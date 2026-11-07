@@ -6778,4 +6778,289 @@ Hệ thống ví: ngày lương về, deadlock từ 2–3 lên 400 lần/giờ, 
   follow: ['Deadlock vs lock wait timeout khác nhau thế nào?', 'Khi nào có lý do dùng SERIALIZABLE?'],
   tags: ['deadlock', 'locking', 'transaction', 'concurrency']
 },
+{
+  id: 'scenario-125',
+  topic: 'scenario',
+  level: 'senior',
+  q: '(Case study – nghiệp vụ) PO giao ticket một dòng: "Cho phép khách tự huỷ đơn hàng trên app". Bạn làm rõ yêu cầu thế nào trước khi code, và những quy tắc nghiệp vụ ẩn nào bạn phải tìm ra?',
+  a: `**Tóm tắt:** Ticket một dòng che giấu cả một **máy trạng thái** và nhiều hệ thống liên quan. Trước khi code, tôi (1) vẽ **vòng đời đơn hàng** và hỏi "được huỷ ở trạng thái nào", (2) đi theo **tiền, hàng, điểm, khuyến mãi** khi huỷ, (3) hỏi **ai bị ảnh hưởng** (kho, vận chuyển, kế toán, CSKH, người bán), (4) chốt bằng **ví dụ cụ thể có số liệu** và tiêu chí nghiệm thu. AI viết được hàm {{cancelOrder()}}; nó không biết rằng đơn đã bàn giao cho đơn vị vận chuyển thì huỷ sẽ tốn phí hoàn hàng 25.000đ mà công ty phải chịu.
+
+### Bước 1 — Vẽ vòng đời và hỏi theo từng trạng thái
+~~~text
+CREATED → PAID → CONFIRMED → PACKED → HANDED_TO_CARRIER → DELIVERED
+                    ↘ CANCELLED (ở đâu được phép? ai được phép?)
+~~~
+Câu hỏi cho PO: huỷ được tới trạng thái nào? Sau khi đóng gói thì sao? Đơn có nhiều người bán thì huỷ một phần được không? Có giới hạn thời gian (ví dụ trong 30 phút sau khi đặt) không?
+
+### Bước 2 — Đi theo dòng tiền, hàng, quyền lợi
+| Khía cạnh | Câu hỏi ẩn |
+|---|---|
+| Tiền | Hoàn qua kênh nào (thẻ, ví, COD chưa thu)? Mất bao lâu? Phí cổng thanh toán đã mất ai chịu? |
+| Khuyến mãi | Voucher đã dùng có được trả lại không? Đơn dùng "mua 2 tặng 1" huỷ một món thì tính lại thế nào? |
+| Điểm thưởng | Điểm đã cộng có bị trừ lại? Điểm đã dùng có được hoàn? |
+| Kho | Tồn kho được trả lại ngay hay sau khi kiểm hàng hoàn? |
+| Vận chuyển | Đã bàn giao thì phải gọi API huỷ vận đơn, có thể mất phí |
+| Kế toán | Hoá đơn điện tử đã xuất thì phải xuất hoá đơn điều chỉnh/huỷ theo quy định |
+| Gian lận | Khách đặt rồi huỷ liên tục để giữ hàng khuyến mãi? Cần giới hạn số lần huỷ |
+
+### Bước 3 — Hỏi các bên liên quan
+Kho, vận chuyển, kế toán, CSKH, đội người bán — mỗi bên 15 phút. Phần lớn quy tắc ẩn nằm ở đây, không nằm trong tài liệu.
+
+### Bước 4 — Chốt bằng ví dụ
+~~~text
+Ví dụ 3: Đơn 2 món (A 300k, B 200k), voucher giảm 50k toàn đơn, thanh toán thẻ 450k,
+trạng thái CONFIRMED. Khách huỷ món B.
+→ Hoàn: 200k − 50k × (200/500) = 180k về thẻ trong 5–7 ngày làm việc; voucher không hoàn
+  vì đơn vẫn còn hiệu lực; trả tồn kho B ngay; điểm thưởng trừ tương ứng 180k.
+~~~
+Mỗi ví dụ được PO và kế toán xác nhận, trở thành test case tự động.
+
+### Ví dụ đời thực
+Ở một sàn thương mại điện tử, phiên bản đầu của tính năng huỷ đơn được làm trong 3 ngày theo đúng ticket. Sau 2 tuần: 1.300 đơn huỷ sau khi đã bàn giao vận chuyển (phí hoàn hàng khoảng 30 triệu đồng), voucher bị hoàn cho cả đơn huỷ một phần (lỗ khoảng 45 triệu), kế toán phát hiện 400 hoá đơn điện tử chưa được điều chỉnh. Lần làm lại bắt đầu bằng 2 buổi làm rõ yêu cầu với 5 bên, ra 14 quy tắc và 22 ví dụ; mất 2 tuần nhưng không có sự cố nào sau ra mắt.
+
+### Vì sao đây là kỹ năng AI khó thay thế
+Thông tin cần thiết **không có trong prompt hay trong code**: nó nằm trong đầu các phòng ban, trong hợp đồng với đơn vị vận chuyển, trong quy định hoá đơn. Người làm được việc này phải biết **hỏi ai, hỏi gì, và nhận ra chỗ các bên hiểu khác nhau**.
+
+### Trả lời mẫu khi phỏng vấn
+"Với một ticket một dòng như cho phép khách huỷ đơn, tôi không code ngay. Tôi vẽ vòng đời đơn hàng và hỏi được huỷ ở những trạng thái nào, ai được huỷ, có giới hạn thời gian không. Sau đó tôi đi theo dòng tiền, hàng và quyền lợi: hoàn tiền qua kênh nào và ai chịu phí, voucher và điểm thưởng xử lý ra sao, tồn kho trả lại lúc nào, đơn đã bàn giao vận chuyển thì sao, hoá đơn điện tử cần điều chỉnh thế nào. Tôi gặp ngắn từng bên liên quan như kho, vận chuyển, kế toán, CSKH vì phần lớn quy tắc ẩn nằm ở họ. Cuối cùng tôi chốt bằng các ví dụ có số liệu cụ thể, được PO và kế toán xác nhận, và biến chúng thành test tự động. Ở dự án trước, bỏ qua bước này khiến bản đầu tiên gây lỗ gần trăm triệu trong hai tuần."
+
+> Senior tip: với mọi tính năng chạm vào tiền, hỏi một câu cố định: "Nếu thao tác này bị đảo ngược (huỷ, hoàn, sửa), những con số nào trong hệ thống phải thay đổi theo?". Danh sách trả lời chính là phạm vi thật của ticket.`,
+  follow: [
+    'Bạn làm gì khi PO và kế toán đưa ra hai quy tắc mâu thuẫn nhau?',
+    'Bạn ước lượng ticket này thế nào khi chưa rõ hết yêu cầu?',
+    'Làm sao biến các ví dụ nghiệp vụ thành test tự động dễ bảo trì?'
+  ],
+  tags: ['requirements', 'business rules', 'state machine', 'ai-proof', 'case study']
+},
+{
+  id: 'scenario-126',
+  topic: 'scenario',
+  level: 'lead',
+  q: '(Case study – quyết định kiến trúc) Ban giám đốc muốn ra mắt tính năng "mua trước trả sau" trong 6 tuần để kịp đối thủ. Hệ thống hiện tại không có phân hệ tín dụng. Bạn đưa ra các phương án, phân tích rủi ro và khuyến nghị thế nào — và chịu trách nhiệm cho khuyến nghị đó ra sao?',
+  a: `**Tóm tắt:** Nhiệm vụ của Lead không phải nói "không kịp" hay "được", mà là **đưa ra 2–3 phương án có thể thực hiện**, mỗi phương án nêu rõ **phạm vi, rủi ro, chi phí, cái giá phải trả về sau**, rồi **khuyến nghị một phương án** kèm điều kiện thành công và điểm dừng. Quyết định được ghi thành **ADR**, có người duyệt, và tôi theo dõi các rủi ro đã nêu sau khi ra mắt. AI có thể liệt kê phương án; nó không biết đối tác nào đã ký hợp đồng, đội nào đang quá tải, và không chịu trách nhiệm khi khuyến nghị sai.
+
+### Bước 1 — Làm rõ "thành công" nghĩa là gì
+- Mục tiêu kinh doanh: có mặt trên thị trường trước Tết? bao nhiêu khách? hạn mức tối đa mỗi khách?
+- Ràng buộc không thương lượng: giấy phép cho vay (công ty có được phép không, hay phải qua công ty tài chính đối tác?), quy định về thông tin khách hàng, đối soát.
+
+### Bước 2 — Ba phương án
+| | A. Tích hợp đối tác BNPL (đối tác cấp tín dụng) | B. Làm phiên bản tối thiểu trên nền hiện có | C. Xây phân hệ tín dụng đầy đủ |
+|---|---|---|---|
+| Phạm vi 6 tuần | Checkout gọi đối tác, nhận kết quả, đối soát | Hạn mức cố định cho nhóm khách tin cậy, kỳ trả 1 lần | Chấm điểm, nhiều kỳ, nhắc nợ, thu hồi |
+| Rủi ro pháp lý | Thấp (đối tác có giấy phép) | Cao nếu không có giấy phép cho vay | Cao |
+| Rủi ro nợ xấu | Đối tác chịu | Công ty chịu | Công ty chịu |
+| Doanh thu | Phí hoa hồng thấp | Cao hơn | Cao nhất về lâu dài |
+| Kịp 6 tuần | Có (nếu đối tác sẵn API) | Sát nút, nợ kỹ thuật lớn | Không |
+| Cái giá về sau | Phụ thuộc đối tác | Phải viết lại | — |
+
+### Bước 3 — Khuyến nghị có điều kiện
+"Khuyến nghị **A** để kịp ra mắt, đồng thời bắt đầu khảo sát pháp lý và thiết kế cho **C** chạy song song trong 6 tháng. Không chọn B vì rủi ro pháp lý và nợ xấu do công ty tự gánh mà không có năng lực chấm điểm." Kèm theo: **điều kiện thành công** (đối tác xác nhận API và môi trường thử trong tuần 1), **điểm dừng** (nếu tuần 2 chưa có môi trường thử, lùi ngày ra mắt hoặc giảm phạm vi), **chỉ số theo dõi** (tỉ lệ duyệt, tỉ lệ hoàn tất thanh toán, khiếu nại).
+
+### Bước 4 — Ghi và chịu trách nhiệm
+- ADR: bối cảnh, phương án, quyết định, hệ quả, ngày xem lại; người duyệt (CTO, pháp chế, rủi ro).
+- Sau ra mắt, báo cáo định kỳ các rủi ro đã nêu; nếu giả định sai, tôi là người đề xuất điều chỉnh trước tiên.
+
+### Ví dụ đời thực
+Một sàn thương mại điện tử đứng trước đúng yêu cầu này. Đội kỹ thuật ban đầu đề xuất tự xây (phương án C, 5 tháng); ban giám đốc ép làm B trong 6 tuần. Lead trình bày bảng trên kèm ý kiến pháp chế: công ty không có giấy phép cho vay, nên B có rủi ro bị xử phạt. Ban giám đốc chọn A với một công ty tài chính đối tác; ra mắt sau 5 tuần, tỉ lệ chuyển đổi ở checkout tăng 9% với nhóm đơn trên 2 triệu. Sau 8 tháng, dựa trên dữ liệu hành vi trả nợ thu được qua đối tác, công ty mới xây phân hệ riêng với rủi ro thấp hơn nhiều.
+
+### Vì sao đây là kỹ năng AI khó thay thế
+Quyết định phụ thuộc vào **thông tin không công khai** (hợp đồng, giấy phép, năng lực đội, khẩu vị rủi ro của lãnh đạo) và cần **một người chịu trách nhiệm** trước ban giám đốc và cơ quan quản lý.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bị ép một mốc thời gian, tôi không trả lời được hay không được, mà đưa ra hai ba phương án khả thi. Trước hết tôi làm rõ thành công là gì và các ràng buộc không thương lượng, như giấy phép cho vay. Với mua trước trả sau, tôi so ba hướng: tích hợp đối tác có giấy phép, làm bản tối thiểu tự gánh rủi ro, hoặc xây phân hệ đầy đủ; mỗi hướng có phạm vi, rủi ro pháp lý, rủi ro nợ xấu, doanh thu, khả năng kịp hạn và cái giá về sau. Tôi khuyến nghị một phương án kèm điều kiện thành công, điểm dừng và chỉ số theo dõi, ghi thành ADR có người duyệt từ pháp chế và rủi ro. Sau ra mắt, tôi theo dõi các giả định đã nêu và chủ động đề xuất điều chỉnh nếu chúng sai."
+
+> Senior tip: luôn kèm một **"điểm dừng"** trong khuyến nghị: điều kiện cụ thể mà nếu không đạt vào ngày X thì sẽ cắt phạm vi hoặc lùi hạn. Nó biến cuộc tranh luận "có kịp không" thành một kế hoạch có kiểm soát mà lãnh đạo dễ đồng ý.`,
+  follow: [
+    'Bạn trình bày rủi ro kỹ thuật cho ban giám đốc không có nền tảng kỹ thuật thế nào?',
+    'Nếu ban giám đốc vẫn chọn phương án bạn không khuyến nghị, bạn làm gì?',
+    'ADR của bạn gồm những mục nào và lưu ở đâu?'
+  ],
+  tags: ['architecture decision', 'trade-off', 'ADR', 'leadership', 'ai-proof', 'case study']
+},
+{
+  id: 'scenario-127',
+  topic: 'scenario',
+  level: 'lead',
+  q: '(Case study – chỉ huy sự cố) 21:05 tối thứ Sáu, tỉ lệ thanh toán thất bại tăng từ 0,5% lên 30%. Có ba giả thuyết: bản deploy lúc 20:30, cổng thanh toán đối tác đang chậm, và DB đang chạy job bảo trì. Bạn là người chỉ huy sự cố. Bạn điều phối, ra quyết định và giao tiếp thế nào trong 60 phút đầu?',
+  a: `**Tóm tắt:** Người chỉ huy sự cố (incident commander) **không tự đi debug** — họ **điều phối**: chia vai trò, cho các giả thuyết được kiểm tra **song song**, ưu tiên **giảm thiệt hại** trước khi tìm nguyên nhân, ra quyết định khi thông tin chưa đầy đủ (rollback là hành động có thể đảo ngược, rẻ), và **giao tiếp đều đặn** với các bên. AI có thể gợi ý giả thuyết; nó không gọi được đối tác lúc 9 giờ tối, không quyết định được việc dừng một job của DBA, và không chịu trách nhiệm cho quyết định.
+
+### 0–10 phút: tổ chức
+- Mở kênh sự cố, tuyên bố mức độ (P1: ảnh hưởng doanh thu trực tiếp), nhận vai **chỉ huy**.
+- Chia vai: **người điều tra kỹ thuật** (2 người, mỗi người một giả thuyết), **người liên lạc** (cập nhật CSKH, quản lý, đối tác), **người ghi chép** (dòng thời gian).
+- Kiểm tra nhanh "điều gì thay đổi gần đây": deploy 20:30, job bảo trì DB 20:45 (ai bật?), dashboard cổng thanh toán.
+
+### 10–25 phút: kiểm tra song song, giảm thiệt hại sớm
+| Giả thuyết | Kiểm tra nhanh | Hành động giảm thiệt hại |
+|---|---|---|
+| Deploy 20:30 | Lỗi bắt đầu lúc nào so với 20:30? Lỗi có tập trung ở pod phiên bản mới? | Rollback (5 phút, đảo ngược được) |
+| Cổng thanh toán chậm | Latency và mã lỗi từ đối tác; trang trạng thái của họ | Chuyển một phần traffic sang cổng dự phòng nếu có |
+| Job bảo trì DB | Lock wait, CPU DB, query chậm từ 20:45 | Tạm dừng job (cần DBA đồng ý) |
+Nguyên tắc: hành động **rẻ và đảo ngược được** thì làm ngay khi có dấu hiệu, không chờ chắc chắn 100%.
+
+### 25–60 phút: quyết định và xác nhận
+Trong ví dụ này: lỗi tăng từ 20:47 (không khớp 20:30) và chỉ ở bước ghi giao dịch; lock wait tăng mạnh; job "VACUUM FULL" bảng giao dịch được một DBA bật nhầm thay cho bảng log. Quyết định: dừng job (DBA xác nhận an toàn), không rollback deploy. 21:31 tỉ lệ lỗi về 0,6%. Tiếp tục theo dõi 30 phút trước khi đóng sự cố; giao dịch thất bại trong khung giờ được liệt kê để CSKH chủ động liên hệ.
+
+### Giao tiếp
+- Cập nhật mỗi 15 phút theo mẫu: **ảnh hưởng — đang làm gì — lần cập nhật tiếp theo lúc mấy giờ**. Không đoán nguyên nhân khi chưa xác nhận.
+- CSKH nhận câu trả lời mẫu cho khách; quản lý nhận ước lượng ảnh hưởng (số giao dịch, số tiền).
+
+### Sau sự cố
+Postmortem không đổ lỗi trong 3 ngày: tại sao lệnh nặng có thể chạy trên bảng giao dịch giờ cao điểm mà không có cảnh báo? Hành động: lịch bảo trì phải qua phê duyệt, chặn lệnh khoá bảng lớn bằng quyền, cảnh báo lock wait.
+
+### Vì sao đây là kỹ năng AI khó thay thế
+Thông tin rời rạc giữa con người và hệ thống, cần **quyết định dưới áp lực khi chưa đủ dữ liệu**, cần **thẩm quyền** để dừng việc của đội khác, và cần **giao tiếp** với khách hàng, đối tác, lãnh đạo.
+
+### Trả lời mẫu khi phỏng vấn
+"Là người chỉ huy, việc đầu tiên tôi làm là tổ chức chứ không tự debug: mở kênh sự cố, tuyên bố mức độ, chia vai gồm người điều tra cho từng giả thuyết, người liên lạc và người ghi dòng thời gian. Các giả thuyết được kiểm tra song song bằng những câu hỏi nhanh: lỗi bắt đầu lúc nào so với thời điểm deploy, lỗi nằm ở đâu, đối tác có báo sự cố không, DB có lock wait không. Tôi ưu tiên giảm thiệt hại: hành động rẻ và đảo ngược được như rollback hay dừng một job thì làm ngay khi có dấu hiệu. Tôi cập nhật mỗi 15 phút theo mẫu ảnh hưởng, đang làm gì, lần cập nhật tiếp theo, và không đoán nguyên nhân khi chưa xác nhận. Sau đó là postmortem không đổ lỗi với hành động cụ thể để không lặp lại."
+
+> Senior tip: hỏi **"điều gì đã thay đổi trong 2 giờ qua?"** ngay phút đầu, và hỏi cả con người (ai vừa chạy gì, bật gì) chứ không chỉ xem lịch deploy. Rất nhiều sự cố lớn bắt nguồn từ một thao tác tay không nằm trong bất kỳ hệ thống theo dõi nào.`,
+  follow: [
+    'Khi nào bạn chọn rollback, khi nào chọn sửa nóng (fix forward)?',
+    'Bạn viết postmortem không đổ lỗi thế nào khi lỗi rõ ràng do một người?',
+    'Làm sao giảm thời gian phát hiện sự cố (MTTD) cho luồng thanh toán?'
+  ],
+  tags: ['incident command', 'production', 'communication', 'decision making', 'ai-proof', 'case study']
+},
+{
+  id: 'scenario-128',
+  topic: 'scenario',
+  level: 'senior',
+  q: '(Case study – tiền và tuân thủ) Kiểm toán nội bộ phát hiện tổng số dư ví của khách lệch 38 triệu đồng so với sổ cái kế toán (0,02%). Bạn tìm nguyên nhân và điều chỉnh dữ liệu thế nào để vừa đúng vừa được kiểm toán chấp nhận?',
+  a: `**Tóm tắt:** Với tiền, **cách sửa quan trọng như kết quả**: không bao giờ chạy {{UPDATE}} số dư trực tiếp. Tôi (1) **khoanh vùng** lệch theo ngày/loại giao dịch/ví bằng đối soát, (2) tìm **nguyên nhân gốc** bằng dữ liệu (log, sự kiện, bút toán), (3) **sửa nguyên nhân** trong code, (4) điều chỉnh số liệu bằng **bút toán điều chỉnh** có lý do, bằng chứng và **maker-checker**, (5) chứng minh với kiểm toán bằng **báo cáo đối soát trước/sau** và quy trình phòng ngừa.
+
+### Bước 1 — Khoanh vùng
+Bất biến cần đúng: với mỗi ví, **số dư = tổng các bút toán** của ví đó. Chạy đối soát:
+~~~sql
+SELECT w.id, w.balance, coalesce(sum(e.amount), 0) AS ledger_sum,
+       w.balance - coalesce(sum(e.amount), 0) AS diff
+FROM wallet w LEFT JOIN ledger_entry e ON e.wallet_id = w.id
+GROUP BY w.id, w.balance
+HAVING w.balance <> coalesce(sum(e.amount), 0);
+~~~
+Kết quả: 412 ví lệch; nhóm theo ngày phát sinh bút toán cuối → tập trung từ ngày 14/10; nhóm theo loại giao dịch → gần như toàn bộ là **hoàn tiền một phần**.
+
+### Bước 2 — Nguyên nhân gốc
+Từ 14/10, một bản sửa đổi hoàn tiền một phần **cập nhật số dư** nhưng ghi **bút toán theo số tiền gốc** của giao dịch thay vì số tiền hoàn (hoặc ngược lại) khi đơn có voucher. Tái hiện bằng test với dữ liệu của 3 ví lệch. Kiểm tra thêm: không có dấu hiệu gian lận (không có ví nào rút tiền bất thường sau khi được cộng thừa).
+
+### Bước 3 — Sửa nguyên nhân
+Bản sửa code, thêm test với các ví dụ có voucher, thêm **kiểm tra bất biến** trong code: mọi thay đổi số dư phải đi kèm bút toán cùng số tiền trong cùng transaction (hoặc tốt hơn: số dư được **tính từ** sổ cái/ cập nhật bởi một nơi duy nhất).
+
+### Bước 4 — Điều chỉnh có kiểm soát
+- Không sửa giao dịch gốc, không {{UPDATE}} số dư tay. Tạo **bút toán điều chỉnh** cho từng ví: số tiền, lý do ("điều chỉnh lỗi hoàn tiền một phần 14/10–02/11, ticket INC-2291"), liên kết tới giao dịch gốc.
+- **Maker** (kỹ sư/ vận hành) tạo lô điều chỉnh từ script đã review; **checker** (kế toán/kiểm soát) duyệt; hệ thống áp dụng và ghi audit.
+- Với ví bị **cộng thừa** mà khách đã tiêu: theo chính sách và pháp chế (thu hồi, hay công ty chịu) — đây là quyết định nghiệp vụ, không phải của kỹ sư.
+
+### Bước 5 — Chứng minh
+Chạy lại đối soát: 0 ví lệch. Gửi kiểm toán: mô tả nguyên nhân, phạm vi (số ví, số tiền, khoảng thời gian), danh sách bút toán điều chỉnh có phê duyệt, bằng chứng đối soát trước/sau, hành động phòng ngừa (đối soát tự động hằng ngày với cảnh báo).
+
+### Ví dụ đời thực
+Lần trước công ty gặp lệch tương tự, một kỹ sư sửa trực tiếp số dư bằng script trong đêm "cho nhanh". Kiểm toán không chấp nhận vì không có dấu vết và không ai duyệt; công ty phải dựng lại toàn bộ lịch sử từ log mất 3 tuần. Lần này, theo quy trình trên, từ lúc phát hiện tới khi kiểm toán đóng hồ sơ mất 6 ngày; đối soát tự động hằng ngày được bật, lần lệch sau (2 tháng sau, do một lỗi khác) được phát hiện trong 18 giờ với 3 ví.
+
+### Vì sao đây là kỹ năng AI khó thay thế
+Cần hiểu **kế toán kép, quy định kiểm toán, phân quyền phê duyệt**, cân nhắc **chính sách với khách hàng** và chịu **trách nhiệm pháp lý** cho dữ liệu tài chính.
+
+### Trả lời mẫu khi phỏng vấn
+"Với lệch số dư, cách sửa quan trọng như kết quả, nên tôi không bao giờ update số dư trực tiếp. Đầu tiên tôi khoanh vùng bằng đối soát bất biến: số dư mỗi ví phải bằng tổng bút toán của nó; nhóm các ví lệch theo ngày và loại giao dịch để tìm điểm bắt đầu, ở đây là hoàn tiền một phần từ một ngày cụ thể. Sau đó tái hiện bằng test và sửa nguyên nhân trong code, thêm kiểm tra bất biến. Dữ liệu được điều chỉnh bằng bút toán điều chỉnh có lý do, liên kết giao dịch gốc, qua maker-checker: người tạo khác người duyệt, có audit. Trường hợp khách đã tiêu số tiền cộng thừa là quyết định của nghiệp vụ và pháp chế. Cuối cùng tôi chứng minh với kiểm toán bằng đối soát trước và sau, và bật đối soát tự động hằng ngày."
+
+> Senior tip: thiết kế để **lệch không thể xảy ra im lặng**: số dư chỉ được thay đổi ở một chỗ duy nhất trong code, cùng transaction với bút toán, và một job đối soát chạy hằng ngày cảnh báo khi có dù chỉ một đồng chênh lệch.`,
+  follow: [
+    'Vì sao không được sửa trực tiếp giao dịch gốc dù biết nó sai?',
+    'Bạn thiết kế để số dư và sổ cái không bao giờ lệch nhau thế nào?',
+    'Khi khách đã tiêu số tiền được cộng thừa, các lựa chọn xử lý là gì?'
+  ],
+  tags: ['ledger', 'reconciliation', 'audit', 'maker-checker', 'fintech', 'ai-proof', 'case study']
+},
+{
+  id: 'scenario-129',
+  topic: 'scenario',
+  level: 'senior',
+  q: '(Case study – kiểm soát code AI viết) Team dùng AI coding assistant, tốc độ ra PR tăng gấp đôi nhưng 3 tháng gần đây số sự cố production tăng 40%. Bạn được giao "giữ tốc độ nhưng giảm lỗi". Bạn phân tích và thiết kế quy trình thế nào?',
+  a: `**Tóm tắt:** AI làm **tăng lượng code** nhanh hơn khả năng **hiểu và kiểm soát** của team. Tôi phân tích **loại lỗi** nào lọt lên production (thường không phải lỗi cú pháp mà là lỗi ở **ranh giới**: đồng thời, transaction, retry, bảo mật, dữ liệu thật), rồi đặt **lưới an toàn tự động** cho đúng các loại đó (test, static analysis, kiểm tra quy tắc kiến trúc), thay đổi **cách review** (review theo rủi ro, tác giả phải giải thích được code), và giữ **PR nhỏ**. Mục tiêu không phải cấm AI mà là để con người tập trung review đúng chỗ AI hay sai.
+
+### Bước 1 — Phân tích dữ liệu sự cố
+Gắn nhãn 31 sự cố 3 tháng theo nguyên nhân:
+| Loại lỗi | Số sự cố | Ví dụ |
+|---|---|---|
+| Đồng thời / race | 8 | "get rồi put" trên map dùng chung, check-then-act trên số dư |
+| Transaction / proxy | 6 | Gọi {{@Transactional}} nội bộ, gọi HTTP trong transaction |
+| Retry / idempotency | 5 | Retry thao tác không idempotent → trùng giao dịch |
+| Bảo mật / dữ liệu | 4 | Log toàn bộ request có số điện thoại, thiếu kiểm tra quyền sở hữu (BOLA) |
+| Hiệu năng | 5 | N+1, tải cả bảng vào bộ nhớ |
+| Khác | 3 | |
+Nhận xét: 90% là lỗi mà **code "trông đúng"** và test đơn vị với mock vẫn xanh.
+
+### Bước 2 — Lưới an toàn tự động cho đúng các loại lỗi
+- **Test tích hợp thật** (Testcontainers) cho repository và luồng tiền; test đồng thời cho các thao tác trên số dư/tồn kho.
+- **Static analysis** có rule cho lỗi hay gặp (SpotBugs, Error Prone, Sonar): {{SimpleDateFormat}} static, so sánh wrapper bằng {{==}}, tài nguyên không đóng.
+- **ArchUnit**: cấm gọi HTTP client bên trong class có {{@Transactional}}, cấm {{@Data}} trên entity, cấm log trực tiếp object request.
+- **Test bảo mật tự động**: user A truy cập tài nguyên của user B phải nhận 404.
+- **Đếm query** trong test cho API danh sách.
+
+### Bước 3 — Thay đổi review
+- PR tối đa khoảng 400 dòng; PR do AI sinh phần lớn phải ghi rõ trong mô tả.
+- **Checklist theo rủi ro**: PR chạm tiền, quyền, dữ liệu cá nhân, đồng thời → bắt buộc reviewer senior và câu hỏi "hai request cùng lúc thì sao? retry thì sao? lỗi giữa chừng thì sao?".
+- **Tác giả phải giải thích** được mọi dòng: nếu không giải thích được vì sao dùng {{REQUIRES_NEW}} ở đây, PR chưa sẵn sàng.
+
+### Bước 4 — Đo lại
+Theo dõi tỉ lệ sự cố trên số deploy, thời gian từ commit tới production, tỉ lệ PR bị trả lại vì lỗi rủi ro cao.
+
+### Ví dụ đời thực
+Sau 3 tháng áp dụng: số sự cố giảm 55% so với đỉnh (thấp hơn cả trước khi dùng AI), tốc độ ra PR chỉ giảm khoảng 10% so với lúc cao nhất. Lưới tự động chặn trung bình 6 lỗi thuộc nhóm rủi ro cao mỗi tuần trước khi tới reviewer. Hai junior chia sẻ rằng việc phải giải thích code AI sinh ra giúp họ học nhanh hơn thay vì chỉ "chấp nhận gợi ý".
+
+### Vì sao đây là kỹ năng AI khó thay thế
+AI làm tăng lượng code cần kiểm soát; người có kinh nghiệm production biết **chỗ nào code trông đúng mà sai** và thiết kế được hệ thống kiểm soát cho cả team.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không cấm AI mà bắt đầu từ dữ liệu: gắn nhãn các sự cố theo loại lỗi. Thường phần lớn là lỗi code trông đúng nhưng sai ở ranh giới: race condition, transaction qua proxy, retry không idempotent, thiếu kiểm tra quyền sở hữu, log dữ liệu nhạy cảm, N+1. Rồi tôi đặt lưới an toàn tự động cho đúng các loại đó: test tích hợp thật và test đồng thời, static analysis, ArchUnit cấm các mẫu nguy hiểm, test bảo mật kiểu user A truy cập dữ liệu user B, đếm query. Review được làm theo rủi ro: PR nhỏ, PR chạm tiền, quyền hay dữ liệu cá nhân cần reviewer senior với checklist, và tác giả phải giải thích được mọi dòng. Rồi đo lại tỉ lệ sự cố trên số deploy để biết quy trình có hiệu quả không."
+
+> Senior tip: thêm vào template PR ba câu hỏi bắt buộc cho thay đổi có trạng thái: "Hai request cùng lúc thì sao? Retry thì sao? Lỗi ở giữa thì sao?". Ba câu này bắt được phần lớn lỗi mà cả người lẫn AI hay bỏ sót.`,
+  follow: [
+    'Làm sao đo hiệu quả thật của AI coding assistant với team?',
+    'Quy tắc nào bạn đưa vào ArchUnit đầu tiên, và vì sao?',
+    'Bạn hướng dẫn junior dùng AI mà vẫn học được kỹ năng nền tảng thế nào?'
+  ],
+  tags: ['AI coding', 'code review', 'quality', 'ArchUnit', 'ai-proof', 'case study']
+},
+{
+  id: 'scenario-130',
+  topic: 'scenario',
+  level: 'senior',
+  q: '(Case study – vận hành hạ tầng) Một thay đổi Terraform nhỏ (đổi tên một tham số của RDS do AI gợi ý "cho chuẩn") được merge; terraform plan có dòng "must be replaced" nhưng không ai đọc kỹ. Pipeline apply suýt xoá và tạo lại DB production. Bạn xử lý và thiết kế lại quy trình thay đổi hạ tầng thế nào?',
+  a: `**Tóm tắt:** Thay đổi hạ tầng có **phạm vi ảnh hưởng lớn** và nhiều thao tác **không đảo ngược được** (xoá DB, đổi mạng, đổi IAM). Quy trình an toàn cần nhiều lớp: **bảo vệ tài nguyên quan trọng ngay trong code** ({{prevent_destroy}}, deletion protection), **plan được kiểm tra tự động** bằng policy-as-code (chặn mọi hành động destroy/replace trên tài nguyên quan trọng), **người duyệt đọc plan** chứ không chỉ đọc diff code, **tách state và quyền** theo môi trường, và **backup đã kiểm chứng**. Lần này may nhờ deletion protection; quy trình không được phụ thuộc vào may mắn.
+
+### Điều gì đã xảy ra
+Đổi một thuộc tính mà provider coi là **ForceNew** (ví dụ tên định danh của instance) khiến Terraform lên kế hoạch **xoá rồi tạo mới**. Diff code chỉ là một dòng đổi tên — reviewer đọc code và duyệt. Plan có dòng {{-/+ resource ... must be replaced}} nằm giữa 300 dòng output. Apply bị chặn lại vì RDS có {{deletion_protection = true}} — nếu không, DB sẽ bị xoá (snapshot cuối tuỳ cấu hình) và hệ thống ngừng nhiều giờ.
+
+### Xử lý ngay
+1. Dừng pipeline, khoá state, xác nhận không có tài nguyên nào đã bị thay đổi một phần.
+2. Revert thay đổi; nếu thật sự cần đổi tên, dùng cách không tạo lại (khối {{moved}} hoặc {{terraform state mv}} khi chỉ đổi địa chỉ trong code; hoặc chấp nhận giữ tên cũ).
+3. Postmortem không đổ lỗi: vì sao một thay đổi có "replace" trên DB production đi được tới bước apply?
+
+### Thiết kế lại quy trình
+| Lớp | Biện pháp |
+|---|---|
+| Trong code | {{prevent_destroy = true}} (trong khối lifecycle) cho DB, bucket dữ liệu, KMS key; deletion protection của dịch vụ bật sẵn |
+| Kiểm tra plan tự động | Xuất plan dạng JSON, kiểm tra bằng OPA/Conftest (hoặc Sentinel): chặn mọi action delete/replace trên loại tài nguyên quan trọng ở prod trừ khi có nhãn phê duyệt đặc biệt |
+| Hiển thị cho reviewer | Bot comment tóm tắt plan lên PR: số tạo/sửa/xoá, liệt kê nổi bật mọi "replace"/"destroy" |
+| Quyền và phạm vi | State tách theo môi trường và theo lớp (mạng, dữ liệu, ứng dụng); role apply của prod chỉ chạy từ pipeline, cần phê duyệt thủ công |
+| Bảo hiểm cuối | AWS Backup có Vault Lock, khôi phục thử định kỳ; SCP chặn xoá tài nguyên có tag quan trọng ngoài quy trình |
+| Thay đổi do AI gợi ý | Được đối xử như mọi thay đổi khác: không có ngoại lệ "chỉ là đổi tên cho chuẩn" |
+
+### Ví dụ đời thực
+Sau sự cố, team bật policy-as-code trong pipeline: tháng đầu tiên nó chặn 3 thay đổi có "replace" trên tài nguyên quan trọng (một subnet, một security group dùng chung, một Aurora cluster), cả ba đều do thay đổi tưởng vô hại. Thời gian review PR hạ tầng giảm vì bot tóm tắt plan, reviewer chỉ tập trung vào phần nổi bật. Không có sự cố hạ tầng nghiêm trọng nào trong 9 tháng tiếp theo.
+
+### Vì sao đây là kỹ năng AI khó thay thế
+AI viết được Terraform; nó không chịu trách nhiệm cho **phạm vi ảnh hưởng** của một lệnh apply trên production và không thiết kế được hệ thống kiểm soát phù hợp với rủi ro của tổ chức. Người vận hành phải hiểu **thao tác nào đảo ngược được, thao tác nào không**.
+
+### Trả lời mẫu khi phỏng vấn
+"Thay đổi hạ tầng nguy hiểm vì phạm vi ảnh hưởng lớn và nhiều thao tác không đảo ngược được, nên tôi không để an toàn phụ thuộc vào việc reviewer đọc kỹ plan dài. Tôi đặt nhiều lớp: tài nguyên quan trọng có prevent_destroy và deletion protection ngay trong code; plan được xuất JSON và kiểm tra tự động bằng OPA hoặc Conftest để chặn mọi hành động xoá hay tạo lại trên tài nguyên quan trọng ở production; bot tóm tắt plan lên PR và làm nổi bật mọi replace; state tách theo môi trường và theo lớp; apply production chỉ chạy từ pipeline với phê duyệt; và backup có Vault Lock đã được khôi phục thử. Khi chỉ đổi tên trong code, tôi dùng khối moved thay vì để Terraform tạo lại tài nguyên. Thay đổi do AI gợi ý cũng đi qua đúng quy trình đó, không có ngoại lệ."
+
+> Senior tip: thêm vào pipeline một bước **đếm "destroy" và "replace" trong plan**; nếu khác 0 ở production thì pipeline dừng và yêu cầu một phê duyệt riêng có ghi lý do. Một dòng script đơn giản này chặn được loại sự cố tốn kém nhất của Infrastructure as Code.`,
+  follow: [
+    'Khối moved trong Terraform giải quyết vấn đề gì?',
+    'Bạn viết policy OPA/Conftest chặn destroy trên tài nguyên quan trọng thế nào?',
+    'Tách state Terraform theo môi trường và theo lớp có lợi gì?'
+  ],
+  tags: ['Terraform', 'infrastructure as code', 'policy as code', 'change management', 'ai-proof', 'case study']
+},
 );
