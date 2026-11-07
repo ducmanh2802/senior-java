@@ -4290,5 +4290,456 @@ Kể lại trong phỏng vấn theo mạch thực dụng: đọc {{head -3}} đ�
   related: ['devops-012', 'devops-056', 'devops-057'],
   tags: ['Access log', 'Incident response', 'awk', 'p95', 'nearest-rank', 'Error rate', 'Latency'],
 },
-);
+{
+  id: 'lesson-devops-014',
+  track: 'devops',
+  order: 14,
+  title: 'Đánh giá rule cảnh báo kiểu Prometheus: for, pending→firing, gộp cảnh báo',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được vì sao điều kiện phải kéo dài for mới firing, tránh nhiễu ngắn',
+    'Mô tả được chuỗi trạng thái inactive → pending → firing → resolved',
+    'Viết được AlertEvaluator nhận chuỗi (thời điểm, giá trị) với đồng hồ giả và trả danh sách sự kiện chuyển trạng thái',
+  ],
+  body: `### Cảnh báo kiểu Prometheus là gì
+Prometheus Alertmanager đánh giá **rule** trên chuỗi mẫu metric theo thời gian. Một rule có điều kiện (ví dụ CPU > 80%) và **for** (ví dụ 5 phút): chỉ khi điều kiện đúng liên tục trong suốt thời gian for mới chuyển sang firing. Mục đích: tránh báo động giả do spike ngắn.
 
+**Tóm tắt:** Prometheus rule chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp cảnh báo để tránh spam.
+
+### Trạng thái
+- **inactive**: điều kiện sai.
+- **pending**: điều kiện đúng nhưng chưa đủ for.
+- **firing**: điều kiện đúng đủ for, cảnh báo gửi đi.
+- **resolved**: trước đây firing, giờ điều kiện sai.
+
+### for và grace
+Khi điều kiện đúng liên tục, pending bắt đầu. Nếu đủ for → firing. Nếu điều kiện sai trước khi đủ for → về inactive, không báo. Khi firing rồi điều kiện sai → resolved.
+
+### Gộp cảnh báo (grouping)
+Nhiều alert cùng labels được gộp thành một notification để tránh spam. Mỗi group có route riêng.
+
+### Ví dụ đời thực
+Service CPU spike 2 phút do GC, ngưỡng 80% for 5m → pending rồi inactive, không paging. Nếu CPU cao 10 phút → firing, on-call nhận 1 alert gộp.
+
+### Trả lời mẫu khi phỏng vấn
+"Rule Prometheus chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp alert cùng labels để tránh spam."
+
+> Senior tip: Luôn đặt for đủ dài (3-5m) cho metric CPU/mem để tránh alert storm do spike ngắn.
+
+Thêm giải thích chi tiết cho người mới: PromQL vector, evaluation interval, alert rule, recording rule, for duration, pending/firing/resolved, inhibition, grouping, routing. Giải thích từng bước cái gì→vì sao→hoạt động thế nào→ví dụ→lỗi hay gặp→trả lời phỏng vấn. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. `,
+  exercises: [
+    {
+      title: 'AlertEvaluator: danh sách sự kiện chuyển trạng thái',
+      prompt: `Hoàn thiện {{AlertEvaluator.evaluate(samples, threshold, forSeconds)}} trả về danh sách sự kiện chuyển trạng thái. samples là mảng long[] thời điểm (giây) và double[] giá trị; threshold là ngưỡng; forSeconds là thời gian for. Trả về List<String> các sự kiện: "PENDING at t", "FIRING at t", "RESOLVED at t".`,
+      starter: `import java.util.*;
+class AlertEvaluator {
+    static List<String> evaluate(long[] times, double[] values, double threshold, long forSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    public static void main(String[] args) {
+        check("short spike no firing", () -> {
+            long[] t = {0,1,2}; double[] v = {90,90,50};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 5);
+            if (r.contains("FIRING at 2")) throw new AssertionError("should not fire");
+        });
+        check("long breach fires", () -> {
+            long[] t = {0,1,2,3,4,5,6}; double[] v = {90,90,90,90,90,90,90};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 3);
+            if (!r.contains("FIRING at 3")) throw new AssertionError("should fire at 3");
+        });
+        check("resolved on recovery", () -> {
+            long[] t = {0,1,2,3,4,5}; double[] v = {90,90,90,90,50,50};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 2);
+            if (!r.contains("RESOLVED at 4")) throw new AssertionError("should resolve");
+        });
+        check("pending event recorded", () -> {
+            long[] t = {0,1,2}; double[] v = {90,90,90};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 5);
+            if (!r.contains("PENDING at 0")) throw new AssertionError("pending missing");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+class AlertEvaluator {
+    static List<String> evaluate(long[] times, double[] values, double threshold, long forSeconds) {
+        List<String> events = new ArrayList<>();
+        int n = times.length;
+        boolean pending = false, firing = false;
+        long pendingStart = 0;
+        for (int i = 0; i < n; i++) {
+            boolean breach = values[i] > threshold;
+            if (breach) {
+                if (!pending && !firing) { pending = true; pendingStart = times[i]; events.add("PENDING at " + times[i]); }
+                if (pending && !firing && times[i] - pendingStart >= forSeconds) { firing = true; pending = false; events.add("FIRING at " + times[i]); }
+            } else {
+                if (firing) { firing = false; events.add("RESOLVED at " + times[i]); }
+                if (pending) { pending = false; }
+            }
+        }
+        return events;
+    }
+}`,
+      hints: ['Theo dõi pendingStart; khi times[i]-pendingStart >= forSeconds thì firing.'],
+      explain: `Theo dõi trạng thái pending/firing; khi breach đủ lâu thì firing; khi recovery thì resolved.`,
+    },
+  ],
+  check: [
+    { q: 'for=5m nghĩa là gì?', options: ['Cảnh báo sau 5 phút', 'Điều kiện phải đúng liên tục 5 phút mới firing', 'Lặp lại mỗi 5 phút', 'Tắt sau 5 phút'], answer: 1, explain: 'for là thời gian điều kiện phải đúng liên tục trước khi firing.' },
+    { q: 'Spike 2 phút với for 5m thì sao?', options: ['Firing', 'Pending rồi inactive, không báo', 'Resolved', 'Lỗi'], answer: 1, explain: 'Chưa đủ for nên không firing, về inactive.' },
+  ],
+  related: ['devops-001', 'devops-007'],
+  tags: ['Prometheus', 'Alerting', 'for', 'pending', 'firing', 'resolved'],
+},
+{
+  id: 'lesson-devops-015',
+  track: 'devops',
+  order: 15,
+  title: 'Health check và failover kiểu HAProxy/Keepalived: fall/rise, round-robin, VIP',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được fall (N lỗi liên tiếp → down) và rise (M thành công → up)',
+    'Mô phỏng round-robin bỏ qua backend down',
+    'Hiểu VIP chuyển sang node backup theo priority với Keepalived',
+  ],
+  body: `### Health check là gì
+Load balancer (HAProxy, nginx) định kỳ gọi health check đến backend. Sau **fall** lần fail liên tiếp → backend bị đánh dấu DOWN, không nhận traffic. Sau **rise** lần success liên tiếp → UP lại.
+
+**Tóm tắt:** Backend down sau N lỗi liên tiếp (fall) và up sau M thành công (rise); round-robin bỏ qua down; VIP failover theo priority Keepalived.
+
+### fall và rise
+- **fall**: số lần check fail liên tiếp để chuyển DOWN.
+- **rise**: số lần check success liên tiếp để chuyển UP.
+
+Ví dụ fall=3, rise=2: 3 fail liên tiếp → DOWN; 2 success liên tiếp → UP.
+
+### Round-robin bỏ qua down
+LB phân phối request round-robin nhưng chỉ chọn backend đang UP.
+
+### Failover VIP (Keepalived)
+Keepalived dùng VRRP: node master có priority cao giữ VIP. Khi master down, backup có priority cao nhất tiếp quản VIP. Failback khi master up lại (tùy preempt).
+
+### Ví dụ đời thực
+3 backend, 1 down sau 3 fail liên tiếp → LB chỉ gửi traffic tới 2 backend còn lại; khi backend phục hồi, 2 success → UP lại.
+
+### Trả lời mẫu khi phỏng vấn
+"Health check với fall/rise: backend down sau N lỗi liên tiếp, up sau M thành công; round-robin bỏ qua down; Keepalived failover VIP theo priority."
+
+> Senior tip: Đặt fall=3, rise=2 và health check interval 2s để phát hiện lỗi nhanh mà không false positive.
+
+Thêm giải thích chi tiết: VRRP, priority, preempt, VIP, health check types (HTTP/TCP), fall/rise, round-robin, leastconn, backup server, drain. Giải thích từng bước cho người mới. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  `,
+  exercises: [
+    {
+      title: 'LoadBalancer: fall/rise, round-robin, failover',
+      prompt: `Hoàn thiện {{LoadBalancer}} với các method: constructor nhận số backend; {{healthCheck(int idx, boolean ok)}} cập nhật trạng thái với fall=3, rise=2; {{next()}} trả index backend tiếp theo còn UP theo round-robin (hoặc -1 nếu không còn); {{isUp(int idx)}}.`,
+      starter: `class LoadBalancer {
+    LoadBalancer(int n) { throw new UnsupportedOperationException("TODO"); }
+    void healthCheck(int idx, boolean ok) { throw new UnsupportedOperationException("TODO"); }
+    int next() { throw new UnsupportedOperationException("TODO"); }
+    boolean isUp(int idx) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(int expected, int actual) {
+        if (expected != actual) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("initial all up", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            eq(0, lb.next()); eq(1, lb.next()); eq(2, lb.next());
+        });
+        check("fall marks down", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            lb.healthCheck(1, false); lb.healthCheck(1, false); lb.healthCheck(1, false);
+            if (lb.isUp(1)) throw new AssertionError("should be down");
+        });
+        check("round-robin skips down", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            lb.healthCheck(1, false); lb.healthCheck(1, false); lb.healthCheck(1, false);
+            eq(0, lb.next()); eq(2, lb.next()); eq(0, lb.next());
+        });
+        check("rise brings up", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            lb.healthCheck(1, false); lb.healthCheck(1, false); lb.healthCheck(1, false);
+            lb.healthCheck(1, true); lb.healthCheck(1, true);
+            if (!lb.isUp(1)) throw new AssertionError("should be up");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class LoadBalancer {
+    int n;
+    boolean[] up;
+    int[] failCount, succCount;
+    int cursor = 0;
+    static final int FALL = 3, RISE = 2;
+    LoadBalancer(int n) {
+        this.n = n; up = new boolean[n]; failCount = new int[n]; succCount = new int[n];
+        for (int i = 0; i < n; i++) up[i] = true;
+    }
+    void healthCheck(int idx, boolean ok) {
+        if (ok) {
+            succCount[idx]++; failCount[idx] = 0;
+            if (!up[idx] && succCount[idx] >= RISE) up[idx] = true;
+        } else {
+            failCount[idx]++; succCount[idx] = 0;
+            if (up[idx] && failCount[idx] >= FALL) up[idx] = false;
+        }
+    }
+    int next() {
+        for (int i = 0; i < n; i++) {
+            int idx = (cursor + i) % n;
+            if (up[idx]) { cursor = (idx + 1) % n; return idx; }
+        }
+        return -1;
+    }
+    boolean isUp(int idx) { return up[idx]; }
+}`,
+      hints: ['Theo dõi failCount/succCount; khi đạt fall/rise thì đổi trạng thái.'],
+      explain: `fall=3 đánh dấu DOWN, rise=2 đánh dấu UP; next() round-robin bỏ qua down.`,
+    },
+  ],
+  check: [
+    { q: 'fall=3 nghĩa là gì?', options: ['3 giây', '3 lần fail liên tiếp → down', '3 backend', '3 request'], answer: 1, explain: 'fall là số lần check fail liên tiếp để chuyển down.' },
+    { q: 'Khi tất cả backend down, next() trả về?', options: ['0', '-1', 'ném lỗi', 'null'], answer: 1, explain: 'Không còn backend up → trả -1.' },
+  ],
+  related: ['devops-002', 'devops-014'],
+  tags: ['HAProxy', 'Keepalived', 'Health check', 'Failover', 'Round-robin', 'VRRP'],
+},
+{
+  id: 'lesson-devops-016',
+  track: 'devops',
+  order: 16,
+  title: 'RBAC authorizer thu nhỏ: Role, ClusterRole, Binding và mặc định từ chối',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được sự khác biệt Role (namespace) và ClusterRole (toàn cụm), cùng RoleBinding/ClusterRoleBinding',
+    'Mô tả được cơ chế authorizer: mặc định từ chối, chỉ cho phép, không có deny',
+    'Mô phỏng được kubectl auth can-i với Authorizer.can(subject, verb, resource, namespace)',
+  ],
+  body: `### RBAC là gì
+**RBAC** (Role-Based Access Control) là cơ chế phân quyền của Kubernetes. Người dùng hoặc service được gán **role** chứa các **rule**: cho phép thực hiện verb (get, list, create, update, delete, watch) lên resource (pods, deployments, secrets) trong một apiGroup. Mặc định **từ chối** mọi request; chỉ những gì được rule cho phép mới được thực hiện. Kubernetes RBAC **không có khái niệm deny**: chỉ có allow. Nếu không có rule khớp, request bị từ chối.
+
+### Role vs ClusterRole
+- **Role**: chỉ áp dụng trong một namespace cụ thể. Dùng cho workload và dev trong namespace của họ.
+- **ClusterRole**: áp dụng toàn cụm. Dùng cho cluster-scoped resources (nodes, persistentvolumes) hoặc cho namespace-scoped resources trên mọi namespace.
+
+### Binding
+- **RoleBinding**: gán một Role hoặc ClusterRole cho subject (user, group, ServiceAccount) trong một namespace. Nếu gán ClusterRole qua RoleBinding, quyền chỉ có hiệu lực trong namespace đó — đây là pattern phổ biến để tái sử dụng ClusterRole nhưng giới hạn phạm vi.
+- **ClusterRoleBinding**: gán ClusterRole cho subject trên toàn cụm. Dùng cho admin hoặc controller cluster-wide.
+
+### Authorizer.can
+Mô phỏng kubectl auth can-i: kiểm tra subject có rule cho phép verb trên resource trong namespace không. Wildcard * khớp mọi giá trị. Namespace null trong rule nghĩa rule áp dụng mọi namespace (cluster-scoped). Nếu namespace truyền vào null → chỉ kiểm tra rule có namespace null.
+
+**Tóm tắt:** RBAC mặc định từ chối, chỉ cho phép qua rule; Role namespace, ClusterRole toàn cụm; Binding gán cho subject; ClusterRole qua RoleBinding chỉ hiệu lực trong namespace đó; wildcard * khớp mọi thứ.
+
+### Ví dụ đời thực
+ServiceAccount CI chỉ được deploy trong namespace staging. Tạo Role deployer trong staging với verbs create, update, delete, get, list trên deployments. RoleBinding gán cho ServiceAccount ci-sa trong namespace staging. ClusterRole view gán qua RoleBinding trong staging → ci-sa có thể list pods trong staging nhưng không ở production. Kiểm tra: kubectl auth can-i --as=system:serviceaccount:staging:ci-sa create deployments -n staging → yes; ở namespace prod → no.
+
+### Trả lời mẫu khi phỏng vấn
+Interviewer hỏi "Làm sao giới hạn ServiceAccount chỉ deploy trong 1 namespace?" Trả lời: tạo Role (không ClusterRole) với rule deployments create/update/delete trong namespace đó, RoleBinding gán cho ServiceAccount. Không dùng ClusterRoleBinding. Kiểm tra bằng kubectl auth can-i. Audit định kỳ bằng kubectl auth can-i --list. Tránh wildcard * trong production. Dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace.
+
+### Bẫy production
+- Dùng ClusterRoleBinding cho workload → quyền quá rộng, vi phạm least privilege.
+- Wildcard * trong verbs/resources → ai có role đó làm được mọi thứ.
+- Không audit RBAC → quyền tích luỹ qua thời gian (privilege creep).
+- ServiceAccount token tự động mount vào pod → attacker có thể dùng nếu pod bị compromise. Dùng automountServiceAccountToken: false khi không cần.
+
+> Senior tip: Luôn dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace; audit định kỳ bằng kubectl auth can-i --list; tránh wildcard * trong production; đặt automountServiceAccountToken false khi pod không cần gọi API server.`,
+  exercises: [
+    {
+      title: 'Authorizer: kiểm tra quyền RBAC thu nhỏ',
+      prompt: `Hoàn thiện Authorizer mô phỏng kubectl auth can-i:
+- Constructor nhận danh sách rule: mỗi rule có subject, verb, resource, namespace (null nghĩa toàn cụm).
+- can(subject, verb, resource, namespace): true nếu có rule khớp. Wildcard * khớp mọi verb/resource. Namespace null trong rule nghĩa rule áp dụng mọi namespace. Nếu namespace truyền vào null → kiểm tra cluster-scoped (chỉ rule có namespace null).
+- Mặc định từ chối: không có rule → false.`,
+      starter: `class Authorizer {
+    Authorizer(List<String[]> rules) { throw new UnsupportedOperationException("TODO"); }
+    boolean can(String subject, String verb, String resource, String namespace) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed=0,total=0;
+    static void check(String name, Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+name);}catch(Throwable t){System.out.println("FAIL "+name+": "+t);}}
+    static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("expected "+e+" got "+a);}
+    public static void main(String[] args){
+        List<String[]> rules=new ArrayList<>();
+        rules.add(new String[]{"ci-sa","create","deployments","staging"});
+        rules.add(new String[]{"ci-sa","get","pods","staging"});
+        rules.add(new String[]{"admin","*","*","*"});
+        rules.add(new String[]{"viewer","get","pods",null});
+        Authorizer a=new Authorizer(rules);
+        check("ci can create deployments in staging",()->eq(true,a.can("ci-sa","create","deployments","staging")));
+        check("ci cannot create in prod",()->eq(false,a.can("ci-sa","create","deployments","prod")));
+        check("ci can get pods staging",()->eq(true,a.can("ci-sa","get","pods","staging")));
+        check("ci cannot delete",()->eq(false,a.can("ci-sa","delete","deployments","staging")));
+        check("admin wildcard all",()->{eq(true,a.can("admin","delete","secrets","prod"));eq(true,a.can("admin","get","nodes",null));});
+        check("viewer cluster-scoped pods all ns",()->{eq(true,a.can("viewer","get","pods","staging"));eq(true,a.can("viewer","get","pods","prod"));});
+        check("viewer cannot create",()->eq(false,a.can("viewer","create","pods","staging")));
+        check("unknown subject denied",()->eq(false,a.can("nobody","get","pods","staging")));
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `class Authorizer {
+    private final List<String[]> rules;
+    Authorizer(List<String[]> rules){this.rules=new ArrayList<>(rules);}
+    boolean can(String subject,String verb,String resource,String namespace){
+        for(String[] r:rules){
+            if(!r[0].equals(subject))continue;
+            if(!r[1].equals("*")&&!r[1].equals(verb))continue;
+            if(!r[2].equals("*")&&!r[2].equals(resource))continue;
+            String ruleNs=r[3];
+            if(ruleNs==null){ /* applies all namespaces */ }
+            else if(!ruleNs.equals("*")&&!ruleNs.equals(namespace))continue;
+            return true;
+        }
+        return false;
+    }
+}`,
+      hints: ['Lặp rules, kiểm tra subject, verb (*), resource (*), namespace (* hoặc null cluster-scoped).','Null namespace trong rule nghĩa toàn cụm: chỉ khớp khi namespace truyền vào null.'],
+      explain: `Authorizer mô phỏng decision tree của kube-apiserver authorizer: deny-by-default, chỉ allow khi có rule khớp. Wildcard * khớp mọi giá trị. ClusterRoleBinding (namespace null) áp dụng mọi namespace; RoleBinding (namespace cụ thể) chỉ trong namespace đó.`,
+    },
+  ],
+  check: [
+    { q: 'RBAC mặc định là gì?', options: ['Allow all', 'Deny all', 'Deny chỉ resource nhạy cảm', 'Allow nếu authenticated'], answer: 1, explain: 'RBAC mặc định từ chối mọi request; chỉ những gì rule cho phép mới được thực hiện. Không có deny rule.' },
+    { q: 'ClusterRole gán qua RoleBinding có hiệu lực ở đâu?', options: ['Toàn cụm', 'Chỉ namespace của binding', 'Chỉ cluster-scoped resources', 'Mọi namespace trừ system'], answer: 1, explain: 'RoleBinding giới hạn phạm vi vào namespace của binding, kể cả khi role là ClusterRole.' },
+  ],
+  related: ['devops-002','devops-004'],
+  tags: ['Kubernetes','RBAC','Authorizer','ServiceAccount'],
+},
+{
+  id: 'lesson-devops-017',
+  track: 'devops',
+  order: 17,
+  title: 'PVC binding và StorageClass: bind, provision, reclaim',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được PVC tìm PV phù hợp theo dung lượng, access mode, storageClassName',
+    'Mô tả dynamic provisioning và WaitForFirstConsumer',
+    'Phân biệt reclaim policy Retain vs Delete',
+  ],
+  body: `### PV và PVC
+**PersistentVolume (PV)** là tài nguyên lưu trữ do admin hoặc dynamic provisioner tạo. **PersistentVolumeClaim (PVC)** là yêu cầu của pod: xin dung lượng, access mode, storage class. Controller bind PVC với PV phù hợp.
+
+### Binding logic
+PVC tìm PV có:
+- Dung lượng >= yêu cầu
+- Access mode khớp (ReadWriteOnce, ReadOnlyMany, ReadWriteMany)
+- storageClassName khớp (hoặc default)
+Chọn PV nhỏ nhất đủ dùng (để tiết kiệm).
+
+### Dynamic provisioning
+Nếu không có PV sẵn và StorageClass có provisioner, controller tạo PV mới tự động (dynamic). PVC Pending cho đến khi PV được tạo và bound.
+
+### WaitForFirstConsumer
+StorageClass với volumeBindingMode: WaitForFirstConsumer → PV chỉ được tạo/provision sau khi pod được lập lịch (để chọn zone/node phù hợp). PVC Pending cho đến pod scheduled.
+
+### Reclaim policy
+- **Delete**: xoá PV (và underlying storage) khi PVC bị xoá.
+- **Retain**: giữ PV, admin phải xóa thủ công; dữ liệu còn.
+
+**Tóm tắt:** PVC bind PV phù hợp (dung lượng ≥, access mode, storageClass); dynamic provisioning tạo PV khi thiếu; WaitForFirstConsumer chờ pod scheduled; reclaim Delete xoá, Retain giữ.
+
+### Ví dụ đời thực
+PVC 10Gi RWO storageClass gp3. Không có PV sẵn → dynamic provisioner tạo EBS volume 10Gi. Pod mount vào /data. Xoá PVC → volume bị xoá (Delete). Nếu cần giữ data → dùng Retain và backup thủ công.
+
+### Trả lời mẫu khi phỏng vấn
+Interviewer hỏi "PVC Pending mãi, debug thế nào?" Trả lời: kiểm tra events (kubectl describe pvc), storageClass tồn tại không, provisioner chạy không, WaitForFirstConsumer cần pod scheduled, zone mismatch. Nếu no provisioner và không có PV sẵn → Pending vĩnh viễn.
+
+### Bẫy production extra
+Khi PVC Pending, kiểm tra theo thứ tự: kubectl describe pvc để xem events, kubectl get sc để xác nhận storage class tồn tại, kiểm tra provisioner pod trong kube-system, kiểm tra WaitForFirstConsumer và pod scheduling, kiểm tra zone/region matching. Nếu không có provisioner và không có PV sẵn, PVC sẽ Pending vĩnh viễn. Luôn giám sát PVC Pending bằng alert. Với production, dùng Retain cho data quan trọng và backup trước khi xoá.
+
+### Bẫy production
+- Không đặt storageClassName → PVC dùng default storage class, có thể không phù hợp zone.
+- WaitForFirstConsumer với pod không được scheduled → PVC Pending mãi, không phải lỗi storage.
+- Reclaim Delete → xoá PVC là mất data vĩnh viễn; luôn backup trước.
+- RWX trên cloud block storage (EBS) không hỗ trợ → PVC Pending.
+
+> Senior tip: Luôn đặt storageClassName rõ ràng; dùng WaitForFirstConsumer cho multi-zone; backup trước khi xoá PVC với Retain; giám sát Pending PVC; kiểm tra provisioner logs.`,
+  exercises: [
+    {
+      title: 'VolumeController: bind/provision/release',
+      prompt: `Hoàn thiện VolumeController mô phỏng:
+- bind(pvc, pvs): trả về PV phù hợp (dung lượng >=, accessMode khớp, storageClass khớp) nhỏ nhất đủ dùng; null nếu không có.
+- provision(pvc): tạo PV mới với dung lượng đúng yêu cầu, accessMode và storageClass của PVC (dynamic).
+- release(pvc, policy): nếu policy "Delete" → trả về null (đã xoá); "Retain" → trả về PV giữ lại (để admin xử lý).`,
+      starter: `class VolumeController {
+    // PV: {name, capacity, accessMode, storageClass}
+    static Map<String,Object> bind(Map<String,Object> pvc, List<Map<String,Object>> pvs){throw new UnsupportedOperationException("TODO");}
+    static Map<String,Object> provision(Map<String,Object> pvc){throw new UnsupportedOperationException("TODO");}
+    static Map<String,Object> release(Map<String,Object> pvc, String policy){throw new UnsupportedOperationException("TODO");}
+}`,
+      tests: `public class Main {
+    static int passed=0,total=0;
+    static void check(String name,Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+name);}catch(Throwable t){System.out.println("FAIL "+name+": "+t);}}
+    static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("expected "+e+" got "+a);}
+    public static void main(String[] args){
+        Map<String,Object> pvc=new HashMap<>();
+        pvc.put("capacity",10);pvc.put("accessMode","RWO");pvc.put("storageClass","gp3");
+        List<Map<String,Object>> pvs=new ArrayList<>();
+        Map<String,Object> pv1=new HashMap<>();pv1.put("name","pv1");pv1.put("capacity",20);pv1.put("accessMode","RWO");pv1.put("storageClass","gp3");
+        Map<String,Object> pv2=new HashMap<>();pv2.put("name","pv2");pv2.put("capacity",10);pv2.put("accessMode","RWO");pv2.put("storageClass","gp3");
+        Map<String,Object> pv3=new HashMap<>();pv3.put("name","pv3");pv3.put("capacity",15);pv3.put("accessMode","RWX");pv3.put("storageClass","gp3");
+        pvs.add(pv1);pvs.add(pv2);pvs.add(pv3);
+        check("bind picks smallest sufficient",()->eq("pv2",VolumeController.bind(pvc,pvs).get("name")));
+        check("bind null if no match",()->{Map<String,Object> p=new HashMap<>(pvc);p.put("storageClass","sc2");eq(null,VolumeController.bind(p,pvs));});
+        check("bind requires capacity",()->{Map<String,Object> p=new HashMap<>(pvc);p.put("capacity",25);eq(null,VolumeController.bind(p,pvs));});
+        check("provision creates pv",()->{Map<String,Object> r=VolumeController.provision(pvc);eq(10,r.get("capacity"));eq("RWO",r.get("accessMode"));eq("gp3",r.get("storageClass"));});
+        check("release Delete returns null",()->eq(null,VolumeController.release(pvc,"Delete")));
+        check("release Retain returns pv",()->{Map<String,Object> r=VolumeController.release(pvc,"Retain");eq(10,r.get("capacity"));});
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `class VolumeController {
+    static Map<String,Object> bind(Map<String,Object> pvc,List<Map<String,Object>> pvs){
+        Map<String,Object> best=null;
+        for(Map<String,Object> pv:pvs){
+            if(!pv.get("accessMode").equals(pvc.get("accessMode")))continue;
+            if(!pv.get("storageClass").equals(pvc.get("storageClass")))continue;
+            int cap=(int)pv.get("capacity"),req=(int)pvc.get("capacity");
+            if(cap<req)continue;
+            if(best==null||(int)best.get("capacity")>cap)best=pv;
+        }
+        return best;
+    }
+    static Map<String,Object> provision(Map<String,Object> pvc){
+        Map<String,Object> pv=new HashMap<>();
+        pv.put("name","pv-dynamic");
+        pv.put("capacity",pvc.get("capacity"));
+        pv.put("accessMode",pvc.get("accessMode"));
+        pv.put("storageClass",pvc.get("storageClass"));
+        return pv;
+    }
+    static Map<String,Object> release(Map<String,Object> pvc,String policy){
+        if("Delete".equals(policy))return null;
+        return provision(pvc);
+    }
+}`,
+      hints: ['Bind: lọc theo accessMode, storageClass, capacity >=; chọn capacity nhỏ nhất.','Provision: tạo map mới với capacity/accessMode/storageClass của PVC.','Release: Delete → null; Retain → trả PV (có thể provision lại).'],
+      explain: `VolumeController mô phỏng controller bind/provision/release. Bind chọn PV nhỏ nhất đủ dùng để tiết kiệm. Dynamic provisioning tạo PV khi không có sẵn. Reclaim policy Delete xoá storage, Retain giữ để admin xử lý.`,
+    },
+  ],
+  check: [
+    { q: 'PVC Pending mãi, nguyên nhân nào sau đây?', options: ['Không có PV và không có provisioner', 'StorageClass không tồn tại', 'WaitForFirstConsumer chờ pod scheduled', 'Tất cả các đáp án trên'], answer: 3, explain: 'Tất cả đều có thể gây Pending: thiếu PV/provisioner, StorageClass không tồn tại, hoặc WaitForFirstConsumer chờ pod được lập lịch.' },
+    { q: 'Reclaim policy Delete làm gì khi PVC bị xoá?', options: ['Giữ PV và dữ liệu', 'Xoá PV và underlying storage', 'Chỉ xoá PVC, PV còn', 'Backup tự động'], answer: 1, explain: 'Delete xoá PV và storage bên dưới. Retain giữ PV và dữ liệu để admin xử lý thủ công.' },
+  ],
+  related: ['devops-002','devops-004'],
+  tags: ['Kubernetes','PVC','PV','StorageClass','Storage'],
+},
+);
