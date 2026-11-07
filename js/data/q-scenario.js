@@ -6056,30 +6056,64 @@ Ngày khuyến mãi, nhà cung cấp gợi ý sản phẩm chậm lên 8s. Trang
   topic: 'scenario',
   level: 'senior',
   q: 'Dữ liệu bị ghi đè do hai người sửa cùng lúc (lost update) trên production: tìm và xử lý thế nào?',
-  a: `**Tóm tắt:** {{Lost update}} xảy ra khi hai transaction đọc cùng giá trị, tính toán độc lập, rồi cả hai ghi đè kết quả của nhau (read-modify-write không được tuần tự hóa). Cần ngăn bằng {{atomic update}} có điều kiện, {{optimistic locking}} hoặc {{pessimistic locking}}.
+  a: `**Tóm tắt:** Lost update là khi hai request cùng **đọc** một giá trị, cùng **tính** trong ứng dụng rồi cùng **ghi**, và lần ghi sau xoá mất lần ghi trước — DB không báo lỗi gì. Tôi xác nhận bằng log/audit và tái hiện bằng test đồng thời, rồi sửa theo thứ tự ưu tiên: **UPDATE nguyên tử có điều kiện** → **optimistic locking ({{@Version}})** → **pessimistic lock ({{SELECT ... FOR UPDATE}})**, và dọn dữ liệu đã sai bằng đối soát.
 
-### Điều tra
-- Tái hiện bằng load test với nhiều request đồng thời cùng khóa chính ({{PK}}).
-- Đọc code: tìm pattern {{read-then-write}} không dùng khóa/version.
+### Cơ chế, từng bước
+~~~text
+t1  A: SELECT qty FROM inventory WHERE sku='X'   -> 10
+t2  B: SELECT qty FROM inventory WHERE sku='X'   -> 10
+t3  A: (ứng dụng tính 10 - 3 = 7)  UPDATE ... SET qty = 7
+t4  B: (ứng dụng tính 10 - 5 = 5)  UPDATE ... SET qty = 5   <- mất 3 sản phẩm của A
+~~~
+Ở mức READ COMMITTED (mặc định PostgreSQL và nhiều cấu hình MySQL), cả hai câu UPDATE đều hợp lệ: B chờ A commit rồi ghi đè. Lỗi nằm ở chỗ phép tính diễn ra **ngoài DB**. Với JPA rất dễ gặp: {{findById}} → sửa field → {{save}} chính là read-modify-write.
 
-### Giải pháp
-1. **UPDATE nguyên tử có điều kiện (ưu tiên khi có thể)**:
+### Điều tra trên production
+- So **audit log / bảng lịch sử** với giá trị hiện tại: tổng xuất kho theo đơn hàng ≠ chênh lệch tồn kho.
+- Tìm trong code các đoạn "đọc → tính trong Java → ghi" trên dữ liệu có nhiều người cùng sửa (tồn kho, số dư, điểm thưởng, trạng thái đơn).
+- Tái hiện: test bắn 50 request đồng thời cùng một khoá (CountDownLatch hoặc k6), so kết quả với giá trị kỳ vọng.
+
+### Ba cách sửa
+**1. UPDATE nguyên tử có điều kiện** — tốt nhất khi phép tính diễn đạt được bằng SQL:
 ~~~sql
 UPDATE inventory SET qty = qty - :take, updated_at = now()
-WHERE sku = :sku AND qty >= :take
-RETURNING qty;
+WHERE sku = :sku AND qty >= :take;   -- 0 dòng bị ảnh hưởng = không đủ hàng
 ~~~
-Nếu không có dòng bị ảnh hưởng (affected rows = 0) → không đủ tồn kho/hết hàng.
+DB khoá dòng trong lúc tính, nên hai lệnh không thể giẫm lên nhau.
 
-2. **Optimistic locking**: thêm cột {{@Version}} (hoặc {{version}}). Khi commit, Hibernate so sánh version; nếu khác → ném {{OptimisticLockException}}, cần retry có giới hạn.
-3. **Pessimistic locking**: {{SELECT ... FOR UPDATE}} khóa hàng trước khi đọc-sửa. Chỉ dùng khi xung đột thực tế cao và không dễ retry, vì dễ gây lock wait/deadlock.
+**2. Optimistic locking** — khi logic phức tạp, xung đột hiếm:
+~~~java
+@Entity class Account {
+  @Id Long id;
+  BigDecimal balance;
+  @Version long version;   // Hibernate thêm "AND version = ?" vào UPDATE
+}
+// Nếu 0 dòng bị cập nhật -> ObjectOptimisticLockingFailureException (Spring)
+// -> đọc lại và thử lại tối đa 3 lần, hoặc báo người dùng "dữ liệu đã thay đổi"
+~~~
+Với form chỉnh sửa trên web, gửi {{version}} xuống client và trả 409 Conflict khi khác.
 
-### Pitfall cần tránh
-- Quên điều kiện {{qty >= :take}} → có thể dẫn đến số âm không mong muốn.
-- Dùng optimistic lock cho {{hot key}} cực nóng → nhiều retry, tốn CPU.
-- Dùng {{SELECT ... FOR UPDATE}} mà quên transaction/timeout → dễ block kéo dài.
+**3. Pessimistic lock** — khi xung đột thường xuyên và retry tốn kém:
+{{@Lock(LockModeType.PESSIMISTIC_WRITE)}} sinh {{SELECT ... FOR UPDATE}}. Giữ transaction thật ngắn, đặt lock timeout, khoá theo thứ tự cố định để tránh deadlock.
 
-> Senior tip: Ưu tiên gom thành một câu SQL nguyên tử có điều kiện. Đó là cách đơn giản và hiệu quả nhất để loại bỏ lost update.`,
+| Cách | Hợp với | Rủi ro |
+|---|---|---|
+| UPDATE nguyên tử | Cộng/trừ, đổi trạng thái có điều kiện | Logic phức tạp khó viết bằng SQL |
+| Optimistic | Xung đột hiếm, form chỉnh sửa | Hot key → retry liên tục |
+| Pessimistic | Xung đột cao, thao tác ngắn | Chờ khoá, deadlock |
+
+### Ví dụ đời thực
+Shop thời trang chạy flash sale: tồn kho hiển thị còn 0 nhưng kho thực tế còn 47 sản phẩm, và có 12 đơn bán vượt tồn ở mã khác. Audit cho thấy code {{findBySku → setQty(qty - n) → save}}. Ở 300 request/giây trên vài mã hot, lost update xảy ra hàng trăm lần. Đổi sang UPDATE nguyên tử có điều kiện {{qty >= :take}}; chạy job đối soát tồn kho với phiếu xuất để sửa dữ liệu cũ. Flash sale tiếp theo: 0 chênh lệch tồn kho, p99 của API đặt hàng còn giảm 30% vì bỏ được một lần SELECT.
+
+### Pitfall
+- Tin rằng {{@Transactional}} tự chống lost update — không, ở READ COMMITTED vẫn xảy ra.
+- Thêm {{@Version}} nhưng merge DTO từ client mà không mang version cũ → kiểm tra vô nghĩa.
+- Retry optimistic vô hạn trên hot key → tải DB tăng vọt.
+- Sửa code nhưng quên đối soát dữ liệu đã sai trước đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Lost update xảy ra khi hai request cùng đọc một giá trị, cùng tính trong ứng dụng rồi cùng ghi, và lần ghi sau xoá mất lần ghi trước. Ở READ COMMITTED thì DB không báo lỗi, nên @Transactional thôi là không đủ. Trên production tôi phát hiện bằng cách so audit log với giá trị hiện tại, và tái hiện bằng test bắn nhiều request đồng thời vào cùng một khoá. Cách sửa tôi ưu tiên là đẩy phép tính vào một câu UPDATE nguyên tử có điều kiện, ví dụ trừ tồn kho với điều kiện còn đủ hàng; nếu không có dòng nào được cập nhật thì báo hết hàng. Khi logic phức tạp và xung đột hiếm, tôi dùng optimistic locking với @Version và retry có giới hạn, hoặc trả 409 cho form chỉnh sửa. Khi xung đột rất cao thì mới dùng SELECT FOR UPDATE với transaction ngắn. Và luôn có bước đối soát để sửa dữ liệu đã sai."
+
+> Senior tip: grep toàn codebase pattern "find → set → save" trên các bảng có cột số lượng hoặc số dư. Đây là nguồn lost update phổ biến nhất trong ứng dụng Spring Data, và thường tìm ra vài chỗ ngay trong buổi đầu tiên.`,
   follow: ['Điều gì xảy ra bên trong DB engine với UPDATE nguyên tử?', 'Optimistic lock vs pessimistic lock: khi nào chọn cái nào?'],
   tags: ['lost-update', 'race-condition', 'optimistic-lock', 'pessimistic-lock']
 },
@@ -6088,26 +6122,48 @@ Nếu không có dòng bị ảnh hưởng (affected rows = 0) → không đủ 
   topic: 'scenario',
   level: 'lead',
   q: 'Migration dữ liệu 500 triệu dòng không downtime: thiết kế thế nào?',
-  a: `**Tóm tắt:** Với bảng lớn, không được chạy {{ALTER TABLE}} kiểu "blocking" trực tiếp. Cần phân loại DDL, dùng online DDL/gh-ost, backfill theo batch có checkpoint, và luôn giới hạn thời gian lock bằng {{lock_timeout}}.
+  a: `**Tóm tắt:** Không có "một lệnh" nào migrate 500 triệu dòng an toàn. Tôi dùng mô hình **expand → migrate → contract**: thêm cấu trúc mới theo cách không khoá (expand), **ghi kép + backfill theo lô có checkpoint và giới hạn tốc độ**, kiểm tra dữ liệu, chuyển đọc sang cấu trúc mới, rồi mới xoá cấu trúc cũ (contract). Mọi DDL đều có {{lock_timeout}} ngắn và retry; mỗi bước có đường lui.
 
-### Nguyên tắc
-- **An toàn trước tốc độ**: Ưu tiên không block write. Nếu không thể tránh block ngắn, giới hạn thời gian và có retry.
-- **Chia nhỏ**: Thay vì một transaction lớn, làm batch nhỏ có thể dừng/tiếp tục.
+### Vì sao DDL trên bảng lớn nguy hiểm
+Ở PostgreSQL, hầu hết {{ALTER TABLE}} cần khoá {{ACCESS EXCLUSIVE}}. Điểm nguy hiểm không chỉ là thời gian lệnh chạy: lệnh **xếp hàng chờ** sau một transaction dài, và mọi câu SELECT/UPDATE đến sau lại xếp hàng sau nó → cả bảng đứng hình dù lệnh DDL chỉ cần 10ms. Vì vậy luôn đặt {{SET lock_timeout = '3s'}} và retry thay vì chờ vô hạn.
 
-### Thiết kế cụ thể
-1. **Chuẩn bị**: Đặt {{lock_timeout}} ngắn (vd 2-3s), có script retry khi bị timeout.
-2. **Thay đổi schema**: 
-   - PostgreSQL: {{ADD COLUMN}} không default thường chỉ thay đổi metadata; {{CREATE INDEX CONCURRENTLY}} (không chạy trong transaction). Lưu ý index {{INVALID}} nếu bị hủy giữa chừng.
-   - MySQL 8: ưu tiên {{ALGORITHM=INSTANT}} khi có thể. Với thay đổi phức tạp, cân nhắc {{gh-ost}}/{{pt-online-schema-change}}.
-3. **Backfill**: Cập nhật theo batch (vd 1000-10000 dòng/batch) theo {{PK}} tăng dần, có {{checkpoint}} (lưu vị trí cuối cùng). Tránh {{UPDATE}} quét toàn bảng trong một câu.
-4. **Đồng bộ/hoàn tất**: Thêm trigger/tạo cột kép nếu cần đọc/ghi song song, sau khi đồng bộ xong chuyển traffic và dọn dẹp.
+### Phân loại thao tác (PostgreSQL 11+)
+| Thao tác | Mức an toàn |
+|---|---|
+| {{ADD COLUMN}} nullable hoặc có default hằng | Chỉ đổi metadata, nhanh |
+| {{CREATE INDEX CONCURRENTLY}} | Không khoá ghi; chạy ngoài transaction; kiểm tra index INVALID nếu lỗi |
+| {{ALTER COLUMN TYPE}} (đổi kiểu cần viết lại) | Viết lại cả bảng — tránh, dùng cột mới + backfill |
+| {{SET NOT NULL}} | Quét cả bảng — thay bằng {{CHECK (...) NOT VALID}} rồi {{VALIDATE CONSTRAINT}} |
+| Thêm foreign key | {{NOT VALID}} trước, {{VALIDATE}} sau (không khoá ghi lâu) |
+MySQL 8: ưu tiên {{ALGORITHM=INSTANT}}/{{INPLACE, LOCK=NONE}}; thay đổi nặng dùng gh-ost hoặc pt-online-schema-change.
 
-### Pitfall cần lưu ý
-- {{CREATE INDEX CONCURRENTLY}} không được đặt trong {{BEGIN/COMMIT}}.
-- Backfill lớn tạo nhiều {{WAL}} (PostgreSQL) → cần theo dõi disk/WAL.
-- {{NOT NULL}} thêm sau khi cột đã có dữ liệu cần backfill đầy đủ và kiểm tra trước.
+### Kế hoạch ví dụ: đổi {{amount}} từ INT sang NUMERIC(19,4)
+1. **Expand**: thêm cột {{amount_v2 NUMERIC(19,4)}} (metadata-only).
+2. **Ghi kép**: release ứng dụng ghi cả hai cột (hoặc trigger).
+3. **Backfill theo lô**:
+~~~sql
+UPDATE payments SET amount_v2 = amount
+WHERE id > :last AND id <= :last + 10000 AND amount_v2 IS NULL;
+-- lưu :last vào bảng checkpoint; nghỉ 50–100ms giữa các lô;
+-- tự giảm tốc khi replication lag > 5s hoặc CPU DB > 70%
+~~~
+4. **Kiểm tra**: đếm dòng còn NULL, so {{sum(amount)}} với {{sum(amount_v2)}} theo từng khoảng id.
+5. **Chuyển đọc** sang cột mới sau feature flag; theo dõi vài ngày.
+6. **Contract**: ngừng ghi cột cũ, rồi xoá cột cũ ở một release sau.
 
-> Senior tip: Trước mọi DDL trên bảng lớn, hãy hỏi: "Liệu lệnh này có block write không?" và "Có cách online không?" Đồng thời luôn có {{rollback plan}}.`,
+### Ví dụ đời thực
+Bảng giao dịch 520 triệu dòng, 1,8TB, cần đổi kiểu cột tiền. Lần thử đầu bằng {{ALTER COLUMN TYPE}} trên staging ước tính khoá bảng 6–7 giờ — không thể. Làm theo expand/contract: backfill 52.000 lô × 10.000 dòng, tốc độ khoảng 4.000 dòng/giây ngoài giờ cao điểm, tự dừng khi replica lag vượt 5 giây; tổng cộng 5 ngày. WAL tăng thêm khoảng 900GB nên phải tăng dung lượng lưu WAL và theo dõi chặt. Kết quả: không có phút downtime nào, kiểm tra tổng tiền khớp tuyệt đối trên 5.200 khoảng id trước khi chuyển đọc.
+
+### Pitfall
+- Một câu UPDATE cho cả bảng: transaction khổng lồ, bloat, replica tụt lại hàng giờ.
+- Quên ghi kép → dữ liệu mới phát sinh trong lúc backfill bị thiếu.
+- Xoá cột cũ cùng release chuyển đọc → không còn đường lui.
+- {{CREATE INDEX CONCURRENTLY}} lỗi giữa chừng để lại index INVALID mà không ai xoá.
+
+### Trả lời mẫu khi phỏng vấn
+"Với 500 triệu dòng, tôi không tìm một lệnh nào đó chạy cho nhanh mà chia thành expand, migrate, contract. Đầu tiên tôi phân loại DDL: thao tác nào chỉ đổi metadata, thao tác nào viết lại cả bảng. Thao tác viết lại thì thay bằng thêm cột mới. Mọi DDL đều đặt lock_timeout vài giây và có retry, vì nguy hiểm nhất là lệnh DDL xếp hàng sau một transaction dài rồi chặn mọi truy vấn phía sau. Sau đó ứng dụng ghi kép vào cả cũ lẫn mới, và tôi backfill theo lô khoảng mười nghìn dòng theo khoá chính, có checkpoint để chạy lại được, có giới hạn tốc độ và tự dừng khi replication lag cao. Xong thì kiểm tra số dòng và tổng theo từng khoảng, chuyển đọc sang cấu trúc mới sau feature flag, và chỉ xoá cấu trúc cũ ở một release sau. Tôi từng làm vậy cho bảng giao dịch hơn 500 triệu dòng, chạy năm ngày mà không có phút downtime nào."
+
+> Senior tip: diễn tập toàn bộ kế hoạch trên một bản sao production có kích thước thật trước, và đo ba con số: tốc độ backfill, lượng WAL sinh ra, replication lag. Ba con số này quyết định lịch chạy và dung lượng cần chuẩn bị — đoán sai một trong ba là sự cố.`,
   follow: ['Làm sao thêm constraint NOT NULL an toàn trên PostgreSQL?', 'gh-ost hoạt động thế nào so với online DDL native?'],
   tags: ['DDL', 'online-migration', 'postgresql', 'mysql']
 },
@@ -6116,24 +6172,50 @@ Nếu không có dòng bị ảnh hưởng (affected rows = 0) → không đủ 
   topic: 'scenario',
   level: 'senior',
   q: 'Kafka consumer lag tăng không ngừng vào giờ cao điểm: nguyên nhân và cách xử lý?',
-  a: `**Tóm tắt:** {{Consumer lag}} tăng khi tốc độ sản xuất ({{producer rate}}) lớn hơn tổng năng lực xử lý của consumer group. Cần tính toán năng lực, tìm nút thắt (DB/I/O), và chỉ scale đúng cách.
+  a: `**Tóm tắt:** Lag tăng không ngừng nghĩa là **tốc độ vào lớn hơn tổng năng lực xử lý** của consumer group. Tôi đo năng lực thật của một consumer (message/giây và thời gian xử lý từng bước), kiểm tra phân bố partition (skew), rebalance và nút thắt phía sau (thường là DB). Cách sửa theo thứ tự: **giảm thời gian xử lý mỗi message** (batch, bỏ I/O thừa) → **tăng song song đúng chỗ** → **thêm partition/consumer** khi thật cần.
+
+### Toán năng lực
+Năng lực một consumer ≈ 1000 / (thời gian xử lý một message tính bằng ms). Mỗi partition chỉ được một consumer trong group đọc, nên:
+~~~text
+Năng lực group = min(số consumer, số partition) × năng lực 1 consumer
+Ví dụ: 12 partition, 12 consumer, mỗi message 25ms -> 12 × 40 = 480 msg/s
+Giờ cao điểm vào 900 msg/s -> lag tăng 420 msg/s, sau 1 giờ ~1,5 triệu message
+~~~
+Thêm consumer thứ 13 không giúp gì nếu chỉ có 12 partition.
 
 ### Điều tra
-1. **Tính năng lực**: Năng lực lý thuyết = {{số partition}} × (1 / {{thời gian xử lý trung bình mỗi message}}). So sánh với {{messages/second}} vào.
-2. **Tìm bottleneck**: Xem thời gian xử lý chủ yếu ở đâu (DB query, HTTP call, serialization). Nếu phần lớn là I/O → tối ưu I/O trước.
-3. **Kiểm tra phân bố**: Có {{partition skew}} không? Một vài partition có lag rất cao trong khi khác thấp?
-4. **Kiểm tra consumer**: Số consumer đang chạy < số partition? Consumer có bị dừng/rebalance liên tục không?
+1. **Lag theo partition** ({{kafka-consumer-groups --describe}}, Burrow, metric {{records-lag-max}}): lag đều trên mọi partition → thiếu năng lực; dồn vào vài partition → **skew** do key nóng (ví dụ một merchant lớn).
+2. **Thời gian xử lý từng bước**: span trace hoặc timer quanh DB call, HTTP call, serialize. Thường 80% là I/O.
+3. **Rebalance**: log "Revoking partitions" lặp lại → consumer bị đá khỏi group vì xử lý một lần {{poll}} lâu hơn {{max.poll.interval.ms}} (mặc định 5 phút), dẫn đến xử lý lại và lag càng tăng.
+4. **Nút thắt phía sau**: DB CPU, pool connection, rate limit của API đối tác.
 
-### Cách xử lý (theo hiệu quả/cước)
-1. **Giảm thời gian xử lý**: Batch ({{@KafkaListener}} batch), giảm round-trip DB (bulk query), cache, tránh gọi đồng bộ không cần thiết.
-2. **Tăng song song trong giới hạn**: Xử lý song song cẩn thận nhưng phải tôn trọng thứ tự theo {{message key}} nếu nghiệp vụ cần.
-3. **Thêm partition + consumer**: Chỉ hiệu quả khi consumer < partition và bottleneck là xử lý. Thay đổi partition không tự "chia lại" dữ liệu cũ dễ dàng.
-4. **Backpressure/failover**: Có kế hoạch xử lý backlog (vd tăng tạm thời, sau giảm về sau giờ cao điểm).
+### Cách xử lý
+- **Batch**: listener nhận lô, ghi DB bằng một câu bulk thay vì 500 câu riêng.
+~~~java
+@KafkaListener(topics = "payments", batch = "true", concurrency = "6")
+void onBatch(List<ConsumerRecord<String, PaymentEvent>> records) {
+    // gom theo khoá, 1 câu INSERT ... ON CONFLICT cho cả lô
+    repo.upsertAll(records.stream().map(r -> toRow(r.value())).toList());
+}   // offset commit sau khi cả lô xong (AckMode BATCH)
+~~~
+- **Cắt I/O thừa**: cache dữ liệu tra cứu, bỏ lời gọi đồng bộ không cần thiết.
+- **Song song trong partition giữ thứ tự theo key**: ví dụ Confluent Parallel Consumer, hoặc hàng đợi nội bộ theo hash(key).
+- **Thêm partition**: chỉ khi số consumer đã bằng số partition; lưu ý message cùng key sau khi thêm partition có thể sang partition khác → mất thứ tự trong giai đoạn chuyển.
+- **Skew**: đổi key (thêm hậu tố cho key nóng nếu nghiệp vụ cho phép), hoặc tách luồng riêng cho khách lớn.
 
-### Lưu ý giám sát
-- Ưu tiên cảnh báo theo **thời gian lag ước tính** ({{lag * avg_processing_time}}) thay vì chỉ "số message lag".
+### Ví dụ đời thực
+Consumer ghi lịch sử giao dịch vào PostgreSQL: lag lên 2 triệu message mỗi tối, tới 2 giờ sáng mới hết. Đo: 18ms/message, trong đó 15ms là INSERT từng dòng; 12 partition, 12 pod. Chuyển sang batch 500 message + một câu INSERT nhiều dòng: còn 1,2ms/message tính bình quân, năng lực tăng khoảng 15 lần với cùng số pod; lag giờ cao điểm không vượt 5 giây. Không cần thêm partition nào.
 
-> Senior tip: Trước khi nói "tăng pod", hãy trả lời được: "1 consumer xử lý bao nhiêu msg/s và tại sao?". Nếu bottleneck là DB, tăng consumer chỉ làm DB nghẽn nặng hơn.`,
+### Pitfall
+- Tăng pod quá số partition — pod thừa ngồi không.
+- Tăng consumer khi nút thắt là DB → DB nghẽn nặng hơn.
+- Xử lý bất đồng bộ rồi commit offset trước khi xong → mất message khi crash.
+- Cảnh báo theo số message lag thay vì theo **thời gian trễ** ({{lag / tốc độ xử lý}}).
+
+### Trả lời mẫu khi phỏng vấn
+"Lag tăng không ngừng nghĩa là tốc độ vào lớn hơn năng lực xử lý của cả group, nên tôi bắt đầu bằng phép tính. Một consumer xử lý mỗi message mất bao nhiêu mili giây, nhân với số consumer, nhưng không vượt quá số partition, vì mỗi partition chỉ một consumer đọc. Sau đó tôi xem lag theo từng partition: đều nhau là thiếu năng lực, dồn vào vài partition là skew do key nóng. Tôi kiểm tra log rebalance, vì xử lý một lần poll quá max.poll.interval là bị đá khỏi group và xử lý lại. Rồi tôi đo thời gian từng bước, và thường thấy phần lớn là I/O vào DB. Cách sửa hiệu quả nhất thường là batch: nhận một lô message và ghi bằng một câu bulk. Lần tôi làm, thời gian xử lý giảm khoảng mười lăm lần mà không cần thêm partition hay pod nào. Chỉ khi đã tối ưu xử lý và consumer đã bằng số partition thì tôi mới thêm partition, và phải lưu ý thứ tự theo key."
+
+> Senior tip: đặt SLO cho consumer bằng **độ trễ thời gian** (ví dụ "sự kiện được xử lý trong 30 giây"), không bằng số message lag. Một triệu message lag có thể là 10 giây với consumer nhanh, hoặc 3 giờ với consumer chậm.`,
   follow: ['Làm sao xử lý partition skew?', 'Tăng số partition có ảnh hưởng gì khi đang chạy?'],
   tags: ['kafka', 'consumer-lag', 'capacity-planning', 'scaling']
 },
@@ -6142,29 +6224,53 @@ Nếu không có dòng bị ảnh hưởng (affected rows = 0) → không đủ 
   topic: 'scenario',
   level: 'senior',
   q: 'Rò rỉ dữ liệu cá nhân qua log: phát hiện, xử lý, ngăn tái diễn thế nào?',
-  a: `**Tóm tắt:** Một khi {{secret}} (API key, token, password) hoặc {{PII}} (thông tin cá nhân) đã bị ghi log/commit, phải coi là "đã lộ". Ưu tiên {{rotate/revoke}} ngay, đánh giá ảnh hưởng, sau đó xử lý lịch sử và ngăn tái diễn.
+  a: `**Tóm tắt:** Phát hiện PII hoặc secret trong log thì coi như **đã lộ**. Thứ tự: **chặn nguồn** (hotfix tắt/mask dòng log) → **thu hẹp phạm vi** (khoá quyền truy cập log, xác định ai đã đọc) → **thu hồi/xoay vòng** mọi secret bị lộ → **xoá hoặc làm mờ** dữ liệu trong mọi nơi log đã chảy tới → **đánh giá nghĩa vụ thông báo** theo Nghị định 13/2023 về bảo vệ dữ liệu cá nhân hoặc GDPR → **ngăn tái diễn** bằng masking tập trung và kiểm tra tự động.
 
-### 1) Phát hiện
-- Quét log gần thời điểm: tìm pattern {{Authorization}}, {{Bearer}}, {{password}}, {{email/phone/ID number}}.
-- Quét git history: {{gitleaks}}, {{git-secrets}}.
-- Kiểm tra access log/CloudTrail để xem credential có bị dùng bất thường không.
+### Vì sao log là nơi rò rỉ phổ biến
+- Dev log nguyên request/response để debug: {{log.info(request)}} kéo theo số CMND, số thẻ, token.
+- {{toString()}} do Lombok sinh ra in mọi field, kể cả field nhạy cảm.
+- Exception message chứa giá trị đầu vào.
+- Log được copy sang nhiều nơi: file trên node, Elasticsearch, S3 archive, công cụ APM, ticket hỗ trợ — xoá một nơi là chưa đủ.
 
-### 2) Xử lý khẩn cấp
-1. **Rotate/Revoke ngay**: Vô hiệu hóa key/token/password bị lộ. Không chỉ "xóa khỏi log".
-2. **Kiểm tra sử dụng**: Tìm request/IP lạ dùng credential đó.
-3. **Đánh giá phạm vi**: Xem log nào bị expose, thời gian, người dùng bị ảnh hưởng.
-4. **Thông báo theo quy định**: Nếu có PII theo {{GDPR}}/{{Nghị định 13}} (Việt Nam) cần đánh giá nghĩa vụ thông báo.
+### Xử lý theo thứ tự
+1. **Chặn nguồn (giờ đầu)**: hotfix bỏ dòng log hoặc mask; nếu chưa deploy kịp, hạ log level của logger đó qua Actuator {{/actuator/loggers}}.
+2. **Thu hẹp truy cập**: tạm khoá index/bucket chứa log nhạy cảm, chỉ để nhóm điều tra; xuất audit log của hệ thống log để biết ai đã truy vấn.
+3. **Secret**: thu hồi và xoay vòng **ngay** (API key, token, mật khẩu DB) — xoá log không làm secret hết hiệu lực. Kiểm tra secret có bị dùng bất thường (CloudTrail, access log).
+4. **Dọn dữ liệu**: xoá hoặc reindex có lọc trong Elasticsearch, xoá object S3 archive (lưu ý versioning và bản sao lưu), xoá trong APM và ticket.
+5. **Đánh giá và thông báo**: loại dữ liệu, số chủ thể bị ảnh hưởng, ai đã truy cập; phối hợp pháp chế/DPO về nghĩa vụ thông báo theo quy định.
+6. **Postmortem** không đổ lỗi, có action cụ thể.
 
-### 3) Dọn lịch sử và ngăn tái diễn
-- **Git**: Nếu secret đã commit, dùng {{git filter-repo}} (khuyến nghị) để xóa khỏi lịch sử. Sau đó {{force push}} và yêu cầu mọi người clone lại repo sạch.
-- **Log**: Xem có thể purge index/log cũ không. Nếu không purge được ngay, hạn chế truy cập và đánh giá rủi ro.
-- **Ngăn tái diễn**: Thêm {{pre-commit hook}} (gitleaks), quét CI, thiết kế {{logging schema}} không chứa PII, dùng {{masking/redaction}} ở logback/appender, áp dụng {{least privilege}} cho log access.
+### Ngăn tái diễn
+~~~java
+// Ẩn field nhạy cảm khỏi toString và JSON log
+public record CustomerDto(
+    String id,
+    @JsonIgnore String nationalId,          // không bao giờ serialize ra log JSON
+    String phone) {
+  @Override public String toString() {      // không để record in nguyên field
+    return "CustomerDto[id=" + id + ", phone=" + mask(phone) + "]";
+  }
+  static String mask(String p) { return p == null ? null : "*******" + p.substring(Math.max(0, p.length() - 3)); }
+}
+~~~
+- Masking tập trung ở tầng logging (mẫu regex cho số thẻ, CMND/CCCD, email trong layout/encoder) làm lưới an toàn cuối.
+- Quy ước log: chỉ log id và mã lỗi, không log body; review checklist có mục PII.
+- Quét tự động: job tìm mẫu PII trong log mỗi ngày, gitleaks trong CI cho secret.
+- Thời gian lưu log ngắn nhất có thể, phân quyền theo vai trò.
+
+### Ví dụ đời thực
+Một ví điện tử phát hiện qua job quét: log của API eKYC ghi nguyên body chứa số CCCD và ảnh dạng base64 trong 9 ngày, khoảng 41.000 bản ghi, chảy vào Elasticsearch và S3 archive. Trong 2 giờ: hotfix bỏ log body, khoá index, audit cho thấy 6 tài khoản nội bộ đã truy vấn. Trong 2 ngày: xoá dữ liệu ở Elasticsearch, S3 (cả version cũ) và APM; pháp chế đánh giá nghĩa vụ báo cáo. Sau đó thêm masking tập trung và job quét hằng ngày — 3 tháng tiếp theo phát hiện thêm 2 chỗ log số điện thoại trước khi lên production.
 
 ### Pitfall
-- Chỉ xóa file trong commit mới → secret vẫn còn trong lịch sử git.
-- Chỉ "sửa log" mà không rotate credential.
+- Chỉ xoá log mà không xoay vòng secret.
+- Quên các bản sao: archive, backup, công cụ APM, ảnh chụp màn hình trong ticket.
+- Mask ở từng chỗ log thủ công — chỗ mới viết sẽ quên.
+- Giấu sự cố — vi phạm quy định và mất lòng tin khi bị phát hiện sau.
 
-> Senior tip: Câu trả lời đúng luôn bắt đầu bằng "{{rotate/revoke ngay}}". Việc dọn lịch sử quan trọng, nhưng vô hiệu hóa credential là điều phải làm trong vài phút đầu.`,
+### Trả lời mẫu khi phỏng vấn
+"Khi phát hiện dữ liệu cá nhân hoặc secret trong log, tôi coi như nó đã lộ và xử lý như một sự cố bảo mật. Giờ đầu tiên tôi chặn nguồn: hotfix bỏ hoặc mask dòng log đó, tạm thời thì hạ log level qua Actuator. Đồng thời khoá quyền truy cập vào index và bucket chứa log, và lấy audit xem ai đã truy vấn. Nếu là secret thì thu hồi và xoay vòng ngay, vì xoá log không làm secret hết hiệu lực. Sau đó dọn dữ liệu ở mọi nơi log đã chảy tới, gồm Elasticsearch, archive S3 kể cả version cũ, công cụ APM. Rồi phối hợp pháp chế đánh giá nghĩa vụ thông báo theo Nghị định 13. Để không tái diễn, tôi đặt masking tập trung ở tầng logging làm lưới an toàn, quy ước chỉ log id và mã lỗi, không log body, và một job quét PII trong log mỗi ngày cùng gitleaks trong CI."
+
+> Senior tip: thêm một bài test tự động gửi request có số thẻ và CCCD giả qua các API chính rồi assert rằng log đầu ra không chứa chuỗi đó. Test này rẻ, chạy trong CI, và bắt được phần lớn lỗi log nhạy cảm trước khi lên production.`,
   follow: ['Làm sao phát hiện sớm secret bị commit?', 'Nên mask PII ở lớp nào trong ứng dụng?'],
   tags: ['security-incident', 'pii', 'secrets', 'git', 'logging']
 },
@@ -6173,25 +6279,42 @@ Nếu không có dòng bị ảnh hưởng (affected rows = 0) → không đủ 
   topic: 'scenario',
   level: 'lead',
   q: 'GC pause dài bất thường dưới tải: chẩn đoán và xử lý thế nào?',
-  a: `**Tóm tắt:** {{GC pause}} dài thường do heap gần đầy, {{Full GC}}, {{allocation rate}} cao, memory leak, hoặc {{CPU throttling}} trong container. Cần chẩn đoán bằng {{GC log}} và {{JFR/Flight Recorder}}, rồi xử lý theo nguyên nhân.
+  a: `**Tóm tắt:** GC pause dài dưới tải có bốn nhóm nguyên nhân chính: **heap gần đầy/leak** (Full GC), **allocation rate quá cao** (GC chạy không kịp), **GC thread bị bóp CPU** (container bị throttle, quá ít CPU), và **cấu hình sai** (heap sát giới hạn container, chọn GC không hợp). Tôi đọc GC log + JFR, kiểm tra CPU throttling, rồi xử lý theo nguyên nhân: sửa leak/giảm allocation trước, sau đó mới sizing và đổi GC.
+
+### Cơ chế cần hiểu
+- **G1** (mặc định từ Java 9): chia heap thành region; Young GC dừng toàn bộ (stop-the-world) để copy object còn sống; mục tiêu pause theo {{-XX:MaxGCPauseMillis}} (mặc định 200ms). Nếu marking đồng thời không kịp dọn Old Gen → **Full GC** (Java 10+ đã song song nhưng vẫn dừng lâu với heap lớn).
+- **Pause tỉ lệ với số object còn sống**, không tỉ lệ với rác. Cache lớn trong heap làm mỗi lần GC phải copy nhiều hơn.
+- **Generational ZGC** (Java 21, bật bằng {{-XX:+UseZGC -XX:+ZGenerational}}; từ Java 23 là mặc định của ZGC): pause dưới 1ms bất kể kích thước heap, đổi lại tốn thêm CPU và bộ nhớ.
 
 ### Chẩn đoán
-1. **Thu thập bằng chứng**: Bật GC log (vd {{-Xlog:gc*}}), hoặc JFR. Xem loại GC, {{pause time}}, {{heap before/after}}, tần suất.
-2. **Kiểm tra môi trường**: Trong Kubernetes, xem {{CPU throttling ratio}} (cgroups). Nếu bị throttle, GC thread chạy chậm → pause dài hơn.
-3. **Tìm pattern**: {{Old Gen}} gần đầy liên tục → dễ trigger Full GC. {{Allocation rate}} tăng đột ngột sau deploy.
-4. **Tìm leak**: Nếu heap không giảm sau GC nhiều chu kỳ → nghi ngờ leak, cần {{heap dump}} + phân tích (MAT/Eclipse Memory Analyzer).
+1. **GC log**: {{-Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags}}. Tìm: "Pause Full", "To-space exhausted", tỉ lệ heap sau GC tăng dần qua các chu kỳ (leak).
+2. **Allocation rate**: JFR ({{jcmd <pid> JFR.start duration=120s filename=app.jfr}}) → mục Allocation, xem method nào cấp phát nhiều nhất.
+3. **CPU throttling** trong Kubernetes: {{container_cpu_cfs_throttled_periods_total}} / {{container_cpu_cfs_periods_total}}. Throttling 30% nghĩa là GC thread cũng bị dừng giữa chừng → pause kéo dài gấp nhiều lần.
+4. **Safepoint**: pause dài nhưng GC log báo thời gian GC ngắn → thời gian chờ thread về safepoint (vòng lặp đếm dài, sự kiện deoptimize).
+5. **Leak**: heap sau Full GC vẫn cao và tăng dần → heap dump ({{jcmd <pid> GC.heap_dump}}), phân tích bằng Eclipse MAT (dominator tree).
 
-### Xử lý
-- **Sizing**: Đặt {{-Xmx}}/{{MaxRAMPercentage}} hợp lý (thường 60-75% memory limit của container). Đừng để heap quá sát limit gây OOM/GC căng.
-- **Chọn GC**: {{G1GC}} cân bằng tốt cho đa số web app. {{ZGC}}/{{Shenandoah}} phù hợp yêu cầu latency rất thấp (cần test).
-- **Container**: Nếu CPU bị throttle nghiêm trọng, cân nhắc tăng {{CPU request/limit}} hoặc bỏ limit không phù hợp.
-- **Code**: Giảm allocation, tránh cache vô hạn không có eviction, fix leak.
+### Xử lý theo nguyên nhân
+| Nguyên nhân | Cách xử lý |
+|---|---|
+| Leak / cache không giới hạn | Sửa code, cache có giới hạn (Caffeine maximumSize, TTL) |
+| Allocation rate cao | Bỏ tạo object thừa trong vòng lặp nóng, stream lớn, log chuỗi không cần |
+| CPU throttling | Tăng CPU limit hoặc bỏ limit chỉ giữ request; kiểm tra {{ActiveProcessorCount}} |
+| Heap sát giới hạn container | {{-XX:MaxRAMPercentage=70}}, chừa chỗ cho metaspace, thread stack, direct buffer |
+| Cần pause thấp với heap lớn | Thử Generational ZGC, đo lại p99 và CPU |
+
+### Ví dụ đời thực
+Service tính giá chạy trên Kubernetes: p99 tăng từ 120ms lên 1,4s mỗi giờ cao điểm. GC log có Young GC 600–900ms, nhưng heap sau GC ổn định (không leak). Metric cho thấy CPU throttling 45%: container limit 1 CPU, JVM thấy 1 CPU nên chỉ chạy 1 GC thread, lại còn bị bóp. Đồng thời JFR chỉ ra một hàm build chuỗi JSON log cấp phát 1,2GB/giây. Tăng limit lên 2 CPU, bỏ log chuỗi lớn: allocation rate còn 350MB/giây, Young GC còn 25–40ms, p99 về 140ms. Không cần đổi GC.
 
 ### Pitfall
-- Chỉ tăng heap mà không nhìn CPU throttling.
-- Tối ưu GC trước khi xác nhận bottleneck thực tế.
+- Tăng heap để "giảm GC" → mỗi lần pause copy nhiều hơn, Full GC còn dài hơn.
+- Copy cờ tuning trên mạng mà không đo trước/sau.
+- Quên rằng heap chỉ là một phần bộ nhớ của JVM → bị OOMKilled bởi container.
+- Đổi sang ZGC mà không tăng CPU → GC đồng thời ăn CPU của ứng dụng.
 
-> Senior tip: Luôn kiểm tra {{throttled time}} cùng với GC pause. Rất nhiều trường hợp "GC chậm" thực chất là "GC bị giới hạn CPU".`,
+### Trả lời mẫu khi phỏng vấn
+"GC pause dài thì tôi không đoán mà bật GC log và JFR. Tôi phân loại theo bốn nhóm. Một là heap gần đầy hoặc leak: nhìn heap sau mỗi chu kỳ có tăng dần không, có Full GC không; nếu có thì lấy heap dump phân tích bằng MAT. Hai là allocation rate quá cao: JFR chỉ ra method nào cấp phát nhiều nhất. Ba là GC bị bóp CPU, rất hay gặp trên Kubernetes: tôi xem metric CPU throttling, vì GC thread bị dừng giữa chừng thì pause dài gấp nhiều lần. Bốn là cấu hình: heap sát giới hạn container, hoặc chọn GC không hợp. Tôi sửa nguyên nhân trước, như leak, cache không giới hạn hay cấp phát thừa, rồi mới chỉnh sizing và cân nhắc Generational ZGC nếu cần pause thấp với heap lớn. Lần gần nhất, nguyên nhân thật là container 1 CPU bị throttle 45% cộng với một hàm log cấp phát hơn 1GB mỗi giây; sửa hai chỗ đó thì Young GC từ gần 1 giây xuống dưới 40ms."
+
+> Senior tip: luôn đặt biểu đồ **CPU throttling** cạnh biểu đồ GC pause trên dashboard. Trong môi trường container, một nửa số ca "GC chậm" thực chất là "GC không được chạy".`,
   follow: ['ZGC vs G1: khi nào chọn?', 'Làm sao đọc GC log hiệu quả cho người mới?'],
   tags: ['gc', 'jvm', 'performance', 'kubernetes']
 },{
@@ -6199,25 +6322,61 @@ Nếu không có dòng bị ảnh hưởng (affected rows = 0) → không đủ 
   topic: 'scenario',
   level: 'lead',
   q: 'Database deadlock tăng vọt giờ cao điểm: điều tra và khắc phục thế nào?',
-  a: `**Tóm tắt:** {{Deadlock}} xảy ra khi hai (hoặc nhiều) transaction giữ lock và chờ lock của nhau tạo thành vòng tròn. Cần tìm nguyên nhân từ {{deadlock log}}, sửa thứ tự truy cập, rút ngắn transaction, và cân nhắc đúng mức isolation.
+  a: `**Tóm tắt:** Deadlock là vòng chờ: transaction A giữ khoá X chờ Y, B giữ Y chờ X; DB phát hiện và **huỷ một bên**. Tăng vọt giờ cao điểm vì nhiều transaction chồng lên nhau hơn. Tôi lấy chi tiết deadlock từ log DB để biết **câu lệnh và dòng nào** tạo vòng, rồi sửa gốc: **khoá theo thứ tự cố định**, **transaction ngắn**, đúng index để không khoá thừa, và **retry có giới hạn** cho bên bị huỷ.
 
-### Điều tra
-1. **Lấy deadlock graph**: PostgreSQL có {{log_lock_waits}}/log, MySQL có {{SHOW ENGINE INNODB STATUS}} (LATEST DETECTED DEADLOCK). Trích tên table, index, khóa (row/key), SQL gây ra.
-2. **Xem pattern**: Thường do truy cập bảng/row theo thứ tự khác nhau giữa các transaction.
-3. **Xem mức độ**: Có phải chỉ ở giờ cao điểm (tăng concurrency) hay có thay đổi code/deploy?
+### Cơ chế, từng bước
+~~~text
+T1: UPDATE account SET ... WHERE id = 1   -- khoá dòng 1
+T2: UPDATE account SET ... WHERE id = 2   -- khoá dòng 2
+T1: UPDATE account SET ... WHERE id = 2   -- chờ T2
+T2: UPDATE account SET ... WHERE id = 1   -- chờ T1  => vòng chờ
+DB phát hiện (PostgreSQL kiểm tra sau deadlock_timeout = 1s) và huỷ một transaction
+~~~
+Chuyển tiền A→B và B→A cùng lúc là ví dụ kinh điển: mỗi transaction khoá tài khoản nguồn trước.
 
-### Khắc phục
-1. **Thống nhất thứ tự truy cập**: Luôn cập nhật các bảng/row theo cùng một thứ tự (vd theo {{PK}} tăng dần).
-2. **Rút ngắn transaction**: Giảm thời gian giữ lock - không gọi HTTP, không làm việc nặng bên trong transaction.
-3. **Tránh lock không cần thiết**: Chỉ lock đúng hàng cần sửa. Cân nhắc {{UPDATE}} nguyên tử nếu có thể.
-4. **Chọn isolation phù hợp**: {{READ COMMITTED}} đủ cho đa số, {{REPEATABLE READ}}/{{SERIALIZABLE}} tăng nguy cơ conflict/deadlock - chỉ dùng khi thật cần.
-5. **Retry**: Khi ứng dụng nhận {{deadlock detected}} (error), tự động retry transaction với giới hạn số lần (vì DB đã chọn 1 transaction để rollback).
+### Lấy bằng chứng
+- **PostgreSQL**: log tự ghi "ERROR: deadlock detected" kèm DETAIL các process, loại khoá, câu lệnh của từng bên. Bật thêm {{log_lock_waits = on}} để thấy cả các lần chờ khoá lâu hơn {{deadlock_timeout}} (dấu hiệu sắp deadlock).
+- **MySQL InnoDB**: {{SHOW ENGINE INNODB STATUS}} mục LATEST DETECTED DEADLOCK; bật {{innodb_print_all_deadlocks}} để ghi mọi deadlock vào error log.
+- Ứng dụng: đếm exception theo câu lệnh (Spring dịch thành {{CannotAcquireLockException}}/{{DeadlockLoserDataAccessException}} tuỳ phiên bản và driver).
 
-### Phân biệt
-- {{Lock wait timeout}}: chờ quá lâu nhưng chưa tạo vòng tròn (có thể timeout).
-- {{Deadlock}}: phát hiện vòng tròn → DB rollback ngay 1 transaction.
+### Nguyên nhân hay gặp và cách sửa
+| Nguyên nhân | Cách sửa |
+|---|---|
+| Hai luồng khoá cùng tập dòng theo thứ tự khác nhau | Luôn khoá theo thứ tự id tăng dần |
+| Transaction dài (gọi HTTP, xử lý nặng bên trong) | Đưa I/O ra ngoài, transaction chỉ chứa thao tác DB |
+| UPDATE thiếu index → khoá nhiều dòng hơn cần (MySQL khoá gap/next-key) | Thêm index đúng cho điều kiện WHERE |
+| Foreign key: insert con khoá dòng cha ở chế độ share | Thứ tự thao tác nhất quán, hoặc cập nhật cha trước |
+| Batch lớn cập nhật hàng nghìn dòng theo thứ tự ngẫu nhiên | Sắp xếp theo khoá trước khi ghi, chia lô nhỏ |
 
-> Senior tip: Không chỉ "retry". Nếu deadlock lặp lại theo cùng pattern, bắt buộc phải sửa thứ tự truy cập hoặc thiết kế transaction.`,
+~~~java
+@Transactional
+public void transfer(long from, long to, BigDecimal amt) {
+    long first = Math.min(from, to), second = Math.max(from, to);
+    // khoá theo thứ tự id cố định -> không thể tạo vòng chờ
+    Account a = repo.lockById(first);    // SELECT ... FOR UPDATE
+    Account b = repo.lockById(second);
+    // ... trừ/cộng tiền
+}
+~~~
+Retry: bên bị huỷ được thử lại tối đa 2–3 lần với backoff ngẫu nhiên (Spring Retry), chỉ cho thao tác idempotent. Retry là lưới an toàn, không phải cách sửa.
+
+### Deadlock khác lock wait timeout
+- **Deadlock**: có vòng chờ, DB huỷ ngay một bên sau khi phát hiện.
+- **Lock wait timeout**: chỉ chờ quá lâu một transaction đang giữ khoá (ví dụ transaction treo), không có vòng.
+
+### Ví dụ đời thực
+Hệ thống ví: ngày lương về, deadlock từ 2–3 lên 400 lần/giờ, 1,5% giao dịch chuyển tiền lỗi. Log PostgreSQL cho thấy hai câu UPDATE trên bảng {{wallet}} với cặp id ngược nhau — chuyển tiền qua lại giữa các ví gia đình. Code khoá ví nguồn trước, ví đích sau. Sửa thành khoá theo id tăng dần và thêm retry 2 lần: deadlock còn 0–1 lần/giờ, giao dịch lỗi dưới 0,01%.
+
+### Pitfall
+- Chỉ thêm retry và để nguyên thiết kế — tải tăng thì retry cũng deadlock tiếp.
+- Nâng isolation lên SERIALIZABLE để "an toàn" → lỗi serialization và xung đột tăng.
+- Khoá cả bảng để tránh deadlock → throughput sụp.
+- Không giám sát số deadlock theo thời gian → chỉ biết khi khách hàng phàn nàn.
+
+### Trả lời mẫu khi phỏng vấn
+"Deadlock là vòng chờ giữa các transaction, và DB sẽ phát hiện rồi huỷ một bên. Nó tăng vọt giờ cao điểm vì có nhiều transaction chồng nhau hơn, chứ nguyên nhân thì đã có sẵn trong thiết kế. Tôi bắt đầu từ bằng chứng: PostgreSQL tự ghi chi tiết deadlock vào log, gồm câu lệnh của từng bên; MySQL thì xem LATEST DETECTED DEADLOCK hoặc bật innodb_print_all_deadlocks. Từ đó tôi biết những câu lệnh và dòng nào tạo vòng. Nguyên nhân hay gặp nhất là khoá cùng tập dòng theo thứ tự khác nhau, như chuyển tiền A sang B và B sang A cùng lúc. Cách sửa là luôn khoá theo thứ tự id tăng dần. Ngoài ra tôi giữ transaction ngắn, không gọi HTTP bên trong, và đảm bảo có index đúng để không khoá thừa dòng. Retry có giới hạn chỉ là lưới an toàn. Một lần ngày lương về, deadlock lên 400 lần mỗi giờ; đổi sang khoá theo thứ tự id thì gần như về 0."
+
+> Senior tip: vẽ biểu đồ số deadlock theo giờ và đặt cảnh báo khi vượt mức nền. Deadlock hiếm khi tự biến mất — nó tăng theo tải, nên bắt được xu hướng sớm là có thời gian sửa thiết kế trước ngày cao điểm tiếp theo.`,
   follow: ['Deadlock vs lock wait timeout khác nhau thế nào?', 'Khi nào có lý do dùng SERIALIZABLE?'],
   tags: ['deadlock', 'locking', 'transaction', 'concurrency']
 },
