@@ -3008,4 +3008,148 @@ Một công ty thương mại điện tử thử nghiệm agent 3 tháng: giai �
   ],
   tags: ['AI agent', 'AIOps', 'AWS', 'security', 'guardrails', 'case study', 'solution architect']
 },
+{
+  id: 'ai-050',
+  topic: 'ai',
+  level: 'lead',
+  q: '(Case study SA) Ban lãnh đạo muốn có "trợ lý AI cho nhân viên" trong 3 tháng. Bạn đánh giá giữa mua sẵn (Amazon Q Business hoặc sản phẩm SaaS), dùng dịch vụ quản lý (Bedrock Knowledge Bases + Agents) và tự xây (Spring AI/LangChain4j + vector DB) thế nào, và đưa ra khuyến nghị ra sao?',
+  a: `**Tóm tắt:** Tôi không chọn theo công nghệ mà theo **mức độ khác biệt của bài toán**: nhu cầu phổ biến (hỏi đáp tài liệu nội bộ, tóm tắt, tìm kiếm có phân quyền) thì **mua sẵn** để có giá trị nhanh; khi cần tích hợp sâu với hệ thống nghiệp vụ và kiểm soát luồng xử lý thì **dịch vụ quản lý** (Bedrock Knowledge Bases, Agents, Guardrails); chỉ **tự xây** phần tạo ra lợi thế riêng hoặc có yêu cầu đặc thù (luồng nghiệp vụ phức tạp, tích hợp lõi, chi phí ở quy mô lớn). Quyết định dựa trên bảng tiêu chí có trọng số, một **pilot 4–6 tuần đo bằng số liệu**, và được ghi thành ADR.
+
+### Tiêu chí đánh giá
+| Tiêu chí | Mua sẵn (Q Business / SaaS) | Bedrock KB + Agents | Tự xây (Spring AI / LangChain4j) |
+|---|---|---|---|
+| Thời gian ra mắt | Tuần | Tuần–tháng | Tháng |
+| Phân quyền theo tài liệu từ nguồn (SharePoint, Confluence) | Có sẵn connector, kế thừa ACL | Có metadata filter, tự đồng bộ quyền | Tự làm toàn bộ |
+| Tuỳ biến luồng, tích hợp hệ thống nội bộ | Hạn chế | Trung bình (action group gọi Lambda/API) | Toàn quyền |
+| Dữ liệu ở đâu, tuân thủ | Theo nhà cung cấp/region hỗ trợ | Trong tài khoản AWS của mình | Hoàn toàn kiểm soát |
+| Chi phí | Theo người dùng/tháng | Theo dùng (token, lưu trữ vector) | Theo dùng + công vận hành |
+| Phụ thuộc nhà cung cấp | Cao | Trung bình | Thấp (đổi model/provider dễ hơn) |
+| Đội ngũ cần có | Quản trị | Kỹ sư cloud + AI | Kỹ sư AI + vận hành |
+
+### Cách ra quyết định
+1. **Liệt kê use case** và xếp theo giá trị × độ khó: thường 70% là hỏi đáp tài liệu, 20% là tác vụ trên hệ thống nội bộ (tra cứu hồ sơ, tạo ticket), 10% là nghiệp vụ đặc thù.
+2. **Ràng buộc không thương lượng**: dữ liệu khách hàng không rời tài khoản/region, phân quyền phải kế thừa từ nguồn, audit đầy đủ.
+3. **Pilot song song nhỏ** với 50–100 người dùng, cùng bộ câu hỏi đánh giá (độ đúng, trích dẫn đúng nguồn, không lộ tài liệu người dùng không có quyền), chi phí thực tế.
+4. **Khuyến nghị theo tầng**: không nhất thiết một lựa chọn cho tất cả.
+
+### Ví dụ đời thực
+Một ngân hàng 6.000 nhân viên: pilot Q Business cho hỏi đáp quy trình nội bộ (connector SharePoint, kế thừa quyền) đạt 86% câu trả lời được đánh giá đúng và có trích dẫn, ra mắt sau 5 tuần. Nhưng trợ lý cho giao dịch viên cần tra hồ sơ khách hàng trên core và tính phí theo biểu phí — Q Business không đáp ứng được yêu cầu kiểm soát và audit từng truy vấn. Phần này dựng trên Bedrock (Knowledge Bases cho biểu phí, action group gọi API nội bộ qua Lambda có kiểm tra quyền, Guardrails che dữ liệu cá nhân). Phần "gợi ý sản phẩm theo hồ sơ khách" — lợi thế cạnh tranh — tự xây bằng Spring AI trong service sẵn có. ADR ghi rõ: xem lại sau 12 tháng dựa trên chi phí và độ hài lòng.
+
+### Pitfall
+- Chọn tự xây vì "đội thích công nghệ" cho bài toán phổ biến → 6 tháng làm lại thứ đã có sẵn.
+- Mua sẵn mà không kiểm tra phân quyền tài liệu → lộ tài liệu nhân sự, lương.
+- Không đo chất lượng bằng bộ câu hỏi thật trước khi quyết định.
+- Bỏ qua chi phí vận hành dài hạn (đánh giá, cập nhật dữ liệu, giám sát) khi tự xây.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi quyết định theo mức độ khác biệt của từng use case chứ không chọn một công nghệ cho tất cả. Nhu cầu phổ biến như hỏi đáp tài liệu nội bộ có phân quyền thì mua sẵn, ví dụ Amazon Q Business với connector kế thừa quyền từ nguồn, để ra mắt trong vài tuần. Khi cần gọi hệ thống nội bộ, kiểm soát luồng và dữ liệu ở trong tài khoản của mình, tôi dùng Bedrock Knowledge Bases, Agents với action group và Guardrails. Chỉ phần tạo lợi thế riêng hoặc có yêu cầu đặc thù mới tự xây bằng Spring AI hay LangChain4j. Tôi chấm theo bảng tiêu chí có trọng số: thời gian, phân quyền, tuân thủ, tuỳ biến, chi phí, phụ thuộc nhà cung cấp, năng lực đội. Rồi chạy pilot nhỏ với bộ câu hỏi đánh giá và đo chi phí thật, ghi quyết định thành ADR có hạn xem lại."
+
+> Senior tip: đưa vào pilot một bài kiểm tra bắt buộc: người dùng A hỏi về tài liệu mà chỉ người dùng B có quyền xem. Giải pháp nào trả lời được câu đó (dù chỉ một đoạn) là bị loại, bất kể các tiêu chí khác tốt đến đâu.`,
+  follow: [
+    'Bạn ước tính tổng chi phí sở hữu (TCO) của phương án tự xây trong 2 năm thế nào?',
+    'Kế thừa phân quyền tài liệu từ SharePoint vào hệ thống RAG được thực hiện ra sao?',
+    'Làm sao tránh bị khoá chặt vào một nhà cung cấp khi dùng dịch vụ quản lý?'
+  ],
+  tags: ['AI', 'build vs buy', 'Bedrock', 'Amazon Q', 'Spring AI', 'ADR', 'case study', 'solution architect']
+},
+{
+  id: 'ai-051',
+  topic: 'ai',
+  level: 'lead',
+  q: '(Case study SA) Đội chống gian lận muốn "dùng LLM để chấm điểm gian lận cho mỗi giao dịch thẻ", nhưng luồng phê duyệt giao dịch chỉ cho phép tổng thời gian dưới 200ms và có 3.000 giao dịch/giây lúc cao điểm. Bạn thiết kế thế nào?',
+  a: `**Tóm tắt:** LLM **không phù hợp** đặt trực tiếp trong đường phê duyệt dưới 200ms: độ trễ hàng trăm mili giây tới vài giây, chi phí theo token ở 3.000 giao dịch/giây là rất lớn, và kết quả không xác định khó giải thích với kiểm toán. Kiến trúc đúng là **hai tầng**: tầng **đồng bộ** dùng **quy tắc + mô hình ML truyền thống** (ví dụ gradient boosting) trên **feature tính sẵn** để quyết định trong vài chục mili giây; tầng **bất đồng bộ** dùng LLM cho việc nó giỏi: **tóm tắt và giải thích** các ca đáng ngờ cho chuyên viên, **phân tích văn bản** (ghi chú, khiếu nại), **sinh giả thuyết** quy tắc mới, và hỗ trợ điều tra.
+
+### Ngân sách độ trễ cho luồng đồng bộ
+| Bước | Ngân sách |
+|---|---|
+| Nhận yêu cầu, kiểm tra cơ bản | 10ms |
+| Lấy feature từ feature store (Redis/DynamoDB): số giao dịch 1 giờ qua, khoảng cách địa lý, thiết bị | 15ms |
+| Quy tắc cứng (danh sách chặn, hạn mức) | 5ms |
+| Mô hình ML (cùng service hoặc endpoint gần) | 10–20ms |
+| Ghi quyết định, trả kết quả | 10ms |
+| Dự phòng | còn lại |
+Mọi lời gọi có timeout; nếu mô hình không trả kịp, **quy tắc mặc định có chủ đích** (cho qua giao dịch nhỏ, từ chối mềm giao dịch lớn) chứ không treo giao dịch.
+
+### Tầng LLM bất đồng bộ
+~~~seq
+title: Luồng giao dịch và điều tra
+actors: Card | Scoring | Kafka | Investigator | LLM | Analyst
+Card -> Scoring: yêu cầu phê duyệt
+Scoring --> Card: quyết định trong 60ms (quy tắc + ML)
+Scoring -> Kafka: sự kiện giao dịch + điểm + lý do
+Kafka -> Investigator: ca điểm cao hoặc bị khách khiếu nại
+Investigator -> LLM: tóm tắt lịch sử, giải thích các tín hiệu
+LLM --> Analyst: bản tóm tắt + câu hỏi gợi ý điều tra
+~~~
+- LLM nhận **feature và lý do** của mô hình (không cần toàn bộ dữ liệu thô), tạo bản tóm tắt dễ đọc cho chuyên viên; chuyên viên quyết định.
+- Kết luận của chuyên viên quay lại làm **nhãn** huấn luyện lại mô hình ML.
+- LLM còn giúp phân loại hàng nghìn khiếu nại "không thực hiện giao dịch" theo kịch bản gian lận.
+
+### Ví dụ đời thực
+Một đơn vị phát hành thẻ thử đặt LLM trực tiếp trong luồng chấm điểm ở môi trường thử nghiệm: p99 650ms, chi phí ước tính hơn 200.000 USD/tháng ở tải thật, và cùng một giao dịch đôi khi cho điểm khác nhau — bộ phận rủi ro từ chối. Thiết kế hai tầng: mô hình gradient boosting với 120 feature tính sẵn, p99 tổng 48ms; LLM chỉ chạy cho khoảng 0,8% giao dịch bị gắn cờ và cho khiếu nại. Thời gian chuyên viên xử lý một ca giảm từ 14 phút còn 6 phút nhờ bản tóm tắt; tỉ lệ phát hiện tăng nhờ nhãn chất lượng hơn đưa về mô hình. Chi phí LLM khoảng 3.000 USD/tháng.
+
+### Pitfall
+- Đặt LLM vào đường đồng bộ có SLA chặt.
+- Để LLM ra quyết định chặn/cho qua mà không giải thích được.
+- Gửi dữ liệu thẻ đầy đủ vào prompt (vi phạm PCI) thay vì feature đã che.
+- Không có vòng phản hồi nhãn → mô hình không tiến bộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không đặt LLM trong đường phê duyệt dưới 200 mili giây: độ trễ và chi phí ở ba nghìn giao dịch mỗi giây không phù hợp, và kết quả không xác định thì khó giải thích với kiểm toán. Tôi thiết kế hai tầng. Tầng đồng bộ dùng quy tắc cứng và một mô hình ML như gradient boosting trên feature tính sẵn trong feature store, có ngân sách độ trễ cho từng bước, timeout và quyết định mặc định có chủ đích khi thành phần nào đó chậm. Tầng bất đồng bộ đọc sự kiện từ Kafka, và LLM chỉ xử lý các ca bị gắn cờ hoặc khiếu nại: tóm tắt lịch sử, giải thích các tín hiệu, gợi ý câu hỏi điều tra cho chuyên viên, phân loại khiếu nại. Chuyên viên ra quyết định, và kết luận của họ quay lại làm nhãn để huấn luyện lại mô hình ML. Dữ liệu thẻ đưa vào LLM là feature đã che, không phải số thẻ."
+
+> Senior tip: khi ai đó đề xuất "dùng LLM cho X", hỏi ba câu: **độ trễ cho phép, khối lượng mỗi giây, và có cần giải thích quyết định không**. Ba câu trả lời đó thường cho biết LLM nên nằm trong đường chính, bên cạnh, hay không nên dùng.`,
+  follow: [
+    'Feature store cho chấm điểm thời gian thực được cập nhật thế nào?',
+    'Bạn giải thích quyết định của mô hình ML với kiểm toán ra sao?',
+    'Khi nào LLM có thể được đưa vào luồng đồng bộ một cách an toàn?'
+  ],
+  tags: ['AI', 'fraud detection', 'latency', 'ML', 'LLM', 'case study', 'solution architect']
+},
+{
+  id: 'ai-052',
+  topic: 'ai',
+  level: 'senior',
+  q: '(Case study SA) Sản phẩm của bạn phục vụ khách hàng Việt Nam (hỏi đáp, tóm tắt hợp đồng tiếng Việt). Có nhiều model để chọn: model thương mại lớn qua API, model nhỏ giá rẻ, model mã nguồn mở tự host. Bạn chọn model thế nào cho có căn cứ?',
+  a: `**Tóm tắt:** Không chọn theo bảng xếp hạng chung — bảng xếp hạng thường đo tiếng Anh và tác vụ khác của bạn. Tôi xây **bộ đánh giá riêng** từ dữ liệu thật của sản phẩm (tiếng Việt có dấu, không dấu, viết tắt, thuật ngữ ngành), định nghĩa **tiêu chí đo được** (đúng nội dung, trích dẫn đúng, định dạng, không bịa, độ an toàn), chạy các model ứng viên, rồi đặt kết quả cạnh **chi phí trên mỗi tác vụ**, **độ trễ p95**, **yêu cầu dữ liệu** (nơi xử lý, có được dùng để huấn luyện không) và **rủi ro vận hành** (phụ thuộc nhà cung cấp, lịch ngừng hỗ trợ model). Thường kết quả là **nhiều model theo tác vụ** chứ không phải một.
+
+### Bước 1 — Bộ đánh giá riêng
+- 300–500 mẫu thật đã ẩn danh: câu hỏi khách hàng (có cả lỗi chính tả, không dấu, "ko", "dc"), hợp đồng thật dài 10–40 trang, các câu hỏi bẫy (thông tin không có trong tài liệu).
+- Với mỗi mẫu: đáp án tham chiếu hoặc tiêu chí chấm (rubric).
+- Chấm bằng: so khớp tự động (định dạng, trường bắt buộc), LLM-as-judge **được hiệu chỉnh** với một tập người chấm, và người chấm cho mẫu khó.
+
+### Bước 2 — Bảng quyết định
+| Tiêu chí | Model lớn qua API | Model nhỏ qua API | Mã nguồn mở tự host |
+|---|---|---|---|
+| Chất lượng tiếng Việt, suy luận dài | Thường tốt nhất | Đủ cho tác vụ đơn giản | Khác nhau nhiều giữa các model; cần đánh giá kỹ |
+| Chi phí / 1.000 tác vụ | Cao | Thấp | Cố định theo GPU; rẻ khi tải lớn và đều |
+| Độ trễ | Trung bình | Thấp | Tuỳ hạ tầng |
+| Dữ liệu và tuân thủ | Theo điều khoản và region của nhà cung cấp/Bedrock | Như trên | Hoàn toàn kiểm soát |
+| Vận hành | Nhà cung cấp lo | Nhà cung cấp lo | Tự lo GPU, scale, cập nhật |
+| Rủi ro | Model bị ngừng/đổi hành vi | Như trên | Cần đội ML vận hành |
+
+### Bước 3 — Kiến trúc nhiều model
+- **Router**: câu hỏi FAQ ngắn → model nhỏ; tóm tắt hợp đồng dài, suy luận nhiều bước → model lớn; phân loại khối lượng lớn chạy đêm → batch hoặc model tự host.
+- **Lớp trừu tượng** (Spring AI {{ChatClient}} hoặc gateway nội bộ) để đổi model theo cấu hình, chạy lại bộ đánh giá trước mỗi lần đổi.
+- **Theo dõi trong production**: tỉ lệ người dùng không hài lòng, tỉ lệ chuyển cho người, độ dài output, chi phí theo tác vụ.
+
+### Ví dụ đời thực
+Một công ty luật số đánh giá 5 model trên 420 mẫu tiếng Việt. Kết quả: model lớn A đạt 91% trên tóm tắt hợp đồng nhưng đắt gấp 12 lần model nhỏ B; B đạt 89% trên FAQ nhưng chỉ 71% trên hợp đồng dài và hay bỏ sót điều khoản phạt; model mã nguồn mở tự host C đạt 84% trên phân loại điều khoản, chi phí thấp nhất khi chạy batch 200.000 tài liệu/tháng. Quyết định: A cho tóm tắt hợp đồng, B cho FAQ (chiếm 75% lượng hỏi), C cho phân loại hàng loạt. Chi phí tổng thấp hơn 58% so với dùng A cho mọi việc; điểm chất lượng tổng thể giảm chưa tới 1 điểm phần trăm. Khi nhà cung cấp thông báo ngừng phiên bản A, đổi sang phiên bản mới chỉ cần chạy lại bộ đánh giá và đổi cấu hình.
+
+### Pitfall
+- Chọn theo bảng xếp hạng tiếng Anh hoặc theo vài câu thử tay.
+- Bộ đánh giá không có câu hỏi không dấu, viết tắt, tài liệu dài — đúng thứ người dùng thật gửi.
+- Tự host vì "rẻ" mà không tính GPU nhàn rỗi và công vận hành.
+- Không chạy lại đánh giá khi nhà cung cấp cập nhật model.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không chọn theo bảng xếp hạng chung vì chúng thường đo tiếng Anh và tác vụ khác. Tôi xây bộ đánh giá vài trăm mẫu từ dữ liệu thật đã ẩn danh, có tiếng Việt không dấu, viết tắt, tài liệu dài và câu hỏi bẫy, với tiêu chí chấm rõ ràng; chấm bằng kiểm tra tự động, LLM-as-judge đã hiệu chỉnh với người chấm, và người chấm cho mẫu khó. Rồi tôi đặt điểm chất lượng cạnh chi phí trên mỗi tác vụ, độ trễ p95, yêu cầu về nơi xử lý dữ liệu, và rủi ro vận hành. Kết quả thường là nhiều model theo tác vụ: model nhỏ cho câu hỏi đơn giản chiếm phần lớn lưu lượng, model lớn cho tác vụ khó, batch hoặc tự host cho xử lý khối lượng lớn. Tôi đặt một lớp trừu tượng để đổi model theo cấu hình và luôn chạy lại bộ đánh giá trước mỗi lần đổi."
+
+> Senior tip: giữ bộ đánh giá như **tài sản của sản phẩm**, thêm mẫu từ mỗi khiếu nại của người dùng. Sau một năm, đó là thứ giá trị nhất giúp bạn đổi model trong một buổi chiều thay vì một quý.`,
+  follow: [
+    'LLM-as-judge cần hiệu chỉnh thế nào để tin được?',
+    'Khi nào tự host model mã nguồn mở thực sự rẻ hơn gọi API?',
+    'Bạn phát hiện chất lượng giảm sau khi nhà cung cấp cập nhật model ra sao?'
+  ],
+  tags: ['AI', 'model selection', 'evaluation', 'Vietnamese', 'LLM', 'case study', 'solution architect']
+},
 );
