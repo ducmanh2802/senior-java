@@ -3,6 +3,18 @@
 ## 2026-11-07
 
 ### Nội dung
+- T293 (auto-committed after kilo review + verify)
+- T133 (auto-committed after kilo review + verify)
+- T849 (auto-committed after kilo review + verify)
+- T848 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Nav: 4 purpose groups (Learn / Practice / Interview / Career) with a one-line description per item
+
+
+## 2026-11-07
+
+### Nội dung
 - T847 (auto-committed after kilo review + verify)
 
 ### Ứng dụng
