@@ -3,6 +3,15 @@
 ## 2026-11-07
 
 ### Nội dung
+- T142 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- UI: section colours, shared header strip, career goal + 4 area cards on home; richer content standard
+
+
+## 2026-11-07
+
+### Nội dung
 
 
 ### Ứng dụng
