@@ -2229,6 +2229,12 @@ Instant back = vn.toInstant();                  // ngược về UTC
 - So sánh {{ZonedDateTime}} khác zone: phải {{toInstant()}} rồi so sánh, không so sánh field trực tiếp.
 - {{Period}} vs {{Duration}}: {{Period}} cho ngày/tháng/năm (date-based), {{Duration}} cho giờ/phút/giây/nano (time-based).
 
+### Ví dụ đời thực
+Một ngân hàng chạy job "chốt giao dịch trong ngày" lúc 23:59 theo giờ Việt Nam, nhưng server và cột DB dùng {{TIMESTAMP}} (không timezone) lưu giờ UTC, còn code so sánh bằng {{LocalDateTime.now()}} theo múi giờ của container (UTC). Kết quả: giao dịch từ 0:00 đến 7:00 sáng giờ Việt Nam bị tính vào ngày hôm trước — khoảng 4% giao dịch mỗi ngày lệch kỳ, báo cáo cho cơ quan quản lý sai. Sửa: cột chuyển sang {{timestamptz}}, code lưu {{Instant}}, ranh giới ngày nghiệp vụ tính tường minh {{LocalDate.of(...).atStartOfDay(ZoneId.of("Asia/Ho_Chi_Minh")).toInstant()}}, inject {{Clock}} để test được các mốc 23:59:59/00:00:00. Thêm test cho ngày cuối tháng và năm nhuận.
+
+### Trả lời mẫu khi phỏng vấn
+"Instant là một điểm trên trục thời gian tính theo UTC, không có múi giờ, phù hợp để lưu và truyền giữa các hệ thống. LocalDateTime chỉ là ngày giờ trên lịch, không biết ở đâu, nên không xác định được một thời điểm cụ thể; tôi chỉ dùng nó cho khái niệm như 'mở cửa lúc 8 giờ'. OffsetDateTime có độ lệch cố định như cộng 7, ZonedDateTime có cả quy tắc múi giờ, gồm giờ mùa hè. Trong DB tôi lưu thời điểm bằng Instant với cột timestamptz, và chỉ đổi sang múi giờ người dùng khi hiển thị hoặc khi tính ranh giới nghiệp vụ như 'ngày giao dịch theo giờ Việt Nam', mà tôi tính tường minh với ZoneId. Tôi inject Clock thay vì gọi now trực tiếp để test các mốc nửa đêm, cuối tháng. Bug kinh điển là container chạy UTC trong khi code giả định giờ địa phương."
+
 > Senior tip: quy tắc vàng — **luôn lưu UTC (Instant) trong DB**, **luôn hiển thị theo timezone người dùng ở frontend**, **không bao giờ để business logic tính toán trên LocalDateTime**. Với batch job cut-off, dùng {{ZonedDateTime}} có ZoneId cố định của ngân hàng để xác định ranh giới ngày.`,
   follow: [
     'Vì sao {{ZonedDateTime}} an toàn hơn {{OffsetDateTime}} cho logic cut-off?',
@@ -2277,6 +2283,15 @@ int primitive = wrapper;         // NPE tại dòng này (unboxing ngầm)
 ### So sánh wrapper
 - Luôn dùng {{equals}} cho wrapper; {{==}} chỉ đúng nhờ cache và là bug ngầm.
 - {{Comparator.naturalOrder()}} an toàn cho wrapper null (ném NPE), {{Comparator.nullsFirst}} xử lý null tường minh.
+
+### Bên trong: vì sao có cache -128..127
+{{Integer.valueOf(int)}} kiểm tra giá trị trong khoảng cache (mặc định -128..127, mở rộng phía trên bằng {{-XX:AutoBoxCacheMax}}) và trả về object đã tạo sẵn; ngoài khoảng thì {{new Integer}}. Autoboxing của compiler chính là lời gọi {{valueOf}}. Vì vậy {{==}} "đúng" với số nhỏ trong test (id 1, 2, 3) nhưng sai với dữ liệu thật (id 1000) — loại bug chỉ lộ ra trên production. {{Long}}, {{Short}}, {{Byte}}, {{Character}} (0..127) cũng có cache tương tự; {{Double}}/{{Float}} thì không.
+
+### Ví dụ đời thực
+Một service phân quyền so sánh {{if (user.getTenantId() == resource.getTenantId())}} với kiểu {{Long}}. Mọi test đều xanh vì dữ liệu test có tenant 1–50. Trên production, tenant id từ 1.000 trở lên → so sánh reference luôn false → người dùng hợp lệ bị từ chối truy cập tài nguyên của chính họ (khoảng 300 khiếu nại trong một buổi sáng). Sửa: {{Objects.equals}} hoặc so sánh {{long}} nguyên thuỷ; bật cảnh báo SpotBugs RC_REF_COMPARISON; thêm dữ liệu test có id lớn hơn 127. Một service khác cũng phát hiện {{Map<Long, Long>}} cộng dồn trong vòng lặp tạo 40 triệu object Long mỗi phút — đổi sang mảng {{long[]}}/primitive map giảm 25% thời gian GC.
+
+### Trả lời mẫu khi phỏng vấn
+"Autoboxing là compiler tự chuyển giữa kiểu nguyên thuỷ và wrapper, thực chất gọi valueOf khi box và intValue khi unbox. Integer.valueOf có cache các giá trị từ âm 128 đến 127, nên so sánh hai Integer bằng dấu bằng bằng chỉ tình cờ đúng với số nhỏ, còn với số lớn hơn thì so sánh reference và ra false; đây là bug hay qua được test vì dữ liệu test thường nhỏ. Tôi luôn dùng equals hoặc so sánh giá trị nguyên thuỷ. Unbox một wrapper null sẽ ném NullPointerException, hay gặp khi map get trả về null rồi cộng vào int, hoặc entity có cột nullable map sang int. Trong vòng lặp nóng, boxing tạo rất nhiều object rác, nên tôi dùng kiểu nguyên thuỷ, mảng hoặc IntStream, LongAdder, thay vì collection của wrapper."
 
 > Senior tip: bật {{-XX:+PrintCompilation}} và {{-XX:+PrintInlining}} để xem JIT có loại bỏ boxing không; trong code quan trọng (low latency), viết thủ công dùng primitive hoặc dùng thư viện primitive collection. Đừng tin rằng "JIT sẽ lo" — đo bằng JMH.`,
   follow: [
@@ -2351,6 +2366,15 @@ var in = Files.newInputStream(path);
 try (in) { ... }  // không cần khai báo mới trong try
 ~~~
 
+### Bên trong: compiler biến try-with-resources thành gì
+javac dịch {{try (var r = open())}} thành một khối try/catch/finally: nếu thân try ném exception {{t}}, khi đóng tài nguyên mà {{close()}} cũng ném {{e}}, compiler gọi {{t.addSuppressed(e)}} rồi ném lại {{t}} — exception chính không bị che. Nếu thân không lỗi mà {{close()}} lỗi, exception của close được ném ra. Tài nguyên khai báo sau đóng trước (ngược thứ tự) vì nó thường phụ thuộc tài nguyên khai báo trước (ví dụ {{PreparedStatement}} phụ thuộc {{Connection}}). Tài nguyên null được bỏ qua khi đóng, không ném NPE.
+
+### Ví dụ đời thực
+Một job xuất file dùng {{try/finally}} tự viết: trong finally gọi {{writer.close()}}; khi đĩa đầy, {{write}} ném IOException "No space left", rồi {{close()}} (cố flush) lại ném exception khác và **che mất** exception gốc. Log chỉ có "Stream closed" — team mất 2 ngày điều tra sai hướng. Chuyển sang try-with-resources: log hiển thị exception gốc kèm phần "Suppressed: ..." của close, chẩn đoán đầy đĩa trong 10 phút. Cùng đợt đó, phát hiện một pool connection bị rò vì {{ResultSet}} không đóng ở nhánh lỗi — try-with-resources với cả {{Connection}}, {{PreparedStatement}}, {{ResultSet}} sửa luôn.
+
+### Trả lời mẫu khi phỏng vấn
+"try-with-resources tự đóng mọi tài nguyên implements AutoCloseable khi thoát khối, kể cả khi có exception, và đóng theo thứ tự ngược với khai báo, vì tài nguyên khai báo sau thường phụ thuộc tài nguyên trước, như statement phụ thuộc connection. Điểm quan trọng là nếu thân khối ném exception và close cũng ném, exception của close được gắn vào getSuppressed của exception chính chứ không che nó, khác với try finally tự viết hay làm mất exception gốc. Khi tự viết AutoCloseable, tôi làm close idempotent để gọi hai lần không lỗi, giải phóng tài nguyên kể cả khi một bước giữa chừng lỗi, và khai báo exception cụ thể thay vì Exception chung. Từ Java 9 có thể dùng biến final đã có sẵn trong khai báo try."
+
 > Senior tip: trong code review, tìm mọi {{close()}} thủ công trong finally — hãy chuyển sang try-with-resources. Với resource pool (DB connection), {{close()}} trả về pool chứ không đóng vật lý; đảm bảo {{AutoCloseable}} của wrapper pool đúng ngữ nghĩa.`,
   follow: [
     'Vì sao exception trong close() bị suppressed thay vì ghi đè exception chính?',
@@ -2411,6 +2435,15 @@ enum OrderState {
 - {{EnumMap}} không thread-safe; dùng {{ConcurrentHashMap}} nếu chia sẻ.
 - {{EnumSet}} không serializable tốt qua một số framework cũ; test kỹ.
 - Switch trên enum: thêm case mới mà quên cập nhật switch ⇒ bug; dùng switch expression (exhaustive) để compiler bắt.
+
+### Bên trong: vì sao EnumMap nhanh
+{{EnumMap}} giữ một **mảng** có độ dài bằng số hằng của enum, index chính là {{ordinal()}} — {{get}}/{{put}} chỉ là truy cập mảng, không tính hash, không có object Node. {{EnumSet}} với enum ≤ 64 hằng dùng **một số long** làm bit vector ({{RegularEnumSet}}): {{contains}} là một phép AND, {{addAll}} là một phép OR. Lưu {{ordinal}} trong bộ nhớ là an toàn vì enum và map cùng một phiên bản class; lưu ra DB hay message thì không, vì thứ tự có thể đổi giữa các phiên bản.
+
+### Ví dụ đời thực
+Bảng {{orders}} lưu trạng thái bằng {{@Enumerated(EnumType.ORDINAL)}} (mặc định của JPA nếu không khai báo). Một dev thêm trạng thái {{PENDING_REVIEW}} vào **giữa** enum → mọi đơn cũ có ordinal từ 3 trở đi bị đọc thành trạng thái kế tiếp: khoảng 180.000 đơn "SHIPPED" hiển thị thành "DELIVERED", vài trăm khách nhận email xác nhận giao hàng sai. Khắc phục: rollback, migration chuyển cột sang chuỗi, dùng {{@Enumerated(EnumType.STRING)}} hoặc {{AttributeConverter}} với mã ổn định ({{"SHP"}}, {{"DLV"}}); thêm ArchUnit rule cấm {{EnumType.ORDINAL}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Enum trong Java là class final với một tập instance cố định, được khởi tạo một lần khi load class, nên enum một phần tử là cách làm singleton thread-safe và chống cả reflection lẫn serialization tạo bản sao. Enum có thể có field, constructor, và method riêng cho từng hằng, nên rất hợp làm state machine nhỏ: mỗi trạng thái tự khai báo các chuyển trạng thái hợp lệ. EnumMap và EnumSet nhanh hơn HashMap, HashSet nhiều vì dùng mảng index theo ordinal và bit vector. Nhưng tôi không bao giờ lưu ordinal ra DB hay message: chỉ cần chèn một hằng vào giữa là toàn bộ dữ liệu cũ đọc sai mà không có lỗi nào. Tôi lưu name, hoặc tốt hơn là một mã ổn định qua AttributeConverter để còn đổi tên hằng được."
 
 > Senior tip: trong JPA, map enum bằng {{@Enumerated(EnumType.STRING)}} (lưu name) hoặc {{AttributeConverter}} cho code tùy chỉnh; **không bao giờ** dùng {{EnumType.ORDINAL}}. Với state machine phức tạp, cân nhắc thư viện như Squirrel hoặc tự viết nhưng tách logic transition ra class riêng.`,
   follow: [
@@ -2483,6 +2516,12 @@ class C implements A, B {
 - Định nghĩa **contract** (capability), không quan tâm implementation.
 - Cần multiple implementation ({{Comparable}}, {{Serializable}}, {{AutoCloseable}}).
 - API công khai muốn binary compatibility khi mở rộng.
+
+### Ví dụ đời thực
+Một thư viện nội bộ có interface {{PaymentGateway}} dùng ở 14 service. Thêm method mới {{refund()}} làm vỡ biên dịch của mọi class triển khai. Team chuyển sang thêm {{default}} method {{refund()}} ném {{UnsupportedOperationException}} kèm thông báo rõ, rồi từng service bổ sung dần — không cần phát hành đồng loạt. Sau đó một service triển khai đồng thời {{PaymentGateway}} và {{Auditable}} — cả hai có default {{describe()}} → lỗi biên dịch, buộc class phải override và chọn rõ {{PaymentGateway.super.describe()}}. Bài học được ghi vào hướng dẫn: default method dùng để **tiến hoá API**, không để nhét logic nghiệp vụ dùng chung (logic đó nên nằm trong class có thể test riêng).
+
+### Trả lời mẫu khi phỏng vấn
+"Từ Java 8 interface có default method và static method, từ Java 9 có thêm private method để chia sẻ code giữa các default. Mục đích chính của default method là tiến hoá API: thêm method vào interface đã có nhiều class triển khai mà không làm vỡ chúng. Diamond problem được giải theo quy tắc: method của class luôn thắng default của interface, interface con cụ thể hơn thắng interface cha, còn nếu hai interface ngang hàng cùng có default thì compiler bắt class phải override và chọn rõ bằng cú pháp tên interface chấm super. Tôi chọn abstract class khi cần trạng thái chung, constructor, hoặc thành viên không public, và chấp nhận chỉ kế thừa một lớp. Interface dành cho hợp đồng, cho phép một class đóng nhiều vai trò, và dễ mock trong test."
 
 > Senior tip: mặc định dùng **interface** cho API mới; chỉ dùng abstract class khi thực sự cần state/constructor. Nếu thấy interface có quá nhiều default method phức tạp, cân nhắc tách thành abstract class helper + interface mảnh.`,
   follow: [
@@ -3909,6 +3948,15 @@ record OrderKey(String tenant, List<String> regions) {
 - Equality theo toàn bộ component có thể làm record key quá rộng; hai phiên bản logic giống nhau nhưng metadata khác sẽ thành key khác.
 - Chuẩn hoá trước khi tạo record, chẳng hạn scale của tiền và chữ hoa/thường của mã; {{BigDecimal.equals}} phân biệt scale.
 
+### Bên trong: record sinh ra gì
+Với {{record Key(String tenant, List<String> tags)}}, compiler sinh field {{private final}}, accessor, constructor canonical, và {{equals}}/{{hashCode}}/{{toString}} dựa trên **giá trị hiện tại** của từng component ({{hashCode}} của record gọi {{tags.hashCode()}} mỗi lần). "final" chỉ khoá **reference** tới list, không khoá nội dung list. Nếu caller sửa list sau khi record đã làm key trong {{HashMap}}, hash thay đổi, entry nằm ở bucket cũ — {{get}} không tìm thấy, {{containsKey}} trả false, nhưng entry vẫn chiếm bộ nhớ (rò rỉ). Compact constructor với {{List.copyOf}} giải quyết: copy một lần, bất biến thật.
+
+### Ví dụ đời thực
+Cache kết quả tìm kiếm dùng {{record SearchKey(String query, List<String> filters)}}. Controller tái sử dụng một {{ArrayList}} filters cho nhiều bước xử lý và thêm filter mặc định **sau** khi đã đưa key vào cache → cache hit rate chỉ 12% thay vì kỳ vọng khoảng 60%, và heap tăng dần vì các entry "mất tích" không bao giờ bị lấy lại (cache không giới hạn kích thước). Sửa: compact constructor {{filters = List.copyOf(filters)}} và giới hạn cache bằng Caffeine. Hit rate lên 58%, heap ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Record chỉ đảm bảo bất biến nông: các component là private final và equals, hashCode, toString được sinh theo giá trị hiện tại của component. Nếu một component là List mutable, caller vẫn có thể sửa nội dung list sau khi record được tạo, và khi record đó là key trong cache thì hashCode thay đổi, entry nằm sai bucket và không bao giờ tìm lại được, vừa mất cache hit vừa rò bộ nhớ. Vì vậy với value object trong domain, tôi dùng compact constructor để validate và copy: List.copyOf, hoặc dùng kiểu bất biến sẵn như String, LocalDate, BigDecimal. Tôi thích record cho value object vì ngắn gọn và equals theo giá trị, còn khi cần nhiều biến thể thì kết hợp sealed interface với các record."
+
 > Senior tip: trước khi dùng value object làm map key, kiểm tra mọi component có bất biến sâu không và chạy thử tình huống caller sửa dữ liệu đầu vào. Với entity JPA, xác định equality theo identity nghiệp vụ trước, đừng để generated id null rồi đổi hash sau persist.`,
   follow: ['Vì sao record không tự phù hợp làm JPA entity?', 'Sealed interface có lợi gì khi model kết quả nghiệp vụ có tập trạng thái hữu hạn?'],
   tags: ['record', 'sealed', 'immutability', 'domain model']
@@ -3944,6 +3992,16 @@ Log dedup cho biết số chuỗi khảo sát, deduplicate và byte tiết kiệ
 - Dedup không giảm số object String, chỉ chia sẻ mảng nội dung; nếu overhead object và reference chiếm phần lớn, lợi ích thấp.
 - Chạy dedup có thể tăng CPU và làm GC thêm việc. Snapshot heap ở một thời điểm cũng dễ gây kết luận sai nếu workload chưa ổn định.
 - Không dựa vào chi tiết triển khai layout object cố định giữa các bản JDK; compressed oops, alignment và header ảnh hưởng kích thước thực.
+
+### Ví dụ đời thực
+Một service gợi ý sản phẩm giữ 6 triệu object thuộc tính trong cache; heap dump cho thấy 2,3GB là {{byte[]}} của String, trong đó khoảng 70% trùng nội dung (tên màu, kích cỡ, thương hiệu). Thử ba cách trên môi trường tải giả lập:
+- Bật {{-XX:+UseStringDeduplication}} (G1): heap sau GC giảm khoảng 1,1GB, CPU GC tăng khoảng 3%, không đổi code — nhưng chỉ áp dụng cho String đã sống qua vài lần GC (mặc định tuổi 3) nên giảm chậm sau mỗi lần nạp cache.
+- {{intern()}} các trường thuộc tính khi parse: giảm khoảng 1,5GB vì gộp cả object String, nhưng thời gian nạp cache tăng 18% do tra StringTable.
+- Chuẩn hoá bằng **một {{HashMap}} riêng** cho từng loại thuộc tính (tự canonicalize, có giới hạn): giảm khoảng 1,5GB, nạp nhanh hơn intern, và dễ đo.
+Team chọn cách thứ ba cho dữ liệu đã biết, giữ String Deduplication làm lưới an toàn cho phần còn lại.
+
+### Trả lời mẫu khi phỏng vấn
+"Ba cơ chế giải quyết ba việc khác nhau. Compact Strings, mặc định từ Java 9, giảm một nửa bộ nhớ cho chuỗi Latin-1 vì mỗi ký tự chỉ một byte, không cần làm gì. String Deduplication của G1 cho các String khác object nhưng cùng nội dung dùng chung một mảng byte, chạy nền và không đổi code, nhưng tốn chút CPU GC và chỉ áp dụng cho chuỗi đã sống qua vài chu kỳ GC. intern gộp cả object String vào bảng chuẩn của JVM, giảm nhiều nhất nhưng tốn thời gian tra bảng và bảng có thể phình nếu dữ liệu không lặp. Tôi quyết định dựa trên heap dump và benchmark: đo bao nhiêu phần trăm là chuỗi trùng, chuỗi đó sống bao lâu. Thường tôi tự chuẩn hoá các trường đã biết khi parse, hoặc đổi sang enum, và để String Deduplication làm lưới an toàn."
 
 > Senior tip: đặt mục tiêu đo được, ví dụ giảm retained heap 10% mà CPU tăng dưới ngưỡng đã thống nhất; thử với traffic đại diện và giữ phương án rollback bằng JVM flag.`,
   follow: ['String dedup chia sẻ điều gì nhưng không chia sẻ điều gì?', 'Vì sao intern không phải giải pháp cache chuỗi tổng quát?'],
@@ -3981,6 +4039,15 @@ Log dedup cho biết số chuỗi khảo sát, deduplicate và byte tiết kiệ
 ### Quyết định
 Viết test cho entity mới, sau persist, proxy, detached và hai instance cùng id. Không dùng mutable field, timestamp hay toàn bộ object graph.
 
+### Bên trong: vì sao entity "biến mất" khỏi HashSet
+{{HashSet}} xếp object vào bucket theo {{hashCode()}} **tại thời điểm add**. Entity mới có {{id = null}} → nếu {{hashCode()}} dựa vào id thì hash là của null (ví dụ 0). Sau {{persist}} và flush, Hibernate gán id = 42 → {{hashCode()}} giờ khác, nhưng object vẫn nằm ở bucket cũ. {{set.contains(entity)}} tìm ở bucket mới → false; {{set.remove(entity)}} không xoá được. Với {{@OneToMany Set<Item>}}, Hibernate có thể thêm trùng hoặc không xoá được phần tử con. Cách phổ biến (theo hướng dẫn của Vlad Mihalcea): {{equals}} so id khi id khác null, {{hashCode()}} trả **hằng số theo class** ({{getClass().hashCode()}}) — mọi entity cùng loại chung một bucket (chỉ chấp nhận được với collection nhỏ), đổi lại an toàn suốt vòng đời. Nếu có business key bất biến (mã đơn hàng, số tài khoản) thì dùng nó là tốt nhất.
+
+### Ví dụ đời thực
+Một đơn hàng có {{Set<OrderLine>}}; {{OrderLine}} dùng Lombok {{@Data}} (equals/hashCode theo mọi field, kể cả id và quan hệ). Thêm dòng mới rồi lưu: sau flush, hash đổi; gọi {{lines.remove(line)}} để xoá dòng vừa thêm không có tác dụng — khách bị tính tiền cho món đã bỏ khỏi giỏ (khoảng 90 đơn trong một ngày). Ngoài ra {{@Data}} gọi {{toString}} trên quan hệ hai chiều gây {{StackOverflowError}} khi log. Sửa: bỏ {{@Data}} khỏi entity, viết equals/hashCode theo mẫu "id + hằng số class", {{toString}} chỉ in id; thêm test persist → contains → remove.
+
+### Trả lời mẫu khi phỏng vấn
+"Vấn đề là entity mới có id null, và nếu hashCode dựa vào id thì sau khi persist, Hibernate gán id, hashCode thay đổi, trong khi HashSet đã đặt object ở bucket theo hash cũ, nên contains và remove không tìm thấy nữa. equals và hashCode của entity phải ổn định qua cả vòng đời transient, managed, detached. Nếu có business key bất biến như mã đơn hàng thì tôi dùng nó. Nếu không, tôi dùng mẫu phổ biến: equals so sánh id khi id khác null, còn hashCode trả về hằng số theo class, an toàn suốt vòng đời, đổi lại các entity cùng loại chung bucket nên chỉ hợp collection nhỏ. Cần cẩn thận với Hibernate proxy: so sánh class bằng getClass có thể sai với proxy, nên dùng instanceof hoặc lấy class thật. Và tuyệt đối không dùng @Data của Lombok trên entity."
+
 > Senior tip: chọn quy tắc một lần cho toàn hệ thống và kiểm tra bằng test với HashSet trước/sau persist; equality của entity là quyết định identity, không chỉ là boilerplate.`,
   follow: ['Vì sao association lazy không nên nằm trong hashCode?', 'HashCode theo class ổn định có trade-off gì?'],
   tags: ['JPA', 'Hibernate', 'equals', 'hashCode', 'entity']
@@ -4017,6 +4084,12 @@ String describe(Result r) {
 
 ### Khi dùng
 Hợp với algebraic data type có tập biến thể hữu hạn trong một bounded context. Không hợp khi plugin bên thứ ba cần tự thêm subtype hoặc hierarchy là API extension mở.
+
+### Ví dụ đời thực
+Kết quả thanh toán được mô hình bằng {{sealed interface PaymentResult permits Approved, Declined, Pending}} với ba record. Ở Java 21, controller dùng {{switch}} pattern matching không có {{default}}. Khi nghiệp vụ thêm {{RequiresOtp}}, compiler báo lỗi ở **11 chỗ** switch chưa xử lý trạng thái mới — team sửa đủ trước khi release. Trước đây với enum + {{default -> throw}}, lần thêm trạng thái tương tự chỉ lộ lỗi ở runtime (2 luồng ném exception trên production). Một bài học khác: service khác dùng thư viện client cũ chưa biết {{RequiresOtp}} — JSON chứa type mới làm deserialization thất bại; team thêm kiểu "Unknown" ở ranh giới API để client cũ không vỡ.
+
+### Trả lời mẫu khi phỏng vấn
+"Với một tập kết quả hữu hạn, tôi dùng sealed interface khai báo permits các variant, mỗi variant là một record bất biến mang đúng dữ liệu của nó, ví dụ Approved có mã giao dịch, Declined có lý do. Sealed có từ Java 17, pattern matching cho switch chính thức từ Java 21, nên switch trên sealed interface được compiler kiểm tra đầy đủ mà không cần default. Lợi ích lớn nhất là khi thêm variant mới, mọi switch chưa xử lý đều lỗi biên dịch, thay vì rơi vào default lúc runtime. Cái giá là phải đặt các variant trong cùng package hoặc module, và ở ranh giới hệ thống như JSON hay message, client cũ không biết variant mới, nên tôi thêm một biến thể unknown hoặc version hoá API. Trong lõi domain thì sealed với record là cách mô hình rõ ràng nhất."
 
 > Senior tip: ghi rõ ai sở hữu tập biến thể và chính sách versioning. Exhaustive switch rất hữu ích trong codebase đồng bộ, nhưng message từ hệ thống ngoài vẫn cần xử lý giá trị chưa biết.`,
   follow: ['Thêm subtype mới ảnh hưởng consumer đã biên dịch ra sao?', 'Phân biệt feature chuẩn Java 21 và API preview bằng cách nào?'],
@@ -5091,6 +5164,15 @@ Giả định một service cache quyền truy cập trong bộ nhớ: {{HashMap
 - {{ConcurrentHashMap}} có overhead node/phân đoạn (trong các phiên bản JDK cũ) nhưng vẫn là map thuần túy.
 - {{Caffeine}} tối ưu kích thước entry hơn, và eviction giúp giữ footprint dưới ngưỡng thay vì để map phình vô hạn.
 - Luôn **giới hạn dung lượng** cache để tránh OutOfMemoryError (OOM). Đừng để cache không giới hạn trong production.
+
+### Bên trong: footprint thật của một entry
+Ước lượng với compressed oops (heap dưới 32GB): một entry {{HashMap}} = Node (32 byte) + một ô trong mảng bucket (4 byte, nhân hệ số trống của load factor) + object key + object value. Key {{String}} 10 ký tự ≈ 56 byte (object String 24 + mảng byte 24+). Value là object 3 field ≈ 24–32 byte. Tổng khoảng 120–150 byte/entry → 1 triệu entry ≈ 120–150MB, chưa tính dữ liệu bên trong value. {{LinkedHashMap}} thêm 8 byte (hai reference before/after). Caffeine thêm metadata cho eviction và thống kê (khoảng vài chục byte/entry) — đổi lại có giới hạn kích thước và chính sách tốt hơn. Đo thật bằng JOL ({{GraphLayout.parseInstance(map).totalSize()}}) hoặc heap dump thay vì ước lượng.
+
+### Ví dụ đời thực
+Service định tuyến giữ bảng 1,2 triệu mã bưu chính → kho hàng trong {{ConcurrentHashMap<String, Warehouse>}}, nạp lại mỗi giờ bằng cách {{clear()}} rồi {{putAll}} — trong lúc nạp có vài giây map thiếu dữ liệu, khoảng 0,3% đơn bị định tuyến về kho mặc định. Đổi sang dựng map mới đầy đủ rồi **thay reference** (field volatile), đồng thời đổi key sang {{int}} (mã bưu chính là số) với map primitive: footprint từ 210MB xuống 45MB, không còn đơn định tuyến sai. Một cache khác (dữ liệu khách hàng, truy cập lệch, cần TTL) dùng Caffeine {{maximumSize(500_000)}} + {{expireAfterWrite(10 phút)}} với hit rate 94%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo ba câu hỏi: có nhiều thread truy cập không, có cần giới hạn kích thước hay hết hạn không, và bộ nhớ bao nhiêu. HashMap chỉ dùng khi một thread hoặc dữ liệu bất biến sau khi dựng. ConcurrentHashMap cho dữ liệu đọc nhiều dùng chung, không tự evict; với bảng tra cứu nạp lại định kỳ, tôi dựng map mới rồi thay reference thay vì clear và nạp lại tại chỗ. LinkedHashMap làm LRU chỉ hợp cache nhỏ một thread. Với cache thật cần giới hạn kích thước, TTL, thống kê, tôi dùng Caffeine với W-TinyLFU. Về bộ nhớ, mỗi entry HashMap với key String ngắn thường tốn khoảng 120 đến 150 byte, nên một triệu entry là hơn một trăm megabyte; tôi đo bằng JOL hoặc heap dump, và nếu key là số thì dùng map primitive để giảm mạnh footprint."
 
 > Senior tip: Đừng tự viết cache phức tạp từ {{LinkedHashMap}} cho môi trường production đa luồng. Nếu cần eviction/LRU/TTL/statistics, {{Caffeine}} đã được chứng minh là giải pháp hiệu quả và an toàn hơn rất nhiều.`,
   follow: ['Tại sao Caffeine dùng W-TinyLFU thay vì chỉ LRU?', 'Cache stampede là gì và cách tránh?', 'Ước lượng footprint bộ nhớ cache thế nào?'],
