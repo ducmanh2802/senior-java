@@ -6,6 +6,15 @@
 
 
 ### Ứng dụng
+- Review: earlier free-model quiz in quiz-java (qz-*-025..030) by Claude
+
+
+## 2026-11-07
+
+### Nội dung
+
+
+### Ứng dụng
 - Review: fact-check deep quiz (T860, T861) by Claude
 
 
