@@ -1983,7 +1983,7 @@ URL path versioning rõ ràng, dễ cache, dễ route; phổ biến nhất.
 {
   id: 'qz-spring-025',
   topic: 'spring',
-  q: 'Hai class @Component đều implements {{BeanPostProcessor}}: {{BPPA}} có {{@Priority(10)}} và {{BPPB}} có {{@Priority(100)}}. Cả hai ghi log trong {{postProcessBeforeInitialization}} và trả về đối tượng bean không thay đổi. Bean mục tiêu có {{@PostConstruct}}. Thứ tự Spring xử lý là gì?',
+  q: 'Hai class @Component đều implements {{BeanPostProcessor}} và {{Ordered}}: {{BPPA.getOrder()}} trả về 10, {{BPPB.getOrder()}} trả về 100. Cả hai ghi log trong {{postProcessBeforeInitialization}} và trả về đối tượng bean không thay đổi. Bean mục tiêu có {{@PostConstruct}}. Thứ tự Spring xử lý là gì?',
   options: [
     'Log của BPPA, rồi log của BPPB, sau đó mới chạy {{@PostConstruct}} của bean',
     'Log của BPPB, rồi log của BPPA, sau đó mới chạy {{@PostConstruct}} của bean',
@@ -1991,23 +1991,24 @@ URL path versioning rõ ràng, dễ cache, dễ route; phổ biến nhất.
     'Thứ tự không đảm bảo, phụ thuộc vào tên class'
   ],
   answer: 0,
-  explain: `**Đáp án đúng: BPP số ưu tiên thấp trước (BPPA @Priority(10)), sau đó mới chạy {{@PostConstruct}}.**
+  explain: `**Đáp án đúng: BPPA (order 10) trước, BPPB (order 100) sau, rồi mới tới {{@PostConstruct}}.**
 
 ### Vì sao đúng
-Spring sắp xếp các {{BeanPostProcessor}} bằng {{@Priority}} (số thấp hơn = ưu tiên cao hơn = chạy trước). Vòng đời khởi tạo một bean:
+Khi refresh context, Spring đăng ký các {{BeanPostProcessor}} theo 3 nhóm, xét bằng **interface**: nhóm {{PriorityOrdered}}, rồi nhóm {{Ordered}}, rồi nhóm còn lại. Trong mỗi nhóm có thứ tự, số {{getOrder()}} nhỏ hơn chạy trước. Vòng đời khởi tạo một bean:
 ~~~text
-1. BeanPostProcessor.postProcessBeforeInitialization (theo thứ tự @Priority)
-2. @PostConstruct / InitializingBean.afterPropertiesSet / init-method
-3. BeanPostProcessor.postProcessAfterInitialization (lúc này proxy AOP, ví dụ @Transactional, mới được tạo)
+1. postProcessBeforeInitialization của từng BPP, theo thứ tự đã đăng ký
+   (@PostConstruct được gọi ở bước này, bởi CommonAnnotationBeanPostProcessor)
+2. InitializingBean.afterPropertiesSet, rồi init-method
+3. postProcessAfterInitialization (proxy AOP như @Transactional được tạo ở đây)
 ~~~
-Cả hai BPP trả về đối tượng gốc nên bean không bị thay thế. {{@PostConstruct}} chạy đúng trên bean gốc, và chạy **trước khi** proxy AOP tồn tại. Đây cũng là lý do gọi {{this.method()}} có {{@Transactional}} bên trong {{@PostConstruct}} không mở transaction.
+{{@PostConstruct}} không phải bước riêng: nó do {{CommonAnnotationBeanPostProcessor}} gọi. Đây là BPP nội bộ, Spring đăng ký lại ở **cuối chuỗi** sau các BPP của bạn, nên log của BPPA và BPPB in ra trước. {{@PostConstruct}} chạy trên bean gốc, **trước khi** proxy AOP tồn tại. Vì vậy gọi một method {{@Transactional}} của chính bean bên trong {{@PostConstruct}} sẽ không mở transaction.
 
 ### Vì sao các phương án còn lại sai
-- **BPPB trước**: sai, số {{@Priority}} lớn hơn chạy sau.
-- **@PostConstruct trước**: callback khởi tạo luôn nằm sau postProcessBeforeInitialization.
-- **Không đảm bảo**: Spring sắp xếp rõ ràng bằng {{@Priority}} hoặc {{@Order}}, không ngẫu nhiên.
+- **BPPB trước**: sai, order 100 lớn hơn nên chạy sau.
+- **@PostConstruct trước**: sai, BPP nội bộ gọi {{@PostConstruct}} nằm cuối chuỗi.
+- **Không đảm bảo**: sai khi BPP implements {{Ordered}}. Nhưng lưu ý: nếu chỉ gắn {{@Order}} hoặc {{@Priority}} lên class BPP mà **không** implements {{Ordered}}, Spring xếp nó vào nhóm "không thứ tự" và chạy theo thứ tự đăng ký bean definition. Khi đó phương án này mới gần đúng.
 
-> Senior tip: nhiều {{BeanPostProcessor}} cùng can thiệp vào một bean thì thứ tự rất quan trọng; ví dụ một BPP bọc bean thành proxy thì BPP sau đó nhận đối tượng đã được bọc. Ghi log thứ tự khởi tạo ở môi trường dev nếu nghi ngờ.`
+> Senior tip: với {{BeanPostProcessor}} và {{BeanFactoryPostProcessor}}, muốn chắc thứ tự thì implements {{Ordered}} hoặc {{PriorityOrdered}}, đừng dựa vào annotation. Đây là lỗi hay gặp khi hai thư viện cùng bọc proxy lên một bean.`
 },
 {
   id: 'qz-spring-026',
@@ -2049,19 +2050,19 @@ Các điều kiện của auto-configuration được **AND** lại: @Conditiona
   q: 'Method {{A.placeOrder()}} có {{@Transactional}} (mặc định REQUIRED) và gọi {{B.logAudit()}} có {{@Transactional(propagation = Propagation.REQUIRES_NEW)}}. {{B}} ghi log vào cùng DB rồi commit. Phát biểu nào đúng? (Chọn 2)',
   options: [
     '{{B.logAudit}} chạy trong transaction vật lý riêng; commit hay rollback của {{B}} không làm thay đổi kết quả của transaction {{A}}',
-    'Khi {{B}} bắt đầu, transaction của {{A}} bị tạm ngưng (suspend), connection của {{A}} được trả về pool trong khi {{B}} chạy',
+    'Khi {{B}} bắt đầu, transaction của {{A}} bị tạm ngưng (suspend) nhưng vẫn giữ connection của nó; {{B}} lấy thêm một connection thứ hai từ pool',
     'Nếu {{B}} ném exception và rollback, transaction {{A}} cũng bị đánh dấu rollback-only',
     '{{REQUIRES_NEW}} không cần kết nối DB vì chỉ lưu nhật ký trong bộ nhớ',
     'Gọi this.logAudit() trong cùng class {{A}} vẫn áp dụng {{REQUIRES_NEW}}'
   ],
   answer: [0, 1],
-  explain: `**Đáp án đúng: transaction riêng của B, transaction của A bị tạm ngưng.**
+  explain: `**Đáp án đúng: B có transaction vật lý riêng; A bị tạm ngưng nhưng vẫn giữ connection, B dùng connection thứ hai.**
 
 ### Vì sao đúng
-Propagation {{REQUIRES_NEW}} tạo một transaction vật lý mới, riêng biệt. Transaction của {{A}} bị **suspend**: connection của nó được trả về pool, transaction của {{B}} dùng một connection riêng. Commit hay rollback của {{B}} không ảnh hưởng đến {{A}}, và ngược lại. Vì mỗi transaction giữ một connection, dùng REQUIRES_NEW nhiều sẽ làm cạn nhanh connection pool nếu pool không đủ lớn.
+Propagation {{REQUIRES_NEW}} tạo một transaction vật lý mới, riêng biệt. Transaction của {{A}} bị **suspend**: Spring gỡ resource của A (connection đang mở transaction) khỏi thread hiện tại, nhưng **không** đóng hay trả connection đó về pool, vì A còn phải commit sau này. B lấy một connection khác từ pool, chạy, commit, rồi Spring gắn lại connection của A vào thread. Commit hay rollback của {{B}} không đổi kết quả của {{A}}, và ngược lại.
 
 ### Vì sao các phương án còn lại sai
-- **B rollback thì A rollback-only**: sai, hai transaction độc lập; rollback của B không lan sang A.
+- **B rollback thì A bị đánh dấu rollback-only**: sai, hai transaction độc lập nên rollback của B không đặt cờ rollback-only cho A. Lưu ý: nếu exception của B lan ra và A **không** bắt lại, A vẫn rollback, nhưng đó là do exception chứ không phải do cờ.
 - **Không cần kết nối DB**: sai, REQUIRES_NEW vẫn cần một connection JDBC cho transaction riêng của nó.
 - **this.logAudit() vẫn REQUIRES_NEW**: sai, gọi this() bỏ qua proxy, advice @Transactional không được kích hoạt (self-invocation).
 

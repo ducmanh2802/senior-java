@@ -3393,262 +3393,457 @@ Virtual thread bị pin (không thể unmount khỏi carrier thread) khi vào sy
 },
 {
   id: 'qz-collections-028', topic: 'collections',
-  q: `HashMap resize khi nào và cơ chế treeify hoạt động thế nào?`,
-  options: ['Resize khi size > capacity*loadFactor; bin thành linked list khi collision', 'Resize khi size > capacity; treeify khi linked list > 8', 'Treeify khi bin size > 6 và untreeify khi <= 6', 'Resize luôn nhân đôi capacity và copy từng node'],
-  answer: 2,
-  explain: `**Tóm tắt:** HashMap resize khi size vượt threshold (capacity*loadFactor); bin chuyển từ linked list sang red-black tree khi độ dài >= 8 (và capacity >= 64), và ngược lại khi <= 6.
+  q: `Một class key có {{hashCode()}} viết lỗi, luôn trả về cùng một số. Một {{HashMap}} mới tạo (capacity mặc định 16) lần lượt nhận 9 key khác nhau của class này. Khi put key thứ 9, HashMap làm gì?`,
+  options: [
+    'Đổi bin đó thành red-black tree ngay, vì bin đã vượt 8 node',
+    'Resize table lên 32 thay vì treeify, vì table còn nhỏ hơn 64; mọi key vẫn rơi vào cùng một bin',
+    'Ném {{IllegalStateException}} vì có quá nhiều collision trong một bin',
+    'Không bao giờ treeify được vì class key không implements {{Comparable}}'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: resize lên 32, chưa treeify, vì table chưa đạt {{MIN_TREEIFY_CAPACITY}} = 64.**
 
 ### Vì sao đúng
-- Threshold = capacity * loadFactor (mặc định 0.75).
-- Khi một bin có >= TREEIFY_THRESHOLD (8) node và capacity >= MIN_TREEIFY_CAPACITY (64), bin trở thành tree (O(log n) thay vì O(n)).
-- UNTREEIFY_THRESHOLD = 6: khi resize làm bin nhỏ lại, tree chuyển về linked list.
+Trong {{putVal}}, khi một bin dạng linked list vượt {{TREEIFY_THRESHOLD}} = 8 node, HashMap gọi {{treeifyBin}}. Nhưng {{treeifyBin}} kiểm tra trước: nếu table còn nhỏ hơn 64 thì nó **resize** thay vì treeify. Lý do thiết kế: bin dài ở table nhỏ thường chỉ là do table quá chật, nên nhân đôi table rẻ hơn và hiệu quả hơn dựng cây.
+
+Với hashCode hằng số, resize không giúp gì: mọi key vẫn cùng hash nên vẫn chung một bin. Các lần put tiếp theo sẽ resize 32 → 64, và chỉ khi table đạt 64 thì bin mới thành tree. Tree lúc đó tìm theo hash trước, sau đó theo {{compareTo}} nếu key là Comparable. Nếu không phải Comparable, HashMap vẫn treeify (dùng {{tieBreakOrder}} để xếp chỗ khi chèn) nhưng khi tìm phải duyệt nhiều nhánh, gần như O(n).
 
 ### Vì sao các phương án còn lại sai
-- **Resize khi size > capacity**: sai, dùng threshold.
-- **Treeify khi bin > 8**: ngưỡng là >= 8.
-- **Resize luôn nhân đôi**: đúng phần capacity, nhưng copy node là chi tiết; focus vào threshold.
+- **Treeify ngay**: bỏ qua điều kiện table phải ≥ 64.
+- **Ném exception**: HashMap không bao giờ ném lỗi vì collision, nó chỉ chậm đi.
+- **Không bao giờ treeify**: sai; key không Comparable vẫn được treeify, chỉ là tìm kiếm kém hiệu quả hơn.
 
-> Senior tip: collision attack (HashDoS) bị JDK 8+ giảm thiểu bằng treeify; nhưng nếu hashCode kém, vẫn O(log n) per op.`
+### Ngưỡng cần nhớ
+| Hằng số | Giá trị | Ý nghĩa |
+|---|---|---|
+| TREEIFY_THRESHOLD | 8 | list dài hơn thì xét treeify |
+| UNTREEIFY_THRESHOLD | 6 | tree còn ≤ 6 node (khi resize tách bin) thì về lại list |
+| MIN_TREEIFY_CAPACITY | 64 | table nhỏ hơn thì resize thay vì treeify |
+
+> Senior tip: treeify là lưới an toàn chống hashCode tệ hoặc tấn công hash-flooding, không phải tính năng để dựa vào. Thấy CPU cao ở {{HashMap.getNode}} trong profile thì kiểm tra hashCode của key trước tiên.`
 },
 {
   id: 'qz-concurrency-029', topic: 'concurrency', multi: true,
-  q: `JMM happens-before: những cặp nào thiết lập happens-before? (Chọn 2)`,
-  options: ['Thread.start() trước run() của thread con', 'volatile write trước volatile read cùng biến', 'synchronized unlock trước lock cùng monitor', 'final field write trong constructor trước publication'],
+  q: `Hai thread dùng chung object có {{int data}} (thường) và {{volatile boolean ready}}:
+~~~java
+// Thread A
+data = 42;
+ready = true;
+
+// Thread B
+while (!ready) { }
+System.out.println(data);
+~~~
+Phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    'B chắc chắn in 42: ghi volatile {{ready}} happens-before lần đọc thấy {{true}}, và {{data = 42}} đứng trước nó theo program order',
+    'Nếu bỏ {{volatile}} ở {{ready}}, B có thể lặp mãi hoặc in ra 0',
+    'Chỉ cần khai báo {{data}} là volatile, còn {{ready}} để thường cũng đảm bảo B in 42',
+    '{{volatile}} cấm mọi reordering trong toàn bộ chương trình',
+    'Đảm bảo này chỉ có trên x86; trên ARM, B vẫn có thể in 0'
+  ],
   answer: [0, 1],
-  explain: `**Tóm tắt:** happens-before là quan hệ thứ tự bộ nhớ trong JMM đảm bảo visibility.
+  explain: `**Đáp án đúng: 0 và 1.**
 
 ### Vì sao đúng
-- Thread.start() happens-before mọi action trong thread con.
-- volatile write happens-before volatile read cùng biến (release/acquire semantics).
+Java Memory Model định nghĩa quan hệ **happens-before (HB)**: nếu X HB Y thì mọi thứ X ghi đều nhìn thấy được ở Y. Có ba mắt xích:
+1. Trong thread A: {{data = 42}} HB {{ready = true}} (program order).
+2. Ghi volatile {{ready}} HB mọi lần đọc volatile {{ready}} **thấy giá trị đó**.
+3. Trong thread B: lần đọc thấy {{true}} HB {{println(data)}}.
+
+HB có tính bắc cầu, nên {{data = 42}} HB lần đọc {{data}} của B, và B in 42. Bỏ volatile thì mất mắt xích 2: JIT được phép đưa {{ready}} ra khỏi vòng lặp (đọc một lần rồi lặp mãi), và CPU hoặc compiler được phép đảo thứ tự hai lệnh ghi của A, nên B có thể in 0.
 
 ### Vì sao các phương án còn lại sai
-- **unlock trước lock**: đúng là unlock happens-before lock, nhưng thứ tự trong option ngược (lock trước unlock là trong cùng thread, không cần HB).
-- **final field**: publication-safe cho final field đúng, nhưng option diễn đạt mơ hồ; không phải cặp HB trực tiếp như 2 cái trên.
+- **Chỉ data volatile**: B đọc {{ready}} không volatile nên không có mắt xích HB nào; vòng lặp vẫn có thể không bao giờ thấy {{true}}.
+- **Cấm mọi reordering**: volatile chỉ ràng buộc thứ tự quanh chính các truy cập volatile, không phải toàn chương trình.
+- **Chỉ đúng trên x86**: JMM là đặc tả của ngôn ngữ; JVM phải giữ đúng đảm bảo này trên mọi kiến trúc (trên ARM nó chèn thêm memory barrier).
 
-> Senior tip: thiếu happens-before → stale read; dùng volatile/synchronized/Atomic/CompletableFuture.`
+> Senior tip: các nguồn HB khác cũng hay gặp trong phỏng vấn: unlock một monitor HB lần lock sau trên cùng monitor; {{Thread.start()}} HB mọi lệnh trong thread mới; mọi lệnh trong thread HB lúc {{join()}} trả về. Busy-wait như ví dụ chỉ để minh hoạ; code thật dùng {{CountDownLatch}} hoặc {{CompletableFuture}}.`
 },
 {
   id: 'qz-concurrency-030', topic: 'concurrency',
-  q: `volatile vs synchronized: khác biệt chính?`,
-  options: ['volatile chỉ đảm bảo visibility, không atomic compound; synchronized đảm bảo cả visibility và mutual exclusion', 'volatile nhanh hơn synchronized luôn', 'synchronized không đảm bảo visibility', 'volatile dùng cho object, synchronized cho primitive'],
+  q: `Hai thread, mỗi thread chạy {{count++}} 1000 lần trên field {{volatile int count}} (ban đầu 0). Sau khi cả hai {{join()}}, giá trị của {{count}} là gì?`,
+  options: [
+    'Có thể nhỏ hơn 2000, vì {{count++}} gồm đọc, cộng, ghi; volatile không làm ba bước đó thành nguyên tử',
+    'Luôn đúng 2000, vì volatile làm mọi thread thấy giá trị mới nhất',
+    'Có thể lớn hơn 2000 do ghi đè lặp',
+    'Ném {{ConcurrentModificationException}} khi hai thread ghi cùng lúc'
+  ],
   answer: 0,
-  explain: `**Tóm tắt:** volatile = visibility + ordering cho single read/write; synchronized = mutual exclusion + visibility.
+  explain: `**Đáp án đúng: có thể nhỏ hơn 2000 (lost update).**
 
 ### Vì sao đúng
-- volatile: write flushing to main memory, read from main memory; không atomic cho i++.
-- synchronized: lock monitor, mutual exclusion, happens-before.
+{{count++}} là ba thao tác: đọc {{count}}, cộng 1, ghi lại. Volatile đảm bảo mỗi lần đọc thấy lần ghi gần nhất, nhưng **không** khoá cả ba bước lại với nhau:
+~~~text
+A đọc 5      B đọc 5
+A ghi 6      B ghi 6     → hai lần ++ nhưng chỉ tăng 1
+~~~
+Mỗi lần xen kẽ như vậy làm mất một lần tăng.
+
+### Cách sửa
+| Cách | Khi nào dùng |
+|---|---|
+| {{AtomicInteger.incrementAndGet()}} | đếm thông thường, dùng CAS |
+| {{LongAdder}} | rất nhiều thread cùng tăng, chỉ thỉnh thoảng đọc tổng (metrics) |
+| {{synchronized}} / {{ReentrantLock}} | cần cập nhật nhiều biến cùng lúc cho nhất quán |
 
 ### Vì sao các phương án còn lại sai
-- **volatile nhanh hơn luôn**: không luôn; contention cao thì khác.
-- **synchronized không visibility**: sai, unlock happens-before lock.
-- **volatile cho object**: volatile áp dụng cho field (reference), không phải object.
+- **Luôn 2000**: nhầm visibility với atomicity.
+- **Lớn hơn 2000**: mỗi lần ghi chỉ là giá trị đọc được cộng 1, nên kết quả không thể vượt tổng số lần tăng.
+- **ConcurrentModificationException**: exception này do iterator của collection ném ra, không liên quan đến field.
 
-> Senior tip: dùng Atomic* cho counter; volatile cho flag stop.`
+> Senior tip: {{LongAdder}} chia bộ đếm thành nhiều cell để giảm tranh chấp CAS; dưới tải rất cao nó nhanh hơn {{AtomicLong}} nhiều lần, nhưng {{sum()}} không phải snapshot nguyên tử.`
 },
 {
   id: 'qz-concurrency-031', topic: 'concurrency',
-  q: `AQS (AbstractQueuedSynchronizer) dùng cơ chế gì?`,
-  options: ['CAS trên state + FIFO queue các thread chờ', 'synchronized monitor', 'volatile boolean', 'CountDownLatch'],
-  answer: 0,
-  explain: `**Tóm tắt:** AQS là nền tảng cho ReentrantLock, Semaphore, CountDownLatch: state (int) + CLH queue.
+  q: `{{new ReentrantLock()}} (constructor không tham số). Thread T1 đang chờ trong hàng đợi của lock. Đúng lúc chủ lock vừa {{unlock()}}, thread T2 mới tới gọi {{lock()}}. Điều gì có thể xảy ra?`,
+  options: [
+    'T1 chắc chắn được lock trước, vì ReentrantLock mặc định là fair (FIFO)',
+    'T2 sẽ bị ném {{IllegalMonitorStateException}} vì đã có thread đang chờ',
+    'T2 có thể giành lock trước T1 (barging), vì mặc định là non-fair: T2 thử CAS lên {{state}} của AQS trước khi xếp hàng',
+    'Gọi {{tryLock()}} trên lock fair luôn tôn trọng thứ tự hàng đợi'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: mặc định non-fair, T2 có thể chen ngang.**
 
 ### Vì sao đúng
-- State được cập nhật bằng CAS; thread chờ vào FIFO queue (CLH).
-- tryAcquire/tryRelease do subclass implement.
+{{ReentrantLock}} xây trên **AbstractQueuedSynchronizer (AQS)**: một biến {{volatile int state}} (0 là tự do, lớn hơn 0 là số lần chủ lock đã lock lại) cùng một hàng đợi FIFO các thread đang park. Ở chế độ non-fair (mặc định), {{lock()}} thử CAS {{state}} từ 0 lên 1 **ngay lập tức**, rồi mới xếp hàng nếu thất bại. T1 vừa được unpark còn phải tốn thời gian để chạy lại, nên T2 (đang chạy sẵn trên CPU) thường thắng.
+
+Vì sao mặc định lại non-fair? Đánh thức một thread đang park tốn hàng chục micro giây, còn thread đang chạy lấy được lock thì không mất context switch nào. Nhờ vậy throughput cao hơn đáng kể; cái giá là một thread có thể bị chen ngang nhiều lần (starvation).
 
 ### Vì sao các phương án còn lại sai
-- **synchronized monitor**: AQS không dùng monitor.
-- **volatile boolean**: state là int, không chỉ boolean.
-- **CountDownLatch**: là một ứng dụng của AQS, không phải cơ chế.
+- **Mặc định fair**: phải gọi {{new ReentrantLock(true)}} mới có fair.
+- **IllegalMonitorStateException**: exception này chỉ xảy ra khi unlock một lock mình không giữ.
+- **tryLock() tôn trọng fairness**: javadoc ghi rõ {{tryLock()}} không tham số giành lock ngay nếu lock đang trống, kể cả với lock fair. Muốn tôn trọng thứ tự thì dùng {{tryLock(0, TimeUnit.SECONDS)}}.
 
-> Senior tip: đọc source ReentrantLock.lock() để hiểu AQS.`
+> Senior tip: fair lock thường chậm hơn nhiều dưới tải cao. Chỉ dùng khi có yêu cầu thật về công bằng (ví dụ không để request nào chờ quá lâu), và đo bằng benchmark trước khi đổi.`
 },
 {
   id: 'qz-concurrency-032', topic: 'concurrency',
-  q: `Virtual thread pinning xảy ra khi nào?`,
-  options: ['Khi vào synchronized block hoặc native method', 'Khi gọi Thread.sleep', 'Khi I/O blocking', 'Khi tạo object'],
-  answer: 0,
-  explain: `**Tóm tắt:** virtual thread bị pin khi vào synchronized hoặc native method; I/O blocking và sleep unmount bình thường.
+  q: `Service chạy **Java 21** dùng virtual thread cho mỗi request. Mỗi request gọi một method {{synchronized}}, trong đó có một truy vấn JDBC chặn khoảng 200 ms. Máy có 8 core. Dưới tải 5.000 request đồng thời, throughput rơi xuống chỉ khoảng 40 request/giây. Nguyên nhân và cách sửa?`,
+  options: [
+    'Virtual thread không chạy được JDBC, phải chuyển sang R2DBC',
+    'Mỗi virtual thread chiếm 1 MB stack nên hết bộ nhớ',
+    '{{Thread.sleep}} và I/O trong virtual thread luôn giữ chặt carrier thread',
+    'Chặn I/O bên trong {{synchronized}} làm virtual thread bị **pin** vào carrier (chỉ có 8 carrier), nên chỉ 8 request chạy cùng lúc; sửa bằng {{ReentrantLock}} hoặc lên JDK 24+'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: pinning do synchronized trên JDK 21.**
 
 ### Vì sao đúng
-- Pinning = không unmount khỏi carrier thread.
+Virtual thread chạy trên một pool nhỏ các **carrier thread** (mặc định bằng số core). Khi virtual thread chặn I/O, JVM **unmount** nó khỏi carrier để carrier chạy việc khác. Trên JDK 21–23 có một ngoại lệ: nếu nó đang ở trong {{synchronized}} (giữ monitor) hoặc trong native frame thì không unmount được và carrier bị giữ chặt (**pinned**). 8 carrier × (1000 ms / 200 ms) = 40 request/giây, đúng con số quan sát được.
+
+### Cách xử lý
+- Thay {{synchronized}} quanh đoạn chặn I/O bằng {{ReentrantLock}}: virtual thread unmount bình thường.
+- Lên **JDK 24+**: JEP 491 cho virtual thread unmount được cả khi đang giữ monitor, nên {{synchronized}} không còn gây pin (gọi native và foreign function vẫn pin).
+- Phát hiện: dùng event JFR {{jdk.VirtualThreadPinned}}; trên JDK 21–23 có thêm {{-Djdk.tracePinnedThreads=full}}.
 
 ### Vì sao các phương án còn lại sai
-- **Thread.sleep**: unmount.
-- **I/O blocking**: unmount.
-- **tạo object**: không pin.
+- **Không chạy được JDBC**: JDBC chặn I/O, vẫn chạy tốt trên virtual thread. Vấn đề ở đây là pinning chứ không phải JDBC.
+- **1 MB stack**: stack của virtual thread nằm trên heap và chỉ lớn theo nhu cầu (vài KB), nên 5.000 thread là chuyện nhỏ.
+- **sleep/I/O luôn pin**: sai; đây chính là những trường hợp unmount được.
 
-> Senior tip: dùng ReentrantLock thay synchronized trong code chạy virtual thread.`
+> Senior tip: pool kết nối DB vẫn là giới hạn thật. 5.000 virtual thread cùng chờ một HikariCP 20 connection thì throughput vẫn bị giới hạn bởi 20 connection, nên phải chỉnh pool và timeout cho phù hợp.`
 },
 {
   id: 'qz-jvm-028', topic: 'jvm',
-  q: `Safepoint là gì?`,
-  options: ['Điểm mà JVM có thể tạm dừng thread để GC/JIT deopt', 'Điểm breakpoint', 'Điểm method entry', 'Điểm class init'],
+  q: `GC log cho thấy một lần young GC chỉ tốn 5 ms, nhưng ứng dụng bị đứng gần 800 ms đúng thời điểm đó. Log {{-Xlog:safepoint}} báo phần "Reaching safepoint" khoảng 795 ms và "At safepoint" khoảng 5 ms. Giải thích hợp lý nhất?`,
+  options: [
+    'Time-to-safepoint dài: một thread chạy rất lâu mà không gặp điểm kiểm tra safepoint (ví dụ vòng lặp đếm lớn trong code đã JIT, hoặc copy mảng khổng lồ), mọi thread khác phải chờ nó',
+    'Có một Full GC chạy ngầm mà không ghi log',
+    'Thread đang chặn trong native/I/O giữ safepoint lại cho đến khi I/O xong',
+    'Safepoint chỉ phục vụ GC nên pause phải đúng bằng thời gian GC; log bị sai'
+  ],
   answer: 0,
-  explain: `**Tóm tắt:** safepoint là thời điểm thread ở trạng thái an toàn để JVM thực hiện GC, deoptimization, biased lock revocation.
+  explain: `**Đáp án đúng: thời gian chờ để mọi thread tới safepoint (time-to-safepoint, TTSP) quá dài.**
 
 ### Vì sao đúng
-- Thread phải đến safepoint (method exit, loop back-edge) để pause.
+Nhiều thao tác của JVM (phần stop-the-world của GC, deoptimization, một số lệnh chẩn đoán như thread dump) cần **mọi** thread Java dừng ở trạng thái an toàn, gọi là safepoint. JVM bật cờ yêu cầu, và mỗi thread tự dừng khi chạy tới một **safepoint poll** (JIT chèn poll ở cuối method và ở back-edge của vòng lặp). Pause người dùng thấy bằng thời gian chờ thread cuối cùng tới safepoint cộng với thời gian làm việc tại safepoint:
+~~~text
+Reaching safepoint ~795 ms   ← chờ thread chậm nhất
+At safepoint        ~5 ms    ← GC thật sự chỉ tốn chừng này
+~~~
+Thủ phạm thường gặp là vòng lặp đếm ({{int i}}) rất dài: C2 từng bỏ poll trong loại vòng lặp này. Từ JDK 10, **loop strip mining** chia vòng lặp thành từng đoạn khoảng 1000 lần lặp và chèn poll giữa các đoạn, nên trường hợp này hiếm hơn nhưng chưa hết (copy mảng rất lớn, một số intrinsic).
 
 ### Vì sao các phương án còn lại sai
-- **breakpoint**: debug concept.
-- **method entry**: không phải safepoint bắt buộc.
-- **class init**: không liên quan.
+- **Full GC ngầm**: mọi lần GC đều có trong log GC; ở đây log đã cho thấy chính phần chờ safepoint.
+- **Thread trong native/I/O**: thread đang chạy native được coi là đã an toàn (nó không đụng heap Java), nên không làm safepoint phải chờ.
+- **Log sai**: safepoint còn dùng cho deopt, revoke lock, thread dump..., và pause luôn bao gồm cả TTSP.
 
-> Senior tip: long-running loop không có safepoint (counted loop) có thể delay GC; dùng -XX:+UseCountedLoopSafepoints.`
+> Senior tip: khi latency spike không khớp với GC pause, hãy bật {{-Xlog:safepoint*}} hoặc xem các event safepoint trong JFR. Async-profiler ở chế độ wall-clock giúp tìm thread chậm tới safepoint.`
 },
 {
   id: 'qz-jvm-029', topic: 'jvm',
-  q: `JIT deoptimization xảy ra khi nào?`,
-  options: ['Khi giả định tối ưu (monomorphic call site) bị vi phạm', 'Khi method quá dài', 'Khi GC chạy', 'Khi thread yield'],
-  answer: 0,
-  explain: `**Tóm tắt:** JIT deopt khi giả định tối ưu bị vi phạm (ví dụ call site đa hình).
+  q: `Interface {{Shape}} lúc đầu chỉ có một implementation được load là {{Circle}}; method nóng {{total(List<Shape>)}} gọi {{shape.area()}} và đã được C2 compile. Vài phút sau, lần đầu tiên một {{Square}} xuất hiện. {{-XX:+PrintCompilation}} in ra "made not entrant" cho {{total}} và latency tăng vọt trong chốc lát. Chuyện gì đã xảy ra?`,
+  options: [
+    'GC di chuyển object Circle nên code đã compile không còn hợp lệ',
+    'C2 compile lỗi nên JVM tự khởi động lại compiler',
+    'Deoptimization: C2 đã inline {{Circle.area()}} dựa trên giả định chỉ có một implementation; Square xuất hiện làm giả định sai, code bị bỏ, method quay về interpreter rồi được compile lại',
+    'JVM tạm dừng để đọc file Square.class từ đĩa, và đó là toàn bộ chi phí'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: deoptimization vì giả định tối ưu bị phá.**
 
 ### Vì sao đúng
-- JIT speculative optimize; deopt về interpreter khi assumption sai.
+JIT tối ưu dựa trên những gì nó **quan sát** được, kèm theo các giả định:
+1. Class Hierarchy Analysis (CHA) và type profile cho thấy chỉ có Circle, nên C2 **inline** thẳng {{Circle.area()}} (không còn virtual call), rồi tối ưu tiếp quanh đoạn đó.
+2. Khi Square được load hoặc xuất hiện tại call site, giả định trên sai. JVM đánh dấu code đó **not entrant** (không cho lần gọi mới vào nữa); các frame đang chạy trong code đó được **deoptimize**, nghĩa là dựng lại trạng thái và chạy tiếp bằng interpreter.
+3. Method chạy chậm ở interpreter và tier thấp một lúc, sau đó được compile lại với profile mới (bimorphic: kiểm tra kiểu rồi inline cả hai). Khoảng thời gian này chính là latency spike.
 
 ### Vì sao các phương án còn lại sai
-- **method quá dài**: không deopt.
-- **GC**: không.
-- **thread yield**: không.
+- **GC di chuyển object**: GC cập nhật con trỏ trong code đã compile thông qua oop map; việc di chuyển object không làm code mất hiệu lực.
+- **Compile lỗi**: đây là cơ chế bình thường, không phải lỗi.
+- **Chỉ do đọc file**: load class rất rẻ; chi phí lớn nằm ở deopt và compile lại.
 
-> Senior tip: deopt thường thấy trong log -XX:+PrintCompilation.`
+> Senior tip: đây là lý do benchmark phải warm-up với dữ liệu đa dạng như production (JMH), và vì sao call site **megamorphic** (từ 3 kiểu trở lên) không inline được. Ở đường code siêu nóng, giữ ít kiểu tại một call site giúp JIT tối ưu tốt hơn.`
 },
 {
   id: 'qz-jvm-030', topic: 'jvm',
-  q: `G1 vs ZGC: khác biệt chính?`,
-  options: ['G1 region-based generational; ZGC concurrent low-pause, colored pointers', 'ZGC generational only', 'G1 không có pause', 'ZGC throughput cao hơn G1'],
-  answer: 0,
-  explain: `**Tóm tắt:** G1 region-based generational GC; ZGC concurrent, pause < 1ms, dùng colored pointers.
+  q: `Service có heap 64 GB, SLA p99 latency 10 ms. Với G1, các mixed GC gây pause 80–150 ms. Dùng JDK 21. Lựa chọn nào hợp lý nhất?`,
+  options: [
+    'Giữ G1, đặt {{-XX:MaxGCPauseMillis=10}}; G1 sẽ đảm bảo không pause quá 10 ms',
+    'Chuyển sang Parallel GC để tăng throughput',
+    'Tăng heap lên 128 GB để G1 chạy ít lần hơn',
+    'Chuyển sang Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}} trên JDK 21): pause dưới 1 ms gần như không phụ thuộc kích thước heap, đổi lại tốn thêm CPU cho phần việc chạy song song và cần dư heap'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Generational ZGC.**
 
 ### Vì sao đúng
-- G1: region, generational, pause mục tiêu.
-- ZGC: concurrent marking/compaction, colored pointers, sub-ms pause.
+G1 chia heap thành region và gom rác theo thế hệ. Phần lớn công việc **di chuyển (evacuate)** object vẫn diễn ra trong pause, nên pause tăng theo lượng dữ liệu sống phải copy. ZGC làm cả việc đánh dấu lẫn di chuyển **song song** với ứng dụng, nhờ **colored pointers** và load barrier: thread nào đọc phải con trỏ cũ sẽ tự sửa nó. Pause chỉ còn vài thao tác ngắn, thường dưới 1 ms kể cả với heap hàng trăm GB.
+
+Phiên bản: JDK 21 có Generational ZGC qua cờ {{-XX:+ZGenerational}}; JDK 23 bật generational mặc định; JDK 24 bỏ hẳn chế độ non-generational.
+
+### Trade-off
+| | G1 | Generational ZGC |
+|---|---|---|
+| Pause | 10–200 ms tuỳ live set | thường dưới 1 ms |
+| CPU | ít hơn | tốn thêm CPU cho GC chạy song song |
+| Heap | gọn hơn | cần dư heap để GC kịp dọn |
+| Throughput | thường cao hơn một chút | thấp hơn một chút |
 
 ### Vì sao các phương án còn lại sai
-- **ZGC generational only**: ZGC có generational mode mới.
-- **G1 không pause**: có pause.
-- **ZGC throughput cao hơn**: thường throughput thấp hơn G1.
+- **MaxGCPauseMillis=10**: chỉ là **mục tiêu**; G1 cố gắng đạt nhưng không đảm bảo, đặt quá thấp còn làm GC chạy dày hơn.
+- **Parallel GC**: mọi việc đều stop-the-world, pause với 64 GB sẽ lên tới hàng giây.
+- **Tăng heap**: GC ít lần hơn nhưng mỗi lần copy nhiều hơn; không giải quyết được pause.
 
-> Senior tip: chọn theo latency requirement; đo với GC log.`
+> Senior tip: trước khi đổi GC, kiểm tra xem pause có thật sự đến từ GC không (xem time-to-safepoint, allocation rate). Khi chuyển sang ZGC, theo dõi "Allocation Stall" trong log: đó là dấu hiệu heap quá chật.`
 },
 {
   id: 'qz-jvm-031', topic: 'jvm',
-  q: `Escape analysis giúp JVM làm gì?`,
-  options: ['Stack allocation / scalar replacement / lock elision cho object không escape', 'GC nhanh hơn', 'JIT compile nhanh hơn', 'Class loading nhanh hơn'],
+  q: `Method nóng sau chạy hàng triệu lần mỗi giây, nhưng JFR gần như không ghi nhận allocation nào của {{Point}}:
+~~~java
+double dist(int x1, int y1, int x2, int y2) {
+    Point p = new Point(x2 - x1, y2 - y1);   // không lưu ra ngoài
+    return Math.sqrt(p.x() * p.x() + p.y() * p.y());
+}
+~~~
+Vì sao?`,
+  options: [
+    'Escape analysis của C2 thấy {{p}} không thoát ra khỏi method, nên dùng scalar replacement: thay object bằng các biến cục bộ hoặc thanh ghi, không cấp phát trên heap',
+    'HotSpot cấp phát {{Point}} trên stack của thread thay vì heap',
+    'Cấp phát trong TLAB nên JFR không tính là allocation',
+    'JVM cache sẵn các {{Point}} nhỏ giống Integer cache'
+  ],
   answer: 0,
-  explain: `**Tóm tắt:** escape analysis cho phép stack allocation, scalar replacement, lock elision khi object không escape method/thread.
+  explain: `**Đáp án đúng: scalar replacement nhờ escape analysis.**
 
 ### Vì sao đúng
-- Object không escape → không cần heap allocation.
+C2 phân tích xem object có **thoát** khỏi method không: có được trả về, gán vào field hoặc static, hay truyền cho method không được inline hay không. {{p}} chỉ dùng tại chỗ nên không thoát. Khi đó C2 **phân rã object thành các field** ({{x}}, {{y}} thành hai biến local), xoá hẳn lệnh {{new}}: không có header, không cấp phát, không tạo việc cho GC. Escape analysis còn cho phép **bỏ lock** (lock elision) trên object không thoát.
 
 ### Vì sao các phương án còn lại sai
-- **GC nhanh hơn**: gián tiếp.
-- **JIT compile nhanh hơn**: không.
-- **class loading**: không.
+- **Cấp phát trên stack**: đây là hiểu lầm phổ biến. HotSpot không cấp phát cả object trên stack; nó làm scalar replacement, nghĩa là object không còn tồn tại.
+- **TLAB**: TLAB chỉ là vùng heap riêng của thread để cấp phát nhanh; object trong TLAB vẫn là allocation thật và JFR vẫn lấy mẫu (event allocation trong và ngoài TLAB).
+- **Cache như Integer**: không có cơ chế nào như vậy cho class tự viết.
 
-> Senior tip: -XX:+DoEscapeAnalysis (default on).`
+### Khi nào tối ưu này không xảy ra
+- Method chưa được C2 compile (chạy ở interpreter hoặc C1).
+- Object được truyền vào một method không inline được (quá lớn, megamorphic).
+- Đường code phức tạp làm object thoát ở một nhánh nào đó.
+
+> Senior tip: đừng phá thiết kế hướng đối tượng để "tránh new" khi chưa đo. Dùng JMH với {{-prof gc}} để xem số byte cấp phát mỗi lần gọi; nhiều object tạm thực tế không tốn gì nhờ escape analysis.`
 },
 {
   id: 'qz-core-029', topic: 'core',
-  q: `Class initialization (static) thứ tự và thread-safety?`,
-  options: ['JVM đảm bảo class init occurs once per classloader, thread-safe via lock', 'Static block chạy mỗi lần new', 'Không thread-safe, cần synchronized', 'Chạy trước main luôn'],
-  answer: 0,
-  explain: `**Tóm tắt:** JVM đảm bảo class initialization xảy ra một lần per classloader, thread-safe (class init lock).
+  q: `Class {{A}} có static initializer đọc {{B.X}}, class {{B}} có static initializer đọc {{A.Y}} (X, Y không phải hằng số compile-time). Thread 1 dùng A lần đầu, đúng lúc đó thread 2 dùng B lần đầu. Điều gì có thể xảy ra?`,
+  options: [
+    'Static initializer của mỗi class chạy hai lần, mỗi thread một lần',
+    'Luôn chạy xong, chỉ là một bên thấy giá trị mặc định (0/null) của field bên kia',
+    'Deadlock: thread 1 giữ khoá khởi tạo của A và chờ B, thread 2 giữ khoá của B và chờ A; hai thread treo vĩnh viễn',
+    'JVM phát hiện vòng lặp và ném {{ExceptionInInitializerError}}'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: deadlock khi khởi tạo class.**
 
 ### Vì sao đúng
-- <clinit> chạy một lần; JVM serializes.
+JLS 12.4.2 đảm bảo mỗi class chỉ được khởi tạo **một lần** cho mỗi classloader. Cách làm: thread khởi tạo class giữ một khoá khởi tạo, thread khác muốn dùng class đó phải **chờ** tới khi khởi tạo xong. Quy trình:
+~~~text
+T1: bắt đầu khởi tạo A  → chạy <clinit> của A → cần B → chờ (T2 đang khởi tạo B)
+T2: bắt đầu khởi tạo B  → chạy <clinit> của B → cần A → chờ (T1 đang khởi tạo A)
+~~~
+Hai thread chờ nhau mãi. Khó chẩn đoán vì không có {{synchronized}} nào trong code. Ở jstack, hai thread cùng kẹt trong {{<clinit>}} và thường không có dòng "Found one Java-level deadlock".
+
+Nếu chỉ có **một** thread, JVM cho phép thread đang khởi tạo A dùng lại A (khởi tạo lồng nhau), nên không treo; khi đó mới xảy ra chuyện thấy giá trị mặc định 0/null.
 
 ### Vì sao các phương án còn lại sai
-- **mỗi lần new**: sai.
-- **không thread-safe**: sai.
-- **trước main luôn**: không, lazy.
+- **Chạy hai lần**: trái với đảm bảo "chỉ một lần" của JLS.
+- **Luôn chạy xong**: chỉ đúng khi cùng một thread; với hai thread thì có thể deadlock.
+- **JVM phát hiện vòng lặp**: JVM không phát hiện; {{ExceptionInInitializerError}} chỉ xuất hiện khi chính static initializer ném exception.
 
-> Senior tip: static init deadlock nếu circular class init.`
+> Senior tip: giữ static initializer đơn giản, không gọi chéo giữa các class. Idiom lazy holder (một static nested class {{Holder}} chứa {{static final X INSTANCE = new X();}}) dựa đúng vào đảm bảo khởi tạo một lần và thread-safe của JLS.`
 },
 {
   id: 'qz-jvm-032', topic: 'jvm',
-  q: `String deduplication (G1) làm gì?`,
-  options: ['G1 dedup các String có cùng char[] để tiết kiệm heap', 'Intern mọi String', 'Xoá String không dùng', 'Nén char[] thành byte[]'],
-  answer: 0,
-  explain: `**Tóm tắt:** G1 String deduplication: các String có cùng nội dung chia sẻ cùng char[]/byte[] backing array.
+  q: `Heap dump của service parse JSON cho thấy khoảng 30% heap là các String có nội dung trùng nhau ("ACTIVE", "VN", tên thành phố…) và sống lâu. Bật {{-XX:+UseStringDeduplication}} thì điều gì xảy ra?`,
+  options: [
+    'Các String trùng nội dung được gộp thành cùng một object, nên {{a == b}} trả về true',
+    'Mọi String đều được tự động {{intern()}}',
+    'Chỉ có tác dụng với String literal trong source code',
+    'GC tìm các String sống đủ lâu có cùng nội dung và cho chúng **dùng chung một mảng byte[]**; các object String vẫn khác nhau'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: dùng chung mảng byte[] bên dưới, object String vẫn tách biệt.**
 
 ### Vì sao đúng
-- -XX:+UseStringDeduplication (G1).
+Một String gồm object String (header, hash, coder) và một mảng {{byte[]}} chứa ký tự, thường là phần tốn bộ nhớ nhất. Khi bật deduplication, GC ghi nhận các String đã sống qua một số lần GC (mặc định 3, chỉnh bằng {{StringDeduplicationAgeThreshold}}), rồi một thread nền tra bảng băm: String nào có nội dung trùng thì trỏ field {{value}} sang mảng đã có, và mảng cũ thành rác.
+- Ban đầu chỉ G1 hỗ trợ; từ JDK 18 có thêm Serial, Parallel và ZGC.
+- Không thay đổi ngữ nghĩa: {{==}} vẫn so sánh hai object khác nhau.
 
 ### Vì sao các phương án còn lại sai
-- **intern mọi String**: không, chỉ dedup backing array.
-- **xoá không dùng**: GC làm.
-- **nén char[]**: Compact Strings (Java 9) làm, không phải dedup.
+- **Gộp object, == true**: chỉ mảng ký tự dùng chung; danh tính object giữ nguyên, nên code không bị đổi hành vi.
+- **Tự intern**: intern trả về object canonical trong StringTable và phải gọi tường minh; dedup là cơ chế khác, chạy ngầm và chỉ với String sống lâu.
+- **Chỉ với literal**: literal vốn đã được intern sẵn; dedup nhắm vào String tạo lúc chạy (parse JSON, đọc DB).
 
-> Senior tip: hữu ích cho heap nhiều String trùng.`
+> Senior tip: dedup tốn thêm CPU nền và chỉ hiệu quả khi String sống lâu. Với dữ liệu tập giá trị nhỏ đã biết trước (status, mã nước), chuyển sang enum hoặc tự chuẩn hoá khi parse (Jackson có {{InternCache}} cho tên field) thường tiết kiệm hơn.`
 },
 {
   id: 'qz-concurrency-033', topic: 'concurrency', multi: true,
-  q: `Chọn 2 cách đúng để publication an toàn của object immutable? (Chọn 2)`,
-  options: ['Final field + constructor không leak this', 'Volatile reference', 'Static field init', 'Synchronized getter'],
-  answer: [0, 1],
-  explain: `**Tóm tắt:** publication safety: final fields được JMM đảm bảo visible sau construction; volatile reference cũng.
+  q: `Class sau được thread A tạo rồi gán vào field dùng chung {{static Config current}} (field thường, không đồng bộ); thread B đọc {{current.timeout()}}:
+~~~java
+class Config {
+    private int timeout;
+    Config(int t) { this.timeout = t; }
+    int timeout() { return timeout; }
+}
+~~~
+B có thể thấy {{current}} khác null nhưng {{timeout}} bằng 0. Thay đổi nào **đảm bảo** B thấy đúng giá trị? (Chọn 3)`,
+  options: [
+    'Đánh dấu field {{timeout}} là {{final}} (và constructor không để lộ {{this}} ra ngoài)',
+    'Khai báo {{current}} là {{volatile}}',
+    'Thay {{current}} bằng {{AtomicReference<Config>}} và dùng {{set}}/{{get}}',
+    'Cho B {{Thread.sleep(100)}} trước khi đọc',
+    'Đánh dấu {{timeout()}} là {{synchronized}}, còn phép gán {{current}} vẫn không đồng bộ'
+  ],
+  answer: [0, 1, 2],
+  explain: `**Đáp án đúng: 0, 1, 2.**
+
+### Vì sao lỗi xảy ra
+Không có quan hệ happens-before giữa A và B, nên compiler hoặc CPU được phép đảo thứ tự: ghi tham chiếu vào {{current}} **trước** khi ghi {{timeout}}. B thấy object rồi nhưng field vẫn là giá trị mặc định. Đây là **unsafe publication**.
 
 ### Vì sao đúng
-- Final fields: freeze action happens-before publication (nếu không leak this).
-- Volatile reference: release/acquire.
+- **final field**: JMM có đảm bảo riêng cho final. Thread nào thấy tham chiếu tới object (sau khi constructor chạy xong) thì chắc chắn thấy giá trị final đã gán trong constructor, kể cả khi bản thân tham chiếu được publish không an toàn. Điều kiện: {{this}} không bị lộ ra ngoài trong lúc constructor đang chạy.
+- **volatile current**: ghi volatile happens-before lần đọc volatile thấy giá trị đó, nên mọi lệnh ghi trước nó (kể cả trong constructor) đều được nhìn thấy.
+- **AtomicReference**: {{set}}/{{get}} có ngữ nghĩa bộ nhớ của volatile.
 
 ### Vì sao các phương án còn lại sai
-- **Static field init**: class init lock đảm bảo, nhưng không phải publication của instance.
-- **Synchronized getter**: không đủ nếu constructor leak this.
+- **sleep**: không tạo happens-before; chỉ làm lỗi khó tái hiện hơn.
+- **synchronized ở getter**: happens-before của monitor chỉ có khi **cả hai bên** dùng cùng một khoá. Phía ghi không giữ khoá đó, nên không có đảm bảo nào.
 
-> Senior tip: không leak this trong constructor (đăng ký listener, start thread).`
+> Senior tip: các cách publish an toàn khác: gán trong static initializer, đặt vào collection thread-safe ({{ConcurrentHashMap}}, {{BlockingQueue}}), hoặc ghi và đọc trong cùng một khoá. Object immutable (mọi field final) là cách đơn giản nhất để khỏi phải nghĩ tới chuyện này.`
 },
 {
   id: 'qz-collections-029', topic: 'collections',
-  q: `ConcurrentHashMap size() trả về gì?`,
-  options: ['Ước lượng (estimate), không chính xác tuyệt đối', 'Chính xác', 'Luôn 0', 'Ném exception'],
+  q: `Nhiều thread cùng dùng đoạn code sau để giới hạn cache dựa trên {{ConcurrentHashMap}} ở 1000 phần tử:
+~~~java
+if (cache.size() < 1000) {
+    cache.put(key, value);
+}
+~~~
+Sau một thời gian, cache có 1.180 phần tử. Vì sao?`,
+  options: [
+    'Kiểm tra rồi mới làm (check-then-act) không nguyên tử: nhiều thread cùng thấy size dưới 1000 rồi cùng put; ngoài ra {{size()}} chỉ là ước lượng khi đang có cập nhật song song',
+    '{{size()}} khoá toàn bộ map, nên lỗi phải nằm ở chỗ khác',
+    'ConcurrentHashMap tự chặn put khi đạt ngưỡng, nên 1.180 là do bug của JDK',
+    'Hai thread put cùng lúc khiến ConcurrentHashMap ném {{ConcurrentModificationException}} và nhân đôi phần tử'
+  ],
   answer: 0,
-  explain: `**Tóm tắt:** ConcurrentHashMap.size() trả về ước lượng vì concurrent updates; mappingCount() trả về long.
+  explain: `**Đáp án đúng: race check-then-act, cộng với size() không phải snapshot.**
 
 ### Vì sao đúng
-- size() là estimate; mappingCount() long.
+Mỗi thao tác của {{ConcurrentHashMap}} riêng lẻ thì thread-safe, nhưng **chuỗi hai thao tác** thì không:
+~~~text
+T1: size() = 999 → OK      T2: size() = 999 → OK
+T1: put(k1)                T2: put(k2)          → 1001
+~~~
+Thêm nữa, {{size()}} cộng một bộ đếm chia thành nhiều cell (giống {{LongAdder}}) mà không khoá map. Khi đang có put/remove song song, kết quả chỉ là ước lượng tại thời điểm đọc. Javadoc cũng khuyên dùng {{mappingCount()}} (trả về long) thay cho {{size()}}.
+
+### Cách làm đúng
+- Dùng cache có giới hạn sẵn: Caffeine với {{maximumSize(1000)}} (đuổi bớt theo tần suất truy cập), đúng thứ mà đoạn code trên cố tự làm.
+- Nếu bắt buộc tự làm: giữ chỗ trước bằng {{AtomicInteger}} hoặc {{Semaphore}}, chỉ put khi giữ được chỗ, rồi trả lại chỗ khi remove.
 
 ### Vì sao các phương án còn lại sai
-- **chính xác**: không trong concurrent.
-- **0**: sai.
-- **exception**: không.
+- **size() khoá map**: ConcurrentHashMap (từ Java 8) không có khoá toàn map; {{size()}} không khoá gì cả.
+- **Tự chặn ở ngưỡng**: ConcurrentHashMap không có khái niệm giới hạn số phần tử.
+- **ConcurrentModificationException**: iterator của ConcurrentHashMap là weakly consistent và không bao giờ ném exception này; key trùng thì bị ghi đè chứ không nhân đôi.
 
-> Senior tip: dùng mappingCount() cho số lớn.`
+> Senior tip: mọi quyết định kiểu "đọc rồi ghi" trên map dùng chung nên dùng thao tác nguyên tử có sẵn: {{putIfAbsent}}, {{computeIfAbsent}}, {{merge}}. Hàm truyền vào {{compute*}} phải ngắn, vì nó chạy trong lúc giữ khoá của bin.`
 },
 {
   id: 'qz-jvm-033', topic: 'jvm',
-  q: `Compact Strings (Java 9) làm gì?`,
-  options: ['Lưu String Latin-1 trong byte[] thay vì char[] để tiết kiệm bộ nhớ', 'Nén gzip', 'Intern String', 'Dedup'],
-  answer: 0,
-  explain: `**Tóm tắt:** Compact Strings: nếu nội dung là Latin-1, lưu trong byte[] (1 byte/char) thay vì char[] (2 byte/char).
+  q: `Với Compact Strings (mặc định từ Java 9), String nào dưới đây được lưu với coder **UTF16** (2 byte cho mỗi ký tự)?`,
+  options: [
+    '"café"',
+    '"Hà Nội"',
+    '"ORDER-2026-001"',
+    '"Über"'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: "Hà Nội".**
 
 ### Vì sao đúng
-- Tiết kiệm ~50% heap cho text ASCII/Latin-1.
+Từ Java 9 (JEP 254), String lưu ký tự trong {{byte[] value}} kèm field {{coder}}:
+- **LATIN1**: mọi ký tự nằm trong U+0000–U+00FF → 1 byte mỗi ký tự.
+- **UTF16**: chỉ cần **một** ký tự nằm ngoài vùng đó → cả chuỗi dùng 2 byte mỗi ký tự.
+
+"Hà Nội": 'à' (U+00E0) vẫn thuộc Latin-1, nhưng 'ộ' (U+1ED9) thì không, nên cả chuỗi là UTF16. Phần lớn chuỗi tiếng Việt có dấu đều rơi vào trường hợp này, vì dấu thanh tiếng Việt chủ yếu nằm ở vùng U+1Exx.
 
 ### Vì sao các phương án còn lại sai
-- **gzip**: không.
-- **intern**: không.
-- **dedup**: tính năng khác.
+- **"café"**: 'é' là U+00E9, thuộc Latin-1.
+- **"ORDER-2026-001"**: toàn ASCII, thuộc Latin-1.
+- **"Über"**: 'Ü' là U+00DC, thuộc Latin-1.
 
-> Senior tip: -XX:-CompactStrings để tắt nếu cần.`
+### Hệ quả thực tế
+- Service chủ yếu giữ chuỗi ASCII (id, mã, JSON key) thường giảm đáng kể dung lượng String khi lên Java 9+.
+- Dữ liệu tiếng Việt có dấu vẫn tốn 2 byte mỗi ký tự trong bộ nhớ, khác với lúc mã hoá UTF-8 khi gửi qua mạng.
+- Có thể tắt bằng {{-XX:-CompactStrings}}, nhưng hiếm khi cần.
+
+> Senior tip: khi ước lượng heap cho cache chứa nhiều text tiếng Việt, đừng tính theo số byte UTF-8 trong DB; trong JVM mỗi ký tự tốn 2 byte, cộng thêm khoảng 40 byte cho object String và header của mảng.`
 },
 {
   id: 'qz-core-030', topic: 'core',
-  q: `String.intern() pool nằm ở đâu?`,
-  options: ['Heap (từ Java 7), trước đó PermGen', 'Stack', 'Metaspace', 'Native memory'],
-  answer: 0,
-  explain: `**Tóm tắt:** String pool ở heap từ Java 7; trước Java 7 ở PermGen.
+  q: `Để "tiết kiệm bộ nhớ", một service gọi {{userId.intern()}} cho mọi request (hàng triệu userId gần như không trùng nhau). Chạy trên Java 17. Đánh giá nào đúng nhất?`,
+  options: [
+    'Gây OutOfMemoryError: PermGen vì chuỗi intern nằm trong PermGen',
+    'Chuỗi đã intern không bao giờ được GC thu hồi, nên heap chắc chắn tràn',
+    '{{intern()}} trả về một bản sao mới nên càng tốn bộ nhớ gấp đôi',
+    'Gần như không tiết kiệm gì vì userId hiếm khi trùng, còn tốn CPU tra bảng StringTable mỗi request; chuỗi intern nằm trên heap và vẫn được GC khi không còn ai tham chiếu'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: lợi ít, hại nhiều; nhưng không có OOM PermGen.**
 
 ### Vì sao đúng
-- Java 7 move intern pool to heap.
+{{intern()}} tra chuỗi trong **StringTable** (bảng băm của JVM): đã có chuỗi bằng nội dung thì trả về object có sẵn, chưa có thì thêm vào. Nó chỉ tiết kiệm bộ nhớ khi **rất nhiều chuỗi trùng nhau** cùng sống lâu. Với userId gần như duy nhất:
+- Mỗi request tốn thêm một lần tính hash và tra bảng có tranh chấp giữa các thread.
+- Bảng phình theo số chuỗi; GC phải dọn các entry chết, làm tăng thời gian GC.
+- Hầu như không có chuỗi nào được dùng chung.
+
+Lịch sử: từ Java 7, chuỗi intern nằm trên **heap** (trước đó ở PermGen); Java 8 bỏ hẳn PermGen. Chuỗi intern được GC thu hồi như object thường khi không còn tham chiếu.
 
 ### Vì sao các phương án còn lại sai
-- **Stack**: không.
-- **Metaspace**: class metadata.
-- **Native memory**: không.
+- **OOM PermGen**: Java 17 không còn PermGen.
+- **Không bao giờ được GC**: sai từ Java 7; chuỗi intern không còn ai tham chiếu vẫn được thu hồi.
+- **Trả về bản sao mới**: ngược lại, nó trả về bản canonical đã có (hoặc chính chuỗi đó nếu là lần đầu).
 
-> Senior tip: intern() có thể gây OOM nếu lạm dụng; dùng cho constant.`
+> Senior tip: muốn giảm chuỗi trùng thì đo trước bằng heap dump (Eclipse MAT có báo cáo chuỗi trùng). Tập giá trị nhỏ thì dùng enum hoặc một map chuẩn hoá có giới hạn; chuỗi sống lâu và trùng nhiều thì bật {{-XX:+UseStringDeduplication}}. Kích thước bảng chỉnh bằng {{-XX:StringTableSize}} nếu thật sự phải intern nhiều.`
 }
 );
