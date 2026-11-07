@@ -3399,6 +3399,12 @@ EC2 private subnet download 1 TB từ S3: traffic đi NAT -> $45 NAT + S3 transf
 | Service | mọi internet | S3, DynamoDB | hầu hết AWS |
 | Bảo mật | ra internet | chỉ AWS backbone | private |
 
+### Ví dụ đời thực
+Hoá đơn của một team tăng 4.200 USD trong tháng sau khi chuyển service xử lý ảnh vào private subnet: mỗi pod đọc/ghi khoảng 90TB/tháng với S3 qua **NAT Gateway**, bị tính phí xử lý dữ liệu của NAT trên từng GB. Thêm **Gateway Endpoint cho S3** (miễn phí, chỉ cần thêm route vào route table của private subnet) — traffic S3 đi thẳng qua mạng AWS, phí NAT cho phần này về gần 0. Tiếp theo thêm Interface Endpoint cho ECR (api, dkr), CloudWatch Logs và Secrets Manager vì pod kéo image và gửi log liên tục; Interface Endpoint có phí theo giờ và theo GB nhưng thấp hơn NAT ở lưu lượng này. Kiểm chứng bằng VPC Flow Logs: lưu lượng qua NAT giảm 92%. Lưu ý thêm: endpoint policy có thể giới hạn chỉ cho phép truy cập bucket của công ty, tăng bảo mật.
+
+### Trả lời mẫu khi phỏng vấn
+"Route table quyết định gói tin từ subnet đi đâu: subnet public có route ra Internet Gateway, subnet private ra NAT Gateway nếu cần gọi ra ngoài. NAT Gateway tính phí theo giờ và theo từng GB dữ liệu đi qua, nên khi EC2 hay pod ở private subnet gọi S3 với khối lượng lớn, toàn bộ traffic đó đi qua NAT và bị tính phí xử lý, hoá đơn tăng vọt. Cách sửa là VPC Endpoint: với S3 và DynamoDB có Gateway Endpoint miễn phí, chỉ thêm route vào route table; các dịch vụ khác như ECR, CloudWatch Logs, Secrets Manager dùng Interface Endpoint qua PrivateLink, có phí nhưng rẻ hơn NAT khi lưu lượng lớn, và traffic không ra Internet. Tôi kiểm chứng bằng VPC Flow Logs, và dùng endpoint policy để chỉ cho phép truy cập tài nguyên của công ty."
+
 > Senior tip: luôn tạo S3 Gateway Endpoint đầu tiên khi dựng VPC; kiểm tra bill NAT hàng tháng — nếu NatGatewayBytesProcessed > 1 TB/tháng và đa số là S3, bạn đang đốt tiền.`,
   follow: [
     'Gateway Endpoint và Interface Endpoint khác nhau thế nào, khi nào chọn cái nào?',
@@ -3437,6 +3443,12 @@ Triệu chứng: 502/504 rải rác, thường với long-polling, SSE, hoặc b
 - ALB access log: tìm 502/504 và elapsed time.
 - Pitfall: health check path trả 200 nhanh; deregistration delay (default 300s) chờ connection drain khi deploy.
 
+### Ví dụ đời thực
+Service Spring Boot sau ALB thỉnh thoảng trả **502** với tỉ lệ khoảng 0,1%, không có lỗi nào trong log ứng dụng. Nguyên nhân: idle timeout của ALB là 60 giây (mặc định), còn keep-alive timeout của Tomcat ({{server.tomcat.keep-alive-timeout}}, mặc định theo connection timeout khoảng 20 giây) **ngắn hơn** — Tomcat đóng kết nối nhàn rỗi trong khi ALB vẫn nghĩ kết nối còn dùng được và gửi request mới vào đúng lúc nó bị đóng → 502. Sửa: đặt keep-alive của Tomcat **dài hơn** idle timeout của ALB (ví dụ 65 giây). 502 biến mất. Một service khác cần giữ IP thật của client cho chống gian lận: với ALB đọc header {{X-Forwarded-For}} (cấu hình {{server.forward-headers-strategy}} trong Spring Boot); với NLB thì bật giữ IP client hoặc Proxy Protocol v2.
+
+### Trả lời mẫu khi phỏng vấn
+"ALB hoạt động ở tầng 7: hiểu HTTP, định tuyến theo path và host, có WAF, chứng chỉ, sticky session, phù hợp cho API web. NLB ở tầng 4: chuyển tiếp TCP, UDP với độ trễ rất thấp, IP tĩnh, chịu lưu lượng cực lớn, dùng cho giao thức không phải HTTP hoặc khi cần IP cố định cho đối tác whitelist. Về IP client, ALB truyền qua header X-Forwarded-For nên ứng dụng phải cấu hình đọc header đó; NLB có thể giữ nguyên IP nguồn hoặc dùng Proxy Protocol. Lỗi 502 lẻ tẻ sau ALB thường do keep-alive timeout của server ngắn hơn idle timeout của ALB: server đóng kết nối trong khi ALB vẫn gửi request vào đó. Cách sửa là đặt keep-alive của Tomcat dài hơn idle timeout của ALB."
+
 > Senior tip: vẽ timeline: client idle timeout < ALB idle timeout < target keep-alive timeout là sai; đúng là target keep-alive timeout < ALB idle timeout < client timeout. Sai thứ tự -> 502 ngẫu nhiên khó debug.`,
   follow: [
     'Khi nào chọn NLB thay vì ALB cho service Java?',
@@ -3472,6 +3484,12 @@ Triệu chứng: 502/504 rải rác, thường với long-polling, SSE, hoặc b
 - Metric: DatabaseConnections, ReplicaLag, Failover events (RDS events).
 - Test failover định kỳ (reboot with failover) trong maintenance window.
 - Pitfall: app cache DNS dài -> sau failover vẫn trỏ instance cũ; set JVM DNS TTL thấp (networkaddress.cache.ttl=5) hoặc dùng proxy.
+
+### Ví dụ đời thực
+Diễn tập failover RDS PostgreSQL Multi-AZ: DB chuyển sang standby trong khoảng 60 giây, nhưng ứng dụng Spring Boot lỗi tới **6 phút**. Nguyên nhân: JVM cache DNS (security manager cũ đặt {{networkaddress.cache.ttl}} vô hạn trong image cũ), và pool HikariCP giữ các kết nối chết vì không có timeout đọc — request treo tới khi TCP timeout của hệ điều hành. Sửa: {{networkaddress.cache.ttl=30}}, đặt {{socketTimeout}} cho JDBC driver, Hikari {{maxLifetime}} ngắn hơn, và retry có giới hạn cho lỗi kết nối. Lần diễn tập sau: ứng dụng phục hồi trong khoảng 75 giây sau khi DB failover. Với nhóm Lambda gọi cùng DB, chuyển sang **RDS Proxy** giúp giữ kết nối phía client trong lúc failover và giảm thêm thời gian lỗi.
+
+### Trả lời mẫu khi phỏng vấn
+"RDS Multi-AZ giữ một bản standby đồng bộ ở AZ khác; khi primary lỗi, RDS chuyển endpoint DNS sang standby, thường trong vài chục giây tới khoảng hai phút. Read replica thì khác: sao chép bất đồng bộ, dùng để chia tải đọc, có độ trễ, và phải promote nếu muốn dùng làm primary. Phía ứng dụng Java phải chuẩn bị: JVM không được cache DNS lâu, pool phải loại kết nối chết nhanh nhờ socket timeout và maxLifetime, và có retry có giới hạn cho lỗi kết nối. Nếu không, DB failover một phút nhưng ứng dụng lỗi vài phút. Với Lambda, RDS Proxy gộp kết nối và giữ kết nối phía client khi failover. Tôi luôn diễn tập failover và đo thời gian lỗi phía ứng dụng, không chỉ phía DB."
 
 > Senior tip: Multi-AZ cho HA, Read Replica cho scale read — đừng nhầm. Với Lambda luôn dùng RDS Proxy, và kiểm tra pinning metric; pinning cao = đang dùng session state và proxy vô dụng.`,
   follow: [
@@ -3516,6 +3534,12 @@ FIFO đảm bảo thứ tự theo MessageGroupId. Nhiều consumer có thể x�
 | Dedup | không | 5 phút |
 | Dùng khi | throughput cao, không cần thứ tự | cần thứ tự / exactly-once |
 
+### Ví dụ đời thực
+Consumer SQS gửi email xác nhận đơn hàng: visibility timeout 30 giây nhưng vào giờ cao điểm việc gọi nhà cung cấp email mất 40–50 giây → message **xuất hiện lại** trước khi xử lý xong, consumer khác nhận và gửi lần nữa; khách nhận 2–3 email giống nhau. Sửa: tăng visibility timeout lên khoảng 6 lần thời gian xử lý tối đa (theo khuyến nghị cho Lambda event source), gia hạn visibility ({{ChangeMessageVisibility}}) cho việc dài, và quan trọng nhất là xử lý **idempotent** theo {{orderId}} (bảng đã gửi). Cấu hình DLQ với {{maxReceiveCount}} = 5 để message lỗi liên tục không chặn hàng đợi; sau khi sửa lỗi nhà cung cấp, dùng **DLQ redrive** đưa message trở lại hàng đợi chính. Với luồng cần đúng thứ tự trạng thái đơn hàng, dùng FIFO với {{MessageGroupId = orderId}}.
+
+### Trả lời mẫu khi phỏng vấn
+"SQS giao message theo at-least-once: khi consumer nhận message, nó bị ẩn trong khoảng visibility timeout; nếu consumer không xoá kịp, message hiện lại và có thể được xử lý lần nữa. Vì vậy visibility timeout phải dài hơn thời gian xử lý tối đa, có thể gia hạn cho việc dài, và consumer luôn phải idempotent. DLQ nhận message sau một số lần nhận thất bại, để message lỗi không chặn hàng đợi; sửa lỗi xong thì dùng redrive đưa chúng về. Standard queue có throughput gần như không giới hạn nhưng không đảm bảo thứ tự; FIFO đảm bảo thứ tự trong từng message group và chống trùng trong cửa sổ deduplication, đổi lại giới hạn throughput. Tôi dùng FIFO với message group theo id thực thể khi thứ tự quan trọng, ví dụ trạng thái đơn hàng."
+
 > Senior tip: thiết kế consumer idempotent ngay từ đầu (business key + DB unique constraint) — đó là cách duy nhất sống sót với at-least-once. Visibility timeout = processing time * 2 + buffer.`,
   follow: [
     'Làm sao implement idempotent consumer với SQS?',
@@ -3555,6 +3579,12 @@ DynamoDB tự chuyển unused capacity từ partition lạnh sang partition nón
 - Metric: ConsumedRead/WriteCapacityUnits, ThrottledRequests, UserErrors.
 - CloudWatch Contributor Insights tìm hot partition.
 - Pitfall: scan toàn table -> cost lớn; luôn query với key.
+
+### Ví dụ đời thực
+Bảng DynamoDB lưu sự kiện IoT với partition key là {{date}} (ví dụ "2026-11-07"): mọi ghi trong ngày dồn vào **một partition key** → throttling dù tổng capacity còn dư rất nhiều (giới hạn mỗi partition khoảng 1.000 WCU và 3.000 RCU). Adaptive capacity giúp được một phần nhưng không cứu được một key duy nhất nhận toàn bộ lưu lượng. Sửa: partition key = {{deviceId}}, sort key = {{timestamp}}; truy vấn "mọi sự kiện trong ngày" chuyển sang GSI với **write sharding** ({{date#shard}}, shard 0–9) và đọc song song 10 shard. Throttling về 0. Một lỗi khác: đọc từ GSI ngay sau khi ghi không thấy dữ liệu — vì GSI luôn **eventually consistent**; luồng cần đọc ngay sau ghi phải đọc từ bảng chính với strongly consistent read.
+
+### Trả lời mẫu khi phỏng vấn
+"DynamoDB phân tán dữ liệu theo hash của partition key, mỗi partition có giới hạn throughput riêng, nên thiết kế partition key quyết định khả năng mở rộng. Key có ít giá trị hoặc dồn lưu lượng, như ngày hay trạng thái, tạo hot partition và bị throttling dù tổng capacity còn dư. Adaptive capacity tự phân bổ lại cho partition nóng nhưng không cứu được một key nhận toàn bộ tải; khi đó tôi chọn key có nhiều giá trị như id người dùng hay thiết bị, hoặc write sharding bằng hậu tố ngẫu nhiên rồi đọc song song. GSI luôn eventually consistent nên không dùng cho luồng cần đọc ngay sau khi ghi. Single-table design gom nhiều loại thực thể vào một bảng theo mẫu truy cập, giảm số lần gọi, nhưng phải biết rõ mẫu truy cập từ đầu và khó thay đổi về sau."
 
 > Senior tip: DynamoDB reward good key design và punish bad; trước khi code, liệt kê access patterns rồi thiết kế PK/SK. Hot partition là lỗi thiết kế, không phải lỗi capacity.`,
   follow: [
@@ -3640,6 +3670,12 @@ Mọi pod trên node dùng cùng instance profile của node -> nếu một pod 
 - CloudTrail log AssumeRoleWithWebIdentity với source IP pod.
 - Pitfall: pod không có SA annotated -> dùng node role (fallback) -> lỗ hổng. Enforce bằng admission policy (OPA/Kyverno) yêu cầu SA có role.
 
+### Ví dụ đời thực
+Một cluster EKS gắn quyền S3 vào **instance profile của node**: mọi pod trên node — kể cả một service marketing — đều đọc được bucket chứa hồ sơ khách hàng. Kiểm thử bảo mật chiếm được một pod qua lỗ hổng thư viện và gọi được S3 bằng credential lấy từ instance metadata (IMDS). Sửa: chuyển từng service sang **EKS Pod Identity** (hoặc IRSA): mỗi ServiceAccount một role với quyền đúng bucket/prefix cần dùng; chặn pod truy cập IMDS (đặt hop limit của IMDSv2 = 1 hoặc NetworkPolicy) để pod không lấy được credential của node; gỡ quyền S3 khỏi role của node. Lần kiểm thử sau, pod bị chiếm chỉ có quyền của chính service đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu gắn quyền vào instance profile của node, mọi pod chạy trên node đều có quyền đó, nên một pod bị chiếm là lộ quyền của tất cả. Tôi gắn quyền theo từng pod. IRSA dùng OIDC provider của cluster: ServiceAccount được annotate role, SDK đổi token của ServiceAccount lấy credential tạm qua AssumeRoleWithWebIdentity. EKS Pod Identity mới hơn và đơn giản hơn: chạy agent trên node, liên kết ServiceAccount với role qua API của EKS, không cần quản lý OIDC provider cho từng cluster và dễ dùng lại role giữa nhiều cluster. Dù chọn cách nào, tôi còn chặn pod truy cập metadata của node bằng IMDSv2 với hop limit 1 hoặc NetworkPolicy, và gỡ các quyền ứng dụng khỏi role của node."
+
 > Senior tip: IRSA/Pod Identity là "zero-trust cho pod": credential sống trong pod memory, tự rotate, không mount secret. Kết hợp với network policy và read-only root filesystem để harden.`,
   follow: [
     'IRSA trust policy condition StringEquals vs StringLike khác nhau thế nào?',
@@ -3681,6 +3717,12 @@ Mọi pod trên node dùng cùng instance profile của node -> nếu một pod 
 | Failover | 60-120s | 10-30s |
 | Read scale | read replica (async lag) | Aurora Replica (lag < 10ms) |
 | Cost | rẻ hơn | đắt hơn |
+
+### Ví dụ đời thực
+Một API dùng Lambda gọi Aurora PostgreSQL: lúc khuyến mãi, concurrency Lambda lên 800, mỗi môi trường thực thi mở kết nối riêng → Aurora chạm max_connections, lỗi "too many connections" hàng loạt. Thêm **RDS Proxy**: Lambda kết nối tới proxy, proxy dùng khoảng 100 kết nối thật tới DB; xác thực bằng IAM thay cho mật khẩu trong biến môi trường. Một lần failover Aurora sau đó, proxy giữ kết nối phía Lambda và chuyển sang writer mới, thời gian lỗi phía ứng dụng giảm rõ so với kết nối trực tiếp. Cần chú ý: code đặt biến phiên ({{SET}}) làm proxy **ghim (pin)** kết nối, mất lợi ích gộp — theo dõi metric pinning và bỏ các lệnh đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Aurora tách tính toán khỏi lưu trữ: dữ liệu được ghi thành sáu bản sao trên ba AZ ở tầng storage, nên mất một AZ hay vài bản sao vẫn đọc ghi được, và replica đọc dùng chung storage nên lag thường rất thấp. Khi writer lỗi, Aurora promote một replica thành writer, thường trong khoảng dưới một phút, và endpoint cluster trỏ sang writer mới. Lambda có vấn đề riêng: mỗi môi trường thực thi mở kết nối, concurrency cao là cạn max_connections. RDS Proxy gộp kết nối, giữ kết nối phía client khi failover, và hỗ trợ xác thực IAM. Tôi theo dõi pinning của proxy, vì dùng biến phiên hay tính năng theo phiên làm proxy phải ghim kết nối cho client đó."
 
 > Senior tip: với Lambda + DB, luôn dùng RDS Proxy + Aurora; pinning metric là KPI quan trọng — pinning cao có nghĩa proxy đang bị vô hiệu hóa.`,
   follow: [
