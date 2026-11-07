@@ -283,7 +283,7 @@ body::after {   /* the trail: dots climbing from the bottom-left to the summit *
 }
 @media print { body::before, body::after { display: none; } }
 /* ---------- per-section side photos (wide screens): real photos in the empty gutters left/right of the 1120px
- * content column, fading toward the text. home = Mac mini M4, interview/English = video calls, study = USD,
+ * content column, fading toward the text. home = MacBook Pro + Mac mini M4, interview/English = video calls, study = USD,
  * practice = code on screen, career = handshake + remote work with a sea view.
  * Photos: Unsplash License (free use), see assets/bg/CREDITS.md. Narrower screens keep the mountain. */
 @media (min-width: 1400px) {
