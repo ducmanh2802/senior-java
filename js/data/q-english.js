@@ -7368,29 +7368,45 @@ Một ứng viên kể xung đột theo kiểu "my teammate was wrong and finall
   topic: 'english',
   level: 'senior',
   q: 'Describe a failure or mistake you made. What did you learn?',
-  a: `**Tóm tắt:** I shipped a migration without a rollback plan and caused a 2-hour outage. I owned it, wrote the postmortem, added automated rollback and a checklist. Since then no similar incident.
+  a: `**Tóm tắt:** Chọn một sai lầm **thật, có hậu quả rõ** nhưng **đã được xử lý tốt**. Kể ngắn phần sai, dành phần lớn thời gian cho **cách bạn khắc phục**, **nguyên nhân gốc** (không chỉ "tôi bất cẩn") và **thay đổi lâu dài** (quy trình, công cụ). Nhận trách nhiệm bằng "I", không đổ lỗi.
 
-### Key points
-- Admit clearly, no excuses.
-- Show concrete learning and process change.
+### Interviewer muốn nghe gì
+- Bạn **dám nhận sai** và hành động nhanh để giảm thiệt hại.
+- Bạn tìm **nguyên nhân hệ thống**, không chỉ tự trách.
+- Bạn biến bài học thành **cải tiến cho cả team** (blameless postmortem).
 
-### Common mistakes
-- Disguising success as failure ("I work too hard").
-- Blaming tools or teammates.
+### Model answer (60–90 seconds)
+"A couple of years ago, I ran a database migration that added a unique index on the customer email column. It had passed in every test environment, so I ran it in production during a normal deployment.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+It failed halfway, because production had about two hundred duplicate emails from an old import. The deployment got stuck, and the sign-up page was down for about twenty minutes until I rolled back the application.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+I owned the mistake in the incident channel right away. After that, I cleaned up the duplicates together with the support team, because some of them belonged to real customers, and then reran the migration safely.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+The root cause wasn't just that I forgot to check the data. Our process had no way to test migrations against production-like data. So I set up a nightly job that restores an anonymized production snapshot and runs all pending migrations against it. In the next six months, that job caught four risky migrations before they reached production.
 
-> Senior tip: Real failures with real fixes beat polished non-answers.`,
+What I learned is that 'it passed in staging' isn't evidence when the data is different — now I always ask what production data looks like."
+
+### Short version (30 seconds)
+"I ran a migration that failed in production because of duplicate data we didn't have in staging, and sign-up was down for twenty minutes. I rolled back, fixed the data, and then built a nightly job that tests migrations on anonymized production data. It caught four risky migrations in six months."
+
+### Real-life example
+Ứng viên chọn "sai lầm" kiểu "I once forgot to update the documentation" — interviewer đánh giá là né tránh. Ứng viên khác kể sai lầm có downtime thật nhưng nhấn vào cách xử lý và job kiểm tra migration; interviewer hỏi tiếp về blameless postmortem và ứng viên có sẵn ví dụ — đó là cuộc trò chuyện họ muốn dẫn tới.
+
+### Cụm từ hữu ích
+- "I owned the mistake right away."
+- "The root cause wasn't just…; our process had no way to…"
+- "To prevent it from happening again, I…"
+- "What I learned is that…"
+- "In a blameless postmortem, we focus on the system, not the person."
+
+### Lỗi người Việt hay mắc
+- Chọn sai lầm quá nhỏ hoặc giả ("I work too hard").
+- Kể quá lâu phần sai, quá ít phần sửa và bài học.
+- "It's not my fault, the data was wrong" → **"I should have checked the production data first."**
+- "I have learned many things" chung chung → **"What I learned is that…"** + một bài học cụ thể.
+- Thì: "I run the migration and it fail" → **"I ran the migration, and it failed."**
+
+> Senior tip: kết câu chuyện sai lầm bằng **một cơ chế** bạn đã tạo ra (job, checklist, alert) và **một con số** về hiệu quả của nó. Sai lầm kèm cơ chế phòng ngừa là một trong những câu trả lời thuyết phục nhất về level Senior.`,
   follow: ['How do you run a blameless postmortem?', 'What process changes followed your last incident?'],
   tags: ['behavioral', 'failure', 'star', 'english'],
   lang: 'en'
@@ -7400,28 +7416,44 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a time you disagreed with your manager.',
-  a: `**Tóm tắt:** My manager wanted to cut testing to hit a deadline. I presented risk data and proposed a phased release. We compromised: ship core features, defer extras. Outcome: on-time, zero critical bugs.
+  a: `**Tóm tắt:** Bất đồng với quản lý là bình thường; điều họ kiểm tra là **cách** bạn bất đồng: **riêng tư, có dữ liệu, đưa ra phương án thay thế**, và **cam kết với quyết định cuối cùng** dù không theo ý bạn ("disagree and commit"). Chọn câu chuyện về ưu tiên, deadline hoặc rủi ro kỹ thuật — không phải chuyện cá nhân.
 
-### Useful phrases
-- "I respectfully disagreed and shared data..."
-- "We found a middle ground..."
+### Interviewer muốn nghe gì
+- Bạn **dám lên tiếng** khi thấy rủi ro, không im lặng làm theo.
+- Bạn nói bằng **dữ liệu và phương án**, không chỉ phản đối.
+- Bạn **tôn trọng quyết định** và vẫn làm hết sức sau khi đã thống nhất.
 
-### Common mistakes
-- Sounding defiant; show respect and alignment.
+### Model answer (60–90 seconds)
+"Last year, my manager committed to launching a new loyalty feature in three weeks for a marketing campaign. After breaking down the work, I estimated it would take at least five weeks to do it safely, because it touched our payment reconciliation.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+Instead of raising it in the team meeting, I asked for a short one-on-one. I showed him the task breakdown and the two risky parts, and I said, 'I understand the campaign date is fixed. Here are two options: we launch a smaller version in three weeks — points are calculated, but redemption comes two weeks later — or we keep the full scope and move the date.'
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+He explained that marketing had already paid for the campaign, so the date couldn't move. We went with the smaller version. I wasn't completely happy with it, but once we decided, I fully committed and made sure the team understood why.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+The campaign launched on time without any payment issues, and the redemption part shipped two weeks later. My manager later told me the options made it much easier for him to negotiate with marketing."
 
-> Senior tip: Frame disagreement around customer/business impact, not ego.`,
+### Short version (30 seconds)
+"My manager committed to a three-week deadline I believed was unsafe. I raised it privately with a task breakdown and two options. We chose a smaller first release, I committed to that decision, and we launched on time without payment issues."
+
+### Real-life example
+Một dev phản đối deadline ngay trong cuộc họp có mặt khách hàng: "This is impossible." Quản lý mất mặt, quan hệ căng thẳng nhiều tháng. Dev khác trong tình huống tương tự gặp riêng, mang theo bảng ước lượng và hai phương án cắt scope — được giao dẫn dắt chính phần đàm phán phạm vi với khách hàng sau đó.
+
+### Cụm từ hữu ích
+- "I asked for a short one-on-one."
+- "Here's what I'm worried about, and here's the data."
+- "I see two options: … or …"
+- "I understand the date is fixed, so…"
+- "Once we decided, I fully committed."
+- "Disagree and commit."
+
+### Lỗi người Việt hay mắc
+- Kể chuyện mình "thắng" quản lý → nghe như khó hợp tác.
+- Chỉ phản đối mà không có phương án.
+- "I told him it is impossible" → **"I explained why I thought the timeline was risky."**
+- "My manager was wrong" → **"We had different views on the timeline."**
+- Thiếu phần kết quả và quan hệ sau đó.
+
+> Senior tip: luôn mang **ít nhất hai phương án** khi bất đồng với quản lý — một giữ deadline, giảm scope; một giữ scope, đổi deadline. Quản lý hiếm khi chọn "không làm", nhưng rất cần người giúp họ chọn phương án ít rủi ro nhất.`,
   follow: ['How do you push back on unrealistic deadlines?', 'When do you escalate?'],
   tags: ['behavioral', 'disagreement', 'star', 'english'],
   lang: 'en'
@@ -7431,25 +7463,44 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'mid',
   q: 'Describe a time you worked under a tight deadline.',
-  a: `**Tóm tắt:** We had 3 days to deliver an API for a partner launch. I scoped MVP, cut non-essentials, paired with a teammate, and communicated daily. Shipped on time with core features; extras followed next week.
+  a: `**Tóm tắt:** Câu chuyện deadline gấp tốt thể hiện ba kỹ năng: **cắt scope có chủ đích** (MVP — giữ cái quan trọng nhất), **báo rủi ro sớm** cho các bên liên quan, và **giữ chất lượng ở chỗ không được phép sai** (tiền, dữ liệu, bảo mật). Kết quả là giao đúng hạn **phần quan trọng** và có kế hoạch cho phần còn lại — không phải "cả team OT mỗi đêm".
 
-### Key points
-- Prioritization and communication.
-- Avoid heroics; mention sustainability.
+### Interviewer muốn nghe gì
+- Bạn **ưu tiên** được, biết nói "không phải bây giờ".
+- Bạn **giao tiếp rủi ro sớm**, không để tới ngày cuối mới báo trễ.
+- Bạn không hy sinh **chất lượng cốt lõi**.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Model answer (60–90 seconds)
+"Last year, a new regulation required us to add transaction limits for e-wallet users, and the deadline from the central bank was fixed — we had four weeks.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+First, I listed everything the business had asked for and sorted it by 'required by regulation' versus 'nice to have'. The core rule — blocking transfers above the daily limit — was mandatory. The admin dashboard and custom limits for VIP users weren't. I proposed delivering the core rule first and the rest in a second release, and the product owner agreed.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+From day one, I posted a simple status every Friday: done, in progress, and risks. In the second week, I flagged that the core banking team needed three days to open a new API, and we escalated early, so it didn't become a surprise.
 
-> Senior tip: Mention trade-offs you made explicitly.`,
+We didn't cut corners on testing the limit logic, because a mistake there would block real customers or break the regulation.
+
+We went live two days before the deadline, with zero incidents. The dashboard and VIP limits followed three weeks later."
+
+### Short version (30 seconds)
+"We had four weeks to implement a regulatory transaction limit. I separated what the regulation required from nice-to-haves, delivered the core rule first, shared weekly risk updates, and escalated a dependency early. We went live two days early with no incidents."
+
+### Real-life example
+Một team nhận deadline gấp và cố làm đủ mọi tính năng, OT ba tuần liền; ngày cuối vẫn trễ và có lỗi tính hạn mức trên production. Lần sau, team lead lập bảng "bắt buộc / có thể để sau", gửi cập nhật rủi ro hằng tuần — giao đúng hạn phần bắt buộc mà không ai phải làm đêm.
+
+### Cụm từ hữu ích
+- "I sorted the requirements into must-have and nice-to-have."
+- "I proposed delivering … first and … in a second release."
+- "I flagged the risk early."
+- "We didn't cut corners on…"
+- "We went live two days before the deadline."
+
+### Lỗi người Việt hay mắc
+- Tự hào về việc OT: "We worked until midnight every day" → nhấn vào **cách ưu tiên** thay vì số giờ làm.
+- "The deadline is very tight so we try our best" → **"The deadline was fixed, so I proposed…"**
+- Báo rủi ro quá muộn trong câu chuyện.
+- "We finish on time" → **"We finished on time / We went live on time."**
+
+> Senior tip: dùng cụm "must-have versus nice-to-have" và kể **ai đã đồng ý** cắt scope (PO, khách hàng). Interviewer muốn thấy bạn thương lượng phạm vi một cách minh bạch, không phải tự âm thầm bỏ bớt việc.`,
   follow: ['How do you scope an MVP?', 'How do you communicate slip risk early?'],
   tags: ['behavioral', 'deadline', 'star', 'english'],
   lang: 'en'
@@ -7459,25 +7510,50 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a time you mentored a junior developer.',
-  a: `**Tóm tắt:** I mentored a junior on code reviews and debugging. We set weekly goals, I paired on hard bugs, and they owned a small feature independently within two months. They later led a module.
+  a: `**Tóm tắt:** Câu này (khác câu kể chuyện mentoring chung) thường đào vào **hai kỹ năng**: **đưa feedback mang tính xây dựng** và **đo xem mentoring có hiệu quả không**. Dùng khung **SBI** (Situation – Behavior – Impact) cho feedback, đặt **mục tiêu cụ thể** cùng người được mentor, và đo bằng **việc họ tự làm được**, không bằng cảm nhận.
 
-### Key points
-- Concrete activities: pairing, reviews, goals.
-- Measurable growth.
+### Interviewer muốn nghe gì
+- Bạn đưa feedback **cụ thể, kịp thời, riêng tư**, tập trung vào hành vi.
+- Bạn **đặt mục tiêu** cùng người được mentor.
+- Bạn có **thước đo**: độc lập hơn, ít vòng review, nhận trách nhiệm mới.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Model answer (60–90 seconds)
+"I mentored a mid-level developer who wanted to grow into a senior role. Technically he was solid, but in design discussions he often went straight into implementation details and lost the room.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+We agreed on a clear goal for the quarter: lead one design review on his own. To give feedback, I used a simple structure — situation, behavior, impact. After one meeting I said, 'In today's design review, you spent the first ten minutes on the database schema before explaining the problem. The product manager got lost and the decision was postponed.' Then I asked what he thought, and we practiced starting with the problem and two options.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+I also asked him to write a one-page design doc before each review, and I reviewed the first two.
 
-> Senior tip: Mentoring is about enabling independence, not doing the work for them.`,
+To measure progress, we looked at concrete things: the number of review rounds on his designs, whether decisions were made in the first meeting, and feedback from the product manager. By the end of the quarter, he led two design reviews, both ended with a decision, and he was promoted to senior six months later."
+
+### Short version (30 seconds)
+"I mentored a mid-level developer toward a senior role. We set a concrete goal — leading a design review — and I gave feedback using situation, behavior, impact. We measured progress by decisions made in his reviews, and he was promoted six months later."
+
+### Khung SBI
+| Phần | Ví dụ |
+|---|---|
+| Situation | "In yesterday's sprint demo…" |
+| Behavior | "…you skipped the error cases…" |
+| Impact | "…so the client asked three follow-up questions and we ran out of time." |
+| (Next step) | "What do you think? Next time, could we cover errors in the first slide?" |
+
+### Real-life example
+Một senior đưa feedback kiểu "Your presentation was not good, you need to improve communication" — junior không biết sửa gì và mất động lực. Khi chuyển sang SBI với ví dụ cụ thể và hỏi ý kiến người nhận, cùng một người junior đã tự đề xuất luyện demo trước với team và cải thiện rõ sau hai lần.
+
+### Cụm từ hữu ích
+- "We agreed on a clear goal for the quarter."
+- "In today's meeting, you… As a result, …"
+- "What do you think?" / "How did it feel from your side?"
+- "To measure progress, we looked at…"
+- "By the end of the quarter, he was able to…"
+
+### Lỗi người Việt hay mắc
+- Feedback chung chung, nhận xét tính cách: "You are not confident" → mô tả **hành vi** cụ thể.
+- Feedback trước mặt cả team → feedback tiêu cực nên **riêng tư**.
+- Không có thước đo: "I think he improved" → **"His designs now need one review round instead of three."**
+- "I gave him many feedbacks" → **"I gave him a lot of feedback"** (feedback không đếm được).
+
+> Senior tip: "feedback" là danh từ không đếm được — nói **"a piece of feedback"**, **"some feedback"**. Lỗi "feedbacks" rất phổ biến và dễ bị để ý trong phỏng vấn tiếng Anh.`,
   follow: ['How do you give constructive feedback?', 'How do you measure mentoring success?'],
   tags: ['behavioral', 'mentoring', 'star', 'english'],
   lang: 'en'
@@ -7487,25 +7563,45 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'What was your biggest technical challenge?',
-  a: `**Tóm tắt:** Scaling a search service from 100 to 10k QPS. Profiling revealed DB bottleneck; added caching and async indexing. Latency dropped from 800ms to 120ms.
+  a: `**Tóm tắt:** Chọn thử thách **có chiều sâu kỹ thuật thật** và **có số liệu**: vấn đề và tác động → cách bạn **đo và khoanh vùng** (profiling, tracing, thử giả thuyết) → các phương án và **vì sao chọn** → kết quả đo được → điều bạn sẽ làm khác. Interviewer chấm **cách bạn suy nghĩ**, không chỉ kết quả.
 
-### Key points
-- Numbers: before/after.
-- Your specific decisions and trade-offs.
+### Interviewer muốn nghe gì
+- Bạn điều tra **có phương pháp**: đo trước, giả thuyết, kiểm chứng.
+- Bạn hiểu **cơ chế bên dưới** (JVM, DB, mạng), không chỉ thử ngẫu nhiên.
+- Bạn biết **trade-off** và tự đánh giá lại.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Model answer (60–90 seconds)
+"My biggest technical challenge was a memory problem in our pricing service. Every few days, pods were killed with out-of-memory errors during peak hours, and each restart caused about a minute of failed requests.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+The heap graphs looked normal, which was confusing. So instead of just increasing memory, I measured. I enabled Native Memory Tracking and compared it with the container's memory usage. The heap was stable at two gigabytes, but direct memory kept growing — about fifty megabytes an hour.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+That pointed me to off-heap buffers. Using a heap dump and the netty metrics, I found that one HTTP client created a new connection pool for every request to a partner API and never closed it, so the native buffers piled up.
 
-> Senior tip: Quantify impact; vague "it was hard" is forgettable.`,
+I fixed it by sharing a single client with a bounded pool and added a limit on direct memory so the problem would fail fast if it came back. I also added memory metrics for direct buffers to our dashboard.
+
+After the fix, memory stayed flat for weeks and the restarts stopped. If I did it again, I'd add the native memory dashboard from the start — it would have saved us two weeks."
+
+### Short version (30 seconds)
+"Our pricing service kept getting OOM-killed, but the heap looked normal. I used Native Memory Tracking and found direct memory growing because an HTTP client created a new connection pool per request. Sharing one client fixed it, and the restarts stopped."
+
+### Real-life example
+Một ứng viên trả lời "The biggest challenge was learning microservices" — quá chung, không có cơ chế. Ứng viên khác kể vụ rò rỉ off-heap như trên; interviewer hỏi tiếp 15 phút về Native Memory Tracking, direct buffer và giới hạn container — và đó chính là phần ứng viên ghi điểm.
+
+### Cụm từ hữu ích
+- "Instead of just…, I measured first."
+- "That pointed me to…"
+- "My hypothesis was…, so I tested it by…"
+- "I fixed it by… and added… so it would fail fast."
+- "If I did it again, I'd…"
+
+### Lỗi người Việt hay mắc
+- Chọn thử thách quá chung hoặc không phải của mình.
+- Kể giải pháp mà bỏ qua quá trình điều tra.
+- "The memory is leak" → **"There was a memory leak"** / **"Memory was leaking."**
+- "I increase the RAM and it's OK" → nói rõ vì sao tăng RAM chỉ che triệu chứng.
+- Đọc số không rõ: "fifty megabyte per hour" → **"about fifty megabytes an hour."**
+
+> Senior tip: chuẩn bị câu chuyện kỹ thuật theo dạng "**triệu chứng gây hiểu nhầm → đo đúng chỗ → nguyên nhân bất ngờ**". Cấu trúc này tự nhiên mời interviewer hỏi sâu vào đúng phần bạn hiểu rõ nhất.`,
   follow: ['How did you profile and measure?', 'What would you do differently?'],
   tags: ['behavioral', 'technical', 'star', 'english'],
   lang: 'en'
@@ -7515,28 +7611,51 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'mid',
   q: 'Why do you want to leave your current company?',
-  a: `**Tóm tắt:** I have grown a lot but want deeper system design and scale challenges plus a stronger engineering culture. I am looking for ownership and impact.
+  a: `**Tóm tắt:** Trả lời theo hướng **"đi tới"** (what I'm looking for) chứ không phải **"chạy khỏi"** (what I hate). Ghi nhận điều tốt ở công ty hiện tại, nêu **một lý do chuyên môn rõ ràng** (quy mô hệ thống, vai trò, lĩnh vực, môi trường quốc tế), và **nối lý do đó với vị trí đang ứng tuyển**. Không nói xấu sếp, đồng nghiệp hay công ty cũ.
 
-### Key points
-- Stay positive about current employer.
-- Focus on growth, not complaints.
+### Interviewer muốn nghe gì
+- Bạn có **động lực tích cực**, không phải người sẽ rời đi khi gặp khó.
+- Lý do của bạn **khớp** với những gì họ có thể cho.
+- Bạn **chuyên nghiệp**, không mang tiêu cực sang chỗ mới.
 
-### Common mistakes
-- Badmouthing; complaining about salary.
+### Model answer (60–90 seconds)
+"I've learned a lot at my current company. I joined as a mid-level developer, and over four years I've built and maintained the core order services for our e-commerce platform. I'm grateful for that.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+But the system has become quite stable, and most of my work now is maintenance and small features. I'm looking for a role where I can work on larger-scale problems — systems with higher traffic, event-driven architecture, and stricter reliability requirements.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+I'm also keen to work in an international team and use English every day, because I want to grow toward a lead role in a global environment.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+That's why this position caught my attention. From the job description and our conversation, your payment platform handles millions of transactions a day, and the team is spread across three countries. That's exactly the kind of challenge I'm looking for next."
 
-> Senior tip: Align your reason with what the target role offers.`,
+### Short version (30 seconds)
+"I've grown a lot at my current company, but the system is now stable and mostly in maintenance. I'm looking for larger-scale, event-driven systems and an international team, and that's exactly what this role offers."
+
+### Nếu lý do thật là tiêu cực
+| Lý do thật | Cách nói chuyên nghiệp |
+|---|---|
+| Lương thấp | "I'm looking for a role that reflects my current level of responsibility." |
+| Sếp khó chịu | "I'm looking for a team with a strong engineering culture and clear feedback." |
+| Công nghệ cũ | "I'd like to work with a more modern stack, like Java 21 and Kubernetes." |
+| OT nhiều | "I'm looking for a more sustainable pace with good planning." |
+| Bị cắt giảm | "My team was affected by a restructuring. It was a business decision, and I'm proud of what we delivered." |
+
+### Real-life example
+Ứng viên trả lời "My manager doesn't respect developers and the salary is too low" — interviewer lo ứng viên sẽ mang tâm lý tiêu cực vào team. Cùng lý do, nói lại theo hướng "looking for" và nối với vị trí, ứng viên được hỏi tiếp về kinh nghiệm event-driven — chuyển cuộc trò chuyện về điểm mạnh.
+
+### Cụm từ hữu ích
+- "I've learned a lot at my current company."
+- "I'm looking for a role where I can…"
+- "I'm keen to…" / "I'd like to grow toward…"
+- "That's why this position caught my attention."
+- "That's exactly the kind of challenge I'm looking for."
+
+### Lỗi người Việt hay mắc
+- Nói xấu công ty cũ, kể chi tiết mâu thuẫn.
+- Chỉ nói về tiền.
+- "I want to change environment" (dịch từ "thay đổi môi trường") → **"I'm looking for a new challenge in a larger-scale environment."**
+- "My company has no chance to promote" → **"There are limited opportunities to grow into a lead role."**
+
+> Senior tip: chuẩn bị sẵn câu trả lời cho follow-up "What would make you stay?". Trả lời trung thực nhưng ngắn gọn ("a role with bigger technical scope") — nó cho thấy lý do của bạn nhất quán, không phải câu nói xã giao.`,
   follow: ['What are you looking for in your next role?', 'What would make you stay?'],
   tags: ['behavioral', 'career', 'english'],
   lang: 'en'
@@ -7546,28 +7665,54 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'mid',
   q: 'What are your salary expectations?',
-  a: `**Tóm tắt:** Based on my research and experience, I am looking for X to Y, but I am flexible and value total compensation and growth. I would like to understand the full package first.
+  a: `**Tóm tắt:** Câu này tập trung vào **hai follow-up khó**: khi nhận **offer thấp** và **thứ gì quan trọng ngoài lương cơ bản**. Phản hồi offer thấp bằng **cảm ơn → khẳng định quan tâm → lý do có dữ liệu → đề xuất cụ thể**, và biết **đàm phán cả gói** (bonus, remote, review lương, đào tạo, thiết bị). Với việc remote cho công ty nước ngoài, nói rõ **tiền tệ, gross, hình thức hợp đồng**.
 
-### Key points
-- Give a range, not a single number.
-- Defer specifics until you know the role.
+### Interviewer muốn nghe gì
+- Bạn **bình tĩnh và có cơ sở**, không cảm tính.
+- Bạn **linh hoạt** về cấu trúc gói, không chỉ một con số.
+- Bạn hiểu **tổng thu nhập** chứ không chỉ lương tháng.
 
-### Common mistakes
-- Giving a number too early; anchoring low.
+### Model answer (60–90 seconds)
+Khi offer thấp hơn kỳ vọng:
+"Thank you for the offer — I'm genuinely excited about the team and the product. The base salary is about fifteen percent below what I expected. Based on market data for senior Java roles and the on-call responsibility in this position, I was aiming for around 4,000 US dollars gross per month. Is there flexibility on the base?"
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+Nếu họ nói lương cơ bản đã cố định:
+"I understand. In that case, could we look at other parts of the package? For example, a sign-on bonus, a salary review after six months based on agreed goals, or a learning budget for certifications."
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+Khi được hỏi điều gì quan trọng ngoài lương:
+"Besides the base salary, I care about the scope of the role, the quality of the engineering team, and room to grow. For a remote contract, I also look at payment terms, the currency, paid time off, and whether the company provides equipment."
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+### Short version (30 seconds)
+"Thank you, I'm excited about the role. The offer is about fifteen percent below my expectation, based on market data and the on-call scope. Is there flexibility on the base? If not, could we discuss a sign-on bonus or an early salary review?"
 
-> Senior tip: Research market rates (levels.fyi) and negotiate total comp.`,
+### Checklist so sánh offer
+| Mục | Câu hỏi |
+|---|---|
+| Lương | Gross hay net? Theo tháng hay năm? Bao nhiêu tháng/năm? |
+| Bonus | Cam kết hay tuỳ kết quả? Điều kiện? |
+| Hợp đồng remote | Nhân viên qua EOR hay contractor? Ai đóng thuế, bảo hiểm? |
+| Thanh toán | Tiền tệ, kênh nhận (Wise, chuyển khoản), phí chuyển đổi |
+| Thời gian | Ngày nghỉ có lương, giờ chồng lấn múi giờ |
+| Phát triển | Ngân sách học, lộ trình lên lead, chu kỳ review lương |
+
+### Real-life example
+Một dev nhận offer remote 3.200 USD/tháng, nói "OK" ngay vì "đã cao hơn lương ở Việt Nam". Sau mới biết hợp đồng contractor không có ngày nghỉ có lương, tự lo thuế và bảo hiểm — tính ra thấp hơn một offer 3.000 USD qua EOR có đủ phúc lợi. Lần sau, họ hỏi rõ hình thức hợp đồng và đàm phán thêm 12 ngày nghỉ có lương cùng ngân sách thiết bị.
+
+### Cụm từ hữu ích
+- "I'm genuinely excited about the role."
+- "The offer is a bit below what I expected."
+- "Based on market data and the scope of the role, …"
+- "Is there flexibility on the base salary?"
+- "Could we look at other parts of the package?"
+- "Could I have a day or two to review the full offer?"
+
+### Lỗi người Việt hay mắc
+- Chấp nhận ngay hoặc từ chối ngay, không đàm phán.
+- Không hỏi gross/net, hình thức hợp đồng khi làm remote.
+- "Can you give me more money?" → **"Is there any flexibility on the base salary?"**
+- "Your offer is too low" → **"The offer is a bit below my expectations."**
+
+> Senior tip: với việc remote nhận USD, luôn quy về **thu nhập ròng cả năm** sau thuế, bảo hiểm tự đóng, phí chuyển tiền và số ngày nghỉ không lương. Hai offer chênh 10% trên giấy có thể đảo ngược khi tính đủ.`,
   follow: ['How do you handle a low offer?', 'What matters more than base salary?'],
   tags: ['behavioral', 'salary', 'english'],
   lang: 'en'
@@ -7577,28 +7722,48 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'mid',
   q: 'What is your biggest weakness?',
-  a: `**Tóm tắt:** I sometimes over-engineer solutions. I now time-box design, seek early feedback, and ship iteratively. It has improved delivery speed.
+  a: `**Tóm tắt:** Câu này thường đi kèm follow-up **"How do you receive feedback?"** và **"What feedback have you acted on recently?"**. Hãy chọn một điểm yếu mà bạn **phát hiện nhờ feedback của người khác**, kể **feedback cụ thể**, **cách bạn phản ứng**, **hành động thay đổi** và **bằng chứng tiến bộ**. Như vậy một câu trả lời trả lời luôn cả ba câu hỏi.
 
-### Key points
-- Real weakness + mitigation.
-- Show self-awareness and progress.
+### Interviewer muốn nghe gì
+- Bạn **nghe được feedback khó** mà không phòng thủ.
+- Bạn **biến feedback thành hành động** có thời hạn.
+- Điểm yếu là thật nhưng **không phải kỹ năng cốt lõi** của vị trí.
 
-### Common mistakes
-- Fake weakness ("perfectionist"); no improvement plan.
+### Model answer (60–90 seconds)
+"One weakness I've been working on is estimating my work. I used to be too optimistic.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+I realized it through feedback. In a retrospective last year, our product owner told me, quite directly, that my estimates were often off by fifty percent, and it made her planning with the client difficult. My first reaction was to explain why each task had been delayed, but I stopped and asked her for two examples instead. She was right — in both cases, I had ignored the time for testing and code review.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+So I changed a few things. I started tracking my estimates against the actual time in a simple spreadsheet. I break tasks down until each part is less than a day, and I add testing and review as separate items. When something is uncertain, I give a range instead of a single number.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+After two months, my estimates were within about fifteen percent most of the time, and the product owner mentioned it in my performance review. Since then, I ask for feedback on my estimates at the end of each sprint."
 
-> Senior tip: Choose a real but non-fatal weakness with a clear fix.`,
+### Short version (30 seconds)
+"I used to underestimate my tasks. Our product owner told me my estimates were often off by half. I asked for examples, started tracking estimates against actual time, and split tasks into smaller pieces. Within two months, I was usually within fifteen percent."
+
+### Cách nhận feedback khó (dùng khi bị hỏi thẳng)
+1. **Cảm ơn** và giữ bình tĩnh — không giải thích ngay.
+2. **Hỏi ví dụ cụ thể** để hiểu đúng.
+3. **Tóm tắt lại** điều mình hiểu.
+4. **Cam kết một hành động** và hẹn kiểm tra lại.
+
+### Real-life example
+Một ứng viên trả lời "My weakness is I'm too perfect with code" rồi bí khi bị hỏi "What feedback have you acted on recently?". Ứng viên khác dùng câu chuyện ước lượng như trên — một câu trả lời phủ cả điểm yếu, cách nhận feedback và hành động cụ thể; interviewer chuyển sang câu tiếp theo sau 90 giây với nhận xét tích cực.
+
+### Cụm từ hữu ích
+- "I realized it through feedback from…"
+- "My first reaction was…, but I stopped and asked for examples."
+- "She was right."
+- "So I changed a few things: …"
+- "Since then, I ask for feedback on…"
+
+### Lỗi người Việt hay mắc
+- Điểm yếu giả hoặc điểm yếu cốt lõi của vị trí.
+- Kể feedback nhưng không có hành động thay đổi.
+- "I received a feedback" → **"I received some feedback / a piece of feedback."**
+- "I accepted it and improved" quá chung → nêu **hành động cụ thể** và **con số**.
+
+> Senior tip: liên kết điểm yếu với **một thói quen bạn đang duy trì** (ví dụ "I ask for feedback on my estimates every sprint"). Thói quen cụ thể nghe đáng tin hơn mọi lời hứa "I'm improving".`,
   follow: ['How do you receive feedback?', 'What feedback have you acted on recently?'],
   tags: ['behavioral', 'weakness', 'english'],
   lang: 'en'
@@ -7608,29 +7773,57 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'What questions do you have for us?',
-  a: `**Tóm tắt:** I ask about team structure, decision-making, on-call, tech debt, and success metrics for the role. These show engagement and help me assess fit.
+  a: `**Tóm tắt:** Câu này đào sâu hơn câu hỏi cuối thông thường: **những câu nào cho thấy sức khoẻ thật của team** (on-call, sự cố, nợ kỹ thuật, tỉ lệ nghỉ việc, cách ra quyết định) và **cách kết thúc buổi phỏng vấn** chuyên nghiệp (tóm tắt mức độ phù hợp, hỏi bước tiếp theo, cảm ơn). Câu hỏi tốt vừa giúp bạn quyết định, vừa cho thấy bạn nghĩ như người trong cuộc.
 
-### Good questions
-- "How does the team make technical decisions?"
-- "What does on-call look like?"
-- "What would success look like in 90 days?"
+### Interviewer muốn nghe gì
+- Bạn **đánh giá công ty** nghiêm túc, không chỉ mong được nhận.
+- Bạn hỏi những điều **người làm thật mới quan tâm**.
+- Bạn **kết thúc tự tin**, rõ ràng.
 
-### Common mistakes
-- Asking about salary first; asking nothing.
+### Câu hỏi để hiểu sức khoẻ team
+| Muốn biết | Câu hỏi |
+|---|---|
+| Vận hành, áp lực | "How does on-call work, and how often do people get paged at night?" |
+| Văn hoá sự cố | "Can you tell me about the last major incident and what changed afterward?" |
+| Nợ kỹ thuật | "How much time does the team spend on technical debt versus new features?" |
+| Ra quyết định | "How was the last big technical decision made?" |
+| Ổn định đội | "How long have most people on the team been here?" |
+| Kỳ vọng | "What would make someone successful in this role after six months?" |
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Model answer (60–90 seconds)
+"Yes, thank you. I have three questions.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+First, can you tell me about the last major production incident and what changed afterward? I'm interested in how the team learns from problems.
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+Second, how much of the team's time goes to technical debt compared with new features, and who decides that balance?
 
-> Senior tip: Prepare 5 questions; ask the ones not already answered.`,
+And third, what would make someone in this role really successful after six months?
+
+[After their answers — closing the interview]
+
+Thank you, that's very helpful. From what you've described — the scale of the payment platform and the focus on reliability — this sounds like a strong match for my experience with Kafka and incident handling. I'm very interested in the role. Could you tell me about the next steps and the timeline?"
+
+### Short version (30 seconds)
+"Could you tell me about the last major incident and what changed afterward? And what would success look like in this role after six months? … Thank you — this sounds like a great match for my experience. What are the next steps?"
+
+### Real-life example
+Một ứng viên hỏi "How was the last big technical decision made?" và nghe câu trả lời "the CTO decided in a meeting". Kết hợp với việc team có 4/6 người mới vào dưới 1 năm, ứng viên hiểu team đang có vấn đề về tự chủ và giữ người — và chọn một offer khác. Câu hỏi tốt bảo vệ chính bạn khỏi một lựa chọn sai.
+
+### Cụm từ hữu ích
+- "I'm interested in how the team…"
+- "Who decides that balance?"
+- "From what you've described, this sounds like a strong match for…"
+- "I'm very interested in the role."
+- "Could you tell me about the next steps and the timeline?"
+- "Is there anything else you need from me?"
+
+### Lỗi người Việt hay mắc
+- Kết thúc đột ngột: "OK, thank you, bye."
+- Hỏi câu "kiểm tra" làm interviewer khó chịu: "Why do people leave your company?" → **"How long have most people on the team been here?"**
+- "What is the next step?" ổn nhưng thêm timeline: **"What are the next steps and the timeline?"**
+- Không ghi chú câu trả lời → mất thông tin để so sánh các offer.
+
+> Senior tip: ghi lại câu trả lời cho cùng một bộ câu hỏi ở mọi công ty bạn phỏng vấn. Sau 3–4 buổi, bảng so sánh này giúp bạn chọn offer bằng dữ liệu thay vì cảm giác — và chuẩn bị câu hỏi đàm phán chính xác hơn.`,
   follow: ['Which questions reveal team health?', 'How do you close an interview?'],
   tags: ['behavioral', 'questions', 'english'],
   lang: 'en'
