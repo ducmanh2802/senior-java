@@ -1702,27 +1702,55 @@ Ngày 25 hằng tháng (ngày lương), lượng chuyển tiền tăng 8 lần t
   topic: 'scenario',
   level: 'senior',
   q: 'Redis đầy bộ nhớ, eviction xoá mất session/lock: maxmemory-policy, tách cluster theo mục đích — xử lý thế nào?',
-  a: `**Tóm tắt:** một Redis instance chia sẻ cho session, cache, lock → khi đầy, eviction xoá session/lock gây logout/mất lock. Giải pháp: tách Redis theo mục đích, đặt maxmemory-policy phù hợp từng loại, và monitor memory.
+  a: `**Tóm tắt:** Redis (kho dữ liệu key-value trong RAM, rất nhanh) khi chạm {{maxmemory}} sẽ áp dụng {{maxmemory-policy}} (chính sách trục xuất key). Nếu dùng chung một Redis cho **cache** (dữ liệu tính lại được), **session** (phiên đăng nhập) và **distributed lock** (khóa phân tán, giúp nhiều tiến trình không tranh chấp cùng tài nguyên), eviction có thể xóa nhầm session/lock → người dùng bị đăng xuất, lock mất dẫn đến xử lý trùng. Cách đúng: tách workload theo yêu cầu mất dữ liệu/độ tin cậy, chọn policy phù hợp từng loại, đặt TTL (time to live, thời gian sống) có chủ đích, giám sát memory/eviction, và thiết kế lock có fencing (chống lock cũ thắng lock mới).
 
-### Cơ chế
-- Redis có noeviction, allkeys-lru/lfu/random và volatile-lru/lfu/random/ttl; volatile chỉ chọn key có TTL. Với noeviction, lệnh ghi cần thêm bộ nhớ sẽ lỗi khi chạm giới hạn.
-- Session/lock không nên bị evict; cache có thể.
+### Cơ chế Redis eviction (giải thích dễ hiểu)
+- **{{maxmemory}}:** giới hạn RAM Redis được dùng cho dataset. Khi cần thêm bộ nhớ cho ghi mới, Redis xem policy.
+- **Policy phổ biến:**
+  - {{noeviction}}: không xóa key; lệnh ghi gây lỗi khi đầy (ứng dụng sẽ nhận lỗi) — an toàn cho dữ liệu không được mất ngầm, nhưng caller phải xử lý lỗi.
+  - {{allkeys-lru/lfu/random}}: chọn trong **mọi** key để xóa theo LRU (ít dùng gần đây), LFU (ít dùng thường xuyên), hoặc ngẫu nhiên.
+  - {{volatile-lru/lfu/random/ttl}}: chỉ chọn key **có TTL**. Nếu không có key có TTL phù hợp, hành vi có thể dẫn tới không evict được như mong đợi → vẫn rủi ro.
+- **Vì sao session/lock nguy hiểm khi bị evict:**
+  - Session mất → user phải đăng nhập lại, giỏ hàng/ trạng thái tạm mất.
+  - Lock key mất → hai worker cùng nghĩ mình giữ lock → chạy trùng nghiệp vụ (gửi mail 2 lần, trừ tiền 2 lần nếu không có bảo vệ khác).
 
-### Giải pháp
-- Tách deployment theo yêu cầu mất dữ liệu, độ trễ và eviction. Session có thể cần persistence/HA theo chính sách, nhưng persistence không thay backup. Lock cần TTL, fencing/nhất quán phù hợp và xử lý lỗi ghi.
-- Đặt maxmemory và maxmemory-policy per instance.
-- Monitor memory, evicted_keys, lỗi OOM và hit rate; đặt ngưỡng theo headroom và tốc độ tăng, không xem 80% là ngưỡng đúng cho mọi workload.
-- Session: dùng Redis với persistence (RDB/AOF) và replica.
+### Cách xử lý từng bước
+1. **Phân loại dữ liệu:** cái gì tái tạo được (cache HTTP, computed result) vs cái gì mất sẽ gây sự cố (session, lock, idempotency key tùy thiết kế).
+2. **Tách theo mục đích:** ít nhất tách **cache** khỏi **session/lock**. Có thể là instance/cluster riêng, hoặc managed service tách biệt. Redis Cluster chỉ hỗ trợ database 0; "logical DB" hay key prefix **không** tạo chính sách eviction/memory riêng — không dùng prefix để thay cho tách hạ tầng.
+3. **Chọn policy:**
+   - Cache thuần: {{allkeys-lru}} hoặc {{allkeys-lfu}} thường hợp; chấp nhận miss.
+   - Session/lock: cần thiết kế để key quan trọng không bị evict ngầm; {{volatile-*}} chỉ an toàn nếu **mọi** key cần giữ đều không thuộc nhóm bị evict sai và dung lượng được quản lý — thực tế thường cần tách instance + giám sát. {{noeviction}} buộc xử lý lỗi ghi rõ ràng.
+4. **TTL có chủ đích:** session có TTL (vd 30 phút idle, theo nghiệp vụ); lock **bắt buộc** có TTL để tránh deadlock khi process chết, nhưng TTL không đủ chống mất lock do eviction — vẫn cần tách/thiết kế an toàn.
+5. **Lock an toàn hơn:** dùng thuật toán/thư viện được kiểm chứng (vd Redisson lock, hoặc pattern có fencing token tùy yêu cầu). Tránh tự viết {{SETNX}} không có TTL/không có cơ chế chống chủ cũ.
+6. **Giám sát:** {{used_memory}}, {{maxmemory}}, {{evicted_keys}}, {{rejected_connections}}/lỗi OOM, hit rate cache. Đặt ngưỡng theo tốc độ tăng và headroom (vd cảnh báo khi tiến gần giới hạn và eviction tăng), không coi "80%" là con số đúng cho mọi hệ thống.
+7. **Session persistence:** nếu session quan trọng, dùng replication/HA và cân nhắc persistence (RDB/AOF) theo RPO/RTO; persistence **không thay thế backup**.
 
-### Trade-off & pitfall
-- Nhiều deployment tăng độ phức tạp. Redis Cluster chỉ hỗ trợ database 0; logical DB index không cách ly tài nguyên, còn key prefix không tạo policy eviction riêng.
-- noeviction instance đầy → write fail; phải scale trước khi đầy.
+~~~text
+Kiến trúc gợi ý (ví dụ)
+  App
+   ├── Redis A (cache): allkeys-lru, có thể evict, chấp nhận miss
+   └── Redis B (session + lock/idempotency): tách instance, policy/dung lượng riêng,
+       giám sát eviction=0 cho key quan trọng, lock có TTL + fencing/thiết kế an toàn
+~~~
 
-> Senior tip: volatile policy vẫn có thể evict session/lock có TTL; key prefix không bảo vệ key khỏi eviction.
-`,
-  follow: ['Redis Cluster vs Sentinel cho HA?', 'Distributed lock với Redis Redlock?'],
-  tags: ['redis', 'eviction', 'session', 'distributed-lock', 'memory']
-,
+### Ví dụ đời thực
+- **Bối cảnh (giả định hợp lý):** ứng dụng thương mại điện tử dùng 1 cụm Redis 8GB cho cả cache sản phẩm, session người dùng (~120.000 session active), và distributed lock khi trừ tồn kho. TTL session 24h, lock TTL 10s.
+- **Sự cố:** chiến dịch sale làm cache key tăng mạnh; Redis chạm {{maxmemory}} với {{allkeys-lru}}. Trong 18 phút, {{evicted_keys}} tăng ~45.000; ~3.200 phiên đăng nhập bị xóa → user báo "bị thoát"; một số lock key bị evict khiến 27 đơn hàng ghi nhận xử lý trùng ở bước downstream (phát hiện qua idempotency check muộn).
+- **Điều tra:** metric cho thấy memory đầy, eviction tăng đúng thời điểm cache bùng nổ; session key không được phân biệt với cache key trong cùng instance.
+- **Xử lý:** tách Redis cache (4GB, {{allkeys-lru}}) và Redis session/lock (4GB, dung lượng theo dõi, cảnh báo eviction > 0); rà soát lock dùng thư viện có TTL và cơ chế an toàn hơn; bổ sung idempotency key cho bước trừ kho/đặt đơn; dashboard cảnh báo {{evicted_keys}} và {{used_memory/maxmemory}}.
+- **Kết quả:** đợt sale sau, cache vẫn evict bình thường khi đầy nhưng không ảnh hưởng session; không còn logout hàng loạt; không ghi nhận trùng đơn do mất lock.
+
+### Pitfall thực tế
+- **{{volatile-lru}} tưởng an toàn tuyệt đối:** chỉ xét key có TTL; session/lock có TTL vẫn có thể nằm trong nhóm bị evict nếu cùng instance và policy/áp lực bộ nhớ cho phép.
+- **Key prefix không cách ly eviction:** {{sess:*}} và {{cache:*}} trên cùng instance vẫn tranh cùng {{maxmemory}}.
+- **{{noeviction}} mà app không xử lý lỗi:** ghi thất bại có thể gây lỗi dây chuyền.
+- **Lock không fencing:** chỉ TTL không đủ cho mọi kịch bản phân tán; cần token/version/fencing tùy mức độ nghiêm trọng.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu Redis đầy bộ nhớ và eviction xóa mất session hoặc lock, em xem đây là lỗi thiết kế vận hành: cùng một Redis đang gánh cả dữ liệu có thể mất như cache và dữ liệu nhạy cảm như phiên đăng nhập hay khóa phân tán. Em sẽ phân loại dữ liệu theo hậu quả khi mất, rồi tách workload — ít nhất tách cache ra khỏi session và lock — vì logical database hay key prefix không tạo ranh giới eviction riêng. Với cache, em có thể dùng allkeys-lru hoặc allkeys-lfu và chấp nhận cache miss. Với session và lock, em cần dung lượng, chính sách và giám sát phù hợp để không bị xóa ngầm; đồng thời lock phải có TTL và cơ chế an toàn như fencing hoặc thư viện được kiểm chứng, vì eviction hoặc trễ mạng đều có thể làm hai tiến trình cùng tiến vào vùng nguy hiểm. Em cũng đặt TTL có chủ đích, theo dõi used_memory, evicted_keys và lỗi ghi, cảnh báo sớm theo tốc độ tăng thay vì dựa vào một con số phần trăm cố định. Với session quan trọng, em cân nhắc replication và persistence theo RPO/RTO, nhưng không coi persistence là thay thế backup. Mục tiêu là cache có thể hy sinh, còn session và lock thì không bị mất trong im lặng." 
+
+> Senior tip: đặt alert {{evicted_keys > 0}} trên Redis dùng cho session/lock là "chuông báo cháy". Nếu workload đó thực sự không được evict, bất kỳ eviction nào cũng là sự cố cần điều tra, không phải chuyện bình thường.`,
+
 },
 {
   id: 'scenario-039',
@@ -2030,30 +2058,42 @@ approvalRepository.insert(command.id(), actor.id(), command.version(), reason);
   topic: 'scenario',
   level: 'mid',
   q: 'Log production cần đủ thông tin để tra soát giao dịch nhưng chứa tên, số tài khoản và token. Bạn thiết kế masking và correlation thế nào để vừa điều tra được vừa giảm lộ dữ liệu?',
-  a: `**Tóm tắt:** Log chỉ những field tối thiểu cần cho vận hành; loại bỏ credential và dữ liệu nhạy cảm, mask/tokenize định danh trước khi ghi, dùng correlation ID không mang ý nghĩa bí mật để nối các service. Thiết lập quyền truy cập, retention và kiểm tra log như một kho dữ liệu nhạy cảm.
+  a: `**Tóm tắt:** Chỉ ghi log những gì tối thiểu để vận hành và tra soát, loại bỏ credential (thông tin đăng nhập như token, mật khẩu) và PII (Personally Identifiable Information — dữ liệu nhận diện cá nhân như tên, số tài khoản, số điện thoại), che/mã hóa định danh trước khi ghi, và dùng correlation ID (mã định danh chuỗi request — giống mã vận đơn để theo dõi một giao dịch qua nhiều service) không chứa bí mật để nối các bước. Coi log là kho dữ liệu nhạy cảm: phân quyền, mã hóa, đặt thời gian lưu (retention), và kiểm tra tự động để phát hiện rò rỉ.
 
-### Thiết kế
-- Allowlist field cho event log: event type, status, duration, partner code, correlation ID, account surrogate.
-- Không serialize nguyên request/response; annotation masking sau serialization dễ bị bỏ sót ở log khác.
-- Với tra soát cần tìm cùng khách hàng, dùng token HMAC có key được quản lý riêng hoặc surrogate ID; không dùng hash thường cho giá trị có không gian đoán nhỏ.
-- Tách audit record nghiệp vụ khỏi diagnostic log; mỗi loại có schema, quyền truy cập và retention riêng.
+### Tại sao phải thiết kế log cẩn thận
+Trong hệ thống nhiều service (microservices — ứng dụng chia thành nhiều dịch vụ nhỏ gọi nhau), một giao dịch chuyển tiền có thể đi qua API Gateway, service xác thực, service giao dịch, service thông báo. Khi sự cố xảy ra (ví dụ khách báo "tiền bị trừ nhưng chưa nhận"), đội vận hành cần tìm lại đúng chuỗi xử lý. Nếu log ghi nguyên request/response, token xác thực hoặc số tài khoản đầy đủ sẽ nằm rải rác ở nhiều nơi (file log, hệ thống thu thập log như ELK/CloudWatch, APM trace). Chỉ cần một quyền truy cập sai hoặc một lần xuất log để debug là có thể lộ dữ liệu.
+
+### Cơ chế hoạt động từng bước
+1. **Allowlist field (danh sách cho phép):** Thay vì "ghi hết rồi che", chỉ định rõ các field được phép log: {{event_type}}, {{status}}, {{latency_ms}}, {{partner_code}}, {{trace_id}}, {{transaction_ref}}, {{account_token}} (mã thay thế). Field mới mặc định không được log cho đến khi có lý do vận hành và chủ sở hữu dữ liệu.
+2. **Masking/Tokenization trước khi ghi:**
+   - Masking (che): {{123456789012}} → {{******9012}} (chỉ giữ vài số cuối để tra soát).
+   - Tokenization (mã hóa thay thế): dùng HMAC (Hash-based Message Authentication Code — hàm băm có khóa bí mật) để tạo {{account_token}} ổn định cho cùng tài khoản nhưng không thể đoán ngược nếu không có key. Không dùng hash thường (như SHA-256 thuần) cho giá trị có không gian nhỏ (số tài khoản 10-12 chữ số dễ bị dò ngược bằng bảng tra).
+3. **Correlation ID:** Sinh {{trace_id}} (UUID) ở điểm vào, truyền qua header (ví dụ {{X-Request-Id}}) sang các service. {{trace_id}} không mang ý nghĩa nghiệp vụ hay bí mật, chỉ dùng để nối log.
+4. **Tách audit log (log kiểm toán nghiệp vụ):** Log "ai làm gì, khi nào, kết quả" (ví dụ phê duyệt giao dịch) lưu riêng schema, quyền truy cập chặt hơn, retention dài hơn. Diagnostic log (log kỹ thuật để debug) có thể retention ngắn hơn.
 
 ~~~text
-Không log: Authorization, OTP, PAN đầy đủ, password, raw payload
-Log: trace_id, transaction_ref, account_token, outcome, latency_ms
+Không log: Authorization, OTP, password, PAN đầy đủ, raw payload
+Cho phép: trace_id, transaction_ref, account_token(HMAC), outcome, latency_ms, error_code
+Ví dụ: event=transfer status=FAILED trace_id=8f3a... account_token=tok_a91... latency_ms=420
 ~~~
 
-### Kiểm soát vòng đời
-Mask ở logger/appender boundary và kiểm thử bằng payload canary chứa chuỗi nhạy cảm. Cấu hình access theo role, ghi lại truy cập khi cần, mã hóa khi truyền/lưu và đặt retention theo mục đích/chính sách nội bộ. Có quy trình purge/index cleanup và xử lý sự cố khi phát hiện leak.
+### Ví dụ đời thực
+Hệ thống thanh toán nội bộ, ~800 QPS giờ cao điểm, 6 service, log đẩy về ELK (Elasticsearch/Logstash/Kibana — bộ công cụ thu thập/tìm kiếm log). Trước đây dev log {{requestBody}} để debug, vô tình ghi {{Authorization}} header. Sau audit: 0.3% dòng log (khoảng 2.4 dòng/giây, ~200k dòng/ngày) chứa chuỗi nhạy cảm. Xử lý: chuyển sang allowlist logger, mask tại appender boundary (điểm xuất log cuối cùng), thêm canary test (gửi payload chứa {{SECRET_CANARY}} và quét log). Sau 2 tuần: 0 lần phát hiện canary, thời gian tra soát giao dịch nhờ {{trace_id}} giảm từ ~25 phút xuống ~6 phút vì log có cấu trúc.
+
+### Khi nào dùng / không dùng
+- Masking một phần: đủ cho tra soát nghiệp vụ, vẫn là dữ liệu nhạy cảm theo chính sách nội bộ.
+- Tokenization HMAC: khi cần tìm "tất cả giao dịch của cùng khách hàng" mà không lưu định danh thô.
+- Không serialize nguyên object: annotation {{@Mask}} dễ bị bỏ sót ở log khác (exception message, APM trace, access log của gateway).
 
 ### Pitfall production
-- MDC/correlation context có thể rò rỉ giữa thread nếu không được truyền/xóa đúng cách trong executor.
-- Regex masking không đáng tin với JSON lồng, encoding khác nhau hoặc field mới; schema allowlist an toàn hơn.
-- Masking {{123456789}} thành {{******789}} vẫn là dữ liệu có thể nhận diện; áp dụng đúng phân loại.
-- Log aggregation, APM trace và exception message đều là đường rò rỉ, không chỉ application log.
+- MDC (Mapped Diagnostic Context — nơi lưu {{trace_id}} theo thread) rò rỉ giữa thread khi dùng thread pool/async executor nếu không truyền và xóa đúng cách.
+- Regex masking dễ sai với JSON lồng, encoding khác nhau, hoặc field mới; allowlist theo schema an toàn hơn.
+- Exception message, stack trace, APM trace, access log đều là đường rò rỉ, không chỉ application log.
 
-> Senior tip: chạy kiểm tra tự động trên log test và truy vấn production để phát hiện pattern cấm; mọi field mới cần owner và lý do vận hành.
-`,
+### Trả lời mẫu khi phỏng vấn
+"Em sẽ coi log là dữ liệu nhạy cảm. Trước hết em dùng allowlist: chỉ log các field cần cho vận hành như trace_id, transaction_ref, trạng thái, latency, và mã thay thế cho tài khoản; tuyệt đối không log credential hay raw payload. Định danh được tokenize bằng HMAC có key quản lý riêng để tra soát cùng khách hàng mà không lưu số tài khoản thô. Ở hệ thống nhiều service, em sinh correlation ID tại gateway và truyền qua header để nối chuỗi xử lý. Em tách audit log nghiệp vụ khỏi diagnostic log vì retention và phân quyền khác nhau. Về kiểm soát, em mask ở appender boundary, chạy canary test tự động quét log, đặt retention và phân quyền truy cập, đồng thời nhớ cả exception message và APM trace cũng có thể rò rỉ."
+
+> Senior tip: Chạy quét tự động trên log (pattern cấm như {{Authorization}}, chuỗi số 16 chữ số) trong CI và định kỳ trên production; mỗi field log mới phải có chủ sở hữu và lý do vận hành, nếu không allowlist sẽ lại phình to.`,
   follow: ['Hash thường và HMAC khác nhau thế nào khi token hóa account ID?', 'MDC hoạt động ra sao với async executor?'],
   tags: ['PII', 'masking', 'logging', 'correlation', 'security']
 },
@@ -4779,37 +4819,49 @@ public class AccessCounter {
   topic: 'scenario',
   level: 'senior',
   q: 'Review PR này (code do AI sinh). Service tạo đơn hàng và gọi payment gateway trong @Transactional. Tìm lỗi.\n~~~java\n@Service\npublic class OrderService {\n    @Transactional\n    public Order createOrder(Cart cart) {\n        Order order = orderRepo.save(new Order(cart));\n        paymentClient.charge(order.getId(), cart.total());\n        order.setStatus(PAID);\n        return orderRepo.save(order);\n    }\n}\n~~~',
-  a: `**Tóm tắt:** hai lỗi nghiêm trọng: (1) gọi HTTP bên trong transaction giữ connection DB lâu, dễ cạn pool và lock; (2) nếu payment thành công nhưng save thứ hai fail, tiền đã trừ nhưng đơn chưa PAID (không nhất quán). Sửa bằng outbox pattern: ghi đơn PENDING trong tx, publish event sau commit, worker gọi payment và cập nhật trạng thái.
+  a: `**Tóm tắt:** Đoạn code có hai lỗi nghiêm trọng ở production: (1) gọi HTTP tới payment gateway (cổng thanh toán — dịch vụ bên ngoài xử lý trừ tiền) bên trong {{@Transactional}} (transaction DB — nhóm thao tác DB "thành công hết hoặc thất bại hết") giữ connection DB (kết nối tới cơ sở dữ liệu, lấy từ pool — bể kết nối giới hạn) quá lâu, dễ cạn pool; (2) nếu payment đã trừ tiền nhưng bước lưu DB sau đó lỗi, transaction rollback (hoàn tác) làm đơn biến mất trong khi tiền đã trừ — dữ liệu không nhất quán. Ngoài ra còn thiếu idempotency key (khóa chống xử lý lặp). Cách sửa chuẩn: ghi đơn {{PENDING}} + outbox event trong một transaction, sau commit mới gọi payment bất đồng bộ với idempotency key.
 
-### Lỗi theo mức nghiêm trọng
+### Cơ chế bên trong — vì sao sai
+**1. HTTP trong transaction giữ connection DB.** Khi method có {{@Transactional}}, Spring lấy một connection từ pool, mở transaction, giữ connection đó cho đến khi method kết thúc (commit/rollback). {{paymentClient.charge()}} là HTTP call có thể mất 200ms–3s (hoặc treo nếu gateway chậm). Trong thời gian đó connection DB bị "ngồi chơi", không phục vụ request khác. Với pool 20 connection và 50 request/giây, chỉ cần vài chục request đồng thời là pool cạn → request mới chờ → timeout dây chuyền.
 
-**1. Critical — gọi HTTP trong transaction.**
-Transaction giữ connection DB trong suốt thời gian charge (vài trăm ms đến vài s). Dưới tải cao: cạn connection pool, lock row đơn hàng lâu, deadlock với luồng khác.
+**2. Không nhất quán tiền/đơn.** Thứ tự: {{save(order)}} (OK) → {{charge()}} (tiền trừ, OK) → {{save(order, PAID)}} (lỗi, ví dụ DB tạm thời lỗi) → Spring rollback transaction. Rollback hoàn tác các thay đổi DB trong transaction, nhưng **không hoàn tác HTTP call** đã gửi đi. Kết quả: khách bị trừ tiền, hệ thống không có đơn {{PAID}}.
 
-**2. Critical — không nhất quán khi payment OK nhưng DB fail.**
-paymentClient.charge đã trừ tiền, rồi save thứ hai throw → transaction rollback → đơn biến mất nhưng tiền đã trừ. Không có cơ chế compensate.
+**3. Không idempotent.** Nếu client timeout và gọi lại {{createOrder}}, {{charge}} chạy lại → trừ tiền hai lần. Payment gateway thường hỗ trợ idempotency key (gửi cùng một key thì chỉ xử lý một lần).
 
-**3. Major — không idempotent.**
-Nếu retry createOrder (do timeout client), charge chạy lại → trừ tiền hai lần. Cần idempotency key.
+**4. Rollback mặc định.** {{@Transactional}} mặc định chỉ rollback với {{RuntimeException}}/{{Error}}; nếu {{charge}} ném checked exception, transaction có thể không rollback như mong đợi (tùy cấu hình), gây trạng thái khó đoán.
 
-**4. Minor — @Transactional mặc định rollback chỉ RuntimeException; nếu charge throw checked exception thì không rollback.**
+### Cách sửa (outbox pattern)
+Outbox pattern (mẫu hộp thư đi): ghi dữ liệu nghiệp vụ và một "sự kiện cần gửi" vào cùng DB transaction; một worker đọc outbox sau commit để gọi hệ thống ngoài. Nhờ cùng transaction nên không mất sự kiện.
 
-### Cách sửa (outbox)
 ~~~java
 @Transactional
-public Order createOrder(Cart cart) {
-    Order order = orderRepo.save(new Order(cart, PENDING));
-    outboxRepo.save(new OutboxEvent("OrderCreated", order.getId()));
-    return order; // commit tx, connection trả về pool
+public Order createOrder(Cart cart, String idempotencyKey) {
+    // unique constraint trên idempotencyKey chặn tạo lặp
+    Order order = orderRepo.save(new Order(cart, OrderStatus.PENDING, idempotencyKey));
+    outboxRepo.save(new OutboxEvent("OrderCreated", order.getId(), idempotencyKey));
+    return order; // commit nhanh, trả connection về pool
 }
-// listener AFTER_COMMIT gọi payment async, cập nhật PAID/FAILED
+
+// Listener AFTER_COMMIT (hoặc relay đọc bảng outbox) gọi payment
+public void onOrderCreated(OrderCreatedEvent e) {
+    // idempotency key = orderId để gateway dedup
+    PaymentResult r = paymentClient.charge(e.orderId(), e.amount(), e.orderId());
+    orderRepo.updateStatus(e.orderId(), r.isOk() ? PAID : PAYMENT_FAILED);
+}
 ~~~
-Payment client dùng idempotency key = orderId.
 
-### Cách nói khi review
-"Em thấy hai vấn đề production-critical: HTTP trong tx giữ connection lâu, và trạng thái tiền/đơn có thể lệch. Em đề xuất outbox: ghi đơn PENDING + event trong tx, worker gọi payment sau commit với idempotency key. HTTP ra ngoài tx."
+### Ví dụ đời thực
+Ứng dụng đặt hàng, pool HikariCP 20 connection, ~120 request/phút giờ cao điểm, gateway payment p95 = 800ms. Khi chạy code cũ: mỗi request giữ connection ~850ms (DB + HTTP), 120 req/phút × 0.85s ≈ 1.7 connection-giây/giây, thêm biến động → pool chờ xuất hiện, p99 API tăng từ 300ms lên 4s, thỉnh thoảng {{Connection is not available}}. Sau khi chuyển sang outbox (transaction chỉ ~15ms): p99 API còn ~120ms, không còn lỗi cạn pool. Một sự cố "trừ tiền nhưng không có đơn" (do save thứ hai lỗi) được loại bỏ vì payment chỉ chạy sau commit.
 
-> Senior tip: khi review code AI sinh ra liên quan DB/transaction, tôi luôn tìm "có network call nào bên trong @Transactional không?" — AI hay đặt mọi thứ trong một method transactional cho "đơn giản", đó là nguồn cạn pool và data inconsistency kinh điển.`,
+### Pitfall production
+- {{@TransactionalEventListener(AFTER_COMMIT)}} đơn giản nhưng nếu app crash sau commit trước khi listener chạy, event có thể mất; bảng outbox + relay an toàn hơn.
+- Cập nhật trạng thái {{PAID}} phải idempotent (chỉ chuyển từ {{PENDING}}) vì relay có thể gửi lặp.
+- Cần job đối soát (reconciliation) giữa giao dịch gateway và đơn hàng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em review thấy hai lỗi critical. Thứ nhất, gọi HTTP payment bên trong @Transactional giữ connection DB suốt thời gian gateway phản hồi, dưới tải sẽ cạn pool và làm tăng latency dây chuyền. Thứ hai, nếu charge thành công nhưng save sau đó fail, transaction rollback DB nhưng HTTP không rollback, nên khách bị trừ tiền mà đơn không thành PAID. Em cũng thấy thiếu idempotency key nên retry có thể trừ tiền hai lần. Cách em đề xuất là outbox pattern: trong một transaction chỉ lưu đơn trạng thái PENDING và một outbox event, commit trả connection ngay; sau commit một worker gọi payment với idempotency key bằng orderId và cập nhật trạng thái. Cần thêm unique constraint cho idempotency key và cơ chế đối soát định kỳ."
+
+> Senior tip: Khi review code AI sinh ra có DB + transaction, em luôn tìm "có network call, sleep, hay xử lý nặng nào trong @Transactional không?" — AI hay gộp mọi thứ vào một method transactional cho đơn giản, đó là nguồn cạn pool và lệch dữ liệu kinh điển.`,
   follow: [
     'Outbox pattern hoạt động thế nào, tại sao không dùng @TransactionalEventListener trực tiếp?',
     'Idempotency key cho payment gateway thiết kế ra sao?'
@@ -4822,40 +4874,46 @@ Payment client dùng idempotency key = orderId.
   topic: 'scenario',
   level: 'senior',
   q: 'Review PR này (code do AI sinh). Đọc file config và gọi HTTP, exception bị nuốt. Tìm lỗi.\n~~~java\npublic String loadConfig(String url) {\n    InputStream in = null;\n    HttpURLConnection c = null;\n    try {\n        c = (HttpURLConnection) new URL(url).openConnection();\n        in = c.getInputStream();\n        return new String(in.readAllBytes(), UTF_8);\n    } catch (Exception e) {\n        log.warn("load failed");\n        return null;\n    }\n}\n~~~',
-  a: `**Tóm tắt:** ba lỗi: (1) InputStream/HttpURLConnection không đóng → connection leak; (2) nuốt exception (chỉ log warn, trả null) → caller không biết lỗi, khó debug; (3) readAllBytes() load toàn bộ vào RAM, nếu response lớn thì OOM. Sửa bằng try-with-resources, ném exception có ngữ cảnh, stream với giới hạn kích thước.
+  a: `**Tóm tắt:** Đoạn code có ba lỗi chính: (1) không đóng {{InputStream}} và {{HttpURLConnection}} → rò rỉ connection (connection leak — tài nguyên mạng/FD không được trả lại), lâu dần cạn tài nguyên; (2) nuốt exception (catch tất cả, chỉ log {{warn}}, trả {{null}}) khiến caller không phân biệt "không có dữ liệu" với "lỗi mạng" và mất stack trace; (3) {{readAllBytes()}} đọc toàn bộ response vào RAM, không timeout, có thể treo vô hạn hoặc OOM (Out Of Memory) nếu response lớn. Sửa bằng try-with-resources, đặt timeout, giới hạn kích thước đọc, và ném exception có ngữ cảnh.
 
-### Lỗi theo mức nghiêm trọng
+### Cơ chế bên trong — vì sao sai
+**1. Resource leak (rò rỉ tài nguyên).** {{HttpURLConnection.getInputStream()}} mở một luồng đọc từ socket mạng. Nếu không {{close()}}, socket/file descriptor (định danh tài nguyên của OS) không được trả lại. Mỗi lần gọi leak một ít; sau vài nghìn lần (hoặc nhanh hơn nếu OS giới hạn FD), ứng dụng không mở thêm connection được → lỗi "Too many open files" hoặc request treo. {{HttpURLConnection}} cũng cần {{disconnect()}} để trả connection về pool nội bộ.
 
-**1. Critical — connection leak.**
-{{InputStream}} và {{HttpURLConnection}} không đóng. Mỗi lần gọi leak một connection; sau vài nghìn lần, pool cạn và request treo.
+**2. Nuốt exception che mất nguyên nhân.** {{catch (Exception e)}} bắt mọi lỗi (DNS, timeout, 500, parse…). Chỉ {{log.warn("load failed")}} không ghi {{e}} → stack trace mất. Trả {{null}} buộc caller phải đoán: null là "chưa cấu hình" hay "mạng lỗi"? Caller có thể dùng giá trị mặc định sai hoặc NPE (NullPointerException) ở chỗ khác, khiến root cause (nguyên nhân gốc) rất khó tìm.
 
-**2. Major — nuốt exception.**
-{{catch (Exception e)}} chỉ log warn rồi trả null. Caller không phân biệt "không có dữ liệu" vs "lỗi mạng"; stack trace mất. Debug production cực khó.
-
-**3. Major — readAllBytes load toàn bộ vào RAM.**
-Nếu response lớn (hoặc endpoint bị tấn công trả payload lớn), OOM. Cần giới hạn kích thước và timeout.
-
-**4. Minor — không set connect/read timeout → có thể treo vô hạn.**
+**3. Đọc không giới hạn + không timeout.** {{readAllBytes()}} cấp bộ nhớ bằng đúng kích thước response; nếu endpoint trả 200MB (do lỗi hoặc bị tấn công), JVM có thể OOM. Không set {{connectTimeout}}/{{readTimeout}} nghĩa là thread có thể chờ vô hạn khi mạng treo, chiếm thread worker.
 
 ### Cách sửa
 ~~~java
 public String loadConfig(String url) throws IOException {
     HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-    c.setConnectTimeout(5000);
-    c.setReadTimeout(5000);
-    try (InputStream in = c.getInputStream()) {
-        byte[] buf = in.readNBytes(1 << 20); // giới hạn 1MB
+    c.setConnectTimeout(5_000); // ms: tối đa chờ nối
+    c.setReadTimeout(5_000);    // ms: tối đa chờ đọc
+    try (InputStream in = c.getInputStream()) { // tự đóng
+        byte[] buf = in.readNBytes(1 << 20);     // giới hạn 1MB
+        if (buf.length == (1 << 20) && in.read() != -1) {
+            throw new IOException("response too large: " + url);
+        }
         return new String(buf, StandardCharsets.UTF_8);
     } finally {
         c.disconnect();
     }
 }
 ~~~
+{{try-with-resources}} (Java 7+) đảm bảo {{close()}} được gọi kể cả khi có exception.
 
-### Cách nói khi review
-"Em thấy leak connection (không đóng stream), nuốt exception (trả null che lỗi), và load toàn bộ response vào RAM. Em đề xuất try-with-resources, set timeout, giới hạn kích thước, và propagate exception hoặc wrap với ngữ cảnh. Log warn hiện tại là không đủ cho production."
+### Ví dụ đời thực
+Service đọc config từ endpoint nội bộ mỗi 60 giây (1.440 lần/ngày/instance, 10 instance = 14.400 lần/ngày). Code cũ không đóng stream: sau ~18 giờ, một instance bắt đầu lỗi mở socket gián đoạn; lệnh kiểm tra FD cho thấy hàng nghìn socket {{CLOSE_WAIT}}. Cùng lúc, endpoint config bị lỗi trả HTML trang lỗi 2MB thay vì JSON 2KB → {{readAllBytes}} tạo áp lực GC. Xử lý: thêm try-with-resources, timeout 5s, giới hạn 256KB. Kết quả: FD ổn định quanh mức vài chục, lỗi mạng được log kèm stack trace và URL, thời gian phát hiện sự cố giảm từ ~40 phút (do chỉ thấy "load failed") xuống ~3 phút.
 
-> Senior tip: khi review code AI sinh ra có I/O, tôi luôn kiểm "resource có đóng không, exception có propagate không, có timeout không" — ba câu hỏi này bắt được phần lớn bug production liên quan network/file.`,
+### Pitfall production
+- Chỉ {{disconnect()}} mà quên đóng stream (hoặc ngược lại) vẫn có thể giữ tài nguyên; dùng try-with-resources cho stream.
+- Log exception phải kèm context (URL, status code nếu đọc được) nhưng không kèm secret (query param token).
+- Với HTTP client hiện đại (Java 11+ {{HttpClient}}), vẫn phải đặt timeout và giới hạn body.
+
+### Trả lời mẫu khi phỏng vấn
+"Em thấy ba vấn đề. Một là leak tài nguyên: InputStream và HttpURLConnection không được đóng, mỗi lần gọi giữ socket, lâu dần cạn file descriptor. Hai là nuốt exception: catch Exception chỉ log warn không kèm stack trace và trả null, nên caller không biết lỗi do đâu và dễ dùng giá trị sai. Ba là không an toàn về tài nguyên: readAllBytes đọc hết vào RAM và không có timeout, nên response lớn gây OOM, mạng treo làm thread chờ vô hạn. Em sửa bằng try-with-resources để tự đóng stream, set connect và read timeout, giới hạn số byte đọc, và ném IOException có ngữ cảnh như URL. Nếu caller có thể xử lý, em để propagate; nếu cần fallback, em log đầy đủ exception và metric để vận hành biết."
+
+> Senior tip: Khi review code AI có I/O (file, HTTP, DB stream), em luôn kiểm ba thứ: resource có được đóng tự động không, có timeout và giới hạn kích thước không, exception có được xử lý có ngữ cảnh hay bị nuốt không.`,
   follow: [
     'Khi nào nên retry và khi nào nên fail fast cho HTTP client?',
     'Làm sao giới hạn kích thước response để chống OOM?'
@@ -4868,35 +4926,46 @@ public String loadConfig(String url) throws IOException {
   topic: 'scenario',
   level: 'senior',
   q: 'Review PR này (code do AI sinh). Dùng object làm key trong HashSet. Tìm lỗi.\n~~~java\npublic class UserKey {\n    private String name;\n    public UserKey(String name) { this.name = name; }\n    public String getName() { return name; }\n    public void setName(String name) { this.name = name; }\n    @Override\n    public boolean equals(Object o) {\n        return o instanceof UserKey && ((UserKey)o).name.equals(name);\n    }\n}\nSet<UserKey> set = new HashSet<>();\nset.add(new UserKey("a"));\nSystem.out.println(set.contains(new UserKey("a")));\n~~~',
-  a: `**Tóm tắt:** hai lỗi: (1) override {{equals}} nhưng không override {{hashCode}} → contract broken, HashSet lookup fail (in ra false) vì bucket khác; (2) key mutable (setName) → nếu mutate sau khi add, hash bucket sai, object "mất" trong set/map. Sửa: override cả hashCode, và làm key immutable.
+  a: `**Tóm tắt:** Đoạn code vi phạm contract (hợp đồng) giữa {{equals}} và {{hashCode}} và dùng key có thể thay đổi (mutable) trong {{HashSet}}. {{equals}} được override nhưng {{hashCode}} không → hai object "bằng nhau" có thể nằm khác bucket (ngăn) nên {{contains}} trả {{false}}. Thêm nữa, {{setName}} cho phép đổi {{name}} sau khi đã {{add}} → hashCode thay đổi, object bị "mất" trong set vì tìm sai bucket. Cách sửa: override cả {{equals}} và {{hashCode}} (dùng cùng các field), và làm key immutable (không đổi được, ví dụ {{final}} field, không có setter).
 
-### Lỗi theo mức nghiêm trọng
+### Cơ chế bên trong — vì sao sai
+**HashSet/HashMap hoạt động thế nào (đơn giản):** Khi {{add}} hoặc {{contains}}, HashSet gọi {{hashCode()}} để tính "số ngăn" (bucket), rồi vào ngăn đó mới dùng {{equals()}} để so sánh thật sự. Đây là tối ưu: thay vì so sánh với mọi phần tử (O(n)), chỉ so sánh trong một ngăn nhỏ (gần O(1)).
 
-**1. Critical — equals mà không hashCode.**
-Contract Object: equal objects phải có cùng hashCode. HashSet dùng hashCode để chọn bucket; hai object equal nhưng hashCode khác → bucket khác → contains trả false (in ra false). Đây là bug kinh điển.
+**1. Override equals mà không hashCode.** {{Object.hashCode()}} mặc định thường dựa trên địa chỉ/định danh object. {{new UserKey("a")}} ở {{add}} và {{new UserKey("a")}} ở {{contains}} là hai object khác nhau → hashCode mặc định thường khác → rơi vào hai bucket khác. HashSet vào bucket của object thứ hai, không thấy object thứ nhất, nên trả {{false}} dù {{equals}} trả {{true}}. Contract Java: nếu {{a.equals(b)}} thì {{a.hashCode() == b.hashCode()}} bắt buộc phải đúng.
 
-**2. Critical — key mutable.**
-{{setName}} cho phép thay đổi name sau khi đã add vào set. Bucket được chọn theo hashCode cũ; sau mutate, hashCode mới → object không tìm thấy nữa ("mất" trong collection). Trong HashMap/HashSet, key phải immutable.
+**2. Key mutable.** Bucket được chọn tại thời điểm {{add}} theo {{name}} lúc đó. Nếu sau đó gọi {{setName("b")}}, hashCode mới (theo "b") khác hashCode cũ (theo "a"), nhưng object vẫn đang nằm ở bucket cũ. {{contains(new UserKey("b"))}} sẽ tìm ở bucket của "b" → không thấy → object coi như "mất". Đây là lỗi rất khó debug.
 
-**3. Minor — equals không null-safe (name null → NPE), và không dùng Objects.equals.**
-
-### Cách sửa
 ~~~java
 public final class UserKey {
-    private final String name;
+    private final String name; // immutable
     public UserKey(String name) { this.name = Objects.requireNonNull(name); }
     public String getName() { return name; }
     @Override public boolean equals(Object o) {
-        return o instanceof UserKey && Objects.equals(name, ((UserKey)o).name);
+        return o instanceof UserKey uk && Objects.equals(name, uk.name);
     }
     @Override public int hashCode() { return Objects.hash(name); }
 }
+Set<UserKey> set = new HashSet<>();
+set.add(new UserKey("a"));
+System.out.println(set.contains(new UserKey("a"))); // true
 ~~~
 
-### Cách nói khi review
-"Em thấy vi phạm contract equals/hashCode: override equals mà không hashCode làm HashSet lookup sai. Và key mutable: mutate sau khi add làm object 'mất' trong collection. Em đề xuất immutable key + override cả hai, dùng Objects.equals/hashCode."
+### Ví dụ đời thực
+Module phân quyền cache danh sách {{UserKey}} đã xử lý trong một batch (HashSet để dedup), ~50k user/batch. Một đoạn code khác vô tình giữ reference và gọi setter (trước khi sửa immutable) → khoảng 0,1% user bị xử lý lặp vì {{contains}} trả sai, gây gửi thông báo trùng. Ở case không override {{hashCode}}, test đơn giản đôi khi "qua" nếu hash mặc định tình cờ trùng, nhưng production với nhiều object thì fail ngẫu nhiên. Sau khi chuyển sang class immutable với {{equals}}/{{hashCode}} đúng: dedup ổn định 100%, thời gian xử lý batch không đổi (vẫn ~4 giây).
 
-> Senior tip: khi review code AI sinh ra dùng object làm key trong Map/Set, tôi luôn kiểm "có override cả equals và hashCode không, và key có mutable không?" — AI hay override một cái hoặc để setter.`,
+### Khi nào dùng / không dùng
+- Dùng class immutable (hoặc Java 16+ {{record}} — tự sinh {{equals}}/{{hashCode}}/constructor cho các thành phần) làm key Map/Set.
+- Nếu bắt buộc phải thay đổi dữ liệu, đừng đổi field dùng trong {{equals}}/{{hashCode}} khi object đang nằm trong HashMap/HashSet; an toàn hơn là xóa key cũ rồi thêm key mới.
+
+### Pitfall production
+- {{equals}} không null-safe ({{name}} null → NPE) và dùng {{instanceof}}/ép kiểu cẩn thận; {{Objects.equals}} an toàn hơn.
+- Dùng field mutable (ví dụ {{List}}) trong {{hashCode}} cũng gây "mất" key nếu list thay đổi.
+- {{HashMap}}/concurrent collection đều phụ thuộc contract này.
+
+### Trả lời mẫu khi phỏng vấn
+"Đoạn code sai ở hai điểm kinh điển. Thứ nhất, nó override equals nhưng không override hashCode, nên vi phạm contract của Java: hai object bằng nhau phải có cùng hashCode. HashSet dùng hashCode để chọn bucket rồi mới dùng equals, nên hai UserKey cùng tên nhưng khác object có thể rơi vào bucket khác và contains trả false. Thứ hai, key là mutable vì có setName; nếu đổi name sau khi add, hashCode thay đổi nhưng object vẫn nằm ở bucket cũ, nên lookup sẽ không tìm thấy, object bị mất trong collection. Em sẽ sửa bằng cách làm UserKey immutable với field final, bỏ setter, override cả equals và hashCode dựa trên cùng field, dùng Objects.equals và Objects.hash; với Java 16 trở lên em ưu tiên dùng record để tránh lỗi này."
+
+> Senior tip: Khi review bất kỳ object nào dùng làm key của HashMap/HashSet, em luôn hỏi: có override cả equals và hashCode không, chúng dùng cùng field không, và key có immutable không? AI hay quên hashCode hoặc để setter.`,
   follow: [
     'Vì sao record Java 16+ giải quyết vấn đề này tự động?',
     'Nếu bắt buộc key mutable, xử lý thế nào?'
@@ -4908,41 +4977,47 @@ public final class UserKey {
   topic: 'scenario',
   level: 'senior',
   q: 'Review PR này (code do AI sinh). Retry khi gọi payment gateway. Tìm lỗi.\n~~~java\npublic PaymentResult charge(String orderId, BigDecimal amount) {\n    int attempts = 0;\n    while (attempts < 3) {\n        try {\n            return gateway.charge(orderId, amount);\n        } catch (Exception e) {\n            attempts++;\n            if (attempts == 3) throw e;\n        }\n    }\n    throw new IllegalStateException("unreachable");\n}\n~~~',
-  a: `**Tóm tắt:** retry không backoff/jitter → thundering herd khi gateway chậm; retry mọi exception (kể cả 4xx/insufficient funds) → charge lại tiền sai; không idempotent → retry charge có thể trừ tiền hai lần. Sửa: retry chỉ transient error (5xx, timeout, 429), exponential backoff + jitter, idempotency key = orderId.
+  a: `**Tóm tắt:** Đoạn retry (thử lại) gọi payment gateway có ba lỗi production nghiêm trọng: (1) không idempotent (không chống xử lý lặp) — nếu lần đầu gateway đã trừ tiền nhưng response bị timeout, retry sẽ trừ tiền lần hai; (2) retry mọi exception, kể cả lỗi nghiệp vụ như "không đủ tiền" (thường không nên retry) → vừa vô ích vừa có thể gây side effect; (3) không có backoff (chờ tăng dần) và jitter (ngẫu nhiên lệch) → khi gateway chậm, tất cả client retry cùng lúc gây thundering herd (hiệu ứng bầy đàn làm hệ thống quá tải nặng hơn). Cách sửa: gửi idempotency key (thường là {{orderId}}), chỉ retry lỗi tạm thời (timeout, 5xx, 429), dùng exponential backoff + jitter.
 
-### Lỗi theo mức nghiêm trọng
+### Cơ chế bên trong — vì sao sai
+**Retry là gì:** Khi một call thất bại, thử gọi lại. Nghe đơn giản nhưng với thao tác "có tác dụng phụ" như trừ tiền, retry sai còn nguy hiểm hơn không retry.
 
-**1. Critical — không idempotent.**
-Retry charge có thể trừ tiền hai lần nếu lần đầu gateway đã xử lý nhưng response bị timeout. Cần idempotency key (orderId) gửi kèm để gateway dedup.
+**1. Không idempotent — trừ tiền hai lần.** Kịch bản: client gửi {{charge}} → gateway xử lý thành công, trừ tiền → response về bị timeout do mạng. Client thấy exception, retry → gateway xử lý lại → trừ tiền lần hai. Đây là sự cố tài chính thực tế. Idempotency key là một mã duy nhất cho "ý định" giao dịch; gateway lưu key và nếu nhận lại cùng key thì trả kết quả cũ thay vì xử lý lại.
 
-**2. Critical — retry mọi exception.**
-Charge sai số tiền/insufficient funds (4xx) retry vô ích và có thể gây side effect. Chỉ retry transient: 5xx, timeout, connection refused, 429.
+**2. Retry mọi exception.** {{catch (Exception e)}} bắt cả lỗi nghiệp vụ (sai tham số, số dư không đủ, thẻ bị khóa — thường trả 4xx). Những lỗi này retry bao nhiêu lần cũng fail, lãng phí tài nguyên, tăng latency, và trong một số API không idempotent có thể gây hành vi lặp. Chỉ nên retry lỗi tạm thời (transient): timeout, lỗi kết nối, HTTP 5xx (lỗi server), 429 (bị giới hạn tốc độ — rate limit).
 
-**3. Major — không backoff/jitter.**
-Retry ngay lập tức → khi gateway chậm, tất cả client retry đồng thời → thundering herd, gateway càng chậm.
+**3. Không backoff/jitter — thundering herd.** Khi gateway chậm/lỗi, hàng nghìn request cùng fail và retry ngay lập tức, đồng loạt dồn vào gateway đang yếu → quá tải nặng hơn. Exponential backoff (chờ 100ms, 200ms, 400ms…) giãn tải; jitter (thêm ngẫu nhiên) tránh các client "nhịp lại" cùng lúc.
 
-**4. Minor — không log attempt, không metric; không giới hạn tổng thời gian.**
-
-### Cách sửa
 ~~~java
 public PaymentResult charge(String orderId, BigDecimal amount) {
     for (int i = 0; i < 3; i++) {
         try {
-            return gateway.charge(orderId, amount, orderId); // idempotency key
-        } catch (TransientPaymentException e) {
-            if (i == 2) throw e;
-            long backoff = (long)(Math.pow(2, i) * 100 + Math.random() * 100);
-            sleep(backoff);
+            // idempotency key = orderId: gateway dedup giao dịch lặp
+            return gateway.charge(orderId, amount, orderId);
+        } catch (TransientPaymentException e) { // chỉ lỗi tạm thời
+            if (i == 2) throw e; // hết lượt thì ném ra
+            long base = (long) (Math.pow(2, i) * 100); // 100,200,400ms
+            sleep(base + (long) (Math.random() * 100)); // + jitter
+        } catch (BusinessPaymentException e) {
+            throw e; // 4xx/nghiệp vụ: không retry
         }
     }
     throw new IllegalStateException("unreachable");
 }
 ~~~
 
-### Cách nói khi review
-"Em thấy retry thiếu ba thứ production-critical: idempotency key (tránh trừ tiền hai lần), phân loại exception (chỉ retry transient), và backoff+jitter (tránh thundering herd). Em đề xuất sửa cả ba; với payment, idempotency là bắt buộc."
+### Ví dụ đời thực
+Hệ thống thanh toán, ~2.000 giao dịch/phút giờ cao điểm, gọi gateway ngoài. Sự cố: gateway bị chậm 20 giây (p99 tăng đột biến). Code cũ retry ngay 3 lần cho mọi lỗi → lưu lượng thực tế lên ~6.000 call/phút vào gateway, gateway quá tải nặng hơn, tỷ lệ timeout tăng từ 2% lên 18%. Một số giao dịch timeout ở lần đầu nhưng gateway đã xử lý → retry gây 37 giao dịch bị nghi ngờ trừ lặp, phải đối soát thủ công. Sau sửa: idempotency key, chỉ retry timeout/5xx, backoff 200ms/500ms/1s + jitter, timeout tổng 4s → khi gateway chậm, lỗi ổn định ~3% và không có giao dịch trừ lặp.
 
-> Senior tip: khi review code AI sinh ra có retry, tôi luôn hỏi "retry có idempotent không, có backoff+jitter không, retry exception nào?" — ba câu này quyết định retry có an toàn hay chỉ khuếch đại sự cố.`,
+### Pitfall production
+- Idempotency key phải ổn định theo "ý định" (orderId), không sinh UUID mới mỗi lần retry.
+- Cần timeout tổng cho cả quá trình retry, không chỉ từng call.
+- Ghi log attempt, mã lỗi, và metric (retry count) để biết gateway đang bất ổn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em thấy retry này nguy hiểm cho payment. Lỗi lớn nhất là không idempotent: nếu lần đầu gateway đã trừ tiền nhưng response timeout, retry sẽ trừ lần hai, nên bắt buộc phải gửi idempotency key, thường dùng orderId, để gateway tự khử trùng. Thứ hai, code retry mọi exception, nhưng lỗi nghiệp vụ như không đủ tiền hay sai tham số thì retry vô ích; em chỉ retry lỗi tạm thời như timeout, lỗi kết nối, 5xx hoặc 429. Thứ ba, không có exponential backoff và jitter nên khi gateway chậm, các client retry cùng lúc tạo thundering herd làm sự cố nặng hơn. Em cũng sẽ đặt timeout tổng, log từng attempt và theo dõi metric retry để phát hiện gateway bất ổn."
+
+> Senior tip: Với payment, em luôn hỏi ba câu: retry có idempotent key không, retry đúng loại lỗi không, và có backoff + jitter + timeout tổng không? Thiếu một trong ba là rủi ro production.`,
   follow: [
     'Idempotency key cho payment gateway thiết kế thế nào?',
     'Exponential backoff với jitter: full jitter vs decorrelated jitter?'
@@ -5002,29 +5077,37 @@ public class UserCache {
   topic: 'scenario',
   level: 'senior',
   q: 'Tuần đầu bạn nhận một hệ thống monolith Java 8, Struts/Spring cũ, Oracle, không có test, người viết đã nghỉ. Bạn bắt đầu thế nào để không phá hỏng gì?',
-  a: `**Tóm tắt:** đừng sửa ngay — ưu tiên quan sát, dựng môi trường an toàn, vẽ bản đồ hệ thống, tìm người còn nhớ, ghi lại mọi thứ. Mục tiêu là hiểu đủ để thay đổi an toàn, chứ không hiểu toàn bộ ngay.
+  a: `**Tóm tắt:** Tuần đầu nhận monolith (ứng dụng một khối lớn, tất cả chức năng nằm chung) Java 8 cũ, không test, người viết đã nghỉ: mục tiêu không phải "sửa ngay" hay "hiểu hết", mà là **quan sát an toàn, dựng môi trường, vẽ bản đồ hệ thống, và ghi chép** để mọi thay đổi sau đó có kiểm soát. Ưu tiên theo luồng nghiệp vụ quan trọng, tìm "vùng nguy hiểm", và thiết lập cách rollback/kiểm chứng trước khi chạm vào code.
 
-### Làm rõ yêu cầu
-- Hệ thống dùng để làm gì (nghiệp vụ quan trọng), có SLA không?
-- Môi trường dev/test/staging/prod khác nhau thế nào, có quyền truy cập gì?
-- Ai còn có thể trả lời (PM cũ, BA, DBA, support)? Có tài liệu nào còn sót lại không?
+### Cơ chế tiếp cận — vì sao phải đi chậm mà chắc
+Hệ thống legacy (hệ thống cũ, còn chạy production) thường có "kiến thức ngầm": một cấu hình tưởng vô hại lại ảnh hưởng batch đêm, một bảng dùng chung, một stored procedure (thủ tục lưu trong DB) không ai nhớ. Khi không có test tự động, mỗi thay đổi là một canh bạc. Vì vậy tuần đầu là giảm rủi ro: hiểu bối cảnh, có môi trường để thử, biết luồng nào quan trọng, và biết ai/cái gì còn giúp được.
 
 ### Điều tra từng bước
-- **Bước 1: Bản đồ nhanh** — liệt kê module chính, entry point (web.xml/servlet, Spring config cũ), dependency, luồng nghiệp vụ quan trọng nhất.
-- **Bước 2: Dựng môi trường** — tìm {{README}}, {{build.xml}}/{{pom.xml}} cũ, script khởi động, config DB; dựng local/staging gần nhất có thể. Nếu không dựng được ngay, đọc code thay vì đoán.
-- **Bước 3: Quan sát thực tế** — xem log gần đây, slow query, cấu hình production-like, dữ liệu test (nếu có). Chú ý các batch/cron chạy đêm.
-- **Bước 4: Tìm "người sống sót"** — hỏi support/ops về incident gần đây, lỗi hay gặp, module nào "đừng động".
-- **Bước 5: Ghi chép** — tạo {{runbook.md}} ngắn: cách start/stop, config quan trọng, luồng chính, người liên hệ.
+1. **Làm rõ bối cảnh (ngày 1):** Hệ thống phục vụ nghiệp vụ gì, giờ cao điểm, SLA (cam kết mức dịch vụ, ví dụ uptime/độ trễ)? Môi trường dev/test/staging/prod khác nhau ra sao? Bạn có quyền gì (đọc code, đọc log, DB read-only)? Ai còn biết: PM/BA cũ, DBA, support, ops?
+2. **Vẽ bản đồ nhanh:** Tìm entry point (điểm vào: {{web.xml}}, Struts Action, Spring XML config cũ), module chính, dependency (thư viện), tích hợp ngoài (DB Oracle, file, service khác, job/batch). Vẽ sơ đồ thô: luồng 1–2 nghiệp vụ quan trọng nhất.
+3. **Dựng môi trường an toàn:** Tìm {{pom.xml}}/{{build.xml}}, script start, config mẫu. Mục tiêu là chạy được local hoặc staging gần production; nếu không dựng ngay, **không đoán**, ưu tiên đọc code + log. Chuẩn bị cách xem log và DB read-only.
+4. **Quan sát production (chỉ đọc):** Log gần đây, lỗi hay gặp, job/cron đêm, bảng/procedure được gọi nhiều. Hỏi support: "module nào đừng động", "sự cố hay lặp".
+5. **Ghi chép "runbook" ngắn:** Cách start/stop, config quan trọng, luồng chính, điểm nhạy cảm, người liên hệ. Đây là tài sản cho chính bạn và team.
 
-### Ví dụ thực tế
-Giả sử bạn thấy một Struts Action xử lý "chuyển khoản". Thay vì sửa ngay, bạn trace: Action → Service → DAO → Procedure Oracle. Ghi lại thứ tự, transaction boundary, điều kiện rollback.
+### Ví dụ đời thực
+Monolith ngân hàng nội bộ, 12 năm tuổi, Java 8 + Struts 1 + Spring XML + Oracle, ~180k dòng, 0 unit test tự động, người viết chính nghỉ 6 tháng. Tuần đầu: bạn không sửa bug. Bạn dựng được môi trường dev sau 2 ngày (thiếu 3 biến config, được DBA/support chỉ), vẽ được 4 luồng chính (đăng nhập, tra cứu, chuyển khoản nội bộ, batch đối soát đêm 02:00). Bạn phát hiện batch đêm gọi 6 stored procedure và có 2 bảng khóa chung với luồng online — ghi vào "vùng nguy hiểm". Kết quả: khi tuần 2 nhận ticket sửa tra cứu, bạn biết phải test thêm ảnh hưởng lên report và tránh chạm batch; thời gian điều tra giảm từ ước tính ~3 ngày xuống ~1 ngày vì đã có bản đồ.
 
-### Pitfall
-- **Đọc từ đầu đến cuối** — không hiệu quả. Ưu tiên theo luồng nghiệp vụ bạn cần sửa sau này.
-- **Thay đổi config mù quáng** — một property cũ có thể ảnh hưởng cả batch.
-- **Tin tưởng comment cũ** — code đã thay đổi nhiều so với comment.
+~~~text
+[Browser] -> [Struts Action] -> [Service (Spring XML)] -> [DAO/JDBC] -> [Oracle + Stored Proc]
+                                \-> [Batch/Cron 02:00] -> [Bảng chung / File đối soát]
+Ghi chú: transaction boundary nằm ở đâu? proc nào commit/rollback?
+~~~
 
-> Senior tip: trong tuần đầu, thành quả quan trọng nhất không phải "fix bug" mà là "bản đồ đáng tin cậy". Một trang sơ đồ + danh sách "module nguy hiểm" sẽ cứu bạn rất nhiều lần sau này.`,
+### Pitfall production
+- **Đọc code từ đầu đến cuối:** Không hiệu quả với 180k dòng. Đi theo luồng nghiệp vụ cần sửa.
+- **Tin comment cũ:** Comment có thể sai hơn code; tin vào hành vi thực tế (log, trace, DB).
+- **Thay đổi config "nhỏ":** Một flag timeout/pool có thể ảnh hưởng batch hoặc giờ cao điểm.
+- **Sửa refactor sớm:** Chưa có test và chưa hiểu, refactor dễ tạo regression (lỗi hồi quy — thứ đang chạy bị hỏng).
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu tuần đầu nhận một monolith Java 8 cũ không test và người viết đã nghỉ, em sẽ không sửa ngay. Ưu tiên đầu tiên là hiểu bối cảnh nghiệp vụ, SLA và các luồng quan trọng, đồng thời xác định mình có quyền truy cập nào và ai còn có thể hỗ trợ như DBA hay support. Em dựng môi trường dev hoặc staging an toàn để quan sát, vẽ bản đồ entry point, module, dependency và tích hợp ngoài, đặc biệt là batch đêm và stored procedure. Em chỉ điều tra production ở chế độ read-only qua log và dữ liệu, rồi ghi runbook ngắn: cách chạy, config quan trọng, vùng nguy hiểm, cách rollback. Mục tiêu của tuần đầu là có nền tảng thay đổi an toàn; khi có ticket sau đó, em sẽ thay đổi nhỏ, có bước kiểm chứng và rollback, rồi mới tính đến bổ sung test đặc trưng."
+
+> Senior tip: Thành quả tuần đầu đáng giá nhất là "bản đồ đáng tin + danh sách đừng động". Trong legacy, biết mình chưa biết gì quan trọng hơn là sửa nhanh một chỗ.`,
   follow: [
     'Làm sao xác định module nào quan trọng nhất để ưu tiên đọc trước?',
     'Khi không có ai trả lời và không có test, bạn giảm rủi ro khi thay đổi thế nào?'
@@ -5082,31 +5165,45 @@ Giả sử bạn thấy một Struts Action xử lý "chuyển khoản". Thay v�
   topic: 'scenario',
   level: 'senior',
   q: 'Phải sửa bug gấp (hotfix) trong code không có test. Bạn làm thế nào để an toàn nhất?',
-  a: `**Tóm tắt:** viết characterization test (test mô tả hành vi hiện tại, không sửa code), hiểu hành vi đúng vs hành vi thực tế, thay đổi nhỏ nhất có thể, thêm rollback plan, test cẩn thận, sau đó thêm regression test.
+  a: `**Tóm tắt:** Sửa bug gấp (hotfix) trên code không có test đòi hỏi ưu tiên **an toàn hơn hoàn hảo**: tái hiện lỗi, viết characterization test (test đặc trưng — ghi lại hành vi hiện tại để phát hiện bạn làm hỏng thứ khác), tìm nguyên nhân gốc, thực hiện thay đổi nhỏ nhất có thể, chuẩn bị rollback (khả năng quay lại nhanh), kiểm chứng kỹ, rồi mới thêm regression test (test chống tái diễn) cho đúng case đã lỗi. Mỗi bước đều nhằm giảm rủi ro vì không có lưới an toàn tự động.
 
-### Làm rõ yêu cầu
-- Bug ảnh hưởng gì (tài chính/khách hàng), mức độ khẩn cấp?
-- Có thể reproduce local/staging không?
-- Có người review nhanh được không?
+### Cơ chế tiếp cận — vì sao phải "test trước, sửa nhỏ"
+Khi không có test, bạn không biết một thay đổi nhỏ sẽ làm hỏng luồng nào khác. Characterization test không phải để chứng minh code "đúng", mà để "chụp ảnh" hành vi hiện tại ở các case quan trọng xung quanh vùng sửa. Nếu sau khi sửa, các test đó vẫn cho kết quả như cũ (trừ case bug), bạn tự tin hơn rằng chưa gây regression. Thay đổi nhỏ giúp review nhanh và rollback dễ.
 
 ### Quy trình từng bước
-- **Bước 1: Reproduce** — tái hiện bug bằng dữ liệu giống nhất có thể. Ghi lại input, output sai, expected.
-- **Bước 2: Characterization test** — viết test để "khóa" hành vi hiện tại (ngay cả khi sai, nhưng bạn cần hiểu ranh giới). Mục đích là phát hiện nếu bạn vô tình thay đổi thứ khác.
-- **Bước 3: Tìm nguyên nhân** — trace code, xem điều kiện, transaction, side effect. Thường là điều kiện thiếu, null, sai format.
-- **Bước 4: Thay đổi nhỏ nhất** — sửa đúng chỗ gây bug, tránh refactor "tiện tay". Thêm if/guard cẩn thận.
-- **Bước 5: Verify** — chạy characterization test + test liên quan, test thủ công kịch bản bug.
-- **Bước 6: Rollback plan** — chuẩn bị script/revert hoặc feature flag để tắt ngay nếu có vấn đề.
-- **Bước 7: Thêm regression test** — sau khi fix, viết test đúng cho case bị bug để ngăn tái diễn.
+1. **Reproduce (tái hiện):** Lấy input, thời điểm, dữ liệu, user/tài khoản liên quan. Tái hiện trên local/staging nếu được; nếu chỉ có log production, trích xuất chính xác điều kiện.
+2. **Khoanh vùng ảnh hưởng:** Bug nằm ở method/class nào, có gọi DB/bên ngoài không, có transaction không? Những luồng nào dùng chung code này?
+3. **Viết characterization test:** Với case bug, ghi nhận hành vi sai hiện tại (để hiểu). Với 2–3 case lân cận "đang đúng", viết test khóa hành vi hiện tại. Dùng dữ liệu/giả lập tối thiểu.
+4. **Sửa nhỏ nhất:** Chỉ chạm đúng nguyên nhân (ví dụ thiếu null check, sai điều kiện, sai format). Tránh refactor, đổi tên, tối ưu "tiện tay".
+5. **Kiểm chứng:** Case bug phải đúng; characterization test lân cận vẫn pass; test thủ công luồng nghiệp vụ liên quan.
+6. **Rollback plan:** Chuẩn bị cách quay lại trong vài phút: revert commit/tag cũ, tắt feature flag, hoặc script khôi phục config. Xác nhận ai có quyền deploy/revert.
+7. **Regression test:** Sau hotfix, thêm test đúng cho case bug để lần sau không tái diễn.
 
-### Ví dụ đơn giản
-Trước khi sửa: viết test gọi method với case gây bug, chạy thấy pass/fail theo hành vi hiện tại. Sau khi sửa, test mới phải pass và characterization test vẫn pass cho các case khác.
+~~~java
+// Ví dụ tư duy: khóa hành vi lân cận, rồi sửa đúng chỗ
+@Test void calcFee_normalCase_shouldKeepCurrentBehavior() {
+    // characterization: ghi lại kết quả "đúng đang có"
+    assertEquals(new BigDecimal("1000"), service.calcFee(amount, "VIP"));
+}
+@Test void calcFee_nullTier_shouldNotThrowNPE_afterFix() {
+    // case bug: trước fix có thể NPE, sau fix trả phí mặc định (theo nghiệp vụ)
+    assertEquals(new BigDecimal("1500"), service.calcFee(amount, null));
+}
+~~~
 
-### Pitfall
-- **Sửa lớn trong lúc nóng** — càng sửa nhiều càng khó rollback.
-- **Không có rollback plan** — phải nghĩ "nếu xấu nhất xảy ra tôi làm gì trong 5 phút?"
-- **Chỉ test case bug** — dễ bỏ qua side effect.
+### Ví dụ đời thực
+Hệ thống tính phí, không có unit test, bug: khách hạng {{null}} (dữ liệu cũ) gây {{NullPointerException}} → ước tính 120 lỗi/giờ, một phần giao dịch không hoàn tất. Bạn tái hiện với record có {{tier=null}}. Trước khi sửa, bạn viết 3 characterization test cho {{VIP}}, {{NORMAL}}, biên số tiền (đang đúng). Sửa một dòng: coi {{null}} như {{DEFAULT}} theo rule nghiệp vụ đã xác nhận với BA (15 phút trao đổi). Chạy test: 3 test cũ pass, test bug pass. Deploy kèm rollback tag; theo dõi 30 phút: lỗi NPE giảm về 0, không có metric bất thường khác. Tổng thời gian ~90 phút, không refactor.
 
-> Senior tip: quy tắc của tôi là "test trước, sửa nhỏ, rollback sẵn". Trong hotfix, an toàn quan trọng hơn hoàn hảo.`,
+### Pitfall production
+- **Refactor trong hotfix:** Tăng diện tích rủi ro, khó review, khó rollback.
+- **Chỉ test đúng case bug:** Bỏ sót side effect lên case khác.
+- **Rollback mơ hồ:** "Lát nữa tính" là không chấp nhận; phải có bước cụ thể.
+- **Sửa theo phỏng đoán:** Không reproduce/không xác nhận rule nghiệp vụ dễ tạo bug mới (đặc biệt tính tiền).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi phải hotfix code không có test, em ưu tiên an toàn. Đầu tiên em tái hiện bug với dữ liệu sát nhất có thể và khoanh vùng ảnh hưởng. Trước khi sửa, em viết characterization test cho vài case lân cận đang đúng để khóa hành vi hiện tại, vì không có test sẵn. Sau đó em tìm nguyên nhân gốc và sửa nhỏ nhất, tránh refactor. Em kiểm chứng case bug, chạy lại các test đặc trưng, và test thủ công luồng liên quan. Em luôn chuẩn bị rollback plan cụ thể như revert tag hoặc feature flag để quay lại trong vài phút nếu có vấn đề. Sau khi ổn định, em bổ sung regression test cho đúng case đã lỗi. Với bug liên quan nghiệp vụ như tính phí, em cũng xác nhận rule với BA trước khi đổi hành vi."
+
+> Senior tip: Trong hotfix, "thay đổi nhỏ + rollback sẵn + kiểm chứng được" quan trọng hơn code đẹp. Characterization test là lưới an toàn tạm thời khi legacy không có test.`,
   follow: [
     'Characterization test khác unit test thông thường thế nào?',
     'Làm sao đảm bảo rollback plan thực tế dùng được?'
@@ -5118,31 +5215,38 @@ Trước khi sửa: viết test gọi method với case gây bug, chạy thấy 
   topic: 'scenario',
   level: 'senior',
   q: 'Quy trình release ở công ty lớn: Change Request, CAB phê duyệt, release window ban đêm, freeze period cuối năm. Bạn chuẩn bị thế nào?',
-  a: `**Tóm tắt:** chuẩn bị Change Request đầy đủ (mô tả, impact, test, rollback), trình CAB đúng thời gian, tuân thủ window/freeze, thông báo liên quan, thực hiện theo checklist, verify sau release, đóng change.
+  a: `**Tóm tắt:** Release ở công ty lớn thường đi theo quy trình quản lý thay đổi: tạo Change Request (CR — hồ sơ mô tả thay đổi), được CAB (Change Advisory Board — nhóm đánh giá tác động thay đổi) phê duyệt nếu cần, triển khai trong release window (khung giờ được phép, thường ban đêm) và tôn trọng freeze period (giai đoạn đóng băng, hạn chế release, ví dụ cuối năm). Chuẩn bị tốt nghĩa là CR rõ ràng, test/rollback cụ thể, thông báo đúng người, thực hiện theo checklist, verify sau deploy, và đóng change có bằng chứng.
 
-### Làm rõ yêu cầu
-- Release window là khi nào, ai có quyền deploy?
-- Freeze period (thường cuối năm/ngày quan trọng) có quy định gì?
-- Cần UAT ký duyệt chưa?
+### Cơ chế quy trình — vì sao "chậm" nhưng cần
+Trong tổ chức lớn, một thay đổi nhỏ có thể ảnh hưởng nhiều hệ thống (tích hợp, batch, báo cáo, đối tác). CAB không kiểm tra từng dòng code; họ kiểm tra **tác động, rủi ro, thời điểm, và khả năng quay lại**. Release window giảm ảnh hưởng người dùng. Freeze period giảm rủi ro khi nhân sự mỏng hoặc giao dịch nhạy cảm. Bỏ quy trình có thể gây sự cố diện rộng và khó truy vết trách nhiệm.
 
-### Checklist chuẩn bị
-- **Change Request (CR)** — tóm tắt thay đổi, lý do, ảnh hưởng (user/module), rủi ro, mitigation.
-- **Test plan** — unit/integration/regression đã chạy, UAT do nghiệp vụ ký (nếu cần).
-- **Rollback plan** — cách revert nhanh, ai có quyền, thời gian ước tính.
-- **Deployment plan** — thứ tự deploy, config cần đổi, script, người phụ trách.
-- **Communication** — thông báo support/ops/BA trước release.
+### Chuẩn bị từng bước
+1. **Soạn CR đầy đủ:** Mô tả thay đổi và lý do; phạm vi ảnh hưởng (module/user/hệ thống liên quan); rủi ro và cách giảm thiểu; thời gian dự kiến; người thực hiện và người duyệt.
+2. **Bằng chứng kiểm thử:** Unit/integration/regression đã chạy; UAT (User Acceptance Test — nghiệp vụ nghiệm thu) nếu quy trình yêu cầu; môi trường đã test (staging gần prod).
+3. **Deployment plan (kế hoạch triển khai):** Thứ tự bước (DB script? config? app?), điều kiện tiên quyết, thời gian từng bước, người giám sát.
+4. **Rollback plan (bắt buộc, cụ thể):** Điều kiện kích hoạt rollback, bước quay lại (revert artifact version X, chạy script Y, khôi phục config Z), thời gian ước tính, ai quyết định. Phải thực tế, không chung chung.
+5. **Communication:** Thông báo support/ops/BA/đội liên quan trước window; kênh liên lạc trong lúc deploy.
+6. **Freeze period:** Nếu trùng freeze, thường chỉ change khẩn cấp/được phê duyệt đặc biệt mới đi; chuẩn bị lý do kinh doanh và rủi ro nếu không release.
 
-### Quy trình
-- **Trước** — mở CR, đính kèm tài liệu, đăng ký CAB (nếu bắt buộc). Nếu trong freeze period, thường phải có lý do đặc biệt và phê duyệt cấp cao.
-- **Trong window** — chỉ deploy theo CR đã duyệt. Ghi log từng bước. Có người giám sát.
-- **Sau** — smoke test quan trọng, kiểm tra log/error, xác nhận với business/support. Cập nhật CR trạng thái.
+### Ví dụ đời thực
+Thay đổi API tính phí (có ảnh hưởng report), 1 service Java + 1 script DB thêm cột nullable. Release window: 01:00–03:00 thứ Bảy. Bạn nộp CR trước 5 ngày làm việc, kèm: kết quả 42 test pass, UAT ký bởi kế toán, script DB đã chạy trên staging (bảng 12 triệu dòng, {{ALTER}} thêm cột nullable ~40 giây, không lock dài), rollback = deploy lại version {{1.8.3}} và bỏ qua cột mới (code tương thích). CAB hỏi về ảnh hưởng report: bạn cung cấp danh sách job đêm đọc bảng đó. Trong window: deploy 01:10, smoke test 6 luồng chính 01:25, kiểm tra log/metric 01:40, xác nhận support 01:50, đóng CR 02:00. Không có sự cố.
 
-### Lưu ý
-- **CAB** — không phải để "xin phép code" mà để xem impact liên hệ (nhiều hệ thống phụ thuộc).
-- **Release window ban đêm** — thường để giảm ảnh hưởng người dùng, cần backup sẵn.
-- **Freeze period** — cấm release không khẩn cấp. Hotfix khẩn cấp vẫn có quy trình riêng.
+~~~text
+[Dev hoàn thành + test] -> [CR + tài liệu] -> [CAB/Phê duyệt]
+  -> [Release window] -> [Deploy theo checklist] -> [Smoke test + monitor]
+  -> [Đóng CR]  (nếu lỗi: kích hoạt rollback plan)
+~~~
 
-> Senior tip: CR tốt là CR mà người không đọc code cũng hiểu "sẽ ảnh hưởng gì và làm sao quay lại". Nếu rollback plan mơ hồ, CAB rất dễ yêu cầu bổ sung.`,
+### Pitfall production
+- **Rollback không thử:** Chưa từng chạy/diễn tập → lúc sự cố mới phát hiện không dùng được.
+- **DB change không tương thích ngược:** Deploy app mới/cũ lẫn lộn trong lúc rollout có thể lỗi; ưu tiên thay đổi tương thích (expand/contract).
+- **Bỏ qua đội liên quan:** Batch/đối tác/report bị ảnh hưởng mà không được báo.
+- **Thay đổi ngoài CR:** "Tiện tay sửa thêm" trong window là nguồn sự cố và vi phạm quy trình.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chuẩn bị release ở công ty lớn, em bắt đầu từ Change Request rõ ràng: mô tả thay đổi, lý do, phạm vi ảnh hưởng, rủi ro, và bằng chứng test gồm cả UAT nếu cần. Em chuẩn bị deployment plan theo từng bước và rollback plan cụ thể, nêu rõ điều kiện rollback, ai quyết định, và mất bao lâu để quay lại. Em trình CAB đúng hạn để họ đánh giá tác động liên hệ thống, không phải để xem từng dòng code. Em tuân thủ release window và freeze period; nếu nằm trong freeze thì chỉ đề xuất đi tiếp khi có lý do khẩn cấp và phê duyệt phù hợp. Trong window em làm theo checklist, chỉ thực hiện phần đã được duyệt, có người giám sát, sau đó smoke test, kiểm tra log và metric, xác nhận với support, rồi đóng CR. Em tránh thay đổi ngoài phạm vi CR vì đó là rủi ro lớn."
+
+> Senior tip: CR tốt là người không đọc code cũng hiểu "ảnh hưởng gì và quay lại thế nào". CAB thường từ chối vì rollback mơ hồ, không phải vì code.`,
   follow: [
     'Sự khác biệt giữa change normal/standard/emergency?',
     'Làm sao thuyết phục khi cần release trong freeze period?'
