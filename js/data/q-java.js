@@ -5321,21 +5321,47 @@ Map<String, User> byEmail = users.stream()
   topic: 'modern',
   level: 'mid',
   q: 'Sequenced collections (Java 21) thêm gì so với List/Set cũ?',
-  a: `**Tóm tắt:** Thêm interface SequencedCollection với first()/last()/reversed(); reversed() là view không copy.
+  a: `**Tóm tắt:** Java 21 thêm interface SequencedCollection (và SequencedSet/SequencedMap) chuẩn hoá thao tác đầu/cuối và đảo chiều: first(), last(), addFirst/addLast, removeFirst/removeLast, reversed(); reversed() trả về **view** không copy.
 
-### Vì sao cần
-- Trước Java 21, lấy phần tử đầu/cuối của LinkedHashSet/Deque không thống nhất (get(0), getLast, peekFirst).
-- SequencedCollection chuẩn hoá: first(), last(), addFirst/addLast, removeFirst/removeLast, reversed().
+### Bối cảnh: trước Java 21 mỗi collection một kiểu
+- ArrayList: get(0), get(size()-1).
+- ArrayDeque: peekFirst/peekLast, pollFirst/pollLast.
+- LinkedHashSet: không có first()/last() trực tiếp trước đây (phải iterator.next()).
+- Kết quả: code generic xử lý "collection có thứ tự" rất lộn xộn, phải instanceof và cast.
+
+### Vì sao cần SequencedCollection
+- Thống nhất API cho mọi collection có thứ tự (List, Deque, LinkedHashSet, SortedSet...).
+- first()/last() O(1) thay vì get(0) O(1) cho ArrayList nhưng O(n) cho LinkedList.
+- reversed() cho phép duyệt ngược mà không cấp phát list mới.
 
 ### Cách hoạt động
-- List, Deque, LinkedHashSet, SequencedSet implement interface.
-- reversed() trả về view đảo chiều, không copy → sửa view sẽ sửa gốc.
+- SequencedCollection extends Collection, thêm first/last/addFirst/addLast/removeFirst/removeLast/reversed.
+- SequencedSet extends Set + SequencedCollection.
+- SequencedMap extends Map với sequencedEntrySet, firstEntry, lastEntry, reversed.
+- reversed() trả về **view** đảo thứ tự: thay đổi view phản ánh vào gốc và ngược lại; không copy.
 
-### Pitfall
-- reversed() là view: sort reversed rồi mutate gốc sẽ ảnh hưởng.
-- Set không có index, chỉ first/last.
+### Ví dụ
+~~~java
+SequencedCollection<String> c = new ArrayList<>(List.of("a","b","c"));
+System.out.println(c.first());   // a
+System.out.println(c.last());    // c
+for (String s : c.reversed()) { // c, b, a (view)
+    System.out.println(s);
+}
+c.addFirst("z");                // gốc thành [z,a,b,c]
+~~~
 
-> Senior tip: dùng reversed() để iterate ngược mà không copy list lớn; cẩn thận concurrent modification.`,
+### Trade-off / khi dùng
+- Dùng reversed() để iterate ngược list lớn mà không tốn O(n) bộ nhớ.
+- Nếu cần snapshot bất biến, copy: new ArrayList<>(c.reversed()).
+
+### Pitfall production
+- reversed() là view: sort/reverse view rồi mutate gốc sẽ ảnh hưởng collection gốc → bug khó tìm.
+- Set không có index: không gọi get(i) trên SequencedSet.
+- Concurrent modification: reversed() view cũng fail-fast như gốc.
+- SequencedMap.reversed() đảo entry order; cẩn thận khi serialize JSON expecting insertion order.
+
+> Senior tip: dùng SequencedCollection trong API nội bộ thay vì List khi cần first/last; reversed() là view nên nếu trả ra ngoài, copy để tránh caller mutate gốc. Trong code review, tìm get(size()-1) và thay bằng last().`,
   follow: ['reversed() có phải copy không?', 'SequencedMap khác gì?'],
   tags: ['Java 21', 'SequencedCollection', 'collections']
 },
@@ -5344,21 +5370,33 @@ Map<String, User> byEmail = users.stream()
   topic: 'modern',
   level: 'senior',
   q: 'Record patterns và switch pattern exhaustiveness với sealed class hoạt động thế nào?',
-  a: `**Tóm tắt:** Record pattern destructure record trong pattern matching; switch trên sealed type được compiler kiểm tra exhaustiveness — thiếu case → lỗi compile.
+  a: `**Tóm tắt:** Record pattern cho phép destructure record trực tiếp trong instanceof/switch; với sealed class, compiler kiểm tra exhaustiveness — thiếu case là lỗi compile, thêm subtype mới bắt buộc cập nhật switch.
 
-### Vì sao cần
-- Trước: instanceof + cast + getter. Java 21 cho phép if (o instanceof Point(int x,int y)).
-- Sealed class giới hạn subtype → compiler biết hết các case.
+### Bối cảnh: trước Java 21
+- Phải instanceof + cast + gọi accessor: if (o instanceof Point p) { int x = p.x(); ... }.
+- Switch trên enum/sealed không được kiểm tra đầy đủ → runtime default catch-all.
 
-### Cách hoạt động
-- switch (shape) { case Circle c -> ...; case Rect r -> ...; } không cần default nếu sealed.
-- Record pattern lồng nhau: case Line(Point p1, Point p2).
+### Record pattern
+- if (o instanceof Point(int x, int y)) { ... } destructure ngay.
+- Lồng nhau: case Line(Point p1, Point p2) -> ...
+- Guarded pattern: case Circle c when c.r() > 10 -> ...
 
-### Pitfall
-- Switch trên non-sealed type cần default.
-- Pattern matching cho primitive chưa đầy đủ.
+### Sealed + exhaustiveness
+- sealed interface Shape permits Circle, Rect, Triangle.
+- switch (shape) { case Circle c -> ...; case Rect r -> ...; case Triangle t -> ...; } không cần default; compiler biết hết subtype.
+- Nếu thêm subtype mới vào permits, mọi switch không default sẽ lỗi compile → refactor an toàn.
 
-> Senior tip: kết hợp sealed + record + switch expression để mô hình hoá domain; compiler bắt sót case khi thêm subtype mới.`,
+### Pitfall production
+- Switch trên non-sealed type cần default (hoặc non-exhaustive).
+- Record pattern chỉ áp dụng record, không phải mọi class.
+- Pattern matching cho primitive còn hạn chế; null case phải xử lý (case null ->).
+- Preview/instability: syntax ổn định từ Java 21.
+
+### Khi nào dùng
+- Mô hình domain với sealed hierarchy + record → algebraic data type style.
+- Parser/AST/protocol message.
+
+> Senior tip: kết hợp sealed + record + switch expression để compiler bắt sót case khi domain mở rộng; thêm case null nếu input có thể null; tránh default "silent" nuốt case mới.`,
   follow: ['Sealed class là gì?', 'Khi nào cần default trong switch?'],
   tags: ['Java 21', 'record patterns', 'sealed', 'pattern matching']
 },
@@ -5367,22 +5405,26 @@ Map<String, User> byEmail = users.stream()
   topic: 'modern',
   level: 'senior',
   q: 'String templates (JEP 430) hiện trạng ra sao? Có nên dùng trong production không?',
-  a: `**Tóm tắt:** String templates là preview trong JDK 21 và đã bị rút (withdrawn) khỏi JDK 22; KHÔNG dùng trong production. Dùng text blocks + formatted hoặc String.formatted.
+  a: `**Tóm tắt:** String templates (JEP 430) là preview trong JDK 21 và đã bị rút (withdrawn) khỏi JDK 22; KHÔNG dùng trong production. Dùng text blocks + String.formatted/MessageFormat.
 
 ### Vì sao cần biết
-- Nhiều tutorial còn nhắc \\"\\"\\" không phải string templates.
+- Nhiều tutorial cũ còn nhắc \\"\\"\\" là "string templates" — sai: đó là text blocks (Java 15).
 - Trạng thái preview/withdrawn thay đổi giữa JDK; production chỉ dùng API stable.
 
-### Cách làm an toàn
-- Dùng text blocks cho SQL/JSON.
-- Dùng String.formatted hoặc MessageFormat cho nội suy.
-- Không bật --enable-preview trong production.
+### Làm an toàn
+- Text blocks cho SQL/JSON nhiều dòng.
+- String.formatted hoặc MessageFormat cho nội suy biến.
+- Không bật --enable-preview trong production build.
 
 ### Pitfall
-- Bật preview trong prod → class không chạy trên JDK khác.
-- Nhầm text block với string templates.
+- Bật preview trong prod → class chỉ chạy trên JDK đúng version, deploy fail.
+- Nhầm text block với string templates → kỳ vọng interpolation không có.
+- Preview feature có thể đổi/bị bỏ giữa release.
 
-> Senior tip: theo dõi JEP nhưng chỉ merge feature khi stable; ghi rõ JDK target trong pom.`,
+### Khi nào preview OK
+- Thử nghiệm local/CI; không commit vào main branch production.
+
+> Senior tip: theo dõi JEP nhưng chỉ merge feature khi stable; ghi rõ java.version/target trong pom; review dependency preview.`,
   follow: ['Text block vs string templates?', 'Khi nào bật preview?'],
   tags: ['Java 21', 'string templates', 'preview', 'JEP']
 },
@@ -5391,21 +5433,28 @@ Map<String, User> byEmail = users.stream()
   topic: 'modern',
   level: 'senior',
   q: 'Scoped values và structured concurrency (preview) giải quyết vấn đề gì của ThreadLocal?',
-  a: `**Tóm tắt:** ScopedValue là ThreadLocal bất biến, có phạm vi lexical; StructuredTaskScope quản lý task con theo cấu trúc → dễ hủy, dễ propagate exception.
+  a: `**Tóm tắt:** ScopedValue là ThreadLocal bất biến với phạm vi lexical; StructuredTaskScope quản lý task con theo cấu trúc → dễ hủy, propagate exception. Cả hai preview trong JDK 21, chưa production.
 
-### Vì sao cần
-- ThreadLocal mutable, dễ leak, khó cleanup, không tự propagate tới thread con.
-- Virtual threads nhiều → ThreadLocal tốn bộ nhớ.
+### ThreadLocal vấn đề
+- Mutable: bất kỳ code nào có thể set → khó truy vết.
+- Dễ leak nếu không remove() trong finally.
+- Không tự propagate sang thread con; với virtual threads số lượng lớn → tốn bộ nhớ (mỗi VT copy ThreadLocal map).
 
-### Cách hoạt động
-- ScopedValue.where(KEY, val).run(() -> ...) → value chỉ tồn tại trong block.
-- StructuredTaskScope: fork task, join; cancel khi một fail.
+### ScopedValue
+- ScopedValue.where(KEY, val).run(() -> ...) → value chỉ tồn tại trong block; immutable.
+- Child thread (structured) tự inherit; không leak ra ngoài scope.
+- Phù hợp request context (userId, traceId) với virtual threads.
+
+### StructuredTaskScope
+- fork(Callable) tạo subtask; join() chờ; cancel khi một fail hoặc timeout.
+- Exception propagate rõ ràng; lifecycle gắn với scope block.
 
 ### Pitfall
-- Preview → không production.
-- StructuredTaskScope chưa stable API.
+- Preview → không production; API có thể đổi.
+- StructuredTaskScope chưa stable; syntax sẽ thay đổi.
+- ThreadLocal vẫn cần cho thư viện chưa hỗ trợ ScopedValue.
 
-> Senior tip: học khái niệm để chuẩn bị; production vẫn dùng ThreadLocal + ExecutorService có cleanup.`,
+> Senior tip: học khái niệm để chuẩn bị; production vẫn dùng ThreadLocal + ExecutorService có cleanup/remove trong finally; khi migrate, đo memory với virtual threads.`,
   follow: ['ThreadLocal leak ở đâu?', 'Virtual threads + ThreadLocal?'],
   tags: ['Java 21', 'scoped values', 'structured concurrency', 'preview']
 },
@@ -5414,21 +5463,27 @@ Map<String, User> byEmail = users.stream()
   topic: 'modern',
   level: 'senior',
   q: 'Generational ZGC (Java 21) cải thiện gì so với ZGC cũ?',
-  a: `**Tóm tắt:** Generational ZGC thêm young/old generation → giảm CPU overhead và pause time cho workload có nhiều short-lived objects; bật bằng -XX:+UseZGC -XX:+ZGenerational.
+  a: `**Tóm tắt:** Generational ZGC thêm young/old generation → giảm CPU overhead và pause time cho workload có nhiều short-lived objects; bật bằng -XX:+UseZGC -XX:+ZGenerational (JDK 21); JDK 23+ mặc định generational.
 
 ### Vì sao cần
 - ZGC cũ non-generational quét toàn heap mỗi cycle → CPU cao với object churn lớn.
-- Generational tận dụng weak generational hypothesis.
+- Weak generational hypothesis: đa số object chết trẻ → thu gom young gen thường xuyên, old gen ít.
 
 ### Cách bật
-- JDK 21+: -XX:+UseZGC -XX:+ZGenerational.
-- JDK 23+ mặc định generational.
+- JDK 21/22: -XX:+UseZGC -XX:+ZGenerational.
+- JDK 23+: -XX:+UseZGC (generational mặc định).
+- So sánh: G1 default an toàn; ZGC cho latency-sensitive (pause < 1ms); Shenandoah tương tự ZGC.
 
-### Pitfall
+### Trade-off
+- ZGC tốn CPU/heap overhead; pause thấp nhưng throughput có thể thấp hơn G1.
+- Generational giảm overhead so với non-gen ZGC.
+
+### Pitfall production
+- Chọn GC theo workload: throughput vs latency; đo với tải thật.
 - ZGC không compact theo region như G1? pause vẫn < 1ms nhưng CPU footprint.
-- Chọn GC theo workload: throughput vs latency.
+- GC log (-Xlog:gc*) để phân tích; không đổi GC mà không đo.
 
-> Senior tip: đo với workload thật; G1 vẫn default an toàn cho đa số; ZGC cho latency-sensitive.`,
+> Senior tip: bắt đầu G1 default; chuyển ZGC chỉ khi p99 latency yêu cầu và có benchmark; generational ZGC là bước tiến nhưng vẫn cần tuning heap size và allocation rate.`,
   follow: ['So sánh G1 vs ZGC?', 'Khi nào dùng Shenandoah?'],
   tags: ['Java 21', 'ZGC', 'GC', 'performance']
 },
@@ -5437,22 +5492,27 @@ Map<String, User> byEmail = users.stream()
   topic: 'core',
   level: 'senior',
   q: 'Lộ trình nâng cấp dự án Java 8/11 lên Java 21 gồm những bước nào? jdeps, --add-opens, thư viện cũ?',
-  a: `**Tóm tắt:** Bước: nâng JDK build → chạy test → jdeps/jdeprscan tìm API bị xoá → xử lý --add-opens cho reflection → cập nhật thư viện → bật preview? không. Cuối cùng tune GC.
+  a: `**Tóm tắt:** Nâng Java 8/11 → 21 theo bước: cài JDK 21, đổi source/target, chạy test, jdeps/jdeprscan tìm API bị xoá, xử lý --add-opens cho reflection, cập nhật thư viện (Spring Boot 3/Hibernate 6), tune GC. Không bật preview trong production.
 
 ### Các bước chi tiết
-1. Cài JDK 21, đổi source/target 21 trong build.
+1. Cài JDK 21 trong CI; đổi maven.compiler.source/target = 21 (hoặc Gradle java.toolchain).
 2. Chạy full test; sửa compile errors (javax→jakarta nếu Spring 6).
 3. jdeps --jdk-internals tìm dùng internal API.
 4. jdeprscan tìm deprecated-for-removal.
 5. Nếu thư viện cũ dùng reflection sâu: thêm --add-opens module/pkg=ALL-UNNAMED tạm thời.
-6. Cập nhật dependency (Spring Boot 3, Hibernate 6).
-7. Bật GC phù hợp, đo.
+6. Cập nhật dependency (Spring Boot 3, Hibernate 6, Lombok, Mockito).
+7. Bật GC phù hợp, đo latency/memory.
 
 ### Pitfall
 - --add-opens chỉ workaround; refactor để không cần.
 - Thư viện pre-JPMS không module-aware.
+- Nhảy thẳng 8→21 làm gỡ lỗi khó; đi từng LTS.
+- Reflection/bytecode instrumentation (APM, Lombok cũ) dễ vỡ.
 
-> Senior tip: migrate theo service nhỏ trước; giữ dual build (JDK 11 và 21) trong CI một thời gian.`,
+### Rollout
+- Chạy song song JDK cũ/mới trong CI; smoke test staging; blue-green deploy; theo dõi GC, p99, memory.
+
+> Senior tip: migrate theo service nhỏ trước; giữ dual build một thời gian; dùng OpenRewrite để tự động hoá một phần; jdeprscan để tìm API sắp bỏ.`,
   follow: ['jdeps output đọc thế nào?', 'Khi nào cần --add-exports?'],
   tags: ['migration', 'Java 21', 'jdeps', 'upgrade']
 },
@@ -5461,22 +5521,36 @@ Map<String, User> byEmail = users.stream()
   topic: 'modern',
   level: 'mid',
   q: 'Text blocks trong SQL/JSON test giúp gì và lưu ý indentation?',
-  a: `**Tóm tắt:** Text block (""") cho chuỗi nhiều dòng; indentation được strip theo dòng ít thụt nhất; \\s giữ trailing space; dùng cho SQL/JSON test readable.
+  a: `**Tóm tắt:** Text block (\"\"\") cho chuỗi nhiều dòng; indentation được strip theo dòng ít thụt nhất; \\s giữ trailing space; dùng cho SQL/JSON test readable.
 
 ### Vì sao cần
-- Trước: nối chuỗi + escape quote rườm rà.
-- Text block giữ format, dễ đọc SQL/JSON.
+- Trước: nối chuỗi + escape quote rườm rà, khó đọc.
+- Text block giữ format, dễ đọc SQL/JSON trong test.
 
 ### Cách hoạt động
-- Dòng đầu tiên sau """ phải là newline (hoặc \\).
-- Indentation tối thiểu bị strip; dùng {{stripIndent}} nếu cần.
-- Escape: \\\\ cho backslash, \\" cho quote trong block? quote không cần escape trong text block.
+- Dòng đầu sau \"\"\" phải là newline (hoặc \\).
+- Indentation tối thiểu bị strip; closing \"\"\" thẳng hàng với code để strip đúng.
+- Escape: \\\\ cho backslash; quote không cần escape trong block.
+- \\s giữ trailing whitespace; \\ (line continuation) nối dòng.
+
+### Ví dụ
+~~~java
+String sql = \"\"\"
+    SELECT id, name
+    FROM users
+    WHERE active = true
+    \"\"\";
+~~~
 
 ### Pitfall
 - Trailing whitespace bị strip trừ khi dùng \\s.
 - Mixing indentation gây kết quả không như ý.
+- Text block compile-time constant nếu content constant → có thể dùng trong annotation/switch.
 
-> Senior tip: đặt closing """ thẳng hàng với code để strip đúng; viết test snapshot so sánh.`,
+### Khi dùng
+- SQL/JSON trong test và repository; template email; documentation.
+
+> Senior tip: đặt closing \"\"\" thẳng hàng với code để strip đúng; viết test snapshot so sánh; dùng \\s khi cần trailing space trong JSON.`,
   follow: ['Text block có phải compile-time constant?'],
   tags: ['Java 15', 'text blocks', 'SQL', 'JSON']
 },
@@ -5485,25 +5559,60 @@ Map<String, User> byEmail = users.stream()
   topic: 'modern',
   level: 'lead',
   q: '(Lead) Chính sách nâng LTS cho 30 service: làm thế nào để đồng bộ và an toàn?',
-  a: `**Tóm tắt:** Lập policy: chuẩn JDK version, timeline theo wave, CI matrix, canary deploy, rollback; dùng jdeps/jdeprscan, contract test; theo dõi metric trước/sau.
+  a: `**Tóm tắt:** Nâng LTS (Long-Term Support - phiên bản Java được Oracle/OpenJDK hỗ trợ dài hạn, ví dụ 11/17/21) cho 30 service phải coi như một chương trình thay đổi có kiểm soát: đặt baseline JDK mục tiêu, quét tương thích tự động, nâng theo wave (từng đợt) với canary (triển khai một phần traffic nhỏ trước) và tiêu chí rollback rõ ràng, đồng thời đo metric trước/sau để chứng minh không có regression (thoái hóa hiệu năng/chức năng).
 
-### Vì sao cần
-- 30 service không thể nâng cùng lúc; cần wave và tiêu chí.
-- Rủi ro: thư viện cũ, reflection, GC thay đổi latency.
+### Vì sao 30 service không thể nâng "một phát ăn ngay"
+- Mỗi service có dependency (thư viện phụ thuộc), cách dùng reflection (gọi/lấy class/method lúc runtime), cấu hình GC (Garbage Collector - bộ dọn rác tự động của JVM), và mức độ quan trọng khác nhau. Một thư viện cũ có thể dùng API nội bộ bị đóng kín từ Java 16+ (strong encapsulation - đóng gói mạnh, ngăn truy cập gói nội bộ JDK).
+- Nâng JDK đôi khi đổi hành vi ngầm: thuật toán GC mặc định khác, thứ tự ngẫu nhiên (randomization) khác, hoặc hiệu năng p99 latency (độ trễ ở ngưỡng 99% request chậm nhất) thay đổi. Nếu nâng 30 service cùng lúc, khi có sự cố bạn không biết nguyên nhân nằm ở service nào hay ở JDK.
+- Ví dụ đời thường: giống như đổi toàn bộ đội xe buýt của thành phố sang loại nhiên liệu mới trong cùng một ngày - nếu hỏng, cả thành phố tê liệt; thay vào đó nên thử một tuyến nhỏ trước.
 
-### Cách làm
-1. Chuẩn hoá build (Maven/Gradle plugin JDK 21).
-2. Wave 1: service ít traffic, không critical; wave 2: core; wave 3: còn lại.
-3. Mỗi service: test + staging + canary 5% → full.
-4. Theo dõi p99 latency, GC pause, error rate; rollback nếu regression.
-5. Tài liệu --add-opens tạm; backlog refactor.
+### Cách làm từng bước (từ chuẩn hóa đến rollout)
+1. **Đặt baseline và RFC (Request for Comments - tài liệu đề xuất kỹ thuật):** chọn JDK mục tiêu (ví dụ Temurin 21.0.x), quy định toolchain (Maven {{maven-compiler-plugin}} / Gradle {{toolchain}}), và cấm dùng API nội bộ. Chốt "supported JDKs" trong CI (Continuous Integration - hệ thống build/test tự động).
+2. **Quét tương thích tự động trên cả 30 repo:**
+   - {{jdeps --jdk-internals}}: tìm chỗ gọi API nội bộ JDK.
+   - {{jdeprscan}}: tìm API đã bị deprecated/loại bỏ.
+   - Quét dependency bằng SCA (Software Composition Analysis - phân tích thành phần phần mềm) để phát hiện thư viện không hỗ trợ JDK mới hoặc có CVE (lỗ hổng bảo mật đã công bố).
+3. **Chia wave theo rủi ro:**
+| Wave | Đối tượng | Tiêu chí qua wave |
+|---|---|---|
+| 0 (pilot) | 1-2 service nội bộ, traffic thấp | build xanh, test pass, canary 24h không lỗi |
+| 1 | service không critical, ít dependency lạ | p99 ±5%, error rate không tăng, GC pause không xấu hơn |
+| 2 | service core (đơn hàng/thanh toán) | canary 5% → 25% → 100%, có rollback trong < 5 phút |
+| 3 | phần còn lại | tái dùng playbook, xử lý ngoại lệ |
+4. **Triển khai an toàn cho mỗi service:** build artifact với JDK 21, chạy toàn bộ test + contract test (kiểm tra "hợp đồng" API giữa các service), deploy staging, rồi canary 5% traffic. Theo dõi dashboard trước/sau ít nhất 24-48h.
+5. **Metric phải so sánh có baseline:**
+   - p50/p95/p99 latency, throughput (số request/giây).
+   - GC pause time, allocation rate (tốc độ cấp phát bộ nhớ), heap usage.
+   - Error rate (5xx), timeout, retry.
+   - Thời gian khởi động (ảnh hưởng autoscaling).
+6. **Kế hoạch thoát hiểm:** giữ khả năng rollback image JDK cũ; nếu buộc phải mở tạm {{--add-opens/--add-exports}} thì ghi ticket refactor có deadline, không để vĩnh viễn.
 
-### Pitfall
-- Không có rollback plan.
-- Bỏ qua dependency CVE.
+### Ví dụ checklist CI cho một service
+~~~yaml
+# Ý tưởng: build/test trên JDK mục tiêu và vẫn giữ JDK cũ một thời gian
+jobs:
+  build:
+    strategy:
+      matrix:
+        java: [17, 21]   # chạy song song để phát hiện vỡ sớm
+    steps:
+      - run: ./mvnw -B -Djava.version=\${{ matrix.java }} verify
+      - run: jdeps --jdk-internals target/app.jar || true  # ghi nhận, không chặn ngay
+~~~
 
-> Senior tip: đặt "JDK 21 LTS baseline" trong RFC; review hàng quý; freeze version mới cho stability.`,
-  follow: ['Làm sao đo regression sau upgrade?'],
+### Pitfall thực tế trên production
+- **Không có rollback plan:** nâng xong mới phát hiện p99 tăng 40% do GC khác; nếu không giữ image cũ, team phải hotfix trong hoảng loạn.
+- **Bỏ qua bytecode agent/annotation processor:** agent APM (Application Performance Monitoring - công cụ theo dõi hiệu năng), Mockito inline, hay thư viện sinh bytecode có thể chưa hỗ trợ JDK mới → lỗi runtime dù compile pass.
+- **Chỉ test chức năng, quên hiệu năng:** GC, JIT (Just-In-Time compiler - trình biên dịch lúc chạy) warmup, và memory footprint đổi theo JDK.
+- **{{--add-opens}} thành nợ kỹ thuật vĩnh viễn:** mở tạm để "qua ngày" rồi không ai dọn.
+- **Dependency có CVE hoặc ngừng bảo trì:** nâng JDK là cơ hội bắt buộc nâng cả thư viện rủi ro.
+
+> Senior tip: coi nâng LTS là "chương trình", không phải ticket. Thực tế hay dùng: 1 owner (platform/architect), playbook dùng chung, dashboard so sánh trước-sau cho mọi service, và quy tắc "wave sau chỉ bắt đầu khi wave trước qua 1 tuần production ổn định". Với 30 service, thường mất 2-4 tháng cho lộ trình 17→21 nếu kỷ luật; cố ép nhanh thường trả giá bằng incident.`,
+  follow: [
+    'Làm sao đo regression hiệu năng sau upgrade một cách đáng tin cậy (không bị nhiễu)?',
+    'Khi một thư viện quan trọng chưa hỗ trợ JDK 21, bạn chọn phương án nào: chờ, thay thế, fork, hay cô lập?',
+    'Strong encapsulation từ Java 16+ ảnh hưởng gì đến code dùng reflection/sun.misc?'
+  ],
   tags: ['lead', 'upgrade', 'policy', 'LTS']
 },
 {
@@ -6084,31 +6193,74 @@ public class ListBench {
   topic: 'modern',
   level: 'senior',
   q: 'Virtual threads (Java 21) khi migrate tu platform thread: ThreadLocal nang, JDBC pool nut that, semaphore gioi han dong thoi.',
-  a: `**Tom tat:** virtual thread la thread nhe do JVM quan ly; migrate don gian vi API giong Thread, nhung ThreadLocal va pool JDBC tro thanh nut that moi, can semaphore/bound de gioi han dong thoi.
+  a: `**Tóm tắt:** Virtual thread (luồng ảo - thread nhẹ do JVM quản lý, chính thức từ Java 21/JEP 444) giúp xử lý rất nhiều tác vụ I/O chờ (gọi DB, HTTP) bằng code blocking quen thuộc, nhưng khi migrate từ platform thread (thread của hệ điều hành, nặng và ít) bạn sẽ đụng 3 nút thắt mới: {{ThreadLocal}} phình bộ nhớ, connection pool JDBC (bộ kết nối CSDL tái sử dụng) trở thành giới hạn thật, và phải dùng semaphore/bulkhead (cơ chế giới hạn số tác vụ chạy đồng thời) để bảo vệ tài nguyên hạ nguồn.
 
-### Khai niem
-- VT mount/unmount tren carrier thread; blocking IO tu unmount.
-- Tao re: hang trieu VT khong van de.
+### Cái gì và vì sao virtual thread khác
+- **Platform thread**: mỗi thread ánh xạ 1-1 với thread OS. Tạo tốn (stack thường ~1MB), số lượng thực tế chỉ vài nghìn → mô hình "thread-per-request" chạm trần khi nhiều request đang chờ I/O.
+- **Virtual thread**: do JVM lập lịch lên một số ít **carrier thread** (thread OS mang). Khi virtual thread gặp blocking I/O (đọc socket, JDBC), JVM **unmount** (gỡ) nó khỏi carrier để carrier chạy việc khác; I/O xong thì **mount** lại. Nhờ vậy bạn có thể có hàng chục nghìn/hàng triệu virtual thread cùng "đang chờ" mà không tốn triệu thread OS.
+- Ví dụ đời thường: platform thread giống mỗi khách hàng chiếm hẳn một nhân viên phục vụ kể cả lúc chờ món; virtual thread giống nhân viên phục vụ nhiều bàn, ai chờ món thì nhân viên chuyển sang bàn khác.
 
-### ThreadLocal nang
-- Moi VT co ban copy => memory lon.
-- Chuyen sang ScopedValue (preview) hoac truyen tham so.
+### Bước 1 - Migrate cách dùng thread (thường là phần dễ)
+~~~java
+// Trước: giới hạn bởi thread pool
+ExecutorService exec = Executors.newFixedThreadPool(200);
 
-### JDBC pool nut that
-- VT cho phep hang ngan request dong thoi, nhung DB pool chi vai chuc connection.
-- Gioi han dong thoi bang semaphore (permits = pool size) hoac bulkhead.
+// Sau (Java 21): mỗi task một virtual thread
+try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
+    futures = tasks.stream().map(t -> exec.submit(t::run)).toList();
+    // try-with-resources chờ tất cả task xong (structured-like)
+}
+~~~
+- API gần như giữ nguyên ({{Runnable/Callable}}). Không cần đổi code blocking thành reactive.
+- **Chỉ có lợi cho I/O-bound** (tác vụ chủ yếu chờ). CPU-bound (tính toán nặng) không nhanh hơn, thậm chí tệ hơn do overhead lập lịch.
 
-### Pinning
-- Carrier bi pin trong synchronized/native; Java 24 synchronized khong con pin.
-- Tranh: dung ReentrantLock.
+### Bước 2 - ThreadLocal phình bộ nhớ
+- {{ThreadLocal}} lưu một bản sao giá trị **cho mỗi thread**. Với 200 platform thread thì 200 bản; với 200.000 virtual thread thì 200.000 bản → memory bùng nổ (OOM - Out Of Memory).
+- Hay gặp: filter gắn {{SecurityContext}}, {{MDC}} (Mapped Diagnostic Context - ngữ cảnh log) của logging, locale, transaction holder.
+- Cách xử lý:
+  - Luôn {{remove()}} trong {{finally}} (với virtual thread số lượng lớn, quên remove = rò rỉ theo vòng đời task).
+  - Truyền dữ liệu qua tham số method thay vì ngầm qua ThreadLocal.
+  - Cân nhắc **ScopedValue** (Java 21 preview, ổn định dần ở các bản sau): giá trị bất biến theo phạm vi (scope), kế thừa an toàn cho virtual thread con, không "nhân bản nặng" như ThreadLocal. Kiểm tra trạng thái preview/final theo đúng JDK bạn dùng.
 
-### Pitfall
-- VT khong nhanh hon CPU-bound.
-- ThreadLocal + VT = memory blowup.
-- Monitoring: JFR.
+### Bước 3 - JDBC pool là nút thắt thật
+- Virtual thread cho phép 10.000 request đồng thời, nhưng database (CSDL) thường chỉ chịu vài chục đến vài trăm connection. {{HikariCP}} (pool JDBC phổ biến) mặc định nhỏ (thường 10). Kết quả: 9.990 virtual thread xếp hàng chờ connection → latency tăng, timeout dồn dập.
+- **Giới hạn đồng thời ở tầng gọi DB** bằng semaphore (biến đếm giấy phép):
+~~~java
+// permits = số connection pool (hoặc nhỏ hơn) để không vượt DB
+Semaphore dbPermits = new Semaphore(20);
 
-> Senior tip: VT la cheap concurrency; nut that chuyen sang resource. Luon dat bound ro rang.`,
-  follow: ['ThreadLocal khac ScopedValue the nao?', 'Pinning xay ra khi nao?', 'Khi nao khong nen dung virtual thread?'],
+try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
+    exec.submit(() -> {
+        dbPermits.acquire();           // chờ lượt, không chiếm carrier khi dùng VT
+        try {
+            return queryDatabase();    // blocking JDBC
+        } finally {
+            dbPermits.release();       // trả lượt
+        }
+    });
+}
+~~~
+- Đây là bulkhead (vách ngăn): cô lập để một hạ nguồn chậm không kéo sập toàn hệ thống. Đừng tăng pool JDBC vô tội vạ - giới hạn nằm ở DB.
+
+### Bước 4 - Pinning (ghim carrier)
+- Nếu virtual thread chạy mã trong khối {{synchronized}} hoặc gọi native method mà bị blocking, JVM có thể **không unmount** được → carrier thread bị "ghim", mất lợi ích mở rộng.
+- Java 21 vẫn có pinning với {{synchronized}}; các bản mới hơn (đáng chú ý từ Java 24) đã cải thiện để {{synchronized}} không còn pin trong nhiều trường hợp. Kiểm tra đúng phiên bản JDK.
+- Cách né: thay {{synchronized}} quanh I/O bằng {{ReentrantLock}}; giữ critical section (đoạn cần khóa) thật ngắn và không chứa I/O.
+- Phát hiện: bật JFR (Java Flight Recorder - công cụ ghi sự kiện JVM) sự kiện {{jdk.VirtualThreadPinned}} hoặc dùng {{-Djdk.tracePinnedThreads=full}} khi debug.
+
+### Pitfall thực tế trên production
+- **Bật virtual thread nhưng không giới hạn hạ nguồn:** DB, dịch vụ ngoài, thread pool legacy bị quá tải → lỗi dây chuyền.
+- **ThreadLocal + virtual thread = rò rỉ/OOM:** nhất là trong filter/logging.
+- **Dùng virtual thread cho CPU-bound:** throughput giảm, p99 xấu đi; CPU-bound hãy dùng {{ForkJoinPool}}/parallelism cố định.
+- **Pool thread cũ bọc trong virtual thread:** tạo virtual thread chỉ để {{submit}} vào {{fixedThreadPool(50)}} thì vẫn nghẽn ở pool 50.
+- **Quan sát kém:** thread dump truyền thống khó đọc với hàng nghìn VT; cần JFR/metrics.
+
+> Senior tip: virtual thread biến "chi phí tạo thread" gần như bằng 0, nhưng **không** biến tài nguyên hạ nguồn thành vô hạn. Công thức thực tế: VT cho fan-out I/O + semaphore = min(pool DB, giới hạn dịch vụ ngoài) + timeout + circuit breaker (ngắt mạch khi hạ nguồn lỗi liên tục). Đo p99 và error rate trước/sau; chỉ rollout khi có số liệu.`,
+  follow: [
+    'ThreadLocal khác ScopedValue thế nào, và ScopedValue giải quyết được gì cho virtual thread?',
+    'Pinning xảy ra khi nào, ảnh hưởng ra sao, và làm sao phát hiện trên production?',
+    'Khi nào KHÔNG nên dùng virtual thread?'
+  ],
   tags: ['virtual threads', 'ThreadLocal', 'JDBC', 'semaphore', 'pinning'],
   refs: [{ type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' }]
 },
@@ -6189,25 +6341,67 @@ ScopedValue.where(CURRENT_USER, user).run(() -> { service.process(); });
   topic: 'modern',
   level: 'lead',
   q: 'Text blocks, switch expression, var - pitfall khi review code.',
-  a: `**Tom tat:** text block giu indentation theo incidental whitespace; switch expression bat buoc exhaustive va case null; var chi local va kieu phai lo ro.
+  a: `**Tóm tắt:** Ba cú pháp "tiện" của Java hiện đại đều có bẫy khi review: **text block** (chuỗi nhiều dòng, Java 15) tính thụt lề theo khoảng trắng chung nhỏ nhất và dễ dính lỗi xuống dòng cuối; **switch expression** (switch trả về giá trị, Java 14) buộc exhaustive (phủ hết trường hợp) và xử lý {{null}} khác switch cũ; **var** (suy luận kiểu cục bộ, Java 10) chỉ dùng cho biến local và làm code khó đọc nếu kiểu không rõ từ vế phải.
 
-### Text block pitfalls
-- Indentation: incidental whitespace = min indentation moi dong.
-- Newline cuoi: dau dong tren dong rieng => co newline.
-- SQL text block + concat du lieu => injection.
+### 1) Text block - cái gì, vì sao cần, bẫy gì
+- **Cái gì:** chuỗi nhiều dòng viết giữa ba dấu ngoặc kép {{""" ... """}}, tiện cho SQL/JSON/HTML nhúng trong code. Trình biên dịch tự xử lý xuống dòng và thụt lề.
+- **Vì sao cần:** trước đây phải nối chuỗi {{\\n}} và escape ngoặc kép, rất khó đọc và dễ sai.
+- **Cơ chế thụt lề (incidental whitespace):** Java tìm số khoảng trắng đầu dòng nhỏ nhất trong các dòng nội dung (xét cả vị trí dấu đóng {{"""}}) rồi cắt bỏ bấy nhiêu ở mỗi dòng. Vì vậy đặt dấu đóng lùi sâu hay nông sẽ đổi kết quả.
+- **Bẫy xuống dòng cuối:** nếu đặt dấu đóng {{"""}} ở dòng riêng, text block có thêm một ký tự xuống dòng ở cuối. Muốn bỏ, dùng {{\\}} ở cuối dòng hoặc đặt dấu đóng sát nội dung (tùy trường hợp).
+- **Bẫy escape:** text block vẫn là chuỗi Java - {{\\}} vẫn là escape. Cần dùng {{\\s}} khi muốn giữ khoảng trắng cuối dòng (trailing space), vì trình biên dịch thường loại bỏ trailing whitespace.
 
-### Switch expression pitfalls
-- Exhaustive: enum/String phai co default hoac phu het.
-- case null: switch pattern ném NPE neu khong co case null (Java 21).
-- Thu tu: pattern tong quat truoc => dominated.
+~~~java
+String sql = """
+        SELECT id, name
+        FROM users
+        WHERE active = true
+        """; // dấu đóng thẳng hàng -> cắt hết thụt lề trái
+// Cẩn thận: KHÔNG nối dữ liệu người dùng vào SQL text block
+String bad = """
+        SELECT * FROM users WHERE name = '""" + userInput + "'";
+// -> SQL injection (chèn mã SQL độc hại). Dùng PreparedStatement.
+~~~
 
-### var pitfalls
-- Chi local; field/param/return phai kieu tuong minh.
-- Khong co initializer hoac null => compile error.
-- var voi diamond: ArrayList<Object>.
+### 2) Switch expression - exhaustive và null
+- **Cái gì:** switch có thể trả về giá trị (expression) dùng {{->}} hoặc {{yield}}; compiler kiểm tra đã phủ hết nhánh chưa.
+- **Exhaustive (phủ hết):** với {{enum}} hoặc sealed type, nếu liệt kê đủ mọi giá trị thì không cần {{default}}. Lợi ích: thêm giá trị enum mới → compile lỗi ở mọi switch thiếu nhánh, thay vì rơi vào {{default}} im lặng.
+- **Bẫy {{null}}:** switch truyền thống trên {{String/enum}} ném {{NullPointerException}} (NPE - lỗi truy cập null) khi selector là {{null}}. Từ Java 21, pattern matching cho phép {{case null}} tường minh; nếu không có {{case null}} (và không có {{default}} bắt), {{null}} vẫn gây NPE. Khi review phải hỏi: "giá trị này có thể null không?".
+- **Bẫy thứ tự pattern (Java 21):** pattern tổng quát đặt trước pattern cụ thể → nhánh sau bị "dominated" (không bao giờ chạy) và compiler báo lỗi.
 
-> Senior tip: dat convention: var chi khi ve phai noi ro kieu; text block chi cho chuoi tinh.`,
-  follow: ['Text block bo indentation theo quy tac nao?', 'Switch expression xu ly null the nao?', 'Khi nao var kho review?'],
+~~~java
+// Java 21: xử lý null rõ ràng
+String label = switch (status) {       // status có thể null
+    case null -> "UNKNOWN";            // bắt null tường minh
+    case ACTIVE -> "Đang hoạt động";
+    case LOCKED -> "Bị khóa";
+}; // enum phủ hết -> không cần default
+~~~
+
+### 3) var - suy luận kiểu cục bộ
+- **Cái gì:** {{var}} (Java 10) cho compiler tự suy ra kiểu biến local từ giá trị khởi tạo. Chỉ dùng cho **biến cục bộ** có initializer; **không** dùng cho field, tham số method, kiểu trả về.
+- **Vì sao cần:** giảm lặp kiểu dài (ví dụ {{Map<String, List<Order>>}}). Nhưng chỉ đáng khi vế phải nói rõ kiểu.
+- **Bẫy "kiểu không rõ":** {{var x = get();}} buộc người đọc phải đoán kiểu → review chậm, dễ hiểu sai.
+- **Bẫy {{diamond}} + {{var}}:** {{var list = new ArrayList<>();}} suy ra {{ArrayList<Object>}} (không có thông tin kiểu), thường không phải ý bạn muốn.
+- **Bẫy {{null}}:** {{var x = null;}} không biên dịch được vì không suy ra được kiểu.
+
+| Tình huống | Nên dùng {{var}}? | Vì sao |
+|---|---|---|
+| {{var user = new User(name);}} | Có | vế phải rõ kiểu |
+| {{var map = Map.of("a", 1);}} | Có | rõ ràng |
+| {{var result = service.process(req);}} | Cân nhắc | phải nhìn chữ ký method |
+| {{var list = new ArrayList<>();}} | Không | suy ra {{Object}} |
+
+### Pitfall thực tế trên production
+- Text block SQL ghép chuỗi dữ liệu → SQL injection (lỗ hổng nghiêm trọng). Luôn dùng bind parameter.
+- Switch expression thêm {{default}} "cho chắc" trên enum → mất cảnh báo compile khi enum thêm giá trị mới.
+- Review code đồng đội lạm dụng {{var}} khiến logic nghiệp vụ (tiền, trạng thái) bị hiểu nhầm kiểu.
+
+> Senior tip: đặt convention (quy ước) trong team: {{var}} chỉ khi vế phải nói rõ kiểu trong cùng dòng; text block chỉ cho hằng chuỗi (không ghép dữ liệu động); switch trên enum/sealed ưu tiên exhaustive không {{default}} để compiler bắt hộ trường hợp mới. Khi review, ba câu hỏi nhanh: "text block có ghép input không?", "switch có thể nhận null không?", "{{var}} này người đọc có biết kiểu ngay không?".`,
+  follow: [
+    'Text block bỏ indentation (thụt lề) theo quy tắc nào, và dấu đóng {{"""}} ảnh hưởng ra sao?',
+    'Switch expression xử lý {{null}} thế nào so với switch truyền thống?',
+    'Khi nào dùng {{var}} làm code khó review hơn, và team nên quy ước ra sao?'
+  ],
   tags: ['text block', 'switch expression', 'var', 'review', 'pitfall']
 },
 {
@@ -6215,26 +6409,61 @@ ScopedValue.where(CURRENT_USER, user).run(() -> { service.process(); });
   topic: 'modern',
   level: 'senior',
   q: 'Record: canonical/compact constructor, bat bien nong (shallow), equals/hashCode, DTO/JPA.',
-  a: `**Tom tat:** record tu sinh constructor/accessor/equals/hashCode/toString; compact constructor validate/chuan hoa; bat bien chi nong; DTO tot, JPA entity khong.
+  a: `**Tóm tắt:** {{record}} (Java 16) là lớp bất biến "mang dữ liệu", compiler tự sinh constructor, accessor, {{equals/hashCode/toString}}; **compact constructor** cho phép validate/chuẩn hóa tham số trước khi gán; nhưng tính bất biến chỉ là **nông (shallow)** - nếu component là {{List/Map}} có thể sửa được thì record vẫn bị thay đổi gián tiếp. Record rất hợp làm DTO (Data Transfer Object - đối tượng chuyển dữ liệu), **không** phù hợp làm JPA entity (thực thể ánh xạ bảng CSDL).
 
-### Canonical vs compact
-- Canonical nhan du component.
-- Compact khong co tham so, chay truoc khi gan field; co the reassign de chuan hoa.
+### Record là gì và vì sao cần
+- **Vấn đề:** lớp "chỉ chứa dữ liệu" (POJO) thường phải viết lặp lại constructor, getter, {{equals}}, {{hashCode}}, {{toString}} - nhiều code, dễ quên cập nhật khi thêm field.
+- **Record giải quyết:** khai báo {{record Order(String id, long amountCents)}} → compiler sinh tất cả. Mỗi component là {{private final}} và có accessor cùng tên ({{order.id()}}, không phải {{getId()}}).
+- Ví dụ đời thường: thay vì tự điền mọi ô trong một biểu mẫu lặp đi lặp lại, bạn dùng một mẫu in sẵn - chỉ cần khai báo các trường.
 
-### Bat bien nong
-- Field final nhung component mutable van mutable.
-- Phai defensive copy: items = List.copyOf(items).
-- equals/hashCode dung tat ca component.
+### Canonical constructor vs Compact constructor
+- **Canonical constructor:** constructor "đầy đủ" nhận đúng tất cả component theo thứ tự khai báo. Bạn có thể tự viết để validate, nhưng phải tự gán mọi field.
+- **Compact constructor:** dạng rút gọn, **không** liệt kê tham số và **không** gán field thủ công. Bạn chỉ kiểm tra/chuẩn hóa; cuối compact constructor, compiler tự gán {{this.id = id}} (giá trị sau chuẩn hóa) cho mọi component.
 
-### DTO
-- It boilerplate, bat bien, Jackson ho tro.
+~~~java
+public record Order(String id, List<String> items) {
+    // Compact constructor: validate + chuẩn hóa + defensive copy
+    public Order {
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException("id trống");
+        }
+        id = id.trim();                         // chuẩn hóa -> compiler tự gán
+        items = List.copyOf(items);             // defensive copy (sao chép phòng thủ)
+        // KHÔNG viết this.items = ... ; compiler tự làm sau block này
+    }
+}
+~~~
 
-### JPA entity
-- Khong nen: can no-arg, field mutable, proxy subclass.
-- Co the dung record lam projection.
+### Bất biến nông (shallow immutability) - bẫy quan trọng
+- {{final}} chỉ ngăn gán lại **tham chiếu** {{items}} sang list khác; nó **không** ngăn sửa nội dung bên trong nếu list đó mutable (có thể thay đổi).
+- Vì vậy {{record R(List<String> items)}} nhận {{new ArrayList<>()}} từ bên ngoài mà không copy → bên ngoài vẫn {{add/remove}} được → record "đột nhiên đổi".
+- **Cách đúng:** dùng {{List.copyOf(items)}} (trả về bản sao bất biến, đồng thời chặn {{null}} phần tử). Với mảng, dùng {{array.clone()}} hoặc bọc bất biến.
 
-> Senior tip: record cho value object/DTO; compact constructor validate + copy.`,
-  follow: ['Vi sao Hibernate khong tao proxy cho record?', 'Compact khac canonical?', 'Record pattern (Java 21) giup gi?'],
+### equals/hashCode/toString
+- Sinh tự động dựa trên **tất cả** component, so sánh theo giá trị (value-based). Hai record cùng kiểu, cùng giá trị component → {{equals}} là {{true}}.
+- **Cẩn thận:** nếu component là mảng ({{byte[]}}), {{equals}} của mảng so sánh tham chiếu, không so sánh nội dung → hai record chứa mảng giống nội dung vẫn có thể {{equals}} false. Tránh dùng mảng thô trong record; dùng {{List}} hoặc tự override (ít khi cần).
+
+### Record làm DTO - rất hợp
+- Ít boilerplate, bất biến, {{toString}} hữu ích khi log, dễ serialize/deserialize với Jackson (từ Jackson 2.12+ hỗ trợ record tốt) và dùng làm response/request object.
+- Phù hợp: API response, message event, value object trong domain.
+
+### Record làm JPA entity - KHÔNG nên
+- **JPA/Hibernate (thư viện ORM - ánh xạ object ↔ bảng CSDL, Hibernate 6 dùng trong Spring Boot 3.x)** cần: constructor không tham số (no-arg), field có thể gán lại (mutable), và khả năng tạo **proxy** (lớp con sinh lúc chạy để lazy loading - nạp trễ).
+- Record: không có no-arg constructor, component {{final}}, là {{final}} class (không cho kế thừa) → Hibernate không tạo proxy được, không gán field qua setter. Vì vậy **không dùng record làm {{@Entity}}**.
+- **Có thể dùng:** record làm **projection** (kết quả truy vấn chỉ đọc), ví dụ {{select new com.app.UserDto(u.id, u.name) from User u}} trong JPQL, hoặc interface/DTO projection của Spring Data JPA.
+
+### Pitfall thực tế trên production
+- Nghĩ record "bất biến tuyệt đối" rồi nhét {{List}} mutable vào → state bị sửa từ nơi khác, bug khó truy vết.
+- Dùng record làm entity → lỗi khởi động Hibernate hoặc hành vi lazy loading sai.
+- Thêm logic nặng trong compact constructor (gọi DB/mạng) → constructor khó test, bất ngờ khi deserialize.
+- Trộn accessor kiểu record {{id()}} với quy ước JavaBean {{getId()}} làm một số framework cũ không map được (hiếm, nhưng kiểm tra khi tích hợp).
+
+> Senior tip: dùng record cho value object/DTO và kết quả truy vấn; luôn defensive-copy các component dạng collection/mảng trong compact constructor ({{List.copyOf}}, {{Map.copyOf}}). Với JPA, giữ entity là class thường và map sang record DTO ở tầng service/controller - vừa tận dụng bất biến, vừa không phá cơ chế proxy/lazy của Hibernate.`,
+  follow: [
+    'Vì sao Hibernate không tạo được proxy cho record, và điều đó ảnh hưởng lazy loading thế nào?',
+    'Compact constructor khác canonical constructor ở điểm nào, khi nào nên dùng compact?',
+    'Record pattern (Java 21, khử cấu trúc) giúp gì khi xử lý dữ liệu lồng nhau?'
+  ],
   tags: ['record', 'compact constructor', 'DTO', 'JPA', 'shallow immutability']
 },
 {
@@ -6242,25 +6471,57 @@ ScopedValue.where(CURRENT_USER, user).run(() -> { service.process(); });
   topic: 'modern',
   level: 'lead',
   q: 'Sealed + pattern matching switch: exhaustiveness, compiler kiem tra, loi ich khi them subtype moi.',
-  a: `**Tom tat:** sealed gioi han tap subclass; switch pattern kiem tra exhaustive tai compile-time neu hierarchy sealed; them subtype moi lam moi switch thieu case loi compile.
+  a: `**Tóm tắt:** {{sealed}} (Java 17) giới hạn chính xác tập lớp con được phép; kết hợp **pattern matching for switch** (Java 21) thì compiler có thể kiểm tra **exhaustive** (đã xử lý hết mọi kiểu con) ngay lúc biên dịch. Lợi ích lớn nhất: khi thêm subtype mới vào hierarchy, mọi {{switch}} expression thiếu nhánh sẽ **lỗi compile** - bạn được compiler "dẫn đi sửa" thay vì phát hiện bug ở runtime.
 
-### Sealed
-- Subclass phai final/sealed/non-sealed va cung module/package.
+### Sealed là gì và vì sao cần
+- **Vấn đề:** class/interface thường cho phép ai cũng kế thừa/implement → bạn không thể biết trước "có bao nhiêu loại" để xử lý. Thêm một loại mới dễ làm sót nhánh {{if-else/switch}}.
+- **Sealed giải quyết:** {{sealed class Payment permits Card, Cash, Wallet}} khai báo danh sách con đóng. Mỗi lớp con trực tiếp phải chọn đúng một trong: {{final}} (không cho kế thừa tiếp), {{sealed}} (đóng tiếp một tầng), hoặc {{non-sealed}} (mở lại cho kế thừa tự do). Các lớp con thường phải cùng module hoặc cùng package (quy tắc Java).
+- Ví dụ đời thường: phương thức thanh toán của cửa hàng chỉ gồm tiền mặt, thẻ, ví điện tử - danh sách cố định giúp quầy thu ngân biết phải xử lý đủ các loại.
 
-### Exhaustiveness
-- Switch expression tren sealed type khong can default neu phu het subtype.
-- Compiler kiem tra coverage; thieu => loi compile.
-- Them subtype moi => moi switch thieu case loi compile.
+### Exhaustiveness - compiler kiểm tra gì
+- Với {{switch}} **expression** (trả giá trị) trên một sealed type, nếu bạn liệt kê đủ mọi subtype được phép thì **không cần {{default}}**. Compiler chứng minh "không còn trường hợp nào khác".
+- Nếu thiếu một subtype → **lỗi biên dịch** (compile-time). Đây là khác biệt cốt lõi so với {{if-else}} chuỗi (chỉ kiểm tra runtime, sót nhánh thì im lặng).
 
-### non-sealed
-- Cho phep mo rong ngoai module => mat exhaustive check => can default.
+~~~java
+sealed interface Payment permits Card, Cash {}
+record Card(String number) implements Payment {}
+record Cash(long amountCents) implements Payment {}
 
-### Pitfall
-- null => NPE neu khong case null.
-- Thu tu: pattern tong quat truoc => dominated.
+String fee(Payment p) {
+    return switch (p) {                     // switch expression
+        case Card c -> "1.5%";             // xử lý Card
+        case Cash c -> "0";                // xử lý Cash
+    }; // đủ hết permits -> không cần default, compiler chấp nhận
+}
+// Nếu sau này thêm: record Wallet(...) implements Payment
+// và cập nhật permits -> hàm fee() SẼ LỖI COMPILE vì thiếu case Wallet.
+~~~
 
-> Senior tip: sealed + record + switch exhaustive thay the visitor pattern.`,
-  follow: ['Vi sao switch pattern tren sealed khong can default?', 'non-sealed anh huong exhaustiveness?', 'Switch pattern xu ly null khac switch String?'],
+### Thêm subtype mới - tại sao đây là "lợi ích lead"
+- Quy trình an toàn: (1) thêm {{Wallet}} và khai báo vào {{permits}}; (2) build → compiler liệt kê mọi {{switch}} chưa xử lý {{Wallet}}; (3) sửa từng chỗ. Không còn kiểu "quên một chỗ, 3 tháng sau mới nổ bug".
+- So sánh với **visitor pattern** (mẫu thiết kế tách thuật toán khỏi cấu trúc đối tượng): visitor cũng ép cập nhật khi thêm type, nhưng cần nhiều boilerplate (interface visitor, method accept). Sealed + switch cho exhaustive check với code ngắn hơn, dispatch (chọn nhánh) rõ ràng ngay tại chỗ.
+
+### {{non-sealed}} và đánh đổi
+- Một nhánh {{non-sealed}} cho phép lớp con "không kiểm soát" bên ngoài → compiler **không** còn chứng minh được đã phủ hết (có thể có subtype lạ xuất hiện lúc runtime) → bạn **phải** có {{default}} hoặc nhánh kiểu cha. Vì vậy dùng {{non-sealed}} có chủ đích, khi bạn thật sự cần điểm mở rộng.
+
+### Bẫy khi migrate và khi review
+- **{{null}}:** pattern matching switch ném {{NullPointerException}} nếu selector là {{null}} và bạn không có {{case null}}. Luôn quyết định rõ: chấp nhận null ({{case null}}) hay chặn null trước switch.
+- **Thứ tự case (dominance):** pattern tổng quát (ví dụ kiểu cha) đặt trước pattern cụ thể → nhánh cụ thể bị che và compiler báo lỗi. Đặt nhánh cụ thể trước.
+- **Guard {{when}}:** {{case Card c when c.expired() -> ...}} thêm điều kiện; nhánh có guard chưa chắc phủ hết subtype đó → có thể vẫn cần nhánh "còn lại" cho cùng subtype.
+- **Lạm dụng trên domain mở:** nếu kiểu con thay đổi thường xuyên bởi plugin bên ngoài, sealed gây sửa nhiều chỗ; hãy dùng interface thường + {{default}}.
+
+| Cách tiếp cận | Khi thêm type mới | Boilerplate | Kiểm tra |
+|---|---|---|---|
+| {{if-else/instanceof}} cũ | Dễ quên, im lặng | Thấp | Runtime |
+| Visitor pattern | Bị ép sửa | Cao | Compile (nếu đủ kỷ luật) |
+| Sealed + switch pattern | Compiler báo mọi chỗ thiếu | Thấp | Compile |
+
+> Senior tip: mô hình hóa domain "đóng" (trạng thái đơn hàng, loại sự kiện, kết quả xử lý) bằng {{sealed interface}} + {{record}} cho từng biến thể, rồi dùng switch expression exhaustive. Khi ai đó thêm biến thể mới, để compiler dẫn đường - đó là lợi ích thiết kế lớn hơn cả cú pháp. Chỉ dùng {{default}} khi bạn thật sự chấp nhận "loại chưa biết" (ví dụ đọc dữ liệu tương lai), và khi đó hãy log/cảnh báo thay vì nuốt im.`,
+  follow: [
+    'Vì sao switch pattern trên sealed type thường không cần {{default}}, và khi nào vẫn cần?',
+    '{{non-sealed}} ảnh hưởng thế nào đến khả năng kiểm tra exhaustive của compiler?',
+    'Switch pattern xử lý {{null}} khác switch truyền thống trên {{String/enum}} ra sao?'
+  ],
   tags: ['sealed', 'pattern matching', 'switch', 'exhaustiveness', 'Java 21']
 },
 {
@@ -6268,21 +6529,61 @@ ScopedValue.where(CURRENT_USER, user).run(() -> { service.process(); });
   topic: 'modern',
   level: 'senior',
   q: 'Sealed class va pattern matching for switch (Java 21): exhaustiveness dam bao gi va pitfall khi migrate tu if-else/visitor.',
-  a: `**Tom tat:** sealed + switch pattern cho exhaustive compile-time check; migrate tu if-else/visitor can chu y null, thu tu case, version preview.
+  a: `**Tóm tắt:** Từ Java 21, {{sealed}} (giới hạn tập lớp con) kết hợp pattern matching cho {{switch}} cho phép compiler kiểm tra exhaustive (phủ hết mọi trường hợp) ngay lúc biên dịch. Khi migrate từ chuỗi {{if-else instanceof}} hoặc từ visitor pattern, bạn được code gọn hơn và an toàn hơn khi thêm type mới, nhưng phải chú ý {{null}}, thứ tự case, và chỉ dùng cho domain thật sự "đóng".
 
-### Loi ich
-- Exhaustive check tai compile-time.
-- Them subtype => compiler nhac moi switch.
-- Thay visitor pattern: it boilerplate, single dispatch.
+### Cái gì và vì sao cần (bối cảnh migrate)
+- **Cách cũ 1 - {{if-else}} + {{instanceof}}:** kiểm tra kiểu từng nhánh. Dễ quên một nhánh; thêm subtype mới không có cơ chế nào nhắc, bug chỉ lộ khi chạy đúng case đó.
+- **Cách cũ 2 - visitor pattern (mẫu thiết kế "khách thăm"):** mỗi subtype có {{accept(visitor)}}, visitor khai báo một method cho từng subtype. Thêm subtype mới buộc sửa interface visitor → mọi visitor implementation lỗi compile. An toàn, nhưng nhiều boilerplate.
+- **Cách mới (Java 21):** {{sealed interface}} + {{record}} cho biến thể + switch expression exhaustive. Bạn giữ được kiểm tra compile-time gần giống visitor, nhưng dispatch nằm gọn tại chỗ dùng, ít lớp phụ.
 
-### Pitfall
-- null => NPE neu khong case null.
-- Thu tu case: cu the truoc tong quat.
-- non-sealed lam mat exhaustive.
-- Preview 17-20, final 21.
+~~~java
+// Trước: if-else dễ sót nhánh
+String render(Shape s) {
+    if (s instanceof Circle c) return "O r=" + c.r();
+    else if (s instanceof Rect r) return "[] " + r.w() + "x" + r.h();
+    return "?"; // thêm Triangle sau này vẫn trả "?" im lặng -> bug
+}
 
-> Senior tip: dung cho domain it thay doi; domain mo thi dung non-sealed/interface thuong.`,
-  follow: ['Vi sao visitor exhaustiveness la runtime?', 'Khi nao khong nen sealed?', 'Record pattern long giup gi?'],
+// Sau (Java 21): sealed + switch exhaustive
+sealed interface Shape permits Circle, Rect, Triangle {}
+record Circle(double r) implements Shape {}
+record Rect(double w, double h) implements Shape {}
+record Triangle(double a, double b, double c) implements Shape {}
+
+String render(Shape s) {
+    return switch (s) {
+        case Circle c -> "O r=" + c.r();
+        case Rect r   -> "[] " + r.w() + "x" + r.h();
+        case Triangle t -> "/\\";
+    }; // thiếu Triangle -> LỖI COMPILE (compiler dẫn đi sửa)
+}
+~~~
+
+### Exhaustiveness đảm bảo điều gì (và không đảm bảo điều gì)
+- **Đảm bảo lúc biên dịch:** với {{switch}} expression trên sealed type, nếu hierarchy "đóng" hoàn toàn (không có nhánh {{non-sealed}} mở), compiler chứng minh mọi permits đã được xử lý. Thêm subtype mới → mọi switch thiếu nhánh lỗi compile.
+- **Không tự xử lý {{null}}:** selector {{null}} gây {{NullPointerException}} trừ khi bạn có {{case null}} (Java 21) hoặc chặn trước. Đây là khác biệt hay gây crash khi migrate.
+- **Không phủ điều kiện guard:** {{case Rect r when r.w() == 0 -> ...}} chỉ phủ một phần {{Rect}}; bạn vẫn cần nhánh {{case Rect r -> ...}} cho phần còn lại, nếu không sẽ không exhaustive.
+
+### Pitfall khi migrate (thực tế hay gặp)
+- **Giữ {{default}} thói quen:** thêm {{default -> throw ...}} để "cho yên tâm" trên sealed type kín → bạn vừa tự tắt lợi ích lớn nhất: compiler không còn báo khi thêm subtype mới. Chỉ dùng {{default}} khi hierarchy có {{non-sealed}} hoặc bạn cố ý chấp nhận loại chưa biết.
+- **Thứ tự case sai (dominated pattern):** đặt {{case Shape s -> ...}} trước các nhánh con → nhánh con không bao giờ chạy, compiler báo lỗi. Quy tắc: cụ thể trước, tổng quát sau.
+- **Nhầm trạng thái preview/final:** pattern matching cho switch hoàn thiện qua nhiều bản preview (Java 17-20) và **chính thức từ Java 21**. Code mẫu preview cũ có thể khác cú pháp/chi tiết; luôn kiểm tra đúng JDK dự án.
+- **Migrate visitor nửa vời:** trộn visitor và switch rải rác làm logic phân tán. Chọn một hướng cho mỗi hierarchy.
+- **Domain mở:** nếu plugin/đối tác được thêm subtype lúc runtime, sealed ép sửa code trung tâm → không phù hợp; dùng interface thường.
+
+### Bảng quyết định nhanh
+| Đặc điểm hierarchy | Gợi ý |
+|---|---|
+| Tập biến thể cố định, thuộc sở hữu team (trạng thái, event, kết quả) | {{sealed}} + {{record}} + switch exhaustive |
+| Cần điểm mở rộng cho bên thứ ba | interface thường (cân nhắc {{non-sealed}} có kiểm soát) |
+| Đang dùng visitor ổn định, team quen | không cần migrate vội; migrate khi thêm type mới gây đau |
+
+> Senior tip: khi migrate, hãy bắt đầu từ hierarchy "nhỏ, đóng, nhiều {{instanceof}}" (ví dụ kết quả {{Success/Failure}}). Bước 1: biến thành {{sealed interface}} + {{record}}. Bước 2: thay {{if-else}} bằng switch expression **không {{default}}**. Bước 3: thêm {{case null}} nếu đầu vào có thể null. Lợi ích thực sự đến ở lần sau ai đó thêm subtype: compiler chỉ thẳng các điểm phải sửa - đó là thứ {{if-else}} không bao giờ làm được.`,
+  follow: [
+    'Vì sao visitor pattern kiểm tra tính đầy đủ chủ yếu dựa vào kỷ luật/compile ở interface, còn sealed+switch kiểm tra trực tiếp tại điểm dùng?',
+    'Khi nào KHÔNG nên dùng {{sealed}} cho một hierarchy?',
+    'Record pattern lồng nhau (deconstruction pattern, Java 21) hỗ trợ gì khi khử cấu trúc dữ liệu?'
+  ],
   tags: ['sealed', 'pattern matching', 'switch', 'visitor', 'Java 21']
 },
 {
@@ -6290,32 +6591,48 @@ ScopedValue.where(CURRENT_USER, user).run(() -> { service.process(); });
   topic: 'modern',
   level: 'lead',
   q: 'Tu Java 8 len 21: lo trinh migrate va tinh nang dang gia nhat.',
-  a: `**Tom tat:** migrate theo buoc 8->11->17->21; gia tri lon: GC/perf, record/sealed/pattern matching, virtual thread, strong encapsulation.
+  a: `**Tóm tắt:** Lộ trình an toàn nhất là đi theo các bản **LTS** (Long-Term Support - bản hỗ trợ dài hạn: 8→11→17→21), mỗi bước có baseline đo lường, quét tương thích tự động, chạy song song CI, và rollout có canary/rollback. Giá trị lớn nhất khi lên 21 không chỉ là cú pháp ({{record/sealed/pattern matching}}) mà còn ở runtime (GC hiện đại, **virtual thread** cho I/O) và bảo mật nền tảng (strong encapsulation).
 
-### Tinh nang dang gia
-- 9: collection factory, module.
-- 10: var.
-- 11 LTS: String methods, HTTP client, G1/ZGC.
-- 14-16: switch expr, text block, record, instanceof pattern.
-- 17 LTS: sealed, strong encapsulation.
-- 21 LTS: virtual thread, pattern matching switch, record pattern, sequenced collection.
+### Vì sao đi từng LTS thay vì nhảy 8→21
+- Mỗi cột mốc gỡ/bẻ một nhóm thứ: module/encapsulation, API bị loại bỏ, hành vi GC, yêu cầu thư viện (Spring Boot 3 đòi Java 17). Nhảy thẳng khiến lỗi trộn lẫn, khó khoanh vùng.
+- Đi từng bước cho phép: (1) cô lập nguyên nhân, (2) nâng dependency tương thích ở đúng mốc, (3) giữ cửa rollback rõ.
+- Ví dụ đời thường: nâng cấp một tòa nhà cũ - làm móng, rồi điện nước, rồi nội thất; làm tất cả cùng lúc thì không biết hỏng ở đâu.
 
-### Lo trinh
-1. Baseline test/JMH/GC.
-2. 8->11: jdeps, thay API bo, TLS.
-3. 11->17: reflection/internal, Spring Boot 3.
-4. 17->21: pattern/record, VT o I/O-bound + do.
-5. CI song song JDK, staging smoke.
-6. Rollout blue-green, monitor.
+### Những mốc thay đổi đáng giá (nhìn thực dụng)
+| Bản | Đáng chú ý cho dự án thật | Ghi chú migrate |
+|---|---|---|
+| 9 | module system (JPMS), API collection {{List.of/Map.of}} | JPMS có thể bỏ qua lúc đầu, nhưng encapsulation mạnh dần |
+| 10 | {{var}} cục bộ | thuần cú pháp, rủi ro thấp |
+| 11 (LTS) | HTTP Client chuẩn, {{String}} API mới, TLS/cert cập nhật, chạy tốt hơn | nhiều thư viện bỏ hỗ trợ 8; kiểm tra {{javax.*}} → {{jakarta.*}} chưa bắt buộc ở đây |
+| 14-16 | {{switch}} expression, text block, {{record}}, {{instanceof}} pattern | giảm boilerplate rõ rệt; build/test dễ hơn |
+| 17 (LTS) | {{sealed}}, **strong encapsulation** mặc định (khó truy cập nội bộ JDK), randomization mặc định một số chỗ | Spring Boot 3.x yêu cầu Java 17; đây là "cửa ải" lớn |
+| 21 (LTS) | **virtual thread** (JEP 444), pattern matching for {{switch}}, record pattern, sequenced collections | lợi ích lớn cho dịch vụ I/O-bound; vẫn cần đo |
 
-### Pitfall
-- Nhay thang 8->21 kho debug.
-- Reflection/bytecode instrumentation vo nhieu.
-- Unsafe deprecated for removal (Java 23+).
-- VT khong cho CPU-bound.
+### Lộ trình migrate từng bước (có thể áp dụng cho 1 service, nhân rộng ra nhiều service)
+1. **Đo baseline trước khi đổi:** test xanh, p50/p95/p99 latency, throughput, GC pause, heap, thời gian khởi động. Không có baseline thì không chứng minh được "không thoái hóa".
+2. **8→11:** nâng toolchain; chạy {{jdeps}} / {{jdeprscan}}; thay API bị gỡ ({{JAXB}}, {{javax.xml.bind}} nếu dùng phải thêm dependency); kiểm tra TLS/cipher; nâng driver DB/broker nếu cần. Giữ CI chạy song song 8 và 11 một thời gian ngắn.
+3. **11→17 (cửa ải khó nhất thường gặp):** xử lý reflection/truy cập nội bộ ({{--add-opens}} chỉ là giải pháp tạm, phải có ticket dọn); nâng framework (Spring Boot 2.7 → 3.x kéo theo {{javax.*}} → {{jakarta.*}} namespace); kiểm tra agent/bytecode (Mockito, APM, Lombok) tương thích. Với Spring Boot 3.x + Hibernate 6 (ORM mặc định) hãy chạy kỹ migration test.
+4. **17→21:** tận dụng {{record/sealed/pattern}} để giảm code lỗi; thử **virtual thread** cho workload I/O-bound (xem {{modern-039}}: giới hạn bằng semaphore, cẩn thận {{ThreadLocal}}/pinning) và **đo** trước khi bật rộng.
+5. **CI song song và rollout:** matrix JDK (17,21) trong giai đoạn chuyển tiếp; staging smoke; deploy canary/blue-green; theo dõi metric 24-48h; rollback bằng image cũ.
 
-> Senior tip: migrate la du an co ke hoach; chay test tren JDK moi truoc production.`,
-  follow: ['Vi sao di tung LTS?', 'Virtual thread giai quyet va khong giai quyet gi?', 'Strong encapsulation anh huong thu vien cu?'],
+~~~text
+8 (LTS) --nâng deps/toolchain--> 11 (LTS) --encapsulation + jakarta--> 17 (LTS) --tận dụng VT/pattern--> 21 (LTS)
+   | đo baseline tại mỗi mốc |  quét jdeps/jdeprscan  |  canary + rollback  |
+~~~
+
+### Pitfall thực tế trên production
+- **Nhảy cóc 8→21:** lỗi do module encapsulation, {{jakarta.*}}, GC, và thư viện đổ dồn một lúc.
+- **Reflection/agent vỡ im lặng:** code chạy nhưng hành vi khác (serialization, proxy). Phải có test tích hợp và kiểm tra log khởi động.
+- **Virtual thread cho CPU-bound:** không nhanh hơn, đôi khi tệ hơn; VT chỉ giải quyết bài toán "nhiều việc đang chờ I/O".
+- **Bỏ qua chi phí warmup/JIT:** so sánh hiệu năng "lạnh" sau deploy với "nóng" trước đó → kết luận sai.
+- **Giữ {{--add-opens/--illegal-access}} mãi:** nợ kỹ thuật, có thể vỡ ở bản JDK sau.
+
+> Senior tip: coi nâng LTS là dự án có owner, playbook và số liệu - không phải "bump version". Với hệ thống nhiều service, dùng wave (pilot → non-critical → core) như {{modern-038}}. Thứ tự ưu tiên giá trị: (1) an toàn/bảo trì (LTS, CVE, thư viện được hỗ trợ), (2) độ tin cậy runtime (GC, observability), (3) năng suất dev (record/sealed/pattern), (4) throughput I/O (virtual thread) - nhưng (4) chỉ "ăn tiền" khi bạn đo được và giới hạn đúng hạ nguồn.`,
+  follow: [
+    'Vì sao bước 11→17 thường khó hơn 8→11 trong hệ Spring?',
+    'Virtual thread giải quyết và không giải quyết bài toán nào?',
+    'Strong encapsulation từ Java 16/17 ảnh hưởng thế nào đến thư viện dùng reflection hoặc truy cập nội bộ JDK?'
+  ],
   tags: ['Java 21', 'migration', 'LTS', 'virtual threads', 'lead']
 }
 );
