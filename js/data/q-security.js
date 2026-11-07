@@ -212,7 +212,7 @@ actors: Client | Resource Server | Auth Server
 Client -> Resource Server: GET /api (Bearer JWT)
 Resource Server -> Auth Server: lay cong khai tu JWKS
 Auth Server --> Resource Server: JWKS (cong khai)
-Resource Server --> Client: 200 OK hoac 401 loi
+Resource Server --> Client: 200 OK hoặc 401 lỗi
 note Client..Auth Server: verify chu ky + exp + iss + aud
 ~~~
 
@@ -1013,10 +1013,10 @@ Sơ đồ dưới đây minh họa tan cong SSRF lay credential tu metadata clou
 ~~~seq
 title: SSRF lay credential tu metadata
 actors: Attacker | App | Metadata
-Attacker -> App: fetch URL tu nguoi dung
+Attacker -> App: fetch URL từ người dùng
 App -> Metadata: lay IAM credential
 Metadata --> App: tra ve IAM role credential
-App --> Attacker: tra ve du lieu (kem credential)
+App --> Attacker: trả về dữ liệu (kèm credential)
 note Attacker..Metadata: chuan bi whitelist host
 ~~~
 
