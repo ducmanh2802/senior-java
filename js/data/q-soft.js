@@ -167,6 +167,15 @@ assertThat(order.chargedAmount()).isEqualTo(500_000L);
 4. **Để tầng dưới được test bằng implementation thật** thay vì mock ở tầng trên.
 5. **Contract test** cho hợp đồng giữa các service thay vì mock dài hạn trong unit test.
 
+### Vì sao mock quá nhiều làm test "giòn"
+Khi bạn viết {{verify(repo).save(any())}} hay {{verify(mapper, times(2)).toDto(any())}}, test đang khẳng định **cách** code làm việc chứ không phải **kết quả**. Refactor hợp lệ — gộp hai lần map thành một, đổi {{save}} thành {{saveAll}} — không làm sai hành vi nhưng làm test đỏ. Dần dần team sợ refactor vì "sửa 1 dòng, đỏ 30 test". Nguyên tắc thực dụng: **mock ở ranh giới hệ thống** (HTTP client ra ngoài, message broker, đồng hồ, gateway thanh toán) và **dùng object thật hoặc fake cho mọi thứ bên trong** (domain object, mapper, validator, repository trong bộ nhớ). Chỉ verify lời gọi khi lời gọi đó **chính là hành vi** cần kiểm tra, ví dụ "phải gửi đúng 1 email xác nhận".
+
+### Ví dụ đời thực
+Module đặt hàng có 420 unit test, 80% dùng Mockito với trung bình 6 mock mỗi test. Khi tách {{OrderService}} thành hai class nhỏ, 140 test đỏ dù không có bug nào; mất 3 ngày để sửa test. Phân tích: phần lớn test verify thứ tự gọi giữa mapper, validator, repository. Team viết {{InMemoryOrderRepository}} (fake, khoảng 40 dòng dùng {{HashMap}}), dùng mapper và validator thật, chỉ mock {{PaymentGateway}} và {{Clock}}. Số test giảm còn 260 nhưng mutation score (PIT) tăng từ 61% lên 78%, và lần refactor lớn tiếp theo chỉ làm đỏ 6 test — đều là thay đổi hành vi thật.
+
+### Trả lời mẫu khi phỏng vấn
+"Stub chỉ trả dữ liệu cố định, mock vừa trả dữ liệu vừa cho phép verify lời gọi, spy là object thật được ghi lại lời gọi, còn fake là bản triển khai nhẹ nhưng chạy thật, như repository trong bộ nhớ. Tôi mock ở ranh giới hệ thống, như HTTP client, broker, gateway thanh toán, đồng hồ, còn bên trong dùng object thật hoặc fake. Dấu hiệu mock quá nhiều là test có năm sáu mock, verify thứ tự gọi nội bộ, và mỗi lần refactor không đổi hành vi lại đỏ hàng loạt; khi đó test đang khoá cấu trúc chứ không bảo vệ hành vi. Cách xử lý: assert vào kết quả quan sát được, thay mock bằng fake cho repository, và nếu một class cần quá nhiều mock thì thường class đó đang làm quá nhiều việc, nên tách nó ra. Tôi dùng mutation testing để kiểm tra test có thật sự bắt lỗi không."
+
 > Senior tip: quy tắc cá nhân tôi dùng khi review PR — **một test chỉ nên fail khi hành vi quan sát được thay đổi**. Nếu đổi tên biến private hoặc thêm một lớp trung gian mà test đỏ, test đó đang khẳng định cấu trúc, và sẽ khiến team ghét viết test.`,
   follow: [
     'Bạn có dùng {{@ExtendWith(MockitoExtension.class)}} không? {{@Mock}} với {{@InjectMocks}} có những vấn đề gì?',
@@ -371,6 +380,12 @@ Ví dụ mutant điển hình: đổi {{>=}} thành {{>}}, xoá một nhánh {{i
 - **Tính mutation score trên toàn bộ code** kể cả code không có logic → tụt số điểm vô nghĩa.
 - **Coverage gate làm chậm PR** nếu chạy lại toàn bộ suite; nên dùng cơ chế "coverage delta" (chặn khi phần code mới làm giảm chất lượng) thay vì chặn tổng.
 
+### Ví dụ đời thực
+Service tính phí vận chuyển có 92% line coverage, CI xanh, nhưng một bug làm khách ở vùng xa bị tính phí bằng 0 suốt 3 ngày. Điều tra: test có gọi {{calculateFee()}} cho mọi vùng nhưng chỉ assert {{assertNotNull(result)}}. Chạy PIT lần đầu: mutation score 54%; mutant "đổi {{>}} thành {{>=}} ở ngưỡng khoảng cách" và "trả về 0" đều sống sót. Team thêm assert cụ thể cho giá trị phí, test cho ranh giới (đúng 50 km, 50,1 km), và đặt PIT chạy trên các class lõi tính tiền với ngưỡng 75%. Chạy PIT ở chế độ incremental chỉ cho class thay đổi trong PR (mất khoảng 3 phút), bản đầy đủ chạy hàng đêm (khoảng 25 phút). Sáu tháng sau mutation score 81%, không còn lỗi tính phí lọt ra production; line coverage gần như không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Coverage chỉ cho biết dòng nào đã chạy qua, không cho biết test có kiểm tra kết quả hay không; một test gọi hàm rồi chỉ assert không null vẫn được tính là phủ. Vì vậy tôi không đặt một ngưỡng chung cho cả repo. Tôi đặt khoảng 80% line và 70% branch cho lõi nghiệp vụ như tính tiền, phân quyền, và loại trừ DTO, cấu hình, code sinh tự động. Coverage dùng để tìm vùng chưa có test, không phải để đánh giá chất lượng. Mutation testing với PIT trả lời câu hỏi đúng hơn: nó cố tình sửa code, như đổi dấu so sánh hay trả về giá trị mặc định, rồi xem test có đỏ không. Mutant sống sót nghĩa là có hành vi chưa được kiểm tra. Trong CI, tôi chạy PIT incremental cho class thay đổi trong PR để nhanh, bản đầy đủ chạy hàng đêm, và đặt ngưỡng cho module lõi."
+
 > Senior tip: hãy dùng coverage như **cảm biến sớm** (module nào chưa được test, ai vừa viết code mà không test) chứ không phải như mục tiêu. Khi cần một con số duy nhất để tranh luận với sếp, mutation score trên domain thuyết phục hơn coverage tổng.`,
   follow: [
     'Coverage "ratchet" (chặn khi phần code mới làm giảm chất lượng) hoạt động thế nào trong pipeline?',
@@ -488,6 +503,12 @@ export default function () {
 - **Tranh luận về style thay vì thiết kế**: style nên do công cụ quyết định.
 - **Review "cho có"**: duyệt hết mọi PR mà không nói gì cũng là một dạng phá hoại.
 
+### Ví dụ đời thực
+Team 10 người có thời gian chờ review trung bình 2 ngày, nhiều PR bị comment 30–40 lần, chủ yếu về đặt tên và format; một dev mới xin chuyển team vì cảm thấy bị "soi". Trong khi đó một PR thêm {{@Transactional}} bao quanh lời gọi HTTP ra ngoài lọt qua review và gây cạn connection pool khi đối tác chậm. Thay đổi: formatter + Checkstyle + SpotBugs chạy trong CI nên review không còn bàn chuyện format; quy ước tiền tố comment ({{blocking:}}, {{suggestion:}}, {{nit:}}, {{question:}}); PR tối đa khoảng 400 dòng; checklist bắt buộc cho phần transaction, truy vấn và bảo mật; cam kết phản hồi review đầu tiên trong 4 giờ làm việc. Sau một quý: thời gian chờ review còn 5 giờ, số comment trung bình mỗi PR giảm một nửa nhưng tỉ lệ comment "blocking" tìm ra vấn đề thật tăng; không còn sự cố do transaction bao I/O.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi review tôi đọc mô tả và ticket trước để hiểu mục tiêu, rồi xem thiết kế tổng thể trước khi đọc từng dòng. Checklist của tôi theo thứ tự ưu tiên: đúng không, gồm logic, biên, null, idempotency; an toàn không, gồm phân quyền, injection, secret trong log; có bền khi tải tăng không, như N+1, thiếu index, transaction bao quanh I/O chậm; có tương thích ngược không, như đổi API hay migration; và cuối cùng là dễ đọc. Format và style tôi để công cụ tự động trong CI lo. Để tôn trọng đồng nghiệp, tôi ghi rõ mức độ mỗi comment, cái nào chặn merge, cái nào chỉ là gợi ý, giải thích lý do thay vì ra lệnh, và khen chỗ làm tốt. Nếu bàn qua lại quá ba lần, tôi chuyển sang nói chuyện trực tiếp. Tôi cũng cố phản hồi nhanh, vì PR chờ lâu tốn của team nhiều hơn một comment thiếu."
+
 > Senior tip: số liệu hay để đo chất lượng review là **thời gian phản hồi đầu tiên** và **số lần PR phải sửa vòng 2**. Nếu PR sửa 3 vòng mới merge, đó là vấn đề ở cách giao tiếp hoặc chất lượng thiết kế ban đầu, không phải ở reviewer.`,
   follow: [
     'Bạn xử lý thế nào khi đồng nghiệp không đồng ý với comment của bạn và cả hai đều có lý lẽ?',
@@ -596,6 +617,12 @@ class OrderFixtures {
 - **Sinh dữ liệu lớn trong mỗi test** (hàng nghìn bản ghi) làm suite chậm; hãy tạo dữ liệu tối thiểu đủ để cover nhánh.
 - **Xoá dữ liệu bằng {{DELETE FROM}} không theo thứ tự** ⇒ vi phạm foreign key. Dùng truncate cascade hoặc rollback.
 - **Test phụ thuộc dữ liệu của môi trường thật** (dev DB cũ) ⇒ không ai tái hiện được ngoài máy đó.
+
+### Ví dụ đời thực
+Bộ integration test 600 case chạy 18 phút và khoảng 1/5 số lần chạy CI có test đỏ ngẫu nhiên. Điều tra: (1) 40 test dùng chung khách hàng có email cố định trong {{data.sql}}, test chạy song song va chạm unique constraint; (2) 25 test dùng {{LocalDate.now()}} nên đỏ vào cuối tháng; (3) 60 class có {{@DirtiesContext}} làm Spring context khởi động lại hơn 60 lần. Sửa: builder sinh dữ liệu với email/mã duy nhất theo test ({{"user-" + UUID}}); inject {{Clock}} và dùng {{Clock.fixed}} trong test; bỏ {{@DirtiesContext}}, xoá dữ liệu bằng truncate sau mỗi test và dùng chung một container Testcontainers cho cả bộ test. Kết quả: thời gian chạy còn 7 phút, tỉ lệ đỏ ngẫu nhiên dưới 1%; test nào đỏ đều tái hiện được ở máy local.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi theo nguyên tắc mỗi test tự tạo dữ liệu nó cần bằng builder hoặc factory có giá trị mặc định hợp lý, chỉ ghi rõ những trường quan trọng với test đó, và dùng giá trị duy nhất như UUID để test chạy song song không va chạm. Mọi thứ không xác định đều được kiểm soát: thời gian qua Clock inject vào, random có seed, ID sinh qua interface có thể thay. Sau mỗi test tôi dọn dữ liệu, bằng rollback hoặc truncate, thay vì dùng DirtiesContext vì nó khởi động lại Spring context và làm bộ test rất chậm. Với integration test, tôi dùng Testcontainers với DB thật, khởi động một lần cho cả bộ. Anti-pattern hay gặp nhất là fixture SQL khổng lồ dùng chung, test phụ thuộc thứ tự chạy, dùng thời gian thật, và sleep để chờ bất đồng bộ thay vì chờ có điều kiện. Test đỏ ngẫu nhiên tôi coi là bug thật cần sửa, không phải chạy lại cho xanh."
 
 > Senior tip: một cách kiểm tra nhanh chất lượng test của team khác là **xoá sạch database và chạy ngược thứ tự các test**. Nếu đỏ ⇒ bạn đã tìm ra test phụ thuộc thứ tự, và đó thường là bug ẩn của cả những test còn lại.`,
   follow: [
@@ -2563,6 +2590,12 @@ Sự cố production, bất đồng kỹ thuật, một lần thất bại, dự
 - Thức khuya đêm trước phỏng vấn: trí nhớ làm việc giảm rõ khi thiếu ngủ.
 - Bỏ qua behavioral vì nghĩ "chỉ cần giỏi kỹ thuật".
 
+### Ví dụ đời thực
+Một dev Java 5 năm nhận lịch phỏng vấn vòng kỹ thuật sau 14 ngày, JD nhấn mạnh Kafka, PostgreSQL, Kubernetes và "thiết kế hệ thống chịu tải". Ngày 1 tự chấm: Spring và JPA 4/5, Kafka 2/5, system design 2/5, chưa có câu chuyện STAR nào viết sẵn. Lịch: tối thứ 2–6 mỗi tối 2 tiếng (1 tiếng lý thuyết theo lỗ hổng, 1 tiếng luyện nói hoặc thuật toán), cuối tuần 5 tiếng cho system design và mock. Mock lần 1 (ngày 6) được 2,5/5: trả lời Kafka còn chung chung, câu chuyện quá dài 4 phút. Sửa: luyện riêng consumer group, rebalance, exactly-once; rút câu chuyện còn 2 phút theo STAR với số liệu. Mock lần 2 (ngày 11) được 3,8/5. Ngày 13 chỉ ôn lại ghi chú và câu hỏi hỏi ngược; ngày 14 nghỉ, ngủ đủ. Kết quả vòng thật: qua, phản hồi tốt nhất ở phần sự cố production.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi sẽ ôn theo JD, không ôn dàn trải. Ngày đầu tôi tách JD thành danh sách kỹ năng có trọng số, tự chấm mình từng mục, và chọn khoảng 5 lỗ hổng lớn nhất có trọng số cao. Vì vẫn đi làm, tôi dành khoảng 2 tiếng mỗi tối và 5 tiếng mỗi ngày cuối tuần: buổi tối chia nửa học lý thuyết theo lỗ hổng, nửa luyện nói hoặc thuật toán; cuối tuần làm system design và mock. Tôi viết sẵn 5 đến 6 câu chuyện STAR có số liệu cho các chủ đề hay gặp: sự cố production, bất đồng kỹ thuật, dẫn dắt, sai lầm và bài học. Tôi làm hai buổi mock, một ở giữa để tìm điểm yếu, một gần cuối để kiểm tra. Hai ngày cuối tôi chỉ ôn nhẹ, tìm hiểu sản phẩm và kiến trúc của công ty, chuẩn bị câu hỏi hỏi lại, và ngủ đủ. Tôi cũng báo trước với team để giảm việc ngoài giờ trong hai tuần đó."
+
 > Senior tip: Dùng chính câu hỏi trong ngân hàng của app: lọc theo chủ đề trong JD, trả lời to thành tiếng trong 2 phút rồi mới mở đáp án, tự chấm Đã thuộc / Cần ôn. Lịch ôn lặp lại tự đưa câu yếu quay lại đúng lúc. Nếu có nhiều vòng phỏng vấn trong cùng tháng, lặp lại chu trình JD → lỗ hổng → mock cho từng công ty; phần chung (STAR, concurrency) sẽ ngày càng chắc.`,
   follow: [
     'Nếu chỉ còn 3 ngày, bạn cắt bớt phần nào?',
@@ -3519,6 +3552,12 @@ Chọn điểm yếu **thật nhưng quản lý được**, và luôn có: ví d
 - **Hỏi mà không chuẩn bị:** "Anh/chị làm giúp em với" mà không nói đã thử gì.
 - **Bỏ qua tiêu chí thành công:** làm xong về kỹ thuật nhưng không đúng nhu cầu.
 - **Không xin feedback sớm:** đi xa theo hướng sai.
+
+### Ví dụ đời thực
+Một dev backend được giao xây pipeline đồng bộ dữ liệu từ PostgreSQL sang OpenSearch bằng CDC (Debezium + Kafka Connect) trong 3 tuần — chưa từng dùng cả hai. Ngày 1: hỏi rõ tiêu chí thành công (độ trễ dưới 5 giây, không mất sự kiện khi restart) và ai trong công ty từng dùng Kafka Connect. Ngày 2–3: đọc tài liệu chính thức, chạy ví dụ bằng Docker Compose ở máy local. Cuối tuần 1: demo một bảng chạy được và báo rủi ro đã thấy (snapshot ban đầu lâu với bảng 50 triệu dòng, cần thay đổi cấu hình replication slot do DBA quản lý). Tuần 2: làm cùng DBA phần replication slot, thêm giám sát lag. Tuần 3: diễn tập restart connector, xác nhận không mất sự kiện, viết tài liệu vận hành 2 trang. Hoàn thành chậm 2 ngày nhưng đã báo từ cuối tuần 1 nên không ai bất ngờ; tài liệu sau này giúp người tiếp theo làm bảng mới trong 1 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Đầu tiên tôi làm rõ mục tiêu và tiêu chí thành công, deadline, và việc nào bắt buộc hay có thể bớt, vì không rõ đích thì học bao nhiêu cũng dễ sai hướng. Tiếp theo tôi khảo sát nhanh trong một hai ngày: đọc tài liệu chính thức, chạy một ví dụ nhỏ, và hỏi xem trong công ty ai đã làm việc tương tự để tránh lặp lại sai lầm của họ. Sau đó tôi chia việc thành các mốc nhỏ, làm một bản chạy được sớm nhất có thể, thường trong tuần đầu, để lấy phản hồi và lộ ra rủi ro thật. Tôi báo tiến độ và rủi ro sớm, kể cả khi thấy có thể trễ, để lead có thời gian điều chỉnh phạm vi hay thêm người. Cuối cùng tôi ghi lại những gì học được thành tài liệu ngắn cho team. Như vậy tôi vừa học nhanh, vừa không để thiếu kinh nghiệm thành rủi ro cho dự án."
 
 > Senior tip: trong phỏng vấn, hãy nhấn mạnh câu "tôi sẽ time-box việc tìm hiểu và cho một checkpoint sớm". Đây là dấu hiệu của người làm việc có kiểm soát — rất giá trị khi giao việc chưa quen.`,
   follow: [
