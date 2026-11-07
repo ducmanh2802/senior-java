@@ -1056,5 +1056,195 @@ plugins {
 > Senior tip: chọn một bounded context có API rõ, chuyển cùng test/observability, so sánh metrics với baseline trước khi scale. Đầu tư build/interop conventions sớm.`,
   follow: ['Bạn sẽ chọn module đầu tiên để migrate thế nào?', 'Làm sao đo ROI của migration?', 'Khi nào nên dừng migration?'],
   tags: ['kotlin', 'migration', 'lead', 'strategy']
+},
+{
+  id: 'kotlin-027',
+  topic: 'kotlin',
+  level: 'senior',
+  q: 'Team muốn viết một microservice nhỏ bằng Kotlin và đang cân nhắc Ktor thay vì Spring Boot. Bạn so sánh hai lựa chọn theo những tiêu chí nào, và khi nào bạn chọn Ktor?',
+  a: `**Tóm tắt:** **Ktor** là framework web của JetBrains viết cho Kotlin, dựa trên **coroutine**, rất nhẹ và **tường minh**: bạn tự cài từng plugin (serialization, auth, metrics), không có auto-configuration và không có DI sẵn. **Spring Boot** là hệ sinh thái đầy đủ: auto-config, DI, Spring Data, Security, Actuator, hàng nghìn tích hợp, nhưng nặng hơn và nhiều "phép màu". Tôi chọn Ktor cho service **nhỏ, I/O nhiều, team thành thạo Kotlin/coroutine**, ít cần tích hợp doanh nghiệp; chọn Spring Boot khi cần **hệ sinh thái, quy chuẩn chung của công ty** và team chủ yếu đến từ Java.
+
+### Ktor hoạt động thế nào
+- Ứng dụng là một hàm Kotlin cấu hình **engine** (Netty, CIO…) và cài **plugin**; route viết bằng DSL; mỗi handler là {{suspend}} function chạy trên coroutine.
+- Không quét classpath, không proxy, không annotation magic → khởi động nhanh, dễ đọc đường đi của request.
+- DI không có sẵn: truyền tay qua constructor hoặc dùng Koin.
+~~~kotlin
+fun main() {
+    embeddedServer(Netty, port = 8080) {
+        install(ContentNegotiation) { json() }          // kotlinx.serialization
+        val repo = OrderRepository(dataSource())        // "DI" bằng tay
+        routing {
+            get("/orders/{id}") {
+                val id = call.parameters["id"]?.toLongOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val order = repo.find(id)                // suspend: không chặn thread
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                call.respond(order)
+            }
+        }
+    }.start(wait = true)
 }
+~~~
+
+### So sánh theo tiêu chí
+| Tiêu chí | Ktor | Spring Boot (Kotlin) |
+|---|---|---|
+| Mô hình | Coroutine từ gốc | MVC blocking (+ virtual thread) hoặc WebFlux + coroutine |
+| Khởi động, bộ nhớ | Nhẹ, nhanh | Nặng hơn (giảm được bằng CDS/AOT/native) |
+| Tích hợp sẵn | Ít: tự chọn thư viện DB (Exposed, jOOQ, JDBC), security | Rất nhiều: Spring Data, Security, Kafka, Actuator, Cloud |
+| Quy chuẩn trong công ty | Phải tự xây (logging, tracing, health) | Thường đã có starter nội bộ |
+| Tuyển người, tài liệu | Ít hơn | Rất nhiều |
+| Testing | testApplication chạy server trong bộ nhớ | Test slice, MockMvc, Testcontainers |
+| Phù hợp | Service nhỏ, gateway, BFF, công cụ nội bộ | Hệ thống nghiệp vụ lớn, nhiều tích hợp |
+
+### Câu hỏi quyết định
+1. Công ty có **platform chuẩn** (starter Spring nội bộ cho logging, tracing, security, config) không? Có → chọn khác chuẩn nghĩa là tự xây lại tất cả cho một service.
+2. Team có **thật sự thành thạo coroutine** (structured concurrency, cancellation, dispatcher) không? Ktor không cho "đường lui" blocking dễ dàng.
+3. Service cần **tích hợp gì**: JPA phức tạp, Kafka, OAuth2 resource server… — Spring có sẵn, Ktor phải ráp.
+4. Ràng buộc **tài nguyên/khởi động** có thật sự quan trọng (serverless, sidecar)?
+
+### Ví dụ đời thực
+Một team 4 người viết BFF (backend-for-frontend) gom dữ liệu từ 6 service cho app mobile bằng Ktor: mỗi request gọi song song 6 service bằng {{async}}, khởi động khoảng 1 giây, chạy với 256MB RAM. Kết quả tốt. Năm sau, team muốn viết service thanh toán cũng bằng Ktor; khi liệt kê yêu cầu (OAuth2 resource server, audit, outbox với Kafka, tracing theo chuẩn công ty), ước lượng tự ráp mất thêm khoảng 5 tuần so với dùng starter Spring nội bộ — họ chọn Spring Boot + Kotlin coroutine cho service đó. Cả hai quyết định đều đúng cho bối cảnh của nó.
+
+### Pitfall
+- Chọn Ktor vì "nhẹ và hiện đại" rồi tự viết lại security, health check, tracing kém hơn chuẩn công ty.
+- Gọi JDBC blocking trực tiếp trong handler Ktor mà không chuyển sang {{Dispatchers.IO}} → chặn thread của event loop.
+- Một công ty có quá nhiều framework → khó luân chuyển người giữa các team.
+- Đánh giá Spring Boot "nặng" chỉ theo thời gian khởi động mà quên CDS, AOT hoặc native image.
+
+### Trả lời mẫu khi phỏng vấn
+"Ktor là framework của JetBrains viết cho Kotlin, dựa trên coroutine, rất nhẹ và tường minh: tôi tự cài từng plugin, route viết bằng DSL, không có auto-configuration và không có DI sẵn. Spring Boot thì là cả một hệ sinh thái với DI, Spring Data, Security, Actuator và rất nhiều tích hợp, đổi lại nặng hơn và nhiều phép màu hơn. Tôi chọn theo bốn câu hỏi: công ty đã có platform chuẩn dựa trên Spring chưa, team có thật sự thành thạo coroutine không, service cần tích hợp những gì, và tài nguyên hay thời gian khởi động có thật sự quan trọng không. Với BFF hay service nhỏ nhiều I/O, team giỏi Kotlin, Ktor rất hợp. Với service nghiệp vụ cần OAuth2, Kafka, audit, tracing theo chuẩn công ty, tôi chọn Spring Boot với Kotlin, vì tự ráp các phần đó trên Ktor tốn nhiều tuần và dễ kém chuẩn hơn."
+
+> Senior tip: trước khi chọn framework khác chuẩn công ty, liệt kê mọi "yêu cầu phi chức năng" (auth, logging, tracing, metrics, config, secret, health) và ước lượng công tự xây. Con số đó thường quyết định nhanh hơn mọi benchmark.`,
+  follow: [
+    'Bạn làm DI trong Ktor thế nào khi service lớn dần?',
+    'Gọi JDBC blocking trong Ktor cần lưu ý gì về dispatcher?',
+    'Spring Boot với coroutine (suspend controller) khác Ktor ở điểm nào khi chạy?'
+  ],
+  tags: ['Kotlin', 'Ktor', 'Spring Boot', 'architecture']
+},
+{
+  id: 'kotlin-028',
+  topic: 'kotlin',
+  level: 'mid',
+  q: 'Bạn viết test cho backend Kotlin có suspend function và gọi service khác. Dùng MockK, runTest (kotlinx-coroutines-test) và test trong Spring Boot thế nào, và những lỗi nào làm test chậm hoặc flaky?',
+  a: `**Tóm tắt:** Test backend Kotlin dùng ba công cụ chính: **MockK** (thư viện mock viết cho Kotlin: hiểu {{suspend}}, final class, object, extension), **runTest** của kotlinx-coroutines-test (chạy coroutine trong test với **thời gian ảo**, delay 10 giây xong ngay lập tức), và **springmockk** ({{@MockkBean}}) khi cần mock bean trong Spring context. Lỗi hay gặp: dùng {{runBlocking}} với delay thật (chậm), dùng Mockito với class Kotlin final (không mock được), và để coroutine chạy ngoài scope của test (flaky).
+
+### Vì sao Mockito "khó chịu" với Kotlin
+- Class Kotlin mặc định **final** → Mockito cổ điển không tạo subclass để mock (cần mockito-inline, nay là mặc định từ Mockito 5, nhưng vẫn vướng nhiều chỗ).
+- {{suspend fun}} có tham số ẩn {{Continuation}} → stub bằng Mockito rất rườm rà.
+- Cú pháp {{when}} trùng từ khoá Kotlin.
+MockK giải quyết bằng DSL: {{every}}/{{coEvery}} để stub, {{verify}}/{{coVerify}} để kiểm tra.
+
+### MockK + runTest
+~~~kotlin
+class OrderServiceTest {
+    private val payment = mockk<PaymentClient>()          // mock "nghiêm": gọi chưa stub -> lỗi
+    private val repo = mockk<OrderRepository>(relaxUnitFun = true)
+    private val service = OrderService(payment, repo)
+
+    @Test
+    fun placesOrderAndRetriesOnce() = runTest {            // thời gian ảo
+        coEvery { payment.charge(any()) } throws IOException() andThen ChargeResult.OK
+        val order = service.place(OrderRequest(amount = 100_000))
+        assertEquals(OrderStatus.PAID, order.status)
+        coVerify(exactly = 2) { payment.charge(any()) }    // 1 lần lỗi + 1 lần retry
+        // service dùng delay(2_000) trước khi retry -> runTest bỏ qua, test chạy trong mili giây
+    }
+}
+~~~
+- {{coEvery}}/{{coVerify}} dành cho suspend function; {{every}}/{{verify}} cho hàm thường.
+- {{slot<T>()}} + {{capture}} để lấy đối số thực tế và assert chi tiết.
+- {{mockkObject(SomeObject)}} cho {{object}} singleton, nhớ {{unmockkAll()}} sau test.
+
+### Điều khiển coroutine trong test
+- runTest dùng **TestDispatcher**: mọi {{delay}} được "tua" ngay; {{advanceUntilIdle()}} chạy hết việc đang chờ.
+- Code tự tạo dispatcher cứng ({{Dispatchers.IO}}) sẽ **thoát khỏi** thời gian ảo → **inject dispatcher** qua constructor để test truyền {{StandardTestDispatcher(testScheduler)}}.
+- Coroutine phóng bằng {{GlobalScope}} không được test chờ → flaky; dùng scope được inject.
+
+### Trong Spring Boot
+- {{@WebMvcTest}}/{{@WebFluxTest}} + {{@MockkBean}} (thư viện springmockk) thay cho {{@MockBean}}/{{@MockitoBean}} khi muốn dùng MockK.
+- Controller {{suspend}} test bằng {{WebTestClient}} hoặc MockMvc (Spring hỗ trợ suspend controller trên cả MVC).
+- Repository test với {{@DataJpaTest}} + Testcontainers như với Java.
+
+### Ví dụ đời thực
+Một service Kotlin có 400 test, chạy 7 phút. Nguyên nhân: test dùng {{runBlocking}} với logic retry có {{delay(1000..5000)}} thật, và 30% test dùng Mockito + {{open}} class chỉ để mock được. Chuyển sang runTest, inject dispatcher, dùng MockK, bỏ {{open}} khỏi class nghiệp vụ: suite còn 1 phút 40 giây; 6 test flaky do {{GlobalScope}} được sửa bằng scope inject.
+
+### Pitfall
+- Mock quá nhiều với {{relaxed = true}} → test xanh dù code gọi sai (mock trả giá trị mặc định cho mọi thứ).
+- Quên {{unmockkAll()}}/{{clearMocks}} → mock rò giữa các test.
+- Dispatcher cứng trong code → không kiểm soát được thời gian.
+- Dùng {{Thread.sleep}} trong test coroutine.
+
+### Trả lời mẫu khi phỏng vấn
+"Với backend Kotlin tôi dùng MockK thay Mockito, vì class Kotlin mặc định final và suspend function có tham số Continuation ẩn, Mockito xử lý rất rườm rà. MockK có every và coEvery để stub, verify và coVerify để kiểm tra, slot để bắt đối số, và mock được cả object. Code coroutine tôi test bằng runTest của kotlinx-coroutines-test: nó chạy với thời gian ảo nên một delay vài giây trong logic retry xong ngay. Muốn vậy, code phải inject dispatcher và scope thay vì dùng Dispatchers.IO cứng hay GlobalScope, nếu không coroutine thoát khỏi thời gian ảo và test vừa chậm vừa flaky. Trong Spring, tôi dùng @MockkBean của springmockk với test slice, và Testcontainers cho repository như với Java. Ở một service trước, chuyển sang runTest và MockK đưa suite từ 7 phút xuống dưới 2 phút."
+
+> Senior tip: đặt quy ước "mọi class dùng coroutine nhận CoroutineDispatcher hoặc CoroutineScope qua constructor". Quy ước nhỏ này quyết định code coroutine có test được một cách xác định hay không.`,
+  follow: [
+    'Mock relaxed khác mock nghiêm thế nào, khi nào dùng relaxed?',
+    'StandardTestDispatcher và UnconfinedTestDispatcher khác nhau ra sao?',
+    'Bạn test một Flow phát nhiều giá trị theo thời gian thế nào?'
+  ],
+  tags: ['Kotlin', 'testing', 'MockK', 'coroutines', 'runTest']
+},
+{
+  id: 'kotlin-029',
+  topic: 'kotlin',
+  level: 'senior',
+  q: 'Bạn muốn tránh lỗi truyền nhầm id (userId vào chỗ orderId) trong code Kotlin bằng value class. Cơ chế của @JvmInline value class là gì, và khi đưa nó qua JSON (Jackson / kotlinx.serialization), Spring và JPA cần lưu ý gì?',
+  a: `**Tóm tắt:** {{@JvmInline value class OrderId(val value: Long)}} tạo một **kiểu riêng** ở thời điểm biên dịch — compiler báo lỗi nếu truyền {{UserId}} vào chỗ cần {{OrderId}} — nhưng ở runtime phần lớn trường hợp được **"mở hộp"** thành {{long}} thuần, gần như không tốn thêm bộ nhớ. Đổi lại, tên hàm nhận value class bị **mangle** (đổi tên trong bytecode) và hành vi qua reflection khác thường, nên các framework dựa trên reflection (Jackson, Hibernate, Spring binding) cần cấu hình hoặc chỉ dùng value class **trong tầng domain**, chuyển sang kiểu nguyên thuỷ ở ranh giới.
+
+### Vấn đề value class giải quyết
+~~~kotlin
+fun refund(userId: Long, orderId: Long, amount: Long)   // ba tham số cùng kiểu Long
+refund(order.id, user.id, 50_000)                         // đảo chỗ, compiler im lặng -> hoàn tiền sai đơn
+~~~
+Với value class:
+~~~kotlin
+@JvmInline value class UserId(val value: Long)
+@JvmInline value class OrderId(val value: Long)
+@JvmInline value class Vnd(val amount: Long) {
+    init { require(amount >= 0) { "Số tiền không âm" } }  // kiểm tra bất biến ngay khi tạo
+}
+fun refund(userId: UserId, orderId: OrderId, amount: Vnd)
+refund(order.id, user.id, Vnd(50_000))                    // LỖI BIÊN DỊCH: type mismatch
+~~~
+
+### Cơ chế ở runtime
+- Khi dùng đúng kiểu tĩnh, compiler thay {{OrderId}} bằng {{long}} → không cấp phát object.
+- Bị **box** (tạo object thật) khi dùng như kiểu chung: đưa vào {{List<OrderId>}}, kiểu nullable {{OrderId?}}, generic, hoặc qua interface.
+- Hàm nhận value class có tên bị mangle (ví dụ {{refund-abc123}}) để tránh trùng chữ ký sau khi mở hộp → **Java gọi không được trực tiếp**; dùng {{@JvmName}} nếu cần gọi từ Java.
+
+### Qua JSON
+| Thư viện | Tình trạng |
+|---|---|
+| kotlinx.serialization | Hỗ trợ tốt: đánh dấu {{@Serializable}} cho value class, serialize thành giá trị bên trong (ví dụ số 42) |
+| Jackson + jackson-module-kotlin | Các phiên bản gần đây hỗ trợ value class nhưng còn giới hạn (nhất là làm key của Map, nullable, generic); kiểm tra kỹ với phiên bản bạn dùng hoặc viết serializer riêng |
+Spring Boot dùng Jackson mặc định; có thể chuyển sang kotlinx.serialization khi thư viện có trên classpath (Spring có HttpMessageConverter cho nó), nhưng phải thống nhất cả service.
+
+### Với Spring và JPA
+- **Path variable / request param**: Spring cần biết chuyển chuỗi "42" thành {{OrderId}} → đăng ký {{Converter<String, OrderId>}}, hoặc nhận {{Long}} ở controller rồi bọc lại.
+- **JPA/Hibernate**: hỗ trợ value class làm cột hoặc id rất hạn chế do name mangling và reflection; cách an toàn là entity giữ {{Long}}, domain/service dùng {{OrderId}}, chuyển đổi ở repository hoặc mapper. Một số team dùng {{AttributeConverter}} cho cột thường (không dùng cho id).
+- Nguyên tắc: **value class mạnh nhất ở tầng domain và API nội bộ**, ranh giới framework dùng kiểu nguyên thuỷ.
+
+### Ví dụ đời thực
+Một sự cố hoàn tiền: hàm {{refund(userId: Long, orderId: Long)}} bị gọi đảo tham số trong một lần refactor, 37 khoản hoàn tiền vào sai đơn trước khi đối soát phát hiện. Sau đó team đưa value class cho các id và số tiền trong module thanh toán; trong lúc chuyển đổi, compiler phát hiện thêm **4 chỗ** truyền nhầm kiểu đã tồn tại từ trước (may mắn chưa gây sự cố vì giá trị trùng hợp). JPA entity vẫn giữ Long; mapper chuyển đổi ở repository. Chi phí hiệu năng đo được không đáng kể.
+
+### Pitfall
+- Đưa value class thẳng vào entity JPA làm id → lỗi khó hiểu lúc khởi động hoặc truy vấn.
+- Quên converter cho path variable → lỗi 400/500 không rõ ràng.
+- Dùng value class trong collection lớn ở đường nóng → boxing, mất lợi thế hiệu năng.
+- Gọi từ Java mà không có {{@JvmName}} → không thấy hàm.
+
+### Trả lời mẫu khi phỏng vấn
+"Value class với @JvmInline tạo một kiểu riêng ở thời điểm biên dịch, nên truyền UserId vào chỗ cần OrderId là lỗi biên dịch, nhưng ở runtime phần lớn trường hợp nó được mở hộp thành long thuần nên gần như không tốn thêm bộ nhớ. Nó vẫn bị box khi đưa vào collection, generic hay kiểu nullable. Ngoài ra tên hàm nhận value class bị mangle trong bytecode, nên Java không gọi trực tiếp được, và các framework dựa trên reflection cần chú ý. kotlinx.serialization hỗ trợ tốt; Jackson với module Kotlin hỗ trợ nhưng còn giới hạn, phải kiểm tra theo phiên bản. Với Spring, tôi đăng ký Converter cho path variable. Với JPA, tôi giữ entity dùng Long và chỉ dùng value class ở tầng domain, chuyển đổi trong mapper. Tôi từng thấy một lần đảo tham số userId và orderId gây hoàn tiền sai đơn; value class chặn được cả loại lỗi đó ngay lúc biên dịch."
+
+> Senior tip: bắt đầu value class từ **các hàm có nhiều tham số cùng kiểu nguyên thuỷ trong luồng tiền** (id, số tiền, đơn vị tiền tệ). Đó là nơi lợi ích lớn nhất và chi phí chuyển đổi nhỏ nhất.`,
+  follow: [
+    'Khi nào value class bị boxing, và điều đó ảnh hưởng hiệu năng ra sao?',
+    'Value class khác typealias thế nào?',
+    'Bạn mô hình số tiền kèm đơn vị tiền tệ thì dùng value class hay data class?'
+  ],
+  tags: ['Kotlin', 'value class', 'type safety', 'Jackson', 'JPA']
+},
 );
