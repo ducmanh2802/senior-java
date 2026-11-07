@@ -5268,6 +5268,15 @@ Giả định hệ thống thanh toán xử lý ~120.000 giao dịch/ngày với
 - **DTO/Record = data transfer, bất biến, không có identity nghiệp vụ phức tạp**.
 - **Làm Map key**: chỉ dùng khi các component của record **toàn bộ immutable**.
 
+### Bên trong: vì sao Hibernate cần class "mở"
+Hibernate tạo entity bằng **constructor không tham số** rồi gán field bằng reflection; theo dõi thay đổi (dirty checking) bằng cách **so sánh snapshot** và **sửa field** khi merge/refresh; lazy loading cần tạo **proxy subclass** (ByteBuddy). Record vi phạm cả ba: không có constructor rỗng, field final không gán lại được, và class final không kế thừa được. Vì vậy record không làm entity được; nhưng từ Hibernate 6.2 record dùng được làm **{{@Embeddable}}** (giá trị nhúng, Hibernate gọi constructor canonical), và làm kết quả projection ({{select new com.x.OrderView(o.id, o.total) ...}}) hoặc projection của Spring Data.
+
+### Ví dụ đời thực
+Một team chuyển toàn bộ DTO sang record — tốt — nhưng cũng dùng record làm **key cache** có component {{BigDecimal amount}}. Hai request "100.0" và "100.00" (khác scale) tạo hai key khác nhau vì {{BigDecimal.equals}} so scale → cache hit rate thấp bất thường (31%). Sửa trong compact constructor: {{amount = amount.setScale(2, RoundingMode.HALF_UP)}}; hit rate lên 74%. Cùng đợt, projection JPQL trả record thay vì entity cho màn hình danh sách: bỏ được dirty checking và lazy loading thừa, p95 API danh sách giảm 40%.
+
+### Trả lời mẫu khi phỏng vấn
+"Record rất hợp làm DTO, projection, value object và key của Map: bất biến nông, equals và hashCode theo giá trị, ngắn gọn. Nhưng record không làm JPA entity được, vì Hibernate cần constructor không tham số để tạo object, cần gán lại field khi merge hay refresh, và cần tạo proxy subclass cho lazy loading, trong khi record có field final, không có constructor rỗng và là class final. Từ Hibernate 6.2, record dùng được làm Embeddable và làm kết quả projection bằng select new hoặc projection của Spring Data, rất tốt cho màn hình chỉ đọc vì bỏ được dirty checking. Khi dùng record làm key, tôi chuẩn hoá dữ liệu trong compact constructor, như copy list bằng List.copyOf hay chuẩn hoá scale của BigDecimal, để equals và hashCode ổn định."
+
 > Senior tip: "Entity là về vòng đời và identity; DTO/ValueObject là về dữ liệu bất biến". Đừng ép record vào vai trò entity chỉ vì ngắn gọn - bạn sẽ đánh đổi khả năng lazy loading, proxy và dirty tracking.`,
   follow: ['Tại sao JPA cần no-arg constructor?', 'Record dùng làm projection được không?', 'Tại sao record tốt làm Map key?'],
   tags: ['record', 'JPA', 'DTO', 'projection']
@@ -5381,6 +5390,12 @@ if (!(o instanceof Entity e)) return false;
 - Dùng {{@Data}} (Lombok) sinh hashCode theo mọi field, trong đó có id → entity bị mất khỏi Set sau persist.
 - Đưa entity vào Set trước khi persist rồi gọi {{set}} để thay đổi → hashCode đổi.
 
+### Ví dụ đời thực
+Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Policy}}; {{equals}} của {{Policy}} dùng {{instanceof}} và so {{policyNumber}}, còn {{LifePolicy}} override {{equals}} so thêm {{beneficiary}}. Kết quả: {{policy.equals(lifePolicy)}} là true nhưng {{lifePolicy.equals(policy)}} là false — vi phạm tính đối xứng; một {{HashSet<Policy>}} dùng để loại trùng khi import lúc giữ, lúc bỏ hợp đồng tuỳ thứ tự đọc file, 1.300 hợp đồng bị nhân đôi trong báo cáo quý. Sửa: equality chỉ dựa trên business key {{policyNumber}} khai báo {{final}} ở lớp cha, lớp con không override equals. Với Hibernate proxy, so sánh bằng {{Hibernate.getClass(o)}} thay vì {{getClass()}} trực tiếp để proxy và entity thật vẫn bằng nhau.
+
+### Trả lời mẫu khi phỏng vấn
+"Với entity JPA, equality phải ổn định qua vòng đời: nếu hashCode dựa vào id tự sinh thì entity add vào HashSet trước khi persist sẽ bị lạc khi id được gán, vì nó vẫn nằm ở bucket theo hash cũ. Tôi ưu tiên business key bất biến; nếu không có thì so id khi khác null và để hashCode là hằng số theo class. Về kế thừa, getClass bảo đảm tính đối xứng vì hai object khác class không bao giờ bằng nhau, còn instanceof cho phép lớp con bằng lớp cha, dễ vi phạm đối xứng nếu lớp con override equals với thêm field. Nhưng với Hibernate, getClass của proxy khác class thật, nên tôi dùng Hibernate.getClass hoặc instanceof kèm equals final ở lớp cha. Quy tắc thực tế: equals dựa trên khoá, khai báo final, lớp con không override."
+
 > Senior tip: chọn một quy tắc cho toàn hệ thống và kiểm tra bằng test với HashSet trước/sau persist. Equality của entity là quyết định identity, không chỉ là boilerplate.`,
   follow: ['Tại sao Hibernate khuyên dùng business key thay vì id trong equals/hashCode?', 'Dùng getClass() vs instanceof ảnh hưởng thế nào đến tính đối xứng của equals?', 'Nếu entity đã nằm trong HashSet trước khi persist và hashCode đổi, làm sao khắc phục?'],
   tags: ['equals', 'hashCode', 'JPA', 'entity', 'HashSet']
@@ -5414,6 +5429,12 @@ if (!(o instanceof Entity e)) return false;
 - Dùng wildcard ở input để người dùng truyền được nhiều loại hơn; output dùng type cụ thể.
 - Không dùng raw type trong API mới; nó tắt kiểm tra compile và gây warning.
 - Tránh varargs generic trong public method nếu không thể đảm bảo an toàn → dùng collection thay vì varargs.
+
+### Ví dụ đời thực
+Một thư viện tiện ích nội bộ có method {{static <T> List<T> listOf(T... items)}} đánh dấu {{@SafeVarargs}} nhưng bên trong **lưu mảng varargs vào một field** để tái sử dụng. Khi được gọi với kiểu generic ({{listOf(List.of(1), List.of(2))}}), mảng thực chất là {{Object[]}}; một chỗ khác ghi phần tử sai kiểu vào mảng đó (heap pollution) và {{ClassCastException}} nổ ở một service khác, xa chỗ gây lỗi, khiến team mất một ngày truy. Sửa: không giữ hay trả ra mảng varargs ({{List.copyOf(Arrays.asList(items))}}), chỉ đặt {{@SafeVarargs}} khi method chỉ **đọc** phần tử. Thêm {{-Xlint:unchecked}} vào build để mọi cảnh báo unchecked trở thành lỗi trong thư viện dùng chung.
+
+### Trả lời mẫu khi phỏng vấn
+"Generic chỉ được kiểm tra lúc biên dịch rồi bị xoá, nên runtime không biết List đó chứa gì. Khi viết API, tôi theo PECS: tham số chỉ để đọc dùng extends, chỉ để ghi dùng super, như Collections.copy, còn kiểu trả về thì cụ thể. Heap pollution là khi một biến generic trỏ tới object không đúng kiểu, thường do raw type hoặc varargs generic: varargs tạo mảng, mà mảng generic thực chất là mảng Object, nên ai đó có thể nhét phần tử sai kiểu vào và ClassCastException nổ ở chỗ khác. @SafeVarargs chỉ là lời cam kết của người viết rằng method không ghi vào mảng varargs và không để nó thoát ra ngoài; compiler không kiểm tra. Trong thư viện dùng chung tôi bật Xlint unchecked như lỗi và tránh raw type hoàn toàn."
 
 > Senior tip: khi thiết kế thư viện, luôn dùng wildcard ở input (PECS) và type cụ thể ở output. {{@SafeVarargs}} chỉ là cam kết — nếu method không final/static/private, compiler sẽ cảnh báo. Không bao giờ tạo mảng generic {{new T[]}}; dùng {{List<List<T>>}} hoặc {{Array.newInstance}} + cast có kiểm soát.`,
   follow: ['Tại sao không thể tạo mảng generic new T[]?', 'Heap pollution xảy ra thế nào và phát hiện ra sao?', 'Khi nào dùng @SafeVarargs và tại sao chỉ cho static/final/private?'],
@@ -5565,6 +5586,15 @@ orders.sort(cmp);
 - Logic so sánh phức tạp sai: {{(a, b) -> a.x < b.x ? -1 : 1}} (quên case bằng nhau trả 0).
 - So sánh float/double với NaN: {{Double.compare}} xử lý NaN, nhưng tự viết {{a < b ? -1 : 1}} sai với NaN.
 - Primitive array sort không stable: {{Arrays.sort(int[])}} dùng quicksort; muốn stable dùng {{Integer[]}} hoặc {{List.sort}}.
+
+### Bên trong: TimSort phát hiện comparator sai
+{{List.sort}}/{{Arrays.sort}} cho object dùng TimSort, giả định comparator tuân thủ hợp đồng (đối xứng, bắc cầu). Khi phát hiện vi phạm trong lúc gộp các đoạn đã sắp xếp, nó ném {{IllegalArgumentException: Comparison method violates its general contract!}} — nhưng **chỉ khi dữ liệu đủ lớn và rơi đúng thứ tự** (thường từ vài chục phần tử trở lên), nên lỗi hay lọt qua test nhỏ. Nguồn vi phạm hay gặp: trừ hai số để so sánh ({{a - b}} tràn số với int lớn), comparator không xử lý null nhất quán, so sánh theo field có thể thay đổi trong lúc sắp xếp, so sánh double có NaN. Dùng {{Comparator.comparingInt}}, {{Integer.compare}}, {{Comparator.nullsLast(...)}} thay vì tự viết.
+
+### Ví dụ đời thực
+Báo cáo xếp hạng đại lý thỉnh thoảng lỗi 500 với thông báo "Comparison method violates its general contract!" — chỉ vào cuối tháng khi danh sách có khoảng 5.000 đại lý. Comparator tự viết là {{(a, b) -> (int)(a.revenue() - b.revenue())}} với doanh thu kiểu {{long}} (đơn vị đồng): hiệu số vượt phạm vi int nên ép kiểu ra dấu sai. Sửa thành {{Comparator.comparingLong(Agent::revenue).reversed().thenComparing(Agent::code)}} — thêm khoá phụ để thứ tự ổn định khi doanh thu bằng nhau. Test mới sinh ngẫu nhiên 10.000 phần tử với giá trị cực lớn để tái hiện.
+
+### Trả lời mẫu khi phỏng vấn
+"Comparator phải tuân thủ hợp đồng: đối xứng, bắc cầu và nhất quán. Tôi xây comparator bằng các factory như comparing, comparingLong, thenComparing, reversed, và nullsFirst hoặc nullsLast để xử lý null rõ ràng, thay vì tự viết phép trừ, vì trừ hai số lớn có thể tràn số và đổi dấu. Nếu comparator vi phạm hợp đồng, TimSort có thể ném IllegalArgumentException, nhưng chỉ khi dữ liệu đủ lớn nên lỗi hay lọt test. Với TreeMap và TreeSet thì nguy hiểm hơn: chúng dùng compare chứ không dùng equals, nên nếu compare trả về 0 cho hai phần tử khác nhau, phần tử sau ghi đè phần tử trước, mất dữ liệu âm thầm. Vì vậy tôi luôn thêm khoá phụ như id vào cuối chuỗi so sánh để chỉ trả 0 khi thật sự là cùng một phần tử."
 
 > Senior tip: khi dùng comparator tùy biến, viết unit test khẳng định các key **khác nhau** vẫn là phần tử riêng biệt; đây là loại bug không nthrows exception, chỉ làm mất record và cực khó phát hiện. Với BigDecimal, luôn normalize ({{stripTrailingZeros}}) trước khi làm key. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
   follow: ['Comparable và Comparator khác nhau thế nào?', 'Tại sao TreeMap không dùng equals/hashCode?', 'Comparator không consistent with equals gây ra vấn đề gì?'],
