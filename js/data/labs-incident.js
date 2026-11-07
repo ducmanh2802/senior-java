@@ -3124,5 +3124,338 @@ Ingress (controller nginx) route traffic tới Service. Service chỉ forward t�
     'Nêu phòng ngừa: probe đúng, CI validation, canary, alert.'
   ],
   tags: ['kubernetes', 'ingress', 'nginx', 'readinessprobe', 'spring-boot', '502']
+},
+{
+  id: 'lab-incident-025',
+  category: 'incident',
+  title: 'Startup dùng AI dựng app: người dùng A thấy đơn hàng của người dùng B',
+  level: 'senior',
+  scenario: `**Bối cảnh (giải thích thuật ngữ):**
+- **Startup nhỏ** (công ty khởi nghiệp quy mô nhỏ) tự dựng một ứng dụng bán hàng bằng công cụ AI tạo code. Ứng dụng gồm: **Next.js** (framework web React, vừa chạy giao diện người dùng trên trình duyệt, vừa chạy code phía server), **Supabase** (nền tảng "backend có sẵn" cung cấp **PostgreSQL** — cơ sở dữ liệu quan hệ lưu bảng — và xác thực đăng nhập), triển khai trên **Vercel** (nền tảng chạy ứng dụng web trên cloud — máy chủ bên ngoài Internet).
+- Ứng dụng vừa có khoảng **4.800 người dùng thật**. Bạn là **freelancer** (người làm việc tự do, được thuê ngắn hạn) để điều tra.
+
+**Triệu chứng:** Sáng 03/11/2026, bộ phận hỗ trợ nhận 19 phiếu khiếu nại: một số người dùng mở trang "Đơn hàng của tôi" nhưng thấy **đơn hàng, địa chỉ và số điện thoại của người khác**. Sau khi người dùng đổi số {{order_id}} trên thanh địa chỉ trình duyệt (ví dụ từ {{/orders/18421}} thành {{/orders/18422}}), server vẫn trả về dữ liệu đơn hàng (HTTP 200) thay vì từ chối.
+
+**Dữ liệu thu thập:** Log HTTP của server, đoạn route handler (mã chạy phía server, viết bằng **TypeScript** — JavaScript có khai báo kiểu), và kết quả truy vấn kiểm tra cấu hình bảo mật bảng trong PostgreSQL.`,
+  artifacts: [
+    {
+      name: 'access-log-2026-11-03.txt',
+      lang: 'text',
+      content: `2026-11-03T08:41:12.044Z INFO  req=8f2a1 user_id=U-102 (alice@example.com) GET /api/orders/18421 200 41ms
+2026-11-03T08:41:18.301Z INFO  req=8f2a2 user_id=U-102 (alice@example.com) GET /api/orders/18422 200 38ms   # order 18422 thuộc U-205
+2026-11-03T08:41:25.117Z INFO  req=8f2a3 user_id=U-102 (alice@example.com) GET /api/orders/18423 200 39ms   # order 18423 thuộc U-311
+2026-11-03T08:42:03.552Z INFO  req=8f2b1 user_id=U-205 (bob@example.com)   GET /api/orders/18421 200 36ms   # order 18421 thuộc U-102
+2026-11-03T08:42:11.009Z INFO  req=8f2b2 user_id=U-205 (bob@example.com)   GET /api/orders/18422 200 35ms
+2026-11-03T08:43:44.880Z WARN  req=8f2c7 user_id=U-102 (alice@example.com) GET /api/orders/18422 200 40ms   # lặp lại, vẫn 200
+# Ghi chú: tất cả request đều có phiên đăng nhập hợp lệ (user_id lấy từ session cookie).
+# Không có dòng 401 (chưa đăng nhập) hay 403 (không có quyền) nào cho các lần đổi order_id chéo người dùng.`
+    },
+    {
+      name: 'app-api-orders-[id]-route.ts',
+      lang: 'text',
+      content: `// app/api/orders/[id]/route.ts (chạy phía server trên Vercel)
+import { createClient } from '@supabase/supabase-js';
+
+// Service role key: khoá quyền CAO NHẤT của Supabase, BỎ QUA mọi Row Level Security.
+// Biến NEXT_PUBLIC_* được "nhúng" vào code gửi xuống trình duyệt (client bundle).
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY! // khoá service role, quyền rất cao
+);
+
+export async function GET(req: Request, { params }: { params: { id: string } }) {
+  const orderId = params.id; // lấy trực tiếp từ URL, ví dụ "18422"
+
+  // BUG: truy vấn chỉ lọc theo id đơn hàng, KHÔNG kiểm tra đơn này có thuộc người đang đăng nhập không.
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, user_id, customer_name, phone, address, items, total')
+    .eq('id', orderId)
+    .single();
+
+  if (error || !data) return Response.json({ error: 'not found' }, { status: 404 });
+  return Response.json(data, { status: 200 }); // trả nguyên dữ liệu, kể cả của người khác
+}`
+    },
+    {
+      name: 'postgres-rls-check.sql.txt',
+      lang: 'text',
+      content: `-- Kiểm tra Row Level Security (RLS) trên bảng orders
+-- RLS = cơ chế của PostgreSQL: mỗi dòng (row) chỉ hiển thị với người dùng thoả điều kiện (policy).
+
+postgres=> SELECT relname, relrowsecurity, relforcerowsecurity
+postgres-> FROM pg_class
+postgres-> WHERE relname IN ('orders', 'order_items', 'customers');
+   relname   | relrowsecurity | relforcerowsecurity
+-------------+----------------+---------------------
+ orders      | f              | f
+ order_items | f              | f
+ customers   | f              | f
+(3 rows)
+-- relrowsecurity = f (false) nghĩa là RLS đang TẮT trên bảng đó.
+
+postgres=> SELECT schemaname, tablename, policyname, cmd, qual
+postgres-> FROM pg_policies
+postgres-> WHERE tablename IN ('orders', 'order_items', 'customers');
+ schemaname | tablename | policyname | cmd | qual
+------------+-----------+------------+-----+------
+(0 rows)
+-- Không có policy (chính sách) nào.`
+    },
+    {
+      name: 'vercel-env-config.txt',
+      lang: 'text',
+      content: `# Cấu hình biến môi trường trên Vercel (giá trị đã che)
+NEXT_PUBLIC_SUPABASE_URL=https://proj-abc123.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.ANON.REDACTED
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.SERVICE_ROLE.sk-test-REDACTED...
+
+# Ghi chú:
+# - ANON key: khoá "ẩn danh", quyền hạn chế, an toàn để dùng phía trình duyệt nếu có RLS.
+# - SERVICE_ROLE key: khoá quyền cao nhất, BỎ QUA RLS — chỉ được dùng ở server, tuyệt đối không lộ ra client.
+# - Dự án dùng SERVICE_ROLE key trong route handler; route handler chạy trên server (OK về vị trí),
+#   nhưng vì RLS đang TẮT và code không tự kiểm tra chủ sở hữu, khoá quyền cao cho phép đọc mọi dòng.`
+    }
+  ],
+  questions: [
+    'Nguyên nhân gốc (root cause — nguyên nhân thật sự sâu bên trong, không chỉ triệu chứng bề mặt) khiến người dùng thấy đơn hàng của người khác là gì? Dẫn chứng từng ý từ artifact.',
+    'Vì sao kết hợp "dùng service role key" + "RLS tắt" + "không kiểm tra chủ sở hữu trong code" lại nguy hiểm? Giải thích từng thành phần cho người mới.',
+    'Bạn sẽ xử lý thế nào: ngắn hạn (chặn rò rỉ ngay), dài hạn (thiết kế lại cho an toàn), cách kiểm chứng bằng 2 tài khoản, và cần thông báo sự cố ra sao?'
+  ],
+  hints: [
+    'Nhìn log: request đã xác định được user_id (đã đăng nhập) nhưng đổi order_id vẫn 200. So với code: câu truy vấn lọc theo cột nào, và thiếu điều kiện nào?',
+    'RLS (Row Level Security) là "hàng rào" ở tầng cơ sở dữ liệu: nếu bật và có policy "chỉ xem dòng của chính mình", thì dù code quên lọc, DB vẫn chặn. Service role key thì đi cửa sau bỏ qua hàng rào đó. Ba lớp phòng thủ đều hở thì chuyện gì xảy ra?',
+    'Kiểm chứng: dùng tài khoản A tạo/lấy một order_id, rồi dùng phiên đăng nhập của tài khoản B gọi GET cùng order_id — trước khi sửa phải trả 200 (lỗ hổng), sau khi sửa phải trả 403 hoặc 404. Rò rỉ dữ liệu cá nhân (địa chỉ, số điện thoại) thường cần quy trình thông báo sự cố.'
+  ],
+  answer: `**Tóm tắt:** Lỗi rò rỉ dữ liệu do **ba lớp phòng thủ cùng hở**: (1) route handler truy vấn đơn hàng chỉ theo {{id}} trên URL mà **không kiểm tra đơn đó thuộc người đang đăng nhập** (đây là dạng lỗ hổng **IDOR — Insecure Direct Object Reference**, tạm hiểu: đoán/đổi mã định danh trên URL là xem được tài nguyên của người khác); (2) **RLS** (Row Level Security — cơ chế PostgreSQL giới hạn mỗi dòng dữ liệu chỉ hiện với người đủ điều kiện) đang **tắt** và không có policy nào; (3) code dùng **service role key** (khoá quyền cao nhất của Supabase, bỏ qua RLS). Vì thế bất kỳ ai đã đăng nhập chỉ cần đổi {{order_id}} là đọc được đơn, địa chỉ, số điện thoại của người khác. Cách sửa: chặn ngay bằng kiểm tra chủ sở hữu + bật RLS/policy, kiểm chứng bằng 2 tài khoản, và thông báo sự cố rò rỉ dữ liệu.
+
+### Giải thích thuật ngữ (cho người mới)
+- **IDOR (Insecure Direct Object Reference):** ứng dụng dùng trực tiếp mã do người dùng gửi (ở đây là {{order_id}} trên URL) để lấy dữ liệu mà **không kiểm tra quyền sở hữu**. Ví dụ đời thường: gửi phòng khách sạn đưa bạn chìa khoá chỉ cần bạn đọc số phòng, không hỏi bạn có phải khách phòng đó không — đọc số phòng khác là mở được phòng khác.
+- **RLS (Row Level Security):** tính năng của PostgreSQL. Khi bật, bạn viết "policy" (chính sách) như "mỗi dòng trong bảng {{orders}} chỉ trả về nếu {{user_id}} của dòng bằng id người đang đăng nhập". DB tự lọc, nên dù code quên kiểm tra, dữ liệu vẫn không rò rỉ.
+- **Service role key:** khoá "chìa tổng" của Supabase, **bỏ qua mọi RLS**. Dùng khi cần tác vụ quản trị phía server, nhưng cực kỳ nguy hiểm nếu dựa vào nó cho truy vấn thay mặt người dùng cuối.
+- **Anon key:** khoá quyền hạn chế, tôn trọng RLS — phù hợp cho truy vấn gắn với người dùng đã đăng nhập.
+
+### Cơ chế bên trong — vì sao rò rỉ xảy ra
+Luồng xử lý một request:
+1. Người dùng (đã đăng nhập, phiên hợp lệ) gọi {{GET /api/orders/18422}}. Server biết đây là {{user_id = U-102}} (alice) — log ghi rõ {{user_id=U-102}}.
+2. Route handler lấy {{orderId = "18422"}} từ URL rồi chạy truy vấn: {{select ... from orders where id = 18422}}. **Không có điều kiện {{and user_id = U-102}}**.
+3. Truy vấn chạy bằng client tạo từ {{SUPABASE_SERVICE_ROLE_KEY}} (quyền cao, bỏ qua RLS). Bảng {{orders}} lại có {{relrowsecurity = f}} (RLS tắt) và không có policy nào. Vì vậy DB trả về dòng id 18422 (thực tế thuộc {{U-205}}) mà không bị chặn ở bất kỳ tầng nào.
+4. Handler trả {{200}} với toàn bộ dữ liệu (tên, số điện thoại, địa chỉ, sản phẩm). Kẻ tấn công chỉ cần lặp với các {{order_id}} khác (liệt kê tuần tự) là thu thập dữ liệu hàng loạt.
+
+### Dẫn chứng (trích từ artifact)
+- {{access-log-2026-11-03.txt}}: {{req=8f2a2 user_id=U-102 GET /api/orders/18422 200}} kèm chú thích "order 18422 thuộc U-205"; {{req=8f2b1 user_id=U-205 GET /api/orders/18421 200}} (đơn của U-102). Không có 401/403 nào khi đổi chéo.
+- {{app-api-orders-[id]-route.ts}}: tạo client bằng {{SUPABASE_SERVICE_ROLE_KEY}} (chú thích "BỎ QUA mọi Row Level Security"); truy vấn {{.eq('id', orderId).single()}} — **thiếu** {{.eq('user_id', currentUserId)}}. Trả {{200}} với {{data}} nguyên bản.
+- {{postgres-rls-check.sql.txt}}: bảng {{orders}}, {{order_items}}, {{customers}} đều {{relrowsecurity = f}} (RLS tắt). Truy vấn {{pg_policies}} trả {{(0 rows)}} — không có policy.
+- {{vercel-env-config.txt}}: xác nhận đang có {{SUPABASE_SERVICE_ROLE_KEY}} (quyền cao). Vị trí dùng ở server là chấp nhận được, nhưng **không được thay thế** việc kiểm tra chủ sở hữu và RLS.
+
+### Cách sửa
+
+**Ngắn hạn (chặn rò rỉ ngay, làm trong giờ đầu):**
+1. Thêm kiểm tra chủ sở hữu trong route handler: lấy người dùng hiện tại từ phiên đăng nhập (session/JWT), rồi lọc {{.eq('id', orderId).eq('user_id', currentUser.id)}}. Nếu không khớp, trả **403 Forbidden** (đã đăng nhập nhưng không có quyền) hoặc **404 Not Found** (không tiết lộ đơn có tồn tại hay không — thường an toàn hơn).
+~~~text
+// minh hoạ logic (TypeScript, chạy phía server)
+const user = await getUserFromSession(req);        // xác định người đang đăng nhập
+if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
+const { data } = await supabase
+  .from('orders').select('id, user_id, ...')
+  .eq('id', orderId).eq('user_id', user.id).single();  // bắt buộc khớp chủ sở hữu
+if (!data) return Response.json({ error: 'not found' }, { status: 404 });
+~~~
+2. Rà soát **mọi** endpoint lấy dữ liệu theo id ({{/api/orders/[id]}}, {{/api/order-items/[id]}}, {{/api/customers/[id]}}) — cùng một lỗi thường lặp lại ở nhiều route (AI sinh code hay bỏ qua bước kiểm tra quyền).
+3. Thu hồi phiên bất thường nếu phát hiện liệt kê hàng loạt; xem log để ước lượng phạm vi dữ liệu đã bị xem.
+
+**Dài hạn (phòng thủ nhiều lớp — "defence in depth"):**
+1. **Bật RLS và tạo policy** trên các bảng chứa dữ liệu người dùng, để DB tự là lớp chặn cuối cùng:
+~~~sql
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY orders_owner_select ON orders
+  FOR SELECT USING (user_id = auth.uid());  -- chỉ trả dòng của chính người đang đăng nhập
+~~~
+   Làm tương tự cho {{order_items}}, {{customers}}. Bật cả {{relforcerowsecurity}} khi cần chủ bảng cũng bị ràng buộc.
+2. Với truy vấn thay mặt người dùng cuối, ưu tiên dùng **anon key + JWT phiên người dùng** (để RLS nhận ra {{auth.uid()}}). Chỉ dùng service role key cho tác vụ quản trị nền (cron, migration) tách biệt, không dùng trong route phục vụ người dùng.
+3. **Kiểm thử phân quyền tự động:** viết test "tài khoản B gọi tài nguyên của A phải bị từ chối" cho mọi endpoint; đưa vào CI (chạy tự động mỗi lần sửa code).
+4. Tránh dùng mã định danh tuần tự dễ đoán ({{18421, 18422}}) cho tài nguyên nhạy cảm nếu có thể; cân nhắc UUID — nhưng **UUID không thay thế kiểm tra quyền**, chỉ làm khó liệt kê hơn.
+5. Quy trình review code: mọi truy vấn theo id lấy từ người dùng phải có điều kiện chủ sở hữu hoặc được RLS bảo vệ.
+
+**Kiểm chứng bằng 2 tài khoản (bắt buộc trước khi đóng sự cố):**
+- Chuẩn bị tài khoản A (có {{order_id = X}}) và tài khoản B.
+- Trước sửa: dùng phiên B gọi {{GET /api/orders/X}} → quan sát trả **200** kèm dữ liệu của A (xác nhận lỗ hổng).
+- Sau sửa: dùng phiên B gọi {{GET /api/orders/X}} → phải trả **403** hoặc **404**; dùng phiên A gọi chính {{X}} → vẫn **200** (không chặn nhầm chủ sở hữu). Lặp với các endpoint khác.
+
+**Thông báo sự cố:**
+- Đây là rò rỉ **dữ liệu cá nhân** (tên, số điện thoại, địa chỉ). Cần kích hoạt quy trình ứng phó sự cố: xác định **phạm vi** (log cho thấy bao nhiêu {{order_id}} bị truy cập chéo, trong khoảng thời gian nào), **mức độ** (trường dữ liệu nào lộ), lưu bằng chứng (log chỉ đọc), phối hợp pháp lý/bảo mật để thông báo đúng quy định hiện hành và thông báo minh bạch cho người dùng bị ảnh hưởng. (Mức cụ thể phụ thuộc luật áp dụng; không suy đoán ngoài dữ liệu có.)
+
+> Senior tip: Lỗ hổng kiểu IDOR + RLS tắt rất hay gặp ở app "AI dựng nhanh": code chạy được đường vui nhưng quên kiểm tra quyền. Hãy nhớ nguyên tắc **phòng thủ nhiều lớp** — (1) code luôn kiểm tra chủ sở hữu, (2) DB bật RLS làm chốt chặn cuối, (3) khoá quyền cao (service role) không dùng cho truy vấn thay mặt người dùng — và viết test phân quyền tự động để lỗi không quay lại.`,
+  rubric: [
+    'Nêu đúng root cause là IDOR (truy vấn theo id từ URL nhưng không kiểm tra chủ sở hữu) kết hợp RLS tắt và dùng service role key; dẫn chứng được log (đổi order_id vẫn 200), code (thiếu điều kiện user_id, dùng service role), và truy vấn RLS (relrowsecurity = f, 0 policy).',
+    'Giải thích được vai trò từng thành phần (IDOR, RLS/policy, service role key/anon key) và vì sao phòng thủ nhiều lớp đều hở thì dữ liệu rò rỉ.',
+    'Đưa ra cách sửa ngắn hạn (kiểm tra chủ sở hữu, trả 403/404) và dài hạn (bật RLS + policy, giới hạn dùng service role, test phân quyền tự động/CI).',
+    'Nêu được cách kiểm chứng bằng 2 tài khoản (B không xem được tài nguyên của A) và đề cập thông báo/ứng phó sự cố rò rỉ dữ liệu cá nhân với phạm vi dựa trên log.'
+  ],
+  tags: ['incident', 'idor', 'rls', 'postgres', 'supabase', 'nextjs', 'access-control', 'data-leak', 'startup']
+},
+{
+  id: 'lab-incident-026',
+  category: 'incident',
+  title: 'Startup dùng AI dựng app: hoá đơn API LLM tăng gấp 40 lần trong 3 ngày',
+  level: 'senior',
+  scenario: `**Bối cảnh (giải thích thuật ngữ):**
+- Cùng startup ở bài trước có tính năng chat hỗ trợ khách hàng dùng **LLM** (Large Language Model — mô hình ngôn ngữ lớn, ví dụ kiểu ChatGPT, nhận văn bản và sinh văn bản trả lời). Ứng dụng gọi **API LLM** (dịch vụ LLM qua mạng, tính phí theo lượng dùng — thường theo số **token**, tạm hiểu token là đơn vị "mẩu chữ" mà mô hình đọc/ghi).
+- Kiến trúc: **Next.js** trên **Vercel**. Đoạn code gọi LLM ban đầu được AI sinh ra và đặt phía **client** (chạy trong trình duyệt người dùng).
+
+**Triệu chứng:** Trong 3 ngày (01–03/11/2026) hoá đơn API LLM tăng **gấp ~40 lần** so với tuần trước (từ ~22 USD/ngày lên ~890 USD/ngày). Người dùng thật không tăng tương ứng. Không có cảnh báo ngân sách (budget alert — thông báo khi chi vượt ngưỡng) nào được cấu hình.
+
+**Dữ liệu thu thập:** Bảng thống kê mức dùng theo giờ, log request tới endpoint {{/api/chat}}, đoạn code client tiết lộ cách gọi API, và cấu hình giới hạn hiện tại.`,
+  artifacts: [
+    {
+      name: 'llm-usage-by-hour.csv',
+      lang: 'text',
+      content: `hour_utc,requests,input_tokens,output_tokens,cost_usd,unique_ips,authed_requests
+2026-10-31T10:00Z,48,62000,31000,1.10,31,48
+2026-10-31T11:00Z,52,67000,34000,1.19,33,52
+2026-11-01T02:00Z,410,1558000,820000,27.60,6,0
+2026-11-01T03:00Z,455,1730000,910000,30.80,6,0
+2026-11-01T10:00Z,380,1440000,760000,25.50,5,0
+2026-11-02T03:00Z,520,1976000,1040000,35.10,7,0
+2026-11-02T11:00Z,498,1892000,996000,33.60,6,0
+2026-11-03T02:00Z,540,2052000,1080000,36.40,7,0
+2026-11-03T03:00Z,560,2128000,1120000,37.90,7,0
+# Nhận xét: từ 01/11 xuất hiện các giờ có requests rất cao, unique_ips thấp (5-7), authed_requests = 0 (không đăng nhập).
+# Tổng 01-03/11 xấp xỉ 890 USD/ngày; tuần trước trung bình ~22 USD/ngày.`
+    },
+    {
+      name: 'vercel-function-log-api-chat.txt',
+      lang: 'text',
+      content: `2026-11-03T02:11:04.112Z POST /api/chat 200 1840ms ip=203.0.113.77  user=anonymous  prompt_chars=4200  completion_tokens=2048
+2026-11-03T02:11:06.501Z POST /api/chat 200 1910ms ip=203.0.113.77  user=anonymous  prompt_chars=4188  completion_tokens=2048
+2026-11-03T02:11:08.044Z POST /api/chat 200 1795ms ip=203.0.113.77  user=anonymous  prompt_chars=4210  completion_tokens=2048
+2026-11-03T02:11:09.733Z POST /api/chat 200 1882ms ip=203.0.113.45  user=anonymous  prompt_chars=4195  completion_tokens=2048
+2026-11-03T02:11:10.980Z POST /api/chat 200 1904ms ip=198.51.100.12 user=anonymous  prompt_chars=4203  completion_tokens=2048
+2026-11-03T02:11:12.220Z POST /api/chat 200 1866ms ip=203.0.113.77  user=anonymous  prompt_chars=4199  completion_tokens=2048
+# Cùng một nhóm ít IP (203.0.113.77 lặp rất dày, ~2 giây/lần), user=anonymous (không đăng nhập),
+# prompt dài gần như nhau, completion_tokens luôn chạm 2048 (mức trần đang cấu hình).`
+    },
+    {
+      name: 'src-app-chat-page.tsx',
+      lang: 'text',
+      content: `// src/app/chat/page.tsx (component chạy trong TRÌNH DUYỆT người dùng)
+'use client';
+import { useState } from 'react';
+
+export default function ChatPage() {
+  const [msg, setMsg] = useState('');
+
+  async function send() {
+    // Gọi THẲNG API LLM từ trình duyệt.
+    // Biến NEXT_PUBLIC_* được nhúng vào file JavaScript gửi xuống trình duyệt,
+    // nên bất kỳ ai cũng xem được giá trị trong tab Network/Source.
+    const res = await fetch('https://api.llm-provider.example/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + process.env.NEXT_PUBLIC_LLM_API_KEY
+      },
+      body: JSON.stringify({
+        model: 'llm-large',
+        messages: [{ role: 'user', content: msg }],
+        max_tokens: 2048
+      })
+    });
+    const data = await res.json();
+    console.log(data.choices[0].message.content);
+  }
+  return <button onClick={send}>Gửi</button>;
 }
+// Giá trị thật của khoá (đã che để minh hoạ): NEXT_PUBLIC_LLM_API_KEY=sk-test-REDACTED-EXAMPLE-DO-NOT-USE`
+    },
+    {
+      name: 'config-and-guardrails.txt',
+      lang: 'text',
+      content: `# Trạng thái kiểm soát hiện tại (đối chiếu ngày 03/11/2026)
+- Xác thực bắt buộc cho /api/chat: KHÔNG (endpoint cho phép anonymous)
+- Rate limit (giới hạn tốc độ — số request tối đa trong một khoảng thời gian) theo IP: KHÔNG
+- Rate limit theo user/tài khoản: KHÔNG
+- Giới hạn max_tokens phía server: KHÔNG (client tự đặt 2048)
+- Giới hạn độ dài prompt phía server: KHÔNG
+- Ngân sách (budget) và cảnh báo chi phí (cost alert): KHÔNG cấu hình
+- Khoá API LLM: đặt trong NEXT_PUBLIC_LLM_API_KEY (lộ ra client) và dùng trực tiếp từ trình duyệt
+- Ghi log gắn định danh người dùng: KHÔNG (log chỉ thấy anonymous)`
+    }
+  ],
+  questions: [
+    'Nguyên nhân gốc khiến hoá đơn API LLM tăng gấp ~40 lần là gì? Dẫn chứng từ từng artifact (thời điểm tăng, mẫu request, vị trí khoá API, kiểm soát đang thiếu).',
+    'Vì sao đặt khoá API trong biến {{NEXT_PUBLIC_*}} và gọi LLM trực tiếp từ trình duyệt lại nguy hiểm? Giải thích cho người mới cách khoá bị lộ và bị lạm dụng.',
+    'Bạn sẽ xử lý thế nào: hành động chặn ngay trong giờ đầu, thiết kế lại cho an toàn (gọi qua server, xác thực, rate limit theo user/IP, giới hạn token/prompt, ngân sách & cảnh báo), và cách phòng ngừa tái diễn?'
+  ],
+  hints: [
+    'Nhìn usage: từ 01/11, giờ cao điểm có ~500 request/giờ nhưng chỉ 5-7 IP và authed_requests = 0. Log cho thấy cùng IP gọi đều mỗi ~2 giây, anonymous, completion_tokens luôn 2048. Đây giống lưu lượng người dùng thật hay lưu lượng tự động lạm dụng?',
+    'Biến {{NEXT_PUBLIC_*}} trong Next.js được đóng gói vào JavaScript gửi xuống trình duyệt: mở tab Network/Source là thấy. Ai có khoá thì gọi API LLM bằng khoá của bạn, bạn trả tiền. Gọi từ trình duyệt cũng khiến bạn không thể kiểm soát tốc độ, danh tính, hay số token.',
+    'Chặn ngay: thu hồi (rotate) khoá đã lộ và phát hành khoá mới chỉ đặt ở server. Dài hạn: chuyển cuộc gọi LLM vào route handler phía server (kiểm tra đăng nhập), thêm rate limit theo user và theo IP, đặt trần {{max_tokens}} và độ dài prompt ở server, cấu hình ngân sách/cảnh báo chi phí.'
+  ],
+  answer: `**Tóm tắt:** Hoá đơn tăng vọt vì **khoá API LLM bị lộ ra phía client** (đặt trong biến {{NEXT_PUBLIC_*}} và gọi thẳng LLM từ trình duyệt) nên bất kỳ ai lấy được khoá đều có thể gọi LLM và **bạn bị tính tiền**; đồng thời endpoint **không yêu cầu đăng nhập** và **không có rate limit/giới hạn token/ngân sách cảnh báo**, nên một nhóm ít IP (5-7) đã gửi lưu lượng tự động (bot/script) liên tục (~2 giây/lần, luôn chạm trần 2048 token) và đẩy chi phí từ ~22 USD/ngày lên ~890 USD/ngày. Cách xử lý: **rotate (thu hồi) khoá ngay**, chuyển gọi LLM về server, bắt buộc xác thực, thêm rate limit và giới hạn token/prompt, đặt ngân sách + cảnh báo.
+
+### Giải thích thuật ngữ (cho người mới)
+- **LLM (Large Language Model):** mô hình ngôn ngữ lớn, nhận văn bản đầu vào (prompt) và sinh văn bản trả lời.
+- **API LLM & token:** bạn gọi LLM qua mạng (API) và trả phí theo lượng dùng, thường tính theo **token** (mẩu chữ; 1 từ tiếng Anh ~1-1.5 token, tiếng Việt thường tốn hơn). Prompt dài + câu trả lời dài ({{max_tokens}} lớn) = tốn nhiều tiền.
+- **API key (khoá API):** chuỗi bí mật dùng như "chìa khoá" để gọi dịch vụ; ai giữ khoá thì gọi được và chủ khoá bị tính phí.
+- **{{NEXT_PUBLIC_*}} (Next.js):** biến môi trường có tiền tố này được **nhúng vào mã JavaScript gửi xuống trình duyệt** — người dùng mở công cụ Developer Tools (tab Network/Source) là đọc được. Vì vậy **không bao giờ** đặt bí mật (API key trả phí, service role key) trong {{NEXT_PUBLIC_*}}.
+- **Client vs server:** client = code chạy trên trình duyệt của người dùng (không kiểm soát được); server = code chạy trên máy chủ của bạn (bạn kiểm soát, có thể giữ bí mật và đặt luật).
+- **Rate limit:** giới hạn tốc độ, ví dụ "mỗi tài khoản tối đa 20 request/phút, mỗi IP tối đa 30 request/phút" để chặn lạm dụng.
+- **Rotate key:** thu hồi khoá cũ (vô hiệu hoá) và phát hành khoá mới, để kẻ đã lộ khoá cũ không dùng tiếp được.
+
+### Cơ chế bên trong — vì sao tiền bị "đốt"
+1. **Khoá lộ:** {{NEXT_PUBLIC_LLM_API_KEY}} bị nhúng vào bundle gửi xuống trình duyệt ({{src-app-chat-page.tsx}} gọi thẳng {{https://api.llm-provider.example/...}} với header {{Authorization: Bearer ...}}). Bất kỳ ai mở trang, xem mã nguồn/Network đều lấy được khoá (hoặc kẻ xấu đã trích xuất sẵn).
+2. **Không có hàng rào:** {{/api/chat}} cho {{anonymous}} (không đăng nhập), không rate limit theo user/IP, client tự đặt {{max_tokens: 2048}}, không giới hạn prompt, không có ngân sách/cảnh báo ({{config-and-guardrails.txt}} đều KHÔNG).
+3. **Lạm dụng tự động:** ai đó dùng khoá/script từ vài IP (5-7) gửi request liên tục ~2 giây/lần, prompt dài gần giống nhau, luôn lấy tối đa 2048 token output. Mỗi request tốn nhiều token → chi phí nhân lên. Bằng chứng: {{llm-usage-by-hour.csv}} từ 01/11 các giờ cao điểm ~380-560 req/giờ, {{unique_ips}} 5-7, {{authed_requests = 0}}; {{vercel-function-log-api-chat.txt}} cho thấy {{203.0.113.77}} lặp dày, {{user=anonymous}}, {{completion_tokens=2048}}.
+4. Vì không có cảnh báo ngân sách, việc tăng gấp 40 lần chỉ được phát hiện khi nhìn hoá đơn.
+
+### Dẫn chứng (trích từ artifact)
+- {{llm-usage-by-hour.csv}}: 31/10 ~50 req/giờ, ~1.1 USD, 31 IP, toàn bộ authed. Từ 01/11: 410-560 req/giờ, 25-38 USD/giờ, chỉ 5-7 IP, {{authed_requests = 0}}. Tổng 01-03/11 ~890 USD/ngày vs ~22 USD/ngày trước đó (~40 lần).
+- {{vercel-function-log-api-chat.txt}}: {{ip=203.0.113.77}} (và vài IP khác) gọi {{POST /api/chat}} mỗi ~2 giây, {{user=anonymous}}, {{prompt_chars ~4200}}, {{completion_tokens=2048}} cố định.
+- {{src-app-chat-page.tsx}}: chạy {{'use client'}} (trình duyệt), gọi thẳng nhà cung cấp LLM với {{process.env.NEXT_PUBLIC_LLM_API_KEY}} và {{max_tokens: 2048}} — khoá lộ ra client.
+- {{config-and-guardrails.txt}}: xác thực KHÔNG, rate limit IP/user KHÔNG, trần max_tokens/prompt phía server KHÔNG, ngân sách/cảnh báo KHÔNG, khoá nằm trong {{NEXT_PUBLIC_LLM_API_KEY}}.
+
+### Cách sửa
+
+**Ngắn hạn (chặn ngay, trong giờ đầu — mục tiêu: ngừng "chảy tiền"):**
+1. **Rotate khoá LLM ngay:** vào trang quản lý của nhà cung cấp LLM, **thu hồi/vô hiệu hoá** khoá {{sk-test-REDACTED...}} (khoá đã lộ) và tạo khoá mới. Khoá mới **chỉ đặt ở biến môi trường phía server** (KHÔNG có tiền tố {{NEXT_PUBLIC_}}), ví dụ {{LLM_API_KEY}} trên Vercel (server-only).
+2. **Tắt đường gọi trực tiếp từ client:** gỡ đoạn gọi thẳng nhà cung cấp LLM trong {{page.tsx}}. Nếu chưa kịp viết lại, tạm thời tắt/giới hạn endpoint chat để chặn lạm dụng.
+3. Bật **tạm thời** chặn khẩn: chặn các IP lạm dụng (theo log) ở tầng Vercel/firewall; nếu nhà cung cấp hỗ trợ, đặt giới hạn chi tiêu cứng (hard spend limit) ngay.
+4. Kiểm tra khoá cũ không còn nằm trong mã nguồn public, lịch sử commit, hay bundle đã build; rà thêm các bí mật {{NEXT_PUBLIC_*}} khác.
+
+**Dài hạn (thiết kế lại cho an toàn):**
+1. **Chuyển gọi LLM về server (bắt buộc):** trình duyệt chỉ gọi route handler của bạn (ví dụ {{POST /api/chat}} trên server). Route handler giữ {{LLM_API_KEY}} ở server, mới gọi nhà cung cấp LLM. Khoá không bao giờ rời server.
+2. **Xác thực:** yêu cầu người dùng đăng nhập để dùng chat ({{user}} gắn định danh), hoặc ít nhất cơ chế chống lạm dụng với khách.
+3. **Rate limit (giới hạn tốc độ):** áp dụng **theo user/tài khoản** (ví dụ 20 req/phút, 200 req/ngày) và **theo IP** (chặn bot). Trả mã **429 Too Many Requests** (quá nhiều yêu cầu) khi vượt ngưỡng.
+4. **Giới hạn token và prompt ở server (không tin client):** đặt trần {{max_tokens}} (ví dụ 512 thay vì 2048 cho hỗ trợ ngắn), giới hạn độ dài prompt, từ chối nội dung bất thường. Tính phí tỷ lệ với token nên trần token là đòn bẩy giảm chi phí trực tiếp.
+5. **Ngân sách và cảnh báo:** cấu hình cảnh báo chi phí (cost alert/budget) ở nhà cung cấp LLM và hệ thống giám sát (ví dụ báo khi vượt 50 USD/ngày, 150 USD/ngày); đặt giới hạn chi tiêu cứng nếu có. Cảnh báo theo "tỷ lệ tăng bất thường" (gấp N lần đường cơ sở) để phát hiện sớm.
+6. **Quan sát (observability):** log gắn {{user_id}}, IP, số token, thời gian; dashboard theo dõi chi phí/req/token theo giờ để thấy bất thường.
+
+**Phòng ngừa:**
+- Quy tắc: **mọi bí mật trả phí** (API key LLM, khoá service role, secret thanh toán) chỉ ở server, **không bao giờ** {{NEXT_PUBLIC_*}}, không commit vào mã nguồn. Dùng kiểm tra tự động (secret scanning) trong CI.
+- Review thiết kế trước khi lên production: endpoint tốn tiền phải có xác thực + rate limit + trần chi phí.
+- Bài kiểm tra: giả lập gửi nhiều request để xác nhận rate limit và 429 hoạt động.
+
+~~~seq
+title: Trước (không an toàn) vs Sau (an toàn)
+actors: Browser | Server | LLM
+Browser -> LLM: (TRƯỚC) gọi thẳng kèm API key lộ trong NEXT_PUBLIC_*
+note Browser..LLM: khoá lộ, không rate limit, ai cũng gọi được
+Browser -> Server: (SAU) POST /api/chat (đã đăng nhập)
+Server -> Server: kiểm tra user + rate limit + trần token
+Server -> LLM: gọi bằng LLM_API_KEY chỉ ở server
+LLM --> Server: phản hồi (giới hạn token)
+Server --> Browser: trả kết quả
+~~~
+
+> Senior tip: Với tính năng dùng API tính phí theo lượt/token, hãy coi "ai được gọi, gọi bao nhiêu, tốn bao nhiêu" là yêu cầu bảo mật ngay từ đầu — khoá đặt server-side, bắt buộc xác thực, rate limit và trần token ở server, cộng ngân sách/cảnh báo. Ứng dụng AI dựng nhanh thường dán khoá vào {{NEXT_PUBLIC_*}} cho "chạy được", và đó là cách hoá đơn tăng gấp hàng chục lần chỉ sau một đêm.`,
+  rubric: [
+    'Nêu đúng root cause: khoá API LLM lộ ở client (NEXT_PUBLIC_*, gọi thẳng từ trình duyệt) dẫn tới bị lạm dụng, cộng với việc thiếu xác thực, thiếu rate limit và thiếu giới hạn token/ngân sách; dẫn chứng được usage (tăng từ 01/11, ít IP, authed_requests=0, ~40 lần), log (IP lặp, anonymous, completion_tokens=2048) và code/config (NEXT_PUBLIC_LLM_API_KEY, guardrails đều KHÔNG).',
+    'Giải thích rõ vì sao NEXT_PUBLIC_* lộ ra trình duyệt và vì sao gọi LLM từ client khiến khoá bị lấy và bị dùng trừ tiền chủ khoá (phù hợp người mới).',
+    'Đưa ra hành động chặn ngay: rotate/thu hồi khoá bị lộ, chuyển khoá về server-only, tắt đường gọi trực tiếp/chặn IP/tạm hạn chế endpoint.',
+    'Đưa ra thiết kế dài hạn/phòng ngừa: gọi LLM qua server, xác thực, rate limit theo user/IP (429), trần max_tokens/độ dài prompt ở server, ngân sách + cảnh báo chi phí, và không đặt bí mật trả phí trong NEXT_PUBLIC_* / secret scanning.'
+  ],
+  tags: ['incident', 'llm', 'api-key-leak', 'nextjs', 'vercel', 'rate-limit', 'cost', 'security', 'startup']
+}
+
 );
