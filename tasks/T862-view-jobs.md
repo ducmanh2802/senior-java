@@ -35,3 +35,4 @@ Owns: `js/views/jobs.js`, `css/views/jobs.css`
 
 ## Notes
 - 2026-11-07 (claude): qoder viết dở rồi hết credit; Claude sửa lỗi cú pháp chuỗi EN, lỗi AI/JD ngắn không hiện (aiErr theo id), digest kẹt loading khi rời trang giữa chừng, phím n từ tab 1, giữ kết quả AI khi đã rời view, gợi ý ôn theo topics của tin khi chưa phân tích; viết jobs.css. Smoke-test với App giả: escape, quá hạn, lỗi AI, Theo dõi → OK. validate OK.
+Reviewed-by: verify-only (code/UI task)
