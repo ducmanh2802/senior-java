@@ -1335,5 +1335,573 @@ class WalLog {
   ],
   related:['db-035','db-006'],
   tags:['WAL','durability','checkpoint','recovery','PostgreSQL']
+},
+{
+  id: 'lesson-db-010',
+  track: 'db',
+  order: 10,
+  title: 'B+ tree thu nhỏ: node lá, tách node, và range scan theo chuỗi lá',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích vì sao database dùng B+ tree thay vì cây nhị phân cho index trên đĩa',
+    'Mô phỏng insert, split node và duy trì thứ tự khóa trong cây bậc nhỏ',
+    'Thực hiện range scan bằng cách đi xuống lá trái rồi theo liên kết giữa các lá',
+    'Liên hệ fan-out, chiều cao cây và số lần đọc page trong PostgreSQL B-tree'
+  ],
+  body: `**Tóm tắt:** B+ tree là cấu trúc index dạng cây cân bằng (balanced tree: mọi lá cùng độ sâu) mà database dùng cho tra cứu theo khóa và truy vấn theo khoảng. Khác với cây nhị phân, mỗi node chứa nhiều khóa (fan-out: số con tối đa của node nội bộ) để giảm chiều cao; khác với B-tree thuần, mọi bản ghi thực nằm ở lá và các lá được nối chuỗi, nên range scan (quét theo khoảng khóa) chỉ cần đi dọc lá.
+
+### Vì sao không dùng cây nhị phân
+Một index trên đĩa (disk: ổ lưu trữ bền nhưng truy cập chậm hơn RAM rất nhiều) đọc dữ liệu theo **page** (trang: đơn vị I/O cố định, thường 8 KB trong PostgreSQL). Nếu mỗi node chỉ chứa 1 khóa như cây nhị phân cân bằng, thì 1 triệu khóa cần khoảng 20 tầng (~20 lần đọc page). B+ tree đặt hàng chục đến hàng trăm khóa vào mỗi page, nên 1 triệu khóa có thể chỉ cần 3-4 tầng. Chiều cao thấp đồng nghĩa ít I/O (input/output, đọc/ghi đĩa) hơn. Fan-out càng lớn, cây càng thấp; PostgreSQL B-tree mặc định page 8 KB, fan-out thực tế thường hàng trăm.
+
+### Cấu trúc B+ tree (phiên bản thu nhỏ)
+Ta mô phỏng B+ tree bậc {{m}} (bậc nhỏ như 4 để dễ quan sát split - tách node). Quy ước:
+- Mỗi node chứa tối đa {{m - 1}} = 3 khóa.
+- Node nội bộ (internal node): khóa phân cách và con trỏ con. Quy ước: đi sang con phải khi {{key >= separator[i]}}.
+- Node lá (leaf node): cặp (khóa, giá trị) đã sắp xếp. Mọi lá cùng độ sâu.
+- Các lá nối bằng con trỏ {{next}} sang lá bên phải: range scan nhanh.
+
+~~~text
+B+ tree bậc 4 (tối đa 3 khóa/node), minh hoạ:
+                 [ 17 | 35 ]
+                /     |     \\
+          [5|9|12]  [17|26]  [35|40|48]   (lá, chứa value)
+             |        |         |
+             +--------+---------+          (next giữa các lá)
+
+Tìm 26: 26 >= 17 và < 35 -> xuống lá giữa -> thấy 26.
+Range [10, 36]: xuống lá chứa 10, đi dọc next tới khi khóa > 36.
+~~~
+
+### Insert và tách node (split)
+Khi chèn khóa mới, luôn chèn vào **lá** đúng vị trí:
+1. Từ gốc đi xuống theo khóa phân cách để tìm lá đích.
+2. Chèn (khóa, giá trị) vào lá, giữ thứ tự. Khóa đã tồn tại -> cập nhật (upsert: chèn hoặc cập nhật).
+3. Lá vượt {{m - 1}} khóa (tràn) -> **split**: chia đôi. Khóa đầu của lá mới được **copy lên** cha (lá vẫn giữ bản sao vì dữ liệu nằm ở lá).
+4. Node cha tràn -> split node nội bộ: khóa giữa **đẩy lên** (promote), không copy.
+5. Split đến gốc -> tạo gốc mới, chiều cao tăng 1.
+
+~~~java
+// Split lá bậc 4 (tối đa 3 khóa). Lá [5,9,12], chèn 7 -> [5,7,9,12] (tràn)
+Leaf left  = [5, 7];       // giữ nửa trái
+Leaf right = [9, 12];      // nửa phải
+right.next = left.next;    // giữ chuỗi cũ
+left.next = right;         // nối left -> right
+promoteKey = 9;            // COPY 9 lên cha (lá vẫn giữ 9)
+~~~
+
+### Range scan
+Truy vấn {{WHERE id >= 10 AND id <= 36}}: (1) tìm lá chứa biên dưới (10); (2) duyệt entry theo thứ tự, hết lá đi theo {{next}}; (3) dừng khi khóa > biên trên (36). Chỉ tốn 1 lần đi xuống cây cộng số lá cần đọc, nên {{ORDER BY}} và range predicate được B-tree hỗ trợ tốt.
+
+### Trong PostgreSQL thật (khác mô phỏng)
+PostgreSQL dùng B-tree (biến thể Lehman & Yao) làm index mặc định, page 8 KB:
+- Mỗi trang là một node; split cần latch (khóa nhẹ trong bộ nhớ) để đọc/ghi đồng thời (concurrency).
+- Lá trỏ tới heap tuple (ctid: địa chỉ vật lý hàng); index-only scan chỉ khả thi khi visibility map cho phép.
+- Có VACUUM dọn entry chết; {{fillfactor}} mặc định 90 cho index chừa chỗ giảm page split (write amplification: ghi khuếch đại).
+
+| Tính chất | Cây nhị phân cân bằng | B+ tree (index DB) |
+|---|---|---|
+| Khóa mỗi node | 1 | hàng chục-hàng trăm (theo page) |
+| Chiều cao với N lớn | ~log2(N) | ~log_f(N), f = fan-out lớn |
+| Range scan | duyệt cây phức tạp | đi xuống lá + đi dọc next |
+| Tối ưu cho | RAM, con trỏ rẻ | đĩa/page, giảm I/O |
+
+### Lỗi hay gặp
+- Nhầm copy lên (leaf split) với promote (internal split): leaf phải giữ khóa vì dữ liệu nằm ở lá.
+- Quên nối {{next}} khi split lá: range scan đứt chuỗi.
+- Nghĩ B+ tree xoay như AVL: nó cân bằng bằng split/merge, mọi lá luôn cùng độ sâu.
+
+### Liên hệ phỏng vấn
+(1) Fan-out lớn -> cây thấp -> ít page read. (2) Dữ liệu ở lá + lá nối chuỗi -> range scan/ORDER BY tốt. (3) Insert có thể gây split và write amplification; random insert (UUID v4) gây split nhiều hơn insert tuần tự. Nhắc {{EXPLAIN (ANALYZE, BUFFERS)}} để xem index scan thực tế.
+
+> Senior tip: thứ tự cột trong composite index (index nhiều cột) quan trọng vì B+ tree hỗ trợ prefix; {{(tenant_id, created_at)}} phục vụ lọc tenant rồi range thời gian, đảo thứ tự thì khác hẳn.`,
+  exercises: [
+    {
+      title: 'B+ tree bậc 4: insert, get, range và chiều cao',
+      prompt: `Cài {{BPlusTree}} bậc cố định 4 (mỗi node tối đa 3 khóa):
+- {{put(key, value)}}: upsert (chèn hoặc cập nhật), giữ khóa tăng dần. Node vượt 3 khóa thì split: lá chia đôi, khóa đầu nửa phải **copy lên** cha; node nội bộ chia đôi, khóa giữa **đẩy lên** cha. Lá duy trì {{next}}.
+- {{get(key)}}: trả {{Integer}} value hoặc {{null}}.
+- {{range(lo, hi)}}: trả {{List<Integer>}} value có khóa {{k}} thỏa {{lo <= k <= hi}}, tăng dần. Tìm lá chứa {{lo}} rồi đi dọc {{next}}, dừng khi khóa > {{hi}}.
+- {{height()}}: số tầng, cây rỗng trả 0, chỉ gốc lá trả 1.
+
+Chỉ dùng JDK chuẩn, không dùng {{TreeMap}}/{{TreeSet}} thay cho cấu trúc cây.`,
+      starter: `import java.util.*;
+
+class BPlusTree {
+    private static final int ORDER = 4;      // tối đa 3 khóa mỗi node
+    private static final int MAX_KEYS = ORDER - 1;
+
+    BPlusTree() { }
+
+    void put(int key, int value) { throw new UnsupportedOperationException("TODO"); }
+
+    Integer get(int key) { throw new UnsupportedOperationException("TODO"); }
+
+    // trả value của các khóa trong [lo, hi], tăng dần theo khóa
+    List<Integer> range(int lo, int hi) { throw new UnsupportedOperationException("TODO"); }
+
+    int height() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int p = 0, t = 0;
+    static void check(String n, Runnable r) {
+        t++; try { r.run(); p++; System.out.println("PASS " + n); }
+        catch (Throwable e) { System.out.println("FAIL " + n + ": " + e); }
+    }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    static void ok(boolean b) { if (!b) throw new AssertionError("expected true"); }
+    public static void main(String[] args) {
+        check("empty tree", () -> {
+            BPlusTree x = new BPlusTree();
+            eq(0, x.height()); eq(null, x.get(1)); eq(List.of(), x.range(0, 10));
+        });
+        check("put and get basic, update same key", () -> {
+            BPlusTree x = new BPlusTree();
+            x.put(5, 50); x.put(1, 10); x.put(9, 90);
+            eq(50, x.get(5)); eq(10, x.get(1)); eq(90, x.get(9)); eq(null, x.get(7));
+            x.put(5, 55); eq(55, x.get(5));
+        });
+        check("leaf split keeps all keys and range order", () -> {
+            BPlusTree x = new BPlusTree();
+            for (int k : new int[]{10, 20, 30, 40}) x.put(k, k * 2);
+            for (int k : new int[]{10, 20, 30, 40}) eq(k * 2, x.get(k));
+            eq(List.of(20, 40, 60, 80), x.range(10, 40));
+            eq(List.of(40, 60), x.range(15, 35));
+            ok(x.height() >= 2);
+        });
+        check("many inserts cause growth and preserve range", () -> {
+            BPlusTree x = new BPlusTree();
+            for (int i = 1; i <= 20; i++) x.put(i, i + 100);
+            for (int i = 1; i <= 20; i++) eq(i + 100, x.get(i));
+            eq(List.of(105, 106, 107, 108, 109, 110), x.range(5, 10));
+            eq(List.of(), x.range(21, 30));
+            ok(x.height() >= 3);
+        });
+        check("range bounds inclusive and missing edges", () -> {
+            BPlusTree x = new BPlusTree();
+            for (int k : new int[]{2, 4, 6, 8, 10, 12}) x.put(k, k);
+            eq(List.of(4, 6, 8), x.range(4, 8));
+            eq(List.of(4, 6, 8), x.range(3, 9));
+            eq(List.of(2), x.range(0, 2));
+            eq(List.of(12), x.range(12, 99));
+            eq(List.of(), x.range(5, 5));
+        });
+        check("reverse-order inserts and overwrite", () -> {
+            BPlusTree x = new BPlusTree();
+            for (int i = 15; i >= 1; i--) x.put(i, i);
+            for (int i = 1; i <= 15; i++) x.put(i, i * 10);
+            eq(List.of(30, 40, 50), x.range(3, 5));
+            eq(150, x.get(15)); eq(null, x.get(0));
+        });
+        System.out.println("RESULT " + p + "/" + t);
+    }
+}`,
+      reference: `import java.util.*;
+
+class BPlusTree {
+    private static final int ORDER = 4;
+    private static final int MAX_KEYS = ORDER - 1;
+
+    private abstract static class Node {
+        final List<Integer> keys = new ArrayList<>();
+        abstract boolean isLeaf();
+    }
+    private static class Leaf extends Node {
+        final List<Integer> vals = new ArrayList<>();
+        Leaf next;
+        boolean isLeaf() { return true; }
+    }
+    private static class Internal extends Node {
+        final List<Node> kids = new ArrayList<>();
+        boolean isLeaf() { return false; }
+    }
+    private static class Split { final int key; final Node right; Split(int k, Node r) { key = k; right = r; } }
+
+    private Node root;
+
+    Integer get(int key) {
+        if (root == null) return null;
+        Leaf lf = findLeaf(key);
+        int i = Collections.binarySearch(lf.keys, key);
+        return i >= 0 ? lf.vals.get(i) : null;
+    }
+
+    void put(int key, int value) {
+        if (root == null) {
+            Leaf lf = new Leaf(); lf.keys.add(key); lf.vals.add(value); root = lf; return;
+        }
+        Split sp = insert(root, key, value);
+        if (sp != null) {
+            Internal nr = new Internal();
+            nr.keys.add(sp.key); nr.kids.add(root); nr.kids.add(sp.right); root = nr;
+        }
+    }
+
+    List<Integer> range(int lo, int hi) {
+        List<Integer> out = new ArrayList<>();
+        if (root == null || lo > hi) return out;
+        Leaf lf = findLeaf(lo);
+        while (lf != null) {
+            for (int i = 0; i < lf.keys.size(); i++) {
+                int k = lf.keys.get(i);
+                if (k > hi) return out;
+                if (k >= lo) out.add(lf.vals.get(i));
+            }
+            lf = lf.next;
+        }
+        return out;
+    }
+
+    int height() {
+        int h = 0; Node n = root;
+        while (n != null) { h++; n = n.isLeaf() ? null : ((Internal) n).kids.get(0); }
+        return h;
+    }
+
+    private Leaf findLeaf(int key) {
+        Node n = root;
+        while (!n.isLeaf()) {
+            Internal in = (Internal) n;
+            int i = childIndex(in.keys, key);
+            n = in.kids.get(i);
+        }
+        return (Leaf) n;
+    }
+
+    private int childIndex(List<Integer> keys, int key) {
+        int i = 0;
+        while (i < keys.size() && key >= keys.get(i)) i++;
+        return i;
+    }
+
+    private Split insert(Node n, int key, int value) {
+        if (n.isLeaf()) return insertLeaf((Leaf) n, key, value);
+        Internal in = (Internal) n;
+        int i = childIndex(in.keys, key);
+        Split sp = insert(in.kids.get(i), key, value);
+        if (sp == null) return null;
+        in.keys.add(i, sp.key);
+        in.kids.add(i + 1, sp.right);
+        if (in.keys.size() <= MAX_KEYS) return null;
+        return splitInternal(in);
+    }
+
+    private Split insertLeaf(Leaf lf, int key, int value) {
+        int i = Collections.binarySearch(lf.keys, key);
+        if (i >= 0) { lf.vals.set(i, value); return null; }
+        i = -i - 1;
+        lf.keys.add(i, key); lf.vals.add(i, value);
+        if (lf.keys.size() <= MAX_KEYS) return null;
+        return splitLeaf(lf);
+    }
+
+    private Split splitLeaf(Leaf lf) {
+        int mid = lf.keys.size() / 2;
+        Leaf right = new Leaf();
+        right.keys.addAll(lf.keys.subList(mid, lf.keys.size()));
+        right.vals.addAll(lf.vals.subList(mid, lf.vals.size()));
+        lf.keys.subList(mid, lf.keys.size()).clear();
+        lf.vals.subList(mid, lf.vals.size()).clear();
+        right.next = lf.next; lf.next = right;
+        return new Split(right.keys.get(0), right); // COPY
+    }
+
+    private Split splitInternal(Internal in) {
+        int mid = in.keys.size() / 2;
+        int up = in.keys.get(mid);
+        Internal right = new Internal();
+        right.keys.addAll(in.keys.subList(mid + 1, in.keys.size()));
+        right.kids.addAll(in.kids.subList(mid + 1, in.kids.size()));
+        in.keys.subList(mid, in.keys.size()).clear();
+        in.kids.subList(mid + 1, in.kids.size()).clear();
+        return new Split(up, right); // PROMOTE
+    }
+}`,
+      hints: [
+        'Tách 2 loại node: lá (keys + values + next) và nội bộ (keys + kids). Luôn insert vào lá; split trả (khóa phân cách, node phải) lên cha.',
+        'Leaf split: chia đôi, nối next (right.next = left.next; left.next = right), copy khóa đầu right lên cha. Internal split: khóa giữa promote lên cha.',
+        'range(lo,hi): findLeaf(lo) rồi duyệt; nếu key > hi thì return; hết lá thì lf = lf.next.',
+        'Upsert: binarySearch thấy key có sẵn thì set value và return null. Cây rỗng put lần đầu tạo gốc lá height=1.'
+      ],
+      explain: `Mô phỏng 3 ý cốt lõi: (1) dữ liệu ở lá, node nội bộ chỉ điều hướng; (2) split giữ cây cân bằng theo chiều cao, mọi lá cùng độ sâu; (3) lá nối chuỗi nên range scan là đi xuống + duyệt tuần tự.
+
+Đơn giản hoá so với PostgreSQL B-tree thật: bậc nhỏ cố định (4); không delete/merge; không concurrency latch; không lưu trên page đĩa hay ctid. PostgreSQL B-tree (Lehman & Yao) dùng latch và chiến lược split để đọc/ghi đồng thời an toàn.
+
+Lỗi thường gặp: quên nối {{next}} khi split; nhầm copy (leaf) với promote (internal); dùng {{TreeMap}} thay cho cấu trúc node.`
+    }
+  ],
+  check: [
+    {
+      q: 'Vì sao B+ tree thường dùng cho index trên đĩa thay vì cây nhị phân cân bằng?',
+      options: [
+        'Vì B+ tree không cần sắp xếp khóa',
+        'Vì fan-out lớn làm cây thấp, giảm số lần đọc page',
+        'Vì B+ tree không bao giờ split',
+        'Vì cây nhị phân không hỗ trợ số nguyên'
+      ],
+      answer: 1,
+      explain: 'Mỗi node B+ tree chứa nhiều khóa (gần đầy page), nên chiều cao thấp và ít I/O hơn.'
+    },
+    {
+      q: 'Điểm nào giúp B+ tree range scan hiệu quả?',
+      options: ['Mọi node nội bộ lưu value', 'Các lá được nối chuỗi và khóa trong lá đã sắp', 'Gốc luôn là lá', 'Split chỉ xảy ra ở gốc'],
+      answer: 1,
+      explain: 'Sau khi tìm lá đầu, chỉ cần đi dọc next giữa các lá theo thứ tự khóa.'
+    },
+    {
+      q: 'Khi split một node lá trong B+ tree, khóa phân cách xử lý thế nào?',
+      options: ['Bị xóa khỏi cây', 'Chỉ nằm ở cha, lá phải không giữ', 'Được copy lên cha và lá phải vẫn giữ khóa đó', 'Được đẩy xuống dưới'],
+      answer: 2,
+      explain: 'Dữ liệu thực nằm ở lá nên lá phải vẫn giữ khóa; bản sao đưa lên cha để điều hướng.'
+    }
+  ],
+  related: ['db-003'],
+  tags: ['B+tree', 'index', 'range-scan', 'page-split', 'PostgreSQL']
+},
+{
+  id: 'lesson-db-011',
+  track: 'db',
+  order: 11,
+  title: 'WAL và khôi phục sau crash: redo commit, bỏ qua chưa commit',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích quy tắc write-ahead: log phải bền trước khi báo commit',
+    'Mô phỏng crash tại nhiều điểm và thấy vì sao chỉ áp dụng transaction đã commit',
+    'Cài recover() duyệt log: checkpoint cắt ngắn, COMMIT thì redo, chưa COMMIT thì bỏ qua',
+    'Liên hệ WAL của PostgreSQL, checkpoint và thời gian khôi phục'
+  ],
+  body: `**Tóm tắt:** WAL (Write-Ahead Log: nhật ký ghi trước) là cơ chế database ghi mô tả thay đổi vào log bền vững **trước** khi sửa trang dữ liệu và trước khi báo transaction (giao dịch: nhóm thao tác coi như một đơn vị) commit. Khi crash (sập: mất điện, process chết), database đọc log từ checkpoint: **redo** (làm lại) thay đổi của transaction đã có COMMIT, **bỏ qua** transaction chưa commit. Dữ liệu đã commit không mất, dữ liệu chưa commit không lọt ra.
+
+### Vì sao cần WAL
+Ghi trực tiếp vào file dữ liệu mỗi lần UPDATE rất tốn: file dữ liệu là các page rải rác, ghi ngẫu nhiên (random I/O) chậm; crash giữa chừng có thể làm page chỉ ghi nửa (torn page). WAL gom thay đổi thành record nhỏ và **append** (ghi nối đuôi) vào file log tuần tự. Ghi tuần tự nhanh, và một lần {{fsync}} (ép bộ đệm xuống đĩa bền) có thể xác nhận commit.
+
+Quy tắc cốt lõi: **log record phải bền trên đĩa trước khi trang dữ liệu bị ghi xuống, và trước khi client nhận "commit thành công".**
+
+~~~text
+Luồng đơn giản hoá (1 transaction):
+  BEGIN
+  SET balance=80 WHERE id=A  -> log (LSN=1, T1, SET, A, 80)
+  SET balance=120 WHERE id=B -> log (LSN=2, T1, SET, B, 120)
+  COMMIT                     -> log (LSN=3, T1, COMMIT) rồi fsync
+                              -> giờ mới báo "commit OK"
+  (trang dữ liệu A,B có thể còn trong buffer, flush sau - checkpoint)
+
+LSN = Log Sequence Number: số thứ tự tăng dần của record trong log.
+~~~
+
+### Crash xảy ra ở đâu?
+- Crash **trước** khi COMMIT fsync: transaction chưa xác nhận -> recover bỏ qua các SET của nó.
+- Crash **sau** khi COMMIT đã fsync: client đã nhận "OK" -> recover phải redo các SET (kể cả khi trang dữ liệu chưa kịp ghi).
+- Nhiều transaction xen kẽ: mỗi transaction xét độc lập dựa trên việc có COMMIT bền hay không.
+
+### Recover: redo các transaction đã commit
+Thuật toán tối thiểu (redo-only, giống tinh thần PostgreSQL):
+1. Bắt đầu từ **checkpoint**. Chỉ đọc log từ {{fromLsn}} trở đi.
+2. Xác định transaction nào có {{COMMIT}}. Áp dụng (redo) SET/DEL của transaction đã COMMIT theo thứ tự log. Bỏ qua thao tác của transaction chưa COMMIT/ABORT.
+3. Trạng thái cuối nhất quán sau crash.
+
+Redo nên **idempotent** (lặp lại cho cùng kết quả) trong thiết kế thật; SET cùng giá trị tự nhiên idempotent.
+
+~~~seq
+title: Crash sau COMMIT T1, T2 chưa commit
+actors: App | DB | WAL | Data
+App -> DB: T1 SET A=80; SET B=120; COMMIT
+DB -> WAL: append SET,SET,COMMIT; fsync
+WAL --> DB: durable
+DB --> App: commit OK (T1)
+App -> DB: T2 SET A=999 (chưa COMMIT)
+DB -> WAL: append SET(A,999)
+note DB,Data: CRASH - buffer chưa flush
+DB -> WAL: recover() từ checkpoint
+WAL --> DB: T1 có COMMIT -> redo A=80,B=120; T2 bỏ qua
+DB -> Data: trạng thái: A=80, B=120
+~~~
+
+### PostgreSQL WAL thật (khác mô phỏng)
+- WAL là file nhị phân segment (thường 16 MB) trong {{pg_wal}}; record ở mức thay đổi page, không phải key/value.
+- Checkpoint định kỳ ghi dirty page xuống data file; {{checkpoint_timeout}}, {{max_wal_size}} ảnh hưởng tần suất. Checkpoint thường -> recover nhanh nhưng tốn I/O nền.
+- {{synchronous_commit}} điều khiển khi fsync: mặc định an toàn; tắt có thể mất vài transaction gần nhất khi crash OS, đổi lại throughput cao hơn.
+- Có full page write sau checkpoint để chống torn page. Replica streaming nhận WAL; PITR dùng base backup + WAL archive.
+
+### Lỗi hay gặp
+- Áp dụng mọi record khi recover: sai, transaction chưa COMMIT phải bỏ qua.
+- Ghi trang dữ liệu rồi mới ghi log: vi phạm write-ahead.
+- Nghĩ checkpoint cho phép xóa hết log: phải giữ WAL đủ cho recovery/replica.
+- Bỏ qua thứ tự LSN: redo phải theo thứ tự log.
+
+### Liên hệ phỏng vấn
+Nhấn mạnh: (1) commit trả lời client chỉ sau COMMIT record fsync; (2) crash recovery redo transaction có COMMIT từ checkpoint; (3) đánh đổi {{synchronous_commit}}/checkpoint/IO. "Mất điện có mất đơn đã báo thành công không?" -> không, nếu COMMIT đã durable.
+
+> Senior tip: theo dõi {{pg_wal}} phình bất thường (thường do replication slot giữ hoặc archiving kẹt), thời gian checkpoint và {{pg_stat_bgwriter}}.`,
+  exercises: [
+    {
+      title: 'WalStore: commit, crash giả lập, recover()',
+      prompt: `Cài {{WalStore}} mô phỏng WAL key/value (đơn giản hoá):
+- {{put(tx, key, value)}}: append log SET cho transaction {{tx}}.
+- {{del(tx, key)}}: append log DEL.
+- {{commit(tx)}}: append log COMMIT. Chỉ transaction có COMMIT mới thành công.
+- {{abort(tx)}}: append log ABORT.
+- {{recover(Map<String,Integer> base, int fromLsn)}}: trả {{Map<String,Integer>}} trạng thái sau khôi phục. Bắt đầu từ bản sao {{base}} (null coi như rỗng). Chỉ xét record có {{lsn >= fromLsn}} (checkpoint). Áp dụng theo thứ tự log các SET/DEL của transaction **có COMMIT** (không abort). Transaction chưa commit/abort -> bỏ qua toàn bộ. Cùng key bị set nhiều lần bởi txn đã commit: giá trị sau cùng theo thứ tự log thắng.
+
+Đơn giản hoá: log lưu trong bộ nhớ; "crash" mô phỏng bằng gọi {{recover}}; LSN tăng dần từ 1; mục tiêu là đúng quy tắc redo commit, bỏ qua chưa commit.`,
+      starter: `import java.util.*;
+
+class WalStore {
+    // gợi ý: record (lsn, tx, op, key, value), lsn tăng từ 1
+    WalStore() { }
+
+    void put(String tx, String key, int value) { throw new UnsupportedOperationException("TODO"); }
+
+    void del(String tx, String key) { throw new UnsupportedOperationException("TODO"); }
+
+    void commit(String tx) { throw new UnsupportedOperationException("TODO"); }
+
+    void abort(String tx) { throw new UnsupportedOperationException("TODO"); }
+
+    // Chỉ redo txn có COMMIT; xét log từ fromLsn (>=), áp trên bản sao base.
+    Map<String, Integer> recover(Map<String, Integer> base, int fromLsn) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int p = 0, t = 0;
+    static void check(String n, Runnable r) {
+        t++; try { r.run(); p++; System.out.println("PASS " + n); }
+        catch (Throwable e) { System.out.println("FAIL " + n + ": " + e); }
+    }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    public static void main(String[] args) {
+        check("commit then crash: committed data survives", () -> {
+            WalStore w = new WalStore();
+            w.put("T1", "A", 80); w.put("T1", "B", 120); w.commit("T1");
+            Map<String, Integer> s = w.recover(new LinkedHashMap<>(), 1);
+            eq(80, s.get("A")); eq(120, s.get("B")); eq(2, s.size());
+        });
+        check("crash before commit: uncommitted ignored", () -> {
+            WalStore w = new WalStore();
+            w.put("T1", "A", 80); w.commit("T1");
+            w.put("T2", "A", 999);
+            Map<String, Integer> s = w.recover(new LinkedHashMap<>(), 1);
+            eq(80, s.get("A"));
+        });
+        check("interleaved txns: only committed applied", () -> {
+            WalStore w = new WalStore();
+            w.put("T1", "A", 1);
+            w.put("T2", "A", 2); w.put("T2", "B", 20);
+            w.commit("T1");
+            Map<String, Integer> s = w.recover(new LinkedHashMap<>(), 1);
+            eq(1, s.get("A")); eq(null, s.get("B"));
+        });
+        check("later committed txn wins in log order", () -> {
+            WalStore w = new WalStore();
+            w.put("T1", "A", 1); w.commit("T1");
+            w.put("T2", "A", 2); w.commit("T2");
+            Map<String, Integer> s = w.recover(new LinkedHashMap<>(), 1);
+            eq(2, s.get("A"));
+        });
+        check("abort/discard uncommitted and delete", () -> {
+            WalStore w = new WalStore();
+            w.put("T1", "A", 5); w.put("T1", "B", 6); w.commit("T1");
+            w.del("T2", "A"); w.commit("T2");
+            w.put("T3", "B", 999); w.abort("T3");
+            w.put("T4", "C", 7);
+            Map<String, Integer> s = w.recover(new LinkedHashMap<>(), 1);
+            eq(null, s.get("A")); eq(6, s.get("B")); eq(null, s.get("C"));
+        });
+        check("checkpoint base and fromLsn", () -> {
+            WalStore w = new WalStore();
+            w.put("T1", "A", 1); w.commit("T1");
+            w.put("T2", "B", 2); w.commit("T2");
+            Map<String, Integer> base = new LinkedHashMap<>(); base.put("A", 1);
+            Map<String, Integer> s = w.recover(base, 3);
+            eq(1, s.get("A")); eq(2, s.get("B"));
+            Map<String, Integer> s2 = w.recover(base, 999);
+            eq(1, s2.get("A")); eq(null, s2.get("B"));
+        });
+        System.out.println("RESULT " + p + "/" + t);
+    }
+}`,
+      reference: `import java.util.*;
+
+class WalStore {
+    private static final class Rec {
+        final int lsn; final String tx, op, key; final Integer val;
+        Rec(int lsn, String tx, String op, String key, Integer val) {
+            this.lsn = lsn; this.tx = tx; this.op = op; this.key = key; this.val = val;
+        }
+    }
+    private final List<Rec> log = new ArrayList<>();
+    private int nextLsn = 1;
+
+    void put(String tx, String key, int value) { log.add(new Rec(nextLsn++, tx, "SET", key, value)); }
+    void del(String tx, String key) { log.add(new Rec(nextLsn++, tx, "DEL", key, null)); }
+    void commit(String tx) { log.add(new Rec(nextLsn++, tx, "COMMIT", null, null)); }
+    void abort(String tx) { log.add(new Rec(nextLsn++, tx, "ABORT", null, null)); }
+
+    Map<String, Integer> recover(Map<String, Integer> base, int fromLsn) {
+        Map<String, Integer> state = base == null ? new LinkedHashMap<>() : new LinkedHashMap<>(base);
+        Set<String> committed = new LinkedHashSet<>();
+        Set<String> aborted = new LinkedHashSet<>();
+        for (Rec r : log) {
+            if (r.lsn < fromLsn) continue;
+            if ("COMMIT".equals(r.op)) committed.add(r.tx);
+            else if ("ABORT".equals(r.op)) aborted.add(r.tx);
+        }
+        for (Rec r : log) {
+            if (r.lsn < fromLsn) continue;
+            if (("SET".equals(r.op) || "DEL".equals(r.op))
+                    && committed.contains(r.tx) && !aborted.contains(r.tx)) {
+                if ("SET".equals(r.op)) state.put(r.key, r.val); else state.remove(r.key);
+            }
+        }
+        return state;
+    }
+}`,
+      hints: [
+        'Mỗi record cần lsn tăng dần, tx id, op (SET/DEL/COMMIT/ABORT), key, value. put/del/commit/abort chỉ append log.',
+        'recover: xác định tập tx có COMMIT (không abort) với lsn >= fromLsn; rồi duyệt log theo thứ tự lsn và chỉ áp dụng SET/DEL của các tx đó lên bản sao base.',
+        'Txn không có COMMIT -> bỏ qua toàn bộ thao tác. Áp dụng theo thứ tự log để "later committed wins" tự đúng.',
+        'Đừng sửa base của caller; dùng new LinkedHashMap<>(base).'
+      ],
+      explain: `Mô phỏng quy tắc WAL: (1) thay đổi ghi thành record log; (2) COMMIT là mốc quyết định transaction tồn tại sau crash; (3) recover chỉ redo transaction có COMMIT, theo thứ tự log, từ checkpoint (base + fromLsn).
+
+Đơn giản hoá so với PostgreSQL/InnoDB: log trong bộ nhớ (không fsync thật), record mức key/value logic thay vì page; không undo log riêng, torn-page handling, group commit, hay ARIES đầy đủ. Vẫn dạy đúng bất biến cốt lõi: "đã báo commit thành công thì crash không được mất" và "chưa commit thì crash phải như chưa từng có".`
+    }
+  ],
+  check: [
+    {
+      q: 'Quy tắc write-ahead yêu cầu điều gì trước khi báo COMMIT thành công?',
+      options: [
+        'Trang dữ liệu phải ghi xong xuống đĩa',
+        'Record COMMIT (và log liên quan) phải bền trên đĩa (fsync log)',
+        'Tất cả index phải cập nhật',
+        'Client phải gửi lại xác nhận'
+      ],
+      answer: 1,
+      explain: 'Báo commit chỉ sau khi log bền; trang dữ liệu có thể flush trễ vì đã có WAL để redo.'
+    },
+    {
+      q: 'Recover sau crash: transaction đã ghi SET nhưng chưa có COMMIT bền thì sao?',
+      options: ['Vẫn redo vì SET đã ghi log', 'Bỏ qua toàn bộ thay đổi của transaction đó', 'Chỉ redo một nửa', 'Chuyển thành COMMIT tự động'],
+      answer: 1,
+      explain: 'Chưa commit bền thì transaction coi như không thành công, phải không để lại hiệu ứng.'
+    },
+    {
+      q: 'Checkpoint trong mô hình recovery giúp gì?',
+      options: [
+        'Làm transaction nhanh gấp đôi',
+        'Cho phép chỉ replay log từ một mốc, giảm thời gian recover',
+        'Thay thế hoàn toàn WAL',
+        'Bỏ qua mọi transaction chưa commit trong tương lai'
+      ],
+      answer: 1,
+      explain: 'Checkpoint đánh dấu base đã an toàn tới mức nào, nên recover không cần đọc lại toàn bộ log từ đầu.'
+    }
+  ],
+  related: ['db-006', 'db-035'],
+  tags: ['WAL', 'crash-recovery', 'redo', 'checkpoint', 'durability']
 }
 );
