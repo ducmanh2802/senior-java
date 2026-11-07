@@ -1050,6 +1050,12 @@ Consumer cập nhật trạng thái đơn hàng từ topic {{order-events}}. Hai
 - Timezone và decimal precision legacy — float vs numeric hoặc khác scale (2 vs 4 chữ số thập phân) làm lệch vài xu mỗi dòng; quy chuẩn trước khi sync.
 - Giao dịch chốt quyết định schema: thêm version flag mới/old schema để tương thích trong vài tuần đầu của cutover.
 
+### Ví dụ đời thực
+Chuyển hệ thống quản lý khách hàng từ Oracle legacy sang service mới trên PostgreSQL, chạy song song 4 tháng. Phương án đầu là **ghi kép từ ứng dụng** (ghi legacy rồi ghi hệ mới): khi hệ mới lỗi giữa chừng, hai bên lệch nhau mà không ai biết; sau 3 tuần lệch 1,8% bản ghi. Làm lại: legacy vẫn là **nguồn sự thật** duy nhất trong giai đoạn đầu; thay đổi được bắt bằng **CDC** (Debezium đọc redo log/LogMiner) đẩy qua Kafka sang hệ mới, consumer idempotent theo khoá chính + version; job **đối soát** hằng đêm so checksum theo từng khoảng id (đếm dòng, hash các cột chính) và tự đẩy lại bản ghi lệch. Khi lệch < 0,001% trong 3 tuần liên tiếp, chuyển hướng đọc dần sang hệ mới (feature flag theo % người dùng), rồi mới đảo chiều nguồn sự thật. Không có sự cố dữ liệu lúc cắt chuyển.
+
+### Trả lời mẫu khi phỏng vấn
+"Điều đầu tiên tôi chốt là tại mỗi giai đoạn chỉ có một nguồn sự thật cho mỗi loại dữ liệu, thường là hệ legacy lúc đầu. Tôi tránh ghi kép từ ứng dụng vì không có transaction chung giữa hai hệ: ghi bên này thành công, bên kia lỗi là lệch mà khó phát hiện. Thay vào đó tôi dùng CDC như Debezium đọc log thay đổi của DB legacy, đẩy qua Kafka sang hệ mới, consumer idempotent theo khoá chính và version, giữ thứ tự theo khoá. Kèm theo là đối soát định kỳ so số dòng và checksum theo từng khoảng, tự đồng bộ lại phần lệch và cảnh báo khi vượt ngưỡng. Khi đối soát ổn định đủ lâu, tôi chuyển dần phần đọc sang hệ mới theo tỉ lệ, rồi mới đảo nguồn sự thật, luôn có đường quay lại."
+
 > Senior tip: migration lớn chiến thắng không phải ở plan kỹ thuật mà ở dashboard đối soát — tôi luôn làm cho tổ chức một dashboard drift hiển thị số dòng lệch theo ngày; combo CDC + outbox + shadow read là nền bền; "kế hoạch hoàn hảo" mà không có đối soát thường dẫn đến nguy hiểm hơn nhiều.
 `,
   follow: [
@@ -1093,6 +1099,12 @@ LEFT JOIN partner_tx p USING (ref_no) WHERE p.ref_no IS NULL;
 - Match key phải chuẩn hóa trước: partner schema khác nhau (ref 16 số, zero padding...) — validator theo version schema.
 - pending status của đối tác settle sau T+1 — không đưa pending vào queue lệch sớm, đợi wait window T+3 rồi xét lại.
 
+### Ví dụ đời thực
+Ví điện tử đối soát với một ngân hàng đối tác: mỗi ngày lệch khoảng 40–60 giao dịch, đội vận hành xử lý tay mất 3 giờ. Phân loại các khoản lệch trong 2 tuần: 55% do **ranh giới ngày** (giao dịch lúc 23:59:58 bên mình, 00:00:03 bên đối tác), 30% do **timeout không rõ kết quả** (bên mình đánh dấu thất bại, đối tác đã trừ tiền), 10% do **hoàn tiền một phần** đối tác ghi thành giao dịch riêng, 5% còn lại cần người xem. Quy trình mới: so khớp theo **mã tham chiếu chung** (không theo số tiền + thời gian), cửa sổ thời gian ±5 phút quanh ranh giới ngày, tự động xử lý các nhóm đã biết (cập nhật trạng thái giao dịch timeout theo dữ liệu đối tác, gộp hoàn tiền một phần), chỉ đẩy phần "không giải thích được" sang hàng chờ người duyệt kèm đủ bằng chứng. Thời gian xử lý tay còn khoảng 20 phút mỗi ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Đối soát tốt cần một khoá chung giữa hai bên, thường là mã tham chiếu giao dịch mình gửi sang đối tác, chứ không khớp theo số tiền và thời gian. Quy trình của tôi: nhận file hoặc API đối soát của đối tác, chuẩn hoá về cùng định dạng, so khớp theo khoá, rồi phân loại kết quả thành khớp, chỉ có ở bên mình, chỉ có ở bên đối tác, và lệch số tiền hay trạng thái. Sau đó tôi thống kê nguyên nhân lệch để tự động hoá những nhóm phổ biến: lệch ranh giới ngày xử lý bằng cửa sổ thời gian, giao dịch timeout thì cập nhật theo kết quả của đối tác, hoàn tiền một phần thì gộp. Phần còn lại đưa vào hàng chờ cho người duyệt kèm bằng chứng, có hạn xử lý và lưu vết. Mọi điều chỉnh đều là bút toán mới, không sửa giao dịch gốc."
+
 > Senior tip: mục tiêu của tôi là match rate 99.9% theo số lượng giao dịch nhưng đừng quên theo giá trị — một giao dịch lệch 5 tỷ VND phải báo ngay, không chờ báo cáo cuối tháng; dashboard đối soát luôn có 2 KPI: count match rate và value variance per day.`,
   follow: [
     'Thiết kế suspense account trong ledger double-entry và khi nào nó về 0?',
@@ -1133,6 +1145,12 @@ LEFT JOIN partner_tx p USING (ref_no) WHERE p.ref_no IS NULL;
 - Force-push không đảm bảo xóa hết: mirror, fork, VCS caching — rotate là biện pháp duy nhất chắc chắn vô hiệu hóa credential cũ.
 - Chỉ sửa log hiện tại mà bỏ qua backup/index snapshot — PII vẫn còn theo ttl; purge phải áp dụng cả backup.
 - Masking regex dễ bỏ sót định dạng lạ (thẻ 13 số so với 16 số, CCCD cũ/mới) — test với dataset thật.
+
+### Ví dụ đời thực
+Một dev commit file {{application-prod.yml}} có mật khẩu DB lên repo GitHub **công khai** của một dự án demo lúc 22:10; công cụ quét của GitHub (secret scanning) gửi cảnh báo lúc 22:12, nhưng bot dò secret của kẻ xấu cũng thường thấy trong vài phút. Xử lý: 22:20 đổi mật khẩu DB và giới hạn security group chỉ cho IP ứng dụng; 22:40 kiểm tra log kết nối DB từ 22:10 — có 3 lần thử đăng nhập từ IP lạ, đều thất bại vì đã đổi mật khẩu; sau đó xoá file khỏi lịch sử bằng {{git filter-repo}} và force push (chỉ để giảm phát tán, **không** thay cho việc rotate). Phòng ngừa: bật pre-commit hook gitleaks, push protection của GitHub, chuyển secret sang Secrets Manager, repo demo không được dùng cấu hình thật. Postmortem không đổ lỗi; điểm mấu chốt được ghi lại: **rotate trong vài phút đầu** quan trọng hơn mọi bước dọn dẹp.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xử lý như một sự cố bảo mật với thứ tự ưu tiên rõ ràng. Với secret đã lên Git, coi như đã lộ, kể cả repo private: việc đầu tiên trong vài phút là thu hồi và xoay vòng secret, rồi thu hẹp quyền truy cập mạng nếu được. Sau đó kiểm tra log truy cập từ thời điểm lộ để biết có bị dùng không. Xoá khỏi lịch sử Git bằng git filter-repo chỉ giảm phát tán, không thay cho việc rotate. Với dữ liệu khách hàng trong log: chặn nguồn ghi log, khoá quyền truy cập hệ thống log, xác định phạm vi và ai đã đọc, xoá ở mọi nơi log đã chảy tới, phối hợp pháp chế về nghĩa vụ thông báo. Phòng ngừa: secret scanning và push protection, pre-commit hook, secret manager, masking tập trung trong logging, và postmortem không đổ lỗi."
 
 > Senior tip: câu trả lời sai thường gặp trong phỏng vấn là "em xóa commit đi là xong" — câu đúng: "rotate ngay trong phút đầu vì bot quét GitHub vài phút sau commit; dọn history là bước hai". Đã có credential AWS bị dùng trong khoảng 10 phút sau khi repo ra public; pre-commit + CI scan là phòng tuyến trước.
 `,
@@ -1245,6 +1263,12 @@ FROM ledger_entries GROUP BY 1 HAVING sum(
 - Đừng đưa pending vào queue lệch sớm; window settling của đối tác T+3 mới xét lại nếu còn thiếu.
 - USD vs VND rounding: VND không có xu, USD có; kê nhiều đồng tiền phải chuẩn hóa trước khi match.
 
+### Ví dụ đời thực
+Ngân hàng nhận file đối soát cuối ngày của NAPAS cho giao dịch chuyển tiền nhanh 24/7: mỗi ngày khoảng 1,2 triệu giao dịch, trong đó vài trăm ở trạng thái **treo** (bên mình "đang xử lý", bên NAPAS đã thành công hoặc ngược lại). Trước đây job chạy một lần lúc 1 giờ sáng, lỗi file là cả quy trình dừng, đội vận hành xử lý tay tới trưa. Thiết kế lại: nhận file qua SFTP → kiểm tra chữ ký/checksum và số dòng ở footer → nạp vào bảng staging → so khớp theo mã tham chiếu → tự động **hoàn tất** các giao dịch treo mà NAPAS báo thành công (ghi có cho người nhận), tạo yêu cầu **tra soát** với các giao dịch bên mình thành công mà NAPAS không có; mọi điều chỉnh là bút toán mới có duyệt hai người với số tiền lớn. Báo cáo kết quả gửi lúc 6 giờ; số giao dịch phải xử lý tay giảm khoảng 85%.
+
+### Trả lời mẫu khi phỏng vấn
+"Quy trình đối soát cuối ngày của tôi có năm bước. Nhận file an toàn và kiểm tra tính toàn vẹn: chữ ký hoặc checksum, số dòng, tổng tiền ở phần cuối file; file lỗi thì cảnh báo và yêu cầu gửi lại, không xử lý một phần. Nạp vào bảng staging và so khớp với giao dịch bên mình theo mã tham chiếu chung. Phân loại: khớp, bên mình treo mà đối tác thành công, bên mình thành công mà đối tác không có, lệch số tiền. Tự động xử lý các nhóm có quy tắc rõ, như hoàn tất giao dịch treo đã được đối tác xác nhận, còn các trường hợp khác tạo yêu cầu tra soát theo quy trình với đối tác. Mọi điều chỉnh là bút toán mới, có duyệt hai người với số tiền lớn, có audit. Job phải chạy lại được an toàn và có báo cáo kết quả, cảnh báo khi số lệch vượt mức bình thường."
+
 > Senior tip: một KPI tôi luôn đặt cho hàm đối soát: "số dư suspense account về 0 trước 08:00"; nếu không là tín hiệu bug hoặc cần người xử lý sớm; dashboard match rate tự động giúp đội OPS đỡ hàng giờ xử lý thủ công mỗi sáng.
 `,
   follow: [
@@ -1292,6 +1316,26 @@ for (Tx t : job.repoPending()) {
 - Đừng ghi FAILED theo timeout khi đối tác chưa xác nhận — nếu tiền thật đi mà bạn refund thì mất tiền thật.
 - Polling inquiry quá dồn dễ bị partner chặn (rate limit); backoff + jitter luôn, và batch inquiry nếu API hỗ trợ.
 - Log đủ chi tiết cho từng case (ref, số tiền, từng bước inquiry) — sau này tranh chấp với đối tác cần timeline từng ms.
+
+### Luồng xử lý trạng thái chưa xác định
+~~~seq
+title: Chuyển tiền qua đối tác bị timeout
+actors: App | Transfer | Partner | Recon
+App -> Transfer: POST /transfers (idempotency key)
+Transfer -> Transfer: trừ tạm (hold) tiền, trạng thái PENDING
+Transfer -> Partner: gửi lệnh, ref=TRF-9921
+note Transfer..Partner: timeout 30s, không có phản hồi
+Transfer --> App: 202 đang xử lý (không báo thất bại)
+Transfer -> Partner: hỏi trạng thái TRF-9921 (sau 1, 5, 15 phút)
+Partner --> Transfer: SUCCESS -> hoàn tất, ghi nợ chính thức
+Recon -> Transfer: cuối ngày: còn PENDING thì tra soát
+~~~
+
+### Ví dụ đời thực
+Một ví đánh dấu **thất bại và hoàn tiền ngay** khi gọi ngân hàng đối tác bị timeout. Thực tế khoảng 60% các lệnh timeout đó **đã thành công** ở phía ngân hàng → người nhận đã nhận tiền, người gửi lại được hoàn tiền: thất thoát khoảng 300 triệu đồng mỗi tháng trước khi đối soát phát hiện. Sửa theo luồng trên: timeout → trạng thái **UNKNOWN/PENDING**, giữ nguyên khoản tạm giữ; job hỏi trạng thái theo mã tham chiếu với backoff; chỉ hoàn tiền khi đối tác xác nhận **thất bại** hoặc khi tra soát cuối ngày kết luận không có giao dịch; gửi lại lệnh chỉ khi đối tác hỗ trợ idempotency theo mã tham chiếu. Thất thoát về 0; khiếu nại "tiền bị trừ mà không đến" giảm nhờ app hiển thị rõ trạng thái "đang xử lý".
+
+### Trả lời mẫu khi phỏng vấn
+"Timeout không có nghĩa là thất bại, chỉ có nghĩa là không biết. Nên tôi không bao giờ hoàn tiền ngay khi timeout: giao dịch chuyển sang trạng thái chưa xác định, khoản tiền vẫn được tạm giữ, và người dùng thấy đang xử lý. Mỗi lệnh gửi sang đối tác có mã tham chiếu duy nhất do mình sinh ra, để có thể hỏi trạng thái và để đối tác chống trùng nếu cần gửi lại. Một job hỏi trạng thái theo mã tham chiếu với backoff; chỉ khi đối tác xác nhận thành công thì hoàn tất, xác nhận thất bại thì mới hoàn tiền. Nếu hết thời gian hỏi mà vẫn chưa rõ, giao dịch đi vào quy trình đối soát cuối ngày và tra soát. Tôi chỉ gửi lại lệnh khi đối tác đảm bảo idempotency theo mã tham chiếu, nếu không thì có nguy cơ chuyển hai lần."
 
 > Senior tip: nguyên tắc tôi luôn áp dụng khi thiết kế payment với 3 trạng thái chắc chắn: SETTLED (tiền tới nơi), FAILED_CONFIRMED (đối tác xác nhận), PENDING (chưa biết); mọi hành động refund phải có đối tác xác nhận — an toàn nhất là 'chờ + inquiry', không tự quyết.
 `,
@@ -1383,6 +1427,12 @@ CREATE INDEX idx_audit_entity ON audit_log (entity_type, entity_id, ts DESC);
 - Cache (Redis) còn plaintext khi DB đã mã hóa — dùng serializer mã hóa key-level hoặc encrypt value trước khi cache.
 - IAM rộng (toàn dev đều read DB) làm bảo mật phá từ bên trong — gắn tiêu chuẩn "time-to-detect ai đọc row X" như một KPI bảo mật.
 
+### Ví dụ đời thực
+Một ngân hàng số chuẩn bị đánh giá PCI DSS cho tính năng thẻ. Rà soát phát hiện số thẻ đầy đủ (PAN) nằm ở **7 nơi**: bảng giao dịch, log ứng dụng, bản sao DB cho đội phân tích, file xuất cho đối tác, cache Redis, ticket hỗ trợ và môi trường test (dữ liệu sao chép từ production). Thiết kế lại theo hướng **thu hẹp phạm vi**: số thẻ chỉ đi vào một **vault tokenization** riêng (mạng tách biệt, khoá trong HSM), mọi hệ thống khác chỉ giữ **token** và 4 số cuối; log có masking tập trung; môi trường test dùng dữ liệu giả; truy cập dữ liệu nhạy cảm qua quyền tạm thời có phê duyệt, mọi lần xem đều audit. Phạm vi hệ thống phải đánh giá PCI giảm từ khoảng 40 service còn 3; đợt đánh giá vượt qua lần đầu.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế theo nguyên tắc giảm thiểu: dữ liệu nhạy cảm càng ít nơi giữ càng tốt. Với số thẻ, tôi dùng tokenization: chỉ một vault được tách biệt lưu số thẻ thật, khoá mã hoá nằm trong HSM hoặc KMS, các hệ thống khác chỉ giữ token và bốn số cuối, nên phạm vi PCI DSS nhỏ lại. Mã hoá in-transit bằng TLS ở mọi nơi, mTLS giữa các service nhạy cảm; mã hoá at-rest ở tầng đĩa và DB, thêm mã hoá cấp trường cho dữ liệu rất nhạy cảm như số giấy tờ. Hiển thị và log đều được che. Phân quyền theo nguyên tắc tối thiểu, truy cập dữ liệu nhạy cảm là quyền tạm thời có phê duyệt và audit. Xác thực người dùng có 2FA, OTP với giới hạn thử. Môi trường test không dùng dữ liệu thật. Và tuân thủ các quy định như Nghị định 13 về dữ liệu cá nhân."
+
 > Senior tip: với ngân hàng, tôi luôn bắt đầu từ data classification matrix; lỗi hay gặp của team dev là mã hóa DB nhưng log và cache còn plaintext — thêm job quét regex CCCD/thẻ trên log sample trước khi công nhận "đã an toàn"; pre-commit scan chỉ là phòng tuyến đầu.
 `,
   follow: [
@@ -1426,6 +1476,12 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 - Update cùng account balance trong một transaction lớn có lock tranh chấp với luồng online deposit — chunk tự khóa theo partition; chunk nhỏ để cùng lock pattern.
 - Business date phải do scheduler cấp (param), không lấy từ JVM clock — tránh trường hợp một pod vắt qua mốc 00:00 khiến hai chunk thuộc hai ngày khác nhau.
 
+### Ví dụ đời thực
+Batch tính lãi cho 6 triệu tài khoản tiết kiệm, mỗi đêm khoảng 50 phút. Một lần DB failover ở phút 31, job được chạy lại thủ công **từ đầu** → 3,6 triệu tài khoản đã cộng lãi bị cộng **lần hai**, phải đảo bút toán cả buổi sáng. Thiết kế lại: (1) mỗi kết quả lãi ghi vào bảng {{interest_postings}} với **unique constraint** {{(account_id, value_date)}} — chạy lại thì INSERT trùng bị từ chối hoặc bỏ qua ({{ON CONFLICT DO NOTHING}}); (2) xử lý theo **partition** tài khoản (ví dụ 64 nhóm theo hash id), mỗi nhóm có trạng thái riêng trong bảng {{batch_partition_status}}, chạy song song có giới hạn; (3) mỗi lô 1.000 tài khoản một transaction, ghi checkpoint; (4) kết thúc bằng **kiểm tra tổng**: số tài khoản đã tính = số tài khoản đủ điều kiện, tổng lãi khớp với tổng tính độc lập bằng một truy vấn SQL. Lần sự cố sau, job tự tiếp tục từ 41 nhóm còn lại, không trùng một đồng nào.
+
+### Trả lời mẫu khi phỏng vấn
+"Batch tính lãi phải đúng, chạy lại được và không trùng. Đúng: logic tính lãi được test kỹ với các trường hợp biên như ngày cuối tháng, năm nhuận, số dư thay đổi trong ngày, làm tròn theo quy định, và có một phép kiểm tra tổng độc lập ở cuối. Không trùng: mỗi kết quả có khoá nghiệp vụ duy nhất, ví dụ tài khoản cộng ngày giá trị, với unique constraint, nên dù chạy lại bao nhiêu lần cũng chỉ ghi một lần. Chạy lại được: chia tài khoản thành các nhóm, mỗi nhóm có trạng thái riêng, xử lý theo lô nhỏ với checkpoint, nên khi lỗi chỉ chạy tiếp phần chưa xong. Song song có giới hạn để không làm quá tải DB, chạy trên dữ liệu đã chốt tại thời điểm cut-off. Cuối cùng là cảnh báo nếu job không hoàn tất đúng hạn và báo cáo đối soát cho nghiệp vụ."
+
 > Senior tip: job lãi hay sai nhất là chỗ re-run từ thiết kế: key nghiệp vụ (account_id + accrual_date) phải unique ngay từ ngày design; kinh nghiệm của tôi là luôn đặt restart đọc từ bảng checkpoint để tiếp tục đúng chỗ, và dựa vào UPSERT thay vì tự đếm theo danh sách trong app.
 `,
   follow: [
@@ -1463,6 +1519,12 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 - Đối tác gateway limit là cap cứng — design phải theo nó (queue theo quota + tracker), không phải chỉ scale infra của mình.
 - Cache bên dưới đầy invalidate đúng giờ G sẽ đá chết website — hot config precomputed theo version key, không xóa ở thời điểm khủng hoảng.
 - Quota tracking của đối tác phải là dữ liệu đo được (dashboard), không dựa vào cảm nhận — nếu không sẽ thường xuyên vượt limit trước khi biết.
+
+### Ví dụ đời thực
+Ngày 25 hằng tháng (ngày lương), lượng chuyển tiền tăng 8 lần từ 8:00 đến 10:00, trong khi API chuyển tiền liên ngân hàng của đối tác giới hạn **300 lệnh/giây**. Năm trước, hệ thống gửi thẳng mọi lệnh → đối tác trả lỗi 429 và một phần timeout, khách thấy "giao dịch thất bại" rồi chuyển lại → trùng giao dịch và khiếu nại. Năm nay: lệnh chuyển được ghi nhận ngay (trừ tạm tiền, trạng thái "đang xử lý"), đưa vào **hàng đợi**; một bộ gửi duy nhất điều tốc bằng token bucket 280 lệnh/giây (chừa biên an toàn), ưu tiên lệnh giá trị nhỏ và khách cá nhân, retry có backoff khi gặp 429; app hiển thị thời gian dự kiến. Đàm phán trước với đối tác nâng hạn mức tạm thời lên 450 lệnh/giây trong khung giờ đó. Hàng đợi đỉnh 42.000 lệnh, xử lý hết trong 12 phút, không có giao dịch trùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi đối tác có giới hạn cứng, tôi không để tải đột biến đi thẳng tới họ. Chuẩn bị trước: dự báo tải từ dữ liệu các tháng trước, load test luồng chuyển tiền, đàm phán hạn mức tạm thời với đối tác. Kiến trúc: lệnh chuyển được nhận và ghi nhận ngay, tạm giữ tiền, trạng thái đang xử lý, rồi đưa vào hàng đợi; một bộ gửi điều tốc theo hạn mức của đối tác với biên an toàn, retry có backoff khi gặp 429, và idempotency theo mã tham chiếu để retry không chuyển hai lần. Có thể ưu tiên theo loại lệnh. Phía người dùng, app hiển thị rõ trạng thái và thời gian dự kiến để họ không chuyển lại. Ngày diễn ra, tôi theo dõi độ dài hàng đợi, tỉ lệ lỗi từ đối tác, và có kênh liên lạc trực tiếp với đội của họ."
 
 > Senior tip: ngày lương không phải bài toán scale đơn thuần mà là bài toán kiểm soát tải vào và quota đối tác — tôi từng tham gia một release lớn cho ngân hàng với gateway đối tác cứng 50 TPS: chỉ nhờ queue có backpressure mới chịu được 200 TPS từ app mà không cháy deadline đối soát.
 `,
@@ -1918,6 +1980,12 @@ Lock toàn bảng làm nghẽn giao dịch; ưu tiên partition ownership, lease
 - Thay đổi rule giữa lần chạy phải tạo rule version mới hoặc cố định version cũ.
 - Reversal/correction cần entry bù có audit, không sửa âm thầm kết quả đã chốt.
 
+### Ví dụ đời thực
+Job EOD áp biểu phí duy trì tài khoản mới cho 4 triệu tài khoản, phải xong trước cut-off 23:30. Đêm đầu tiên, job chạy chậm hơn dự kiến và tới 23:30 mới xong 65%; theo quy tắc cut-off, job phải dừng để hệ thống chuyển sang ngày giao dịch mới. Sáng hôm sau, chạy lại thủ công áp phí với **ngày giá trị của hôm nay** cho cả 4 triệu tài khoản → 2,6 triệu tài khoản bị thu phí hai lần (một lần ngày cũ, một lần ngày mới). Thiết kế lại: mỗi lần chạy có **run_id** gắn với **ngày nghiệp vụ** cố định (không lấy ngày hệ thống lúc chạy); bản ghi phí có khoá duy nhất {{(account_id, fee_type, business_date)}}; tiến độ ghi theo lô; khi chạy lại, job đọc run_id cũ và chỉ xử lý tài khoản chưa có bản ghi; khoá nghiệp vụ trên bảng {{batch_run}} ngăn hai lần chạy cùng ngày nghiệp vụ đồng thời. Thêm dự báo thời gian chạy dựa trên tốc độ thực tế để cảnh báo trước cut-off 1 giờ.
+
+### Trả lời mẫu khi phỏng vấn
+"Điểm mấu chốt là mỗi lần chạy gắn với một ngày nghiệp vụ cố định, không phải ngày hệ thống lúc job chạy, nên chạy lại vào sáng hôm sau vẫn áp phí cho đúng ngày cũ. Mỗi bản ghi phí có khoá duy nhất gồm tài khoản, loại phí và ngày nghiệp vụ, nên chạy lại không thể tính hai lần. Job xử lý theo lô với checkpoint, khi tiếp tục chỉ xử lý những tài khoản chưa có bản ghi. Một khoá nghiệp vụ trên bảng quản lý lần chạy đảm bảo không có hai lần chạy cùng ngày nghiệp vụ song song. Với cut-off, job phải dừng an toàn ở ranh giới lô, ghi lại trạng thái, và cảnh báo sớm nếu dự báo không kịp. Cuối cùng là kiểm tra tổng sau khi hoàn tất: số tài khoản và tổng phí khớp với kỳ vọng."
+
 > Senior tip: dashboard EOD theo expected/processed/failed count và tổng amount; chặn bước tiếp theo nếu invariant tổng hoặc số account không khớp.
 `,
   follow: ['Điều gì phải commit atomically với checkpoint?', 'Xử lý giao dịch đến muộn sau cut-off theo nguyên tắc nào?'],
@@ -2026,6 +2094,12 @@ public Result confirm(OrderCommand c) {
 - Redis failover có thể làm mất write đã xác nhận; replication không biến Redis thành ledger bền vững.
 - Consumer retry sau timeout có thể tạo đơn trùng nếu dedup không nằm cùng transaction nghiệp vụ.
 - Không hoàn quota theo exception chung: lỗi mạng không chứng minh consumer chưa commit.
+
+### Ví dụ đời thực
+Flash sale 30 vé concert: Redis {{DECR}} trừ tồn kho (nhanh, nguyên tử), rồi gửi lệnh đặt vào Kafka, consumer tạo đơn trong PostgreSQL. Kết quả: Redis báo hết vé, nhưng DB chỉ có 27 đơn — 3 lệnh bị mất vì consumer lỗi validate và **không trả lại tồn kho Redis**; 3 khách bị báo "hết vé" trong khi vé vẫn còn. Ở một lần khác, Redis restart mất dữ liệu (không bật AOF) và **bán vượt** 12 vé. Sửa: DB là nguồn sự thật cho tồn kho cuối cùng (UPDATE có điều kiện {{remaining >= 1}}); Redis chỉ là **cổng lọc** để chặn bớt traffic (tồn kho Redis = tồn kho DB + biên nhỏ, được đồng bộ lại định kỳ); mỗi lệnh có trạng thái (RESERVED → CONFIRMED/RELEASED) và thời hạn giữ chỗ; consumer lỗi thì phát sự kiện **hoàn trả** chỗ; job đối soát mỗi phút so số lượng đã bán trong DB với Redis và sửa chênh lệch. Không còn bán vượt hay "mất vé".
+
+### Trả lời mẫu khi phỏng vấn
+"Khi có nhiều nơi giữ trạng thái tồn kho như Redis, Kafka và DB, tôi chốt một nguồn sự thật, thường là DB với câu UPDATE có điều kiện còn hàng, vì nó bền và nguyên tử. Redis dùng làm lớp chặn nhanh phía trước để giảm tải, chứ không phải nơi quyết định cuối cùng; nếu Redis mất dữ liệu hay lệch thì DB vẫn chặn bán vượt. Mỗi lượt đặt có vòng đời rõ ràng: giữ chỗ có thời hạn, xác nhận hoặc nhả ra, và mọi đường lỗi trong consumer đều phải phát sự kiện trả lại chỗ, xử lý idempotent. Một job đối soát chạy thường xuyên so sánh số đã bán trong DB với số trong Redis và sửa chênh lệch, đồng thời cảnh báo khi lệch vượt ngưỡng. Như vậy không bán vượt, và chỗ bị giữ do lỗi sẽ được trả lại."
 
 > Senior tip: theo dõi gap giữa reserved, confirmed, rejected và expired theo campaign; alert theo số tuyệt đối và tỷ lệ, rồi có thao tác freeze campaign để dừng nhận đơn khi invariant bị phá.
 `,

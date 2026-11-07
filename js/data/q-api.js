@@ -5,57 +5,24 @@
     topic: 'api',
     level: 'mid',
     q: 'Safe method và idempotent method khác nhau như thế nào? Cho ví dụ PUT vs PATCH vs POST trong API chuyển tiền ngân hàng.',
-    a: `**Tóm tắt:** Safe method (phương thức "an toàn", ví dụ GET, HEAD, OPTIONS) là phương thức không làm thay đổi trạng thái trên server — gọi bao nhiêu lần cũng không tạo ra tác dụng phụ. Idempotent method (phương thức "lũy đẳng", ví dụ GET, PUT, DELETE, HEAD, OPTIONS) là phương thức mà gọi 1 lần hay gọi N lần cho **kết quả cuối cùng trên server giống nhau**. POST vừa không safe vừa không idempotent; PUT idempotent vì thay thế toàn bộ tài nguyên; PATCH thường không idempotent vì cập nhật một phần theo delta. Trong API chuyển tiền ngân hàng, mọi thao tác tài chính phải được thiết kế idempotent (thường dùng POST + Idempotency-Key) để tránh chuyển tiền hai lần khi client retry.
+    a: `**Tóm tắt:** Safe method (GET, HEAD, OPTIONS) không thay đổi trạng thái server; idempotent method (GET, PUT, DELETE, HEAD, OPTIONS) cho kết quả giống nhau khi gọi nhiều lần. POST không safe cũng không idempotent; PUT idempotent thay thế toàn bộ resource; PATCH không idempotent (thường) vì cập nhật một phần.
 
-### Bối cảnh: vì sao cần phân biệt safe và idempotent
-Khi bạn gọi một API qua mạng, có ba thứ hay xảy ra ngoài ý muốn: (1) request đến server nhưng response bị mất trên đường về (timeout), (2) client bấm nút hai lần, (3) proxy/gateway tự retry. Nếu method không idempotent, mỗi lần retry có thể tạo ra một giao dịch thật — ví dụ chuyển tiền hai lần. HTTP spec định nghĩa tính chất của từng method để client, proxy, cache biết cách xử lý an toàn:
-- **Safe**: không thay đổi representation của resource. GET /accounts/123 chỉ đọc, có thể cache, prefetch, crawler gọi thoải mái.
-- **Idempotent**: gọi lặp cho cùng hiệu ứng cuối. PUT /accounts/123 {balance: 1000} gọi 10 lần thì balance vẫn 1000. DELETE xóa xong rồi xóa lại vẫn cho kết quả "không còn" (204 hoặc 404), hiệu ứng cuối như nhau.
+### Safe vs Idempotent
+- **Safe**: Không làm thay đổi representation của resource trên server. GET /accounts/123 an toàn, có thể cache, pre-fetch.
+- **Idempotent**: Gọi n lần (n≥1) cho hiệu ứng giống gọi 1 lần. PUT /accounts/123 {balance: 1000} gọi 10 lần vẫn balance = 1000. DELETE idempotent: xóa rồi xóa lại vẫn 404/204.
 
-### PUT vs PATCH vs POST — cơ chế từng bước
-| Method | Safe? | Idempotent? | Ngữ nghĩa | Ví dụ chuyển tiền ngân hàng |
-|---|---|---|---|---|
-| GET | Có | Có | Đọc resource | GET /transfers/tx-789 — xem chi tiết giao dịch |
-| POST | Không | Không | Tạo resource mới hoặc thực hiện action | POST /transfers {from:A,to:B,amount:500000} — mỗi lần gọi tạo 1 giao dịch mới |
-| PUT | Không | Có | Thay thế **toàn bộ** resource (client gửi full state) | PUT /transfers/tx-789 {status:"CANCELLED",reason:"USER"} — gọi nhiều lần vẫn CANCELLED |
-| PATCH | Không | Thường không | Cập nhật **một phần** (delta) | PATCH /accounts/A {balanceDelta:-500000} — gọi 2 lần trừ 2 lần |
-| DELETE | Không | Có | Xóa resource | DELETE /draft-transfers/tx-789 — xóa rồi xóa lại vẫn "không còn" |
+### PUT vs PATCH vs POST trong chuyển tiền
+| Method | Idempotent? | Dùng khi nào | Ví dụ ngân hàng |
+|--------|-------------|--------------|-----------------|
+| POST | Không | Tạo resource mới, hoặc action không idempotent | POST /transfers {from: A, to: B, amount: 500} — gọi 2 lần = chuyển 2 lần |
+| PUT | Có | Thay thế toàn bộ resource (client nắm full state) | PUT /accounts/A {balance: 5000, currency: VND} — gọi nhiều lần vẫn 5000 |
+| PATCH | Thường không | Cập nhật một phần, delta | PATCH /accounts/A {balance: -500} (trừ tiền) — gọi 2 lần trừ 2 lần |
 
-Lưu ý về PATCH: JSON Merge Patch (RFC 7396) thay giá trị tại từng field nên thường idempotent. JSON Patch (RFC 6902) có thao tác {{add}} với path kết thúc bằng {{/-}} (thêm vào cuối mảng) — gọi 2 lần sẽ thêm 2 phần tử, nên không idempotent. Muốn an toàn, thêm thao tác {{test}} để kiểm tra điều kiện trước khi sửa.
+### Pitfall production
+- POST cho action cần chống trùng (ví dụ "đặt hàng") mà không có cơ chế dedup → user bấm nút 2 lần = 2 đơn hàng. Giải pháp: client gửi **Idempotency-Key** header, server deduplicate.
+- JSON Merge Patch (RFC 7396) thay **nguyên** giá trị (kể cả array) nên thường idempotent. JSON Patch (RFC 6902) thì không chắc: op "add" với path kết thúc bằng "/-" (append vào array) gọi 2 lần sẽ thêm 2 phần tử. Dùng op "test" làm điều kiện trước khi sửa nếu cần an toàn.
 
-~~~seq
-title: Chuyển tiền với POST + Idempotency-Key
-actors: Client | API | DB
-Client -> API: POST /transfers (Idempotency-Key: k1)
-API -> DB: Kiểm tra key k1 đã tồn tại?
-DB --> API: Chưa có
-API -> DB: Ghi key k1 + tạo giao dịch (atomic)
-DB --> API: OK
-API --> Client: 201 Created (tx-789)
-note Client..API: Timeout, client không nhận response
-Client -> API: POST /transfers (Idempotency-Key: k1)
-API -> DB: Kiểm tra key k1 đã tồn tại?
-DB --> API: Đã có, trả kết quả cũ
-API --> Client: 201 Created (tx-789) — không trừ tiền lần 2
-~~~
-
-### Ví dụ đời thực
-Giả định hệ thống thanh toán nội bộ ngân hàng: 2.000 QPS giờ cao điểm, p99 latency 120ms, trung bình 0,3% request bị timeout ở client (mạng di động). Mỗi ngày ~1,7 triệu giao dịch. Trước đây API chuyển tiền dùng POST thuần, không có cơ chế chống trùng. Khi timeout, app mobile tự retry sau 2 giây → khoảng 5.000 giao dịch/ngày bị nhân đôi, trung bình 800.000 VND/giao dịch, thiệt hại tiềm năng ~4 tỷ VND/ngày phải hoàn tiền thủ công.
-
-Cách xử lý: (1) Client sinh UUID v4 làm {{Idempotency-Key}} cho mỗi thao tác chuyển tiền (giữ nguyên key khi retry cùng thao tác). (2) Server lưu {{(key, request_hash, status, response)}} trong bảng DB có unique constraint trên {{key}} (hoặc Redis SETNX) với TTL 24h. (3) Request trùng key → trả lại response cũ nguyên vẹn, không gọi business logic. (4) Cùng key nhưng body khác → trả 422 Unprocessable Entity.
-
-Kết quả sau 2 tuần: giao dịch nhân đôi giảm về 0, khiếu nại hoàn tiền giảm 98%, p99 latency tăng thêm ~3ms (do lookup key), chi phí lưu trữ key ~2GB/ngày (chấp nhận được).
-
-### Lỗi hay gặp trên production
-- **Dùng POST cho action nhưng không có Idempotency-Key**: user bấm "Thanh toán" 2 lần hoặc app retry → 2 đơn hàng/2 lần trừ tiền. Luôn yêu cầu client gửi key cho mọi POST tài chính.
-- **Dùng PATCH với JSON Patch {{add /-}}** cho thao tác cộng/trừ số dư: tưởng idempotent nhưng thực ra append/lặp tác dụng phụ. Với tiền, dùng PUT thay toàn bộ trạng thái hoặc POST + Idempotency-Key.
-- **Scope của Idempotency-Key quá rộng hoặc quá hẹp**: key nên unique theo (user, endpoint, operation), không dùng global; nếu quá hẹp (per request attempt) thì retry với key mới vẫn tạo duplicate.
-- **Cache GET sai khi resource thay đổi**: GET là safe nên CDN/proxy cache mạnh; nếu quên {{Cache-Control: no-store}} cho dữ liệu nhạy cảm (số dư), user thấy dữ liệu cũ.
-
-### Trả lời mẫu khi phỏng vấn
-"Em phân biệt hai khái niệm này như sau: safe method như GET không làm thay đổi trạng thái server, nên có thể cache hoặc gọi lại thoải mái. Idempotent method là method gọi một lần hay nhiều lần cho cùng kết quả cuối trên server — PUT, DELETE, GET, HEAD, OPTIONS đều idempotent; POST thì không. Trong API chuyển tiền ngân hàng, POST /transfers tạo giao dịch mới nên không idempotent: nếu client timeout và retry, có thể chuyển tiền hai lần. Cách em xử lý là bắt buộc client gửi header Idempotency-Key là một UUID cho mỗi thao tác; server lưu key kèm hash request và response vào DB với unique constraint. Request đến với key đã xử lý thì trả lại response cũ nguyên vẹn, không chạy lại business logic. Với PUT, em dùng khi thay thế toàn bộ trạng thái resource — ví dụ cập nhật trạng thái giao dịch sang CANCELLED — vì gọi lặp vẫn ra CANCELLED. PATCH em dùng cẩn thận: JSON Merge Patch thường an toàn, nhưng JSON Patch có thao tác append vào mảng thì không idempotent. Với mọi API tài chính, nguyên tắc của em là thiết kế để retry an toàn, vì mạng thì luôn không đáng tin."
-
-> Senior tip: Với hệ thống tiền, coi mọi POST mutating là "nguy hiểm cho đến khi có Idempotency-Key". Hãy lưu key + request hash + response ở tầng durable (DB có unique constraint) thay vì chỉ Redis, để crash giữa chừng không làm mất bằng chứng đã xử lý; Redis TTL phù hợp cho cache nhưng không phải nguồn sự thật cho giao dịch tài chính.`,
+> Senior tip: Trong ngân hàng, mọi giao dịch tài chính **bắt buộc** idempotent. Thiết kế API chuyển tiền dùng POST + Idempotency-Key (UUID do client sinh), server lưu key + kết quả trong Redis TTL 24h. Trả 409 nếu key trùng với request đang xử lý.`,
     follow: [
       'Làm sao để đảm bảo idempotency cho POST /transfers khi client timeout và retry?',
       'Tại sao PUT thay thế toàn bộ resource thay vì merge? Trade-off gì so với PATCH?'
@@ -2602,64 +2569,41 @@ major  ngừng trả field cũ (đây là lúc cần version mới, xem chính s
     topic: 'api',
     level: 'senior',
     q: 'HTTP/1.1, HTTP/2, HTTP/3 khác nhau ở multiplexing, head-of-line blocking và HPACK thế nào? Ảnh hưởng tới connection pool của client Java (HttpClient, RestClient) ra sao?',
-    a: `**Tóm tắt:** HTTP/1.1 xử lý tuần tự trên mỗi kết nối TCP nên buộc client mở nhiều connection song song; HTTP/2 ghép nhiều luồng (multiplexing — gửi xen kẽ nhiều request/response trên cùng một kết nối) bằng framing nhị phân và nén header bằng HPACK, nhưng vẫn bị head-of-line blocking (HOL blocking — một gói tin mất làm tắc toàn bộ các luồng phía sau) ở tầng TCP; HTTP/3 chuyển xuống QUIC (giao thức trên UDP, tích hợp TLS 1.3) để mỗi luồng độc lập, tránh HOL blocking ở tầng vận chuyển. Với Java {{HttpClient}} (Java 11+), khi server hỗ trợ HTTP/2 qua ALPN, client tự động gộp về gần như 1 connection/host, nên việc "tăng connection pool" theo kiểu HTTP/1.1 không còn ý nghĩa như trước.
+    a: `**Tóm tắt:** HTTP/1.1 tuần tự trên mỗi connection nên phải mở nhiều connection; HTTP/2 multiplex nhiều stream trên một TCP connection với HPACK nén header; HTTP/3 đưa multiplex xuống QUIC/UDP để tránh head-of-line blocking ở TCP. Với Java HttpClient, khi server hỗ trợ HTTP/2 thì pool co về 1 connection/host.
 
-### Bối cảnh: vì sao HTTP phải tiến hóa
-Hãy tưởng tượng bạn gọi điện thoại đặt nhiều món ăn, nhưng mỗi cuộc gọi chỉ đặt được 1 món và phải đợi món đó xác nhận xong mới gọi món tiếp. Đó là HTTP/1.1 trên một kết nối. Để nhanh hơn, người ta mở nhiều cuộc gọi song song (nhiều TCP connection) — tốn tài nguyên cả hai phía. HTTP/2 ra đời để đặt nhiều món trên **cùng một cuộc gọi** (multiplexing). HTTP/3 đi xa hơn: nếu một gói tin bị mất, các món khác vẫn tiếp tục, không phải chờ gói đó gửi lại.
+### Hiểu nhanh
+HTTP/1.1 như một quầy phục vụ: mỗi khách đợi người trước xong. HTTP/2 như nhiều đầu bếp cùng làm nhiều món trên cùng một quầy. HTTP/3 như giao hàng trực tiếp để một gói tắc không làm tắc toàn bộ.
 
-### So sánh cơ chế từng bước
-| Tiêu chí | HTTP/1.1 | HTTP/2 | HTTP/3 |
-|---|---|---|---|
-| Tầng vận chuyển | TCP | TCP + TLS (thường) | QUIC trên UDP + TLS 1.3 tích hợp |
-| Multiplexing | Không (1 request/response tại 1 thời điểm/connection) | Có: nhiều stream đánh số, chia thành frame xen kẽ trên 1 TCP connection | Có: mỗi QUIC stream độc lập |
-| Head-of-line blocking | Có ở cả HTTP và TCP | Không ở HTTP, **vẫn có ở TCP** (1 packet mất → tất cả stream chờ retransmit) | Không ở tầng vận chuyển (packet mất chỉ ảnh hưởng stream đó) |
-| Nén header | Không (gửi lặp {{Cookie}}, {{User-Agent}} mỗi request) | HPACK: bảng tĩnh + bảng động, mã hóa Huffman | QPACK (biến thể HPACK phù hợp QUIC, tránh HOL do tham chiếu bảng) |
-| Số connection/host điển hình | 6 (trình duyệt) hoặc pool N (Java client) | Thường 1 | Thường 1 |
-| Thiết lập kết nối | TCP handshake + TLS handshake | Như HTTP/1.1 + ALPN negotiate h2 | 1-RTT hoặc 0-RTT (nhanh hơn, hỗ trợ di chuyển mạng) |
+### HTTP/1.1
+- Một TCP connection = một request/response tại một thời điểm.
+- Trình duyệt mở 6 connection song song cho mỗi host; Java HttpClient pool nhỏ.
+- Keep-alive tái dùng nhưng vẫn tuần tự → head-of-line blocking.
+- Header gửi đầy đủ mỗi lần.
 
-### HPACK hoạt động thế nào (HTTP/2)
-Header HTTP thường lặp lại ({{:method}}, {{:path}}, {{cookie}}, {{authorization}}). HPACK nén bằng hai bảng:
-1. **Bảng tĩnh**: 61 header phổ biến có sẵn ở cả client và server (ví dụ {{:method GET}} là index 2).
-2. **Bảng động**: header mới gặp được thêm vào bảng dùng chung cho connection đó; lần sau chỉ gửi index.
-3. Giá trị chuỗi có thể mã hóa Huffman để giảm thêm kích thước.
-Ví dụ: 10 request liên tiếp với cùng {{Authorization}} dài 500 byte — HTTP/1.1 gửi 5.000 byte header; HTTP/2 sau request đầu chỉ gửi vài byte index.
+### HTTP/2
+- Một TCP connection chứa nhiều stream đánh số; request/response chia thành frame và xen kẽ → multiplexing.
+- HPACK nén header bằng bảng tĩnh + động.
+- Vẫn một TCP connection → mất packet làm toàn bộ stream chờ retransmit (HoL ở TCP).
 
-### Ảnh hưởng tới connection pool của Java client
-- **{{java.net.http.HttpClient}} (Java 11+)**: mặc định cố negotiate HTTP/2 qua ALPN (Application-Layer Protocol Negotiation — bước trong TLS handshake để hai bên chọn giao thức). Khi server hỗ trợ {{h2}}, HttpClient dùng **một connection** cho nhiều request đồng thời tới cùng host. Vì vậy tăng "pool size" kiểu HTTP/1.1 (mở nhiều connection) không giúp; thay vào đó, giới hạn số stream đồng thời và timeout.
-- **{{RestClient}} / {{WebClient}} (Spring, dùng Reactor Netty)**: cũng hỗ trợ HTTP/2; pool {{ConnectionProvider}} quản lý connection, nhưng khi HTTP/2 bật thì 1 connection chịu nhiều stream.
-- **Fallback**: nếu server/proxy không hỗ trợ h2, HttpClient tự rơi về HTTP/1.1 (pool connection như cũ). Cần kiểm tra ALPN thực tế, không giả định.
-- **Lưu ý HTTP/3**: Java HttpClient (đến Java 21) chưa hỗ trợ HTTP/3 chính thức; cần thư viện bên ngoài (Jetty, Netty incubator) nếu muốn dùng QUIC.
+### HTTP/3
+- Chạy trên QUIC (UDP) với TLS 1.3 tích hợp, mỗi stream độc lập.
+- Kết nối nhanh (0-RTT), di động tốt (connection migration).
+- Cần firewall/proxy hỗ trợ QUIC.
 
-~~~seq
-title: Multiplexing HTTP/2 trên một TCP connection
-actors: Java Client | TCP Conn | API Server
-Java Client -> TCP Conn: Stream 1: GET /orders/1
-Java Client -> TCP Conn: Stream 3: GET /orders/2
-Java Client -> TCP Conn: Stream 5: POST /payments
-TCP Conn -> API Server: Frame xen kẽ (S1, S3, S5)
-API Server --> TCP Conn: Frame phản hồi S3 (nhanh xong trước)
-TCP Conn --> Java Client: Response Stream 3
-API Server --> TCP Conn: Frame phản hồi S1, S5
-TCP Conn --> Java Client: Response Stream 1, Stream 5
-~~~
+### Ảnh hưởng Java client
+- HttpClient tự negotiate HTTP/2 qua ALPN; pool co về 1 connection/host.
+- RestClient/WebClient dùng Reactor Netty → HTTP/2 multiplex tự động.
+- Cần fallback cho server cũ; timeout stream riêng khác connection timeout.
 
-### Ví dụ đời thực
-Giả định một service Java (Spring Boot 3, Java 21) gọi downstream {{catalog-service}}: 1.500 QPS, mỗi request trả ~2KB JSON, p99 latency mục tiêu 80ms. Ban đầu dùng HTTP/1.1 với {{HttpClient}} mặc định; dưới tải, client mở ~120 TCP connection đồng thời tới cùng host, p99 tăng lên 220ms do HOL blocking và chi phí tạo connection/TLS handshake. CPU ở phía downstream tăng vì xử lý nhiều connection.
+### Trên production
+- Triệu chứng: latency p99 cao dù throughput thấp → HoL blocking HTTP/1.1.
+- Đo: connection count per host, ALPN negotiation.
+- Tuning: bật HTTP/2 ở reverse proxy, ALPN ở TLS terminator.
 
-Cách xử lý: (1) Bật HTTP/2 ở reverse proxy (Nginx/Envoy) và đảm bảo ALPN {{h2}} trong TLS terminator. (2) Nâng {{HttpClient}} dùng mặc định (tự negotiate h2). (3) Giảm cấu hình pool kiểu cũ (không cần 120 connection), đặt timeout per-request hợp lý. (4) Đo bằng metrics: số connection thực tế/host, tỉ lệ h2 vs h1.
+### Trả lời miệng 1 phút
+"HTTP/1.1 tuần tự nên mở nhiều connection; HTTP/2 multiplex stream với HPACK; HTTP/3 đưa multiplex xuống QUIC/UDP. Với Java HttpClient, pool co về 1 connection/host khi hỗ trợ HTTP/2."
 
-Kết quả: connection tới catalog giảm từ ~120 xuống ~6 (mỗi instance client giữ 1 connection h2/host, 6 instance), p99 giảm còn 65ms, memory phía client giảm ~40MB do ít socket buffer, CPU downstream giảm 12%. Khi mạng có packet loss 0,5%, p99 vẫn nhỉnh hơn kỳ vọng vì HOL ở TCP (HTTP/2) — nếu bài toán nhạy latency hơn, cân nhắc HTTP/3 ở edge.
-
-### Lỗi hay gặp trên production
-- **Tăng connection pool khi đã dùng HTTP/2**: không cải thiện throughput, chỉ tốn resource; hãy kiểm tra ALPN negotiation bằng log hoặc {{HttpClient.newBuilder().version(...)}} và metric connection count.
-- **Load balancer/proxy "nói" HTTP/1.1 về backend**: client thấy h2 tới LB nhưng LB nối h1 tới app → không tận dụng multiplexing end-to-end. Kiểm tra từng chặng.
-- **Timeout nhầm tầng**: HTTP/2 có connection timeout và stream timeout; đặt chỉ connection timeout có thể khiến một stream chậm treo lâu mà không cắt.
-- **HPACK dynamic table và bảo mật**: tấn công CRIME/BREACH biến thể (HPACK bomb) có thể xảy ra nếu server không giới hạn kích thước bảng; dùng cấu hình mặc định an toàn của server/proxy uy tín.
-
-### Trả lời mẫu khi phỏng vấn
-"Em nhìn sự khác nhau theo ba trục: multiplexing, head-of-line blocking và nén header. HTTP/1.1 xử lý tuần tự trên mỗi kết nối, nên client phải mở nhiều TCP connection song song — tốn tài nguyên và vẫn bị HOL blocking. HTTP/2 cho phép multiplex: nhiều request/response chia thành frame và xen kẽ trên cùng một kết nối TCP, đồng thời dùng HPACK nén header bằng bảng tĩnh và bảng động nên giảm đáng kể overhead khi header lặp lại. Tuy nhiên HTTP/2 vẫn chạy trên TCP, nên nếu một packet mất thì toàn bộ stream trên connection đó phải chờ retransmit — đó là HOL blocking ở tầng vận chuyển. HTTP/3 giải quyết bằng QUIC trên UDP: mỗi stream độc lập, mất packet chỉ ảnh hưởng stream liên quan, và tích hợp TLS 1.3 nên thiết lập kết nối nhanh hơn. Với Java, {{HttpClient}} từ Java 11 tự negotiate HTTP/2 qua ALPN; khi thành công, nó dùng gần như một connection cho nhiều request đồng thời tới cùng host, nên tư duy 'tăng connection pool' kiểu HTTP/1.1 không còn phù hợp. Em sẽ đo số connection thực tế và p99 trước/sau, đồng thời kiểm tra ALPN end-to-end vì đôi khi proxy giữa chặng vẫn hạ về HTTP/1.1."
-
-> Senior tip: Trước khi "tune pool", hãy xác minh protocol thực tế bằng metric (connection count/host, tỉ lệ h2). Bật HTTP/2 end-to-end (hoặc ít nhất tới hop quan trọng) thường cho lợi ích lớn hơn mọi chỉnh pool; với môi trường packet loss cao (mobile, cross-region), cân nhắc HTTP/3 ở edge để cắt HOL blocking tận gốc.`,
+> Senior tip: đo số connection thực tế trước khi tuning pool; chuyển HTTP/2 giải quyết tận gốc và giảm memory.`,
     follow: [
       'ALPN negotiation diễn ra như thế nào và khi nào HttpClient fallback về HTTP/1.1?',
       'HPACK dynamic table có thể bị poisoning không và mitigation là gì?',
@@ -2727,61 +2671,41 @@ Hai service nội bộ (tính giá ↔ đặt hàng) gọi nhau 12.000 lần/gi�
     topic: 'api',
     level: 'lead',
     q: 'Idempotency key phía server: lưu ở đâu, race khi 2 request cùng key đến song song, trả lại response cũ thế nào?',
-    a: `**Tóm tắt:** Idempotency key phía server là cơ chế để một thao tác (thường là POST) chỉ có hiệu lực **một lần** dù client gửi lại nhiều lần. Client gửi header {{Idempotency-Key}} (thường là UUID). Server lưu key cùng hash của request và response vào một kho bền vững (DB có unique constraint hoặc Redis với SETNX) kèm TTL; request trùng key trả lại response cũ nguyên vẹn. Khi hai request cùng key đến song song, server dùng thao tác chèn nguyên tử (atomic insert) để chỉ một request được xử lý, request còn lại chờ hoặc nhận trạng thái "đang xử lý"; nếu cùng key nhưng body khác thì trả 422.
+    a: `**Tóm tắt:** Server nhận header Idempotency-Key, lưu key + hash(request) + response vào store (Redis/DB) với TTL. Request trùng key trả response cũ; cùng key nhưng body khác trả 422. Race xử lý bằng atomic insert (unique constraint / SETNX) và lock ngắn.
 
-### Bối cảnh: vì sao server phải tự bảo vệ
-Idempotency key (khóa lũy đẳng — một mã định danh để đánh dấu "đây là cùng một thao tác") sinh ra vì mạng không tin cậy: client gửi POST tạo đơn hàng, server xử lý xong nhưng response mất, client timeout và retry. Nếu server xử lý lại từ đầu, đơn hàng bị tạo hai lần. Client có thể hứa "tôi sẽ không gửi trùng", nhưng server không được tin lời hứa đó — server phải tự kiểm chứng.
+### Hiểu nhanh
+Idempotency key như số biên lai: cùng biên lai trả kết quả cũ, không làm lại. Hai người cùng đưa biên lai cùng lúc → chỉ một xử lý, người kia chờ kết quả.
 
-### Thiết kế lưu trữ — lưu ở đâu, lưu gì
-- **Lưu gì**: một bản ghi gồm {{key}}, {{scope}} (ví dụ user_id + endpoint), {{request_hash}} (SHA-256 của body để phát hiện client dùng lại key cho body khác), {{status}} (processing/completed/failed), {{response_status}}, {{response_body}}, {{created_at}}, {{expires_at}}.
-- **Lưu ở đâu**:
-  - **DB quan hệ (PostgreSQL/MySQL)**: bền vững, có unique constraint trên {{(scope, key)}} để chèn nguyên tử. Phù hợp giao dịch tài chính vì cần nguồn sự thật durable.
-  - **Redis**: nhanh, dùng {{SETNX}} (set-if-not-exists) với TTL. Phù hợp throughput cao, nhưng cần cân nhắc persistence (RDB/AOF) và rủi ro mất dữ liệu khi crash — không nên là nguồn sự thật duy nhất cho tiền.
-  - **Thực tế hay dùng**: DB là nguồn sự thật, Redis là lớp chặn nhanh (cache/check) nếu cần tối ưu latency.
-- **TTL**: thường 24 giờ; đủ dài để client retry trong cửa sổ hợp lý, đủ ngắn để không phình kho.
+### Thiết kế
+- Client sinh UUID v4 per operation, gửi header Idempotency-Key.
+- Server hash body (SHA-256) để phát hiện misuse.
+- Store record: {key, request_hash, status, response_status, response_body, created_at, expires_at}.
+- TTL thường 24h.
 
-### Race khi 2 request cùng key đến song song — xử lý từng bước
-Giả sử do retry song song hoặc bug client, hai request R1 và R2 cùng {{Idempotency-Key: k1}} đến gần như cùng lúc:
+### Flow
+1. Nhận request → lookup key.
+2. Nếu không có: atomic insert (INSERT ... ON CONFLICT DO NOTHING hoặc Redis SETNX).
+3. Nếu insert thành công: xử lý business, lưu response, trả.
+4. Nếu insert thất bại:
+   - request_hash khác → 422 Unprocessable Entity.
+   - status processing → chờ (poll) hoặc 409 Conflict.
+   - completed → trả response cũ nguyên vẹn.
 
-~~~seq
-title: Race hai request cùng Idempotency-Key
-actors: Client R1 | Client R2 | API | DB
-Client R1 -> API: POST /orders (key k1)
-Client R2 -> API: POST /orders (key k1)
-API -> DB: INSERT key k1, status=processing (atomic)
-DB --> API: R1 OK (inserted)
-API -> DB: INSERT key k1 (atomic)
-DB --> API: R2 FAIL (unique conflict)
-API -> DB: R1 xử lý business, lưu response
-DB --> API: R1 completed
-API --> Client R1: 201 + response
-API -> DB: R2 đọc lại key k1
-DB --> API: status=completed + response cũ
-API --> Client R2: 201 + response cũ (giống R1)
-~~~
+### Race handling
+- Unique constraint trên (key, scope) ở DB → atomic.
+- Redis: SETNX với TTL.
+- Lock ngắn cho processing state.
+- Chỉ cho mutating methods (POST/PATCH), không cho GET.
 
-Các trường hợp cần xử lý:
-1. **Key chưa tồn tại**: thực hiện atomic insert với {{status=processing}}. Chỉ bên insert thành công mới được chạy business logic.
-2. **Insert thất bại (đụng unique constraint)**: đọc bản ghi hiện có. Nếu {{request_hash}} khác → trả **422 Unprocessable Entity** (client dùng sai key cho body khác). Nếu {{status=processing}} → trả **409 Conflict** kèm {{Retry-After}} hoặc chờ ngắn (poll) tùy thiết kế. Nếu {{completed}} → trả lại **response cũ nguyên vẹn** (cùng status code, cùng body) để client thấy như request đầu thành công.
-3. **Chỉ áp dụng cho method ghi**: POST/PATCH; GET không cần.
+### Trên production
+- Triệu chứng: duplicate charge → kiểm tra key scope (per user/endpoint, không global).
+- Đo: hit rate, conflict rate, latency thêm.
+- Tuning: TTL theo business, partial failure retry.
 
-### Ví dụ đời thực
-Giả định hệ thống đặt vé: 800 QPS giờ mở bán, p99 latency 150ms, tỉ lệ timeout client 0,4%. Không có idempotency key, mỗi đợt mở bán ghi nhận ~1.200 đơn trùng/ngày (user bấm lại khi spinner quay lâu), trung bình xử lý hoàn tiền/tháo chỗ mất 6 phút/đơn cho CS.
+### Trả lời miệng 1 phút
+"Idempotency key lưu ở Redis/DB với unique constraint; race xử lý bằng atomic insert; request trùng trả response cũ nguyên vẹn, khác body trả 422. Cần scope key theo user/endpoint và TTL hợp lý."
 
-Triển khai: (1) App client sinh UUID per lần bấm "Đặt vé", giữ nguyên khi retry. (2) Bảng {{idempotency_records}} (PostgreSQL) với unique index {{(user_id, endpoint, idem_key)}}, TTL 24h dọn bằng job. (3) Transaction: {{INSERT ... ON CONFLICT DO NOTHING RETURNING}}; nếu không insert được thì {{SELECT}} bản ghi. (4) Trả response cũ với header {{Idempotent-Replayed: true}} để dễ debug.
-
-Kết quả sau 1 tháng: đơn trùng giảm về < 5/ngày (chỉ còn trường hợp client sinh key mới mỗi lần — được fix ở app), p99 tăng ~4ms, tải CS liên quan đơn trùng giảm ~90%.
-
-### Lỗi hay gặp trên production
-- **Không hash body**: client vô tình tái dùng key cho request khác nội dung → server trả response cũ sai ngữ cảnh. Luôn lưu và so sánh {{request_hash}}.
-- **Lưu response ở Redis không durable cho giao dịch tiền**: Redis restart mất bản ghi → retry sau restart tạo duplicate. Giao dịch tài chính phải dùng DB durable làm nguồn sự thật.
-- **Trả response khác với lần đầu**: client dựa vào response (ví dụ {{order_id}}) để hiển thị; nếu lần replay trả body khác, client rối. Phải trả **nguyên vẹn** response đã lưu.
-- **Scope key sai**: key global cho mọi user có thể bị va chạm; key quá hẹp (per attempt) làm mất tác dụng chống trùng. Dùng scope {{(user_id, endpoint, key)}}.
-
-### Trả lời mẫu khi phỏng vấn
-"Em thiết kế idempotency key phía server như một lớp chặn ở đầu request ghi. Client gửi header Idempotency-Key là UUID cho mỗi thao tác nghiệp vụ và giữ nguyên key khi retry. Server tính hash của body, rồi cố gắng chèn một bản ghi {{(scope, key, request_hash, status=processing)}} vào DB với unique constraint — thao tác này nguyên tử nên khi hai request cùng key đến song song, chỉ một request insert thành công và được chạy business logic. Request còn lại gặp unique conflict: nếu body hash khác em trả 422 vì client dùng sai key; nếu đang processing em trả 409 hoặc cho chờ; nếu đã completed em trả lại response cũ nguyên vẹn, cùng status code và body. Em lưu ở PostgreSQL làm nguồn sự thật vì durable; Redis chỉ dùng nếu cần chặn nhanh nhưng không phải nơi duy nhất cho giao dịch tiền. TTL thường 24 giờ. Điểm em hay nhấn mạnh là phải hash body và trả đúng response cũ, nếu không cơ chế này sẽ gây lỗi ngữ cảnh khó debug hơn cả duplicate."
-
-> Senior tip: Với giao dịch tài chính, hãy chọn DB có unique constraint làm "hàng rào" nguyên tử và coi response đã lưu là immutable. Đừng tối ưu bằng cách bỏ qua lưu response body — client cần response ổn định khi replay, và bạn cần bằng chứng đã xử lý khi điều tra sự cố.`,
+> Senior tip: luôn hash body và so sánh; client retry với cùng body nhưng key khác sẽ tạo duplicate — document rõ key phải stable per operation, không per request attempt.`,
     follow: [
       'Làm sao xử lý partial failure: request xử lý xong nhưng response mất?',
       'Idempotency key scope nên global hay per (user, endpoint)?',
@@ -2794,60 +2718,34 @@ Kết quả sau 1 tháng: đơn trùng giảm về < 5/ngày (chỉ còn trườ
     topic: 'api',
     level: 'senior',
     q: 'ETag và If-Match: optimistic concurrency qua HTTP, khác nhau giữa 412 Precondition Failed và 409 Conflict thế nào?',
-    a: `**Tóm tắt:** ETag (Entity Tag — một "dấu vân tay"/phiên bản của tài nguyên) và {{If-Match}} cho phép optimistic concurrency control (kiểm soát đồng thời lạc quan: giả định xung đột hiếm, chỉ kiểm tra khi ghi) qua HTTP. Client GET nhận ETag, khi cập nhật gửi {{If-Match: <etag>}}; server so sánh với phiên bản hiện tại, nếu khác thì trả **412 Precondition Failed** (điều kiện tiên quyết không thỏa — phiên bản lệch, client cần lấy lại và thử lại). **409 Conflict** khác bản chất: dùng khi request xung đột với **trạng thái nghiệp vụ** hiện tại (ví dụ hủy đơn đã giao), không phải lệch phiên bản; client thường không thể chỉ retry máy móc mà phải xử lý theo nghiệp vụ.
+    a: `**Tóm tắt:** Server trả ETag (phiên bản tài nguyên). Client gửi If-Match với ETag khi update; server so sánh, nếu khác → 412 Precondition Failed (optimistic lock fail). 409 Conflict dùng khi xung đột nghiệp vụ (state không cho phép), không phải version mismatch.
 
-### Bối cảnh: vì sao cần optimistic concurrency
-Hãy tưởng tượng hai người cùng sửa một tài liệu Google Docs nhưng không có cơ chế hợp nhất: người sửa sau ghi đè người sửa trước. Với API, hai client cùng GET một đơn hàng (version 5), cùng sửa, cùng PUT — nếu không kiểm tra phiên bản, bản ghi sau sẽ âm thầm ghi đè bản ghi trước (lost update). Optimistic concurrency giải quyết bằng cách: "chỉ ghi nếu phiên bản vẫn là version bạn đã đọc".
+### Hiểu nhanh
+ETag như số phiên bản tài liệu: bạn download version 5, sửa, gửi lại kèm "tôi đang sửa version 5"; nếu ai đó đã sửa thành version 6 thì server từ chối (412) để bạn merge. 409 là xung đột nghiệp vụ (ví dụ hủy đơn đã giao), không phải version.
 
-### ETag và If-Match hoạt động từng bước
-- **ETag** là giá trị do server sinh, gắn với representation hiện tại của resource. Có thể là hash nội dung ({{"a1b2c3"}}) hoặc số phiên bản ({{"v5"}}). Strong ETag nghĩa là giống byte-for-byte; weak ETag ({{W/"v5"}}) nghĩa là tương đương ngữ nghĩa.
-- **If-Match**: header client gửi kèm request ghi (PUT/PATCH/DELETE) để nói "chỉ thực hiện nếu ETag hiện tại khớp giá trị này". {{If-Match: *}} nghĩa là "chỉ thực hiện nếu resource tồn tại".
-- **If-None-Match**: ngược lại, thường dùng cho GET có điều kiện (trả 304 Not Modified nếu chưa đổi) hoặc tạo mới chỉ khi chưa tồn tại.
+### ETag
+- Strong ETag: byte-identical.
+- Weak ETag: semantic equivalent (W/).
+- Server tính từ content hash hoặc version number.
 
-~~~seq
-title: Optimistic concurrency với ETag và If-Match
-actors: Client A | Client B | API | DB
-Client A -> API: GET /orders/42
-API -> DB: Đọc order version 5
-API --> Client A: 200 + ETag: "v5"
-Client B -> API: GET /orders/42
-API --> Client B: 200 + ETag: "v5"
-Client B -> API: PUT /orders/42 (If-Match: "v5")
-API -> DB: Kiểm tra version == 5? OK, cập nhật
-API --> Client B: 200 + ETag: "v6"
-Client A -> API: PUT /orders/42 (If-Match: "v5")
-API -> DB: Kiểm tra version == 5? KHÔNG (đã là 6)
-API --> Client A: 412 Precondition Failed
-Client A -> API: GET /orders/42 (lấy lại version mới)
-~~~
+### Flow optimistic concurrency
+1. GET /resource → 200 + ETag: "v5".
+2. Client PUT với If-Match: "v5".
+3. Server load current version; nếu == v5 → update, trả 200 + ETag "v6"; nếu != → 412.
 
-### 412 Precondition Failed vs 409 Conflict
-| Tiêu chí | 412 Precondition Failed | 409 Conflict |
-|---|---|---|
-| Nguyên nhân | Điều kiện tiên quyết ({{If-Match}}, {{If-None-Match}}, {{If-Unmodified-Since}}) không thỏa | Request xung đột với **trạng thái nghiệp vụ** hiện tại của resource |
-| Ví dụ | PUT với {{If-Match: "v5"}} nhưng resource đã là "v6" | Hủy đơn hàng nhưng đơn đã ở trạng thái DELIVERED; tạo user trùng email (unique nghiệp vụ) |
-| Client nên làm gì | GET lại resource + ETag mới, merge thay đổi, retry | Đọc lỗi, xử lý theo nghiệp vụ (thông báo user, chọn hướng khác); **không** retry máy móc |
-| Bản chất | Lệch phiên bản (kỹ thuật đồng thời) | Xung đột trạng thái/quy tắc (nghiệp vụ) |
+### 412 vs 409
+- 412 Precondition Failed: điều kiện If-Match/If-None-Match/If-Unmodified-Since không thỏa → version mismatch, client phải GET lại và retry.
+- 409 Conflict: request xung đột với trạng thái hiện tại (resource locked, state transition invalid) → client không retry máy móc được.
 
-Phân biệt rõ giúp client (và người debug) biết có nên retry tự động hay không: 412 thường retry được sau khi làm mới dữ liệu; 409 retry mù thường vô ích hoặc gây vòng lặp.
+### Trên production
+- Triệu chứng: 412 storm khi nhiều client cùng edit → giảm granularity hoặc dùng PATCH.
+- Đo: 412 rate, retry success.
+- Tuning: weak ETag cho partial update, strong cho full replace.
 
-### Ví dụ đời thực
-Giả định hệ thống quản lý kho: 300 QPS cập nhật tồn kho từ nhiều kênh (web, app, đối tác), mỗi bản ghi sản phẩm được đọc/ghi bởi trung bình 4 client đồng thời trong giờ sale. Trước đây dùng "last write wins" (ghi đè im lặng) → khoảng 0,8% cập nhật bị mất (lost update), gây oversell ~120 đơn/ngày, mỗi đơn xử lý hậu quả tốn ~15 phút.
+### Trả lời miệng 1 phút
+"ETag là version; If-Match kiểm tra version trước update, khác thì 412 để client GET lại và retry. 409 dành cho xung đột nghiệp vụ/state, không phải version mismatch."
 
-Triển khai: (1) Mỗi response GET {{/inventory/:sku}} trả {{ETag}} là số phiên bản (cột {{version}} trong DB). (2) Client gửi {{If-Match}} khi PUT/PATCH. (3) Server dùng câu lệnh {{UPDATE ... WHERE sku=? AND version=?}}; nếu số dòng ảnh hưởng = 0 thì trả 412. (4) Client nhận 412 thì GET lại, tính toán lại delta, retry (tối đa 3 lần với backoff).
-
-Kết quả: lost update giảm về 0, tỉ lệ 412 khoảng 2,1% trong giờ sale (xung đột thật được phát hiện), retry thành công 97% trong 2 lần thử, oversell do race giảm xuống < 5 đơn/tháng.
-
-### Lỗi hay gặp trên production
-- **Nhầm 409 cho lỗi version**: API trả 409 khi ETag lệch khiến client không biết nên refresh và retry; hãy dùng đúng 412 cho precondition failure.
-- **Dùng weak ETag cho cập nhật toàn phần**: weak ETag chỉ đảm bảo tương đương ngữ nghĩa, có thể bỏ sót khác biệt byte quan trọng; với PUT thay thế toàn bộ, ưu tiên strong ETag.
-- **Không trả ETag trong response GET**: client không có giá trị để gửi {{If-Match}} → mất khả năng kiểm soát đồng thời. Mọi GET resource mutable nên cân nhắc trả ETag.
-- **ETag không ổn định qua nhiều instance/cache**: nếu ETag tính từ timestamp hoặc instance-local state, cùng nội dung có thể ra ETag khác sau khi qua load balancer → 412 giả. Tính ETag từ nội dung hoặc version trong DB.
-
-### Trả lời mẫu khi phỏng vấn
-"Em dùng ETag và If-Match để làm optimistic concurrency control qua HTTP. Luồng là: client GET một resource và nhận header ETag đại diện cho phiên bản hiện tại; khi cập nhật, client gửi PUT hoặc PATCH kèm {{If-Match}} với ETag đó. Server so sánh với phiên bản đang lưu — nếu khớp thì cập nhật và trả ETag mới, nếu không khớp thì trả 412 Precondition Failed để báo phiên bản đã thay đổi. Khi nhận 412, client nên GET lại dữ liệu mới, hợp nhất thay đổi rồi retry, chứ không ghi đè mù. Em phân biệt rõ 412 với 409: 412 là điều kiện tiên quyết không thỏa, tức lệch phiên bản kỹ thuật và thường retry được; còn 409 Conflict là xung đột trạng thái nghiệp vụ, ví dụ hủy một đơn đã giao — trường hợp này retry máy móc không giải quyết được, client phải xử lý theo quy tắc nghiệp vụ. Trong thực tế, em hay kết hợp ETag với cột {{version}} trong DB và câu {{UPDATE ... WHERE id=? AND version=?}} để kiểm tra nguyên tử ở tầng dữ liệu."
-
-> Senior tip: Hãy chuẩn hóa semantics lỗi trong API contract: 412 = "hãy refresh rồi thử lại", 409 = "hãy đọc lỗi nghiệp vụ rồi quyết định". Sự rõ ràng này giúp client implement retry đúng và giảm rất nhiều bug "retry vô hạn" hoặc "mất cập nhật" khi tích hợp.`,
+> Senior tip: phân biệt rõ 412 (retry được) và 409 (cần xử lý nghiệp vụ); client retry 409 máy móc sẽ gây loop vô ích.`,
     follow: [
       'Khi nào dùng If-None-Match (GET có điều kiện) thay vì If-Match?',
       'ETag với distributed cache và load balancer: consistency thế nào?',
@@ -2860,61 +2758,36 @@ Kết quả: lost update giảm về 0, tỉ lệ 412 khoảng 2,1% trong giờ 
     topic: 'api',
     level: 'lead',
     q: 'Webhook: giao ít nhất một lần, chữ ký HMAC + timestamp chống replay, retry và thứ tự thế nào?',
-    a: `**Tóm tắt:** Webhook là cơ chế HTTP callback (máy chủ A chủ động POST sự kiện tới URL của máy chủ B) thường hoạt động theo mô hình **at-least-once** (gửi ít nhất một lần — có thể trùng, không được mất). Để chống giả mạo và replay (gửi lại request cũ), provider ký payload bằng HMAC-SHA256 trên {{timestamp + "." + body}} và receiver kiểm tra chữ ký với so sánh constant-time, đồng thời từ chối nếu timestamp quá cũ. Provider retry bằng exponential backoff khi nhận lỗi; receiver phải trả 2xx nhanh, xử lý bất đồng bộ (đẩy vào queue), **idempotent** theo event id, và tự xử lý trường hợp sự kiện đến sai thứ tự.
+    a: `**Tóm tắt:** Webhook là HTTP callback: provider POST event tới URL của bạn. Đảm bảo at-least-once bằng retry với exponential backoff; chống giả mạo bằng HMAC-SHA256 trên body + timestamp; client phải idempotent và xử lý out-of-order.
 
-### Bối cảnh: vì sao webhook "khó" hơn gọi API thông thường
-Webhook đảo chiều: thay vì bạn gọi provider, provider gọi bạn. Bạn không kiểm soát thời điểm, số lần, thứ tự, cũng không kiểm soát mạng trung gian. Ba vấn đề luôn xuất hiện: (1) request có thể bị gửi lại → bạn xử lý trùng; (2) kẻ tấn công có thể giả request → bạn thực thi lệnh giả; (3) sự kiện đến lệch thứ tự → bạn cập nhật trạng thái sai. Thiết kế tốt phải chấp nhận at-least-once và bảo vệ ở phía receiver.
+### Hiểu nhanh
+Webhook như nhân viên giao hàng mang thư: có thể giao lại nếu không có người nhận (retry), có thể bị giả mạo → phải kiểm tra chữ ký và thời gian. Thứ tự giao có thể bị xáo → người nhận phải tự sắp xếp.
 
-### Chữ ký HMAC + timestamp chống giả mạo và replay
-- **HMAC** (Hash-based Message Authentication Code — mã xác thực dùng hàm băm và khóa bí mật): provider và receiver chia sẻ một {{secret}}. Provider tính {{signature = HMAC-SHA256(secret, timestamp + "." + raw_body)}} và gửi trong header (ví dụ {{X-Signature}}, {{X-Timestamp}}).
-- **Receiver kiểm tra từng bước**:
-  1. Lấy {{timestamp}} từ header, tính {{|now - timestamp|}}; nếu lớn hơn ngưỡng (ví dụ 300 giây) thì từ chối — chống replay (kẻ tấn công bắt được request cũ và gửi lại).
-  2. Tính lại HMAC từ {{raw_body}} gốc (không parse JSON rồi serialize lại, vì format có thể đổi).
-  3. So sánh chữ ký bằng hàm **constant-time** (so sánh mất cùng thời gian dù khác ở ký tự nào) để tránh timing attack (đo thời gian so sánh để đoán dần chữ ký).
-  4. Hỗ trợ xoay secret: cho phép 2 secret hợp lệ trong giai đoạn chuyển tiếp.
+### Chữ ký HMAC + timestamp
+- Provider gửi header X-Signature = HMAC-SHA256(secret, timestamp + "." + body).
+- Header X-Timestamp (Unix seconds).
+- Receiver verify: recompute HMAC, compare constant-time; reject nếu |now - timestamp| > 5 phút (chống replay).
+- Secret rotate định kỳ; hỗ trợ multiple secrets trong transition.
 
-~~~seq
-title: Webhook: ký, giao, retry và xử lý idempotent
-actors: Provider | Receiver API | Queue | Worker | DB
-Provider -> Receiver API: POST event (X-Timestamp, X-Signature)
-Receiver API -> Receiver API: Kiểm tra timestamp + HMAC
-Receiver API -> DB: Lưu event_id nếu chưa có (dedup)
-Receiver API -> Queue: Đẩy event để xử lý async
-Receiver API --> Provider: 200 OK (nhanh)
-Worker -> Queue: Lấy event
-Worker -> Worker: Xử lý nghiệp vụ (idempotent)
-note Provider..Receiver API: Nếu timeout/5xx, Provider retry backoff
-Provider -> Receiver API: POST lại cùng event
-Receiver API -> DB: event_id đã có -> bỏ qua
-Receiver API --> Provider: 200 OK
-~~~
+### At-least-once và retry
+- Provider retry khi response không 2xx.
+- Exponential backoff + jitter, tối đa N lần.
+- Receiver trả 2xx càng sớm càng tốt; xử lý async (queue) để tránh timeout.
+- Idempotency: dedup theo event id.
 
-### At-least-once, retry và thứ tự
-- **At-least-once**: provider chỉ coi là thành công khi nhận 2xx. Nếu timeout, lỗi mạng, 5xx → retry. Vì vậy cùng một event có thể đến nhiều lần.
-- **Retry strategy**: exponential backoff (khoảng cách tăng dần: 1s, 2s, 4s, 8s...) + jitter (nhiễu ngẫu nhiên) để tránh "thundering herd"; giới hạn số lần và có dead-letter/cảnh báo sau cùng.
-- **Receiver trả lời nhanh**: xác minh chữ ký, lưu/dedup event, đẩy vào queue, trả 2xx — **không** làm nghiệp vụ nặng trong request handler, vì chậm sẽ bị provider coi là lỗi và retry.
-- **Thứ tự không đảm bảo**: retry có thể làm event B (mới, gửi lại sau) đến sau event A (cũ) hoặc xen kẽ. Receiver cần: gắn {{event_id}} và {{occurred_at/sequence}}; dedup theo {{event_id}}; nếu cần thứ tự nghiêm ngặt, lưu trạng thái và bỏ qua event cũ hơn (so sánh version/sequence) hoặc fetch lại trạng thái mới nhất từ provider.
+### Thứ tự
+- Không đảm bảo thứ tự across retries → receiver sort theo event timestamp/sequence.
+- Out-of-order handling: buffer hoặc re-fetch state từ provider.
 
-### Ví dụ đời thực
-Giả định tích hợp cổng thanh toán gửi webhook {{payment.succeeded}} về hệ thống thương mại điện tử: 120 event/phút giờ bình thường, 1.200 event/phút flash sale, p99 xử lý nghiệp vụ (cập nhật đơn, gửi email) ~900ms. Ban đầu receiver xử lý đồng bộ trong handler và không verify chữ ký chặt.
+### Trên production
+- Triệu chứng: duplicate processing → kiểm tra dedup store.
+- Đo: delivery success rate, retry rate, lag.
+- Tuning: timeout receiver < provider timeout, queue depth.
 
-Sự cố: (1) Một đợt mạng chập chờn làm 3% request timeout → provider retry tạo ~2.500 xử lý trùng/tuần, một số đơn được cộng điểm loyalty hai lần. (2) Một request giả mạo (không có chữ ký hợp lệ) từng lọt vào môi trường staging do thiếu kiểm tra.
+### Trả lời miệng 1 phút
+"Webhook at-least-once với retry exponential backoff; bảo mật bằng HMAC-SHA256 trên body+timestamp và reject timestamp cũ; receiver phải idempotent (dedup event id) và xử lý out-of-order."
 
-Cách xử lý: (1) Verify HMAC-SHA256 + timestamp (ngưỡng 5 phút), so sánh constant-time; từ chối request sai chữ ký với 401. (2) Bảng {{webhook_events}} có unique {{event_id}} để dedup. (3) Handler chỉ verify + persist + enqueue, trả 200 trong < 50ms; worker xử lý nghiệp vụ idempotent. (4) Provider retry tối đa 8 lần với exponential backoff + jitter.
-
-Kết quả: xử lý trùng giảm về 0 (mọi duplicate bị dedup), không còn request giả mạo được chấp nhận, tỉ lệ provider retry giảm rõ vì receiver trả 200 nhanh; trong flash sale queue absorb burst, độ trễ cập nhật đơn tăng nhẹ (p95 ~3 giây) nhưng chấp nhận được theo nghiệp vụ.
-
-### Lỗi hay gặp trên production
-- **Xử lý nghiệp vụ đồng bộ trong webhook handler**: chậm → provider timeout → retry storm → tải tăng gấp bội. Luôn tách nhận (nhanh) và xử lý (async).
-- **Parse JSON rồi ký lại để verify**: thay đổi khoảng trắng/thứ tự field làm lệch chữ ký. Phải verify trên **raw body bytes**.
-- **So sánh chữ ký bằng {{==}} thông thường**: có thể bị timing attack. Dùng {{MessageDigest.isEqual}} (Java) hoặc hàm constant-time tương đương.
-- **Không dedup theo {{event_id}}**: coi at-least-once như at-most-once → duplicate nghiệp vụ. Idempotency là bắt buộc ở receiver.
-- **Tin thứ tự đến**: cập nhật trạng thái theo thứ tự nhận được có thể ghi đè trạng thái mới bằng event cũ (retry trễ). Dùng {{occurred_at/sequence}} để bỏ qua event lỗi thời.
-
-### Trả lời mẫu khi phỏng vấn
-"Khi thiết kế nhận webhook, em giả định mô hình at-least-once: provider sẽ retry khi không nhận 2xx, nên cùng event có thể đến nhiều lần và thứ tự không đảm bảo. Về bảo mật, em yêu cầu provider ký payload bằng HMAC-SHA256 trên chuỗi gồm timestamp và raw body; phía receiver kiểm tra timestamp trong cửa sổ cho phép, ví dụ 5 phút, để chống replay, rồi tính lại HMAC và so sánh bằng hàm constant-time để tránh timing attack — và em luôn verify trên raw body, không phải JSON đã parse lại. Về độ tin cậy, handler của em chỉ làm ba việc nhanh: verify chữ ký, dedup theo event id bằng unique constraint, đẩy vào queue, rồi trả 200. Business logic chạy ở worker và phải idempotent. Với thứ tự, em không tin thứ tự đến: mỗi event có occurred_at hoặc sequence, worker sẽ bỏ qua event cũ hơn trạng thái hiện có hoặc fetch lại trạng thái mới nhất từ provider nếu cần. Cách này giúp hệ thống chịu được retry storm, request giả mạo và out-of-order mà vẫn giữ tính đúng của nghiệp vụ."
-
-> Senior tip: Hãy coi webhook endpoint là "public input không đáng tin": verify chữ ký + timestamp trước tiên, trả 2xx chỉ sau khi đã persist/dedup bền vững (để crash sau đó không làm mất event), và giám sát tỉ lệ retry/duplicate/invalid-signature — các chỉ số này phát hiện sớm cả lỗi tích hợp lẫn tấn công.`,
+> Senior tip: trả 2xx ngay sau khi persist event vào queue; xử lý business async; đừng làm business trong request handler vì provider timeout gây retry storm.`,
     follow: [
       'Làm sao verify HMAC constant-time để tránh timing attack?',
       'Webhook ordering guarantees: có provider nào đảm bảo in-order không?',
