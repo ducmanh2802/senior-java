@@ -36,3 +36,4 @@ Chạy `node scripts/validate.js` → OK.
 ## Notes
 
 Claude 2026-11-07: đào sâu 10 câu tình huống.
+Reviewed-by: kilo (T929R)
