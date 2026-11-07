@@ -1243,16 +1243,16 @@ Ba khái niệm: **event object** = một object thường chứa dữ liệu ({
 
 ### Gửi email trong transaction: chuyện gì xảy ra
 ~~~seq
-title: @EventListener chay ngay trong transaction dang mo
+title: @EventListener chạy ngay trong transaction đang mở
 actors: API | OrderService | DB | MailListener | SMTP
 API -> OrderService: POST /orders
 OrderService -> DB: insert order (chua commit)
 OrderService -> MailListener: publishEvent(OrderCreatedEvent)
-MailListener -> SMTP: gui email xac nhan (2 giay)
+MailListener -> SMTP: gửi email xác nhận (2 giây)
 MailListener --> OrderService: quay lai, transaction van dang mo
 OrderService -> DB: rollback vi tru kho that bai
 DB --> API: loi 500
-note API..SMTP: email da gui, don hang thi khong ton tai
+note API..SMTP: email đã gửi, đơn hàng thì không tồn tại
 ~~~
 
 Bốn hệ quả đều rất thực tế:
@@ -2455,7 +2455,7 @@ note Container,BPP: sau buoc 6, reference trong context co the la proxy
 public interface BeanPostProcessor {
   // goi TRUOC init (@PostConstruct)
   default Object postProcessBeforeInitialization(Object bean, String beanName) { return bean; }
-  // goi SAU init: tra ve bean hoac PROXY boc bean
+  // gọi SAU init: trả về bean hoặc PROXY bọc bean
   default Object postProcessAfterInitialization(Object bean, String beanName) { return bean; }
 }
 ~~~
