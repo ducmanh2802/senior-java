@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-07",
+  "intro": "Hôm nay có hai bản RC của Spring (Boot 4.2.0-RC2 và Spring Cloud 2026.0.0-RC2), một ca thực tế chuyển ECS từ cluster riêng từng brand sang multi-tenant dùng chung, bài so sánh Docker Sandboxes với container, và hướng dẫn Secure Coding mới của Oracle cho Java.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring Boot 4.2.0-RC2 ra mắt với 99 thay đổi",
+      "title": "Spring Boot 4.2.0-RC2 available now",
+      "url": "https://spring.io/blog/2026/11/06/spring-boot-4-2-0-RC2-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Boot 4.2.0-RC2 phát hành ngày 6/11/2026 trên Maven Central, gồm 99 cải tiến, cập nhật tài liệu, nâng cấp dependency và sửa lỗi. Có hỗ trợ header {{X-Forwarded-Prefix}} với Reactor Netty, và cấu hình {{spring.data.redis.database}} giờ áp dụng cho cả kết nối master lẫn replica. Bài chưa nêu ngày GA; hướng dẫn nâng cấp nằm trong release notes trên wiki.",
+      "why": "RC là lúc nên chạy thử nâng cấp trên nhánh riêng: đọc release notes, chạy test và phát hiện breaking change sớm thay vì chờ GA. Thay đổi Redis database dễ gây bất ngờ nếu bạn có đọc từ replica.",
+      "interview_q": "Team bạn muốn nâng Spring Boot lên một minor mới. Bạn sẽ lập quy trình nâng cấp thế nào để giảm rủi ro: khi nào thử bản RC, kiểm tra gì trong release notes, rollback ra sao?",
+      "related": ["spring-001"],
+      "tags": ["spring-boot", "release"]
+    },
+    {
+      "title_vi": "Spring Cloud 2026.0.0-RC2 (Paddington) dựa trên Boot 4.2.0-RC2",
+      "title": "Spring Cloud 2026.0.0-RC2 (aka Paddington) Has Been Released",
+      "url": "https://spring.io/blog/2026/11/05/spring-cloud-2026-0-0-RC2-has-been-released",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Release train Spring Cloud 2026.0.0-RC2 (Paddington) ra ngày 5/11/2026, các module dùng phiên bản 5.1.0-RC2 và dựa trên Spring Boot 4.2.0-RC2. Config Server hỗ trợ thêm backend Google Cloud Storage; Gateway Server Web MVC có filter LocalResponseCache; OpenFeign gửi object lồng nhau trong {{@SpringQueryMap}} dưới dạng query parameter lồng nhau.",
+      "why": "Spring Cloud phải khớp với phiên bản Boot, nên mỗi lần nâng Boot bạn cần nâng cả release train. Thay đổi cách OpenFeign serialize query lồng nhau có thể làm đổi request tới service khác.",
+      "interview_q": "Vì sao Spring Cloud dùng release train thay vì version riêng cho từng module, và bạn xử lý thế nào khi nâng Spring Boot mà một module Spring Cloud chưa hỗ trợ?",
+      "related": ["microservices-003"],
+      "tags": ["spring-cloud", "release"]
+    },
+    {
+      "title_vi": "OrderServ gộp ECS từng brand vào cluster multi-tenant, tiết kiệm 47–64% compute",
+      "title": "How OrderServ achieved up to 64% cost savings with multi-tenant ECS",
+      "url": "https://aws.amazon.com/blogs/architecture/how-orderserv-achieved-up-to-64-cost-savings-with-multi-tenant-ecs/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Trước đây mỗi brand chạy một cluster ECS Fargate riêng với 21 microservice (5 brand là 105 service). Nay dùng một cluster chung: thư viện tenancy lấy tenant từ header {{X-Tenant-Id}} và định tuyến sang bảng DynamoDB, key prefix Valkey, schema Aurora riêng. EC2 Auto Scaling với warm pool trên Bottlerocket rút thời gian scale từ 5–7 phút còn 30–60 giây. Đổi lại, ranh giới cô lập chủ yếu nằm ở code ứng dụng nên cần thêm credential STS theo tenant.",
+      "why": "Đây là bài học trade-off điển hình: multi-tenant giảm chi phí và thời gian onboard nhưng đẩy trách nhiệm cô lập dữ liệu sang code của bạn, một lỗi tenant context là rò dữ liệu giữa khách hàng.",
+      "interview_q": "Hệ thống SaaS của bạn có 5 khách hàng, mỗi khách một cluster riêng và chi phí tăng tuyến tính. Bạn sẽ chuyển sang multi-tenant dùng chung thế nào, đảm bảo cô lập dữ liệu và xử lý noisy neighbor ra sao?",
+      "related": ["aws-001"],
+      "tags": ["ecs", "multi-tenant", "cost"]
+    },
+    {
+      "title_vi": "Docker Sandboxes và container: khi nào cần microVM cho AI agent",
+      "title": "Docker Sandboxes vs. Containers: Choosing the Right Isolation for AI Agents",
+      "url": "https://www.docker.com/blog/docker-sandboxes-vs-containers/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Container chia sẻ kernel của host và cô lập bằng namespace/cgroup; Docker Sandboxes là microVM có kernel riêng và Docker Engine riêng. Bài khuyên chọn sandbox khi agent chạy không giám sát, cần build image/Testcontainers, đọc input không tin cậy hoặc cần API key không muốn để trong môi trường của agent. Cái giá là tốn thêm RAM/disk và cần cấu hình network policy. Lưu ý: mount {{/var/run/docker.sock}} vào container thực chất trao quyền điều khiển Docker daemon của host.",
+      "why": "Dev Java ngày càng chạy Testcontainers và agent sinh code trong CI hoặc máy local. Hiểu ranh giới kernel chung của container giúp bạn đánh giá đúng rủi ro khi mount Docker socket hay chạy code không tin cậy.",
+      "interview_q": "Container khác VM ở mức cô lập nào, và vì sao mount Docker socket vào container CI lại nguy hiểm? Bạn sẽ chạy Testcontainers trong pipeline một cách an toàn thế nào?",
+      "related": ["devops-002"],
+      "tags": ["docker", "isolation", "security"]
+    },
+    {
+      "title_vi": "Oracle công bố Secure Coding Guidelines for Java cập nhật",
+      "title": "Java Secure Coding Guidelines",
+      "url": "https://inside.java/2026/10/28/java-secure-coding-guidelines/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Andrew Gross giới thiệu bộ Secure Coding Guidelines for Java trên Inside Java (28/10/2026), kèm các ví dụ code không an toàn dẫn tới lỗ hổng và cách tránh. Bài nói phần input validation và serialization đã được mở rộng, cùng một số cập nhật khác. Trang bài viết chỉ có phần giới thiệu, chi tiết từng khuyến nghị nằm trong bộ guidelines.",
+      "why": "Input validation và serialization là hai nguồn lỗ hổng kinh điển của backend Java (injection, deserialization). Guidelines chính thức là tài liệu tham chiếu tốt để review code và chuẩn bị câu hỏi bảo mật.",
+      "interview_q": "Vì sao Java deserialization từ nguồn không tin cậy nguy hiểm, và bạn sẽ làm gì để giảm rủi ro trong một service nhận dữ liệu từ bên ngoài?",
+      "related": ["security-001"],
+      "tags": ["security", "java"]
+    }
+  ]
+}
