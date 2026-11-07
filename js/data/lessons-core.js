@@ -496,13 +496,13 @@ Test sẽ dùng {{HashSet}}, {{TreeSet}}, {{HashMap}} và {{Collections.sort}} �
             return a.equals(b) && b.equals(a) && a.hashCode() == b.hashCode()
                 && a.equals(a) && !a.equals(null) && !a.equals("USD 1000");
         });
-        guard("HashSet khong giu hai phan tu trung gia tri", () ->
+        guard("HashSet không giữ hai phần tử trùng giá trị", () ->
             new HashSet<>(List.of(new Money(500, "VND"), new Money(500, "VND"), new Money(600, "VND"))).size() == 2);
-        guard("khac tien te thi khong equals du cung so tien", () -> {
+        guard("khác tiền tệ thì không equals cùng số tiền", () -> {
             Money a = new Money(1000, "USD"), b = new Money(1000, "EUR");
             return !a.equals(b) && !b.equals(a);
         });
-        guard("add tra object moi va khong lam doi hai so hang", () -> {
+        guard("add trả object mới và không làm đổi hai số hạng", () -> {
             Money a = new Money(700, "USD"), b = new Money(450, "USD"), sum = a.add(b);
             return sum.amountMinor() == 1150 && sum.currency().equals("USD")
                 && a.amountMinor() == 700 && b.amountMinor() == 450;
@@ -549,7 +549,7 @@ Test sẽ dùng {{HashSet}}, {{TreeSet}}, {{HashMap}} và {{Collections.sort}} �
 
     Money add(Money other) {
         if (other == null) throw new IllegalArgumentException("other null");
-        if (!currency.equals(other.currency)) throw new IllegalArgumentException("khong cong duoc khac tien te");
+        if (!currency.equals(other.currency)) throw new IllegalArgumentException("không cộng được khác tiền tệ");
         return new Money(Math.addExact(amountMinor, other.amountMinor), currency);
     }
 
@@ -561,7 +561,7 @@ Test sẽ dùng {{HashSet}}, {{TreeSet}}, {{HashMap}} và {{Collections.sort}} �
     @Override public int hashCode() { return Objects.hash(amountMinor, currency); }
 
     @Override public int compareTo(Money other) {
-        if (!currency.equals(other.currency)) throw new IllegalArgumentException("khong so sanh duoc khac tien te");
+        if (!currency.equals(other.currency)) throw new IllegalArgumentException("không so sánh được khác tiền tệ");
         return Long.compare(amountMinor, other.amountMinor);
     }
 }`,
@@ -792,7 +792,7 @@ final class Attempts {
 
     static <T> Result<T> success(T value) { return new Result<>(value, null); }
     static <T> Result<T> failure(Throwable error) {
-        if (error == null) throw new IllegalArgumentException("Result.failure can phai co loi");
+        if (error == null) throw new IllegalArgumentException("Result.failure phải có lỗi");
         return new Result<>(null, error);
     }
     static <T> Result<T> of(Supplier<T> action) {
@@ -804,7 +804,7 @@ final class Attempts {
         if (error == null) return value;
         if (error instanceof RuntimeException re) throw re;
         if (error instanceof Error er) throw er;
-        throw new IllegalStateException("Khong doc duoc gia tri tu Result that bai", error);
+        throw new IllegalStateException("Không đọc được giá trị từ Result thất bại", error);
     }
     Throwable error() { return error; }
 }
@@ -816,16 +816,16 @@ final class Attempts {
             try {
                 return action.get();
             } catch (RuntimeException | Error e) {
-                if (!retryOn.test(e)) throw e;                       // loi khong duoc phep retry: dung ngay, giu nguyen loi
+                if (!retryOn.test(e)) throw e;                       // lỗi không được phép retry: dừng ngay, giữ nguyên lỗi
                 if (attempt == maxAttempts) {
                     for (Throwable earlier : history)
                         if (earlier != e) e.addSuppressed(earlier);   // Java cam gan mot exception vao chinh no
-                    throw e;                                          // loi lan cuoi nam trong message, phan con lai o suppressed
+                    throw e;                                          // lỗi lần cuối nằm trong message, phần còn lại ở suppressed
                 }
                 history.add(e);
             }
         }
-        throw new IllegalStateException("khong the xay ra");          // can vi maxAttempts la bien, compiler khong tu suy ra vong lap ket thuc
+        throw new IllegalStateException("khong the xay ra");          // cần vì maxAttempts là biến, compiler không tự suy ra vòng lặp kết thúc
     }
     static <T> Result<T> attempt(Supplier<T> action, int maxAttempts, Predicate<Throwable> retryOn) {
         try { return Result.success(retry(action, maxAttempts, retryOn)); }
@@ -940,14 +940,14 @@ Vì sao không dùng enum? Vì mỗi nhánh ở đây mang dữ liệu riêng: D
 Đây là cách nói khác của nguyên tắc "make illegal states unrepresentable": thiết kế kiểu dữ liệu sao cho lỗi không viết ra được. Luồng thật của một lệnh thanh toán qua ba hệ thống, nơi {{PaymentResult}} ra đời:
 
 ~~~seq
-title: Mot lenh thanh toan di qua ba he thong
+title: Một lệnh thanh toán đi qua ba hệ thống
 actors: Service | Bank Gateway | Ngan hang
 Service -> Bank Gateway: POST /pay (so tien, ma don hang)
 Bank Gateway -> Ngan hang: uy quyet the (authorization)
 Ngan hang --> Bank Gateway: ma loi 51 (the het han)
 Bank Gateway --> Service: 200 + ket qua DECLINED
 Service --> Service: chuyen ket qua thanh Success hoac Declined
-note Service..Ngan hang: Service chi nhan PaymentResult, khong bao gio nhan null
+note Service..Ngân hàng: Service chỉ nhận PaymentResult, không bao giờ nhận null
 ~~~
 
 ### instanceof pattern (Java 16/17) và switch pattern (Java 21)
@@ -1118,14 +1118,14 @@ class Checkout {
 record Success(long amount, String reference, long fee) implements PaymentResult {
     Success {
         if (amount < 0) throw new IllegalArgumentException("amount phai >= 0");
-        if (reference == null || reference.isBlank()) throw new IllegalArgumentException("reference khong duoc trong");
+        if (reference == null || reference.isBlank()) throw new IllegalArgumentException("reference không được trống");
     }
 }
 
 record Declined(long amount, String code, String message, boolean retryable) implements PaymentResult {
     Declined {
         if (amount < 0) throw new IllegalArgumentException("amount phai >= 0");
-        if (code == null || code.isBlank()) throw new IllegalArgumentException("code khong duoc trong");
+        if (code == null || code.isBlank()) throw new IllegalArgumentException("code không được trống");
     }
 }
 
@@ -1152,7 +1152,7 @@ class Checkout {
     static boolean retryLater(PaymentResult r) {
         if (r instanceof Declined d) return d.retryable();
         if (r instanceof Failed) return true;
-        return false;                     // Success, va moi subtype chua duoc xu ly
+        return false;                     // Success, và mỗi subtype chưa được xử lý
     }
 }`,
     hints: ['Compact constructor chỉ ghi tên record rồi đến khối thân, không có danh sách tham số. Muốn chuẩn hoá thì ghi đè tham số, đừng gán vào this.', 'Kiểm tra chuỗi rỗng nên viết {{reference == null || reference.isBlank()}}: isBlank coi chuỗi chỉ toàn khoảng trắng là rỗng (có từ Java 11).', 'Mẫu instanceof viết là {{if (r instanceof Success s)}} — một cặp ngoặc đơn bao điều kiện, biến s chỉ dùng được bên trong nhánh đó.', 'Hàm vẫn cần một dòng return cuối vì compiler Java 17 không biết ba nhánh instanceof đã phủ hết sealed type; đó chính là chỗ switch pattern của Java 21 giúp bạn.'],

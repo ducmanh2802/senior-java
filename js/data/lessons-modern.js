@@ -1075,7 +1075,7 @@ class SalesReport {
                 Order::customerId,
                 Collectors.groupingBy(Order::month, TreeMap::new,
                     Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add))));
-        // buoc 2: sap khach hang theo TONG doanh thu (mapFactory khong sap duoc theo gia tri)
+        // bước 2: sắp khách hàng theo TỔNG doanh thu (mapFactory không sắp được theo giá trị)
         Comparator<String> byTotalDescThenId = (a, b) -> {
             int c = total(grouped.get(b)).compareTo(total(grouped.get(a)));
             return c != 0 ? c : a.compareTo(b);
@@ -1089,7 +1089,7 @@ class SalesReport {
     }
 }`,
       hints: [
-        'Cap trong dung {{Collectors.groupingBy(Order::month, TreeMap::new, Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add))}} de thang tu sap xep.',
+        'Cấp trong dùng {{Collectors.groupingBy(Order::month, TreeMap::new, Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add))}} để tháng tự sắp xếp.',
         'Chưa có tổng thì không sắp được: gom xong hãy tính {{total}} cua moi khach bang {{values().stream().reduce(BigDecimal.ZERO, BigDecimal::add)}}.',
         'Cuoi day do vao {{LinkedHashMap}} theo danh sach key da sap — {{HashMap}}/{{TreeMap}} khong giu thu tu do.',
         'So sánh {{BigDecimal}} dung {{compareTo}}, không dung {{equals}} ({{equals}} phan biet 1.0 vs 1.00).',
@@ -1349,9 +1349,9 @@ Sau khi {{allOf}} hoàn thành thì mọi future đã xong, nên {{join}} ở b�
 
 ### Timeout: orTimeout và completeOnTimeout (Java 9+)
 ~~~java
-// loi neu qua 200 ms: future hoan thanh voi TimeoutException
+// lỗi nếu quá 200 ms: future hoàn thành với TimeoutException
 f.orTimeout(200, TimeUnit.MILLISECONDS);
-// hoac dung gia tri mac dinh neu qua 200 ms:
+// hoặc dùng giá trị mặc định nếu quá 200 ms:
 g.completeOnTimeout("N/A", 200, TimeUnit.MILLISECONDS);
 ~~~
 
@@ -1367,7 +1367,7 @@ Nếu một nhánh lỗi mà không xử lý, {{allOf}} sẽ hoàn thành **vớ
 ~~~java
 CompletableFuture<String> safe = CompletableFuture.supplyAsync(scoreClient::fetch, io)
         .orTimeout(200, TimeUnit.MILLISECONDS)
-        .exceptionally(ex -> "N/A");     // nguon loi hoac cham -> gia tri mac dinh
+        .exceptionally(ex -> "N/A");     // nguồn lỗi hoặc chậm -> giá trị mặc định
 ~~~
 
 Sau {{exceptionally}} thì lỗi đã được "tiêu"; đặt nó ở cuối chuỗi. Nếu muốn biết nguồn nào phải fallback để log/metric, dùng {{handle((v, ex) -> ...)}} thay cho {{exceptionally}}.
@@ -1393,7 +1393,7 @@ Không phải silver bullet: nó không làm tăng tốc việc CPU-bound, vẫn
 Vấn đề còn lại: fan-out bằng {{CompletableFuture}} hay virtual threads thì các task con vẫn là "sương mù" — thread gọi không biết mình đã đẻ bao nhiêu task, một task lỗi thì các task khác vẫn chạy tiếp, và timeout không hủy được. Structured concurrency gom task con vào một scope có cây:
 
 ~~~java
-// CHI de biet: preview, API co the doi giua cac JDK; dung duoc voi --enable-preview
+// CHỈ để biết: preview, API có thể đổi giữa các JDK; dùng được với --enable-preview
 try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
     StructuredTaskScope.SubTask<Profile> p = scope.fork(() -> profileClient.get(id));
     StructuredTaskScope.SubTask<List<Order>> o = scope.fork(() -> orderClient.list(id));
@@ -1533,7 +1533,7 @@ class Aggregator {
         });
         check("nguon treo vo tan: timeout dung fallback, khong treo", () -> {
             ExecutorService pool = newPool();
-            CountDownLatch neverReleased = new CountDownLatch(1);   // khong bao gio duoc countDown
+            CountDownLatch neverReleased = new CountDownLatch(1);   // không bao giờ được countDown
             Supplier<String> hanging = () -> {
                 try { neverReleased.await(30, TimeUnit.SECONDS); }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -1573,11 +1573,11 @@ class Aggregator {
 
     Map<String, String> fetchAll(List<Source> sources, long timeoutMs) {
         List<CompletableFuture<String>> calls = new ArrayList<>();
-        // buoc 1: phat dong TAT CA nguon truoc (khong cho tung cai trong vong lap)
+        // bước 1: phát động TẤT CẢ nguồn trước (không chờ từng cái trong vòng lặp)
         for (Source s : sources) {
             calls.add(CompletableFuture.supplyAsync(s.call(), executor)
                     .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)          // cham -> TimeoutException
-                    .exceptionally(ex -> s.fallback())                    // loi hoac cham -> fallback
+                    .exceptionally(ex -> s.fallback())                    // lỗi hoặc chậm -> fallback
                     .thenApply(v -> v == null ? s.fallback() : v));       // null -> fallback
         }
         // buoc 2: cho nhung nguon con lai; moi cai da duoc "chuẩn hoá" nen allOf khong bi loi
@@ -1592,7 +1592,7 @@ class Aggregator {
         'Vòng lặp thứ nhất CHỈ phát động: {{CompletableFuture.supplyAsync(s.call(), executor)}} rồi thêm vào list. Không gọi join/get trong vòng lặp này (nó sẽ làm chạy tuần tự).',
         'Biến lỗi thành giá trị mặc định: {{.orTimeout(timeoutMs, TimeUnit.MILLISECONDS).exceptionally(ex -> s.fallback())}}.',
         'Chờ tất cả bằng {{CompletableFuture.allOf(calls.toArray(new CompletableFuture[0])).join()}}, sau do doc tung future bang {{join()}} (da xong nen khong chan them).',
-        'Dung {{LinkedHashMap}} va duyet theo thu tu {{sources}} de key ra dung thu tu; {{HashMap}} se bi do test 1.',
+        'Dùng {{LinkedHashMap}} và duyệt theo thứ tự {{sources}} để key ra đúng thứ tự; {{HashMap}} sẽ bị đổ test 1.',
       ],
       explain: `Ba bước tách bạch là toàn bộ bài học: **phát động** → **chờ** → **gộp**. Người mới hay viết vòng lặp {{for}} rồi {{join()}} ngay bên trong, tức chờ xong nguồn A mới phát động B: thời gian là tổng chứ không phải max. Tách ra hai vòng lặp thì {{supplyAsync}} trả về gần như tức thì, cả ba nguồn chạy chồng nhau.
 
@@ -1603,7 +1603,7 @@ Vì sao thứ tự tương đối giữa {{orTimeout}} và {{exceptionally}} qua
 Lỗi hay gặp:
 - {{supplyAsync}} không truyền executor → chạy trên commonPool; test tên thread sẽ đỏ, và I/O nghẽn pool chung.
 - Quen {{exceptionally}} → một nguồn lỗi làm {{allOf}} lỗi, mất hết kết quả các nguồn tốt.
-- {{join}}/{{get}} trong vong lap phat dong → chay tuan tu.
+- {{join}}/{{get}} trong vòng lặp phát động → chạy tuần tự.
 - Dùng {{HashMap}} → thứ tự key lộn xộn, báo cáo/JSON đổi chỗ giữa các lần chạy.
 - Tin rằng timeout dừng được lời gọi HTTP: nó chỉ hoàn thành future, lời gọi vẫn giữ thread cho tới khi xong. Test ở đây giữ nguồn treo 30 giây nhưng fetchAll phải trả về sau khoảng timeout.`,
     },
@@ -1743,10 +1743,10 @@ class PageBuilder {
         List<CompletableFuture<String>> calls = new ArrayList<>();
         for (Source s : sources) {
             calls.add(CompletableFuture.supplyAsync(s.call(), executor)
-                    .completeOnTimeout(s.fallback(), timeoutMs, TimeUnit.MILLISECONDS)  // cham -> fallback, khong loi
-                    .handle((v, ex) -> ex != null || v == null ? s.fallback() : v));     // loi hoac null -> fallback
+                    .completeOnTimeout(s.fallback(), timeoutMs, TimeUnit.MILLISECONDS)  // chậm -> fallback, không lỗi
+                    .handle((v, ex) -> ex != null || v == null ? s.fallback() : v));     // lỗi hoặc null -> fallback
         }
-        // khong join o day: thenApply chay khi tat ca da xong, page() tra ve lien tuc
+        // không join ở đây: thenApply chạy khi tất cả đã xong, page() trả về liên tục
         return CompletableFuture.allOf(calls.toArray(new CompletableFuture[0]))
                 .thenApply(v -> {
                     Map<String, String> values = new LinkedHashMap<>();
@@ -1756,9 +1756,9 @@ class PageBuilder {
     }
 }`,
       hints: [
-        'Dung {{completeOnTimeout(fallback, timeoutMs, TimeUnit.MILLISECONDS)}} de nguon cham thanh gia tri mac dinh ma khong nem loi.',
+        'Dùng {{completeOnTimeout(fallback, timeoutMs, TimeUnit.MILLISECONDS)}} để nguồn chậm thành giá trị mặc định mà không ném lỗi.',
         'Them {{.handle((v, ex) -> ex != null || v == null ? s.fallback() : v)}} de nguon loi/null cung ra fallback.',
-        'Tra ve {{CompletableFuture.allOf(...).thenApply(...)}}: ben trong thenApply duoc phep join vi luc do moi future da xong.',
+        'Trả về {{CompletableFuture.allOf(...).thenApply(...)}}: bên trong thenApply được phép join vì lúc đó mỗi future đã xong.',
         'Vòng lặp duyet sources KHÔNG được gọi join/get — chỉ lắp chuỗi callback rồi trả về.',
       ],
       explain: `Đây là hình dáng thật của một aggregator trong web reactive/async: method trả về future ngay, không giữ thread của Tomcat/Netty ngồi chờ. Toàn bộ việc chờ nằm trong {{thenApply}} được ghép sau {{allOf}}, và callback đó chạy trên thread vừa hoàn thành bước cuối cùng (hoặc {{ForkJoinPool.commonPool()}} nếu không chỉ định executor cho {{thenApplyAsync}}) — đó là lý do bước gộp phải rất nhẹ.
