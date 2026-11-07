@@ -5747,6 +5747,15 @@ Không dùng component scan để đăng ký auto-configuration từ thư viện
 ### Pitfall production
 {{@ConditionalOnProperty}} mặc định cần property tồn tại và giá trị không phải false; cấu hình {{matchIfMissing}} thay đổi mặc định này. Điều kiện dựa trên class có thể khác giữa test và production do dependency transitively khác nhau. Exclude một auto-config để chữa triệu chứng có thể làm mất cả nhóm bean liên quan.
 
+### Bên trong: điều kiện của auto-configuration được đánh giá thế nào
+Spring Boot 3 đọc danh sách lớp auto-configuration từ {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}} trong mọi jar. Mỗi lớp có các điều kiện {{@ConditionalOnClass}} (lớp có trên classpath không), {{@ConditionalOnMissingBean}} (bạn đã tự khai báo bean cùng loại chưa — nếu có thì Boot **lùi lại**), {{@ConditionalOnProperty}}, {{@ConditionalOnWebApplication}}… Các lớp được sắp theo {{@AutoConfiguration(before/after)}}. Công cụ xem kết quả: chạy với {{--debug}} (hoặc {{debug=true}}) để in **Condition Evaluation Report** — danh sách "Positive matches" và "Negative matches" kèm lý do; Actuator {{/actuator/conditions}} và {{/actuator/beans}} cho cùng thông tin lúc chạy.
+
+### Ví dụ đời thực
+Sau khi thêm một thư viện nội bộ, service bỗng dùng {{ObjectMapper}} serialize ngày tháng thành số timestamp thay vì chuỗi ISO — app mobile hiển thị sai ngày. {{/actuator/beans}} cho thấy có một bean {{ObjectMapper}} đến từ lớp cấu hình trong thư viện mới; Condition Evaluation Report ghi {{JacksonAutoConfiguration... Did not match: @ConditionalOnMissingBean found bean 'objectMapper'}}, tức Boot đã lùi lại và mọi cấu hình {{spring.jackson.*}} trong application.yml **không còn tác dụng**. Sửa: thư viện nội bộ đổi sang cung cấp {{Jackson2ObjectMapperBuilderCustomizer}} (tuỳ biến thêm vào cấu hình của Boot) thay vì tự tạo ObjectMapper.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Boot 3 tìm danh sách auto-configuration trong file AutoConfiguration.imports của mỗi jar, thay cho spring.factories ở Boot 2. Mỗi lớp auto-configuration có điều kiện: ConditionalOnClass, ConditionalOnProperty, và quan trọng nhất là ConditionalOnMissingBean, nghĩa là nếu tôi đã tự khai báo bean cùng loại thì Boot lùi lại. Khi một bean bất ngờ xuất hiện hoặc không xuất hiện, tôi chạy với debug để xem Condition Evaluation Report, liệt kê điều kiện nào khớp, điều kiện nào không và lý do, hoặc xem actuator conditions và beans khi ứng dụng đang chạy. Lỗi hay gặp là một thư viện tự khai báo ObjectMapper hay DataSource làm cấu hình của Boot bị tắt im lặng; cách đúng là dùng các customizer mà Boot cung cấp thay vì thay thế cả bean."
+
 > Senior tip: khi bean thiếu, tìm negative match đầu tiên trong report thay vì thêm một {{@Bean}} nữa. Với starter dùng chung, viết context test cho cả trường hợp dependency có/không và bean ứng dụng override để hợp đồng auto-config được kiểm tra rõ.`,
   follow: ['Vì sao Boot 3 starter không nên đăng ký auto-configuration bằng component scan?', 'Bạn thiết kế điều kiện để app override bean mặc định ra sao?'],
   tags: ['Spring Boot 3', 'AutoConfiguration.imports', 'ConditionalOn', 'starter']
@@ -5770,6 +5779,15 @@ Gắn userId, orderId hoặc URL đầy đủ làm metric tag sẽ tạo cardina
 
 Đo latency giữa các service cần đồng bộ clock tương đối tốt, nhưng duration của span cục bộ đáng tin hơn so timestamp tuyệt đối. Không xem trace là audit log: sampling và retention khiến trace không đảm bảo lưu mọi request.
 
+### Bên trong: một request mang ngữ cảnh đi qua các service thế nào
+Micrometer Observation API là lớp chung: một lần {{Observation}} sinh ra **cả** metric (timer) lẫn span (qua Micrometer Tracing với bridge OpenTelemetry hoặc Brave). Spring Boot 3 tự instrument HTTP server, RestClient/WebClient/RestTemplate (khi tạo từ builder của Spring), Kafka (khi bật observation), JDBC qua thư viện bổ sung. Header W3C {{traceparent}} mang traceId sang service tiếp theo; traceId và spanId được đưa vào **MDC** để log tự có. **Exemplar**: metric dạng histogram có thể đính kèm traceId của một request mẫu, từ biểu đồ p99 trên Grafana bấm thẳng sang trace của một request chậm.
+
+### Ví dụ đời thực
+Khách báo "thanh toán treo 10 giây" kèm thời điểm. Trước đây team phải grep log trên 5 service theo thời gian, mất trung bình 45 phút mỗi lần. Sau khi chuẩn hoá: mọi service Spring Boot 3 dùng Micrometer Tracing + OTLP gửi về Tempo, log JSON có traceId, response lỗi trả traceId cho client, Prometheus bật exemplar. Lần sau, bộ phận hỗ trợ gửi traceId từ màn hình lỗi; trace cho thấy 9,2 giây nằm ở span gọi dịch vụ chống gian lận (retry 3 lần với timeout 3 giây). Thời gian điều tra còn khoảng 5 phút; team giảm timeout và thêm circuit breaker.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế để ba tín hiệu nối được với nhau bằng traceId. Trong Spring Boot 3, Micrometer Observation sinh cả metric lẫn span cho mỗi thao tác được instrument; tôi dùng Micrometer Tracing với bridge OpenTelemetry, xuất qua OTLP về Tempo hoặc Jaeger. Context đi qua các service bằng header traceparent, nên client HTTP phải tạo từ builder của Spring, Kafka phải bật observation, và executor bất đồng bộ phải bọc context propagation. traceId được đưa vào MDC nên log JSON tự có trường này, tôi trả traceId trong response lỗi để hỗ trợ gửi lại. Metric dùng histogram kèm exemplar để từ biểu đồ p99 bấm thẳng sang trace của request chậm. Sampling thì cân bằng chi phí, giữ đủ trace lỗi và chậm."
+
 > Senior tip: bắt đầu với RED metrics (rate, errors, duration), rồi trace các đường đi có giá trị điều tra. Theo dõi cả chi phí ingest và cardinality; dashboard đẹp nhưng tag không giới hạn sẽ biến observability thành sự cố vận hành.`,
   follow: ['Khi nào chọn head sampling và tail sampling?', 'Vì sao không nên đặt orderId làm label của metric?'],
   tags: ['Micrometer', 'Tracing', 'Observation', 'OpenTelemetry', 'observability']
@@ -5791,6 +5809,16 @@ Platform thread gắn với OS thread, nên lượng lớn thread chờ I/O tố
 
 ### Pitfall production
 Tối ưu thread count nhưng bỏ qua connection pool có thể tạo hàng chục nghìn tác vụ cùng chờ lấy connection và làm latency đuôi tăng. Thread-local cache có thể nhân memory theo virtual thread nếu tạo quá nhiều task. Không dùng synchronized block dài quanh I/O mà không đánh giá runtime/JDK cụ thể.
+
+### Ví dụ đời thực
+Service tra cứu hồ sơ (Spring MVC, JDBC, gọi 3 API nội bộ) chạy Tomcat 200 thread; giờ cao điểm 400 request đồng thời → hàng đợi Tomcat dài, p99 2,3 giây dù CPU 35%. Rollout virtual thread theo bước:
+1. Nâng Java 21, chạy {{-Djdk.tracePinnedThreads=full}} trên staging + load test → phát hiện pinning ở một thư viện client cũ dùng {{synchronized}} quanh I/O và ở {{synchronized}} trong code cache tự viết (đổi sang {{ReentrantLock}}).
+2. Kiểm tra giới hạn phía sau: pool Hikari 30 — với virtual thread, 400 request đồng thời sẽ cùng tranh 30 connection; đặt {{connectionTimeout}} hợp lý và giới hạn đồng thời ở các API ngoài bằng semaphore.
+3. Bật {{spring.threads.virtual.enabled=true}} cho 1 pod (canary) 2 ngày, so p99 và lỗi.
+Kết quả: p99 2,3 giây → 420ms, không tăng lỗi; điểm nghẽn mới lộ ra là pool DB (đúng như dự đoán), giải quyết bằng tối ưu 2 query nặng.
+
+### Trả lời mẫu khi phỏng vấn
+"Bật spring.threads.virtual.enabled trên Java 21 và Spring Boot 3.2 trở lên làm Tomcat và các executor của Spring chạy mỗi request trên một virtual thread, nên khi chờ I/O thread nhả carrier và ta phục vụ được rất nhiều request đồng thời mà giữ nguyên code blocking. Lợi ích lớn với workload chờ I/O như JDBC, HTTP; không giúp gì cho CPU-bound. Giới hạn: trên Java 21, synchronized quanh I/O gây pinning, đã được khắc phục từ Java 24; và virtual thread không tăng tài nguyên phía sau, nên pool DB và rate limit của API ngoài thành điểm nghẽn mới, cần giới hạn đồng thời. Kế hoạch rollout của tôi: phát hiện pinning bằng JFR hoặc tracePinnedThreads trên staging, load test, rà lại pool và ThreadLocal nặng, rồi bật cho một pod canary và so p99, lỗi trước khi bật toàn bộ."
 
 > Senior tip: virtual thread giúp mở rộng concurrency của blocking I/O, không phải nút tăng tốc tổng quát. Rollout theo canary, giữ giới hạn concurrency ở biên phụ thuộc và so p95/p99 cùng pool wait time, không chỉ nhìn CPU thấp hơn.`,
   follow: ['Virtual thread khác reactive programming ở điểm nào?', 'Làm sao phát hiện virtual thread bị pinning trong môi trường thật?'],
@@ -5814,6 +5842,18 @@ Khi nhận tín hiệu shutdown, instance phải sớm rời khỏi endpoint nh�
 
 ### Pitfall production
 Readiness chỉ đổi sau khi process bắt đầu tắt có thể khiến load balancer tiếp tục gửi traffic một khoảng ngắn. Timeout quá ngắn làm request bị kill; quá dài giữ rollout treo hoặc vượt ngân sách deployment. Web server drain không tự xử lý transaction đang chạy ở background executor hay message listener. Shutdown hook không đảm bảo chạy khi process bị SIGKILL hoặc host mất điện.
+
+### Bên trong: trình tự khi Kubernetes dừng pod
+1. Pod bị đánh dấu Terminating; **song song**: kubelet gửi SIGTERM cho container **và** endpoint controller gỡ pod khỏi Service/Endpoints — việc gỡ lan tới mọi node (kube-proxy, ingress) mất vài giây.
+2. Nếu ứng dụng dừng nhận request ngay khi nhận SIGTERM, các request đang được định tuyến tới pod trong mấy giây đó sẽ lỗi "connection refused". Vì vậy thêm **{{preStop}} sleep 5–10 giây** để chờ việc gỡ endpoint lan xong.
+3. Spring Boot với {{server.shutdown=graceful}}: ngừng nhận request mới, chờ request đang xử lý xong trong {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30 giây), rồi đóng context (dừng consumer Kafka, scheduler, đóng pool).
+4. Tổng thời gian (preStop + shutdown) phải nhỏ hơn {{terminationGracePeriodSeconds}} (mặc định 30 giây), nếu không pod bị SIGKILL.
+
+### Ví dụ đời thực
+Mỗi lần deploy (rolling update 12 pod), service thanh toán có khoảng 0,8% request lỗi 502 trong 1–2 phút. Đã bật {{server.shutdown=graceful}} nhưng không có preStop: ingress vẫn gửi request tới pod đã ngừng nhận. Thêm {{preStop: sleep 10}}, {{terminationGracePeriodSeconds: 60}}, timeout shutdown 40 giây, readiness probe dùng {{/actuator/health/readiness}} (Spring tự chuyển sang REFUSING_TRAFFIC khi bắt đầu tắt). Consumer Kafka được dừng sớm và commit offset trước khi đóng. Lỗi khi deploy giảm về 0 trong 20 lần deploy liên tiếp.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi Kubernetes dừng pod, nó gửi SIGTERM và đồng thời gỡ pod khỏi endpoints, nhưng việc gỡ lan tới ingress và kube-proxy mất vài giây, nên trong khoảng đó pod vẫn nhận request mới. Tôi thêm preStop sleep khoảng mười giây để chờ việc gỡ lan xong. Spring Boot bật server.shutdown bằng graceful: ngừng nhận request mới, chờ request đang chạy xong trong thời hạn timeout-per-shutdown-phase, rồi đóng context theo thứ tự, gồm dừng consumer và commit offset, dừng scheduler, đóng pool. Readiness probe dùng nhóm readiness của Actuator để báo không nhận traffic khi bắt đầu tắt. Quan trọng là tổng preStop cộng thời gian shutdown phải nhỏ hơn terminationGracePeriodSeconds, nếu không pod bị kill cứng. Tôi kiểm chứng bằng load test chạy liên tục trong lúc rolling update."
 
 > Senior tip: lấy p99 thời lượng request và thời gian deregistration thực tế để đặt grace period, sau đó diễn tập rolling deploy dưới tải. Graceful shutdown giảm gián đoạn, nhưng retry an toàn và idempotency vẫn là lớp bảo vệ cuối cho client.`,
   follow: ['Kubernetes readiness và Spring graceful shutdown cần thứ tự phối hợp ra sao?', 'Consumer đang xử lý message khi shutdown thì đảm bảo không mất message thế nào?'],
@@ -5886,6 +5926,12 @@ Checksum là **hash nội dung file**, lưu lúc migration chạy. Validate đ�
 - Sửa file đã chạy chỉ để dọn comment/format: prod không đổi ngay, nhưng boot tiếp theo nổ checksum - thường đúng giờ cao điểm.
 - Tập thói quen gọi repair mỗi khi validate lỗi khiến checksum mất vai trò cảnh báo; repair phải là quyết định có review, không là thuốc xịt.
 - Ghép migration từ nhiều service cùng schema chung: các V tăng dần có thể đụng cùng một version; quy ước khoảng version riêng cho từng service hoặc thư mục vị trí riêng theo service.
+
+### Ví dụ đời thực
+Một dev sửa trực tiếp file {{V12__add_index.sql}} đã chạy trên staging (thêm {{CONCURRENTLY}} cho "an toàn hơn"). Lần deploy production sau, ứng dụng không khởi động: {{Validate failed: Migration checksum mismatch for migration version 12}} — trên production V12 chạy bản cũ, file giờ khác. Team xử lý: (1) **hoàn tác** file V12 về đúng nội dung đã chạy; (2) tạo {{V13}} cho thay đổi mới; (3) chỉ những môi trường dev cá nhân mới dùng {{flyway repair}}. Một bài học khác: index {{CREATE INDEX CONCURRENTLY}} không chạy được trong transaction — với PostgreSQL, Flyway cần migration đó chạy ngoài transaction (Flyway tự nhận diện một số lệnh; nếu không, tách file và cấu hình phù hợp với phiên bản Flyway đang dùng). Quy ước sau sự cố: CI chạy {{flyway validate}} trên bản sao schema production cho mọi PR có file migration.
+
+### Trả lời mẫu khi phỏng vấn
+"Versioned migration có tiền tố V và số phiên bản, chạy đúng một lần theo thứ tự, dùng cho thay đổi schema và dữ liệu. Repeatable migration có tiền tố R, chạy lại mỗi khi nội dung đổi, sau các versioned, hợp cho view, function, stored procedure. Flyway lưu checksum của mỗi file đã chạy trong bảng flyway_schema_history; khi khởi động, validate so checksum với file hiện tại để phát hiện ai đó sửa migration đã chạy, vì môi trường khác nhau sẽ có schema khác nhau. Khi gặp checksum mismatch, tôi không sửa bảng history mà tìm vì sao file bị đổi: thường là hoàn tác file về nội dung cũ và đưa thay đổi mới vào một migration mới. repair chỉ dùng có chủ đích, như ở môi trường dev. Nguyên tắc là không bao giờ sửa migration đã chạy ở môi trường dùng chung."
 
 > Senior tip: khoá policy bằng CI: định kỳ chạy {{flyway validate}} trên một DB dựng từ đầu từ V1 tới bản mới nhất và trên snapshot staging; bất kỳ file nào drift khỏi hai đường đó sẽ lộ ra trước khi tới prod.
 `,
@@ -6028,6 +6074,12 @@ Hibernate thực thi action queue theo nhóm (ví dụ insert, update, collectio
 
 ### Pitfall production
 Bulk JPQL update/delete chạy trực tiếp ở DB và bỏ qua dirty checking của entity đang nằm trong context, nên object managed có thể stale; clear/refresh phù hợp sau bulk operation. Flush không làm dữ liệu durable: rollback vẫn hoàn tác SQL. Thay đổi collection lớn có thể tạo nhiều snapshot/SQL và tăng heap.
+
+### Ví dụ đời thực
+Một transaction vừa **xoá** bản ghi cấu hình cũ rồi **thêm** bản ghi mới cùng khoá duy nhất ({{tenant_id, key}}). Code: {{repo.delete(old); repo.save(newOne);}} → lỗi {{duplicate key value violates unique constraint}}. Nguyên nhân: Hibernate flush theo **thứ tự loại thao tác** cố định — INSERT trước, rồi UPDATE, rồi xoá phần tử collection, rồi DELETE — không theo thứ tự bạn gọi. Nên câu INSERT bản mới chạy khi bản cũ chưa bị xoá. Cách sửa: gọi {{flush()}} ngay sau {{delete}} (ép DELETE chạy trước), hoặc **cập nhật** bản ghi cũ thay vì xoá rồi thêm. Một lỗi tương tự: {{@Transactional(readOnly = true)}} ở service đọc rồi gọi setter để "chuẩn hoá hiển thị" — với readOnly, Spring đặt flush mode MANUAL cho Hibernate nên không ghi; nhưng khi ai đó bỏ readOnly, thay đổi "chỉ để hiển thị" bị ghi xuống DB.
+
+### Trả lời mẫu khi phỏng vấn
+"Persistence context giữ mỗi entity managed kèm một snapshot giá trị lúc nạp. Dirty checking diễn ra khi flush: Hibernate so từng entity với snapshot và sinh UPDATE cho phần thay đổi; flush xảy ra trước commit, trước một query có thể bị ảnh hưởng nếu flush mode là AUTO, hoặc khi gọi flush tường minh. Flush order là điểm hay bị bỏ qua: Hibernate thực thi theo loại thao tác, INSERT trước, UPDATE, rồi DELETE, chứ không theo thứ tự tôi gọi trong code. Hệ quả kinh điển là xoá rồi thêm bản ghi cùng khoá duy nhất trong một transaction sẽ lỗi duplicate key, vì INSERT chạy trước DELETE. Tôi xử lý bằng cách flush sau khi xoá, hoặc tốt hơn là cập nhật bản ghi hiện có thay vì xoá rồi thêm."
 
 > Senior tip: với batch lớn, flush rồi clear theo chunk để giới hạn persistence context; kiểm tra SQL thực phát và transaction log thay vì suy ra từ số lần gọi {{save}}.`,
   follow: ['Query auto-flush xảy ra khi nào và có thể gây bất ngờ gì?', 'Bulk update ảnh hưởng entity đang managed ra sao?'],
@@ -6209,6 +6261,12 @@ Second-level cache chia sẻ entity/collection giữa các Session, phù hợp d
 - Script chạy trước migration → INSERT vào bảng chưa tạo, boot nổ; hoặc ngược lại lặng lẽ bị bỏ qua ở prod (mode embedded) trong khi test H2 vẫn chạy: dữ liệu "sống" ở dev, "chết" ở prod mà không exception nào.
 - Để {{ddl-auto=update}} trên prod vì schema lệch migration: Hibernate tự thêm cột làm schema trôi khỏi Flyway, và validate chỉ soi các file migration - drift kiểu này nằm ngoài radar.
 - Seed dữ liệu tham chiếu (danh mục, vai trò, cấu hình) qua data.sql: prod cần cùng bản định danh nhưng script không được bảo đảm chạy; id lệch giữa env làm quan hệ FK gãy. Đặt seed vào migration - versioned cho một lần, repeatable cho nội dung idempotent.
+
+### Ví dụ đời thực
+Team thêm {{data.sql}} seed danh mục tỉnh thành; chạy local với H2 thì có dữ liệu, lên PostgreSQL thì không — vì từ Spring Boot 2.5, script init chỉ chạy mặc định với **DB nhúng** ({{spring.sql.init.mode=embedded}}). Một dev đặt {{mode=always}} và {{spring.jpa.defer-datasource-initialization=true}} → trên production, {{data.sql}} chạy **mỗi lần khởi động**, INSERT trùng gây lỗi khởi động ở lần deploy thứ hai; trước đó trên staging, script chạy **trước** Flyway nên báo bảng chưa tồn tại. Quyết định cuối: production và staging chỉ dùng **Flyway** cho cả schema lẫn dữ liệu tham chiếu (migration {{V20__seed_provinces.sql}} dùng {{INSERT ... ON CONFLICT DO NOTHING}}), {{spring.sql.init.mode=never}}, Hibernate {{ddl-auto=validate}}; dữ liệu test nạp trong test bằng {{@Sql}} hoặc Testcontainers.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Boot có ba cơ chế có thể tạo schema hay dữ liệu: script init schema.sql và data.sql, Hibernate ddl-auto, và công cụ migration như Flyway hay Liquibase. Script init mặc định chỉ chạy với DB nhúng, muốn chạy với DB thật phải đặt spring.sql.init.mode bằng always; nó chạy mỗi lần khởi động và mặc định trước khi Hibernate khởi tạo, trừ khi bật defer-datasource-initialization. Flyway thì chạy trước khi EntityManagerFactory sẵn sàng. Trộn các cơ chế dễ gây lỗi thứ tự và chạy lặp. Nguyên tắc của tôi là chọn một đường: production dùng Flyway cho cả schema và dữ liệu tham chiếu, viết idempotent, ddl-auto đặt validate, script init tắt; dữ liệu test nạp trong test bằng @Sql hoặc Testcontainers."
 
 > Senior tip: chính sách ba dòng phải thuộc: schema chỉ đến từ migration, script init gắn profile dev/test qua {{spring.sql.init.mode}}, mọi seed xuyên môi trường nằm trong Flyway; và integration test chạy PostgreSQL thật (testcontainers) thay vì để H2 che thứ tự thực tế.`,
   follow: ['Vì sao {{spring.sql.init.mode}} mặc định embedded trên DB thật?', 'Vì sao seed dữ liệu tham chiếu nên qua migration thay vì script init?'],
@@ -7371,6 +7429,12 @@ Cách xử lý: nếu muốn nuốt exception, phải tách transaction (REQUIRE
 - Propagation chỉ có tác dụng khi lời gọi qua proxy – self-invocation phá propagation.
 - REQUIRES_NEW cần kiểm tra kích thước connection pool và đặt timeout cho phần chờ connection.
 
+### Ví dụ đời thực
+Job đối soát cuối ngày xử lý 10.000 giao dịch trong **một** transaction ngoài; với mỗi giao dịch lệch, gọi {{discrepancyService.record()}} có REQUIRES_NEW để "ghi lại kể cả khi job lỗi". Một ngày dữ liệu đối tác lỗi khiến 4.000 giao dịch bị lệch: 4.000 transaction con mở và đóng tuần tự, mỗi cái lấy thêm một connection — job chậm gấp 6 lần nhưng chưa sập. Tệ hơn: một giao dịch ném exception trong {{matchService.match()}} (REQUIRED, cùng transaction), job **bắt và bỏ qua** để chạy tiếp → transaction ngoài đã bị đánh dấu rollback-only; đến cuối, commit ném {{UnexpectedRollbackException}} và **toàn bộ** kết quả đối soát của ngày bị rollback, chỉ còn lại các bản ghi chênh lệch (do REQUIRES_NEW). Thiết kế lại: chia lô 500 giao dịch mỗi transaction ({{TransactionTemplate}}), lỗi của một giao dịch được xử lý trong transaction riêng của lô đó, chênh lệch ghi theo lô.
+
+### Trả lời mẫu khi phỏng vấn
+"Hai bẫy propagation tôi gặp nhiều nhất. Thứ nhất, REQUIRES_NEW tạm treo transaction ngoài nhưng connection vẫn bị giữ, nên mỗi luồng cần hai connection; dưới tải, khi số luồng đạt kích thước pool, có thể mọi luồng cùng chờ connection thứ hai và hệ thống đứng. Thứ hai là rollback-only: khi một method REQUIRED tham gia cùng transaction ném exception qua proxy, transaction bị đánh dấu chỉ được rollback; nếu bên ngoài bắt và nuốt exception rồi kết thúc bình thường, lúc commit Spring ném UnexpectedRollbackException và mọi thứ bị rollback, gây bất ngờ. Cách tôi xử lý là giữ transaction ngắn, chia lô xử lý bằng TransactionTemplate để lỗi một phần không phá cả lô lớn, dùng REQUIRES_NEW tiết kiệm hoặc thay bằng sự kiện sau commit, và không nuốt exception trong transaction."
+
 > Senior tip: trước khi thêm REQUIRES_NEW, hãy hỏi "transaction con có thật sự cần sống sót khi transaction cha rollback không?". Nếu không, dùng REQUIRED. Khi đã dùng REQUIRES_NEW, luôn kiểm tra pool size và đặt connection timeout.`,
   follow: [
     'Transaction con dùng REQUIRES_NEW commit thành công nhưng transaction cha rollback – dữ liệu sẽ ra sao?',
@@ -7527,6 +7591,12 @@ Khi đó Tomcat xử lý mỗi request bằng một virtual thread: code blockin
 - Toàn bộ I/O non-blocking (R2DBC, WebClient, reactive Kafka).
 - Gateway/proxy với throughput cực cao và latency thấp.
 
+### Ví dụ đời thực
+Một nhóm đang viết lại service thông báo đẩy (push notification) — phải giữ **50.000 kết nối SSE** mở cùng lúc tới app, mỗi kết nối gần như im lặng, thỉnh thoảng có sự kiện. Thử nghiệm: Spring MVC + virtual thread giữ được nhưng mỗi kết nối vẫn chiếm một virtual thread và bộ đệm của Tomcat, bộ nhớ khoảng 3,2GB; WebFlux (Netty) với {{Flux}} cho mỗi kết nối và backpressure từ nguồn Kafka: khoảng 1,1GB, CPU thấp hơn 30%. Team chọn WebFlux cho service này, còn 14 service CRUD khác chuyển sang MVC + virtual thread vì code đơn giản và dùng JPA. Tiêu chí được ghi thành ADR: "WebFlux khi có streaming hoặc rất nhiều kết nối mở lâu và toàn bộ đường đi non-blocking; còn lại MVC + virtual thread".
+
+### Trả lời mẫu khi phỏng vấn
+"Với Java 21, Spring MVC bật virtual thread giải quyết được phần lớn lý do trước đây khiến người ta chọn WebFlux: phục vụ nhiều request đồng thời chờ I/O mà không cạn thread, trong khi giữ code blocking dễ viết, dễ debug, dùng được JPA và JDBC. Tôi vẫn chọn WebFlux trong vài trường hợp: streaming như SSE hay WebSocket với rất nhiều kết nối mở lâu, cần backpressure end to end từ nguồn dữ liệu tới client, hoặc gateway, proxy mà toàn bộ đường đi đã non-blocking với driver reactive. WebFlux không làm từng request nhanh hơn, và nếu phía sau là JDBC blocking thì lợi ích gần như mất, còn dễ chặn event loop. Nên mặc định của tôi là MVC kèm virtual thread, WebFlux là lựa chọn có chủ đích cho bài toán streaming."
+
 > Senior tip: đừng chọn WebFlux chỉ vì nghe "reactive là xu hướng". Nếu hệ thống bị nghẽn vì thread bị chặn I/O (DB, HTTP client), chuyển sang virtual thread là thay đổi nhỏ, hiệu quả cao. Chuyển sang WebFlux là viết lại toàn bộ tầng I/O – chi phí lớn, chỉ đáng làm khi thực sự cần backpressure và streaming.`,
   follow: [
     'Tại sao dùng WebFlux cùng JPA là một anti-pattern?',
@@ -7612,6 +7682,15 @@ Slice annotation dùng @ImportAutoConfiguration để chỉ nạp auto-config li
 - Mock repository trong @WebMvcTest rồi test logic nghiệp vụ → test sai layer.
 - Context cache: đặt @DirtiesContext cẩn thận; lạm dụng làm suite chậm.
 - Flaky test do shared state (static, singleton) giữa các test method.
+
+### Bên trong: context cache và vì sao test chậm
+Spring TestContext **cache** application context theo "khoá cấu hình" (lớp cấu hình, profile, properties, danh sách {{@MockBean}}/{{@MockitoBean}}, initializer…). Hai lớp test có khoá giống hệt nhau dùng chung một context; chỉ cần **khác một mock** là tạo context mới (5–20 giây mỗi lần). {{@DirtiesContext}} buộc tạo lại. Từ Spring Boot 3.4 / Spring Framework 6.2, {{@MockBean}}/{{@SpyBean}} bị deprecated, thay bằng {{@MockitoBean}}/{{@MockitoSpyBean}} của Spring Framework. Test slice ({{@WebMvcTest}}, {{@DataJpaTest}}) chỉ nạp một phần auto-configuration nên nhanh hơn, nhưng bean ngoài slice (service, repository khác) phải mock hoặc {{@Import}}.
+
+### Ví dụ đời thực
+Suite 900 test mất 24 phút. Log cho thấy context được khởi tạo **63 lần**: mỗi lớp {{@SpringBootTest}} mock một tổ hợp bean khác nhau, cộng 9 lớp có {{@DirtiesContext}}. Team gom thành 4 lớp cơ sở có cùng bộ mock (bean nào không cần thì vẫn mock giống nhau), chuyển phần lớn test controller sang {{@WebMvcTest}}, test repository sang {{@DataJpaTest}} + Testcontainers dùng chung, bỏ {{@DirtiesContext}} bằng cách dọn dữ liệu sau test. Context còn khởi tạo 7 lần, suite còn 6 phút 30 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Test slice chỉ nạp phần cấu hình cần cho một tầng: WebMvcTest nạp controller, advice, converter, Jackson, MockMvc mà không nạp service hay repository; DataJpaTest nạp JPA, repository, và mặc định mỗi test chạy trong transaction được rollback; JsonTest chỉ kiểm tra serialize. Bean ngoài slice thì mock bằng MockBean, từ Boot 3.4 là MockitoBean. Điều quan trọng là Spring cache application context theo cấu hình của lớp test, và mỗi tổ hợp mock khác nhau tạo một context mới tốn vài giây đến vài chục giây; DirtiesContext cũng buộc tạo lại. Vì vậy tôi gom các lớp test dùng chung một bộ cấu hình và mock, ưu tiên slice cho test từng tầng, chỉ dùng SpringBootTest cho vài luồng xuyên tầng, và theo dõi số lần context khởi động trong CI."
 
 > Senior tip: chiến lược test hợp lý: slice test cho logic từng layer (nhanh, nhiều), @SpringBootTest cho 1-2 smoke test integration, và Testcontainers cho DB thật. Đừng mock repository rồi gọi là "test integration" – đó chỉ là unit test với Spring context.`,
   follow: [
