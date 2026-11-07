@@ -3,6 +3,16 @@
 ## 2026-11-07
 
 ### Nội dung
+- T596 (auto-committed after kilo review + verify)
+- T862 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- #/exam: route awaits the light index (177 KB) instead of the quiz pool (1.65 MB)
+
+
+## 2026-11-07
+
+### Nội dung
 
 
 ### Ứng dụng
