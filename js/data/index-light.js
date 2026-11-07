@@ -1564,6 +1564,8 @@ window.DATA_INDEX = {
     {"id":"lesson-jpa-005","track":"jpa","order":5,"title":"Batch insert, IDENTITY và SEQUENCE pooled","level":"senior","minutes":25},
     {"id":"lesson-jpa-006","track":"jpa","order":6,"title":"Owning side, cascade và orphanRemoval trong quan hệ hai chiều","level":"senior","minutes":30},
     {"id":"lesson-jpa-007","track":"jpa","order":7,"title":"Second-level cache và query cache","level":"senior","minutes":30},
+    {"id":"lesson-jpa-008","track":"jpa","order":8,"title":"Dirty checking: snapshot, @DynamicUpdate và chi phí","level":"senior","minutes":25},
+    {"id":"lesson-jpa-009","track":"jpa","order":9,"title":"Thứ tự flush và ActionQueue","level":"senior","minutes":25},
     {"id":"lesson-design-001","track":"design","order":1,"title":"Rate limiter: token bucket và sliding window log","level":"mid","minutes":30},
     {"id":"lesson-design-002","track":"design","order":2,"title":"Cache eviction: LRU và LFU","level":"mid","minutes":30},
     {"id":"lesson-design-003","track":"design","order":3,"title":"Consistent hashing và virtual nodes","level":"senior","minutes":30},
