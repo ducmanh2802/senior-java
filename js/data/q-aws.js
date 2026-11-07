@@ -3833,4 +3833,182 @@ Lần mở bán đầu tiên không có waiting room: trong 90 giây, Lambda ch�
   ],
   tags: ['AWS', 'scalability', 'quota', 'waiting room', 'case study', 'solution architect']
 },
+{
+  id: 'aws-058',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Case study SA) Core thanh toán của ngân hàng chạy ở một region AWS. Cơ quan quản lý yêu cầu RTO 30 phút, RPO dưới 1 phút khi mất cả region, nhưng ngân sách DR chỉ bằng 25% chi phí hiện tại. Bạn chọn chiến lược DR nào và chứng minh nó hoạt động ra sao?',
+  a: `**Tóm tắt:** Với RTO 30 phút và RPO dưới 1 phút, **backup & restore** (RPO giờ, RTO nhiều giờ) không đạt, **active-active** đạt nhưng vượt ngân sách và đòi hỏi ứng dụng xử lý ghi đa region. Lựa chọn hợp lý là **pilot light / warm standby thu nhỏ**: **dữ liệu sao chép liên tục** (Aurora Global Database, S3 Replication), hạ tầng ở region phụ **dựng sẵn bằng IaC nhưng chạy tối thiểu** (cụm ECS/EKS 0–2 task, scale khi failover), chuyển hướng bằng **Route 53 Application Recovery Controller**, và **diễn tập định kỳ có bấm giờ** để chứng minh con số.
+
+### So sánh bốn chiến lược
+| Chiến lược | RPO | RTO | Chi phí so với prod | Ghi chú |
+|---|---|---|---|---|
+| Backup & restore | Giờ | Nhiều giờ | ~5–10% | Không đạt yêu cầu |
+| Pilot light | Giây–phút | 30–60 phút | ~15–25% | Dữ liệu sẵn, compute dựng khi cần |
+| Warm standby | Giây | 10–30 phút | ~30–50% | Chạy thu nhỏ, chỉ cần scale |
+| Active-active | Gần 0 | Gần 0 | ~100%+ | Ứng dụng phải xử lý ghi đa region |
+Chọn **pilot light nâng cấp**: DB và dữ liệu luôn sẵn; compute chạy tối thiểu để kiểm tra sức khoẻ liên tục; scale nhanh nhờ image đã có sẵn ở region phụ.
+
+### Thành phần
+- **Dữ liệu**: Aurora Global Database (lag thường dưới 1 giây → RPO đạt); S3 Replication có RTC cho chứng từ; secret và khoá KMS đã sao chép (multi-region keys); ECR replication cho image.
+- **Hạ tầng**: cùng Terraform module, region phụ chạy với số task tối thiểu; quota (vCPU, IP, Lambda concurrency) đã xin trước cho mức chạy đầy đủ.
+- **Chuyển hướng**: Route 53 ARC routing control (bật/tắt luồng traffic theo region, có quy tắc an toàn chống tắt cả hai); readiness check so cấu hình hai region.
+- **Quy trình failover**: (1) quyết định failover (người có thẩm quyền, tiêu chí rõ); (2) promote Aurora ở region phụ; (3) scale compute; (4) chuyển routing control; (5) kiểm tra giao dịch mẫu; (6) thông báo. Mỗi bước có runbook tự động hoá được.
+
+### Chứng minh bằng diễn tập
+Diễn tập mỗi quý: mô phỏng mất region chính (chặn traffic, failover Aurora), đo thời gian từng bước, kiểm tra dữ liệu (đối soát giao dịch trước/sau). Kết quả diễn tập là **bằng chứng** nộp cho kiểm toán; mọi bước chậm trở thành việc cần cải tiến.
+
+### Ví dụ đời thực
+Lần diễn tập đầu tiên mất **2 giờ 10 phút**: secret của Secrets Manager chưa sao chép, quota vCPU Fargate ở region phụ chỉ đủ 20% tải, chứng chỉ ACM chưa tạo, một job cấu hình cứng endpoint DB region chính. Sau 2 vòng cải tiến (sao chép secret và KMS multi-region, xin quota, tham số hoá endpoint, tự động hoá runbook bằng Systems Manager): diễn tập thứ ba đạt **24 phút**, RPO đo được 0,8 giây. Chi phí DR khoảng 21% chi phí prod.
+
+### Pitfall
+- Chỉ sao chép dữ liệu, quên secret, khoá, image, quota, chứng chỉ, DNS.
+- Không có tiêu chí và người quyết định failover → mất 1 giờ để họp.
+- Failback (quay về region chính) không được lên kế hoạch.
+- Chưa từng diễn tập → con số RTO chỉ là ước đoán.
+
+### Trả lời mẫu khi phỏng vấn
+"Với RTO 30 phút, RPO dưới một phút và ngân sách khoảng một phần tư, backup và restore không đạt, active-active thì quá đắt và đòi hỏi ứng dụng ghi đa region. Tôi chọn pilot light nâng cấp: dữ liệu sao chép liên tục bằng Aurora Global Database với lag dưới một giây và S3 Replication; hạ tầng region phụ dựng sẵn bằng cùng Terraform nhưng chạy tối thiểu, image, secret, khoá KMS đã sao chép, quota đã xin đủ cho tải đầy. Chuyển hướng bằng Route 53 Application Recovery Controller. Quy trình failover có tiêu chí và người quyết định rõ, các bước được tự động hoá. Và quan trọng nhất là diễn tập mỗi quý có bấm giờ, đối soát dữ liệu sau failover, dùng kết quả làm bằng chứng cho kiểm toán và làm danh sách cải tiến."
+
+> Senior tip: con số RTO thật luôn nằm ở những thứ ngoài dữ liệu — secret, quota, chứng chỉ, endpoint cứng trong một job ít ai nhớ. Lần diễn tập đầu tiên hầu như luôn thất bại; lên lịch nó sớm, khi chưa có sự cố thật.`,
+  follow: [
+    'Failback về region chính sau sự cố bạn làm thế nào để không mất dữ liệu?',
+    'Khi nào nên chuyển từ pilot light sang active-active?',
+    'Bạn tránh tình huống cả hai region cùng nhận ghi (split-brain) khi failover ra sao?'
+  ],
+  tags: ['AWS', 'disaster recovery', 'RTO', 'RPO', 'Aurora Global', 'case study', 'solution architect']
+},
+{
+  id: 'aws-059',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Case study SA) Đội phân tích chạy truy vấn báo cáo trực tiếp trên Aurora production làm chậm giao dịch. Họ cần dữ liệu gần thời gian thực (trễ dưới 5 phút) cho dashboard và mô hình rủi ro. Bạn thiết kế đường đưa dữ liệu sang nền tảng phân tích trên AWS thế nào?',
+  a: `**Tóm tắt:** Tách **OLTP** khỏi **phân tích** bằng **CDC** (Change Data Capture — đọc log thay đổi của DB thay vì truy vấn bảng): lựa chọn đơn giản nhất là **Aurora zero-ETL integration với Amazon Redshift** (dữ liệu tự sao chép sang Redshift trong vài giây, không phải viết pipeline); nếu cần data lake mở và nhiều nguồn, dùng **Debezium (MSK Connect) hoặc DMS** đẩy thay đổi qua Kafka/Kinesis vào **S3 dạng bảng Apache Iceberg**, truy vấn bằng Athena/Redshift/Spark. Thêm lớp **quản trị dữ liệu**: che dữ liệu cá nhân, phân quyền theo cột/dòng (Lake Formation), catalog.
+
+### Vì sao không chạy báo cáo trên replica là đủ
+Read replica giảm tải cho primary, nhưng truy vấn phân tích (quét hàng trăm triệu dòng, join nhiều bảng) vẫn chậm trên DB dạng dòng, giữ transaction dài gây trễ replica, và đội phân tích vẫn phụ thuộc schema của ứng dụng (đổi schema là vỡ báo cáo).
+
+### Hai kiến trúc
+| Tiêu chí | Aurora zero-ETL → Redshift | CDC → Kafka → S3 Iceberg |
+|---|---|---|
+| Độ trễ | Giây | Vài giây đến phút |
+| Công sức vận hành | Thấp (dịch vụ quản lý) | Cao hơn (connector, schema, compaction) |
+| Nguồn dữ liệu | Aurora/RDS hỗ trợ | Bất kỳ (nhiều DB, sự kiện ứng dụng) |
+| Định dạng mở / nhiều engine | Gắn với Redshift | Iceberg đọc được bằng Athena, Spark, Redshift |
+| Hợp với | Một vài DB, đội nhỏ | Nền tảng dữ liệu nhiều nguồn |
+
+### Luồng CDC chi tiết
+~~~seq
+title: CDC từ Aurora sang data lake
+actors: Aurora | Debezium | Kafka | Sink | S3Iceberg | Athena
+Aurora -> Debezium: đọc logical replication (WAL)
+Debezium -> Kafka: sự kiện thay đổi theo bảng (key = khoá chính)
+Kafka -> Sink: tiêu thụ theo lô mỗi 1-2 phút
+Sink -> S3Iceberg: MERGE vào bảng Iceberg (upsert theo khoá)
+Athena -> S3Iceberg: truy vấn dashboard, mô hình rủi ro
+~~~
+Lưu ý: logical replication giữ WAL nếu consumer ngừng → **theo dõi replication slot** để không đầy đĩa primary; bảng Iceberg cần **compaction** định kỳ (nhiều file nhỏ).
+
+### Quản trị dữ liệu
+- Phân loại cột (PII, tài chính); che hoặc băm số điện thoại, CCCD trước khi vào vùng phân tích chung.
+- Lake Formation cấp quyền theo bảng/cột/dòng cho từng nhóm; mọi truy vấn có audit.
+- **Data contract**: đội ứng dụng thông báo thay đổi schema; pipeline kiểm tra schema và cảnh báo thay vì vỡ âm thầm.
+
+### Ví dụ đời thực
+Một công ty cho vay tiêu dùng: dashboard rủi ro chạy truy vấn 8 phút trên Aurora mỗi 15 phút, p99 API giải ngân tăng gấp 4 lần trong lúc chạy. Giai đoạn 1 bật Aurora zero-ETL sang Redshift Serverless: dashboard chạy dưới 10 giây với dữ liệu trễ khoảng 15 giây, tải Aurora giảm 35%. Giai đoạn 2, khi cần kết hợp dữ liệu từ hệ thống CRM và sự kiện app, dựng thêm Debezium → MSK → Iceberg cho các nguồn đó. Một lần consumer CDC dừng 6 giờ vì lỗi quyền, replication slot giữ 180GB WAL — từ đó có cảnh báo độ trễ slot.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách phân tích khỏi OLTP bằng CDC, tức đọc log thay đổi của DB thay vì truy vấn trực tiếp bảng. Nếu nguồn là Aurora và nhu cầu chủ yếu là phân tích trên Redshift, tôi chọn zero-ETL integration: dữ liệu sang Redshift trong vài giây mà không phải tự viết pipeline. Nếu cần nền tảng dữ liệu nhiều nguồn và định dạng mở, tôi dùng Debezium hoặc DMS đẩy thay đổi qua Kafka vào S3 dưới dạng bảng Iceberg với upsert theo khoá, truy vấn bằng Athena hay Spark, nhớ compaction định kỳ. Hai điểm vận hành quan trọng: theo dõi replication slot để consumer dừng không làm đầy WAL của primary, và có data contract để thay đổi schema không làm vỡ báo cáo âm thầm. Kèm quản trị dữ liệu: che dữ liệu cá nhân, phân quyền theo cột và dòng bằng Lake Formation."
+
+> Senior tip: đặt cảnh báo cho **độ trễ của replication slot** (lượng WAL bị giữ) ngay từ ngày đầu bật CDC. Đây là cách phổ biến nhất mà một pipeline phân tích "vô hại" làm đầy đĩa và đánh sập DB production.`,
+  follow: [
+    'Bạn xử lý thay đổi schema (thêm/đổi cột) trong pipeline CDC thế nào?',
+    'Vì sao bảng Iceberg cần compaction và bạn lên lịch nó ra sao?',
+    'Dữ liệu cá nhân trong data lake: che ở đâu, ai được xem bản gốc?'
+  ],
+  tags: ['AWS', 'CDC', 'data lake', 'Iceberg', 'Redshift', 'zero-ETL', 'case study', 'solution architect']
+},
+{
+  id: 'aws-060',
+  topic: 'aws',
+  level: 'senior',
+  q: '(Case study SA) Để giảm chi phí, team chuyển node EKS sang EC2 Spot. Từ đó thỉnh thoảng có đợt lỗi 5xx kéo dài 1–2 phút và một vài job xử lý dở bị mất. Bạn điều tra và thiết kế lại thế nào để vừa tiết kiệm vừa ổn định?',
+  a: `**Tóm tắt:** Spot rẻ (giảm tới khoảng 70–90%) nhưng EC2 có thể **thu hồi với cảnh báo 2 phút**. Lỗi 5xx và job mất là dấu hiệu **ứng dụng và cluster chưa xử lý gián đoạn**: node bị thu hồi mà pod không được drain đúng cách, nhiều replica nằm cùng một loại instance bị thu hồi cùng lúc, job không có checkpoint. Thiết kế lại: **đa dạng loại instance và AZ**, **xử lý thông báo gián đoạn** (Karpenter hoặc Node Termination Handler để cordon và drain), **PodDisruptionBudget**, **graceful shutdown** đúng, giữ **một phần on-demand** cho thành phần quan trọng, và job phải **idempotent + checkpoint**.
+
+### Điều tra
+- Đối chiếu thời điểm lỗi với sự kiện **EC2 Spot Interruption** (EventBridge) và sự kiện node NotReady trong cluster.
+- Xem pod của service lỗi nằm trên những node nào: nếu 4/6 replica cùng nằm trên một loại instance (ví dụ chỉ m5.xlarge ở một AZ), một đợt thu hồi lấy mất phần lớn năng lực.
+- Kiểm tra pod có nhận SIGTERM và kết thúc trong thời gian cho phép không (preStop, terminationGracePeriodSeconds), readiness có tắt sớm không.
+
+### Thiết kế lại
+| Vấn đề | Cách xử lý |
+|---|---|
+| Thu hồi đồng loạt | Đa dạng hoá: nhiều instance family/size (m5, m6i, m6a, c6i…), nhiều AZ; Karpenter chọn từ danh sách rộng với chiến lược ưu tiên pool ít bị thu hồi |
+| Node bị lấy mà pod chưa drain | Karpenter (interruption queue) hoặc AWS Node Termination Handler: nhận cảnh báo 2 phút / rebalance recommendation → cordon, drain, tạo node thay thế trước |
+| Nhiều replica cùng đi | PodDisruptionBudget (ví dụ minAvailable 70%), topologySpreadConstraints theo AZ và node |
+| Request đang xử lý bị cắt | Graceful shutdown: preStop sleep, server.shutdown=graceful, thời gian tổng < 2 phút |
+| Job mất tiến độ | Job idempotent, checkpoint theo lô, dùng hàng đợi có visibility timeout để việc chưa xong được giao lại |
+| Thành phần quan trọng | Node pool on-demand cho stateful, ingress controller, CoreDNS, service thanh toán |
+
+### Ví dụ đời thực
+Một nền tảng giao đồ ăn chuyển 100% node sang Spot, tiết kiệm 62% chi phí EC2 nhưng mỗi tuần có 3–4 đợt 5xx. Điều tra: node group chỉ dùng 2 loại instance trong một AZ; không có Node Termination Handler nên node biến mất đột ngột; job tính hoa hồng chạy 40 phút không checkpoint. Sau khi chuyển sang Karpenter với 14 loại instance trên 3 AZ, bật interruption handling, PDB và topology spread, đưa CoreDNS/ingress/payment sang pool on-demand (khoảng 20% node), chia job thành lô có checkpoint: tiết kiệm còn 54% nhưng không còn đợt 5xx nào liên quan Spot trong 2 tháng; job bị gián đoạn tự tiếp tục từ lô cuối.
+
+### Pitfall
+- Chỉ chọn một hai loại instance "rẻ nhất" → thu hồi đồng loạt.
+- terminationGracePeriodSeconds dài hơn 2 phút trên Spot → bị kill giữa chừng.
+- Chạy DB, Kafka broker hay stateful set quan trọng trên Spot không có kế hoạch.
+- Không có PDB → drain một lúc nhiều node lấy hết replica.
+
+### Trả lời mẫu khi phỏng vấn
+"Spot có thể bị thu hồi với cảnh báo hai phút, nên lỗi 5xx và job mất cho thấy hệ thống chưa xử lý gián đoạn. Tôi điều tra bằng cách đối chiếu thời điểm lỗi với sự kiện Spot interruption và xem replica của service nằm trên node nào; thường là quá ít loại instance nên bị thu hồi cùng lúc, và không có cơ chế drain. Thiết kế lại gồm: đa dạng nhiều loại instance và AZ, dùng Karpenter hoặc Node Termination Handler để nhận cảnh báo, cordon, drain và tạo node thay thế trước; PodDisruptionBudget và topology spread để không mất nhiều replica một lúc; graceful shutdown hoàn tất trong dưới hai phút; job idempotent có checkpoint và dùng hàng đợi để việc dở được giao lại. Thành phần quan trọng như ingress, DNS, stateful và thanh toán đặt trên node on-demand. Như vậy vẫn tiết kiệm lớn mà ổn định."
+
+> Senior tip: diễn tập gián đoạn Spot có chủ đích bằng **AWS Fault Injection Service** (hành động gửi interruption cho Spot instance) trên staging, đo lỗi phía người dùng. Nếu không thử, cơ chế drain gần như chắc chắn có một chỗ cấu hình sai.`,
+  follow: [
+    'Karpenter khác Cluster Autoscaler thế nào trong việc chọn instance Spot?',
+    'Workload nào tuyệt đối không nên chạy trên Spot?',
+    'Bạn tính tỉ lệ on-demand và Spot hợp lý cho một cluster ra sao?'
+  ],
+  tags: ['AWS', 'EKS', 'Spot', 'Karpenter', 'cost', 'resilience', 'case study']
+},
+{
+  id: 'aws-061',
+  topic: 'aws',
+  level: 'senior',
+  q: '(Case study SA) Một access key IAM của tài khoản dev bị lộ lên GitHub công khai. 2 giờ sau, có 40 instance GPU được tạo ở 5 region để đào tiền mã hoá, hoá đơn tăng nhanh. Bạn phản ứng thế nào trong giờ đầu, và thay đổi gì để không lặp lại?',
+  a: `**Tóm tắt:** Giờ đầu theo thứ tự **chặn → thu hồi → điều tra → dọn dẹp**: vô hiệu hoá access key, chặn quyền của danh tính bị lộ, tìm và xoá **mọi** tài nguyên kẻ tấn công tạo (kể cả cơ chế **bám trụ** như IAM user/role/key mới, Lambda, EventBridge rule) ở **mọi region**, dựa trên CloudTrail; liên hệ AWS Support về hoá đơn. Dài hạn: **bỏ access key dài hạn** (SSO, role, OIDC cho CI), **SCP** chặn region không dùng và loại instance đắt, **GuardDuty**, budget/anomaly alert, secret scanning chặn ngay khi push.
+
+### Giờ đầu — từng bước
+1. **Vô hiệu hoá** access key (không xoá ngay để giữ bằng chứng); nếu không chắc phạm vi, gắn policy từ chối tất cả (deny-all) cho user đó. AWS thường tự gắn policy cách ly (AWSCompromisedKeyQuarantine) khi phát hiện key công khai — nhưng **không** dựa vào đó.
+2. **Ai đã làm gì**: CloudTrail Lake/Athena lọc theo access key ID: {{RunInstances}}, {{CreateUser}}, {{CreateAccessKey}}, {{AttachUserPolicy}}, {{CreateRole}}, {{PutBucketPolicy}}, {{CreateFunction}}… trên **tất cả region**.
+3. **Dừng thiệt hại**: terminate instance ở mọi region (kiểm tra cả Spot request, Launch Template, Auto Scaling group kẻ tấn công tạo để tự dựng lại); xoá IAM user/role/key mới tạo; kiểm tra bucket bị đổi quyền (lộ dữ liệu?).
+4. **Kiểm tra lộ dữ liệu**: có {{GetObject}}/{{ListBucket}} trên bucket nhạy cảm không; key có quyền gì với tài khoản khác (assume role)?
+5. **Thông báo**: đội bảo mật, quản lý; mở case với AWS Support (thường hỗ trợ xem xét phí phát sinh do sự cố khi khách hàng đã khắc phục).
+6. **Xoay vòng** mọi secret có thể bị lộ cùng repo.
+
+### Vì sao chuyện này hay xảy ra
+Key dài hạn của dev có quyền rộng ({{AdministratorAccess}} "cho tiện"), không giới hạn region, không có cảnh báo chi phí theo giờ. Bot quét GitHub tìm key AWS chỉ trong vài phút sau khi push.
+
+### Phòng ngừa
+| Lớp | Biện pháp |
+|---|---|
+| Danh tính | IAM Identity Center (SSO, credential tạm thời), CI dùng OIDC (GitHub Actions → role), cấm tạo access key dài hạn bằng SCP |
+| Giới hạn | SCP chỉ cho phép region đang dùng; chặn instance GPU/loại đắt ở tài khoản dev; quota thấp ở tài khoản dev |
+| Phát hiện | GuardDuty (phát hiện đào coin, gọi API từ IP bất thường), Security Hub, CloudTrail tổ chức |
+| Chi phí | AWS Budgets theo ngày, Cost Anomaly Detection cảnh báo tức thì |
+| Mã nguồn | Secret scanning + push protection, pre-commit hook (gitleaks) |
+
+### Ví dụ đời thực
+Một startup bị đúng tình huống này: key admin của một dev nằm trong file .env bị commit. Trong 3 giờ, kẻ tấn công tạo 48 instance GPU ở 7 region và một IAM user mới để quay lại sau. Đội phát hiện nhờ cảnh báo budget lúc chi phí trong ngày vượt 5 lần bình thường; dọn dẹp mất 2 giờ, IAM user "dự phòng" của kẻ tấn công chỉ được tìm ra nhờ truy CloudTrail đầy đủ. Hoá đơn phát sinh khoảng 11.000 USD, phần lớn được AWS xem xét hỗ trợ sau khi nộp báo cáo khắc phục. Sau đó: SSO cho mọi người, OIDC cho CI, SCP chặn region và GPU ở dev, GuardDuty bật cho toàn Organization.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong giờ đầu tôi làm theo thứ tự chặn, thu hồi, điều tra, dọn dẹp. Vô hiệu hoá ngay access key và gắn deny-all cho danh tính bị lộ. Dùng CloudTrail lọc theo access key đó trên mọi region để biết kẻ tấn công đã làm gì: tạo instance, tạo IAM user hay key mới để bám trụ, sửa bucket policy, tạo Lambda hay rule. Sau đó xoá toàn bộ tài nguyên và cơ chế bám trụ, kiểm tra xem dữ liệu có bị đọc không, xoay vòng các secret liên quan, báo đội bảo mật và mở case với AWS về chi phí. Dài hạn, tôi loại bỏ access key dài hạn bằng SSO và OIDC cho CI, dùng SCP giới hạn region và loại instance ở tài khoản dev, bật GuardDuty, budget và anomaly alert theo ngày, và secret scanning chặn ngay khi push."
+
+> Senior tip: **truy hết CloudTrail** trước khi tuyên bố "đã dọn xong". Kẻ tấn công chuyên nghiệp gần như luôn tạo một đường quay lại (IAM user, access key mới, role tin cậy tài khoản lạ) — xoá instance mà bỏ sót nó là sự cố thứ hai đang chờ.`,
+  follow: [
+    'Vì sao vô hiệu hoá trước rồi mới xoá key?',
+    'Bạn thiết kế SCP chặn region không dùng thế nào mà không chặn dịch vụ global như IAM, CloudFront?',
+    'CI/CD dùng OIDC để lấy quyền AWS hoạt động ra sao?'
+  ],
+  tags: ['AWS', 'security', 'incident response', 'IAM', 'GuardDuty', 'case study']
+},
 )
