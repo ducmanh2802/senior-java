@@ -670,7 +670,7 @@ class Graph {
         };
         List<String> s1 = g1.flush();
         check("owning side writes the FK", Arrays.equals(want1, s1.toArray()), "sql = " + s1);
-        check("helper keeps both sides", l1.order == o1 && o1.lines.contains(l1), "thieu mot trong hai phia cua lien ket");
+        check("helper keeps both sides", l1.order == o1 && o1.lines.contains(l1), "thiếu một trong hai phía của liên kết");
         List<String> s2 = g1.flush();
         check("flush twice is clean", s2.isEmpty(), "sql = " + s2);
 
@@ -775,7 +775,7 @@ class Graph {
         for (Order o : new ArrayList<>(managed.values())) {
             if (removed.contains(o.id)) {               // cascade REMOVE
                 for (Line l : new ArrayList<>(o.lines)) {
-                    if (l.order != o) continue;         // con da doi cha thi khong bi xoa theo
+                    if (l.order != o) continue;         // con đã đổi cha thì không bị xóa theo
                     if (insLine.remove(l.id)) { out.add("DELETE FROM order_line WHERE id=" + l.id); fk.remove(l.id); }
                     orphans.remove(l.id);
                 }
@@ -970,7 +970,7 @@ class DbSim {
 }
 class HibernateLite {
     DbSim db; int cap;
-    LinkedHashMap<Long, String> l2 = new LinkedHashMap<>();  // region: id -> STATE, khong phai object
+    LinkedHashMap<Long, String> l2 = new LinkedHashMap<>();  // region: id -> STATE, không phải object
     LinkedHashMap<Long, Account> l1;                         // identity map cua session dang mo, null = chua mo
     int hits, misses;
 
@@ -984,11 +984,11 @@ class HibernateLite {
         return fresh;
     }
     private String state(long id) {
-        if (l2.containsKey(id)) { hits++; String s = l2.remove(id); l2.put(id, s); return s; }  // duoc cham thi o lai gan hon
+        if (l2.containsKey(id)) { hits++; String s = l2.remove(id); l2.put(id, s); return s; }  // được chạm thì ở lại gần hơn
         misses++;
         String s = db.read(id);
         l2.put(id, s);
-        while (l2.size() > cap) l2.remove(l2.keySet().iterator().next());       // day thi: doi phan tu lau dung nhat ra
+        while (l2.size() > cap) l2.remove(l2.keySet().iterator().next());       // đầy thì: đẩy phần tử lâu dùng nhất ra
         return s;
     }
     void save(long id, String name) { db.rows.put(id, name); l2.remove(id); l2.put(id, name); }  // write-through, bo qua L1
