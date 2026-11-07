@@ -3,6 +3,15 @@
 ## 2026-11-07
 
 ### Nội dung
+
+
+### Ứng dụng
+- T862 jobs view (finished by Claude) + quiz route loads 174 KB instead of 1.9 MB
+
+
+## 2026-11-07
+
+### Nội dung
 - T128 (auto-committed after kilo review + verify)
 - T812 (auto-committed after kilo review + verify)
 - T811 (auto-committed after kilo review + verify)
