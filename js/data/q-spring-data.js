@@ -47,6 +47,15 @@ public class BadOrderService {
 - Dùng Lombok {{@Data}} sẽ sinh cả {{@RequiredArgsConstructor}} nhưng cũng sinh {{equals}}/{{hashCode}} theo **mọi** field → với JPA entity sẽ gây N+1 và lỗi logic (xem câu về equals/hashCode của entity).
 - Nên inject **interface** khi đang có một implementation, để sau dễ thay bằng mock hoặc implementation thứ hai mà không sửa call site.
 
+### Bên trong: container dựng bean theo thứ tự nào
+Lúc khởi động, Spring (1) quét và đọc cấu hình thành các **BeanDefinition** (công thức tạo bean, chưa có object), (2) chạy {{BeanFactoryPostProcessor}} (ví dụ thay các placeholder cấu hình bằng giá trị thật), (3) với mỗi singleton: chọn constructor → **resolve dependency theo kiểu** (cùng kiểu có nhiều bean thì xét {{@Primary}}, {{@Qualifier}}, tên tham số) → tạo object → tiêm field/setter → gọi callback khởi tạo → cho {{BeanPostProcessor}} bọc proxy (AOP, transaction). Với constructor injection, dependency phải có **trước** khi object tồn tại, nên vòng phụ thuộc lộ ra ngay lúc khởi động; với field injection, object được tạo rỗng rồi mới gán field qua reflection — đó là lý do field injection "che" được vòng phụ thuộc và làm object có thể tồn tại ở trạng thái thiếu dependency.
+
+### Ví dụ đời thực
+Một service có class {{OrderService}} với 14 field {{@Autowired}}. Unit test phải dựng cả Spring context (40 giây) vì không có cách nào truyền mock ngoài reflection; một test quên mock một field → NPE trong test khác. Chuyển sang constructor injection (Lombok {{@RequiredArgsConstructor}} với field final): constructor 14 tham số **lộ ra** rằng class làm quá nhiều việc, team tách thành 3 service; unit test chạy không cần Spring (từ 40 giây xuống dưới 1 giây cho cả lớp test). Cùng đợt, một vòng phụ thuộc {{OrderService ↔ PaymentService}} bị lộ ngay lúc khởi động — trước đó field injection che nó.
+
+### Trả lời mẫu khi phỏng vấn
+"IoC nghĩa là tôi không tự tạo dependency mà để container tạo và tiêm vào. Spring đọc cấu hình thành BeanDefinition, rồi với mỗi bean chọn constructor, tìm dependency theo kiểu, xét Primary hay Qualifier khi có nhiều ứng viên, tạo object, tiêm, chạy các callback khởi tạo, và cho BeanPostProcessor bọc proxy như transaction. Tôi dùng constructor injection làm mặc định: field có thể final, object không bao giờ ở trạng thái thiếu dependency, unit test chỉ cần new với mock mà không cần Spring, và vòng phụ thuộc lộ ra ngay lúc khởi động. Constructor quá nhiều tham số còn là tín hiệu class làm quá nhiều việc. Field injection chỉ còn chấp nhận được trong code test; setter injection cho dependency thật sự tuỳ chọn."
+
 > Senior tip: quy tắc thực tế cho team nên đưa vào code review: cấm {{@Autowired}} trên field, bắt buộc constructor injection. Lý do không chỉ ở "style" – field injection làm biến mất danh sách dependency khi đọc code và là nguồn gốc phổ biến nhất của circular dependency mà Spring phải che bằng proxy. Một repo có thể chặn bằng Checkstyle rule {{IllegalAnnotation}} hoặc ArchUnit test.`,
   follow: [
     'Tại sao Spring Framework 4.3 bỏ yêu cầu {{@Autowired}} khi class chỉ có một constructor?',
@@ -154,6 +163,15 @@ Các lựa chọn khác:
 - Prototype chứa dependency singleton thì vẫn an toàn; ngược lại singleton chứa prototype thì phải dùng {{ObjectProvider}}.
 - Singleton chứa state (biến đếm, cache không đồng bộ) là nguồn gốc của rất nhiều bug race condition – mọi bean mặc định nên là stateless.
 
+### Bên trong: scoped proxy hoạt động thế nào
+Khi khai báo {{@Scope(value = "request", proxyMode = ScopedProxyMode.TARGET_CLASS)}} (hoặc dùng {{@RequestScope}}), Spring tiêm vào singleton **một proxy** (lớp con CGLIB) thay vì object thật. Mỗi lần gọi method trên proxy, nó hỏi scope hiện tại ("request đang xử lý là request nào?") để lấy **đúng instance** của request đó rồi chuyển lời gọi sang. Với {{prototype}}, không có "scope hiện tại" nên proxy tạo instance mới **mỗi lần gọi method** — thường không phải điều bạn muốn; dùng {{ObjectProvider<T>.getObject()}} để chủ động lấy instance mới đúng lúc cần.
+
+### Ví dụ đời thực
+Một bean {{PriceCalculator}} giữ trạng thái tạm (danh sách khuyến mãi đã áp dụng) được khai báo {{prototype}} để "mỗi lần một bản mới", nhưng lại được inject vào {{CheckoutService}} singleton → thực tế chỉ có **một** instance dùng chung cho mọi request. Dưới tải, khuyến mãi của khách này lẫn sang hoá đơn khách khác (khoảng 0,2% đơn giờ cao điểm). Sửa: bỏ trạng thái khỏi bean (truyền context qua tham số), các chỗ còn cần object có trạng thái thì tạo bằng {{ObjectProvider}} trong method. Thêm test gọi đồng thời 50 request với dữ liệu khác nhau và kiểm tra không lẫn.
+
+### Trả lời mẫu khi phỏng vấn
+"Singleton là một instance cho cả container và là mặc định; prototype tạo instance mới mỗi lần container được yêu cầu; request và session gắn với vòng đời HTTP. Vấn đề khi tiêm prototype vào singleton là việc tiêm chỉ xảy ra một lần lúc tạo singleton, nên singleton giữ mãi một instance prototype duy nhất, và nếu nó có trạng thái thì trạng thái bị chia sẻ giữa mọi request. Cách khắc phục là lấy instance khi cần bằng ObjectProvider hoặc @Lookup, hoặc với request scope thì dùng scoped proxy, là một proxy tra đúng instance của request hiện tại mỗi lần gọi. Nhưng cách tốt nhất thường là thiết kế bean singleton không có trạng thái, truyền dữ liệu theo request qua tham số."
+
 > Senior tip: trong review code, hãy soi xem bean nào giữ state và bean nào được inject vào singleton. Quy tắc đơn giản: **bean mặc định phải stateless và thread-safe**; nếu cần state thì scope hẹp hơn (request/session) hoặc dùng cấu trúc chia sẻ an toàn (Atomic, ConcurrentHashMap).`,
   follow: [
     'Tại sao Spring không gọi {{@PreDestroy}} cho bean prototype? Làm sao xử lý tài nguyên trong trường hợp đó?',
@@ -211,6 +229,12 @@ public void importFile(InputStream in) throws IOException { /* ... */ }
 - {{readOnly = true}} giúp Hibernate không dirty-check và có thể tối ưu ở DB; dùng cho query.
 - Nếu proxy theo interface (JDK proxy) thì phải inject qua interface, không được inject kiểu class cụ thể.
 
+### Ví dụ đời thực
+Service đặt vé có method {{public void bookAll(List<Seat> seats)}} lặp và gọi {{this.bookOne(seat)}} — {{bookOne}} có {{@Transactional(propagation = REQUIRES_NEW)}} để "mỗi ghế một transaction, ghế lỗi không ảnh hưởng ghế khác". Thực tế gọi qua {{this}} bỏ qua proxy: không có transaction riêng nào, mọi ghế chạy trong transaction của {{bookAll}} (hoặc không có transaction nếu bookAll không có annotation) → một ghế lỗi làm rollback cả đơn, hoặc ngược lại ghế đã ghi không được rollback. Một bug khác cùng service: {{SeatTakenException extends Exception}} (checked) ném ra nhưng transaction vẫn **commit** vì Spring mặc định chỉ rollback với unchecked. Sửa: tách {{bookOne}} sang bean riêng {{SeatBookingService}}, đổi exception thành unchecked (hoặc {{rollbackFor = SeatTakenException.class}}), thêm test tích hợp kiểm tra dữ liệu sau khi lỗi.
+
+### Trả lời mẫu khi phỏng vấn
+"@Transactional hoạt động nhờ proxy: Spring tạo một proxy bọc bean, và lời gọi đi qua proxy thì proxy mở transaction, gọi method thật, rồi commit hoặc rollback. Khi một method trong cùng class gọi method khác qua this, lời gọi không đi qua proxy nên annotation trên method được gọi bị bỏ qua hoàn toàn, kể cả propagation hay readOnly. Cách sửa là tách method sang một bean khác, hoặc tự inject chính bean qua proxy, hoặc dùng TransactionTemplate cho phần cần transaction riêng. Method private hay final cũng không được proxy. Về rollback, mặc định Spring chỉ rollback với RuntimeException và Error; checked exception thì vẫn commit, trừ khi khai báo rollbackFor. Vì vậy tôi dùng exception nghiệp vụ unchecked, và luôn có test tích hợp kiểm tra dữ liệu sau khi lỗi."
+
 > Senior tip: khi debug transaction, hãy kiểm tra 3 thứ theo thứ tự: (1) method có {{public}} và class không {{final}} không, (2) lời gọi có đi qua proxy hay là self-invocation, (3) exception có bị nuốt không. Thêm {{logging.level.org.springframework.transaction=DEBUG}} để xem transaction đang bắt đầu/commit hay rollback.`,
   follow: [
     'Tại sao {{@Transactional}} trên method {{private}} bị bỏ qua một cách âm thầm?',
@@ -256,6 +280,12 @@ public class AuditService {
 - {{REQUIRES_NEW}} tạo ra tính không nhất quán: transaction trong commit trước, transaction ngoài rollback sau ⇒ dữ liệu đã ghi vẫn còn. Chỉ dùng khi nghiệp vụ chấp nhận điều đó (log, notification).
 - {{NESTED}} trên JPA có thể không hoạt động như kỳ vọng vì provider hỗ trợ hạn chế; hãy test trên đúng DB của bạn.
 - Propagation chỉ có tác dụng khi lời gọi **qua proxy** – self-invocation sẽ phá luôn cả propagation.
+
+### Ví dụ đời thực
+Service thanh toán ghi audit log bằng {{REQUIRES_NEW}} để audit vẫn còn dù thanh toán rollback — đúng mục đích. Nhưng audit được gọi **trong vòng lặp** xử lý 200 giao dịch của một lô, mỗi lần REQUIRES_NEW **tạm treo** transaction ngoài (vẫn giữ connection của nó) và **lấy thêm connection thứ hai**. Với 20 thread xử lý lô song song và pool 20 connection, mỗi thread giữ 1 connection rồi chờ connection thứ hai → toàn bộ treo (pool deadlock), log Hikari báo "Connection is not available". Sửa: audit gom lại, ghi một lần sau khi transaction chính kết thúc ({{@TransactionalEventListener(phase = AFTER_COMPLETION)}} hoặc bảng outbox), pool đặt tối thiểu bằng số thread × số connection mỗi luồng cần cộng dự phòng. Không còn treo.
+
+### Trả lời mẫu khi phỏng vấn
+"REQUIRED là mặc định: có transaction thì tham gia, không có thì tạo mới; nếu method bên trong ném lỗi thì cả transaction bị đánh dấu rollback-only. REQUIRES_NEW tạm treo transaction ngoài và mở một transaction độc lập với connection riêng, commit hay rollback riêng, hợp cho audit log hoặc ghi nhận lỗi phải giữ lại dù nghiệp vụ chính rollback; cái giá là cần hai connection cùng lúc, dễ cạn pool nếu dùng trong vòng lặp hay khi nhiều thread. NESTED dùng savepoint trong cùng transaction và connection, cho phép rollback một phần, cần driver và transaction manager hỗ trợ như JDBC, không hỗ trợ với JPA thông thường. SUPPORTS, NOT_SUPPORTED, MANDATORY, NEVER ít dùng hơn. Tôi dùng REQUIRED cho hầu hết, REQUIRES_NEW thật tiết kiệm, và thường thay bằng sự kiện sau commit."
 
 > Senior tip: trước khi thêm {{REQUIRES_NEW}}, hãy hỏi "transaction con có thật sự cần sống sót khi transaction cha rollback không?". Nếu câu trả lời là không, dùng {{REQUIRED}}. Khi đã dùng {{REQUIRES_NEW}}, luôn kiểm tra kích thước connection pool và đặt timeout cho phần chờ connection.`,
   follow: [
@@ -304,6 +334,17 @@ public class LoggingAspect {
 
 ### Khi nào không dùng AOP
 Khi logic cần chạy ở nhiều nơi mà không phải "cross-cutting" (ví dụ nghiệp vụ cụ thể), hãy dùng composition – một service gọi service khác – rõ ràng và test được hơn.
+
+### Bên trong: hai loại proxy được tạo thế nào
+- **JDK dynamic proxy**: tạo lúc chạy một lớp mới **implements các interface** của bean, mọi lời gọi đi vào {{InvocationHandler}}. Chỉ proxy được method có trong interface; inject theo **lớp cụ thể** sẽ lỗi vì proxy không phải lớp đó.
+- **CGLIB**: tạo **lớp con** của bean (sinh bytecode), override các method để chèn advice. Không override được method {{final}}, {{private}}, {{static}}; class {{final}} không proxy được. Spring Boot mặc định dùng CGLIB ({{spring.aop.proxy-target-class=true}}) để tránh lỗi inject theo lớp cụ thể.
+Advice chỉ chạy khi lời gọi **đi qua proxy** — gọi nội bộ qua {{this}} thì không.
+
+### Ví dụ đời thực
+Team viết aspect {{@Timed}} tự chế để đo thời gian các method repository custom. Dashboard cho thấy một nửa method "không bao giờ được gọi". Nguyên nhân: các method đó là {{final}} (do một quy ước code cũ "method không override thì để final") và một số được gọi nội bộ trong cùng class — CGLIB không chặn được. Ngoài ra một aspect logging dùng pointcut {{execution(* com.shop..*(..))}} quá rộng, bọc cả các bean nhỏ gọi hàng triệu lần mỗi phút → CPU tăng 9%. Sửa: dùng Micrometer {{@Observed}}/{{@Timed}} có sẵn, bỏ final ở method cần đo, thu hẹp pointcut theo annotation. CPU trở về mức cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring AOP dùng proxy. JDK dynamic proxy tạo lớp mới implements các interface của bean nên chỉ chặn được method trong interface, và inject theo lớp cụ thể sẽ lỗi. CGLIB tạo lớp con của bean nên chặn được cả method không thuộc interface, nhưng không override được method final, private, static, và không proxy được class final; Spring Boot mặc định dùng CGLIB. Hạn chế hay gặp nhất trên production là self-invocation: gọi method qua this không đi qua proxy nên transaction, cache, async hay aspect của bạn đều không chạy. Ngoài ra là pointcut quá rộng làm tốn CPU, và thứ tự giữa nhiều aspect như transaction với retry cần đặt Order rõ ràng. Với những gì cần chặn cả lời gọi nội bộ hoặc hiệu năng cao, tôi viết code tường minh thay vì AOP."
 
 > Senior tip: AOP rất dễ tạo cảm giác "ma thuật". Quy tắc an toàn trong team: dùng AOP cho **cross-cutting concern rõ ràng** (log, metrics, retry, security, audit), luôn khai báo {{@Order}} để tránh mơ hồ thứ tự, và viết test chứng minh advice thực sự chạy (nhiều bug AOP lọt qua review chỉ vì không có test nào chạm vào nó).`,
   follow: [
@@ -568,6 +609,16 @@ Với task lặp lại ({{fixedRate}}/{{fixedDelay}}/{{cron}}), Spring bọc tas
 - Với job dài: tách phần "lấy dữ liệu" và "ghi kết quả", ghi theo lô (batch) để không giữ transaction mở quá lâu.
 - Job ghi file/xuất báo cáo: ghi ra file tạm rồi rename để không ai đọc được file dở dang.
 
+### Ví dụ đời thực
+Service chạy 3 pod có {{@Scheduled(cron = "0 0 2 * * *")}} gửi email nhắc nợ. Sau khi scale lên 3 pod, khách nhận **3 email giống nhau** mỗi sáng — 18.000 email trùng, nhà cung cấp email cảnh báo spam. Cùng lúc, job chạy lúc 9 giờ sáng giờ Việt Nam thay vì 2 giờ vì container dùng UTC. Một job khác ({{fixedRate}} 1 phút) có lần chạy lâu 7 phút do DB chậm; vì scheduler mặc định chỉ có **một thread**, mọi job khác trong service bị trễ 7 phút. Sửa:
+- {{@Scheduled(cron = "0 0 2 * * *", zone = "Asia/Ho_Chi_Minh")}};
+- ShedLock ({{@SchedulerLock(name = "debtReminder", lockAtMostFor = "30m", lockAtLeastFor = "5m")}}) với bảng khoá trong DB để chỉ một pod chạy;
+- {{spring.task.scheduling.pool.size=4}};
+- job tự bắt và log exception, kèm metric số lần thành công/thất bại để cảnh báo khi job không chạy.
+
+### Trả lời mẫu khi phỏng vấn
+"Với @Scheduled tôi kiểm tra bốn điều. Timezone: cron chạy theo múi giờ của JVM, container thường là UTC, nên tôi khai báo zone tường minh. Nhiều instance: mỗi pod đều chạy job, nên với job chỉ được chạy một lần tôi dùng ShedLock với khoá trong DB, hoặc chuyển sang scheduler riêng như Kubernetes CronJob hay Quartz cluster, và vẫn thiết kế job idempotent. Task chạy lâu: scheduler mặc định chỉ có một thread nên một job chậm làm trễ mọi job khác; tôi tăng pool size hoặc đẩy việc nặng sang executor riêng, và phân biệt fixedRate với fixedDelay. Exception: lỗi trong job chỉ được log và job chạy lại lần sau, nên tôi tự bắt, log có ngữ cảnh, và đặt metric cùng cảnh báo khi job không chạy thành công trong khoảng thời gian dự kiến."
+
 > Senior tip: hãy coi mọi scheduled job là **distributed system** thu nhỏ: nó có thể chạy song song (nhiều instance), chạy lại (retry), và chạy trễ (deploy, GC pause). Thiết kế theo hướng "at-least-once + idempotent" sẽ khiến hệ thống chịu được cả ba. Nếu job quan trọng, hãy dùng batch framework (Quartz, Spring Batch) thay vì {{@Scheduled}}.`,
   follow: [
     'Tại sao {{fixedRate}} có thể khiến các lần chạy bị dồn lại (fixed rate so với fixed delay)?',
@@ -613,6 +664,12 @@ Khi đó Tomcat xử lý mỗi request bằng một virtual thread: **code block
 
 ### Câu hỏi phỏng vấn đáng nhớ
 "Khi nào bạn **không** dùng WebFlux?" – Câu trả lời tốt: khi toàn bộ I/O là blocking (JPA/JDBC), khi hệ thống cần độ trễ thấp cho request đơn giản, hoặc khi đội ngũ không đủ kinh nghiệm reactive – lúc đó MVC + virtual thread cho hiệu năng tốt hơn với chi phí phát triển thấp hơn nhiều.
+
+### Ví dụ đời thực
+Một team chuyển API gateway nội bộ sang WebFlux vì "nhanh hơn", nhưng các service phía sau vẫn gọi JPA. Họ bọc repository bằng {{Mono.fromCallable(...)}} mà quên {{subscribeOn(Schedulers.boundedElastic())}} → các lời gọi JDBC chặn chạy ngay trên **event loop** (chỉ vài thread bằng số core) → dưới tải vừa phải, p99 tăng lên 4 giây, mọi request khác cũng đứng. BlockHound (công cụ phát hiện lời gọi chặn trong reactive thread) bắt được 23 chỗ. Cuối cùng team quay lại Spring MVC + virtual thread ({{spring.threads.virtual.enabled=true}}, Java 21): code đơn giản lại, throughput tương đương bản WebFlux đã sửa, p99 ổn định 180ms. WebFlux được giữ cho một service streaming SSE với hàng chục nghìn kết nối mở lâu — nơi nó thật sự phát huy.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring MVC chạy mỗi request trên một thread và code blocking quen thuộc; WebFlux dùng mô hình non-blocking trên số ít thread event loop, mạnh khi phần lớn thời gian là chờ I/O và toàn bộ đường đi đều non-blocking. WebFlux không làm từng request nhanh hơn; nó giúp phục vụ nhiều kết nối đồng thời với ít thread. Nếu phía sau vẫn là JDBC hay JPA blocking thì lợi ích gần như mất, và lỡ chạy lời gọi chặn trên event loop thì còn tệ hơn MVC. Virtual thread của Java 21 thay đổi bức tranh: Spring MVC bật virtual thread phục vụ được rất nhiều request đồng thời mà giữ code blocking dễ đọc và debug. Nên giờ tôi mặc định chọn MVC kèm virtual thread, và chỉ chọn WebFlux cho streaming, rất nhiều kết nối mở lâu, hoặc khi cần backpressure end to end với driver reactive như R2DBC."
 
 > Senior tip: đừng chọn WebFlux chỉ vì nghe "reactive là xu hướng". Hãy đo: nếu hệ thống bị nghẽn vì thread bị chặn I/O (DB, HTTP client), chuyển sang virtual thread là thay đổi nhỏ, hiệu quả cao. Chuyển sang WebFlux là viết lại toàn bộ tầng I/O – chi phí lớn, chỉ đáng làm khi thực sự cần backpressure và streaming.`,
   follow: [
@@ -915,6 +972,12 @@ Các flush mode:
 - {{equals}}/{{hashCode}} dựa trên {{getId()}}: trước khi persist, {{getId()}} là {{null}} → entity có thể bị "mất" trong {{HashSet}}.
 - Đừng dùng entity làm DTO trả về API: kích hoạt lazy loading ngầm, rò rỉ field nhạy cảm và dễ sinh N+1 khi serialize.
 
+### Ví dụ đời thực
+Một job cập nhật giá cho 300.000 sản phẩm trong **một** transaction: {{findAll()}} rồi sửa từng entity. Persistence context giữ cả 300.000 entity **cùng bản sao snapshot** để dirty checking → heap tăng 3,5GB, và lúc flush Hibernate phải so sánh từng entity với snapshot → mất 11 phút, GC full liên tục. Sửa: xử lý theo lô 1.000 entity, sau mỗi lô {{flush()}} rồi {{clear()}} để giải phóng persistence context, bật JDBC batch ({{hibernate.jdbc.batch_size=50}}, {{order_updates=true}}); với cập nhật hàng loạt cùng một công thức thì dùng câu {{UPDATE}} bulk (lưu ý bulk update bỏ qua persistence context, phải clear). Thời gian còn 40 giây, heap tối đa khoảng 300MB. Một lỗi khác cùng job: đọc entity với {{@Transactional(readOnly = true)}} rồi gọi setter để "chuẩn hoá hiển thị" — với readOnly, Hibernate (Spring 5.1+) đặt flush mode MANUAL nên không ghi; nhưng trước đó, ở method không readOnly, cùng thao tác đã vô tình ghi xuống DB.
+
+### Trả lời mẫu khi phỏng vấn
+"Persistence context là bộ nhớ đệm cấp một gắn với EntityManager, thường là một transaction. Entity có bốn trạng thái: transient là object mới chưa liên quan; managed là đang được context theo dõi; detached là đã rời context, ví dụ sau khi transaction kết thúc; removed là đã đánh dấu xoá. Với entity managed, Hibernate giữ một snapshot lúc nạp, và khi flush thì so sánh để tự sinh UPDATE, đó là dirty checking, nên gọi setter là đủ, không cần save. Flush mặc định là AUTO, xảy ra trước commit và trước query có thể bị ảnh hưởng. Hệ quả thực tế: xử lý hàng trăm nghìn entity trong một transaction làm phình bộ nhớ và chậm flush, nên tôi chia lô, flush và clear sau mỗi lô, bật JDBC batch; và cẩn thận với setter trên entity managed vì nó sẽ được ghi xuống DB."
+
 > Senior tip: hãy nhớ quy tắc "**managed = thay đổi được tự động lưu**". Khi debug, nếu sửa field mà DB không đổi, hãy kiểm tra ngay: object có còn managed không (session còn mở không, có bị {{detach}} không), field có {{final}} không, và transaction có commit thật không.`,
   follow: [
     'Vì sao {{merge}} trên entity detached có thể tạo ra bản sao và gây hiểu lầm?',
@@ -967,6 +1030,12 @@ Sau đó phải sửa code cho đúng:
 - Tắt OSIV là thay đổi **hành vi**, không chỉ là config: nhiều chỗ truy cập lazy ngoài transaction sẽ nổ lên lúc chạy. Hãy bật cờ này ở môi trường test trước khi lên production.
 - Nếu dùng view template (JPA + Thymeleaf), cách sạch là: fetch dữ liệu đủ trong query, rồi render – đừng để template tự kích hoạt lazy.
 - Với entity có lazy {{@ManyToMany}}, {{toString}}/{{equals}} mặc định cũng có thể chạm proxy và gây lỗi hoặc query lạ.
+
+### Ví dụ đời thực
+Một API trả danh sách đơn hàng chạy tốt khi Open Session In View đang bật (mặc định của Spring Boot, kèm cảnh báo lúc khởi động). Nhưng mỗi request mở session suốt từ đầu tới khi serialize JSON xong: Jackson duyệt {{order.items}}, {{order.customer}} → **lazy load** hàng trăm query trong lúc render, connection bị giữ suốt cả request kể cả khi gọi API ngoài 2 giây. Dưới tải, pool 30 connection cạn. Tắt OSIV ({{spring.jpa.open-in-view=false}}) → hàng loạt {{LazyInitializationException}} lộ ra ở 17 endpoint — chính là 17 chỗ đang ngầm chạy N+1. Sửa từng endpoint bằng DTO projection hoặc {{@EntityGraph}} trong service; số query của API danh sách từ khoảng 210 xuống 3, thời gian giữ connection trung bình mỗi request từ 1,4 giây xuống 35ms.
+
+### Trả lời mẫu khi phỏng vấn
+"LazyInitializationException xảy ra khi truy cập một quan hệ lazy chưa được nạp sau khi persistence context đã đóng, thường là khi entity được trả ra khỏi service rồi controller hay Jackson chạm vào quan hệ đó. Open Session In View giữ session mở tới hết request nên exception biến mất, Spring Boot bật mặc định. Tôi tắt nó, vì nó che giấu vấn đề: lazy loading xảy ra rải rác trong lúc render JSON gây N+1 khó thấy, và connection bị giữ suốt cả request, kể cả lúc gọi API ngoài, nên pool dễ cạn dưới tải. Cách làm đúng là service quyết định rõ dữ liệu cần lấy: trả DTO hoặc projection, dùng JOIN FETCH hay EntityGraph cho các quan hệ cần, và không trả entity thẳng ra controller. Khi tắt OSIV trên hệ thống có sẵn, mỗi exception lộ ra chính là một chỗ N+1 cần sửa."
 
 > Senior tip: bật {{spring.jpa.open-in-view=false}} ngay từ đầu project, rồi thêm test tích hợp cho các API chính. Nếu team chưa sẵn sàng, hãy bật cờ này ở profile {{test}} để lộ lỗi sớm. Đây là một trong những thay đổi cấu hình có ROI cao nhất trong dự án Spring Boot: ít giữ connection hơn, lỗi rõ ràng hơn, hiệu năng ổn định hơn.`,
   follow: [
@@ -1030,6 +1099,12 @@ Optional<Account> findForUpdate(@Param("id") Long id);
 - Pessimistic lock giữ khoá cả khi bạn gọi HTTP service khác trong transaction → giữ lock lâu, tăng deadlock. Nên giữ transaction ngắn và không gọi I/O ngoài.
 - Với nhiều bảng, thống nhất thứ tự khoá để tránh deadlock.
 - Không dùng pessimistic lock cho truy vấn chỉ đọc – hãy dùng {{LockModeType.PESSIMISTIC_READ}} hoặc snapshot.
+
+### Ví dụ đời thực
+Màn hình quản lý tồn kho cho phép nhiều nhân viên sửa cùng một sản phẩm. Không có khoá: nhân viên A sửa giá, nhân viên B (mở form từ trước) sửa mô tả rồi lưu → **ghi đè giá cũ** lên giá A vừa sửa; 46 sản phẩm bán sai giá trong đợt khuyến mãi. Thêm {{@Version}}: lần lưu thứ hai nhận {{ObjectOptimisticLockingFailureException}} → API trả 409, giao diện báo "Sản phẩm đã được người khác cập nhật, tải lại?". Với API trừ tồn kho từ đơn hàng (hàng trăm request/giây vào cùng mã hot) thì optimistic gây retry liên tục, nên team dùng UPDATE có điều kiện ({{qty = qty - :n WHERE qty >= :n}}) cho phần đó. Quy tắc chốt: form người dùng → optimistic + 409; đếm/trừ số lượng nóng → câu lệnh nguyên tử; luồng ngắn cần chắc chắn thứ tự → {{PESSIMISTIC_WRITE}} có timeout.
+
+### Trả lời mẫu khi phỏng vấn
+"Optimistic locking giả định xung đột hiếm: entity có cột version, UPDATE kèm điều kiện version bằng giá trị đã đọc và tăng version; nếu không có dòng nào được cập nhật nghĩa là người khác đã sửa, Hibernate ném OptimisticLockException, Spring dịch thành ObjectOptimisticLockingFailureException. Không khoá gì trong DB nên đọc không bị chặn. Pessimistic locking thì khoá dòng ngay khi đọc bằng SELECT FOR UPDATE, người khác phải chờ, hợp khi xung đột thường xuyên và thao tác ngắn, cần lock timeout và thứ tự khoá để tránh deadlock. Xử lý OptimisticLockException tuỳ ngữ cảnh: với form người dùng, trả 409 và yêu cầu tải lại, kèm version gửi xuống client; với xử lý tự động, đọc lại và thử lại vài lần có backoff. Với tăng giảm số lượng trên dữ liệu rất nóng, tôi dùng UPDATE nguyên tử thay vì cả hai."
 
 > Senior tip: chọn optimistic trước, vì nó rẻ hơn và không gây bottleneck. Chỉ chuyển sang pessimistic khi nghiệp vụ **bắt buộc** phải tuần tự hoá (ví dụ trừ tiền trong hệ thống thanh toán cũ, nơi business key là số tiền theo số dư chứ không phải version). Với ngân hàng, nguyên tắc là: đọc cân nhắc optimistic, ghi tranh chấp trên số dư thì cân nhắc pessimistic hoặc hàng đợi theo khóa tài khoản.`,
   follow: [
