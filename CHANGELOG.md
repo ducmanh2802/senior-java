@@ -3,6 +3,15 @@
 ## 2026-11-07
 
 ### Nội dung
+
+
+### Ứng dụng
+- Backdrops: real photos in the side gutters, no text
+
+
+## 2026-11-07
+
+### Nội dung
 - T127 (auto-committed after kilo review + verify)
 - T110 (auto-committed after kilo review + verify)
 - T854 (auto-committed after kilo review + verify)
