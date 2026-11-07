@@ -29,3 +29,4 @@ Thêm 2 bài (track core):
 - Gate đã chạy: `node scripts/test-lessons.js lesson-core-006` (9/9), `node scripts/test-lessons.js lesson-core-007` (7/7), `node scripts/test-lessons.js` → `108/108`, `node scripts/build-light-index.js`, `node scripts/validate.js` → `OK — không có lỗi.`
 - **Đề xuất cho integrator**: thêm `lesson-core-006` và `lesson-core-007` vào `js/data/path.js` (validate đang cảnh báo "có 2 bài học không nằm trong PATH" vì `path.js` không thuộc quyền sửa của task này). Gợi ý đặt cạnh các bài core hiện có, 006 sau nhóm collections/value type, 007 cạnh `lesson-core-001`.
 - File bị thay đổi: `js/data/lessons-core.js`, `js/data/index-light.js` (sinh lại theo luật 6), `tasks/T595-lessons-core-2.md`. Không commit.Reviewed-by: kilo (T595R)
+Reviewed-by: kilo (T595R)

@@ -2537,5 +2537,372 @@ major  ngừng trả field cũ (đây là lúc cần version mới, xem chính s
       'Khi nào thì nên tạo major version mới thay vì vẫn cố cộng thêm?'
     ],
     tags: ['Backward Compatibility', 'Tolerant Reader', 'API Evolution', 'Jackson', 'Contract Test']
+    },
+  {
+    id: 'api-031',
+    topic: 'api',
+    level: 'senior',
+    q: 'HTTP/1.1, HTTP/2, HTTP/3 khác nhau ở multiplexing, head-of-line blocking và HPACK thế nào? Ảnh hưởng tới connection pool của client Java (HttpClient, RestClient) ra sao?',
+    a: `**Tóm tắt:** HTTP/1.1 tuần tự trên mỗi connection nên phải mở nhiều connection; HTTP/2 multiplex nhiều stream trên một TCP connection với HPACK nén header; HTTP/3 đưa multiplex xuống QUIC/UDP để tránh head-of-line blocking ở TCP. Với Java HttpClient, khi server hỗ trợ HTTP/2 thì pool co về 1 connection/host.
+
+### Hiểu nhanh
+HTTP/1.1 như một quầy phục vụ: mỗi khách đợi người trước xong. HTTP/2 như nhiều đầu bếp cùng làm nhiều món trên cùng một quầy. HTTP/3 như giao hàng trực tiếp để một gói tắc không làm tắc toàn bộ.
+
+### HTTP/1.1
+- Một TCP connection = một request/response tại một thời điểm.
+- Trình duyệt mở 6 connection song song cho mỗi host; Java HttpClient pool nhỏ.
+- Keep-alive tái dùng nhưng vẫn tuần tự → head-of-line blocking.
+- Header gửi đầy đủ mỗi lần.
+
+### HTTP/2
+- Một TCP connection chứa nhiều stream đánh số; request/response chia thành frame và xen kẽ → multiplexing.
+- HPACK nén header bằng bảng tĩnh + động.
+- Vẫn một TCP connection → mất packet làm toàn bộ stream chờ retransmit (HoL ở TCP).
+
+### HTTP/3
+- Chạy trên QUIC (UDP) với TLS 1.3 tích hợp, mỗi stream độc lập.
+- Kết nối nhanh (0-RTT), di động tốt (connection migration).
+- Cần firewall/proxy hỗ trợ QUIC.
+
+### Ảnh hưởng Java client
+- HttpClient tự negotiate HTTP/2 qua ALPN; pool co về 1 connection/host.
+- RestClient/WebClient dùng Reactor Netty → HTTP/2 multiplex tự động.
+- Cần fallback cho server cũ; timeout stream riêng khác connection timeout.
+
+### Trên production
+- Triệu chứng: latency p99 cao dù throughput thấp → HoL blocking HTTP/1.1.
+- Đo: connection count per host, ALPN negotiation.
+- Tuning: bật HTTP/2 ở reverse proxy, ALPN ở TLS terminator.
+
+### Trả lời miệng 1 phút
+"HTTP/1.1 tuần tự nên mở nhiều connection; HTTP/2 multiplex stream với HPACK; HTTP/3 đưa multiplex xuống QUIC/UDP. Với Java HttpClient, pool co về 1 connection/host khi hỗ trợ HTTP/2."
+
+> Senior tip: đo số connection thực tế trước khi tuning pool; chuyển HTTP/2 giải quyết tận gốc và giảm memory.`,
+    follow: [
+      'ALPN negotiation diễn ra như thế nào và khi nào HttpClient fallback về HTTP/1.1?',
+      'HPACK dynamic table có thể bị poisoning không và mitigation là gì?',
+      'Khi nào nên tắt HTTP/2 (load balancer không hỗ trợ, packet loss lớn)?'
+    ],
+    tags: ['HTTP/2', 'HTTP/3', 'QUIC', 'HPACK', 'HttpClient', 'Connection Pool']
+  },
+  {
+    id: 'api-032',
+    topic: 'api',
+    level: 'senior',
+    q: 'gRPC bên trong: stream HTTP/2, protobuf encoding (varint, field number), deadline propagation. Khi nào không nên dùng gRPC?',
+    a: `**Tóm tắt:** gRPC là RPC trên HTTP/2: mỗi call là một stream, message serialize bằng Protocol Buffers (binary, field number + varint). Deadline lan truyền từ client xuống server và downstream. Không dùng khi client là browser trực tiếp, payload rất lớn/media, hoặc cần debug dễ bằng curl.
+
+### Hiểu nhanh
+gRPC như gọi hàm từ xa qua mạng: định nghĩa hàm trong proto, sinh code, gọi như method local. Protobuf đóng hàng vào thùng nhỏ có nhãn số → nhỏ và nhanh. Deadline như hẹn giờ: quá giờ tự hủy toàn bộ chuỗi gọi.
+
+### Protobuf encoding
+- Message = sequence các field, mỗi field = (field_number << 3) | wire_type.
+- Varint: số nguyên mã hóa base-128, byte cao nhất bit continuation → số nhỏ tốn 1 byte.
+- Field number là danh tính field; thêm field mới không phá client cũ.
+- So với JSON: nhỏ hơn 3–10 lần, parse nhanh hơn, nhưng không đọc được bằng mắt.
+
+### Stream HTTP/2
+- Unary, server streaming, client streaming, bidirectional.
+- Metadata qua header; trailer mang status code + message.
+
+### Deadline propagation
+- Client đặt deadline (Context.withDeadlineAfter).
+- Server nhận qua header grpc-timeout; khi gọi downstream phải propagate deadline còn lại.
+- Downstream hết thời gian → CANCELLED, tránh work vô ích.
+- Cần propagate cả cancellation.
+
+### Khi không nên dùng gRPC
+- Browser trực tiếp (cần gRPC-Web + proxy).
+- Payload rất lớn / media streaming.
+- Team cần debug bằng curl/Postman dễ dàng.
+- Public API cho third-party.
+- Load balancer/proxy không hỗ trợ HTTP/2 hoặc trailer.
+
+### Trên production
+- Triệu chứng: deadline exceeded cascade → kiểm tra propagation và timeout từng hop.
+- Đo: latency per hop, cancellation rate, message size.
+- Tuning: deadline hợp lý, keepalive, max message size, retry chỉ idempotent.
+
+### Trả lời miệng 1 phút
+"gRPC là RPC trên HTTP/2 với protobuf binary: field number + varint; mỗi call là stream HTTP/2; deadline lan truyền. Tôi không dùng khi client là browser trực tiếp, payload lớn/media, hoặc cần debug dễ và public API."
+
+> Senior tip: deadline propagation là lợi thế lớn nhất — đặt deadline ở edge và propagate xuống; đừng set timeout từng service độc lập vì tổng vượt deadline edge.`,
+    follow: [
+      'gRPC load balancing hoạt động thế nào khi client giữ một connection dài?',
+      'Proto field evolution: reserved field number và reserved name dùng để làm gì?',
+      'So sánh gRPC với REST cho internal microservice: latency, throughput, debugging.'
+    ],
+    tags: ['gRPC', 'Protobuf', 'HTTP/2', 'Deadline', 'RPC']
+  },
+  {
+    id: 'api-033',
+    topic: 'api',
+    level: 'lead',
+    q: 'Idempotency key phía server: lưu ở đâu, race khi 2 request cùng key đến song song, trả lại response cũ thế nào?',
+    a: `**Tóm tắt:** Server nhận header Idempotency-Key, lưu key + hash(request) + response vào store (Redis/DB) với TTL. Request trùng key trả response cũ; cùng key nhưng body khác trả 422. Race xử lý bằng atomic insert (unique constraint / SETNX) và lock ngắn.
+
+### Hiểu nhanh
+Idempotency key như số biên lai: cùng biên lai trả kết quả cũ, không làm lại. Hai người cùng đưa biên lai cùng lúc → chỉ một xử lý, người kia chờ kết quả.
+
+### Thiết kế
+- Client sinh UUID v4 per operation, gửi header Idempotency-Key.
+- Server hash body (SHA-256) để phát hiện misuse.
+- Store record: {key, request_hash, status, response_status, response_body, created_at, expires_at}.
+- TTL thường 24h.
+
+### Flow
+1. Nhận request → lookup key.
+2. Nếu không có: atomic insert (INSERT ... ON CONFLICT DO NOTHING hoặc Redis SETNX).
+3. Nếu insert thành công: xử lý business, lưu response, trả.
+4. Nếu insert thất bại:
+   - request_hash khác → 422 Unprocessable Entity.
+   - status processing → chờ (poll) hoặc 409 Conflict.
+   - completed → trả response cũ nguyên vẹn.
+
+### Race handling
+- Unique constraint trên (key, scope) ở DB → atomic.
+- Redis: SETNX với TTL.
+- Lock ngắn cho processing state.
+- Chỉ cho mutating methods (POST/PATCH), không cho GET.
+
+### Trên production
+- Triệu chứng: duplicate charge → kiểm tra key scope (per user/endpoint, không global).
+- Đo: hit rate, conflict rate, latency thêm.
+- Tuning: TTL theo business, partial failure retry.
+
+### Trả lời miệng 1 phút
+"Idempotency key lưu ở Redis/DB với unique constraint; race xử lý bằng atomic insert; request trùng trả response cũ nguyên vẹn, khác body trả 422. Cần scope key theo user/endpoint và TTL hợp lý."
+
+> Senior tip: luôn hash body và so sánh; client retry với cùng body nhưng key khác sẽ tạo duplicate — document rõ key phải stable per operation, không per request attempt.`,
+    follow: [
+      'Làm sao xử lý partial failure: request xử lý xong nhưng response mất?',
+      'Idempotency key scope nên global hay per (user, endpoint)?',
+      'So sánh idempotency key với natural idempotency qua PUT với resource id.'
+    ],
+    tags: ['Idempotency', 'Redis', 'Concurrency', 'API Design']
+  },
+  {
+    id: 'api-034',
+    topic: 'api',
+    level: 'senior',
+    q: 'ETag và If-Match: optimistic concurrency qua HTTP, khác nhau giữa 412 Precondition Failed và 409 Conflict thế nào?',
+    a: `**Tóm tắt:** Server trả ETag (phiên bản tài nguyên). Client gửi If-Match với ETag khi update; server so sánh, nếu khác → 412 Precondition Failed (optimistic lock fail). 409 Conflict dùng khi xung đột nghiệp vụ (state không cho phép), không phải version mismatch.
+
+### Hiểu nhanh
+ETag như số phiên bản tài liệu: bạn download version 5, sửa, gửi lại kèm "tôi đang sửa version 5"; nếu ai đó đã sửa thành version 6 thì server từ chối (412) để bạn merge. 409 là xung đột nghiệp vụ (ví dụ hủy đơn đã giao), không phải version.
+
+### ETag
+- Strong ETag: byte-identical.
+- Weak ETag: semantic equivalent (W/).
+- Server tính từ content hash hoặc version number.
+
+### Flow optimistic concurrency
+1. GET /resource → 200 + ETag: "v5".
+2. Client PUT với If-Match: "v5".
+3. Server load current version; nếu == v5 → update, trả 200 + ETag "v6"; nếu != → 412.
+
+### 412 vs 409
+- 412 Precondition Failed: điều kiện If-Match/If-None-Match/If-Unmodified-Since không thỏa → version mismatch, client phải GET lại và retry.
+- 409 Conflict: request xung đột với trạng thái hiện tại (resource locked, state transition invalid) → client không retry máy móc được.
+
+### Trên production
+- Triệu chứng: 412 storm khi nhiều client cùng edit → giảm granularity hoặc dùng PATCH.
+- Đo: 412 rate, retry success.
+- Tuning: weak ETag cho partial update, strong cho full replace.
+
+### Trả lời miệng 1 phút
+"ETag là version; If-Match kiểm tra version trước update, khác thì 412 để client GET lại và retry. 409 dành cho xung đột nghiệp vụ/state, không phải version mismatch."
+
+> Senior tip: phân biệt rõ 412 (retry được) và 409 (cần xử lý nghiệp vụ); client retry 409 máy móc sẽ gây loop vô ích.`,
+    follow: [
+      'Khi nào dùng If-None-Match (GET có điều kiện) thay vì If-Match?',
+      'ETag với distributed cache và load balancer: consistency thế nào?',
+      'Conditional request trong HTTP caching (304 Not Modified) khác gì với concurrency control?'
+    ],
+    tags: ['ETag', 'If-Match', 'Optimistic Concurrency', 'HTTP']
+  },
+  {
+    id: 'api-035',
+    topic: 'api',
+    level: 'lead',
+    q: 'Webhook: giao ít nhất một lần, chữ ký HMAC + timestamp chống replay, retry và thứ tự thế nào?',
+    a: `**Tóm tắt:** Webhook là HTTP callback: provider POST event tới URL của bạn. Đảm bảo at-least-once bằng retry với exponential backoff; chống giả mạo bằng HMAC-SHA256 trên body + timestamp; client phải idempotent và xử lý out-of-order.
+
+### Hiểu nhanh
+Webhook như nhân viên giao hàng mang thư: có thể giao lại nếu không có người nhận (retry), có thể bị giả mạo → phải kiểm tra chữ ký và thời gian. Thứ tự giao có thể bị xáo → người nhận phải tự sắp xếp.
+
+### Chữ ký HMAC + timestamp
+- Provider gửi header X-Signature = HMAC-SHA256(secret, timestamp + "." + body).
+- Header X-Timestamp (Unix seconds).
+- Receiver verify: recompute HMAC, compare constant-time; reject nếu |now - timestamp| > 5 phút (chống replay).
+- Secret rotate định kỳ; hỗ trợ multiple secrets trong transition.
+
+### At-least-once và retry
+- Provider retry khi response không 2xx.
+- Exponential backoff + jitter, tối đa N lần.
+- Receiver trả 2xx càng sớm càng tốt; xử lý async (queue) để tránh timeout.
+- Idempotency: dedup theo event id.
+
+### Thứ tự
+- Không đảm bảo thứ tự across retries → receiver sort theo event timestamp/sequence.
+- Out-of-order handling: buffer hoặc re-fetch state từ provider.
+
+### Trên production
+- Triệu chứng: duplicate processing → kiểm tra dedup store.
+- Đo: delivery success rate, retry rate, lag.
+- Tuning: timeout receiver < provider timeout, queue depth.
+
+### Trả lời miệng 1 phút
+"Webhook at-least-once với retry exponential backoff; bảo mật bằng HMAC-SHA256 trên body+timestamp và reject timestamp cũ; receiver phải idempotent (dedup event id) và xử lý out-of-order."
+
+> Senior tip: trả 2xx ngay sau khi persist event vào queue; xử lý business async; đừng làm business trong request handler vì provider timeout gây retry storm.`,
+    follow: [
+      'Làm sao verify HMAC constant-time để tránh timing attack?',
+      'Webhook ordering guarantees: có provider nào đảm bảo in-order không?',
+      'So sánh webhook với polling và SSE cho event delivery.'
+    ],
+    tags: ['Webhook', 'HMAC', 'At-least-once', 'Retry', 'Security']
+  },
+  {
+    id: 'api-036',
+    topic: 'api',
+    level: 'senior',
+    q: 'Rate limiting phân tán: fixed window vs sliding window log/counter vs token bucket trên Redis (Lua script atomic) — chọn thế nào?',
+    a: `**Tóm tắt:** Fixed window đơn giản nhưng spike ở boundary; sliding window log chính xác nhưng tốn memory; sliding window counter cân bằng; token bucket cho phép burst và refill liên tục. Trên Redis, dùng Lua script để atomic check-and-increment, tránh race giữa nhiều instance.
+
+### Hiểu nhanh
+Rate limit như quota nước: fixed window là "mỗi giờ 100 lít" — phút 59 và phút 0 có thể rút 200 lít trong 2 phút (boundary spike). Sliding window là "100 lít trong bất kỳ 60 phút liên tiếp". Token bucket là "thùng 100 token, mỗi giây thêm 1 token, rút tối đa 100 cùng lúc".
+
+### Các thuật toán
+- Fixed window: counter per (key, window); reset mỗi window. Đơn giản, O(1) memory. Boundary spike.
+- Sliding window log: lưu timestamp mỗi request; đếm trong [now-W, now]. Chính xác, O(N) memory.
+- Sliding window counter: weighted average của window hiện tại và trước. Cân bằng.
+- Token bucket: bucket capacity + refill rate; consume token per request; cho burst up to capacity.
+- Leaky bucket: queue FIFO với rate cố định; smoothing, không burst.
+
+### Redis Lua atomic
+- INCR + EXPIRE không atomic qua nhiều instance → race.
+- Lua script chạy atomic trên Redis single-threaded.
+- Sliding window counter: cần 2 key (prev, curr) + Lua compute weighted.
+- Token bucket: lưu {tokens, last_refill} hash; Lua compute refill và consume.
+
+### Chọn thế nào
+- Public API: token bucket (burst friendly).
+- Login/password reset: fixed window nhỏ (chống brute force).
+- Billing/quota: sliding window counter.
+- Strict fairness: leaky bucket.
+
+### Trên production
+- Triệu chứng: 429 storm khi traffic burst → token bucket capacity tuning.
+- Đo: 429 rate, latency Redis, key cardinality.
+- Tuning: per-user/per-IP/per-endpoint keys; Redis Cluster hash tag để cùng slot.
+
+### Trả lời miệng 1 phút
+"Fixed window đơn giản nhưng boundary spike; sliding window counter cân bằng chính xác và memory; token bucket cho burst + refill. Trên Redis dùng Lua script atomic để tránh race giữa instance."
+
+> Senior tip: key design quyết định hơn thuật toán — per-user cho authenticated, per-IP cho anonymous, per-endpoint cho expensive ops; dùng Redis Cluster hash tag để atomic Lua chạy đúng slot.`,
+    follow: [
+      'Fixed window boundary spike cụ thể là bao nhiêu request trong 2 phút?',
+      'Token bucket vs leaky bucket: khi nào burst là mong muốn vs nguy hiểm?',
+      'Rate limit response header (X-RateLimit-*) nên trả gì và client retry thế nào?'
+    ],
+    tags: ['Rate Limiting', 'Redis', 'Token Bucket', 'Sliding Window', 'Lua']
+  },
+  {
+    id: 'api-037',
+    topic: 'api',
+    level: 'senior',
+    q: 'HTTP caching: Cache-Control, ETag, Vary, stale-while-revalidate hoạt động thế nào và khi nào dùng CDN vs browser cache?',
+    a: `**Tóm tắt:** Cache-Control điều khiển ai được cache và bao lâu (max-age, s-maxage, no-store). ETag/Last-Modified cho conditional request → 304. Vary phân biệt response theo header (Accept, Accept-Encoding). stale-while-revalidate cho phép trả stale trong khi revalidate nền. CDN cache ở edge (s-maxage), browser cache ở client (max-age).
+
+### Hiểu nhanh
+Cache như tủ lạnh: max-age là hạn sử dụng, ETag là tem kiểm tra còn nguyên, Vary là "phiên bản theo khẩu vị" (Accept-Language), stale-while-revalidate là "dùng hàng cũ trong khi đi mua hàng mới".
+
+### Cache-Control directives
+- public/private: ai được lưu.
+- max-age: TTL ở client.
+- s-maxage: TTL ở shared cache (CDN).
+- no-store: không lưu (dữ liệu nhạy cảm).
+- no-cache: phải revalidate trước khi dùng.
+- must-revalidate: không được dùng stale khi hết hạn.
+- stale-while-revalidate=N: trả stale trong N giây trong khi revalidate nền.
+- stale-if-error=N: trả stale khi origin lỗi.
+
+### Conditional request
+- Client gửi If-None-Match (ETag) hoặc If-Modified-Since.
+- Server trả 304 Not Modified (không body) nếu không đổi → tiết kiệm bandwidth.
+- Strong vs weak ETag.
+
+### Vary
+- Vary: Accept, Accept-Encoding, Accept-Language → cache key gồm các header đó.
+- Vary: * → disable caching hiệu quả.
+
+### CDN vs browser
+- Browser cache: per-user, max-age ngắn, phù hợp personalized.
+- CDN: shared, s-maxage dài, edge gần user, phù hợp static/public.
+- Kết hợp: max-age=60, s-maxage=3600, stale-while-revalidate=86400.
+
+### Trên production
+- Triệu chứng: stale data sau deploy → purge CDN hoặc versioned URL.
+- Đo: hit ratio, origin load, bandwidth.
+- Tuning: cache key design, purge API, versioned assets.
+
+### Trả lời miệng 1 phút
+"Cache-Control với max-age/s-maxage điều khiển TTL client/CDN; ETag cho conditional 304; Vary phân biệt theo header; stale-while-revalidate trả stale trong khi revalidate. CDN cho public/shared, browser cho personalized."
+
+> Senior tip: dùng versioned URL cho static assets (immutable, max-age=1y) và short TTL cho API dynamic; đừng cache authenticated response ở shared cache.`,
+    follow: [
+      'stale-while-revalidate khác gì stale-if-error và khi nào dùng cả hai?',
+      'Cache poisoning qua Vary header sai thế nào?',
+      'CDN purge vs versioned URL: trade-off operational.'
+    ],
+    tags: ['HTTP Caching', 'Cache-Control', 'CDN', 'ETag', 'Vary']
+  },
+  {
+    id: 'api-038',
+    topic: 'api',
+    level: 'lead',
+    q: 'API gateway pattern: routing, auth, rate limit, circuit breaker, request/response transform ở gateway thế nào? Khi nào nên dùng gateway vs service mesh?',
+    a: `**Tóm tắt:** API gateway là entry point duy nhất: routing theo path/host, terminating TLS, auth (JWT/API key), rate limiting, circuit breaker, transform request/response, aggregation. Service mesh (Istio/Linkerd) xử lý east-west traffic giữa service với mTLS, retry, circuit breaker ở sidecar. Gateway cho north-south (client → cluster), mesh cho east-west (service ↔ service).
+
+### Hiểu nhanh
+Gateway như lễ tân tòa nhà: kiểm tra giấy tờ, điều hướng khách, giới hạn số khách. Service mesh như hệ thống an ninh nội bộ giữa các phòng ban: mỗi phòng có bảo vệ riêng (sidecar) kiểm tra người ra vào giữa các phòng.
+
+### Gateway responsibilities
+- Routing: path/host → upstream service.
+- TLS termination.
+- Authn/authz: JWT validation, API key, OAuth2.
+- Rate limiting per consumer.
+- Circuit breaker, timeout, retry.
+- Request/response transform: header injection, body rewrite.
+- Aggregation: BFF pattern, compose nhiều service.
+- Observability: access log, metrics, tracing.
+
+### Gateway options
+- Spring Cloud Gateway (reactive, Java).
+- Kong, Envoy, AWS API Gateway, Apigee.
+- Trade-off: managed (AWS) vs self-hosted (Kong/Envoy).
+
+### Gateway vs Service Mesh
+- Gateway: north-south, client-facing, coarse-grained policy.
+- Mesh: east-west, service-to-service, fine-grained, mTLS, traffic splitting.
+- Có thể kết hợp: gateway ở edge + mesh trong cluster.
+- Mesh overhead: sidecar memory/CPU, complexity; không cần nếu chỉ có ít service.
+
+### Trên production
+- Triệu chứng: gateway bottleneck (single point of failure) → scale horizontally, health check.
+- Đo: latency added, error rate, throughput.
+- Tuning: connection pool, timeout, caching response.
+
+### Trả lời miệng 1 phút
+"API gateway là entry point: routing, TLS, auth, rate limit, circuit breaker, transform, aggregation. Service mesh xử lý east-west với mTLS ở sidecar. Gateway cho north-south, mesh cho east-west; kết hợp khi cần cả hai."
+
+> Senior tip: đừng nhét business logic vào gateway; giữ gateway stateless và thin; BFF cho mobile/web riêng biệt để tránh coupling client với backend evolution.`,
+    follow: [
+      'Spring Cloud Gateway filter chain hoạt động thế nào và khi nào dùng custom filter?',
+      'Service mesh sidecar (Envoy) intercept traffic bằng iptables thế nào?',
+      'Gateway aggregation vs client-side composition: trade-off latency và coupling.'
+    ],
+    tags: ['API Gateway', 'Service Mesh', 'Spring Cloud Gateway', 'Envoy', 'mTLS']
   }
 );

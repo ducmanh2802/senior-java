@@ -793,5 +793,1536 @@ Khác biệt với production: {{computeIfAbsent}} giữ lock bin trong suốt t
   ],
   related: ['api-015', 'api-011', 'api-002'],
   tags: ['idempotency', 'payment', 'concurrency', 'REST', 'retry'],
+},
+
+{
+  id: 'lesson-api-004',
+  track: 'api',
+  order: 4,
+  title: 'Idempotency-Key: chống trừ tiền 2 lần khi client retry POST',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao POST không idempotent gây trừ tiền/đặt hàng 2 lần khi mạng lỗi và client retry',
+    'Thiết kế được luồng Idempotency-Key: lưu key + hash request + trạng thái + response; xử lý key trùng, body khác (422), và request đang xử lý (409)',
+    'Viết được IdempotencyStore trong Java thuần, an toàn với 2 thread cùng key (chỉ chạy nghiệp vụ 1 lần)',
+  ],
+  body: `### Cái gì: POST không tự an toàn khi retry
+**Tóm tắt:** {{Idempotency-Key}} là một chuỗi do client sinh (thường UUID) gửi kèm header mỗi request tạo tài nguyên/thanh toán. Server dùng key đó để nhận ra "request này đã xử lý rồi" và trả lại đúng response cũ thay vì chạy nghiệp vụ lần hai.
+
+**Thuật ngữ lần đầu gặp:**
+- **Idempotent (bất biến theo lần lặp)**: gọi 1 lần hay 10 lần với cùng đầu vào thì kết quả cuối trên server giống nhau. Ví dụ đời thường: bấm nút tầng 5 trong thang máy nhiều lần vẫn chỉ tới tầng 5.
+- **Retry (thử lại)**: client tự gửi lại request khi nghi ngờ lỗi (timeout, mất mạng). Mobile app, API gateway, SDK đều hay retry.
+- **Race condition (đua nhau)**: 2 thread/request cùng chạy và cùng đọc/ghi một trạng thái, dẫn đến kết quả sai (ở đây: chạy nghiệp vụ 2 lần).
+- **TTL (Time To Live)**: thời gian sống của một bản ghi; hết TTL thì xoá để bảng không phình vô hạn.
+
+HTTP định nghĩa {{GET}}, {{PUT}}, {{DELETE}} là idempotent, còn {{POST}} (tạo mới/thanh toán) thì **không**. Vì vậy {{POST /payments}} retry có thể tạo 2 giao dịch.
+
+### Vì sao cần: câu chuyện trừ tiền 2 lần
+Giả sử người dùng bấm "Thanh toán 500.000đ":
+1. Client gửi {{POST /payments}} kèm {{Idempotency-Key: 7f3a-...}}.
+2. Server trừ tiền, ghi DB, nhưng response bị mất trên đường về (mạng chập chờn).
+3. Client thấy timeout, SDK tự retry cùng request, **cùng key**.
+4. Nếu server không nhớ key: trừ tiền lần 2. Khách mất 1.000.000đ.
+
+Idempotency-Key biến retry thành "hãy cho tôi kết quả của lần đầu".
+
+### Hoạt động thế nào: luồng nhiều bên
+~~~seq
+title: POST thanh toán với Idempotency-Key (retry an toàn)
+actors: Client | Payment API | Idempotency Store | Core Banking
+Client -> Payment API: POST /payments, Idempotency-Key=K1, body={500k}
+Payment API -> Idempotency Store: lookup(K1, hash(body))
+Idempotency Store --> Payment API: MISS (chưa có)
+Payment API -> Idempotency Store: claim(K1, IN_PROGRESS)
+Payment API -> Core Banking: debit(500k)
+Core Banking --> Payment API: OK, txn=TX99
+Payment API -> Idempotency Store: save(K1, hash, 201, response)
+Payment API --> Client: 201 Created (bị mất do mạng)
+Client -> Payment API: RETRY POST, cùng K1, cùng body
+Payment API -> Idempotency Store: lookup(K1, hash(body))
+Idempotency Store --> Payment API: HIT (201, response cũ)
+Payment API --> Client: 201 Created (response cũ, KHÔNG trừ tiền lại)
+~~~
+
+Các tình huống server phải xử lý:
+
+| Tình huống | Cách xử lý | HTTP gợi ý |
+|---|---|---|
+| Key mới | Claim {{IN_PROGRESS}}, chạy nghiệp vụ, lưu response | 201/200 như bình thường |
+| Key trùng, **cùng** hash body, đã có response | Trả lại response cũ, **không** chạy nghiệp vụ | Trả lại đúng status/body cũ |
+| Key trùng, **khác** hash body | Từ chối (client dùng lại key cho request khác là bug) | 422 Unprocessable Entity |
+| Key trùng, đang {{IN_PROGRESS}} | Request đầu chưa xong; tránh chạy song song | 409 Conflict (+ Retry-After) |
+
+**Vì sao phải lưu hash của body?** Nếu client vô tình dùng lại cùng key cho một đơn hàng khác (body khác), trả response cũ sẽ sai nghiệp vụ (trả kết quả đơn A cho đơn B). So hash giúp phát hiện lỗi này.
+
+**Vì sao cần "claim" IN_PROGRESS?** Hai retry đến gần như cùng lúc: cả hai cùng thấy MISS rồi cùng gọi Core Banking → trừ tiền 2 lần. Claim phải là thao tác **atomic** (nguyên tử: chỉ một bên thắng).
+
+### Ví dụ cụ thể (Java thuần, mô phỏng cơ chế)
+~~~java
+import java.util.*; import java.util.concurrent.*; import java.util.function.*;
+
+class Response { final int status; final String body;
+    Response(int status, String body){ this.status=status; this.body=body; } }
+
+class IdempotencyStore {
+    enum State { IN_PROGRESS, DONE }
+    static final class Entry {
+        final State state; final String hash; final Response resp;
+        Entry(State s, String h, Response r){ state=s; hash=h; resp=r; }
+    }
+    // ConcurrentHashMap: ghi/đọc an toàn giữa nhiều thread
+    private final ConcurrentHashMap<String, Entry> map = new ConcurrentHashMap<>();
+
+    Response execute(String key, String requestHash, Supplier<Response> work) {
+        // putIfAbsent là atomic: chỉ thread đầu tiên đặt IN_PROGRESS
+        Entry first = map.putIfAbsent(key, new Entry(State.IN_PROGRESS, requestHash, null));
+        if (first == null) {
+            try {
+                Response r = work.get();                 // chỉ thread thắng mới chạy
+                map.put(key, new Entry(State.DONE, requestHash, r));
+                return r;
+            } catch (RuntimeException e) {
+                map.remove(key);                         // lỗi: cho phép retry thật sự
+                throw e;
+            }
+        }
+        // đã có entry từ trước
+        if (!Objects.equals(first.hash, requestHash)) {
+            return new Response(422, "key reused with different body");
+        }
+        if (first.state == State.IN_PROGRESS) {
+            return new Response(409, "request in progress");
+        }
+        return first.resp;                               // HIT: trả response cũ
+    }
+}
+~~~
+
+### Lỗi hay gặp
+- **Chỉ lưu key, không lưu hash body**: dùng lại key cho request khác → trả nhầm response. Luôn so hash.
+- **Không atomic khi claim**: check-then-act ({{if (!map.containsKey(k)) map.put(...)}}) không an toàn đa luồng. Dùng {{putIfAbsent}}/ràng buộc unique ở DB ({{INSERT ... ON CONFLICT}}).
+- **TTL quá ngắn**: ngắn hơn cửa sổ retry của client → retry muộn bị coi là request mới, trừ tiền 2 lần. TTL thường 24 giờ; webhook retry dài thì dài hơn.
+- **Không lưu response, chỉ lưu "đã xử lý"**: retry thành công phía server nhưng client không nhận lại được body (mã giao dịch) để hiển thị/đối soát.
+- **Áp dụng cho GET**: GET vốn idempotent, không cần key; thêm key gây phức tạp vô ích.
+
+### Liên hệ phỏng vấn
+Câu hay hỏi: "Làm sao chống double charge khi retry?" Trả lời theo khung: (1) client sinh {{Idempotency-Key}} per thao tác, (2) server lưu (key, hash body, trạng thái, response) với unique constraint, (3) claim IN_PROGRESS atomic để tránh race, (4) hit thì trả response cũ, body khác thì 422, đang xử lý thì 409, (5) TTL ≥ cửa sổ retry. Nhấn mạnh: **atomic claim** là điểm quyết định; chỉ "check rồi insert" sẽ hỏng dưới concurrency. Nêu ví dụ thanh toán/đặt hàng để chứng minh bạn từng gặp bài toán thật.
+
+> **Senior tip:** Trong production, key sống ở DB (Postgres unique index) hoặc Redis, không chỉ in-memory; response lưu đủ để tái lập chính xác. Với luồng "chạy lâu" (phê duyệt, chuyển tiền xuyên ngân hàng), tách {{IN_PROGRESS}} có timeout/heartbeat để tránh kẹt vĩnh viễn khi process chết giữa chừng.`,
+  exercises: [
+    {
+      title: 'IdempotencyStore: execute chỉ chạy nghiệp vụ 1 lần kể cả khi 2 thread cùng key',
+      prompt: `Viết {{class IdempotencyStore}} với method:
+{{Response execute(String key, String requestHash, Supplier<Response> work)}}
+
+Quy tắc:
+- Key **mới**: chạy {{work.get()}} đúng 1 lần, lưu (key, requestHash, response), trả response.
+- Key **trùng, cùng** {{requestHash}}, đã có response: trả lại response cũ, **không** chạy {{work}}.
+- Key **trùng, khác** {{requestHash}}: trả {{new Response(422, "key reused with different body")}}.
+- Key **trùng**, request đầu **đang xử lý** (chưa có response): trả {{new Response(409, "request in progress")}}.
+
+Class {{Response}} đã cho: {{final int status; final String body;}} và constructor {{Response(int status, String body)}}.
+Yêu cầu an toàn đa luồng: nếu 2 thread gọi {{execute}} **cùng lúc** với cùng key mới, {{work}} chỉ được chạy **đúng 1 lần**.`,
+      starter: `class Response {
+    final int status;
+    final String body;
+    Response(int status, String body) { this.status = status; this.body = body; }
+}
+
+class IdempotencyStore {
+    // TODO: lưu trạng thái theo key, an toàn đa luồng
+
+    Response execute(String key, String requestHash, java.util.function.Supplier<Response> work) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.concurrent.*; import java.util.concurrent.atomic.*; import java.util.function.*;
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean eq(Response r, int st, String body) {
+        return r != null && r.status == st && body.equals(r.body);
+    }
+    public static void main(String[] args) throws Exception {
+        // 1. key mới chạy work và trả response
+        IdempotencyStore s1 = new IdempotencyStore();
+        AtomicInteger calls = new AtomicInteger(0);
+        Response r1 = s1.execute("k1", "hA", () -> { calls.incrementAndGet(); return new Response(201, "ok"); });
+        check("new key runs work", eq(r1, 201, "ok") && calls.get() == 1, "status/body/calls=" + (r1==null?"null":r1.status+","+r1.body) + "/" + calls.get());
+
+        // 2. retry cùng key + cùng hash trả response cũ, không chạy work
+        Response r2 = s1.execute("k1", "hA", () -> { calls.incrementAndGet(); return new Response(201, "again"); });
+        check("same key+hash returns cached", eq(r2, 201, "ok") && calls.get() == 1, "calls=" + calls.get() + " body=" + (r2==null?"null":r2.body));
+
+        // 3. cùng key nhưng hash khác -> 422
+        Response r3 = s1.execute("k1", "hB", () -> { calls.incrementAndGet(); return new Response(201, "x"); });
+        check("same key different hash -> 422", eq(r3, 422, "key reused with different body") && calls.get() == 1, "got " + (r3==null?"null":r3.status+","+r3.body));
+
+        // 4. key khác chạy độc lập
+        Response r4 = s1.execute("k2", "hA", () -> { calls.incrementAndGet(); return new Response(200, "two"); });
+        check("different key independent", eq(r4, 200, "two") && calls.get() == 2, "calls=" + calls.get());
+
+        // 5. request đang xử lý -> 409
+        IdempotencyStore s2 = new IdempotencyStore();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Thread t = new Thread(() -> s2.execute("slow", "hs", () -> {
+            started.countDown();
+            try { release.await(2, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return new Response(201, "done");
+        }));
+        t.start();
+        started.await(2, TimeUnit.SECONDS);
+        Response r5 = s2.execute("slow", "hs", () -> new Response(201, "nope"));
+        release.countDown();
+        t.join(2000);
+        check("in progress -> 409", eq(r5, 409, "request in progress"), "got " + (r5==null?"null":r5.status+","+r5.body));
+
+        // 6. 2 thread cùng key mới: work chỉ chạy 1 lần
+        IdempotencyStore s3 = new IdempotencyStore();
+        AtomicInteger workCalls = new AtomicInteger(0);
+        CountDownLatch go = new CountDownLatch(1);
+        CountDownLatch both = new CountDownLatch(2);
+        Callable<Response> task = () -> {
+            go.await(2, TimeUnit.SECONDS);
+            Response r = s3.execute("race", "hr", () -> { workCalls.incrementAndGet(); return new Response(201, "race-ok"); });
+            both.countDown();
+            return r;
+        };
+        ExecutorService ex = Executors.newFixedThreadPool(2);
+        Future<Response> f1 = ex.submit(task); Future<Response> f2 = ex.submit(task);
+        go.countDown();
+        both.await(3, TimeUnit.SECONDS);
+        Response a = f1.get(2, TimeUnit.SECONDS); Response b = f2.get(2, TimeUnit.SECONDS);
+        ex.shutdownNow();
+        boolean bothOk = (eq(a, 201, "race-ok") || eq(a, 409, "request in progress"))
+                      && (eq(b, 201, "race-ok") || eq(b, 409, "request in progress"));
+        check("2 threads same key: work once", workCalls.get() == 1 && bothOk, "workCalls=" + workCalls.get() + " a=" + (a==null?"n":a.status) + " b=" + (b==null?"n":b.status));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Response {
+    final int status;
+    final String body;
+    Response(int status, String body) { this.status = status; this.body = body; }
+}
+
+class IdempotencyStore {
+    enum State { IN_PROGRESS, DONE }
+    static final class Entry {
+        final State state; final String hash; final Response resp;
+        Entry(State s, String h, Response r) { state = s; hash = h; resp = r; }
+    }
+    private final java.util.concurrent.ConcurrentHashMap<String, Entry> map = new java.util.concurrent.ConcurrentHashMap<>();
+
+    Response execute(String key, String requestHash, java.util.function.Supplier<Response> work) {
+        Entry first = map.putIfAbsent(key, new Entry(State.IN_PROGRESS, requestHash, null));
+        if (first == null) {
+            try {
+                Response r = work.get();
+                map.put(key, new Entry(State.DONE, requestHash, r));
+                return r;
+            } catch (RuntimeException e) {
+                map.remove(key);
+                throw e;
+            }
+        }
+        if (!java.util.Objects.equals(first.hash, requestHash)) {
+            return new Response(422, "key reused with different body");
+        }
+        if (first.state == State.IN_PROGRESS) {
+            return new Response(409, "request in progress");
+        }
+        return first.resp;
+    }
+}`,
+      hints: [
+        'Dùng {{ConcurrentHashMap}} và {{putIfAbsent}} để claim key một cách atomic: chỉ thread nhận về {{null}} (mình là người đặt đầu tiên) mới được chạy {{work}}.',
+        'Lưu một Entry gồm {{state}} (IN_PROGRESS/DONE), {{hash}}, và {{resp}}. Với entry đã có: so hash trước, rồi xét state.',
+      ],
+      explain: `Điểm mấu chốt là **atomic claim**: {{putIfAbsent}} vừa kiểm tra vừa đặt trong một bước, nên dù 2 thread cùng vào, chỉ 1 thread nhận {{null}} và chạy {{work.get()}}. Thread kia thấy entry {{IN_PROGRESS}} và trả 409 (hoặc, nếu chạy sau khi DONE, trả response cũ).
+
+Nếu dùng {{if (!map.containsKey(k)) map.put(k, ...)}} (check-then-act tách rời), cả hai thread có thể cùng vượt qua {{if}} rồi cùng chạy nghiệp vụ: đây chính là race condition gây trừ tiền 2 lần.
+
+Khi {{work}} ném lỗi, ta {{remove(key)}} để lần retry sau có thể thử lại thật sự (nếu giữ IN_PROGRESS mãi, mọi retry sẽ bị 409 vĩnh viễn). Trong production, phần "claim" thường là câu {{INSERT}} với unique key ở DB để atomic ngay cả khi chạy nhiều instance server.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Client gửi lại POST thanh toán với CÙNG Idempotency-Key nhưng body KHÁC (số tiền khác). Server nên làm gì?',
+      options: [
+        'Chạy nghiệp vụ với body mới vì đó là ý định mới nhất',
+        'Trả response cũ của lần đầu',
+        'Từ chối với lỗi 422 vì key bị dùng lại cho request khác',
+        'Xoá key cũ rồi xử lý như request mới',
+      ],
+      answer: 2,
+      explain: `Đáp án đúng là 422. Cùng key nhưng hash body khác cho thấy client dùng lại key sai (bug phía client) hoặc cố gửi request khác; trả response cũ sẽ trả kết quả của giao dịch A cho giao dịch B (sai nghiệp vụ), còn chạy body mới sẽ phá cam kết idempotency của key. So hash body và từ chối rõ ràng là an toàn nhất.`,
+    },
+    {
+      q: 'Vì sao bước "claim" key IN_PROGRESS phải là thao tác atomic (như putIfAbsent hoặc unique constraint ở DB)?',
+      options: [
+        'Để tiết kiệm bộ nhớ',
+        'Để hai request retry đến cùng lúc không cùng chạy nghiệp vụ, tránh trừ tiền 2 lần',
+        'Để response trả về nhanh hơn',
+        'Vì HTTP bắt buộc mọi header phải xử lý atomic',
+      ],
+      answer: 1,
+      explain: `Nếu check và ghi tách rời, hai thread/request có thể cùng thấy "chưa có key" rồi cùng chạy nghiệp vụ: race condition gây double charge. Thao tác atomic đảm bảo chỉ một bên thắng quyền chạy; bên còn lại nhận biết request đang xử lý (409) hoặc đã xong (trả response cũ).`,
+    },
+    {
+      q: 'Retry cùng key đến khi request đầu tiên VẪN đang xử lý (chưa có response). Phản hồi phù hợp nhất là gì?',
+      options: [
+        '200 OK với body rỗng',
+        '409 Conflict (đang xử lý), kèm gợi ý thử lại sau',
+        '500 Internal Server Error',
+        'Chạy một bản sao nghiệp vụ thứ hai cho chắc',
+      ],
+      answer: 1,
+      explain: `409 báo request trùng đang được xử lý; client nên chờ rồi hỏi lại (hoặc server hỗ trợ long-poll). Chạy bản sao thứ hai phá idempotency (trừ tiền 2 lần). 200 rỗng nói dối rằng đã xong. 500 ám chỉ lỗi server trong khi thực ra chỉ là đang bận xử lý.`,
+    },
+    {
+      q: 'TTL (thời gian sống) của bản ghi idempotency nên chọn thế nào?',
+      options: [
+        'Càng ngắn càng tốt, ví dụ 30 giây, để tiết kiệm bộ nhớ',
+        'Dài hơn cửa sổ retry của client (thường ≥ 24 giờ); quá ngắn thì retry muộn bị coi là request mới',
+        'Không bao giờ hết hạn để an toàn tuyệt đối',
+        'Bằng đúng thời gian xử lý trung bình của request',
+      ],
+      answer: 1,
+      explain: `Key phải sống ít nhất bằng khoảng thời gian client còn có thể retry; nếu ngắn hơn, retry muộn sẽ tạo giao dịch mới. 24 giờ là mức phổ biến. Không hết hạn thì bảng phình vô hạn. 30 giây hoặc bằng thời gian xử lý đều quá ngắn so với retry thực tế (client có thể retry sau phút, giờ khi mạng hồi phục).`,
+    },
+  ],
+  related: ['api-015', 'api-011', 'api-002'],
+  tags: ['idempotency', 'payment', 'concurrency', 'REST', 'retry'],
+},
+
+{
+  id: 'lesson-api-005',
+  track: 'api',
+  order: 5,
+  title: 'Phân trang API: cursor (keyset) vs offset/limit',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao OFFSET lớn chậm và vì sao offset gây trùng/sót bản ghi khi dữ liệu bị chèn/xoá giữa các trang',
+    'Hiểu cơ chế cursor (keyset pagination): mã hoá vị trí (createdAt, id), truy vấn "sau mốc này", sort ổn định',
+    'Cài được CursorPager trong Java thuần trả items + nextCursor (Base64 của "createdAt|id") không trùng không sót khi có chèn thêm',
+  ],
+  body: `### Cái gì: phân trang là gì
+**Tóm tắt:** Phân trang (pagination) chia một danh sách lớn thành nhiều trang nhỏ để API không trả hàng triệu bản ghi một lúc. Hai cách phổ biến: **offset/limit** ("bỏ qua N bản ghi đầu") và **cursor/keyset** ("lấy các bản ghi sau mốc X").
+
+**Thuật ngữ lần đầu gặp:**
+- **Offset**: số bản ghi cần bỏ qua tính từ đầu. Ví dụ đời thường: đọc sách từ trang 101 nghĩa là bỏ qua 100 trang đầu.
+- **Cursor (con trỏ vị trí)**: một mốc đánh dấu "tôi đang ở đây". Ví dụ đời thường: cái kẹp sách đánh dấu trang bạn đọc dở, dù ai có rút thêm trang ở trước thì kẹp vẫn chỉ đúng chỗ bạn dở.
+- **Keyset pagination**: dùng giá trị của (các) cột đã sắp xếp làm cursor, thay vì đếm vị trí. "Keyset" = tập khoá định vị.
+- **Ổn định (stable sort)**: thứ tự sắp xếp không đổi khi có phần tử bằng nhau; thường đạt bằng cách thêm một cột duy nhất (như {{id}}) làm tiêu chí phụ.
+- **Base64**: cách mã hoá dữ liệu nhị phân/chuỗi thành chuỗi ký tự an toàn để đặt trong URL; không phải mã hoá bí mật.
+
+### Vì sao cần: offset chậm và sai khi dữ liệu thay đổi
+**Offset chậm ở trang sâu:** {{SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 100000}} buộc DB vẫn phải duyệt và bỏ qua 100.000 dòng đầu rồi mới lấy 20 dòng. Trang càng sâu càng chậm (O(offset + limit)).
+
+**Offset trùng/sót khi có chèn/xoá:** Bạn đang xem trang 1 (bản ghi A, B). Trước khi bạn sang trang 2 (OFFSET 2), có bản ghi mới X được chèn lên đầu. Danh sách giờ là X, A, B. Trang 2 với OFFSET 2 sẽ trả B lần nữa (trùng), còn nếu có bản ghi bị xoá bạn có thể bị sót. Đây là lỗi rất hay gặp ở feed/thông báo realtime.
+
+| | Offset/limit | Cursor/keyset |
+|---|---|---|
+| Cú pháp | {{?page=5001}} hoặc {{?offset=100000&limit=20}} | {{?cursor=abc&limit=20}} |
+| Trang sâu | Chậm (quét bỏ offset dòng) | Nhanh đều (đi thẳng tới mốc nhờ index) |
+| Chèn/xoá giữa chừng | Dễ trùng/sót | Không trùng, không sót (bám theo mốc) |
+| Nhảy tới trang N tuỳ ý | Được | Không trực tiếp (chỉ đi tiếp/lùi) |
+| Triển khai | Đơn giản | Cần sort ổn định + mã hoá cursor |
+
+### Hoạt động thế nào: cursor mã hoá (createdAt, id)
+Chọn cột sắp xếp có thứ tự ổn định, ví dụ {{(createdAt DESC, id DESC)}} (id làm tiêu chí phụ để phá vỡ trường hợp cùng thời gian). Trang đầu:
+- Query: lấy 20 bản ghi mới nhất (không cần WHERE theo cursor).
+- {{nextCursor}} = Base64 của "{{createdAt}}|{{id}}" của **bản ghi cuối** trang.
+
+Trang sau, client gửi lại {{cursor}}:
+- Giải mã ra {{(t, i)}}.
+- Query: {{WHERE (createdAt < t) OR (createdAt = t AND id < i) ORDER BY createdAt DESC, id DESC LIMIT 20}}.
+- DB dùng index trên {{(createdAt, id)}} để nhảy thẳng tới mốc, không quét bỏ.
+
+Vì ta bám theo giá trị mốc chứ không đếm vị trí, một bản ghi mới chèn "phía trên" (mới hơn mốc) không làm đổi tập bản ghi "sau mốc". Không trùng, không sót.
+
+### Ví dụ cụ thể (Java thuần, mô phỏng)
+~~~java
+import java.util.*;
+
+class Item {
+    final long createdAt; final long id; final String name;
+    Item(long createdAt, long id, String name){ this.createdAt=createdAt; this.id=id; this.name=name; }
+}
+
+class PageResult { final List<Item> items; final String nextCursor;
+    PageResult(List<Item> items, String nextCursor){ this.items=items; this.nextCursor=nextCursor; } }
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        long ct = Long.MAX_VALUE, ci = Long.MAX_VALUE;          // trang đầu: không chặn
+        if (cursor != null && !cursor.isEmpty()) {
+            String dec = new String(Base64.getUrlDecoder().decode(cursor));
+            String[] p = dec.split("[|]");                     // "createdAt|id"
+            ct = Long.parseLong(p[0]); ci = Long.parseLong(p[1]);
+        }
+        List<Item> out = new ArrayList<>();
+        for (Item it : sortedData) {                              // sortedData: DESC (createdAt,id)
+            boolean after = (it.createdAt < ct) || (it.createdAt == ct && it.id < ci);
+            if (after) { out.add(it); if (out.size() == size) break; }
+        }
+        String next = null;
+        if (out.size() == size) {
+            Item last = out.get(out.size() - 1);
+            next = Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString((last.createdAt + "|" + last.id).getBytes());
+        }
+        return new PageResult(out, next);
+    }
+}
+~~~
+
+**Minh hoạ không trùng/sót:** trang 1 trả [A, B], cursor trỏ sau B. Có bản ghi X mới chèn lên đầu danh sách. Trang 2 hỏi "sau B" → vẫn trả [C, D], không lặp A/B và không sót C/D, dù X chen ngang.
+
+### Lỗi hay gặp
+- **Sort không ổn định**: chỉ {{ORDER BY createdAt}} mà nhiều bản ghi cùng {{createdAt}} → thứ tự giữa chúng không xác định, cursor có thể bỏ sót/lặp. Luôn thêm cột duy nhất ({{id}}) làm tie-breaker.
+- **Cursor lộ thông tin nội bộ nhạy cảm**: cursor chỉ là vị trí, nhưng đừng nhét dữ liệu bí mật; có thể ký (HMAC) nếu sợ client sửa cursor để dò dữ liệu.
+- **Dùng offset cho feed vô hạn**: feed thêm liên tục + người dùng cuộn sâu → vừa chậm vừa trùng. Feed/notification gần như luôn nên dùng cursor.
+- **Quên index (createdAt, id)**: không có index thì truy vấn cursor vẫn quét bảng, mất lợi thế tốc độ.
+
+### Liên hệ phỏng vấn
+Câu hay hỏi: "Thiết kế API phân trang cho feed 10 triệu bản ghi?" Trả lời: (1) dùng cursor (keyset) trên {{(createdAt, id)}} để tránh quét offset và tránh trùng/sót khi có bài mới; (2) cursor là Base64 (tuỳ chọn ký HMAC) của mốc cuối trang; (3) index kép {{(createdAt DESC, id DESC)}}; (4) so sánh offset chỉ phù hợp màn hình admin cần nhảy trang và dữ liệu ít biến động. Nêu được ví dụ "chèn bản ghi mới giữa hai lần tải trang" là cộng điểm thực tế.
+
+> **Senior tip:** Trả {{nextCursor: null}} (hoặc bỏ field) ở trang cuối để client biết dừng, tránh vòng lặp vô hạn. Với dữ liệu cho phép "nhảy trang" (bảng quản trị), có thể dùng offset nhưng vẫn nên đặt trần offset tối đa; với API public/volume lớn, cursor gần như luôn là lựa chọn đúng.`,
+  exercises: [
+    {
+      title: 'CursorPager.page: phân trang cursor không trùng không sót',
+      prompt: `Viết {{class CursorPager}} với method:
+{{static PageResult page(List<Item> sortedData, String cursor, int size)}}
+
+- {{Item}} có {{final long createdAt; final long id; final String name;}} và constructor {{Item(long createdAt, long id, String name)}}.
+- {{PageResult}} có {{final List<Item> items; final String nextCursor;}} và constructor {{PageResult(List<Item> items, String nextCursor)}}.
+- {{sortedData}} đã sắp xếp **giảm dần** theo {{(createdAt, id)}} (mới nhất trước). Danh sách này có thể được thêm phần tử mới ở đầu giữa các lần gọi {{page}} (mô phỏng dữ liệu mới chèn vào).
+- {{cursor == null}} hoặc rỗng: trả trang đầu tiên (tối đa {{size}} phần tử đầu danh sách).
+- Ngược lại: giải mã cursor (Base64 của chuỗi {{"createdAt|id"}}) và trả tối đa {{size}} phần tử **đứng sau** mốc đó theo đúng thứ tự giảm dần.
+- {{nextCursor}} là Base64 của {{"createdAt|id"}} của **phần tử cuối** trong {{items}} trả về; nếu không còn phần tử phía sau thì {{nextCursor = null}}.
+- Yêu cầu: khi có phần tử mới chèn vào đầu {{sortedData}} giữa trang 1 và trang 2, việc dùng {{nextCursor}} của trang 1 vẫn cho kết quả **không trùng, không sót** so với tập phần tử cũ.`,
+      starter: `import java.util.*;
+
+class Item {
+    final long createdAt;
+    final long id;
+    final String name;
+    Item(long createdAt, long id, String name) { this.createdAt = createdAt; this.id = id; this.name = name; }
+}
+
+class PageResult {
+    final List<Item> items;
+    final String nextCursor;
+    PageResult(List<Item> items, String nextCursor) { this.items = items; this.nextCursor = nextCursor; }
+}
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static String ids(List<Item> items) {
+        StringBuilder b = new StringBuilder();
+        for (Item it : items) { if (b.length() > 0) b.append(','); b.append(it.id); }
+        return b.toString();
+    }
+    static List<Item> base() {
+        List<Item> a = new ArrayList<>();
+        a.add(new Item(100, 5, "E")); a.add(new Item(90, 4, "D"));
+        a.add(new Item(80, 3, "C")); a.add(new Item(70, 2, "B")); a.add(new Item(60, 1, "A"));
+        return a; // DESC by (createdAt,id)
+    }
+    public static void main(String[] args) {
+        // 1. trang đầu
+        PageResult p1 = CursorPager.page(base(), null, 2);
+        check("first page items", "5,4".equals(ids(p1.items)), "ids=" + ids(p1.items));
+        check("first page has next", p1.nextCursor != null && !p1.nextCursor.isEmpty(), "next=" + p1.nextCursor);
+
+        // 2. trang hai dùng cursor trang một
+        PageResult p2 = CursorPager.page(base(), p1.nextCursor, 2);
+        check("second page items", "3,2".equals(ids(p2.items)), "ids=" + ids(p2.items));
+
+        // 3. trang cuối nextCursor null
+        PageResult p3 = CursorPager.page(base(), p2.nextCursor, 2);
+        check("last page items", "1".equals(ids(p3.items)), "ids=" + ids(p3.items));
+        check("last page next null", p3.nextCursor == null, "next=" + p3.nextCursor);
+
+        // 4. chèn bản ghi mới ở đầu giữa trang 1 và trang 2: không trùng, không sót
+        List<Item> changed = base();
+        changed.add(0, new Item(110, 6, "F")); // phần tử mới nhất, chen đầu
+        PageResult p2b = CursorPager.page(changed, p1.nextCursor, 2); // dùng cursor cũ (trỏ sau id=4)
+        check("insert at head: no dup/gap", "3,2".equals(ids(p2b.items)), "ids=" + ids(p2b.items));
+
+        // 5. size >= tổng số phần tử: trả hết, next null
+        PageResult all = CursorPager.page(base(), null, 10);
+        check("all items one page", "5,4,3,2,1".equals(ids(all.items)) && all.nextCursor == null, "ids=" + ids(all.items) + " next=" + all.nextCursor);
+
+        // 6. tie-breaker theo id khi createdAt bằng nhau
+        List<Item> tie = new ArrayList<>();
+        tie.add(new Item(100, 9, "X")); tie.add(new Item(100, 8, "Y")); tie.add(new Item(100, 7, "Z"));
+        PageResult t1 = CursorPager.page(tie, null, 1);
+        PageResult t2 = CursorPager.page(tie, t1.nextCursor, 2);
+        check("stable with tie-breaker", "9".equals(ids(t1.items)) && "8,7".equals(ids(t2.items)), "t1=" + ids(t1.items) + " t2=" + ids(t2.items));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+class Item {
+    final long createdAt;
+    final long id;
+    final String name;
+    Item(long createdAt, long id, String name) { this.createdAt = createdAt; this.id = id; this.name = name; }
+}
+
+class PageResult {
+    final List<Item> items;
+    final String nextCursor;
+    PageResult(List<Item> items, String nextCursor) { this.items = items; this.nextCursor = nextCursor; }
+}
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        long ct = Long.MAX_VALUE, ci = Long.MAX_VALUE;
+        if (cursor != null && !cursor.isEmpty()) {
+            String dec = new String(Base64.getUrlDecoder().decode(cursor));
+            String[] p = dec.split("[|]");
+            ct = Long.parseLong(p[0]);
+            ci = Long.parseLong(p[1]);
+        }
+        List<Item> out = new ArrayList<>();
+        for (Item it : sortedData) {
+            boolean after = (it.createdAt < ct) || (it.createdAt == ct && it.id < ci);
+            if (after) {
+                out.add(it);
+                if (out.size() == size) break;
+            }
+        }
+        String next = null;
+        if (out.size() == size) {
+            Item last = out.get(out.size() - 1);
+            next = Base64.getUrlEncoder().withoutPadding().encodeToString((last.createdAt + "|" + last.id).getBytes());
+        }
+        return new PageResult(out, next);
+    }
+}`,
+      hints: [
+        'Giải mã cursor: {{new String(Base64.getUrlDecoder().decode(cursor))}} cho chuỗi {{"createdAt|id"}}, rồi {{split("\\\\|")}} (trong Java string cần escape dấu | cho regex, và trong template literal cần thêm một lớp \\).',
+        'Phần tử "đứng sau" mốc (ct, ci) theo thứ tự giảm dần (createdAt, id) khi {{createdAt < ct || (createdAt == ct && id < ci)}}. Trang đầu thì coi mốc là vô cực để lấy từ đầu.',
+        'Chỉ đặt {{nextCursor}} khi trang đầy ({{items.size() == size}}); trang cuối trả {{null}}.',
+      ],
+      explain: `Cursor là "cái kẹp sách": ta so sánh giá trị (createdAt, id) thay vì đếm vị trí. Khi có phần tử mới chèn vào đầu danh sách, các phần tử cũ vẫn giữ nguyên giá trị (createdAt, id), nên điều kiện "sau mốc" vẫn chọn đúng tập phần tử kế tiếp: không trùng, không sót.
+
+Hai điểm dễ sai: (1) quên tie-breaker {{id}} khi {{createdAt}} bằng nhau khiến phần tử cùng mốc bị lặp/bỏ sót; (2) luôn trả {{nextCursor}} kể cả trang cuối làm client lặp vô hạn. Kiểm tra {{out.size() == size}} là cách đơn giản (chấp nhận một lần gọi thừa ở biên); cách chặt hơn là lấy thêm 1 phần tử để biết còn hay không.
+
+Ở API thật, thay vì duyệt list trong bộ nhớ, ta đưa điều kiện "sau mốc" vào câu SQL với index {{(createdAt DESC, id DESC)}} để DB nhảy thẳng tới mốc.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{SELECT ... LIMIT 20 OFFSET 100000}} thường chậm hơn nhiều so với truy vấn dùng cursor ở trang tương đương?',
+      options: [
+        'Vì LIMIT không hoạt động khi có OFFSET',
+        'Vì DB vẫn phải duyệt/bỏ qua 100000 dòng trước khi lấy 20 dòng, trong khi cursor dùng mốc + index để đi thẳng tới vị trí',
+        'Vì cursor không cần ORDER BY',
+        'Vì OFFSET bắt buộc trả về toàn bộ bảng',
+      ],
+      answer: 1,
+      explain: `Offset không "nhảy cóc": DB phải thực hiện công việc tạo ra 100000 dòng đầu rồi loại bỏ. Cursor/keyset đặt điều kiện {{WHERE (createdAt, id) < (t, i)}} khớp index, nên chỉ đọc vùng cần thiết. Trang càng sâu, offset càng chậm tuyến tính; cursor gần như đều.`,
+    },
+    {
+      q: 'Người dùng đang xem trang 1 (offset) của feed. Trước khi họ tải trang 2, một bài viết mới được đăng lên đầu feed. Hệ quả thường gặp là gì?',
+      options: [
+        'Trang 2 trả đúng như cũ, không ảnh hưởng',
+        'Trang 2 có thể lặp lại một mục đã thấy ở trang 1 và/hoặc bỏ sót một mục (do các phần tử bị đẩy dịch)',
+        'Server tự động chuyển sang cursor',
+        'Trang 1 bị xoá khỏi DB',
+      ],
+      answer: 1,
+      explain: `Offset đếm theo vị trí: chèn 1 phần tử lên đầu làm mọi phần tử cũ dịch xuống 1 bậc. Trang 2 (bỏ qua N) giờ bỏ qua cả phần tử mới, nên phần tử cuối trang 1 cũ rơi vào trang 2 (trùng) và chuỗi bị lệch. Cursor bám theo giá trị mốc nên không bị hiệu ứng này.`,
+    },
+    {
+      q: 'Khi thiết kế cursor cho danh sách sắp xếp theo {{createdAt DESC}}, vì sao nên thêm {{id}} làm tiêu chí phụ (ORDER BY createdAt DESC, id DESC)?',
+      options: [
+        'Để truy vấn trông phức tạp hơn',
+        'Để sort ổn định khi nhiều bản ghi cùng createdAt, tránh bỏ sót/lặp phần tử có cùng mốc thời gian',
+        'Vì Base64 chỉ mã hoá được số nguyên',
+        'Vì index không hoạt động trên cột thời gian',
+      ],
+      answer: 1,
+      explain: `Nếu chỉ sort theo {{createdAt}} và nhiều bản ghi cùng giá trị, thứ tự tương đối giữa chúng không xác định giữa các truy vấn; cursor đặt tại một mốc thời gian đó có thể bỏ sót hoặc lặp các bản ghi "đồng hạng". Thêm {{id}} (duy nhất) làm tie-breaker tạo thứ tự toàn phần, ổn định, và cursor {{(createdAt, id)}} định vị chính xác.`,
+    },
+    {
+      q: 'Khi nào offset/limit vẫn là lựa chọn chấp nhận được so với cursor?',
+      options: [
+        'Khi làm feed mạng xã hội vô hạn cho hàng triệu người dùng',
+        'Khi cần "nhảy tới trang 50" trong màn hình quản trị, tập dữ liệu nhỏ/ít biến động và trang sâu hiếm',
+        'Khi dữ liệu thay đổi liên tục từng giây',
+        'Offset luôn tốt hơn cursor trong mọi trường hợp',
+      ],
+      answer: 1,
+      explain: `Offset cho phép nhảy trang tuỳ ý và triển khai đơn giản, phù hợp màn hình admin nội bộ với dữ liệu tương đối ổn định, ít bản ghi, không cuộn sâu vô hạn. Với feed realtime, API public volume lớn, hoặc dữ liệu biến động, cursor tránh được cả vấn đề hiệu năng trang sâu lẫn trùng/sót khi chèn/xoá.`,
+    },
+  ],
+  related: ['api-001', 'api-014', 'api-015'],
+  tags: ['pagination', 'cursor', 'keyset', 'offset', 'REST', 'performance'],
+},
+{
+  id: 'lesson-api-006',
+  track: 'api',
+  order: 6,
+  title: '429 Too Many Requests: Retry-After, RateLimit-* và client tôn trọng giới hạn',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được 429 khác 403 và khác 503 ở đâu, và vì sao client cần {{Retry-After}} thay vì tự đoán',
+    'Đọc và viết đúng các header {{Retry-After}}, {{RateLimit-Limit}}, {{RateLimit-Remaining}}, {{RateLimit-Reset}}',
+    'Viết client retry đúng: backoff tăng dần + jitter xác định, tôn trọng Retry-After, không retry POST thiếu {{Idempotency-Key}}',
+    'Chọn được thuật toán rate limit (fixed window, sliding window, token bucket) và nơi đặt bộ đếm khi chạy nhiều instance',
+  ],
+  body: `### Cái gì: 429 là lời từ chối "có hẹn giờ quay lại"
+**Tóm tắt:** {{429 Too Many Requests}} nghĩa là request hoàn toàn hợp lệ (đúng token, đúng cú pháp) nhưng client đang gọi **quá nhanh** nên server tạm từ chối. Nó khác {{401}}/{{403}} (vấn đề danh tính/quyền, retry vô ích) và khác {{503}} (server quá tải hoặc đang bảo trì, không phải do client). Điểm làm 429 hữu ích: header {{Retry-After}} — server nói luôn **bao lâu nữa thì quay lại**, client không phải đoán.
+
+Thuật ngữ xuất hiện lần đầu, đọc chậm vì mọi ví dụ dưới đây dùng lại:
+- **Rate limit (giới hạn tốc độ)**: trần số request một client được gửi trong một đơn vị thời gian, ví dụ 100 request/phút cho mỗi API key. Giống đèn tín hiệu cho phép tối đa 600 xe mỗi giờ qua một ngã tư.
+- **Quota (hạn mức theo kỳ)**: tổng lượng được dùng trong kỳ dài hơn, ví dụ 1 triệu request/tháng. Rate limit bảo vệ CPU và pool kết nối; quota bảo vệ năng lực vận hành và hoá đơn.
+- **Throttle (bóp lưu lượng)**: làm client chậm lại thay vì chặn hẳn, ví dụ xếp hàng đợi hoặc cắt băng thông.
+- **Backoff (lùi)**: nghỉ mỗi lúc một lâu hơn giữa các lần thử lại: 100ms, 200ms, 400ms…
+- **Jitter (nhiễu ngẫu nhiên)**: cộng thêm một phần ngẫu nhiên vào thời gian nghỉ. Hình dung 5.000 client cùng nhận 429 lúc 10:00:00 và cùng hẹn retry đúng 10 giây sau — nếu không có jitter, cả 5.000 request ập tới trong cùng một giây và làm hệ thống vừa hồi phục gục lần nữa. Jitter dàn trải chúng ra nhiều giây khác nhau.
+- **Retry storm (bão thử lại)**: chính hiện tượng vừa mô tả.
+- **Retry budget (ngân sách retry)**: trần tỷ lệ request được phép là retry, ví dụ "không quá 20% request trong 10 giây gần nhất". Vượt ngân sách thì coi như lỗi thật, dừng retry và **báo động** thay vì tiếp tục tự đào hố.
+- **Idempotent**: gọi một hay nhiều lần với cùng dữ liệu thì trạng thái cuối như nhau (GET, PUT, DELETE). POST thì không, nên retry POST mù có thể trừ tiền hai lần.
+
+### Vì sao cần chặn, và chặn ở đâu
+Mỗi request đều chiếm tài nguyên hữu hạn: một thread (Java 21 có thể dùng **virtual thread** — luồng siêu nhẹ do JVM tự quản, tạo hàng triệu cái không tốn RAM như thread hệ điều hành), một slot trong **connection pool** (nhóm kết nối DB được mở sẵn để dùng lại, vì mở kết nối DB mới tốn vài chục ms), vài KB RAM. Không có giới hạn, một client buggy (vòng lặp gọi API không dừng) hoặc một cú sốc traffic (flash sale) sẽ chiếm hết mọi thứ và **tất cả** khách hàng cùng chết — đây là hiệu ứng "một con hư làm hỏng cả đàn".
+
+Chặn phải đặt **trước** tầng nghiệp vụ: tầng gateway/API edge, hoặc một filter/interceptor sớm trong ứng dụng. Nếu request đã vào tới service rồi mới bị từ chối thì DB và pool kết nối đã hứng trọn cú đánh, tức là ta chặn để… bảo vệ cảm giác của lập trình viên chứ không phải bảo vệ hệ thống.
+
+### Các thuật toán đếm request
+| Thuật toán | Cách hoạt động | Ưu | Nhược |
+|---|---|---|---|
+| **Fixed window** (cửa sổ cố định) | Đếm trong ô "phút hiện tại", vượt trần thì chặn, quay số 0 vào đầu phút sau | 1 bộ đếm, cực rẻ | Cho phép lách kiểu burst kép: 100 request lúc 10:00:59 + 100 request lúc 10:01:01 = 200 request trong 2 giây nhưng không lần nào vượt "100/phút" |
+| **Sliding window log** (nhật ký cửa sổ trượt) | Lưu timestamp **từng** request, đếm số phần tử trong 60 giây gần nhất | Chính xác tuyệt đối | Tốn nhớ theo số request |
+| **Sliding window counter** | Đếm theo cửa sổ hiện tại + tỉ lệ phần đã trôi qua của cửa sổ trước | Rẻ, xấp xỉ đúng | Chỉ là ước lượng |
+| **Token bucket** (lọ token) | Lọ sức chứa B, được nạp r token/giây. Mỗi request lấy 1 token; lọ cạn thì 429. Hết tốc lực rồi vẫn "burst" được B request liên tiếp | Cho phép burst tự nhiên, chỉ cần 2 số (tokens, lastRefill) để mô tả **một client**, nên mới chạy được ở **API edge** (tầng cửa ngõ, nơi request đầu tiên chạm hệ thống bạn — thường là gateway) | Tính đúng hơn fixed window một chút; cần xử lý đồng bộ khi nhiều thread cùng lấy token |
+
+Token bucket là lựa chọn phổ biến nhất cho API công khai vì nó mô tả đúng ý "trung bình 100/phút, vẫn được burst ngắn trong giới hạn".
+
+~~~java
+// Mot lo token thu thuan JDK: suc chua 100 token, nap day 100 token moi 60 giay.
+class TokenBucket {
+    private static final double CAPACITY = 100;
+    private static final long REFILL_NANOS = 60_000_000_000L;   // 60 giay
+    private double tokens = CAPACITY;
+    private long last = System.nanoTime();
+
+    synchronized boolean tryConsume() {
+        long now = System.nanoTime();
+        tokens = Math.min(CAPACITY, tokens + (now - last) / (double) REFILL_NANOS * CAPACITY);
+        last = now;
+        if (tokens < 1) return false;
+        tokens -= 1;
+        return true;
+    }
+
+    // Con bao nhieu giay thi co lai du 1 token? Day chinh la gia tri cho Retry-After.
+    synchronized long retryAfterSeconds() {
+        double missing = Math.max(0, 1 - tokens);
+        return (long) Math.ceil(missing / CAPACITY * 60);
+    }
+}
+~~~
+
+### Header phía server: hai nhóm, đừng nhầm
+**Nhóm 1 — {{Retry-After}}** (đi kèm 429 và 503; RFC 9110 định nghĩa nó cho 503 và 3xx, các hãng API dùng cả cho 429). Chỉ có **hai** định dạng:
+- Số giây: {{Retry-After: 12}} — "đợi 12 giây". Dễ nhất cho client.
+- HTTP-date: {{Retry-After: Wed, 21 Oct 2026 07:28:00 GMT}} — "đợi tới thời điểm này". **Phụ thuộc đồng hồ hai bên**: lệch giờ là lệch thời gian chờ, nên ưu tiên dạng số giây.
+
+**Nhóm 2 — {{RateLimit-*}}** cho client biết **còn bao nhiêu** để tự điều tiết trước khi bị chặn:
+- {{RateLimit-Limit}}: hạn mức của cửa sổ (100).
+- {{RateLimit-Remaining}}: còn lại bao nhiêu request trong cửa sổ.
+- {{RateLimit-Reset}}: **số giây nữa** cửa sổ hồi tokens (bản draft IETF cũ định nghĩa là epoch timestamp; bản draft mới dùng số giây — vì vậy khi đọc API của đối tác, phải tra tài liệu của họ chứ đừng đoán).
+
+Bản draft IETF hiện hành gộp thành một header kiểu structured field, ví dụ {{RateLimit: "account";r=49;t=12}}, cho phép nhiều hạn mức cùng lúc (theo tài khoản, theo IP). Trên thực tế phần lớn API vẫn trả ba header rời, và SDK nào cũng đọc được cả hai nếu bạn viết client tử tế.
+
+Nguyên tắc vàng: **{{RateLimit-Remaining}} là thông tin, {{Retry-After}} là lệnh.** Server vẫn có quyền trả 429 sớm hơn (đang scale-down), nên client chỉ được tin tuyệt đối vào Retry-After.
+
+### Luồng đầy đủ khi có nhiều tầng
+~~~seq
+title: Client tôn trọng 429 + Retry-After
+actors: App | Gateway | Redis | Service
+App -> Gateway: GET /orders (ke kem API key)
+Gateway -> Redis: tryConsume key=ratelimit:acct42
+Redis --> Gateway: OK, con 48 token
+Gateway -> Service: forward request
+Service --> Gateway: 200 OK, danh sach lenh
+Gateway --> App: 200 + RateLimit-Remaining: 47
+App -> Gateway: request thu 101 trong cung phut
+Gateway -> Redis: tryConsume
+Redis --> Gateway: EMPTY, lọ da can
+note Gateway: khong forward; sinh 429 tai edge
+Gateway --> App: 429 + Retry-After: 12
+note App: cho 12s + jitter, chi retry vi GET
+App -> Gateway: GET /orders sau 12 giay
+Gateway --> App: 200 OK
+~~~
+
+Vì sao bộ đếm phải ở **Redis** (Redis = kho lưu giá trị trong RAM, truy cập bằng tên khoá, dùng chung cho mọi instance) mà không ở biến trong JVM? Vì ứng dụng chạy 6 instance sau load balancer: mỗi instance giữ bộ đếm riêng thì hạn mức thực tế thành 600/phút dù bạn công bố 100/phút. Đây là lỗi kinh điển khi scale-out. Đổi lại, mỗi request thêm một round-trip Redis (vài ms), nên người ta thường đếm **cục bộ + tổng** (mỗi instance giữ hạn mức nháp, định kỳ báo về Redis để trừ dần) hoặc dùng Redis với lệnh nguyên tử {{EVAL}} một lượt.
+
+### Client đúng cách: viết một lần, mọi SDK dùng chung
+~~~java
+Response send(Request req) {
+    int attempt = 0;
+    while (true) {
+        attempt++;
+        Response r = http.execute(req);
+        boolean retryable = (r.status() == 429 || r.status() == 503);
+        boolean safe = !req.method().equals("POST") || req.header("Idempotency-Key") != null;
+        if (!retryable || !safe || attempt >= MAX_ATTEMPTS) return r;
+        sleep(backoff(r, attempt));        // chi cho phep ngat giua chung khi caller het tong thoi gian cho
+    }
+}
+
+long backoff(Response r, int attempt) {
+    String ra = r.header("Retry-After");
+    if (ra != null) return retryAfterMillis(ra);          // 1) server noi gì thì nghe cái đó
+    long d = Math.min(MAX_DELAY, BASE_DELAY << (attempt - 1));  // 2) exponential: 100, 200, 400...
+    return d / 2 + random.nextLong(d / 2 + 1);            // 3) "equal jitter": [d/2, d]
+}
+~~~
+Bốn quyết định thiết kế cần nói được khi phỏng vấn:
+1. **Nghe {{Retry-After}} trước**, chỉ tự tính khi server không nói. Server biết lọ token của bạn bao giờ hồi phục, client thì không.
+2. **Backoff luỹ thừa** (mỗi lần thử nhân đôi) để dàn tải, **chặn trần** (cap) ở ví dụ 10–30 giây để không chờ tới hết deadline người dùng.
+3. **Jitter** để hàng nghìn client không retry cùng một instant. Hai biến thể hay nhắc: *full jitter* ({{random(0, d)}}) và *equal jitter* ({{d/2 + random(0, d/2)}} — vẫn đảm bảo nghỉ đủ lâu, ít dồn hơn).
+4. **Không retry request không idempotent.** POST không có {{Idempotency-Key}} thì 429 là "hãy gọi lại sau khi tạo key mới", không phải "gửi lại y như cũ". Nếu bắt buộc retry POST, phải gửi lại **cùng một** key (bài 3 và 4 của track này).
+
+Ngoài ra cần một **tổng deadline**: 5 lần retry với backoff có thể tiêu tốn hơn 30 giây, trong khi người dùng đã rời màn hình từ giây thứ 3. SDK tốt luôn nhận {{timeout}} từ caller và huỷ giữa chừng khi hết thời gian.
+
+### Lỗi hay gặp
+- **Trả 429 mà không có {{Retry-After}}**: client buộc phải đoán, đa số đoán "ngay lập tức" → tự sinh ra retry storm.
+- **Đếm theo IP** với khách hàng đi qua proxy công ty: 200 nhân viên dùng chung một IP, cả công ty bị chặn vì một người. Phải đếm theo API key/user, IP chỉ là lớp phụ.
+- **Mỗi instance một hạn mức** như đã nói ở trên.
+- **Retry sập nguồn lỗi**: retry chỉ dành cho lỗi **tạm thời** (429, 503, timeout mạng). Retry khi nhận {{400}}/{{401}}/{{403}}/{{422}} chỉ làm chậm người dùng và che mất bug thật.
+- **Quên ngân sách retry và cảnh báo**: nếu 429 kéo dài thì đó là sự cố, không phải thứ để SDK âm thầm xử lý. Đếm số lần retry và đẩy lên metrics.
+- **Để retry phá deadline của caller** hoặc retry mãi không dừng (thiếu {{maxAttempts}}) — vòng lặp vô hạn khi server lỗi dai dẳng.
+- **Bỏ sót cảnh báo ở client**: 429 nên được log với nhãn riêng; nếu gộp chung vào "lỗi mạng" thì sáng hôm sau không ai biết mình đã bị đối tác chặn.
+
+### Liên hệ phỏng vấn
+Câu điển hình: "API công khai của bạn chạy 8 instance sau load balancer, đối tác phàn nàn bị 429 oan. Điều tra và sửa thế nào?" Cấu trúc trả lời ăn điểm:
+1. **Xác định chỗ đếm**: 8 instance mỗi cái một bộ đếm trong JVM → hạn mức thực tế gấp 8 và không ổn định theo định tuyến; chuyển bộ đếm ra Redis (lệnh nguyên tử) hoặc xuống API gateway.
+2. **Kiểm tra đơn vị tính**: đếm theo IP hay theo API key? Sau NAT công ty thì IP là đơn vị sai.
+3. **Chất lượng response**: 429 có {{Retry-After}} và {{RateLimit-Remaining}} chưa; có {{Request-Id}} để đối chiếu log hai bên không.
+4. **Phía client**: SDK có backoff + jitter, có maxAttempts, có tôn trọng tính idempotent không.
+5. **Chính sách**: hạn mức theo khách hàng (tier), theo endpoint ({{POST /payments}} đắt hơn {{GET /health}}), và cần cả **công cụ tự phục vụ** để khách thấy mức dùng của họ.
+
+Điểm cộng: nói được rằng rate limit là một phần của **graceful degradation** (hệ thống chủ động hy sinh một phần dịch vụ để phần còn lại sống) — chặn đúng đối tượng để 99% khách hàng tốt vẫn chạy, thay vì để hệ thống chết chung.
+
+> **Senior tip:** Ba chi tiết phân biệt người từng vận hành API công khai. (1) Luôn trả {{Retry-After}} cho 429 **và** 503, kể cả khi bạn chỉ ước lượng "1 giây" — con số sai vẫn tốt hơn không có gì. (2) Trả 429 **càng sớm càng tốt**: ở edge, trước khi giải JWT và trước khi chạm DB; nếu filter rate limit chạy sau filter auth thì kẻ tấn công vẫn làm bạn tốn tài nguyên xác thực. (3) Cân nhắc 429 **trước cả request**: nếu {{RateLimit-Remaining}} = 0 thì chủ động chờ 150ms thay vì gọi và nhận 429 — bạn giảm được một vòng round-trip cho cả hai bên, và đối tác không bị tính là "khách hàng có lỗi".`,
+  exercises: [
+    {
+      title: 'RetryClient: đọc Retry-After, backoff + jitter xác định, không retry POST thiếu Idempotency-Key',
+      prompt: `Viết {{class RetryClient}} gọi một server giả theo đúng hợp đồng dưới đây. Mọi thứ đều **xác định** (deterministic): có đồng hồ giả, không được dùng {{Thread.sleep}}, không dùng thời gian thực.
+
+Các loại có sẵn (đừng đổi chữ ký):
+- {{FakeServer}} — interface có đúng một method, {{Response handle(Request req)}}, server giả trả về một {{Response}} cho mỗi lần được gọi.
+- {{record Request(String method, String path, Map<String, String> headers)}} — {{header(name)}} tra cứu **không phân biệt hoa thường**.
+- {{record Response(int status, Map<String, String> headers)}} — khoá header trong map này đã là chữ thường; {{header(name)}} lấy theo tên.
+- {{class FakeClock}} — {{long now()}}, {{void advance(long deltaMillis)}}.
+- {{class RetryPolicy}} — {{int maxAttempts}} (tổng số lần gọi server, tính cả lần đầu, >= 1), {{long baseDelayMs}}, {{long maxDelayMs}} (trần của bước lùi), {{long seed}}.
+
+Chữ ký phải cài: {{Response send(Request req)}}.
+
+Luật xử lý, áp dụng theo thứ tự:
+1. Gọi {{server.handle(req)}}. Đếm số lần đã gọi là {{attempt}} (lần đầu là 1).
+2. Trả ngay {{resp}} (không chờ) nếu **ít nhất một** điều kiện sau đúng:
+   - {{resp.status()}} không phải 429 và không phải 503.
+   - {{attempt >= policy.maxAttempts}} (hết ngân sách thử — trả về chính response cuối cùng nhận được).
+   - {{req.method()}} là {{POST}} và request **không** có header {{Idempotency-Key}}. Lý do: retry một request không idempotent có thể tạo bản ghi trùng, an toàn còn hơn lịch sự.
+3. Ngược lại, tính thời gian chờ {{wait}} rồi gọi {{clock.advance(wait)}} và quay lại bước 1:
+   - Nếu {{resp}} có header {{retry-after}} không rỗng thì **dùng nó**, bỏ qua backoff và jitter. {{retry-after}} là số nguyên giây (ví dụ {{"7"}} nghĩa là 7000 ms) **hoặc** một HTTP-date theo RFC 1123 (ví dụ {{"Tue, 14 Nov 2023 22:13:50 GMT"}}); với HTTP-date, {{wait}} = thời điểm đó trừ {{clock.now()}}, tối thiểu 0. Giá trị giây âm được coi là 0.
+   - Nếu không có {{retry-after}}: {{d = min(maxDelayMs, baseDelayMs * 2^(attempt-1))}}, sau đó áp jitter nửa-và-nửa: {{wait = d/2 + jitter}} với {{jitter}} nằm trong {{[0, d/2]}}.
+   - {{jitter}} phải **xác định**: mỗi lần gọi {{send}}, tạo đúng một {{SplittableRandom}} với seed {{policy.seed ^ (req.method() + " " + req.path()).hashCode()}}, rồi mỗi lần retry lấy {{rnd.nextLong(d / 2 + 1)}}. Cùng một request, cùng seed thì phải ra cùng một dãy thời gian chờ.
+4. Response cuối cùng nhận được là kết quả trả về (kể cả khi vẫn là 429).`,
+      starter: `import java.time.*;
+import java.time.format.DateTimeFormatter;
+
+interface FakeServer {
+    Response handle(Request req);
+}
+
+record Request(String method, String path, Map<String, String> headers) {
+    Request {
+        Map<String, String> norm = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : headers.entrySet()) norm.put(e.getKey().toLowerCase(Locale.ROOT), e.getValue());
+        headers = norm;
+    }
+    Request(String method, String path) { this(method, path, Map.of()); }
+    String header(String name) { return headers.get(name.toLowerCase(Locale.ROOT)); }
+}
+
+record Response(int status, Map<String, String> headers) {
+    Response(int status) { this(status, Map.of()); }
+    String header(String name) { return headers.get(name); }
+}
+
+class FakeClock {
+    private long ms;
+    FakeClock(long startMillis) { this.ms = startMillis; }
+    long now() { return ms; }
+    void advance(long deltaMillis) { this.ms += deltaMillis; }
+}
+
+class RetryPolicy {
+    final int maxAttempts;
+    final long baseDelayMs;
+    final long maxDelayMs;
+    final long seed;
+    RetryPolicy(int maxAttempts, long baseDelayMs, long maxDelayMs, long seed) {
+        this.maxAttempts = maxAttempts;
+        this.baseDelayMs = baseDelayMs;
+        this.maxDelayMs = maxDelayMs;
+        this.seed = seed;
+    }
+}
+
+class RetryClient {
+    private final FakeServer server;
+    private final FakeClock clock;
+    private final RetryPolicy policy;
+
+    RetryClient(FakeServer server, FakeClock clock, RetryPolicy policy) {
+        this.server = server;
+        this.clock = clock;
+        this.policy = policy;
+    }
+
+    Response send(Request req) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void inRange(long lo, long hi, long v) {
+        if (v < lo || v > hi) throw new AssertionError("expected in [" + lo + "," + hi + "] got " + v);
+    }
+    static Map<String, String> h(String... kv) {
+        Map<String, String> m = new LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
+        return m;
+    }
+    static class Recorder {
+        final List<Long> at = new ArrayList<>();
+        final List<Request> seen = new ArrayList<>();
+        int calls() { return at.size(); }
+        List<Long> gaps() {
+            List<Long> d = new ArrayList<>();
+            for (int i = 1; i < at.size(); i++) d.add(at.get(i) - at.get(i - 1));
+            return d;
+        }
+    }
+    static FakeServer script(FakeClock clock, Recorder rec, Response... responses) {
+        return req -> {
+            rec.at.add(clock.now());
+            rec.seen.add(req);
+            int i = rec.calls() - 1;
+            return i < responses.length ? responses[i] : responses[responses.length - 1];
+        };
+    }
+    public static void main(String[] args) {
+        check("429 roi 200: chi retry dung 1 lan, cho trong khoang backoff", () -> {
+            FakeClock clock = new FakeClock(1_000_000L);
+            Recorder rec = new Recorder();
+            RetryPolicy p = new RetryPolicy(5, 100, 2000, 7L);
+            RetryClient c = new RetryClient(script(clock, rec, new Response(429), new Response(200)), clock, p);
+            Response r = c.send(new Request("GET", "/orders"));
+            eq(200, Integer.valueOf(r.status()));
+            eq(2, Integer.valueOf(rec.calls()));
+            List<Long> g = rec.gaps();
+            eq(1, Integer.valueOf(g.size()));
+            inRange(50, 100, g.get(0));
+        });
+        check("retry-after giay duoc ton that tuyet doi, bang qua jitter", () -> {
+            FakeClock clock = new FakeClock(1_000_000L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(
+                script(clock, rec, new Response(429, h("retry-after", "7")), new Response(200)), clock, new RetryPolicy(5, 100, 2000, 7L));
+            eq(200, Integer.valueOf(c.send(new Request("GET", "/orders")).status()));
+            List<Long> g = rec.gaps();
+            eq(1, Integer.valueOf(g.size()));
+            eq(7000L, g.get(0).longValue());
+        });
+        check("retry-after kieu HTTP-date tinh theo dong ho gia", () -> {
+            FakeClock clock = new FakeClock(1_700_000_000_000L);
+            String when = DateTimeFormatter.RFC_1123_DATE_TIME
+                .format(ZonedDateTime.ofInstant(Instant.ofEpochMilli(clock.now() + 30_000L), ZoneOffset.UTC));
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(
+                script(clock, rec, new Response(429, h("retry-after", when)), new Response(200)), clock, new RetryPolicy(5, 100, 2000, 3L));
+            eq(200, Integer.valueOf(c.send(new Request("GET", "/orders")).status()));
+            eq(30000L, rec.gaps().get(0).longValue());
+        });
+        check("retry-after am duoc coi la 0", () -> {
+            FakeClock clock = new FakeClock(500L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(
+                script(clock, rec, new Response(429, h("retry-after", "-5")), new Response(200)), clock, new RetryPolicy(5, 100, 2000, 1L));
+            eq(200, Integer.valueOf(c.send(new Request("GET", "/orders")).status()));
+            eq(500L, clock.now());
+            eq(2, Integer.valueOf(rec.calls()));
+        });
+        check("POST thieu Idempotency-Key: khong bao gio retry du co retry-after", () -> {
+            FakeClock clock = new FakeClock(1_000_000L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(
+                script(clock, rec, new Response(429, h("retry-after", "1")), new Response(200)), clock, new RetryPolicy(5, 100, 2000, 2L));
+            Response r = c.send(new Request("POST", "/payments"));
+            eq(429, Integer.valueOf(r.status()));
+            eq(1, Integer.valueOf(rec.calls()));
+            eq(1_000_000L, clock.now());
+        });
+        check("POST co Idempotency-Key: duoc retry, gi nguyen header qua moi lan", () -> {
+            FakeClock clock = new FakeClock(0L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(
+                script(clock, rec, new Response(503), new Response(503), new Response(201)), clock, new RetryPolicy(3, 20, 500, 5L));
+            Response r = c.send(new Request("POST", "/payments", h("idempotency-key", "k-1")));
+            eq(201, Integer.valueOf(r.status()));
+            eq(3, Integer.valueOf(rec.calls()));
+            List<Long> g = rec.gaps();
+            eq(2, Integer.valueOf(g.size()));
+            inRange(10, 20, g.get(0));
+            inRange(20, 40, g.get(1));
+            for (Request seen : rec.seen) eq("k-1", seen.header("Idempotency-Key"));
+        });
+        check("ket ngan o maxAttempts va tra nguyen response cuoi", () -> {
+            FakeClock clock = new FakeClock(0L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(
+                script(clock, rec, new Response(429, h("retry-after", "3"))), clock, new RetryPolicy(3, 100, 5000, 9L));
+            Response r = c.send(new Request("GET", "/orders"));
+            eq(429, Integer.valueOf(r.status()));
+            eq(3, Integer.valueOf(rec.calls()));
+            eq(List.of(3000L, 3000L), rec.gaps());
+        });
+        check("maxAttempts = 1 nghia la khong retry lan nao", () -> {
+            FakeClock clock = new FakeClock(0L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(script(clock, rec, new Response(503)), clock, new RetryPolicy(1, 100, 500, 4L));
+            eq(503, Integer.valueOf(c.send(new Request("DELETE", "/orders/9")).status()));
+            eq(1, Integer.valueOf(rec.calls()));
+            eq(0L, clock.now());
+        });
+        check("mau khong retry duoc (500, 403) tra ve ngay lap tuc", () -> {
+            FakeClock clock = new FakeClock(77L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(script(clock, rec, new Response(500), new Response(200)), clock, new RetryPolicy(4, 100, 900, 8L));
+            eq(500, Integer.valueOf(c.send(new Request("GET", "/orders")).status()));
+            eq(1, Integer.valueOf(rec.calls()));
+            eq(77L, clock.now());
+        });
+        check("backoff tang day nhung bi chan o maxDelayMs", () -> {
+            FakeClock clock = new FakeClock(0L);
+            Recorder rec = new Recorder();
+            RetryClient c = new RetryClient(script(clock, rec,
+                new Response(429), new Response(429), new Response(429), new Response(429), new Response(429), new Response(200)),
+                clock, new RetryPolicy(6, 100, 400, 3L));
+            eq(200, Integer.valueOf(c.send(new Request("GET", "/orders")).status()));
+            List<Long> g = rec.gaps();
+            eq(5, Integer.valueOf(g.size()));
+            inRange(50, 100, g.get(0));
+            inRange(100, 200, g.get(1));
+            inRange(200, 400, g.get(2));
+            inRange(200, 400, g.get(3));
+            inRange(200, 400, g.get(4));
+        });
+        check("cung seed thi cho cung day thoi gian cho (jitter xac dinh)", () -> {
+            long start = 10_000L;
+            List<Long> first, second;
+            {
+                FakeClock clock = new FakeClock(start);
+                Recorder rec = new Recorder();
+                RetryClient c = new RetryClient(script(clock, rec, new Response(429), new Response(429), new Response(429), new Response(200)),
+                    clock, new RetryPolicy(5, 100, 5000, 11L));
+                c.send(new Request("GET", "/accounts/7"));
+                first = rec.gaps();
+            }
+            {
+                FakeClock clock = new FakeClock(start);
+                Recorder rec = new Recorder();
+                RetryClient c = new RetryClient(script(clock, rec, new Response(429), new Response(429), new Response(429), new Response(200)),
+                    clock, new RetryPolicy(5, 100, 5000, 11L));
+                c.send(new Request("GET", "/accounts/7"));
+                second = rec.gaps();
+            }
+            eq(3, Integer.valueOf(first.size()));
+            eq(first, second);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+import java.time.format.DateTimeFormatter;
+
+interface FakeServer {
+    Response handle(Request req);
+}
+
+record Request(String method, String path, Map<String, String> headers) {
+    Request {
+        Map<String, String> norm = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : headers.entrySet()) norm.put(e.getKey().toLowerCase(Locale.ROOT), e.getValue());
+        headers = norm;
+    }
+    Request(String method, String path) { this(method, path, Map.of()); }
+    String header(String name) { return headers.get(name.toLowerCase(Locale.ROOT)); }
+}
+
+record Response(int status, Map<String, String> headers) {
+    Response(int status) { this(status, Map.of()); }
+    String header(String name) { return headers.get(name); }
+}
+
+class FakeClock {
+    private long ms;
+    FakeClock(long startMillis) { this.ms = startMillis; }
+    long now() { return ms; }
+    void advance(long deltaMillis) { this.ms += deltaMillis; }
+}
+
+class RetryPolicy {
+    final int maxAttempts;
+    final long baseDelayMs;
+    final long maxDelayMs;
+    final long seed;
+    RetryPolicy(int maxAttempts, long baseDelayMs, long maxDelayMs, long seed) {
+        this.maxAttempts = maxAttempts;
+        this.baseDelayMs = baseDelayMs;
+        this.maxDelayMs = maxDelayMs;
+        this.seed = seed;
+    }
+}
+
+class RetryClient {
+    private final FakeServer server;
+    private final FakeClock clock;
+    private final RetryPolicy policy;
+
+    RetryClient(FakeServer server, FakeClock clock, RetryPolicy policy) {
+        this.server = server;
+        this.clock = clock;
+        this.policy = policy;
+    }
+
+    Response send(Request req) {
+        SplittableRandom rnd = new SplittableRandom(policy.seed ^ (req.method() + " " + req.path()).hashCode());
+        int attempt = 0;
+        while (true) {
+            attempt++;
+            Response resp = server.handle(req);
+            boolean retryable = resp.status() == 429 || resp.status() == 503;
+            boolean safeToRepeat = !"POST".equals(req.method()) || req.header("Idempotency-Key") != null;
+            if (!retryable || !safeToRepeat || attempt >= policy.maxAttempts) return resp;
+            clock.advance(waitMillis(resp, attempt, rnd));
+        }
+    }
+
+    private long waitMillis(Response resp, int attempt, SplittableRandom rnd) {
+        Long serverSaid = retryAfterMillis(resp.header("retry-after"), clock.now());
+        if (serverSaid != null) return serverSaid;        // server da biet, khong can doan
+        long d = policy.baseDelayMs;
+        for (int i = 1; i < attempt; i++) d = Math.min(policy.maxDelayMs, d * 2);
+        return d / 2 + rnd.nextLong(d / 2 + 1);           // "equal jitter": nua co dinh, nua ngau nhien
+    }
+
+    // tra ve null neu header vang hoac khong parse duoc (coi nhu server khong noi gi)
+    static Long retryAfterMillis(String value, long nowMillis) {
+        if (value == null || value.isBlank()) return null;
+        String v = value.trim();
+        try {
+            return Math.max(0L, Long.parseLong(v) * 1000L);       // dang so giay
+        } catch (NumberFormatException notSeconds) {
+            // lang xuong thu dang HTTP-date
+        }
+        try {
+            long at = Instant.from(DateTimeFormatter.RFC_1123_DATE_TIME.parse(v)).toEpochMilli();
+            return Math.max(0L, at - nowMillis);                  // dang moc thoi gian tuyet doi
+        } catch (RuntimeException badDate) {
+            return null;
+        }
+    }
+}`,
+      hints: [
+        'Vòng lặp {{while(true)}} với bộ đếm {{attempt}} tăng ở **đầu** mỗi vòng: gọi server trước, rồi mới quyết định có chờ và quay vòng nữa không.',
+        'Chưa {{retry-after}} bằng {{Long.parseLong}}; ném {{NumberFormatException}} thì mới thử {{DateTimeFormatter.RFC_1123_DATE_TIME}} và trừ {{clock.now()}}.',
+        'Đừng nhân đôi tràn bộ nhớ: thay vì shift {{baseDelayMs << (attempt-1)}}, lặp {{attempt-1}} lần {{d = Math.min(maxDelayMs, d * 2)}}, hoặc tạo {{SplittableRandom}} một lần duy nhất đầu hàm send.',
+      ],
+      explain: `Ba điều bài tập này dạy, cũng là ba lỗi phổ biến trong SDK thật.
+
+**Một — thứ tự kiểm tra quyết định tính an toàn.** Điều kiện "POST không có {{Idempotency-Key}}" phải chặn retry **trước khi** chờ. Nếu để sau, client vẫn lịch sự chờ 12 giây rồi mới gửi lại một lệnh chuyển tiền có thể đã thành công ở phía server (request timeout ≠ request thất bại — server có thể đã trừ tiền rồi mới chết ở đường về). Đây chính là lý do {{Idempotency-Key}} tồn tại: nó biến một POST không idempotent thành một POST **có thể phát lại**, và đó cũng là lý do client không được tự sinh key mới cho mỗi lần retry — phải giữ nguyên key, như test {{gi nguyen header qua moi lan}} kiểm tra.
+
+**Hai — {{Retry-After}} là lệnh, backoff là phương án dự phòng.** Server giữ lọ token nên biết chính xác khi nào bạn hồi phục; client chỉ đoán. Vì vậy khi có header thì dùng thẳng, không cộng thêm jitter (test {{retry-after giay}} đòi đúng 7000 ms). Khi phải tự tính, công thức an toàn là {{min(cap, base * 2^(attempt-1))}} rồi cắt về nửa trên + nửa ngẫu nhiên — biến thể *equal jitter*. Nếu dùng {{new Random()}} trần, các test của bạn sẽ chạy không xác định; nếu dùng **cùng một** giá cố định cho mọi request thì tất cả client lại retry cùng một nhịp, đúng cái jitter sinh ra để tránh. Mẹo: seed theo {{policy.seed ^ request.hashCode()}} — xác định theo từng request, khác nhau giữa các request.
+
+**Ba — đồng hồ giả biến logic chờ thành logic kiểm chứng được.** Nếu client gọi {{Thread.sleep}}, test mất 30 giây thật và vẫn không chứng minh được client chờ **đúng bao lâu**. Với {{FakeClock}}, mỗi lần chờ là một {{advance}} và bạn chỉ việc so hiệu thời điểm giữa hai lần gọi server. Đây là khuôn mẫu đáng học: bất kỳ code nào phụ thuộc thời gian (SRS, phiên hết hạn, cache TTL) đều nên nhận đồng hồ qua tham số để test được.
+
+Lỗi hay gặp khi viết bài này: dùng {{<=}} thay {{<}} khiến số lần gọi nhiều hơn {{maxAttempts}}; quên {{attempt >= maxAttempts}} khi {{maxAttempts == 1}} nên vẫn retry; coi mọi header {{retry-after}} là số nên ném exception khi gặp HTTP-date; parse HTTP-date bằng {{Date}} cũ phụ thuộc múi giờ máy chạy test (mốc 1970-01-01T00:00:00Z) thay vì {{Instant}}; và trả về response **đầu tiên** thay vì response cuối khi cạn ngân sách, làm mất {{retry-after}} mới nhất mà client gọi cấp trên cần.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Server trả {{429}} kèm {{Retry-After: 30}}. Client nên làm gì?',
+      options: [
+        'Retry ngay lập tức vì 429 là lỗi mạng tạm thời',
+        'Chờ 30 giây (có thể cộng jitter) rồi retry, nếu request là idempotent',
+        'Dừng hẳn và báo lỗi cho người dùng vì 429 nghĩa là bị cấm vĩnh viễn',
+        'Retry ngay nhưng tăng {{RateLimit-Limit}} lên 30',
+      ],
+      answer: 1,
+      explain: '{{Retry-After}} cho biết thời điểm server kỳ vọng bạn quay lại, nên chờ theo nó. Cộng thêm jitter là tốt để dàn tải khi có hàng nghìn client cùng bị chặn. Chờ chỉ áp dụng cho request idempotent. 429 không phải cấm vĩnh viễn (đó là 403 hoặc khoá tài khoản), và {{RateLimit-Limit}} là header **server gửi**, client gửi lên không có ý nghĩa gì.',
+    },
+    {
+      q: 'Vì sao không nên tự retry một {{POST /payments}} nhận về 503?',
+      options: [
+        'Vì 503 không phải lỗi có thể retry',
+        'Vì POST chưa chắc idempotent: retry có thể tạo thêm một giao dịch thứ hai, trừ tiền hai lần',
+        'Vì POST luôn nhanh hơn GET nên retry là lãng phí',
+        'Vì client không được phép retry bất kỳ method nào',
+      ],
+      answer: 1,
+      explain: '503 là lỗi tạm thời và **có thể** retry, nhưng chỉ với request mà gọi lại không gây tác dụng phụ. POST không idempotent: lệnh có thể đã thành công ở server rồi mới mất trên đường về, retry sẽ tạo bản ghi thứ hai.Lối ra duy nhất là làm cho nó idempotent bằng {{Idempotency-Key}} và gửi lại **cùng key** — khi đó retry là an toàn.',
+    },
+    {
+      q: 'Ứng dụng chạy 8 instance sau load balancer, mỗi instance giữ bộ đếm request trong một biến của JVM. Hệ quả là gì?',
+      options: [
+        'Không sao, load balancer tự chia đều nên hạn mức vẫn đúng',
+        'Hạn mức thực tế thành gấp ~8 lần công bố và phụ thuộc định tuyến, phải chuyển bộ đếm ra Redis hoặc gateway',
+        'Hiệu năng giảm vì Redis không được dùng',
+        'Chỉ sai khi có hơn 100 client',
+      ],
+      answer: 1,
+      explain: 'Mỗi JVM đếm độc lập nên "100 request/phút" nhân theo số instance; client có session affinity (load balancer luôn đẩy cùng một khách về một instance) còn thấy hạn mức "ảo" khác client bị phân tán. Bộ đếm phải ở nơi **dùng chung** (Redis với lệnh nguyên tử, hoặc tầng gateway). Load balancer chia đều chỉ làm sai số ít hơn, không làm nó đúng.',
+    },
+    {
+      q: 'Hiện tượng "nhiều client cùng nhận 429 rồi cùng retry đúng một giây sau, làm hệ thống vừa hồi phục gục lần nữa" gọi là gì và khắc phục bằng cách nào?',
+      options: [
+        'Thundering herd — chỉ có thể khắc phục bằng cách tăng hạn mức',
+        'Retry storm — dùng backoff luỹ thừa cộng jitter, và đặt retry budget',
+        'Split-brain — dùng thêm một Redis replica',
+        'Poison pill — xoá message khỏi hàng đợi',
+      ],
+      answer: 1,
+      explain: 'Đây là retry storm (một dạng của thundering herd). Backoff luỹ thừa làm tổng tải giảm theo thời gian, jitter dàn trải các mốc retry thay vì dồn vào một giây, retry budget ngăn việc biến mọi request thành retry. Tăng hạn mức chỉ là chữa cháy, không loại bỏ hiện tượng.',
+    },
+  ],
+  related: ['api-019', 'api-002', 'api-011'],
+  tags: ['429', 'Retry-After', 'rate limit', 'backoff', 'jitter', 'retry', 'client'],
+},
+{
+  id: 'lesson-api-007',
+  track: 'api',
+  order: 7,
+  title: 'Tiến hoá API mà không làm hỏng client: breaking change, tolerant reader, versioning, Sunset',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân loại một thay đổi schema thành an toàn / rủi ro / phá vỡ, và giải thích được vì sao nằm ở nhóm đó',
+    'Cấu hình **tolerant reader** trong Jackson để client cũ không crash khi server thêm field hoặc thêm giá trị enum',
+    'Chọn cách versioning (URI, header, media type) và biện minh bằng đánh đổi về cache, debug, CORS',
+    'Viết lộ trình deprecation đúng: {{Deprecation}}, {{Sunset}}, {{Link}} và đo lường trước khi tắt bản cũ',
+  ],
+  body: `### Cái gì: API là hợp đồng, không phải hàm nội bộ
+**Tóm tắt:** Khi đổi một hàm trong service của bạn, bạn sửa luôn 20 chỗ gọi nó trong cùng một commit. Khi đổi API, bạn không biết ai đang gọi: app mobile phiên bản 2.3 đã phát hành từ năm ngoái và nằm trên máy khách hàng, đối tác đã tích hợp từ hai năm trước, cùng một scripts nội bộ của team khác. Bạn **không thể** sửa phía họ, nên chỉ có ba lựa chọn: đổi theo cách họ chịu được (tương thích ngược), chạy song song hai phiên bản (versioning), hoặc báo trước rồi tắt dần (deprecation + {{Sunset}}).
+
+Thuật ngữ xuất hiện lần đầu:
+- **Tương thích ngược (backward compatible)**: phiên bản server mới vẫn phục vụ đúng kỳ vọng của client **cũ**. Ví dụ đời thường: ổ cắm điện mới vẫn cắm được phích cũ.
+- **Tương thích tiến (forward compatible)**: client **mới** sống được khi gặp server **cũ** (field nó cần chưa tồn tại). Cả hai chiều này là lý do API nên được thiết kế "thêm dễ, bỏ khó".
+- **Breaking change (thay đổi phá vỡ)**: khiến client đang chạy bị lỗi — crash, đọc sai dữ liệu, hoặc nhận response nó không parse được.
+- **Non-breaking / additive change**: client cũ bỏ qua được mà không hỏng.
+- **Tolerant reader**: cách viết client **chấp nhận cái lạ** — field lạ thì bỏ qua, giá trị enum lạ thì coi như "không biết" thay vì ném exception. Đây là phòng tuyến quan trọng nhất, vì nó biến nhiều thay đổi "phá vỡ" thành "an toàn".
+- **Contract (hợp đồng)**: mô tả máy-đọc-được của API (OpenAPI/Swagger, protobuf, AVRO schema). **Contract test** là test tự động chứng minh client và server vẫn khớp nhau.
+- **Semantic versioning cho API**: {{v1}}, {{v2}} — chỉ tăng số lớn (major) khi có breaking change.
+- **Deprecation**: đánh dấu "still dùng được nhưng đừng dùng nữa". **Sunset**: ngày chính thức ngừng phục vụ.
+
+### Vì sao "thêm một field cho có" lại có thể làm sập app
+Vì đa số client sinh mã tự động (generated client) và các parser nghiêm khắc. Jackson của Spring Boot **mặc định đã tắt** việc fail khi gặp field lạ, nhưng nhiều đội bật lại {{FAIL_ON_UNKNOWN_PROPERTIES = true}} để "phát hiện lỗi sớm", hoặc dùng XML/JSON mapper kiểu cũ, hoặc dùng parser ở ngôn ngữ khác: {{System.Text.Json}} của .NET **mặc định ném lỗi** khi JSON có property không tồn tại trong class. Khi đó một field thêm vào = app crash trên toàn bộ người dùng cũ. Bài học: **luôn hỏi đối tác xem reader của họ có dung thứ (tolerant) không trước khi "thêm field cho có"**.
+
+### Bảng phân loại thay đổi
+Xét theo hướng: bạn đổi **server**, client cũ vẫn còn sống.
+
+| Thay đổi | Phân loại | Vì sao |
+|---|---|---|
+| Thêm field **optional** vào response | An toàn (với tolerant reader) | Client cũ không biết tới field thì bỏ qua |
+| Thêm field **bắt buộc** vào request body | **Phá vỡ** | Client cũ không gửi field đó, server mới trả 400 |
+| Xoá field khỏi response | **Phá vỡ** | Client đang đọc field đó nhận null → NPE hoặc hiển thị trống |
+| Xoá field khỏi request (server chấp nhận rồi bỏ qua) | Rủi ro thấp | Client vẫn gửi được, chỉ là dữ liệu bị bỏ qua — nên báo trước |
+| Đổi kiểu field: {{int}} → {{String}} | **Phá vỡ** | Parser và ép kiểu (cast) phía client cũ thất bại |
+| Nới rộng kiểu số: {{int}} → {{long}} | **Rủi ro** | JSON vẫn là số nên parse được, nhưng client nhét vào biến {{int}} sẽ tràn số khi giá trị lớn hơn 2 tỷ |
+| Đổi **ý nghĩa** field: {{status: "PENDING"}} nghĩa mới | **Phá vỡ ngầm** | Không lỗi kỹ thuật nào, client chỉ làm ra quyết định sai. Đây là loại nguy hiểm nhất |
+| Thêm giá trị enum vào response ({{status: "REFUNDED"}}) | **Phá vỡ** nếu reader nghiêm khắc | {{switch}} không có nhánh default → ném exception hoặc rơi vào nhánh "impossible" |
+| Bỏ một giá trị enum | **Phá vỡ** | Client gặp dữ liệu lịch sử vẫn còn giá trị đó |
+| Đổi tên field | **Phá vỡ** | Với client cũ đó là field cũ bị xoá cộng một field vô nghĩa |
+| Đổi đơn vị (tiền: VND cent → VND) / đổi múi giờ ngày tháng | **Phá vỡ ngầm** | Như đổi ý nghĩa |
+| Thêm {{Link}}/{{Deprecation}} header | An toàn | Header lạ bị bỏ theo chuẩn HTTP |
+
+### Tolerant reader: viết client để lần sau khỏi phải nâng cấp gấp
+~~~java
+// 1) Bỏ qua field lạ thay vì ném UnrecognizedPropertyException
+@JsonIgnoreProperties(ignoreUnknown = true)
+class AccountView {
+    public String id;
+    public Money amount;
+
+    // 2) Enum: khai bao mot gia tri mac dinh de gia tri moi cua server khong lam do app
+    @JsonEnumDefaultValue
+    public enum Status { NEW, PAID, VOID, UNKNOWN }
+}
+
+ObjectMapper mapper = new ObjectMapper()
+    .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+    .enable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE);
+~~~
+Ba quy tắc còn lại không nằm trong code cấu hình:
+- **Không bao giờ giả định field luôn có mặt**: đọc bằng {{Optional}}, kiểm tra null, và có giá trị mặc định hợp lý.
+- **Không dựa vào thứ tự phần tử** của mảng nếu tài liệu không hứa thứ tự; không đếm số field để suy ra phiên bản.
+- **Không "mượn" field có sẵn cho mục đích mới** (dùng {{note}} để truyền mã lỗi). Đó là breaking-âm: client cũ hiển thị thứ vô nghĩa mà không ai báo lỗi.
+
+### Versioning: ba cách đặt số phiên bản
+| Cách | Ví dụ | Ưu | Nhược |
+|---|---|---|---|
+| **URI path** | {{GET /v2/accounts/9}} | Rõ ràng, log/dashboard tách theo version được, cache-friendly, dễ route ở gateway | URI là "danh tính" tài nguyên nhưng mang chi tiết triển khai; khó A/B hai version trên cùng một URL |
+| **Header tuỳ biến** | {{X-API-Version: 2}} | URI sạch | CORS: header lạ làm phát sinh **preflight** (request OPTIONS trước request thật) cho client trình duyệt; khó debug bằng tay |
+| **Media type (content negotiation)** | {{Accept: application/vnd.bank.v2+json}} | "Chuẩn" nhất về mặt REST; một URI, nhiều hình dung | Khó nhìn, khó cache theo biến thể (cần {{Vary}}), tooling ít thân thiện |
+
+Với API công khai, URI path phổ biến vì dễ vận hành và dễ giải thích cho đối tác. Đừng version mọi thứ: nếu thay đổi là additive thì client không cần biết có version mới.
+
+### Báo trước rồi tắt: {{Deprecation}} và {{Sunset}}
+- {{Deprecation}} (draft IETF): nói "API này sẽ bị loại". Dạng mới dùng HTTP-date, có cờ hiệu: {{Deprecation: @1735689600}} (epoch seconds dạng @) hoặc {{Deprecation: true}} ở bản cũ.
+- {{Sunset}} (RFC 8594): **ngày giờ cụ thể** bản này ngừng phục vụ, dạng HTTP-date: {{Sunset: Tue, 01 Dec 2026 00:00:00 GMT}}.
+- {{Link}} để chỉ đường tới tài liệu bản mới: {{Link: <https://docs.bank.vn/migrate-v1-to-v2>; rel="deprecation"}}, và {{rel="alternate"}} trỏ tới chính URL của phiên bản thay thế.
+- {{Warning: 299 - "API v1 is deprecated, see docs/..."}}: kiểu cũ, các chuẩn mới đã bỏ {{Warning}}, dùng ba header trên.
+- Sau Sunset: trả {{410 Gone}} (mất vĩnh viễn, đừng trả {{404}} vì client sẽ tưởng tài nguyên bị xoá) kèm message chỉ tới bản mới.
+
+Kỹ thuật triển khai thật: mỗi response của v1 đều mang {{Deprecation}}/{{Sunset}} + log **{{User-Agent}}/API key** nào còn gọi v1. Sau đó gửi email đúng chủ key đó, và chỉ tắt khi đường cong traffic về gần 0.
+
+### Chiến lược expand → migrate → contract (đổi mà không phá)
+~~~seq
+title: Doi ten amount(int) thanh amountMinor(int64) khong gay hong client cu
+actors: App cu | App moi | Gateway | Service | DB
+note Gateway: giai doan EXPAND, ca hai version song song
+App cu -> Gateway: GET /v1/accounts/9
+Gateway -> Service: route v1
+Service -> DB: doc amount_minor
+Service --> Gateway: amount (int) + amountMinor (int64)
+Gateway --> App cu: 200, v1 van co field cu
+App moi -> Gateway: GET /v2/accounts/9
+Gateway -> Service: route v2
+Service --> Gateway: chi co amountMinor
+Gateway --> App moi: 200
+note Service: giai doan MIGRATE, dam du 100% traffic da sang v2
+note Service: giai doan CONTRACT, xoa field cu khoi v1 roi tat v1 bang Sunset
+~~~
+Ba bước đó là toàn bộ bí mật của việc đổi API lớn: **thêm trước** (cả hai cùng tồn tại), **dọn khách hàng** (đo và ép di cư), **bỏ sau**. Ai muốn làm tắt một bước sẽ phải gọi điện xin lỗi.
+
+### Kiểm chứng tự động thay vì tin nhau
+- **Chẩn diff OpenAPI trong CI**: sinh file OpenAPI từ code (springdoc), so với bản của {{main}}, chặn nếu có breaking change — fail build ngay khi ai đó xoá field.
+- **Contract test / consumer-driven contract** (Pact, Spring Cloud Contract): mỗi client công bố kỳ vọng của mình, server chạy bộ kỳ vọng đó trong CI. Đổi schema mà làm hỏng kỳ vọng thì không merge được.
+- **Feature flag + canary**: bật response kiểu mới cho 1% traffic, theo dõi tỷ lệ 4xx/5xx và lỗi parse phía client (từ log client gửi về) trước khi bật hết.
+- **Version endpoint ngay trong schema**: nếu client không đọc được {{apiVersion}}/khả năng thì chưa sẵn sàng cho thay đổi nào.
+
+### Lỗi hay gặp
+- **"Chỉ là thêm field có gì đâu"** rồi làm sập đối tác dùng reader nghiêm khắc; không hỏi, không đo.
+- **Nuôi {{v1}} và {{v2}} vĩnh viễn**: mỗi version là thêm chi phí sửa lỗi, vá bảo mật và chạy test; hai version lệch nhau tính năng là nơi sinh ra bug. Luôn có ngày Sunset và giữ lời.
+- **Version trong payload** ({{"apiVersion": 2}} trong body của cùng một URL): gateway không route được, phải giải mã body mới biết phiên bản.
+- **Quên {{Vary}}** khi cùng một URL trả nội dung khác nhau theo header version → CDN trả nhầm bản cho khách khác.
+- **Đổi ý nghĩa field mà không tăng version** — tệ nhất trong các loại, vì không có tín hiệu nào để client phát hiện.
+- **Tắt version theo đồng hồ, không theo dữ liệu**: tắt v1 khi còn 3% traffic từ một khách hàng enterprise trả tiền nhiều nhất.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Bạn phải đổi kiểu tiền từ {{int}} thành {{String}} cho 50 đối tác, làm thế nào?" Hướng trả lời được chấm cao:
+1. **Phân loại**: đây là breaking change (đổi kiểu), không thể làm âm thầm.
+2. **Thêm cái mới song song**: field {{amountMinor}} (int64) và {{amountText}} được thêm vào cả v1 — additive, không phá ai.
+3. **Contract test + OpenAPI diff trong CI** để mọi thay đổi sau đó được chứng minh tự động.
+4. **Di cư có số liệu**: log API key nào còn dùng field cũ, dashboard đếm theo tuần, chủ động liên hệ nhóm còn lại.
+5. **{{Deprecation}}/{{Sunset}} trên mọi response của v1**, rồi {{410 Gone}} sau ngày đó.
+6. Nói được **tolerant reader** và Jackson {{READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE}}: phòng tuyến để lần sau không lặp lại cảnh này.
+
+Điểm cộng cho vai trò Lead/Architect: nêu **chi phí vận hành** của việc nuôi nhiều version và đề xuất giới hạn (tối đa 2 version public, thời gian overlap có trần, tỷ lệ traffic là điều kiện tắt chứ không phải ngày hẹn).
+
+> **Senior tip:** Quy tắc tôi dùng khi review thay đổi schema: *cái gì server thêm thì server chịu, cái gì client cần thì client tự bảo vệ mình*. Nghĩa là: không bao giờ bỏ field/enum value nếu chưa đo, không bao giờ đổi kiểu hay đổi nghĩa tại chỗ, luôn gửi kèm một trường mô tả bằng chuỗi cho giá trị enum ({{statusLabel}} dạng chữ dễ đọc) để khách hàng có thể chuyển sang hiển thị trường đó thay vì {{switch}} trên mã enum. Và một điều ít ai nói: **tài liệu là một phần của hợp đồng** — thêm field mà không cập nhật tài liệu/OpenAPI thì 6 tháng sau chính team bạn sẽ phá vỡ nó vì "không ai biết field này dùng để làm gì".`,
+  exercises: [
+    {
+      title: 'CompatChecker.diff: so sánh 2 schema và xếp loại thay đổi (breaking / risky / safe)',
+      prompt: `Viết {{class CompatChecker}} với method tĩnh:
+
+{{static CompatReport diff(Map<String, Field> before, Map<String, Field> after)}}
+
+Các loại có sẵn (đừng đổi chữ ký):
+- {{record Field(String type, boolean required, Set<String> values)}} — {{type}} là một trong {{string}}, {{int}}, {{long}}, {{float}}, {{double}}, {{boolean}}, {{enum}}, {{object}}, {{array}}. {{values}} **chỉ có nghĩa** khi {{type}} là {{enum}} (tập giá trị hợp lệ); constructor {{Field(String type, boolean required)}} tạo field không phải enum.
+- {{record CompatReport(List<String> breaking, List<String> risky, List<String> safe)}} — ba danh sách nhãn thay đổi, **mỗi danh sách sắp xếp tăng dần theo thứ tự từ điển**.
+
+Quy tắc xếp loại, áp dụng cho từng field:
+1. Field có trong {{before}}, mất trong {{after}}: {{breaking}} — nhãn {{"removed:<tên field>"}}.
+2. Field mới xuất hiện trong {{after}}: nếu {{required}} thì {{breaking}} — {{"added-required:<tên>"}}; nếu không thì {{safe}} — {{"added-optional:<tên>"}}.
+3. Field có ở cả hai mà {{required}} đổi: {{false -> true}} là {{breaking}} {{"now-required:<tên>"}} (bắt buộc cái trước đó tuỳ chọn); {{true -> false}} là {{safe}} {{"now-optional:<tên>"}}.
+4. {{type}} đổi:
+   - Nếu cặp kiểu nằm trong danh sách nới rộng số học an toàn (bốn cặp: {{int->long}}, {{int->double}}, {{long->double}}, {{float->double}}) thì {{risky}} — {{"widened:<tên>:<kiểu cũ>-><kiểu mới>"}} (client nhét vào biến kiểu cũ sẽ tràn số).
+   - Mọi trường hợp đổi kiểu khác là {{breaking}} — {{"retyped:<tên>:<kiểu cũ>-><kiểu mới>"}}.
+5. Hai bên **đều là {{enum}}** (kiểu giống nhau): so {{values}}.
+   - Mỗi giá trị bị bỏ: {{breaking}} — {{"enum-value-removed:<tên>:<giá trị>"}}.
+   - Mỗi giá trị được thêm: {{risky}} — reader nghiêm khắc sẽ fail khi gặp giá trị mới, nhưng tolerant reader thì sống, nên không xếp vào breaking.
+   - Khi {{type}} đổi (ví dụ {{enum}} sang {{string}}) thì **chỉ** áp dụng quy tắc 4, không sinh nhãn enum.
+6. Một field có thể rơi vào nhiều quy tắc cùng lúc (ví dụ vừa đổi kiểu vừa thành bắt buộc) — emit đủ các nhãn tương ứng.
+7. Không có thay đổi nào thì danh sách tương ứng rỗng. Không được phát sinh nhãn thừa.`,
+      starter: `record Field(String type, boolean required, Set<String> values) {
+    Field(String type, boolean required) { this(type, required, Set.of()); }
+}
+
+record CompatReport(List<String> breaking, List<String> risky, List<String> safe) {
+}
+
+class CompatChecker {
+    static CompatReport diff(Map<String, Field> before, Map<String, Field> after) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Set<String> ev(String... v) { return new LinkedHashSet<>(Arrays.asList(v)); }
+    static Map<String, Field> s(Object... kv) {
+        Map<String, Field> m = new LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], (Field) kv[i + 1]);
+        return m;
+    }
+    public static void main(String[] args) {
+        check("schema khong doi -> ba danh sach rong", () -> {
+            Map<String, Field> a = s("id", new Field("string", true), "note", new Field("string", false));
+            CompatReport r = CompatChecker.diff(a, s("id", new Field("string", true), "note", new Field("string", false)));
+            eq(List.of(), r.breaking());
+            eq(List.of(), r.risky());
+            eq(List.of(), r.safe());
+        });
+        check("them field optional la safe, khong phai breaking", () -> {
+            CompatReport r = CompatChecker.diff(s("id", new Field("string", true)),
+                s("id", new Field("string", true), "nickname", new Field("string", false)));
+            eq(List.of(), r.breaking());
+            eq(List.of(), r.risky());
+            eq(List.of("added-optional:nickname"), r.safe());
+        });
+        check("them field bat buoc pha vo client cu", () -> {
+            CompatReport r = CompatChecker.diff(s("id", new Field("string", true)),
+                s("id", new Field("string", true), "taxId", new Field("string", true)));
+            eq(List.of("added-required:taxId"), r.breaking());
+            eq(List.of(), r.safe());
+        });
+        check("xoa field khoi response la breaking", () -> {
+            CompatReport r = CompatChecker.diff(s("id", new Field("string", true), "balance", new Field("long", true)),
+                s("id", new Field("string", true)));
+            eq(List.of("removed:balance"), r.breaking());
+        });
+        check("doi kieu khong tu nhien la breaking, doi enum sang string khong sinh nhan enum", () -> {
+            CompatReport r = CompatChecker.diff(s("amount", new Field("string", true)),
+                s("amount", new Field("int", true)));
+            eq(List.of("retyped:amount:string->int"), r.breaking());
+            eq(List.of(), r.risky());
+            CompatReport e = CompatChecker.diff(s("status", new Field("enum", true, ev("NEW", "PAID"))),
+                s("status", new Field("string", true, ev("NEW", "PAID"))));
+            eq(List.of("retyped:status:enum->string"), e.breaking());
+        });
+        check("noi rong kieu so: van parse duoc nhung quy vao nhom rui ro", () -> {
+            CompatReport r = CompatChecker.diff(
+                s("amount", new Field("int", true), "rate", new Field("float", false), "big", new Field("long", false)),
+                s("amount", new Field("long", true), "rate", new Field("double", false), "big", new Field("string", false)));
+            eq(List.of("retyped:big:long->string"), r.breaking());
+            eq(List.of("widened:amount:int->long", "widened:rate:float->double"), r.risky());
+            eq(List.of(), r.safe());
+        });
+        check("optional -> required la pha vo; required -> optional thi an toan", () -> {
+            CompatReport r1 = CompatChecker.diff(s("email", new Field("string", false)), s("email", new Field("string", true)));
+            eq(List.of("now-required:email"), r1.breaking());
+            CompatReport r2 = CompatChecker.diff(s("email", new Field("string", true)), s("email", new Field("string", false)));
+            eq(List.of(), r2.breaking());
+            eq(List.of("now-optional:email"), r2.safe());
+        });
+        check("enum: gia tri bi bo la breaking, gia tri them la risky", () -> {
+            CompatReport r = CompatChecker.diff(s("status", new Field("enum", true, ev("NEW", "PAID", "VOID"))),
+                s("status", new Field("enum", true, ev("NEW", "PAID", "REFUNDED", "DISPUTED"))));
+            eq(List.of("enum-value-removed:status:VOID"), r.breaking());
+            eq(List.of("enum-value-added:status:DISPUTED", "enum-value-added:status:REFUNDED"), r.risky());
+            eq(List.of(), r.safe());
+        });
+        check("nhieu thay doi: moi danh sach sap xep tang dan va phan loai dung", () -> {
+            Map<String, Field> before = s(
+                "id", new Field("string", true),
+                "age", new Field("int", false),
+                "kind", new Field("enum", true, ev("A", "B")),
+                "legacy", new Field("string", true));
+            Map<String, Field> after = s(
+                "id", new Field("string", true),
+                "age", new Field("int", true),
+                "kind", new Field("enum", true, ev("A", "B", "C")),
+                "channel", new Field("string", false),
+                "ownerId", new Field("string", true));
+            CompatReport r = CompatChecker.diff(before, after);
+            eq(List.of("added-required:ownerId", "now-required:age", "removed:legacy"), r.breaking());
+            eq(List.of("enum-value-added:kind:C"), r.risky());
+            eq(List.of("added-optional:channel"), r.safe());
+        });
+        check("mot field vua doi kieu vua thanh bat buoc: emit ca hai nhan", () -> {
+            CompatReport r = CompatChecker.diff(s("count", new Field("int", false)), s("count", new Field("long", true)));
+            eq(List.of("now-required:count"), r.breaking());
+            eq(List.of("widened:count:int->long"), r.risky());
+            eq(List.of(), r.safe());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Field(String type, boolean required, Set<String> values) {
+    Field(String type, boolean required) { this(type, required, Set.of()); }
+}
+
+record CompatReport(List<String> breaking, List<String> risky, List<String> safe) {
+}
+
+class CompatChecker {
+    // Cặp kiểu "đọc được bằng parser cũ, chỉ rủi ro khi giá trị vượt khoảng cũ"
+    private static final Set<String> WIDENING = Set.of("int->long", "int->double", "long->double", "float->double");
+
+    static CompatReport diff(Map<String, Field> before, Map<String, Field> after) {
+        List<String> breaking = new ArrayList<>();
+        List<String> risky = new ArrayList<>();
+        List<String> safe = new ArrayList<>();
+
+        for (Map.Entry<String, Field> e : before.entrySet()) {
+            String name = e.getKey();
+            Field b = e.getValue();
+            Field a = after.get(name);
+            if (a == null) {
+                breaking.add("removed:" + name);
+                continue;
+            }
+            if (!b.type().equals(a.type())) {
+                String pair = b.type() + "->" + a.type();
+                if (WIDENING.contains(pair)) risky.add("widened:" + name + ":" + pair);
+                else breaking.add("retyped:" + name + ":" + pair);
+            } else if ("enum".equals(b.type())) {
+                for (String v : b.values()) if (!a.values().contains(v)) breaking.add("enum-value-removed:" + name + ":" + v);
+                for (String v : a.values()) if (!b.values().contains(v)) risky.add("enum-value-added:" + name + ":" + v);
+            }
+            if (!b.required() && a.required()) breaking.add("now-required:" + name);
+            else if (b.required() && !a.required()) safe.add("now-optional:" + name);
+        }
+        for (Map.Entry<String, Field> e : after.entrySet()) {
+            if (before.containsKey(e.getKey())) continue;
+            if (e.getValue().required()) breaking.add("added-required:" + e.getKey());
+            else safe.add("added-optional:" + e.getKey());
+        }
+        Collections.sort(breaking);
+        Collections.sort(risky);
+        Collections.sort(safe);
+        return new CompatReport(breaking, risky, safe);
+    }
+}`,
+      hints: [
+        'Duyệt {{before}} để bắt {{removed}}, {{retyped}}, {{widened}}, {{now-required}}, {{now-optional}}, nhãn enum; sau đó duyệt {{after}} và bỏ qua field đã có trong {{before}} để bắt {{added-required}}/{{added-optional}}.',
+        'So sánh kiểu bằng {{equals}}, ghép nhãn bằng chuỗi {{"<kiểu cũ>-><kiểu mới>"}} — dùng cùng một biến {{pair}} cho cả {{widened}} lẫn {{retyped}} để không lệch nhãn.',
+        'Với enum, chỉ so {{values}} khi {{type}} của hai bên **đều** là "enum". Set không giữ thứ tự, nên sort cả ba danh sách trước khi trả để kết quả xác định.',
+      ],
+      explain: `Bài này mô phỏng đúng thứ CI phải làm mỗi khi ai đó sửa schema: sinh danh sách thay đổi, **dựa vào danh sách đó để quyết định** có được merge hay không, có phải tăng version hay không.
+
+Ba chỗ dễ sai nhất về mặt **ý nghĩa**, không phải cú pháp:
+
+**Một — "{{enum-value-added}}" là risky chứ không phải safe.** Trực giác nói "thêm giá trị mới thì client cũ có đụng tới đâu". Nhưng client cũ thường có {{switch (status)}} với các nhánh {{NEW}}, {{PAID}}; gặp {{REFUNDED}} nó hoặc ném exception (switch biểu thức không có default), hoặc đi vào nhánh "lẽ ra không thể xảy ra" và gửi tiền hoàn cho bộ phận sai. Đây là lý do Jackson cần {{@JsonEnumDefaultValue}} + {{READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE}}, protobuf cần giá trị {{UNKNOWN = 0}}, và AVRO/protobuf được gọi là cơ chế **forward/backward compatible** có điều kiện.
+
+**Hai — nới rộng số học để ở {{risky}}, không phải {{safe}}.** JSON nhét {{1234567890123}} vào một field mà client khai là {{int}} sẽ gây tràn số hoặc lỗi chuyển kiểu ({{InputCoercionException}} của Jackson). Nếu field là số dư tính bằng cent thì nó chỉ vỡ khi khách hàng đủ lớn — nghĩa là test của bạn không thấy, còn phòng kế toán thì thấy. Vậy nên vẫn cho qua nhưng phải gắn cờ để người review quyết định.
+
+**Ba — "đổi ý nghĩa" không nằm trong danh sách vì máy không phát hiện được.** {{status: "PENDING"}} đổi từ "chờ thanh toán" sang "chờ duyệt hồ sơ" là breaking change hoàn toàn mà {{CompatChecker}} nào cũng trả về "không thay đổi". Đấy là lý do quy trình phải có **người review diff schema**, và là lý do tốt nhất để tăng version.
+
+Về kỹ thuật Java: dùng {{Collections.sort}} (so sánh {{String.compareTo}}) để đầu ra xác định — nếu quên, thứ tự duyệt {{Set}}/{{HashMap}} thay đổi giữa các lần chạy và test đỏ lúc có lúc không mà không giải thích được; dùng {{LinkedHashMap}}/{{LinkedHashSet}} khi dựng dữ liệu test cũng giúp đọc lỗi dễ hơn. Điều kiện {{required}} nên kiểm tra **độc lập** với điều kiện kiểu, vì một field có thể vừa đổi kiểu vừa thành bắt buộc (test cuối).
+
+Trong dự án thật, bạn gần như không tự viết cái này: {{oasdiff}}, {{schemastore}}, {{buf breaking --against}} (protobuf), hoặc Apache {{Avro}} {{CompatibilityChecker}} làm việc đó trên toàn bộ OpenAPI/Avro/protobuf schema và fail build khi phát sinh breaking. Nhưng hiểu bảng phân loại ở trên mới là thứ được hỏi trong phỏng vấn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Thay đổi nào sau đây là **breaking change** với client cũ?',
+      options: [
+        'Thêm một field optional vào response',
+        'Xoá một field khỏi response mà client đang đọc',
+        'Thêm header {{Deprecation}} vào response',
+        'Thêm một giá trị mới vào tài liệu mô tả API',
+      ],
+      answer: 1,
+      explain: 'Xoá field khiến client đang đọc nó nhận null hoặc lỗi parse → phá vỡ. Thêm field optional thường an toàn (điều kiện: reader dung thứ), header lạ thì chuẩn HTTP cho phép bỏ qua, tài liệu không ảnh hưởng runtime. Lưu ý thêm **giá trị enum** vào response thì khác — nó nằm ở nhóm rủi ro vì {{switch}} của client cũ có thể không có nhánh default.',
+    },
+    {
+      q: 'Client nên làm gì để "thêm field" thật sự luôn an toàn cho chính nó?',
+      options: [
+        'Kiểm tra {{Content-Length}} trước khi parse',
+        'Tắt fail-on-unknown-field, dùng {{@JsonEnumDefaultValue}} cho enum, và không giả định field luôn tồn tại',
+        'Khoá chặt schema và ném lỗi khi gặp bất kỳ key lạ nào',
+        'Gửi header {{X-API-Version}} trong mọi request',
+      ],
+      answer: 1,
+      explain: 'Đó chính là **tolerant reader**: bỏ qua field lạ ({{FAIL_ON_UNKNOWN_PROPERTIES = false}}), map giá trị enum lạ về một giá trị mặc định, đọc field như thể nó có thể vắng mặt. Ngược lại, khoá chặt schema và ném lỗi khi gặp key lạ là cách biến mỗi lần server thêm field thành một sự cố.',
+    },
+    {
+      q: 'Vì sao nhiều đội chọn versioning theo URI ({{/v2/...}}) thay vì theo header?',
+      options: [
+        'Vì header không truyền được dữ liệu',
+        'Vì URI dễ nhìn, dễ log, dễ route ở gateway, cache được; header version buộc trình duyệt gửi preflight CORS',
+        'Vì URI là bắt buộc theo chuẩn HTTP',
+        'Vì version trong URI làm giảm số lượng API',
+      ],
+      answer: 1,
+      explain: 'Version trong URI tự mô tả, tách được traffic theo version trong log và dashboard, cấu hình route/cache đơn giản. Header version ({{X-API-Version}}) giữ URI sạch nhưng với client trình duyệt nó là header tuỳ biến → mỗi request phát sinh thêm một lượt OPTIONS preflight, và debug bằng tay khó hơn.',
+    },
+    {
+      q: 'Header {{Sunset}} dùng để làm gì?',
+      options: [
+        'Thông báo server sắp tắt vào cuối ngày',
+        'Cho biết ngày giờ cụ thể một phiên bản API ngừng được phục vụ',
+        'Yêu cầu client xoá cache',
+        'Đánh dấu response bị cắt ngắn',
+      ],
+      answer: 1,
+      explain: '{{Sunset}} (RFC 8594) là mốc thời gian tuyệt đối mà sau đó endpoint không còn phục vụ, đi cùng {{Deprecation}} và {{Link}} có {{rel="deprecation"}} để client biết đường di cư. Nó là lời hứa với khách hàng, không phải tín hiệu hạ tầng hay cache.',
+    },
+  ],
+  related: ['api-016', 'api-030', 'api-014'],
+  tags: ['API versioning', 'breaking change', 'tolerant reader', 'deprecation', 'Sunset', 'contract test'],
 }
 );

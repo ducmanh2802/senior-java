@@ -2617,4 +2617,1143 @@ DB:   Oracle on-prem ══ DMS full load ══ CDC liên tục ═════
     { type: 'doc', title: 'What is AWS Database Migration Service?', url: 'https://docs.aws.amazon.com/dms/latest/userguide/Welcome.html' }
   ]
 }
-);
+,
+{
+  id: 'aws-031',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Route 53 ho tro cac ban ghi A, AAAA, CNAME, Alias va MX/TXT. Vi sao khong dat CNAME o apex (root domain), va TTL anh huong the nao khi cutover?',
+  a: `**Tom tat:** CNAME khong the dat o apex vi RFC cam ban ghi khac cung ten; Route 53 giai bang Alias tro toi AWS resource. TTL thap truoc cutover de client nhanh chuyen, TTL cao sau de giam query va chi phi.
+
+### Ban ghi co ban
+- **A**: ten -> IPv4. **AAAA**: ten -> IPv6.
+- **CNAME**: ten -> ten khac. Chi duoc dung khi ten do khong co ban ghi khac (khong MX, TXT, NS, SOA).
+- **Alias** (Route 53 rieng): giong A/AAAA nhung tro toi AWS resource (ALB, CloudFront, S3 website, API Gateway). Mien phi query, tu theo IP resource, ho tro apex.
+
+### Vi sao khong CNAME o apex
+Apex domain (example.com) bat buoc co NS va SOA. RFC 1034 cam CNAME cung ton tai voi ban ghi khac cung ten. Neu dat CNAME o apex se xung dot voi NS/SOA -> resolver tra SERVFAIL. Vi vay dung Alias (hoac A tinh) o apex; subdomain (www) moi dung CNAME.
+
+### TTL va cutover
+TTL = thoi gian resolver cache ban ghi. Khi chuyen he thong:
+1. Truoc cutover 24-48h: ha TTL xuong 60-300s de client nhanh nhan IP moi.
+2. Cutover: doi ban ghi.
+3. Sau on dinh: nang TTL len 3600-86400s de giam query DNS, chi phi Route 53 va tai resolver.
+Nho TTL cu co the da cache o client/ISP -> thuc te cho toi da TTL cu. Alias TTL do AWS quan ly (thuong 60s) nen cutover nhanh hon.
+
+### MX/TXT
+- **MX**: mail server + priority. Nhieu MX voi priority khac nhau cho failover.
+- **TXT**: SPF, DKIM, DMARC, domain verification.
+
+### Pitfall
+- Ha TTL nhung client/ISP ignore TTL nho (mot so cache toi thieu 300s).
+- Quen ha TTL cho ban ghi phu thuoc (CNAME chain).
+- Dung Alias tro S3 website: bucket name phai trung domain.
+
+> Senior tip: truoc moi cutover DNS, ghi lai TTL hien tai va thoi diem ha; dung dig +trace kiem tra propagation. Voi ngan hang, DNS la diem rollback nhanh nhat.`,
+  follow: [
+    'Khac biet giua weighted, latency, failover routing policy cua Route 53?',
+    'Health check cua Route 53 hoat dong the nao va khi nao failover?',
+    'Khi migrate domain tu on-prem DNS sang Route 53, thu tu lam the nao de khong downtime?'
+  ],
+  tags: ['DNS', 'Route53', 'Alias', 'TTL', 'cutover']
+},
+{
+  id: 'aws-032',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Request qua ALB tra ve HTTP 400 trong khi backend van song va traffic lon. Nguyen nhan nao, va phan biet ALB tu tra loi voi target tra loi bang metric va access log?',
+  a: `**Tom tat:** HTTP 400 qua ALB co the do request/header sai, Host header khong khop, request qua lon, HTTP desync mitigation chan, hoac target tu tra 400. Phan biet qua HTTPCode_ELB_4XX_Count vs HTTPCode_Target_4XX_Count va access log.
+
+### ALB tu tra 400 (ELB-side)
+- Header khong hop le: ky tu control, xuong dong trong header (HTTP request smuggling), Host header sai/thieu.
+- HTTP desync mitigation: ALB chan request co ambiguity (Content-Length + Transfer-Encoding ca hai).
+- Request line/body qua lon: header > 16KB (tong), URI > 16KB.
+- TLS/HTTP version khong ho tro, method khong hop le.
+
+### Target tu tra 400
+- Spring validation, JSON parse loi, CSRF token sai, content-type khong dung.
+
+### Phan biet bang metric
+- **HTTPCode_ELB_4XX_Count**: ALB tu sinh 4xx (request khong toi target).
+- **HTTPCode_Target_4XX_Count**: target tra 4xx.
+Neu ELB 4xx tang dot bien con target 4xx khong doi -> loi o edge/client; neu target 4xx tang -> loi app/validation.
+
+### Dieu tra tung buoc
+1. CloudWatch: xem ty le hai metric, thoi diem bat dau.
+2. ALB access log: truong elb_status_code vs target_status_code. Neu target_status_code = "-" -> ALB khong forward (ELB-side).
+3. Loc theo client IP, User-Agent, URI; xem header size.
+4. Reproduce voi curl toi gian; them header dan de tim header gay loi.
+5. Kiem tra WAF logs (neu attach) vi WAF co the tra 403.
+6. Kiem tra application log cho 400 tuong ung (request id).
+
+### Pitfall
+- Header lon do JWT/cookie tich luy -> client gui > 16KB -> ALB 400. Giam cookie.
+- ALB access log co do tre ~5 phut; dung real-time metric truoc.
+- HTTP/2 tu client: ALB ho tro nhung backend HTTP/1.1; mot so header bi loai.
+
+> Senior tip: luon bat ALB access log vao S3 va CloudWatch metric alarm cho HTTPCode_ELB_4XX_Count. Khi incident, so sanh hai metric trong 30s de biet loi o edge hay app.`,
+  follow: [
+    'ALB tra 502/503/504 khac nhau the nao va nguyen nhan?',
+    'Cach cau hinh connection draining va deregistration delay?',
+    'Khi nao dung NLB thay ALB (TCP/UDP, static IP, PrivateLink)?'
+  ],
+  tags: ['ALB', 'HTTP400', 'desync', 'CloudWatch', 'access-log', 'troubleshooting']
+},
+{
+  id: 'aws-033',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Chuyen du lieu giua cac region: S3 Cross-Region Replication, chi phi data transfer, va cac lua chon cho DB (cross-region read replica, Aurora Global Database, DMS).',
+  a: `**Tom tat:** S3 CRR replicate object moi sang region khac (can versioning, IAM role); object cu dung Batch Replication; RTC cho SLA. DB: cross-region read replica (lag giay-phut), Aurora Global Database (lag < 1s, RPO thap), DMS cho migrate/dong bo lien tuc.
+
+### S3 Cross-Region Replication (CRR)
+- Bat versioning ca source va destination bucket.
+- Tao IAM role cho S3 replicate.
+- Chi replicate object **moi** sau khi bat; object cu dung **S3 Batch Replication**.
+- Ho tro filter prefix/tag, encryption (SSE-S3/SSE-KMS), delete marker replication (tuy chon).
+- **Replication Time Control (RTC)**: SLA 99.99% object replicate trong 15 phut, co metric.
+
+### Chi phi
+- Data transfer out tu source region: ~0.02 USD/GB (tuy region).
+- Request charges o destination.
+- Storage o destination.
+- RTC them phi.
+Tinh truoc: 10TB/thang x 0.02 = 200 USD + storage.
+
+### DB giua region
+- **Cross-region read replica (RDS)**: async replication, lag thuong giay den phut; co the promote thanh primary (RPO = lag, RTO phut). Phu hop DR warm standby.
+- **Aurora Global Database**: primary region + secondary region, lag thuong < 1s, RPO thap; failover region ~1 phut (managed). Chi phi storage nhan ban.
+- **DMS**: full load + CDC de dong bo lien tuc giua DB khac engine/on-prem va AWS; dung khi migrate hoac keeping in sync. Khong phai HA solution.
+
+### Khi nao chon cai nao
+- Can DR voi RPO < 1s va RTO < 1 phut -> Aurora Global.
+- DB engine co dinh (Oracle/SQL Server) -> cross-region read replica hoac Multi-AZ DB cluster + snapshot copy.
+- Migrate tu on-prem -> DMS full load + CDC.
+- Object luu tru -> S3 CRR + RTC.
+
+### Pitfall
+- CRR khong replicate object da ton tai truoc khi bat (can Batch).
+- KMS key phai grant cho role replicate o ca hai region.
+- Aurora Global secondary khong nhan write; app phai redirect sau failover.
+- DMS CDC lag tang khi transaction lon; monitor CloudWatch.
+
+> Senior tip: voi ngan hang, dinh nghia RPO/RTO truoc roi moi chon cong nghe. Aurora Global cho RPO < 1s, nhung chi phi va complexity cao; nhieu he thong chi can RDS cross-region replica + snapshot copy la du va re hon nhieu.`,
+  follow: [
+    'S3 CRR voi delete marker va versioning: rui ro xoa nham lan sang region khac?',
+    'Aurora Global Database failover tu dong vs thu cong khac nhau the nao?',
+    'Cach do replication lag va alert cho DB cross-region?'
+  ],
+  tags: ['S3', 'CRR', 'Aurora-Global', 'DMS', 'cross-region', 'DR', 'replication']
+},
+{
+  id: 'aws-034',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Ket noi private tu on-premise len AWS: Site-to-Site VPN vs Direct Connect (private/transit VIF, DX + VPN backup). So sanh thoi gian trien khai, bang thong, do tre, chi phi.',
+  a: `**Tom tat:** Site-to-Site VPN nhanh trien khai (phut-gio), re, nhung qua Internet, do tre bien dong, bang thong gioi han. Direct Connect on dinh, do tre thap, bang thong lon, nhung trien khai tuan-thang va chi phi cao. Thuong DX lam chinh, VPN backup.
+
+### Site-to-Site VPN
+- IPsec tunnel qua Internet giua CGW (customer gateway) va VGW/TGW.
+- Trien khai: vai phut den vai gio (neu co thiet bi).
+- Bang thong: moi tunnel toi da ~1.25 Gbps; co the nhieu tunnel.
+- Do tre: bien dong, phu thuoc Internet.
+- Chi phi: theo gio (~0.05 USD/h/tunnel) + data transfer.
+- Uu: nhanh, re, khong can hop dong telco.
+- Nhuoc: jitter, packet loss, khong SLA.
+
+### Direct Connect (DX)
+- Ket noi vat ly dedicated tu on-prem/datacenter den AWS DX location.
+- **Private VIF**: truy cap VPC private (qua VGW/TGW).
+- **Transit VIF**: truy cap nhieu VPC qua TGW.
+- **Public VIF**: truy cap public service (S3, DynamoDB) qua DX.
+- Trien khai: 2-8 tuan (dat circuit, cross-connect, LOA).
+- Bang thong: 1/10/100 Gbps (hoac hosted connection 50Mbps-10Gbps).
+- Do tre: on dinh, thap, co SLA.
+- Chi phi: port fee theo gio + data transfer out (re hon Internet) + circuit telco.
+
+### DX + VPN backup
+- DX lam duong chinh; VPN qua Internet lam backup.
+- Dung BGP: advertise route qua ca hai; khi DX down, route tu chuyen sang VPN (failover vai giay-phut).
+- Hoac dung DX with MACsec cho encryption o layer 2.
+
+### Khi nao chon
+- Can nhanh, tam thoi, dev/test -> VPN.
+- Production banking, latency-sensitive, throughput lon -> DX + VPN backup.
+- Nhieu VPC -> Transit VIF + TGW.
+
+### Pitfall
+- VPN tunnel MTU: IPsec overhead -> dat MTU 1400-1436 de tranh fragmentation.
+- DX khong ma hoa mac dinh; banking thuong yeu cau MACsec/IPsec tren DX.
+- Hosted connection phu thuoc partner; port capacity chia se.
+
+> Senior tip: banking thuong yeu cau dual DX o hai location khac nhau + VPN backup de dat HA. Luon test failover that (rut cap) truoc go-live, vi BGP convergence co the mat 30-90s va app phai chiu duoc.`,
+  follow: [
+    'BGP route advertisement va AS path prepending dung de uu tien DX the nao?',
+    'Khi DX down, VPN backup co du bang thong khong? Plan capacity ra sao?',
+    'Direct Connect Gateway dung de ket noi nhieu region the nao?'
+  ],
+  tags: ['VPN', 'DirectConnect', 'BGP', 'hybrid', 'networking', 'banking']
+},
+{
+  id: 'aws-035',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Ket noi nhieu VPC: VPC peering (khong transitive) vs Transit Gateway (route table, phan vung) vs PrivateLink. CIDR trung nhau thi xu ly the nao?',
+  a: `**Tom tat:** Peering don gian, re, nhung khong transitive va phai manage route tung cap. TGW tap trung, ho tro transitive routing va phan vung bang route table. PrivateLink expose service cu the khong can peering full network. CIDR trung -> dung PrivateLink, NAT, hoac re-IP.
+
+### VPC Peering
+- Ket noi 1-1 giua hai VPC (cung hoac khac account/region).
+- **Khong transitive**: A peering B, B peering C khong co nghia A den C.
+- Moi VPC them route tro CIDR cua VPC kia qua peering connection.
+- Security Group co the reference peer SG (cung region).
+- Chi phi: data transfer cross-AZ/region; peering connection mien phi.
+- Phu hop: it VPC, ket noi don gian.
+
+### Transit Gateway (TGW)
+- Hub trung tam: nhieu VPC attach vao TGW; routing qua TGW route table.
+- **Transitive**: VPC A den VPC C qua TGW.
+- **Phan vung**: nhieu route table, associate/disassociate attachment; vi du prod va non-prod tach biet.
+- Ho tro VPN, DX attach.
+- Chi phi: theo attachment/gio + data processing USD/GB.
+- Phu hop: nhieu VPC, multi-account, hybrid.
+
+### PrivateLink (VPC Endpoint Service)
+- Expose mot service (NLB) tu provider VPC cho consumer VPC qua endpoint ENI.
+- Consumer chi thay IP private cua endpoint; khong can peering full CIDR.
+- Ho tro cross-account, cross-region (qua TGW/peering).
+- Phu hop: share service cu the (API, DB) ma khong mo toan mang.
+
+### CIDR trung nhau
+- Peering/TGW **khong** ho tro CIDR overlap -> route ambiguous.
+- Giai phap:
+  1. **Re-IP**: doi CIDR mot VPC (ton cong nhung sach).
+  2. **PrivateLink**: expose service qua endpoint, khong can route CIDR.
+  3. **NAT/Proxy**: proxy traffic qua host co IP rieng.
+  4. **TGW + NAT**: NAT gateway o TGW? (AWS khong NAT giua VPC; dung appliance).
+- Banking thuong plan CIDR centrally (IPAM) de tranh overlap ngay tu dau.
+
+### Pitfall
+- Peering route phai them ca hai chieu; quen mot chieu -> timeout im lang.
+- TGW default route table associate tat ca attachment -> rui ro lateral movement; nen tach route table.
+- PrivateLink chi TCP; UDP khong ho tro (tru mot so service).
+
+> Senior tip: voi landing zone ngan hang, dung TGW lam backbone voi route table theo environment (prod/nonprod/shared), va PrivateLink cho service dung chung (auth, logging). Luon dung IPAM de cap CIDR tu dau — re-IP sau nay la ac mong.`,
+  follow: [
+    'TGW route table: cach implement segmentation prod vs non-prod?',
+    'PrivateLink vs peering: khi nao chon cai nao cho database sharing?',
+    'VPC Lattice la gi va khac TGW/PrivateLink the nao?'
+  ],
+  tags: ['VPC-peering', 'Transit-Gateway', 'PrivateLink', 'CIDR', 'segmentation', 'networking']
+},
+{
+  id: 'aws-036',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Nhieu EC2/ECS can share chung storage: EFS, FSx, S3. Khi nao dung cai nao?',
+  a: `**Tom tat:** EFS cho file system POSIX chia se NFS giua nhieu EC2/ECS trong region (multi-AZ). FSx cho workload chuyen biet (Windows SMB, Lustre HPC, NetApp). S3 la object storage, khong phai file system POSIX—dung khi app ho tro S3 API.
+
+### EFS (Elastic File System)
+- NFSv4, POSIX-compliant, tu scale capacity.
+- Mount target theo tung AZ (moi AZ co ENI); EC2/ECS mount qua NFS.
+- Throughput mode: Bursting (mac dinh, theo size) hoac Provisioned (dat truoc).
+- Performance mode: General Purpose vs Max I/O.
+- ECS: mount EFS volume vao container (task definition volume).
+- Multi-AZ by default; du lieu replicate trong region.
+- Use case: shared config, upload file, CMS, home directory.
+
+### FSx
+- **FSx for Windows File Server**: SMB, Active Directory, ACL Windows. Dung cho app Windows/.NET legacy.
+- **FSx for Lustre**: HPC, ML training, throughput cuc cao, tich hop S3 (lazy load).
+- **FSx for NetApp ONTAP**: enterprise NAS, snapshot, replication.
+- **FSx for OpenZFS**: Linux workload can ZFS feature.
+
+### S3
+- Object storage, khong phai file system POSIX. Khong mount nhu NFS (co the qua Mountpoint for S3 nhung read-heavy, khong POSIX day du).
+- Dung khi app doc/ghi qua SDK (upload, backup, data lake, static asset).
+- Re nhat cho luu tru lon; durability 11 nines.
+
+### Bang chon nhanh
+| Nhu cau | Chon |
+|---|---|
+| Nhieu Linux container/EC2 share file POSIX | EFS |
+| App Windows can SMB/AD | FSx Windows |
+| HPC/ML training throughput lon | FSx Lustre |
+| Upload/backup/data lake, app dung SDK | S3 |
+| Database file (Oracle) | EBS (khong share) hoac FSx |
+
+### Pitfall
+- EFS throughput theo size: volume nho ma IO cao -> provisioned throughput.
+- Mount target phai cung AZ voi EC2 de tranh cross-AZ latency/chi phi.
+- S3 khong co rename/append POSIX; app phai thiet ke theo object.
+- EFS backup qua AWS Backup (khong tu dong).
+
+> Senior tip: banking thuong dung S3 cho document/scan, EFS cho shared config va file tam giua service, FSx cho legacy Windows. Dung co gang mount S3 nhu file system cho DB hay app can POSIX—se gap loi concurrency va performance.`,
+  follow: [
+    'EFS throughput mode Bursting vs Provisioned khac nhau the nao?',
+    'Cach mount EFS vao ECS task va IAM permission?',
+    'Khi nao dung EBS multi-attach thay vi EFS?'
+  ],
+  tags: ['EFS', 'FSx', 'S3', 'storage', 'NFS', 'ECS']
+},
+{
+  id: 'aws-037',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Dung moi truong cho mot app dap ung HA va co backup: tu VPC, subnet da AZ, ALB, ASG/ECS/EKS, RDS Multi-AZ, AWS Backup, secrets, logging. Liet ke thu tu trien khai va vi sao.',
+  a: `**Tom tat:** Thu tu: account/landing zone -> network (VPC, subnet, NAT, SG) -> IAM/secret -> compute platform -> data (RDS Multi-AZ) -> load balancer -> CI/CD -> observability/backup -> DR test. Vi ha tang nen phai co truoc khi app chay.
+
+### Thu tu trien khai
+1. **Account & guardrail**: landing zone, SCP, log archive.
+2. **Network**: VPC, public/private subnet da AZ, IGW, NAT Gateway, route table, SG co ban. Vi moi tai nguyen can mang.
+3. **IAM & secrets**: role cho ECS task, secret trong Secrets Manager/SSM Parameter Store, KMS key. Vi app can credential truoc khi chay.
+4. **Compute platform**: ECS cluster/EKS hoac ASG + launch template, AMI, user-data.
+5. **Data layer**: RDS Multi-AZ (hoac Aurora), subnet group, parameter group, backup retention. Vi app phu thuoc DB; tao truoc de connection string san.
+6. **Load balancer**: ALB, target group, listener, health check, certificate ACM. Vi traffic vao qua ALB.
+7. **CI/CD**: pipeline build image, push ECR, deploy.
+8. **Observability**: CloudWatch log group, metric, alarm, X-Ray/OTel, VPC Flow Logs.
+9. **Backup & DR**: AWS Backup plan (RDS, EFS, EBS), cross-region copy, restore test.
+10. **Security review**: WAF, GuardDuty, Config rules, penetration test.
+
+### Vi sao thu tu nay
+- Network va IAM la nen; khong co chung khong tao duoc tai nguyen khac.
+- Data truoc compute de app start khong fail do thieu DB.
+- Observability va backup sau cung vi can biet tai nguyen nao ton tai.
+- DR test cuoi cung vi can toan bo stack.
+
+### HA chi tiet
+- Subnet it nhat 2 AZ (khuyen nghi 3).
+- ALB trai qua nhieu AZ; target dang ky o nhieu AZ.
+- RDS Multi-AZ: standby synchronous, failover 1-2 phut.
+- ASG min instance >= 2 o cac AZ khac nhau.
+- Stateless app de scale horizontal.
+
+### Pitfall
+- Tao RDS truoc khi co subnet group -> phai recreate.
+- Quen backup retention va PITR -> khong restore duoc.
+- Secret rotation chua cau hinh -> secret cu het han gay outage.
+- Health check qua strict -> instance bi terminate lien tuc.
+
+> Senior tip: viet toan bo ha tang bang IaC (Terraform/CDK) va deploy qua pipeline; manual console chi cho PoC. Banking yeu cau moi thay doi co approval va audit trail—console change la rui ro audit.`,
+  follow: [
+    'RDS Multi-AZ vs Read Replica: khac nhau the nao?',
+    'Cach thiet ke health check cho ALB de tranh false positive?',
+    'AWS Backup: retention, vault lock, cross-region copy hoat dong the nao?'
+  ],
+  tags: ['HA', 'architecture', 'VPC', 'RDS', 'ALB', 'backup', 'IaC', 'banking']
+},
+{
+  id: 'aws-038',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Security Group stateful vs NACL stateless trong su co thuc te: ephemeral port bi NACL chan chieu ve, cach debug bang VPC Flow Logs va Reachability Analyzer.',
+  a: `**Tom tat:** SG tu dong cho phep traffic tra ve (stateful); NACL phai mo ca chieu di va ve (stateless). Loi pho bien: NACL cho phep inbound nhung chan outbound ephemeral port -> connection timeout. Debug bang Flow Logs (REJECT) va Reachability Analyzer.
+
+### Case: ephemeral port bi chan chieu ve
+Client (port 54321) -> Server (port 443). Reply tu server port 443 -> client port 54321 (ephemeral).
+- SG: tu dong cho phep reply (stateful) -> khong can rule.
+- NACL: phai co rule outbound cho port 443 (server->client) va inbound cho ephemeral range 1024-65535. Neu NACL server-side deny outbound 1024-65535 -> reply bi chan -> connection hang/timeout.
+Trieu chung: TCP handshake SYN den server OK, nhung client khong nhan SYN-ACK -> timeout; hoac connection established roi stall.
+
+### Debug bang VPC Flow Logs
+- Bat Flow Logs cho subnet/ENI.
+- Tim record: srcaddr dstaddr srcport dstport protocol action.
+- Neu thay REJECT voi dstport la ephemeral -> NACL chan.
+- Neu ACCEPT nhung app khong nhan -> SG hoac app issue.
+- Flow Logs co do tre ~5-10 phut.
+
+### Reachability Analyzer
+- Cong cu managed: kiem tra reachability giua hai ENI/resource theo SG/NACL/route table.
+- Tao path: source ENI -> destination ENI; tra ve reachable/unreachable + hop nao chan (SG/NACL/route).
+- Khong gui traffic that -> an toan cho production.
+- Ho tro ENI, IGW, NAT GW, TGW, VPN, peering.
+
+### Cac nguyen nhan khac
+- Route table thieu route ve client CIDR.
+- SG cua client khong allow outbound.
+- NACL inbound rule deny IP client.
+
+### Pitfall
+- NACL rule number: rule nho hon duoc uu tien; default deny o *.
+- Flow Logs khong capture packet payload; chi metadata.
+- Reachability Analyzer chi kiem tra control plane config, khong capture runtime (packet loss).
+
+> Senior tip: banking network team thuong giu NACL mac dinh allow-all va chi dung SG cho security, vi NACL stateless de gay su co kho debug. Neu phai dung NACL (compliance), luon mo ephemeral range 1024-65535 ca hai chieu va document ro.`,
+  follow: [
+    'Khi nao can dung NACL thay vi chi SG?',
+    'VPC Flow Logs format va cach query bang Athena?',
+    'Reachability Analyzer khac Network Access Analyzer the nao?'
+  ],
+  tags: ['Security-Group', 'NACL', 'Flow-Logs', 'Reachability-Analyzer', 'troubleshooting', 'networking']
+},
+{
+  id: 'aws-039',
+  topic: 'aws',
+  level: 'lead',
+  q: '(lead) Landing zone cho ngan hang chuyen len cloud: Control Tower, account vending, SCP guardrail, log archive/audit account, network account tap trung.',
+  a: `**Tom tat:** Landing zone = nen tang multi-account: Control Tower tu dong dung OU, guardrail SCP, account vending cho team, log archive/audit account tap trung, network account chua TGW/DX/VPN. Muc tieu: isolation, audit, compliance banking.
+
+### Control Tower
+- Tu dong dung landing zone theo best practice AWS: OU (Security, Sandbox, Workloads), account (Log archive, Audit).
+- **Account Factory**: vending account moi qua Service Catalog, tu apply guardrail va baseline.
+- **Guardrails**: preventive (SCP) va detective (Config rules + SNS).
+- Dashboard compliance.
+
+### OU structure goi y (banking)
+- **Security OU**: Log archive, Audit account.
+- **Infrastructure OU**: Network account, Shared services.
+- **Workloads OU**: Prod, Non-prod (per domain).
+- **Sandbox OU**: dev ca nhan (guardrail chat).
+
+### SCP guardrail (Service Control Policy)
+- Ap o OU/account, gioi han max permission (khong grant, chi deny).
+- Vi du: deny region ngoai approved (chi ap-southeast-1), deny disable CloudTrail, deny leave organization, deny create access key cho root.
+- SCP khong anh huong service-linked role.
+
+### Log archive / audit account
+- **Log archive**: nhan CloudTrail, VPC Flow Logs, Config tu moi account qua organization trail; bucket immutable (Object Lock), retention 7 nam.
+- **Audit**: Security Hub, GuardDuty findings, cross-account read-only role cho auditor.
+- Tach khoi workload account de tamper-proof.
+
+### Network account tap trung
+- Chua TGW, DX, VPN, DNS resolver, firewall (Network Firewall).
+- Workload VPC attach TGW; traffic giua VPC va on-prem di qua network account.
+- Centralized egress: NAT Gateway va proxy o network account -> kiem soat outbound.
+- IPAM cap CIDR centrally.
+
+### Pitfall
+- SCP deny qua rong -> break service (vi du deny region nhung service can global endpoint).
+- Account vending khong tu dong apply SCP neu OU sai.
+- Log archive bucket phai Object Lock compliance mode de audit.
+- Networking centralized tang latency neu khong dat TGW attachment dung AZ.
+
+> Senior tip: banking regulator yeu cau segregation of duties va audit trail. Landing zone voi log archive immutable va SCP guardrail la minimum viable compliance. Hay bat dau voi Control Tower (it custom) roi moi build custom (AFT) khi can scale.`,
+  follow: [
+    'AWS Organizations vs Control Tower: khi nao dung cai nao?',
+    'Account Factory for Terraform (AFT) la gi va khac Account Factory?',
+    'Cach implement cross-account role cho CI/CD deploy?'
+  ],
+  tags: ['landing-zone', 'Control-Tower', 'SCP', 'multi-account', 'compliance', 'banking', 'lead']
+},
+{
+  id: 'aws-040',
+  topic: 'aws',
+  level: 'lead',
+  q: '(lead) Migrate database tu on-prem len AWS voi downtime toi thieu: DMS full load + CDC, SCT khi doi engine, kiem tra du lieu, ke hoach cutover va rollback.',
+  a: `**Tom tat:** Dung DMS full load + CDC de dong bo lien tuc; SCT neu doi engine; validate du lieu bang DMS validation va checksum; cutover = dung ghi -> cho CDC lag 0 -> verify -> doi connection string -> smoke test; rollback = giu DB on-prem sync nguoc (CDC reverse) trong cua so 72h.
+
+### DMS full load + CDC
+- **Full load**: copy toan bo du lieu ban dau (bulk).
+- **CDC (Change Data Capture)**: sau full load, DMS doc transaction log (binlog/WAL/redo) va apply thay doi lien tuc -> target luon dong bo.
+- Replication instance dat o AWS (hoac on-prem neu firewall). Endpoint source/target.
+- Monitor: CDCLatencySource/Target, FullLoadThroughput.
+
+### SCT (Schema Conversion Tool)
+- Dung khi doi engine (Oracle -> Aurora PostgreSQL, SQL Server -> RDS).
+- Convert schema, stored procedure, function; bao cao assessment (action items).
+- Mot so object phai sua thu cong (packages, custom types).
+- Neu cung engine (Oracle -> RDS Oracle) thi khong can SCT.
+
+### Kiem tra du lieu
+- DMS data validation: so sanh row count va checksum giua source/target.
+- Tu viet query checksum (hash aggregate) cho bang quan trong.
+- Test application tren target (read-only) truoc cutover.
+- Performance test tren target.
+
+### Ke hoach cutover
+1. T-7 ngay: freeze schema change; dien tap cutover tren staging.
+2. T-1 ngay: ha TTL DNS/connection string; thong bao user.
+3. Cutover window:
+   a. Dung ghi app (maintenance page) hoac redirect read-only.
+   b. Cho CDC lag ve 0 (monitor).
+   c. Validate checksum cuoi.
+   d. Doi connection string/DNS sang target.
+   e. Smoke test (login, transaction mau).
+   f. Mo traffic.
+4. Giu CDC reverse (target->source) trong 72h de rollback.
+
+### Rollback
+- Neu phat hien loi trong 72h: doi connection string ve source (van sync tu target qua CDC reverse).
+- Dieu kien rollback: data corruption, performance khong dat, loi nghiep vu.
+- Sau 72h on dinh: tat replication, decommission source (sau backup).
+
+### Pitfall
+- DMS CDC lag tang khi co long transaction/bulk update -> plan maintenance window du lon.
+- LOB columns lon lam full load cham; dung LOB mode phu hop.
+- Timezone/collation khac nhau giua source/target gay mismatch.
+- Forgot to migrate sequences/identity -> duplicate key sau cutover.
+
+> Senior tip: downtime toi thieu khong phai "khong downtime" — banking thuong chap nhan 30-60 phut maintenance window vao dem. Quan trong la co rollback ro rang va da dien tap. Hay do thoi gian tung buoc trong lan dien tap dau; lan dau luon lau gap 2-3 lan du kien.`,
+  follow: [
+    'Khi nao nen dung native replication thay vi DMS?',
+    'Cach xu ly sequence/identity khi migrate Oracle sang PostgreSQL?',
+    'Blue/green deployment cho database tren AWS hoat dong the nao?'
+  ],
+  tags: ['DMS', 'SCT', 'migration', 'CDC', 'cutover', 'rollback', 'database', 'lead']
+},
+{
+  id: 'aws-041',
+  topic: 'aws',
+  level: 'senior',
+  q: 'EKS và ECS (Fargate) khác nhau bản chất ở đâu? Khi nào chọn EKS, khi nào ECS Fargate là đủ?',
+  a: `**Tóm tắt:** ECS Fargate là container service managed của AWS, đơn giản, phù hợp đa số service; EKS là Kubernetes managed, mạnh khi công ty đã có platform K8s hoặc cần hệ sinh thái K8s (CRD, operator, service mesh). Cái giá của EKS là độ phức tạp và chi phí con người.
+
+### Hiểu nhanh
+Hãy tưởng tượng bạn cần vận chuyển hàng. **ECS Fargate** giống dịch vụ giao hàng trọn gói: bạn đóng thùng (Docker image), điền địa chỉ, còn lại AWS lo xe, tài xế, bảo dưỡng. **EKS** giống bạn thuê nguyên một đội vận tải theo chuẩn quốc tế (Kubernetes): rất mạnh khi có nhiều kho, nhiều tuyến, nhiều đội phối hợp, nhưng phải có người quản lý đội, bảo trì xe, xử lý sự cố. Nếu công ty chỉ có vài service và không có người trực platform, EKS là "đội vận tải" quá lớn so với nhu cầu.
+
+### Thuật ngữ
+- **Control plane**: "bộ não" của Kubernetes (API server, scheduler, etcd); trên EKS do AWS vận hành, tính phí theo giờ.
+- **Data plane**: các node thực sự chạy pod (EC2 của bạn hoặc Fargate).
+- **Pod**: đơn vị nhỏ nhất chạy container trong Kubernetes; một pod có thể chứa nhiều container.
+- **Deployment / ReplicaSet**: Kubernetes object khai báo số bản sao pod và cách cập nhật chúng.
+- **Service / Ingress**: Kubernetes object expose pod ra mạng; Ingress thường trỏ tới ALB hoặc NGINX.
+- **HPA (Horizontal Pod Autoscaler)**: tự tăng/giảm số pod theo CPU hoặc metric tuỳ chỉnh.
+- **CRD (Custom Resource Definition)**: cách mở rộng Kubernetes bằng loại tài nguyên mới.
+- **Operator**: controller tự động hoá vận hành một phần mềm cụ thể (ví dụ Kafka, Postgres) trên K8s.
+- **Service mesh**: lớp quản lý traffic giữa service (Istio, Linkerd) chạy trên K8s.
+
+### So sánh bản chất
+| Tiêu chí | ECS Fargate | EKS |
+|---|---|---|
+| API quản lý | AWS API (task definition, service) | Kubernetes API (Deployment, Service, Ingress) |
+| Đơn vị chạy | Task (1 hoặc nhiều container) | Pod |
+| Auto-scale | Application Auto Scaling theo CPU/memory/request | HPA theo metric, Cluster Autoscaler/Karpenter cho node |
+| Networking | awsvpc: mỗi task có ENI riêng | CNI (VPC CNI): pod có IP trong VPC |
+| Quyền IAM cho pod | Task role (đơn giản) | IRSA hoặc EKS Pod Identity (phức tạp hơn) |
+| Chi phí con người | Thấp | Cao (cần người trực cluster) |
+| Hệ sinh thái | Hạn chế trong AWS | Rất lớn (Helm, CRD, operator, mesh) |
+
+### Khi chọn ECS Fargate
+- Đội nhỏ (5–20 người), không có người trực platform.
+- Service chủ yếu là HTTP API Spring Boot chạy 24/7.
+- Muốn deploy đơn giản, ít moving part.
+- Không cần CRD, operator, service mesh.
+
+### Khi chọn EKS
+- Công ty đã có platform Kubernetes và nhiều team dùng chung.
+- Cần hệ sinh thái K8s: operator cho Kafka/Postgres, service mesh, policy-as-code (OPA/Gatekeeper).
+- Nhiều service, cần chuẩn hoá deploy và observability across team.
+- Có người trực cluster (SRE/platform engineer).
+
+### Lỗi hay gặp
+- **Chọn EKS vì "công ty lớn đều dùng".** Triệu chứng: đội 5 người dành nửa thời gian nâng cấp cluster, sửa add-on, ingress. Cách tránh: chỉ chọn EKS khi có người trực platform và nhu cầu thật.
+- **Dùng EKS nhưng không chuẩn hoá deploy.** Triệu chứng: mỗi service một kiểu YAML, cấu hình lệch nhau, khó nâng cấp. Cách tránh: Helm/Kustomize với template chung và policy-as-code.
+- **Nhầm task role và node role trên EKS.** Triệu chứng: pod chạy được nhưng code gọi AWS bị AccessDenied. Cách tránh: dùng IRSA/Pod Identity, không để pod thừa hưởng quyền của node.
+
+### Trả lời miệng 1 phút
+"ECS Fargate là container service managed của AWS: tôi đóng image, khai báo task definition, AWS lo phần chạy, không có node để vá. EKS là Kubernetes managed, mạnh khi công ty đã có platform K8s, nhiều team, cần CRD/operator/service mesh. Cái giá của EKS là độ phức tạp và chi phí con người. Với đội Java 5–20 người và service HTTP bình thường, mặc định của tôi là ECS Fargate; chỉ nhảy lên EKS khi có người trực cluster và nhu cầu thật."
+
+> Senior tip: chi phí ẩn của Kubernetes là con người, không phải hoá đơn AWS. Nếu không có người trực cluster, EKS sẽ ngốn thời gian của cả đội phát triển.`,
+  follow: [
+    'Karpenter khác gì Cluster Autoscaler trên EKS?',
+    'IRSA và EKS Pod Identity khác nhau thế nào?',
+    'Bạn sẽ migrate từ ECS sang EKS mà không downtime ra sao?'
+  ],
+  tags: ['EKS', 'ECS', 'Fargate', 'Kubernetes']
+},
+{
+  id: 'aws-042',
+  topic: 'aws',
+  level: 'senior',
+  q: 'IRSA và EKS Pod Identity: cách gắn IAM role cho pod mà không dùng access key, cơ chế và khác biệt ra sao?',
+  a: `**Tóm tắt:** IRSA dùng OIDC provider để pod assume role qua token ServiceAccount; EKS Pod Identity dùng agent trên node. Cả hai đều cấp credential tạm cho SDK, không cần access key trong code.
+
+### Hiểu nhanh
+**IRSA** giống bạn có thẻ căn cước do trường cấp (Kubernetes ServiceAccount token) và AWS tin thẻ đó như giấy tờ tuỳ thân, nên cấp thẻ khách (credential tạm). **EKS Pod Identity** giống AWS đặt một lễ tân ngay tại toà nhà (agent trên node): pod chỉ cần nói "tôi là service X", lễ tân kiểm tra và phát thẻ. Cả hai đều tránh hard-code access key.
+
+### Thuật ngữ
+- **ServiceAccount**: danh tính của pod trong Kubernetes.
+- **OIDC provider**: cấu hình IAM tin token do cluster EKS ký.
+- **Web identity token**: JWT ngắn hạn gắn với ServiceAccount, mount vào pod.
+- **STS AssumeRoleWithWebIdentity**: API STS cấp credential tạm từ JWT.
+- **EKS Pod Identity agent**: DaemonSet chạy trên node, cung cấp credential cho pod.
+- **Credential provider chain**: AWS SDK tự tìm credential theo thứ tự.
+
+### Cơ chế IRSA
+1. Tạo IAM role với trust policy tin OIDC provider của cluster và ServiceAccount cụ thể.
+2. Tạo ServiceAccount có annotation {{eks.amazonaws.com/role-arn}}.
+3. Pod dùng ServiceAccount đó nhận projected volume chứa JWT.
+4. SDK đọc env {{AWS_ROLE_ARN}} và {{AWS_WEB_IDENTITY_TOKEN_FILE}}, gọi {{AssumeRoleWithWebIdentity}}.
+5. STS trả credential tạm; SDK tự refresh trước khi hết hạn.
+
+### Cơ chế EKS Pod Identity
+1. Cài EKS Pod Identity agent (add-on) trên cluster.
+2. Tạo association giữa ServiceAccount và IAM role qua API EKS.
+3. Agent trên node cung cấp endpoint credential cho pod (giống ECS).
+4. SDK đi theo container credential provider, gọi agent, nhận credential tạm.
+
+### So sánh
+| Tiêu chí | IRSA | EKS Pod Identity |
+|---|---|---|
+| Cần OIDC provider | Có | Không |
+| Trust policy theo cluster | Phải include OIDC URL | Đơn giản hơn, theo account/cluster |
+| Cross-account | Phức tạp | Dễ hơn |
+| Setup | Annotation ServiceAccount | Association qua EKS API |
+| Khuyến nghị mới | Legacy | Preferred cho cluster mới |
+
+### Lỗi hay gặp
+- **Annotation sai ServiceAccount.** Triệu chứng: pod không assume được role, SDK fallback sang node role. Cách tránh: kiểm tra ServiceAccount name/namespace khớp association.
+- **Trust policy quá rộng.** Triệu chứng: bất kỳ ServiceAccount nào assume được role. Cách tránh: giới hạn {{sub}} condition tới ServiceAccount cụ thể.
+- **Quên cài agent cho Pod Identity.** Triệu chứng: SDK không tìm được credential endpoint. Cách tránh: cài add-on trước khi dùng.
+
+### Trả lời miệng 1 phút
+"IRSA dùng OIDC provider để pod assume role qua JWT của ServiceAccount; EKS Pod Identity dùng agent trên node và association qua EKS API. Cả hai cấp credential tạm cho SDK, không cần access key. IRSA là cách cũ, cần OIDC provider và trust policy theo cluster; Pod Identity đơn giản hơn và là khuyến nghị cho cluster mới. Tôi chọn Pod Identity cho cluster mới, IRSA cho cluster cũ đã setup OIDC."
+
+> Senior tip: đừng để pod thừa hưởng quyền của node. Luôn gắn role riêng cho từng workload qua IRSA hoặc Pod Identity, và review trust policy như review code.`,
+  follow: [
+    'Vì sao pod không nên dùng node role?',
+    'Trust policy của IRSA cần condition gì để an toàn?',
+    'Pod Identity có hỗ trợ cross-account không?'
+  ],
+  tags: ['IRSA', 'EKS Pod Identity', 'IAM', 'EKS']
+},
+{
+  id: 'aws-043',
+  topic: 'aws',
+  level: 'senior',
+  q: 'IAM policy evaluation: khi gặp AccessDenied, debug thế nào? Explicit deny, SCP, permission boundary tương tác ra sao?',
+  a: `**Tóm tắt:** IAM đánh giá theo thứ tự: explicit Deny thắng tất cả; sau đó cần Allow khớp và không bị SCP/permission boundary chặn; còn lại implicit deny. Debug bằng IAM Policy Simulator, CloudTrail event, và kiểm tra trust policy, SCP, boundary.
+
+### Hiểu nhanh
+Hãy tưởng tượng vào một toà nhà cao cấp. **Explicit deny** giống danh sách đen ở cổng: dù có thẻ VIP, nếu tên bạn trong danh sách đen thì không vào được. **SCP (Service Control Policy)** giống quy định của tập đoàn: dù phòng ban cho phép, nếu tập đoàn cấm thì không được. **Permission boundary** giống giới hạn trần của phòng ban: phòng ban không thể cấp quyền vượt trần dù muốn. Khi bị từ chối, cần kiểm tra từng lớp: danh sách đen → quy định tập đoàn → trần phòng ban → thẻ cá nhân.
+
+### Thuật ngữ
+- **Identity policy**: policy gắn vào user/role.
+- **Resource policy**: policy gắn vào resource (S3 bucket policy, SQS queue policy).
+- **SCP**: policy ở cấp Organization/OU/account, giới hạn quyền tối đa.
+- **Permission boundary**: policy giới hạn quyền tối đa mà một principal có thể được cấp.
+- **Explicit deny**: statement Effect=Deny khớp request.
+- **Implicit deny**: không có Allow khớp.
+- **IAM Policy Simulator**: công cụ test policy mà không gọi thật.
+- **CloudTrail**: log mọi API call.
+
+### Cơ chế đánh giá
+1. Có explicit Deny nào khớp (identity, resource, SCP, boundary)? → TỪ CHỐI.
+2. Có Allow nào khớp trong identity policy hoặc resource policy? Nếu không → implicit deny.
+3. Allow đó có bị SCP chặn không? Nếu SCP không Allow → TỪ CHỐI.
+4. Allow đó có bị permission boundary chặn không? Nếu boundary không Allow → TỪ CHỐI.
+5. Nếu qua hết → CHO PHÉP.
+
+Lưu ý: SCP và boundary chỉ **giới hạn** (filter), không cấp quyền. Quyền thực sự phải đến từ identity/resource policy.
+
+### Debug AccessDenied từng bước
+1. Đọc CloudTrail event: {{errorCode}}, {{errorMessage}}, {{userIdentity}}, {{requestParameters}}.
+2. Xác định principal thực sự (role assumed, không phải user gốc).
+3. Kiểm tra identity policy của role: có Allow action+resource khớp không?
+4. Kiểm tra resource policy (nếu có): S3 bucket policy có Deny cross-account không?
+5. Kiểm tra SCP ở account/OU: có Deny action không?
+6. Kiểm tra permission boundary của role: có Allow action không?
+7. Kiểm tra condition: VPC endpoint, MFA, source IP, tag...
+8. Dùng IAM Policy Simulator để test policy combination.
+
+### Lỗi hay gặp
+- **Quên SCP chặn.** Triệu chứng: identity policy Allow nhưng vẫn AccessDenied; CloudTrail không nói rõ. Cách tránh: kiểm tra SCP ở account và OU; dùng Policy Simulator với SCP.
+- **Permission boundary thiếu action.** Triệu chứng: admin cấp quyền mới nhưng boundary không có nên không hiệu lực. Cách tránh: boundary phải bao gồm tất cả action principal cần.
+- **Condition sai.** Triệu chứng: policy đúng action/resource nhưng condition {{aws:SourceVpce}} không khớp vì request đi qua NAT. Cách tránh: kiểm tra condition bằng CloudTrail {{requestParameters}} và {{sourceIPAddress}}.
+- **Nhầm principal.** Triệu chứng: debug role A nhưng request thực sự từ role B (assumed). Cách tránh: đọc {{userIdentity.arn}} trong CloudTrail.
+
+### Trả lời miệng 1 phút
+"IAM đánh giá theo thứ tự: explicit Deny thắng tất cả; sau đó cần Allow khớp và không bị SCP hay permission boundary chặn; còn lại implicit deny. SCP và boundary chỉ giới hạn, không cấp quyền. Khi gặp AccessDenied, tôi đọc CloudTrail để lấy principal và action thực sự, rồi kiểm tra identity policy, resource policy, SCP, boundary và condition theo thứ tự. Tôi dùng IAM Policy Simulator để test combination và luôn nhớ rằng principal thực sự có thể là role assumed, không phải user gốc."
+
+> Senior tip: 80% AccessDenied là do condition (VPC endpoint, source IP) hoặc SCP, không phải policy identity. Luôn đọc CloudTrail trước khi sửa policy.`,
+  follow: [
+    'SCP khác permission boundary ở điểm nào?',
+    'Làm sao test policy mà không gọi thật?',
+    'Resource policy và identity policy cùng áp dụng thế nào?'
+  ],
+  tags: ['IAM', 'SCP', 'permission boundary', 'AccessDenied']
+},
+{
+  id: 'aws-044',
+  topic: 'aws',
+  level: 'senior',
+  q: 'NAT Gateway và chi phí data transfer: vì sao NAT đắt, làm sao giảm bằng VPC endpoint và kiến trúc?',
+  a: `**Tóm tắt:** NAT Gateway tính phí theo giờ và theo GB xử lý; traffic lớn qua NAT (ECR image, log, S3) làm hoá đơn tăng vọt. VPC endpoint (gateway cho S3/DynamoDB, interface cho SQS/KMS/ECR/CloudWatch) giúp traffic AWS không qua NAT. Kiến trúc: endpoint cho dịch vụ AWS, NAT chỉ cho traffic Internet thật.
+
+### Hiểu nhanh
+NAT Gateway giống trạm thu phí trên cao tốc: mỗi GB đi qua đều bị tính tiền, dù bạn chỉ đi từ nhà mình sang nhà hàng xóm trong cùng thành phố. Nếu bạn liên tục chở container image và log qua trạm thu phí, hoá đơn sẽ khổng lồ. **VPC endpoint** giống đường nội bộ dẫn thẳng tới "siêu thị AWS" mà không qua trạm thu phí. Vì vậy nguyên tắc là: traffic tới dịch vụ AWS phải đi đường nội bộ, NAT chỉ dành cho traffic ra Internet thật (gọi API bên thứ ba).
+
+### Thuật ngữ
+- **NAT Gateway**: managed NAT, tính phí theo giờ + GB xử lý, HA trong một AZ.
+- **Data transfer cost**: phí truyền dữ liệu giữa AZ, region, Internet.
+- **Gateway endpoint**: endpoint miễn phí cho S3 và DynamoDB, gắn vào route table.
+- **Interface endpoint (PrivateLink)**: endpoint tạo ENI trong subnet, tính phí theo giờ + GB.
+- **Private DNS**: endpoint tự resolve tên miền chuẩn của dịch vụ AWS.
+- **Cross-AZ data transfer**: phí khi traffic đi giữa các AZ.
+- **VPC Flow Logs**: log traffic trong VPC để phân tích.
+
+### Cơ chế chi phí
+1. NAT Gateway: ~0,045 USD/giờ (~32 USD/tháng) + ~0,045 USD/GB xử lý.
+2. Interface endpoint: ~0,01 USD/giờ/AZ + ~0,01 USD/GB.
+3. Gateway endpoint (S3, DynamoDB): miễn phí (chỉ tính storage/request của dịch vụ).
+4. Cross-AZ: ~0,01 USD/GB mỗi chiều.
+
+Ví dụ: app kéo 50 GB Docker image/tháng qua NAT → 50 × 0,045 = 2,25 USD/tháng chỉ cho image; cộng log, S3, SQS... có thể lên hàng trăm USD.
+
+### Kiến trúc giảm chi phí
+1. **Gateway endpoint cho S3 và DynamoDB** — luôn bật, miễn phí.
+2. **Interface endpoint cho ECR (api + dkr)** — để kéo image không qua NAT; nhớ gateway endpoint S3 vì layer image nằm trên S3.
+3. **Interface endpoint cho CloudWatch Logs, Secrets Manager, KMS, SQS, SNS** — traffic management không ra Internet.
+4. **NAT chỉ cho traffic Internet thật**: gọi API bên thứ ba, tải package từ Internet.
+5. **Mỗi AZ một NAT** để tránh cross-AZ data charge và single point of failure.
+6. **Bật private DNS** cho interface endpoint để SDK dùng tên miền chuẩn.
+
+### Lỗi hay gặp
+- **Kéo image và đẩy log qua NAT.** Triệu chứng: NAT cost tăng vọt mỗi lần deploy. Cách tránh: endpoint cho ECR (api + dkr + gateway S3) và CloudWatch Logs.
+- **Một NAT dùng chung nhiều AZ.** Triệu chứng: phí cross-AZ + single point of failure. Cách tránh: mỗi AZ một NAT.
+- **Quên gateway endpoint S3 khi dùng ECR endpoint.** Triệu chứng: layer image vẫn đi qua NAT. Cách tránh: luôn có gateway endpoint S3.
+- **Không bật private DNS.** Triệu chứng: SDK vẫn resolve tên miền ra Internet. Cách tránh: bật private DNS cho interface endpoint.
+
+### Trả lời miệng 1 phút
+"NAT Gateway tính phí theo giờ và GB xử lý, nên traffic lớn qua NAT (image, log, S3) làm hoá đơn tăng vọt. Tôi giảm bằng VPC endpoint: gateway endpoint miễn phí cho S3 và DynamoDB, interface endpoint cho ECR, CloudWatch Logs, Secrets Manager, KMS, SQS. NAT chỉ dành cho traffic Internet thật. Kiến trúc: mỗi AZ một NAT cho HA, endpoint cho mọi dịch vụ AWS, bật private DNS. Tôi bật VPC Flow Logs để phát hiện traffic bất thường đi qua NAT."
+
+> Senior tip: vẽ route table trước khi vẽ diagram. Phần lớn sự cố 'chi phí NAT cao' là do thiếu endpoint. Bật VPC Flow Logs gửi về S3/CloudWatch để phân tích traffic theo destination.`,
+  follow: [
+    'Vì sao gateway endpoint cho S3 miễn phí nhưng interface endpoint cho ECR mất phí?',
+    'Làm sao phát hiện traffic đang đi qua NAT không cần thiết?',
+    'Cross-AZ data transfer ảnh hưởng chi phí thế nào?'
+  ],
+  tags: ['NAT Gateway', 'VPC endpoint', 'data transfer', 'cost']
+},
+{
+  id: 'aws-045',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Lead) Tối ưu chi phí AWS cho hệ thống Java: Savings Plans, Graviton, Spot cho worker, right-sizing — chiến lược và thứ tự ưu tiên ra sao?',
+  a: `**Tóm tắt:** Tối ưu chi phí AWS theo thứ tự: right-sizing (đo và cắt thừa) → Graviton (ARM, rẻ hơn và nhanh hơn cho Java) → Savings Plans/Reserved Instances cho baseline → Spot cho worker/batch → architecture (serverless, caching, endpoint). Mỗi bước cần đo trước khi làm.
+
+### Hiểu nhanh
+Tối ưu chi phí giống giảm cân: đừng mua thuốc giảm cân (Savings Plans) khi chưa biết đang ăn thừa ở đâu (right-sizing). Đầu tiên là **đo và cắt thừa** (right-sizing): nhiều hệ đang chạy instance lớn hơn cần thiết. Sau đó **đổi sang Graviton** (chip ARM của AWS) thường rẻ hơn 20% và nhanh hơn cho Java. Tiếp theo **commit baseline** bằng Savings Plans để được giảm giá. Cuối cùng **Spot** cho workload chịu được gián đoạn (worker, batch). Architecture (caching, serverless) là bước cuối cùng.
+
+### Thuật ngữ
+- **Right-sizing**: điều chỉnh size instance/container theo nhu cầu thực tế.
+- **Graviton**: chip ARM do AWS thiết kế (Graviton2/3/4), giá rẻ hơn và hiệu năng/Watt tốt hơn x86 cho nhiều workload.
+- **Savings Plans**: cam kết chi tiêu theo giờ (1 hoặc 3 năm) để được giảm giá, linh hoạt hơn Reserved Instances.
+- **Reserved Instances (RI)**: cam kết instance cụ thể để được giảm giá.
+- **Spot Instances**: dùng capacity thừa của AWS với giá giảm sâu, có thể bị thu hồi với cảnh báo 2 phút.
+- **Compute Savings Plans**: áp dụng cho EC2, Fargate, Lambda bất kể instance family/region.
+- **EC2 Instance Savings Plans**: áp dụng cho instance family cụ thể trong region, giảm giá sâu hơn.
+- **Cost Explorer / Compute Optimizer**: công cụ AWS phân tích chi phí và gợi ý right-sizing.
+
+### Thứ tự ưu tiên
+1. **Right-sizing** (tuần 1-2): dùng Compute Optimizer và CloudWatch để tìm instance/container thừa. Giảm CPU/memory xuống mức thực tế + buffer 20-30%. Đây là bước rẻ nhất và an toàn nhất.
+2. **Graviton** (tuần 2-4): migrate Java workload sang Graviton (m5 → m7g, c6i → c7g). Java chạy tốt trên ARM từ JDK 17; Spring Boot, Hibernate không cần thay đổi. Thường giảm 20% chi phí và tăng throughput.
+3. **Savings Plans** (tháng 1): commit baseline (phần workload ổn định 24/7) bằng Compute Savings Plans 1 năm. Giảm ~30-40% so với on-demand. Không commit phần biến động.
+4. **Spot** (tháng 2): dùng Spot cho worker, batch, CI runner, dev/staging. Cần handle interruption (checkpoint, graceful shutdown). Có thể giảm 60-90%.
+5. **Architecture** (liên tục): caching (ElastiCache), serverless cho workload thất thường, VPC endpoint giảm NAT, S3 lifecycle.
+
+### Java trên Graviton
+- JDK 17+ hỗ trợ ARM64 tốt; JVM tự nhận diện architecture.
+- Docker image cần build multi-arch (linux/arm64) hoặc dùng image có sẵn.
+- Một số native library (JNI) cần rebuild cho ARM.
+- Benchmark trước khi migrate production; thường Graviton cho throughput cao hơn với cùng giá.
+
+### Spot cho Java worker
+- Worker xử lý job từ SQS/Kafka: nếu bị thu hồi, message quay lại queue (visibility timeout) → worker khác xử lý. An toàn nếu idempotent.
+- Cần graceful shutdown: nhận SIGTERM, dừng nhận job mới, hoàn thành job hiện tại trong 2 phút.
+- Dùng Spot Fleet / Auto Scaling Group với mixed instances và on-demand fallback.
+- Không dùng Spot cho API serving (latency nhạy cảm) hoặc stateful workload.
+
+### Lỗi hay gặp
+- **Mua Savings Plans trước khi right-size.** Triệu chứng: commit chi tiêu cho instance thừa, lãng phí. Cách tránh: right-size trước, commit sau.
+- **Migrate Graviton mà không test native library.** Triệu chứng: app crash vì JNI library chỉ có x86. Cách tránh: kiểm tra dependency, build multi-arch, test staging.
+- **Dùng Spot cho API serving.** Triệu chứng: request bị drop khi Spot bị thu hồi. Cách tránh: Spot chỉ cho worker/batch/dev.
+- **Không handle Spot interruption.** Triệu chứng: job mất giữa chừng, dữ liệu không nhất quán. Cách tránh: checkpoint + graceful shutdown + idempotent processing.
+
+### Trả lời miệng 1 phút
+"Tối ưu chi phí tôi làm theo thứ tự: right-sizing trước (đo và cắt thừa), sau đó Graviton (ARM, thường rẻ hơn 20% và nhanh hơn cho Java), rồi Savings Plans cho baseline ổn định, Spot cho worker và batch, cuối cùng architecture như caching và serverless. Quan trọng là đo trước khi làm: dùng Compute Optimizer và CloudWatch. Java chạy tốt trên Graviton từ JDK 17, chỉ cần build multi-arch image. Spot chỉ cho workload chịu được gián đoạn và phải handle interruption gracefully."
+
+> Senior tip: đừng mua Savings Plans khi chưa right-size. Nhiều hệ đang chạy instance lớn gấp đôi cần thiết; cắt trước có thể giảm 30-50% mà không cần commit gì.`,
+  follow: [
+    'Compute Savings Plans khác EC2 Instance Savings Plans thế nào?',
+    'Làm sao handle Spot interruption trong Java worker?',
+    'Graviton có nhược điểm gì so với x86 cho Java?'
+  ],
+  tags: ['cost optimization', 'Savings Plans', 'Graviton', 'Spot', 'right-sizing', 'lead']
+},
+{
+  id: 'aws-046',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Lead) Secrets và rotation: Secrets Manager vs Parameter Store, Spring Boot đọc secret thế nào và rotate không downtime ra sao?',
+  a: `**Tóm tắt:** Secrets Manager có rotation tự động và audit tốt nhưng đắt; Parameter Store rẻ hơn, phù hợp config không nhạy cảm. Spring Boot đọc qua AWS SDK hoặc Spring Cloud AWS. Rotation không downtime cần app hỗ trợ reload secret (refresh scope) và dual-credential window.
+
+### Hiểu nhanh
+**Secrets Manager** giống tủ sắt có người quản lý: tự đổi mật khẩu định kỳ, ghi log ai mở tủ, nhưng thuê tủ đắt. **Parameter Store** giống ngăn kéo văn phòng: rẻ, có khoá, nhưng tự bạn phải đổi mật khẩu và không có log chi tiết. Với secret quan trọng (DB password, API key), dùng Secrets Manager để có rotation tự động. Với config (feature flag, URL), dùng Parameter Store Standard (miễn phí) hoặc Advanced.
+
+### Thuật ngữ
+- **Secret**: giá trị nhạy cảm (password, token, key).
+- **Parameter**: giá trị config (có thể encrypted).
+- **Rotation**: tự động đổi secret theo lịch.
+- **Lambda rotation function**: hàm Lambda do Secrets Manager gọi để đổi secret.
+- **Dual credential**: giữ cả secret cũ và mới trong thời gian chuyển đổi.
+- **Spring Cloud AWS**: thư viện tích hợp AWS vào Spring Boot.
+- **@RefreshScope**: Spring annotation cho phép bean reload khi config thay đổi.
+- **Secrets Manager caching client**: client cache secret để giảm API call và chi phí.
+
+### So sánh
+| Tiêu chí | Secrets Manager | Parameter Store |
+|---|---|---|
+| Giá | ~0,40 USD/secret/tháng + API call | Standard miễn phí; Advanced ~0,05 USD/parameter/tháng |
+| Rotation tự động | Có (Lambda) | Không (phải tự viết) |
+| Audit (CloudTrail) | Chi tiết | Cơ bản |
+| Kích thước | Tối đa 64 KB | Standard 4 KB, Advanced 8 KB |
+| Cross-account | Dễ (resource policy) | Hạn chế |
+| Phù hợp | Secret quan trọng cần rotation | Config, feature flag, secret ít thay đổi |
+
+### Spring Boot đọc secret
+Cách 1: AWS SDK trực tiếp trong @PostConstruct hoặc @ConfigurationProperties, dùng Secrets Manager caching client để cache và tự refresh.
+
+Cách 2: Spring Cloud AWS: thêm dependency, cấu hình {{spring.config.import=aws-secretsmanager:/secret/name}}, Spring tự inject vào Environment.
+
+Cách 3: Mount secret vào env var qua ECS/Lambda (ít linh hoạt, không reload runtime).
+
+### Rotation không downtime
+1. Secret có hai version: AWSCURRENT và AWSPREVIOUS.
+2. Rotation function tạo secret mới, cập nhật DB (đổi password), rồi promote version mới.
+3. App phải hỗ trợ reload: dùng @RefreshScope + polling hoặc event, hoặc restart rolling.
+4. Trong thời gian chuyển đổi, cả credential cũ và mới đều hợp lệ (dual credential) nhờ DB hỗ trợ multiple password hoặc grace period.
+5. Secrets Manager caching client tự refresh khi detect version mới.
+
+### Lỗi hay gặp
+- **App cache secret mãi không reload.** Triệu chứng: sau rotation, app vẫn dùng secret cũ, connection fail. Cách avoid: dùng caching client với TTL, hoặc @RefreshScope + actuator refresh endpoint.
+- **Rotation function không idempotent.** Triệu chứng: rotation chạy hai lần gây lỗi hoặc secret lệch. Cách avoid: thiết kế idempotent, kiểm tra version trước khi đổi.
+- **Dùng Parameter Store cho secret cần rotation.** Triệu chứng: phải tự viết rotation, dễ lỗi. Cách avoid: secret quan trọng dùng Secrets Manager.
+- **Secret trong env var của task definition.** Triệu chứng: secret nằm trong CloudFormation/IaC, bị lộ. Cách avoid: dùng secret reference (ECS secret injection từ Secrets Manager/Parameter Store), không put plaintext.
+
+### Trả lời miệng 1 phút
+"Secrets Manager có rotation tự động và audit tốt nhưng đắt; Parameter Store rẻ hơn, phù hợp config. Spring Boot đọc qua AWS SDK caching client hoặc Spring Cloud AWS. Rotation không downtime cần app hỗ trợ reload secret (@RefreshScope hoặc caching client với TTL) và dual-credential window trong thời gian chuyển đổi. Secret quan trọng (DB password) dùng Secrets Manager; config/feature flag dùng Parameter Store Standard."
+
+> Senior tip: đừng lưu secret trong env var plaintext của task definition. Dùng secret reference để ECS/Lambda tự inject từ Secrets Manager/Parameter Store, và secret không xuất hiện trong IaC hay console.`,
+  follow: [
+    'Secrets Manager rotation Lambda hoạt động thế nào các bước?',
+    'Làm sao app Java reload secret mà không restart?',
+    'Khi nào dùng Parameter Store Advanced thay vì Secrets Manager?'
+  ],
+  tags: ['Secrets Manager', 'Parameter Store', 'rotation', 'Spring Boot', 'lead']
+}
+,
+{
+  id: 'aws-047',
+  topic: 'aws',
+  level: 'senior',
+  q: 'VPC: route table, NAT Gateway, VPC Endpoint (Gateway vs Interface) — vì sao chi phí NAT tăng vọt khi EC2 gọi S3?',
+  a: `**Tóm tắt:** NAT Gateway tính tiền theo GB data processed; gọi S3 qua NAT = trả tiền NAT + S3. Dùng S3 Gateway Endpoint (miễn phí, thêm route vào route table) để traffic đi nội bộ AWS, không qua NAT và không mất tiền NAT.
+
+### Cái gì là route table
+Route table là "bảng chỉ đường" của subnet: mỗi dòng {destination CIDR -> target}. Ví dụ 10.0.0.0/16 -> local (trong VPC), 0.0.0.0/0 -> nat-xxx (ra internet). Subnet liên kết với 1 route table.
+
+### NAT Gateway
+NAT Gateway đặt ở public subnet, có Elastic IP, cho phép private subnet ra internet (outbound only). Tính tiền: ~$0.045/giờ + $0.045/GB processed. Quan trọng: "processed" = mọi byte đi qua NAT, kể cả S3.
+
+### VPC Endpoint
+- Gateway Endpoint: chỉ cho S3 và DynamoDB. Miễn phí, thêm route trong route table (pl-xxx -> vpce). Traffic không qua NAT/internet.
+- Interface Endpoint (PrivateLink): cho hầu hết service AWS, tạo ENI trong subnet, có phí/giờ + $/GB. Dùng khi cần private access hoặc service không có Gateway Endpoint.
+
+### Vì sao chi phí NAT tăng vọt với S3
+EC2 private subnet download 1 TB từ S3: traffic đi NAT -> $45 NAT + S3 transfer. Nếu dùng Gateway Endpoint: $0 NAT (S3 transfer trong cùng region miễn phí). Nhiều team quên endpoint -> bill NAT khổng lồ.
+
+### Trên production
+- Triệu chứng: bill NAT Gateway cao bất thường, CloudWatch NatGatewayBytesProcessed lớn.
+- Cách đo: Cost Explorer filter NAT Gateway; metric NatGatewayBytesProcessed.
+- Tuning: tạo S3 Gateway Endpoint cho mọi VPC có EC2 gọi S3; bật S3 bucket policy yêu cầu VPC endpoint; dùng Interface Endpoint cho ECR/Secrets Manager nếu private.
+- Pitfall: Gateway Endpoint không hỗ trợ cross-region; Interface Endpoint cần SG cho ENI; endpoint policy mặc định allow all -> siết lại.
+
+### So sánh
+| | NAT Gateway | S3 Gateway Endpoint | Interface Endpoint |
+|---|---|---|---|
+| Phí | $/giờ + $/GB | miễn phí | $/giờ + $/GB |
+| Service | mọi internet | S3, DynamoDB | hầu hết AWS |
+| Bảo mật | ra internet | chỉ AWS backbone | private |
+
+> Senior tip: luôn tạo S3 Gateway Endpoint đầu tiên khi dựng VPC; kiểm tra bill NAT hàng tháng — nếu NatGatewayBytesProcessed > 1 TB/tháng và đa số là S3, bạn đang đốt tiền.`,
+  follow: [
+    'Gateway Endpoint và Interface Endpoint khác nhau thế nào, khi nào chọn cái nào?',
+    'Làm sao bắt buộc traffic S3 phải đi qua VPC endpoint (bucket policy)?',
+    'VPC Flow Logs giúp debug routing thế nào?'
+  ],
+  tags: ['VPC', 'NAT', 'Endpoint', 'S3', 'senior']
+},
+{
+  id: 'aws-048',
+  topic: 'aws',
+  level: 'senior',
+  q: 'ALB vs NLB: layer 7 vs layer 4, giữ IP client, idle timeout gây 502/504 với keep-alive của app Java',
+  a: `**Tóm tắt:** ALB hiểu HTTP (routing theo path/host, WebSocket), NLB ở layer 4 giữ IP client và latency thấp. Idle timeout của ALB (mặc định 60s) cắt connection keep-alive của Tomcat/Netty -> 502/504 nếu app giữ connection lâu hơn. Fix: tune idle timeout ALB > app keep-alive timeout, hoặc tắt keep-alive.
+
+### Layer
+- ALB (Application LB): layer 7, HTTP/HTTPS/gRPC/WebSocket. Routing theo host, path, header, query. Terminate TLS. Có WAF integration.
+- NLB (Network LB): layer 4, TCP/UDP/TLS. Giữ IP client (preserve client IP), latency ~ microseconds, static IP/EIP per AZ. Không hiểu HTTP.
+
+### Giữ IP client
+- ALB: app thấy IP của ALB; IP client nằm trong X-Forwarded-For header. Cần cấu hình Tomcat RemoteIpValve hoặc Spring server.forward-headers-strategy=framework.
+- NLB: app thấy IP client thật (nếu target type instance/ip). Tốt cho protocol không HTTP hoặc cần IP thật.
+
+### Idle timeout và 502/504
+ALB có idle timeout (default 60s). Nếu connection giữa ALB và target idle > timeout, ALB đóng connection. Nếu app (Tomcat keep-alive timeout 20s? Actually Tomcat default keepAliveTimeout 20s; nếu app set lớn) hoặc client gửi request trên connection đã bị ALB đóng -> 502 Bad Gateway hoặc 504 Gateway Timeout.
+
+Triệu chứng: 502/504 rải rác, thường với long-polling, SSE, hoặc batch upload. Log ALB: target_connection_error_count, http_5xx_count.
+
+### Fix
+- Set ALB idle timeout > app keep-alive timeout + buffer (ví dụ app 30s, ALB 60s) HOẶC app keep-alive timeout > ALB? Quy tắc: timeout của hop ngắn hơn phải < hop dài hơn. ALB-target: ALB idle timeout nên > target keep-alive timeout. Client-ALB: client timeout < ALB idle timeout.
+- Với SSE/long-poll: tăng idle timeout ALB lên 300-3600s (max 4000s) hoặc dùng NLB.
+- Tắt keep-alive ở app nếu traffic ngắn: server.tomcat.keep-alive-timeout=1.
+
+### Trên production
+- Metric: ALB TargetResponseTime, HTTPCode_Target_5XX_Count, TargetConnectionErrorCount.
+- ALB access log: tìm 502/504 và elapsed time.
+- Pitfall: health check path trả 200 nhanh; deregistration delay (default 300s) chờ connection drain khi deploy.
+
+> Senior tip: vẽ timeline: client idle timeout < ALB idle timeout < target keep-alive timeout là sai; đúng là target keep-alive timeout < ALB idle timeout < client timeout. Sai thứ tự -> 502 ngẫu nhiên khó debug.`,
+  follow: [
+    'Khi nào chọn NLB thay vì ALB cho service Java?',
+    'Cách cấu hình Spring Boot nhận IP client thật qua ALB?',
+    'Deregistration delay ảnh hưởng deploy thế nào?'
+  ],
+  tags: ['ALB', 'NLB', 'keep-alive', '502', 'senior']
+},
+{
+  id: 'aws-049',
+  topic: 'aws',
+  level: 'senior',
+  q: 'RDS Multi-AZ failover thực tế: DNS, thời gian, read replica lag, RDS Proxy với Lambda',
+  a: `**Tóm tắt:** Multi-AZ là synchronous replication standby ở AZ khác; failover đổi DNS endpoint (TTL thấp) trong 1-2 phút, connection đang mở bị drop -> app phải retry. Read replica là async -> lag. RDS Proxy gom connection, hợp Lambda (nhiều concurrent connection).
+
+### Multi-AZ cơ chế
+- Primary ở AZ A, standby synchronous ở AZ B. Standby không serve read (chỉ standby). Failover tự động khi primary fail (hardware, AZ outage, patch).
+- Failover: promote standby, đổi DNS CNAME endpoint sang instance mới. TTL ~5s. Thời gian thực tế 60-120s (phát hiện + promote + DNS propagate). Connection đang mở bị reset -> SQLException.
+
+### App Java phải làm gì
+- Dùng connection pool (HikariCP) với validation query và retry. Set connectionTimeout, maxLifetime < failover time? Thực tế: catch SQLException, retry với backoff. Spring @Retryable.
+- Multi-AZ không tăng read capacity (standby không đọc). Muốn scale read -> Read Replica.
+
+### Read Replica lag
+- Async replication: replica có thể lag vài ms đến vài giây (hoặc phút khi load cao). Đọc ngay sau write -> stale data. Dùng cho report/analytics, không cho read-after-write critical.
+- Cross-region replica cho DR; lag cao hơn.
+
+### RDS Proxy với Lambda
+- Lambda mỗi invocation mở connection -> thousands concurrent connections overwhelm RDS. RDS Proxy là connection pooler giữa Lambda và RDS, reuse connection, giảm connection churn, hỗ trợ IAM auth và failover nhanh hơn (proxy giữ connection).
+- Pinning: transaction hoặc session state (SET, temp table, advisory lock) làm proxy không thể reuse connection -> mất lợi ích. Tránh session-level state.
+
+### Trên production
+- Metric: DatabaseConnections, ReplicaLag, Failover events (RDS events).
+- Test failover định kỳ (reboot with failover) trong maintenance window.
+- Pitfall: app cache DNS dài -> sau failover vẫn trỏ instance cũ; set JVM DNS TTL thấp (networkaddress.cache.ttl=5) hoặc dùng proxy.
+
+> Senior tip: Multi-AZ cho HA, Read Replica cho scale read — đừng nhầm. Với Lambda luôn dùng RDS Proxy, và kiểm tra pinning metric; pinning cao = đang dùng session state và proxy vô dụng.`,
+  follow: [
+    'Làm sao test failover RDS mà không downtime người dùng?',
+    'Khi nào dùng Aurora thay vì RDS PostgreSQL?',
+    'Read replica lag đo thế nào và ngưỡng nào cần alert?'
+  ],
+  tags: ['RDS', 'Multi-AZ', 'Read Replica', 'RDS Proxy', 'Lambda', 'senior']
+},
+{
+  id: 'aws-050',
+  topic: 'aws',
+  level: 'senior',
+  q: 'SQS: visibility timeout, at-least-once, FIFO + message group, DLQ và redrive',
+  a: `**Tóm tắt:** SQS at-least-once: message có thể deliver nhiều lần. Visibility timeout ẩn message sau khi nhận; nếu xử lý xong không delete -> nhận lại. FIFO + MessageGroupId đảm bảo thứ tự trong group. DLQ bắt message fail nhiều lần, redrive để replay.
+
+### Visibility timeout
+Khi consumer receive message, SQS ẩn message trong visibility timeout (default 30s). Consumer phải xử lý và delete message trước hết timeout. Nếu crash -> message hiện lại -> consumer khác xử lý. Nếu xử lý > timeout -> duplicate processing. Set timeout >= xử lý worst-case, hoặc extend (ChangeMessageVisibility) khi xử lý lâu.
+
+### At-least-once
+Standard queue: có thể duplicate (network retry, timeout). Consumer phải idempotent: dùng message ID / business key để dedup. FIFO queue: exactly-once processing (dedup trong 5 phút qua MessageDeduplicationId) nhưng vẫn at-least-once delivery; dedup ID chống duplicate.
+
+### FIFO + Message Group
+FIFO đảm bảo thứ tự theo MessageGroupId. Nhiều consumer có thể xử lý song song các group khác nhau, nhưng trong cùng group thì tuần tự. Throughput FIFO: 300 msg/s (hoặc 3000 với batching) per queue; partition theo group.
+
+### DLQ và redrive
+- DLQ: queue nhận message sau N lần fail (maxReceiveCount). Giúp không block queue chính.
+- Redrive: sau khi fix bug, chuyển message từ DLQ về main queue (redrive) hoặc xử lý thủ công.
+- Redrive allow policy: DLQ phải cho phép source queue redrive.
+
+### Trên production
+- Metric: ApproximateNumberOfMessagesVisible, NumberOfMessagesSent/Received, DLQ depth.
+- Alert DLQ depth > 0.
+- Pitfall: visibility timeout quá ngắn -> duplicate storm; quá dài -> delay retry.
+- Xử lý poison message: log payload + message ID, không retry vô hạn; dùng DLQ.
+
+### So sánh Standard vs FIFO
+| | Standard | FIFO |
+|---|---|---|
+| Thứ tự | best-effort | strict per group |
+| Throughput | gần như vô hạn | 300-3000/s |
+| Dedup | không | 5 phút |
+| Dùng khi | throughput cao, không cần thứ tự | cần thứ tự / exactly-once |
+
+> Senior tip: thiết kế consumer idempotent ngay từ đầu (business key + DB unique constraint) — đó là cách duy nhất sống sót với at-least-once. Visibility timeout = processing time * 2 + buffer.`,
+  follow: [
+    'Làm sao implement idempotent consumer với SQS?',
+    'Khi nào dùng SNS fan-out + SQS thay vì Kafka?',
+    'Redrive policy và cách replay DLQ an toàn?'
+  ],
+  tags: ['SQS', 'visibility timeout', 'FIFO', 'DLQ', 'senior']
+},
+{
+  id: 'aws-051',
+  topic: 'aws',
+  level: 'senior',
+  q: 'DynamoDB: partition key, hot partition, adaptive capacity, GSI eventual consistency, single-table design',
+  a: `**Tóm tắt:** DynamoDB phân tán theo partition key hash; hot partition xảy ra khi một key nhận traffic lớn vượt capacity của partition. Adaptive capacity tự điều chỉnh nhưng không cứu hot key đơn lẻ. GSI là async -> eventual consistency. Single-table design dùng composite key + overload.
+
+### Partition key và partition
+- Table partition theo hash(partition key). Mỗi partition có throughput limit (~3000 RCU / 1000 WCU) và storage 10GB.
+- Nếu partition key là userId và một user hot (celebrity) -> hot partition -> throttling dù total capacity còn dư.
+
+### Adaptive capacity
+DynamoDB tự chuyển unused capacity từ partition lạnh sang partition nóng. Nhưng nếu một partition key đơn lẻ vượt hard limit của partition, adaptive không đủ -> phải redesign key (sharding, thêm suffix random).
+
+### Hot partition fix
+- Chọn high-cardinality key (userId + timestamp bucket).
+- Write sharding: thêm random suffix (0-9) vào PK cho write-heavy, đọc phải query tất cả shard.
+- Dùng on-demand capacity hoặc provisioned với auto-scaling.
+
+### GSI eventual consistency
+- GSI replicate async từ base table. Write vào base -> GSI update sau vài ms. Read GSI ngay sau write -> có thể chưa thấy. Không dùng GSI cho read-after-write critical; dùng base table query hoặc strongly consistent read (chỉ base table).
+- GSI có throughput riêng; hot GSI cũng throttling.
+
+### Single-table design
+- Một table chứa nhiều entity type, dùng PK/SK composite. Ví dụ PK=USER#123, SK=PROFILE; PK=USER#123, SK=ORDER#456. Query bằng begins_with.
+- Overload GSI: GSI1PK/GSI1SK cho access pattern khác. Giảm số table, transaction ACID trong cùng table.
+
+### Trên production
+- Metric: ConsumedRead/WriteCapacityUnits, ThrottledRequests, UserErrors.
+- CloudWatch Contributor Insights tìm hot partition.
+- Pitfall: scan toàn table -> cost lớn; luôn query với key.
+
+> Senior tip: DynamoDB reward good key design và punish bad; trước khi code, liệt kê access patterns rồi thiết kế PK/SK. Hot partition là lỗi thiết kế, không phải lỗi capacity.`,
+  follow: [
+    'Khi nào dùng DynamoDB thay vì RDS?',
+    'Làm sao debug hot partition với CloudWatch?',
+    'Single-table design trade-off vs multi-table?'
+  ],
+  tags: ['DynamoDB', 'partition key', 'hot partition', 'GSI', 'senior']
+},
+{
+  id: 'aws-052',
+  topic: 'aws',
+  level: 'lead',
+  q: 'IAM policy evaluation logic: explicit deny, SCP, permission boundary, role cho workload',
+  a: `**Tóm tắt:** AWS đánh giá request theo: explicit deny thắng mọi thứ; SCP giới hạn tối đa tổ chức; permission boundary giới hạn tối đa role/user; identity policy + resource policy phải allow. Tất cả phải allow, một deny là deny.
+
+### Thứ tự đánh giá
+1. SCP (Service Control Policy) ở Organization: nếu deny -> deny. SCP không grant, chỉ giới hạn.
+2. Permission boundary (nếu có): giới hạn tối đa permission của user/role. Phải allow trong boundary.
+3. Identity-based policy (attached to user/role) hoặc resource-based policy: phải allow.
+4. Explicit deny ở bất kỳ đâu -> deny ngay.
+
+Implicit deny: không có allow nào -> deny.
+
+### SCP
+Áp dụng ở OU/account level. Ví dụ deny region ngoài ap-southeast-1, deny xóa CloudTrail. Dùng để guardrail toàn org.
+
+### Permission boundary
+Dùng cho delegated admin: dev có thể tạo role nhưng bị boundary giới hạn (không được tạo admin role). Boundary là policy attached to user/role như max permission.
+
+### Resource-based policy
+S3 bucket policy, SQS queue policy, KMS key policy. Có thể grant cross-account. Kết hợp identity policy: cả hai phải allow (trừ resource policy với principal cùng account có thể override? Thực tế: nếu same account, identity allow đủ; cross-account cần cả hai).
+
+### Role cho workload
+- EC2 instance profile, ECS task role, Lambda execution role, EKS IRSA/Pod Identity.
+- Principle of least privilege: chỉ permission cần thiết, dùng condition (aws:SourceVpc, aws:PrincipalTag).
+- Session policy khi assume role: further restrict.
+
+### Trên production
+- Dùng IAM Access Analyzer để tìm unused permission và external access.
+- CloudTrail log mọi API call; alert AssumeRole bất thường.
+- Pitfall: wildcard * trong Action/Resource -> over-permission. Dùng policy simulator để test.
+
+> Senior tip: thiết kế IAM như code: version control policy, review PR, dùng permission boundary cho self-service. Explicit deny cho các action nguy hiểm (iam:*, s3:DeleteBucket) ở SCP level.`,
+  follow: [
+    'Permission boundary và SCP khác nhau thế nào?',
+    'Làm sao audit permission unused trong AWS?',
+    'Condition key nào hay dùng để restrict theo VPC/tag?'
+  ],
+  tags: ['IAM', 'SCP', 'permission boundary', 'policy', 'lead']
+},
+{
+  id: 'aws-053',
+  topic: 'aws',
+  level: 'lead',
+  q: 'IRSA / EKS Pod Identity: role cho pod, vì sao không dùng node instance profile',
+  a: `**Tóm tắt:** IRSA dùng OIDC federation: pod có service account annotated với IAM role ARN; kubelet inject token (JWT) vào pod, AWS STS AssumeRoleWithWebIdentity đổi token thành AWS credentials. Pod Identity là cơ chế mới đơn giản hơn (agent trên node). Không dùng node instance profile vì mọi pod chia sẻ cùng permission -> vi phạm least privilege.
+
+### Vấn đề node instance profile
+Mọi pod trên node dùng cùng instance profile của node -> nếu một pod bị compromise, attacker có toàn bộ permission của node (S3, DynamoDB...). Không thể phân biệt pod.
+
+### IRSA (IAM Roles for Service Accounts)
+- EKS cluster có OIDC provider (IAM identity provider).
+- Tạo IAM role với trust policy: Principal = OIDC provider, condition StringEquals sub = system:serviceaccount:ns:sa.
+- Annotate K8s ServiceAccount với eks.amazonaws.com/role-arn.
+- Pod dùng SA đó: webhook inject env AWS_ROLE_ARN và AWS_WEB_IDENTITY_TOKEN_FILE (JWT mounted).
+- AWS SDK tự gọi STS AssumeRoleWithWebIdentity -> temporary credentials. Rotate tự động.
+
+### EKS Pod Identity
+- Cơ chế mới (2023): agent (eks-pod-identity-agent DaemonSet) trên node intercept AWS SDK calls, assume role dựa trên mapping Pod Identity Association (namespace+SA -> role). Không cần OIDC, không cần annotate SA. Đơn giản hơn, hỗ trợ session tags, revoke nhanh.
+
+### So sánh
+| | IRSA | Pod Identity |
+|---|---|---|
+| Setup | OIDC provider + trust policy condition | association API |
+| Annotate SA | cần | không cần |
+| Revocation | xóa SA/role | xóa association |
+| Khuyến nghị mới | legacy | preferred cho cluster mới |
+
+### Trên production
+- Principle: một role per service (payment-service, order-service), không shared.
+- Trust policy condition phải chặt (namespace + SA name), tránh wildcard.
+- CloudTrail log AssumeRoleWithWebIdentity với source IP pod.
+- Pitfall: pod không có SA annotated -> dùng node role (fallback) -> lỗ hổng. Enforce bằng admission policy (OPA/Kyverno) yêu cầu SA có role.
+
+> Senior tip: IRSA/Pod Identity là "zero-trust cho pod": credential sống trong pod memory, tự rotate, không mount secret. Kết hợp với network policy và read-only root filesystem để harden.`,
+  follow: [
+    'IRSA trust policy condition StringEquals vs StringLike khác nhau thế nào?',
+    'Làm sao migrate từ IRSA sang Pod Identity?',
+    'Pod không có permission AWS thì debug thế nào?'
+  ],
+  tags: ['EKS', 'IRSA', 'Pod Identity', 'IAM', 'lead']
+},
+{
+  id: 'aws-054',
+  topic: 'aws',
+  level: 'lead',
+  q: 'RDS Proxy với Lambda và Aurora storage 6 bản sao: failover và connection pooling',
+  a: `**Tóm tắt:** Aurora storage là distributed volume 6 bản sao trên 3 AZ, tự repair; failover chỉ promote reader (10-30s) vì data đã shared. RDS Proxy trước Lambda gom connection, tránh connection storm và rút ngắn failover perceived. Kết hợp: Aurora + Proxy cho serverless workload.
+
+### Aurora storage
+- Volume distributed, 6 copies trên 3 AZ (2 per AZ). Self-healing: nếu một copy hỏng, tự rebuild từ các copy khác. Không mất data khi mất 2 copies.
+- Storage auto-grow đến 128 TB, không cần provision.
+- Write quorum 4/6, read quorum 3/6 -> durability cao.
+
+### Failover Aurora
+- Primary fail -> promote một Aurora Replica làm primary. Vì storage shared, không cần copy data -> failover 10-30s (vs RDS 60-120s). Endpoint cluster (writer/reader) tự update.
+- Có reader endpoint load-balance read traffic.
+
+### RDS Proxy + Lambda
+- Lambda concurrency cao -> mỗi invocation mở DB connection -> RDS connection limit (max_connections theo instance size) bị exhaust -> timeout. Proxy là pooler: Lambda kết nối proxy (nhanh, nhiều), proxy giữ ít connection đến DB.
+- Proxy hỗ trợ auth IAM (no password in code) và failover nhanh: proxy detect primary fail và route sang primary mới, app không cần reconnect.
+- Pinning: transaction, session variables, advisory locks, temp tables làm proxy pin connection -> giảm reuse. Tránh SET SESSION; dùng transaction-level.
+
+### Trên production
+- Metric: DatabaseConnections, Proxy client connections, pinning count (DatabaseConnections? Actually CloudWatch metric DatabaseConnections cho proxy).
+- Alert: pinning > 5% connections -> review code.
+- Pitfall: long transaction giữ connection -> pool exhaustion; set timeout.
+
+### So sánh RDS vs Aurora
+| | RDS | Aurora |
+|---|---|---|
+| Storage | EBS, single AZ (Multi-AZ standby) | distributed 6 copies |
+| Failover | 60-120s | 10-30s |
+| Read scale | read replica (async lag) | Aurora Replica (lag < 10ms) |
+| Cost | rẻ hơn | đắt hơn |
+
+> Senior tip: với Lambda + DB, luôn dùng RDS Proxy + Aurora; pinning metric là KPI quan trọng — pinning cao có nghĩa proxy đang bị vô hiệu hóa.`,
+  follow: [
+    'Aurora Replica lag khác RDS read replica thế nào?',
+    'Làm sao giảm pinning trong RDS Proxy?',
+    'Khi nào Aurora Serverless v2 phù hợp?'
+  ],
+  tags: ['Aurora', 'RDS Proxy', 'Lambda', 'failover', 'lead']
+}
+)

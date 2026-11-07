@@ -1552,5 +1552,876 @@ Lỗi hay gặp:
   ],
   related: ['collections-009', 'collections-010', 'collections-007'],
   tags: ['PriorityQueue', 'heap', 'top-K', 'ArrayDeque', 'sliding window'],
+},
+{
+  id: 'lesson-collections-006',
+  track: 'collections',
+  order: 6,
+  title: 'Iterator từ bên trong: modCount, fail-fast, removeIf, ListIterator và tự viết một Iterable',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích {{ConcurrentModificationException}} sinh ra từ {{modCount}}/{{expectedModCount}} và vì sao code sai vẫn có thể KHÔNG ném exception',
+    'Kể được 4 cách xoá phần tử an toàn khi đang lặp và chi phí của từng cách trên {{ArrayList}}/{{HashMap}}',
+    'Phân biệt iterator fail-fast, snapshot ({{CopyOnWriteArrayList}}) và weakly consistent ({{ConcurrentHashMap}})',
+    'Viết một {{Iterable}}/{{Iterator}} đúng hợp đồng và vì sao {{hasNext}} phải idempotent',
+  ],
+  body: `### for-each chỉ là Iterator đội lốt
+{{orders}} là một {{Collection}} thì vòng {{for (Order o : orders)}} được compiler dịch thành đúng ba bước: gọi {{orders.iterator()}}, lặp {{while (it.hasNext())}}, rồi {{Order o = it.next()}}. Không có gì khác, nên mọi quy tắc của {{Iterator}} đều áp dụng cho for-each. Ngoại lệ duy nhất: lặp trên **mảng** thì compiler dùng chỉ số {{0..length-1}}, không có iterator nên cũng không có fail-fast.
+
+{{Iterator}} có ba method và một hợp đồng mà Javadoc nói rõ nhưng ít người đọc:
+
+1. {{hasNext()}} gọi bao nhiêu lần cũng được và **không được làm đổi trạng thái**. Muốn vậy iterator thật phải **đọc trước (prefetch)** phần tử kế tiếp vào một field, còn {{next()}} chỉ việc trả field đó.
+2. {{next()}} ném {{NoSuchElementException}} khi đã cạn, chứ không trả {{null}}.
+3. {{remove()}} chỉ hợp lệ sau một {{next()}} thành công và **tối đa một lần cho mỗi lần {{next()}}**; gọi sai thì ném {{IllegalStateException}}.
+
+### modCount và expectedModCount: gốc của ConcurrentModificationException
+Mỗi {{ArrayList}}, {{HashMap}}, {{LinkedHashMap}}, {{TreeMap}} đều có một field {{int modCount}} tăng lên mỗi lần **thay đổi cấu trúc**: {{add}}, {{remove}}, {{clear}}, {{put}} một key **chưa có** trong map. Khi bạn gọi {{iterator()}}, iterator chép {{modCount}} vào {{expectedModCount}} của riêng nó, rồi so hai giá trị ở mỗi bước:
+
+~~~java
+// Phóng thích HashMap.KeyIterator.nextNode() va ArrayList.Itr.next()
+public E next() {
+    if (modCount != expectedModCount)
+        throw new ConcurrentModificationException();   // "collection đã đổi từ lúc tôi bắt đầu lặp"
+    ...
+}
+~~~
+
+Ba hệ quả mà ứng viên hay trả lời sai:
+
+- **Một thread cũng ném được CME.** Tên exception gợi tới race, nhưng đây là cơ chế *fail-fast* để bắt lỗi logic: sửa cấu trúc bằng con đường khác iterator ({{map.remove(k)}}, {{list.remove(o)}}, {{list.add(...)}}) làm {{modCount}} nhảy, và iterator phát hiện ở lần {{next()}} kế tiếp.
+- **Không phải mọi thao tác sửa đều bị cấm.** {{list.set(i, x)}}, {{entry.setValue(v)}} và {{put}} đè lên key đã có **không** đổi {{modCount}}, nên vẫn an toàn khi đang lặp.
+- **Code sai có thể im lặng.** Việc kiểm tra nằm trong {{next()}}, nên nếu phần tử bạn xoá là phần tử **cuối cùng** được duyệt thì không còn lệnh {{next()}} nào nữa để mà ném exception. Vòng lặp dừng, kết quả đúng, unit test xanh. Ngày mai dữ liệu có thêm một dòng nữa thì system crash. Đây là lý do câu "đoạn này có ném CME không" phải trả lời bằng {{modCount}}, không bằng cảm giác.
+
+{{modCount}} là {{int}} thường, không {{volatile}} và không được cập nhật nguyên tử, nên trong hệ thống nhiều thread nó chỉ là heuristic: có khi không phát hiện ra race, có khi báo oan. CME **không** phải một cơ chế đồng bộ hoá.
+
+### Bốn cách xoá phần tử khi đang lặp
+~~~java
+List<Order> orders = new ArrayList<>(loaded);
+
+orders.removeIf(o -> o.ageSeconds() > 300);                        // 1. Ngắn nhất (JDK 8+)
+
+for (Iterator<Order> it = orders.iterator(); it.hasNext(); )       // 2. Iterator.remove: chuẩn, dùng cho mọi Collection
+    if (it.next().ageSeconds() > 300) it.remove();
+
+for (ListIterator<Order> it = orders.listIterator(orders.size()); it.hasPrevious(); )
+    if (it.previous().ageSeconds() > 300) it.remove();             // 3. ListIterator: đi ngược được
+
+for (int i = orders.size() - 1; i >= 0; i--)                       // 4. Không dùng iterator: chỉ số lùi
+    if (orders.get(i).ageSeconds() > 300) orders.remove(i);
+~~~
+
+| Cách | An toàn? | Chi phí trên {{ArrayList}} | Ghi chú |
+|---|---|---|---|
+| {{removeIf(p)}} | Có | một vòng duyệt + **một** lần nén mảng | nhanh hơn hẳn xoá từng cái; vẫn tăng {{modCount}} nên iterator tạo trước đó sẽ CME nếu dùng tiếp |
+| {{Iterator.remove()}} | Có | O(n) cho mỗi lần xoá ở giữa (phải dời phần tử) | for-each không cho chạm vào iterator, nên phải viết vòng {{for}} cổ điển |
+| Chỉ số **lùi** + {{remove(i)}} | Có | O(n) mỗi lần | không có iterator thì không có CME; đi lùi để phần tử chưa xét không bị nhảy chỉ số |
+| Chỉ số **thuận** + {{remove(i)}} | **Sai** | — | phần tử bên phải trượt vào chỉ số {{i}} và bị bỏ qua vĩnh viễn; **không có exception nào báo** |
+| Copy rồi mới xoá ({{new ArrayList<>(src)}}, {{src.toArray()}}) | Có | O(n) bộ nhớ | bản copy là snapshot: ghi vào {{src}} sau đó sẽ không thấy |
+| {{subList(from, to).clear()}} | Có (List) | O(n) | cắt nguyên một khoảng; được tính là sửa cấu trúc list gốc |
+
+Vì sao xoá ở giữa đắt: {{ArrayList}} giữ phần tử trong một mảng liên tục, nên {{remove(i)}} phải {{System.arraycopy}} toàn bộ đuôi mảng. Cần bỏ nhiều phần tử thì **dựng danh sách mới** rẻ hơn rất nhiều so với xoá lần lượt trên danh sách cũ.
+
+### ListIterator: iterator hai chiều của List
+{{ListIterator}} là iterator biết đi ngược và chèn được: {{previous}}, {{hasPrevious}}, {{nextIndex}}/{{previousIndex}}, {{add(e)}}, {{set(e)}}. {{listIterator(i)}} đặt con trỏ ngay **trước** chỉ số {{i}}. Hai điều hay bị hỏi:
+- {{add(e)}} chèn **phía trước** con trỏ, và {{next()}} kế tiếp **không** trả lại phần tử vừa chèn (muốn thấy lại thì phải {{previous}}). Nhờ đó vòng lặp "duyệt và chèn" không bị lặp vô hạn.
+- {{set(e)}} thay đúng phần tử vừa được trả về, **không** đổi {{modCount}}, nên an toàn khi đang lặp.
+
+### View: sửa qua view là sửa collection nền
+{{subList}}, {{keySet}}, {{values}}, {{entrySet}} và map trả về từ {{Collectors.groupingBy}} **không chứa dữ liệu riêng** — chúng là cửa nhìn vào collection gốc. Thay đổi qua view làm {{modCount}} của gốc nhảy, và ngược lại.
+
+~~~java
+List<String> ids = new ArrayList<>(List.of("a", "b", "c", "d"));
+List<String> tail = ids.subList(1, 3);   // view: ["b", "c"]
+ids.add("e");                            // sửa cấu trúc list gốc
+tail.remove(0);                          // ConcurrentModificationException: view bị vô hiệu hoá
+~~~
+
+Hai bẫy kinh điển:
+- Service trả {{bigList.subList(0, 10)}} với lý do "tiết kiệm bộ nhớ". View giữ tham chiếu tới **cả mảng gốc**, nên 10 bản ghi hiển thị vẫn làm sống hàng triệu object — một kiểu memory leak rất khó nhìn ra trong heap dump. Muốn cắt thì copy: {{List.copyOf(...)}} hoặc {{new ArrayList<>(...)}}.
+- {{map.keySet().removeAll(other)}} và {{map.values().removeIf(...)}} **có** sửa map gốc; còn {{new ArrayList<>(map.keySet())}} là bản sao, sửa bao nhiêu cũng không chạm tới map.
+
+### Nhiều thread: fail-fast, snapshot hay weakly consistent
+| Lớp | Tính chất iterator | Hệ quả |
+|---|---|---|
+| {{ArrayList}}, {{HashMap}}, {{HashSet}}, {{LinkedList}}, {{TreeMap}} | fail-fast | nhiều thread vừa đọc vừa ghi là undefined behaviour; CME chỉ là triệu chứng, không phải hợp đồng |
+| {{CopyOnWriteArrayList}}, {{CopyOnWriteArraySet}} | snapshot | iterator duyệt mảng tại thời điểm tạo, không bao giờ CME; mỗi lần ghi phải copy cả mảng nên chỉ hợp với đọc nhiều – ghi ít (danh sách listener) |
+| {{ConcurrentHashMap}}, {{ConcurrentSkipListMap}}, {{ConcurrentLinkedQueue}} | weakly consistent | có thể thấy hoặc không thấy các ghi xảy ra đồng thời, không trùng phần tử, không CME, cũng không hứa thấy hết |
+| {{Hashtable}}, {{Collections.synchronizedList(...)}} | fail-fast | vẫn phải bọc cả vòng lặp trong khối {{synchronized (list)}}, nếu không vẫn CME |
+
+Câu trả lời senior: trong hệ thống nhiều thread, đừng "sửa cho hết CME" bằng cách bắt exception rồi chạy lại; hãy đổi cấu trúc dữ liệu, hoặc đồng bộ hoá **cả khối lặp**.
+
+### Tự viết Iterable và Iterator
+~~~java
+final class Countdown implements Iterable<Integer> {
+    private final int from;
+    Countdown(int from) { this.from = from; }
+
+    @Override public Iterator<Integer> iterator() {
+        return new Iterator<>() {
+            private int next = from;                                 // prefetch: "next" là phần tử sẽ được trả
+            @Override public boolean hasNext() { return next >= 1; }  // idempotent, gọi bao lần cũng vậy
+            @Override public Integer next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                return next--;                                        // trả 3, rồi 2, rồi 1
+            }
+        };
+    }
+}
+for (int i : new Countdown(3)) System.out.print(i);   // in ra 321
+~~~
+
+{{Iterable}} là "thứ có thể **bắt đầu** một lượt duyệt"; {{Iterator}} là "một lượt duyệt đang chạy". Mỗi lệnh {{iterator()}} trả một object mới, nên bạn lặp được hai lần và lặp đồng thời bằng hai iterator độc lập — đó là lý do {{Collection}} kế thừa {{Iterable}} chứ không kế thừa {{Iterator}}. Muốn {{stream()}} và {{parallelStream()}} chia việc tốt trên class tự viết thì override thêm {{spliterator()}}; nếu không, mặc định là {{Spliterators.spliteratorUnknownSize}} nên gần như không tách đôi được.
+
+> Ba dòng code từng làm hỏng ca trực: (1) {{for (String k : map.keySet()) if (bad(k)) map.remove(k);}} chạy trơn với 3 key và ném CME với 5000 key; (2) {{removeIf}} trên {{Arrays.asList(...)}} ném {{UnsupportedOperationException}} — đây là lỗi **khác hẳn** CME: danh sách này cố định kích thước, chỉ {{set}} được, muốn thêm/bớt thì bọc {{new ArrayList<>(...)}}; (3) một iterator tự viết cài {{hasNext()}} theo kiểu "đọc thử một dòng từ socket" (nó ăn luôn bản tin): gọi hai lần là mất dữ liệu trong im lặng, không exception nào báo.
+
+### Liên hệ phỏng vấn
+Bộ câu hỏi thường gặp và ý phải chạm: "Đoạn này có ném {{ConcurrentModificationException}} không?" — so {{modCount}} với {{expectedModCount}}, nhớ rằng chỉ {{next()}} mới kiểm tra nên có thể sai mà không nổ; "Xoá phần tử thỏa mãn khi đang lặp bằng cách nào?" — {{removeIf}} hoặc {{Iterator.remove}}, đừng {{list.remove(o)}} trong for-each; "Fail-fast khác snapshot và weakly consistent thế nào?"; "Vì sao {{Iterator.remove}} bắt buộc gọi sau {{next}}?" — iterator phải biết phần tử nào là "vừa trả về" và phải chừa đường báo {{IllegalStateException}} khi xoá hai lần; "Khi nào cần {{ListIterator}}?" — đi ngược, chèn hoặc sửa ngay tại con trỏ. Câu hỏi liên quan trong ngân hàng: collections-004, collections-029, collections-024.`,
+  exercises: [
+    {
+      title: 'Dọn phiên đăng nhập hết hạn mà không vỡ vòng lặp',
+      prompt: `{{SessionStore}} giữ bản đồ {{id -> thời điểm thấy gần nhất}} của các phiên đang hoạt động. Cần viết hai method:
+
+- {{removeExpired(cutoff)}}: xoá mọi entry có giá trị **nhỏ hơn** {{cutoff}} và trả về số entry đã xoá. Không được ném {{ConcurrentModificationException}}, không được để sót, gọi lại lần hai phải trả về 0.
+- {{liveIds(cutoff)}}: trả về **danh sách bản sao** các id còn sống (giá trị {{>= cutoff}}), sắp tăng dần theo id. Method này **không** được xoá gì khỏi map, và danh sách trả về phải là snapshot: sau khi gọi, map có đổi thì danh sách cũ vẫn nguyên.
+
+{{touch}}, {{lastSeen}}, {{size}} đã viết sẵn. Gợi ý mục tiêu: muốn xoá trong lúc lặp thì phải xoá **thông qua chính iterator** ({{Iterator.remove}}), không gọi {{map.remove(key)}}.`,
+      starter: `class SessionStore {
+    private final Map<String, Long> lastSeenAt = new HashMap<>();
+
+    void touch(String sessionId, long when) {
+        lastSeenAt.put(sessionId, when);
+    }
+
+    long lastSeen(String sessionId) {
+        return lastSeenAt.getOrDefault(sessionId, -1L);   // -1 = không có phiên
+    }
+
+    int size() {
+        return lastSeenAt.size();
+    }
+
+    int removeExpired(long cutoff) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String> liveIds(long cutoff) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("xoá đúng các entry hết hạn", () -> {
+            SessionStore s = new SessionStore();
+            s.touch("A", 10); s.touch("B", 50); s.touch("C", 20); s.touch("D", 90);
+            eq(2, s.removeExpired(30));
+            eq(2, s.size());
+            eq(-1L, s.lastSeen("A"));
+            eq(-1L, s.lastSeen("C"));
+            eq(50L, s.lastSeen("B"));
+            eq(90L, s.lastSeen("D"));
+        });
+        check("store rỗng và không có gì hết hạn", () -> {
+            eq(0, new SessionStore().removeExpired(5));
+            SessionStore s = new SessionStore();
+            s.touch("X", 100);
+            eq(0, s.removeExpired(100));
+            eq(1, s.size());
+        });
+        check("tất cả hết hạn", () -> {
+            SessionStore s = new SessionStore();
+            s.touch("A", 1); s.touch("B", 2); s.touch("C", 3);
+            eq(3, s.removeExpired(4));
+            eq(0, s.size());
+            eq(List.of(), s.liveIds(0));
+        });
+        check("5000 entry, 1/3 hết hạn: không CME, không sót", () -> {
+            SessionStore s = new SessionStore();
+            for (int i = 0; i < 5000; i++) s.touch(String.format("K%04d", i), i % 3 == 0 ? 5L : 100L);
+            eq(1667, s.removeExpired(10));
+            eq(3333, s.size());
+            for (int i = 0; i < 5000; i++) {
+                long seen = s.lastSeen(String.format("K%04d", i));
+                if (i % 3 == 0 && seen != -1L) throw new AssertionError("K" + i + " phải bị xoá");
+                if (i % 3 != 0 && seen != 100L) throw new AssertionError("K" + i + " không được xoá");
+            }
+        });
+        check("liveIds: đã sắp xếp, chỉ còn phiên sống, không xoá gì", () -> {
+            SessionStore s = new SessionStore();
+            s.touch("bbb", 100); s.touch("aaa", 5); s.touch("ccc", 200); s.touch("ddd", 1);
+            eq(List.of("bbb", "ccc"), s.liveIds(50));
+            eq(4, s.size());
+            eq(List.of("aaa", "bbb", "ccc", "ddd"), s.liveIds(1));
+            eq(List.of(), s.liveIds(1000));
+        });
+        check("liveIds trả snapshot chứ không phải view", () -> {
+            SessionStore s = new SessionStore();
+            s.touch("A", 10); s.touch("B", 20);
+            List<String> before = s.liveIds(0);
+            s.touch("C", 30);
+            eq(1, s.removeExpired(15));
+            eq(List.of("A", "B"), before);
+            eq(List.of("B", "C"), s.liveIds(0));
+        });
+        check("removeExpired idempotent", () -> {
+            SessionStore s = new SessionStore();
+            s.touch("A", 1); s.touch("B", 2); s.touch("C", 9);
+            eq(2, s.removeExpired(5));
+            eq(0, s.removeExpired(5));
+            eq(List.of("C"), s.liveIds(5));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class SessionStore {
+    private final Map<String, Long> lastSeenAt = new HashMap<>();
+
+    void touch(String sessionId, long when) {
+        lastSeenAt.put(sessionId, when);
+    }
+
+    long lastSeen(String sessionId) {
+        return lastSeenAt.getOrDefault(sessionId, -1L);
+    }
+
+    int size() {
+        return lastSeenAt.size();
+    }
+
+    int removeExpired(long cutoff) {
+        int removed = 0;
+        Iterator<Map.Entry<String, Long>> it = lastSeenAt.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Long> e = it.next();
+            if (e.getValue() < cutoff) {
+                it.remove();            // xoá qua iterator: modCount được chỉnh lại cho chính iterator
+                removed++;              // map.remove(e.getKey()) ở đây sẽ ném CME ở bước sau
+            }
+        }
+        return removed;
+    }
+
+    List<String> liveIds(long cutoff) {
+        List<String> ids = new ArrayList<>();
+        for (Map.Entry<String, Long> e : lastSeenAt.entrySet())   // chỉ đọc, không sửa cấu trúc: an toàn
+            if (e.getValue() >= cutoff) ids.add(e.getKey());
+        ids.sort(Comparator.naturalOrder());                     // sort tại chỗ trên bản sao của riêng mình
+        return ids;
+    }
+}`,
+      hints: [
+        'Lấy {{Iterator<Map.Entry<String, Long>>>}} từ {{lastSeenAt.entrySet().iterator()}}, rồi {{it.remove()}} khi gặp entry hết hạn — đây là cách duy nhất xoá an toàn ngay trong lúc lặp.',
+        'Không được gọi {{lastSeenAt.remove(key)}} bên trong vòng lặp for-each trên {{entrySet()}}.',
+        '{{liveIds}}: gom vào một {{ArrayList}} **mới** (thế là có snapshot), sau đó {{sort}}; đừng trả {{new ArrayList<>(map.keySet())}} mà không lọc, và đừng xoá gì cả.',
+      ],
+      explain: `Cách sai hay gặp là {{for (Map.Entry<...> e : map.entrySet()) if (hết hạn) map.remove(e.getKey());}}. {{map.remove}} làm {{modCount}} tăng, còn {{expectedModCount}} mà iterator đã chép lúc tạo thì đứng yên — nhưng chỗ kiểm tra nằm trong {{next()}}, nên lỗi chỉ nổ khi **còn** phần tử để bước tiếp. Store 3 key mà key bị xoá là key cuối thì code "chạy đúng", sang 5000 key là {{ConcurrentModificationException}}. Test 5000 entry ở trên tồn tại chính vì lý do đó.
+
+Ba bản sửa đều đạt: {{Iterator.remove}} (cách trong lời giải), {{lastSeenAt.entrySet().removeIf(...)}} (đọc gọn hơn, vẫn là một vòng duyệt), hoặc duyệt qua **bản sao** {{new ArrayList<>(map.entrySet())}} rồi {{map.remove(k)}} — bản sao là snapshot nên không có iterator nào bị vô hiệu.
+
+Bài học kèm theo: muốn có danh sách an toàn để trả về phía ngoài thì phải **copy**; trả {{keySet}}, {{values}}, {{entrySet}} hay {{subList}} nghĩa là trả một cửa nhìn vào trạng thái bên trong, và caller (hoặc một thread khác) có thể làm nó đổi ngay sau khi bạn đã kiểm tra.`,
+    },
+    {
+      title: 'Tự viết PeekingIterator: lookahead một phần tử',
+      prompt: `Bài "tách câu" cần biết phần tử **kế tiếp** là gì mà chưa được phép tiêu thụ nó. Class {{Iterator}} gốc không có {{peek}}, nên hãy viết {{PeekingIterator}} bao một {{Iterator}} khác:
+
+- Constructor nhận {{Iterator<T> src}}.
+- {{hasNext()}}: còn phần tử hay không; **gọi bao nhiêu lần cũng không được làm thay đổi** gì cả (kể cả với {{src}}).
+- {{peek()}}: trả phần tử kế tiếp mà **không** tiêu thụ. Không còn phần tử thì ném {{NoSuchElementException}}.
+- {{next()}}: trả phần tử kế tiếp (nếu {{peek()}}/hasNext đã đọc trước thì trả phần tử đã đọc trước đó, {{src}} không được tiến thêm). Hết thì ném {{NoSuchElementException}}.
+- {{remove()}}: gỡ khỏi collection nguồn phần tử mà {{next()}} gần nhất đã trả. Ném {{IllegalStateException}} nếu {{next()}} chưa được gọi kể từ lúc tạo hoặc kể từ lần {{remove()}} gần nhất.
+
+Ghi nhớ hợp đồng {{Iterator}}: {{hasNext}} idempotent, {{next}} báo cạn bằng exception chứ không trả {{null}}, {{remove}} chỉ chạy sau {{next}}.`,
+      starter: `class PeekingIterator<T> implements Iterator<T> {
+    private final Iterator<T> src;
+
+    PeekingIterator(Iterator<T> src) {
+        this.src = src;
+    }
+
+    @Override public boolean hasNext() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    T peek() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    @Override public T next() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    @Override public void remove() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static PeekingIterator<String> of(String... items) {
+        return new PeekingIterator<>(new ArrayList<>(List.of(items)).iterator());
+    }
+    static List<String> drain(PeekingIterator<String> it) {
+        List<String> out = new ArrayList<>();
+        while (it.hasNext()) out.add(it.next());
+        return out;
+    }
+    public static void main(String[] args) {
+        check("peek không tiêu thụ, hasNext idempotent", () -> {
+            PeekingIterator<String> it = of("a", "b", "c");
+            eq("a", it.peek());
+            for (int i = 0; i < 3; i++) { eq(true, it.hasNext()); eq("a", it.peek()); }
+            eq("a", it.next());
+            eq("b", it.next());
+            eq("c", it.next());
+            eq(false, it.hasNext());
+            eq(false, it.hasNext());
+        });
+        check("drain sau peek vẫn đúng thứ tự và đủ phần tử", () -> {
+            PeekingIterator<String> it = of("1", "2", "3", "4");
+            eq("1", it.peek());
+            eq(List.of("1", "2", "3", "4"), drain(it));
+        });
+        check("iterator rỗng", () -> {
+            PeekingIterator<String> it = of();
+            eq(false, it.hasNext());
+            try { it.peek(); } catch (NoSuchElementException e) { return; }
+            throw new AssertionError("peek trên iterator rỗng phải ném NoSuchElementException");
+        });
+        check("next khi đã cạn ném NoSuchElementException", () -> {
+            PeekingIterator<String> it = of("x");
+            eq("x", it.next());
+            try { it.next(); } catch (NoSuchElementException e) { return; }
+            throw new AssertionError("next khi cạn phải ném NoSuchElementException");
+        });
+        check("remove gỡ đúng phần tử next vừa trả", () -> {
+            List<String> src = new ArrayList<>(List.of("a", "b", "c", "d"));
+            PeekingIterator<String> it = new PeekingIterator<>(src.iterator());
+            eq("a", it.next());
+            it.remove();
+            eq(List.of("b", "c", "d"), src);
+            eq("b", it.peek());
+            eq("b", it.next());
+            it.remove();
+            eq(List.of("c", "d"), src);
+            eq(List.of("c", "d"), drain(it));
+        });
+        check("remove sai thời điểm ném IllegalStateException", () -> {
+            PeekingIterator<String> it = of("a", "b");
+            try { it.remove(); throw new AssertionError("remove khi chưa next phải ném IllegalStateException"); }
+            catch (IllegalStateException expected) { }
+            it.next();
+            it.remove();
+            try { it.remove(); throw new AssertionError("remove hai lần phải ném IllegalStateException"); }
+            catch (IllegalStateException expected) { }
+        });
+        check("dùng lookahead để tách câu theo dấu chấm", () -> {
+            PeekingIterator<String> it = of("a", "b", ".", "c", ".", "d");
+            List<List<String>> sentences = new ArrayList<>();
+            List<String> current = new ArrayList<>();
+            while (it.hasNext()) {
+                if (it.peek().equals(".")) { it.next(); sentences.add(current); current = new ArrayList<>(); }
+                else current.add(it.next());
+            }
+            if (!current.isEmpty()) sentences.add(current);
+            eq(List.of(List.of("a", "b"), List.of("c"), List.of("d")), sentences);
+        });
+        check("1000 phần tử, trộn peek/hasNext/next", () -> {
+            List<String> data = new ArrayList<>();
+            for (int i = 0; i < 1000; i++) data.add("v" + i);
+            PeekingIterator<String> it = new PeekingIterator<>(data.iterator());
+            int seen = 0;
+            while (it.hasNext()) {
+                String peeked = it.peek();
+                eq(peeked, it.next());
+                it.hasNext();
+                seen++;
+            }
+            eq(1000, seen);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class PeekingIterator<T> implements Iterator<T> {
+    private final Iterator<T> src;
+    private T cached;              // phần tử đã đọc trước
+    private boolean hasCached;
+    private boolean canRemove;     // true khi next() vừa trả một phần tử
+
+    PeekingIterator(Iterator<T> src) {
+        this.src = src;
+    }
+
+    private void prefetch() {
+        if (!hasCached && src.hasNext()) {   // chỉ tiến trên src khi chưa giữ sẵn phần tử nào
+            cached = src.next();
+            hasCached = true;
+        }
+    }
+
+    @Override public boolean hasNext() {
+        prefetch();                 // đọc trước một phần tử để hasNext không đổi trạng thái thêm nữa
+        return hasCached;
+    }
+
+    T peek() {
+        if (!hasNext()) throw new NoSuchElementException();
+        return cached;
+    }
+
+    @Override public T next() {
+        if (!hasNext()) throw new NoSuchElementException();
+        T value = cached;
+        cached = null;              // giúp GC
+        hasCached = false;
+        canRemove = true;           // src đang "trỏ" đúng vào phần tử vừa trả
+        return value;
+    }
+
+    @Override public void remove() {
+        if (!canRemove) throw new IllegalStateException("remove() chi goi sau next()");
+        canRemove = false;
+        src.remove();
+    }
+}`,
+      hints: [
+        'Giữ ba state: {{cached}}, {{hasCached}}, {{canRemove}}. {{prefetch()}} chỉ lấy một phần tử từ {{src}} khi {{hasCached}} còn false — đó là cách biến {{hasNext}} thành idempotent.',
+        '{{next()}} phải trả {{cached}} nếu có, **không** gọi {{src.next()}} lần nữa; nếu không, {{peek()}} rồi {{next()}} sẽ làm mất một phần tử.',
+        '{{remove()}}: {{canRemove}} false thì ném {{IllegalStateException}}; nếu không thì gọi {{src.remove()}}, vì {{src}} chưa tiến thêm sau khi {{next()}} trả {{cached}}.',
+      ],
+      explain: `Toàn bộ kỹ thuật nằm ở chỗ **đọc trước một phần tử vào field**. Không làm vậy thì {{hasNext}} buộc phải "nhìn" vào {{src}} mà không lấy, mà {{Iterator}} thì không có {{peek}} — đó chính xác là lý do class này tồn tại (Guava có {{PeekingIterator}}, JDBC và các parser dòng cũng cùng khuôn).
+
+Hai bug hay gặp khi tự viết:
+- {{next()}} gọi {{src.next()}} mà quên trả {{cached}}: mọi phần tử đã {{peek}} bị ăn cắp, {{hasNext}} trả true nhưng dữ liệu đã mất.
+- Đặt {{canRemove = true}} ngay sau {{peek}}: {{src.remove()}} khi đó sẽ xoá phần tử mà caller **chưa từng thấy**.
+
+Lưu ý về thread: {{PeekingIterator}} không hề làm việc duyệt trở nên thread-safe. Nếu {{src}} là iterator của {{ArrayList}} và một thread khác đang ghi, bạn vẫn nhận {{ConcurrentModificationException}} (hoặc kết quả sai với {{HashMap}}). Muốn an toàn khi chia sẻ thì duyệt snapshot ({{List.copyOf}}) hoặc dùng collection weakly consistent.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vòng lặp {{for (String k : map.keySet()) if (bad(k)) map.remove(k);}} trên {{HashMap}} 3 key. Điều gì đúng nhất?',
+      options: ['Luôn ném {{ConcurrentModificationException}} ngay lần xoá đầu tiên', 'Có thể chạy trọn vẹn nếu key bị xoá là key cuối cùng được duyệt; có thêm phần tử đứng sau thì mới ném CME', 'Không bao giờ ném CME vì {{HashMap}} thread-safe với for-each', 'Luôn để lại entry đã bị xoá một nửa'],
+      answer: 1,
+      explain: `Kiểm tra {{modCount != expectedModCount}} nằm trong {{next()}}/{{hasNext}} của iterator, không nằm trong {{map.remove}}. Nếu không còn phần tử nào để bước tới, vòng lặp kết thúc bình thường và code trông như đúng. CME không phải bảo chứng cho tính đúng đắn, và HashMap cũng chẳng thread-safe; cách sửa là {{Iterator.remove}} hoặc {{entrySet().removeIf}}.`,
+    },
+    {
+      q: 'Trong lúc đang lặp {{List}} bằng for-each, thao tác nào **không** làm thay đổi {{modCount}} (nên không gây CME)?',
+      options: ['{{list.add(e)}}', '{{list.remove(o)}}', '{{list.set(i, x)}}', '{{list.clear()}}'],
+      answer: 2,
+      explain: `{{set}} chỉ thay giá trị tại một ô có sẵn, số phần tử không đổi nên {{modCount}} đứng yên. {{add}}, {{remove}}, {{clear}} là thay đổi cấu trúc; {{add}}/{{remove}} còn làm các iterator đang sống ném CME ở bước kế tiếp. Muốn chèn khi đang lặp thì dùng {{ListIterator.add}}.`,
+    },
+    {
+      q: 'Iterator của {{ConcurrentHashMap}} so với iterator của {{HashMap}} khác nhau chỗ nào khi có thread khác đang ghi?',
+      options: ['Cả hai đều ném CME, chỉ khác mức thường xuyên', '{{ConcurrentHashMap}} là weakly consistent: không ném CME, có thể thấy hoặc không thấy các ghi đồng thời; iterator {{HashMap}} fail-fast và hành vi khi ghi cạnh tranh là không xác định', '{{ConcurrentHashMap}} luôn thấy mọi ghi nên an toàn tuyệt đối', 'Iterator {{ConcurrentHashMap}} tạo bản copy toàn bộ map'],
+      answer: 1,
+      explain: `Weakly consistent nghĩa là: không exception, không trùng phần tử, nhưng không có cam kết thấy hết các thay đổi xảy ra đồng thời. Bản copy toàn bộ là {{CopyOnWriteArrayList}} (mỗi lần **ghi** mới copy). {{HashMap}} không được thiết kế cho ghi cạnh tranh: CME chỉ là triệu chứng may mà có.`,
+    },
+  ],
+  related: ['collections-004', 'collections-029', 'collections-024'],
+  tags: ['Iterator', 'ConcurrentModificationException', 'removeIf', 'ListIterator', 'Iterable'],
+},
+{
+  id: 'lesson-collections-007',
+  track: 'collections',
+  order: 7,
+  title: 'Sắp xếp trong Java: Comparable hay Comparator, TimSort ổn định và lỗi "violates its general contract"',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Phân biệt {{Comparable}} (thứ tự tự nhiên, chỉ một) và {{Comparator}} (chiến lược, nhiều cái) và chọn đúng cái nào cho class nào',
+    'Giải thích TimSort: ổn định, thích nghi với dữ liệu gần sắp xếp, và ba điều kiện hợp đồng comparator',
+    'Viết comparator không tràn số, không NPE với null, có tie-breaker để kết quả xác định',
+    'Xử lý đúng khi sort dữ liệu lớn: external merge sort, đẩy ORDER BY xuống DB, và vì sao tie-breaker quyết định cả phân trang',
+  ],
+  body: `### Hai đường để nói "sắp xếp theo gì"
+{{Comparable<T>}} là **thứ tự tự nhiên** của chính class: một class chỉ có một, và nó là thứ tự mà {{list.sort()}}, {{TreeMap}}/{{TreeSet}} (khi không truyền comparator) dùng. {{Comparator<T>}} là chiến lược **mua ngoài**: muốn bao nhiêu cũng được, không phải sửa class đang sort — đây cũng là lựa chọn duy nhất khi bạn sort {{String}}, {{Instant}} hay entity của thư viện mà không sửa được mã nguồn.
+
+~~~java
+record Transfer(String id, long amountCents, Instant createdAt) implements Comparable<Transfer> {
+    @Override public int compareTo(Transfer o) {
+        return Long.compare(amountCents, o.amountCents);   // KHÔNG viết (int)(a - b): long trừ long rồi ép về int sẽ tràn
+    }
+}
+
+// Báo cáo tổng kết: tiền giảm dần; bằng tiền thì tạo sớm hơn đứng trước; vẫn bằng thì theo id
+static final Comparator<Transfer> REPORT =
+        Comparator.comparingLong(Transfer::amountCents).reversed()
+                  .thenComparing(Transfer::createdAt)
+                  .thenComparing(Transfer::id);
+
+List<Transfer> rows = load();
+rows.sort(REPORT);                       // Java 8+: List.sort; Collections.sort(rows, REPORT) tương đương
+~~~
+
+Cách chọn không mơ hồ: nếu **cả hệ thống** coi một thứ tự là mặc định (id, timestamp, mức độ ưu tiên) thì đặt vào {{Comparable}}. Nếu thứ tự phụ thuộc màn hình, báo cáo, người dùng thì dùng {{Comparator}}. Đừng nhét thứ tự của một màn hình vào {{Comparable}} rồi về sau đổi ý: mọi {{TreeMap}} đang chạy theo thứ tự cũ phải dựng lại từ đầu.
+
+### TimSort: thứ mà {{List.sort}} thật sự chạy
+{{ArrayList.sort}} và {{Arrays.sort(Object[])}} (Java 7+) dùng **TimSort**: nó quét tìm các đoạn đã được sắp sẵn ({{run}}), cộng thêm phần tử vào các đoạn ngắn bằng binary insertion sort, rồi **trộn** các đoạn. Ba tính chất cần nằm lòng:
+
+- **Ổn định**: hai phần tử mà comparator trả 0 giữ nguyên thứ tự tương đối như đầu vào. Hệ quả thực dụng: sort theo lương trên danh sách đã sort theo tên thì người cùng lương vẫn theo tên; và muốn "sort nhiều tiêu chí" chỉ cần sort từ tiêu chí phụ đến tiêu chí chính.
+- **Thích nghi**: dữ liệu gần sắp xếp thì gần O(n); xấu nhất vẫn O(n log n) và cần bộ nhớ tạm cỡ n/2.
+- **Chỉ là thuật toán của sort**, không phải của {{PriorityQueue}}. Heap **không ổn định**: hai job cùng priority sẽ ra thứ tự phụ thuộc vào vị trí trong mảng heap, nghĩa là không xác định giữa hai lần chạy.
+
+Cảnh báo hay bị hỏi nhất: {{Arrays.sort(int[])}}/{{Arrays.sort(long[])}} dùng **dual-pivot quicksort**, **không ổn định**. Chỉ sort trên object (mảng wrapper, {{List}}) mới được bảo đảm ổn định.
+
+### Ba điều kiện hợp đồng, và vì sao lỗi chỉ nổ trên production
+Comparator phải là một **thứ tự toàn phần yếu** (total preorder). Với mọi {{x, y, z}}:
+
+~~~text
+1) doi xung:    sgn(compare(x, y)) == -sgn(compare(y, x))
+2) bac cau:     compare(x, y) > 0  va  compare(y, z) > 0  =>  compare(x, z) > 0
+3) tuong duong bac cau: compare(x, y) == 0 => sgn(compare(x, z)) == sgn(compare(y, z))
+~~~
+
+TimSort trộn các đoạn theo giả định này. Khi phát hiện không thể tìm được vị trí chèn hợp lý, nó **dừng và ném** {{IllegalArgumentException: Comparison method violates its general contract!}}. Điểm làm người ta hoang mang: vụ nổ **phụ thuộc dữ liệu và độ lớn**. Danh sách 5 phần tử có thể không bao giờ ném; 10 000 phần tử "gần sắp xếp" thì ném. Đó là lý do loại bug này thường xuất hiện lần đầu ở production chứ không trong unit test.
+
+Bốn nguồn lỗi phổ biến:
+1. **Trừ số rồi ép về int**: {{(int) (a.amount - b.amount)}} — hiệu đúng 3 000 000 000 bị cắt thành số âm; với {{int}} cũng tràn vì {{Integer.MIN_VALUE - 1}} là số dương. Dùng {{Integer.compare}}, {{Long.compare}}, {{Comparator.comparingLong}}.
+2. **{{double}}/{{float}} và {{NaN}}**: mọi so sánh với {{NaN}} đều false nên tính đối xứng bị phá. Dùng {{Double.compare}} và lọc {{NaN}}/{{Infinity}} trước khi sort.
+3. **Key thay đổi trong lúc sort**: comparator đọc field mà thread khác đang ghi, hoặc gọi {{LocalDate.now()}}, hoặc tính lại một giá trị đắt (giá từ DB). Kết quả không còn là hàm của hai đối số. Cách sửa: chốt (materialize) key trước khi sort — biến mỗi phần tử thành {{record Keyed(long key, DomainItem item)}} rồi sort theo {{key}}.
+4. **{{reversed()}} đặt sai chỗ**: {{comparing(a).thenComparing(b).reversed()}} đảo **cả hai** tiêu chí. Muốn đảo một tiêu chí thì {{comparing(a).reversed().thenComparing(b)}}.
+
+### Số, null, chuỗi và tiếng Việt
+| Nhu cầu | Viết đúng |
+|---|---|
+| {{int}}/{{long}}/{{double}} | {{comparingInt}}, {{comparingLong}}, {{comparingDouble}} — hoặc {{Integer.compare}}…; đừng trừ |
+| {{boolean}} ưu tiên trước | {{comparingInt(x -> x.isUrgent() ? 0 : 1)}} hoặc {{Comparator.comparing(X::isUrgent).reversed()}} |
+| Key có thể null | {{Comparator.nullsLast(Comparator.naturalOrder())}} cho **chính comparator**, {{Comparator.comparing(f, Comparator.nullsLast(naturalOrder()))}} khi **field** null |
+| Bỏ qua hoa thường | {{String.CASE_INSENSITIVE_ORDER}} hoặc {{Comparator.comparing(X::name, String.CASE_INSENSITIVE_ORDER)}} |
+| Tiếng Việt / đa ngữ | {{Collator.getInstance(Locale.forLanguageTag("vi"))}}, bọc bằng {{Comparator.comparing(X::name, collator)}} |
+
+{{String.compareTo}} so sánh theo **code unit UTF-16**, nên "Zoo" nhỏ hơn "apple" và các dấu tiếng Việt ("á", "à", "ả") nằm cách xa chữ gốc. Thêm nữa, "é" dạng tổ hợp (NFD: {{e}} + dấu sắc, hai code point) và "é" dạng phối sẵn (NFC: một code point) nhìn giống hệt nhau nhưng {{compareTo}} trả về **khác 0** — chỉ cần một nguồn dữ liệu chuẩn hoá kiểu khác là việc ghép khoá, sort, {{contains}} sai âm thầm. Với tên người dùng: {{Normalizer.normalize(s, Normalizer.Form.NFC)}} rồi so bằng {{Collator}}.
+
+### Sort rồi phân trang: cùng một lỗi, hai tầng
+Cũng điều kiện "phải có tie-breaker" áp dụng cho {{ORDER BY}} trong DB. Nếu thứ tự không xác định, hai lần chạy cùng query có thể trả thứ tự khác nhau giữa hai trang, và kết quả là một bản ghi xuất hiện **hai lần** trong khi bản ghi khác **không bao giờ** xuất hiện:
+
+~~~seq
+title: Phan trang khong co tie-breaker
+actors: Client | API | DB
+Client -> API: GET /txns?page=1
+API -> DB: ORDER BY amount DESC LIMIT 20
+DB --> API: 20 dong, nhieu dong bang amount
+API --> Client: trang 1
+Client -> API: GET /txns?page=2
+API -> DB: ORDER BY amount DESC LIMIT 20 OFFSET 20
+DB --> API: thu tu giua cac dong bang nhau co the khac lan 1
+API --> Client: 1 dong lap lai, 1 dong bi thieu
+note API..DB: Them tie-breaker: ORDER BY amount DESC, id
+~~~
+
+Trong app thì tương đương: comparator "không đầy đủ" + {{subList(page*size, ...)}}, hoặc sort lại một danh sách đã đổi trong lúc user lật trang. Fix luôn là thêm khóa duy nhất vào cuối comparator / {{ORDER BY}}.
+
+### Dữ liệu không vừa RAM
+- **Đẩy xuống nơi có dữ liệu**: {{ORDER BY}} trong DB với cursor pagination ({{WHERE (amount, id) < (:a, :i)}}), hoặc sort trong Elasticsearch/Spark.
+- **External merge sort**: đọc từng chunk vừa bộ nhớ, sort bằng TimSort, ghi ra file tạm; sau đó trộn K file bằng **một {{PriorityQueue}} chứa head của mỗi file** (bài lesson-collections-005). tổng O(n log K) thời gian, O(K) bộ nhớ.
+- **Chỉ cần top-K**: đừng sort hết. Giữ min-heap K phần tử, O(n log K) thời gian và O(K) bộ nhớ.
+- Nếu bắt buộc sort tại chỗ trên danh sách khổng lồ, nhớ {{List.sort}} cần bộ nhớ tạm, và mỗi phần tử {{Long}}/{{Integer}} trong {{List}} còn tốn 16 byte cho object wrapper.
+
+> Lỗi hay gặp ngoài production: {{List.of(...).sort(cmp)}} và {{Collectors.toUnmodifiableList().sort(...)}} ném {{UnsupportedOperationException}} vì list bất biến không cho {{set}} — phải copy: {{new ArrayList<>(immutable)}} rồi sort. Ngược lại, {{Arrays.asList(...)}} **sort được** (nó là view cố định kích thước, cho phép {{set}}) và sort này thay đổi cả mảng gốc, một cái bẫy khó ngờ: "danh sách gốc của tôi sao đổi?".
+
+### Liên hệ phỏng vấn
+Câu hay hỏi: "So sánh {{Comparable}} và {{Comparator}}, khi nào dùng cái nào?" — phải nói được là {{Comparable}} là thứ tự tự nhiên duy nhất và được {{TreeMap}} dùng khi không truyền gì; "Sort có ổn định không, ổn định nghĩa là gì, ở đâu không ổn định?" — TimSort ổn định, heap và {{Arrays.sort(int[])}} thì không; "Viết comparator cho {{long}}, vì sao không trừ?" — vì tràn; "Lỗi Comparison method violates its general contract nghĩa là gì và bạn debug thế nào?" — chỉ ra 3 điều kiện hợp đồng, nói vì sao nó phụ thuộc dữ liệu, và mô tả cách cô lập comparator rồi fuzz nó bằng bộ ba ngẫu nhiên; "10 triệu bản ghi, sort trong 2 GB RAM?" — external merge sort hoặc đẩy xuống DB. Câu hỏi liên quan: collections-013, collections-020, collections-030.`,
+  exercises: [
+    {
+      title: 'Comparator tổng thứ tự cho bảng xếp hạng',
+      prompt: `{{Ordering}} là nơi duy nhất định nghĩa thứ tự hiển thị bảng xếp hạng. Viết hai thứ:
+
+- {{byScore()}} trả một {{Comparator<Player>}}: {{points}} **giảm dần**; bằng điểm thì {{penalties}} **tăng dần** (ít phạt hơn đứng trước); vẫn bằng thì {{id}} **tăng dần**. Tiêu chí cuối phải đảm bảo comparator chỉ trả 0 khi hai đối tượng giống hệt nhau về ba tiêu chí đó, nên {{List.sort}} không bao giờ phải đoán thứ tự.
+- {{sorted(players)}} trả **danh sách mới** đã sắp theo {{byScore()}}, giữ nguyên thứ tự các phần tử bằng nhau còn lại, **không được sửa** danh sách đầu vào và **bỏ qua** các phần tử {{null}} trong đầu vào (không được ném {{NullPointerException}}).
+
+Ràng buộc kỹ thuật: {{points}} là {{long}} nên cấm mọi phép trừ rồi ép kiểu về {{int}}; comparator của bạn phải chạy an toàn với {{Long.MIN_VALUE}} và {{Long.MAX_VALUE}}.`,
+      starter: `record Player(String id, String team, long points, int penalties) {}
+
+class Ordering {
+    static Comparator<Player> byScore() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static List<Player> sorted(List<Player> players) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Comparator<Player> C = Ordering.byScore();
+    static void before(Player first, Player second) {
+        int c = C.compare(first, second);
+        if (c >= 0) throw new AssertionError(first.id() + " phải đứng trước " + second.id() + " (compare = " + c + ")");
+    }
+    static void tied(Player a, Player b) {
+        int c = C.compare(a, b);
+        if (c != 0) throw new AssertionError(a.id() + " và " + b.id() + " phải bằng nhau theo comparator (compare = " + c + ")");
+    }
+    static String ids(List<Player> l) {
+        StringBuilder sb = new StringBuilder();
+        for (Player p : l) sb.append(p.id()).append(' ');
+        return sb.toString().trim();
+    }
+    public static void main(String[] args) {
+        check("thứ tự chính và tie-break theo penalties", () -> {
+            List<Player> in = new ArrayList<>(List.of(
+                    new Player("p3", "B", 100, 2),
+                    new Player("p1", "A", 300, 5),
+                    new Player("p2", "A", 300, 1),
+                    new Player("p4", "C", 100, 2)));
+            eq("p2 p1 p3 p4", ids(Ordering.sorted(in)));
+        });
+        check("vẫn bằng thì theo id tăng dần", () -> {
+            List<Player> in = List.of(new Player("z", "A", 50, 0), new Player("a", "B", 50, 0), new Player("m", "A", 50, 0));
+            eq("a m z", ids(Ordering.sorted(in)));
+        });
+        check("long extremes: khong duoc phep tru", () -> {
+            List<Player> in = new ArrayList<>(List.of(
+                    new Player("lo", "A", Long.MIN_VALUE, 0),
+                    new Player("hi", "A", Long.MAX_VALUE, 0),
+                    new Player("mid", "A", 4_000_000_000L, 0),
+                    new Player("neg", "A", -4_000_000_000L, 0)));
+            eq("hi mid neg lo", ids(Ordering.sorted(in)));
+            before(new Player("h", "A", Long.MAX_VALUE, 0), new Player("l", "A", Long.MIN_VALUE, 0));
+            before(new Player("m", "A", 4_000_000_000L, 0), new Player("n", "A", -4_000_000_000L, 0));
+        });
+        check("sorted khong sua danh sach dau vao", () -> {
+            List<Player> in = new ArrayList<>(List.of(new Player("a", "A", 1, 0), new Player("b", "B", 9, 0)));
+            List<Player> snapshot = new ArrayList<>(in);
+            List<Player> out = Ordering.sorted(in);
+            eq(snapshot, in);                                   // đầu vào còn nguyên thứ tự cũ
+            eq("b a", ids(out));
+            if (out == in) throw new AssertionError("sorted phải trả danh sách mới");
+            out.remove(0);                                      // sửa kết quả thì input không được đổi theo
+            eq(snapshot, in);
+            eq(2, in.size());
+        });
+        check("loc null khong NPE", () -> {
+            List<Player> in = new ArrayList<>(Arrays.asList(new Player("a", "A", 5, 0), null, new Player("b", "B", 7, 0), null));
+            eq("b a", ids(Ordering.sorted(in)));
+            eq(List.of(), Ordering.sorted(new ArrayList<>()));
+        });
+        check("hợp đồng: chỉ bằng nhau khi cả ba tiêu chí giống nhau", () -> {
+            Player x = new Player("x", "A", 10, 3);
+            Player y = new Player("x", "ZZZ", 10, 3);   // team không tham gia comparator
+            tied(x, y);
+            tied(x, x);
+            before(x, new Player("x", "A", 10, 4));              // phạt nhiều hơn đứng sau
+            before(new Player("w", "A", 10, 3), x);              // cùng điểm/phạt, id "w" nhỏ hơn đứng trước
+            before(new Player("x", "A", 11, 99), x);             // nhiều điểm hơn đứng trước, bất kể phạt
+        });
+        check("fuzz 4000 tam: doi xung va bac cau", () -> {
+            Random rnd = new Random(7);
+            List<Player> pool = new ArrayList<>();
+            for (int i = 0; i < 200; i++)
+                pool.add(new Player("P" + i, "T" + (i % 5), rnd.nextInt(21) - 10L * (i % 7), rnd.nextInt(4)));
+            for (int t = 0; t < 4000; t++) {
+                Player a = pool.get(rnd.nextInt(pool.size())), b = pool.get(rnd.nextInt(pool.size())), c = pool.get(rnd.nextInt(pool.size()));
+                int ab = Integer.signum(C.compare(a, b)), ba = Integer.signum(C.compare(b, a));
+                if (ab != -ba) throw new AssertionError("khong doi xung: " + a.id() + " " + b.id() + " -> " + ab + "/" + ba);
+                int bc = Integer.signum(C.compare(b, c)), ac = Integer.signum(C.compare(a, c));
+                if (ab > 0 && bc > 0 && !(ac > 0)) throw new AssertionError("mat tinh bac cau: " + a.id() + "," + b.id() + "," + c.id());
+                if (ab == 0 && ac != Integer.signum(C.compare(b, c))) throw new AssertionError("tuong duong khong bac cau: " + a.id() + "," + b.id() + "," + c.id());
+            }
+        });
+        check("20000 phan tu nhieu bang nhau: sort khong nem exception", () -> {
+            Random rnd = new Random(11);
+            List<Player> in = new ArrayList<>();
+            for (int i = 0; i < 20000; i++) in.add(new Player(String.format("N%05d", i), "T", rnd.nextInt(3), rnd.nextInt(3)));
+            List<Player> out = Ordering.sorted(in);
+            eq(20000, out.size());
+            for (int i = 1; i < out.size(); i++)
+                if (C.compare(out.get(i - 1), out.get(i)) > 0) throw new AssertionError("le chenh tai " + i);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Player(String id, String team, long points, int penalties) {}
+
+class Ordering {
+    static Comparator<Player> byScore() {
+        return Comparator.comparingLong(Player::points).reversed()   // points giảm dần; so sánh bằng Long.compare bên trong
+                .thenComparingInt(Player::penalties)                 // bằng điểm: ít phạt đứng trước
+                .thenComparing(Player::id);                          // tie-breaker cuối: thứ tự là toàn phần
+    }
+
+    static List<Player> sorted(List<Player> players) {
+        List<Player> copy = new ArrayList<>(players.size());
+        for (Player p : players) if (p != null) copy.add(p);         // input là của caller: không đụng tới
+        copy.sort(byScore());                                        // List.sort = TimSort, ổn định
+        return copy;
+    }
+}`,
+      hints: [
+        'Dùng {{Comparator.comparingLong(Player::points).reversed()}}, đừng viết {{(int) (a.points() - b.points())}}.',
+        'Chuỗi {{thenComparing}} áp dụng theo thứ tự từ trái qua phải; {{reversed()}} đặt ngay sau {{comparingLong}} để chỉ đảo tiêu chí điểm.',
+        '{{sorted}}: tạo {{ArrayList}} mới rồi {{sort}} trên danh sách đó. Gọi {{players.sort(...)}} là sửa của caller; {{new ArrayList<>(players)}} vẫn giữ các {{null}} nên phải lọc.',
+      ],
+      explain: `{{comparingLong}} và {{thenComparingInt}} bên trong gọi {{Long.compare}}/{{Integer.compare}}, nên không bao giờ tràn; đó là lý do Javadoc của {{Comparator}} khuyên đừng bao giờ so số bằng phép trừ. Tie-breaker {{id}} làm thứ tự thành **toàn phần**: comparator không trả 0 cho hai người khác nhau, nên kết quả sort không phụ thuộc thứ tự đầu vào — điều kiện cần nếu bạn định phân trang danh sách bằng {{subList}}.
+
+{{reversed()}} đặt ở giữa chỉ đảo tiêu chí phía trước nó. Nếu viết {{comparingLong(points).thenComparingInt(penalties).reversed()}} thì penalties bị đảo theo thành "nhiều phạt đứng trước" — một bug rất khó nhìn trong code review.
+
+Hai lỗi hay gặp với {{sorted}}: {{return players.stream().sorted(cmp).toList()}} thì đúng nhưng {{players.sort(cmp)}} thì làm đổi danh sách của caller; và {{new ArrayList<>(players).removeAll(List.of(null))}} — được, nhưng đừng dùng cách này trong code sản xuất vì nó đọc như đang sửa dữ liệu.
+
+Nếu danh sách lớn tới mức sort chiếm RAM, đừng copy thêm một lần nữa: sort theo index ({{Integer[]}} trỏ vào danh sách gốc) hoặc đẩy {{ORDER BY}} xuống DB.`,
+    },
+    {
+      title: 'Sort ổn định và hạng dense cho hàng đợi job',
+      prompt: `Đầu vào là danh sách job **đã theo thứ tự gửi** ({{submittedAt}} tăng dần). Viết:
+
+- {{byPriority(jobs)}}: danh sách **mới**, sắp theo {{priority}} giảm dần, **chỉ** theo tiêu chí đó. Vì {{List.sort}} ổn định, hai job cùng {{priority}} phải ra đúng thứ tự gửi — đây là điều test bắt bạn chứng minh (dùng {{PriorityQueue}} sẽ không ổn định và fail). Không được sửa danh sách đầu vào.
+- {{rankByPriority(jobs)}}: map {{id -> hạng}} theo kiểu **dense rank**: priority cao nhất là hạng 1, mọi job cùng priority **chia sẻ cùng hạng**, hạng kế tiếp là hạng + 1 dù khoảng cách priority lớn tới đâu (100, 50, 50, 1 → 1, 2, 2, 3). Không được sửa đầu vào; job trùng {{id}} thì một hạng duy nhất.
+
+{{priority}} là {{int}}, có thể âm, có thể bằng {{Integer.MIN_VALUE}} hoặc {{Integer.MAX_VALUE}}.`,
+      starter: `record Job(String id, int priority, long submittedAt) {}
+
+class Scheduler {
+    static List<Job> byPriority(List<Job> jobs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Map<String, Integer> rankByPriority(List<Job> jobs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static long seq = 0;
+    static Job j(String id, int p) { return new Job(id, p, seq++); }   // submittedAt = thứ tự gửi
+    static String ids(List<Job> l) {
+        StringBuilder sb = new StringBuilder();
+        for (Job x : l) sb.append(x.id()).append(' ');
+        return sb.toString().trim();
+    }
+    public static void main(String[] args) {
+        check("on dinh: hai job cung priority giu thu tu gui", () -> {
+            List<Job> in = List.of(j("a", 5), j("b", 10), j("c", 5), j("d", 10), j("e", 1));
+            eq("b d a c e", ids(Scheduler.byPriority(in)));
+        });
+        check("khong sua dau vao, danh sach moi doc lap", () -> {
+            List<Job> in = new ArrayList<>(List.of(j("a", 1), j("b", 9)));
+            List<Job> before = new ArrayList<>(in);
+            eq(before, in);
+            eq(9, Scheduler.byPriority(in).get(0).priority());
+            eq(before, in);
+        });
+        check("extreme int: khong duoc phep tru", () -> {
+            List<Job> in = List.of(j("x", Integer.MIN_VALUE), j("y", Integer.MAX_VALUE), j("z", -1), j("w", 0));
+            eq("y w z x", ids(Scheduler.byPriority(in)));
+            eq(List.of(), Scheduler.byPriority(List.of()));
+        });
+        check("dense rank: khoang cach priority khong tinh den hang", () -> {
+            List<Job> in = List.of(j("h", 100), j("g", 50), j("f", 50), j("e", 1));
+            Map<String, Integer> r = Scheduler.rankByPriority(in);
+            eq(4, r.size());
+            eq(1, r.get("h")); eq(2, r.get("g")); eq(2, r.get("f")); eq(3, r.get("e"));
+        });
+        check("dense rank: moi bang nhau cung hang 1", () -> {
+            List<Job> in = List.of(j("a", 7), j("b", 7), j("c", 7));
+            Map<String, Integer> r = Scheduler.rankByPriority(in);
+            eq(1, r.get("a")); eq(1, r.get("b")); eq(1, r.get("c"));
+        });
+        check("rank doc lap voi thu tu dau vao", () -> {
+            List<Job> a = List.of(j("h", 100), j("g", 50), j("f", 50), j("e", 1));
+            List<Job> b = List.of(j("e", 1), j("f", 50), j("g", 50), j("h", 100));
+            eq(Scheduler.rankByPriority(a), Scheduler.rankByPriority(b));
+        });
+        check("rank voi priority am, dau vao rong va mot job", () -> {
+            eq(Map.of(), Scheduler.rankByPriority(List.of()));
+            eq(Map.of("only", 1), Scheduler.rankByPriority(List.of(j("only", -5))));
+            Map<String, Integer> r = Scheduler.rankByPriority(List.of(j("p", Integer.MIN_VALUE), j("q", -1), j("s", Integer.MAX_VALUE)));
+            eq(1, r.get("s")); eq(2, r.get("q")); eq(3, r.get("p"));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Job(String id, int priority, long submittedAt) {}
+
+class Scheduler {
+    private static final Comparator<Job> PRIORITY_DESC = (x, y) -> Integer.compare(y.priority(), x.priority());
+
+    static List<Job> byPriority(List<Job> jobs) {
+        List<Job> copy = new ArrayList<>(jobs);
+        copy.sort(PRIORITY_DESC);        // TimSort ổn định: phần tử bằng nhau giữ nguyên thứ tự đầu vào
+        return copy;                     // chưa cần tie-breaker: ta đang dựa vào tính ổn định của TimSort
+    }
+
+    static Map<String, Integer> rankByPriority(List<Job> jobs) {
+        Map<String, Integer> ranks = new LinkedHashMap<>();
+        int rank = 0;
+        int previousPriority = 0;
+        boolean firstOfRun = true;
+        for (Job job : byPriority(jobs)) {
+            if (firstOfRun || job.priority() != previousPriority) {
+                rank++;                                   // dense rank: bước nhảy luôn là 1
+                previousPriority = job.priority();
+                firstOfRun = false;
+            }
+            ranks.put(job.id(), rank);
+        }
+        return ranks;
+    }
+}`,
+      hints: [
+        '{{copy.sort(cmp)}} chứ không phải {{new PriorityQueue<>(cmp)}}: heap không ổn định, hai job cùng priority sẽ ra thứ tự phụ thuộc vào cách sift-up.',
+        'So sánh {{int}} bằng {{Integer.compare(y.priority(), x.priority())}} để giảm dần mà không tràn.',
+        '{{rankByPriority}}: lặp danh sách đã sort, tăng {{rank}} chỉ khi priority đổi; dùng {{LinkedHashMap}} nếu bạn muốn thứ tự lặp của map cũng theo hạng.',
+      ],
+      explain: `Bài này có hai tầng. Tầng thứ nhất là **tính ổn định**: comparator cố ý trả 0 cho mọi cặp cùng priority, nên thứ tự quyết định là thứ tự đầu vào — đúng những gì {{List.sort}} (TimSort) hứa và {{PriorityQueue}} không hứa. Đây là cách dùng ổn định trong thực tế: sort theo lương trên danh sách đã sort theo tên, hoặc "job gửi trước được xử lý trước trong cùng mức ưu tiên".
+
+Tầng thứ hai là **dense rank**: hạng chỉ tăng khi priority đổi, nên khoảng cách điểm (100 so với 1) không làm nhảy hạng. Muốn "competition rank" (1, 2, 2, 4) thì cộng số phần tử đã qua thay vì 1.
+
+Lỗi kinh điển: viết {{x.priority() - y.priority()}} thay cho {{Integer.compare}} — với {{Integer.MIN_VALUE}} thì phép trừ tràn thành số dương, comparator mất tính bắc cầu, và {{List.sort}} có thể ném {{IllegalArgumentException: Comparison method violates its general contract}}. Nếu bạn không muốn dựa vào tính ổn định của {{List.sort}} (vì ai đó có thể đổi cách sort, hoặc cần kết quả giống hệt nhau trên mọi máy), hãy thêm {{thenComparingLong(Job::submittedAt)}} để thứ tự trở nên xác định tuyệt đối.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Danh sách {{List<Job>}} đã sort theo {{name}} tăng dần. Bạn {{sort}} lại theo {{score}} giảm dần bằng comparator chỉ chứa {{score}}. Với hai job cùng {{score}}, thứ tự kết quả là gì?',
+      options: ['Ngẫu nhiên, vì sort không đảm bảo gì', 'Giữ nguyên thứ tự theo {{name}} vì {{List.sort}} dùng TimSort ổn định', 'Luôn theo thứ tự thêm vào ban đầu, trước cả lần sort theo name', 'Java tự thêm tie-breaker theo {{hashCode}}'],
+      answer: 1,
+      explain: `{{List.sort}}/{{Collections.sort}} (object) dùng TimSort và được đặc tả là **ổn định**: phần tử so sánh bằng nhau giữ thứ tự tương đối đầu vào, nên danh sách vẫn còn "dấu" của lần sort theo tên. Muốn chắc chắn không phụ thuộc, hãy thêm tie-breaker vào comparator. {{PriorityQueue}} thì không ổn định.`,
+    },
+    {
+      q: 'Comparator {{(a, b) -> (int) (a.longField - b.longField)}} có vấn đề gì?',
+      options: ['Không có vấn đề, chỉ chậm hơn một chút', 'Hiệu {{long}} bị ép về {{int}}: hai giá trị cách nhau hơn 2^31 cho dấu sai, phá tính bắc cầu và có thể ném "Comparison method violates its general contract" khi sort', 'Chỉ sai khi một trong hai giá trị là số âm', 'Không biên dịch được vì lambda thiếu kiểu'],
+      answer: 1,
+      explain: `Ép {{long}} về {{int}} giữ lại 32 bit thấp, nên {{Long.MAX_VALUE}} thành -1 và dấu sai. Hệ quả không chỉ là thứ tự lộn xộn mà còn là {{IllegalArgumentException}} từ TimSort, và vì vụ nổ phụ thuộc dữ liệu nên nó có thể chỉ xảy ra trên production. Đúng là {{Comparator.comparingLong(X::longField)}} hoặc {{Long.compare}}.`,
+    },
+    {
+      q: 'Vì sao {{List.of("b", "a").sort(Comparator.naturalOrder())}} ném exception, trong khi {{Arrays.asList("b", "a").sort(Comparator.naturalOrder())}} chạy được?',
+      options: ['Vì {{List.of}} không chấp nhận {{Comparator}} tự nhiên', 'Vì {{List.of}} trả danh sách bất biến: {{sort}} phải ghi lại phần tử bằng {{set}}, mà {{set}} ném {{UnsupportedOperationException}}; {{Arrays.asList}} cấm thêm/xoá nhưng cho phép {{set}}', 'Vì {{Arrays.asList}} trả về một bản copy nên luôn an toàn', 'Vì {{sort}} chỉ hoạt động với {{ArrayList}}'],
+      answer: 1,
+      explain: `{{List.sort}} được cài đặt bằng cách đọc ra mảng, sắp xếp, rồi ghi lại vào từng vị trí qua {{set}}. Danh sách bất biến của {{List.of}}, {{copyOf}}, {{toUnmodifiableList}} chặn {{set}} nên nhận {{UnsupportedOperationException}} — phải copy ra {{ArrayList}} trước. {{Arrays.asList}} là view **cố định kích thước** của mảng: {{add}}/{{remove}} bị cấm nhưng {{set}} thì được, nên sort chạy và làm đổi luôn mảng gốc. {{nullsLast}} không liên quan ở đây.`,
+    },
+  ],
+  related: ['collections-013', 'collections-020', 'collections-030'],
+  tags: ['Comparable', 'Comparator', 'TimSort', 'stable sort', 'Collator'],
 }
 );

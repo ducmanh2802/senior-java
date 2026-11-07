@@ -121,6 +121,7 @@ Một đáp án: đúng 4 options không trùng, `answer` là số nguyên 0..3.
 | `> ghi chú` | hộp tip / lưu ý |
 | `\| a \| b \|` | bảng; dòng đầu là header, dòng `\|---\|` bị bỏ qua |
 | `~~~java` … `~~~` | code block (`java`, `sql`, `yaml`, `json`, `bash`, `text`) |
+| `~~~seq` … `~~~` | **sơ đồ sequence** vẽ thành SVG (js/core/diagram.js). Mỗi dòng: `title: …` (tuỳ chọn), `actors: A \| B \| C` (tuỳ chọn, phân cách bằng dấu gạch đứng), `A -> B: yêu cầu`, `B --> A: phản hồi`, `A -> A: tự xử lý`, `note A..C: ghi chú`. 2–6 actor, tên ngắn; text mỗi bước ≤ 60 ký tự. Validator báo lỗi nếu sai cú pháp. Dùng cho luồng nhiều bên (API ↔ DB ↔ Kafka, OAuth, chuyển tiền…) thay cho sơ đồ ASCII |
 
 Bẫy hay gặp:
 - **Không** được có ký tự backtick `` ` `` bên trong đáp án, vì sẽ làm vỡ template literal.
@@ -312,7 +313,7 @@ Mỗi bài học dạy một khái niệm cho người hổng nền tảng: lý 
 ```
 - Code bài tập **chỉ dùng JDK chuẩn** (không Spring, không thư viện ngoài), **không class public** ngoài `Main` (code được ghép vào một file), import `java.util.*`, `java.util.function.*`, `java.util.stream.*`, `java.util.concurrent.*` (+ `.atomic`), `java.math.*` được tự thêm (xem `App.code.assemble`). Với chủ đề framework (Spring, JPA), bài tập **mô phỏng cơ chế bằng Java thuần** (ví dụ: tự viết một DI container nhỏ, một dynamic proxy bọc transaction, đếm số query để thấy N+1).
 - Test phải **xác định (deterministic)**: không phụ thuộc thời gian thực hay thứ tự lập lịch thread; với concurrency hãy dùng `CountDownLatch`/`ExecutorService` + `join`/`awaitTermination` có timeout và lặp đủ nhiều lần để lỗi race lộ ra ổn định ở code sai.
-- Bài tập phải biên dịch với **Java 17** (JDK trên máy và CI là 17; Judge0 còn cũ hơn): tính năng Java 21 (virtual threads, switch pattern) chỉ được dạy trong `body`/`explain`.
+- Bài tập phải biên dịch với **Java 17** (JDK trên máy và CI là 17; máy chạy code online là Wandbox OpenJDK 21): tính năng Java 21 (virtual threads, switch pattern) chỉ được dạy trong `body`/`explain`.
 - Chạy `node scripts/test-lessons.js` (biên dịch thật bằng JDK 17): reference phải pass hết, starter phải biên dịch được và **không** pass hết. Và `node scripts/validate.js` → OK.
 
 ## 13. Nguồn học thêm: `refs` cho câu hỏi

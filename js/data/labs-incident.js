@@ -2377,6 +2377,752 @@ Repository dùng {{@Query}} trả về projection (không phải entity, không 
     'Đề xuất sửa: streaming (projection, fetch size, ghi file tạm, RequestBody.fromFile hoặc multipart) và tách workload (Kubernetes CronJob/worker riêng, concurrencyPolicy Forbid hoặc ShedLock); giải thích vì sao tăng heap, đổi region size hay đổi GC chỉ là giảm triệu chứng.'
   ],
   tags: ['g1', 'gc-log', 'humongous', 'full-gc', 'scheduled', 'workload-isolation', 'kubernetes', 'export', 'latency']
+},
+{
+  id: 'lab-incident-017',
+  category: 'incident',
+  title: 'Rolling update làm rơi request 502: thiếu preStop và readiness probe chưa đúng',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn **ShopVN** triển khai **checkout-service** (xử lý thanh toán) trên **Kubernetes** — nền tảng tự động triển khai, mở rộng và quản lý các **container** (môi trường đóng gói ứng dụng cùng mọi thứ cần để chạy) trên nhiều máy. Các container chạy trong **pod** (đơn vị nhỏ nhất của Kubernetes, thường là một container). **Deployment** quản lý số bản sao của pod và cách cập nhật: khi có phiên bản mới, Kubernetes dùng **rolling update** — tạo pod mới, đợi pod mới sẵn sàng, rồi tắt từng pod cũ, để dịch vụ không ngừng.
+
+**Triệu chứng:** Ngày **23/10/2026 lúc 15:00**, ShopVN triển khai phiên bản mới của checkout-service. Trong quá trình rolling update, khách hàng nhận hàng loạt lỗi **502 Bad Gateway** trong khoảng 2-3 phút. 502 là mã HTTP có nghĩa "máy trung gian (gateway, ví dụ ingress/nginx) không nhận được phản hồi hợp lệ từ server phía sau" — ở đây là pod checkout đã bị tắt hoặc chưa sẵn sàng chấp nhận kết nối. Tổng cộng khoảng **1.840 request** bị lỗi 502. Pod cũ đang trạng thái **Terminating** (đang tắt) vẫn nhận request; pod mới nhận traffic khi chưa sẵn sàng.
+
+**Dữ liệu thu thập:** bản cấu hình Deployment của checkout-service (xem artifact deployment.yaml).`,
+  artifacts: [ { name: 'deployment.yaml', lang: 'yaml', content: `apiVersion: apps/v1
+kind: Deployment
+metadata: { name: checkout-service }
+spec:
+  replicas: 3
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: checkout-service
+        readinessProbe:
+          httpGet: { path: /actuator/health, port: 8080 }
+          initialDelaySeconds: 5` } ],
+  questions: [ 'Tại sao trong rolling update, khách hàng vẫn nhận 502 từ pod cũ đang tắt và từ pod mới chưa sẵn sàng?', 'Thiết kế lại readiness probe, startup probe, preStop và graceful shutdown để không rơi request khi triển khai.' ],
+  hints: [ 'Readiness probe quyết định pod được đưa vào danh sách nhận traffic (Endpoints) hay không. Probe sớm quá hoặc kiểm tra sai endpoint khiến pod được đánh sẵn sàng trước khi Tomcat đã lắng nghe cổng 8080.', 'Khi xóa pod, Kubernetes gửi tín hiệu SIGTERM (yêu cầu tắt nhẹ nhàng), chờ terminationGracePeriodSeconds, rồi mới gửi SIGKILL (é bắt buộc tắt ngay). Nếu không có preStop (lệnh chạy trước khi tắt, ví dụ sleep để chờ request đang xử lý xong), ingress có thể đổ request vào pod ngay khi nó bắt đầu tắt.' ],
+  answer: `**Tóm tắt:** Lỗi 502 trong lần triển khai do hai nguyên nhân cùng xảy ra: (1) readiness probe quá sớm (initialDelaySeconds 5) và kiểm tra {{/actuator/health}} chỉ báo ngữ cảnh đã nạp, chưa chắc Tomcat đã lắng nghe cổng 8080, nên pod mới được đưa vào nhận traffic trước khi thật sự sẵn sàng; (2) pod cũ bị tắt mà không có preStop, grace period ngắn 30 giây, nên ingress vẫn chuyển request vào pod đang Terminating và cắt giữa chừng request đang xử lý. Kết quả: khách hàng nhận hàng loạt 502 Bad Gateway trong 2-3 phút, khoảng 1.840 request.
+
+### Khái niệm cần biết trước
+- **Pod:** đơn vị nhỏ nhất của Kubernetes, chứa một hoặc nhiều container dùng chung địa chỉ IP và lưu trữ.
+- **Container:** môi trường đóng gói ứng dụng kèm thư viện và cấu hình, chạy độc lập khỏi hệ điều hành máy chủ.
+- **Deployment:** quản lý các bản sao (replica) của pod và triển khai phiên bản mới theo kiểu luân phiên (rolling update) thay vì tắt hết dịch vụ cùng lúc.
+- **Ingress:** thành phần như "cổng cửa" nhận request từ internet và định tuyến đến pod phù hợp (ở đây là nginx ingress, đóng vai trò gateway).
+- **Readiness probe:** kiểm tra định kỳ xem pod đã sẵn sàng phục vụ traffic chưa. Nếu probe thành công, kubelet đánh pod Ready và endpoint controller đưa pod vào Endpoints — ingress mới bắt đầu gửi request vào pod.
+- **PreStop:** hook chạy trong container trước khi Kubernetes gửi tín hiệu tắt, dùng để chờ các request đang xử lý kết thúc.
+- **SIGTERM / SIGKILL:** tín hiệu Linux yêu cầu chương trình tắt nhẹ nhàng (SIGTERM) và tín hiệu buộc tắt ngay lập tức, không cho kịp xử lý (SIGKILL).
+- **Graceful shutdown:** tắt nhẹ nhàng — ngừng nhận kết nối mới nhưng xử lý xong các kết nối đang diễn ra trước khi dừng hoàn toàn (Spring Boot cấu hình bằng {{server.shutdown=graceful}}).
+- **TerminationGracePeriodSeconds:** thời gian tối đa Kubernetes chờ pod tự tắt sau SIGTERM trước khi bắn SIGKILL.
+
+### Nguyên nhân gốc
+
+**1. Readiness probe passes quá sớm và kiểm tra chưa đủ.** initialDelaySeconds 5 nghĩa là Kubernetes bắt đầu kiểm tra sau 5 giây, có thể chưa đủ thời gian Spring Boot nạp xong ngữ cảnh và Tomcat mở cổng 8080. Đơn chỉ kiểm tra {{/actuator/health}}: endpoint này trả UP khi ngữ cảnh ứng dụng nạp xong, nhưng chưa chắc chắn Tomcat đã sẵn sàng chấp nhận kết nối. Khi đợt kiểm tra đầu tiên thành công, kubelet đánh pod là Ready, endpoint controller của Kubernetes cập nhật Endpoints, và ingress bắt đầu đổ request vào pod ngay lập tức — trong lúc Tomcat vừa khởi động hoặc chưa lắng nghe → request rơi, trả 502.
+
+**2. Thiếu preStop khi tắt pod cũ.** Kubernetes xóa pod theo thứ tự: gắn thời gian xóa, pod vào trạng thái Terminating, endpoint controller từng bước cập nhật tin trên các node (có độ trễ vài giây), rồi gửi SIGTERM vào container. Nếu container không có preStop, nó không được chờ đợi request đang xử lý xong; kết hợp với server.shutdown chưa bật graceful, request bị cắt giữa chừng, khách hàng thấy 502.
+
+**3. Grace period quá ngắn.** terminationGracePeriodSeconds = 30 giây, trong khi một request thanh toán có thể chạy 10-30 giây. Hết 30 giây, Kubernetes bắn SIGKILL, cắt mọi request còn sống.
+
+### Cách sửa
+
+- **Readiness probe:** đổi path sang {{/actuator/health/readiness}} (endpoint readiness của Spring Boot Actuator 3.x — chỉ trả READY sau khi sự kiện ApplicationReady đã được xử lý, nghĩa là ứng dụng thật sự sẵn sàng phục vụ traffic), đặt {{initialDelaySeconds: 15}}, {{periodSeconds: 5}}, {{failureThreshold: 3}}. Cần đảm bảo {{management.endpoints.web.exposure.include}} chứa {{health}} và {{management.endpoint.health.probes.enabled: true}} (mặc định là true).
+- **Startup probe:** thêm {{startupProbe}} đường dẫn {{/actuator/health}}, {{failureThreshold: 30}} (mỗi 10 giây một đợt, tối đa 300 giây) để Kubernetes không hỏi readiness/liveness trong khi ứng dụng còn khởi động.
+- **PreStop hook:** thêm {{lifecycle.preStop}} chạy lệnh {{sleep 10}} (hoặc gọi endpoint tắt nội bộ) trước khi nhận SIGTERM, cho ingress và endpoint controller kịp cập nhật, và request đang xử lý kịp kết thúc.
+- **Grace period:** tăng {{terminationGracePeriodSeconds}} lên 60 giây (hoặc nhiều hơn, dựa trên p99 thời gian xử lý request kinh doanh).
+- **Spring Boot:** bật {{server.shutdown=graceful}} trong {{application.yml}}, để Tomcat ngừng nhận kết nối mới nhưng xử lý xong kết nối hiện tại trước khi dừng.
+
+Xác minh sau khi sửa: triển khai lại, theo dõi pod mới không vào Endpoints trước khi {{/actuator/health/readiness}} trả 200, và trong rolling update không có request 502 nào ({{kubectl get pods --watch}}, ingress access log).
+
+> Senior tip: Mỗi lần triển khai rơi 502, chín mươi phần trăm là vấn đề probe và vòng đời pod (lifecycle). preStop ngủ 5-10 giây là biện pháp rẻ nhất và hiệu quả nhất. Luôn đặt readiness probe ở endpoint phản ánh "sẵn sàng phục vụ traffic", không chỉ "ứng dụng đã khởi động", và hãy theo dõi p99 thời gian xử lý request để đặt grace period đủ dài, không chọn số ngẫu nhiên như 30 giây.`,
+  rubric: [ 'Nhận ra readiness probe sớm quá và kiểm tra {{/actuator/health}} chưa phản ánh Tomcat sẵn sàng lắng nghe, làm pod mới nhận traffic sớm.', 'Giải thích thứ tự tắt pod của Kubernetes: Terminating → endpoint controller cập nhật Endpoints → SIGTERM → chờ terminationGracePeriodSeconds → SIGKILL, và vai trò preStop.', 'Đề xuất sửa đúng: readiness {{/actuator/health/readiness}}, startupProbe, preStop sleep, grace period 60s, {{server.shutdown=graceful}}.' ],
+  tags: ['kubernetes', 'rolling-update', 'readiness-probe', 'prestop', '502']
+},
+{
+  id: 'lab-incident-018',
+  category: 'incident',
+  title: 'HPA mở rộng liên tục nhưng p99 tăng: CPU limit 500m làm JVM bị CFS throttle',
+  level: 'senior',
+  scenario: `**Bối cảnh:** ShopVN chạy **search-service** trên Kubernetes. Mỗi pod được cấp **CPU request** là 250m (0.25 CPU — lượng CPU Kubernetes đảm bảo pod luôn nhận được) và **CPU limit** là 500m (0.5 CPU — giới hạn cứng, pod không được vượt quá mức này). **HPA (Horizontal Pod Autoscaler)** là thành phần tự động thay đổi số lượng pod theo một chỉ số; ở đây mục tiêu là CPU sử dụng 70% (tính theo mức sử dụng so với request).
+
+**Triệu chứng:** Ngày **24/10/2026**, từ 10:00, traffic tăng. HPA mở rộng liên tục từ 2 pod lên 10 pod trong 15 phút, nhưng độ trễ p99 (thời gian chậm nhất trong 10% request chậm nhất) tăng từ 120 ms lên 1.8 s. Mỗi pod dùng CPU thực tế chỉ khoảng 300m, dưới limit 500m, nhưng tỷ lệ thời gian bị hạn chế (throttled periods) rất cao.
+
+**Dữ liệu thu thập:** lệnh kubectl top pod và thông số HPA (xem artifact kubectl-top.txt).`,
+  artifacts: [ { name: 'kubectl-top.txt', lang: 'text', content: `NAME                            CPU(cores)   MEMORY(bytes)
+search-6f4a2-abc12              320m         612Mi
+search-6f4a2-def34              310m         598Mi
+# HPA
+NAME           REFERENCE                 TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+search-service Deployment/search-service  180%/70%  2         10        10         15m
+# cfs throttling ratio ~0.9, gc pause 40ms mỗi 1.3s, p99 1.8s` } ],
+  questions: [ 'Vì sao HPA mở rộng liên tục từ 2 lên 10 pod nhưng p99 lại tăng thay vì giảm?', 'Giải thích CFS quota, CFS throttling và tác động của chúng lên JVM (Java 17) chạy trong container.' ],
+  hints: [ 'HPA tính mức sử dụng CPU so với request (250m): 320m / 250m = 128%, vượt ngưỡng 70%, nên điều khiển mở rộng liên tục.', 'Limit 500m có nghĩa là CFS quota 50 ms trên mỗi chu kỳ 100 ms. Khi JVM bùng nổ (GC, biên dịch JIT), vượt 50 ms trong chu kỳ thì bị throttled (dựng lại) cho đến hết chu kỳ. p99 tăng vì các lần bùng này.' ],
+  answer: `**Tóm tắt:** HPA mở rộng vì nó tính {{usage / request}} (320m / 250m = 128% > 70%), chứ không so với limit. Mặt cao, limit 500m làm kernel áp dụng CFS quota 50 ms mỗi 100 ms; JVM bùng nổ (gom rác, biên dịch JIT) vượt mức này trong một chu kỳ thì bị throttled — treo lại cho đến hết chu kỳ. JDK 17 nhận container chỉ có 0.5 CPU nên {{availableProcessors()}} = 1, luồng GC và JIT chỉ còn 1, làm GC pause lâu (40 ms mỗi 1.3 s) và p99 tăng từ 120 ms lên 1.8 s. Thêm pod không khắc phục vì mỗi pod vẫn bị throttle và xử lý chậm hơn.
+
+### Khái niệm cần biết trước
+- **Pod / container:** pod là đơn vị nhỏ nhất của Kubernetes; container là môi trường chạy ứng dụng bị giới hạn tài nguyên bởi kernel Linux.
+- **CPU request:** lượng CPU Kubernetes đặt cam kết dành cho pod, dùng để lập lịch và tính toán mức sử dụng cho HPA.
+- **CPU limit:** giới hạn cứng trên CPU pod có thể dùng; vượt quá thì kernel hạn chế.
+- **HPA (Horizontal Pod Autoscaler):** tự động tăng hoặc giảm số pod khi chỉ số theo dõi vượt ngưỡng đã đặt.
+- **CFS (Completely Fair Scheduler):** bộ lập lịch công bằng hoàn toàn của Linux, chia thời gian CPU cho các quá trình. Với container, kernel dùng **CFS quota** (thời gian tối đa được dùng CPU trong một chu kỳ) và **CFS period** (độ dài chu kỳ, mặc định 100 ms).
+- **CFS throttling:** trạng thái container đã dùng hết quota trong chu kỳ, kernel "dựng" nó cho đến khi chu kỳ mới bắt đầu. Thường xuyên bị throttled làm ứng dụng bị giật, độ trễ tăng.
+- **JVM container-aware:** từ JDK 10+/17, JVM tự nhận giới hạn container để tự cấu hình heap và số luồng (thread GC, JIT) thay vì nhìn toàn bộ nút chủ.
+- **availableProcessors():** phương thức Java trả về số CPU mà JVM thấy được; với limit 500m trên nút nhiều nhân, JDK 17 thường trả về 1.
+- **KEDA:** Kubernetes-based Event Driven Autoscaling, mở rộng pod theo chỉ số tùy chỉnh (RPS, độ trễ, số message Kafka…) thay vì chỉ CPU.
+
+### Nguyên nhân gốc
+
+**1. HPA chạy theo request, không theo limit, nên luôn cho mở rộng.** HPA tính {{usage / request}} = 320m / 250m = 128%, vượt ngưỡng 70%, nên liên tục yêu cầu thêm pod (2 → 10 trong 15 phút). Số pod nhiều hơn chia nhẹ traffic, nhưng mỗi pod vẫn bị cùng giới hạn CPU.
+
+**2. Limit 500m gây CFS throttling.** Limit 500m = 0.5 CPU → CFS quota 50 ms, period 100 ms. Trong 100 ms, JVM chỉ được dùng CPU tối đa 50 ms. Khi JVM bùng mở (ví dụ luồng GC chạy hoặc JIT biên dịch mã mới), dùng trên 50 ms trong chu kỳ thì kernel treo JVM cho đến hết chu kỳ. Tỷ lệ bị throttled khoảng 0.9 (90%) cho thấy pod hầu hết thời gian đang bị hạn chế, dù kubectl top chỉ báo 320m (trung bình dưới limit).
+
+**3. JVM bị hạ cấp xuống 1 CPU.** JDK 17 container-aware tính availableProcessors() từ CPU limit: 0.5 làm tròn lên là 1. Thread GC và JIT chỉ được 1 luồng → gom rác lâu hơn (GC pause 40 ms mỗi 1.3 s), mã chạy chậm hơn sau khi biên dịch, p99 độ trệ từ 120 ms lên 1.8 s. Thêm pod không giúp latency vì mỗi pod vẫn xử lý chậm bằng nhau; tổng throughput tăng nhưng trải nghiệm khách hàng tệ hơn.
+
+### Cách sửa
+
+- **CPU resource:** đặt {{requests.cpu: 300m}} (gần mức dùng thực) và {{limits.cpu: 1000m}} hoặc bỏ limit CPU nếu namespace cho phép. Tốt nhất đặt request = limit để pod được lớp QoS **Guaranteed** (kernel không throttled nếu limit đủ cao và không bị cướp CPU).
+- **HPA theo chỉ số thích hợp:** thay CPU utilization, mở rộng theo RPS (request mỗi giây) hoặc độ trễ p95/p99 qua **KEDA** hoặc Prometheus Adapter, ngưỡng đáp ứng trải nghiệm thực tế.
+- **JVM:** bật {{-XX:+UseContainerSupport}} (mặc định từ JDK 17) và đặt {{-XX:MaxRAMPercentage=75.0}} để heap phù hợp với cỡ container; xem xét {{-XX:ActiveProcessorCount}} để chỉ rõ số luồng GC/JIT thay vì để JVM đoán 1 luồng.
+- **Giám sát và cảnh báo:** theo dõi {{container_cpu_cfs_throttled_periods_total}} và {{container_cpu_cfs_throttled_seconds_total}}; cảnh báo khi tỷ lệ throttled tăng hoặc p99 vượt ngưỡng khi pod đang mở rộng.
+
+> Senior tip: Nếu thấy HPA mở rộng liên tục mà độ trễ không giảm, hãy kiểm tra {{container_cpu_cfs_throttled_periods_total}} ngay — chín mươi phần trăm trường hợp là CPU limit quá thấp so với nhịp burst của JVM. Một quy tắc thực tiễn: cho Java trong container đặt request và limit bằng nhau (Guaranteed QoS), và không bao giờ để CPU limit nhỏ hơn mức mà JVM cần để gom rác trong khoảng thời gian chấp nhận được.`,
+  rubric: [ 'Giải thích HPA tính dùng/request (320m/250m = 128% > 70%) nên mở rộng liên tục, không phải vì thực sự cần nhiều pod hơn.', 'Giải thích CFS quota 50 ms / period 100 ms từ limit 500m và việc JVM bị throttled khi bùng nổ, dù trung bình dùng chỉ 320m.', 'Giải thích availableProcessors() = 1 làm GC/JIT chỉ 1 luồng, GC pause lâu, p99 tăng, và thêm pod không giải quyết latency.', 'Đề xuất sửa: request/limit CPU hợp lý (hoặc Guaranteed QoS), HPA theo RPS/độ trễ qua KEDA, cài đặt JVM container-aware, cảnh báo chỉ số throttled.' ],
+  tags: ['kubernetes', 'hpa', 'cpu-throttling', 'cfs', 'jvm']
+}
+,
+{
+  id: 'lab-incident-019',
+  category: 'incident',
+  title: 'Kafka consumer bị đá khỏi group liên tục và xử lý trùng message',
+  level: 'senior',
+  scenario: `Hệ thống order-service tiêu thụ topic {{orders.created}} (3 partition) bằng Spring Kafka với concurrency 3. Sau khi thêm bước enrich dữ liệu gọi HTTP sang service khác (mất 15-20 giây mỗi batch), consumer bị đá khỏi group, lag tăng từ 0 lên 80.000, và cùng một order bị xử lý nhiều lần. Log consumer và kafka-consumer-groups --describe dưới đây.`,
+  artifacts: [
+    { name: 'consumer.log', lang: 'text', content: `[2026-11-06 09:12:01] INFO  o.s.k.l.KafkaMessageListenerContainer - partitions assigned: [orders.created-0, orders.created-1, orders.created-2]
+[2026-11-06 09:12:05] INFO  c.e.OrderConsumer - batch size=500, enrich via HTTP, start
+[2026-11-06 09:12:25] INFO  c.e.OrderConsumer - batch enriched, writing to DB
+[2026-11-06 09:12:31] WARN  o.a.k.c.c.i.ConsumerCoordinator - Member consumer-1-abc123 sending LeaveGroup request to coordinator because session timed out or failed to send heartbeat
+[2026-11-06 09:12:31] INFO  o.s.k.l.KafkaMessageListenerContainer - partitions revoked: [orders.created-0, orders.created-1, orders.created-2]
+[2026-11-06 09:12:32] INFO  o.s.k.l.KafkaMessageListenerContainer - partitions assigned: [orders.created-0, orders.created-1, orders.created-2]
+[2026-11-06 09:12:32] INFO  c.e.OrderConsumer - batch size=500, enrich via HTTP, start
+[2026-11-06 09:12:52] WARN  o.a.k.c.c.i.ConsumerCoordinator - Member consumer-1-abc123 sending LeaveGroup request to coordinator because session timed out or failed to send heartbeat
+[2026-11-06 09:12:52] INFO  o.s.k.l.KafkaMessageListenerContainer - partitions revoked: [orders.created-0, orders.created-1, orders.created-2]
+[2026-11-06 09:12:53] INFO  o.s.k.l.KafkaMessageListenerContainer - partitions assigned: [orders.created-0, orders.created-1, orders.created-2]
+[2026-11-06 09:12:53] INFO  c.e.OrderConsumer - batch size=500, enrich via HTTP, start
+[2026-11-06 09:13:13] WARN  o.a.k.c.c.i.ConsumerCoordinator - Member consumer-1-abc123 sending LeaveGroup request to coordinator because session timed out or failed to send heartbeat
+[2026-11-06 09:13:13] INFO  o.s.k.l.KafkaMessageListenerContainer - partitions revoked: [orders.created-0, orders.created-1, orders.created-2]
+[2026-11-06 09:13:14] INFO  o.s.k.l.KafkaMessageListenerContainer - partitions assigned: [orders.created-0, orders.created-1, orders.created-2]
+[2026-11-06 09:13:20] INFO  c.e.OrderConsumer - duplicate orderId=ORD-7781 already processed, skipping
+[2026-11-06 09:13:20] INFO  c.e.OrderConsumer - duplicate orderId=ORD-7782 already processed, skipping
+[2026-11-06 09:13:20] INFO  c.e.OrderConsumer - duplicate orderId=ORD-7783 already processed, skipping` },
+    { name: 'consumer-groups.txt', lang: 'text', content: `GROUP           TOPIC            PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+order-service    orders.created   0          12000           40000           28000
+order-service    orders.created   1          11500           41000           29500
+order-service    orders.created   2          12300           40800           28500
+Consumer group 'order-service' has no active members.` },
+    { name: 'metrics.txt', lang: 'text', content: `kafka_consumer_lag_sum{group="order-service"} 86000
+max_poll_interval_ms configured = 30000
+max.poll.records = 500
+session.timeout.ms = 45000
+heartbeat.interval.ms = 3000
+processing time per batch = 20s (enrich HTTP) + 6s (DB write) = 26s` }
+  ],
+  questions: ['Nguyên nhân gốc vì sao consumer bị đá khỏi group và lag tăng? Dẫn chứng từ log.', 'Bạn sẽ sửa thế nào ngắn hạn và dài hạn?'],
+  hints: ['So sánh thời gian xử lý batch với max.poll.interval.ms.', 'max.poll.interval.ms là thời gian tối đa giữa hai lần poll(), không phải thời gian xử lý một message.'],
+  answer: `**Tóm tắt:** Batch xử lý mất 26 giây, consumer không gọi poll() kịp → coordinator coi member đã chết và đá khỏi group, partition được gán lại, message đã xử lý một phần bị xử lý lại.
+
+### Cơ chế bên trong
+
+1. **max.poll.interval.ms không phải timeout xử lý message.** Đây là khoảng thời gian tối đa giữa hai lần gọi {{poll()}}. Nếu xử lý một batch lâu hơn giá trị này, consumer không gọi poll() kịp → coordinator coi member đã chết → đá khỏi group → rebalance → partition gán cho consumer khác.
+2. **Heartbeat chỉ được gửi khi consumer vẫn gọi poll().** Nó chạy trên luồng mạng nền của Kafka client (không phải thread xử lý batch của bạn). session.timeout.ms = broker coi member chết nếu không nhận heartbeat đủ lâu; max.poll.interval.ms = thời gian tối đa giữa hai lần poll(). Xử lý batch đồng bộ quá lâu không gọi poll → coordinator coi member đã chết → đá khỏi group → rebalance.
+3. **Rebalance dẫn đến xử lý trùng.** Partition được gán lại, offset chưa commit → message đã xử lý một phần bị xử lý lại. Nếu không có idempotency, dữ liệu bị trùng.
+4. **Lag tăng.** Consumer bị đá liên tục → không commit offset → lag tăng.
+
+### Dẫn chứng
+
+- Log: {{Member consumer-1-abc123 sending LeaveGroup request ... session timed out}}.
+- metrics: processing time per batch = 26s, max_poll_interval_ms = 30000 → rất sát ngưỡng.
+- consumer-groups.txt: LAG ~28000 mỗi partition, no active members.
+
+### Cách sửa
+
+- **Ngắn hạn:** tăng max.poll.interval.ms lên 5 phút ({{max.poll.interval.ms=300000}}) và giảm max.poll.records xuống 50-100 để batch nhỏ hơn. Bật {{enable.auto.commit=false}} và commit thủ công sau khi xử lý xong.
+- **Dài hạn:** tách enrich HTTP ra khỏi consumer loop: dùng async/non-blocking, hoặc produce sang topic trung gian, hoặc xử lý song song với ExecutorService và poll trong thread chính. Thêm idempotency (orderId unique) để xử lý trùng không gây lỗi.
+- **Giám sát:** theo dõi rebalance rate, consumer lag, processing time per batch.
+
+> Senior tip: max.poll.interval.ms nên lớn hơn 2-3 lần thời gian xử lý batch thực tế; nếu batch lớn hơn 1 phút, hãy giảm batch size hoặc tách xử lý ra khỏi consumer thread. Luôn thiết kế consumer idempotent vì rebalance là điều không tránh khỏi.`,
+  rubric: ['Giải thích max.poll.interval.ms là thời gian giữa hai poll(), không phải timeout xử lý message.', 'Giải thích heartbeat chỉ gửi khi còn gọi poll (luồng mạng nền), session.timeout.ms vs max.poll.interval.ms, batch xử lý đồng bộ làm consumer không poll kịp.', 'Giải thích rebalance dẫn đến xử lý trùng và lag tăng.', 'Đề xuất tăng max.poll.interval.ms, giảm batch size, tách enrich ra khỏi consumer loop, idempotency.'],
+  tags: ['kafka', 'consumer', 'rebalance', 'max-poll-interval', 'idempotency']
+},
+{
+  id: 'lab-incident-020',
+  category: 'incident',
+  title: 'HikariCP cạn connection: REQUIRES_NEW lồng trong transaction ngoài',
+  level: 'senior',
+  scenario: `OrderService.createOrder() mở transaction ngoài, gọi PaymentService.charge() có @Transactional(propagation=REQUIRES_NEW). Mỗi request giữ 2 connection cùng lúc. Khi traffic tăng, HikariCP cạn connection, log "Connection is not available, request timed out after 30000ms", pending connections tăng, thread dump cho thấy nhiều thread chờ getConnection. Dưới đây là log, metric và thread dump.`,
+  artifacts: [
+    { name: 'app.log', lang: 'text', content: `[2026-11-06 10:05:12] ERROR c.z.h.p.HikariPool - HikariPool-1 - Connection is not available, request timed out after 30000ms.
+[2026-11-06 10:05:12] WARN  o.h.e.j.s.SqlExceptionHelper - SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 30000ms.
+[2026-11-06 10:05:12] ERROR c.e.OrderController - createOrder failed for orderId=ORD-9912: org.springframework.dao.DataAccessResourceFailureException
+[2026-11-06 10:05:15] ERROR c.z.h.p.HikariPool - HikariPool-1 - Connection is not available, request timed out after 30000ms.
+[2026-11-06 10:05:18] ERROR c.z.h.p.HikariPool - HikariPool-1 - Connection is not available, request timed out after 30000ms.` },
+    { name: 'metrics.txt', lang: 'text', content: `hikaricp_connections_active = 20
+hikaricp_connections_idle = 0
+hikaricp_connections_pending = 145
+hikaricp_connections_max = 20
+hikaricp_connections_timeout_ms = 30000
+http_requests_in_flight = 80
+db_query_p99_ms = 45
+cpu_usage = 35%` },
+    { name: 'thread-dump.txt', lang: 'text', content: `"http-nio-8080-exec-12" #45 prio=5 os_prio=0 tid=0x00007f... state=WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+    at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:162)
+    at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:128)
+    at org.springframework.jdbc.datasource.DataSourceUtils.getConnection(DataSourceUtils.java:79)
+    at org.hibernate.engine.jdbc.env.internal.JdbcEnvironmentImpl... (waiting for connection)
+"http-nio-8080-exec-13" #46 prio=5 os_prio=0 tid=0x00007f... state=WAITING (parking)
+    at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:162)
+    at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:128)
+"http-nio-8080-exec-14" #47 prio=5 os_prio=0 tid=0x00007f... state=WAITING (parking)
+    at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:162)` }
+  ],
+  questions: ['Nguyên nhân gốc vì sao HikariCP cạn connection? Dẫn chứng từ metric và thread dump.', 'Bạn sẽ sửa thế nào ngắn hạn và dài hạn?'],
+  hints: ['So sánh số connection active với max; đếm số connection mỗi request giữ.', 'REQUIRES_NEW mở transaction mới → mượn connection mới từ pool.'],
+  answer: `**Tóm tắt:** Mỗi request giữ 2 connection cùng lúc vì transaction ngoài chưa commit khi gọi REQUIRES_NEW; pool 20 connection chỉ phục vụ 10 request đồng thời → khi traffic > 10, connection cạn, thread chờ getConnection.
+
+### Cơ chế bên trong
+
+1. **REQUIRES_NEW mở transaction mới và mượn connection mới.** Khi method có @Transactional(propagation=REQUIRES_NEW) được gọi trong transaction ngoài, Spring suspend transaction ngoài (giữ connection của nó) và mở transaction mới mượn connection mới từ pool. Request đó giữ 2 connection đồng thời.
+2. **Pool size nhỏ so với concurrency.** Pool max 20, mỗi request giữ 2 → tối đa 10 request đồng thời. http_requests_in_flight = 80 → 70 request phải chờ connection.
+3. **Thread bị block chờ getConnection.** Thread dump cho thấy nhiều http-nio thread state=WAITING tại HikariPool.getConnection. Sau 30s timeout, ném SQLTransientConnectionException.
+4. **Không phải query chậm.** db_query_p99_ms = 45ms, cpu 35% → DB và CPU đều rảnh; bottleneck là pool size và pattern giữ connection.
+
+### Dẫn chứng
+
+- metrics: active=20, idle=0, pending=145, max=20.
+- thread-dump: nhiều thread WAITING tại getConnection.
+- app.log: "Connection is not available, request timed out after 30000ms".
+
+### Cách sửa
+
+- **Ngắn hạn:** tăng pool size lên 40-50 (nhưng DB max_connections phải đủ); giảm connection timeout xuống 5-10s để fail fast; thêm circuit breaker.
+- **Dài hạn:** loại bỏ REQUIRES_NEW lồng trong transaction ngoài: gộp logic vào cùng transaction, hoặc tách PaymentService gọi async/event-driven (outbox pattern) để không giữ connection lâu. Nếu cần REQUIRES_NEW, đảm bảo transaction ngoài commit/release connection trước khi gọi.
+- **Giám sát:** theo dõi hikaricp_connections_pending, active, timeout; cảnh báo khi pending > 0 kéo dài.
+
+> Senior tip: REQUIRES_NEW là công cụ mạnh nhưng nguy hiểm khi lồng trong transaction ngoài vì giữ 2 connection. Quy tắc: transaction nên ngắn, không gọi service ngoài (HTTP, Kafka) trong transaction, và pool size phải ≥ 2 × số request đồng thời nếu dùng REQUIRES_NEW.`,
+  rubric: ['Giải thích REQUIRES_NEW suspend transaction ngoài và mượn connection mới → giữ 2 connection/request.', 'Giải thích pool 20 chỉ phục vụ 10 request đồng thời, traffic 80 → cạn connection.', 'Dẫn chứng metric active=20/pending=145 và thread dump WAITING tại getConnection.', 'Đề xuất tăng pool, loại bỏ REQUIRES_NEW lồng, async/event-driven, giám sát pending.'],
+  tags: ['hikaricp', 'connection-pool', 'transaction', 'requires_new', 'spring']
+},
+{
+  id: 'lab-incident-021',
+  category: 'incident',
+  title: 'API trả 500 hàng loạt lúc 2h sáng vì đĩa đầy, log bị xoá nhưng dung lượng không giảm',
+  level: 'mid',
+  scenario: `**Bối cảnh:** Hệ thống **ShopVN** chạy service **order-service** (Spring Boot 3.2, Logback ghi log ra file, deploy trên 1 VM Linux Ubuntu 22.04, ổ đĩa root {{/dev/sda1}} 50 GB). Ứng dụng ghi log tại {{/var/log/order-service/app.log}} và access log tại {{/var/log/nginx/access.log}}. Đội vận hành (DevOps - đội quản lý hạ tầng, server, deploy) đã từng cấu hình **logrotate** (công cụ Linux tự xoay vòng file log: nén log cũ, tạo file mới, xoá log quá hạn) nhưng chưa kiểm tra lại sau lần nâng cấp gần đây.
+
+**Triệu chứng:** Ngày **03/11/2026**, từ **02:14** (giờ thấp điểm, batch job chạy), giám sát báo tỷ lệ HTTP 500 tăng vọt trên {{/api/orders}}. Log ứng dụng ghi lỗi {{java.io.IOException: No space left on device}} (không còn chỗ trống trên thiết bị lưu trữ - ổ đĩa đã đầy). Một bạn trực ca SSH vào server, thấy {{df -h}} báo {{/}} dùng 100%. Bạn chạy {{rm /var/log/order-service/app.log}} (xoá file log) nhưng {{df -h}} **vẫn 100%**, API vẫn 500. Đến 02:41 sau khi xử lý đúng cách, dịch vụ mới hồi phục.
+
+**Dữ liệu thu thập:** Log lỗi Java, kết quả {{df -h}}, {{du -sh}} thư mục log, cấu hình {{logrotate}}, trạng thái cron/timer của logrotate, và {{lsof}} cho file đã bị xoá nhưng vẫn bị giữ.`,
+  artifacts: [
+    {
+      name: 'app-error.log',
+      lang: 'text',
+      content: `2026-11-03T02:14:07.183+07:00 ERROR 18421 --- [order-service] [http-nio-8080-exec-41] v.s.order.OrderController : create order failed orderId=ORD-0311-88412
+org.springframework.jdbc.CannotGetJdbcConnectionException: Failed to obtain JDBC Connection
+  at org.springframework.jdbc.datasource.DataSourceUtils.getConnection(DataSourceUtils.java:84)
+  at org.springframework.jdbc.core.JdbcTemplate.execute(JdbcTemplate.java:653)
+Caused by: org.postgresql.util.PSQLException: Could not open file "pg_wal/00000001000000A2000000B4": No space left on device
+  at org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse(QueryExecutorImpl.java:2725)
+2026-11-03T02:14:07.190+07:00 ERROR 18421 --- [order-service] [http-nio-8080-exec-41] c.s.logging.ErrorFileAppender : Failed to write log event
+java.io.IOException: No space left on device
+  at java.base/sun.nio.ch.FileDispatcherImpl.write0(Native Method)
+  at java.base/sun.nio.ch.FileDispatcherImpl.write(FileDispatcherImpl.java:62)
+  at ch.qos.logback.core.FileAppender.writeOut(FileAppender.java:211)
+2026-11-03T02:14:08.002+07:00 ERROR 18421 --- [order-service] [http-nio-8080-exec-52] v.s.order.OrderController : create order failed orderId=ORD-0311-88419
+java.io.IOException: No space left on device
+  at java.base/java.io.RandomAccessFile.writeBytes(Native Method)
+  at ch.qos.logback.core.rolling.RollingFileAppender.subAppend(RollingFileAppender.java:235)
+2026-11-03T02:14:09.441+07:00 WARN  18421 --- [order-service] [scheduling-1] o.s.s.c.ThreadPoolTaskScheduler : Error occurred in scheduled task
+java.io.UncheckedIOException: java.io.IOException: No space left on device`
+    },
+    {
+      name: 'disk-and-logs.txt',
+      lang: 'text',
+      content: `$ date
+Tue Nov  3 02:18:32 +07 2026
+
+$ df -h
+Filesystem      Size  Used Avail Use% Mounted on
+tmpfs           1.6G  2.1M  1.6G   1% /run
+/dev/sda1        50G   50G     0 100% /
+tmpfs           7.8G     0  7.8G   0% /dev/shm
+/dev/sdb1       200G   86G  104G  46% /data
+
+$ df -i /
+Filesystem      Inodes  IUsed   IFree IUse% Mounted on
+/dev/sda1      3276800 284112 2992688    9% /
+
+$ du -sh /var/log/* | sort -h | tail -n 8
+8.0K    /var/log/alternatives.log
+12M     /var/log/syslog
+48M     /var/log/apt
+96M     /var/log/journal
+1.2G    /var/log/nginx
+31G     /var/log/order-service
+32G     total
+
+$ ls -lh /var/log/order-service
+total 31G
+-rw-r--r-- 1 app app  31G Nov  3 02:18 app.log
+-rw-r--r-- 1 app app    0 Oct 12 03:14 app.log.1
+
+$ ls -lh /var/log/nginx
+total 1.2G
+-rw-r--r-- 1 root root 1.2G Nov  3 02:18 access.log
+-rw-r--r-- 1 root root  18M Nov  2 23:59 error.log
+
+$ # Trực ca đã thử:
+$ sudo rm /var/log/order-service/app.log
+$ df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        50G   50G     0 100% /
+# (vẫn 100%, dung lượng không giảm)`
+    },
+    {
+      name: 'logrotate-and-lsof.txt',
+      lang: 'text',
+      content: `$ cat /etc/logrotate.d/order-service
+/var/log/order-service/*.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+
+$ cat /etc/logrotate.d/nginx
+/var/log/nginx/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        [ -s /run/nginx.pid ] && kill -USR1 $(cat /run/nginx.pid)
+    endscript
+}
+
+$ systemctl status logrotate.timer
+● logrotate.timer - Daily rotation of log files
+     Loaded: loaded (/lib/systemd/system/logrotate.timer; disabled; vendor preset: enabled)
+     Active: inactive (dead)
+    Trigger: n/a
+
+$ systemctl status cron
+● cron.service - Regular background program processing daemon
+     Active: active (running) since Mon 2026-10-12 03:14:02 +07; 3 weeks 1 days ago
+
+$ sudo logrotate --debug /etc/logrotate.conf 2>&1 | grep -A2 "order-service"
+reading config file /etc/logrotate.d/order-service
+Allocating hash table for state file, size 64 entries
+error: error opening /var/log/order-service/app.log.1: Permission denied
+
+$ sudo lsof +L1 /var/log 2>/dev/null | head -n 12
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NLINK     NODE NAME
+java    18421  app   9w   REG    8,1 33285996544     0 1312451 /var/log/order-service/app.log (deleted)
+nginx    2310 root   4w   REG    8,1  1288490188     0 1312388 /var/log/nginx/access.log (deleted)
+nginx    2311 www-data 4w REG    8,1  1288490188     0 1312388 /var/log/nginx/access.log (deleted)
+
+$ ps -o pid,lstart,cmd -p 18421
+  PID                  STARTED CMD
+18421 Mon Oct 12 03:14:55 2026 /usr/bin/java -jar /opt/order-service/app.jar`
+    }
+  ],
+  questions: [
+    'Giải thích vì sao xoá file app.log bằng rm mà df vẫn báo đĩa đầy. Dẫn chứng từ artifact: dung lượng đang bị giữ ở đâu, process nào giữ?',
+    'Vì sao logrotate không xoay log cho order-service (và log tích luỹ đến 31 GB)? Phân tích cả timer và lỗi cấu hình/quyền.',
+    'Bạn xử lý sự cố thế nào ngay (khôi phục dịch vụ trong đêm) và phòng ngừa dài hạn ra sao?'
+  ],
+  hints: [
+    'Trong Linux, "xoá file" (rm/unlink) chỉ gỡ tên file khỏi thư mục. Dung lượng đĩa chỉ được giải phóng khi KHÔNG còn process nào đang mở file descriptor (FD - tay cầm mà process dùng để đọc/ghi file) trỏ tới file đó. lsof +L1 liệt kê file có NLINK=0 (đã mất tên) nhưng vẫn đang mở.',
+    'logrotate.timer đang disabled (không chạy theo lịch). Ngoài ra logrotate --debug báo Permission denied với app.log.1 (owner app:app) - khi logrotate chạy bằng root mà gặp file quyền lạ hoặc cấu hình sai, nó có thể bỏ qua. copytruncate và create/postrotate là hai cách khác nhau để process ghi tiếp file mới.',
+    'Ngắn hạn: giải phóng FD đang giữ (truncate file đang mở qua /proc/<pid>/fd/<n>, hoặc gửi tín hiệu/restart process có kiểm soát). Dài hạn: bật timer, sửa quyền/cấu hình logrotate, tách /var/log sang partition riêng, quota, giám sát dung lượng và kích thước log, rolling trong Logback.'
+  ],
+  answer: `**Tóm tắt:** Đĩa {{/dev/sda1}} (50 GB) đầy 100% vì log của order-service và nginx tích luỹ (31 GB + 1.2 GB) trong khi {{logrotate.timer}} bị tắt và cấu hình logrotate lỗi quyền, nên log không được xoay. Trực ca dùng {{rm}} xoá file nhưng process Java (PID 18421, chạy từ 12/10) và nginx vẫn giữ **file descriptor** (FD - "tay cầm" mở file) trỏ tới file đã mất tên, nên kernel chưa giải phóng dung lượng ({{lsof +L1}} cho thấy {{app.log (deleted)}} vẫn chiếm ~31 GB). Cần truncate FD đang mở để cứu sự cố, rồi bật xoay log, tách phân vùng và giám sát.
+
+### Từng bước hiểu vấn đề
+
+**Bước 1 - Đĩa đầy gây 500 như thế nào?**
+- Ổ đĩa (disk/storage) là nơi lưu file. Mỗi ổ chia thành **partition** (phân vùng). {{/dev/sda1}} là phân vùng root {{/}} dung lượng 50 GB, đang {{Use% 100%}} ({{df -h}}). Inode (mục lục quản lý file) vẫn còn 91% trống ({{df -i}}), nên hết dung lượng **dữ liệu**, không phải hết inode.
+- Khi ứng dụng ghi log ({{FileAppender}} của Logback - thư viện ghi log của Spring Boot) hoặc hệ thống ghi dữ liệu, hệ điều hành cần chỗ trống. Hết chỗ → {{IOException: No space left on device}}. Log {{app-error.log}} còn cho thấy PostgreSQL (cơ sở dữ liệu) cũng báo lỗi ghi {{pg_wal/... No space left on device}} nếu DB cùng phân vùng hoặc cùng bị ảnh hưởng - ở đây DB có thể nằm trên {{/data}} (46%) nhưng JDBC connection/ghi tạm vẫn có thể gặp lỗi gián tiếp; điểm chắc chắn là ứng dụng không ghi được log và request lỗi 500.
+
+**Bước 2 - Vì sao {{rm}} không giải phóng dung lượng? (khái niệm quan trọng)**
+- Trong Linux, một file có hai phần: (1) **tên** trong thư mục (directory entry) và (2) **dữ liệu** trên đĩa (inode + blocks). Lệnh {{rm}} thực chất gọi {{unlink}}: chỉ gỡ tên. Kernel (nhân hệ điều hành) giải phóng dữ liệu khi **số liên kết tên (NLINK) = 0 VÀ không còn process nào đang mở file đó**.
+- Process mở file sẽ nhận một FD (số nguyên trỏ tới file đang mở). Nếu process vẫn giữ FD sau khi tên bị gỡ, file trở thành "deleted nhưng vẫn mở" - chiếm dung lượng thật.
+- Dẫn chứng: {{lsof +L1 /var/log}} ({{lsof}} = liệt kê file đang mở; {{+L1}} = file có NLINK < 1, tức đã bị xoá tên) cho thấy:
+  - {{java (PID 18421, user app) FD 9w}} đang mở {{/var/log/order-service/app.log (deleted)}} kích thước **33,285,996,544 bytes (~31 GB)**, {{NLINK 0}}.
+  - {{nginx (PID 2310, 2311)}} đang mở {{/var/log/nginx/access.log (deleted)}} ~1.2 GB.
+- Vì vậy {{df -h}} vẫn 100% sau {{rm}}: dữ liệu 31 GB + 1.2 GB vẫn do các FD này giữ.
+
+**Bước 3 - Vì sao log phình to 31 GB?**
+- {{logrotate.timer}} (lịch chạy logrotate theo systemd timer) đang {{disabled; inactive (dead)}} → logrotate **không chạy tự động**. Cron vẫn chạy, nhưng trên Ubuntu hiện đại logrotate thường được kích hoạt bằng timer; nếu timer tắt và không có cron job tương đương, sẽ không xoay.
+- {{logrotate --debug}} báo {{Permission denied}} với {{app.log.1}} (file thuộc {{app:app}}). Logrotate thường chạy với quyền root, nhưng lỗi này cho thấy trạng thái file/cấu hình đang bất thường (ví dụ lần xoay trước dở dang, hoặc tương tác với {{copytruncate}}). Dù nguyên nhân chính là timer tắt, cấu hình cũng cần kiểm tra.
+- Java process (PID 18421) chạy liên tục từ **Mon Oct 12 03:14:55 2026** (~3 tuần). Không xoay log + app ghi log liên tục → {{app.log}} lớn dần tới 31 GB.
+
+**Cách sửa**
+
+*Xử lý ngay (khôi phục dịch vụ, làm cẩn thận):*
+1. **Giải phóng dung lượng đang bị FD giữ** mà không cần xoá process ngay:
+   - Cách an toàn thường dùng: **truncate** (cắt rỗng) file đang mở qua đường dẫn FD trong {{/proc}}: {{sudo truncate -s 0 /proc/18421/fd/9}} và {{sudo truncate -s 0 /proc/2310/fd/4}} (trỏ đúng PID/FD lấy từ {{lsof}}). File vẫn mở nhưng kích thước về 0 → đĩa trống ra ngay. Kiểm tra lại {{df -h}}.
+   - Hoặc gửi tín hiệu để nginx mở lại file log: {{nginx -s reopen}} / {{kill -USR1}} (khớp cấu hình {{postrotate}} của nginx). Với Java + Logback dùng {{copytruncate}}, restart app sẽ giải phóng FD cũ nhưng gây gián đoạn; chỉ làm khi truncate qua {{/proc}} không áp dụng được.
+2. Dọn log cũ an toàn: nén/xoá {{app.log.1}} và log nén cũ, giữ lại vài bản gần nhất. Kiểm tra không xoá nhầm dữ liệu ứng dụng.
+3. Xác nhận API hết 500, DB/ứng dụng ghi bình thường. Ghi nhận mốc thời gian sự cố.
+
+*Dài hạn (phòng ngừa):*
+- **Bật và kiểm tra logrotate:** {{sudo systemctl enable --now logrotate.timer}}, chạy thử {{sudo logrotate -f /etc/logrotate.d/order-service}} và kiểm tra kết quả. Sửa quyền file log (đảm bảo logrotate đọc/đổi tên được) hoặc dùng {{su app app}} trong khối logrotate nếu cần.
+- **Hiểu {{copytruncate}} vs {{create}}/{{postrotate}}:** {{copytruncate}} sao chép nội dung rồi cắt rỗng file đang mở (không cần app mở file mới) - tiện nhưng có thể **mất vài dòng log** tại thời điểm cắt và tốn I/O khi file lớn. Cách tốt hơn cho Java/Logback: dùng **RollingFileAppender/SizeAndTimeBasedRollingPolicy** ngay trong Logback để ứng dụng tự xoay file, giảm phụ thuộc logrotate. Với nginx, {{create}} + {{postrotate}} ({{USR1}}) là chuẩn.
+- **Tách phân vùng:** đặt {{/var/log}} (hoặc {{/var/log/order-service}}) trên partition/volume riêng (như {{/dev/sdb1}} còn 104 GB trống). Log đầy sẽ không làm đầy {{/}} và không kéo sập hệ điều hành/DB.
+- **Giới hạn dung lượng:** quota, giới hạn kích thước log mỗi file và tổng số bản xoay (ví dụ 200 MB × 10 file). Bật {{maxHistory}}/{{totalSizeCap}} trong Logback.
+- **Giám sát và cảnh báo (alert):** cảnh báo khi {{disk usage > 80%}}, khi tốc độ tăng dung lượng bất thường, khi file log vượt ngưỡng (ví dụ > 2 GB), và kiểm tra {{logrotate.timer}} đang active. Đây là việc DevOps/SRE (đội đảm bảo độ tin cậy) nên tự động hoá.
+- **Sau sự cố:** viết postmortem (tổng kết sự cố), thêm runbook "đĩa đầy / log phình" cho trực ca.
+
+> Senior tip: "Xoá file log mà đĩa không trống" là câu hỏi phỏng vấn kinh điển vì nó kiểm tra bạn có hiểu file descriptor và cách Linux quản lý file hay không. Khi debug đĩa đầy, luôn chạy theo bộ ba: {{df -h}} (còn chỗ không?), {{df -i}} (còn inode không?), {{du -sh}} + {{lsof +L1}} (ai đang chiếm, có file đã xoá nhưng còn mở không?). Và đừng để log chung phân vùng với {{/}}.`,
+  rubric: [
+    'Giải thích đúng cơ chế Linux: rm chỉ unlink tên; dung lượng chỉ giải phóng khi NLINK=0 và không còn FD mở; dẫn chứng lsof +L1 (java PID 18421 FD 9w, app.log deleted ~31 GB, nginx access.log deleted) và df vẫn 100% sau rm.',
+    'Phân tích nguyên nhân log phình: logrotate.timer disabled/inactive nên không chạy; logrotate --debug có Permission denied với app.log.1; process Java chạy liên tục từ 12/10; tổng /var/log/order-service 31 GB.',
+    'Nêu cách xử lý ngay an toàn: truncate /proc/<pid>/fd/<n> (hoặc reopen/restart có kiểm soát) để giải phóng FD đang giữ, kiểm tra df và phục vụ HTTP; không chỉ lặp lại rm.',
+    'Nêu phòng ngừa dài hạn: bật logrotate.timer + chạy thử, sửa cấu hình/quyền, dùng Logback rolling hoặc hiểu copytruncate/create+postrotate, tách /var/log partition, quota, giám sát disk/log và timer.'
+  ],
+  tags: ['disk-full', 'logrotate', 'lsof', 'linux', 'file-descriptor', 'devops']
+},
+{
+  id: 'lab-incident-022',
+  category: 'incident',
+  title: 'Gọi API đối tác lỗi SSLHandshakeException: chứng chỉ hết hạn và thiếu chuỗi trung gian',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **payment-service** (Spring Boot 3.2, Java 17, chạy trên Kubernetes - nền tảng điều phối container) gọi HTTPS tới API của đối tác **VBK** tại {{https://api.vbk.example/payments}} bằng {{RestTemplate}} (client HTTP của Spring). Kết nối HTTPS dùng **TLS** (Transport Layer Security - giao thức mã hoá kênh truyền: "ổ khoá" trên trình duyệt). Java xác minh chứng chỉ TLS của server thông qua **truststore** (kho chứa các CA - Certificate Authority, tổ chức cấp chứng chỉ - mà Java tin tưởng). Ứng dụng dùng truststore mặc định của JDK ({{\$JAVA_HOME/lib/security/cacerts}}), mount vào container.
+
+**Triệu chứng:** Lúc **00:03 ngày 01/11/2026** (sau nửa đêm), mọi request sang VBK bắt đầu lỗi {{javax.net.ssl.SSLHandshakeException: PKIX path building failed}}. Trước đó 23:59 ngày 31/10 vẫn gọi thành công. VBK xác nhận "phía họ không đổi code API". Đội vận hành dùng {{openssl s_client}} (công cụ dòng lệnh kiểm tra kết nối TLS/chứng chỉ) từ trong pod và phát hiện chứng chỉ server trình bày đã hết hạn; đồng thời chuỗi chứng chỉ thiếu **intermediate CA** (CA trung gian - chứng chỉ nằm giữa chứng chỉ của server và root CA). Trên trình duyệt một số máy vẫn vào được, nhưng Java client trong pod thì lỗi.
+
+**Dữ liệu thu thập:** Stack trace Java, kết quả {{openssl s_client -showcerts}}, thông tin ngày hết hạn, và cấu hình truststore/tính năng TLS của ứng dụng.`,
+  artifacts: [
+    {
+      name: 'java-ssl-error.log',
+      lang: 'text',
+      content: `2026-11-01T00:03:12.441+07:00 ERROR 1 --- [payment-service] [http-nio-8080-exec-19] v.s.payment.VbkPaymentClient : call VBK debit failed ref=PAY-A77102
+org.springframework.web.client.ResourceAccessException: I/O error on POST request for "https://api.vbk.example/payments/debit": PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+  at org.springframework.web.client.RestTemplate.createResourceAccessException(RestTemplate.java:915)
+  at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:895)
+  at org.springframework.web.client.RestTemplate.exchange(RestTemplate.java:730)
+  at v.s.payment.VbkPaymentClient.debit(VbkPaymentClient.java:54)
+Caused by: javax.net.ssl.SSLHandshakeException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+  at java.base/sun.security.ssl.Alert.createSSLException(Alert.java:131)
+  at java.base/sun.security.ssl.TransportContext.fatal(TransportContext.java:378)
+  at java.base/sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1357)
+Caused by: sun.security.validator.ValidatorException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+  at java.base/sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:439)
+  at java.base/sun.security.provider.certpath.SunCertPathBuilder.engineBuild(SunCertPathBuilder.java:141)
+  at java.base/java.security.cert.CertPathBuilder.build(CertPathBuilder.java:297)
+Caused by: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+  at java.base/sun.security.provider.certpath.SunCertPathBuilder.build(SunCertPathBuilder.java:146)
+2026-11-01T00:03:12.445+07:00 WARN  1 --- [payment-service] [http-nio-8080-exec-19] v.s.payment.PaymentService : payment=PAY-A77102 marked UNKNOWN due to TLS error (no debit confirmed)
+2026-11-01T00:03:13.102+07:00 ERROR 1 --- [payment-service] [http-nio-8080-exec-22] v.s.payment.VbkPaymentClient : call VBK debit failed ref=PAY-A77109
+javax.net.ssl.SSLHandshakeException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target`
+    },
+    {
+      name: 'openssl-s_client.txt',
+      lang: 'text',
+      content: `$ date -u
+Fri Nov  1 00:05:10 UTC 2026
+
+$ openssl s_client -connect api.vbk.example:443 -servername api.vbk.example -showcerts </dev/null 2>&1 | sed -n '1,80p'
+CONNECTED(00000003)
+depth=0 CN = api.vbk.example
+verify error:num=10:certificate has expired
+notAfter=Oct 31 16:59:59 2026 GMT
+verify return:1
+depth=0 CN = api.vbk.example
+notAfter=Oct 31 16:59:59 2026 GMT
+verify return:1
+---
+Certificate chain
+ 0 s:CN = api.vbk.example
+   i:C = US, O = Example Trust Services, CN = Example RSA Issuing CA 2
+   a:PKEY: rsaEncryption, 2048 (bit); sigalg: RSA-SHA256
+   v:NotBefore: Aug  2 00:00:00 2026 GMT; NotAfter: Oct 31 16:59:59 2026 GMT
+-----BEGIN CERTIFICATE-----
+MIIDXTCCAkWgAwIBAgIQBvK3exampleSERVERcert...
+-----END CERTIFICATE-----
+---
+Server certificate
+subject=CN = api.vbk.example
+issuer=C = US, O = Example Trust Services, CN = Example RSA Issuing CA 2
+---
+No client certificate CA names sent
+Peer signing digest: SHA256
+Peer signature type: RSA-PSS
+Server Temp Key: X25519, 253 bits
+---
+SSL handshake has read 1521 bytes and written 412 bytes
+Verification error: certificate has expired
+---
+New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+Verify return code: 10 (certificate has expired)
+---
+
+$ # Kiểm tra chuỗi khi chỉ có cert server (thiếu intermediate):
+$ openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /tmp/vbk-leaf.pem
+C = US, O = Example Trust Services, CN = Example RSA Issuing CA 2
+error 20 at 0 depth lookup: unable to get local issuer certificate
+error /tmp/vbk-leaf.pem: verification failed
+
+$ # Nếu cung cấp đủ intermediate CA 2 + root, verify mới pass (trừ chuyện hết hạn):
+$ openssl verify -CAfile /tmp/root.pem -untrusted /tmp/intermediate2.pem /tmp/vbk-leaf.pem
+/tmp/vbk-leaf.pem: OK   (khi chạy trước thời điểm hết hạn)`
+    },
+    {
+      name: 'tls-config.txt',
+      lang: 'text',
+      content: `# payment-service (Kubernetes Deployment trích đoạn)
+containers:
+  - name: payment-service
+    image: registry.shopvn.local/payment-service:1.42.0
+    env:
+      - name: JAVA_TOOL_OPTIONS
+        value: "-Djavax.net.ssl.trustStore=/opt/java/cacerts -Djavax.net.ssl.trustStorePassword=changeit"
+    volumeMounts:
+      - name: jdk-cacerts
+        mountPath: /opt/java/cacerts
+        subPath: cacerts
+volumes:
+  - name: jdk-cacerts
+    configMap:
+      name: jdk17-cacerts-2025-01   # snapshot cacerts tạo tháng 01/2025, không tự cập nhật
+
+# application.yml
+vbk:
+  base-url: https://api.vbk.example
+  connect-timeout: 2s
+  read-timeout: 5s
+# RestTemplate dùng JDK HttpClient mặc định (không tắt hostname verification, không tắt verify)
+# Không có cấu hình giám sát hạn chứng chỉ (certificate expiry monitoring)
+
+# Quan sát:
+# - Trình duyệt trên laptop nhân viên vào https://api.vbk.example vẫn thấy "khoá xanh" ở một số máy
+#   (trình duyệt có thể cache/try-fetch intermediate hoặc dùng AIA), nhưng Java trong pod không làm vậy.
+# - Lệnh kiểm tra trước đó: chưa có job định kỳ chạy openssl/check expiry.`
+    }
+  ],
+  questions: [
+    'Giải thích lỗi PKIX path building failed / unable to find valid certification path to requested target. Chuỗi chứng chỉ TLS hoạt động thế nào, và vì sao Java trong pod lỗi trong khi trình duyệt có thể vẫn vào được?',
+    'Phân tích hai vấn đề trong artifact: chứng chỉ hết hạn và thiếu intermediate CA. Mỗi vấn đề tự nó có gây lỗi không? Dẫn chứng cụ thể.',
+    'Bạn xử lý sự cố thế nào ngay để khôi phục gọi VBK, và thiết kế phòng ngừa dài hạn (giám sát hạn chứng chỉ, tự động gia hạn/phân phối) ra sao?'
+  ],
+  hints: [
+    'TLS dùng "chuỗi tin cậy": chứng chỉ server (leaf) do Intermediate CA ký, Intermediate CA do Root CA ký. Client chỉ tin server nếu xây được đường đi (path) từ leaf lên một Root CA có trong truststore. PKIX path building failed nghĩa là Java không xây được đường đi hợp lệ.',
+    'openssl s_client cho thấy: verify error num=10 certificate has expired, notAfter Oct 31 16:59:59 2026 GMT (đã qua thời điểm 00:03 01/11 UTC+7). Chuỗi server chỉ gửi 1 chứng chỉ (Certificate chain có 0 s: ... api.vbk.example) - thiếu intermediate "Example RSA Issuing CA 2", nên openssl verify với chỉ CA bundle cũng báo unable to get local issuer certificate. Hết hạn chắc chắn gây lỗi; thiếu intermediate cũng gây lỗi trên client không tự lấy intermediate (Java thường không). Trình duyệt có thể "giấu" lỗi nhờ cache/AIA (Authority Information Access) hoặc phiên khác.',
+    'Ngắn hạn: phối hợp VBK gia hạn và gửi đủ chuỗi (fullchain); tạm thời chỉ trong phạm vi kiểm soát, có thể cập nhật truststore/bundle nếu thiếu CA (nhưng KHÔNG tắt verify). Dài hạn: giám sát expiry (blackbox_exporter/cert-manager/cảnh báo 30-14-7 ngày), tự động gia hạn (ACM/Let us Encrypt + cert-manager), phân phối fullchain, và quy trình khi đổi cert.'
+  ],
+  answer: `**Tóm tắt:** Java client lỗi {{SSLHandshakeException: PKIX path building failed}} vì không xây được **chuỗi tin cậy chứng chỉ** (certificate chain - đường đi từ chứng chỉ của server lên một CA gốc mà Java tin). Artifact cho thấy hai vấn đề: (1) chứng chỉ {{api.vbk.example}} **hết hạn** lúc {{Oct 31 16:59:59 2026 GMT}} ({{openssl}} báo {{verify error:num=10:certificate has expired}}) nên mọi client kiểm tra đúng đều từ chối; (2) server chỉ gửi **leaf certificate** (chứng chỉ của chính server) mà **thiếu intermediate CA** ("Example RSA Issuing CA 2"), nên ngay cả khi chưa hết hạn, Java cũng khó xây chuỗi tới root trong truststore. Khắc phục ngay là VBK gia hạn và cấu hình gửi **fullchain** (đầy đủ leaf + intermediate); phòng ngừa là giám sát hạn chứng chỉ và tự động gia hạn/phân phối.
+
+### Cơ chế TLS/certificate chain (giải thích từ gốc)
+
+- **TLS là gì?** Khi Java gọi {{https://...}}, nó mở kết nối TLS: hai bên thoả thuận mã hoá và server gửi **chứng chỉ số** để chứng minh "tôi đúng là api.vbk.example". Chứng chỉ giống "căn cước" của server, do một tổ chức đáng tin (CA) ký xác nhận.
+- **Chuỗi tin cậy:**
+  1. **Leaf (server cert):** chứng chỉ của {{api.vbk.example}}, do Intermediate CA ký.
+  2. **Intermediate CA:** chứng chỉ trung gian, do Root CA ký. (Thực tế thường có 1-2 intermediate.)
+  3. **Root CA:** chứng chỉ gốc, nằm sẵn trong **truststore** của client (Java dùng {{cacerts}}; hệ điều hành/trình duyệt có kho riêng).
+- **Xây đường (path building):** Client nhận chứng chỉ từ server, kiểm tra chữ ký từng mắt xích và tìm xem có đi được tới Root CA mà mình tin không. Đồng thời kiểm tra: còn hạn ({{NotBefore/NotAfter}}), đúng tên miền (hostname), chưa bị thu hồi (tuỳ cấu hình). Nếu không xây được đường hợp lệ → {{PKIX path building failed}} / {{unable to find valid certification path to requested target}}. (PKIX là chuẩn xác minh chứng chỉ X.509.)
+- **Vì sao trình duyệt có thể "vào được" còn Java thì lỗi?** (bẫy thực tế)
+  - Trình duyệt có thể **cache** intermediate đã thấy trước đó, hoặc dùng cơ chế **AIA** (chỉ dẫn trong chứng chỉ để tải intermediate), hoặc có hành vi khác với từng phiên/máy. Java (JSSE - thư viện TLS của JDK) **không phụ thuộc** vào cache trình duyệt và thường **không tự đi lấy** intermediate; nó cần server gửi đủ chuỗi hoặc intermediate có sẵn trong truststore. Vì vậy "trình duyệt vẫn xanh" không có nghĩa Java client an toàn.
+  - Ngoài ra chứng chỉ **hết hạn** thì client kiểm tra đúng phải từ chối; nếu một máy vẫn thấy "xanh" có thể do đồng hồ, cache, hoặc đang nhìn phiên khác - cần tin vào {{openssl}} và thời gian thực.
+
+### Dẫn chứng từ artifact
+
+- **Hết hạn:** {{openssl s_client}} báo {{verify error:num=10:certificate has expired}}, {{notAfter=Oct 31 16:59:59 2026 GMT}}, còn thời điểm kiểm tra là {{Fri Nov 1 00:05:10 UTC 2026}} (đã quá hạn). Đây là nguyên nhân trực tiếp khiến handshake thất bại từ 00:03.
+- **Thiếu intermediate:** {{Certificate chain}} chỉ có {{0 s:CN = api.vbk.example}} (1 chứng chỉ). {{issuer}} là {{Example RSA Issuing CA 2}} nhưng server không gửi chứng chỉ của CA này. {{openssl verify}} chỉ với {{ca-certificates.crt}} báo {{unable to get local issuer certificate}} (không tìm được chứng chỉ cấp phát). Khi cấp đủ {{-untrusted intermediate2.pem}} thì verify cấu trúc chuỗi đạt {{OK}} (trước khi hết hạn). Kết luận: **thiếu intermediate tự nó cũng đủ gây lỗi** trên Java client điển hình; ở đây nó đi kèm lỗi hết hạn.
+- **Java stack trace:** {{ValidatorException: PKIX path building failed}} → {{SunCertPathBuilderException: unable to find valid certification path to requested target}} khớp hoàn toàn với việc không xây được chuỗi hợp lệ.
+- **Bối cảnh cấu hình:** truststore là snapshot {{jdk17-cacerts-2025-01}} trong ConfigMap, không tự cập nhật - không phải nguyên nhân gây hết hạn cert của VBK (cert đó do VBK quản lý), nhưng là rủi ro nếu sau này cần thêm CA mới.
+
+### Cách sửa
+
+*Ngắn hạn (khôi phục an toàn):*
+1. **Xác định phạm vi ảnh hưởng:** mọi request sang {{api.vbk.example}} lỗi TLS từ 00:03. Ứng dụng đã đánh payment {{UNKNOWN}} (đúng hướng: lỗi TLS xảy ra trước khi xác nhận ghi nợ) - đối soát lại các giao dịch UNKNOWN, không retry mù gây trùng.
+2. **Phối hợp VBK (bên sở hữu chứng chỉ server):** gia hạn/cấp lại chứng chỉ cho {{api.vbk.example}} và cấu hình server gửi **fullchain** gồm leaf + intermediate (và đúng thứ tự). Yêu cầu họ kiểm tra bằng {{openssl s_client -showcerts}} từ bên ngoài.
+3. **Phía mình:** sau khi VBK sửa, kiểm tra từ trong pod: {{openssl s_client -connect api.vbk.example:443 -servername api.vbk.example}} phải {{Verify return code: 0 (ok)}} và chuỗi đủ. Không cần đổi code Java nếu fullchain đúng và root CA đã có trong {{cacerts}}.
+4. **Tuyệt đối không** "sửa tạm" bằng cách tắt xác minh chứng chỉ ({{trust all}}, {{NoopHostnameVerifier}}, tắt SSL verify). Cách đó mở lỗ hổng bảo mật nghiêm trọng (kẻ tấn công có thể giả mạo server - man-in-the-middle). Chỉ trong tình huống cực hiếm, có kiểm soát và thời hạn, mới cân nhắc thêm đúng chứng chỉ/CA cần thiết vào truststore riêng.
+
+*Dài hạn (phòng ngừa):*
+- **Giám sát hạn chứng chỉ (certificate expiry monitoring):** theo dõi {{notAfter}} của endpoint quan trọng và cảnh báo trước 30, 14, 7, 1 ngày. Cách làm: Prometheus {{blackbox_exporter}} (probe TLS), hoặc job định kỳ chạy {{openssl}}/thư viện, hoặc dịch vụ quản lý chứng chỉ. Cảnh báo cả khi chuỗi không đầy đủ.
+- **Tự động gia hạn và phân phối:**
+  - Nếu chứng chỉ do mình quản lý: dùng **cert-manager** (Kubernetes) với Let's Encrypt/CA nội bộ, hoặc **AWS ACM** (AWS Certificate Manager) cho ALB/CloudFront/API Gateway - ACM tự gia hạn chứng chỉ do nó cấp. Luôn deploy **fullchain**.
+  - Nếu do đối tác quản lý (như VBK): đưa vào danh mục phụ thuộc, yêu cầu SLA/thông báo trước khi hết hạn, và vẫn tự giám sát từ phía mình.
+- **Quy trình thay đổi cert:** checklist gồm fullchain, đúng hostname/SAN, kiểm tra bằng {{openssl}} và bằng chính Java client, theo dõi lỗi TLS sau deploy.
+- **Truststore:** tránh snapshot {{cacerts}} cũ đóng băng trong ConfigMap quá lâu; có cơ chế cập nhật base image/JDK định kỳ. Cân nhắc dùng truststore của hệ điều hành/base image được vá.
+- **Quan sát:** metric/log riêng cho lỗi TLS (tách khỏi lỗi HTTP 5xx thông thường), dashboard và runbook "SSL/TLS handshake failure".
+
+> Senior tip: Khi gặp {{PKIX path building failed}}, đừng vội kết luận "thiếu CA trong truststore". Hãy chạy {{openssl s_client -showcerts -servername <host>}} và kiểm tra ba thứ: (1) có hết hạn không, (2) server có gửi đủ intermediate (fullchain) không, (3) root có nằm trong truststore client không. Và nhớ: **không bao giờ tắt verify TLS** để "thông" tạm - đó là biến sự cố vận hành thành sự cố bảo mật.`,
+  rubric: [
+    'Giải thích đúng chuỗi tin cậy TLS (leaf → intermediate → root), vai trò truststore/cacerts, và ý nghĩa PKIX path building failed / unable to find valid certification path; nêu vì sao trình duyệt có thể khác Java (cache/AIA, Java thường không tự lấy intermediate).',
+    'Dẫn chứng hai vấn đề từ artifact: chứng chỉ hết hạn (verify error 10, notAfter 2026-10-31 16:59:59 GMT) và thiếu intermediate (Certificate chain chỉ có 1 cert, openssl verify báo unable to get local issuer certificate; pass khi có intermediate+root).',
+    'Nêu hướng xử lý ngay an toàn: VBK gia hạn và gửi fullchain, kiểm tra lại bằng openssl/Java client, đối soát payment UNKNOWN; nêu rõ KHÔNG tắt xác minh TLS/hostname.',
+    'Đề xuất phòng ngừa: giám sát expiry (cảnh báo 30/14/7 ngày, blackbox_exporter), tự động gia hạn/phân phối (cert-manager/ACM), quy trình fullchain, cập nhật truststore, tách metric/log lỗi TLS.'
+  ],
+  tags: ['tls', 'ssl', 'certificate', 'pki', 'handshake', 'devops']
+},
+{
+  id: 'lab-incident-023',
+  category: 'incident',
+  title: 'StatefulSet Redis/MariaDB kẹt Pending sau khi chuyển cluster: PVC không bind',
+  level: 'mid',
+  scenario: `**Bối cảnh:** payment-service (Spring Boot 3.2) dùng Redis (cache) và MariaDB (database quan hệ) chạy trong Kubernetes dưới dạng StatefulSet (controller của K8s để chạy workload có trạng thái, mỗi pod có tên ổn định và volume riêng). Sau khi chuyển cụm từ cluster cũ sang cluster mới (cùng namespace), các pod Redis/MariaDB ở trạng thái Pending (chờ) và không mount được volume. App không kết nối được DB/cache, readinessProbe fail, traffic bị loại khỏi Service.
+
+**Triệu chứng:** kubectl get pods cho thấy {{redis-0}} và {{mariadb-0}} Pending. kubectl get pvc cho thấy PVC (PersistentVolumeClaim - yêu cầu lưu trữ bền vững) ở trạng thái Pending với thông báo "waiting for first consumer" hoặc "no persistent volumes available for this claim and no storage class is set". kubectl get storageclass không có storage class mặc định (default). Events của PVC báo "no persistent volumes available for this claim".`,
+  artifacts: [
+    { name: 'pods.txt', lang: 'text', content: `NAME        READY   STATUS    RESTARTS   AGE
+redis-0     0/1     Pending   0          12m
+mariadb-0   0/1     Pending   0          12m
+app-7d9f    1/1     Running   0          5m
+# redis-0 và mariadb-0 Pending do PVC chưa bind; app-7d9f Running nhưng DB không kết nối được
+` },
+    { name: 'pvc.txt', lang: 'text', content: `NAME            STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+data-redis-0    Pending                                      12m
+data-mariadb-0  Pending                                      12m
+` },
+    { name: 'storageclass.txt', lang: 'text', content: `NAME   PROVISIONER            RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+gp2    kubernetes.io/aws-ebs   Retain         Immediate           false                 2y
+# (không có storage class nào được đánh dấu (default))
+` },
+    { name: 'describe-pvc.txt', lang: 'text', content: `Name:          data-redis-0
+Namespace:     prod
+StorageClass:
+Status:        Pending
+Volume:
+Labels:        app=redis
+Annotations:   volume.kubernetes.io/storage-provisioner:
+Events:
+  Type     Reason              Age   From                         Message
+  ----     ------              ----  ----                         -------
+  Warning  ProvisioningFailed  2m    persistentvolume-controller  no persistent volumes available for this claim and no storage class is set
+` }
+  ],
+  questions: ['Nguyên nhân gốc là gì? Dẫn chứng từ artifact.', 'Bạn sẽ sửa thế nào, ngắn hạn và dài hạn?'],
+  hints: ['PVC Pending nghĩa là volume chưa được bind; kiểm tra storage class và PV.', 'StatefulSet tự tạo PVC theo template; nếu không có default storage class thì PVC không bind.'],
+  answer: `**Tóm tắt:** PVC Pending vì không có storage class mặc định và không có PV phù hợp; cần đặt storageClassName rõ ràng hoặc tạo default storage class, rồi recreate pod/PVC đúng cách.
+
+### Cơ chế bên trong
+PVC (PersistentVolumeClaim) là yêu cầu lưu trữ của pod. K8s cần bind PVC với PV (PersistentVolume) hoặc provision động qua StorageClass. StatefulSet tự tạo PVC theo volumeClaimTemplates. Nếu PVC không có storageClassName và không có default storage class, controller không provision được volume → PVC Pending → pod Pending.
+
+### Dẫn chứng
+- pvc.txt: STATUS Pending, STORAGECLASS rỗng.
+- storageclass.txt: không có storage class default (không có (default)).
+- describe-pvc.txt: "no persistent volumes available for this claim and no storage class is set".
+
+### Cách sửa ngắn hạn
+1. Tạo storage class mặc định hoặc gán storageClassName trong volumeClaimTemplates.
+2. Nếu có PV cũ từ cluster cũ: tạo PV trỏ đúng volume (EBS/Azure disk) với storageClassName khớp, rồi bind.
+3. Xoá pod Pending để StatefulSet tạo lại sau khi PVC bind (không xoá PVC nếu còn data).
+
+### Cách sửa dài hạn / phòng ngừa
+- Luôn khai báo storageClassName rõ ràng trong manifest.
+- Đặt default storage class trong cluster.
+- Backup/restore dữ liệu trước khi chuyển cluster (Velero).
+- Kiểm tra manifest bằng kubeval/helm lint trong pipeline.
+
+> Senior tip: PVC Pending thường do thiếu default storage class hoặc PV không khớp access mode; đừng xoá PVC vội vì sẽ mất data.`,
+  rubric: [
+    'Giải thích PVC/PV/StorageClass và cơ chế bind/provision.',
+    'Dẫn chứng PVC Pending, storage class rỗng, event no persistent volumes available.',
+    'Nêu cách sửa: đặt storageClassName hoặc default storage class, bind PV cũ, không xoá PVC vội.',
+    'Nêu phòng ngừa: manifest rõ ràng, default storage class, backup trước chuyển cluster.'
+  ],
+  tags: ['kubernetes', 'pvc', 'storageclass', 'statefulset', 'redis', 'mariadb']
+},
+{
+  id: 'lab-incident-024',
+  category: 'incident',
+  title: 'Ingress trả 502/503 sau deploy bản mới Spring Boot: endpoints rỗng',
+  level: 'senior',
+  scenario: `**Bối cảnh:** payment-service (Spring Boot 3.2, Java 17) deploy bản mới trên Kubernetes. Ingress (bộ điều phối traffic HTTP vào cluster) dùng ingress-nginx. Sau deploy, người dùng nhận 502/503 từ Ingress. Log ingress-nginx báo "upstream connect error" / "no endpoints". kubectl get endpoints trả về rỗng vì readinessProbe sai port/path hoặc Service targetPort lệch containerPort.
+
+**Triệu chứng:** curl vào host trả 502 Bad Gateway. Log ingress-nginx: "upstream connect error or disconnect/reset before headers" và "no endpoints available". kubectl get endpoints payment-service rỗng. kubectl get pods cho thấy pod Running nhưng readinessProbe fail. describe pod cho thấy readinessProbe sai port/path.`,
+  artifacts: [
+    { name: 'curl.txt', lang: 'text', content: `HTTP/2 502
+server: nginx
+via: 1.1 google
+
+date: Sat, 07 Nov 2026 03:12:00 GMT
+content-type: text/html; charset=utf-8
+content-length: 150
+<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>
+` },
+    { name: 'ingress-log.txt', lang: 'text', content: `2026/11/07 03:12:01 [error] 123#123: *456 upstream connect error or disconnect/reset before headers while connecting to upstream, client: 10.0.0.5, server: pay.example.com, request: "GET /health HTTP/1.1", upstream: "http://10.244.1.22:8080/health", host: "pay.example.com"
+` },
+    { name: 'endpoints.txt', lang: 'text', content: `NAME             ENDPOINTS   AGE
+payment-service  <none>      12m
+# Service không có endpoint nào vì không có pod ready matching selector app=payment
+# kubectl get endpoints -o wide sẽ hiển thị IP:port của pod ready; ở đây rỗng hoàn toàn
+` },
+    { name: 'describe-pod.txt', lang: 'text', content: `Name:         payment-7d9f
+Status:       Running
+Containers:
+  payment:
+    Port:       8080/TCP
+    Readiness:  http-get http://:8081/actuator/health (probe)
+Events:
+  Warning  Unhealthy  2m  kubelet  Readiness probe failed: Get "http://10.244.1.22:8081/actuator/health": dial tcp 10.244.1.22:8081: connect: connection refused
+` },
+    { name: 'service.yaml', lang: 'text', content: `apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: prod
+spec:
+  selector:
+    app: payment
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+# Service đúng targetPort, nhưng pod chưa ready do readinessProbe sai port
+` }
+  ],
+  questions: ['Nguyên nhân gốc là gì? Dẫn chứng từ artifact.', 'Bạn sẽ sửa thế nào, ngắn hạn và dài hạn?'],
+  hints: ['Endpoints rỗng nghĩa là không có pod ready; kiểm tra readinessProbe và targetPort.', 'Ingress 502 thường do upstream không reachable.'],
+  answer: `**Tóm tắt:** Ingress 502 vì readinessProbe sai port/path khiến pod không ready → endpoints rỗng; cần sửa probe và targetPort, rồi rollout undo nếu cần.
+
+### Cơ chế bên trong
+Ingress (controller nginx) route traffic tới Service. Service chỉ forward tới pod có readinessProbe pass (ready). Nếu probe sai port/path, pod không ready → endpoints rỗng → nginx trả 502/503. targetPort phải khớp containerPort.
+
+### Dẫn chứng
+- endpoints.txt: ENDPOINTS <none>.
+- describe-pod.txt: readinessProbe http://:8081/actuator/health, connection refused (app listen 8080).
+- ingress-log.txt: upstream connect error.
+- service.yaml: targetPort 8080 (đúng), nhưng probe sai.
+
+### Cách sửa ngắn hạn
+1. Sửa readinessProbe về port 8080 và path đúng ({{/actuator/health}}).
+2. Apply manifest, chờ pod ready.
+3. Nếu cần nhanh: kubectl rollout undo deployment/payment.
+
+### Cách sửa dài hạn / phòng ngừa
+- Thêm readinessProbe và livenessProbe đúng trong manifest.
+- CI pipeline: validate manifest (kubeval), chạy smoke test sau deploy.
+- Canary/blue-green deploy, monitor error rate.
+- Alert khi endpoints rỗng hoặc 5xx tăng.
+
+> Senior tip: 502 từ Ingress thường không phải app crash mà là readiness/probe sai; luôn kiểm tra endpoints trước khi debug app.`,
+  rubric: [
+    'Giải thích Ingress → Service → Pod readiness và endpoints.',
+    'Dẫn chứng endpoints rỗng, readinessProbe sai port, ingress log upstream connect error.',
+    'Nêu cách sửa: sửa probe/targetPort, rollout undo.',
+    'Nêu phòng ngừa: probe đúng, CI validation, canary, alert.'
+  ],
+  tags: ['kubernetes', 'ingress', 'nginx', 'readinessprobe', 'spring-boot', '502']
 }
 );
-// APPEND_END

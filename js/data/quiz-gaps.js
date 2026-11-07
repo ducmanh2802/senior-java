@@ -1552,5 +1552,565 @@ val job = scope.launch(Dispatchers.Default) {
 - **Dispatchers.IO**: chỉ đổi pool thread chạy code, không đổi cơ chế huỷ.
 
 > Senior tip: trong vòng lặp nóng, gọi {{ensureActive()}} mỗi N vòng (ví dụ 10 nghìn) thay vì mỗi vòng để chi phí kiểm tra không đáng kể; và luôn ném lại CancellationException nếu buộc phải catch rộng.`
+},// ===================== banking =====================
+{
+  id: 'qz-banking-001',
+  topic: 'banking',
+  q: 'Người dùng bấm "Chuyển 1 triệu" trên app, service trừ tiền ở core banking rồi mới publish event Kafka, nhưng service bị crash giữa chừng. Hậu quả nào xảy ra và cách xử lý đúng là gì?',
+  options: [
+    'Không có hậu quả vì Kafka tự replay event sau khi service khởi động lại',
+    'Tiền đã bị trừ nhưng event không được publish, downstream không biết giao dịch; cần outbox pattern: ghi event vào cùng transaction DB rồi relay sang Kafka',
+    'Core banking tự rollback nếu service không gửi ACK trong 30 giây',
+    'Chỉ cần tăng timeout của Kafka producer lên 60 giây'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: transactional outbox pattern.**
+
+### Vì sao đúng
+Hai thao tác "trừ tiền trong DB" và "publish Kafka" là hai thao tác riêng biệt, không thể đảm bảo atomic together bằng cách đơn giản. Nếu service thực hiện xong DB commit (tiền đã trừ) rồi mới bắt đầu publish Kafka, mà crash trước khi publish xong → DB đã commit, Kafka chưa nhận → sự kiện mất. Downstream (ví dụ hệ thống ghi công nợ, hệ thống báo cáo) không biết giao dịch đã xảy ra, tiền đã bị trừ nhưng không được ghi nhận ở phía kia.
+
+**Outbox pattern** giải quyết bằng cách thay vì publish trực tiếp, service ghi cả giao dịch và một bản ghi "event cần gửi" vào **cùng một transaction DB** — bảng outbox. Vì cùng transaction, hoặc cả hai thành công hoặc cả hai rollback: nếu crash trước commit, tiền không bị trừ; nếu commit thành công, event đã có trong outbox. Sau đó một relay (job hoặc service) đọc bảng outbox, publish từng event lên Kafka, và xóa/đánh dấu đã gửi. Vì relay có thể crash và restart, các event phải **idempotent** (có key để Kafka producer set producer idempotent, consumer dedupe).
+
+### Vì sao các phương án khác sai
+- **Kafka replay**: replay chỉ gửi lại những event đã tồn tại trên topic; event này chưa từng được publish nên replay không giúp được gì.
+- **Core banking tự rollback sau 30s**: core banking là hệ thống ACID, nó không biết service khác có intention gì; core không thể tự rollback một giao dịch đã commit chỉ vì một service khác không gửi ACK.
+- **Tăng timeout producer lên 60s**: chỉ trễ thêm thời gian trước khi publish fail, không giải quyết vấn đề crash giữa chừng; nếu crash sau khi publish thành công thì vẫn mất, nếu crash trước thì vẫn mất event.
+
+### Cách thực hiện chi tiết
+1. Service mở transaction, UPDATE số dư + INSERT vào outbox (cột event_type, payload, status=PENDING) trong cùng transaction → commit.
+2. Relay poll outbox WHERE status=PENDING, publish Kafka, UPDATE status=SENT (trong transaction riêng của relay).
+3. Consumer Kafka dùng idempotency key để không xử lý trùng.
+
+> Senior tip: Outbox pattern là giải pháp chuẩn cho "transaction DB + messaging" atomic. Alternatives: Kafka transactional producer (kafka transactional id) nhưng chỉ works khi producer và broker là Kafka; 2PC (two-phase commit) heavier và dễ treo. Trong phỏng vấn, hãy vẽ bảng so sánh 3 cách: dual-write (lỗi), outbox (đúng), 2PC (phức tạp).`
+},
+{
+  id: 'qz-banking-002',
+  topic: 'banking',
+  multi: true,
+  q: 'Giao dịch hoàn tiền (refund) cần bút toán nào cho đúng? (Chọn 2)',
+  options: [
+    'Xóa giao dịch gốc trong bảng giao dịch',
+    'Tạo bút toán ngược (reversal entry) ghi nhận số tiền hoàn',
+    'Cập nhật trạng thái giao dịch gốc thành REFUNDED',
+    'Xóa log audit để tiết kiệm dung lượng'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: tạo bút toán ngược (reversal entry) + cập nhật trạng thái giao dịch gốc thành REFUNDED.**
+
+### Vì sao đúng
+Sổ cái kế toán (ledger) là **append-only**: một dòng đã được ghi là không được xóa hoặc sửa. Nếu khách hoàn tiền, bạn không thể xóa dòng ghi "A trừ 2 triệu" vì đó là lịch sử pháp lý và kiểm toán. Thay vào đó, bạn ghi một dòng mới — reversal entry — có số tiền ngược lại (A cộng 2 triệu), và đánh dấu giao dịch gốc là REFUNDED để truy vấn dễ. Như vậy, số dư A quay lại như ban đầu, lịch sử vẫn còn 2 dòng để kiểm tra.
+
+Ví dụ: A chuyển 2 triệu cho B (dòng 1: A -2tr, dòng 2: B +2tr). Sau đó hoàn tiền: dòng 3: A +2tr, dòng 4: B -2tr. Tổng dòng 3+4 = 0, số dư A và B quay lại như đầu, lịch sử còn 4 dòng.
+
+### Vì sao các phương án khác sai
+- **Xóa giao dịch gốc**: mất audit trail, không thể kiểm toán, vi phạm quy định tài chính.
+- **Xóa log audit**: tương tự, vi phạm tuân thủ và làm mất bằng chứng.
+
+> Senior tip: Trong phỏng vấn, hãy nói "append-only ledger" và vẽ 4 dòng trên giấy để chứng minh số dư quay lại. Đây là khác biệt giữa hệ thống tiền và hệ thống đơn hàng (đơn hàng có thể xóa, tiền không bao giờ).`
+},
+{
+  id: 'qz-banking-003',
+  topic: 'banking',
+  q: 'Cut-off và ngày làm việc trong ngân hàng có ý nghĩa gì cho xử lý batch?',
+  options: [
+    'Cut-off là thời điểm đóng cửa chi nhánh, không liên quan batch',
+    'Sau cut-off, giao dịch được tính vào ngày làm việc tiếp theo; batch EOD chỉ xử lý giao dịch của ngày làm việc hiện tại',
+    'Cut-off chỉ áp dụng cho thẻ tín dụng',
+    'Ngày làm việc là ngày dương lịch, không tính ngày lễ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cut-off quyết định ngày ghi số (value date) và batch EOD chỉ tổng kết ngày làm việc hiện tại.**
+
+### Vì sao đúng
+Cut-off time (giờ cắt) là mốc thời gian trong ngày: giao dịch được nhận trước cut-off sẽ được ghi vào **ngày làm việc hiện tại**, giao dịch sau cut-off sẽ được ghi vào **ngày làm việc tiếp theo** (value date = ngày làm việc kế tiếp). Batch EOD (End of Day) chạy sau khi cut-off, tổng kết và đóng sổ cái **chỉ cho các giao dịch thuộc ngày làm việc hiện tại** — nó không xử lý các giao dịch đã trượt qua cut-off vì những giao dịch đó chưa chính thức thuộc ngày hôm nay.
+
+Ví dụ: cut-off 15h30. Khách chuyển tiền lúc 15h29 → value date = hôm nay, EOD tổng kết. Khách chuyển tiền lúc 15h31 → value date = ngày làm việc mai, EOD hôm nay không thấy giao dịch này.
+
+### Vì sao các phương án khác sai
+- **Cut-off chỉ là thời điểm đóng cửa chi nhánh, không liên quan batch**: cut-off không phải là thời gian cửa hàng đóng cửa (cửa hàng có thể nhận đơn sau giờ) mà là mốc **technical** để phân loại giao dịch vào ngày giá trị nào; nó quyết định batch EOD xử lý những giao dịch nào.
+- **Cut-off chỉ áp dụng cho thẻ tín dụng**: cut-off áp dụng cho mọi loại giao dịch (chuyển tiền, nạp tiền, thanh toán hóa đơn, thẻ…) vì mỗi loại có thể có cut-off khác nhau.
+- **Ngày làm việc là ngày dương lịch, không tính ngày lễ**: ngày làm việc (business day) loại bỏ cuối tuần và ngày lễ quốc gia; ngày dương lịch (calendar day) luôn tính 365 ngày. Nếu nhầm, dev sẽ tính lãi sai và giao dịch bị trễ.
+
+> Senior tip: Dev phải có một BusinessDayService dùng chung cho toàn hệ thống, không được tính ngày một cách tùy tiện ở từng màn hình. Cut-off và ngày làm việc khác nhau giữa các sản phẩm (tiết kiệm, vay, thẻ) — hỏi rõ specification trước khi code.`
+},
+{
+  id: 'qz-banking-004',
+  topic: 'banking',
+  q: 'Callback từ ngân hàng đối tác gửi về hai lần với cùng mã giao dịch (idempotency key). Service nên xử lý thế nào?',
+  options: [
+    'Xử lý cả hai, vì hai lần có thể khác số tiền',
+    'Kiểm tra idempotency key đã tồn tại thì trả kết quả cũ, không xử lý lại',
+    'Từ chối lần thứ hai với HTTP 409',
+    'Ghi log và bỏ qua không trả response'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: kiểm tra idempotency key đã tồn tại → trả kết quả cũ, không xử lý lại.**
+
+### Vì sao đúng
+Callback từ đối tác (ví dụ NAPAS, switch) là một dạng "server-to-server webhook". Đối tác cần đảm bảo việc gửi callback là **idempotent**: nếu nó gửi đi nhiều lần (do timeout, retry, network duplicate), hệ thống của bạn chỉ xử lý **một lần** và không bị trừ/cộng tiền nhiều lần.
+
+Cách đúng: mỗi callback có một **idempotency key** (thường là mã giao dịch transaction ID hoặc một UUID do đối tác tạo). Khi nhận callback:
+1. Trích key ra.
+2. Kiểm tra trong DB (bảng processed_callbacks hoặc bảng giao dịch) xem key đã được xử lý chưa.
+3. Nếu đã xử lý → trả về 200 OK ngay, không làm gì thêm (trả kết quả đã lưu).
+4. Nếu chưa → xử lý (cập nhật số dư, trạng thái), lưu key + kết quả, trả 200 OK.
+
+Lưu ý: việc kiểm tra và lưu key phải trong **cùng một transaction** với việc cập nhật số dư, để tránh race condition (xem qz-banking-011).
+
+### Vì sao các phương án khác sai
+- **Xử lý cả hai, vì hai lần có thể khác số tiền**: callback cùng key luôn là cùng một giao dịch; số tiền không thay đổi giữa các retry. Xử lý cả hai → trừ/cộng tiền nhiều lần.
+- **Từ chối lần thứ hai với HTTP 409**: 409 Conflict báo "xung đột", đối tác sẽ retry (vì retry là hành vi chuẩn khi không nhận được 2xx), và sẽ bị từ chối liên tục → giao dịch treo.
+- **Ghi log và bỏ qua không trả response**: đối tác không biết có thành công hay không, nó sẽ retry indefinitely hoặc coi là failure, giao dịch không được cập nhật.
+
+> Senior tip: Dùng unique constraint trên idempotency key + INSERT ... ON CONFLICT DO NOTHING (PostgreSQL) để thực hiện atomic check-and-insert. TTL cho key (ví dụ 7 ngày) để table không vô hạn. Nếu đối tác không có key, yêu cầu họ thêm — đó là điều kiện bắt buộc cho tích hợp an toàn.`
+},
+{
+  id: 'qz-banking-005',
+  topic: 'banking',
+  multi: true,
+  q: 'Khi đối soát (reconciliation) giữa core banking và ngân hàng đối tác, những loại dòng lệch nào thường gặp? (Chọn 3)',
+  options: [
+    'Giao dịch có ở core nhưng chưa ở đối tác (timing)',
+    'Giao dịch có ở đối tác nhưng chưa ở core',
+    'Sai số tiền do làm tròn',
+    'Tên khách hàng viết hoa/thường khác nhau'
+  ],
+  answer: [0, 1, 2],
+explain: `**Đáp án đúng: timing cả hai chiều + sai số tiền do làm tròn. Tên khác nhau không phải nguồn lệch phổ biến.**
+
+### Vì sao đúng
+Đối chiếu (reconciliation) là việc so sánh sổ cái của hai bên (core banking vs đối tác NAPAS/switch) để tìm "dòng lệch" (unmatched transaction). Ba nguồn lệch thường gặp:
+
+1. **Timing (độ trễ)**: core đã ghi giao dịch và trừ tiền, nhưng đối tác chưa gửi file đối chiếu (hoặc ngược lại) do mạng lag, file chưa được tạo, hoặc batch chưa chạy. Đây là nguồn **phổ biến nhất**.
+2. **Sai số tiền do làm tròn**: khi đổi tiền tệ, áp dụng tỷ giá, hoặc trừ phí, số tiền trên core có thể là 1000.123 VND trong khi đối tác làm tròn về 1000.12 VND → lệch 0.01-0.03. Đây là nguồn **thường gặp** khi có tỷ giá và phí.
+3. **Tồn tại ở một bên**: core đã ghi nhưng đối tác không nhận được (hoặc đối tác đã ghi nhưng core chưa thấy) do timeout, lost message, hoặc một bên crash.
+
+### Vì sao phương án còn lại sai
+- **Tên khách hàng viết hoa/thường khác nhau**: đối chiếu trong banking là theo **số tiền và mã giao dịch** (transaction ID), không theo tên khách hàng. Tên có thể khác nhau do dữ liệu nhập liệu (VD: "Nguyen Van A" vs "Nguyễn Văn A") nhưng không làm ảnh hưởng đến việc đối chiếu số tiền — hai bên matching theo key và amount.
+
+> Senior tip: Reconciliation job chạy hàng ngày (hoặc theo từng batch), tự động phân loại unmatched vào queue để nhân viên xử lý. Dùng aging report để ưu tiên các dòng lệch lâu (ví dụ > 24h). Không bao giờ xóa dòng lệch — phải ghi reversal entry hoặc điều chỉnh theo quy trình maker-checker.`
+},
+{
+  id: 'qz-banking-006',
+  topic: 'banking',
+  q: 'Làm tròn tiền trong giao dịch ngân hàng nên dùng kiểu dữ liệu nào trong Java?',
+  options: [
+    'float hoặc double cho đơn giản',
+    'BigDecimal với scale cố định',
+    'long lưu số tiền theo đơn vị nhỏ nhất (xu)',
+    'String rồi parse khi cần'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: BigDecimal với scale cố định.**
+
+### Vì sao đúng
+Trong ngân hàng, tiền là số thập phân với hai chữ số thập phân (đồng, xu) và phải **chính xác tuyệt đối** — không được phép bị sai số như float/double. BigDecimal là lớp trong Java đại diện số thập phân với độ chính xác tuyệt đối: nó lưu cả significand (số nguyên) và scale (số chữ số thập phân), mọi phép cộng/trừ/nhân/chia đều chính xác nếu bạn chỉ dùng/phép chia có điều kiện.
+
+Ví dụ: {{new BigDecimal("0.1").add(new BigDecimal("0.2"))}} → {{0.3}} chính xác, trong khi {{0.1 + 0.2}} bằng {{0.30000000000000004}}. Với scale cố định (ví dụ {{scale = 2}}), mọi số tiền đều có đúng 2 chữ số thập phân, dễ so sánh, dễ format, dễ validate.
+
+### Vì sao các phương án khác sai
+- **float/double**: là số thập phân binary (IEEE 754), không thể biểu diễn chính xác 0.1. Sau nhiều phép toán, sai số tích lũy có thể gây lệch 1-2 đồng — không chấp nhận được trong sổ cái. Thêm nữa, so sánh bằng {{==}} với double là sai; phải dùng {{compareTo}}.
+- **long lưu theo đơn vị nhỏ nhất (xu)**: là một lựa chọn hiệu năng cao (nhanh, ít bộ nhớ) và dùng trong một số hệ thống hiện đại, nhưng nó **phụ thuộc vào đơn vị cụ thể** (xu, cent) và dễ bị nhầm lẫn khi đổi đơn vị; nó không phải là "kiểu dữ liệu tiền" mà là "kiểu dữ liệu số nguyên đã được quy ước". Trong phỏng vấn banking, BigDecimal là câu trả lời chuẩn; long minor units là một tối ưu có thể dùng sau khi đã đúng về mặt khái niệm.
+- **String rồi parse khi cần**: không thể tính toán trực tiếp, phải parse liên tục, dễ lỗi format, không có semantic của số tiền.
+
+> Senior tip: Dùng {{BigDecimal}} với {{setScale(2, RoundingMode.HALF_UP)}} khi format hiển thị; khi so sánh dùng {{compareTo}} không dùng {{equals}} (vì {{new BigDecimal("2.0").equals(new BigDecimal("2.00"))}} là false). Nếu hệ thống cần hiệu năng cao (VD: 10k giao dịch/giây), có thể dùng {{long}} minor units nhưng phải có layer convert/display dùng BigDecimal để format.`
+},
+{
+  id: 'qz-banking-007',
+  topic: 'banking',
+  q: 'Trong log ứng dụng, để tuân thủ bảo mật PCI-DSS, số thẻ PAN nên được xử lý thế nào?',
+  options: [
+    'Log đầy đủ PAN để debug dễ hơn',
+    'Che (mask) PAN, chỉ giữ 6 số đầu và 4 số cuối, không log CVV',
+    'Mã hóa PAN bằng Base64',
+    'Băm PAN bằng MD5'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: che (mask) PAN, chỉ giữ 6 số đầu và 4 số cuối, không log CVV.**
+
+### Vì sao đúng
+PCI DSS (Payment Card Industry Data Security Standard) là tiêu chuẩn bảo mật bắt buộc cho mọi hệ thống xử lý, lưu trữ hoặc truyền số thẻ thanh toán. Requirement 3 của PCI DSS quy định:
+
+- **Không được lưu PAN (Primary Account Number — số thẻ đầy đủ) ở dạng plain text** trong DB, log, backup, hay bộ nhớ.
+- **Chỉ được hiển thị PAN với tối đa 6 số đầu + 4 số cuối**, phần giữa che bằng * (ví dụ: 123456 **** **** 3456). Điều này giúp nhân viên có thể xác định thẻ mà không đọc được toàn bộ số.
+- **CVV (Card Verification Value — 3 số sau thẻ) TUYỆT ĐỐI không được lưu** bất kể ở dạng nào, dù đã mã hóa. Sau khi xác thực giao dịch, phải xóa CVV khỏi bộ nhớ ngay.
+
+Ví dụ: log đúng là "Giao dịch thẻ **** **** **** 3456 thành công", không được ghi "123456******3456" hay số thẻ đầy đủ.
+
+### Vì sao các phương án khác sai
+- **Log đầy đủ PAN để debug**: vi phạm PCI DSS Requirement 3.1, nếu log bị lộ thì tất cả thẻ bị đánh cắp.
+- **Mã hóa PAN bằng Base64**: Base64 không phải là mã hóa — nó chỉ là encoding để truyền dữ liệu binary dưới dạng text; ai có Base64 string có thể decode về số thẻ gốc. Dùng AES encryption hoặc tokenization thay vì Base64.
+- **Băm PAN bằng MD5**: MD5 là hàm băm (hash) một chiều, không thể giải mã được. Nhưng nó không phải là giải pháp PCI DSS vì (a) MD5 không an toàn (collision), (b) hash không cho phép khôi phục số thẻ khi cần (VD: hoàn tiền), (c) PCI DSS yêu cầu mã hóa hoặc token, không phải hash.
+
+> Senior tip: Dùng centralized masking service hoặc library (VD: PCI-compliant masking library) để che thẻ ở tất cả nơi: UI, email, SMS, log, API response. Nếu hệ thống phải tích hợp với payment gateway, ưu tiên tokenization (thay thẻ bằng token) thay vì lưu PAN.`
+},
+{
+  id: 'qz-banking-008',
+  topic: 'banking',
+  q: 'Maker-checker (4 mắt) trong nghiệp vụ ngân hàng yêu cầu điều gì?',
+  options: [
+    'Một người làm và tự duyệt',
+    'Người tạo giao dịch (maker) và người duyệt (checker) phải là hai người khác nhau',
+    'Checker chỉ cần xem log, không cần duyệt trước khi thực hiện',
+    'Áp dụng chỉ cho giao dịch lớn hơn 1 tỷ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: người tạo giao dịch (maker) và người duyệt (checker) phải là hai người khác nhau.**
+
+### Vì sao đúng
+Maker-checker (4 mắt) là một trong những nguyên tắc kiểm soát nội bộ quan trọng nhất trong ngân hàng. Ý tưởng: **một thao tác ảnh hưởng đến tiền không bao giờ được một người làm trọn vẹn**.
+
+- **Maker** (người tạo): khởi tạo giao dịch (VD: "chuyển 500 triệu từ A sang B"), nhưng giao dịch ở trạng thái PENDING, chưa có hiệu lực.
+- **Checker** (người duyệt): là một nhân viên **khác**, có quyền phê duyệt. Checker kiểm tra lại thông tin (số tiền, tài khoản, lý do) và duyệt hoặc từ chối. Chỉ khi checker duyệt, tiền mới được chuyển.
+
+Nguyên lý: nếu một người làm cả hai, thì người đó có thể gian lận (nhập sai số tiền, chuyển tiền vào tài khoản cá nhân) và tự duyệt để che giấu. Nếu hai người khác nhau, thì để gian lận xảy ra thì cả hai đều phải đồng lõi — rủi ro thấp hơn nhiều.
+
+### Vì sao các phương án khác sai
+- **Một người làm và tự duyệt**: mất kiểm soát, dễ gian lận và lỗi đơn lẻ (nhập sai số tiền 500 triệu thành 5000 triệu).
+- **Checker chỉ cần xem log, không cần duyệt trước khi thực hiện**: không phải duyệt trước (pre-approval) — checker phải kiểm tra và phê duyệt **trước khi** giao dịch được thực hiện. Xem log là insufficient.
+- **Áp dụng chỉ cho giao dịch lớn hơn 1 tỷ**: nhiều ngân hàng áp dụng maker-checker cho **tất cả** giao dịch nhạy cảm (chuyển tiền, sửa hạn mức, mở tài khoản, hoàn tiền), không phân biệt số lượng. Có thể có ngưỡng số tiền nhưng không phải là "chỉ trên 1 tỷ".
+
+> Senior tip: Trong phỏng vấn, hãy nhấn mạnh "maker và checker không được là cùng một người" và hệ thống phải lưu maker_id + checker_id vào audit trail. Đừng nhầm maker-checker với "2PC" (two-phase commit) — maker-checker là quy trình nghiệp vụ, 2PC là cơ chế phân tán.`
+},
+{
+  id: 'qz-banking-009',
+  topic: 'banking',
+  q: 'Khi tiền bị trừ nhưng app báo lỗi (timeout), hệ thống nên làm gì để đảm bảo nhất quán?',
+  options: [
+    'Tự động hoàn tiền ngay lập tức',
+    'Trả về trạng thái PENDING và cho phép truy vấn trạng thái giao dịch bằng idempotency key',
+    'Yêu cầu khách bấm lại, hệ thống sẽ trừ lại',
+    'Xóa giao dịch trong DB'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đặt trạng thái PENDING và cung cấp API truy vấn trạng thái giao dịch theo idempotency key.**
+
+### Vì sao đúng
+Khi timeout, có hai khả năng: (a) giao dịch đã thành công ở phía server nhưng response bị mất, hoặc (b) giao dịch chưa được xử lý xong. Dev **không thể biết** là (a) hay (b) — và điều quan trọng là **không được retry tự động** vì nếu là (a) thì retry sẽ trừ tiền hai lần.
+
+Cách đúng:
+1. Khi timeout, hệ thống đặt trạng thái giao dịch là **PENDING** (chưa biết thành công hay thất bại).
+2. Client hiển thị "Giao dịch đang được xử lý, vui lòng chờ" và không được bấm lại.
+3. Hệ thống cung cấp API **GET /transactions/{idempotency_key}/status** để client poll hoặc tra cứu.
+4. Khi backend đã xác định được kết quả (thành công hoặc thất bại), cập nhật trạng thái và thông báo cho client.
+
+### Vì sao các phương án khác sai
+- **Tự động hoàn tiền ngay lập tức**: nếu giao dịch đã thành công (tiền đã được trừ), hoàn tiền sẽ làm tiền bị trừ rồi hoàn lại → tiền không thay đổi, nhưng lịch sử bị rối và khách hoang mang. Nếu giao dịch chưa thành công, hoàn tiền là không cần thiết.
+- **Yêu cầu khách bấm lại, hệ thống sẽ trừ lại**: đây là retry — nếu giao dịch đã thành công, trừ lại sẽ trừ tiền hai lần.
+- **Xóa giao dịch trong DB**: mất audit trail, không thể đối chiếu sau này, vi phạm quy định tài chính.
+
+> Senior tip: API "get transaction status" là bắt buộc trong mọi payment flow. Thiết kế idempotency key từ đầu (client tạo UUID), lưu key + status + result trong cùng transaction. Nếu backend dùng Kafka/outbox, consumer sẽ cập nhật status khi event được xử lý.`
+},
+{
+  id: 'qz-banking-010',
+  topic: 'banking',
+  multi: true,
+  q: 'Để đảm bảo giao dịch chuyển tiền atomic giữa hai tài khoản, những biện pháp nào đúng? (Chọn 2)',
+  options: [
+    'Dùng một transaction DB covering cả hai UPDATE',
+    'Dùng distributed lock trên từng tài khoản',
+    'Gửi email xác nhận trước khi trừ tiền',
+    'Log giao dịch vào file text'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: transaction DB covering cả hai UPDATE + distributed lock trên từng tài khoản.**
+
+### Vì sao đúng
+**Transaction DB (ACID)**: nếu tài khoản A và B cùng nằm trong một cơ sở dữ liệu (ví dụ một PostgreSQL instance), một transaction có thể UPDATE cả hai tài khoản trong cùng một transaction. Nếu một UPDATE bị lỗi (VD: A không đủ tiền), transaction rollback → cả hai UPDATE đều không được ghi. Đây là cách đơn giản và đúng để đảm bảo atomic (hoặc tất cả hoặc không).
+
+**Distributed lock**: nếu hệ thống có nhiều instance (VD: 2 service pod chạy song song), hai request cùng nhắm đến tài khoản A có thể đến hai instance khác nhau. Transaction DB chỉ đảm bảo atomic **trong cùng một DB**, không đảm bảo atomic **giữa các instance**. Distributed lock (VD: Redis lock theo accountId) đảm bảo chỉ một instance thực hiện giao dịch trên tài khoản A tại một thời điểm, tránh race condition.
+
+### Vì sao các phương án khác sai
+- **Gửi email xác nhận trước khi trừ tiền**: email không liên quan đến atomicity DB. Nó là một hành động bất đồng bộ, có thể mất, và không thể dùng để rollback giao dịch.
+- **Log giao dịch vào file text**: file text không có transaction, không có rollback, và không có locking — không thể đảm bảo atomic.
+
+> Senior tip: Trong phỏng vấn, hãy phân biệt: cùng DB → transaction; nhiều DB/microservice → saga + compensating transaction (VD: A trừ tiền xong → gửi event → B cộng tiền; nếu B lỗi → hoàn tiền A). Distributed lock là giải pháp ngắn hạn, saga là giải pháp dài hạn cho microservices.`
+},
+{
+  id: 'qz-banking-011',
+  topic: 'banking',
+  q: 'Idempotency key được lưu trong DB có ràng buộc duy nhất (unique constraint). Khi hai request cùng key đến song song (không có race condition prevention), điều gì xảy ra và cách xử lý đúng là gì?',
+  options: [
+    'Lỗi unique constraint bị throw, request thứ hai bị từ chối với exception',
+    'Cả hai request đều kiểm tra key chưa tồn tại (đều thấy chưa), cả hai đều xử lý → trừ tiền hai lần (race condition)',
+    'Hai request được hàng đợi (queue) tự động xử lý lần lượt, không cần code phòng thủ',
+    'Database tự động lock và chỉ cho một request đi qua, request kia chờ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: race condition — cả hai đều thấy key chưa tồn tại, cả hai đều xử lý.**
+
+### Vì sao đúng
+Unique constraint chỉ đảm bảo **khi đã insert xong** thì không thể insert dòng khác có cùng key. Nhưng nếu hai request cùng kiểm tra {{SELECT ... WHERE key = ?}} trước (đều thấy chưa tồn tại), rồi cùng {{INSERT}}, một request sẽ thành công, request kia sẽ throw duplicate key exception — nhưng **tiền đã bị trừ hai lần** vì cả hai đều đã thực hiện logic trừ tiền trước khi insert key. Đây là race condition kinh điển: check-then-act không atomic.
+
+### Vì sao các phương án khác sai
+- **Lỗi unique constraint throw, request thứ hai bị từ chối**: đúng là request thứ hai throw duplicate, nhưng nó đã **đã thực hiện việc trừ tiền** trước khi throw — tiền đã trừ hai lần, chỉ là client không nhận được response. Lỗi không được tự động hoàn tiền.
+- **Hàng đợi tự xử lý**: nếu không có external message queue, hai request đến cùng một instance vẫn có thể song song trên hai thread; DB không tự động queue các request theo thứ tự bạn mong muốn.
+- **Database tự động lock**: DB dùng row lock khi UPDATE/SELECT FOR UPDATE, nhưng {{SELECT WHERE key=?}} thường không lock dòng nếu không dùng FOR UPDATE — planner có thể chọn scan không lock.
+
+### Cách xử lý đúng
+1. Dùng {{SELECT ... FOR UPDATE}} hoặc một stored procedure với row lock để serialized check-and-insert.
+2. Hoặc dùng {{INSERT ... ON CONFLICT DO NOTHING}} (PostgreSQL) rồi kiểm tra số dòng affected: nếu 0 dòng insert (đã tồn tại), rollback hoặc trả kết quả cũ.
+3. Hoặc dùng distributed lock (Redis lock theo key) trước khi check-and-insert.
+
+> Senior tip: Idempotency key phải được insert trước (với unique constraint) trong cùng transaction với việc trừ tiền, hoặc dùng SELECT FOR UPDATE để lock row trước khi check. Không bao giờ check-then-act không atomic.`
+},
+{
+  id: 'qz-banking-012',
+  topic: 'banking',
+  q: 'Trong đối soát, dòng lệch do timing (có ở core, chưa ở đối tác) nên xử lý thế nào?',
+  options: [
+    'Báo lỗi ngay và rollback',
+    'Đưa vào hàng đợi unmatched, chờ đối tác gửi sau, tự động match khi xuất hiện',
+    'Xóa dòng trong core',
+    'Yêu cầu khách liên hệ ngân hàng'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: hàng đợi unmatched (unmatched queue).**
+
+### Vì sao đúng
+Dòng lệch do timing (giao dịch có ở core nhưng chưa có ở đối tác, hoặc ngược lại) là **thường gặp và tự động khắc phục được**. Khi core đã ghi giao dịch (trừ tiền xong) nhưng đối tác chưa gửi file đối chiếu (do file chưa được tạo, network delay, batch của đối tác chưa chạy), hệ thống đối chiếu sẽ thấy core có nhưng đối tác không có → một dòng "unmatched".
+
+Đừng báo lỗi ngay, đừng rollback (vì core đã commit và tiền đã trừ). Thay vào đó:
+1. Hệ thống tự động **đưa dòng vào unmatched queue** (hàng đợi) với thông tin: mã giao dịch, số tiền, thời gian, hướng (core-đã-ghi/đối tác-chưa-gửi).
+2. Job đối chiếu poll queue, chờ đối tác gửi file tiếp theo. Khi file mới xuất hiện, tự động **match** (ghép) dòng unmatched với dòng trong file đối tác.
+3. Nếu match thành công → cập nhật trạng thái matched, xóa khỏi queue.
+4. Nếu sau một khoảng SLA (VD: 24h, 48h) vẫn không match → **escalate** (thông báo nhân viên kiểm tra tay).
+
+### Vì sao các phương án khác sai
+- **Báo lỗi ngay và rollback**: core đã commit, không thể rollback được (ACID). Báo lỗi ngay làm giao dịch treo, khách không biết trạng thái.
+- **Xóa dòng trong core**: mất audit trail, không thể đối chiếu sau này, vi phạm quy định tài chính.
+- **Yêu cầu khách liên hệ ngân hàng**: khách không có thông tin kỹ thuật để báo; việc đối chiếu là việc của hệ thống, không phải của khách.
+
+> Senior tip: Reconciliation dashboard với aging report (phân loại unmatched theo độ tuổi: 0-2h, 2-24h, >24h) để ưu tiên xử lý các dòng cũ. Unmatched queue nên dùng message queue (Kafka/RabbitMQ) để scalable và không mất job nếu server restart.`
+},
+{
+  id: 'qz-behavioral-015',
+  topic: 'behavioral',
+  q: 'Lead kỹ thuật muốn áp dụng mẫu thiết kế phức tạp (ví dụ event sourcing) cho tính năng nội bộ nhỏ, nhưng bạn lo rủi ro vận hành quá cao so với nhu cầu. Cách phản hồi tốt nhất là gì?',
+  options: [
+    'Đồng ý ngay để không làm lead khó xử, sau đó tự triển khai cách đơn giản hơn mà không nói với ai.',
+    'Phản đối trực tiếp tại họp và nói mẫu thiết kế này quá phức tạp, không nên dùng cho tính năng nhỏ.',
+    'Ghi nhận quan điểm của lead, rồi nêu lo ngại cụ thể (tính năng nhỏ, team chưa có kinh nghiệm event sourcing, vận hành phức tạp hơn). Đề xuất làm spike 2 ngày để so sánh với cách hiện tại, và để lead quyết định cuối cùng.',
+    'Bỏ qua và làm theo cách của mình, vì bạn là senior hơn lead về kinh nghiệm.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Phản hồi này làm theo ba bước bất đồng lịch sự: ghi nhận quan điểm của lead, nêu lo ngại cụ thể về vấn đề kỹ thuật (không phán xét người), và đề xuất cách xác minh bằng số liệu (spike 2 ngày) trước khi để lead quyết định cuối cùng. Điều này thể hiện tư duy kỹ thuật, tôn trọng và ownership — đúng tầm Senior.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: đồng ý mặt ngoài thì làm khác phía sau làm mất niềm tin, và lead không có cơ hội sửa định hướng sai.
+- **Phương án 1**: phán xét mẫu thiết kế là quá phức tạp và tấn công người đưa ra ý tưởng thay vì bàn vấn đề, gây đối đầu không cần thiết.
+- **Phương án 3**: thử thống trị bằng vị trí senior, bỏ qua quy trình ra quyết định của team. Làm hỏng quan hệ làm việc.
+
+> Senior tip: khi bất đồng với người cấp trên, hãy dùng khung "Tôi hiểu quan điểm của bạn, sau đó nêu lo ngại, rồi đề xuất cách thử X". Luôn bàn ý tưởng, không bàn người.`
+},
+{
+  id: 'qz-behavioral-016',
+  topic: 'behavioral',
+  q: 'Quản lý yêu cầu hoàn thành tính năng mới trong 3 tuần, nhưng bạn ước lượng cần ít nhất 6 tuần vì hệ thống bên thứ ba chưa có tài liệu tích hợp. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Nhận việc và làm thêm giờ cả tuần để cố gắng kịp 3 tuần, không báo gì trước khi đến hạn.',
+    'Từ chối trực tiếp: "3 tuần là không thể, tôi cần 6 tuần", và không làm gì cho đến khi quản lý đồng ý.',
+    'Báo sớm cho quản lý ước lượng 6 tuần kèm nguyên nhân, đưa ra 2 lựa chọn: lùi deadline, hoặc cắt phạm vi (tích hợp đơn giản trước, nâng cấp sau). Quản lý chọn lùi 1 tuần và cắt phạm vi, tính năng lên đúng hạn mới.',
+    'Làm theo 3 tuần và hy vọng hệ thống bên thứ ba sẽ có tài liệu kịp thời.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Câu trả lời này thể hiện cách xử lý trưởng thành khi deadline không thực tế: thừa nhận ước lượng của chính mình có thể sai, nêu nguyên nhân khách quan nhưng không đổ lỗi, báo sớm (không đợi đến ngày cuối), và đưa ra lựa chọn có trade-off để người ra quyết định chọn. Có kết quả cụ thể và thay đổi quy trình để không lặp lại.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: nhận việc và làm thêm giờ không bền vững, chất lượng dễ giảm, và che giấu vấn đề capacity với quản lý.
+- **Phương án 1**: từ chối trực tiếp không đưa ra giải pháp hay trade-off, khiến quản lý không có dữ liệu để quyết định.
+- **Phương án 3**: hy vọng là không phải chiến thuật. Nếu hệ thống bên thứ ba không có tài liệu kịp, tính năng sẽ trễ hoặc lỗi.
+
+> Senior tip: câu then chốt là "tôi báo sớm kèm phương án". Tin xấu đến sớm thì vẫn còn lựa chọn, tin xấu đến muộn chỉ còn hậu quả.`
+},
+{
+  id: 'qz-behavioral-017',
+  topic: 'behavioral',
+  q: 'Bạn vô tình áp dụng thay đổi cấu hình cache sai gây quá tải cơ sở dữ liệu và gián đoạn dịch vụ khoảng 15 phút trong giờ cao điểm. Cách trả lời tốt nhất khi interviewer hỏi về sự cố này là gì?',
+  options: [
+    'Lỗi do hệ thống cache cũ không ổn định, không phải lỗi của bạn, nên không cần kiểm tra lại.',
+    'Bạn nhận lỗi: đã thay đổi TTL cache không kiểm tra trên môi trường staging, gây quá tải DB. Khôi phục cấu hình ngay, cùng on-call giám sát DB, rồi viết postmortem và thêm bước review cấu hình trước khi áp dụng production.',
+    'Báo cho manager là sự cố do hạ tầng, và nghỉ hẹn trước khi vấn đề được xử lý xong.',
+    'Bạn luôn kiểm tra kỹ trước khi deploy nên sự cố này không thể do bạn gây ra.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Vì sao đúng
+Câu trả lời này thể hiện ownership rõ ràng ("tôi nhận lỗi"), chi tiết kỹ thuật chính xác (thay đổi TTL cache không kiểm tra trên staging), xử lý incident bài bản (khôi phục, giám sát, giao tiếp), và phòng ngừa hệ thống (postmortem, bước review cấu hình). Đây là dấu hiệu của kỹ sư Senior chịu trách nhiệm.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: phủ nhận trách nhiệm và đổ lỗi cho hệ thống. Câu hỏi yêu cầu sự cố do bạn gây ra, trả lời bằng cách phủ nhận là tín hiệu xấu.
+- **Phương án 2**: bỏ cuộc trước khi xử lý xong, không chuyên nghiệp và làm đồng nghiệp phải gánh thêm.
+- **Phương án 3**: giả định và thiếu thực tế. Mọi kỹ sư làm production đủ lâu đều từng gây sự cố; khẳng định ngược lại khiến interviewer nghi ngờ sự trung thực.
+
+> Senior tip: kể sự cố theo khung postmortem: tác động → phát hiện → giảm thiểu → nguyên nhân gốc → hành động phòng ngừa. Blameless có nghĩa là không quy tội cá nhân, không có nghĩa là không ai sở hữu vấn đề.`
+},
+{
+  id: 'qz-behavioral-018',
+  topic: 'behavioral',
+  q: 'Một đồng nghiệp trong team liên tục không hoàn thành phần việc được giao, ảnh hưởng đến tiến độ của toàn bộ sprint. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Nhận hết công việc của họ và tự làm để sprint không bị trễ, không nói gì với ai.',
+    'Hẹn hò 1-1 để hiểu nguyên nhân (ví dụ quá tải, chưa hiểu yêu cầu, vấn đề cá nhân), cung cấp hỗ trợ hoặc chia nhỏ công việc, đặt mong đợi rõ ràng; nếu vẫn không cải thiện thì trình bày minh bạch với lead.',
+    'Báo ngay với lead rằng đồng nghiệp này không làm việc và đề xuất chuyển họ ra khỏi team.',
+    'Bỏ qua, vì công việc của bạn đã xong đúng hạn và không phải vấn đề của bạn.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Vì sao đúng
+Cách xử lý này ưu tiên hiểu trước khi hành động: hẹn 1-1 để tìm nguyên nhân thực sự (quá tải, chưa hiểu yêu cầu, hay vấn đề cá nhân), sau đó cung cấp hỗ trợ phù hợp, chia nhỏ công việc và đặt mong đợi rõ ràng. Nếu vẫn không cải thiện, trình bày minh bạch với lead. Điều này thể hiện sự đồng cảm, năng lực quản lý và sở hữu kết quả của team.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: hero mode. Sprint đúng hạn ngắn hạn nhưng đồng nghiệp không tiến bộ, và bạn trở thành nút thắt cổ chai. Che giấu vấn đề capacity.
+- **Phương án 2**: bỏ qua mọi nỗ lực hỗ trợ, gán nhãn "không làm việc" khi chưa tìm nguyên nhân. Thể hiện thiếu sự đồng cảm và tinh thần team.
+- **Phương án 3**: bỏ qua ảnh hưởng đến kết quả chung. Với vị trí Senior, interviewer muốn thấy bạn chịu trách nhiệm cho kết quả của team, không chỉ phần việc cá nhân.
+
+> Senior tip: khi nói về người khác trong câu trả lời, giữ tôn trọng (không nêu tên, không chê bai) và nhấn mạnh kết quả của họ, không phải công lao của bạn.`
+},
+{
+  id: 'qz-behavioral-019',
+  topic: 'behavioral',
+  q: 'Manager giao nhiệm vụ "tối ưu hóa hệ thống báo cáo" mà không chỉ ra mục tiêu cụ thể, chỉ số nào cần cải thiện hay deadline. Cách phản hồi tốt nhất là gì?',
+  options: [
+    'Bắt đầu viết code tối hoá ngay theo ý mình để thể hiện chủ động, không cần hỏi thêm.',
+    'Nói rằng nhiệm vụ quá mơ hồ, bạn không thể làm vì không có yêu cầu rõ ràng.',
+    'Hỏi các câu làm rõ: mục tiêu là giảm thời gian tạo báo cáo hay giảm tải DB? Hiện tại mất bao lâu, mục tiêu là bao lâu? Ai là người sử dụng báo cáo? Sau đó viết một bản tóm tắt phạm vi và xác nhận với manager trước khi bắt đầu.',
+    'Giao lại cho một thành viên khác vì họ dường nào sẽ biết yêu cầu hơn.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Khi được giao việc mơ hồ, cách xử lý đúng là làm rõ trước khi hành động: hỏi các câu cụ thể về mục tiêu, chỉ số, người dùng và deadline. Sau đó tóm tắt phạm vi và xác nhận với manager. Điều này tránh việc xây dựng sai hướng, lãng phí thời gian, và thể hiện tư duy phân tích của Senior.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: xây dựng theo ý mình mà không làm rõ có thể làm sai hướng, lãng phí công sức, và phải làm lại từ đầu.
+- **Phương án 1**: từ chối không đưa ra giải pháp, gây ấn tượng thiếu chủ động và không biết giải quyết sự mơ hồ.
+- **Phương án 3**: giao lại cho người khác không giải quyết được vấn đề mơ hồ, chỉ đẩy gánh nặng cho đồng nghiệp khác.
+
+> Senior tip: việc mơ hồ là cơ hội để thể hiện năng lực phân tích. Hãy viết một bản tóm tắt phạm vi ngắn (mục tiêu, chỉ số, phạm vi, phi phạm vi, deadline) và gửi manager xác nhận trước khi bắt đầu code.`
+},
+{
+  id: 'qz-english-023',
+  topic: 'english',
+  multi: true,
+  q: 'A teammate asks you to take on an urgent task, but you are already at full capacity. Which 2 responses are polite and professional? (Choose 2)',
+  options: [
+    "I'd like to help, but I'm at full capacity this sprint. Can we discuss priority with our lead, or can this wait until next week?",
+    'No, I am too busy. Ask someone else.',
+    "I can take it, but something else will have to slip. Which of my current tasks should I deprioritize?",
+    'Sure, I will do it even if I have to work all weekend.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.**
+
+### Vì sao đúng
+Cả hai đều từ chối yêu cầu một cách lịch sự và chuyên nghiệp, đồng thời đưa ra giải pháp thay thế. Phương án 0 nhấn mạnh hiện tại đang full capacity và đề xuất thảo luận ưu tiên với lead hoặc hoãn sang tuần sau. Phương án 2 chấp nhận nhận việc nhưng minh bạch về trade-off (nhiều việc khác sẽ bị hoãn) và hỏi xem nhiệm vụ nào nên được ưu tiên giảm bớt.
+
+### Vì sao các phương án khác sai
+- **Phương án 1**: "No, I am too busy. Ask someone else." đúng ngữ pháp nhưng quá thẳng thắn, thiếu lịch sự và không đưa ra giải pháp thay thế. Trong môi trường làm việc quốc tế, cách nói này gây ấn tượng xấu.
+- **Phương án 3**: đồng ý làm dù phải làm thêm giờ cuối tuần không bền vững, dễ dẫn đến burnout và chất lượng giảm. Nó cũng che giấu vấn đề capacity với quản lý.
+
+> Senior tip: khi từ chối yêu cầu, hãy dùng cấu trúc "Tôi muốn giúp, nhưng…" + nêu lý do cụ thể + đề xuất thay thế hoặc hỏi ưu tiên. Tránh từ chối trần tuýt và tránh đồng ý mọi thứ đến mức làm quá tải bản thân.`
+},
+{
+  id: 'qz-english-024',
+  topic: 'english',
+  q: 'You realize you will not finish a task by the agreed deadline. Which message is best to send to your manager?',
+  options: [
+    'I will not finish on time.',
+    "I'm flagging a risk: the third-party API integration is taking longer than expected. I expect to finish by Thursday instead of Wednesday. I can either deliver a simpler version by Wednesday or the full version by Thursday — which do you prefer?",
+    'Sorry, I am late. The other team did not give me the documentation.',
+    'I think the deadline was unrealistic from the start.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Vì sao đúng
+Câu trả lời này báo sớm (flagging a risk), nêu nguyên nhân cụ thể (tích hợp API bên thứ ba mất thời gian hơn dự kiến), đưa ra ngày dự kiến mới (Thứ Năm thay vì Thứ Tư), và đưa ra 2 lựa chọn có trade-off (phiên bản đơn giản vào thứ Tư hoặc phiên bản đầy đủ vào thứ Năm) để quản lý quyết định. Đây là cách communicate chuyên nghiệp của một Senior.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: "I will not finish on time." chỉ báo tin xấu mà không đưa ra nguyên nhân, ngày mới, hay giải pháp. Không đủ thông tin để quản lý quyết định.
+- **Phương án 2**: đổ lỗi cho team khác ("The other team did not give me the documentation") và không đưa ra ngày hoàn thành mới hay giải pháp.
+- **Phương án 3**: phán xét deadline không thực tế ngay từ đầu nhưng không đưa ra giải pháp hoặc kế hoạch tiếp theo. Nghe như tìm lý do thay vì xử lý vấn đề.
+
+> Senior tip: khi báo trễ tiến độ, hãy báo sớm, nêu nguyên nhân khách quan (không đổ lỗi), đưa ra ngày mới và ít nhất một lựa chọn có trade-off để quản lý có thể quyết định nhanh.`
+},
+{
+  id: 'qz-english-025',
+  topic: 'english',
+  q: 'You did not hear the interviewer clearly because of a bad connection. Which response is most natural and polite?',
+  options: [
+    'What? Say that again.',
+    'I did not understand. Your English is unclear.',
+    "Sorry, I think the connection cut out. Could you repeat the last part, please?",
+    'I will answer anyway, even though I did not hear the question.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+"Sorry, I think the connection cut out. Could you repeat the last part, please?" nhận lỗi về kết nối (không đổ lỗi cho người nói), dùng cụm lịch sự "Could you repeat… please?", và cụ thể hóa phần cần lặp lại ("the last part"). Đây là cách tự nhiên và chuyên năng trong phỏng vấn từ xa.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: "What? Say that again." quá thô lỗ, thiếu lịch sự, và không nhận lỗi về kết nối.
+- **Phương án 1**: "I did not understand. Your English is unclear." đổ lỗi cho người nói (nói tiếng Anh của họ không rõ), gây bất cảm và không chuyên nghiệp.
+- **Phương án 3**: trả lời dù không nghe rõ câu hỏi dễ dẫn đến trả lời sai vấn đề, làm interviewer đánh giá bạn không lắng nghe hoặc không thèm làm rõ.
+
+> Senior tip: nếu không nghe rõ do kết nối, hãy nhận lỗi về kết nối thay vì đổ lỗi cho người khác, rồi yêu cầu lặp lại phần cụ thể. Việc hỏi lại để làm rõ là điểm cộng chứ không phải điểm trừ.`
+},
+{
+  id: 'qz-english-026',
+  topic: 'english',
+  multi: true,
+  q: 'You need to summarize a production incident to a non-technical stakeholder. Which 2 elements should you include? (Choose 2)',
+  options: [
+    'The exact SQL query that failed and the stack trace.',
+    'What happened, how long it lasted, and how it affected users (in plain language).',
+    'What we are doing to fix it and how we will prevent it from happening again.',
+    'The names of the engineers who caused the incident.'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: phương án 1 và 2.**
+
+### Vì sao đúng
+Khi tóm tắt sự cố cho stakeholder không kỹ thuật, nên tập trung vào: (1) gì đã xảy ra, kéo dài bao lâu, và tác động đến người dùng như thế nào (bằng ngôn ngữ thường ngày, không thuật ngữ kỹ thuật sâu), và (2) nhóm đang làm gì để khắc phục và cách phòng ngừa lần sau. Điều này giúp stakeholder hiểu rõ tình hình và tin tưởng vào team.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: câu truy vấn SQL và stack trace là chi tiết kỹ thuật quá sâu, stakeholder không kỹ thuật không hiểu và không cần biết.
+- **Phương án 3**: nêu tên kỹ sư gây ra sự cố vi phạm nguyên tắc blameless (không quy tội cá nhân) và không hữu ích cho việc khắc phục sự cố.
+
+> Senior tip: stakeholder quan tâm đến tác động kinh doanh (người dùng bị ảnh hưởng như thế nào, thời gian gián đoạn bao lâu) và hành động khắc phục, không quan tâm đến chi tiết kỹ thuật. Hãy dùng ngôn ngữ đơn giản, tránh thuật ngữ kỹ thuật không cần thiết.`
+},
+{
+  id: 'qz-english-027',
+  topic: 'english',
+  q: 'Interviewer asks "What is your greatest weakness?". Which answer is honest and professional?',
+  options: [
+    'I do not have any weaknesses.',
+    'I work too hard and care too much about my code.',
+    "I used to hesitate to speak up in meetings when I disagreed with a senior colleague. I have been working on this by preparing my points in advance and using phrases like 'I see your point, and I have a concern…'. Last month I raised a risk about the database change that saved us from downtime.",
+    'I am not good at English, so I cannot communicate well.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Câu trả lời này trung thực về một điểm yếu thực sự (ngần ngại nói lên khi bất đồng với senior), nhưng cũng nêu rõ hành động đang cải thiện (chuẩn bị ý kiến trước, dùng cụm từ lịch sự như "I see your point, and I have a concern…") và kết quả cụ thể (tháng ngoái đã nêu rủi ro về thay đổi cơ sở dữ liệu giúp tránh gián đoạn dịch vụ). Đây là cách trả lời phỏng vấn chuyên nghiệp.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: "I do not have any weaknesses." không trung thực và thiếu tự nhận thức. Mọi người đều có điểm yếu.
+- **Phương án 1**: "I work too hard and care too much about my code." là điểm yếu giả (humble-brag), interviewer đã nghe hàng trăm lần và coi là tránh vấn đề.
+- **Phương án 3**: "I am not good at English, so I cannot communicate well." là một điểm yếu cốt lõi đối với vị trí yêu cầu giao tiếp, và không nêu hành động cải thiện. Có thể khiến interviewer lo ngại về khả năng làm việc của bạn.
+
+> Senior tip: khi trả lời về điểm yếu, hãy chọn một điểm yếu thực sự nhưng không phải kỹ năng cốt lõi của vị trí, rồi nêu hành động đang cải thiện và kết quả đã đạt được. Tránh điểm yếu giả và tránh điểm yếu ảnh hưởng trực tiếp đến công việc chính.`
 }
 );

@@ -54,8 +54,12 @@ const topicIds = new Set(TOPICS.map(t => t.id));
 const LEVELS = new Set(['mid', 'senior', 'lead']);
 const REF_TYPES = new Set(['video', 'doc', 'article', 'book', 'course']);
 
+const Diagram = require(path.join(__dirname, '..', 'js', 'core', 'diagram.js'));
 function checkMarkup(file, id, field, s) {
   if (typeof s !== 'string') return;
+  for (const m of s.matchAll(/^~~~seq[^\n]*\n([\s\S]*?)^~~~/gm)) {   // ~~~seq diagrams must parse (js/core/diagram.js)
+    try { Diagram.parseSeq(m[1]); } catch (e) { err(file, `${id}.${field}: sơ đồ ~~~seq lỗi: ${e.message}`); }
+  }
   const prose = s.replace(/~~~[\s\S]*?~~~/g, '');   // App.md does not parse {{…}} inside code fences
   const opens = (prose.match(/\{\{/g) || []).length, closes = (prose.match(/\}\}/g) || []).length;
   if (opens !== closes) err(file, `${id}.${field}: số {{ và }} không khớp (${opens}/${closes})`);

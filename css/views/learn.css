@@ -41,3 +41,9 @@
   .view-learn .ln-ex-actions .muted { display: none; }
   .view-learn .ln-footer .btn { flex: 1 1 100%; }
 }
+
+/* Explain-back (AI grades the learner's own explanation) */
+.view-learn .ln-eb { margin-top: 16px; }
+.view-learn .ln-eb .ln-h { margin-top: 0; }
+.view-learn .ln-eb-text { width: 100%; min-height: 120px; }
+.view-learn .ln-eb-actions { margin: 10px 0; gap: 8px; flex-wrap: wrap; }

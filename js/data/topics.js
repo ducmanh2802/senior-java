@@ -20,11 +20,13 @@ window.TOPICS = [
   { id: 'design',        name: 'System Design',              icon: '🏗️', group: 'Architecture', file: 'q-system-design.js' },
   { id: 'architecture',  name: 'Design Patterns & Clean Arch', icon: '🧩', group: 'Architecture', file: 'q-system-design.js' },
   { id: 'scenario',      name: 'Tình huống thực tế',          icon: '🔥', group: 'Architecture', file: 'q-scenario.js' },
+  { id: 'banking',       name: 'Nghiệp vụ ngân hàng cho dev', icon: '🏦', group: 'Architecture', file: 'q-banking.js' },
   { id: 'aws',           name: 'AWS & Cloud',                icon: '☁️', group: 'Cloud & AI',   file: 'q-aws.js' },
   { id: 'ai',            name: 'AI / LLM cho Java dev',      icon: '🤖', group: 'Cloud & AI',   file: 'q-ai.js' },
   { id: 'claude',        name: 'Claude Developer (CCDV-F)',  icon: '🟠', group: 'Cloud & AI',   file: 'q-claude.js' },
   { id: 'devops',        name: 'Docker, K8s, Linux & Git',   icon: '🐳', group: 'Cloud & AI',   file: 'q-devops.js' },
   { id: 'testing',       name: 'Testing & Quality',          icon: '🧪', group: 'Soft skills',  file: 'q-soft.js' },
+  { id: 'autotest',      name: 'Automation Test (QA → SDET)', icon: '🤖', group: 'Soft skills',  file: 'q-autotest.js' },
   { id: 'behavioral',    name: 'Leadership & Behavioral',    icon: '🤝', group: 'Soft skills',  file: 'q-soft.js' },
   { id: 'english',       name: 'Phỏng vấn tiếng Anh',        icon: '🇬🇧', group: 'Soft skills',  file: 'q-english.js' },
 ];

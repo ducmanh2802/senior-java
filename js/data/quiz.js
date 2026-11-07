@@ -5026,5 +5026,470 @@ Prompt chỉ là **hướng dẫn mềm**; mô hình có thể sinh JSON thiếu
 ~~~
 
 > Senior tip: đừng bao giờ để LLM là nguồn dữ liệu duy nhất cho hành động không thể hoàn tác. Với pipeline quan trọng, hãy dùng **schema versioning** và kiểm thử với bộ input đa dạng, gồm cả trường hợp model trả về rỗng hoặc JSON không hợp lệ.`
+},
+{
+  id: 'qz-english-009',
+  topic: 'english',
+  q: 'You left that company in 2022. Which sentence is correct?',
+  options: [
+    'I have worked there for three years.',
+    'I worked there for three years.',
+    'I am working there for three years.',
+    'I will work there for three years.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: I worked there for three years.**
+
+### Vì sao đúng
+Bạn nhắc mốc thời gian quá khứ rõ ràng (in 2022) và công việc đã **kết thúc** (bạn đã nghỉ làm), nên dùng **thì quá khứ đơn (past simple)**: worked. Thì này dùng cho sự việc hoàn thành tại một thời điểm xác định trong quá khứ (last year, in 2021, two years ago).
+
+### Vì sao các phương án còn lại sai
+- **I have worked there for three years**: thì hiện tại hoàn thành (present perfect) dùng cho kinh nghiệm tính đến hiện tại, thường **không kèm mốc quá khứ xác định** như in 2022. Nếu bạn vẫn đang làm ở đó, câu tự nhiên là I have worked there for three years (không có mốc quá khứ).
+- **I am working**: thì hiện tại tiếp diễn, nói về việc đang xảy ra bây giờ, không phù hợp với công ty bạn đã rời.
+- **I will work**: thì tương lai, nghĩa ngược hoàn toàn.
+
+> Senior tip: quy tắc nhớ: có mốc thời gian quá khứ rõ ràng (last year, in 2021, ago) thì dùng past simple; không có mốc và nhấn mạnh liên hệ với hiện tại thì dùng present perfect.`
+},
+{
+  id: 'qz-english-010',
+  topic: 'english',
+  q: 'Which sentence is correct in an IT meeting?',
+  options: [
+    'We need to discuss about the requirements.',
+    'We need to discuss the requirements.',
+    'We need discussion about the requirements.',
+    'We need to talking about the requirements.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: We need to discuss the requirements.**
+
+### Vì sao đúng
+Động từ **discuss** trong tiếng Anh đã mang nghĩa "thảo luận, bàn về" nên đi trực tiếp với tân ngữ, **không cần giới từ about**. Cụm discuss about là lỗi dịch thẳng từ tiếng Việt "thảo luận về" — một false friend (cặp từ dễ nhầm) phổ biến của người học Việt. Câu đúng: discuss the requirements, discuss the issue, discuss the design.
+
+### Vì sao các phương án còn lại sai
+- **discuss about**: sai, discuss đã bao hàm nghĩa "về", thêm about là dư và sai ngữ pháp.
+- **discussion about**: danh từ discussion thì đúng đi với about, nhưng sau need to phải dùng động từ nguyên thể (discuss), không phải danh từ.
+- **need to talking**: sau to phải là nguyên thể (talk), không phải V-ing.
+
+> Senior tip: một số động từ khác dễ mắc lỗi tương tự: mention (không thêm about), explain (explain something **to** someone, không dùng explain me), reach (không thêm to). Học động từ kèm giới từ đi kèm, không học riêng lẻ.`
+},
+{
+  id: 'qz-english-011',
+  topic: 'english',
+  q: 'Complete the sentence naturally: "She ______ the payment module."',
+  options: [
+    'is responsible the payment module',
+    'is responsible for the payment module',
+    'is responsible with the payment module',
+    'is responsible of the payment module'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: is responsible for the payment module.**
+
+### Vì sao đúng
+**responsible for** là collocation (cặp từ đi kèm cố định) chuẩn trong tiếng Anh để nói "phụ trách / có trách nhiệm về". Ví dụ: I am responsible for backend APIs, Who is responsible for this incident?. Cụm này đi kèm danh từ hoặc V-ing (responsible for managing the team).
+
+### Vì sao các phương án còn lại sai
+- **responsible the payment module**: thiếu giới từ for, câu thiếu thành phần.
+- **responsible with / responsible of**: không phải collocation chuẩn của tiếng Anh; với responsible, giới hạn đi kèm là for (trách nhiệm) và to (người bị đối phó: responsible to the manager).
+- Mọi lựa chọn sai đều làm câu nghe không tự nhiên hoặc sai ngữ pháp trong môi trường làm việc quốc tế.
+
+> Senior tip: collocation quyết định mức độ tự nhiên của câu. Tham khảo thêm: in charge of (có nghĩa tương tự responsible for), accountable for (trách nhiệm quản trị cao hơn, thường dùng khi trả về kết quả cuối cùng).`
+},
+{
+  id: 'qz-english-012',
+  topic: 'english',
+  q: 'Which word fits: "Can you give me some ______ on my system design?"',
+  options: [
+    'advices',
+    'advise',
+    'advice',
+    'an advice'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: advice.**
+
+### Vì sao đúng
+**Advice** là danh từ không đếm được (uncountable noun), nghĩa là "lời khuyên". Nó không số nhiều và không dùng a/an: không nói an advice hay advices. Cụm give someone advice là chuẩn. Ví dụ: Can you give me some advice on my system design? / I need your advice.
+
+### Vì sao các phương án còn lại sai
+- **advices**: sai, advice không số nhiều.
+- **advise**: là động từ (tương đương khuyên, tư vấn), ví dụ I advise you to check the logs. Ở chỗ này cần danh từ sau some.
+- **an advice**: advice là danh từ không đếm được, không dùng mạo từ a/an. Muốn đếm hãy dùng a piece of advice.
+
+> Senior tip: cặp từ dễ nhầm tương tự: practice (danh từ: thực hành) vs practise (động tại, Anh), license (danh từ). Quan trọng: advice luôn là danh từ, advise luôn là động từ, không quan trọng Anh hay Mỹ.`
+},
+{
+  id: 'qz-english-013',
+  topic: 'english',
+  q: 'Complete naturally: "The tech lead asked the team to ______ a decision by Friday."',
+  options: [
+    'make',
+    'do',
+    'take',
+    'give'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: make.**
+
+### Vì sao đúng
+**Make a decision** là collocation cố định trong tiếng Anh (đưa ra quyết định / quyết định). Các collocation quan trọng khác với make: make a plan, make a suggestion, make progress, make a mistake. Trong môi trường IT: We need to make a decision on the database by Friday.
+
+### Vì sao các phương án còn lại sai
+- **do a decision**: do đi với công việc chung chung (do homework, do the task), không dùng với decision.
+- **take a decision**: hiểu được nhưng ít tự nhiên hơn make trong văn nói IT; take đi với take a look, take a break, take responsibility.
+- **give a decision**: không phải collocation chuẩn.
+
+> Senior tip: collocation là chìa khóa để nói và viết tự nhiên. Nhớ thêm: raise a concern (nêu lo ngại), meet a deadline (đến hạn, không phải catch), take ownership (nhận trách nhiệm), pay down technical debt (giảm nợ kỹ thuật), reach a consensus (đ general sự đồng ý).`
+},
+{
+  id: 'qz-english-014',
+  topic: 'english',
+  q: 'Complete naturally: "During standup, I want to ______ a concern about the API latency."',
+  options: [
+    'raise',
+    'rise',
+    'lift',
+    'create'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: raise.**
+
+### Vì sao đúng
+**Raise a concern** là collocation chuẩn, nghĩa là "nêu ra một lo ngại / vấn đề cần lưu ý". Đây là cách chuyên nghiệp để gợi ý rủi ro trong dự án mà không gây đối đầu. Ví dụ: I'd like to raise a concern about the rollback plan.
+
+### Vì sao các phương án còn lại sai
+- **rise**: là động từ nội động (intransitive), không đi với tân ngữ (the sun rises, prices rise); không nói rise a concern.
+- **lift**: nghĩa là nhấc lên vật lý, không dùng trừu tượng như vậy.
+- **create a concern**: hiểu được nhưng không phải collocation tự nhiên; create dùng với create an issue, create a problem.
+
+> Senior tip: collocation hay trong phỏng vấn: make a decision (đưa ra quyết định), raise a concern (nêu lo ngại), meet a deadline (đến hạn), take ownership (nhận trách nhiệm), pay down technical debt (giảm nợ kỹ thuật). Học theo cụm, không học từng từ đơn lẻ.`
+},
+{
+  id: 'qz-english-015',
+  topic: 'english',
+  q: 'Interviewer suggests using one shared database for two services, and you disagree. Which 2 responses are polite and professional? (Choose 2)',
+  multi: true,
+  options: [
+    "I see your point. My concern is that a shared database couples the two services' release cycles.",
+    'You are wrong, a shared database is a bad idea.',
+    "I understand, but I'm worried about data ownership. Would separate schemas work better?",
+    'With all due respect, that idea makes no sense at all.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: 0 và 2.**
+
+### Vì sao đúng
+Cả hai đều tuân theo khung bất đồng lịch sự: ghi nhận quan điểm người kia → nêu lo ngại cụ thể về vấn đề kỹ thuật → đề xuất thay thế dưới dạng câu hỏi. I see your point và I understand chỉ thị sự tôn respect; My concern is that... và I'm worried about... tập trung vào vấn đề, không chỉ trích người nói; Would... work better? mở ra cuộc thảo luận.
+
+### Vì sao các phương án còn lại sai
+- **You are wrong...**: đúng ngữ pháp nhưng quá thẳng, công kích người thay vì bàn ý tưởng. Trong văn hoá làm việc quốc tế, đặc biệt với interviewer, register này gây ấn tượng rất xấu.
+- **With all due respect... makes no sense**: cụm with all due respect trong tiếng Anh bản ngữ thường báo hiệu một lời chỉ trích sắp tới; kết hợp với makes no sense at all nghe mỉa mai và không đưa ra lý do hay phương án thay thế.
+
+> Senior tip: cụm nên thuộc trong phỏng vấn system design: My concern with that is..., One risk I see is..., Have we considered...?, I'd lean towards X because..., What if we...?. Luôn bàn ý tưởng, không bàn người.`
+},
+{
+  id: 'qz-english-016',
+  topic: 'english',
+  q: 'You did not hear the interviewer clearly. Which 2 ways to ask them to repeat or clarify are natural and polite? (Choose 2)',
+  multi: true,
+  options: [
+    'Could you repeat the question, please?',
+    'Can you repeat again the question?',
+    "Just to make sure I understand: are you asking about the read path or the write path?",
+    'What do you mean? Your question is not clear.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: 0 và 2.**
+
+### Vì sao đúng
+Could you repeat the question, please? là cấu trúc lịch sự, chuẩn. Just to make sure I understand: nhận trách nhiệm hiểu về phía mình, rồi đưa ra hai lựa chọn cụ thể (read path / write path) để interviewer trả lời nhanh — rất hay dùng trong system design.
+
+### Vì sao các phương án còn lại sai
+- **Can you repeat again the question?**: hai lỗi. repeat đã mang nghĩa "lại" nên thêm again là dư; trật tự từ không tự nhiên (tân ngữ phải sát động từ). Câu tự nhiên: Could you repeat the question, please?.
+- **What do you mean? Your question is not clear.**: đúng ngữ pháp nhưng đổ lỗi cho người hỏi, giọng gay gắt. Trong phỏng vấn, register này gây ấn tượng xấu.
+
+> Senior tip: hỏi lại để làm rõ là điểm cộng chứ không phải điểm trừ, đặc biệt với câu system design mơ hồ. Cụm hay: Could you clarify what you mean by...?, When you say X, do you mean...?, I'll assume... unless you'd like me to consider..., Did I get that right?.`
+},
+{
+  id: 'qz-english-017',
+  topic: 'english',
+  q: 'Choose the correct sentence for a finished project last year.',
+  options: [
+    'I have led the migration to Kubernetes last year.',
+    'I led our migration to Kubernetes last year.',
+    'Last year I am responsible for leading the migration.',
+    'I was leaded the migration to Kubernetes last year.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: I led our migration to Kubernetes last year.**
+
+### Vì sao đúng
+Có mốc thời gian quá khứ rõ ràng (last year) → dùng thì quá khứ đơn (past simple): led (quá khứ bất quy tắc của lead). Mệnh đề này rõ ràng, có động từ mạnh, và cho thấy vai trò cá nhân — đúng tinh thần STAR khi kể thành tích.
+
+### Vì sao các phương án còn lại sai
+- **I have led... last year**: thì hiện tại hoàn thành không đi với mốc quá khứ xác định. Có thể nói I have led two migrations (không mốc), nhưng có last year thì phải là past simple.
+- **Last year I am responsible...**: thì hiện tại cho sự việc năm ngoái (phải là was), và sau for phải dùng V-ing (responsible for leading). Cũng yếu hơn led vì chỉ nói trách nhiệm, không nói hành động.
+- **I was leaded**: lead là bất quy tắc (lead – led – led), không có leaded; was led là bị động (nghĩa là bạn bị ai đó dẫn dắt).
+
+> Senior tip: khi kể thành tích, ưu tiên động từ mạnh ở past simple (led, designed, built, cut, reduced, migrated) thay vì was responsible for hay was involved in. Câu ngắn, có số đo, nghe tự tin hơn.`
+},
+{
+  id: 'qz-english-018',
+  topic: 'english',
+  q: 'Complete naturally: "He is very good ______ writing complex SQL queries."',
+  options: [
+    'at',
+    'in',
+    'on',
+    'with'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: at.**
+
+### Vì sao đúng
+**Good at** là collocation chuẩn để nói "giỏi về / thạo cái gì", đi kèm V-ing: good at writing SQL, good at debugging, good at system design. Ví dụ: She is very good at optimizing queries.
+
+### Vì sao các phương án còn lại sai
+- **good in**: dùng cho môn học hoặc môi trường (good in math, good in English), không dùng cho kỹ năng cụ thể.
+- **good on**: không phải collocation chuẩn trong nghĩa này.
+- **good with**: dùng cho người hoặc công cụ (good with people, good with Java), không đi với V-ing để nói về kỹ năng.
+
+> Senior tip: giới từ thay đổi nghĩa hoàn toàn. So sánh: interested in (quan tâm về), good at (giỏi làm gì), responsible for (phụ trách), depend on (phụ thuộc vào). Học giới từ kèm động từ/tính từ, không học riêng lẻ.`
+},
+{
+  id: 'qz-english-019',
+  topic: 'english',
+  q: 'Complete naturally: "I look forward to ______ from you."',
+  options: [
+    'hear',
+    'hearing',
+    'to hear',
+    'have heard'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: hearing.**
+
+### Vì sao đúng
+Sau cụm **look forward to**, từ "to" ở đây là **giới từ**, không phải to của nguyên thể, nên phải đi với V-ing: look forward to hearing, look forward to meeting, look forward to working with you. Đây là câu chius thư và câu kết phỏng vấn rất phổ biến.
+
+### Vì sao các phương án còn lại sai
+- **hear**: phải là V-ing sau giới từ to.
+- **to hear**: sai cấu trúc (to to) và to sau forward ở đây là giới từ.
+- **have heard**: thì hiện tại hoàn thành không fit nghĩa "mong chờ tương lai".
+
+> Senior tip: lưu ý khác của look forward to: sau to là V-ing, nhưng trong want to hear, need to discuss thì to là phần của nguyên thể và đi với V nguyên thể. Phân biệt bằng cách nhớ: look forward to = mong chờ cái gì (danh từ/V-ing).`
+},
+{
+  id: 'qz-english-020',
+  topic: 'english',
+  q: 'Choose 2 phrases that use the correct preposition with "depends". (Choose 2)',
+  multi: true,
+  options: [
+    'The result depends on the traffic.',
+    'The result depends of the traffic.',
+    'The delivery depends on the database configuration.',
+    'The delivery depends in the database configuration.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: 0 và 2.**
+
+### Vì sao đúng
+**Depend on** là collocation chuẩn: phụ thuộc vào cái gì. Cả hai câu đúng đều dùng on: The result depends on the traffic và The delivery depends on the database configuration.
+
+### Vì sao các phương án còn lại sai
+- **depends of**: sai giới từ, không tồn tại trong tiếng Anh chuẩn (lỗi dịch từ phụ thuộc của).
+- **depends in**: sai, in dùng cho nơi chốn hoặc thời gian (in Vietnam, in 2024), không dùng với depend.
+
+> Senior tip: giới từ là chỗ dễ sai nhất của người Việt vì dịch thẳng từ tiếng Việt. Các cặp cần ghi nhớ: depend on (phụ thuộc vào), interested in (quan tâm về), good at (giỏi làm gì), responsible for (phụ trách), discuss something (không thêm about).`
+},
+{
+  id: 'qz-english-021',
+  topic: 'english',
+  q: 'Complete naturally: "I am ______ event-driven architecture."',
+  options: [
+    'interested on',
+    'interested in',
+    'interesting in',
+    'interested with'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: interested in.**
+
+### Vì sao đúng
+**Interested in** là cấu trúc chuẩn: quan tâm / hứng thú với cái gì. Sau interested phải dùng giới từ in. Ví dụ: I am interested in distributed systems and event-driven architecture.
+
+### Vì sao các phương án còn lại sai
+- **interested on / interested with**: sai giới từ, không phải collocation chuẩn.
+- **interesting in**: interesting là tính từ mô tả cái gì làm người khác hứng thú (the lecture is interesting), còn interested mô tả cảm xúc của người tham gia (I am interested). Hai từ này không hoán đổi.
+
+> Senior tip: phân chia -ed vs -ing: bored / boring, tired / tiring, excited / exciting. Với -ed mô tả cảm xúc của người (I am interested), với -ing mô tả tính chất của vật (The topic is interesting).`
+},
+{
+  id: 'qz-english-022',
+  topic: 'english',
+  q: 'Choose 2 correct sentences about a past habit that no longer exists. (Choose 2)',
+  multi: true,
+  options: [
+    'We used to use Jenkins for CI/CD.',
+    'We are used to using Jenkins.',
+    'We would deploy every Friday when I was there.',
+    'We use to deploy every Friday.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: 0 và 2.**
+
+### Vì sao đúng
+**Used to + V** và **would + V** đều diễn tả thói quen ở quá khứ đã không còn xảy ra: We used to use Jenkins (trước đây chúng tôi dùng Jenkins, giờ không dùng nữa), We would deploy every Friday (thứ sáu tuần nào cũng lên deploy). Would chỉ dùng cho hành động lặp lại, không dùng cho trạng thái.
+
+### Vì sao các phương án còn lại sai
+- **We are used to using Jenkins**: đây là be used to = quen với, nghĩa hoàn toàn khác (chúng tôi quen dùng Jenkins), không nói về thói quen quá khứ đã bỏ.
+- **We use to deploy**: thiếu thì quá khứ; đúng phải là used to deploy (d có e ở cuối khi đứng sau did/don't: Did you use to...?). Ở dạng khẳng định thì viết used to.
+
+> Senior tip: trong phỏng vấn, hãy dùng used to / would để kể quá khứ làm việc (ví dụ We used to deploy manually, now we use CI/CD). Nó làm câu chuyện thêm bối cảnh và cho thấy sự thay đổi, điều interviewer đánh giá cao.`
+},
+{
+  id: 'qz-behavioral-009',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một lần bạn bất đồng với đồng nghiệp về một quyết định kỹ thuật." Câu trả lời STAR tốt nhất là gì?',
+  options: [
+    'Anh lead cũ muốn dùng MongoDB chỉ vì thích công nghệ mới, trong khi rõ ràng không hiểu bài toán. Tôi phải escalate lên CTO và cuối cùng tôi đã đúng.',
+    'Team chúng tôi thường tranh luận, nhưng luôn thảo luận cởi mở và cùng nhau tìm ra giải pháp tốt nhất cho dự án.',
+    'Tôi và một senior khác bất đồng giữa MongoDB và PostgreSQL cho module billing, cần chốt trong 1 tuần. Tôi đề xuất thống nhất tiêu chí trước (transaction, báo cáo, vận hành), mỗi người làm spike 2 ngày trên dữ liệu thật, và ghi nhận điểm mạnh về schema linh hoạt của phương án kia. Team chọn PostgreSQL kèm cột JSONB, cả hai đồng thuận, module lên production đúng hạn và 6 tháng không có lỗi đối soát. Bài học: thống nhất tiêu chí trước khi tranh luận giải pháp.',
+    'Nếu có bất đồng, tôi sẽ lắng nghe, đưa ra dữ liệu và luôn tôn trọng quyết định cuối cùng của team.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: câu số 2 (MongoDB vs PostgreSQL).**
+
+### Vì sao đúng
+Câu này đủ cấu trúc STAR: S/T là module billing, áp lực chốt trong 1 tuần; A là hành động của chính ứng viên (đề xuất tiêu chí, spike, ghi nhận ưu điểm phương án đối phương) giải quyết bất đồng bằng dữ liệu chứ không phải bằng cái tôi; R là có số (đúng hạn, 6 tháng không lỗi), cả hai đồng thuận, phương án cuối kết hợp JSONB; cùng có bài học rút ra, điều interviewer cấp Senior/Lead rất tìm kiếm.
+
+### Vì sao các phương án còn lại sai
+- **Escalate lên CTO và khẳng định "tôi đã đúng"**: lỗi kinh điển: đổ lỗi, hạ thấp đồng nghiệp, escalate thay vì tự giải quyết, đo thành công bằng "tôi thắng".
+- **Team thường tranh luận... cởi mở**: chung chung, dùng "chúng tôi" nên không biết ứng viên làm gì, không có tình huống cụ thể, không có kết quả.
+- **"Nếu có bất đồng, tôi sẽ..."**: trả lời giả định cho câu hỏi hành vi (kể về một lần), nên bị hiểu là ứng viên không có ví dụ thật.
+
+> Senior tip: chuẩn bị sẵn 6–8 câu chuyện STAR từ dự án thật, mỗi câu 1,5–2 phút, tái sử dụng cho nhiều câu hỏi. Khoảng 60% thời lượng dành cho phần Action.`
+},
+{
+  id: 'qz-behavioral-010',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một lần bạn không kịp deadline." Câu trả lời nào NÊN TRÁNH nhất (chứa red flag)?',
+  options: [
+    'Dự án trễ 3 tuần vì team QA test quá chậm và product liên tục đổi requirement. Phần việc của tôi xong đúng hạn.',
+    'Tôi ước lượng tích hợp cổng thanh toán mất 2 tuần, giữa sprint phát hiện sandbox của đối tác thiếu webhook hoàn tiền. Ngay hôm đó tôi báo PM ước lượng mới kèm 2 lựa chọn: lùi 1 tuần, hoặc go-live đúng hạn và xử lý hoàn tiền thủ công tạm. PM chọn phương án 2, go-live đúng ngày, hoàn tiền tự động bổ sung sau 8 ngày.',
+    'Tôi trễ submit bản thiết kế 1 ngày vì underestimated thời gian review. Tôi báo sớm cho PM, hoàn thành đúng hôm sau, và từ đó tôi chia task thành các milestone nhỏ có ngày check-in.',
+    'Khi thấy không kịp, tôi luôn chủ động thông báo sớm và đề xuất phạm vi có thể cắt để vẫn đạt mốc quan trọng nhất.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: câu số 0 (đỏ lỗi, chứa red flag).**
+
+### Vì sao câu số 0 là red flag
+Nó **đổ lỗi** cho QA và product, tách mình khỏi kết quả chung (phần việc của tôi xong đúng hạn). Với vị trí Senior, interviewer muốn thấy bạn chịu trách nhiệm cho kết quả của team, và đã làm gì khi thấy QA chậm hay requirement đổi. Đây là tín hiệu sẽ khiến hiring manager lo ngại.
+
+### Vì sao các phương án còn lại không phải red flag
+- **Câu 1**: STAR chuẩn — thừa nhận ước lượng sai, báo sớm, đưa lựa chọn có trade-off, có kết quả số (go-live đúng ngày, 8 ngày sau đủ tính năng) và thay đổi quy trình (luôn spike tích hợp bên thứ ba trong tuần đầu).
+- **Câu 2**: thừa nhận underestimated, báo sớm, hoàn thành, và có cải thiện (chia milestone nhỏ).
+- **Câu 3**: thông báo sớm và đề xuất cắt phạm vi — cách xử lý trưởng thành khi ràng buộc thời gian.
+
+> Senior tip: câu then chốt nên có trong câu trả lời về trễ deadline là "tôi báo sớm kèm phương án". Tin xấu đến sớm thì vẫn còn lựa chọn, tin xấu đến muộn chỉ còn hậu quả.`
+},
+{
+  id: 'qz-behavioral-011',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một sự cố production do chính bạn gây ra." Câu trả lời STAR tốt nhất là gì?',
+  options: [
+    'Lỗi đó thực ra do môi trường staging khác production nên không ai có thể phát hiện trước, không phải lỗi của cá nhân nào.',
+    'Chúng tôi gặp một sự cố lớn, cả team họp khẩn và fix rất nhanh, sau đó mọi thứ hoạt động ổn định trở lại.',
+    'Tôi deploy một migration tạo index không dùng CONCURRENTLY trên bảng orders 80 triệu dòng, chặn ghi khoảng 12 phút giờ cao điểm. Tôi nhận trách nhiệm incident: dừng pipeline, cùng on-call huỷ câu lệnh, cập nhật kênh incident 5 phút một lần, rồi tạo lại index bằng CREATE INDEX CONCURRENTLY ngoài giờ cao điểm. Sau đó tôi viết postmortem blameless và thêm rule lint chặn tạo index không CONCURRENTLY trên bảng lớn; một năm sau lỗi này không lặp lại.',
+    'Tôi luôn test rất kỹ trước khi deploy nên tôi sẽ không để xảy ra sự cố production do mình gây ra.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: câu số 2 (migration tạo index trên bảng 80 triệu dòng).**
+
+### Vì sao đúng
+- **Ownership rõ ràng**: "tôi deploy", "tôi nhận trách nhiệm". Không né, không đổ lỗi.
+- **Chi tiết kỹ thuật vừa đủ và chính xác**: CREATE INDEX thường giữ lock chặn INSERT/UPDATE/DELETE trên bảng suốt thời gian build; CREATE INDEX CONCURRENTLY không chặn ghi (đổi lại build chậm hơn và không chạy được trong transaction block). Interviewer kỹ thuật sẽ tin câu chuyện thật.
+- **Xử lý incident bài bản**: giảm thiểu tác động trước, giao tiếp định kỳ, rồi mới sửa gốc.
+- **Phòng ngừa hệ thống** (rule lint) thay vì "lần sau cẩn thận hơn", kèm kết quả theo thời gian (một năm sau lỗi này không lặp lại).
+
+### Vì sao các phương án còn lại sai
+- **Do staging khác production... không phải lỗi của ai**: câu hỏi yêu cầu sự cố do bạn gây ra; trả lời bằng cách phủ nhận trách nhiệm là tín hiệu xấu. Blameless trong postmortem nghĩa là không quy tội cá nhân, không có nghĩa là không ai sở hữu vấn đề.
+- **Chúng tôi... fix rất nhanh**: không biết sự cố là gì, ứng viên làm gì, tác động bao nhiêu, rút ra gì. Dùng chúng tôi để che vai trò cá nhân.
+- **Tôi luôn test kỹ... sẽ không để xảy ra**: vừa giả định, vừa thiếu thực tế. Mọi kỹ sư làm production đủ lâu đều từng gây sự cố; khẳng định ngược lại khiến interviewer nghi ngờ kinh nghiệm hoặc sự trung thực.
+
+> Senior tip: kể sự cố theo khung postmortem: tác động → phát hiện → giảm thiểu → nguyên nhân gốc → hành động phòng ngừa. Interviewer cấp Lead đặc biệt chú ý phần phát hiện: nếu khách hàng báo trước monitoring thì bạn cũng nên kể bạn đã bổ sung alert gì.`
+},
+{
+  id: 'qz-behavioral-012',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một feedback khó nghe mà bạn từng nhận." Câu trả lời nào NÊN TRÁNH nhất (chứa red flag)?',
+  options: [
+    'Manager nói tài liệu thiết kế của tôi quá dài nên stakeholder không đọc. Ban đầu tôi hơi khó chịu, nhưng tôi xin 2 ví dụ cụ thể và 2 tài liệu mẫu được đánh giá tốt. Tôi chuyển sang format 1 trang: vấn đề, phương án, trade-off, quyết định cần chốt, chi tiết đưa vào phụ lục, và nhờ manager review 3 tài liệu tiếp theo. Thời gian chốt design giảm từ khoảng 2 tuần xuống 4 ngày, và format này trở thành template của team.',
+    'Tôi giải thích với manager rằng tài liệu dài là cần thiết vì hệ thống phức tạp, và sau buổi đó anh ấy đã hiểu ra quan điểm của tôi.',
+    'Tôi nhận feedback về ước lượng quá lạc quan, nên bắt đầu chia task thành các milestone nhỏ có ngày check-in và luôn thêm biên an toàn 20%. Sau 3 sprint, tỉ lệ dự đoán đúng tăng từ 50% lên 85%.',
+    'Tôi thường nhờ lead review tài liệu trước khi gửi stakeholder để tránh feedback về độ dài, và mình cũng viết tóm tắt 1 trang kèm theo.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: câu số 1 (phòng thủ, bác bỏ feedback).**
+
+### Vì sao câu số 1 là red flag
+Phản ứng **phòng thủ**: câu chuyện thực chất là ứng viên bác bỏ feedback (tài liệu dài là cần thiết, manager cuối cùng hiểu quan điểm của tôi). Interviewer sẽ lo người này khó coach, không dễ tiếp nhận ý kiến.
+
+### Vì sao các phương án còn lại không phải red flag
+- **Câu 0**: trung thực về cảm xúc (hơi khó chịu), nhưng hành động chủ động (xin ví dụ cụ thể, tìm mẫu tốt, thay đổi cách làm, mời người góp ý kiểm tra lại), kết quả đo được (2 tuần → 4 ngày) và lan ra cả team (template). Dấu hiệu cấp Senior/Lead.
+- **Câu 2**: thừa nhận feedback, có hành động cụ thể (chia milestone, thêm biên 20%), kết quả số (50% → 85%).
+- **Câu 3**: có biện pháp phòng ngừa (lead review, tóm tắt 1 trang) — xử lý trước khi feedback xảy ra.
+
+> Senior tip: chọn feedback thật sự có giá trị và về kỹ năng không phải cốt lõi tuyệt đối của vị trí (giao tiếp, ước lượng, uỷ quyền), rồi chứng minh đã thay đổi bằng số. Kết thúc bằng việc bạn giờ chủ động xin feedback thế nào (ví dụ hỏi sau mỗi design review) sẽ ghi điểm thêm.`
+},
+{
+  id: 'qz-behavioral-013',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về lần bạn giúp một thành viên trong team đang gặp khó khăn về hiệu suất." Câu trả lời STAR tốt nhất là gì?',
+  options: [
+    'Một junior vào được 3 tháng, PR thường bị trả lại 4–5 vòng và hay trễ task. Tôi hẹn 1-1 và nhận ra bạn ngại hỏi, chưa hiểu domain thanh toán. Tôi viết checklist review, pair programming 2 buổi mỗi tuần trong một tháng, và giao task nhỏ có phạm vi rõ trước. Sau 2 tháng, số vòng review trung bình còn 1–2 và bạn tự làm một feature nhỏ end-to-end. Tôi rút ra: vấn đề thường nằm ở bối cảnh hơn là năng lực.',
+    'Bạn ấy làm chậm nên tôi nhận lại các task khó và tự làm cho nhanh, để bạn ấy làm việc dễ hơn; nhờ vậy sprint của team luôn đúng hạn.',
+    'Tôi báo với manager rằng bạn ấy không đủ năng lực và đề nghị chuyển bạn sang team khác để không ảnh hưởng tiến độ.',
+    'Tôi rất thích mentor. Tôi thường chia sẻ kiến thức về Spring, JPA, Kafka, clean code và design pattern cho các bạn junior, đồng thời tổ chức tech talk hằng tháng để cả team cùng học hỏi.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: câu số 0 (1-1, checklist và pair programming với junior).**
+
+### Vì sao đúng
+- **Chẩn đoán trước khi hành động**: 1-1 để tìm nguyên nhân (ngại hỏi, thiếu domain), không mặc định là kém.
+- **Hành động có cấu trúc, phù hợp nguyên nhân**: checklist (giảm lỗi lặp lại), pair programming (truyền domain), task nhỏ (tạo thành công sớm).
+- **Kết quả đo được** (4–5 vòng → 1–2 vòng, tự làm feature) và bài học về cách nhìn người.
+
+### Vì sao các phương án còn lại sai
+- **Nhận lại task khó và tự làm**: hero mode. Sprint đúng hạn ngắn hạn nhưng junior không tiến bộ, senior thành nút thắt cổ chai. Interviewer cấp Lead xem đây là thiếu năng lực phát triển người khác.
+- **Báo manager chuyển team**: bỏ qua mọi nỗ lực hỗ trợ, gán nhãn không đủ năng lực khi chưa tìm nguyên nhân. Thể hiện thiếu sự đồng cảm và tinh thần team.
+- **Rất thích mentor... tech talk**: nghe tích cực nhưng lạc đề: câu hỏi về một người cụ thể đang gặp khó khăn, câu trả lời lại liệt kê hoạt động chung chung, không có tình huống, không có kết quả.
+
+> Senior tip: khi kể chuyện về người khác, giữ tôn trọng (không nêu tên, không chê bai) và nhấn mạnh kết quả của họ, không phải công lao của bạn. Nếu câu chuyện kết thúc bằng việc người đó vẫn không tiến bộ, hãy kể bạn đã phối hợp với manager minh bạch và công bằng ra sao; đó cũng là câu trả lời tốt.`
+},
+{
+  id: 'qz-behavioral-014',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một lần hai stakeholder cùng yêu cầu việc gấp mà bạn chỉ làm kịp một việc." Chọn 2 câu trả lời chứa RED FLAG (nên tránh). (Chọn 2)',
+  multi: true,
+  options: [
+    'Tôi nhận cả hai và làm thêm giờ cả tuần để hoàn thành, vì tôi không muốn làm ai thất vọng.',
+    'Sales cần API báo giá cho một khách lớn trong 5 ngày, cùng lúc Ops yêu cầu sửa job đối soát đang lệch số. Tôi ước lượng cả hai và hỏi mỗi bên tác động nếu chậm 1 tuần: báo giá có thể mất hợp đồng khoảng 200 nghìn USD, đối soát có thể xử lý tay tạm thời. Tôi đưa bảng so sánh cho engineering manager và hai bên cùng chốt: làm API trước, Ops chạy script tạm tôi viết trong 2 giờ. Cả hai việc xong trong 8 ngày và không mất hợp đồng nào.',
+    'Tôi hỏi mỗi bên tác động nếu chậm 1 tuần, rồi gửi đề xuất ưu tiên cho engineering manager để cả hai bên cùng chốt.',
+    'Tôi chọn làm việc của Sales vì họ mang lại doanh thu, còn với Ops thì tôi trả lời là đang bận và để họ tự xoay xở.'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: câu 0 và 3 (cả hai chứa red flag).**
+
+### Vì sao câu 0 và 3 là red flag
+- **Câu 0**: nhận cả hai và làm thêm giờ cả tuần — không biết nói không hay thương lượng; không bền vững, chất lượng dễ giảm, và che giấu vấn đề capacity với quản lý.
+- **Câu 3**: chọn Sales vì doanh thu, để Ops tự xoay xở — quyết định đơn phương và giao tiếp kém, làm hỏng quan hệ với Ops, không có kết quả về tác động của việc đối soát lệch.
+
+### Vì sao các phương án còn lại không phải red flag
+- **Câu 1**: STAR chuẩn — ra quyết định dựa trên tác động (hỏi cụ thể chậm 1 tuần thì mất gì), minh bạch và đúng người quyết định (đưa bảng so sánh cho EM, hai bên cùng chốt), giảm thiệt hại cho bên bị lùi (script tạm 2 giờ), có kết quả cụ thể.
+- **Câu 2**: hỏi mỗi bên tác động, rồi gửi đề xuất ưu tiên cho manager — cách xử lý trong suốt, chịu trách nhiệm đưa dữ liệu để người có thẩm quyền quyết định.
+
+> Senior tip: ở cấp Senior trở lên, câu "không phải tôi một mình quyết định ưu tiên, nhưng tôi chịu trách nhiệm đưa đủ dữ liệu để người có thẩm quyền quyết định nhanh" thể hiện đúng tầm. Kể thêm bạn đã cập nhật lại cho bên bị lùi lịch thế nào sẽ là điểm cộng.`
 }
 );

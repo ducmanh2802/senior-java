@@ -855,6 +855,590 @@ final class Attempts {
     answer: 3,
     explain: 'Đây đúng là cơ chế try-with-resources dùng cho lỗi close. Giữ toàn bộ lịch sử trong một exception giúp so sánh message giữa các lần thử (transient hay lặp lại y hệt) mà không phải lần ngược nhiều dòng log của cùng một request.'
   }], related: ['core-001', 'core-003'], tags: ['Exception', 'retry', 'Result', 'observability']
+},
+{
+  id: 'lesson-core-008', track: 'core', order: 8,
+  title: 'Record, sealed interface và pattern matching: mô hình hoá kết quả nghiệp vụ', level: 'senior', minutes: 30,
+  goals: ['Viết record kèm compact constructor để chặn dữ liệu sai ngay lúc tạo', 'Mô hình hoá kết quả bằng sealed interface để trạng thái sai không còn biểu diễn được', 'Dùng instanceof pattern rẽ nhánh theo kiểu mà không cast thủ công', 'Nói được switch pattern Java 21 hơn gì ở tính đầy đủ và vì sao bài tập chỉ dùng Java 17'],
+  body: `**Tóm tắt:** **record** là class chứa dữ liệu chỉ đọc do compiler viết hộ: bạn khai báo danh sách thành phần (gọi là **component**), Java tự sinh field final, constructor, accessor, {{equals}}, {{hashCode}}, {{toString}}. **sealed interface** kèm {{permits}} niêm phong tập kiểu con được phép, nên kết quả thanh toán chỉ có thể là Success, Declined hoặc Failed — không có trạng thái thứ tư, không cần trả {{null}} và không cần cờ {{boolean}}. **instanceof pattern** ({{r instanceof Success s}}) vừa kiểm tra kiểu vừa tạo ra biến {{s}} đã được ép kiểu; còn **switch pattern** là tính năng Java 21, ở đây chỉ dùng để đọc hiểu vì bài tập biên dịch bằng Java 17.
+
+### Từ class chứa dữ liệu đến record
+Trước đây một class chỉ chở dữ liệu trông như sau: field final, constructor gán từng field, accessor cho từng field, rồi {{equals}}, {{hashCode}}, {{toString}} — khoảng ba mươi dòng, và ba dòng cuối là nơi hay sai nhất: quên một field trong {{equals}} làm hai đối tượng khác nhau bị coi là bằng nhau, quên trong {{hashCode}} khiến tra HashMap trả kết quả khó đoán.
+
+~~~java
+record Money(long amount, String currency) { }
+~~~
+
+Một dòng thay cho toàn bộ khối đó. Bảng dưới liệt kê đúng những gì compiler tự viết:
+
+| Bạn chỉ khai báo | Compiler tự sinh |
+|---|---|
+| {{record Money(long amount, String currency)}} | mỗi component thành một field private final |
+| | canonical constructor {{Money(long, String)}} đúng thứ tự component |
+| | accessor {{amount()}} và {{currency()}} — không có tiền tố get |
+| | {{equals}} và {{hashCode}} tính theo tất cả component, không thể quên field |
+| | {{toString}} dạng {{Money[amount=1000, currency=VND]}} |
+
+Hai điểm hay bị hỏi: accessor là {{amount()}} chứ không phải {{getAmount()}}, vì record không theo chuẩn JavaBeans (Jackson từ 2.12 đọc record qua constructor và component nên không cần getter); và record luôn ngầm định là **final** đồng thời đã kế thừa {{java.lang.Record}} — nên nó không kế thừa class khác, implement interface thì bình thường, và không được khai thêm field nội bộ ngoài component (static field thì được).
+
+### Compact constructor: chốt chặn ngay ở cửa
+**Compact constructor** là khối thân viết ngắn bằng tên record, không có danh sách tham số. Nó chạy **trước khi** các field được gán; cuối thân, compiler tự chèn lệnh gán field từ chính tham số.
+
+~~~java
+record Money(long amount, String currency) {
+    Money {                                                      // compact: không ghi (long amount, ...)
+        if (amount < 0) throw new IllegalArgumentException("amount phai >= 0");
+        currency = currency.toUpperCase(java.util.Locale.ROOT);   // chuẩn hoá THAM SỐ, không ghi this
+    }
+}
+~~~
+
+Vì sao phải chạy trước lúc gán? Vì field là final, chỉ được gán một lần, và lần gán đó là phần compiler thêm vào cuối. Nếu bạn viết {{this.currency = ...}} trong compact constructor, compiler báo lỗi "cannot assign a value to final variable currency" — đó là cách Java nhắc bạn: muốn biến đổi giá trị thì ghi đè tham số.
+
+> Lưu ý thiết kế: khi việc kiểm tra nằm trong constructor, mọi object Money tồn tại trong hệ thống đều đã hợp lệ. Các hàm phía sau không cần lặp lại điều kiện {{amount < 0}} nữa. Đó là **bất biến** (invariant): một điều luôn đúng suốt vòng đời của object, và nơi duy nhất cần kiểm tra là lúc tạo.
+
+| Muốn gì | Dùng cách nào |
+|---|---|
+| Chặn hoặc chuẩn hoá dữ liệu đầu vào | compact constructor |
+| Thêm cách tạo thuận tiện, ví dụ tự suy ra tiền tệ | overload gọi {{this(amount, "VND")}} |
+| Cắt liên kết với list/mảng của người gọi | {{List.copyOf}} trong compact constructor |
+| Đổi hình thức chữ ký công khai | canonical constructor viết tay, giữ đúng kiểu và thứ tự component |
+
+### Bất biến nông: record không tự bảo vệ nội dung bên trong
+Field final chỉ đảm bảo **cái tham chiếu** không đổi. Nếu component là {{List}} hoặc mảng mà người gọi vẫn giữ bản gốc, họ sửa được nội dung bên trong; mà {{hashCode}} của record tính theo nội dung, nên object đang nằm trong HashMap/HashSet sẽ "mất tích" khi tra.
+
+~~~java
+record Basket(String id, List<String> items) {
+    Basket { items = List.copyOf(items); }        // bản sao bất biến: người gọi hết đường sửa
+}
+~~~
+
+{{List.copyOf}} vừa copy vừa trả về list không cho sửa — đó là defensive copy ở cửa vào, cùng nguyên tắc với bài Immutable object và defensive copy trong track này.
+
+### Sealed interface: niêm phong danh sách kiểu con
+Mục tiêu mô hình hoá: "một lệnh thanh toán có đúng ba số phận".
+
+~~~java
+sealed interface PaymentResult permits Success, Declined, Failed {
+    long amount();                                   // ba subtype đều phải có số tiền
+}
+record Success(long amount, String reference, long fee) implements PaymentResult { }
+record Declined(long amount, String code, String message, boolean retryable) implements PaymentResult { }
+record Failed(long amount, String message, Throwable cause) implements PaymentResult { }
+~~~
+
+{{permits}} liệt kê đúng những kiểu được phép implement; class khác muốn implement {{PaymentResult}} sẽ bị compiler từ chối. Mỗi subtype phải chọn một trong ba thái độ: final (không cho kế thừa tiếp), sealed (tiếp tục niêm phong) hoặc non-sealed (mở lại cho thế giới); record ngầm định là final nên không cần ghi gì. Các subtype phải nằm **cùng package** với kiểu sealed (nếu dự án dùng module thì cùng module); đặt chung một file là cách gọn nhất, khi đó có thể bỏ {{permits}} vì compiler tự suy ra.
+
+Vì sao không dùng enum? Vì mỗi nhánh ở đây mang dữ liệu riêng: Declined cần {{code}} và {{retryable}}, Success cần {{reference}} và {{fee}}; enum constant là hằng đơn, muốn gắn dữ liệu khác nhau theo từng lần tạo phải nhét field vào enum và khi đó mọi constant mang mọi field. Vì sao không {{boolean ok}} cộng một mớ field rời? Vì cách đó cho phép biểu diễn trạng thái vô nghĩa.
+
+| Cách mô hình hoá | Trạng thái vô nghĩa có tạo ra được không | Ai phát hiện |
+|---|---|---|
+| cờ boolean cùng field rời, cho phép null | Có: ok true nhưng reference null | người dùng, sau khi lỗi đã xảy ra |
+| class cha mở cộng subclass | Có: thêm subtype mới mà không chỗ nào xử lý | code review, hoặc bug |
+| sealed interface cùng record | Không: mỗi nhánh mang đúng dữ liệu của nó | compiler |
+
+Đây là cách nói khác của nguyên tắc "make illegal states unrepresentable": thiết kế kiểu dữ liệu sao cho lỗi không viết ra được. Luồng thật của một lệnh thanh toán qua ba hệ thống, nơi {{PaymentResult}} ra đời:
+
+~~~seq
+title: Mot lenh thanh toan di qua ba he thong
+actors: Service | Bank Gateway | Ngan hang
+Service -> Bank Gateway: POST /pay (so tien, ma don hang)
+Bank Gateway -> Ngan hang: uy quyet the (authorization)
+Ngan hang --> Bank Gateway: ma loi 51 (the het han)
+Bank Gateway --> Service: 200 + ket qua DECLINED
+Service --> Service: chuyen ket qua thanh Success hoac Declined
+note Service..Ngan hang: Service chi nhan PaymentResult, khong bao gio nhan null
+~~~
+
+### instanceof pattern (Java 16/17) và switch pattern (Java 21)
+~~~java
+static long charged(PaymentResult r) {
+    if (r instanceof Success s) return s.amount();   // s đã là Success, không cần ép kiểu thủ công
+    if (r instanceof Declined d) return 0L;
+    if (r instanceof Failed f) return 0L;
+    return 0L;                                       // Java 17 KHÔNG biết ba nhánh đã phủ hết
+}
+~~~
+
+Biến {{s}} trong mẫu {{r instanceof Success s}} gọi là biến được **gắn** (binding variable): nó chỉ sống ở những điểm mà compiler chứng minh được điều kiện đã đúng — quy tắc này có tên flow scoping. Vì nếu điều kiện sai thì chẳng có object nào để ép kiểu, nên {{s}} không dùng được trong khối {{else}}. Cách an toàn nhất: trả kết quả ngay trong nhánh, đừng để dành biến cho phía sau. Giới hạn thứ hai: mẫu gộp kiểu {{if (r instanceof Declined || r instanceof Failed)}} không gắn được biến, vì compiler không biết nhánh nào đúng.
+
+Dòng {{return 0L}} chót là chỗ gây khó chịu kinh điển: sealed cho ta biết chỉ có ba kiểu, nhưng chuỗi if thì không bị kiểm tra tính đầy đủ ở Java 17. Java 21 (JEP 441) sửa bằng switch pattern:
+
+~~~java
+static long charged21(PaymentResult r) {
+    return switch (r) {                              // Java 21 — KHÔNG dùng trong bài tập dưới đây
+        case Success s -> s.amount();
+        case Declined d -> 0L;
+        case Failed f -> 0L;                         // không cần default: sealed đã liệt kê đủ
+    };
+}
+~~~
+
+Ở dạng này compiler **buộc** phủ hết mọi subtype, và record pattern còn bóc luôn component: {{case Success(amt, ref, fee) -> ...}}, kèm điều kiện phụ khi (guard): {{case Declined d when d.retryable() -> ...}}. Hệ quả thực tế rất đáng tiền: thêm {{Crypto}} vào {{permits}} thì mọi switch không có default đều **lỗi biên dịch** và liệt kê đúng những chỗ phải sửa. Nếu bạn theo thói quen viết default, lợi ích này biến mất, vì default nuốt luôn subtype mới.
+
+Một chi tiết về null: {{switch}} trên giá trị null ném {{NullPointerException}} nếu không có {{case null}} (Java 21 cho phép viết {{case null}}), còn chuỗi if/else instanceof thì null âm thầm rơi xuống dòng chót. Nếu null không phải đầu vào hợp lệ, mở đầu hàm bằng {{Objects.requireNonNull(r, "result")}}.
+
+> Senior tip: thứ giết bạn trên production không phải cú pháp mà là **chỗ xử lý thiếu nhánh**. Codebase Java 17 dùng chuỗi if/else instanceof: thêm subtype mới là im lặng rơi vào nhánh cuối, ví dụ trả 0 đồng thay vì báo lỗi. Ba biện pháp phòng ngừa: gom mọi lần "dịch" {{PaymentResult}} sang hành vi vào **một** hàm duy nhất; viết unit test cho từng subtype; khi lên Java 21 thì đổi sang switch pattern và xoá được cả hai thứ đó.
+
+### Pitfall production
+- Dùng record làm JPA **entity**: Hibernate cần class không final để tạo proxy lazy loading, cần constructor không tham số và field gán lại được khi load. Record rất hợp làm DTO/projection; từ Hibernate 6.2 record còn dùng làm {{@Embeddable}} được.
+- Component là {{List}} hoặc mảng mà không copy: nội dung bị sửa từ bên ngoài, {{equals}}/{{hashCode}} đổi theo, object mất tích trong HashMap/HashSet.
+- Ghi {{this.x = ...}} trong compact constructor: lỗi biên dịch; muốn chuẩn hoá thì ghi đè tham số.
+- {{toString}} của record in **toàn bộ** component: nếu record chứa PAN, token, mật khẩu thì log sẽ lộ. Override {{toString}} để mask là hợp lệ và nên làm ngay khi tạo.
+- {{equals}} so theo component nên hai record khác kiểu cùng giá trị vẫn không bằng nhau; khi cần so theo nghiệp vụ, so qua accessor chung của interface ({{amount()}}) thay vì {{equals}}.
+- Sealed subtype đặt ở package khác: lỗi "illegal inheritance" khó hiểu — nhớ quy tắc cùng package/module.
+- Không kiểm tra tham số ở cửa, để NPE nổ ở tầng mapper cách xa nơi nhận dữ liệu sai; người điều tra mất một buổi để tìm một dòng {{null}}.
+- Nghĩ rằng "record bất biến nên tạo bao nhiêu cũng được": mỗi lần "sửa" là một object mới. Vòng lặp đọc hai triệu dòng sẽ thấy áp lực allocation — nhưng đó là việc đo xong hãy tối ưu, không phải lý do để bỏ record.
+
+### Liên hệ phỏng vấn
+Câu hỏi đi theo trình tự: record khác class thường ở điểm nào, compact constructor chạy lúc nào và có được gán {{this.x}} không, sealed cho ta gì mà interface thường không có, exhaustiveness hoạt động ra sao khi thêm subtype, vì sao không dùng record làm entity, instanceof pattern khác switch pattern ở phiên bản nào. Cách trả lời ăn điểm: **cơ chế → lợi ích an toàn kiểu → giới hạn thực tế (component mutable, JPA, toString)** rồi khép bằng một kinh nghiệm, ví dụ "chúng tôi gom việc chuyển kết quả sang một hàm và đổi sang switch pattern khi lên Java 21, nhờ đó mọi chỗ chưa xử lý lộ ra ngay lúc biên dịch".`,
+  exercises: [{
+    title: 'PaymentResult sealed, instanceof pattern và compact constructor',
+    prompt: `Mô hình hoá kết quả một lệnh thanh toán bằng sealed interface cùng ba record, rồi xử lý bằng instanceof pattern. **Chỉ dùng tính năng có trong Java 17**: không switch pattern, không record pattern.
+- {{sealed interface PaymentResult}} permits đúng ba kiểu {{Success}}, {{Declined}}, {{Failed}}; mỗi kiểu là một record và đều có component {{amount}} kiểu {{long}} (VND); interface khai báo {{long amount();}}.
+- {{Success}} có thêm {{reference}} (mã giao dịch) và {{fee}} (phí, {{long}}). {{Declined}} có thêm {{code}}, {{message}} và {{retryable}} ({{boolean}}). {{Failed}} có thêm {{message}} và {{cause}} ({{Throwable}}).
+- Compact constructor **từ chối dữ liệu sai ngay lúc tạo**: {{amount < 0}} → {{IllegalArgumentException}} có message chứa chữ amount, áp dụng cho cả ba record; {{reference}} null hoặc chỉ toàn khoảng trắng → {{IllegalArgumentException}} chứa reference; {{code}} null hoặc trắng → {{IllegalArgumentException}} chứa code; ở {{Failed}}, {{cause}} null → {{NullPointerException}} có message đúng bằng chuỗi cause.
+- {{Checkout.charged(r)}}: Success trả {{amount}}, Declined trả 0, Failed trả 0.
+- {{Checkout.receipt(r)}}: Success → "OK " + reference + " " + (amount - fee); Declined → "NO " + code + " REUSE" nếu retryable, ngược lại "NO " + code + " STOP"; Failed → "ERR " + message.
+- {{Checkout.retryLater(r)}}: chỉ true khi Declined mà retryable, hoặc khi Failed; Success → false.
+Viết rẽ nhánh bằng mẫu {{if (r instanceof Success s)}}, không ép kiểu thủ công. Không đọc ngày giờ, không random, không sleep: chạy hai lần phải cho cùng kết quả.`,
+    starter: `sealed interface PaymentResult permits Success, Declined, Failed {
+    long amount();
+}
+
+record Success(long amount, String reference, long fee) implements PaymentResult {
+    Success {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+record Declined(long amount, String code, String message, boolean retryable) implements PaymentResult {
+    Declined {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+record Failed(long amount, String message, Throwable cause) implements PaymentResult {
+    Failed {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class Checkout {
+    static long charged(PaymentResult r) { throw new UnsupportedOperationException("TODO"); }
+    static String receipt(PaymentResult r) { throw new UnsupportedOperationException("TODO"); }
+    static boolean retryLater(PaymentResult r) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("muốn " + expected + " nhận " + actual);
+    }
+    static Throwable thrown(Runnable body) {
+        try { body.run(); return null; } catch (Throwable t) { return t; }
+    }
+    public static void main(String[] args) {
+        Success ok = new Success(1000L, "T1", 10L);
+        Declined no = new Declined(1000L, "51", "the het han", false);
+        Declined retry = new Declined(1000L, "96", "ngan hang bom", true);
+        Throwable boom = new IllegalStateException("socket timeout");
+        Failed err = new Failed(1000L, "khong goi duoc gateway", boom);
+
+        check("charged chi trut tien khi Success", () -> {
+            eq(1000L, Checkout.charged(ok));
+            eq(0L, Checkout.charged(no));
+            eq(0L, Checkout.charged(err));
+        });
+        check("receipt cua Success la OK reference va tien thuc thu", () -> eq("OK T1 990", Checkout.receipt(ok)));
+        check("receipt cua Declined phan biet retryable", () -> {
+            eq("NO 51 STOP", Checkout.receipt(no));
+            eq("NO 96 REUSE", Checkout.receipt(retry));
+        });
+        check("receipt cua Failed la ERR kem message", () -> eq("ERR khong goi duoc gateway", Checkout.receipt(err)));
+        check("retryLater: Success false, Declined theo retryable, Failed true", () -> {
+            eq(false, Checkout.retryLater(ok));
+            eq(false, Checkout.retryLater(no));
+            eq(true, Checkout.retryLater(retry));
+            eq(true, Checkout.retryLater(err));
+        });
+        check("compact constructor tu choi amount am o ca ba record", () -> {
+            Throwable t1 = thrown(() -> new Success(-1L, "T1", 0L));
+            Throwable t2 = thrown(() -> new Declined(-1L, "51", "x", false));
+            Throwable t3 = thrown(() -> new Failed(-1L, "x", boom));
+            eq(true, t1 instanceof IllegalArgumentException);
+            eq(true, t2 instanceof IllegalArgumentException);
+            eq(true, t3 instanceof IllegalArgumentException);
+            eq(true, t1.getMessage().contains("amount"));
+            eq(true, t2.getMessage().contains("amount"));
+            eq(true, t3.getMessage().contains("amount"));
+        });
+        check("compact constructor tu choi reference va code rong", () -> {
+            Throwable a = thrown(() -> new Success(1L, null, 0L));
+            Throwable b = thrown(() -> new Success(1L, "   ", 0L));
+            Throwable c = thrown(() -> new Declined(1L, "", "x", false));
+            eq(true, a instanceof IllegalArgumentException);
+            eq(true, b instanceof IllegalArgumentException);
+            eq(true, a.getMessage().contains("reference"));
+            eq(true, b.getMessage().contains("reference"));
+            eq(true, c instanceof IllegalArgumentException);
+            eq(true, c.getMessage().contains("code"));
+        });
+        check("Failed yeu cause: thieu cause la NullPointerException voi message cause", () -> {
+            Throwable t = thrown(() -> new Failed(1L, "loi", null));
+            eq(true, t instanceof NullPointerException);
+            eq("cause", t.getMessage());
+        });
+        check("record so sanh theo gia tri va toString lo component", () -> {
+            Success same = new Success(1000L, "T1", 10L);
+            eq(true, ok.equals(same));
+            eq(true, ok.hashCode() == same.hashCode());
+            eq(true, ok.toString().contains("reference=T1"));
+            Map<Success, String> seen = new HashMap<>();
+            seen.put(ok, "lan dau");
+            seen.put(same, "lan hai");
+            eq(1, seen.size());
+            eq("lan hai", seen.get(new Success(1000L, "T1", 10L)));
+        });
+        check("Failed giu dung instance cause de con dieu tra", () -> {
+            eq(true, err.cause() == boom);
+            eq("socket timeout", err.cause().getMessage());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `sealed interface PaymentResult permits Success, Declined, Failed {
+    long amount();
+}
+
+record Success(long amount, String reference, long fee) implements PaymentResult {
+    Success {
+        if (amount < 0) throw new IllegalArgumentException("amount phai >= 0");
+        if (reference == null || reference.isBlank()) throw new IllegalArgumentException("reference khong duoc trong");
+    }
+}
+
+record Declined(long amount, String code, String message, boolean retryable) implements PaymentResult {
+    Declined {
+        if (amount < 0) throw new IllegalArgumentException("amount phai >= 0");
+        if (code == null || code.isBlank()) throw new IllegalArgumentException("code khong duoc trong");
+    }
+}
+
+record Failed(long amount, String message, Throwable cause) implements PaymentResult {
+    Failed {
+        if (amount < 0) throw new IllegalArgumentException("amount phai >= 0");
+        Objects.requireNonNull(cause, "cause");
+    }
+}
+
+class Checkout {
+    static long charged(PaymentResult r) {
+        if (r instanceof Success s) return s.amount();
+        if (r instanceof Declined d) return 0L;
+        if (r instanceof Failed f) return 0L;
+        return 0L;                        // Java 17 khong chứng minh ba nhánh đã đủ, hàm vẫn cần lối ra
+    }
+    static String receipt(PaymentResult r) {
+        if (r instanceof Success s) return "OK " + s.reference() + " " + (s.amount() - s.fee());
+        if (r instanceof Declined d) return "NO " + d.code() + (d.retryable() ? " REUSE" : " STOP");
+        if (r instanceof Failed f) return "ERR " + f.message();
+        return "UNKNOWN";
+    }
+    static boolean retryLater(PaymentResult r) {
+        if (r instanceof Declined d) return d.retryable();
+        if (r instanceof Failed) return true;
+        return false;                     // Success, va moi subtype chua duoc xu ly
+    }
+}`,
+    hints: ['Compact constructor chỉ ghi tên record rồi đến khối thân, không có danh sách tham số. Muốn chuẩn hoá thì ghi đè tham số, đừng gán vào this.', 'Kiểm tra chuỗi rỗng nên viết {{reference == null || reference.isBlank()}}: isBlank coi chuỗi chỉ toàn khoảng trắng là rỗng (có từ Java 11).', 'Mẫu instanceof viết là {{if (r instanceof Success s)}} — một cặp ngoặc đơn bao điều kiện, biến s chỉ dùng được bên trong nhánh đó.', 'Hàm vẫn cần một dòng return cuối vì compiler Java 17 không biết ba nhánh instanceof đã phủ hết sealed type; đó chính là chỗ switch pattern của Java 21 giúp bạn.'],
+    explain: `Mỗi record tự sinh accessor {{amount()}} từ component trùng tên, nên ba subtype thoả mãn khai báo {{long amount();}} của interface mà không phải viết thêm dòng nào. Compact constructor chạy trước lúc gán field: nếu {{amount < 0}} thì object không hề tồn tại, vì thế {{charged}} không bao giờ phải đề phòng số âm. Dòng {{Objects.requireNonNull(cause, "cause")}} trả lại chính xác instance được truyền vào và chỉ ném khi nó null — kiểu lỗi này hợp với thất bại từ hạ tầng (gọi gateway hỏng) nơi bạn muốn một message ngắn gọn chứ không phải exception nghiệp vụ. Test {{err.cause() == boom}} khẳng định record giữ nguyên instance chứ không tạo bản sao, nên stack trace gốc còn nguyên để điều tra. Điều kiện {{equals}}/{{hashCode}} do compiler sinh cũng là lý do nhiều đội dùng record làm key: hai {{Success}} cùng giá trị chỉ tạo một entry trong HashMap, và {{toString}} in sẵn tên component nên log đọc được ngay — nhớ mask trước khi để nó in dữ liệu nhạy cảm.`
+  }], check: [{
+    q: 'Compact constructor của record chạy ở thời điểm nào và được phép làm gì?',
+    options: ['Chạy sau khi field đã gán, nên muốn chuẩn hoá phải ghi this.x = ...', 'Chạy trước khi field được gán: bạn validate hoặc ghi đè tham số, còn gán this.x sẽ bị compiler báo lỗi', 'Chỉ chạy với record không có component, dùng để khởi tạo giá trị static', 'Là constructor bắt buộc mà compiler sinh ra khi bạn tự viết canonical constructor'],
+    answer: 1,
+    explain: 'Compiler tự chèn phần gán field vào cuối compact constructor, nên thân hàm làm việc với tham số. Field của record là final và chưa được gán lúc thân chạy, vì vậy ghi this.x sẽ nhận lỗi cannot assign a value to final variable.'
+  },{
+    q: 'Codebase Java 17 xử lý PaymentResult bằng chuỗi if/else instanceof. Thêm một subtype mới vào danh sách permits thì gì xảy ra?',
+    options: ['Compiler báo lỗi ở mọi chỗ rẽ nhánh chưa xử lý subtype mới', 'Runtime ném illegal subtype exception nên test sẽ phát hiện ngay', 'Không có lỗi biên dịch: nhánh mới im lặng rơi vào phần xử lý còn lại của hàm và có thể trả giá trị sai', 'Toàn bộ record cũ bị vô hiệu hoá và phải viết lại equals'],
+    answer: 2,
+    explain: 'Chuỗi if không bị kiểm tra tính đầy đủ, kể cả khi kiểu là sealed. Đây là loại bug không ném exception: đơn hàng kiểu mới bị coi như thất bại hoặc bị trừ 0 đồng. Chỉ switch pattern của Java 21 mới buộc phủ hết, và khi đó đừng viết default.'
+  },{
+    q: 'Vì sao record không phù hợp làm JPA entity nhưng lại phù hợp làm DTO?',
+    options: ['Vì record không có equals và hashCode nên JPA không so sánh được', 'Vì entity cần class không final để Hibernate tạo proxy lazy loading, cần constructor không tham số và field gán lại được; DTO chỉ cần chở dữ liệu bất biến', 'Vì record chỉ chứa kiểu số nguyên nên không ánh xạ được cột', 'Vì Jackson không đọc được record nên mọi tầng đều phải dùng class thường'],
+    answer: 1,
+    explain: 'Hibernate kế thừa class entity để làm lazy loading và dirty checking, nên class final như record bị loại. Record vẫn là lựa chọn tốt cho DTO, cho projection trong query, và từ Hibernate 6.2 là @Embeddable. Jackson từ 2.12 hỗ trợ record trực tiếp qua canonical constructor.'
+  },{
+    q: 'Đoạn code: if (r instanceof Success s) return s.reference(); Sau dòng if này, biến s còn dùng được không?',
+    options: ['Có, vì s được khai báo ở phạm vi cả hàm', 'Không: s chỉ tồn tại ở những điểm mà compiler chứng minh điều kiện đúng (flow scoping); muốn dùng tiếp thì xử lý trọn trong nhánh hoặc gán ra biến riêng', 'Chỉ dùng được nếu Success là subtype của sealed interface', 'Chỉ dùng được khi viết thêm case null'],
+    answer: 1,
+    explain: 'Biến được gắn của instanceof pattern chỉ đi vào scope tại nhánh mà điều kiện chắc chắn đúng. Nếu điều kiện sai thì không có đối tượng nào để ép kiểu, nên giữ s sống tiếp sẽ phá vỡ an toàn kiểu — đây cũng là lý do nên return ngay trong nhánh.'
+  }], related: ['modern-003', 'core-003', 'core-007'], tags: ['record', 'sealed', 'pattern matching', 'Java 17', 'domain modeling']
+},
+{
+  id: 'lesson-core-009', track: 'core', order: 9,
+  title: 'Optional và xử lý null đúng cách: kiểu trả về, cửa vào và giá trị mặc định đắt', level: 'mid', minutes: 25,
+  goals: ['Diễn giải được vì sao NullPointerException nổ ở nơi xa chỗ nhận dữ liệu sai', 'Dùng Optional đúng chỗ: kiểu trả về, không dùng cho field, tham số và phần tử collection', 'Viết chuỗi lookup bằng map/flatMap thay cho null-check lồng nhau và giải thích map xử lý hàm trả null thế nào', 'Chọn orElse hay orElseGet dựa trên chi phí tính giá trị mặc định, và chặn null ở cửa vào bằng Objects.requireNonNull'],
+  body: `**Tóm tắt:** {{null}} nghĩa là "biến này không trỏ tới object nào"; chỉ cần gọi method trên nó là JVM ném {{NullPointerException}}. {{Optional}} là một object nhỏ bọc giá trị, hoặc có một giá trị hoặc không có gì, tồn tại để nói ngay trong kiểu trả về rằng "kết quả có thể vắng mặt". Nó hợp làm **kiểu trả về**, không hợp làm field, tham số method hay phần tử collection. {{orElse}} nhận một **giá trị** nên giá trị đó đã được tính trước khi hàm chạy; {{orElseGet}} nhận một **công thức chưa chạy** ({{Supplier}}) và chỉ gọi khi thật sự thiếu.
+
+### Null là gì và vì sao nó tai hại
+Biến kiểu object không chứa object, nó chứa **tham chiếu** (địa chỉ tới object trên heap). {{null}} là giá trị đặc biệt của tham chiếu: "không có gì ở đây". Đọc field hoặc gọi method trên một tham chiếu null thì JVM ném {{NullPointerException}} — một {{RuntimeException}}, nên compiler không ép bạn xử lý nó.
+
+Vấn đề không phải là NPE, mà là **nơi nó nổ thường không phải nơi dữ liệu bị hỏng**:
+
+~~~java
+String city = order.getCustomer().getAddress().getCity().toUpperCase();
+// NPE ở dòng này, nhưng dữ liệu thiếu có thể được ghi từ 3 tầng trước, hoặc từ một job import lúc 2 giờ sáng
+~~~
+
+Chiều sâu thật của chuỗi này: mỗi tầng tin rằng tầng dưới sẽ không trả null. Khi một tầng phá lời hứa, cả hệ thống mang nợ, và người trả nợ là người đọc stack trace.
+
+### Chặn dữ liệu sai ở cửa vào
+{{Objects}} là class tiện ích trong {{java.util}}. Ba cách dùng quan trọng nhất:
+
+~~~java
+void ship(User user, String id) {
+    Objects.requireNonNull(user, "user");                 // NPE với message "user"
+    Objects.requireNonNull(id);                           // NPE nhưng message null -> log rất vô ích
+    if (id.isBlank()) throw new IllegalArgumentException("id rong: " + id);  // lỗi do caller, kèm ngữ cảnh
+}
+~~~
+
+Quy tắc chọn: {{requireNonNull}} cho tiền điều kiện "không được null" (lỗi của người gọi code, thường là bug); {{IllegalArgumentException}} khi null **là** một input hợp lệ về cú pháp nhưng nghiệp vụ không chấp nhận; còn nếu sự vắng mặt là chuyện bình thường thì đừng báo lỗi — trả {{Optional.empty()}}. {{requireNonNull}} có hai họ nữa hay bị bỏ quên: {{requireNonNullElse(x, "mac-dinh")}} (lấy giá trị dự phòng) và {{requireNonNullElseGet(x, () -> expensive())}} (chỉ tính dự phòng khi cần), cùng {{checkFromIndexSize}} cho validation index.
+
+{{Optional.of(maybeNull)}} ném NPE; {{Optional.ofNullable(maybeNull)}} trả {{Optional.empty()}}. Đây là cặp hay bị viết nhầm nhất và là nội dung một test bên dưới.
+
+### Ba cách tạo, và chuỗi xử lý thay cho null-check lồng nhau
+~~~java
+// trước: bốn tầng if lồng nhau, dễ quên một tầng
+String city = null;
+if (users.containsKey(id)) {
+    User u = users.get(id);
+    if (u != null && u.address() != null) {
+        Address a = u.address();
+        if (a.city() != null && !a.city().isBlank()) city = a.city();
+    }
+}
+
+// sau: một biểu thức, mỗi tầng tự dừng khi gặp thiếu
+Optional<String> cityOpt = Optional.ofNullable(id)
+        .map(k -> users.get(k))      // Optional<User>: rỗng nếu không có user
+        .map(User::address)          // rỗng nếu address null (map tự đổi null thành empty)
+        .map(Address::city)          // rỗng nếu city null
+        .filter(c -> !c.isBlank());  // rỗng nếu chỉ toàn khoảng trắng
+~~~
+
+Điểm then chốt của {{map}}: nếu hàm bên trong trả **null**, kết quả là {{Optional.empty()}}, không phải NPE. Nhờ đó một chuỗi {{map}} thay được cả loạt {{if (x != null)}}. Khi hàm của bạn **đã trả về Optional**, dùng {{flatMap}} để không bị lồng {{Optional}} trong {{Optional}}:
+
+~~~java
+Optional<Address> viaMap     = userOpt.map(u -> lookupAddress(u));  // Optional<Optional<Address>> — sai
+Optional<Address> viaFlatMap = userOpt.flatMap(u -> lookupAddress(u)); // Optional<Address> — đúng
+~~~
+
+Các hàm còn lại, và phiên bản Java có chúng:
+
+| Hàm | Làm gì | Có từ |
+|---|---|---|
+| {{ifPresent(c -> ...)}} | chạy {{c}} khi có giá trị | 8 |
+| {{orElse(d)}} | trả giá trị hoặc {{d}}; **{{d}} đã được tính từ trước** | 8 |
+| {{orElseGet(s)}} | chỉ gọi {{s}} khi rỗng | 8 |
+| {{orElseThrow()}} | ném {{NoSuchElementException}} message "No value present" | 10 |
+| {{orElseThrow(() -> new NotFoundException(...))}} | biến "không có" thành lỗi nghiệp vụ có message | 8 |
+| {{filter(p)}} | giữ giá trị nếu thoả {{p}}, ngược lại rỗng | 8 |
+| {{ifPresentOrElse(c, otherwise)}} | hai nhánh rõ ràng, hay dùng thay cho {{isPresent()}} | 9 |
+| {{or(() -> otherSource)}} | khi rỗng thì thử một nguồn khác | 9 |
+| {{stream()}} | 0 hoặc 1 phần tử, để ghép vào {{Stream}} | 9 |
+| {{isEmpty()}} | thay cho {{!isPresent()}}, đọc dễ hơn | 11 |
+
+### orElse hay orElseGet: câu hỏi là chi phí tính giá trị mặc định
+Đây không phải đặc thù của {{Optional}} mà là quy tắc của Java: **mọi đối số được tính xong trước khi method được gọi**.
+
+~~~java
+static final AtomicInteger calls = new AtomicInteger();
+
+static User expensiveFallback() {              // đọc DB: cứ chạy là đếm thêm một lần
+    calls.incrementAndGet();
+    return new User("khach-lang", null);
+}
+
+User a = userOpt.orElse(expensiveFallback());          // fallback vẫn chạy, dù userOpt đã có giá trị
+User b = userOpt.orElseGet(() -> expensiveFallback()); // chỉ chạy khi userOpt rỗng
+~~~
+
+Ví dụ đời thường: {{orElse}} giống việc bạn **đã gọi món dự phòng và trả tiền**, rồi mới hỏi khách có cần không; {{orElseGet}} đưa đầu bếp cho khách, khách không lấy thì bếp không nấu. Trên production, một service gọi {{orElse(loadDefaultFromDb())}} trong vòng lặp 50.000 đơn hàng sẽ gửi 50.000 query thừa, dù 99% đơn có user — đây là loại lỗi chỉ thấy trên APM, không thấy khi đọc code.
+
+| Giá trị mặc định là | Dùng |
+|---|---|
+| hằng số, chuỗi tĩnh, biến đã có sẵn | {{orElse}} |
+| lời gọi hàm, có side-effect, hoặc cần new object | {{orElseGet}} |
+| không chấp nhận vắng mặt | {{orElseThrow}} với exception nghiệp vụ có message |
+
+### Không dùng Optional ở đâu
+- **Field của class/DTO**: {{Optional}} không triển khai {{Serializable}}, làm mapping phức tạp (Jackson cần {{Jdk8Module}}), và với JPA/Hibernate thì field Optional không được hỗ trợ như field thường.
+- **Tham số method**: ép người gọi viết {{Optional.of(x)}} vô ích. Muốn "có thể không truyền" thì dùng overload, hoặc {{@Nullable}} + {{requireNonNullElse}}.
+- **Phần tử collection / key của Map**: {{List<Optional<String>>}} nên là {{List<String>}} đã lọc bỏ; và method trả danh sách thì trả danh sách rỗng, đừng trả {{Optional<List<T>>}} vì caller phải xử lý hai tầng "không có".
+- **Primitive có Optional riêng**: {{OptionalInt}}, {{OptionalLong}}, {{OptionalDouble}} để tránh boxing, nhưng API của chúng ít tiện ({{getAsInt}}), cân nhắc trả giá trị mặc định thay vì Optional.
+- **Vòng lặp nóng**: mỗi {{Optional}} là một object; JIT có thể loại bỏ bằng escape analysis nhưng không có gì bảo đảm. Trong loop triệu phần tử, đo trước khi kết luận.
+
+> Senior tip: ở ranh giới (repository, client HTTP) hãy để {{Optional}} "nói" sự vắng mặt; khi vào tầng hiển thị hoặc tầng nghiệp vụ đã chắc chắn, chuyển về giá trị hoặc lỗi. {{findById}} của Spring Data JPA trả {{Optional}} — viết {{repository.findById(id).orElseThrow(() -> new EntityNotFoundException("Khong thay id=" + id))}} thay vì {{.get()}}: cùng một hành vi nhưng message nói được thiếu cái gì. {{.get()}} ném {{NoSuchElementException}} với message "No value present" — vô dụng trong log.
+
+### Pitfall production
+- Method khai báo trả {{Optional}} nhưng có nhánh {{return null;}} → NPE nổ ở chỗ caller tin rằng không cần kiểm tra. Quy tắc: không bao giờ trả null từ kiểu {{Optional}}.
+- {{opt.isPresent()}} rồi {{opt.get()}} trong if: đây chỉ là null-check viết dài hơn, không dùng được gì của Optional; thay bằng {{map/orElse/ifPresentOrElse}}.
+- {{Map.of(...)}}, {{List.of(...)}} và các collection bất biến **cấm null**: {{Map.of().get(null)}} ném NPE trong khi {{new HashMap<>().get(null)}} trả null. Vì thế chuỗi lookup nên bắt đầu bằng {{Optional.ofNullable(id).map(k -> users.get(k))}} chứ không phải {{Optional.ofNullable(users.get(id))}}.
+- {{ConcurrentHashMap}} cấm cả key lẫn value null; muốn biểu diễn "không có" thì dùng {{Optional}} ở giá trị trả về hoặc sentinel, đừng nhét null vào map.
+- Quên {{filter}}: "không có thành phố" được lưu dưới dạng chuỗi rỗng hoặc chuỗi khoảng trắng, {{Optional.of("")}} coi là **có** giá trị và in ra dòng trống.
+- Bọc {{Optional}} quanh kết quả của một phép đã chắc chắn có: {{Optional.of(value)}} khi value đến từ DB và có thể null → NPE; dùng {{ofNullable}} cho giá trị từ bên ngoài.
+- Log {{Optional}} trực tiếp: {{toString}} in "Optional[Hà Nội]" — dễ gây hiểu khi parse log; hãy {{orElse("-")}} trước khi log.
+- {{Optional.empty()}} là một instance dùng lại, còn {{Optional.of(x)}} tạo object mới: so sánh bằng {{==}} giữa hai Optional là sai, hãy dùng {{equals}} hoặc {{isPresent}}+{{equals}}.
+
+### Liên hệ phỏng vấn
+Bộ câu hỏi kinh điển: Optional dùng ở đâu và không ở đâu; {{of}} khác {{ofNullable}}; {{orElse}} khác {{orElseGet}} (câu này gần như chắc chắn có, và đáp án đúng nằm ở **quy tắc tính đối số**, không phải trong class Optional); {{map}} xử lý hàm trả null ra sao và khi nào cần {{flatMap}}; vì sao không dùng Optional làm field JPA; làm gì để không nhận NPE từ {{get()}}. Trả lời gọn: kiểu trả về để biểu đạt sự vắng mặt, chặn null ở cửa vào bằng {{requireNonNull}}, chọn {{orElseGet}} khi giá trị mặc định đắt, và luôn có message nghiệp vụ trong {{orElseThrow}}.`,
+  exercises: [{
+    title: 'Refactor chuỗi lookup lồng null-check sang Optional và đếm số lần gọi fallback',
+    prompt: `Dùng ba kiểu đã khai báo: {{record User(String name, Address address)}}, {{record Address(String city)}} và class {{Lookups}}. Viết bốn hàm, **chỉ dùng tính năng có trong Java 17**, không dùng {{get()}}, không đọc ngày giờ/random/sleep.
+- {{Lookups.city(Map<String, User> users, String id)}} trả {{Optional<String>}}: chuỗi {{id}} → user → address → city. Trả {{Optional.empty()}} khi {{id}} null, khi map không chứa id, khi {{address}} null, khi {{city}} null, và khi {{city}} chỉ toàn khoảng trắng. **Không được ném exception** kể cả khi {{users}} là {{Map.of()}} (thứ mà {{get(null)}} ném NPE). Không bao giờ trả về {{null}}.
+- {{Lookups.cityOrDefault(Map<String, User> users, String id, Supplier<String> fallback)}}: trả thành phố nếu có, nếu không thì trả kết quả của {{fallback}}. {{fallback}} **chỉ được gọi khi thiếu** — tức là dùng {{orElseGet}}, không dùng {{orElse}}.
+- {{Lookups.mustFind(Map<String, User> users, String id)}}: trả đúng {{User}} có trong map; khi không có, ném {{IllegalArgumentException}} có message chứa {{id}} (dùng {{orElseThrow}}, không dùng {{get()}}).
+- {{Lookups.tagged(String tag, Optional<String> value)}}: chặn {{tag}} null ở cửa vào bằng {{Objects.requireNonNull(tag, "tag")}} rồi trả {{tag + "=" + gia tri}}; khi {{value}} rỗng thì phần giá trị là dấu {{-}}. Tham số {{value}} luôn là một Optional, không null.
+Gợi ý thứ tự an toàn cho {{city}}: bắt đầu bằng {{Optional.ofNullable(id)}} rồi {{map}} từng tầng, sau đó {{filter}}.`,
+    starter: `record User(String name, Address address) { }
+record Address(String city) { }
+
+class Lookups {
+    static Optional<String> city(Map<String, User> users, String id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static String cityOrDefault(Map<String, User> users, String id, Supplier<String> fallback) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static User mustFind(Map<String, User> users, String id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static String tagged(String tag, Optional<String> value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("muốn " + expected + " nhận " + actual);
+    }
+    static Throwable thrown(Runnable body) {
+        try { body.run(); return null; } catch (Throwable t) { return t; }
+    }
+    static Map<String, User> hmap() {
+        Map<String, User> m = new HashMap<>();
+        m.put("u1", new User("An", new Address("Hà Nội")));
+        m.put("u2", new User("Bình", null));
+        m.put("u3", new User("Cường", new Address(null)));
+        m.put("u4", new User("Dung", new Address("   ")));
+        m.put("u5", new User("Em", new Address("Đà Nẵng")));
+        return m;
+    }
+    public static void main(String[] args) {
+        check("chuoi du tra ve thanh pho", () -> eq(Optional.of("Hà Nội"), Lookups.city(hmap(), "u1")));
+        check("address null, city null va city trang deu ra empty", () -> {
+            eq(Optional.empty(), Lookups.city(hmap(), "u2"));
+            eq(Optional.empty(), Lookups.city(hmap(), "u3"));
+            eq(Optional.empty(), Lookups.city(hmap(), "u4"));
+        });
+        check("id khong co trong map ra empty, khong phai null", () -> {
+            Optional<String> r = Lookups.city(hmap(), "khong-co");
+            eq(true, r != null);
+            eq(Optional.empty(), r);
+        });
+        check("id null voi Map.of() khong duoc nem NPE", () -> {
+            eq(Optional.empty(), Lookups.city(Map.of(), null));
+            eq(Optional.empty(), Lookups.city(hmap(), null));
+        });
+        check("cityOrDefault khong goi fallback khi da co gia tri", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            String r = Lookups.cityOrDefault(hmap(), "u1", () -> { calls.incrementAndGet(); return "Mặc định"; });
+            eq("Hà Nội", r);
+            eq(0, calls.get());
+        });
+        check("cityOrDefault goi fallback dung mot lan khi thieu", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            String r = Lookups.cityOrDefault(hmap(), "u2", () -> { calls.incrementAndGet(); return "Mặc định"; });
+            eq("Mặc định", r);
+            eq(1, calls.get());
+        });
+        check("mustFind tra dung instance va nem IllegalArgumentException kem id khi thieu", () -> {
+            Map<String, User> m = hmap();
+            eq(true, Lookups.mustFind(m, "u5") == m.get("u5"));
+            Throwable t = thrown(() -> Lookups.mustFind(m, "u9"));
+            eq(true, t instanceof IllegalArgumentException);
+            eq(true, t.getMessage() != null && t.getMessage().contains("u9"));
+        });
+        check("tagged chan tag null o cua vao, message ro rong", () -> {
+            Throwable t = thrown(() -> Lookups.tagged(null, Optional.of("X")));
+            eq(true, t instanceof NullPointerException);
+            eq("tag", t.getMessage());
+        });
+        check("tagged tra gia tri hoac dau gach khi Optional rong", () -> {
+            eq("city=Hà Nội", Lookups.tagged("city", Optional.of("Hà Nội")));
+            eq("city=-", Lookups.tagged("city", Optional.empty()));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `record User(String name, Address address) { }
+record Address(String city) { }
+
+class Lookups {
+    static Optional<String> city(Map<String, User> users, String id) {
+        return Optional.ofNullable(id)
+                .map(k -> users.get(k))
+                .map(User::address)
+                .map(Address::city)
+                .filter(c -> !c.isBlank());
+    }
+    static String cityOrDefault(Map<String, User> users, String id, Supplier<String> fallback) {
+        return city(users, id).orElseGet(fallback);        // orElse se goi fallback ngay ca khi co gia tri
+    }
+    static User mustFind(Map<String, User> users, String id) {
+        return Optional.ofNullable(id)
+                .map(k -> users.get(k))
+                .orElseThrow(() -> new IllegalArgumentException("Không thấy user với id " + id));
+    }
+    static String tagged(String tag, Optional<String> value) {
+        Objects.requireNonNull(tag, "tag");
+        return tag + "=" + value.orElse("-");
+    }
+}`,
+    hints: ['Bắt đầu chuỗi bằng {{Optional.ofNullable(id)}}: khi id null thì chưa dòng nào chạm tới map, nên {{Map.of()}} không kịp ném NPE.', 'Mỗi tầng là một {{map}}; nếu hàm trong map trả null thì Optional tự biến thành rỗng, nên bạn không cần {{if}} nào cả. Thêm {{filter(c -> !c.isBlank())}} để loại chuỗi khoảng trắng.', 'Đếm số lần fallback được gọi: biến {{AtomicInteger}} do test truyền vào qua {{Supplier}}. Nếu bạn dùng {{orElse(fallback.get())}} thì bộ đếm sẽ tăng ngay cả khi có giá trị.', 'Viết {{orElseThrow(() -> new IllegalArgumentException("... " + id))}} chứ không viết {{get()}}: message cho người đọc log biết thiếu id nào.'],
+    explain: `Bốn dòng {{map}} tương đương bốn tầng {{if != null}} lồng nhau, nhưng thêm tầng mới chỉ là thêm một {{map}} chứ không thêm một cấp lồng. Điểm dễ sai nhất là tầng đầu: {{Optional.ofNullable(users.get(id))}} trông gọn hơn nhưng đọc {{users.get(null)}} ngay lập tức, và với {{Map.of(...)}} (Java 9+, mọi {{List.of}}, {{Set.of}} cũng vậy) thì thao tác đó ném NPE; bọc {{id}} trong {{Optional.ofNullable}} rồi mới {{map}} vào map thì chuỗi dừng lại an toàn. {{cityOrDefault}} dùng {{orElseGet}} vì lý do đã nói ở body: đối số của {{orElse}} luôn được tính trước khi method chạy, nên fallback có side-effect sẽ chạy ở mọi lời gọi. {{mustFind}} chứng minh {{orElseThrow}} tốt hơn {{get()}} ở đúng một chỗ: message — {{get()}} chỉ nói "No value present" còn message của bạn nói thiếu id nào. Cuối cùng, {{tagged}} dùng {{Objects.requireNonNull(tag, "tag")}}: nếu bỏ luôn tham số message thì NPE nhận message {{null}} và log của bạn mất hết ngữ cảnh.`
+  }], check: [{
+    q: 'Vì sao orElse(loadDefaultFromDb()) luôn truy vấn DB dù Optional đã có giá trị?',
+    options: ['Vì orElse được định nghĩa là gọi supplier hai lần để an toàn', 'Vì Java tính xong mọi đối số trước khi gọi method: loadDefaultFromDb() chạy trước, kết quả mới được truyền vào orElse; orElseGet nhận một Supplier chưa chạy và chỉ gọi khi rỗng', 'Vì orElse chỉ làm việc với collection', 'Vì loadDefaultFromDb là static method nên bị JVM cache'],
+    answer: 1,
+    explain: 'Đây là quy tắc của ngôn ngữ chứ không phải đặc thù của Optional. orElse nhận một giá trị đã có, còn orElseGet nhận công thức tạo giá trị. Hệ quả thực tế: orElse với hàm có side-effect sẽ trả giá cho side-effect đó ở mọi lời gọi, kể cả lời gọi vẫn đủ dữ liệu.'
+  },{
+    q: 'Optional.of(x) và Optional.ofNullable(x) khác nhau thế nào khi x có thể null?',
+    options: ['Cả hai trả Optional.empty() khi x null', 'of ném NullPointerException ngay, còn ofNullable trả Optional.empty() — muốn an toàn với giá trị từ bên ngoài thì dùng ofNullable', 'of chấp nhận null, ofNullable không chấp nhận null', 'ofNullable chỉ dùng cho kiểu primitive'],
+    answer: 1,
+    explain: 'of biểu đạt khẳng định "tôi chắc chắn nó không null", nên vi phạm khẳng định đó là bug và được báo tại chỗ. ofNullable biểu đạt "có thể không có", chuyển sự vắng mặt thành Optional.empty() để chuỗi map/filter phía sau dừng lại êm.'
+  },{
+    q: 'Vị trí nào dưới đây là nơi NÊN dùng Optional?',
+    options: ['Field của entity JPA để biểu diễn cột nullable', 'Kiểu trả về của repository method có thể không tìm thấy bản ghi, ví dụ findById', 'Phần tử của List<Optional<String>> trả về cho tầng hiển thị', 'Tham số method để caller truyền Optional.empty() khi không có giá trị'],
+    answer: 1,
+    explain: 'Optional sinh ra để làm tín hiệu ở kiểu trả về. Làm field thì nó không Serializable và gây khó cho mapping; làm phần tử collection thì nên lọc bỏ null và trả danh sách; làm tham số thì ép caller bọc giá trị vô ích, thà dùng overload hoặc chặn null ở cửa vào.'
+  },{
+    q: 'Hàm bên trong map trả về null thì điều gì xảy ra?',
+    options: ['map trả Optional.empty(), nhờ vậy một chuỗi map thay được nhiều if kiểm tra null lồng nhau', 'map ném NullPointerException tại tầng đó', 'map trả Optional chứa null, và get() sau đó mới nổ', 'map bỏ qua cả chuỗi và trả Optional của tầng đầu tiên'],
+    answer: 0,
+    explain: 'Đây chính là cơ chế khiến chuỗi map an toàn: Optional không bao giờ chứa null, nên kết quả null của hàm được quy về sự vắng mặt. Nếu hàm của bạn đã trả Optional thì dùng flatMap, vì map sẽ tạo Optional bọc Optional.'
+  }], related: ['modern-002', 'core-007', 'core-003'], tags: ['Optional', 'null', 'Objects.requireNonNull', 'API design']
 }
 );
 

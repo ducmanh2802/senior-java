@@ -2092,6 +2092,1563 @@ Nguyên nhân hay gặp: vòng lặp đã được JIT tối ưu bỏ poll (JDK 
 - **Deoptimize toàn bộ**: deoptimization cũng cần safepoint nhưng log ghi rõ lý do là G1CollectForAllocation.
 - **ZGC**: dòng log là của G1, và phase concurrent không làm treo thread ứng dụng.
 
-> Senior tip: khi latency spike không khớp GC pause, luôn bật {{-Xlog:safepoint}} và so sánh "Total" với "At safepoint". JFR có event {{jdk.SafepointBegin}}, async-profiler có chế độ ttsp để chỉ ra đoạn code đang chặn safepoint.`
+    > Senior tip: khi latency spike không khớp GC pause, luôn bật {{-Xlog:safepoint}} và so sánh "Total" với "At safepoint". JFR có event {{jdk.SafepointBegin}}, async-profiler có chế độ ttsp để chỉ ra đoạn code đang chặn safepoint.`
+  },
+
+// ===================== core =====================
+{
+  id: 'qz-core-021', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+class Base {
+    String name = "base";
+    String describe() { return "base:" + name; }
+}
+class Derived extends Base {
+    String name = "derived";
+    @Override
+    String describe() { return "derived:" + name; }
+}
+// main:
+Base b = new Derived();
+System.out.println(b.name + " " + b.describe());
+~~~`,
+  options: [
+    `derived derived:derived`,
+    `base base:base`,
+    `base derived:derived`,
+    `derived base:base`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: base derived:derived.**
+
+### Hai quy tắc "binding" khác nhau
+- **Field** (biến của object) được chọn theo **kiểu tĩnh** của biến tham chiếu, tức kiểu bạn khai báo ({{Base b}}). Compiler tra {{name}} trong {{Base}} và sinh bytecode đọc đúng field đó. Java **không có khái niệm ghi đè field**: field cùng tên trong {{Derived}} chỉ bị **giấu (hiding)**, và object thật chứa **hai** field {{name}} — một của {{Base}}, một của {{Derived}} (đều tốn heap).
+- **Instance method** được chọn theo **kiểu động** của object thật (dynamic dispatch qua bảng method của class) → JVM chạy {{describe()}} của {{Derived}}. Trong method đó, {{name}} đã được biên dịch theo class chứa nó ({{Derived}}) nên đọc ra "derived".
+
+~~~text
+b ──> object Derived: [name(Derived)="derived"] + [name(Base)="base"]
+      đọc b.name      : theo kiểu biến   (Base)    -> "base"
+      gọi b.describe(): theo object thật (Derived) -> "derived:derived"
+~~~
+
+### Vì sao các phương án còn lại sai
+- **derived derived:derived**: đúng cho method nhưng sai cho field; field không tham gia polymorphism.
+- **base base:base**: chỉ đúng nếu method là {{static}}, {{final}} hoặc {{private}} — ba kiểu đó bị "hide" theo kiểu tham chiếu chứ không bị override.
+- **derived base:base**: đảo ngược cả hai quy tắc.
+
+> Senior tip: bug thật: hai tầng class cùng khai báo field {{id}}/{{version}}, code đọc {{parentRef.id}} nhận giá trị cũ dù subclass đã gán lại, hoặc object âm thầm mang hai bản field. Phòng bằng cách luôn để field {{private}} + getter (lúc đó không còn truy cập trực tiếp để mà nhầm), bật check {{FieldHidesSuperclass}} của ErrorProne/IDE. Cũng lưu ý: field bị giấu làm heap dump khó đọc vì MAT hiển thị hai entry trùng tên.`
+},
+{
+  id: 'qz-core-022', topic: 'core', multi: true,
+  q: `Class sau **không** biên dịch được. Những phát biểu nào **đúng**? (Chọn 2)
+~~~java
+public class Repo {
+    void save(List<String> ids)  { /* ... */ }
+    void save(List<Integer> ids) { /* ... */ }
+
+    boolean isStringList(Object o) {
+        return o instanceof List<String>;
+    }
+}
+~~~`,
+  options: [
+    `Chỉ cần đổi tham số của hai method thành List<?> là xung đột biến mất`,
+    `Dòng instanceof List<String> là lỗi biên dịch: kiểu của phần tử không tồn tại lúc chạy, và Java 21 với pattern matching cũng không cho phép`,
+    `Thêm @SuppressWarnings("unchecked") thì javac sẽ thôi báo lỗi`,
+    `Hai method save bị coi là trùng vì sau khi erase, cả hai đều có chữ ký save(List) — javac báo "name clash ... same erasure"`
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: {{instanceof}} với kiểu generic luôn lỗi, và hai overload xung đột vì erasure.**
+
+### Erasure là gì, vì sao nó tồn tại
+Generics (thêm vào Java 5) được hiện thực bằng **type erasure**: compiler dùng kiểu để kiểm tra lúc biên dịch, rồi **xoá thông tin kiểu** khỏi bytecode. {{List<String>}} và {{List<Integer>}} đều trở thành {{List}} thô, phần tử được lấy ra bằng {{Object}} cộng một cast ẩn. Mục đích là **tương thích nhị phân**: code viết trước 2005 vẫn chạy với thư viện dùng generics và ngược lại. Hệ quả: JVM không thể hỏi "list này chứa String hay Integer" với một object {{ArrayList}} bình thường.
+
+### Vì sao hai phát biểu đúng
+- {{instanceof}} kiểm tra kiểu **của object đang chạy**. Một {{ArrayList}} không mang kiểu phần tử, nên {{o instanceof List<String>}} là câu hỏi vô nghĩa (một list rỗng thì "có phải List của String" không?). javac chặn; chỉ viết được {{o instanceof List}} hoặc {{o instanceof List<?>}}. Java 16+ thêm pattern matching ({{o instanceof List l && l.size() > 0}}) chỉ giúp **bind biến**, không mở khoá kiểm tra element type.
+- Trong bytecode, chữ ký của cả hai method đều là {{save(Ljava/util/List;)V}}. Hai method trùng chữ ký trong cùng một class là lỗi **compile-time** ("name clash: ... have the same erasure"), không phải warning.
+
+### Cách sửa đúng
+Đổi tên method ({{saveStrings}} / {{saveInts}}), hoặc dùng một method generic {{<T> void save(List<T> ids)}}, hoặc {{List<? extends Number>}} nếu muốn nhận cả hai. Nếu thực sự cần biết element type lúc chạy, hãy truyền thêm {{Class<T>}} (type token) hoặc để caller tự khai báo class cha generic và đọc {{ParameterizedType}} qua reflection.
+
+### Vì sao các phương án còn lại sai
+- **Đổi thành {{List<?>}}**: {{List<?>}} cũng bị erase thành {{List}} → vẫn cùng chữ ký, vẫn clash.
+- **{{@SuppressWarnings("unchecked")}}**: annotation này chỉ tắt **warning** (thô, unchecked cast); nó không biến một lỗi biên dịch thành code hợp lệ.
+
+> Senior tip: các hệ quả của erasure hay bị hỏi tiếp: {{new T[10]}} không hợp lệ, không có {{List<String>.class}}, {{List<String>}} và {{List<Integer>}} có cùng {{getClass()}}, và một {{List}} raw chứa lẫn kiểu sẽ ném {{ClassCastException}} ở chỗ **đọc** chứ không phải chỗ **thêm** — loại bug "heap pollution" mất vài giờ để lần ra. Vì vậy quy ước team: không dùng raw type, bật {{-Xlint:unchecked}} và coi warning là error trong CI.`
+},
+{
+  id: 'qz-core-023', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+Map<String, Integer> count = new HashMap<>();
+count.put("cart", null);              // có key, value chưa có
+int a = count.get("cart");            // 1
+int b = count.getOrDefault("views", 0);
+System.out.println(a + " " + b);
+~~~`,
+  options: [
+    `Ném NullPointerException ở dòng 1, chương trình không in gì`,
+    `in "null 0"`,
+    `in "0 0"`,
+    `Không biên dịch được vì không được gán Integer cho int`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: NullPointerException ở dòng gán {{int a}}.**
+
+### Autoboxing và unboxing
+{{int}} là **primitive** (chỉ con số, không có method). {{Integer}} là **wrapper**: một object chứa con số đó. **Autoboxing** là compiler tự bọc {{int}} thành {{Integer}}; **unboxing** là tự gọi {{intValue()}} để lấy ngược {{int}}. Dòng {{int a = count.get("cart");}} được biên dịch thành {{int a = count.get("cart").intValue();}} — đó là chỗ nguy hiểm: nếu giá trị lấy về là {{null}} thì {{null.intValue()}} ném {{NullPointerException}}.
+
+### Vì sao đúng
+- {{count.put("cart", null)}} tạo một entry **hợp lệ**: key "cart" có tồn tại, chỉ value là {{null}}.
+- {{count.get("cart")}} → {{null}}; unboxing {{null}} → NPE ngay dòng 1, nên {{println}} không kịp chạy, không in gì.
+- {{getOrDefault("views", 0)}} không chạy tới vì chương trình đã chết ở dòng 1; bản thân nó an toàn vì key "views" **không có** trong map → trả {{0}}.
+- Bẫy hay bị hỏi thêm: đổi thành {{int b = count.getOrDefault("cart", 0);}} thì **vẫn NPE**. Theo đặc tả, default chỉ được dùng khi map **không chứa key**; ở đây key có chứa, value là {{null}} nên {{getOrDefault}} trả về {{null}}.
+
+### Vì sao các phương án còn lại sai
+- **in "null 0"**: {{System.out.println(count.get("cart"))}} đúng là in "null" (không có unboxing vì nhận {{Object}}), nhưng ở đây giá trị bị ép sang {{int}} ngay khi gán.
+- **in "0 0"**: Java không quy ước {{null}} thành 0; chỉ C/C++ con trỏ mới "coi 0 là không có gì".
+- **Không biên dịch được**: gán {{Integer}} cho {{int}} hoàn toàn hợp lệ từ Java 5.
+
+> Senior tip: lỗi này nổi tiếng vì stack trace trỏ vào code nghiệp vụ chứ không phải chỗ đọc DB — ví dụ cột {{click_count}} nullable đổ vào {{Map<String,Integer>}} rồi gán cho {{int}}, hoặc {{Integer}} trong DTO bị null sau một lần serialize/migrate. Cách sống chung: giữ kiểu {{Integer}} rồi kiểm tra null tường minh, hoặc dùng {{Objects.requireNonNullElse(v, 0)}}; với bộ đếm thì {{map.merge(k, 1, Integer::sum)}} (key chưa có sẽ được gắn value mới, không bao giờ là null). Quy ước team nên là: **không bao giờ** put null vào map đếm.`
+}, 
+
+{
+  id: 'qz-core-024', topic: 'core',
+  q: `Đoạn code sau in ra gì? ({{MILLIS}} là biến, không phải hằng)
+~~~java
+int MILLIS = 1000;
+long ttlMillis = 30 * 24 * 60 * 60 * MILLIS;   // mong đợi: 30 ngày tính bằng ms
+System.out.println(ttlMillis);
+~~~`,
+  options: [
+    `2592000000`,
+    `0, vì giá trị vượt quá giới hạn nên bị coi như không hợp lệ`,
+    `Lỗi biên dịch vì biểu thức vượt quá phạm vi của int`,
+    `-1702967296`
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: -1702967296.**
+
+### Chỗ cần hiểu: kiểu của biểu thức, không phải kiểu của biến nhận
+Tất cả toán hạng ({{30}}, {{24}}, {{60}}, {{MILLIS}}) đều là {{int}}, nên **toàn bộ phép tính chạy bằng {{int}}**. Việc gán kết quả cho {{long}} chỉ là **widening sau khi phép tính đã xong** — nó không mở rộng phạm vi trung gian.
+{{int}} dùng 32 bit theo **two's complement**, giá trị tối đa là 2.147.483.647. Kết quả đúng của 30*24*60*60*1000 là 2.592.000.000 > mức đó → số **quanh vòng (wrap)**: 2.592.000.000 − 2^32 = **−1.702.967.296**. Java định nghĩa rõ hành vi này (không phải undefined behaviour như C/C++), và **không có exception nào** được ném.
+
+~~~text
+2.592.000.000 (toán học)  >  2.147.483.647 (Integer.MAX_VALUE)
+wrap: 2.592.000.000 - 4.294.967.296 = -1.702.967.296   -> vừa khít vào int
+~~~
+
+### Cách viết đúng
+- Đưa chữ {{L}} vào toán hạng **đầu tiên**: {{long ttl = 30L * 24 * 60 * 60 * 1000;}} (từ đây mọi phép tính đều là {{long}}).
+- Dùng API có sẵn đơn vị: {{TimeUnit.DAYS.toMillis(30)}} hoặc {{Duration.ofDays(30).toMillis()}} — các method này tính bằng {{long}} và có kiểm tra tràn.
+- Muốn lỗi "nổ" ngay khi tràn (để test bắt được): {{Math.multiplyExact(a, b)}} ném {{ArithmeticException}}.
+
+### Vì sao các phương án còn lại sai
+- **2592000000**: chỉ đúng nếu phép nhân chạy bằng {{long}}; ở đây {{long}} chỉ xuất hiện ở chỗ gán.
+- **0**: Java không "bão hoà" (saturate) và không có giá trị sentinel cho tràn số.
+- **Lỗi biên dịch**: javac không đánh giá tràn số của biểu thức chạy bằng biến; đây là lỗi **logic**, âm thầm chạy được.
+
+> Senior tip: bug thật của kiểu này thường có dạng TTL/hạn dùng: hết hạn tính ra **âm** nên mọi entry cache bị coi là hết hạn ngay (miss 100%, DB bị dồn tải) hoặc token OAuth "hết hạn năm 1970". Dấu hiệu nhận biết: log có {{expiresAt}} nhỏ hơn {{now}} một cách vô lý. Trong CI nên bật ErrorProne {{IntegerDivisionInfiniteLoop}}/{{BadShiftValues}} và Sonar rule "Make sure this value fits into the type"; đồng thời thêm một test tính bằng {{Duration}} rồi so sánh với giá trị mong đợi.`
+},
+
+// ===================== collections =====================
+{
+  id: 'qz-collections-021', topic: 'collections',
+  q: `Cache phụ trợ tra theo **instance object**: mỗi request tạo một {{Token}} mới, app ghi {{static final Map<Token, String> META = new HashMap<>();}} rồi {{META.put(token, meta)}}. Chỉ có đường thông mới gọi {{META.remove(token)}}; đường lỗi (exception) thì quên. Sau 6 giờ, heap dump cho thấy hàng triệu {{Token}} không ai dùng nhưng vẫn sống. Yêu cầu: entry phải **tự biến mất** khi object key không còn được tham chiếu ở nơi khác. Lựa chọn nào trong JDK đáp ứng yêu cầu này?`,
+  options: [
+    `IdentityHashMap, vì cache tra theo đúng instance nên so sánh bằng == là hợp lý`,
+    `WeakHashMap, vì key được giữ bằng weak reference nên entry tự rơi khi key chỉ còn cache tham chiếu tới`,
+    `ConcurrentHashMap, vì nó tự dọn những entry "yếu" theo mỗi chu kỳ GC`,
+    `Collections.synchronizedMap(new HashMap<>()), vì đồng bộ hoá giúp GC nhận biết entry không còn dùng`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: {{WeakHashMap}}.**
+
+### Ba loại reference trong JDK (nền tảng để hiểu câu này)
+- **Strong reference** — kiểu mặc thường: {{Map<Token, String>}} giữ key bằng strong reference thì GC **không được phép** thu hồi, dù code nghiệp vụ đã "quên" object đó. Đây chính là leak trong tình huống trên.
+- **SoftReference** — chỉ bị dọn khi JVM sắp hết bộ nhớ; hợp với cache dung lượng lớn muốn "tự co" (nhưng gây GC liên tục, xem câu hỏi về cache 2 GB {{SoftReference}}).
+- **WeakReference** — bị dọn **ngay khi** không còn strong reference nào khác trỏ tới object.
+- **PhantomReference** — dùng để biết object đã bị thu hồi, phục vụ giải phóng bộ nhớ native.
+
+### Vì sao {{WeakHashMap}} đúng
+{{WeakHashMap}} bọc mỗi key trong một {{WeakReference}} và nhận thông báo từ {{ReferenceQueue}} khi key bị GC, rồi loại entry tương ứng. Kết quả: cache không giữ chân object nữa — key "sống" bao lâu nghiệp vụ còn dùng nó.
+Hai giới hạn phải nói được khi phỏng vấn:
+1. Việc dọn **lười (lazy)**: entry chỉ được gỡ khi bạn thao tác trên map ({{get}}/{{put}}/{{size}}). Không có thread GC chủ động dọn, nên "heap chết" có thể tồn tại tới lần access kế tiếp.
+2. **Value không được tham chiếu ngược lại key** (Javadoc cảnh báo rõ): nếu {{String meta}} / object value giữ reference tới {{Token}}, key luôn còn một đường strong reachable qua entry → entry không bao giờ bị dọn.
+3. Nó **không thread-safe** và **không có bound** về dung lượng.
+
+### Vì sao các phương án còn lại sai
+- **{{IdentityHashMap}}**: khác ở chỗ dùng {{==}} thay vì {{equals}} cho key, nhưng vẫn giữ key bằng **strong reference** → leak y nguyên.
+- **{{ConcurrentHashMap}}**: mạnh về đồng thời, không có khái niệm "weak entry"; muốn cache weak/expire phải dùng Caffeine ({{weakKeys()}}, {{expireAfterAccess()}}).
+- **{{synchronizedMap}}**: từ khoá {{synchronized}} chỉ chống race, không ảnh hưởng reachability của GC.
+
+> Senior tip: trong service thật, ưu tiên **Caffeine** (bound số entry + TTL + stats + {{weakKeys}}/{{weakValues}}) hơn {{WeakHashMap}}, vì {{WeakHashMap}} cho bạn đúng một cơ chế "không giữ object" còn dung lượng và hit-rate thì không kiểm soát được — và vì cleanup lazy nên {{size()}} của nó chỉ là con số ước lượng tại thời điểm gọi. Nếu vẫn muốn ở lại JDK: để cache là **instance field** có {{clear()}} theo vòng đời, đừng là {{static}}.`
+},
+{
+  id: 'qz-collections-022', topic: 'collections',
+  q: `Đoạn code sau in ra gì?
+~~~java
+Map<String, Integer> hits = new HashMap<>();
+hits.put("home", 1);
+hits.merge("home", 5, Integer::sum);
+hits.merge("cart", 3, Integer::sum);
+hits.merge("home", 7, (oldValue, newValue) -> null);
+System.out.println(hits);
+~~~`,
+  options: [
+    `{home=6, cart=3}`,
+    `{home=13, cart=3}`,
+    `{cart=3}`,
+    `{cart=3, home=0}`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: {{cart=3}}.**
+
+### {{Map.merge}} làm gì (phần nhiều người dùng thiếu)
+{{merge(key, newValue, remappingFunction)}} có ba nhánh xác định theo trạng thái của key:
+1. Key **chưa tồn tại** (hoặc value hiện là {{null}}): gắn thẳng {{newValue}}; **hàm remapping không được gọi**.
+2. Key **đã có value khác null**: gọi {{remappingFunction.apply(giaTriCu, newValue)}} rồi gán kết quả.
+3. Kết quả của hàm remapping là {{null}}: key bị **xoá khỏi map** — đây là hành vi được đặc tả, không phải tác dụng phụ.
+{{newValue}} không được là {{null}} (nếu có, {{merge}} ném {{NullPointerException}}).
+
+### Bấm từng dòng
+- {{put("home", 1)}} → {{home=1}}.
+- {{merge("home", 5, Integer::sum)}}: key đã có → {{1 + 5}} = 6 → {{home=6}}.
+- {{merge("cart", 3, Integer::sum)}}: key chưa có → gắn 3, hàm không chạy → {{cart=3}}.
+- {{merge("home", 7, (o, n) -> null)}}: hàm trả {{null}} → **xoá home**.
+Còn đúng một entry nên kết quả in ra không phụ thuộc thứ tự duyệt của {{HashMap}}.
+
+### Vì sao các phương án còn lại sai
+- **{{home=6, cart=3}}**: dừng ở bước 2, quên rằng hàm remapping trả {{null}} ở bước cuối.
+- **{{home=13, cart=3}}**: coi merge như "cộng dồn vô điều kiện" (1+5+7) và không biết gì về nhánh 3.
+- **{{cart=3, home=0}}**: tưởng trả {{null}} nghĩa là gán 0; merge **gỡ** entry chứ không chèn 0.
+
+> Senior tip: bộ đếm an toàn-đồng-thời gọn nhất là {{hits.merge(path, 1, Integer::sum)}}; với {{ConcurrentHashMap}} thao tác này atomic theo key, trong khi {{map.put(k, map.get(k) + 1)}} là read-modify-write và mất update khi có hai thread cùng tăng. Ở chiều ngược lại, nhánh 3 là một cái bẫy: lambda điều kiện trả {{null}} sẽ **xoá bản ghi** chứ không "giữ nguyên", nên nếu chỉ muốn xoá hãy gọi {{remove}} tường minh và đọc code review thật kỹ những {{merge}} có lambda phức tạp.`
+},
+{
+  id: 'qz-collections-023', topic: 'collections',
+  q: `Đoạn code sau in ra gì?
+~~~java
+Comparator<Integer> ascending = (a, b) -> a - b;
+Integer[] ids = { Integer.MAX_VALUE, -1 };
+System.out.println(ascending.compare(ids[0], ids[1]) < 0);
+~~~`,
+  options: [
+    `true: comparator khẳng định 2147483647 nhỏ hơn -1, nghĩa là mọi danh sách sắp bằng nó đều có thể sai thứ tự`,
+    `false: vì a - b luôn cho hiệu đúng với số nguyên`,
+    `Lỗi biên dịch: không được dùng dấu trừ trên hai Integer`,
+    `Ném ArithmeticException vì phép trừ vượt phạm vi int`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: {{true}} — comparator nói sai.**
+
+### Hợp đồng của Comparator
+{{compare(a, b)}} phải trả **số âm** nếu a đứng trước b, **0** nếu ngang, **số dương** nếu a đứng sau. Người viết hay "tối ưu" thành {{a - b}} vì nghĩ hiệu mang đúng dấu.
+
+### Chỗ hỏng: {{int}} tràn số, và Java wrap im lặng
+{{Integer.MAX_VALUE - (-1)}} về toán học là 2.147.483.648, lớn hơn {{Integer.MAX_VALUE}} (2.147.483.647). {{int}} có 32 bit nên kết quả **quanh vòng** thành {{Integer.MIN_VALUE}} (-2.147.483.648), tức một số **âm**. Do đó {{compare(MAX, -1) < 0}} là {{true}}: comparator tuyên bố số dương lớn nhất nhỏ hơn -1.
+{{a - b}} cũng hợp lệ về cú pháp vì {{Integer}} được **unboxing** thành {{int}} trước khi trừ — không lỗi biên dịch, không exception: Java định nghĩa tràn số là wrap, chỉ {{Math.subtractExact}} mới ném {{ArithmeticException}}.
+
+### Hệ quả thực tế
+- {{Arrays.sort}}/{{List.sort}} với comparator "nói dối" trả về danh sách **trông có vẻ** được sắp nhưng sai ở các cặp giá trị xa nhau; kiểu bug này lộ ra rất chậm vì dữ liệu test nhỏ không đủ để tràn số.
+- TimSort kiểm tra tính bắc cầu và có thể ném {{IllegalStateException: Comparison method violates its general contract!}} với comparator không nhất quán.
+- {{TreeMap}}/{{TreeSet}} dựa hoàn toàn vào comparator, nên phần tử có thể bị đặt sai nhánh, {{get}}/{{contains}} trả về sai.
+
+### Cách viết đúng
+{{Integer.compare(a, b)}} (so sánh bằng phép quan hệ, không trừ), hoặc {{Comparator.<Integer>naturalOrder()}}, hoặc dạng field: {{Comparator.comparingInt(Order::getQuantity)}}. Với khoảng cách/epoch millis dùng {{Long.compare}}.
+
+> Senior tip: đây là lỗi kinh điển trong code review; luôn soi {{-}}/{{+}} trong lambda comparator, đặc biệt khi so sánh {{timestamp}}, {{id}}, {{amount}} (giá trị lớn). Test nên có cặp cố cực: {{Integer.MAX_VALUE}} với {{-1}}, {{Long.MIN_VALUE}} với {{1}}. Effective Java (Item 14) nêu đúng điều này: "tránh dùng phép trừ cho comparator".`
+},
+{
+  id: 'qz-collections-024', topic: 'collections', multi: true,
+  q: `Service đẩy audit event vào {{ArrayBlockingQueue}} dung lượng 10.000 (đang **đầy**). Producer chạy trên thread xử lý HTTP và **không được phép** block quá 200 ms. Những phát biểu nào **đúng**? (Chọn 2)`,
+  options: [
+    `offer(e) khi hàng đợi đầy sẽ chờ đến khi có chỗ trống rồi mới trả về true`,
+    `add(e) khi hàng đợi đầy sẽ trả về false, giống hệt offer(e)`,
+    `put(e) sẽ block thread cho tới khi có chỗ, và thread đó có thể bị interrupt khi đang chờ`,
+    `poll() khi hàng đợi rỗng ném NoSuchElementException`,
+    `offer(e, 200, TimeUnit.MILLISECONDS) trả về false nếu sau 200 ms vẫn không có chỗ, không ném exception`
+  ],
+  answer: [2, 4],
+  explain: `**Đáp án đúng: {{put}} block (và interrupt được); phiên bản {{offer}} có timeout trả {{false}} khi hết giờ.**
+
+### {{BlockingQueue}} là gì
+Là {{Queue}} mà các thao tác có **ngữ nghĩa chờ**: đầu sản xuất và đầu tiêu dùng không cần tự polling hay tự khoá. {{ArrayBlockingQueue}} là vòng đệm bounded (dung lượng cố định lúc tạo), dùng một lock chung cho head và tail.
+
+### Bảng hành vi phải nhớ (cột "khi đầy" / "khi rỗng")
+~~~text
+add(e)        : ném IllegalStateException khi đầy        |  element()  ném NoSuchElementException khi rỗng
+offer(e)      : trả false ngay khi đầy (không chờ)        |  peek()     trả null khi rỗng
+offer(e,t,u)  : chờ tối đa t, trả false nếu quá hạn        |  poll()     trả null khi rỗng
+put(e)        : chờ vô hạn tới khi có chỗ (Interruptible) |  take()     chờ vô hạn tới khi có phần tử (Interruptible)
+~~~
+
+### Vì sao hai phát biểu đúng
+- {{put}}: đây là **backpressure** thật sự — thread sản xuất đứng tới khi consumer giải phóng chỗ; vì nó chờ trên {{Condition}} nên {{Thread.interrupt()}} đánh thức và ném {{InterruptedException}}.
+- {{offer(e, 200, MILLISECONDS)}}: chờ có giới hạn rồi **báo cáo bằng giá trị trả về**, không ném exception — đúng ràng buộc "không block quá 200 ms" của đề bài (thực tế nếu muốn chắc chắn ≤200 ms kể cả khi đã chờ trước đó, dùng {{offer(e)}} không chờ rồi tự xử lý khi {{false}}).
+
+### Vì sao các phát biểu còn lại sai
+- **{{offer}} chờ rồi trả true**: {{offer(e)}} một tham số **không bao giờ chờ**; phiên bản có timeout mới chờ.
+- **{{add}} trả false**: {{add}} kế thừa hợp đồng {{Collection.add}} "luôn thành công" nên khi đầy nó **ném** {{IllegalStateException}} — lỗi này thường nổ ở production chứ không im lặng.
+- **{{poll}} ném exception**: đó là {{remove()}}; {{poll}} được thiết kế để trả {{null}}, và vì {{null}} bị cấm trong {{BlockingQueue}} nên {{null}} luôn nghĩa là "hết hàng đợi".
+
+> Senior tip: hãy chọn policy khi đầy một cách có ý thức và **đo** nó: {{offer}} + counter "dropped events" (mất dữ liệu nhưng giữ latency), spill ra đĩa/DB, hoặc {{CallerRunsPolicy}} khi dùng qua executor (tự nhiên producer chạy luôn task — backpressure mềm). Đừng {{put}} vô hạn trên thread HTTP: một consumer chậm (Kafka lag, DB treo) sẽ biến thành toàn bộ request pool nằm chờ, triệu chứng là throughput về 0 mà CPU thấp và thread dump toàn WAITING trên {{Condition}}.`
+},
+
+// ===================== modern =====================
+{
+  id: 'qz-modern-021', topic: 'modern',
+  q: `Dữ liệu đọc từ file của khách hàng có khoảng trắng kiểu Unicode ở đầu dòng ({{\\u3000}} — IDEOGRAPHIC SPACE). Đoạn code sau in ra gì?
+~~~java
+String raw = "\\u3000\\torder-42  ";
+boolean same = raw.trim().equals(raw.strip());
+System.out.println(same + " | " + raw.trim().length() + " | " + raw.strip().length());
+~~~`,
+  options: [
+    `true | 8 | 8`,
+    `false | 11 | 8`,
+    `false | 10 | 8`,
+    `false | 10 | 11`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: {{false | 10 | 8}}.**
+
+### Hai API, hai định nghĩa "khoảng trắng"
+- {{trim()}} (Java 1): cắt ký tự ở hai đầu miễn là mã của nó **{{<= U+0020}}**. tức chỉ {{space}}, {{\\t}}, {{\\n}}, {{\\r}} và control char ASCII. Gặp {{\\u3000}} (mã 12288) là nó **dừng lại ngay**.
+- {{strip()}} (Java 11): cắt theo **{{Character.isWhitespace(codePoint)}}**, tức mở rộng cho khoảng trắng Unicode ({{\\u3000}}, {{\\u2003 EM SPACE}}…). {{isBlank()}} cũng dùng đúng định nghĩa này: một chuỗi chỉ chứa {{\\u3000}} thì {{isEmpty()}} là {{false}} nhưng {{isBlank()}} là {{true}}.
+- {{String}} trong Java là mảng **code unit UTF-16**, nên {{\\u3000}} (nằm trong BMP) tính là **1** ký tự; chỉ ký tự ngoài BMP (emoji) mới tính 2.
+
+### Đếm để loại phương án sai
+{{raw}} có 12 code unit: {{\\u3000}}, {{\\t}}, {{"order-42"}} (8), 2 {{space}}.
+- {{trim()}}: ký tự đầu là {{\\u3000}} → không cắt được gì ở đầu; 2 {{space}} cuối bị cắt → còn {{\\u3000\\torder-42}} = **10**.
+- {{strip()}}: cắt {{\\u3000}} và {{\\t}} ở đầu, 2 {{space}} ở cuối → còn {{"order-42"}} = **8**.
+- Hai kết quả khác nhau → {{equals}} = {{false}}.
+
+### Vì sao các phương án còn lại sai
+- **{{true | 8 | 8}}**: gán cho {{trim}} khả năng Unicode của {{strip}} — đây là nhầm phổ biến nhất vì "hai cái cùng tên ý nghĩa".
+- **{{false | 11 | 8}}**: tính {{\\u3000\\t}} là 3 code unit hoặc tưởng 2 {{space}} cuối vẫn còn.
+- **{{false | 10 | 11}}**: tưởng {{strip}} chỉ cắt {{space}} ASCII, không cắt {{\\t}}.
+
+> Senior tip: bẫy thật sự còn khó hơn một bậc: {{\\u00A0}} (NBSP — ký tự Excel/Word/Google Docs hay chèn) **không** phải whitespace theo {{Character.isWhitespace}}, nên **cả {{trim}} lẫn {{strip}} đều bỏ qua** — chuỗi in ra trông y hệt mà {{equals}}/{{HashMap.get}} không khớp. Cách chuẩn hoá dữ liệu đầu vào:
+
+~~~java
+String normalize(String v) {
+    String s = v.replace('\\u00A0', ' ').strip();   // đổi NBSP thành space ASCII trước rồi mới cắt
+    return Normalizer.normalize(s, Normalizer.Form.NFC);  // đồng nhất tổ hợp dấu (á kiểu NFC vs NFD)
+}
+~~~
+
+Khi điều tra loại bug này, đừng in chuỗi — hãy in {{s.codePoints()}} để thấy mã thật của từng ký tự.`
+},
+{
+  id: 'qz-modern-022', topic: 'modern',
+  q: `Đoạn code sau in ra gì? (Java 17)
+~~~java
+String query = """
+    SELECT *
+    FROM orders
+    """;
+System.out.print(query.length());
+~~~`,
+  options: [
+    `20`,
+    `21`,
+    `25`,
+    `29`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 21.**
+
+### Text block được biên dịch thành chuỗi thế nào (ba quy tắc đủ để tự tính)
+Text block (chính thức từ Java 15) cho phép viết chuỗi nhiều dòng bằng **ba dấu nháy kép** liên tiếp, không cần nối chuỗi thủ công. javac áp ba bước biến đổi **trên source**:
+1. Sau {{"""}} mở đầu chỉ được có khoảng trắng rồi xuống dòng; dấu xuống dòng đó **không** đi vào chuỗi.
+2. **Incidental indentation**: JVM đo số ký tự thụt đầu của *từng dòng nội dung* **và của dòng chứa {{"""}} đóng**, lấy **min**, rồi cắt bỏ đúng bấy nhiêu ký tự ở đầu mọi dòng. Ở đây cả ba dòng đều thụt 4 → mỗi dòng mất 4 space.
+3. **Mỗi dòng nội dung giữ lại dấu xuống dòng của nó** — kể cả dòng cuối: vì {{"""}} đóng nằm trên một dòng riêng nên ngay trước nó có một xuống dòng, và xuống dòng đó **được tính vào chuỗi**.
+
+### Cộng lại
+~~~text
+SELECT *        ->  8 ký tự
+xuống dòng      ->  1
+FROM orders     -> 11 ký tự
+xuống dòng      ->  1
+tổng            -> 21
+~~~
+
+### Vì sao các phương án còn lại sai
+- **20**: quên mất xuống dòng trước {{"""}} đóng. Kết quả này đúng nếu bạn đặt {{"""}} đóng ngay cuối dòng {{FROM orders}}, hoặc kết thúc dòng cuối bằng {{\\}} (escape nối dòng).
+- **25**: chỉ cắt được indentation của một dòng (12 + 1 + 11 + 1).
+- **29**: không cắt indentation chút nào: dòng 1 dài 12, dòng 2 dài 15, cộng hai xuống dòng.
+
+> Senior tip: hai thứ hay dùng kèm: {{stripTrailing()}} (Java 15) cắt toàn bộ khoảng trắng cuối chuỗi khi bạn không muốn xuống dòng thừa, và {{formatted(args)}} để tham số hoá template. Muốn **giữ** một dấu cách cuối dòng thì thêm {{\\s}} trước xuống dòng, vì trailing space mặc định bị loại. Với SQL trong text block: luôn giữ placeholder {{?}} và truyền giá trị qua {{PreparedStatement}}, tuyệt đối không nội suy biến người dùng vào chuỗi — text block không làm SQL injection khó hơn chút nào.`
+},
+{
+  id: 'qz-modern-023', topic: 'modern', multi: true,
+  q: `{{keyword}} có thể là {{null}} (user không nhập ô tìm kiếm). Những dòng nào **không** ném exception lúc chạy? (Chọn 3)
+~~~java
+String keyword = request.param("q");            // có thể null
+
+Optional<String> a = Optional.ofNullable(keyword);
+Optional<String> b = Optional.of(keyword);
+int len1 = keyword.length();
+Optional<String> c = Optional.ofNullable(keyword).map(String::trim);
+boolean has = Objects.nonNull(keyword);
+~~~`,
+  options: [
+    `Dòng gán a hợp lệ: ofNullable được thiết kế để nhận null`,
+    `Dòng gán b hợp lệ: Optional sẽ tự chứa giá trị rỗng khi keyword null`,
+    `Dòng gán c không ném exception vì map chỉ chạy khi có giá trị`,
+    `Dòng len1 không ném exception vì length() tồn tại trên mọi String`,
+    `Dòng has không ném exception`
+  ],
+  answer: [0, 2, 4],
+  explain: `**Đáp án đúng: {{a}}, {{c}} và {{has}} — ba dòng dùng {{ofNullable}}, {{map}} trên Optional rỗng, và {{Objects.nonNull}}.**
+
+### Optional tồn tại để làm gì
+{{Optional<T>}} là wrapper nói "kết quả có thể **không có**", buộc caller xử lý thiếu thay vì nhận {{null}}. Nó chỉ có hai trạng thái: chứa giá trị **khác null**, hoặc rỗng.
+
+### Vì sao ba dòng an toàn
+- {{Optional.ofNullable(keyword)}}: đây chính là API dành cho giá trị có thể {{null}}; {{null}} → {{Optional.empty()}}.
+- {{Optional.ofNullable(keyword).map(String::trim)}}: trên Optional **rỗng**, {{map}}/{{filter}}/{{ifPresent}} là no-op — hàm bên trong **không được gọi**, nên {{String::trim}} không bao giờ chạy trên {{null}}. Đây là "lazy" theo nghĩa pipeline: chỉ phần present mới bị tác động.
+- {{Objects.nonNull(keyword)}}: một static method nhận {{Object}}, chỉ so sánh với {{null}} — không dereference gì cả.
+
+### Vì sao hai dòng ném exception
+- {{Optional.of(null)}} ném **{{NullPointerException}} ngay tại dòng tạo Optional** (hợp đồng {{Objects.requireNonNull}}). Ý "Optional sẽ tự chứa giá trị rỗng" là sai: nó **không có** trạng thái "chứa null". Bẫy ở đây là exception xảy ra **lúc build**, không phải lúc bạn gọi {{get()}}/{{isPresent()}}, nên stack trace trông như "code null-check lại NPE".
+- {{keyword.length()}} là dereference trực tiếp trên {{null}} → {{NullPointerException}}.
+
+> Senior tip: ở ranh giới hệ thống (HTTP param, cột nullable, kết quả RPC) hãy đổi {{null}} thành {{Optional}} **một lần** rồi làm việc với {{Optional}}: {{Optional.ofNullable(v).map(...).orElse("")}} hoặc {{.orElseThrow(() -> new BadRequestException("thiếu q"))}}. Tránh ba anti-pattern: {{Optional.of}} với giá trị có thể null; {{Optional}} làm **tham số method** hoặc **field entity** (không {{Serializable}}, tốn object, không dùng được với JPA/DTO phổ biến); và {{ifPresent(x -> ...)}} rồi {{else throw}} — viết {{ifPresentOrElse}} hoặc {{orElseThrow}} rõ ràng hơn. {{Objects.requireNonNullElse(keyword, "")}} cũng là lựa chọn ngắn gọn khi bạn không cần Optional.`
+},
+{
+  id: 'qz-modern-024', topic: 'modern',
+  q: `Đoạn code sau in ra gì? (Java 21)
+~~~java
+Stream.iterate(1, x -> x < 8, x -> x * 2)
+      .forEach(x -> System.out.print(x + " "));
+~~~`,
+  options: [
+    `1 2 4 8 (mỗi phần tử được phát ra rồi mới kiểm tra điều kiện)`,
+    `2 4 (seed bị đưa qua next trước khi phát)`,
+    `In vô hạn: 1 2 4 8 16 32 ... vì iterate luôn tạo stream vô hạn`,
+    `1 2 4 (mỗi số kèm một dấu cách, nên có dấu cách ở cuối)`
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: {{1 2 4}} (kèm dấu cách cuối).**
+
+### Ba tham số của {{Stream.iterate}} nghĩa là gì
+Overload {{iterate(seed, hasNext, next)}} được thêm trong **Java 9**; bản Java 8 chỉ có {{iterate(seed, f)}} và luôn tạo stream **vô hạn** (buộc phải {{limit(n)}}). Hợp đồng của bản ba tham số: {{seed}} được **kiểm tra điều kiện trước**, nếu đạt thì phát; sau đó {{next}} sinh giá trị mới, giá trị mới lại được kiểm tra rồi mới phát — lặp cho đến khi điều kiện trả {{false}}.
+
+### Bấm từng bước
+~~~text
+x = 1 : hasNext(1) = 1 < 8  -> true   -> phát 1
+x = 2 : hasNext(2)          -> true   -> phát 2
+x = 4 : hasNext(4)          -> true   -> phát 4
+x = 8 : hasNext(8) = 8 < 8  -> false  -> KHÔNG phát, dừng
+~~~
+Vì {{forEach}} in {{x + " "}} nên kết quả thật là "{{1 2 4 }}" — có một dấu cách cuối, chi tiết hay bị hỏi để kiểm tra bạn có đọc kỹ không.
+
+### Vì sao các phương án còn lại sai
+- **{{1 2 4 8}}**: tưởng điều kiện chạy **sau khi** phát (dạng {{do ... while}}); ở đây nó chạy trước, nên 8 bị loại.
+- **{{2 4}}**: {{seed}} không bị "ăn"; nó là phần tử đầu tiên được xét.
+- **In vô hạn**: chỉ đúng với overload hai tham số; ở đây {{hasNext}} là trần dừng.
+
+> Senior tip: {{hasNext}} không được bảo đảm sẽ bao giờ trả {{false}}. Ví dụ {{Stream.iterate(0L, x -> x != 100L, x -> x + 3L)}} nhảy 0, 3, 6... và **không bao giờ** chạm 100, nên stream chạy vĩnh viễn; các điều kiện kiểu "{{!=}}" hoặc dựa trên tràn số là nguồn treo production khó hiểu. An toàn: luôn thêm {{limit(n)}} như một "cầu dao", hoặc dùng {{IntStream.range}}/{{IntStream.rangeClosed}} khi biết trước số lượng. {{iterate}} cũng **không song song hoá tốt** (mỗi phần tử phụ thuộc phần tử trước, spliterator không ước lượng được kích thước để chia đoạn); cần {{parallel}} thì chuyển sang {{range}}/{{generate}}.`
+},
+
+// ===================== concurrency =====================
+{
+  id: 'qz-concurrency-021', topic: 'concurrency',
+  q: `Ứng dụng khởi động 3 adapter song song rồi phải chờ cả 3 sẵn sàng mới nhận traffic. Một adapter thiếu cấu hình nên {{connect()}} ném exception. Điều gì xảy ra?
+~~~java
+CountDownLatch ready = new CountDownLatch(3);
+for (Adapter a : adapters) {
+    pool.submit(() -> {
+        try {
+            a.connect();                 // ném IllegalStateException
+            ready.countDown();
+        } catch (Exception e) {
+            log.error("adapter fail", e);
+        }
+    });
+}
+ready.await();
+markReady();
+~~~
+`,
+  options: [
+    `markReady() chạy sớm hơn dự kiến, vì await() chỉ cần count giảm được 1 là trả về`,
+    `pool tự chuyển exception sang main thread nên await() bị hủy theo`,
+    `await() chờ 60 giây rồi trả về, vì mọi latch đều có timeout mặc định`,
+    `await() treo vĩnh viễn: adapter lỗi không countDown nên count dừng ở 1 và không bao giờ về 0`
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: await() treo vĩnh viễn vì count không bao giờ về 0.**
+
+### CountDownLatch hoạt động thế nào
+Latch là một bộ đếm **chỉ giảm**: {{countDown()}} trừ 1, {{await()}} chặn cho tới khi count về 0 rồi đánh thức mọi thread đang chờ. Count không tăng lại được nên latch dùng **một lần**. Câu hỏi duy nhất nó trả lời là "đã đủ N sự kiện chưa?".
+
+### Bấm từng bước
+~~~text
+count = 3
+adapter A ok  -> countDown -> 2
+adapter B ok  -> countDown -> 1
+adapter C     -> connect() ném exception -> vào catch, log, KHÔNG countDown -> count vẫn 1
+main          -> await(): count != 0 -> park, không có ai đánh thức -> treo vĩnh viễn
+~~~
+Bug nằm ở chỗ {{countDown()}} đặt **trong try, sau câu có thể ném exception**. Nó phải chạy trên **mọi đường ra** của task:
+~~~java
+try { a.connect(); }
+catch (Exception e) { log.error("adapter fail", e); }
+finally { ready.countDown(); }   // kể cả khi throw, kể cả khi return sớm
+~~~
+
+### Vì sao các phương án còn lại sai
+- **await trả về khi count giảm 1**: nhầm sang {{Semaphore}}/{{CyclicBarrier}}; {{await()}} chỉ thoát khi count **bằng 0**.
+- **pool chuyển exception cho main**: {{submit()}} bọc exception vào {{Future}}; nếu không ai gọi {{future.get()}} thì exception **không bao giờ lộ ra** — đây là cái bẫy thứ hai của đoạn code (lỗi bị nuốt, chỉ còn dòng log).
+- **Có timeout mặc định**: {{await()}} không tham số chờ vô hạn; muốn có trần phải gọi {{await(10, TimeUnit.SECONDS)}} rồi kiểm tra {{ready.getCount()}} và fail-fast.
+
+> Senior tip: hai quy tắc: (1) {{countDown()}} luôn nằm trong {{finally}}; (2) code khởi động không được có {{await()}} nào thiếu timeout — main thread treo làm app mãi không {{markReady()}}, readiness probe trên Kubernetes báo đỏ vĩnh viễn mà process vẫn "sống" nên không ai restart. Dấu hiệu khi debug: thread dump cho thấy main ở trạng thái WAITING trong {{CountDownLatch$Sync}}. Với bài toán "khởi động N thành phần", {{CompletableFuture.allOf(...)}} hoặc {{invokeAll(...)}} tốt hơn latch vì lấy được exception của **từng** task để báo lỗi cấu hình ngay lúc boot.`
+},
+{
+  id: 'qz-concurrency-022', topic: 'concurrency',
+  q: `Job chạy mỗi 60 giây để dọn đơn hàng quá hạn. Lúc 03:00 DB trượt kết nối một lần và {{findExpired()}} ném exception; từ đó job **không bao giờ chạy nữa** và scheduler cũng không log gì. Vì sao?
+~~~java
+ScheduledExecutorService ses = Executors.newSingleThreadScheduledExecutor();
+ScheduledFuture<?> sf = ses.scheduleAtFixedRate(
+    () -> orders.findExpired().forEach(o -> rebuild(o)),
+    0, 60, TimeUnit.SECONDS);
+~~~
+`,
+  options: [
+    `Chỉ lần chạy đó hỏng; các lần sau vẫn được lên lịch bình thường vì period vẫn còn hiệu lực`,
+    `Task bị gỡ khỏi lịch vĩnh viễn: mọi lần chạy sau một lần exception thoát ra đều bị hủy, còn exception nằm im trong ScheduledFuture`,
+    `Worker thread đã chết nên toàn bộ executor bị vô hiệu; mọi task khác cũng submit thất bại`,
+    `JDK tự retry task lỗi 3 lần theo backoff rồi mới hủy lịch`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: exception làm task bị gỡ khỏi lịch vĩnh viễn, và không ai đọc exception nên im lặng.**
+
+### Cơ chế
+Javadoc của {{ScheduledExecutorService}} nói thẳng: "If any execution of the task encounters an uncaught exception, **subsequent executions are suppressed**". Nghĩa là:
+1. Exception thoát ra khỏi {{Runnable}} → {{ScheduledFuture}} được hoàn thành ở trạng thái **exceptionally**.
+2. Task định kỳ bị loại khỏi hàng đợi lịch của executor — không có lần chạy thứ hai, vô điều kiện.
+3. Exception không in ra đâu cả vì nó được **cất vào Future**. Muốn xem phải gọi {{sf.get()}} (ném {{ExecutionException}}); nếu không gọi thì nó nằm im tới khi GC.
+4. {{UncaughtExceptionHandler}} của thread cũng **không** chạy, vì exception đã bị executor bắt lại chứ không truyền tới {{Thread}}.
+
+### Sửa
+Bọc **cả** thân task trong try/catch {{Throwable}} để không gì thoát ra ngoài:
+~~~java
+ses.scheduleAtFixedRate(() -> {
+    try { rebuildExpiredOrders(); }
+    catch (Throwable t) {                 // Throwable, không phải Exception
+        log.error("job failed", t);       // Error như NoClassDefFoundError cũng bị nuốt
+        metrics.increment("jobs.expired_rebuild.failures");
+    }
+}, 0, 60, TimeUnit.SECONDS);
+~~~
+Có thể biến nó thành wrapper dùng chung cho mọi job ({{Runnable guarded = SafeRunner.wrap(task, name)}}) để không phụ thuộc kỷ luật từng dev.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ mất một lần chạy**: sai, mất **tất cả** các lần sau.
+- **Cả executor chết**: worker thread được pool tạo lại/tiếp tục phục vụ task khác; chỉ task gây lỗi bị hủy lịch.
+- **Tự retry 3 lần**: executor không có khái niệm retry, đó là thứ bạn phải tự viết.
+
+> Senior tip: so sánh để tránh nhầm: {{java.util.Timer}} còn tệ hơn — một exception trong {{TimerTask}} làm **chết cả Timer**, mọi task khác mất luôn; còn Spring {{@Scheduled}} mặc định bọc try/catch và log ERROR nên các lần sau vẫn chạy. Dấu hiệu nhận biết ngoài production: job "biến mất trong im lặng" — vì vậy mỗi job định kỳ phải có **heartbeat metric** ({{last_success_timestamp}}) và alert khi stale quá 2 lần period; hoặc soi JMX {{java.util.concurrent:type=ScheduledThreadPoolExecutor}} thấy {{CompletedTaskCount}} đứng yên. Đừng lấy {{sf.isDone()}} làm nhịp sống chính: sau khi lỗi thì future chuyển sang done thật, nhưng một job chỉ chạy chậm cũng dễ khiến bạn đọc nhầm cờ này.`
+},
+{
+  id: 'qz-concurrency-023', topic: 'concurrency', multi: true,
+  q: `Review một class dùng toàn {{synchronized}}. Những phát biểu nào **đúng**? (Chọn 3)
+~~~java
+public class OrderService {
+    private static final String LOCK = "ORDERS";
+    public static synchronized void rebuildAll() { ... }
+    public synchronized void save(Order o) { ... }
+    public void publish(Order o) {
+        synchronized (LOCK) { queue.add(o); }
+    }
+}
+~~~
+`,
+  options: [
+    `rebuildAll() khoá trên object OrderService.class, nên hai instance khác nhau vẫn loại trừ lẫn nhau`,
+    `Monitor có tính reentrant: thread đang giữ lock vẫn vào được code khác dùng cùng lock mà không tự chặn mình`,
+    `Khóa trên LOCK là String literal thì an toàn vì literal đã intern và không bao giờ đổi giá trị`,
+    `Thread đang blocked chờ vào một khối synchronized có thể bị đánh thức bằng thread.interrupt()`,
+    `Gọi LOCK.wait() khi không giữ monitor của LOCK ném IllegalMonitorStateException`
+  ],
+  answer: [0, 1, 4],
+  explain: `**Đáp án đúng: lock của static method là Class object, monitor reentrant, và wait() bắt buộc phải giữ monitor.**
+
+### Monitor là gì
+Mọi object Java đi kèm một **monitor**: một vé loại trừ lẫn nhau (chỉ một thread giữ tại một thời điểm) cộng một **wait set** (danh sách thread đang {{wait()}}). Token của lock chính là **tham chiếu object** được chỉ định.
+
+### Vì sao các đáp án được chọn là đúng
+- **{{static synchronized}} → lock trên {{OrderService.class}}**: vì method static không có {{this}}, JVM dùng {{Class}} object làm monitor. Hai thread trên hai instance **vẫn** loại trừ nhau. Ngược lại {{save()}} lock trên {{this}}: hai instance khác nhau chạy **song song**, không chặn nhau — đây là chỗ hay bị hiểu nhầm khi cần invariant toàn cục.
+- **Reentrant**: monitor đếm số lần acquire theo thread, nên thread đã giữ lock có thể vào lại vùng cùng lock (method gọi method) mà không tự deadlock. Nhờ vậy code lồng nhau viết đơn giản.
+- **{{wait()}} yêu cầu giữ monitor**: nó phải thêm thread vào wait set của chính object đó, nên gọi ngoài {{synchronized}} sẽ ném {{IllegalMonitorStateException}} ngay.
+
+### Vì sao các phương án còn lại sai
+- **String literal an toàn**: literal được **intern trong toàn JVM**, nên bất kỳ class nào khác khóa trên chuỗi "ORDERS" y hệt sẽ dùng **chung monitor** với bạn — coupling vô hình, contention khó hiểu, và nếu ai đó truyền tham chiếu này ra ngoài thì họ giữ lock của bạn được. Chuẩn: {{private static final Object LOCK = new Object();}} (object không thể tình cờ bị chia sẻ).
+- **Interrupt được khi blocked ở {{synchronized}}**: acquisition của monitor là khối **không interruptible**; {{interrupt()}} chỉ được ghi cờ và thread vẫn chờ tới khi lấy được lock. Cần khả năng hủy thì dùng {{ReentrantLock.lockInterruptibly()}} (hoặc {{tryLock}} có timeout). Lưu ý phân biệt: {{wait()}} thì **có** phản ứng với interrupt (ném {{InterruptedException}}).
+
+> Senior tip: hai hệ quả thực chiến: (1) một {{synchronized}} bọc gọi RPC/DB có thể làm **treo cả pool thread** — mọi request khác queue lại phía sau, và vì không interrupt được nên {{ExecutorService.shutdownNow()}}, timeout của client, hay cancel request đều không cứu được; vì vậy chỉ giữ những dòng thật sự cần nằm trong monitor và không gọi ra ngoài (RPC, DB) trong đó. (2) Trong thread dump, deadlock kiểu này hiện ra là nhóm "waiting to lock" cùng một monitor mà chính holder cũng đang chờ lock khác — JVM in "Found one Java-level deadlock" cho monitor lẫn {{ReentrantLock}}, nhưng **không** phát hiện được deadlock "tự chờ" như upgrade read-lock sang write-lock.`
+},
+{
+  id: 'qz-concurrency-024', topic: 'concurrency',
+  q: `Cache dùng {{ReentrantReadWriteLock}}. Hai thread cùng đọc và **cùng** thấy key chưa có. Điều gì xảy ra?
+~~~java
+rw.readLock().lock();
+try {
+    if (cache.get(key) == null) {
+        rw.writeLock().lock();               // cố "upgrade"
+        try { cache.put(key, loadFromDb(key)); }
+        finally { rw.writeLock().unlock(); }
+    }
+    return cache.get(key);
+} finally {
+    rw.readLock().unlock();
+}
+~~~
+`,
+  options: [
+    `Cả hai treo vĩnh viễn: write lock không cấp khi còn read lock chưa nhả, mà read lock đó chính hai thread này đang giữ`,
+    `T2 lấy được write lock ngay vì read lock tự động nhả khi thread xin write lock`,
+    `T2 ném IllegalMonitorStateException vì đang giữ read lock mà xin write lock`,
+    `Code đúng, chỉ chậm hơn: write lock sẽ chờ cho tới khi read lock của thread kia hết hạn`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: T1 và T2 deadlock lẫn nhau vì không có upgrade read → write.**
+
+### Đọc cơ chế
+{{ReentrantReadWriteLock}} cho **nhiều** thread giữ read lock đồng thời, nhưng write lock là độc quyền: nó chỉ được cấp khi **không còn** read lock nào. Javadoc ghi rõ lớp khóa này **không hỗ trợ upgrade** read lock thành write lock — tức là đang giữ read mà xin write thì bạn tự chặn chính mình.
+
+Diễn biến:
+~~~text
+T1: readLock OK (đếm readers = 2 cùng T2) -> xin writeLock -> blocked, chờ readers nhả
+T2: readLock OK                                  -> xin writeLock -> blocked, chờ readers nhả
+ readers hiện tại = {T1, T2}, và cả hai đang blocked nên không ai nhả
+ -> vòng chờ kín, không timeout, không exception
+~~~
+Điểm đau: đây là deadlock **không có chủ** (write lock chưa thuộc về ai), nên công cụ dò deadlock kiểu {{ThreadMXBean.findDeadlockedThreads()}} dễ bỏ sót; thread dump chỉ hiện hai thread {{WAITING (parking)}} trong {{writeLock().lock()}} và bạn phải tự nhận ra họ đang giữ read lock ({{getHoldCount()}} của read lock > 0).
+
+### Sửa
+Nhả read lock **trước** khi xin write, rồi kiểm tra lại điều kiện sau khi có write (double-check), vì có thể thread khác đã load xong trong lúc mình chờ:
+~~~java
+rw.readLock().lock();
+boolean absent;
+try { absent = cache.get(key) == null; }
+finally { rw.readLock().unlock(); }
+if (absent) {
+    rw.writeLock().lock();
+    try { if (cache.get(key) == null) cache.put(key, loadFromDb(key)); }
+    finally { rw.writeLock().unlock(); }
+}
+~~~
+Sau khi **giữ write** rồi muốn đọc tiếp thì được phép **downgrade** (lấy read, nhả write) — chiều đó JDK hỗ trợ.
+Cách gọn hơn cho đúng bài toán "load-once theo key": bỏ hẳn lock, dùng {{ConcurrentHashMap.computeIfAbsent}} (chỉ chạy function khi key thiếu, nguyên tử theo bin — nhưng nhớ mapping function phải ngắn, không I/O chậm) hoặc {{StampedLock}} với {{tryConvertToWriteLock}} / {{tryOptimisticRead}}, hoặc pattern immutable snapshot + {{AtomicReference}}.
+
+### Vì sao các phương án còn lại sai
+- **Read lock tự nhả khi xin write**: không có cơ chế đó; nó vẫn được tính là reader đang giữ.
+- **Ném exception**: xin lock sai tư thế không ném gì cả, nên lỗi biểu hiện bằng **treo**, không bằng log.
+- **Chỉ chậm hơn**: "write lock chờ read lock hết hạn" là vô nghĩa — read lock không có hạn, nó chỉ hết khi {{unlock()}}.
+
+> Senior tip: nếu vẫn muốn dùng RWLock, đừng upgrade mà dùng {{tryLock(timeout)}} cho write: hết thời gian thì trả về "cache miss, đọc trực tiếp từ DB" thay vì treo; có timeout là biến deadlock thành degradation. Và nên nhớ read lock **không** miễn phí: mỗi lần {{lock()}}/{{unlock()}} là một lần CAS trên state dùng chung (cache line nóng), nên với cache nhỏ+đọc nhiều, {{StampedLock}} optimistic read hoặc map concurrent thường nhanh hơn và không có cửa deadlock.`
+},
+
+// ===================== jvm =====================
+{
+  id: 'qz-jvm-021', topic: 'jvm', multi: true,
+  q: `Property {{app.timeout}} không được truyền vào container nên {{parseInt}} ném exception. Hai endpoint của **cùng một JVM** đọc {{Config.TIMEOUT}} theo thứ tự, mỗi chỗ đều {{catch (Throwable t)}} rồi log tên class của exception. Những phát biểu nào **đúng**? (Chọn 3)
+~~~java
+class Config {
+    static final int TIMEOUT = Integer.parseInt(System.getProperty("app.timeout", "abc"));
+}
+~~~
+`,
+  options: [
+    `Lần đọc đầu tiên ném ExceptionInInitializerError, mọi lần đọc sau ném NoClassDefFoundError kèm message "Could not initialize class Config"`,
+    `TIMEOUT không phải compile-time constant nên đọc nó kích hoạt initialization; nếu viết static final int TIMEOUT = 30 thì javac đã in hằng số vào caller và không kích hoạt gì cả`,
+    `Class.forName("Config") một tham số chỉ load class chứ chưa chạy static initializer`,
+    `JVM chỉ chạy <clinit> một lần cho mỗi class trong một classloader; class đã bị đánh dấu lỗi nên mọi lần truy cập sau cũng thất bại, phải khởi động lại process`,
+    `int có giá trị mặc định 0 nên lần đọc thứ hai trả về 0, endpoint số hai vẫn chạy bình thường`
+  ],
+  answer: [0, 1, 3],
+  explain: `**Đáp án đúng: ExceptionInInitializerError rồi NoClassDefFoundError, constant mới được in-lined, và static initializer chỉ chạy đúng một lần.**
+
+### Class đi qua những bước nào
+1. **Loading**: tìm bytecode, dựng {{Class}} object, chuyển vào metaspace.
+2. **Linking**: verify (kiểm tra bytecode), **prepare** (cấp bộ nhớ cho static field và gán **giá trị mặc định của kiểu**: 0, null — chưa chạy code của bạn), resolve.
+3. **Initialization**: chạy {{<clinit>}} — tức là các static initializer và static block, **theo đúng thứ tự khai báo trong file**.
+
+{{<clinit>}} chạy **đúng một lần** cho mỗi (class, classloader), dưới một **initialization lock** của riêng class đó (JVMS 5.5). Kết quả được ghi lại: thành công (mark = initialized) hoặc thất bại (mark = erroneous).
+
+### Diễn biến trong tình huống này
+~~~text
+Endpoint A: getstatic Config.TIMEOUT -> class chưa init -> chạy <clinit>
+            -> NumberFormatException -> JVM wrap: ExceptionInInitializerError(cause=NumberFormatException)
+            -> Config bị đánh dấu ERRONEOUS
+Endpoint B: getstatic -> class erroneous -> NoClassDefFoundError: Could not initialize class Config
+            (cause gốc KHÔNG còn trong stack trace!)
+~~~
+Vì sao các đáp án còn lại sai:
+- **{{Class.forName("Config")}}** phiên bản một tham số tương đương {{forName(name, true, loader)}} → **có** initialize. Muốn chỉ load thì phải dùng bản ba tham số với {{initialize = false}}.
+- **Trả về 0**: trạng thái "prepare" (mọi static = 0) là **trước** init; khi class erroneous thì không lần đọc nào được phép trả giá trị — nó ném tiếp {{NoClassDefFoundError}} mãi mãi.
+
+### Vì sao "constant" là ngoại lệ
+JVMS định nghĩa *constant expression* (primitive/String, chỉ gồm hằng số và phép toán không gọi method). {{static final int TIMEOUT = 30;}} là constant → javac nhét thẳng value vào bytecode của class dùng nó (thuộc tính {{ConstantValue}}), field không còn được đọc bằng {{getstatic}} nên **không** kích hoạt init. {{Integer.parseInt(...)}} là lời gọi method → không phải constant → kích hoạt init, dù field là {{final}}.
+
+> Senior tip: đây là nguồn của incident "endpoint thứ hai lỗi lạ hơn endpoint thứ nhất": stack trace thứ hai **mất cause**, người ta đi debug sai chỗ. Ba phòng ngừa: (1) đừng làm I/O (đọc file, gọi vault, parse config) trong {{<clinit>}} — hãy để nó trong một method {{init()}} gọi tường minh lúc boot để fail-fast và log đủ nguyên nhân; (2) nếu vẫn dùng static init, ở boot hãy "chạm" class và catch {{ExceptionInInitializerError}} rồi in {{getCause()}}; (3) nhớ initialization lock cũng có thể gây **deadlock** khi hai thread ở hai class khởi tạo chéo nhau (A đang chạy {{<clinit>}} cần B, B đang chạy {{<clinit>}} cần A); thread dump hiện {{BLOCKED}}, "waiting to lock" trên một {{java.lang.Class}} — dễ đọc nhầm thành lỗi khóa thông thường.`
+},
+{
+  id: 'qz-jvm-022', topic: 'jvm',
+  q: `Bật sampling cấp phát (async-profiler {{-e alloc}} / JFR) trên một method **đang nóng** thì gần như không thấy object nào được tạo, dù code rõ ràng allocate mỗi lần gọi. Chạy lại với {{-Xint}} (chỉ interpreter) thì vòng nào cũng thấy {{Point}} mới. Giải thích khả dĩ nhất?
+~~~java
+public double distance(Point p) {
+    Point copy = new Point(p.x, p.y);   // không thoát ra ngoài method
+    return Math.hypot(copy.x, copy.y);
+}
+~~~
+`,
+  options: [
+    `GC đã dọn hết trước khi profiler kịp ghi mẫu, vì object nhỏ chỉ nằm trong Eden vài ms`,
+    `C2 thấy object không thoát ra ngoài nên thay bằng các biến cục bộ (scalar replacement): field nằm trong thanh ghi/stack frame, không có cấp phát trên heap`,
+    `JVM tự intern mọi object immutable value class nên chỉ tồn tại một instance dùng chung`,
+    `Ở chế độ thường object được lấy sẵn từ TLAB đã chia cho thread, nên chỉ lần gọi đầu tiên là cấp phát thật`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: escape analysis + scalar replacement của JIT compiler.**
+
+### "Escape" là gì và cơ chế hoạt động
+JIT (C2) phân tích xem **reference** của object vừa tạo có "thoát" khỏi phạm vi compile của method hay không. Nó thoát khi bạn:
+- trả object về cho caller, gán vào field của object khác đang sống, cho vào collection/static,
+- truyền nó cho method mà C2 **không inline** được,
+- công khai cho thread khác (kể cả qua {{BlockingQueue}}).
+
+Nếu không thoát, thì object thực chất chỉ là **tập hợp các giá trị cục bộ**: C2 tách nó ra ("scalar replace") và giữ từng field trong thanh ghi hoặc slot của stack frame. Không có object trên heap → không có gì để GC dọn, và vòng {{for}} của benchmark trông như "miễn phí".
+Đi kèm là **lock elision**: {{synchronized}} trên object không thoát bị loại bỏ hẳn, vì không ai khác có thể thấy object đó.
+
+### Vì sao {{-Xint}} lại khác
+{{-Xint}} vô hiệu JIT: code chạy interpreter, không có phân tích nào cả nên mỗi vòng đều {{new}} thật. Ở chế độ thường, tối ưu chỉ xuất hiện **sau khi** method đủ nóng để được C2 compile và các callee được inline — vì vậy đo "{{-Xint}} so với bình thường" hay "vòng đầu so với vòng thứ một triệu" cho kết luận khác nhau hoàn toàn.
+
+### Vì sao các phương án còn lại sai
+- **GC dọn trước khi kịp ghi**: sampling cấp phát ghi sự kiện tại **thời điểm object được tạo** (khi bump con trỏ TLAB), không phải lúc GC; object chết nhanh vẫn được đếm.
+- **Intern object**: chỉ {{String}} intern theo yêu cầu ({{intern()}}, constant pool); không có cơ chế tự share object theo giá trị.
+- **TLAB share sẵn**: TLAB là một vùng heap đã xin trước cho thread, mỗi {{new}} vẫn là một lần bump pointer và vẫn sinh event cấp phát; nó không phải object pool.
+
+> Senior tip: hai hệ quả thực dụng. (1) **Đừng viết object pool / tái chế object để "giảm GC"** cho object nhỏ, short-lived: {{new}} trong TLAB chỉ vài nano giây, young GC với object đã chết gần như miễn phí; pool thêm field giữ tham chiếu, dễ gây leak và còn **ngăn** scalar replacement vì object giờ sống lâu và chia sẻ. (2) Tối ưu này là **opportunistic**: thêm một dòng log có placeholder, đổi method thành lớn hơn, hay caller không inline được cũng làm cấp phát **quay lại** giữa hai build. Vì vậy khi tối ưu allocation, hãy đo allocation rate ({{jcmd PID GC.class_histogram}}, async-profiler {{-e alloc}}, JFR {{jdk.ObjectAllocationInNewTLAB}}) trên bản build thật, thay vì tin rằng "object nhỏ thì JVM tự lo". Lưu ý thêm: object **không** escape nhưng quá to, hoặc có field dạng array thay đổi động, cũng thường bị bỏ qua.`
+},
+{
+  id: 'qz-jvm-023', topic: 'jvm',
+  q: `Service đọc nguyên file lên bộ nhớ: mỗi request cấp phát một {{byte[]}} khoảng 6 MB. Heap 8 GB, {{-XX:G1HeapRegionSize=4m}}. GC log có dòng {{Pause Young ... (G1 Humongous Allocation)}} và số humongous regions tăng đều, thỉnh thoảng {{Pause Full}}. Điều gì đang xảy ra?
+~~~text
+[gc] GC(118) Pause Young (Mixed) (G1 Humongous Allocation) 6215M->5980M(8192M) 41.2ms
+[gc,heap] GC(118) Humongous regions: 1542->1540
+~~~
+`,
+  options: [
+    `Mảng 6 MB lớn hơn young gen nên bị đẩy thẳng vào old gen, đó là hành vi bình thường của G1`,
+    `G1 luôn copy mọi object sống nên chỉ là pause dài hơn một chút, không cần quan tâm`,
+    `JVM tự tăng region size khi thấy object lớn, các dòng log này thuộc giai đoạn warm-up`,
+    `Mảng 6 MB vượt quá nửa region (2 MB) nên bị xếp là humongous: nó chiếm một chuỗi region liên tiếp, nằm ngoài vòng thu gom young thông thường, và việc phải tìm chuỗi region trống liền mạch gây phân mảnh tới mức hết chỗ dù heap còn trống`
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: object > 50% region size trở thành humongous object.**
+
+### Region và ngưỡng humongous
+G1 chia heap thành các **region** bằng nhau (mặc định chọn theo heap, từ 1 MB đến 32 MB; ở đây bạn ép 4 MB). Một region đóng vai trò eden/survivor/old, **hoặc** chứa một **humongous object**. Quy tắc: object có kích thước **lớn hơn 50% region size** (> 2 MB với region 4 MB) không vừa vào một region nên được gọi là humongous.
+
+Nó được cấp phát ngay từ đầu vào một **chuỗi region liên tiếp**: region đầu (head) mang metadata, các region sau chỉ tiếp sức. Hệ quả:
+- **Không đi qua young gen**: không được thu hồi "miễn phí" ở young GC như object short-lived bình thường; muốn dọn region humongous phải biết chắc không còn ai tham chiếu (JDK 9+ có eager reclaim cho trường hợp không còn reference, nhưng vẫn phải có cycle đủ thông tin).
+- **Cần vùng trống liền mạch**: 6 MB cần **2 region liên tiếp** còn trống. Heap có thể còn 2 GB tự do nhưng xé vụn → không đủ chuỗi → allocation fail. Khi đó G1 hoặc phải bắt một concurrent cycle sớm, hoặc nếu hết cách thì **Full GC** — chính là dòng {{Pause Full}} trong log.
+- **Copy đắt**: khi phải di chuyển, nó copy nguyên các region, pause tăng.
+
+Vì vậy {{G1 Humongous Allocation}} xuất hiện thường xuyên = bạn đang tự tạo áp lực old gen và phân mảnh bằng các array lớn.
+
+### Cách sửa (theo thứ tự nên thử)
+- **Đừng nạp nguyên file vào RAM**: stream theo lát nhỏ ({{InputStream}}, buffer 64–128 KB), hoặc {{FileChannel.transferTo}} để copy không đi qua heap.
+- **Tái sử dụng buffer** theo cách có kiểm soát (pool buffer, {{ArrayDeque}} + clear) hoặc dùng **direct ByteBuffer** (off-heap, không vào region nào).
+- **Tăng region size**: {{-XX:G1HeapRegionSize=16m}} → ngưỡng 8 MB, mảng 6 MB thành object thường. Đánh đổi: độ mịn phân vùng giảm, dự báo pause kém chính xác hơn, heap nhỏ không nên dùng.
+
+### Vì sao các phương án còn lại sai
+- **Lớn hơn young gen nên bị đẩy vào old**: young gen ở đây lớn hơn 6 MB rất nhiều; vấn đề là **kích thước region**, không phải young gen.
+- **Chỉ là pause dài hơn**: log có {{Pause Full}} và heap gần cạn — đó là dấu hiệu sự cố, không phải hành vi bình thường.
+- **Tự tăng region size**: region size chốt **một lần lúc khởi động**, không bao giờ đổi khi đang chạy.
+
+> Senior tip: hai chi tiết hay bị hỏi tiếp. (1) Ngưỡng "một nửa region" giải thích vì sao cùng một mảng 6 MB có thể là humongous hoặc không tùy {{-XX:G1HeapRegionSize}} — luôn kiểm tra bằng {{jcmd}} với lệnh {{VM.flags}} hoặc nhìn dòng {{Humongous regions}} trong {{-Xlog:gc+heap}}. (2) {{MaxGCPauseMillis}} quá tham (ví dụ 20 ms) làm G1 thu nhỏ young gen để giữ pause, khiến object còn sống bị đẩy lên old sớm hơn và làm vấn đề thêm nặng; nếu workload của bạn cố tình nhiều object khổng lồ, ZGC (không có mô hình region-copy theo kiểu này và pause không tỉ lệ với heap) thường là lựa chọn hợp lý hơn, nhưng hãy đo allocation rate trước khi đổi GC.`
+},
+{
+  id: 'qz-jvm-024', topic: 'jvm',
+  q: `Service Java 21 chạy với {{-Xmx31g}} rất ổn. Để "hết OOM", team nâng lên {{-Xmx48g}} trên cùng một node. Sau đó: RSS tăng **nhiều hơn** đúng tỉ lệ 48/31, throughput giảm khoảng 12–15%, trong khi GC log cho thấy số lần GC và lượng live data gần như không đổi. Nguyên nhân khả dĩ nhất?`,
+  options: [
+    `Trên 31 GB, G1 tự động chuyển sang thuật toán serial Full GC vì không đủ region để song song hóa`,
+    `JVM tắt JIT khi heap vượt 32 GB để dành bộ nhớ cho object, code rơi về interpreter`,
+    `Trên ngưỡng 32 GB, HotSpot thôi dùng compressed oops: mỗi field tham chiếu phình từ 4 lên 8 byte, object to ra, ít object nằm vừa một cache line và traffic RAM tăng`,
+    `Linux chỉ address được 32 GB cho một tiến trình Java 64-bit, phần vượt bị swap`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: vượt ~32 GB thì compressed oops bị tắt, mọi object có tham chiếu đều to hơn.**
+
+### Compressed oops là gì
+"oop" = **ordinary object pointer**, cách JVM lưu một **tham chiếu tới object trên heap** trong field của object khác hoặc trong array. Ở JVM 64-bit, thay vì tốn 8 byte, HotSpot lưu có **4 byte** rồi giải mã khi dùng:
+~~~text
+address = HEAP_BASE + (stored_value << 3)
+~~~
+Phép dịch trái **3 bit** này hợp lệ vì mọi object được **align 8 byte**, nên 3 bit thấp luôn bằng 0 — nhờ đó 32 bit biểu diễn được vùng heap tới **2^32 × 8 = 32 GB**. Điều kiện: vùng heap (chính xác hơn là khoảng địa chỉ JVM reservation, tính cả phần reserved) nằm trong ngưỡng đó; ergonomics tự tắt compressed oops khi {{-Xmx}} vượt ~32 GB.
+
+### Vì sao vượt ngưỡng lại chậm
+| | heap ≤ 32 GB | heap > 32 GB |
+|---|---|---|
+| field tham chiếu | 4 byte | 8 byte |
+| object ví dụ: header 12 + 3 ref | 12 + 12 = 24 byte | 12 + 24 = 36 → pad 40 byte |
+| object chứa trong 64-byte cache line | nhiều hơn | ít hơn |
+Hậu quả dây chuyền: heap "phình" hơn lượng live data thật, **nhiều bytes phải scan/copy hơn** mỗi lần GC, và **nhiều lần truy cập RAM hơn** vì một cache line chứa ít object sống. Đó là lý do throughput giảm dù số lần GC không đổi — hiện tượng quen tên "32 GB cliff".
+
+### Kiểm chứng và cách xử lý
+- Xem cờ thật sự đang bật: {{java -XX:+PrintCommandLineFlags -version}}, hoặc {{jcmd}} với lệnh {{VM.flags}} và tìm {{UseCompressedOops}}; MAT cũng báo "compressed oops" trong heap dump.
+- **Giữ heap ≤ ~31 GB và chạy nhiều instance** (thường là đáp án đúng nhất cho service web: young GC nhỏ, blast radius nhỏ).
+- {{-XX:ObjectAlignmentInBytes=16}} cho phép compressed oops với heap tới 64 GB, nhưng mọi object bị pad lên bội số 16 byte — thường lỗ cho workload nhiều object nhỏ.
+- Đưa dữ liệu lớn ra **off-heap** (direct buffer, cache ngoài, RocksDB) hoặc dùng **ZGC** cho heap rất lớn, và đo lại.
+
+### Vì sao các phương án còn lại sai
+- **G1 chuyển sang serial Full GC**: Full GC của G1 đã đa luồng từ JDK 10 và region không phụ thuộc ngưỡng 32 GB.
+- **Tắt JIT**: không tồn tại cơ chế đó; {{UseCompressedOops}} cũng không liên quan tới compiled code.
+- **Linux chỉ address 32 GB**: tiến trình 64-bit address được hàng trăm TB; 32 GB chỉ là ngưỡng để **ép** tham chiếu còn 4 byte.
+
+> Senior tip: có hai "nén" độc lập hay bị nhầm: **compressed oops** phụ thuộc **kích thước heap**, còn **compressed class pointers** (tham chiếu tới {{Klass}}) phụ thuộc **Metaspace** (mặc định vùng 2 GB) và vẫn bật dù heap lớn. Vì vậy đừng trả lời phỏng vấn "tắt vì heap > 32 GB nên class pointer cũng tắt". Ngoài ra, đây là ví dụ điển hình của việc "tăng {{-Xmx}}" được coi là sửa lỗi mà không hiểu nguyên nhân: nếu live set thực tế 40 GB thì heap 48 GB chỉ mua thời gian, còn nếu live set 20 GB thì nên xem lại vì sao {{-Xmx31g}} báo OOM — thường do fragmentation, do humongous allocation, hoặc do off-heap chứ không phải do heap thiếu.`
+},
+{
+  id: 'qz-core-025', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+String a = "java";
+String b = new String("java");
+String c = b.intern();
+System.out.println((a == b) + " " + (a == c) + " " + (a.equals(b)));
+~~~`,
+  options: [`true true true`, `false true true`, `false false true`, `true false true`],
+  answer: 1,
+  explain: `**Đáp án đúng: false true true.**
+
+### Vì sao đúng
+- {{a == b}}: {{new String("java")}} luôn tạo object mới trên heap → false.
+- {{b.intern()}} trả về bản trong String pool; bản đó chính là object của literal {{a}} → {{a == c}} true.
+- {{equals}} so sánh nội dung ký tự → true.
+
+### Vì sao các phương án còn lại sai
+- **true true true**: new String không trỏ vào pool.
+- **false false true**: intern trả về bản pool.
+- **true false true**: đảo ngược hai trường hợp.
+
+> Senior tip: {{intern()}} hữu ích khi đọc rất nhiều chuỗi từ file/network để giảm bộ nhớ và tăng tốc so sánh bằng {{==}}, nhưng gọi intern trên mọi chuỗi là tốn CPU và làm phình pool. Java 7+ pool nằm trên heap và bị GC, nên không còn leak như Java 6 (khi pool ở PermGen).`
+},
+{
+  id: 'qz-core-026', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+String s = "a" + "b" + 1 + 2;
+System.out.println(s + " " + ("ab" + (1 + 2)));
+~~~`,
+  options: [`ab12 ab3`, `ab3 ab3`, `ab12 ab12`, `ab3 ab12`],
+  answer: 0,
+  explain: `**Đáp án đúng: ab12 ab3.**
+
+### Vì sao đúng
+- {{+}} với String là nối chuỗi; với số là cộng số. Phép tính từ trái sang phải: {{"a" + "b"}} = "ab", rồi {{+ 1}} = "ab1", rồi {{+ 2}} = "ab12".
+- Ở biểu thức thứ hai, {{(1 + 2)}} được tính trước = 3, nên kết quả "ab3".
+
+### Vì sao các phương án còn lại sai
+- **ab3 ab3**: bỏ qua thứ tự tính toán và ưu tiên ngoặc.
+- **ab12 ab12**: không tính ngoặc trước.
+- **ab3 ab12**: đảo ngược.
+
+> Senior tip: compiler gộp hằng số chuỗi lúc biên dịch (constant folding), nên {{"a" + "b" + "c"}} không tạo object trung gian. Với chuỗi build động trong vòng lặp, dùng {{StringBuilder}} hoặc {{String.join}}/{{Collectors.joining}}; từ Java 9 phép nối runtime dùng {{StringConcatFactory}} (invokedynamic) nên thường không cần tự tối ưu.`
+},
+{
+  id: 'qz-collections-025', topic: 'collections',
+  q: `HashMap resize khi nào và chi phí ra sao?`,
+  options: [
+    `Khi size > capacity * loadFactor (mặc định 0.75); tạo bảng mới gấp đôi, rehash toàn bộ entry, O(n)`,
+    `Khi số bucket đầy, thêm bucket mới vào cuối bảng`,
+    `Khi một bucket có nhiều hơn 8 phần tử, resize ngay`,
+    `Không bao giờ resize nếu dùng new HashMap<>(n)`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: resize khi size > capacity * loadFactor.**
+
+### Vì sao đúng
+Mặc định capacity 16, load factor 0.75, threshold 12. Khi thêm phần tử thứ 13, HashMap tạo bảng mới capacity 32 và **rehash** mọi entry (tính lại bucket theo capacity mới). Chi phí O(n) và có thể gây pause ngắn trong hot path.
+
+### Vì sao các phương án còn lại sai
+- **Thêm bucket cuối bảng**: HashMap là mảng cố định kích thước luỹ thừa 2, không linked list bucket.
+- **Treeify khi 8 phần tử**: treeify chuyển linked list thành cây đỏ-đen trong bucket, không resize bảng.
+- **new HashMap<>(n) không resize**: constructor nhận capacity, không phải số phần tử; vẫn có thể resize nếu size vượt threshold.
+
+> Senior tip: pre-size bằng {{HashMap.newHashMap(expectedSize)}} (Java 19+) để tránh resize. Treeify threshold 8 và untreeify 6; bucket chuyển cây khi chuỗi va chạm dài, giúp get từ O(n) về O(log n).`
+},
+{
+  id: 'qz-collections-026', topic: 'collections',
+  q: `ConcurrentHashMap.putIfAbsent khác gì so với computeIfAbsent về locking?`,
+  options: [
+    `putIfAbsent không gọi mapping function nên không giữ lock bin trong lúc tính; computeIfAbsent giữ lock bin suốt function`,
+    `Cả hai đều khoá toàn bộ map`,
+    `putIfAbsent luôn gọi function kể cả khi key có`,
+    `computeIfAbsent không nguyên tử`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: putIfAbsent không chạy function giữ lock.**
+
+### Vì sao đúng
+{{putIfAbsent(k, v)}} chỉ so sánh và gán giá trị đã có sẵn, không chạy function. {{computeIfAbsent(k, mappingFunction)}} phải giữ lock bin để đảm bảo function chạy **tối đa một lần** cho mỗi key, nên function phải ngắn và không I/O.
+
+### Vì sao các phương án còn lại sai
+- **Khoá toàn bộ map**: ConcurrentHashMap khoá ở mức bin.
+- **putIfAbsent luôn gọi function**: không có function trong putIfAbsent.
+- **computeIfAbsent không nguyên tử**: ngược lại, nó nguyên tử.
+
+> Senior tip: để cache giá trị tốn kém, dùng {{computeIfAbsent(k, x -> CompletableFuture.supplyAsync(...))}} hoặc Caffeine AsyncLoadingCache để không block bin.`
+},
+{
+  id: 'qz-modern-025', topic: 'modern',
+  q: `Record sau có những đặc điểm nào?`,
+  options: [
+    `Là final class, component là private final, có constructor canonical, equals/hashCode/toString tự sinh`,
+    `Có thể kế thừa class khác`,
+    `Component có thể gán lại`,
+    `Không có constructor`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: record là final, component final, tự sinh method.**
+
+### Vì sao đúng
+Record (Java 16) là **transparent carrier** cho dữ liệu bất biến: class final, component private final, có canonical constructor, và tự sinh equals/hashCode/toString/accessor. Có thể thêm compact constructor để validate/normalize.
+
+### Vì sao các phương án còn lại sai
+- **Kế thừa class khác**: record không extends class khác (chỉ implement interface).
+- **Component gán lại**: component là final.
+- **Không có constructor**: có canonical constructor (có thể viết compact).
+
+> Senior tip: record phù hợp DTO/value object. Nhưng chỉ bất biến nông (shallow): record chứa List mutable vẫn bị sửa từ ngoài nếu không copy trong constructor.`
+},
+{
+  id: 'qz-modern-026', topic: 'modern',
+  q: `Sealed interface Payment permits Card, Wallet. Khi nào switch exhaustive không cần default?`,
+  options: [
+    `Khi tất cả subtype đã được liệt kê và sealed hierarchy không thay đổi`,
+    `Khi có default luôn`,
+    `Khi interface không sealed`,
+    `Khi dùng enum`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: khi đã cover hết subtype của sealed type.**
+
+### Vì sao đúng
+Sealed (Java 17) giới hạn subtype. Compiler kiểm tra exhaustiveness tại compile-time; nếu đã cover hết permits thì không cần default. Thêm subtype sau sẽ làm switch cũ không biên dịch được (nếu không default), giúp phát hiện chỗ cần sửa.
+
+### Vì sao các phương án còn lại sai
+- **Có default**: default làm switch không còn exhaustive-checking khi thêm subtype.
+- **Interface không sealed**: compiler không biết tập subtype hữu hạn.
+- **Enum**: enum cũng exhaustive, nhưng câu hỏi về sealed interface.
+
+> Senior tip: sealed hierarchy public qua thư viện là cam kết API; thêm subtype là breaking change với consumer dùng switch exhaustive.`
+},
+{
+  id: 'qz-modern-027', topic: 'modern',
+  q: `Pattern matching cho instanceof (Java 16) cho phép gì?`,
+  options: [
+    `Gán biến pattern trong scope luồng điều khiển mà không cần cast thủ công`,
+    `Kiểm tra kiểu phần tử của generic`,
+    `Tự động unboxing`,
+    `Thay thế switch hoàn toàn`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: bind biến pattern theo luồng.**
+
+### Vì sao đúng
+{{if (o instanceof String s)}} thì {{s}} có thể dùng ngay trong scope mà compiler chứng minh pattern đã khớp, không cần cast. Flow scoping cho phép dùng sau guard clause.
+
+### Vì sao các phương án còn lại sai
+- **Kiểm tra kiểu phần tử generic**: erasure vẫn chặn.
+- **Tự động unboxing**: không liên quan.
+- **Thay thế switch**: pattern matching cho switch là Java 21.
+
+> Senior tip: viết {{return o instanceof Point p && x == p.x && y == p.y;}} trong equals rất gọn. Guarded pattern {{when}} chỉ dùng trong switch.`
+},
+{
+  id: 'qz-modern-028', topic: 'modern',
+  q: `Sequenced Collections (Java 21) thêm method nào vào List/Deque?`,
+  options: [
+    `getFirst/getLast/addFirst/addLast/removeFirst/removeLast/reversed`,
+    `sort/shuffle`,
+    `stream/parallelStream`,
+    `of/copyOf`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: getFirst/getLast/.../reversed.**
+
+### Vì sao đúng
+JEP 431 thêm các method thống nhất cho collection có thứ tự. {{reversed()}} là view đảo ngược, ghi xuyên xuống collection gốc nếu gốc sửa được.
+
+### Vì sao các phương án còn lại sai
+- **sort/shuffle**: đã có từ trước.
+- **stream/parallelStream**: đã có.
+- **of/copyOf**: factory bất biến, không mới.
+
+> Senior tip: trước Java 21 mỗi loại collection có cách khác nhau ({{get(size-1)}}, {{peekLast()}}). Khi nâng cấp, class tự viết implement List có method cùng tên khác kiểu trả về có thể không biên dịch.`
+},
+{
+  id: 'qz-concurrency-025', topic: 'concurrency',
+  q: `Virtual thread trong Java 21 phù hợp nhất cho workload nào?`,
+  options: [
+    `I/O-bound: nhiều task chờ network/DB/file`,
+    `CPU-bound: mã hoá, nén`,
+    `Task cần thread pool cố định`,
+    `Task cần stack lớn`,
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: I/O-bound.**
+
+### Vì sao đúng
+Virtual thread rất rẻ và unmount khi block I/O, nên throughput tăng khi có nhiều task chờ. CPU-bound vẫn bị giới hạn bởi số core; không pool virtual thread, dùng Semaphore/pool tài nguyên để giới hạn đồng thời.
+
+### Vì sao các phương án còn lại sai
+- **CPU-bound**: không thêm CPU.
+- **Pool cố định**: pool virtual thread không cần thiết.
+- **Stack lớn**: virtual thread stack trên heap, vẫn chịu giới hạn bộ nhớ.
+
+> Senior tip: virtual thread không tăng giới hạn DB connection pool; giới hạn đồng thời đặt ở Semaphore/HikariCP.`
+},
+{
+  id: 'qz-concurrency-026', topic: 'concurrency',
+  q: `CompletableFuture.exceptionally nhận exception như thế nào?`,
+  options: [
+    `Nhận CompletionException bọc exception gốc; thenApply bị bỏ qua`,
+    `Nhận trực tiếp IllegalStateException`,
+    `Chạy cùng thenApply`,
+    `Ném ngay tại join`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: nhận CompletionException.**
+
+### Vì sao đúng
+Stage phụ thuộc bị bỏ qua và truyền exception (bọc CompletionException). {{exceptionally}} chạy khi stage trước lỗi, có thể khôi phục giá trị. {{join()}} chỉ ném nếu không phục hồi.
+
+### Vì sao các phương án còn lại sai
+- **Nhận trực tiếp**: join/get mới bọc; exceptionally nhận CompletionException.
+- **Chạy cùng thenApply**: thenApply bị bỏ qua.
+- **Ném ngay tại join**: chỉ khi không có exceptionally/handle.
+
+> Senior tip: supplyAsync không truyền executor dùng commonPool; với I/O luôn truyền executor riêng và dùng orTimeout.`
+},
+{
+  id: 'qz-jvm-025', topic: 'jvm',
+  q: `Service latency p99 < 10ms, heap 32GB, Java 21. Lựa chọn GC hợp lý?`,
+  options: [
+    `Generational ZGC (-XX:+UseZGC -XX:+ZGenerational)`,
+    `Parallel GC`,
+    `G1 với MaxGCPauseMillis=1`,
+    `Serial GC`,
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Generational ZGC.**
+
+### Vì sao đúng
+ZGC pause thường dưới 1ms và không tăng theo heap size; generational (Java 21) tách young/old, giảm CPU so với ZGC cũ. Trade-off: tốn CPU hơn và cần heap dư.
+
+### Vì sao các phương án còn lại sai
+- **Parallel GC**: stop-the-world trên 32GB rất dài.
+- **G1 MaxGCPauseMillis=1**: mục tiêu mềm, vẫn vượt.
+- **Serial GC**: pause còn dài hơn.
+
+> Senior tip: xác nhận latency do GC bằng GC log/JFR trước khi đổi; nhiều khi thủ phạm là TTSP hoặc allocation.`
+},
+{
+  id: 'qz-jvm-026', topic: 'jvm',
+  q: `GC pause nhỏ nhưng ứng dụng khựng lâu. Nguyên nhân có thể là?`,
+  options: [
+    `Time-to-safepoint lớn (TTSP)`,
+    `GC log sai`,
+    `ZGC concurrent phase`,
+    `JIT deoptimize toàn bộ`,
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: TTSP lớn.**
+
+### Vì sao đúng
+GC stop-the-world cần mọi thread dừng tại safepoint. {{Reaching safepoint}} trong safepoint log cho thấy thời gian chờ thread cuối tới safepoint; GC chỉ chạy sau đó. Nguyên nhân: vòng lặp JIT không có poll, copy mảng lớn, swap/page fault.
+
+### Vì sao các phương án còn lại sai
+- **GC log sai**: GC log đo đúng phần GC.
+- **ZGC concurrent**: không làm treo thread ứng dụng.
+- **Deoptimize toàn bộ**: không phải nguyên nhân chính.
+
+> Senior tip: bật -Xlog:safepoint và so sánh Total với At safepoint; JFR có event SafepointBegin.`
+},
+{
+  id: 'qz-core-027', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+List<Integer> a = new ArrayList<>(List.of(1,2,3));
+List<Integer> b = a.subList(1,3);
+b.set(0, 99);
+System.out.println(a);
+~~~`,
+  options: [`[1, 99, 3]`, `[1, 2, 3]`, `[99, 2, 3]`, `UnsupportedOperationException`],
+  answer: 0,
+  explain: `**Đáp án đúng: [1, 99, 3].**
+
+### Vì sao đúng
+subList là view, set ghi xuyên xuống list gốc. Index trong view tương ứng offset trong gốc, nên b.set(0) sửa a[1].
+
+### Vì sao các phương án còn lại sai
+- **[1,2,3]**: bỏ qua tính chất view.
+- **[99,2,3]**: nhầm index.
+- **UOE**: subList view hỗ trợ set.
+
+> Senior tip: lưu subList lâu dài giữ nguyên list gốc, gây memory leak; dùng List.copyOf.`
+},
+{
+  id: 'qz-modern-029', topic: 'modern',
+  q: `Text block (Java 15) sau cho kết quả gì?
+~~~java
+String s = """
+    line1
+    line2
+    """;
+System.out.println(s.lines().count());
+~~~`,
+  options: [`2`, `3`, `1`, `Lỗi biên dịch`],
+  answer: 0,
+  explain: `**Đáp án đúng: 2.**
+
+### Vì sao đúng
+Text block giữ newline; có hai dòng nội dung. Incidental whitespace bị loại bỏ theo common indent.
+
+### Vì sao các phương án còn lại sai
+- **3**: trailing newline? Text block kết thúc trước closing delimiter, không có newline thừa.
+- **1**: text block không gộp dòng.
+- **Lỗi biên dịch**: text block chuẩn từ Java 15.
+
+> Senior tip: text block rất hợp JSON/SQL trong test; dùng stripIndent/translateEscapes khi cần.`
+},
+{
+  id: 'qz-concurrency-027', topic: 'concurrency',
+  q: `Khi nào nên dùng ReentrantLock thay vì synchronized?`,
+  options: [
+    `Khi cần tryLock timeout, lock fairness, hoặc lock quanh I/O với virtual thread`,
+    `Luôn luôn vì nhanh hơn`,
+    `Khi cần lock trong constructor`,
+    `Khi cần lock trên primitive`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: khi cần tính năng mở rộng.**
+
+### Vì sao đúng
+ReentrantLock hỗ trợ tryLock(timeout), lockInterruptibly, fairness, và không pin virtual thread khi block. synchronized đơn giản và đủ cho lock ngắn.
+
+### Vì sao các phương án còn lại sai
+- **Luôn nhanh hơn**: synchronized được tối ưu tốt, often faster cho lock ngắn.
+- **Constructor**: không liên quan.
+- **Primitive**: lock phải trên object.
+
+> Senior tip: chọn synchronized mặc định; nâng lên ReentrantLock khi cần timeout/backpressure.`
+},
+{
+  id: 'qz-core-028', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+record Box(int v) {}
+Box a = new Box(1);
+Box b = new Box(1);
+System.out.println(a == b);
+System.out.println(a.equals(b));
+System.out.println(a.hashCode() == b.hashCode());
+~~~`,
+  options: [
+    `false true true`,
+    `true true true`,
+    `false false false`,
+    `true false false`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: false true true.**
+
+### Vì sao đúng
+record tự sinh equals/hashCode dựa trên các component (ở đây là v), nên hai Box(1) bằng nhau và cùng hash. Nhưng a và b là hai object riêng biệt trên heap, nên a == b là false.
+
+### Vì sao các phương án còn lại sai
+- **true true true**: record không tự intern, == vẫn là so tham chiếu.
+- **false false false**: equals/hashCode được sinh tự động, không phải identity.
+- **true false false**: sai cả hai chiều.
+
+> Senior tip: record là value object bất biến; dùng nó để tránh viết equals/hashCode thủ công và tránh lỗi contract.`
+},
+{
+  id: 'qz-collections-027', topic: 'collections',
+  q: `Đoạn code sau in ra gì?
+~~~java
+Map<String, Integer> m = new HashMap<>();
+m.put("a", 1);
+m.put("b", 2);
+m.merge("a", 10, Integer::sum);
+m.computeIfAbsent("c", k -> 3);
+System.out.println(m);
+~~~`,
+  options: [
+    `{a=11, b=2, c=3}`,
+    `{a=1, b=2, c=3}`,
+    `{a=10, b=2, c=3}`,
+    `Ném NullPointerException`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: {a=11, b=2, c=3}.**
+
+### Vì sao đúng
+- merge("a", 10, sum): key "a" đã có giá trị 1, remapping function sum(1,10)=11 → gán 11.
+- computeIfAbsent("c", ...): key "c" chưa có → gọi function trả 3 → gán 3.
+- "b" không bị chạm.
+
+### Vì sao các phương án còn lại sai
+- **{a=1,...}**: merge không bỏ qua key đã tồn tại; nó áp dụng function.
+- **{a=10,...}**: merge cộng dồn, không thay thế.
+- **NPE**: function không null và key không null, không ném.
+
+> Senior tip: merge/computeIfAbsent/computeIfPresent là cách thay thế pattern "get rồi put" trong concurrent map; chúng nguyên tử trên ConcurrentHashMap.`
+},
+{
+  id: 'qz-concurrency-028', topic: 'concurrency',
+  q: `Đoạn code sau có vấn đề gì?
+~~~java
+ExecutorService ex = Executors.newFixedThreadPool(2);
+CompletableFuture<Integer> f = CompletableFuture.supplyAsync(() -> {
+    if (true) throw new IllegalStateException("boom");
+    return 1;
+}, ex);
+f.thenApply(x -> x + 1).exceptionally(e -> -1);
+System.out.println(f.join());
+~~~`,
+  options: [
+    `In ra -1`,
+    `Ném CompletionException bọc IllegalStateException`,
+    `In ra 0`,
+    `Chương trình treo`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ném CompletionException bọc IllegalStateException.**
+
+### Vì sao đúng
+- f là CompletableFuture gốc, chứa exception. thenApply/exceptionally tạo ra một CompletableFuture **mới** (chained), không sửa f.
+- f.join() trả về kết quả của f gốc → ném CompletionException bọc exception gốc.
+- Để lấy -1 phải gọi join() trên future chained (f.exceptionally(...)).
+
+### Vì sao các phương án còn lại sai
+- **-1**: chỉ future chained mới có giá trị -1, không phải f.
+- **0/ treo**: join() không treo khi future đã hoàn thành (kể cả exceptional).
+
+> Senior tip: luôn lưu biến cho chained future nếu cần xử lý exception; hoặc dùng whenComplete/handle để vừa log vừa trả giá trị.`
+},
+{
+  id: 'qz-jvm-027', topic: 'jvm',
+  q: `G1 GC chọn region nào để thu hồi đầu tiên trong một chu kỳ?`,
+  options: [
+    `Region có garbage nhiều nhất (garbage-first)`,
+    `Region mới nhất (youngest)`,
+    `Region lớn nhất (humongous)`,
+    `Region theo thứ tự allocation`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: region có garbage nhiều nhất.**
+
+### Vì sao đúng
+G1 chia heap thành các region cùng kích thước. Nó ưu tiên thu hồi các region có tỷ lệ rác cao nhất (garbage-first) để đạt pause target, nên tên là Garbage-First.
+
+### Vì sao các phương án còn lại sai
+- **youngest**: young gen được thu hồi thường xuyên nhưng không phải tiêu chí chọn region đầu tiên.
+- **humongous**: humongous region xử lý riêng, không ưu tiên.
+- **allocation order**: không phải.
+
+> Senior tip: đặt -XX:MaxGCPauseMillis hợp lý; G1 sẽ trade-off throughput.`
+},
+{
+  id: 'qz-modern-030', topic: 'modern',
+  q: `Virtual thread bị pin khi nào? (Chọn 2)`,
+  options: [
+    `Khi chạy synchronized block`,
+    `Khi gọi Thread.sleep`,
+    `Khi thực hiện I/O blocking`,
+    `Khi gọi native method`,
+    `Khi tạo object mới`
+  ],
+  multi: true,
+  answer: [0, 3],
+  explain: `**Đáp án đúng: synchronized block và native method.**
+
+### Vì sao đúng
+Virtual thread bị pin (không thể unmount khỏi carrier thread) khi vào synchronized block/monitor hoặc native method. I/O blocking và sleep sẽ unmount bình thường.
+
+### Vì sao các phương án còn lại sai
+- **Thread.sleep**: unmount, không pin.
+- **I/O blocking**: unmount.
+- **tạo object**: không pin.
+
+> Senior tip: dùng ReentrantLock thay synchronized trong code chạy trên virtual thread để tránh pinning.`
+},
+{
+  id: 'qz-collections-028', topic: 'collections',
+  q: `HashMap resize khi nào và cơ chế treeify hoạt động thế nào?`,
+  options: ['Resize khi size > capacity*loadFactor; bin thành linked list khi collision', 'Resize khi size > capacity; treeify khi linked list > 8', 'Treeify khi bin size > 6 và untreeify khi <= 6', 'Resize luôn nhân đôi capacity và copy từng node'],
+  answer: 2,
+  explain: `**Tóm tắt:** HashMap resize khi size vượt threshold (capacity*loadFactor); bin chuyển từ linked list sang red-black tree khi độ dài >= 8 (và capacity >= 64), và ngược lại khi <= 6.
+
+### Vì sao đúng
+- Threshold = capacity * loadFactor (mặc định 0.75).
+- Khi một bin có >= TREEIFY_THRESHOLD (8) node và capacity >= MIN_TREEIFY_CAPACITY (64), bin trở thành tree (O(log n) thay vì O(n)).
+- UNTREEIFY_THRESHOLD = 6: khi resize làm bin nhỏ lại, tree chuyển về linked list.
+
+### Vì sao các phương án còn lại sai
+- **Resize khi size > capacity**: sai, dùng threshold.
+- **Treeify khi bin > 8**: ngưỡng là >= 8.
+- **Resize luôn nhân đôi**: đúng phần capacity, nhưng copy node là chi tiết; focus vào threshold.
+
+> Senior tip: collision attack (HashDoS) bị JDK 8+ giảm thiểu bằng treeify; nhưng nếu hashCode kém, vẫn O(log n) per op.`
+},
+{
+  id: 'qz-concurrency-029', topic: 'concurrency', multi: true,
+  q: `JMM happens-before: những cặp nào thiết lập happens-before? (Chọn 2)`,
+  options: ['Thread.start() trước run() của thread con', 'volatile write trước volatile read cùng biến', 'synchronized unlock trước lock cùng monitor', 'final field write trong constructor trước publication'],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** happens-before là quan hệ thứ tự bộ nhớ trong JMM đảm bảo visibility.
+
+### Vì sao đúng
+- Thread.start() happens-before mọi action trong thread con.
+- volatile write happens-before volatile read cùng biến (release/acquire semantics).
+
+### Vì sao các phương án còn lại sai
+- **unlock trước lock**: đúng là unlock happens-before lock, nhưng thứ tự trong option ngược (lock trước unlock là trong cùng thread, không cần HB).
+- **final field**: publication-safe cho final field đúng, nhưng option diễn đạt mơ hồ; không phải cặp HB trực tiếp như 2 cái trên.
+
+> Senior tip: thiếu happens-before → stale read; dùng volatile/synchronized/Atomic/CompletableFuture.`
+},
+{
+  id: 'qz-concurrency-030', topic: 'concurrency',
+  q: `volatile vs synchronized: khác biệt chính?`,
+  options: ['volatile chỉ đảm bảo visibility, không atomic compound; synchronized đảm bảo cả visibility và mutual exclusion', 'volatile nhanh hơn synchronized luôn', 'synchronized không đảm bảo visibility', 'volatile dùng cho object, synchronized cho primitive'],
+  answer: 0,
+  explain: `**Tóm tắt:** volatile = visibility + ordering cho single read/write; synchronized = mutual exclusion + visibility.
+
+### Vì sao đúng
+- volatile: write flushing to main memory, read from main memory; không atomic cho i++.
+- synchronized: lock monitor, mutual exclusion, happens-before.
+
+### Vì sao các phương án còn lại sai
+- **volatile nhanh hơn luôn**: không luôn; contention cao thì khác.
+- **synchronized không visibility**: sai, unlock happens-before lock.
+- **volatile cho object**: volatile áp dụng cho field (reference), không phải object.
+
+> Senior tip: dùng Atomic* cho counter; volatile cho flag stop.`
+},
+{
+  id: 'qz-concurrency-031', topic: 'concurrency',
+  q: `AQS (AbstractQueuedSynchronizer) dùng cơ chế gì?`,
+  options: ['CAS trên state + FIFO queue các thread chờ', 'synchronized monitor', 'volatile boolean', 'CountDownLatch'],
+  answer: 0,
+  explain: `**Tóm tắt:** AQS là nền tảng cho ReentrantLock, Semaphore, CountDownLatch: state (int) + CLH queue.
+
+### Vì sao đúng
+- State được cập nhật bằng CAS; thread chờ vào FIFO queue (CLH).
+- tryAcquire/tryRelease do subclass implement.
+
+### Vì sao các phương án còn lại sai
+- **synchronized monitor**: AQS không dùng monitor.
+- **volatile boolean**: state là int, không chỉ boolean.
+- **CountDownLatch**: là một ứng dụng của AQS, không phải cơ chế.
+
+> Senior tip: đọc source ReentrantLock.lock() để hiểu AQS.`
+},
+{
+  id: 'qz-concurrency-032', topic: 'concurrency',
+  q: `Virtual thread pinning xảy ra khi nào?`,
+  options: ['Khi vào synchronized block hoặc native method', 'Khi gọi Thread.sleep', 'Khi I/O blocking', 'Khi tạo object'],
+  answer: 0,
+  explain: `**Tóm tắt:** virtual thread bị pin khi vào synchronized hoặc native method; I/O blocking và sleep unmount bình thường.
+
+### Vì sao đúng
+- Pinning = không unmount khỏi carrier thread.
+
+### Vì sao các phương án còn lại sai
+- **Thread.sleep**: unmount.
+- **I/O blocking**: unmount.
+- **tạo object**: không pin.
+
+> Senior tip: dùng ReentrantLock thay synchronized trong code chạy virtual thread.`
+},
+{
+  id: 'qz-jvm-028', topic: 'jvm',
+  q: `Safepoint là gì?`,
+  options: ['Điểm mà JVM có thể tạm dừng thread để GC/JIT deopt', 'Điểm breakpoint', 'Điểm method entry', 'Điểm class init'],
+  answer: 0,
+  explain: `**Tóm tắt:** safepoint là thời điểm thread ở trạng thái an toàn để JVM thực hiện GC, deoptimization, biased lock revocation.
+
+### Vì sao đúng
+- Thread phải đến safepoint (method exit, loop back-edge) để pause.
+
+### Vì sao các phương án còn lại sai
+- **breakpoint**: debug concept.
+- **method entry**: không phải safepoint bắt buộc.
+- **class init**: không liên quan.
+
+> Senior tip: long-running loop không có safepoint (counted loop) có thể delay GC; dùng -XX:+UseCountedLoopSafepoints.`
+},
+{
+  id: 'qz-jvm-029', topic: 'jvm',
+  q: `JIT deoptimization xảy ra khi nào?`,
+  options: ['Khi giả định tối ưu (monomorphic call site) bị vi phạm', 'Khi method quá dài', 'Khi GC chạy', 'Khi thread yield'],
+  answer: 0,
+  explain: `**Tóm tắt:** JIT deopt khi giả định tối ưu bị vi phạm (ví dụ call site đa hình).
+
+### Vì sao đúng
+- JIT speculative optimize; deopt về interpreter khi assumption sai.
+
+### Vì sao các phương án còn lại sai
+- **method quá dài**: không deopt.
+- **GC**: không.
+- **thread yield**: không.
+
+> Senior tip: deopt thường thấy trong log -XX:+PrintCompilation.`
+},
+{
+  id: 'qz-jvm-030', topic: 'jvm',
+  q: `G1 vs ZGC: khác biệt chính?`,
+  options: ['G1 region-based generational; ZGC concurrent low-pause, colored pointers', 'ZGC generational only', 'G1 không có pause', 'ZGC throughput cao hơn G1'],
+  answer: 0,
+  explain: `**Tóm tắt:** G1 region-based generational GC; ZGC concurrent, pause < 1ms, dùng colored pointers.
+
+### Vì sao đúng
+- G1: region, generational, pause mục tiêu.
+- ZGC: concurrent marking/compaction, colored pointers, sub-ms pause.
+
+### Vì sao các phương án còn lại sai
+- **ZGC generational only**: ZGC có generational mode mới.
+- **G1 không pause**: có pause.
+- **ZGC throughput cao hơn**: thường throughput thấp hơn G1.
+
+> Senior tip: chọn theo latency requirement; đo với GC log.`
+},
+{
+  id: 'qz-jvm-031', topic: 'jvm',
+  q: `Escape analysis giúp JVM làm gì?`,
+  options: ['Stack allocation / scalar replacement / lock elision cho object không escape', 'GC nhanh hơn', 'JIT compile nhanh hơn', 'Class loading nhanh hơn'],
+  answer: 0,
+  explain: `**Tóm tắt:** escape analysis cho phép stack allocation, scalar replacement, lock elision khi object không escape method/thread.
+
+### Vì sao đúng
+- Object không escape → không cần heap allocation.
+
+### Vì sao các phương án còn lại sai
+- **GC nhanh hơn**: gián tiếp.
+- **JIT compile nhanh hơn**: không.
+- **class loading**: không.
+
+> Senior tip: -XX:+DoEscapeAnalysis (default on).`
+},
+{
+  id: 'qz-core-029', topic: 'core',
+  q: `Class initialization (static) thứ tự và thread-safety?`,
+  options: ['JVM đảm bảo class init occurs once per classloader, thread-safe via lock', 'Static block chạy mỗi lần new', 'Không thread-safe, cần synchronized', 'Chạy trước main luôn'],
+  answer: 0,
+  explain: `**Tóm tắt:** JVM đảm bảo class initialization xảy ra một lần per classloader, thread-safe (class init lock).
+
+### Vì sao đúng
+- <clinit> chạy một lần; JVM serializes.
+
+### Vì sao các phương án còn lại sai
+- **mỗi lần new**: sai.
+- **không thread-safe**: sai.
+- **trước main luôn**: không, lazy.
+
+> Senior tip: static init deadlock nếu circular class init.`
+},
+{
+  id: 'qz-jvm-032', topic: 'jvm',
+  q: `String deduplication (G1) làm gì?`,
+  options: ['G1 dedup các String có cùng char[] để tiết kiệm heap', 'Intern mọi String', 'Xoá String không dùng', 'Nén char[] thành byte[]'],
+  answer: 0,
+  explain: `**Tóm tắt:** G1 String deduplication: các String có cùng nội dung chia sẻ cùng char[]/byte[] backing array.
+
+### Vì sao đúng
+- -XX:+UseStringDeduplication (G1).
+
+### Vì sao các phương án còn lại sai
+- **intern mọi String**: không, chỉ dedup backing array.
+- **xoá không dùng**: GC làm.
+- **nén char[]**: Compact Strings (Java 9) làm, không phải dedup.
+
+> Senior tip: hữu ích cho heap nhiều String trùng.`
+},
+{
+  id: 'qz-concurrency-033', topic: 'concurrency', multi: true,
+  q: `Chọn 2 cách đúng để publication an toàn của object immutable? (Chọn 2)`,
+  options: ['Final field + constructor không leak this', 'Volatile reference', 'Static field init', 'Synchronized getter'],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** publication safety: final fields được JMM đảm bảo visible sau construction; volatile reference cũng.
+
+### Vì sao đúng
+- Final fields: freeze action happens-before publication (nếu không leak this).
+- Volatile reference: release/acquire.
+
+### Vì sao các phương án còn lại sai
+- **Static field init**: class init lock đảm bảo, nhưng không phải publication của instance.
+- **Synchronized getter**: không đủ nếu constructor leak this.
+
+> Senior tip: không leak this trong constructor (đăng ký listener, start thread).`
+},
+{
+  id: 'qz-collections-029', topic: 'collections',
+  q: `ConcurrentHashMap size() trả về gì?`,
+  options: ['Ước lượng (estimate), không chính xác tuyệt đối', 'Chính xác', 'Luôn 0', 'Ném exception'],
+  answer: 0,
+  explain: `**Tóm tắt:** ConcurrentHashMap.size() trả về ước lượng vì concurrent updates; mappingCount() trả về long.
+
+### Vì sao đúng
+- size() là estimate; mappingCount() long.
+
+### Vì sao các phương án còn lại sai
+- **chính xác**: không trong concurrent.
+- **0**: sai.
+- **exception**: không.
+
+> Senior tip: dùng mappingCount() cho số lớn.`
+},
+{
+  id: 'qz-jvm-033', topic: 'jvm',
+  q: `Compact Strings (Java 9) làm gì?`,
+  options: ['Lưu String Latin-1 trong byte[] thay vì char[] để tiết kiệm bộ nhớ', 'Nén gzip', 'Intern String', 'Dedup'],
+  answer: 0,
+  explain: `**Tóm tắt:** Compact Strings: nếu nội dung là Latin-1, lưu trong byte[] (1 byte/char) thay vì char[] (2 byte/char).
+
+### Vì sao đúng
+- Tiết kiệm ~50% heap cho text ASCII/Latin-1.
+
+### Vì sao các phương án còn lại sai
+- **gzip**: không.
+- **intern**: không.
+- **dedup**: tính năng khác.
+
+> Senior tip: -XX:-CompactStrings để tắt nếu cần.`
+},
+{
+  id: 'qz-core-030', topic: 'core',
+  q: `String.intern() pool nằm ở đâu?`,
+  options: ['Heap (từ Java 7), trước đó PermGen', 'Stack', 'Metaspace', 'Native memory'],
+  answer: 0,
+  explain: `**Tóm tắt:** String pool ở heap từ Java 7; trước Java 7 ở PermGen.
+
+### Vì sao đúng
+- Java 7 move intern pool to heap.
+
+### Vì sao các phương án còn lại sai
+- **Stack**: không.
+- **Metaspace**: class metadata.
+- **Native memory**: không.
+
+> Senior tip: intern() có thể gây OOM nếu lạm dụng; dùng cho constant.`
 }
 );

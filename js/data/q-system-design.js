@@ -70,7 +70,6 @@ Luôn trả lời được: "Nếu Redis chết thì sao?", "Nếu traffic tăng
   tags: ['system design', 'interview framework', 'estimation']
 ,
   refs: [
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
     { type: 'book', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
   ]
 },
@@ -180,8 +179,6 @@ Khi vượt 1 tỷ URL: shard theo {{hash(code)}} với consistent hashing, ho�
   tags: ['URL shortener', 'base62', 'cache', 'Kafka']
 ,
   refs: [
-    { type: 'doc', title: 'System Design Primer: Pastebin / URL shortener solution', url: 'https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/pastebin/README.md' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
   ]
 },
 {
@@ -281,7 +278,6 @@ Ngoài 429, nên trả thêm thời gian chờ và hướng dẫn. Client tốt 
   level: 'lead',
   refs: [
     { type: 'doc', title: 'Redis: Scripting with Lua', url: 'https://redis.io/docs/latest/develop/interact/programmability/eval-intro/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
   ],
   q: 'Thiết kế hệ thống flash sale: 100.000 request trong 1 giây cho 1.000 sản phẩm, mỗi người chỉ mua 1, tuyệt đối không oversell. Trình bày cả luồng và cách xử lý sự cố.',
   a: `**Tóm tắt:** Flash sale là bài toán **tranh chấp tài nguyên hữu hạn dưới tải cực lớn**. Nguyên tắc: chặn và quyết định càng sớm càng tốt, trừ kho bằng thao tác **nguyên tử có điều kiện**, tạo đơn bất đồng bộ, và luôn có tầng DB làm chốt chặn cuối cùng chống oversell.
@@ -675,7 +671,6 @@ Tách ranking khỏi storage; cache kết quả ngắn hạn. Không chạy mode
   tags: ['news feed', 'fan-out', 'Redis sorted set', 'celebrity']
 ,
   refs: [
-    { type: 'doc', title: 'System Design Primer: Twitter timeline solution', url: 'https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/twitter/README.md' },
     { type: 'doc', title: 'Redis sorted sets', url: 'https://redis.io/docs/latest/develop/data-types/sorted-sets/' },
   ]
 },
@@ -1030,7 +1025,6 @@ Với hệ replicated N node: ghi thành công khi W node xác nhận, đọc t�
   level: 'lead',
   refs: [
     { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
   ],
   q: 'Hệ thống hiện có 1.000 người dùng, sếp muốn chuẩn bị cho 1 triệu. Bạn vạch lộ trình kiến trúc theo từng mốc, mỗi mốc gắn với tín hiệu nào cần scale?',
   a: `**Tóm tắt:** Scale không phải là làm kiến trúc của Google ngay từ đầu, mà là **giải quyết điểm nghẽn tiếp theo** ở mỗi mốc. 1k user cần một monolith gọn gàng và backup; 100k cần stateless + cache + replica; 1M cần shard, tách async, multi-region. Mỗi bước phải có **tín hiệu đo được** và chi phí vận hành tương xứng.
@@ -1247,7 +1241,6 @@ Job có thể chạy lại do retry, lease hết hạn, hoặc chạy tay. Mọi
 ,
   refs: [
     { type: 'doc', title: 'PostgreSQL SELECT: The Locking Clause (SKIP LOCKED)', url: 'https://www.postgresql.org/docs/current/sql-select.html' },
-    { type: 'doc', title: 'ShedLock', url: 'https://github.com/lukas-krecan/ShedLock' },
     { type: 'doc', title: 'Spring Batch Reference', url: 'https://docs.spring.io/spring-batch/reference/' },
   ]
 }
@@ -2319,7 +2312,6 @@ ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có t
 ,
   refs: [
     { type: 'doc', title: 'RFC 9562: Universally Unique IDentifiers (UUIDv7)', url: 'https://www.rfc-editor.org/rfc/rfc9562' },
-    { type: 'doc', title: 'ULID Specification', url: 'https://github.com/ulid/spec' },
     { type: 'doc', title: 'PostgreSQL CREATE SEQUENCE', url: 'https://www.postgresql.org/docs/current/sql-createsequence.html' },
   ]
 },
@@ -4362,4 +4354,682 @@ XAUTOCLAIM jobs workers w2 60000 0-0 COUNT 10   -- nhận lại job pending > 60
     { type: 'article', title: 'ZemIT: Kafka có phải queue thật và bạn vẫn', url: 'https://zemit.substack.com/p/kafka-a-co-queue-that-va-ban-van' }
   ]
 },
+{
+  id: 'architecture-023',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Team bạn đang chọn nền tảng nhắn tin cho hệ thống: Kafka hay RabbitMQ. Bạn viết Architecture Decision Record (ADR) thế nào để ghi lại quyết định, khi nào cần ADR, và cho ví dụ cấu trúc ADR cho trường hợp này?',
+  a: `**Tóm tắt:** ADR (Architecture Decision Record — bản ghi quyết định kiến trúc) là một văn bản ngắn, lưu cùng mã nguồn, ghi lại **một quyết định kiến trúc quan trọng, bối cảnh, các lựa chọn đã cân nhắc, và lý do chọn/bỏ**. Cần ADR khi quyết định khó đảo ngược, tốn kém nếu đổi, ảnh hưởng nhiều team, hoặc có nhiều lựa chọn hợp lý dễ gây tranh luận lại sau này. ADR không phải tài liệu thiết kế chi tiết; nó trả lời "tại sao lúc đó chúng ta chọn thế này" để người mới (hoặc chính bạn 6 tháng sau) không lặp lại tranh luận cũ.
+
+### ADR là gì, vì sao cần
+- **Cái gì:** Mỗi ADR là một file (thường Markdown) đánh số thứ tự, ví dụ {{0007-use-kafka-for-order-events.md}}. Nó bất biến (immutable) theo nghĩa: quyết định cũ không bị sửa nội dung; nếu đổi hướng, tạo ADR mới đánh dấu ADR cũ là "Superseded" (bị thay thế).
+- **Vì sao cần:**
+  - **Bộ nhớ tổ chức:** Người rời team mang theo lý do; ADR giữ lại. Dev mới đọc 10 ADR hiểu được "xương sống" kiến trúc nhanh hơn đọc 200 ticket.
+  - **Tránh tranh luận lặp:** "Sao mình không dùng RabbitMQ?" — đọc ADR 0007. Nếu bối cảnh đổi (ví dụ throughput giờ chỉ 50 msg/s, không cần replay), ADR mới có thể thay thế.
+  - **Ra quyết định minh bạch:** Buộc người đề xuất nêu rõ trade-off, không chọn theo "quen tay" hay "trend".
+  - **Kiểm toán/compliance:** Một số lĩnh vực (tài chính, y tế) cần truy vết lý do kỹ thuật.
+
+### Khi nào CẦN ADR, khi nào KHÔNG
+| Cần ADR | Không cần ADR |
+|---|---|
+| Chọn công nghệ nền tảng (DB, message broker, cloud) | Chọn tên biến, cấu trúc package nhỏ |
+| Quyết định ranh giới service/module | Refactor nội bộ một class |
+| Chiến lược auth, multi-tenancy, data residency | Nâng phiên bản thư viện patch |
+| Pattern xuyên suốt (sync vs async, event sourcing có/không) | Cách implement một feature cụ thể (đã có pattern) |
+| Quyết định tốn tiền lớn hoặc khó đảo ngược | Thử nghiệm tạm thời (spike) — nhưng kết luận của spike nên thành ADR |
+
+Quy tắc ngón tay: nếu đổi quyết định này mất > 2 tuần công hoặc ảnh hưởng > 1 team, viết ADR.
+
+### Cấu trúc ADR phổ biến (MADR / Nygard)
+~~~text
+# ADR-0007: Dùng Kafka cho luồng sự kiện đơn hàng
+
+- Status: Accepted (2026-08-15)
+- Deciders: An (Tech Lead), Bình (Architect), Chi (SRE)
+- Date: 2026-08-15
+
+## Context (Bối cảnh)
+Hệ thống thương mại điện tử có 5 service (Order, Inventory, Payment,
+Notification, Analytics) cần phản ứng khi đơn hàng đổi trạng thái.
+Yêu cầu đo được:
+- ~3.000 sự kiện/giây giờ cao điểm, tăng gấp 3 vào sale.
+- 4 consumer độc lập (Inventory, Notification, Analytics, Fraud) đọc
+  cùng sự kiện, mỗi bên xử lý tốc độ khác nhau.
+- Cần replay 7 ngày để dựng lại báo cáo Analytics khi logic đổi.
+- Độ trễ chấp nhận < 2 giây (không cần sub-millisecond).
+- Team 8 dev, 1 SRE; chưa ai vận hành Kafka production.
+
+## Options Considered (Các lựa chọn)
+1. Kafka
+2. RabbitMQ
+3. AWS SNS + SQS
+
+## Decision (Quyết định)
+Chọn **Kafka** (managed: Amazon MSK) cho luồng sự kiện đơn hàng.
+
+## Rationale (Lý do)
+- **Nhiều consumer + replay:** Kafka giữ log theo retention; 4 group
+  độc lập đọc cùng topic, offset riêng. Replay 7 ngày đáp ứng yêu cầu
+  Analytics. RabbitMQ xoá message sau khi ack — phải tự lưu bản sao.
+- **Throughput:** 3.000 msg/s (peaks 9.000) nằm trong vùng Kafka xử lý
+  thoải mái với 6 partition; RabbitMQ làm được nhưng vận hành phức
+  tạp hơn ở mức này khi cần durable + nhiều queue.
+- **Trade-off chấp nhận:** vận hành Kafka khó hơn. Giảm rủi ro bằng
+  MSK (managed), giới hạn scope ban đầu 1 cluster, 1 topic domain,
+  training 2 tuần cho team; SRE chịu trách nhiệm runbook.
+
+## Why not others (Vì sao không chọn)
+- **RabbitMQ:** mạnh về routing phức tạp, per-message ack, delay —
+  nhưng replay và multi-consumer độc lập không phải điểm mạnh tự nhiên;
+  phải duplicate queue hoặc dùng stream plugin (thêm độ phức tạp).
+- **SNS+SQS:** đơn giản, managed; nhưng replay cần tự lưu (S3/Kinesis),
+  chi phí tăng theo số consumer (mỗi consumer 1 queue + fan-out),
+  và vendor lock-in AWS sâu hơn mức team muốn ở tầng này.
+
+## Consequences (Hệ quả)
+- Cần quy ước: schema event (Avro/JSON Schema + Schema Registry),
+  key partition (orderId), idempotent consumer, DLQ topic.
+- Chi phí MSK ~\$X/tháng (ước tính) + dung lượng lưu 7 ngày.
+- Bước tiếp: spike 1 tuần (ADR-0008) chứng minh consumer idempotent
+  và replay; review lại sau 3 tháng vận hành thực tế.
+~~~
+
+### Ví dụ so sánh nhanh trong ADR (bảng trade-off)
+| Tiêu chí | Kafka (MSK) | RabbitMQ | SNS+SQS |
+|---|---|---|---|
+| Replay sự kiện | Có (retention) | Không tự nhiên | Phải tự lưu |
+| Nhiều consumer độc lập | Consumer group | Duplicate queue | Fan-out |
+| Per-message retry/DLQ | Tự xây (topic phụ) | Có sẵn | Có sẵn |
+| Throughput mục tiêu | Rất thoải mái | Đạt được, tốn công hơn | Đạt được |
+| Vận hành (team hiện tại) | Khó → dùng managed | Trung bình | Thấp |
+| Độ trễ | ms–s | sub-ms–ms | ms–s |
+
+### Pitfall production
+- **ADR viết sau khi đã làm xong:** mất giá trị vì lý do thật bị "hợp thức hoá" ngược. Viết khi đang cân nhắc, chốt trước khi implement lớn.
+- **ADR quá dài như tài liệu thiết kế:** không ai đọc. 1–2 trang là đủ; chi tiết kỹ thuật để ở design doc/link.
+- **Không ghi "Consequences" và điều kiện xem lại:** quyết định trông đúng mãi. Ghi rõ "review lại nếu throughput < 500 msg/s hoặc team không còn vận hành được Kafka".
+- **ADR nằm ngoài repo (Confluence, Google Doc):** lệch khỏi code, khó tìm. Lưu {{docs/adr/}} trong repo, review qua PR như code.
+
+> Senior tip: ADR tốt nhất là ADR khiến người phản đối cũng thấy lập luận của mình đã được ghi nhận trong mục "Why not others". Nếu ADR chỉ ca ngợi lựa chọn được chọn, nó là văn bản bán hàng, không phải quyết định kỹ thuật. Khi tôi review ADR, tôi tìm phần trade-off bị chấp nhận — nếu không có, tôi yêu cầu bổ sung trước khi Approve.`,
+  follow: [
+    'Khi bối cảnh thay đổi (ví dụ traffic giảm mạnh), bạn cập nhật ADR cũ thế nào mà vẫn giữ lịch sử?',
+    'ADR khác gì RFC (Request for Comments) và design doc? Khi nào dùng cái nào?',
+    'Làm sao để team thực sự duy trì thói quen viết ADR thay vì bỏ sau 2 tháng?'
+  ],
+  tags: ['ADR', 'architecture decision', 'Kafka', 'RabbitMQ', 'trade-off', 'documentation'],
+  refs: [
+    { type: 'doc', title: 'MADR - Markdown Architectural Decision Records', url: 'https://adr.github.io/madr/' },
+    { type: 'article', title: 'Michael Nygard: Documenting Architecture Decisions', url: 'https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions' }
+  ]
+},
+{
+  id: 'architecture-024',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Modular monolith là gì? Bạn đặt ranh giới module, kiểm tra ranh giới bằng ArchUnit, và quyết định khi nào tách một module thành service riêng như thế nào?',
+  a: `**Tóm tắt:** Modular monolith (monolith theo module) là một ứng dụng deploy thành **một đơn vị** (một file chạy, một process) nhưng bên trong được chia thành các **module** có ranh giới rõ: mỗi module sở hữu dữ liệu và logic của mình, module khác chỉ tương tác qua API công khai (interface/method) hoặc event, không chọc thẳng vào bảng/class nội bộ. Nó giữ được sự đơn giản vận hành của monolith (một deploy, gọi hàm trong process, transaction dễ hơn) nhưng chuẩn bị đường thoát sang microservice khi thực sự cần. ArchUnit giúp biến ranh giới từ "quy ước miệng" thành test tự động.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Cái gì:** Hãy tưởng tượng một tòa nhà văn phòng: monolith lộn xộn là một sàn mở, ai cũng đi qua bàn ai. Microservice là nhiều tòa nhà khác phố, đi lại phải gửi thư (network). Modular monolith là một tòa nhà nhưng mỗi phòng ban có cửa, bảng tên, và lễ tân — muốn hỏi phòng Kế toán phải qua quầy, không được tự mở tủ hồ sơ của họ.
+- **Vì sao cần:**
+  - Nhiều team nhảy thẳng sang microservice khi chưa cần → chịu chi phí network, data consistency phân tán, deploy/observability phức tạp, nhưng vẫn chia ranh giới sai (distributed monolith — tệ hơn monolith).
+  - Modular monolith cho phép đi nhanh, refactor ranh giới dễ (đổi package/interface rẻ hơn đổi API mạng + migration dữ liệu), và chỉ trả chi phí phân tán khi có lý do thật.
+- **Hoạt động thế nào:** Mỗi module là một package gốc (ví dụ {{com.shop.order}}, {{com.shop.catalog}}, {{com.shop.payment}}). Quy tắc: package gốc = API công khai; package con ({{.internal}}, {{.persistence}}) = private. Module A gọi module B qua interface trong {{com.shop.catalog.api}}, không import {{com.shop.catalog.internal.*}}.
+
+### Cấu trúc module (ví dụ)
+~~~text
+com.shop
+  +-- order
+  |    +-- api                (public: OrderFacade, OrderPlaced event)
+  |    +-- internal           (private: OrderService, rules)
+  |    +-- persistence        (private: OrderRepository, entities)
+  +-- catalog
+  |    +-- api                (public: CatalogFacade, ProductView)
+  |    +-- internal
+  |    +-- persistence
+  +-- payment
+       +-- api
+       +-- internal
+       +-- persistence
+~~~
+Nguyên tắc dữ liệu: bảng {{orders}} chỉ do module {{order}} sở hữu. Module {{payment}} cần biết tổng tiền? Gọi {{OrderFacade.getPayableAmount(orderId)}} hoặc nhận event {{OrderPlaced}} — không join trực tiếp bảng {{orders}}.
+
+### Kiểm tra ranh giới bằng ArchUnit
+~~~java
+@AnalyzeClasses(packages = "com.shop")
+class ModuleBoundaryTest {
+    @ArchTest
+    static final ArchRule noInternalAccess = noClasses()
+        .that().resideInAPackage("..order..")
+        .should().dependOnClassesThat()
+        .resideInAPackage("..catalog.internal..");
+
+    @ArchTest
+    static final ArchRule noCycles = slices()
+        .matching("com.shop.(*)..").namingSlices("$1")
+        .should().beFreeOfCycles();
+
+    @ArchTest
+    static final ArchRule persistenceIsolated = noClasses()
+        .that().resideOutsideOfPackage("..order.persistence..")
+        .should().dependOnClassesThat()
+        .resideInAPackage("..order.persistence..");
+}
+~~~
+Test này chạy trong CI ({{mvn test}}). Vi phạm ranh giới = build fail. Với codebase cũ nhiều vi phạm, dùng {{FreezingArchRule.freeze(...)}} để chặn vi phạm mới và giảm dần (xem cũng architecture-021). Spring Modulith cung cấp cách tiếp cận tương tự với {{ApplicationModules.verify()}} và hỗ trợ event giữa module.
+
+### Giao tiếp giữa module
+| Cách | Khi nào | Ưu | Nhược |
+|---|---|---|---|
+| Gọi interface công khai (in-process) | Cần kết quả ngay (query) | Đơn giản, nhanh, dễ debug | Coupling đồng bộ; caller chịu lỗi callee |
+| Application event (Spring {{@TransactionalEventListener}}) | Phản ứng phụ (gửi mail sau khi đặt hàng) | Giảm coupling; dễ thêm consumer | Khó trace luồng; thứ tự/xử lý lỗi cần chú ý |
+| Event + bảng outbox (trong cùng DB) | Cần đảm bảo event khớp DB | Nhất quán mà không cần broker | Thêm độ phức tạp; vẫn in-process consumer |
+
+### Khi nào tách module thành service riêng?
+Chỉ tách khi có **lý do đo được**, không tách "cho đẹp":
+- **Scale khác biệt:** module Search cần 20 instance lúc sale, phần còn lại 3 — tách để scale độc lập. Nếu scale giống nhau, tách chỉ tốn tiền.
+- **Nhịp deploy khác:** team Fraud cần deploy 5 lần/ngày, Order 1 lần/tuần và bị chặn bởi quy trình kiểm soát — tách giảm xung đột (nhưng trước tiên thử tách pipeline/ownership).
+- **Yêu cầu cô lập:** dữ liệu nhạy cảm (PCI) phải tách mạng/DB; hoặc một module hay sập kéo sập cả hệ.
+- **Team độc lập thật sự:** > 2 team đụng cùng module liên tục gây conflict — và ranh giới module đã rõ. Ranh giới mờ thì tách service = distributed monolith.
+
+Dấu hiệu CHƯA nên tách: team < 10 người, chưa có observability tốt, ranh giới module còn hay đổi, chưa đo được bottleneck.
+
+### Pitfall production
+- **"Modular" chỉ trên giấy:** package chia đẹp nhưng module A inject thẳng repository của module B. Không có ArchUnit/Spring Modulith verify = ranh giới sẽ mục.
+- **Chia DB schema chung không có chủ sở hữu:** ai cũng {{ALTER TABLE}} của nhau. Quy ước: mỗi module có schema/prefix bảng riêng; truy cập chéo qua API.
+- **Tách service quá sớm khi ranh giới sai:** phải gộp lại hoặc sống với API mạng vụng về + saga phức tạp. Chi phí sửa ranh giới trên mạng cao gấp nhiều lần trong monolith.
+- **Transaction xuyên module:** {{@Transactional}} bọc gọi 2 module tưởng là nguyên tử — đúng trong monolith, nhưng đây là coupling ẩn; nếu mai tách service sẽ vỡ. Cần nhận diện và thiết kế lại (eventual consistency) cho các điểm này.
+
+> Senior tip: tôi coi modular monolith là "trạng thái mặc định tốt" cho team nhỏ/vừa. Câu hỏi phỏng vấn hay bị trả lời sai là liệt kê lợi ích microservice mà quên chi phí; câu trả lời mạnh là: "Tôi giữ monolith modular, đặt ArchUnit từ đầu, và chỉ tách service khi có số liệu (scale/deploy/isolation) chứng minh module đó cần sống riêng." Nhớ kèm ví dụ số liệu bạn từng gặp.`,
+  follow: [
+    'Làm sao xử lý transaction cần ghi vào hai module (ví dụ Order + Inventory) trong modular monolith?',
+    'Spring Modulith khác gì tự viết ArchUnit rule? Khi nào chọn cái nào?',
+    'Bạn phát hiện module A gọi 40 chỗ vào internal của module B — kế hoạch xử lý từng bước?'
+  ],
+  tags: ['modular monolith', 'ArchUnit', 'bounded context', 'microservice', 'module boundary'],
+  refs: [
+    { type: 'doc', title: 'Spring Modulith Reference', url: 'https://docs.spring.io/spring-modulith/reference/' },
+    { type: 'doc', title: 'ArchUnit User Guide', url: 'https://www.archunit.org/userguide/html/000_Index.html' }
+  ]
+},
+{
+  id: 'architecture-025',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn phải thay thế một hệ thống legacy (monolith cũ, không ai dám sửa) bằng hệ thống mới mà không được ngừng dịch vụ. Bạn áp dụng Strangler Fig pattern: routing, đồng bộ dữ liệu hai chiều, và khi nào tắt hệ cũ? Minh hoạ luồng bằng ~~~seq.',
+  a: `**Tóm tắt:** Strangler Fig (cây đa bóp — đặt theo cách cây đa mọc bọc quanh cây chủ rồi dần thay thế) là chiến lược di trú tăng dần: đặt một lớp **routing/facade** trước hệ cũ, chuyển từng khả năng (capability) sang hệ mới, để cả hai chạy song song, rồi cuối cùng tắt hệ cũ. Phần khó nhất không phải viết code mới mà là **đồng bộ dữ liệu hai chiều** khi cả hai hệ cùng "sống", và quyết định **điểm cắt** an toàn. Không có "big bang rewrite" — mỗi bước phải có thể rollback.
+
+### Cái gì → vì sao cần
+- **Cái gì:** Thay vì tắt hệ cũ, xây hệ mới xong rồi bật cái mới một lần (big bang — rủi ro cực cao), bạn "bóp nghẹt" dần: chuyển chức năng A sang mới, kiểm chứng, chuyển B, ... hệ cũ teo dần đến khi tắt.
+- **Vì sao cần:** Hệ legacy thường là "hộp đen" nuôi nghiệp vụ: không có test, logic rải rác, nhưng đang chạy tiền thật. Big bang rewrite hay thất bại vì: (1) hiểu sai nghiệp vụ ẩn, (2) mất 18 tháng mà chưa ra gì, (3) cutover một đêm lỗi là thảm hoạ. Strangler giảm blast radius: mỗi lần chỉ chuyển một lát cắt nhỏ.
+- **Ví dụ đời thường:** Sửa đường cao tốc đang chạy xe — không đóng cả đường xây lại; làm từng làn, chuyển xe sang làn tạm, xong làn này mới làm làn kia.
+
+### Bước 1: Lớp routing (facade/proxy)
+Đặt một điểm vào duy nhất (API Gateway, reverse proxy, hoặc facade service) quyết định request đi hệ cũ hay mới:
+~~~text
+Luồng tổng quát:
+Client -> [Routing Facade] --(đã migrate)--> [Hệ mới]
+                           --(chưa)---------> [Hệ legacy]
+~~~
+Routing theo tính năng (URL/endpoint), theo phần trăm (canary), hoặc theo tenant. Bắt đầu 0% sang mới, tăng dần.
+
+~~~seq
+title: Strangler Fig - chuyển dần endpoint GET /orders
+actors: Client | Facade | NewSvc | Legacy
+Client -> Facade: GET /orders/123
+Facade -> Facade: rule: orders READ da migrate
+Facade -> NewSvc: GET /orders/123
+NewSvc --> Facade: 200 order
+Facade --> Client: 200 order
+note Client..Legacy: endpoint chua migrate van di Legacy
+~~~
+
+### Bước 2: Đồng bộ dữ liệu hai chiều (phần khó nhất)
+Khi cả hai hệ cùng chạy, dữ liệu phải nhất quán đủ dùng. Có 3 chiến lược (thường kết hợp):
+| Chiến lược | Cách làm | Ưu | Nhược | Khi nào |
+|---|---|---|---|---|
+| **Một nguồn sự thật (single write)** | Chỉ hệ mới (hoặc cũ) được ghi; bên kia đọc qua API hoặc nhận bản sao | Đơn giản, không xung đột ghi | Bên đọc có thể trễ; phụ thuộc bên ghi | Ưu tiên nếu làm được |
+| **CDC (Change Data Capture)** | Đọc thay đổi từ DB log (ví dụ Debezium đọc binlog/WAL) đẩy sang bên kia | Không sửa code legacy | Độ trễ; mapping schema; vòng lặp nếu hai chiều | Legacy không sửa được |
+| **Sync hai chiều có kiểm soát** | Cả hai ghi, đồng bộ qua event/CDC, có quy tắc giải xung đột | Linh hoạt giai đoạn chuyển tiếp | **Phức tạp, dễ tạo vòng lặp/xung đột** | Chỉ tạm thời, phạm vi hẹp |
+
+~~~seq
+title: CDC dong bo mot chieu (Legacy -> New)
+actors: Legacy | LegacyDB | CDC | NewSvc | NewDB
+Legacy -> LegacyDB: UPDATE orders
+LegacyDB -> CDC: doc thay doi tu WAL
+CDC -> NewSvc: event OrderUpdated
+NewSvc -> NewDB: upsert orders (idempotent)
+NewSvc --> CDC: ack
+~~~
+
+Quy tắc sống còn cho sync hai chiều: (1) **Idempotent** — nhận lại cùng event không tạo bản ghi trùng (dùng key tự nhiên/upsert). (2) **Chống vòng lặp** — event do sync tạo ra phải gắn cờ {{source=sync}} để CDC bên kia bỏ qua, nếu không A->B->A->B vô hạn. (3) **Một trường một chủ** — mỗi field có đúng một hệ là chủ (source of truth); tránh hai bên cùng sửa một field. (4) **Reconcile định kỳ** — job so sánh hai bên, báo lệch.
+
+### Bước 3: Di trú theo lát cắt (slice)
+Không chuyển theo tầng kỹ thuật ("chuyển hết DB trước") mà theo **khả năng nghiệp vụ** dọc:
+1. Chọn lát cắt nhỏ, giá trị rõ, ít phụ thuộc (ví dụ: "xem chi tiết đơn" trước, "tạo đơn + thanh toán" sau).
+2. Xây trong hệ mới, migrate dữ liệu lịch sử lát cắt đó (backfill), bật routing (canary 1% → 10% → 100%).
+3. So sánh kết quả (shadow/parallel run nếu được): gọi cả hai, trả kết quả cũ cho user, log khác biệt.
+4. Đóng băng ghi trên phần đã migrate ở hệ cũ (read-only hoặc chặn).
+
+### Bước 4: Khi nào tắt hệ cũ?
+Tắt khi **tất cả** điều kiện sau đúng:
+- 100% traffic các khả năng đã route sang mới, duy trì ổn định (ví dụ 2–4 tuần) không rollback.
+- Không còn consumer đọc/ghi trực tiếp DB legacy (kiểm tra connection, CDC, job batch, report).
+- Dữ liệu lịch sử cần giữ đã backfill/archived; đối chiếu checksum/số lượng khớp.
+- Runbook rollback hết hiệu lực (không ai cần quay lại), và team vận hành ký xác nhận.
+- Hợp đồng/compliance cho phép ngừng (lưu trữ audit nếu cần).
+
+Tắt theo từng phần: thu hồi quyền truy cập, tắt route, tắt CDC, đặt DB legacy read-only một thời gian, rồi mới decommission. Giữ snapshot/backup trước khi xoá hẳn.
+
+### Pitfall production
+- **Sync hai chiều không chống vòng lặp:** CDC đẩy A->B, B ghi DB kích CDC đẩy B->A — bão event, dữ liệu nhấp nháy. Luôn gắn metadata nguồn và bỏ qua event do sync sinh ra.
+- **Chuyển "tầng" thay vì "lát cắt":** migrate hết DB nhưng logic vẫn ở legacy → hai hệ ghép chặt qua DB chung, không tắt được cái nào.
+- **Quên consumer ẩn của legacy DB:** report, script kế toán, integration đối tác đọc thẳng DB cũ. Phải rà soát toàn bộ kết nối trước khi tắt.
+- **Không có shadow comparison:** tưởng hệ mới đúng nhưng lệch logic tính thuế/khuyến mãi — phát hiện khi khách khiếu nại. Chạy song song và so diff trên traffic thật (ẩn PII) trước khi cutover.
+
+> Senior tip: Tiêu chí thành công của strangler không phải "hệ mới xong" mà là "mỗi tháng tắt được thêm một phần legacy đo được". Lập bảng: endpoint nào còn trên legacy, % traffic, ngày mục tiêu tắt. Nếu 3 tháng bảng không thay đổi, bạn đang xây hệ mới song song chứ không phải strangler — phải quay lại cắt lát cắt nhỏ hơn.`,
+  follow: [
+    'Bạn xử lý trường hợp legacy và hệ mới có mô hình dữ liệu khác nhau (ví dụ 1 bảng cũ tách thành 3 bảng mới)?',
+    'Shadow traffic so sánh kết quả khác nhau — bạn phân loại khác biệt "chấp nhận được" và "lỗi" thế nào?',
+    'Khi nào strangler KHÔNG phù hợp và bạn buộc phải cân nhắc cách khác?'
+  ],
+  tags: ['strangler fig', 'legacy migration', 'CDC', 'routing', 'data sync', 'incremental migration'],
+  refs: [
+    { type: 'article', title: 'Martin Fowler: Strangler Fig Application', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' },
+    { type: 'doc', title: 'Debezium Documentation', url: 'https://debezium.io/documentation/' }
+  ]
+},
+{
+  id: 'architecture-026',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn thiết kế multi-tenancy cho sản phẩm SaaS B2B (nhiều công ty khách dùng chung một hệ thống). So sánh shared schema, schema-per-tenant, DB-per-tenant; xử lý noisy neighbor và cô lập dữ liệu thế nào?',
+  a: `**Tóm tắt:** Multi-tenancy (đa thuê bao) nghĩa là một hệ thống phần mềm phục vụ nhiều khách hàng (tenant — ví dụ mỗi công ty là một tenant) trên cùng hạ tầng, nhưng dữ liệu của họ phải cô lập với nhau. Ba mô hình chính: **shared schema** (chung bảng, có cột {{tenant_id}}) rẻ và scale số tenant lớn nhất nhưng rủi ro rò rỉ cao nhất nếu code quên lọc; **schema-per-tenant** tách schema trên cùng DB; **DB-per-tenant** cô lập mạnh nhất, đắt và khó vận hành khi nhiều tenant. Thực tế hay dùng **lai**: tenant nhỏ chung, tenant lớn/trả nhiều hoặc có yêu cầu tuân thủ được cấp DB riêng. Noisy neighbor (hàng xóm ồn — một tenant dùng quá nhiều tài nguyên làm tenant khác chậm) xử lý bằng giới hạn tài nguyên, hàng đợi công bằng, và tách tầng khi cần.
+
+### Ba mô hình so sánh
+| Tiêu chí | Shared schema ({{tenant_id}}) | Schema per tenant | DB per tenant |
+|---|---|---|---|
+| Cô lập dữ liệu | Yếu nhất (phụ thuộc code) | Khá (tách namespace) | Mạnh nhất |
+| Rủi ro rò rỉ do bug | Cao (quên {{WHERE tenant_id}}) | Trung bình | Thấp |
+| Chi phí / tenant | Thấp nhất | Trung bình | Cao nhất |
+| Scale số tenant | Rất tốt (hàng nghìn) | Trung bình (giới hạn số schema/connection) | Kém khi quá nhiều DB |
+| Migrate schema | 1 lần | N lần (mỗi schema) | N lần (mỗi DB) |
+| Tuỳ biến schema/phiên bản | Khó | Có thể | Dễ |
+| Backup/restore 1 tenant | Khó (lọc dòng) | Dễ hơn | Dễ |
+| Tuỳ hợp đồng (dữ liệu đặt tại quốc gia) | Khó | Khó | Dễ (đặt DB ở region) |
+
+### Shared schema: cách làm an toàn
+- Mọi bảng nghiệp vụ có {{tenant_id}} (NOT NULL, có index). Khóa chính tổng hợp hoặc unique gồm {{tenant_id}} để tránh va chạm.
+- **Bắt buộc lọc tenant ở tầng hạ tầng, không dựa vào dev nhớ:** dùng Hibernate filter/{{@TenantId}} (Hibernate 6), Row Level Security (RLS) của PostgreSQL, hoặc wrapper repository tự chèn điều kiện. RLS là lớp phòng thủ kép: ngay cả câu SQL thô quên điều kiện, DB vẫn chặn.
+~~~sql
+-- PostgreSQL RLS: DB tự lọc theo tenant đang đặt trong session
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_iso ON orders
+  USING (tenant_id = current_setting('app.tenant_id')::bigint);
+~~~
+~~~java
+// Set tenant mỗi request (sau khi xác thực), clear trong finally
+jdbc.execute("SET LOCAL app.tenant_id = '" + tenantId + "'");
+// SET LOCAL chỉ sống trong transaction — tránh rò sang request khác
+~~~
+- Tenant lấy từ **claim đã xác thực** (token), không tin giá trị client gửi tự do (header {{X-Tenant}} phải đối chiếu quyền).
+
+### Noisy neighbor
+- **Cái gì:** Tenant A chạy báo cáo nặng / import 10 triệu dòng làm DB CPU 100%, tenant B (trả tiền) bị chậm theo. Giống chung cư: một hộ xả nước tối đa làm cả tầng yếu áp lực.
+- **Xử lý theo tầng:**
+  - **Giới hạn tốc độ (rate limit) per tenant:** số request/giây, kích thước payload, số job đồng thời. Trả 429/503 có {{Retry-After}}.
+  - **Hàng đợi công bằng:** job nặng (export, import) đi qua queue; worker lấy theo vòng (fair scheduling) để tenant lớn không chiếm hết slot.
+  - **Cô lập tài nguyên DB:** giới hạn {{statement_timeout}} per tenant/role; connection pool tách cho tác vụ nặng; read replica cho báo cáo. Với PostgreSQL có thể dùng {{ALTER ROLE tenant_a SET statement_timeout = '5s'}}.
+  - **Tách tầng cho tenant "cá voi":** tenant rất lớn hoặc yêu cầu SLA cao → chuyển sang DB-per-tenant hoặc cụm riêng (mô hình lai). Đây là lý do thực tế phải thiết kế để **di chuyển tenant** được.
+  - **Quan sát per tenant:** metric độ trễ/lỗi/CPU truy vấn gắn nhãn {{tenant_id}} để phát hiện ai gây tải.
+
+### Cách chọn thực tế
+1. SaaS giai đoạn đầu, nhiều tenant nhỏ, ngân sách hạn chế: **shared schema** + RLS + rate limit. Đầu tư lớp tenant context thật chặt.
+2. Số tenant trung bình, cần tuỳ biến nhẹ: **schema-per-tenant** (chú ý giới hạn connection/migration).
+3. Ít tenant lớn, yêu cầu tuân thủ/data residency hoặc trả phí cao: **DB-per-tenant**.
+4. Trưởng thành: **lai** — mặc định shared, nâng hạng tenant đặc biệt sang DB riêng. Thiết kế {{TenantRouter}} (chọn datasource theo tenant) từ đầu để việc nâng hạng không phải viết lại.
+
+### Pitfall production
+- **Rò rỉ tenant do thiếu lọc:** một câu query admin, một job batch, một API export quên {{tenant_id}} → trả dữ liệu chéo. Phòng thủ nhiều lớp: {{@TenantId}}/filter + RLS + test tự động quét query không có điều kiện tenant + review.
+- **Cache dùng chung key không có tenant:** {{cache.get("product:123")}} trả sản phẩm của tenant A cho tenant B. Luôn đưa {{tenant_id}} vào cache key.
+- **Connection pool bùng nổ với DB/schema-per-tenant:** 500 tenant × 5 connection × 10 instance = 25.000 connection. Cần pooler (PgBouncer), pool lười, hoặc giới hạn tenant hoạt động đồng thời.
+- **Migration N lần thất bại giữa chừng:** 200/500 schema đã migrate, 201 lỗi → trạng thái không đồng nhất. Cần công cụ migration per-tenant có theo dõi phiên bản và khả năng chạy lại (idempotent).
+
+> Senior tip: Trong phỏng vấn, đừng chỉ chọn một mô hình — hãy nói "tôi chọn shared schema ban đầu nhưng thiết kế TenantContext + TenantRouter để có thể tách tenant lớn sau, vì yêu cầu cô lập thường tăng theo giá trị hợp đồng". Và luôn nhắc hai lớp phòng thủ (code + RLS): một bug ứng dụng không được phép trở thành sự cố rò rỉ dữ liệu khách hàng.`,
+  follow: [
+    'Bạn di chuyển một tenant từ shared schema sang DB riêng với gần như không downtime thế nào?',
+    'Làm sao test tự động phát hiện query thiếu điều kiện tenant_id?',
+    'Tenant yêu cầu dữ liệu đặt tại EU (data residency) — kiến trúc thay đổi ra sao?'
+  ],
+  tags: ['multi-tenancy', 'SaaS', 'tenant isolation', 'noisy neighbor', 'RLS', 'PostgreSQL'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Row Security Policies', url: 'https://www.postgresql.org/docs/current/ddl-rowsecurity.html' },
+    { type: 'doc', title: 'Hibernate ORM User Guide (Multitenancy)', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }
+  ]
+},
+{
+  id: 'architecture-027',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Event sourcing là gì? Khi nào nó đáng dùng, khi nào là over-engineering? Bạn xử lý snapshot và schema evolution (tiến hoá lược đồ) của event ra sao?',
+  a: `**Tóm tắt:** Event sourcing (lưu theo sự kiện) lưu **chuỗi sự kiện bất biến** mô tả mọi thay đổi ("Đơn đã tạo", "Đã thêm món", "Đã thanh toán") thay vì chỉ lưu trạng thái hiện tại. Trạng thái hiện tại suy ra bằng cách phát lại (replay) các event. Nó cho audit log tự nhiên, khả năng dựng lại trạng thái quá khứ, và dễ phát event tích hợp — nhưng đổi cách tư duy, truy vấn phức tạp hơn (thường cần projection/read model), và schema event khó đổi. **Đáng dùng** khi lịch sử/audit/khả năng replay là yêu cầu cốt lõi (kế toán sổ cái, giao dịch tài chính, quy trình có tranh chấp). **Over-engineering** cho CRUD thông thường (quản lý danh mục, hồ sơ đơn giản) nơi bạn chỉ cần trạng thái hiện tại.
+
+### Cái gì → ví dụ đời thường
+- **State-based (thông thường):** tài khoản có số dư 500.000đ — bạn chỉ biết hiện tại, không biết vì sao.
+- **Event sourcing:** lưu chuỗi: {{AccountOpened(+0)}} → {{MoneyDeposited(+1.000.000)}} → {{MoneyWithdrawn(-500.000)}} → số dư hiện tại = phát lại = 500.000đ. Bạn biết toàn bộ lịch sử, có thể trả lời "số dư cuối ngày 15 là bao nhiêu?" bằng cách replay tới ngày 15. Giống sao kê ngân hàng (danh sách giao dịch) vs chỉ nhìn số dư.
+- **Event bất biến:** đã ghi thì không sửa/xoá (append-only). Sửa sai bằng event bù ({{MoneyWithdrawnReversed}}), không đè event cũ — giữ được audit.
+
+### Cấu trúc lưu trữ (đơn giản hoá)
+~~~text
+Event Store (bảng append-only, ví dụ theo aggregate)
+| aggregate_id | version | type              | data (JSON)                 | occurred_at |
+| ord-123      | 1       | OrderCreated      | {customer:7, items:[...]}   | 10:00:01    |
+| ord-123      | 2       | ItemAdded         | {sku:"A1", qty:2}           | 10:00:15    |
+| ord-123      | 3       | OrderPaid         | {amount:200000, txn:"T9"}   | 10:05:00    |
+Trạng thái hiện tại = fold/replay event 1..3 theo thứ tự version.
+~~~
+~~~java
+// Suy ra trạng thái: áp từng event lên aggregate rỗng
+Order order = Order.empty();
+for (Event e : store.load("ord-123")) order.apply(e);
+// order giờ ở trạng thái "Paid" với đúng items
+~~~
+- **Optimistic concurrency:** ghi event mới kèm {{expectedVersion}}. Nếu ai đó đã ghi version 4, ghi với expected 3 sẽ thất bại (conflict) — tránh ghi đè mất sự kiện.
+
+### Khi nào ĐÁNG dùng
+- **Audit/bắt buộc truy vết:** tài chính, kế toán sổ cái, bảo hiểm, y tế — cần chứng minh "ai đổi gì, lúc nào, giá trị trước/sau". Event sourcing cho audit "miễn phí" vì bản chất là log.
+- **Cần dựng lại quá khứ / what-if:** "trạng thái đơn hàng tại thời điểm tranh chấp là gì?", phát lại logic mới trên event cũ để sửa báo cáo.
+- **Miền nghiệp vụ giàu hành vi, event tự nhiên:** quy trình nhiều bước, domain expert nói bằng sự kiện ("khi khách hủy sau khi giao...").
+- **Tích hợp hướng sự kiện:** event nội bộ có thể publish ra ngoài (thường qua outbox) cho service khác.
+
+### Khi nào OVER-ENGINEERING
+- **CRUD thuần:** quản lý danh mục sản phẩm, cấu hình — chỉ cần giá trị hiện tại, không ai hỏi "tên sản phẩm lúc 3 tháng trước là gì?". Thêm event store, projection, replay = chi phí lớn không mang lại giá trị.
+- **Team chưa quen:** mô hình tư duy khác (suy nghĩ bằng event, không phải set state), debug khó hơn ("trạng thái này đến từ event nào?"), tooling ít hơn ORM truyền thống.
+- **Yêu cầu truy vấn ad-hoc mạnh:** hỏi "tất cả đơn > 1 triệu, giao Hà Nội, tháng trước" trên event store thô rất bất tiện → bắt buộc xây read model/projection (CQRS). Nếu mọi thứ là truy vấn phức tạp, chi phí projection lớn.
+- **Miền dữ liệu lớn, vòng đời dài:** aggregate có 100.000 event → replay chậm (cần snapshot, xem dưới).
+
+### Snapshot (ảnh chụp)
+- **Vấn đề:** aggregate sống 5 năm tích 50.000 event; load mỗi lần replay 50.000 event → chậm.
+- **Giải pháp:** định kỳ lưu **snapshot** = trạng thái tại version N. Load = đọc snapshot gần nhất + replay phần event sau snapshot.
+~~~text
+Load ord-123 (50.000 events, snapshot tại version 49.000):
+1. Đọc snapshot @ 49.000 -> có trạng thái ngay.
+2. Replay event 49.001..50.000 (1.000 events) -> trạng thái hiện tại.
+~~~
+- Snapshot là **tối ưu**, không phải nguồn sự thật; có thể xoá và dựng lại từ event. Lưu mỗi K event (ví dụ 500) hoặc theo thời gian. Snapshot phải đi kèm version để biết replay tiếp từ đâu.
+
+### Schema evolution của event (tiến hoá lược đồ)
+Event sống mãi (append-only), code thì đổi — đây là thách thức lớn nhất:
+- **Quy tắc vàng:** event đã phát hành là **hợp đồng bất biến**. Không đổi nghĩa field, không tái sử dụng type cho mục đích khác.
+- **Thay đổi tương thích (an toàn):** thêm field tuỳ chọn có giá trị mặc định; thêm loại event mới (code cũ bỏ qua). Giống mở rộng JSON về phía trước.
+- **Thay đổi không tương thích:** đổi tên/kiểu/xoá field bắt buộc, đổi nghĩa. **Không** sửa event cũ trong store. Cách xử lý:
+  - **Upcasting:** khi đọc, chuyển event phiên bản cũ lên cấu trúc mới trong code ({{v1 -> v2}}) trước khi apply. Store vẫn giữ bản gốc.
+  - **Version hoá rõ:** {{OrderCreated_v2}}, hoặc field {{schemaVersion}} trong payload.
+  - **Copy-and-transform (hiếm, cẩn thận):** migrate sang stream mới — chỉ khi thực sự cần, phải giữ truy vết.
+- Tránh payload mơ hồ: dùng tên rõ, đơn vị rõ ({{amountCents}}, {{currency}}), không nhét cả object khổng lồ nếu chỉ cần vài field.
+
+### Pitfall production
+- **Dùng event sourcing rồi lại truy vấn trực tiếp event store cho UI:** chậm và vụng. Cần **projection/read model** (bảng thường, cập nhật từ event) cho truy vấn — tức chấp nhận CQRS (tách đọc/ghi).
+- **Sửa/xoá event trong store "cho tiện":** phá audit và có thể làm replay ra trạng thái sai. Muốn "xóa" theo GDPR → dùng crypto-shredding (mã hoá dữ liệu cá nhân trong event bằng key per-user, xoá key) thay vì xoá event.
+- **Event quá to hoặc quá chi tiết:** lưu cả blob/ảnh trong event → store phình; hoặc event "mọi lần gõ phím" → không mang nghĩa nghiệp vụ. Event nên là **fact nghiệp vụ có ý nghĩa**.
+- **Không version event từ đầu:** 6 tháng sau đổi schema không còn đường lên. Đặt {{schemaVersion}} và cơ chế upcast ngay từ event đầu tiên.
+
+> Senior tip: Câu trả lời senior không phải "event sourcing tuyệt vời" mà là "tôi dùng event sourcing cho phần cần audit/replay (ví dụ sổ cái giao dịch) và giữ CRUD thường cho phần còn lại trong cùng hệ thống". Event sourcing là công cụ cho đúng bài toán, không phải kiến trúc mặc định cho mọi thứ. Nếu interviewer hỏi "khi nào KHÔNG dùng" mà bạn không nêu được, đó là dấu hiệu chưa dùng thực tế.`,
+  follow: [
+    'Event sourcing khác gì chỉ lưu audit log hoặc dùng CDC/outbox? Khi nào audit log là đủ?',
+    'Bạn thiết kế projection bị lỗi hoặc cần thay đổi — rebuild read model thế nào trên production?',
+    'Làm sao đáp ứng yêu cầu "xóa dữ liệu người dùng" (GDPR) khi event store là append-only?'
+  ],
+  tags: ['event sourcing', 'CQRS', 'snapshot', 'schema evolution', 'audit', 'append-only'],
+  refs: [
+    { type: 'article', title: 'Martin Fowler: Event Sourcing', url: 'https://martinfowler.com/eaaDev/EventSourcing.html' },
+    { type: 'doc', title: 'EventStoreDB: Event Sourcing Basics', url: 'https://www.eventstore.com/event-sourcing' }
+  ]
+},
+{
+  id: 'architecture-028',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Cell-based architecture (kiến trúc theo ô/tế bào) là gì? Nó giúp giới hạn blast radius (bán kính ảnh hưởng) như thế nào, và bạn thiết kế routing, chia cell, quản lý state ra sao?',
+  a: `**Tóm tắt:** Cell-based architecture chia hệ thống thành nhiều **cell** giống nhau, mỗi cell là một cụm độc lập đầy đủ (compute + storage + dependencies cần thiết) phục vụ một **tập con** người dùng/tenant. Lỗi, deploy xấu, hoặc quá tải chỉ ảnh hưởng cell đó — **blast radius bị giới hạn** theo kích thước cell thay vì làm sập toàn hệ. Đổi lại phải có lớp **cell router** (định tuyến tenant → cell), chiến lược chia/di chuyển tenant, và chấp nhận rằng một số state/dữ liệu toàn cục khó chia.
+
+### Cái gì → vì sao cần
+- **Cái gì:** Thay vì một cụm khổng lồ phục vụ mọi người dùng (shared-everything), bạn tạo N bản sao thu nhỏ của stack: {{cell-1}} phục vụ tenant 1–1000, {{cell-2}} tenant 1001–2000... Mỗi cell có app, DB (hoặc shard), cache riêng. Một cell hỏng = chỉ 1000 tenant bị ảnh hưởng, 9000 tenant còn lại vẫn chạy.
+- **Ví dụ đời thường:** Tàu thủy có nhiều khoang kín nước. Một khoang thủng thì ngập khoang đó, tàu chưa chìm vì khoang khác vẫn kín. Một thân liền mạch thì một lỗ thủng có thể làm chìm cả tàu.
+- **Vì sao cần:**
+  - **Blast radius:** deploy lỗi, query xấu làm cạn connection, hoặc bug chỉ kích hoạt với dữ liệu tenant X → chỉ cell chứa X chết. Với cụm đơn, 100% người dùng ảnh hưởng.
+  - **Scale theo đơn vị:** thêm cell mới khi tăng tenant, thay vì phình một cụm đơn khổng lồ (gặp giới hạn DB connection, kích thước cluster, thời gian failover).
+  - **Giới hạn failure domain:** thử nghiệm/rollout từng cell (canary theo cell).
+
+### Thành phần chính
+~~~seq
+title: Cell-based routing
+actors: Client | Router | Cell1 | Cell2 | Global
+Client -> Router: request (tenant=1500)
+Router -> Router: map tenant 1500 -> cell-2
+Router -> Cell2: forward request
+Cell2 --> Router: response
+Router --> Client: response
+note Client..Global: Global chi giu mapping tenant->cell
+~~~
+
+| Thành phần | Vai trò | Lưu ý |
+|---|---|---|
+| **Cell router** | Nhận request, tra cứu {{tenant -> cell}}, chuyển tiếp | Phải cực kỳ đơn giản, sẵn sàng cao; router hỏng = toàn hệ hỏng (blast radius mới) — nên là lớp mỏng, stateless, multi-AZ/region |
+| **Cell** | Stack đầy đủ cho tập tenant được gán | Tự chủ nhất có thể: app, DB, cache, queue. Giảm phụ thuộc chéo giữa cell |
+| **Bảng ánh xạ tenant→cell** | Nguồn sự thật "tenant này ở đâu" | Lưu ở tầng global bền (replicated), cache tại router; thay đổi khi di chuyển tenant |
+| **Control plane (global)** | Tạo/xoá cell, gán tenant, di chuyển, deploy | Tách khỏi data plane; control plane chậm không được làm data plane chết |
+
+### Chia cell và giới hạn kích thước
+- Chọn kích thước cell để một cell chết vẫn chấp nhận được (ví dụ mỗi cell ≤ 5% tổng tenant, hoặc ≤ 5% doanh thu). Đây chính là **blast radius mục tiêu**.
+- Gán tenant: hash/mod (đơn giản, cố định) hoặc tra cứu bảng (linh hoạt, di chuyển được). Thực tế ưu tiên **bảng ánh xạ** vì tenant lớn/nhỏ không đều và cần di chuyển.
+- Di chuyển tenant giữa cell (khi cell đầy hoặc cân bằng): cần cơ chế migrate dữ liệu tenant + chuyển ánh xạ, thường có cửa sổ đóng băng ghi ngắn hoặc dual-write tạm.
+
+### State toàn cục — điểm khó
+Không phải mọi thứ chia theo cell được:
+- **Dữ liệu tenant (orders, users của tenant):** nằm trong cell — tốt.
+- **Danh mục chung, cấu hình toàn cục, tìm kiếm xuyên tenant (admin):** khó đặt trong cell. Cách xử lý: (1) dịch vụ global riêng, read-only replica đẩy xuống cell; (2) chấp nhận truy vấn global đi đường khác (không qua cell router); (3) duplicate dữ liệu tham chiếu vào mỗi cell (eventual consistency).
+- **Định danh:** {{tenant_id}}/ID phải globally unique (không trùng giữa cell) — dùng UUID/ULID hoặc dải ID.
+
+### So sánh nhanh với cách khác
+| Cách | Blast radius | Độ phức tạp | Phù hợp |
+|---|---|---|---|
+| Một cụm lớn + autoscale | 100% | Thấp | Nhỏ/vừa, chưa gặp sự cố lan rộng |
+| Sharding DB (chỉ DB) | DB chia, app vẫn chung | Trung bình | Nút thắt ở DB |
+| **Cell-based (full stack)** | Giới hạn theo cell | Cao | Rất lớn, cần cô lập failure domain mạnh |
+| Multi-region active-active | Theo region + cell | Rất cao | Toàn cầu, yêu cầu DR |
+
+### Pitfall production
+- **Router thành điểm chết đơn:** router phức tạp, có state, hoặc phụ thuộc DB chậm → sập router là sập hết. Giữ router stateless, cache ánh xạ cục bộ, có cơ chế fallback an toàn.
+- **Phụ thuộc global ẩn trong cell:** cell gọi một dịch vụ global duy nhất (auth chung, config service) — dịch vụ đó chết thì mọi cell chết. Audit dependency: cell phải sống được khi global suy giảm (cache credential, cấu hình).
+- **Cell không đều (hot cell):** vài tenant "cá voi" dồn vào một cell → cell đó quá tải. Cần giám sát per cell, đặt tenant lớn vào cell riêng hoặc chia lại.
+- **Vận hành N cell:** deploy, migrate schema, quan sát nhân lên N lần. Bắt buộc tự động hoá (IaC, deploy theo sóng cell) — làm tay không scale.
+
+> Senior tip: Cell-based không phải bước đầu tiên. Hãy nói: "Tôi chỉ dùng cell khi đã thấy sự cố một tenant/deploy làm ảnh hưởng toàn hệ và chi phí sự cố vượt chi phí vận hành N cell." Nhấn mạnh hai điểm interviewer hay hỏi: router phải cực đơn giản (nó là blast radius còn lại), và phải đo được kích thước cell = blast radius mục tiêu bằng số liệu, không chọn cảm tính.`,
+  follow: [
+    'Làm sao deploy phiên bản mới an toàn trên 50 cell (rollout strategy)?',
+    'Một tenant cần truy vấn dữ liệu tổng hợp xuyên các tenant khác (báo cáo admin) — đi đường nào trong kiến trúc cell?',
+    'Router cache ánh xạ tenant→cell bị stale trong lúc di chuyển tenant — xử lý thế nào?'
+  ],
+  tags: ['cell-based architecture', 'blast radius', 'fault isolation', 'routing', 'scalability'],
+  refs: [
+    { type: 'doc', title: 'AWS: Cell-Based Architecture Guidance', url: 'https://docs.aws.amazon.com/wellarchitected/latest/reducing-scope-of-impact-with-cell-based-architecture/what-is-a-cell-based-architecture.html' },
+    { type: 'article', title: 'AWS Builders Library: Shuffle Sharding / cell concepts', url: 'https://aws.amazon.com/builders-library/workload-isolation-using-shuffle-sharding/' }
+  ]
+},
+{
+  id: 'architecture-029',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Chi phí cloud (FinOps) là gì và vì sao nó là một thuộc tính kiến trúc? Cho ví dụ con số cụ thể và các trade-off kiến trúc ảnh hưởng trực tiếp tới hoá đơn.',
+  a: `**Tóm tắt:** FinOps (Financial Operations) là thực hành quản lý chi phí cloud liên tục, có sự phối hợp giữa kỹ thuật, tài chính và sản phẩm. Chi phí cloud **là thuộc tính kiến trúc** vì các quyết định thiết kế (serverless hay container luôn chạy, chọn DB, giữ log bao lâu, chatty service gọi nhau qua mạng, multi-AZ/region) quyết định 70–90% hoá đơn — tối ưu sau khi xây xong chỉ gọt được phần nhỏ. Kiến trúc tốt cân bằng chi phí với độ tin cậy, hiệu năng và tốc độ phát triển, dùng **số liệu đơn vị** (cost per request/order/tenant) thay vì chỉ nhìn tổng hoá đơn.
+
+### Cái gì → vì sao là thuộc tính kiến trúc
+- **FinOps là gì:** không phải "đợt cắt giảm cuối quý" mà là vòng lặp: đo (biết tiền đi đâu) → gán chủ (ai chịu trách nhiệm) → tối ưu (đổi kiến trúc/cấu hình) → dự báo. Giống hoá đơn điện: biết máy nào tốn điện mới biết tắt hay thay.
+- **Vì sao là thuộc tính kiến trúc:** code chạy đúng nhưng kiến trúc chọn sai có thể tốn gấp 5–10 lần. Ví dụ: hai service chatty gọi nhau 20 lần/request qua NAT Gateway + cross-AZ, mỗi request rẻ nhưng 500 triệu request/tháng thành hoá đơn khổng lồ. Quyết định "gộp hay tách", "gọi sync hay async", "lưu dữ liệu ở đâu, bao lâu" được chốt ở thiết kế.
+- **Khái niệm cần biết:** {{on-demand}} (trả theo giờ/giây, linh hoạt, đắt nhất), {{reserved/savings plan}} (cam kết 1–3 năm, giảm ~30–60% cho tải ổn định), {{spot}} (dùng công suất dư, giảm ~60–90% nhưng có thể bị thu hồi — hợp job chịu gián đoạn).
+
+### Ví dụ con số (minh hoạ, để hiểu thứ tự lớn)
+Giả sử API thương mại điện tử ~50 request/giây trung bình (≈130 triệu/tháng), giờ cao điểm gấp 4:
+
+| Quyết định kiến trúc | Lựa chọn A (đắt hơn) | Lựa chọn B (rẻ hơn) | Trade-off |
+|---|---|---|---|
+| Compute | 12 pod EKS luôn chạy cho peak (over-provision) ~\$1.800/tháng | Autoscale 3→12 pod theo tải + mix spot cho worker ~\$700/tháng | B cần autoscale tốt, warm-up; spot chỉ cho job chịu gián đoạn |
+| DB | RDS instance lớn on-demand ~\$900/tháng | Right-size + 1yr reserved cho baseline ~\$550/tháng | Reserved cần cam kết; phải đo utilisation thật |
+| Log/observability | Giữ log ứng dụng 365 ngày, index tất cả field ~\$1.200/tháng | Giữ 30 ngày hot + archive S3, sampling trace 10% ~\$300/tháng | Mất khả năng tra cứu log cũ; cần truy vết đủ khi sự cố |
+| Giao tiếp service | 2 service gọi nhau cross-AZ qua NAT, chatty ~\$400/tháng data transfer | Gộp lời gọi (batch), dùng endpoint nội bộ, cân nhắc đặt cùng AZ/caching ~\$80/tháng | Gộp làm tăng coupling; cross-AZ giúp HA — không bỏ HA chỉ để rẻ |
+| Lưu trữ | Ảnh/object luôn S3 Standard ~\$230/tháng (10 TB) | Lifecycle: 30 ngày Standard → IA → Glacier ~\$60/tháng | Truy xuất Glacier chậm/đắt; phù hợp dữ liệu lạnh |
+
+*(Số liệu minh hoạ theo thứ tự lớn thường gặp; thực tế phụ thuộc region/cấu hình — luôn tính bằng pricing calculator và bill thật.)*
+
+Tổng minh hoạ: A ~\$4.530/tháng vs B ~\$1.690/tháng cho cùng chức năng, nhưng B chấp nhận trade-off (retention ngắn hơn, cam kết reserved, autoscale phải chuẩn).
+
+### Đo đúng: đơn vị chi phí
+- Tổng hoá đơn tăng có thể là tốt (người dùng tăng). Chỉ số hữu ích: **cost per 1.000 request**, **cost per order**, **cost per tenant/tháng**. Nếu traffic tăng 2× mà cost per order không đổi → kiến trúc scale hiệu quả.
+- Gắn nhãn tài nguyên (tag {{service}}, {{team}}, {{env}}) để biết tiền của ai. Thiếu tag = hoá đơn là một cục không ai chịu trách nhiệm.
+
+### Trade-off kiến trúc điển hình
+- **Managed vs self-host:** managed (RDS, MSK) đắt tiền dịch vụ hơn tự chạy trên EC2, nhưng giảm công vận hành và rủi ro. Team nhỏ thường rẻ hơn tổng thể khi dùng managed (tính cả lương vận hành).
+- **Serverless (Lambda) vs luôn chạy:** Lambda rẻ khi tải thấp/lẻ tẻ (trả theo lần gọi), đắt hơn nhiều khi tải cao ổn định liên tục — lúc đó container/EC2 + reserved rẻ hơn. Phải tính theo profile tải.
+- **Độ bền/HA cao vs chi phí:** multi-AZ, replica chéo region, backup dài hạn đều tốn tiền. Chọn theo RPO/RTO yêu cầu, không phải "bật hết cho chắc" mọi hệ thống (hệ nội bộ ít quan trọng không cần mức HA của hệ thanh toán).
+- **Build vs buy:** tự xây (log pipeline, auth) tốn công kỹ sư liên tục — chi phí ẩn thường lớn hơn hoá đơn dịch vụ mua.
+
+### Pitfall production
+- **Tối ưu vi mô, bỏ qua macro:** dev tốn 3 ngày giảm 5% CPU pod, trong khi log/index chiếm 40% hoá đơn. Luôn bắt đầu từ breakdown top 5 khoản chi.
+- **Dữ liệu chuyển mạng (data transfer) bị quên:** cross-AZ, NAT Gateway, egress internet tính tiền theo GB — kiến trúc chatty giữa service có thể làm mục này phình bất ngờ.
+- **Tài nguyên mồ côi:** EBS không gắn, load balancer không có target, snapshot cũ, môi trường dev chạy cuối tuần. Tự động tắt/xoá tài nguyên không dùng.
+- **Cắt chi phí làm vỡ SLO:** giảm replica, tắt multi-AZ, xoá log để rẻ → sự cố kéo dài, mất niềm tin. FinOps tối ưu **lãng phí**, không tối ưu **độ bền cần thiết**.
+
+> Senior tip: Khi trình bày quyết định kiến trúc, tôi kèm ước tính chi phí bậc lớn (order of magnitude) và chỉ số cost-per-request, ví dụ "phương án A ~\$2k/tháng, B ~\$600/tháng nhưng RTO tăng từ 5 phút lên 30 phút — với hệ thanh toán tôi chọn A, với báo cáo nội bộ tôi chọn B". Điều đó cho thấy bạn xem chi phí là ràng buộc thiết kế thật, không phải việc của đội tài chính sau khi deploy.`,
+  follow: [
+    'Làm sao bạn phát hiện và xử lý tài nguyên cloud mồ côi (orphaned) tự động?',
+    'Khi nào serverless (Lambda) đắt hơn chạy container thường xuyên? Hãy ước tính ngưỡng.',
+    'Bạn cân bằng thế nào giữa yêu cầu multi-region (DR) với chi phí gần gấp đôi hạ tầng?'
+  ],
+  tags: ['FinOps', 'cloud cost', 'architecture', 'trade-off', 'AWS', 'cost optimization'],
+  refs: [
+    { type: 'doc', title: 'FinOps Foundation: What is FinOps', url: 'https://www.finops.org/introduction/what-is-finops/' },
+    { type: 'doc', title: 'AWS Well-Architected: Cost Optimization Pillar', url: 'https://docs.aws.amazon.com/wellarchitected/latest/cost-optimization-pillar/welcome.html' }
+  ]
+},
+{
+  id: 'architecture-030',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn là kiến trúc sư và team không đồng ý với quyết định kiến trúc của bạn (ví dụ chọn công nghệ hoặc cách chia service). Bạn dẫn dắt quyết định như thế nào: dùng RFC, spike, tiêu chí đo ra sao để đi đến kết luận?',
+  a: `**Tóm tắt:** Mục tiêu không phải "thắng tranh luận" mà là đi đến quyết định **tốt nhất theo bằng chứng** mà team hiểu và cam kết thực hiện. Quy trình thực dụng: viết **RFC** (Request for Comments — đề xuất xin góp ý) nêu rõ vấn đề, lựa chọn, tiêu chí đánh giá; dùng **spike** (thử nghiệm ngắn, có giới hạn thời gian) để biến ý kiến thành dữ liệu khi tiêu chí còn mơ hồ; quyết định dựa trên **tiêu chí đo được** đã chốt trước; ghi lại bằng ADR. Người kiến trúc sư dẫn dắt bằng cách làm rõ ràng bài toán và trade-off, không áp đặt bằng chức danh.
+
+### Cái gì → vì sao cần
+- **Cái gì:**
+  - **RFC:** văn bản đề xuất (1–3 trang) gửi team góp ý trước khi chốt: nêu bối cảnh, vấn đề, các phương án, tiêu chí, phương án đề xuất, rủi ro. Có thời hạn góp ý (ví dụ 3 ngày làm việc).
+  - **Spike:** thử nghiệm kỹ thuật ngắn (time-box, thường 1–5 ngày) để trả lời một câu hỏi cụ thể ("Kafka có đạt 5.000 msg/s với payload 2KB trên hạ tầng ta không?", "ORM X có sinh query N+1 trong case của ta không?"). Kết quả là dữ liệu/kết luận, **code spike thường vứt đi**.
+  - **Tiêu chí đo:** các thước đo cụ thể dùng để so phương án (độ trễ p95, throughput, chi phí/tháng, công vận hành ước tính, thời gian implement, mức team quen).
+- **Vì sao cần:** Bất đồng kiến trúc thường là bất đồng về **ưu tiên** (người A coi độ trễ quan trọng nhất, người B coi tốc độ giao hàng) hoặc về **giả định chưa kiểm chứng** ("chắc Mongo nhanh hơn"). Không có quy trình, tranh luận rơi vào cảm tính, uy tín cá nhân, hoặc ai nói to hơn.
+
+### Quy trình dẫn dắt từng bước
+1. **Làm rõ vấn đề, không nhảy vào giải pháp:** viết một đoạn "Problem statement" — ta đang giải quyết gì, ràng buộc gì (SLA, ngân sách, deadline, kỹ năng team), thành công đo bằng gì. Nhiều bất đồng tan khi cùng đồng ý vấn đề.
+2. **Liệt kê phương án thật sự (kể cả phương án bạn không thích):** mỗi phương án nêu ưu/nhược trung thực. Nếu RFC chỉ ca ngợi một phương án, đó là vận động hành lang, không phải RFC.
+3. **Chốt tiêu chí và trọng số TRƯỚC khi tranh luận phương án:**
+~~~text
+Tiêu chí (ví dụ chọn message broker):
+- Đáp ứng throughput 5.000 msg/s (bắt buộc, pass/fail)
+- Hỗ trợ replay 7 ngày (bắt buộc)
+- Công vận hành với team 1 SRE (trọng số cao)
+- Chi phí/tháng (trọng số trung bình)
+- Độ trễ p95 < 500ms (đủ dùng, không cần tối ưu quá)
+Chốt bộ tiêu chí này với team trước khi chấm điểm phương án.
+~~~
+4. **Dùng spike khi còn giả định chưa kiểm chứng:** nếu tranh cãi "Kafka có phức tạp quá với team mình không?" — spike 3 ngày: dựng cluster dev, viết producer/consumer, đo effort và vấn đề gặp. Quyết bằng dữ liệu, không bằng cảm giác.
+5. **Thu thập góp ý có cấu trúc:** RFC mở comment trong thời hạn; họp 30–45 phút chỉ để giải quyết điểm chưa rõ, không để họp biến thành tranh luận lại từ đầu. Ghi nhận phản đối trong RFC ("Concern: ... / Response: ...").
+6. **Ra quyết định minh bạch:** người chịu trách nhiệm quyết định (DRI/architect) chốt, nêu rõ căn cứ theo tiêu chí. **Disagree and commit** — người không đồng ý vẫn được ghi nhận, nhưng team cam kết thực hiện; đặt mốc **review lại** (ví dụ sau 2 tháng/1 quý) nếu tiêu chí không đạt.
+7. **Ghi ADR:** kết quả chốt thành ADR (xem architecture-023) để không tranh luận lại.
+
+~~~seq
+title: Dẫn dắt quyết định kiến trúc
+actors: Arch | Team | Spike
+Arch -> Team: RFC: van de + phuong an + tieu chi
+Team -> Arch: gop y, neu lo ngai
+Arch -> Team: chot tieu chi chung
+Arch -> Spike: spike 3 ngay kiem chung gia dinh
+Spike --> Arch: ket qua do duoc
+Arch -> Team: quyet dinh theo tieu chi + ly do
+Arch -> Team: ghi ADR, dat moc review
+~~~
+
+### Pitfall production
+- **Áp đặt bằng quyền lực:** "tôi là architect nên chọn cái này" — team ngoan ngoãn thực hiện nhưng không cam kết, ngầm chống đối, hoặc không cảnh báo rủi ro. Quyết định tệ hơn vì mất trí tuệ tập thể.
+- **Nhượng bộ để "yên ổn":** chọn phương án trung bình yếu để tránh xung đột, dù tiêu chí cho thấy phương án khác tốt hơn. Lãnh đạo là chịu trách nhiệm quyết định có căn cứ.
+- **Spike không có câu hỏi và time-box:** biến thành dự án nhỏ 3 tuần, code spike lọt vào production. Spike phải có câu hỏi rõ ("đo được X chưa?") và ngày kết thúc cứng.
+- **Không đặt mốc review:** quyết định sai sống mãi vì "đã chốt rồi". Ghi trong ADR: "review sau 8 tuần; nếu chi phí vận hành > Y hoặc p95 > Z thì xét lại phương án B".
+- **Bỏ qua tiếng nói ít nói:** người im lặng (junior, người mới, remote) có thể thấy rủi ro thật. RFC dạng viết giúp họ góp ý không phải tranh miệng.
+
+> Senior tip: Dấu hiệu bạn dẫn dắt tốt là sau quyết định, người từng phản đối có thể giải thích được "vì sao team chọn vậy" gần đúng như bạn — nghĩa là họ thấy lập luận của mình được xét đến. Trong phỏng vấn, kể một câu chuyện thật: bất đồng gì, bạn dùng RFC/spike/tiêu chí nào, kết quả ra sao (kể cả khi bạn đã sai và đổi ý nhờ dữ liệu) — điều đó thể hiện trưởng thành hơn là kể bạn luôn đúng.`,
+  follow: [
+    'Khi spike cho thấy phương án bạn đề xuất kém hơn, bạn xử lý thế nào trước team?',
+    'Làm sao phân biệt quyết định "cần đồng thuận" với quyết định "cần dứt khoát dù chưa ai hoàn toàn hài lòng"?',
+    'Team phân tán múi giờ — bạn điều chỉnh quy trình RFC/spike ra sao?'
+  ],
+  tags: ['RFC', 'spike', 'architecture decision', 'leadership', 'trade-off', 'ADR'],
+  refs: [
+    { type: 'article', title: 'Martin Fowler: Writing Architecture Decision Records (and decision context)', url: 'https://martinfowler.com/articles/scaling-architecture-conversationally.html' },
+    { type: 'article', title: 'Thoughtworks: Spikes', url: 'https://www.thoughtworks.com/en-us/insights/blog/just-enough-technical-design-spikes' }
+  ]
+}
+,
+{
+  id: 'design-030',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế notification service đa kênh.',
+  a: `**Tóm tắt:** at-least-once + dedup theo (dedupKey,channel), hàng đợi theo kênh, ưu tiên, retry+jitter, circuit breaker.
+
+> Senior tip: OTP ưu tiên.` ,
+  follow: ['OTP ưu tiên thế nào?','Tại sao cần jitter?'],
+  tags: ['notification','queue','dedup']
+},
+{
+  id: 'design-031',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế leaderboard realtime.',
+  a: `**Tóm tắt:** Redis ZSET, ZINCRBY atomic, ZREVRANGE/ZREVRANK, DB source of truth.`,
+  follow: ['Tie-breaker?', 'Khôi phục?'],
+  tags: ['leaderboard','redis']
+},
+{
+  id: 'design-032',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế chat 1-1 và nhóm realtime.',
+  a: `**Tóm tắt:** WebSocket, lưu trước broadcast, fan-out hybrid, presence, push khi offline.`,
+  follow: ['Fan-out?', 'Reconnect?'],
+  tags: ['chat','websocket']
+},
+{
+  id: 'design-033',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế news feed với celebrity.',
+  a: `**Tóm tắt:** Hybrid fan-out, cursor-based pagination.`,
+  follow: ['Tại sao hybrid?', 'Cursor khác OFFSET?'],
+  tags: ['news-feed','fan-out']
+},
+{
+  id: 'design-034',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế lưu file có deduplication.',
+  a: `**Tóm tắt:** Content-addressable, chunking, reference counting.`,
+  follow: ['Tại sao chunking?', 'Reference counting?'],
+  tags: ['dedup','chunking']
+},
+{
+  id: 'design-035',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế đặt vé chống overbook.',
+  a: `**Tóm tắt:** Hold TTL + SELECT FOR UPDATE, expiry worker, confirm atomic.`,
+  follow: ['Pessimistic vs optimistic?', 'Hold hết hạn?'],
+  tags: ['ticketing','overbook']
+}
 );

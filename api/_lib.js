@@ -10,9 +10,9 @@
  *                        At least one of (Supabase, APP_PASSCODE) must be configured.
  *   ANTHROPIC_API_KEY  required for /api/grade
  *   CLAUDE_MODEL       optional, default claude-opus-5-5
- *   JUDGE0_KEY         optional — RapidAPI key for Judge0 CE; enables /api/run
- *   JUDGE0_URL         optional, default https://judge0-ce.p.rapidapi.com (or a self-hosted Judge0 URL)
- *   JUDGE0_JAVA_ID     optional, default 62 (Java on Judge0 CE)
+ *   WANDBOX_URL        optional, default https://wandbox.org — /api/run compiles & runs Java there (free, no key)
+ *   WANDBOX_COMPILER   optional, default openjdk-jdk-21+35 (falls back to the newest OpenJDK Wandbox lists)
+ *   RUNNER_URL, RUNNER_TOKEN  optional — own Java runner (runner/README.md); /api/run uses it first, Wandbox as fallback
  */
 'use strict';
 

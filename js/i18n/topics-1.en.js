@@ -19,6 +19,8 @@ App.i18n.content({
   'design': { name: 'System Design', group: 'Architecture' },
   'architecture': { name: 'Design Patterns & Clean Arch', group: 'Architecture' },
   'scenario': { name: 'Real-world Scenarios', group: 'Architecture' },
+  'autotest': { name: 'Automation Testing (QA → SDET)', group: 'Soft skills' },
+  'banking': { name: 'Banking Domain for Developers', group: 'Architecture' },
   'aws': { name: 'AWS & Cloud', group: 'Cloud & AI' },
   'ai': { name: 'AI / LLM for Java dev', group: 'Cloud & AI' },
   'devops': { name: 'Docker, K8s, Linux & Git', group: 'Cloud & AI' },

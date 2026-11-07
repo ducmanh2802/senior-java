@@ -437,7 +437,8 @@ ProblemDetail handle(EmailTakenException e) {
     pd.setType(URI.create("https://api.example.com/errors/email-taken")); // client phân loại theo type
     return pd;
 }
-~~~ Giữ {{type}} ổn định để client phân loại; {{detail}} nên hữu ích nhưng không lộ dữ liệu nhạy cảm. Validation error nên có danh sách field/message đã chuẩn hóa, thứ tự ổn định nếu client hoặc snapshot test phụ thuộc.
+~~~
+Giữ {{type}} ổn định để client phân loại; {{detail}} nên hữu ích nhưng không lộ dữ liệu nhạy cảm. Validation error nên có danh sách field/message đã chuẩn hóa, thứ tự ổn định nếu client hoặc snapshot test phụ thuộc.
 
 | Lỗi | HTTP thường dùng | Xử lý |
 |---|---|---|
@@ -933,5 +934,1255 @@ class SimpleJsonMapper {
     }],
     check: [{ q: 'Vì sao field {{long id;}} trong User bị bỏ qua ở chế độ thường?', options: ['Vì không public và không có @JsonProperty', 'Vì kiểu long không serialize được', 'Vì @JsonIgnore áp dụng cho cả class', 'Vì mapper chỉ đọc getter'], answer: 0, explain: `Mapper chỉ include field public hoặc có @JsonProperty; id là package-private và không annotation nên bị drop im lặng — đúng loại bug strict mode sinh ra để bắt. Kiểu long serialize bình thường (số). @JsonIgnore chỉ gắn trên field ssn, không áp cho cả class. Mapper của bài không đọc getter; và User cũng không có getter nào.` }, { q: 'Chế độ strict thay đổi điều gì?', options: ['Biến field bị drop thành exception, output hợp lệ không đổi', 'Tự động thêm getter', 'Bỏ qua @JsonIgnore', 'Sắp xếp field theo tên'], answer: 0, explain: `strict không thay đổi JSON của object hợp lệ; nó chỉ kiểm tra và ném exception khi gặp field không public mà không annotation. Nó không sinh code hay getter. @JsonIgnore vẫn được tôn trọng (field bị ignore không làm strict ném lỗi). Thứ tự field giữ nguyên như khai báo.` }, { q: 'Với ObjectMapper mặc định của Jackson, class có {{private String nick;}} và {{public String getNick()}}. Khi serialize, nick có xuất hiện không?', options: ['Có, vì getter public được nhận là property', 'Không, vì field private luôn bị bỏ qua', 'Chỉ khi thêm @JsonProperty lên field', 'Chỉ khi bật FAIL_ON_EMPTY_BEANS'], answer: 0, explain: `Jackson tìm property từ field public, getter public và annotation; getNick() public nên nick được serialize qua getter dù field private. "Field private luôn bị bỏ qua" sai vì bỏ qua field không có nghĩa là bỏ qua property — getter vẫn mang nó ra. @JsonProperty là cách khác để lộ field, không bắt buộc ở đây. FAIL_ON_EMPTY_BEANS chỉ quyết định có ném lỗi khi object không có property nào.` }],
       related: ['spring-005', 'spring-006'], tags: ['Jackson', 'reflection', 'annotation', 'JSON', 'visibility']
+  },
+  {
+    id: 'lesson-spring-008', track: 'spring', order: 8,
+    title: 'Auto-configuration và @Conditional: vì sao bean mặc định nhường bean của bạn', level: 'senior', minutes: 45,
+    goals: ['Mô tả cách @Conditional lọc bean definition lúc khởi động', 'Giải thích vì sao bean tự khai báo thắng bean mặc định của Boot', 'Đọc CONDITIONS EVALUATION REPORT để tìm điều kiện đã chặn bean', 'Viết một auto-configuration có điều kiện OnClass/OnProperty/OnMissingBean'],
+    body: `**Tóm tắt:** Auto-configuration là cách Spring Boot **tự đăng ký bean hộ bạn** khi hội đủ điều kiện: class cần thiết có trên classpath, property được bật, và chưa có bean cùng loại. Mỗi điều kiện là một {{@Conditional...}} được đánh giá **một lần lúc khởi động**, lúc container mới đọc *bean definition* (bản mô tả bean: tên, kiểu, cách tạo) chứ chưa tạo instance. Bean bạn tự khai báo luôn thắng bean mặc định, vì definition của bạn được ghi vào container **trước** khi Boot chạy các lớp auto-configuration, nên {{@ConditionalOnMissingBean}} đã thấy bean của bạn và điều kiện "missing" thất bại.
+
+### Vấn đề auto-configuration giải quyết
+Trước Spring Boot, dựng một app web có JPA + JSON + connection pool nghĩa là viết hàng chục dòng cấu hình tay: khai báo {{DataSource}}, {{PlatformTransactionManager}}, {{ObjectMapper}}, đăng ký filter, map error page… Boot đảo bài toán: bạn chỉ khai **ý định** bằng cách thêm dependency ({{spring-boot-starter-data-jpa}}), còn việc **nối các bean với nhau** do các lớp {{*AutoConfiguration}} trong jar {{spring-boot-autoconfigure}} lo. Câu chốt của cơ chế: "nếu class cần thiết có trên classpath và người dùng chưa tự định nghĩa bean, hãy tạo giúp họ một bean có cấu hình hợp lý".
+Hai từ khoá dùng suốt bài: **starter** = gói dependency gom sẵn cho một tính năng (kèm mọi jar nó cần); **classpath** = tập jar mà JVM nhìn thấy lúc chạy. Class không có trên classpath thì lệnh nạp class bằng {{Class.forName}} sẽ ném {{ClassNotFoundException}} — và đó đúng là cách Boot "thấy" hay "không thấy" một công nghệ để quyết định có cấu hình nó hay không.
+
+### @Conditional: bộ lọc chạy lúc đăng ký definition
+{{@Conditional}} nhận một class triển khai interface {{Condition}}, chỉ có một method là {{matches(context, metadata)}}, trả về true/false và **kèm lý do** ghi vào báo cáo. Đây là điểm quan trọng: điều kiện là một **câu hỏi boolean**, nó chạy lúc Spring đọc annotation, tức là **trước khi bean nào được tạo**. Bốn điều kiện hay gặp nhất:
+
+| Điều kiện | Đọc từ đâu | Dùng để làm gì |
+|---|---|---|
+| {{@ConditionalOnClass(name = "org.h2.Driver")}} | classpath (thử load class) | chỉ cấu hình khi có jar cần thiết |
+| {{@ConditionalOnMissingBean(DataSource.class)}} | danh sách bean definition đã có | chừa đường cho user tự định nghĩa |
+| {{@ConditionalOnProperty(prefix = "app.mail", name = "host")}} | Environment (application.yml, biến môi trường) | bật tính năng theo cấu hình |
+| {{@ConditionalOnWebApplication}} | kiểu ứng dụng đang chạy | chỉ tạo filter/handler khi app là web |
+
+Quy tắc của {{@ConditionalOnProperty}} — hay bị hỏi và hay bị hiểu sai:
+- Chỉ có {{name}}, không có {{havingValue}}: khớp khi property **tồn tại** và giá trị **khác** "false" (không phân biệt hoa thường). Property vắng mặt = **không** khớp.
+- Có {{havingValue = "kafka"}}: chỉ khớp khi giá trị property bằng đúng chuỗi đó (phân biệt hoa thường).
+- Có {{matchIfMissing = true}}: property vắng mặt được coi là khớp — biến tính năng thành mặc định **bật**.
+
+> Lưu ý: property được đọc qua *relaxed binding*, nên {{app.id-strategy}}, {{app.idStrategy}} và biến môi trường {{APP_ID_STRATEGY}} cùng trỏ về một thuộc tính. Điều kiện chỉ thấy giá trị **có lúc khởi động**: đổi config trên server rồi hot-reload không làm bean xuất hiện hay biến mất.
+
+### Thứ tự đăng ký: vì sao bean của bạn thắng
+~~~seq
+title: Thu tu dang ky bean luc khoi dong
+actors: App | UserConfig | BootJar | CondEval | BeanFactory
+App -> UserConfig: component scan nang @Service va @Bean cua ban
+UserConfig -> BeanFactory: dang ky definition cua ban (buoc 1)
+App -> BootJar: EnableAutoConfiguration doc file AutoConfiguration.imports
+BootJar -> CondEval: do @ConditionalOnClass tung auto-config
+BootJar -> BeanFactory: dang ky definition mac dinh (buoc 2)
+BeanFactory -> CondEval: @ConditionalOnMissingBean da thay bean cua ban
+CondEval --> BootJar: khong khop -> bo bean mac dinh
+note App..BeanFactory: dieu kien danh tren definition, chua tao instance
+~~~
+
+{{@SpringBootApplication}} chứa {{@EnableAutoConfiguration}}; annotation này gắn {{AutoConfigurationImportSelector}}, một class đọc toàn bộ tên lớp auto-config từ file {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}}, loại những lớp bị {{@Conditional}} chặn, sắp thứ tự rồi submit các lớp còn lại sang container. Vì cấu hình của bạn được xử lý ở pha "user configuration" — trước pha auto-configuration — nên lúc {{@ConditionalOnMissingBean}} chạy, bean của bạn đã nằm trong danh sách definition. Hai hệ quả:
+1. Bạn **không** cần {{@Primary}} và cũng không cần bật {{spring.main.allow-bean-definition-overriding}} để thắng một bean mặc định: chỉ cần khai báo bean đúng **kiểu** (hoặc đúng tên) mà auto-config định tạo.
+2. Ngược lại, {{@ConditionalOnBean}} / {{@ConditionalOnMissingBean}} đặt trong config **của riêng bạn** thì mong manh, vì nó chỉ thấy những definition đã được đăng ký **tính tới thời điểm đánh giá**. Tài liệu Boot vì thế khuyên chỉ dùng cặp điều kiện này trong lớp auto-config, kèm {{@AutoConfigureAfter}} để chốt thứ tự.
+
+### Ví dụ: auto-configuration của một starter nội bộ
+~~~java
+@AutoConfiguration                                // Boot 3: thay cho @Configuration(proxyBeanMethods = false) khai tay
+@ConditionalOnClass(MailerClient.class)           // không có jar mailer -> cả lớp này bị bỏ qua
+public class MailerAutoConfiguration {
+    @Bean
+    @ConditionalOnProperty(prefix = "app.mail", name = "enabled")  // phải bật rõ ràng
+    @ConditionalOnMissingBean                     // user đã tự có Mailer? -> nhường
+    Mailer mailer(MailerProperties props) {       // props bind từ app.mail.*
+        return new SmtpMailer(props.getHost(), props.getPort());
+    }
+}
+~~~
+Không có dòng đăng ký dưới đây thì class trên chỉ là code chết, không ai nạp:
+~~~text
+src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+    com.acme.mailer.MailerAutoConfiguration
+~~~
+(Trước Boot 2.7 đăng ký bằng key {{EnableAutoConfiguration}} trong {{META-INF/spring.factories}}; từ Boot 3 dùng file {{.imports}}.)
+
+### Đọc báo cáo --debug
+Chạy {{java -jar app.jar --debug}} (hoặc {{--logging.level.org.springframework.boot.autoconfigure=DEBUG}}) sẽ in ra báo cáo liệt kê **từng** auto-config và **từng** điều kiện, kể cả lý do thất bại:
+~~~text
+============================
+CONDITIONS EVALUATION REPORT
+============================
+
+Positive matches:
+-----------------
+   MailerAutoConfiguration matched:
+      - @ConditionalOnClass found required class 'com.acme.mailer.MailerClient' (OnClassCondition)
+   MailerAutoConfiguration#mailer matched:
+      - @ConditionalOnProperty (app.mail.enabled) matched (OnPropertyCondition)
+      - @ConditionalOnMissingBean (types: com.acme.mailer.Mailer; SearchStrategy: all) did not find any beans
+
+Negative matches:
+-----------------
+   DataSourceAutoConfiguration#dataSource:
+      - @ConditionalOnMissingBean (types: javax.sql.DataSource; SearchStrategy: all) found bean 'myDataSource'
+
+Exclusions:
+-----------
+    None
+~~~
+"Positive matches" = lớp/bean được nạp kèm lý do khớp; "Negative matches" = bị chặn, ghi rõ **điều kiện nào** và **thấy gì**. Báo cáo ghi theo từng method, nên bạn biết chính xác bean nào trong một lớp config bị loại chứ không chỉ "cả lớp". Cùng nội dung đó có ở endpoint {{/actuator/conditions}} của Actuator — endpoint đã bật sẵn nhưng chưa được expose qua HTTP, phải thêm {{management.endpoints.web.exposure.include=conditions}}; đọc từ endpoint tiện hơn vì không cần khởi động lại app. Muốn loại hẳn một auto-config: khai {{spring.autoconfigure.exclude}} trong yml hoặc {{@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)}}.
+
+### Bẫy production
+- **Một typo property làm bean biến mất trong im lặng.** {{app.mail.enabled: FALSE}} thì còn hiểu được, nhưng {{app.mail.enable: true}} thì không: property "không tồn tại" nên điều kiện fail, app vẫn khởi động OK và lỗi chỉ lộ ra khi có request gọi tới bean đó. Phòng: bind cấu hình bằng {{@ConfigurationProperties}} + {{@Validated}} để thiếu/sai tên là fail ngay lúc khởi động, thay vì đọc property rời rạc bằng {{@Value}} ở mười chỗ khác nhau.
+- **{{@ConditionalOnMissingBean}} xét theo kiểu trả về của method** và dùng quan hệ "có thể gán", nên bean của bạn là **subclass** của kiểu đó cũng làm auto-config nhường. Ngược lại, nếu bean của bạn **khác kiểu mà trùng tên** với bean mặc định thì đó là bean definition trùng tên: Boot 2+ mặc định cấm ghi đè và ném {{BeanDefinitionOverrideException}} ngay lúc khởi động.
+- **Điều kiện chỉ chạy một lần.** "Tôi đổi property rồi mà bean không xuất hiện" là hành vi đúng, không phải bug — phải khởi động lại context.
+- **Cần bean do auto-config khác tạo** thì phải khai {{@AutoConfigureBefore}}/{{@AutoConfigureAfter}}; nếu không, Boot sắp thứ tự mặc định gần như theo tên class và thứ tự đó có thể đổi khi nâng cấp phiên bản.
+- **Test auto-config** nên dùng {{ApplicationContextRunner}} thay vì {{@SpringBootTest}}: chạy nhanh và assert được chính xác hai nhánh "user tự định nghĩa bean thì auto-config phải nhường" và "user không định nghĩa thì bean mặc định phải có".
+
+### Liên hệ phỏng vấn
+Khung trả lời: (1) auto-config là các lớp {{@Configuration}} nạp từ file {{.imports}} và lọc bằng {{@Conditional}}; (2) điều kiện đánh giá trên bean definition lúc khởi động, không trên instance; (3) bean của bạn thắng vì nó được đăng ký trước, {{@ConditionalOnMissingBean}} thấy nên nhường; (4) khi bean "mất", bật {{--debug}} hoặc {{/actuator/conditions}} đọc negative match thay vì đoán. Nếu bị hỏi "viết starter nội bộ thế nào", nhấn mạnh: mọi bean phải có {{@ConditionalOnMissingBean}}, property phải có mặc định hợp lý, và phải có test cho cả hai nhánh.
+
+> Senior tip: Hãy coi auto-configuration của starter nội bộ là **API công khai**. Một lần quên {{@ConditionalOnMissingBean}} khiến cả công ty không override được và phải fork starter. Ngược lại, khi tiếp nhận code người khác, đừng vội kết luận "Bean X không được tạo" — chạy một lần với {{--debug}} thường tiết kiệm nửa ngày debug, và nên bật báo cáo điều kiện ở môi trường staging.`,
+    exercises: [{
+      title: 'Mini auto-config container với điều kiện OnProperty và OnMissingBean',
+      prompt: `Hoàn thiện {{AutoConfig}} — một auto-configuration container tí hon mô phỏng {{@ConditionalOnProperty}} và {{@ConditionalOnMissingBean}} của Spring Boot. Lớp {{Cond}} và ba nhà máy điều kiện đã có sẵn, bạn chỉ viết ba method:
+- {{register(bean, conds)}}: ghi lại tên bean cùng mảng điều kiện **theo đúng thứ tự đăng ký** (mỗi lần register giống một method {{@Bean}} trong lớp auto-config). Không có điều kiện nào thì luôn được chấp nhận.
+- {{resolve(props, userBeans)}}: trả về danh sách tên bean cuối cùng có trong container. Danh sách **bắt đầu bằng toàn bộ userBeans theo đúng thứ tự được truyền vào** (đây là "bean của người dùng", đăng ký trước auto-config). Sau đó duyệt từng spec **theo thứ tự đã đăng ký**: nếu **mọi** điều kiện của spec đều thoả thì thêm tên bean của spec vào cuối danh sách.
+  - {{onProperty(key)}} thoả khi {{props}} chứa key và giá trị **không phải** "false" (bỏ qua hoa thường).
+  - {{onPropertyValue(key, value)}} thoả khi {{props}} chứa key và giá trị bằng đúng {{value}} (phân biệt hoa thường).
+  - {{onMissingBean(name)}} thoả khi tên {{name}} **chưa** xuất hiện trong danh sách bean đã đăng ký **tính tới lúc đó**, gồm bean của người dùng và bean của các spec đã được chấp nhận trước nó.
+- Mỗi spec, dù được chấp nhận hay bị bỏ, đều ghi một dòng vào báo cáo: {{REGISTERED ten}} hoặc {{SKIPPED ten MA_LOI}}. {{MA_LOI}} là lý do của điều kiện **thất bại đầu tiên** trong mảng điều kiện, lấy theo bảng: thiếu property → {{NO_PROPERTY}}; property có nhưng giá trị là false → {{PROPERTY_FALSE}}; giá trị khác với value mong muốn → {{VALUE_MISMATCH}}; bean đã tồn tại → {{ALREADY_PRESENT}}. Riêng {{onPropertyValue}} mà property vắng mặt thì vẫn báo {{NO_PROPERTY}}.
+- {{report()}}: trả báo cáo của **lần resolve gần nhất** — ghi đè mỗi lần gọi resolve, không cộng dồn, và là danh sách rỗng nếu chưa resolve lần nào.`,
+      starter: `
+class AutoConfig {
+    static final class Cond {
+        final String kind, key, value;
+        private Cond(String kind, String key, String value) { this.kind = kind; this.key = key; this.value = value; }
+        static Cond onProperty(String key) { return new Cond("PROPERTY", key, ""); }
+        static Cond onPropertyValue(String key, String value) { return new Cond("PROPERTY_VALUE", key, value); }
+        static Cond onMissingBean(String bean) { return new Cond("MISSING_BEAN", bean, ""); }
+    }
+    private final List<String> beans = new ArrayList<>();
+    private final List<List<Cond>> specs = new ArrayList<>();
+    private List<String> lastReport = new ArrayList<>();
+    void register(String bean, Cond... conds) { throw new UnsupportedOperationException("TODO"); }
+    List<String> resolve(Map<String, String> props, List<String> userBeans) { throw new UnsupportedOperationException("TODO"); }
+    List<String> report() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int passed=0, total=0;
+ static void check(String n, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + n); } catch (Throwable t) { System.out.println("FAIL " + n + ": " + t); } }
+ static void eq(Object got, Object want) { if (!Objects.equals(got, want)) throw new AssertionError("got " + got + " want " + want); }
+ static AutoConfig one(String bean, AutoConfig.Cond... cs) { AutoConfig a = new AutoConfig(); a.register(bean, cs); return a; }
+ public static void main(String[] x) {
+  check("property present registers the bean", () -> {
+    AutoConfig a = one("h2Console", AutoConfig.Cond.onProperty("spring.h2.console.enabled"));
+    eq(a.resolve(Map.of("spring.h2.console.enabled", "true"), List.of()), List.of("h2Console"));
+    eq(a.report(), List.of("REGISTERED h2Console"));
+  });
+  check("property absent reports NO_PROPERTY", () -> {
+    AutoConfig a = one("h2Console", AutoConfig.Cond.onProperty("spring.h2.console.enabled"));
+    eq(a.resolve(Map.of(), List.of()), List.of());
+    eq(a.report(), List.of("SKIPPED h2Console NO_PROPERTY"));
+  });
+  check("property false differs from absent property", () -> {
+    AutoConfig a = one("h2Console", AutoConfig.Cond.onProperty("spring.h2.console.enabled"));
+    eq(a.resolve(Map.of("spring.h2.console.enabled", "false"), List.of()), List.of());
+    eq(a.report(), List.of("SKIPPED h2Console PROPERTY_FALSE"));
+  });
+  check("FALSE in any case is PROPERTY_FALSE", () -> {
+    AutoConfig a = one("h2Console", AutoConfig.Cond.onProperty("spring.h2.console.enabled"));
+    eq(a.resolve(Map.of("spring.h2.console.enabled", "FALSE"), List.of()), List.of());
+    eq(a.report(), List.of("SKIPPED h2Console PROPERTY_FALSE"));
+  });
+  check("spec without conditions is unconditional", () -> {
+    AutoConfig a = one("jsonMapper");
+    eq(a.resolve(Map.of(), List.of()), List.of("jsonMapper"));
+    eq(a.report(), List.of("REGISTERED jsonMapper"));
+  });
+  check("havingValue compares the value exactly", () -> {
+    AutoConfig a = one("uuidId", AutoConfig.Cond.onPropertyValue("app.id-strategy", "uuid"));
+    eq(a.resolve(Map.of("app.id-strategy", "uuid"), List.of()), List.of("uuidId"));
+    AutoConfig b = one("uuidId", AutoConfig.Cond.onPropertyValue("app.id-strategy", "uuid"));
+    eq(b.resolve(Map.of("app.id-strategy", "sequence"), List.of()), List.of());
+    eq(b.report(), List.of("SKIPPED uuidId VALUE_MISMATCH"));
+    AutoConfig c = one("uuidId", AutoConfig.Cond.onPropertyValue("app.id-strategy", "uuid"));
+    eq(c.resolve(Map.of("app.id-strategy", "UUID"), List.of()), List.of());
+    eq(c.report(), List.of("SKIPPED uuidId VALUE_MISMATCH"));
+  });
+  check("havingValue with missing property reports NO_PROPERTY", () -> {
+    AutoConfig a = one("uuidId", AutoConfig.Cond.onPropertyValue("app.id-strategy", "uuid"));
+    eq(a.resolve(Map.of(), List.of()), List.of());
+    eq(a.report(), List.of("SKIPPED uuidId NO_PROPERTY"));
+  });
+  check("user bean blocks the default bean", () -> {
+    AutoConfig a = one("mailSender", AutoConfig.Cond.onProperty("app.mail.host"), AutoConfig.Cond.onMissingBean("mailSender"));
+    eq(a.resolve(Map.of("app.mail.host", "smtp.acme.com"), List.of("mailSender")), List.of("mailSender"));
+    eq(a.report(), List.of("SKIPPED mailSender ALREADY_PRESENT"));
+  });
+  check("default bean applies when user defines nothing", () -> {
+    AutoConfig a = one("mailSender", AutoConfig.Cond.onProperty("app.mail.host"), AutoConfig.Cond.onMissingBean("mailSender"));
+    eq(a.resolve(Map.of("app.mail.host", "smtp.acme.com"), List.of()), List.of("mailSender"));
+    eq(a.report(), List.of("REGISTERED mailSender"));
+  });
+  check("first failing condition is the reported reason", () -> {
+    AutoConfig a = one("cache", AutoConfig.Cond.onMissingBean("cache"), AutoConfig.Cond.onProperty("app.cache.redis"));
+    eq(a.resolve(Map.of(), List.of("cache")), List.of("cache"));
+    eq(a.report(), List.of("SKIPPED cache ALREADY_PRESENT"));
+    AutoConfig b = one("cache", AutoConfig.Cond.onProperty("app.cache.redis"), AutoConfig.Cond.onMissingBean("cache"));
+    eq(b.resolve(Map.of(), List.of("cache")), List.of("cache"));
+    eq(b.report(), List.of("SKIPPED cache NO_PROPERTY"));
+  });
+  check("earlier auto-config bean wins over a later default", () -> {
+    AutoConfig a = new AutoConfig();
+    a.register("cacheManager", AutoConfig.Cond.onProperty("app.cache.hazelcast"));
+    a.register("cacheManager", AutoConfig.Cond.onProperty("app.cache.simple"), AutoConfig.Cond.onMissingBean("cacheManager"));
+    eq(a.resolve(Map.of("app.cache.hazelcast", "true", "app.cache.simple", "true"), List.of()), List.of("cacheManager"));
+    eq(a.report(), List.of("REGISTERED cacheManager", "SKIPPED cacheManager ALREADY_PRESENT"));
+  });
+  check("later default runs when the earlier one is off", () -> {
+    AutoConfig a = new AutoConfig();
+    a.register("cacheManager", AutoConfig.Cond.onProperty("app.cache.hazelcast"));
+    a.register("cacheManager", AutoConfig.Cond.onProperty("app.cache.simple"), AutoConfig.Cond.onMissingBean("cacheManager"));
+    eq(a.resolve(Map.of("app.cache.hazelcast", "false", "app.cache.simple", "true"), List.of()), List.of("cacheManager"));
+    eq(a.report(), List.of("SKIPPED cacheManager PROPERTY_FALSE", "REGISTERED cacheManager"));
+  });
+  check("user beans keep their order and come first", () -> {
+    AutoConfig a = one("health", AutoConfig.Cond.onProperty("management.health.db.enabled"));
+    eq(a.resolve(Map.of("management.health.db.enabled", "true"), List.of("dataSource", "jdbcTemplate")), List.of("dataSource", "jdbcTemplate", "health"));
+  });
+  check("report reflects only the last resolve", () -> {
+    AutoConfig a = one("job", AutoConfig.Cond.onProperty("app.jobs"));
+    a.resolve(Map.of("app.jobs", "true"), List.of());
+    eq(a.resolve(Map.of(), List.of()), List.of());
+    eq(a.report(), List.of("SKIPPED job NO_PROPERTY"));
+  });
+  System.out.println("RESULT " + passed + "/" + total);
+ }
+}`,
+      reference: `
+class AutoConfig {
+    static final class Cond {
+        final String kind, key, value;
+        private Cond(String kind, String key, String value) { this.kind = kind; this.key = key; this.value = value; }
+        static Cond onProperty(String key) { return new Cond("PROPERTY", key, ""); }
+        static Cond onPropertyValue(String key, String value) { return new Cond("PROPERTY_VALUE", key, value); }
+        static Cond onMissingBean(String bean) { return new Cond("MISSING_BEAN", bean, ""); }
+    }
+    private final List<String> beans = new ArrayList<>();
+    private final List<List<Cond>> specs = new ArrayList<>();
+    private List<String> lastReport = new ArrayList<>();
+    void register(String bean, Cond... conds) {
+        beans.add(bean);
+        specs.add(Arrays.asList(conds));
+    }
+    List<String> resolve(Map<String, String> props, List<String> userBeans) {
+        List<String> registered = new ArrayList<>(userBeans);
+        List<String> report = new ArrayList<>();
+        for (int i = 0; i < beans.size(); i++) {
+            String bean = beans.get(i);
+            String failure = firstFailure(specs.get(i), props, registered);
+            if (failure == null) {
+                registered.add(bean);
+                report.add("REGISTERED " + bean);
+            } else {
+                report.add("SKIPPED " + bean + " " + failure);
+            }
+        }
+        lastReport = report;
+        return registered;
+    }
+    List<String> report() { return lastReport; }
+    private String firstFailure(List<Cond> conds, Map<String, String> props, List<String> registered) {
+        for (Cond c : conds) {
+            String actual = props.get(c.key);
+            if (c.kind.equals("PROPERTY")) {
+                if (actual == null) return "NO_PROPERTY";
+                if (actual.equalsIgnoreCase("false")) return "PROPERTY_FALSE";
+            } else if (c.kind.equals("PROPERTY_VALUE")) {
+                if (actual == null) return "NO_PROPERTY";
+                if (!actual.equals(c.value)) return "VALUE_MISMATCH";
+            } else if (c.kind.equals("MISSING_BEAN")) {
+                if (registered.contains(c.key)) return "ALREADY_PRESENT";
+            }
+        }
+        return null;
+    }
+}`,
+      hints: ['Giữ hai danh sách song song theo thứ tự đăng ký ({{beans}} và {{specs}}), hoặc một danh sách các spec gồm tên + điều kiện. {{register}} chỉ việc append, nó **không** đánh giá điều kiện nào cả — đây chính là điểm "điều kiện chạy lúc resolve, không chạy lúc khai báo".', '{{resolve}} tạo một {{List}} bắt đầu bằng {{userBeans}}, rồi duyệt spec theo thứ tự. Bean của spec được chấp nhận phải được append vào **chính danh sách đó**, để {{onMissingBean}} của spec sau nhìn thấy bean do spec trước tạo ra.', 'Điều kiện là AND và báo lý do của điều kiện fail **đầu tiên**: viết một hàm trả về {{null}} khi mọi điều kiện thoả, ngược lại trả đúng một trong bốn mã lỗi. Dùng {{equalsIgnoreCase("false")}} cho PROPERTY nhưng {{equals}} cho PROPERTY_VALUE — hai quy tắc khác nhau, test sẽ bắt chỗ lẫn.', 'Gán {{lastReport = report}} ở **cuối** mỗi lần resolve để báo cáo bị ghi đè, và trả chính danh sách đó từ {{report()}}.'],
+      explain: `Mô hình trên dựng lại đúng ba quyết định thiết kế của Spring Boot.
+
+**Thứ nhất**, {{register}} chỉ ghi metadata. Trong Spring, {{@ConditionalOnMissingBean}} được {{ConfigurationClassPostProcessor}} đánh giá lúc nó đọc class config và tạo bean definition, **trước** khi bean được instantiate. Vì vậy điều kiện không "chờ" bean tồn tại, nó chỉ nhìn danh sách definition — giống {{resolve}} của ta nhìn {{registered}} chứ không tạo object.
+
+**Thứ hai**, danh sách bean khởi tạo bằng user bean rồi mới duyệt spec theo thứ tự đăng ký. Đây là lý do bean của bạn thắng: definition của bạn có mặt trước, nên {{onMissingBean}} trả về "đã có" và bean mặc định bị bỏ. Trong container thật, điều này đến từ việc Boot submit user configuration trước auto-configuration.
+
+**Thứ ba**, bean được chấp nhận phải được append vào danh sách đang duyệt, nên hai spec cùng tên bean chỉ một spec thắng, và thắng thua phụ thuộc **thứ tự đăng ký**. Boot mô tả đúng hành vi này bằng {{@AutoConfigureBefore}}/{{@AutoConfigureAfter}}: thứ tự giữa các auto-config là thứ bạn phải khai báo, không phải thứ Spring tự suy ra.
+
+Lỗi hay gặp khi làm bài:
+- Dùng {{Set}} cho bean đã đăng ký: mất thứ tự, test "user beans keep their order" fail.
+- Quên append bean được chấp nhận: {{ALREADY_PRESENT}} không bao giờ xuất hiện, cả hai spec cùng tạo bean trùng tên.
+- So sánh {{equals("false")}} thay vì {{equalsIgnoreCase}}: bỏ sót {{enabled: FALSE}} trong yaml thật.
+- Dùng một biến property chung cho cả hai loại {{onProperty}} và {{onPropertyValue}}: sai mã lỗi, vì giá trị vắng mặt phải là NO_PROPERTY còn giá trị khác phải là VALUE_MISMATCH.
+- {{report}} cộng dồn qua các lần resolve: Spring cũng giữ báo cáo của **một** lần khởi động, mỗi lần refresh context là đánh giá lại từ đầu.
+
+Nâng cấp bài tập (nếu muốn gần production hơn): cho {{onMissingBean}} xét theo **kiểu** thay vì tên, bằng cách lưu thêm {{Class}} vào {{Cond}} và dùng {{isAssignableFrom}} — đó chính xác là cách {{OnBeanCondition}} so sánh.`
+    }],
+    check: [
+        { q: 'Với {{@ConditionalOnProperty(name = "app.export.enabled")}} và không có {{havingValue}}, trường hợp nào bean **được tạo**?', options: ['Trong yaml có {{app.export.enabled: true}}', 'Không khai báo property đó ở bất kỳ đâu', 'Trong yaml có {{app.export.enabled: false}}', 'Property đó nằm trong một profile không được kích hoạt'], answer: 0, explain: `Không có {{havingValue}} thì điều kiện khớp khi property **tồn tại** và giá trị khác "false". Trường hợp 1: property tồn tại và bằng true nên khớp. Trường hợp 2 và 4 đều tương đương "property vắng mặt" nên không khớp (muốn khớp phải thêm {{matchIfMissing = true}}). Trường hợp 3 là giá trị false nên thất bại — và trong báo cáo --debug, hai ca 2/4 và ca 3 có lý do khác nhau, đó là manh mối debug hữu ích.` },
+        { q: 'Bạn khai {{@Bean DataSource myDataSource()}} trong class {{@Configuration}} của mình. Boot có {{DataSourceAutoConfiguration}} tạo bean {{dataSource}} với {{@ConditionalOnMissingBean}}. Chuyện gì xảy ra?', options: ['Bean mặc định thắng vì auto-configuration luôn có độ ưu tiên cao hơn', 'App fail vì có hai bean cùng kiểu DataSource', 'Cả hai bean đều được tạo và Spring chọn ngẫu nhiên theo tên', 'Bean của bạn thắng: definition của bạn được đăng ký trước pha auto-config, nên điều kiện missing thất bại'], answer: 3, explain: `Đúng thứ tự: user configuration trước, auto-configuration sau; khi OnMissingBean được đánh giá thì {{myDataSource}} đã có trong danh sách definition nên bean mặc định bị bỏ — không cần {{@Primary}}, không cần bật {{spring.main.allow-bean-definition-overriding}}. Boot không hề "ưu tiên" auto-config. Hai bean cùng kiểu chỉ xảy ra nếu bean của bạn khác kiểu còn auto-config xét theo một kiểu khác, hoặc bạn trùng tên bean dẫn tới {{BeanDefinitionOverrideException}}. Không có chuyện chọn ngẫu nhiên.` },
+        { q: 'Auto-config của bạn dùng {{@ConditionalOnBean(MetricRegistry.class)}}, mà bean đó do một auto-config khác tạo. Thỉnh thoảng điều kiện fail dù registry chắc chắn sẽ tồn tại. Vì sao?', options: ['Vì @ConditionalOnBean chỉ thấy bean đã được instantiate xong', 'Vì điều kiện đánh giá trên bean definition theo thứ tự xử lý; auto-config kia có thể chưa được xử lý tại thời điểm đó', 'Vì MetricRegistry luôn có scope prototype', 'Vì thiếu @Lazy trên bean registry'], answer: 1, explain: `Đây là lý do tài liệu Boot khuyên chỉ dùng OnBean/OnMissingBean trong lớp auto-config và phải chốt thứ tự bằng {{@AutoConfigureAfter}}. Khi registry chắc chắn sẽ được tạo, vấn đề duy nhất là **thời điểm** đánh giá điều kiện so với thứ tự nạp config. Điều kiện chạy trên definition chứ không cần instance nên phương án "chỉ thấy bean đã instantiate" là sai. Scope và @Lazy không phải nguyên nhân ở đây.` },
+        { q: 'Một bean bạn mong đợi không được tạo. Cách nào cho biết chính xác điều kiện nào đã chặn nó mà không phải đọc code auto-config?', options: ['Bật logging.level.root=TRACE và đọc hết log', 'Gọi context.getBeanDefinitionNames() sau khi khởi động', 'Chạy app với cờ --debug rồi đọc CONDITIONS EVALUATION REPORT, hoặc gọi /actuator/conditions', 'Xoá thư mục target rồi build lại cho sạch cache'], answer: 2, explain: `Báo cáo điều kiện liệt kê positive và negative matches **kèm lý do và giá trị tìm thấy**, theo từng bean method. TRACE làm log phình hàng trăm MB mà vẫn không nói lý do điều kiện; {{getBeanDefinitionNames()}} chỉ cho biết kết quả (bean nào có), không cho biết vì sao bean khác bị loại; build lại không liên quan.`
+      }
+    ],
+    related: ['spring-007'], tags: ['auto-configuration', '@Conditional', 'starter', 'boot', 'debug']
+  },
+  {
+    id: 'lesson-spring-009', track: 'spring', order: 9,
+    title: 'Spring Events và @TransactionalEventListener: gửi email lúc nào mới đúng', level: 'senior', minutes: 45,
+    goals: ['Mô tả thời điểm @EventListener chạy so với transaction', 'Giải thích các phase của @TransactionalEventListener và fallbackExecution', 'Nêu được vì sao AFTER_COMMIT vẫn mất event và khi nào bắt buộc dùng outbox', 'Mô phỏng bus event có transaction giả bằng Java thuần'],
+    body: `**Tóm tắt:** {{ApplicationEventPublisher}} + {{@EventListener}} là cơ chế pub/sub **trong một process và đồng bộ**: lệnh publish gọi handler ngay trên chính thread gọi nó. Vì listener chạy **tại thời điểm publish**, nó chạy **bên trong** transaction đang mở — email, SMS, gọi API đã bay ra thế giới trước khi commit, và rollback không kéo chúng về. {{@TransactionalEventListener}} thì khác: lúc có event, Spring không gọi handler mà **đăng ký một callback** (interface {{TransactionSynchronization}}) với transaction đang hoạt động; transaction manager sẽ gọi callback ở đúng phase, mặc định là {{AFTER_COMMIT}}, và **bỏ hẳn** nếu transaction rollback. Cả hai vẫn **không bền vững**: process chết sau commit nhưng trước khi gửi thì event mất vĩnh viễn — side effect liên quan tới tiền phải dùng **transactional outbox**.
+
+### Event, publisher, listener là gì
+Tình huống điển hình: sau khi tạo đơn hàng, hệ thống phải gửi email xác nhận, cộng điểm tích luỹ, và cập nhật chỉ mục tìm kiếm. Viết thẳng thì {{OrderService}} phải có ba dependency, và mỗi lần thêm một side effect lại phải sửa {{OrderService}}. Pattern pub/sub đảo việc đó: service chỉ thông báo "**đơn hàng đã tạo**", ai quan tâm thì tự đăng ký nghe.
+Ba khái niệm: **event object** = một object thường chứa dữ liệu ({{new OrderCreatedEvent(orderId, total)}}; từ Spring 4.2 không cần kế thừa {{ApplicationEvent}}); **publisher** = bean inject {{ApplicationEventPublisher}} rồi gọi {{publishEvent(event)}} (chính {{ApplicationContext}} cũng là một publisher); **listener** = method đánh dấu {{@EventListener}}, được khớp theo **kiểu tham số** — listener khai báo tham số {{OrderEvent}} sẽ nhận cả subclass của {{OrderEvent}}, và {{@Order}} dùng để xếp thứ tự nhiều listener cùng nhận một event.
+Điểm bị hiểu sai nhiều nhất: **mặc định listener chạy đồng bộ, trên thread của người publish, ngay trong lệnh publish**. Muốn listener chạy chỗ khác phải {{@Async}} + {{@EnableAsync}} — và khi đó listener **không còn** transaction của người publish, toàn bộ phần dưới đây đổi ý nghĩa.
+
+### Gửi email trong transaction: chuyện gì xảy ra
+~~~seq
+title: @EventListener chay ngay trong transaction dang mo
+actors: API | OrderService | DB | MailListener | SMTP
+API -> OrderService: POST /orders
+OrderService -> DB: insert order (chua commit)
+OrderService -> MailListener: publishEvent(OrderCreatedEvent)
+MailListener -> SMTP: gui email xac nhan (2 giay)
+MailListener --> OrderService: quay lai, transaction van dang mo
+OrderService -> DB: rollback vi tru kho that bai
+DB --> API: loi 500
+note API..SMTP: email da gui, don hang thi khong ton tai
+~~~
+
+Bốn hệ quả đều rất thực tế:
+1. **Side effect "ma"**: khách nhận email "đã đặt hàng thành công" cho một đơn không tồn tại. Không cách nào rollback một lệnh SMTP hay một message đã vào Kafka.
+2. **Giữ connection và lock lâu hơn mức cần thiết**: transaction giữ một kết nối của pool ({{HikariCP}} mặc định tối đa 10) và lock các row đã sửa. Listener gọi SMTP mất 1–2 giây hoặc gọi service khác timeout 5 giây → kết nối bị giữ suốt thời gian đó. Traffic tăng là pool cạn, cả app chờ {{connection-timeout}} chứ không riêng gì luồng gửi email.
+3. **Lỗi phụ làm hỏng nghiệp vụ chính**: listener ném exception thì exception lan ngược lên {{publishEvent}}, đang ở trong transaction nên transaction rollback. "Không gửi được email" biến thành "không tạo được đơn hàng".
+4. **Retry nhân bản side effect**: client thấy 500 rồi bấm lại, nhưng email lần trước đã gửi.
+
+### @TransactionalEventListener hoạt động thế nào
+{{@TransactionalEventListener}} không phải là "event chạy async". Nó là {{@EventListener}} + một bước đăng ký callback: listener adapter kiểm tra annotation, rồi gọi {{TransactionSynchronizationManager.registerSynchronization}} — nghĩa là **ghi tên mình vào danh sách callback của transaction hiện có**. Khi transaction kết thúc, {{AbstractPlatformTransactionManager}} gọi từng callback đúng lúc:
+- {{BEFORE_COMMIT}}: ngay trước khi commit (vẫn còn trong transaction, ghi DB ở đây nằm trọn trong transaction đó).
+- {{AFTER_COMMIT}} — **mặc định**: sau khi commit thành công. Rollback thì callback này **không bao giờ chạy**.
+- {{AFTER_ROLLBACK}}: chỉ khi rollback.
+- {{AFTER_COMPLETION}}: luôn chạy sau khi transaction kết thúc, bất kể commit hay rollback (dùng cho dọn dẹp, đo metric).
+Bốn chi tiết phải nhớ khi phỏng vấn:
+- {{fallbackExecution}} mặc định **false**: nếu lúc publish **không có transaction nào đang mở**, Spring bỏ event và chỉ ghi một dòng log ở mức debug. Listener "tự nhiên không chạy" thường đúng vì lý do này — ví dụ kinh điển là publish từ một method chỉ {{@Transactional}} ở lớp caller khác, hoặc publish trong unit test không có transaction.
+- Callback chạy **sau** commit nên transaction cũ đã xong. Nếu listener **ghi** DB, phải mở transaction mới: {{@Transactional(propagation = Propagation.REQUIRES_NEW)}}; không có gì bảo đảm thao tác ghi đó được commit. Đọc thì ổn, vì dữ liệu đã commit và hiển thị với mọi kết nối.
+- **Không nhét entity lazy vào event**: sau commit, session Hibernate đã đóng; listener chạm vào {{order.getItems()}} sẽ ăn {{LazyInitializationException}}. Gửi {{id}} hoặc một DTO đã copy sẵn field.
+- **Listener ném exception ở AFTER_COMMIT không làm rollback** (đã commit rồi) nhưng exception vọng ra lệnh gọi commit, nên API trả 500 trong khi dữ liệu đã lưu — client retry có thể tạo đơn trùng. Vì vậy listener kiểu này phải tự bắt lỗi, log và phát metric, đừng để exception toả ra ngoài.
+
+### Khi AFTER_COMMIT vẫn chưa đủ: transactional outbox
+Vấn đề còn lại là **nguyên tử hoá hai việc ở hai hệ thống**: "biến đổi trong DB" và "thông báo ra ngoài" nằm ở hai hệ thống khác nhau, không có transaction nào bao cả hai ({{Two-Phase Commit}} giữa Postgres và Kafka gần như không tồn tại trong thực tế). Outbox giải quyết bằng cách biến việc gửi thành một phần của chính transaction:
+~~~seq
+title: Outbox dua event ra Kafka ma khong mat tin hieu
+actors: App | DB | Poller | Kafka | Consumer
+App -> DB: insert don hang (mot transaction)
+App -> DB: insert outbox_row (event id, payload)
+DB --> App: committed
+Poller -> DB: select outbox_row where sent = false
+Poller -> Kafka: publish payload theo dung thu tu
+Poller -> DB: danh dau sent = true
+Kafka --> Consumer: email, diem thuong, tim kiem
+note App..Kafka: process chet sau commit van con row de gui lai
+~~~
+Tính chất: **at-least-once** (một event có thể được gửi hai lần khi poller chết giữa chừng), nên consumer phải **idempotent** — thường bằng cách lưu {{event_id}} vào bảng đã-xử-lý với unique constraint, hoặc dùng upstream topic compaction. So với {{@TransactionalEventListener}} thuần, outbox thêm độ trễ (poll mỗi 100 ms – 1 s, hoặc dùng CDC như Debezium đọc WAL để gần real-time) và thêm một thành phần phải monitor, nhưng đổi lại: không mất signal, gửi lại được, và có audit log.
+
+| Cách | Thời điểm chạy | Khi rollback | Khi process chết sau commit | Dùng cho |
+|---|---|---|---|---|
+| {{@EventListener}} | ngay lúc publish, trong transaction | vẫn đã chạy | đã chạy | việc nội bộ thuần tính toán, không side effect |
+| {{@TransactionalEventListener}} AFTER_COMMIT | sau khi commit | bị bỏ | **mất signal** | thông báo nội bộ, cache eviction, email "nice to have" |
+| Outbox + queue | sau commit, độ trễ polling | row không tồn tại | **còn row, gửi lại được** | email giao dịch, cộng tiền, message cho service khác |
+
+### Bẫy hay gặp
+- **Test có {{@Transactional}}**: TestContext mặc định rollback sau mỗi test, nên listener {{AFTER_COMMIT}} không bao giờ chạy và bạn tưởng code sai. Bỏ annotation, hoặc dùng {{TransactionTemplate}} rồi assert sau commit, hoặc {{TestTransaction.setCommit(true)}}.
+- **{{fallbackExecution = true}}** làm listener chạy cả khi không có transaction — tức là quay lại hành vi "side effect trước commit". Chỉ bật khi bạn biết chắc listener không có side effect nguy hiểm.
+- **{{@Async}} + {{@TransactionalEventListener}}**: callback được submit xuống executor sau commit; request trả về nhanh nhưng lỗi của listener không còn ai nhận → bắt buộc log + metric + cảnh báo.
+- **Cấu hình {{taskExecutor}} cho {{ApplicationEventMulticaster}}** sẽ biến *mọi* listener thành async một cách im lặng — một thay đổi tưởng vô hại ở config làm hỏng tính nhất quán mà {{@EventListener}} đang dựa vào.
+- **Nhiều listener cùng phase** chạy tuần tự theo {{@Order}}; chúng vẫn chia sẻ một kết nối/thread nên listener chậm thứ nhất làm listener thứ hai chậm theo.
+- **Poller outbox**: đừng {{SELECT ... FOR UPDATE}} rồi gửi Kafka ngay trong transaction (giữ lock và biến broker thành dependency của DB transaction); đọc row, gửi, rồi đánh dấu bằng {{event_id}} unique để gửi trùng không sao.
+
+### Liên hệ phỏng vấn
+Khung trả lời bốn bước: (1) event của Spring là in-process và **đồng bộ**, listener chạy trong transaction của người publish; (2) nên {{@EventListener}} chỉ dùng cho tính toán nội bộ, còn side effect ra bên ngoài phải trì tới sau commit; (3) {{@TransactionalEventListener(phase = AFTER_COMMIT)}} đăng ký callback với transaction, bị bỏ khi rollback, nhưng listener muốn ghi DB thì cần transaction mới và phải tự bắt exception của chính mình; (4) vẫn chưa đủ khi yêu cầu là "chắc chắn gửi được" → outbox + queue + idempotency, hoặc CDC. Kết bằng một câu chứng minh đã gặp thực tế: "listener của tôi từng bị bỏ vì test bọc {{@Transactional}}, sau này tôi chuyển sang {{TransactionTemplate}} để test đúng pha commit".
+
+> Senior tip: Quy tắc chọn gọn: side effect **mất cũng không sao** → {{@TransactionalEventListener}}; side effect **liên quan tiền, hợp đồng, hoặc vượt ra hệ thống khác** → outbox. Và luôn đo thời gian giữ connection: một listener gọi SMTP 2 giây trong transaction là đủ để pool 10 connection sập khi traffic tăng gấp ba — lỗi biểu hiện thành "app treo" chứ không phải "email chậm".`,
+    exercises: [{
+      title: 'EventBus có transaction giả: IMMEDIATE, AFTER_COMMIT, AFTER_COMPLETION',
+      prompt: `Hoàn thiện {{EventBus}} — mô hình thu nhỏ của {{ApplicationEventPublisher}} + {{@TransactionalEventListener}}, với một transaction giả (không DB, không thread). Các class {{Handler}}, {{OrderEvent}}, {{PaidEvent}} (subclass của {{OrderEvent}}), {{RefundEvent}} đã có sẵn.
+- {{subscribe(eventType, phase, handler)}}: thêm listener vào danh sách **theo thứ tự đăng ký**. Chỉ chấp nhận ba giá trị phase {{"IMMEDIATE"}}, {{"AFTER_COMMIT"}}, {{"AFTER_COMPLETION"}}; giá trị khác phải ném {{IllegalArgumentException}}.
+- {{publish(event)}}: duyệt listener theo thứ tự đăng ký, bỏ qua listener có {{eventType}} **không phải** kiểu của event (lưu ý listener đăng ký {{OrderEvent}} phải nhận cả {{PaidEvent}}). Listener {{IMMEDIATE}} → gọi handler **ngay**, và nếu handler ném exception thì {{publish}} ném lại exception đó. Listener {{AFTER_COMMIT}}/{{AFTER_COMPLETION}}: nếu đang có transaction mở thì **xếp vào hàng đợi callback** (kèm object event của lần publish đó); nếu **không** có transaction thì bỏ qua, không gọi và cũng không xếp hàng (đây là {{fallbackExecution = false}} mặc định của Spring).
+- {{beginTx()}}: mở transaction. Nếu đã có transaction mở thì ném {{IllegalStateException}} (không mô phỏng transaction lồng nhau).
+- {{commit()}}: nếu không có transaction đang mở thì ném {{IllegalStateException}}. Đóng transaction trước ({{inTransaction()}} phải trả false), rồi chạy các callback {{AFTER_COMMIT}} đang xếp hàng theo thứ tự đăng ký, **sau đó** chạy {{AFTER_COMPLETION}}. Hai hàng đợi phải được **lấy ra và xoá** trước khi gọi callback. Nếu callback {{AFTER_COMMIT}} ném exception: exception phải vọng ra {{commit()}}, transaction vẫn được coi là đã commit, và các callback {{AFTER_COMPLETION}} **vẫn** phải chạy (đúng như Spring làm).
+- {{rollback()}}: nếu không có transaction đang mở thì ném {{IllegalStateException}}. Đóng transaction, **bỏ** toàn bộ callback {{AFTER_COMMIT}}, vẫn chạy {{AFTER_COMPLETION}} theo thứ tự đăng ký; exception từ callback {{AFTER_COMPLETION}} vọng ra {{rollback()}}.
+- {{inTransaction()}}: true từ lúc {{beginTx()}} cho tới khi {{commit()}}/{{rollback()}} kết thúc. Test không kiểm tra giá trị của nó **bên trong** callback, nên bạn không cần bắt chước chính xác chi tiết đó của Spring.`,
+      starter: `
+interface Handler { void handle(Object event); }
+class OrderEvent {}
+class PaidEvent extends OrderEvent {}
+class RefundEvent {}
+class EventBus {
+    void subscribe(Class<?> eventType, String phase, Handler handler) { throw new UnsupportedOperationException("TODO"); }
+    void publish(Object event) { throw new UnsupportedOperationException("TODO"); }
+    void beginTx() { throw new UnsupportedOperationException("TODO"); }
+    void commit() { throw new UnsupportedOperationException("TODO"); }
+    void rollback() { throw new UnsupportedOperationException("TODO"); }
+    boolean inTransaction() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int passed=0, total=0;
+ static void check(String n, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + n); } catch (Throwable t) { System.out.println("FAIL " + n + ": " + t); } }
+ static void eq(Object got, Object want) { if (!Objects.equals(got, want)) throw new AssertionError("got " + got + " want " + want); }
+ static void expect(Class<? extends RuntimeException> kind, Runnable r) {
+   try { r.run(); } catch (RuntimeException e) { if (!kind.isInstance(e)) throw new AssertionError("wrong type: " + e); return; }
+   throw new AssertionError("expected " + kind.getSimpleName());
+ }
+ public static void main(String[] x) {
+  check("immediate listener runs at publish time inside the transaction", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "IMMEDIATE", e -> trace.add("now:" + bus.inTransaction()));
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("after"));
+    bus.beginTx();
+    bus.publish(new OrderEvent());
+    eq(trace, List.of("now:true"));
+  });
+  check("AFTER_COMMIT fires only after commit", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "IMMEDIATE", e -> trace.add("now"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("after"));
+    bus.beginTx();
+    bus.publish(new OrderEvent());
+    eq(trace, List.of("now"));
+    bus.commit();
+    eq(trace, List.of("now", "after"));
+    if (bus.inTransaction()) throw new AssertionError("transaction must be closed after commit");
+  });
+  check("rollback drops AFTER_COMMIT and fires AFTER_COMPLETION", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "IMMEDIATE", e -> trace.add("now"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("after"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMPLETION", e -> trace.add("done"));
+    bus.beginTx();
+    bus.publish(new OrderEvent());
+    bus.rollback();
+    eq(trace, List.of("now", "done"));
+  });
+  check("AFTER_COMPLETION also runs on commit, after AFTER_COMMIT", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("after"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMPLETION", e -> trace.add("done"));
+    bus.beginTx();
+    bus.publish(new OrderEvent());
+    bus.commit();
+    eq(trace, List.of("after", "done"));
+  });
+  check("callbacks are grouped by phase and ordered by subscription", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("a1"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMPLETION", e -> trace.add("c1"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("a2"));
+    bus.beginTx();
+    bus.publish(new OrderEvent());
+    bus.commit();
+    eq(trace, List.of("a1", "a2", "c1"));
+  });
+  check("phase listeners without an open transaction are dropped", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "IMMEDIATE", e -> trace.add("now"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("after"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMPLETION", e -> trace.add("done"));
+    bus.publish(new OrderEvent());
+    eq(trace, List.of("now"));
+    bus.beginTx();
+    bus.commit();
+    eq(trace, List.of("now"));
+  });
+  check("listeners match by type including subclasses", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "IMMEDIATE", e -> trace.add("order:" + e.getClass().getSimpleName()));
+    bus.subscribe(PaidEvent.class, "IMMEDIATE", e -> trace.add("paid"));
+    bus.subscribe(RefundEvent.class, "IMMEDIATE", e -> trace.add("refund"));
+    bus.publish(new PaidEvent());
+    bus.publish(new RefundEvent());
+    eq(trace, List.of("order:PaidEvent", "paid", "refund"));
+  });
+  check("exception in immediate listener escapes publish and lets the caller rollback", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "IMMEDIATE", e -> { throw new RuntimeException("smtp down"); });
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("after"));
+    bus.beginTx();
+    expect(RuntimeException.class, () -> bus.publish(new OrderEvent()));
+    bus.rollback();
+    eq(trace, List.of());
+  });
+  check("exception in AFTER_COMMIT escapes commit but AFTER_COMPLETION still runs", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> { throw new RuntimeException("template missing"); });
+    bus.subscribe(OrderEvent.class, "AFTER_COMPLETION", e -> trace.add("done"));
+    bus.beginTx();
+    bus.publish(new OrderEvent());
+    expect(RuntimeException.class, () -> bus.commit());
+    eq(trace, List.of("done"));
+    if (bus.inTransaction()) throw new AssertionError("data was already committed");
+    expect(IllegalStateException.class, () -> bus.commit());
+  });
+  check("queued callbacks fire only once, not on the next transaction", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add("after"));
+    bus.subscribe(OrderEvent.class, "AFTER_COMPLETION", e -> trace.add("done"));
+    bus.beginTx();
+    bus.publish(new OrderEvent());
+    bus.commit();
+    bus.beginTx();
+    bus.commit();
+    eq(trace, List.of("after", "done"));
+  });
+  check("each queued callback receives the event it was queued with", () -> {
+    List<String> trace = new ArrayList<>();
+    EventBus bus = new EventBus();
+    bus.subscribe(OrderEvent.class, "AFTER_COMMIT", e -> trace.add(e.getClass().getSimpleName()));
+    bus.beginTx();
+    bus.publish(new PaidEvent());
+    bus.publish(new OrderEvent());
+    bus.commit();
+    eq(trace, List.of("PaidEvent", "OrderEvent"));
+  });
+  check("unknown phase is rejected at subscribe time", () -> {
+    EventBus bus = new EventBus();
+    expect(IllegalArgumentException.class, () -> bus.subscribe(OrderEvent.class, "BEFORE_COMMIT", e -> {}));
+  });
+  check("beginTx rejects a second open transaction", () -> {
+    EventBus bus = new EventBus();
+    bus.beginTx();
+    expect(IllegalStateException.class, () -> bus.beginTx());
+  });
+  System.out.println("RESULT " + passed + "/" + total);
+ }
+}`,
+      reference: `
+interface Handler { void handle(Object event); }
+class OrderEvent {}
+class PaidEvent extends OrderEvent {}
+class RefundEvent {}
+class EventBus {
+    private static final class Sub {
+        final Class<?> type; final String phase; final Handler handler;
+        Sub(Class<?> type, String phase, Handler handler) { this.type = type; this.phase = phase; this.handler = handler; }
+    }
+    private record Pending(Sub sub, Object event) {}
+    private final List<Sub> subs = new ArrayList<>();
+    private final List<Pending> commitQueue = new ArrayList<>();
+    private final List<Pending> completionQueue = new ArrayList<>();
+    private boolean tx;
+    void subscribe(Class<?> eventType, String phase, Handler handler) {
+        if (!phase.equals("IMMEDIATE") && !phase.equals("AFTER_COMMIT") && !phase.equals("AFTER_COMPLETION")) {
+            throw new IllegalArgumentException("unknown phase: " + phase);
+        }
+        subs.add(new Sub(eventType, phase, handler));
+    }
+    void publish(Object event) {
+        for (Sub s : subs) {
+            if (!s.type.isInstance(event)) continue;
+            if (s.phase.equals("IMMEDIATE")) {
+                s.handler.handle(event);
+            } else if (tx) {
+                if (s.phase.equals("AFTER_COMMIT")) commitQueue.add(new Pending(s, event));
+                else completionQueue.add(new Pending(s, event));
+            }
+        }
+    }
+    void beginTx() {
+        if (tx) throw new IllegalStateException("transaction already active");
+        tx = true;
+    }
+    void commit() {
+        if (!tx) throw new IllegalStateException("no active transaction");
+        tx = false;
+        List<Pending> commit = new ArrayList<>(commitQueue);
+        List<Pending> completion = new ArrayList<>(completionQueue);
+        commitQueue.clear();
+        completionQueue.clear();
+        try {
+            fire(commit);
+        } finally {
+            fire(completion);
+        }
+    }
+    void rollback() {
+        if (!tx) throw new IllegalStateException("no active transaction");
+        tx = false;
+        commitQueue.clear();
+        List<Pending> completion = new ArrayList<>(completionQueue);
+        completionQueue.clear();
+        fire(completion);
+    }
+    boolean inTransaction() { return tx; }
+    private void fire(List<Pending> items) {
+        for (Pending p : items) p.sub().handler.handle(p.event());
+    }
+}`,
+      hints: ['Cấu trúc tối thiểu: một {{List}} listener ({{eventType}}, {{phase}}, {{handler}}), một cờ {{boolean tx}}, và hai hàng đợi callback cho {{AFTER_COMMIT}} và {{AFTER_COMPLETION}}. Mỗi phần tử hàng đợi phải lưu **cả listener lẫn object event**, vì hai lần publish trong cùng một transaction sẽ cho ra hai callback khác event nhau.', 'So khớp kiểu bằng {{eventType.isInstance(event)}} — đúng bằng cách Spring khớp listener theo kiểu tham số, nên listener đăng ký super class nhận cả subclass.', 'Xếp hàng chứ không gọi: trong {{publish}}, với phase không phải {{IMMEDIATE}} mà {{tx}} đang false thì **không làm gì cả** (đừng ném lỗi, đừng gọi handler). Đây là hành vi {{fallbackExecution = false}}.', 'Trong {{commit}}, sao chép rồi xoá hai hàng đợi **trước khi** chạy callback, và đặt vòng {{AFTER_COMPLETION}} trong {{finally}} của vòng {{AFTER_COMMIT}} để callback completion vẫn chạy khi callback commit ném lỗi — đúng như {{AbstractPlatformTransactionManager.processCommit}}.'],
+      explain: `Bài tập này dựng lại đúng ba quyết định trong Spring.
+
+**Thứ nhất**, listener {{IMMEDIATE}} được gọi trong vòng {{publish}}. Trong Spring, {{publishEvent}} đi qua {{ApplicationEventMulticaster}} và gọi listener **ngay trên thread hiện tại**, lúc transaction còn mở. Đó là lý do email đã gửi mà đơn hàng còn có thể rollback, và cũng là lý do listener chậm làm transaction giữ connection lâu hơn.
+
+**Thứ hai**, listener theo phase không chạy mà được **xếp hàng**. Spring làm việc đó bằng {{TransactionSynchronizationManager.registerSynchronization}}, tức gắn callback vào transaction đang mở; {{commit}}/{{rollback}} của transaction manager là nơi quyết định callback nào được gọi. Vì callback gắn với transaction, nếu lúc publish không có transaction thì chẳng có gì để gắn — event bị bỏ, đó là {{fallbackExecution = false}}.
+
+**Thứ ba**, {{AFTER_COMPLETION}} chạy trong {{finally}} sau {{AFTER_COMMIT}}. Spring làm gần như y hệt trong {{processCommit}}: exception từ callback afterCommit **vọng ra ngoài** cho caller, nhưng transaction thì đã commit thật; sau đó afterCompletion vẫn được trigger. Hệ quả thực tế rất đau: API trả 500 dù dữ liệu đã lưu, và client retry tạo đơn trùng — vì thế listener AFTER_COMMIT phải tự bắt lỗi, log và đo metric.
+
+Lỗi hay gặp khi làm bài:
+- Hàng đợi chỉ lưu listener mà quên lưu event: test "each queued callback receives the event it was queued with" fail.
+- Quên xoá hàng đợi sau khi chạy: callback bị gọi lại ở transaction kế tiếp.
+- Chạy {{AFTER_COMMIT}} và {{AFTER_COMPLETION}} trộn theo thứ tự đăng ký thay vì theo phase: test "grouped by phase" fail. Spring cũng chạy theo nhóm phase trước/sau như bài này.
+- Gọi callback sau khi đã mở lại transaction mới, hoặc quên đặt {{tx}} = false trước khi chạy callback: các assert về {{inTransaction()}} sai.
+- Cho {{rollback}} chạy cả callback {{AFTER_COMMIT}}: mất ý nghĩa của cả pattern.
+Nâng cấp để gần production hơn: bắt {{beginTx}}/{{commit}} hỗ trợ {{propagation}} ({{REQUIRES_NEW}} tạm treo transaction ngoài), hoặc cho {{AFTER_COMMIT}} callback quyền publish tiếp — và bạn sẽ thấy event phát lúc đó **bị bỏ** vì không còn transaction nào mở. Chính chỗ đó là lý do người ta chuyển sang outbox.`
+    }],
+    check: [
+        { q: 'Test của bạn bọc trong {{@Transactional}} (Spring Test rollback sau mỗi test) và listener {{@TransactionalEventListener}} không bao giờ chạy. Vì sao?', options: ['Listener chỉ chạy trong production build', 'Spring Test vô hiệu hoá mọi application event', 'Transaction của test bị rollback, nên phase AFTER_COMMIT không bao giờ xảy ra', 'Vì listener thiếu @Async'], answer: 2, explain: `{{@TransactionalEventListener}} đăng ký callback cho transaction hiện tại; khi transaction kết thúc bằng rollback thì callback AFTER_COMMIT bị bỏ — mà TestContext mặc định luôn rollback sau mỗi test. Fix: đừng bọc test bằng {{@Transactional}}, dùng {{TransactionTemplate}} rồi assert sau commit, hoặc {{TestTransaction.setCommit(true)}}. Annotation không phụ thuộc môi trường build, test context vẫn phát event bình thường, và {{@Async}} không liên quan tới việc callback bị bỏ.` },
+        { q: 'Code gọi {{publishEvent(e)}} khi **không** có transaction đang mở, listener là {{@TransactionalEventListener}} mặc định. Chuyện gì xảy ra?', options: ['Listener chạy ngay như @EventListener', 'Listener bị bỏ qua và chỉ có log; phải đặt fallbackExecution = true để nó chạy cả ngoài transaction', 'Spring ném IllegalStateException', 'Listener chạy sau khi Spring tự mở một transaction mới'], answer: 1, explain: `Mặc định {{fallbackExecution = false}}: không có transaction để gắn callback thì event bị bỏ, Spring chỉ ghi log ở mức debug. Đây là nguồn của rất nhiều bug "sao listener không chạy". Nó không tự mở transaction (publisher không quyết định ranh giới nghiệp vụ), không hành xử như {{@EventListener}} thường, và cũng không ném lỗi.` },
+        { q: 'Listener {{AFTER_COMMIT}} ném RuntimeException. Điều nào đúng?', options: ['Transaction bị rollback vì listener là một phần của transaction', 'Spring tự retry listener ba lần', 'Lỗi bị nuốt hoàn toàn, caller không thấy gì', 'Dữ liệu đã commit rồi; exception vọng ra caller của lệnh commit, API có thể trả 500 dù đơn hàng đã tạo'], answer: 3, explain: `Callback chạy **sau** doCommit, nên không còn gì để rollback; exception được truyền lên caller của lệnh commit — hệ quả là client nhận 500 và retry, sinh đơn trùng. Spring không retry listener. Lỗi cũng không bị nuốt (chỉ callback ở afterCompletion là Spring ghi log rồi đi tiếp). Vì vậy listener AFTER_COMMIT nên tự bắt lỗi và phát metric.` },
+        { q: 'Vì sao {{@TransactionalEventListener}} một mình nó chưa đủ để "chắc chắn gửi được email", và outbox thêm được gì?', options: ['Vì process có thể chết sau commit nhưng trước khi kịp gửi; outbox ghi event vào DB trong chính transaction đó để gửi lại sau', 'Vì listener AFTER_COMMIT chạy trước commit', 'Vì outbox làm email được gửi nhanh hơn', 'Vì Spring event chỉ cho phép tối đa một listener'], answer: 0, explain: `Spring event chỉ tồn tại trong bộ nhớ của một process: commit xong, mà JVM chết trước khi callback gửi email (deploy, OOM, pod bị drain) thì signal mất vĩnh viễn và không log nào cho biết. Outbox ghi một row event **trong chính transaction đó**, nên "commit" đồng nghĩa "message đã được lưu"; một poller hoặc CDC đọc row chưa gửi rồi đẩy vào queue, và consumer phải idempotent vì việc gửi lại có thể trùng. AFTER_COMMIT chạy sau commit chứ không trước, outbox tăng độ trễ chứ không giảm, và số listener không bị giới hạn một.`
+      }
+    ],
+    related: ['spring-016'], tags: ['event', '@TransactionalEventListener', 'AFTER_COMMIT', 'outbox', 'transaction']
+  },
+  {
+    id: 'lesson-spring-010', track: 'spring', order: 10,
+    title: '@Transactional không chạy khi gọi nội bộ: bản đồ proxy và cách sửa', level: 'senior', minutes: 45,
+    goals: [
+      'Phân biệt ba thứ: target bạn viết, proxy Spring tạo, và reference bạn đang cầm',
+      'Giải thích từng bước vì sao {{this.method()}} không bao giờ chạy advice',
+      'Kể được năm cách sửa self-invocation và trade-off của từng cách',
+      'Tự dựng proxy transaction bằng {{java.lang.reflect.Proxy}} và đếm begin/join/commit',
+    ],
+    body: `**Tóm tắt:** {{@Transactional}} không tự mở transaction khi code chạy. Nó chỉ là **metadata** để Spring quyết định bọc bean bằng một **proxy** (object đứng giữa, chạy thêm hành vi trước và sau lời gọi). Bean bạn inject vào nơi khác thật ra là proxy; instance lớp bạn viết (**target**) nằm giấu bên trong. Khi code bên trong target gọi {{this.saveOther()}}, lời gọi đi thẳng từ target tới target, không chạm proxy, nên phần "mở transaction - commit - rollback" của advice không có cơ hội chạy.
+
+### Có ba object, nhưng bạn chỉ cầm một
+Lúc khởi động, Spring làm ba việc tách biệt với một bean có method {{@Transactional}}:
+
+1. **Tạo target**: gọi constructor của {{OrderService}} được **một** instance. Instance này là object thô, chưa có gì bọc ngoài.
+2. **Bọc bằng proxy**: một {{BeanPostProcessor}} (nói gọn là "auto proxy creator" — bộ máy quét annotation rồi sinh proxy) thấy bean này có transaction annotation nên tạo proxy trỏ vào target.
+3. **Đưa proxy vào cache bean**: từ đây mọi {{@Autowired OrderService}} trong ứng dụng nhận **proxy**, không nhận target.
+
+~~~text
+   caller                PROXY (thứ bạn inject)          TARGET (instance bạn viết)
+     │  service.create()      │                              │
+     ├──────────────────────▶ │ TxInterceptor:               │
+     │                        │   begin tx                   │
+     │                        ├────────────────────────────▶ │ create(): ...
+     │                        │                              │   this.saveOther()  ✗
+     │                        │   ◀── return ────────────────┤   (đi trong nội bộ target,
+     │  ◀── return ────────── │ commit tx                    │    không quay lại proxy)
+~~~
+
+Chìa khoá: **{{this}} luôn là target**, mà advice nằm ở proxy. Target không biết mình đang được bọc, nên Java không có cách nào "tự nhảy" về proxy. Đây không phải lỗi của Spring — tài liệu chính thức coi đây là giới hạn hiển nhiên của mô hình proxy AOP.
+
+### JDK proxy và CGLIB: hai cách tạo, cùng một giới hạn
+{{java.lang.reflect.Proxy}} (JDK dynamic proxy) sinh một class **cài các interface** bạn liệt kê; mọi lời gọi đi qua một {{InvocationHandler}}. CGLIB/ByteBuddy thì sinh **lớp con** của class target và override method để chèn advice. Spring Boot mặc định dùng CGLIB ({{spring.aop.proxy-target-class=true}}), nên inject theo class cụ thể vẫn chạy.
+
+| Cách | Điều kiện | Hệ quả khi gọi nội bộ |
+|---|---|---|
+| JDK proxy | bean phải có interface, caller inject theo interface | như nhau: advice chỉ chạy ở proxy |
+| CGLIB (subclass) | class và method không được **final** | như nhau; method private/static không override được |
+| AspectJ weaving | sửa **bytecode của chính target** (lúc compile hoặc load) | self-call **có** bị chèn advice — nhưng build phức tạp hơn |
+
+Điểm dễ hiểu sai: CGLIB tạo lớp con, nên người mới nghĩ "proxy là chính object đó, {{this}} là proxy". Không phải: Spring vẫn tạo target riêng rồi để proxy **ủy quyền** (delegate) sang target. Chỉ khi dùng AspectJ weaving thì lời gọi nội bộ mới đi qua advice.
+
+### Vì sao "không có transaction" nguy hiểm hơn "có transaction sai"
+- {{REQUIRES_NEW}} trên method inner + self-call: inner chạy **trong** transaction ngoài. Audit log lẽ ra phải còn sau khi nghiệp vụ rollback thì lại bị cuộn mất theo.
+- {{readOnly = true}} trên method đọc + self-call: connection không được đánh dấu read-only, query đọc vẫn về primary, không route sang replica được.
+- Chỉ method inner có annotation, method ngoài không có và gọi nội bộ: **không có transaction nào cả**. Mỗi {{repository.save()}} là một auto-commit riêng. Vòng 10.000 dòng thành 10.000 commit — chậm hơn hàng chục lần, và nếu dòng 7.000 lỗi thì 6.999 dòng đầu vẫn nằm lại trong DB.
+- Cùng cơ chế nên {{@Cacheable}}, {{@Async}}, {{@Retryable}}, {{@PreAuthorize}} cũng hỏng y hệt khi gọi nội bộ. Một bug, bốn hậu quả.
+
+### Chẩn đoán trong năm phút
+~~~java
+@Transactional
+public void handle(Command c) {
+    // in ra ngay đầu method: false nghĩa là lời gọi này không đi qua proxy
+    log.info("tx active = {}, bean = {}",
+        TransactionSynchronizationManager.isActualTransactionActive(),  // "giao dịch có đang mở trên thread này không?"
+        AopUtils.isAopProxy(this));                                     // this là target nên luôn false
+}
+~~~
+
+Ba mẹo thực tế: bật log {{org.springframework.transaction.interceptor}} mức TRACE để thấy interceptor có chạy không; gọi {{TransactionAspectSupport.currentTransactionStatus()}} — nó ném {{NoTransactionException}} khi không có transaction; và kiểm tra bean thực sự là proxy bằng {{bean.getClass().getName()}} (tên chứa "{{$$SpringCGLIB$$0}}"). Trường hợp hay gặp nhất: service được tạo bằng {{new ...}} trong test hoặc trong code tay chứ không phải bean Spring — object thô thì vĩnh viễn không có advice.
+
+### Năm cách sửa, theo thứ tự nên dùng
+1. **Tách method inner sang bean khác** (khuyến nghị): call path đi ra ngoài bean, do đó đi qua proxy của bean kia. Nó cũng buộc bạn nghĩ lại ranh giới trách nhiệm.
+2. **Đặt boundary ở method ngoài cùng**: nếu inner chỉ là helper, đừng đánh dấu nó. Transaction của outer đã đủ.
+3. **{{TransactionTemplate}}** — mở transaction bằng code, không cần proxy:
+
+~~~java
+@Service
+class ImportService {
+    private final TransactionTemplate tx;          // Boot tự cấu hình khi có PlatformTransactionManager
+    ImportService(TransactionTemplate tx) { this.tx = tx; }
+
+    void run(List<Row> rows) {
+        for (Row r : rows) {
+            tx.executeWithoutResult(status -> repository.save(r));  // transaction THẬT, mỗi dòng một lần
+        }
+    }
+}
+~~~
+
+    Bẫy: {{TransactionTemplate}} là object **mutable** và thường là bean dùng chung. Gọi {{tx.setPropagationBehavior(...)}} đổi luôn hành vi của mọi nơi khác dùng cùng template. Muốn REQUIRES_NEW một chỗ thì khai báo một template riêng (một {{@Bean}}) hoặc tạo {{new TransactionTemplate(transactionManager)}} trong constructor.
+4. **Tự xin proxy của chính mình**: {{@Lazy OrderService self}} ({{@Lazy}} = "đưa một proxy con rùa, chỉ resolve khi lần đầu dùng"), hoặc {{ObjectProvider<OrderService>.getObject()}}, hoặc {{AopContext.currentProxy()}} với {{exposeProxy = true}}. Chạy được, nhưng call graph thành tối nghĩa và unit test gọi {{new OrderService(...)}} thì {{self}} null.
+5. **AspectJ weaving** khi yêu cầu "mọi lời gọi đều được bọc" là chính đáng (hiếm). Đánh đổi: build/load-time agent, khó debug, không còn là Spring AOP.
+
+### Liên hệ phỏng vấn
+Trả lời theo bốn nhịp để thể hiện bạn hiểu cơ chế chứ không thuộc triệu chứng: (1) mô tả ba object và vẽ đường đi caller → proxy → target; (2) nói vì sao {{this}} là target nên advice bị bỏ; (3) nêu hậu quả thật (REQUIRES_NEW, readOnly, batch auto-commit) và cách chẩn đoán bằng {{isActualTransactionActive()}}; (4) đưa hai ba cách sửa kèm lý do chọn, và chủ động nói {{@Cacheable}}/{{@Async}} cùng chung bệnh. Câu đào sâu thường gặp: "annotation đặt trên interface thì có được không?" (có — Spring còn tìm annotation ở method khai báo trong interface), "method private thì sao?" (proxy không chặn được, kể cả khi gọi từ ngoài), "làm sao chứng minh trong test?" (dùng {{@SpringBootTest}} và assert trạng thái transaction, hoặc như bài tập dưới đây).
+
+> Senior tip: Trong code review, thấy một method {{@Transactional}} được gọi từ method khác **trong cùng class** thì hỏi lại ngay: ranh giới nghiệp vụ ở đâu. Đặt boundary ở tầng use case, đừng đặt ở helper. Trên production, hai chỉ số tố cáo self-invocation nhanh nhất là **số commit/giây tăng vọt** khi chạy import hàng loạt và **dữ liệu nửa vời** sau một lỗi giữa chừng — trong khi log transaction của method ngoài vẫn "bình thường".`,
+    exercises: [{
+      title: 'Dựng proxy transaction bằng JDK Proxy: đếm begin/join/commit và thấy self-invocation bị bỏ qua',
+      prompt: `Viết lại phần cốt lõi của Spring transaction bằng {{java.lang.reflect.Proxy}}. {{TxSim.wrap(target, iface, log)}} trả về một proxy cài {{iface}} và ủy quyền cho {{target}}. {{log}} (type {{TxLog}} cho sẵn) là nơi ghi số liệu **và** đóng vai "transaction đang mở của thread" ({{log.active}}), dùng chung cho mọi proxy trong cùng bài test — giống {{TransactionSynchronizationManager}}.
+
+Quy tắc handler phải làm, mô phỏng {{TransactionInterceptor}}:
+- **Transaction attribute**: method được coi là có transaction nếu {{@Tx}} nằm trên method của **class target** *hoặc* trên method **khai báo ở interface**. Không có ở cả hai → chỉ gọi target, trả kết quả, không ghi gì vào {{log}}.
+- **Transaction ngoài cùng** ({{log.active == false}}): {{begins++}}, đặt {{active = true}} và {{rollbackOnly = false}}, ghi sự kiện {{"begin:" + tên method}}. Rồi chạy target:
+  - trả về bình thường: nếu {{rollbackOnly}} đã bật bởi một lời gọi lồng nhau thì {{rollbacks++}} và ghi {{"rollback:" + tên}}, ngược lại {{commits++}} và ghi {{"commit:" + tên}};
+  - ném {{RuntimeException}} hoặc {{Error}}: {{rollbacks++}}, ghi {{"rollback:" + tên}}, **ném lại chính exception gốc**;
+  - ném checked {{Exception}}: vẫn tính như thành công theo mặc định của Spring ({{commits++}}, {{"commit:" + tên}}) rồi ném tiếp.
+  - Dù thành công hay lỗi, trước khi thoát phải đặt {{active = false}} (và xoá {{rollbackOnly}}).
+- **Tham gia transaction đang mở** ({{log.active == true}}, tức REQUIRED): {{joins++}}, ghi {{"join:" + tên}}, chạy target, **không** begin/commit/rollback ở tầng này. Nếu target ném {{RuntimeException}} hoặc {{Error}}: bật {{rollbackOnly = true}} rồi ném tiếp — transaction ngoài cùng mới là nơi quyết định.
+- Lời gọi {{method.invoke(target, args)}} bọc exception của target trong {{InvocationTargetException}}; handler phải ném lại {{getCause()}}.
+
+Fixture đã có sẵn trong file: {{TxWorker}}, {{WorkerImpl}} ({{outer()}} gọi {{this.inner()}} — self-invocation; {{delegated()}} và {{swallow()}} gọi qua {{Helper}} **đã được bọc bằng proxy**), {{MarkedApi}}, {{MarkedImpl}} ({{@Tx}} chỉ nằm trên interface). Bạn không cần sửa fixture.`,
+      starter: `@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) @interface Tx {}
+
+class TxLog {
+    int begins, commits, rollbacks, joins;
+    boolean active, rollbackOnly;
+    final List<String> events = new ArrayList<>();
+}
+
+interface TxWorker {
+    String outer(); String inner(); String delegated(); String plain();
+    String boom(); String io() throws java.io.IOException; String swallow();
+}
+interface Helper { String work(); String failing(); }
+class HelperImpl implements Helper {
+    @Tx public String work() { return "w"; }
+    @Tx public String failing() { throw new IllegalStateException("insert into audit_log failed"); }
+}
+class WorkerImpl implements TxWorker {
+    private final Helper helper;                                   // bean khác, được inject dưới dạng proxy
+    WorkerImpl(Helper helper) { this.helper = helper; }
+    @Tx public String outer() { return "outer|" + inner(); }       // self-invocation: không qua proxy
+    @Tx public String inner() { return "inner"; }
+    @Tx public String delegated() { return "d|" + helper.work(); } // đi ra bean khác: có qua proxy
+    @Tx public String swallow() {
+        try { return "d|" + helper.failing(); }
+        catch (IllegalStateException swallowed) { return "swallowed"; }   // bug "nuốt lỗi" kinh điển
+    }
+    public String plain() { return "plain"; }                      // không annotation
+    @Tx public String boom() { throw new IllegalStateException("bad state"); }
+    @Tx public String io() throws java.io.IOException { throw new java.io.IOException("disk full"); }
+}
+interface MarkedApi { @Tx String work(); }
+class MarkedImpl implements MarkedApi { public String work() { return "marked"; } }
+
+class TxSim {
+    static Object wrap(Object target, Class<?> iface, TxLog log) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int passed = 0, total = 0;
+ interface Body { void run() throws Exception; }
+ static void check(String name, Body body) { total++; try { body.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+ static void eq(Object a, Object b) { if (!java.util.Objects.equals(a, b)) throw new AssertionError("expected [" + b + "] but was [" + a + "]"); }
+ static Throwable thrown(Body body) { try { body.run(); } catch (Throwable t) { return t; } throw new AssertionError("caller không nhận được exception"); }
+ static TxWorker worker(TxLog log, Helper helper) { return (TxWorker) TxSim.wrap(new WorkerImpl(helper), TxWorker.class, log); }
+ static Helper helper(TxLog log) { return (Helper) TxSim.wrap(new HelperImpl(), Helper.class, log); }
+ public static void main(String[] args) {
+  check("proxy cài đúng interface", () -> {
+    Object p = TxSim.wrap(new WorkerImpl(null), TxWorker.class, new TxLog());
+    if (!(p instanceof TxWorker)) throw new AssertionError("proxy phải cài TxWorker");
+    if (!java.lang.reflect.Proxy.isProxyClass(p.getClass())) throw new AssertionError("phải là JDK dynamic proxy");
+  });
+  check("self-invocation: advice không chạy cho inner", () -> {
+    TxLog log = new TxLog(); TxWorker w = worker(log, null);
+    eq(w.outer(), "outer|inner");                       // nghiệp vụ vẫn chạy
+    eq(log.events, List.of("begin:outer", "commit:outer"));   // nhưng chỉ outer được advice
+    eq(log.begins, 1); eq(log.joins, 0);
+  });
+  check("cùng method inner, gọi từ ngoài qua proxy thì có advice", () -> {
+    TxLog log = new TxLog(); TxWorker w = worker(log, null);
+    eq(w.inner(), "inner");
+    eq(log.events, List.of("begin:inner", "commit:inner"));
+    eq(log.begins, 1);
+  });
+  check("đẩy công việc sang bean thứ hai: REQUIRED tham gia transaction ngoài", () -> {
+    TxLog log = new TxLog(); Helper h = helper(log); TxWorker w = worker(log, h);
+    eq(w.delegated(), "d|w");
+    eq(log.events, List.of("begin:delegated", "join:work", "commit:delegated"));
+    eq(log.begins, 1); eq(log.joins, 1); eq(log.commits, 1);
+  });
+  check("method không annotation thì không mở gì cả", () -> {
+    TxLog log = new TxLog(); TxWorker w = worker(log, null);
+    eq(w.plain(), "plain");
+    eq(log.events, List.of()); eq(log.begins, 0);
+  });
+  check("RuntimeException rollback và tới caller nguyên vẹn", () -> {
+    TxLog log = new TxLog(); TxWorker w = worker(log, null);
+    Throwable t = thrown(() -> w.boom());
+    if (!(t instanceof IllegalStateException) || !"bad state".equals(t.getMessage())) throw new AssertionError("sai exception: " + t);
+    eq(log.events, List.of("begin:boom", "rollback:boom"));
+    eq(log.commits, 0); eq(log.rollbacks, 1); eq(log.active, false);
+  });
+  check("checked exception vẫn commit (mặc định của Spring)", () -> {
+    TxLog log = new TxLog(); TxWorker w = worker(log, null);
+    Throwable t = thrown(() -> w.io());
+    if (!(t instanceof java.io.IOException)) throw new AssertionError("sai exception: " + t);
+    eq(log.events, List.of("begin:io", "commit:io")); eq(log.commits, 1); eq(log.rollbacks, 0);
+  });
+  check("lỗi bị nuốt ở ngoài vẫn đánh dấu transaction rollback-only", () -> {
+    TxLog log = new TxLog(); Helper h = helper(log); TxWorker w = worker(log, h);
+    eq(w.swallow(), "swallowed");
+    eq(log.events, List.of("begin:swallow", "join:failing", "rollback:swallow"));
+    eq(log.commits, 0); eq(log.rollbacks, 1);
+  });
+  check("@Tx khai báo trên interface vẫn có hiệu lực", () -> {
+    TxLog log = new TxLog(); MarkedApi m = (MarkedApi) TxSim.wrap(new MarkedImpl(), MarkedApi.class, log);
+    eq(m.work(), "marked");
+    eq(log.begins, 1); eq(log.events, List.of("begin:work", "commit:work"));
+  });
+  System.out.println("RESULT " + passed + "/" + total);
+ }
+}`,
+      reference: `@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) @interface Tx {}
+
+class TxLog {
+    int begins, commits, rollbacks, joins;
+    boolean active, rollbackOnly;
+    final List<String> events = new ArrayList<>();
+}
+
+interface TxWorker {
+    String outer(); String inner(); String delegated(); String plain();
+    String boom(); String io() throws java.io.IOException; String swallow();
+}
+interface Helper { String work(); String failing(); }
+class HelperImpl implements Helper {
+    @Tx public String work() { return "w"; }
+    @Tx public String failing() { throw new IllegalStateException("insert into audit_log failed"); }
+}
+class WorkerImpl implements TxWorker {
+    private final Helper helper;
+    WorkerImpl(Helper helper) { this.helper = helper; }
+    @Tx public String outer() { return "outer|" + inner(); }
+    @Tx public String inner() { return "inner"; }
+    @Tx public String delegated() { return "d|" + helper.work(); }
+    @Tx public String swallow() {
+        try { return "d|" + helper.failing(); }
+        catch (IllegalStateException swallowed) { return "swallowed"; }
+    }
+    public String plain() { return "plain"; }
+    @Tx public String boom() { throw new IllegalStateException("bad state"); }
+    @Tx public String io() throws java.io.IOException { throw new java.io.IOException("disk full"); }
+}
+interface MarkedApi { @Tx String work(); }
+class MarkedImpl implements MarkedApi { public String work() { return "marked"; } }
+
+class TxSim {
+    static Object wrap(Object target, Class<?> iface, TxLog log) {
+        return java.lang.reflect.Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[] { iface }, (proxy, method, args) -> {
+            String name = method.getName();
+            if (!transactional(target, method)) return call(target, method, args);   // không có advice
+            if (log.active) {                                        // REQUIRED: đã có tx ngoài -> tham gia
+                log.joins++;
+                log.events.add("join:" + name);
+                try { return call(target, method, args); }
+                catch (RuntimeException | Error unchecked) { log.rollbackOnly = true; throw unchecked; }
+            }
+            log.begins++;
+            log.active = true;
+            log.rollbackOnly = false;
+            log.events.add("begin:" + name);
+            try {
+                Object out = call(target, method, args);
+                finish(log, name);                                   // thành công: commit, trừ khi rollback-only
+                return out;
+            } catch (RuntimeException | Error unchecked) {
+                log.rollbacks++;
+                log.events.add("rollback:" + name);
+                throw unchecked;
+            } catch (Exception checked) {                            // checked: Spring commit theo mặc định
+                finish(log, name);
+                throw checked;
+            } finally {
+                log.active = false;                                  // Spring gỡ ThreadLocal đúng ở chỗ này
+            }
+        });
+    }
+    static void finish(TxLog log, String name) {
+        if (log.rollbackOnly) { log.rollbacks++; log.events.add("rollback:" + name); }
+        else { log.commits++; log.events.add("commit:" + name); }
+    }
+    static boolean transactional(Object target, java.lang.reflect.Method proxyMethod) {
+        if (proxyMethod.isAnnotationPresent(Tx.class)) return true;  // annotation trên interface
+        try {
+            return target.getClass().getMethod(proxyMethod.getName(), proxyMethod.getParameterTypes())
+                         .isAnnotationPresent(Tx.class);             // hoặc trên class thật
+        } catch (NoSuchMethodException missing) { return false; }
+    }
+    static Object call(Object target, java.lang.reflect.Method proxyMethod, Object[] args) throws Throwable {
+        try { return proxyMethod.invoke(target, args); }
+        catch (java.lang.reflect.InvocationTargetException wrapped) { throw wrapped.getCause(); }
+    }
+}`,
+      hints: [
+        '{{Proxy.newProxyInstance(loader, interfaces, handler)}}: loader lấy từ {{iface.getClassLoader()}}, interfaces là một mảng chỉ gồm {{iface}}, handler là lambda {{(proxy, method, args) -> ...}} trả kết quả của lời gọi. Trong handler, {{method}} là method **của interface**, không phải của class target.',
+        'Handler chỉ thấy những lời gọi đi **qua proxy**. {{target.outer()}} gọi {{inner()}} tức {{this.inner()}} trên target nên không lần nào handler được hỏi về inner — đó là toàn bộ nội dung test "self-invocation".',
+        'Coi {{log.active}} như {{TransactionSynchronizationManager}}: bật khi vào transaction ngoài cùng, không cho phép một transaction ngoài cùng thứ hai chồng lên, và luôn hạ xuống trong {{finally}}.{{rollbackOnly}} là cờ mà lời gọi lồng nhau bật lên khi nó lỗi; người kết thúc transaction ngoài cùng mới đọc cờ đó.',
+        'Đừng bắt {{Exception}} rồi ném {{new RuntimeException(e)}}: test so **đúng instance** exception gốc. Quên unwrap {{InvocationTargetException}} thì caller sẽ nhận exception lạ thay vì {{IllegalStateException}}.'
+      ],
+      explain: `Bài tập dựng lại nguyên văn ba quyết định của Spring trong {{TransactionInterceptor}} + {{AbstractPlatformTransactionManager}}.
+
+**Một: advice chỉ chạy ở proxy.** Test "self-invocation" assert {{outer}} sinh đúng {{["begin:outer", "commit:outer"]}} dù nghiệp vụ của {{inner}} vẫn chạy (kết quả là "outer|inner"). Trong Spring thật, {{inner}} khi đó không có transaction riêng: nó chạy nhờ transaction của {{outer}}, và mọi annotation của nó ({{REQUIRES_NEW}}, {{readOnly}}, {{Propagation}}...) bị bỏ qua hoàn toàn. Test "cùng method inner gọi từ ngoài" cho thấy vấn đề không nằm ở annotation hay ở method, mà nằm ở **đường đi của lời gọi**.
+
+**Hai: REQUIRED tham gia, không mở lần hai.** Test "delegated" có {{begins == 1}} nhưng {{joins == 1}}: một connection, một commit. Đây chính là bảng propagation trong bài lesson-spring-003, chỉ khác là lần này bạn nhìn nó bằng số liệu. Đây cũng là lý do "tách bean" (cách sửa số 1) có tác dụng: nó không thay đổi propagation, nó chỉ đưa lời gọi **đi qua proxy** để advice được hỏi.
+
+**Ba: rollback-only và exception.** Test "swallow" mô tả đúng bug {{UnexpectedRollbackException}}: lời gọi lồng nhau báo lỗi, interceptor của nó đánh dấu transaction "chỉ rollback được", method ngoài bắt và nuốt exception rồi tưởng mình thành công — nhưng khi commit, Spring thấy cờ nên rollback toàn bộ và ném lỗi cho caller. {{commits == 0}} ở đây là bài học đáng giá nhất của bài tập: nuốt exception không cứu được transaction.
+
+Bốn chi tiết dễ sai khi làm bài:
+- Quên tìm annotation trên **interface**: test "annotation khai báo trên interface" fail. Spring cũng làm đủ hai bước này.
+- Đặt {{active = false}} mà không dùng {{finally}}: một lần lỗi khiến mọi lời gọi sau bị coi là transaction ngoài cùng mới.
+- Tăng {{commits}} trong nhánh lồng nhau: sẽ có hai commit cho một transaction, không khớp test.
+- Bọc exception khi ném lại: caller không bắt được loại exception gốc, và transaction của method ngoài (nếu có) không nhìn đúng loại lỗi.
+
+Nâng cấp để gần Spring hơn: cho {{wrap}} hỗ trợ {{REQUIRES_NEW}} bằng cách lưu {{active}} cũ, đặt {{active = false}} tạm, rồi khôi phục trong {{finally}} (Spring gọi là "suspend"); hoặc cho {{@Tx}} thuộc tính {{rollbackFor}} để tested behaviour giống lesson-spring-003. Sau đó bạn sẽ tự thấy: vấn đề của self-invocation **không phải** do transaction manager, mà do proxy chỉ có một cửa vào.`
+    }],
+    check: [
+        { q: '{{ImportService.run()}} mang {{@Transactional}} và gọi {{this.saveOther()}}; {{saveOther()}} mang {{@Transactional(propagation = REQUIRES_NEW)}}. Kết quả thực tế?', options: ['{{saveOther}} chạy trong transaction mới độc lập vì nó có annotation riêng', '{{saveOther}} chạy ngay trong transaction của {{run}}: lời gọi nội bộ không đi qua proxy nên interceptor của nó không bao giờ được gọi', 'Spring ném lỗi vì {{REQUIRES_NEW}} không được nesting', 'Không có transaction nào được mở, kể cả của {{run}}'], answer: 1, explain: `Annotation chỉ có tác dụng khi lời gọi tới **proxy**. {{this.saveOther()}} là lời gọi nội bộ trên target nên interceptor của nó không chạy, và transaction của {{run}} vẫn bao trọn — {{REQUIRES_NEW}} bị phớt lờ một cách im lặng. {{run}} thì vẫn có transaction vì caller gọi {{run}} qua proxy. Không có lỗi nesting nào cả; đây đúng là kiểu lỗi "nhìn code rất hợp lý" nguy hiểm nhất.` },
+        { q: 'Bạn cần method inner thực sự mở transaction riêng, nhưng không muốn tách bean. Cách nào **ít** gây ngạc nhiên cho người đọc nhất?', options: ['Dùng {{TransactionTemplate}} để mở transaction bằng code ngay trong method', 'Bật {{exposeProxy = true}} rồi gọi {{((ImportService) AopContext.currentProxy()).saveOther()}}', 'Đánh dấu {{saveOther}} là private để Spring tự inner', 'Đặt {{@Transactional}} ở cấp class và mong Spring chặn mọi lời gọi'], answer: 0, explain: `{{TransactionTemplate}} nói thẳng "ở đây có một transaction" ngay tại chỗ cần nó, không phụ thuộc proxy, và unit test vẫn chạy được. {{AopContext.currentProxy}} chạy được nhưng là **cơ chế của Spring** rò vào business code, và nổ {{IllegalStateException}} khi object không phải proxy (ví dụ trong test). Private thì proxy không chặn nổi. Class-level annotation cũng vẫn chỉ áp dụng cho lời gọi đi qua proxy.` },
+        { q: 'Đâu là cách nhanh nhất để **chứng minh** một method đang không có transaction?', options: ['Đọc log build xem có dòng "Created proxy" không', 'In {{TransactionSynchronizationManager.isActualTransactionActive()}} ngay đầu method, hoặc gọi {{TransactionAspectSupport.currentTransactionStatus()}} và xem nó có ném {{NoTransactionException}} không', 'Đổi method sang {{REQUIRED}} rồi chạy lại test', 'Kiểm tra {{spring.datasource.autocommit}} trong application.yaml'], answer: 1, explain: `{{isActualTransactionActive()}} trả lời đúng câu hỏi "thread này đang có transaction chưa" tại chính dòng code đó — nếu nó false bên trong method có {{@Transactional}} thì lời gọi không đi qua proxy. {{currentTransactionStatus()}} ném {{NoTransactionException}} trong cùng tình huống. Log "Created proxy" chỉ cho biết bean **có** proxy, không cho biết lời gọi cụ thể đi đường nào; đổi propagation không sửa được self-invocation; autocommit là chuyện của connection, không phải của Spring transaction.` },
+        { q: 'Method {{@Transactional private void flush()}} được gọi từ method public cùng bean. Transaction có mở không?', options: ['Có, vì Spring quét bytecode của mọi method', 'Không: private không bị proxy chặn, và lời gọi nội bộ cũng không qua proxy', 'Có, nếu chuyển sang JDK proxy', 'Chỉ khi {{flush}} trả về non-void'], answer: 1, explain: `Hai lớp lỗi cộng dồn: lớp con CGLIB không override được method private (JDK proxy thì càng không), nên kể cả gọi từ bean khác cũng vô ích; đồng thời đây còn là self-call nên không có proxy nào đứng giữa. Spring không "quét rồi tự chạy" annotation. JDK proxy không khá hơn — nó còn yêu cầu interface. Kiểu trả về không liên quan.` }
+    ],
+    related: ['spring-004', 'spring-028', 'spring-006'], tags: ['@Transactional', 'AOP', 'proxy', 'self-invocation', 'TransactionTemplate']
+  },
+  {
+    id: 'lesson-spring-011', track: 'spring', order: 11,
+    title: 'Vòng phụ thuộc bean: early reference, ba cấp cache và cách thiết kế lại', level: 'senior', minutes: 45,
+    goals: [
+      'Giải thích vì sao constructor cycle vô phương cứu, còn field cycle thì container phá được',
+      'Mô tả ba cấp singleton cache và lý do Spring lưu {{ObjectFactory}} thay vì object',
+      'Bốn kỹ thuật xoá vòng kèm trade-off, và cách đọc thông báo cycle của Spring Boot 2.6+',
+      'Viết mini container phát hiện cycle và in ra đúng đường đi {{A -> B -> C -> A}}',
+    ],
+    body: `**Tóm tắt:** vòng phụ thuộc là một **chu trình** trong đồ thị bean: A cần B, B cần A. Container chỉ phá được chu trình khi nó đưa ra được một object **chưa hoàn chỉnh** (early reference) cho bean khác đang được tạo — điều chỉ làm được với field/setter injection. Với constructor injection thì không tồn tại thứ tự tạo hợp lệ, nên Spring báo lỗi ngay lúc khởi động. Từ Spring Boot 2.6, khả năng "tự phá vòng" bị **tắt mặc định**.
+
+### Vòng constructor: bài toán không có lời giải
+Vấn đề không phải Spring lười, mà là **logic**. Muốn chạy {{new A(b)}} thì phải có {{b}} **xong trước**; muốn có {{b}} xong trước thì phải chạy {{new B(a)}} — cần {{a}} đã xong. Không tồn tại điểm bắt đầu.
+
+~~~text
+getBean(A)  ->  new A(??)  cần B hoàn chỉnh
+                     getBean(B)  ->  new B(??)  cần A hoàn chỉnh
+                          getBean(A)  ->  A đang được tạo, chưa có gì để đưa   X
+~~~
+
+Ví dụ đời thường: hai người ký giấy cho nhau, ai cũng "chỉ ký sau khi thấy giấy kia đã ký". Field/setter injection thì khác: {{new A()}} không cần gì cả, tạo được ngay một object **có địa chỉ bộ nhớ** dù các field còn null. Java cho phép hai object tham chiếu lẫn nhau, chỉ cần địa chỉ đã tồn tại — đó là toàn bộ cơ chế phá vòng.
+
+### Spring làm việc đó thế nào: ba cấp cache
+Bean registry của {{DefaultSingletonBeanRegistry}} có ba bản đồ, sắp theo mức "hoàn chỉnh":
+
+| Cấp | Bản đồ | Chứa gì | Ai đọc |
+|---|---|---|---|
+| 1 | {{singletonObjects}} | bean **đã hoàn chỉnh** | mọi {{getBean}} thông thường |
+| 2 | {{earlySingletonObjects}} | early reference, **có thể đã là proxy** | bean khác đang cần A giữa chừng |
+| 3 | {{singletonFactories}} | {{ObjectFactory}} — "công thức" tạo early reference, **chưa chạy** | chỉ chạy khi thật sự có người xin |
+
+Đường đi của một bean đơn (rút gọn từ {{doCreateBean}}):
+
+1. {{getSingleton(type)}} — kiểm tra cấp 1. Chưa có?
+2. Đánh dấu bean đang được tạo ({{singletonsCurrentlyInCreation}} — đây là nơi sinh ra {{BeanCurrentlyInCreationException}} khi phát hiện cycle).
+3. {{createBeanInstance}} — gọi constructor (các dependency **đã phải xong**, nên cycle ở đây chết).
+4. {{addSingletonFactory}} — ghi vào **cấp 3**: "nếu ai cần tham chiếu sớm của A thì gọi lambda này".
+5. {{populateBean}} — inject field/setter; nếu gặp B và B lại cần A, Spring gọi {{getSingleton(A, true)}} → chạy factory cấp 3 → bean ra **cấp 2** rồi trả về.
+6. {{initializeBean}} ({{@PostConstruct}}, {{afterPropertiesSet}}) rồi đẩy kết quả vào **cấp 1**, xoá cấp 2 và cấp 3.
+
+Vì sao phải có cấp 3 (factory) chứ không nhét thẳng instance vào cấp 2? Vì bean có AOP ({{@Transactional}}, {{@Cacheable}}...) **không được** lộ ra dưới dạng object thô. Spring muốn hoãn việc tạo proxy tới lúc **thực sự** có người xin tham chiếu sớm. Factory ở cấp 3 cho phép "chưa quyết định gì cả" và không tốn chi phí; chỉ khi bean khác xin, {{SmartInstantiationAwareBeanPostProcessor}} mới tạo proxy một lần và bỏ vào cấp 2, để mọi bên sau đó nhận **cùng một** object. Đây là chỗ nối trực tiếp với lesson-spring-010: nếu early reference là object thô mà proxy được tạo sau, bạn sẽ có hai identity khác nhau trong đồ thị — và bug kiểu "field null khó hiểu" là hậu quả của việc sai ở bước này.
+
+~~~seq
+title: Spring phá vòng qua field injection
+actors: App | Container | Order | Payment
+App -> Container: getBean(Order)
+Container -> Order: new Order() (field còn null)
+Container -> Container: ghi ObjectFactory của Order
+Order -> Container: populate: cần Payment
+Container -> Payment: new Payment()
+Payment -> Container: populate: cần Order
+Container -> Order: trả early reference
+Payment --> Container: Payment hoàn tất
+Order --> App: Order hoàn tất
+note Order..Payment: cả hai trỏ đúng instance thật
+~~~
+
+### Spring Boot 2.6+ tắt khả năng đó, và vì sao nên để nó tắt
+{{SpringApplication}} có cờ {{setAllowCircularReferences(false)}} — nay là mặc định, biểu hiện qua {{spring.main.allow-circular-references=false}}. Khởi động fail sớm và in ra **đường đi** của vòng, dạng:
+
+~~~text
+The dependencies of some of two beans in the container form a cycle;
+the application context could not be started. We found the following cycle:
+  Bean 'orderService' - field 'payment' with required bean 'paymentService'
+  Bean 'paymentService' - field 'order' with required bean 'orderService'
+Action:
+  Break the cycle, or switch to constructor injection with @Lazy...
+~~~
+
+Lý do đổi mặc định rất thực dụng: (1) early reference là object **chưa chạy** {{@PostConstruct}} và chưa validate gì, nên B nhận về một A "nửa vời" và lỗi lộ ra ở thì tương lai, rất khó truy; (2) thứ tự khởi tạo proxy/lifecycle dễ sai như đoạn trên; (3) quan trọng nhất — chu trình thường là dấu hiệu **ranh giới class chưa tách đúng**, mà một lá cờ thì che bệnh đi thay vì chữa. Bật cờ là hợp lệ khi bạn cần nâng cấp gấp để chạy tiếp, nhưng phải xem nó như giải pháp tạm có thời hạn.
+
+### Bốn cách xoá vòng một cách đàng hoàng
+1. **Tách phần chung ra bean thứ ba.** A và B hay cãi nhau vì cả hai đều muốn dùng chung một logic; đặt logic đó ở C thì A → C và B → C, hết chu trình.
+2. **Đảo chiều phụ thuộc (Dependency Inversion).** Nếu A chỉ cần "đọc số dư" từ B, cho A phụ thuộc một interface {{BalanceReader}} mà B cài đặt. Mũi tên nghiệp vụ quay ngược lại, đồ thị thành DAG.
+3. **Biến lời gọi thành sự kiện.** A phát hành {{OrderPaidEvent}}, B là listener. Cạnh A → B biến mất, chỉ còn A → publisher. Nhớ đọc lesson-spring-009: {{AFTER_COMMIT}} và outbox quyết định event có bị mất hay không.
+4. **Làm dependency thành lười.** {{@Lazy}} trên **tham số constructor** bơm vào một proxy lười (lazy proxy): bean được tạo ngay, chu trình bị cắt, và B chỉ resolve khi A gọi method đầu tiên. Cùng mục đích nhưng tường minh hơn: {{ObjectProvider<PaymentService>}}, gọi {{.getObject()}} khi cần.
+
+~~~java
+@Service
+class OrderService {
+    private final ObjectProvider<PaymentService> payments;   // không resolve lúc khởi tạo
+
+    OrderService(ObjectProvider<PaymentService> payments) { this.payments = payments; }
+
+    void refund(String id) {
+        payments.getObject().refund(id);                      // resolve lần đầu tại đây
+    }
+}
+~~~
+
+| Cách | Khi nào chọn | Đánh đổi |
+|---|---|---|
+| Tách bean thứ ba | hai service trùng một trách nhiệm | thêm một class, nhưng thiết kế thật sự sạch |
+| Đảo chiều qua interface | phụ thuộc "ngược tầng" (service gọi lại controller/adapter) | phải định nghĩa abstraction ổn định |
+| Sự kiện | A không cần **kết quả** của B ngay | bất đồng bộ, cần suy nghĩ về mất event |
+| {{@Lazy}} / {{ObjectProvider}} | cycle do lịch sử để lại, chưa refactor được ngay | vẫn còn cycle trong đồ thị, chỉ không nổ lúc boot |
+
+### Vòng phụ thuộc hay "tự lộ" khi bạn không ngờ tới
+Thêm **một** tham số constructor vào một bean giữa chuỗi A → B → C cũng đủ biến đồ thị thành chu trình — vì vậy code đang chạy tốt có thể fail khởi động sau một commit trông rất vô hại. Constructor injection giúp bạn trả giá **lúc khởi động** (tốt) thay vì lúc 2h sáng với {{NullPointerException}} ở field chưa inject (rất xấu). Ở tầng kiến trúc, quy tắc "service không được phụ thuộc repository của feature khác" nên được kiểm bằng test kiến trúc ({{beFreeOfCycles}}) hoặc tối thiểu là code review, vì container chỉ báo cycle **cấp bean**, không báo cycle **cấp package/module** (thứ gây ra vòng trong microservice khi hai team gọi nhau).
+
+### Liên hệ phỏng vấn
+Cấu trúc trả lời được đánh giá cao: (1) phân loại cycle — constructor thì vô phương, field/setter thì container **có thể** phá bằng early reference; (2) nói được cơ chế ba cấp cache và lý do cần {{ObjectFactory}} (proxy); (3) nêu mặc định Boot 2.6+ và vì sao; (4) đưa ít nhất hai cách sửa, xếp theo độ "đàng hoàng": tách bean / đảo chiều / event, rồi {{@Lazy}} như lựa chọn cuối. Câu đào sâu: "vòng tự reference {{A}} inject {{A}} thì sao?" (cũng là cycle; và nếu mục đích là gọi qua proxy để có {{@Transactional}} thì đã có cách khác: {{TransactionTemplate}}); "gọi {{getBean}} thủ công có phá được cycle không?" (về kỹ thuật được, nhưng đó là service locator — dependency bị ẩn trong method).
+
+> Senior tip: Khi gặp báo cycle, đừng nhìn hai bean cãi nhau — hãy nhìn **trách nhiệm** nào đang bị xẻ đôi giữa chúng. Chín trên mười lần, refactor đúng (tách bean thứ ba hoặc đưa xuống tầng domain) vừa xoá vòng vừa làm cả hai class dễ test hơn. Và khi code review, hãy nghi một class có hơn 6–7 dependency trong constructor: đó thường là thứ sẽ tạo cycle ở commit kế tiếp.`,
+    exercises: [{
+      title: 'Mini container báo đúng đường đi của vòng phụ thuộc',
+      prompt: `Hoàn thiện {{CycleContainer}} — mô phỏng {{DefaultSingletonBeanRegistry}} ở mức tối giản. Cờ {{allowCircularReferences}} trong constructor tương ứng {{spring.main.allow-circular-references}}.
+
+API ({{type}} luôn là class có **đúng một** constructor):
+- {{define(Class<T> type)}}: đăng ký bean chỉ có dependency qua constructor (suy từ tham số constructor).
+- {{define(Class<T> type, Class<?>... fieldDeps)}}: đăng ký bean và khai báo thêm các type nó sẽ nhận **qua field** sau khi đã tạo xong instance.
+- {{get(Class<T> type)}}: trả về singleton — tạo nếu chưa tạo, và **đúng instance cũ** nếu đã tạo.
+
+Hành vi cần mô phỏng:
+1. **Constructor dependency**: được resolve **trước** khi gọi constructor. Nếu type đang được tạo dở (có mặt trong "stack đang tạo") thì đó là vòng constructor, **không có early reference nào cứu được** — dù {{allowCircularReferences}} là {{true}}.
+2. **Field dependency**: resolve **sau** khi đã tạo instance, và instance đó phải được ghi nhớ như "early reference" **trước khi** populate field. Nhờ vậy một vòng **qua field** giải được khi {{allowCircularReferences == true}}: bean đang tạo dở được trả ra ngay (cùng instance), hai bean tham chiếu nhau hợp lệ.
+3. Nếu {{allowCircularReferences == false}} thì vòng qua field **cũng bị từ chối** (đúng mặc định Spring Boot 2.6+).
+4. Type chưa đăng ký (kể cả khi nó là dependency của bean khác) → ném {{IllegalStateException}} với message đúng bằng {{"Unregistered: " + simpleName}}.
+5. Mọi trường hợp cycle → ném {{IllegalStateException}} với message **chứa** {{"Circular dependency: "}} rồi tới đường đi, các simple name nối bằng {{" -> "}}, bắt đầu từ bean **lặp lại** và kết thúc bằng chính nó. Ví dụ {{get(Ctor1.class)}} với Ctor1 → Ctor2 → Ctor3 → Ctor1 phải cho {{"Circular dependency: Ctor1 -> Ctor2 -> Ctor3 -> Ctor1"}}; vòng tự reference cho {{"Mirror -> Mirror"}}.
+6. Một lần {{get}} thất bại **không** làm hỏng container: {{finally}} phải gỡ khỏi stack đang tạo để bean khác vẫn tạo được, và lần {{get}} lại cùng vòng phải báo **lại đúng** cycle.
+7. Khi gán field, chỉ gán nếu field tương ứng còn {{null}} và bean có field đó; dùng reflection như {{MiniContainer}} bài trước dùng với constructor.
+
+Fixture có sẵn: {{Audit}}, {{Ledger}} (constructor), {{Ctor1}}, {{Ctor2}}, {{Ctor3}} (vòng constructor), {{Order}}, {{Payment}} (vòng field), {{Mirror}} (tự reference qua field).`,
+      starter: `class CycleContainer {
+    private final boolean allowCircularReferences;
+
+    CycleContainer(boolean allowCircularReferences) { this.allowCircularReferences = allowCircularReferences; }
+
+    <T> void define(Class<T> type) { throw new UnsupportedOperationException("TODO"); }
+    <T> void define(Class<T> type, Class<?>... fieldDeps) { throw new UnsupportedOperationException("TODO"); }
+    <T> T get(Class<T> type) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class Audit {}
+class Ledger { final Audit audit; Ledger(Audit audit) { this.audit = audit; } }
+
+class Ctor1 { Ctor2 dep; Ctor1(Ctor2 dep) {} }
+class Ctor2 { Ctor3 dep; Ctor2(Ctor3 dep) {} }
+class Ctor3 { Ctor1 dep; Ctor3(Ctor1 dep) {} }
+
+class Order { Payment payment; }        // field được container gán sau khi tạo instance
+class Payment { Order order; }
+class Mirror { Mirror self; }`,
+      tests: `public class Main {
+ static int passed = 0, total = 0;
+ interface Body { void run() throws Exception; }
+ static void check(String name, Body body) { total++; try { body.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+ static void eq(Object a, Object b) { if (!java.util.Objects.equals(a, b)) throw new AssertionError("expected [" + b + "] but was [" + a + "]"); }
+ static void same(Object a, Object b) { if (a != b) throw new AssertionError("hai instance khác nhau: " + a + " vs " + b); }
+ static void cycle(Body body, String path) {
+  Throwable thrown = null;
+  try { body.run(); } catch (Throwable t) { thrown = t; }
+  if (!(thrown instanceof IllegalStateException)) throw new AssertionError("không báo cycle bằng IllegalStateException: " + thrown);
+  eq(thrown.getMessage(), "Circular dependency: " + path);
+ }
+ static CycleContainer lenient() { CycleContainer c = new CycleContainer(true); register(c); return c; }
+ static CycleContainer strict() { CycleContainer c = new CycleContainer(false); register(c); return c; }
+ static void register(CycleContainer c) {
+  c.define(Audit.class); c.define(Ledger.class);
+  c.define(Ctor1.class); c.define(Ctor2.class); c.define(Ctor3.class);
+  c.define(Order.class, Payment.class); c.define(Payment.class, Order.class);
+  c.define(Mirror.class, Mirror.class);
+ }
+ public static void main(String[] args) {
+  check("constructor injection and singleton cache", () -> {
+    CycleContainer c = lenient();
+    Ledger l = c.get(Ledger.class);
+    same(l.audit, c.get(Audit.class));
+    same(l, c.get(Ledger.class));
+  });
+  check("type chưa đăng ký thì báo Unregistered", () -> {
+    CycleContainer c = new CycleContainer(true);
+    try { c.get(Ledger.class); throw new AssertionError("đã tự tạo bean chưa đăng ký"); }
+    catch (IllegalStateException e) { eq(e.getMessage(), "Unregistered: Ledger"); }
+    c.define(Ledger.class);                       // đăng ký thiếu Audit: lỗi phải chỉ ra Audit
+    try { c.get(Ledger.class); throw new AssertionError("không báo thiếu dependency"); }
+    catch (IllegalStateException e) { eq(e.getMessage(), "Unregistered: Audit"); }
+  });
+  check("vòng constructor không phá được, báo cả đường đi", () -> {
+    cycle(() -> lenient().get(Ctor1.class), "Ctor1 -> Ctor2 -> Ctor3 -> Ctor1");
+    cycle(() -> strict().get(Ctor1.class), "Ctor1 -> Ctor2 -> Ctor3 -> Ctor1");
+  });
+  check("vòng field dùng early reference khi được phép", () -> {
+    CycleContainer c = lenient();
+    Order o = c.get(Order.class);
+    Payment p = c.get(Payment.class);
+    same(p, o.payment); same(o, p.order); same(o, c.get(Order.class));
+  });
+  check("vòng field bị từ chối theo mặc định, kèm đường đi", () -> {
+    cycle(() -> strict().get(Order.class), "Order -> Payment -> Order");
+    cycle(() -> strict().get(Payment.class), "Payment -> Order -> Payment");
+  });
+  check("tự reference qua field", () -> {
+    CycleContainer c = lenient();
+    Mirror m = c.get(Mirror.class);
+    same(m, m.self);
+    cycle(() -> strict().get(Mirror.class), "Mirror -> Mirror");
+  });
+  check("container vẫn dùng được sau khi một lần tạo thất bại", () -> {
+    CycleContainer c = lenient();
+    cycle(() -> c.get(Ctor1.class), "Ctor1 -> Ctor2 -> Ctor3 -> Ctor1");
+    Ledger l = c.get(Ledger.class);
+    same(l.audit, c.get(Audit.class));
+    cycle(() -> c.get(Ctor1.class), "Ctor1 -> Ctor2 -> Ctor3 -> Ctor1");
+    cycle(() -> c.get(Ctor2.class), "Ctor2 -> Ctor3 -> Ctor1 -> Ctor2");
+  });
+  check("early reference giữ đúng identity của bean", () -> {
+    CycleContainer c = lenient();
+    Payment p = c.get(Payment.class);              // Payment xin Order trong lúc Order đang tạo
+    Order o = c.get(Order.class);
+    same(o, p.order); same(o, c.get(Order.class)); eq(p, o.payment);
+  });
+  System.out.println("RESULT " + passed + "/" + total);
+ }
+}`,
+      reference: `class Audit {}
+class Ledger { final Audit audit; Ledger(Audit audit) { this.audit = audit; } }
+class Ctor1 { Ctor2 dep; Ctor1(Ctor2 dep) {} }
+class Ctor2 { Ctor3 dep; Ctor2(Ctor3 dep) {} }
+class Ctor3 { Ctor1 dep; Ctor3(Ctor1 dep) {} }
+class Order { Payment payment; }
+class Payment { Order order; }
+class Mirror { Mirror self; }
+
+class CycleContainer {
+    private final boolean allowCircularReferences;
+    private final Map<Class<?>, List<Class<?>>> fieldDeps = new HashMap<>();
+    private final Map<Class<?>, Object> singletons = new LinkedHashMap<>();   // cấp 1
+    private final Map<Class<?>, Object> early = new HashMap<>();              // cấp 2 (early reference)
+    private final Set<Class<?>> creating = new LinkedHashSet<>();             // stack "đang tạo", có giữ thứ tự
+
+    CycleContainer(boolean allowCircularReferences) { this.allowCircularReferences = allowCircularReferences; }
+
+    <T> void define(Class<T> type) { define(type, new Class<?>[0]); }
+    <T> void define(Class<T> type, Class<?>... deps) { fieldDeps.put(type, List.of(deps)); }
+
+    @SuppressWarnings("unchecked") <T> T get(Class<T> type) { return (T) create(type, false); }
+
+    private Object create(Class<?> type, boolean fromField) {
+        if (singletons.containsKey(type)) return singletons.get(type);
+        if (creating.contains(type)) {                       // cycle: A đang dở mà cần lại chính A
+            if (fromField && allowCircularReferences && early.containsKey(type)) return early.get(type);
+            throw new IllegalStateException("Circular dependency: " + pathOf(type));
+        }
+        List<Class<?>> deps = fieldDeps.get(type);
+        if (deps == null) throw new IllegalStateException("Unregistered: " + type.getSimpleName());
+        creating.add(type);
+        try {
+            java.lang.reflect.Constructor<?> ctor = type.getDeclaredConstructors()[0];
+            Object[] args = Arrays.stream(ctor.getParameterTypes()).map(t -> create(t, false)).toArray();
+            ctor.setAccessible(true);
+            Object bean = ctor.newInstance(args);            // constructor dependency bắt buộc phải xong trước
+            early.put(type, bean);                           // cấp 2: cho phép vòng qua field
+            for (Class<?> dep : deps) wire(bean, dep, create(dep, true));
+            singletons.put(type, bean);                      // xong: đưa lên cấp 1
+            return bean;
+        } catch (ReflectiveOperationException e) { throw new IllegalStateException(type + ": " + e, e); }
+        finally { creating.remove(type); early.remove(type); }
+    }
+
+    private String pathOf(Class<?> repeat) {
+        List<String> names = new ArrayList<>();
+        boolean started = false;
+        for (Class<?> c : creating) {
+            if (c == repeat) started = true;
+            if (started) names.add(c.getSimpleName());
+        }
+        names.add(repeat.getSimpleName());                   // lặp lại để đóng vòng
+        return String.join(" -> ", names);
+    }
+
+    private static void wire(Object bean, Class<?> dep, Object value) {
+        for (java.lang.reflect.Field field : bean.getClass().getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+            if (!field.getType().isAssignableFrom(dep)) continue;
+            field.setAccessible(true);
+            try {
+                if (field.get(bean) == null) { field.set(bean, value); return; }
+            } catch (IllegalAccessException e) { throw new IllegalStateException(e); }
+        }
+    }
+}`,
+      hints: [
+        'Cần bốn cấu trúc: một {{Map}} type → danh sách field deps đã đăng ký, {{Map}} singleton (cấp 1), {{Map}} early reference (cấp 2), và một {{Set}} **giữ thứ tự** các type đang tạo ({{LinkedHashSet}}) để in được đường đi. Hàm {{create}} nên nhận thêm cờ {{boolean fromField}} để phân biệt hai loại cycle.',
+        'Thứ tự quyết định hành vi: {{singletons}} trước, rồi {{creating}}, rồi mới kiểm tra đã đăng ký chưa. Vòng constructor ném lỗi ngay ở bước 2 vì {{fromField == false}}; vòng field thì {{fromField == true}} nên được trả {{early}} instance (nếu {{allowCircularReferences}}).',
+        'Ghi {{early}} **ngay sau khi gọi constructor** và **trước khi** populate field — đó chính là {{addSingletonFactory}}. Nếu ghi sau khi populate xong thì vòng không bao giờ phá được.',
+        'Đường đi: duyệt {{creating}} theo thứ tự chèn, tìm phần tử đầu tiên trùng type bị lặp, in từ đó tới hết rồi lặp lại tên đó lần cuối. {{creating.remove(type)}}, {{early.remove(type)}} phải nằm trong {{finally}}, nếu không một lần lỗi sẽ khiến các Bean khác bị báo cycle giả.',
+        'Gán field bằng {{getDeclaredFields()}}, lọc field không static có {{getType().isAssignableFrom(dep)}} và đang {{null}}, rồi {{setAccessible(true)}} + {{set}}.'
+      ],
+      explain: `Bài tập này tái hiện đúng ba quyết định trong {{AbstractAutowireCapableBeanFactory.doCreateBean}}.
+
+**Constructor vs field là hai thế giới khác nhau.** Test "vòng constructor không phá được" chạy với {{allowCircularReferences == true}} mà vẫn lỗi: tại thời điểm cần tham số, bean kia **chưa tồn tại** nên không có gì để đưa. Test "vòng field" thì qua, vì instance đã được tạo và ghi vào {{early}} trước khi populate — đó chính là early reference. Spring Boot 2.6+ quyết định không dùng cơ chế này nữa mặc định, nên cùng một đồ thị, app cũ chạy, app mới fail khởi động: hai assert "{{vòng field bị từ chối theo mặc định}}" mô phỏng đúng thay đổi đó, và thông báo có **đường đi** là thứ giúp bạn định vị trong 30 giây.
+
+**{{finally}} là bài học thật.** Test "container vẫn dùng được sau khi một lần tạo thất bại" bắt lỗi quên gỡ {{creating}}/{{early}}. Không gỡ {{creating}} thì bean kế tiếp ({{Ledger}}) bị báo cycle giả; gỡ nhưng xoá bằng {{clear()}} thì lại phá cả stack của caller ở tầng trên. Spring cũng làm vậy: {{DefaultSingletonBeanRegistry.getSingleton}} có {{try/finally}} để gỡ dấu "đang tạo" cho riêng bean đó.
+
+**Identity, không phải bản sao.** Test "early reference giữ đúng identity" bắt đầu từ {{Payment}} để buộc Order được tạo làm early reference, rồi assert {{c.get(Order.class)}} **là đúng cái** {{Payment}} đã nhận. Nếu implementation của bạn trả về instance mới mỗi lần xin early reference thì {{o.payment != p}} — đây chính xác là loại bug "field null lúc 2h sáng" mà early reference + proxy tạo ra trong Spring thật khi cấp 2 và cấp 3 không nhất quán.
+
+Bốn chỗ dễ sai khác:
+- Quên cờ {{fromField}} và đồng nhất mọi cycle thành một loại → vòng field bị báo sai, hoặc ngược lại vòng constructor "chạy được" (sai hoàn toàn bản chất).
+- {{List.of(deps)}} cho varargs rỗng → list trống, fine; nhưng đừng {{null}} để rồi NPE.
+- {{field.set}} trên field {{final}} ({{Ledger.audit}}): với object vừa tạo bằng reflection thì hợp lệ, nhưng nếu bạn gán {{Ledger.audit}} qua wire thì test singleton fail — field deps chỉ dành cho type đã khai báo.
+- Báo "{{Circular dependency:}}" **kèm** tên bean ở cả hai phía nhưng không có "{{->}}" → assert chuỗi không khớp; format là một phần của đặc tả, vì nó chính là thứ bạn dán vào ticket.
+
+Muốn gần Spring hơn: đổi {{early}} thành {{Map<Class<?>, Supplier<Object>>}} (cấp 3 thật sự là {{ObjectFactory}}), và khi bean có "AOP" — ví dụ implement một interface {{Proxied}} — thì factory trả về proxy của instance thay vì instance thô. Bạn sẽ thấy ngay vì sao cấp 3 cần thiết chứ không phải thừa.`
+    }],
+    check: [
+        { q: 'Ứng dụng Spring Boot 3 có {{A(B b)}} trong constructor và {{B(A a)}}, không cấu hình gì thêm. Kết quả?', options: ['Chạy bình thường, vì Spring luôn giải được vòng', 'Khởi động thất bại với thông báo mô tả đường đi của vòng: constructor cycle không phá được bằng early reference', 'Spring tạo hai instance cho mỗi bean để phá vòng', 'Chỉ lỗi khi có request đầu tiên đi qua {{A}}'], answer: 1, explain: `{{new A(b)}} đòi {{b}} đã hoàn chỉnh và ngược lại, nên không tồn tại thứ tự tạo; container báo {{BeanCurrentlyInCreationException}} (Boot in thành thông báo "form a cycle" kèm đường đi) ngay lúc refresh context. Trường hợp "chạy bình thường" chỉ đúng với vòng **qua field/setter** và khi {{allow-circular-references = true}} (mặc định cũ, trước Boot 2.6). Spring không nhân bản bean để phá vòng, và lỗi xảy ra lúc khởi động chứ không chờ request.` },
+        { q: 'Vòng {{Order}} ↔ {{Payment}} qua field injection, {{spring.main.allow-circular-references=true}}. Điều nào ĐÚNG?', options: ['{{Payment}} nhận một bản sao khác của {{Order}}', 'Một trong hai bean nhận tham chiếu tới object **chưa chạy** {{@PostConstruct}} và chưa được populate đầy đủ', 'Spring tự chuyển hai bean sang scope {{prototype}}', 'Bean được inject muộn hơn, ngay lần gọi đầu tiên'], answer: 1, explain: `Early reference được lấy ra ở cấp 2 **sau bước tạo instance, trước initializeBean**, nên bean nhận về thấy field chưa gán và callback khởi tạo chưa chạy. Đó chính là lý do mặc định mới tắt cơ chế này. Hai bean vẫn là singleton duy nhất (không bản sao), không có đổi scope, và việc inject xảy ra lúc khởi tạo chứ không đợi lần gọi đầu.` },
+        { q: 'Bạn nâng app từ Spring Boot 2.5 lên 2.7 mà **không sửa code**, app fail khởi động vì circular reference. Cách xử lý nào đúng tinh thần nhất?', options: ['Đặt {{spring.main.allow-circular-references=true}} để như cũ', 'Đọc đường đi trong thông báo rồi phá vòng: tách bean thứ ba, đảo chiều phụ thuộc qua interface, hoặc đẩy sang event; {{@Lazy}} chỉ là giải pháp tạm', 'Chuyển hết field injection sang constructor injection', 'Xoá một trong hai bean'], answer: 1, explain: `Mặc định 2.6+ phản ánh một quyết định thiết kế: cycle là nợ kỹ thuật, thông báo đã chỉ rõ đường đi để bạn sửa đúng chỗ. Bật lại cờ thì app chạy nhưng giữ nguyên cấu trúc vòng và nhận thêm early reference "nửa vời". Chuyển **hết** sang constructor injection làm cycle lộ ra ngay cả với những vòng trước đó từng phá được — không phải cách sửa. Xoá bean là thay đổi hành vi.` },
+        { q: '{{ObjectProvider<X>}} và {{@Lazy}} trên tham số constructor giúp gì cho vòng phụ thuộc?', options: ['Làm container tạo thêm một instance X nữa', 'Cắt chu trình lúc khởi tạo: dependency chỉ được resolve khi **lần đầu sử dụng**, nên đồ thị ban đầu không cần X hoàn chỉnh', 'Tự động phá cycle mà không cần chú ý tới thứ tự khởi tạo nữa', 'Chuyển bean X sang scope {{request}}'], answer: 1, explain: `{{@Lazy}} inject một proxy chưa resolve; {{ObjectProvider}} là "cái núm xoay chậm": cả hai đều hoãn {{getBean(X)}} tới lúc gọi {{getObject()}}, đủ để {{A}} được tạo xong mà không cần {{B}} hoàn chỉnh. Không có instance thừa, scope không đổi. Và cycle vẫn còn trong thiết kế — đồ thị thật chỉ được cắt ở thì khởi động, nên nếu {{B}} chưa init xong thì lỗi vẫn có thể xuất hiện về sau.` }
+    ],
+    related: ['spring-008', 'spring-001', 'spring-028'], tags: ['circular dependency', 'DI', 'early reference', 'BeanCurrentlyInCreationException', '@Lazy']
   }
 );

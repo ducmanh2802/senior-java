@@ -28,7 +28,7 @@
       'ai.settings.aiOk': '✅ {model}',
       'ai.settings.aiMissing': '❌ thiếu OPENROUTER_API_KEY',
       'ai.settings.runOk': '✅',
-      'ai.settings.runMissing': '❌ thiếu JUDGE0_KEY (sẽ dùng AI review code thay thế)',
+      'ai.settings.runMissing': '❌ máy chạy code chưa sẵn sàng (sẽ dùng AI review code thay thế)',
       'ai.settings.speech': 'Giọng nói: {supported}',
       'ai.settings.speechSupported': '✅ trình duyệt hỗ trợ (cần cấp quyền micro)',
       'ai.settings.speechUnsupported': '❌ trình duyệt không hỗ trợ — dùng Chrome hoặc Edge',
@@ -86,7 +86,7 @@
       'ai.settings.aiOk': '✅ {model}',
       'ai.settings.aiMissing': '❌ thiếu OPENROUTER_API_KEY',
       'ai.settings.runOk': '✅',
-      'ai.settings.runMissing': '❌ missing JUDGE0_KEY (will use AI code review instead)',
+      'ai.settings.runMissing': '❌ code runner unavailable (will use AI code review instead)',
       'ai.settings.speech': 'Speech: {supported}',
       'ai.settings.speechSupported': '✅ browser supports (needs mic permission)',
       'ai.settings.speechUnsupported': '❌ browser does not support — use Chrome or Edge',
@@ -396,7 +396,9 @@ const ui = {
       const cases = parsed && parsed.cases.length ? '<ul class="run-cases">' + parsed.cases.map(c =>
         '<li class="' + (c.ok ? 'ok' : 'bad') + '">' + (c.ok ? '✔' : '✘') + ' ' + esc(c.name) + (c.detail ? ' — <span class="muted">' + esc(c.detail) + '</span>' : '') + '</li>').join('') + '</ul>' : '';
       const err = run.stderr ? '<pre class="code"><code>' + esc(run.stderr.slice(0, 3000)) + '</code></pre>' : '';
-      const meta = run.time ? ' <span class="muted small">' + App.t('ai.runResult.time', { time: run.time, mem: Math.round((run.memory || 0) / 1024) }) + '</span>' : '';
+      const meta = !run.time ? '' : ' <span class="muted small">' + (run.memory
+        ? App.t('ai.runResult.time', { time: run.time, mem: Math.round(run.memory / 1024) })
+        : esc(run.time) + 's') + '</span>';
       return '<div class="run-box">' + head + meta + cases + err + '</div>';
     },
     /** Friendly message for an AiError, with a settings hint when relevant. */

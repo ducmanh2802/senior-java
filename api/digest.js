@@ -1,6 +1,7 @@
 /*
  * GET /api/digest              → latest daily digest ("Bản tin hôm nay") + recent dates
  * GET /api/digest?date=YYYY-MM-DD → that day's digest (digest: null when there is none)
+ * GET /api/digest?kind=jobs[&date=…] → the daily job digest (table job_digest, docs/JOBS-DIGEST.md), same shape
  * Public, read-only. Rows are written by the editor with scripts/publish-digest.js (docs/NEWS-DIGEST.md).
  * → { configured, digest: {date, intro, items, published_at} | null, dates: ['YYYY-MM-DD', …], setup? }
  */
@@ -23,6 +24,7 @@ module.exports = async function handler(req, res) {
 
   const q = req.query || {};
   const date = typeof q.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.date) && !isNaN(Date.parse(q.date)) ? q.date : null;
+  const TABLE = q.kind === 'jobs' ? 'job_digest' : 'news_digest';
   if (q.date && !date) { send(res, 400, { error: 'date phải có dạng YYYY-MM-DD', code: 'bad_date' }); return; }
 
   if (!supabaseConfigured()) {
@@ -31,11 +33,11 @@ module.exports = async function handler(req, res) {
   }
 
   const one = date
-    ? '/rest/v1/news_digest?date=eq.' + date + '&select=date,intro,items,published_at&limit=1'
-    : '/rest/v1/news_digest?select=date,intro,items,published_at&order=date.desc&limit=1';
+    ? '/rest/v1/' + TABLE + '?date=eq.' + date + '&select=date,intro,items,published_at&limit=1'
+    : '/rest/v1/' + TABLE + '?select=date,intro,items,published_at&order=date.desc&limit=1';
   let r1, r2;
   try {
-    [r1, r2] = await Promise.all([one, '/rest/v1/news_digest?select=date&order=date.desc&limit=60'].map(p => supabase(p)));
+    [r1, r2] = await Promise.all([one, '/rest/v1/' + TABLE + '?select=date&order=date.desc&limit=60'].map(p => supabase(p)));
   } catch (e) {
     console.error('digest: ' + e.message);
     send(res, 502, { error: 'Không đọc được bản tin, thử lại sau' });
@@ -44,7 +46,7 @@ module.exports = async function handler(req, res) {
   if (!r1.ok || !r2.ok) {
     const text = await (r1.ok ? r2 : r1).text();
     // table not created yet (PostgREST: PGRST205 / 42P01) → treat as "no digest yet", tell the admin what to do
-    if (/PGRST205|42P01|news_digest/.test(text) && (r1.status === 404 || r2.status === 404 || /does not exist|schema cache/.test(text))) {
+    if (/PGRST205|42P01|_digest/.test(text) && (r1.status === 404 || r2.status === 404 || /does not exist|schema cache/.test(text))) {
       sendCached(res, 200, { configured: true, digest: null, dates: [], setup: 'missing_table' }, 'public, s-maxage=300');
       return;
     }

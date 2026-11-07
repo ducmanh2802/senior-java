@@ -21,9 +21,9 @@
       // GENERATED compact index of the heavy groups (scripts/build-light-index.js) for light routes; ~100 KB
       index: ['index-light.js'],
       questions: ['q-java.js', 'q-kotlin.js', 'q-concurrency-jvm.js', 'q-spring-data.js', 'q-sql.js', 'q-api.js',
-        'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-aws.js', 'q-ai.js',
-        'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js'],
-      quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js'],
+        'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-banking.js', 'q-aws.js', 'q-ai.js',
+        'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js', 'q-autotest.js'],
+      quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js'],
       exams: ['exams.js'],                                    // exam registry (#/exam)
       algos: ['algo.js'],
       companies: ['companies.js'],
@@ -31,7 +31,7 @@
       lessons: ['lessons-collections.js', 'lessons-core.js', 'lessons-modern.js', 'lessons-concurrency.js',
         'lessons-spring.js', 'lessons-jpa.js', 'lessons-design.js', 'lessons-microservices.js', 'lessons-db.js',
         'lessons-jvm.js', 'lessons-sql.js', 'lessons-security.js', 'lessons-testing.js', 'lessons-api.js',
-        'lessons-devops.js', 'lessons-architecture.js', 'lessons-ai.js', 'lessons-claude.js', 'lessons-aws.js'],
+        'lessons-devops.js', 'lessons-architecture.js', 'lessons-ai.js', 'lessons-claude.js', 'lessons-aws.js', 'lessons-banking.js', 'lessons-autotest.js'],
       sd: ['sd-problems.js'],
       drills: ['drills-shadow.js', 'drills-qa.js', 'drills-term.js'],
       glossary: ['glossary-dist.js', 'glossary-java.js', 'glossary-infra.js'],
@@ -72,7 +72,7 @@
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)

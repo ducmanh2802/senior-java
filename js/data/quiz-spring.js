@@ -1630,5 +1630,772 @@ Token bucket tách bạch hai tham số: **tốc độ nạp** (trung bình dài
 - **Giới hạn connection đồng thời**: kiểm soát concurrency, không phải tốc độ; request nhanh có thể vượt xa 10/giây, request chậm thì bị chặn oan.
 
 > Senior tip: trong hệ thống nhiều instance, rate limit cục bộ ở từng pod sẽ nhân giới hạn lên theo số pod; cần store chung (Redis) hoặc chia giới hạn theo số instance. Khi Redis lỗi, quyết định trước là fail-open (cho qua) hay fail-closed (chặn) tuỳ mức độ quan trọng của API.`
+},
+{
+  id: 'qz-spring-021',
+  topic: 'spring',
+  q: 'Bạn gọi method {{@Transactional}} của cùng bean qua {{this}} (self-invocation). Method có rollbackFor? Kết quả transaction?',
+  options: [
+    'Transaction vẫn mở và rollback nếu exception',
+    'Không có proxy nên không có transaction, exception propagate bình thường',
+    'Spring tự động tạo proxy cho self-call',
+    'Compile lỗi'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: self-invocation không qua proxy, nên không có transaction.**
+
+### Vì sao đúng
+Spring AOP proxy bọc bean; chỉ lời gọi từ bên ngoài qua proxy mới kích hoạt advice. Gọi {{this.method()}} là gọi trực tiếp object gốc, proxy bị bỏ qua, nên @Transactional không có tác dụng. Exception propagate bình thường mà không rollback.
+
+### Vì sao khác sai
+- **Vẫn mở transaction**: chỉ đúng nếu gọi qua proxy (bean khác).
+- **Tự tạo proxy**: Spring không tự tạo cho self-call.
+- **Compile lỗi**: không có lỗi compile.
+
+> Senior tip: tránh self-invocation; tách logic vào bean khác hoặc dùng ApplicationEventPublisher.`
+},
+{
+  id: 'qz-spring-022',
+  topic: 'spring',
+  multi: true,
+  q: 'Spring bean scope nào là mặc định và nào tạo instance mới mỗi request? (Chọn 2)',
+  options: [
+    'singleton mặc định',
+    'prototype tạo mới mỗi lần getBean',
+    'request scope tạo mới mỗi HTTP request',
+    'session scope tạo mới mỗi session',
+    'application scope tạo mới mỗi ServletContext'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: singleton mặc định; request scope tạo mới mỗi HTTP request.**
+
+### Vì sao đúng
+- Singleton là scope mặc định, một instance cho toàn context.
+- Request scope tạo mới instance mỗi HTTP request (trong web context).
+
+### Vì sao khác sai
+- Prototype tạo mới mỗi lần getBean (đúng nhưng không phải HTTP request).
+- Session/application không phải mặc định cho câu hỏi này.
+
+> Senior tip: dùng request scope cẩn thận với proxy; inject scoped bean vào singleton cần proxy.`
+},
+{
+  id: 'qz-spring-023',
+  topic: 'spring',
+  q: 'Spring Boot auto-configuration bật khi nào?',
+  options: [
+    'Luôn bật khi có dependency',
+    'Khi classpath có class và không có bean do user định nghĩa (@ConditionalOnMissingBean)',
+    'Chỉ khi profile prod active',
+    'Khi property spring.boot.enable-autoconfig=true'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: khi classpath có class và không có bean do user định nghĩa.**
+
+### Vì sao đúng
+Auto-config dùng @ConditionalOnClass và @ConditionalOnMissingBean để chỉ bật khi dependency có và user chưa tự định nghĩa bean.
+
+### Vì sao khác sai
+- Không luôn bật; có điều kiện.
+- Không phụ thuộc profile mặc định.
+- Property không phải điều kiện chính.
+
+> Senior tip: dùng --debug để xem condition evaluation report.`
+},
+{
+  id: 'qz-spring-024',
+  topic: 'spring',
+  multi: true,
+  q: 'TransactionalEventListener phase nào chạy sau commit thành công? (Chọn 2)',
+  options: [
+    'AFTER_COMMIT',
+    'AFTER_ROLLBACK',
+    'AFTER_COMPLETION',
+    'BEFORE_COMMIT',
+    'IMMEDIATE'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: AFTER_COMMIT và AFTER_COMPLETION.**
+
+### Vì sao đúng
+- AFTER_COMMIT chạy sau commit thành công.
+- AFTER_COMPLETION chạy sau khi transaction kết thúc (commit hoặc rollback).
+
+### Vì sao khác sai
+- AFTER_ROLLBACK chỉ sau rollback.
+- BEFORE_COMMIT chưa có.
+- IMMEDIATE không phải phase.
+
+> Senior tip: AFTER_COMMIT vẫn có khe hở pod chết; dùng outbox cho event bắt buộc.`
+},
+{
+  id: 'qz-jpa-021',
+  topic: 'jpa',
+  q: 'Batch insert với IDENTITY strategy có vấn đề gì?',
+  options: [
+    'Không có vấn đề',
+    'Hibernate phải INSERT ngay để lấy id, phá batching',
+    'Sequence phải allocationSize=1',
+    'Không compile'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Hibernate phải INSERT ngay để lấy id, phá batching.**
+
+### Vì sao đúng
+IDENTITY bắt buộc INSERT ngay để lấy id, nên JDBC batching không thể gom insert.
+
+### Vì sao khác sai
+- Có vấn đề rõ ràng.
+- Sequence allocationSize không liên quan IDENTITY.
+- Compile được.
+
+> Senior tip: dùng SEQUENCE với pooled optimizer cho batch insert lớn.`
+},
+{
+  id: 'qz-jpa-022',
+  topic: 'jpa',
+  multi: true,
+  q: 'Bulk update qua @Modifying có tác dụng gì? (Chọn 2)',
+  options: [
+    'Bỏ qua persistence context',
+    'Cập nhật nhiều dòng bằng một câu UPDATE',
+    'Tự động flush trước',
+    'Tự động clear sau',
+    'Tự động rollback nếu lỗi'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: bỏ qua persistence context và cập nhật nhiều dòng bằng một câu UPDATE.**
+
+### Vì sao đúng
+@Modifying thực thi bulk update trực tiếp trên DB, bỏ qua persistence context; cập nhật nhiều dòng trong một câu.
+
+### Vì sao khác sai
+- Không tự flush/clear/rollback mặc định (clearAutomatically optional).
+
+> Senior tip: sau bulk update, clear persistence context để tránh stale entity.`
+},
+{
+  id: 'qz-jpa-023',
+  topic: 'jpa',
+  q: 'DTO projection trong Spring Data JPA là gì?',
+  options: [
+    'Entity đầy đủ',
+    'Interface hoặc class chỉ chứa subset cột, query chỉ SELECT các cột đó',
+    'Native query bắt buộc',
+    'Cache L2'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: interface hoặc class chỉ chứa subset cột.**
+
+### Vì sao đúng
+Projection định nghĩa tập con cột; Spring Data sinh query chỉ SELECT các cột đó, không có managed entity.
+
+### Vì sao khác sai
+- Không phải entity đầy đủ.
+- Không bắt buộc native.
+- Không liên quan cache.
+
+> Senior tip: dùng projection cho màn hình đọc để giảm I/O và heap.`
+},
+{
+  id: 'qz-jpa-024',
+  topic: 'jpa',
+  multi: true,
+  q: 'Optimistic lock với @Version hoạt động thế nào? (Chọn 2)',
+  options: [
+    'Kiểm tra version khi UPDATE',
+    'Ném OptimisticLockException nếu version mismatch',
+    'Khoá dòng DB',
+    'Tự retry',
+    'Dùng cho read-heavy'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: kiểm tra version khi UPDATE và ném OptimisticLockException nếu mismatch.**
+
+### Vì sao đúng
+@Version thêm cột version; UPDATE có WHERE version = ?; nếu không có dòng nào cập nhật thì ném OptimisticLockException.
+
+### Vì sao khác sai
+- Không khoá dòng DB (pessimistic mới khoá).
+- Không tự retry.
+
+> Senior tip: retry ở tầng service, không trong transaction.`
+},
+{
+  id: 'qz-db-021',
+  topic: 'db',
+  q: 'MVCC trong PostgreSQL nghĩa là gì?',
+  options: [
+    'Mỗi UPDATE tạo phiên bản mới, readers không block writers',
+    'Khoá bảng khi write',
+    'Không có snapshot',
+    'Chỉ dùng cho SELECT'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: mỗi UPDATE tạo phiên bản mới, readers không block writers.**
+
+### Vì sao đúng
+MVCC giữ nhiều phiên bản; reader thấy snapshot, writer tạo phiên bản mới, không chặn nhau.
+
+### Vì sao khác sai
+- Không khoá bảng.
+- Có snapshot.
+- Áp dụng mọi operation.
+
+> Senior tip: autovacuum dọn dead tuple; transaction treo chặn cleanup.`
+},
+{
+  id: 'qz-db-022',
+  topic: 'db',
+  multi: true,
+  q: 'Isolation level nào ngăn lost update? (Chọn 2)',
+  options: [
+    'READ COMMITTED với SELECT FOR UPDATE',
+    'REPEATABLE READ (PostgreSQL)',
+    'READ UNCOMMITTED',
+    'SERIALIZABLE',
+    'READ COMMITTED plain'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: REPEATABLE READ (PostgreSQL) và SERIALIZABLE.**
+
+### Vì sao đúng
+PostgreSQL RR chặn update đồng thời trên cùng dòng; SERIALIZABLE phát hiện xung đột.
+
+### Vì sao khác sai
+- READ COMMITTED plain có thể lost update.
+- READ UNCOMMITTED không an toàn.
+
+> Senior tip: dùng UPDATE atomic hoặc lock để tránh lost update.`
+},
+{
+  id: 'qz-db-023',
+  topic: 'db',
+  q: 'Index nào giúp query WHERE lower(email)=? nhanh?',
+  options: [
+    'Index thường trên email',
+    'Expression index trên lower(email)',
+    'Hash index',
+    'Partial index'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: expression index trên lower(email).**
+
+### Vì sao đúng
+Expression index stores computed value; query must match expression exactly.
+
+### Vì sao khác sai
+- Index thường không chứa lower().
+- Hash/partial không giải quyết hàm.
+
+> Senior tip: chuẩn hoá dữ liệu khi ghi để tránh hàm trong WHERE.`
+},
+{
+  id: 'qz-db-024',
+  topic: 'db',
+  multi: true,
+  q: 'Deadlock xảy ra khi nào? (Chọn 2)',
+  options: [
+    'Hai transaction cùng chờ lock của nhau',
+    'Lock theo thứ tự khác nhau',
+    'Isolation READ COMMITTED',
+    'Index thiếu',
+    'Transaction quá ngắn'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: hai transaction cùng chờ lock của nhau; lock theo thứ tự khác nhau.**
+
+### Vì sao đúng
+Deadlock là cycle wait; lock ordering khác nhau gây cycle.
+
+### Vì sao khác sai
+- Isolation không trực tiếp gây deadlock.
+- Transaction ngắn giảm rủi ro.
+
+> Senior tip: luôn lock theo cùng thứ tự (id tăng dần).`
+},
+{
+  id: 'qz-api-023',
+  topic: 'api',
+  q: 'Idempotency key dùng để làm gì?',
+  options: [
+    'Mã hoá payload',
+    'Đảm bảo retry cùng request không tạo duplicate',
+    'Xác thực user',
+    'Rate limit'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đảm bảo retry cùng request không tạo duplicate.**
+
+### Vì sao đúng
+Idempotency key định danh request; server trả response đã cache cho key trùng.
+
+### Vì sao khác sai
+- Không mã hoá/xác thực/rate limit.
+
+> Senior tip: lưu key với TTL và response để replay.`
+},
+{
+  id: 'qz-api-024',
+  topic: 'api',
+  multi: true,
+  q: 'Response 429 nên kèm gì? (Chọn 2)',
+  options: [
+    'Retry-After',
+    'RateLimit headers',
+    'Set-Cookie',
+    'Location',
+    'ETag'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: Retry-After và RateLimit headers.**
+
+### Vì sao đúng
+429 nghĩa là quá nhiều request; Retry-After cho biết khi nào retry; RateLimit headers hiển thị quota.
+
+### Vì sao khác sai
+- Cookie/Location/ETag không liên quan.
+
+> Senior tip: client backoff + jitter để tránh spike.`
+},
+{
+  id: 'qz-api-025',
+  topic: 'api',
+  q: 'API versioning an toàn nhất thường dùng gì?',
+  options: [
+    'URL path /v1/',
+    'Query param version',
+    'Header Accept version',
+    'Không version'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: URL path /v1/.**
+
+### Vì sao đúng
+URL path versioning rõ ràng, dễ cache, dễ route; phổ biến nhất.
+
+### Vì sao khác sai
+- Query/header cũng dùng nhưng kém rõ ràng/cache.
+- Không version gây breaking.
+
+> Senior tip: dùng expand/contract khi deprecate.`
+},
+{
+  id: 'qz-spring-025',
+  topic: 'spring',
+  q: 'Hai class @Component đều implements {{BeanPostProcessor}}: {{BPPA}} có {{@Priority(10)}} và {{BPPB}} có {{@Priority(100)}}. Cả hai ghi log trong {{postProcessBeforeInitialization}} và trả về đối tượng bean không thay đổi. Bean mục tiêu có {{@PostConstruct}}. Thứ tự Spring xử lý là gì?',
+  options: [
+    'Log của BPPA, rồi log của BPPB, sau đó mới chạy {{@PostConstruct}} của bean',
+    'Log của BPPB, rồi log của BPPA, sau đó mới chạy {{@PostConstruct}} của bean',
+    '{{@PostConstruct}} chạy trước cả hai log',
+    'Thứ tự không đảm bảo, phụ thuộc vào tên class'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: BPP số ưu tiên thấp trước (BPPA @Priority(10)), sau đó mới chạy {{@PostConstruct}}.**
+
+### Vì sao đúng
+Spring sắp xếp các {{BeanPostProcessor}} bằng {{@Priority}} (số thấp hơn = ưu tiên cao hơn = chạy trước). Vòng đời khởi tạo một bean:
+~~~text
+1. BeanPostProcessor.postProcessBeforeInitialization (theo thứ tự @Priority)
+2. @PostConstruct / InitializingBean.afterPropertiesSet / init-method
+3. BeanPostProcessor.postProcessAfterInitialization (lúc này proxy AOP, ví dụ @Transactional, mới được tạo)
+~~~
+Cả hai BPP trả về đối tượng gốc nên bean không bị thay thế. {{@PostConstruct}} chạy đúng trên bean gốc, và chạy **trước khi** proxy AOP tồn tại. Đây cũng là lý do gọi {{this.method()}} có {{@Transactional}} bên trong {{@PostConstruct}} không mở transaction.
+
+### Vì sao các phương án còn lại sai
+- **BPPB trước**: sai, số {{@Priority}} lớn hơn chạy sau.
+- **@PostConstruct trước**: callback khởi tạo luôn nằm sau postProcessBeforeInitialization.
+- **Không đảm bảo**: Spring sắp xếp rõ ràng bằng {{@Priority}} hoặc {{@Order}}, không ngẫu nhiên.
+
+> Senior tip: nhiều {{BeanPostProcessor}} cùng can thiệp vào một bean thì thứ tự rất quan trọng; ví dụ một BPP bọc bean thành proxy thì BPP sau đó nhận đối tượng đã được bọc. Ghi log thứ tự khởi tạo ở môi trường dev nếu nghi ngờ.`
+},
+{
+  id: 'qz-spring-026',
+  topic: 'spring',
+  q: `Auto-configuration của một thư viện khai báo:
+~~~java
+@Configuration
+@ConditionalOnClass(name = "org.springframework.data.redis.core.RedisTemplate")
+@ConditionalOnProperty(prefix = "app.feature", name = "enabled", havingValue = "true", matchIfMissing = true)
+public class FeatureAutoConfiguration {
+    @Bean
+    public FeatureService featureService() { return new FeatureService(); }
+}
+~~~
+Environment **không** có property {{app.feature.enabled}} nào, nhưng class {{RedisTemplate}} có trên classpath. Bean {{FeatureService}} được tạo không?`,
+  options: [
+    'Không, vì thiếu property nên @ConditionalOnProperty không match',
+    'Có, vì {{matchIfMissing = true}} coi việc thiếu property là match, và class RedisTemplate có trên classpath',
+    'Có, dù class RedisTemplate có trên classpath hay không',
+    'Không, vì @ConditionalOnClass và @ConditionalOnProperty không dùng cùng nhau được'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: được tạo, vì matchIfMissing = true khiến thiếu property được coi như match.**
+
+### Vì sao đúng
+Các điều kiện của auto-configuration được **AND** lại: @ConditionalOnClass kiểm tra classpath (class RedisTemplate phải có), @ConditionalOnProperty kiểm tra environment. Mặc định matchIfMissing = false, nghĩa là thiếu property thì điều kiện fail. Với matchIfMissing = true, thiếu property được coi là match, nên bean vẫn được tạo. Nếu thiếu class RedisTemplate thì auto-configuration này bị bỏ qua hoàn toàn.
+
+### Vì sao các phương án còn lại sai
+- **Thiếu property nên không match**: sai khi matchIfMissing = true; đây chính là điểm khác biệt so với mặc định.
+- **Dù có class hay không**: sai, @ConditionalOnClass vẫn bắt buộc class phải có trên classpath.
+- **Hai điều kiện mâu thuẫn**: sai, chúng phối hợp nhau, điều kiện nào fail thì auto-config không áp dụng.
+
+> Senior tip: khi viết auto-configuration cho thư viện của riêng mình, hãy kết hợp @ConditionalOnClass (thư viện có trên classpath), @ConditionalOnMissingBean (người dùng chưa định nghĩa bean) và @ConditionalOnProperty (bật/tắt bằng thuộc tính), để Boot tự lùi lại khi người dùng muốn kiểm soát bằng tay.`
+},
+{
+  id: 'qz-spring-027',
+  topic: 'spring',
+  multi: true,
+  q: 'Method {{A.placeOrder()}} có {{@Transactional}} (mặc định REQUIRED) và gọi {{B.logAudit()}} có {{@Transactional(propagation = Propagation.REQUIRES_NEW)}}. {{B}} ghi log vào cùng DB rồi commit. Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    '{{B.logAudit}} chạy trong transaction vật lý riêng; commit hay rollback của {{B}} không làm thay đổi kết quả của transaction {{A}}',
+    'Khi {{B}} bắt đầu, transaction của {{A}} bị tạm ngưng (suspend), connection của {{A}} được trả về pool trong khi {{B}} chạy',
+    'Nếu {{B}} ném exception và rollback, transaction {{A}} cũng bị đánh dấu rollback-only',
+    '{{REQUIRES_NEW}} không cần kết nối DB vì chỉ lưu nhật ký trong bộ nhớ',
+    'Gọi this.logAudit() trong cùng class {{A}} vẫn áp dụng {{REQUIRES_NEW}}'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: transaction riêng của B, transaction của A bị tạm ngưng.**
+
+### Vì sao đúng
+Propagation {{REQUIRES_NEW}} tạo một transaction vật lý mới, riêng biệt. Transaction của {{A}} bị **suspend**: connection của nó được trả về pool, transaction của {{B}} dùng một connection riêng. Commit hay rollback của {{B}} không ảnh hưởng đến {{A}}, và ngược lại. Vì mỗi transaction giữ một connection, dùng REQUIRES_NEW nhiều sẽ làm cạn nhanh connection pool nếu pool không đủ lớn.
+
+### Vì sao các phương án còn lại sai
+- **B rollback thì A rollback-only**: sai, hai transaction độc lập; rollback của B không lan sang A.
+- **Không cần kết nối DB**: sai, REQUIRES_NEW vẫn cần một connection JDBC cho transaction riêng của nó.
+- **this.logAudit() vẫn REQUIRES_NEW**: sai, gọi this() bỏ qua proxy, advice @Transactional không được kích hoạt (self-invocation).
+
+> Senior tip: REQUIRES_NEW hợp cho audit log phải lưu dù nghiệp vụ chính rollback, nhưng nhớ nó giữ **2 connection cùng lúc** (1 của A đang suspend, 1 của B). Pool nhỏ dưới tải cao có thể tự chặn chính mình: mọi thread giữ 1 connection và chờ connection thứ 2.`
+},
+{
+  id: 'qz-spring-028',
+  topic: 'spring',
+  q: `Method sau trong service:
+~~~java
+@Transactional(noRollbackFor = {RuntimeException.class})
+public void process() {
+    orderRepo.save(new Order("PENDING"));
+    throw new RuntimeException("lỗi nghiệp vụ");
+}
+~~~
+Exception được caller bắt lại và không tiếp tục ném. Trạng thái đơn hàng trong DB sau khi method kết thúc là gì?`,
+  options: [
+    'Rollback, đơn hàng không được lưu, vì RuntimeException luôn gây rollback',
+    'Commit, đơn hàng PENDING được lưu, vì noRollbackFor loại trừ RuntimeException khỏi quy tắc rollback',
+    'Rollback, rồi Spring tự retry method một lần',
+    'Không compile được, vì noRollbackFor không cho phép chứa RuntimeException'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: commit, đơn hàng PENDING được lưu.**
+
+### Vì sao đúng
+Mặc định Spring rollback khi gặp RuntimeException hoặc Error. Thuộc tính {{noRollbackFor}} ghi đè quy tắc đó: các exception liệt kê trong {{noRollbackFor}} **không** gây rollback. Ở đây RuntimeException nằm trong danh sách nên transaction vẫn commit; exception vẫn được ném ra để caller bắt, nhưng dữ liệu đã lưu vào DB. {{rollbackFor}} là thuộc tính ngược lại: liệt kê các exception **bắt buộc** gây rollback (ví dụ checked exception).
+
+### Vì sao các phương án còn lại sai
+- **RuntimeException luôn rollback**: đúng với quy tắc mặc định, nhưng bị noRollbackFor ghi đè ở đây.
+- **Tự retry**: Spring không tự retry method khi transaction rollback hoặc commit.
+- **Không compile**: noRollbackFor hoàn toàn hợp lệ và có thể chứa bất kỳ lớp exception nào.
+
+> Senior tip: noRollbackFor hiếm khi dùng, nhưng hữu ích khi một lỗi nghiệp vụ (ví dụ hàng hết hàng) được ném dưới dạng RuntimeException mà bạn vẫn muốn lưu log đơn hàng vào DB. Nếu muốn rollback cả checked exception, dùng {{rollbackFor = Exception.class}} như câu qz-spring-007.`
+},
+{
+  id: 'qz-spring-029',
+  topic: 'spring',
+  multi: true,
+  q: 'Gọi method {{@Transactional}} của chính bean đó qua {{this}} (self-invocation) không có transaction. Cách khắc phục nào đúng? (Chọn 2)',
+  options: [
+    'Tách method cần transaction ra một bean khác, inject bean đó vào bean gốc, gọi qua bean đó',
+    'Bật {{@EnableAspectJAutoProxy(exposeProxy = true)}} rồi gọi {{AopContext.currentProxy()}}.method() thay vì this.method()',
+    'Đặt {{@Transactional}} trên constructor của bean',
+    'Gọi this.method() bên trong {{@PostConstruct}} thì proxy đã sẵn sàng'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: tách ra bean khác, hoặc dùng AopContext.currentProxy() sau khi bật exposeProxy.**
+
+### Vì sao đúng
+Spring AOP bọc bean bằng proxy; chỉ lời gọi từ **ngoài** qua proxy mới kích hoạt advice. Gọi {{this.method()}} là gọi trực tiếp đối tượng gốc, bỏ qua proxy, nên {{@Transactional}} không có tác dụng. Hai cách sửa:
+- Tách logic sang bean khác, inject bean đó, gọi qua proxy của bean khác (cách sạch nhất).
+- Bật {{@EnableAspectJAutoProxy(exposeProxy = true)}}, lấy proxy hiện tại bằng {{(AopContext.currentProxy())}} và gọi method trên nó. Cần ép kiểu class hiện tại implements {{AopContextAware}}.
+
+### Vì sao các phương án còn lại sai
+- **@Transactional trên constructor**: constructor chạy khi object mới tạo, chưa có proxy, annotation không có nghĩa.
+- **this.method() trong @PostConstruct**: sai, lúc chạy {{@PostConstruct}} proxy chưa được tạo (proxy tạo ở postProcessAfterInitialization, xem câu qz-spring-025).
+
+> Senior tip: ưu tiên tách bean khác thay vì AopContext.currentProxy(), vì code sẽ rõ ràng hơn, dễ unit test và không phụ thuộc vào cơ chế proxy của Spring.`
+},
+{
+  id: 'qz-jpa-025',
+  topic: 'jpa',
+  q: `Trong một transaction, code lưu cha mới rồi con mới có khoá ngoại tham chiếu cha:
+~~~java
+Order order = new Order();
+orderRepo.save(order);
+OrderItem item = new OrderItem();
+item.setOrder(order);
+itemRepo.save(item);
+// commit
+~~~
+Hibernate flush câu SQL nào trước?`,
+  options: [
+    'INSERT order_item trước, sau đó mới INSERT order',
+    'INSERT order trước, sau đó mới INSERT order_item (vì khoá ngoại phải trỏ đến hàng đã có)',
+    'Cả hai INSERT cùng một câu lệnh (multi-row INSERT)',
+    'Thứ tự không chắc chắn, phụ thuộc vào driver DB'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: INSERT order trước, sau đó mới INSERT order_item.**
+
+### Vì sao đúng
+Khi flush, Hibernate sắp xếp thứ tự câu SQL: insert entity trước, insert collection sau. Trong các insert entity, hàng được tham chiếu bởi khoá ngoại (cha) được insert trước hàng tham chiếu (con), để không vi phạm ràng buộc FK khi insert con. Nên câu SQL thực tế là INSERT order rồi mới INSERT order_item. Delete ngược lại: xóa entity sau cùng, xóa collection cuối cùng.
+
+### Vì sao các phương án còn lại sai
+- **Insert order_item trước**: sẽ vi phạm FK nếu order_item.order_id bắt buộc phải trỏ đến hàng order đã tồn tại.
+- **Cả hai cùng một câu lệnh**: Hibernate không gộp các bảng khác nhau thành multi-row INSERT mặc định (cần JDBC batching với cùng bảng).
+- **Không chắc chắn**: Hibernate có thứ tự cố định, tuân thủ ràng buộc FK.
+
+> Senior tip: thứ tự flush này là lý do tại sao bạn có thể lưu cha rồi con mà không cần flush giữa hai bước; Hibernate tự xử lý đúng thứ tự khi commit. Nếu dùng IDENTITY, Hibernate bị ép phải insert ngay để lấy id, nên phá batching (xem câu qz-jpa-021).`
+},
+{
+  id: 'qz-jpa-026',
+  topic: 'jpa',
+  q: `Code sau chạy trong một transaction. Sau khi commit, bảng Order có dòng mới được thêm không?
+~~~java
+Order o = new Order();
+o.setCode("X");
+em.persist(o);
+em.flush();      // o đã có id sau flush
+em.detach(o);    // loại o khỏi persistence context
+o.setCode("Y");  // sửa sau khi detach
+~~~`,
+  options: [
+    'Có, mã Y, vì o vẫn là object đã persist',
+    'Không có dòng nào, vì detach hủy đi việc persist',
+    'Có, mã X, vì detach làm Hibernate ngừng theo dõi o; sửa sau đó không được flush',
+    'Ném Exception vì không được sửa entity sau khi detach'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: có dòng mới, mã X; sửa sau detach không được lưu.**
+
+### Vì sao đúng
+{{em.persist(o)}} đánh dấu o là managed và lên lịch INSERT; INSERT thực sự chạy khi flush (lúc gọi flush() rõ ràng, hoặc khi commit) → hàng được lưu với mã X. {{em.detach(o)}} loại o khỏi persistence context, o trở thành **detached**. Hibernate không theo dõi detached entity, nên {{setCode("Y")}} không sinh UPDATE nào, và commit cũng không đẩy thay đổi này. Hàng trong DB vẫn giữ mã X.
+
+### Vì sao các phương án còn lại sai
+- **Mã Y**: detach đã ngắt liên kết o với persistence context, Hibernate không biết o đã đổi.
+- **Không có dòng nào**: detach chỉ ngừng theo dõi, không xoá hàng đã insert.
+- **Ném Exception**: sửa detached entity hoàn toàn hợp lệ, chỉ đơn giản không được lưu.
+
+> Senior tip: cần cập nhật detached entity thì dùng {{em.merge(o)}} (merge load hàng hiện có, chép trạng thái vào, trả về managed instance) hoặc dùng managed entity trong suốt transaction. detach thích hợp khi muốn tách object khỏi session, ví dụ gửi entity qua cache hoặc về phía client.`
+},
+{
+  id: 'qz-jpa-027',
+  topic: 'jpa',
+  multi: true,
+  q: 'Entity {{Order}} có {{@OneToMany(fetch = FetchType.LAZY) @BatchSize(20) List<OrderItem> items}}. Truy vấn lấy 35 order rồi duyệt items của từng order. Cách Hibernate xử lý là gì? (Chọn 2)',
+  options: [
+    'Khi truy cập items của order đầu tiên, Hibernate load items của đúng 20 order cùng lúc bằng câu SELECT ... WHERE order_id IN (...)',
+    '@BatchSize chỉ có hiệu quả khi FetchType.EAGER, vì EAGER đã load kèm items trong truy vấn chính',
+    '{{hibernate.default_batch_fetch_size}} áp dụng cho collection/entity nào chưa có @BatchSize',
+    'Batch fetch luôn tạo ra ít câu SQL hơn {{JOIN FETCH}} items'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Hibernate gom ids thành các lô tối đa 20 và load bằng câu SELECT ... IN; default_batch_fetch_size là cấu hình toàn cục.**
+
+### Vì sao đúng
+Batch fetching dùng khi khởi tạo lazy collection: thay vì mỗi order chạy 1 câu SELECT items (35 câu = N+1), Hibernate gom ids của các order đang cần load, chia thành lô tối đa 20 id, chạy 2 câu SELECT ... WHERE order_id IN (...) (20 + 15). {{hibernate.default_batch_fetch_size}} áp dụng cho mọi entity/collection không có @BatchSize riêng.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ hiệu quả với EAGER**: sai, EAGER đã load items kèm query chính, không còn lazy để batch fetch nữa.
+- **Luôn ít câu SQL hơn JOIN FETCH**: sai, JOIN FETCH chỉ 1 câu duy nhất (nhưng gặp vấn đề tích Descartes khi fetch nhiều collection và phải phân trang trong bộ nhớ, mã HHH90003004). Batch fetch chạy nhiều câu IN nhưng an toàn hơn với nhiều collection.
+
+> Senior tip: đặt @BatchSize trên collection lớn được truy cập lẻ lẻ, hoặc đặt hibernate.default_batch_fetch_size = 20–50 cho toàn ứng dụng. Giá trị quá lớn làm câu IN quá dài và tải nhiều dữ liệu thừa vào bộ nhớ.`
+},
+{
+  id: 'qz-jpa-028',
+  topic: 'jpa',
+  multi: true,
+  q: 'Thuộc tính {{spring.jpa.open-in-view}} điều khiển Open Session In View (OSIV). Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Mặc định là true: persistence context mở tới khi view (Thymeleaf/HTML) render xong, nên truy cập lazy field trong template vẫn hoạt động',
+    'Đặt false: truy cập lazy field sau khi transaction/controller kết thúc ném {{LazyInitializationException}}',
+    'false làm giảm tổng số câu SQL vì Hibernate không thể lazy-load thêm',
+    'Khi false, JPA tự động load tất cả lazy field trong transaction để tránh lỗi'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: OSIV giữ session mở trong lúc render view; tắt thì truy cập lazy sau transaction bị lỗi.**
+
+### Vì sao đúng
+Mặc định true, Spring gán EntityManager vào luồng request và chỉ đóng sau khi view render xong. Như vậy template Thymeleaf có thể truy cập lazy field (ví dụ {{order.getItems()}}) sau khi controller trả về. Với false, persistence context đóng khi transaction/controller kết thúc, truy cập lazy field sau đó ném {{LazyInitializationException}}.
+
+### Vì sao các phương án còn lại sai
+- **false giảm tổng số SQL**: sai, OSIV không có nghĩa là ít query hơn; ngược lại việc lazy-load trong template có thể sinh thêm query không ngờ, và connection DB bị giữ trông suốt quá trình render (nguy cơ cạn pool nếu template chậm).
+- **JPA tự load tất cả lazy field**: sai, JPA không biết bạn cần field nào; khi OSIV tắt, bạn phải tự fetch đủ dữ liệu trong service bằng {{JOIN FETCH}}, {{@EntityGraph}} hoặc dùng DTO/projection.
+
+> Senior tip: OSIV bật đơn giản hóa code nhưng làm mờ chi phí truy vấn và giữ connection lâu. Dự án lớn thường tắt (spring.jpa.open-in-view=false), bắt buộc fetching rõ ràng ở service layer, và dùng projection cho màn hình đọc.`
+},
+{
+  id: 'qz-jpa-029',
+  topic: 'jpa',
+  q: `Entity {{Product}} dùng {{@Cache(usage = CacheConcurrencyStrategy.READ_ONLY)}} và đã bật second-level cache ({{hibernate.cache.use_second_level_cache=true}} plus provider). Hai lần gọi {{em.find(Product.class, id)}} trong hai transaction khác nhau. Điều gì xảy ra lần thứ hai?`,
+  options: [
+    'Lại chạy SELECT từ DB vì second-level cache chỉ giữ trong một transaction',
+    'Có thể đọc từ second-level cache, không query DB, vì cache nằm ở mức SessionFactory chia sẻ các transaction',
+    'Ném NonUniqueRequestException vì cùng entity được truy cập hai lần',
+    'Chỉ dùng cache nếu hai transaction có cùng isolation level'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: lần thứ hai có thể đọc từ second-level cache, không query DB.**
+
+### Vì sao đúng
+Hibernate có hai mức cache: level-1 là persistence context (mỗi EntityManager/transaction) và level-2 ở mức SessionFactory, **chia sẻ giữa các transaction**. Lần đầu findProduct sinh SELECT và đưa vào L2. Lần thứ hai (transaction khác) Hibernate kiểm tra L2 trước, nếu có bản READ_ONLY thì trả về luôn, không query DB. READ_ONLY phù hợp dữ liệu tham khảo gần như không đổi, không cần invalidation.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ giữ trong một transaction**: đó là level-1, không phải level-2.
+- **NonUniqueRequestException**: không phải lỗi hợp lệ trong trường hợp này.
+- **Cùng isolation level**: isolation level liên quan đến transaction DB, không ảnh hưởng việc đọc L2.
+
+> Senior tip: L2 không tự biết DB bị sửa bởi ứng dụng khác; dữ liệu thay đổi ngoài Hibernate sẽ làm L2 lỗi thời. Dùng READ_ONLY cho dữ liệu genuinely không đổi, hoặc cấu hình invalidation/TTL; tránh cache dữ liệu thay đổi thường xuyên nếu không có cơ chế đồng bộ.`
+},
+{
+  id: 'qz-db-025',
+  topic: 'db',
+  multi: true,
+  q: `Bảng {{orders}} có index:
+~~~sql
+CREATE INDEX ON orders (customer_id, created_at);
+~~~
+Phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    '{{WHERE customer_id = ? ORDER BY created_at}} có thể quét index và trả về đã theo thứ tự, không cần node Sort',
+    '{{WHERE created_at = ?}} có thể dùng index như thể index chỉ có cột created_at',
+    '{{WHERE customer_id = ? AND created_at > ?}} dùng được index: bằng trên cột đầu, khoảng trên cột thứ hai',
+    'Thứ tự cột trong index không quan trọng, PostgreSQL tự tối ưu lại'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: cột bằng đứng đầu, cột khoảng/sắp xếp đứng sau.**
+
+### Vì sao đúng
+B-tree index được sắp xếp theo thứ tự (customer_id, created_at).
+- {{WHERE customer_id = ? ORDER BY created_at}}: các hàng cùng customer_id đã nằm liền nhau và theo thứ tự created_at trong index, nên quét index là đủ, không cần Sort.
+- {{WHERE customer_id = ? AND created_at > ?}}: bằng trên cột đầu lùi về đúng nhóm customer, rồi khoảng trên cột thứ hai được quét liên tục trong index.
+
+### Vì sao các phương án còn lại sai
+- **WHERE created_at = ? dùng index như cột duy nhất**: sai, PostgreSQL không có index skip scan hiệu quả; không có giá trị customer_id thì không thể định vị trong index, thường phải Seq Scan.
+- **Thứ tự cột không quan trọng**: sai, nó quyết định index dùng cho điều kiện nào và tránh Sort khi nào. Quy tắc thực dụng: cột dùng phép bằng đứng trước, cột dùng khoảng hoặc ORDER BY đứng sau.
+
+> Senior tip: nếu truy vấn thường xuyên lọc theo created_at duy nhất, hãy tạo index riêng (created_at) hoặc đổi thứ tự index. Xem EXPLAIN để xác nhận có node Sort hay không.`
+},
+{
+  id: 'qz-db-026',
+  topic: 'db',
+  q: `Bảng {{orders}} có index {{CREATE INDEX ON orders (status)}} (status có nhiều giá trị NULL). Query:
+~~~sql
+SELECT * FROM orders WHERE status IS NULL;
+~~~
+PostgreSQL xử lý thế nào?`,
+  options: [
+    'Không dùng index được vì B-tree không lưu giá trị NULL',
+    'Có thể dùng Index Scan vì PostgreSQL B-tree lưu cả mục NULL, điều này khác Oracle',
+    'Phải dùng expression index {{CREATE INDEX ON orders (status IS NULL)}}',
+    'Chỉ dùng index được khi cột có NOT NULL'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: PostgreSQL B-tree lưu mục NULL, nên WHERE status IS NULL có thể dùng Index Scan.**
+
+### Vì sao đúng
+Không giống Oracle, PostgreSQL B-tree index chứa các mục NULL. Do đó {{IS NULL}} và {{IS NOT NULL}} đều có thể sử dụng index; ORDER BY cột cũng có thể tránh Sort nhờ thứ tự trong index. Mặc định NULL xếp sau cùng trong ASC (trước cùng trong DESC), nên {{ORDER BY status ASC NULLS FIRST}} sẽ không khớp thứ tự index và phải thêm node Sort (có thể tạo index {{status ASC NULLS FIRST}} để khớp).
+
+### Vì sao các phương án còn lại sai
+- **B-tree không lưu NULL**: đúng với Oracle, sai với PostgreSQL.
+- **Phải dùng expression index**: không bắt buộc; expression index chỉ cần khi bạn bọc cột trong hàm (ví dụ lower(status)).
+- **Chỉ khi NOT NULL**: không bắt buộc; index lưu NULL bình thường.
+
+> Senior tip: nếu cột có rất ít NULL và query hay tìm NULL, partial index {{WHERE status IS NULL}} sẽ nhỏ gọn hơn index đầy đủ. Lưu ý vị trí NULL trong ORDER BY phải khớp với định nghĩa index để tránh Sort.`
+},
+{
+  id: 'qz-db-027',
+  topic: 'db',
+  q: 'Query join bảng {{orders}} (10 triệu dòng) và {{order_items}} (50 triệu dòng) trên cột {{order_id}}, không có index phù hợp trên order_items. PostgreSQL có thể chọn cách nào và điều gì làm chậm nó?',
+  options: [
+    'Hash join: xây bảng băm từ bảng nhỏ hơn, quét bảng lớn hơn để tra băm; nếu bảng băm vượt quá {{work_mem}}, PostgreSQL ghi spill ra disk và truy vấn chậm rõ',
+    'Nested loop luôn được chọn vì hai bảng đều lớn',
+    'Merge join yêu cầu cả hai bảng đã có index trên cột join, nếu không PostgreSQL báo lỗi',
+    'PostgreSQL chỉ có nested loop, không hỗ trợ hash join'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: hash join, và work_mem quá nhỏ gây spill ra disk làm chậm.**
+
+### Vì sao đúng
+PostgreSQL có ba thuật toán join:
+- **Nested loop**: lấy từng hàng của bảng ngoài, tìm trong bảng trong bằng index. Hiệu quả khi bảng ngoài nhỏ và bảng trong có index trên cột join.
+- **Hash join**: không cần index. Xây bảng băm từ đầu vào nhỏ hơn (hash table trong bộ nhớ), quét đầu vào lớn hơn và tra băm. Giới hạn bộ nhớ là {{work_mem}}; vượt ngưỡng thì ghi spill ra disk, truy vấn chậm mạnh.
+- **Merge join**: yêu cầu cả hai đầu vào đã được sắp xếp theo cột join (có thể thêm node Sort nếu chưa có index).
+
+Planner chọn dựa trên thống kê (ANALYZE), chi phí ước tính và work_mem. Hash join spill ra disk là "ngã ngừ" hiệu năng phổ biến trên join bảng lớn.
+
+### Vì sao các phương án còn lại sai
+- **Nested loop luôn được chọn**: sai, nested loop dễ chậm trên hai bảng lớn nếu không có index.
+- **Merge join yêu cầu index**: sai, yêu cầu dữ liệu đã sắp xếp, có thể sắp xếp tạm, không báo lỗi.
+- **Chỉ có nested loop**: sai, PostgreSQL hỗ trợ cả ba thuật toán trên.
+
+> Senior tip: khi join bảng lớn mà chậm, xem EXPLAIN (ANALYZE, BUFFERS) xem planner chọn join nào và có node Sort hay không; cần thiết thì tăng work_mem cho session hoặc thêm index phù hợp cho nested loop.`
+},
+{
+  id: 'qz-db-028',
+  topic: 'db',
+  q: `Index: {{CREATE INDEX ON orders (created_at ASC)}}. Query:
+~~~sql
+SELECT * FROM orders ORDER BY created_at ASC NULLS FIRST LIMIT 20;
+~~~
+PostgreSQL có thể dùng index để tránh Sort không?`,
+  options: [
+    'Có, B-tree quét ngược/lui đều được nên vị trí NULL không quan trọng',
+    'Không: index ASC mặc định trả các giá trị NULL sau cùng (NULLS LAST), conflict với NULLS FIRST, nên PostgreSQL thêm node Sort',
+    'Có, nhưng chỉ khi cột declared NOT NULL',
+    'Phải tạo index {{created_at DESC}} mới dùng được'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không khớp vị trí NULL nên PostgreSQL phải thêm node Sort.**
+
+### Vì sao đúng
+Quy ước mặc định của PostgreSQL: index ASC quét về phía trước trả hàng NULL sau cùng (NULLS LAST); index ASC quét ngược (DESC) trả NULL trước cùng. Query yêu cầu {{NULLS FIRST}} nhưng index ASC mặc định là {{NULLS LAST}}, thứ tự không khớp, nên planner không dùng index để sắp xếp và thêm node Sort. Cách khắc phục: tạo index khớp đúng, ví dụ {{CREATE INDEX ON orders (created_at ASC NULLS FIRST)}}. Luôn kiểm tra bằng EXPLAIN xem có node Sort hay không.
+
+### Vì sao các phương án còn lại sai
+- **Quét ngược/lui đều được**: sai, vị trí NULL trong kết quả sắp xếp phải khớp với index.
+- **Chỉ khi NOT NULL**: NOT NULL giúp nhưng planner không tự giả sử cột không NULL trừ khi có ràng buộc.
+- **Phải tạo DESC**: không đủ; vấn đề là vị trí NULL, không phải hướng ASC/DESC đơn thuần.
+
+> Senior tip: khi dùng ORDER BY ... NULLS FIRST/LAST, hãy xem EXPLAIN. Nếu thấy Sort chỉ do vị trí NULL, tạo index với định dạng NULLS tương ứng.`
+},
+{
+  id: 'qz-db-029',
+  topic: 'db',
+  q: `EXPLAIN ANALYZE query trên bảng {{orders}}:
+~~~text
+Index Scan using idx_orders_status on orders
+  Index Cond: (status = 'NEW')
+  Filter: (created_at > '2026-01-01')
+~~~
+Mệnh đề {{Filter}} có tác dụng gì?`,
+  options: [
+    'Lọc các hàng đã lấy từ heap; nó không làm giảm số trang index phải quét',
+    'Gộp nhiều phạm vi index thành một quét liên tục',
+    'Thay thế Index Cond khi index không đủ chọn lọc',
+    'Chỉ được hiển thị khi dùng Index Only Scan'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Filter lọc hàng đã lấy từ heap, không giảm số trang index phải quét.**
+
+### Vì sao đúng
+- **Index Cond**: điều kiện được dùng bên trong quét index để thu hẹp các mục index cần thăm (ở đây chỉ quét mục status = 'NEW').
+- **Filter**: điều kiện áp dụng lên từng hàng (tuple) sau khi lấy từ heap (bảng chính). Nó không làm giảm số trang index phải đọc; nếu rất nhiều mục khớp Index Cond nhưng lại bị Filter loại bỏ, truy vấn vẫn đọc nhiều heap page và chậm.
+
+Cách cải thiện: chỉ số composite (status, created_at) hoặc INCLUDE (created_at) để điều kiện created_at cũng thu hẹp quét index, hoặc dùng Index Only Scan nếu mọi cột cần nằm trong index và visibility map đã cập nhật.
+
+### Vì sao các phương án còn lại sai
+- **Gộp phạm vi index**: không phải vai trò của Filter.
+- **Thay thế Index Cond**: hai mệnh đề cùng tồn tại, mỗi một vai trò khác nhau.
+- **Chỉ hiển thị với Index Only Scan**: Filter xuất hiện trên Index Scan thông thường lẫn Index Only Scan.
+
+> Senior tip: đọc EXPLAIN (ANALYZE, BUFFERS): Shared Hit là đọc từ bộ nhớ đệm, Shared Read là đọc từ disk. Nếu Filter loại bỏ phần lớn hàng sau Index Cond, hãy xem xét chỉ số phù hợp hơn thay vì hy vọng index hiện tại cứu được truy vấn.`
 }
 );

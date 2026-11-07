@@ -847,5 +847,970 @@ Lỗi hay gặp khác: so sánh giờ UTC thay vì giờ VN (test 09:30 UTC sẽ
   ],
   related: [],
   tags: ['java.time', 'Instant', 'ZonedDateTime', 'timezone'],
+},
+{
+  id: 'lesson-modern-006',
+  track: 'modern',
+  order: 6,
+  title: 'Collectors nâng cao: downstream, giữ thứ tự bằng LinkedHashMap/TreeMap, toMap merge và teeing',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Đọc được chữ ký groupingBy/partitioningBy/toMap/teeing và chọn đúng downstream collector cho từng báo cáo',
+    'Kiểm soát thứ tự key trong map kết quả bằng mapFactory (TreeMap/LinkedHashMap) và biết vì sao HashMap không có thứ tự',
+    'Xử lý key trùng trong toMap bằng merge function thay vì để ném IllegalStateException, gộp hai thống kê bằng teeing',
+  ],
+  body: `**Tóm tắt:** {{Collectors}} có nhiều hơn {{toList}} và {{groupingBy}} cơ bản. Ba khái niệm quyết định chất lượng một báo cáo dựng bằng stream: **downstream collector** (phần tử cùng nhóm thì được làm gì tiếp), **mapFactory** (dùng loại map nào, tức là thứ tự key lúc duyệt) và **merge function** của {{toMap}} (xử lý key trùng thay vì ném {{IllegalStateException}}). Thêm {{partitioningBy}} cho báo cáo nhị phân và {{teeing}} để tính hai chỉ số trong một lượt duyệt. Bài này đọc theo thứ tự: collector là gì → các hàm tạo nhóm → thứ tự map → key trùng → hai nhóm → gộp chỉ số.
+
+### Collector thực chất là gì (vì sao không cộng dồn vào biến ngoài)
+Cách mọi người hay viết khi mới học stream:
+
+~~~java
+Map<String, BigDecimal> total = new HashMap<>();
+orders.forEach(o -> total.merge(o.customerId(), o.amount(), BigDecimal::add));  // chạy được, nhưng sai khi parallel
+~~~
+
+Đoạn trên **có side-effect**: nó sửa một object sống bên ngoài pipeline. Chạy tuần tự thì đúng; đổi thành {{parallelStream}} là có thể mất bản ghi hoặc ném exception, vì {{HashMap}} không phải cấu trúc thread-safe và nhiều luồng cùng ghi vào nó. {{Collector}} tồn tại để mô tả phép "gom" theo cách máy có thể chạy an toàn trên nhiều luồng. Một collector gồm 5 thành phần ({{Collector.of(supplier, accumulator, combiner, finisher, characteristics)}}):
+
+| Thành phần | Việc nó làm | Với {{toList}} |
+|---|---|---|
+| {{supplier()}} | tạo **container rỗng** (mỗi luồng một cái khi parallel) | một {{ArrayList}} mới |
+| {{accumulator()}} | nhét một phần tử vào container | {{list.add(t)}} |
+| {{combiner()}} | gộp hai container thành một | {{left.addAll(right)}} |
+| {{finisher()}} | biến container thành kết quả cuối | trả chính list |
+| {{characteristics()}} | mô tả tính chất để stream tối ưu | {{IDENTITY_FINISH}} |
+
+Nhờ container là **của riêng từng luồng** rồi mới gộp bằng {{combiner}}, {{collect}} chạy đúng ở cả parallel mà không cần lock. Vì vậy có nguyên tắc: muốn gom dữ liệu thì dùng {{collect}}, đừng gom vào biến ngoài.
+
+### groupingBy và downstream collector
+Chữ ký (có 3 overload; thực dụng nhất là bản 3 tham số):
+
+~~~java
+groupingBy(classifier)                                  // key, mặc định HashMap + toList
+groupingBy(classifier, downstream)                      // key + "giá trị mỗi nhóm là gì"
+groupingBy(classifier, mapFactory, downstream)          // key + loại map + giá trị mỗi nhóm
+~~~
+
+Tham số thứ ba mới là thứ tạo ra "báo cáo": nó quyết định mỗi nhóm sẽ thành gì thay vì list phần tử thô.
+
+~~~java
+Map<String, Long> soDonTheoKhach = orders.stream()
+    .collect(Collectors.groupingBy(Order::customerId, Collectors.counting()));
+
+Map<String, BigDecimal> tongTienTheoKhach = orders.stream()
+    .collect(Collectors.groupingBy(Order::customerId,
+        Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add)));
+
+Map<String, Optional<Order>> donLonNhatTheoThang = orders.stream()
+    .collect(Collectors.groupingBy(Order::month,
+        Collectors.maxBy(Comparator.comparing(Order::amount))));
+
+// mỗi kênh bán hàng: tập mã khách hàng không trùng, đã sắp xếp
+Map<String, Set<String>> khachTheoKenh = orders.stream()
+    .collect(Collectors.groupingBy(Order::channel,
+        Collectors.mapping(Order::customerId, Collectors.toCollection(TreeSet::new))));
+~~~
+
+Downstream hay dùng: {{counting}}, {{summingInt}}/{{summingLong}}/{{summingDouble}}, {{averagingDouble}}, {{mapping(f, downstream)}} (biến phần tử rồi gom), {{filtering(pred, downstream)}} (lọc rồi gom), {{minBy}}/{{maxBy}}, {{reducing}}, {{toCollection(factory)}}, {{joining(", ")}}, và {{groupingBy}} lồng (báo cáo nhiều cấp). Muốn nhóm bằng cấu trúc song song an toàn: {{groupingByConcurrent}}.
+
+### Thứ tự map: HashMap, LinkedHashMap hay TreeMap
+{{groupingBy}} mặc định dùng map **không đảm bảo thứ tự** (hiện thực thường là {{HashMap}}; đặc tả {{Collector}} không cam kết kiểu/có thể đổi/tính thread-safe của {{Map}} trả về). Thứ tự duyệt vì thế phụ thuộc hiện thực và có thể đổi khi map resize — đừng dựa vào nó. Muốn báo cáo in ra theo thứ tự thì chọn đúng loại map qua mapFactory:
+
+| Loại map | Thứ tự khi duyệt | Chi phí thêm | Dùng khi |
+|---|---|---|---|
+| {{HashMap}} | không có thứ tự | không | chỉ cần tra cứu theo key |
+| {{LinkedHashMap}} | **thứ tự chèn** (bạn kiểm soát) | gần như không | cần thứ tự riêng, ví dụ xếp hạng theo doanh thu |
+| {{TreeMap}} | **key** tăng dần theo Comparator | O(log n) mỗi lần chèn | key tự nhiên đã có nghĩa: tháng "YYYY-MM", mã vùng |
+
+{{TreeMap}} giải quyết thứ tự **key**. Muốn sắp theo **giá trị** (doanh thu giảm dần) thì mapFactory không làm được, vì mapFactory chỉ được gọi trước khi có dữ liệu. Cách đúng: thu thập xong, sắp xếp các entry, rồi đổ vào một {{LinkedHashMap}} mới — đây chính là bài tập 1.
+
+> Tháng định dạng "YYYY-MM" so theo chuỗi cũng ra đúng thứ tự thời gian, vì năm đứng trước và tháng luôn có 2 chữ số. Với định dạng "MM/YYYY" thì sai (01/2025 xếp trước 12/2024).
+
+### toMap và IllegalStateException khi key trùng
+{{Collectors.toMap(Order::customerId, Order::amount)}} được ví như {{map.put(k, v)}} cho từng phần tử, nhưng bản không có merge function dùng {{Map.merge}} với hàm "ném lỗi": gặp key trùng là {{IllegalStateException: Duplicate key ...}}.
+
+Vì sao Java chọn báo lỗi thay vì ghi đè? Im lặng ghi đè nghĩa là đơn thứ hai của cùng khách hàng **biến mất** khỏi báo cáo doanh thu, và bạn chỉ phát hiện khi khách hàng khiếu nại. Fail-fast chuyển lỗi đó thành một exception ở dev/test.
+
+Hai cách dùng đúng:
+
+~~~java
+// 1. Cung cấp merge function: (giá trị đã lưu, giá trị mới) -> giá trị giữ lại
+Map<String, BigDecimal> tongTien = orders.stream()
+    .collect(Collectors.toMap(Order::customerId, Order::amount, BigDecimal::add));
+
+// 2. Muốn giữ TẤT CẢ bản ghi thì đổi sang groupingBy
+Map<String, List<Order>> theoKhach = orders.stream()
+    .collect(Collectors.groupingBy(Order::customerId));
+~~~
+
+Bẫy thứ hai của {{toMap}}: nó ném {{NullPointerException}} khi **value null** (không phải key). Lý do: bên trong nó gọi {{Map.merge}}, mà merge không nhận giá trị null. Xử lý: lọc trước {{.filter(o -> o.note() != null)}}, hoặc dùng {{groupingBy}} + {{toList}}, hoặc {{map.keySet().removeIf(k -> map.get(k) == null)}} sau khi gom.
+
+### partitioningBy: hai nhóm luôn tồn tại
+{{partitioningBy(predicate)}} giống {{groupingBy}} nhưng key là {{Boolean}} và **cả hai key luôn có mặt** trong map (nhóm không có phần tử nào thì value là list rỗng). {{groupingBy}} thuần predicate thì key thiếu hoàn toàn, hay phải viết {{getOrDefault}}.
+
+~~~java
+Map<Boolean, List<Order>> donHoanHuy = orders.stream()
+    .collect(Collectors.partitioningBy(o -> "CANCEL".equals(o.channel())));
+long soDonHoanHuy = donHoanHuy.getOrDefault(Boolean.TRUE, List.of()).size();
+
+// chia theo "đơn lớn" và tính luôn tổng tiền từng bên
+Map<Boolean, BigDecimal> tongTheoNguong = orders.stream()
+    .collect(Collectors.partitioningBy(o -> o.amount().compareTo(new BigDecimal("1000")) > 0,
+        Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add)));
+~~~
+{{partitioningBy}} chỉ chia được **hai** nhóm; ba nhóm trở lên phải dùng {{groupingBy}} với một hàm phân lớp.
+
+### teeing: hai thống kê trong một lượt duyệt
+{{Collectors.teeing(c1, c2, merger)}} (Java 12) gửi **cùng một stream** cho hai collector rồi gộp hai kết quả bằng {{merger}}. Dùng khi cần một chỉ số dẫn xuất từ hai chỉ số khác mà không muốn duyệt dữ liệu hai lần và không muốn tự viết class gom counter.
+
+~~~java
+// tỷ lệ đơn hủy trên tổng số đơn
+double tiLeHoanHuy = orders.stream().collect(Collectors.teeing(
+    Collectors.filtering(o -> "CANCEL".equals(o.channel()), Collectors.counting()),
+    Collectors.counting(),
+    (hoanHuy, tongSo) -> tongSo == 0 ? 0.0 : hoanHuy / (double) tongSo));
+~~~
+
+{{teeing}} có thể lồng để ra ba chỉ số (bài tập 2). Nó chỉ cho **hai** collector mỗi lần, nên ba chỉ số cần hai lớp lồng và một record trung gian.
+
+### Bảng chọn nhanh
+| Muốn | Dùng |
+|---|---|
+| gom phần tử thành list | {{toList()}}/{{toUnmodifiableList()}} |
+| đếm / tổng / trung bình theo nhóm | {{groupingBy(key, counting()}} / {{summingLong}} / {{averagingDouble}} |
+| giá trị lớn nhất mỗi nhóm | {{groupingBy(key, maxBy(comparator))}} (value là {{Optional}}) |
+| key duy nhất, dữ liệu có thể trùng key | {{toMap(k, v, mergeFn)}} |
+| đúng 2 nhóm, luôn có cả 2 | {{partitioningBy(pred)}} |
+| key phải sorted | mapFactory {{TreeMap::new}} |
+| thứ tự theo doanh thu | gom xong rồi dựng lại {{LinkedHashMap}} |
+| 2 chỉ số gộp thành 1 kết quả | {{teeing(c1, c2, merger)}} |
+
+> Senior tip: đừng đổi sang {{parallelStream}} chỉ vì thấy {{collect}} chậm; điểm chết của báo cáo thường là vòng lặp gọi DB (N+1) hoặc {{toMap}} tạo map khổng lồ, không phải bản thân collector. Dùng {{reducing}}/{{mapping}} để giảm bản sao, và nếu thật sự cần parallel thì chia theo vùng dữ liệu bằng executor riêng.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: {{toMap}} trùng key thì sao và vì sao Java chọn ném lỗi, {{groupingBy}} có mấy tham số và tham số nào quyết định giá trị, làm sao để map kết quả sorted theo key và theo value, {{partitioningBy}} khác {{groupingBy}} ở điểm nào hữu ích, dùng {{collect}} thay vì {{forEach}} cộng vào biến ngoài ra sao, muốn hai chỉ số trong một lượt duyệt thì làm gì. Bài 1 kiểm tra phần sorted theo key và theo value, bài 2 kiểm tra {{toMap}} merge, {{partitioningBy}} và {{teeing}}.`,
+  exercises: [
+    {
+      title: 'Báo cáo doanh thu nhiều cấp, đúng thứ tự cả hai chiều',
+      prompt: `Cho {{record Order(String customerId, String month, String channel, BigDecimal amount)}} với {{month}} dạng "YYYY-MM". Viết {{SalesReport.report(List<Order> orders)}} trả về {{Map<String, Map<String, BigDecimal>>}}: khách hàng → (tháng → tổng tiền của khách đó trong tháng đó).
+
+Yêu cầu:
+- Map ngoài (khách hàng) phải duyệt ra theo **tổng doanh thu giảm dần**; hai khách cùng tổng thì mã khách hàng tăng dần.
+- Map trong (tháng) phải duyệt ra theo **tháng tăng dần**.
+- Cộng tiền bằng {{BigDecimal}}, không dùng double.
+- Dùng stream + Collectors cho phần nhóm; phần sắp xếp theo doanh thu làm sau khi đã gom.
+- Danh sách rỗng thì map rỗng. Khách hàng/tháng không có đơn thì không xuất hiện.`,
+      starter: `record Order(String customerId, String month, String channel, BigDecimal amount) {}
+
+class SalesReport {
+    static Map<String, Map<String, BigDecimal>> report(List<Order> orders) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void eqMoney(String expected, BigDecimal actual) {
+        if (actual == null) throw new AssertionError("thieu gia tri, mong " + expected);
+        if (actual.compareTo(new BigDecimal(expected)) != 0) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Order o(String c, String m, String v) {
+        return new Order(c, m, "RETAIL", new BigDecimal(v));
+    }
+    public static void main(String[] args) {
+        check("empty list -> empty map", () -> {
+            eq(true, SalesReport.report(List.of()).isEmpty());
+        });
+        check("one order", () -> {
+            Map<String, Map<String, BigDecimal>> r = SalesReport.report(List.of(o("KH001", "2024-03", "100.00")));
+            eq(List.of("KH001"), new ArrayList<>(r.keySet()));
+            eqMoney("100.00", r.get("KH001").get("2024-03"));
+        });
+        check("same customer same month sums", () -> {
+            Map<String, Map<String, BigDecimal>> r = SalesReport.report(List.of(
+                o("KH001", "2024-03", "100.00"), o("KH001", "2024-03", "250.50"), o("KH001", "2024-04", "50.00")));
+            eqMoney("350.50", r.get("KH001").get("2024-03"));
+            eqMoney("50.00", r.get("KH001").get("2024-04"));
+            eq(2, r.get("KH001").size());
+        });
+        check("BigDecimal khong bi sai so lam tron", () -> {
+            Map<String, Map<String, BigDecimal>> r = SalesReport.report(List.of(
+                o("KH001", "2024-03", "0.10"), o("KH001", "2024-03", "0.20")));
+            eqMoney("0.30", r.get("KH001").get("2024-03"));
+        });
+        check("thang ben trong duoc sap xep tang dan", () -> {
+            Map<String, Map<String, BigDecimal>> r = SalesReport.report(List.of(
+                o("KH001", "2024-12", "1"), o("KH001", "2023-11", "2"), o("KH001", "2024-01", "3"), o("KH001", "2024-05", "4")));
+            eq(List.of("2023-11", "2024-01", "2024-05", "2024-12"), new ArrayList<>(r.get("KH001").keySet()));
+        });
+        check("khach hang ben ngoai sap theo doanh thu giam dan", () -> {
+            Map<String, Map<String, BigDecimal>> r = SalesReport.report(List.of(
+                o("KH001", "2024-01", "50.00"),
+                o("KH002", "2024-01", "90.00"), o("KH002", "2024-02", "20.00"),
+                o("KH003", "2024-01", "10.00"), o("KH003", "2024-02", "70.00"), o("KH003", "2024-03", "25.00")));
+            eq(List.of("KH002", "KH003", "KH001"), new ArrayList<>(r.keySet()));
+        });
+        check("cung doanh thu thi ma khach tang dan", () -> {
+            Map<String, Map<String, BigDecimal>> r = SalesReport.report(List.of(
+                o("KH900", "2024-02", "50.00"), o("KH100", "2024-01", "50.00"), o("KH500", "2024-03", "50.00")));
+            eq(List.of("KH100", "KH500", "KH900"), new ArrayList<>(r.keySet()));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Order(String customerId, String month, String channel, BigDecimal amount) {}
+
+class SalesReport {
+    static Map<String, Map<String, BigDecimal>> report(List<Order> orders) {
+        // buoc 1: gom hai cap, thang dung TreeMap::new de key tang dan
+        Map<String, Map<String, BigDecimal>> grouped = orders.stream()
+            .collect(Collectors.groupingBy(
+                Order::customerId,
+                Collectors.groupingBy(Order::month, TreeMap::new,
+                    Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add))));
+        // buoc 2: sap khach hang theo TONG doanh thu (mapFactory khong sap duoc theo gia tri)
+        Comparator<String> byTotalDescThenId = (a, b) -> {
+            int c = total(grouped.get(b)).compareTo(total(grouped.get(a)));
+            return c != 0 ? c : a.compareTo(b);
+        };
+        Map<String, Map<String, BigDecimal>> out = new LinkedHashMap<>();
+        grouped.keySet().stream().sorted(byTotalDescThenId).forEach(id -> out.put(id, grouped.get(id)));
+        return out;
+    }
+    private static BigDecimal total(Map<String, BigDecimal> months) {
+        return months.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+}`,
+      hints: [
+        'Cap trong dung {{Collectors.groupingBy(Order::month, TreeMap::new, Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add))}} de thang tu sap xep.',
+        'Chưa có tổng thì không sắp được: gom xong hãy tính {{total}} cua moi khach bang {{values().stream().reduce(BigDecimal.ZERO, BigDecimal::add)}}.',
+        'Cuoi day do vao {{LinkedHashMap}} theo danh sach key da sap — {{HashMap}}/{{TreeMap}} khong giu thu tu do.',
+        'So sánh {{BigDecimal}} dung {{compareTo}}, không dung {{equals}} ({{equals}} phan biet 1.0 vs 1.00).',
+      ],
+      explain: `Bài này có hai bài toán riêng biệt và lời giải phải tách làm hai bước.
+
+**Bước 1 — gom và cộng.** {{groupingBy(Order::customerId, downstream)}} nhóm đơn hàng theo khách; downstream là một {{groupingBy}} khác nhóm tiếp theo tháng và dùng {{reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add)}} để cộng tiền. {{reducing}} ở đây lấy value bằng hàm {{Order::amount}} rồi gộp bằng {{BigDecimal::add}}, nên kết quả là {{BigDecimal}} chứ không phải {{List<Order>}}. Truyền {{TreeMap::new}} cho mapFactory của cấp trong để tháng được sắp tăng dần.
+
+**Bước 2 — sắp theo giá trị.** Map ngoài không thể sắp bằng mapFactory, vì mapFactory chỉ tạo container **rỗng** trước khi có dữ liệu. Nên phải gom xong, tính tổng của từng khách (cộng các value của map trong), rồi chèn vào một {{LinkedHashMap}} theo thứ tự đã sắp. {{LinkedHashMap}} duyệt theo thứ tự chèn nên giữ nguyên thứ tự sắp xếp.
+
+Lỗi hay gặp:
+- Quên comparator phụ: hai khách cùng tổng tiền thì thứ tự thành không xác định, test dễ đỏ khi đổi máy — luôn có tie-break.
+- Dùng {{summingDouble}} cho tiền: {{double}} làm tròn, 0.1 + 0.2 ra 0.30000000000000004.
+- So sánh {{BigDecimal}} bằng {{equals}}: {{new BigDecimal("1.0").equals(new BigDecimal("1.00"))}} là **false** dù cùng giá trị, vì {{equals}} so cả scale. Phải dùng {{compareTo}}.
+- Sắp {{grouped.entrySet()}} rồi {{toMap}} ngược lại mà không truyền {{LinkedHashMap::new}} → thứ tự mất.
+- Dùng {{forEach}} cộng vào map bên ngoài: chạy được tuần tự nhưng hỏng khi parallel.`,
+    },
+    {
+      title: 'toMap merge, partitioningBy và teeing trong một bản ghi kiểm toán',
+      prompt: `Vẫn dùng {{record Order(String customerId, String month, String channel, BigDecimal amount)}}. Viết lớp {{OrderAudit}} với ba method tĩnh:
+
+1. {{Map<String, BigDecimal> revenueByCustomer(List<Order> orders)}}: tổng tiền theo khách. **Không được ném {{IllegalStateException}} khi trùng key** (một khách có nhiều đơn).
+2. {{Map<Boolean, Long> customerCountByTier(List<Order> orders, BigDecimal threshold)}}: đếm **số khách hàng** có tổng tiền >= {{threshold}} (key {{true}}) và số khách còn lại (key {{false}}). Dùng {{toMap}} có merge rồi {{partitioningBy}} với downstream là {{counting}}. Map luôn có **cả hai key**, kể cả khi dữ liệu rỗng hoặc một nhóm không có ai.
+3. {{Audit audit(List<Order> orders)}}: một lượt duyệt stream tính ba chỉ số — số đơn, số khách hàng phân biệt, tổng tiền. Dùng {{Collectors.teeing}} (có thể lồng). {{record Audit(long orderCount, long distinctCustomers, BigDecimal total)}}.`,
+      starter: `record Order(String customerId, String month, String channel, BigDecimal amount) {}
+record Audit(long orderCount, long distinctCustomers, BigDecimal total) {}
+
+class OrderAudit {
+    static Map<String, BigDecimal> revenueByCustomer(List<Order> orders) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Map<Boolean, Long> customerCountByTier(List<Order> orders, BigDecimal threshold) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Audit audit(List<Order> orders) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void eqMoney(String expected, BigDecimal actual) {
+        if (actual == null) throw new AssertionError("thieu gia tri, mong " + expected);
+        if (actual.compareTo(new BigDecimal(expected)) != 0) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Order o(String c, String m, String v) {
+        return new Order(c, m, "RETAIL", new BigDecimal(v));
+    }
+    public static void main(String[] args) {
+        check("revenueByCustomer gộp key trùng lặp, không ném exception", () -> {
+            Map<String, BigDecimal> r = OrderAudit.revenueByCustomer(List.of(
+                o("KH001", "2024-01", "100.00"), o("KH002", "2024-01", "200.00"), o("KH001", "2024-02", "50.00")));
+            eq(2, r.size());
+            eqMoney("150.00", r.get("KH001"));
+            eqMoney("200.00", r.get("KH002"));
+        });
+        check("revenueByCustomer voi danh sach rong", () -> {
+            eq(true, OrderAudit.revenueByCustomer(List.of()).isEmpty());
+        });
+        check("tier: cả hai key luôn tồn tại khi không ai đạt ngưỡng", () -> {
+            Map<Boolean, Long> r = OrderAudit.customerCountByTier(
+                List.of(o("KH001", "2024-01", "10"), o("KH002", "2024-01", "20")), new BigDecimal("100"));
+            eq(2, r.size());
+            eq(0L, r.get(Boolean.TRUE));
+            eq(2L, r.get(Boolean.FALSE));
+        });
+        check("tier: tổng bằng ngưỡng được tính vào nhóm true", () -> {
+            Map<Boolean, Long> r = OrderAudit.customerCountByTier(
+                List.of(o("KH001", "2024-01", "60"), o("KH001", "2024-02", "40"), o("KH002", "2024-01", "5")),
+                new BigDecimal("100"));
+            eq(1L, r.get(Boolean.TRUE));
+            eq(1L, r.get(Boolean.FALSE));
+        });
+        check("tier: nhóm true rỗng khi dữ liệu rỗng", () -> {
+            Map<Boolean, Long> r = OrderAudit.customerCountByTier(List.of(), new BigDecimal("100"));
+            eq(0L, r.get(Boolean.TRUE));
+            eq(0L, r.get(Boolean.FALSE));
+        });
+        check("audit dem don, dem khach phan biet va tong tien", () -> {
+            Audit a = OrderAudit.audit(List.of(
+                o("KH001", "2024-01", "10.00"), o("KH001", "2024-02", "15.00"), o("KH002", "2024-01", "20.00")));
+            eq(3L, a.orderCount());
+            eq(2L, a.distinctCustomers());
+            eqMoney("45.00", a.total());
+        });
+        check("audit voi danh sach rong khong nem exception", () -> {
+            Audit a = OrderAudit.audit(List.of());
+            eq(0L, a.orderCount());
+            eq(0L, a.distinctCustomers());
+            eqMoney("0", a.total());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Order(String customerId, String month, String channel, BigDecimal amount) {}
+record Audit(long orderCount, long distinctCustomers, BigDecimal total) {}
+
+class OrderAudit {
+    static Map<String, BigDecimal> revenueByCustomer(List<Order> orders) {
+        // merge function gop tien khi cung khach hang xuat hien nhieu lan
+        return orders.stream().collect(Collectors.toMap(
+            Order::customerId, Order::amount, BigDecimal::add, TreeMap::new));
+    }
+
+    static Map<Boolean, Long> customerCountByTier(List<Order> orders, BigDecimal threshold) {
+        return revenueByCustomer(orders).values().stream().collect(Collectors.partitioningBy(
+            total -> total.compareTo(threshold) >= 0, Collectors.counting()));
+    }
+
+    static Audit audit(List<Order> orders) {
+        // teeing long: ((so don, so khach), tong tien) -> Audit
+        return orders.stream().collect(Collectors.teeing(
+            Collectors.teeing(
+                Collectors.counting(),
+                Collectors.mapping(Order::customerId, Collectors.toCollection(HashSet::new)),
+                (count, ids) -> new long[] { count, ids.size() }),
+            Collectors.reducing(BigDecimal.ZERO, Order::amount, BigDecimal::add),
+            (counts, total) -> new Audit(counts[0], counts[1], total)));
+    }
+}`,
+      hints: [
+        'Method 1: {{toMap(Order::customerId, Order::amount, BigDecimal::add)}} — tham số thứ ba la merge function cho khoa trung.',
+        'Method 2: go method 1 roi {{values().stream().collect(partitioningBy(total -> total.compareTo(threshold) >= 0, counting()))}}. partitioningBy tu sinh ca hai key.',
+        'Method 3: {{teeing}} chi gop HAI collector, nen long: teeing(teeing(counting(), mapping(...toCollection(HashSet::new))), reducing(...), merger).',
+        'Dem khach hang phan biet bang cach thu thanh {{HashSet}} roi lay {{size}}, khong co "countingDistinct" trong Java 17.',
+      ],
+      explain: `**{{toMap}} có merge function** là cách duy nhất để nó chịu được key trùng; tham số thứ ba nhận (giá trị đã lưu, giá trị mới). Vì mỗi khách có thể có nhiều đơn, thiếu nó thì báo cáo sẽ chết giữa chừng với {{IllegalStateException}}. Thêm {{TreeMap::new}} để thứ tự key ổn định (không bắt buộc ở test nhưng tốt cho báo cáo).
+
+**{{partitioningBy}} luôn trả cả hai key**: kể cả stream rỗng, map vẫn có {{false}} → 0 và {{true}} → 0. Đây là khác biệt thực dụng nhất so với {{groupingBy}} theo predicate, và là lý do người ta dùng nó cho các báo cáo đạt/không đạt: không cần {{getOrDefault}} và không sợ NPE khi unbox {{Long}}.
+
+**{{teeing}} lồng**: mỗi lần {{teeing}} chỉ gộp hai collector, nên ba chỉ số cần hai lớp. Lớp trong gộp {{counting}} (số đơn) và {{mapping(customerId, toCollection(HashSet::new))}} (tập khách hàng distinct) thành một {{long[]}} tạm; lớp ngoài gộp {{long[]}} đó với tổng tiền từ {{reducing}} rồi gọi constructor {{Audit}}. Toàn bộ đi qua stream **một lần** thay vì ba lần gọi {{stream()}}.
+
+Lỗi hay gặp:
+- Dùng {{toMap}} ba tham số nhưng nhầm thứ tự merge: tham số là (giá trị cũ, giá trị mới).
+- Quên {{counting}} là downstream → {{partitioningBy(pred)}} một tham số cho {{Map<Boolean, List<BigDecimal>>}}, không phải số đếm.
+- Đếm distinct bằng {{distinct()}} rồi {{counting()}} trong cùng một collector là **không được** ({{counting}} không nhận stream); phải đổi phần tử sang tập hợp qua {{toCollection}}/{{toSet}}.
+- {{reducing}} một tham số trả {{Optional}}; bản ba tham số có identity nên trả giá trị trần và an toàn với stream rỗng.
+- Trong {{audit}} trên stream rỗng, {{reducing}} trả đúng {{BigDecimal.ZERO}} — nếu không có identity thì {{Optional}} rỗng và unbox sẽ NPE.`,
+    },
+  ],
+  check: [
+    {
+      q: '{{Collectors.toMap(k, v}} gặp hai phần tử có cùng key sẽ làm gì?',
+      options: ['Ghi đè bằng giá trị mới', 'Bỏ qua phần tử thứ hai', 'Ném IllegalStateException', 'Trả về List chứa cả hai giá trị'],
+      answer: 2,
+      explain: 'Bản hai tham số dùng merge function {{throwingMerger}}, ném IllegalStateException khi key trùng. Đây là lựa chọn có chủ đích: ghi đè hoặc bỏ qua đều làm mất dữ liệu trong báo cáo mà không ai biết. Muốn xử lý thì cung cấp merge function (tham số ba) hoặc đổi sang groupingBy.',
+    },
+    {
+      q: 'Tham số nào của {{groupingBy}} quyết định giá trị của mỗi key trong map kết quả?',
+      options: ['classifier', 'mapFactory', 'downstream collector', 'characteristics'],
+      answer: 2,
+      explain: 'classifier sinh key, mapFactory quyết định loại map (và thứ tự key), còn downstream collector quyết định mỗi nhóm được gom thành gì (toList, counting, reducing, groupingBy lồng...). Characteristics là mô tả tính chất để stream tối ưu, không phải tham số của groupingBy.',
+    },
+    {
+      q: 'Muốn map kết quả duyệt ra theo thứ tự key tăng dần thì làm thế nào?',
+      options: ['Dùng LinkedHashMap::new làm mapFactory', 'Dùng TreeMap::new làm mapFactory', 'Gọi sorted() trên stream trước collect', 'Không thể, map luôn không có thứ tự'],
+      answer: 1,
+      explain: 'TreeMap sắp key theo Comparator (hoặc tự nhiên), nên mapFactory TreeMap::new cho đúng thứ tự key. LinkedHashMap giữ thứ tự chèn, không tự sắp key; sorted() trên stream chỉ sắp phần tử chứ không sắp key của map dựng sau đó (trừ khi classifier đã gán key theo thứ tự mong muốn).',
+    },
+    {
+      q: 'Điểm khác biệt hữu ích của partitioningBy so với groupingBy theo predicate?',
+      options: ['Nhanh hơn', 'Chia tối đa 3 nhóm', 'Luôn có cả key true và false trong map', 'Trả về List thay vì Map'],
+      answer: 2,
+      explain: 'partitioningBy chứa cả hai khóa Boolean, nhóm không có phần tử sẽ có value rỗng (danh sách hoặc 0 khi counting), nên không cần getOrDefault. Nó chỉ chia được đúng 2 nhóm, không phải 3.',
+    },
+  ],
+  related: ['modern-008', 'modern-029'],
+  tags: ['Collectors', 'groupingBy', 'toMap', 'partitioningBy', 'teeing'],
+},
+{
+  id: 'lesson-modern-007',
+  track: 'modern',
+  order: 7,
+  title: 'Fan-out gọi nhiều service song song: CompletableFuture, timeout, fallback và virtual threads',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Biết vì sao gọi tuần tự 3 service cộng thời gian và fan-out rút về bằng service chậm nhất',
+    'Dùng supplyAsync với executor riêng, allOf để chờ, exceptionally/completeOnTimeout cho fallback và timeout',
+    'Giải thích được virtual threads và structured concurrency thay đổi gì so với CompletableFuture',
+  ],
+  body: `**Tóm tắt:** Một màn hình cần dữ liệu từ 3 service độc lập. Nếu gọi tuần tự, thời gian phản hồi là **tổng** của 3 lần gọi (600 ms cho 3 lần 200 ms). Fan-out là phát động cả 3 cùng lúc rồi chờ: thời gian chỉ còn bằng lần **chậm nhất** (200 ms). Trong Java 8+ cách thuần là {{CompletableFuture}} với {{supplyAsync}} + {{allOf}} + {{orTimeout}}/{{completeOnTimeout}} + {{exceptionally}} cho fallback. Từ Java 21, virtual threads cho phép viết code tuần tự mà vẫn song song, và structured concurrency (preview) quản lý nhóm task con theo cây.
+
+### Bài toán: 3 lần gọi, mỗi lần 200 ms
+~~~seq
+title: Trang chủ gọi 3 service
+actors: Web | Profile | Orders | Score
+Web -> Profile: GET /profile
+Web -> Orders: GET /orders
+Web -> Score: GET /score
+note Web..Score: ca 3 phat dong cung luc
+Profile --> Web: 200 ms
+Orders --> Web: 200 ms
+Score --> Web: 200 ms
+note Web..Score: tong thoi gian ~200 ms, khong phai 600 ms
+~~~
+
+Code tuần tự (rất hay gặp trong service mới viết):
+
+~~~java
+Profile p = profileClient.get(id);      // 200 ms
+List<Order> o = orderClient.list(id);   // 200 ms
+Score s = scoreClient.of(id);           // 200 ms
+// tổng: 600 ms, trong khi 3 lần gọi không phụ thuộc nhau
+~~~
+
+Ba lần gọi này **độc lập**: không cái nào cần kết quả của cái trước. Đó là điều kiện để fan-out. Nếu lần gọi thứ hai cần id lấy từ lần thứ nhất thì không song song hoá được (đó là quan hệ phụ thuộc, dùng {{thenCompose}}).
+
+### CompletableFuture là gì, đọc từ gốc
+{{java.util.concurrent.Future}} thường (trả về từ {{ExecutorService.submit}}) chỉ có {{get()}} là **chặn** và không ghép được việc tiếp theo. {{CompletableFuture}} (Java 8) vừa là hộp chứa kết quả, vừa là nơi đăng ký các bước chạy sau khi có kết quả. Nó có ba trạng thái: chưa xong, xong bình thường (có value), xong với lỗi (có exception).
+
+Phát động một việc trên executor khác:
+
+~~~java
+Executor io = Executors.newFixedThreadPool(32);
+CompletableFuture<Profile> f = CompletableFuture.supplyAsync(() -> profileClient.get(id), io);
+// f trả về NGAY, chưa chờ. Thread của web chưa bị giữ.
+~~~
+
+**Luôn truyền executor.** Không truyền thì {{supplyAsync}} chạy trên {{ForkJoinPool.commonPool()}}, mà pool này mặc định chỉ có khoảng "số CPU - 1" luồng và **dùng chung cho toàn JVM** (kể cả parallel stream). Gọi I/O là chặn: 7 request đồng thời là pool hết chỗ, mọi tính toán parallel khác trong process bị đói. Vì vậy: pool riêng cho I/O (đặt tên thread để đọc được jstack), pool chung để cho CPU.
+
+### Nối việc và gộp việc
+| Method | Dùng khi | Kết quả |
+|---|---|---|
+| {{thenApply(fn)}} | biến kết quả thành kết quả khác (cùng bước) | {{CF<U>}} |
+| {{thenCompose(fn)}} | bước tiếp theo **tự trả về một CF** (tránh CF lồng CF) | {{CF<U>}} |
+| {{thenAccept}} / {{thenRun}} | chỉ tiêu thụ kết quả / chỉ làm việc không cần giá trị | {{CF<Void>}} |
+| {{thenCombine(other, fn)}} | hai việc **độc lập** gộp lại khi cả hai xong | {{CF<V>}} |
+| {{exceptionally(fn)}} | dựng fallback khi nhánh lỗi | {{CF<T>}} |
+| {{handle(fn)}} | chạy cả trường hợp thành công lẫn lỗi | {{CF<U>}} |
+| {{whenComplete(fn)}} | quan sát/hậu kỳ (đo time, log) rồi ném lỗi tiếp | {{CF<T>}} |
+
+{{thenApply}} và {{thenCompose}} là {{map}} và {{flatMap}} của thế giới async: nếu hàm của bạn trả về {{CompletableFuture}}, dùng {{thenApply}} sẽ cho {{CompletableFuture<CompletableFuture<X>>}} — vô dụng.
+
+### Fan-out rồi chờ: allOf
+{{CompletableFuture.allOf(a, b, c)}} trả về {{CompletableFuture<Void>}}: nó chỉ báo "tất cả đã xong", **không chứa giá trị**. Vì vậy phải giữ danh sách future để đọc từng cái:
+
+~~~java
+List<CompletableFuture<Item>> calls = sources.stream()
+    .map(s -> CompletableFuture.supplyAsync(s, io))
+    .toList();
+CompletableFuture<Void> done = CompletableFuture.allOf(calls.toArray(new CompletableFuture[0]));
+// done.join() chi bao "da xong", gia tri lay tu calls
+List<Item> items = calls.stream().map(CompletableFuture::join).toList();
+~~~
+
+Sau khi {{allOf}} hoàn thành thì mọi future đã xong, nên {{join}} ở bước sau **không chặn**. Đây là mẫu chuẩn: phát động hết, ghép fallback/timeout, {{allOf}}, rồi gộp.
+
+### Timeout: orTimeout và completeOnTimeout (Java 9+)
+~~~java
+// loi neu qua 200 ms: future hoan thanh voi TimeoutException
+f.orTimeout(200, TimeUnit.MILLISECONDS);
+// hoac dung gia tri mac dinh neu qua 200 ms:
+g.completeOnTimeout("N/A", 200, TimeUnit.MILLISECONDS);
+~~~
+
+Hai điểm hay bị hiểu sai:
+- Timeout **không dừng** công việc bên dưới. Nó chỉ hoàn thành future bằng {{TimeoutException}}; thread đang gọi HTTP vẫn gọi tiếp cho tới khi xong. Muốn thật sự dừng phải có **read timeout ở HTTP client** ({{RestClient}}, {{HttpClient.newBuilder().connectTimeout/connectTimeout}}) hoặc {{Future.cancel(true)}} trên {{submit}}.
+- {{orTimeout}} làm hỏng cả chuỗi nếu bạn không xử lý lỗi phía sau; {{completeOnTimeout}} tiện cho fallback nhưng che mất thông tin "nguồn này chậm".
+
+{{join()}} ném {{CompletionException}} (unchecked) còn {{get()}} ném {{ExecutionException}} (checked); cả hai **bọc** lỗi gốc, nên muốn biết lỗi gì thật thì xem {{getCause()}}.
+
+### Fallback từng nhánh trước khi gộp
+Nếu một nhánh lỗi mà không xử lý, {{allOf}} sẽ hoàn thành **với lỗi** và bạn mất luôn kết quả của các nhánh tốt. Cách làm: "chuẩn hoá" mỗi nhánh thành future không bao giờ lỗi.
+
+~~~java
+CompletableFuture<String> safe = CompletableFuture.supplyAsync(scoreClient::fetch, io)
+        .orTimeout(200, TimeUnit.MILLISECONDS)
+        .exceptionally(ex -> "N/A");     // nguon loi hoac cham -> gia tri mac dinh
+~~~
+
+Sau {{exceptionally}} thì lỗi đã được "tiêu"; đặt nó ở cuối chuỗi. Nếu muốn biết nguồn nào phải fallback để log/metric, dùng {{handle((v, ex) -> ...)}} thay cho {{exceptionally}}.
+
+### Virtual threads (Java 21): cùng bài toán, code tuần tự
+Virtual thread là thread do JVM quản lý trên một vài carrier thread OS. Khi nó block ở {{sleep}}, {{read}}, {{await}}, nó được **gỡ khỏi** carrier (unmount) và carrier đi chạy thread khác, nên block gần như miễn phí. Kết quả: giữ code tuần tự dễ đọc mà vẫn có fan-out.
+
+~~~java
+try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+    var p = pool.submit(() -> profileClient.get(id));
+    var o = pool.submit(() -> orderClient.list(id));
+    var s = pool.submit(() -> scoreClient.of(id));
+    // van can timeout: get(timeout) hoac deadline
+    return new Page(p.get(200, TimeUnit.MILLISECONDS),
+                    o.get(200, TimeUnit.MILLISECONDS),
+                    s.get(200, TimeUnit.MILLISECONDS));
+}   // close() dung cho toi khi het task; close() co the bi interrupt -> bat IOException
+~~~
+
+Không phải silver bullet: nó không làm tăng tốc việc CPU-bound, vẫn cần **giới hạn đồng thời** xuống DB (Semaphore hoặc pool DB), và ở Java 21 code trong {{synchronized}} dài hạn có thể bị **pinning** carrier thread (JDK 24 đã cải thiện, {{-Djdk.tracePinnedThreads=full}} để soi). Với Spring Boot 3.2+ chỉ cần {{spring.threads.virtual.enabled=true}} cho MVC.
+
+### Structured concurrency (preview, Java 21+)
+Vấn đề còn lại: fan-out bằng {{CompletableFuture}} hay virtual threads thì các task con vẫn là "sương mù" — thread gọi không biết mình đã đẻ bao nhiêu task, một task lỗi thì các task khác vẫn chạy tiếp, và timeout không hủy được. Structured concurrency gom task con vào một scope có cây:
+
+~~~java
+// CHI de biet: preview, API co the doi giua cac JDK; dung duoc voi --enable-preview
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    StructuredTaskScope.SubTask<Profile> p = scope.fork(() -> profileClient.get(id));
+    StructuredTaskScope.SubTask<List<Order>> o = scope.fork(() -> orderClient.list(id));
+    StructuredTaskScope.SubTask<Score> s = scope.fork(() -> scoreClient.of(id));
+    scope.joinUntil(Instant.now().plusMillis(250)).throwIfFailed();
+    return new Page(p.get(), o.get(), s.get());
+}   // scope dong = moi task con duoc huy
+~~~
+
+{{ShutdownOnFailure}}: một nhánh lỗi thì hủy các nhánh còn lại và ném {{ExecutionException}} có cause là **lỗi gốc** (không bọc 2 lớp như {{CompletionException}}). Ý tưởng đi kèm là {{ScopedValue}} thay {{ThreadLocal}} (bất biến, có phạm vi, rẻ). Trạng thái: vẫn preview/incubating, **không bật trong production** trước khi chắc JDK của team ổn định.
+
+### Bảng chọn cách làm
+| Cách | Code | Timeout/fallback | Huỷ khi 1 nhánh loi | Dung duoc JDK |
+|---|---|---|---|---|
+| Tuần tự | đơn giản nhất | dễ | không áp dụng | 8 |
+| CompletableFuture fan-out | rườm rà nhưng kiểm soát được | {{orTimeout}}, {{exceptionally}} | không tự động | 8 (timeout: 9+) |
+| Virtual threads + submit | tuần tự, dễ đọc | phải tự đặt | khi cancel Future | 21 |
+| StructuredTaskScope | tuần tự, có cây | {{joinUntil}} | có, mặc định | 21+ preview |
+
+### Lỗi hay gặp trên production
+- Không truyền executor → {{I/O}} chạy trên {{commonPool}}, nghẽn toàn JVM.
+- {{join()}} từng future trong vòng lặp → thành tuần tự (mỗi lần chờ cái kế tiếp).
+- Không có fallback trước {{allOf}} → một nguồn lỗi làm mất cả trang.
+- Tin rằng timeout sẽ dừng gọi HTTP → vẫn còn trả tiền và vẫn còn giữ thread.
+- Không có **deadline tổng thể**: 3 nhánh timeout 200 ms cộng ghép đoạn sau có thể vượt quá SLA của caller.
+- Nuốt lỗi im lặng trong {{exceptionally}} → metric không biết nguồn nào hỏng.
+- Gửi quá nhiều request đồng thời xuống DB: fan-out làm tăng đồng thời, phải giữ pool DB/Semaphore.
+
+> Senior tip: đặt ngân sách thời gian cho cả request (ví dụ caller cho 300 ms): mỗi nhánh timeout nhỏ hơn ngân sách, và dùng deadline tuyệt đối ({{joinUntil(Instant)}} hoặc {{get(deadline - now)}}) thay vì timeout tương đối cho từng nhánh, vì thời gian xếp hàng trong executor cũng phải tính vào. Luôn phát ra metric {{source=profile,status=ok|timeout|error}} để khi một nguồn chậm thì thấy ngay trên dashboard thay vì chỉ thấy trang chậm.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: vì sao gọi tuần tự lại chậm, {{allOf}} có trả giá trị không, {{thenApply}} khác {{thenCompose}} chỗ nào, timeout có hủy được lời gọi bên dưới không, lỗi một nhánh xử lý thế nào, executor nào nên dùng và vì sao không dùng commonPool, virtual threads thay gì cho CompletableFuture, structured concurrency giải quyết vấn đề gì còn sót. Bài tập dưới đây cho bạn viết một aggregator 3 nguồn có timeout, fallback và chứng minh nó thật sự song song.`,
+  exercises: [
+    {
+      title: 'Aggregator 3 nguồn: song song, timeout, fallback, không treo',
+      prompt: `Viết class {{Aggregator}} nhận một {{java.util.concurrent.Executor}} trong constructor. Method {{Map<String, String> fetchAll(List<Source> sources, long timeoutMs)}}:
+
+- {{record Source(String name, String fallback, java.util.function.Supplier<String> call)}}.
+- **Phát động mọi nguồn cùng lúc** trên executor được truyền vào (không chạy tuần tự, không dùng commonPool).
+- Chờ cho tới khi mọi nguồn đã có kết luận (thành công, lỗi, hoặc quá {{timeoutMs}}) rồi trả về một {{Map}} theo tên nguồn.
+- Nguồn ném exception, trả về {{null}}, hoặc chưa xong sau {{timeoutMs}} thì dùng {{fallback}} của chính nguồn đó. **Không được ném exception ra ngoài** và không được treo.
+- Thứ tự key trong map phải theo đúng thứ tự danh sách {{sources}}.
+
+Test điều khiển thời gian bằng {{CountDownLatch}}: khi nào test buông latch thì nguồn mới trả kết quả, nên nếu code của bạn chạy tuần tự hoặc chờ từng cái thì test sẽ phát hiện.`,
+      starter: `record Source(String name, String fallback, java.util.function.Supplier<String> call) {}
+
+class Aggregator {
+    private final java.util.concurrent.Executor executor;
+
+    Aggregator(java.util.concurrent.Executor executor) {
+        this.executor = executor;
+    }
+
+    Map<String, String> fetchAll(List<Source> sources, long timeoutMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService newPool() {
+        AtomicInteger n = new AtomicInteger();
+        return Executors.newFixedThreadPool(6, r -> { Thread t = new Thread(r, "io-" + n.incrementAndGet()); t.setDaemon(true); return t; });
+    }
+    static Source src(String name, String fallback, Supplier<String> call) {
+        return new Source(name, fallback, call);
+    }
+    public static void main(String[] args) {
+        check("tat ca nguon thanh cong: map theo ten, giu thu tu danh sach", () -> {
+            ExecutorService pool = newPool();
+            try {
+                Map<String, String> r = new Aggregator(pool).fetchAll(List.of(
+                    src("profile", "P?", () -> "user"),
+                    src("orders", "O?", () -> "5 đơn"),
+                    src("score", "S?", () -> "50%")), 1000);
+                eq(List.of("profile", "orders", "score"), new ArrayList<>(r.keySet()));
+                eq("user", r.get("profile"));
+                eq("5 đơn", r.get("orders"));
+                eq("50%", r.get("score"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("nguon nem exception: chi nguon do dung fallback", () -> {
+            ExecutorService pool = newPool();
+            try {
+                Map<String, String> r = new Aggregator(pool).fetchAll(List.of(
+                    src("profile", "P?", () -> "user"),
+                    src("orders", "O?", () -> { throw new IllegalStateException("503"); }),
+                    src("score", "S?", () -> "50%")), 1000);
+                eq("user", r.get("profile"));
+                eq("O?", r.get("orders"));
+                eq("50%", r.get("score"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("nguon tra null: dung fallback", () -> {
+            ExecutorService pool = newPool();
+            try {
+                Map<String, String> r = new Aggregator(pool).fetchAll(List.of(src("score", "S?", () -> null)), 1000);
+                eq("S?", r.get("score"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("danh sach rong: map rong, khong treo", () -> {
+            ExecutorService pool = newPool();
+            try { eq(true, new Aggregator(pool).fetchAll(List.of(), 1000).isEmpty()); }
+            finally { pool.shutdownNow(); }
+        });
+        check("fan-out that: 3 nguồn đứng chung một barrier", () -> {
+            ExecutorService pool = newPool();
+            CyclicBarrier barrier = new CyclicBarrier(3);   // chi qua khi 3 nguon chay CUNG LUC
+            Supplier<String> gated = () -> {
+                try { barrier.await(3, TimeUnit.SECONDS); } catch (Exception e) { throw new IllegalStateException(e); }
+                return "ok";
+            };
+            try {
+                Map<String, String> r = new Aggregator(pool).fetchAll(
+                    List.of(src("a", "A?", gated), src("b", "B?", gated), src("c", "C?", gated)), 3000);
+                eq("ok", r.get("a"));
+                eq("ok", r.get("b"));
+                eq("ok", r.get("c"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("moi nguon chay tren executor duoc truyen, ten thread bat dau bang io-", () -> {
+            ExecutorService pool = newPool();
+            Map<String, String> threads = new ConcurrentHashMap<>();
+            Supplier<String> spy = () -> { threads.put(Thread.currentThread().getName(), "x"); return "ok"; };
+            try {
+                new Aggregator(pool).fetchAll(List.of(src("a", "A?", spy), src("b", "B?", spy)), 1000);
+                for (String t : threads.keySet())
+                    if (!t.startsWith("io-")) throw new AssertionError("nguon chay tren thread " + t);
+            } finally { pool.shutdownNow(); }
+        });
+        check("nguon treo vo tan: timeout dung fallback, khong treo", () -> {
+            ExecutorService pool = newPool();
+            CountDownLatch neverReleased = new CountDownLatch(1);   // khong bao gio duoc countDown
+            Supplier<String> hanging = () -> {
+                try { neverReleased.await(30, TimeUnit.SECONDS); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return "MUON";
+            };
+            try {
+                long t0 = System.nanoTime();
+                Map<String, String> r = new Aggregator(pool).fetchAll(
+                    List.of(src("fast", "F?", () -> "ok"), src("slow", "S?", hanging)), 250);
+                long ms = (System.nanoTime() - t0) / 1_000_000;
+                eq("ok", r.get("fast"));
+                eq("S?", r.get("slow"));
+                if (ms > 5_000) throw new AssertionError("ket thuc sau " + ms + "ms trong khi timeout chi 250ms");
+            } finally { pool.shutdownNow(); }
+        });
+        check("tat ca nguon loi: dung toan bo fallback, khong nem ra ngoai", () -> {
+            ExecutorService pool = newPool();
+            try {
+                Map<String, String> r = new Aggregator(pool).fetchAll(List.of(
+                    src("a", "A?", () -> { throw new RuntimeException("a loi"); }),
+                    src("b", "B?", () -> { throw new RuntimeException("b loi"); })), 1000);
+                eq("A?", r.get("a"));
+                eq("B?", r.get("b"));
+            } finally { pool.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Source(String name, String fallback, java.util.function.Supplier<String> call) {}
+
+class Aggregator {
+    private final java.util.concurrent.Executor executor;
+
+    Aggregator(java.util.concurrent.Executor executor) {
+        this.executor = executor;
+    }
+
+    Map<String, String> fetchAll(List<Source> sources, long timeoutMs) {
+        List<CompletableFuture<String>> calls = new ArrayList<>();
+        // buoc 1: phat dong TAT CA nguon truoc (khong cho tung cai trong vong lap)
+        for (Source s : sources) {
+            calls.add(CompletableFuture.supplyAsync(s.call(), executor)
+                    .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)          // cham -> TimeoutException
+                    .exceptionally(ex -> s.fallback())                    // loi hoac cham -> fallback
+                    .thenApply(v -> v == null ? s.fallback() : v));       // null -> fallback
+        }
+        // buoc 2: cho nhung nguon con lai; moi cai da duoc "chuẩn hoá" nen allOf khong bi loi
+        CompletableFuture.allOf(calls.toArray(new CompletableFuture[0])).join();
+        // buoc 3: gop ket qua, giu nguyen thu tu danh sach nguon
+        Map<String, String> out = new LinkedHashMap<>();
+        for (int i = 0; i < sources.size(); i++) out.put(sources.get(i).name(), calls.get(i).join());
+        return out;
+    }
+}`,
+      hints: [
+        'Vòng lặp thứ nhất CHỈ phát động: {{CompletableFuture.supplyAsync(s.call(), executor)}} rồi thêm vào list. Không gọi join/get trong vòng lặp này (nó sẽ làm chạy tuần tự).',
+        'Biến lỗi thành giá trị mặc định: {{.orTimeout(timeoutMs, TimeUnit.MILLISECONDS).exceptionally(ex -> s.fallback())}}.',
+        'Chờ tất cả bằng {{CompletableFuture.allOf(calls.toArray(new CompletableFuture[0])).join()}}, sau do doc tung future bang {{join()}} (da xong nen khong chan them).',
+        'Dung {{LinkedHashMap}} va duyet theo thu tu {{sources}} de key ra dung thu tu; {{HashMap}} se bi do test 1.',
+      ],
+      explain: `Ba bước tách bạch là toàn bộ bài học: **phát động** → **chờ** → **gộp**. Người mới hay viết vòng lặp {{for}} rồi {{join()}} ngay bên trong, tức chờ xong nguồn A mới phát động B: thời gian là tổng chứ không phải max. Tách ra hai vòng lặp thì {{supplyAsync}} trả về gần như tức thì, cả ba nguồn chạy chồng nhau.
+
+Mỗi nhánh được "chuẩn hoá" thành một future **không bao giờ lỗi**: {{orTimeout}} biến nguồn chậm thành {{TimeoutException}}, {{exceptionally}} biến mọi exception (kể cả timeout) thành fallback, {{thenApply}} cuối biến {{null}} thành fallback. Nhờ vậy {{allOf}} luôn hoàn thành bình thường, không cần biết nguồn nào hỏng, và kết quả luôn đủ mọi key. {{join()}} ở bước 3 không chặn vì các future đã xong — đó là lý do {{allOf}} rồi {{join}} rẻ hơn {{join}} từng cái.
+
+Vì sao thứ tự tương đối giữa {{orTimeout}} và {{exceptionally}} quan trọng: {{orTimeout}} đứng trước để nó ném {{TimeoutException}} xuống chuỗi, {{exceptionally}} đứng sau để bắt được cả lỗi gốc lẫn lỗi timeout. Nếu đảo ngược, {{exceptionally}} chạy trước thì timeout phía sau không ai xử lý và {{allOf}} sẽ hoàn thành với lỗi.
+
+Lỗi hay gặp:
+- {{supplyAsync}} không truyền executor → chạy trên commonPool; test tên thread sẽ đỏ, và I/O nghẽn pool chung.
+- Quen {{exceptionally}} → một nguồn lỗi làm {{allOf}} lỗi, mất hết kết quả các nguồn tốt.
+- {{join}}/{{get}} trong vong lap phat dong → chay tuan tu.
+- Dùng {{HashMap}} → thứ tự key lộn xộn, báo cáo/JSON đổi chỗ giữa các lần chạy.
+- Tin rằng timeout dừng được lời gọi HTTP: nó chỉ hoàn thành future, lời gọi vẫn giữ thread cho tới khi xong. Test ở đây giữ nguồn treo 30 giây nhưng fetchAll phải trả về sau khoảng timeout.`,
+    },
+    {
+      title: 'Phiên bản không chặn: trả về CompletableFuture cho toàn trang',
+      prompt: `Viết {{PageBuilder}} nhận {{java.util.concurrent.Executor}} trong constructor. Method {{CompletableFuture<Page> page(List<Source> sources, long timeoutMs)}}:
+
+- {{record Page(Map<String, String> values)}} và {{record Source(String name, String fallback, java.util.function.Supplier<String> call)}} (giống bài trên).
+- Phát động mọi nguồn **song song** trên executor, mỗi nguồn có fallback khi lỗi hoặc quá {{timeoutMs}}.
+- Trả về {{CompletableFuture<Page>}} **ngay lập tức**: không được gọi {{join}}/{{get}} (method không được chặn thread gọi).
+- Future hoàn thành khi tất cả nguồn đã có kết luận, {{Page.values}} có đủ mọi key theo đúng thứ tự {{sources}}.
+- Không nguồn nào được phép làm future kết quả lỗi: nguồn lỗi hoặc chậm thì nhận {{fallback}}.
+- Danh sách rỗng: future trả về {{Page}} với map rỗng.`,
+      starter: `record Source(String name, String fallback, java.util.function.Supplier<String> call) {}
+record Page(Map<String, String> values) {}
+
+class PageBuilder {
+    private final java.util.concurrent.Executor executor;
+
+    PageBuilder(java.util.concurrent.Executor executor) {
+        this.executor = executor;
+    }
+
+    CompletableFuture<Page> page(List<Source> sources, long timeoutMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService newPool() {
+        AtomicInteger n = new AtomicInteger();
+        return Executors.newFixedThreadPool(6, r -> { Thread t = new Thread(r, "io-" + n.incrementAndGet()); t.setDaemon(true); return t; });
+    }
+    static Source src(String name, String fallback, Supplier<String> call) {
+        return new Source(name, fallback, call);
+    }
+    static Page await(CompletableFuture<Page> f) {
+        try { return f.get(3, TimeUnit.SECONDS); }
+        catch (TimeoutException e) { throw new AssertionError("future chua xong sau 3s"); }
+        catch (InterruptedException e) { throw new AssertionError(e); }
+        catch (ExecutionException e) { throw new AssertionError("future loi: " + e.getCause()); }
+    }
+    public static void main(String[] args) {
+        check("page khong chan: future chua xong khi nguon con giu", () -> {
+            ExecutorService pool = newPool();
+            CountDownLatch gate = new CountDownLatch(1);   // test chu dong giu nguon lai
+            Supplier<String> gated = () -> {
+                try { gate.await(3, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return "ok";
+            };
+            try {
+                CompletableFuture<Page> f = new PageBuilder(pool).page(List.of(src("a", "A?", gated)), 2000);
+                if (f.isDone()) throw new AssertionError("page() da chan de lay ket qua");
+                gate.countDown();
+                eq("ok", await(f).values().get("a"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("du moi key, giu thu tu danh sach nguon", () -> {
+            ExecutorService pool = newPool();
+            try {
+                Page p = await(new PageBuilder(pool).page(List.of(
+                    src("zeta", "z?", () -> "z"), src("alpha", "a?", () -> "a"), src("mid", "m?", () -> "m")), 1000));
+                eq(List.of("zeta", "alpha", "mid"), new ArrayList<>(p.values().keySet()));
+                eq("z", p.values().get("zeta"));
+                eq("a", p.values().get("alpha"));
+                eq("m", p.values().get("mid"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("nguon loi khong lam hu future ket qua", () -> {
+            ExecutorService pool = newPool();
+            try {
+                Page p = await(new PageBuilder(pool).page(List.of(
+                    src("good", "G?", () -> "ok"),
+                    src("bad", "B?", () -> { throw new IllegalStateException("500"); }),
+                    src("null", "N?", () -> null)), 1000));
+                eq("ok", p.values().get("good"));
+                eq("B?", p.values().get("bad"));
+                eq("N?", p.values().get("null"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("nguon cham dung fallback sau timeout, cac nguon khac van du", () -> {
+            ExecutorService pool = newPool();
+            CountDownLatch neverReleased = new CountDownLatch(1);
+            Supplier<String> hanging = () -> {
+                try { neverReleased.await(30, TimeUnit.SECONDS); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return "MUON";
+            };
+            try {
+                Page p = await(new PageBuilder(pool).page(
+                    List.of(src("fast", "F?", () -> "ok"), src("slow", "S?", hanging)), 250));
+                eq("ok", p.values().get("fast"));
+                eq("S?", p.values().get("slow"));            } finally { pool.shutdownNow(); }
+        });
+        check("fan-out that: 3 nguon dung chung mot barrier", () -> {
+            ExecutorService pool = newPool();
+            CyclicBarrier barrier = new CyclicBarrier(3);
+            Supplier<String> gated = () -> {
+                try { barrier.await(3, TimeUnit.SECONDS); } catch (Exception e) { throw new IllegalStateException(e); }
+                return "ok";
+            };
+            try {
+                Page p = await(new PageBuilder(pool).page(
+                    List.of(src("a", "A?", gated), src("b", "B?", gated), src("c", "C?", gated)), 4000));
+                eq("ok", p.values().get("a"));
+                eq("ok", p.values().get("b"));
+                eq("ok", p.values().get("c"));
+            } finally { pool.shutdownNow(); }
+        });
+        check("danh sach rong: Page voi map rong", () -> {
+            ExecutorService pool = newPool();
+            try { eq(true, await(new PageBuilder(pool).page(List.of(), 1000)).values().isEmpty()); }
+            finally { pool.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Source(String name, String fallback, java.util.function.Supplier<String> call) {}
+record Page(Map<String, String> values) {}
+
+class PageBuilder {
+    private final java.util.concurrent.Executor executor;
+
+    PageBuilder(java.util.concurrent.Executor executor) {
+        this.executor = executor;
+    }
+
+    CompletableFuture<Page> page(List<Source> sources, long timeoutMs) {
+        List<CompletableFuture<String>> calls = new ArrayList<>();
+        for (Source s : sources) {
+            calls.add(CompletableFuture.supplyAsync(s.call(), executor)
+                    .completeOnTimeout(s.fallback(), timeoutMs, TimeUnit.MILLISECONDS)  // cham -> fallback, khong loi
+                    .handle((v, ex) -> ex != null || v == null ? s.fallback() : v));     // loi hoac null -> fallback
+        }
+        // khong join o day: thenApply chay khi tat ca da xong, page() tra ve lien tuc
+        return CompletableFuture.allOf(calls.toArray(new CompletableFuture[0]))
+                .thenApply(v -> {
+                    Map<String, String> values = new LinkedHashMap<>();
+                    for (int i = 0; i < sources.size(); i++) values.put(sources.get(i).name(), calls.get(i).join());
+                    return new Page(values);
+                });
+    }
+}`,
+      hints: [
+        'Dung {{completeOnTimeout(fallback, timeoutMs, TimeUnit.MILLISECONDS)}} de nguon cham thanh gia tri mac dinh ma khong nem loi.',
+        'Them {{.handle((v, ex) -> ex != null || v == null ? s.fallback() : v)}} de nguon loi/null cung ra fallback.',
+        'Tra ve {{CompletableFuture.allOf(...).thenApply(...)}}: ben trong thenApply duoc phep join vi luc do moi future da xong.',
+        'Vòng lặp duyet sources KHÔNG được gọi join/get — chỉ lắp chuỗi callback rồi trả về.',
+      ],
+      explain: `Đây là hình dáng thật của một aggregator trong web reactive/async: method trả về future ngay, không giữ thread của Tomcat/Netty ngồi chờ. Toàn bộ việc chờ nằm trong {{thenApply}} được ghép sau {{allOf}}, và callback đó chạy trên thread vừa hoàn thành bước cuối cùng (hoặc {{ForkJoinPool.commonPool()}} nếu không chỉ định executor cho {{thenApplyAsync}}) — đó là lý do bước gộp phải rất nhẹ.
+
+Khác biệt so với bài 1: ở đây dùng {{completeOnTimeout}} thay cho {{orTimeout}}. {{orTimeout}} ném {{TimeoutException}} xuống chuỗi, bạn phải có {{exceptionally}} phía sau; {{completeOnTimeout}} thì hoàn thành future bằng fallback nên lỗi không bao giờ xuất hiện — gọn hơn khi chiến lược với nguồn chậm chỉ là "dùng giá trị mặc định". {{handle}} nhận cả {{(value, exception)}} nên nó xử lý được cả hai trường hợp trong một lambda, còn {{exceptionally}} chỉ chạy khi có lỗi.
+
+Vì {{allOf}} trả {{CompletableFuture<Void>}}, giá trị phải lấy từ chính danh sách {{calls}} đã giữ. Không giữ danh sách này thì không còn cách nào đọc kết quả từng nguồn.
+
+Lỗi hay gặp:
+- Gọi {{join()}}/{{get()}} trong {{page()}} để "cho đơn giản": mất hoàn toàn lợi ích fan-out và giữ thread web.
+- Một nguồn lỗi mà không {{handle}}/{{exceptionally}} → future kết quả lỗi, mất cả trang.
+- Trồng {{thenApply}} trên từng future rồi {{allOf}} các future gốc: {{allOf}} chỉ chờ future gốc, không chờ phần việc bạn trồng thêm.
+- Dùng {{anyOf}} để "lấy cái nhanh nhất": nguồn lỗi nhanh nhất cũng thắng.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Ba lời gọi {{CompletableFuture.supplyAsync}} độc lập, mỗi cái mất 200 ms, rồi {{allOf}} và {{join()}}. Tổng thời gian xấp xỉ bao nhiêu?',
+      options: ['600 ms', '200 ms', '400 ms', 'Phụ thuộc vào số nhân CPU'],
+      answer: 1,
+      explain: 'Fan-out: cả ba việc phát động gần như cùng lúc nên thời gian là max của ba việc, tức khoảng 200 ms (cộng overhead nhỏ). Muốn thành 600 ms thì code phải join() từng cái ngay trong vòng lặp, hoặc executor chỉ có 1 luồng.',
+    },
+    {
+      q: '{{CompletableFuture.allOf(f1, f2, f3)}} trả về gì?',
+      options: ['{{CF<List<Object>>}} chứa ba kết quả', '{{CF<Void>}}: chỉ báo tất cả đã xong', 'Kết quả của future xong sớm nhất', 'Một {{Map}} tên → giá trị'],
+      answer: 1,
+      explain: '{{allOf}} trả {{CompletableFuture<Void>}}. Muốn lấy giá trị thì phải giữ danh sách future ban đầu rồi join sau khi allOf hoàn thành (join khi đó không chặn). "Xong sớm nhất" là hành vi của anyOf.',
+    },
+    {
+      q: '{{f.orTimeout(200, MILLISECONDS)}} khi lời gọi HTTP bên trong mất 5 giây. Điều gì xảy ra?',
+      options: [
+        'Future hoàn thành với TimeoutException, request HTTP vẫn chạy tiếp tới khi xong',
+        'Thread gọi HTTP bị interrupt và request bị hủy',
+        'Không có gì xảy ra cho tới khi ai đó gọi get()',
+        'Executor tự tạo thread mới thay thế',
+      ],
+      answer: 0,
+      explain: 'CompletableFuture không biết thread nào đang làm việc nên không interrupt được; orTimeout chỉ hoàn thành future bằng TimeoutException sau đúng 200 ms, còn request dưới kia vẫn giữ kết nối và thread. Vì vậy phải có read timeout ở HTTP client. Timeout được lập lịch ngay khi gọi orTimeout, không chờ get().',
+    },
+    {
+      q: 'Vì sao nên truyền một {{Executor}} riêng cho {{supplyAsync}} khi gọi I/O?',
+      options: [
+        'Executor riêng chạy nhanh hơn commonPool',
+        'commonPool ít luồng và dùng chung cả JVM, block I/O sẽ làm nghẽn mọi việc khác',
+        'Không truyền executor thì code không biên dịch',
+        'Để tránh leak CompletableFuture',
+      ],
+      answer: 1,
+      explain: 'commonPool có khoảng (số CPU − 1) luồng chia cho cả parallel stream lẫn CompletableFuture trong process; mỗi request I/O block chiếm một suất nên rất nhanh hết chỗ. Truyền executor riêng còn cho phép đặt giới hạn (kích thước pool, tên thread để đọc stack dump, hàng đợi và chính sách từ chối).',
+    },
+  ],
+  related: ['concurrency-005', 'concurrency-013', 'concurrency-037'],
+  tags: ['CompletableFuture', 'fan-out', 'timeout', 'fallback', 'virtual threads'],
 }
 );

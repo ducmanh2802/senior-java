@@ -1052,5 +1052,606 @@ Trong production, State và ledger phải được lưu bền và cập nhật n
     { q: 'Sau khi DB đã xoá nhưng blob lỗi, compensation ledger nên ghi gì?', options: ['Không ghi gì vì chưa hoàn tất', 'compensation.delete.row(id) cho bước DB đã thành công', 'compensation.delete.blob(id) cho bước vừa lỗi', 'Một bản sao dữ liệu blob để phục hồi'], answer: 1, explain: `Ledger ghi các bước đã thành công để reconciler biết id còn dang dở; trong ví dụ này là row. Bước vừa lỗi chưa thành công nên không ghi blob; không ghi gì sẽ làm mất dấu id cần xử lý; sao lưu blob là việc của backup, không phải ledger compensation.` },
   ], related: ['microservices-043', 'microservices-004', 'microservices-022'],
   tags: ['207', 'partial success', 'compensation', 'saga', 'reconcile']
+},
+{
+  id: 'lesson-microservices-008', track: 'microservices', order: 8,
+  title: 'Saga engine tổng quát: compensation ngược thứ tự, idempotent và state log', level: 'senior', minutes: 45,
+  goals: ['Viết engine saga chạy mọi danh sách bước (action + compensate), lỗi ở bước k thì bù trừ ngược k-1..0', 'Giải thích vì sao compensate có thể bị gọi hai lần và cách chặn ở cả engine lẫn phía nhận', 'Chọn nơi lưu trạng thái saga (bảng durable, event log, workflow engine) để crash không mất tiến độ'],
+  body: `**Tóm tắt:** Saga là một dãy bước, mỗi bước có action (làm việc) và compensation (hoàn tác việc đã làm). Khi action của bước k thất bại, engine chạy compensation cho các bước đã thành công theo thứ tự NGƯỢC từ k-1 về 0; mỗi compensation chỉ được gọi một lần cho một saga, kể cả sau khi retry hay restart. Trạng thái saga phải lưu bền để tiến trình chết vẫn làm tiếp được. Bài 003 đã đi qua một luồng cố định bốn bước; bài này tổng quát hóa thành engine chạy được mọi danh sách bước — đúng cái bạn sẽ cài đặt ở bài tập — và trả lời hai câu khó nhất: vì sao compensate bị gọi hai lần và state saga để đâu.
+
+### Nhắc lại gốc: không có rollback xuyên service
+Trong monolith, một hàm gắn {{@Transactional}} (đơn vị làm việc do database quản lý: mọi thao tác bên trong hoặc cùng thành công, hoặc cùng bị hoàn tác) ghi đơn hàng, kho, tiền vào CÙNG database; dòng thứ ba lỗi thì database tự undo hai dòng trước. Mỗi microservice có database riêng thì không lệnh rollback nào với tới ba nơi cùng lúc. Nên "hủy" không phải là xóa: phải tạo HÀNH ĐỘNG MỚI bù cho hành động cũ — refund, nhả kho, hủy lệnh giao. Hóa đơn hủy vẫn nằm trong log, tiền có thể về chậm, phí có thể không hoàn lại. Compensation là nghiệp vụ, không phải nút xóa. (Ví dụ đời thường: trả hàng đã shipped không phải là làm như chưa từng mua — cửa hàng lập phiếu trả hàng, thu gói về, hoàn tiền, mỗi việc một phiếu riêng.)
+
+### Luồng bốn bước chuẩn: đặt hàng → trừ kho → thanh toán → giao hàng
+~~~seq
+title: Order saga: bước giao hàng loi, bu tru nguoc thu tu
+actors: Order | Kho | Thanh toán | Vận chuyển
+Order -> Kho: reserve(SKU-42)
+Kho --> Order: OK giu hang
+Order -> Thanh toán: authorize(250000)
+Thanh toán --> Order: OK giu tien
+Order -> Vận chuyển: schedulePickup(o42)
+Vận chuyển --> Order: FAIL het xe
+Order -> Thanh toán: refund(250000) cung key
+Order -> Kho: release(SKU-42)
+note Order: saga xong khi ca hai bu tru xong
+~~~
+
+### Vì sao compensation phải chạy ngược thứ tự
+Bước sau được xây trên kết quả bước trước: lệnh giao hàng tồn tại nhờ kho đã giữ và tiền đã thu. Nếu hoàn tác theo thứ tự xuôi — nhả kho trước khi hủy lệnh giao — đội giao vận sẽ nhận lệnh đi lấy hàng trong khi chỗ hàng đã được bán cho khách khác; nếu refund trước khi hủy order, order còn sống nhưng tiền đã mất. Engine vì thế hoạt động như một stack undo: bước lỗi dừng hàng đợi, rồi compensate từ ngay trước nó ngược về bước đầu. Quy tắc bạn sẽ cài: lỗi ở bước k → chỉ compensate các bước 0..k-1 theo thứ tự k-1, k-2, ..., 0.
+
+### Bước nào được compensate — và timeout là ca khó nhất
+Chỉ bước chắc chắn đã thành công mới được compensate; bước vừa lỗi không được coi là thành công nên không có gì để bù. Trường hợp khó là TIMEOUT: service gọi không trả lời kịp, bạn KHÔNG biết charge đã chạy chưa. Timeout không phải thất bại — refund ngay có thể hoàn một khoản chưa từng thu (cho khách tiền miễn phí), bỏ qua có thể để khách bị trừ tiền oan. Động tác đúng: đánh dấu bước là UNKNOWN, truy vấn kết quả theo sagaId hoặc gửi lại ĐÚNG idempotency key để phía kia trả kết quả cũ (xem lesson-microservices-006), chỉ khi chắc chắn mới quyết định đi tiếp hay bù trừ.
+
+### Vì sao compensate có thể bị gọi hai lần
+Orchestrator gửi refund, nhận timeout; không biết refund đã chạy chưa nên retry; nếu payment không chống trùng, khách nhận hai lần tiền. Chiều ngược cũng xảy ra: engine crash sau khi refund thành công nhưng TRƯỚC khi ghi "refund xong" vào state — restart thấy bước chưa bù nên gọi compensate lần hai. Phòng thủ phải có ở hai tầng: (1) engine lưu trạng thái compensation theo sagaId + bước nên không gọi lại compensate đã thành công; (2) phía nhận giữ idempotency key để lệnh trùng trả kết quả cũ thay vì hoàn thêm tiền. Bài tập dưới đây cài đúng tầng (1): retryCompensations() gọi hai lần không được làm compensate chạy hai lần.
+
+### Trạng thái saga lưu ở đâu
+Nguyên tắc: ghi transition của saga TRƯỚC hoặc cùng transaction với lúc phát command bước kế (kết hợp outbox ở bài 001), để restart biết chính xác đang đứng đâu. Dạng bảng tối thiểu:
+~~~sql
+CREATE TABLE saga_state (
+  saga_id      varchar PRIMARY KEY,
+  saga_type    varchar NOT NULL,           -- 'order_v1'
+  status       varchar NOT NULL,           -- RUNNING | COMPENSATING | DONE | FAILED
+  step_states  jsonb NOT NULL,             -- {"reserve":"DONE","pay":"DONE","ship":"FAILED"}
+  updated_at   timestamptz NOT NULL
+);
+-- Scanner phục hồi: saga kẹt (cần làm tiếp sau restart)
+SELECT * FROM saga_state
+ WHERE status IN ('RUNNING','COMPENSATING')
+   AND updated_at < now() - interval '5 minutes';
+~~~
+| Cách | Khi nào hợp | Đánh đổi |
+|---|---|---|
+| Bảng saga_state tự viết | Vài bước, đội quen SQL | Tự viết retry, timer, dashboard, công cụ xem saga |
+| Event log / event sourcing | Đã theo CQRS, cần audit từng transition | Phức tạp khi saga rẽ nhánh |
+| Workflow engine (Temporal, AWS Step Functions, Camunda) | Saga dài, nhiều nhánh, cần durable timer | Thêm hạ tầng phải vận hành, vendor lock-in |
+
+### Khung engine tổng quát
+~~~java
+// Buoc van hanh theo sagaId de moi lenh giu duoc idempotency key cua no
+record Step(String name, SagaAction action, SagaAction compensate) {}
+interface SagaAction { void run(String sagaId) throws Exception; }
+
+void advance(Saga saga) {
+    while (saga.step() < saga.steps().size()) {
+        Step s = saga.steps().get(saga.step());
+        try {
+            s.action().run(saga.id());
+            saga.markDone(s.name());        // ghi saga_state truoc hoac cung luc phat lenh ke tiep
+            saga.step(saga.step() + 1);
+        } catch (TimeoutException e) {
+            saga.markUnknown(s.name());     // UNKNOWN: truy van ket qua, khong doan that bai
+            return;
+        } catch (Exception e) {
+            saga.markFailed(s.name());
+            compensateFrom(saga, saga.step() - 1);   // bu nguoc ve buoc dau
+            return;
+        }
+    }
+    saga.markCompleted();
+}
+~~~
+
+### Lỗi hay gặp trên production
+- Compensate theo thứ tự xuôi: lệnh nghiệp vụ phía sau tham chiếu tài nguyên đã bị thu hồi.
+- Compensate cả bước chưa thành công: refund khoản chưa từng charge.
+- Compensation của mình lỗi mà chỉ ghi log ERROR: saga kẹt âm thầm; phải có trạng thái COMPENSATION_PENDING + hàng đợi retry + alert theo tuổi saga.
+- State chỉ nằm trong RAM: restart là mất đơn hàng đang dở; hai pod cùng "tiếp quản" một saga nếu không có lease.
+- Xem timeout như thất bại chắc chắn: nguồn gốc của hoàn tiền hai lần và kho bị nhả oan.
+
+### Liên hệ phỏng vấn
+Vẽ state machine: RUNNING → mỗi bước DONE/FAILED/UNKNOWN → COMPENSATING (ngược thứ tự) → COMPLETED/ROLLED_BACK/COMPENSATION_PENDING. Trả lời gọn ba câu: vì sao ngược thứ tự (bước sau đè lên bước trước), compensate có thể bị gọi hai lần bằng cách nào (timeout + crash-trước-khi-ghi-state) và chặn ở đâu (engine theo sagaId + key ở phía nhận), state lưu đâu (bảng saga hoặc workflow engine, ghi trước/cùng lúc phát lệnh). Nói thêm compensation không đảo ngược mọi thứ: tiền về chậm, phí không hoàn, kho đã hết hạn giữ.
+
+> Senior tip: bug saga đắt tiền nhất là "bù nửa vời im lặng" — compensation lỗi, không ai biết, khách bị giữ tiền giữa hai trạng thái. Theo dõi saga kẹt theo tuổi và theo bước, alert khi số saga COMPENSATION_PENDING tăng mà reconciler không giảm; mỗi saga phải có một người chịu trách nhiệm và một runbook can thiệp tay.
+`,
+  exercises: [{
+    title: 'SagaRunner: chạy N bước, lỗi ở đâu bù ngược về đó, compensate không chạy hai lần',
+    prompt: `Cài {{SagaRunner}} làm việc trong bộ nhớ, nhận một danh sách bước ({{Step}} với {{name()}}, {{doWork()}}, {{compensate()}} đã khai báo trong starter).
+
+- {{SagaStatus run()}}: lần lượt chạy {{doWork}} của từng bước, ghi log {{START <ten>}}, {{DONE <ten>}}, {{FAIL <ten>}}. Tất cả thành công → {{COMMITTED}}. Một bước ném exception → ghi {{FAIL}}, KHÔNG chạy các bước sau, rồi compensate đúng các bước đã thành công theo thứ tự NGƯỢC (từ bước ngay trước bước lỗi về bước đầu): ghi {{COMPENSATE <ten>}} trước khi gọi, {{COMPENSATED <ten>}} khi hoàn tác thành công, {{COMPENSATE_FAILED <ten>}} khi hoàn tác cũng ném exception — và vẫn tiếp tục bù các bước còn lại chứ không dừng.
+- Trạng thái cuối của run(): mọi compensation đều thành công (hoặc không có bước nào cần bù) → {{ROLLED_BACK}}; còn bước nào thất bại khi bù → {{COMPENSATION_PENDING}}.
+- {{SagaStatus retryCompensations()}}: chạy lại CHỈ các bước đang {{COMPENSATION_PENDING}}, theo thứ tự ngược; nếu không còn bước pending → {{ROLLED_BACK}}. Nếu trạng thái hiện tại không phải {{COMPENSATION_PENDING}} thì trả ngay trạng thái hiện tại và KHÔNG gọi bất kỳ {{compensate}} nào — bảo đảm một compensation đã thành công không bao giờ chạy lần hai dù retry được gọi lặp.
+- {{SagaStatus status()}} trả trạng thái hiện tại; {{List<String> stateLog()}} trả bản copy log trạng thái.
+- Không có ràng buộc thứ tự giữa START và DONE của log nghiệp vụ; test chỉ dựa vào trạng thái từng bước, số lần compensate, và log COMPENSATE.
+`,
+    starter: `interface Step {
+    String name();
+    void doWork() throws Exception;      // action: commit local transaction cua service do
+    void compensate() throws Exception;  // hanh dong nghiep vu nguoc chieu, phai idempotent
+}
+enum SagaStatus { COMMITTED, ROLLED_BACK, COMPENSATION_PENDING }
+class SagaRunner {
+    SagaRunner(List<Step> steps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    SagaStatus run() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    SagaStatus retryCompensations() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    SagaStatus status() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    List<String> stateLog() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ interface Act { void run() throws Exception; }
+ static void ck(String n,Act r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ static Act ok(){ return ()->{ }; }
+ static Act boom(){ return ()->{ throw new RuntimeException("step failed"); }; }
+ static Act onceThenOk(AtomicInteger n){ return ()->{ if(n.incrementAndGet()==1) throw new RuntimeException("compensation unavailable"); }; }
+ static Step stp(String name,Act work,Act comp,List<String> trace){
+  return new Step(){
+   public String name(){ return name; }
+   public void doWork() throws Exception { trace.add("do "+name); work.run(); }
+   public void compensate() throws Exception { trace.add("comp "+name); comp.run(); }
+  };
+ }
+ public static void main(String[] x){
+  ck("all steps succeed -> COMMITTED, no compensation",()->{
+   List<String> trace=new ArrayList<>();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("reserve",ok(),ok(),trace));
+   steps.add(stp("pay",ok(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.COMMITTED,r.run());
+   eq(SagaStatus.COMMITTED,r.status());
+   eq(List.of("do reserve","do pay"),trace);
+   eq(0,(int)trace.stream().filter(s->s.startsWith("comp ")).count());
+  });
+  ck("last step fails -> earlier steps compensated in reverse",()->{
+   List<String> trace=new ArrayList<>();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("reserve",ok(),ok(),trace));
+   steps.add(stp("pay",ok(),ok(),trace));
+   steps.add(stp("ship",boom(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.ROLLED_BACK,r.run());
+   eq(List.of("do reserve","do pay","do ship","comp pay","comp reserve"),trace);
+  });
+  ck("first step fails -> nothing to compensate",()->{
+   List<String> trace=new ArrayList<>();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("reserve",boom(),ok(),trace));
+   steps.add(stp("pay",ok(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.ROLLED_BACK,r.run());
+   eq(List.of("do reserve"),trace);
+  });
+  ck("failure in the middle -> only completed steps compensated",()->{
+   List<String> trace=new ArrayList<>();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("reserve",ok(),ok(),trace));
+   steps.add(stp("pay",boom(),ok(),trace));
+   steps.add(stp("ship",ok(),ok(),trace));
+   steps.add(stp("gift",ok(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.ROLLED_BACK,r.run());
+   eq(List.of("do reserve","do pay","comp reserve"),trace);
+  });
+  ck("compensation failure keeps other compensations running",()->{
+   List<String> trace=new ArrayList<>();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("reserve",ok(),ok(),trace));
+   steps.add(stp("pay",ok(),ok(),trace));
+   steps.add(stp("ship",boom(),ok(),trace));
+   steps.add(stp("gift",ok(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.ROLLED_BACK,r.run());
+   eq(List.of("do reserve","do pay","do ship","comp pay","comp reserve"),trace);
+  });
+  ck("pending compensation -> COMPENSATION_PENDING then retry fixes it",()->{
+   List<String> trace=new ArrayList<>();
+   AtomicInteger orderComp=new AtomicInteger();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("order",ok(),onceThenOk(orderComp),trace));
+   steps.add(stp("reserve",ok(),ok(),trace));
+   steps.add(stp("ship",boom(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.COMPENSATION_PENDING,r.run());
+   eq(1,orderComp.get());
+   eq(SagaStatus.ROLLED_BACK,r.retryCompensations());
+   eq(2,orderComp.get());
+   eq(2,(int)trace.stream().filter(s->s.equals("comp order")).count());
+  });
+  ck("compensate is never called twice after a clean rollback",()->{
+   List<String> trace=new ArrayList<>();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("reserve",ok(),ok(),trace));
+   steps.add(stp("pay",ok(),ok(),trace));
+   steps.add(stp("ship",boom(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.ROLLED_BACK,r.run());
+   eq(SagaStatus.ROLLED_BACK,r.retryCompensations());
+   eq(SagaStatus.ROLLED_BACK,r.retryCompensations());
+   eq(1,(int)trace.stream().filter(s->s.equals("comp pay")).count());
+   eq(1,(int)trace.stream().filter(s->s.equals("comp reserve")).count());
+  });
+  ck("retry with nothing pending keeps every counter unchanged",()->{
+   List<String> trace=new ArrayList<>();
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("a",ok(),ok(),trace));
+   steps.add(stp("b",boom(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.ROLLED_BACK,r.run());
+   int before=trace.size();
+   eq(SagaStatus.ROLLED_BACK,r.retryCompensations());
+   eq(before,trace.size());
+  });
+  ck("permanently failing compensation stays pending across retries",()->{
+   List<String> trace=new ArrayList<>();
+   AtomicInteger calls=new AtomicInteger();
+   Act alwaysBoom=()->{ calls.incrementAndGet(); throw new RuntimeException("still down"); };
+   List<Step> steps=new ArrayList<>();
+   steps.add(stp("order",ok(),alwaysBoom,trace));
+   steps.add(stp("ship",boom(),ok(),trace));
+   SagaRunner r=new SagaRunner(steps);
+   eq(SagaStatus.COMPENSATION_PENDING,r.run());
+   eq(SagaStatus.COMPENSATION_PENDING,r.retryCompensations());
+   eq(SagaStatus.COMPENSATION_PENDING,r.retryCompensations());
+   eq(3,calls.get());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `interface Step {
+    String name();
+    void doWork() throws Exception;
+    void compensate() throws Exception;
+}
+enum SagaStatus { COMMITTED, ROLLED_BACK, COMPENSATION_PENDING }
+class SagaRunner {
+    private final List<Step> steps;
+    private final Map<String, Boolean> applied = new HashMap<>();
+    private final Map<String, Boolean> compensated = new HashMap<>();
+    private final List<String> log = new ArrayList<>();
+    private int failedIndex = -1;
+    private SagaStatus status;
+
+    SagaRunner(List<Step> steps) { this.steps = steps; }
+
+    SagaStatus run() {
+        failedIndex = -1;
+        for (int i = 0; i < steps.size(); i++) {
+            Step s = steps.get(i);
+            log.add("START " + s.name());
+            try {
+                s.doWork();
+                applied.put(s.name(), true);
+                log.add("DONE " + s.name());
+            } catch (Exception e) {
+                log.add("FAIL " + s.name());
+                failedIndex = i;
+                break;
+            }
+        }
+        if (failedIndex < 0) { status = SagaStatus.COMMITTED; log.add("COMMITTED"); return status; }
+        unwind(failedIndex - 1);
+        return status;
+    }
+
+    SagaStatus retryCompensations() {
+        if (status != SagaStatus.COMPENSATION_PENDING) return status;
+        unwind(failedIndex - 1);
+        return status;
+    }
+
+    private void unwind(int from) {
+        for (int i = from; i >= 0; i--) {
+            Step s = steps.get(i);
+            if (!Boolean.TRUE.equals(applied.get(s.name()))) continue; // never compensate a step that did not succeed
+            if (!Boolean.TRUE.equals(compensated.get(s.name()))) {     // idempotency guard: a done compensation is never re-run
+                log.add("COMPENSATE " + s.name());
+                try {
+                    s.compensate();
+                    compensated.put(s.name(), true);
+                    log.add("COMPENSATED " + s.name());
+                } catch (Exception e) {
+                    compensated.put(s.name(), false);
+                    log.add("COMPENSATE_FAILED " + s.name());
+                }
+            }
+        }
+        status = computeStatus();
+        log.add(status.name());
+    }
+
+    private SagaStatus computeStatus() {
+        for (int i = failedIndex - 1; i >= 0; i--) {
+            String n = steps.get(i).name();
+            if (Boolean.TRUE.equals(applied.get(n)) && !Boolean.TRUE.equals(compensated.get(n)))
+                return SagaStatus.COMPENSATION_PENDING;
+        }
+        return SagaStatus.ROLLED_BACK;
+    }
+
+    SagaStatus status() { return status; }
+    List<String> stateLog() { return List.copyOf(log); }
+}`,
+    hints: [
+      'Giữ hai map: bước nào đã {{applied}} và bước nào đã {{compensated}}. Khi bước k lỗi, duyệt i = k-1 về 0 và chỉ bù các bước applied mà chưa compensated.',
+      'Bọc từng {{compensate}} trong try/catch: một bước bù lỗi thì ghi {{COMPENSATE_FAILED}} rồi đi tiếp các bước còn lại, đừng ném exception làm mất phần bù của các bước đầu.',
+      'Trạng thái saga là hệ quả của các bước: còn ít nhất một bước applied mà chưa compensated → {{COMPENSATION_PENDING}}, không còn → {{ROLLED_BACK}}. retryCompensations chỉ chạy lại khi đang pending, nhờ vậy compensate đã thành công không bị gọi lần hai.',
+    ],
+    explain: `Engine SagaRunner tách làm hai phần: vòng apply ghi dấu từng bước thành công, và vòng unwind duyệt NGƯỢC từ bước ngay trước bước lỗi về bước đầu. Điều kiện {{applied}} loại đúng bước vừa lỗi (chưa từng commit gì) và các bước sau nó (chưa chạy); điều kiện {{!compensated}} chính là idempotency guard ở tầng orchestrator: một compensation đã thành công được đánh dấu nên dù retryCompensations() được gọi thêm bao nhiêu lần nữa, không service nào nhận lệnh bù lần hai. Trong production guard này phải nằm trong {{saga_state}} (mỗi transition ghi trước khi phát command tiếp theo) thì restart mới khôi phục được; map trong RAM chỉ mô phỏng một tiến trình sống liên tục.
+
+Chi tiết dễ sai thứ hai: exception từ {{compensate}} không được thoát khỏi vòng unwind. Refund lỗi (nhà cung cấp tạm từ chối, hết hạn hoàn) không phải lý do để bỏ qua việc nhả kho — mỗi bước còn lại vẫn phải cố bù, bước lỗi rơi về trạng thái pending để reconciler hoặc người vận hành xử lý sau. Trạng thái cuối vì thế suy ra từ tập bước chứ không hard-code: còn bước pending → COMPENSATION_PENDING.
+
+Lỗi kinh điển mà bài tập cố phơi bày: xem timeout là thất bại chắc chắn. Ở đây doWork ném exception nghĩa là THẤT BẠI RÕ; còn timeout là chưa biết — engine thật phải truy vấn theo sagaId hoặc gửi lại cùng idempotency key trước khi quyết định compensate, nếu không sẽ refund khoản chưa từng charge.`,
+  }],
+  check: [
+    { q: 'Trong các câu về saga bên dưới, câu nào SAI?', options: ['Compensation nên chạy ngược thứ tự các bước đã thành công', 'Timeout của một bước nên được xử lý như chưa biết kết quả, không phải thất bại chắc chắn', 'Vì mỗi bước đã commit local transaction của nó, compensation chỉ cần chạy đúng một lần là đủ, không cần phía nhận biết trùng lặp', 'Một saga đúng thứ tự cần idempotency key: timeout cộng với retry luôn có thể tạo lệnh trùng'], answer: 2, explain: `Idempotency engine tầng (guard theo sagaId + bước) không đủ khi chính lệnh compensate gửi đi rồi timeout và được retry. Hai lần gửi refund là hai lời gọi đến payment, nên phía nhận vẫn phải dedup bằng idempotency key. Ba câu còn lại là tính chất chuẩn của saga.` },
+    { q: 'Bước pay lỗi và refund cũng lỗi (provider từ chối) trong khi release kho đã chạy. SagaRunner đúng phải làm gì?', options: ['Dừng và đánh dấu saga thất bại', 'Chạy tiếp các bước bù còn lại, giữ saga ở trạng thái pending để reconcile', 'Xóa order khỏi database', 'Gọi lại refund trong một vòng lặp không giới hạn cho tới khi thành công'], answer: 1, explain: `Một compensation lỗi không hủy bỏ các compensation còn lại. Saga rơi về pending (cần reconcile/alert), không phải trạng thái cuối, và không được retry vô hạn không có trần.` },
+    { q: 'Vì sao bảng saga_state phải ghi TRƯỚC (hoặc cùng transaction với) việc phát command bước tiếp theo?', options: ['Để tăng tốc độ phản hồi', 'Vì nếu ghi SAU khi gửi, tiến trình chết giữa hai thời điểm khiến restart không biết đã gửi lệnh hay chưa và phát trùng', 'Vì Kafka yêu cầu', 'Để tránh deadlock'], answer: 1, explain: `Thứ tự ghi-state-rồi-gửi-lệnh là cái tạo khả năng phục hồi. Ghi sau lệnh gửi để lại cửa sổ mất tiến độ; nhờ idempotency key, phát lại cùng bước thì an toàn còn quên mất bước thì không có gì cứu được.` },
+  ], related: ['microservices-004', 'microservices-023'],
+  tags: ['saga', 'compensation', 'idempotent', 'orchestrator', 'state']
+},
+{
+  id: 'lesson-microservices-009', track: 'microservices', order: 9,
+  title: 'Timeout budget và deadline propagation: đừng để chuỗi gọi tự giết nhau', level: 'senior', minutes: 40,
+  goals: ['Giải thích vì sao timeout của một service phải nhỏ hơn thời gian còn lại mà caller giao cho nó', 'Tính tải nhân bản khi nhiều tầng cùng retry (retry storm) và nêu 4 cách chặn', 'Tính timeout còn lại cho từng hop với đồng hồ giả và quyết định có còn đủ thời gian để retry'],
+  body: `**Tóm tắt:** Một request đi qua nhiều service chỉ có TỔNG thời gian cho phép (timeout budget) — thường là SLA của client. Mỗi hop phải lấy thời gian còn lại để cấu hình timeout cho hop kế (deadline propagation), không đặt timeout cứng độc lập; và trước khi retry phải kiểm tra thời gian còn lại đủ cho một lần gọi mới, không sẽ tiếp tay cho retry storm.
+
+### Ba từ ngữ cần định nghĩa trước
+- **timeout**: số mili-giây tối đa bạn chịu chờ MỘT lời gọi (ví dụ 800ms).
+- **deadline (hay budget)**: MỐC THỜI GIAN TUYỆT ĐỐI mà request phải xong (ví dụ 12:00:03.420). Deadline không đổi khi đi qua các hop, chỉ có thời gian còn lại là ngắn dần.
+- **SLA**: cam kết thời gian phản hồi với người dùng (ví dụ "99% request dưới 3 giây") — nguồn của con số budget.
+Ví dụ đời thường: máy bay cất cánh lúc 15:00 (deadline) chứ không phải "đợi 2 tiếng nữa" (timeout) — mọi bộ phận tính ngược từ 15:00, không ai tự đặt giờ riêng.
+
+### Vì sao mỗi nơi tự đặt timeout là thảm họa
+Quy ước sai phổ biến: mọi service đều đặt timeout gọi downstream = 5 giây. Chain user → gateway → order → payment → ngân hàng, payment treo. Hình dung:
+~~~text
+Gateway:   |========== 5s ==========|  → bỏ cuộc, báo lỗi user
+Order:     |=========== 5s ===========|  → bỏ cuộc, gọi lại payment
+Payment:   |============ 5s =============|  → vẫn chờ ngân hàng!
+Ngân hàng: |============= 5s ===============|  → làm xong, không ai nhận
+~~~
+Ba hệ quả: (1) user nhận lỗi từ giây thứ 5 nhưng hệ thống đốt tài nguyên (thread, connection DB) tới giây 15 cho request không còn ai chờ — dưới tải cao chính đám "work mồ côi" này làm nghẽn pool và sập dây chuyền (cascading failure: một service chậm kéo cả cụm chết theo); (2) caller đã bỏ cuộc trong khi callee vẫn đang làm → nếu thao tác ghi (trừ tiền) thì trạng thái hệ thống lệch với những gì user thấy; (3) không ai biết lỗi thật nằm ở đâu khi tầng nào cũng báo "timeout".
+Vì thế luật nền tảng: **timeout bạn đặt cho chính mình phải NHỎ HƠN thời gian còn lại mà caller giao**, để caller còn kịp đọc lỗi của bạn và tự xử lý (fallback, trả 504 kèm lý do). Ngược lại, hop trong cùng một service thì timeout của nó phải nhỏ hơn deadline đang chạy.
+
+### Deadline propagation: truyền thời gian còn lại, đừng truyền timeout
+Thay vì mỗi hop tự đặt timeout cứng, caller gửi "mày chỉ còn X ms" cho callee. HTTP không có chuẩn, người ta tự đặt header ({{X-Deadline-Ms}} hoặc mốc tuyệt đối bằng epoch-ms); gRPC thì có sẵn header grpc-timeout và mọi interceptor tự tuân theo — nên một chain gRPC chậm dần tự cắt đúng chỗ.
+~~~seq
+title: Deadline di truyen: moi hop tiep tuoi con it thoi gian hon
+actors: User | Gateway | Order | Payment | Bank
+User -> Gateway: POST /orders (deadline +3000ms)
+Gateway -> Order: create (deadline con 2600ms)
+Order -> Payment: authorize (deadline con 1900ms)
+Payment -> Bank: charge (deadline con 1200ms)
+Bank --> Payment: OK
+Payment --> Order: OK (con 700ms du loi)
+Order --> Gateway: 201 Created
+Gateway --> User: 201 Created
+note Gateway: moi hop truir thoi gian cua minh roi moi truyen deadline
+~~~
+Số học cụ thể, và cũng là quy tắc cài đặt:
+~~~text
+Client đưa 3000ms tổng
+Gateway:      giữ 400ms cho việc của mình → giao Order      2600ms
+Order:        giữ 700ms (DB, tổng hợp)  → giao Payment     1900ms
+Payment:      cap hop Bank 1200ms, giữ 700ms còn lại để ghi kết quả + trả lời
+~~~
+Code phía gọi (kiểu RestTemplate/Feign interceptor):
+~~~java
+// Timeout hop ke tiep = min(cap cua minh, budget con lai - du phong cho viec cua minh)
+long remaining = budget.remainingMillis();          // doc tu header X-Deadline
+long hopTimeout = Math.min(1200, remaining - 300);  // cap 1.2s, giu 300ms duoi
+if (hopTimeout <= 0) {
+    return failFast("deadline exhausted");          // het gio: goi tiep cung khong kip xong, dung goi
+}
+requestConfig.setResponseTimeout(Duration.ofMillis(hopTimeout));
+~~~
+
+### Retry storm: phép nhân tải không ai chủ trương
+Một service timeout rồi retry 3 lần là bình thường. Ba tầng CHỒNG NHAU, mỗi tầng 3 lần, là thảm họa: nếu cả gateway, order lẫn payment đều retry khi tầng dưới chậm, một request của user biến thành tối đa 3x3x3 = 27 request đến payment — đúng lúc payment đang chậm nhất. Đó là retry storm (bão retry): tải nhân bản theo cấp số nhân, biến một dependency chậm thành cả cụm sập. Bốn lớp chặn:
+1. **Chỉ retry Ở MỘT tầng** gần nguồn lỗi chuyển tiếp nhất (thường là tầng gọi trực tiếp), các tầng trên fail-fast.
+2. **Retry có budget**: ví dụ tối đa 10% tổng request được là retry (Envoy và Resilience4j đều có retry budget).
+3. **Backoff + jitter**: backoff là tăng dần thời gian chờ giữa các lần thử (100ms, 200ms, 400ms); jitter là cộng nhiễu ngẫu nhiên để hàng nghìn client không cùng retry đúng một thời điểm.
+4. **Circuit breaker** (máy cắt tự động: n lỗi liên tiếp thì tạm ngưng gọi một khoảng): chặn dòng retry vô ích, và chỉ retry những request còn ĐỦ deadline — quay lại mục sau.
+
+### Khi nào KHÔNG được retry nữa
+Retry chỉ có nghĩa nếu lần thử mới còn kịp xong TRƯỚC deadline. Công thức: {{canRetry = remaining >= backoffMillis + timeoutOfNextAttempt}}. Còn 250ms mà hop kế cần 1200ms thì lần retry đó chắc chắn chết dọc đường — gửi đi chỉ tổ thêm tải. Chết sớm (fail fast) ở edge là hành vi ĐÚNG: user thấy lỗi trong 3 giây như cam kết, còn hệ thống ngừng đốt tài nguyên cho request ma.
+
+### Lỗi hay gặp
+- Đặt timeout tầng trong LỚN HƠN tầng ngoài: tầng ngoài đầu hàng trước, tầng trong làm công cốc.
+- Quên trừ phần việc của chính mình: giao hết budget cho downstream, không còn ms nào ghi kết quả hay trả lời caller.
+- Truyền TIMEOUT (số ms tương đối) thay vì DEADLINE (mốc tuyệt đối): mỗi hop tính lại từ đầu làm tổng thời gian phình ra.
+- Mọi tầng cùng retry → storm khi một dependency chậm (brownout: chậm dần chứ chưa chết).
+- Không cancel công việc đang chạy khi deadline đi qua — chỉ thôi chờ là chưa đủ.
+
+### Liên hệ phỏng vấn
+Vẽ chain 4 hop với budget 3000ms, chỉ ra công thức chia timeout từng hop; giải thích vì sao deadline (mốc tuyệt đối) phải được propagate chứ không phải timeout; liệt kê retry storm + 4 cách chặn (một tầng retry, retry budget, backoff + jitter, circuit breaker); chốt bằng "fail fast khi không còn đủ thời gian là tính năng, không phải bug".
+
+> Senior tip: đặt timeout từ số liệu, không từ cảm giác: đo p99 thật của downstream rồi chọn timeout = p99 + một biên độ (công thức hay dùng là p99 x2 hoặc p99 + 100ms); timeout quá chật tự sinh lỗi trên traffic chậm-but-ok, quá rộng thì giữ tài nguyên. Monitor riêng "số request bị cắt bởi deadline" và "retry rate / request rate" — hai đường này dốc lên cùng lúc chính là bình minh của một sự cố storm.
+`,
+  exercises: [{
+    title: 'Budget: tính thời gian còn lại cho từng hop với đồng hồ giả',
+    prompt: `Cài {{Budget}} — bộ tính thời gian còn lại của một chuỗi gọi, dùng đồng hồ giả truyền vào để test bước thời gian tự do (không sleep, không đọc giờ thật).
+
+- {{Budget(long totalMillis, LongSupplier clock)}}: deadline = thời điểm hiện tại của đồng hồ + totalMillis; ném {{IllegalArgumentException}} nếu totalMillis không dương.
+- {{static Budget withDeadline(long deadlineMillis, LongSupplier clock)}}: tạo từ deadline tuyệt đối truyền xuống từ caller qua header (kiểu X-Deadline) — một service giữa chuỗi đi tiếp deadline của người gọi, không tự đặt lại từ đầu.
+- {{long deadlineAt()}}: deadline tuyệt đối đã lưu.
+- {{long remaining()}}: thời gian còn lại, không bao giờ âm.
+- {{boolean expired()}}: đồng hồ đã chạm hoặc vượt deadline.
+- {{long timeoutForCall(long capMillis, long reserveMillis)}}: timeout dành cho lời gọi downstream tiếp theo = {{min(capMillis, remaining - reserveMillis)}}; nếu kết quả không dương thì trả {{0}} — caller phải fail fast, đừng gọi downstream. Kiểm tra {{capMillis > 0}}, {{reserveMillis >= 0}} (ngược lại ném IllegalArgumentException).
+- {{boolean canRetry(long retryTimeoutMillis, long backoffMillis)}}: chỉ cho phép thêm một lần thử khi thời gian còn lại đủ để chờ backoff rồi chạy trọn một attempts {{retryTimeoutMillis}}; kiểm tra {{retryTimeoutMillis > 0}}, {{backoffMillis >= 0}}.
+`,
+    starter: `class Budget {
+    Budget(long totalMillis, LongSupplier clock) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static Budget withDeadline(long deadlineMillis, LongSupplier clock) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    long deadlineAt() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    long remaining() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    boolean expired() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    long timeoutForCall(long capMillis, long reserveMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    boolean canRetry(long retryTimeoutMillis, long backoffMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ interface Th { void run() throws Exception; }
+ static void ck(String n,Th r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] x){
+  ck("remaining decreases with the clock and never goes negative",()->{
+   AtomicLong now=new AtomicLong(0);
+   Budget b=new Budget(1000,now::get);
+   eq(1000L,b.remaining());
+   now.set(400);
+   eq(600L,b.remaining());
+   now.set(2000);
+   eq(0L,b.remaining());
+   eq(true,b.expired());
+  });
+  ck("expired exactly at the deadline",()->{
+   AtomicLong now=new AtomicLong(0);
+   Budget b=new Budget(500,now::get);
+   now.set(499);
+   eq(false,b.expired());
+   now.set(500);
+   eq(true,b.expired());
+   eq(0L,b.remaining());
+  });
+  ck("timeoutForCall uses the cap when the budget is generous",()->{
+   AtomicLong now=new AtomicLong(0);
+   Budget b=new Budget(1000,now::get);
+   eq(300L,b.timeoutForCall(300,100));
+   eq(1000L,b.timeoutForCall(5000,0));
+  });
+  ck("timeoutForCall shrinks to remaining minus reserve",()->{
+   AtomicLong now=new AtomicLong(0);
+   Budget b=new Budget(500,now::get);
+   now.set(300);
+   eq(150L,b.timeoutForCall(1000,50));
+   now.set(450);
+   eq(0L,b.timeoutForCall(1000,50));
+   now.set(480);
+   eq(10L,b.timeoutForCall(1000,10));
+   now.set(495);
+   eq(0L,b.timeoutForCall(1000,10));
+  });
+  ck("canRetry passes exactly at the boundary and fails one ms short",()->{
+   AtomicLong now=new AtomicLong(0);
+   Budget b=new Budget(1000,now::get);
+   eq(true,b.canRetry(800,200));
+   eq(false,b.canRetry(800,201));
+   now.set(300);
+   eq(true,b.canRetry(700,0));
+   eq(false,b.canRetry(701,0));
+  });
+  ck("withDeadline continues the caller deadline instead of resetting",()->{
+   AtomicLong now=new AtomicLong(700);
+   Budget caller=new Budget(1000,now::get);      // deadline = 1700
+   now.set(900);
+   Budget hop=new Budget(5000,now::get);         // hop tu dat timeout 5s: sai
+   Budget propagated=Budget.withDeadline(caller.deadlineAt(),now::get);
+   eq(800L,propagated.remaining());
+   eq(5000L,hop.remaining());
+   eq(caller.deadlineAt(),propagated.deadlineAt());
+   eq(true,propagated.remaining()<hop.remaining());
+  });
+  ck("chain simulation: later hops get less until they fail fast",()->{
+   AtomicLong now=new AtomicLong(0);
+   Budget chain=new Budget(1000,now::get);
+   List<Long> used=new ArrayList<>();
+   for(int hop=0; hop<4; hop++){
+    long t=chain.timeoutForCall(500,0);
+    if(t==0) { used.add(0L); continue; }
+    used.add(t);
+    now.set(now.get()+t);                        // moi hop dung het timeout cua no
+   }
+   eq(List.of(500L,500L,0L,0L),used);
+  });
+  ck("retry loop stops when the budget is exhausted",()->{
+   AtomicLong now=new AtomicLong(0);
+   Budget b=new Budget(1000,now::get);
+   now.set(200);                                 // first attempt burned its full 200ms timeout
+   int retries=0;
+   long backoff=100;
+   while(b.canRetry(200,backoff)){
+    now.set(now.get()+backoff+200);
+    retries++;
+    backoff*=2;
+   }
+   eq(2,retries);
+   eq(100L,b.remaining());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `class Budget {
+    private final long deadline;
+    private final LongSupplier clock;
+
+    Budget(long totalMillis, LongSupplier clock) {
+        this(deadlineFrom(totalMillis, clock), clock, true);
+    }
+    private Budget(long deadline, LongSupplier clock, boolean ignored) {
+        this.deadline = deadline;
+        this.clock = clock;
+    }
+    private static long deadlineFrom(long totalMillis, LongSupplier clock) {
+        if (clock == null) throw new IllegalArgumentException("clock required");
+        if (totalMillis <= 0) throw new IllegalArgumentException("totalMillis must be positive");
+        return clock.getAsLong() + totalMillis;
+    }
+    static Budget withDeadline(long deadlineMillis, LongSupplier clock) {
+        if (clock == null) throw new IllegalArgumentException("clock required");
+        return new Budget(deadlineMillis, clock, true);
+    }
+    long deadlineAt() { return deadline; }
+    long remaining() { return Math.max(0L, deadline - clock.getAsLong()); }
+    boolean expired() { return clock.getAsLong() >= deadline; }
+    long timeoutForCall(long capMillis, long reserveMillis) {
+        if (capMillis <= 0) throw new IllegalArgumentException("capMillis must be positive");
+        if (reserveMillis < 0) throw new IllegalArgumentException("reserveMillis must not be negative");
+        long available = deadline - clock.getAsLong() - reserveMillis;
+        return available <= 0 ? 0 : Math.min(capMillis, available);
+    }
+    boolean canRetry(long retryTimeoutMillis, long backoffMillis) {
+        if (retryTimeoutMillis <= 0) throw new IllegalArgumentException("retryTimeoutMillis must be positive");
+        if (backoffMillis < 0) throw new IllegalArgumentException("backoffMillis must not be negative");
+        return remaining() >= retryTimeoutMillis + backoffMillis;
+    }
+}`,
+    hints: [
+      'Chỉ cần lưu hai thứ: deadline tuyệt đối (long) và clock. Mọi phương pháp khác đều là deadline trừ thời điểm hiện tại của clock.',
+      'Dùng {{Math.max(0, deadline - now)}} để {{remaining()}} không bao giờ âm khi đồng hồ đã vượt deadline.',
+      'Trong {{timeoutForCall}}, lấy {{deadline - now - reserve}} rồi mới {{Math.min}} với cap; nếu phần khả dụng không dương thì trả 0 chứ không trả số âm.',
+      'Với constructor public nhận totalMillis: tính deadline trước trong một static helper, rồi gọi qua constructor phụ private có tham số phụ (boolean) để hai constructor không trùng chữ ký.',
+    ],
+    explain: `Budget là phần số học của deadline propagation: một request sinh ra với deadline tuyệt đối (mốc đồng hồ, không phải số ms tương đối), và mọi quyền định sau nó đều suy từ {{deadline - now}}. {{timeoutForCall(cap, reserve)}} embody hai quy tắc trong lesson: timeout của hop kế không bao giờ vượt cap của chính hop đó, và luôn trừ lại {{reserve}} để service còn ms ghi kết quả, trả lời caller, chạy compensation. Trả {{0}} nghĩa là "fail fast": đừng phát lời gọi mà bạn biết chắc không kịp sống.
+
+{{canRetry(timeout, backoff)}}, không phải trạng thái retry, là chốt chặn retry storm: nếu {{remaining < backoff + timeout}} thì lần thử mới chắc chắn chết sau khi caller đầu hàng, phát nó chỉ để nhân tải cho hệ thống đang chậm. Vòng retry trong test 8 dừng đúng lúc remaining còn 100ms < backoff 400 + timeout 200 — request sẽ fail-fast ở edge trong SLA thay vì biến thành con số 27 ở tầng cuối.
+
+{{withDeadline}} tái hiện hop giữa chuỗi: service B nhận deadline của A và đi tiếp chính mốc đó — nó KHÔNG được quyền tự cộng thêm 1000ms. Đây là chỗ phân biệt truyền deadline (mốc tuyệt đối) với truyền timeout (số tương đối): truyền timeout làm deadline phình lên qua từng hop. Trong production còn một nửa việc chưa mô phỏng được: khi deadline đi qua lúc công việc đang chạy dở, service phải cancel (interrupt, đóng connection, statement timeout) — chỉ ngừng chờ mà để worker tiếp tục đốt DB là đúng công thức của work mồ côi.
+
+Bẫy khi cài: quên clamp {{remaining}} về 0 (test 1, 5 sẽ đỏ), so sánh {{remaining >= timeout}} mà quên backoff (test 5, 8 sẽ đỏ), trả timeout âm khi reserve ăn hết budget (test 4), và dùng {{System.currentTimeMillis}} thay vì clock truyền vào (thừa pass nhưng không test được deterministic).`,
+  }],
+  check: [
+    { q: 'Gateway cho order-service deadline 1000ms. Order đã dùng 650ms, cần gọi payment với cap 500ms và muốn giữ 100ms cho việc của mình. Timeout đặt cho payment là bao nhiêu?', options: ['500 ms — cap cấu hình của payment', '350 ms — thời gian còn lại của order', '250 ms — còn lại trừ phần dự phòng', '1000 ms — deadline gốc từ gateway'], answer: 2, explain: `Còn 350ms, trừ 100ms dự phòng, chỉ còn 250ms khả dụng; cap 500ms không đạt nên không cắt thêm. Đặt 350ms (không dự phòng) nghĩa là payment có thể xong đúng lúc order không còn ms nào ghi kết quả; đặt cap hay deadline gốc đều vi phạm budget của caller.` },
+    { q: 'Ba tầng A→B→C, mỗi tầng đặt 3 lần thử (1 ban đầu + 2 retry). C chậm. Số request tối đa có thể đổ xuống C cho MỘT request của user?', options: ['3 request', '9 request', '18 request', '27 request'], answer: 3, explain: `A thử 3 lần; mỗi lần đó B cũng thử 3 lần; mỗi lần của B, C lại nhận 3 lần từ B → 3x3x3 = 27. Đó là lý do retry phải tập kết ở MỘT tầng, có retry budget và chỉ khi còn đủ deadline.` },
+    { q: 'Vì sao nên truyền deadline tuyệt đối (mốc thời gian) thay vì timeout tương đối qua header?', options: ['Vì header gọn hơn', 'Vì truyền số ms tương đối khiến mỗi hop tính lại từ đầu, tổng thời gian chuỗi phình to; deadline không đổi nên phần còn lại luôn đúng', 'Vì deadline nhanh hơn timeout', 'Vì HTTP không hỗ trợ timeout'], answer: 1, explain: `Timeout là đại lượng tương đối, cộng dồn qua mỗi hop là sai; deadline là mốc tuyệt đối, hop nào cũng tự suy ra thời gian còn lại của mình bằng deadline - now. gRPC làm đúng như vậy với grpc-timeout.` },
+    { q: 'Payment timeout (provider không trả lời kịp). Trong các câu sau, câu nào ĐÚNG?', options: ['Timeout là bằng chứng charge chưa chạy, refund ngay là an toàn', 'Timeout không phân biệt được chưa chạy hay đã chạy xong, phải xác minh qua idempotency key hoặc query trước khi kết luận', 'Timeout là tín hiệu chậm, cứ retry ngay 3 lần', 'Timeout chỉ có ý nghĩa khi timeout đặt dài hơn deadline tổng'], answer: 1, explain: `Cả ba kịch bản (chưa chạy / đang chạy / xong nhưng response đi lạc) đều cho cùng một timeout. Chỉ idempotency key hoặc truy vấn trạng thái mới phân biệt được; đó cũng là lý do deadline propagation và canRetry phải đi kèm, để không retry mù vào khoảng không biết.` },
+  ], related: ['microservices-025', 'microservices-008', 'microservices-007'],
+  tags: ['timeout budget', 'deadline propagation', 'retry storm', 'backoff', 'fail fast']
 }
 );

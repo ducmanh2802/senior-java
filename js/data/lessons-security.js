@@ -1939,5 +1939,1927 @@ Lỗi hay gặp: kiểm tenant **sau** khi đã trả true cho OWNER (OWNER côn
   related: ['security-008', 'security-024', 'security-020'],
   tags: ['authorization', 'RBAC', 'IDOR', 'BOLA', 'deny by default'],
 },
+{
+  id: 'lesson-security-006',
+  track: 'security',
+  order: 6,
+  title: 'OAuth2 Authorization Code + PKCE: vì sao app không giữ được client_secret và code_verifier bịt lỗ hổng thế nào',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Phân biệt confidential client và public client; giải thích được vì sao SPA và app mobile không thể giữ {{client_secret}}',
+    'Sinh đúng {{code_verifier}} (43–128 ký tự) và {{code_challenge}} = BASE64URL(SHA-256(verifier)) không padding, chỉ bằng JDK thuần',
+    'Viết phía authorization server: code chỉ dùng một lần, có hạn dùng, verifier sai thì bị từ chối và bị vô hiệu luôn',
+    'Giải thích {{state}} chống gì, vì sao nó không thay được PKCE, và PKCE không chữa được những rủi ro nào',
+  ],
+  body: `### Bốn vai trong OAuth2 (định nghĩa từ đầu, vì mọi thứ sau phụ thuộc vào nó)
+- **Resource Owner**: chính là người dùng — chủ nhân của dữ liệu.
+- **Client**: ứng dụng muốn đọc dữ liệu **nhân danh** người dùng. Đó có thể là SPA viết bằng React/Vue chạy trong trình duyệt, app iOS/Android, hoặc một backend chạy job đêm.
+- **Authorization Server (AS)**: nơi người ta thực sự đăng nhập và bấm "Đồng ý cho app". Ví dụ: Google, Keycloak, Spring Authorization Server, Auth0. AS phát **authorization code** (một tờ vé ngắn hạn) rồi đổi tờ vé đó lấy **access token**.
+- **Resource Server (RS)**: API chứa dữ liệu — thường là chính Spring Boot app của bạn. RS không biết mật khẩu ai, chỉ kiểm tra access token gửi trong header **Authorization** rồi trả lời "token này có scope đọc được đơn hàng không".
+
+Ví dụ đời thường: app "Tính calorie" muốn đọc thực đơn trong Google Calendar của bạn. Đưa mật khẩu Google cho app giống đưa chìa khoá nhà cho người lạ: họ giữ vĩnh viễn, mở được mọi phòng (mail, Drive, ảnh), và bạn không thu hồi riêng cái app đó được. OAuth giải quyết bằng cách để **Google tự tay** phát cho app một tấm vé chỉ mở được cửa calendar và hết hạn sau một giờ.
+
+| Loại client | Chạy ở đâu | Giữ được secret? | Ví dụ |
+|---|---|---|---|
+| **Confidential client** | Server **của bạn** (backend, batch job) | Có — secret nằm trong môi trường do bạn kiểm soát | Spring Boot làm BFF, service-to-service |
+| **Public client** | Máy **của người dùng** | **Không bao giờ** | SPA trong trình duyệt, app mobile, CLI, smart TV |
+
+### Vì sao SPA và mobile không thể giữ client_secret
+Với SPA, toàn bộ JavaScript đã được tải về máy người dùng để chạy. Nghĩa là chỉ cần F12 → tab Sources (hoặc Ctrl+U xem source) là đọc được mọi chuỗi trong bundle — kể cả chuỗi bạn gọi là "secret" và đã xoá khỏi repo từ đời nào. Với app mobile còn tệ hơn: file APK/IPA lấy được từ store, giải nén bằng công cụ phổ biến, chạy {{strings}} là thấy. Mã hoá obfuscate chỉ làm khó đọc, không làm khó **trích xuất**: thuật toán chạy trên máy kẻ tấn công thì kẻ tấn công đọc được thuật toán.
+
+Vậy nên {{client_secret}} của public client không phải secret, và chuẩn OAuth hiện hành (RFC 9700, OAuth 2.1) **bỏ luôn** việc dùng secret ở đây; {{client_id}} chỉ là định danh công khai, giống tên miền, không chứng minh được thân phận người gọi. Hệ quả: khi app quay lại đổi code lấy token, AS không có cách nào biết "đây có phải đúng cái app đã bắt đầu luồng không". Đó chính là chỗ PKCE lấp vào.
+
+### Từng bước của Authorization Code flow có PKCE
+~~~seq
+title: Authorization Code + PKCE cho SPA
+actors: App | AS | RS
+App -> App: tao code_verifier ngau nhien
+App -> AS: /authorize?code_challenge&state
+AS --> App: man hinh dang nhap va dong y
+AS --> App: redirect ?code&state
+App -> AS: /token (code + code_verifier)
+App -> App: kiem tra state khop
+AS -> AS: SHA256(verifier) == challenge?
+AS --> App: access token + refresh token
+App -> RS: GET /api/orders (Bearer token)
+RS --> App: du lieu don hang
+note App..RS: code chi dung duoc 1 lan, TTL vai chuc giay
+~~~
+
+**Bước 1.** App sinh {{code_verifier}} ngẫu nhiên, giữ trong bộ nhớ phiên làm việc ({{sessionStorage}}), rồi chuyển hướng trình duyệt tới AS:
+
+~~~text
+GET https://auth.example.com/authorize
+  ?response_type=code
+  &client_id=spa-calorie
+  &redirect_uri=https://app.example.com/callback
+  &scope=openid%20profile
+  &state=7f3Aq0Kz9Xk2mQpR
+  &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+  &code_challenge_method=S256
+~~~
+
+**Bước 2.** Người dùng đăng nhập **trên màn hình của AS**. App không bao giờ nhìn thấy mật khẩu — đó là toàn bộ ý nghĩa của "uỷ quyền thay vì trao khoá".
+**Bước 3.** AS redirect về {{redirect_uri}} kèm {{?code=...&state=...}}. Chú ý: code đi qua **trình duyệt**, tức là qua địa chỉ, qua lịch sử, qua log.
+**Bước 4.** App POST tới {{/token}} với {{code}}, {{code_verifier}}, {{client_id}} (không secret):
+
+~~~text
+POST /oauth2/token HTTP/1.1
+Host: auth.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&code=SlaxwqT3vN9dLk2Yh
+&redirect_uri=https://app.example.com/callback
+&client_id=spa-calorie
+&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+~~~
+
+**Bước 5.** AS kiểm tra {{SHA-256(code_verifier)}} có đúng bằng {{code_challenge}} đã lưu ở Bước 1 không, rồi mới phát access token (+ refresh token).
+**Bước 6.** App gọi RS với header **Authorization: Bearer**. RS không cần hỏi AS mỗi câu nếu token là JWT tự chứa (kiểm tra chữ ký + {{exp}} + {{aud}}); khi cần thu hồi tức thời thì dùng token opaque + introspection.
+
+### Code bị đánh cắp bằng cách nào — bài học khiến PKCE ra đời
+Kẻ tấn công chỉ cần nhìn thấy {{code}} là đổi được token, nếu không có PKCE:
+- **Mobile, custom URL scheme**: app đăng ký {{myapp://oauth/callback}}. Hệ điều hành mở **app nào đăng ký scheme đó**, không quan tâm ai sở hữu. Một app độc hại cài cùng scheme nhận được code nguyên văn.
+- **SPA**: code xuất hiện trên thanh địa chỉ → lọt vào lịch sử trình duyệt, vào header **Referer** nếu trang callback lập tức tải tài nguyên bên thứ ba, vào log của reverse proxy/CDN, vào extension đọc DOM, và vào cả screenshot khi ai đó "cho tôi xin cái link".
+- Người dùng copy đường link "để gửi cho bộ phận hỗ trợ", hoặc trình duyệt tự điền lại URL cũ có chứa code.
+
+Đây gọi là **authorization code interception attack**. Cũng vì kiểu rò này mà **Implicit flow** bị khai tử: nó trả thẳng access token qua phần sau dấu # của URL — token hiện nguyên trên thanh địa chỉ, nằm trong lịch sử, mọi script trên trang đọc được, và còn không có refresh token nên cứ 5 phút lại phải chạy lại luồng login.
+
+### PKCE: một mật khẩu chỉ người tạo ra nó biết, và không đi qua kênh rò rỉ
+Nguyên lý trong một câu: **bước lộ thì gửi hash, bước kín thì gửi nguyên bản**.
+- {{code_verifier}} là chuỗi ngẫu nhiên 43–128 ký tự lấy từ bảng ký tự *unreserved* {{A-Za-z0-9-._~}} (tập ký tự an toàn trong URI, không cần escape). Thực tế người ta lấy đúng 32 byte ngẫu nhiên từ {{SecureRandom}} rồi mã base64url không padding → ra 43 ký tự, đủ chuẩn.
+- {{code_challenge}} = BASE64URL(**không padding**) của SHA-256 tính trên byte ASCII của verifier.
+- Challenge đi trong request {{/authorize}} (kênh rò rỉ): attacker thấy challenge cũng vô ích, vì SHA-256 một chiều — không suy ngược verifier được.
+- Verifier đi trong **POST body** của {{/token}} qua TLS: không vào URL, không vào history, không vào log proxy, không vào Referer. Attacker có code trong tay vẫn thiếu mảnh cuối.
+
+Test vector chính thức trong Phụ lục B của RFC 7636 — hãy tự tính lại một lần để tin:
+
+| | Giá trị |
+|---|---|
+| {{code_verifier}} | dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk |
+| {{code_challenge}} | E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM |
+
+{{code_challenge_method=plain}} nghĩa là gửi verifier thô ngay ở {{/authorize}}: kẻ đứng giữa (hoặc log proxy) đọc verifier từ bước 1, PKCE vô dụng. Chuẩn mới chỉ cho {{S256}}; AS phải **từ chối** mọi request dùng {{plain}} hoặc thiếu {{code_challenge_method}}.
+
+Điều PKCE chứng minh được chỉ là: "kẻ đang đổi code là kẻ đã bắt đầu phiên này". Nó **không** xác thực thân phận client, không chứng minh app là app thật.
+
+### state: một lớp chống CSRF riêng, đừng nhầm với PKCE
+Attacker tự login bằng **tài khoản của hắn**, lấy một code hợp lệ, rồi nhét URL callback chứa code đó vào trình duyệt nạn nhân (một link chat, một trang ảnh). Nạn nhân click → phiên của nạn nhân gắn với tài khoản của attacker → mọi thứ nạn nhân gõ (đơn hàng, ảnh, ghi chú) rơi vào tài khoản attacker, và attacker đọc được chúng. Đây là **login CSRF**, và PKCE không chống được vì code hoàn toàn hợp lệ, verifier cũng đúng.
+Cách chống: app sinh {{state}} ngẫu nhiên, gắn với phiên làm việc hiện tại của chính trình duyệt đó, gửi lên AS, nhận về ở callback và so khớp với giá trị đã lưu. AS nên giữ state như một tham số opaque, không diễn giải nó.
+({{nonce}} là người anh em cùng ý tưởng nhưng dùng cho {{id_token}} của OIDC, chống replay token.)
+
+### PKCE không chữa được gì — và cái gì chữa
+| Rủi ro | Biện pháp đúng |
+|---|---|
+| Code bị chặn trên đường về | PKCE (S256) + code TTL ngắn, dùng một lần |
+| Code hợp lệ của người khác bị nhét vào trình duyệt của bạn | {{state}} |
+| Token bị đọc bằng XSS (token nằm trong {{localStorage}}) | Mẫu **BFF**: backend giữ token, SPA chỉ nhận cookie {{HttpOnly}} {{SameSite}} |
+| Token lọt ra ngoài rồi bị dùng lại | Refresh token **rotation** (dùng một lần, phát hiện tái sử dụng thì thu hồi cả chuỗi) + sender-constraining (DPoP, mTLS) |
+| App giả mạo đứng tên {{client_id}} | App Attest / Play Integrity, và AS bắt buộc PKCE |
+| id_token bị replay | {{nonce}} + kiểm tra {{aud}}, {{iss}}, {{exp}} |
+
+### Viết bằng Java thuần
+Chỉ cần ba class JDK: {{SecureRandom}}, {{MessageDigest}}, {{java.util.Base64}}:
+
+~~~java
+byte[] raw = new byte[32];                                  // 256 bit entropy
+new SecureRandom().nextBytes(raw);                          // KHONG dung Math.random: seed doan duoc
+String verifier = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);   // 43 ky tu, A-Za-z0-9-_
+
+MessageDigest md = MessageDigest.getInstance("SHA-256");
+String challenge = Base64.getUrlEncoder().withoutPadding()  // withoutPadding loai bo dau "="
+    .encodeToString(md.digest(verifier.getBytes(StandardCharsets.US_ASCII)));    // verifier la ASCII
+~~~
+
+Trong Spring, hai mảnh config hay bị hỏi:
+- AS bắt buộc PKCE: {{ClientSettings.builder().requireProofKey(true).build()}} (Spring Authorization Server), hoặc đặt PKCE method {{S256}} cho client trong Keycloak.
+- Spring Security **đóng vai client**: {{OAuth2AuthorizationRequestCustomizers.withPkce()}} gắn vào {{DefaultOAuth2AuthorizationRequestResolver}} để tự sinh verifier và gửi S256.
+
+### Bẫy production
+- {{redirect_uri}} kiểm bằng {{startsWith}} hay {{matches}}: attacker đăng ký {{https://app.example.com.callback.evil.tld}} và nhận code. Phải so **chính xác từng ký tự** với danh sách đã đăng ký.
+- AS chỉ kiểm tra xem request có {{code_challenge}}, không đối chiếu verifier khi đổi code ("cho xong request") — PKCE biến thành trang trí.
+- Dùng lại một verifier cho nhiều lần đăng nhập, hoặc ghi verifier vào log/URL: mất tác dụng ngay.
+- Trả code qua GET tới {{/token}}, hoặc đặt verifier trong query string: verifier vào access log.
+- Code TTL hàng phút tới hàng giờ, và đổi được nhiều lần: phải một lần dùng, TTL 15–60 giây, và gắn chặt với {{client_id}} + {{redirect_uri}} đã dùng ở bước authorize.
+- Khi verifier **sai**, RFC khuyên vô hiệu mọi code đang chờ của client đó (chứng tỏ có kẻ đang đoán), chứ không cho thử tiếp.
+- SPA để access token + refresh token trong JS storage: một XSS là mất tất cả; cân nhắc BFF thay vì cố "che" secret.
+
+### Liên hệ phỏng vấn
+Câu hỏi điển hình: "SPA đăng nhập Google thế nào mà không cần client_secret?", "PKCE chống attack cụ thể nào?", "state khác nonce ở chỗ nào?", "PKCE có thay được refresh token rotation không?". Trả lời được bốn câu đó với đúng tên cuộc tấn công (code interception, login CSRF) và đúng dải ký tự của verifier là đã hơn phần lớn ứng viên. Làm bài tập dưới đây để sở hữu luôn phần cơ chế: tự sinh verifier, tự tính challenge khớp test vector của RFC, và tự viết phía server từ chối code dùng rồi / hết hạn / verifier sai.`,
+  exercises: [
+    {
+      title: 'Viết Pkce và AuthServerSim: sinh verifier, tính challenge, đổi code lấy token an toàn',
+      prompt: `Hai class cần hoàn thiện ({{Exchange}} đã viết sẵn, chỉ dùng).
+
+**{{Pkce}}**
+- {{newVerifier(random)}}: lấy {{VERIFIER_BYTES}} (32) byte từ {{SecureRandom}} đã truyền vào, trả về base64url **không padding** của chúng → đúng 43 ký tự, thuộc bảng unreserved.
+- {{challenge(verifier)}}: SHA-256 tính trên byte **US-ASCII** của verifier, trả base64url không padding của digest. {{NoSuchAlgorithmException}} bọc thành {{IllegalStateException}}.
+
+**{{AuthServerSim}}** — phía authorization server, đồng hồ **truyền vào** để test tất định:
+- {{issueCode(codeChallenge, issuedAtEpochSec)}}: sinh {{code}} từ 16 byte ngẫu nhiên base64url (không padding), lưu {{code -> (challenge, issuedAt, used=false)}} trong map, trả về {{code}}.
+- {{exchange(code, codeVerifier, nowEpochSec)}} trả về {{Exchange}}, kiểm tra theo **đúng thứ tự** sau:
+1. {{code}} null hoặc không có trong map → {{Exchange.failed("unknown_code")}}.
+2. code đã từng được dùng → {{failed("redeemed")}}.
+3. {{nowEpochSec - issuedAt >= CODE_TTL_SECONDS}} → {{failed("expired")}} (giây cuối cùng trước hạn vẫn **phải** thành công).
+4. verifier hỏng bất kỳ kiểu nào → {{failed("invalid_grant")}} **và đánh dấu code đã dùng** (kẻ đang đoán verifier không được thử lần hai). Hỏng gồm: {{null}}, độ dài ngoài 43..128, có ký tự ngoài bảng {{A-Za-z0-9-._~}}, hoặc SHA-256(verifier) không khớp challenge đã lưu. So khớp phải dùng {{MessageDigest.isEqual}} trên byte, không dùng {{equals}}.
+5. Mọi thứ ổn → đánh dấu {{used = true}}, trả {{Exchange.granted("at-" + code)}}.
+
+Chỉ JDK 17, không thư viện ngoài, không dùng thời gian thực.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+
+final class Pkce {
+    static final int VERIFIER_BYTES = 32;
+
+    static String newVerifier(SecureRandom random) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static String challenge(String verifier) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+final class Exchange {
+    final boolean ok;
+    final String accessToken;
+    final String error;
+
+    private Exchange(boolean ok, String accessToken, String error) {
+        this.ok = ok;
+        this.accessToken = accessToken;
+        this.error = error;
+    }
+
+    static Exchange granted(String accessToken) { return new Exchange(true, accessToken, null); }
+
+    static Exchange failed(String error) { return new Exchange(false, null, error); }
+}
+
+final class AuthServerSim {
+    static final int CODE_TTL_SECONDS = 600;
+    static final String UNRESERVED =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+
+    private static final class Pending {
+        final String challenge;
+        final long issuedAt;
+        boolean used;
+
+        Pending(String challenge, long issuedAt) {
+            this.challenge = challenge;
+            this.issuedAt = issuedAt;
+        }
+    }
+
+    private final Map<String, Pending> codes = new HashMap<>();
+    private final SecureRandom random;
+
+    AuthServerSim(SecureRandom random) {
+        this.random = random;
+    }
+
+    String issueCode(String codeChallenge, long issuedAtEpochSec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Exchange exchange(String code, String codeVerifier, long nowEpochSec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    private static boolean wellFormed(String verifier) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
+
+public class Main {
+    interface Case { void run() throws Exception; }
+    static int passed = 0, total = 0;
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final String VERIFIER_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    static final String URLSAFE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    static boolean onlyIn(String s, String alphabet) {
+        if (s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) if (alphabet.indexOf(s.charAt(i)) < 0) return false;
+        return true;
+    }
+    static String sha256url(String verifier) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(md.digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        } catch (Exception e) { throw new IllegalStateException(e); }
+    }
+    public static void main(String[] args) {
+        check("newVerifier is 43 url-safe chars and varies", () -> {
+            String v1 = Pkce.newVerifier(new SecureRandom());
+            String v2 = Pkce.newVerifier(new SecureRandom());
+            eq(43, v1.length());
+            if (!onlyIn(v1, VERIFIER_CHARS)) throw new AssertionError("ky tu ngoai bang unreserved: " + v1);
+            if (v1.equals(v2)) throw new AssertionError("hai verifier trung nhau");
+        });
+        check("challenge equals the RFC 7636 appendix B vector", () ->
+            eq("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", Pkce.challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")));
+        check("challenge is base64url without padding and deterministic", () -> {
+            String v = Pkce.newVerifier(new SecureRandom());
+            String c1 = Pkce.challenge(v);
+            eq(43, c1.length());
+            if (c1.indexOf('=') >= 0) throw new AssertionError("challenge con padding: " + c1);
+            eq(c1, Pkce.challenge(v));
+            eq(c1, sha256url(v));
+            if (c1.equals(Pkce.challenge(v + "x"))) throw new AssertionError("verifier khac ma challenge giong nhau");
+        });
+        check("issueCode returns distinct unguessable codes", () -> {
+            AuthServerSim s = new AuthServerSim(new SecureRandom());
+            String challenge = Pkce.challenge(Pkce.newVerifier(new SecureRandom()));
+            String a = s.issueCode(challenge, 1000);
+            String b = s.issueCode(challenge, 1000);
+            if (a.length() < 22) throw new AssertionError("code qua ngan de doan: " + a.length());
+            if (!onlyIn(a, URLSAFE_CHARS)) throw new AssertionError("code khong phai base64url: " + a);
+            if (a.equals(b)) throw new AssertionError("hai code trung nhau");
+            if (a.equals(challenge)) throw new AssertionError("code trong nhu challenge");
+        });
+        check("happy path redeems once with the matching verifier", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            Exchange r = s.exchange(code, verifier, 1001);
+            if (!r.ok) throw new AssertionError("dung verifier ma bi tu choi: " + r.error);
+            eq("at-" + code, r.accessToken);
+            eq(null, r.error);
+        });
+        check("code is single use", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            if (!s.exchange(code, verifier, 1000).ok) throw new AssertionError("lan dau bi tu choi");
+            Exchange again = s.exchange(code, verifier, 1001);
+            if (again.ok) throw new AssertionError("code dung lan hai ma thanh cong");
+            eq("redeemed", again.error);
+        });
+        check("wrong verifier is rejected and burns the code", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            Exchange bad = s.exchange(code, Pkce.newVerifier(rnd), 1001);
+            if (bad.ok) throw new AssertionError("verifier sai ma duoc cap token");
+            eq("invalid_grant", bad.error);
+            if (s.exchange(code, verifier, 1002).ok) throw new AssertionError("verifier sai ma code van dung duoc sau do");
+        });
+        check("expired code rejected, last second before TTL still works", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            Exchange late = s.exchange(code, verifier, 1000 + AuthServerSim.CODE_TTL_SECONDS);
+            if (late.ok) throw new AssertionError("code het han ma thanh cong");
+            eq("expired", late.error);
+            String code2 = s.issueCode(Pkce.challenge(verifier), 2000);
+            if (!s.exchange(code2, verifier, 2000 + AuthServerSim.CODE_TTL_SECONDS - 1).ok) throw new AssertionError("giay cuoi cua TTL phai con dung duoc");
+        });
+        check("unknown or null code is rejected without touching storage", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            eq("unknown_code", s.exchange("khong-ton-tai", verifier, 1001).error);
+            eq("unknown_code", s.exchange(null, verifier, 1001).error);
+            if (!s.exchange(code, verifier, 1002).ok) throw new AssertionError("exchange that fail lam code that bi an");
+        });
+        check("verifier must be well formed even if its hash matches", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String tooShort = "abc123";
+            Exchange shortR = s.exchange(s.issueCode(Pkce.challenge(tooShort), 1000), tooShort, 1001);
+            if (shortR.ok) throw new AssertionError("verifier 6 ky tu ma van duoc cap token");
+            eq("invalid_grant", shortR.error);
+            String junk = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ";
+            Exchange r = s.exchange(s.issueCode(Pkce.challenge(junk), 1000), junk, 1001);
+            if (r.ok) throw new AssertionError("verifier co dau cach bi chap nhan");
+            eq("invalid_grant", r.error);
+            eq("invalid_grant", s.exchange(s.issueCode(Pkce.challenge(tooShort), 1000), null, 1001).error);
+            String longOk = "a".repeat(128);
+            if (!s.exchange(s.issueCode(Pkce.challenge(longOk), 1000), longOk, 1001).ok) throw new AssertionError("verifier 128 ky tu hop le bi tu choi");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+
+final class Pkce {
+    static final int VERIFIER_BYTES = 32;
+
+    static String newVerifier(SecureRandom random) {
+        byte[] raw = new byte[VERIFIER_BYTES];
+        random.nextBytes(raw);                                  // entropy that, khong phai Math.random
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);   // 43 ky tu
+    }
+
+    static String challenge(String verifier) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return Base64.getUrlEncoder().withoutPadding()      // base64url + bo padding = dung RFC 7636
+                .encodeToString(md.digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 phai co trong moi JVM", e);
+        }
+    }
+}
+
+final class Exchange {
+    final boolean ok;
+    final String accessToken;
+    final String error;
+
+    private Exchange(boolean ok, String accessToken, String error) {
+        this.ok = ok;
+        this.accessToken = accessToken;
+        this.error = error;
+    }
+
+    static Exchange granted(String accessToken) { return new Exchange(true, accessToken, null); }
+
+    static Exchange failed(String error) { return new Exchange(false, null, error); }
+}
+
+final class AuthServerSim {
+    static final int CODE_TTL_SECONDS = 600;
+    static final String UNRESERVED =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+
+    private static final class Pending {
+        final String challenge;
+        final long issuedAt;
+        boolean used;
+
+        Pending(String challenge, long issuedAt) {
+            this.challenge = challenge;
+            this.issuedAt = issuedAt;
+        }
+    }
+
+    private final Map<String, Pending> codes = new HashMap<>();
+    private final SecureRandom random;
+
+    AuthServerSim(SecureRandom random) {
+        this.random = random;
+    }
+
+    String issueCode(String codeChallenge, long issuedAtEpochSec) {
+        byte[] raw = new byte[16];                              // >= 128 bit de code khong doan duoc
+        random.nextBytes(raw);
+        String code = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+        codes.put(code, new Pending(codeChallenge, issuedAtEpochSec));
+        return code;                                            // real server also binds client_id + redirect_uri
+    }
+
+    Exchange exchange(String code, String codeVerifier, long nowEpochSec) {
+        Pending p = code == null ? null : codes.get(code);
+        if (p == null) return Exchange.failed("unknown_code");
+        if (p.used) return Exchange.failed("redeemed");
+        if (nowEpochSec - p.issuedAt >= CODE_TTL_SECONDS) return Exchange.failed("expired");
+
+        boolean valid = wellFormed(codeVerifier)
+            && codeVerifier.length() >= 43 && codeVerifier.length() <= 128;
+        if (valid) {
+            byte[] expected = p.challenge == null ? new byte[0] : p.challenge.getBytes(StandardCharsets.US_ASCII);
+            byte[] actual = Pkce.challenge(codeVerifier).getBytes(StandardCharsets.US_ASCII);
+            valid = MessageDigest.isEqual(expected, actual);     // constant-time, nhu so sanh hash mat khau
+        }
+        if (!valid) {
+            p.used = true;                                       // ke dang doan verifier: vo hieu hoa code ngay
+            return Exchange.failed("invalid_grant");
+        }
+        p.used = true;                                           // code chi mot lan
+        return Exchange.granted("at-" + code);
+    }
+
+    private static boolean wellFormed(String verifier) {
+        if (verifier == null) return false;
+        int n = verifier.length();
+        if (n < 43 || n > 128) return false;                     // RFC 7636: 43..128 ky tu
+        for (int i = 0; i < n; i++) {
+            if (AuthServerSim.UNRESERVED.indexOf(verifier.charAt(i)) < 0) return false;
+        }
+        return true;
+    }
+}`,
+      hints: [
+        'Base64url **không padding** là {{Base64.getUrlEncoder().withoutPadding()}}; {{Base64.getEncoder()}} chuẩn sẽ thêm dấu = và dùng ký tự + / nên sai chuẩn PKCE.',
+        '32 byte base64url ra đúng 43 ký tự (10 nhóm 3 byte = 40 ký tự, nhóm 2 byte dư cuối = 3 ký tự) — đó là lý do dải verifier bắt đầu từ 43.',
+        'Trong {{exchange}}, đừng "sửa lỗi" bằng cách so chuỗi bằng {{equals}}; convert cả challenge đã lưu và challenge tính lại sang byte rồi dùng {{MessageDigest.isEqual}}.',
+        'Đánh dấu {{used = true}} ở **cả nhánh verifier sai**: RFC 9700 khuyên vô hiệu code khi bằng chứng PKCE không khớp, vì đó là dấu hiệu đang bị đoán.',
+      ],
+      explain: `Ba chỗ dễ sai nhất khi viết tay.
+
+**Một là base64 thường thay vì base64url.** Digest SHA-256 có 32 byte; mã hoá base64 chuẩn sinh ra các ký tự {{+}} và {{/}} và có thể thêm {{=}}. Cả ba đều là ký tự phải escape khi đi trong query string, nên thực tế client hay bị hỏng ở đây. Chuẩn RFC 7636 qui định base64url **không padding**; vì thế challenge luôn dài đúng 43 ký tự (SHA-256 32 byte không bao giờ cần padding hơn 1 ký tự và url-safe alphabet không có {{+}} {{/}}). Test vector trong RFC chính là "gương" để soi implementation của bạn.
+
+**Hai là chỉ kiểm challenge mà quên kiểm verifier.** Nếu server chỉ so {{SHA-256(verifier)}} với challenge, một verifier 6 ký tự vẫn lọt, làm giảm entropy của cả cơ chế. Dải 43–128 và bảng ký tự unreserved là **một phần của chuẩn**, server phải kiểm — đó là lý do bài có case "verifier quá ngắn nhưng hash khớp vẫn phải bị từ chối".
+
+**Ba là thứ tự kiểm tra và hậu quả của nó.** Nếu bạn kiểm hết hạn sau khi kiểm verifier, attacker dò verifier được trên code đã chết. Nếu bạn không đánh dấu code đã dùng khi verifier sai, cùng một code bị thử nghiệm hàng nghìn lần. Ngược lại, nếu bạn xoá hẳn entry khi thất bại, client chính chủ quay lại lần thứ hai sẽ nhận "unknown_code" thay vì "redeemed" và bạn mất luôn tín hiệu để cảnh báo. Bài này giữ entry + đánh dấu dùng, nên cả hai bên đều có thông tin đủ để xử lý.
+
+Còn một điều nên nói rõ khi phỏng vấn: server thật **không phân biệt lý do từ chối với client** (RFC 6749 chỉ có {{invalid_grant}}); ta tách "unknown_code"/"expired"/"redeemed" trong bài để test và để ghi log nội bộ, nhưng response trả về cho app nên gộp lại để không cho attacker biết code có tồn tại hay không.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao SPA và app mobile dùng PKCE thay vì {{client_secret}}?',
+      options: [
+        'Vì PKCE mạnh hơn secret: verifier 43 ký tự dài hơn secret trung bình',
+        'Vì code của SPA/mobile chạy trên máy người dùng, secret trích xuất được nên không còn là secret; PKCE thay thế bằng cách chứng minh client đã bắt đầu phiên, không cần bí mật chung',
+        'Vì AS không nhận {{client_secret}} cho bất kỳ client nào',
+        'Vì PKCE mã hoá access token nên secret trở nên thừa',
+      ],
+      answer: 1,
+      explain: `Điểm mấu chốt là **nơi code chạy**: JS trong trình duyệt và APK/IPA đều trích xuất được chuỗi bên trong, nên secret không thể giữ bí mật. PKCE không "mạnh hơn" secret mà giải một bài toán khác: không cần bí mật chung vẫn buộc kẻ đổi code phải là kẻ đã tạo verifier. AS vẫn nhận secret với confidential client (backend), và PKCE không liên quan gì tới việc mã hoá token.`,
+    },
+    {
+      q: 'Trong flow có PKCE, {{code_challenge}} và {{code_verifier}} được dùng ở bước nào?',
+      options: [
+        'Cả hai gửi ở {{/authorize}}, verifier bị bỏ qua',
+        'Verifier gửi ở {{/authorize}}, challenge gửi ở {{/token}}',
+        'Challenge (hash của verifier) gửi ở {{/authorize}}, verifier gốc gửi trong POST body ở {{/token}}; AS so SHA-256(verifier) với challenge đã lưu',
+        'Verifier gửi kèm access token trong header mỗi lần gọi API',
+      ],
+      answer: 2,
+      explain: `Nguyên tắc là "bước lộ thì gửi hash, bước kín thì gửi nguyên bản": {{/authorize}} đi qua trình duyệt nên chỉ gửi challenge (một chiều, không suy ngược được), còn verifier đi trong body của POST {{/token}} qua TLS. Nếu đổi chỗ (gửi verifier thô ở bước 1) thì đó là {{plain}}, bị attacker chặn mất; verifier không hề đi cùng access token khi gọi API.`,
+    },
+    {
+      q: 'Attacker lấy một code **hợp lệ** do chính hắn đăng nhập bằng tài khoản của hắn, rồi đẩy victim mở URL callback chứa code đó. Đây là gì và chống bằng gì?',
+      options: [
+        'Authorization code interception; chống bằng PKCE với S256',
+        'Login CSRF; chống bằng {{state}} ngẫu nhiên lưu ở phía app và so khớp khi callback về',
+        'Replay của {{id_token}}; chống bằng cách tăng TTL access token',
+        'Không phải tấn công, vì code thuộc về tài khoản của attacker',
+      ],
+      answer: 1,
+      explain: `Code hợp lệ, verifier đúng (chính attacker tạo) nên PKCE hoàn toàn bất lực — đây là login CSRF: nạn nhân bị đăng nhập nhầm vào tài khoản của attacker và ghi dữ liệu vào đó. {{state}} binds request và browser session của nạn nhân lại nên app phát hiện code không phải của mình. {{nonce}} là cơ chế cho {{id_token}}, và tăng TTL thì chỉ làm tệ hơn; hậu quả là thật: dữ liệu nạn nhân rơi vào tài khoản attacker kiểm soát.`,
+    },
+  ],
+  related: ['security-004', 'security-006', 'security-023'],
+  tags: ['OAuth2', 'PKCE', 'code_verifier', 'state', 'SPA', 'mobile'],
+},
+{
+  id: 'lesson-security-007',
+  track: 'security',
+  order: 7,
+  title: 'Mã hoá trường dữ liệu nhạy cảm bằng AES-GCM: IV không được lặp, version khoá để xoay vòng, blind index để tìm kiếm',
+  level: 'senior',
+  minutes: 50,
+  goals: [
+    'Phân biệt khi nào phải {{hash}}, khi nào phải {{mã hoá}} hai chiều, và vì sao AES-{{ECB}} bị cấm còn {{AES/GCM/NoPadding}} là lựa chọn đúng',
+    'Sinh {{IV}} 12 byte ngẫu nhiên cho **mỗi** lần encrypt, hiểu vì sao lặp IV với cùng khoá là thảm hoạ',
+    'Thiết kế định dạng lưu {{v<version>:base64(iv + ciphertext + tag)}} và xoay vòng khoá mà vẫn đọc được dữ liệu cũ',
+    'Viết {{blindIndex}} bằng {{HmacSHA256}} để tìm kiếm equality trên cột đã mã hoá, và biết trước nó rò rỉ gì',
+  ],
+  body: `### Ba thứ hay lẫn lộn: encoding, hash, mã hoá
+| Công cụ | Đọc lại được không | Cần khoá không | Dùng cho |
+|---|---|---|---|
+| Encoding (Base64, hex, URL-encode) | Có, ai cũng đọc được | Không | Đổi **định dạng** byte, không bảo mật gì |
+| Hash (SHA-256, bcrypt) | **Không** | Không (salt không bí mật) | Mật khẩu, kiểm toàn vẹn, so trùng |
+| Mã hoá (AES-GCM) | Có, khi có khoá | **Có** | Dữ liệu nghiệp vụ phải **dùng lại**: số CCCD, số tài khoản |
+
+Bài trước đã giải quyết mật khẩu: mật khẩu **không bao giờ cần đọc lại**, nên hash là đúng. Nhưng số CCCD thì khác: in ra hợp đồng, đối chiếu với dữ liệu của cơ quan dân cư, hiển thị 4 số cuối cho khách — nghĩa là ứng dụng **phải giải mã được**. Đây là lúc dùng mã hoá đối xứng. Và đây cũng là lúc phát sinh toàn bộ vấn đề của bài này: khoá quản lý thế nào, xoay khoá ra sao, và tìm kiếm trên dữ liệu đã mã hoá thế nào.
+
+Một lưu ý pháp lý cho bối cảnh Việt Nam: CCCD, số tài khoản, số thẻ là dữ liệu cá nhân theo Nghị định 13/2023/NĐ-CP, và nhóm "dữ liệu cá nhân nhạy cảm" phải được mã hoá khi lưu chuyển và lưu trữ. Nói cách khác, cột {{cccd}} để plaintext trong DB không phải chuyện "nếu thấy thì sửa", mà là vi phạm.
+
+### AES và "chế độ" (mode) — vì sao ECB bị cấm
+{{AES}} là mã hoá **khối**: nó mã hoá từng blok 16 byte một với khoá 128/192/256 bit. Dữ liệu thật dài hơn 16 byte, nên cần một **chế độ** (mode) quyết định cách nối nhiều blok lại. Đây là chỗ mà {{Cipher.getInstance("AES/.../...")}} hỏi bạn.
+
+{{ECB}} (Electronic CodeBook) là chế độ ngây thơ nhất: mỗi blok mã hoá độc lập. Hệ quả: **cùng một blok plaintext luôn cho cùng một blok ciphertext**, dù ở dòng nào, lúc nào. CCCD chỉ khác nhau vài chữ số cuối, vậy là phần đầu bản mã của hàng triệu người **giống hệt nhau**; attacker nhìn bảng là biết ai trùng 8 số đầu, gom được nhóm, đoán được quy tắc sinh số. Hình ảnh kinh điển: mã hoá ảnh con cá voi Tux bằng ECB vẫn thấy rõ hình con cá voi, vì các vùng cùng màu cho ra cùng một bản mã.
+
+{{CBC}} (Cipher Block Chaining) khắc phục bằng cách XOR blok trước vào blok sau, nhưng cần padding và dính một họ lỗi rất nổi tiếng tên là **padding oracle**: nếu server trả về lỗi khác nhau khi "padding sai" và "MAC sai", attacker lặp lại hàng triệu request để giải mã từng byte mà không cần khoá — đây là lớp lỗi đã bị khai thác thực tế nhiều lần, từ cookie mã hoá của các nền tảng web cho tới BitLocker và SSH (CipherSuck, 2024). Bài học chung: **đừng tự ghép các mảnh bảo mật rời rạc**; dùng chế độ xác thực sẵn.
+
+### GCM: một chế độ, hai tính năng
+{{GCM}} (Galois/Counter Mode) = phần **mã hoá** chạy ở chế độ CTR + phần **xác thực** GHASH.
+- CTR: từ IV (còn gọi là nonce) và một bộ đếm, AES sinh ra một **dòng keystream**, rồi XOR keystream với plaintext. Vì vậy ciphertext **dài đúng bằng** plaintext — đó là lý do tham số thứ ba trong {{Cipher.getInstance("AES/GCM/NoPadding")}} là {{NoPadding}} (không cần nhét thêm byte cho đủ blok).
+- GHASH: tính một **tag** 16 byte phủ lên IV, ciphertext và (tuỳ chọn) phần dữ liệu thêm gọi là AAD. Khi decrypt, phần mềm tính lại tag và so; khác là ném {{AEADBadTagException}}.
+
+Cặp mã hoá + xác thực như vậy gọi là **authenticated encryption** (AEAD). Nó chặn một tấn công rất thực tế: attacker không đọc được plaintext nhưng có toàn quyền sửa cột trong DB. Với {{ECB}} hoặc {{CBC}} không MAC, đổi vài byte là đổi được cả con số, tên người nhận. Với GCM, chỉ cần một bit bị sửa, {{decrypt}} fail ngay.
+
+### IV 12 byte: vì sao lặp là chết
+Với {{GCM}}, điều cấm kỵ tuyệt đối là **dùng lại IV dưới cùng một khoá**. Lý do, từng bước:
+1. Cùng khoá + cùng IV → cùng một keystream (vì keystream chỉ sinh từ khoá và IV).
+2. {{C1 = P1 xor K}} và {{C2 = P2 xor K}} → {{C1 xor C2 = P1 xor P2}}. Keystream bị triệt tiêu, attacker thu được **hiệu của hai plaintext**. Biết một trong hai số là suy ra số kia; và với các bản ghi có định dạng cố định (CCCD 12 chữ số) thì dò được cả hai.
+3. Tệ hơn với GCM: lặp IV còn cho phép khôi phục khoá {{H}} của GHASH, tức là attacker **giả mạo được tag hợp lệ** mà không cần biết AES key.
+
+Vì {{GCM}} hay dùng IV ngẫu nhiên, phải tính khả năng **va chạm** (birthday): chuẩn NIST SP 800-38D khuyến cáo không quá {{2^32}} bản mã sinh ra từ một khoá IV ngẫu nhiên. Con số này là lý do thật sự khiến bạn **phải** có xoay vòng khoá, chứ không phải vì "cho an toàn". Dùng IV 8 byte hoặc tự viết bộ đếm là tự chuốc rủi ro; 12 byte là độ dài chuẩn mà GCM xử lý nhanh nhất.
+
+### Định dạng bản ghi và AAD
+Định dạng được dùng phổ biến (và là định dạng bài tập này yêu cầu):
+
+~~~text
+lo luu = "v" + phienBanKhoa + ":" + base64( IV(12 byte) + ciphertext + tag(16 byte) )
+vi du  = v2:Sjao9xkQ0m1QY3p0Y2V...
+~~~
+
+| Mảnh | Ai đọc được | Ghi chú |
+|---|---|---|
+| {{v2}} | Không cần khoá | Cho biết phải lấy khoá nào để giải mã; phải có trong keyring |
+| {{IV}} 12 byte | Không cần khoá | Đi kèm bản mã, **không** bí mật, nhưng **không** được lặp |
+| ciphertext | Chỉ người có khoá | Dài đúng bằng plaintext |
+| tag 16 byte | Không cần khoá (chỉ để kiểm) | Bằng chứng bản mã chưa bị sửa |
+
+{{tag}} đã nằm sẵn ở cuối mảng trả về của {{doFinal}}, bạn không phải tính riêng. Kích thước phần thêm: 12 + 16 = 28 byte, rồi base64 nhân ~1.37 lần. CCCD 12 ký tự → 40 byte → 56 ký tự base64 → cột {{varchar(96)}} là thừa chỗ cho cả tiền tố.
+
+**AAD** (Additional Authenticated Data): những byte được đưa vào phép tính tag nhưng **không bị mã hoá** — thường là tên cột, tenant id, user id của dòng. Tác dụng: chặn tấn công **cắt–dán bản mã** giữa các dòng (lấy ciphertext CCCD của người A ghi vào dòng của người B: không đọc được gì, nhưng nếu không có AAD thì B bỗng mang CCCD của A). AAD cũng làm ciphertext của cùng một giá trị ở hai cột khác nhau trở nên khác nhau.
+
+### Xoay vòng khoá bằng version
+Không có khoá nào sống mãi: ai đó có quyền đọc đã nghỉ việc, dung lượng dữ liệu mã hoá bằng một key đã vượt giới hạn an toàn, hoặc nghi ngờ lộ key (kể cả lộ qua log). Xoay khoá nghĩa là: **thêm khoá mới, tăng "phiên bản hiện hành", không bao giờ sửa nội dung một khoá cũ**.
+
+Chiến lược thực tế nhất ({{rotate}} trong bài tập):
+- {{decrypt}}: đọc version từ tiền tố → lấy khoá tương ứng. Khoá cũ vẫn phải còn trong keyring, nếu không dữ liệu cũ **mất vĩnh viễn**.
+- {{encrypt}}: luôn ghi bằng khoá hiện hành → dữ liệu tự "di cư" dần mỗi khi có một bản ghi được cập nhật.
+- **Re-wrap khi đọc**: nếu giải mã thành công một blob version cũ, tiện thể ghi lại bằng version mới (idempotent, không có gì để ghi nếu đã là version hiện hành). Cách này rải đều chi phí, không cần một job khổng lồ khoá bảng cả đêm.
+- **Batch job**: chạy offline khi cần "xoay gấp" vì lộ key, theo lô nhỏ và có đo lường tiến độ.
+- Sau khi không còn bản ghi nào dùng khoá cũ → **huỷ** khoá. Xoá key chính là xoá dữ liệu ({{crypto-shredding}}, một cách tuân thủ yêu cầu "quên tôi đi"), và đó cũng là lý do bạn không được backup key ở nơi backup DB.
+
+Trong production, đừng giữ key trong {{application.yml}} commit lên git. Mẫu chuẩn là **envelope encryption**: KMS (AWS KMS, GCP KMS) hoặc HashiCorp Vault giữ khoá **KEK**, app chỉ nhận về khoá **DEK** đã wrap và giải mã DEK trong bộ nhớ; app có thể đọc DEK hiện hành và các DEK cũ nhưng không tự ý lấy được KEK. Khi DB bị dump mà không kèm keyring, dữ liệu chỉ là rác.
+
+### Blind index: tìm kiếm trên cột đã mã hoá
+Mã hoá xong thì {{WHERE cccd = '0791234567890'}} hết tác dụng: giá trị trong DB là blob base64, và vì {{IV}} ngẫu nhiên nên mã hoá cùng số CCCD hai lần cho hai kết quả khác nhau → không so được.
+
+Giải pháp là **blind index**: một cột phụ chứa {{HMAC-SHA256(khoá_index, giá_trị_đã_chuẩn_hoá)}} — deterministic, nên {{SELECT * FROM customers WHERE cccd_index = ?}} chạy được và dùng index B-tree bình thường. Ứng dụng tính HMAC của số vừa nhập rồi hỏi; DB không bao giờ thấy plaintext.
+
+Vì sao HMAC có khoá mà không phải SHA-256 trần? CCCD chỉ gồm 12 chữ số, không gian giá trị đâu đó cỡ {{10^12}} (thực tế còn hẹp hơn vì có quy tắc sinh số) — một GPU băm hàng trăm triệu SHA-256 mỗi giây nên bảng tra dựng được trong vài giờ. Khoá HMAC làm bảng tra vô dụng và cho mỗi môi trường một chỉ mục khác nhau.
+
+Ba điều phải trả giá, nên nói rõ khi thiết kế:
+- **Chuẩn hoá** giá trị trước khi tạo index và trước khi truy vấn (bỏ khoảng trắng, bỏ số 0 đầu, cùng UTF-8 normalization) — hai bên lệch nhau một ký tự là tìm không thấy.
+- Index **tiết lộ tính trùng**: hai dòng có cùng giá trị thì cùng {{blind_index}}. Với CCCD (vốn duy nhất) thì không sao; với cột ít giá trị (giới tính, loại giấy tờ) thì bạn vừa tự vẽ biểu đồ phân bố cho attacker.
+- Không có {{LIKE}}, không có range search. Nếu nghiệp vụ thật sự cần "tìm 4 số cuối", hãy thiết kế cột riêng {{cccd_last4}} (vẫn nên kèm {{tenant_id}}) thay vì cố làm điều không thể.
+
+### Java thuần: đủ dùng trong 8 dòng
+~~~java
+Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+byte[] iv = new byte[12];
+new SecureRandom().nextBytes(iv);                       // IV moi cho MOI lan
+c.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
+byte[] body = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));   // ciphertext || tag
+
+// khi decrypt: tag duoc kiem tra ben trong doFinal
+Cipher d = Cipher.getInstance("AES/GCM/NoPadding");
+d.init(Cipher.DECRYPT_MODE, oldKey, new GCMParameterSpec(128, ivFromStorage));
+byte[] plain = d.doFinal(ctFromStorage, 12, ctFromStorage.length - 12);   // nem AEADBadTagException neu bi sua
+~~~
+
+### Cái giá phải trả
+- AES chạy bằng {{AES-NI}} của CPU đạt cỡ vài GB/s, nên **hiệu suất không phải lý do** để sợ mã hoá; chi phí thật nằm ở chỗ mất khả năng truy vấn.
+- Mất {{ORDER BY}}, {{GROUP BY}}, {{LIKE}}, aggregate trên cột đã mã hoá; báo cáo phải tính ở tầng ứng dụng hoặc từ một cột dẫn xuất.
+- Khoá là **single point of failure**: KMS sập, key bị xoá, region mất — dữ liệu không đọc được. Phải có keyring nhiều bản, chạy thử quy trình restore thật định kỳ.
+- Plaintext dễ rò qua kênh khác: log request, exception message, APM, audit log, API trả về DTO, clipboard của nhân viên vận hành. Mã hoá cột mà log ra {{cccd}} thì coi như không mã hoá.
+- Migration: về sau thêm cột hoặc đổi định dạng phải có script và số liệu kiểm kê (bao nhiêu dòng mỗi version).
+
+### Bẫy production
+- IV cố định, IV = 0, hoặc dùng bộ đếm khởi động từ 0 mỗi lần app khởi động lại → lặp IV.
+- "Mã hoá" bằng {{Base64}} rồi gọi là encrypted; hoặc tự chế {{AES-CBC}} + {{MD5}} kiểm toàn vẹn.
+- Dùng **cùng một khoá** cho {{AES}} và cho {{HMAC}} index, hoặc dùng một khoá cho mọi cột và mọi môi trường → mất tính độc lập; hãy tách khoá, hoặc dẫn xuất từ một master key với nhãn riêng cho từng mục đích.
+- Sửa {{AEADBadTagException}} thành {{IllegalArgumentException}}: caller không còn phân biệt được "dữ liệu hỏng format" và "dữ liệu bị can thiệp", và bạn mất luôn tín hiệu cảnh báo sớm.
+- Đặt khoá vào biến môi trường rồi in biến môi trường ra log lúc khởi động để "debug".
+- Quên rằng dữ liệu đã mã hoá vẫn phải **validate trước khi dùng** ({{decrypt}} xong vẫn kiểm định dạng CCCD), và vẫn phải chống SQL injection như mọi cột khác.
+- Xoay khoá bằng cách ghi đè khoá cũ trong keyring: đúng ra phải thêm phiên bản mới; ghi đè làm mọi blob cũ không thể đọc được.
+
+### Liên hệ phỏng vấn
+Bộ câu hỏi hay gặp: "Bạn lưu số CCCD thế nào?", "IV và nonce khác gì salt?", "Vì sao không dùng ECB?", "Xoay khoá mà vẫn đọc được dữ liệu cũ thì làm kiểu gì?", "Mã hoá rồi thì tìm kiếm ra sao?", "AAD để làm gì?". Mỗi câu đã có câu trả lời ở trên; khi trả lời, hãy nói theo thứ tự **mối đe dọa → cơ chế → chi phí đánh đổi** (ví dụ: "ECB lộ mẫu hình nên dùng GCM; GCM cấm lặp IV nên mỗi lần encrypt một IV 12 byte ngẫu nhiên và xoay khoá trước khi chạm ngưỡng 2^32 bản mã; vì không query được nên thêm cột blind index HMAC"). Làm bài tập để cầm chắc phần cơ chế: viết {{encrypt}}, {{decrypt}}, {{rotate}}, {{blindIndex}} và thấy tận tay {{AEADBadTagException}} nổ ra khi ai đó sửa một byte.`,
+  exercises: [
+    {
+      title: 'Viết FieldCipher: AES-GCM với IV ngẫu nhiên, version khoá, rotate và blind index',
+      prompt: `Hoàn thiện class {{FieldCipher}}. Hai hằng {{IV_BYTES = 12}} và {{TAG_BITS = 128}} đã khai báo, **đừng đổi**.
+
+- {{FieldCipher(keysByVersion, currentVersion, random)}}: lưu **bản copy** của map ({{new HashMap<>(...)}} để dữ liệu bên ngoài sửa không làm mất khả năng giải mã); {{currentVersion}} phải có key trong map, không thì ném {{IllegalArgumentException}}.
+- {{encrypt(plaintext)}}: sinh {{IV_BYTES}} byte mới bằng {{SecureRandom}} đã truyền vào, mã {{AES/GCM/NoPadding}} với khoá hiện hành và {{GCMParameterSpec(TAG_BITS, iv)}}, trả về
+  {{"v" + currentVersion + ":" + Base64.getEncoder().encodeToString(iv || ciphertext || tag)}}
+  ({{doFinal}} đã trả ciphertext nối tiếp tag, chỉ cần ghép {{iv}} vào đầu). Không ném checked exception nào khác {{GeneralSecurityException}}.
+- {{decrypt(stored)}}: tách version và phần base64, **lấy khoá theo version đọc từ chuỗi** (có thể là khoá cũ), giải mã và trả plaintext UTF-8. Quy ước lỗi: hỏng format (chuỗi {{null}}, thiếu tiền tố {{v}}, không có {{:}}, version không có trong map, base64 sai, hoặc độ dài decoded nhỏ hơn {{IV_BYTES + TAG_BITS / 8}}) → {{IllegalArgumentException}}; tag không hợp lệ → **để nguyên {{AEADBadTagException}} ném lên**, không được bọc thành loại khác (caller phải phân biệt được "hỏng format" và "bị can thiệp").
+- {{rotate(stored)}}: nếu {{stored}} đã mang version hiện hành thì **trả lại đúng chuỗi đó** (idempotent, không ghi lại vô ích); ngược lại giải mã bằng khoá cũ và trả bản mã mới theo version hiện hành.
+- {{blindIndex(plaintext, hmacKey)}} (static): HMAC-SHA256 trên byte UTF-8 của {{plaintext}}, trả hex **chữ thường** 64 ký tự ({{HexFormat.of().formatHex(...)}}). Đây là giá trị ghi vào cột {{cccd_index}} để query equality. Không ném checked exception.
+
+Chỉ JDK 17. Không dùng {{ThreadLocal}} hay thời gian thực; {{Cipher}} tạo mới mỗi lần gọi (nó không thread-safe).`,
+      starter: `import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+final class FieldCipher {
+    static final int IV_BYTES = 12;
+    static final int TAG_BITS = 128;
+
+    private final Map<Integer, SecretKey> keys;
+    private final int currentVersion;
+    private final SecureRandom random;
+
+    FieldCipher(Map<Integer, SecretKey> keysByVersion, int currentVersion, SecureRandom random) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String encrypt(String plaintext) throws GeneralSecurityException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String decrypt(String stored) throws GeneralSecurityException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String rotate(String stored) throws GeneralSecurityException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static String blindIndex(String plaintext, SecretKey hmacKey) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    private static int colonIndex(String stored) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+import javax.crypto.AEADBadTagException;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+
+public class Main {
+    interface Case { void run() throws Exception; }
+    static int passed = 0, total = 0;
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> kind, Case c) {
+        try { c.run(); }
+        catch (Throwable t) {
+            if (!kind.isInstance(t)) throw new AssertionError("mong " + kind.getSimpleName() + " nhung nhan " + t);
+            return;
+        }
+        throw new AssertionError("mong " + kind.getSimpleName() + " nhung khong ném loi");
+    }
+    static SecretKey aes(int fill) {
+        byte[] b = new byte[32];                                  // AES-256
+        Arrays.fill(b, (byte) fill);
+        return new SecretKeySpec(b, "AES");
+    }
+    static Map<Integer, SecretKey> keys() {
+        Map<Integer, SecretKey> m = new HashMap<>();
+        m.put(1, aes(1));
+        m.put(2, aes(2));
+        return m;
+    }
+    static FieldCipher cipher(int current) { return new FieldCipher(keys(), current, new SecureRandom()); }
+    static String prefix(String stored) { return stored.substring(0, stored.indexOf(':')); }
+    static byte[] payload(String stored) { return Base64.getDecoder().decode(stored.substring(stored.indexOf(':') + 1)); }
+    static String flipped(String stored, int offset) {
+        byte[] b = payload(stored);
+        b[offset] = (byte) (b[offset] ^ 1);
+        return prefix(stored) + ":" + Base64.getEncoder().encodeToString(b);
+    }
+    static final String CCCD = "0791234567890";
+    static SecretKey indexKey() { return new SecretKeySpec("0123456789abcdef".getBytes(StandardCharsets.US_ASCII), "HmacSHA256"); }
+    public static void main(String[] args) {
+        FieldCipher c = cipher(2);
+        check("encrypt stores vCURRENT and base64 of iv plus ciphertext plus tag", () -> {
+            String stored = c.encrypt(CCCD);
+            eq("v2", prefix(stored));
+            int n = CCCD.getBytes(StandardCharsets.UTF_8).length;
+            eq(FieldCipher.IV_BYTES + n + FieldCipher.TAG_BITS / 8, payload(stored).length);
+            if (stored.indexOf('.') >= 0) throw new AssertionError("base64 chuan khong co dau cham");
+        });
+        check("round trip keeps the empty string and Vietnamese text", () -> {
+            eq("", c.decrypt(c.encrypt("")));
+            String vn = "Số CCCD 0791234567890 - Nguyễn Thị Bé, TP.HCM";
+            eq(vn, c.decrypt(c.encrypt(vn)));
+        });
+        check("same value twice gives different blobs, both decryptable", () -> {
+            String a = c.encrypt(CCCD);
+            String b = c.encrypt(CCCD);
+            if (a.equals(b)) throw new AssertionError("IV bi dung lai: hai blob giong het nhau");
+            eq(CCCD, c.decrypt(a));
+            eq(CCCD, c.decrypt(b));
+        });
+        check("flipping a ciphertext byte raises AEADBadTagException", () -> {
+            String stored = c.encrypt(CCCD);
+            expect(AEADBadTagException.class, () -> c.decrypt(flipped(stored, FieldCipher.IV_BYTES + 2)));
+        });
+        check("flipping an IV byte also raises AEADBadTagException", () -> {
+            String stored = c.encrypt(CCCD);
+            expect(AEADBadTagException.class, () -> c.decrypt(flipped(stored, 3)));
+            expect(AEADBadTagException.class, () -> c.decrypt(flipped(stored, FieldCipher.IV_BYTES - 1)));
+        });
+        check("decrypt reads a blob written with the older key version", () -> {
+            String v1 = cipher(1).encrypt(CCCD);
+            eq("v1", prefix(v1));
+            eq(CCCD, cipher(2).decrypt(v1));
+        });
+        check("rotate moves v1 to current and is idempotent", () -> {
+            String v1 = cipher(1).encrypt(CCCD);
+            String v2 = cipher(2).rotate(v1);
+            eq("v2", prefix(v2));
+            eq(CCCD, cipher(2).decrypt(v2));
+            eq(v2, cipher(2).rotate(v2));
+            if (v2.equals(v1)) throw new AssertionError("rotate khong doi duoc version");
+        });
+        check("malformed storage and unknown key version are IllegalArgumentException", () -> {
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("v9:" + Base64.getEncoder().encodeToString(new byte[40])));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("khong phai ban ma"));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("v2:" + Base64.getEncoder().encodeToString(new byte[20])));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("abc:" + Base64.getEncoder().encodeToString(new byte[40])));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt(null));
+        });
+        check("constructor rejects a current version with no key", () -> {
+            expect(IllegalArgumentException.class, () -> new FieldCipher(keys(), 7, new SecureRandom()));
+        });
+        check("blindIndex is HMAC-SHA256 lowercase hex", () -> {
+            String idx = FieldCipher.blindIndex("987654321012345", indexKey());
+            eq("4f04392005b677d67c17009aacb3093d36eeb8341aeba727b67f34ad784c6384", idx);
+            eq(64, idx.length());
+            if (!idx.matches("[0-9a-f]{64}")) throw new AssertionError("blindIndex khong phai hex thuong: " + idx);
+        });
+        check("blindIndex is deterministic and depends on value and key", () -> {
+            eq(FieldCipher.blindIndex(CCCD, indexKey()), FieldCipher.blindIndex(CCCD, indexKey()));
+            if (FieldCipher.blindIndex(CCCD, indexKey()).equals(FieldCipher.blindIndex("0791234567891", indexKey())))
+                throw new AssertionError("hai gia tri khac nhau cung index");
+            SecretKey other = new SecretKeySpec("fedcba9876543210".getBytes(StandardCharsets.US_ASCII), "HmacSHA256");
+            if (FieldCipher.blindIndex(CCCD, indexKey()).equals(FieldCipher.blindIndex(CCCD, other)))
+                throw new AssertionError("doi khoa ma index khong doi");
+            if (FieldCipher.blindIndex(CCCD, indexKey()).equals(CCCD)) throw new AssertionError("blindIndex lo gia tri");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.Map;
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+final class FieldCipher {
+    static final int IV_BYTES = 12;
+    static final int TAG_BITS = 128;
+
+    private final Map<Integer, SecretKey> keys;
+    private final int currentVersion;
+    private final SecureRandom random;
+
+    FieldCipher(Map<Integer, SecretKey> keysByVersion, int currentVersion, SecureRandom random) {
+        this.keys = new HashMap<>(keysByVersion);            // copy: map ben ngoai bi doi thi van giai ma duoc
+        this.random = random;
+        if (!keys.containsKey(currentVersion)) {
+            throw new IllegalArgumentException("khong co key cho phien ban hien hanh: v" + currentVersion);
+        }
+        this.currentVersion = currentVersion;
+    }
+
+    String encrypt(String plaintext) throws GeneralSecurityException {
+        byte[] iv = new byte[IV_BYTES];
+        random.nextBytes(iv);                               // IV MOI 100% moi lan — GCM cam lap IV
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");  // GCM = CTR + GHASH, khong can padding
+        c.init(Cipher.ENCRYPT_MODE, keys.get(currentVersion), new GCMParameterSpec(TAG_BITS, iv));
+        byte[] body = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));   // ciphertext || tag
+        byte[] all = ByteBuffer.allocate(iv.length + body.length).put(iv).put(body).array();
+        return "v" + currentVersion + ":" + Base64.getEncoder().encodeToString(all);
+    }
+
+    String decrypt(String stored) throws GeneralSecurityException {
+        int cut = colonIndex(stored);
+        int version = Integer.parseInt(stored.substring(1, cut));
+        SecretKey key = keys.get(version);                   // co the la khoa cua phien ban cu
+        if (key == null) throw new IllegalArgumentException("khong co key cho phien ban: v" + version);
+        byte[] all = Base64.getDecoder().decode(stored.substring(cut + 1));
+        if (all.length < IV_BYTES + TAG_BITS / 8) throw new IllegalArgumentException("ban ma qua ngan");
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+        c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, all, 0, IV_BYTES));
+        // doFinal KIEM TAG va nem AEADBadTagException neu ban ma bi sua — de nguyen, khong boc
+        byte[] plain = c.doFinal(all, IV_BYTES, all.length - IV_BYTES);
+        return new String(plain, StandardCharsets.UTF_8);
+    }
+
+    String rotate(String stored) throws GeneralSecurityException {
+        int cut = colonIndex(stored);
+        if (Integer.parseInt(stored.substring(1, cut)) == currentVersion) return stored;   // idempotent
+        return encrypt(decrypt(stored));                     // doc bang khoa cu, ghi bang khoa moi
+    }
+
+    static String blindIndex(String plaintext, SecretKey hmacKey) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(hmacKey);                               // khoa rieng, kh dung lai khoa AES
+            return HexFormat.of().formatHex(mac.doFinal(plaintext.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("HmacSHA256 phai co trong moi JVM", e);
+        }
+    }
+
+    private static int colonIndex(String stored) {
+        if (stored == null || stored.charAt(0) != 'v') throw new IllegalArgumentException("sai dinh dang ban ma");
+        int cut = stored.indexOf(':');
+        if (cut <= 1) throw new IllegalArgumentException("sai dinh dang ban ma");
+        return cut;
+    }
+}`,
+      hints: [
+        'Ghép mảng bằng {{ByteBuffer.allocate(iv.length + body.length).put(iv).put(body).array()}}; khi tách ra thì {{Arrays.copyOfRange}} cho IV và {{doFinal(all, IV_BYTES, all.length - IV_BYTES)}} cho phần còn lại.',
+        '{{GCMParameterSpec(TAG_BITS, all, 0, IV_BYTES)}} là overload đọc IV ngay trong mảng đã lưu — khỏi cần copy.',
+        'Đừng bọc toàn bộ {{decrypt}} trong một {{catch}} bắt {{GeneralSecurityException}} rồi ném lại {{IllegalArgumentException}}: {{AEADBadTagException}} là lớp con của {{GeneralSecurityException}} nên nó sẽ bị nuốt mất.',
+        '{{Integer.parseInt}} ném {{NumberFormatException}} (là con của {{IllegalArgumentException}}) và {{Base64.getDecoder().decode}} ném {{IllegalArgumentException}} — hai thứ đó đã đáp ứng đúng yêu cầu "hỏng format thì IllegalArgumentException".',
+        'Với {{stored.charAt(0)}} khi {{stored}} rỗng: kiểm {{null}} và {{isEmpty}} trước khi đọc {{charAt}} để không ném {{IndexOutOfBoundsException}}.',
+      ],
+      explain: `Bốn chỗ quyết định bài này, và cũng là bốn thứ interviewer hay moi.
+
+**Một là không bọc {{AEADBadTagException}}.** Nó là lớp con của {{GeneralSecurityException}}, nên một {{catch (GeneralSecurityException e)}} "cho sạch" sẽ nuốt nó và biến "có người đang sửa dữ liệu" thành "chuỗi lỗi format". Hai tình huống đó cần hai hành động rất khác: format sai là dữ liệu bẩn, tag sai là **toàn vẹn bị vi phạm** — phải ghi audit log và cảnh báo. Đây là lý do {{decrypt}} khai báo {{throws GeneralSecurityException}} rồi để exception đi lên tự nhiên.
+
+**Hai là giới hạn độ dài tối thiểu.** {{GCM}} cần đủ chỗ cho IV 12 byte và tag 16 byte. Một blob 20 byte hợp lệ về base64 nhưng vô nghĩa về mật mã: nếu bạn không chặn mà đẩy thẳng vào {{doFinal}}, bạn nhận được {{InvalidAlgorithmParameterException}} hoặc kết quả khó đoán. Chặn bằng {{IllegalArgumentException}} ở tầng phân tích định dạng là đúng nơi, đúng loại lỗi.
+
+**Ba là rotate phải idempotent.** Nếu {{rotate}} luôn giải mã rồi mã hoá lại, mỗi lần chạy là mỗi lần sinh IV mới → blob đổi liên tục, batch job ghi đè chính mình, binary diff của backup phình to, và bạn không bao giờ hội tụ. Kiểm version trước, đã là hiện hành thì trả nguyên văn — đó cũng là cách để job rotate chạy đi chạy lại nhiều lần mà không cần trạng thái.
+
+**Bốn là khoá HMAC phải khác khoá AES.** Cùng một khoá dùng cho hai mục đích (mã hoá và chỉ mục) nghĩa là một chỗ lộ làm sập cả hai, và ở một số thuật toán còn mở đường tấn công kiểu "dùng chính oracle HMAC để dò bản mã". Tách khoá, hoặc dẫn xuất từ master key bằng HKDF với nhãn riêng cho từng mục đích.
+
+Ngoài bài tập, hai điều nên nhớ vì chúng là câu hỏi "tại sao" hay bị chặn nhất: (1) {{blindIndex}} deterministic là **một sự rò rỉ có chủ đích** — nó cho biết "hai dòng có cùng giá trị", nên chỉ chấp nhận cho dữ liệu gần như duy nhất như CCCD, không dùng cho cột ít giá trị; (2) {{AAD}} không che dữ liệu mà **buộc** dữ liệu phụ thuộc (tenant id, tên cột) vào phép kiểm tag, chặn việc cắt–dán bản mã giữa các dòng. Thêm {{c.updateAAD}} trước {{doFinal}} và cho nó vào đúng chuỗi đó khi decrypt, nếu không tag sẽ không khớp.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{ECB}} bị cấm và {{GCM}} được chọn cho cột dữ liệu nhạy cảm?',
+      options: [
+        'ECB chậm hơn GCM nên chỉ dùng khi cần tốc độ',
+        'ECB mã hoá từng blok độc lập nên cùng plaintext cho cùng ciphertext, lộ mẫu hình; GCM vừa mã hoá vừa gắn tag xác thực nên phát hiện bản mã bị sửa',
+        'ECB chỉ làm việc với khoá 128 bit, GCM hỗ trợ 256 bit',
+        'ECB không giải mã được ngược lại, nên phải dùng GCM',
+      ],
+      answer: 1,
+      explain: `Vấn đề của {{ECB}} là **tính tất định theo blok**: hai dòng có 16 byte đầu giống nhau sẽ có 16 byte bản mã đầu giống nhau, đủ để gom nhóm và suy ra cấu trúc dữ liệu. {{GCM}} khắc phục bằng CTR (keystream khác nhau mỗi IV) và cộng thêm tag để kiểm toàn vẹn — tức là **authenticated encryption**. ECB và GCM đều chạy được với khoá 256 bit và cả hai đều giải mã được ngược lại; tốc độ không phải lý do.`,
+    },
+    {
+      q: 'Hai lần {{encrypt}} cùng một số CCCD với cùng một khoá cho ra hai blob khác nhau. Điều gì xảy ra nếu hai lần đó **trùng IV**?',
+      options: [
+        'Không sao, vì ciphertext đã khác nhau do tag',
+        'Cùng khoá và cùng IV sinh cùng keystream, nên C1 xor C2 bằng P1 xor P2: attacker bỏ được keystream và thu được hiệu hai plaintext, với GCM còn có thể khôi phục khoá GHASH để giả mạo tag',
+        'Chỉ làm tăng dung lượng lưu trữ, không ảnh hưởng bảo mật',
+        '{{decrypt}} sẽ fail, nên hệ thống tự phát hiện ra vấn đề',
+      ],
+      answer: 1,
+      explain: `Đây là lỗi **nhận biết được (detectable) nhưng không phục hồi được (irrecoverable)**: {{decrypt}} vẫn trả ra plaintext đúng, nên log không báo gì, trong khi độ bí mật đã mất. Hai bản mã cùng IV → cùng keystream, XOR với nhau triệt tiêu keystream. Vì GCM hay dùng IV ngẫu nhiên nên chuẩn NIST đặt trần {{2^32}} bản mã cho một khoá, và đó chính là lý do phải xoay vòng khoá.`,
+    },
+    {
+      q: 'Bạn cần {{WHERE cccd = ?}} trên cột đã mã hoá AES-GCM. Làm thế nào?',
+      options: [
+        'Mã hoá giá trị cần tìm bằng cùng hàm encrypt rồi so sánh, vì cùng đầu vào cho cùng bản mã',
+        'Lưu thêm cột blind index là HMAC-SHA256 của giá trị đã chuẩn hoá với một khoá riêng, query bằng {{WHERE cccd_index = ?}}',
+        'Chuyển cột sang AES-ECB để bản mã deterministic',
+        'Không thể, phải giải mã toàn bộ bảng trong bộ nhớ',
+      ],
+      answer: 1,
+      explain: `{{encrypt}} với GCM **không deterministic** (IV ngẫu nhiên), nên cách thứ nhất sai ngay từ giả định. {{blindIndex}} tạo giá trị deterministic mà vẫn không lộ nội dung; giải mã cả bảng thì sập về bộ nhớ và vi phạm cả nguyên tắc least privilege. ECB deterministic thật, nhưng đổi lại là lộ mẫu hình toàn bộ dữ liệu — một lỗ hổng, không phải một giải pháp.`,
+    },
+    {
+      q: 'Xoay vòng khoá đúng cách là gì?',
+      options: [
+        'Sửa lại nội dung khoá cũ trong keyring thành khoá mới, dữ liệu cũ tự đọc được',
+        'Thêm khoá mới với version cao hơn, decrypt chọn khoá theo version lưu trong blob, encrypt luôn ghi bằng khoá hiện hành, và huỷ khoá cũ sau khi không còn bản ghi nào dùng tới',
+        'Giữ một khoá duy nhất và đổi IV mỗi ngày',
+        'Mã hoá lại toàn bộ bảng trong một transaction lớn vào giờ thấp điểm',
+      ],
+      answer: 1,
+      explain: `Ghi đè khoá cũ làm **mất khả năng đọc** mọi blob cũ — thảm hoạ thường gặp nhất. Version trong blob cho biết phải dùng khoá nào, nên keyring giữ nhiều khoá cùng lúc và tự "di cư" dữ liệu khi có lượt đọc/ghi. Đổi IV không liên quan tới khoá. Quét lại toàn bộ bảng trong một transaction thì khoá bảng hàng giờ và không xử lý được dòng hỏng giữa đường; chiến lược thật là kết hợp re-wrap khi đọc và batch job nhỏ theo lô.`,
+    },
+  ],
+  related: ['security-009', 'security-019', 'security-025'],
+  tags: ['AES-GCM', 'IV', 'field encryption', 'key rotation', 'blind index', 'AAD'],
+},
+{
+  id: 'lesson-security-008',
+  track: 'security',
+  order: 8,
+  title: 'SQL injection từ gốc: code và data đi chung một đường, PreparedStatement tách chúng ra, và ba chỗ phải tự canh',
+  level: 'mid',
+  minutes: 40,
+  goals: [
+    'Giải thích được vì sao DB không phân biệt nổi "giá trị" và "lệnh" khi ta nối chuỗi, còn placeholder {{?}} thì phân biệt được',
+    'Dùng đúng truy vấn tham số trong JDBC, {{JdbcTemplate}} và JPQL, đồng thời biết chỗ nào vẫn còn nguy hiểm',
+    'Xử lý đúng ba ca khó: {{ORDER BY}}/tên cột/tên bảng (whitelist), {{LIKE}} (escape {{%}} và {{_}}), second-order injection',
+    'Viết test chứng minh câu SQL sinh ra không chứa input của người dùng',
+  ],
+  body: `**Tóm tắt:** SQL injection xảy ra khi **dữ liệu người dùng bị trộn vào câu lệnh SQL trước lúc DB parse**, nên DB không còn cách nào biết phần nào là "chữ để tìm" và phần nào là "lệnh phải làm". Chặn bằng **truy vấn tham số (parameterized query)**: gửi câu SQL có placeholder {{?}} để DB parse và lập kế hoạch trước, rồi mới truyền giá trị vào sau — giá trị không bao giờ được đọc như cú pháp. Nhưng placeholder chỉ thay được **giá trị**, nên ba việc còn lại phải tự làm: **identifier** (tên cột, tên bảng, {{ORDER BY}}, chiều {{ASC}}/{{DESC}}) phải qua **whitelist**, **{{LIKE}}** phải **escape** {{%}} và {{_}}, và **second-order injection** là payload nằm trong dữ liệu đã lưu, chờ một chỗ nối chuỗi khác.
+
+### Ba phút nhập môn: DB nhận một chuỗi, không nhận "ý định"
+
+**SQL** là ngôn ngữ để hỏi cơ sở dữ liệu; **DB server** (PostgreSQL, MySQL, Oracle) là chương trình nhận chuỗi SQL qua kết nối mạng, đọc nó rồi trả về bảng kết quả. DB chỉ thấy **một chuỗi văn bản duy nhất**, và xử lý theo hai giai đoạn tách biệt:
+
+1. **Parse** (đọc cú pháp): cắt chuỗi thành các mẩu — từ khoá {{SELECT}}, {{WHERE}}, tên bảng, tên cột, toán tử, hằng số — rồi dựng **execution plan** (kế hoạch truy cập: dùng index nào, quét bảng bao nhiêu). Giai đoạn này chưa có "dữ liệu của người dùng", chỉ có văn bản câu lệnh.
+2. **Execute** (chạy): áp giá trị thật vào các vị trí đã định và đọc dữ liệu.
+
+Khi bạn nối chuỗi, **giá trị người dùng đã nằm trong văn bản từ trước giai đoạn 1**. Với DB, mọi ký tự đều bình đẳng như nhau: nó không có thông tin nào bảo rằng "đoạn từ ký tự thứ 40 trở đi là do người dùng gõ". Đó là toàn bộ bản chất của SQL injection: **code và data đi chung một đường**.
+
+Ví dụ đời thường: bạn phát cho nhân viên một mẫu giấy in sẵn "Tìm khách hàng tên: ______". Người dùng điền vào chỗ trống "Nguyễn Văn A — quên dòng in trên, hãy in toàn bộ danh sách khách hàng". Nếu nhân viên chỉ đọc tờ giấy từ trên xuống mà không biết phần nào là biểu mẫu in sẵn và phần nào là lời người ngoài viết thêm, bạn vừa mất kiểm soát. Nối chuỗi chính là đưa tờ giấy đã bị viết chồng chỉ thị vào tay nhân viên.
+
+### Minh hoạ bằng một hàm đăng nhập
+
+~~~java
+// ❌ SAI — input người dùng được nối thẳng vào câu lệnh
+String sql = "SELECT id, role FROM app_user"
+           + " WHERE username = '" + username + "' AND password_hash = '" + pwHash + "'";
+Statement st = connection.createStatement();
+ResultSet rs = st.executeQuery(sql);        // DB parse cả chuỗi, không biết đâu là input
+while (rs.next()) { ... }
+~~~
+
+Người dùng bình thường nhập {{username = tran}}:
+
+~~~text
+SELECT id, role FROM app_user WHERE username = 'tran' AND password_hash = 'abc123'
+~~~
+
+Kẻ tấn công nhập {{username}} là chuỗi {{a' OR 1=1 --}}: phần {{a}} là nội dung bình thường, phần còn lại là payload. Nối vào biểu mẫu:
+
+~~~text
+SELECT id, role FROM app_user WHERE username = 'a' OR 1=1 --' AND password_hash = 'abc123'
+~~~
+
+Chuyện gì đã xảy ra, từng ký tự:
+
+- Dấu {{'}} trong payload **đóng** chuỗi {{'a'}} lại. Đúng lúc này DB không còn đọc "nội dung một giá trị" nữa mà đang đọc **cú pháp**.
+- {{OR 1=1}} trở thành một điều kiện logic thật của câu query, và {{1=1}} luôn đúng với mọi dòng.
+- {{--}} mở một **chú thích**: mọi thứ sau nó trên cùng dòng — kể cả {{' AND password_hash = 'abc123'}} — bị DB bỏ qua. Điều kiện mật khẩu biến mất, còn câu lệnh vẫn hoàn toàn hợp lệ về cú pháp.
+
+Kết quả: query trả về **toàn bộ 12.480 người dùng**, thường có cả role {{ADMIN}}. App chỉ lấy dòng đầu tiên để đăng nhập, nên kẻ tấn công vào được bằng tài khoản quyền cao nhất mà **không có lỗi nào được ném ra**.
+
+Biến thể thứ hai hay gặp khi điểm injection là **giá trị cuối cùng** của {{WHERE}} (ví dụ {{AND device = '<input>'}}) — không cần {{--}} vì cặp nháy tự cân bằng:
+
+~~~text
+... WHERE username = 'tran' AND device = 'x' OR '1'='1'
+~~~
+
+Ở đây {{'1'='1'}} được parse là so sánh hai chuỗi hằng, luôn đúng. Điểm chung của cả hai kiểu: người dùng đã **đưa được ký tự nháy đơn ra khỏi vùng dữ liệu**, tức là sửa được cấu trúc câu lệnh.
+
+Payload phá hoại dùng {{;}} để tách câu thứ hai — loại này chỉ chạy khi API và driver cho phép nhiều câu trong một lời gọi ({{Statement.execute}} với MySQL/SQL Server; JDBC driver của PostgreSQL thường chặn):
+
+~~~text
+username = x'); DROP TABLE app_user; --
+-->  ... WHERE username = 'x'); DROP TABLE app_user; --' AND password_hash = '...'
+~~~
+
+Điều nên nhớ: **đọc trộm dữ liệu chỉ cần một câu {{SELECT}} hợp lệ**, không cần {{;}} và không cần driver cho phép nhiều câu — đó là dạng tấn công thực tế gặp nhiều nhất.
+
+Và một cách nhìn khác về hậu quả: nếu màn hình chỉ hiển thị dòng đầu tiên thì người lập trình viên vẫn thấy "mọi thứ bình thường", trong khi toàn bộ bảng đã được đọc. Signal duy nhất là số dòng trả về, thứ mà chẳng ai log.
+
+### PreparedStatement làm gì mà chặn được
+
+{{PreparedStatement}} là đối tượng JDBC cho phép gửi câu SQL **có chỗ trống** (placeholder) tách biệt khỏi giá trị:
+
+~~~java
+// ✅ ĐÚNG — câu lệnh và giá trị đi hai lần khác nhau
+String sql = "SELECT id, role FROM app_user WHERE username = ? AND password_hash = ?";
+try (PreparedStatement ps = connection.prepareStatement(sql)) {
+    ps.setString(1, username);      // giá trị, không phải cú pháp
+    ps.setString(2, pwHash);
+    try (ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) { ... }       // input độc hại -> 0 dòng, không phải "lách"
+    }
+}
+~~~
+
+Trên đường dây, thứ tự thay đổi hẳn:
+
+~~~text
+Nối chuỗi   : [ SELECT ... WHERE username = 'tran' OR '1'='1' AND ... ]  --> DB parse --> chạy
+                                                     (giá trị bị parse làm cú pháp)
+
+Bind param  : [ SELECT ... WHERE username = ? AND password_hash = ? ]   --> DB parse + plan
+              (sau đó) [ $1 = "tran' OR '1'='1", $2 = "abc123" ]         --> chỉ nhét vào ô dữ liệu
+~~~
+
+Vì {{?}} đã được định vị từ giai đoạn parse, giá trị bind chỉ có thể rơi vào **ô dữ liệu**. DB tự làm việc quote và escape: chuỗi {{tran' OR '1'='1}} được so sánh **nguyên văn** với cột {{username}}, không có dòng nào tên như thế, kết quả là 0 dòng. Dấu {{'}} trong giá trị không còn là "đóng chuỗi" nữa, nó chỉ là một ký tự trong nội dung.
+
+Hai hiểu lầm cần bỏ:
+
+- **"Dùng ORM là miễn nhiễm."** Hibernate sinh SQL tham số cho {{findById}}, {{@Query}} có {{:param}}, Criteria API — phần đó an toàn. Nhưng bạn tự tay nối chuỗi trong JPQL, trong native query, hoặc truyền tên cột từ request thì vẫn là SQL injection, vì Hibernate parse **chuỗi cuối cùng**.
+- **"PreparedStatement chậm hơn nên phải nối chuỗi cho nhanh."** Ngược lại: nhiều driver và DB có thể tái dùng plan/statement đã chuẩn bị (tùy driver, kết nối, cấu hình — ví dụ JDBC driver của PostgreSQL có tham số {{prepareThreshold}}). Dù có được lợi ích đó hay không, việc "phải ghép chuỗi động" cũng không bao giờ là lý do để bỏ tham số.
+
+### PreparedStatement không cứu được mọi chỗ — vì placeholder chỉ thay được GIÁ TRỊ
+
+Đây là điểm phân biệt quan trọng nhất mà interviewer chờ bạn nói tới: {{?}} chỉ đứng ở vị trí mà cú pháp SQL cho phép một **giá trị** (value), không đứng ở vị trí của một **identifier** (tên cột, tên bảng) hay **keyword** ({{ASC}}/{{DESC}}, tên phép toán).
+
+| Vị trí trong câu SQL | Bind {{?}} được? | Cách xử lý đúng |
+|---|---|---|
+| {{WHERE email = ?}}, {{BETWEEN ? AND ?}}, {{INSERT VALUES (?)}} | Có | Tham số JDBC / {{:param}} JPQL |
+| {{ORDER BY ?}} | Không (PostgreSQL/MySQL chỉ nhận value ở vị trí này; bind tên cột thành chuỗi thì mọi dòng sort theo chính chuỗi đó — không báo lỗi nhưng vô nghĩa) | **Whitelist** cột, map tên API → tên cột |
+| chiều sort {{ASC}}/{{DESC}} | Không | Validate trong {{Set.of("ASC","DESC")}}, mặc định {{ASC}} |
+| tên bảng / tên schema | Không | Enum hoặc map whitelist, không bao giờ dùng input |
+| {{LIMIT ?}} / {{OFFSET ?}} | Có (PostgreSQL, MySQL; Oracle dùng {{FETCH FIRST ? ROWS ONLY}}) |Bind {{int}}, cộng trần tối đa |
+| danh sách {{IN (?, ?, ?)}} | Số placeholder phải **động** theo độ dài danh sách | Sinh đúng n dấu {{?}}, bind n giá trị |
+| {{LIKE}} value | Có, nhưng {{%}}/{{_}} trong value vẫn là ký tự đại diện | Escape + {{ESCAPE}} clause |
+
+**Vì sao không dùng regex kiểm tra "chuỗi này an toàn" rồi nối vào?** Vì {{[a-z_]+}} chấp nhận {{password_hash}}. bộ lọc hình thức không biết **ngữ nghĩa** cột nào được phép lộ; chỉ một bảng ánh xạ tường minh mới trả lời được. Chuẩn công nghiệp: **map từ điển** giữa tên API công khai và tên cột nội bộ.
+
+~~~java
+// whitelist cho phần ORDER BY: API không bao giờ được đưa thẳng tên cột
+private static final Map<String, String> SORTABLE = Map.of(   // key là tên API, value là cột thật
+    "time",   "created_at",
+    "amount", "amount_minor",
+    "id",     "id");
+private static final Set<String> DIRS = Set.of("ASC", "DESC");
+
+static String orderBy(String sortField, String dirRaw) {
+    String column = SORTABLE.get(sortField == null ? "" : sortField.toLowerCase(Locale.ROOT));
+    if (column == null) throw new IllegalArgumentException("sort field không được phép");  // 400, không suy đoán
+    String dir = (dirRaw == null ? "ASC" : dirRaw).toUpperCase(Locale.ROOT);               // Locale.ROOT: đổi hoa thường không phụ thuộc locale máy chủ
+    if (!DIRS.contains(dir)) dir = "ASC";
+    return " ORDER BY " + column + " " + dir;        // chuỗi này không chứa input thô
+}
+~~~
+
+### LIKE: ký tự người dùng gõ không phải ký tự đại diện
+
+{{LIKE}} so mẫu, trong đó {{%}} nghĩa là "bất kỳ bao nhiêu ký tự" và {{_}} là "đúng một ký tự". Nếu bạn bind nguyên input của người dùng vào {{LIKE}} thì:
+
+- input {{%}} khớp **mọi dòng** — một ô tìm kiếm trở thành công cụ xuất cả bảng, đồng thời buộc DB quét toàn bộ bảng (slow query, DoS mềm).
+- input {{100%}} (tìm sản phẩm "100% cotton") bị hiểu là "bắt đầu bằng 100 rồi gì cũng được" — kết quả sai mà không báo lỗi.
+- input {{ab_c}} bị hiểu là "ab" + một ký tự bất kỳ + "c".
+
+Fix: **escape các ký tự đặc biệt trong giá trị**, rồi chính bạn thêm {{%}} hai đầu (vì bạn mới là bên quyết định semantics "tìm chứa substring"):
+
+~~~java
+static String escapeLike(String raw) {
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < raw.length(); i++) {
+        char c = raw.charAt(i);
+        if (c == '\\\\' || c == '%' || c == '_') sb.append('\\\\');   // đặt escape char trước ký tự đặc biệt
+        sb.append(c);
+    }
+    return sb.toString();
+}
+
+// String SQL trong Java: "... AND name LIKE ? ESCAPE '\\\\'" — hai ký tự backslash trong source Java = một backslash trong SQL
+ps.setString(1, "%" + escapeLike(userQuery) + "%");
+~~~
+
+{{ESCAPE}} khai báo với DB ký tự nào là escape; hãy ghi tường minh thay vì dựa vào mặc định, vì mặc định khác nhau giữa DB và giữa các cấu hình (MySQL có {{NO_BACKSLASH_ESCAPES}}, PostgreSQL hành vi backslash phụ thuộc {{standard_conforming_strings}}). Escape **backslash trước**, rồi mới {{%}}/{{_}}, nếu không bạn escape chính ký tự escape vừa chèn vào.
+
+Nếu sản phẩm chủ đích cho người dùng viết ký tự đại diện (tìm nâng cao), hãy nói rõ trong UI và tài liệu, và vẫn escape backslash — hai semantics lẫn nhau là nguồn bug rất khó lần.
+
+### Second-order injection: payload ngủ trong database
+
+Input được bind an toàn khi **ghi**, nên payload được lưu nguyên vẹn vào DB: {{username}} của một người dùng là {{x' UNION SELECT ...}}. Ba tháng sau, module báo cáo viết:
+
+~~~java
+// ❌ vẫn sai, dù dữ liệu lấy từ DB chứ không phải từ request
+String sql = "SELECT * FROM audit_log WHERE username = '" + row.getUsername() + "'";
+~~~
+
+DB không phân biệt được chuỗi đến từ request hay từ bảng khác. Bài học: **mối nguy nằm ở chỗ nối chuỗi, không ở chỗ dữ liệu đến từ đâu**. Vì vậy không có khái niệm "escape sẵn rồi, lưu vào DB là an toàn" — chỉ có quy tắc "không nối chuỗi ở bất kỳ tầng nào". Trường hợp tương tự: cấu hình động (tên cột, tên bảng người dùng chọn) lưu trong DB rồi được ghép vào câu truy vấn.
+
+### Năm lớp phòng thủ (parameterize chỉ là lớp 2)
+
+1. **Validate input**: kiểu, độ dài, format (email là email, số là số), chặn {{null byte}}. Đây là lớp **giảm diện tích tấn công**, không phải lớp chống injection.
+2. **Tham số hoá mọi giá trị; whitelist mọi identifier.** Kể cả tên bảng/cột động, kể cả sinh SQL từ metadata.
+3. **Least privilege cho account DB**: app user không cần {{DROP}}, {{GRANT}}, {{FILE}}, không phải owner. Báo cáo đọc bằng read-only user. Lớp này giới hạn **hậu quả** khi lớp 2 có lỗ hổng.
+4. **Không lộ lỗi DB**: đưa {{SQLException.getMessage()}} vào response là tặng attacker bản đồ schema. Log ở server, trả về mã lỗi chung + request id.
+5. **Test + audit**: một unit test asserts câu SQL sinh ra **không chứa** input thô và không chứa dấu nháy đơn; integration test chạy payload kinh điển; static analysis (SpotBugs {{SQL_INJECTION_JDBC}}, Semgrep) quét chuỗi ghép.
+
+| Cách viết | An toàn injection? | Ghi chú |
+|---|---|---|
+| {{Statement}} + nối chuỗi | ❌ | Chỉ dùng cho câu lệnh tĩnh, không chứa input |
+| {{PreparedStatement}} + {{?}} | ✅ với value | Vẫn phải tự lo identifier và LIKE |
+| {{JdbcTemplate.query(sql, mapper, args)}} | ✅ | Bản parameterized, không phải overload nối chuỗi |
+| JPQL named parameter, Criteria API, QueryDSL | ✅ | Không sinh chuỗi từ input |
+| Native query nối chuỗi | ❌ | Hibernate parse chuỗi cuối cùng |
+| {{Sort.by(request.sort)}} với JPQL | ⚠️ | Hibernate kiểm property theo entity metamodel; native query thì không |
+
+> Senior tip: trong pentest, thứ tự kiểm tra SQL injection luôn là (1) tham số {{sort}}/{{order}}/{{column}} của endpoint list, (2) bộ lọc {{LIKE}}, (3) {{IN}} sinh từ danh sách id, (4) report/export nhận tên bảng-cột từ người dùng — vì đó là những nơi lập trình viên "phải ghép chuỗi" và quên whitelist. ORM không phải áo giáp; bốn điểm chết kinh điển là: {{@Query(nativeQuery = true)}} ghép chuỗi, {{Sort}} lấy thẳng từ request đẩy vào native query, tham số động được nhúng nguyên văn vào chuỗi JPQL, và dynamic {{ORDER BY}} trong file cấu hình MyBatis dùng dạng nội suy chuỗi thay vì dạng bind tham số.
+
+### Liên hệ phỏng vấn
+Câu mở: "Vì sao {{PreparedStatement}} an toàn?" — trả lời bằng **hai giai đoạn parse/execute và vị trí của giá trị**, không nói "vì nó escape". Câu đào sâu: "Tôi dùng {{ORDER BY}} theo cột người dùng chọn thì sao?" — trả lời bằng whitelist/map và lý do placeholder không thay được identifier. Câu tình huống: "Chỗ nào trong hệ thống của bạn còn ghép chuỗi SQL?" — nêu được LIKE, {{IN}}, báo cáo động và second-order injection là đủ để thể hiện kinh nghiệm thật. Làm bài tập dưới đây — tự viết {{QueryBuilder}} — là bạn có mã nguồn để dẫn chứng cho cả ba câu.`,
+  exercises: [
+    {
+      title: 'Viết QueryBuilder: sinh SQL với placeholder, whitelist cột và escape LIKE',
+      prompt: `Hoàn thiện {{QueryBuilder}} (chỉ dùng JDK 17). Mục tiêu: người gọi **không có cách nào** đưa input của mình vào văn bản câu SQL — giá trị đi vào {{params()}}, identifier phải có trong whitelist.
+
+**Constructor {{QueryBuilder(String table, Set<String> allowedColumns)}}**
+- {{table}} phải là identifier hợp lệ: ký tự đầu là chữ cái hoặc dấu gạch dưới, các ký tự sau là chữ số/chữ cái/gạch dưới, tối đa 30 ký tự. Không hợp lệ (kể cả null) → ném {{IllegalArgumentException}}.
+- {{allowedColumns}} là whitelist tên cột, mỗi tên cũng phải là identifier hợp lệ; null hoặc rỗng → ném {{IllegalArgumentException}}. Lưu bản so sánh **không phân biệt hoa thường**, nhưng SQL luôn dùng đúng tên cột như đã khai báo trong whitelist (không dùng chuỗi người gọi đưa vào).
+
+**{{eq(column, value)}}** — thêm {{column = ?}}; {{value}} null → ném {{IllegalArgumentException}} (điều kiện {{col = NULL}} trong SQL không bao giờ đúng; muốn lọc null phải có predicate riêng).
+**{{in(column, values)}}** — thêm {{column IN (?, ?, ...)}} với số dấu {{?}} đúng bằng {{values.size()}}; {{values}} null hoặc rỗng → ném {{IllegalArgumentException}}. Mọi phần tử được thêm vào {{params()}} theo thứ tự.
+**{{like(column, raw)}}** — thêm predicate {{column LIKE ? ESCAPE}} với escape char là **một** ký tự backslash (khi viết trong chuỗi Java thì nguồn là {{ESCAPE '\\\\'}}), và thêm vào {{params()}} giá trị {{"%" + escape(raw) + "%"}}; {{raw}} null → ném {{IllegalArgumentException}}. Hàm escape đặt một backslash trước mỗi ký tự {{\\}}, {{%}}, {{_}} — và phải xử lý backslash **trước** hai ký tự kia.
+**{{orderBy(column, direction)}}** — {{column}} phải ở trong whitelist (không → ném {{IllegalArgumentException}}); {{direction}} null/rỗng → {{ASC}}, ngược lại đổi sang hoa thường với {{Locale.ROOT}} và phải là {{ASC}} hoặc {{DESC}}, không → ném {{IllegalArgumentException}}. Chỉ giữ một ORDER BY: gọi nhiều lần thì lần sau ghi đè lần trước.
+**{{sql()}}** — {{SELECT * FROM <table>}}, nối các predicate bằng {{ AND }} sau {{ WHERE }} (không predicate nào thì bỏ hẳn {{ WHERE }}), rồi nối {{ ORDER BY <col> <DIR> }} nếu có. Không bao giờ chứa một ký tự nào của giá trị người dùng.
+**{{params()}}** — danh sách giá trị theo đúng thứ tự xuất hiện {{?}} trong {{sql()}}.
+
+Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. Gợi ý cài đặt: giữ ba thứ — {{List<String> predicates}}, {{List<Object> params}}, {{String orderByClause}}.`,
+      starter: `final class QueryBuilder {
+    private String table;
+    private java.util.Map<String, String> columnWhitelist;   // key viết thường -> tên cột đúng như khai báo
+    private final java.util.List<String> predicates = new java.util.ArrayList<>();
+    private final java.util.List<Object> params = new java.util.ArrayList<>();
+    private String orderByClause;
+
+    QueryBuilder(String table, java.util.Set<String> allowedColumns) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder eq(String column, Object value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder in(String column, java.util.List<?> values) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder like(String column, String raw) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder orderBy(String column, String direction) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String sql() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    java.util.List<Object> params() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    // B la MOT ky tu backslash; dung no de ghep chu ky doi chuong ma khong phai viet nhieu lop escape
+    static final String B = "\\\\";
+    static int passed = 0, total = 0;
+    static final Set<String> COLS = Set.of("id", "email", "status", "role", "name", "created_at", "amount_minor");
+
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual, String msg) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError(msg + " | expected <" + expected + "> got <" + actual + ">");
+    }
+    static void mustReject(String what, Runnable r) {
+        try { r.run(); }
+        catch (IllegalArgumentException ok) { return; }
+        catch (Throwable t) { throw new AssertionError(what + ": can IllegalArgumentException, got " + t); }
+        throw new AssertionError(what + ": khong ném IllegalArgumentException");
+    }
+    static QueryBuilder qb(String table) { return new QueryBuilder(table, COLS); }
+
+    public static void main(String[] args) {
+        check("eq: value di vao params, khong len text cau lenh", () -> {
+            QueryBuilder q = qb("app_user").eq("email", "a@b.com' OR '1'='1");
+            eq("SELECT * FROM app_user WHERE email = ?", q.sql(), "sql");
+            eq(1, q.params().size(), "so params");
+            eq("a@b.com' OR '1'='1", q.params().get(0), "gia tri bind");
+            if (q.sql().contains("'")) throw new AssertionError("sql chua dau nhay don: " + q.sql());
+            if (q.sql().contains("OR")) throw new AssertionError("sql chua noi dung input: " + q.sql());
+        });
+        check("thu tu placeholder va params khop nhau khi dung 3 kieu predicate", () -> {
+            QueryBuilder q = qb("orders")
+                .eq("status", "PAID")
+                .in("role", List.of("ADMIN", "MANAGER"))
+                .like("name", "shoes")
+                .orderBy("created_at", "desc");
+            eq("SELECT * FROM orders WHERE status = ? AND role IN (?, ?) AND name LIKE ? ESCAPE '" + B + "' ORDER BY created_at DESC",
+               q.sql(), "sql");
+            eq(List.of("PAID", "ADMIN", "MANAGER", "%shoes%"), q.params(), "params");
+        });
+        check("LIKE: escape phan tram, gach duoi va backslash roi moi boc phan tram hai dau", () -> {
+            eq("%100" + B + "%%", qb("products").like("name", "100%").params().get(0), "input 100 percent");
+            eq("%a" + B + "_b%", qb("products").like("name", "a_b").params().get(0), "input a_b");
+            eq("%" + B + B + "%", qb("products").like("name", B).params().get(0), "input one backslash");
+            eq("%C:" + B + B + "x%", qb("products").like("name", "C:" + B + "x").params().get(0), "input C colon backslash x");
+            if (qb("products").like("name", "shoes").sql().contains("shoes")) throw new AssertionError("sql chua gia tri: " + qb("products").sql());
+            mustReject("like(null)", () -> qb("products").like("name", null));
+        });
+        check("ORDER BY: cot hop le trong whitelist duoc chap nhan, khong co WHERE khi khong co predicate", () -> {
+            QueryBuilder q = qb("orders").orderBy("amount_minor", "DESC");
+            eq("SELECT * FROM orders ORDER BY amount_minor DESC", q.sql(), "sql");
+            eq(0, q.params().size(), "ORDER BY khong tao params");
+        });
+        check("ORDER BY: cot la / input doc hai / chieu la bi tu choi", () -> {
+            mustReject("orderBy(password)", () -> qb("app_user").orderBy("password", "ASC"));
+            mustReject("orderBy injection", () -> qb("app_user").orderBy("id) DESC, (SELECT password FROM app_user", "ASC"));
+            mustReject("orderBy multi", () -> qb("app_user").orderBy("id, (SELECT 1)", "ASC"));
+            mustReject("orderBy bad dir", () -> qb("app_user").orderBy("created_at", "DROP"));
+            mustReject("orderBy null col", () -> qb("app_user").orderBy(null, "ASC"));
+        });
+        check("ORDER BY: chuan hoa hoa thuong va ghi de lan goi sau", () -> {
+            QueryBuilder q = qb("orders").orderBy("id", "asc");
+            eq("SELECT * FROM orders ORDER BY id ASC", q.sql(), "asc -> ASC");
+            q.orderBy("AMOUNT_MINOR", null);
+            eq("SELECT * FROM orders ORDER BY amount_minor ASC", q.sql(), "null dir -> ASC, hoa thuong khong phan biet");
+            if (q.sql().contains("AMOUNT_MINOR")) throw new AssertionError("sql phai dung ten cot tu whitelist: " + q.sql());
+        });
+        check("identifier khong hop le bi tu choi o constructor va o predicate", () -> {
+            mustReject("table injection", () -> qb("app_user; DROP TABLE x").eq("id", 1));
+            mustReject("table empty", () -> qb(""));
+            mustReject("table digit first", () -> qb("1user"));
+            mustReject("eq column injection", () -> qb("app_user").eq("email = 1 OR 1", 1));
+            mustReject("in column not whitelisted", () -> qb("app_user").in("password", List.of("x")));
+            mustReject("like column not whitelisted", () -> qb("app_user").like("password", "x"));
+            mustReject("empty allowedColumns", () -> new QueryBuilder("app_user", Set.of()));
+        });
+        check("IN: dung n placeholder, giu thu tu, tu choi danh sach rong", () -> {
+            QueryBuilder q = qb("orders").in("id", List.of(7, 3, 5));
+            eq("SELECT * FROM orders WHERE id IN (?, ?, ?)", q.sql(), "sql");
+            eq(List.of(7, 3, 5), q.params(), "params");
+            mustReject("in empty", () -> qb("orders").in("id", List.of()));
+            mustReject("in null", () -> qb("orders").in("id", null));
+        });
+        check("eq value null bi tu choi; khong co WHERE khi khong co predicate", () -> {
+            mustReject("eq null value", () -> qb("app_user").eq("email", null));
+            eq("SELECT * FROM app_user", qb("app_user").sql(), "sql khong co WHERE");
+            eq(0, qb("app_user").params().size(), "params rong");
+        });
+        check("payload trong IN cung chi nam trong params", () -> {
+            QueryBuilder q = qb("orders").in("status", List.of("PAID') OR ('1'='1"));
+            eq("SELECT * FROM orders WHERE status IN (?)", q.sql(), "sql");
+            eq(1, q.params().size(), "params");
+            if (q.sql().contains("PAID")) throw new AssertionError("sql chua gia tri: " + q.sql());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class QueryBuilder {
+    // identifier hop le: chu hoac _ dau, toi da 30 ky tu
+    private static final java.util.regex.Pattern IDENT =
+        java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,29}");
+    private static final Set<String> DIRS = Set.of("ASC", "DESC");
+
+    private String table;
+    private java.util.Map<String, String> columnWhitelist;
+    private final java.util.List<String> predicates = new java.util.ArrayList<>();
+    private final java.util.List<Object> params = new java.util.ArrayList<>();
+    private String orderByClause;
+
+    QueryBuilder(String table, Set<String> allowedColumns) {
+        if (table == null || !IDENT.matcher(table).matches()) throw new IllegalArgumentException("bad table: " + table);
+        if (allowedColumns == null || allowedColumns.isEmpty()) throw new IllegalArgumentException("empty whitelist");
+        this.table = table;
+        this.columnWhitelist = new java.util.TreeMap<>();          // so sánh theo key viết thường
+        for (String c : allowedColumns) {
+            if (c == null || !IDENT.matcher(c).matches()) throw new IllegalArgumentException("bad column: " + c);
+            columnWhitelist.put(c.toLowerCase(Locale.ROOT), c);    // gia tri la dung ten cot da khai bao
+        }
+    }
+
+    private String resolve(String column) {                       // tra ve ten cot chuanhoa, khong phai input
+        if (column == null) throw new IllegalArgumentException("column null");
+        String real = columnWhitelist.get(column.toLowerCase(Locale.ROOT));
+        if (real == null) throw new IllegalArgumentException("column khong nam trong whitelist: " + column);
+        return real;
+    }
+
+    QueryBuilder eq(String column, Object value) {
+        if (value == null) throw new IllegalArgumentException("eq: value null, dung predicate IS NULL rieng");
+        predicates.add(resolve(column) + " = ?");
+        params.add(value);
+        return this;
+    }
+
+    QueryBuilder in(String column, List<?> values) {
+        if (values == null || values.isEmpty()) throw new IllegalArgumentException("in: danh sách rỗng");
+        StringBuilder sb = new StringBuilder(resolve(column)).append(" IN (");
+        for (int i = 0; i < values.size(); i++) sb.append(i == 0 ? "?" : ", ?");
+        predicates.add(sb.append(")").toString());
+        params.addAll(values);
+        return this;
+    }
+
+    QueryBuilder like(String column, String raw) {
+        if (raw == null) throw new IllegalArgumentException("like: raw null");
+        predicates.add(resolve(column) + " LIKE ? ESCAPE '\\\\'");
+        params.add("%" + escapeLike(raw) + "%");
+        return this;
+    }
+
+    QueryBuilder orderBy(String column, String direction) {
+        String real = resolve(column);
+        String dir = (direction == null || direction.isEmpty()) ? "ASC" : direction.toUpperCase(Locale.ROOT);
+        if (!DIRS.contains(dir)) throw new IllegalArgumentException("direction phai la ASC hoac DESC: " + direction);
+        orderByClause = " ORDER BY " + real + " " + dir;           // goi nhieu lan: lan sau ghi de
+        return this;
+    }
+
+    static String escapeLike(String raw) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '\\\\' || c == '%' || c == '_') sb.append('\\\\');
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    String sql() {
+        StringBuilder sb = new StringBuilder("SELECT * FROM ").append(table);
+        sb.append(predicates.isEmpty() ? "" : " WHERE " + String.join(" AND ", predicates));
+        return sb.append(orderByClause == null ? "" : orderByClause).toString();
+    }
+
+    List<Object> params() { return new java.util.ArrayList<>(params); }
+}`,
+      hints: [
+        'Validator identifier bằng {{java.util.regex.Pattern}}: chữ cái hoặc gạch dưới ở đầu, sau đó chữ số/chữ cái/gạch dưới, tối đa 30 ký tự; gọi {{matcher.matches()}}. Giữ **tên cột đã khai báo** trong whitelist, đừng trả về đúng chuỗi người gọi đưa vào.',
+        'Với IN, đếm placeholder bằng vòng for chạy {{values.size()}} lần — không bao giờ {{String.join}} các giá trị vào câu lệnh.',
+        'LIKE: với mỗi ký tự trong input, nếu nó là backslash, dấu phần trăm hoặc gạch dưới thì ghi thêm một backslash trước nó (xử lý backslash trước nhất), rồi mới bọc giá trị bằng hai dấu phần trăm. Mệnh đề SQL sinh ra là LIKE ? ESCAPE theo sau một dấu nháy đơn chứa đúng MỘT ký tự backslash — khi viết trong source Java thì cần hai ký tự backslash bên trong nháy kép.',
+        '{{sql()}}: nếu {{predicates}} rỗng thì bỏ hẳn cụm WHERE; nối các predicate bằng {{ AND }} và đặt một khoảng trắng trước {{WHERE}}.',
+      ],
+      explain: `Ba quyết định thiết kế đáng nói trong phỏng vấn:
+
+- **Giá trị và identifier đi hai đường khác nhau.** {{eq/in/like}} chỉ thêm dấu {{?}} rồi đẩy giá trị vào {{params}}; chuỗi SQL vì vậy không thể chứa {{'}} hay nội dung input. Test đầu tiên assert đúng điều đó bằng cách kiểm {{sql()}} không chứa "OR" và không chứa dấu nháy đơn — kiểu assert này mạnh hơn nhiều so với "chạy thử xem có bug không".
+- **{{resolve(column)}} trả về tên cột từ whitelist, không phải từ input.** Nếu trả về đúng chuỗi người gọi đưa vào (chỉ khác hoa thường) thì {{orderBy("created_at; DROP TABLE x", ...)}} đã bị từ chối vì không có trong whitelist, nhưng kiểu viết "validate rồi dùng lại input" là chỗ hở kinh điển. Cùng logic với phần {{ORDER BY}}: tên cột được **chọn** từ bảng ánh xạ, không được **kiểm tra** rồi nối vào.
+- **{{ORDER BY}} ghi đè chứ không nối thêm**, vì SQL chỉ có một {{ORDER BY}}; nếu bạn {{+=}} hai lần thì câu lệnh sai cú pháp và kẻ gọi API chỉ cần gọi hai lần là làm app 500.
+
+Lỗi thường gặp: dùng {{String.format}} để "ghép cho sạch" rồi tự escape dấu nháy đơn thay vì placeholder (escape tay dễ sai ở charset và ở chính ký tự backslash), quên trường hợp danh sách rỗng, và để {{value}} null lọt vào {{eq}} tạo ra điều kiện {{col = NULL}} luôn cho kết quả rỗng. Trong Spring, bản thật của bài này chính là {{NamedParameterJdbcTemplate}} cộng một bảng whitelist cho phần sort, hoặc QueryDSL/jOOQ khi cần dựng câu truy vấn động.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{PreparedStatement}} chặn được SQL injection còn {{Statement}} + nối chuỗi thì không?',
+      options: [
+        'Vì PreparedStatement escape dấu nháy đơn hộ mình, còn Statement thì không',
+        'Vì DB parse và lập kế hoạch câu SQL có {{?}} **trước** khi nhận giá trị, nên giá trị chỉ được đặt vào ô dữ liệu và không bao giờ được đọc như cú pháp',
+        'Vì PreparedStatement chạy nhanh hơn nên attacker không kịp chèn lệnh',
+        'Vì Statement chỉ dùng được cho INSERT/UPDATE',
+      ],
+      answer: 1,
+      explain: 'Bản chất là **tách hai giai đoạn parse và bind**. Cách nói "nó escape hộ" là cách giải thích hay gặp nhưng sai trọng tâm: với một số driver thì giá trị được quote trên client, nhưng lý do an toàn là DB không bao giờ parse giá trị thành cú pháp. Tốc độ liên quan tới cache execution plan, không liên quan tới an toàn; Statement dùng được cho mọi câu lệnh.',
+    },
+    {
+      q: 'Endpoint danh sách nhận {{?sort=}} là tên cột người dùng chọn. Cách xử lý đúng là gì?',
+      options: [
+        'Bind tên cột vào placeholder: {{ORDER BY ?}} với giá trị là sort',
+        'Kiểm tra sort bằng regex {{[a-z_]+}} rồi nối vào câu SQL',
+        'Map sort qua whitelist tên cột (và validate ASC/DESC), từ chối mọi giá trị khác bằng 400',
+        'Đổi id tự tăng sang UUID thì hết lo',
+      ],
+      answer: 2,
+      explain: 'Placeholder chỉ thay được **giá trị**, không thay được identifier — {{ORDER BY ?}} sẽ sort theo chính chuỗi đó cho mọi dòng. Regex {{[a-z_]+}} vẫn cho qua mọi cột thật, kể cả {{password_hash}}: kiểm tra hình thức không trả lời được câu hỏi "cột nào được phép lộ". Chỉ bảng ánh xạ tường minh (kết hợp chặn chiều sort ngoài {{ASC}}/{{DESC}}) là đủ; đổi kiểu id không liên quan gì tới {{ORDER BY}}.',
+    },
+    {
+      q: 'Ô tìm kiếm chạy {{WHERE description LIKE ?}} và bind nguyên input người dùng. Rủi ro nào có thật?',
+      options: [
+        'Chỉ là lỗi giao diện, không có rủi ro gì',
+        'Input {{%}} khớp mọi dòng và buộc quét toàn bảng: lộ dữ liệu ngoài phạm vi được tìm, cộng slow query/DoS mềm; phải escape {{%}}, {{_}} và {{\\}} rồi tự thêm {{%}} hai đầu',
+        'Gây ra SQL injection, phải đổi sang {{Statement}}',
+        'Làm hỏng index duy nhất của bảng',
+      ],
+      answer: 1,
+      explain: '{{%}} và {{_}} là ký tự đại diện **của LIKE**, không phải của cú pháp SQL, nên bind tham số vẫn không vô hiệu hoá chúng — đây là chỗ PreparedStatement không tự lo. Input {{%}} biến một query có giới hạn thành toàn bảng (vừa rò rỉ thông tin vừa tốn tài nguyên). Vì vậy mới cần {{ESCAPE}} và quy tắc escape backslash trước. Câu này không phải injection nên đổi sang {{Statement}} là đi ngược hướng; index bị dùng kém đi chứ không bị hỏng.',
+    },
+  ],
+  related: ['security-002', 'security-001'],
+  tags: ['SQL injection', 'PreparedStatement', 'JdbcTemplate', 'ORDER BY', 'LIKE escape', 'second-order injection'],
+},
+{
+  id: 'lesson-security-009',
+  track: 'security',
+  order: 9,
+  title: 'SSRF: vì sao để server tự đi gọi một URL theo yêu cầu là nguy hiểm, và kiểm tra URL đúng cách ở tầng ứng dụng',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Giải thích SSRF bằng một feature rất đời thường (tải avatar theo URL) và liệt kê được attacker chạm vào những gì khi server gửi request thay họ',
+    'Đọc hiểu CIDR và biết vì sao phải chặn 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.169.254',
+    'Liệt kê được các kiểu qua mặt: IP literal và dạng số thập phân/thập lục phân, DNS rebinding (TOCTOU), redirect, tên miền mã hoá IP',
+    'Viết được routine kiểm tra URL theo thứ tự: parse, scheme allowlist, định dạng hostname, domain allowlist, resolve rồi kiểm tra từng IP',
+  ],
+  body: `**Tóm tắt:** **SSRF** (Server-Side Request Forgery) là lỗi để người dùng đưa vào **một URL mà chính server sẽ đi gọi**. Server đứng ở vị trí đặc quyền: nằm trong VPC, gần Redis/Adminer/Elasticsearch nội bộ, và thường có **IAM role gắn trên instance** để gọi AWS mà không cần mang key. Nên thứ tưởng như vô hại — "dán link ảnh avatar vào" — biến thành: quét cổng nội bộ, đọc {{http://169.254.169.254/...}} để lấy credential, đánh sập service nội bộ. Cách chặn: **allowlist scheme**, **từ chối IP literal và mọi dạng số**, **allowlist tên miền**, **resolve rồi kiểm tra từng IP** xem có thuộc dải nội bộ/link-local không, và **không để HTTP client tự follow redirect**.
+
+### Feature nào mở cửa cho SSRF
+
+Những chỗ này gần như luôn tồn tại trong app và đều nguy hiểm như nhau:
+
+- "Tải ảnh đại diện từ URL" / image proxy / thumbnailer: app {{GET}} URL người dùng đưa, đọc response rồi trả về.
+- Webhook và "test connection" cho integration (Stripe-like, Zapier-like): người dùng nhập URL đích, server bấm nút **Test** gọi thử.
+- Nhập dữ liệu từ URL: import CSV/XML từ link, {{@Import(url)}}.
+- Trình render PDF/HTML từ template có {{<img src="http://169.254.169.254/..."}}> — headless Chrome đi theo link và gửi kết quả về cho attacker qua lỗi hiển thị.
+- Health check / crawler / preview link (hiện title và ảnh khi chia sẻ URL).
+
+Điểm chung: **server là bên kết nối**, nên mục tiêu mà nó chạm tới không phải internet mà là mạng nội bộ của bạn.
+
+### Vì sao nguy hiểm hơn một lỗi đọc dữ liệu thông thường
+
+Ở cloud, mỗi EC2/GCE instance có một **metadata service** — một web server chỉ nghe trên địa chỉ link-local {{169.254.169.254}}, dùng để kể cho chính instance đó biết nó là ai, và cấp **credential tạm**. Trên AWS:
+
+~~~text
+GET http://169.254.169.254/latest/meta-data/iam/security-credentials/<role-name>
+->  { "AccessKeyId": "ASIA...", "SecretAccessKey": "...", "Token": "...", "Expiration": "..." }
+~~~
+
+Nhiều application gán role rộng (S3 full, DynamoDB full) cho instance. SSRF đọc được JSON đó là attacker có **khoá hợp lệ**, thường còn hiệu lực vài giờ, và dùng được từ máy của họ. Đây là lý do một endpoint "tải ảnh" bị xếp vào nhóm nghiêm trọng nhất chứ không phải lỗi vặt.
+
+Kẻ tấn công cũng dùng SSRF như một **máy quét cổng nội bộ**: gọi {{http://127.0.0.1:6379/}} (Redis), {{:9200}} (Elasticsearch), {{:8500}} (Consul), {{:2375}} (Docker daemon), và phân biệt "cổng mở/cổng đóng" qua độ trễ hoặc qua thông báo lỗi {{Connection refused}} mà app trả về. Với Redis, một request dạng text đơn giản đủ để ghi file và leo thang — đó là lý do các protocol text-based nội bộ không bao giờ được expose cho URL do người dùng chọn.
+
+### CIDR trong 60 giây, và dải nào phải chặn
+
+{{10.0.0.0/8}} đọc là "mọi địa chỉ có 8 bit đầu cố định", tức mọi IP bắt đầu bằng {{10.}} — dải private lớn nhất của mạng nội bộ. Số sau dấu {{/}} là số bit cố định. Bảng các dải **không phải internet**, cần chặn khi validate IP ({{a.b.c.d}} là bốn số 0–255):
+
+| Dải | Ý nghĩa | Vì sao phải chặn |
+|---|---|---|
+| {{0.0.0.0/8}} | "địa chỉ này trên mạng này", {{0.0.0.0}} tự nó | Một số stack định tuyến về localhost; không phải địa chỉ công khai |
+| {{10.0.0.0/8}} | private | Mạng nội bộ, DB, service |
+| {{100.64.0.0/10}} | CGNAT (carrier-grade NAT) | dải hay bị quên nhất; overlay network và ISP đều dùng |
+| {{127.0.0.0/8}} | loopback | chính máy đang chạy app — admin ports |
+| {{169.254.0.0/16}} | link-local | **metadata cloud** ({{169.254.169.254}}) |
+| {{172.16.0.0/12}} | private | DB subnets |
+| {{192.0.0.0/24}}, {{192.0.2.0/24}} | IETF reserved / TEST-NET | không route được, chắc chắn không phải đích thật |
+| {{192.168.0.0/16}} | private | mạng nội bộ phổ biến |
+| {{198.18.0.0/15}} | benchmarking | không phải đích thật |
+| {{224.0.0.0/4}} trở lên | multicast + reserved | không phải unicast |
+
+> Lưu ý: **không có** dải {{192.168.0.0/16}} nào "an toàn để gọi" và cũng không có dải nào "chỉ để tham khảo". Chặn là chặn cả dải, không chặn từng địa chỉ hay gặp.
+
+### Những kiểu qua mặt mà bộ lọc naive bỏ sót
+
+Đây là phần interviewer thích đào sâu nhất. Giả sử code chỉ kiểm tra chuỗi URL có "{{localhost}}" hoặc "{{127.0.0.1}}" trong đó:
+
+~~~text
+http://127.1/                     rút gọn, vẫn là loopback
+http://2130706433/                cùng 127.0.0.1 nhưng viết ở dạng số thập phân
+http://0x7f000001/                dạng thập lục phân
+http://017700000001/              dạng bát phân
+http://0000:0000:0000:0000:0000:ffff:127.0.0.1/  IPv6 mapped IPv4
+http://[::1]/                     IPv6 loopback literal
+http://169.254.169.254.nip.io/    dịch vụ DNS công khai: tên miền chứa IP, trỏ về đúng IP đó
+http://sub.example.com/           tên miền bình thường, nhưng zone trỏ về 10.0.0.5
+~~~
+
+Bài học: **đừng cố parse mọi biến thể của địa chỉ**, dễ sai hơn là chặn. Hai quy tắc làm gọn hết danh sách trên:
+
+1. **Không chấp nhận IP literal và host dạng số.** Một hostname phải gồm các label chữ thường {{a-z0-9-}}, phân cách bằng dấu chấm, và **không được có mọi label toàn chữ số**. Mọi thứ như {{10.0.5.9}}, {{2130706433}}, {{017700000001}}, {{[::1]}} đều bị từ chối ngay — kể cả khi nó là IP công khai hợp lệ. Đây là lý do bài tập dưới đây trả về {{BAD_URL}} cho {{http://10.0.5.9/}} chứ không phải {{PRIVATE_IP}}. Tên một nhãn như {{localhost}} vẫn được đi tiếp, vì nó chỉ có nghĩa sau khi resolve — và chính bước resolve sẽ trả {{127.0.0.1}}.
+2. **Với tên miền, phải resolve rồi kiểm tra địa chỉ nhận được**, vì tên miền là thứ người dùng (hoặc DNS của họ) kiểm soát.
+
+{{0x7f000001}} là ví dụ hay: vì có chữ cái nên nó đi qua bước định dạng, nhưng resolver sẽ cho ra {{127.0.0.1}} và bị chặn ở bước kiểm IP — phòng thủ theo lớp, mỗi lớp bắt một phần.
+
+### Redirect và DNS rebinding: hai lần kiểm tra có thể cho hai kết quả khác nhau
+
+**Redirect**: bạn kiểm tra URL của người dùng là public, gửi request, server đích trả {{302}} với {{Location: http://169.254.169.254/...}}, và HTTP client **tự đi theo** — lần này không ai kiểm tra. {{java.net.http.HttpClient}} mặc định {{Redirect.NEVER}}, còn {{HttpURLConnection}} ({{URL.openConnection}}) tự follow trong cùng protocol theo mặc định. Cách xử lý: đặt {{followRedirects(NEVER)}}, tự đọc {{Location}}, và chạy **toàn bộ** routine kiểm tra cho mỗi bước nhảy, với số lần nhảy tối đa.
+
+**DNS rebinding** nguy hiểm hơn vì nó phá đúng giả định "đã kiểm tra xong là xong":
+
+~~~seq
+title: DNS rebinding - hai lần resolve cho hai kết quả
+actors: Attacker | App | DNS | Metadata
+Attacker -> App: tai anh tai http://evil.com/a.png
+App -> DNS: resolve evil.com
+DNS --> App: 1.2.3.4 (public, hop le)
+note App..DNS: TOCTOU: kiem tra xong, chua ket noi
+App -> DNS: resolve evil.com lan hai, luc connect
+DNS --> App: 169.254.169.254 (TTL = 0)
+App -> Metadata: GET /latest/meta-data/iam/security-credentials
+Metadata --> App: AccessKeyId, SecretAccessKey, Token
+App --> Attacker: 200 OK (va anh da nam trong log/response)
+~~~
+
+Zone {{evil.com}} có TTL 0 nên lần resolve thứ hai trả địa chỉ khác: bạn kiểm tra một IP công khai, rồi kết nối tới IP nội bộ. Đây là lỗi **TOCTOU** (time-of-check to time-of-use). Không đóng được bằng cách "chỉ resolve một lần" nếu client tự resolve lại khi connect. Ba cách đóng, xếp theo độ tin cậy:
+
+1. **Không cho app đi ra internet trực tiếp.** Routing/NetworkPolicy/egress proxy ở DMZ chỉ cho phép đúng một số đích. Đây là lớp duy nhất không phụ thuộc code.
+2. **Pin IP**: resolve lấy địa chỉ, kiểm tra, rồi bảo client kết nối **đúng địa chỉ đã kiểm** và tự gửi header {{Host}}. Làm được với Apache HttpClient ({{HttpClientBuilder.setDnsResolver}}) hoặc OkHttp ({{Dns}}); {{java.net.http.HttpClient}} thì không có chỗ cắm, nên hoặc đổi client hoặc chấp nhận lớp 1.
+3. **Allowlist tên miền chặt** ({{*.example.com}} do bạn quản lý zone) — khi đó attacker không có DNS của riêng họ để lật.
+
+> Senior tip: trên AWS, bật **IMDSv2** ({{MetadataOptions.HttpTokens = required}}) để token phải xin bằng {{PUT}} có phiên và bị chặn bởi **hop limit** — request đi từ một proxy/ container thường không còn tới được metadata, kể cả khi có SSRF. Đồng thời đặt {{MetadataOptions.HttpPutResponseHopLimit = 1}} và hop limit thấp ở level instance. Đây là "giảm hậu quả", không phải "vá lỗi SSRF": vẫn còn {{user-data}} để đọc và vẫn còn cả mạng nội bộ để quét.
+
+### Quy trình kiểm tra một URL, theo thứ tự
+
+Viết theo đúng thứ tự và trả về **mã lỗi riêng cho từng bước**, vì nó cũng là thứ tự bạn giải thích trong phỏng vấn:
+
+1. Parse bằng {{java.net.URI}}, bắt exception. Từ chối nếu không absolute, thiếu host, có {{userinfo}} ({{http://safe.com@evil.com/}} — phần trước {{@}} là userinfo, host thật là {{evil.com}}).
+2. **Scheme allowlist**: thường chỉ {{http}}, {{https}}. {{file}} đọc filesystem, {{gopher}}/{{dict}} nói chuyện với Redis/memcached, {{jar}}/{{netdoc}} là các handler xưa của Java.
+3. **Định dạng hostname**: chữ thường, label hợp lệ, không có label toàn chữ số, không IPv6 literal, không dấu cách/underscore/ký tự lạ.
+4. **Domain allowlist** (nếu có): so trên host đã chuẩn hoá; chỉ cho {{host == d}} hoặc {{host.endsWith("." + d)}}. Kiểm ở đây **trước** khi resolve, vì đây là filter rẻ nhất.
+5. **Resolve và kiểm tra từng địa chỉ**: không có bản ghi → fail; có bất kỳ địa chỉ nào rơi vào bảng dải ở trên → fail. Không chỉ kiểm IP đầu tiên.
+6. Khi gọi: timeout kết nối và timeout đọc, số redirect tối đa và kiểm lại mỗi redirect, giới hạn kích thước response, và **thông báo lỗi chung** cho người dùng ({{Connection refused to 10.0.0.5:5432}} trong response là một máy quét cổng miễn phí).
+
+| Cách kiểm tra | Chặn được gì | Lọt qua bởi |
+|---|---|---|
+| {{contains("localhost")}}, blacklist chuỗi | ít | mọi dạng IP, {{127.1}}, {{nip.io}}, {{.local}} |
+| Regex "trông có vẻ là URL" | vài | IP literal, redirect, rebinding |
+| Parse + scheme + hostname + resolve + kiểm IP | phần lớn | DNS rebinding (TOCTOU), redirect nếu client tự follow |
+| Ở trên + allowlist domain do bạn quản lý zone | nhiều hơn | domain nội bộ bị DNS trỏ sai, redirect ra ngoài allowlist |
+| Ở trên + egress kiểm soát ở network/proxy | **thật sự chặn** | không gì (đó là điểm mạnh) |
+
+> Senior tip: trong hệ thống nhiều tenant, cho mỗi tenant dùng URL riêng phải đi qua một **egress proxy tập trung** (hoặc một service nhỏ chỉ có trách nhiệm fetch): họ khai {{webhook_url}}, bạn chỉ ghi log "{{host}} duoc goi", không cho app khác ra ngoài. Vừa sửa SSRF một lần cho mọi feature, vừa có dữ liệu để audit ai gọi cái gì, và chặn được cả feature "test connection" bị dùng làm máy quét.
+
+### Liên hệ phỏng vấn
+Câu mở: "App của bạn có chỗ nào để người dùng nhập URL không? Vì sao nguy hiểm?" — trả lời bằng chính danh sách feature ở trên, không nói chung chung. Câu đào sâu: "Tôi chặn {{localhost}} và {{127.0.0.1}} rồi, còn thiếu gì?" — kể được IP dạng số, {{nip.io}}, redirect, rebinding, metadata. Câu thiết kế: "Làm sao cho phép webhook của khách mà vẫn an toàn?" — trả lời theo lớp: allowlist + resolve-and-check + không tự follow redirect + egress control + IMDSv2, và nói thẳng phần nào code không tự đóng được. Làm xong bài tập {{UrlGuard}} dưới đây là bạn có mã nguồn để chứng minh cho cả ba câu.`,
+  exercises: [
+    {
+      title: 'Viết UrlGuard: scheme allowlist, từ chối IP literal, domain allowlist và kiểm tra IP sau khi resolve',
+      prompt: `Hoàn thiện {{UrlGuard}} (chỉ dùng JDK 17, **không gọi mạng** — DNS được truyền vào qua {{Resolver}} để test xác định). Hai kiểu sau đã có sẵn trong file và bạn không cần sửa:
+
+~~~java
+enum Verdict { OK, BAD_URL, BAD_SCHEME, DOMAIN_NOT_ALLOWED, PRIVATE_IP, DNS_FAIL }
+interface Resolver { List<String> lookup(String host); }   // rỗng/null = không resolve được
+~~~
+
+**{{UrlGuard(Resolver resolver, Set<String> allowedSchemes, Set<String> allowedDomains)}}** lưu {{allowedSchemes}} và {{allowedDomains}} ở dạng chữ thường (so sánh không phân biệt hoa thường); {{allowedDomains}} null hoặc rỗng nghĩa là **không giới hạn tên miền**.
+
+**{{Verdict check(String url)}}** áp theo **đúng thứ tự** này:
+
+1. {{url}} null, chỉ có khoảng trắng, hoặc {{trim()}} của nó không parse được bằng {{new URI(...)}} → {{BAD_URL}}.
+2. URL không absolute (thiếu scheme), hoặc {{getHost()}} null/rỗng → {{BAD_URL}}.
+3. scheme (chữ thường) không có trong {{allowedSchemes}} → {{BAD_SCHEME}}.
+4. {{getUserInfo()}} khác null → {{BAD_URL}} (chặn {{http://safe.com@evil.com/}}).
+5. Kiểm **định dạng hostname**: đổi sang chữ thường với {{Locale.ROOT}}, bỏ **một** dấu chấm cuối nếu có. Sau đó:
+   - rỗng, hoặc bắt đầu bằng {{[}} (IPv6 literal) → {{BAD_URL}};
+   - tách theo dấu chấm, mỗi label phải dài 1–63 ký tự, chỉ gồm {{a-z}}, {{0-9}}, {{-}}, không bắt đầu và không kết thúc bằng {{-}}; có label rỗng → {{BAD_URL}};
+   - nếu **mọi** label chỉ gồm chữ số ({{10.0.5.9}}, {{2130706433}}, {{017700000001}}) → {{BAD_URL}}. Đây là quy tắc "không chấp nhận IP literal và host dạng số".
+6. Nếu {{allowedDomains}} không rỗng: host phải **bằng đúng** một domain trong danh sách hoặc **kết thúc** bằng dấu chấm cộng domain đó ({{cdn.example.com}} với {{example.com}} thì đạt; {{example.com.evil.net}} thì không). Không đạt → {{DOMAIN_NOT_ALLOWED}}.
+7. Gọi {{resolver.lookup(host)}} với host đã chuẩn hoá. Null hoặc rỗng → {{DNS_FAIL}}. Với **mỗi** địa chỉ trả về: phải là bốn label số, mỗi label 1–3 chữ số và giá trị 0–255; không đúng dạng → {{BAD_URL}}. Nếu địa chỉ **không phải** unicast công khai → {{PRIVATE_IP}}.
+8. Tất cả địa chỉ đều public → {{OK}}.
+
+**{{PRIVATE_IP}}** được hiểu là một trong các dải: {{0.0.0.0/8}}, {{10.0.0.0/8}}, {{100.64.0.0/10}}, {{127.0.0.0/8}}, {{169.254.0.0/16}}, {{172.16.0.0/12}}, {{192.0.0.0/24}}, {{192.0.2.0/24}}, {{192.168.0.0/16}}, {{198.18.0.0/15}}, và mọi địa chỉ có octet đầu {{>= 224}}. Chỉ cần **một** địa chỉ vi phạm là {{PRIVATE_IP}}.
+
+Gợi ý: tách thành ba hàm nhỏ — chuẩn hoá và kiểm hostname, kiểm {{allowedDomains}}, kiểm một địa chỉ IPv4 — để mỗi bước test được riêng.`,
+      starter: `final class UrlGuard {
+    enum Verdict { OK, BAD_URL, BAD_SCHEME, DOMAIN_NOT_ALLOWED, PRIVATE_IP, DNS_FAIL }
+
+    interface Resolver {
+        List<String> lookup(String host);
+    }
+
+    private UrlGuard.Resolver resolver;
+    private java.util.Set<String> schemes;
+    private java.util.Set<String> domains;
+
+    UrlGuard(Resolver resolver, java.util.Set<String> allowedSchemes, java.util.Set<String> allowedDomains) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Verdict check(String url) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.net.URI;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static final Set<String> HTTP_HTTPS = Set.of("http", "https");
+
+    // DNS gia lap: khong goi mang, ket qua xac dinh
+    static class Dns implements UrlGuard.Resolver {
+        final Map<String, List<String>> table = new HashMap<>();
+        public List<String> lookup(String host) { return table.get(host); }
+        Dns put(String host, String... ips) { table.put(host, List.of(ips)); return this; }
+    }
+
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual, String msg) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError(msg + " | expected " + expected + " got " + actual);
+    }
+    static UrlGuard build(Dns dns, Set<String> domains) { return new UrlGuard(dns, HTTP_HTTPS, domains); }
+
+    public static void main(String[] args) {
+        Dns dns = new Dns()
+            .put("cdn.example.com", "93.184.216.34")
+            .put("example.com", "93.184.216.34")
+            .put("localhost", "127.0.0.1")
+            .put("internal-db.corp", "10.0.0.5")
+            .put("meta.internal", "169.254.169.254")
+            .put("cg.example.com", "100.64.5.6")
+            .put("dual.example.com", "93.184.216.34", "192.168.1.7")
+            .put("hex.example.com", "127.0.0.1")
+            .put("evil.net", "203.0.113.9")
+            .put("rubbish.example.com", "999.1.1.1");
+
+        check("URL public di qua duoc", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com/img/avatar.png"), "http public");
+            eq(UrlGuard.Verdict.OK, g.check("https://cdn.example.com/x"), "https public");
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com:8443/x"), "cong khong anh huong");
+        });
+        check("scheme chi duoc phep moi qua, file:// bi chan", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.BAD_SCHEME, g.check("ftp://cdn.example.com/a"), "ftp");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("file:///etc/passwd"), "file khong co host -> BAD_URL");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("cdn.example.com/x"), "thieu scheme");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://"), "thieu host");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("not a url"), "chuoi ran");
+            eq(UrlGuard.Verdict.BAD_URL, g.check(null), "null");
+        });
+        check("IP literal va moi dang so bi tu choi thuong", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://10.0.5.9/admin"), "IPv4 literal");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://2130706433/"), "thap phan");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://169.254.169.254/latest/meta-data/"), "metadata dang so");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://[::1]/"), "IPv6 literal");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://017700000001/"), "bat phan");
+        });
+        check("dinh dang hostname kieu RFC: underscore, label rong, dau -, ipv6", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://exa_mple.com/x"), "underscore");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://a..b.com/x"), "label rong");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://-bad.example.com/x"), "label bat dau dau -");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://bad-.example.com/x"), "label ket thuc dau -");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://exa mple.com/x"), "dau cach trong host");
+        });
+        check("resolve ra IP noi bo thi chan, kiem tat ca cac dia chi", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://localhost:8080/admin"), "loopback");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://internal-db.corp/x"), "10/8");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://meta.internal/latest/meta-data/"), "169.254 link-local");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://cg.example.com/x"), "100.64/10 CGNAT");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://dual.example.com/x"), "mot cong mot noi bo");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://hex.example.com/x"), "ten co chu van bi chan vi IP");
+        });
+        check("DNS khong co ket qua va data ran", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.DNS_FAIL, g.check("http://missing.example.com/x"), "khong resolve duoc");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://rubbish.example.com/x"), "999.1.1.1 khong phai IP hop le");
+        });
+        check("domain allowlist: subdomain duoc, duoi-gian-ten-khong", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com/a"), "subdomain hop le");
+            eq(UrlGuard.Verdict.OK, g.check("http://example.com/a"), " chinh domain cung duoc");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://example.com.evil.net/a"), "vi duoi ten khong phai subdomain");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://notexample.com/a"), "chua phai duoi .example.com");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "domain la");
+        });
+        check("userinfo bi tu choi truc tiep, ke ca khi host that ngoai allowlist", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://admin:pass@cdn.example.com/a"), "co userinfo");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://cdn.example.com@evil.net/a"), "host that la evil.net + co userinfo");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "khong co userinfo thi bi chan boi allowlist");
+        });
+        check("thu tu uu tien: allowlist duoc kiem truoc khi resolve", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://internal-db.corp/x"), "khong mat cong resolve cho domain ngoai allowlist");
+        });
+        check("chuan hoa hoa thuong va dau cham cuoi", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.OK, g.check("HTTP://CDN.Example.COM./a"), "hoa thuong + dau cham cuoi");
+            eq(UrlGuard.Verdict.OK, g.check("  https://cdn.example.com/a  "), "khoang trang hai dau");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.net.URI;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
+
+final class UrlGuard {
+    enum Verdict { OK, BAD_URL, BAD_SCHEME, DOMAIN_NOT_ALLOWED, PRIVATE_IP, DNS_FAIL }
+
+    interface Resolver {
+        List<String> lookup(String host);
+    }
+
+    private final Resolver resolver;
+    private final Set<String> schemes;   // du lieu gia lap trong test, khong phai input nguoi dung
+    private final Set<String> domains;   // rong = khong gioi han ten mien
+
+    UrlGuard(Resolver resolver, Set<String> allowedSchemes, Set<String> allowedDomains) {
+        this.resolver = resolver;
+        this.schemes = lower(allowedSchemes);
+        this.domains = lower(allowedDomains);
+    }
+
+    private static Set<String> lower(Set<String> in) {
+        Set<String> out = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        if (in != null) for (String s : in) if (s != null && !s.isBlank()) out.add(s.trim());
+        return out;
+    }
+
+    Verdict check(String url) {
+        if (url == null || url.trim().isEmpty()) return Verdict.BAD_URL;
+        URI uri;
+        try {
+            uri = new URI(url.trim());                     // neu chua ky tu dac biet thi ném exception
+        } catch (Exception e) {
+            return Verdict.BAD_URL;
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || !uri.isAbsolute()) return Verdict.BAD_URL;
+        String rawHost = uri.getHost();
+        if (rawHost == null || rawHost.isBlank()) return Verdict.BAD_URL;      // file:///... khong co host
+        if (!schemes.contains(scheme.toLowerCase(Locale.ROOT))) return Verdict.BAD_SCHEME;
+        if (uri.getUserInfo() != null) return Verdict.BAD_URL;
+        String host = normalizeHost(rawHost);
+        if (host == null) return Verdict.BAD_URL;
+        if (!domains.isEmpty() && !domainAllowed(host)) return Verdict.DOMAIN_NOT_ALLOWED;
+        return resolveAndCheck(host);
+    }
+
+    // tra ve null neu hostname khong dat chuan; nguoc lai la ban da chuan hoa
+    private static String normalizeHost(String raw) {
+        if (raw == null) return null;
+        String host = raw.toLowerCase(Locale.ROOT);
+        if (host.endsWith(".")) host = host.substring(0, host.length() - 1);
+        if (host.isEmpty() || host.startsWith("[")) return null;      // IPv6 literal
+        String[] labels = host.split("\\\\.", -1);
+        boolean allNumeric = true;
+        for (String label : labels) {
+            if (label.isEmpty() || label.length() > 63) return null;
+            if (label.startsWith("-") || label.endsWith("-")) return null;
+            boolean numeric = true;
+            for (int i = 0; i < label.length(); i++) {
+                char c = label.charAt(i);
+                boolean ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+                if (!ok) return null;                                   // underscore, percent, unicode...
+                if (c < '0' || c > '9') numeric = false;
+            }
+            if (!numeric) allNumeric = false;
+        }
+        return allNumeric ? null : host;                                 // IP literal / dang so
+    }
+
+    private boolean domainAllowed(String host) {
+        for (String d : domains) {
+            if (host.equals(d) || host.endsWith("." + d)) return true;
+        }
+        return false;
+    }
+
+    private Verdict resolveAndCheck(String host) {
+        List<String> ips = resolver == null ? null : resolver.lookup(host);
+        if (ips == null || ips.isEmpty()) return Verdict.DNS_FAIL;
+        for (String ip : ips) {
+            int[] o = parseIpv4(ip);
+            if (o == null) return Verdict.BAD_URL;
+            if (!isGlobalUnicast(o)) return Verdict.PRIVATE_IP;
+        }
+        return Verdict.OK;
+    }
+
+    // dung tay thay vi InetAddress.getByName: no se goi DNS that
+    private static int[] parseIpv4(String ip) {
+        if (ip == null) return null;
+        String[] parts = ip.trim().split("\\\\.", -1);
+        if (parts.length != 4) return null;
+        int[] o = new int[4];
+        for (int i = 0; i < 4; i++) {
+            String p = parts[i];
+            if (p.isEmpty() || p.length() > 3) return null;
+            int v = 0;
+            for (int k = 0; k < p.length(); k++) {
+                char c = p.charAt(k);
+                if (c < '0' || c > '9') return null;
+                v = v * 10 + (c - '0');
+            }
+            if (v > 255) return null;
+            o[i] = v;
+        }
+        return o;
+    }
+
+    private static boolean isGlobalUnicast(int[] o) {
+        int a = o[0], b = o[1], c = o[2];
+        if (a == 0) return false;                                   // 0.0.0.0/8
+        if (a == 10) return false;                                  // 10.0.0.0/8
+        if (a == 100 && b >= 64 && b <= 127) return false;          // 100.64.0.0/10
+        if (a == 127) return false;                                 // loopback
+        if (a == 169 && b == 254) return false;                     // link-local (metadata)
+        if (a == 172 && b >= 16 && b <= 31) return false;           // 172.16.0.0/12
+        if (a == 192 && b == 0 && (c == 0 || c == 2)) return false; // IETF reserved + TEST-NET
+        if (a == 192 && b == 168) return false;
+        if (a == 198 && (b == 18 || b == 19)) return false;         // benchmarking
+        return a < 224;                                             // multicast va reserved
+    }
+}`,
+      hints: [
+        'Đừng dùng {{InetAddress.getByName}}: nó gọi DNS thật và có cache, làm test không còn xác định. Hãy gọi {{resolver.lookup(host)}} rồi tự parse bốn octet bằng tay.',
+        'Chuẩn hoá hostname một lần duy nhất (chữ thường với {{Locale.ROOT}}, cắt một dấu chấm cuối) rồi dùng bản đó cho cả allowlist lẫn DNS — nếu không thì {{EXAMPLE.COM.}} và {{example.com}} thành hai kết quả khác nhau.',
+        'Để từ chối IP literal, kiểm "mọi label chỉ gồm chữ số" sau khi tách dấu chấm; đừng cố nhận diện {{2130706433}} bằng cách sinh số rồi so dải.',
+        'Phần label: dùng {{split}} với giới hạn {{-1}} để label rỗng không bị mất, nếu không {{a..b.com}} trông như hợp lệ.',
+        'Cho {{0x7f000001}}: nó có chữ cái nên đi qua bước định dạng, rồi bị chặn ở bước kiểm IP — đó là ý của phòng thủ nhiều lớp.',
+      ],
+      explain: `Bốn điều nên nói được trong phỏng vấn sau khi viết xong {{UrlGuard}}:
+
+- **Thứ tự các bước là một phần của thiết kế.** Filter rẻ (định dạng, allowlist tên miền) đứng trước, việc đắt (resolve) đứng sau, và vì thế {{http://internal-db.corp}} với allowlist {{example.com}} trả về {{DOMAIN_NOT_ALLOWED}} chứ không phải {{PRIVATE_IP}}. Kiểm tra quyền/ordering sai là nguồn bug "test xanh, production đỏ".
+- **Từ chối IP literal là quyết định đúng chứ không phải lười.** Parse mọi biến thể của một địa chỉ ({{127.1}}, bát phân, IPv6-mapped) rất dễ sai; "không chấp nhận host dạng số" cắt hết danh sách bằng một dòng, và trong thực tế chẳng ai đưa IP literal vào webhook.
+- **Resolver phải là dependency.** Đây là điểm làm bài tập test được: cùng một hostname có thể trả về hai địa chỉ khác nhau theo thời gian, nên nếu gọi thẳng {{InetAddress}} thì test vừa chậm vừa không xác định. Trong app thật, cùng lý do đó dẫn tới một quyết định kiến trúc: cho phép **pin** địa chỉ đã kiểm tra (OkHttp {{Dns}}, Apache {{setDnsResolver}}).
+- **{{check}} trả mã lỗi, không trả exception về tay người dùng.** Message {{BAD_URL}} là để log/đo; còn response cho client nên là một lỗi chung ("URL không hợp lệ"), vì mỗi thông báo khác nhau tiết lộ một sự thật về hệ thống bên trong.
+
+Lỗi còn lại mà bài này **không** đóng được — và bạn nên nói rõ trong phỏng vấn: DNS rebinding (kiểm tra lúc {{t0}}, kết nối lúc {{t1}}), và redirect. Cái thứ nhất cần pin IP hoặc egress control ở tầng network; cái thứ hai cần {{followRedirects = NEVER}} rồi chạy lại toàn bộ {{check}} cho mỗi {{Location}}.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Endpoint {{POST /avatar}} nhận về một trường {{url}}, server tải ảnh ở URL đó rồi lưu vào S3. Vì sao đây là lỗ hổng nghiêm trọng dù chỉ là đọc một tấm ảnh?',
+      options: [
+        'Vì tải ảnh tốn băng thông',
+        'Vì server đứng trong mạng nội bộ và có vai trò IAM trên instance: nó có thể được dụ gọi các đích nội bộ như {{http://169.254.169.254/latest/meta-data/}} để lấy credential tạm',
+        'Vì ảnh có thể chứa virus',
+        'Vì {{HttpClient}} không hỗ trợ HTTPS',
+      ],
+      answer: 1,
+      explain: 'Bản chất là **server gửi request từ vị trí đặc quyền thay cho người dùng**. Network nội bộ, admin ports và metadata endpoint đều chỉ reachable từ bên trong, nên attacker dùng app làm bàn đạp. Tốn băng thông là hệ quả nhỏ; virus là một bài toán khác; HTTPS thì luôn ổn. Trên AWS còn bật IMDSv2 và hop limit để giảm hậu quả, nhưng vẫn phải sửa SSRF.',
+    },
+    {
+      q: 'Code hiện tại chặn nếu URL chứa chuỗi {{localhost}} hoặc {{127.0.0.1}}. Payload nào dưới đây **lọt** qua?',
+      options: [
+        'Chỉ {{http://localhost:8080}} mới lọt qua',
+        '{{http://2130706433/}} (số thập phân của 127.0.0.1), {{http://127.1/}}, {{http://[::1]/}} và {{http://abc.127.0.0.1.nip.io/}}',
+        'Không lọt được cái nào vì driver sẽ chuẩn hoá về {{127.0.0.1}} trước khi kết nối',
+        'Chỉ {{http://[::1]/}} lọt qua, vì IPv6 không liên quan tới loopback',
+      ],
+      answer: 1,
+      explain: 'Blacklist chuỗi chỉ chặn đúng hai dạng được viết ra. {{2130706433}}, {{0x7f000001}}, bát phân, {{127.1}}, IPv6 {{[::1]}} là cách viết khác của cùng một nơi, và {{nip.io}} là dịch vụ DNS công khai cho phép nhúng IP vào tên miền. Vì driver phân tích **sau** khi app đã quyết định cho qua, nên bộ lọc chuỗi không được chuẩn hoá hộ. Đúng là kiểm định dạng (không nhận host dạng số) rồi resolve và kiểm địa chỉ.',
+    },
+    {
+      q: 'Bạn resolve {{evil.com}}, thấy {{1.2.3.4}} là public rồi cho kết nối — nhưng server lại đọc được metadata. Đây là lỗi gì và cách sửa đáng tin nhất?',
+      options: [
+        'Không có lỗi, chắc là log bị sai',
+        'SQL injection trong truy vấn avatar',
+        'DNS rebinding (TOCTOU): zone có TTL cực ngắn nên lần resolve lúc kết nối trả 169.254.169.254; đáng tin nhất là kiểm soát đường ra ở tầng network/egress proxy, cộng với pin đúng địa chỉ đã kiểm tra',
+        'Lỗi nằm ở {{HttpClient}} và chỉ cần nâng cấp version mới nhất',
+      ],
+      answer: 2,
+      explain: 'Kiểm tra và sử dụng là **hai thời điểm**, giữa hai thời điểm đó attacker đổi bản ghi DNS, nên kết quả kiểm tra không còn áp dụng. Nâng cấp client không đổi được điều đó. Sửa được bằng cách kết nối **đúng địa chỉ đã kiểm** (OkHttp {{Dns}}, Apache {{setDnsResolver}}) hoặc không cho app ra internet tuỳ ý — lớp network không phụ thuộc code nên đáng tin hơn.',
+    },
+  ],
+  related: ['security-011', 'security-001'],
+  tags: ['SSRF', 'metadata endpoint', 'DNS rebinding', 'allowlist', 'egress control', 'IMDSv2'],
+},
 );
 

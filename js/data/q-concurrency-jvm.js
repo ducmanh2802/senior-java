@@ -3341,7 +3341,6 @@ asprof -d 60 -e cpu,alloc,lock -f /tmp/profile.jfr <pid>
   ],
   tags: ['async-profiler', 'flame graph', 'profiling', 'CPU', 'wall-clock', 'alloc', 'lock'],
   refs: [
-    { type: 'doc', title: 'async-profiler', url: 'https://github.com/async-profiler/async-profiler' },
   ]
 },
 {
@@ -4929,7 +4928,6 @@ jcmd <pid> JFR.dump name=blackbox filename=/dumps/rec.jfr  # lấy tối đa 6 g
     { type: 'doc', title: 'Native Memory Tracking (Java SE 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html' },
     { type: 'doc', title: 'The java Command (Java SE 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
     { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
-    { type: 'doc', title: 'async-profiler', url: 'https://github.com/async-profiler/async-profiler' }
   ]
 },
 {
@@ -5136,7 +5134,6 @@ JoinBench.stringJoin    1000  avgt   10  7480.9 ±  255.7  ns/op
   ],
   tags: ['JMH', 'benchmark', 'JIT', 'dead code elimination', 'warm-up', 'performance'],
   refs: [
-    { type: 'doc', title: 'JMH (OpenJDK Code Tools)', url: 'https://github.com/openjdk/jmh' }
   ]
 },
 {
@@ -5335,7 +5332,6 @@ Caffeine với {{refreshAfterWrite}} trả giá trị cũ trong lúc tải giá 
   ],
   tags: ['single-flight', 'cache stampede', 'CompletableFuture', 'ConcurrentHashMap', 'Caffeine'],
   refs: [
-    { type: 'doc', title: 'Caffeine (GitHub)', url: 'https://github.com/ben-manes/caffeine' }
   ]
 },
 {
@@ -5478,8 +5474,6 @@ void quotaNeverExceeded() throws Exception {
   ],
   tags: ['testing', 'concurrency test', 'CountDownLatch', 'jcstress', 'Awaitility', 'race condition'],
   refs: [
-    { type: 'doc', title: 'jcstress (OpenJDK Code Tools)', url: 'https://github.com/openjdk/jcstress' },
-    { type: 'doc', title: 'Awaitility', url: 'https://github.com/awaitility/awaitility' }
   ]
 },
 {

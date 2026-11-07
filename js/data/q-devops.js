@@ -3244,5 +3244,7260 @@ Với SLI độ trễ, Spring Boot tạo sẵn bucket ở ngưỡng SLO bằng {
       { type: 'doc', title: 'Postmortem Culture: Learning from Failure', url: 'https://sre.google/sre-book/postmortem-culture/' },
       { type: 'doc', title: 'Example Error Budget Policy', url: 'https://sre.google/workbook/error-budget-policy/' }
     ]
+  },
+  {
+    id: 'devops-039',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Spring Boot chạy hoàn hảo khi chỉ có một instance, nhưng vừa scale lên 3 Pod trên Kubernetes thì người dùng đang dùng bị bật về màn hình đăng nhập, file báo cáo vừa upload biến mất, và job tính lãi đầu ngày chạy đúng ba lần. Giải thích từng hiện tượng và cách sửa.',
+    a: `**Tóm tắt:** Mỗi request có thể rơi vào một Pod khác nhau, mà RAM của Pod này thì Pod kia không nhìn thấy. App giữ state trong process (HTTP session, file trên đĩa local, job đếm lần chạy) sẽ hỏng ngay khi có replica thứ hai. Cách sửa là làm app **stateless**: session đưa ra Redis (Spring Session), file đưa lên object storage (S3), job phải có khoá phân tán (ShedLock), cache local phải có TTL và chiến lược invalidate rõ ràng. Sticky session chỉ là băng keo dán tạm.
+
+### Vì sao mất state — hình dung từ gốc
+Quầy giao dịch có 3 nhân viên giống hệt nhau, khách được xếp luân phiên. Nếu nhân viên A ghi thông tin vào cuốn sổ **cất trong túi áo mình**, khách quay lại gặp nhân viên B thì B không biết gì. Process Java cũng vậy: HTTP session, object cache, biến đếm đều nằm trong RAM của chính nó. Trên Kubernetes, mỗi Pod là một process độc lập (thường ở node khác nhau), Service chia request luân phiên giữa các Pod. Tệ hơn, Pod là tạm thời (ephemeral): rollout, restart, node chết là toàn bộ RAM bay theo, không để lại dấu vết.
+
+### Hiện tượng 1: bị bật về màn hình đăng nhập — HTTP session
+Tomcat tạo session trong memory và trả cookie {{JSESSIONID}}. Request sau đi vào Pod khác, Pod đó không có session với id đó nên tạo session mới → người dùng mất trạng thái đăng nhập.
+Sửa bằng **Spring Session**: thêm {{spring-session-data-redis}}, session được serialize vào Redis thay vì memory của Tomcat; mọi Pod đọc chung.
+
+~~~yaml
+# build.gradle / pom: spring-boot-starter-data-redis + spring-session-data-redis
+spring:
+  session:
+    timeout: 30m
+  data:
+    redis:
+      host: redis-sessions.payments.svc   # nên là Redis HA (Sentinel/Cluster)
+~~~
+
+Hướng khác: **JWT** — server không giữ session, chỉ ký token; nhưng logout thu hồi token ngay thì phải thêm denylist, và token phải ngắn hạn kèm refresh token. Lưu ý: session replication kiểu Tomcat cluster gần như không dùng được trên Kubernetes vì Pod phát hiện nhau động.
+
+### Hiện tượng 2: file upload "biến mất"
+File multipart được ghi vào đĩa tạm của Pod (/tmp); request tải về rơi Pod khác → 404; Pod bị restart → file mất hẳn. PVC kiểu RWO (ReadWriteOnce) chỉ bind được cho **một** Pod, không phải ổ đĩa chung cho cả Deployment.
+Sửa: stream thẳng lên S3/GCS ngay khi nhận, DB chỉ lưu key; file lớn cho client upload qua **presigned URL** để không đi qua app.
+
+### Hiện tượng 3: job chạy ba lần
+{{@Scheduled}} chạy trong **mọi** replica — cả 3 Pod đều thức lúc 1h và cùng tính lãi. Đây là bug tiền bạc, không phải sự khó chịu.
+
+~~~java
+@Scheduled(cron = "0 0 1 * * *")
+@SchedulerLock(name = "dailyInterest", lockAtMostFor = "30m", lockAtLeastFor = "59m")
+public void calculateInterest() {
+    // Pod lấy được lock (Redis/DB) mới chạy; hai Pod còn thấy lock đang giữ thì bỏ qua vòng này
+}
+~~~
+
+{{lockAtLeastFor}} 59m đảm bảo job dưới 1 phút vẫn không chạy hai lần trong cùng ngày. Hoặc tách hẳn batch sang Kubernetes CronJob chạy một Pod duy nhất.
+
+### Các hầm chông còn lại
+| State | Biểu hiện | Cách sửa |
+|---|---|---|
+| Cache Caffeine/ConcurrentHashMap | Pod A vừa ghi, Pod B trả số cũ | TTL ngắn, hoặc Redis + pub/sub invalidate |
+| WebSocket | Nhận tin nhắn chỉ ở một Pod | sticky (tạm) hoặc backplane Redis / chuyển sang SSE + Redis pub/sub |
+| Queue trong memory | Mất message khi Pod chết | Đưa sang Kafka/SQS |
+| Rate limiter in-memory | Limit thực tế = 3x con số khai | Redis ({{INCR}} + expire) hoặc bucket4j với cache phân tán |
+
+### Sticky session có phải giải pháp?
+ALB có stickiness, nhưng NGINX mở (community) không có directive sticky (chỉ NGINX Plus). Sticky làm Pod cũ nhận mãi khách cũ → lệch tải; rollout tạo Pod mới chưa có session nào vẫn bị "đục" vì session nằm ở Pod sắp chết; Pod chết thì vẫn mất session. Acceptable cho tình thế tạm, không phải thiết kế.
+
+### Checklist stateless cho service mới
+- Không session/credential trong memory kéo dài giữa các request.
+- Không ghi file vào đĩa container (trừ cache có TTL, rebuild được từ nguồn khác).
+- Job/leader election qua ShedLock hoặc CronJob riêng.
+- Mọi thứ cần "sống sót qua Pod" nằm ở Redis/S3/DB/queue.
+
+### Lỗi hay gặp
+- Session object chứa class custom rồi đổi package → Redis deserialize fail lặn sau upgrade.
+- Redis sập: toàn bộ user mất phiên — phải có Redis HA và chấp nhận đây là dependency mới của auth.
+- Bật Spring Session nhưng vẫn đọc request.getAttribute từ session Tomcat cũ ở code legacy.
+
+> Senior tip: tiêu chí nghiệm thu tôi hay áp: chạy k6 tạo tải có đăng nhập, trong lúc đó {{kubectl delete pod --force}} một replica giữa phiên — người dùng phải không nhận ra gì ngoài chậm hơn một nhịp. Test này bắt được 90% lỗi stateless trước khi lên prod.`,
+    follow: [
+      'Đã dùng Spring Session với Redis mà Redis chết: người dùng gặp gì và bạn thiết kế graceful thế nào?',
+      'JWT không cần session — vậy làm sao "đá" một user đăng xuất ngay khi token còn hạn 15 phút?',
+      'Cache Caffeine TTL 5 phút giữa 3 Pod: khi nào chấp nhận được, khi nào nguy hiểm cho số dư tài khoản?'
+    ],
+    tags: ['Stateless', 'Spring Session', 'Redis', 'ShedLock', 'Kubernetes']
+  },
+  {
+    id: 'devops-040',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Java chạy trên EKS cần đọc/ghi S3 và gửi tin lên SQS. Hiện access key + secret key nằm trong ConfigMap, rotate thủ công mỗi quý và đoàn audit vừa ghi biên bản. Bạn thay bằng cơ chế nào để không còn key tĩnh, và AWS SDK lấy credential từ đâu?',
+    a: `**Tóm tắt:** Bỏ hẳn key tĩnh, chuyển sang **IAM role gắn với Pod**. Trên EKS có hai con đường: **IRSA** (ServiceAccount khai báo IAM role, Pod nhận OIDC token ngắn hạn) hoặc **EKS Pod Identity** (mới hơn, dùng agent, đỡ cấu hình OIDC theo từng cluster). AWS SDK không đọc env một cách mù quáng mà đi theo **default credentials chain**: gặp biến {{AWS_WEB_IDENTITY_TOKEN_FILE}} thì gọi {{AssumeRoleWithWebIdentity}}, lấy credential sống ~1 giờ và tự làm mới — không có gì để rotate.
+
+### Key tĩnh trong ConfigMap sai ở đâu
+- ConfigMap lưu **bằng văn bản thường** trong etcd (Secret chỉ base64, cũng không phải mã hoá nếu không bật encryption at rest); bất kỳ ai có quyền get trong namespace đọc được.
+- Key tồn tại vĩnh viễn: nhân sự nghỉ, laptop mất, repo public — key vẫn xài được.
+- Một key nhiều service dùng → CloudTrail không phân biệt được **ai** đã gọi {{s3:DeleteObject}}; audit không có câu trả lời.
+- Rotate là một dự án: phải đổi ConfigMap, restart từng dịch, cầu nguyện không sót chỗ nào cache giá trị cũ.
+- Có nguy cơ bị commit vào Git, và lịch sử Git thì không tẩy được.
+
+### Default credentials chain của AWS SDK v2
+{{S3Client.create()}} không cần truyền credential; SDK tự tìm theo thứ tự (gần đúng):
+1. Biến môi trường {{AWS_ACCESS_KEY_ID}} / {{AWS_SECRET_ACCESS_KEY}}.
+2. System properties của JVM.
+3. **Web identity token file** ({{AWS_WEB_IDENTITY_TOKEN_FILE}} + {{AWS_ROLE_ARN}}) — đây chính là cửa mà IRSA đi vào.
+4. {{~/.aws/credentials}} (profile).
+5. Container credentials (endpoint cục bộ) — cửa của EKS Pod Identity.
+6. Instance credentials qua IMDS.
+
+Bài học: code chỉ cần một dòng builder; chuyện credential là việc của hạ tầng, đừng nhúng logic vào app.
+
+### IMDS — danh tính của node, không phải của Pod
+IMDS là địa chỉ link-local {{169.254.169.254}}; Pod trên node đó gọi vào sẽ nhận **role của node** (node role thường rất rộng để pull ECR, ghi log...). Mọi service sẽ dùng chung một quyền — mất cô lập. Biện pháp: bật IMDSv2 và giới hạn hop limit = 1 để Pod không với tới IMDS, ép mỗi service dùng danh tính riêng.
+
+### IRSA hoạt động thế nào
+~~~text
+Cluster EKS có OIDC provider (một lần, theo cluster)
+Role "payment-s3-sqs" có:
+  - Trust policy: cho AssumeRoleWithWebIdentity VỚI điều kiện
+      system:serviceaccount:payments:payment-sa  (đúng namespace + SA)
+  - Permission policy: s3:GetObject/PutObject theo prefix arn:aws:s3:::bank/payments/*,
+                       sqs:SendMessage đúng queue arn
+SA payment-sa annotation arn:aws:iam::11111122221111:role/payment-s3-sqs
+=> webhook EKS gắn token projected vào Pod + 2 env:
+     AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/.../token
+=> SDK gọi STS đổi token lấy credential ~1h, tự làm mới trước hạn
+~~~
+
+Điểm mạnh: credential **ngắn hạn, theo service, tự rotate**; STS session bị trói chặt vào (namespace, ServiceAccount) nên Pod SA khác không đóng giả được.
+
+### EKS Pod Identity
+Amazon thêm EKS Pod Identity Agent (DaemonSet) trên node; bạn tạo **role association** qua API của EKS thay vì annotation + OIDC; SDK nhận credential qua endpoint cục bộ. Ưu: đỡ lập OIDC cho từng cluster, một role xài được ở nhiều cluster, không lo token. Nếu cluster bạn mới dựng hoặc nhiều cluster, tôi chọn Pod Identity; IRSA vẫn hoàn toàn đúng và phổ biến hơn.
+
+### Least privilege — quyền "vừa đủ"
+Mỗi service một role riêng, policy chỉ tới tài nguyên cụ thể (prefix bucket, queue ARN, key KMS cần decrypt). Cấm {{s3:*}}, {{iam:*}}. Hệ quả dễ chịu: khi audit hỏi "ai xoá file này", CloudTrail trả lời đúng role của đúng service.
+
+### Dev chạy local thì sao
+Dùng AWS SSO ({{aws sso login}}) với role dev, hoặc profile tạm hết hạn 1 giờ; test offline bằng LocalStack mock S3/SQS. **Không** có ngoại lệ "key prod để dev tiện".
+
+### Lỗi hay gặp
+- 403 AccessDenied dù role đã có policy: kiểm tra trust condition sai tên namespace/SA, hoặc SA chưa annotation.
+- Quên region làm gọi STS/SDK treo hoặc UnknownHostException — luôn đặt {{AWS_REGION}} (hoặc env cluster-defaults).
+- SDK v1 quá cũ: có phiên bản không tự làm mới web identity token → job batch chết sau 1 giờ đúng nửa đêm; nâng SDK v2.
+- Tự cache {{BasicSessionCredentials}} vào static variable — đừng đấu với SDK.
+
+### Trả lời phỏng vấn
+Chuỗi ý: key tĩnh có vấn đề gì → chain credential → IRSA/Pod Identity cơ chế → least privilege theo từng service → dev local bằng SSO. Kết bằng lợi ích audit: mỗi service một danh tính, mọi call truy vết được.
+
+> Senior tip: đề ra chính sách **zero static credential** và cài secret scanner (gitleaks/trufflehog) trong pipeline để key không quay lại qua ngỏ Git; sau khi chuyển hết sang IRSA, xoá key cũ trong IAM từng cái một (disable rồi theo dõi CloudTrail vài ngày trước khi delete) để phát hiện chỗ nào còn dùng lén.`,
+    follow: [
+      'Pod bị lỗi 403 sau khi đổi tên ServiceAccount: bạn debug từ những đối tượng nào?',
+      'Vì sao hop limit 1 của IMDSv2 chặn được Pod đọc credential của node?',
+      'Service cần chữ ký presigned URL hiệu lực 7 ngày — token 1 giờ của IRSA có cho phép không?'
+    ],
+    tags: ['AWS', 'EKS', 'IRSA', 'IAM', 'Secrets', 'Java SDK']
+  },
+  {
+    id: 'devops-041',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Team platform muốn bỏ kiểu Jenkins cầm kubectl apply từ ngoài cluster, chuyển sang GitOps với Argo CD. Là dev sở hữu service, điều gì thay đổi trong deploy hằng ngày, rollback, phát hiện sửa tay, và secrets?',
+    a: `**Tóm tắt:** GitOps = **toàn bộ trạng thái mong muốn của cluster nằm trong Git**, và một operator chạy *trong* cluster (Argo CD) liên tục so sánh thực tế với Git rồi kéo thực tế về khớp Git. CI không còn "deploy" nữa — CI chỉ commit bump version image. Rollback thành {{git revert}}, sửa tay bị phát hiện là **drift** và có thể bị self-heal đè lại, secrets không bao giờ vào Git (External Secrets lo phần đó).
+
+### Push-based vs pull-based (GitOps)
+| | Push: Jenkins chạy kubectl | Pull: Argo CD trong cluster |
+|---|---|---|
+| Credential cluster nằm ở | Jenkins (bên ngoài, dễ rò) | trong cluster, không lộ ra ngoài |
+| Hướng kết nối | Jenkins phải mở đường từ ngoài vào prod | cluster chủ động outbound tới Git |
+| Nguồn sự thật | DB của Jenkins + history job | Git repo — diff, review, audit free |
+| Rollback | job cũ replay, hoặc kubectl | {{git revert}} — vẫn là một lần deploy có review |
+| Dev muốn deploy | cần quyền Jenkins/prod | mở PR vào repo cấu hình là đủ |
+
+### Luồng deploy một service sau chuyển
+~~~text
+merge PR → CI build image (tag = git SHA) → push registry
+        → CI/Argo Image Updater commit tag mới vào apps repo (PR hoặc direct)
+        → Argo CD thấy commit (webhook/poll) → diff → Sync → Pod mới theo rolling update
+~~~
+Developer không còn gõ kubectl ở prod; "deploy" đơn giản là merge một commit cấu hình.
+
+### Drift, OutOfSync và selfHeal
+Argo liên tục chạy {{diff}} giữa live object và Git render:
+- {{OutOfSync}} = có khác biệt; UI cho xem diff từng field.
+- {{selfHeal: true}}: ai đó {{kubectl edit}}/apply tay → Argo đè lại về Git ngay → buộc mọi thay đổi phải đi qua PR. Đây là tính năng **quy trình** chứ không chỉ kỹ thuật.
+- Ngoại lệ bắt buộc phải có: HPA sửa {{/spec/replicas}} liên tục → nếu selfHeal sẽ đánh nhau; khai báo {{ignoreDifferences}} với jsonPointers {{/spec/replicas}} (hoặc bật HPA quản lý replicas, xoá field khỏi manifest).
+
+### Rollback kiểu GitOps
+- {{kubectl rollout undo}} tạo drift tức thì và selfHeal "rollback của rollback" — cấm dùng ở môi trường có GitOps.
+- Đúng: {{git revert}} commit bump image (platform team cho phép revert nhanh ở prod qua branch emergency có review 1 người), Argo sync lại. Toàn bộ lịch sử deploy = git log, auditor rất thích.
+- Độ trễ: poll mặc định 3 phút; webhook/Argo Notifications giảm còn tính bằng chục giây — prod cần tốc độ thì cấu hình phần này.
+
+### Sync waves & hooks — thứ tự trong một deploy
+Manifest áp cùng lúc thì Flyway Job chạy sau Pod app là sai. Dùng annotation số:
+
+~~~yaml
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"   # 0: Namespace/RBAC; 1: migration Job (hook PreSync); 2: Deployment
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/hook: PreSync    # Job Flyway chạy trước, phải Complete mới đi tiếp
+~~~
+
+30 service thì quản bằng **app-of-apps** hoặc ApplicationSet (template từ repo layout), thêm service chỉ bằng một commit.
+
+### Secrets đi đâu trong mô hình GitOps
+Git không chứa secret; hai lựa chọn phổ biến: **External Secrets Operator** pull từ Vault/Secrets Manager về tạo Kubernetes Secret, hoặc sealed secrets mã hoá theo cluster. Với app Java nhớ: ESO cập nhật Secret nhưng app chỉ đọc lúc khởi động → rotate cần restart có kiểm soát (đây là chỗ nhiều team đau, xem thêm ConfigMap/Secret).
+
+### Điểm chết thường gặp
+- Commit secret thật vào apps repo vì "tạm thời" — scanner phải chặn ở CI.
+- CRD của operator chưa cài, app sync fail hàng loạt sau restore cluster — đưa CRD vào wave -1.
+- Repo cấu hình phình to (30 service × 4 môi trường) → render chậm; tách apps/infra và dùng ApplicationSet.
+- Văn hoá "thôi kubectl cho nhanh" sống sót sau selfHeal — phải kỷ luật: prod access chỉ còn break-glass có log.
+- Argo CD là single point of failure: mất Argo thì cluster vẫn chạy, nhưng bạn mất cách deploy an toàn — cần runbook.
+
+> Senior tip: trước khi chuyển, chạy drill "tường lửa": phá cluster staging, dựng lại từ trắng, chỉ dùng Git + registry — mục tiêu dưới 30 phút. Drill này đồng thời test GitOps, backup image, Terraform và tài liệu; team nào không làm được là GitOps còn hổng thật.`,
+    follow: [
+      'selfHeal với HPA quản lý replicas đánh nhau — bạn xử lý kiến trúc thế nào để không ping-pong?',
+      'So sánh rollback bằng git revert với kubectl rollout undo về audit và tốc độ ở prod.',
+      'Pipeline vẫn cần deploy "nóng" 2 phút trong sự cố P1 — thiết kế break-glass ra sao cho không mất kiểm soát?'
+    ],
+    tags: ['GitOps', 'Argo CD', 'CI/CD', 'drift', 'Rollback', 'External Secrets']
+  },
+  {
+    id: 'devops-042',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Team muốn canary tự động: 5% traffic → theo dõi lỗi 10 phút → 25% → 50% → 100%, hễ lỗi tăng là tự dừng. Argo Rollouts thực hiện việc đó thế nào, và service Java cần lưu ý gì về warm-up, database và sample quá nhỏ?',
+    a: `**Tóm tắt:** Argo Rollouts thay Deployment bằng CRD **Rollout**: nó điều phối hai ReplicaSet (stable + canary) theo một danh sách **steps** — setWeight, pause, chạy **AnalysisTemplate**. Template đó định kỳ query Prometheus (tỷ lệ 5xx, p99...); nếu vượt ngưỡng {{failureLimit}} nhiều lần, rollout bị **abort** và canary scale về 0. Traffic chia theo tỉ lệ Pod (không cần ingress đặc thù) hoặc qua NGINX ingress/mesh với {{canary-weight}}, {{canary-by-header}}.
+
+### Đọc nhanh Rollout mẫu
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+spec:
+  replicas: 20
+  strategy:
+    canary:
+      canaryService: payment-canary
+      stableService: payment-stable
+      trafficRouting:
+        nginx:
+          stableIngress: payments-nginx
+      canaryAnalysis:
+        maxWeight: 50
+        steps:
+        - setWeight: 5
+        - pause: {}                      # dừng vô hạn: mắt người xem trước khi máy chạy tiếp
+        - setWeight: 25
+        - pause: { duration: 10m }
+        - analysis:
+            templates:
+            - templateName: error-rate
+      scaleDownDelaySecondsOnScaleUp: 60 # giữ pod cũ 60s để drain request đang chạy
+~~~
+{{setWeight: 5}} nghĩa là 5% traffic tới canary; với mode chia theo tỉ lệ Pod thì 20 replica → canary 1 Pod, xấp xỉ 5%.
+
+### AnalysisTemplate — "cái máy đo"
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate
+spec:
+  metrics:
+  - name: http-5xx-ratio
+    intervalSeconds: 60
+    failureLimit: 2                # fail 2 lần liên tiếp thì abort
+    successCondition: result[0] < 0.01   # 5xx < 1%
+    provider:
+      prometheus:
+        address: http://prometheus.observability:9090
+        query: |
+          sum(rate(http_server_requests_seconds_count{job="payment",status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{job="payment"}[5m]))
+~~~
+Metric nên lấy từ {{Micrometer}} (http_server_requests) — cùng nguồn với dashboard SLO, đừng chế số mới.
+
+### Ba đường chia traffic
+| Cách | Điều kiện | Ghi chú |
+|---|---|---|
+| Tỉ lệ Pod (không trafficRouting) | không cần ingress hỗ trợ | coarse: 1 pod = 5% khi 20 pod; latency phụ thuộc pod nhận nhiều nhất |
+| NGINX ingress {{canary-weight}} | cần ingress-nginx | chính xác theo %; {{canary-by-header}} cho tester nội bộ đi 100% vào canary |
+| Service mesh (Istio/Linkerd) | VirtualService/TS | cho cả weight + header + mirror |
+
+### Ba thứ chỉ dân Java mới nhớ
+1. **JVM lạnh**: pod canary mới JIT chưa warm, p99 cao vài phút đầu — dễ làm analysis fail oan. Dùng {{warmupDurationSecs}}, và chỉ bắt đầu đo sau cửa sổ pause.
+2. **Database là state chia sẻ**: canary không cách ly được schema — migration không tương thích thì cả stable lẫn canary đau như nhau; expand-contract vẫn là điều kiện cần.
+3. **Sample nhỏ khi traffic thấp**: 10 RPS × 5% = 0.5 RPS thì p99 là nhiễu; cần điều kiện số request tối thiểu trong query, hoặc pause vô hạn ở 5% để người bấm promote.
+
+### Abort và promote thủ công
+Khi abort: canary scale về 0, rollout dừng ở trạng thái aborted, metrics còn trong UI để điều tra. Người vận hành {{kubectl argo rollouts promote}}/abort khi muốn đi tiếp — script cho phép chạy tiếp từng nấc khi đang incident.
+
+### Lỗi hay gặp
+- Readiness probe quá lạc quan → pod canary chưa warm đã nhận traffic, 5xx thật nhưng do hạ tầng, analysis abort oan rồi không ai sửa probe.
+- Canary-by-header: tester bắn hỏng → abort không đúng vì traffic test không được analysis đếm (đọc theo header, weight vẫn 0).
+- Chạy canary đồng thời với DB migration coalesce → không còn "old code path" để lui.
+- Pause vô hạn bị quên: rollout treo 3 ngày giữa 5%, hai ReplicaSet cùng tồn tại, dev tưởng đã xong.
+
+> Senior tip: với service thanh toán, bắt đầu phân tích bằng **tỷ lệ lỗi 5xx + tỷ lệ lỗi nghiệp vụ (gateway từ chối)** thay vì p99 — hai metric này ít nhiễu ở sample nhỏ. Giữ bước pause đầu tiên vô hạn để con người nhìn log canary 10 phút; chỉ tin máy sau khi bạn thấy analysis máy đã bắt đúng 2–3 vụ thật.`,
+    follow: [
+      'Traffic rất thấp (dưới 1 RPS): thiết kế analysis thế nào để canary không fail oan?',
+      'Mirror 10% traffic production sang canary (shadow traffic) hoạt động ra sao và rủi ro gì với API ghi?',
+      'Abort rồi thì Pod canary chết — làm sao giữ được heap dump/log để điều tra?'
+    ],
+    tags: ['Argo Rollouts', 'Canary', 'Progressive delivery', 'Prometheus', 'Traffic splitting']
+  },
+  {
+    id: 'devops-043',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Mỗi service Spring Boot chạy 10 replica với maximumPoolSize 20; PostgreSQL max_connections 200 thường quá tải, và mỗi lần rolling update tình hình tệ hẳn. Bạn giải bài toán connection pooling ở tầng app, tầng pool và tầng DB thế nào?',
+    a: `**Tóm tắt:** PostgreSQL connection không phải là socket nhẹ — mỗi connection là một **server process** tốn memory và CPU; throughput của DB không tăng theo số connection mở, mà tới mức nào đó còn giảm vì tranh chấp. 10 pod × 20 = 200 chỉ tính **một** service; chưa kể migration, cron, service khác, và cửa sổ rollout nhân đôi số pod. Chiến lược ba tầng: pool app **nhỏ và đúng công thức**, thêm **PgBouncer** multiplex ở giữa, đặt ngân sách connection DB có dự phòng; chống **connection storm** lúc Pod đồng loạt khởi động.
+
+### Vì sao mở nhiều connection không giúp gì
+Ngân hàng 2 quầy, 200 khách xếp hàng giao dịch: số nhân viên DB có thể phục vụ đồng thời ≈ số core CPU. Mỗi connection của Postgres là một process (fork) tốn vài MB, mỗi query có thể ngốn {{work_mem}} cho sort/hash; 200 connection chạy đồng thời là 200 lần như thế + tranh chấp lock + vacuum trễ. đường cong throughput: tăng tới ~2× số core thì đạt đỉnh, thêm nữa là đi xuống. HikariCP đưa công thức khởi điểm kinh điển: {{connections = core_count * 2 + effective_spindle_count}} — pool to chỉ cần khi query của bạn chờ I/O lâu.
+
+### Đặt ngân sách connection (số hoá)
+~~~text
+DB max_connections          = 200 (trừ superuser reserved ~10, monitoring ~5)
+Còn phân bổ được            ≈ 185
+payment-svc: 10 pod × pool 8  = 80
+order-svc:   10 pod × pool 6  = 60
+Flyway job + CronJob           = 6
+Buffer sự cố / rollout surge   = ~40  ← con số nhiều người quên
+~~~
+
+Và nhớ rollout tăng surge: maxSurge 25% nghĩa là tạm thời 12–13 pod — 13 × 8 = 104 cho riêng service đó.
+
+### Connection storm khi triển khai
+Mặc định Hikari mở {{minimumIdle}} = maximumPoolSize khi pool được khởi tạo → 10–13 pod cùng dậy trong 60 giây và mỗi pod lao tới DB xin 8 connection: DB vừa nhận connection mới (fork process, làm xác thực) vừa gồng query cũ → timeout dây chuyền, pod fail readiness, restart làm storm to hơn (death spiral).
+Giảm: {{minimumIdle}} nhỏ (mở theo nhu cầu), {{connectionTimeout}} 2–3 giây để fail nhanh + retry có backoff ở tầng service, {{initializationFailTimeout = -1}} để app dậy được khi DB tạm nghẽn rồi connect lại dần, và cho DB một lớp chắn (xem PgBouncer).
+
+~~~yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 8
+      minimum-idle: 2
+      connection-timeout: 3000
+      initialization-fail-timeout: -1
+      leak-detection-threshold: 60000   # log stacktrace nếu app giữ connection 60s không trả
+~~~
+
+### PgBouncer — multiplex ở tầng giữa
+Ý tưởng: app giữ hàng trăm connection **giả** phía PgBouncer; PgBouncer giữ ~50 connection **thật** tới DB, mượn cho từng transaction rồi trả — server process của DB được chia sẻ.
+| Chế độ | Cách hoạt | Hệ quả với Java |
+|---|---|---|
+| session | gán cứng 1 server connection cho 1 client | không save memory, hiếm dùng |
+| transaction (phổ biến) | cho mượn server connection theo **từng transaction** | tiết kiệm nhất, nhưng bỏ đi các thứ phụ thuộc "phiên" |
+| statement | multiplex theo từng statement | dễ vỡ, tránh |
+
+Cạm bẫy transaction-mode với JDBC/Postgres: prepared statements của driver (mặc định Postgres JDBC cache sau 5 lần execute) không hợp với PgBouncer bản cũ — PgBouncer 1.21+ đã hỗ trợ server prepared statements (cấu {{max_prepared_statements}}), còn bản cũ phải tắt cache phía driver ({{prepareThreshold=0}}); {{SET}} biến session (search_path, timezone) không còn "dính" cả phiên → set mặc định ở role/db bằng {{ALTER ROLE ... SET search_path}} thay vì mỗi kết nối; advisory lock, {{LISTEN/NOTIFY}}, temporal session state đều không chạy được. RDS Proxy của AWS là lựa chọn managed cùng ý tưởng.
+
+### Leak và long transaction — phía code
+- {{@Transactional}} bọc cả gọi HTTP sang đối tác 3 giây → giữ connection 3 giây thay vì 20 ms; p99 DB pool exhaustion đến sớm. Thu hẹp transaction quanh thao tác DB, gọi ngoài ở ngoài transaction.
+- Báo cáo chạy 200 giây: tách DataSource riêng, pool 2–3, user readonly, {{statement_timeout}} theo role — đừng cho report ăn pool giao dịch.
+
+### Trả lời phỏng vấn 30 giây
+"Đầu tiên em tính ngân sách connection thật (tổng pod × pool + surge), không scale pool theo cảm tính; pool app để nhỏ theo công thức core; nếu số client lớn thì đặt PgBouncer/RDS Proxy multiplex và kiểm tra prepared statements + session variables; storm lúc deploy xử lý bằng minimumIdle nhỏ, fail-fast + backoff; cuối cùng thêm cảnh báo cả hai phía hikari_pending và pg_stat_activity."
+
+> Senior tip: dashboard đúng phải có **cả hai phía**: {{hikaricp_connections_active/pending}} (Micrometer) đặt cạnh {{pg_stat_activity}} đếm theo application_name. 90% vụ "app treo khi cao điểm" là một transaction dài giữ connection + pool nhỏ — leak-detection-threshold chính là nút bằng chứng thay vì phỏng đoán.`,
+    follow: [
+      'PgBouncer transaction-mode + Spring Data JPA lazy loading ngoài transaction: vì sao vỡ và sửa ở đâu?',
+      'Vì sao giới hạn 50 connection có thể nhanh hơn 200? Giải thích qua đường cong throughput.',
+      'Rolling update làm DB chạm max_connections: bạn đổi chiến lược rollout hay pool trước?'
+    ],
+    tags: ['HikariCP', 'PostgreSQL', 'PgBouncer', 'Connection pool', 'Kubernetes', 'Rollout']
+  },
+  {
+    id: 'devops-044',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Pod Spring Boot của bạn mất 90–120 giây mới Ready. Vì sao điều đó nguy hiểm trên Kubernetes chứ không chỉ "chậm", bạn đo xem thời gian chết ở khâu nào, và những cách giảm thời gian khởi động (AppCDS, tối ưu context, CRaC, native image) đáng dùng khi nào?',
+    a: `**Tóm tắt:** Khởi động của một Pod = **pull image + JVM + Spring context + warm-up**. Trên Kubernetes, 90 giây này làm HPA phản ứng chậm sau khi quá tải đã xảy ra, rollout kéo dài khiến hai version cùng chạy song song lâu hơn (và rollback cũng chậm y vậy), và khi node chết thì "cách duy nhất để phục vụ lại" cũng phải chờ đúng 90 giây đó. Trước khi tối ưu phải **đo theo từng phase**; sau đó chọn biện pháp theo đường cong hiệu quả/công sức: AppCDS và bớt việc khi khởi động cho hiệu quả tốt nhất trên mỗi công sức bỏ ra, CRaC và native image chỉ đáng khi khởi động chậm là bài toán cốt lõi của bạn.
+
+### 90 giây đó đi đâu
+~~~text
+Pull image 210 MB      ~6s (node có cache) / 20–40s (node mới tinh)
+JVM khởi động          ~0,5–1s
+Spring context         ~60s: autoconfig + quét package, tạo beans,
+                       entity scan JPA, xác thực + migrate DB, mở pool,
+                       đăng ký Kafka listener, warm cache
+JIT warm-up            p99 cao thêm 30–60s **sau** khi đã Ready
+~~~
+
+### Vì sao chậm là vấn đề **vận hành**, không phải vấn đề lịch sự
+- **HPA**: tín hiệu tải tăng → HPA quyết định thêm Pod → Pod Ready sau 90s. Trong 90s đó request dồn vào các Pod cũ: p99 sụp đúng lúc đông khách nhất. Service khởi động chậm phải để minReplicas cao hơn mức cần — tốn tiền.
+- **Rollback chậm**: phiên bản mới có bug, bạn "quay về bản cũ" nhưng bản cũ cũng cần 90s/Pod để dựng lại.
+- **Cứu sự cố**: node mất, Deployment tự tạo Pod bù ở node khác — phải pull lại từ đầu.
+- **startupProbe** phải đặt failureThreshold × period đủ phủ cả thời gian khởi động + pull trên node mới, nếu không Pod bị kill oan khi chưa kịp xong → CrashLoopBackOff vì lý do... quá chậm.
+
+### Đo: biết bean nào ăn thời gian
+Boot 3 có sẵn endpoint dựng từ **BufferingApplicationStartup**:
+
+~~~java
+SpringApplication app = new SpringApplication(PaymentApp.class);
+app.setApplicationStartup(new BufferingApplicationStartup(4096)); // đệm sự kiện startup
+app.run(args);
+// GET /actuator/startup → timeline từng bước: bean tạo mất bao lâu, flyway, kafka listener...
+~~~
+
+Cộng với timestamp từ {{kubectl get events}} (Scheduled → Pulling → Created → Started → Ready) để tách phần pull khỏi phần app.
+
+### Giảm theo từng phase
+1. **Pull**: image nhỏ (layered jar + JRE/distroless), registry trong cùng VPC/region, một số team dùng DaemonSet pre-pull image đang chạy lên mọi node.
+2. **Class loading — AppCDS (App Class Data Sharing)**: JVM đọc và **verify** hàng chục nghìn class mỗi lần khởi động; CDS lưu kết quả verify vào một **archive** tạo sẵn trong CI, lúc chạy chỉ việc map vào:
+
+~~~bash
+# Một lần trong CI (hoặc local): chạy app đến lúc exit, ghi lại những class đã nạp + đóng archive
+java -XX:ArchiveClassesAtExit=app-cds.jsa -jar payment.jar
+# Mọi lần khởi động sau dùng archive — thường bớt 10–40% thời gian JVM
+java -XX:SharedArchiveFile=app-cds.jsa -jar payment.jar
+~~~
+
+Archive phụ thuộc đúng jar đó → regenerate mỗi build, copy vào image. Rủi ro gần bằng 0.
+3. **Bớt việc khi khởi động**: {{spring.autoconfigure.exclude}} những autoconfig không dùng; thu hẹp package quét component/entity (quét cả gốc repo là thói quen phổ biến); chuyển Flyway sang **Job riêng chạy trước deploy** (Pod app không chờ migration); cache warm / Kafka listener defer chạy **sau** readiness chứ không chặn readiness vô hạn. lazy-initialization=true chỉ nên cân nhắc khi chấp nhận: bean lỗi cấu hình không chết lúc boot mà chết lúc user chạm tới.
+4. **CRaC (Coordinated Restore at Checkpoint)**: khởi động một lần đầy đủ, "chụp" process đang nóng thành checkpoint, mỗi Pod mới chỉ **restore** ~1–3 giây. JDK 21 + Spring Boot 3.2 có hỗ trợ. Đánh đổi: thao tác reopen socket/connection sau restore (pool DB, Kafka) phải được xử lý đúng — độ chín theo từng thư viện, hạ tầng build phức tạp hơn.
+5. **Native image (GraalVM)**: AOT biên dịch sẵn, khởi động ~50–200 ms, RAM thấp; nhưng closed-world (reflection phải khai báo), mất peak throughput của JIT, công cụ debug/profiling hạn chế, nhiều thư viện Java cần cấu hình riêng. Hợp với function/CLI/sidecar cần scale cực nhanh; không hợp với app 600 beans dùng JAXB ở mọi ngóc ngách.
+
+| Biện pháp | Giảm được | Giá phải trả |
+|---|---|---|
+| AppCDS | 10–40% | không đáng kể |
+| Bớt autoconfig/scan, migration ra Job | tới vài chục % | công rà soát cấu hình |
+| CRaC | tới mức giây | phức tạp toolchain, hook restore |
+| Native image | tới mức 0,1s | reflection, throughput, ràng buộc thư viện |
+
+### Lỗi hay gặp
+- startupProbe period × failureThreshold nhỏ hơn thời gian worst-case (node mới + pull) — chỉ đủ cho node cũ.
+- Cắt startup nhưng bỏ mặc warm-up: Ready nhanh mà p99 vẫn teo 1 phút đầu → cần gradual traffic (warmupDurationSecs của Argo Rollouts) hoặc minReplicas đủ.
+- lazy init làm lỗi cấu hình xuất hiện lúc 20h thay vì lúc deploy — fail-fast là tính năng.
+
+> Senior tip: đặt SLO cho chính thời gian khởi động, ví dụ "Pod mới Ready dưới 45s p95, kể cả trên node vừa sạch image", và **đo nó trong mỗi lần rollout** chứ không phải lúc chạy bench trên laptop. Sau khi rút xuống ~20s, giảm minReplicas các service HPA-bound theo — tiền tiết kiệm từ startup nhanh thường lớn hơn tiền tiết kiệm từ image nhỏ.`,
+    follow: [
+      'Phân biệt vai trò startupProbe / livenessProbe / readinessProbe khi app khởi động 2 phút; công thức chọn failureThreshold × period?',
+      'Chuyển Flyway sang Job trước deploy: thứ tự an toàn với K8s và pipeline ra sao, rủi ro gì?',
+      'Vì sao native image có thể CHẬM hơn JVM ở throughput đỉnh với app long-running?'
+    ],
+    tags: ['Startup time', 'AppCDS', 'CRaC', 'Native image', 'Spring Boot', 'Kubernetes']
+  },
+  {
+    id: 'devops-045',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Phiên bản mới của service thanh toán đổi trường amount từ number thành string, xoá trường fee cũ và thắt chặt validation. Trong rolling update, Pod cũ và mới cùng chạy; mobile app hai phiên bản vẫn gọi vào. Bạn "tiến hoá" API này thế nào, và CI cần bảo đảm điều gì để không phá consumer?',
+    a: `**Tóm tắt:** API đã publish là **hợp đồng** — bạn không kiểm soát lúc consumer nâng cấp, nên thay đổi phá vỡ (breaking change) không được "deploy một phát ăn ngay" mà phải đi theo **expand-contract ở tầng API**: mở rộng tương thích trước, chuyển dần consumer, chỉ thu gọn khi mức dùng field cũ về gần 0; thay đổi lớn thì thêm version chạy song song kèm lịch sunset. CI phải chặn breaking change **trước khi merge** bằng **contract testing** (Pact hoặc Spring Cloud Contract): provider chỉ được deploy khi thoả contract của mọi consumer đã đăng ký.
+
+### Bảng "được phép / cấm" — thuộc lòng khi phỏng vấn
+| Thay đổi | Loại | Cách an toàn |
+|---|---|---|
+| Thêm field optional vào response | an toàn | consumer là **tolerant reader**: bỏ qua field lạ |
+| Thêm endpoint / thêm giá trị enum | gần an toàn | client parse enum chặt sẽ crash — hỏi trước |
+| Nới lỏng validation (nhận nhiều hơn) | an toàn | — |
+| Đổi tên field, đổi kiểu dữ liệu | **breaking** | thêm field mới song song, giữ field cũ có ngày hết hạn |
+| Xoá field / xoá endpoint | **breaking** | deprecation + giám sát usage rồi mới xoá |
+| Thắt validation, đổi status code, đổi định dạng ngày | **breaking âm thầm** | migrate từng consumer hoặc ra version mới |
+
+amount number→string và xoá fee: cả hai đều breaking → phải đi qua ba pha.
+
+### Ba pha cho chính case này
+1. **Expand**: trả về **cả** {{amount}} (number, giữ nguyên hành vi) và {{amountDecimal}} (string, đúng 2 chữ số thập phân, không sai số float); validation vẫn chấp nhận input cũ. Rolling update an toàn vì cả Pod cũ lẫn Pod mới đều tôn trọng contract cũ.
+2. **Migrate + đo**: công bố changelog, gắn header {{Deprecation}}/{{Sunset}}; tag {{X-Client-Version}} vào metric để xem bao nhiêu % traffic còn đọc field cũ, phân theo phiên bản app.
+3. **Contract**: khi usage field cũ dưới ngưỡng (và lịch sunset đã qua), xoá field trong một release "khai tử" riêng, thông báo trước một chu kỳ.
+
+### Versioning: chọn gì
+| Cách | Ví dụ | Nhận xét |
+|---|---|---|
+| URI | {{/v1/payments}} | tường minh, dễ route/canary, dễ cache |
+| Header | {{Api-Version: 2}} | sạch URL nhưng khó debug, khó cache |
+| Media type | {{Accept: application/vnd.bank.v2+json}} | đúng lý thuyết REST, ít team dùng |
+Quyết định thực dụng: **thay đổi cộng dồn không cần bump version**; chỉ bump khi breaking; v1 và v2 phục vụ song song từ cùng một codebase (hai route trỏ vào cùng handler qua adapter) để không bảo trì hai service.
+
+### Contract testing — CI chứng minh điều gì
+- **Pact (consumer-driven)**: mỗi consumer (mobile, đối tác) viết test mô tả phần response họ dùng → xuất **pact file** lên Pact Broker; CI của provider **replay mọi pact** của mọi consumer vào API thật. Gate **can-i-deploy**: "version này có phá app 3.2 chưa nâng cấp không?" — có thì chặn promote.
+- **Spring Cloud Contract**: ngược chiều — provider định nghĩa contract trong repo mình, sinh ra (a) verification test cho provider, (b) **stub WireMock** để consumer test độc lập. Hợp khi bạn sở hữu cả hai phía.
+- Consumer bên ngoài (đối tác): giữ **sandbox + stub** phản chiếu contract hiện hành, kèm changelog có ngày hiệu lực.
+
+### Tolerant reader — nửa còn lại
+Khi app của bạn **tiêu thụ** API người khác: cấu hình Jackson **không** fail vì field lạ ({{FAIL_ON_UNKNOWN_PROPERTIES = false}}), bỏ qua field mới thay vì crash; giá trị enum lạ coi là unknown và cảnh báo, không ném exception. Đây là chiếc khiên phòng mọi vụ đối tác đổi API lúc 3h sáng.
+
+### Lỗi hay gặp
+- "Chỉ frontend của tôi dùng thôi mà" — quên consumer thật: cron nội bộ, đối tác, webhook, app cũ chưa ép nâng cấp.
+- Breaking change đi nhờ một commit refactor trong release 40 commit → đến incident mới lộ. Contract verify ở CI bắt ngay commit chứa nó.
+- Siết validation "để chặn dữ liệu bẩn" làm client cũ (vẫn gửi null như trước) chết hàng loạt.
+- gRPC/protobuf: **không tái sử dụng số field** đã xoá — trên wire không còn tên để mà thương lượng.
+
+> Senior tip: biến "còn bao nhiêu % traffic dùng API cũ" thành một panel cố định; xoá endpoint mà không có số liệu này giống như rút cầu khi chưa biết còn người bên kia. Và giữ quy tắc sắt: mọi PR thay đổi schema phải kèm kết quả pact-verify — đỏ là không merge; discussion với product không thay thế được máy kiểm.`,
+    follow: [
+      'Đối tác EU gọi API của bạn, họ không nâng cấp theo lịch của bạn: thiết kế chính sách hỗ trợ phiên bản thế nào?',
+      'Contract test phát hiện breaking change nhưng product muốn ship gấp — quy trình escape hatch của bạn ra sao?',
+      'API vẫn trả 200 nhưng ý nghĩa field đổi (fee luôn bằng 0): công cụ nào bắt được kiểu breaking "âm thầm" này?'
+    ],
+    tags: ['API design', 'Contract testing', 'Pact', 'Versioning', 'Rolling update']
+  },
+  {
+    id: 'devops-046',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Platform đề xuất Istio cho 30 microservice để có mTLS tự động, retry và dashboard traffic; team Java nói đã dùng Resilience4j và tự cấu hình HTTP client. Service mesh thực chất làm gì, chạy ở đâu, giá phải trả ra sao — và bạn quyết định thế nào?',
+    a: `**Tóm tắt:** Service mesh là **tầng hạ tầng xử lý traffic đông–tây** (service gọi nhau): một proxy (Envoy) chạy cạnh mỗi Pod **chặn mọi request đi và đến**, nên nền tảng bật được encryption mTLS tự động + identity per-service, áp policy L7 (timeout, retry, traffic split, fault injection) và thu metric theo cặp src→dst **mà không đổi một dòng code**. Resilience4j làm việc tương tự nhưng **bên trong JVM** — biết nghiệp vụ, rẻ, không cần hạ tầng. Mesh thắng khi bài toán là của **nền tảng** (hợp nhất 30 service đa ngôn ngữ, compliance mã hoá lưu lượng, audit identity); thua khi bài toán chỉ là retry/fallback có logic nghiệp vụ.
+
+### Nó hoạt động thế nào (đủ để nói chuyện với dân platform)
+- **Sidecar**: init container cấu hình iptables trong Pod để mọi gói vào/ra đi qua Envoy; app chỉ việc gọi {{http://order-svc:8080}}, Envoy lo phần còn lại.
+- **mTLS**: mỗi workload có identity từ ServiceAccount (chuẩn SPIFFE), mesh tự ký/xoay chứng chỉ, mã hoá **từng chặng** trong cluster → thoả "encrypt in transit + biết chính xác dịch vụ nào gọi dịch vụ nào" mà không ai viết dòng code TLS nào.
+- **Policy dạng CRD**: VirtualService (route, retry, timeout, chia %), DestinationRule (outlier ejection, connection pool), AuthorizationPolicy (cho ai gọi ai) — khai báo trong Git, đồng bộ bằng GitOps, platform áp thống nhất.
+- **Telemetry**: RED metric + trace theo cặp src/dst và status code hoàn toàn tự động.
+
+### Mesh vs Resilience4j — không phải either/or
+| | Mesh (Istio/Envoy) | Thư viện trong app (Resilience4j) |
+|---|---|---|
+| Chỗ chạy | process riêng cạnh Pod | cùng JVM |
+| Cấu hình | CRD, platform giữ, đổi không cần build lại app | code/yml, dev giữ |
+| Biết gì | HTTP status, header, latency | **ngữ cảnh**: method nào idempotent, fallback trả giá trị cache, suy giảm chức năng thế nào |
+| Retry POST không idempotent | **nguy hiểm** — mesh không biết nghiệp vụ | dev kiểm soát |
+| Overhead | thêm một proxy mỗi hop | gần 0 |
+| Fallback theo nghiệp vụ | không làm được | làm được |
+Kết luận hay dùng: **mesh cho security + traffic shifting + telemetry, thư viện trong app cho fallback/timeout theo nghiệp vụ**; retry chỉ bật ở **một** phía.
+
+### Giá phải trả thật sự
+- Latency thêm mỗi hop (dưới 1 ms tới vài ms) và CPU/memory cho Envoy mỗi Pod — service thanh toán có ngân sách p99 eo hẹp phải **đo trước khi quyết**.
+- Độ phức tạp vận hành: thêm một control plane để upgrade, thêm một lớp để debug — **503 có thể sinh ra từ Envoy chứ không phải app**; on-call phải học đọc log proxy.
+- Connection chồng connection: pool HTTP/JDBC của app + pool upstream của Envoy → giới hạn thật nằm ở đâu phải tính lại.
+- Inject sidecar = mọi Pod phải restart; namespace chưa inject gọi sang namespace đã STRICT mTLS là chết request.
+
+### Ambient và lựa chọn khác
+Istio **ambient mode**: node-agent (ztunnel) lo mTLS/L4 cho mọi Pod, proxy L7 (waypoint) chỉ bật ở chỗ cần — giảm overhead sidecar nhưng còn mới; cân nhắc độ chín trước khi cam kết cho production thanh toán. Alternatives: Linkerd nhẹ hơn, tập trung mTLS + telemetry; hoặc **không mesh**: cert-manager + TLS ở ingress, Spring Cloud Gateway — vẫn ổn nếu 30 service đều Java và team platform nhỏ.
+
+### Đường vào an toàn (nếu quyết làm)
+1. Pilot 1–2 namespace không cốt lõi: bật mTLS ở chế độ **PERMISSIVE** (vẫn nhận clear text) → audit xem ai còn gọi thô → mới chuyển **STRICT**.
+2. Bật telemetry, so p99 trước/sau tại cùng mức tải; test fault injection trên staging.
+3. Làm một canary bằng VirtualService (90/10 theo header) — đây thường là tính năng "bán" mesh tốt nhất cho chính team dev.
+4. Viết runbook: "Pod không lên được vì sidecar thì xử lý thế nào".
+
+### Lỗi hay gặp
+- Bật STRICT mTLS một phát → CronJob không sidecar, hệ monitoring ngoài cluster, Pod đang di chuyển giữa hai node đồng loạt lỗi.
+- Mesh retry tự động trên API ghi → ghi nợ hai lần; hoặc dev thêm Resilience4j retry **chồng** mesh retry → bùng nổ 3×3 request khi đối tác chậm.
+- App bind port vượt mặt mesh (hostNetwork, gọi thẳng IP + port gốc) → tưởng đã mã hoá mà chưa.
+
+> Senior tip: đừng quyết mesh bằng câu hỏi "tool nào mạnh" mà bằng hai câu của auditor: **(1) ta có cần chứng minh mọi traffic giữa các service được mã hoá và có identity không? (2) ta có đủ người vận hành thêm một control plane không?** Ngân hàng 30 service thường trả lời "có" cho (1) — mesh là đường ngắn; startup 5 người thì "không" cho (2) — thư viện + TLS ở ingress là đúng.`,
+    follow: [
+      'VirtualService retry 2 lần + Resilience4j retry 2 lần cho cùng một call: hệ quả và cách đặt quy tắc "ai được retry"?',
+      'Chứng minh với auditor rằng service A gọi B có identity — mesh cho bạn gì mà JWT tự chế khó có được?',
+      'mTLS STRICT làm CronJob chết: phân tích nguyên nhân và thiết kế lại rollout an toàn.'
+    ],
+    tags: ['Service mesh', 'Istio', 'mTLS', 'Resilience4j', 'Envoy']
+  },
+  {
+    id: 'devops-047',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Cluster production đang chậm phiên bản Kubernetes 3 bậc, EKS chỉ vá CVE cho 3 bản mới nhất; kỳ trước team "nhảy một phát" làm vỡ ingress và một nửa PDB không apply. Là tech lead, bạn biến việc upgrade thành một chương trình đều đặn hằng năm thay vì dự án 3 năm một lần như thế nào?',
+    a: `**Tóm tắt:** Version delay là **nợ**: mỗi bản Kubernetes gỡ thêm API deprecated, kéo theo ma trận addon (ingress, Argo CD, cert-manager, CSI) ngày càng khó thoả mãn, và CVE không còn được vá. Chương trình nâng cấp đúng là **release train**: một minor mỗi lần, lịch cố định; công cụ quét API deprecated trên **chính manifest trong Git** từ nhiều tháng trước; thứ tự bất biến control plane → addons → node group; diễn tập trên staging **sao chép prod**; và app teams nhận bulletin thay đổi sớm thay vì nhận hậu quả muộn.
+
+### Vì sao "chậm 3 bậc" đắt gấp nhiều lần "chậm 1 bậc"
+- EKS chỉ patch CVE cho 3 phiên bản gần nhất → chậm 3 bậc là chạy bản **hết hỗ trợ bảo mật**.
+- API bị **gỡ** theo mốc, YAML của bạn không tự đổi: PodDisruptionBudget {{policy/v1beta1}} và CronJob {{batch/v1beta1}} gỡ ở 1.25; HPA {{autoscaling/v2beta1}} gỡ ở 1.26; PodSecurityPolicy bị xoá hẳn ở 1.25 (thay bằng Pod Security Admission hoặc OPA/Gatekeeper). Manifest cũ lên 1.26+: {{kubectl apply}} fail, Argo CD báo OutOfSync, tệ nhất là PDB **âm thầm không tồn tại** → node drain giết quá số Pod cho phép.
+- Nhảy 3 bậc cùng lúc = gộp 3 lần breaking changes + 3 vòng upgrade addon → khi sự cố xảy ra không biết thủ phạm nào; mà control plane thì **không hạ cấp được**.
+
+### Bốn chân của chương trình
+1. **Nhịp cố định**: mục tiêu "luôn chậm bản mới nhất của EKS không quá 1–2 minor"; mỗi quý một upgrade window, đối xử như release có Go/No-Go và lịch freeze (tránh trước chiến dịch bán hàng, lễ Tết).
+2. **Tự động phát hiện**: chạy {{kubent}} (hoặc {{pluto}}) trên repo GitOps + helm charts mỗi tuần → bot mở PR liệt kê apiVersion sắp bị gỡ **từ nhiều tháng trước**; chuyển PDB sang {{policy/v1}} là một PR bình thường, không cần chờ tới ngày upgrade.
+3. **Thứ tự nâng cấp**: control plane từng minor một (EKS không cho nhảy cách bậc) → addons (CRD trước controller) → node group **nối tiếp**, drain có PDB bảo vệ. Ràng buộc version: kubelet **không được mới hơn** apiserver; được phép chậm vài minor nhưng mục tiêu là đuổi kịp ngay.
+4. **Diễn tập thật**: staging dựng bằng **đúng** repo GitOps/manifest của prod; chạy suite integration/e2e + một phiên "phá Pod xem PDB/HPA có sống". Staging không phải bản sao prod thì diễn tập chỉ kiểm tra trí tưởng tượng.
+
+### Phần team Java phải tự làm (platform không làm thay)
+- Quét manifest của service mình theo PR của kubent: apiVersion của PDB/HPA/CronJob, SecurityContext sau khi PSP mất.
+- Node image mới thường chuyển **cgroup v2**: JVM đời cũ đọc giới hạn cgroup v2 sai → xác minh JDK đã hỗ trợ (bản 17/21 đều ổn, JDK 8/11 phải đủ mới), test lại {{MaxRAMPercentage}} và số GC thread sau khi đổi node image.
+- Pin image theo tag bất biến/digest — nâng cấp khiến node kéo lại image, tag {{latest}} sẽ lộ đủ thứ.
+- Nâng client libraries tương tác cluster (K8s Java client, version helm chart của service).
+
+### Rollback và dây an toàn
+- Control plane không rollback được → chiến lược là **giảm blast radius**: node group "canary" chạy workload không cốt lõi nâng trước, giữ một pool version cũ vài ngày làm xuồng cứu sinh; GitOps repo cho phép revert manifest addon về commit cũ.
+- Trước window: snapshot PV (đặc biệt DB chạy trên cluster), etcd backup nếu self-managed — và **test restore thật**, backup chưa restore thử là backup chưa tồn tại.
+- Runbook các sự cố chữ ký riêng: ingress-nginx upgrade làm hỏng webhook cấu hình, CSI driver lệch version, CoreDNS.
+
+### Đo sức khoẻ chương trình
+KPI: số minor đang chậm, **thời gian trung bình vá một CVE của runtime**, tổng effort mỗi upgrade (phải giảm dần qua các chu kỳ), số incident trong 30 ngày sau mỗi upgrade. Upgrade là một product nội bộ — có backlog, có retrospective.
+
+> Senior tip: khác biệt giữa team "nâng cấp như địa ngục" và team "nâng cấp như routine" chỉ là hai dòng kỷ luật: (1) kubent chạy **định kỳ** chứ không chạy lúc hoảng, (2) không bao giờ nhảy nhiều hơn một minor kể cả khi "tiện thể". Sau 3 chu kỳ đúng lịch, chi phí một upgrade giảm còn bằng một buổi release bình thường — và bạn đủ tư thế trả lời audit về CVE trên runtime.`,
+    follow: [
+      'Sau khi nâng 1.25, PDB của 10 service âm thầm biến mất: phát hiện bằng gì, và lần node drain tới sẽ hậu quả ra sao?',
+      'Node group canary: tiêu chí chọn workload "hy sinh" và điều kiện nào thì cho kéo toàn bộ cluster?',
+      'Team bạn vẫn chạy bản hết support vì "bận": bạn trình bày risk với management thế nào để lấy lịch upgrade?'
+    ],
+    tags: ['Kubernetes upgrade', 'EKS', 'deprecation', 'PDB', 'runbook', 'tech lead']
+  },
+  {
+    id: 'devops-048',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Chi phí hạ tầng cho 30 service tăng gấp ba sau một năm trong khi CPU sử dụng trung bình rất thấp; CFO muốn giảm 30% nhưng không đổi SLA của service thanh toán. Bạn dẫn dắt chương trình tối ưu chi phí bền vững thế nào: đo, right-size requests, VPA, spot, autoscaler và bắt các team chịu trách nhiệm con số?',
+    a: `**Tóm tắt:** Node được **tính kích thước theo Σ requests**, không phải bằng usage — nên khoản lãng phí lớn nhất là các Java service khai request gấp 2–3 lần dùng thật ("cho an toàn"). Chương trình bền vững: đo theo namespace (OpenCost) → right-size request theo **p95 usage + buffer** → tăng bin packing (Karpenter/cluster autoscaler) và cắt phần "ngủ cũng tốn tiền" (minReplicas, dev/test chạy đêm) → spot ở nơi an toàn → cắt log/metric/lưu trữ/network thừa → và **gắn hoá đơn về từng team** bằng quota + showback. Con số trình CFO không phải tổng chi phí tuyệt đối mà là **cost per 1.000 giao dịch**.
+
+### Vì sao request = tiền
+Scheduler đặt Pod theo **request**: bạn xin 4Gi là node dành 4Gi cho bạn kể cả khi RSS thực dùng 1Gi; instance vẫn chạy và vẫn tính tiền. Hai chỗ rò: (a) từng service overprovision, (b) cả cluster phình vì không ai gom Pod rỗng vào một node. **limit** thì ngược lại, không ảnh hưởng lịch Pod — chỉ ảnh hưởng lúc bị siết.
+
+### Bước 0: đo trước khi cắt
+- OpenCost/Kubecost: allocation = request, có điều chỉnh theo usage; cắt theo namespace/environment/service. Mức phổ biến: **dev + test chiếm 30–40%** hoá đơn; top 10 service overprovision có thể "nuôi" được 2 service khác.
+- Đường cơ sở: cost/1.000 giao dịch theo tháng. Không có baseline thì mọi con số "-x%" đều là kể chuyện.
+
+### Right-size cho Java — không cắt vào đau
+Lấy số liệu 2–4 tuần: {{container_memory_working_set_bytes}} (bộ nhớ thường trú thật của container: heap + metaspace + thread stack + direct buffer) và CPU usage kèm **CFS throttling** ({{container_cpu_cfs_throttled_periods_total}}):
+- **Memory request ≈ p95 usage × 1.2**: memory không nén được; hạ quá → node-pressure eviction hoặc OOMKilled đúng giờ cao điểm. Service thanh toán cân nhắc request = limit (QoS Guaranteed).
+- **CPU request có thể dưới usage** với burst (Burstable), nhưng service nhạy p99 thì giữ request = limit để không bị throttle — quyết định bằng metric throttling, không bằng cảm giác.
+- VPA để chế độ **recommend** làm báo cáo soát định kỳ; **không** bật auto-apply cho app JVM: limit đổi làm {{MaxRAMPercentage}} đổi theo mỗi lần Pod tạo lại (heap hành vi không ổn định), và VPA restart Pod xung đột với HPA/rollout.
+- Sau mỗi đợt đổi requests: theo dõi SLO + OOM/throttle **2 tuần** rồi mới đi đợt kế.
+
+### Cắt tầng "đang ngủ cũng tốn tiền"
+- **minReplicas**: 30 service × min 3 = sàn chi phí cố định khổng lồ. Hạ min ở service startup nhanh (bài tối ưu khởi động: ready 15s thì HPA đuổi kịp burst, không cần min 3).
+- **Karpenter/cluster autoscaler**: mua instance đúng kích thước, gom Pod cho chặt, **consolidate** node rỗng — khi drain node phải tôn trọng PodDisruptionBudget.
+- **dev/test**: cron scale-to-zero ngoài giờ làm việc, môi trường per-PR có TTL tự huỷ; dev không cần HA → chạy spot toàn bộ.
+- **Spot cho stateless**: pool đa instance type/đa AZ, PDB + HPA floor để mất 1/3 node vẫn còn đủ năng lực; **không** spot cho batch 40 phút chưa có checkpoint; không "cả rổ" Pod thanh toán trên spot cùng lúc.
+
+### Những hoá đơn ẩn
+Log retention 90d→14d (archive nếu bắt buộc), trace sampling 100%→10% cho service ồn, dashboard không ai mở; storage gp2→gp3 (rẻ hơn, đổi không downtime); EBS volume "orphan" sau migration; snapshot để lại cả năm; ECR không lifecycle policy; **NAT gateway** — traffic đi ra S3/khác AZ của Java app bị tính tiền cả hai chiều: dùng gateway endpoint cho S3, đặt Pod cùng AZ với DB/Redis, cho upload lớn đi presigned URL.
+
+### Làm team "sở hữu" con số — mấu chốt bền vững
+- ResourceQuota/LimitRange theo namespace = **ngân sách cứng**: team muốn thêm phải nói chuyện với quota, không phải với node.
+- Showback: dashboard cost per service cho từng team; đưa chi phí vào review kiến trúc — khi ai đó chọn "3 replica min cho chắc", hỏi luôn ngân sách đã duyệt chưa.
+- Nhịp đều: mỗi tháng right-size top-10-waste + báo cáo cost/1.000 transactions. Một cú "-30%" kiểu dự án rồi tan băng thường quay lại đỉnh cũ sau 2 quý, kèm một sự cố do cắt tay.
+
+### Lỗi hay gặp
+- Cắt request không nhìn throttling/eviction → incident thanh toán chiều thứ sáu; cost program mất uy tín vĩnh viễn.
+- VPA auto + HPA cùng quản lý một tài nguyên → hai vòng điều khiển đánh nhau.
+- Đếm "số Pod" thay vì "số reservation": 40 Pod Burstable request nhỏ thường rẻ hơn 8 Pod limit-khủng.
+- Cắt monitoring "để tiết kiệm": hoá đơn postmortem của một vụ không phát hiện sớm đắt hơn cả năm tiền Grafana.
+
+> Senior tip: hai đòn ROI cao nhất gần như mọi nơi: **giảm minReplicas + right-size request** (một service trung bình giấu 3–10Gi reservation chết) và **tắt dev/test ban đêm/cuối tuần**. Trình CFO bằng đường cost/1.000 transactions — nó chứng minh bạn giảm chi phí đơn vị, không chỉ hưởng lợi khi mùa này traffic thấp.`,
+    follow: [
+      'CPU request dưới mức usage trung bình: khi nào an toàn, khi nào giết p99 — bạn quyết bằng metric nào?',
+      'Mỗi namespace một team: thiết kế quota + quy trình "xin nâng quota" để không thành chuyện chính trị?',
+      'Service thanh toán cần 100% on-demand nhưng 30% chi phí là batch: bạn tách chi phí thế nào để không đánh đổi SLA?'
+    ],
+    tags: ['Cost optimization', 'FinOps', 'right-sizing', 'Karpenter', 'spot', 'ResourceQuota']
+  },
+  {
+    id: 'devops-049',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Bạn tách một file Terraform monolith (hơn 200 tài nguyên, một state) thành nhiều module và nhiều state theo service. Làm thế nào để refactor mà không xóa/tạo lại tài nguyên trên cloud? Giải thích {{moved}} block, {{terraform state mv/rm}}, và cách dùng {{terraform_remote_state}} để chia sẻ output giữa các state.',
+    a: `**Tóm tắt:** Khi đổi cấu trúc code Terraform (đổi tên resource, chuyển vào module, tách state), địa chỉ của resource trong state thay đổi. Nếu bạn chỉ sửa code, Terraform thấy "địa chỉ cũ biến mất, địa chỉ mới xuất hiện" và sẽ lên kế hoạch **destroy + create** — thảm họa với RDS hay load balancer đang chạy. Giải pháp: dùng {{moved}} block (Terraform 1.1+) để khai báo "resource này đã chuyển từ địa chỉ A sang B" ngay trong code, hoặc dùng {{terraform state mv}} để sửa state thủ công. Khi tách thành nhiều state riêng, dùng {{terraform_remote_state}} data source để state A đọc output của state B.
+
+### Thuật ngữ nền (giải thích từ đầu)
+
+- **State (trạng thái)**: file JSON (thường lưu trên S3) là "sổ cái" ghi mỗi resource trong code tương ứng với tài nguyên thật nào trên AWS (ID, thuộc tính). Terraform dùng nó để tính diff.
+- **Địa chỉ resource (resource address)**: tên định danh trong state, ví dụ {{aws_db_instance.main}} hoặc {{module.payment.aws_db_instance.main}}. Đổi địa chỉ = Terraform nghĩ đó là resource khác.
+- **Module**: nhóm resource tái sử dụng, gọi như hàm. Đưa resource vào module làm địa chỉ thay đổi (thêm prefix {{module.<name>.}}).
+- **Monolith state**: tất cả resource của mọi service nằm chung một file state. {{terraform plan}} phải refresh tất cả → chậm, dễ conflict, blast radius lớn (lỗi một chỗ ảnh hưởng toàn bộ).
+- **Refactor (tái cấu trúc)**: thay đổi cách tổ chức code mà không thay đổi hành vi/tài nguyên thật. Với Terraform, refactor code mà không refactor state = phá hỏng.
+
+### Ví dụ đời thường
+
+Giống như bạn đổi cách đánh số phòng trong một tòa nhà. Phòng "101" giờ thuộc "Tầng 1, khu A" thành "A-101". Nếu bạn chỉ dán biển mới mà quên cập nhật sơ đồ tòa nhà (state), bảo vệ (Terraform) sẽ nghĩ phòng 101 bị phá bỏ và cần xây phòng A-101 mới — trong khi người vẫn đang ở trong phòng đó.
+
+### Vấn đề: refactor gây destroy/create
+
+~~~hcl
+# TRƯỚC: resource nằm ở root
+resource "aws_s3_bucket" "logs" {
+  bucket = "myapp-logs-prod"
+}
+
+# SAU: chuyển vào module
+module "storage" {
+  source = "./modules/storage"
+}
+# Trong modules/storage/main.tf:
+# resource "aws_s3_bucket" "logs" { bucket = "myapp-logs-prod" }
+~~~
+
+Chạy {{terraform plan}} sau khi sửa code: Terraform thấy {{aws_s3_bucket.logs}} (địa chỉ cũ) không còn trong code → plan **destroy**. Thấy {{module.storage.aws_s3_bucket.logs}} (địa chỉ mới) chưa có trong state → plan **create**. Bucket S3 có dữ liệu sẽ bị xóa!
+
+### Cách 1: {{moved}} block (khuyến nghị, Terraform 1.1+)
+
+Khai báo ánh xạ địa chỉ cũ → mới ngay trong code. Terraform tự động cập nhật state khi bạn chạy {{plan/apply}}.
+
+~~~hcl
+# Đặt ở root module, commit cùng với code refactor
+moved {
+  from = aws_s3_bucket.logs
+  to   = module.storage.aws_s3_bucket.logs
+}
+
+# Có thể chain nhiều bước refactor
+moved {
+  from = module.storage.aws_s3_bucket.logs
+  to   = module.storage.aws_s3_bucket.app_logs
+}
+~~~
+
+      - **Ưu điểm**: có thể review trong PR (ai cũng thấy mapping), an toàn (Terraform validate), hoạt động với remote state và team workflow. Sau khi apply xong, {{moved}} block có thể giữ lại (không hại) hoặc xóa dần.
+      - **Lưu ý**: {{from}} và {{to}} phải cùng loại resource. {{moved}} block hoạt động với cả địa chỉ resource lẻ và địa chỉ bên trong module (chỉ cần mapping địa chỉ cũ → mới chính xác).
+
+### Cách 2: {{terraform state mv}} (thủ công)
+
+Sửa trực tiếp state. Dùng khi cần thao tác nhanh hoặc Terraform version cũ.
+
+~~~bash
+# Di chuyển resource vào module
+terraform state mv aws_s3_bucket.logs module.storage.aws_s3_bucket.logs
+
+# Di chuyển toàn bộ module
+terraform state mv module.old_name module.new_name
+
+# LUÔN chạy plan sau để xác nhận "No changes"
+terraform plan
+~~~
+
+- **Rủi ro**: thao tác trực tiếp trên state (nhất là remote). Nếu quên chạy trên đúng workspace/state, hoặc hai người làm cùng lúc → hỏng state. Nên dùng {{-state-out}} để tách ra file riêng khi chia state.
+- **Backup**: S3 backend có versioning thì có thể rollback; nhưng tốt nhất {{terraform state pull > backup.tfstate}} trước.
+
+### Cách 3: {{terraform state rm}} + {{import}} block (khi tách state)
+
+Khi tách một nhóm resource sang **state file hoàn toàn mới** (ví dụ: tách networking ra state riêng):
+
+~~~bash
+# Ở state CŨ: xóa resource khỏi state (KHÔNG xóa trên cloud)
+terraform state rm aws_vpc.main
+terraform state rm aws_subnet.private[0]
+# ... lặp cho các resource liên quan
+
+# Ở state MỚI (thư mục/config riêng, backend key khác):
+# Dùng import block (Terraform 1.5+) — khai báo trong code, review được
+~~~
+
+~~~hcl
+# networking/imports.tf (state mới)
+import {
+  to = aws_vpc.main
+  id = "vpc-0a1b2c3d4e5f67890"   # ID thật trên AWS
+}
+
+import {
+  to = aws_subnet.private[0]
+  id = "subnet-0123456789abcdef0"
+}
+~~~
+
+Chạy {{terraform plan}} → Terraform sẽ generate hành động import (không create/destroy). Sau {{apply}}, xóa các {{import}} block.
+
+### Tách state và chia sẻ dữ liệu: {{terraform_remote_state}}
+
+Khi networking, database, application nằm ở 3 state riêng, app cần biết VPC ID và DB endpoint. Dùng **output** ở state nguồn và **data source** ở state đích.
+
+~~~hcl
+# State networking/outputs.tf
+output "vpc_id" {
+  value = aws_vpc.main.id
+}
+output "private_subnet_ids" {
+  value = aws_subnet.private[*].id
+}
+
+# State application/main.tf — đọc output từ networking
+data "terraform_remote_state" "networking" {
+  backend = "s3"
+  config = {
+    bucket = "mycompany-tfstate-prod"
+    key    = "networking/prod/terraform.tfstate"
+    region = "ap-southeast-1"
   }
+}
+
+resource "aws_ecs_service" "app" {
+  # ...
+  network_configuration {
+    subnets = data.terraform_remote_state.networking.outputs.private_subnet_ids
+  }
+}
+~~~
+
+- **Ràng buộc**: state đích phải có quyền đọc state nguồn (IAM policy cho S3 key). Output thay đổi → consumer cần {{plan/apply}} lại.
+- **Thay thế**: dùng SSM Parameter Store / data source trực tiếp ({{data "aws_vpc"}}) để giảm coupling giữa state, nhưng mất tính "hợp đồng" rõ ràng của output.
+
+### Chiến lược tách state (thu nhỏ blast radius)
+
+| Cách tách | Ví dụ | Ưu | Nhược |
+|---|---|---|---|
+| Theo môi trường | prod/staging/dev mỗi cái 1 state | An toàn, prod không bị dev ảnh hưởng | Lặp config (dùng module chung) |
+| Theo thành phần | networking, data, compute, app | Blast radius nhỏ, team sở hữu riêng | Cần {{remote_state}} wiring |
+| Theo vòng đời | tài nguyên sống lâu (VPC, RDS) vs ngắn (ECS task) | Ít risk khi deploy app | Phải phân loại rõ |
+| Monolith | 1 state cho tất cả | Đơn giản ban đầu | Plan chậm, lock conflict, 1 lỗi ảnh hưởng tất |
+
+### Bẫy thực tế
+
+- **Refactor không có {{moved}} block trong PR**: reviewer không thấy mapping, CI plan hiện destroy/create khổng lồ, ai đó approve vội → mất dữ liệu. Quy tắc: PR refactor Terraform phải có {{moved}} block hoặc mô tả rõ {{state mv}} đã chạy.
+- **{{terraform state rm}} nhầm**: xóa resource khỏi state không xóa trên cloud, nhưng lần plan sau Terraform muốn **tạo lại** (vì code vẫn còn) → conflict tên/ID. Luôn {{plan}} ngay sau {{state mv/rm}}.
+- **Tách state nhưng quên import**: tạo state mới với code copy sang, apply → Terraform tạo resource trùng tên → lỗi "already exists" hoặc tệ hơn là tạo bản thứ hai.
+- **{{terraform_remote_state}} đọc state chưa có output**: consumer plan fail. Đảm bảo thứ tự apply: networking trước, app sau. Dùng {{depends_on}} gián tiếp qua CI pipeline ordering.
+- **Count/for_each thay đổi index**: đổi từ {{count}} sang {{for_each}}, hoặc đổi key, cũng làm địa chỉ thay đổi → cần {{moved}} block cho từng phần tử. Đây là nguồn destroy/create bất ngờ phổ biến nhất.
+
+> Senior tip: Đặt quy tắc team — "mọi thay đổi địa chỉ resource phải đi kèm {{moved}} block trong cùng PR, và CI phải fail nếu plan có destroy trên resource có tag {{prevent_destroy}} hoặc là database/storage". Với monolith state trên 100 resource, ưu tiên tách theo vòng đời (networking + data layer tách riêng, app layer tách riêng) trước — đó là nơi blast radius giảm nhiều nhất với effort thấp nhất.`,
+    follow: [
+      'Bạn đang đổi một resource từ {{count}} sang {{for_each}}. Viết {{moved}} block để ánh xạ {{aws_subnet.private[0]}} sang {{aws_subnet.private["ap-southeast-1a"]}} và giải thích tại sao không làm sẽ gây mất subnet.',
+      'Khi nào bạn chọn {{terraform_remote_state}} thay vì dùng {{data}} source trực tiếp (ví dụ {{data "aws_vpc"}}) để lấy thông tin từ stack khác? Trade-off về coupling và độ tin cậy?',
+      'State bị hỏng (corrupt) sau một lần {{state mv}} lỗi giữa chừng trên local. Backend S3 có versioning. Bạn khôi phục thế nào, và làm sao ngăn lặp lại?'
+    ],
+    tags: ['Terraform', 'state mv', 'moved block', 'import', 'terraform_remote_state', 'refactoring']
+  },
+  {
+    id: 'devops-051',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Hệ thống có 20 microservice Java gửi metrics, traces và logs. Chi phí observability tăng gấp 3 trong 6 tháng. Bạn thiết kế OpenTelemetry Collector pipeline (receivers, processors, exporters) như thế nào để giảm chi phí mà vẫn giữ được dữ liệu quan trọng? Giải thích tail-based sampling và trade-off của nó.',
+    a: `**Tóm tắt:** **OpenTelemetry Collector** (OTel Collector, hay otelcol) là một "trạm trung chuyển" telemetry: nhận dữ liệu quan sát (metrics, traces, logs) từ ứng dụng, xử lý (lọc, gom lô, lấy mẫu, che dữ liệu nhạy cảm), rồi xuất sang các backend (Prometheus, Tempo, Loki, Datadog...). Kiến trúc pipeline gồm 3 thành phần: **receivers** (nhận vào), **processors** (xử lý giữa chừng), **exporters** (gửi ra). Để giảm chi phí mà không mất tín hiệu quan trọng, dùng **tail-based sampling** (quyết định giữ/bỏ trace sau khi thấy toàn bộ trace — giữ 100% trace lỗi và chậm, lấy mẫu ngẫu nhiên phần còn lại), kết hợp lọc span không cần thiết (health check, static asset), và kiểm soát cardinality metrics.
+
+### Thuật ngữ nền
+
+- **Telemetry (dữ liệu quan sát)**: 3 loại chính — **metrics** (số đo theo thời gian, rẻ, ví dụ: request/s, CPU%), **traces** (bản ghi đường đi của 1 request qua nhiều service), **logs** (ghi chép chi tiết từng sự kiện).
+- **OpenTelemetry (OTel)**: bộ tiêu chuẩn mở (spec + SDK + công cụ) để thu thập telemetry. Thay thế các SDK riêng lẻ (Jaeger client, Zipkin, vendor agent).
+- **OTel Collector**: tiến trình trung gian (chạy dạng DaemonSet, sidecar, hoặc Deployment riêng) nhận telemetry qua giao thức OTLP (OpenTelemetry Protocol) hoặc các giao thức khác, xử lý, rồi chuyển tiếp.
+- **Pipeline**: chuỗi xử lý trong Collector — dữ liệu đi từ receiver → processor(s) → exporter. Một Collector có thể có nhiều pipeline (traces, metrics, logs riêng).
+- **Sampling (lấy mẫu)**: chỉ giữ một phần traces để giảm chi phí lưu trữ/xử lý. **Head-based**: quyết định ngay khi trace bắt đầu (rẻ, đơn giản, nhưng có thể bỏ sót trace lỗi). **Tail-based**: quyết định sau khi trace hoàn thành (giữ được trace lỗi/chậm, nhưng tốn RAM và phức tạp).
+- **Cardinality**: số lượng chuỗi time-series duy nhất của một metric. Tag {{userId}} với 1 triệu user = 1 triệu chuỗi → Prometheus/TSDB quá tải và tốn tiền.
+
+### Ví dụ đời thường
+
+OTel Collector giống trạm phân loại bưu phẩm trung tâm. **Receivers** là các cửa nhận hàng từ nhiều nguồn (bưu điện, xe tải, chuyển phát). **Processors** là dây chuyền phân loại: gộp bưu phẩm nhỏ thành lô (batch), loại bỏ thư rác/quảng cáo (filter), kiểm tra gói nào quan trọng để giữ nguyên — gói có khiếu nại (trace lỗi) luôn được giữ, gói bình thường chỉ giữ 10% ngẫu nhiên (sampling). **Exporters** là xe chuyển đến các kho khác nhau (kho lưu trữ dài hạn, kho tra cứu nhanh, kho phân tích).
+
+### Cấu trúc pipeline
+
+~~~yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317    # app gửi trace/metric/log qua gRPC
+      http:
+        endpoint: 0.0.0.0:4318    # hoặc HTTP
+
+processors:
+  memory_limiter:                   # BẢO VỆ: tránh Collector OOM
+    check_interval: 5s
+    limit_mib: 1500
+    spike_limit_mib: 500
+
+  batch:                            # GỘP LÔ: giảm số request ra backend
+    send_batch_size: 1024
+    timeout: 5s
+
+  attributes:                       # CHE DỮ LIỆU NHẠY CẢM
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: db.statement
+        action: hash              # hash SQL thay vì gửi nguyên văn
+
+  filter/traces:                    # LỌC: bỏ span không có giá trị
+    traces:
+      span:
+        - 'attributes["http.route"] == "/actuator/health"'
+        - 'attributes["http.route"] == "/actuator/prometheus"'
+        - 'attributes["url.path"] == "/favicon.ico"'
+
+  tail_sampling:                    # LẤY MẪU THÔNG MINH
+    decision_wait: 30s            # chờ 30s để thu đủ span của trace
+    num_traces: 100000            # buffer tối đa trace đang chờ quyết định
+    policies:
+      - name: errors
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: slow
+        type: latency
+        latency: { threshold_ms: 2000 }
+      - name: baseline
+        type: probabilistic
+        probabilistic: { sampling_percentage: 10 }
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo.monitoring.svc:4317
+    tls: { insecure: true }
+  prometheusremotewrite:
+    endpoint: http://mimir.monitoring.svc/api/v1/push
+  loki:
+    endpoint: http://loki.monitoring.svc/loki/api/v1/push
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/traces, tail_sampling, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes, batch]
+      exporters: [loki]
+~~~
+
+### Tail-based sampling: cách hoạt động và trade-off
+
+~~~seq
+title: Tail-based sampling quyết định giữ trace
+actors: Service A | Service B | OTel Collector | Tempo
+Service A -> OTel Collector: Span 1 (root, HTTP 200, 50ms)
+Service B -> OTel Collector: Span 2 (child, DB query, 30ms)
+Service A -> OTel Collector: Span 3 (HTTP 500, 2100ms)
+OTel Collector -> OTel Collector: Đợi decision_wait (30s)
+OTel Collector -> OTel Collector: Trace có lỗi + chậm → policy match
+OTel Collector -> Tempo: Gửi toàn bộ trace (3 span)
+~~~
+
+**Cách hoạt động**: Collector gom tất cả span thuộc cùng {{traceId}} vào buffer, đợi {{decision_wait}} giây (đủ để span từ service chậm nhất đến), rồi áp dụng policy theo thứ tự. Trace khớp bất kỳ policy "giữ" nào (lỗi, chậm) → giữ toàn bộ. Không khớp → rơi vào policy {{probabilistic}} (10%).
+
+**Trade-off**:
+
+| Khía cạnh | Head-based sampling | Tail-based sampling |
+|---|---|---|
+| Quyết định | Ngay tại span đầu tiên | Sau khi có đủ span (chờ 30s+) |
+| Trace lỗi/chậm | Có thể bị bỏ sót | Giữ 100% (nếu policy đúng) |
+| Tài nguyên Collector | Thấp (không cần buffer) | Cao (RAM cho buffer {{num_traces}}) |
+| Độ phức tạp | Đơn giản, cấu hình ở SDK | Cần Collector tập trung, stateful |
+| Load balancing | Không cần | **Bắt buộc**: mọi span cùng traceId phải đến cùng 1 Collector instance |
+
+### Vấn đề load balancing với tail sampling
+
+Trace đi qua nhiều service → span của cùng 1 trace đến từ nhiều Pod khác nhau. Nếu Collector chạy nhiều replica (Deployment), span của cùng trace có thể rơi vào replica khác nhau → mỗi replica chỉ thấy một phần trace, quyết định sai. Giải pháp: dùng **load balancing exporter** (hoặc OTel Collector {{loadbalancing}} exporter) ở tầng đầu, route theo {{traceId}} hash để đảm bảo cùng trace → cùng Collector instance.
+
+~~~yaml
+# Collector tầng 1 (DaemonSet, nhận từ app): chỉ route
+exporters:
+  loadbalancing:
+    routing_key: "traceID"
+    protocol:
+      otlp: { tls: { insecure: true } }
+    resolver:
+      dns:
+        hostname: otel-collector-sampling.monitoring.svc
+# Collector tầng 2 (StatefulSet/Deployment, có tail_sampling): xử lý
+~~~
+
+### Giảm chi phí metrics
+
+- **Lọc metric không dùng**: {{filter/metrics}} processor bỏ metric mà không dashboard/alert nào query.
+- **Giảm cardinality**: không dùng {{userId}}, {{requestId}}, URL có path param thật (ví dụ {{/orders/12345}}) làm label. Dùng {{http.route}} với template (ví dụ {{/orders/:id}} hoặc route pattern của framework). Cấu hình ở SDK (Micrometer {{MeterFilter}}) **và** ở Collector ({{attributes}} processor) — hai lớp phòng thủ.
+- **Giảm tần suất scrape/export**: metric ít thay đổi (JVM version info) không cần export mỗi 15s.
+
+### Bẫy thực tế
+
+- **{{decision_wait}} quá ngắn**: trace qua 5 service, service cuối chậm → span cuối đến sau khi Collector đã quyết định bỏ trace → mất span. Đặt {{decision_wait}} ≥ p99 latency end-to-end của luồng chậm nhất.
+- **{{num_traces}} buffer quá nhỏ**: traffic cao giờ peak, buffer đầy → Collector rơi trace mới (hoặc quyết định sớm) → mất dữ liệu đúng lúc cần nhất. Giám sát metric "dropped too early/early decisions" của {{tail_sampling}} processor (tên metric có thể khác theo phiên bản Collector; bật telemetry nội bộ để xem).
+- **Tail sampling nhưng không có load balancing exporter**: chạy 3 replica Collector, trace bị chia mảnh → policy "errors" không thấy span lỗi (nằm ở replica khác) → trace lỗi bị bỏ. Đây là lỗi cấu hình phổ biến nhất.
+- **{{memory_limiter}} đặt sau {{tail_sampling}}**: buffer tail sampling ăn RAM trước, memory_limiter không kịp can thiệp → Collector OOM. **memory_limiter phải là processor đầu tiên** trong pipeline.
+- **Lọc health check ở SDK nhưng quên ở Collector**: nếu có service khác (không phải Java, không dùng SDK chung) vẫn gửi health span → vẫn tốn tiền. Lọc ở Collector là lưới an toàn chung.
+
+> Senior tip: Bắt đầu bằng **head-based 10% + giữ 100% lỗi** ở SDK (đơn giản, không cần infrastructure thêm). Khi chi phí vẫn cao hoặc cần "giữ trace chậm" chính xác, mới chuyển sang tail sampling — nhưng phải đầu tư đúng: 2 tầng Collector (gateway route + sampling stateful), giám sát buffer/drop metrics, và test với traffic thật. Chi phí vận hành tail sampling (RAM, complexity) đôi khi lớn hơn tiền tiết kiệm được nếu hệ thống nhỏ; với 20 service Java traffic trung bình, head-based sampling + filter health check thường đã giảm 60–80% chi phí trace.`,
+    follow: [
+      'Tại sao {{memory_limiter}} phải đứng đầu danh sách processors? Điều gì xảy ra nếu bạn đặt nó sau {{tail_sampling}} và {{batch}}?',
+      'Service A gọi B gọi C. Span lỗi xảy ra ở C (cuối chuỗi), nhưng {{decision_wait}} hết trước khi span C đến Collector. Trace có được giữ không? Bạn cấu hình gì để giảm rủi ro này?',
+      'So sánh chi phí và độ phức tạp giữa: (1) head-based 5% ở mọi SDK, (2) tail sampling tập trung ở Collector, (3) gửi 100% trace sang backend có tính năng sampling (Jaeger/Tempo). Khi nào chọn phương án nào?'
+    ],
+    tags: ['OpenTelemetry', 'OTel Collector', 'tail sampling', 'receivers processors exporters', 'observability cost']
+  },
+  {
+    id: 'devops-052',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Team dùng GitOps (Argo CD) để deploy, nhưng mật khẩu database và API key không được commit vào Git. Bạn so sánh Sealed Secrets, External Secrets Operator và SOPS: mỗi cách hoạt động thế nào, khi nào chọn cái nào, và rủi ro khi rotation (xoay mật khẩu) là gì?',
+    a: `**Tóm tắt:** Trong GitOps, Git là "nguồn sự thật" cho mọi thứ — nhưng secret (mật khẩu, API key, chứng chỉ) không được lưu dạng plaintext trong Git. Ba giải pháp phổ biến: **Sealed Secrets** mã hóa secret bằng public key của controller trong cluster, commit bản mã hóa vào Git (Git chứa ciphertext an toàn); **SOPS** mã hóa field nhạy cảm trong file YAML bằng key từ KMS/age/PGP, cũng commit vào Git; **External Secrets Operator (ESO)** không lưu secret trong Git mà lưu **tham chiếu** (reference) trỏ tới secret manager bên ngoài (AWS Secrets Manager, Vault, GCP Secret Manager), ESO đồng bộ giá trị thật vào Kubernetes Secret. Chọn dựa trên: ai quản lý secret, tần suất rotation, yêu cầu audit, và mức độ phức tạp vận hành.
+
+### Thuật ngữ nền
+
+- **Secret (bí mật)**: thông tin nhạy cảm như mật khẩu DB, API key, TLS private key. Trong Kubernetes, {{Secret}} là resource lưu dạng base64 (không phải mã hóa) — ai có quyền đọc {{Secret}} trong namespace đều thấy plaintext.
+- **GitOps**: mô hình vận hành: mọi cấu hình (Deployment, Service, ConfigMap, Secret...) được khai báo trong Git, một agent (Argo CD, Flux) tự động đồng bộ Git → cluster. Git = nguồn sự thật duy nhất.
+- **Mã hóa bất đối xứng**: dùng cặp key — **public key** để mã hóa (ai cũng có), **private key** để giải mã (chỉ controller/owner giữ). Sealed Secrets dùng cách này.
+- **Mã hóa đối xứng / envelope encryption**: dùng key để mã hóa dữ liệu, key đó được bảo vệ bởi key khác (KMS). SOPS dùng envelope encryption.
+- **Secret manager**: dịch vụ chuyên lưu secret (AWS Secrets Manager, HashiCorp Vault, Azure Key Vault). Cung cấp: lưu trữ mã hóa, access control, audit log, rotation tự động.
+- **Rotation (xoay secret)**: thay mật khẩu/key định kỳ hoặc khi nghi ngờ lộ. Thách thức: cập nhật giá trị ở nguồn, đồng bộ xuống cluster, và ứng dụng phải nhận giá trị mới.
+
+### Ví dụ đời thường
+
+Giống quản lý chìa khóa văn phòng. **Sealed Secrets**: bạn bỏ chìa vào hộp khóa (mã hóa bằng public key), dán nhãn và để trên bàn lễ tân (commit vào Git) — ai cũng thấy hộp nhưng chỉ người có chìa hộp (controller trong cluster) mới mở được. **SOPS**: bạn viết danh sách chìa khóa vào sổ, nhưng mã hóa từng dòng nhạy cảm bằng mật khẩu két sắt công ty (KMS key) — sổ để trên bàn, đọc được cấu trúc nhưng không đọc được nội dung nhạy cảm. **External Secrets Operator**: sổ trên bàn chỉ ghi "chìa phòng A: xem ngăn số 5 trong két sắt ngân hàng" (tham chiếu) — nhân viên (ESO) tự đi lấy chìa thật từ két sắt (secret manager) khi cần.
+
+### Cách 1: Sealed Secrets (Bitnami)
+
+~~~seq
+title: Sealed Secrets — mã hóa tại chỗ, giải mã trong cluster
+actors: Developer | Git Repo | Argo CD | SealedSecret Controller | K8s Secret
+Developer -> Developer: kubeseal --cert pub.pem < secret.yaml > sealed.yaml
+Developer -> Git Repo: Commit sealed.yaml (ciphertext an toàn)
+Argo CD -> SealedSecret Controller: Sync SealedSecret CRD vào cluster
+SealedSecret Controller -> K8s Secret: Giải mã bằng private key → tạo Secret
+~~~
+
+~~~yaml
+# sealed-secret.yaml — commit được vào Git
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: db-credentials
+  namespace: app
+spec:
+  encryptedData:
+    password: AgBy3i4OJSWK+PiTySYZZA9rO43cGDEq...  # ciphertext
+    username: AgCtr8jKL...                            # ciphertext
+~~~
+
+- **Ưu điểm**: đơn giản, không cần infrastructure ngoài. Git chứa đầy đủ (kể cả secret đã mã hóa) → GitOps thuần túy. Phù hợp team nhỏ, cluster ít.
+- **Nhược điểm**: rotation khó — đổi mật khẩu phải tạo SealedSecret mới, commit, đợi Argo sync. **Mất private key của controller** (disaster recovery không backup key) = không giải mã được toàn bộ SealedSecret → phải tạo lại tất cả. Audit yếu (không biết ai đọc secret khi nào). Scope mặc định gắn theo namespace/name — đổi tên hoặc chuyển namespace cần re-seal.
+
+### Cách 2: SOPS (Mozilla, nay CNCF)
+
+~~~yaml
+# secret.enc.yaml — mã hóa bằng SOPS + AWS KMS
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+stringData:
+  username: ENC[AES256_GCM,data:abc123==,iv:...,tag:...,type:str]
+  password: ENC[AES256_GCM,data:xyz789==,iv:...,tag:...,type:str]
+sops:
+  kms:
+    - arn: arn:aws:kms:ap-southeast-1:123456:key/abcd-1234
+  # metadata SOPS: version, mac, ...
+~~~
+
+Argo CD cần plugin ({{ksops}}, {{helm-secrets}}) để giải mã khi sync. Hoặc dùng Flux có hỗ trợ SOPS native.
+
+- **Ưu điểm**: linh hoạt (mã hóa chỉ field nhạy cảm, phần còn lại đọc được trong Git). Hỗ trợ nhiều backend key (AWS KMS, GCP KMS, Azure Key Vault, age, PGP). Tốt cho Helm values, Kustomize overlay.
+- **Nhược điểm**: CI/CD và Argo CD cần quyền truy cập KMS key để giải mã → quản lý IAM phức tạp. Rotation tương tự Sealed Secrets (sửa file, mã hóa lại, commit). Không có audit "ai đọc secret lúc runtime". Merge conflict trên file mã hóa khó giải quyết.
+
+### Cách 3: External Secrets Operator (ESO)
+
+~~~yaml
+# external-secret.yaml — chỉ chứa THAM CHIẾU, commit vào Git
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: db-credentials
+  namespace: app
+spec:
+  refreshInterval: 1h             # đồng bộ lại mỗi 1 giờ
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  target:
+    name: db-credentials           # tên K8s Secret sẽ được tạo
+    creationPolicy: Owner
+  data:
+    - secretKey: password          # key trong K8s Secret
+      remoteRef:
+        key: prod/payment/db       # path trong AWS Secrets Manager
+        property: password         # field trong secret JSON
+    - secretKey: username
+      remoteRef:
+        key: prod/payment/db
+        property: username
+~~~
+
+~~~yaml
+# ClusterSecretStore — cấu hình kết nối tới secret manager (1 lần)
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: ap-southeast-1
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: eso-sa
+            namespace: external-secrets   # dùng IRSA (IAM Roles for Service Accounts)
+~~~
+
+- **Ưu điểm**: secret thật không bao giờ nằm trong Git. **Rotation dễ**: đổi mật khẩu trong AWS Secrets Manager → ESO tự đồng bộ (theo {{refreshInterval}}) → K8s Secret cập nhật. Audit tập trung ở secret manager (ai đọc, khi nào). Hỗ trợ nhiều backend (AWS, Vault, GCP, Azure, 1Password...).
+- **Nhược điểm**: thêm dependency (ESO operator + secret manager). Cần IAM/auth setup. Nếu secret manager down, ESO không sync được secret mới (nhưng Secret cũ trong cluster vẫn còn). Chi phí dịch vụ secret manager.
+
+### So sánh tổng quan
+
+| Tiêu chí | Sealed Secrets | SOPS | External Secrets Operator |
+|---|---|---|---|
+| Secret trong Git | Ciphertext (mã hóa toàn bộ) | Ciphertext (mã hóa field) | Chỉ tham chiếu (không có giá trị) |
+| Nguồn sự thật | Git | Git | Secret manager bên ngoài |
+| Rotation | Thủ công: re-seal, commit, sync | Thủ công: re-encrypt, commit | Tự động: đổi ở manager, ESO sync |
+| Audit đọc secret | Không | Không | Có (tại secret manager) |
+| Hạ tầng thêm | Controller trong cluster | KMS/age key | ESO + secret manager |
+| GitOps thuần túy | Cao | Cao | Trung bình (Git không có giá trị) |
+| Phù hợp | Team nhỏ, ít secret, ít rotation | Helm values, nhiều môi trường | Production, rotation thường xuyên, compliance |
+
+### Rotation: vấn đề mà nhiều team bỏ quên
+
+Xoay mật khẩu DB trong secret manager (hoặc tạo SealedSecret mới) chỉ là **bước 1**. Bước 2 khó hơn: **ứng dụng phải nhận giá trị mới**.
+
+- **Kubernetes Secret cập nhật**: ESO/SOPS controller cập nhật {{Secret}} resource. Nhưng Pod đang chạy **không tự reload** — env var được inject lúc Pod khởi động, volume mount cập nhật chậm (kubelet sync, có thể 1–2 phút) nhưng app phải đọc lại file.
+- **Giải pháp**:
+  - **Restart Pod có kiểm soát**: dùng {{Reloader}} (Stakater) — watcher tự trigger rolling restart Deployment khi Secret/ConfigMap đổi. Đơn giản, an toàn với rolling update.
+  - **Spring Cloud Kubernetes / Spring Cloud Vault**: app tự reload property khi Secret đổi (cần cấu hình {{@RefreshScope}}). Phức tạp hơn, không phải mọi bean đều refresh đúng.
+  - **Vault dynamic secrets**: Vault tạo credential DB tạm thời (TTL 1h), tự revoke. ESO hoặc Vault Agent Injector cấp credential mới. App dùng connection pool phải hỗ trợ reconnect (HikariCP {{maxLifetime}} < TTL của credential).
+  - **Chấp nhận downtime ngắn**: rotation trong maintenance window, restart app. Đơn giản nhất cho team nhỏ.
+
+### Bẫy thực tế
+
+- **Commit plaintext Secret rồi chuyển sang Sealed Secrets**: plaintext vẫn nằm trong Git history. Phải rotate secret đó (đổi mật khẩu thật) + dùng {{git filter-repo}} hoặc BFG để xóa history (và force push — phối hợp team).
+- **Sealed Secrets controller key không backup**: cluster rebuild hoặc migrate → private key mất → toàn bộ SealedSecret không giải mã được. Backup key bằng {{kubectl get secret -n kube-system -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml}} và lưu an toàn (ví dụ Vault).
+- **ESO {{refreshInterval}} quá dài**: rotation ở secret manager xong nhưng ESO chưa sync (còn 50 phút) → app vẫn dùng mật khẩu cũ, mật khẩu cũ đã bị revoke → lỗi kết nối. Đặt interval phù hợp (5m–15m cho secret quan trọng) hoặc trigger sync thủ công.
+- **Argo CD diff luôn hiện "OutOfSync"**: ESO tạo Secret với metadata/annotation mà Git manifest không có → Argo CD thấy khác. Cấu hình {{ignoreDifferences}} trong Argo CD Application cho Secret do ESO quản lý.
+- **App cache connection với credential cũ**: DB password đổi, Secret cập nhật, Pod restart — nhưng connection pool giữ connection cũ (vẫn hoạt động với một số DB cho đến khi connection bị đóng). Hiểu behavior của DB và pool.
+
+> Senior tip: Với team mới bắt đầu GitOps, **Sealed Secrets** là điểm khởi đầu hợp lý (ít thành phần, GitOps thuần). Khi số secret tăng, cần rotation tự động, hoặc audit/compliance yêu cầu truy vết — chuyển sang **ESO + AWS Secrets Manager/Vault**. Đừng trộn 3 cách trong cùng cluster nếu không có quy ước rõ ràng (mỗi namespace một pattern) — sẽ gây nhầm lẫn "secret này quản lý ở đâu?". Dù dùng cách nào, luôn cấu hình **encryption at rest** cho etcd (KMS provider) và RBAC chặt cho phép đọc {{secrets}} resource.`,
+    follow: [
+      'Bạn dùng ESO với AWS Secrets Manager. DBA vừa rotate mật khẩu RDS. Mô tả toàn bộ chuỗi từ lúc đổi mật khẩu đến khi app Java dùng mật khẩu mới, kể cả trường hợp app dùng HikariCP connection pool.',
+      'Sealed Secrets: controller bị xóa và redeploy, private key cũ mất. Cluster đang chạy bình thường (Secret đã được giải mã). Bạn khôi phục khả năng GitOps cho các SealedSecret hiện có như thế nào?',
+      'Khi nào SOPS phù hợp hơn ESO? Cho một ví dụ cụ thể về Helm values file chứa cả config thường và config nhạy cảm.'
+    ],
+    tags: ['Sealed Secrets', 'External Secrets Operator', 'SOPS', 'GitOps secrets', 'secret rotation']
+  },
+  {
+    id: 'devops-053',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java deploy lên Kubernetes. Bạn cấu hình HPA (Horizontal Pod Autoscaler) nhưng gặp 3 vấn đề: (1) scale-up quá chậm khi traffic tăng đột ngột, (2) scale-down quá nhanh gây mất Pod đang warm-up, (3) CPU metric không phản ánh tải thật vì JVM GC chiếm CPU. Bạn giải quyết từng vấn đề thế nào? Giải thích stabilization window, custom metrics, và JVM warm-up.',
+    a: `**Tóm tắt:** **HPA** tự động tăng/giảm số Pod dựa trên metric (CPU, memory, hoặc custom metric). Ba vấn đề thường gặp với Java: (1) scale-up chậm vì HPA đánh giá mỗi 15s + Pod mới cần 30–90s để JVM khởi động và JIT warm-up → dùng {{behavior.scaleUp}} aggressive hơn, minReplicas buffer, và tối ưu startup; (2) scale-down nhanh giết Pod vừa warm-up xong → dùng {{stabilizationWindowSeconds}} dài cho scaleDown và {{terminationGracePeriodSeconds}} đủ; (3) CPU metric bị nhiễu bởi GC pause → dùng custom metric gần tải thật hơn (RPS, p99 latency, queue depth) qua Prometheus Adapter hoặc KEDA.
+
+### Thuật ngữ nền
+
+- **HPA (Horizontal Pod Autoscaler)**: controller Kubernetes tự điều chỉnh {{spec.replicas}} của Deployment/StatefulSet dựa trên metric. Công thức: {{desiredReplicas = ceil(currentReplicas × currentMetric / targetMetric)}}.
+- **Stabilization window (cửa sổ ổn định)**: khoảng thời gian HPA "nhìn lại" các đề xuất scale trước khi thực hiện. Chống dao động (flapping) — scale lên rồi xuống rồi lên liên tục. Mặc định: scale-down 300s, scale-up 0s.
+- **Custom metric**: metric không phải CPU/memory của Pod, ví dụ: request per second, Kafka lag, queue length. Cần {{metrics-server}} cho CPU/memory, cần **Prometheus Adapter** hoặc **KEDA** cho custom/external metric.
+- **JVM warm-up**: sau khi JVM khởi động, code chạy chậm ở chế độ interpreted. JIT compiler (C1/C2) dần biên dịch hot path thành native code → throughput tăng, latency giảm. Quá trình này mất 30 giây đến vài phút tùy workload.
+- **GC (Garbage Collection)**: JVM tự dọn bộ nhớ. GC chiếm CPU — đặc biệt GC pause dài (Full GC) làm CPU spike nhưng không phải do traffic tăng.
+
+### Ví dụ đời thường
+
+HPA giống hệ thống điều hòa tự động. **CPU metric** giống cảm biến nhiệt độ đặt gần bếp — khi nấu ăn (GC chạy) nhiệt độ tăng dù phòng không có thêm người (traffic không tăng). **Stabilization window** giống bộ hẹn giờ: máy lạnh không tắt ngay khi nhiệt độ vừa đạt ngưỡng (tránh bật/tắt liên tục làm hỏng máy), mà chờ 5 phút xác nhận nhiệt độ ổn định. **JVM warm-up** giống xe máy mùa đông: mới nổ máy chạy yếu, cần đạp ga nhẹ vài phút mới êm — nếu bạn cho xe chạy chở hàng nặng ngay (route traffic vào Pod mới chưa warm), xe ì ạch (latency cao).
+
+### Vấn đề 1: Scale-up quá chậm
+
+**Nguyên nhân gộp**:
+- HPA check metric mỗi 15s ({{--horizontal-pod-autoscaler-sync-period}}).
+- Sau khi quyết định scale, Pod mới cần: scheduling (1–5s) + pull image (0s nếu cached) + JVM start (10–30s) + Spring context init (10–30s) + JIT warm-up (30–120s) + readiness probe pass.
+- Tổng cộng: 1–3 phút từ lúc traffic tăng đến lúc Pod mới thực sự phục vụ tốt.
+
+**Giải pháp**:
+
+~~~yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment-api
+  minReplicas: 3              # buffer: luôn đủ gánh tải bình thường
+  maxReplicas: 20
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: http_server_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "50"   # 50 RPS/Pod
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0     # phản ứng ngay khi metric vượt ngưỡng
+      policies:
+        - type: Percent
+          value: 100                    # cho phép tăng gấp đôi mỗi lần
+          periodSeconds: 60
+        - type: Pods
+          value: 4                      # hoặc thêm tối đa 4 Pod mỗi 60s
+          periodSeconds: 60
+      selectPolicy: Max                 # chọn policy cho phép scale nhanh nhất
+    scaleDown:
+      stabilizationWindowSeconds: 600   # chờ 10 phút trước khi scale down
+      policies:
+        - type: Percent
+          value: 10                     # giảm tối đa 10% mỗi 60s
+          periodSeconds: 60
+      selectPolicy: Min
+~~~
+
+**Tối ưu startup Java**:
+- **Startup probe** đủ dài: {{initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 24}} (cho phép 130s). Tránh kubelet giết Pod đang khởi động.
+- **Readiness probe** chỉ pass khi app thực sự sẵn sàng (DB connected, cache warmed). Không dùng {{/actuator/health}} mặc định nếu nó trả UP quá sớm.
+- **CDS (Class Data Sharing)**: {{java -Xshare:auto -XX:SharedArchiveFile=app.jsa}} giảm thời gian load class. Spring Boot 3.3+ hỗ trợ {{-Dspring.context.exit=onRefresh}} để tạo CDS archive.
+- **GraalVM native image**: startup ~50ms, nhưng trade-off: peak throughput thấp hơn JIT, build chậm, reflection cần cấu hình. Phù hợp serverless/scale-to-zero, cân nhắc cho service long-running.
+
+### Vấn đề 2: Scale-down quá nhanh giết Pod đang warm-up
+
+**Kịch bản**: traffic spike → HPA scale up 3 → 8 Pod → 5 Pod mới khởi động, đang warm-up → traffic giảm nhẹ → HPA scale down sau 15s (nếu stabilization = 0) → giết 2 Pod vừa warm-up xong → latency spike → HPA scale up lại → dao động.
+
+**Giải pháp**:
+- {{stabilizationWindowSeconds: 600}} cho scaleDown: HPA nhìn lại 10 phút, chỉ scale down nếu metric thấp ổn định suốt 10 phút.
+- {{terminationGracePeriodSeconds: 120}}: Pod nhận SIGTERM có 120s để xử lý hết request đang giữ (drain).
+- **PreStop hook**: {{sleep 10}} để load balancer/endpoint controller kịp gỡ Pod khỏi danh sách trước khi app ngừng nhận request.
+
+~~~yaml
+# Trong Pod spec
+terminationGracePeriodSeconds: 120
+containers:
+  - name: app
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sh", "-c", "sleep 10"]
+~~~
+
+- **PodDisruptionBudget** (PDB): {{minAvailable: 50%}} đảm bảo scale-down/rolling update không giết quá nhiều Pod cùng lúc.
+
+### Vấn đề 3: CPU metric không phản ánh tải thật
+
+**Kịch bản**: service Java I/O-bound (chờ DB, gọi HTTP). CPU thấp (20%) dù RPS cao và latency tăng. HPA không scale. Ngược lại, GC Full GC spike CPU lên 90% trong 2 giây → HPA muốn scale up dù traffic bình thường.
+
+**Giải pháp: custom metric gần tải thật hơn**
+
+| Metric | Khi nào dùng | Cách lấy |
+|---|---|---|
+| RPS (requests/second per Pod) | API service, tải tỷ lệ với request | Prometheus Adapter: {{http_server_requests_seconds_count}} rate |
+| p99 latency | SLA-driven, latency là thứ người dùng cảm nhận | Prometheus Adapter, cần cẩn thận (latency tăng do downstream → scale không giúp) |
+| Queue depth / consumer lag | Worker, Kafka consumer | KEDA scaler hoặc Prometheus Adapter |
+| Active connections / thread pool usage | Service có thread pool giới hạn | Micrometer gauge → Prometheus → Adapter |
+
+~~~yaml
+# Prometheus Adapter config (ConfigMap) — map PromQL thành custom metric
+rules:
+  - seriesQuery: 'http_server_requests_seconds_count{namespace!="",pod!=""}'
+    resources:
+      overrides:
+        namespace: { resource: "namespace" }
+        pod: { resource: "pod" }
+    name:
+      matches: "^(.*)_count$"
+      as: "http_requests_per_second"
+    metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+~~~
+
+**Lưu ý**: CPU metric vẫn hữu ích làm **sàn** (floor) — đặt 2 metric trong HPA (CPU + RPS), HPA lấy giá trị cao hơn (scale nhiều hơn). Tránh trường hợp RPS thấp nhưng 1 request chiếm 100% CPU.
+
+### Bẫy thực tế
+
+- **Không đặt {{requests.cpu}}**: HPA theo CPU tính {{currentMetric / targetMetric}} dựa trên {{requests}}. Không có request → HPA báo {{<unknown>}} → không scale.
+- **{{stabilizationWindowSeconds: 0}} cho cả scaleUp và scaleDown**: flapping nghiêm trọng. Luôn đặt scaleDown window dài (300–600s).
+- **Target RPS quá cao**: 1 Pod Java handle 200 RPS ở warm state nhưng chỉ 50 RPS lúc cold → HPA tính theo 200, scale ra ít Pod → Pod mới cold nhận traffic → latency spike. Đặt target theo throughput **cold/warm trung bình**, không phải peak benchmark.
+- **Custom metric lag**: Prometheus scrape mỗi 15–30s, Adapter query có delay → HPA quyết định dựa trên dữ liệu 30–60s trước. Kết hợp với {{minReplicas}} buffer cho burst.
+- **Readiness probe trả 200 ngay khi Spring context up**: traffic đổ vào Pod chưa JIT warm → p99 spike 5–10x trong 1–2 phút đầu. Dùng custom readiness: chỉ UP sau khi xử lý N request warm-up hoặc sau delay.
+
+> Senior tip: Với Java trên Kubernetes, HPA là **cần nhưng chưa đủ**. Công thức thực tế: (1) {{minReplicas}} đủ gánh baseline + buffer 30%, (2) HPA scale theo **RPS hoặc custom metric** (không chỉ CPU), (3) scaleUp nhanh + scaleDown chậm (stabilization 10 phút), (4) tối ưu startup (CDS, readiness đúng nghĩa), (5) PDB + graceful shutdown. Đo bằng load test: ramp traffic từ baseline lên 3x trong 2 phút, xem p99 có spike không và HPA mất bao lâu để ổn định — con số đó mới là "thời gian phản ứng thật" của hệ thống, không phải 15s sync period.`,
+    follow: [
+      'Bạn đặt HPA với 2 metric: CPU target 70% và RPS target 50/Pod. Lúc này CPU = 40%, RPS = 80/Pod. HPA tính desiredReplicas theo metric nào và tại sao?',
+      'Startup probe, liveness probe, readiness probe — mỗi cái ảnh hưởng thế nào đến HPA và traffic routing? Pod Java đang warm-up 60s: cấu hình 3 probe này ra sao?',
+      'Khi nào bạn chọn KEDA thay vì HPA + Prometheus Adapter? Cho ví dụ workload cụ thể mà HPA thuần không xử lý được.'
+    ],
+    tags: ['HPA', 'stabilization window', 'JVM warm-up', 'custom metrics', 'autoscaling', 'Prometheus Adapter']
+  },
+  {
+    id: 'devops-054',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Team deploy service Java bằng Argo Rollouts với chiến lược canary: 5% → 25% → 50% → 100%. Bạn cấu hình AnalysisTemplate dùng Prometheus metric để tự động promote hoặc rollback như thế nào? Khi nào canary tự động rollback sai (false positive), và khi nào nó bỏ sót lỗi thật (false negative)?',
+    a: `**Tóm tắt:** **Argo Rollouts** là công cụ progressive delivery cho Kubernetes, thay thế Deployment bằng CRD {{Rollout}} hỗ trợ canary và blue-green. **AnalysisTemplate** định nghĩa các "bài kiểm tra" (metric query, threshold) chạy trong mỗi bước canary — nếu metric vượt ngưỡng (ví dụ: error rate > 1%), rollout tự **abort** và scale canary về 0. Ngược lại, tất cả analysis pass → tự **promote** lên bước tiếp. Rủi ro: **false positive** (rollback oan) khi traffic thấp, metric nhiễu, hoặc baseline không ổn định; **false negative** (bỏ sót lỗi) khi sample quá nhỏ ở bước 5%, metric không đo đúng lỗi, hoặc cửa sổ quan sát quá ngắn.
+
+### Thuật ngữ nền
+
+- **Progressive delivery (triển khai tiến bộ)**: đưa phiên bản mới ra từ từ (1% → 5% → 25% → 100%) thay vì thay toàn bộ cùng lúc. Giảm blast radius (phạm vi ảnh hưởng) nếu có lỗi.
+- **Canary**: phiên bản mới nhận một phần nhỏ traffic thật để "thử". Tên lấy từ chuyện chim hoàng yến trong mỏ than — nếu chim ngất, thợ mỏ biết có khí độc.
+- **Argo Rollouts**: Kubernetes controller (CRD) mở rộng Deployment. Quản lý 2 ReplicaSet (stable + canary), điều phối traffic weight, chạy analysis.
+- **AnalysisTemplate / AnalysisRun**: {{AnalysisTemplate}} là "bài kiểm tra" tái sử dụng (query Prometheus, Web hook, Job...). {{AnalysisRun}} là instance chạy thực tế trong một rollout. Kết quả: {{Successful}}, {{Failed}}, {{Inconclusive}}.
+- **Promote / Abort**: promote = canary pass, chuyển sang bước tiếp hoặc hoàn tất (canary trở thành stable). Abort = analysis fail, rollback (scale canary về 0, stable nhận lại 100%).
+- **Baseline comparison**: so sánh metric của canary với stable (cùng thời điểm) thay vì so với ngưỡng cố định. Tránh false positive khi cả hệ thống đang có vấn đề (không phải do canary).
+
+### Ví dụ đời thường
+
+Giống mở chi nhánh nhà hàng mới. Thay vì đổi toàn bộ menu (deploy 100%) rồi phát hiện khách chê, bạn thử món mới với 5% khách (canary 5%), theo dõi: tỷ lệ phàn nàn có tăng không? Khách có quay lại không? Nếu 5% khách đầu ổn, mở rộng cho 25%. Nếu tỷ lệ phàn nàn gấp đôi → rút món mới (abort). Nhưng nếu chỉ có 10 khách thử (sample nhỏ), 1 người phàn nàn = 10% — nghe đáng sợ nhưng chưa đủ kết luận (false positive). Ngược lại, món mới có lỗi nhỏ chỉ 2% khách gặp — với 10 khách thử, có thể không ai gặp (false negative).
+
+### Cấu hình Rollout + AnalysisTemplate
+
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payment-api
+spec:
+  replicas: 10
+  strategy:
+    canary:
+      canaryService: payment-api-canary   # Service trỏ tới canary Pod
+      stableService: payment-api-stable   # Service trỏ tới stable Pod
+      trafficRouting:
+        nginx:
+          stableIngress: payment-api-ingress
+      steps:
+        - setWeight: 5
+        - pause: { duration: 5m }          # chờ 5 phút thu thập metric
+        - analysis:
+            templates:
+              - templateName: error-rate-check
+            args:
+              - name: service
+                value: payment-api-canary
+        - setWeight: 25
+        - pause: { duration: 10m }
+        - analysis:
+            templates:
+              - templateName: error-rate-check
+              - templateName: latency-check
+            args:
+              - name: service
+                value: payment-api-canary
+        - setWeight: 50
+        - pause: { duration: 10m }
+        - analysis:
+            templates:
+              - templateName: error-rate-check
+              - templateName: latency-check
+        - setWeight: 100
+      # Tự động rollback nếu analysis fail
+      abortScaleDownDelaySeconds: 30
+~~~
+
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-check
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: error-rate
+      interval: 60s                  # kiểm tra mỗi 60 giây
+      count: 5                       # chạy 5 lần
+      failureLimit: 2                # fail 2/5 lần → abort
+      successCondition: result[0] < 0.01   # error rate < 1%
+      failureCondition: result[0] >= 0.05  # error rate >= 5% → fail ngay
+      inconclusiveLimit: 3           # 3 lần inconclusive → inconclusive
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc:9090
+          query: |
+            sum(rate(http_server_requests_seconds_count{
+              service="{{ args.service }}", status=~"5.."
+            }[5m]))
+            /
+            sum(rate(http_server_requests_seconds_count{
+              service="{{ args.service }}"
+            }[5m]))
+~~~
+
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: latency-check
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: p99-latency
+      interval: 60s
+      count: 5
+      failureLimit: 2
+      successCondition: result[0] < 500    # p99 < 500ms
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_server_requests_seconds_bucket{
+                service="{{ args.service }}"
+              }[5m])) by (le)
+            ) * 1000
+~~~
+
+### Luồng canary với analysis
+
+~~~seq
+title: Argo Rollouts canary với auto analysis
+actors: Argo Rollouts | Canary Pod | Stable Pod | Prometheus | SRE
+Argo Rollouts -> Canary Pod: Deploy canary, setWeight 5%
+Argo Rollouts -> Argo Rollouts: Pause 5 phút
+Argo Rollouts -> Prometheus: Query error-rate (5 lần, mỗi 60s)
+Prometheus --> Argo Rollouts: result = 0.003 (OK)
+Argo Rollouts -> Canary Pod: setWeight 25%
+Argo Rollouts -> Prometheus: Query error-rate + p99
+Prometheus --> Argo Rollouts: error-rate = 0.08 (FAIL)
+Argo Rollouts -> Canary Pod: Abort — scale to 0
+Argo Rollouts -> Stable Pod: 100% traffic về stable
+Argo Rollouts -> SRE: Notification (Slack/webhook)
+~~~
+
+### False positive: rollback oan
+
+| Nguyên nhân | Ví dụ | Giảm thiểu |
+|---|---|---|
+| **Sample quá nhỏ** ở bước 5% | 5% của 100 RPS = 5 RPS. 1 lỗi = 20% error rate | Đặt {{count}} đủ lớn, tăng {{pause}} duration, dùng {{inconclusiveLimit}} (chưa đủ dữ liệu → chờ, không abort) |
+| **JVM cold start** của canary Pod | Pod mới warm-up 60s, p99 spike 3x → latency check fail | Warm-up: {{setCanaryScale}} tăng Pod trước {{setWeight}}, hoặc dùng readiness gate + delay analysis |
+| **Metric nhiễu** (noisy baseline) | Service vốn có error rate 0.5–2% dao động | Dùng **baseline comparison** (so canary vs stable cùng lúc) thay vì ngưỡng cố định |
+| **Lỗi do dependency, không phải canary** | DB chậm → cả stable và canary đều lỗi | Baseline comparison: canary error rate / stable error rate < 1.5 |
+| **{{failureLimit}} quá nhạy** | 1 lần fail trong 5 lần → abort, dù 4 lần kia OK | Đặt {{failureLimit: 2}} hoặc 3, kết hợp {{successCondition}} rõ ràng |
+
+**Baseline comparison** (Argo Rollouts hỗ trợ qua {{AnalysisTemplate}} với 2 query hoặc dùng Kayenta/Datadog):
+
+~~~yaml
+metrics:
+  - name: canary-vs-stable
+    interval: 60s
+    count: 5
+    failureLimit: 2
+    provider:
+      prometheus:
+        query: |
+          (
+            sum(rate(http_server_requests_seconds_count{service="{{args.canary}}",status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{service="{{args.canary}}"}[5m]))
+          ) - (
+            sum(rate(http_server_requests_seconds_count{service="{{args.stable}}",status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{service="{{args.stable}}"}[5m]))
+          )
+    successCondition: result[0] < 0.005    # canary chỉ được tệ hơn stable tối đa 0.5%
+~~~
+
+### False negative: bỏ sót lỗi thật
+
+| Nguyên nhân | Ví dụ | Giảm thiểu |
+|---|---|---|
+| **Sample quá nhỏ** ở 5% | Lỗi chỉ xảy ra với 1% request (edge case) → 5% traffic × 1% = 0.05% → có thể không thấy | Tăng traffic tổng, kéo dài pause, thêm bước 10% |
+| **Metric không đo đúng lỗi** | Canary trả HTTP 200 nhưng response body sai (logic bug) | Thêm **business metric** (tỷ lệ đơn hàng thành công, checksum) hoặc **synthetic test** (Job chạy test case) |
+| **Cửa sổ quan sát quá ngắn** | Memory leak: 5 phút đầu OK, 30 phút sau OOM | Thêm analysis chạy dài hơn ở bước cuối, giám sát memory trend |
+| **Lỗi chỉ xảy ra ở traffic pattern cụ thể** | Lỗi chỉ khi user gửi payload > 1MB, mà canary 5% chưa nhận request đó | Traffic mirroring (shadow traffic) trước canary, hoặc header-based routing để test với traffic cụ thể |
+| **Ngưỡng quá lỏng** | {{successCondition: result[0] < 0.05}} (5% error rate vẫn pass) | Đặt ngưỡng dựa trên SLO thực tế, review định kỳ |
+
+### Bẫy thực tế
+
+- **Không có {{failureCondition}}**: chỉ có {{successCondition}} → metric trả về giá trị "giữa" (không pass, không fail rõ) → kết quả {{Inconclusive}} lặp lại. Đặt cả {{failureCondition}} (abort nhanh khi rõ ràng tệ) và {{inconclusiveLimit}}.
+- **Prometheus query chia cho 0**: canary mới deploy, chưa có request → mẫu số = 0 → query trả NaN/Inf → analysis {{Inconclusive}} hoặc {{Error}}. Thêm điều kiện {{or vector(0)}} và xử lý trong query.
+- **Canary và stable dùng chung DB migration chưa tương thích**: canary chạy code mới cần cột mới, stable chạy code cũ — migration phải **backward-compatible** (expand-contract pattern). Canary analysis sẽ pass nhưng rollback sau đó có thể fail.
+- **{{abortScaleDownDelaySeconds}} quá ngắn**: abort xong, canary Pod bị xóa ngay → mất log/metric để debug. Đặt 30–60s hoặc giữ Pod ở trạng thái {{Paused}} để điều tra.
+
+> Senior tip: Canary analysis chỉ tốt bằng metric bạn đo. Bắt đầu với 2 metric: **error rate** (5xx) và **p99 latency** — so sánh baseline (canary vs stable), không dùng ngưỡng cố định. Thêm business metric (conversion, success rate) khi đã ổn định. Luôn có **manual gate** (bước {{pause}} không có duration, chờ {{kubectl argo rollouts promote}}) ở bước trước 100% cho service critical — tự động hóa hoàn toàn là mục tiêu, nhưng đến đó cần nhiều iteration tuning analysis. Ghi lại mọi lần false positive/negative và điều chỉnh {{failureLimit}}, {{count}}, {{interval}} — analysis template là "bộ test production", cần maintain như test code.`,
+    follow: [
+      'Tại sao baseline comparison (canary vs stable cùng thời điểm) tốt hơn ngưỡng cố định? Cho ví dụ cụ thể khi ngưỡng cố định gây false positive dù canary không có lỗi.',
+      'Bước canary 5% trên service có 20 RPS. Analysis chạy 5 lần, mỗi 60s. Mỗi lần query trung bình bao nhiêu request? Đủ để kết luận error rate 1% không? Bạn điều chỉnh gì?',
+      'Canary pass tất cả analysis, promote 100%. 2 giờ sau phát hiện memory leak (OOMKilled mỗi 3h). Analysis đã bỏ sót — bạn bổ sung analysis gì và ở bước nào?'
+    ],
+    tags: ['Argo Rollouts', 'canary', 'AnalysisTemplate', 'progressive delivery', 'Prometheus analysis']
+  },
+  {
+    id: 'devops-055',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Công ty có 20 team, mỗi team tự build CI/CD pipeline riêng cho service Java. Kết quả: 20 cách deploy khác nhau, onboarding dev mới mất 2 tuần chỉ để hiểu pipeline, và incident do pipeline lỗi tăng. Bạn thiết kế một Internal Developer Platform (IDP) với "golden path" như thế nào? Làm sao để team tự nguyện dùng mà không bị coi là áp đặt từ trên xuống?',
+    a: `**Tóm tắt:** **Internal Developer Platform (IDP)** là một lớp tự phục vụ (self-service) mà platform team xây dựng, giúp product team ship code nhanh mà không cần hiểu sâu hạ tầng. **Golden path** (đường mòn vàng) là "cách làm mặc định được hỗ trợ tốt nhất" — ví dụ: tạo service mới từ template → có sẵn CI/CD, observability, security scan, deploy lên Kubernetes — mọi thứ hoạt động trong 30 phút thay vì 2 tuần. Golden path không bắt buộc (team vẫn có thể đi đường khác), nhưng được thiết kế đủ tốt để team **muốn** dùng. Thành công phụ thuộc vào: giải quyết pain thật, co-design với team, đo lường adoption, và vận hành platform như một sản phẩm nội bộ.
+
+### Thuật ngữ nền
+
+- **IDP (Internal Developer Platform)**: tập hợp công cụ, template, API, UI mà platform team cung cấp để developer tự phục vụ (tạo service, deploy, xem log, tạo DB) mà không cần ticket cho ops. Ví dụ công cụ: Backstage (Spotify), Port, Humanitec.
+- **Platform team (đội nền tảng)**: team chuyên xây dựng và vận hành IDP. Khách hàng của họ là các product team (developer nội bộ), không phải end user.
+- **Golden path (đường mòn vàng)**: quy trình mặc định, được tài liệu hóa, được hỗ trợ, bao phủ 80% use case phổ biến. "Paved road" — đi trên đường này thì mượt; đi ra ngoài thì được phép nhưng tự chịu trách nhiệm.
+- **Self-service**: developer thực hiện thao tác (tạo service, provision DB, deploy) qua UI/CLI/API mà không cần chờ ai approve thủ công. Có guardrail (giới hạn, policy) tự động.
+- **Cognitive load (tải nhận thức)**: lượng kiến thức mà developer phải giữ trong đầu để làm việc. 20 pipeline khác nhau = cognitive load cao khi dev chuyển team.
+
+### Ví dụ đời thường
+
+Giống hệ thống đường trong thành phố. **Không có IDP**: mỗi khu dân cư tự đắp đường đất đến trung tâm — có đường rộng, đường hẹp, đường lầy; người mới chuyển nhà mất 2 tuần học đường. **Golden path**: thành phố xây đường nhựa chuẩn (template) nối mọi khu đến trung tâm, có biển chỉ dẫn (docs), đèn giao thông (CI/CD stages), camera giám sát (observability). Ai cũng có thể tự đắp đường riêng nếu cần, nhưng 90% người đi đường nhựa vì nhanh và an toàn. **Platform team** giống sở giao thông: họ không lái xe hộ, họ xây và bảo trì đường.
+
+### Thiết kế golden path cho service Java
+
+~~~text
+Golden Path: "Tạo service Java mới → Production trong 1 ngày"
+
+Bước 1: Developer chạy lệnh (hoặc dùng Backstage UI)
+  $ platform create-service --name order-service --type java-spring --team checkout
+
+Bước 2: Template tự động tạo:
+  ├── Git repo (order-service/)
+  │   ├── src/                    (Spring Boot skeleton)
+  │   ├── Dockerfile              (multi-stage, base image chuẩn)
+  │   ├── pom.xml                 (parent POM nội bộ, dependencies chuẩn)
+  │   ├── .gitlab-ci.yml          (pipeline chuẩn: build → test → scan → deploy)
+  │   ├── k8s/                     (Helm chart hoặc Kustomize base)
+  │   │   ├── deployment.yaml     (probes, resources, security context)
+  │   │   ├── service.yaml
+  │   │   └── hpa.yaml
+  │   ├── catalog-info.yaml       (Backstage metadata)
+  │   └── README.md               (hướng dẫn team-specific)
+  ├── CI/CD pipeline (đã cấu hình, chạy được ngay)
+  ├── Argo CD Application (GitOps, deploy tới staging)
+  ├── Grafana dashboard (RED metrics, tự tạo từ template)
+  ├── PagerDuty/OpsGenie service (on-call routing)
+  └── Slack channel #alerts-order-service
+
+Bước 3: Developer push code → pipeline chạy → deploy staging tự động
+Bước 4: Promote production qua merge request (có approval gate)
+~~~
+
+### Kiến trúc IDP (các thành phần)
+
+| Thành phần | Công cụ ví dụ | Chức năng |
+|---|---|---|
+| **Service catalog** | Backstage, Port | Danh mục tất cả service, owner, docs, status. "Ai sở hữu service X?" |
+| **Scaffolding/template** | Backstage Software Templates, Cookiecutter | Tạo service mới từ template chuẩn |
+| **CI/CD chuẩn** | Shared pipeline library (GitLab CI includes, GitHub reusable workflows) | Pipeline nhất quán: build, test, SAST, container scan, deploy |
+| **GitOps** | Argo CD, Flux | Deploy declarative, audit trail trong Git |
+| **Observability mặc định** | OTel SDK auto-instrumentation, Grafana dashboard template | Metrics, traces, logs có sẵn khi service tạo |
+| **Secret management** | ESO + AWS Secrets Manager | Self-service tạo secret, rotation tự động |
+| **Infrastructure self-service** | Crossplane, Terraform modules | Developer tự tạo DB, queue, bucket qua PR/YAML (có guardrail) |
+
+### Làm sao team tự nguyện dùng (không áp đặt)
+
+**1. Giải quyết pain thật, không phải pain tưởng tượng**
+
+Trước khi build, phỏng vấn 5–8 team: "Bạn mất thời gian nhất ở đâu khi ship code?" Câu trả lời thường là: "setup CI mất 3 ngày", "không biết config Kubernetes thế nào", "mỗi lần deploy production phải nhờ ops". Golden path phải giải quyết đúng những pain này — không phải build portal đẹp nhưng không ai cần.
+
+**2. Co-design, không phải hand-off**
+
+Mời developer từ 2–3 team tham gia thiết kế template và pipeline. Họ biết edge case thực tế. Khi họ góp phần xây, họ trở thành "champion" vận động team mình dùng. Platform team **không** build xong rồi ném qua tường.
+
+**3. Golden path, không phải golden cage**
+
+- Team **được phép** đi đường khác (custom pipeline, config riêng) — nhưng họ tự chịu trách nhiệm vận hành.
+- Golden path phải **opt-out dễ**, không phải opt-in khó. Mặc định = golden path; thoát ra = có lý do và tự support.
+- Cung cấp **extension point**: template cho phép override (ví dụ: thêm build step riêng) mà không fork toàn bộ pipeline.
+
+**4. Đo lường adoption bằng giá trị, không bằng mệnh lệnh**
+
+| Metric | Ý nghĩa | Mục tiêu |
+|---|---|---|
+| Time to first deploy (service mới) | Từ tạo repo đến deploy staging | < 1 ngày (trước: 2 tuần) |
+| Deployment frequency | Số lần deploy/tuần/team | Tăng (dễ deploy = deploy nhiều hơn) |
+| Lead time for changes | Commit → production | Giảm |
+| Adoption rate | % service dùng golden path | Theo dõi xu hướng, không đặt quota cứng |
+| Developer satisfaction (survey) | NPS/CSAT nội bộ | > 7/10 |
+
+Không bắt KPI "100% team phải dùng golden path trong Q3" — đó là áp đặt. Thay vào đó, cho thấy số liệu: "Team dùng golden path deploy nhanh gấp 5 lần, incident do pipeline giảm 60%."
+
+**5. Vận hành platform như sản phẩm nội bộ**
+
+- Platform team có **roadmap, backlog, sprint** — ưu tiên theo nhu cầu product team.
+- Có **support channel** (Slack #platform-help), SLA phản hồi.
+- **Docs, examples, migration guide** cho team muốn chuyển từ pipeline cũ.
+- **Changelog**: thông báo khi template/pipeline cập nhật, có migration path.
+- Thu thập feedback định kỳ (survey quý, office hours).
+
+### Bẫy thực tế
+
+- **Build platform trước khi hiểu vấn đề**: 6 tháng build portal Backstage đẹp, nhưng pain thật của team là "chờ ops cấp DB mất 2 tuần" — portal không giải quyết. Nói chuyện với team trước, build thứ đau nhất trước.
+- **Golden path quá cứng**: template không cho override gì → team có nhu cầu đặc biệt (gRPC service, batch job, ML pipeline) bị ép vào khuôn → họ fork template và không bao giờ quay lại. Thiết kế extension point.
+- **Platform team thành bottleneck**: mọi thay đổi pipeline phải qua platform team review/merge → team chờ đợi, platform team quá tải. Cho phép team contribute vào template (inner-source model), platform team review nhưng không phải người duy nhất sửa.
+- **Không maintain template**: template tạo 1 năm trước, dependency cũ, base image có CVE → service mới sinh ra đã nợ kỹ thuật. Lên lịch cập nhật template định kỳ, tự động PR bump dependency.
+- **Ép migration "big bang"**: yêu cầu 20 team chuyển pipeline trong 1 tháng → kháng cự, lỗi, burnout. Migration dần: team mới dùng golden path mặc định, team cũ migrate khi có dịp (refactor, thêm feature). Đặt deadline mềm, hỗ trợ migration.
+
+> Senior tip: IDP thành công khi developer **không nghĩ về platform** — họ chỉ thấy "tạo service mới mất 10 phút, deploy dễ, có dashboard sẵn". Đo lường thành công bằng "time to first deploy" và "developer satisfaction", không phải "số feature của platform". Bắt đầu nhỏ: 1 golden path cho 1 loại service phổ biến nhất (Spring Boot REST API), làm thật tốt, có 3–5 team dùng thành công và nói tốt về nó — rồi mới mở rộng. Platform team 2–3 người phục vụ 20 team là khả thi nếu golden path giảm 80% ticket ops, nhưng chỉ khi scope được kiểm soát chặt.`,
+    follow: [
+      'Một team muốn dùng Quarkus thay vì Spring Boot. Golden path chỉ hỗ trợ Spring Boot. Bạn xử lý thế nào — mở rộng golden path, cho team tự build, hay từ chối? Tiêu chí quyết định?',
+      'Làm sao bạn đo "cognitive load" giảm sau khi có IDP? Metric nào cụ thể, và bạn thu thập dữ liệu đó như thế nào?',
+      'Platform team có 3 người, 20 product team. 6 tháng sau, platform team trở thành bottleneck (mọi request đều chờ họ). Bạn tái cấu trúc vận hành thế nào?'
+    ],
+    tags: ['IDP', 'golden path', 'internal developer platform', 'platform team', 'developer experience']
+  },
+  {
+    id: 'devops-056',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Công ty có 8 team on-call, mỗi team 4–5 người xoay ca. Sau 6 tháng: 2 người nghỉ việc vì kiệt sức, alert channel có 200+ alert/tuần nhưng 70% là noise, và thời gian phản hồi incident thực sự chậm vì mọi người "chịu đựng" alert. Bạn thiết kế chính sách on-call bền vững: cấu trúc rota, giảm alert fatigue, và chuyển sang SLO-based alerting như thế nào?',
+    a: `**Tóm tắt:** On-call bền vững = người trực được nghỉ ngơi thực sự, chỉ bị đánh thức khi có vấn đề **thật sự ảnh hưởng người dùng**, và có đủ context/công cụ để xử lý. Ba trụ cột: (1) **Rota hợp lý** — xoay ca công bằng, có thời gian hồi phục, không để 1 người gánh quá nhiều; (2) **Giảm alert fatigue** — phân loại alert (page vs ticket vs log), xóa/điều chỉnh alert noise, đặt ngưỡng dựa trên triệu chứng (symptom) không phải nguyên nhân (cause); (3) **SLO-based alerting** — alert khi "ngân sách lỗi" (error budget) đang bị đốt nhanh, thay vì alert từng lỗi nhỏ lẻ. Mục tiêu: on-call nhận < 2 page/shift có thể hành động, và mọi page đều cần phản hồi thật.
+
+### Thuật ngữ nền
+
+- **On-call (trực ca)**: người được phân công sẵn sàng phản hồi sự cố ngoài giờ làm việc. Khi hệ thống cảnh báo nghiêm trọng (page), điện thoại/pager của họ reo.
+- **Rota (lịch xoay ca)**: lịch phân công ai trực khi nào. Ví dụ: tuần này bạn A trực, tuần sau bạn B.
+- **Alert fatigue (mệt mỏi vì cảnh báo)**: khi nhận quá nhiều alert (đặc biệt alert không cần hành động), người trực bắt đầu bỏ qua, phản hồi chậm, hoặc tắt thông báo — dẫn đến bỏ sót incident thật.
+- **Page (gọi khẩn)**: alert nghiêm trọng, đánh thức người trực ngay lập tức (điện thoại reo, SMS). Chỉ dùng cho vấn đề cần hành động **ngay bây giờ**.
+- **Ticket (tạo phiếu)**: alert quan trọng nhưng không khẩn — tạo ticket xử lý trong giờ làm việc.
+- **SLO (Service Level Objective)**: mục tiêu mức độ dịch vụ, ví dụ "99.9% request thành công trong 30 ngày" hoặc "p99 latency < 500ms". Đo bằng SLI (Service Level Indicator — số đo thực tế).
+- **Error budget (ngân sách lỗi)**: lượng lỗi "được phép" trong kỳ SLO. SLO 99.9% trong 30 ngày = cho phép 0.1% = ~43 phút downtime. Nếu đã dùng hết ngân sách, dừng release feature, tập trung reliability.
+- **Burn rate (tốc độ đốt)**: tốc độ error budget đang bị tiêu hao. Burn rate = 1 nghĩa là vừa đủ dùng hết budget cuối kỳ. Burn rate = 10 nghĩa là sẽ hết budget trong 1/10 thời gian (3 ngày nếu kỳ 30 ngày).
+
+### Ví dụ đời thường
+
+On-call giống bảo vệ trực đêm tòa nhà. **Alert fatigue** = hệ thống báo động reo 30 lần/đêm, 28 lần là mèo chạy qua cảm biến — đến lần thứ 29, bảo vệ tắt chuông. Lần thứ 30 là trộm thật. **SLO-based alerting** = thay vì báo mỗi lần cảm biến rung, chỉ báo khi "số lần rung bất thường trong 1 giờ vượt mức cho phép của tháng này" — tức là có vấn đề hệ thống, không phải mèo. **Rota bền vững** = bảo vệ trực 1 tuần rồi nghỉ 3 tuần, có người backup, và được bù ngày nghỉ sau ca trực đêm nhiều sự cố.
+
+### Trụ cột 1: Rota bền vững
+
+**Cấu trúc đề xuất (team 4–5 người)**:
+- **Primary + Secondary**: mỗi ca có 1 người trực chính, 1 người backup. Secondary chỉ bị gọi nếu primary không phản hồi trong 15 phút.
+- **Chu kỳ**: xoay tuần (1 tuần trực, 3–4 tuần nghỉ). Tránh xoay ngày (context switch nhiều) hoặc xoay 2 tuần (kiệt sức).
+- **Follow-the-sun** (nếu có team đa múi giờ): mỗi team chỉ trực giờ làm việc của họ. Tránh trực đêm — ảnh hưởng sức khỏe nghiêm trọng.
+- **Không follow-the-sun** (1 múi giờ): giới hạn giờ trực đêm. Ví dụ: 18:00–08:00 chỉ page cho severity 1 (ảnh hưởng > 50% user). Severity 2 chờ sáng.
+- **Compensation**: ca trực đêm/ngoài giờ được bù (tiền hoặc ngày nghỉ). Ca có nhiều incident → thêm ngày nghỉ hồi phục.
+
+**Quy tắc**:
+- Không ai trực > 1 tuần liên tiếp.
+- Sau ca có > 3 page đêm → ngày hôm sau được nghỉ hoặc làm nhẹ.
+- On-call không bị giao feature work deadline trong tuần trực (chỉ xử lý incident + cải thiện reliability).
+- Mỗi tháng review rota: có công bằng không? Ai bị page nhiều nhất? Tại sao?
+
+### Trụ cột 2: Giảm alert fatigue
+
+**Bước 1: Kiểm toán alert hiện tại (alert audit)**
+
+Với 200 alert/tuần, 70% noise = 140 alert vô nghĩa. Phân loại mỗi alert:
+
+| Hành động | Tiêu chí | Ví dụ |
+|---|---|---|
+| **Giữ + page** | Ảnh hưởng user ngay, cần hành động ngay | Error rate > 5% trong 5 phút, service down |
+| **Chuyển thành ticket** | Cần xử lý nhưng không khẩn | Disk 80% (còn 2 ngày), certificate hết hạn trong 14 ngày |
+| **Chuyển thành dashboard/log** | Thông tin tham khảo, không cần hành động | CPU spike ngắn, 1 pod restart (tự hồi phục) |
+| **Xóa** | Không ai hành động, không ai nhớ tại sao có | Alert "test-alert-do-not-remove" từ 2 năm trước |
+
+**Bước 2: Nguyên tắc thiết kế alert tốt**
+
+- **Alert trên triệu chứng (symptom), không phải nguyên nhân (cause)**: alert "user thấy lỗi 500" (symptom), không alert "CPU 90%" (cause — CPU cao chưa chắc user bị ảnh hưởng). CPU cao → xem dashboard; user bị lỗi → page.
+- **Mỗi alert phải có runbook**: link đến tài liệu "khi nhận alert này, làm gì đầu tiên". Alert không có runbook = alert không ai biết xử lý.
+- **Mỗi alert phải actionable**: nếu nhận alert mà không làm gì được (chờ hết, tự hồi phục) → đó không phải page, đó là noise.
+- **Deduplicate và group**: 1 service down gây 15 alert (health check fail, latency tăng, error rate tăng, downstream timeout...) → group thành 1 page với context.
+
+### Trụ cột 3: SLO-based alerting
+
+Thay vì alert từng metric riêng lẻ, alert khi **error budget bị đốt nhanh**.
+
+**Thiết lập SLO (ví dụ)**:
+
+~~~text
+Service: payment-api
+SLI: tỷ lệ request thành công (non-5xx) / tổng request
+SLO: 99.9% trong 30 ngày (rolling window)
+Error budget: 0.1% = ~43.2 phút downtime tương đương/tháng
+
+Burn rate alert (multi-window, multi-burn-rate):
+┌──────────────────────────────────────────────────────────────────┐
+│ Window dài  + Window ngắn (xác nhận) │ Burn rate │ Đốt budget  │ Hành động │
+│───────────────────────────────────────────────────────────────────│
+│ 1h  + 5m  đều vượt ngưỡng           │ 14.4x     │ 2% trong 1h │ PAGE      │
+│ 6h  + 30m đều vượt ngưỡng           │ 6x        │ 5% trong 6h │ PAGE      │
+│ 3 ngày vượt ngưỡng                   │ 1x        │ 10%/3 ngày  │ TICKET    │
+└──────────────────────────────────────────────────────────────────┘
+~~~
+
+**Prometheus alerting rule (ví dụ, burn rate 14.4x)**:
+
+~~~yaml
+# Alert khi đốt 2% error budget trong 1 giờ (burn rate 14.4x)
+# = nếu giữ tốc độ này, hết budget 30 ngày trong ~50 giờ
+groups:
+  - name: slo-payment-api
+    rules:
+      - alert: PaymentAPIHighBurnRate
+        expr: |
+          (
+            sum(rate(http_server_requests_seconds_count{service="payment-api",status=~"5.."}[1h]))
+            / sum(rate(http_server_requests_seconds_count{service="payment-api"}[1h]))
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum(rate(http_server_requests_seconds_count{service="payment-api",status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{service="payment-api"}[5m]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          service: payment-api
+        annotations:
+          summary: "payment-api đang đốt error budget rất nhanh (14.4x)"
+          runbook: "https://wiki.internal/runbooks/payment-api-errors"
+          dashboard: "https://grafana.internal/d/slo-payment"
+~~~
+
+**Tại sao multi-window**: cửa sổ dài (1h) xác nhận vấn đề kéo dài (không phải spike 30s). Cửa sổ ngắn (5m) xác nhận vấn đề vẫn đang xảy ra (không page cho incident đã tự hồi phục 55 phút trước).
+
+**Lợi ích SLO-based alerting**:
+- Giảm noise: lỗi nhỏ lẻ không đốt budget nhanh → không page. Chỉ page khi thực sự đáng lo.
+- Gắn với trải nghiệm user: SLO phản ánh điều user cảm nhận, không phải metric hạ tầng.
+- Quyết định rõ ràng: budget còn nhiều → ship feature. Budget gần hết → tập trung reliability. Không tranh luận cảm tính.
+
+### Lộ trình triển khai (6–8 tuần)
+
+1. **Tuần 1–2**: Alert audit — phân loại 200 alert. Xóa/chuyển 70% noise. Mỗi alert còn lại phải có runbook.
+2. **Tuần 2–3**: Định nghĩa SLI/SLO cho 3 service quan trọng nhất (hỏi: "user mong đợi gì?"). Bắt đầu đo error budget.
+3. **Tuần 3–5**: Triển khai SLO-based alerting (burn rate) song song với alert cũ. So sánh: alert nào fire, cái nào chính xác hơn?
+4. **Tuần 5–6**: Tắt alert cũ đã được SLO alert thay thế. Review rota: thêm secondary, compensation, giới hạn page đêm.
+5. **Tuần 6–8**: Mở rộng SLO cho service còn lại. Thiết lập review hàng tháng: error budget report, on-call health (số page, satisfaction).
+
+### Bẫy thực tế
+
+- **SLO quá tham vọng (99.99%)**: error budget quá nhỏ (4.3 phút/tháng) → mọi biến động nhỏ đều đốt budget → team lại bị page liên tục. Bắt đầu với SLO thực tế (đo baseline 3 tháng, đặt SLO hơi cao hơn hiện trạng) rồi cải thiện dần.
+- **SLO quá lỏng (99%)**: budget 7.2 giờ/tháng → user phàn nàn nhưng alert không fire. SLO phải phản ánh kỳ vọng user, không phải "dễ đạt".
+- **Alert SLO nhưng không có hành động**: burn rate cao → page → người trực nhìn dashboard, không biết làm gì vì không có runbook. Mỗi SLO alert phải có runbook và quyền/escalation path.
+- **Bỏ qua on-call wellbeing**: giảm alert xong nhưng vẫn xoay ca 1 tuần/người, không compensation, không hồi phục sau ca nặng → người vẫn nghỉ. Rota và compensation quan trọng không kém kỹ thuật.
+- **Chỉ đo infrastructure SLI**: CPU, memory, pod count — không phản ánh trải nghiệm user. SLI phải đo từ góc nhìn user (request success, latency ở entry point).
+
+> Senior tip: On-call bền vững là vấn đề **văn hóa + kỹ thuật**, không chỉ kỹ thuật. Bắt đầu bằng alert audit (xóa noise — hiệu quả ngay tuần đầu, team cảm nhận được). Song song xây SLO cho 2–3 service quan trọng. Chỉ số sức khỏe on-call quan trọng nhất: **số page ban đêm có thể hành động/tuần** — mục tiêu < 2. Nếu > 2 liên tục 2 tuần, đó là incident của chính quy trình on-call, cần ưu tiên xử lý như production incident. Track "on-call toil" (thời gian xử lý việc lặp lại, không tạo giá trị lâu dài) — nếu > 50% thời gian on-call là toil, team cần đầu tư automation, không phải thêm người trực.`,
+    follow: [
+      'Bạn đặt SLO 99.9% cho payment-api (30 ngày). Tháng này đã dùng 60% error budget trong 10 ngày đầu do 1 incident lớn. 20 ngày còn lại bạn vận hành thế nào — freeze deploy, chấp nhận rủi ro, hay điều chỉnh SLO?',
+      'Service có 3 dependency (DB, Redis, external API). SLO của service là 99.9% nhưng external API chỉ cam kết 99.5%. Bạn thiết lập SLO và error budget như thế nào? Ai "chịu" phần budget dependency gây ra?',
+      'Làm sao bạn thuyết phục engineering manager đầu tư 4 tuần cho alert audit + SLO setup khi team đang có deadline feature? Bạn dùng số liệu gì?'
+    ],
+    tags: ['on-call', 'alert fatigue', 'SLO-based alerting', 'error budget', 'burn rate', 'rota']
+  },
+  {
+    id: 'devops-057',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Java trên server Linux bỗng ăn 100% CPU một core lúc cao điểm. Bạn dùng top -H để tìm thread nóng, chuyển thread id sang hex để đối chiếu với jstack như thế nào, và đọc stack trace ra nguyên nhân ra sao?',
+    a: `**Tóm tắt:** CPU 100% ở Java thường là một thread đang chạy vòng lặp tính toán (code, regex, serialize) hoặc GC liên tục. Quy trình: dùng {{top -H -p <PID>}} để thấy thread nào (TID) đang ăn CPU, đổi TID từ thập phân sang hex, tìm dòng {{nid=0x...}} tương ứng trong thread dump ({{jstack}} hoặc {{jcmd PID Thread.print}}) để biết thread đó đang đứng ở dòng code nào. Bắt buộc lấy bằng chứng (thread dump, {{jstat}}) trước khi restart, vì restart xoá sạch dấu vết.
+
+### Hiểu nhanh
+Hãy tưởng tượng một nhà máy (JVM process) có nhiều công nhân (thread). Một công nhân làm việc điên cuồng không nghỉ khiến máy đếm điện (CPU meter) nhảy 100%. Bạn không thể nhìn bằng mắt thường trong nhà máy đang chạy; bạn dùng camera giám sát theo từng công nhân ({{top -H}}) để biết ai đang làm, rồi tra bảng chấm công (thread dump) để biết người đó đang thực hiện công đoạn nào. Chuyển TID sang hex giống như đổi mã nhân viên từ hệ thập phân sang mã in trên bảng chấm công.
+
+### Thuật ngữ (giải thích từ gốc)
+- **PID (Process ID)**: số định danh một tiến trình (process) trên Linux. Mỗi lần chạy {{java -jar app.jar}} là một process mới có PID riêng.
+- **TID (Thread ID)**: số định danh một luồng (thread) bên trong process. JVM tạo nhiều thread (main, GC, worker, HTTP handler). Trên Linux, thread cũng là "lightweight process" nên có TID riêng.
+- **Thread dump**: ảnh chụp trạng thái tất cả thread của JVM tại một thời điểm: tên thread, trạng thái (RUNNABLE, BLOCKED, WAITING), và stack trace (chuỗi hàm đang gọi). Lấy bằng {{jstack <PID>}} hoặc {{jcmd <PID> Thread.print}}.
+- **nid**: "native id" trong thread dump, là TID của thread hệ điều hành viết dưới dạng hex (cơ số 16). Đây là cầu nối giữa Linux và JVM.
+- **Hex (thập lục phân)**: hệ đếm cơ số 16 dùng 0-9 và a-f. Ví dụ 12399 (thập phân) = 0x306f (hex).
+
+### Quy trình từng bước (có ví dụ số liệu)
+~~~bash
+# Bước 1: Xác nhận process Java nào ăn CPU
+top -c
+# Giả sử thấy: PID 12345, COMMAND java, %CPU 198 (gần 200% = ăn 2 core)
+
+# Bước 2: Xem thread nào trong process đó ăn CPU
+top -H -p 12345
+# -H: hiện thread (mặc định top chỉ hiện process)
+# -p: chỉ xem PID 12345
+# Nhấn P để sắp xếp theo %CPU. Ví dụ thấy:
+#   PID   USER  %CPU  COMMAND
+#   12399 app   99.3  java      <-- thread nóng (TID=12399)
+#   12401 app   98.7  java      <-- thread nóng thứ 2
+
+# Bước 3: Chuyển TID thập phân sang hex
+printf '%x\\n' 12399
+# Kết quả: 306f
+printf '%x\\n' 12401
+# Kết quả: 3071
+
+# Bước 4: Lấy thread dump và tìm nid tương ứng
+jstack 12345 > /tmp/dump1.txt
+# Hoặc: jcmd 12345 Thread.print > /tmp/dump1.txt
+grep -n 'nid=0x306f' /tmp/dump1.txt
+# Tìm thấy dòng kiểu:
+# "http-nio-8080-exec-7" #42 daemon prio=5 os_prio=0 tid=0x... nid=0x306f runnable
+# Sau đó đọc 15-30 dòng tiếp theo để thấy stack trace
+grep -A 25 'nid=0x306f' /tmp/dump1.txt
+~~~
+
+### Đọc stack trace: ví dụ minh hoạ
+~~~text
+"http-nio-8080-exec-7" #42 daemon prio=5 nid=0x306f runnable
+   java.lang.Thread.State: RUNNABLE
+        at java.util.regex.Pattern$GroupHead.match(Pattern.java:...)
+        at java.util.regex.Pattern$Branch.match(Pattern.java:...)
+        at com.myapp.util.Validator.isValidEmail(Validator.java:87)
+        at com.myapp.service.UserService.register(UserService.java:42)
+~~~
+Stack đọc từ trên xuống: frame trên cùng là nơi thread đang chạy. Ở đây thread bị kẹt trong regex engine ({{Pattern.match}}) — dấu hiệu của "catastrophic backtracking" (regex chạy lặp lại mũ khi gặp input xấu). Dòng code nghiệp vụ là {{Validator.java:87}}.
+
+### Phân biệt nguyên nhân theo stack
+| Thấy trong stack | Nghi ngờ | Hướng xử lý |
+|---|---|---|
+| Vòng lặp trong code nghiệp vụ ({{while}}, {{for}}) | Logic sai, điều kiện thoát không đạt | Đọc code, kiểm tra input |
+| {{java.util.regex.Pattern}} | Regex backtracking với input dài/xấu | Đơn giản hoá regex, giới hạn độ dài input, dùng possessive quantifier |
+| {{G1 Young Generation}}, {{GC Thread}}, {{VMThread}} | GC đang chạy liên tục do heap gần đầy | {{jstat -gcutil <PID> 1000}}, xem heap/GC log |
+| {{ObjectMapper.writeValue}}, {{Gson.toJson}} trên object lớn | Serialize object đồ thị phức tạp | Giới hạn response, dùng DTO, streaming |
+| {{MessageDigest}}, {{BCrypt}}, {{Cipher}} | Mã hoá/hash nặng (có thể bình thường nếu tải cao) | Kiểm tra throughput, cân nhắc offload |
+
+### Lưu ý về phiên bản JDK
+- **JDK 8-17**: {{nid}} trong thread dump thường in hex ({{nid=0x306f}}). Bạn phải đổi TID sang hex.
+- **JDK 21+ (HotSpot)**: một số bản in {{nid}} dạng thập phân trong thread dump; khi đó có thể khớp trực tiếp với TID từ {{top -H}}. Cách chắc nhất: chạy {{jstack <PID> \| head -30}} xem định dạng {{nid}} rồi quyết định có cần chuyển hex hay không.
+- Luôn lấy **3 thread dump cách nhau 5-10 giây**: nếu cùng một thread ở cùng stack qua 3 dump, đó là thread "kẹt"; nếu stack thay đổi liên tục, thread đang chạy nặng nhưng vẫn tiến triển.
+
+### Lỗi hay gặp (pitfall thực tế)
+1. **Restart ngay khi thấy CPU cao**: mất toàn bộ bằng chứng. Trên production, sự cố tương tự có thể lặp lại; không có dump thì lần sau vẫn mò. Cách tránh: luôn thu {{jstack}} (3 lần), {{jstat -gcutil}}, và lưu trước khi restart.
+2. **Chỉ nhìn %CPU của process, không nhìn thread**: process 200% nhưng chia đều cho 20 thread (mỗi thread 10%) là tải bình thường; một thread 100% là bất thường. Cách tránh: luôn dùng {{top -H -p <PID>}}.
+3. **Đổi nhầm chiều hex/thập phân**: {{printf '%x'}} chuyển thập phân → hex; {{printf '%d' 0x306f}} chuyển ngược. Nhiều người tra nhầm nên không tìm thấy {{nid}}.
+4. **Bỏ qua thread GC**: nếu thread nóng là {{GC task thread}} hoặc {{G1 Conc#0}}, nguyên nhân gốc là bộ nhớ (heap gần đầy, allocation rate cao), không phải code nghiệp vụ. Tối ưu code lúc này vô ích; cần xem {{-Xmx}}, {{jstat}}, heap dump.
+
+### Trả lời phỏng vấn
+Khi service Java ăn 100% CPU, em dùng {{top -H -p <PID>}} để tìm thread cụ thể đang tiêu thụ CPU (TID). Sau đó chuyển TID sang hex bằng {{printf '%x'}} vì thread dump của HotSpot ghi native id ở dạng {{nid=0x...}}. Em lấy ít nhất 3 thread dump cách nhau 5 giây bằng {{jstack}} hoặc {{jcmd}}, rồi grep {{nid}} để thấy stack trace. Từ stack, em phân biệt: nếu là code nghiệp vụ hoặc regex thì sửa logic; nếu là thread GC thì vấn đề nằm ở bộ nhớ, em chuyển sang phân tích {{jstat -gcutil}} và GC log. Em luôn thu bằng chứng trước khi restart vì restart làm mất trạng thái.
+
+> Senior tip: Trên Kubernetes, bạn thường không có {{jstack}} cài sẵn trong image distroless. Hãy dùng {{jcmd}} (đi kèm JRE), hoặc {{kubectl debug}} với ephemeral container có JDK, hoặc expose endpoint thread dump qua Spring Boot Actuator ({{/actuator/threaddump}}) có bảo vệ auth. Chuẩn bị sẵn cách lấy dump trước khi sự cố xảy ra.`,
+    follow: [
+      'Nếu thread dump cho thấy thread nóng là GC thread, bạn chuyển sang điều tra gì tiếp theo?',
+      'Tại sao cần lấy 3 thread dump cách nhau vài giây thay vì chỉ 1 dump?',
+      'Làm sao phát hiện "catastrophic backtracking" của regex trên production mà không cần đọc code?'
+    ],
+    tags: ['Linux', 'CPU', 'top -H', 'jstack', 'thread dump', 'nid', 'troubleshooting']
+  },
+  {
+    id: 'devops-058',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Lệnh uptime báo load average là 12.00, 8.50, 4.20 trên máy 4 core. Điều đó có nghĩa là gì? Load average khác gì với %CPU, và khi nào load cao nhưng CPU lại thấp?',
+    a: `**Tóm tắt:** Load average là số lượng trung bình các process đang **chạy** (RUNNABLE) hoặc **chờ tài nguyên không bị ngắt** (thường là chờ I/O đĩa, trạng thái D trên Linux) trong 1, 5, 15 phút. Trên Linux, load average **bao gồm cả process chờ I/O**, nên load cao không đồng nghĩa CPU bận. Quy tắc thô: load trung bình bền vững > số core nghĩa là có hàng đợi. Ba con số cho biết xu hướng: đang tăng (12 > 8.5 > 4.2) hay giảm. Luôn kết hợp {{vmstat}}, {{top}} (%wa, %us), {{iostat}} để biết hàng đợi là do CPU hay do I/O.
+
+### Hiểu nhanh
+Hãy nghĩ load average như số người đang xếp hàng tại quầy thu ngân (core CPU). "Đang chạy" là người đang được tính tiền; "đang chờ I/O" (trạng thái D) là người đứng trước quầy nhưng thu ngân đang chờ máy quẹt thẻ phản hồi — họ chiếm chỗ trong hàng dù thu ngân không bận tính toán. Trên Linux, cả hai loại đều được đếm vào hàng. Vì vậy hàng dài (load cao) có thể do quá nhiều khách (CPU-bound) hoặc do máy quẹt thẻ chậm (I/O-bound).
+
+### Thuật ngữ
+- **RUNNABLE (R)**: process đang chạy trên CPU hoặc đang chờ trong hàng đợi CPU để được chạy.
+- **Uninterruptible sleep (D)**: process đang chờ một thao tác I/O (thường là đĩa, đôi khi NFS) hoàn tất và **không thể bị ngắt** bởi signal (kể cả {{kill -9}} không giết được ngay). Trên Linux, D-state được tính vào load average.
+- **I/O wait (%wa)**: phần trăm thời gian CPU ở trạng thái nhàn rỗi nhưng đang chờ I/O hoàn thành. CPU "rảnh" nhưng công việc bị kẹt ở đĩa/mạng.
+- **Core**: đơn vị thực thi của CPU. Máy 4 core có thể chạy đồng thời 4 thread CPU-bound mà không xếp hàng.
+
+### Đọc ba con số load average
+~~~bash
+uptime
+#  02:15:03 up 10 days,  3:42,  2 users,  load average: 12.00, 8.50, 4.20
+#                                                         1m     5m    15m
+~~~
+- **1 phút = 12.00**: trung bình 12 process trong hàng đợi/chạy trong 1 phút gần nhất.
+- **5 phút = 8.50, 15 phút = 4.20**: xu hướng **đang tăng** (12 > 8.5 > 4.2) → vấn đề đang diễn ra, cần chú ý ngay.
+- Nếu xu hướng ngược (4, 8, 12): vấn đề đang dịu đi.
+- So với số core: {{nproc}} trả về 4 → load 12 trên 4 core nghĩa là trung bình ~3 process đang chờ cho mỗi core. Đây là dấu hiệu quá tải rõ nếu kéo dài.
+
+**Ngưỡng tham khảo (thô, tuỳ workload):**
+| Load / Core | Diễn giải |
+|---|---|
+| < 0.7 | Thoải mái |
+| 0.7 – 1.0 | Cần theo dõi |
+| > 1.0 kéo dài | Có hàng đợi, latency tăng |
+| > số core * 2 | Quá tải nghiêm trọng (với workload CPU-bound) |
+
+### Load cao nhưng CPU thấp: khi nào xảy ra?
+~~~bash
+# Kiểm tra nhanh
+top
+# Quan sát dòng %Cpu(s): us thấp (ví dụ 5%), nhưng wa cao (ví dụ 70%)
+vmstat 1 5
+# Cột r: số process chờ CPU (RUNNABLE)
+# Cột b: số process blocked chờ I/O (D-state)  <-- load cao do đây
+# Cột wa: % CPU chờ I/O
+~~~
+| Tình huống | Load | %us (CPU user) | %wa (I/O wait) | Cột b (vmstat) | Nguyên nhân điển hình |
+|---|---|---|---|---|---|
+| CPU-bound | Cao | Cao | Thấp | 0 | Vòng lặp, tính toán, GC |
+| I/O-bound | Cao | Thấp | Cao | Cao | Đĩa chậm, query DB chậm ghi đĩa, NFS treo, log ghi ồ ạt |
+| Lock contention (ít gặp) | Có thể cao | Thấp | Thấp | Thấp | Nhiều thread RUNNABLE nhưng tranh lock (ít làm tăng load như I/O) |
+
+### Ví dụ điều tra I/O-bound
+~~~bash
+iostat -x 1 3
+# Xem %util (gần 100% = đĩa bão hoà), await (ms chờ trung bình), r/s w/s
+# %util cao + await cao + load cao + %wa cao = đĩa là nút thắt
+
+# Tìm process nào đang gây I/O nhiều
+pidstat -d 1 5
+# Cột kB_rd/s, kB_wr/s theo PID
+
+# Với Java: kiểm tra GC log, ghi heap dump, ghi log quá nhiều?
+lsof -p <PID> | wc -l   # nhiều file mở?
+~~~
+
+### Pitfall hay gặp
+1. **Thấy load > core liền đòi thêm CPU**: nếu nguyên nhân là I/O (đĩa EBS chậm, NFS lag, DB trên cùng máy), thêm CPU không giúp; cần nâng IOPS, chuyển storage, hoặc giảm I/O. Cách tránh: luôn nhìn {{%wa}} và {{iostat}} trước.
+2. **So sánh load giữa máy khác số core**: load 8 trên 4 core (gấp đôi) tệ hơn load 8 trên 32 core (nhàn). Cách tránh: luôn chia load cho {{nproc}}.
+3. **Nhầm load average của Linux với các hệ Unix khác**: một số hệ Unix (BSD truyền thống) không tính I/O wait vào load. Tài liệu đọc trên mạng có thể gây nhầm; trên Linux, D-state được tính.
+4. **Bỏ qua xu hướng 1/5/15 phút**: một spike 1 phút có thể là deploy hoặc batch job ngắn; load 15 phút cao mới cho thấy vấn đề bền vững.
+
+### Trả lời phỏng vấn
+Load average trên Linux là số process trung bình đang chạy hoặc chờ I/O không ngắt được (D-state) trong 1, 5, 15 phút. Điểm quan trọng là Linux tính cả I/O wait vào load, nên load cao không có nghĩa CPU bận. Ví dụ load 12 trên máy 4 core: nếu {{vmstat}} cho thấy cột {{b}} cao và {{%wa}} cao trong {{top}}, vấn đề là I/O (đĩa, storage mạng), em sẽ dùng {{iostat -x}} và {{pidstat -d}} để tìm nguồn; nếu {{%us}} cao và cột {{r}} cao, mới là CPU-bound. Em luôn đọc ba con số theo xu hướng và chia cho số core để đánh giá mức độ.
+
+> Senior tip: Trên cloud (AWS EC2 với EBS gp2/gp3), "load cao, CPU thấp" rất hay gặp khi burst credit của EBS cạn hoặc IOPS cấu hình thấp hơn nhu cầu. Hãy kiểm tra {{iostat -x}} (await, %util) và CloudWatch metric {{VolumeQueueLength}}, {{BurstBalance}} cùng lúc. Với Java, GC log ghi đồng bộ hoặc log framework flush liên tục cũng có thể tạo I/O wait bất ngờ.`,
+    follow: [
+      'Làm sao phân biệt load cao do I/O đĩa với load cao do NFS mount bị treo?',
+      'Process ở trạng thái D (uninterruptible sleep) có kill được bằng kill -9 không? Tại sao?',
+      'Trên container Kubernetes, load average bạn thấy trong container phản ánh điều gì?'
+    ],
+    tags: ['Linux', 'load average', 'CPU', 'I/O wait', 'vmstat', 'iostat', 'troubleshooting']
+  },
+  {
+    id: 'devops-059',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Server Linux báo "No space left on device" khi ghi log. {{df -h}} thấy phân vùng / đầy 100%, nhưng {{du -sh /}} cộng lại chỉ khoảng 60%. Bạn giải thích hiện tượng này thế nào, dùng {{lsof +L1}} để tìm file đã xoá nhưng vẫn bị giữ ra sao, và xử lý an toàn thế nào?',
+    a: `**Tóm tắt:** {{df}} đo dung lượng ở mức filesystem (block đã cấp phát), còn {{du}} đi bộ qua cây thư mục và cộng kích thước file đang có tên. Khi một process vẫn giữ file descriptor mở vào file đã bị {{rm}} (xoá tên khỏi thư mục) nhưng chưa {{close()}}, filesystem chưa giải phóng block vì "link count" thực tế vẫn > 0 ở mức kernel — nên {{df}} vẫn thấy đầy, {{du}} không thấy file đó. Công cụ {{lsof +L1}} liệt kê file có link count < 1 nhưng vẫn mở. Xử lý an toàn: truncate file qua {{/proc/<PID>/fd/<FD>}} hoặc yêu cầu app xoay log/restart có kiểm soát; không {{kill -9}} bừa bãi. Ngoài ra, "No space left" cũng có thể do **hết inode** ({{df -i}}).
+
+### Hiểu nhanh
+Hãy tưởng tượng file như một cuốn sổ trong thư viện. {{rm}} chỉ gỡ nhãn tên cuốn sổ khỏi kệ (xoá entry trong thư mục). Nhưng nếu có người (process) đang cầm cuốn sổ mở đọc, thủ thư (filesystem/kernel) chưa thể vứt cuốn sổ đi vì người đó vẫn cần nó — trang giấy (block đĩa) vẫn bị chiếm. {{du}} chỉ đếm sách trên kệ; {{df}} đếm tổng giấy đã dùng trong kho. {{lsof +L1}} giúp tìm ai đang cầm cuốn sổ "vô danh" (không còn nhãn trên kệ).
+
+### Thuật ngữ
+- **Block**: đơn vị cấp phát dung lượng trên filesystem (thường 4KB). {{df}} đếm block đã cấp phát.
+- **Inode**: cấu trúc metadata của file (quyền, owner, timestamp, con trỏ tới block dữ liệu). Mỗi file cần 1 inode. Hết inode → không tạo được file mới dù còn dung lượng.
+- **File descriptor (fd)**: số nguyên process dùng để tham chiếu file đang mở. Kernel giữ bảng fd cho mỗi process.
+- **Hard link / link count**: số tên (directory entry) trỏ tới cùng inode. {{rm}} giảm link count; block chỉ được giải phóng khi link count = 0 **và** không còn fd nào mở.
+- **Truncate**: cắt nội dung file về kích thước nhỏ hơn (thường 0) mà không xoá file/đóng fd.
+
+### Điều tra bước 1: xác nhận thiếu dung lượng hay thiếu inode
+~~~bash
+df -h
+# Filesystem      Size  Used Avail Use% Mounted on
+# /dev/nvme0n1p1   50G   50G     0 100% /
+
+df -i
+# Filesystem      Inodes  IUsed   IFree IUse% Mounted on
+# /dev/nvme0n1p1 3276800 3276800      0  100% /   <-- hết inode (triệu file nhỏ)
+~~~
+Nếu {{IUse%}} 100% nhưng dung lượng còn: nguyên nhân là quá nhiều file nhỏ (session file, cache, thư mục {{/tmp}}). Cần tìm thư mục có nhiều file: {{for d in /*; do echo "$d $(find "$d" -xdev | wc -l)"; done 2>/dev/null | sort -k2 -rn | head}}.
+
+### Điều tra bước 2: df vs du lệch — file đã xoá còn giữ mở
+~~~bash
+# du thường cần chạy ở thư mục mount point, bỏ qua filesystem khác
+du -shx / 2>/dev/null
+# 30G  /
+
+# Tìm file đã "unlinked" (link count 0) nhưng vẫn mở
+lsof +L1
+# hoặc giới hạn theo filesystem: lsof +L1 /dev/nvme0n1p1
+# Ví dụ output:
+# COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NLINK  NODE NAME
+# java    12345 app    3w   REG  259,1 21474836480    0 123456 /var/log/app/app.log (deleted)
+#                                     ^^^^^^^^^^^        ^ NLINK=0: đã xoá
+#                                     ~20GB vẫn bị giữ
+~~~
+- Cột **NLINK** = 0 (hoặc hiển thị {{(deleted)}}): file không còn tên trong thư mục.
+- Cột **SIZE/OFF**: dung lượng thực tế vẫn chiếm block.
+- Cột **FD** (ví dụ {{3w}}): file descriptor số 3, mở để ghi.
+
+Bạn cũng có thể kiểm tra từ phía process:
+~~~bash
+ls -l /proc/12345/fd/3
+# lrwx------ 1 app app 64 ... /proc/12345/fd/3 -> /var/log/app/app.log (deleted)
+~~~
+
+### Xử lý an toàn (không làm mất dữ liệu quan trọng tuỳ trường hợp)
+| Cách | Lệnh | Khi nào dùng | Rủi ro |
+|---|---|---|---|
+| Truncate qua /proc fd | {{: > /proc/12345/fd/3}} hoặc {{truncate -s 0 /proc/12345/fd/3}} | Cần giải phóng ngay, chấp nhận mất nội dung log đang mở | Mất log chưa flush/ship; app vẫn ghi tiếp từ offset hiện tại — có thể tạo "lỗ hổng" null byte tuỳ cách app ghi |
+| Gửi tín hiệu xoay log | {{kill -USR1 12345}} (nếu app hỗ trợ) hoặc dùng {{logrotate -f}} | App có cơ chế reopen log | Cần app hỗ trợ; kiểm tra config |
+| Restart service có kiểm soát | {{systemctl restart app}} (theo quy trình) | Sau khi đã thu bằng chứng, chấp nhận downtime ngắn | Mất trạng thái in-memory; làm theo runbook |
+| Copy ra chỗ khác rồi truncate | {{cp /proc/12345/fd/3 /tmp/app.log.rescued && : > /proc/12345/fd/3}} | Cần giữ log để điều tra | Tốn I/O tạm thời |
+
+**Lưu ý:** {{rm /var/log/app/app.log}} khi file đang bị giữ **không giải phóng dung lượng** — đó chính là nguyên nhân. Sau khi truncate, {{df -h}} sẽ phản ánh dung lượng trống.
+
+### Phòng ngừa
+- Dùng **logrotate** (Linux) hoặc cấu hình rolling trong logging framework (Logback {{SizeAndTimeBasedRollingPolicy}}, Log4j2 {{RollingFileAppender}}) để xoay và nén/xoá log cũ.
+- Tránh pattern "xoá file log rồi app tự tạo lại" mà không có cơ chế reopen fd — app vẫn ghi vào fd cũ (đã unlinked).
+- Giám sát {{node_filesystem_avail_bytes}} (node_exporter/Prometheus) và {{node_filesystem_files_free}} (inode), cảnh báo ở 80%.
+- Với container/Kubernetes: log nên ghi ra stdout để runtime thu thập; giới hạn kích thước log container (Docker {{max-size}}, containerd config).
+
+### Lỗi hay gặp
+1. **Chỉ chạy {{rm}} file lớn rồi tưởng đã xong**: nếu process còn mở, {{df}} không đổi. Cách tránh: sau {{rm}}, kiểm tra {{lsof +L1}}; ưu tiên truncate hoặc restart có kiểm soát.
+2. **{{kill -9}} process Java ngay lập tức**: giải phóng fd nhưng mất cơ hội thu thread dump/heap dump, và có thể gây hỏng dữ liệu đang ghi. Cách tránh: thu bằng chứng, thử truncate/xoay log trước; restart theo quy trình.
+3. **Bỏ qua inode**: {{df -h}} còn trống nhưng vẫn "No space left" — nhiều người bối rối. Cách tránh: luôn kiểm tra {{df -i}} cùng lúc.
+4. **Chạy {{du}} trên mount khác**: {{du -sh /}} có thể đi vào {{/proc}}, {{/sys}}, mount mạng và cho kết quả sai/chậm. Cách tránh: dùng {{du -shx /}} ({{-x}}: không vượt filesystem boundary).
+
+### Trả lời phỏng vấn
+Khi {{df}} báo đầy nhưng {{du}} cộng lại nhỏ hơn, em nghi file đã bị xoá tên nhưng process vẫn giữ file descriptor mở. {{df}} tính block đã cấp phát ở mức filesystem; {{du}} chỉ tính file còn đường dẫn. Em dùng {{lsof +L1}} để tìm các entry có {{NLINK=0}} và cột {{SIZE/OFF}} lớn — thường là log file Java bị {{rm}} nhưng app chưa reopen. Cách xử lý an toàn là truncate qua {{/proc/<PID>/fd/<FD>}} hoặc trigger log rotation/restart có kiểm soát; em tránh {{kill -9}} khi chưa thu bằng chứng. Em cũng kiểm tra {{df -i}} vì hết inode gây cùng thông báo lỗi. Về lâu dài, em dùng log rotation, giám sát disk/inode, và trong container thì đẩy log ra stdout.
+
+> Senior tip: "Log file 20GB bị xoá nhưng đĩa không trống" là sự cố kinh điển lúc 2 giờ sáng. Hãy thêm alert khi {{lsof +L1}} (hoặc metric tương đương) phát hiện file deleted lớn, và chuẩn hoá logging: trên K8s ghi stdout; trên VM dùng logrotate + signal reopen. Đừng bao giờ dùng {{rm}} trên file log đang được ghi như cách "dọn đĩa nhanh".`,
+    follow: [
+      'Tại sao truncate qua /proc/<PID>/fd có thể gây "lỗ" null byte trong file log nếu app ghi bằng append offset?',
+      'Làm sao cấu hình Logback để tự xoay log theo dung lượng và thời gian, tránh phải xoá tay?',
+      'Hết inode thường xảy ra trong tình huống nào, và cách phát hiện sớm?'
+    ],
+    tags: ['Linux', 'disk full', 'df', 'du', 'lsof', 'deleted file', 'inode', 'logrotate']
+  },
+  {
+    id: 'devops-060',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Server chạy service Java có hàng nghìn kết nối TCP ở trạng thái TIME_WAIT và CLOSE_WAIT tăng dần. Bạn dùng {{ss}} để chẩn đoán thế nào, phân biệt nguyên nhân TIME_WAIT vs CLOSE_WAIT, và xử lý trong code Java ra sao?',
+    a: `**Tóm tắt:** TIME_WAIT và CLOSE_WAIT là hai trạng thái TCP khác bản chất: **TIME_WAIT** xảy ra ở phía **chủ động đóng** kết nối sau khi trao đổi FIN hoàn tất, giữ ~60 giây (trên Linux) để tránh gói trễ gây nhầm lẫn — nhiều TIME_WAIT thường do app mở/đóng kết nối liên tục tới cùng đích (không reuse). **CLOSE_WAIT** xảy ra ở phía **bị động** khi đã nhận FIN từ peer nhưng **ứng dụng chưa gọi close()** — CLOSE_WAIT tăng dần gần như luôn là bug rò rỉ socket trong code. Dùng {{ss -tan}} để đếm theo trạng thái và theo đích; sửa gốc ở code: connection pool + đóng response đúng cách.
+
+### Hiểu nhanh
+Kết nối TCP giống một cuộc gọi điện thoại hai chiều. Khi kết thúc: bên cúp máy trước (chủ động đóng) phải đợi một lúc (TIME_WAIT) để chắc bên kia đã nghe thấy tiếng "tút" cuối và không có tín hiệu cũ lạc vào cuộc gọi mới. Bên cúp sau (bị động) nghe thấy bên kia cúp, nhưng nếu ứng dụng (người cầm máy) quên đặt ống nghe xuống, đường dây vẫn bị giữ ở trạng thái "chờ bạn đặt máy" — đó là CLOSE_WAIT. TIME_WAIT nhiều thường do bạn gọi quá nhiều cuộc gọi ngắn; CLOSE_WAIT nhiều do code quên đặt máy.
+
+### Thuật ngữ
+- **Socket**: điểm cuối của kết nối mạng, gắn với (IP, port, giao thức). Trong Java, {{Socket}}, kết nối HTTP bên dưới {{HttpClient}} đều dùng socket.
+- **FIN**: gói TCP báo "tôi hết dữ liệu để gửi, muốn đóng chiều gửi". Đóng kết nối TCP cần trao đổi FIN/ACK hai chiều.
+- **Ephemeral port (cổng tạm)**: cổng nguồn do OS cấp tự động khi client mở kết nối ra ngoài (dải {{ip_local_port_range}}, thường 32768-60999). Hết cổng tạm → không mở được kết nối mới tới đích đó.
+- **Keep-alive (HTTP)**: tái sử dụng một kết nối TCP cho nhiều request HTTP, tránh bắt tay TCP/TLS lặp lại.
+
+### Chẩn đoán bằng ss
+~~~bash
+# Tổng quan socket theo trạng thái
+ss -s
+
+# Đếm TIME_WAIT và CLOSE_WAIT
+ss -tan state time-wait | wc -l
+ss -tan state close-wait | wc -l
+
+# Xem đích nào có nhiều TIME_WAIT (client mở/đóng liên tục tới đâu?)
+ss -tan state time-wait | awk '{print $5}' | sort | uniq -c | sort -rn | head
+
+# Xem CLOSE_WAIT gắn với process nào
+ss -tanp state close-wait
+# -p: hiện process (cần quyền root hoặc cùng user)
+# Ví dụ: users:(("java",pid=12345,fd=187))
+
+# Kiểm tra fd của process đó có phải socket không
+lsof -nP -p 12345 | grep -c TCP
+~~~
+
+### TIME_WAIT: nguyên nhân và xử lý
+**Triệu chứng điển hình:** hàng chục nghìn TIME_WAIT tới cùng {{IP:443}} của đối tác; kèm lỗi {{java.net.BindException: Cannot assign requested address}} (EADDRNOTAVAIL) khi burst.
+
+**Nguyên nhân gốc trong code Java:**
+~~~java
+// SAI: tạo HttpClient mới mỗi request -> không reuse kết nối TCP/TLS
+// Mỗi lần xong, kết nối đóng -> TIME_WAIT ở phía client (nếu client đóng trước)
+public String call(String url) throws Exception {
+    HttpClient c = HttpClient.newHttpClient();
+    return c.send(HttpRequest.newBuilder(URI.create(url)).build(),
+                  HttpResponse.BodyHandlers.ofString()).body();
+}
+
+// ĐÚNG: dùng chung một client (thread-safe), có pool/keep-alive
+private static final HttpClient CLIENT = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(2))
+        .build();
+~~~
+Với Spring: khai báo **một bean** {{RestClient}}/{{WebClient}} có cấu hình {{ConnectionProvider}} (Reactor Netty) hoặc {{PoolingHttpClientConnectionManager}} (Apache). Đừng {{new RestTemplate()}} trong mỗi method.
+
+**Xử lý tầng hệ thống (chỉ nới biên, không sửa gốc):** mở rộng {{net.ipv4.ip_local_port_range}}; bật {{net.ipv4.tcp_tw_reuse=1}} (Linux) cho kết nối đi ra — chỉ dùng khi hiểu rõ (cần TCP timestamps). Không tắt TIME_WAIT.
+
+### CLOSE_WAIT: nguyên nhân và xử lý
+**Triệu chứng:** {{ss}} cho thấy CLOSE_WAIT tăng dần theo thời gian, không giảm; sau vài giờ chạm giới hạn fd hoặc hành vi kỳ lạ.
+
+**Nguyên nhân gốc:** peer đã gửi FIN (đóng phía nó), kernel của bạn đã ACK và chuyển socket sang CLOSE_WAIT, nhưng **ứng dụng Java không đọc hết/không đóng** response/stream → fd/socket bị giữ mãi.
+
+~~~java
+// SAI (Apache HttpClient 4.x/5.x kiểu cũ): không consume/close entity -> connection không trả về pool
+CloseableHttpResponse resp = httpClient.execute(request);
+String body = EntityUtils.toString(resp.getEntity()); // nếu ném exception trước khi close...
+// resp.close() không được gọi -> socket có thể kẹt
+
+// ĐÚNG: try-with-resources
+try (CloseableHttpResponse resp = httpClient.execute(request)) {
+    String body = EntityUtils.toString(resp.getEntity());
+    return body;
+}
+
+// Với java.net.http.HttpResponse: body đã được BodyHandler đọc xong thường OK,
+// nhưng nếu dùng InputStream BodyHandler thì phải close stream.
+~~~
+Với JDBC: luôn đóng {{ResultSet}}, {{Statement}}, {{Connection}} (try-with-resources) hoặc dùng pool (HikariCP) quản lý. Connection rò rỉ có thể biểu hiện khác, nhưng cùng họ "quên close resource".
+
+### Bảng so sánh nhanh
+| | TIME_WAIT | CLOSE_WAIT |
+|---|---|---|
+| Phía nào | Chủ động đóng kết nối | Bị động (nhận FIN từ peer) |
+| Thời gian | ~60s (Linux, cố định) | Vô hạn cho tới khi app gọi close() |
+| Tăng dần mãi? | Không (tự hết sau timeout), nhưng có thể luôn cao nếu tạo mới liên tục | Có — dấu hiệu bug rò rỉ |
+| Nguyên nhân thường gặp | Mở/đóng kết nối liên tục, không pool/keep-alive | Không đóng response/socket/stream |
+| Hướng sửa chính | Reuse connection, pool | Sửa code: try-with-resources, đóng entity |
+| Rủi ro | Hết ephemeral port (EADDRNOTAVAIL) | Hết file descriptor (EMFILE) |
+
+### Lỗi hay gặp
+1. **Nhầm CLOSE_WAIT là lỗi mạng/peer**: CLOSE_WAIT nghĩa là peer đã đóng đúng phần của nó; lỗi nằm ở app bạn chưa đóng. Cách tránh: tìm {{ss -tanp state close-wait}} xem PID/fd, rồi soi code path dùng fd đó.
+2. **Cố "xoá" TIME_WAIT bằng sysctl liều lĩnh**: {{tcp_tw_recycle}} đã bị xoá khỏi kernel mới và gây hỏng NAT; chỉnh bừa gây lỗi khó debug. Cách tránh: sửa code để reuse kết nối.
+3. **Chỉ nhìn tổng số kết nối, không nhìn theo đích/trạng thái**: 5000 TIME_WAIT phân tán khác 5000 TIME_WAIT tới một đích (gây hết cổng tạm tới đích đó). Cách tránh: {{ss}} + {{awk/sort/uniq}} theo cột đích.
+
+### Trả lời phỏng vấn
+Em phân biệt TIME_WAIT và CLOSE_WAIT bằng {{ss -tan}}. TIME_WAIT nằm ở phía chủ động đóng, tồn tại ~60 giây để bảo vệ gói trễ; nhiều TIME_WAIT tới cùng một đích thường do code tạo kết nối mới cho mỗi request thay vì dùng connection pool và keep-alive — rủi ro là hết ephemeral port. CLOSE_WAIT nằm ở phía bị động sau khi nhận FIN, nhưng app chưa {{close()}}; CLOSE_WAIT tăng dần gần như chắc chắn là bug rò rỉ socket, ví dụ HTTP response entity không được consume/đóng trong Java. Em dùng {{ss -tanp state close-wait}} để gắn với PID/fd, rồi kiểm tra code dùng try-with-resources. Sửa gốc ở code; chỉnh sysctl chỉ là biện pháp tạm.
+
+> Senior tip: Thêm metric {{process_files_open_files}} và dashboard socket theo trạng thái (node_exporter hoặc Micrometer + OS metrics). CLOSE_WAIT tăng tuyến tính theo giờ là "bom hẹn giờ" — phát hiện ở 30% giới hạn fd còn kịp sửa trong giờ hành chính. Với service gọi nhiều đối tác, bắt buộc chuẩn hoá HTTP client thành bean dùng chung có pool và timeout rõ ràng.`,
+    follow: [
+      'Vì sao TIME_WAIT tồn tại trong TCP và điều gì xảy ra nếu loại bỏ nó hoàn toàn?',
+      'Trong Spring Boot dùng RestTemplate/WebClient, bạn cấu hình connection pool và timeout thế nào để tránh rò rỉ kết nối?',
+      'Làm sao phân biệt CLOSE_WAIT do app bạn với CLOSE_WAIT do thư viện/driver (ví dụ JDBC driver, HTTP client)?'
+    ],
+    tags: ['Linux', 'TCP', 'TIME_WAIT', 'CLOSE_WAIT', 'ss', 'socket leak', 'troubleshooting']
+  },
+  {
+    id: 'devops-061',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java gọi {{api.partner.com}} đôi khi bị treo vài giây ở bước phân giải DNS, hoặc sau khi đối tác đổi IP (failover) app vẫn gọi vào IP cũ hàng chục phút. JVM cache DNS như thế nào, cấu hình {{networkaddress.cache.ttl}} ở đâu, và bạn chẩn đoán DNS chậm trên Linux/container ra sao?',
+    a: `**Tóm tắt:** JVM (class {{InetAddress}}) có lớp cache DNS riêng bên trên resolver của hệ điều hành. Mặc định lịch sử: khi có Security Manager, kết quả thành công cache **vĩnh viễn** (tránh DNS spoofing); khi không có Security Manager (phổ biến từ Java 17+ vì Security Manager bị deprecate), kết quả thành công cache **30 giây**, lookup thất bại cache **10 giây**. Cấu hình qua {{networkaddress.cache.ttl}} và {{networkaddress.cache.negative.ttl}} trong file {{<java.home>/conf/security/java.security}} hoặc đặt lúc khởi động bằng {{java.security.Security.setProperty}}. DNS chậm thì chẩn đoán ở tầng OS/container ({{/etc/resolv.conf}}, {{nsswitch.conf}}, {{getent}}, {{dig}}, độ trễ tới resolver) trước, rồi mới nghi tầng JVM.
+
+### Hiểu nhanh
+DNS giống tra danh bạ để đổi tên ({{api.partner.com}}) thành số điện thoại (IP). JVM giữ một cuốn sổ tay nhỏ (cache) để đỡ phải tra danh bạ liên tục — tra nhanh hơn nhưng nếu số đổi (failover), sổ tay cũ gây gọi nhầm. Danh bạ thật nằm ở hệ điều hành ({{/etc/resolv.conf}} trỏ tới DNS server). Nếu tra danh bạ thật bị chậm, JVM cũng chậm dù sổ tay có hoạt động.
+
+### Thuật ngữ
+- **DNS (Domain Name System)**: hệ thống phân giải tên miền thành địa chỉ IP.
+- **TTL (Time To Live)**: thời gian một bản ghi DNS được phép cache. Có TTL của bản ghi DNS (từ authoritative server) và TTL của cache trong JVM/OS — hai thứ khác nhau.
+- **Resolver**: thành phần thực hiện truy vấn DNS (thường là thư viện glibc/musl + cấu hình {{/etc/resolv.conf}}).
+- **{{InetAddress}}**: class Java chuẩn để biểu diễn địa chỉ IP và thực hiện phân giải tên ({{InetAddress.getByName}}, {{getAllByName}}).
+
+### JVM cache DNS: cơ chế và mặc định
+~~~text
+Code Java gọi InetAddress.getByName("api.partner.com")
+  -> Kiểm tra cache JVM (InetAddress cache)
+     -> Cache hit & chưa hết TTL: trả IP ngay (không hỏi OS)
+     -> Cache miss/hết TTL: gọi resolver của OS
+        -> OS kiểm tra /etc/hosts, nscd (nếu có), rồi hỏi DNS server trong /etc/resolv.conf
+        -> Trả kết quả, JVM lưu vào cache theo TTL
+~~~
+
+**Giá trị mặc định (cần nhớ khi phỏng vấn):**
+| Thuộc tính | Có Security Manager | Không có Security Manager (phổ biến hiện nay) |
+|---|---|---|
+| {{networkaddress.cache.ttl}} (thành công) | -1 (cache vĩnh viễn) | 30 (giây) |
+| {{networkaddress.cache.negative.ttl}} (thất bại) | 10 | 10 |
+
+Giá trị: {{-1}} = cache mãi; {{0}} = không cache; {{N}} = cache N giây. (Xác nhận trên JDK bạn dùng vì hành vi/tài liệu có thể khác theo bản phân phối; Security Manager bị deprecate từ Java 17.)
+
+### Cấu hình TTL
+~~~text
+# File: $JAVA_HOME/conf/security/java.security
+# (tìm dòng networkaddress.cache.ttl)
+networkaddress.cache.ttl=30
+networkaddress.cache.negative.ttl=10
+~~~
+Hoặc đặt trong code lúc khởi động (phải chạy sớm, trước lookup đầu tiên, và cân nhắc chính sách bảo mật):
+~~~java
+import java.security.Security;
+
+// Cache 30 giây — cân bằng giữa giảm lookup và phản ứng failover
+Security.setProperty("networkaddress.cache.ttl", "30");
+Security.setProperty("networkaddress.cache.negative.ttl", "5");
+~~~
+Hoặc truyền property khi chạy (một số JDK hỗ trợ property khác nhau; cách chắc là {{java.security}}). Kiểm tra tài liệu JDK cụ thể.
+
+**Cân nhắc khi chọn TTL:**
+- TTL quá lớn (hoặc -1): sau failover/đổi IP (RDS endpoint đổi IP, ELB, đối tác DR), app gọi IP cũ → lỗi kéo dài cho tới khi restart hoặc hết cache.
+- TTL = 0: mỗi lần gọi đều resolve → tăng độ trễ, tăng tải DNS; nhưng phản ứng nhanh với thay đổi.
+- Thực tế: 30-60 giây là điểm cân bằng phổ biến; với dịch vụ failover quan trọng, 10-30 giây. Kết hợp **connection pool** để giảm số lần resolve (kết nối giữ mở không cần resolve lại).
+
+### Chẩn đoán DNS chậm trên Linux/container
+~~~bash
+# 1) Cấu hình resolver trong container/pod
+cat /etc/resolv.conf
+# nameserver, search, ndots, options timeout/attempts
+
+cat /etc/nsswitch.conf | grep hosts
+# Ví dụ: hosts: files dns  (tra /etc/hosts trước, rồi DNS)
+
+# 2) Đo thời gian resolve (bỏ qua cache JVM — chạy từ shell)
+time getent hosts api.partner.com
+# getent dùng NSS của hệ thống (giống nhiều app native)
+
+dig api.partner.com
+# Xem "Query time" (ms), SERVER nào trả lời, ANSWER SECTION
+
+# 3) Kiểm tra /etc/hosts có entry cũ không
+grep partner /etc/hosts
+
+# 4) Kiểm tra connectivity/độ trễ tới DNS server
+# (từ resolv.conf lấy IP nameserver, ví dụ 10.96.0.10)
+# dùng nc hoặc dig đo lặp lại
+
+# 5) Nếu nghi cache OS (nscd/systemd-resolved)
+# systemd-resolve --statistics (tuỳ distro)
+~~~
+
+**Trong Kubernetes:** {{/etc/resolv.conf}} thường trỏ tới CoreDNS (ClusterIP). {{ndots:5}} và search domain có thể làm một tên miền ngoài bị thử nhiều lần với suffix nội bộ → nhiều query NXDOMAIN, tăng độ trễ (xem cũng {{devops-035}}). Triệu chứng: {{dig}} tên FQDN có dấu chấm cuối {{api.partner.com.}} nhanh, nhưng gọi không có dấu chấm chậm.
+
+### Phân biệt "DNS chậm" với "kết nối chậm"
+| Triệu chứng | Nghi DNS | Nghi TCP/TLS/connect |
+|---|---|---|
+| Lần đầu gọi domain chậm, lần sau (cùng process, trong TTL) nhanh | Cache JVM/OS miss rồi hit | Ít liên quan |
+| {{dig}} chậm | Resolver/DNS server/search path | Không |
+| {{dig}} nhanh nhưng app chậm | Cache JVM TTL=0, hoặc resolve mỗi lần do code | Hoặc TLS handshake, pool cạn |
+| Sau failover vẫn gọi IP cũ | Cache JVM/OS TTL quá dài | Không |
+
+### Lỗi hay gặp
+1. **Đặt {{networkaddress.cache.ttl=-1}} (cache vĩnh viễn)**: phổ biến khi copy cấu hình cũ "cho an toàn". Hậu quả: failover DNS không có tác dụng cho tới khi restart toàn bộ JVM. Cách tránh: đặt TTL hữu hạn (30s) trừ khi bạn có cơ chế khác.
+2. **Chỉ sửa DNS record nhưng quên TTL ở nhiều lớp**: DNS authoritative TTL, resolver cache, OS cache, JVM cache, connection pool giữ kết nối tới IP cũ. Cách tránh: khi lên kế hoạch failover, hạ TTL trước (giờ/ngày tuỳ), hiểu toàn bộ chuỗi cache.
+3. **Đổ lỗi cho "Java chậm" mà không đo tầng OS**: {{dig/getent}} mất 3 giây thì JVM cũng vậy. Cách tránh: chẩn đoán từ dưới lên (network → resolver → OS NSS → JVM).
+4. **Nhầm {{tcp_fin_timeout}}/sysctl khác với DNS**: các tham số TCP không sửa DNS. Cách tránh: khoanh vùng đúng tầng.
+
+### Trả lời phỏng vấn
+JVM cache DNS trong {{InetAddress}}. Mặc định hiện đại (không có Security Manager) thường cache lookup thành công khoảng 30 giây và lookup lỗi 10 giây; có thể cấu hình {{networkaddress.cache.ttl}} và {{networkaddress.cache.negative.ttl}} trong {{java.security}} hoặc set sớm bằng {{Security.setProperty}}. TTL quá dài gây app gọi IP cũ sau failover; TTL 0 gây quá nhiều lookup. Khi DNS chậm, em chẩn đoán từ OS: {{/etc/resolv.conf}}, {{nsswitch.conf}}, đo bằng {{getent}} và {{dig}} để tách resolver chậm khỏi app chậm. Trên Kubernetes em chú ý {{ndots}}/search domain làm tăng số query. Em cũng dùng connection pool để giảm tần suất resolve.
+
+> Senior tip: Trước một đợt failover có kế hoạch (đổi endpoint DB, DR site), hãy lập checklist: hạ DNS TTL ở authoritative trước; xác nhận JVM {{networkaddress.cache.ttl}} đủ thấp; kiểm tra connection pool có validate/evict kết nối chết; và có runbook restart rolling nếu cần. "DNS đã đổi mà app vẫn lỗi" gần như luôn là chuyện cache ở một tầng nào đó.`,
+    follow: [
+      'Sự khác nhau giữa TTL của bản ghi DNS (authoritative) và {{networkaddress.cache.ttl}} của JVM là gì?',
+      'Trong Kubernetes, {{ndots:5}} ảnh hưởng thế nào đến độ trễ phân giải tên miền ngoài cluster?',
+      'Bạn xử lý thế nào để service Java phản ứng nhanh khi RDS failover đổi endpoint IP?'
+    ],
+    tags: ['Linux', 'DNS', 'JVM', 'InetAddress', 'networkaddress.cache.ttl', 'troubleshooting']
+  },
+  {
+    id: 'devops-062',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Process Java bỗng biến mất. Có lúc log có {{java.lang.OutOfMemoryError}}, có lúc log im lặng và container báo exit code 137. Khác nhau giữa OOM killer của Linux (kernel) và OutOfMemoryError của JVM là gì, bạn dùng {{dmesg}}/journalctl để xác nhận ra sao, và cách phòng tránh mỗi loại?',
+    a: `**Tóm tắt:** **OutOfMemoryError (OOME)** là lỗi do **JVM** ném ra khi không cấp phát được bộ nhớ trong các vùng JVM quản lý (heap, metaspace, v.v.) — process thường vẫn sống (tuỳ cấu hình), log có stack trace OOME, và bạn có thể có heap dump nếu bật {{-XX:+HeapDumpOnOutOfMemoryError}}. **OOM killer** là cơ chế của **Linux kernel**: khi hệ thống (hoặc cgroup/container) cạn RAM, kernel chọn process để giết ngay (SIGKILL) — log ứng dụng thường **không kịp ghi gì**, exit code thường là 137 (128+9), và bằng chứng nằm ở {{dmesg}} hoặc {{journalctl -k}}. Hai thứ khác tầng, khác triệu chứng, khác cách sửa.
+
+### Hiểu nhanh
+Hãy coi JVM như một công ty thuê văn phòng (container có giới hạn RAM). **OOME** giống kế toán nội bộ (JVM) báo "phòng heap hết chỗ, không đặt thêm bàn được" — công ty vẫn đứng vững, kế toán viết biên bản (stack trace). **OOM killer** giống ban quản lý toà nhà (kernel) thấy cả toà/căn hộ vượt điện nước cho phép, cắt điện đột ngột (SIGKILL) — không ai kịp viết biên bản, chỉ có sổ bảo vệ toà nhà ({{dmesg}}) ghi lại.
+
+### Thuật ngữ
+- **Heap**: vùng nhớ JVM cấp phát object Java. Giới hạn bởi {{-Xmx}}.
+- **Metaspace**: vùng nhớ (native, từ Java 8+) chứa metadata class. Có thể bị tràn nếu load class quá nhiều.
+- **SIGKILL (signal 9)**: tín hiệu buộc process chết ngay, process không bắt/chặn và không chạy shutdown hook. Exit code = 128 + 9 = **137**.
+- **cgroup (control group)**: cơ chế Linux giới hạn tài nguyên (RAM, CPU) cho nhóm process. Container dùng cgroup; vượt memory limit của cgroup → kernel OOM kill process trong cgroup.
+- **oom_score / oom_score_adj**: giá trị kernel dùng để chọn "nạn nhân" khi OOM ở mức hệ thống. Điểm cao hơn dễ bị giết hơn.
+
+### Bảng so sánh
+| | OutOfMemoryError (JVM) | OOM killer (Linux kernel) |
+|---|---|---|
+| Ai quyết định | JVM | Kernel (hệ thống hoặc cgroup) |
+| Nguyên nhân điển hình | Heap đầy, metaspace đầy, không tạo được thread native | Process/cgroup vượt RAM vật lý/limit; node hết RAM |
+| Log ứng dụng | Có {{java.lang.OutOfMemoryError: ...}} và stack trace | Thường **không có** gì (bị SIGKILL) |
+| Exit code (container/process) | Tuỳ: app có thể còn chạy, hoặc thoát với code do app quyết định; nếu dùng {{-XX:+ExitOnOutOfMemoryError}} JVM thoát (thường code 3) / {{CrashOnOutOfMemoryError}} | Thường **137** (SIGKILL) |
+| Heap dump | Có nếu bật {{-XX:+HeapDumpOnOutOfMemoryError}} | Không (JVM không được chạy) |
+| Bằng chứng | Log app, heap dump ({{.hprof}}), {{jstat}} | {{dmesg -T}}, {{journalctl -k}}, {{/var/log/kern.log}} (tuỳ distro), event K8s |
+| Cách sửa | Tăng/điều chỉnh {{-Xmx}}, sửa leak, giảm allocation, xem metaspace/thread | Tăng memory limit/request hợp lý, giảm RSS (heap + metaspace + thread stack + direct buffer + native), sửa leak native |
+
+### Xác nhận OOM killer
+~~~bash
+# Xem log kernel (cần quyền; trên container có thể phải xem ở node)
+dmesg -T | grep -i -E 'killed process|out of memory|oom-kill'
+# Ví dụ dòng:
+# [Tue Nov 05 10:22:11 2026] Out of memory: Killed process 12345 (java)
+#   total-vm:..., anon-rss:..., file-rss:..., shmem-rss:...
+
+# Với systemd/journald
+journalctl -k --since "1 hour ago" | grep -i -E 'killed process|oom'
+
+# Trên Kubernetes: mô tả pod
+kubectl describe pod <pod>
+# Tìm: Last State: Terminated, Reason: OOMKilled, Exit Code: 137
+# Hoặc Events có cảnh báo
+~~~
+Nếu chạy trong container, {{dmesg}} trong container có thể không thấy gì tuỳ cấu hình bảo mật; kiểm tra trên **node** hoặc dùng {{kubectl describe}}/monitoring.
+
+### Xác nhận OutOfMemoryError của JVM
+~~~bash
+# Tìm trong log ứng dụng
+grep -n "OutOfMemoryError" /var/log/app/app.log
+
+# Các dạng OOME phổ biến:
+# Java heap space          -> heap đầy (leak hoặc heap nhỏ)
+# Metaspace                -> quá nhiều class/loader (thường leak ClassLoader)
+# unable to create new native thread -> hết RAM/native cho thread stack hoặc chạm giới hạn OS
+# Direct buffer memory     -> ByteBuffer direct (Netty, NIO) tích luỹ
+# GC overhead limit exceeded (một số GC/cấu hình cũ) -> GC chạy mãi không thu hồi được
+~~~
+
+### Phòng tránh
+**Với OOME (JVM):**
+~~~bash
+# Bật heap dump khi OOME (nhớ đảm bảo có chỗ ghi file dump)
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/var/log/app/heapdump.hprof
+# Cho JVM thoát để orchestrator restart sạch (tuỳ chiến lược)
+-XX:+ExitOnOutOfMemoryError
+# Giới hạn heap hợp lý, không đặt -Xmx sát memory limit container
+~~~
+
+**Với OOM killer (container):**
+- Tổng RSS thực tế = heap + metaspace + code cache + thread stacks + direct buffers + native + GC overhead. Đừng đặt {{-Xmx}} = 100% memory limit container. Quy tắc thô: heap 60-75% limit, chừa phần còn lại cho non-heap.
+- Dùng {{-XX:MaxRAMPercentage=75.0}} (JDK 10+) để JVM tính heap theo limit container/cgroup.
+- Đặt Kubernetes {{resources.requests.memory}} và {{limits.memory}} thực tế; theo dõi {{container_memory_working_set_bytes}}.
+- Kiểm tra số thread ({{-Xss}}, thread pool) — mỗi thread tốn stack (mặc định thường ~1MB, tuỳ JVM/OS).
+
+### Lỗi hay gặp
+1. **Thấy exit 137 liền tăng {{-Xmx}}**: nếu bị OOM killer do cgroup, tăng heap có thể làm RSS vượt limit nhanh hơn → bị giết sớm hơn. Cách tránh: xác nhận {{dmesg}}/K8s OOMKilled; tăng **memory limit** container hoặc giảm non-heap/heap hợp lý.
+2. **Không bật heap dump vì "tốn đĩa"**: khi OOME thật sự xảy ra bạn không có dữ liệu phân tích leak. Cách tránh: bật dump, cấu hình đường dẫn có dung lượng, có cơ chế dọn file cũ.
+3. **Nhầm OOME {{unable to create new native thread}} là heap**: tăng {{-Xmx}} có thể làm tệ hơn vì bớt RAM native cho thread. Cách tránh: đọc kỹ thông điệp OOME; kiểm tra số thread, {{-Xss}}, {{ulimit -u}}.
+4. **Chỉ nhìn log app khi process biến mất**: OOM killer không để lại log app. Cách tránh: luôn kiểm tra kernel log/K8s events.
+
+### Trả lời phỏng vấn
+Em phân biệt hai trường hợp. OutOfMemoryError là JVM ném ra khi heap/metaspace/direct memory/... không đủ — log app có stack trace, có thể có heap dump nếu bật {{HeapDumpOnOutOfMemoryError}}. OOM killer là kernel Linux giết process (thường SIGKILL, exit 137) khi hệ thống hoặc cgroup cạn RAM — log app thường im lặng, bằng chứng nằm ở {{dmesg -T}} hoặc {{journalctl -k}} và trên Kubernetes là {{OOMKilled}}. Cách sửa khác nhau: OOME thì phân tích heap dump, chỉnh {{-Xmx}} hoặc sửa leak; OOM killer thì đảm bảo memory limit đủ cho tổng RSS (heap + non-heap + thread + direct buffer), dùng {{MaxRAMPercentage}} thay vì hardcode {{-Xmx}} quá sát limit.
+
+> Senior tip: Quy tắc vận hành: mọi service Java production nên có {{-XX:+HeapDumpOnOutOfMemoryError}}, {{-XX:+ExitOnOutOfMemoryError}} (hoặc cơ chế tương đương) để fail-fast và để orchestrator restart; đồng thời dashboard phải tách bạch "OOMKilled (kernel)" và "OOME (JVM)" vì runbook khác nhau. Đừng chẩn đoán OOM chỉ bằng "app chết".`,
+    follow: [
+      'Làm sao chọn {{-Xmx}} và {{MaxRAMPercentage}} khi chạy Java trong container có memory limit 2Gi?',
+      'OOM killer chọn process nào để giết khi cả node cạn RAM? {{oom_score_adj}} ảnh hưởng thế nào?',
+      'OOME "Metaspace" thường do nguyên nhân gì trong ứng dụng Spring Boot, và cách phát hiện?'
+    ],
+    tags: ['Linux', 'OOM killer', 'OutOfMemoryError', 'dmesg', 'JVM', 'Kubernetes', 'troubleshooting']
+  },
+  {
+    id: 'devops-063',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java chạy vài ngày thì ném {{java.io.IOException: Too many open files}} hoặc {{SocketException: Too many open files}}. Bạn kiểm tra giới hạn {{ulimit -n}} (soft/hard), giới hạn trong systemd/container, và dùng {{lsof}}/{{/proc/<PID>/fd}} để tìm rò rỉ file descriptor trong Java thế nào?',
+    a: `**Tóm tắt:** Mỗi file, socket, pipe, epoll fd... process mở đều tiêu tốn một **file descriptor (fd)**. Linux giới hạn số fd mỗi process bằng {{RLIMIT_NOFILE}} (soft limit và hard limit, xem {{ulimit -n}} / {{ulimit -Hn}}). Khi chạm giới hạn, mở file/socket mới thất bại với "Too many open files" (EMFILE). Nguyên nhân thường gặp trong Java: stream/socket/channel không đóng (thiếu try-with-resources), {{Files.list/lines/walk}} trả về Stream giữ fd, connection pool lệch cấu hình, hoặc WatchService. Chẩn đoán: xem giới hạn thực của process trong {{/proc/<PID>/limits}}, đếm fd hiện tại, dùng {{lsof -p}} để biết fd là loại gì và trỏ tới đâu; sửa code đóng tài nguyên và đặt giới hạn hợp lý ở tầng systemd/container.
+
+### Hiểu nhanh
+File descriptor giống "số vé" để vào phòng tài nguyên: mỗi file đang mở, mỗi kết nối mạng, mỗi pipe đều cần một vé. Kernel cấp cho mỗi process một số vé tối đa (giới hạn). Nếu code "mượn vé" (mở file/socket) nhưng quên "trả vé" (close), số vé đang giữ tăng dần — chạy vài ngày là hết, và lần mở tiếp theo bị từ chối: "Too many open files". Dù thông báo nói "files", thực ra socket mạng cũng tính.
+
+### Thuật ngữ
+- **File descriptor (fd)**: số nguyên không âm (0,1,2...): 0=stdin, 1=stdout, 2=stderr; từ 3 trở đi là file/socket/pipe... do process mở.
+- **Soft limit / Hard limit**: soft là ngưỡng kernel áp dụng ngay; process (có quyền phù hợp) có thể tăng soft lên tới hard; chỉ root (hoặc quyền {{CAP_SYS_RESOURCE}}) mới tăng hard. {{ulimit -n}} thường hiện soft; {{ulimit -Hn}} hiện hard.
+- **{{RLIMIT_NOFILE}}**: tên giới hạn tài nguyên cho số fd mở.
+- **try-with-resources**: cú pháp Java cho phép khai báo tài nguyên trong câu lệnh {{try(...)}}; trình biên dịch tự chèn lệnh {{close()}} khi ra khỏi block, kể cả khi có exception. Ví dụ: {{try (var in = Files.newInputStream(path))}} rồi dùng {{in}} bên trong block.
+
+### Kiểm tra giới hạn và mức sử dụng
+~~~bash
+# Giới hạn trong shell hiện tại (có thể KHÁC process đang chạy)
+ulimit -n      # soft
+ulimit -Hn     # hard
+
+# Giới hạn THỰC của process Java (quan trọng)
+PID=12345
+cat /proc/$PID/limits | grep "Max open files"
+# Max open files   1024   4096   files  (ví dụ: soft 1024, hard 4096)
+
+# Số fd đang mở
+ls /proc/$PID/fd | wc -l
+# hoặc
+lsof -nP -p $PID | wc -l
+
+# Xem fd là loại gì (file thường, socket TCP/UDP, pipe, anon_inode...)
+lsof -nP -p $PID | awk '{print $5}' | sort | uniq -c | sort -rn | head
+# Ví dụ: 800 IPv4 (socket), 50 REG (file), 30 FIFO...
+~~~
+
+Nếu {{ls /proc/$PID/fd | wc -l}} tăng đều theo thời gian (đồ thị đi lên), đó là rò rỉ.
+
+### Giới hạn ở nhiều tầng (Linux/service/container)
+| Tầng | Cấu hình | Ghi chú |
+|---|---|---|
+| Kernel toàn hệ thống | {{fs.file-max}}, {{fs.nr_open}} ({{/proc/sys/fs/...}}) | Trần hệ thống; hiếm khi là nguyên nhân trực tiếp của một process |
+| PAM/login shell | {{/etc/security/limits.conf}}, {{limits.d}} | Áp dụng cho session đăng nhập; **service systemd thường không đọc** file này |
+| systemd service | {{LimitNOFILE=65536}} trong {{[Service]}} | Cách đúng cho daemon chạy bằng systemd; reload daemon và restart service |
+| Docker/containerd | {{--ulimit nofile=65536:65536}}, hoặc config runtime | Image/container cần đặt rõ; mặc định có thể thấp |
+| Kubernetes | Thường kế thừa từ node/container runtime; một số môi trường dùng {{securityContext}}/annotations tuỳ runtime | Kiểm tra thực tế trong pod: {{cat /proc/1/limits}} |
+
+**Bẫy:** bạn SSH vào server thấy {{ulimit -n}} = 65535, nhưng service Java do systemd chạy vẫn thấy 1024 trong {{/proc/$PID/limits}} vì systemd unit không set {{LimitNOFILE}}.
+
+### Tìm rò rỉ fd trong Java: pattern thường gặp
+~~~bash
+# Socket rò rỉ: nhiều dòng TCP tới cùng đích hoặc CLOSE_WAIT
+lsof -nP -p $PID | grep TCP | head
+ss -tanp | grep "pid=$PID"
+
+# File rò rỉ: nhiều REG trỏ tới file log/tạm/thư mục
+lsof -nP -p $PID | grep REG | awk '{print $9}' | sort | uniq -c | sort -rn | head
+
+# "anon_inode:[eventpoll]" nhiều bất thường: có thể do tạo selector/epoll lặp (hiếm)
+# Pipe nhiều: tạo ProcessBuilder/process không đóng stream
+~~~
+
+**Code Java hay gây rò:**
+~~~java
+// SAI: Files.lines trả về Stream giữ fd mở cho tới khi close
+long n = Files.lines(Path.of("/data/big.txt")).count();
+
+// ĐÚNG
+try (Stream<String> lines = Files.lines(Path.of("/data/big.txt"))) {
+    long n = lines.count();
+}
+
+// SAI: Files.list / Files.walk cũng phải close
+Files.list(dir).forEach(...);
+
+// ĐÚNG
+try (Stream<Path> paths = Files.list(dir)) {
+    paths.forEach(...);
+}
+
+// SAI: HttpURLConnection / InputStream không đóng
+InputStream in = url.openStream();
+byte[] b = in.readAllBytes();
+
+// ĐÚNG
+try (InputStream in = url.openStream()) {
+    byte[] b = in.readAllBytes();
+}
+
+// ZipFile / JarFile giữ fd tới file nén — phải close
+try (ZipFile z = new ZipFile("app.jar")) { ... }
+~~~
+Ngoài ra: {{DirectoryStream}} (NIO) phải close; {{WatchService}} nếu tạo mới liên tục; kết nối HTTP/DB không qua pool hoặc pool cấu hình sai (leak detection của HikariCP hữu ích).
+
+### Công cụ hỗ trợ
+- HikariCP: bật {{leakDetectionThreshold}} để log cảnh báo connection mượn quá lâu.
+- {{lsof}} lặp lại theo thời gian hoặc giám sát {{process_files_open_files}} / {{process_files_max_files}} (Prometheus JMX exporter / Micrometer).
+- Heap dump đôi khi giúp gián tiếp (tìm object giữ {{Socket}}, {{FileInputStream}}), nhưng công cụ trực tiếp hơn là {{lsof}} và review code path.
+
+### Lỗi hay gặp
+1. **Chỉ tăng {{ulimit}}/{{LimitNOFILE}} mà không sửa leak**: hết fd muộn hơn, nhưng vẫn hết; đồng thời che giấu bug. Cách tránh: tăng giới hạn là biện pháp an toàn tạm thời, nhưng phải tìm và sửa leak.
+2. **Sửa {{/etc/security/limits.conf}} cho systemd service**: không có tác dụng. Cách tránh: đặt {{LimitNOFILE}} trong unit file systemd.
+3. **Nhầm "Too many open files" chỉ là file trên đĩa**: phần lớn trường hợp trên service mạng là **socket**. Cách tránh: dùng {{lsof}} phân loại theo TYPE.
+4. **Đóng resource ở nhánh happy-path nhưng quên khi exception**: rò rỉ chỉ xuất hiện khi có lỗi. Cách tránh: luôn dùng try-with-resources cho {{Closeable}}/{{AutoCloseable}}.
+
+### Trả lời phỏng vấn
+"Too many open files" nghĩa là process chạm {{RLIMIT_NOFILE}}. Em kiểm tra giới hạn thực của process qua {{/proc/<PID>/limits}} (không chỉ {{ulimit}} trong shell) vì systemd/container có thể đặt khác. Em đo số fd bằng {{ls /proc/<PID>/fd | wc -l}} và phân loại bằng {{lsof -p}} để biết là socket hay file thường. Trong Java, nguyên nhân hay gặp là quên đóng resource: {{Files.lines/list/walk}} trả Stream giữ fd, {{InputStream}}/{{Socket}}/{{ZipFile}} không close, hoặc HTTP/DB connection không trả về pool — fix bằng try-with-resources và cấu hình pool đúng. Em tăng {{LimitNOFILE}} (systemd) hoặc ulimit container như biện pháp an toàn, nhưng luôn xử lý leak gốc và thêm giám sát {{open_files}} theo thời gian.
+
+> Senior tip: Hãy đặt alert khi {{process_open_fds / process_max_fds > 0.7}} (hoặc tương đương). Rò fd thường tăng chậm (vài fd/phút) và chỉ nổ sau ngày — nếu bạn chỉ nhìn khi đã 100%, bạn luôn xử lý sự cố lúc nửa đêm. Với Java NIO/Netty, cũng kiểm tra direct buffer và số channel, nhưng "Too many open files" là tín hiệu fd-level rõ ràng nhất.`,
+    follow: [
+      'Tại sao {{Files.lines()}} bắt buộc phải dùng trong try-with-resources trong khi nhiều developer bỏ sót?',
+      'Khác nhau giữa đặt {{ulimit}} trong shell, {{limits.conf}}, và {{LimitNOFILE}} của systemd?',
+      'Làm sao dùng HikariCP leak detection và metric fd để phát hiện connection leak trước khi chạm giới hạn?'
+    ],
+    tags: ['Linux', 'ulimit', 'file descriptor', 'Too many open files', 'lsof', 'Java', 'troubleshooting']
+  },
+  {
+    id: 'devops-064',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Bạn xây dựng runbook xử lý sự cố production cho team on-call của một dịch vụ Java (ngân hàng/thanh toán). Runbook cần gồm những bước nào (detect/triage/mitigate/resolve/postmortem), nguyên tắc thu thập bằng chứng trước khi restart, và cách tổ chức escalation/communication để giảm thời gian ảnh hưởng?',
+    a: `**Tóm tắt:** Runbook sự cố là tài liệu hành động theo bước để người trực (kể cả không phải tác giả hệ thống) có thể **giảm ảnh hưởng nhanh, an toàn, có phối hợp**. Khung chuẩn: **Detect → Triage → Mitigate → Communicate (song song) → Resolve → Postmortem**. Với Java, nguyên tắc vàng là **thu thập bằng chứng trước khi restart** (thread dump, heap dump/histogram, GC log, {{dmesg}}, metric snapshot) vì restart xoá trạng thái trong RAM. Ở cấp lead, bạn thiết kế runbook để giảm MTTR (mean time to recovery), giảm bus factor, và xây văn hoá blameless: mục tiêu là sửa hệ thống, không tìm người đổ lỗi.
+
+### Hiểu nhanh
+Runbook giống "sổ tay xử lý cháy" đặt cạnh bình chữa cháy: khi có khói, người trực không cần nhớ hết kiến trúc — họ mở đúng trang, làm theo checklist, gọi đúng người, và ghi lại đã làm gì. Trong thanh toán/ngân hàng, xử lý sự cố còn gắn với cam kết SLA, thông báo khách hàng/đối tác, và đôi khi yêu cầu tuân thủ (audit trail). Restart service giống "tắt cầu dao" — có thể dập lửa nhanh nhưng cũng làm mất dấu vết; vì vậy phải chụp ảnh hiện trường (bằng chứng) trước.
+
+### Thuật ngữ
+- **Incident (sự cố)**: tình huống làm giảm chất lượng dịch vụ hoặc gián đoạn (lỗi tăng, latency tăng, mất chức năng).
+- **On-call**: lịch trực để phản ứng sự cố ngoài giờ hành chính.
+- **MTTD / MTTR**: Mean Time To Detect / To Recover — thời gian trung bình phát hiện / khôi phục.
+- **Mitigation (giảm thiểu)**: hành động giảm ảnh hưởng cho khách hàng nhanh (rollback, scale, chuyển traffic), chưa nhất thiết sửa nguyên nhân gốc.
+- **Root cause (nguyên nhân gốc)**: nguyên nhân sâu khiến sự cố xảy ra; tìm sau khi hệ thống ổn.
+- **Blameless postmortem**: họp rút kinh nghiệm không quy lỗi cá nhân, tập trung vào cơ chế/hệ thống/guardrail.
+
+### Cấu trúc runbook (mẫu khung)
+~~~text
+1. Detect (Phát hiện)
+   - Nguồn: alert (Prometheus/Alertmanager, CloudWatch, APM), báo từ CS/đối tác
+   - Điều kiện vào incident: error rate > X% trong Y phút, p99 > Z ms, payment success < ...
+   - Mở kênh incident (Slack/Teams/bridge call), đặt Incident Commander (IC) nếu mức độ cao
+
+2. Triage (Phân loại)
+   - Mức độ (SEV): SEV1 ảnh hưởng giao dịch tiền/khách hàng diện rộng; SEV2 suy giảm một phần; SEV3 thấp
+   - Phạm vi: bao nhiêu % traffic, region nào, chức năng nào (login/thanh toán/tra cứu)
+   - Giả thuyết nhanh: deploy gần đây? phụ thuộc DB/đối tác/mạng? thay đổi hạ tầng?
+
+3. Mitigate (Giảm thiểu) — ưu tiên khôi phục dịch vụ
+   - Rollback phiên bản gần nhất (nếu tương quan với deploy)
+   - Tắt feature flag gây lỗi; giảm traffic (rate limit), chuyển sang chế độ degraded
+   - Scale/restart có kiểm soát (sau khi thu bằng chứng); failover DB/region theo playbook
+   - Với thanh toán: xác định giao dịch treo/đang xử lý, tránh double-charge; phối hợp nghiệp vụ
+
+4. Communicate (Song song)
+   - Cập nhật định kỳ (ví dụ mỗi 15 phút cho SEV1): trạng thái, ảnh hưởng, hành động tiếp theo, ETA nếu có
+   - Stakeholder: CS, quản lý, đối tác, (nếu cần) tuân thủ/pháp chế — theo mẫu thông báo đã duyệt
+   - Ghi timeline: mốc thời gian + hành động + người thực hiện
+
+5. Resolve (Khắc phục)
+   - Xác nhận metric hồi phục (error rate, latency, success rate) ổn định
+   - Theo dõi sau sự cố (hypercare) 30-60 phút
+   - Đóng incident khi đạt điều kiện
+
+6. Postmortem (Rút kinh nghiệm) — trong 24-72 giờ làm việc
+   - Timeline khách quan, impact (số giao dịch/khách hàng, thời gian)
+   - Root cause (kỹ thuật + quy trình), contributing factors
+   - Action items có owner, deadline, mức ưu tiên (test, alert, circuit breaker, runbook cập nhật)
+   - Blameless: không nêu tên để quy lỗi; nêu "hệ thống cho phép điều gì xảy ra"
+~~~
+
+### Nguyên tắc thu thập bằng chứng TRƯỚC khi restart (Java)
+Restart/xoá pod/kill process làm mất: stack thread, heap, trạng thái socket, buffer trong RAM. Hãy chuẩn bị "gói thu thập" (script) và chạy nhanh:
+
+~~~bash
+TS=$(date +%Y%m%d_%H%M%S)
+OUT=/tmp/incident_$TS; mkdir -p $OUT
+PID=<PID_JAVA>
+
+# 1) Bối cảnh hệ thống
+date > $OUT/time.txt
+uptime; free -m; df -h; df -i > $OUT/sys.txt
+top -H -b -n1 -p $PID > $OUT/top_threads.txt
+
+# 2) Thread dump: 3 lần cách 5-10 giây
+for i in 1 2 3; do jcmd $PID Thread.print > $OUT/threaddump_$i.txt; sleep 7; done
+# Hoặc jstack $PID
+
+# 3) Bộ nhớ/GC
+jcmd $PID GC.heap_info > $OUT/heap_info.txt 2>&1 || true
+jcmd $PID GC.class_histogram > $OUT/class_histogram.txt 2>&1 || true
+# Heap dump chỉ khi nghi leak và còn dung lượng/cho phép (file lớn, có thể gây pause)
+# jcmd $PID GC.heap_dump $OUT/heap.hprof
+
+# 4) Mạng/socket
+ss -s > $OUT/ss_summary.txt
+ss -tanp > $OUT/ss_all.txt 2>&1 || true
+lsof -nP -p $PID > $OUT/lsof.txt 2>&1 || true
+
+# 5) Kernel/OOM
+dmesg -T | tail -200 > $OUT/dmesg_tail.txt 2>&1 || true
+
+# 6) Log app (kéo đoạn gần sự cố)
+# tail -n 5000 /var/log/app/app.log > $OUT/app_tail.log
+
+# Nén và lưu theo quy định (chú ý dữ liệu nhạy cảm/PII)
+tar czf $OUT.tgz $OUT
+~~~
+
+**Trong Kubernetes:** dùng {{kubectl exec}} (nếu container có {{jcmd}}), ephemeral debug container, hoặc endpoint Actuator ({{/actuator/threaddump}}, {{/actuator/heapdump}}) được bảo vệ chặt. Cân nhắc: {{heapdump}} có thể chứa dữ liệu nhạy cảm — tuân thủ chính sách bảo mật.
+
+**Khi nào restart trước?** Nếu ảnh hưởng SEV1 đang lan rộng và bạn đã chụp tối thiểu (thread dump + metric + {{dmesg}}) hoặc không thể truy cập process, ưu tiên giảm thiểu. Runbook phải ghi rõ "tối thiểu cần gì trước khi restart".
+
+### Escalation & communication
+- **Ma trận escalation**: SEV1 gọi IC + lead kỹ thuật + chủ sở hữu dịch vụ phụ thuộc trong X phút; có số liên lạc dự phòng.
+- **Một đầu mối điều phối (IC)**: tránh nhiều người ra lệnh chồng chéo.
+- **Mẫu thông báo**: viết sẵn cho khách hàng nội bộ/đối tác, nêu "ảnh hưởng gì, từ khi nào, đang làm gì, cập nhật tiếp lúc nào" — không suy đoán nguyên nhân khi chưa chắc.
+- **Ngân hàng/thanh toán**: ghi nhận giao dịch nghi vấn, phối hợp reconciliation; tuân thủ quy trình báo cáo sự cố theo quy định nội bộ/cơ quan quản lý nếu đạt ngưỡng.
+
+### Lỗi hay gặp
+1. **Không có runbook, chỉ có "anh A biết"**: anh A nghỉ phép thì MTTR tăng vọt. Cách tránh: tài liệu hoá, diễn tập (game day), cập nhật sau mỗi postmortem.
+2. **Restart reflex (phản xạ restart)**: dập triệu chứng nhưng lặp lại, không có dữ liệu root cause. Cách tránh: checklist "thu bằng chứng tối thiểu" trước restart; tự động hoá thu thập.
+3. **Postmortem biến thành buổi quy lỗi**: mọi người giấu thông tin lần sau. Cách tránh: blameless, tập trung vào guardrail (alert, test, circuit breaker, limit, review).
+4. **Action items mơ hồ, không owner/deadline**: "cải thiện monitoring" không bao giờ xong. Cách tránh: mỗi action có người chịu trách nhiệm, hạn, và tiêu chí hoàn thành.
+
+### Trả lời phỏng vấn (góc lead)
+Em xây runbook theo vòng đời Detect, Triage, Mitigate, Communicate, Resolve, Postmortem. Phần quan trọng nhất với Java là checklist thu bằng chứng trước khi restart: 3 thread dump cách nhau, thông tin heap/GC, số fd/socket, và {{dmesg}} để phân biệt OOM killer với OOME — vì restart xoá trạng thái RAM. Em phân mức SEV rõ, có Incident Commander, mẫu cập nhật stakeholder định kỳ, và ma trận escalation để đúng người tham gia trong vài phút. Sau sự cố là blameless postmortem với action items có owner và deadline. Mục tiêu của em là giảm MTTR và lặp lại sự cố, không phải tìm ai sai. Trong bối cảnh thanh toán, em thêm bước kiểm soát ảnh hưởng giao dịch và phối hợp nghiệp vụ/tuân thủ.
+
+> Senior tip: Runbook chỉ sống nếu được dùng. Hãy (1) gắn link runbook vào alert, (2) chạy game day/diễn tập định kỳ trên môi trường an toàn, (3) cập nhật runbook ngay trong action item của postmortem. Một runbook 80% đúng nhưng ai cũng tìm thấy còn giá trị hơn tài liệu hoàn hảo nằm trong wiki không ai đọc.`,
+    follow: [
+      'Bạn phân định SEV1/SEV2 cho dịch vụ thanh toán dựa trên tiêu chí nào (SLO, % giao dịch, doanh thu, tuân thủ)?',
+      'Khi nghi ngờ deploy gây lỗi, bạn chọn rollback hay roll-forward? Điều kiện ra quyết định là gì?',
+      'Làm sao cân bằng giữa "thu thập heap dump" (có thể gây pause/lộ dữ liệu) và yêu cầu bảo mật/tuân thủ?'
+    ],
+    tags: ['on-call', 'incident response', 'runbook', 'SRE', 'postmortem', 'leadership', 'troubleshooting']
+  },
+{
+  id: 'devops-065',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Giải thích user, group, quyền rwx/octal, sudo/sudoers, setuid, umask; cấp quyền tối thiểu cho user deploy thế nào?',
+  a: `**Tóm tắt:** Linux quản lý truy cập bằng user/group và 3 nhóm quyền r/w/x cho owner/group/other; cấp quyền tối thiểu cho deploy user = user riêng, group riêng, sudo chỉ các lệnh cụ thể, umask 027, không setuid bừa.
+
+### Khái niệm cơ bản
+- **User**: mỗi tài khoản có UID; /etc/passwd lưu UID, home, shell.
+- **Group**: tập user; /etc/group. Một user có primary group + supplementary groups.
+- **Quyền rwx**: read (đọc nội dung/list dir), write (sửa/tạo/xoá), execute (chạy file/vào dir).
+- **Octal**: r=4, w=2, x=1; ví dụ 755 = rwxr-xr-x, 640 = rw-r-----.
+- **sudo**: chạy lệnh với quyền root theo chính sách /etc/sudoers (sửa bằng visudo).
+- **sudoers**: định nghĩa ai được chạy lệnh nào trên host nào với tư cách ai.
+- **setuid**: bit đặc biệt (4xxx) khiến file chạy với UID owner (ví dụ passwd). Rủi ro bảo mật lớn.
+- **umask**: mặt nạ quyền mặc định khi tạo file (022 → file 644, dir 755; 027 → file 640, dir 750).
+
+### Cấp quyền tối thiểu cho deploy user
+1. Tạo user deploy riêng: useradd -m -s /bin/bash deploy.
+2. Tạo group app và thêm deploy: usermod -aG app deploy.
+3. Thư mục app thuộc group app, mode 2750 (setgid để file mới kế thừa group): chown -R root:app /opt/app && chmod 2750 /opt/app.
+4. sudoers chỉ cho lệnh cần thiết: deploy ALL=(root) NOPASSWD: /bin/systemctl restart myapp, /bin/journalctl -u myapp. Sửa bằng visudo; không cho sudo su hay sudo bash.
+5. umask 027 trong ~/.bashrc của deploy.
+6. Private key deploy mode 600.
+
+### Pitfall
+- chmod -R 777 là anti-pattern.
+- sudo NOPASSWD cho apt/yum = root thực sự.
+- setuid trên script shell bị kernel bỏ qua.
+
+> Senior tip: Nguyên tắc least privilege: deploy user không cần root shell, chỉ cần restart service và đọc log. Audit sudoers định kỳ (sudo -l -U deploy).`,
+  follow: [
+    'Khác nhau giữa chmod và chown? Khi nào dùng ACL (setfacl)?',
+    'setgid bit trên thư mục có tác dụng gì với file mới tạo?',
+    'Làm sao audit quyền truy cập của deploy user trên production?'
+  ],
+  tags: ['linux', 'permissions', 'sudo', 'umask', 'security']
+},
+{
+  id: 'devops-066',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Viết bash script deploy xử lý lỗi: set -euo pipefail, trap ERR/EXIT, exit code, retry có giới hạn, log, idempotent.',
+  a: `**Tóm tắt:** Script deploy đáng tin cậy = set -euo pipefail để fail-fast, trap để dọn dẹp/log, retry có giới hạn cho thao tác mạng, log có timestamp, và các bước idempotent (chạy lại không hại).
+
+### set -euo pipefail
+- set -e: thoát ngay khi lệnh fail.
+- set -u: lỗi nếu dùng biến chưa khai báo.
+- set -o pipefail: pipeline fail nếu bất kỳ lệnh nào fail (không chỉ lệnh cuối).
+
+### trap
+- trap cleanup EXIT: chạy cleanup khi script kết thúc (thành công hay lỗi).
+- trap 'echo "fail at line LINENO" >&2' ERR: log dòng lỗi.
+
+### Retry có giới hạn
+retry() { local n=0 max=5 delay=2; until "$@"; do n=$((n+1)); [ $n -ge $max ] && return 1; sleep $delay; delay=$((delay*2)); done; }
+Dùng cho curl health check, pull image, scp.
+
+### Log
+- exec > >(tee -a /var/log/deploy.log) 2>&1 hoặc function log() { echo "[$(date -Is)] $*"; }.
+- Thêm correlation id (deploy id) để truy vết.
+
+### Idempotent
+- Kiểm tra trước khi làm: nếu file/service đã đúng trạng thái thì skip.
+- Dùng checksum/version để quyết định có deploy không.
+- Atomic: deploy vào thư mục mới rồi symlink switch, rollback = đổi symlink.
+
+### Pitfall
+- set -e không bắt lỗi trong if/while condition; cần kiểm tra rõ.
+- trap ERR không chạy nếu exit do signal; thêm trap cho INT/TERM.
+- Retry vô hạn gây hang; luôn có max.
+
+> Senior tip: Script deploy production nên có --dry-run, lock file (flock) để tránh 2 deploy chạy cùng lúc, và exit code rõ ràng (0 ok, 1 lỗi chung, 2 lock, 3 health fail) để CI/CD phân loại.`,
+  follow: [
+    'Khác nhau giữa trap EXIT và trap ERR?',
+    'Làm sao đảm bảo chỉ một instance deploy chạy cùng lúc (flock)?',
+    'Khi nào nên dùng Ansible thay vì bash script?'
+  ],
+  tags: ['bash', 'deploy', 'error-handling', 'idempotency']
+},
+{
+  id: 'devops-067',
+  topic: 'devops',
+  level: 'senior',
+  q: 'So sánh Deployment, ReplicaSet, StatefulSet, DaemonSet: cơ chế bên trong và ví dụ dùng cho app Spring, Kafka/DB, log agent.',
+  a: `**Tóm tắt:** Deployment quản lý ReplicaSet để rollout app stateless; ReplicaSet giữ số pod; StatefulSet cho workload stateful với identity/PVC ổn định và rollout có thứ tự; DaemonSet chạy 1 pod trên mỗi node.
+
+### Cơ chế bên trong
+- **ReplicaSet**: controller so sánh số pod thực tế với replicas, tạo/xoá pod theo selector. Có ownerReferences trỏ tới Deployment.
+- **Deployment**: quản lý ReplicaSet, thực hiện rolling update, rollback bằng revision history.
+- **StatefulSet**: pod có tên ổn định (web-0, web-1), PVC riêng theo ordinal, rollout có thứ tự, phù hợp DB/Kafka/ZooKeeper.
+- **DaemonSet**: đảm bảo 1 pod trên mỗi node, dùng cho log/metrics agent, CNI, storage.
+
+### Ví dụ
+- App Spring Boot stateless → Deployment + HPA.
+- Kafka broker → StatefulSet + PVC.
+- Fluent Bit/log agent → DaemonSet.
+
+### Pitfall
+- Dùng Deployment cho DB sẽ mất identity/PVC mapping.
+- StatefulSet scale down không tự xoá PVC; cần dọn thủ công.
+
+> Senior tip: Chọn workload type theo state + identity: stateless → Deployment; stateful + identity → StatefulSet; node-level agent → DaemonSet.`,
+  follow: [
+    'Rolling update của Deployment hoạt động thế nào (maxSurge, maxUnavailable)?',
+    'Khi nào dùng Job/CronJob thay vì Deployment?',
+    'StatefulSet headless service dùng để làm gì?'
+  ],
+  tags: ['kubernetes', 'workload', 'deployment', 'statefulset', 'daemonset']
+},
+{
+  id: 'devops-068',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Các loại Service (ClusterIP, NodePort, LoadBalancer, ExternalName, headless) và đưa request từ ngoài vào cluster (Ingress, Gateway API, AWS LB Controller), khi nào dùng cái nào?',
+  a: `**Tóm tắt:** Service cung cấp endpoint ổn định cho pod; ClusterIP nội bộ, NodePort mở port node, LoadBalancer tạo LB cloud, ExternalName alias DNS, headless cho discovery trực tiếp. Từ ngoài vào dùng Ingress/Gateway API + AWS LB Controller.
+
+### Các loại Service
+- **ClusterIP**: IP nội bộ cluster, default. Dùng giao tiếp service-to-service.
+- **NodePort**: mở port 30000-32767 trên mọi node; truy cập qua node IP:port.
+- **LoadBalancer**: provision LB cloud (AWS NLB/ALB) trỏ vào service.
+- **ExternalName**: CNAME tới DNS ngoài (không proxy).
+- **Headless (clusterIP: None)**: trả DNS A records của pod; dùng StatefulSet discovery, gRPC.
+
+### Đưa request từ ngoài vào
+- **Ingress**: L7 routing (host/path) qua Ingress controller (nginx, ALB).
+- **Gateway API**: chuẩn mới, hỗ trợ HTTPRoute/GRPCRoute, role separation.
+- **AWS Load Balancer Controller**: tạo ALB/NLB từ Ingress/Gateway/Service.
+
+### Khi nào dùng
+- API public → Ingress/ALB + ClusterIP service.
+- TCP/UDP hoặc gRPC streaming → NLB hoặc Gateway.
+- Service mesh/internal → ClusterIP + mesh.
+
+### Pitfall
+- NodePort range và firewall.
+- LoadBalancer mỗi service = nhiều LB → chi phí; gom qua Ingress.
+
+> Senior tip: Ưu tiên Gateway API cho dự án mới; Ingress vẫn phổ biến. Dùng ExternalName để migrate dần dependency ngoài.`,
+  follow: [
+    'Khác nhau giữa Ingress và Service LoadBalancer về cost và tính năng?',
+    'Gateway API giải quyết hạn chế gì của Ingress?',
+    'Khi nào dùng headless service với StatefulSet?'
+  ],
+  tags: ['kubernetes', 'service', 'ingress', 'gateway-api', 'aws']
+},
+{
+  id: 'devops-069',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Hệ thống monitoring gồm những thành phần nào (metrics, logs, traces, alerting, dashboard, on-call) và luồng dữ liệu đi qua từng thành phần?',
+  a: `**Tóm tắt:** Monitoring = metrics (số liệu) + logs (sự kiện) + traces (đường đi request) + alerting (cảnh báo) + dashboard (trực quan) + on-call (phản ứng). Luồng: app → agent/collector → storage → query → dashboard/alert → on-call.
+
+### Thành phần
+- **Metrics**: số liệu time-series (CPU, RPS, latency p99). Prometheus/Grafana/CloudWatch.
+- **Logs**: dòng sự kiện có timestamp, level, context. Fluent Bit → Loki/Elasticsearch/CloudWatch Logs.
+- **Traces**: distributed tracing (OpenTelemetry) theo traceId/spanId.
+- **Alerting**: rule trên metrics/logs → Alertmanager/PagerDuty.
+- **Dashboard**: Grafana panels.
+- **On-call**: rotation, escalation, runbook.
+
+### Luồng dữ liệu
+App emit metrics (Prometheus scrape / push OTLP) → Prometheus remote_write → storage (Thanos/Mimir) → Grafana query → dashboard.
+Logs: app stdout → container runtime → Fluent Bit DaemonSet → parse/label → Loki → Grafana.
+Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
+
+### Pitfall
+- Chỉ có metrics không đủ để root cause; cần logs+traces.
+- Alert fatigue: quá nhiều alert → bỏ qua.
+
+> Senior tip: Chuẩn hoá OpenTelemetry để vendor-neutral; correlation id (traceId) xuyên suốt log/metrics/traces.`,
+  follow: [
+    'RED method và USE method là gì?',
+    'Khi nào dùng push vs pull cho metrics?',
+    'Làm sao giảm chi phí log retention?'
+  ],
+  tags: ['monitoring', 'observability', 'metrics', 'logs', 'traces']
+},
+{
+  id: 'devops-070',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Cơ chế thu thập logs và metrics: pull (Prometheus scrape) vs push, agent DaemonSet (Fluent Bit), parse/label, retention và chi phí, cardinality.',
+  a: `**Tóm tắt:** Prometheus pull scrape endpoint /metrics; push qua Pushgateway/OTLP cho job ngắn. Fluent Bit DaemonSet tail log file, parse, gắn label, gửi Loki. Cardinality (số combination label) quyết định chi phí và performance.
+
+### Pull vs push
+- **Pull**: Prometheus scrape target theo interval; target phải expose endpoint. Dễ phát hiện target down (scrape fail).
+- **Push**: app push (Pushgateway cho batch job, OTLP cho OTel). Cần cho job ngắn sống.
+
+### Fluent Bit DaemonSet
+- Chạy trên mỗi node, tail /var/log/containers/*.log.
+- Parse (JSON/regex), filter, enrich (k8s metadata), output tới Loki/Elasticsearch.
+- Buffer và retry khi backend down.
+
+### Retention và chi phí
+- Logs: hot 7-14 ngày, cold (S3) 90+ ngày; sampling debug logs.
+- Metrics: high-res 15d, downsample 90d+.
+- Cardinality: số distinct label combinations. Label cao cardinality (user_id, request_id) → blow-up storage/query.
+
+### Pitfall
+- Gắn request_id vào metric label → cardinality explosion.
+- Không set retention → chi phí tăng.
+
+> Senior tip: Quy tắc: metric label chỉ cho dimension có bounded values (status code, endpoint normalized). High-cardinality data đưa vào logs/traces, không metrics.`,
+  follow: [
+    'Làm sao detect cardinality explosion (Prometheus TSDB head)?',
+    'Fluent Bit vs Fluentd: khi nào chọn cái nào?',
+    'Log sampling ảnh hưởng điều tra sự cố thế nào?'
+  ],
+  tags: ['logging', 'metrics', 'prometheus', 'fluent-bit', 'cardinality']
+},
+{
+  id: 'devops-071',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Scale app dựa trên yếu tố gì: CPU, RAM (vì sao scale theo RAM với JVM thường sai), RPS, queue lag, custom metrics; HPA/KEDA/Cluster Autoscaler/Karpenter.',
+  a: `**Tóm tắt:** Scale nên dựa trên bottleneck thực tế: CPU cho compute, RPS/latency cho web, queue lag cho worker. Scale theo RAM với JVM thường sai vì heap cố định và GC; dùng custom metrics (RPS, lag) với HPA/KEDA, node scale bằng Cluster Autoscaler/Karpenter.
+
+### Vì sao scale theo RAM với JVM sai
+- JVM heap size cố định (-Xmx), RAM used ≈ heap + metaspace + off-heap; không tăng theo load ngay.
+- GC dọn heap → used RAM dao động; scale theo RAM gây scale không cần thiết hoặc chậm.
+
+### Yếu tố scale
+- CPU utilization (HPA target 70%).
+- RPS / latency p99 (custom metrics từ Prometheus).
+- Queue lag (Kafka/RabbitMQ) cho worker.
+- In-flight requests.
+
+### Công cụ
+- **HPA**: scale pod theo metrics (CPU/mem/custom/external).
+- **KEDA**: event-driven autoscaling (queue lag, cron) scale to zero.
+- **Cluster Autoscaler**: thêm node khi pod pending.
+- **Karpenter**: provision node nhanh theo pod requirement, spot-friendly.
+
+### Pitfall
+- HPA cần requests/limits đúng; nếu requests quá thấp → scale sai.
+- Scale out nhưng DB connection pool cạn → bottleneck dời.
+
+> Senior tip: Đo bottleneck end-to-end (LB → app → DB) trước khi chọn metric scale; thường là DB connection hoặc CPU, không phải RAM.`,
+  follow: [
+    'Karpenter khác Cluster Autoscaler ở điểm nào?'
+  ],
+  tags: ['autoscaling', 'hpa', 'keda', 'karpenter', 'jvm']
+},
+{
+  id: 'devops-072',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Luồng pipeline CI/CD và downstream: pipeline phức tạp gọi sang repo khác (GitLab multi-project/parent-child, Jenkins upstream-downstream, GitHub Actions repository_dispatch/workflow_call), truyền artifact/version, xử lý khi downstream fail.',
+  a: `**Tóm tắt:** Pipeline phức tạp orchestrate nhiều repo: GitLab parent-child/multi-project, Jenkins upstream-downstream, GitHub Actions reusable workflow/repository_dispatch. Truyền version/artifact qua registry và API; downstream fail → retry/rollback/alert.
+
+### Các cơ chế
+- **GitLab**: parent-child pipeline (trigger:include), multi-project pipeline (trigger:project), truyền variables qua variables.
+- **Jenkins**: build job → upstream/downstream, dùng artifact copy plugin hoặc Nexus/registry.
+- **GitHub Actions**: workflow_call (reusable workflow), repository_dispatch (event từ repo khác), workflow_run.
+
+### Truyền artifact/version
+- Build image → push registry với tag version (git SHA + semver).
+- Downstream pull image theo tag; không copy artifact trực tiếp.
+- Truyền metadata qua API/variable (version, commit SHA).
+
+### Xử lý downstream fail
+- Retry với backoff; nếu fail → rollback deploy trước đó.
+- Thông báo Slack/PagerDuty; block merge.
+- Idempotent deploy: chạy lại an toàn.
+
+### Pitfall
+- Coupling chặt giữa repos → thay đổi một repo phá pipeline khác.
+- Secret sprawl: mỗi repo giữ secret riêng.
+
+> Senior tip: Dùng container registry làm contract giữa repos; version là image tag; pipeline downstream chỉ cần tag, không cần source.`,
+  follow: [
+    'Khi nào dùng reusable workflow vs repository_dispatch?',
+    'Làm sao đảm bảo version consistency giữa nhiều repos?',
+    'Rollback khi downstream deploy fail thế nào?'
+  ],
+  tags: ['cicd', 'pipeline', 'gitlab', 'jenkins', 'github-actions']
+},
+{
+  id: 'devops-073',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Ansible vs Terraform: provisioning vs configuration management, inventory, playbook, idempotency, khi nào dùng cả hai?',
+  a: `**Tóm tắt:** Terraform provision hạ tầng (IaC, state) declarative; Ansible configure phần mềm/idempotent (agentless, SSH). Dùng Terraform tạo VM/K8s cluster, Ansible cài package/config app. Kết hợp: Terraform output inventory → Ansible run.
+
+### Khái niệm
+- **Provisioning**: tạo tài nguyên (VM, network, DB) → Terraform.
+- **Configuration management**: cài đặt/cấu hình phần mềm trên host → Ansible.
+- **Inventory**: danh sách host/group cho Ansible (static hoặc dynamic từ Terraform output).
+- **Playbook**: YAML mô tả task theo thứ tự, module idempotent.
+- **Idempotency**: chạy lại không thay đổi nếu đã đúng trạng thái.
+
+### Khi nào dùng cả hai
+- Terraform tạo EC2 + security group + RDS → output IP → Ansible playbook cài Java, deploy app, config systemd.
+- Terraform cho infra lifecycle; Ansible cho app config và patching.
+
+### Pitfall
+- Ansible không quản lý state hạ tầng → không biết drift; Terraform state cần remote backend + locking.
+- SSH key management và become (sudo) cần cẩn thận.
+
+> Senior tip: Tách infra (Terraform) và config (Ansible); dùng dynamic inventory để không hardcode IP; kiểm tra idempotency bằng chạy playbook 2 lần.`,
+  follow: [
+    'Terraform state locking hoạt động thế nào (DynamoDB)?',
+    'Ansible idempotency dựa trên module, không phải task viết tay — giải thích.',
+    'Khi nào dùng Ansible thay vì cloud-init/user-data?'
+  ],
+  tags: ['ansible', 'terraform', 'iac', 'configuration-management']
+},
+{
+  id: 'devops-074',
+  topic: 'devops',
+  level: 'lead',
+  q: '(lead) Load test một app trước go-live từ góc DevOps: môi trường, công cụ, chỉ số, tìm bottleneck ở tầng hạ tầng (LB, DB connection, node).',
+  a: `**Tóm tắt:** Load test trước go-live: môi trường giống production (scale nhỏ hơn nhưng topology giống), công cụ k6/JMeter/Gatling, chỉ số latency p95/p99, error rate, throughput, resource; tìm bottleneck ở LB connection, DB pool, node CPU/mem, GC.
+
+### Môi trường
+- Staging mirror production: cùng instance type, DB size tỷ lệ, network.
+- Dữ liệu test realistic (seed DB).
+- Warm-up JVM/GC trước đo.
+
+### Công cụ
+- k6, JMeter, Gatling, wrk; phân phối load từ nhiều region.
+- Chaos: inject latency to dependency.
+
+### Chỉ số
+- Throughput (RPS), latency p50/p95/p99, error rate.
+- Resource: CPU/mem/node, DB connections/queries, GC pause, thread pool.
+- Saturation: queue depth, connection pool usage.
+
+### Tìm bottleneck hạ tầng
+- LB: connection limit, TLS handshake cost, target health.
+- DB: connection pool exhausted, slow query, lock contention.
+- Node: CPU throttling, memory pressure, disk I/O, network bandwidth.
+- App: thread pool, GC, connection leak.
+
+### Pitfall
+- Test từ 1 máy → network bottleneck giả.
+- Không warm-up → cold start méo số liệu.
+- Chỉ đo average latency → che p99.
+
+> Senior tip: Định nghĩa SLO trước (p99 < X ms, error < 0.1%) và dừng test khi đạt; lưu baseline để so sánh sau deploy; chạy soak test (nhiều giờ) để phát hiện memory leak.`,
+  follow: [
+    'Khác nhau giữa load test, stress test, soak test, spike test?',
+    'Làm sao load test an toàn trên production (canary load)?',
+    'Khi p99 cao nhưng CPU thấp, bạn điều tra theo thứ tự nào?'
+  ],
+  tags: ['load-testing', 'performance', 'sre', 'capacity-planning', 'leadership']
+},
+{
+  id: 'devops-075',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Ở một ngân hàng đang chuyển lên cloud (AWS), "DevOps" thường được chia thành nhiều vai: SA (Solution Architect), DevOps/Platform, Infra/System, SRE, Cloud Security. Mỗi vai làm gì, phỏng vấn thường hỏi gì, và một dev Java 4 năm nên nhắm vai nào nếu muốn chuyển hướng?',
+  a: `**Tóm tắt:** Trong ngân hàng, "làm DevOps" không phải một vai duy nhất: **SA (Solution Architect - kiến trúc sư giải pháp)** thiết kế bức tranh tổng thể, **DevOps/Platform** xây đường ống CI/CD và nền tảng chạy ứng dụng (K8s, registry), **Infra/System** vận hành máy chủ/mạng/hệ điều hành, **SRE (Site Reliability Engineering - kỹ sư độ tin cậy)** giữ hệ thống sống ổn định bằng SLO/quan sát/sự cố, **Cloud Security** kiểm soát bảo mật trên cloud (IAM, mạng, tuân thủ). Dev Java muốn chuyển hướng thường đi tự nhiên nhất sang **DevOps/Platform** hoặc **SRE** vì tận dụng được hiểu biết về ứng dụng, build, và cách hệ thống hỏng.
+
+### Hiểu nhanh
+Hãy hình dung một ngân hàng như một tòa nhà giao dịch lớn. **SA** là kiến trúc sư vẽ bản thiết kế cả tòa nhà (phòng nào nối phòng nào, luồng khách đi ra sao). **Infra/System** là đội xây và bảo trì móng, điện, nước, thang máy (máy chủ, mạng, OS). **DevOps/Platform** là đội lắp "đường ống" để mọi phòng nhận được đồ đúng giờ (CI/CD, nền tảng K8s, registry). **SRE** là đội trực ca đảm bảo tòa nhà không sập giờ cao điểm, có camera và chuông báo cháy (giám sát, SLO, ứng cứu sự cố). **Cloud Security** là đội an ninh kiểm soát thẻ ra vào, camera, két sắt (IAM, mạng, mã hóa, tuân thủ). Mỗi vai nhìn cùng một hệ thống nhưng ở một "lớp" khác nhau.
+
+### Thuật ngữ (giải thích lần đầu)
+- **SA - Solution Architect (kiến trúc sư giải pháp)**: người thiết kế cách các thành phần (app, DB, queue, cloud service) ghép lại để giải quyết một bài toán nghiệp vụ, cân bằng chi phí/độ tin cậy/bảo mật/tuân thủ.
+- **Platform (nền tảng)**: bộ công cụ và hạ tầng dùng chung mà các team phát triển "đứng lên" để build và chạy app (ví dụ: cụm Kubernetes, registry lưu image, pipeline CI/CD mẫu) — thay vì mỗi team tự dựng mọi thứ.
+- **SRE - Site Reliability Engineering (kỹ sư độ tin cậy)**: vai trò bắt nguồn từ Google, dùng cách tiếp cận kỹ thuật phần mềm để vận hành: đặt mục tiêu độ tin cậy (SLO), đo lường, tự động hóa, và xử lý sự cố có hệ thống.
+- **SLO - Service Level Objective (mục tiêu mức dịch vụ)**: con số cam kết, ví dụ "99.9% request thành công mỗi tháng" hoặc "p99 latency < 300ms". SLO giúp quyết định có được deploy tính năng mới hay phải ưu tiên độ ổn định.
+- **IAM - Identity and Access Management (quản lý danh tính và quyền truy cập)**: hệ thống kiểm soát "ai được làm gì" trên cloud (user, role, policy).
+- **Tuân thủ (compliance)**: đáp ứng các quy định bắt buộc (ở ngân hàng VN thường liên quan yêu cầu của NHNN, kiểm toán, quy định lưu trữ/ bảo mật dữ liệu).
+
+### So sánh các vai
+| Vai | Làm gì hằng ngày | Công cụ/kiến thức hay gặp | Phỏng vấn thường hỏi | Góc nhìn chính |
+|---|---|---|---|---|
+| SA (Solution Architect) | Thiết kế kiến trúc cho một bài toán (ví dụ: mở thẻ online), chọn dịch vụ AWS, vẽ luồng tích hợp, review thiết kế | AWS (VPC, EKS, RDS, SQS...), sơ đồ kiến trúc, trade-off, bảo mật, chi phí, DR | "Thiết kế hệ thống chuyển tiền/X triệu user", "Chọn RDS hay tự cài DB?", "Multi-AZ/DR ra sao?" | Toàn cảnh, trade-off |
+| DevOps / Platform | Xây và vận hành CI/CD, cụm K8s, Helm chart chuẩn, registry, template project; hỗ trợ team app onboard | GitLab CI/GitHub Actions, Docker, Kubernetes, Helm, Argo CD, Terraform (mức dùng), Harbor | "Thiết kế pipeline CI/CD", "Pod CrashLoopBackOff xử lý thế nào?", "Helm/Terraform dùng ra sao?" | Đường ống, nền tảng |
+| Infra / System | Quản lý VM, mạng, DNS, load balancer, hệ điều hành Linux, storage, backup/restore | Linux, networking (TCP/IP, routing, firewall), VMware/on-prem, một phần cloud (EC2, VPC) | "Debug sự cố mạng/DNS", "Linux: process, disk, permission", "Backup/restore thế nào?" | Hạ tầng, hệ điều hành |
+| SRE | Định nghĩa SLO/SLI, dashboard/alert, on-call, xử lý sự cố (incident), postmortem, tự động hóa vận hành, capacity | Prometheus/Grafana, logging, tracing, runbook, toil automation, đôi khi K8s | "Thiết kế alert theo SLO", "Xử lý incident production", "Latency tăng đột ngột điều tra thế nào?" | Độ tin cậy, đo lường |
+| Cloud Security | Thiết kế IAM least privilege, network segmentation, mã hóa, quét lỗ hổng, giám sát bảo mật, đáp ứng tuân thủ | IAM, KMS, Security Groups/NACL/WAF, GuardDuty/CloudTrail, chính sách tuân thủ | "Thiết kế IAM an toàn", "Cách cô lập workload", "Xử lý secret/credential", "Audit và tuân thủ" | Rủi ro, tuân thủ |
+
+### Dev Java 4 năm nên nhắm vai nào?
+- **DevOps/Platform (phù hợp tự nhiên nhất)**: bạn đã quen build (Maven/Gradle), dependency, cách app Spring Boot chạy, log, cấu hình, healthcheck. Bước tiếp là học đóng gói (Docker), deploy (K8s), và tự động hóa (pipeline). Bạn nói được "vì sao app cần graceful shutdown/probe" vì bạn hiểu app.
+- **SRE (phù hợp nếu thích điều tra sự cố)**: tận dụng hiểu biết về JVM, thread, DB connection, latency để tìm gốc rễ khi hệ thống chậm/lỗi. Cần bổ sung tư duy đo lường (SLO, metric) và quy trình incident.
+- **SA**: thường cần kinh nghiệm rộng hơn (nhiều hệ thống, tích hợp, bảo mật, chi phí) và kinh nghiệm giao tiếp với business; có thể là đích đến sau vài năm làm Platform/SRE.
+- **Infra/System hoặc Cloud Security**: chuyển được nhưng khoảng cách kiến thức lớn hơn (mạng chuyên sâu, Linux hệ thống, hoặc bảo mật/tuân thủ). Hợp nếu bạn thật sự thích mảng đó.
+
+~~~text
+Góc nhìn (từ gần app → gần hạ tầng/bảo mật):
+
+  [Dev Java] --hiểu app--> [DevOps/Platform] --độ tin cậy--> [SRE]
+       \\                         |                              |
+        \\                        v                              v
+         '------------------> [SA] (toàn cảnh)            [On-call/Incident]
+                                  |
+                 [Infra/System] --+-- [Cloud Security]
+                    (máy/mạng/OS)      (quyền/tuân thủ)
+~~~
+
+### Ví dụ đời thực (ngân hàng)
+Một team ra mắt tính năng chuyển tiền nhanh: **SA** quyết định dùng EKS + RDS Multi-AZ, tách service, luồng gọi qua API Gateway. **Platform** cung cấp Helm chart chuẩn, pipeline build-scan-deploy, namespace và quota. **Infra** đảm bảo kết nối mạng tới core banking on-prem ổn định. **SRE** đặt SLO p99 < 500ms, dựng dashboard/alert, viết runbook và trực canary. **Cloud Security** review IAM role của Pod (IRSA), policy S3/KMS, và checklist tuân thủ trước go-live. Một sự cố latency thường cần Platform + SRE + (đôi khi) Infra cùng nhìn.
+
+### Pitfall (lỗi hay gặp)
+- **Nhầm tên vai**: "DevOps" trong JD ngân hàng đôi khi thực chất là Infra vận hành thủ công, hoặc ngược lại là Platform thuần. Cách tránh: hỏi JD nói rõ làm CI/CD/K8s hay quản VM/mạng, có trực on-call không, tỉ lệ "xây" vs "vận hành".
+- **Học công cụ rời rạc mà thiếu nền tảng**: biết gõ lệnh kubectl nhưng không hiểu Pod/network/DNS → kẹt ở câu debug. Cách tránh: học theo lớp (Linux + mạng → container → K8s → CI/CD → quan sát).
+- **Dev chuyển vai nhưng bỏ quên lợi thế**: không khai thác việc hiểu app (thread pool, GC, DB pool) — đây là điểm mạnh khi phỏng vấn Platform/SRE.
+
+### Câu trả lời phỏng vấn nên nói thế nào
+"Em hiểu ở ngân hàng DevOps thường tách vai: SA thiết kế kiến trúc tổng thể và trade-off, Platform/DevOps xây CI/CD và nền tảng K8s, Infra lo máy chủ/mạng/Linux, SRE lo SLO, giám sát và xử lý sự cố, còn Cloud Security lo IAM, cô lập mạng và tuân thủ. Với nền tảng dev Java 4 năm, em nhắm vai Platform hoặc SRE vì em hiểu cách ứng dụng build/chạy/hỏng (probe, graceful shutdown, connection pool, JVM), và em đang bổ sung Linux, container/K8s, pipeline và observability để đóng được phần hạ tầng quanh ứng dụng."
+
+> Senior tip: Khi phỏng vấn bất kỳ vai "DevOps" nào ở ngân hàng, hãy hỏi ba điều: (1) bạn sẽ **xây nền tảng** hay **vận hành hệ thống có sẵn**, (2) có **on-call** và quy trình incident không, (3) ranh giới với Security/Infra ở đâu. Câu trả lời cho thấy vai thật sự, và giúp bạn không nhận nhầm một việc thuần vận hành khi mục tiêu là Platform/SRE.`,
+  follow: ['Sự khác nhau giữa SRE và DevOps truyền thống là gì? (gợi ý: SLO, error budget, toil)', 'Một Platform Engineer cần hiểu gì về ứng dụng Java để hỗ trợ team dev tốt (probe, resource, JVM)?', 'Khi SA thiết kế hệ thống lên AWS cho ngân hàng, những ràng buộc tuân thủ/bảo mật nào thường ảnh hưởng quyết kiến trúc?'],
+  tags: ['devops-roles', 'SA', 'SRE', 'platform', 'cloud-security', 'career'],
+  refs: [
+    { type: 'doc', title: 'Site Reliability Engineering (Google SRE book)', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' }
+  ]
+},
+{
+  id: 'devops-076',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Case thực tế: deploy bản mới lên K8s, Pod rơi vào CrashLoopBackOff nhưng chỉ ở 1/3 node (2 node chạy bình thường, 1 node Pod cứ restart). Bạn điều tra từng bước thế nào (describe, events, logs --previous), và "node khác nhau ở đâu" là manh mối gì?',
+  a: `**Tóm tắt:** CrashLoopBackOff chỉ trên 1/3 node gần như luôn có nguyên nhân **gắn với node đó**, không chỉ với image/cấu hình chung. Quy trình: (1) xác định Pod nào trên node nào ({{kubectl get pod -o wide}}), (2) {{describe}} để đọc Events/Last State/Exit Code, (3) {{logs --previous}} lấy stack trace lần chết trước, (4) so sánh node lỗi với node khỏe (label/taint, dung lượng đĩa/inode, phiên bản runtime, kernel, thời gian, DNS, mount/hostPath, network tới dependency). Khác biệt thường gặp: node **DiskPressure/PIDPressure**, image cache cũ/khác kiến trúc hiếm, hostPath/permission khác, clock lệch, hoặc node không kết nối được DB/registry nội bộ.
+
+### Bối cảnh thật
+Ngân hàng deploy bản {{payment-api:1.24.0}} (rolling update) lên cụm 3 node worker. 2 node: Pod {{1/1 Running}}. Node {{worker-3}}: Pod vào {{CrashLoopBackOff}}, {{RESTARTS}} tăng. Vì Deployment phân bổ Pod, chỉ replica rơi vào {{worker-3}} mới lỗi → triệu chứng "1/3 node". Ảnh hưởng: capacity giảm 1/3, nếu tiếp tục rollout có thể làm xấu thêm.
+
+### Thuật ngữ (giải thích lần đầu)
+- **CrashLoopBackOff**: container khởi động rồi thoát (chết), kubelet khởi động lại nhưng **chờ lùi dần** (back-off: 10s, 20s, 40s… tối đa 5 phút) giữa các lần. "Loop" = lặp; "back-off" = lùi lại/chờ lâu hơn.
+- **Node (nút)**: một máy (VM hoặc vật lý) trong cụm Kubernetes nơi Pod thực sự chạy. Mỗi node có kubelet, container runtime, đĩa, mạng, thời gian hệ thống riêng.
+- **kubelet**: "người quản gia" trên mỗi node, nhận lệnh từ control plane để chạy/giám sát container.
+- **Taint (vết bẩn)**: nhãn trên node để "xua" Pod không phù hợp; **toleration** là "giấy phép" Pod mang theo để được xếp lên node có taint.
+- **hostPath**: gắn một thư mục của chính node vào container — tiện nhưng làm Pod phụ thuộc vào trạng thái node (mỗi node có nội dung/permission khác nhau).
+- **DiskPressure / inode**: node sắp hết dung lượng đĩa (DiskPressure) hoặc hết số lượng mục file (inode) — cả hai đều làm tạo/ghi file của container thất bại.
+
+### Điều tra từng bước
+
+~~~text
+B1. Định vị Pod trên node nào?
+    kubectl get pod -n pay -l app=payment-api -o wide
+    -> thấy pod-A (worker-1, Running), pod-B (worker-2, Running), pod-C (worker-3, CrashLoopBackOff)
+
+B2. Đọc "bệnh án" Pod lỗi
+    kubectl describe pod pod-C -n pay
+    -> xem: Node, Events (cuối), Last State/Reason/Exit Code, Conditions, Volume mounts
+
+B3. Đọc log lần chết TRƯỚC (rất quan trọng)
+    kubectl logs pod-C -n pay --previous --tail=200
+    -> stack trace/lỗi của container vừa thoát (log hiện tại thường gần rỗng vì container mới vừa lên)
+
+B4. So sánh node lỗi vs node khỏe
+    kubectl describe node worker-3 | grep -A5 Conditions
+    kubectl get node --show-labels
+    -> DiskPressure? MemoryPressure? taint? kernel/runtime version? zone?
+
+B5. Khoanh vùng: lỗi do APP hay do NODE?
+    - Cordon worker-3, xóa pod-C -> scheduler tạo pod mới trên worker-1/2: nếu CHẠY OK => lỗi gắn node-3
+    - Scale lên, ép 1 Pod test lên worker-3 (nodeSelector) để tái hiện
+~~~
+
+### Lệnh và bằng chứng cần nhìn
+~~~bash
+# B1: pod nào, node nào, restart mấy lần
+kubectl get pod -n pay -o wide
+
+# B2: sự kiện + trạng thái lần chết
+kubectl describe pod pod-C -n pay
+# đọc: Last State: Terminated, Reason/Exit Code; Events: Back-off restarting...
+
+# B3: log của lần chạy vừa chết (không có --previous sẽ thấy log rỗng)
+kubectl logs pod-C -n pay --previous --tail=200
+
+# B4: tình trạng node
+kubectl describe node worker-3   # Conditions, Allocatable, Taints, Images
+kubectl get events -n pay --sort-by=.lastTimestamp | tail -30
+~~~
+
+**Đọc exit code (manh mối nhanh):** {{1}} = app tự thoát (exception, thiếu config). {{137}} = 128+9 (SIGKILL), thường OOMKilled — kiểm tra Reason. {{139}} = 128+11 (SIGSEGV) — crash native (thư viện JNI, lỗi hiếm). {{0}} nhưng vẫn restart = process thoát sạch nhưng liveness/probe hoặc entrypoint sai.
+
+### "Node khác nhau ở đâu" — các nguyên nhân hay gặp
+| Khác biệt trên node lỗi | Triệu chứng / bằng chứng | Cách xác minh |
+|---|---|---|
+| **DiskPressure / hết inode** | Pod crash khi ghi log/temp; Event evicted hoặc tạo file thất bại; {{kubectl describe node}} có {{DiskPressure=True}} | {{describe node}} (Conditions), trên node: {{df -h}}, {{df -i}} |
+| **Image khác/thiếu trên node** | Nếu dùng tag {{latest}} hoặc {{imagePullPolicy: IfNotPresent}}, node-3 có thể giữ image cũ hỏng cache; hoặc pull fail gián đoạn (nhưng thường ra ImagePullBackOff, không phải CrashLoopBackOff) | {{describe node}} phần Images; so digest image |
+| **hostPath / quyền file khác** | App đọc/ghi {{hostPath}} (config, cert, socket) mà node-3 thiếu file hoặc sai permission | {{describe pod}} xem Volume; kiểm tra đường dẫn trên node (qua ops/SSM) |
+| **Mạng từ node-3 tới dependency** | App khởi động kết nối DB/Redis/Kafka/core on-prem; chỉ subnet/route/firewall của node-3 bị chặn → timeout → app fail fast thoát | {{logs --previous}} thấy timeout kết nối; test {{nc/telnet}} từ node-3; so security group/subnet |
+| **Đồng hồ lệch (clock skew)** | Gọi TLS/JWT/OAuth thất bại vì cert/token "chưa hiệu lực/đã hết hạn" theo giờ node-3; app thoát lúc init | Log lỗi xác thực/thời gian; {{chronyc tracking}} hoặc {{timedatectl}} trên node |
+| **Tài nguyên/node pressure cục bộ** | Node MemoryPressure hoặc cgroup khác; ít gặp nếu request/limit chuẩn, nhưng custom runtime/kernel khác có thể ảnh hưởng | {{describe node}} Conditions, {{kubectl top node}} |
+| **Taint/label dẫn tới cấu hình khác** | Hiếm: nếu Pod có toleration đặc biệt hoặc DaemonSet/sidecar chỉ chạy trên node-3 gây xung đột | {{kubectl get node --show-labels}}, {{describe node}} taints |
+
+~~~seq
+title: Luồng điều tra CrashLoopBackOff chỉ trên 1/3 node
+actors: DevOps | API K8s | Node-3 (lỗi)
+DevOps -> API K8s: kubectl get pod -o wide
+API K8s --> DevOps: pod-C trên Node-3, CrashLoopBackOff
+DevOps -> API K8s: kubectl describe pod pod-C
+API K8s --> DevOps: Exit Code, Events, Last State
+DevOps -> Node-3 (lỗi): kubectl logs --previous pod-C
+Node-3 (lỗi) --> DevOps: stack trace lần chết
+DevOps -> API K8s: kubectl describe node Node-3
+API K8s --> DevOps: Conditions, Taints, Allocatable
+DevOps -> DevOps: so sánh Node-3 vs Node-1/2, khoanh vùng
+~~~
+
+### Pitfall (lỗi hay gặp)
+- **Chỉ nhìn image/cấu hình chung**: "2 node chạy được thì không thể lỗi config". Sai — config có thể đúng nhưng node-3 thiếu file hostPath, hết đĩa, hoặc không tới được DB.
+- **Quên {{--previous}}**: thấy log gần rỗng, kết luận "không có lỗi". Lỗi nằm ở container đã chết.
+- **Xóa Pod cho "tự khỏi"**: scheduler có thể lại xếp Pod mới lên chính node-3 → lỗi lặp lại. Hãy {{cordon}} node-3 trước khi thay Pod để cô lập.
+- **Nhầm với Pending**: nếu Pod {{Pending}} chỉ trên node-3 thì là vấn đề lập lịch (taint/toleration/resource); {{CrashLoopBackOff}} là container đã chạy rồi mới chết.
+
+### Trả lời phỏng vấn (từng bước, ngắn gọn khi nói)
+"Vì chỉ 1/3 node lỗi, em nghi nguyên nhân gắn với node. Em {{get pod -o wide}} để xác định Pod trên node nào, {{describe pod}} đọc Events, Last State và Exit Code, rồi {{logs --previous}} lấy stack trace lần chết trước. Sau đó em so sánh node lỗi với node khỏe: {{describe node}} xem DiskPressure/taint/allocatable, kiểm tra khác biệt về mạng tới DB/Redis, hostPath/permission, clock, image digest. Để xác nhận, em cordon node lỗi và để Pod chạy lại trên node khác: nếu hết lỗi thì khoanh vùng hạ tầng/node; nếu vẫn lỗi thì quay lại phân tích app/config. Em không xóa Pod mù mờ vì scheduler có thể đặt lại đúng node hỏng."
+
+> Senior tip: Trong ngân hàng, lỗi "chỉ 1 node" hay gặp sau thay đổi hạ tầng im lặng: node mới gia nhập cụm thiếu route tới DB nội bộ, cert CA nội bộ chưa cài, hoặc đồng hồ chưa sync NTP. Hãy giữ baseline node (cùng AMI/image, cùng cấu hình cloud-init) và dùng {{kubectl describe node}} + kiểm tra điều kiện {{Ready/DiskPressure}} trong runbook; cordon node nghi ngờ ngay để chặn ảnh hưởng lan rộng trước khi đào sâu.`,
+  follow: ['Làm sao cô lập nhanh: phân biệt lỗi do image/config (mọi node) với lỗi do node (chỉ 1 node)?', 'Nếu {{logs --previous}} trống và Exit Code 137, bạn kết luận gì và kiểm tra tiếp ở đâu?', 'Tại sao dùng tag image bất biến (digest/commit SHA) giúp tránh sự cố "node giữ image cũ"?'],
+  tags: ['Kubernetes', 'CrashLoopBackOff', 'troubleshooting', 'node', 'incident'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Debug Pods', url: 'https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/' }
+  ]
+},
+{
+  id: 'devops-077',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Case thực tế: ngân hàng dùng blue-green deploy nhưng hai môi trường (blue/green) dùng chung một database. Bạn xử lý migration schema tương thích ngược (expand/contract) thế nào, chuyển traffic ra sao, và rollback khi có lỗi?',
+  a: `**Tóm tắt:** Blue-green (hai môi trường song song, chuyển traffic một lần) chỉ "dễ rollback app" khi **schema DB tương thích ngược (backward compatible)** — vì DB dùng chung, bản cũ và bản mới phải cùng chạy được trên cùng schema trong lúc chuyển. Giải pháp là **expand/contract**: (1) *expand* thêm cột/bảng mới theo kiểu an toàn, giữ cột cũ, code mới ghi cả hai/đọc linh hoạt; (2) deploy green và chuyển traffic; (3) khi ổn định, *contract* mới bỏ cột/cấu trúc cũ. Rollback app thì chuyển traffic về blue — chỉ an toàn nếu bước expand chưa phá tương thích. Migration phá hủy (đổi tên/xóa cột, đổi kiểu không tương thích) phải tách ra sau.
+
+### Bối cảnh thật
+Ngân hàng chạy {{order-service}}: **blue** = bản 1.8 (đang phục vụ), **green** = bản 1.9 (mới). Cả hai trỏ vào **một cụm Oracle/RDS dùng chung** (DB tách đôi rất đắt và khó đồng bộ giao dịch ngân hàng). Bản 1.9 cần đổi {{phone}} (một cột) thành {{mobile_phone}} và thêm kiểm tra mới. Nếu migrate "đổi tên cột" rồi mới deploy: trong khoảnh khắc blue vẫn đọc {{phone}} → lỗi. Nếu deploy green trước khi có cột mới → lỗi. Đây là xung đột blue-green + shared DB.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Blue-green deploy**: duy trì hai môi trường giống nhau (blue = đang live, green = bản mới). Deploy xong green, kiểm tra, rồi **chuyển 100% traffic** sang green. Rollback = chuyển traffic về blue. (Giống có hai sân khấu, khán giả ngồi bên này, chuẩn bị xong thì chuyển khán giả sang bên kia.)
+- **Shared database (DB dùng chung)**: cả blue và green cùng đọc/ghi một DB. Ưu: dữ liệu nhất quán, không cần đồng bộ. Nhược: schema trở thành "điểm nghẽn tương thích" giữa hai phiên bản app.
+- **Backward compatible - tương thích ngược (schema)**: schema mới vẫn cho **code phiên bản cũ** chạy đúng (cũ đọc/ghi được). **Forward compatible - tương thích xuôi**: code cũ ghi dữ liệu mà code mới hiểu được.
+- **Expand/contract (mở rộng/thu hẹp)**: kỹ thuật migration nhiều bước: *expand* thêm thứ mới mà không phá cái cũ; chạy song song; *contract* bỏ cái cũ khi không còn ai dùng.
+- **Cutover (chuyển lưu lượng)**: thời điểm đổi router/load balancer/DNS để traffic đi sang môi trường mới.
+
+### Cơ chế expand/contract (ví dụ đổi {{phone}} → {{mobile_phone}})
+~~~text
+Trạng thái DB dùng chung:  [ BLUE v1.8 ] <--đọc/ghi--> ( DB ) <--đọc/ghi--> [ GREEN v1.9 ]
+
+BƯỚC 1 - EXPAND (migration an toàn, chạy TRƯỚC khi deploy green)
+  DB:  THÊM cột mobile_phone (nullable), GIỮ cột phone
+       (không xóa, không đổi tên, không NOT NULL ngay)
+  App v1.9 (code): ghi CẢ phone và mobile_phone; đọc mobile_phone ưu tiên, fallback phone
+  -> v1.8 (blue) vẫn chạy bình thường vì cột phone còn nguyên.
+
+BƯỚC 2 - DEPLOY GREEN + CHUYỂN TRAFFIC
+  Deploy v1.9 lên green, smoke test nội bộ (chưa nhận traffic thật).
+  Chuyển traffic: blue -> green (qua LB/DNS/Ingress weight/service selector).
+  Theo dõi metric (error rate, latency, nghiệp vụ). Blue vẫn chạy nóng để rollback.
+
+BƯỚC 3 - ỔN ĐỊNH + BACKFILL (tùy chọn)
+  Chạy job nền copy dữ liệu phone -> mobile_phone cho bản ghi cũ (backfill), theo lô, có throttle.
+
+BƯỚC 4 - CONTRACT (chỉ khi CHẮC CHẮN không rollback về v1.8)
+  Bỏ code đọc/ghi phone (deploy v1.10 hoặc dọn dẹp), rồi migration: đặt NOT NULL/default nếu cần,
+  cuối cùng mới DROP cột phone. Bước này KHÔNG tương thích ngược với v1.8.
+~~~
+
+~~~seq
+title: Blue-green với shared DB (expand/contract)
+actors: User | LB | Blue v1.8 | Green v1.9 | DB (shared)
+User -> LB: request
+LB -> Blue v1.8: traffic 100% (ban đầu)
+Blue v1.8 -> DB (shared): đọc/ghi cột phone
+note Blue v1.8..Green v1.9: EXPAND: thêm mobile_phone, giữ phone
+LB -> Green v1.9: smoke test nội bộ
+LB -> Green v1.9: chuyển 100% traffic
+Green v1.9 -> DB (shared): ghi cả phone + mobile_phone
+Green v1.9 --> User: OK
+note LB..Blue v1.8: Lỗi? rollback = chuyển traffic về Blue
+~~~
+
+### Quy tắc migration an toàn (tương thích ngược)
+| Thay đổi | An toàn với blue-green + shared DB? | Cách làm |
+|---|---|---|
+| Thêm cột nullable / có default | Có (expand) | Thêm trước deploy; code mới dùng, code cũ bỏ qua |
+| Thêm bảng/index mới | Có | Thêm trước; lưu ý lock khi tạo index trên bảng lớn ({{ONLINE}} nếu DB hỗ trợ) |
+| Đổi tên / xóa cột | **Không** (phá v1.8) | Expand (thêm cột mới, ghi kép) → contract sau khi bỏ hẳn v1.8 |
+| Đổi kiểu dữ liệu không tương thích | **Không** | Thêm cột kiểu mới, backfill, chuyển code, rồi bỏ cột cũ |
+| Thêm NOT NULL không default | **Không** ngay | Thêm nullable → backfill → mới đặt NOT NULL |
+
+### Chuyển traffic và rollback
+- **Chuyển traffic**: đổi đích ở Load Balancer / Ingress / Service selector / DNS (ưu tiên cơ chế chuyển nhanh, kiểm soát được; DNS phụ thuộc TTL nên chậm hơn). Kiểm tra green bằng smoke test + healthcheck trước khi nhận traffic thật.
+- **Tiêu chí go/no-go**: error rate, p99 latency, lỗi nghiệp vụ, checksum giao dịch mẫu — quan sát một cửa sổ (ví dụ 15-30 phút) trước khi "chốt".
+- **Rollback app**: chuyển traffic về blue. **Chỉ an toàn nếu** schema đang ở trạng thái tương thích ngược (đã expand, chưa contract). Vì thế: tuyệt đối không chạy bước contract trong cùng cửa sổ deploy; contract là thay đổi riêng, sau vài ngày/tuần ổn định.
+- **Rollback DB**: migration expand (thêm cột nullable) thường không cần rollback; nếu bắt buộc phải hoàn tác, dùng migration ngược có kiểm soát — nhưng với dữ liệu đã ghi ở cột mới, cần kế hoạch hợp nhất.
+
+### Pitfall (lỗi hay gặp)
+- **Chạy migration phá hủy rồi mới chuyển traffic**: blue chết ngay khi vẫn còn nhận request, hoặc green lỗi nửa chừng → outage. Cách tránh: tách expand (trước) và contract (sau, riêng).
+- **Nghĩ "blue-green rollback dễ" mà quên shared DB**: rollback app được, nhưng dữ liệu green đã ghi theo schema mới — nếu contract đã chạy hoặc code cũ không hiểu dữ liệu mới, rollback thất bại. Cách tránh: contract chỉ sau khi hết cửa sổ rollback.
+- **Tạo index trên bảng lớn gây lock**: migration "nhỏ" nhưng chặn ghi, làm nghẽn cả blue lẫn green. Cách tránh: dùng tùy chọn tạo index online/concurrent nếu DB hỗ trợ, chạy ngoài giờ cao điểm, đo trên dữ liệu thật.
+- **Backfill toàn bộ một lúc**: khóa bảng/IO cao. Cách tránh: backfill theo lô (batch), giới hạn tốc độ, chạy idempotent (chạy lại không hỏng).
+
+### Trả lời phỏng vấn
+"Với blue-green dùng chung DB, em tách migration theo expand/contract: bước expand thêm cấu trúc mới tương thích ngược (ví dụ thêm cột nullable, giữ cột cũ), code bản mới ghi kép/đọc linh hoạt, nên bản cũ vẫn chạy được. Em deploy green, smoke test, rồi chuyển traffic qua load balancer và theo dõi error/latency/nghiệp vụ; blue giữ nóng để rollback bằng cách chuyển traffic về. Chỉ khi ổn định và hết nhu cầu rollback em mới chạy contract để bỏ cấu trúc cũ — vì contract phá tương thích ngược. Điểm mấu chốt: blue-green rollback app chỉ an toàn khi schema chưa bị contract."
+
+> Senior tip: Ở ngân hàng, hãy gắn mỗi bước expand/contract với một thay đổi có mã và cửa sổ phê duyệt riêng, và **cấm contract trong cùng đợt deploy**. Hai thứ hay bị quên nhất: (1) job backfill phải idempotent và giới hạn tốc độ để không làm nghẽn DB dùng chung, (2) tiêu chí "hết cửa sổ rollback" (ví dụ sau 3-5 ngày không sự cố) phải được chốt bằng văn bản trước khi ai đó chạy DROP cột.`,
+  follow: ['Nếu buộc phải đổi kiểu cột không tương thích trên bảng hàng trăm triệu dòng, bạn lên kế hoạch từng bước thế nào để không downtime?', 'So sánh blue-green và canary khi DB dùng chung: cái nào giảm rủi ro schema tốt hơn?', 'Làm sao đảm bảo code bản mới ghi "kép" (dual-write) không tạo dữ liệu mâu thuẫn giữa cột cũ và cột mới?'],
+  tags: ['blue-green', 'schema-migration', 'expand-contract', 'rollback', 'database']
+},
+{
+  id: 'devops-078',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Case thực tế: sau khi migrate ứng dụng từ on-prem (trung tâm dữ liệu tại chỗ) lên AWS, người dùng phản ánh latency (độ trễ) tăng gấp 3. Bạn liệt kê các nguyên nhân thường gặp (gọi chéo về on-prem qua VPN, DNS, NAT Gateway, cross-AZ, connection pool) và quy trình tìm ra nguyên nhân gốc?',
+  a: `**Tóm tắt:** Latency tăng gấp 3 sau migrate thường đến từ **đường đi của request dài ra hoặc thêm chặng mạng mới**, không phải vì "AWS chậm". Nguyên nhân hay gặp: app trên AWS vẫn gọi chéo dịch vụ/DB còn ở on-prem qua **VPN/Direct Connect** (thêm hàng chục ms mỗi hop), **DNS** resolve chậm hoặc trỏ nhầm về on-prem, đi qua **NAT Gateway** thừa, **cross-AZ** (traffic đi chéo zone) cộng dồn, và **connection pool** bị cấu hình sai cho độ trễ mới (pool nhỏ + latency cao = chờ connection). Cách tìm: đo phân rã latency theo từng chặng (tracing/metric), so sánh đường đi trước-sau migrate, và kiểm tra từng giả thuyết bằng số liệu.
+
+### Bối cảnh thật
+{{loan-service}} (Spring Boot) chuyển từ VM on-prem lên EKS (AWS). Trước migrate: p95 = 120ms. Sau migrate: p95 = 360ms (gấp 3). Chức năng không đổi, code không đổi — vậy vấn đề gần như chắc nằm ở **hạ tầng/mạng/cấu hình kết nối** phát sinh từ vị trí mới.
+
+### Thuật ngữ (giải thích lần đầu)
+- **On-prem / on-premise (tại chỗ)**: hệ thống chạy trên máy chủ trong trung tâm dữ liệu của công ty (không phải cloud).
+- **Latency (độ trễ)**: thời gian từ lúc gửi request đến lúc nhận phản hồi. {{p95}} = 95% request nhanh hơn mức này (bỏ qua 5% chậm bất thường) — dùng p95/p99 thay vì trung bình vì trung bình che mất request chậm.
+- **VPN (Virtual Private Network) / Site-to-Site VPN**: đường hầm mã hóa nối mạng on-prem với VPC trên AWS qua Internet công cộng — tiện nhưng thêm độ trễ và băng thông giới hạn. **Direct Connect (DX)** là đường dây riêng, ổn định hơn.
+- **AZ - Availability Zone (vùng sẵn sàng)**: một (hoặc nhóm) trung tâm dữ liệu riêng biệt trong một AWS Region. Cross-AZ = traffic đi giữa hai AZ khác nhau (có phí và thêm độ trễ nhỏ mỗi chiều, thường < 1-2ms nhưng cộng dồn nếu "chatty").
+- **NAT Gateway**: dịch vụ cho phép tài nguyên trong subnet riêng (private) đi ra Internet/AWS API — nhưng là một chặng thêm; gọi giữa các dịch vụ trong VPC mà lại đi vòng qua NAT là lỗi thiết kế.
+- **DNS (Domain Name System)**: phân giải tên (ví dụ {{db.internal}}) ra địa chỉ IP. Resolve chậm, cache sai, hoặc tên trỏ về IP on-prem thay vì endpoint AWS đều gây thêm độ trễ.
+- **Connection pool (bể kết nối)**: tập kết nối DB/HTTP giữ sẵn để tái dùng (tạo kết nối mới rất tốn thời gian, nhất là có TLS). Pool quá nhỏ + mỗi request chờ kết nối lâu = latency tăng.
+
+### Các nguyên nhân thường gặp
+| Nguyên nhân | Vì sao latency tăng | Dấu hiệu / cách kiểm tra |
+|---|---|---|
+| **Gọi chéo về on-prem qua VPN** | App/DB/dependency còn ở on-prem; mỗi request qua VPN thêm 20-80ms+ (tùy khoảng cách), gọi N lần (chatty) thì nhân lên | Distributed tracing thấy span gọi {{corebank/db}} tốn phần lớn thời gian; IP đích là dải on-prem; {{ping/traceroute/mtr}} từ Pod tới endpoint on-prem |
+| **DNS chậm hoặc trỏ sai** | Resolver cấu hình chưa tối ưu; tên nội bộ vẫn trỏ IP on-prem (đi đường vòng); TTL/cache gây resolve lặp | Metric thời gian resolve (nếu có), {{dig/nslookup}} từ Pod; so IP trả về với endpoint AWS mong muốn; kiểm tra CoreDNS log/metrics |
+| **Đi vòng qua NAT Gateway** | Gọi dịch vụ nội bộ (S3, DB, service khác) qua NAT thay vì VPC Endpoint/private path → thêm hop + có thể nghẽn băng thông NAT | VPC Flow Logs / topology; kiểm tra route table subnet; gọi S3/DynamoDB mà không có VPC Endpoint |
+| **Cross-AZ** | App ở AZ-a gọi DB/service ở AZ-b; một request gọi nhiều lần → cộng dồn | Tracing/metric theo đích; kiểm tra AZ của Pod (node label) và của RDS/endpoint; bật topology-aware routing nếu phù hợp |
+| **Connection pool sai cho latency mới** | Trước đây on-prem ↔ DB 1ms, pool 5 đủ; giờ qua VPN 30ms, pool 5 gây xếp hàng chờ connection → latency tăng vọt dù DB nhanh | Metric pool (active/idle/pending, thời gian chờ lấy connection - HikariCP {{hikaricp.connections.acquire}}); thread dump thấy chờ pool |
+| **TLS handshake / kết nối mới liên tục** | Không tái dùng kết nối (HTTP keep-alive tắt, pool tắt) → mỗi request trả giá handshake (đắt hơn khi RTT lớn) | Số kết nối mới cao, metric handshake; kiểm tra cấu hình HTTP client/keep-alive |
+| **MTU/fragment hoặc băng thông VPN bão hòa** | Gói bị phân mảnh hoặc đường VPN nghẽn giờ cao điểm | {{mtr}} thấy loss/MTU issue; metric băng thông VPN/DX, CloudWatch |
+
+### Quy trình tìm nguyên nhân (từng bước)
+~~~text
+1. XÁC NHẬN & PHẠM VI
+   - Latency tăng ở đâu? (toàn bộ API hay chỉ API gọi dependency X?)
+   - So p50/p95/p99 trước-sau migrate, cùng khung giờ/tải.
+
+2. PHÂN RÃ LATENCY THEO CHẶNG (quan trọng nhất)
+   - Dùng distributed tracing (ví dụ OpenTelemetry/X-Ray/Jaeger): xem span nào chiếm thời gian.
+   - Nếu chưa có tracing: log thời gian từng bước (gọi DB, gọi service ngoài), metric client.
+
+3. KHOANH VÙNG ĐƯỜNG MẠNG
+   - Span chậm trỏ tới đích nào? Đích đó ở AWS hay on-prem?
+   - Từ Pod: dig tên, kiểm tra IP; traceroute/mtr tới đích; so route/VPC Flow Logs.
+
+4. KIỂM TRA GIẢ THUYẾT CỤ THỂ
+   - Cross-AZ: so AZ nguồn/đích. NAT: kiểm tra route table, thử VPC Endpoint.
+   - Connection pool: xem metric pending/acquire time (HikariCP), thử tăng pool/tune timeout có đo lại.
+
+5. XÁC NHẬN & KHẮC PHỤC
+   - Đổi một yếu tố, đo lại (trước-sau), tránh đổi nhiều thứ cùng lúc.
+~~~
+
+~~~seq
+title: Đường đi request trước và sau migrate (ví dụ)
+actors: User | Loan (AWS) | NAT/VPN | CoreDB (on-prem)
+User -> Loan (AWS): request
+Loan (AWS) -> NAT/VPN: gọi CoreDB (tên trỏ on-prem)
+NAT/VPN -> CoreDB (on-prem): qua VPN + hop thêm
+CoreDB (on-prem) --> NAT/VPN: phản hồi
+NAT/VPN --> Loan (AWS): +20-80ms mỗi lượt
+Loan (AWS) --> User: p95 gấp 3 (nếu gọi nhiều lần)
+note Loan (AWS),CoreDB (on-prem): chatty + VPN = latency nhân lên
+~~~
+
+### Pitfall (lỗi hay gặp)
+- **Kết luận "cloud chậm" mà không đo phân rã**: thay đổi instance type tốn tiền nhưng không chạm nguyên nhân (thực ra là gọi về on-prem). Cách tránh: luôn phân rã latency theo chặng trước khi "scale".
+- **Bỏ qua connection pool**: sau migrate RTT tăng, pool cũ (nhỏ) gây xếp hàng — nhìn CPU/DB đều thấp nhưng latency cao. Cách tránh: kiểm tra metric acquire/pending của HikariCP.
+- **Chỉ {{ping}} một lần**: ping ICMP có thể bị chặn hoặc không phản ánh TCP/TLS thực tế. Cách tránh: đo bằng {{curl}} thời gian kết nối, hoặc tracing thực.
+- **Sửa DNS/NAT mà quên cache**: CoreDNS/app cache vẫn giữ IP cũ. Cách tránh: kiểm tra TTL, khởi động/flush có kiểm soát và đo lại.
+
+### Trả lời phỏng vấn
+"Latency tăng gấp 3 sau migrate, em giả định nguyên nhân ở đường mạng/cấu hình kết nối vì code không đổi. Em dùng tracing hoặc log phân rã để tìm span chậm: hay gặp nhất là app trên AWS vẫn gọi chéo DB/service còn on-prem qua VPN nên mỗi hop thêm hàng chục ms và nhân lên nếu chatty; ngoài ra DNS trỏ nhầm về on-prem, đi vòng qua NAT Gateway, cross-AZ cộng dồn, hoặc connection pool quá nhỏ so với RTT mới gây chờ connection (nhìn HikariCP acquire/pending). Em kiểm tra từng giả thuyết bằng số liệu (dig, traceroute, route table/VPC Endpoint, AZ nguồn-đích, metric pool), đổi một yếu tố rồi đo lại p95/p99."
+
+> Senior tip: Hãy đo **baseline latency theo từng dependency** *trước* khi migrate (p95 mỗi chặng) để sau migrate so sánh được ngay. Ở ngân hàng, giai đoạn chuyển tiếp thường "hybrid" (một phần on-prem) — mục tiêu kiến trúc là giảm số lần gọi chéo qua VPN: gom call, thêm cache, hoặc di chuyển dependency cùng wave. Đừng tăng connection pool mù quáng: pool quá lớn gây nghẽn phía DB; dùng metric pending/acquire để tune.`,
+  follow: ['Connection pool (HikariCP) nên tính kích thước thế nào khi RTT tới DB tăng sau migrate? (gợi ý: pool size vs latency)', 'Khi nào dùng VPC Endpoint thay vì NAT Gateway, và nó cải thiện latency/bảo mật thế nào?', 'Làm sao giảm tác động giai đoạn hybrid khi một phần dependency bắt buộc còn ở on-prem?'],
+  tags: ['migration', 'latency', 'AWS', 'networking', 'connection-pool', 'troubleshooting'],
+  refs: [
+    { type: 'doc', title: 'AWS Site-to-Site VPN', url: 'https://docs.aws.amazon.com/vpn/latest/s2svpn/VPC_VPN.html' },
+    { type: 'doc', title: 'NAT gateways', url: 'https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html' }
+  ]
+},
+{
+  id: 'devops-079',
+  topic: 'devops',
+  level: 'lead',
+  q: '(lead) Bạn được giao lập kế hoạch migrate 40 ứng dụng on-prem lên cloud (AWS) theo đợt. Bạn dùng khung 7R thế nào, lập wave planning và dependency mapping ra sao, tổ chức cutover cuối tuần, và đặt tiêu chí go/no-go? (Liên kết aws-030, không lặp lại.)',
+  a: `**Tóm tắt:** Migrate 40 app không phải "dời 40 lần" mà là một **chương trình theo sóng (wave)** dựa trên phụ thuộc và rủi ro. Dùng **7R** để quyết định chiến lược cho từng app (rehost/replatform/refactor/repurchase/retire/retain/relocate), **dependency mapping** để gom app có liên hệ vào cùng wave và xác định thứ tự, rồi với mỗi wave có **runbook cutover cuối tuần** và **tiêu chí go/no-go/rollback** rõ. Nền tảng (landing zone, kết nối, quan sát, bảo mật) phải sẵn sàng trước wave 1. (Chi tiết kỹ thuật di chuyển DB bằng DMS/CDC và cutover DB xem **aws-030**; ở đây tập trung vào lập kế hoạch chương trình 40 app.)
+
+### Bối cảnh thật
+Ngân hàng có 40 app on-prem (VM, vài mainframe-adjacent, DB Oracle/SQL Server), muốn lên AWS trong 12-18 tháng để giảm rủi ro hạ tầng cũ và tăng tốc ra tính năng. Ràng buộc: một số app kết nối core banking, cửa sổ thay đổi hạn chế (cuối tuần), yêu cầu tuân thủ/kiểm toán, đội vận hành chưa quen cloud. Không thể "big bang" (dời hết một lần) vì rủi ro và phụ thuộc chồng chéo.
+
+### Thuật ngữ (giải thích lần đầu)
+- **7R**: bảy chiến lược migrate — **Retire** (bỏ app không còn giá trị), **Retain** (giữ lại on-prem tạm thời), **Rehost** (chuyển nguyên như cũ, "lift-and-shift"), **Relocate** (chuyển cả cụm hạ tầng), **Repurchase** (thay bằng SaaS), **Replatform** (đổi nền tảng, ít sửa code, ví dụ VM → container/ECS), **Refactor** (viết lại/đổi kiến trúc để cloud-native).
+- **Wave (sóng/đợt)**: một nhóm app được migrate cùng một khoảng thời gian/cửa sổ, có mục tiêu và runbook riêng. Wave sau học từ wave trước.
+- **Dependency mapping (lập bản đồ phụ thuộc)**: liệt kê app nào gọi app nào, dùng DB/queue/DNS/hệ thống nào, ai là upstream/downstream — để tránh dời một app mà "dây" của nó vẫn ở on-prem.
+- **Cutover (chuyển lưu lượng)**: thời điểm chuyển người dùng/th traffic sang môi trường mới.
+- **Go/no-go**: cuộc họp/quyết định tại các mốc kiểm tra để quyết định **tiếp tục (go)** hay **dừng/hoãn (no-go)** dựa trên tiêu chí định lượng đã chốt trước.
+- **Runbook**: tài liệu từng bước cho một thao tác (ở đây là cutover/rollback), ghi rõ ai làm, làm gì, mất bao lâu, dấu hiệu lỗi, cách quay lui.
+
+### Bước 1 — Khảo sát và gắn 7R cho từng app
+Với 40 app, lập bảng danh mục (portfolio): tên, chủ sở hữu nghiệp vụ, công nghệ, tích hợp, dữ liệu nhạy cảm, tần suất thay đổi, chi phí/vấn đề hiện tại, và **7R đề xuất** + lý do. Tránh refactor hàng loạt (đắt, chậm) trừ khi có lợi ích rõ.
+
+| 7R | Khi chọn (ví dụ) | Ghi chú 40-app |
+|---|---|---|
+| Retire | Ít người dùng, trùng chức năng | Dời 0 dòng code, giảm số app phải migrate — làm sớm |
+| Retain | Phụ thuộc core/mainframe chưa chuyển, hoặc sắp thay thế | Có kế hoạch/điều kiện để revisit, không "bỏ quên" |
+| Repurchase | Có SaaS đáp ứng (HR, CRM nội bộ) | Cần đánh giá tích hợp/dữ liệu/tuân thủ |
+| Rehost | Ổn định, cần chuyển nhanh, ít giá trị khi sửa | Nhanh nhưng không tận dụng cloud; thường là bước tạm |
+| Replatform | Spring Boot/Java đã có thể đóng gói; muốn bỏ quản lý OS/patch | Thường "ngọt" nhất cho app Java (VM → container/EKS/ECS) |
+| Refactor | Cần scale/độ tin cậy lớn, sẵn sàng đầu tư | Chỉ 1-2 app trọng yếu, không làm đồng loạt |
+
+### Bước 2 — Dependency mapping và xếp wave
+- **Thu thập phụ thuộc**: phỏng vấn team, đọc sơ đồ tích hợp, xem cấu hình (endpoint, DNS, connection string), log/flow mạng. Vẽ đồ thị: app → app/DB/queue/DNS/hệ thống on-prem.
+- **Nguyên tắc xếp wave**:
+  - Wave 0 (nền tảng): landing zone, mạng (VPN/Direct Connect), IAM/bảo mật, CI/CD, observability, registry — chưa có nền tảng thì wave app sẽ hỗn loạn.
+  - Wave 1: **ít phụ thuộc, rủi ro thấp**, có thể replatform nhanh — dùng để "luyện" quy trình, runbook, đội ngũ.
+  - Wave giữa: gom app **cùng cụm phụ thuộc** vào cùng wave (tránh một app lên cloud còn gọi 5 app on-prem qua đường chậm). Xử lý phụ thuộc vòng bằng cách tách giao diện hoặc dùng strangler/adapter tạm.
+  - Wave cuối: app **phụ thuộc core banking/on-prem nặng** hoặc rủi ro cao — lúc này đội đã có kinh nghiệm, và có thể đã có giải pháp kết nối ổn định.
+- **Quản lý hybrid tạm thời**: trong lúc chuyển tiếp, chấp nhận một phần gọi chéo on-prem ↔ cloud, nhưng **đo latency** và đặt mục tiêu giảm dần (liên hệ aws-030 về đường đi/độ trễ; devops-078 về nguyên nhân latency khi hybrid).
+
+~~~text
+Wave 0  Nền tảng: landing zone, DX/VPN, IAM, CI/CD, giám sát
+   |
+Wave 1  3-5 app độc lập, rủi ro thấp  (replatform)  -> luyện runbook
+   |
+Wave 2  cụm app A,B,C (phụ thuộc nhau) + DB của cụm  -> migrate cùng wave
+   |
+Wave 3  ... từng cụm theo dependency map ...
+   |
+Wave N  app gắn core on-prem / rủi ro cao  (sau khi kết nối + đội đã vững)
+Mỗi wave: chuẩn bị -> rehearsals (diễn tập) -> cutover cuối tuần -> hypercare -> lessons learned
+~~~
+
+### Bước 3 — Cutover cuối tuần (mỗi wave)
+Cutover cuối tuần vì lưu lượng thấp và có cửa sổ bảo trì; ngân hàng thường có quy trình phê duyệt thay đổi (change). **Runbook** (viết từ lần diễn tập, không viết lý thuyết) gồm:
+- **T-1/T-2 tuần**: diễn tập (rehearsal) trên môi trường giống prod; khóa phiên bản, đóng băng thay đổi không liên quan.
+- **Trước cửa sổ**: xác nhận backup/restore, thông báo stakeholder, kiểm tra đường mạng/cert/DNS, chuẩn bị lệnh rollback.
+- **Trong cửa sổ (ví dụ T0 22:00 → 04:00)**: từng bước có giờ, người chịu trách nhiệm, kênh liên lạc (bridge). Triển khai theo thứ tự phụ thuộc; smoke test nghiệp vụ sau mỗi cụm.
+- **Sau cutover**: giám sát tăng cường (hypercare 3-5 ngày), giữ đường rollback theo thời hạn đã chốt. (Kỹ thuật cutover/rollback DB dùng DMS/CDC: xem aws-030.)
+
+### Bước 4 — Tiêu chí go/no-go
+Chốt **trước** ngày cutover, đo được, và gắn người có quyền quyết định. Ví dụ:
+| Mốc | Go nếu | No-go nếu |
+|---|---|---|
+| Go/No-go diễn tập (T-1 tuần) | Diễn tập đạt, thời gian nằm trong cửa sổ, checklist hoàn tất | Bước quan trọng thất bại, chưa có cách xử lý |
+| Go/No-go trước cửa sổ (ngày T) | Team sẵn sàng, backup OK, không sự cố P1 đang mở, phê duyệt change | Thiếu người then chốt, sự cố đang diễn ra, dependency chưa sẵn sàng |
+| Go/No-go trong cửa sổ (sau smoke test) | Error rate/latency trong ngưỡng, giao dịch mẫu đúng, checksum khớp (nếu có) | Lỗi nghiệp vụ nghiêm trọng, dữ liệu lệch, không xác định nguyên nhân nhanh |
+| Quyết định rollback | Tiêu chí rollback đã xảy ra (chốt trước) | Cố "vá" vượt quá thời gian cửa sổ mà chưa rõ nguyên nhân |
+
+### Pitfall (lỗi hay gặp)
+- **Big bang 40 app**: một lỗi kéo sập nhiều luồng, không ai biết nguyên nhân ở đâu. Cách tránh: chia wave, wave 1 nhỏ để học.
+- **Xếp wave theo phòng ban thay vì theo phụ thuộc**: dời app A mà B (còn on-prem) phụ thuộc A → gọi chéo xa, latency/lỗi. Cách tránh: dependency mapping là đầu vào bắt buộc của wave planning.
+- **Refactor mọi thứ**: đội kiệt sức, trễ chương trình. Cách tránh: 7R theo giá trị/rủi ro, đa số Java app hợp replatform.
+- **Không có nền tảng (Wave 0)**: mỗi wave tự chế bảo mật/mạng/CI → nợ và lỗ hổng. Cách tránh: landing zone + guardrail trước wave 1.
+- **Go/no-go cảm tính**: tranh luận trong đêm cutover. Cách tránh: tiêu chí định lượng + người quyết định chốt từ trước.
+- **Bỏ qua con người/quy trình**: đội vận hành chưa quen cloud/on-call mới. Cách tránh: đào tạo, runbook, hypercare, và cập nhật quy trình incident.
+
+### Trả lời phỏng vấn (lead)
+"Với 40 app em tiếp cận như một chương trình theo wave, không big bang. Em lập danh mục và gắn 7R cho từng app: retire/repurchase để giảm số lượng, đa số Java replatform, chỉ refactor khi có lý do rõ. Song song em làm dependency mapping (tích hợp, DB, DNS, luồng on-prem) để gom cụm phụ thuộc vào cùng wave; Wave 0 dựng landing zone/kết nối/IAM/observability, Wave 1 chọn app ít phụ thuộc rủi ro thấp để luyện quy trình. Mỗi wave có rehearsal, runbook cutover cuối tuần với vai trò/giờ rõ, và hypercare. Go/no-go và rollback là tiêu chí định lượng chốt trước (sau diễn tập, trước cửa sổ, sau smoke test). Phần kỹ thuật di chuyển/cutover DB em dùng DMS full load + CDC, tiêu chí lag về 0 và checksum — chi tiết như aws-030."
+
+> Senior tip: Hai thứ quyết định chương trình 40 app: (1) **dependency mapping thật** (đừng tin chỉ sơ đồ lý thuyết — xác minh bằng log/flow mạng) và (2) **runbook lấy từ diễn tập** chứ không từ tài liệu. Hãy đo tỉ lệ "gọi chéo on-prem" sau mỗi wave và coi đó là chỉ số sức khỏe kiến trúc hybrid; mục tiêu là giảm dần. Giữ nhật ký quyết định 7R (vì sao app X replatform chứ không refactor) để kiểm toán và để wave sau không tranh luận lại từ đầu.`,
+  follow: ['Làm sao phát hiện phụ thuộc ẩn giữa các app mà tài liệu không ghi? (gợi ý: flow log, tracing, DNS/query log)', 'Khi một cụm app có phụ thuộc vòng (A gọi B, B gọi A), bạn xếp wave và cutover thế nào?', 'Những chỉ số nào bạn báo cáo lãnh đạo sau mỗi wave để chứng minh chương trình đang an toàn và đúng tiến độ?'],
+  tags: ['migration', '7R', 'wave-planning', 'dependency-mapping', 'cutover', 'go-no-go', 'leadership'],
+  refs: [
+    { type: 'doc', title: 'AWS Cloud Adoption Framework', url: 'https://aws.amazon.com/cloud-adoption-framework/' },
+    { type: 'doc', title: '7 Rs migration strategies', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/strategy-migration/welcome.html' }
+  ]
+},
+{
+  id: 'devops-080',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Làm sao để chạy một ứng dụng Java (Spring Boot) như một dịch vụ hệ thống trên Linux bằng systemd, và làm sao kiểm tra/log khi nó không khởi động?',
+  a: `**Tóm tắt:** Để app Java chạy liên tục sau khi reboot và tự khởi động lại khi lỗi, ta viết một file unit systemd (ví dụ {{loan-service.service}}) đặt tại {{/etc/systemd/system/}}, chạy app dưới một user riêng (không dùng root), rồi dùng {{systemctl enable --now}}. Khi lỗi, xem log bằng {{journalctl -u loan-service}} và kiểm tra trạng thái bằng {{systemctl status}}.
+
+### Thuật ngữ (giải thích lần đầu)
+- **systemd**: trình quản lý dịch vụ và khởi động của Linux hiện đại (thay SysV init cũ). Lệnh chính là {{systemctl}}.
+- **Unit file**: file cấu hình (.service) mô tả systemd cách chạy dịch vụ, khi nào restart, user nào, giới hạn tài nguyên.
+- **User/group riêng**: tạo user dedicate (ví dụ {{loansvc}}) để app chạy, hạn chế thiệt hại nếu app bị xâm nhập (không chạy như root).
+- **journalctl**: lệnh xem log hệ thống/dịch vụ đã được systemd thu thập.
+- **Load average / free / iostat / ss**: các lệnh chẩn đoán server chậm (xem CPU, RAM, ổ đĩa, kết nối mạng).
+
+### Cách làm từng bước
+
+**Bước 1 — Tạo user và thư mục**
+~~~bash
+sudo useradd -r -s /bin/false loansvc
+sudo mkdir -p /opt/loan-service /var/log/loan-service
+sudo chown -R loansvc:loansvc /opt/loan-service /var/log/loan-service
+~~~
+Giải thích: {{-r}} tạo system user, {{-s /bin/false}} không cho đăng nhập interactively. App chạy dưới {{loansvc}}.
+
+**Bước 2 — Viết unit file** ({{/etc/systemd/system/loan-service.service}})
+~~~yaml
+[Unit]
+Description=Loan Service Java App
+After=network.target
+
+[Service]
+Type=simple
+User=loansvc
+Group=loansvc
+WorkingDirectory=/opt/loan-service
+ExecStart=/usr/bin/java -jar -Xms512m -Xmx1g loan-service.jar
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/loan-service/app.log
+StandardError=append:/var/log/loan-service/error.log
+
+[Install]
+WantedBy=multi-user.target
+~~~
+Giải thích từng dòng:
+- **Type=simple**: systemd coi dịch vụ đã khởi động ngay khi process bắt đầu.
+- **Restart=always**: tự khởi động lại nếu process chết (không kể exit code). Dùng {{on-failure}} nếu chỉ restart khi lỗi.
+- **RestartSec=5**: chờ 5 giây trước khi restart, tránh restart liên tục quá nhanh.
+- **StandardOutput/StandardError=append:**: ghi log ra file thay vì journald, dễ đọc khi troubleshooting.
+- **WantedBy=multi-user.target**: bật dịch vụ khi hệ thống vào multi-user mode (máy chủ thông thường).
+
+**Bước 3 — Nạp và khởi động**
+~~~bash
+sudo systemctl daemon-reload
+sudo systemctl enable loan-service      # tự chạy khi boot
+sudo systemctl start loan-service       # chạy ngay
+sudo systemctl status loan-service      # xem trạng thái
+~~~
+{{daemon-reload}} bắt buộc sau khi sửa unit file.
+
+**Bước 4 — Xem log khi lỗi**
+~~~bash
+sudo journalctl -u loan-service -n 100          # 100 dòng cuối
+sudo journalctl -u loan-service --since "1 hour ago"
+sudo journalctl -u loan-service -f              # theo dõi real-time
+~~~
+
+### Trên production
+- Nếu app khởi động rồi lập tức chết, thường do sai quyền file (jar không đọc được), thiếu biến môi trường (thêm {{Environment=SPRING_PROFILES_ACTIVE=prod}} vào [Service]), hoặc port đã bị chiếm ({{ss -tlnp | grep :8080}}).
+- Giới hạn tài nguyên: thêm vào [Service]: {{MemoryMax=2G}}, {{CPUQuota=50%}}, {{LimitNOFILE=65536}} (số file mở tối đa, quan trọng với kết nối DB nhiều).
+- Không sửa unit file trực tiếp rồi quên {{daemon-reload}} → systemd vẫn dùng cấu hình cũ.
+
+### Bảng so sánh
+| Lệnh | Dùng khi nào | Lưu ý |
+|---|---|---|
+| systemctl status | xem dịch vụ đang chạy, lỗi, PID | Có trạng thái active/inactive/failed |
+| journalctl -u <tên> | xem log dịch vụ | Cần {{-f}} để theo dõi liên tục |
+| free -h | xem RAM còn trống | Dùng để quyết định {{-Xmx}} cho Java |
+| iostat -x 1 | xem ổ đĩa bị nghẽn | Cần cài {{sysstat}} |
+| ss -tlnp | xem port đang listen và process | Thay netstat, cần quyền root để xem PID |
+| uptime | xem load average | 3 số là trung bình 1/5/15 phút |
+
+> Senior tip: Trên production, đừng để app chạy dưới root. Nếu app cần bind port dưới 1024 (ví dụ 80/443), hãy dùng {{setcap cap_net_bind_service=+ep}} trên java binary hoặc để reverse proxy (Nginx) lắng nghe port 80/443 rồi chuyển tiếp qua port 8080 (app chạy port cao, an toàn hơn).`,
+  follow: ['Khi app Java khởi động rồi lập tức died, bạn kiểm tra thứ tự gì đầu tiên? (gợi ý: journalctl, systemctl status, quyền file, port đã chiếm chưa)', 'Tại sao nên đặt Restart=always nhưng kèm RestartSec, thay vì để systemctl restart liên tục không chờ?', 'Làm sao giới hạn RAM cho Java service trên Linux tránh OOM Kill? (gợi ý: -Xmx, MemoryMax, cgroup)'],
+  tags: ['linux', 'systemd', 'java-service', 'journalctl', 'troubleshooting']
+},
+{
+  id: 'devops-081',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Bảo mật SSH trên server Linux thực tế như thế nào: dùng khóa thay mật khẩu, tắt đăng nhập root, giới hạn cổng và user, fail2ban, và bastion/jump host là gì?',
+  a: `**Tóm tắt:** SSH là cổng vào chính của server, nên phải cứng rắn: dùng khóa SSH thay mật khẩu, tắt đăng nhập root, giới hạn user được phép đăng nhập, dùng fail2ban chặn brute-force, và qua bastion/jump host thay vì để server đính trực tiếp Internet. Mỗi biện pháp chặn một loại tấn công phổ biến.
+
+### Thuật ngữ (giải thích lần đầu)
+- **SSH (Secure Shell)**: giao thức từ xa mã hóa để quản lý server Linux qua dòng lệnh.
+- **Khóa SSH (SSH key)**: cặp khóa công/khai (public/private key). Khóa private giữ trên máy mình, khóa public đặt trên server. An toàn hơn mật khẩu vì không bị brute-force và không gửi mật khẩu qua mạng.
+- **fail2ban**: dịch vụ giám sát log, chặn tự động địa chỉ IP sai mật khẩu quá nhiều lần.
+- **Bastion / jump host**: server trung gian được bảo vệ chặt chẽ (hardened), nằm ở cửa vào, dùng để ssh vào các server bên trong không nối trực tiếp Internet.
+- **ProxyJump**: tùy chọn SSH để qua một bastion tự động, không cần ssh hai lần thủ công.
+
+### Cách làm từng bước
+
+**Bước 1 — Tạo khóa SSH trên máy dev**
+~~~bash
+ssh-keygen -t ed25519 -C "dev@company.com" -f ~/.ssh/id_ed25519_company
+~~~
+Sinh cặp khóa Ed25519 (hiện đại, ngắn, an toàn). Không nhập passphrase nếu muốn không gõ mỗi lần (hoặc dùng ssh-agent để nhớ passphrase).
+
+**Bước 2 — Đẩy khóa public lên server**
+~~~bash
+ssh-copy-id -i ~/.ssh/id_ed25519_company.pub loansvc@server-ip
+~~~
+Thêm khóa public vào {{~/.ssh/authorized_keys}} của user {{loansvc}} trên server.
+
+**Bước 3 — Cứng rắn sshd_config** ({{/etc/ssh/sshd_config}})
+~~~text
+Port 2222
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+AllowUsers loansvc deploy
+MaxAuthTries 3
+ClientAliveInterval 300
+ClientAliveCountMax 3
+~~~
+Giải thích:
+- **Port 2222**: chuyển khỏi port 22 mặc định để giảm log bị bot quét (bảo mật bằng sự mờ, không phải biện pháp chính nhưng hữu ích).
+- **PermitRootLogin no**: cấm root đăng nhập trực tiếp, phải dùng user thường rồi {{sudo}} nếu cần quyền cao.
+- **PasswordAuthentication no**: chỉ cho phép khóa SSH, chặn brute-force mật khẩu.
+- **AllowUsers loansvc deploy**: chỉ liệt kê user được phép, chặn tất cả user khác.
+- **MaxAuthTries 3**: tối đa 3 lần thử xác thực, sau đó ngắt kết nối.
+- **ClientAliveInterval/CountMax**: giữ kết nối không bị cut khi im lặng.
+
+Sau khi sửa, khởi động lại: {{sudo systemctl restart sshd}}. **Hãy giữ một session SSH đang mở để kiểm tra trước khi đóng session cũ**, tránh bị khóa ngoài.
+
+**Bước 4 — Cài fail2ban**
+~~~bash
+sudo apt install fail2ban   # Debian/Ubuntu
+~~~
+Tạo file {{/etc/fail2ban/jail.local}}:
+~~~text
+[sshd]
+enabled = true
+port = 2222
+maxretry = 3
+bantime = 1h
+findtime = 10m
+~~~
+Khởi động lại fail2ban. Nó sẽ chặn IP sai quá 3 lần trong 10 phút trong 1 giờ.
+
+**Bước 5 — Bastion và ProxyJump**
+Nếu server app không đính Internet, đặt nó trong private subnet, chỉ bastion đính Internet. Từ máy dev:
+~~~bash
+ssh -J bastion-user@bastion-ip loansvc@app-private-ip
+~~~
+Hoặc thêm vào {{~/.ssh/config}}:
+~~~text
+Host app
+  HostName app-private-ip
+  User loansvc
+  ProxyJump bastion-user@bastion-ip
+  IdentityFile ~/.ssh/id_ed25519_company
+~~~
+Rồi chỉ cần {{ssh app}}.
+
+### Trên production
+- Không bao giờ cho phép PasswordAuthentication trên server production.
+- Giữ bastion tối giản: chỉ cài SSH, không cài web server, không deploy app, giữ OS và SSH patch mới nhất.
+- Gọi lệnh qua bastion để triển khai/patch: {{ssh -J bastion user@app sudo systemctl restart loan-service}}.
+- Hạ thu khóa của nhân viên nghỉ việc khỏi {{authorized_keys}} ngay lập tức.
+
+### Bảng so sánh
+| Biện pháp | Chặn tấn công nào | Chi phí triển khai |
+|---|---|---|
+| Khóa SSH (không mật khẩu) | Brute-force mật khẩu, stealing password | Trung bình (quản lý khóa) |
+| PermitRootLogin no | L root trực tiếp, leo thang quyền | Thấp |
+| AllowUsers | Đăng nhập của user không mong muốn | Thấp |
+| fail2ban | Brute-force SSH, quét port | Thấp |
+| Bastion/ProxyJump | Server đính Internet bị tấn công trực tiếp | Trung bình (dùng thêm server) |
+
+> Senior tip: Trên production, hãy centralized tập hợp public key của team vào một repos và dùng công cụ (ví dụ Ansible, Terraform, hoặc ssh-ca) để đẩy/thu hồi khóa tự động. Cứ thủ công sửa {{authorized_keys}} trên mỗi server sẽ sớm rối và khóa cũ không bao giờ bị xoá. Ghi log mọi phiên SSH ({{/var/log/auth.log}}) và gửi về SIEM để kiểm tra khi có sự cố.`,
+  follow: ['Tại sao nên dùng khóa SSH thay vì mật khẩu trên server production?', 'Làm sao kiểm tra xem fail2ban đã chặn IP nào chưa? (gợi ý: fail2ban-client status sshd)', 'Khi không thể ssh vào server, bạn kiểm tra thứ tự gì: sshd đang chạy, port, firewall, hay khóa sai?'],
+  tags: ['ssh', 'security', 'fail2ban', 'bastion', 'proxyjump']
+},
+{
+  id: 'devops-082',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Networking cơ bản mà dev Java backend cần biết: mô hình OSI, NAT, DNS (A/CNAME/TTL, tại sao đổi DNS chưa có hiệu lực ngay), HTTP/HTTPS + TLS handshake, và chứng chỉ SSL hết hạn gây thế nào?',
+  a: `**Tóm tắt:** Networking là lớp dưới cùng mà mọi dịch vụ Java đều dựa vào. Dev cần hiểu OSI để biết lỗi nằm ở tầng nào, NAT/DNS để hiểu vì sao dịch vụ gọi không đúng đích hoặc đổi DNS chưa có tác dụng, và TLS/HTTPS để hiểu vì sao chiam API bị lỗi "certificate expired" hoặc handshake chậm.
+
+### Thuật ngữ (giải thích lần đầu)
+- **OSI (Open Systems Interconnection)**: mô hình 7 tầng chia mạng (Physical, Data Link, Network, Transport, Session, Presentation, Application). HTTP ở tầng Application, TCP ở Transport, IP ở Network.
+- **NAT (Network Address Translation)**: dịch private IP của máy trong nội bộ thành public IP của router khi đi ra Internet, và ngược lại. Các máy trong cùng VPC/nội bộ dùng private IP, ra ngoài dùng public IP của NAT gateway.
+- **DNS (Domain Name System)**: dịch tên miền ({{api.company.com}}) thành IP. **A record** trỏ tên tới IP, **CNAME** trỏ tên tới tên khác, **TTL** (Time to Live) là thời gian bản ghi được cache (giây). Đổi DNS chưa có hiệu lực vì client/ISP vẫn cache bản ghi cũ theo TTL.
+- **TLS (Transport Layer Security)**: mã hóa kết nối HTTP thành HTTPS. TLS handshake là quá trình client/server thương lượng khóa mã hóa trước khi truyền dữ liệu.
+- **Chứng chỉ SSL/TLS**: file số đánh giá chủ sở hữu công khai, có ngày hết hạn. Hết hạn → trình duyệt/API client báo lỗi, kết nối bị từ chối.
+
+### Cách làm từng bước
+
+**DNS: kiểm tra và hiểu TTL**
+~~~bash
+dig api.company.com +noall +answer
+nslookup api.company.com
+~~~
+Kết quả A record có TTL (ví dụ 300 giây = 5 phút). Nếu đổi IP rồi vẫn gọi sai, đó là vì TTL chưa hết hoặc client/ISP cache. Cách xử lý: giảm TTL trước khi đổi (ví dụ 60 giây), chờ một TTL cũ, rồi mới đổi IP. Dùng {{dig +trace}} để xem quy trình phân giải từng cấp.
+
+**TLS handshake: các bước**
+1. Client gửi {{ClientHello}} (phiên bản TLS, cipher hỗ trợ).
+2. Server gửi {{ServerHello}}, chứng chỉ (public key), có thể yêu cầu client cert.
+3. Client xác minh chứng chỉ (CA roots), sinh pre-master secret, mã hóa bằng public key của server, gửi lại.
+4. Cả hai sinh session key từ pre-master secret, mã hóa dữ liệu sau này bằng session key.
+Handshake tốn hai vòng_network (round trip) trở nên chậm khi latency cao (ví dụ gọi chéo lục địa qua VPN). Dùng HTTP keep-alive / connection pool để tái dùng kết nối, tránh handshake mỗi request.
+
+**Chứng chỉ hết hạn**
+Kiểm tra ngày hết hạn:
+~~~bash
+echo | openssl s_client -connect api.company.com:443 2>/dev/null | openssl x509 -noout -dates
+~~~
+Output có {{notBefore}} và {{notAfter}}. Nếu {{notAfter}} đã qua, client nhận lỗi {{certificate expired}}. Cách khắc phục: renew chứng chỉ (Let's Encrypt: {{certbot renew}}, hoặc qua AWS ACM/Cloudflare tự động), rồi reload dịch vụ (Nginx/Java keystore). Theo dõi bằng monitoring (cảnh báo trước 30/14/7 ngày).
+
+**NAT: khi nào dùng**
+Máy trong private subnet không có public IP, muốn gọi API bên ngoài → đi qua NAT gateway. Nhưng gọi service cùng VPC qua NAT là sai thiết kế (thêm chi phí, latency). Dùng VPC endpoint (S3, DynamoDB) hoặc private link thay vì NAT cho traffic nội bộ.
+
+### Trên production
+- Lỗi "certificate expired" thường do quên renew hoặc CI không deploy cert mới. Hãy tự động hóa renew và alert sớm.
+- TLS handshake chậm → kiểm tra latency giữa client/server, bật keep-alive, dùng connection pool (HikariCP cho DB, HttpClient cho REST).
+- DNS đổi chưa có hiệu lực → kiểm tra TTL, flush cache ({{ipconfig /flushdns}} trên Windows, {{systemd-resolve --flush-caches}} trên Linux), xem log CoreDNS nếu trong K8s.
+- Gọi API bị timeout → dùng {{traceroute}} / {{mtr}} để xem tầng nào bị chậm, kiểm tra security group/NACL (firewall) và NAT gateway.
+
+### Bảng so sánh
+| Khái niệm | Tầng OSI | Dùng để |
+|---|---|---|
+| IP / NAT | Network | định vị máy, dịch private↔public IP |
+| TCP / TLS | Transport | kết nối đáng tin cậy, mã hóa |
+| HTTP / HTTPS | Application | giao thức ứng dụng web/API |
+| DNS | Application | dịch tên thành IP |
+
+> Senior tip: Khi debugging "gọi API lỗi", đừng tưởng là do code Java lỗi. Hãy phân lớp: {{ping}} (ICMP, có thể bị chặn), {{telnet host port}} / {{nc -vz host port}} (kiểm tra TCP port mở), {{curl -v}} (xem TLS handshake và HTTP response), {{dig}} (DNS). Lỗi thường nằm ở security group chặn port, cert hết hạn, hoặc DNS trỏ sai, chứ không phải code.`,
+  follow: ['TTL là gì và tại sao đổi DNS/IP chưa có hiệu lực ngay lập tức?', 'TLS handshake tốn bao lâu và làm sao giảm chi phí handshake trên đường gọi cao latency?', 'Chứng chỉ SSL hết hạn thì ứng dụng Java client gọi HTTPS bị lỗi gì, bạn khắc phục thế nào?'],
+  tags: ['networking', 'osi', 'nat', 'dns', 'tls', 'ssl-certificate']
+},
+{
+  id: 'devops-083',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Reverse proxy và load balancer (Nginx/HAProxy) đặt trước ứng dụng Java: cấu hình health check, sticky session, timeout, và header X-Forwarded-* dùng để làm gì?',
+  a: `**Tóm tắt:** Reverse proxy (Nginx/HAProxy) đứng trước app Java, nhận request từ client rồi chuyển tiếp. Nó dùng để terminate TLS, phân phối tải qua nhiều instance (load balancing), kiểm tra sức khỏe (health check) để không gửi traffic tới instance chết, giữ session cùng instance (sticky session) nếu cần, và thiết lập timeout phù hợp. Header X-Forwarded-* cho app Java biết thông tin client thực (IP, proto, host) thay vì thấy IP của proxy.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Reverse proxy**: server nhận request từ client rồi chuyển tiếp tới server backend (app Java), ngược lại của forward proxy.
+- **Load balancer (LB)**: phân phối request đến nhiều backend instance để tránh quá tải một máy.
+- **Health check**: LB định kỳ gọi một endpoint (ví dụ {{/actuator/health}}) của instance; nếu trả về lỗi hoặc không phản hồi, LB ngừng gửi traffic tới instance đó.
+- **Sticky session (session affinity)**: LB gắn một user cụ thể luôn đến cùng một instance (dùng cookie), cần khi app lưu session trong bộ nhớ local (không khuyến khích, nên dùng Redis).
+- **X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host**: header proxy thêm để backend biết IP client thực, protokol (http/https), host ban đầu.
+
+### Cách làm từng bước
+
+**Nginx làm reverse proxy + health check** ({{/etc/nginx/conf.d/loan.conf}})
+~~~text
+upstream loan_backend {
+    least_conn;
+    server 10.0.1.10:8080;
+    server 10.0.1.11:8080;
+    health_check interval=5s fails=3;
+}
+
+server {
+    listen 80;
+    server_name api.company.com;
+
+    location / {
+        proxy_pass http://loan_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
+    location /actuator/health {
+        proxy_pass http://loan_backend;
+        access_log off;
+    }
+}
+~~~
+Giải thích:
+- **upstream / least_conn**: nhóm backend, chia theo số kết nối ít nhất.
+- **server ... weight**: có thể thêm {{weight=2}} cho máy mạnh hơn.
+- **health_check**: Nginx Plus có directive này; với Nginx open-source dùng {{proxy_next_upstream}} và {{max_fails}} thay vì health check tích hợp.
+- **proxy_set_header X-Forwarded-For**: thêm IP client vào danh sách, backend lấy phần tử đầu làm IP client thực.
+- **proxy_set_header X-Forwarded-Proto $scheme**: cho app biết client dùng http hay https (quan trọng khi Nginx terminate TLS, app thấy http).
+- **proxy_connect_timeout/send_timeout/read_timeout**: thời gian chờ kết nối/gửi/đọc với backend. Đặt 30s cho API thường, dài hơn cho report exports.
+
+**Spring Boot đọc X-Forwarded-***
+Thêm vào {{application.properties}}:
+~~~text
+server.forward-headers-strategy=framework
+~~~
+Spring sẽ dùng X-Forwarded-For/Proto/Host để tạo {{HttpServletRequest}} đúng (getRemoteAddr, getScheme, getServerPort). Nếu không bật, app sẽ thấy IP của Nginx ({{127.0.0.1}}) và scheme http dù client dùng https → sai redirect, sai log audit.
+
+**Sticky session (chỉ khi thực sự cần)**
+~~~text
+upstream loan_backend {
+    sticky cookie route;
+    server 10.0.1.10:8080 route=instance1;
+    server 10.0.1.11:8080 route=instance2;
+}
+~~~
+Nginx Plus dùng cookie {{route}}. Lưu ý: sticky session làm scaling/khuất instance khó hơn (mất session khi instance xuống). Nên lưu session vào Redis (Spring Session) và dùng round-robin/least_conn, không cần sticky.
+
+### Trên production
+- Health check endpoint nên nhẹ (không truy vấn DB nặng) và trả về 200 nhanh. Spring Boot Actuator {{/actuator/health}} có thể cấu hình chỉ hiện status tổng hợp.
+- Timeout đừng đặt quá dài: read timeout 30s-60s cho API, nếu quá lâu client sẽ ngắt và LB cũng ngưng chờ. Dùng non-blocking/async cho task lâu.
+- Nginx open-source không có health check tích hợp đầy đủ; có thể dùng {{max_fails=3}} {{fail_timeout=30s}} trên mỗi server trong upstream để tự động loại instance không phản hồi.
+- X-Forwarded-For có thể bị spoof (client gửi header giả). Backend chỉ nên tin phần tử **cuối cùng** thêm bởi proxy gần nhất, hoặc cấu hình proxy tin proxy trước đó (set_real_ip_from).
+
+### Bảng so sánh
+| Tính năng | Nginx open-source | HAProxy | Nginx Plus |
+|---|---|---|---|
+| Reverse proxy | Có | Có | Có |
+| Load balancing | round-robin, least_conn, ip_hash | Nhiều thuật toán hơn | Nhiều thuật toán |
+| Health check | Giới hạn (max_fails) | Tích hợp chi tiết | Tích hợp đầy đủ |
+| Sticky session | ip_hash | Cookie/table | Cookie |
+
+> Senior tip: Đừng gắn session vào instance (sticky session) trừ khi bắt buộc. Mỗi instance Java nên stateless: session lưu Redis, file lưu S3/minIO, upload gửi trực tiếp storage. Stateless thìLB chọn thuật toán nào cũng được, scale instance thêm/bớt không ảnh hưởng user, và rolling deploy không làm drop session. X-Forwarded-Proto là nỗi đau đen: nếu sai, Spring Security redirect về http thay vì https và cookie Secure không gửi được.`,
+  follow: ['X-Forwarded-Proto dùng để làm gì và sai thì hỏng gì trong Spring Boot?', 'Health check endpoint nên kiểm tra gì để không làm quá tải DB?', 'Tại sao khuyên dùng stateless (session trong Redis) thay vì sticky session?'],
+  tags: ['nginx', 'haproxy', 'reverse-proxy', 'load-balancer', 'health-check', 'sticky-session', 'x-forwarded']
+},
+{
+  id: 'devops-084',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Firewall (ufw/iptables/security group), VPN và whitelist IP: cấu hình cho ứng dụng Java kết nối DB và gọi API đối tác/ngân hàng như thế nào để an toàn?',
+  a: `**Tóm tắt:** Firewall lạnh lão chỉ cho phép cổng cần thiết (app listen 8080, SSH 2222, DB 5432 chỉ từ app server), dùng security group (AWS) hoặc ufw/iptables (Linux). VPN tạo đường hầm mã hóa tới mạng đối tác/ngân hàng, và whitelist IP chỉ cho phép các IP đã đăng ký gọi vào API của chúng ta. Kết hợp cả ba: app Java trong private subnet, chỉ gọi DB qua security group, gọi đối tác qua IPsec VPN với IP whitelist hai bên.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Firewall**: bộ lọc gói tin, cho phép/từ chối kết nối dựa trên cổng, IP, giao thức.
+- **ufw (Uncomplicated Firewall)**: wrapper dễ dùng trên iptables (Debian/Ubuntu).
+- **iptables**: firewall nhân Linux, qui tắc chains (INPUT/OUTPUT/FORWARD).
+- **Security group (SG)**: firewall ảo của cloud (AWS/VPC), gắn vào ENI instance, stateful (cho phép phản hồi tự động).
+- **VPN (IPsec/Site-to-Site)**: đường hầm mã hóa nối hai mạng riêng qua Internet công cộng.
+- **Whitelist IP**: danh sách IP được phép truy cập, tất cả IP khác bị từ chối.
+
+### Cách làm từng bước
+
+**ufw trên server Linux (app/DB VM)**
+~~~bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 2222/tcp        # SSH (đã đổi port)
+sudo ufw allow 8080/tcp        # app Java listen
+sudo ufw allow from 10.0.1.0/24 to any port 5432   # chỉ subnet app gọi DB PostgreSQL
+sudo ufw enable
+~~~
+Giải thích: mặc định chặn tất cả kết nối từ ngoài vào trừ quy tắc cho phép. Chỉ mở 2222 (SSH), 8080 (app), 5432 (DB) và chỉ từ subnet app. Không mở 5432 ra toàn Internet.
+
+**iptables (nếu ufw không có)**
+~~~bash
+sudo iptables -A INPUT -p tcp --dport 2222 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+sudo iptables -A INPUT -p tcp -s 10.0.1.0/24 --dport 5432 -j ACCEPT
+sudo iptables -A INPUT -j DROP
+~~~
+Quy tắc được đọc từ trên xuống, thứ tự quan trọng. {{DROP}} cuối cùng làm mặc định chặn.
+
+**Security group AWS (EC2/EKS)**
+- SG-app: inbound 8080 từ SG-loadbalancer, 2222 từ IP bastion, 5432 từ SG-app (không mở 0.0.0.0/0).
+- SG-db: inbound 5432 chỉ từ SG-app.
+SG là stateful: nếu cho inbound 8080, phản hồi ra ngoài được tự động.
+
+**VPN IPsec tới đối tác/ngân hàng**
+Cấu hình trên gateway/router (ví dụ strongSwan, AWS Site-to-Site VPN, Cisco ASA):
+~~~text
+left=203.0.113.10        # IP công cộng của chúng ta
+leftsubnet=10.0.0.0/16   # mạng nội bộ chúng ta
+right=198.51.100.5       # IP công cộng đối tác
+rightsubnet=172.16.0.0/16 # mạng đối tác
+ike=aes256-sha2-modp2048
+esp=aes256-sha2
+~~~
+Sau khi tunnel up, app Java gọi API đối tác qua private IP ({{172.16.x.x}}) thay vì public IP, toàn bộ traffic mã hóa.
+
+**Whitelist IP cho API của chúng ta**
+Nếu đối tác gọi API chúng ta, chỉ cho phép IP đối tác:
+~~~bash
+# ufw
+sudo ufw allow from 203.0.113.50 to any port 8443   # IP đối tác gọi API bảo mật
+~~~
+Hoặc trong Nginx:
+~~~text
+allow 203.0.113.50;
+deny all;
+~~~
+Trên AWS, security group inbound 8443 chỉ từ IP đối tác (hoặc prefix list).
+
+### Trên production
+- Không bao giờ mở 0.0.0.0/0 cho cổng DB (5432, 1433, 1521, 3306) và Redis (6379). Chỉ từ SG app.
+- Dùng security group tham chiếu security group (AWS) thay vì hard-code IP, vì IP instance có thể thay đổi.
+- Whitelist IP đối tác phải có quy trình phê duyệt và review định kỳ (xoá IP không dùng nữa).
+- VPN tunnel down → app gọi đối tác thất bại. Cần monitoring tunnel trạng thái và có đường dự phòng (second VPN hoặc redirect qua public API với mTLS).
+- Kiểm tra firewall đã chặn gì: {{sudo ufw status numbered}}, {{sudo iptables -L -n -v}}, AWS VPC flow logs, security group rules.
+
+### Bảng so sánh
+| Công cụ | Dùng nơi nào | Stateful? | Lệnh chính |
+|---|---|---|---|
+| ufw | Linux VM (Ubuntu/Debian) | Có | ufw allow/deny |
+| iptables | Linux VM (tất cả distro) | Có | iptables -A |
+| Security group | AWS/VPC cloud | Có | AWS console/CLI |
+| VPN IPsec | Kết nối hai mạng riêng | Có | strongSwan, AWS VPN |
+
+> Senior tip: "Mở cổng để chạy thử rồi quên đóng" là nguyên nhân phổ biến của rò r dữ liệu. Hãy áp dụng nguyên tắc least privilege: đóng tất cả, mở từng cổng cần từng cặp (nguồn, đích, cổng). Trong AWS, chọn security group làm nguồn thay vì CIDR rộng, và gắn tag {{Owner}}/{{Ticket}} vào mỗi quy tắc để biết ai yêu cầu, khi nào review lại. Mọi thay đổi firewall phải qua change request và có rollback plan.`,
+  follow: ['Tại sao không bao giờ mở cổng DB (5432) ra 0.0.0.0/0 trên Internet công cộng?', 'Security group khác iptables/ufw ở điểm nào, và khi nào dùng cái nào?', 'Whitelist IP đối tác cần review định kỳ như thế nào để không dính IP lỗi thời?'],
+  tags: ['firewall', 'ufw', 'iptables', 'security-group', 'vpn', 'ip-whitelist']
+},
+{
+  id: 'devops-085',
+  topic: 'devops',
+  level: 'senior',
+  q: 'SSH bastion/jump host và ProxyJump ở quy mô lớn: triển khai như thế nào, ghi audit ai ssh vào server nào, và hardening bastion để không thành mục tiêu tấn công?',
+  a: `**Tóm tắt:** Bastion (jump host) là điểm vào duy nhất để quản lý các server trong private subnet, không đính Internet trực tiếp. Dùng ProxyJump để ssh qua bastion một cách trong suốt. Ở quy mô lớn, cần tập trung quản lý khóa, ghi chú tất cả lệnh chạy (audit), và cứng rắn bastion để không trở thành "chìa khóa chính" bị tấn công.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Bastion / jump host**: server trung gian đặt ở đường vào (public subnet hoặc DMZ), dùng làm điểm ssh vào các server nội bộ. Bastion không deploy app, chỉ cho ssh đi-through.
+- **ProxyJump (-J)**: tùy chọn SSH tự động nối qua bastion, người dùng chỉ cần ssh một lệnh thay vì ssh bastion rồi ssh lại app.
+- **Audit SSH**: ghi lại ai, khi nào, từ IP nào, chạy lệnh gì trên server nào (dùng để điều tra sự cố và tuân thủ).
+- **Hardening**: cấu hình giảm bề mặt tấn công (tắt dịch vụ không cần, giới hạn user, cập nhật kernel).
+
+### Cách làm từng bước
+
+**Cấu hình bastion**
+~~~text
+# /etc/ssh/sshd_config trên bastion
+PermitRootLogin no
+PasswordAuthentication no
+AllowGroups sshusers
+MaxAuthTries 3
+ForceCommand internal-sftp   # nếu chỉ cần SFTP, hoặc để trống để cho shell
+ClientAliveInterval 300
+~~~
+Tạo group {{sshusers}}, chỉ thêm user quản trị vào nhóm này. Bastion chỉ cho ssh vào, không cho ssh ra trừ tới private subnet app.
+
+**ProxyJump từ máy dev**
+~~~bash
+ssh -J bastion-user@bastion-ip loansvc@app-private-ip
+~~~
+Hoặc ~/.ssh/config:
+~~~text
+Host app-private
+  HostName 10.0.1.10
+  User loansvc
+  ProxyJump bastion-user@bastion.company.com
+  IdentityFile ~/.ssh/id_ed25519_company
+~~~
+Chỉ cần {{ssh app-private}}.
+
+**Tunnel cổng qua bastion (gọi DB từ máy dev qua app)**
+~~~bash
+ssh -J bastion-user@bastion-ip -L 5432:db-private:5432 loansvc@app-private-ip
+~~~
+Lệnh này mở cổng 5432 localhost trên máy dev, tunnel qua bastion + app tới DB nội bộ. Dùng để chạy psql/DBeaver từ dev mà không mở DB ra Internet.
+
+**Ghi audit SSH**
+- Cài {{auditd}} trên bastion và app server, ghi sự kiện ssh, sudo, lệnh chạy.
+- Hoặc dùng {{sshd}} với {{LogLevel VERBOSE}} ghi vào {{/var/log/auth.log}}: user, IP, thời gian, thành công/thất bại.
+- Để ghi toàn bộ phiên (kiểu quay phim), dùng {{ttyrec}} hoặc {{script}} bao quanh shell, hoặc giải pháp commerciales (Teleport, StrongDM).
+- Gửi log về SIEM/ELK, lưu tối thiểu 6-12 tháng (tuỳ quy định ngân hàng).
+
+**Quản lý khóa tập trung**
+Không thêm public key thủ công vào {{~/.ssh/authorized_keys}} trên mỗi server. Dùng:
+- **SSH CA (certificate authority)**: ký khóa SSH với CA, server tin CA, khóa hết hạn tự động (không cần xoá thủ công khi nghỉ việc).
+- **Ansible/Terraform**: đẩy/thu hồi public key tự động qua IaC.
+- **Teleport/StrongDM**: quản lý truy cập zentral, audit session, không cần khóa SSH thủ công.
+
+### Trên production
+- Bastion không deploy app, không cài web server, không có dữ liệu kinh doanh. Chỉ SSH, auditd, OS patch.
+- Giới hạn IP nguồn có thể ssh vào bastion (security group/ufw chỉ từ IP văn phòng/VPN của công ty).
+- Tắt X11Forwarding, AgentForwarding nếu không cần (giảm rủi ro forwarding key).
+- Xoá khóa của nhân viên nghỉ việc ngay: nếu dùng SSH CA, khóa hết hạn; nếu dùng authorized_keys, xoá entry và duyệt lại toàn bộ server.
+- Ghi log lệnh (auditd/ttyrec) và alert khi có lệnh nguy hiểm ({{rm -rf}}, {{chmod 777}}, {{sudo su}}) trên production.
+
+### Bảng so sánh
+| Cách tiếp cận | Ưu điểm | Nhược điểm |
+|---|---|---|
+| authorized_keys thủ công | Đơn giản, không cài thêm | Khó thu hồi, rủi ro khóa cũ còn hiệu lực |
+| SSH CA | Khóa hết hạn, quản lý tập trung | Cần cài CA, kiến thức thêm |
+| Teleport/StrongDM | Audit session, MFA, không khóa thủ công | Phụ thuộc dịch vụ bên thứ ba, chi phí |
+
+> Senior tip: Bastion là "chìa khóa chính" của toàn bộ hệ thống nội bộ. Nếu attacker chiếm bastion, họ có thể ssh vào mọi app server. Do đó bastion phải cứng rắn hơn app server: MFA, chỉ từ IP whitelisted, ghi toàn bộ phiên, và không lưu secret/code trên bastion. Giống như cửa chính của ngân hàng — chỉ mở cho người được phép, và ghi lại mọi người vào-ra.`,
+  follow: ['ProxyJump khác ssh hai lần thủ công (bastion rồi app) ở điểm nào?', 'Làm sao ghi lại tất cả lệnh chạy qua bastion để kiểm tra khi có sự cố?', 'SSH CA giúp gì so với public key thủ công trong authorized_keys?'],
+  tags: ['ssh', 'bastion', 'proxyjump', 'audit', 'hardening']
+},
+{
+  id: 'devops-086',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Phản ứng sự cố production Linux (server chậm, Java app bị OOM/crash): cách dùng systemd giới hạn tài nguyên, đọc load average/free/iostat/ss, journalctl phân tích, và runbook khôi phục dịch vụ?',
+  a: `**Tóm tắt:** Khi server production chậm hoặc app Java OOM/crash, lead cần phân tích nhanh các tầng: hệ thống (CPU/RAM/IO/mạng), dịch vụ (systemd status/log), và ứng dụng (Java heap/GC/thread dump). Dùng {{systemctl}} giới hạn tài nguyên để tránh một app "ăn hết" máy, journalctl để xem lịch sử sự cố, rồi chạy runbook khôi phục (restart, scale, rollback) có kiểm soát.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Load average**: số trung bình các process đang chạy hoặc chờ CPU/IO trong 1, 5, 15 phút (xem qua {{uptime}}). Số cao hơn số lõi CPU → máy đang quá tải CPU hoặc chờ IO.
+- **free**: xem RAM dùng/trống/cache ({{free -h}}). RAM trống thấp không nhất thiết là lỗi (Linux dùng RAM làm cache), cần xem available.
+- **iostat**: xem hiệu năng ổ đĩa (read/write, throughput, utilization, await). Cần cài {{sysstat}}.
+- **ss**: xem socket/port kết nối ({{ss -tlnp}}), thay netstat.
+- **OOM Kill**: nhân Linux giết process khi hết RAM (xem trong {{dmesg}} hoặc journalctl có thông báo "Out of memory: Kill process").
+- **systemd resource limit**: {{MemoryMax}}, {{CPUQuota}}, {{LimitNOFILE}} trong unit file giới hạn tài khoản một dịch vụ.
+
+### Cách làm từng bước
+
+**Bước 1 — Phát hiện server chậm**
+~~~bash
+uptime                  # load average 1/5/15 phút
+free -h                 # RAM, swap
+iostat -x 1             # IO đợi (await cao = ổ đĩa chậm)
+ss -tlnp | grep :8080   # app Java đang listen, xem PID
+~~~
+Nếu load average cao >> số lõi CPU, và iostat await cao → ổ đĩa chậm (log ghi nhiều, swap thrashing). Nếu load cao nhưng iostat bình thường → CPU bottleneck (Java GC, vòng lặp vô hạn).
+
+**Bước 2 — Xem dịch vụ Java qua systemd**
+~~~bash
+systemctl status loan-service          # trạng thái, PID, lệnh cuối
+journalctl -u loan-service --since "1 hour ago"   # log app, tìm OOM/Exception
+journalctl -u loan-service -n 200 --no-pager      # 200 dòng cuối, không phân trang
+~~~
+Tìm {{OutOfMemoryError}}, {{GC overhead limit exceeded}}, hoặc process bị kill (OOM Killer).
+
+**Bước 3 — Java diagnostic**
+~~~bash
+# Lấy PID của java
+pid=$(pgrep -f loan-service.jar)
+# Heap histogram
+jmap -histo:live $pid | head -30
+# Thread dump (tìm deadlock, thread bị treo)
+jstack $pid > /tmp/threaddump.txt
+~~~
+Nếu app đã chết, không lấy được jstack. Xem journalctl log stack trace gần thời gian crash.
+
+**Bước 4 — Giới hạn tài nguyên (ngăn ăn hết máy)**
+Sửa unit file, thêm vào [Service]:
+~~~yaml
+MemoryMax=2G
+MemorySwapMax=0
+CPUQuota=50%
+LimitNOFILE=65536
+~~~
+Rồi {{sudo systemctl daemon-reload}} && {{sudo systemctl restart loan-service}}. Điều này ngăn Java heap quá lớn làm hết RAM máy, và CPUQuota ngăn một instance dùng hết CPU.
+
+**Bước 5 — Runbook khôi phục**
+1. **Khởi động lại dịch vụ**: {{sudo systemctl restart loan-service}}, kiểm tra {{systemctl status}}.
+2. **Nếu vẫn crash**: rollback phiên bản trước (cũ ổn định), rồi điều tra.
+3. **Nếu server quá tải hoàn toàn**: tắt dịch vụ không quan trọng, hoặc scale thêm instance qua LB (nếu có).
+4. **Sau khi khôi phục**: ghi incident report (nguyên nhân, ảnh hưởng, hành động khắc phục, phòng ngừa), cập nhật runbook.
+
+### Trên production
+- Không restart service mù quáng nếu đang xử lý giao dịch tài chính: kiểm tra có giao dịch nào đang xử lý (thread dump), có thể chờ xong hoặc drain qua LB trước.
+- OOM thường do heap quá lớn (Xmx quá gần RAM máy), memory leak, hoặc nhiều thread. Tune {{-Xms}} {{-Xmx}} theo RAM có sẵn (để 20-30% RAM cho OS/cache).
+- Swap bật trên server Java thường xấu (GC trong swap rất chậm). Có thể tắt swap hoặc dùng {{MemorySwapMax=0}} trong systemd.
+- journalctl log bị xoá khi reboot nếu không cấu hình persistent ({{Storage=persistent}} trong {{/etc/systemd/journald.conf}}). Bật persistent để xem log sau reboot.
+
+### Bảng so sánh
+| Dấu hiệu | Nguyên nhân suspect | Công cụ kiểm tra |
+|---|---|---|
+| Load cao, iostat await cao | ổ đĩa chậm, swap thrashing | iostat, dmesg, journalctl |
+| Load cao, CPU cao, RAM bình thường | Java GC, vòng lặp, luồng treo | top, jstack, jmap |
+| App crash, log "Out of memory" | Heap quá nhỏ, memory leak | journalctl, jmap -histo |
+| Không connect được app | Port không listen, firewall | ss -tlnp, ufw status |
+
+> Senior tip: Runbook phải được viết và **diễn tập trước khi có sự cố**, không viết giữa đêm khi server đang xuống. Mỗi runbook ghi rõ: ai được gọi, lệnh chạy theo thứ tự, tiêu chí rollback, và khi nào escalate lên đội DBA/infra. Systemd resource limit là giànadero phòng khi một app Java bị "loạn" (ví dụ loop tạo file log) — thiết lập trước, đợi sự cố mới cấu hình thì đã muộn.`,
+  follow: ['Load average cao nhưng CPU/RAM bình thường có thể do gì, và bạn kiểm tra bằng lệnh gì? (gợi ý: iostat, ss, thread dump)', 'OOM Kill trong Linux là gì, và journalctl có dấu hiệu gì để xác nhận app bị OOM?', 'Tại sao nên đặt MemoryMax và CPUQuota trong systemd unit file cho Java service?'],
+  tags: ['linux', 'incident-response', 'systemd', 'oom', 'troubleshooting', 'journalctl', 'runbook']
+},
+{
+  id: 'devops-087',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Thiết kế bảo mật mạng theo tầng (defense in depth) cho hệ thống ngân hàng: DMZ, zona công khai/riêng nội bộ, traffic north-south và east-west, tường lửa giữa các zona, và ví dụ định tuyến cho một giao dịch thanh toán?',
+  a: `**Tóm tắt:** Defense in depth (bảo mật nhiều tầng) nghĩa là không tin vào một tường lửa duy nhất, mà chia mạng thành các zona (DMZ, công khai, riêng nội bộ, dữ liệu nhạy cảm), đặt tường lửa giữa các zona, chỉ cho phép traffic cần thiết (least privilege), và phân biệt traffic north-south (client↔server) và east-west (server↔server trong trung tâm dữ liệu). Ví dụ luồng thanh toán đi qua các zona này, mỗi zona được kiểm soát riêng.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Defense in depth (bảo mật nhiều tầng)**: nhiều lớp kiểm soát (tường lửa, WAF, IDS/IPS, mã hóa, kiểm tra truy cập) sau nhau, một lớp bị bỏ qua vẫn có lớp khác.
+- **DMZ (Demilitarized Zone)**: zona trung gian giữa Internet và mạng nội bộ, chứa dịch vụ đính Internet (WAF, reverse proxy, API gateway) nhưng không chứa DB/core banking.
+- **Zona công khai (public)**: subnet có thể đính Internet, chỉ chứa dịch vụ cần thiết (nginx, load balancer).
+- **Zona riêng nội bộ (private)**: subnet không đính Internet, chứa app server, chỉ gọi được từ DMZ hoặc app khác trong cùng zona.
+- **Zona dữ liệu nhạy cảm (data zone)**: chứa DB, core banking, chỉ app server được gọi, không đính Internet.
+- **Traffic north-south**: traffic từ client ngoài vào server (và ngược lại), đi qua tường iglesia biên (edge firewall).
+- **Traffic east-west**: traffic giữa server trong cùng trung tâm dữ liệu (app gọi DB, app gọi app), cần tường lửa nội bộ (micro-segmentation).
+
+### Cách làm từng bước
+
+**Xác định zona và tường lửa giữa zona**
+| Zona | Chứa gì | Đính Internet? | Quy tắc firewall chính |
+|---|---|---|---|
+| Internet | Client, đối tác | Có | Chỉ WAF/LB |
+| DMZ | WAF, Nginx/LB, API gateway | Có | Chỉ 80/443 vào, gọi tới app zona |
+| App zona | Spring Boot instances | Không | Chỉ từ DMZ, gọi DB zona |
+| DB zona | PostgreSQL, Oracle core | Không | Chỉ từ app zona, cổng DB |
+| Backup/Mgmt | Backup server, bastion | Không (qua VPN) | Chỉ từ IP admin qua VPN |
+
+**Ví dụ định tuyến giao dịch thanh toán (ví dụ minh họa)**
+1. Khách hàng gọi {{https://api.company.com/pay}} (north-south) → WAF/DMZ.
+2. WAF kiểm tra tấn công (SQL injection, DDoS) → gửi Nginx/LB trong DMZ.
+3. Nginx terminate TLS, kiểm tra X-Forwarded-*, chuyển tiếp qua API gateway.
+4. API gateway xác thực token, gọi Spring Boot trong app zona (east-west, qua tường lửa nội bộ).
+5. App Spring Boot gọi DB core trong data zona (east-west, chỉ cổng 5432/1521 từ SG app).
+6. App gọi core banking đối tác qua IPsec VPN (north-south ra ngoài, mã hóa).
+7. Phản hồi ngược lại theo đường cũ đến khách hàng.
+
+~~~seq
+title: Luồng giao dịch thanh toán qua các zona bảo mật
+actors: Khách hàng | WAF/DMZ | App zona | DB/Core zona | Đối tác (VPN)
+Khách hàng -> WAF/DMZ: HTTPS /pay
+WAF/DMZ -> App zona: forward request (qua tường lửa nội bộ)
+App zona -> DB/Core zona: truy vấn giao dịch (cổng DB)
+DB/Core zona --> App zona: kết quả
+App zona -> Đối tác (VPN): xác thực thanh toán (IPsec)
+Đối tác (VPN) --> App zona: phản hồi đối tác
+App zona --> WAF/DMZ: phản hồi API
+WAF/DMZ --> Khách hàng: HTTPS response
+note WAF/DMZ,App zona,DB/Core zona: mỗi zona kiểm tra độc lập, least privilege
+~~~
+
+**Tường lửa giữa zona (micro-segmentation)**
+- AWS: security group từng zona, app zona SG chỉ cho inbound từ DMZ SG, DB zona SG chỉ cho inbound từ app zona SG.
+- Linux host-based: iptables/ufw trên mỗi server, chỉ cho phép cổng cần thiết.
+- Mạng vật lý: VLAN riêng cho mỗi zona, router/Layer 3 switch kiểm soát giữa VLAN.
+
+### Trên production
+- Không cho app zona gọi trực tiếp Internet (trừ qua proxy đã whitelist). Dùng NAT gateway hoặc proxy nếu cần gọi API bên ngoài.
+- DB zona không đính Internet, không có SSH trực tiếp (ssh qua bastion trong management zona).
+- Mỗi thay đổi tường lửa phải qua change request, có rollback, và test từ cả hai bên (từ app có thể gọi DB, từ Internet không thể gọi DB).
+- Giám sát traffic east-west (IDS/IPS nội bộ) vì attacker đã trong mạng nội bộ có thể di chuyển ngang (lateral movement).
+- Mã hóa traffic trong vùng nội bộ (mTLS giữa microservices) nếu chứa dữ liệu nhạy cảm (PCI-DSS yêu cầu).
+
+### Bảng so sánh
+| Zona | Mục tiêu | Traffic chính | Kiểm soát |
+|---|---|---|---|
+| DMZ | Dịch vụ đính Internet | north-south | WAF, tường lửa biên |
+| App zona | Xử lý nghiệp vụ | east-west (gọi DB/app) | Tường lửa nội bộ, SG |
+| DB zona | Lưu dữ liệu nhạy cảm | east-west (chỉ app gọi) | SG, mã hóa kết nối DB |
+| Management | Quản trị | north-south qua VPN | Bastion, IP whitelist, MFA |
+
+> Senior tip: "Mạng nội bộ là an toàn" là giả định nguy hiểm nhất trong bảo mật ngân hàng. Attacker đã vào mạng nội bộ (qua email lừa, app có lỗi) sẽ tìm cách di chuyển ngang (east-west) đến DB/core. Do đó hãy áp dụng micro-segmentation (tường lửa giữa app-server và DB-server, không cho tất cả app gọi tất cả DB), mã hóa mTLS giữa các dịch vụ nội bộ, và giả định mọi zone không tin zone khác. Network segmentation là lớp cuối cùng bảo vệ core banking khi tất cả lớp khác đã bị bỏ qua.`,
+  follow: ['Traffic north-south và east-west khác nhau như thế nào, và tại sao east-west cũng cần tường lửa?', 'DMZ chứa gì, và tại sao DB/core banking không được đặt trong DMZ?', 'Micro-segmentation là gì và áp dụng như thế nào trong AWS security group?'],
+  tags: ['network-security', 'defense-in-depth', 'dmz', 'micro-segmentation', 'north-south', 'east-west', 'vpn']
+},
+  {
+    id: 'devops-088',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Khi một Pod mới tạo mãi ở trạng thái Pending, Kubernetes scheduler (bộ lập lịch - thành phần chọn node cho Pod) đã làm gì bên trong? Giải thích cơ chế filter + score từng bước và cách bạn đọc sự kiện để tìm nguyên nhân.',
+    a: `**Tóm tắt:** Scheduler chạy một vòng lặp: lấy Pod Pending từ hàng đợi, lọc (filter) bỏ các node không đủ điều kiện (thiếu CPU/RAM theo request, vi phạm taint/affinity, volume không gắn được), rồi chấm điểm (score) các node còn lại để chọn node tốt nhất. Pod Pending thường do filter loại hết node; đọc {{kubectl describe pod}} phần Events và thông điệp {{FailedScheduling}} để biết predicate nào thất bại. Hiểu filter/score giúp bạn đặt request đúng, dùng affinity/taint có chủ đích và tránh "không node nào đủ" dù cluster trông còn trống.
+
+### Thuật ngữ (giải thích cho người mới)
+- **Scheduler**: thành phần control plane quyết định Pod chạy trên node nào; nó không khởi chạy container (kubelet làm việc đó).
+- **Request**: lượng CPU/RAM Pod "đặt chỗ" để scheduler xét; đây là con số dùng để lập lịch, không phải mức dùng thực tế lúc chạy.
+- **Taint / Toleration**: taint là "nhãn từ chối" gắn trên node (ví dụ node dành cho DB); Pod chỉ được xếp lên nếu có toleration (giấy phép) khớp.
+- **Affinity / Anti-affinity**: quy tắc ưu tiên hoặc bắt buộc Pod đặt gần/xa Pod khác hoặc node có đặc tính nào đó (ví dụ trải đều theo zone).
+
+### Scheduler hoạt động từng bước (cơ chế bên trong)
+1. **Hàng đợi (Scheduling Queue)**: Pod mới tạo (chưa có {{spec.nodeName}}) vào ActiveQ. Pod từng thất bại có thể nằm trong BackoffQ/UnschedulableQ; khi cluster thay đổi scheduler đánh thức chúng.
+2. **Chọn Pod**: lấy một Pod từ đầu hàng đợi (mỗi vòng một Pod).
+3. **Pha Filter (lọc)**: với mỗi node, chạy chuỗi plugin. Node bị loại nếu:
+   - {{NodeResourcesFit}}: tổng request Pod + Pod đã đặt > allocatable (CPU/memory).
+   - {{NodePorts}}: {{hostPort}} bị chiếm.
+   - {{TaintToleration}}: Pod không chịu được taint {{NoSchedule}}.
+   - {{NodeAffinity}} / {{PodAffinity}}: vi phạm điều kiện required.
+   - {{VolumeBinding}}: PV/PVC không gắn được (sai zone/topology).
+4. **Pha Score (chấm điểm 0-100)**: node qua Filter được chấm và cộng trọng số (cân bằng tài nguyên, image locality, preferred affinity).
+5. **Bind**: scheduler ghi {{spec.nodeName}}; kubelet trên node đó kéo image và tạo container.
+
+~~~text
+[Scheduling Cycle - mỗi vòng xử lý 1 Pod]
+Pending Pod -> [ActiveQ] -> Pop Pod
+  -> Filter: NodeResourcesFit, TaintToleration, Affinity, VolumeBinding
+       NodeA: fail (Insufficient memory)
+       NodeB: fail (untolerated taint {dedicated=db: NoSchedule})
+       NodeC: pass    NodeD: pass
+  -> Score (0-100): NodeC=72, NodeD=65
+  -> Bind Pod -> NodeC (kubelet tạo container)
+~~~
+
+### Ví dụ: đọc {{FailedScheduling}}
+~~~text
+$ kubectl describe pod payment-7d9f-abcde -n payment
+Events:
+  Warning  FailedScheduling  12s  default-scheduler  0/6 nodes are available:
+    2 nodes had untolerated taint {dedicated=db: NoSchedule},
+    3 Insufficient memory,
+    1 node(s) didn't match pod anti-affinity rules.
+    preemption: 0/6 nodes are available: 6 Preemption is not helpful for scheduling.
+~~~
+Filter loại hết 6 node; không node nào vào Score. "Preemption is not helpful" nghĩa là đuổi Pod ưu tiên thấp cũng không giải quyết.
+
+~~~yaml
+resources:
+  requests:
+    cpu: "6"      # node lớn nhất chỉ 4 CPU allocatable -> Insufficient cpu
+    memory: "8Gi"
+~~~
+
+### Vì sao thiết kế filter + score (trade-off)
+- **Tách Filter/Score**: Filter đảm bảo đúng (không đặt lên node không hợp lệ). Score tối ưu (cân bằng, locality). Dễ mở rộng bằng plugin.
+- **Lập lịch theo request, không theo usage**: quyết định nhanh, ổn định; usage thay đổi từng giây. Trade-off: request cao -> lãng phí/Pending giả; request thấp -> node pack dày, tranh chấp runtime.
+
+### Trên production
+- **Triệu chứng**: Pod Pending kéo dài, rollout chậm, HPA tạo Pod mới nhưng không lên node. Node "CPU 30% used" nhưng vẫn {{Insufficient cpu}}.
+- **Cách đo**: {{kubectl describe pod}} (Events), {{kubectl describe node}} xem {{Allocated resources}} (request cam kết) vs {{Allocatable}}. So với usage thực (metrics-server).
+- **Tuning**: đặt request theo P95 usage + buffer (không copy limit). Dùng {{PriorityClass}} cho workload quan trọng. Thiếu node thật -> Cluster Autoscaler/Karpenter. Kiểm tra taint/toleration.
+
+### Câu trả lời sai phổ biến
+- "Pending vì node hết RAM thực tế": sai, scheduler xét tổng **request** allocatable, không xét RAM đang dùng.
+- "Tăng replica hết Pending": nếu do filter (taint/affinity/request quá lớn) thì chỉ thêm Pod Pending.
+
+### Lỗi hay gặp
+1. **Request đặt bằng limit (quá lớn)**: {{Insufficient}} dù usage thấp. Cách tránh: tách request/limit, đo usage.
+2. **Anti-affinity {{requiredDuringScheduling}} với replicas > số node/zone**: không đủ domain -> Pending mãi. Cách tránh: dùng {{preferred}} hoặc đủ domain.
+3. **PVC sai zone**: {{VolumeBinding}} thất bại. Cách tránh: StorageClass đúng topology.
+4. **Thêm taint cho node pool quên toleration**: Pending hàng loạt. Cách tránh: change có kiểm tra ảnh hưởng.
+
+### Trả lời phỏng vấn
+"Pending nghĩa là scheduler chưa bind được Pod. Em đọc {{kubectl describe pod}} phần Events: FailedScheduling liệt kê lý do filter thất bại. Scheduler lấy Pod từ hàng đợi, chạy pha Filter — NodeResourcesFit so tổng request với allocatable, rồi TaintToleration, Affinity, VolumeBinding. Có node qua thì Score chấm theo cân bằng tài nguyên, locality, affinity để chọn node tốt nhất. Điểm hay nhầm: scheduler dùng request, không dùng usage thực. Trên production em kiểm tra Allocated resources trên node, chỉnh request theo đo đạc, và dùng Cluster Autoscaler khi thiếu node."
+
+> Senior tip: Khi "cluster còn chỗ mà vẫn Pending", luôn so {{Allocated resources}} (request cam kết) với {{Allocatable}} bằng {{kubectl describe node}}, đừng nhìn {{kubectl top}}. Request phình do copy limit là nguyên nhân rất phổ biến; đặt alert khi tổng request commit namespace vượt ngưỡng an toàn.`,
+    follow: [
+      'Preemption (ưu tiên đuổi Pod khác) hoạt động khi nào, và rủi ro gì cho workload đang chạy?',
+      'PodAntiAffinity required vs preferred khác nhau thế nào về hành vi khi cluster thiếu node?',
+      'Làm sao thiết lập request/limit cho service Java để vừa qua scheduler vừa tránh lãng phí?'
+    ],
+    tags: ['Kubernetes', 'Scheduler', 'Filter', 'Score', 'Pending', 'Requests'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Scheduler', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/' },
+      { type: 'doc', title: 'Assigning Pods to Nodes (Affinity)', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/' }
+    ]
+  },
+  {
+    id: 'devops-089',
+    topic: 'devops',
+    level: 'lead',
+    q: 'QoS class (Guaranteed, Burstable, BestEffort) trong Kubernetes được xác định thế nào và ảnh hưởng ra sao đến thứ tự bị evict (trục xuất) khi node thiếu tài nguyên? Với tư cách lead, bạn đặt chiến lược request/limit cho các lớp workload (critical, batch, best-effort) ra sao?',
+    a: `**Tóm tắt:** QoS class được Kubernetes gán tự động từ request/limit: Guaranteed khi mọi container có request = limit cho CPU và memory; Burstable khi có request/limit nhưng không thoả Guaranteed; BestEffort khi không đặt gì. Khi node chịu áp lực memory, kubelet evict theo ưu tiên: BestEffort trước, rồi Burstable (ưu tiên Pod vượt request), rồi Guaranteed — kết hợp với PriorityClass. Chiến lược lead: bảo vệ luồng critical (Guaranteed + PriorityClass cao + PDB), cho batch linh hoạt có giới hạn, và giám sát allocatable/eviction.
+
+### Thuật ngữ (giải thích cho người mới)
+- **QoS (Quality of Service) class**: nhãn Kubernetes gán cho Pod để quyết định mức "được bảo vệ" khi node thiếu tài nguyên.
+- **Eviction**: kubelet chủ động chấm dứt Pod trên node để giải phóng tài nguyên (khác scheduler preemption xảy ra trước khi đặt Pod).
+- **Node pressure**: node thiếu memory/disk/inode; kubelet có eviction thresholds để phản ứng.
+- **Allocatable**: tài nguyên node dành cho Pod (đã trừ phần hệ thống/kubelet).
+- **PriorityClass**: mức ưu tiên lập lịch/đuổi Pod; ảnh hưởng preemption và kết hợp với QoS khi căng thẳng.
+
+### Cách QoS được xác định (cơ chế)
+Kubernetes xét mọi container trong Pod:
+- **Guaranteed**: mỗi container, mọi resource có request đều có limit và **request == limit** (CPU và memory).
+- **Burstable**: không phải Guaranteed, nhưng có ít nhất một container đặt request hoặc limit.
+- **BestEffort**: không container nào đặt request/limit.
+
+~~~yaml
+# Guaranteed
+resources:
+  requests: { cpu: "500m", memory: "512Mi" }
+  limits:   { cpu: "500m", memory: "512Mi" }
+# Burstable
+resources:
+  requests: { cpu: "200m", memory: "256Mi" }
+  limits:   { cpu: "1",    memory: "1Gi" }
+# BestEffort: không khai báo resources
+~~~
+
+### Eviction khi node thiếu memory (từng bước)
+1. Kubelet theo dõi {{memory.available}}. Dưới ngưỡng eviction -> node pressure.
+2. Kubelet chọn Pod evict: Pod vượt **request** bị cân nhắc trước; **BestEffort** trước, rồi **Burstable** (vượt request nhiều hơn), rồi **Guaranteed**.
+3. Eviction chấm dứt Pod (tôn trọng grace period); controller reschedule.
+4. OOM killer kernel (khi cgroup chạm trần) chọn process theo {{oom_score_adj}}; kubelet gán điểm theo QoS (BestEffort dễ bị giết hơn).
+
+~~~text
+Node memory pressure
+  -> kubelet eviction manager
+  -> evict: BestEffort > Burstable (vượt request) > Guaranteed
+  -> Pod terminate, controller tạo lại (có thể node khác)
+~~~
+
+### Vì sao thiết kế vậy (trade-off)
+- **Guaranteed** bảo vệ workload quan trọng nhưng phải "trả đủ" (request=limit) -> giảm mật độ pack, tốn chi phí.
+- **Burstable** tận dụng phần dư; trade-off: node căng -> Pod burst quá mức dễ bị evict.
+- **BestEffort** tận dụng tối đa nhưng không cam kết: chỉ hợp job chạy lại được.
+
+### Trên production
+- **Triệu chứng**: Pod batch evict liên tục khi traffic tăng; service quan trọng sống (nếu Guaranteed). Node {{MemoryPressure}}, Pod {{Evicted}}.
+- **Cách đo**: {{kubectl describe node}} (Conditions, Events), {{kubectl get pod -A --field-selector=status.phase=Failed}} reason Evicted, metric eviction, so request tổng vs allocatable.
+- **Chiến lược lead**:
+  - **Critical (thanh toán/core)**: Guaranteed hoặc request sát thực tế + {{PriorityClass}} cao + {{PodDisruptionBudget}}.
+  - **Latency-sensitive co giãn**: Burstable, request theo P95, limit có trần; HPA phù hợp.
+  - **Batch có thể chạy lại**: Burstable/BestEffort + retry, giới hạn concurrency.
+  - Resource quota theo namespace, giám sát overcommit.
+
+### Câu trả lời sai phổ biến
+- "Guaranteed nghĩa là Pod không bao giờ bị giết": vẫn có thể OOMKilled nếu vượt cgroup/limit, hoặc tình huống cực đoan.
+- "Chỉ cần PriorityClass là đủ": PriorityClass ảnh hưởng preemption; eviction còn xét QoS và mức dùng vs request.
+
+### Lỗi hay gặp
+1. **Service critical để request thấp/limit cao**: node căng -> vượt request -> evict. Cách tránh: request thực tế, cân nhắc Guaranteed.
+2. **Mọi workload Guaranteed request cao**: tốn kém. Cách tránh: phân lớp theo SLO.
+3. **Nhầm eviction (kubelet) với preemption (scheduler)**. Cách tránh: đọc Events/Reason.
+4. **Không theo dõi Evicted Pods**. Cách tránh: alert event Evicted.
+
+### Trả lời phỏng vấn (lead)
+"QoS do Kubernetes gán: Guaranteed khi request=limit cho CPU/memory, BestEffort khi không khai báo, còn lại Burstable. Node memory pressure thì kubelet evict BestEffort trước, rồi Burstable (vượt request), rồi Guaranteed; kernel OOM killer cũng nghiêng theo {{oom_score_adj}} tương ứng QoS. Em phân lớp: luồng critical dùng Guaranteed hoặc request sát thực tế + PriorityClass cao + PDB; batch dùng Burstable/BestEffort với retry; giám sát allocatable và eviction events. Trade-off: Guaranteed giảm rủi ro bị trục xuất nhưng tốn chi phí."
+
+> Senior tip: Kiểm tra thực tế QoS class bằng lệnh {{kubectl get pod}} với jsonpath status.qosClass (tránh lồng ngoặc nhọn trong inline code — dùng code block nếu cần) và audit workload critical. Kết hợp QoS với PriorityClass, PDB, quota namespace; thiếu mắt xích nào thì node pressure vẫn có thể rớt sai Pod.`,
+    follow: [
+      'Sự khác nhau giữa scheduler preemption và kubelet eviction là gì, và bạn debug mỗi loại thế nào?',
+      'Khi nào bạn chọn request=limit cho memory của Java nhưng không đặt CPU limit? Vì sao?',
+      'Làm sao thiết kế PriorityClass và quota cho nhiều team dùng chung một cluster?'
+    ],
+    tags: ['Kubernetes', 'QoS', 'Eviction', 'Guaranteed', 'Burstable', 'OOM'],
+    refs: [
+      { type: 'doc', title: 'Configure Quality of Service for Pods', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/' },
+      { type: 'doc', title: 'Node-pressure Eviction', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/' }
+    ]
+  },
+  {
+    id: 'devops-090',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Vì sao một ứng dụng Java trên Kubernetes có CPU trung bình thấp (ví dụ 30-40%) nhưng p99 latency lại tăng mạnh? Giải thích cơ chế CFS throttling (cgroup CPU quota) từng bước và bạn quyết định có nên đặt CPU limit hay không ra sao?',
+    a: `**Tóm tắt:** Khi đặt CPU limit, cgroup dùng CFS quota: mỗi chu kỳ (thường 100ms) container chỉ được chạy tối đa một "quota" tương ứng limit; nếu dùng hết quota sớm, kernel throttle container tới chu kỳ sau. App Java nhiều thread có thể đốt hết quota trong vài chục ms, gây dừng hàng chục ms lặp lại — p99 tăng dù CPU trung bình vẫn thấp. Cách xử lý: đo {{nr_throttled}}/{{throttled_usec}}, cân nhắc bỏ CPU limit (chỉ giữ request) cho service nhạy latency, đặt {{-XX:ActiveProcessorCount}}, hoặc tăng limit và tối ưu số thread.
+
+### Thuật ngữ (giải thích cho người mới)
+- **CPU limit/request**: request là phần CPU "đặt chỗ" cho scheduler; limit là trần CPU (thực thi bằng CFS quota).
+- **CFS (Completely Fair Scheduler)**: bộ lập lịch CPU của Linux chia thời gian CPU giữa các task.
+- **CFS quota/period**: mỗi period (thường 100ms) container được chạy tối đa {{quota}}. cgroup v2 dùng {{cpu.max}} (quota period).
+- **Throttling**: kernel tạm ngừng container chạy khi hết quota trong period.
+- **p99 latency**: độ trễ 99% request nhanh hơn; nhạy với các khoảng "đứng hình" ngắn lặp lại.
+
+### Cơ chế CFS throttling từng bước
+1. Kubernetes chuyển {{limits.cpu: 500m}} thành quota 50ms trong mỗi period 100ms.
+2. App Java có nhiều thread (Tomcat/Netty, GC, ForkJoinPool). Nhiều thread chạy song song trên nhiều core -> đốt quota nhanh.
+3. Dùng hết 50ms chỉ sau 15ms thực tế -> kernel **throttle** toàn cgroup tới period sau.
+4. Request đang xử lý bị "đóng băng" ~85ms -> latency nhảy vọt; vài request trúng nhịp -> p99 xấu.
+5. CPU trung bình trên 1 phút vẫn ~40% — trung bình thấp nhưng có vết cắt gây đuôi latency.
+
+~~~text
+Period 100ms, limit 500m (quota 50ms)
+0ms      15ms                          100ms       115ms
+|--RUN 50ms--|======== THROTTLED =========|--RUN 50ms-->
+  (đa thread đốt quota nhanh, chạy song song nhiều core)
+Request A trúng đoạn throttle -> +85ms latency
+~~~
+
+### Ví dụ quan sát (output thật / cgroup v2)
+~~~text
+# /sys/fs/cgroup/cpu.stat
+nr_periods 1200
+nr_throttled 540
+throttled_usec 18500000
+~~~
+540/1200 period bị throttle; tổng ~18.5s bị dừng. Metric Prometheus (cAdvisor): {{container_cpu_cfs_throttled_periods_total}} / {{container_cpu_cfs_periods_total}}.
+
+### Vì sao Java dễ bị ảnh hưởng
+- **Nhiều thread song song** tiêu thụ quota "theo bề ngang".
+- **Burst ngắn** (JSON, TLS, serialize) kích hoạt throttle.
+- JVM sizing theo CPU limit trong một số trường hợp (ít thread/GC serial), nhưng quota vẫn cắt.
+
+### Có nên đặt CPU limit không? (trade-off)
+| Lựa chọn | Ưu | Nhược | Hợp khi |
+|---|---|---|---|
+| Có CPU limit | Chặn Pod "ăn" hết CPU node, bảo vệ hàng xóm | Dễ throttle -> p99 xấu | Batch, không nhạy latency, hoặc limit đủ cao đã đo |
+| Không CPU limit, chỉ request | Tránh CFS throttle, latency ổn định | Pod có thể burst ảnh hưởng Pod khác nếu node quá commit | Service online nhạy latency, có giám sát |
+
+Thực tế nhiều team: **giữ CPU request, bỏ CPU limit** cho API latency-sensitive, và đặt {{-XX:ActiveProcessorCount}} để JVM không ảo tưởng có quá nhiều CPU.
+
+~~~bash
+JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75"
+~~~
+
+### Trên production
+- **Triệu chứng**: p99/p999 tăng, timeout ngắt quãng, CPU avg 30-50%, throughput không tăng.
+- **Cách đo**: tỉ lệ CFS throttled periods (cAdvisor), {{cpu.stat}}, correlate latency spike với {{nr_throttled}}. Load test concurrency cao.
+- **Tuning**: nếu giữ limit -> tăng limit (500m -> 2) hoặc giảm worker threads. Nếu bỏ limit -> giữ request thực tế, set ActiveProcessorCount. Kiểm tra GC threads/ForkJoinPool. Cân nhắc HPA theo RPS/latency.
+
+### Câu trả lời sai phổ biến
+- "CPU 40% thì không thể là vấn đề CPU": sai — throttling là "cắt theo nhịp", không lộ ở trung bình.
+- "Tăng request hết throttle": request ảnh hưởng scheduling; **limit** mới tạo quota throttle.
+
+### Lỗi hay gặp
+1. **Limit 500m/1 cho Java nhiều thread**: throttle nặng. Cách tránh: đo throttled ratio; tăng hoặc bỏ limit + ActiveProcessorCount.
+2. **Bỏ limit nhưng không set {{-XX:ActiveProcessorCount}}**: JVM thấy toàn bộ core node -> tạo nhiều GC threads. Cách tránh: cố định theo request.
+3. **Chỉ nhìn CPU avg dashboard**: bỏ sót throttling. Cách tránh: thêm panel throttled periods.
+
+### Trả lời phỏng vấn
+"CPU trung bình thấp mà p99 cao trên Kubernetes thường do CFS throttling. Có CPU limit thì cgroup cấp quota theo period 100ms; app Java nhiều thread đốt quota trong vài chục ms rồi bị kernel tạm dừng đến hết period, nên request bị trễ hàng chục ms lặp lại. Em kiểm tra {{container_cpu_cfs_throttled_periods_total}} và {{cpu.stat}}. Với service nhạy latency, em thường giữ CPU request nhưng cân nhắc bỏ CPU limit, đồng thời đặt {{-XX:ActiveProcessorCount}} theo request để JVM sizing hợp lý. Trade-off: bỏ limit giảm throttle nhưng phải kiểm soát noisy neighbor bằng giám sát."
+
+> Senior tip: Đừng kết luận "code chậm" khi p99 tăng mà CPU avg thấp — kiểm tra CFS throttling trước. Dashboard production nên có tỉ lệ throttled periods; quyết định CPU limit phải đi kèm đo latency dưới tải concurrency thật.`,
+    follow: [
+      'CFS period 100ms ảnh hưởng thế nào đến workload latency nhạy, và có tuỳ chọn nào khác (cẩn trọng) không?',
+      'Làm sao chọn -XX:ActiveProcessorCount khi không đặt CPU limit để cân bằng GC và thread pool?',
+      'Nếu buộc phải giữ CPU limit, bạn tune ứng dụng Java và cấu hình thế nào để giảm throttling?'
+    ],
+    tags: ['Kubernetes', 'CPU', 'CFS', 'Throttling', 'JVM', 'Latency'],
+    refs: [
+      { type: 'doc', title: 'Assign CPU Resources to Containers and Pods', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/assign-cpu-resource/' },
+      { type: 'doc', title: 'cgroup v2 CPU controller', url: 'https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu' }
+    ]
+  },
+  {
+    id: 'devops-091',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Phân biệt OOMKilled (exit 137) với java.lang.OutOfMemoryError trong container. Giải thích cơ chế cgroup v2 memory (memory.max), oom_score_adj, và cách MaxRAMPercentage ảnh hưởng đến heap; bạn xử lý Pod bị OOMKilled khi heap usage trông vẫn thấp như thế nào?',
+    a: `**Tóm tắt:** {{OutOfMemoryError}} do JVM ném khi vùng nhớ JVM quản lý (heap/metaspace) cạn; {{OOMKilled}} do kernel giết process khi tổng bộ nhớ cgroup vượt ngưỡng ({{memory.max}} trên cgroup v2) — exit code 137, thường không có stack trace Java. JVM heap chỉ là một phần RSS; còn metaspace, thread stack, code cache, direct buffer, native. {{MaxRAMPercentage}} tính heap theo giới hạn container nhưng không bao trùm non-heap, nên đặt quá cao vẫn gây OOMKilled.
+
+### Thuật ngữ (giải thích cho người mới)
+- **OOMKilled**: kernel (OOM killer) kết thúc process khi hết bộ nhớ; {{Reason: OOMKilled}}, {{Exit Code: 137}} (128 + SIGKILL 9).
+- **java.lang.OutOfMemoryError (OOME)**: lỗi Java khi JVM không cấp phát được (Java heap space, Metaspace, unable to create native thread).
+- **RSS**: bộ nhớ RAM thực tế process chiếm (heap, metaspace, thread stack, native...).
+- **cgroup v2 memory**: {{memory.max}} là trần cứng; vượt có thể kích hoạt OOM. {{memory.high}} là ngưỡng mềm hơn (reclaim/throttle).
+- **oom_score_adj**: kernel ưu tiên process bị giết khi OOM; kubelet gán theo QoS/Priority.
+- **MaxRAMPercentage**: cờ JVM đặt heap tối đa theo % bộ nhớ container; thay {{-Xmx}} cố định.
+
+### Hai cơ chế OOM — khác "ai quyết định"
+| Tiêu chí | java.lang.OutOfMemoryError | OOMKilled (kernel) |
+|---|---|---|
+| Ai phát hiện | JVM | Linux kernel / cgroup |
+| Phạm vi | Vùng nhớ JVM (heap, metaspace) | Tổng memory cgroup (RSS) |
+| Dấu hiệu | Exception/stack trace, có thể heap dump | Exit 137, Reason OOMKilled, không stack trace |
+| Nguyên nhân điển hình | Leak heap/metaspace, object quá lớn | Heap + non-heap vượt {{memory.max}}; native leak; quá nhiều thread |
+
+### Cơ chế cgroup v2 (từng bước)
+1. Container chạy trong cgroup có {{memory.max}} (tương ứng {{limits.memory}}).
+2. JVM cấp phát: heap (GC quản lý) + native (thread stack, direct ByteBuffer/Netty, JNI, metaspace, code cache).
+3. Kernel theo dõi mức dùng; vượt {{memory.max}} mà không reclaim đủ -> OOM killer chọn victim ({{oom_score_adj}} ảnh hưởng theo QoS).
+4. Process nhận SIGKILL -> container chết, Kubernetes ghi OOMKilled.
+
+~~~text
+JVM process trong cgroup (memory.max 2Gi)
+  Heap (MaxRAMPercentage)  ~1.5Gi
+  Metaspace                ~150Mi
+  Thread stacks (200*1M)   ~200Mi   (mỗi thread ~1MB stack)
+  Code cache/Direct/JNI    ~200Mi
+  --------------------------------
+  RSS tiến tới 2Gi -> kernel OOM -> SIGKILL (exit 137)
+~~~
+
+### MaxRAMPercentage: heap không phải toàn bộ
+JVM container support tính heap theo % bộ nhớ container. Production thường đặt ~70-75%. Nhưng thread stack (tuỳ {{-Xss}}), direct buffers (Netty/NIO), metaspace, code cache nằm ngoài heap Java. {{MaxRAMPercentage=90}} trên limit 2Gi có thể để non-heap đẩy RSS vượt 2Gi -> OOMKilled dù heap 60%.
+
+~~~bash
+java -XshowSettings:vm -version
+# Ví dụ cấu hình
+JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -XX:NativeMemoryTracking=summary"
+~~~
+
+~~~text
+# kubectl describe pod (Last State)
+  Last State:     Terminated
+    Reason:       OOMKilled
+    Exit Code:    137
+~~~
+
+### Trên production
+- **Triệu chứng**: Pod restart {{OOMKilled}}, heap dùng 50-70%, container working set sát limit; không heap dump OOME.
+- **Cách đo**: {{kubectl describe pod}} (Exit 137). Metric {{container_memory_working_set_bytes}} vs limit. NMT: {{jcmd 1 VM.native_memory summary}} (baseline/diff). Đếm thread. Heap dump khi nghi OOME: {{-XX:+HeapDumpOnOutOfMemoryError}}.
+- **Tuning**: giảm {{MaxRAMPercentage}} (70-75%), đo load test. Giới hạn thread (Tomcat maxThreads, Hikari maximumPoolSize) và tính pool*stack. Netty/direct: {{-XX:MaxDirectMemorySize}}, metric direct memory. request=limit cho workload critical.
+
+### Câu trả lời sai phổ biến
+- "OOMKilled nghĩa là heap leak": chưa chắc — có thể thread/direct/native.
+- "Đặt Xmx = memory limit là đúng": sai, bỏ quên non-heap.
+- "Tăng limit là cách duy nhất": có thể che leak; phải tìm nguyên nhân.
+
+### Lỗi hay gặp
+1. **Thread pool quá lớn** (500 thread * 1MB = ~500MB): RSS vượt limit. Cách tránh: giới hạn thread theo tải thực.
+2. **Direct buffer/Netty leak**: heap ổn, RSS tăng. Cách tránh: NMT, metric direct memory, review giải phóng buffer.
+3. **Chỉ xem heap dashboard**: bỏ sót container working set. Cách tránh: dashboard cả hai.
+4. **Nhiều sidecar chia sẻ limit Pod**: tổng vượt limit. Cách tránh: tính resources từng container.
+
+### Trả lời phỏng vấn
+"OOMKilled là kernel giết process vì cgroup vượt giới hạn bộ nhớ (exit 137), còn OutOfMemoryError là JVM ném khi heap/metaspace cạn — khác nguyên nhân và dấu vết. Với cgroup v2, {{memory.max}} là trần cứng; {{oom_score_adj}} gán theo QoS. Heap thấp mà vẫn OOMKilled thường do non-heap: thread stack, metaspace, code cache, direct buffer. {{MaxRAMPercentage}} chỉ đặt heap, không bao trùm non-heap. Em xem container working set, bật NMT, đếm thread, kiểm tra pool và MaxDirectMemorySize, rồi hạ MaxRAMPercentage (thường 70-75%) và giới hạn thread. Đặt alert khi working set tiến sát limit."
+
+> Senior tip: Heap thấp mà OOMKilled: (1) xác nhận working set chạm limit, (2) NMT summary, (3) đếm thread và kiểm tra pool. Đừng vội tăng limit gấp đôi — có thể chỉ mua thời gian cho leak native hoặc thread pool phình.`,
+    follow: [
+      'NativeMemoryTracking (NMT) cho bạn thấy những vùng nào và bạn dùng diff thế nào để tìm leak?',
+      'Giới hạn bộ nhớ chia cho nhiều container trong cùng Pod ra sao và bẫy thường gặp?',
+      'Khi nào dùng -XX:MaxDirectMemorySize và làm sao phát hiện direct buffer leak với Netty?'
+    ],
+    tags: ['Kubernetes', 'OOMKilled', 'JVM', 'cgroup v2', 'MaxRAMPercentage', 'Memory'],
+    refs: [
+      { type: 'doc', title: 'Assign Memory Resources to Containers and Pods', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/' },
+      { type: 'doc', title: 'Node-pressure Eviction', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/' }
+    ]
+  },
+  {
+    id: 'devops-092',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Kubernetes Service định tuyến traffic tới Pod như thế nào với kube-proxy chế độ iptables và IPVS? Conntrack (bảng theo dõi kết nối) liên quan gì, và vì sao kết nối keep-alive lâu dài hoặc gRPC làm cân bằng tải bị lệch giữa các Pod?',
+    a: `**Tóm tắt:** Service có ClusterIP (IP ảo); kube-proxy lập trình datapath trên mỗi node để gói tới ClusterIP:port được DNAT tới Pod backend. iptables dùng chuỗi rule (phân bổ theo xác suất) và dựa conntrack để "ghim" flow vào backend; IPVS dùng bảng L4 trong kernel, hiệu năng tốt hơn khi nhiều Service. Với HTTP keep-alive hoặc gRPC (kết nối TCP dài, nhiều request/stream chung một kết nối), chọn backend xảy ra **một lần khi tạo kết nối** — Pod mới scale lên không nhận tải từ kết nối cũ, gây lệch.
+
+### Thuật ngữ (giải thích cho người mới)
+- **ClusterIP**: IP ảo ổn định của Service, có ý nghĩa trong cơ chế routing cluster.
+- **kube-proxy**: chạy trên mỗi node, watch Service/EndpointSlice và cài rule (iptables/IPVS) để chuyển traffic.
+- **DNAT**: đổi địa chỉ đích (ClusterIP -> Pod IP).
+- **iptables**: framework tường lửa/NAT Linux dựa chuỗi rule, xử lý tuần tự.
+- **IPVS (IP Virtual Server)**: cân bằng tải L4 trong kernel, bảng hash/thuật toán (rr, lc...), scale tốt hơn khi nhiều Service.
+- **Conntrack**: bảng trạng thái kết nối kernel để NAT nhớ flow đã DNAT tới đâu.
+- **Keep-alive / gRPC channel**: giữ kết nối TCP mở lâu để gửi nhiều request/HTTP2 streams — giảm handshake nhưng "dính" backend.
+
+### iptables mode: cơ chế từng bước
+1. kube-proxy watch Service và EndpointSlice.
+2. Tạo chain iptables ({{KUBE-SERVICES}}, {{KUBE-SVC-*}}, {{KUBE-SEP-*}}).
+3. Gói tới {{ClusterIP:port}} khớp {{KUBE-SERVICES}} -> chain Service.
+4. Chain Service chọn backend theo xác suất ({{statistic}}) -> {{KUBE-SEP-*}}.
+5. SEP DNAT tới {{PodIP:targetPort}}.
+6. **Conntrack** ghi mapping flow (5-tuple). Các gói tiếp theo của **cùng kết nối TCP** đi theo conntrack, không chọn lại Pod.
+
+~~~text
+Client -> ClusterIP:80 (SYN)
+  iptables: KUBE-SVC -> chọn SEP-PodB (statistic)
+  DNAT -> 10.244.2.7:8080
+  conntrack: [client:ephemeral -> ClusterIP:80] => PodB
+Request sau trên CÙNG TCP connection -> vẫn tới PodB (theo conntrack)
+~~~
+
+### IPVS mode: khác gì
+- kube-proxy lập virtual server cho ClusterIP với real servers (Pod); kernel phân phối theo thuật toán (rr/lc/sh).
+- Vẫn dùng conntrack/NAT trong nhiều thiết lập; lookup thường hiệu quả hơn khi hàng nghìn Service.
+- **Kết nối dài** vẫn gắn flow/backend -> không "chữa" lệch tải L7.
+
+| Tiêu chí | iptables | IPVS |
+|---|---|---|
+| Cấu trúc | Chuỗi rule | Bảng virtual server + real servers |
+| Scale nhiều Service | Có thể chậm/cồng kềnh | Thường tốt hơn |
+| Thuật toán LB | Rule/statistic | rr, lc, sh... |
+| Debug | {{iptables-save}} | {{ipvsadm -Ln}} |
+| Kết nối dài | Ghim theo conntrack | Vẫn gắn flow/backend |
+
+### Vì sao keep-alive / gRPC gây lệch tải
+1. Client tạo kết nối TCP tới ClusterIP và giữ mở (HTTP/1.1 keep-alive, HTTP/2 gRPC).
+2. Lần đầu: datapath chọn Pod A -> DNAT -> conntrack ghi nhớ.
+3. 1000 request tiếp theo trên **cùng kết nối** -> tất cả tới Pod A. Pod B, C mới scale lên không nhận request từ kết nối đó.
+4. Ít client connection nhưng mỗi connection bơm nhiều request -> một Pod nóng, Pod khác nguội.
+
+~~~text
+Trước scale: 3 connections -> Pod1, Pod1, Pod2 (lệch)
+Scale thêm Pod3, Pod4: connections cũ vẫn ghim Pod1/Pod2 -> Pod3,Pod4 rảnh
+~~~
+
+### Trên production
+- **Triệu chứng**: scale out nhưng vài Pod CPU/latency cao, Pod mới thấp. gRPC nội bộ lệch rõ.
+- **Cách đo**: so RPS/CPU/latency per-pod; số connection ({{ss -tnp}}); conntrack {{nf_conntrack_count}}.
+- **Xử lý**:
+  - **Client-side load balancing** cho gRPC: headless Service ({{clusterIP: None}}) + client LB/resolver, hoặc service mesh (xDS/L7).
+  - Cấu hình max connection age/idle cho gRPC channel để tái phân phối.
+  - Tăng số connection trong pool để phân tán.
+  - IPVS cải thiện datapath nhưng không sửa bản chất kết nối dài.
+
+### Câu trả lời sai phổ biến
+- "Service round-robin mỗi request": sai với TCP connection đã thiết lập; quyết định gắn với flow.
+- "IPVS tự fix lệch tải gRPC": không, vấn đề nằm ở kết nối dài/L7.
+- "Thêm Pod hết nóng": kết nối cũ vẫn ghim Pod cũ.
+
+### Lỗi hay gặp
+1. **gRPC nội bộ qua ClusterIP**: channel giữ lâu -> lệch. Cách tránh: client-side LB, headless Service, max connection age.
+2. **Gateway giữ ít kết nối upstream**: upstream lệch. Cách tránh: tuning pool/L7 balancing ở gateway.
+3. **Conntrack table đầy** (nhiều connection ngắn): drop gói. Cách tránh: giám sát {{nf_conntrack_count}} vs max, giảm churn.
+
+### Trả lời phỏng vấn
+"kube-proxy lập trình đường đi ClusterIP -> Pod: iptables cài rule DNAT và chọn backend theo statistic; IPVS dùng bảng L4, scale tốt hơn khi nhiều Service. Cả hai gắn với conntrack: một kết nối TCP DNAT tới Pod thì request sau trên cùng kết nối vẫn tới Pod đó. Nên HTTP keep-alive lâu hoặc gRPC (nhiều stream trên một kết nối dài) làm cân bằng tải lệch: Pod mới không nhận traffic từ kết nối cũ. Em xử lý bằng client-side load balancing cho gRPC (headless Service, service mesh, max connection age) và theo dõi metric per-pod. IPVS giúp datapath nhưng không giải quyết bản chất L7."
+
+> Senior tip: "Scale out mà Pod mới ngồi chơi" — kiểm tra pattern kết nối (keep-alive/gRPC) và phân phối per-pod. Với gRPC nội bộ, cân bằng tải ở tầng client/mesh hiệu quả hơn xoay xở kube-proxy mode.`,
+    follow: [
+      'Headless Service hoạt động thế nào và vì sao gRPC client-side LB thường dùng nó?',
+      'Conntrack đầy gây triệu chứng gì và bạn giám sát/xử lý ra sao trên node production?',
+      'Service mesh (sidecar/eBPF) thay đổi đường đi traffic và cách cân bằng tải so với kube-proxy thế nào?'
+    ],
+    tags: ['Kubernetes', 'Service', 'kube-proxy', 'iptables', 'IPVS', 'conntrack', 'gRPC'],
+    refs: [
+      { type: 'doc', title: 'Virtual IPs and Service Proxies', url: 'https://kubernetes.io/docs/reference/networking/virtual-ips/' },
+      { type: 'doc', title: 'Service', url: 'https://kubernetes.io/docs/concepts/services-networking/service/' }
+    ]
+  },
+  {
+    id: 'devops-093',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Ở quy mô lớn, rolling update với maxSurge/maxUnavailable, readiness/liveness/startup probe, preStop và terminationGracePeriodSeconds tương tác thế nào? Thiết kế chiến lược deploy zero-downtime và những guardrail bạn đặt ra là gì?',
+    a: `**Tóm tắt:** Rolling update thay Pod dần theo {{maxSurge}} (tạo thêm) và {{maxUnavailable}} (cho phép thiếu). Zero-downtime cần: Pod mới chỉ nhận traffic khi readiness thật sự sẵn sàng (sau startup/warm-up), Pod cũ rời traffic êm trước khi tắt (preStop + graceful shutdown) và không bị SIGKILL giữa chừng (grace period đủ). Quy mô lớn cần thêm PDB, minReadySeconds, progressDeadline/rollback tự động, canary khi rủi ro cao, và tương thích ngược schema/config vì hai phiên bản chạy song song.
+
+### Thuật ngữ (giải thích cho người mới)
+- **maxSurge / maxUnavailable**: surge là số Pod vượt desired; unavailable là số Pod được phép không sẵn sàng khi cập nhật.
+- **Readiness/Liveness/Startup probe**: readiness quyết định Pod nhận traffic; liveness restart khi "kẹt"; startup cho thời gian khởi động trước khi liveness/readiness "thắt".
+- **preStop hook**: chạy trước SIGTERM; hay dùng {{sleep}} để chờ endpoint gỡ khỏi proxy.
+- **terminationGracePeriodSeconds**: thời gian tối đa trước SIGKILL; phải đủ cho preStop + graceful shutdown.
+- **PDB (PodDisruptionBudget)**: giới hạn gián đoạn tự nguyện (drain/upgrade) cùng lúc.
+
+### Tương tác cơ chế (từng bước)
+1. **Pod mới**: scale lên theo surge. Qua startup rồi readiness mới Available và vào EndpointSlice.
+2. **Pod cũ**: khi Pod mới Available, Deployment giảm Pod cũ. Hai luồng song song:
+   - Endpoint controller gỡ Pod khỏi EndpointSlice -> proxy cập nhật (có độ trễ lan truyền).
+   - Kubelet chạy preStop, rồi SIGTERM; app (Spring {{server.shutdown=graceful}}) ngừng nhận request mới, chờ in-flight.
+3. **Race gây 502**: không preStop thì app đóng socket khi proxy vẫn route. Grace period ngắn -> SIGKILL cắt request.
+
+~~~text
+Pod cũ Terminating
+  t0: gỡ endpoint (lan truyền dần)  ||  preStop sleep 10s (vẫn phục vụ)
+  t10: SIGTERM -> graceful drain in-flight
+  t40: xong
+  t60: terminationGracePeriod hết -> SIGKILL (nếu còn)
+~~~
+
+### Ví dụ cấu hình
+~~~yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+minReadySeconds: 15
+template:
+  spec:
+    terminationGracePeriodSeconds: 60
+    containers:
+    - name: payment
+      lifecycle:
+        preStop: { exec: { command: ["sh","-c","sleep 10"] } }
+      readinessProbe:
+        httpGet: { path: /actuator/health/readiness, port: 8080 }
+      livenessProbe:
+        httpGet: { path: /actuator/health/liveness, port: 8080 }
+      startupProbe:
+        httpGet: { path: /actuator/health/liveness, port: 8080 }
+        failureThreshold: 30
+~~~
+Spring: {{server.shutdown=graceful}}, {{spring.lifecycle.timeout-per-shutdown-phase=30s}}.
+
+### Vai trò từng probe (tránh restart storm / nhận traffic sớm)
+| Probe | Sai lầm | Hậu quả |
+|---|---|---|
+| startup | Liveness quá sớm với app khởi động 90s | Liveness kill -> CrashLoop, rollout tắc |
+| readiness | Chỉ check TCP mở, chưa warm DB/cache | Pod mới nhận traffic -> lỗi/latency |
+| liveness | Check DB/external dependency | DB chậm -> restart hàng loạt |
+
+Nguyên tắc: liveness kiểm tra "process còn sống"; readiness kiểm tra "có nên nhận traffic".
+
+### Guardrail ở quy mô lớn (lead)
+- **PDB**: luôn còn tối thiểu Pod khi drain; phối hợp replicas.
+- **minReadySeconds**: Pod Ready ổn định trước khi tiến bước.
+- **progressDeadlineSeconds** + rollback/canary tự động (Argo Rollouts/Flagger/CI).
+- **Tương thích ngược**: DB schema expand-contract, API backward compatible (version cũ/mới chạy song song).
+- **Grace period đủ**: > preStop + timeout shutdown + buffer.
+
+### Trên production
+- **Triệu chứng**: 502/503 khi deploy; spike per version; consumer Kafka xử lý trùng do SIGKILL trước commit.
+- **Cách đo**: load test liên tục trong deploy (error budget không vượt), error rate/latency per version, event rollout, thời gian shutdown thực tế.
+- **Tuning**: preStop 5-15s tuỳ LB; tăng grace period cho request dài nhưng hỗ trợ idempotency/retry; image distroless dùng sleep action/httpGet drain.
+
+### Câu trả lời sai phổ biến
+- "Rolling update mặc định là zero-downtime": không, nếu probe/shutdown sai.
+- "Chỉ preStop sleep là đủ": còn cần graceful shutdown và grace period đủ.
+- "maxUnavailable 0 luôn tốt": tốn surge; cluster nhỏ có thể không đủ chỗ.
+
+### Lỗi hay gặp
+1. **Liveness check dependency ngoài**: restart hàng loạt khi DB chậm. Cách tránh: liveness nội bộ.
+2. **Grace period < thời gian xử lý request dài**: SIGKILL cắt ngang. Cách tránh: đo P99 xử lý, tăng grace period.
+3. **Schema breaking khi hai version chạy**: lỗi nghiệp vụ. Cách tránh: expand-contract, feature flag.
+
+### Trả lời phỏng vấn (lead)
+"Zero-downtime là phối hợp: rolling update kiểm soát tốc độ (thường maxUnavailable 0, surge vừa phải), startup/readiness đảm bảo Pod mới sẵn sàng, preStop + SIGTERM graceful + terminationGracePeriod đủ để Pod cũ rời êm và xử lý hết in-flight. Quy mô lớn em thêm PDB, minReadySeconds, progressDeadline, rollback/canary tự động và tương thích ngược. Em không tin cấu hình bằng cảm giác: load test liên tục trong deploy trên staging với ngưỡng error rate/latency làm gate."
+
+> Senior tip: Coi deploy là thí nghiệm có kiểm soát: đo error rate per-version, rollback tự động khi vượt ngưỡng, rehearsal runbook. Nhiều thất bại "zero-downtime" đến từ DB migration hoặc dependency chậm, không chỉ từ YAML — guardrail phải bao cả tầng dữ liệu.`,
+    follow: [
+      'Làm sao thiết kế deploy khi request có thể chạy tới 2-5 phút (long-running) mà vẫn không bị cắt?',
+      'PDB tương tác với node drain và rolling update thế nào, và khi nào PDB chặn cả hai?',
+      'Khi nào bạn chọn canary/blue-green thay vì rolling update thuần cho service thanh toán?'
+    ],
+    tags: ['Kubernetes', 'RollingUpdate', 'Probes', 'GracefulShutdown', 'PDB', 'ZeroDowntime'],
+    refs: [
+      { type: 'doc', title: 'Pod Lifecycle (Termination)', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination' },
+      { type: 'doc', title: 'Configure Liveness, Readiness and Startup Probes', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/' }
+    ]
+  },
+  {
+    id: 'devops-094',
+    topic: 'devops',
+    level: 'senior',
+    q: 'HPA (Horizontal Pod Autoscaler) tính số replica theo công thức nào? Stabilization window hoạt động ra sao, và khi scale theo custom metric (ví dụ RPS, queue depth) qua Prometheus Adapter, pipeline dữ liệu đi như thế nào? Bạn tránh scale dao động (flapping) ra sao?',
+    a: `**Tóm tắt:** HPA (v2) lấy metric từ Metrics API, tính {{desiredReplicas = ceil(currentReplicas * currentMetric / targetMetric)}} cho từng metric rồi chọn giá trị phù hợp (thường max để đáp ứng metric căng nhất), trong min/max. Stabilization window giữ lịch sử khuyến nghị để tránh flapping: scale down mặc định nhìn lại 300s. Custom metric đi qua Prometheus -> Adapter -> Custom/External Metrics API -> HPA. Cần metric đúng (per-pod khi cần), chống nhiễu, và hiểu độ trễ pipeline.
+
+### Thuật ngữ (giải thích cho người mới)
+- **HPA**: controller tự tăng/giảm replica của workload theo metric.
+- **Metrics API**: API cung cấp CPU/memory (thường metrics-server).
+- **Custom/External Metrics API**: API cho metric tuỳ chỉnh/external, thường do Prometheus Adapter cung cấp.
+- **Prometheus Adapter**: đọc metric từ Prometheus và "dịch" thành API mà HPA hiểu.
+- **Stabilization window**: khoảng thời gian HPA xét đề xuất trước đó để giảm dao động.
+- **Flapping**: scale up/down liên tục do metric nhiễu hoặc cấu hình không phù hợp.
+
+### Công thức tính replica (từng bước)
+1. Lấy {{currentMetricValue}} (ví dụ CPU trung bình 90% của request) và {{target}} (60%).
+2. {{desired = ceil(currentReplicas * currentMetricValue / target)}}. Ví dụ: ceil(4 * 90 / 60) = 6.
+3. Áp tolerance (mặc định ~10%) để tránh phản ứng dao động nhỏ.
+4. Nhiều metric -> tính desired cho từng metric và chọn **cao nhất**.
+5. Kẹp trong {{minReplicas}}..{{maxReplicas}}, áp behavior (stabilization, policies).
+
+~~~text
+4 replicas, CPU avg 90%, target 60%  -> ceil(4*90/60)=6
+6 replicas, RPS/pod avg 120, target 100 -> ceil(6*120/100)=8
+=> HPA chọn 8 (max các đề xuất)
+~~~
+
+### Stabilization window (cơ chế)
+- {{scaleDown.stabilizationWindowSeconds}} mặc định 300: HPA xem desired trong cửa sổ và chọn **cao nhất** khi scale down -> giữ Pod lâu hơn, tránh cắt sớm.
+- Scale up thường cửa sổ 0 để phản ứng nhanh.
+- {{policies}} giới hạn tốc độ (ví dụ tối đa +100%/30s, giảm 1 Pod/60s).
+
+~~~yaml
+behavior:
+  scaleUp:
+    stabilizationWindowSeconds: 0
+    policies: [{ type: Percent, value: 100, periodSeconds: 30 }]
+  scaleDown:
+    stabilizationWindowSeconds: 300
+    policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+~~~
+
+### Pipeline custom metric (Prometheus Adapter)
+~~~seq
+title: HPA custom metric (RPS)
+actors: App | Prometheus | Adapter | API Server | HPA
+App -> Prometheus: scrape /metrics
+Prometheus -> Prometheus: recording rule rate()
+Adapter -> Prometheus: PromQL query
+Adapter -> API Server: custom.metrics.k8s.io
+HPA -> API Server: GET custom metric
+HPA -> HPA: compute desiredReplicas
+~~~
+Độ trễ cộng dồn (scrape, eval, adapter, HPA sync ~15s) có thể 30-60s+ -> HPA phản ứng theo phút.
+
+### Trên production
+- **Triệu chứng**: scale lên chậm; flapping; scale lên tối đa do metric cấu hình sai; CPU thấp nhưng latency xấu (I/O-bound).
+- **Cách đo**: {{kubectl describe hpa}} (metric hiện tại, desired, events), kiểm tra metric nguồn Prometheus và mapping adapter.
+- **Tuning**: chọn metric gần tải (lag/queue cho consumer, RPS/in-flight cho API I/O-bound). Metric trung bình per-pod đúng type. Scale up nhanh/scale down chậm. minReplicas đủ nền; maxReplicas ràng buộc downstream (DB connections = pool * replicas). Với Java: readiness đúng để tránh CPU ảo do JIT.
+
+### Câu trả lời sai phổ biến
+- "HPA scale tức thì khi vượt target": có chu kỳ sync + độ trễ pipeline.
+- "Nhiều metric luôn tốt hơn": có thể chọn max và scale quá mức nếu một metric nhiễu.
+- "CPU đủ cho mọi service": I/O-bound có CPU thấp nhưng latency cao.
+
+### Lỗi hay gặp
+1. **Custom metric cấu hình sai (label/PromQL)**: HPA đọc 0 hoặc sai -> scale sai. Cách tránh: kiểm tra custom metrics API.
+2. **Nhầm metric tổng vs per-pod**: công thức sai. Cách tránh: dùng type Pods/AverageValue đúng.
+3. **Flapping do target sát nhiễu**: tăng stabilization, smoothing (rate window).
+4. **maxReplicas vượt số partition Kafka**: Pod thừa, rebalance. Cách tránh: maxReplicas <= partitions.
+
+### Trả lời phỏng vấn
+"HPA tính desired = ceil(currentReplicas * currentMetric / target) cho từng metric, áp tolerance, chọn giá trị đáp ứng metric căng nhất trong min/max. Stabilization window (scale down mặc định 300s) giữ lịch sử đề xuất để tránh flapping. Custom metric đi từ app -> Prometheus -> Adapter -> Custom Metrics API -> HPA, nên có độ trễ chục giây. Em chọn metric gần tải (RPS/lag) hơn CPU cho service I/O-bound, scale up nhanh/scale down chậm, và luôn kiểm tra giới hạn downstream như DB connections khi đặt maxReplicas."
+
+> Senior tip: Luôn {{kubectl describe hpa}} để xem metric HPA thực sự nhìn thấy — nhiều sự cố autoscale do adapter/PromQL trả giá trị khác kỳ vọng. Đừng quên maxReplicas * connection pool có thể tự DDoS database.`,
+    follow: [
+      'Khi HPA dùng nhiều metric, làm sao debug trường hợp replica bị đẩy lên do một metric phụ?',
+      'Làm sao thiết kế metric RPS per-pod ổn định (tránh nhiễu) cho HPA?',
+      'KEDA khác HPA thuần ở điểm nào và khi nào bạn chọn KEDA cho queue/cron?'
+    ],
+    tags: ['Kubernetes', 'HPA', 'Autoscaling', 'Prometheus', 'CustomMetrics', 'Stabilization'],
+    refs: [
+      { type: 'doc', title: 'Horizontal Pod Autoscaling', url: 'https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/' },
+      { type: 'doc', title: 'HPA Walkthrough', url: 'https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/' }
+    ]
+  },
+  {
+    id: 'devops-095',
+    topic: 'devops',
+    level: 'lead',
+    q: 'HPA, PodDisruptionBudget (PDB), và Cluster Autoscaler tương tác thế nào khi traffic tăng đột biến và khi node được bảo trì/drain? Bạn thiết kế chính sách disruption và capacity để vừa scale nhanh vừa không làm rớt SLO ra sao?',
+    a: `**Tóm tắt:** HPA tăng/giảm replica theo metric (phút); Cluster Autoscaler (CA) thêm/bớt node khi Pod Pending thiếu tài nguyên hoặc node dưới tải (phút tới chục phút). PDB giới hạn gián đoạn tự nguyện cùng lúc (drain, upgrade). Tương tác: HPA scale lên -> Pod Pending -> CA thêm node (chậm); drain node tôn trọng PDB nên có thể bị chặn nếu PDB quá chặt/thiếu replica. Thiết kế cần minReplicas/PDB/maxUnavailable cân bằng, headroom cho burst, maxReplicas ràng buộc downstream, và quy trình bảo trì có checklist.
+
+### Thuật ngữ (giải thích cho người mới)
+- **Cluster Autoscaler (CA)**: tăng node khi Pod Pending không xếp được do thiếu tài nguyên; giảm node khi dưới tải an toàn.
+- **PDB (PodDisruptionBudget)**: "luôn còn ít nhất X Pod" ({{minAvailable}}) hoặc "tối đa Y Pod gián đoạn" ({{maxUnavailable}}) cho gián đoạn **tự nguyện** (drain).
+- **Drain node**: đuổi Pod khỏi node để bảo trì; tôn trọng PDB.
+- **SLO (Service Level Objective)**: mục tiêu mức dịch vụ (ví dụ 99.9% thành công, p99 < 300ms).
+
+### Tương tác (từng bước)
+#### Traffic tăng đột biến
+1. Metric tăng -> HPA tăng desired replicas -> tạo Pod mới.
+2. Đủ tài nguyên: scheduler đặt Pod -> startup/readiness -> nhận traffic.
+3. Thiếu tài nguyên: Pod Pending ({{Insufficient cpu/memory}}).
+4. CA thấy Pending có thể giải quyết bằng thêm node -> scale node pool (cloud API). **Độ trễ**: vài phút (provision + join + image pull).
+5. Node mới Ready -> đặt Pod -> warm-up. Đỉnh ngắn có thể qua trước khi kịp.
+
+#### Bảo trì/drain node
+1. Drain evict Pod tự nguyện.
+2. Eviction API kiểm tra PDB: vi phạm -> eviction bị từ chối/hoãn.
+3. Pod tạo lại trên node khác; thiếu chỗ -> Pending -> CA có thể thêm node.
+4. PDB quá chặt (minAvailable = replicas) hoặc replicas quá ít -> drain kẹt.
+
+~~~text
+HPA: tăng replica -> Pod Pending -> CA: thêm node (phút)
+Drain: evict Pod -> PDB cho phép? -> không: drain blocked
+~~~
+
+### Thiết kế chính sách (lead, trade-off)
+| Mục tiêu | Cơ chế | Trade-off |
+|---|---|---|
+| Chịu burst nhanh | minReplicas cao, headroom/overprovisioning | Chi phí |
+| Scale linh hoạt | HPA + CA | Độ trễ thêm node, cold start Java |
+| Không rớt khi bảo trì | PDB hợp lý, đủ replicas | PDB quá chặt chặn drain/upgrade |
+| Bảo vệ downstream | maxReplicas * pool <= DB limit | Giới hạn scale |
+
+~~~yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: payment-pdb }
+spec:
+  maxUnavailable: 1
+  selector: { matchLabels: { app: payment } }
+~~~
+Replicas nhỏ (2-3) cẩn thận với {{minAvailable}} tuyệt đối; đảm bảo luôn evict được ít nhất 1 Pod khi drain.
+
+### Trên production
+- **Triệu chứng**: drain treo (PDB block); HPA scale nhưng Pod Pending lâu (CA chậm/quota cloud); sau bảo trì SLO giảm.
+- **Cách đo**: {{kubectl get/describe pdb}} (Allowed disruptions), events FailedScheduling, log CA, thời gian provision node, SLO/error budget.
+- **Tuning**: minReplicas theo tải nền; scheduled scaling cho đỉnh biết trước. PDB {{maxUnavailable: 1}} để drain tiến triển; tăng replicas trước nâng cấp lớn. CA cấu hình node pool, cân nhắc image pre-pull/buffer. maxReplicas tính cả DB connections. "Game day": drain node, burst test, xác nhận PDB/CA.
+
+### Câu trả lời sai phổ biến
+- "PDB ngăn mọi Pod bị giết": chỉ gián đoạn **tự nguyện**; node chết/OOMKilled/preemption không bị PDB chặn theo cách đó.
+- "CA làm HPA scale tức thì": CA thêm node chậm; không thay warm-up app.
+- "PDB càng chặt càng an toàn": quá chặt gây kẹt vận hành, trì hoãn vá bảo mật.
+
+### Lỗi hay gặp
+1. **Replicas = 1, PDB minAvailable 1**: không thể drain. Cách tránh: >=2 replicas cho HA + PDB hợp lý.
+2. **maxReplicas lớn nhưng DB chỉ chịu N connections**: scale sập DB. Cách tránh: capacity planning end-to-end.
+3. **CA chậm + Java cold start**: SLO vi phạm. Cách tránh: buffer capacity, giảm startup.
+4. **Không kiểm tra Allowed disruptions**: bất ngờ khi drain. Cách tránh: {{kubectl describe pdb}} trong runbook.
+
+### Trả lời phỏng vấn (lead)
+"HPA quyết định replica theo metric, CA quyết định node khi Pod Pending thiếu tài nguyên — hai vòng lặp khác tốc độ. PDB bảo vệ số Pod tối thiểu khi gián đoạn tự nguyện (drain), nên có thể chặn eviction nếu quá chặt. Em thiết kế: minReplicas đủ nền, HPA scale up nhanh/scale down chậm, maxReplicas ràng buộc downstream (DB pool), PDB cho phép drain tiến triển (maxUnavailable 1) và luôn đủ replicas để PDB khả thi. Burst khó đoán thì chấp nhận headroom/scheduled scaling; bảo trì thì tăng replica trước, kiểm tra Allowed disruptions. PDB không bảo vệ khỏi node crash hay OOMKilled — đó là việc của HA và thiết kế chịu lỗi."
+
+> Senior tip: Trước nâng cấp node pool: replicas đủ, {{kubectl describe pdb}} còn Allowed disruptions, CA/quota cloud đủ, dashboard SLO sẵn sàng. Nhiều ca "drain kẹt 2 giờ" chỉ vì PDB minAvailable bằng đúng số replica hiện tại.`,
+    follow: [
+      'Làm sao tính minAvailable/maxUnavailable cho PDB khi service có replicas thay đổi theo HPA?',
+      'Cluster Autoscaler quyết định scale down node dựa trên tiêu chí nào và Pod nào có thể chặn việc này?',
+      'Khi traffic spike, bạn ưu tiên phản ứng bằng HPA, buffer tĩnh, hay overprovisioning — tiêu chí chọn là gì?'
+    ],
+    tags: ['Kubernetes', 'HPA', 'PDB', 'ClusterAutoscaler', 'Disruption', 'SRE', 'Leadership'],
+    refs: [
+      { type: 'doc', title: 'Specifying a Disruption Budget for your Application', url: 'https://kubernetes.io/docs/tasks/run-application/configure-pdb/' },
+      { type: 'doc', title: 'Cluster Autoscaler', url: 'https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler' }
+    ]
+  }
+
+  ,{
+    id: 'devops-096',
+    topic: 'devops',
+    level: 'mid',
+    q: 'So sánh GitFlow và trunk-based development cho team Java backend: khi nào chọn cái nào, và quy tắc branch/commit/MR ra sao?',
+    a: `**Tóm tắt:** GitFlow phù hợp release theo chu kỳ với nhiều version song song; trunk-based phù hợp deploy liên tục với feature flag. Team nhỏ nên trunk-based + MR ngắn.
+
+### Vì sao cần workflow
+Không có quy ước → conflict lớn, review khó, release hỗn loạn. Workflow = hợp đồng về cách thay đổi vào main.
+
+### GitFlow
+- Branch: main (production), develop, feature/*, release/*, hotfix/*.
+- Release branch: gom các feature, stabilize, tag.
+- Hotfix: từ main, merge về main và develop.
+- Phù hợp: phần mềm desktop/mobile, nhiều version hỗ trợ.
+
+### Trunk-based
+- Chỉ main + short-lived branch (≤ 1 ngày) + feature flag.
+- Merge nhỏ, thường xuyên; CI chạy mỗi commit.
+- Phù hợp: SaaS deploy liên tục.
+
+### Quy tắc chung
+- Commit message conventional commits: feat/fix/chore.
+- MR nhỏ (< 400 dòng), review bắt buộc, CI green.
+- Branch protection: không push trực tiếp main.
+
+### Bảng so sánh
+| Tiêu chí | GitFlow | Trunk-based |
+|---|---|---|
+| Tần suất release | Tuần/tháng | Nhiều lần/ngày |
+| Độ phức tạp | Cao | Thấp |
+| Feature flag | Không bắt buộc | Bắt buộc |
+| Phù hợp team | Lớn, release cố định | Agile, CD |
+
+### Trên production
+- Sai lầm: branch tồn tại hàng tuần → merge conflict lớn.
+- Kiểm tra: thời gian sống branch trung bình, số MR/ngày.
+
+> Senior tip: Trunk-based + feature flag cho phép dark launch và rollback bằng flag mà không revert code.`,
+    follow: [
+      'Feature flag nên quản lý ở đâu và lifecycle ra sao?',
+      'Làm sao xử lý hotfix trong trunk-based?',
+      'Branch protection rules tối thiểu là gì?'
+    ],
+    tags: ['Git', 'Workflow', 'TrunkBased', 'GitFlow']
+  }
+
+
+  ,{
+    id: 'devops-097',
+    topic: 'devops',
+    level: 'mid',
+    q: 'GitLab CI: stages, jobs, cache vs artifacts, runner shell/docker và biến bảo mật masked/protected hoạt động thế nào?',
+    a: `**Tóm tắt:** Stage chạy tuần tự, job trong stage chạy song song; cache tăng tốc build, artifacts truyền kết quả giữa stage; runner thực thi; biến masked/protected che secret.
+
+### Stages & jobs
+- stages: build, test, deploy.
+- Job có script, image, rules.
+
+### Cache vs artifacts
+- cache: dependencies (Maven .m2) tái sử dụng giữa pipeline.
+- artifacts: file build/test report truyền stage sau, expire sau N ngày.
+
+### Runner
+- shared vs specific; executor shell/docker.
+- Docker executor: mỗi job trong container sạch.
+
+### Biến bảo mật
+- CI/CD variables masked (không in log), protected (chỉ protected branch).
+- secret từ Vault/external.
+
+### Triển khai theo môi trường
+- environment: name, url.
+- manual approval: when: manual + rules.
+
+### Trên production
+- Sai lầm: cache chứa secret hoặc artifact quá lớn.
+- Kiểm tra: pipeline duration, cache hit rate.
+
+> Senior tip: Dùng needs để DAG pipeline, giảm thời gian; artifacts expire để tiết kiệm storage.`,
+    follow: ['Cache key nên thiết kế thế nào cho Maven/Gradle?', 'Làm sao tránh leak secret trong log?', 'Rollback pipeline khi deploy fail?'],
+    tags: ['GitLabCI', 'Pipeline', 'Secrets']
+  }
+  ,{
+    id: 'devops-098',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Jenkinsfile declarative: agent, stages, shared library; so sánh với GitLab CI/GitHub Actions?',
+    a: `**Tóm tắt:** Jenkins tự host, declarative pipeline định nghĩa stage/agent; shared library tái sử dụng; so với GitLab/GitHub Actions là SaaS/integrated.
+
+### Jenkinsfile declarative
+- pipeline { agent any; stages { stage('Build'){ steps { sh 'mvn...' } } } }
+- agent: any/label/docker.
+- post: always/success/failure.
+
+### Shared library
+- vars/, src/; @Library('lib') _.
+- Tái sử dụng across repos.
+
+### So sánh
+| Tiêu chí | Jenkins | GitLab CI | GitHub Actions |
+|---|---|---|---|
+| Hosting | Tự quản | SaaS/self | SaaS |
+| Config | Jenkinsfile | .gitlab-ci.yml | workflow yaml |
+| Plugin | Rất nhiều | Built-in | Marketplace |
+| Secret | Credentials store | Variables | Secrets |
+
+### Trên production
+- Sai lầm: Jenkins controller bottleneck, plugin conflict.
+- Kiểm tra: queue time, agent utilization.
+
+> Senior tip: Jenkins phù hợp enterprise legacy; greenfield ưu tiên GitHub Actions/GitLab CI.`,
+    follow: ['Khi nào chọn self-hosted runner?', 'Cách version shared library?', 'Blue ocean vs classic UI?'],
+    tags: ['Jenkins', 'CI', 'Comparison']
+  }
+  ,{
+    id: 'devops-099',
+    topic: 'devops',
+    level: 'senior',
+    q: 'SonarQube quality gate: coverage, code smell, chặn merge khi không đạt; cấu hình cho Maven/Gradle?',
+    a: `**Tóm tắt:** SonarQube phân tích code và áp dụng quality gate (coverage, bugs, vulnerabilities); fail gate chặn merge qua webhook/PR decoration.
+
+### Cơ chế
+- Scanner gửi report lên server.
+- Quality gate: conditions on metrics.
+- PR decoration comment trên MR/PR.
+
+### Maven
+- mvn sonar:sonar -Dsonar.projectKey=...
+- jacoco agent để coverage.
+
+### Gradle
+- sonarqube plugin, jacoco.
+
+### Chặn merge
+- GitLab: require pipeline success + external status check.
+- GitHub: branch protection required checks.
+
+### Trên production
+- Sai lầm: coverage threshold 0 ban đầu rồi không tăng.
+- Kiểm tra: gate pass rate, new code coverage.
+
+> Senior tip: Dùng "new code" period để tránh legacy debt chặn delivery.`,
+    follow: ['Làm sao xử lý false positive?', 'Coverage nên đo unit hay integration?', 'SonarLint trong IDE?'],
+    tags: ['SonarQube', 'QualityGate', 'Maven', 'Gradle']
+  }
+  ,{
+    id: 'devops-100',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Build image Java trong pipeline: multi-stage Dockerfile, layer cache, tag theo commit SHA, đẩy lên registry và quét lỗ hổng Trivy?',
+    a: `**Tóm tắt:** Multi-stage giảm kích thước; layer cache tăng tốc; tag SHA truy vết; push Harbor/ECR; Trivy quét CVE.
+
+### Multi-stage Dockerfile
+- Build stage: Maven/Gradle.
+- Runtime stage: JRE slim.
+- COPY --from=build.
+
+### Layer cache
+- Copy pom trước, download deps, rồi copy source.
+- BuildKit cache mounts.
+
+### Tag
+- image:tag = commit SHA short + version.
+- latest chỉ cho dev.
+
+### Registry
+- Harbor/ECR; docker login with token.
+- Retention policy.
+
+### Trivy
+- trivy image --severity HIGH,CRITICAL.
+- Fail pipeline nếu CVE critical.
+
+### Trên production
+- Sai lầm: root user, secret trong layer.
+- Kiểm tra: image size, scan report.
+
+> Senior tip: Dùng distroless JRE để giảm attack surface.`,
+    follow: ['Làm sao cache Maven trong Docker build?', 'Image signing Cosign?', 'Base image update strategy?'],
+    tags: ['Docker', 'CI', 'Trivy', 'Registry']
+  }
+  ,{
+    id: 'devops-101',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Triển khai bán tự động vs tự động hoàn toàn và rollback nhanh khi lỗi?',
+    a: `**Tóm tắt:** Bán tự động cần manual approval cho prod; tự động hoàn toàn deploy mỗi commit; rollback qua previous image/tag hoặc Helm rollback.
+
+### Bán tự động
+- Auto deploy dev/staging; manual prod.
+- Phù hợp regulated environments.
+
+### Tự động hoàn toàn
+- CD pipeline deploy prod sau test.
+- Cần feature flag, monitoring, auto rollback.
+
+### Rollback
+- Kubernetes: kubectl rollout undo.
+- Helm: helm rollback.
+- Image tag previous.
+
+### Trên production
+- Sai lầm: không có runbook rollback, migration DB không tương thích.
+- Kiểm tra: rollback time, SLO.
+
+> Senior tip: Expand/contract migration để rollback an toàn.`,
+    follow: ['Database migration rollback strategy?', 'Feature flag vs deploy rollback?', 'Canary vs blue-green?'],
+    tags: ['CD', 'Rollback', 'Deployment']
+  }
+  ,{
+    id: 'devops-102',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Release management: release branch, hotfix, versioning SemVer và coordination nhiều service?',
+    a: `**Tóm tắt:** SemVer cho library/API; release branch stabilize; hotfix từ main; coordination qua contract tests và changelog.
+
+### SemVer
+- MAJOR.MINOR.PATCH.
+- Breaking change → MAJOR.
+
+### Release branch
+- release/1.2.0 từ develop/main.
+- Bug fix cherry-pick.
+
+### Hotfix
+- hotfix/* từ main, merge main + develop.
+
+### Multi-service
+- Independent deploy with versioned API.
+- Contract testing.
+
+### Trên production
+- Sai lầm: release branch sống lâu, drift.
+- Kiểm tra: release frequency, hotfix count.
+
+> Senior tip: Trunk-based + feature flag giảm nhu cầu release branch.`,
+    follow: ['Làm sao communicate breaking change?', 'Deprecation policy?', 'Release notes automation?'],
+    tags: ['Release', 'SemVer', 'Hotfix', 'Leadership']
+  }
+  ,{
+    id: 'devops-103',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Bảo mật pipeline: secret scanning, dependency scanning, SAST/DAST và policy as code?',
+    a: `**Tóm tắt:** Pipeline phải scan secret, dependency, code; policy as code enforce; least privilege runner.
+
+### Secret scanning
+- gitleaks/trufflehog.
+- Pre-commit hooks.
+
+### Dependency scanning
+- OWASP Dependency-Check, Snyk.
+- SBOM.
+
+### SAST/DAST
+- SonarQube SAST; OWASP ZAP DAST.
+
+### Policy as code
+- OPA/Conftest.
+- Enforce image signature, no root.
+
+### Trên production
+- Sai lầm: scan chỉ report không block.
+- Kiểm tra: findings trend, MTTR.
+
+> Senior tip: Shift-left: scan sớm trong PR, không chỉ pipeline main.`,
+    follow: ['SBOM nên lưu ở đâu?', 'Image signing verification runtime?', 'Compliance audit?'],
+    tags: ['Security', 'Pipeline', 'SAST', 'Policy']
+  }
+
+,
+  {
+    id: 'devops-104',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Prometheus + node_exporter + Micrometer (Spring Boot Actuator) + Grafana giám sát app Java như thế nào?',
+    a: `**Tóm tắt:** Prometheus kéo (scrape) metric từ node_exporter (máy) và Actuator (app Java) rồi Grafana vẽ biểu đồ; metric Java quan trọng: JVM heap/GC, thread, HTTP p95/p99, Hikari pool.
+
+### Các thành phần
+- **Prometheus**: time-series DB, tự scrape endpoint theo chu kỳ (pull model).
+- **node_exporter**: daemon trên host, xuất metric CPU/RAM/disk/network.
+- **Micrometer + Spring Boot Actuator**: app Java xuất metric JVM và HTTP tại {{/actuator/prometheus}}.
+- **Grafana**: dashboard, alert rule, biểu đồ.
+
+### Cài Actuator
+~~~yaml
+# application.yml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: order-service
+~~~
+~~~xml
+<!-- pom.xml -->
+<dependency>
+  <groupId>io.micrometer</groupId>
+  <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
+~~~
+
+### Prometheus scrape config
+~~~yaml
+scrape_configs:
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+  - job_name: 'springboot'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['order-service:8080']
+~~~
+
+### Metric Java quan trọng
+- {{jvm_memory_used_bytes}} / {{jvm_memory_max_bytes}} (heap).
+- {{jvm_gc_pause_seconds}} (GC pause).
+- {{jvm_threads_live_threads}}.
+- {{http_server_requests_seconds}} histogram → p95/p99.
+- {{hikaricp_connections_active}} / {{hikaricp_connections_max}}.
+
+### Trên production
+- Sai lầm: chỉ xem CPU, bỏ qua GC pause và Hikari pool.
+- Kiểm tra: dashboard JVM + alert khi heap > 85% liên tục 5 phút.
+
+> Senior tip: Tag metric bằng application + env để filter dashboard; cardinality cao (user id) sẽ làm Prometheus nổ bộ nhớ.`,
+    follow: ['Pull vs push metric?', 'Cardinality là gì?', 'Prometheus retention bao lâu?'],
+    tags: ['Prometheus', 'Grafana', 'Micrometer', 'Observability']
+  }
+,
+  {
+    id: 'devops-105',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Alertmanager gửi Telegram/Slack, tránh alert fatigue, SLO-based alert như thế nào?',
+    a: `**Tóm tắt:** Alertmanager nhóm và định tuyến alert; tránh fatigue bằng ngưỡng hợp lý, for:, grouping; SLO-based alert theo error budget thay vì ngưỡng tĩnh.
+
+### Alertmanager
+- Nhận alert từ Prometheus, dedupe, group, route tới receiver (Slack/Telegram/PagerDuty).
+- Inhibit: alert cha dập alert con.
+- Silence: tắt tạm thời khi bảo trì.
+
+### Ví dụ rule
+~~~yaml
+groups:
+  - name: slo
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m])) > 0.01
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Error rate > 1% trong 10 phút"
+~~~
+
+### for: và ngưỡng
+- {{for:}} tránh flapping (alert phải đúng liên tục N phút mới fire).
+- Ngưỡng: đặt theo SLO, không quá nhạy.
+- Group by service để tránh spam.
+
+### SLO-based alert
+- SLO: 99.9% availability → error budget 0.1%.
+- Alert khi đốt error budget nhanh (burn rate) thay vì CPU > 80%.
+- Multi-window: 1h + 6h burn rate.
+
+### Trên production
+- Sai lầm: alert mọi metric → on-call mệt, bỏ qua alert thật.
+- Kiểm tra: alert firing count, MTTA, false positive rate.
+
+> Senior tip: Mỗi alert phải có runbook link trong annotation; alert không có hành động = noise.`,
+    follow: ['PagerDuty escalation?', 'Silence vs inhibit?', 'Burn rate là gì?'],
+    tags: ['Alertmanager', 'SLO', 'Alerting']
+  }
+,
+  {
+    id: 'devops-106',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Logging tập trung: ELK/EFK vs Loki, log JSON, correlation id, retention và chi phí?',
+    a: `**Tóm tắt:** Log có cấu trúc JSON + correlation id để truy vết; ELK mạnh search nhưng nặng/đắt; Loki rẻ và nhanh cho label-based; retention theo tier để kiểm soát chi phí.
+
+### Log có cấu trúc
+- JSON: timestamp, level, service, traceId, message, fields.
+- Spring: logback + logstash-encoder.
+~~~xml
+<dependency>
+  <groupId>net.logstash.logback</groupId>
+  <artifactId>logstash-logback-encoder</artifactId>
+</dependency>
+~~~
+~~~xml
+<appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+  <encoder class="net.logstash.logback.encoder.LogstashEncoder"/>
+</appender>
+~~~
+
+### Correlation id
+- Filter thêm X-Request-Id vào MDC; propagate qua Feign/RestTemplate.
+- Log mọi dòng cùng traceId → search một chuỗi thấy toàn flow.
+
+### ELK vs EFK vs Loki
+- ELK: Elasticsearch + Logstash + Kibana, search full-text mạnh, tốn RAM/disk.
+- EFK: thay Logstash bằng Fluentd/Fluent Bit (nhẹ hơn).
+- Loki: chỉ index label, không full-text → rẻ, nhanh cho filter theo service/env; Grafana tích hợp.
+
+### Retention và chi phí
+- Hot 7 ngày (SSD), warm 30 ngày, cold 90-365 ngày (S3/Glacier).
+- Sampling: debug/info chỉ giữ 1-7 ngày, error giữ lâu hơn.
+- Tránh log payload nhạy cảm (PII).
+
+### Trên production
+- Sai lầm: log toàn bộ body request → chi phí lưu và rò rỉ.
+- Kiểm tra: index size, ingestion rate, query latency p95.
+
+> Senior tip: Log level INFO mặc định, DEBUG chỉ bật tạm thời qua Actuator /loggers khi điều tra.`,
+    follow: ['TraceId vs SpanId?', 'Log sampling?', 'Chi phí Elasticsearch?'],
+    tags: ['Logging', 'ELK', 'Loki', 'Observability']
+  }
+,
+  {
+    id: 'devops-107',
+    topic: 'devops',
+    level: 'senior',
+    q: 'High availability: Keepalived + VIP (VRRP), HAProxy/Nginx active-passive, DB replication + failover, split-brain?',
+    a: `**Tóm tắt:** HA dùng VIP (VRRP/Keepalived) để chuyển IP sang node sống; LB active-passive; DB replication + failover tự động; split-brain là rủi ro khi cả hai node nghĩ mình là primary.
+
+### Keepalived + VIP
+- VRRP: nhiều router chia sẻ một Virtual IP; master gửi heartbeat; backup takeover khi master chết.
+~~~conf
+vrrp_instance VI_1 {
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 100
+    advert_int 1
+    authentication { auth_type PASS; auth_pass secret }
+    virtual_ipaddress { 10.0.0.100/24 }
+}
+~~~
+- Backup priority thấp hơn (90).
+
+### HAProxy/Nginx active-passive
+- Hai LB, VIP trỏ tới active; passive standby.
+- Health check backend; failover VIP khi active chết.
+
+### DB replication + failover
+- PostgreSQL streaming replication: primary → standby (async/sync).
+- Failover: Patroni/repmgr tự promote standby; app reconnect qua VIP/proxy.
+- Semi-sync MySQL: primary chờ ít nhất 1 replica ack.
+
+### Split-brain
+- Mạng phân mảnh: hai node đều nghĩ mình primary → ghi dữ liệu khác nhau → corrupt.
+- Giải pháp: quorum (ít nhất N/2+1), fencing (STONITH), witness/arbiter, lease.
+- PostgreSQL Patroni dùng DCS (etcd/Consul) làm arbiter.
+
+### Trên production
+- Sai lầm: replication async + failover tự động mà không fencing → split-brain.
+- Kiểm tra: replication lag, failover drill định kỳ.
+
+> Senior tip: HA không chỉ uptime; phải test failover thực tế, không chỉ assume config đúng.`,
+    follow: ['Patroni là gì?', 'Quorum majority?', 'STONITH?'],
+    tags: ['HA', 'Keepalived', 'VRRP', 'PostgreSQL']
+  }
+,
+  {
+    id: 'devops-108',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Giám sát database (PostgreSQL/MySQL exporter): slow query, connection, replication lag?',
+    a: `**Tóm tắt:** Dùng postgres_exporter/mysql_exporter để Prometheus scrape metric DB; cảnh báo slow query, connection saturation, replication lag; kết hợp pg_stat_statements.
+
+### Exporter
+- postgres_exporter: scrape {{pg_stat_activity}}, {{pg_stat_database}}, replication lag.
+- mysqld_exporter: threads, slow queries, replication lag.
+
+### Prometheus scrape
+~~~yaml
+scrape_configs:
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+~~~
+
+### Slow query
+- Bật {{pg_stat_statements}} extension; query {{calls}}, {{total_exec_time}}, {{mean_exec_time}}.
+- Alert: query mean > 1s hoặc total time tăng đột biến.
+- PostgreSQL: {{log_min_duration_statement = 1000}} để log query > 1s.
+
+### Connection
+- {{pg_stat_activity_count}} vs {{max_connections}}.
+- Alert khi > 80% max connections.
+
+### Replication lag
+- {{pg_replication_lag}} (seconds) hoặc byte lag.
+- Alert lag > 30s (async) hoặc > 0 (sync).
+- MySQL: {{Seconds_Behind_Master}}.
+
+### Trên production
+- Sai lầm: không index → slow query đột ngột.
+- Kiểm tra: EXPLAIN ANALYZE, vacuum/analyze, connection pool size.
+
+> Senior tip: Slow query thường do thiếu index hoặc N+1 từ app; giám sát DB phải đi kèm giám sát app query.`,
+    follow: ['pg_stat_statements?', 'Connection pool tuning?', 'Vacuum là gì?'],
+    tags: ['Database', 'PostgreSQL', 'MySQL', 'Monitoring']
+  }
+,
+  {
+    id: 'devops-109',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Uptime/synthetic check và trang status nội bộ xây dựng thế nào?',
+    a: `**Tóm tắt:** Synthetic check chủ động probe endpoint (HTTP/TCP) từ nhiều vị trí; trang status nội bộ tổng hợp health; phân biệt uptime đơn giản và SLO availability.
+
+### Synthetic check
+- Blackbox exporter (Prometheus) probe HTTP/TCP/ICMP.
+~~~yaml
+scrape_configs:
+  - job_name: 'blackbox'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://api.example.com/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+~~~
+- Alert khi probe_success == 0 trong 2 phút.
+
+### Trang status nội bộ
+- Tổng hợp health của service: DB, Redis, Kafka, external API.
+- Spring Actuator {{/actuator/health}} với health indicators.
+- Dashboard Grafana hoặc trang đơn giản hiển thị status.
+
+### Availability vs uptime
+- Uptime: service up (process sống).
+- Availability: user thực sự dùng được (latency < SLO, error rate < ngưỡng).
+- Synthetic check đo availability từ góc user.
+
+### Trên production
+- Sai lầm: health check chỉ trả 200 mà không kiểm tra dependency → false green.
+- Kiểm tra: health check sâu (DB query, Redis ping) nhưng không quá chậm.
+
+> Senior tip: Health check phải nhanh (< 1s) và không phụ thuộc service ngoài nặng; deep check riêng cho readiness.`,
+    follow: ['Liveness vs readiness?', 'Blackbox exporter?', 'SLI/SLO/SLA?'],
+    tags: ['Uptime', 'Synthetic', 'HealthCheck', 'SLO']
+  }
+,
+  {
+    id: 'devops-110',
+    topic: 'devops',
+    level: 'lead',
+    q: 'SLO, SLI, error budget và cách đặt alert dựa trên error budget burn rate?',
+    a: `**Tóm tắt:** SLI đo chất lượng (latency, availability), SLO là mục tiêu, error budget là phần được phép sai; alert theo burn rate thay vì ngưỡng tĩnh để phát hiện sự cố nhanh.
+
+### Định nghĩa
+- **SLI** (Service Level Indicator): metric đo (ví dụ % request < 300ms).
+- **SLO** (Service Level Objective): mục tiêu (99.9% request < 300ms).
+- **SLA** (Service Level Agreement): hợp đồng với khách, thường thấp hơn SLO.
+- **Error budget**: 100% - SLO = 0.1% được phép fail.
+
+### Burn rate
+- Tốc độ đốt error budget. Burn rate 1 = đều, 14.4 = đốt hết budget trong 2 ngày (1h window).
+- Multi-window burn rate alert: alert nếu burn rate cao trong cả window ngắn và dài → tránh false positive.
+
+### Ví dụ Prometheus
+~~~yaml
+- alert: HighBurnRate
+  expr: |
+    (sum(rate(http_requests_total{status=~"5.."}[1h])) / sum(rate(http_requests_total[1h]))) > 14.4 * 0.001)
+    and
+    (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 14.4 * 0.001
+  for: 2m
+  labels:
+    severity: page
+~~~
+
+### Trên production
+- Sai lầm: đặt SLO 99.99% không cần thiết → error budget quá nhỏ, alert liên tục.
+- Kiểm tra: error budget còn lại, burn rate trend.
+
+> Senior tip: SLO nên dựa trên user experience, không phải infra metric; review SLO quarterly.`,
+    follow: ['Error budget policy?', 'Multi-window alert?', 'SLA penalty?'],
+    tags: ['SLO', 'SLI', 'ErrorBudget', 'Alerting']
+  }
+,
+  {
+    id: 'devops-111',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Distributed tracing: OpenTelemetry, Jaeger/Tempo, trace context propagation trong Spring Boot?',
+    a: `**Tóm tắt:** OpenTelemetry instrument app để sinh trace/span; propagate trace context qua HTTP header (W3C traceparent); backend Jaeger/Tempo lưu và hiển thị; giúp tìm bottleneck trong microservices.
+
+### Khái niệm
+- **Trace**: một request end-to-end qua nhiều service.
+- **Span**: một đơn vị công việc (HTTP call, DB query) với thời gian.
+- **Context propagation**: truyền traceId/spanId qua header để nối span.
+
+### OpenTelemetry trong Spring Boot 3
+- Thêm opentelemetry-spring-boot-starter.
+- Auto-instrument HTTP, JDBC, Kafka.
+- Exporter OTLP → Tempo/Jaeger.
+
+~~~xml
+<dependency>
+  <groupId>io.opentelemetry.instrumentation</groupId>
+  <artifactId>opentelemetry-spring-boot-starter</artifactId>
+</dependency>
+~~~
+~~~yaml
+otel:
+  exporter:
+    otlp:
+      endpoint: http://tempo:4317
+  traces:
+    sampler: parentbased_traceidratio
+    sampler.arg: 0.1
+~~~
+
+### W3C traceparent
+- Header: {{traceparent: 00-<traceId>-<spanId>-01}}.
+- Propagate qua Feign/RestTemplate/WebClient tự động với OTel.
+
+### Sampling
+- 100% dev, 1-10% prod để giảm chi phí.
+- Tail-based sampling: giữ trace có lỗi/chậm.
+
+### Trên production
+- Sai lầm: trace mọi request → storage nổ.
+- Kiểm tra: trace latency, span count, sampling rate.
+
+> Senior tip: Trace + metric + log (three pillars) liên kết bằng traceId; Grafana Tempo + Loki + Prometheus là stack phổ biến.`,
+    follow: ['Tail-based sampling?', 'Baggage?', 'Tempo vs Jaeger?'],
+    tags: ['OpenTelemetry', 'Tracing', 'Tempo', 'Observability']
+  }
+  ,
+  {
+    id: 'devops-112',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Docker network là gì và các chế độ bridge, host, overlay, none khác nhau thế nào? Khi app Java trong container cần gọi PostgreSQL cũng chạy trong container, bạn publish port ra host và để các container tìm nhau ra sao cho đúng?',
+    a: `**Tóm tắt:** **Docker network** là lớp mạng ảo mà Docker tạo để các container giao tiếp với nhau và với bên ngoài (giống một mạng LAN ảo do phần mềm điều khiển). Mặc định nên dùng **user-defined bridge**: container gọi nhau bằng **tên service** nhờ DNS nội bộ của Docker, và chỉ **publish port** ({{-p host:container}}) khi cần truy cập từ máy host. {{host}} network bỏ lớp ảo (container dùng thẳng mạng của máy host), {{overlay}} nối nhiều máy (Swarm/Kubernetes dùng khái niệm tương tự), {{none}} tắt mạng.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Container**: một "hộp" chạy ứng dụng đã đóng gói, cô lập với máy host (máy thật) về tiến trình và hệ thống file.
+- **Network namespace**: cơ chế Linux cô lập ngăn xếp mạng (IP, cổng, bảng định tuyến) cho từng container.
+- **Bridge**: "cầu nối" mạng ảo; Docker tạo một switch ảo, gắn container vào đó.
+- **Publish port (ánh xạ cổng)**: mở một cổng trên máy host và chuyển tiếp vào cổng trong container, ví dụ {{-p 8080:8080}}.
+- **DNS nội bộ**: dịch tên (ví dụ {{postgres}}) thành IP container trong cùng mạng.
+
+### Các chế độ mạng và khi dùng
+| Chế độ | Cơ chế | Ưu điểm | Nhược điểm | Khi dùng |
+|---|---|---|---|---|
+| {{bridge}} mặc định | Bridge {{docker0}}, không có DNS theo tên tự động | Đơn giản | Gọi nhau phải dùng IP, kém tiện | Hạn chế, legacy |
+| **User-defined bridge** | Bridge riêng, có DNS theo tên container/service | Tên ổn định, cô lập tốt | Chỉ trên 1 host | Dev/local, Compose (mặc định) |
+| {{host}} | Dùng thẳng network namespace của host | Không NAT, độ trễ thấp | Không cô lập cổng, dễ xung đột; không dùng trên Docker Desktop như Linux | Tối ưu hiệu năng đặc biệt, Linux |
+| {{overlay}} | Mạng phủ nhiều host (VXLAN) | Container khác máy gọi được nhau | Cần orchestrator, phức tạp | Swarm; K8s dùng CNI riêng |
+| {{none}} | Không có giao diện mạng (trừ loopback) | Cô lập tối đa | Không giao tiếp | Job xử lý offline |
+
+### Ví dụ thực tế: Java gọi PostgreSQL trong Compose
+~~~yaml
+# compose.yaml - Compose tự tạo user-defined bridge cho project
+services:
+  app:
+    image: myteam/order-api:dev
+    ports:
+      - "8080:8080"        # publish: truy cập từ trình duyệt/IDE trên host
+    environment:
+      # GỌI BẰNG TÊN SERVICE "db", KHÔNG dùng localhost, KHÔNG dùng IP
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/orders
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_PASSWORD: devpass   # chỉ cho dev; prod dùng secret manager
+    # KHÔNG publish 5432 ra host nếu không cần kết nối từ ngoài -> giảm bề mặt tấn công
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+~~~
+
+### Cơ chế từng bước (vì sao "localhost" trong container là sai)
+1. Mỗi container có network namespace riêng, nên {{localhost}} (127.0.0.1) bên trong container {{app}} chỉ trỏ về chính {{app}}, **không** trỏ tới {{db}}.
+2. Trên user-defined bridge, Docker chạy DNS nhúng: truy vấn tên {{db}} trả về IP nội bộ của container {{db}} (IP có thể đổi khi tạo lại container, nên luôn dùng tên).
+3. {{ports: "8080:8080"}} tạo quy tắc NAT (iptables trên Linux) từ cổng host vào container. Container với container trên cùng bridge nói chuyện **trực tiếp** qua cổng container (5432), không cần publish.
+
+### Lỗi hay gặp
+- Dùng {{localhost:5432}} trong cấu hình app chạy trong container → kết nối bị từ chối.
+- Publish cổng DB ra {{0.0.0.0}} trên máy dev nối mạng công cộng → lộ DB.
+- Tin vào IP container hard-code → hỏng sau khi {{docker compose up --force-recreate}}.
+
+> Senior tip: Coi publish port là "mở cửa ra ngoài" — chỉ mở những gì thực sự cần từ host. Giữa các service nội bộ, để chúng nói chuyện trên mạng Compose riêng bằng tên service; sang Kubernetes tư duy tương tự nhưng tên phân giải qua Service/DNS của cluster.`,
+    follow: [
+      'Khác nhau giữa EXPOSE trong Dockerfile và ports trong Compose là gì?',
+      'Vì sao DNS theo tên không hoạt động trên bridge mặc định docker0?',
+      'Làm sao giới hạn một service chỉ nghe trên 127.0.0.1 của host khi publish port?'
+    ],
+    tags: ['Docker', 'network', 'bridge', 'port', 'Compose', 'DNS'],
+    refs: [
+      { type: 'doc', title: 'Docker networking overview', url: 'https://docs.docker.com/engine/network/' },
+      { type: 'doc', title: 'Networking in Compose', url: 'https://docs.docker.com/compose/how-tos/networking/' }
+    ]
+  },
+  {
+    id: 'devops-113',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Phân biệt Docker volume và bind mount? Khi chạy container bằng user non-root, vì sao hay gặp lỗi "Permission denied" khi ghi file vào thư mục mount, và bạn xử lý thế nào cho an toàn?',
+    a: `**Tóm tắt:** **Volume** là vùng lưu dữ liệu do Docker quản lý (thường dưới {{/var/lib/docker/volumes}}), bền vững và tách khỏi cấu trúc thư mục host — phù hợp cho dữ liệu DB. **Bind mount** gắn thẳng một đường dẫn cụ thể trên máy host vào container — phù hợp khi dev muốn sửa code/config trên host và thấy ngay trong container. Lỗi quyền xảy ra vì tiến trình trong container chạy với **UID/GID** (mã số user/group Linux) khác với chủ sở hữu file trên host; cách xử lý là căn chỉnh UID/GID hoặc dùng named volume và tránh chạy container như root.
+
+### Thuật ngữ
+- **Mount**: gắn một nơi lưu trữ vào một đường dẫn trong hệ thống file của container.
+- **UID/GID**: định danh số của user/group trong Linux (root thường là UID 0). Quyền file kiểm tra theo số này, không phải theo tên.
+- **Non-root**: chạy tiến trình không phải UID 0 để giảm thiểu nếu container bị chiếm quyền.
+- **Ephemeral**: lớp ghi của container là tạm thời — xoá container là mất dữ liệu trên lớp đó.
+
+### So sánh
+| Tiêu chí | **Named volume** | **Bind mount** |
+|---|---|---|
+| Ai quản lý đường dẫn | Docker | Bạn (đường dẫn tuyệt đối trên host) |
+| Dữ liệu khi xoá container | Còn (trừ {{down -v}}) | Còn trên host |
+| Nội dung ban đầu | Nếu volume rỗng, Docker copy nội dung từ image vào volume | Che (ẩn) nội dung tại đường dẫn đó trong image |
+| Hiệu năng Docker Desktop (Mac/Win) | Thường tốt hơn | Có thể chậm do chia sẻ file qua VM |
+| Dùng cho | DB data, dữ liệu cần bền | Source code dev, file config inject |
+| Rủi ro | Khó "nhìn" trực tiếp trên host | Lệ thuộc cấu trúc host, dễ lỗi quyền |
+
+### Ví dụ cấu hình
+~~~yaml
+services:
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # named volume: dữ liệu DB bền vững
+  app:
+    image: eclipse-temurin:21-jre
+    user: "10001:10001"                    # chạy non-root (UID:GID)
+    volumes:
+      - ./config:/app/config:ro           # bind mount, read-only: inject config
+      - applogs:/app/logs                 # named volume: app ghi log được
+volumes:
+  pgdata:                                  # khai báo volume do Docker quản lý
+  applogs:
+~~~
+
+### Vì sao "Permission denied" khi non-root ghi vào bind mount
+1. Trên host, thư mục {{./config}} hoặc thư mục đích ghi thuộc về user host (ví dụ UID 1000).
+2. Container chạy với UID 10001. Kernel kiểm tra quyền trên inode: UID 10001 không có quyền ghi → {{Permission denied}}, dù bên trong container bạn "thấy" thư mục tồn tại.
+3. Với **named volume mới** (rỗng), Docker thường khởi tạo quyền dựa trên thư mục trong image, nên ít gặp hơn; nhưng nếu image chuẩn bị thư mục thuộc root rồi container chạy non-root, vẫn có thể lỗi.
+
+### Cách xử lý an toàn (ưu tiên từ trên xuống)
+- **Ưu tiên named volume** cho dữ liệu app/DB cần ghi; tránh bind mount cho đường dẫn ghi.
+- Bind mount chỉ đọc ({{:ro}}) khi không cần ghi.
+- **Căn UID/GID**: build image tạo user có UID cố định (ví dụ 10001) và {{chown}} thư mục ghi trong Dockerfile; nếu bind mount bắt buộc, đảm bảo thư mục host cấp quyền cho UID đó.
+- Tránh "chữa cháy" bằng {{chmod 777}} (mở cho tất cả) hoặc chạy lại bằng {{root}} — cả hai phá mô hình bảo mật.
+- Trên SELinux (RHEL/Fedora), bind mount có thể cần cờ {{:z}}/{{:Z}} để gắn nhãn — dùng cẩn thận vì {{:Z}} gắn nhãn private.
+
+### Ví dụ chuẩn bị thư mục ghi trong Dockerfile
+~~~dockerfile
+FROM eclipse-temurin:21-jre
+# Tạo user non-root với UID cố định để dễ căn quyền với volume
+RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app \
+    && mkdir -p /app/logs && chown -R 10001:10001 /app
+USER 10001:10001
+WORKDIR /app
+COPY --chown=10001:10001 target/app.jar /app/app.jar
+ENTRYPOINT ["java","-jar","/app/app.jar"]
+~~~
+
+> Senior tip: Quyền file trong container là "điểm mù" kinh điển khi chuyển từ chạy root sang non-root. Hãy chọn một UID cố định cho image, ghi rõ trong README, và dùng named volume cho mọi đường dẫn ghi; bind mount chỉ dành cho dữ liệu read-only hoặc source code ở môi trường dev.`,
+    follow: [
+      'Sự khác nhau giữa volume driver local và volume dùng storage ngoài (NFS, cloud) là gì?',
+      'Khi nào dùng tmpfs mount và nó giúp gì cho dữ liệu nhạy cảm?',
+      'Lệnh docker compose down -v nguy hiểm thế nào trên môi trường có dữ liệu quan trọng?'
+    ],
+    tags: ['Docker', 'volume', 'bind mount', 'permissions', 'non-root', 'UID'],
+    refs: [
+      { type: 'doc', title: 'Volumes', url: 'https://docs.docker.com/engine/storage/volumes/' },
+      { type: 'doc', title: 'Bind mounts', url: 'https://docs.docker.com/engine/storage/bind-mounts/' }
+    ]
+  },
+  {
+    id: 'devops-114',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Một image Java đã build xong nhưng chạy container với mặc định của Docker thì vẫn có nhiều quyền thừa. Bạn harden (gia cố) container runtime thế nào: chạy non-root, read-only filesystem, drop capabilities, no-new-privileges? Giải thích từng cơ chế và ánh xạ sang Kubernetes securityContext.',
+    a: `**Tóm tắt:** Gia cố runtime nghĩa là **giảm quyền** của tiến trình trong container xuống mức tối thiểu cần thiết (nguyên tắc **least privilege** — đặc quyền tối thiểu). Các lớp chính: (1) chạy **non-root** để hạn chế tác động nếu bị khai thác; (2) **read-only root filesystem** để kẻ tấn công khó ghi mã độc; (3) **drop Linux capabilities** (bỏ các "mảnh" quyền root như {{NET_ADMIN}}) và chỉ thêm lại thứ thực sự cần; (4) {{no-new-privileges}} để chặn leo thang qua binary setuid. Trên Kubernetes cấu hình tương ứng nằm trong {{securityContext}} và bị chính sách (Pod Security Admission) kiểm soát.
+
+### Thuật ngữ
+- **Hardening**: gia cố, giảm bề mặt tấn công bằng cấu hình chặt hơn.
+- **Linux capabilities**: Linux tách quyền của root thành nhiều mảnh nhỏ ({{CAP_NET_BIND_SERVICE}}, {{CAP_SYS_ADMIN}}...). Container mặc định vẫn giữ một tập capabilities.
+- **seccomp**: bộ lọc syscall (lời gọi hệ thống) — giới hạn tiến trình được gọi những hàm kernel nào.
+- **seccomp/AppArmor/SELinux**: các lớp kiểm soát bắt buộc của kernel; seccomp lọc syscall, AppArmor/SELinux gắn nhãn và chính sách truy cập.
+
+### Các cơ chế, vì sao cần, và cách bật
+| Cơ chế | Vì sao cần | Docker (ví dụ) | Kubernetes ({{securityContext}}) |
+|---|---|---|---|
+| Non-root | Lỗ hổng RCE ít cơ hội thao tác hệ thống; một số chính sách cấm root | {{USER 10001}} trong image; {{docker run --user 10001:10001}} | {{runAsNonRoot: true}}, {{runAsUser: 10001}} |
+| Read-only rootfs | Ngăn ghi webshell/mã độc vào filesystem container | {{--read-only}} + mount {{tmpfs}} cho {{/tmp}} | {{readOnlyRootFilesystem: true}} + {{emptyDir}}/{{tmpfs}} cho thư mục ghi |
+| Drop capabilities | Bỏ quyền root thừa (mặc định vẫn còn vài capability) | {{--cap-drop=ALL --cap-add=NET_BIND_SERVICE}} (nếu cần) | {{capabilities.drop: ["ALL"]}} |
+| No new privileges | Chặn tiến trình lấy thêm quyền qua file setuid/setgid | {{--security-opt=no-new-privileges:true}} | {{allowPrivilegeEscalation: false}} |
+| Seccomp profile | Giảm syscall bề mặt kernel | {{--security-opt seccomp=profile.json}} (mặc định Docker đã có profile) | {{seccompProfile.type: RuntimeDefault}} |
+
+### Ví dụ Docker Compose gia cố một service Java
+~~~yaml
+services:
+  order-api:
+    image: my-registry.local/order-api:1.4.2@sha256:3b1c... # pin digest
+    user: "10001:10001"                # non-root
+    read_only: true                    # filesystem gốc chỉ đọc
+    tmpfs:
+      - /tmp:size=64m,mode=1777       # Java/các lib thường cần /tmp ghi tạm
+    cap_drop:
+      - ALL                            # bỏ mọi capability
+    security_opt:
+      - no-new-privileges:true
+    # không dùng: privileged: true, network_mode: host (trừ khi thật sự bắt buộc)
+~~~
+
+### Ví dụ Pod Kubernetes (Pod Security "restricted" tương thích)
+~~~yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: order-api
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: my-registry.local/order-api:1.4.2@sha256:3b1c...
+      securityContext:
+        runAsUser: 10001
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp              # chỗ ghi tạm khi rootfs read-only
+  volumes:
+    - name: tmp
+      emptyDir: {}
+~~~
+
+### Lỗi hay gặp khi bật read-only/cap-drop
+- App hoặc thư viện ghi vào {{/tmp}}, {{/var}}, thư mục work của Tomcat → crash. Cách xử lý: mount {{emptyDir}}/{{tmpfs}} đúng đường dẫn cần ghi; với Spring Boot dùng JAR (không WAR exploded trên Tomcat ngoài) thường chỉ cần {{/tmp}}.
+- Bind port < 1024 cần {{CAP_NET_BIND_SERVICE}}; app Java thường nghe 8080 nên chỉ cần {{drop: ALL}} là đủ.
+- Image dựng trên giả định chạy root (ghi vào {{/app}}) → phải sửa Dockerfile ({{chown}} thư mục cần ghi, hoặc chuyển sang đường dẫn mount).
+
+### Trên production
+- **Sự cố thật:** container chạy root bị RCE qua lỗ hổng dependency; kẻ tấn công cài công cụ đào coin vào {{/tmp}}. Với read-only rootfs + {{/tmp}} là tmpfs có {{noexec}} (nâng cao) và drop capabilities, tác động bị thu hẹp.
+- **Kiểm tra:** {{docker inspect}} xem {{ReadonlyRootfs}}, {{CapDrop}}; trên K8s dùng {{kubectl auth can-i --as=system:serviceaccount:...}} và công cụ policy (Kyverno/OPA) để bắt pod vi phạm. Quét cấu hình bằng {{trivy config}} hoặc {{kube-bench}}/policy audit.
+
+> Senior tip: Gia cố runtime là "phòng thủ theo chiều sâu" — image sạch (ít CVE) nhưng chạy privileged vẫn nguy hiểm. Hãy đặt Pod Security Admission mức {{restricted}} cho namespace prod và biến vi phạm thành lỗi CI (render manifest rồi quét) thay vì vá sau khi đã lên cụm.`,
+    follow: [
+      'Khác nhau giữa allowPrivilegeEscalation: false và chạy non-root là gì?',
+      'Khi nào thực sự cần thêm lại một capability, và quy trình phê duyệt ra sao?',
+      'Seccomp profile RuntimeDefault chặn điều gì và khi nào app bị ảnh hưởng?'
+    ],
+    tags: ['Docker', 'Kubernetes', 'securityContext', 'non-root', 'capabilities', 'read-only', 'hardening'],
+    refs: [
+      { type: 'doc', title: 'Pod Security Standards', url: 'https://kubernetes.io/docs/concepts/security/pod-security-standards/' },
+      { type: 'doc', title: 'Security options for Docker', url: 'https://docs.docker.com/engine/containers/run/#security' }
+    ]
+  },
+  {
+    id: 'devops-115',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Làm sao xây chuỗi tin cậy cho container image: quét lỗ hổng image và dependency (Trivy, Dependabot), tạo SBOM, ký image và chỉ cho phép cluster chạy image từ registry tin cậy/đã ký?',
+    a: `**Tóm tắt:** **Chuỗi cung ứng phần mềm (software supply chain)** của container gồm: mã nguồn → dependency → image → registry → runtime. Cần nhiều lớp: **SCA/Dependabot** cảnh báo lỗ hổng dependency trong mã, **Trivy** quét image (OS package + dependency app) và cấu hình, **SBOM** (Software Bill of Materials — "bảng kê nguyên liệu" liệt kê thành phần trong image) để truy vết nhanh khi có CVE mới, **ký image** (Cosign) để chứng minh nguồn gốc, và **admission policy** (Kyverno/OPA Gatekeeper/cosign policy) để cluster **từ chối** image không đến từ registry tin cậy hoặc chưa ký.
+
+### Thuật ngữ
+- **CVE**: mã định danh một lỗ hổng bảo mật công khai.
+- **SCA (Software Composition Analysis)**: phân tích thành phần/thư viện bên thứ ba để tìm CVE và vấn đề license.
+- **SBOM**: danh sách thành phần (tên, phiên bản, nguồn) đóng gói trong phần mềm/image; giúp trả lời "log4j 2.14 có trong image nào?".
+- **Image signing**: gắn chữ ký số vào image trong registry; bên chạy xác minh chữ ký khớp key/identity tin cậy.
+- **Admission controller/policy**: thành phần chặn đối tượng Kubernetes không đạt chính sách trước khi tạo.
+
+### Các lớp kiểm soát
+| Lớp | Công cụ ví dụ | Phát hiện/chặn gì | Chạy khi nào |
+|---|---|---|---|
+| Dependency (mã) | Dependabot, Renovate, {{trivy fs}} | CVE trong {{pom.xml}}/{{build.gradle}} | PR/định kỳ |
+| Image | {{trivy image}} | CVE OS + app deps trong image | Sau build, trước promote |
+| Config/IaC | {{trivy config}} | Dockerfile/K8s manifest rủi ro | CI |
+| SBOM | {{trivy image --format cyclonedx}} / Syft | Bảng kê thành phần | Gắn vào artifact mỗi build |
+| Ký image | Cosign (Sigstore) | Chứng minh image do pipeline tin cậy tạo | Sau push registry |
+| Chỉ chạy image tin cậy | Kyverno, Gatekeeper, Connaisseur | Từ chối image sai registry/chưa ký | Lúc deploy (admission) |
+
+### Ví dụ lệnh (khái niệm, chạy trong CI)
+~~~bash
+# 1) Quét image đã build (fail CI nếu có HIGH/CRITICAL đã có bản vá)
+trivy image --severity HIGH,CRITICAL --ignore-unfixed \
+  --exit-code 1 my-registry.local/order-api:1.4.2
+
+# 2) Tạo SBOM (CycloneDX) và lưu kèm artifact
+trivy image --format cyclonedx --output sbom.json my-registry.local/order-api:1.4.2
+
+# 3) Ký image bằng Cosign (keyless/OIDC trong CI, hoặc key quản lý an toàn)
+cosign sign --yes my-registry.local/order-api@sha256:3b1c...
+
+# 4) Xác minh chữ ký (thực hiện bởi policy/admission hoặc bước kiểm tra)
+cosign verify --certificate-identity-regexp "https://gitlab.myco/.+" \
+  --certificate-oidc-issuer "https://gitlab.myco" \
+  my-registry.local/order-api@sha256:3b1c...
+~~~
+
+### Chính sách "chỉ chạy image từ registry tin cậy" (ý tưởng Kyverno)
+~~~yaml
+# Rút gọn ý tưởng: chỉ cho phép image từ registry nội bộ
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: allow-trusted-registry
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: validate-registry
+      match:
+        resources:
+          kinds: ["Pod"]
+      validate:
+        message: "Image must come from trusted registry"
+        pattern:
+          spec:
+            containers:
+              - image: "my-registry.local/*"   # chỉ registry nội bộ được phép
+~~~
+
+### Trên production
+- **Sự cố thật:** CVE nghiêm trọng công bố ở một thư viện logging; không có SBOM nên mất hàng ngày rà từng service. Có SBOM + registry inventory, truy vấn "image nào chứa lib X version Y" trả lời trong phút.
+- **Sự cố thật:** dev {{kubectl run}} image {{docker.io/...}} lạ để debug → rủi ro mã độc. Admission chặn image ngoài registry nội bộ.
+- **Quy trình:** quét tạo tín hiệu (PR/CI), nhưng chính sách chặn (admission) mới là điểm kiểm soát cuối. Xử lý CVE: phân loại reachable/không, nâng bản vá, rebuild image (base image patch định kỳ) rồi promote lại.
+
+> Senior tip: "Quét" mà không có "chặn" thì chỉ là báo cáo. Hãy khóa pipeline theo digest ({{@sha256:...}}) chứ không phải tag trôi ({{latest}}), vì tag có thể trỏ sang image khác sau khi đã quét/đã ký.`,
+    follow: [
+      'Khác nhau giữa ký image bằng key pair và ký keyless (OIDC) của Cosign?',
+      'Vì sao nên tham chiếu image bằng digest thay vì tag trong manifest production?',
+      'Làm sao cân bằng chính sách chặn CVE nghiêm trọng với nhu cầu hotfix gấp?'
+    ],
+    tags: ['Trivy', 'SBOM', 'Cosign', 'supply chain', 'registry', 'Kyverno', 'CVE'],
+    refs: [
+      { type: 'doc', title: 'Trivy documentation', url: 'https://trivy.dev/latest/docs/' },
+      { type: 'doc', title: 'Sigstore Cosign', url: 'https://docs.sigstore.dev/cosign/' }
+    ]
+  },
+  {
+    id: 'devops-116',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Chạy database (PostgreSQL/MySQL) bằng Docker: khi nào phù hợp, khi nào rủi ro? Bạn thiết kế backup/restore cho dữ liệu trong volume, healthcheck, và các vấn đề bộ nhớ/hiệu năng cần lưu ý ra sao?',
+    a: `**Tóm tắt:** Chạy database bằng Docker **rất hợp** cho dev/test/CI (tái lập nhanh, cùng phiên bản cho cả team) nhưng **rủi ro cao** cho production nếu team chưa có năng lực vận hành stateful (lưu trữ bền, backup, failover, giám sát I/O). Dữ liệu phải nằm trên **volume** (không phải lớp ghi ephemeral), backup nên dùng công cụ native ({{pg_dump}}/{{mysqldump}} hoặc snapshot nhất quán) chứ không chỉ copy file khi DB đang chạy, healthcheck phải kiểm tra DB thực sự nhận truy vấn, và cần chú ý bộ nhớ ({{shared_buffers}} vs giới hạn container, {{shm_size}}).
+
+### Thuật ngữ
+- **Stateful**: có trạng thái/dữ liệu phải giữ qua lần khởi động lại (ngược với stateless).
+- **Ephemeral storage**: lưu trữ tạm, mất khi container bị xoá.
+- **Volume snapshot**: bản chụp nhanh của block storage; cần phối hợp với DB để đảm bảo nhất quán (consistent).
+- **shm (shared memory)**: vùng nhớ chia sẻ giữa tiến trình; PostgreSQL dùng cho shared buffers một phần cơ chế.
+
+### Khi nào dùng / khi nào tránh
+| Bối cảnh | Dùng Docker cho DB? | Lý do |
+|---|---|---|
+| Dev local, onboarding | Nên | Một lệnh dựng đúng phiên bản, dễ reset |
+| CI integration test | Nên (ephemeral) | Mỗi job một DB sạch, hủy sau khi chạy |
+| Staging giống prod (có kiểm soát) | Cân nhắc | Chấp nhận được nếu có backup/monitoring |
+| Production quan trọng, team nhỏ | Thường **không** | Rủi ro mất dữ liệu, failover phức tạp; cân nhắc managed DB (RDS/Cloud SQL) |
+| Production, team có năng lực K8s + storage | Có thể (StatefulSet/operator) | Cần operator (ví dụ CloudNativePG), storage class tốt, quy trình rõ |
+
+### Ví dụ chạy PostgreSQL bền vững cho dev/test
+~~~yaml
+services:
+  db:
+    image: postgres:16-alpine
+    shm_size: 128mb                    # tránh lỗi shared memory với một số cấu hình
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password  # file, không lộ qua env dài hạn
+    secrets:
+      - db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro  # script .sql/.sh chỉ chạy khi data dir trống
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Giới hạn bộ nhớ container (tùy môi trường), cần hiểu shared_buffers
+    # deploy/resources hoặc --memory; tránh để DB tranh hết RAM host
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt      # dev: file local không commit
+volumes:
+  pgdata:
+~~~
+
+### Backup và restore (nguyên tắc)
+- **Logical backup (khuyến nghị cho portable):** {{pg_dump}} tạo file SQL/định dạng nén, khôi phục bằng {{pg_restore}}/{{psql}}. Chạy khi DB đang hoạt động (nhất quán ở mức snapshot giao dịch của dump).
+~~~bash
+# Backup (chạy từ host, exec vào container hoặc dùng psql client)
+docker exec -t db pg_dump -U app -d orders -Fc -f /tmp/orders.dump
+docker cp db:/tmp/orders.dump ./backups/orders-$(date +%F).dump
+
+# Restore vào DB trống
+docker cp ./backups/orders-2026-11-06.dump db:/tmp/orders.dump
+docker exec -t db pg_restore -U app -d orders --clean --if-exists /tmp/orders.dump
+~~~
+- **Volume/file copy:** chỉ an toàn khi DB **đã dừng** hoặc dùng cơ chế freeze/snapshot nhất quán; copy thư mục data đang ghi có thể hỏng cụm.
+- Luôn **thử restore** định kỳ (backup chưa restore chưa phải backup).
+
+### Bộ nhớ và hiệu năng
+- PostgreSQL dùng {{shared_buffers}} (cấu hình DB) và OS cache. Nếu đặt {{shared_buffers}} cao nhưng container bị giới hạn RAM thấp (cgroup), có thể OOM-kill. Căn {{shared_buffers}} hợp lý với giới hạn container/host.
+- {{shm_size}} mặc định của Docker có thể nhỏ; một số workload/hình ảnh cần tăng.
+- Gắn volume lên đĩa nhanh; trên Docker Desktop hiệu năng I/O khác Linux native.
+
+### Trên production
+- **Sự cố thật:** đặt DB trong container không có volume (dùng lớp ghi) → {{docker rm}} mất sạch dữ liệu.
+- **Sự cố thật:** script trong {{/docker-entrypoint-initdb.d}} "không chạy" — vì thư mục data đã có dữ liệu từ lần trước; init script chỉ chạy khi khởi tạo lần đầu (data dir trống).
+- **Kiểm tra:** giám sát dung lượng volume, thời gian backup, cảnh báo khi restore test thất bại; {{pg_isready}} chỉ báo nhận kết nối, không thay thế kiểm tra ứng dụng/query thực.
+
+> Senior tip: "Chạy được" trong Docker không đồng nghĩa "an toàn cho production". Với dữ liệu tiền/bệnh án/đơn hàng, câu hỏi không phải là Docker có chạy DB được không, mà là team có quy trình backup-restore-failover đã diễn tập chưa; nếu chưa, managed database thường rẻ hơn một lần mất dữ liệu.`,
+    follow: [
+      'Vì sao depends_on: service_started chưa đủ để đảm bảo DB sẵn sàng nhận query?',
+      'Khác nhau giữa pg_dump (logical) và snapshot volume/đĩa ở mức độ phục hồi?',
+      'Khi nào dùng StatefulSet và operator (ví dụ CloudNativePG) thay vì container đơn lẻ?'
+    ],
+    tags: ['Docker', 'PostgreSQL', 'database', 'volume', 'backup', 'healthcheck', 'shm_size'],
+    refs: [
+      { type: 'doc', title: 'Docker Official Image: postgres', url: 'https://hub.docker.com/_/postgres' },
+      { type: 'doc', title: 'PostgreSQL backup and restore', url: 'https://www.postgresql.org/docs/current/backup.html' }
+    ]
+  },
+  {
+    id: 'devops-117',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn chuẩn hóa Docker Compose cho môi trường dev của team Java (app + Postgres + Redis + Kafka): ngoài "chạy lên được", các bẫy thường gặp là gì (depends_on, init, port, rebuild image, dữ liệu cũ) và bạn thiết kế thế nào để mọi người trong team có trải nghiệm giống nhau?',
+    a: `**Tóm tắt:** Compose cho dev không chỉ là danh sách service mà là **môi trường có thể tái lập**. Bẫy phổ biến: {{depends_on}} không đợi DB thực sự sẵn sàng, Kafka/Zookeeper/KRaft khởi động chậm và cấu hình listener sai, init script DB chỉ chạy lần đầu, port xung đột giữa máy dev, image build cũ do quên {{--build}}, và dữ liệu volume cũ làm hành vi "khác máy". Giải pháp: healthcheck + {{service_healthy}}, pin version image, profile cho service nặng, quy ước {{.env}} không commit secret, lệnh reset rõ ràng, và tài liệu "một lệnh chạy".
+
+### Thuật ngữ
+- **Tái lập (reproducible)**: người khác chạy cùng bước cho ra môi trường tương đương.
+- **Pin version/digest**: cố định phiên bản ({{postgres:16.3-alpine}}) hoặc digest để tránh "hôm nay kéo image khác hôm qua".
+- **Profile**: nhóm service tùy chọn trong Compose, chỉ bật khi cần (giảm tải máy dev).
+- **Init script**: script chạy khi khởi tạo lần đầu (ví dụ {{/docker-entrypoint-initdb.d}}).
+
+### Các bẫy thường gặp và cách xử lý
+| Bẫy | Triệu chứng | Vì sao | Cách xử lý |
+|---|---|---|---|
+| {{depends_on}} mặc định | App lỗi kết nối DB lúc khởi động | Chỉ đợi container start, chưa healthy | {{condition: service_healthy}} + healthcheck thật |
+| Init DB chỉ chạy lần đầu | Đổi file init nhưng DB vẫn schema cũ | Init bỏ qua nếu data dir đã có dữ liệu | {{docker compose down -v}} khi cần reset, hoặc dùng migration (Flyway) |
+| Kafka listener sai | App trong container nối được, app trên host không (hoặc ngược lại) | {{ADVERTISED_LISTENERS}} phải đúng ngữ cảnh trong/ngoài Docker | Cấu hình 2 listener (internal/external) theo image Kafka dùng |
+| Port conflict | {{bind: address already in use}} | Máy dev đã có 5432/6379 chạy | Cho phép override port qua {{.env}} ({{DB_PORT=15432}}) |
+| Image cũ | Sửa code nhưng container chạy bản cũ | Compose dùng image đã build sẵn | {{docker compose up --build}} hoặc tách profile build |
+| Volume dữ liệu cũ | Test pass máy A, fail máy B | State còn sót từ lần chạy trước | Lệnh reset chuẩn; migration idempotent |
+| Resource ăn hết máy | Laptop nóng, Docker treo | Kafka/ES nặng | {{profiles}}, giới hạn {{mem_limit}}/deploy.resources (tùy Compose), chỉ bật service cần |
+
+### Ví dụ khung Compose cho team (rút gọn, có comment)
+~~~yaml
+# compose.yaml - chạy: docker compose --profile kafka up -d
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/orders
+      SPRING_DATA_REDIS_HOST: redis
+    ports:
+      - "\${APP_PORT:-8080}:8080"       # override qua .env nếu xung đột
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    image: postgres:16.3-alpine        # pin version, tránh :latest
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: \${DB_PASSWORD:-devpass}  # dev mặc định; không commit secret thật
+    ports:
+      - "\${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.2-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: bitnami/kafka:3.7           # ví dụ; kiểm tra biến cấu hình theo image thực tế
+    profiles: ["kafka"]                # chỉ bật khi cần: giảm tải máy dev
+    environment:
+      # Cấu hình listener phụ thuộc image/mode (KRaft/ZK); đọc kỹ README image
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+
+volumes:
+  pgdata:
+~~~
+
+### Thực hành giúp team đồng bộ
+- Commit {{compose.yaml}} + {{.env.example}} (không commit {{.env}} có secret thật). README ghi: chạy, reset ({{down -v}}), xem log, bật profile.
+- Dùng **Flyway/Liquibase** cho schema thay vì trông chờ init script — migration chạy được lặp lại và khớp mọi môi trường.
+- Với Java dev: hot reload trong container cần mount source + cấu hình build tool; đơn giản hơn là chạy app trên IDE, chỉ để DB/Redis/Kafka trong Compose (hybrid) — chọn một cách và chuẩn hóa.
+
+> Senior tip: Môi trường dev "gần prod" là mục tiêu tốt, nhưng đừng copy y nguyên bảo mật/prod topology vào laptop. Tối ưu cho vòng phản hồi nhanh và khả năng reset; khác biệt có chủ đích (ví dụ không bật TLS nội bộ ở dev) phải được ghi rõ để không bất ngờ khi lên staging.`,
+    follow: [
+      'Khi nào nên chạy app Java trên IDE còn hạ tầng trong Compose (hybrid) thay vì container hóa cả app?',
+      'Làm sao xử lý xung đột port khi nhiều dev chạy nhiều bản sao stack trên cùng máy?',
+      'Vì sao không nên dùng tag :latest cho image hạ tầng trong Compose của team?'
+    ],
+    tags: ['Docker Compose', 'dev environment', 'healthcheck', 'profiles', 'Kafka', 'Flyway']
+  },
+  {
+    id: 'devops-118',
+    topic: 'devops',
+    level: 'lead',
+    q: 'So sánh quản lý secret cho ứng dụng Java/container bằng biến môi trường, file mount, và hệ thống chuyên dụng (Vault, AWS Secrets Manager). Vì sao biến môi trường có rủi ro, và bạn thiết kế cơ chế xoay vòng (rotation) secret thế nào để không làm gián đoạn dịch vụ?',
+    a: `**Tóm tắt:** **Secret** (mật khẩu DB, API key, chứng chỉ) cần được lưu, phân phối và xoay vòng an toàn. **Biến môi trường** tiện nhưng dễ lộ qua log, crash dump, trang debug, hoặc {{/proc/<pid>/environ}} và bị kế thừa xuống tiến trình con. **File mount** (đặc biệt tmpfs/in-memory, như Kubernetes Secret volume) giảm lộ "vô tình" và hỗ trợ cập nhật file, nhưng app phải đọc lại. **Vault/AWS Secrets Manager** (hoặc cơ chế tương đương) tập trung hóa, kiểm soát truy cập (IAM/policy), audit, và hỗ trợ **rotation**; ứng dụng lấy secret lúc chạy (SDK/sidecar/External Secrets) và dùng **credential ngắn hạn** khi có thể. Rotation an toàn cần hai pha (chấp nhận cả secret cũ và mới trong cửa sổ chuyển tiếp) và quy trình reload/restart có kiểm soát.
+
+### Thuật ngữ
+- **Secret sprawl**: secret bị sao chép khắp nơi (repo, CI, chat, máy dev) khó kiểm soát.
+- **Rotation (xoay vòng)**: thay secret định kỳ hoặc khi nghi ngờ lộ; mục tiêu là giảm thời gian secret bị lợi dụng.
+- **Dynamic secret**: secret do hệ thống cấp phát ngắn hạn theo yêu cầu (ví dụ Vault cấp user DB tạm), hết hạn tự vô hiệu.
+- **Least privilege**: chỉ cấp quyền đọc đúng secret mà service cần.
+
+### So sánh phương án phân phối
+| Phương án | Ưu điểm | Rủi ro/hạn chế | Khi dùng |
+|---|---|---|---|
+| Biến môi trường | Đơn giản, 12-factor quen thuộc | Lộ qua log/debug/dump/{{/proc}}, kế thừa tiến trình con, khó audit truy cập chi tiết, đổi giá trị thường cần restart | Dev/local; secret ít nhạy cảm; chấp nhận rủi ro có kiểm soát |
+| File mount (in-memory) | Không hiện trong env; K8s có thể cập nhật file (trừ subPath) | App phải đọc file/reload; quyền file phải chặt; vẫn là "secret tĩnh" nếu không rotation | K8s Secret volume, Docker secrets/file; tốt hơn env cho đa số trường hợp |
+| Vault / AWS Secrets Manager + fetch lúc chạy | Tập trung, IAM/policy, audit, rotation, có thể dynamic/short-lived | Phụ thuộc hạ tầng secret; cần xử lý cache, hết hạn, lỗi mạng | Production, nhiều service, yêu cầu compliance/audit |
+
+### Vì sao biến môi trường rủi ro (cơ chế)
+1. Nhiều framework/endpoint debug in cấu hình; một dòng log một dòng log in cả object cấu hình (chứa secret) ra console có thể lộ secret.
+2. Trên Linux, tiến trình cùng quyền (hoặc kịch bản leo thang) có thể đọc {{/proc/<pid>/environ}}.
+3. Tiến trình con kế thừa env; gọi lệnh ngoài ({{Runtime.exec}}, script) có thể vô tình mang theo secret.
+4. Secret đặt trong env của {{docker inspect}}/manifest không được mã hóa như người ta tưởng — cần kiểm soát ai xem được metadata.
+
+### Rotation không gián đoạn (mẫu hai pha)
+~~~text
+T0: DB chấp nhận password P1 (đang dùng)
+T1: Tạo password P2, cấu hình DB chấp nhận CẢ P1 và P2 (cửa sổ chuyển tiếp)
+T2: Phát P2 tới app (Secret Manager cập nhật / Vault lease mới)
+T3: App nạp P2 (reload) và mở kết nối mới bằng P2; kết nối cũ tự hết theo pool
+T4: Xác nhận không còn kết nối dùng P1 -> thu hồi P1
+~~~
+- Với **dynamic secret** (DB credential do Vault cấp theo TTL), app xin credential mới trước khi hết hạn và hủy cái cũ — giảm nhu cầu "password sống mãi".
+- Trên Spring, lấy secret lúc khởi động là đơn giản nhưng đổi secret cần restart; muốn reload cần cơ chế refresh (cẩn thận với connection pool). Nhiều team chọn **rolling restart** có kiểm soát sau khi secret đổi thay vì reload phức tạp, miễn downtime được thiết kế (nhiều replica).
+
+### Trên production
+- **Sự cố thật:** API key commit vào repo rồi đưa vào image → lộ vĩnh viễn trong lịch sử. Xử lý: thu hồi/xoay key ngay, xóa khỏi lịch sử (nhưng coi như đã lộ), chuyển sang secret manager.
+- **Sự cố thật:** rotation đổi DB password một phía → toàn bộ app mất kết nối. Nguyên nhân: không có cửa sổ chấp nhận kép và không có thứ tự phối hợp.
+- **Kiểm tra:** audit log "ai đọc secret nào lúc nào", cảnh báo secret sắp hết hạn/chưa rotate, quét repo/image (secret scanning) trong CI.
+
+> Senior tip: Mục tiêu trưởng thành không phải "giấu secret khỏi code" (bước 1) mà là **giảm blast radius**: secret ngắn hạn, phạm vi hẹp, có audit, rotation tự động, và app chịu được thay đổi credential. Khi phỏng vấn, hãy nói rõ trade-off: reload phức tạp vs rolling restart đơn giản nhưng cần nhiều replica.`,
+    follow: [
+      'Làm sao ứng dụng Java nhận secret mới khi dùng connection pool mà không rớt request?',
+      'External Secrets Operator giải quyết bài toán gì trong Kubernetes?',
+      'Khác nhau giữa xoay vòng secret tĩnh (đổi mật khẩu) và dùng credential động ngắn hạn?'
+    ],
+    tags: ['secrets', 'Vault', 'AWS Secrets Manager', 'rotation', 'security', 'least privilege'],
+    refs: [
+      { type: 'doc', title: 'AWS Secrets Manager rotation', url: 'https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotating-secrets.html' },
+      { type: 'doc', title: 'Kubernetes Secrets', url: 'https://kubernetes.io/docs/concepts/configuration/secret/' }
+    ]
+  },
+  {
+    id: 'devops-119',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Với tư cách tech lead, bạn thiết lập "đường ray an toàn" cho container của các team Java: chỉ chạy image từ registry tin cậy, image đã ký/đã quét, và xử lý thế nào khi một CVE nghiêm trọng được công bố trên image đang chạy ngoài production?',
+    a: `**Tóm tắt:** Ở quy mô nhiều team, an toàn container không dựa vào kỷ luật cá nhân mà dựa vào **đường ray (guardrails)** tự động: (1) một **registry tin cậy** nội bộ là nguồn phát hành duy nhất, có proxy/cache upstream có kiểm soát; (2) pipeline chuẩn **build → quét → tạo SBOM → ký → promote** và chỉ artifact đạt chuẩn mới được đẩy sang registry prod; (3) **admission policy** trên cluster chặn image sai nguồn/chưa ký/vi phạm baseline; (4) khi CVE nghiêm trọng (zero-day hoặc CVSS cao) xuất hiện, dùng SBOM/inventory để xác định phạm vi ảnh hưởng trong phút, phân loại mức độ khai thác được, rồi **rebuild + rolling deploy** hoặc áp dụng biện pháp giảm thiểu tạm thời, có kênh liên lạc và mốc thời gian rõ.
+
+### Thuật ngữ
+- **Registry tin cậy**: kho image được tổ chức kiểm soát (Harbor/ECR/GAR với policy), tách biệt dev/prod, có quét và kiểm soát truy cập.
+- **Guardrails**: rào chắn tự động cho phép đi nhanh trong giới hạn an toàn (khác với "cổng phê duyệt tay" mọi bước).
+- **CVSS**: thang điểm mức độ nghiêm trọng lỗ hổng; điểm cao chưa chắc bị khai thác trong ngữ cảnh của bạn.
+- **Blast radius**: phạm vi ảnh hưởng nếu một thành phần bị tấn công.
+
+### Kiến trúc đường ray (mô hình tham chiếu)
+| Chặng | Kiểm soát | Bằng chứng |
+|---|---|---|
+| Source/PR | Secret scanning, SCA dependency, review | Trạng thái check bắt buộc |
+| Build | Base image phê duyệt, Dockerfile lint, build tái lập | Log CI, digest image |
+| Verify | {{trivy image/config}}, SBOM, unit/integration test | Báo cáo quét + SBOM gắn artifact |
+| Trust | Ký image (Cosign, gắn identity CI) | Chữ ký trong registry |
+| Promote | Chỉ promote digest đã qua verify; replicate sang registry prod | Tag bất biến theo release |
+| Admit | Policy: registry cho phép + chữ ký + baseline securityContext | Admission deny + audit log |
+| Run | Runtime tối thiểu đặc quyền, network policy, quan sát | Alert bất thường, drift detection |
+
+### Quy trình ứng phó CVE nghiêm trọng trên image đang chạy
+1. **Nhận tín hiệu:** feed CVE/advisory, Dependabot, cảnh báo scanner liên tục trên registry.
+2. **Xác định phạm vi (nhanh):** tra SBOM/inventory: service nào, image/tag/digest nào chứa package/lib ảnh hưởng? Có mặt ở prod không?
+3. **Phân loại:** có bản vá không ({{fixed version}})? có bị khai thác trong ngữ cảnh của ta không (service có expose đường dẫn đó, có input không tin cậy)? Quyết định: vá ngay, giảm thiểu tạm, hoặc chấp nhận có theo dõi (ghi nhận bằng văn bản).
+4. **Giảm thiểu tạm (nếu chưa kịp vá):** rule WAF, tắt tính năng, network policy chặn đường khai thác, tăng giám sát — chỉ là tạm thời.
+5. **Vá gốc:** nâng dependency/base image, rebuild, quét lại, ký, deploy rolling (ưu tiên dịch vụ rủi ro cao/mặt ngoài). Với base OS CVE, rebuild image thường đủ; với lib Java, bump version trong {{pom.xml}}/{{build.gradle}}.
+6. **Xác minh & hậu kiểm:** xác nhận digest mới đang chạy, quét lại sạch (hoặc còn CVE chấp nhận), rút kinh nghiệm (vì sao mất bao lâu để biết phạm vi? SBOM có đủ không?).
+
+### Cân bằng tốc độ và an toàn
+- **Tự động hóa quyết định lặp lại:** chặn tự động HIGH/CRITICAL có bản vá trên main/prod artifact; cho phép ngoại lệ có hạn (ticket + chủ sở hữu + ngày hết hạn) thay vì "tắt scanner".
+- **Nền tảng cung cấp đường mặc định an toàn:** base image chuẩn, template Dockerfile/Helm đã harden, pipeline dùng chung — team sản phẩm không phải tự phát minh.
+- **Đo lường:** thời gian từ "CVE công bố" đến "biết phạm vi" và đến "prod chạy bản vá"; tỉ lệ image prod ký hợp lệ; số lần admission từ chối (tín hiệu guardrail hoạt động).
+
+> Senior tip: KPI "không có CVE" là ảo; KPI hữu ích là **mean time to remediate** và khả năng trả lời "ta có bị ảnh hưởng không?" trong vài phút nhờ SBOM. Khi nói với lãnh đạo, hãy khung an toàn container như năng lực giao hàng: guardrails tốt giúp team ship nhanh hơn vì bớt tranh luận ad-hoc ở phút cuối.`,
+    follow: [
+      'Bạn ưu tiên vá những CVE nào trước khi nguồn lực có hạn (CVSS, khả năng khai thác, mức phơi bày)?',
+      'Làm sao xử lý ngoại lệ (exception) cho một CVE chưa có bản vá mà business vẫn cần deploy?',
+      'Khác nhau giữa kiểm soát ở CI (shift-left) và kiểm soát ở admission/runtime (shift-right) và vì sao cần cả hai?'
+    ],
+    tags: ['container security', 'supply chain', 'CVE response', 'SBOM', 'guardrails', 'leadership'],
+    refs: [
+      { type: 'doc', title: 'SLSA supply-chain levels', url: 'https://slsa.dev/' },
+      { type: 'doc', title: 'Trivy vulnerability scanning', url: 'https://trivy.dev/latest/docs/scanner/vulnerability/' }
+    ]
+  },
+  {
+    id: 'devops-120',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service trong Kubernetes có những loại nào (ClusterIP, NodePort, LoadBalancer, ExternalName)? Ingress hoạt động ra sao: mô tả luồng request từ domain qua LB, ingress-nginx, Service tới Pod, cách viết path/host rule, dùng annotation (timeout, body size) và cấu hình TLS với cert-manager.',
+    a: `**Tóm tắt:** Service tạo địa chỉ ổn định trước các Pod: ClusterIP chỉ dùng nội bộ cluster, NodePort mở cổng trên mọi node, LoadBalancer nhờ cloud cấp LB ngoài, ExternalName ánh xạ sang DNS ngoài. Ingress là tập rule L7 (host/path/TLS) do Ingress controller (ví dụ ingress-nginx) thực thi: request đi từ DNS → Load Balancer → ingress-nginx Pod → Service → Pod. cert-manager tự động xin và gia hạn chứng chỉ TLS cho Ingress.
+
+### Hiểu nhanh
+Hãy tưởng tượng một khu chung cư. **Service** là số điện thoại nội bộ của một phòng ban: dù nhân viên (Pod) thay đổi, số nội bộ vẫn giữ nguyên. **ClusterIP** là số chỉ gọi được từ trong toà nhà; **NodePort** là mở thêm một số máy lẻ ở sảnh mỗi tầng để người ngoài gọi vào; **LoadBalancer** là thuê tổng đài bên ngoài (cloud) nhận cuộc gọi rồi chuyển vào; **ExternalName** giống ghi danh bạ "gọi phòng này thì quay số đối tác bên ngoài". **Ingress** là quầy lễ tân tầng trệt: đọc tên công ty trên thư (host) và phòng ban (path) để chuyển đúng chỗ, đồng thời kiểm tra con dấu bảo mật (TLS). **cert-manager** là nhân viên tự đi xin và gia hạn giấy phép bảo mật trước khi hết hạn.
+
+### Thuật ngữ (giải thích lần đầu)
+- **ClusterIP**: kiểu Service mặc định, cấp một IP ảo chỉ truy cập được bên trong cluster.
+- **NodePort**: kiểu Service mở một cổng (mặc định 30000–32767) trên **mọi node** (máy chủ trong cluster); traffic vào cổng đó được chuyển tới Service.
+- **LoadBalancer**: kiểu Service yêu cầu nhà cung cấp cloud (AWS, GCP, Azure) tạo một load balancer có IP public trỏ vào Service.
+- **ExternalName**: kiểu Service trả về một bản ghi CNAME DNS trỏ sang tên miền bên ngoài, không có proxy hay ClusterIP.
+- **Ingress**: tài nguyên Kubernetes khai báo rule định tuyến HTTP/HTTPS (theo host, path) từ bên ngoài vào các Service.
+- **Ingress controller**: chương trình thực thi rule Ingress (ingress-nginx, HAProxy, Traefik...). Bản thân nó chạy như Pod; nếu không cài controller, tài nguyên Ingress không có tác dụng.
+- **TLS (Transport Layer Security)**: giao thức mã hoá kết nối HTTPS; cần chứng chỉ (certificate) do một CA (Certificate Authority) cấp.
+- **cert-manager**: controller Kubernetes tự động xin, gia hạn và lưu chứng chỉ TLS (thường từ Let's Encrypt) vào Secret.
+- **Annotation**: cặp key-value gắn thêm vào tài nguyên để controller đọc cấu hình mở rộng (mỗi controller có bộ annotation riêng).
+
+### Luồng request từ domain tới Pod
+~~~seq
+title: Luồng request HTTPS qua Ingress
+actors: User | DNS/LB | ingress-nginx | Service | Pod
+User -> DNS/LB: GET https://shop.bank.vn/api/orders
+note DNS/LB..ingress-nginx: DNS trỏ shop.bank.vn -> IP public của Load Balancer
+DNS/LB -> ingress-nginx: Chuyển TCP 443 vào Pod ingress-nginx
+ingress-nginx -> ingress-nginx: Kết thúc TLS, khớp host+path rule
+ingress-nginx -> Service: Proxy tới order-svc:80
+Service -> Pod: Chọn Pod Ready (EndpointSlice), gửi tới :8080
+Pod --> ingress-nginx: HTTP 200 JSON
+ingress-nginx --> User: HTTPS 200 (mã hoá lại)
+~~~
+
+### 4 loại Service và khi nào dùng
+| Loại | Phạm vi truy cập | Dùng khi | Lưu ý |
+|---|---|---|---|
+| ClusterIP | Chỉ trong cluster | Service-to-service (order gọi payment qua {{http://payment-svc}}) | Mặc định; an toàn nhất |
+| NodePort | Ngoài cluster qua {{<NodeIP>:30000-32767}} | On-prem không có cloud LB, hoặc LB ngoài tự trỏ vào node | Mở cổng trên mọi node; phải quản lý firewall |
+| LoadBalancer | IP public do cloud cấp | Muốn mỗi Service có LB riêng (ít dùng) hoặc expose Ingress controller | Tốn chi phí mỗi LB; thường chỉ dùng 1 LB cho ingress-nginx |
+| ExternalName | Trả CNAME DNS | Gọi dịch vụ ngoài cluster bằng tên nội bộ (ví dụ {{db.external}} -> RDS endpoint) | Không proxy, không health check; chỉ là alias DNS |
+
+### Manifest Ingress: host/path rule, annotation, TLS
+~~~yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop-ingress
+  annotations:
+    # Annotation riêng cho ingress-nginx (controller khác tên khác)
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"   # chờ backend tối đa 60s
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"     # giới hạn body upload 10MB
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"     # cert-manager tự xin cert
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [shop.bank.vn]
+      secretName: shop-tls          # cert-manager sẽ tạo/cập nhật Secret này
+  rules:
+    - host: shop.bank.vn
+      http:
+        paths:
+          - path: /api/orders
+            pathType: Prefix        # khớp /api/orders và /api/orders/123
+            backend:
+              service: { name: order-svc, port: { number: 80 } }
+          - path: /api/payments
+            pathType: Prefix
+            backend:
+              service: { name: payment-svc, port: { number: 80 } }
+~~~
+
+### cert-manager xin TLS tự động thế nào
+~~~yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata: { name: letsencrypt-prod }
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ops@bank.vn
+    privateKeySecretRef: { name: letsencrypt-prod-key }
+    solvers:
+      - http01:
+          ingress: { class: nginx }  # cert-manager tạo route tạm để Let's Encrypt xác minh
+~~~
+Khi Ingress có annotation {{cert-manager.io/cluster-issuer}}, cert-manager tạo Certificate → gửi yêu cầu ACME → hoàn thành thử thách HTTP-01 qua Ingress → lưu cert/key vào Secret {{shop-tls}}. Nó tự gia hạn trước khi hết hạn (thường còn 30 ngày).
+
+### Trên production
+- **Lệnh kiểm tra:**
+~~~bash
+kubectl get ingress shop-ingress -o wide          # xem host, address, rules
+kubectl describe ingress shop-ingress             # events, backend, TLS secret
+kubectl get endpointslices -l kubernetes.io/service-name=order-svc  # Pod nào đang nhận
+kubectl logs -n ingress-nginx deploy/ingress-nginx-controller --tail=100  # lỗi 502/504
+kubectl get certificate,certificaterequest,challenge -A  # trạng thái cert-manager
+~~~
+- **Sự cố hay gặp:** (1) Ingress trả 503 "Service Temporarily Unavailable" vì Service không có endpoint (selector sai hoặc Pod chưa Ready). Kiểm tra {{kubectl get endpointslices}}. (2) Upload file lớn bị 413: chưa đặt {{proxy-body-size}}. (3) Backend xử lý lâu bị 504: timeout mặc định ingress-nginx là 60s; tăng {{proxy-read-timeout}} nhưng cũng phải xem app có tối ưu được không. (4) Cert không được cấp: {{kubectl describe challenge}} xem lỗi ACME (DNS chưa trỏ đúng, firewall chặn port 80 cho HTTP-01).
+- **IngressClass:** cluster có thể có nhiều controller; luôn đặt {{ingressClassName}} để rule đi đúng controller.
+
+> Senior tip: Chỉ tạo **một** Service kiểu LoadBalancer cho ingress-nginx và dùng Ingress để chia traffic cho nhiều service — tiết kiệm chi phí và IP public. Với ngân hàng, thường dùng private Load Balancer + WAF phía trước, và TLS kết thúc tại Ingress (hoặc passthrough nếu cần end-to-end). Luôn pin version ingress-nginx và theo dõi thông báo bảo mật; dự án ingress-nginx đã thông báo ngừng bảo trì (retirement), nên lên kế hoạch đánh giá Gateway API (HTTPRoute) cho các tính năng routing chuẩn hơn.`,
+    follow: [
+      'Sự khác nhau giữa pathType Prefix, Exact và ImplementationSpecific trong Ingress là gì? Cho ví dụ dễ nhầm.',
+      'TLS termination tại Ingress khác TLS passthrough thế nào? Khi nào ngân hàng cần end-to-end encryption?',
+      'Gateway API (HTTPRoute, Gateway) giải quyết hạn chế gì của Ingress và bạn sẽ cân nhắc chuyển khi nào?'
+    ],
+    tags: ['Kubernetes', 'Service', 'Ingress', 'TLS', 'cert-manager'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Service', url: 'https://kubernetes.io/docs/concepts/services-networking/service/' },
+      { type: 'doc', title: 'Kubernetes Ingress', url: 'https://kubernetes.io/docs/concepts/services-networking/ingress/' },
+      { type: 'doc', title: 'cert-manager: Securing Ingress Resources', url: 'https://cert-manager.io/docs/usage/ingress/' }
+    ]
+  },
+  {
+    id: 'devops-121',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Helm là gì và giải quyết vấn đề gì khi deploy ứng dụng Spring Boot lên Kubernetes? Hãy giải thích chart, values, release, các lệnh upgrade --install, rollback, helm template; và khi nào bạn tự viết chart, khi nào dùng Kustomize.',
+    a: `**Tóm tắt:** Helm là trình quản lý gói (package manager) cho Kubernetes: gom nhiều manifest YAML (Deployment, Service, Ingress, ConfigMap...) thành một **chart** có tham số hoá qua **values**; mỗi lần cài tạo một **release** có lịch sử để rollback. Dùng {{helm upgrade --install}} để triển khai lặp lại (idempotent), {{helm template}} để render YAML xem trước, {{helm rollback}} để quay lại bản cũ. Tự viết chart khi cần đóng gói tái sử dụng với nhiều biến cấu hình; dùng Kustomize khi muốn patch YAML thuần theo môi trường mà không cần template engine.
+
+### Hiểu nhanh
+Deploy một app Spring Boot lên K8s thường cần 5–10 file YAML (Deployment, Service, Ingress, ConfigMap, Secret, HPA...). Mỗi môi trường (dev/staging/prod) chỉ khác vài giá trị như số replica, image tag, domain. Copy-paste YAML rồi sửa tay rất dễ sai sót. **Helm** giống "bộ công thức nấu ăn + gia vị tuỳ chỉnh": chart là công thức (template YAML), values là gia vị (replica=2 hay 4, tag=v1.2.3), release là một nồi đã nấu (bản deploy đang chạy). Muốn đổi gia vị thì nấu lại nồi đó (upgrade) và luôn nhớ lần nấu trước để làm lại nếu dở (rollback). **Kustomize** thì khác: không dùng công thức có biến, mà giữ YAML gốc rồi "dán miếng vá" (patch) cho từng môi trường.
+
+### Thuật ngữ
+- **Chart**: gói Helm, là một thư mục chứa {{Chart.yaml}} (metadata), {{values.yaml}} (giá trị mặc định), và {{templates/}} (manifest YAML có placeholder dạng ngoặc nhọn kép, ví dụ tham chiếu {{.Values.image.tag}}).
+- **Values**: các biến cấu hình; có thể đặt trong {{values.yaml}}, file override ({{-f values-prod.yaml}}), hoặc {{--set key=value}}.
+- **Release**: một lần cài chart vào cluster với tên cụ thể; Helm lưu lịch sử release (revision) trong Secret của cluster.
+- **Repository**: kho chart (HTTP index) để chia sẻ chart công khai/nội bộ (ví dụ Bitnami, Harbor OCI).
+- **Idempotent**: chạy lặp lại cho cùng kết quả; {{upgrade --install}} sẽ cài nếu chưa có, nâng cấp nếu đã có.
+- **Render**: Helm thay placeholder trong template bằng values để sinh ra YAML Kubernetes thuần.
+
+### Cấu trúc chart tối giản
+~~~text
+payment-chart/
+  Chart.yaml          # name, version (chart), appVersion
+  values.yaml         # giá trị mặc định
+  templates/
+    deployment.yaml   # dùng \{{ .Values.image.tag }}, \{{ .Values.replicaCount }}
+    service.yaml
+    ingress.yaml
+    _helpers.tpl      # hàm/template dùng chung (tên, label)
+~~~
+~~~yaml
+# values.yaml (rút gọn)
+replicaCount: 2
+image:
+  repository: harbor.bank.local/core/payment
+  tag: "1.4.0"           # CI sẽ override khi deploy
+service: { port: 80, targetPort: 8080 }
+ingress:
+  enabled: true
+  host: payment.bank.vn
+resources:
+  requests: { cpu: 250m, memory: 512Mi }
+  limits:   { cpu: "1",   memory: 1Gi }
+~~~
+
+### Các lệnh Helm hay dùng (có comment)
+~~~bash
+# 1) Cài hoặc nâng cấp (idempotent) - dùng trong CI/CD
+helm upgrade --install payment ./payment-chart \
+  -n payment --create-namespace \       # namespace đích, tạo nếu chưa có
+  -f values-prod.yaml \                  # override theo môi trường
+  --set image.tag=1.4.7 \                # tag do CI build ra
+  --atomic --timeout 5m                  # lỗi thì tự rollback, chờ tối đa 5 phút
+
+# 2) Xem YAML sẽ được áp dụng (review trước khi chạy thật)
+helm template payment ./payment-chart -f values-prod.yaml --set image.tag=1.4.7
+
+# 3) Xem lịch sử và rollback
+helm history payment -n payment
+helm rollback payment 3 -n payment       # quay về revision 3
+
+# 4) Kiểm tra khác biệt (cần plugin helm-diff) và gỡ cài
+helm diff upgrade payment ./payment-chart -f values-prod.yaml
+helm uninstall payment -n payment
+~~~
+
+### Helm vs Kustomize: chọn cái nào
+| Tiêu chí | Helm | Kustomize |
+|---|---|---|
+| Cách tuỳ biến | Template + values (logic {{if/range}} trong YAML) | Patch/overlay trên YAML thuần (không template) |
+| Đóng gói tái sử dụng | Tốt: chart như thư viện, version hoá, publish repo | Kém hơn: thường copy base rồi patch |
+| Dễ đọc manifest | Khó hơn: phải render mới thấy YAML cuối | Dễ: YAML gần như nguyên bản |
+| Quản lý release/rollback | Có sẵn (history, rollback) | Không có; dựa vào GitOps controller (Argo CD/Flux) |
+| Hợp khi | Nhiều biến, cài phần mềm bên thứ ba (Postgres, Redis), cần gói tái dùng | Ít biến, muốn YAML thuần, GitOps thuần tuý |
+
+Trong thực tế nhiều đội dùng **cả hai**: Helm render chart bên thứ ba, hoặc Argo CD deploy Helm chart nhưng quản lý values trong Git; Kustomize dùng cho overlay nhẹ.
+
+### Trên production
+- **Sự cố hay gặp:** (1) {{helm upgrade}} thất bại giữa chừng để lại release trạng thái {{failed/pending-upgrade}}: dùng {{--atomic}} để tự rollback, hoặc {{helm rollback}} thủ công. (2) {{--set}} nhầm kiểu (số thành chuỗi, boolean) gây YAML sai: ưu tiên file {{-f}} và {{helm template}} để review. (3) Sửa resource trực tiếp bằng {{kubectl edit}} rồi Helm upgrade đè lại: gọi là "drift" (lệch khỏi khai báo). Tránh sửa tay; mọi thay đổi đi qua values + upgrade.
+- **Lệnh kiểm tra:**
+~~~bash
+helm list -n payment                      # release đang cài, trạng thái, revision
+helm get values payment -n payment -a     # values thực tế đang dùng
+helm get manifest payment -n payment      # YAML đã render đang áp dụng
+kubectl get events -n payment --sort-by=.lastTimestamp  # lỗi khi rollout
+~~~
+- **Bảo mật:** không nhét Secret thật vào {{values.yaml}} commit lên Git. Dùng {{helm-secrets}} (SOPS), External Secrets Operator, hoặc inject từ CI secret store.
+
+> Senior tip: Luôn chạy {{helm template}} (và {{helm diff}} nếu có) trong CI để review YAML trước khi apply — template Helm có thể sinh ra YAML khác ý bạn chỉ vì một thụt dòng hay {{if}} sai. Đặt {{--atomic --timeout}} trong pipeline deploy để thất bại tự quay về trạng thái tốt, và version hoá chart ({{version}} trong Chart.yaml) tách biệt với {{appVersion}} để quản lý thay đổi hạ tầng độc lập với thay đổi code.`,
+    follow: [
+      'Helm lưu lịch sử release ở đâu trong cluster và bạn xử lý thế nào khi Secret lịch sử quá lớn?',
+      'Làm sao quản lý Secret an toàn khi dùng Helm trong GitOps (Argo CD) mà không commit mật khẩu vào Git?',
+      'Khi nào bạn chọn dùng chart của cộng đồng (Bitnami) và khi nào phải tự viết chart nội bộ?'
+    ],
+    tags: ['Kubernetes', 'Helm', 'Kustomize', 'Deployment', 'GitOps'],
+    refs: [
+      { type: 'doc', title: 'Helm - Using Helm', url: 'https://helm.sh/docs/intro/using_helm/' },
+      { type: 'doc', title: 'Helm - Charts', url: 'https://helm.sh/docs/topics/charts/' }
+    ]
+  },
+  {
+    id: 'devops-122',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Với ứng dụng Spring Boot chạy trên Kubernetes, bạn dùng ConfigMap và Secret thế nào? So sánh truyền qua biến môi trường (env) và mount file; vì sao đổi ConfigMap thì Pod không tự nhận cấu hình mới và cách xử lý (checksum annotation, rollout restart)? Giải thích vì sao Secret chỉ là base64 và các giải pháp an toàn hơn (encryption at-rest, External Secrets, Sealed Secrets).',
+    a: `**Tóm tắt:** ConfigMap giữ cấu hình không nhạy cảm, Secret giữ dữ liệu nhạy cảm (mật khẩu, token). Cả hai có thể đưa vào Pod qua biến môi trường hoặc mount thành file; Spring Boot đọc {{application.yml}}/properties từ file mount rất tự nhiên, còn env map tốt với {{SPRING_*}}. Biến môi trường chỉ được đọc lúc tiến trình khởi động nên đổi ConfigMap/Secret không tự cập nhật Pod đang chạy — thường buộc rollout bằng checksum annotation hoặc {{kubectl rollout restart}}. Secret Kubernetes mặc định chỉ mã hoá base64 (không phải mã hoá bảo mật); cần bật encryption at-rest cho etcd và dùng External Secrets Operator hoặc Sealed Secrets để không lưu bản rõ trong Git.
+
+### Hiểu nhanh
+**ConfigMap** giống tờ hướng dẫn cấu hình dán trên tường (URL dịch vụ, feature flag) — ai trong phòng cũng đọc được. **Secret** giống két sắt đựng mật khẩu — cần chìa khoá (RBAC) mới mở. Bạn có thể "đọc to" hướng dẫn cho nhân viên lúc vào ca (truyền qua biến môi trường: chỉ nghe một lần lúc bắt đầu) hoặc "để tờ giấy trên bàn" (mount file: có thể thay giấy mới, nhưng nhân viên phải chịu khó nhìn lại). Vấn đề: đổi nội dung ConfigMap giống thay tờ hướng dẫn trên tường, nhưng nhân viên đã vào ca (container đang chạy) không tự quay lại đọc — bạn phải cho họ ra vào lại ca (restart Pod). Và "két sắt" Secret mặc định chỉ khoá bằng mã base64 — ai cầm được file YAML cũng mở được như đọc chữ nghiêng, nên cần két thật (mã hoá at-rest) và quy trình gửi két an toàn (External Secrets/Sealed Secrets).
+
+### Thuật ngữ
+- **ConfigMap**: đối tượng K8s lưu cặp key-value hoặc nội dung file cấu hình dạng text, không dành cho dữ liệu nhạy cảm.
+- **Secret**: đối tượng K8s lưu dữ liệu nhạy cảm; giá trị được mã hoá base64 khi lưu trong manifest (base64 **không** phải mã hoá bảo mật).
+- **env / envFrom**: cách inject key của ConfigMap/Secret thành biến môi trường của container.
+- **Volume mount**: gắn ConfigMap/Secret như một thư mục/file trong filesystem container.
+- **etcd**: kho dữ liệu của control plane Kubernetes, nơi lưu mọi object (kể cả Secret). **Encryption at-rest** mã hoá dữ liệu Secret trong etcd.
+- **External Secrets Operator (ESO)**: controller đồng bộ secret từ kho ngoài (AWS Secrets Manager, Vault, GCP Secret Manager) vào Secret K8s.
+- **Sealed Secrets**: công cụ (Bitnami) mã hoá Secret thành SealedSecret an toàn để commit lên Git; chỉ controller trong cluster mới giải mã được.
+- **Rollout restart**: khởi động lại lần lượt các Pod của Deployment để chúng đọc lại env/config.
+
+### env vs file mount cho Spring Boot
+| Tiêu chí | Biến môi trường (env/envFrom) | Mount file (volume) |
+|---|---|---|
+| Spring Boot đọc thế nào | Map {{SPRING_DATASOURCE_URL}} → {{spring.datasource.url}} tự động | Đặt {{application.yml}}/properties vào đường dẫn Spring tìm ({{/config}}) hoặc trỏ {{spring.config.import}} |
+| Cập nhật khi đổi ConfigMap | **Không** bao giờ với tiến trình đang chạy (env cố định lúc start) | Kubelet cập nhật file sau một trễ (gần 1 phút); **nhưng** Spring Boot không tự reload trừ khi dùng cơ chế reload (Spring Cloud Config + refresh) hoặc actuator refresh |
+| Hạn chế | Tên biến dài, dễ rò rỉ qua {{/proc}}, crash dump; khó chứa file lớn | Nếu mount bằng {{subPath}}, file **không** được cập nhật tự động |
+| Hợp khi | Vài giá trị đơn giản, secret dạng key riêng lẻ | File cấu hình phức tạp (YAML dài), chứng chỉ, nhiều key |
+
+~~~yaml
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: payment-config }
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+  application.yml: |
+    server.port: 8080
+    app.timeout-ms: 2000
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: payment-secret }
+type: Opaque
+stringData:                      # dùng stringData để khỏi tự base64 tay
+  SPRING_DATASOURCE_PASSWORD: "s3cr3t"
+---
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    metadata:
+      annotations:
+        # Đổi checksum khi ConfigMap/Secret đổi -> Pod template đổi -> rollout tự động
+        checksum/config: "\{{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum \}}"
+    spec:
+      containers:
+        - name: payment
+          envFrom:
+            - configMapRef: { name: payment-config }   # chỉ lấy key-value, không lấy file
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom: { secretKeyRef: { name: payment-secret, key: SPRING_DATASOURCE_PASSWORD } }
+          volumeMounts:
+            - name: cfg
+              mountPath: /config                        # Spring Boot tự đọc /config/application.yml
+      volumes:
+        - name: cfg
+          configMap: { name: payment-config, items: [{ key: application.yml, path: application.yml }] }
+~~~
+
+### Vì sao đổi ConfigMap Pod không tự nhận và cách xử lý
+- **Nguyên nhân gốc:** biến môi trường là thuộc tính của tiến trình, gán lúc container start. Spring Boot đọc cấu hình lúc khởi động context. Dù kubelet có cập nhật file mount, app không tự đọc lại.
+- **Cách 1 — Rollout restart (đơn giản, an toàn):** {{kubectl rollout restart deploy/payment -n payment}}. Phù hợp khi thay đổi cấu hình không quá thường xuyên và chấp nhận rolling restart.
+- **Cách 2 — Checksum annotation (Helm):** tính hash nội dung ConfigMap/Secret đưa vào {{spec.template.metadata.annotations}}. Nội dung đổi → hash đổi → Pod template đổi → Deployment tự rolling update. Đây là cách phổ biến khi dùng Helm.
+- **Cách 3 — App tự reload:** Spring Cloud Kubernetes hoặc actuator {{/actuator/refresh}} với {{@RefreshScope}}. Phức tạp hơn, không phải bean nào cũng refresh an toàn (connection pool, thread pool). Dùng có chọn lọc.
+
+### Secret chỉ là base64 — nghĩa là gì và xử lý ra sao
+Base64 chỉ là **mã hoá biểu diễn** (encoding) để nhúng dữ liệu nhị phân vào YAML, ai cũng giải mã được: {{echo c2VjcmV0 | base64 -d}} ra {{secret}}. Vì vậy:
+- **Bật encryption at-rest cho etcd**: API server mã hoá Secret trước khi ghi vào etcd (KMS provider hoặc aescbc). Người đọc thẳng etcd không thấy bản rõ.
+- **Giới hạn RBAC**: chỉ ServiceAccount/nhóm cần thiết mới được {{get/list}} Secret. Tránh gán quyền rộng.
+- **Không commit Secret bản rõ vào Git**. Dùng:
+  - **External Secrets Operator (ESO):** khai báo {{ExternalSecret}} trỏ tới AWS Secrets Manager/Vault; ESO đồng bộ ra Secret K8s. Secret thật nằm ở kho ngoài, Git chỉ chứa tham chiếu.
+  - **Sealed Secrets:** {{kubeseal}} mã hoá Secret bằng public key của cluster thành {{SealedSecret}} (an toàn commit Git); chỉ controller trong cluster giải mã.
+- **Tránh lộ qua log/env dump:** không log cấu hình nhạy cảm, cẩn thận với actuator {{/env}} (tắt hoặc bảo vệ), tránh {{kubectl describe pod}} lộ giá trị (K8s không hiện giá trị Secret trong describe, nhưng env inject vẫn có thể lộ qua exec).
+
+### Trên production
+~~~bash
+kubectl get cm,secret -n payment
+kubectl describe cm payment-config -n payment     # xem key (không lộ giá trị nguy hiểm)
+kubectl rollout restart deploy/payment -n payment  # áp dụng config mới
+kubectl rollout status deploy/payment -n payment
+kubectl exec deploy/payment -n payment -- env | grep SPRING  # kiểm tra env (cẩn thận)
+~~~
+- **Sự cố:** (1) Đổi Secret DB password nhưng quên restart → app vẫn dùng mật khẩu cũ trong env, một lúc sau DB đổi pass → lỗi kết nối hàng loạt. (2) Dùng {{subPath}} mount file cấu hình → kubelet không cập nhật file khi ConfigMap đổi, gây hiểu lầm "đã đổi mà app vẫn cũ". (3) Commit file {{secret.yaml}} base64 lên Git public/nội bộ rộng → lộ mật khẩu. Chuyển sang ESO/Sealed Secrets và xoay (rotate) credential ngay.
+
+> Senior tip: Quy ước thực tế: ConfigMap/Secret cho cấu hình **không nhạy cảm hoặc tham chiếu**, credential thật nằm ở vault (AWS Secrets Manager, HashiCorp Vault) và đồng bộ bằng External Secrets Operator; bật encryption at-rest cho etcd và audit quyền đọc Secret. Trong Helm, dùng checksum annotation để mọi thay đổi config đều tạo rollout có kiểm soát — và nhớ Spring Boot actuator endpoint {{/env}}, {{/configprops}} phải được bảo vệ (hoặc tắt public) vì có thể lộ giá trị nhạy cảm.`,
+    follow: [
+      'So sánh External Secrets Operator và Sealed Secrets: luồng dữ liệu, ai giữ khoá, và khi nào chọn cái nào?',
+      'Làm sao để Spring Boot reload một phần cấu hình (ví dụ timeout, feature flag) mà không restart Pod? Rủi ro là gì?',
+      'Bạn phát hiện Secret DB từng bị commit base64 vào Git. Các bước ứng phó (xoay khoá, dọn lịch sử, phòng ngừa) là gì?'
+    ],
+    tags: ['Kubernetes', 'ConfigMap', 'Secret', 'Spring Boot', 'External Secrets'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes ConfigMaps', url: 'https://kubernetes.io/docs/concepts/configuration/configmap/' },
+      { type: 'doc', title: 'Kubernetes Secrets', url: 'https://kubernetes.io/docs/concepts/configuration/secret/' },
+      { type: 'doc', title: 'Encrypting Confidential Data at Rest', url: 'https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/' }
+    ]
+  },
+  {
+    id: 'devops-123',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Ứng dụng Spring Boot trên Kubernetes khởi động chậm (load context, kết nối pool, warm-up). Bạn cấu hình liveness, readiness, startup probe thế nào với Spring Boot Actuator health groups để vừa an toàn vừa tránh restart loop? Những sai lầm cấu hình nào thường gây Pod bị restart liên tục?',
+    a: `**Tóm tắt:** Dùng **startupProbe** để cho app thời gian khởi động (trong lúc này liveness/readiness chưa chạy), **readinessProbe** gắn với health group {{readiness}} để chỉ nhận traffic khi thật sự sẵn sàng (DB/pool OK), và **livenessProbe** gắn với group {{liveness}} để chỉ phát hiện trạng thái treo không tự hồi phục — tuyệt đối không kiểm tra dependency ngoài (DB, Redis) trong liveness. Spring Boot Actuator cung cấp sẵn {{/actuator/health/liveness}} và {{/actuator/health/readiness}}. Sai cấu hình kinh điển: liveness chạy quá sớm hoặc phụ thuộc DB → Pod restart vòng lặp khi DB chậm.
+
+### Hiểu nhanh
+Ba probe giống ba câu hỏi y tế khác nhau cho một nhân viên ca mới: **Startup** — "Bạn đã vào vị trí và mở máy xong chưa?" (hỏi kiên nhẫn lúc đầu ca, chưa xong thì đợi). **Readiness** — "Bạn có đang phục vụ khách được không?" (nếu máy in hỏng/DB chưa nối, tạm không đưa khách tới, nhưng không đuổi nhân viên về). **Liveness** — "Bạn có còn tỉnh táo không hay đã ngất xỉu?" (chỉ khi treo hẳn, không tự hồi phục mới gọi cấp cứu — restart). Sai lầm phổ biến: coi "máy in hỏng" (DB chậm) là "ngất xỉu" (liveness fail) → đuổi cả đội về giữa giờ cao điểm → hết người phục vụ.
+
+### Thuật ngữ
+- **Probe**: cơ chế kubelet kiểm tra container định kỳ (HTTP GET, TCP socket, hoặc exec lệnh). Tham số chính: {{initialDelaySeconds}} (trễ lần đầu, bỏ qua nếu có startupProbe), {{periodSeconds}}, {{timeoutSeconds}}, {{failureThreshold}} (số lần fail liên tiếp mới tính là fail), {{successThreshold}}.
+- **startupProbe**: kiểm tra giai đoạn khởi động; khi chưa thành công, liveness/readiness bị vô hiệu. Fail quá {{failureThreshold}} → container bị restart. Dùng để "khoan" cho app chậm.
+- **readinessProbe**: fail → Pod bị gỡ khỏi EndpointSlice của Service (ngừng nhận traffic), **không** restart.
+- **livenessProbe**: fail → kubelet **restart** container. Chỉ nên phát hiện deadlock/hung không tự phục hồi.
+- **Actuator**: module Spring Boot cung cấp endpoint vận hành (health, metrics, info). **Health group** gom các indicator thành nhóm ({{liveness}}, {{readiness}}) để probe gọi đúng mục đích.
+- **Health indicator**: thành phần kiểm tra một phần ({{db}}, {{diskSpace}}, {{redis}}, {{ping}}). Group {{liveness}} mặc định chỉ gồm {{livenessState}} (trạng thái nội bộ), {{readiness}} gồm {{readinessState}} và thường cả {{db}} tuỳ cấu hình.
+
+### Cấu hình Spring Boot Actuator (health groups)
+~~~yaml
+# application.yml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true            # bật /actuator/health/liveness và /readiness
+      show-details: never        # production: không lộ chi tiết ra ngoài
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  health:
+    livenessState.enabled: true
+    readinessState.enabled: true
+~~~
+Spring Boot (2.3+, chuẩn trên 3.x) tự bật liveness/readiness state trên Kubernetes. Group {{liveness}} chỉ phản ánh trạng thái nội tại ứng dụng ({{LivenessState.CORRECT}} trừ khi bạn chủ động báo {{BROKEN}}). Group {{readiness}} phản ánh khả năng nhận traffic; bạn có thể kiểm soát gồm những indicator nào.
+
+### Manifest probe cho app Java khởi động chậm
+~~~yaml
+containers:
+  - name: payment
+    image: harbor.bank.local/core/payment:1.4.7
+    ports: [{ containerPort: 8080 }]
+    startupProbe:
+      httpGet: { path: /actuator/health/liveness, port: 8080 }
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 36        # cho phép tới 5s*36 = 180s khởi động
+    readinessProbe:
+      httpGet: { path: /actuator/health/readiness, port: 8080 }
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 3         # 3 lần fail liên tiếp -> gỡ khỏi Service
+      successThreshold: 1
+    livenessProbe:
+      httpGet: { path: /actuator/health/liveness, port: 8080 }
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3         # chỉ restart khi treo thật sự
+~~~
+Công thức: thời gian khởi động tối đa = {{startupProbe.periodSeconds * failureThreshold}}. Đo thời gian start thực tế trên staging (log "Started ... in X seconds") rồi đặt dư ra (ví dụ start 60s → cho 150–180s).
+
+### So sánh 3 probe (nhắc lại, tập trung vào sai lầm)
+| Probe | Gắn endpoint nào | Fail thì | Sai lầm gây restart loop |
+|---|---|---|---|
+| startup | {{/health/liveness}} (nhẹ) | Restart sau khi hết ngưỡng | {{failureThreshold}} quá nhỏ so với thời gian start thực |
+| readiness | {{/health/readiness}} | Gỡ khỏi Service, **không** restart | Hiếm gây restart; nhưng nếu nhầm dùng liveness endpoint có dependency nặng thì gián tiếp ảnh hưởng |
+| liveness | {{/health/liveness}} (chỉ nội tại) | **Restart** container | Kiểm tra DB/Redis bên ngoài → DB chậm 30s → tất cả Pod restart đồng loạt |
+
+### Trên production
+~~~bash
+kubectl describe pod payment-xxx -n payment   # Events: "Liveness probe failed", "Back-off restarting"
+kubectl get pod -n payment -w                 # theo dõi RESTARTS tăng liên tục
+kubectl logs payment-xxx -n payment --previous  # có lỗi app hay chỉ bị probe giết?
+# Kiểm tra endpoint health từ trong pod
+kubectl exec deploy/payment -n payment -- curl -s localhost:8080/actuator/health/liveness
+kubectl exec deploy/payment -n payment -- curl -s localhost:8080/actuator/health/readiness
+~~~
+- **Sự cố restart loop điển hình:** (1) Không có startupProbe, liveness {{initialDelaySeconds}}=30s nhưng app start 90s → kubelet restart mãi, RESTARTS tăng, log bị cắt giữa chừng. (2) Liveness gọi {{/actuator/health}} (gộp, gồm DB) thay vì {{/health/liveness}} → DB quá tải/ngắt mạng một lúc → **tất cả** Pod bị restart cùng lúc → thảm hoạ dây chuyền. (3) {{timeoutSeconds}} quá nhỏ (1s) trong khi GC pause hoặc load cao làm endpoint phản hồi chậm → fail giả.
+- **Nguyên tắc vàng:** liveness chỉ trả lời "tiến trình còn sống và không deadlock"; readiness trả lời "có nên gửi traffic cho tôi lúc này". Dependency ngoài (DB, dịch vụ khác) thuộc readiness, **không** thuộc liveness.
+
+> Senior tip: Đo p99 thời gian khởi động (đến khi readiness UP) trên staging với dữ liệu thật rồi đặt startupProbe dư 2–3 lần; bật thêm metric {{application.ready.time}} và {{application.started.time}}. Với app ngân hàng kết nối nhiều hệ thống, cân nhắc tách readiness indicator: dependency "bắt buộc để phục vụ" (DB chính) ảnh hưởng readiness, dependency "phụ" (cache) thì degrade nhẹ thay vì làm Pod NotReady — nhưng phải thiết kế code chấp nhận chạy thiếu cache. Tuyệt đối không để liveness phụ thuộc DB: một lần DB bảo trì có thể kéo sập toàn bộ cụm ứng dụng.`,
+    follow: [
+      'Nếu app bị deadlock (thread bị treo) nhưng HTTP server vẫn trả lời health, probe có phát hiện được không? Cách nào bổ sung?',
+      'Bạn sẽ cấu hình readiness group thế nào khi app phụ thuộc vừa DB chính (bắt buộc) vừa Redis cache (có thể thiếu tạm)?',
+      'StartupProbe, initialDelaySeconds và failureThreshold tương tác ra sao? Khi có startupProbe thì initialDelaySeconds của liveness còn ý nghĩa không?'
+    ],
+    tags: ['Kubernetes', 'Probe', 'Spring Boot Actuator', 'Liveness', 'Readiness'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Liveness, Readiness and Startup Probes', url: 'https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/' },
+      { type: 'doc', title: 'Spring Boot Actuator - Kubernetes Probes', url: 'https://docs.spring.io/spring-boot/reference/actuator/endpoints.html' }
+    ]
+  },
+  {
+    id: 'devops-124',
+    topic: 'devops',
+    level: 'senior',
+    q: 'So sánh chiến lược Deployment RollingUpdate và Recreate. Giải thích maxSurge/maxUnavailable, cách dùng rollout undo. PodDisruptionBudget (PDB) là gì và tại sao cần khi drain node bảo trì? Hãy đưa ví dụ manifest và tình huống production.',
+    a: `**Tóm tắt:** RollingUpdate thay Pod cũ bằng Pod mới dần dần (mặc định), kiểm soát tốc độ bằng {{maxSurge}} (số Pod tạo thêm) và {{maxUnavailable}} (số Pod được phép thiếu); Recreate xoá hết Pod cũ rồi mới tạo Pod mới — gây downtime nhưng tránh hai version chạy song song. {{kubectl rollout undo}} quay về ReplicaSet revision trước. PodDisruptionBudget (PDB) đặt mức Pod tối thiểu phải còn khi xảy ra **voluntary disruption** (drain node, autoscaler thu hồi node), giúp bảo trì không làm sập dịch vụ.
+
+### Hiểu nhanh
+Nâng cấp một quán có 4 nhân viên phục vụ: **RollingUpdate** là cho 1 nhân viên mới vào tập việc, quen rồi mới cho 1 nhân viên cũ nghỉ — quán luôn đủ người (không downtime), nhưng có lúc nhân viên cũ và mới làm chung (hai version song song). **Recreate** là cho cả 4 nghỉ, đóng cửa dọn dẹp, rồi 4 nhân viên mới vào cùng lúc — nhanh gọn, không ai lẫn version, nhưng có lúc đóng cửa (downtime). **maxSurge** là "được thuê thêm tối đa mấy người tạm", **maxUnavailable** là "được phép thiếu tối đa mấy người". **PDB** là quy định của chủ quán: "dù sửa chữa toà nhà (drain node), lúc nào cũng phải giữ ít nhất 3 người phục vụ" — đội bảo trì không được đuổi người nếu vi phạm quy định đó.
+
+### Thuật ngữ
+- **RollingUpdate**: chiến lược cập nhật mặc định; tạo Pod mới dần, xoá Pod cũ dần, duy trì khả năng phục vụ (nếu cấu hình đúng).
+- **Recreate**: xoá toàn bộ Pod cũ trước khi tạo Pod mới; chấp nhận gián đoạn.
+- **maxSurge**: số Pod (hoặc %) được phép vượt quá {{replicas}} mong muốn trong lúc rollout. Ví dụ replicas=4, maxSurge=1 → tối đa 5 Pod.
+- **maxUnavailable**: số Pod (hoặc %) được phép không Ready so với {{replicas}}. maxUnavailable=0 → luôn đủ replica Ready.
+- **ReplicaSet revision**: Deployment giữ lịch sử ReplicaSet ({{revisionHistoryLimit}}, mặc định 10) để rollback.
+- **Drain node**: {{kubectl drain}} đuổi (evict) Pod khỏi node để bảo trì/nâng cấp node — đây là **voluntary disruption** (gián đoạn có chủ đích).
+- **PodDisruptionBudget (PDB)**: giới hạn số Pod bị gián đoạn đồng thời do voluntary disruption; dùng {{minAvailable}} hoặc {{maxUnavailable}}.
+
+### So sánh chiến lược
+| Tiêu chí | RollingUpdate | Recreate |
+|---|---|---|
+| Downtime | Không (nếu probe + cấu hình đúng) | Có (khoảng thời gian giữa xoá cũ và mới Ready) |
+| Hai version song song | Có — code/DB phải tương thích ngược | Không |
+| Tài nguyên tạm thêm | Cần (maxSurge) | Không cần thêm (có thể cần đủ chỗ khi tạo lại) |
+| Dùng khi | API/stateless service, hầu hết trường hợp | App không hỗ trợ chạy 2 version (lock DB schema độc quyền, chiếm port/volume RWO đặc biệt), batch đơn instance, migration phá vỡ tương thích |
+
+### Manifest: RollingUpdate có kiểm soát + PDB
+~~~yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: payment, namespace: payment }
+spec:
+  replicas: 4
+  revisionHistoryLimit: 10        # giữ 10 bản để rollback
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                 # tạo thêm tối đa 1 Pod
+      maxUnavailable: 0           # luôn giữ đủ 4 Pod Ready (zero-downtime)
+  selector: { matchLabels: { app: payment } }
+  template:
+    metadata: { labels: { app: payment } }
+    spec:
+      containers:
+        - name: payment
+          image: harbor.bank.local/core/payment:1.4.7
+          readinessProbe:         # bắt buộc để maxUnavailable=0 có ý nghĩa
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: payment-pdb, namespace: payment }
+spec:
+  minAvailable: 3                 # luôn còn ít nhất 3 Pod khi drain/evict tự nguyện
+  selector: { matchLabels: { app: payment } }
+~~~
+
+### Rollout và rollback
+~~~bash
+kubectl apply -f deploy.yaml                    # cập nhật (tạo revision mới nếu spec đổi)
+kubectl rollout status deploy/payment -n payment # chờ rollout xong / báo lỗi
+kubectl rollout history deploy/payment -n payment  # xem các revision
+kubectl rollout undo deploy/payment -n payment     # quay về revision ngay trước
+kubectl rollout undo deploy/payment -n payment --to-revision=2  # về revision cụ thể
+~~~
+Lưu ý: rollout dừng ở trạng thái tiến triển thất bại (Pod mới không Ready) sau {{progressDeadlineSeconds}} (mặc định 600s) nhưng **không tự rollback** — pipeline/Argo Rollouts cần tự xử lý.
+
+### PodDisruptionBudget khi drain node
+- {{kubectl drain <node> --ignore-daemonsets}} evict các Pod để node rỗng. Nếu không có PDB, drain có thể đuổi cùng lúc nhiều Pod của một service → giảm năng lực hoặc sập.
+- PDB {{minAvailable: 3}} (4 replica) nghĩa là eviction bị **từ chối** nếu làm số Pod available < 3; drain sẽ chờ (hoặc treo) cho tới khi Pod được lập lịch lại nơi khác và Ready.
+- **PDB không bảo vệ khỏi involuntary disruption**: node chết đột ngột, kernel panic, OOM của node — những cái này không đi qua eviction API.
+- Bẫy: PDB quá chặt ({{minAvailable}} = {{replicas}}) làm drain **không bao giờ xong**. Cân bằng: luôn chừa ít nhất 1 Pod được phép gián đoạn, hoặc dùng {{maxUnavailable: 1}}.
+
+### Trên production
+~~~bash
+kubectl get pdb -n payment                        # ALLOWED DISRUPTIONS phải >= 1 khi cần drain
+kubectl describe pdb payment-pdb -n payment
+kubectl drain node-3 --ignore-daemonsets --delete-emptydir-data --timeout=15m
+kubectl get events -n payment --sort-by=.lastTimestamp
+~~~
+- **Sự cố:** (1) Drain treo mãi vì PDB {{minAvailable}} = replicas (hoặc Pod còn lại không đủ node đặt) → kiểm tra {{kubectl get pdb}}, tăng node tạm hoặc nới PDB có kiểm soát. (2) Dùng Recreate cho service đang nhận traffic cao điểm → outage vài phút. (3) RollingUpdate nhưng DB migration phá vỡ tương thích → version cũ lỗi khi version mới đã migrate; phải dùng chiến lược expand-contract. (4) {{maxSurge}} lớn + cluster thiếu tài nguyên → Pod mới Pending, rollout chậm và có thể kẹt.
+
+> Senior tip: Với service Java quan trọng, đặt {{maxUnavailable: 0}} + PDB {{maxUnavailable: 1}} (hoặc {{minAvailable: N-1}}) và **bắt buộc** readinessProbe đúng nghĩa — nếu thiếu readinessProbe, Kubernetes coi Pod "sẵn sàng" ngay khi container chạy, maxUnavailable=0 trở nên vô nghĩa. Khi bảo trì node, luôn kiểm tra {{ALLOWED DISRUPTIONS}} trước; kết hợp với Cluster Autoscaler/PDB-aware scheduling để node mới kịp nhận Pod trước khi node cũ bị đuổi hết.`,
+    follow: [
+      'maxSurge và maxUnavailable tương tác thế nào? Có thể đặt cả hai là 0 không, vì sao?',
+      'PDB bảo vệ khỏi loại gián đoạn nào và KHÔNG bảo vệ loại nào? Cho ví dụ từng loại.',
+      'Khi nào bạn chọn chiến lược blue-green hoặc canary (Argo Rollouts) thay vì RollingUpdate mặc định?'
+    ],
+    tags: ['Kubernetes', 'Deployment', 'RollingUpdate', 'PodDisruptionBudget', 'Rollout'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Deployments', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/deployment/' },
+      { type: 'doc', title: 'Specifying a Disruption Budget for your Application', url: 'https://kubernetes.io/docs/tasks/run-application/configure-pdb/' }
+    ]
+  },
+  {
+    id: 'devops-125',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Namespace trong Kubernetes dùng để làm gì? Khi nhiều team hoặc nhiều môi trường (dev/staging/prod) dùng chung một cluster, bạn dùng Namespace kết hợp ResourceQuota và LimitRange như thế nào để cô lập và tránh team này dùng hết tài nguyên của team khác?',
+    a: `**Tóm tắt:** Namespace là cách chia cluster thành nhiều "không gian" logic để nhóm tài nguyên, áp chính sách (RBAC, quota, network policy) và tránh đụng tên. **ResourceQuota** giới hạn tổng tài nguyên/đối tượng mà một namespace được dùng (tổng CPU/RAM request, số Pod). **LimitRange** đặt mặc định và min/max cho từng Pod/container trong namespace (đặc biệt là default request/limit khi người dùng quên khai báo). Kết hợp ba thứ này giúp nhiều team/môi trường dùng chung cluster mà không "ăn hết phần" của nhau.
+
+### Hiểu nhanh
+Hãy coi cluster Kubernetes là một toà nhà văn phòng lớn. **Namespace** là chia toà nhà thành các tầng/khu vực riêng (tầng đội Thanh Toán, tầng đội Thẻ, khu staging, khu prod): mỗi khu có biển tên riêng, thẻ ra vào riêng (RBAC). **ResourceQuota** là hợp đồng thuê khu: "tầng Thanh Toán được dùng tối đa 20 CPU, 64GB RAM, 50 Pod" — dùng vượt thì không cấp thêm. **LimitRange** là nội quy từng phòng: "mỗi nhân viên (container) phải khai báo nhu cầu tối thiểu/tối đa; ai quên khai báo thì mặc định cấp 250m CPU, 512MB RAM" — tránh một phòng chiếm hết điện nước của cả tầng. Thiếu quota/limit, một team deploy nhầm vòng lặp tạo Pod có thể làm cạn tài nguyên cả cluster.
+
+### Thuật ngữ
+- **Namespace**: phạm vi logic để đặt tên và cô lập tài nguyên (Pod, Service, ConfigMap...). Một số tài nguyên là cluster-scoped (Node, PersistentVolume) không thuộc namespace. Tên DNS Service có dạng {{<svc>.<namespace>.svc.cluster.local}}.
+- **RBAC (Role-Based Access Control)**: phân quyền ai được làm gì; Role/RoleBinding thường gắn theo namespace để team chỉ thao tác namespace của mình.
+- **ResourceQuota**: object giới hạn tổng lượng tài nguyên ({{requests.cpu}}, {{limits.memory}}, {{pods}}, {{services.loadbalancers}}...) trong một namespace.
+- **LimitRange**: object đặt ràng buộc mặc định/min/max cho từng container/Pod/PVC trong namespace ({{default}}, {{defaultRequest}}, {{max}}, {{min}}).
+- **Request vs Limit**: request là phần được "đặt chỗ" để scheduler xếp Pod và để quota tính; limit là trần sử dụng thực tế (CPU bị throttle, vượt memory bị OOMKilled).
+
+### Ví dụ: namespace + quota + limit cho team
+~~~yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-payment-dev
+  labels: { team: payment, env: dev }
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: rq-payment-dev, namespace: team-payment-dev }
+spec:
+  hard:
+    requests.cpu: "8"        # tổng CPU request cả namespace
+    requests.memory: 16Gi
+    limits.cpu: "16"         # tổng CPU limit
+    limits.memory: 32Gi
+    pods: "40"               # tối đa 40 Pod
+    services.loadbalancers: "0"  # dev không được tạo LB public
+---
+apiVersion: v1
+kind: LimitRange
+metadata: { name: lr-payment-dev, namespace: team-payment-dev }
+spec:
+  limits:
+    - type: Container
+      default:               # limit mặc định nếu container không khai báo
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:        # request mặc định nếu không khai báo
+        cpu: 100m
+        memory: 128Mi
+      max:                   # trần cho mỗi container
+        cpu: "2"
+        memory: 2Gi
+~~~
+Khi namespace có ResourceQuota giới hạn CPU/memory, **mọi Pod mới bắt buộc phải khai báo** {{requests}}/{{limits}} cho container — nếu không, API server từ chối tạo Pod. LimitRange giúp tự điền mặc định để bớt phiền, nhưng đội vẫn nên khai báo rõ theo nhu cầu thật.
+
+### Chiến lược chia namespace
+| Cách chia | Ví dụ | Ưu | Nhược |
+|---|---|---|---|
+| Theo môi trường | {{payment-dev}}, {{payment-staging}}, {{payment-prod}} | Rõ ràng, dễ gắn quota/policy khác nhau | Prod và non-prod chung cluster có rủi ro blast radius (nhiều tổ chức tách cluster prod riêng) |
+| Theo team | {{team-payment}}, {{team-card}} | Gắn RBAC theo sở hữu | Nhiều môi trường trong một namespace dễ lẫn nếu không kỷ luật label |
+| Theo team + môi trường | {{team-payment-prod}} | Cô lập rõ nhất | Nhiều namespace, cần tự động hoá |
+
+### Trên production
+~~~bash
+kubectl get ns --show-labels
+kubectl describe quota rq-payment-dev -n team-payment-dev   # xem Used vs Hard
+kubectl describe limitrange lr-payment-dev -n team-payment-dev
+kubectl get pods -n team-payment-dev
+# Tạo Pod vượt quota sẽ bị lỗi: "exceeded quota: rq-payment-dev, requested: pods=1, used: pods=40, limited: pods=40"
+~~~
+- **Sự cố:** (1) Quên đặt LimitRange và dev không khai báo request → scheduler không có thông tin để xếp Pod hợp lý, HPA theo CPU cũng không chạy (utilization tính trên request). (2) ResourceQuota đặt quá thấp so với nhu cầu deploy (rolling update cần maxSurge tạo thêm Pod) → rollout kẹt vì không tạo được Pod mới. Tính quota chừa chỗ cho surge. (3) Dùng namespace {{default}} cho mọi thứ → khó RBAC, khó quota, dễ xoá nhầm. (4) Namespace cô lập logic nhưng **không cô lập mạng** mặc định: Pod ở namespace A vẫn gọi được Pod namespace B trừ khi có NetworkPolicy.
+
+> Senior tip: Namespace + ResourceQuota + LimitRange là "bộ ba tối thiểu" cho cluster đa team; thêm NetworkPolicy để cô lập traffic và RBAC để cô lập quyền. Với ngân hàng, production thường tách cluster (hoặc ít nhất tách node pool) khỏi non-prod để giảm blast radius; quota nên được quản lý như code (GitOps) và đặt cảnh báo khi {{Used}} tiến gần {{Hard}} (ví dụ 80%) để kịp mở rộng trước khi rollout bị chặn giữa đêm.`,
+    follow: [
+      'ResourceQuota tính trên request hay trên usage thực tế? Điều này ảnh hưởng thế nào tới việc lập kế hoạch dung lượng?',
+      'Namespace có cô lập mạng giữa các team không? Nếu không thì dùng gì để chặn traffic chéo?',
+      'Làm sao tự động tạo bộ namespace + quota + limitrange + RBAC chuẩn mỗi khi onboard một team mới?'
+    ],
+    tags: ['Kubernetes', 'Namespace', 'ResourceQuota', 'LimitRange', 'Multi-tenancy'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Namespaces', url: 'https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/' },
+      { type: 'doc', title: 'Resource Quotas', url: 'https://kubernetes.io/docs/concepts/policy/resource-quotas/' },
+      { type: 'doc', title: 'Limit Ranges', url: 'https://kubernetes.io/docs/concepts/policy/limit-range/' }
+    ]
+  },
+  {
+    id: 'devops-126',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Bạn là lead của nền tảng chạy hàng chục service Spring Boot trên Kubernetes. Hãy thiết kế bộ tiêu chuẩn triển khai: cách dùng Ingress/TLS, Helm chart chuẩn, quản lý ConfigMap/Secret, probe cho app Java, chiến lược rollout + PDB. Làm sao cân bằng tự chủ của team với guardrail của nền tảng, và bạn xử lý tình huống production (cert hết hạn, rollout gây lỗi hàng loạt, secret bị lộ) ra sao?',
+    a: `**Tóm tắt:** Nền tảng chuẩn hoá "đường ray an toàn" thay vì để mỗi team tự phát minh: một Ingress controller + cert-manager quản lý TLS tập trung, một Helm chart nền (golden chart) có sẵn probe/readiness/resource/PDB hợp lý, cấu hình qua ConfigMap + secret đồng bộ từ vault (ESO), rollout {{RollingUpdate}} với {{maxUnavailable: 0}} và guardrail tự động. Lead cân bằng bằng cơ chế "mặc định an toàn, override có kiểm soát" (policy-as-code) và runbook ứng phó sự cố (cert, rollout lỗi, lộ secret). Mục tiêu: team ship nhanh mà không tự bắn vào chân.
+
+### Hiểu nhanh
+Hãy nghĩ bạn quản lý một khu chợ có 30 gian hàng (30 service). Nếu mỗi gian tự kéo điện, tự làm biển, tự giữ tiền, sẽ có người quên cầu dao, biển sai quy định, tiền để hở. Nền tảng là ban quản lý chợ: cung cấp hệ thống điện chuẩn có cầu dao tự ngắt (probe + resource limit), cổng chính có bảo vệ kiểm tra vé và camera (Ingress + TLS + WAF), két tiền chung an toàn (secret manager), và quy trình mở cửa/đóng cửa từng gian một khi sửa chữa (rolling update + PDB). Gian hàng vẫn tự quyết món bán (business logic) nhưng phải cắm vào đúng ổ điện và két chuẩn. Khi sự cố xảy ra (mất điện cổng, két bị rò rỉ), có sổ tay xử lý chung để không ai hoảng.
+
+### Thuật ngữ
+- **Golden path / golden chart**: mẫu chuẩn (Helm chart, template) mà nền tảng cung cấp; team dùng mặc định, chỉ override values được phép.
+- **Policy-as-code**: chính sách hạ tầng viết thành code/máy kiểm tra được (OPA Gatekeeper, Kyverno) để chặn manifest vi phạm (thiếu probe, chạy root, thiếu resource).
+- **Guardrail**: rào chắn tự động ngăn lỗi phổ biến, khác với "gate" chặn mọi thứ; guardrail tốt vẫn cho phép ngoại lệ có kiểm soát.
+- **GitOps**: trạng thái mong muốn nằm trong Git; controller (Argo CD/Flux) đồng bộ vào cluster, giúp audit và rollback.
+- **Drift**: khác biệt giữa trạng thái khai báo (Git/chart) và trạng thái thật (cluster) do sửa tay.
+- **Blast radius**: phạm vi ảnh hưởng khi một thành phần lỗi (một service, một namespace, một node).
+
+### Bộ tiêu chuẩn triển khai (đề xuất)
+| Hạng mục | Tiêu chuẩn mặc định (golden chart) | Lý do |
+|---|---|---|
+| Ingress/TLS | 1 Service LoadBalancer cho ingress-nginx; mỗi app khai báo Ingress qua values; TLS do cert-manager (ClusterIssuer Let's Encrypt nội bộ/ACME hoặc CA doanh nghiệp); annotation timeout/body-size có mặc định an toàn | Tiết kiệm LB, TLS tự gia hạn, cấu hình nhất quán |
+| Helm | {{helm upgrade --install --atomic --timeout}}; chart version hoá; {{helm template/diff}} trong CI; cấm {{latest}} tag | Triển khai lặp lại, rollback tự động khi fail |
+| Config/Secret | ConfigMap cho cấu hình không nhạy cảm; secret thật qua External Secrets Operator từ vault; checksum annotation buộc rollout khi đổi | Không commit mật khẩu Git; cập nhật có kiểm soát |
+| Probe (Java) | startupProbe đủ dài (đo p99 start), readiness {{/health/readiness}}, liveness {{/health/liveness}} (không check DB); Spring Boot Actuator bật probe | Tránh restart loop, zero-downtime thật |
+| Rollout/PDB | RollingUpdate {{maxUnavailable: 0, maxSurge: 1}}, PDB {{maxUnavailable: 1}}, {{terminationGracePeriodSeconds}} > preStop + shutdown | Không rơi request khi deploy/drain |
+| Tài nguyên | Bắt buộc {{requests/limits}} (LimitRange default + Kyverno bắt buộc); JVM {{MaxRAMPercentage}} 70–75% | Lập lịch đúng, tránh hàng xóm ồn/noisy neighbor |
+
+### Cân bằng tự chủ team vs guardrail nền tảng
+- **Mặc định an toàn, override có lý do:** golden chart đặt giá trị an toàn; team override qua values (replica, timeout, host). Override vượt ngưỡng (tắt liveness, chạy privileged, bỏ resource limit) bị policy chặn hoặc cần ngoại lệ có ticket + chủ sở hữu + ngày hết hạn.
+- **Nền tảng sở hữu "đường ray", team sở hữu "hàng hoá":** nền tảng duy trì chart/controller/policy/quan sát; team sở hữu image, cấu hình nghiệp vụ, SLO. Tránh nền tảng thành nút thắt cổ chai bằng self-service (catalog chart, tài liệu, CI template).
+- **Đo lường:** tỉ lệ service tuân thủ probe/PDB/resource, thời gian deploy, tỉ lệ rollback, số sự cố do cấu hình sai (phân loại nguyên nhân gốc).
+
+### Xử lý tình huống production
+### 1) Chứng chỉ TLS hết hạn (cert-manager lỗi)
+~~~bash
+kubectl get certificate -A                        # READY=False?
+kubectl describe certificate shop-tls -n shop
+kubectl describe certificaterequest,challenge -A  # lỗi ACME (DNS, port 80, rate limit)
+kubectl logs -n cert-manager deploy/cert-manager --tail=200
+~~~
+- **Ngắn hạn:** nếu cert sắp/đã hết hạn gây gián đoạn, cấp cert tạm từ CA doanh nghiệp và cập nhật Secret TLS thủ công (ghi nhận drift, có thời hạn). Kiểm tra chuỗi cert: {{openssl s_client -connect shop.bank.vn:443 -servername shop.bank.vn | openssl x509 -noout -dates}}.
+- **Gốc:** sửa nguyên nhân ACME (DNS chưa trỏ, firewall chặn HTTP-01, {{ClusterIssuer}} sai), xác minh cert-manager có quyền tạo solver Ingress, đặt cảnh báo "cert hết hạn trong 14/7 ngày".
+
+### 2) Rollout gây lỗi hàng loạt (version mới hỏng)
+~~~bash
+kubectl rollout status deploy/payment -n payment
+kubectl rollout undo deploy/payment -n payment    # quay lại revision tốt
+kubectl get pods -n payment -o wide               # Pod mới CrashLoop/Error?
+kubectl logs -l app=payment -n payment --tail=100 --prefix
+~~~
+- **Ngắn hạn:** {{rollout undo}} ngay; nếu dùng {{--atomic}} trong Helm, thất bại đã tự rollback. Giảm blast radius: tạm hạ traffic (scale/circuit breaker) nếu lỗi lan.
+- **Gốc:** yêu cầu readinessProbe thực sự (đừng Ready khi chưa phục vụ được), {{progressDeadlineSeconds}} + canary/Argo Rollouts cho service rủi ro cao, smoke test sau deploy, và expand-contract cho thay đổi DB để rollback version app vẫn chạy được với schema.
+
+### 3) Secret bị lộ (commit Git, log, dump)
+- **Ngắn hạn (phút/giờ):** coi secret đã bị xâm phạm → **xoay (rotate)** credential ngay tại nguồn (đổi mật khẩu DB, thu hồi token), cập nhật vault/ESO, buộc rollout để Pod nhận secret mới. Kiểm tra truy cập bất thường.
+- **Dọn dẹp:** xoá secret khỏi Git (lọc lịch sử bằng công cụ chuyên dụng), nhưng xem lịch sử đã lộ là sự thật không đảo ngược → rotate vẫn bắt buộc. Quét repo bằng secret scanning.
+- **Phòng ngừa:** cấm Secret bản rõ trong Git (ESO/Sealed Secrets), pre-commit/CI secret scanning, RBAC hạn chế đọc Secret, bảo vệ actuator endpoint, encryption at-rest.
+
+> Senior tip: Hãy coi tiêu chuẩn triển khai là **sản phẩm** của nền tảng có version, roadmap và phản hồi từ team — guardrail bị ghét thường vì nó chặn muộn và không giải thích; policy tốt chặn sớm trong CI với thông báo "sai gì, sửa thế nào". Hai chỉ số lead nên theo: (1) tỉ lệ rollout không cần can thiệp tay, (2) thời gian khôi phục (MTTR) khi cert/rollout/secret gặp sự cố. Với ngân hàng, mọi ngoại lệ bảo mật (tắt probe check, nới policy) phải có thời hạn và được audit — ngoại lệ vĩnh viễn là nợ rủi ro.`,
+    follow: [
+      'Bạn dùng cơ chế nào (OPA Gatekeeper hay Kyverno) để bắt buộc mọi Deployment có probe và resource limit? Trade-off là gì?',
+      'Làm sao triển khai canary release (Argo Rollouts) cho service thanh toán để giảm rủi ro rollout hàng loạt?',
+      'Khi một team yêu cầu ngoại lệ "tắt liveness vì app hay restart", bạn xử lý thế nào để vừa giúp họ vừa không làm hỏng guardrail?'
+    ],
+    tags: ['Kubernetes', 'Platform', 'Helm', 'Guardrail', 'Leadership'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Production Best Practices (Checklist)', url: 'https://kubernetes.io/docs/setup/best-practices/' },
+      { type: 'doc', title: 'External Secrets Operator', url: 'https://external-secrets.io/latest/' },
+      { type: 'doc', title: 'Argo Rollouts - Progressive Delivery', url: 'https://argoproj.github.io/rollouts/' }
+    ]
+  },
+  {
+    id: 'devops-127',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Nhiều team (Thanh toán, Thẻ, Kênh số, Dữ liệu) dùng chung một cụm Kubernetes. Bạn thiết kế quản trị (governance) thế nào: cô lập namespace và network, chiến lược ResourceQuota theo team/môi trường, quản lý Secret quy mô lớn, chuẩn Helm/GitOps và xử lý config drift? Hãy nêu mô hình vận hành và trade-off.',
+    a: `**Tóm tắt:** Quản trị cụm đa team dựa trên "cô lập theo lớp + tự động hoá + audit": namespace theo team/môi trường gắn RBAC + ResourceQuota + LimitRange + NetworkPolicy mặc định từ chối chéo; Secret tập trung ở vault đồng bộ qua External Secrets Operator (mỗi team chỉ đọc đường dẫn của mình); chuẩn hoá triển khai bằng golden Helm chart và GitOps (Git là nguồn sự thật, controller đối chiếu drift). Lead định nghĩa mô hình sở hữu (ai chịu trách nhiệm gì), quy trình ngoại lệ có thời hạn, và chỉ số (quota sử dụng, vi phạm policy, drift) để quản trị bằng dữ liệu thay vì cảm tính.
+
+### Hiểu nhanh
+Cụm dùng chung giống một cao ốc văn phòng: mỗi công ty thuê một tầng (namespace) có khóa cửa riêng (RBAC), hạn mức điện nước (quota), nội quy thiết bị (LimitRange), và quy định không được tự nối dây sang tầng khác (NetworkPolicy). Két sắt của mỗi công ty nằm ở ngân hàng bên ngoài (vault), nhân viên chỉ được rút đúng chìa của tầng mình (ESO + policy). Mọi thay đổi nội thất phải gửi bản vẽ được duyệt và lưu hồ sơ (GitOps) — ai tự khoan tường (sửa tay) thì hệ thống phát hiện và báo (drift). Ban quản lý toà nhà (platform team) đặt luật chung và cho thuê tự phục vụ; từng công ty chịu trách nhiệm hoạt động bên trong tầng mình.
+
+### Thuật ngữ
+- **Multi-tenancy**: nhiều "người thuê" (team) dùng chung hạ tầng; mức cô lập có thể mềm (namespace) hoặc cứng (tách cluster/node pool).
+- **NetworkPolicy**: luật mạng K8s kiểm soát Pod nào được nói chuyện với Pod/địa chỉ nào (ingress/egress). Mặc định K8s **cho phép tất cả** nếu không có policy.
+- **GitOps**: mọi thay đổi hạ tầng/ứng dụng qua commit Git; Argo CD/Flux liên tục reconcile (đối chiếu và áp dụng) trạng thái cluster theo Git.
+- **Config drift**: trạng thái thật khác Git (do {{kubectl edit/apply}} tay, hotfix ngoài luồng). Drift làm rollback và audit không còn đáng tin.
+- **Self-service**: team tự tạo/triển khai trong khuôn khổ cho phép mà không phải mở ticket chờ nền tảng thao tác tay.
+- **Blast radius**: phạm vi ảnh hưởng khi lỗi/bị tấn công; tách namespace/node/cluster để thu nhỏ.
+
+### Mô hình cô lập theo lớp
+| Lớp | Cơ chế | Mục tiêu | Lưu ý |
+|---|---|---|---|
+| Danh tính/quyền | Namespace + RBAC (Role/RoleBinding theo team), ServiceAccount riêng | Team chỉ thao tác namespace mình | Quyền {{cluster-admin}} chỉ cho nền tảng; audit log API server |
+| Tài nguyên | ResourceQuota + LimitRange + (tuỳ chọn) PriorityClass | Không team nào "đói" tài nguyên; scheduler có thông tin | Chừa quota cho surge khi rolling update |
+| Mạng | NetworkPolicy mặc định deny, chỉ allow cần thiết (ingress controller → app, app → DB cho phép) | Giảm di chuyển ngang khi một Pod bị xâm nhập | Cần CNI hỗ trợ (Calico/Cilium); test kỹ kẻo chặn nhầm |
+| Secret | Vault + External Secrets Operator, đường dẫn theo team ({{kv/team-payment/*}}) | Không lộ chéo, xoay khoá tập trung, audit truy cập | Pod chỉ gắn Secret nó cần; cấm đọc Secret namespace khác |
+| Compute (nâng cao) | Node pool/taint theo môi trường hoặc độ nhạy cảm (prod, PCI) | Giảm blast radius phần cứng/kernel | Tốn chi phí hơn; dùng khi yêu cầu tuân thủ cao |
+
+### Chiến lược ResourceQuota theo team/môi trường
+- **Theo môi trường:** dev quota rộng về số lượng nhưng giới hạn chi phí (CPU/RAM thấp hơn, cấm LoadBalancer), staging gần prod, prod cấp theo cam kết năng lực (đo load test). Tránh prod/non-prod chung một "ổ" quota.
+- **Theo team:** cấp hạn mức ban đầu (baseline) + quy trình tăng quota qua Git (pull request) có số liệu (usage, đỉnh, lý do). Đặt cảnh báo 80% {{Used/Hard}}.
+- **Quota cho đối tượng:** ngoài CPU/RAM, giới hạn {{count/services.loadbalancers}}, {{count/persistentvolumeclaims}}, {{pods}} để tránh tạo tài nguyên đắt hoặc bùng nổ ngoài ý muốn.
+~~~bash
+kubectl get resourcequota -A
+kubectl describe quota -n team-payment-prod        # Used/Hard theo từng loại
+# Script/Grafana cảnh báo khi used/hard > 0.8
+~~~
+
+### Secret quy mô lớn
+- Mỗi team một "không gian" trong vault (path/policy). ESO {{SecretStore/ClusterSecretStore}} + {{ExternalSecret}} tham chiếu đúng path; Git chỉ chứa tên tham chiếu, không chứa giá trị.
+- **Xoay khoá:** secret có TTL/lịch xoay; sau khi xoay ở vault, ESO đồng bộ Secret K8s → cần cơ chế rollout (checksum annotation) để Pod nhận giá trị mới.
+- **Cấm:** commit secret base64, chia sẻ secret giữa namespace bằng copy tay, dùng một ServiceAccount quyền đọc mọi secret. Bật audit truy cập vault và K8s Secret.
+
+### Helm/GitOps chuẩn và chống config drift
+- **Nguồn sự thật là Git:** chart + values theo môi trường nằm trong repo; Argo CD/Flux reconcile. Cấm {{kubectl apply/edit}} trực tiếp lên prod (trừ sự cố khẩn cấp có ghi nhận và backport vào Git).
+- **Chống drift:** bật chế độ Argo CD tự phát hiện drift (OutOfSync) và cảnh báo; với môi trường chín, cân nhắc {{selfHeal/prune}} nhưng hiểu rủi ro (hotfix tay sẽ bị ghi đè). Luôn backport hotfix vào Git ngay.
+- **Chuẩn Helm:** golden chart version hoá; team dùng chart chung, override values; quét manifest ({{kubeconform}}, {{helm template}}) và policy (Kyverno) trong CI trước merge.
+~~~bash
+# Argo CD: xem app lệch Git
+argocd app diff payment-prod
+argocd app sync payment-prod          # đồng bộ về trạng thái Git (cẩn thận)
+kubectl get events -A --sort-by=.lastTimestamp | head
+~~~
+
+### Mô hình vận hành và trade-off
+| Quyết định | Lợi ích | Trade-off |
+|---|---|---|
+| Một cluster đa namespace | Rẻ, tận dụng tài nguyên, vận hành tập trung | Blast radius lớn hơn (lỗi control plane/CNI ảnh hưởng nhiều team); noisy neighbor nếu quota/policy yếu |
+| Tách cluster prod | Cô lập mạnh, rủi ro tuân thủ thấp | Chi phí và vận hành gấp đôi; phức tạp khi chia sẻ dịch vụ chung |
+| NetworkPolicy deny mặc định | Bảo mật, giảm di chuyển ngang | Tốn công khai báo luồng hợp lệ; dễ chặn nhầm gây sự cố kết nối |
+| GitOps self-heal | Drift bị sửa tự động, nhất quán | Hotfix khẩn cấp có thể bị ghi đè nếu quên commit Git |
+
+### Trên production
+- **Sự cố drift:** ai đó {{kubectl set image}} hotfix prod lúc 2 giờ sáng, quên commit → sáng hôm sau Argo sync/self-heal ghi đè về image cũ → tái diễn sự cố. Phòng ngừa: quy trình hotfix bắt buộc mở PR ngay, tạm tắt auto-sync có thời hạn, audit lệnh kubectl.
+- **Sự cố quota:** team Thẻ rollout tăng replica đúng lúc quota đầy → Pod mới Pending, rollout kẹt nửa chừng. Kiểm tra {{kubectl describe quota}}, tạm nới có phê duyệt hoặc thu hồi tài nguyên dev; dài hạn: cảnh báo 80% và quy trình tăng quota tự phục vụ.
+- **Sự cố cô lập mạng:** bật NetworkPolicy deny-all mà quên allow DNS (kube-dns/coredns port 53) → toàn bộ Pod không phân giải được tên Service. Luôn có baseline policy cho phép DNS và kiểm thử trên namespace thử nghiệm trước.
+
+> Senior tip: Quản trị đa team thành công hay thất bại ở **đường mặc định**: nếu đường an toàn (golden chart, namespace tự cấp qua Git, secret qua ESO) dễ hơn đường tắt (sửa tay, hardcode secret), team sẽ tự tuân thủ. Đo bằng chỉ số dẫn đường: thời gian onboard team mới, tỉ lệ thay đổi đi qua Git, số vi phạm policy chặn ở CI (không phải ở prod), và tần suất drift. Với ngân hàng, hãy coi RBAC + audit + NetworkPolicy là yêu cầu tuân thủ, không phải tuỳ chọn — và diễn tập "một namespace bị xâm nhập" để kiểm chứng blast radius thực sự đã nhỏ.`,
+    follow: [
+      'Bạn thiết kế NetworkPolicy baseline mặc định (deny-all + allow DNS + allow ingress controller) như thế nào để không làm gãy service hiện hữu?',
+      'Khi nào nên tách thành nhiều cluster thay vì tiếp tục multi-tenancy bằng namespace? Nêu ngưỡng quyết định.',
+      'Làm sao xử lý hotfix khẩn cấp 2 giờ sáng trong mô hình GitOps mà không tạo drift và không làm chậm khôi phục?'
+    ],
+    tags: ['Kubernetes', 'Governance', 'Multi-tenancy', 'GitOps', 'Secret Management'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Network Policies', url: 'https://kubernetes.io/docs/concepts/services-networking/network-policies/' },
+      { type: 'doc', title: 'Argo CD Declarative GitOps', url: 'https://argo-cd.readthedocs.io/en/stable/' },
+      { type: 'doc', title: 'External Secrets Operator', url: 'https://external-secrets.io/latest/' }
+    ]
+  },
+  {
+    id: 'devops-128',
+    topic: 'devops',
+    level: 'mid',
+    q: 'StorageClass, PV và PVC trong Kubernetes hoạt động thế nào? Dynamic provisioning là gì và access modes RWO/RWX/RWOP khác nhau ra sao?',
+    a: `**Tóm tắt:** PersistentVolume (PV) là tài nguyên lưu trữ cấp cluster; PersistentVolumeClaim (PVC) là yêu cầu của Pod; StorageClass là "bản thiết kế" cho dynamic provisioning, tự tạo PV khi có PVC.
+
+### Bối cảnh
+Container filesystem là ephemeral (mất khi Pod restart). Stateful workload (DB, queue) cần lưu trữ bền. K8s tách "yêu cầu" (PVC) khỏi "tài nguyên" (PV) để linh hoạt.
+
+### Cơ chế từng bước
+1. Admin tạo StorageClass trỏ tới provisioner (ví dụ AWS EBS CSI).
+2. Dev tạo PVC khai báo dung lượng, accessMode.
+3. Controller quan sát PVC Pending → gọi provisioner tạo volume → tạo PV bound.
+4. Pod mount PVC; dữ liệu sống trên volume ngoài cluster.
+
+### Access modes
+- RWO (ReadWriteOnce): mount read-write trên một node. EBS thường RWO.
+- RWX (ReadWriteMany): nhiều node cùng mount. Cần NFS/EFS/CephFS.
+- RWOP (ReadWriteOncePod): chỉ một Pod (CSI mới hỗ trợ).
+
+### Reclaim policy
+- Delete: xoá volume khi PVC bị xoá (default cloud).
+- Retain: giữ dữ liệu, admin phải dọn tay. Dùng cho dữ liệu quan trọng.
+
+### volumeBindingMode
+- WaitForFirstConsumer: trì hoãn bind đến khi Pod được schedule → đảm bảo volume tạo ở đúng AZ/node. Tránh PVC bound vào volume ở AZ khác.
+
+### PVC Pending điều tra
+~~~bash
+kubectl describe pvc <name>
+kubectl get storageclass
+kubectl get events -n <ns>
+~~~
+Nguyên nhân thường: không có StorageClass mặc định, provisioner lỗi, quota storage, topology mismatch.
+
+> Senior tip: Luôn đặt volumeBindingMode WaitForFirstConsumer và reclaimPolicy Retain cho production DB; test restore định kỳ vì Retain không tự động xoá rác.`,
+    follow: [
+      'Khi nào chọn static provisioning thay vì dynamic?',
+      'Làm sao migrate PVC sang StorageClass mới mà không downtime?',
+      'Tại sao Pod bị Pending với lỗi "volume node affinity conflict"?'
+    ],
+    tags: ['Kubernetes', 'Storage', 'PV', 'PVC', 'StorageClass'],
+    refs: [
+      { type: 'doc', title: 'Persistent Volumes', url: 'https://kubernetes.io/docs/concepts/storage/persistent-volumes/' },
+      { type: 'doc', title: 'Storage Classes', url: 'https://kubernetes.io/docs/concepts/storage/storage-classes/' }
+    ]
+  },
+  {
+    id: 'devops-129',
+    topic: 'devops',
+    level: 'senior',
+    q: 'StatefulSet là gì? Khi nào dùng StatefulSet thay vì Deployment, và có nên chạy PostgreSQL/Redis trên K8s không?',
+    a: `**Tóm tắt:** StatefulSet cấp identity ổn định (pod-0, pod-1), DNS ổn định và volume riêng cho từng replica; dùng cho workload có trạng thái. Chạy DB trên K8s là trade-off giữa kiểm soát và vận hành.
+
+### Cơ chế
+- Mỗi Pod có hostname cố định: web-0, web-1.
+- Headless Service (clusterIP: None) tạo DNS record cho từng Pod.
+- volumeClaimTemplates: mỗi Pod có PVC riêng, không bị xoá khi Pod restart.
+- Thứ tự khởi động/terminate tuần tự (pod-0 trước pod-1) mặc định; có thể parallel.
+
+### So với Deployment
+Deployment: Pod vô danh, thay thế tuỳ ý, share volume. StatefulSet: identity + storage ổn định. Dùng cho DB, Kafka, ZooKeeper.
+
+### Chạy PostgreSQL/Redis trên K8s?
+Ưu: đồng nhất môi trường, GitOps, tiết kiệm chi phí, kiểm soát phiên bản.
+Nhược: backup/restore phức tạp, failover cần operator, storage I/O, noisy neighbor, vận hành DB là chuyên môn riêng.
+
+### Thực tế
+- PostgreSQL: dùng CloudNativePG hoặc Zalando operator; Patroni cho HA. Managed (RDS/Aurora) thường an toàn hơn cho team nhỏ.
+- Redis: Redis Operator hoặc Bitnami chart; managed (ElastiCache/MemoryDB) cho production quan trọng.
+- Quyết định: nếu SLA cao và team nhỏ → managed; nếu cần tuỳ biến sâu hoặc on-prem → operator trên K8s.
+
+> Senior tip: Nếu chạy DB trên K8s, bắt buộc có backup tự động, tested restore, và runbook failover; đừng chỉ "cài chart rồi quên".`,
+    follow: [
+      'Headless Service khác Service thường thế nào?',
+      'Làm sao scale down StatefulSet mà không mất dữ liệu?',
+      'Khi nào operator tốt hơn Helm chart cho DB?'
+    ],
+    tags: ['Kubernetes', 'StatefulSet', 'PostgreSQL', 'Redis', 'Operator'],
+    refs: [
+      { type: 'doc', title: 'StatefulSets', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/' },
+      { type: 'doc', title: 'CloudNativePG', url: 'https://cloudnative-pg.io/' }
+    ]
+  },
+  {
+    id: 'devops-130',
+    topic: 'devops',
+    level: 'senior',
+    q: 'RBAC trong Kubernetes: Role/ClusterRole, RoleBinding, ServiceAccount hoạt động thế nào? Quyền tối thiểu cho pipeline CI deploy vào 1 namespace là gì?',
+    a: `**Tóm tắt:** RBAC kiểm soát ai (subject) được làm gì (verb) trên tài nguyên (resource) ở scope namespace (Role) hoặc cluster (ClusterRole). Pipeline nên có ServiceAccount riêng với Role giới hạn namespace.
+
+### Khái niệm
+- Subject: User, Group, ServiceAccount.
+- Role: tập rule trong 1 namespace.
+- ClusterRole: rule cấp cluster (hoặc tái sử dụng cho nhiều namespace).
+- RoleBinding/ClusterRoleBinding: gắn subject với role.
+
+### Ví dụ Role tối thiểu cho deploy
+~~~yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: payments
+  name: deployer
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get","list","patch","update"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get","list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: payments
+  name: ci-deployer
+subjects:
+- kind: ServiceAccount
+  name: ci-deployer
+  namespace: ci
+roleRef:
+  kind: Role
+  name: deployer
+  apiGroup: rbac.authorization.k8s.io
+~~~
+
+### Kiểm tra quyền
+~~~bash
+kubectl auth can-i patch deployment -n payments --as=system:serviceaccount:ci:ci-deployer
+kubectl auth can-i --list --as=...
+~~~
+
+### Rancher
+Rancher thêm lớp user/role/project ở trên K8s RBAC, đồng bộ xuống cluster. Phù hợp quản lý nhiều team nhưng vẫn nên hiểu RBAC gốc.
+
+> Senior tip: Không dùng cluster-admin cho CI; bắt đầu từ quyền rỗng và thêm khi pipeline fail với lỗi Forbidden; lưu manifest RBAC trong Git.`,
+    follow: [
+      'Khi nào cần ClusterRole thay vì Role?',
+      'Làm sao audit thay đổi RBAC?',
+      'ServiceAccount token tự động mount có rủi ro gì?'
+    ],
+    tags: ['Kubernetes', 'RBAC', 'Security', 'CI/CD'],
+    refs: [
+      { type: 'doc', title: 'RBAC Authorization', url: 'https://kubernetes.io/docs/reference/access-authn-authz/rbac/' },
+      { type: 'doc', title: 'kubectl auth can-i', url: 'https://kubernetes.io/docs/reference/kubectl/generated/kubectl_auth/kubectl_auth_can-i/' }
+    ]
+  },
+  {
+    id: 'devops-131',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Backup Kubernetes gồm những gì? Velero + object storage (MinIO/S3) hoạt động thế nào và diễn tập khôi phục ra sao?',
+    a: `**Tóm tắt:** Backup K8s phải bao gồm manifest (resource), dữ liệu PV và etcd/config. Velero backup resource + snapshot/file-system volume vào object storage, restore theo namespace/label.
+
+### Backup gồm gì
+- Manifest: Deployment, Service, ConfigMap, Secret, CRD...
+- Dữ liệu: PV (DB data).
+- Cluster state: etcd (thường managed bởi cloud).
+- Cấu hình công cụ: Helm values, GitOps repo.
+
+### Velero
+- Backup: chụp resource qua API server + volume snapshot hoặc file-system backup (Restic/Kopia).
+- Storage: S3/MinIO bucket.
+- Schedule: CronSchedule.
+- Restore: chọn backup, namespace, label.
+
+### Snapshot vs file-system
+- Snapshot: nhanh, phụ thuộc CSI driver, cùng region.
+- File-system (Kopia): portable, chậm hơn, tốn CPU, backup mọi volume.
+
+### Ví dụ
+~~~bash
+velero backup create daily --include-namespaces payments --storage-location default
+velero schedule create hourly --schedule="0 * * * *" --include-namespaces payments
+velero restore create --from-backup daily-2024...
+~~~
+
+### Diễn tập khôi phục
+1. Tạo namespace test, restore backup.
+2. Kiểm tra Pod Running, PVC bound, dữ liệu.
+3. Đo RTO/RPO.
+4. Ghi runbook.
+
+> Senior tip: Backup chưa test restore thì chưa tồn tại; diễn tập hàng quý, đo thời gian thực tế và cập nhật runbook.`,
+    follow: [
+      'Khi nào dùng snapshot thay vì file-system backup?',
+      'Làm sao backup etcd trên cluster tự quản?',
+      'Velero restore có thể ghi đè resource đang tồn tại không?'
+    ],
+    tags: ['Kubernetes', 'Backup', 'Velero', 'Disaster Recovery'],
+    refs: [
+      { type: 'doc', title: 'Velero Documentation', url: 'https://velero.io/docs/' },
+    ]
+  },
+  {
+    id: 'devops-132',
+    topic: 'devops',
+    level: 'mid',
+    q: 'DaemonSet là gì? Taints/tolerations và nodeSelector/affinity dùng để đặt agent log/monitoring ở đâu?',
+    a: `**Tóm tắt:** DaemonSet đảm bảo mỗi node (hoặc subset) chạy một Pod. Taints/tolerations và affinity quyết định Pod chạy trên node nào.
+
+### DaemonSet
+- Chạy agent trên mọi node: log shipper (Fluent Bit), monitoring (node-exporter), CNI.
+- Khi node mới join, DaemonSet tự tạo Pod.
+- Khi node bị remove, Pod bị xoá.
+
+### Taints/Tolerations
+- Taint trên node: "không cho Pod thường chạy ở đây" (ví dụ node GPU/dedicated).
+- Toleration trên Pod: "tôi chấp nhận taint đó".
+- Dùng để cô lập workload và giữ node cho hệ thống.
+
+### nodeSelector / affinity
+- nodeSelector: match label đơn giản.
+- nodeAffinity: điều kiện phức tạp (In, NotIn, Exists).
+- podAffinity/antiAffinity: phân tán Pod cùng/ khác node.
+
+### Ví dụ
+~~~yaml
+spec:
+  template:
+    spec:
+      tolerations:
+      - key: "dedicated"
+        operator: "Equal"
+        value: "monitoring"
+        effect: "NoSchedule"
+      nodeSelector:
+        node-role: monitoring
+~~~
+
+### Trên production
+- Agent monitoring phải tolerate taint control-plane? Tuỳ; tránh chạy trên master nếu không cần.
+- Kiểm tra: kubectl get ds -A, kubectl describe ds, events.
+
+> Senior tip: Dùng DaemonSet cho agent node-level; dùng Deployment + affinity cho agent cần HA theo replica, không theo node.`,
+    follow: [
+      'Khi nào dùng DaemonSet thay vì Deployment?',
+      'Làm sao rolling update DaemonSet an toàn?',
+      'Taints có ảnh hưởng đến cluster autoscaler không?'
+    ],
+    tags: ['Kubernetes', 'DaemonSet', 'Scheduling', 'Monitoring'],
+    refs: [
+      { type: 'doc', title: 'DaemonSet', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/' },
+      { type: 'doc', title: 'Taints and Tolerations', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/' }
+    ]
+  },
+  {
+    id: 'devops-133',
+    topic: 'devops',
+    level: 'senior',
+    q: 'GitOps với Argo CD/Flux khác CI đẩy kubectl apply thế nào? Drift detection là gì?',
+    a: `**Tóm tắt:** GitOps lấy Git làm nguồn chân lý duy nhất; controller trong cluster liên tục đồng bộ trạng thái cluster với Git và phát hiện drift. CI pushing kubectl apply là imperative và dễ drift.
+
+### CI pushes kubectl
+- Pipeline build image → kubectl apply manifest.
+- Trạng thái cluster phụ thuộc pipeline; thay đổi tay không bị phát hiện.
+- Rollback = chạy lại pipeline cũ.
+
+### GitOps (Argo CD/Flux)
+- Manifest lưu trong Git (kustomize/helm).
+- Agent trong cluster pull và sync.
+- Drift detection: so sánh live state với Git; tự heal hoặc cảnh báo.
+- Audit: mọi thay đổi qua PR, ai làm gì.
+
+### So sánh
+| Tiêu chí | CI push | GitOps |
+|---|---|---|
+| Nguồn chân lý | Pipeline | Git |
+| Drift | Không phát hiện | Phát hiện/heal |
+| Quyền cluster | CI cần credential | Agent trong cluster |
+| Rollback | Pipeline | Git revert |
+
+### Drift detection
+- Argo CD: so sánh resource live với desired; status OutOfSync.
+- Có thể auto-sync hoặc manual.
+- Lưu ý: field do controller mutate (replicas bởi HPA) cần ignore để tránh false drift.
+
+> Senior tip: Bắt đầu GitOps với read-only mode (không auto-sync) để quan sát drift trước khi bật self-heal; tránh "auto-heal xoá hotfix khẩn cấp".`,
+    follow: [
+      'Khi nào giữ CI push cho workload đơn giản?',
+      'Làm sao xử lý secret trong GitOps (Sealed Secrets/ESO)?',
+      'Argo CD ApplicationSet dùng khi nào?'
+    ],
+    tags: ['Kubernetes', 'GitOps', 'ArgoCD', 'Flux'],
+    refs: [
+      { type: 'doc', title: 'Argo CD', url: 'https://argo-cd.readthedocs.io/en/stable/' },
+      { type: 'doc', title: 'Flux', url: 'https://fluxcd.io/' }
+    ]
+  },
+  {
+    id: 'devops-134',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Helm chart và Kustomize khác nhau thế nào? Khi nào chọn cái nào cho Java service trên K8s?',
+    a: `**Tóm tắt:** Helm là package manager templating; Kustomize là patch overlay không template. Chọn Helm cho distributable chart, Kustomize cho overlay môi trường đơn giản.
+
+### Helm
+- Template Go text/template, values.yaml.
+- Chart repository, versioning, release history, rollback.
+- Phức tạp: debug template, drift.
+
+### Kustomize
+- Base + overlays (patches).
+- Không cần template engine; giữ YAML gốc.
+- Tích hợp kubectl -k.
+
+### So sánh
+| Tiêu chí | Helm | Kustomize |
+|---|---|---|
+| Packaging | Mạnh | Yếu |
+| Rollback | Có | Không |
+| Độ phức tạp | Cao | Thấp |
+| Phù hợp | Thư viện chia sẻ | Overlay env |
+
+### Thực tế Java service
+- Team lớn, nhiều env, cần rollback → Helm + values per env.
+- Team nhỏ, manifest đơn giản → Kustomize overlay.
+- GitOps: cả hai đều được Argo/Flux hỗ trợ.
+
+### Chi tiết so sánh khi triển khai Spring Boot
+Helm chart thường có deployment, service, ingress, hpa, pdb, configmap, secret template. Kustomize overlay chỉ patch image tag, replica, resource. Với Java, cần quan tâm JVM memory limit, readiness probe /actuator/health, graceful shutdown. Helm giúp đóng gói chuẩn cho nhiều service; Kustomize giữ đơn giản.
+
+### Pitfall
+- Helm template quá phức tạp khó debug: dùng helm template locally.
+- Kustomize patches sai strategic merge làm mất field.
+- Secret plaintext trong values; nên dùng SOPS/ESO.
+
+> Senior tip: Không trộn Helm và Kustomize bừa; chọn một chuẩn team và viết README rõ ràng.`,
+    follow: [
+      'Helm values secrets nên quản lý thế nào?',
+      'Kustomize patches strategic merge khác JSON patch?',
+      'Làm sao test Helm chart trong CI?'
+    ],
+    tags: ['Kubernetes', 'Helm', 'Kustomize', 'Deployment'],
+    refs: [
+      { type: 'doc', title: 'Helm', url: 'https://helm.sh/docs/' },
+      { type: 'doc', title: 'Kustomize', url: 'https://kustomize.io/' }
+    ]
+  },
+  {
+    id: 'devops-135',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Observability trên K8s: metrics/logs/traces cho Java service triển khai thế nào? Prometheus/Grafana/Loki/Tempo hay managed?',
+    a: `**Tóm tắt:** Triển khai observability trên K8s gồm metrics (Prometheus), logs (Loki/Fluent Bit), traces (Tempo/OTel). Managed (Datadog, CloudWatch) giảm vận hành nhưng chi phí cao.
+
+### Metrics
+- Prometheus scrape /actuator/prometheus (Micrometer).
+- Grafana dashboard.
+- Alertmanager rules.
+
+### Logs
+- Fluent Bit DaemonSet ship log từ node/Pod.
+- Loki lưu trữ theo label.
+- Structured JSON log từ Spring Boot.
+
+### Traces
+- OpenTelemetry SDK trong app, OTLP exporter.
+- Tempo/Jaeger lưu trace.
+- Correlate traceId với log.
+
+### Managed vs self-hosted
+- Self-hosted: kiểm soát, chi phí infra thấp nhưng vận hành nặng.
+- Managed: Datadog, New Relic, CloudWatch: nhanh nhưng chi phí theo host/log volume.
+
+### Trên production
+- Giữ cardinality thấp (không label user id).
+- Retention: metrics 15d, logs 7-30d, traces 7d.
+- Alert theo SLO, không alert noise.
+
+> Senior tip: Bắt đầu với metrics + structured logs + traceId trong log; thêm distributed tracing khi có nhu cầu debug cross-service thực sự.`,
+    follow: [
+      'Làm sao tránh cardinality explosion trong Prometheus?',
+      'OpenTelemetry collector deploy thế nào trên K8s?',
+      'Khi nào chọn managed observability?'
+    ],
+    tags: ['Kubernetes', 'Observability', 'Prometheus', 'Grafana', 'OpenTelemetry'],
+    refs: [
+      { type: 'doc', title: 'Prometheus', url: 'https://prometheus.io/docs/' },
+      { type: 'doc', title: 'OpenTelemetry', url: 'https://opentelemetry.io/docs/' }
+    ]
+  }
+,
+  {
+    id: 'devops-136',
+    topic: 'devops',
+    level: 'senior',
+    q: 'PostgreSQL High Availability với Patroni + etcd + HAProxy hoạt động thế nào?',
+    a: `**Tóm tắt:** Patroni chạy trên mỗi node Postgres, dùng etcd (DCS) để bầu leader; HAProxy health-check REST API của Patroni để route traffic tới primary hiện tại; app Java dùng JDBC multi-host với targetServerType=primary và retry.
+
+### Vì sao cần DCS
+- PostgreSQL streaming replication chỉ có primary/standby, không tự bầu leader. Khi primary chết, cần ai đó promote standby và thông báo cho app.
+- DCS (Distributed Configuration Store, ví dụ etcd) là "bảng trắng" chung: node nào giữ lock /leader là primary. etcd dùng Raft, cần số node lẻ (3 hoặc 5) để quorum.
+
+### Leader election
+- Mỗi node chạy Patroni agent. Agent cố acquire lock /leader trong etcd với TTL (lease). Node giữ lock = primary; các node khác standby.
+- Primary gia hạn lease định kỳ. Nếu primary chết, lease hết hạn, standby đầu tiên acquire lock và promote mình (pg_ctl promote).
+- Fencing: Patroni dùng pg_ctl promote và (nếu cấu hình) STONITH để tránh split-brain. App phải reconnect.
+
+### HAProxy health check
+- HAProxy backend trỏ tới REST API Patroni (port 8008): {{GET /primary}} trả 200 chỉ trên primary, {{GET /replica}} trả 200 trên standby.
+- HAProxy route write traffic tới node trả 200 cho /primary; read traffic có thể round-robin replicas.
+
+~~~yaml
+# patroni.yml (rút gọn)
+scope: pgcluster
+name: node1
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: node1:8008
+etcd:
+  hosts: etcd1:2379,etcd2:2379,etcd3:2379
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+postgresql:
+  listen: 0.0.0.0:5432
+  data_dir: /var/lib/postgresql/data
+~~~
+
+### App Java kết nối
+- JDBC URL multi-host: {{jdbc:postgresql://host1:5432,host2:5432,host3:5432/db?targetServerType=primary&loadBalanceHosts=true}}
+- HikariCP: set connectionTimeout, validationTimeout; khi failover connection cũ chết, Hikari tự tạo connection mới tới host khác.
+- Retry ở application layer cho transient error (PSQLException với SQLState 08xxx).
+
+### Trên production
+- Sai lầm: etcd cùng node với Postgres → mất node = mất cả DB và DCS → không failover.
+- Kiểm tra: {{patronictl -c /etc/patroni.yml list}}; {{etcdctl endpoint health}}; HAProxy stats page; test failover bằng {{patronictl pause}} / kill primary.
+
+> Senior tip: Failover tự động chỉ an toàn khi DCS có quorum và fencing; luôn drill failover định kỳ, đo RTO thực tế (thường 30-60s) và RPO (data loss do async replication).`,
+    follow: ['etcd quorum cần bao nhiêu node?', 'targetServerType=primary làm gì?', 'Làm sao tránh split-brain khi mạng phân mảnh?'],
+    tags: ['PostgreSQL', 'Patroni', 'etcd', 'HAProxy', 'HA']
+  }
+,
+  {
+    id: 'devops-137',
+    topic: 'devops',
+    level: 'mid',
+    q: 'MariaDB Galera Cluster hoạt động thế nào: replication đồng bộ, quorum, SST/IST?',
+    a: `**Tóm tắt:** Galera là multi-master synchronous replication: mỗi node nhận write, certify transaction qua cluster, commit cùng lúc; cần số node lẻ để quorum; node mới join dùng SST (full copy) hoặc IST (incremental).
+
+### Replication đồng bộ (wsrep)
+- Ứng dụng ghi vào bất kỳ node nào. Node đó broadcast write-set (thay đổi hàng) tới các node khác qua gcomm.
+- Mỗi node certify: kiểm tra xung đột (certification failure) → nếu OK thì apply commit; nếu conflict thì rollback transaction ở node gốc.
+- Commit chỉ thành công khi đạt quorum (majority node ack). Latency = round-trip chậm nhất trong cluster.
+
+### Quorum và số node lẻ
+- Quorum = floor(N/2)+1. Cluster 3 node cần 2 node sống. 2 node không đủ quorum → read-only (protect data).
+- Số node lẻ (3,5,7) để tránh tie (2 vs 2). Node lẻ cho phép majority rõ ràng.
+
+### SST vs IST
+- SST (State Snapshot Transfer): node mới/full sync nhận toàn bộ data dump (mysqldump hoặc rsync/mariabackup). Chậm nhưng an toàn.
+- IST (Incremental State Transfer): node đã có data, chỉ nhận các transaction còn thiếu từ gcache (ring buffer). Nhanh; cần gcache đủ lớn.
+
+### Xung đột ghi (certification failure)
+- Hai node cùng update cùng row → một transaction bị rollback với error "Deadlock found" / certification failure. App phải retry.
+
+### Trên production
+- Sai lầm: deploy 2 node → không có quorum majority rõ → split-brain risk.
+- Kiểm tra: {{SHOW STATUS LIKE 'wsrep_%'}}; {{wsrep_cluster_size}}, {{wsrep_ready}}, {{wsrep_local_state_comment}}; log: "New COMPONENT".
+
+> Senior tip: Galera tốt cho write-heavy multi-master nhưng certification failure yêu cầu app retry; với workload conflict cao, cân nhắc single-writer + async replica.`,
+    follow: ['SST mất bao lâu với DB 100GB?', 'gcache size đặt bao nhiêu?', 'Galera vs Group Replication?'],
+    tags: ['MariaDB', 'Galera', 'HA', 'Replication']
+  }
+,
+  {
+    id: 'devops-138',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Redis Sentinel: quorum, failover và client (Lettuce/Redisson) tự phát hiện master mới?',
+    a: `**Tóm tắt:** Sentinel là hệ thống giám sát + failover cho Redis single-master: nhiều Sentinel vote, đạt quorum thì promote replica; client (Lettuce/Redisson)subscribe Sentinel để biết master mới.
+
+### Quorum
+- Sentinel không phải data node, chỉ monitor. Cần ≥3 Sentinel (số lẻ) để majority vote. Quorum cấu hình: {{sentinel monitor mymaster 127.0.0.1 6379 2}} → cần 2 Sentinel đồng ý master down.
+
+### Failover
+- Sentinel phát hiện master down (subjective down → objective down khi quorum đồng ý). Bầu leader Sentinel (Raft-like). Leader chọn replica tốt nhất (replication offset cao nhất, priority thấp nhất) và {{REPLICAOF NO ONE}}. Các Sentinel khác reconfigure replica theo master mới. Thông báo qua pub/sub channel.
+
+### Client
+- Lettuce/Redisson kết nối tới Sentinel list, query {{SENTINEL get-master-addr-by-name}} để lấy master hiện tại; subscribe để reconnect khi failover. Spring Data Redis: {{RedisSentinelConfiguration}}.
+
+### Sentinel vs Redis Cluster
+- Sentinel: single master + replicas, data không sharding, đơn giản; phù hợp session/cache nhỏ. Cluster: sharding 16384 slot, multi-master, scale ngang; phức tạp hơn, client phải hỗ trợ MOVED/ASK redirect.
+
+### Trên production
+- Sai lầm: Sentinel đặt cùng node với Redis → node chết = mất cả.
+- Kiểm tra: {{redis-cli -p 26379 SENTINEL master mymaster}}; {{SENTINEL ckquorum mymaster}}.
+
+> Senior tip: Sentinel failover thường 10-30s; app cần retry/idempotent; với cache, accept eventual consistency và fallback DB.`,
+    follow: ['Redis Cluster failover thế nào?', 'Sentinel quorum vs cluster quorum?', 'Lettuce auto-reconnect config?'],
+    tags: ['Redis', 'Sentinel', 'HA']
+  }
+,
+  {
+    id: 'devops-139',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Kafka cluster HA: replication factor, min.insync.replicas, rack awareness, KRaft quorum?',
+    a: `**Tóm tắt:** Kafka HA dựa trên replication: mỗi partition có leader + replicas; RF=3 + min.insync.replicas=2 cho phép mất 1 broker vẫn ghi; rack awareness phân tán replica; KRaft thay ZooKeeper bằng controller quorum Raft.
+
+### Replication factor & min.insync.replicas
+- RF=3: mỗi partition có 3 bản copy trên 3 broker. Producer acks=all chờ tất cả ISR (in-sync replicas) ack.
+- min.insync.replicas=2: leader chỉ accept write khi ≥2 ISR sẵn sàng. Mất 1 broker → còn 2 ISR → vẫn ghi. Mất 2 broker → không đủ min.insync → producer lỗi (an toàn, tránh mất data).
+- ISR co giãn: broker chậm bị loại khỏi ISR; khi bắt kịp thì quay lại.
+
+### Rack awareness
+- Cấu hình {{broker.rack=rack1}}; Kafka đặt replica trên rack khác nhau → mất cả rack vẫn còn data.
+
+### KRaft
+- Kafka 3.x+ bỏ ZooKeeper, dùng KRaft: controller nodes (quorum Raft) quản lý metadata. Cần số controller lẻ (3 hoặc 5). Controller và broker có thể cùng process (combined) hoặc tách (dedicated).
+
+### Mất bao nhiêu broker vẫn ghi được
+- RF=3, min.insync=2: mất 1 broker vẫn ghi (2 ISR). Mất 2 broker: không ghi được (chỉ 1 ISR) nhưng đọc vẫn OK nếu còn replica.
+
+### Trên production
+- Sai lầm: RF=3 nhưng min.insync=1 → mất 1 broker vẫn ghi nhưng có thể mất data nếu leader chết trước khi replicate.
+- Kiểm tra: {{kafka-topics.sh --describe}} (ISR list); {{kafka-metadata-quorum.sh --status}}.
+
+> Senior tip: HA Kafka = RF3 + min.insync2 + acks=all + rack awareness; test bằng kill broker và đo message loss.`,
+    follow: ['ZooKeeper vs KRaft?', 'unclean.leader.election.enable làm gì?', 'Kafka replication lag alert?'],
+    tags: ['Kafka', 'HA', 'KRaft']
+  }
+,
+  {
+    id: 'devops-140',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Elasticsearch cluster HA: master-eligible node, quorum, shard + replica, split-brain?',
+    a: `**Tóm tắt:** ES cluster dùng Zen2 discovery: master-eligible nodes bầu master qua quorum (majority); data phân shard + replica; split-brain được ngăn bằng quorum và voting configuration.
+
+### Master-eligible & quorum
+- Node có role master. Cần số master-eligible lẻ (3,5). Quorum = majority. ES 7+ tự tính quorum từ voting config.
+- Master quản lý cluster state, shard allocation. Mất master → bầu master mới từ các node còn lại (nếu còn quorum).
+
+### Shard + replica
+- Index chia thành N primary shard. Mỗi primary có R replica shard trên node khác. Mất node chứa primary → replica promote thành primary.
+- Replica count quyết định fault tolerance: replica=1 cho phép mất 1 node chứa shard đó.
+
+### Split-brain
+- Mạng phân mảnh: hai nhóm node đều bầu master → hai cluster state khác nhau → data diverge. ES ngăn bằng quorum: nhóm < majority không bầu master → read-only/down.
+- Voting config: có thể thêm tie-breaker node (master-eligible nhưng không data) để giữ quorum với số node chẵn.
+
+### Trên production
+- Sai lầm: 2 master-eligible node → tie → split-brain.
+- Kiểm tra: {{GET _cluster/health}}, {{GET _cat/nodes}}, {{GET _cat/shards}}; log "master node changed".
+
+> Senior tip: Luôn dùng 3 master-eligible dedicated node nhỏ + data node riêng; monitor cluster health và unassigned shards.`,
+    follow: ['Dedicated master node sizing?', 'Shard size khuyến nghị?', 'Cross-cluster replication?'],
+    tags: ['Elasticsearch', 'HA', 'Shards']
+  }
+,
+  {
+    id: 'devops-141',
+    topic: 'devops',
+    level: 'senior',
+    q: 'MongoDB replica set HA: primary/secondary, election, write concern, fencing?',
+    a: `**Tóm tắt:** MongoDB replica set: một primary nhận write, secondary replicate qua oplog; primary chết → election bầu primary mới; write concern kiểm soát durability; fencing qua majority write concern.
+
+### Replication
+- Primary ghi vào oplog (capped collection). Secondary tail oplog và apply. Replication async mặc định; secondary có thể lag.
+
+### Election
+- Heartbeat giữa members. Primary không reachable → secondary có vote majority bầu primary mới. Cần số member lẻ (3,5,7) hoặc arbiter để majority.
+- Priority và votes: member có priority 0 không thể làm primary (dùng cho DR site).
+
+### Write concern
+- {{w: 1}}: primary ack (nhanh, có thể mất data nếu primary chết trước replicate).
+- {{w: "majority"}}: majority members ack (chậm hơn, durable). Kết hợp {{j: true}} để journal fsync.
+- Read concern: local/majority/linearizable cho read consistency.
+
+### Fencing
+- MongoDB dùng majority write concern + term (Raft-like) để tránh split-brain: primary cũ với term thấp bị step down khi thấy term cao hơn.
+
+### Trên production
+- Sai lầm: w:1 + failover tự động → mất write chưa replicate.
+- Kiểm tra: {{rs.status()}}, {{rs.printReplicationInfo()}}; mongostat; oplog window.
+
+> Senior tip: Production nên w:majority + j:true cho data quan trọng; monitor replication lag và oplog window.`,
+    follow: ['Arbiter là gì, khi nào dùng?', 'Read preference primary/secondary?', 'Sharded cluster HA?'],
+    tags: ['MongoDB', 'ReplicaSet', 'HA']
+  }
+,
+  {
+    id: 'devops-142',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Thiết kế chung HA: số node lẻ, quorum, fencing và kiểm thử failover định kỳ?',
+    a: `**Tóm tắt:** HA đúng cần: số node lẻ để majority rõ, quorum để quyết định, fencing để tránh split-brain, và drill failover định kỳ để đo RPO/RTO thực tế.
+
+### Số node lẻ
+- Quorum majority = floor(N/2)+1. Node lẻ (3,5,7) tránh tie. 3 node chịu được 1 failure; 5 node chịu 2 failure. Chi phí tăng, chọn theo SLO.
+
+### Quorum
+- Quorum là số tối thiểu node phải đồng ý để thực hiện thay đổi (bầu leader, commit write). Nhóm < quorum không acting → tránh split-brain.
+
+### Fencing (STONITH)
+- Khi mạng phân mảnh, node cũ có thể vẫn nghĩ mình primary. Fencing forcibly kill node cũ (power off, network block) trước khi promote node mới. Ví dụ: IPMI, cloud API terminate instance, pg_ctl promote + revoke VIP.
+- Soft fencing: revoke lease trong DCS; hard fencing: kill node.
+
+### Kiểm thử failover (chaos)
+- Drill định kỳ: kill primary, network partition, disk full. Đo thời gian service recover (RTO) và data loss (RPO).
+- Chaos engineering: Netflix Chaos Monkey; LitmusChaos trên K8s.
+
+### RPO / RTO
+- RPO (Recovery Point Objective): mất tối đa bao nhiêu data (giây/phút). RTO (Recovery Time Objective): downtime tối đa.
+- HA sync replication → RPO≈0 nhưng latency cao; async → RPO>0 nhưng nhanh hơn.
+
+### Trên production
+- Sai lầm: cấu hình HA nhưng không drill → failover fail khi cần.
+- Kiểm tra: runbook, alert, dashboard; quarterly DR drill.
+
+> Senior tip: HA không phải config mà là capability được chứng minh bằng drill; viết runbook và đo RTO/RPO thực tế.`,
+    follow: ['Chaos testing tool nào?', 'RPO vs RTO khác gì?', 'Multi-region HA?'],
+    tags: ['HA', 'Quorum', 'Fencing', 'Chaos']
+  }
+,
+  {
+    id: 'devops-143',
+    topic: 'devops',
+    level: 'lead',
+    q: 'PostgreSQL vs MariaDB Galera vs MongoDB replica set: so sánh HA cho Java backend?',
+    a: `**Tóm tắt:** Postgres+Patroni (single-writer, sync/async replica) phù hợp OLTP mạnh; Galera (multi-master sync) phù hợp write phân tán nhưng conflict; Mongo (document, majority write concern) phù hợp flexible schema. Chọn theo workload và consistency.
+
+### Bảng so sánh
+| Tiêu chí | PostgreSQL+Patroni | MariaDB Galera | MongoDB Replica Set |
+|---|---|---|---|
+| Mô hình | single primary + standby | multi-master sync | single primary + secondary |
+| Write | 1 node | bất kỳ node | 1 node (primary) |
+| Consistency | strong (sync) | strong (certification) | tunable (w/majority) |
+| Conflict | không (single writer) | certification failure | không (single writer) |
+| Failover | Patroni promote | cluster tự heal | election |
+| Scale read | replica | mọi node | secondary |
+| Schema | relational strict | relational | document flexible |
+
+### Khi nào chọn
+- OLTP transaction phức tạp, join, constraint → PostgreSQL.
+- Cần multi-master write ở nhiều site, conflict thấp → Galera.
+- Schema linh hoạt, document, horizontal scale → MongoDB.
+
+### Java client
+- Postgres: JDBC + Hikari, targetServerType=primary.
+- MariaDB: JDBC Galera load balancing.
+- Mongo: Mongo Java Driver, read preference, write concern.
+
+### Trên production
+- Sai lầm: chọn Galera cho workload conflict cao → retry storm.
+- Kiểm tra: benchmark TPS, failover drill, replication lag.
+
+> Senior tip: HA database là trade-off consistency/latency/complexity; bắt đầu managed (RDS/Aurora) nếu team nhỏ, tự host khi cần control.`,
+    follow: ['Aurora HA khác gì?', 'Multi-region DB strategy?', 'Connection pooling với HA DB?'],
+    tags: ['PostgreSQL', 'MariaDB', 'MongoDB', 'HA', 'Comparison']
+  }
+
 );
