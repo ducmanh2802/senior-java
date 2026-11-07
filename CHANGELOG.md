@@ -3,6 +3,18 @@
 ## 2026-11-07
 
 ### Nội dung
+- T139 (auto-committed after kilo review + verify)
+- T887 (auto-committed after kilo review + verify)
+- T782 (auto-committed after kilo review + verify)
+- T579 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- UI: dark theme by default
+
+
+## 2026-11-07
+
+### Nội dung
 - T142 (auto-committed after kilo review + verify)
 
 ### Ứng dụng
