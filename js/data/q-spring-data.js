@@ -8876,4 +8876,441 @@ MySQL:
     { type: 'doc', title: 'PostgreSQL: pg_database View', url: 'https://www.postgresql.org/docs/current/monitoring-stats.html#PG-DATABASE-VIEW' },
     { type: 'doc', title: 'MySQL: SHOW ENGINE', url: 'https://dev.mysql.com/doc/refman/8.0/en/show-engine.html' }
   ]
-});
+},
+{
+  id: 'db-048',
+  topic: 'db',
+  level: 'senior',
+  q: 'Database chậm nhưng không ai biết query nào cần tối ưu trước. Bạn dùng pg_stat_statements, slow query log, auto_explain và APM thế nào để tìm đúng thủ phạm?',
+  a: `**Tóm tắt:** Không tối ưu theo cảm giác. Tôi tìm query tốn **tổng thời gian DB** nhiều nhất (không phải query chậm nhất một lần) bằng **pg_stat_statements**, lấy **kế hoạch thực tế** của câu chậm bằng **auto_explain** hoặc {{EXPLAIN (ANALYZE, BUFFERS)}} trên bản sao, nối với **trace APM** để biết API nào gọi nó và gọi bao nhiêu lần mỗi request, rồi ưu tiên theo **tác động** (thời gian × tần suất × mức quan trọng của API).
+
+### Vì sao "tổng thời gian" quan trọng hơn "chậm nhất"
+| Query | Thời gian mỗi lần | Số lần/giờ | Tổng/giờ |
+|---|---|---|---|
+| Báo cáo tháng | 4 giây | 6 | 24 giây |
+| Đếm giỏ hàng | 3 ms | 2.000.000 | 6.000 giây |
+Query thứ hai "nhanh" nhưng chiếm DB gấp 250 lần. Tối ưu nó (cache, index) có tác động lớn nhất.
+
+### Công cụ và cách dùng
+- **pg_stat_statements** (extension, nạp qua {{shared_preload_libraries}}): thống kê gộp theo dạng câu lệnh (tham số được chuẩn hoá thành $1, $2).
+~~~sql
+SELECT left(query, 80) AS q, calls,
+       round(total_exec_time) AS total_ms, round(mean_exec_time, 1) AS mean_ms,
+       rows, shared_blks_read                     -- block phải đọc từ đĩa
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;
+~~~
+Chụp lại định kỳ (hoặc {{pg_stat_statements_reset()}} đầu kỳ) để so trước/sau một release.
+- **Slow query log**: {{log_min_duration_statement = 500}} ghi câu chạy lâu hơn 500ms kèm tham số thật — để tái hiện.
+- **auto_explain**: ghi luôn **kế hoạch thực thi** của câu chậm ({{auto_explain.log_min_duration}}, {{log_analyze}} cẩn thận vì tốn chi phí) — rất quý vì kế hoạch trên production có thể khác staging.
+- **APM / tracing**: cho biết API nào sinh ra query, mỗi request gọi bao nhiêu lần (lộ ra N+1), và query chiếm bao nhiêu phần trăm thời gian request.
+- **pg_stat_activity, pg_locks**: lúc đang sự cố — ai đang chạy, ai đang chờ khoá, transaction nào treo.
+- Với MySQL: Performance Schema / sys schema, slow query log + pt-query-digest. AWS RDS: Performance Insights cho bức tranh "DB load" theo câu lệnh và loại chờ.
+
+### Quy trình
+1. Lấy top 10–20 theo tổng thời gian.
+2. Với mỗi câu: ai gọi (APM), gọi bao nhiêu lần, kế hoạch thực tế, số dòng ước lượng vs thực tế.
+3. Phân loại nguyên nhân: thiếu index / điều kiện mất index / thống kê sai / N+1 / đọc thừa dữ liệu / khoá.
+4. Sửa, đo lại cùng chỉ số; ghi lại kết quả.
+
+### Ví dụ đời thực
+DB của một sàn thương mại điện tử chạy CPU 85% giờ cao điểm; đội định nâng cấp instance (thêm khoảng 2.000 USD/tháng). Top pg_stat_statements: câu đếm sản phẩm trong giỏ 3ms nhưng gọi 1,8 triệu lần/giờ (37% tổng thời gian DB) — APM cho thấy header của mọi trang gọi nó; câu thứ hai là truy vấn danh sách đơn có Seq Scan. Cache số lượng giỏ hàng 30 giây ở Redis và thêm index composite cho câu thứ hai: CPU giờ cao điểm còn 40%, không cần nâng cấp.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không đoán query nào chậm mà đo. Tôi dùng pg_stat_statements để lấy top câu lệnh theo tổng thời gian DB, vì câu vài mili giây gọi hàng triệu lần thường tốn hơn câu vài giây hiếm khi chạy. Với các câu đứng đầu, tôi lấy kế hoạch thực tế bằng auto_explain trên production hoặc EXPLAIN ANALYZE với BUFFERS trên bản sao, và dùng trace APM để biết API nào gọi nó, mỗi request gọi bao nhiêu lần, vì đó là cách lộ ra N+1. Slow query log cho tôi tham số thật để tái hiện. Sau đó tôi phân loại nguyên nhân, sửa, và đo lại đúng chỉ số đó. Tôi chụp top pg_stat_statements định kỳ để so trước và sau mỗi release, phát hiện câu vừa trở nên tệ hơn."
+
+> Senior tip: thêm vào checklist release: so sánh top 20 pg_stat_statements trước và sau deploy một ngày. Đây là cách rẻ nhất phát hiện một câu ORM mới vô tình quét cả bảng trước khi nó thành sự cố.`,
+  follow: [
+    'Vì sao query nhanh trên staging lại chậm trên production?',
+    'auto_explain với log_analyze bật có ảnh hưởng hiệu năng thế nào?',
+    'Performance Insights trên RDS cho bạn thêm thông tin gì?'
+  ],
+  tags: ['performance', 'pg_stat_statements', 'auto_explain', 'observability', 'PostgreSQL']
+},
+{
+  id: 'db-049',
+  topic: 'db',
+  level: 'senior',
+  q: 'Có 60 pod Spring Boot, mỗi pod pool 20 connection, nhưng PostgreSQL chỉ chịu được khoảng 300 connection. Bạn dùng PgBouncer hoặc RDS Proxy thế nào, và những tính năng nào bị ảnh hưởng ở chế độ transaction pooling?',
+  a: `**Tóm tắt:** 60 × 20 = 1.200 connection tiềm năng trong khi mỗi connection PostgreSQL là **một process** tốn RAM và CPU chuyển ngữ cảnh. Đặt **connection pooler** (PgBouncer, RDS Proxy) giữa ứng dụng và DB: ứng dụng mở nhiều connection "rẻ" tới pooler, pooler dùng **ít connection thật** tới DB. Ở chế độ **transaction pooling**, một connection DB chỉ thuộc về client trong **một transaction**, nên các tính năng gắn với **phiên (session)** bị ảnh hưởng: {{SET}} không có LOCAL, advisory lock theo phiên, {{LISTEN/NOTIFY}}, bảng tạm qua nhiều transaction, và prepared statement (tuỳ phiên bản pooler).
+
+### Ba chế độ của PgBouncer
+| Chế độ | Connection DB gắn với client trong | Tiết kiệm | Tương thích |
+|---|---|---|---|
+| session | Cả phiên | Ít | Đầy đủ |
+| transaction | Một transaction | Nhiều | Mất tính năng theo phiên |
+| statement | Một câu lệnh | Nhiều nhất | Không dùng được transaction nhiều câu |
+Thực tế hầu như dùng **transaction**.
+
+### Những gì cần sửa ở ứng dụng Java
+- {{SET search_path}}, {{SET statement_timeout}} theo phiên → dùng {{SET LOCAL}} trong transaction, hoặc đặt ở mức role/database ({{ALTER ROLE app SET statement_timeout = '5s'}}).
+- Advisory lock theo phiên ({{pg_advisory_lock}}) → dùng bản theo transaction ({{pg_advisory_xact_lock}}).
+- Prepared statement phía server: driver pgjdbc tự chuyển sang server-side prepared sau vài lần thực thi ({{prepareThreshold}}, mặc định 5); với PgBouncer cũ cần {{prepareThreshold=0}}. PgBouncer từ 1.21 hỗ trợ prepared statement ở chế độ transaction ({{max_prepared_statements}}) — kiểm tra phiên bản bạn dùng.
+- Pool phía ứng dụng (HikariCP) vẫn giữ nhưng nhỏ hơn; đặt {{maxLifetime}} ngắn hơn timeout của pooler.
+
+### RDS Proxy
+Dịch vụ quản lý của AWS: gộp connection, giữ connection khi failover (giảm thời gian ứng dụng mất kết nối), tích hợp IAM/Secrets Manager — đặc biệt hữu ích cho **Lambda** (mỗi lần gọi mở connection). Khi client dùng tính năng theo phiên, RDS Proxy **pin** (ghim) connection cho client đó → mất lợi ích gộp; theo dõi metric pinning.
+
+### Kích thước
+- Connection thật tới DB: bắt đầu từ khoảng **(số core × 2) + số đĩa** theo kinh nghiệm cộng đồng PostgreSQL, rồi đo. Nhiều connection hơn không có nghĩa nhanh hơn — vượt điểm bão hoà thì latency tăng.
+- {{max_connections}} chừa chỗ cho admin, replication, job.
+
+### Ví dụ đời thực
+Sau khi scale lên 60 pod cho đợt khuyến mãi, PostgreSQL báo "too many connections" và RAM tăng vọt (mỗi backend vài MB, cộng work_mem khi truy vấn). Đặt PgBouncer chế độ transaction với 120 connection thật, Hikari mỗi pod 10. Hai lỗi lộ ra khi chuyển: một job dùng {{pg_advisory_lock}} (khoá theo phiên) bị "rò" khoá sang client khác — đổi sang {{pg_advisory_xact_lock}}; một service đặt {{SET statement_timeout}} khi lấy connection — đổi sang cấu hình theo role. Kết quả: p99 giảm 30% nhờ DB không còn quá tải process, không còn lỗi kết nối khi scale.
+
+### Trả lời mẫu khi phỏng vấn
+"Mỗi connection PostgreSQL là một process, nên 60 pod nhân 20 connection vượt xa khả năng của DB. Tôi đặt một connection pooler như PgBouncer hoặc RDS Proxy ở giữa: ứng dụng mở connection tới pooler, pooler dùng một số ít connection thật tới DB, đo để chọn kích thước gần điểm bão hoà. Tôi dùng chế độ transaction pooling, nghĩa là connection thật chỉ thuộc về client trong một transaction, nên phải bỏ các tính năng theo phiên: SET thường thay bằng SET LOCAL hoặc cấu hình theo role, advisory lock theo phiên đổi sang theo transaction, LISTEN NOTIFY cần đường riêng, và prepared statement phải cấu hình theo phiên bản PgBouncer và driver. Với Lambda hoặc cần failover nhanh trên AWS thì RDS Proxy là lựa chọn tự nhiên, nhưng phải theo dõi pinning."
+
+> Senior tip: trước khi bật transaction pooling, grep toàn bộ code tìm {{SET }}, {{pg_advisory_lock}}, {{LISTEN}}, {{TEMP TABLE}}. Mỗi chỗ tìm thấy là một lỗi sẽ xuất hiện ngẫu nhiên sau khi chuyển — sửa trước rẻ hơn nhiều.`,
+  follow: [
+    'Vì sao tăng max_connections không phải là cách giải quyết?',
+    'RDS Proxy pinning là gì và bạn giảm nó thế nào?',
+    'Tính kích thước pool HikariCP khi đã có PgBouncer phía sau ra sao?'
+  ],
+  tags: ['PgBouncer', 'RDS Proxy', 'connection pooling', 'PostgreSQL', 'scalability']
+},
+{
+  id: 'db-050',
+  topic: 'db',
+  level: 'mid',
+  q: 'Một câu báo cáo chạy 40 phút và một transaction bị bỏ quên đã giữ khoá suốt đêm, làm chậm cả hệ thống. Bạn đặt các "rào chắn" timeout nào ở PostgreSQL và ở ứng dụng để chuyện này không lặp lại?',
+  a: `**Tóm tắt:** Đặt giới hạn ở **nhiều tầng** để không câu lệnh hay transaction nào chiếm tài nguyên vô hạn: {{statement_timeout}} (thời gian tối đa của một câu), {{lock_timeout}} (thời gian tối đa chờ khoá), {{idle_in_transaction_session_timeout}} (cắt phiên mở transaction rồi bỏ đó); PostgreSQL 17 có thêm {{transaction_timeout}}. Đặt theo **role** cho từng loại ứng dụng (API ngắn, báo cáo dài hơn), kèm timeout ở **pool** và **HTTP client** phía ứng dụng, và cảnh báo khi có transaction dài.
+
+### Mỗi timeout chặn loại sự cố nào
+| Tham số | Chặn | Gợi ý |
+|---|---|---|
+| statement_timeout | Câu lệnh chạy quá lâu (quét cả bảng, báo cáo nặng trên DB chính) | API: 2–5 giây; báo cáo: vài phút trên replica |
+| lock_timeout | Chờ khoá vô hạn, đặc biệt DDL xếp hàng chặn mọi truy vấn sau nó | 2–5 giây cho migration; ngắn cho API |
+| idle_in_transaction_session_timeout | Ứng dụng mở transaction rồi quên (lỗi code, debug) — giữ khoá, chặn vacuum | 30–60 giây |
+| transaction_timeout (PG17+) | Tổng thời gian một transaction | Theo nhu cầu |
+
+### Đặt ở đâu
+~~~sql
+ALTER ROLE api_user    SET statement_timeout = '3s';
+ALTER ROLE api_user    SET idle_in_transaction_session_timeout = '30s';
+ALTER ROLE report_user SET statement_timeout = '10min';   -- chạy trên replica
+-- migration: đặt trong chính script
+SET lock_timeout = '3s';
+~~~
+Đặt theo role thay vì toàn cục để job hợp lệ chạy lâu không bị cắt nhầm. Trong Spring có thể đặt thêm {{@Transactional(timeout = 5)}} hoặc query hint timeout của JPA cho từng truy vấn.
+
+### Phía ứng dụng
+- HikariCP {{connectionTimeout}} (chờ lấy connection), {{maxLifetime}}.
+- Timeout HTTP client: không gọi dịch vụ ngoài khi đang giữ transaction.
+- Khi câu lệnh bị huỷ do timeout, ứng dụng nhận lỗi rõ ràng (SQLState 57014) → trả lỗi có kiểm soát thay vì treo.
+
+### Giám sát
+~~~sql
+SELECT pid, state, now() - xact_start AS xact_age, left(query, 60)
+FROM pg_stat_activity
+WHERE xact_start < now() - interval '5 minutes' ORDER BY xact_age DESC;
+~~~
+Cảnh báo khi có transaction dài hơn 5 phút hoặc phiên "idle in transaction".
+
+### Ví dụ đời thực
+Một dev chạy câu báo cáo trên DB chính bằng tài khoản ứng dụng lúc 9 giờ sáng: quét 200 triệu dòng, 40 phút, DB CPU 100%. Cùng tuần, một lỗi code để transaction mở khi gặp exception ở nhánh hiếm — phiên "idle in transaction" giữ khoá trên bảng đơn hàng suốt đêm, autovacuum không dọn được, sáng hôm sau migration xếp hàng sau nó và chặn mọi truy vấn 6 phút. Sau đó: role riêng cho API (statement_timeout 3s, idle_in_transaction 30s), role báo cáo chỉ được kết nối replica, migration luôn có lock_timeout + retry, cảnh báo transaction dài. Hai loại sự cố không lặp lại.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi đặt rào chắn ở nhiều tầng. Ở PostgreSQL: statement_timeout giới hạn thời gian một câu, lock_timeout giới hạn thời gian chờ khoá, đặc biệt quan trọng với migration vì DDL xếp hàng có thể chặn mọi truy vấn phía sau, và idle_in_transaction_session_timeout cắt các phiên mở transaction rồi bỏ quên, vốn giữ khoá và chặn vacuum; PostgreSQL 17 có thêm transaction_timeout. Tôi đặt theo role cho từng loại ứng dụng: API ngắn, báo cáo dài hơn và chạy trên replica. Phía ứng dụng có timeout của pool, của transaction và của HTTP client, không gọi dịch vụ ngoài trong transaction. Cuối cùng là cảnh báo khi có transaction dài hơn vài phút."
+
+> Senior tip: tách **tài khoản DB theo mục đích** (API, job, báo cáo, migration, người) ngay từ đầu. Nó cho phép đặt timeout và quyền khác nhau, và khi có sự cố nhìn pg_stat_activity là biết ngay ai đang làm gì.`,
+  follow: [
+    'Vì sao lock_timeout đặc biệt quan trọng với migration?',
+    'Phiên idle in transaction ảnh hưởng tới autovacuum thế nào?',
+    'Bạn xử lý lỗi bị huỷ do statement_timeout trong Spring ra sao?'
+  ],
+  tags: ['PostgreSQL', 'timeout', 'locking', 'guardrails', 'operations']
+},
+{
+  id: 'db-051',
+  topic: 'db',
+  level: 'senior',
+  q: 'Những mẫu viết lại query nào bạn hay dùng để tăng tốc mà không đổi kết quả? Giải thích NOT IN và NOT EXISTS, OR và UNION ALL, subquery tương quan và JOIN/LATERAL, CTE và COUNT(*) trên bảng lớn.',
+  a: `**Tóm tắt:** Nhiều query chậm không cần index mới mà cần **viết lại** để planner chọn kế hoạch tốt hơn hoặc để đọc ít dữ liệu hơn. Các mẫu hay dùng: {{NOT EXISTS}} thay {{NOT IN}} (còn sửa cả lỗi NULL), {{UNION ALL}} thay {{OR}} giữa các cột có index khác nhau, {{JOIN}}/{{LATERAL}} thay subquery chạy lại cho từng dòng, kiểm soát CTE có bị "vật chất hoá" hay không, và tránh {{COUNT(*)}} chính xác trên bảng khổng lồ khi chỉ cần ước lượng. Luôn kiểm chứng bằng {{EXPLAIN ANALYZE}} và so kết quả.
+
+### NOT IN và NOT EXISTS
+~~~sql
+-- Sai khi subquery có NULL: NOT IN trả về rỗng hoàn toàn
+SELECT * FROM customers c WHERE c.id NOT IN (SELECT o.customer_id FROM orders o);
+-- Đúng và thường nhanh hơn (anti-join)
+SELECT * FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+~~~
+{{x NOT IN (1, 2, NULL)}} cho kết quả UNKNOWN với mọi x → không dòng nào được trả. {{NOT EXISTS}} không có bẫy này và planner chuyển thành anti-join hiệu quả.
+
+### OR giữa các cột khác nhau
+{{WHERE email = $1 OR phone = $2}} với hai index riêng: PostgreSQL có thể dùng BitmapOr, nhưng thường kém hơn tách:
+~~~sql
+SELECT * FROM users WHERE email = $1
+UNION ALL
+SELECT * FROM users WHERE phone = $2 AND email IS DISTINCT FROM $1;   -- tránh trùng dòng
+~~~
+
+### Subquery tương quan → JOIN / LATERAL
+Subquery trong {{SELECT}} chạy lại cho từng dòng. Với "đơn hàng mới nhất của mỗi khách":
+~~~sql
+SELECT c.id, o.*
+FROM customers c
+CROSS JOIN LATERAL (
+  SELECT * FROM orders o WHERE o.customer_id = c.id
+  ORDER BY o.created_at DESC LIMIT 1                     -- dùng index (customer_id, created_at DESC)
+) o;
+~~~
+Hoặc {{DISTINCT ON (customer_id)}} của PostgreSQL, hoặc window function — chọn theo số nhóm và index sẵn có.
+
+### CTE
+Từ PostgreSQL 12, CTE không đệ quy, không có tác dụng phụ và chỉ dùng một lần sẽ được **gộp vào** câu chính (planner tối ưu xuyên qua nó). Có thể ép bằng {{WITH x AS MATERIALIZED (...)}} (tính một lần, dùng nhiều lần) hoặc {{NOT MATERIALIZED}}. Trước PG12, CTE luôn là "hàng rào tối ưu" — query cũ viết bằng CTE có thể chậm vì lý do này.
+
+### COUNT(*) trên bảng lớn
+Vì MVCC, PostgreSQL phải kiểm tra từng dòng có hiển thị với transaction hiện tại không, nên {{COUNT(*)}} trên 500 triệu dòng rất tốn. Lựa chọn:
+- Hiển thị "khoảng 2,3 triệu" từ ước lượng ({{SELECT reltuples FROM pg_class WHERE relname = 'orders'}}) hoặc từ {{EXPLAIN}}.
+- Đếm có điều kiện dùng index nhỏ (index-only scan nếu visibility map tốt).
+- Bảng đếm duy trì riêng (cập nhật theo sự kiện) cho con số cần chính xác.
+- Giao diện phân trang không cần tổng số (keyset + "trang tiếp").
+
+### Ví dụ đời thực
+Một màn hình CRM "khách chưa từng mua hàng" dùng {{NOT IN}} — sau khi bảng orders có vài dòng {{customer_id}} NULL (dữ liệu import lỗi), màn hình trả về **rỗng** và đội marketing gửi nhầm chiến dịch; đổi sang {{NOT EXISTS}} vừa đúng vừa nhanh hơn 6 lần. Cùng dự án, trang danh sách hiển thị "Tổng: 48.213.004 bản ghi" chạy {{COUNT(*)}} 9 giây mỗi lần mở; đổi sang ước lượng và keyset, trang mở trong 80ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi có vài mẫu viết lại hay dùng, luôn kiểm chứng bằng EXPLAIN ANALYZE và so kết quả trước và sau. NOT IN với subquery tôi đổi thành NOT EXISTS, vừa tránh bẫy NULL làm kết quả rỗng, vừa để planner làm anti-join. OR giữa các cột có index khác nhau thì tách thành UNION ALL, xử lý trùng dòng cẩn thận. Subquery tương quan trong SELECT tôi đổi sang JOIN, hoặc LATERAL với LIMIT cho bài toán bản ghi mới nhất mỗi nhóm, dựa trên index đúng thứ tự. Với CTE, từ PostgreSQL 12 chúng thường được gộp vào câu chính, còn có thể ép MATERIALIZED khi cần tính một lần. Và tôi tránh COUNT chính xác trên bảng rất lớn khi giao diện chỉ cần ước lượng, vì MVCC buộc phải kiểm tra từng dòng."
+
+> Senior tip: giữ một file "các câu truy vấn mẫu nhanh" của team (top-N mỗi nhóm, anti-join, upsert, phân trang keyset) có kèm index cần thiết. Phần lớn query chậm trong code review là biến thể của vài mẫu này được viết theo cách chậm.`,
+  follow: [
+    'Vì sao NOT IN với NULL trả về rỗng — giải thích bằng logic ba giá trị?',
+    'DISTINCT ON, window function và LATERAL: chọn cách nào cho top-1 mỗi nhóm?',
+    'Khi nào bạn cố ý dùng CTE MATERIALIZED?'
+  ],
+  tags: ['SQL', 'query rewrite', 'NOT EXISTS', 'LATERAL', 'CTE', 'performance']
+},
+{
+  id: 'db-052',
+  topic: 'db',
+  level: 'senior',
+  q: 'Bộ đếm lượt thích, số tồn kho của một sản phẩm hot hay một dòng "tổng doanh thu hôm nay" bị hàng nghìn request cập nhật cùng lúc, gây chờ khoá và deadlock. Bạn xử lý "hot row" thế nào?',
+  a: `**Tóm tắt:** Mỗi {{UPDATE}} khoá dòng tới khi transaction kết thúc, nên một dòng bị cập nhật hàng nghìn lần mỗi giây trở thành **điểm tuần tự hoá** của cả hệ thống. Cách xử lý theo mức độ: **rút ngắn transaction** giữ khoá dòng nóng (đặt cập nhật dòng nóng cuối transaction), **chia nhỏ bộ đếm** thành N dòng con (sharded counter) rồi cộng khi đọc, **ghi thêm thay vì sửa** (append-only + tổng hợp định kỳ), hoặc **đưa bộ đếm ra Redis** ({{INCRBY}}) và đồng bộ về DB theo lô — tuỳ mức độ cần chính xác tức thời.
+
+### Vì sao hot row nghẽn
+Transaction A {{UPDATE stats SET total = total + 1 WHERE day = today}} giữ khoá dòng đó tới khi commit. Nếu A còn làm việc khác 50ms sau đó, mọi transaction khác cập nhật cùng dòng phải **xếp hàng**: tối đa khoảng 20 lần/giây cho dòng đó, bất kể DB mạnh thế nào. Thêm nhiều dòng nóng được cập nhật theo thứ tự khác nhau → deadlock.
+
+### Các cách xử lý
+| Cách | Ý tưởng | Đánh đổi |
+|---|---|---|
+| Cập nhật dòng nóng cuối transaction | Giữ khoá trong thời gian ngắn nhất | Vẫn tuần tự, chỉ đỡ hơn |
+| Sharded counter | N dòng {{(key, shard)}}, mỗi request cộng vào shard ngẫu nhiên; đọc = SUM | Đọc tốn hơn một chút |
+| Append-only | INSERT mỗi sự kiện, job tổng hợp mỗi phút | Tổng có độ trễ |
+| Redis INCRBY | Bộ đếm nguyên tử trong bộ nhớ, đồng bộ về DB theo lô | Có thể mất vài giây dữ liệu nếu Redis lỗi (bật AOF, đối soát) |
+| Tồn kho chia "khoang" | Chia tồn kho thành nhiều dòng (ví dụ 10 dòng × 100 sản phẩm) | Logic chọn dòng còn hàng |
+
+~~~sql
+-- Sharded counter: 16 dòng con cho mỗi bài viết
+INSERT INTO post_likes_counter (post_id, shard, cnt) VALUES ($1, floor(random() * 16), 1)
+ON CONFLICT (post_id, shard) DO UPDATE SET cnt = post_likes_counter.cnt + 1;
+-- Đọc
+SELECT sum(cnt) FROM post_likes_counter WHERE post_id = $1;
+~~~
+
+### Chọn theo yêu cầu chính xác
+- **Tiền, tồn kho bán** cần chính xác tại thời điểm quyết định: dùng cập nhật có điều kiện trên DB, chia khoang nếu quá nóng, giữ transaction cực ngắn.
+- **Lượt thích, lượt xem, thống kê**: chấp nhận trễ vài giây → Redis hoặc append-only + tổng hợp.
+
+### Ví dụ đời thực
+Bảng {{daily_revenue}} có một dòng mỗi ngày được mọi giao dịch thanh toán cập nhật trong cùng transaction với việc ghi giao dịch. Giờ cao điểm 1.500 giao dịch/giây: p99 thanh toán lên 2,4 giây, deadlock xuất hiện khi kết hợp với cập nhật số dư. Đổi sang append-only: mỗi giao dịch INSERT dòng doanh thu riêng (không tranh chấp), job mỗi phút tổng hợp vào {{daily_revenue}}; dashboard trễ tối đa 1 phút (nghiệp vụ chấp nhận). p99 thanh toán còn 140ms, deadlock biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+"Một dòng bị cập nhật liên tục trở thành điểm tuần tự hoá, vì mỗi UPDATE giữ khoá dòng tới khi transaction kết thúc; thông lượng của dòng đó bị giới hạn bởi độ dài transaction chứ không phải sức mạnh DB. Tôi xử lý tuỳ yêu cầu chính xác. Với tiền hay tồn kho cần đúng tại thời điểm quyết định, tôi giữ cập nhật có điều kiện trên DB, đặt nó cuối transaction và giữ transaction cực ngắn, nếu vẫn quá nóng thì chia tồn kho thành nhiều dòng. Với bộ đếm và thống kê chấp nhận trễ vài giây, tôi dùng sharded counter, nhiều dòng con cộng khi đọc, hoặc ghi append-only rồi tổng hợp định kỳ, hoặc dùng Redis INCRBY đồng bộ về DB theo lô."
+
+> Senior tip: tìm hot row bằng {{pg_locks}} và {{pg_stat_activity}} trong lúc tải cao — nhiều phiên chờ khoá trên cùng một dòng là dấu hiệu rõ nhất. Một bảng "thống kê tổng" được cập nhật trong transaction nghiệp vụ là nguyên nhân phổ biến hơn bạn nghĩ.`,
+  follow: [
+    'Sharded counter đọc thế nào cho nhanh khi có hàng triệu khoá?',
+    'Bạn đồng bộ bộ đếm từ Redis về DB thế nào để không mất hoặc đếm trùng?',
+    'Vì sao đặt cập nhật dòng nóng ở cuối transaction giúp giảm tranh chấp?'
+  ],
+  tags: ['hot row', 'contention', 'locking', 'counter', 'scalability']
+},
+{
+  id: 'db-053',
+  topic: 'db',
+  level: 'mid',
+  q: 'Dashboard tổng hợp doanh thu theo ngày, theo cửa hàng chạy truy vấn GROUP BY trên hàng trăm triệu dòng mỗi lần mở. Bạn dùng materialized view hay bảng tổng hợp tăng dần thế nào?',
+  a: `**Tóm tắt:** Thay vì tính lại từ dữ liệu thô mỗi lần đọc, **tính trước** kết quả tổng hợp. **Materialized view** lưu kết quả một truy vấn thành bảng, làm mới bằng {{REFRESH MATERIALIZED VIEW}} (tính lại toàn bộ; {{CONCURRENTLY}} để không chặn người đọc, cần unique index). Khi dữ liệu lớn và cần mới hơn, dùng **bảng tổng hợp tăng dần**: chỉ cộng thêm phần dữ liệu mới từ lần chạy trước (theo thời gian hoặc id), upsert vào bảng tổng hợp.
+
+### Materialized view
+~~~sql
+CREATE MATERIALIZED VIEW daily_store_revenue AS
+SELECT date_trunc('day', paid_at) AS day, store_id, sum(amount) AS revenue, count(*) AS orders
+FROM payments GROUP BY 1, 2;
+CREATE UNIQUE INDEX ON daily_store_revenue (day, store_id);     -- bắt buộc cho CONCURRENTLY
+REFRESH MATERIALIZED VIEW CONCURRENTLY daily_store_revenue;      -- người đọc không bị chặn
+~~~
+Ưu: đơn giản, khai báo bằng SQL. Nhược: mỗi lần refresh tính lại **toàn bộ** — với dữ liệu nhiều năm sẽ ngày càng lâu; PostgreSQL không có refresh tăng dần sẵn.
+
+### Bảng tổng hợp tăng dần
+~~~sql
+-- Chạy mỗi 5 phút: chỉ xử lý ngày bị ảnh hưởng bởi dữ liệu mới
+INSERT INTO daily_store_revenue_t (day, store_id, revenue, orders)
+SELECT date_trunc('day', paid_at), store_id, sum(amount), count(*)
+FROM payments
+WHERE paid_at >= date_trunc('day', now()) - interval '1 day'   -- tính lại hôm qua và hôm nay
+GROUP BY 1, 2
+ON CONFLICT (day, store_id) DO UPDATE
+  SET revenue = EXCLUDED.revenue, orders = EXCLUDED.orders;
+~~~
+Tính lại cửa sổ gần (hôm nay, hôm qua) bao được dữ liệu đến muộn; ngày cũ không đổi thì không tính lại. Nếu dữ liệu cũ có thể bị sửa (hoàn tiền), cần cơ chế đánh dấu ngày bị ảnh hưởng để tính lại.
+
+### So sánh
+| | Materialized view | Bảng tổng hợp tăng dần | Kho phân tích (Redshift, ClickHouse) |
+|---|---|---|---|
+| Độ mới | Theo lịch refresh | Vài phút | Giây–phút (qua CDC) |
+| Chi phí mỗi lần cập nhật | Tính lại toàn bộ | Chỉ phần mới | Hạ tầng riêng |
+| Độ phức tạp | Thấp | Trung bình | Cao |
+| Hợp với | Dữ liệu vừa, dashboard cập nhật theo giờ/ngày | Dữ liệu lớn, cần mới hơn | Nhiều nguồn, truy vấn tuỳ ý |
+
+### Ví dụ đời thực
+Dashboard điều hành của một chuỗi bán lẻ chạy GROUP BY trên 320 triệu dòng thanh toán: 25 giây mỗi lần mở, 40 người mở vào 8 giờ sáng làm DB chính quá tải. Bước 1: materialized view refresh mỗi giờ — dashboard mở trong 50ms nhưng refresh mất 6 phút và ngày càng lâu. Bước 2: chuyển sang bảng tổng hợp tăng dần chạy mỗi 5 phút (tính lại 2 ngày gần nhất, mất khoảng 8 giây), cộng một bảng "ngày bị ảnh hưởng" để tính lại khi có hoàn tiền vào ngày cũ. Dashboard dữ liệu trễ tối đa 5 phút, DB chính không còn bị tải buổi sáng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với dashboard tổng hợp trên dữ liệu rất lớn, tôi tính trước kết quả thay vì GROUP BY mỗi lần mở. Cách đơn giản là materialized view, làm mới bằng REFRESH CONCURRENTLY có unique index để không chặn người đọc; nhược điểm là mỗi lần refresh tính lại toàn bộ nên càng lâu khi dữ liệu tăng. Khi dữ liệu lớn hoặc cần mới hơn, tôi dùng bảng tổng hợp tăng dần: job định kỳ chỉ tính lại cửa sổ gần như hôm nay và hôm qua rồi upsert, có cơ chế tính lại ngày cũ khi dữ liệu cũ bị sửa như hoàn tiền. Nếu nhu cầu phân tích nhiều chiều và nhiều nguồn, tôi đưa dữ liệu sang kho phân tích qua CDC thay vì làm trên DB giao dịch."
+
+> Senior tip: ghi rõ trên dashboard **"dữ liệu cập nhật lúc …"**. Chỉ một dòng chữ đó ngăn được phần lớn tranh cãi "số liệu sai" khi người dùng so với hệ thống giao dịch thời gian thực.`,
+  follow: [
+    'Vì sao REFRESH CONCURRENTLY cần unique index?',
+    'Bạn xử lý dữ liệu đến muộn trong bảng tổng hợp thế nào?',
+    'Khi nào nên chuyển từ bảng tổng hợp sang kho phân tích riêng?'
+  ],
+  tags: ['materialized view', 'aggregation', 'reporting', 'PostgreSQL', 'performance']
+},
+{
+  id: 'db-054',
+  topic: 'db',
+  level: 'senior',
+  q: 'Bảng orders được cập nhật trạng thái liên tục: dung lượng tăng gấp 3 so với dữ liệu thật và truy vấn chậm dần dù không thêm dòng mới. Bạn chẩn đoán bloat và tuning autovacuum, fillfactor, HOT update thế nào?',
+  a: `**Tóm tắt:** Trong PostgreSQL, mỗi {{UPDATE}} tạo **phiên bản dòng mới**, phiên bản cũ thành "dead tuple" chờ **VACUUM** dọn. Bảng cập nhật nhiều mà autovacuum chạy không kịp (ngưỡng mặc định theo **20%** số dòng — quá thưa với bảng lớn) sẽ **phình (bloat)**: nhiều trang hơn phải đọc, index cũng phình. Xử lý: **tuning autovacuum theo từng bảng** (ngưỡng nhỏ hơn, chạy nhanh hơn), tận dụng **HOT update** bằng {{fillfactor}} và tránh cập nhật cột có index không cần thiết, loại bỏ **transaction dài** chặn vacuum, và thu hồi dung lượng đã phình bằng **pg_repack** (không khoá lâu) khi cần.
+
+### Vì sao bảng phình
+1. {{UPDATE orders SET status = 'SHIPPED'}} ghi dòng mới, dòng cũ đánh dấu chết.
+2. Autovacuum chỉ chạy khi số dòng chết vượt {{autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × số dòng}} — mặc định 50 + 20%. Bảng 100 triệu dòng phải có 20 triệu dòng chết mới được dọn.
+3. VACUUM không dọn được phiên bản mà **transaction cũ hơn vẫn có thể nhìn thấy** — một transaction dài (hoặc replication slot bị bỏ quên, replica với hot_standby_feedback) chặn việc dọn trên toàn DB.
+4. VACUUM thường đánh dấu chỗ trống để tái sử dụng, **không trả dung lượng** cho hệ điều hành.
+
+### Chẩn đoán
+~~~sql
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, n_tup_upd, n_tup_hot_upd
+FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+~~~
+- Tỉ lệ dead/live cao, {{last_autovacuum}} lâu rồi → autovacuum không theo kịp.
+- {{n_tup_hot_upd}} thấp so với {{n_tup_upd}} → ít HOT update.
+- Ước lượng bloat bằng extension {{pgstattuple}} hoặc các truy vấn ước lượng phổ biến.
+- Kiểm tra transaction dài và replication slot không hoạt động.
+
+### Xử lý
+~~~sql
+-- Tuning riêng cho bảng cập nhật nhiều
+ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.01,   -- 1% thay vì 20%
+                        autovacuum_vacuum_threshold = 10000,
+                        fillfactor = 85);                          -- chừa 15% trang cho HOT update
+~~~
+- **HOT update** (Heap-Only Tuple): khi cập nhật **không đổi cột nào có index** và trang còn chỗ, PostgreSQL ghi phiên bản mới ngay trên cùng trang mà **không phải cập nhật index** → ít ghi, ít bloat index. {{fillfactor}} thấp hơn 100 chừa chỗ cho việc này (fillfactor chỉ áp dụng cho dữ liệu ghi sau khi đổi).
+- Tránh index thừa trên cột hay đổi (ví dụ index trên {{updated_at}} khiến mọi update mất HOT).
+- Tăng tài nguyên autovacuum toàn cục nếu nhiều bảng cần ({{autovacuum_vacuum_cost_limit}}, số worker).
+- Thu hồi dung lượng đã phình: **pg_repack** (dựng lại bảng trực tuyến, khoá ngắn) thay vì {{VACUUM FULL}} (khoá độc quyền suốt quá trình).
+
+### Ví dụ đời thực
+Bảng {{orders}} 60 triệu dòng, mỗi đơn đổi trạng thái 6–8 lần. Dung lượng 180GB trong khi dữ liệu thật khoảng 55GB; truy vấn danh sách đơn chậm dần từ 40ms lên 400ms. Chẩn đoán: 41 triệu dead tuple, autovacuum lần cuối 9 ngày trước (ngưỡng 20% quá thưa), HOT update chỉ 12% vì có index trên {{updated_at}}. Xử lý: scale_factor 0,01, fillfactor 85, bỏ index {{updated_at}} (thay bằng index trên cột thật sự được lọc), chạy pg_repack một lần ngoài giờ cao điểm. Dung lượng còn 68GB, HOT update lên 78%, truy vấn về 35ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong PostgreSQL mỗi UPDATE tạo phiên bản dòng mới, phiên bản cũ chờ VACUUM dọn. Với bảng lớn cập nhật liên tục, ngưỡng mặc định của autovacuum là khoảng 20% số dòng nên quá thưa, dead tuple tích luỹ và bảng cùng index phình ra, truy vấn phải đọc nhiều trang hơn. Tôi chẩn đoán bằng pg_stat_user_tables: số dead tuple, lần autovacuum gần nhất, tỉ lệ HOT update, và kiểm tra transaction dài hay replication slot bỏ quên vì chúng chặn việc dọn. Xử lý gồm: đặt autovacuum riêng cho bảng đó với scale factor nhỏ như 1%; giảm fillfactor để chừa chỗ cho HOT update và bỏ index trên cột hay thay đổi mà không ai lọc; loại bỏ transaction dài. Dung lượng đã phình thì thu hồi bằng pg_repack để không khoá bảng lâu như VACUUM FULL."
+
+> Senior tip: đặt cảnh báo cho **tuổi của transaction cũ nhất** và **replication slot không hoạt động**. Phần lớn sự cố bloat nghiêm trọng (và cả transaction ID wraparound) bắt nguồn từ một thứ duy nhất đang chặn vacuum mà không ai để ý.`,
+  follow: [
+    'HOT update hoạt động thế nào và khi nào không xảy ra?',
+    'Vì sao VACUUM FULL nguy hiểm trên production và pg_repack khác gì?',
+    'Transaction ID wraparound liên quan gì tới autovacuum?'
+  ],
+  tags: ['PostgreSQL', 'VACUUM', 'bloat', 'autovacuum', 'HOT update', 'fillfactor']
+},
+{
+  id: 'db-055',
+  topic: 'db',
+  level: 'lead',
+  q: '(Bản đồ) Tối ưu database và query: có những cách nào, theo thứ tự nào, và mỗi cách áp dụng khi nào? (Câu tổng hợp, dẫn tới các câu chi tiết trong ngân hàng)',
+  a: `**Tóm tắt:** Tối ưu DB có **8 tầng**, từ rẻ và an toàn đến tốn kém và phức tạp: (1) viết lại query, (2) index, (3) thống kê và planner, (4) tầng ứng dụng và ORM, (5) kết nối, timeout, cấu hình server, (6) cache và tách tải đọc, (7) thiết kế dữ liệu, (8) kiến trúc khi một DB không còn đủ. Nguyên tắc: **đo trước** (tìm query tốn tổng thời gian nhiều nhất), sửa ở tầng rẻ nhất giải quyết được, **đo lại**. Mỗi mục dưới đây ghi mã câu hỏi chi tiết trong ngân hàng — gõ mã đó vào ô tìm kiếm để mở.
+
+### 0. Đo trước khi sửa
+- Tìm thủ phạm: pg_stat_statements, slow log, auto_explain, APM → {{db-048}}
+- Đọc kế hoạch thực thi → {{db-003}}, {{sql-033}}; ba thuật toán join và work_mem → {{db-015}}, {{sql-032}}
+
+### 1. Viết lại query
+- NOT EXISTS thay NOT IN, OR → UNION ALL, LATERAL, CTE, COUNT(*) lớn → {{db-051}}
+- Điều kiện làm mất index (hàm trên cột, ép kiểu, LIKE '%x') → {{db-023}}, {{sql-036}}
+- Phân trang keyset thay OFFSET → {{db-005}}, {{sql-034}}; window function → {{db-017}}
+- Upsert và ghi theo lô → {{db-038}}
+
+### 2. Index
+- B-tree bên trong, composite, covering → {{db-001}}, {{db-040}}, {{sql-035}}
+- Partial, expression, GIN, BRIN, GiST → {{db-013}}; index-only scan → {{db-046}}
+- Clustered vs non-clustered (InnoDB) → {{db-022}}, {{db-042}}; khoá chính UUID → {{db-032}}
+- Tạo index không chặn ghi → {{scenario-003}}
+
+### 3. Thống kê và planner
+- Selectivity, histogram, CREATE STATISTICS → {{sql-031}}
+- Execution plan trên Oracle → {{db-029}}
+
+### 4. Ứng dụng và ORM
+- N+1 và cách sửa → {{jpa-001}}; bài tập sửa bug N+1 ở mục "Sửa bug thật"
+- Persistence context, flush, xử lý lô → {{jpa-002}}; lost update và khoá → {{jpa-004}}, {{scenario-119}}
+- Export/stream dữ liệu lớn → {{db-039}}, {{scenario-010}}
+
+### 5. Kết nối, timeout, cấu hình
+- HikariCP sizing → {{db-007}}, {{db-043}}; pool cạn → {{scenario-006}}
+- PgBouncer / RDS Proxy → {{db-049}}
+- statement_timeout, lock_timeout, idle in transaction → {{db-050}}
+- MVCC, VACUUM, bloat, HOT update → {{db-012}}, {{db-054}}; wraparound → {{db-047}}
+
+### 6. Cache và tách tải đọc
+- Read replica và đọc lại dữ liệu vừa ghi → {{db-016}}, {{db-044}}
+- Cache stampede, Redis → {{scenario-018}}, {{db-024}}
+- Materialized view, bảng tổng hợp → {{db-053}}; tách báo cáo khỏi DB chính → {{scenario-004}}
+
+### 7. Thiết kế dữ liệu
+- Chuẩn hoá và denormalize có chủ đích → {{db-021}}
+- Partition theo thời gian → {{db-014}}, {{db-045}}; dọn dữ liệu cũ → {{scenario-007}}
+- Hot row và bộ đếm nóng → {{db-052}}
+- Multi-tenant → {{sql-037}}
+
+### 8. Kiến trúc
+- Replication, partition, sharding → {{db-006}}
+- SQL vs NoSQL, chọn đúng loại store → {{db-009}}
+- CDC sang kho phân tích → {{aws-059}}
+
+### Thứ tự khi gặp một query chậm
+~~~text
+Đo (top theo tổng thời gian) → đọc EXPLAIN (ANALYZE, BUFFERS)
+→ ước lượng lệch?        → sửa thống kê (tầng 3)
+→ quét thừa / sort lớn?  → viết lại query, thêm/đổi index (tầng 1–2)
+→ gọi quá nhiều lần?     → sửa N+1, cache (tầng 4, 6)
+→ chờ khoá / pool?       → transaction ngắn, timeout, pooler (tầng 5)
+→ dữ liệu quá lớn?       → partition, tổng hợp trước, tách kho (tầng 7–8)
+~~~
+
+### Ví dụ đời thực
+Một hệ thống thanh toán có p99 API 1,9 giây. Đo: 3 câu chiếm 70% thời gian DB. Câu 1 (N+1 trong danh sách giao dịch, 400 query mỗi request) — sửa bằng một truy vấn gộp; câu 2 lọc {{DATE(created_at)}} mất index — viết lại theo khoảng thời gian; câu 3 cập nhật dòng "tổng hôm nay" trong mọi transaction (hot row) — chuyển sang append-only + tổng hợp mỗi phút. Không thêm phần cứng, p99 còn 180ms. Partition và tách kho phân tích được lên kế hoạch cho năm sau dựa trên tốc độ tăng dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tối ưu theo thứ tự từ rẻ đến đắt và luôn đo trước. Đầu tiên tìm query tốn tổng thời gian nhiều nhất bằng pg_stat_statements và APM, đọc EXPLAIN ANALYZE với BUFFERS để biết vấn đề là ước lượng sai, quét thừa, sort lớn, gọi quá nhiều lần hay chờ khoá. Sau đó sửa ở tầng rẻ nhất giải quyết được: viết lại query cho đúng mẫu, thêm hoặc đổi index composite, sửa thống kê; ở tầng ứng dụng thì sửa N+1, xử lý theo lô, giữ transaction ngắn. Tiếp đến là kết nối và timeout: pool đúng cỡ, PgBouncer, statement và lock timeout. Khi tải đọc lớn thì cache, read replica, bảng tổng hợp. Chỉ khi dữ liệu thật sự vượt khả năng một DB mới đến partition, tách kho phân tích hay sharding. Sau mỗi thay đổi tôi đo lại đúng chỉ số ban đầu."
+
+> Senior tip: phần lớn hệ thống không cần tầng 7–8. Trước khi đề xuất sharding hay đổi database, hãy chứng minh bằng số liệu rằng tầng 1–6 đã được làm hết — trong đa số trường hợp, ba query hàng đầu là toàn bộ vấn đề.`,
+  follow: [
+    'Bạn chứng minh với quản lý rằng cần partition hoặc sharding bằng số liệu nào?',
+    'Khi index mới làm chậm thao tác ghi, bạn cân nhắc thế nào?',
+    'Tầng nào bạn kiểm tra đầu tiên khi p99 tăng đột ngột sau deploy?'
+  ],
+  tags: ['performance', 'database', 'query optimization', 'roadmap', 'PostgreSQL'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Performance Tips', url: 'https://www.postgresql.org/docs/current/performance-tips.html' },
+    { type: 'doc', title: 'PostgreSQL: Indexes', url: 'https://www.postgresql.org/docs/current/indexes.html' },
+    { type: 'doc', title: 'PostgreSQL: pg_stat_statements', url: 'https://www.postgresql.org/docs/current/pgstatstatements.html' },
+    { type: 'doc', title: 'PostgreSQL: Routine Vacuuming', url: 'https://www.postgresql.org/docs/current/routine-vacuuming.html' },
+    { type: 'article', title: 'Use The Index, Luke', url: 'https://use-the-index-luke.com/' }
+  ]
+},
+);
