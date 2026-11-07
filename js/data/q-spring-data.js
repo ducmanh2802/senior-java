@@ -1220,6 +1220,15 @@ Khi {{order.getItems().remove(item)}}, Hibernate gọi {{DELETE}} cho {{item}}. 
 - Xóa bằng {{entityManager.remove()}} sẽ xóa con theo cascade; nếu chỉ muốn "bỏ liên kết", dùng {{orphanRemoval}} và gỡ khỏi collection.
 - Quan hệ đệ quy (parent-child tự tham chiếu) với cascade có thể gây lỗi khi xóa cả nhánh.
 
+### Bên trong: Hibernate chỉ nhìn owning side
+Khi flush, Hibernate sinh câu SQL cho khoá ngoại **dựa trên phía sở hữu** (phía có {{@JoinColumn}}, thường là {{@ManyToOne}}). Phía {{mappedBy}} ({{@OneToMany(mappedBy = "order")}}) chỉ là "gương" cho tiện đọc: thêm phần tử vào {{order.getItems()}} mà không gán {{item.setOrder(order)}} thì khoá ngoại **không được ghi** (cột order_id NULL hoặc giữ giá trị cũ). Vì vậy cần helper method đồng bộ hai phía ({{order.addItem(item)}} gán cả hai). {{orphanRemoval = true}}: phần tử bị gỡ khỏi collection thì bị **DELETE**; {{cascade = REMOVE}}: xoá cha thì xoá con. {{CascadeType.ALL}} trên {{@ManyToOne}} (con → cha) là cái bẫy: xoá một dòng con có thể xoá luôn cha và mọi con khác.
+
+### Ví dụ đời thực
+Màn hình sửa đơn hàng gửi lên danh sách dòng hàng mới; code viết {{order.setItems(newItems)}} (thay cả collection) trên quan hệ có {{orphanRemoval = true}}. Hibernate ném "A collection with cascade=all-delete-orphan was no longer referenced" ở một số request; ở bản sửa vội trước đó, dev bỏ orphanRemoval → các dòng hàng bị gỡ khỏi đơn vẫn nằm trong DB với order_id cũ, báo cáo doanh thu cộng cả những dòng đã xoá (lệch khoảng 1,5% trong 2 tuần). Sửa đúng: giữ orphanRemoval, cập nhật **trên chính collection** ({{items.clear(); items.addAll(...)}} hoặc so khớp theo id), dùng helper đồng bộ hai phía; thêm test kiểm tra số dòng trong DB sau khi sửa đơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong quan hệ hai chiều, owning side là phía giữ khoá ngoại, thường là ManyToOne có JoinColumn; inverse side là phía mappedBy. Hibernate chỉ dựa vào owning side để ghi khoá ngoại, nên chỉ thêm vào collection của phía mappedBy mà không gán phía kia thì không có gì được ghi. Tôi luôn viết helper method đồng bộ cả hai phía. Cascade lan truyền thao tác như persist, remove từ cha sang con, hợp với quan hệ thành phần như đơn hàng và dòng hàng; orphanRemoval xoá con khi nó bị gỡ khỏi collection. Nguy hiểm là đặt cascade ALL hay REMOVE sai chiều, ví dụ trên ManyToOne từ con lên cha, có thể xoá dữ liệu dùng chung; và thay cả collection bằng setter trên quan hệ orphanRemoval gây lỗi, phải sửa trên chính collection đó."
+
 > Senior tip: hãy dùng **aggregate root** làm ranh giới nhất quán: đối tượng con chỉ được tạo/sửa/xoá thông qua cha. Khi đó {{cascade = PERSIST}} trên cha là hợp lý, còn {{REMOVE}} nên được thay bằng {{orphanRemoval}} cùng quy tắc nghiệp vụ rõ ràng. Nếu một entity bị tham chiếu từ nhiều nơi, nó **không nên** nằm trong cascade graph của bất kỳ bean nào.`,
   follow: [
     'Khi nào nên dùng {{orphanRemoval}} thay vì {{cascade = REMOVE}}?',
@@ -1354,6 +1363,12 @@ jdbcTemplate.batchUpdate(
 - Với batch lớn, nhớ chia lô và commit theo lô để tránh transaction quá dài và undo log phình to.
 - Đo trước/sau bằng {{EXPLAIN ANALYZE}}; đừng đoán.
 
+### Ví dụ đời thực
+Báo cáo "doanh thu theo kênh theo ngày, có tỉ lệ so với cùng kỳ" viết bằng JPQL + xử lý trong Java: tải 1,2 triệu entity đơn hàng vào bộ nhớ để gom nhóm → 4 phút, heap 5GB. Viết lại bằng một câu SQL native dùng window function ({{SUM(...) OVER (PARTITION BY channel ORDER BY day)}}, {{LAG}}) map thẳng vào DTO record qua {{JdbcClient}} (Spring 6.1+): 1,8 giây. Nhưng cùng tuần, một job dùng {{JdbcTemplate}} cập nhật {{status}} đơn hàng trong khi một transaction JPA khác đang giữ các entity đó trong persistence context → entity "cũ" ghi đè lại trạng thái mới khi flush. Quy tắc team chốt: SQL thủ công cho đọc báo cáo và bulk; ghi vào bảng mà JPA đang quản lý thì qua JPA, hoặc làm trong transaction riêng và {{clear()}}/{{refresh()}} context, có {{@Version}} để phát hiện ghi đè.
+
+### Trả lời mẫu khi phỏng vấn
+"JPA rất tốt cho CRUD và nghiệp vụ trên từng aggregate, nhưng tôi rời JPA khi truy vấn là báo cáo phức tạp với window function, CTE, gom nhóm nhiều chiều, khi xử lý hàng loạt hàng trăm nghìn dòng, hoặc khi cần tính năng riêng của DB như ON CONFLICT hay JSONB. Lúc đó tôi dùng JdbcClient hay JdbcTemplate map thẳng vào DTO, hoặc jOOQ nếu muốn SQL kiểm tra kiểu lúc biên dịch. Rủi ro khi trộn là persistence context không biết dữ liệu đã bị SQL thủ công thay đổi: entity cũ trong bộ nhớ có thể ghi đè dữ liệu mới khi flush, và cache cấp hai trở nên lỗi thời. Nên tôi tách rõ: SQL thủ công cho đọc báo cáo và bulk, ghi vào bảng do JPA quản lý thì qua JPA hoặc trong transaction riêng có clear, kèm @Version để phát hiện ghi đè."
+
 > Senior tip: có một câu hỏi hay trong phỏng vấn: "Ở dự án của bạn, có bao giờ phải bỏ JPA không – và vì sao?". Câu trả lời tốt là bạn biết rõ **ranh giới**: JPA cho aggregate và CRUD, SQL/jOOQ cho truy vấn đọc phức tạp, và bạn đã kiểm soát được vấn đề flush khi trộn hai thế giới. Trộn mù là nơi phát sinh bug "đọc được dữ liệu cũ" khó tìm nhất.`,
   follow: [
     'Vì sao Hibernate không tự flush trước khi chạy native query?',
@@ -1410,6 +1425,12 @@ public class Customer { /* ... */ }
 - {{@ToString}} mặc định của Lombok in toàn bộ field, gồm cả collection và quan hệ ngược (cha – con – cha…) ⇒ **stack overflow** khi log, hoặc log khổng lồ và tự gọi query.
 - {{@Data}} còn sinh {{@RequiredArgsConstructor}} và {{@Getter/@Setter}} cho mọi field – với JPA, non-arg constructor là bắt buộc, nên dùng {{@NoArgsConstructor}} + {{@AllArgsConstructor(access = AccessLevel.PROTECTED)}} thay vì {{@Data}}.
 - Nếu dùng {{@Data}} trên entity có {{@OneToMany}}, {{equals}} sẽ gọi {{List.equals}} → so sánh từng phần tử → kích hoạt lazy → rất tệ.
+
+### Ví dụ đời thực
+Entity {{Customer}} dùng Lombok {{@Data}} có quan hệ hai chiều với {{Address}}. Ba sự cố trong một tháng: (1) log {{customer.toString()}} gây {{StackOverflowError}} vì Customer in Address, Address in lại Customer; (2) {{toString}} trong log debug kích hoạt **lazy loading** hàng trăm query khi bật DEBUG trên production; (3) một {{HashSet<Customer>}} dùng để gom khách không trùng mất phần tử vì {{hashCode}} sinh từ mọi field (kể cả field thay đổi sau khi add). Sửa: bỏ {{@Data}} trên entity, chỉ dùng {{@Getter}}/{{@Setter}} cần thiết; {{equals}} theo id (khi khác null) hoặc business key, {{hashCode}} là hằng số theo class; {{toString}} tự viết chỉ in id; thêm ArchUnit rule cấm {{@Data}}/{{@EqualsAndHashCode}} trên class có {{@Entity}}.
+
+### Trả lời mẫu khi phỏng vấn
+"equals và hashCode của entity phải ổn định qua cả vòng đời, kể cả khi id được sinh lúc persist và khi đối tượng là proxy của Hibernate. Tôi dùng business key bất biến nếu có; nếu không thì equals so id khi id khác null, hashCode là hằng số theo class. Lombok @Data rất rủi ro trên entity: nó sinh equals và hashCode từ mọi field, gồm cả field thay đổi và quan hệ, nên phá vỡ HashSet và có thể kích hoạt lazy loading; toString in mọi field nên gây lazy loading hàng loạt hoặc StackOverflowError với quan hệ hai chiều. Trên entity tôi chỉ dùng Getter, Setter có chọn lọc, tự viết equals, hashCode, toString, và đặt ArchUnit rule để cấm @Data trên entity."
 
 > Senior tip: quy tắc đơn giản cho team: **entity dùng {{@Getter}} + {{@Setter}}, không dùng {{@Data}}**; {{equals}}/{{hashCode}} dựa trên business key nếu có, nếu không thì để Hibernate quản lý (identity) và tuyệt đối không đặt entity vào {{HashSet}} dựa trên {{equals}} tùy ý. Đồng thời luôn để {{@ToString}} chỉ in id và vài field an toàn.`,
   follow: [
@@ -3373,6 +3394,12 @@ JPA Spec (Jakarta Persistence API)
 - Dùng Spring Data JPA mà không hiểu JPQL/Hibernate sinh ra SQL gì ⇒ N+1, query chậm, fetch plan sai.
 - Spring Data JPA **không** thay thế Hibernate – nó là lớp vỏ. Hiểu được Hibernate mới debug được sự cố hiệu năng.
 
+### Ví dụ đời thực
+Một dev mới viết {{interface OrderRepository extends JpaRepository<Order, Long>}} và method {{findByCustomerEmailAndStatusOrderByCreatedAtDesc}} — Spring Data **tự sinh** JPQL từ tên method lúc khởi động; JPQL được **Hibernate** dịch thành SQL cho PostgreSQL; JPA chỉ là bộ chuẩn API ({{EntityManager}}, annotation) mà Hibernate triển khai. Khi query chậm, dev chỉnh "Spring Data" mà không biết phải nhìn SQL do Hibernate sinh ra: bật {{spring.jpa.show-sql}} (hoặc tốt hơn, log {{org.hibernate.SQL}} + datasource-proxy) mới thấy query JOIN 3 bảng thiếu index. Thêm index {{(customer_email, status, created_at)}}: 2,1 giây → 12ms. Bài học cho team mới: lỗi query thì xem tầng Hibernate (SQL sinh ra), lỗi cấu hình repository thì xem tầng Spring Data, còn hành vi persistence context là tầng JPA/Hibernate.
+
+### Trả lời mẫu khi phỏng vấn
+"JPA, nay là Jakarta Persistence, là bộ đặc tả: định nghĩa annotation như Entity, Id, OneToMany, giao diện EntityManager, JPQL và quy tắc vòng đời entity, nhưng không có code chạy. Hibernate là một bản triển khai JPA: nó làm việc thật như sinh SQL theo dialect của DB, persistence context, dirty checking, cache, lazy loading, và có thêm tính năng riêng ngoài chuẩn. Spring Data JPA là lớp trên cùng giúp viết ít code: interface repository, tự sinh query từ tên method, phân trang, projection, và tích hợp transaction của Spring; bên dưới nó vẫn gọi EntityManager của Hibernate. Khi gỡ lỗi, tôi biết lỗi nằm ở tầng nào: query chậm thì xem SQL Hibernate sinh ra, repository hành xử lạ thì xem Spring Data, còn chuyện entity, flush, lazy thì là JPA và Hibernate."
+
 > Senior tip: trong phỏng vấn, câu trả lời tốt là: "JPA là interface, Hibernate là implementation, Spring Data JPA là repository abstraction dùng Hibernate. Tôi code chủ yếu Spring Data JPA, nhưng khi cần tối ưu hiệu năng tôi dùng {{EntityManager}} hoặc Hibernate {{Session}} trực tiếp, và luôn đọc SQL sinh ra bằng {{show-sql}} hoặc {{p6spy}}."`,
   follow: [
     'Có thể dùng Spring Data JPA với provider khác Hibernate không (ví dụ EclipseLink)?',
@@ -3411,6 +3438,12 @@ Order ref = orderRepo.getReferenceById(id);    // ném EntityNotFoundException k
 - **{{merge}} trả về bản sao** – nếu bạn giữ tham chiếu entity gốc và tiếp tục sửa, thay đổi sẽ **không** được lưu.
 - **{{getReferenceById}} dùng sai chỗ** (cần đọc dữ liệu) -> ném exception lúc render view/serialize JSON.
 - {{saveAndFlush}} dùng để lấy generated id ngay (ví dụ IDENTITY) – nhưng với IDENTITY thì {{save}} đã thực thi INSERT ngay để lấy id (dù không flush các thay đổi khác).
+
+### Ví dụ đời thực
+Một API tạo bình luận cần gắn với bài viết: code gọi {{postRepository.findById(postId).orElseThrow()}} chỉ để lấy tham chiếu cho {{comment.setPost(post)}} → mỗi request thừa một SELECT lấy cả bài viết (có cột nội dung lớn), 4.000 request/phút. Đổi sang {{getReferenceById(postId)}}: Hibernate trả proxy chỉ có id, INSERT bình luận dùng luôn id đó, không SELECT nào. Một lỗi ngược lại ở chỗ khác: dùng {{getReferenceById}} cho id không tồn tại rồi đọc {{post.getTitle()}} ngoài transaction → {{EntityNotFoundException}}/{{LazyInitializationException}} lúc truy cập, khó hiểu hơn nhiều so với kiểm tra tồn tại ngay. Ngoài ra, một import gọi {{save()}} cho 50.000 entity có id gán sẵn (không sinh tự động): Spring Data coi là entity "không mới" nên gọi {{merge}} → mỗi entity một SELECT trước INSERT. Thêm {{@Version}} (hoặc implement {{Persistable.isNew()}}) để Spring Data dùng {{persist}}: thời gian import từ 6 phút xuống 50 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"persist đưa một entity mới vào persistence context, chính object đó trở thành managed, INSERT xảy ra khi flush. merge copy trạng thái của một object, thường là detached, vào một bản managed và trả về bản managed đó; object truyền vào vẫn không được quản lý, và với entity chưa có trong context, merge thường phải SELECT trước. save của Spring Data gọi persist nếu entity được coi là mới, ngược lại gọi merge; với id gán sẵn, Spring Data không biết là mới nên gọi merge kèm SELECT thừa, sửa bằng @Version hoặc Persistable. saveAndFlush thì flush ngay, hữu ích khi cần lỗi constraint lộ ra tại chỗ. findById truy vấn DB và trả Optional; getReferenceById trả proxy chỉ có id, không truy vấn, rất hợp để gán quan hệ, nhưng truy cập field của id không tồn tại sẽ lỗi muộn."
 
 > Senior tip: quy tắc đơn giản: **mặc định dùng {{save}}** (Spring Data). Chỉ dùng {{saveAndFlush}} khi cần id generated ngay hoặc cần xem lỗi constraint ngay. Không dùng {{persist}}/{{merge}} trực tiếp trừ khi viết custom repository. Với FK, dùng {{getReferenceById}} để tránh SELECT thừa.`,
   follow: [
@@ -4411,6 +4444,15 @@ public class OrderService {
 - Quên {{@Repository}} trên DAO tuỳ chỉnh ⇒ exception JPA rò rỉ ra tầng service, gắn chặt service với JPA.
 - {{@Controller}} dùng cho REST API sẽ trả view name thay vì JSON – phải dùng {{@RestController}} hoặc thêm {{@ResponseBody}}.
 
+### Bên trong: exception translation làm gì
+{{@Repository}} được {{PersistenceExceptionTranslationPostProcessor}} bọc proxy: exception riêng của công nghệ ({{SQLException}} với mã lỗi của PostgreSQL, {{PersistenceException}} của Hibernate) được dịch sang cây **{{DataAccessException}}** chung của Spring — {{DuplicateKeyException}}, {{DataIntegrityViolationException}}, {{CannotAcquireLockException}}, {{QueryTimeoutException}}… Nhờ đó tầng service bắt lỗi theo **ý nghĩa** ("trùng khoá") mà không phụ thuộc DB hay ORM. Spring Data JPA repository đã có sẵn cơ chế này. {{@Service}}, {{@Controller}} không thêm hành vi đặc biệt (ngoài {{@Controller}} được Spring MVC nhận diện làm handler) — chủ yếu là ngữ nghĩa và mục tiêu cho pointcut.
+
+### Ví dụ đời thực
+API đăng ký tài khoản bắt {{catch (SQLException e)}} rồi kiểm tra {{e.getSQLState().equals("23505")}} để báo "email đã tồn tại". Sau khi chuyển một phần sang JPA, exception đến là {{DataIntegrityViolationException}} (đã được dịch) nên nhánh catch không chạy → người dùng thấy lỗi 500 thay vì "email đã được đăng ký" (khoảng 300 lượt/ngày). Sửa: bắt {{DuplicateKeyException}}/{{DataIntegrityViolationException}} ở service, map sang 409 trong {{@RestControllerAdvice}}; đồng thời vẫn kiểm tra tồn tại trước để có thông báo thân thiện, unique constraint là lớp bảo vệ cuối cho trường hợp hai request đồng thời.
+
+### Trả lời mẫu khi phỏng vấn
+"Bốn annotation đều là @Component nên đều được component scan đăng ký thành bean; khác nhau ở ngữ nghĩa tầng và một số hành vi đi kèm. @Controller được Spring MVC nhận diện làm handler, @RestController thêm ResponseBody. @Service chủ yếu đánh dấu tầng nghiệp vụ, tiện cho đọc code và pointcut. @Repository có thêm exception translation: một post processor bọc proxy để dịch exception riêng của JDBC hay Hibernate sang cây DataAccessException của Spring, như DuplicateKeyException hay CannotAcquireLockException. Nhờ đó tầng service xử lý lỗi theo ý nghĩa mà không phụ thuộc vào DB hay ORM cụ thể. Spring Data repository đã có sẵn việc này. Thực tế tôi bắt các exception đã dịch đó và map sang mã HTTP phù hợp ở controller advice."
+
 > Senior tip: quy tắc review đơn giản: **bean nào chạm DB thì phải có {{@Repository}}**. Nếu team dùng Spring Data JPA interface thì interface đó đã được proxy bằng {{@Repository}} ngầm, nhưng DAO class tuỳ chỉnh thì phải tự thêm.`,
   follow: [
     'Tại sao Spring không gộp {{@Service}} và {{@Repository}} thành một annotation duy nhất?',
@@ -4464,6 +4506,15 @@ public class LiteConfig {
 ### Pitfall production
 - Tắt {{proxyBeanMethods}} mà vẫn gọi method {{@Bean}} khác ⇒ tạo instance trùng lặp, mất singleton, connection pool bị nhân đôi.
 - Dùng {{@Bean}} cho class do mình viết mà có thể dùng {{@Component}} ⇒ code dài hơn, component scan không thấy, dễ quên khai báo.
+
+### Bên trong: vì sao gọi @Bean method trong @Configuration lại trả cùng một object
+Với {{@Configuration}} (mặc định {{proxyBeanMethods = true}}), Spring tạo **lớp con CGLIB** của class cấu hình; mỗi lời gọi tới method {{@Bean}} từ bên trong class bị chặn: nếu bean đã có trong container thì trả về bean đó thay vì chạy lại method. Nhờ vậy {{dataSource()}} gọi hai lần vẫn chỉ có một pool. Với {{proxyBeanMethods = false}} ("lite mode"), không có proxy: gọi {{dataSource()}} trực tiếp sẽ **tạo object mới** mỗi lần — phải nhận dependency qua tham số method {{@Bean}} thay vì gọi method. Spring Boot dùng {{false}} cho hầu hết auto-configuration để khởi động nhanh hơn và hỗ trợ native image.
+
+### Ví dụ đời thực
+Một lớp cấu hình viết {{@Configuration(proxyBeanMethods = false)}} (copy từ ví dụ trên mạng) và trong đó {{orderClient()}} gọi {{httpClient()}}, {{paymentClient()}} cũng gọi {{httpClient()}} → hai {{HttpClient}} riêng, mỗi cái một pool connection 200 → số connection tới gateway gấp đôi giới hạn, gateway từ chối 5% request giờ cao điểm. Sửa: nhận {{HttpClient}} qua tham số method ({{@Bean OrderClient orderClient(HttpClient http)}}). Quy tắc của team: luôn nhận dependency qua tham số method @Bean — đúng trong cả hai chế độ.
+
+### Trả lời mẫu khi phỏng vấn
+"@Component đặt trên class của chính mình để component scan tạo bean; @Bean là method trong class cấu hình trả về object, dùng khi tạo bean từ thư viện bên ngoài hoặc cần logic khởi tạo tuỳ chỉnh. Với @Configuration mặc định, Spring tạo lớp con CGLIB chặn các lời gọi giữa các method @Bean, nên gọi dataSource hai lần vẫn chỉ nhận một bean singleton. proxyBeanMethods bằng false bỏ proxy đó, khởi động nhanh hơn và hợp với native image, Spring Boot dùng cho auto-configuration; nhưng khi đó gọi method @Bean trực tiếp sẽ tạo object mới mỗi lần. Vì vậy quy tắc an toàn của tôi là luôn nhận dependency qua tham số của method @Bean thay vì gọi method khác, đúng trong cả hai chế độ."
 
 > Senior tip: mặc định dùng {{@Component}} cho class mình viết; chỉ dùng {{@Bean}} khi bắt buộc (thư viện, logic tạo instance). Với {{@Configuration}}, hãy để {{proxyBeanMethods = false}} và inject qua tham số – đó là phong cách Spring Boot 3 hiện đại.`,
   follow: [
@@ -4644,6 +4695,24 @@ catch (InsufficientFundsException e) {
 - Ngược lại: nếu exception được ném từ một method {{@Transactional}} **khác bean** (REQUIRED, join chung transaction) rồi bị bắt ở method ngoài, transaction đã bị đánh dấu rollback-only ⇒ lúc commit nhận {{UnexpectedRollbackException}}. Nuốt exception không "cứu" được transaction.
 - {{@Transactional}} trên method {{private}}, {{final}}, {{static}} **không có tác dụng** (không proxy được) – Spring im lặng bỏ qua.
 - Đặt {{@Transactional}} ở **tầng service**, không phải controller hay repository.
+
+### Ví dụ đời thực
+Service chuyển khoản viết:
+~~~java
+@Transactional
+public void transfer(...) {
+    debit(from, amount);
+    try {
+        credit(to, amount);            // ném DataIntegrityViolationException
+    } catch (Exception e) {
+        log.error("credit failed", e); // "nuốt" lỗi để trả kết quả đẹp cho client
+    }
+}
+~~~
+Kết quả: tiền đã trừ ở tài khoản nguồn **được commit**, tài khoản đích không được cộng — 23 khoản tiền "biến mất" trước khi đối soát phát hiện. Một biến thể khác: {{credit}} nằm ở bean khác có {{@Transactional}} (REQUIRED), lỗi bên trong đánh dấu transaction **rollback-only**; outer bắt và nuốt exception rồi kết thúc bình thường → Spring ném {{UnexpectedRollbackException}} lúc commit, client nhận 500 dù code "đã xử lý lỗi". Sửa: không bắt exception trong method transactional trừ khi xử lý được thật sự; nếu cần trả kết quả thân thiện thì để exception đi ra và map ở {{@RestControllerAdvice}}; checked exception nghiệp vụ dùng {{rollbackFor}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Mặc định Spring chỉ rollback khi method ném RuntimeException hoặc Error; checked exception thì vẫn commit. Muốn rollback với checked exception thì khai báo rollbackFor, hoặc dùng exception nghiệp vụ unchecked như tôi thường làm. Bẫy lớn hơn là try-catch nuốt exception bên trong method transactional: proxy không thấy lỗi nên commit mọi thứ đã làm, ví dụ đã trừ tiền nhưng chưa cộng tiền. Biến thể khó hiểu là lỗi xảy ra trong một bean transactional khác cùng transaction: nó đã đánh dấu rollback-only, outer nuốt lỗi rồi kết thúc bình thường, và lúc commit Spring ném UnexpectedRollbackException. Nguyên tắc của tôi: chỉ bắt exception trong method transactional khi thật sự xử lý được, còn lại để exception đi ra và map ở controller advice."
 
 > Senior tip: quy tắc code review bắt buộc: **method có {{@Transactional}} không được có try-catch không rethrow**. Nếu bắt lỗi để xử lý, hãy wrap thành unchecked exception và ném lại. Ngoài ra, luôn bật log DEBUG cho {{org.springframework.transaction}} khi debug transaction.`,
   follow: [
@@ -5617,6 +5686,12 @@ Tách phần cần transaction thành bean riêng, để lời gọi đi qua dep
 ### Pitfall production
 Test gọi method trực tiếp trên object tạo bằng {{new}} không có transaction proxy. Cũng vậy, gọi annotated method qua private method hoặc constructor không kích hoạt advice. Kiểm tra bằng integration test có transaction manager thật và quan sát commit/rollback, không chỉ assert annotation tồn tại.
 
+### Ví dụ đời thực
+Self-invocation không chỉ ảnh hưởng {{@Transactional}}. Một service catalog có {{getProduct(id)}} gắn {{@Cacheable("products")}} và method {{getProducts(ids)}} gọi {{this.getProduct(id)}} trong vòng lặp → cache **không bao giờ** được dùng cho đường này; mỗi trang danh sách 50 sản phẩm tạo 50 query, DB CPU 70% giờ cao điểm dù dashboard cache báo hit rate 95% (chỉ tính các lời gọi trực tiếp từ controller). Tương tự, {{@Async}} gọi nội bộ chạy **đồng bộ** trên thread request. Sửa: tách {{ProductCacheFacade}} thành bean riêng chứa method {{@Cacheable}}, các method gọi qua bean đó; viết test tích hợp đếm query để chứng minh cache có tác dụng. DB CPU giờ cao điểm giảm xuống 30%.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring áp dụng transaction, cache, async thông qua proxy bọc bean. Khi controller gọi service, lời gọi đi qua proxy nên advice chạy; nhưng khi một method trong service gọi method khác của chính nó qua this, lời gọi đi thẳng vào object thật, không qua proxy, nên mọi annotation như Transactional, Cacheable, Async trên method được gọi đều bị bỏ qua. Điều này đúng với cả JDK proxy lẫn CGLIB, vì cả hai đều chỉ chặn lời gọi từ bên ngoài đi vào proxy. Cách sửa dễ bảo trì nhất là tách phần cần advice sang một bean riêng; có thể tự inject chính bean qua proxy hoặc dùng TransactionTemplate, nhưng những cách đó khó đọc hơn. Tôi luôn có test tích hợp chứng minh annotation thật sự có tác dụng, như đếm query hay kiểm tra rollback."
+
 > Senior tip: coi transaction boundary là ranh giới use case công khai. Một service method ngắn, được gọi qua bean proxy, thường an toàn hơn việc rải annotation lên helper nội bộ.`,
   follow: ['Vì sao {{@Transactional}} trên method private không có tác dụng với proxy?', 'Nếu tách bean không phù hợp, bạn kiểm chứng proxy thực tế của bean bằng cách nào?'],
   tags: ['@Transactional', 'AOP', 'JDK proxy', 'CGLIB', 'self-invocation']
@@ -5639,6 +5714,15 @@ Giả sử pool có 20 connection và 20 request đều đã lấy mỗi request
 
 ### Pitfall production
 Tăng pool vô hạn chỉ chuyển nghẽn sang DB, nơi số session, memory và lock contention cũng hữu hạn. Một transaction ngoài đã suspend vẫn giữ connection, không có nghĩa connection được trả về pool. Cũng cần nhớ inner commit không rollback theo outer transaction, nên audit có thể ghi nhận hành động mà đơn hàng cuối cùng không được commit.
+
+### Định lượng rủi ro bằng con số
+Mỗi request dùng REQUIRES_NEW cần **2 connection cùng lúc** (một bị treo của transaction ngoài, một cho transaction mới). Nếu pool có P connection và có T thread xử lý đồng thời mà mỗi thread đều có thể vào nhánh REQUIRES_NEW, điều kiện **có thể deadlock pool** là khi T ≥ P: tất cả P connection bị các transaction ngoài giữ, không thread nào lấy được connection thứ hai, mọi thread chờ tới timeout. Quy tắc tham khảo (HikariCP wiki): pool tối thiểu = T × (số connection đồng thời mỗi luồng cần − 1) + 1. Với T = 40 thread Tomcat bận cùng lúc, mỗi luồng cần 2 connection → pool ≥ 41, trong khi DB chỉ cho mỗi pod 30 connection — bất khả thi, phải đổi thiết kế.
+
+### Ví dụ đời thực
+Hệ thống đơn hàng ghi audit bằng REQUIRES_NEW, pool 20, Tomcat 200 thread. Bình thường chỉ khoảng 10 request đồng thời nên ổn; ngày khuyến mãi lên 60 request đồng thời → 20 transaction ngoài giữ hết 20 connection và cùng chờ connection thứ hai → service đứng 30 giây (timeout của Hikari) rồi lỗi hàng loạt, lặp lại theo từng đợt. Thay audit REQUIRES_NEW bằng ghi audit vào bảng **outbox trong cùng transaction** (audit chỉ cần khi nghiệp vụ thành công), còn audit cho trường hợp thất bại ghi bằng {{@TransactionalEventListener(phase = AFTER_ROLLBACK)}} chạy sau khi đã trả connection. Đồng thời giới hạn số request đồng thời vào luồng đặt hàng. Không còn đứng hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+"REQUIRES_NEW tạm treo transaction ngoài nhưng connection của transaction ngoài vẫn bị giữ, và transaction mới cần thêm một connection nữa, nên mỗi request đi qua nhánh này cần hai connection cùng lúc. Khi số thread đồng thời bằng hoặc vượt kích thước pool, có thể xảy ra tình huống mọi connection bị transaction ngoài giữ và không ai lấy được connection thứ hai, cả service đứng tới khi timeout. Tôi định lượng bằng công thức kích thước pool tối thiểu bằng số thread nhân với số connection mỗi luồng cần trừ một, cộng một, rồi so với giới hạn connection DB cho phép. Thường kết quả cho thấy nên đổi thiết kế: ghi audit vào outbox trong cùng transaction, hoặc dùng sự kiện sau commit hay sau rollback, và giới hạn đồng thời ở tầng vào thay vì chỉ tăng pool."
 
 > Senior tip: dùng metric pending borrowers, acquisition latency và transaction duration để phát hiện trước khi timeout. Nếu pool cỡ N và mọi request có thể nested một tầng, kiểm tra kịch bản đồng thời gần N; headroom phải được thiết kế và thử tải, không đoán theo traffic trung bình.`,
   follow: ['Khi nào audit nên cùng transaction với dữ liệu nghiệp vụ?', 'Outbox giải quyết bài toán ghi event sau commit thế nào?'],
