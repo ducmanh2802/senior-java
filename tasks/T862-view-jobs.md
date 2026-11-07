@@ -1,7 +1,7 @@
 # T862 — View `#/jobs`: Việc làm hôm nay + việc tôi theo dõi
 
-Status: TODO
-Agent: qoder
+Status: DONE
+Agent: claude
 Owns: `js/views/jobs.js`, `css/views/jobs.css`
 
 Đọc AGENTS.md (mục 2, 7, 9, 14, 15) và `docs/JOBS-DIGEST.md`. Tham khảo cách làm của `js/views/news.js` (phần bản tin, chọn ngày, xử lý lỗi) và `js/views/career.js` (danh sách người dùng tự nhập có `id`/`updatedAt`/`deleted`, i18n, AI coach). Integrator đã nối sẵn: route `jobs` trong `js/core/data-manifest.js` (views), link nav `#/jobs` trong `index.html`, `App.store.data.jobs = []` (đồng bộ tài khoản giống `stories`), `App.news.digest({ kind: 'jobs', date })`. **Không sửa file core.**
@@ -34,3 +34,4 @@ Owns: `js/views/jobs.js`, `css/views/jobs.css`
 `node --check js/views/jobs.js`, `node scripts/check-budget.js` (nếu có), `node scripts/validate.js` → OK. Không mở trình duyệt. KHÔNG commit. Ghi `Status: DONE` + ghi chú ngắn vào Notes.
 
 ## Notes
+- 2026-11-07 (claude): qoder viết dở rồi hết credit; Claude sửa lỗi cú pháp chuỗi EN, lỗi AI/JD ngắn không hiện (aiErr theo id), digest kẹt loading khi rời trang giữa chừng, phím n từ tab 1, giữ kết quả AI khi đã rời view, gợi ý ôn theo topics của tin khi chưa phân tích; viết jobs.css. Smoke-test với App giả: escape, quá hạn, lỗi AI, Theo dõi → OK. validate OK.

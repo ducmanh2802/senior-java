@@ -47,8 +47,8 @@
       roadmap: ['index'],                                     // App.dueItems()
       bank: ['questions', 'glossary'],
       flash: ['questions', 'glossary'],
-      quiz: ['quiz', 'glossary'],
-      exam: ['quiz', 'exams', 'glossary'],
+      quiz: ['index'],                                        // setup from the light index; the view awaits 'quiz' on start
+      exam: ['quiz', 'exams'],                                // glossary arrives via prefetch (term tooltips re-index on load)
       algo: ['algos', 'glossary'],
       mock: ['questions', 'algos'],
       companies: ['companies', 'questions'],                  // App.stats()

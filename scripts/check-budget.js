@@ -16,8 +16,10 @@ const M = require(path.join(ROOT, 'js', 'core', 'data-manifest.js'));
 const BUDGET_EAGER = 400 * 1024;    // views lazy since 2026-11-04 (was 1000 KB with all 21 views + css eager)
 // Routes that must stay light (no question bank): data awaited before render. Other routes are reported only,
 // since they legitimately need the bank (which grows with content) — the win there is the parallel, non-blocking load.
-// quiz/exam: 1500 → 1800 KB when the pool passed 630 questions (quiz-gaps.js, 2026-10-30); next step is splitting by topic
-const BUDGET_ROUTE_DATA = { quiz: 1800 * 1024, exam: 1800 * 1024, algo: 1500 * 1024, speak: 300 * 1024, news: 0,
+// quiz/exam: 1500 → 1800 KB when the pool passed 630 questions (quiz-gaps.js, 2026-10-30).
+// quiz: 1800 → 300 KB (2026-11-07): the setup screen reads the light index, the view awaits the quiz group on start.
+// exam still awaits the whole pool (domain stats need q text); next step there is per-exam pools.
+const BUDGET_ROUTE_DATA = { quiz: 300 * 1024, exam: 1800 * 1024, algo: 1500 * 1024, speak: 300 * 1024, news: 0,
   'legal/privacy': 0, 'legal/terms': 0, roadmap: 200 * 1024, account: 200 * 1024 };
 // Landing page: eager shell + awaited data, total. The dashboard renders from the generated light index
 // (js/data/index-light.js, ~100 KB) instead of the ~6 MB of questions/lessons/algos it used to await.

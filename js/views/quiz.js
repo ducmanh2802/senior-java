@@ -123,13 +123,15 @@ App.i18n.add({
   /** Các topic có ít nhất 1 câu trắc nghiệm. */
   function topicsWithQuiz() {
     const counts = {};
-    App.quiz().forEach(q => { counts[q.topic] = (counts[q.topic] || 0) + 1; });
+    App.lite('quiz').forEach(q => { counts[q.topic] = (counts[q.topic] || 0) + 1; });
     return App.topics().filter(t => counts[t.id]).map(t => ({ id: t.id, name: t.name, icon: t.icon, n: counts[t.id] }));
   }
 
   /** Danh sách câu hỏi theo lựa chọn topic hiện tại. */
+  // The setup screen reads the light index ({id, topic}); startQuiz awaits the full 'quiz' group, after which
+  // App.lite('quiz') returns the full objects (docs/PERFORMANCE.md).
   function pool() {
-    const all = App.quiz();
+    const all = App.lite('quiz');
     if (!Q.topics.length) return all;
     return all.filter(q => Q.topics.indexOf(q.topic) >= 0);
   }
@@ -217,7 +219,7 @@ App.i18n.add({
       '<section class="card quiz-exam-cta"><h3>' + App.t('quiz.examTitle') + '</h3>' +
         '<p class="small muted">' + App.t('quiz.examText') + '</p>' +
         '<div class="row"><a class="btn primary" href="#/exam">' + App.t('quiz.examAll') + '</a> ' +
-        (App.quiz().some(q => q.topic === 'claude') ? '<a class="btn" href="#/exam/claude">' + App.t('quiz.examClaude') + '</a>' : '') + '</div></section>' +
+        (App.lite('quiz').some(q => q.topic === 'claude') ? '<a class="btn" href="#/exam/claude">' + App.t('quiz.examClaude') + '</a>' : '') + '</div></section>' +
       '<section class="card quiz-history">' +
         '<h3>' + App.t('quiz.bestScore') + (best && best.pct >= 0 ? ': ' + best.pct + '% (' + best.correct + '/' + best.total + ')' : '') + '</h3>' +
         (histRows ? '<ul class="quiz-hist">' + histRows + '</ul>' : '<p class="muted small">' + App.t('quiz.noHistory') + '</p>') +
@@ -342,7 +344,16 @@ App.i18n.add({
   }
 
   /** Bắt đầu phiên mới theo lựa chọn hiện tại. */
-  function startQuiz(root) {
+  let viewGen = 0;   // bumped on every render of the view: a start that resolves after the user left is dropped
+  async function startQuiz(root) {
+    if (!App.hasData(['quiz'])) {
+      const gen = viewGen;
+      const btn = document.getElementById('quizStart');
+      if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.textContent = '…'; }
+      App.need(['glossary']);   // term tooltips: not awaited, they re-index when the group arrives
+      await App.need(['quiz']);
+      if (gen !== viewGen || Q.phase !== 'setup') return;
+    }
     const poolList = pool();
     if (!poolList.length) return;
     const list = App.shuffle(poolList).slice(0, Q.count).map(prepare);
@@ -520,7 +531,8 @@ App.i18n.add({
       Q.correct = 0;
       Q.seconds = 0;
       Q.topics = [];
-      const available = App.quiz().length;
+      viewGen++;
+      const available = App.lite('quiz').length;
       Q.count = Math.min(10, available || 10);
       render(root);
       const off = App.onKey(onKeyDown);

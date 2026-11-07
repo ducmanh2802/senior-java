@@ -147,11 +147,12 @@
   // without the heavy groups. App.lite(kind) returns the FULL list once its group is loaded (or when there is
   // no index, e.g. Node tools), otherwise compact objects: questions {id, topic, level[, lang, q]},
   // algos {id, title, difficulty, pattern}, lessons {id, track, order, title, level, minutes}, sd {id, title},
-  // drills {id, kind, q|term+example|en}, companies {id, name, focus}. Light objects carry __light = true.
-  const LITE_GROUP = { questions: 'questions', algos: 'algos', lessons: 'lessons', sd: 'sd', drills: 'drills', companies: 'companies' };
+  // drills {id, kind, q|term+example|en}, companies {id, name, focus}, quiz {id, topic}. Light objects carry __light = true.
+  const LITE_GROUP = { questions: 'questions', algos: 'algos', lessons: 'lessons', sd: 'sd', drills: 'drills', companies: 'companies', quiz: 'quiz' };
   const LITE_FULL = {
     questions: () => questions(), algos: () => algos(), lessons: () => lessons(),
     sd: () => window.SD_PROBLEMS || [], drills: () => window.DRILLS || [], companies: () => window.COMPANIES || [],
+    quiz: () => quiz(),
   };
   let liteCache = null;
   function lightIndex() {
@@ -166,6 +167,7 @@
       algos: obj(I.algos),
       lessons: obj(I.lessons).sort((a, b) => order.indexOf(a.track) - order.indexOf(b.track) || a.order - b.order),
       sd: obj(I.sd), drills: obj(I.drills), companies: obj(I.companies),
+      quiz: (I.quiz || []).map(r => mark({ id: r[0], topic: r[1] })),
     };
     liteCache = { src: I, lists };
     return lists;
