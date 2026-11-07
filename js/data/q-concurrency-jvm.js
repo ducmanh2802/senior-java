@@ -5977,7 +5977,7 @@ T2: lock() -> CAS state 0->1 FAIL (state da = 1)
     addWaiter(Node.EXCLUSIVE): node = new Node(T2); CAS tail -> node (thua thi doc lai tail, thu lai)
     node.prev = tail cu      (chi co prev duoc gan, next chua ai set)
     acquireQueued(node):
-      - neu node.prev == head -> tryAcquire them mot lan nua (van duoc phep chen)
+      - nếu node.prev == head -> tryAcquire thêm một lần nữa (vẫn được phép chen)
       - shouldParkAfterFailedAcquire: CAS prev.waitStatus 0 -> SIGNAL
         lan dau tra false de quay lai tryAcquire; lan sau moi ngu
       - LockSupport.park(this)  -> T2 WAITING, khong tot CPU
@@ -5993,11 +5993,11 @@ Hai chi tiết thiết kế đáng nói: (1) thread được đánh thức vẫn
 // NonfairSync — ban mac dinh
 public void lock() {
     if (compareAndSetState(0, 1)) setExclusiveOwnerThread(Thread.currentThread());
-    else acquire(1);            // chua duoc thi moi xep hang
+    else acquire(1);            // chưa được thì mới xếp hàng
 }
-// FairSync: khong co duong tat o cua, va trong tryAcquire chi them mot dieu kien:
+// FairSync: không có đường tắt ở cửa, và trong tryAcquire chỉ thêm một điều kiện:
 if (c == 0) {
-    if (!hasQueuedPredecessors() &&        // "hang doi co ai dung truoc toi khong"
+    if (!hasQueuedPredecessors() &&        // "hàng đợi có ai đứng trước tôi không"
         compareAndSetState(0, 1)) { ... }
 }
 ~~~
@@ -6049,25 +6049,25 @@ Thư viện chia sách thành 64 kệ nhỏ. Thủ thư không khoá cả thư v
 ~~~text
 1. kiem tra key/value khac null -> null la NullPointerException co tinh (map cam null)
 2. h = spread(key.hashCode())
-3. tab = table (doc volatile mot lan, dung lam "anh" nhat quan cho vong lap)
-   - neu tab == null -> initTable(): CAS sizeCtl 0 -> -1; ai thang thi khoi tao mang 16 o,
-     nguoi kia quay vong lap doc lai table (khong ai phong to mang hai lan)
-4. i = (tab.length - 1) & h        -> vi do dung khi kich thuoc table luy thua cua 2
-5. f = tabAt(tab, i)               -> doc volatile cua phan tu mang (khong phai lay ca mang ra roi doc)
+3. tab = table (đọc volatile một lần, dùng làm "ảnh" nhất quán cho vòng lặp)
+   - nếu tab == null -> initTable(): CAS sizeCtl 0 -> -1; ai thắng thì khởi tạo mảng 16 ô,
+     người kia quay vòng lặp đọc lại table (không ai phóng to mảng hai lần)
+4. i = (tab.length - 1) & h        -> vì đồ dùng khi kích thước table lũy thừa của 2
+5. f = tabAt(tab, i)               -> đọc volatile của phần tử mảng (không phải lấy cả mảng ra rồi đọc)
    a) f == null  -> CAS tab[i] null -> new Node(h, key, value)
-        thanh cong -> xong (day la fast path: khong mot cai lock nao)
+        thành công -> xong (đây là fast path: không một cái lock nào)
         that bai    -> co ai vua chen, quay buoc 3 doc lai
    b) f.hash < 0 -> node dac biet: TreeBin / ReservationNode / ForwardingNode
         ForwardingNode -> goi helpTransfer() de giup resize roi moi ghi
    c) f la node binh thuong -> synchronized (f) {   // KHOA NODE DAU = KHOA CA BUCKET
         duyet chuoi, dem binCount
         thay key trung (equals) -> thay value
-        khong thay -> noi node vao duoi chuoi (hoac them vao cay)
+        không thấy -> nối node vào dưới chuỗi (hoặc thêm vào cây)
         neu binCount >= 8 -> treeifyBin(tab, i)
       }
-      khi cap nhat key da co, node duoc noi TRUOC khi value cu bi ghi de,
-      nen get() cua thread khac khong bao gio nhin thay node co value null
-6. addCount(1L, binCount): tang bo dem, va co the kep doi bang neu vuot nguong
+      khi cập nhật key đã có, node được nối TRƯỚC khi value cũ bị ghi đè,
+      nên get() của thread khác không bao giờ nhìn thấy node có value null
+6. addCount(1L, binCount): tăng bộ đếm, và có thể kẹp đôi bảng nếu vượt ngưỡng
 ~~~
 
 ### Vì sao lại chia hai chế độ CAS / synchronized
@@ -6204,7 +6204,7 @@ public class Point {
 
     public int distanceFromOrigin() {
         long stamp = sl.tryOptimisticRead();          // khong khoa gi ca
-        int curX = x, curY = y;                       // copy het nhung gi can dung ra bien cuc bo
+        int curX = x, curY = y;                       // copy hết những gì cần dùng ra biến cục bộ
         if (!sl.validate(stamp)) {                    // co writer xen vao?
             stamp = sl.readLock();                    // quay ve doc "that"
             try {
@@ -6451,7 +6451,7 @@ Poller -> Kernel: epoll_wait
 Kernel -> Poller: socket co du lieu
 Poller -> VirtualThread: unpark, do virtual thread vao hang doi scheduler
 Carrier -> Continuation: mount tiep: thaw stack chunk ve stack native
-Carrier -> VirtualThread: chay tiep dung sau read(), tra ve ket qua
+Carrier -> VirtualThread: chạy tiếp đúng sau read(), trả về kết quả
 ~~~
 Ba hệ quả quan trọng: (1) thứ tự chạy không còn bị ràng buộc bởi một thread cụ thể — code của bạn có thể tiếp tục trên **carrier khác** (hoặc cùng carrier sau đó), nên mọi giả định "việc A và việc B chạy trên cùng thread" đều sai; (2) không có gì "tạo OS thread" khi bạn block, cái phải chờ là một task trong hàng đợi scheduler; (3) {{ThreadLocal}} và {{synchronized}} trở nên nguy hiểm hơn về hiệu năng/ngữ cảnh vì chúng gắn với carrier hoặc giữ carrier.
 
@@ -6528,7 +6528,7 @@ Cửa phòng có một **bảng ghi trạng thái** ngay trên cánh (mark word)
   lock bits = 11 : biased              -> ( JDK <= 15, da bi go )
 Khi thin lock, frame cua thread giu:
   LockRecord { address cua object | displaced mark word | owner | rec_count | ... }
-Vong fast path: CAS mark word (word swap) -> thanh cong, khong cap phat, khong syscall.
+Vòng fast path: CAS mark word (word swap) -> thành công, không cấp phát, không syscall.
 Thread 2 tranh chan: inflate -> ObjectMonitor { _owner, _EntryList, _WaitSet, _recursions }
 ~~~
 Điểm đáng chú ý: displaced mark word nằm trong **stack** của thread, nên lock nhẹ có chi phí bộ nhớ gần bằng không và tự biến mất khi method return. Ngược lại ObjectMonitor là bộ nhớ native, và mỗi lần block là một round-trip xuống OS.
