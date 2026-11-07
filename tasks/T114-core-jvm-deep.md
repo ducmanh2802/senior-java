@@ -8,3 +8,4 @@ Owns: `js/data/q-java.js`, `js/data/q-concurrency-jvm.js`
 
 ## Notes
 Đã bổ sung 5 câu core, 2 câu concurrency và 3 câu JVM theo các góc đào sâu còn thiếu; các ý task đã có sẵn được giữ nguyên để tránh lặp. File thực tế đúng như topic registry. `node --check` cả hai file và `node scripts/validate.js` đều OK. `check-links.mjs` chạy trên hai file, báo Links: 0.
+Reviewed-by: kilo (T114R)
