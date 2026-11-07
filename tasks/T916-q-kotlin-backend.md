@@ -36,3 +36,4 @@ Chủ đề:
 ## Notes
 
 Claude 2026-11-07: thêm 3 câu kotlin-027..029 (Ktor vs Spring, test MockK/runTest, value class). Các chủ đề còn lại của đề đã có trong kotlin-004/005/010/012/013/017..026 (vốn đã trùng nhau) nên không thêm.
+Reviewed-by: kilo (T916R)

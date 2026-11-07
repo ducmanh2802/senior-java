@@ -300,18 +300,25 @@ Job xuất báo cáo đọc 2 triệu dòng giao dịch, lọc rồi lấy 100 d
 {
   id: 'kotlin-008', topic: 'kotlin', level: 'mid',
   q: 'Trong code review, bạn giải thích {{let}}, {{run}}, {{with}}, {{apply}} và {{also}} ra sao để team không biến scope function thành cú pháp khó đọc?',
-  a: `**Tóm tắt:** Scope functions khác nhau ở hai trục: receiver là {{this}} hay argument là {{it}}, và kết quả trả về là object receiver hay giá trị lambda. Dùng chúng để gom thao tác ngắn có mục đích; tránh lồng nhiều scope vì tên {{this}}/{{it}} che khuất ngữ cảnh.
+  a: `**Tóm tắt:** Kotlin cung cấp năm hàm phạm vi (scope function) — let, run, with, apply, also — để gom một chuỗi thao tác ngắn trên một đối tượng vào một khối lambda. Chúng khác nhau ở hai trục: tên gọi đối tượng bên trong lambda (this hay it) và giá trị trả về (chính đối tượng hay kết quả của lambda). Dùng chúng cho khối ngắn, mục đích rõ; tránh lồng nhiều hàm vì this và it dễ bị nhầm lẫn.
 
-### Bảng nhớ nhanh
-| Hàm | Trong lambda | Kết quả | Ý định hay gặp |
+### 1. Khái niệm cơ bản
+Scope function là hàm mở rộng (extension function): nó cho phép gọi bằng cú pháp doiTuong.tenHam() mà không cần sửa hay kế thừa class gốc. Java dev hiểu đơn giản là static method nhận đối tượng làm tham số đầu, nhưng Kotlin cho cú pháp đẹp hơn. Hai điều cần ghi nhớ:
+- this: lambda truy cập thành viên của đối tượng mà không cần viết tên đối tượng.
+- it: lambda nhận đối tượng làm tham số đặt tên là it.
+- Giá trị trả về: apply và also trả về chính đối tượng nhận gọi (dùng để chain); let, run, with trả về giá trị lambda tính toán được.
+
+### 2. Bảng so sánh
+| Hàm | Gọi đối tượng bằng | Trả về | Dùng khi nào |
 |---|---|---|---|
-| let | it | giá trị lambda | null handling, transform |
-| run | this | giá trị lambda | cấu hình rồi tính kết quả |
-| with(obj) | this | giá trị lambda | nhiều thao tác trên object |
-| apply | this | receiver | khởi tạo/cấu hình |
-| also | it | receiver | side effect như log/validate |
+| let | it | giá trị lambda | biến đổi giá trị, xử lý khi khác null |
+| run | this | giá trị lambda | cấu hình rồi tính toán một kết quả |
+| with(obj) | this | giá trị lambda | gọi nhiều thành viên của obj, obj không phải this của class xung quanh |
+| apply | this | chính đối tượng | khởi tạo và thiết lập trường cho đối tượng mới |
+| also | it | chính đối tượng | side effect nhẹ như log, validate, không làm gián đoạn luồng |
 
-~~~text
+Ví dụ:
+~~~kotlin
 val request = Request().apply {
     id = incomingId
     source = "web"
@@ -320,32 +327,40 @@ val request = Request().apply {
 val length = nullableName?.let { it.trim().length }
 ~~~
 
-### Chọn cú pháp theo ý định
-{{apply}} hữu ích khi builder/mutable object cần cấu hình rồi trả lại chính nó. {{also}} phù hợp side effect nhỏ mà không đổi giá trị pipeline. {{let}} thường thể hiện biến đổi hoặc thực thi khi non-null. {{run}}/ {{with}} giúp truy cập nhiều member và trả kết quả tính toán.
+apply trả về chính request nên ta có thể nối .also sau đó. also nhận request qua it để ghi log. let trên nullableName chỉ chạy lambda khi giá trị khác null, và trả về độ dài hoặc null.
 
-Không chọn scope function chỉ để tiết kiệm vài ký tự. Nếu lambda dài, chứa nhiều nhánh hoặc có side effect quan trọng, dùng biến có tên và method riêng để người đọc thấy luồng.
+### 3. Cách chọn trong code thực tế
+- Đối tượng mới cần thiết lập vài trường trước khi dùng: apply.
+- Muốn ghi log hoặc validate đối tượng mà không thay đổi giá trị luồng: also.
+- Giá trị có thể null và muốn biến đổi khi có giá trị: let.
+- Gọi nhiều thành viên của obj và lấy ra một kết quả tính toán: run hoặc with.
+- run thường dùng như mở rộng của đối tượng (this ngầm), còn with(obj) là hàm thông thường nhận obj làm tham số.
 
-### Pitfall production
-- Lồng {{apply}}/{{let}} khiến {{this}} ngầm trỏ nhầm object; dùng receiver label hoặc tốt hơn là tách khối.
-- {{also}} có thể khiến pipeline trông functional trong khi đang ghi DB/gửi event. Side effect cần tên method và xử lý lỗi rõ.
-- {{let}} trên nullable không tự validate nội dung; null ở bên trong vẫn có thể đến từ platform type.
-- Tránh chain scope function dài trong entity JPA, nơi getter có thể trigger lazy load.
+### 4. Những điều cần tránh (pitfall)
+- Lồng apply và let khiến this/it ngầm trỏ nhầm đối tượng; nếu không chắc, dùng biến trung gian có tên.
+- also trông như hàm tinh tế nhưng thực ra có thể ghi database, gửi sự kiện — side effect cần hàm riêng và xử lý lỗi rõ ràng.
+- let trên nullable không kiểm tra nội dung bên trong; null vẫn có thể đến từ kiểu Java (platform type) nếu bạn không kiểm tra ở ranh giới.
+- Tránh chain dài các hàm phạm vi trong entity JPA, vì getter có thể kích hoạt lazy load vào cơ sở dữ liệu.
 
-> Senior tip: trong review, hỏi “lambda trả về gì và ai là receiver?” Nếu câu trả lời cần đọc lại cả chain, thay bằng biến trung gian có tên; dễ debug hơn vài dòng ngắn.`,
+### 5. Trả lời mẫu khi phỏng vấn
+"Năm hàm phạm vi của Kotlin — let, run, with, apply, also — khác nhau ở hai điểm: tên biến đại diện cho đối tượng bên trong lambda (this hay it) và giá trị trả về (đối tượng hay kết quả lambda). Tôi dùng apply khi khởi tạo đối tượng và thiết lập vài trường, dùng also để log hoặc validate mà không làm gián đoạn luồng, dùng let để xử lý giá trị có thể null. Tôi tránh lồng nhiều hàm phạm vi vì this và it dễ bị nhầm, và nếu lambda dài tôi sẽ tách thành biến có tên hoặc hàm riêng để code dễ đọc và debug hơn."
+
+> Senior tip: trong code review, hãy hỏi “lambda trả về gì và ai là receiver?”. Nếu câu trả lời cần đọc lại toàn bộ chain, hãy thay bằng biến trung gian có tên; ít dòng hơn không phải luôn dễ bảo trì hơn.`,
   follow: ['{{apply}} và {{also}} trả về gì khác nhau?', 'Vì sao {{it}}/{{this}} lồng nhau làm review khó?', 'Bạn dùng {{let}} thay cho if-null trong trường hợp nào?'],
   tags: ['scope functions', 'let', 'apply', 'readability']
 },
 {
   id: 'kotlin-009', topic: 'kotlin', level: 'mid',
   q: 'Khi Kotlin cần khai báo singleton/factory mà Java caller cũng sử dụng, bạn chọn top-level declaration, object hay companion object? {{@JvmStatic}} thay đổi điều gì?',
-  a: `**Tóm tắt:** Kotlin top-level function/property được biên dịch thành static member của file facade; {{object}} tạo singleton; {{companion object}} là object gắn với class để đặt factory/constants liên quan class. {{@JvmStatic}} sinh thêm static bridge cho Java ergonomics, không biến companion thành static state theo đúng nghĩa JVM.
+  a: `**Tóm tắt:** Kotlin có ba cách khai báo thành phần dùng chung: hàm/property trên cao nhất file (top-level), object (đơn thể duy nhất trong ứng dụng), và companion object (đối tượng đồng hành gắn liền với một class, dùng cho factory và hằng số). Java caller thấy chúng khác nhau: top-level thành static method của class phụ sinh từ file, object là instance thường, companion cần @JvmStatic nếu muốn Java gọi như static method quen thuộc.
 
-### Cách chọn
-- Top-level: hàm tiện ích không thuộc một class cụ thể, ví dụ parse/format; giữ package nhỏ và file có tên rõ.
-- {{object}}: một instance dùng chung, ví dụ stateless registry hoặc strategy; nhớ rằng mutable state là global state và cần thread safety.
-- Companion: factory {{User.from(dto)}}, constants hoặc API tạo instance liên quan {{User}}. Đây là instance companion, không phải constructor.
+### 1. Ba cách khai báo
+- Top-level function/property: khai báo ngoài cùng trong file .kt, biên dịch thành thành viên static của class phụ sinh (mặc định tên dựa trên tên file, ví dụ StringUtilsKt). Dùng cho hàm tiện ích không thuộc class nào, ví dụ parse, format, validation. Giữ file nhỏ, tên rõ.
+- object: khai báo đơn thể, chỉ có một instance trong toàn ứng dụng. Dùng cho registry không trạng thái, strategy dùng chung. Lưu ý trạng thái có thể thay đổi (mutable state) thành trạng thái toàn cục, cần an toàn luồng.
+- companion object: đối tượng đồng hành nằm trong class, dùng cho factory như User.from(dto) hoặc hằng số liên quan đến class. Đây là instance thông thường, không phải constructor.
 
-~~~text
+Ví dụ:
+~~~kotlin
 class User private constructor(val id: Long) {
     companion object {
         @JvmStatic
@@ -354,16 +369,22 @@ class User private constructor(val id: Long) {
 }
 ~~~
 
-Kotlin gọi {{User.from(1)}}. Không có {{@JvmStatic}}, Java thường gọi {{User.Companion.from(1)}}. Annotation tạo static bridge để Java gọi {{User.from(1)}}; có thể thêm bridge cho property getter tương ứng.
+Kotlin gọi User.from(1). Nếu không có @JvmStatic, Java thường gọi User.Companion.from(1). @JvmStatic sinh thêm phương thức static cầu nối để Java gọi User.from(1), tương tự cho getter của property tương ứng.
 
-### Interop và pitfall
-Top-level API Java thấy qua facade class (mặc định tên dựa trên file); đổi tên file có thể đổi binary API, trừ khi ổn định bằng {{@file:JvmName}}. Đừng tạo facade chứa nhiều tiện ích không liên quan.
+### 2. Khi chọn cái nào
+- Hàm tiện ích chung không thuộc class cụ thể: top-level.
+- Cần duy nhất một instance, không trạng thái hay trạng thái được bảo vệ kín: object.
+- Cần factory, hằng số, API tạo instance gắn liền với class: companion object.
 
-{{const val}} phù hợp giá trị compile-time constant đơn giản; {{val}} trong companion không nhất thiết là JVM static final constant theo cách Java mong đợi. Public constant inline vào client có thể gây vấn đề khi đổi giá trị mà client chưa recompile.
+### 3. Ranh giới Java interop
+- Java thấy top-level API qua class phụ sinh của file; đổi tên file có thể đổi nhị phân API, trừ khi ổn định bằng @file:JvmName. Đừng tạo class phụ sinh chứa nhiều tiện ích không liên quan.
+- const val phù hợp giá trị hằng số compile-time đơn giản; val trong companion không nhất thiết là hằng static final theo cách Java mong đợi. Giá trị hằng được nhúng vào code client có thể gây vấn đề khi đổi giá trị mà client chưa biên dịch lại.
+- Đơn thể không nên giữ trạng thái của request hoặc người dùng; classloader, cách ly test và bộ sưu tập có thể thay đổi toàn cục dễ tạo rò rỉ giữa request hoặc giữa test.
 
-Singleton không nên giữ request/user state; classloader, test isolation và mutable collection toàn cục dễ tạo rò rỉ giữa request hoặc test.
+### 4. Trả lời mẫu khi phỏng vấn
+"Khi cần thành phần dùng chung mà Java cũng phải gọi, tôi chọn theo mục đích: hàm tiện ích chung thì khai báo top-level, cần duy nhất một instance thì dùng object, và cần factory hay hằng số gắn với class thì dùng companion object. Với Java caller, companion object thường gọi qua User.Companion.from(), nên tôi thêm @JvmStatic để Java gọi được như static method quen thuộc. Tôi cũng tránh để trạng thái có thể thay đổi trong object vì đó là trạng thái toàn cục, dễ gây rò rỉ giữa request."
 
-> Senior tip: nếu API dùng rộng từ Java, viết một smoke test Java nhỏ cho cách gọi thực tế và giữ facade/signature ổn định; Kotlin compile thành công không đảm bảo API Java dễ dùng.`,
+> Senior tip: nếu API dùng rộng từ Java, viết một smoke test nhỏ bằng Java cho cách gọi thực tế và giữ tên class phụ sinh, chữ ký ổn định; Kotlin biên dịch thành công không đảm bảo API Java dễ dùng.`,
   follow: ['Java gọi companion function không có {{@JvmStatic}} thế nào?', 'Khi nào top-level function thành API Java bất ổn?', 'Vì sao singleton mutable có thể gây rò rỉ dữ liệu giữa request?'],
   tags: ['companion object', '@JvmStatic', 'Java interop', 'singleton']
 },
@@ -824,37 +845,49 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Spri
   topic: 'kotlin',
   level: 'senior',
   q: 'Trong Spring Boot 3, coroutine Kotlin và Virtual Thread Java cùng hứa hẹn "code đồng bộ, throughput cao" — bạn chọn cái nào, khi nào?',
-  a: `**Tóm tắt:** Virtual Thread là cơ chế JVM (Java 21) cho mọi ngôn ngữ trên JVM, phù hợp khi bạn muốn giữ code Java blocking và scale thread; coroutine Kotlin là abstraction cấp ngôn ngữ, phù hợp khi codebase Kotlin và cần structured concurrency, cancellation, Flow. Trong Spring Boot 3 cả hai đều chạy được, chọn theo stack và nhu cầu cancellation/composition, không phải theo hiệu năng thuần.
+  a: `**Tóm tắt:** Trong Spring Boot 3, cả luồng ảo Java (Virtual Thread, Java 21) và coroutine Kotlin đều hứa hẹn viết mã đồng bộ nhưng xử lý nhiều tác vụ cùng lúc. Virtual Thread là cơ chế cấp JVM dùng cho mọi ngôn ngữ trên JVM, phù hợp khi giữ mã Java blocking và mở rộng số luồng. Coroutine là trừu tượng hóa cấp ngôn ngữ Kotlin, phù hợp khi codebase viết Kotlin và cần structured concurrency, hủy tác vụ (cancellation), kết hợp các lời gọi bất đồng bộ. Chọn theo stack và nhu cầu, không theo con số hiệu năng đơn lẻ.
 
-### 1. Hai khái niệm khác nhau ở tầng nào
-- Virtual Thread (JEP 444): thread thật của JVM nhưng rẻ như coroutine, mount/unmount lên carrier thread. Code vẫn là blocking I/O thông thường ({{Thread.sleep}}, {{InputStream.read}}).
-- Coroutine: suspend function, compiler sinh state machine, không block thread; cần runtime kotlinx-coroutines.
+### 1. Hai khái niệm khác nhau
+- Virtual Thread (JEP 444): luồng thật của JVM nhưng rẻ như coroutine, gắn (mount) và tháo (unmount) khỏi luồng chở (carrier thread). Mã vẫn là blocking I/O thông thường như Thread.sleep, InputStream.read. Bạn không cần đổi cách viết mã, chỉ cần cấu hình JVM/Spring.
+- Coroutine: hàm chờ (suspend function), compiler sinh ra máy trạng thái, không chiếm luồng khi chờ; cần runtime kotlinx-coroutines. Bạn viết mã trông đồng bộ nhưng thực ra coroutine nhường luồng tại mỗi điểm chờ.
 
 ### 2. Khi nào chọn Virtual Thread
-- Codebase chủ yếu Java hoặc Kotlin nhưng gọi API blocking (JDBC, RestTemplate).
-- Muốn bật nhanh bằng {{spring.threads.virtual.enabled=true}} mà không đổi code.
-- Cần tương thích với thư viện chỉ có blocking API.
+- Codebase chủ yếu Java, hoặc Kotlin nhưng gọi API blocking như JDBC, RestTemplate, các thư viện cũ chỉ có API blocking.
+- Muốn bật nhanh bằng spring.threads.virtual.enabled=true mà không đổi mã.
+- Cần tương thích với công cụ observability, agent, profiler chạy trên luồng JVM thường.
 
 ### 3. Khi nào chọn coroutine
-- Codebase Kotlin, muốn {{suspend}}, {{Flow}}, structured concurrency, cancellation tự động.
-- Cần compose nhiều lời gọi bất đồng bộ (async/await) và propagate cancellation.
-- Cần integration Reactor (coroutines có bridge với Reactor).
+- Codebase Kotlin, muốn suspend, Flow, structured concurrency, hủy tác vụ tự động khi yêu cầu hủy.
+- Cần kết hợp nhiều lời gọi bất đồng bộ (async/await) và truyền hủy tác vụ xuống các lời gọi con.
+- Cần kết nối Reactor (coroutine có cầu nối với Reactor qua kotlinx-coroutines-reactor).
 
 ### 4. Bảng trade-off
 | Tiêu chí | Virtual Thread | Coroutine |
 |---|---|---|
-| Ngôn ngữ | Java/Kotlin | Kotlin |
-| Code style | blocking | suspend |
-| Cancellation | thủ công | structured |
-| Compose async | CompletableFuture | async/await, Flow |
-| Thư viện | blocking OK | cần suspend-aware |
+| Ngôn ngữ | Java và Kotlin | Kotlin |
+| Phong cách mã | blocking | suspend |
+| Hủy tác vụ | thủ công | có cấu trúc tự động |
+| Kết hợp bất đồng bộ | CompletableFuture | async/await, Flow |
+| Thư viện | API blocking ổn | cần API nhận thức suspend |
 
-### 5. Pitfall
-- Virtual Thread + synchronized/pin carrier thread → mất lợi ích; dùng ReentrantLock.
-- Coroutine + blocking call → block thread pool; dùng {{withContext(Dispatchers.IO)}}.
-- Trộn cả hai trong cùng request → khó debug context.
+### 5. Ví dụ Spring Boot 3
+~~~kotlin
+@GetMapping("/orders/{id}")
+suspend fun get(@PathVariable id: Long): OrderDto =
+    withContext(Dispatchers.IO) {
+        service.load(id)
+    }
+~~~
 
-> Senior tip: bắt đầu với Virtual Thread nếu team còn Java; chuyển sang coroutine khi cần cancellation/composition và đã có Kotlin. Đo p99 và số thread thực tế trước khi quyết định.`,
+{{withContext(Dispatchers.IO)}} chỉ bọc phần blocking truy cập cơ sở dữ liệu, không block toàn bộ luồng xử lý. Với Virtual Thread, bạn không cần {{withContext}} này, nhưng vẫn bị giới hạn bởi pool kết nối cơ sở dữ liệu.
+
+### 6. Lỗi hay gặp
+- Virtual Thread kết hợp synchronized có thể ghim luồng chở (pin carrier thread), làm mất lợi ích; hãy dùng ReentrantLock thay vì synchronized khi cần.
+- Coroutine gọi mã blocking trực tiếp sẽ chiếm luồng dispatcher; hãy dùng withContext(Dispatchers.IO) cho phần blocking.
+- Trộn cả hai trong cùng một yêu cầu làm ngữ cảnh khó theo dõi và debug.
+- Virtual Thread không làm cho cơ sở dữ liệu nhanh hơn; pool kết nối và giới hạn downstream vẫn là nút thắt.
+
+> Senior tip: bắt đầu với Virtual Thread nếu team còn viết Java nhiều; chuyển sang coroutine khi cần hủy tác vụ, kết hợp bất đồng bộ và codebase đã dùng Kotlin. Đo p99 và số luồng thực tế trước khi quyết định, không chỉ tin vào benchmark đơn lẻ.`,
   follow: ['Bạn đo pinning của Virtual Thread bằng cách nào?', 'withContext(Dispatchers.IO) khác gì Virtual Thread về tài nguyên?', 'Khi nào coroutine không đáng công migrate?'],
   tags: ['kotlin', 'coroutine', 'virtual-thread', 'spring-boot']
 },
@@ -863,37 +896,47 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Spri
   topic: 'kotlin',
   level: 'senior',
   q: 'Structured concurrency và cancellation trong coroutine Kotlin: coroutineScope, supervisorScope khác nhau thế nào, và vì sao cancellation cooperative?',
-  a: `**Tóm tắt:** Structured concurrency đảm bảo coroutine con không "rò rỉ" — parent chờ con xong và huỷ con khi parent huỷ. {{coroutineScope}} huỷ toàn bộ khi một con lỗi; {{supervisorScope}} cho con lỗi độc lập. Cancellation là cooperative: code phải kiểm tra {{isActive}} hoặc gọi suspend function.
+  a: `**Tóm tắt:** Structured concurrency (đồng thời có cấu trúc — mọi coroutine con đều gắn vào một scope cha có vòng đời rõ ràng) đảm bảo coroutine con không bao giờ bị rò rỉ: cha chờ con hoàn tất, hủy cha thì hủy toàn bộ cây con. coroutineScope hủy toàn bộ khi một con lỗi; supervisorScope để con lỗi độc lập. Hủy tác vụ là cooperative (phải hợp tác): coroutine chỉ dừng khi mã tự kiểm tra isActive hoặc gọi một hàm chờ (suspend function), nên việc đặt cờ hủy thôi chưa đủ.
 
 ### 1. Vấn đề coroutine "rò rỉ"
-Nếu launch coroutine mà không gắn vào scope, khi request xong coroutine vẫn chạy → leak tài nguyên, khó debug.
+Nếu khởi chạy coroutine mà không gắn vào scope có vòng đời rõ, khi yêu cầu xong coroutine vẫn chạy → rò rỉ tài nguyên, khó debug. Mỗi coroutine phải thuộc một scope; scope cha chờ tất cả con, hủy scope cha thì hủy toàn bộ cây dưới nó. Ví dụ launch trong controller không gắn vào lifecycle của request sẽ tiếp tục chạy sau khi response đã trả về.
 
-### 2. Structured concurrency giải quyết
-Mỗi coroutine thuộc một scope; scope cha chờ tất cả con; huỷ scope cha → huỷ toàn bộ cây con.
+### 2. coroutineScope vs supervisorScope
+- coroutineScope: nếu một con ném lỗi, hủy các con khác và truyền lỗi ra ngoài. Phù hợp khi tất cả nhánh phải thành công, ví dụ tổng hợp dữ liệu từ nhiều dịch vụ.
+- supervisorScope: lỗi của một con không ảnh hưởng các con khác; lỗi lan qua Job của chính con đó. Phù hợp khi một thành phần lỗi không được làm hỏng toàn bộ trang, ví dụ dashboard nhiều widget độc lập.
 
-### 3. coroutineScope vs supervisorScope
-- {{coroutineScope}}: nếu một con throw, huỷ các con khác và propagate exception.
-- {{supervisorScope}}: con lỗi không ảnh hưởng con khác; exception propagate qua Job của con đó.
-
-### 4. Cancellation cooperative
-- Gọi {{job.cancel()}} chỉ set flag cancelled; coroutine chỉ dừng khi gặp suspend point hoặc kiểm tra {{isActive}}.
-- Code CPU-heavy phải tự check {{ensureActive()}}.
-
-### 5. Ví dụ
+Ví dụ:
 ~~~kotlin
 suspend fun fetchAll() = coroutineScope {
     val a = async { fetchA() }
     val b = async { fetchB() }
-    a.await() + b.await()  // nếu a lỗi, b bị cancel
+    a.await() + b.await() // nếu a lỗi, b bị hủy
 }
 ~~~
 
-### 6. Pitfall
-- Bỏ qua CancellationException → coroutine không dừng.
-- Dùng GlobalScope → mất structured concurrency.
-- Blocking call trong coroutine → không respond cancellation.
+Nếu đổi thành supervisorScope, lỗi của fetchA không hủy fetchB, và lỗi chỉ ném ra khi bạn await Deferred của chính nhánh đó.
 
-> Senior tip: coi cancellation như contract: mọi suspend function nên respond cancellation; test bằng cách cancel Job và assert resource cleanup.`,
+### 3. Hủy tác vụ là cooperative
+Gọi job.cancel() chỉ đánh dấu cờ đã hủy; coroutine chỉ dừng khi gặp điểm chờ (suspend point) hoặc kiểm tra isActive. Vòng lặp xử lý CPU nặng phải tự gọi ensureActive(). Không bắt CancellationException rồi trả kết quả bình thường, điều đó phá vỡ structured concurrency và khiến yêu cầu bị hủy vẫn tiếp tục ghi dữ liệu.
+
+Ví dụ kiểm tra trong vòng lặp:
+~~~kotlin
+while (items.hasNext()) {
+    ensureActive() // ném CancellationException nếu bị hủy
+    process(items.next())
+}
+~~~
+
+### 4. Lỗi hay gặp
+- Bỏ qua CancellationException → coroutine không dừng khi được yêu cầu.
+- Dùng GlobalScope → mất structured concurrency, coroutine sống độc lập.
+- Gọi mã blocking trực tiếp trong coroutine → không phản hồi hủy tác vụ.
+- Dùng runBlocking trong controller hoặc filter → chiếm luồng và dễ gây hunger luồng.
+
+### 5. Trả lời mẫu khi phỏng vấn
+"Tôi dùng structured concurrency để đảm bảo coroutine con không rò rỉ: cha chờ con hoàn tất và hủy cha sẽ hủy toàn bộ cây con. coroutineScope phù hợp khi mọi nhánh phải thành công — một con lỗi thì hủy các con khác. supervisorScope phù hợp khi các con độc lập, ví dụ widget trên dashboard. Hủy tác vụ trong Kotlin là cooperative: job.cancel() chỉ đặt cờ, coroutine dừng ở điểm chờ tiếp theo, nên mã CPU-heavy phải kiểm tra isActive. Tôi không dùng GlobalScope và không bắt CancellationException lầm thành lỗi thông thường."
+
+> Senior tip: coi hủy tác vụ như một hợp đồng — mọi hàm chờ nên phản hồi hủy tác vụ; hãy kiểm thử bằng cách hủy Job và kiểm tra tài nguyên được dọn dẹp.`,
   follow: ['ensureActive() đặt ở đâu trong vòng lặp CPU-heavy?', 'CancellationException có nên catch không?', 'Làm sao propagate cancellation sang blocking I/O?'],
   tags: ['kotlin', 'coroutine', 'cancellation', 'structured-concurrency']
 },
@@ -902,35 +945,43 @@ suspend fun fetchAll() = coroutineScope {
   topic: 'kotlin',
   level: 'mid',
   q: 'Null safety khi gọi code Java từ Kotlin: platform type là gì, và vì sao NPE vẫn có thể xảy ra?',
-  a: `**Tóm tắt:** Khi gọi Java từ Kotlin, kiểu trả về Java (không có annotation nullability) trở thành platform type ({{T!}}), Kotlin không biết null hay non-null, nên compiler không bắt buộc check. NPE vẫn xảy ra nếu Java trả null và code Kotlin dereference mà không check.
+  a: `**Tóm tắt:** Khi gọi mã Java từ Kotlin, kiểu trả về của Java nếu không có chú thích nullability (thông tin cho biết giá trị có được phép null hay không) trở thành kiểu nền tảng (platform type, ví dụ {{String!}}), Kotlin không biết giá trị đó null hay không-null, nên compiler không bắt buộc kiểm tra. NPE (NullPointerException — lỗi truy cập null lúc chạy) vẫn xảy ra nếu Java trả null và mã Kotlin tham chiếu mà không kiểm tra. Ở ranh giới, hãy coi mọi giá trị từ Java là có thể null cho đến khi có chú thích đáng tin cậy, và chuyển sang kiểu Kotlin rõ ràng.
 
-### 1. Platform type
-- Java method {{String getName()}} → Kotlin thấy {{String!}} (có dấu !).
-- Compiler cho phép gọi cả method nullable và non-null trên nó, không cảnh báo.
-- Annotation {{@Nullable}}/{{@NotNull}} (JSR-305, JetBrains) giúp Kotlin biết chính xác.
+### 1. Kiểu nền tảng là gì
+- Phương thức Java String getName() được Kotlin thấy là String! (có dấu than).
+- Compiler cho phép gọi cả cách dùng nullable lẫn non-null trên kiểu này, không đưa ra cảnh báo.
+- Chú thích {{@Nullable}}/{{@NotNull}} (JSR-305, JetBrains, Android, v.v.) có thể giúp Kotlin suy luận nullability, nhưng mức hỗ trợ phụ thuộc cấu hình trình biên dịch (ví dụ {{-Xjsr305}}) và phiên bản; JSpecify ({{org.jspecify.annotations}}) là hướng chuẩn hóa mới hơn — hãy kiểm tra phiên bản Kotlin, cấu hình và chú thích thực tế trong dự án.
 
 ### 2. Vì sao NPE vẫn xảy ra
-- Java code trả null bất ngờ (ví dụ Map.get).
-- Kotlin code tin là non-null và gọi method → NPE tại runtime.
-- Java generic {{List<String>}} có thể chứa null.
+- Mã Java trả null bất ngờ, ví dụ Map.get trả null khi khóa không có.
+- Kotlin tin là non-null và gọi phương thức → NPE tại thời điểm chạy.
+- Generic Java như List<String> có thể chứa phần tử null nếu không có chú thích type-use đáng tin cậy.
 
-### 3. Cách phòng
-- Thêm nullability annotation vào Java code (Spring dùng {{@Nullable}}).
-- Ở biên Kotlin, coi platform type là nullable và check.
-- Dùng {{Objects.requireNonNull}} hoặc requireNotNull ở boundary.
+### 3. Cách phòng ngừa
+- Thêm chú thích nullability vào mã Java (Spring thường dùng @Nullable/@NotNull).
+- Ở ranh giới Kotlin, coi kiểu nền tảng là nullable và kiểm tra.
+- Dùng Objects.requireNonNull hoặc requireNotNull ở ranh giới để fail fast rõ ràng.
 
-### 4. Ví dụ
+Ví dụ:
 ~~~kotlin
-val name: String? = javaObj.name  // an toàn
-val upper = name?.uppercase()     // null-safe
+val name: String? = javaObj.name // an toàn, coi là có thể null
+val upper = name?.uppercase() // chỉ viết hoa khi khác null
+val required = requireNotNull(javaObj.name) // thất bại ngay với thông báo rõ ràng
 ~~~
 
-### 5. Pitfall
-- Cast platform type sang non-null bằng {{!!}} → NPE nếu Java trả null.
-- Collection từ Java có thể mutate và null element.
-- Annotation không được propagate qua reflection/generic.
+### 4. Những điều cần tránh
+- Ép kiểu nền tảng sang non-null bằng !! → NPE nếu Java trả null.
+- Bộ sưu tập từ Java có thể bị thay đổi và chứa phần tử null.
+- Chú thích không được lan truyền qua reflection hay generic.
+- Đừng để kiểu nền tảng lan sâu vào miền nghiệp vụ (domain); hãy chuyển ngay ở adapter.
 
-> Senior tip: coi mọi giá trị từ Java là nullable cho đến khi có annotation; viết adapter layer để convert sang Kotlin type rõ ràng.`,
+### 5. Ví dụ đời thực
+Một hệ thống đặt hàng gọi API legacy Java lấy mã khách hàng. DTO Kotlin ban đầu dùng String (non-null) cho trường mã khách hàng, nhưng Java trả null khi khách hàng là khách lẻ. Lỗi NPE chỉ phát hiện sau hai tuần production khi doanh thu giảm 15% tại check-out. Cách sửa: đổi thành String? ở DTO, dùng requireNotNull ở ranh giới dịch vụ, và hiển thị "Khách lẻ" khi null. Sau khi sửa, lỗi NPE về khách hàng giảm về không.
+
+### 6. Trả lời mẫu khi phỏng vấn
+"Kiểu nền tảng là cách Kotlin xử lý kiểu Java không có thông tin nullability, ví dụ String!; compiler không biết null hay không-null nên không bắt buộc kiểm tra. Nếu Java trả null và Kotlin tham chiếu, NPE xảy ra tại runtime. Tôi xử lý bằng cách coi mọi giá trị từ Java là nullable ở ranh giới, thêm chú thích nullability vào mã Java, và dùng requireNotNull hoặc toán tử an toàn ?. để chuyển sang kiểu Kotlin rõ ràng. Tôi tránh !! trừ khi invariant đã được chứng minh và lỗi phải fail fast."
+
+> Senior tip: coi mọi giá trị từ Java là nullable cho đến khi có chú thích; viết lớp adapter ở ranh giới để chuyển sang kiểu Kotlin rõ ràng, ghi log có định danh yêu cầu nhưng không ghi dữ liệu nhạy cảm.`,
   follow: ['JSR-305 annotation có bị Kotlin honour mặc định không?', 'Làm sao enforce nullability ở biên Java?', 'Map.get trong Java trả platform type, xử lý thế nào?'],
   tags: ['kotlin', 'null-safety', 'platform-type', 'java-interop']
 },
@@ -939,31 +990,59 @@ val upper = name?.uppercase()     // null-safe
   topic: 'kotlin',
   level: 'senior',
   q: 'Data class Kotlin vs Java record trong JPA/Hibernate: bạn chọn cái nào và vì sao entity thường không nên là data class?',
-  a: `**Tóm tắt:** Data class Kotlin sinh equals/hashCode/toString/copy dựa trên tất cả property; Java record tương tự nhưng immutable. Entity JPA cần mutable + identity theo id + proxy, nên cả hai đều không phù hợp làm entity; dùng class thường với {{var}} và equals theo id. Data class/record phù hợp cho DTO/value object.
+  a: `**Tóm tắt:** Data class Kotlin sinh equals, hashCode, toString, copy dựa trên tất cả property trong constructor chính; Java record tương tự nhưng bất biến. Entity JPA cần mutable, identity theo id, và có thể tạo proxy cho lazy loading, nên cả hai đều không phù hợp làm entity. Dùng class thường với var và equals theo id (hoặc identity mặc định). Data class và record phù hợp cho DTO, giá trị, read model.
 
 ### 1. Data class Kotlin
-- Sinh constructor, getter, setter (var), equals, hashCode, toString, copy.
-- equals/hashCode dùng mọi property → vấn đề với lazy association và proxy.
+- Sinh constructor, getter, setter (nếu var), equals, hashCode, toString, copy.
+- equals/hashCode dùng mọi property → vấn đề với liên kết lazy và proxy.
+- copy() là shallow copy: đối tượng mutable bên trong vẫn dùng chung tham chiếu.
 
 ### 2. Java record
-- Immutable, component accessor, equals/hashCode/toString.
-- Không có setter → không thể JPA hydrate (cần no-arg + setter hoặc field access).
+- Bất biến theo thiết kế, accessor tên thành phần (không có getter JavaBean mặc định), record là final.
+- Không có setter nên Hibernate khó khởi tạo (cần constructor không tham số và truy cập trường); không phù hợp entity.
 
 ### 3. Vì sao entity không nên là data class
-- Lazy loading: equals/hashCode chạm association → N+1 hoặc LazyInitializationException.
-- Proxy: Hibernate tạo subclass proxy; data class final by default → proxy không thể subclass (cần open/all-open).
-- Identity: entity identity theo id, không theo toàn bộ state.
+- Lazy loading: equals/hashCode chạm liên kết có thể gây N+1 hoặc LazyInitializationException.
+- Proxy: Hibernate tạo subclass proxy cho lazy loading; data class final theo mặc định không thể được subclass (cần open hoặc plugin all-open).
+- Identity: entity nhận biết qua id, không phải toàn bộ trạng thái; hai entity mới cùng id null có thể bị coi là bằng nhau nếu equals dựa trên các trường khác.
+- Data class với collection mutable dễ gây lỗi aliasing.
 
-### 4. Lựa chọn
-- Entity: class thường, {{open}} (hoặc all-open plugin), equals/hashCode theo id (hoặc identity default).
-- DTO/read model: data class hoặc record (immutable, value semantics).
+### 4. Cách làm an toàn
+~~~kotlin
+@Entity
+open class Order protected constructor() {
+    @Id
+    var id: UUID? = null
 
-### 5. Pitfall
-- Data class với collection mutable → aliasing bug.
-- Record làm JPA entity → no-arg constructor thiếu → lỗi runtime.
-- copy() trên entity → detach/merge nhầm.
+    lateinit var code: String
 
-> Senior tip: quy ước: entity = class mutable với id identity; DTO = data class/record immutable. Code review check equals/hashCode của entity.`,
+    constructor(code: String) : this() {
+        this.code = code
+        this.id = UUID.randomUUID()
+    }
+
+    override fun equals(other: Any?): Boolean =
+        this === other || (other is Order && code == other.code)
+
+    override fun hashCode(): Int = code.hashCode()
+
+    override fun toString(): String = "Order(code=$code)"
+}
+~~~
+
+- Business key phải bất biến, duy nhất và có ý nghĩa nghiệp vụ.
+- Không đưa collection, liên kết lazy, timestamp đánh giá hay trường thay đổi vào equals/hashCode.
+- Proxy là subclass của entity, nên other is Order vẫn đúng; nhưng javaClass == other.javaClass sai vì class proxy khác class thật. Đọc giá trị qua getter (property) để proxy khởi tạo và trả giá trị thật.
+- Với id do ứng dụng gán, Spring Data thấy id khác null và coi là entity cũ, gọi merge; hãy cài Persistable với cờ isNew nếu muốn save dùng persist.
+
+### 5. Lựa chọn
+- Entity: class thường, open (hoặc all-open plugin), equals/hashCode theo id hoặc identity mặc định.
+- DTO/read model: data class hoặc record (bất biến, value semantics).
+
+### 6. Trả lời mẫu khi phỏng vấn
+"Tôi không dùng data class làm entity JPA vì equals/hashCode sinh tự động dùng mọi property, bao gồm id chưa gán và liên kết lazy — điều này làm hash thay đổi sau khi persist, phá HashSet/HashMap và có thể kích hoạt truy vấn không mong muốn. Java record cũng không phù hợp vì bất biến và thiếu setter mà JPA cần. Tôi dùng class thường mở (open), equals/hashCode dựa trên business key bất biến hoặc id, và data class/record chỉ cho DTO và read model."
+
+> Senior tip: quy ước entity = class mutable nhận biết qua id; DTO = data class/record bất biến. Code review nên kiểm tra equals/hashCode của entity và viết test thêm entity vào HashSet rồi kiểm tra contains sau khi persist.`,
   follow: ['Equals/hashCode entity theo id có vấn đề gì khi entity chưa persist?', 'all-open plugin cấu hình thế nào?', 'Khi nào dùng @Immutable của Hibernate?'],
   tags: ['kotlin', 'data-class', 'record', 'jpa', 'hibernate']
 },
@@ -972,36 +1051,45 @@ val upper = name?.uppercase()     // null-safe
   topic: 'kotlin',
   level: 'mid',
   q: 'Extension function Kotlin: cơ chế hoạt động thế nào, và rủi ro lạm dụng trong codebase lớn?',
-  a: `**Tóm tắt:** Extension function là syntactic sugar: compiler chuyển {{receiver.ext()}} thành static method {{ExtKt.ext(receiver)}}. Không có dispatch động, không truy cập private, và không override được. Lạm dụng dẫn đến API "ma", khó tìm định nghĩa, và xung đột tên.
+  a: `**Tóm tắt:** Extension function (hàm mở rộng) là syntactic sugar (cú pháp rút gọn): compiler chuyển {{receiver.ext()}} thành phương thức tĩnh {{ExtKt.ext(receiver)}}. Không có đa hình lúc chạy (dynamic dispatch), không truy cập thành viên {{private}}, và không ghi đè (override) được. Lạm dụng dẫn đến API "ma" khó tìm định nghĩa và xung đột tên trong codebase lớn.
 
-### 1. Cơ chế
-- {{fun String.isEmail(): Boolean}} compile thành {{fun isEmail($receiver: String): Boolean}}.
-- Gọi {{s.isEmail()}} → {{isEmail(s)}}.
-- Static resolution tại compile time, không polymorphic.
+### 1. Cơ chế hoạt động
+- fun String.isEmail(): Boolean biên dịch thành fun isEmail($receiver: String): Boolean.
+- Gọi s.isEmail() thực ra gọi isEmail(s).
+- Quy tắc phân trùng được quyết tại thời điểm biên dịch theo kiểu khai báo của receiver, không đa hình theo runtime type. Nếu subclass có phương thức thành viên cùng tên, phương thức thành viên luôn được ưu tiên.
 
 ### 2. Lợi ích
-- Thêm method cho class không sở hữu (String, List) mà không kế thừa.
-- DSL builder, builder-style API.
+- Thêm phương thức cho class bạn không sở hữu (String, List, v.v.) mà không cần kế thừa.
+- Xây dựng DSL, API kiểu builder.
 - Extension property (getter/setter).
 
-### 3. Rủi ro lạm dụng
-- Overload resolution khó: extension vs member, extension vs extension.
-- "Action at a distance": method xuất hiện từ import bất kỳ.
-- Đặt tên chung ({{toDto}}) ở nhiều module → conflict.
-- Khó discover qua IDE nếu import chưa có.
+### 3. Rủi ro khi lạm dụng
+- Phân trùng overload khó hiểu: extension so với thành viên của class, extension so với extension.
+- "Hành động từ xa": phương thức xuất hiện bất ngờ từ một import nào đó.
+- Tên chung như toDto ở nhiều module dẫn đến xung đột.
+- Khó khám phá qua IDE nếu chưa có import.
 
-### 4. Quy ước
-- Extension nên là pure function, không side effect.
-- Đặt trong file rõ ràng, package theo domain.
-- Tránh extension cho type quá chung (Any, List<Any>).
-- Prefer member function nếu bạn sở hữu class.
+### 4. Quy ước sử dụng
+- Extension nên là hàm thuần khiết (pure function), không side effect.
+- Đặt trong file rõ ràng, gói theo miền nghiệp vụ (domain).
+- Tránh extension cho kiểu quá chung như Any, List<Any>.
+- Nếu bạn sở hữu class, ưu tiên thành viên của class thay vì extension.
 
-### 5. Pitfall
-- Extension không override → gọi nhầm khi có subclass.
-- Extension property không có backing field.
-- Java không thấy extension như method (chỉ static helper).
+### 5. Java interop
+- Java không thấy extension như phương thức, chỉ thấy static helper trong class phụ sinh của file (mặc định tên dựa trên tên file, ví dụ StringExtKt). Dùng @file:JvmName để ổn định tên class, @JvmName khi có xung đột chữ ký.
+- Tham số mặc định cần @JvmOverloads nếu Java muốn gọi overload.
 
-> Senior tip: extension là công cụ ergonomic, không phải cơ chế OOP; review xem có thể thay bằng method/member hoặc utility class rõ ràng hơn không.`,
+### 6. Ví dụ đời thực
+Một team đặt fun String.toDto() trong module chung. Hai tháng sau, thư viện Java mới thêm phương thức getDto() và một module khác cũng khai báo extension toDto(). Code compile nhưng runtime gọi sai hàm, gây sai dữ liệu trong báo cáo tài chính. Cách sửa: đổi tên thành toOrderDto(), toInvoiceDto(), đặt trong gói riêng và gắn @file:JvmName("OrderDtoExt") để Java caller ổn định.
+
+### 7. Lỗi hay gặp
+- Extension không override: gọi nhầm khi có subclass.
+- Extension property không có trường lưu trữ (backing field).
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Extension function cho phép thêm phương thức vào class đã có mà không sửa class đó; compiler biên dịch thành hàm static nhận đối tượng làm tham số đầu. Tôi chỉ dùng extension cho hàm thuần, ngắn, tên rõ miền nghiệp vụ (domain), và tránh extension lên kiểu chung như {{Any}}. Nếu extension cần mock, gọi repository, hay lấy cấu hình, tôi chuyển thành bean rõ ràng thay vì để dependency ẩn. Với Java, extension xuất hiện dưới dạng static helper trong class phụ sinh, nên tôi giữ tên file và chữ ký ổn định."
+
+> Senior tip: extension là công cụ tiện lợi, không phải cơ chế hướng đối tượng; nếu một extension cần mock, transaction hoặc cấu hình môi trường, nó không còn là extension — hãy biến nó thành bean.`,
   follow: ['Extension function và member function thứ tự ưu tiên?', 'Làm sao tổ chức extension trong multi-module?', 'Extension có thể truy cập private không?'],
   tags: ['kotlin', 'extension-function', 'api-design']
 },
@@ -1010,43 +1098,50 @@ val upper = name?.uppercase()     // null-safe
   topic: 'kotlin',
   level: 'senior',
   q: 'Spring Boot + Kotlin: open class/all-open plugin, kotlin-spring, Jackson module — cấu hình tối thiểu và lỗi hay gặp?',
-  a: `**Tóm tắt:** Kotlin class/method final by default, nhưng Spring cần subclass proxy (AOP, @Transactional, @Async) và JPA cần subclass proxy + no-arg constructor. Plugin all-open (kotlin-spring) mở các class có annotation Spring; no-arg plugin sinh constructor rỗng cho entity. Jackson module kotlin xử lý data class và nullability.
+  a: `**Tóm tắt:** Kotlin làm cho class và phương thức final theo mặc định, nhưng Spring cần tạo subclass proxy cho AOP, @Transactional, @Async, còn JPA cần subclass proxy và constructor không tham số để khởi tạo entity. Plugin all-open (kotlin-spring) mở các class có chú thích Spring; plugin no-arg (kotlin-jpa) sinh constructor rỗng cho entity. Jackson module Kotlin xử lý data class, giá trị mặc định và nullability khi deserialize JSON.
 
-### 1. Vấn đề final
-- Spring AOP tạo proxy subclass → class final → CGLIB fail.
-- JPA/Hibernate tạo proxy subclass → cần open.
-- @Configuration class phải open (hoặc dùng proxyBeanMethods=false).
+### 1. Vấn đề với final
+- Spring AOP tạo proxy subclass; class final khiến CGLIB không tạo proxy được, @Transactional không hoạt động và không rollback.
+- JPA/Hibernate tạo proxy subclass cho lazy loading; entity cần mở (open).
+- Lớp cấu hình @Configuration cần open hoặc đặt proxyBeanMethods = false.
 
 ### 2. kotlin-spring / all-open
-- Plugin tự open class/method có @Component, @Transactional, @Async, @Cacheable, v.v.
-- Cấu hình Gradle: {{id("org.jetbrains.kotlin.plugin.spring")}}.
-- Có thể open thêm annotation custom.
+- Plugin tự mở class và phương thức có chú thích @Component, @Service, @Transactional, @Async, @Cacheable, v.v.
+- Cấu hình Gradle: id("org.jetbrains.kotlin.plugin.spring").
+- Có thể mở thêm chú thích tuỳ chỉnh qua khối allOpen.
 
 ### 3. no-arg plugin
-- Sinh constructor rỗng cho class có @Entity, @Embeddable, @MappedSuperclass.
-- Cần cho JPA instantiate entity.
+- Sinh constructor không tham số cho class có @Entity, @Embeddable, @MappedSuperclass, cần JPA khởi tạo entity.
+- Constructor sinh ra mặc định không chạy khối khởi tạo hay initializer; Hibernate gán trường từ ResultSet sau đó.
 
-### 4. Jackson module
-- {{jackson-module-kotlin}} hỗ trợ constructor, data class, default value, nullability.
-- Đăng ký qua {{ObjectMapper.registerModule(KotlinModule())}} (Spring Boot auto-config nếu dependency có).
+### 4. Jackson module Kotlin
+- jackson-module-kotlin hỗ trợ constructor chính, data class, giá trị mặc định và nullability.
+- Spring Boot tự đăng ký nếu có dependency trên classpath; nếu tự tạo ObjectMapper, hãy đăng ký KotlinModule() thủ công.
+- Dùng @field:NotBlank/@field:Min vì Bean Validation mặc định đọc trường/getter, không phải tham số constructor.
 
-### 5. Lỗi hay gặp
-- Quên plugin → @Transactional không hoạt động (không proxy) → không rollback.
-- Entity final → Hibernate proxy fail.
-- Jackson không deserialize data class → cần module.
-- {{lateinit}} + constructor injection: thứ tự init.
-
-### 6. Ví dụ Gradle
+### 5. Ví dụ Gradle
 ~~~kotlin
 plugins {
-  kotlin("jvm")
-  kotlin("plugin.spring")
-  kotlin("plugin.jpa")
-  kotlin("plugin.allopen")
+    kotlin("jvm")
+    kotlin("plugin.spring")
+    kotlin("plugin.jpa")
+    kotlin("plugin.allopen")
 }
 ~~~
 
-> Senior tip: có checklist build plugin trong CI: verify @Transactional rollback bằng test; verify entity load lazy; verify JSON round-trip.`,
+### 6. Lỗi hay gặp
+- Quên plugin → @Transactional dường như hoạt động nhưng không rollback vì không có proxy.
+- Entity final → Hibernate không tạo proxy, lazy loading lỗi.
+- Jackson không deserialize data class nếu thiếu module Kotlin.
+- lateinit kết hợp constructor injection cần lưu ý thứ tự khởi tạo.
+
+### 7. Ví dụ đời thực
+Một service đặt đơn hàng và đánh dấu @Transactional. Do quên plugin kotlin-spring, class service là final, Spring không tạo proxy nên @Transactional bị bỏ qua. Khi lỗi xảy ra giữa chừng, dữ liệu đã ghi được một nửa nhưng không rollback, dẫn đến đơn hàng bị khuyết. Sau khi bật plugin và viết kiểm thử integration xác nhận rollback, sự cố không tái lập.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Kotlin class final theo mặc định, còn Spring cần subclass proxy cho @Transactional và JPA cần proxy cho lazy loading. Tôi dùng plugin kotlin-spring (all-open) để mở các class chú thích Spring, plugin kotlin-jpa (no-arg) để sinh constructor rỗng cho entity, và đăng ký jackson-module-kotlin để Jackson hiểu data class và nullability. Tôi cũng kiểm thử integration thực sự: rollback khi lỗi, lazy loading ngoài transaction và round-trip JSON."
+
+> Senior tip: có checklist trong CI: kiểm thử @Transactional rollback thực sự, kiểm thử entity load liên kết lazy, và kiểm thử JSON round-trip. Không tin vào đơn giản là mã biên dịch được.`,
   follow: ['proxyBeanMethods=false khi nào dùng?', 'lateinit vs constructor injection?', 'KSP thay kapt trong Spring có được không?'],
   tags: ['kotlin', 'spring-boot', 'all-open', 'jackson', 'gradle']
 },
@@ -1055,37 +1150,50 @@ plugins {
   topic: 'kotlin',
   level: 'senior',
   q: 'Flow Kotlin vs Project Reactor (Mono/Flux): khác nhau về cold/hot, backpressure, và khi nào chọn cái nào trong Spring WebFlux?',
-  a: `**Tóm tắt:** Flow là cold stream Kotlin (coroutine-based), backpressure tự nhiên qua suspend; Reactor là thư viện reactive Java với cold/hot, backpressure qua request(n). Trong Spring WebFlux (Reactor-based), dùng Reactor ở boundary web, bridge sang Flow ở logic Kotlin bằng kotlinx-coroutines-reactor.
+  a: `**Tóm tắt:** Flow là dòng dữ liệu lạnh của Kotlin dựa trên coroutine, backpressure tự nhiên qua việc hàm chờ (suspend). Reactor (Mono/Flux) là thư viện reactive Java, dòng lạnh mặc định, backpressure qua cơ chế subscriber yêu cầu dữ liệu (request n). Trong Spring WebFlux (dựa trên Reactor), dùng Reactor ở ranh giới web, bridge sang Flow trong logic Kotlin bằng kotlinx-coroutines-reactor.
 
-### 1. Cold vs hot
-- Flow: cold — mỗi collect chạy lại producer.
-- SharedFlow/StateFlow: hot — broadcast, không replay (StateFlow replay 1).
-- Mono/Flux: cold mặc định; hot qua Sinks/Processor.
+### 1. Cold và hot
+- {{Flow}}: lạnh — mỗi lần {{collect}} chạy lại nguồn tạo dữ liệu. {{collect}} là hàm chờ (suspend), nên luồng thu nhận/đẩy dữ liệu tự nhiên theo nhịp consumer (backpressure).
+- SharedFlow/StateFlow: nóng — phát tán cho nhiều thu nhận; StateFlow lưu lại giá trị mới nhất (replay 1).
+- Mono/Flux: lạnh mặc định; nóng qua Sinks.
 
 ### 2. Backpressure
-- Flow: tự nhiên — collect suspend, producer suspend khi buffer đầy (với buffer).
-- Reactor: explicit request(n) từ subscriber.
+- Flow: tự nhiên — collect là hàm chờ, khi người dùng chậm, phía tạo dữ liệu cũng bị chờ (với buffer). Dùng buffer, confluent, collectLatest để điều khiển.
+- Reactor: rõ ràng — người dùng yêu cầu n phần tử; các toán tử như limitRate, flatMap có tham số cùng lúc cần đặt theo năng lực downstream.
 
-### 3. Composition
-- Flow: operator suspend (map, filter, flatMapMerge), structured concurrency.
-- Reactor: operator chain, Scheduler.
+### 3. Thành phần
+- {{Flow}}: toán tử là hàm chờ ({{map}}, {{filter}}, {{flatMapMerge}}, v.v.), vận hành trong ngữ cảnh coroutine/structured concurrency.
+- Reactor: chuỗi toán tử, Scheduler để luân chuyển luồng.
 
-### 4. Trong Spring WebFlux
-- Controller trả Mono/Flux (Reactor) để Spring hiểu.
-- Logic Kotlin có thể trả Flow, convert {{flow.asFlux()}}.
-- Bridge context: {{Dispatchers.Reactor}}.
+### 4. Ví dụ bridge
+~~~kotlin
+@GetMapping("/prices/{id}", produces = [MediaType.TEXT_EVENT_STREAM_VALUE])
+fun stream(@PathVariable id: String): Flow<Price> = service.prices(id)
+~~~
+
+Spring WebFlux thích ứng Flow thành Flux. Cầu nối ngược: flow.asFlux(), Publisher.asFlow(). Cầu nối ngữ cảnh: Dispatchers.Reactor, ReactorContext. Không tự đồng bộ mọi ThreadLocal; MDC, security, tenant phải xử lý riêng.
 
 ### 5. Chọn cái nào
-- Stack Kotlin + coroutine: Flow cho domain logic, Reactor ở web boundary.
-- Stack Java/Reactor: Reactor end-to-end.
-- Cần interop với Reactor ecosystem (WebClient, R2DBC): Reactor.
+| Bối cảnh | Lựa chọn |
+|---|---|
+| WebFlux + R2DBC + WebClient | Reactor |
+| Logic Kotlin thuần, JDBC, hàm chờ | Flow |
+| Cần tương thích hệ sinh thái Reactor (WebClient, R2DBC) | Reactor |
 
-### 6. Pitfall
-- Flow không có subscriber → không chạy (cold) — dễ quên collect.
-- Mixing dispatcher → context loss.
-- Hot stream không backpressure → OOM.
+Không chuyển qua lại nhiều lần trên đường đi nóng; chọn ranh giới (adapter) và giữ một mô hình xuyên suốt.
 
-> Senior tip: boundary rõ: web layer Reactor, domain layer Flow; convert ở controller. Đo memory/backpressure bằng load test.`,
+### 6. Ví dụ đời thực
+Một API giá cổ phiếu real-time dùng {{Flow}} để phát (emit) giá mỗi giây cho client qua SSE (Server-Sent Events — kênh đẩy dữ liệu một chiều từ server xuống trình duyệt qua HTTP). Vì một lỗi ở tầng tích hợp, luồng không được thu nhận (collect) đúng cách trong vòng đời xử lý yêu cầu, {{Flow}} là dòng lạnh nên không chạy và client không nhận được giá. Sau khi sửa để controller trả {{Flow}} (hoặc chuyển đúng sang {{Flux}}) và xử lý hủy khi client ngắt kết nối, dữ liệu cập nhật ổn định. Lỗi ngược lại: dùng {{SharedFlow}} với bộ đệm không giới hạn để phát cho nhiều subscriber nội bộ khi consumer chậm dẫn đến bộ nhớ tăng dần; chuyển sang {{StateFlow}} (chỉ giữ giá trị mới nhất, conflation) hoặc đặt giới hạn bộ đệm/hủy subscriber chậm giúp khống chế bộ nhớ.
+
+### 7. Lỗi hay gặp
+- Flow không có thu nhận thì không chạy (lạnh) — dễ quên collect.
+- Trộn luồng điều khiển (dispatcher) làm mất ngữ cảnh.
+- Dòng nóng không backpressure có thể gây thiếu bộ nhớ (OOM).
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Flow là dòng dữ liệu lạnh Kotlin dựa trên coroutine, backpressure tự nhiên vì {{collect}} là hàm chờ. Reactor là thư viện reactive Java, backpressure rõ ràng qua {{request(n)}}. Trong Spring WebFlux, tôi giữ Reactor ở ranh giới web ({{Mono}}/{{Flux}} từ controller, {{WebClient}}, R2DBC), dùng {{Flow}} trong miền nghiệp vụ (domain) Kotlin, và chuyển bằng {{flow.asFlux()}} ở bộ điều khiển. Tôi không chuyển qua lại nhiều lần trên đường nóng và luôn kiểm thử backpressure bằng tải thực."
+
+> Senior tip: ranh giới rõ — lớp web dùng Reactor, miền nghiệp vụ (domain) dùng {{Flow}}, chuyển ở bộ điều khiển. Đo bộ nhớ và chênh lệch người dùng (lag) bằng tải thực, không chỉ theo thời gian phản hồi một lần.`,
   follow: ['asFlux() có preserve context không?', 'SharedFlow vs Flux.share()?', 'Khi nào dùng StateFlow thay cache?'],
   tags: ['kotlin', 'flow', 'reactor', 'webflux', 'backpressure']
 },
@@ -1094,40 +1202,46 @@ plugins {
   topic: 'kotlin',
   level: 'lead',
   q: '(Lead) Có nên chuyển codebase Java sang Kotlin không? Bạn sẽ quyết định và thực thi thế nào?',
-  a: `**Tóm tắt:** Không big-bang. Quyết định dựa trên business value, team skill, và compatibility. Approach strangler: module mới Kotlin, interop boundary rõ, đo metrics. Giữ Java ở hot path/legacy, Kotlin ở domain mới. Migration là dự án nhiều quý, cần owner và rollback plan.
+  a: `**Tóm tắt:** Không viết lại toàn bộ codebase theo kiểu big-bang. Quyết định chuyển sang Kotlin dựa trên giá trị kinh doanh, kỹ năng team và khả năng tương thích. Dùng chiến lược strangler fig: module mới viết Kotlin, giữ ranh giới interop rõ ràng với Java, đo số liệu. Migration là dự án kéo dài nhiều quý, cần người chủ sở hữu và kế hoạch quay lại.
 
-### 1. Khi nào nên
-- Team đã Kotlin-savvy, codebase cần null safety/coroutine/DSL.
-- Domain mới, API rõ, test tốt.
-- Build tooling sẵn (Gradle, KSP).
+### 1. Khi nào nên chuyển
+- Team đã quen Kotlin, codebase cần null safety, coroutine hay DSL.
+- Miền nghiệp vụ (domain) mới, API rõ ràng, kiểm thử tốt.
+- Công cụ build sẵn (Gradle, KSP).
 
-### 2. Khi nào không
-- Team Java-only, deadline gấp.
-- Legacy framework không hỗ trợ Kotlin tốt.
-- Performance-critical với tooling Java (profilers, agents).
+### 2. Khi nào không nên chuyển
+- Team chỉ biết Java, thời hạn gấp.
+- Framework legacy không hỗ trợ Kotlin tốt.
+- Code quan trọng hiệu năng phụ thuộc công cụ profiling, agent của Java.
 
-### 3. Chiến lược strangler
+### 3. Chiến lược strangler fig
 - Module mới viết Kotlin; module cũ giữ Java.
-- Interop boundary: package/contract rõ, avoid Kotlin-specific trong public API.
-- Convert dần khi touch file (boy scout), không rewrite lớn.
+- Ranh giới interop: gói/hợp đồng rõ, tránh đặc thù Kotlin trong API công khai dùng bởi Java.
+- Chuyển dần khi chạm đến file (boy scout), không viết lại lớn.
 
-### 4. Rủi ro & mitigation
-- Build time tăng (kapt/KSP) → KSP, cache.
-- Mixed codebase complexity → convention, ktlint/detekt.
-- Hiring/onboarding → tài liệu, pair programming.
-- Binary compatibility → careful public API.
+### 4. Rủi ro và cách giảm thiểu
+- Thời gian build tăng do kapt/KSP → ưu tiên KSP, dùng build cache.
+- Codebase hỗn hợp phức tạp hơn → quy ước, ktlint/detekt, kiểm thử interop.
+- Việc tuyển dụng và hòa nhập thành viên mới → tài liệu, lập trình đôi (pair programming).
+- Tương thích nhị phân → cẩn thận thay đổi API công khai.
 
-### 5. Metrics để quyết định mở rộng
-- Lead time, defect escape, build time, p99.
-- Developer satisfaction survey.
-- Rollback capability: module có thể revert.
+### 5. Số liệu để quyết định mở rộng
+- Thời gian đưa ra thị trường (lead time), lỗi lọt qua kiểm thử (defect escape), thời gian build, p99.
+- Khảo sát sự hài lòng của nhà phát triển.
+- Khả năng quay lại: module có thể hoàn tác mà không ảnh hưởng module cũ.
 
-### 6. Pitfall
-- Big-bang rewrite → regression, morale.
-- Kotlin "Java-style" → mất lợi ích.
-- Quên annotation processing → runtime lỗi.
+### 6. Ví dụ đời thực
+Một công ty logistics chuyển module quản lý đơn hàng từ Java sang Kotlin theo kiểu strangler: module mới viết Kotlin, gọi module Java cũ qua API REST. Hai tháng sau, build thời gian tăng 40% do kapt và team gặp lỗi serialize data class do thiếu Jackson module. Dùng KSP thay kapt, thêm jackson-module-kotlin, và giữ kiểm thử integration song song. Khi module Kotlin ổn định, mới chuyển tiếp module kế toán.
 
-> Senior tip: chọn một bounded context có API rõ, chuyển cùng test/observability, so sánh metrics với baseline trước khi scale. Đầu tư build/interop conventions sớm.`,
+### 7. Lỗi hay gặp
+- Viết lại toàn bộ cùng lúc → sai lầm về hồi quy, morale té.
+- Viết Kotlin theo kiểu Java → không tận dụng lợi ích ngôn ngữ.
+- Quên xử lý annotation processing → lỗi chỉ xuất hiện khi chạy thực tế.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Tôi không phê duyệt việc viết lại toàn bộ codebase. Tôi chọn một bounded context có API rõ, viết module mới bằng Kotlin cùng kiểm thử và quan sát, rồi so sánh số liệu với hệ thống Java hiện tại trước khi mở rộng. Ranh giới giữa Java và Kotlin phải rõ ràng, tránh đưa kiểu đặc thù Kotlin vào API công khai. Tôi ưu tiên KSP để build nhanh, giữ khả năng quay lại cho từng module, và không đo thành công bằng số dòng code."
+
+> Senior tip: chọn một bounded context có API rõ, chuyển cùng kiểm thử và quan sát, so sánh số liệu với baseline trước khi quy mô mở rộng. Đầu tư sớm vào công cụ build và quy ước ranh giới Java sẽ rẻ hơn nhiều so với sửa lỗi proxy hay deserialize rải rác sau này.`,
   follow: ['Bạn sẽ chọn module đầu tiên để migrate thế nào?', 'Làm sao đo ROI của migration?', 'Khi nào nên dừng migration?'],
   tags: ['kotlin', 'migration', 'lead', 'strategy']
 },
