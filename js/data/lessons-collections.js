@@ -2116,7 +2116,7 @@ title: Phan trang khong co tie-breaker
 actors: Client | API | DB
 Client -> API: GET /txns?page=1
 API -> DB: ORDER BY amount DESC LIMIT 20
-DB --> API: 20 dong, nhieu dong bang amount
+DB --> API: 20 dòng, nhiều dòng bằng amount
 API --> Client: trang 1
 Client -> API: GET /txns?page=2
 API -> DB: ORDER BY amount DESC LIMIT 20 OFFSET 20
@@ -2194,7 +2194,7 @@ class Ordering {
             List<Player> in = List.of(new Player("z", "A", 50, 0), new Player("a", "B", 50, 0), new Player("m", "A", 50, 0));
             eq("a m z", ids(Ordering.sorted(in)));
         });
-        check("long extremes: khong duoc phep tru", () -> {
+        check("long extremes: không được phép trừ", () -> {
             List<Player> in = new ArrayList<>(List.of(
                     new Player("lo", "A", Long.MIN_VALUE, 0),
                     new Player("hi", "A", Long.MAX_VALUE, 0),
@@ -2243,7 +2243,7 @@ class Ordering {
                 if (ab == 0 && ac != Integer.signum(C.compare(b, c))) throw new AssertionError("tuong duong khong bac cau: " + a.id() + "," + b.id() + "," + c.id());
             }
         });
-        check("20000 phan tu nhieu bang nhau: sort khong nem exception", () -> {
+        check("20000 phần tử nhiều bằng nhau: sort không ném exception", () -> {
             Random rnd = new Random(11);
             List<Player> in = new ArrayList<>();
             for (int i = 0; i < 20000; i++) in.add(new Player(String.format("N%05d", i), "T", rnd.nextInt(3), rnd.nextInt(3)));
@@ -2332,12 +2332,12 @@ class Scheduler {
             eq(9, Scheduler.byPriority(in).get(0).priority());
             eq(before, in);
         });
-        check("extreme int: khong duoc phep tru", () -> {
+        check("extreme int: không được phép trừ", () -> {
             List<Job> in = List.of(j("x", Integer.MIN_VALUE), j("y", Integer.MAX_VALUE), j("z", -1), j("w", 0));
             eq("y w z x", ids(Scheduler.byPriority(in)));
             eq(List.of(), Scheduler.byPriority(List.of()));
         });
-        check("dense rank: khoang cach priority khong tinh den hang", () -> {
+        check("dense rank: khoảng cách priority không tính đến hạng", () -> {
             List<Job> in = List.of(j("h", 100), j("g", 50), j("f", 50), j("e", 1));
             Map<String, Integer> r = Scheduler.rankByPriority(in);
             eq(4, r.size());
@@ -2353,7 +2353,7 @@ class Scheduler {
             List<Job> b = List.of(j("e", 1), j("f", 50), j("g", 50), j("h", 100));
             eq(Scheduler.rankByPriority(a), Scheduler.rankByPriority(b));
         });
-        check("rank voi priority am, dau vao rong va mot job", () -> {
+        check("rank với priority âm, đầu vào rỗng và một job", () -> {
             eq(Map.of(), Scheduler.rankByPriority(List.of()));
             eq(Map.of("only", 1), Scheduler.rankByPriority(List.of(j("only", -5))));
             Map<String, Integer> r = Scheduler.rankByPriority(List.of(j("p", Integer.MIN_VALUE), j("q", -1), j("s", Integer.MAX_VALUE)));
