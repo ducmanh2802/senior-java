@@ -357,3 +357,21 @@ Mỗi kịch bản đưa người học đi trọn một tính năng thật. **B
   tags: ['…'] }
 ```
 Các giai đoạn phải nối nhau: số liệu, tên service, quyết định ở bước trước được dùng lại ở bước sau; lỗi ở `bugfix` phải bắt nguồn từ một quyết định/giả định ở các bước trước.
+
+## 17. Sửa bug thật: `window.BUGS` (`js/data/bugs.js`, view `#/bugs`)
+
+Mỗi bài mô phỏng một **bug nghiêm trọng trên production** của một dự án thật: người học đọc sự cố và artifact, chạy test để thấy bug, sửa code, viết RCA (AI chấm), rồi xem đáp án. **Bài mẫu: `bug-001`; đọc kỹ trước khi viết.**
+```js
+{ id: 'bug-009', title, domain: 'Ví điện tử / Fintech', level: 'mid|senior|lead', severity: 'P1|P2|P3', minutes: 20,
+  story: `markup ≥ 300 ký tự: bối cảnh dự án, sự cố có số liệu, nhiệm vụ`,
+  artifacts: [{ name, lang: 'text|java|sql|yaml|json|bash', content }],   // log, jstack, APM trace… giống thật, khớp với code
+  starter: 'Java: code dự án ĐANG LỖI, biên dịch được; phần hạ tầng ghi rõ "KHÔNG cần sửa"',
+  tests: 'public class Main { … tái hiện bug, in PASS/FAIL, cuối cùng RESULT passed/total; System.exit(0) nếu có thread }',
+  reference: 'Java: code đã sửa, pass 100% test',
+  hints: ['≥ 2, tăng dần'], rootCause: `markup: nguyên nhân gốc + dẫn chứng trích từ artifact`,
+  fix: `markup ≥ 800 ký tự: cách sửa, trên production thật, so sánh, phòng ngừa, liên hệ phỏng vấn`,
+  related: ['id câu hỏi có thật'], tags: ['…'] }
+```
+- Test phải **tái hiện bug một cách xác định** (dùng latch/barrier, fake repository đếm query, `Clock`/`Instant` cố định…), không dựa vào may rủi.
+- Chạy `node scripts/test-bugs.js`: reference pass hết (≥ 3 test), starter biên dịch được và **không** pass hết. Và `node scripts/validate.js` → OK.
+- Cùng quy tắc code như bài tập bài học (mục 12): chỉ JDK chuẩn, không class public ngoài `Main`, biên dịch được với Java 17.

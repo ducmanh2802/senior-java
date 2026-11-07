@@ -37,6 +37,7 @@
       glossary: ['glossary-dist.js', 'glossary-java.js', 'glossary-infra.js'],
       projects: ['projects.js'],
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
+      bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
       aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js'],
     },
@@ -67,16 +68,17 @@
       projects: ['projects', 'lessons', 'questions', 'glossary'],
       career: ['questions', 'companies'],
       sdlc: ['sdlc'],
+      bugs: ['bugs', 'questions', 'glossary'],               // related-questions widget
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
     },
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs', 'bugs'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)
-    prefetch: ['index', 'questions', 'glossary', 'lessons', 'algos', 'quiz', 'exams', 'companies', 'sd', 'drills', 'labs', 'projects', 'sdlc', 'aws'],
+    prefetch: ['index', 'questions', 'glossary', 'lessons', 'algos', 'quiz', 'exams', 'companies', 'sd', 'drills', 'labs', 'projects', 'sdlc', 'aws', 'bugs'],
   };
   /** Groups a resolved view needs: needsFor('legal', 'privacy') → routes['legal/privacy'] ?? routes.legal ?? []. */
   M.needsFor = function (view, param) {

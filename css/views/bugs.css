@@ -1,0 +1,29 @@
+/* View "bugs" (#/bugs) — every selector scoped to .view-bugs; colours via tokens only. */
+.view-bugs .bg-how p { margin: 0 0 10px; }
+.view-bugs .bg-filter { margin: 14px 0; align-items: center; }
+.view-bugs .bg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.view-bugs .bg-card { display: flex; flex-direction: column; gap: 6px; color: inherit; text-decoration: none; }
+.view-bugs .bg-card h3 { margin: 4px 0 0; font-size: 1.02rem; line-height: 1.35; }
+.view-bugs .bg-card p { margin: 0; }
+.view-bugs .bg-card-top, .view-bugs .bg-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.view-bugs .bg-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; padding-top: 6px; }
+.view-bugs .bg-tag { font-size: .75rem; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--text); }
+.view-bugs .bg-h { font-size: 1.05rem; margin: 0 0 10px; }
+.view-bugs section.card, .view-bugs .bg-answer .card { margin-bottom: 14px; }
+.view-bugs .bg-artifact { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; background: var(--bg); }
+.view-bugs .bg-artifact summary { cursor: pointer; padding: 8px 12px; font-weight: 600; }
+.view-bugs .bg-pre { margin: 0; padding: 10px 12px; overflow: auto; max-height: 360px; font-family: var(--mono, 'JetBrains Mono', monospace); font-size: .8rem; line-height: 1.5; white-space: pre; }
+.view-bugs .bg-editor { width: 100%; min-height: 420px; font-family: var(--mono, 'JetBrains Mono', monospace); font-size: .84rem; line-height: 1.5; tab-size: 4; white-space: pre; overflow: auto; resize: vertical; }
+.view-bugs .bg-actions { margin-top: 10px; flex-wrap: wrap; gap: 8px; align-items: center; }
+.view-bugs .bg-hints { margin-top: 10px; display: grid; gap: 6px; }
+.view-bugs .bg-hint { padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 6px; }
+.view-bugs .bg-result { margin-top: 12px; }
+.view-bugs .bg-pass { font-weight: 600; color: var(--ok); margin-top: 8px; }
+.view-bugs .bg-rca .textarea { width: 100%; }
+.view-bugs .bg-rca .row { margin-top: 8px; }
+.view-bugs .bg-rca-result { margin-top: 10px; }
+.view-bugs .bg-answer { margin-top: 14px; }
+@media (max-width: 600px) {
+  .view-bugs .bg-editor { min-height: 320px; font-size: .78rem; }
+  .view-bugs .bg-grid { grid-template-columns: 1fr; }
+}

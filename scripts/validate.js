@@ -46,6 +46,7 @@ for (const f of files) {
   (sandbox.window.QUIZ || []).slice(zBefore).forEach(q => { q.__file = f; });
   (sandbox.window.ALGOS || []).forEach(q => { q.__file = q.__file || f; });
   (sandbox.window.LABS || []).forEach(q => { q.__file = q.__file || f; });
+  (sandbox.window.BUGS || []).forEach(q => { q.__file = q.__file || f; });
   (sandbox.window.LESSONS || []).forEach(q => { q.__file = q.__file || f; });
 }
 
@@ -234,6 +235,33 @@ for (const z of sandbox.window.LABS || []) {
   const allowed = new Set(['id', 'category', 'title', 'level', 'scenario', 'artifacts', 'questions', 'hints', 'answer', 'rubric', 'tags', '__file']);
   Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
   ['scenario', 'answer'].forEach(k => checkMarkup(f, id, k, z[k]));
+}
+
+// ---- bug hunt (AGENTS.md section 17; runtime check: node scripts/test-bugs.js) ----
+const seenBug = new Set();
+const allQids = new Set((sandbox.window.QUESTIONS || []).map(q => q.id));
+for (const z of sandbox.window.BUGS || []) {
+  const f = z.__file || 'bugs', id = z.id || '(no id)';
+  if (!/^bug-\d{3}$/.test(z.id || '') || seenBug.has(z.id)) err(f, `bug id thiếu/trùng/sai dạng bug-NNN: ${id}`);
+  seenBug.add(z.id);
+  if (!LEVELS.has(z.level)) err(f, `${id}: level phải là mid|senior|lead`);
+  if (!['P1', 'P2', 'P3'].includes(z.severity)) err(f, `${id}: severity phải là P1|P2|P3`);
+  if (!Number.isInteger(z.minutes) || z.minutes < 5 || z.minutes > 120) err(f, `${id}: minutes phải là số nguyên 5..120`);
+  ['title', 'domain', 'story', 'starter', 'tests', 'reference', 'rootCause', 'fix'].forEach(k => { if (!z[k] || typeof z[k] !== 'string') err(f, `${id}: thiếu ${k}`); });
+  if (typeof z.story === 'string' && z.story.length < 300) err(f, `${id}: story cần ≥ 300 ký tự (bối cảnh + sự cố + số liệu)`);
+  if (typeof z.fix === 'string' && z.fix.length < 800) err(f, `${id}: fix cần ≥ 800 ký tự (cách sửa, production, phòng ngừa)`);
+  if (typeof z.tests === 'string' && !/public\s+class\s+Main\b/.test(z.tests)) err(f, `${id}: tests phải có public class Main`);
+  if (typeof z.tests === 'string' && !/RESULT/.test(z.tests)) err(f, `${id}: tests phải in "RESULT passed/total"`);
+  if (z.starter === z.reference) err(f, `${id}: starter và reference giống hệt nhau`);
+  if (!Array.isArray(z.hints) || z.hints.length < 2) err(f, `${id}: cần ≥ 2 hints`);
+  (z.artifacts || []).forEach((a, i) => {
+    if (!a || !a.name || !['text', 'java', 'sql', 'yaml', 'json', 'bash'].includes(a.lang) || typeof a.content !== 'string' || a.content.length < 80) err(f, `${id}.artifacts[${i}]: cần name, lang hợp lệ, content ≥ 80 ký tự`);
+  });
+  (z.related || []).forEach(q => { if (!allQids.has(q)) err(f, `${id}: related "${q}" không có trong ngân hàng câu hỏi`); });
+  const allowed = new Set(['id', 'title', 'domain', 'level', 'severity', 'minutes', 'story', 'artifacts', 'starter', 'tests', 'reference', 'hints', 'rootCause', 'fix', 'related', 'tags', '__file']);
+  Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
+  ['story', 'rootCause', 'fix'].forEach(k => checkMarkup(f, id, k, z[k]));
+  (z.hints || []).forEach((x, i) => checkMarkup(f, id, `hints[${i}]`, x));
 }
 
 // ---- lessons (AGENTS.md section 12) ----
