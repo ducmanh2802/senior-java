@@ -130,7 +130,7 @@ Ví dụ: rules = [{{"T T D", "T F F", "T T T"}}] → kết quả = [{{"T T T", 
         catch (IllegalArgumentException e) { thrown = "iae"; }
         catch (Exception e) { thrown = "sai loai: " + e.getClass().getSimpleName(); }
         check("min >= max nem IllegalArgumentException", "iae".equals(thrown), thrown);
-        check("D duoc dien bang T", TestDesign.expandRules(List.of("T T D", "T F F")).equals(List.of("T T T", "T F F")),
+        check("D được điền bằng T", TestDesign.expandRules(List.of("T T D", "T F F")).equals(List.of("T T T", "T F F")),
             "got " + TestDesign.expandRules(List.of("T T D", "T F F")));
         check("loai hang trung giu lan dau", TestDesign.expandRules(List.of("T D F", "T T F", "D D D")).equals(List.of("T T F", "T T T")),
             "got " + TestDesign.expandRules(List.of("T D F", "T T F", "D D D")));
@@ -138,7 +138,7 @@ Ví dụ: rules = [{{"T T D", "T F F", "T T T"}}] → kết quả = [{{"T T T", 
             "got " + TestDesign.expandRules(List.of("F T", "T F")));
         check("toan D thanh 1 hang day T", TestDesign.expandRules(List.of("D D D")).equals(List.of("T T T")),
             "got " + TestDesign.expandRules(List.of("D D D")));
-        check("so hang bang so rule khong trung", TestDesign.expandRules(List.of("T D", "D T", "F F", "T T")).size() == 2,
+        check("số hàng bằng số rule không trùng", TestDesign.expandRules(List.of("T D", "D T", "F F", "T T")).size() == 2,
             "got " + TestDesign.expandRules(List.of("T D", "D T", "F F", "T T")));
         System.out.println("RESULT " + passed + "/" + total);
     }
@@ -369,11 +369,11 @@ final class Locator {
         List<DomNode> chain = Locator.css(root, "div#app form.login #submit");
         check("chuoi 3 segment", chain.size() == 1 && chain.get(0) == submit, "got " + chain.size());
         List<DomNode> none = Locator.css(root, "form a");
-        check("khong co thi tra danh sach rong", none.isEmpty(), "got " + none.size());
+        check("không có thì trả danh sách rỗng", none.isEmpty(), "got " + none.size());
         List<DomNode> footBtn = Locator.css(root, "footer .btn");
         check("pham vi bi cha gioi han", footBtn.size() == 1 && footBtn.get(0) == support, "got " + footBtn.size());
         List<DomNode> links = Locator.css(root, "body div .menu a");
-        check("descendant nhieu tang khong ke node chinh",
+        check("descendant nhiều tầng không kể node chính",
             links.size() == 2 && links.get(0) == homeLink && links.get(1) == teamLink, "got " + links.size());
         System.out.println("RESULT " + passed + "/" + total);
     }
@@ -607,7 +607,7 @@ Hỏi: "Test của bạn ổn định bằng gì?" — đừng trả lời "em �
 ~~~text
 poll tai elapsed 0 -> chua dat? -> advance(every) -> neu elapsed > atMost: throw WaitTimeoutException
 poll -> chua dat? -> advance -> ...
-dat thi: tra value ngay (khong advance them)
+đạt thì: trả value ngay (không advance thêm)
 ~~~
 
 Quy tắc chính xác:
@@ -704,7 +704,7 @@ final class FluentWait {
         AtomicInteger n6 = new AtomicInteger();
         String v6 = new FluentWait(c6).atMost(5000).every(200).ignoring(StaleException.class)
             .until(() -> { if (n6.incrementAndGet() == 1) throw new DetachedException(); return "sub"; });
-        check("lop con cua exception duoc ignore cung", "sub".equals(v6) && n6.get() == 2 && c6.now() == 200,
+        check("lớp con của exception được ignore cũng", "sub".equals(v6) && n6.get() == 2 && c6.now() == 200,
             "calls=" + n6.get() + " now=" + c6.now());
 
         FakeClock c7 = new FakeClock();
@@ -903,7 +903,7 @@ void loginSuccess() {
 
 ### PageFactory và @FindBy: đã deprecated
 ~~~java
-// KIEU CU (Selenium 2/3) — KHONG nen dung nua:
+// KIỂU CŨ (Selenium 2/3) — KHÔNG nên dùng nữa:
 public class LoginPage {
     @FindBy(id = "username") private WebElement userInput;    // proxied, chi tim khi cham den
     public LoginPage(WebDriver driver) { PageFactory.initElements(driver, this); }
@@ -1076,7 +1076,7 @@ final class DashboardPage extends Page {
     public static void main(String[] args) {
         MiniBrowser b1 = new MiniBrowser();
         Page d1 = new LoginPage(b1).type("bean").password("secret123").clickLogin();
-        check("login dung -> DashboardPage", d1 instanceof DashboardPage, "nhan: " + d1.getClass().getSimpleName());
+        check("login đúng -> DashboardPage", d1 instanceof DashboardPage, "nhan: " + d1.getClass().getSimpleName());
         check("dashboard xin chao dung user va doi url",
             d1 instanceof DashboardPage && ((DashboardPage) d1).welcome().equals("Xin chào bean")
                 && b1.currentUrl().equals("/dashboard"), "welcome=" + b1.welcome() + " url=" + b1.currentUrl());
@@ -1107,12 +1107,12 @@ final class DashboardPage extends Page {
         LoginPage lp5 = new LoginPage(b5);
         lp5.type("bean").password("bad").clickLogin();
         Page d5 = lp5.type("bean").password("secret123").clickLogin();
-        check("login lai dung thi error cu duoc xoa",
+        check("login lại đúng thì error cũ được xoá",
             d5 instanceof DashboardPage && lp5.error().isEmpty(), "error=" + b5.error());
 
         MiniBrowser b6 = new MiniBrowser();
         Page p6 = new LoginPage(b6).type("").password("").clickLogin();
-        check("bo trong khong duoc phep vung dashboard",
+        check("bỏ trống không được phép vượt dashboard",
             p6 instanceof LoginPage && b6.currentUrl().equals("/login") && b6.error().equals("Sai mật khẩu"),
             "url=" + b6.currentUrl() + " error=" + b6.error());
 
@@ -1307,7 +1307,7 @@ class SearchSmokeTest {
         browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true));
     }
 
-    @BeforeEach void openPage() {              // chay truoc tung @Test
+    @BeforeEach void openPage() {              // chạy trước từng @Test
         context = browser.newContext();        // context moi = cookie/localStorage/storageState rieng
         page = context.newPage();
     }
@@ -1347,7 +1347,7 @@ Trả lời phỏng vấn kiểu "team bạn dùng gì": nói **JUnit 5 cho unit
 Thay vì viết 6 test giống nhau, viết **một** test và cho nó chạy trên bảng dữ liệu.
 
 ~~~java
-@ParameterizedTest(name = "{0} + {1} = {2}")        // ten ca kiem thu hien thi trong bao cao
+@ParameterizedTest(name = "{0} + {1} = {2}")        // tên ca kiểm thử hiển thị trong báo cáo
 @CsvSource({
     "1, 2, 3",
     "10, 20, 30",
@@ -1368,7 +1368,7 @@ void loginFlow(LoginCase c) {
 static Stream<LoginCase> loginCases() {                // ten phuong tien khop voi @MethodSource("loginCases")
     return Stream.of(
         new LoginCase("bean", "secret123", false),
-        new LoginCase("ghost", "secret123", true));    // LoginCase la record hoac POJO cua team
+        new LoginCase("ghost", "secret123", true));    // LoginCase là record hoặc POJO của team
 }
 ~~~
 
@@ -1479,7 +1479,7 @@ Ràng buộc: chỉ dùng JDK, hàm static, không đọc file, không dùng th�
             List<Map<String, String>> rs = TestTable.rows(CSV);
             return rs.size() == 3 && new ArrayList<>(rs.get(0).keySet()).equals(List.of("user", "pass", "expect"));
         });
-        check("rows dau phay trong ngoac kep khong tach cot", () -> TestTable.rows(CSV).get(1).get("pass").equals("pa,ss"));
+        check("rows dấu phẩy trong ngoặc kép không tách cột", () -> TestTable.rows(CSV).get(1).get("pass").equals("pa,ss"));
         check("rows gia tri duoc cat khoang trang hai dau", () -> TestTable.rows("k1, k2\\n  v1 , v2  ").get(0).get("k2").equals("v2"));
         check("rows hai dau nhay kep la mot dau nhay that", () ->
             TestTable.rows("note\\n\\"say \\"\\"hi\\"\\"\\"").get(0).get("note").equals("say \\"hi\\""));
@@ -1490,7 +1490,7 @@ Ràng buộc: chỉ dùng JDK, hàm static, không đọc file, không dùng th�
             Map<String, String> row = TestTable.rows(CSV).get(0);
             return TestTable.render("login {user} (expect {expect})", row).equals("login bean (expect ok)");
         });
-        check("render cot khong ton tai nem IAE dung message", () -> {
+        check("render cột không tồn tại ném IAE đúng message", () -> {
             try {
                 TestTable.render("{nope}", Map.of("user", "bean"));
                 return false;
@@ -1505,7 +1505,7 @@ Ràng buộc: chỉ dùng JDK, hàm static, không đọc file, không dùng th�
         check("run exception cua check thanh FAIL kem message", () ->
             TestTable.run("user\\nbean", "{user}", row -> { throw new IllegalStateException("boom"); })
                 .equals(List.of("FAIL bean: boom")));
-        check("run exception khong co message dung ten class", () -> {
+        check("run exception không có message dùng tên class", () -> {
             List<String> rep = TestTable.run("user\\nbean", "{user}", row -> { throw new NullPointerException(); });
             return rep.equals(List.of("FAIL bean: NullPointerException"));
         });
@@ -1688,7 +1688,7 @@ Tỉ lệ thực tế của một suite khỏe: **~70% API, ~25% unit của dev,
 
 ### given / when / then: đọc như một câu tiếng Anh
 ~~~java
-// REST Assured 5.x (io.restassured:rest-assured) — doc de hieu, khong chay duoc trong trinh duyet
+// REST Assured 5.x (io.restassured:rest-assured) — đọc để hiểu, không chạy được trong trình duyệt
 import static io.restassured.RestAssured.*;
 import static org.hamcrest.Matchers.*;
 
@@ -1749,7 +1749,7 @@ Order Service --> API Gateway: 201 { id: 4217 }
 API Gateway --> Test: 201 va header Location
 Test -> API Gateway: DELETE /orders/4217 o AfterEach
 API Gateway -> Database: delete hoac soft delete
-note Test..Database: id duoc lay bang extract, khong hard-code
+note Test..Database: id lấy bằng extract, không hard-code
 ~~~
 
 Nguyên tắc dữ liệu test (SDET bị hỏi câu này liên tục):
@@ -1776,10 +1776,10 @@ String token = String.valueOf(payload.get("token"));                // token dun
 
 Browser browser = playwright.chromium().launch();
 BrowserContext fresh = browser.newContext();
-// Luu cookie + localStorage cua ngay sau login de tai dung cho moi test UI
+// Lưu cookie + localStorage của ngay sau login để tái dùng cho mọi test UI
 fresh.storageState(new BrowserContext.StorageStateOptions().setPath(Paths.get("auth.json")));
 
-// Test UI bat ky: mo context dung nap san session, khong can login qua giao dien
+// Test UI bất kỳ: mở context dùng nạp sẵn session, không cần login qua giao diện
 BrowserContext reused = browser.newContext(
     new Browser.NewContextOptions().setStorageStatePath(Paths.get("auth.json")));
 Page page = reused.newPage();
@@ -2058,11 +2058,11 @@ final class Then {
         return s;
     }
     public static void main(String[] args) {
-        check("statusCode khop thi khong nem loan", () -> failMessage(() ->
+        check("statusCode khớp thì không ném loạn", () -> failMessage(() ->
             Rest.given(app()).when().get("/books").statusCode(200)).isEmpty());
         check("statusCode lech nem AssertionError dung message", () -> failMessage(() ->
             Rest.given(app()).when().get("/books").statusCode(201)).equals("statusCode: expected 201 but was 200"));
-        check("extract lay duoc gia tri long trong cay", () ->
+        check("extract lấy được giá trị lồng trong cây", () ->
             Rest.given(app()).when().get("/books").extract("data.items[1].title").equals("Design Data Intensive"));
         check("nhieu matcher noi chuoi deu pass", () -> failMessage(() -> Rest.given(app()).when().get("/books")
             .statusCode(200)
@@ -2074,7 +2074,7 @@ final class Then {
         check("index vuot mang tra null va that bai co message", () -> failMessage(() -> Rest.given(app())
             .when().get("/books").body("data.items[5].title", M.notNullValue()))
             .equals("data.items[5].title: expected notNullValue but was null"));
-        check("key khong ton tai va khong phai map deu ra null", () -> {
+        check("key không tồn tại và không phải map đều ra null", () -> {
             Object a = Rest.given(app()).when().get("/books").extract("data.missing.x");
             Object b = Rest.given(app()).when().get("/books").extract("total.length[0]");
             Object c = Rest.given(app()).when().get("/books").extract("[0].id");
@@ -2089,7 +2089,7 @@ final class Then {
                 && failMessage(() -> t.body("echo", M.containsString("Effective"))).isEmpty()
                 && failMessage(() -> t.header("Location", M.equalTo("/books/99"))).isEmpty();
         });
-        check("header khong co trong response that bai voi label header", () -> failMessage(() -> Rest.given(app())
+        check("header không có trong response thất bại với label header", () -> failMessage(() -> Rest.given(app())
             .when().get("/books").header("X-Missing", M.notNullValue()))
             .equals("header X-Missing: expected notNullValue but was null"));
         check("khong co route 404, sai phuong thuc 405", () ->
@@ -2405,7 +2405,7 @@ Feature: Voucher at check-out
   Background:
     Given the shop has product "Ao" priced 200000 VND
 
-  Scenario: Voucher het han khong ap dung duoc
+  Scenario: Voucher hết hạn không áp dụng được
     Given the customer has a voucher "XMAS24" expired on 2024-01-01
     When the customer applies voucher "XMAS24" at check-out
     Then the order total is 200000 VND
@@ -2679,7 +2679,7 @@ final class Steps {
             StepMatch m = cart().match("Then I have 3 apples");
             return "defined".equals(m.status()) && m.args().equals(List.of(3)) && m.candidates().isEmpty();
         });
-        check("int am duoc khop va doi duoc kieu", () -> cart().match("I have -2 apples").args().equals(List.of(-2)));
+        check("int âm được khớp và đổi được kiểu", () -> cart().match("I have -2 apples").args().equals(List.of(-2)));
         check("string boc nhay kep bi lo nhay khi truyen", () ->
             login().match("Given user " + Q + "bean" + Q + " logs in").args().equals(List.of("bean")));
         check("string rong cho ra chuoi rong", () ->
@@ -2695,12 +2695,12 @@ final class Steps {
             Steps s = new Steps().add("the cart is empty", a -> "empty:" + a.size());
             return s.match("Given the cart is empty").args().isEmpty() && "empty:0".equals(s.run("Given the cart is empty"));
         });
-        check("ky tu dac biet cua regex duoc khop nguyen van", () -> {
+        check("ký tự đặc biệt của regex được khớp nguyên văn", () -> {
             Steps s = new Steps().add("cost is 3.5 USD", REC);
             return "defined".equals(s.match("Then cost is 3.5 USD").status())
                 && "undefined".equals(s.match("Then cost is 3x5 USD").status());
         });
-        check("khop toan bo dong khong phai chuoi con", () -> "undefined".equals(cart().match("I have 3 apples today").status()));
+        check("khớp toàn bộ dòng không phải chuỗi con", () -> "undefined".equals(cart().match("I have 3 apples today").status()));
         check("undefined thi match bao undefined con run nem UndefinedStepException", () -> {
             String e = msg(() -> cart().run("Then I fly away"));
             return "undefined".equals(cart().match("Then I fly away").status())
@@ -2719,7 +2719,7 @@ final class Steps {
             String e = msg(() -> ambiguous().run("take -5 coins"));
             return e.startsWith("AmbiguousStepException:") && e.contains("khop voi 2 dinh nghia");
         });
-        check("run tra ve ket qua cua step body duoc khop", () -> cart().run("Then I have 3 apples").equals("call[3]"));
+        check("run trả về kết quả của step body được khớp", () -> cart().run("Then I have 3 apples").equals("call[3]"));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
@@ -3023,11 +3023,11 @@ BrowserContext context = browser.newContext(new Browser.NewContextOptions()
 Page page = context.newPage();
 page.goto("https://shop.test/checkout");
 
-// Trong @AfterEach: chi khi fail moi lay bang chung (bao cao ngan hon va de doc hon)
+// Trong @AfterEach: chỉ khi fail mới lấy bằng chứng (báo cáo ngắn hơn và dễ đọc hơn)
 if (testFailed) {
     page.screenshot(new Page.ScreenshotOptions()
             .setPath(java.nio.file.Paths.get("artifacts/fail-" + testName + ".png"))
-            .setFullPage(true));                      // full-page: cuon het chieu cao, khong chi man hinh trong
+            .setFullPage(true));                      // full-page: cuộn hết chiều cao, không chỉ màn hình trong
     page.locator("#cart").screenshot();               // hoac chi chup vung nghi van
 }
 ~~~
@@ -3041,11 +3041,11 @@ import io.qameta.allure.Allure;
 import io.qameta.allure.Attachment;
 import io.qameta.allure.Step;
 
-@Step("Dang nhap bang tai khoan {0}")            // {0} = tham so thu nhat, hien tren bao cao
+@Step("Dang nhap bang tai khoan {0}")            // {0} = tham số thứ nhất, hiện trên báo cáo
 void login(String user) {
     page.fill("#user", user);
     page.fill("#pass", "pwd");
-    Allure.addAttachment("Request body", "{\\"user\\": \\"" + user + "\\"}");   // du lieu debug, phai mask secret
+    Allure.addAttachment("Request body", "{\\"user\\": \\"" + user + "\\"}");   // dữ liệu debug, phải mask secret
 }
 
 @Attachment(value = "Man hinh khi fail", type = "image/png")
@@ -3096,7 +3096,7 @@ Test -> Allure: ghi JSON moi buoc, attachment
 CI -> XML: doc so failures/errors/skipped
 CI --> CI: cong boom, gan label bug hay flaky
 Allure --> CI: html report + artifact
-note Test..Allure: fail phai ke duoc loi dau, khong chi "3 failed"
+note Test..Allure: fail phải kể được lỗi đầu, không chỉ "3 failed"
 ~~~
 
 ### Bốn lỗi hay gặp trên production
@@ -3129,7 +3129,7 @@ note Test..Allure: fail phai ke duoc loi dau, khong chi "3 failed"
 ~~~text
 3 fail:
   - status: expected 200 but was 500
-  - token: khong duoc null
+  - token: không được null
   - role: expected admin but was guest
 ~~~
 
@@ -3254,7 +3254,7 @@ final class JUnitXml {
             """;
 
     public static void main(String[] args) {
-        t("check dung khong gom loi", () -> {
+        t("check đúng không gom lỗi", () -> {
             SoftAssert s = new SoftAssert();
             s.check(true, "khong co gi sai");
             eq(s.pending(), 0);
@@ -3275,7 +3275,7 @@ final class JUnitXml {
             return s.errors().equals(Arrays.asList("status: expected 200 but was 500"));
         });
 
-        t("equal bang nhau khong gom loi", () -> {
+        t("equal bằng nhau không gom lỗi", () -> {
             SoftAssert s = new SoftAssert();
             s.equal("OK", "OK", "state");
             s.equal(10, 10, "tong");
@@ -3289,13 +3289,13 @@ final class JUnitXml {
             return s.errors().equals(Arrays.asList("body: expected abc but was null", "khach: expected null but was abc"));
         });
 
-        t("notNull voi gia tri null bao dung cu phap", () -> {
+        t("notNull với giá trị null báo đúng cú pháp", () -> {
             SoftAssert s = new SoftAssert();
             s.notNull(null, "token");
             return s.errors().equals(Arrays.asList("token: khong duoc null"));
         });
 
-        t("notNull co gia tri khong gom loi", () -> {
+        t("notNull có giá trị không gom lỗi", () -> {
             SoftAssert s = new SoftAssert();
             s.notNull("", "token");
             s.notNull(0, "dem");
@@ -3341,13 +3341,13 @@ final class JUnitXml {
             try {
                 s.assertAll();
             } catch (AssertionError ignored) {
-                // bao cao da di, trang thai phai duoc don de test sau dung lai
+                // báo cáo đã đi, trạng thái phải được dọn để test sau dùng lại
             }
             eq(s.pending(), 0);
             return s.errors().isEmpty();
         });
 
-        t("assertAll im lang khi khong co loi", () -> {
+        t("assertAll im lặng khi không có lỗi", () -> {
             SoftAssert s = new SoftAssert();
             s.check(true, "a");
             s.assertAll();
@@ -3355,7 +3355,7 @@ final class JUnitXml {
             return s.pending() == 0;
         });
 
-        t("dung lai duoc sau khi da bao cao", () -> {
+        t("dùng lại được sau khi đã báo cáo", () -> {
             SoftAssert s = new SoftAssert();
             s.check(false, "a");
             try {
@@ -3372,7 +3372,7 @@ final class JUnitXml {
             }
         });
 
-        t("nam loi thi message co nam dong", () -> {
+        t("năm lỗi thì message có năm dòng", () -> {
             SoftAssert s = new SoftAssert();
             for (int i = 1; i <= 5; i++) s.check(false, "loi " + i);
             try {
@@ -3418,7 +3418,7 @@ final class JUnitXml {
             return m.get("suites") == 2;
         });
 
-        t("thieu tests thi dem so testcase trong suite", () -> {
+        t("thiếu tests thì đếm số testcase trong suite", () -> {
             Map<String, Integer> m = JUnitXml.summary(NOATTR);
             eq(m.get("tests"), 3);
             eq(m.get("failures"), 0);
@@ -3751,7 +3751,7 @@ public final class PlaywrightHolder {
         Browser b = BROWSER.get();
         if (b != null) { b.close(); BROWSER.remove(); }
         Playwright p = PW.get();
-        if (p != null) { p.close(); PW.remove(); }   // REMOVE: thread CI duoc dung lai!
+        if (p != null) { p.close(); PW.remove(); }   // REMOVE: thread CI được dùng lại!
     }
 }
 ~~~
@@ -3874,7 +3874,7 @@ Hai cái bẫy mà test sẽ bắt: (a) nếu pool giữ **một** driver dùng 
 
 ~~~text
 thread main   : acquire -> FakeDriver#1, acquire -> FakeDriver#1 (object y het)
-thread worker-3: acquire -> FakeDriver#2   (khong bao gio duoc #1)
+thread worker-3: acquire -> FakeDriver#2   (không bao giờ được #1)
 quit tren worker-3: #2 closed, live() = 1
 ~~~`,
       starter: `final class FakeDriver {
@@ -3986,7 +3986,7 @@ final class BrowserPool {
             return p.created() == 2 && p.live() == 1;
         });
 
-        t("quit khong co driver thi im lang", () -> {
+        t("quit không có driver thì im lặng", () -> {
             BrowserPool p = new BrowserPool();
             p.quit();
             p.quit();
@@ -3997,7 +3997,7 @@ final class BrowserPool {
             return p.live() == 1;
         });
 
-        t("thread khac khong nhin thay driver cua main", () -> {
+        t("thread khác không nhìn thấy driver của main", () -> {
             BrowserPool p = new BrowserPool();
             FakeDriver mine = p.acquire();
             AtomicReference<FakeDriver> seenCurrent = new AtomicReference<>();
@@ -4044,7 +4044,7 @@ final class BrowserPool {
             return b.created() == 1;
         });
 
-        t("8 thread x 50 lan khong ai dung chung driver", () -> {
+        t("8 thread x 50 lần không ai dùng chung driver", () -> {
             BrowserPool p = new BrowserPool();
             ExecutorService ex = Executors.newFixedThreadPool(8);
             List<Future<long[]>> futures = new ArrayList<>();
@@ -4092,7 +4092,7 @@ final class BrowserPool {
             return p.live() == 0;
         });
 
-        t("driver cua worker mang id cua chinh worker do", () -> {
+        t("driver của worker mang id của chính worker đó", () -> {
             BrowserPool p = new BrowserPool();
             ExecutorService ex = Executors.newFixedThreadPool(2);
             List<Future<long[]>> futures = new ArrayList<>();
@@ -4299,13 +4299,13 @@ Khai báo ở {{src/test/resources/junit-platform.properties}}:
 
 ~~~properties
 junit.jupiter.execution.parallel.enabled = true
-# class nay duoc chay song song voi class khac
+# class này được chạy song song với class khác
 junit.jupiter.execution.parallel.mode.default = concurrent
 junit.jupiter.execution.parallel.mode.classes.default = concurrent
 # mo rong: 2 thread / nhan, tran 16
 junit.jupiter.execution.parallel.config.strategy = dynamic
 junit.jupiter.execution.parallel.config.dynamic.factor = 2
-# cho test cung class dung mot instance (can cho @BeforeAll/@AfterAll khong static)
+# cho test cùng class dùng một instance (cần cho @BeforeAll/@AfterAll không static)
 junit.jupiter.testinstance.lifecycle.default = per_class
 ~~~
 
@@ -4331,7 +4331,7 @@ jobs:
       # Image cua Microsoft: co san Chromium/Firefox/WebKit + ffmpeg + dependency he thong
       image: mcr.microsoft.com/playwright/java:v1.47.0-noble
     strategy:
-      fail-fast: false           # shard nay hong khong dung cac shard khac
+      fail-fast: false           # shard này hỏng không dừng các shard khác
       matrix:
         shard: [1, 2, 3, 4]
     env:
@@ -4388,7 +4388,7 @@ durations: A 50s, B 40s, C 30s, D 25s, E 20s, F 5s     shards = 2
   E -> S2            S2=[B,C,E]    luu S1=75  S2=90
   F -> S1            S1=[A,D,F]    luu S1=80  S2=90
 
-makespan = 90 (so voi chia theo so luong A,B,C | D,E,F thi 120)
+makespan = 90 (so với chia theo số lượng A,B,C | D,E,F thì 120)
 ~~~
 
 Cần **dữ liệu thời lượng lịch sử**: lấy từ JUnit XML (mỗi {{<testcase time="4.7">}}) hoặc từ báo cáo CI, tích lũy trung bình trượt 10 lần chạy gần nhất để không bị một lần chạy bất thường làm lệch. Test mới chưa có lịch sử: cho một giá trị mặc định (trung vị của suite), đừng cho 0 — nếu không nó bị xếp dồn hết vào một shard.
@@ -4424,7 +4424,7 @@ Cần **dữ liệu thời lượng lịch sử**: lấy từ JUnit XML (mỗi {
 Ví dụ với {{a=5, b=3, c=2, d=2}} và {{shards = 2}}:
 
 ~~~text
-thu tu giam dan: a(5), b(3), c(2), d(2)   (c dung hoa voi d nen c di truoc)
+thứ tự giảm dần: a(5), b(3), c(2), d(2)   (c đụng hoà với d nên c đi trước)
 a -> shard 0            [a]      luu 5 | 0
 b -> shard 1            [a] [b]  luu 5 | 3
 c -> shard 1            [a] [b,c] luu 5 | 5
@@ -4486,14 +4486,14 @@ Gợi ý bẫy: (a) nếu bạn sắp xếp bằng cách duyệt map và so {{>}
             return plan.equals(Arrays.asList(Arrays.asList("a", "d"), Arrays.asList("b", "c")));
         });
 
-        t("cung thoi luong thi ten tang dan di truoc", () -> {
+        t("cùng thời lượng thì tên tăng dần đi trước", () -> {
             Map<String, Long> m = map(new String[][] {{"y", "5"}, {"x", "5"}, {"z", "1"}});
             List<List<String>> plan = Sharder.split(m, 2);
             eq(plan, Arrays.asList(Arrays.asList("x", "z"), Arrays.asList("y")));
             return Sharder.makespan(plan, m) == 6;
         });
 
-        t("so shard duoc tra dung bang shards", () -> {
+        t("số shard được trả đúng bằng shards", () -> {
             List<List<String>> plan = Sharder.split(map(new String[][] {{"a", "10"}, {"b", "1"}}), 4);
             eq(plan.size(), 4);
             eq(plan, Arrays.asList(Arrays.asList("a"), Arrays.asList("b"), Arrays.asList(), Arrays.asList()));
@@ -4537,7 +4537,7 @@ Gợi ý bẫy: (a) nếu bạn sắp xếp bằng cách duyệt map và so {{>}
             return Sharder.makespan(plan, null) == 0L;
         });
 
-        t("khong co test thi tra shards danh sach rong", () -> {
+        t("không có test thì trả shards danh sách rỗng", () -> {
             List<List<String>> plan = Sharder.split(new LinkedHashMap<>(), 3);
             eq(plan.size(), 3);
             eq(Sharder.makespan(plan, new LinkedHashMap<>()), 0L);
@@ -4545,7 +4545,7 @@ Gợi ý bẫy: (a) nếu bạn sắp xếp bằng cách duyệt map và so {{>}
             return plan.get(0).isEmpty() && plan.get(2).isEmpty();
         });
 
-        t("map null khong nem loi", () -> {
+        t("map null không ném lỗi", () -> {
             List<List<String>> plan = Sharder.split(null, 2);
             eq(plan.size(), 2);
             eq(Sharder.lowerBound(null, 2), 0L);
@@ -4774,14 +4774,14 @@ Cách ly **không phải** là {{@Disabled}} rồi quên. Khuôn đang chạy t�
 5. Số lượng cách ly vượt ~3% tổng suite thì dừng thêm tính năng, dành sprint trả nợ.
 
 ~~~seq
-title: Luong xu ly test do trong CI
+title: Luồng xử lý test đỏ trong CI
 actors: CI | Detector | Owner | Board
-CI -> Detector: gui lich su chay test commit ket qua
+CI -> Detector: gửi lịch sử chạy test từng commit
 Detector -> Detector: tim cung commit ma vua pass vua fail
 Detector -> Board: cap nhat flaky rate va danh sach cach ly
 Board -> Owner: phat issue khi vuot nguong
 Owner -> CI: sua goc roi bo tag quarantine
-note CI..Detector: khong co history thi khong phan biet duoc flaky va regression
+note CI..Detector: không có history thì không phân biệt được flaky/regression
 ~~~
 
 ### Quy trình sửa tận gốc (6 bước)
@@ -4828,7 +4828,7 @@ Ví dụ với dữ liệu:
 
 ~~~text
 LoginTest c1: pass pass fail   -> c1 lan lon  |  1/2 commit  -> rate 0.5   FLAKY
-PayTest   c1 fail c2 fail c3 fail             -> rate 0.0   khong flaky, khong regression (chua tung pass)
+PayTest   c1 fail c2 fail c3 fail             -> rate 0.0   không flaky, không regression (chưa từng pass)
 CartTest  c1 pass c2 pass c3 fail             -> rate 0.0   -> REGRESSION (commit cuoi fail het, tung pass o commit truoc)
 SearchTest c1: pass+fail  c2: fail+pass  c3 pass  c4 pass   -> 2/4 = 0.5   FLAKY
 OtpTest    c1: fail pass                     -> 1/1 = 1.0   FLAKY
@@ -4942,7 +4942,7 @@ final class FlakyDetector {
             return !f.contains("CartTest");
         });
 
-        t("fail deu tren moi commit khong phai flaky", () -> {
+        t("fail đều trên mọi commit không phải flaky", () -> {
             Set<String> f = FlakyDetector.flaky(fx());
             eq(f.contains("PayTest"), false);
             eq(FlakyDetector.rate(fx()).get("PayTest"), 0.0);
@@ -4950,7 +4950,7 @@ final class FlakyDetector {
             return !FlakyDetector.regressions(fx()).contains("PayTest");
         });
 
-        t("pass roi fail theo commit la regression khong phai flaky", () -> {
+        t("pass rồi fail theo commit là regression không phải flaky", () -> {
             List<Run> r = Arrays.asList(new Run("X", "c1", true), new Run("X", "c2", false));
             eq(FlakyDetector.flaky(r).isEmpty(), true);
             eq(FlakyDetector.regressions(r), Arrays.asList("X"));
@@ -4977,7 +4977,7 @@ final class FlakyDetector {
             return FlakyDetector.quarantine(fx(), 0.0, 99).isEmpty();
         });
 
-        t("minCommits chan test moi chay mot lan", () -> {
+        t("minCommits chặn test mới chạy một lần", () -> {
             eq(FlakyDetector.quarantine(fx(), 0.5, 1).contains("OtpTest"), true);
             eq(FlakyDetector.quarantine(fx(), 0.5, 2).contains("OtpTest"), false);
             return FlakyDetector.quarantine(fx(), 0.5, 3).equals(Arrays.asList("SearchTest"));
@@ -5005,7 +5005,7 @@ final class FlakyDetector {
             return FlakyDetector.quarantine(r, 0.5, 2).equals(Arrays.asList("X"));
         });
 
-        t("test chi chay mot lan chua du de ket luan", () -> {
+        t("test chỉ chạy một lần chưa đủ để kết luận", () -> {
             List<Run> r = Arrays.asList(new Run("Solo", "c1", true));
             eq(FlakyDetector.flaky(r).isEmpty(), true);
             eq(FlakyDetector.rate(r).get("Solo"), 0.0);
@@ -5013,7 +5013,7 @@ final class FlakyDetector {
             return FlakyDetector.quarantine(r, 0.5, 1).isEmpty();
         });
 
-        t("danh sach rong va null khong nem loi", () -> {
+        t("danh sách rỗng và null không ném lỗi", () -> {
             eq(FlakyDetector.flaky(new ArrayList<>()).isEmpty(), true);
             eq(FlakyDetector.rate(new ArrayList<>()).isEmpty(), true);
             eq(FlakyDetector.commitCount(new ArrayList<>()).isEmpty(), true);
@@ -5257,11 +5257,11 @@ class PaymentGatewayTest {
         // Nhat hanh: client goi toi http://localhost:8089/v1/charge
         verify(1, postRequestedFor(urlEqualTo("/v1/charge"))
                 .withHeader("Idempotency-Key", matching("^[0-9a-f-]{36}$")));
-        // verify bat duoc loi ma khong can assert kqua: client gui 2 request trung lap
+        // verify bắt được lỗi mà không cần assert kqua: client gửi 2 request trùng lặp
     }
 
     @Test void gateway_error_is_handled() {
-        // Chi nhanh ngan hang tu choi -> app phai hien loi que huong don
+        // Chi nhánh ngân hàng từ chối -> app phải hiện lỗi quê hương đơn
         stubFor(post(urlEqualTo("/v1/charge"))
                 .willReturn(aResponse()
                         .withStatus(200)
@@ -5283,7 +5283,7 @@ WireMock còn có **record mode**: chạy thật một lượt với hệ thốn
 Với UI test, bạn không cần dựng server: Playwright chặn request ngay trong trình duyệt và tự trả nội dung.
 
 ~~~java
-// Mock API cua trang: moi lan trang goi /api/orders thi nhan du lieu ta chon
+// Mock API của trang: mỗi lần trang gọi /api/orders thì nhận dữ liệu ta chọn
 page.route("**/api/orders", route -> route.fulfill(
         new Route.FulfillOptions()
                 .setStatus(200)
@@ -5293,7 +5293,7 @@ page.route("**/api/orders", route -> route.fulfill(
 // Lam hong yeu cau tai JS: de test canh bao mat ket noi
 page.route("**/analytics.js", Route::abort);
 
-// Gui storageState de moi context dang nhap san, khoi phai click form login
+// Gửi storageState để mọi context đăng nhập sẵn, khỏi phải click form login
 BrowserContext ctx = browser.newContext(
         new Browser.NewContextOptions().setStorageStatePath(java.nio.file.Paths.get("qa/storage-state.json")));
 ~~~
@@ -5321,10 +5321,10 @@ class OrderRepositoryIT {
     static final PostgreSQLContainer<?> DB = new PostgreSQLContainer<>("postgres:15-alpine")
             .withDatabaseName("shop")
             .withUsername("qa")
-            .withPassword("qa");        // chi la credential cua container, khong phai secret that
+            .withPassword("qa");        // chỉ là credential của container, không phải secret thật
 
     @Test void unique_index_blocks_duplicate_order() {
-        // DB.getMappedPort() tra ve cong that duoc Docker cap phat (tranh xung dot cong)
+        // DB.getMappedPort() trả về cổng thật được Docker cấp phát (tránh xung đột cổng)
         try (Connection c = DriverManager.getConnection(DB.getJdbcUrl(), DB.getUsername(), DB.getPassword())) {
             // chèn 2 đơn trùng idempotency key -> lần 2 phai bi loi unique
         }
@@ -5356,7 +5356,7 @@ Ba nguyên tắc: **mỗi test tự tạo dữ liệu của nó** (không dựa 
 ### Luong mo mot test co virtualization
 
 ~~~seq
-title: Test thanh toan dung WireMock va Testcontainers
+title: Test thanh toán dùng WireMock và Testcontainers
 actors: Test | App | WireMock | Container
 Test -> Container: khoi dong Postgres va seed schema
 Test -> App: goi dich vu tao don hang
@@ -5578,7 +5578,7 @@ final class StubServer {
             return s.callCount("POST", "/charge") == 4;
         });
 
-        t("header khong khop thi roi xuong stub chung", () -> {
+        t("header không khớp thì rơi xuống stub chung", () -> {
             StubServer s = new StubServer();
             s.on("GET", "/v", code(200));
             s.on("GET", "/v", Map.of("role", "admin"), code(403));
@@ -5626,7 +5626,7 @@ final class StubServer {
             return s.handle("GET", "/a", null).status() == 200;
         });
 
-        t("method hoac url null khong ghi nhat ky", () -> {
+        t("method hoặc url null không ghi nhật ký", () -> {
             StubServer s = new StubServer();
             s.on("GET", "/a", code(200));
             eq(s.handle(null, "/a", null).status(), 404);
@@ -5856,7 +5856,7 @@ Trinh duyet          Server API
     | ----------------> |   < 200 [ {...}, {...} ]
     |  GET /logo.png    |
     ~~~~~~~~~~~~~~~~~~~~~
-    UI ve cai ta nhan duoc tu /api/orders, khong phai cai "la that"
+    UI vẽ cái ta nhận được từ /api/orders, không phải cái "là thật"
 ~~~
 
 UI test truyền thống là con tin của chuỗi đó ở ba điểm: (1) **data** — muốn thấy "đơn đã hoàn tiền" phải có một đơn đã hoàn tiền, tức là phải đi qua cả luồng nghiệp vụ; (2) **hỏng** — không ai biết cách "bắt" server trả 500 vào lúc 2 giờ sáng CI chạy; (3) **tốc độ** — mỗi request thật thêm độ trễ mạng và thêm cơ hội flaky (lúc pass lúc fail). Mock mạng cắt ba gông đó bằng cách đặt một **trọng tài** ngay trong trình duyệt: request đi qua tay bạn trước khi quyết định.
@@ -5865,7 +5865,7 @@ UI test truyền thống là con tin của chuỗi đó ở ba điểm: (1) **da
 Trong Playwright for Java, handler nhận **hai** tham số: {{route}} (điều khiển số phận request) và {{request}} (thông tin request bị chặn).
 
 ~~~java
-// Chan API danh sach don: moi lan trang goi **/api/orders* thi nhan JSON TA chon
+// Chặn API danh sách đơn: mỗi lần trang gọi **/api/orders* thì nhận JSON TA chọn
 page.route("**/api/orders*", (route, request) -> route.fulfill(
         new Route.FulfillOptions()
                 .setStatus(200)
@@ -5890,8 +5890,8 @@ Bốn số phận của một request:
 
 ~~~text
 **            bat ky gi, KE CA dau chay /        **/api/**        -> moi thu duoi /api/
-*             bat ky gi, KHONG di qua dau chay    /api/*/items     -> chi mot doan trung gian
-?             DUNG mot ky tu, khong phai dau chay  /v?/list         -> /v1/list ok, /v12/list roi
+*             bất kỳ gì, KHÔNG đi qua dấu chéo    /api/*/items     -> chỉ một đoạn trung gian
+?             ĐÚNG một ký tự, không phải dấu chéo  /v?/list         -> /v1/list ok, /v12/list rồi
 ky tu khac    so nguyen van (dau . cung la ky tu thuong)
 ~~~
 
@@ -5899,7 +5899,7 @@ ky tu khac    so nguyen van (dau . cung la ky tu thuong)
 
 ### Tiêm lỗi — phần khiến mock đáng giá nhất
 ~~~java
-// 1) Server loi: UI phai hien "Khong tai duoc danh sach" + nut Thu lai
+// 1) Server lỗi: UI phải hiện "Không tải được danh sách" + nút Thử lại
 page.route("**/api/orders*", (route, request) -> route.fulfill(
         new Route.FulfillOptions().setStatus(500).setContentType("application/json")
                 .setBody("{\\"code\\":\\"ORDER_SERVICE_DOWN\\"}")));
@@ -5907,7 +5907,7 @@ page.route("**/api/orders*", (route, request) -> route.fulfill(
 // 2) Mat ket noi: request chet nhu that, JS cua trang buoc vao nhanh catch
 page.route("**/api/**", (route, request) -> route.abort());
 
-// 3) Cham den muc timeout: abort voi ma loi timedout mo phong network timeout
+// 3) Chậm đến mức timeout: abort với mã lỗi timedout mô phỏng network timeout
 page.route("**/api/checkout", (route, request) ->
         route.abort(new Route.AbortOptions().setErrorCode("timedout")));
 
@@ -5944,7 +5944,7 @@ Dùng khi: backend chưa xong nhưng đã có bản recording từ môi trườn
 
 Câu thần chú: *mock trả lời "code của tôi xử lý ra sao khi nhận đáp án X"; test thật trả lời "X có thực sự trả đáp án đó không"*. Đừng bao giờ để một UI test mock **toàn bộ** API rồi assert "đơn hàng đã tạo thành công" — bạn vừa test chính JSON mình viết.
 
-### Luong mot lan mock trong test
+### Luồng một lần mock trong test
 
 ~~~seq
 title: Test UI dung page.route
@@ -6050,9 +6050,9 @@ Gợi ý triển khai: biểu diễn mỗi route bằng một record nhỏ (glob
         String a2 = prec.dispatch("https://x.test/api/orders");
         check("route dang ky sau thang", "abort:failed".equals(a2), "got " + a2);
         String a3 = prec.dispatch("https://x.test/api/cart");
-        check("khong khop ro roi thi roi xuong route truoc do", "fulfill:generic".equals(a3), "got " + a3);
+        check("không khớp rõ ràng thì rơi xuống route trước đó", "fulfill:generic".equals(a3), "got " + a3);
         String a4 = prec.dispatch("https://x.test/app/main");
-        check("khong route nao khop thi continue", "continue".equals(a4), "got " + a4);
+        check("không route nào khớp thì continue", "continue".equals(a4), "got " + a4);
         check("unmatched dem duoc 1", prec.unmatched() == 1, "unmatched=" + prec.unmatched());
         String a5 = prec.dispatch(null);
         check("url null coi nhu khong khop va dem unmatched", "continue".equals(a5) && prec.unmatched() == 2, "unmatched=" + prec.unmatched());
@@ -6063,9 +6063,9 @@ Gợi ý triển khai: biểu diễn mỗi route bằng một record nhỏ (glob
         String b1 = seg.dispatch("https://shop.test/tenant1/orders");
         check("dau sao don khop mot doan duong dan", "fulfill:one-segment".equals(b1), "got " + b1);
         String b2 = seg.dispatch("https://shop.test/a/b/orders");
-        check("dau sao don khong duoc vuot dau chay", "continue".equals(b2), "got " + b2);
+        check("dấu sao đơn không được vượt dấu chéo", "continue".equals(b2), "got " + b2);
         String b3 = seg.dispatch("https://shop.test//orders");
-        check("dau sao rong van khop nen hai dau chay lien ke di duoc", "fulfill:one-segment".equals(b3), "got " + b3);
+        check("dấu sao rỗng vẫn khớp nên hai dấu chéo liền kề đi được", "fulfill:one-segment".equals(b3), "got " + b3);
 
         RouteTable deep = new RouteTable();
         deep.route("**/img/**", "fulfill:under-img");
@@ -6083,18 +6083,18 @@ Gợi ý triển khai: biểu diễn mỗi route bằng một record nhỏ (glob
         RouteTable qm = new RouteTable();
         qm.route("**/v?/list", "fulfill:versioned");
         String e1 = qm.dispatch("https://api.test/v1/list");
-        check("? khop dung mot ky tu", "fulfill:versioned".equals(e1), "got " + e1);
+        check("? khớp đúng một ký tự", "fulfill:versioned".equals(e1), "got " + e1);
         String e2 = qm.dispatch("https://api.test/v12/list");
         check("? khong khop hai ky tu", "continue".equals(e2), "got " + e2);
         String e3 = qm.dispatch("https://api.test/v//list");
-        check("? khong khop dau chay", "continue".equals(e3), "got " + e3);
+        check("? không khớp dấu chéo", "continue".equals(e3), "got " + e3);
 
         RouteTable dot = new RouteTable();
         dot.route("**/a.b", "fulfill:dot");
         String f1 = dot.dispatch("https://x.test/a.b");
         check("dau cham la ky tu thuong", "fulfill:dot".equals(f1), "got " + f1);
         String f2 = dot.dispatch("https://x.test/aXb");
-        check("dau cham khong phai wildcard", "continue".equals(f2), "got " + f2);
+        check("dấu chấm không phải wildcard", "continue".equals(f2), "got " + f2);
 
         RouteTable cnt = new RouteTable();
         cnt.route("**/api/orders", "abort:failed");
@@ -6107,7 +6107,7 @@ Gợi ý triển khai: biểu diễn mỗi route bằng một record nhỏ (glob
         cnt.unroute("**/api/orders");
         String g1 = cnt.dispatch("https://x.test/api/orders");
         check("sau unroute thi roi ve continue", "continue".equals(g1), "got " + g1);
-        check("unroute khong reset so lan khop cua qua", cnt.hits("**/api/orders") == 2, "hits=" + cnt.hits("**/api/orders"));
+        check("unroute không reset số lần khớp của qua", cnt.hits("**/api/orders") == 2, "hits=" + cnt.hits("**/api/orders"));
         check("unroute khong cham vao glob khac", cnt.hits("**/assets/**") == 1, "assets=" + cnt.hits("**/assets/**"));
         check("unmatched tang sau unroute", cnt.unmatched() == 1, "unmatched=" + cnt.unmatched());
 
@@ -6307,7 +6307,7 @@ int b = px & 0xFF;
 // So sanh hai anh: lech theo tung kenh, khong so nguyen 24 bit
 int dr = Math.abs(ra - rb);             // R = 255 vs 250 -> dr = 5
 int maxLech = Math.max(dr, Math.max(dg, db));
-boolean khacNhau = maxLech > tolerance; // tolerance = cuong do chap nhan duoc
+boolean khacNhau = maxLech > tolerance; // tolerance = cường độ chấp nhận được
 ~~~
 
 **Tolerance** (ngưỡng cường độ, theo từng kênh) khác với **số pixel được phép khác**. Hai khái niệm này hay bị lẫn, và cả hai công cụ lớn đều có:
@@ -6352,14 +6352,14 @@ Nguyên tắc: mask **càng hẹp càng tốt**. Mask cả một khối bảng v
 ~~~seq
 title: Mot vong do visual regression
 actors: Test | Browser | Engine | Baseline
-Test -> Browser: mo trang voi du lieu da mock
+Test -> Browser: mở trang với dữ liệu đã mock
 Test -> Browser: cho network idle va font xong
 Browser --> Engine: anh PNG cua man hinh
 Engine -> Baseline: doc anh chuan duoc duyet lan cuoi
 Baseline --> Engine: PNG baseline cung Docker image
 Engine --> Test: so pixel khac vuot nguong thi FAIL
 Engine -> Baseline: ghi anh diff va anh moi cho nguoi xem
-note Engine..Baseline: nguoi approve thi baseline bi de thay
+note Engine..Baseline: người approve thì baseline bị đè thay
 ~~~
 
 Ba quyết định phải viết thành văn bản trong team: **ai được cập nhật baseline** (không phải mọi QA, vì người update có thể "tắt đèn" cho CI xanh); **baseline lưu ở đâu** (git + Git LFS, hoặc object storage theo version giao diện — lưu trong D:\\tmp thì mất khi runner chết); và **diff được xem ở đâu** (một job CI đăng ảnh actual/baseline/diff lên báo cáo, nếu không thì không ai đọc FAIL). Khi một FAIL hợp lệ bị approve, hãy gắn nó với **mã commit/PR** gây ra thay đổi — về sau đây là cách trả lời câu "change này làm giao diện đổi từ bao giờ".
@@ -6417,7 +6417,7 @@ a = 2x2 toan bo 0xFFFFFF (trang)
 b = nhu a nhung b[1][0] = 0xFF0000 (do)
 
 compare(a, b, 0, 0.0, null)                      -> compared=4 changed=1 ratio=0.25 pass=false
-compare(a, b, 0, 0.25, null)                     -> pass=true  (ty le dung bang nguong)
+compare(a, b, 0, 0.25, null)                     -> pass=true  (tỷ lệ đúng bằng ngưỡng)
 compare(a, b, 0, 0.0, new int[][]{{0,1,1,1}})    -> compared=3 changed=0 pass=true (pixel do da bi mask)
 diffBounds(a, b, 0, null)                        -> {0, 1, 1, 1}
 diffBounds(a, a, 0, null)                        -> {0, 0, 0, 0}
@@ -6489,7 +6489,7 @@ Bẫy: nếu bạn so nguyên giá trị {{0xRRGGBB}} bằng {{!=}} thì {{chann
         int[][] white = grid(2, 2, 0xFFFFFF);
         PixelDiff.Report same = PixelDiff.compare(white, grid(2, 2, 0xFFFFFF), 0, 0.0, null);
         check("hai anh giong het: 0 khac, duoc so 4", same.changed() == 0 && same.compared() == 4 && same.pass(), "" + same);
-        check("ratio bang 0 khi khong co gi khac", Math.abs(same.ratio()) < 1e-9, "" + same);
+        check("ratio bằng 0 khi không có gì khác", Math.abs(same.ratio()) < 1e-9, "" + same);
 
         int[][] one = paint(grid(2, 2, 0xFFFFFF), 1, 0, 0xFF0000);
         PixelDiff.Report d1 = PixelDiff.compare(white, one, 0, 0.0, null);
@@ -6497,7 +6497,7 @@ Bẫy: nếu bạn so nguyên giá trị {{0xRRGGBB}} bằng {{!=}} thì {{chann
         check("ratio 1 tren 4 la 0.25", Math.abs(d1.ratio() - 0.25) < 1e-9, "" + d1);
         check("vuot nguong 0.0 thi FAIL", !d1.pass(), "" + d1);
         PixelDiff.Report d2 = PixelDiff.compare(white, one, 0, 0.25, null);
-        check("ratio dung bang nguong thi PASS", d2.pass(), "" + d2);
+        check("ratio đúng bằng ngưỡng thì PASS", d2.pass(), "" + d2);
 
         int[][] softBlue = paint(grid(1, 1, 0x000000), 0, 0, 0x000005);
         PixelDiff.Report tol10 = PixelDiff.compare(grid(1, 1, 0x000000), softBlue, 10, 0.0, null);
@@ -6509,7 +6509,7 @@ Bẫy: nếu bạn so nguyên giá trị {{0xRRGGBB}} bằng {{!=}} thì {{chann
         PixelDiff.Report c9 = PixelDiff.compare(grid(1, 1, 0x000000), red10, 9, 0.0, null);
         check("so tung kenh: do lech 10 vuot nguong 9", c9.changed() == 1, "" + c9);
         PixelDiff.Report c10 = PixelDiff.compare(grid(1, 1, 0x000000), red10, 10, 0.0, null);
-        check("lech dung bang nguong thi chua phai khac", c10.changed() == 0, "" + c10);
+        check("lệch đúng bằng ngưỡng thì chưa phải khác", c10.changed() == 0, "" + c10);
         int[][] mix = paint(grid(1, 1, 0x000A00), 0, 0, 0x00000A);
         PixelDiff.Report mixRep = PixelDiff.compare(grid(1, 1, 0x000000), mix, 9, 0.0, null);
         check("khong lay tong kenh: moi lech 10 o kenh lam la khac", mixRep.changed() == 1, "" + mixRep);
@@ -6532,20 +6532,20 @@ Bẫy: nếu bạn so nguyên giá trị {{0xRRGGBB}} bằng {{!=}} thì {{chann
         PixelDiff.Report r015 = PixelDiff.compare(big, bigDiff, 0, 0.15, null);
         check("0.125 duoi nguong 0.15 thi PASS", r015.pass(), "" + r015);
         PixelDiff.Report r0125 = PixelDiff.compare(big, bigDiff, 0, 0.125, null);
-        check("nguong bang chinh xac ty le thi PASS", r0125.pass(), "" + r0125);
+        check("ngưỡng bằng chính xác tỷ lệ thì PASS", r0125.pass(), "" + r0125);
 
         check("diffBounds bam sat hai goc thay doi", Arrays.equals(PixelDiff.diffBounds(big, bigDiff, 0, null), new int[] {0, 0, 4, 4}),
             Arrays.toString(PixelDiff.diffBounds(big, bigDiff, 0, null)));
-        check("diffBounds cua mot pixel o hang 1 cot 0", Arrays.equals(PixelDiff.diffBounds(white, one, 0, null), new int[] {0, 1, 1, 1}),
+        check("diffBounds của một pixel ở hàng 1 cột 0", Arrays.equals(PixelDiff.diffBounds(white, one, 0, null), new int[] {0, 1, 1, 1}),
             Arrays.toString(PixelDiff.diffBounds(white, one, 0, null)));
-        check("khong khac gi thi bbox rong", Arrays.equals(PixelDiff.diffBounds(white, white, 0, null), new int[] {0, 0, 0, 0}),
+        check("không khác gì thì bbox rỗng", Arrays.equals(PixelDiff.diffBounds(white, white, 0, null), new int[] {0, 0, 0, 0}),
             Arrays.toString(PixelDiff.diffBounds(white, white, 0, null)));
         check("bbox bo qua pixel bi mask", Arrays.equals(PixelDiff.diffBounds(white, one, 0, new int[][] {{0, 1, 1, 1}}), new int[] {0, 0, 0, 0}),
             Arrays.toString(PixelDiff.diffBounds(white, one, 0, new int[][] {{0, 1, 1, 1}})));
         int[][] faint = paint(grid(2, 2, 0xFFFFFF), 1, 0, 0xFFFFF8);
         check("lech duoi nguong kenh thi bbox rong", Arrays.equals(PixelDiff.diffBounds(white, faint, 10, null), new int[] {0, 0, 0, 0}),
             Arrays.toString(PixelDiff.diffBounds(white, faint, 10, null)));
-        check("cung lech do voi nguong 0 thi co bbox", Arrays.equals(PixelDiff.diffBounds(white, faint, 0, null), new int[] {0, 1, 1, 1}),
+        check("cùng lệch độ với ngưỡng 0 thì có bbox", Arrays.equals(PixelDiff.diffBounds(white, faint, 0, null), new int[] {0, 1, 1, 1}),
             Arrays.toString(PixelDiff.diffBounds(white, faint, 0, null)));
 
         PixelDiff.Report sz = PixelDiff.compare(grid(2, 2, 0xFFFFFF), grid(3, 3, 0xFFFFFF), 0, 0.0, null);
@@ -6835,7 +6835,7 @@ Schema -> CI: file schema nam trong repo, doi qua PR
 API test -> CI: goi endpoint that roi soi shape
 Pact -> CI: client khai bao ky vong, server chung minh khop
 CI --> Schema: in duong dan loi kieu items[1].price
-note Pact..API test: schema kiem tra response that, Pact kiem tra ca case client thiet ke
+note Pact..API test: schema kiểm tra response thật, Pact kiểm tra case client thiết kế
 ~~~
 
 - **Schema validation trong test** (bài này): bạn giữ file schema và soi response thật. Rẻ, thêm được ngay, nhưng schema do **QA viết** — nếu QA viết theo trí nhớ, bạn chỉ đang tự kiểm tra trí nhớ của mình.
@@ -6952,17 +6952,17 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
     public static void main(String[] args) {
         Map<String, Object> sc = orderSchema();
         List<String> e0 = SchemaValidator.validate(sc, good());
-        check("du lieu hop le thi khong co loi", e0.isEmpty(), "" + e0);
+        check("dữ liệu hợp lệ thì không có lỗi", e0.isEmpty(), "" + e0);
 
         Map<String, Object> extra = good();
         extra.put("coupon", "XMAS");
         List<String> eX = SchemaValidator.validate(sc, extra);
-        check("field la trong du lieu duoc bo qua", eX.isEmpty(), "" + eX);
+        check("field lạ trong dữ liệu được bỏ qua", eX.isEmpty(), "" + eX);
 
         Map<String, Object> d1 = good();
         d1.put("total", "25");
         List<String> e1 = SchemaValidator.validate(sc, d1);
-        check("sai kieu thi chi bao type, khong bao minimum", e1.equals(l("$.total: type number")), "" + e1);
+        check("sai kiểu thì chỉ báo type, không báo minimum", e1.equals(l("$.total: type number")), "" + e1);
 
         Map<String, Object> d2 = good();
         d2.remove("id");
@@ -6972,7 +6972,7 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         Map<String, Object> d3 = good();
         d3.put("id", null);
         List<String> e3 = SchemaValidator.validate(sc, d3);
-        check("key co mat ma null: khong phai loi required", e3.equals(l("$.id: type string")), "" + e3);
+        check("key có mặt mà null: không phải lỗi required", e3.equals(l("$.id: type string")), "" + e3);
 
         Map<String, Object> d4 = good();
         d4.put("status", "refunded");
@@ -6982,7 +6982,7 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         Map<String, Object> d4b = good();
         d4b.put("status", "cancelled");
         List<String> e4b = SchemaValidator.validate(sc, d4b);
-        check("gia tri trong enum thi hop le", e4b.isEmpty(), "" + e4b);
+        check("giá trị trong enum thì hợp lệ", e4b.isEmpty(), "" + e4b);
 
         Map<String, Object> d5 = good();
         d5.put("total", 12);
@@ -6992,7 +6992,7 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         Map<String, Object> d5b = good();
         d5b.put("total", 20);
         List<String> e5b = SchemaValidator.validate(sc, d5b);
-        check("bang dung minimum thi hop le", e5b.isEmpty(), "" + e5b);
+        check("bằng đúng minimum thì hợp lệ", e5b.isEmpty(), "" + e5b);
 
         Map<String, Object> d6 = good();
         d6.put("qty", 2.5);
@@ -7002,7 +7002,7 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         Map<String, Object> d6b = good();
         d6b.put("qty", Boolean.TRUE);
         List<String> e6b = SchemaValidator.validate(sc, d6b);
-        check("boolean khong phai la number", e6b.equals(l("$.qty: type integer")), "" + e6b);
+        check("boolean không phải là number", e6b.equals(l("$.qty: type integer")), "" + e6b);
 
         Map<String, Object> d7 = good();
         d7.put("tags", l("vip", 7));
@@ -7012,7 +7012,7 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         Map<String, Object> d7b = good();
         d7b.put("tags", l());
         List<String> e7b = SchemaValidator.validate(sc, d7b);
-        check("mang rong thi khong co loi", e7b.isEmpty(), "" + e7b);
+        check("mảng rỗng thì không có lỗi", e7b.isEmpty(), "" + e7b);
 
         Map<String, Object> d7c = good();
         d7c.put("tags", m("a", "b"));
@@ -7032,12 +7032,12 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         Map<String, Object> d8c = good();
         d8c.put("items", l(m("price", 3), m("price", 4)));
         List<String> e8c = SchemaValidator.validate(sc, d8c);
-        check("thieu sku khong phai loi vi sku khong required", e8c.isEmpty(), "" + e8c);
+        check("thiếu sku không phải lỗi vì sku không required", e8c.isEmpty(), "" + e8c);
 
         Map<String, Object> d9 = good();
         d9.put("shipping", "GHN");
         List<String> e9 = SchemaValidator.validate(sc, d9);
-        check("sai kieu o node object: dung tai day, khong xuong required", e9.equals(l("$.shipping: type object")), "" + e9);
+        check("sai kiểu ở node object: dừng tại đây, không xuống required", e9.equals(l("$.shipping: type object")), "" + e9);
 
         Map<String, Object> d10 = good();
         d10.remove("total");
@@ -7048,7 +7048,7 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         List<String> sortedCopy = new ArrayList<String>(e10);
         Collections.sort(sortedCopy);
         check("bon loi cung luc", e10.size() == 4, "" + e10);
-        check("danh sach loi duoc sap xep va du noi dung",
+        check("danh sách lỗi được sắp xếp và đủ nội dung",
             e10.equals(sortedCopy) && e10.containsAll(l("$.note: type string", "$.qty: type integer",
                 "$.status: enum", "$.total: required")), "" + e10);
 
@@ -7058,11 +7058,11 @@ Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có
         check("khai null ma lai co gia tri", e11b.equals(l("$: type null")), "" + e11b);
 
         List<String> e12 = SchemaValidator.validate(null, m("id", "O-1"));
-        check("schema null thi khong rang buoc", e12.isEmpty(), "" + e12);
+        check("schema null thì không ràng buộc", e12.isEmpty(), "" + e12);
         List<String> e13 = SchemaValidator.validate(m(), "bat ky");
-        check("schema rong thi khong rang buoc", e13.isEmpty(), "" + e13);
+        check("schema rỗng thì không ràng buộc", e13.isEmpty(), "" + e13);
         List<String> e14 = SchemaValidator.validate(m("type", "date-time"), 5);
-        check("type ngoai bang dinh nghia thi bo qua", e14.isEmpty(), "" + e14);
+        check("type ngoài bảng định nghĩa thì bỏ qua", e14.isEmpty(), "" + e14);
         List<String> e15 = SchemaValidator.validate(m("type", "string"), 5);
         check("goc la scalar thi duong dan la dau dollar", e15.equals(l("$: type string")), "" + e15);
         List<String> e16 = SchemaValidator.validate(m("type", "array", "items", m("type", "string")), l("a", "b", 3));
