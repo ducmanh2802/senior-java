@@ -2623,33 +2623,58 @@ DB:   Oracle on-prem ══ DMS full load ══ CDC liên tục ═════
   topic: 'aws',
   level: 'mid',
   q: 'Route 53 ho tro cac ban ghi A, AAAA, CNAME, Alias va MX/TXT. Vi sao khong dat CNAME o apex (root domain), va TTL anh huong the nao khi cutover?',
-  a: `**Tom tat:** CNAME khong the dat o apex vi RFC cam ban ghi khac cung ten; Route 53 giai bang Alias tro toi AWS resource. TTL thap truoc cutover de client nhanh chuyen, TTL cao sau de giam query va chi phi.
+  a: `**Tóm tắt:** DNS (Domain Name System - hệ thống "danh bạ" đổi tên miền như {{app.example.com}} thành địa chỉ IP để máy tính kết nối được) trên Route 53 có các bản ghi A/AAAA (tên -> IP), CNAME (tên -> tên khác), MX (máy chủ mail), TXT (xác thực) và Alias (đặc thù Route 53). Không đặt CNAME ở apex (tên miền gốc, ví dụ {{example.com}}) vì chuẩn DNS cấm CNAME đi cùng các bản ghi khác tại cùng tên; dùng Alias trỏ tới tài nguyên AWS. TTL (Time To Live - thời gian resolver/ISP được cache bản ghi) phải hạ thấp trước cutover (chuyển đổi hệ thống) để client nhận IP mới nhanh, rồi nâng lên sau khi ổn định để giảm chi phí và tải DNS.
 
-### Ban ghi co ban
-- **A**: ten -> IPv4. **AAAA**: ten -> IPv6.
-- **CNAME**: ten -> ten khac. Chi duoc dung khi ten do khong co ban ghi khac (khong MX, TXT, NS, SOA).
-- **Alias** (Route 53 rieng): giong A/AAAA nhung tro toi AWS resource (ALB, CloudFront, S3 website, API Gateway). Mien phi query, tu theo IP resource, ho tro apex.
+### Cái gì và vì sao cần hiểu rõ từng loại bản ghi
+- **Resolver DNS**: thành phần hỏi đáp "tên này là IP nào" (máy tính của bạn, DNS ISP, hoặc public resolver). Resolver cache câu trả lời theo TTL.
+- **A**: ánh xạ tên -> IPv4 (ví dụ {{203.0.113.10}}). **AAAA**: tên -> IPv6.
+- **CNAME (Canonical Name)**: ánh xạ tên -> một tên khác, resolver sẽ hỏi tiếp tên đích. Ví dụ {{www.example.com}} -> {{app-alb-123.ap-southeast-1.elb.amazonaws.com}}.
+- **MX (Mail Exchange)**: chỉ máy chủ nhận email cho domain, kèm độ ưu tiên (số nhỏ ưu tiên trước) để failover mail.
+- **TXT**: lưu text tự do, dùng cho SPF/DKIM/DMARC (chống giả mạo email) và xác minh quyền sở hữu domain.
+- **Alias (Route 53)**: bản ghi đặc thù AWS, trông giống A/AAAA nhưng đích là tài nguyên AWS (ALB, CloudFront, S3 website, API Gateway, bản ghi Route 53 khác...). Route 53 tự theo dõi IP của tài nguyên; truy vấn Alias thường miễn phí và hỗ trợ apex.
 
-### Vi sao khong CNAME o apex
-Apex domain (example.com) bat buoc co NS va SOA. RFC 1034 cam CNAME cung ton tai voi ban ghi khac cung ten. Neu dat CNAME o apex se xung dot voi NS/SOA -> resolver tra SERVFAIL. Vi vay dung Alias (hoac A tinh) o apex; subdomain (www) moi dung CNAME.
+### Vì sao CNAME không được đặt ở apex (root domain)
+Apex là tên miền gốc của zone, ví dụ {{example.com}}. Theo RFC 1034/1912, một tên có CNAME thì **không được** có bất kỳ bản ghi nào khác cùng tên, vì CNAME nghĩa là "tên này chỉ là bí danh của tên kia". Nhưng apex **bắt buộc** có bản ghi NS (Name Server - máy chủ DNS có thẩm quyền) và SOA (Start of Authority - thông tin quản trị zone). Nếu bạn đặt CNAME ở apex, nó sẽ xung đột với NS/SOA; resolver có thể trả {{SERVFAIL}} hoặc hành vi không xác định, làm cả website và email (MX) có nguy cơ hỏng. Vì vậy:
+- Apex: dùng **Alias A/AAAA** trỏ tới ALB/CloudFront (hoặc A tĩnh nếu đích là IP cố định).
+- Subdomain như {{www}} hoặc {{api}}: dùng CNAME (hoặc Alias). Thông lệ: Alias apex -> ALB, CNAME {{www}} -> apex hoặc cùng ALB.
 
-### TTL va cutover
-TTL = thoi gian resolver cache ban ghi. Khi chuyen he thong:
-1. Truoc cutover 24-48h: ha TTL xuong 60-300s de client nhanh nhan IP moi.
-2. Cutover: doi ban ghi.
-3. Sau on dinh: nang TTL len 3600-86400s de giam query DNS, chi phi Route 53 va tai resolver.
-Nho TTL cu co the da cache o client/ISP -> thuc te cho toi da TTL cu. Alias TTL do AWS quan ly (thuong 60s) nen cutover nhanh hon.
+~~~seq
+title: CNAME tại apex gây xung đột
+actors: Resolver | Route53 | ALB
+Resolver -> Route53: Hỏi A cho example.com
+note Route53: apex có NS, SOA; nếu thêm CNAME -> vi phạm RFC
+Route53 --> Resolver: SERVFAIL hoặc đáp án lỗi
+Resolver -> Route53: Hỏi A cho www.example.com (CNAME hợp lệ)
+Route53 --> Resolver: www -> ALB DNS name
+Resolver -> ALB: Kết nối IP ALB
+ALB --> Resolver: Phản hồi HTTP
+~~~
 
-### MX/TXT
-- **MX**: mail server + priority. Nhieu MX voi priority khac nhau cho failover.
-- **TXT**: SPF, DKIM, DMARC, domain verification.
+### TTL ảnh hưởng thế nào khi cutover
+TTL (giây) là "thời hạn giữ" câu trả lời trong cache. Cutover DNS là đổi bản ghi để trỏ sang hệ thống mới (ví dụ ALB mới, region mới). Cơ chế từng bước:
+1. **Trước cutover 24-48 giờ**: hạ TTL bản ghi liên quan xuống 60-300s. Phải làm sớm hơn TTL cũ (nếu TTL cũ là 86400s = 24h, phải hạ trước ít nhất 24h để cache cũ hết hạn).
+2. **Cutover**: đổi giá trị bản ghi (IP mới hoặc đích Alias mới).
+3. **Lan truyền**: resolver nào cache hết hạn sẽ hỏi lại và nhận giá trị mới. Thời gian thực tế xấp xỉ "TTL cũ còn sót + TTL mới". Lưu ý: một số ISP/thiết bị áp TTL tối thiểu (ví dụ 300s) dù bạn đặt 60s.
+4. **Sau ổn định (vài giờ đến 1 ngày)**: nâng TTL lên 3600-86400s để giảm số truy vấn DNS (Route 53 tính phí theo truy vấn, trừ Alias tới một số tài nguyên AWS) và giảm tải.
+Alias có TTL do AWS quản lý (thường 60s với ALB/CloudFront) nên cutover qua Alias thường nhanh và ít phụ thuộc TTL bạn đặt.
 
-### Pitfall
-- Ha TTL nhung client/ISP ignore TTL nho (mot so cache toi thieu 300s).
-- Quen ha TTL cho ban ghi phu thuoc (CNAME chain).
-- Dung Alias tro S3 website: bucket name phai trung domain.
+### Ví dụ đời thực
+Hệ thống ngân hàng chuyển frontend từ on-prem (A record {{203.0.113.10}}, TTL 86400s) sang CloudFront + ALB trên AWS. Lưu lượng ~2.000 req/s giờ cao điểm, domain {{ibank.example.com}} (subdomain) và {{example.com}} (apex). Kế hoạch:
+- T-48h: hạ TTL cả apex và subdomain từ 86400 xuống 60s; dùng {{dig ibank.example.com +trace}} kiểm tra resolver nhận TTL mới.
+- T-0 (02:00, traffic thấp ~200 req/s): đổi apex thành Alias A -> CloudFront; đổi {{ibank}} CNAME -> CloudFront. Giữ hệ cũ chạy song song 2 giờ.
+- Quan sát: p95 latency giảm từ 420ms xuống 180ms nhờ edge cache; khoảng 5% traffic (ISP cache cứng) còn vào hệ cũ trong 10 phút đầu - chấp nhận được vì hai hệ cùng đọc DB. Sau 2 giờ không còn traffic cũ -> tắt on-prem.
+- Kết quả: cutover không gián đoạn, rollback chỉ cần đổi bản ghi về (nhờ TTL 60s, phần lớn client quay lại trong 1-3 phút).
 
-> Senior tip: truoc moi cutover DNS, ghi lai TTL hien tai va thoi diem ha; dung dig +trace kiem tra propagation. Voi ngan hang, DNS la diem rollback nhanh nhat.`,
+### Pitfall production
+- Quên hạ TTL **trước** cutover: client giữ IP cũ suốt TTL cũ, một phần user vào hệ mới, một phần hệ cũ - rất khó debug.
+- Quên chuỗi CNAME/Alias phụ thuộc ({{www}} -> apex, apex -> ALB mới): đổi thiếu một mắt xích.
+- Đặt CNAME ở apex theo thói quen của DNS provider khác: một số provider "làm phẳng" CNAME (CNAME flattening) nhưng đây không phải hành vi chuẩn; trên Route 53 dùng Alias.
+- MX/TXT đặt sai khi đổi zone: email ngừng nhận - luôn kiểm tra MX, SPF, DKIM sau cutover.
+
+### Trả lời mẫu khi phỏng vấn
+"DNS trên Route 53 có A/AAAA trỏ tên tới IP, CNAME trỏ tên tới tên khác, MX cho mail, TXT cho xác thực, và Alias là bản ghi đặc thù AWS trỏ tới tài nguyên như ALB hay CloudFront. Em không đặt CNAME ở apex vì theo RFC, một tên có CNAME thì không được có bản ghi khác, trong khi apex bắt buộc có NS và SOA nên sẽ xung đột gây SERVFAIL; giải pháp là dùng Alias A/AAAA ở apex. Về TTL, đó là thời gian resolver cache bản ghi. Khi cutover em hạ TTL xuống 60-300 giây từ 24-48 giờ trước để cache cũ hết hạn, rồi mới đổi bản ghi; sau khi ổn định em nâng TTL lại để giảm truy vấn và chi phí. Thực tế có ISP cache cứng nên em luôn giữ hệ cũ chạy song song một lúc và xem đây là điểm rollback nhanh nhất - chỉ cần đổi bản ghi ngược lại."
+
+> Senior tip: Trước mọi cutover DNS, ghi lại giá trị và TTL hiện tại, dùng {{dig +trace}} kiểm tra propagation, và giữ đường rollback (hệ cũ còn chạy) trong vài giờ. Với ngân hàng, DNS là nút rollback nhanh nhất nhưng cũng dễ gây sự cố dây chuyền nếu quên MX/TXT.`,
   follow: [
     'Khac biet giua weighted, latency, failover routing policy cua Route 53?',
     'Health check cua Route 53 hoat dong the nao va khi nao failover?',
@@ -2662,36 +2687,60 @@ Nho TTL cu co the da cache o client/ISP -> thuc te cho toi da TTL cu. Alias TTL 
   topic: 'aws',
   level: 'senior',
   q: 'Request qua ALB tra ve HTTP 400 trong khi backend van song va traffic lon. Nguyen nhan nao, va phan biet ALB tu tra loi voi target tra loi bang metric va access log?',
-  a: `**Tom tat:** HTTP 400 qua ALB co the do request/header sai, Host header khong khop, request qua lon, HTTP desync mitigation chan, hoac target tu tra 400. Phan biet qua HTTPCode_ELB_4XX_Count vs HTTPCode_Target_4XX_Count va access log.
+  a: `**Tóm tắt:** HTTP 400 qua ALB (Application Load Balancer - bộ cân bằng tải tầng ứng dụng HTTP/HTTPS của AWS) có thể do ALB tự từ chối (request/header sai chuẩn, Host header bất thường, header/URI quá lớn, cơ chế chống HTTP desync chặn) hoặc do target (ứng dụng backend, ví dụ Spring Boot) trả 400 (validate lỗi, JSON sai). Phân biệt bằng hai metric CloudWatch: {{HTTPCode_ELB_4XX_Count}} (ALB tự sinh) và {{HTTPCode_Target_4XX_Count}} (target trả), kết hợp ALB access log để xem {{elb_status_code}} và {{target_status_code}}.
 
-### ALB tu tra 400 (ELB-side)
-- Header khong hop le: ky tu control, xuong dong trong header (HTTP request smuggling), Host header sai/thieu.
-- HTTP desync mitigation: ALB chan request co ambiguity (Content-Length + Transfer-Encoding ca hai).
-- Request line/body qua lon: header > 16KB (tong), URI > 16KB.
-- TLS/HTTP version khong ho tro, method khong hop le.
+### Cái gì và vì sao phải phân biệt hai nguồn 400
+- **ALB (tầng 7)** nhận HTTP từ client, kiểm tra tính hợp lệ cơ bản, rồi chuyển tiếp tới target (EC2/ECS/IP). Nếu request vi phạm quy tắc HTTP hoặc giới hạn của ALB, ALB trả lỗi **mà không gọi target**.
+- **Target** là ứng dụng của bạn (Spring Boot). Nếu request tới được app nhưng dữ liệu sai (thiếu field, JSON lỗi cú pháp, CSRF token sai), app trả 400.
+Phân biệt đúng nguồn quyết định hướng xử lý: lỗi ở edge/client/WAF hay lỗi ở code/validate. Nhầm hướng sẽ tốn hàng giờ soi log app trong khi request chưa bao giờ tới app.
 
-### Target tu tra 400
-- Spring validation, JSON parse loi, CSRF token sai, content-type khong dung.
+~~~seq
+title: Luồng request và điểm phát sinh 400
+actors: Client | ALB | WAF | SpringBoot
+Client -> ALB: HTTP request
+note ALB: Kiểm tra header, Host, size, desync
+ALB --> Client: 400 (ELB-side) nếu vi phạm
+ALB -> SpringBoot: Forward nếu hợp lệ
+SpringBoot --> Client: 400 (Target-side) nếu validate lỗi
+~~~
 
-### Phan biet bang metric
-- **HTTPCode_ELB_4XX_Count**: ALB tu sinh 4xx (request khong toi target).
-- **HTTPCode_Target_4XX_Count**: target tra 4xx.
-Neu ELB 4xx tang dot bien con target 4xx khong doi -> loi o edge/client; neu target 4xx tang -> loi app/validation.
+### Nguyên nhân ALB tự trả 400 (ELB-side)
+- **Header không hợp lệ**: ký tự điều khiển, xuống dòng trong header, định dạng sai. Đây cũng liên quan tấn công HTTP request smuggling.
+- **HTTP desync mitigation**: ALB phát hiện request mơ hồ (ví dụ vừa có {{Content-Length}} vừa có {{Transfer-Encoding}} theo cách nguy hiểm) và chặn để an toàn.
+- **Vượt giới hạn kích thước**: tổng header thường giới hạn ~16 KB, URI ~16 KB (theo tài liệu ALB; luôn kiểm tra giới hạn hiện hành). Cookie/JWT quá lớn là nguyên nhân hay gặp.
+- **Host header** thiếu hoặc không khớp quy tắc routing mà cấu hình yêu cầu chặt.
+- **Method/phiên bản HTTP** không hỗ trợ trong ngữ cảnh nhất định.
 
-### Dieu tra tung buoc
-1. CloudWatch: xem ty le hai metric, thoi diem bat dau.
-2. ALB access log: truong elb_status_code vs target_status_code. Neu target_status_code = "-" -> ALB khong forward (ELB-side).
-3. Loc theo client IP, User-Agent, URI; xem header size.
-4. Reproduce voi curl toi gian; them header dan de tim header gay loi.
-5. Kiem tra WAF logs (neu attach) vi WAF co the tra 403.
-6. Kiem tra application log cho 400 tuong ung (request id).
+### Nguyên nhân target trả 400 (Target-side)
+- Spring {{@Valid}} / Bean Validation thất bại, {{@RequestBody}} parse JSON lỗi, enum không khớp.
+- Thiếu {{Content-Type: application/json}} khi API yêu cầu.
+- CSRF token sai (ứng dụng web truyền thống), chữ ký request sai (API có HMAC).
 
-### Pitfall
-- Header lon do JWT/cookie tich luy -> client gui > 16KB -> ALB 400. Giam cookie.
-- ALB access log co do tre ~5 phut; dung real-time metric truoc.
-- HTTP/2 tu client: ALB ho tro nhung backend HTTP/1.1; mot so header bi loai.
+### Phân biệt bằng metric và access log
+1. **CloudWatch metrics** (đặt alarm sớm):
+   - {{HTTPCode_ELB_4XX_Count}}: số 4xx ALB tự sinh. Tăng đột biến, target 4xx không đổi -> vấn đề ở edge/request.
+   - {{HTTPCode_Target_4XX_Count}}: số 4xx target trả. Tăng -> nhìn vào validate/log app, có thể do client mới deploy hoặc dữ liệu bẩn.
+   - So sánh hai đường trên cùng khung thời gian (1 phút) để khoanh vùng trong ~30 giây.
+2. **ALB access log** (lưu S3, có độ trễ vài phút): mỗi dòng có {{elb_status_code}} và {{target_status_code}}. Nếu {{target_status_code}} là {{-}} (hoặc không có target) nghĩa là ALB không forward -> ELB-side. Lọc theo thời điểm, {{client:port}}, {{request_url}}, {{user_agent}} để tái hiện.
+3. **Truy vết ứng dụng**: nếu là target 400, tìm {{traceId/requestId}} trong log Spring để xem exception ({{MethodArgumentNotValidException}}, {{HttpMessageNotReadableException}}).
 
-> Senior tip: luon bat ALB access log vao S3 va CloudWatch metric alarm cho HTTPCode_ELB_4XX_Count. Khi incident, so sanh hai metric trong 30s de biet loi o edge hay app.`,
+### Ví dụ đời thực
+Ứng dụng thương mại điện tử (Spring Boot trên ECS, sau ALB, ~1.200 req/s) sau khi mobile app phát hành phiên bản mới, dashboard báo 400 tăng từ 0,2% lên 6% trong 10 phút. Cách xử lý:
+- Bước 1: CloudWatch cho thấy {{HTTPCode_ELB_4XX_Count}} tăng gấp 30 lần, {{HTTPCode_Target_4XX_Count}} gần như phẳng -> khoanh vùng ALB-side.
+- Bước 2: ALB access log cho thấy {{target_status_code}} = {{-}}, {{elb_status_code}} = 400, tập trung vào một {{User-Agent}} của app mới; header {{Authorization}} (JWT) dài bất thường.
+- Bước 3: Đo kích thước header: ~18 KB do JWT nhúng quá nhiều claim + cookie phiên chồng thêm -> vượt giới hạn header của ALB.
+- Xử lý: backend rút gọn claim JWT (chỉ giữ {{sub, roles, exp}}), chuyển profile sang gọi API; phía client bỏ cookie dư thừa. Tạm thời bật tính năng phù hợp phía app (giảm header) và theo dõi; sau 20 phút tỷ lệ 400 về 0,25%. Bài học: thêm kiểm thử kích thước header trong CI cho mobile.
+
+### Pitfall production
+- Cookie tích lũy (tracking, A/B test) làm header phình to -> 400 ngẫu nhiên theo người dùng.
+- Tái hiện bằng {{curl}} tối giản nhưng quên gửi header "bẩn" thật -> không reproduce.
+- ALB access log trễ ~5 phút: khi incident dùng metric trước, log sau để xác nhận.
+- Có WAF (Web Application Firewall) gắn ALB: WAF có thể trả 403/400 theo rule; kiểm tra log WAF song song.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi ALB trả HTTP 400, em tách hai khả năng: ALB tự từ chối hoặc target ứng dụng trả về. ALB-side thường do header/request sai chuẩn, vượt giới hạn kích thước header/URI, Host header bất thường hoặc cơ chế chống HTTP desync chặn request mơ hồ. Target-side thường là lỗi validate hoặc parse JSON trong Spring Boot. Em khoanh vùng nhanh bằng CloudWatch: {{HTTPCode_ELB_4XX_Count}} là lỗi do ALB sinh ra, {{HTTPCode_Target_4XX_Count}} là lỗi target trả; so sánh hai metric trong khung một phút là biết hướng. Sau đó em đọc ALB access log: nếu {{target_status_code}} là dấu gạch ngang thì request không tới backend. Em từng gặp case JWT làm header vượt giới hạn, metric ELB 4xx tăng còn target 4xx phẳng, fix bằng cách rút gọn claim và loại cookie dư thừa."
+
+> Senior tip: Luôn bật ALB access log và đặt alarm cho {{HTTPCode_ELB_4XX_Count}} lẫn {{HTTPCode_Target_4XX_Count}}. Khi sự cố, 30 giây đầu nhìn hai metric để biết "lỗi ở cửa" hay "lỗi ở nhà", tránh điều tra sai tầng.`,
   follow: [
     'ALB tra 502/503/504 khac nhau the nao va nguyen nhan?',
     'Cach cau hinh connection draining va deregistration delay?',
@@ -2746,43 +2795,61 @@ Một công ty bảo hiểm cần RPO dưới 1 phút và RTO dưới 1 giờ ch
   topic: 'aws',
   level: 'senior',
   q: 'Ket noi private tu on-premise len AWS: Site-to-Site VPN vs Direct Connect (private/transit VIF, DX + VPN backup). So sanh thoi gian trien khai, bang thong, do tre, chi phi.',
-  a: `**Tom tat:** Site-to-Site VPN nhanh trien khai (phut-gio), re, nhung qua Internet, do tre bien dong, bang thong gioi han. Direct Connect on dinh, do tre thap, bang thong lon, nhung trien khai tuan-thang va chi phi cao. Thuong DX lam chinh, VPN backup.
+  a: `**Tóm tắt:** Để kết nối private từ on-premise (hạ tầng tại chỗ, ví dụ data center công ty) lên AWS, hai lựa chọn chính là Site-to-Site VPN (mã hóa IPsec qua Internet, triển khai nhanh, rẻ nhưng băng thông/độ trễ biến động) và Direct Connect - DX (đường truyền riêng vật lý, ổn định, băng thông lớn, độ trễ thấp nhưng triển khai tuần-tháng và chi phí cao). Thực tế production thường dùng DX làm đường chính và VPN làm dự phòng (failover qua BGP - giao thức định tuyến động).
 
-### Site-to-Site VPN
-- IPsec tunnel qua Internet giua CGW (customer gateway) va VGW/TGW.
-- Trien khai: vai phut den vai gio (neu co thiet bi).
-- Bang thong: moi tunnel toi da ~1.25 Gbps; co the nhieu tunnel.
-- Do tre: bien dong, phu thuoc Internet.
-- Chi phi: theo gio (~0.05 USD/h/tunnel) + data transfer.
-- Uu: nhanh, re, khong can hop dong telco.
-- Nhuoc: jitter, packet loss, khong SLA.
+### Cái gì: các thành phần chính
+- **VPC (Virtual Private Cloud)**: mạng riêng ảo trên AWS.
+- **VPN Site-to-Site**: hai đầu nối IPsec tunnel: phía AWS là VGW (Virtual Private Gateway) hoặc gắn vào TGW (Transit Gateway - bộ định tuyến trung tâm nối nhiều VPC/on-prem); phía khách hàng là CGW (Customer Gateway - thiết bị/địa chỉ public của bạn). Mỗi "kết nối VPN" thường có 2 tunnel để HA.
+- **Direct Connect (DX)**: cáp/port vật lý tại DX location. Trên đó tạo **VIF (Virtual Interface)**:
+  - **Private VIF**: truy cập tài nguyên private trong VPC (qua VGW/TGW).
+  - **Transit VIF**: gắn TGW để đi tới nhiều VPC.
+  - **Public VIF**: truy cập endpoint public của dịch vụ AWS (S3, DynamoDB public endpoint) qua mạng AWS, không qua Internet.
+- **BGP (Border Gateway Protocol)**: trao đổi route tự động; khi một đường hỏng, route chuyển sang đường còn lại.
 
-### Direct Connect (DX)
-- Ket noi vat ly dedicated tu on-prem/datacenter den AWS DX location.
-- **Private VIF**: truy cap VPC private (qua VGW/TGW).
-- **Transit VIF**: truy cap nhieu VPC qua TGW.
-- **Public VIF**: truy cap public service (S3, DynamoDB) qua DX.
-- Trien khai: 2-8 tuan (dat circuit, cross-connect, LOA).
-- Bang thong: 1/10/100 Gbps (hoac hosted connection 50Mbps-10Gbps).
-- Do tre: on dinh, thap, co SLA.
-- Chi phi: port fee theo gio + data transfer out (re hon Internet) + circuit telco.
+~~~seq
+title: DX chính, VPN dự phòng
+actors: OnPrem | DXRouter | TGW | VPCApp
+OnPrem -> DXRouter: BGP advertise route nội bộ
+DXRouter -> TGW: Private/Transit VIF (đường chính)
+TGW -> VPCApp: Route tới subnet private
+note OnPrem: Khi DX down, BGP failover sang VPN tunnel
+OnPrem -> TGW: VPN IPsec qua Internet (dự phòng)
+TGW -> VPCApp: Traffic tiếp tục đi
+~~~
 
-### DX + VPN backup
-- DX lam duong chinh; VPN qua Internet lam backup.
-- Dung BGP: advertise route qua ca hai; khi DX down, route tu chuyen sang VPN (failover vai giay-phut).
-- Hoac dung DX with MACsec cho encryption o layer 2.
+### So sánh chi tiết (giá trị tham khảo, cần kiểm tra bảng giá hiện hành theo region)
+| Tiêu chí | Site-to-Site VPN | Direct Connect |
+|---|---|---|
+| Triển khai | Phút đến vài giờ (có thiết bị sẵn) | 2-10 tuần (đặt circuit, cross-connect, cấu hình) |
+| Băng thông | ~1,25 Gbps mỗi tunnel; gộp nhiều tunnel phức tạp | 1/10/100 Gbps (dedicated) hoặc hosted 50 Mbps-10 Gbps |
+| Độ trễ | Biến động, phụ thuộc Internet, có jitter | Ổn định, thấp hơn, có SLA đường truyền |
+| Mã hóa | IPsec mặc định | Không mã hóa mặc định; có thể dùng MACsec (L2) hoặc IPsec over DX |
+| Chi phí | Theo giờ (~0,05 USD/giờ/tunnel) + data transfer | Port-hour + data transfer out (thường rẻ hơn Internet/GB) + phí circuit nhà mạng |
+| Độ tin cậy | Phụ thuộc Internet | Cao hơn; vẫn cần thiết kế HA (2 DX/2 location nếu critical) |
 
-### Khi nao chon
-- Can nhanh, tam thoi, dev/test -> VPN.
-- Production banking, latency-sensitive, throughput lon -> DX + VPN backup.
-- Nhieu VPC -> Transit VIF + TGW.
+### Vì sao chọn thế nào (quyết định theo nhu cầu)
+- **Cần nhanh, tạm thời, POC, dev/test, chi phí thấp**: VPN là hợp lý. Có thể dựng trong ngày.
+- **Production, ngân hàng, latency nhạy cảm, truyền dữ liệu lớn liên tục (batch, replication DB)**: DX làm chính + VPN backup. DX cho chất lượng; VPN đảm bảo còn đường khi DX bảo trì/lỗi.
+- **Nhiều VPC/multi-account**: dùng Transit VIF + TGW để tránh tạo nhiều Private VIF/VGW rời rạc.
 
-### Pitfall
-- VPN tunnel MTU: IPsec overhead -> dat MTU 1400-1436 de tranh fragmentation.
-- DX khong ma hoa mac dinh; banking thuong yeu cau MACsec/IPsec tren DX.
-- Hosted connection phu thuoc partner; port capacity chia se.
+### Ví dụ đời thực
+Ngân hàng có core on-prem, chuyển dần service sang AWS (3 VPC: prod, non-prod, shared). Yêu cầu: replication DB on-prem -> RDS liên tục ~80 Mbps giờ cao điểm, API nội bộ p95 < 40 ms giữa DC và AWS, không gián đoạn khi một đường lỗi.
+- Giai đoạn 1 (tuần 1): dựng VPN Site-to-Site 2 tunnel qua TGW để có kết nối ngay, chạy thử migration batch đêm (tốn ~6 giờ cho 120 GB qua VPN, độ trễ dao động 35-90 ms) - chấp nhận cho dev/test.
+- Giai đoạn 2 (tuần 6): DX hosted 1 Gbps tại DX location, Transit VIF vào TGW; cấu hình BGP ưu tiên DX (local preference/AS path). VPN giữ làm backup, health check BGP.
+- Diễn tập failover: tắt cổng DX, traffic chuyển sang VPN trong ~45 giây, p95 tăng lên 75 ms nhưng ứng dụng vẫn hoạt động; BGP hội tụ lại về DX trong ~60 giây khi bật lại.
+- Kết quả: batch replication ổn định, chi phí data transfer giảm so với kéo qua Internet; đáp ứng kiểm toán (đường riêng + mã hóa IPsec trên VPN backup; cân nhắc MACsec trên DX theo chính sách).
 
-> Senior tip: banking thuong yeu cau dual DX o hai location khac nhau + VPN backup de dat HA. Luon test failover that (rut cap) truoc go-live, vi BGP convergence co the mat 30-90s va app phai chiu duoc.`,
+### Pitfall production
+- **MTU/fragmentation trên VPN**: IPsec thêm overhead, gói lớn có thể phân mảnh gây chậm/mất gói. Đặt MTU ~1400-1436 hoặc bật TCP MSS clamping; kiểm tra bằng ping với cờ DF.
+- **DX không mã hóa mặc định**: ngân hàng thường yêu cầu MACsec hoặc IPsec over DX; không được giả định "đường riêng = an toàn tuyệt đối" nếu chính sách yêu cầu mã hóa.
+- **BGP failover không như ý**: quảng bá route sai, prefix dài/ngắn khác nhau làm đường backup không được chọn; phải test failover thật (rút cáp/bật-tắt) trước go-live.
+- **Băng thông VPN backup không đủ**: DX 1 Gbps nhưng VPN backup chỉ chịu ~200 Mbps thực tế -> khi failover, hệ thống nghẽn. Cần tính capacity backup cho lưu lượng tối thiểu sống sót.
+- **Hosted DX phụ thuộc partner**: công suất chia sẻ; xác nhận SLA và quy trình sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi kết nối private từ on-prem lên AWS, em cân nhắc Site-to-Site VPN và Direct Connect. VPN chạy IPsec qua Internet, dựng được trong vài giờ, chi phí thấp nhưng băng thông và độ trễ biến động. Direct Connect là đường vật lý riêng, độ trễ ổn định, băng thông lớn và có SLA, nhưng mất vài tuần triển khai và chi phí cao hơn; DX không mã hóa mặc định nên với ngân hàng em xem thêm MACsec hoặc IPsec. Thực tế em hay chọn DX làm đường chính và VPN làm dự phòng, dùng BGP để failover tự động. Khi thiết kế em chú ý MTU để tránh fragmentation trên VPN, kiểm tra capacity đường backup, và luôn diễn tập failover thật trước go-live vì BGP hội tụ có thể mất vài chục giây và ứng dụng phải chịu được."
+
+> Senior tip: Đừng chỉ vẽ sơ đồ HA - hãy diễn tập rút đường chính. Với ngân hàng, yêu cầu dual DX ở hai location khác nhau + VPN backup là phổ biến, nhưng giá trị thật nằm ở việc đã test failover và đo được thời gian hội tụ BGP.`,
   follow: [
     'BGP route advertisement va AS path prepending dung de uu tien DX the nao?',
     'Khi DX down, VPN backup co du bang thong khong? Plan capacity ra sao?',
@@ -2909,38 +2976,59 @@ Một startup dựng hệ thống trên một AZ, một NAT gateway, RDS Single-
   topic: 'aws',
   level: 'senior',
   q: 'Security Group stateful vs NACL stateless trong su co thuc te: ephemeral port bi NACL chan chieu ve, cach debug bang VPC Flow Logs va Reachability Analyzer.',
-  a: `**Tom tat:** SG tu dong cho phep traffic tra ve (stateful); NACL phai mo ca chieu di va ve (stateless). Loi pho bien: NACL cho phep inbound nhung chan outbound ephemeral port -> connection timeout. Debug bang Flow Logs (REJECT) va Reachability Analyzer.
+  a: `**Tóm tắt:** Security Group (SG - tường lửa gắn vào ENI/tài nguyên, ví dụ EC2) là **stateful** (có nhớ trạng thái kết nối: cho phép chiều đi thì tự cho phép chiều về), còn NACL (Network ACL - tường lửa gắn vào subnet) là **stateless** (không nhớ, phải khai báo rule cả hai chiều). Sự cố kinh điển: NACL cho phép inbound tới server nhưng chặn outbound ephemeral port (cổng tạm, dải 1024-65535) khiến phản hồi không về được -> client timeout dù server đã xử lý. Debug bằng VPC Flow Logs (thấy {{REJECT}}) và VPC Reachability Analyzer (chỉ ra hop/rule chặn).
 
-### Case: ephemeral port bi chan chieu ve
-Client (port 54321) -> Server (port 443). Reply tu server port 443 -> client port 54321 (ephemeral).
-- SG: tu dong cho phep reply (stateful) -> khong can rule.
-- NACL: phai co rule outbound cho port 443 (server->client) va inbound cho ephemeral range 1024-65535. Neu NACL server-side deny outbound 1024-65535 -> reply bi chan -> connection hang/timeout.
-Trieu chung: TCP handshake SYN den server OK, nhung client khong nhan SYN-ACK -> timeout; hoac connection established roi stall.
+### Cái gì và vì sao hai lớp này dễ gây nhầm
+- **ENI (Elastic Network Interface)**: "card mạng ảo" của tài nguyên trong VPC.
+- **Ephemeral port (cổng tạm)**: khi client mở kết nối TCP, hệ điều hành cấp một cổng nguồn tạm (thường 1024-65535; dải có thể khác theo OS) để nhận phản hồi. Ví dụ: client {{10.0.1.20:54321}} -> server {{10.0.2.30:443}}; phản hồi đi ngược {{443 -> 54321}}.
+- **Stateful (SG)**: SG ghi nhận connection đã được cho phép; gói phản hồi thuộc connection đó được tự động cho qua, không cần rule outbound/inbound riêng cho chiều về.
+- **Stateless (NACL)**: mỗi gói được đánh giá độc lập theo rule inbound/outbound của subnet; không quan tâm gói đó có phải phản hồi hay không.
 
-### Debug bang VPC Flow Logs
-- Bat Flow Logs cho subnet/ENI.
-- Tim record: srcaddr dstaddr srcport dstport protocol action.
-- Neu thay REJECT voi dstport la ephemeral -> NACL chan.
-- Neu ACCEPT nhung app khong nhan -> SG hoac app issue.
-- Flow Logs co do tre ~5-10 phut.
+~~~seq
+title: Ephemeral port bị NACL chặn chiều về
+actors: Client | SubnetNACL | ServerSG | Server
+Client -> SubnetNACL: TCP SYN src 54321 dst 443
+SubnetNACL -> ServerSG: Inbound allow 443 OK
+ServerSG -> Server: SG stateful cho vào
+Server -> ServerSG: SYN-ACK src 443 dst 54321
+ServerSG -> SubnetNACL: SG tự cho reply ra
+note SubnetNACL: Outbound thiếu rule cho 1024-65535
+SubnetNACL --> Client: REJECT - client timeout
+~~~
 
-### Reachability Analyzer
-- Cong cu managed: kiem tra reachability giua hai ENI/resource theo SG/NACL/route table.
-- Tao path: source ENI -> destination ENI; tra ve reachable/unreachable + hop nao chan (SG/NACL/route).
-- Khong gui traffic that -> an toan cho production.
-- Ho tro ENI, IGW, NAT GW, TGW, VPN, peering.
+### Cơ chế sự cố ephemeral port
+Kịch bản: web server trong subnet private lắng nghe 443. NACL subnet server có inbound allow TCP 443 từ client CIDR, nhưng outbound chỉ allow vài port (ví dụ 443, 53) và **quên** dải ephemeral 1024-65535.
+- Client gửi SYN tới 443 -> qua NACL inbound (OK) -> qua SG server (OK, stateful).
+- Server trả SYN-ACK/response từ 443 về {{client:54321}} -> SG cho ra (stateful) -> NACL outbound kiểm tra đích 54321, **không khớp rule allow** -> rơi vào rule deny -> {{REJECT}}.
+- Kết quả: client thấy timeout hoặc "connection timed out"; đôi khi bắt tay một phần rồi treo. Nếu nhìn từ app server, request có thể đã được nhận/xử lý (tùy thời điểm) nhưng response không về.
 
-### Cac nguyen nhan khac
-- Route table thieu route ve client CIDR.
-- SG cua client khong allow outbound.
-- NACL inbound rule deny IP client.
+Ngược lại cũng xảy ra: server là client đi ra ngoài (gọi API), NACL subnet server cho outbound 443 nhưng inbound không cho ephemeral -> response từ Internet/API không về.
 
-### Pitfall
-- NACL rule number: rule nho hon duoc uu tien; default deny o *.
-- Flow Logs khong capture packet payload; chi metadata.
-- Reachability Analyzer chi kiem tra control plane config, khong capture runtime (packet loss).
+### Debug từng bước
+1. **Xác định triệu chứng**: {{curl}} từ client tới server timeout; từ trong cùng subnet hoặc bypass NACL (tạm thời, cẩn thận) có khác không? Kiểm tra SG trước: SG stateful nên hiếm khi là nguyên nhân chiều về.
+2. **VPC Flow Logs**: bật cho ENI hoặc subnet (gửi CloudWatch Logs/S3). Tìm bản ghi 5-tuple: {{srcaddr, dstaddr, srcport, dstport, protocol, action}}. Nếu thấy {{REJECT}} với {{dstport}} trong dải 1024-65535 theo chiều phản hồi -> NACL chặn ephemeral. Lưu ý Flow Logs có độ trễ ~5-10 phút và chỉ có metadata, không có payload.
+3. **VPC Reachability Analyzer**: tạo path từ ENI nguồn tới ENI đích (port/protocol). Công cụ phân tích cấu hình (SG, NACL, route table, IGW/NAT/TGW) và trả về reachable hay không, kèm thành phần chặn. Không gửi gói thật nên an toàn khi production; nhưng không phát hiện vấn đề runtime (app không listen, OS firewall).
+4. **Kiểm tra NACL rule order**: NACL đánh giá theo số rule tăng dần, rule đầu khớp sẽ áp dụng; có rule {{* DENY}} cuối cùng. Một rule DENY đặt sớm có thể chặn trước rule ALLOW.
+5. **Kiểm tra route table**: nếu response đi đường khác hoặc thiếu route về CIDR client -> cũng timeout (Flow Logs có thể thấy pattern khác).
 
-> Senior tip: banking network team thuong giu NACL mac dinh allow-all va chi dung SG cho security, vi NACL stateless de gay su co kho debug. Neu phai dung NACL (compliance), luon mo ephemeral range 1024-65535 ca hai chieu va document ro.`,
+### Ví dụ đời thực
+Hệ thống nội bộ ngân hàng: service A (subnet app) gọi service B (subnet app khác) qua HTTPS 443, lưu lượng ~300 req/s. Sau thay đổi NACL để "siết bảo mật", tỷ lệ timeout tăng 40%, p99 từ 120 ms lên 8.000 ms (timeout). App log service B cho thấy vẫn nhận request, nhưng service A báo {{Read timed out}}.
+- Quan sát CloudWatch: không có thay đổi SG; metric app cho thấy request đến B tăng nhưng response thành công giảm.
+- Bật Flow Logs (đã có sẵn) và truy vấn: thấy {{REJECT}} từ subnet B về subnet A, {{srcport=443}}, {{dstport}} rải rác 49152-65535 -> NACL subnet B chặn outbound ephemeral.
+- Reachability Analyzer xác nhận path {{ENI A -> ENI B port 443}} reachable chiều đi, nhưng chiều phản hồi bị NACL.
+- Khắc phục: thêm rule NACL outbound subnet B cho TCP 1024-65535 tới CIDR subnet A (và ngược lại inbound ephemeral nếu B gọi ra); kiểm thử lại. Tỷ lệ timeout về 0% sau 3 phút.
+- Phòng ngừa: chuẩn hóa NACL template, review change qua IaC (Terraform/CDK), test kết nối sau mỗi thay đổi mạng.
+
+### Pitfall production
+- Cho rằng "SG đã mở là đủ": SG stateful giúp chiều về, nhưng **NACL vẫn có thể chặn** trước khi gói rời subnet.
+- Mở ephemeral quá hẹp: Linux/Windows dùng dải khác nhau; an toàn là 1024-65535 trừ khi có chuẩn nội bộ chặt và kiểm soát OS.
+- Dùng NACL để "siết" như SG: NACL stateless khó bảo trì, dễ gây outage; nhiều đội chỉ dùng NACL cho deny cụ thể (chặn IP xấu) và để allow rộng, còn kiểm soát chính bằng SG.
+- Flow Logs không thấy gói bị SG chặn? (tùy trường hợp) - kết hợp cả SG rule review và Reachability Analyzer.
+
+### Trả lời mẫu khi phỏng vấn
+"Security Group là stateful nên nếu cho phép request đi vào, phản hồi tự được phép đi ra. NACL gắn ở subnet là stateless, phải khai báo rule cả inbound và outbound cho từng chiều. Sự cố em hay gặp là NACL cho inbound tới port 443 nhưng quên outbound dải ephemeral 1024-65535, nên server nhận request nhưng phản hồi về client bị NACL chặn, dẫn tới timeout dù backend vẫn sống. Khi debug em bật VPC Flow Logs để tìm bản ghi REJECT theo 5-tuple và xác định port đích là ephemeral; sau đó dùng Reachability Analyzer để chỉ ra đúng NACL hoặc route table nào chặn. Cách phòng ngừa là chuẩn hóa rule NACL, ưu tiên kiểm soát chi tiết bằng SG, và luôn test kết nối sau thay đổi mạng."
+
+> Senior tip: Với môi trường ngân hàng, nhiều đội giữ NACL gần như allow-all và kiểm soát bằng SG để tránh outage khó debug; nếu compliance bắt buộc NACL, hãy chuẩn hóa template mở ephemeral 1024-65535 có chủ đích và review mọi thay đổi qua IaC + kiểm thử tự động.`,
   follow: [
     'Khi nao can dung NACL thay vi chi SG?',
     'VPC Flow Logs format va cach query bang Athena?',
@@ -3599,36 +3687,66 @@ Bảng DynamoDB lưu sự kiện IoT với partition key là {{date}} (ví dụ 
   topic: 'aws',
   level: 'lead',
   q: 'IAM policy evaluation logic: explicit deny, SCP, permission boundary, role cho workload',
-  a: `**Tóm tắt:** AWS đánh giá request theo: explicit deny thắng mọi thứ; SCP giới hạn tối đa tổ chức; permission boundary giới hạn tối đa role/user; identity policy + resource policy phải allow. Tất cả phải allow, một deny là deny.
+  a: `**Tóm tắt:** IAM (Identity and Access Management - dịch vụ quản lý danh tính và quyền trên AWS) đánh giá quyền theo nguyên tắc "explicit deny thắng tất cả" (từ chối rõ ràng luôn thắng), sau đó cần có "allow" phù hợp và không bị SCP (Service Control Policy - chính sách giới hạn ở cấp AWS Organizations) hay permission boundary (ranh giới quyền tối đa cho user/role) chặn. Để request được phép: **không có deny** nào khớp, **có allow** từ identity policy hoặc resource policy, và allow đó **được SCP và boundary cho phép**. Hiểu logic này giúp cấp quyền đúng (least privilege - tối thiểu cần thiết) cho workload (ứng dụng chạy trên EC2/ECS/Lambda/EKS).
 
-### Thứ tự đánh giá
-1. SCP (Service Control Policy) ở Organization: nếu deny -> deny. SCP không grant, chỉ giới hạn.
-2. Permission boundary (nếu có): giới hạn tối đa permission của user/role. Phải allow trong boundary.
-3. Identity-based policy (attached to user/role) hoặc resource-based policy: phải allow.
-4. Explicit deny ở bất kỳ đâu -> deny ngay.
+### Cái gì: các loại policy và vai trò
+- **Identity-based policy**: gắn vào IAM user, group, role (ví dụ role của ECS task). Nói "principal này được/không được làm gì trên resource nào".
+- **Resource-based policy**: gắn vào tài nguyên (S3 bucket policy, SQS queue policy, KMS key policy). Nói "ai được truy cập tài nguyên này". Hỗ trợ cross-account rõ ràng.
+- **SCP (Service Control Policy)**: áp ở AWS Organizations (OU/account). SCP **không cấp quyền**, chỉ đặt "trần" tối đa; kể cả admin trong account cũng không vượt được SCP deny/không-allow.
+- **Permission boundary**: policy gắn vào user/role để giới hạn quyền tối đa principal đó có thể được cấp (dù identity policy cho rộng). Hữu ích khi ủy quyền cho team tự tạo role nhưng vẫn bị kiểm soát.
+- **Session policy**: giới hạn thêm khi assume role (ví dụ STS session) - thu hẹp, không mở rộng.
+- **Explicit deny**: statement {{Effect: Deny}} khớp action/resource/condition. **Implicit deny**: mặc định từ chối nếu không có Allow.
 
-Implicit deny: không có allow nào -> deny.
+~~~seq
+title: Luồng đánh giá IAM (rút gọn)
+actors: Principal | IAMEngine | SCP | Resource
+Principal -> IAMEngine: Gọi API (vd: s3:GetObject)
+IAMEngine -> SCP: Có explicit Deny hoặc không Allow?
+SCP --> IAMEngine: SCP chặn -> Deny
+IAMEngine -> Resource: Kiểm tra resource policy
+Resource --> IAMEngine: Allow/Deny theo policy
+note IAMEngine: Explicit Deny bất kỳ đâu -> Deny
+IAMEngine --> Principal: Allow nếu qua mọi tầng
+~~~
 
-### SCP
-Áp dụng ở OU/account level. Ví dụ deny region ngoài ap-southeast-1, deny xóa CloudTrail. Dùng để guardrail toàn org.
+### Vì sao logic đánh giá hoạt động theo thứ tự này
+AWS thiết kế "deny ưu tiên" để an toàn: chỉ cần một lớp bảo vệ nói "không" là chặn được, tránh lộ do một policy khác cấu hình sai. Cơ chế (đơn giản hóa cho trường hợp phổ biến):
+1. **Explicit Deny?** Nếu có Deny khớp ở identity policy, resource policy, SCP, boundary, session policy -> **Deny** ngay.
+2. **Có Allow khớp?** Cần Allow từ identity policy và/hoặc resource policy (tùy same-account/cross-account và loại dịch vụ). Nếu không có Allow -> **Implicit Deny**.
+3. **SCP cho phép?** SCP phải không chặn (trong mô hình allow-list SCP, action phải được Allow; trong deny-list, không bị Deny). Nếu bị chặn -> **Deny**.
+4. **Permission boundary cho phép?** Boundary phải Allow phạm vi đó. Nếu không -> **Deny**.
+5. Qua tất cả -> **Allow**.
 
-### Permission boundary
-Dùng cho delegated admin: dev có thể tạo role nhưng bị boundary giới hạn (không được tạo admin role). Boundary là policy attached to user/role như max permission.
+Lưu ý cross-account (ví dụ truy cập S3 bucket ở account khác): thường cần **cả** identity policy bên principal cho phép **và** resource policy bên bucket cho phép (và vẫn chịu SCP/boundary).
 
-### Resource-based policy
-S3 bucket policy, SQS queue policy, KMS key policy. Có thể grant cross-account. Kết hợp identity policy: cả hai phải allow (trừ resource policy với principal cùng account có thể override? Thực tế: nếu same account, identity allow đủ; cross-account cần cả hai).
+### Áp dụng cho workload (role cho ứng dụng)
+- **EC2**: instance profile gắn IAM role; app dùng AWS SDK lấy credential tạm từ metadata.
+- **ECS/Fargate**: task role (quyền app gọi AWS) tách với task execution role (quyền ECS kéo image, ghi log). Đây là điểm hay nhầm.
+- **Lambda**: execution role.
+- **EKS**: IRSA hoặc EKS Pod Identity để gắn role theo ServiceAccount/pod.
+Nguyên tắc: cấp đúng action/resource (tránh {{*}}), thêm {{Condition}} khi phù hợp ({{aws:SourceVpc}}, {{aws:PrincipalTag}}, ràng buộc {{kms:ViaService}}...), tách role theo service (payment không dùng chung role với reporting).
 
-### Role cho workload
-- EC2 instance profile, ECS task role, Lambda execution role, EKS IRSA/Pod Identity.
-- Principle of least privilege: chỉ permission cần thiết, dùng condition (aws:SourceVpc, aws:PrincipalTag).
-- Session policy khi assume role: further restrict.
+### Ví dụ đời thực
+Nền tảng ngân hàng multi-account (AWS Organizations): account workload chạy ECS service ghi file vào S3 bucket cùng account, đọc secret từ Secrets Manager. Sự cố: deploy phiên bản mới bị {{AccessDenied}} khi {{s3:PutObject}}, dù task role "trông có vẻ đủ quyền".
+- Kiểm tra CloudTrail: thấy {{errorCode AccessDenied}}, {{userIdentity}} là task role {{arn:aws:iam::111122223333:role/pay-svc-task}}.
+- Identity policy của role có {{s3:PutObject}} trên {{arn:aws:s3:::pay-bucket/*}} -> có Allow.
+- Kiểm tra bucket policy: không có Deny.
+- Kiểm tra **permission boundary** gắn trên role (do platform team áp để ủy quyền): boundary chỉ cho phép {{s3:GetObject}}, không có {{s3:PutObject}} -> boundary chặn dù identity Allow.
+- Kiểm tra SCP ở OU: không deny S3.
+- Khắc phục: cập nhật boundary (qua quy trình review) để thêm {{s3:PutObject}} đúng prefix {{inbox/*}}; thêm {{Condition}} giới hạn. Sau khi áp dụng, request thành công. Đồng thời thêm test quyền trong pipeline (IAM Policy Simulator/kiểm thử tích hợp) để phát hiện sớm.
+- Kết quả: không còn {{AccessDenied}}, audit ghi rõ vì sao boundary thay đổi.
 
-### Trên production
-- Dùng IAM Access Analyzer để tìm unused permission và external access.
-- CloudTrail log mọi API call; alert AssumeRole bất thường.
-- Pitfall: wildcard * trong Action/Resource -> over-permission. Dùng policy simulator để test.
+### Pitfall production
+- **Wildcard {{Action:*}} / {{Resource:*}}**: tiện lúc dev nhưng rủi ro lớn; dùng Access Analyzer và review định kỳ để thu hẹp.
+- **Nhầm execution role và task role (ECS)**: app thiếu quyền vì policy gắn nhầm role.
+- **Quên SCP/boundary**: debug chỉ nhìn identity policy sẽ "bí". Luôn kiểm tra đủ các tầng.
+- **Resource policy deny ngầm**: bucket policy có {{Deny}} không khớp điều kiện VPC endpoint/KMS -> lỗi khó hiểu.
+- **Credential precedence trên EC2/EKS**: app lỡ dùng env credential thay vì role mong muốn.
 
-> Senior tip: thiết kế IAM như code: version control policy, review PR, dùng permission boundary cho self-service. Explicit deny cho các action nguy hiểm (iam:*, s3:DeleteBucket) ở SCP level.`,
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu IAM evaluation theo nguyên tắc explicit deny thắng tất cả. Để một request được phép, trước hết không có Deny nào khớp ở identity policy, resource policy, SCP hay permission boundary; sau đó phải có Allow phù hợp, và Allow đó không bị SCP hay permission boundary chặn. SCP ở Organizations đặt trần cho cả account, còn permission boundary đặt trần cho từng user hoặc role. Khi cấp quyền cho workload như ECS hay Lambda, em dùng role riêng, tách task role và execution role trên ECS, áp least privilege, tránh wildcard và thêm condition khi cần. Khi gặp AccessDenied, em đọc CloudTrail để biết principal và action thật, rồi kiểm tra lần lượt identity policy, resource policy, SCP, boundary - vì rất nhiều trường hợp do boundary hoặc SCP chặn chứ không phải do thiếu Allow."
+
+> Senior tip: Thiết kế IAM như code: version control, review thay đổi, dùng permission boundary cho mô hình self-service, và đặt SCP deny cho hành động nguy hiểm (tắt CloudTrail, xóa log). Khi debug {{AccessDenied}}, luôn đọc CloudTrail trước - 80% nguyên nhân nằm ở condition, boundary hoặc SCP.`,
   follow: [
     'Permission boundary và SCP khác nhau thế nào?',
     'Làm sao audit permission unused trong AWS?',
