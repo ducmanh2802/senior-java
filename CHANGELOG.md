@@ -3,6 +3,15 @@
 ## 2026-11-07
 
 ### Nội dung
+
+
+### Ứng dụng
+- Home backdrop: MacBook Pro on the left, Mac mini M4 on the right
+
+
+## 2026-11-07
+
+### Nội dung
 - T118 (auto-committed after kilo review + verify)
 - T877 (auto-committed after kilo review + verify)
 
