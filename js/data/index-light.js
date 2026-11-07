@@ -1611,6 +1611,8 @@ window.DATA_INDEX = {
     {"id":"lesson-security-007","track":"security","order":7,"title":"Mã hoá trường dữ liệu nhạy cảm bằng AES-GCM: IV không được lặp, version khoá để xoay vòng, blind index để tìm kiếm","level":"senior","minutes":50},
     {"id":"lesson-security-008","track":"security","order":8,"title":"SQL injection từ gốc: code và data đi chung một đường, PreparedStatement tách chúng ra, và ba chỗ phải tự canh","level":"mid","minutes":40},
     {"id":"lesson-security-009","track":"security","order":9,"title":"SSRF: vì sao để server tự đi gọi một URL theo yêu cầu là nguy hiểm, và kiểm tra URL đúng cách ở tầng ứng dụng","level":"senior","minutes":45},
+    {"id":"lesson-security-010","track":"security","order":10,"title":"Tự ký và kiểm JWT HS256","level":"senior","minutes":40},
+    {"id":"lesson-security-011","track":"security","order":11,"title":"PKCE S256 cho OAuth public client","level":"senior","minutes":40},
     {"id":"lesson-testing-001","track":"testing","order":1,"title":"Test double: fake, stub và mock — chọn cái nào thay vì mock mọi thứ","level":"mid","minutes":25},
     {"id":"lesson-testing-002","track":"testing","order":2,"title":"Clock injection: test code phụ thuộc thời gian mà không ngủ và không flaky","level":"senior","minutes":20},
     {"id":"lesson-testing-003","track":"testing","order":3,"title":"Property-based testing mini: sinh input bằng seed cố định để tìm bug merge/sort","level":"senior","minutes":30},
