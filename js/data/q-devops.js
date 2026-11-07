@@ -8721,47 +8721,61 @@ Service thanh toán trước đây cảnh báo khi "5xx > 1% trong 5 phút": b�
     topic: 'devops',
     level: 'lead',
     q: 'Distributed tracing: OpenTelemetry, Jaeger/Tempo, trace context propagation trong Spring Boot?',
-    a: `**Tóm tắt:** OpenTelemetry instrument app để sinh trace/span; propagate trace context qua HTTP header (W3C traceparent); backend Jaeger/Tempo lưu và hiển thị; giúp tìm bottleneck trong microservices.
+    a: `**Tóm tắt:** Distributed tracing ghi lại hành trình của một request qua nhiều service thành một **trace** gồm nhiều **span** (mỗi span là một đoạn việc: gọi HTTP, query DB, gửi Kafka). **OpenTelemetry** là chuẩn chung để sinh và gửi dữ liệu trace; **trace context** đi kèm request qua header W3C {{traceparent}}; **Jaeger/Tempo** lưu và hiển thị. Trong Spring Boot 3, Micrometer Tracing với bridge OpenTelemetry tự instrument phần lớn đường đi; việc của bạn là đảm bảo context không bị đứt và chọn **sampling** hợp lý.
 
-### Khái niệm
-- **Trace**: một request end-to-end qua nhiều service.
-- **Span**: một đơn vị công việc (HTTP call, DB query) với thời gian.
-- **Context propagation**: truyền traceId/spanId qua header để nối span.
-
-### OpenTelemetry trong Spring Boot 3
-- Thêm opentelemetry-spring-boot-starter.
-- Auto-instrument HTTP, JDBC, Kafka.
-- Exporter OTLP → Tempo/Jaeger.
-
-~~~xml
-<dependency>
-  <groupId>io.opentelemetry.instrumentation</groupId>
-  <artifactId>opentelemetry-spring-boot-starter</artifactId>
-</dependency>
+### Khái niệm, từng bước
+~~~seq
+title: Một trace qua 3 service
+actors: Gateway | Order | Payment | DB
+Gateway -> Order: POST /orders (traceparent: 00-T-A-01)
+Order -> DB: INSERT order (span B, cha là A)
+Order -> Payment: POST /charge (traceparent: 00-T-C-01)
+Payment -> DB: UPDATE wallet (span D, cha là C)
+Payment --> Order: 200
+Order --> Gateway: 201
 ~~~
+- **traceId (T)** giống nhau trên mọi span của hành trình; mỗi span có **spanId** riêng và id của span cha → dựng được cây thời gian.
+- Header {{traceparent}} có dạng {{00-<traceId 32 hex>-<spanId 16 hex>-<flags>}}; bit cuối của flags cho biết request có được lấy mẫu (sampled) hay không, để mọi service quyết định nhất quán.
+- **Baggage**: cặp key-value đi kèm context (ví dụ tenantId) — tiện nhưng bị gửi qua mọi lời gọi, không đưa dữ liệu nhạy cảm vào.
+
+### Spring Boot 3
 ~~~yaml
-otel:
-  exporter:
-    otlp:
-      endpoint: http://tempo:4317
-  traces:
-    sampler: parentbased_traceidratio
-    sampler.arg: 0.1
+# dependency: io.micrometer:micrometer-tracing-bridge-otel + io.opentelemetry:opentelemetry-exporter-otlp
+management:
+  tracing:
+    sampling:
+      probability: 0.1          # head sampling 10%; mặc định 0.1
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4318/v1/traces
 ~~~
-
-### W3C traceparent
-- Header: {{traceparent: 00-<traceId>-<spanId>-01}}.
-- Propagate qua Feign/RestTemplate/WebClient tự động với OTel.
+- RestClient/WebClient/RestTemplate **tạo từ builder do Spring cung cấp** (bean) mới được instrument; tự {{new RestTemplate()}} thì mất context.
+- Kafka: bật observation trên KafkaTemplate và listener container để context đi qua header message.
+- {{@Async}} và executor tự tạo: bọc bằng context propagation, nếu không span con mất cha.
+- traceId tự vào MDC → log và trace nối được với nhau.
 
 ### Sampling
-- 100% dev, 1-10% prod để giảm chi phí.
-- Tail-based sampling: giữ trace có lỗi/chậm.
+| Kiểu | Cách làm | Ưu / nhược |
+|---|---|---|
+| Head-based | Quyết định ở đầu request (ví dụ 10%) | Rẻ, đơn giản; có thể bỏ lỡ chính request lỗi |
+| Tail-based | OpenTelemetry Collector giữ toàn bộ span một lúc rồi quyết định: giữ 100% trace lỗi hoặc chậm, 5% trace bình thường | Giữ được trace quan trọng; Collector tốn RAM, cần định tuyến theo traceId |
 
-### Trên production
-- Sai lầm: trace mọi request → storage nổ.
-- Kiểm tra: trace latency, span count, sampling rate.
+### Jaeger hay Tempo
+Jaeger: giao diện tìm kiếm theo service/tag tốt, lưu trên Elasticsearch/Cassandra. Grafana Tempo: chỉ đánh index theo traceId, lưu trên object storage nên rẻ; tìm bằng TraceQL hoặc đi từ log (traceId) và exemplar trên biểu đồ metric sang trace.
 
-> Senior tip: Trace + metric + log (three pillars) liên kết bằng traceId; Grafana Tempo + Loki + Prometheus là stack phổ biến.`,
+### Ví dụ đời thực
+API đặt hàng p99 = 2,1s, mỗi team đều nói service của mình nhanh. Bật tracing với tail sampling (100% trace > 1s). Trace cho thấy Order gọi Inventory **tuần tự** cho từng dòng hàng (đơn trung bình 7 dòng × 180ms), và một lần gọi lại Pricing không cần thiết. Gộp thành một lời gọi batch và bỏ lời gọi thừa: p99 còn 420ms. Cũng nhờ trace, team phát hiện các lời gọi qua {{@Async}} bị đứt context — sửa executor để có cây span đầy đủ.
+
+### Pitfall
+- Một service không truyền header → trace đứt đôi, mất đúng đoạn cần xem.
+- Sampling 100% ở production lưu lượng lớn → chi phí lưu trữ bùng nổ.
+- Đặt attribute có cardinality cao hoặc dữ liệu cá nhân lên span.
+- Mỗi service một tỉ lệ sampling khác nhau mà không tôn trọng cờ sampled của cha.
+
+### Trả lời mẫu khi phỏng vấn
+"Distributed tracing ghi hành trình của một request thành một trace gồm nhiều span, mỗi span là một đoạn việc như gọi HTTP hay query DB, có traceId chung và id span cha để dựng cây thời gian. Context đi qua các service bằng header W3C traceparent, trong đó có cờ sampled để mọi service quyết định giống nhau. Trong Spring Boot 3 tôi dùng Micrometer Tracing với bridge OpenTelemetry, gửi qua OTLP tới Collector rồi lưu ở Tempo hoặc Jaeger. Những chỗ hay làm đứt context là client HTTP tự new thay vì lấy từ builder của Spring, executor của @Async, và Kafka chưa bật observation. Về sampling, head-based 10% rẻ nhưng có thể bỏ lỡ request lỗi, nên ở hệ thống quan trọng tôi dùng tail-based trên Collector: giữ hết trace lỗi và chậm, chỉ lấy mẫu trace bình thường. Lần gần nhất, trace chỉ ra Order gọi Inventory tuần tự từng dòng hàng; gộp thành một lời gọi là p99 giảm từ 2,1 giây xuống khoảng 400 mili giây."
+
+> Senior tip: đặt traceId vào header response và vào mọi thông báo lỗi trả cho client. Khi khách hàng hoặc QA báo lỗi kèm traceId, thời gian tìm nguyên nhân giảm từ hàng chục phút xuống vài phút.`,
     follow: ['Tail-based sampling?', 'Baggage?', 'Tempo vs Jaeger?'],
     tags: ['OpenTelemetry', 'Tracing', 'Tempo', 'Observability']
   }
@@ -10120,38 +10134,55 @@ kubectl get events -A --sort-by=.lastTimestamp | head
     topic: 'devops',
     level: 'mid',
     q: 'StorageClass, PV và PVC trong Kubernetes hoạt động thế nào? Dynamic provisioning là gì và access modes RWO/RWX/RWOP khác nhau ra sao?',
-    a: `**Tóm tắt:** PersistentVolume (PV) là tài nguyên lưu trữ cấp cluster; PersistentVolumeClaim (PVC) là yêu cầu của Pod; StorageClass là "bản thiết kế" cho dynamic provisioning, tự tạo PV khi có PVC.
+    a: `**Tóm tắt:** Filesystem của container mất khi Pod bị tạo lại, nên dữ liệu bền vững cần volume ngoài. **PersistentVolume (PV)** là một ổ đĩa thật trong cluster (EBS, disk của cloud, NFS…); **PersistentVolumeClaim (PVC)** là Pod "xin" một ổ có dung lượng và kiểu truy cập nhất định; **StorageClass** mô tả cách **tự tạo** PV khi có PVC (dynamic provisioning) qua CSI driver. Access mode quyết định bao nhiêu node được gắn ổ cùng lúc: **RWO** (một node), **RWX** (nhiều node), **RWOP** (đúng một Pod).
 
-### Bối cảnh
-Container filesystem là ephemeral (mất khi Pod restart). Stateful workload (DB, queue) cần lưu trữ bền. K8s tách "yêu cầu" (PVC) khỏi "tài nguyên" (PV) để linh hoạt.
-
-### Cơ chế từng bước
-1. Admin tạo StorageClass trỏ tới provisioner (ví dụ AWS EBS CSI).
-2. Dev tạo PVC khai báo dung lượng, accessMode.
-3. Controller quan sát PVC Pending → gọi provisioner tạo volume → tạo PV bound.
-4. Pod mount PVC; dữ liệu sống trên volume ngoài cluster.
+### Cơ chế dynamic provisioning, từng bước
+1. Bạn tạo PVC: 20Gi, {{ReadWriteOnce}}, {{storageClassName: gp3}}.
+2. Controller thấy PVC chưa có PV phù hợp → gọi **CSI driver** của StorageClass (ví dụ {{ebs.csi.aws.com}}) tạo ổ mới trên cloud.
+3. Một PV được tạo đại diện ổ đó và **bind** một-một với PVC.
+4. Khi Pod dùng PVC được xếp lên node, kubelet gắn (attach + mount) ổ vào node rồi vào container.
+~~~yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: { name: gp3 }
+provisioner: ebs.csi.aws.com
+parameters: { type: gp3 }
+reclaimPolicy: Retain                      # giữ ổ khi xoá PVC (dữ liệu quan trọng)
+volumeBindingMode: WaitForFirstConsumer    # chờ biết node/zone của Pod rồi mới tạo ổ
+allowVolumeExpansion: true
+~~~
+Static provisioning: admin tạo sẵn PV (ví dụ trỏ tới NFS có sẵn), PVC bind vào — dùng khi ổ đã tồn tại hoặc storage không có CSI tự tạo.
 
 ### Access modes
-- RWO (ReadWriteOnce): mount read-write trên một node. EBS thường RWO.
-- RWX (ReadWriteMany): nhiều node cùng mount. Cần NFS/EFS/CephFS.
-- RWOP (ReadWriteOncePod): chỉ một Pod (CSI mới hỗ trợ).
+| Mode | Nghĩa | Ví dụ storage |
+|---|---|---|
+| ReadWriteOnce (RWO) | Gắn đọc-ghi trên **một node** (nhiều Pod cùng node vẫn dùng được) | EBS, Persistent Disk |
+| ReadOnlyMany (ROX) | Nhiều node chỉ đọc | NFS, một số disk |
+| ReadWriteMany (RWX) | Nhiều node cùng đọc-ghi | EFS, NFS, CephFS, Azure Files |
+| ReadWriteOncePod (RWOP) | Đúng **một Pod** trong cả cluster (GA từ Kubernetes 1.29) | CSI hỗ trợ |
+Block storage (EBS) gần như luôn chỉ RWO; cần RWX thì dùng file storage (EFS) và chấp nhận latency cao hơn.
 
-### Reclaim policy
-- Delete: xoá volume khi PVC bị xoá (default cloud).
-- Retain: giữ dữ liệu, admin phải dọn tay. Dùng cho dữ liệu quan trọng.
+### Reclaim policy và binding mode
+- **Delete** (mặc định của nhiều StorageClass): xoá PVC là xoá luôn ổ và dữ liệu. **Retain**: giữ ổ, admin tự xử lý — dùng cho dữ liệu quan trọng.
+- **WaitForFirstConsumer**: tạo ổ ở đúng zone mà Pod được xếp. Với {{Immediate}}, ổ có thể tạo ở zone A trong khi Pod chỉ xếp được ở zone B → Pod Pending vì "volume node affinity conflict" (EBS không gắn chéo zone).
 
-### volumeBindingMode
-- WaitForFirstConsumer: trì hoãn bind đến khi Pod được schedule → đảm bảo volume tạo ở đúng AZ/node. Tránh PVC bound vào volume ở AZ khác.
+### Điều tra PVC/Pod Pending
+- {{kubectl describe pvc}}: sự kiện từ provisioner (sai tên StorageClass, hết quota, thiếu quyền IAM của CSI driver).
+- {{kubectl describe pod}}: lỗi attach/mount, xung đột zone, ổ RWO vẫn đang gắn ở node cũ (Multi-Attach error khi Pod chuyển node mà node cũ chưa nhả ổ).
 
-### PVC Pending điều tra
-~~~bash
-kubectl describe pvc <name>
-kubectl get storageclass
-kubectl get events -n <ns>
-~~~
-Nguyên nhân thường: không có StorageClass mặc định, provisioner lỗi, quota storage, topology mismatch.
+### Ví dụ đời thực
+Một team chạy Elasticsearch trên EKS, StorageClass để {{volumeBindingMode: Immediate}}. Sau khi một node ở zone ap-southeast-1a chết, Pod được xếp sang 1b nhưng ổ EBS nằm ở 1a → Pod Pending 3 giờ. Đổi sang {{WaitForFirstConsumer}}, thêm topology spread cho StatefulSet và chuyển {{reclaimPolicy}} sang Retain (trước đó một lệnh xoá namespace nhầm đã xoá luôn 400GB dữ liệu ở môi trường staging). Lần node chết tiếp theo, Pod khởi động lại trong cùng zone trên node khác sau khoảng 4 phút.
 
-> Senior tip: Luôn đặt volumeBindingMode WaitForFirstConsumer và reclaimPolicy Retain cho production DB; test restore định kỳ vì Retain không tự động xoá rác.`,
+### Pitfall
+- Dùng reclaim Delete cho dữ liệu quan trọng.
+- Nghĩ RWO là "một Pod" — thực ra là một node; muốn đúng một Pod dùng RWOP.
+- Ghi dữ liệu dùng chung qua NFS RWX cho workload cần IOPS cao → chậm và khoá file khó lường.
+- Quên {{allowVolumeExpansion}} → không mở rộng PVC tại chỗ được.
+
+### Trả lời mẫu khi phỏng vấn
+"Container mất filesystem khi Pod được tạo lại, nên dữ liệu bền vững phải nằm ở volume ngoài. PV là ổ thật trong cluster, PVC là yêu cầu của Pod về dung lượng và kiểu truy cập, còn StorageClass mô tả cách tự tạo PV qua CSI driver khi có PVC, đó là dynamic provisioning. Access mode RWO nghĩa là gắn đọc-ghi trên một node, RWX là nhiều node cùng ghi, cần file storage như EFS hay NFS, còn RWOP là đúng một Pod. Hai cấu hình tôi luôn kiểm tra là reclaimPolicy, Retain cho dữ liệu quan trọng để xoá PVC không mất dữ liệu, và volumeBindingMode WaitForFirstConsumer để ổ được tạo đúng zone của Pod. Tôi từng gặp Pod Pending ba giờ vì ổ EBS tạo ở zone A còn Pod chỉ xếp được ở zone B; đổi binding mode là hết."
+
+> Senior tip: với dữ liệu quan trọng trên Kubernetes, kết hợp ba thứ: StorageClass Retain, snapshot định kỳ qua VolumeSnapshot hoặc Velero, và một lần diễn tập khôi phục mỗi quý. Mất dữ liệu trên K8s thường do xoá nhầm, không phải do ổ hỏng.`,
     follow: [
       'Khi nào chọn static provisioning thay vì dynamic?',
       'Làm sao migrate PVC sang StorageClass mới mà không downtime?',
@@ -10168,27 +10199,56 @@ Nguyên nhân thường: không có StorageClass mặc định, provisioner lỗ
     topic: 'devops',
     level: 'senior',
     q: 'StatefulSet là gì? Khi nào dùng StatefulSet thay vì Deployment, và có nên chạy PostgreSQL/Redis trên K8s không?',
-    a: `**Tóm tắt:** StatefulSet cấp identity ổn định (pod-0, pod-1), DNS ổn định và volume riêng cho từng replica; dùng cho workload có trạng thái. Chạy DB trên K8s là trade-off giữa kiểm soát và vận hành.
+    a: `**Tóm tắt:** StatefulSet dành cho workload mà **từng replica có danh tính riêng**: tên Pod cố định ({{db-0}}, {{db-1}}), DNS cố định qua headless Service, **PVC riêng cho mỗi Pod** (volumeClaimTemplates) và thứ tự khởi động/dừng. Deployment coi các Pod là thay thế được cho nhau. Chạy PostgreSQL/Redis trên K8s **được**, nhưng nên qua **operator** trưởng thành (CloudNativePG, Zalando, Redis operator) và chỉ khi team đủ năng lực vận hành; nếu không, dịch vụ quản lý (RDS, ElastiCache) thường rẻ hơn tính theo công người.
 
-### Cơ chế
-- Mỗi Pod có hostname cố định: web-0, web-1.
-- Headless Service (clusterIP: None) tạo DNS record cho từng Pod.
-- volumeClaimTemplates: mỗi Pod có PVC riêng, không bị xoá khi Pod restart.
-- Thứ tự khởi động/terminate tuần tự (pod-0 trước pod-1) mặc định; có thể parallel.
+### StatefulSet khác Deployment ở đâu
+| Tiêu chí | Deployment | StatefulSet |
+|---|---|---|
+| Tên Pod | Ngẫu nhiên (order-7c9f-xk2p) | Cố định theo số thứ tự (db-0, db-1) |
+| Volume | Dùng chung một PVC hoặc không có | Mỗi Pod một PVC riêng, giữ nguyên khi Pod tạo lại |
+| DNS | Qua Service (cân bằng tải) | Từng Pod: db-0.db-headless.ns.svc.cluster.local |
+| Thứ tự | Song song | Mặc định tuần tự 0 → N khi tạo, N → 0 khi xoá |
+| Cập nhật | Rolling, tạo Pod mới trước | Rolling từ số lớn nhất về 0; có partition để canary |
+Headless Service ({{clusterIP: None}}) không cân bằng tải mà trả về IP từng Pod, để client biết chính xác Pod nào là primary.
 
-### So với Deployment
-Deployment: Pod vô danh, thay thế tuỳ ý, share volume. StatefulSet: identity + storage ổn định. Dùng cho DB, Kafka, ZooKeeper.
+~~~yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: redis }
+spec:
+  serviceName: redis-headless     # headless Service cho DNS từng Pod
+  replicas: 3
+  selector: { matchLabels: { app: redis } }
+  template: { metadata: { labels: { app: redis } }, spec: { containers: [ { name: redis, image: redis:7 } ] } }
+  volumeClaimTemplates:           # mỗi Pod một PVC: data-redis-0, data-redis-1...
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 10Gi } } }
+~~~
 
-### Chạy PostgreSQL/Redis trên K8s?
-Ưu: đồng nhất môi trường, GitOps, tiết kiệm chi phí, kiểm soát phiên bản.
-Nhược: backup/restore phức tạp, failover cần operator, storage I/O, noisy neighbor, vận hành DB là chuyên môn riêng.
+### Những điều StatefulSet KHÔNG làm
+Nó không biết replication, failover, backup hay nâng cấp phiên bản DB. Scale từ 3 xuống 2 chỉ xoá Pod {{redis-2}} (PVC vẫn giữ lại), không chuyển dữ liệu hay đổi primary. Phần "hiểu DB" do **operator** đảm nhận: tự cấu hình replication, failover, backup lên S3, nâng cấp từng node.
 
-### Thực tế
-- PostgreSQL: dùng CloudNativePG hoặc Zalando operator; Patroni cho HA. Managed (RDS/Aurora) thường an toàn hơn cho team nhỏ.
-- Redis: Redis Operator hoặc Bitnami chart; managed (ElastiCache/MemoryDB) cho production quan trọng.
-- Quyết định: nếu SLA cao và team nhỏ → managed; nếu cần tuỳ biến sâu hoặc on-prem → operator trên K8s.
+### Có nên chạy DB trên K8s?
+| Nên cân nhắc khi | Nên dùng dịch vụ quản lý khi |
+|---|---|
+| Chạy on-premise, không có RDS | Đang trên cloud, team nhỏ |
+| Cần nhiều DB nhỏ cho môi trường dev/test | DB production quan trọng, ít người biết vận hành |
+| Team có kinh nghiệm DB + K8s, dùng operator trưởng thành | Cần cam kết sẵn sàng và backup đã được kiểm chứng |
+Rủi ro thật: node bị drain khi nâng cấp cluster, Pod di chuyển phải gắn lại ổ, lỗi CSI; tuning bộ nhớ (shared_buffers vs limit), noisy neighbor.
 
-> Senior tip: Nếu chạy DB trên K8s, bắt buộc có backup tự động, tested restore, và runbook failover; đừng chỉ "cài chart rồi quên".`,
+### Ví dụ đời thực
+Một công ty tự chạy PostgreSQL bằng StatefulSet viết tay (không operator) trên cluster on-premise. Khi nâng cấp node, primary {{pg-0}} bị drain; không có gì tự chuyển primary → ghi bị lỗi 18 phút cho tới khi có người tay chỉnh. Chuyển sang CloudNativePG: 3 instance, failover tự động, backup liên tục WAL lên MinIO, PodDisruptionBudget chặn drain đồng loạt. Lần nâng cấp node tiếp theo: switchover có kiểm soát mất khoảng 6 giây. Với môi trường cloud của công ty con, họ vẫn chọn RDS vì chỉ có 2 người làm hạ tầng.
+
+### Pitfall
+- Dùng Deployment cho DB với một PVC RWO → Pod mới không gắn được ổ khi Pod cũ chưa chết hẳn.
+- Xoá StatefulSet nghĩ là xoá dữ liệu — PVC vẫn còn (và vẫn tính tiền); ngược lại xoá PVC là mất dữ liệu.
+- Không có PodDisruptionBudget → drain node có thể đưa nhiều replica xuống cùng lúc.
+- Coi StatefulSet là giải pháp HA cho DB.
+
+### Trả lời mẫu khi phỏng vấn
+"StatefulSet dùng khi từng replica có danh tính riêng. Mỗi Pod có tên cố định như db-0, db-1, có DNS riêng qua headless Service, có PVC riêng tạo từ volumeClaimTemplates và giữ nguyên khi Pod được tạo lại, và được khởi động, dừng theo thứ tự. Deployment thì coi các Pod là thay thế được cho nhau, hợp với service stateless. Điều quan trọng là StatefulSet không hiểu DB: nó không làm replication, failover hay backup. Vì vậy nếu chạy PostgreSQL hay Redis trên K8s, tôi dùng operator trưởng thành như CloudNativePG, kèm PodDisruptionBudget và backup ra object storage. Còn có nên chạy hay không thì tôi cân nhắc theo năng lực team: trên cloud với team nhỏ, RDS hay ElastiCache thường rẻ hơn khi tính công người; on-premise hoặc nhiều DB nhỏ cho dev/test thì operator rất hợp lý."
+
+> Senior tip: trước khi chạy DB production trên K8s, diễn tập ba tình huống: drain node đang chạy primary, xoá Pod primary, và khôi phục từ backup sang cluster khác. Nếu cả ba không trơn tru, dùng dịch vụ quản lý.`,
     follow: [
       'Headless Service khác Service thường thế nào?',
       'Làm sao scale down StatefulSet mà không mất dữ liệu?',
@@ -10205,54 +10265,62 @@ Nhược: backup/restore phức tạp, failover cần operator, storage I/O, noi
     topic: 'devops',
     level: 'senior',
     q: 'RBAC trong Kubernetes: Role/ClusterRole, RoleBinding, ServiceAccount hoạt động thế nào? Quyền tối thiểu cho pipeline CI deploy vào 1 namespace là gì?',
-    a: `**Tóm tắt:** RBAC kiểm soát ai (subject) được làm gì (verb) trên tài nguyên (resource) ở scope namespace (Role) hoặc cluster (ClusterRole). Pipeline nên có ServiceAccount riêng với Role giới hạn namespace.
+    a: `**Tóm tắt:** RBAC của Kubernetes trả lời câu hỏi **ai** (User/Group/ServiceAccount) **được làm gì** (verb: get, list, create, patch…) **trên tài nguyên nào** (deployments, secrets…) **ở phạm vi nào** (Role trong một namespace, ClusterRole toàn cluster). Binding gắn quyền với chủ thể. Pipeline CI deploy vào một namespace cần một **ServiceAccount riêng + Role giới hạn trong namespace đó**, chỉ đủ verb để cập nhật workload — không cluster-admin, không đọc Secret nếu không cần.
 
-### Khái niệm
-- Subject: User, Group, ServiceAccount.
-- Role: tập rule trong 1 namespace.
-- ClusterRole: rule cấp cluster (hoặc tái sử dụng cho nhiều namespace).
-- RoleBinding/ClusterRoleBinding: gắn subject với role.
+### Bốn đối tượng
+- **Role**: danh sách quyền trong **một namespace**.
+- **ClusterRole**: quyền cho tài nguyên cấp cluster (nodes, namespaces, CRD) hoặc một bộ quyền dùng lại ở nhiều namespace.
+- **RoleBinding**: gắn Role (hoặc ClusterRole) cho chủ thể **trong một namespace**.
+- **ClusterRoleBinding**: gắn ClusterRole cho chủ thể **trên toàn cluster** — mạnh, dùng hạn chế.
+RBAC chỉ có **cho phép** (không có deny); quyền là hợp của mọi binding.
 
-### Ví dụ Role tối thiểu cho deploy
+### Quyền tối thiểu cho CI deploy vào namespace shop
 ~~~yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata:
-  namespace: payments
-  name: deployer
+metadata: { name: ci-deployer, namespace: shop }
 rules:
-- apiGroups: ["apps"]
-  resources: ["deployments"]
-  verbs: ["get","list","patch","update"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get","list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]   # đổi image, xem rollout
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]                        # theo dõi rollout, không exec
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata:
-  namespace: payments
-  name: ci-deployer
-subjects:
-- kind: ServiceAccount
-  name: ci-deployer
-  namespace: ci
-roleRef:
-  kind: Role
-  name: deployer
-  apiGroup: rbac.authorization.k8s.io
+metadata: { name: ci-deployer, namespace: shop }
+subjects: [ { kind: ServiceAccount, name: ci-deployer, namespace: shop } ]
+roleRef: { kind: Role, name: ci-deployer, apiGroup: rbac.authorization.k8s.io }
 ~~~
+Không có {{secrets}}, {{pods/exec}}, {{delete}} namespace, {{roles}}/{{rolebindings}} (tránh tự nâng quyền). Nếu dùng Helm, nó cần thêm quyền với Secret (Helm lưu release dưới dạng Secret) — ghi rõ lý do.
 
-### Kiểm tra quyền
-~~~bash
-kubectl auth can-i patch deployment -n payments --as=system:serviceaccount:ci:ci-deployer
-kubectl auth can-i --list --as=...
-~~~
+### Kiểm tra và audit
+- {{kubectl auth can-i patch deployments -n shop --as=system:serviceaccount:shop:ci-deployer}} → yes/no.
+- {{kubectl auth can-i --list --as=...}} liệt kê toàn bộ quyền thực tế.
+- Bật audit log của API server; lưu manifest RBAC trong Git (GitOps) để mọi thay đổi qua review.
 
-### Rancher
-Rancher thêm lớp user/role/project ở trên K8s RBAC, đồng bộ xuống cluster. Phù hợp quản lý nhiều team nhưng vẫn nên hiểu RBAC gốc.
+### Token của ServiceAccount
+- Từ Kubernetes 1.24, token không còn tự tạo dưới dạng Secret vĩnh viễn; Pod nhận **token có thời hạn** (projected, tự xoay vòng).
+- Pod không cần gọi API thì đặt {{automountServiceAccountToken: false}} — container bị chiếm cũng không có token để gọi API.
+- CI bên ngoài cluster: ưu tiên định danh qua OIDC (ví dụ GitHub Actions OIDC → IAM → EKS access entry) thay vì token dài hạn dán vào biến CI; hoặc dùng GitOps để CI không cần quyền vào cluster.
 
-> Senior tip: Không dùng cluster-admin cho CI; bắt đầu từ quyền rỗng và thêm khi pipeline fail với lỗi Forbidden; lưu manifest RBAC trong Git.`,
+### Ví dụ đời thực
+Kiểm tra bảo mật một cluster phát hiện ServiceAccount của Jenkins có ClusterRoleBinding {{cluster-admin}}, token dài hạn nằm trong biến môi trường của 60 job. Một plugin Jenkins có lỗ hổng đồng nghĩa với toàn quyền cluster, kể cả đọc Secret DB production. Thay bằng mỗi namespace một ServiceAccount với Role như trên, token ngắn hạn, sau đó chuyển hẳn sang Argo CD (CI chỉ push image và sửa Git). Số chủ thể có quyền đọc Secret production giảm từ 14 xuống 3.
+
+### Pitfall
+- Cho CI quyền {{*}} trên {{*}} "cho nhanh".
+- Cho quyền tạo RoleBinding → chủ thể tự gán thêm quyền cho mình.
+- Quyền {{pods/exec}} ở production → ai có nó đọc được mọi secret mà Pod thấy.
+- Quên rằng quyền {{create pods}} đủ để chạy Pod dùng bất kỳ ServiceAccount nào trong namespace.
+
+### Trả lời mẫu khi phỏng vấn
+"RBAC trả lời câu hỏi ai được làm gì trên tài nguyên nào ở phạm vi nào. Role là quyền trong một namespace, ClusterRole cho tài nguyên cấp cluster hoặc bộ quyền dùng lại, RoleBinding và ClusterRoleBinding gắn quyền cho User, Group hay ServiceAccount. RBAC chỉ có cho phép, không có deny. Với pipeline CI deploy vào một namespace, tôi tạo ServiceAccount riêng và một Role trong đúng namespace đó, chỉ cho get, list, watch, patch deployments, cập nhật service và configmap, xem pod để theo dõi rollout. Không có quyền đọc secret, không exec, không tạo rolebinding để tránh tự nâng quyền. Tôi kiểm tra bằng kubectl auth can-i với as serviceaccount, và lưu RBAC trong Git để thay đổi qua review. Tốt hơn nữa là để CI không vào cluster: CI chỉ push image và sửa Git, còn Argo CD trong cluster làm việc deploy."
+
+> Senior tip: chạy {{kubectl auth can-i --list}} cho từng ServiceAccount định kỳ và so với danh sách mong đợi. Quyền RBAC chỉ tăng theo thời gian vì ai cũng "thêm cho chạy được" mà không ai bớt.`,
     follow: [
       'Khi nào cần ClusterRole thay vì Role?',
       'Làm sao audit thay đổi RBAC?',
@@ -10269,38 +10337,54 @@ Rancher thêm lớp user/role/project ở trên K8s RBAC, đồng bộ xuống c
     topic: 'devops',
     level: 'lead',
     q: 'Backup Kubernetes gồm những gì? Velero + object storage (MinIO/S3) hoạt động thế nào và diễn tập khôi phục ra sao?',
-    a: `**Tóm tắt:** Backup K8s phải bao gồm manifest (resource), dữ liệu PV và etcd/config. Velero backup resource + snapshot/file-system volume vào object storage, restore theo namespace/label.
+    a: `**Tóm tắt:** Backup Kubernetes gồm ba phần: **trạng thái cluster** (etcd hoặc toàn bộ manifest trong Git), **tài nguyên của ứng dụng** (Deployment, ConfigMap, Secret, CRD…) và **dữ liệu trong volume**. **Velero** sao lưu tài nguyên qua API server thành file lên object storage (S3/MinIO) và sao lưu volume bằng **snapshot** của storage hoặc **file-system backup** (Kopia). Backup chỉ có giá trị khi **đã khôi phục thử thành công** — diễn tập định kỳ sang một cluster khác và đo thời gian.
 
-### Backup gồm gì
-- Manifest: Deployment, Service, ConfigMap, Secret, CRD...
-- Dữ liệu: PV (DB data).
-- Cluster state: etcd (thường managed bởi cloud).
-- Cấu hình công cụ: Helm values, GitOps repo.
+### Backup gồm những gì
+| Thành phần | Cách sao lưu |
+|---|---|
+| Manifest ứng dụng | Git (GitOps) là nguồn chính; Velero là lưới an toàn (bắt cả thứ tạo tay) |
+| etcd (cluster tự quản) | {{etcdctl snapshot save}} định kỳ, lưu ngoài cluster, mã hoá |
+| Dữ liệu PV | Snapshot (CSI VolumeSnapshot, EBS snapshot) hoặc file-system backup |
+| Database | Backup ở tầng DB (pg_basebackup + WAL, operator backup) — nhất quán hơn snapshot đĩa |
+| Bên ngoài cluster | Secret trong vault, DNS, chứng chỉ, IAM — ghi rõ trong runbook |
+Cluster quản lý (EKS/GKE/AKS) thì nhà cung cấp lo etcd; bạn lo phần còn lại.
 
-### Velero
-- Backup: chụp resource qua API server + volume snapshot hoặc file-system backup (Restic/Kopia).
-- Storage: S3/MinIO bucket.
-- Schedule: CronSchedule.
-- Restore: chọn backup, namespace, label.
-
-### Snapshot vs file-system
-- Snapshot: nhanh, phụ thuộc CSI driver, cùng region.
-- File-system (Kopia): portable, chậm hơn, tốn CPU, backup mọi volume.
-
-### Ví dụ
+### Velero hoạt động thế nào
+1. Velero server chạy trong cluster; bạn tạo **Backup** hoặc **Schedule** (cron) chọn theo namespace/label.
+2. Velero đọc tài nguyên qua API server, nén thành tarball và đẩy lên **BackupStorageLocation** (bucket S3/MinIO).
+3. Với volume: gọi plugin snapshot của nhà cung cấp/CSI, hoặc dùng **file-system backup** (node agent đọc dữ liệu trong volume bằng Kopia) khi storage không có snapshot.
+4. **Restore**: tạo lại tài nguyên theo thứ tự hợp lý (namespace, CRD, PVC, rồi workload); mặc định **không ghi đè** tài nguyên đã tồn tại (có tuỳ chọn {{--existing-resource-policy=update}}).
 ~~~bash
-velero backup create daily --include-namespaces payments --storage-location default
-velero schedule create hourly --schedule="0 * * * *" --include-namespaces payments
-velero restore create --from-backup daily-2024...
+velero schedule create daily-shop --schedule="0 2 * * *"   --include-namespaces shop --ttl 720h          # giữ 30 ngày
+velero backup describe daily-shop-20261107020000 --details
+velero restore create --from-backup daily-shop-20261107020000   --namespace-mappings shop:shop-restore-test     # khôi phục sang namespace khác để kiểm tra
 ~~~
 
-### Diễn tập khôi phục
-1. Tạo namespace test, restore backup.
-2. Kiểm tra Pod Running, PVC bound, dữ liệu.
-3. Đo RTO/RPO.
-4. Ghi runbook.
+### Snapshot hay file-system backup
+| | Snapshot | File-system backup (Kopia) |
+|---|---|---|
+| Tốc độ | Nhanh, ở tầng storage | Chậm hơn, đọc từng file |
+| Khôi phục khác vùng/nhà cung cấp | Hạn chế (snapshot gắn với cloud/region) | Linh hoạt, dữ liệu nằm trong bucket |
+| Nhất quán ứng dụng | Crash-consistent; cần hook (fsfreeze, flush DB) | Đọc khi app đang ghi → cần hook |
+Velero hỗ trợ **pre/post hook** (ví dụ chạy lệnh flush/khóa ghi trước khi snapshot).
 
-> Senior tip: Backup chưa test restore thì chưa tồn tại; diễn tập hàng quý, đo thời gian thực tế và cập nhật runbook.`,
+### Diễn tập khôi phục
+- Mỗi quý: khôi phục bản backup mới nhất sang **cluster/namespace riêng**, chạy smoke test, kiểm tra dữ liệu (đếm dòng, checksum), ghi **thời gian khôi phục thực tế** so với RTO.
+- Bucket backup: bật versioning + **object lock**, tài khoản/region khác cluster chính — chống xoá nhầm và ransomware.
+
+### Ví dụ đời thực
+Một lệnh {{kubectl delete namespace}} chạy nhầm context xoá namespace production chứa 23 deployment và 6 PVC (reclaim Delete). Velero chạy hằng đêm nhưng chưa từng thử restore: lần restore đầu thất bại vì CRD của cert-manager chưa có trên cluster và plugin snapshot thiếu quyền IAM. Khôi phục mất 5 giờ 40 phút, mất 9 giờ dữ liệu từ bản backup lúc 2 giờ sáng. Sau sự cố: backup 4 giờ một lần, DB chuyển sang backup WAL liên tục, StorageClass Retain, diễn tập hằng quý. Lần diễn tập thứ ba khôi phục toàn bộ trong 38 phút.
+
+### Pitfall
+- Backup nằm cùng tài khoản/region với cluster → mất cả hai cùng lúc.
+- Chỉ backup manifest, quên dữ liệu volume (hoặc ngược lại).
+- Snapshot đĩa của DB đang ghi mà không hook → khôi phục ra dữ liệu hỏng.
+- Không bao giờ restore thử.
+
+### Trả lời mẫu khi phỏng vấn
+"Backup Kubernetes với tôi gồm ba phần: trạng thái cluster, tức etcd nếu tự quản lý hoặc toàn bộ manifest trong Git; tài nguyên ứng dụng; và dữ liệu trong volume. Tôi dùng Velero: nó đọc tài nguyên qua API server, đẩy lên bucket S3 hoặc MinIO theo lịch, còn volume thì dùng snapshot của storage hoặc file-system backup bằng Kopia khi cần khôi phục sang nơi khác. DB thì tôi backup ở tầng DB, như WAL liên tục, vì nhất quán hơn snapshot đĩa. Bucket backup đặt ở tài khoản và region khác, bật versioning và object lock. Quan trọng nhất là diễn tập: mỗi quý khôi phục sang một cluster hoặc namespace riêng, chạy smoke test, kiểm tra dữ liệu và đo thời gian thực tế so với RTO. Tôi từng thấy một team có backup hằng đêm nhưng lần restore đầu tiên thất bại vì thiếu CRD và quyền IAM, mất gần sáu tiếng."
+
+> Senior tip: đưa một bước "restore vào namespace tạm và chạy smoke test" thành job tự động hằng tuần. Backup chưa được khôi phục thử thì chỉ là một file chiếm chỗ.`,
     follow: [
       'Khi nào dùng snapshot thay vì file-system backup?',
       'Làm sao backup etcd trên cluster tự quản?',
@@ -10316,42 +10400,61 @@ velero restore create --from-backup daily-2024...
     topic: 'devops',
     level: 'mid',
     q: 'DaemonSet là gì? Taints/tolerations và nodeSelector/affinity dùng để đặt agent log/monitoring ở đâu?',
-    a: `**Tóm tắt:** DaemonSet đảm bảo mỗi node (hoặc subset) chạy một Pod. Taints/tolerations và affinity quyết định Pod chạy trên node nào.
+    a: `**Tóm tắt:** **DaemonSet** đảm bảo **mỗi node** (hoặc mỗi node thoả điều kiện) chạy đúng một Pod — dùng cho agent cấp node: thu log (Fluent Bit), metric máy (node-exporter), mạng (CNI), bảo mật. **nodeSelector/affinity** là Pod **chủ động chọn** node; **taint/toleration** là node **từ chối** Pod trừ khi Pod chịu được taint. Agent giám sát thường cần toleration rộng để chạy cả trên node đặc biệt (GPU, control plane).
 
-### DaemonSet
-- Chạy agent trên mọi node: log shipper (Fluent Bit), monitoring (node-exporter), CNI.
-- Khi node mới join, DaemonSet tự tạo Pod.
-- Khi node bị remove, Pod bị xoá.
+### DaemonSet vận hành ra sao
+- Controller tạo một Pod cho mỗi node phù hợp; node mới vào cluster thì tự có Pod, node rời đi thì Pod bị dọn.
+- Không có {{replicas}} — số Pod = số node phù hợp.
+- Cập nhật kiểu {{RollingUpdate}} với {{maxUnavailable}} (mặc định 1 node mỗi lần); có thể dùng {{maxSurge}} để chạy song song Pod mới trước khi dừng Pod cũ (tránh hở log).
+- Agent thường cần truy cập máy: {{hostPath}} (đọc /var/log/pods), {{hostNetwork}}, đôi khi quyền đặc biệt → phải giới hạn chặt.
 
-### Taints/Tolerations
-- Taint trên node: "không cho Pod thường chạy ở đây" (ví dụ node GPU/dedicated).
-- Toleration trên Pod: "tôi chấp nhận taint đó".
-- Dùng để cô lập workload và giữ node cho hệ thống.
+### Taint và toleration
+Taint gắn trên node: {{key=value:Effect}}.
+| Effect | Ý nghĩa |
+|---|---|
+| NoSchedule | Không xếp Pod mới thiếu toleration |
+| PreferNoSchedule | Tránh nếu có thể |
+| NoExecute | Đuổi luôn Pod đang chạy thiếu toleration |
+Ví dụ: node GPU có taint {{gpu=true:NoSchedule}} để chỉ job ML chạy trên đó. Control plane thường có taint {{node-role.kubernetes.io/control-plane:NoSchedule}}. Kubernetes cũng tự thêm taint khi node có vấn đề (not-ready, disk-pressure); DaemonSet controller tự thêm toleration cho các taint hệ thống này để agent không bị đuổi khi node gặp sự cố.
 
-### nodeSelector / affinity
-- nodeSelector: match label đơn giản.
-- nodeAffinity: điều kiện phức tạp (In, NotIn, Exists).
-- podAffinity/antiAffinity: phân tán Pod cùng/ khác node.
+### nodeSelector và affinity
+- **nodeSelector**: điều kiện bằng nhau đơn giản ({{disktype: ssd}}).
+- **nodeAffinity**: biểu thức phong phú hơn, có loại **bắt buộc** ({{requiredDuringSchedulingIgnoredDuringExecution}}) và **ưu tiên** ({{preferred...}}).
+- **podAntiAffinity/topologySpreadConstraints**: rải Pod của Deployment qua node/zone khác nhau (không cần cho DaemonSet vì đã một Pod mỗi node).
 
-### Ví dụ
 ~~~yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: fluent-bit, namespace: logging }
 spec:
+  selector: { matchLabels: { app: fluent-bit } }
+  updateStrategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 10% } }
   template:
+    metadata: { labels: { app: fluent-bit } }
     spec:
       tolerations:
-      - key: "dedicated"
-        operator: "Equal"
-        value: "monitoring"
-        effect: "NoSchedule"
-      nodeSelector:
-        node-role: monitoring
+        - operator: Exists            # chịu mọi taint: chạy cả node GPU, control plane
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:3.1
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 200Mi } }
+          volumeMounts: [ { name: varlog, mountPath: /var/log, readOnly: true } ]
+      volumes: [ { name: varlog, hostPath: { path: /var/log } } ]
 ~~~
 
-### Trên production
-- Agent monitoring phải tolerate taint control-plane? Tuỳ; tránh chạy trên master nếu không cần.
-- Kiểm tra: kubectl get ds -A, kubectl describe ds, events.
+### Ví dụ đời thực
+Một cluster thêm node pool GPU có taint {{nvidia.com/gpu:NoSchedule}}. Fluent Bit và node-exporter không có toleration nên không chạy trên các node mới; 3 tuần sau, job huấn luyện chết vì đầy đĩa mà không ai có log hay metric để điều tra. Thêm toleration {{operator: Exists}} cho agent giám sát, đặt request/limit hợp lý, thêm cảnh báo "số Pod DaemonSet sẵn sàng < số node". Đồng thời phát hiện Fluent Bit không có memory limit từng ăn 1,5GB khi Elasticsearch chậm — đặt limit và bật buffer ra đĩa.
 
-> Senior tip: Dùng DaemonSet cho agent node-level; dùng Deployment + affinity cho agent cần HA theo replica, không theo node.`,
+### Pitfall
+- Agent thiếu toleration → "điểm mù" trên node đặc biệt.
+- DaemonSet không có resource request → scheduler không tính phần agent, node bị quá tải.
+- Cập nhật DaemonSet {{maxUnavailable}} quá lớn → mất log trên nhiều node cùng lúc.
+- Dùng toleration {{Exists}} cho workload ứng dụng thường → Pod chạy vào node control plane hoặc node đắt tiền.
+
+### Trả lời mẫu khi phỏng vấn
+"DaemonSet đảm bảo mỗi node phù hợp chạy đúng một Pod, nên dùng cho agent cấp node như Fluent Bit thu log, node-exporter, CNI. Node mới vào thì tự có Pod, không cần replicas. Để quyết định Pod chạy ở đâu có hai chiều. nodeSelector và nodeAffinity là Pod chủ động chọn node theo nhãn, có loại bắt buộc và loại ưu tiên. Taint là node từ chối Pod, chỉ Pod có toleration tương ứng mới được xếp vào, ví dụ node GPU chỉ cho job ML. Với agent giám sát, tôi thường cho toleration rộng để chạy cả trên node GPU và control plane, nếu không sẽ có điểm mù. Tôi luôn đặt resource request và limit cho agent, cập nhật rolling với maxUnavailable nhỏ, và có cảnh báo khi số Pod sẵn sàng của DaemonSet nhỏ hơn số node."
+
+> Senior tip: thêm một cảnh báo so sánh {{kube_daemonset_status_number_ready}} với {{kube_daemonset_status_desired_number_scheduled}} cho mọi agent quan trọng. Thiếu agent trên một node là loại lỗi im lặng, chỉ lộ ra đúng lúc bạn cần log của node đó.`,
     follow: [
       'Khi nào dùng DaemonSet thay vì Deployment?',
       'Làm sao rolling update DaemonSet an toàn?',
@@ -10368,33 +10471,51 @@ spec:
     topic: 'devops',
     level: 'senior',
     q: 'GitOps với Argo CD/Flux khác CI đẩy kubectl apply thế nào? Drift detection là gì?',
-    a: `**Tóm tắt:** GitOps lấy Git làm nguồn chân lý duy nhất; controller trong cluster liên tục đồng bộ trạng thái cluster với Git và phát hiện drift. CI pushing kubectl apply là imperative và dễ drift.
+    a: `**Tóm tắt:** Với **CI push**, pipeline giữ quyền vào cluster và chạy {{kubectl apply}}/{{helm upgrade}} — trạng thái thật của cluster có thể lệch khỏi Git mà không ai biết. Với **GitOps** (Argo CD/Flux), Git là **nguồn sự thật duy nhất**; một controller **trong cluster** liên tục **kéo** Git và đưa cluster về đúng trạng thái đó. **Drift detection** là phát hiện chỗ cluster khác Git (ai đó sửa tay) và báo hoặc tự sửa lại (self-heal).
 
-### CI pushes kubectl
-- Pipeline build image → kubectl apply manifest.
-- Trạng thái cluster phụ thuộc pipeline; thay đổi tay không bị phát hiện.
-- Rollback = chạy lại pipeline cũ.
-
-### GitOps (Argo CD/Flux)
-- Manifest lưu trong Git (kustomize/helm).
-- Agent trong cluster pull và sync.
-- Drift detection: so sánh live state với Git; tự heal hoặc cảnh báo.
-- Audit: mọi thay đổi qua PR, ai làm gì.
-
-### So sánh
-| Tiêu chí | CI push | GitOps |
+### Hai mô hình
+~~~seq
+title: GitOps - CI chỉ sửa Git, Argo CD kéo về cluster
+actors: Dev | CI | GitRepo | ArgoCD | Cluster
+Dev -> CI: merge PR vào app repo
+CI -> CI: build, test, push image v1.4.2
+CI -> GitRepo: sửa image tag trong repo cấu hình
+ArgoCD -> GitRepo: poll / webhook: có commit mới
+ArgoCD -> Cluster: apply manifest, chờ healthy
+ArgoCD -> ArgoCD: so Git và cluster liên tục (drift)
+~~~
+| Tiêu chí | CI push | GitOps pull |
 |---|---|---|
-| Nguồn chân lý | Pipeline | Git |
-| Drift | Không phát hiện | Phát hiện/heal |
-| Quyền cluster | CI cần credential | Agent trong cluster |
-| Rollback | Pipeline | Git revert |
+| Quyền vào cluster | CI giữ credential mạnh | Chỉ controller trong cluster |
+| Trạng thái thật | Biết lúc deploy, sau đó có thể lệch | So sánh liên tục, hiển thị lệch |
+| Rollback | Chạy lại pipeline cũ | {{git revert}} |
+| Audit | Log pipeline | Lịch sử Git (ai, khi nào, review) |
+| Nhiều cluster | Mỗi cluster một bước pipeline | ApplicationSet sinh app cho nhiều cluster |
 
-### Drift detection
-- Argo CD: so sánh resource live với desired; status OutOfSync.
-- Có thể auto-sync hoặc manual.
-- Lưu ý: field do controller mutate (replicas bởi HPA) cần ignore để tránh false drift.
+### Drift detection hoạt động ra sao
+- Argo CD render manifest từ Git (YAML, Helm, Kustomize), so với live state, trạng thái app: **Synced** hoặc **OutOfSync** kèm diff.
+- {{syncPolicy.automated.selfHeal: true}}: tự apply lại khi có người sửa tay ({{kubectl edit}}); {{prune: true}}: xoá tài nguyên không còn trong Git.
+- Một số trường do hệ thống khác quản lý (ví dụ {{replicas}} khi có HPA) cần đưa vào {{ignoreDifferences}}, nếu không Argo CD và HPA "giằng co" nhau.
 
-> Senior tip: Bắt đầu GitOps với read-only mode (không auto-sync) để quan sát drift trước khi bật self-heal; tránh "auto-heal xoá hotfix khẩn cấp".`,
+### Secret trong GitOps
+Không commit secret dạng thường. Lựa chọn: **External Secrets Operator** (đồng bộ từ AWS Secrets Manager/Vault vào Secret của K8s), **Sealed Secrets** (mã hoá bằng khoá công khai của controller, chỉ cluster giải mã được), hoặc SOPS.
+
+### Khi nào vẫn giữ CI push
+Team nhỏ, một cluster, ít service; hoặc workload tạm (môi trường preview mỗi PR) — GitOps thêm một repo và một controller cần vận hành.
+
+### Ví dụ đời thực
+Một công ty 35 service, deploy bằng Jenkins chạy {{kubectl apply}}. Trong một sự cố, kỹ sư trực sửa tay limit bộ nhớ và biến môi trường của 4 deployment; 2 tuần sau một lần deploy ghi đè ngược lại, sự cố cũ tái diễn và mất 3 giờ mới hiểu vì sao. Chuyển sang Argo CD với selfHeal và cảnh báo OutOfSync: mọi thay đổi khẩn cấp phải là commit (có thể merge nhanh), rollback bằng revert mất khoảng 2 phút, credential cluster-admin bị gỡ khỏi Jenkins. Trong quý đầu, Argo CD phát hiện 11 lần sửa tay, tất cả được chuyển thành commit hoặc bị hoàn tác.
+
+### Pitfall
+- Bật selfHeal trong khi người trực vẫn quen sửa tay → thay đổi khẩn cấp bị hoàn tác giữa sự cố; cần quy trình "commit khẩn".
+- Không {{ignoreDifferences}} cho trường do HPA/operator quản lý.
+- Để image tag {{latest}} → Git không phản ánh thật phiên bản đang chạy.
+- Một repo cấu hình khổng lồ không phân quyền → ai cũng sửa được production.
+
+### Trả lời mẫu khi phỏng vấn
+"Với CI push, pipeline giữ quyền vào cluster và chạy kubectl apply hay helm upgrade; sau lần deploy, nếu ai đó sửa tay thì cluster lệch khỏi Git mà không ai biết. Với GitOps, Git là nguồn sự thật duy nhất: CI chỉ build, test, push image rồi sửa image tag trong repo cấu hình, còn Argo CD hoặc Flux chạy trong cluster kéo Git về và đưa cluster về đúng trạng thái đó. Drift detection là việc controller so liên tục giữa Git và cluster, đánh dấu OutOfSync kèm diff, và nếu bật selfHeal thì tự hoàn tác thay đổi tay. Lợi ích là CI không cần credential mạnh, rollback bằng git revert, audit bằng lịch sử Git. Cần lưu ý ignoreDifferences cho trường do HPA quản lý, và secret thì dùng External Secrets hoặc Sealed Secrets. Ở công ty trước, Argo CD phát hiện 11 lần sửa tay chỉ trong quý đầu."
+
+> Senior tip: khi đưa GitOps vào, viết sẵn quy trình "thay đổi khẩn trong sự cố" (PR một dòng, một người duyệt, merge trong 5 phút). Thiếu quy trình này, người trực sẽ tắt selfHeal ngay lần sự cố đầu tiên và không bao giờ bật lại.`,
     follow: [
       'Khi nào giữ CI push cho workload đơn giản?',
       'Làm sao xử lý secret trong GitOps (Sealed Secrets/ESO)?',
@@ -10411,40 +10532,65 @@ spec:
     topic: 'devops',
     level: 'lead',
     q: 'Helm chart và Kustomize khác nhau thế nào? Khi nào chọn cái nào cho Java service trên K8s?',
-    a: `**Tóm tắt:** Helm là package manager templating; Kustomize là patch overlay không template. Chọn Helm cho distributable chart, Kustomize cho overlay môi trường đơn giản.
+    a: `**Tóm tắt:** **Helm** là trình quản lý gói: chart là **template** (Go template) + {{values.yaml}}, cài thành **release** có phiên bản, nâng cấp và rollback được — hợp để **đóng gói phân phối** (chart dùng chung cho nhiều service, chart của bên thứ ba). **Kustomize** không dùng template: lấy YAML gốc (**base**) rồi áp **overlay/patch** theo môi trường — đơn giản, YAML luôn hợp lệ, có sẵn trong {{kubectl apply -k}}. Với Java service: một **chart chung** cho mọi Spring Boot service, hoặc Kustomize base + overlay khi team ít service và muốn đọc YAML thẳng.
 
-### Helm
-- Template Go text/template, values.yaml.
-- Chart repository, versioning, release history, rollback.
-- Phức tạp: debug template, drift.
+### Helm hoạt động thế nào
+- Chart: {{Chart.yaml}}, {{values.yaml}}, thư mục {{templates/}}; Helm render template với values thành manifest rồi apply.
+- Release lưu lịch sử (dưới dạng Secret trong namespace); {{helm rollback}} quay về revision cũ.
+- Dependency giữa chart, repository OCI để phân phối, hook (chạy job migrate trước khi nâng cấp).
+~~~yaml
+# templates/deployment.yaml (trích) - một chart dùng cho mọi Spring Boot service
+spec:
+  replicas: {{ .Values.replicas }}
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=70 {{ .Values.jvmExtraOpts }}"
+          readinessProbe: { httpGet: { path: /actuator/health/readiness, port: 8080 } }
+~~~
 
-### Kustomize
-- Base + overlays (patches).
-- Không cần template engine; giữ YAML gốc.
-- Tích hợp kubectl -k.
+### Kustomize hoạt động thế nào
+~~~text
+base/                  deployment.yaml, service.yaml, kustomization.yaml
+overlays/staging/      kustomization.yaml (replicas: 2, configMapGenerator)
+overlays/prod/         kustomization.yaml (replicas: 6, patch tăng memory, HPA)
+kubectl apply -k overlays/prod
+~~~
+Patch có hai kiểu: **strategic merge** (viết một phần YAML, gộp theo khoá) và **JSON 6902 patch** (thao tác op/path/value chính xác). {{configMapGenerator}} thêm hash vào tên ConfigMap → đổi cấu hình tự kích hoạt rolling restart.
 
 ### So sánh
 | Tiêu chí | Helm | Kustomize |
 |---|---|---|
-| Packaging | Mạnh | Yếu |
-| Rollback | Có | Không |
-| Độ phức tạp | Cao | Thấp |
-| Phù hợp | Thư viện chia sẻ | Overlay env |
+| Cơ chế | Template + values | Base + patch, không template |
+| Logic điều kiện, vòng lặp | Có (dễ bị lạm dụng) | Không (cố ý) |
+| Phiên bản, rollback | Release, {{helm rollback}} | Dựa vào Git |
+| Phân phối cho người khác | Rất tốt (repository) | Kém |
+| Độ dễ đọc | Template dày đặc khó đọc | YAML thuần |
+| Đi với Argo CD | Hỗ trợ | Hỗ trợ |
+Hai cách có thể kết hợp: Kustomize có {{helmCharts}} để render chart rồi patch thêm; Argo CD render cả hai.
 
-### Thực tế Java service
-- Team lớn, nhiều env, cần rollback → Helm + values per env.
-- Team nhỏ, manifest đơn giản → Kustomize overlay.
-- GitOps: cả hai đều được Argo/Flux hỗ trợ.
+### Gợi ý cho Java service
+- Nhiều service Spring Boot giống nhau → **một chart nội bộ** (probe Actuator, JVM options, resource, PodDisruptionBudget, ServiceMonitor) với values riêng mỗi service; sửa một chỗ áp dụng cho tất cả.
+- Ít service, mỗi cái khác nhau, team muốn đọc YAML thẳng → Kustomize base + overlay theo môi trường.
+- Kiểm tra trong CI: {{helm lint}}, {{helm template}} + kubeconform để validate schema, test giá trị đầu ra (helm-unittest).
 
-### Chi tiết so sánh khi triển khai Spring Boot
-Helm chart thường có deployment, service, ingress, hpa, pdb, configmap, secret template. Kustomize overlay chỉ patch image tag, replica, resource. Với Java, cần quan tâm JVM memory limit, readiness probe /actuator/health, graceful shutdown. Helm giúp đóng gói chuẩn cho nhiều service; Kustomize giữ đơn giản.
+### Ví dụ đời thực
+Một team có 22 service Spring Boot, mỗi service tự copy một bộ YAML. Khi cần thêm {{preStop}} sleep để graceful shutdown và đổi đường dẫn readiness sang Actuator, phải sửa 22 repo, sót 5 → các service đó tiếp tục rớt request mỗi lần deploy. Chuyển sang một chart nội bộ có version: lần thay đổi tiếp theo (thêm PodDisruptionBudget) chỉ là một release chart và bump version trong 22 file values qua Renovate — xong trong một ngày, không sót service nào.
 
 ### Pitfall
-- Helm template quá phức tạp khó debug: dùng helm template locally.
-- Kustomize patches sai strategic merge làm mất field.
-- Secret plaintext trong values; nên dùng SOPS/ESO.
+- Template Helm đầy {{if}} lồng nhau → không ai đọc nổi; giữ chart đơn giản, ít tuỳ chọn.
+- Đưa secret vào values.yaml commit Git.
+- Kustomize overlay chồng nhiều tầng → khó biết giá trị cuối cùng; dùng {{kustomize build}} để xem.
+- Nâng cấp Helm release lỗi giữa chừng để trạng thái {{pending-upgrade}} chặn các lần sau.
 
-> Senior tip: Không trộn Helm và Kustomize bừa; chọn một chuẩn team và viết README rõ ràng.`,
+### Trả lời mẫu khi phỏng vấn
+"Helm là trình quản lý gói: chart gồm template và values, cài thành release có phiên bản, nâng cấp và rollback được, nên rất hợp để đóng gói và phân phối, ví dụ một chart chung cho mọi service hoặc chart của bên thứ ba. Kustomize không có template: tôi viết YAML gốc làm base rồi patch theo môi trường bằng overlay, YAML luôn hợp lệ và đọc thẳng được, có sẵn trong kubectl. Với nhiều service Spring Boot giống nhau, tôi chọn một chart nội bộ đóng gói sẵn probe Actuator, JVM options, resource, PodDisruptionBudget, mỗi service chỉ có file values riêng; sửa một chỗ là áp dụng cho tất cả. Nếu ít service và mỗi cái một kiểu, Kustomize đơn giản hơn. Trong CI tôi chạy helm lint, render template rồi validate schema bằng kubeconform. Ở dự án trước, chuyển 22 service sang một chart chung giúp những thay đổi kiểu thêm preStop không còn bị sót service nào."
+
+> Senior tip: giữ chart nội bộ như một thư viện có semantic version và changelog. Service nâng version chart như nâng một dependency, có thể từng bước, thay vì mọi service cùng đổi một lúc khi chart thay đổi.`,
     follow: [
       'Helm values secrets nên quản lý thế nào?',
       'Kustomize patches strategic merge khác JSON patch?',
@@ -10577,29 +10723,47 @@ postgresql:
     topic: 'devops',
     level: 'mid',
     q: 'MariaDB Galera Cluster hoạt động thế nào: replication đồng bộ, quorum, SST/IST?',
-    a: `**Tóm tắt:** Galera là multi-master synchronous replication: mỗi node nhận write, certify transaction qua cluster, commit cùng lúc; cần số node lẻ để quorum; node mới join dùng SST (full copy) hoặc IST (incremental).
+    a: `**Tóm tắt:** MariaDB Galera Cluster là **multi-primary đồng bộ (gần như)**: ghi vào node nào cũng được; khi commit, transaction được **phát (broadcast) tới mọi node** kèm write-set, mỗi node **certify** (kiểm tra xung đột) theo cùng một thứ tự toàn cục, rồi apply. Cần **số node lẻ (≥ 3)** để có **quorum** khi mạng chia cắt. Node mới hoặc tụt lại đồng bộ bằng **SST** (chép toàn bộ dữ liệu) hoặc **IST** (chỉ phần thiếu, lấy từ {{gcache}} của node khác).
 
-### Replication đồng bộ (wsrep)
-- Ứng dụng ghi vào bất kỳ node nào. Node đó broadcast write-set (thay đổi hàng) tới các node khác qua gcomm.
-- Mỗi node certify: kiểm tra xung đột (certification failure) → nếu OK thì apply commit; nếu conflict thì rollback transaction ở node gốc.
-- Commit chỉ thành công khi đạt quorum (majority node ack). Latency = round-trip chậm nhất trong cluster.
+### Commit diễn ra thế nào
+1. Client ghi vào node A; transaction chạy cục bộ như bình thường (khoá dòng chỉ trên A).
+2. Lúc COMMIT, A đóng gói **write-set** (các dòng thay đổi + khoá chính) và phát qua tầng giao tiếp nhóm với **thứ tự toàn cục** (mọi node nhận cùng thứ tự).
+3. Mỗi node **certify**: write-set này có đụng dòng mà một transaction đứng trước trong thứ tự toàn cục đã sửa (và node gốc chưa thấy) không? Quyết định là **xác định** — mọi node ra cùng kết quả mà không cần hỏi nhau.
+4. Qua certify: A trả OK cho client; các node khác apply bất đồng bộ (vì vậy gọi là "virtually synchronous": dữ liệu đã chắc chắn nhưng apply có thể trễ một chút). Không qua: A rollback và trả lỗi **deadlock** cho client.
+Hệ quả: hai người ghi **cùng dòng trên hai node khác nhau** → một bên nhận lỗi lúc commit (certification failure), dù không có khoá nào chờ nhau.
 
-### Quorum và số node lẻ
-- Quorum = floor(N/2)+1. Cluster 3 node cần 2 node sống. 2 node không đủ quorum → read-only (protect data).
-- Số node lẻ (3,5,7) để tránh tie (2 vs 2). Node lẻ cho phép majority rõ ràng.
+### Quorum
+- Mỗi phần mạng đếm số node mình thấy; phần có **đa số** tiếp tục là cluster chính (Primary Component), phần thiểu số chuyển sang **non-primary** và từ chối truy vấn — chống split-brain.
+- 2 node đứt mạng → mỗi bên 50%, không bên nào đa số → cả cluster ngừng. Vì vậy dùng 3 node, hoặc 2 node + **garbd** (Galera Arbitrator, chỉ bỏ phiếu, không lưu dữ liệu).
 
-### SST vs IST
-- SST (State Snapshot Transfer): node mới/full sync nhận toàn bộ data dump (mysqldump hoặc rsync/mariabackup). Chậm nhưng an toàn.
-- IST (Incremental State Transfer): node đã có data, chỉ nhận các transaction còn thiếu từ gcache (ring buffer). Nhanh; cần gcache đủ lớn.
-
-### Xung đột ghi (certification failure)
-- Hai node cùng update cùng row → một transaction bị rollback với error "Deadlock found" / certification failure. App phải retry.
+### SST và IST
+| | SST | IST |
+|---|---|---|
+| Khi nào | Node mới, hoặc tụt quá xa (gcache không còn phần thiếu) | Node vắng mặt ngắn, phần thiếu còn trong gcache |
+| Dữ liệu chuyển | Toàn bộ DB | Chỉ write-set thiếu |
+| Phương thức | {{mariabackup}} (không khoá donor lâu), rsync | Từ gcache của donor |
+| Thời gian | DB 100GB qua mạng 1Gbps ≈ 15–30 phút trở lên | Vài giây đến vài phút |
+Đặt {{gcache.size}} đủ lớn để chứa lượng ghi trong khoảng thời gian bảo trì thường gặp (ví dụ ghi 2GB/giờ, bảo trì 2 giờ → gcache ≥ 4–5GB) để node khởi động lại dùng IST thay vì SST.
 
 ### Trên production
-- Sai lầm: deploy 2 node → không có quorum majority rõ → split-brain risk.
-- Kiểm tra: {{SHOW STATUS LIKE 'wsrep_%'}}; {{wsrep_cluster_size}}, {{wsrep_ready}}, {{wsrep_local_state_comment}}; log: "New COMPONENT".
+- Ghi vào **một node** tại một thời điểm (qua ProxySQL/MaxScale) để tránh certification failure; các node khác phục vụ đọc và dự phòng.
+- Mọi bảng cần **khoá chính** (InnoDB); bảng không có khoá chính replicate rất chậm hoặc gây lỗi.
+- Transaction lớn (UPDATE hàng triệu dòng) → write-set khổng lồ, cả cluster chững lại; chia lô.
+- Theo dõi {{wsrep_cluster_size}}, {{wsrep_cluster_status}}, {{wsrep_local_recv_queue_avg}}, {{wsrep_flow_control_paused}} (node chậm kéo cả cluster chậm theo cơ chế flow control).
 
-> Senior tip: Galera tốt cho write-heavy multi-master nhưng certification failure yêu cầu app retry; với workload conflict cao, cân nhắc single-writer + async replica.`,
+### Ví dụ đời thực
+Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin vào cả 3. Giờ cao điểm có 2–3% giao dịch đặt phòng lỗi "deadlock found" dù log không có deadlock thật — đó là certification failure khi hai người đặt cùng phòng trên hai node. Chuyển sang ghi qua MaxScale vào một node chính (đọc vẫn chia đều), thêm retry cho lỗi certification: lỗi giảm còn dưới 0,05%. Đồng thời tăng {{gcache.size}} từ 128MB mặc định lên 4GB: lần vá OS tiếp theo, mỗi node quay lại bằng IST trong 40 giây thay vì SST 25 phút.
+
+### Pitfall
+- Cluster 2 node không arbitrator.
+- Ghi đa node rồi ngạc nhiên vì lỗi "deadlock" lúc commit.
+- gcache quá nhỏ → mỗi lần restart là một lần SST nặng, donor bị chậm.
+- Một node yếu hơn (đĩa chậm) → flow control làm cả cluster chậm theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Galera là cluster multi-primary đồng bộ. Transaction chạy cục bộ trên node nhận ghi; lúc commit, write-set được phát tới mọi node theo một thứ tự toàn cục, và mỗi node tự certify xem nó có xung đột với transaction đứng trước không. Vì thứ tự giống nhau nên mọi node ra cùng quyết định. Qua thì commit, không qua thì bên khởi tạo rollback và trả lỗi deadlock, nên ghi cùng dòng trên hai node sẽ có một bên lỗi lúc commit. Cluster cần số node lẻ, tối thiểu ba hoặc hai node cộng arbitrator, để phần đa số giữ quyền chính khi mạng chia cắt, còn phần thiểu số tự ngừng nhận truy vấn. Node mới hoặc tụt xa thì đồng bộ bằng SST, tức chép toàn bộ, thường bằng mariabackup; node vắng ngắn thì dùng IST lấy phần thiếu từ gcache. Thực tế tôi ghi vào một node qua ProxySQL hoặc MaxScale và đặt gcache đủ lớn để restart chỉ cần IST."
+
+> Senior tip: tính kích thước gcache từ lượng binlog/write-set sinh ra mỗi giờ nhân với thời gian bảo trì dài nhất bạn hay làm. Đổi một tham số này thường biến mỗi lần bảo trì từ "chờ 30 phút SST" thành "vài chục giây IST".`,
     follow: ['SST mất bao lâu với DB 100GB?', 'gcache size đặt bao nhiêu?', 'Galera vs Group Replication?'],
     tags: ['MariaDB', 'Galera', 'HA', 'Replication']
   }
