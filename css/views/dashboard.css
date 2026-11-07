@@ -135,3 +135,39 @@
 @media (prefers-reduced-motion: reduce) {
   .view-dashboard .db-ring-fg, .view-dashboard .db-tile { transition: none; }
 }
+
+/* ---------- career goal (role + USD rate) ---------- */
+.view-dashboard .db-career { margin-top: 16px; box-shadow: inset 4px 0 0 var(--accent), var(--shadow); }
+.view-dashboard .db-career-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.view-dashboard .db-career-k { font-size: .78rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.view-dashboard .db-career h2 { margin: 4px 0 2px; font-size: 1.25rem; }
+.view-dashboard .db-career-rate { color: var(--accent); white-space: nowrap; }
+.view-dashboard .db-career-act { display: flex; flex-wrap: wrap; gap: 8px; }
+.view-dashboard .db-career-bar { margin-top: 12px; }
+.view-dashboard .db-career-form { display: grid; grid-template-columns: 2fr 1.4fr 1fr 1fr auto; gap: 10px; align-items: center; }
+.view-dashboard .db-career-form .db-goal-q { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+
+/* ---------- 4 area cards, each in its section colour ---------- */
+.view-dashboard .db-secs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+.view-dashboard .db-sec {
+  position: relative; display: flex; flex-direction: column; gap: 6px; padding: 16px 16px 14px; overflow: hidden;
+  border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  box-shadow: var(--shadow); transition: transform .2s, box-shadow .2s, border-color .2s;
+}
+.view-dashboard .db-sec::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 4px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.view-dashboard .db-sec:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); text-decoration: none; }
+.view-dashboard .db-sec-top { display: flex; align-items: center; gap: 8px; color: var(--accent); }
+.view-dashboard .db-sec-ico { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--accent-soft); font-size: 18px; }
+.view-dashboard .db-sec-big { font-size: 1.9rem; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.view-dashboard .db-sec-big small { font-size: .8rem; font-weight: 600; color: var(--muted); margin-left: 6px; }
+.view-dashboard .db-sec-line { font-weight: 600; font-size: .92rem; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .view-dashboard .db-secs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .view-dashboard .db-career-form { grid-template-columns: 1fr 1fr; }
+  .view-dashboard .db-career-form input[name="role"] { grid-column: 1 / -1; }
+}
+@media (max-width: 420px) {
+  .view-dashboard .db-secs { grid-template-columns: 1fr; }
+  .view-dashboard .db-career-form { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .view-dashboard .db-sec:hover { transform: none; } }

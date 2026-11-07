@@ -468,6 +468,7 @@
     if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
     document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
     document.querySelectorAll('.nav-group[open]').forEach(d => d.removeAttribute('open'));
+    updateSection(name);
     const root = document.getElementById('main');
     root.innerHTML = '';
     root.className = 'container view-' + name;
@@ -486,6 +487,25 @@
       root.innerHTML = '';
       show();
     });
+  }
+
+  // Section of the current route = its nav group (index.html). Sets body[data-group] (per-group colour palette in
+  // base.css) and fills the shared header strip #secbar: "group › page — one-line description", read from the nav
+  // markup so it follows the menu and the current language. Lives outside <main>, so views never overwrite it.
+  const SECTION = { study: ['learn', '📖'], practice: ['practice', '💪'], interviewGroup: ['interview', '🎤'], careerGroup: ['career', '💼'] };
+  function updateSection(name) {
+    const link = document.querySelector('.nav a[data-route="' + name + '"]');
+    const sum = link && link.closest('.nav-group') && link.closest('.nav-group').querySelector('summary');
+    const sec = sum && SECTION[(sum.dataset.i18n || '').replace('nav.', '')];
+    document.body.dataset.group = sec ? sec[0] : 'home';
+    const bar = document.getElementById('secbar');
+    if (!bar) return;
+    if (!sec) { bar.hidden = true; bar.innerHTML = ''; return; }
+    const page = link.querySelector('span'), desc = link.querySelector('small');
+    bar.innerHTML = '<div class="secbar-inner"><span class="secbar-group">' + sec[1] + ' ' + esc(sum.textContent.trim()) + '</span>' +
+      '<span class="secbar-sep" aria-hidden="true">›</span><span class="secbar-page">' + esc(page ? page.textContent : '') + '</span>' +
+      (desc && desc.textContent ? '<span class="secbar-desc">' + esc(desc.textContent) + '</span>' : '') + '</div>';
+    bar.hidden = false;
   }
 
   function renderView(view, root, parts) {

@@ -138,7 +138,9 @@ Người đọc là dev Java 4–8 năm kinh nghiệm chuẩn bị phỏng vấn
     như đang dạy một người chưa biết), ví dụ minh hoạ cụ thể (code, số liệu, sơ đồ ASCII), so sánh/bảng trade-off,
     khi nào dùng / không dùng, **pitfall thực tế trên production**.
   - Code ngắn (≤ 30 dòng), có comment giải thích những dòng quan trọng.
-  - Độ dài khoảng **1500–4000 ký tự** (câu system design / tình huống có thể dài hơn).
+  - Có `### Ví dụ đời thực`: một tình huống production cụ thể có số liệu (triệu chứng → điều tra → xử lý → kết quả đo được).
+  - Có `### Trả lời mẫu khi phỏng vấn`: đoạn nói tự nhiên 60–90 giây (150–220 từ), như ứng viên Senior trả lời thật.
+  - Độ dài khoảng **3000–5000 ký tự** (câu system design / tình huống có thể dài hơn). Validator cảnh báo đáp án dưới 1500 ký tự.
 - Câu trắc nghiệm: `explain` giải thích vì sao đáp án đúng **và vì sao từng phương án sai** là sai.
 - Kết thúc bằng một `> Senior tip:` thể hiện góc nhìn kinh nghiệm thực tế: số liệu, tuning, case thật.
 - Nội dung phải **đúng kỹ thuật** với Java 17/21, Spring Boot 3.x, Hibernate 6 và AWS hiện hành. Không bịa API.
