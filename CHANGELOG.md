@@ -3,6 +3,15 @@
 ## 2026-11-07
 
 ### Nội dung
+
+
+### Ứng dụng
+- Topic remote: Remote & Freelance (Upwork) + seed question remote-001 (Claude)
+
+
+## 2026-11-07
+
+### Nội dung
 - T293 (auto-committed after kilo review + verify)
 - T133 (auto-committed after kilo review + verify)
 - T849 (auto-committed after kilo review + verify)
