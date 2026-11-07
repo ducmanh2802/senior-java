@@ -37,3 +37,4 @@ Chạy `node scripts/validate.js` → OK.
 
 ## Notes
 - Claude: deepen devops-136 (Patroni failover diễn tập + Trả lời mẫu).
+Reviewed-by: kilo (T938R)
