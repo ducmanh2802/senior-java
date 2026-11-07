@@ -213,7 +213,7 @@ class JoinEngine {
         Map<Integer, List<Row>> table = new HashMap<>();
         for (Row b : build) table.computeIfAbsent(b.id, k -> new ArrayList<>()).add(b);
 
-        // Pha probe: moi dong tra bang bam dung mot lan
+        // Pha probe: mỗi dòng tra bảng băm dùng một lần
         List<String[]> result = new ArrayList<>();
         for (Row p : probe) {
             hashCount++;
@@ -976,8 +976,8 @@ class Window {
         Integer[] out = new Integer[rows.size()];
         String curGroup = null;
         int prevAmount = 0;
-        int curRank = 0;   // rank cua dong vua xu ly
-        int seen = 0;      // so dong da thay trong partition (dung cho RANK nhay)
+        int curRank = 0;   // rank của dòng vừa xử lý
+        int seen = 0;      // số dòng đã thấy trong partition (dùng cho RANK nhảy)
         for (int i : order(rows)) {
             Row r = rows.get(i);
             if (!r.group.equals(curGroup)) {          // sang partition moi: reset
@@ -1265,7 +1265,7 @@ class Joins {
         List<String[]> out = new ArrayList<>();
         for (Row l : left) {
             for (Row r : right) {
-                comparisons++;                 // moi cap duoc kiem tra
+                comparisons++;                 // mỗi cặp được kiểm tra
                 if (keyEq(l.key, r.key)) out.add(new String[]{l.val, r.val});
             }
         }
@@ -1286,7 +1286,7 @@ class Joins {
         List<String[]> out = new ArrayList<>();
         for (Row p : probe) {
             if (p.key == null) continue;       // null khong tra cuu
-            comparisons++;                     // mot lan tra/kiem tra cho dong probe
+            comparisons++;                     // một lần tra/kiểm tra cho dòng probe
             List<Row> matches = table.get(p.key);
             if (matches == null) continue;
             for (Row b : matches) {
@@ -1308,7 +1308,7 @@ class Joins {
         };
         List<Row> L = new ArrayList<>(left); L.sort(cmp);
         List<Row> R = new ArrayList<>(right); R.sort(cmp);
-        // bo qua duoi null (null khong khop) bang cach gioi han pham vi khong-null
+        // bỏ qua dưới null (null không khớp) bằng cách giới hạn phạm vi không-null
         int lEnd = L.size(); while (lEnd > 0 && L.get(lEnd - 1).key == null) lEnd--;
         int rEnd = R.size(); while (rEnd > 0 && R.get(rEnd - 1).key == null) rEnd--;
         List<String[]> out = new ArrayList<>();
@@ -1319,7 +1319,7 @@ class Joins {
             if (c < 0) { i++; }
             else if (c > 0) { j++; }
             else {
-                // khop: xuat tich Descartes cua nhom key bang nhau o ca hai ben
+                // khớp: xuất tích Descartes của nhóm key bằng nhau ở cả hai bên
                 int key = L.get(i).key;
                 int jStart = j;
                 while (i < lEnd && L.get(i).key.equals(key)) {
