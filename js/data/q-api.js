@@ -59,6 +59,12 @@
 - Dùng 401 cho "không đủ quyền" → client nhầm tưởng token hết hạn mà refresh mãi. Phân biệt rõ 401 vs 403.
 - Trả 500 cho downstream timeout → monitoring không phân biệt lỗi mình hay đối tác. Dùng 504.
 
+### Ví dụ đời thực
+API thanh toán của một ví trả **200 kèm {{"success": false}}** cho mọi lỗi. Hệ quả: (1) API gateway và client SDK coi mọi response là thành công nên **retry không bao giờ xảy ra** khi lỗi tạm thời; (2) dashboard tỉ lệ lỗi 5xx luôn bằng 0 dù 3% giao dịch thất bại; (3) đối tác tích hợp phải parse body để biết lỗi. Chuẩn hoá lại: 201 + header {{Location}} khi tạo giao dịch; 202 + link trạng thái khi chuyển sang xử lý bất đồng bộ với ngân hàng; 400 cho JSON sai định dạng; 422 cho vi phạm nghiệp vụ (số tiền vượt hạn mức); 401 khi thiếu hoặc sai token; 403 khi đúng người nhưng không có quyền; 409 khi trùng {{Idempotency-Key}} với nội dung khác; 429 kèm {{Retry-After}}; 503/504 cho lỗi phía sau. Body lỗi theo **RFC 9457 Problem Details** ({{type}}, {{title}}, {{status}}, {{detail}}, kèm {{code}} riêng của hệ thống). Sau khi đổi, tỉ lệ retry thành công của SDK tăng và cảnh báo 5xx bắt được một sự cố DB sớm 20 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn status code để máy hiểu được kết quả mà không cần đọc body, vì gateway, client SDK, cache và monitoring đều dựa vào nó. Tạo thành công là 201 kèm Location; chấp nhận để xử lý bất đồng bộ là 202 kèm đường dẫn kiểm tra trạng thái; xoá hoặc cập nhật không có nội dung trả về là 204. Lỗi phía client: 400 khi request sai cú pháp, 422 khi đúng cú pháp nhưng vi phạm quy tắc nghiệp vụ, 401 khi chưa xác thực hoặc token sai, 403 khi đã xác thực nhưng không có quyền, 404, 409 khi xung đột trạng thái hoặc trùng idempotency key, 429 kèm Retry-After khi vượt rate limit. Lỗi phía server: 500, 502 và 504 khi upstream lỗi hoặc timeout, 503 khi tạm thời quá tải. Body lỗi tôi theo Problem Details RFC 9457, có mã lỗi ổn định cho client xử lý."
+
 > Senior tip: Spring Boot 3.x có **ProblemDetail** (RFC 7807) sẵn: {{throw new ErrorResponseException(HttpStatus.UNPROCESSABLE_ENTITY, ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, "Số dư không đủ"), null)}}. Bật {{spring.mvc.problemdetails.enabled=true}} để cả exception mặc định của Spring MVC cũng trả ProblemDetail. Client parse {{type}}, {{title}}, {{detail}}, {{instance}} thống nhất.`,
     follow: [
       'Khi nào trả 202 thay vì 201? Client poll status như thế nào?',
@@ -115,6 +121,20 @@
 | Total count | Có | Tốn query COUNT(*) |
 | Phù hợp | Admin, dashboard | Feed, mobile infinite scroll |
 
+### Ví dụ đời thực
+API sao kê ban đầu là {{GET /getTransactionsByAccount?accId=...&page=...}} trả về **mảng thuần**. Ba vấn đề: không thể thêm thông tin phân trang mà không phá client; tham số page-based với dữ liệu giao dịch liên tục chèn mới làm khách thấy **trùng hoặc mất** giao dịch khi kéo trang; trang sâu chậm (OFFSET). Thiết kế lại:
+~~~text
+GET /accounts/{accountId}/transactions?from=2026-10-01&to=2026-10-31&type=DEBIT&sort=-bookedAt&limit=50&cursor=eyJ0Ijo...
+200 OK
+{ "items": [ ... ],
+  "nextCursor": "eyJ0IjoiMjAyNi0xMC0xNVQwOToxMjowMFoiLCJpZCI6ODgxMn0",
+  "hasMore": true }
+~~~
+Cursor là base64 của {{(bookedAt, id)}} cuối trang, server giải mã để làm keyset. Kiểm tra quyền: {{accountId}} trong path phải thuộc về người dùng trong token (chống IDOR). Màn hình quản trị cần "tổng số" và nhảy trang thì dùng endpoint riêng có page-based, giới hạn bộ lọc theo khoảng thời gian.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi đặt tên resource là danh từ số nhiều và để HTTP method thể hiện hành động, ví dụ accounts và accounts/{id}/transactions, chỉ lồng một cấp khi quan hệ sở hữu rõ ràng. Lọc, sắp xếp, phân trang đi qua query parameter với quy ước thống nhất, như sort có dấu trừ cho giảm dần, limit có giới hạn tối đa. Response luôn là object chứa items và thông tin phân trang, không trả mảng thuần, để còn mở rộng. Với dữ liệu giao dịch liên tục thêm mới, tôi dùng cursor-based: cursor mã hoá giá trị sắp xếp và id của phần tử cuối, server dùng làm keyset, nên không trùng, không mất và trang nào cũng nhanh; đổi lại không nhảy tới trang bất kỳ và không có tổng số. Page-based chỉ dùng cho màn hình quản trị cần tổng số. Và luôn kiểm tra tài nguyên trong path thuộc về người gọi để tránh IDOR."
+
 > Senior tip: Ngân hàng dùng **cursor-based cho statement/transaction history** (hàng triệu dòng, insert liên tục). Page-based cho admin quản lý user (cần total count, nhảy trang). Luôn set {{max page size ≤ 100}} chống DoS.`,
     follow: [
       'Làm sao filter theo khoảng ngày hiệu quả trên bảng transaction 100M rows?',
@@ -167,6 +187,12 @@ DispatcherServlet (Front Controller)
 2. **Sync DB call trong controller**: Block Tomcat thread. Fix: Reactive (WebFlux), @Async + CompletableFuture, virtual thread (Java 21).
 3. **HandlerInterceptor chain dài**: Pre-handle lặp. Fix: Gom log, MDC vào 1 interceptor; tránh logic nặng.
 4. **ArgumentResolver custom nhiều**: Mỗi request resolve lại. Fix: Cache resolution, dùng @ModelAttribute binding sẵn.
+
+### Ví dụ đời thực
+API trả danh sách sản phẩm có p99 800ms dù truy vấn DB chỉ 40ms. Profiler (async-profiler) chỉ ra 60% thời gian nằm ở **HttpMessageConverter**: Jackson serialize entity JPA thay vì DTO — chạm vào quan hệ lazy (kích hoạt query thêm), serialize cả cột mô tả HTML lớn và dùng một {{ObjectMapper}} được tạo mới mỗi request trong một {{@Bean}} khai báo sai scope. Thêm vào đó, một {{HandlerInterceptor}} ghi log toàn bộ body response (đọc lại và copy chuỗi lớn). Sửa: trả DTO record chỉ có trường cần thiết, dùng ObjectMapper singleton do Spring Boot cấu hình, bỏ log body (chỉ log kích thước và status), bật nén gzip ở gateway. p99 còn 90ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Request vào Tomcat, qua chuỗi Filter, gồm cả Spring Security, rồi tới DispatcherServlet. DispatcherServlet hỏi các HandlerMapping để tìm handler phù hợp, thường là method controller theo RequestMapping, kèm các HandlerInterceptor. HandlerAdapter gọi method đó: trước khi gọi, các argument resolver và HttpMessageConverter đọc body JSON thành object, chạy validation; sau khi gọi, return value handler và message converter ghi kết quả ra JSON. Nếu có exception, HandlerExceptionResolver xử lý, trong đó có ControllerAdvice. Điểm nghẽn hay gặp: serialize entity thay vì DTO làm lazy loading và payload lớn, logic nặng hoặc log body trong filter và interceptor, thread Tomcat bị giữ bởi lời gọi chậm phía sau, và validation hay mapping tốn kém. Tôi đo bằng profiler hoặc trace trước khi tối ưu."
 
 > Senior tip: Spring Boot 3.2+ trên Java 21 bật **virtual threads** ({{spring.threads.virtual.enabled=true}}) — Tomcat thread không còn bottleneck cho I/O blocking. Nhưng JSON serialization là việc CPU-bound: virtual thread không làm nó nhanh hơn và vẫn chiếm carrier thread trong lúc chạy, nên vẫn cần projection/streaming cho payload lớn.`,
     follow: [
@@ -2626,6 +2652,12 @@ gRPC như gọi hàm từ xa qua mạng: định nghĩa hàm trong proto, sinh c
 ### Trả lời miệng 1 phút
 "gRPC là RPC trên HTTP/2 với protobuf binary: field number + varint; mỗi call là stream HTTP/2; deadline lan truyền. Tôi không dùng khi client là browser trực tiếp, payload lớn/media, hoặc cần debug dễ và public API."
 
+### Bên trong: một message protobuf trên dây
+Với message {{Payment}} gồm {{int64 amount = 1}} và {{string currency = 2}}, giá trị amount = 150, currency = "VND": mỗi trường ghi **tag** = (số thứ tự trường × 8 + wire type) rồi giá trị. {{amount}}: tag {{08}} (trường 1, varint), giá trị 150 dạng varint 2 byte {{96 01}}; {{currency}}: tag {{12}} (trường 2, length-delimited), độ dài {{03}}, rồi 3 byte "VND". Tổng **9 byte**, trong khi JSON tương ứng khoảng 33 byte. Tên trường **không** nằm trên dây — vì vậy đổi tên trường an toàn, nhưng **đổi số thứ tự hoặc kiểu** của trường đã dùng là phá vỡ tương thích; trường bỏ đi phải {{reserved}} số của nó.
+
+### Ví dụ đời thực
+Hai service nội bộ (tính giá ↔ đặt hàng) gọi nhau 12.000 lần/giây bằng REST JSON, CPU serialize chiếm 25%. Chuyển sang gRPC: payload nhỏ hơn khoảng 70%, p99 giảm từ 35ms còn 11ms. Nhưng sự cố đầu tiên: một dev đổi số thứ tự trường {{discount}} từ 5 sang 6 khi "sắp xếp lại file proto" → service cũ đọc giá trị sai kiểu, áp sai giảm giá cho 40 phút. Sau đó thêm **buf breaking** vào CI để chặn thay đổi phá tương thích. Deadline: service đặt hàng đặt deadline 300ms; gRPC truyền deadline còn lại qua header {{grpc-timeout}} sang service tiếp theo, nên service tính giá tự huỷ khi client đã bỏ đi thay vì làm việc vô ích.
+
 > Senior tip: deadline propagation là lợi thế lớn nhất — đặt deadline ở edge và propagate xuống; đừng set timeout từng service độc lập vì tổng vượt deadline edge.`,
     follow: [
       'gRPC load balancing hoạt động thế nào khi client giữ một connection dài?',
@@ -2800,6 +2832,9 @@ Rate limit như quota nước: fixed window là "mỗi giờ 100 lít" — phút
 ### Trả lời miệng 1 phút
 "Fixed window đơn giản nhưng boundary spike; sliding window counter cân bằng chính xác và memory; token bucket cho burst + refill. Trên Redis dùng Lua script atomic để tránh race giữa instance."
 
+### Ví dụ đời thực
+API gửi OTP dùng **fixed window** 5 lần/phút theo số điện thoại bằng {{INCR}} + {{EXPIRE}} trên Redis. Kẻ tấn công gửi 5 lần ở giây 59 và 5 lần ở giây 61 → 10 OTP trong 2 giây (hiệu ứng biên cửa sổ), chi phí SMS tăng vọt khoảng 18 triệu đồng một đêm. Một lỗi khác: {{INCR}} rồi mới {{EXPIRE}} bằng hai lệnh riêng; pod crash giữa hai lệnh → khoá không bao giờ hết hạn, số điện thoại bị chặn vĩnh viễn. Chuyển sang **token bucket** viết bằng **một script Lua** (Redis chạy script nguyên tử): đọc số token và thời điểm nạp cuối, nạp thêm theo thời gian đã trôi qua, trừ token nếu đủ, đặt TTL — tất cả trong một lần gọi. Thêm giới hạn thứ hai theo IP và theo thiết bị. Chi phí SMS bất thường biến mất; người dùng bình thường không bị ảnh hưởng nhờ cho phép "bùng nổ" ngắn (dung lượng bucket 3).
+
 > Senior tip: key design quyết định hơn thuật toán — per-user cho authenticated, per-IP cho anonymous, per-endpoint cho expensive ops; dùng Redis Cluster hash tag để atomic Lua chạy đúng slot.`,
     follow: [
       'Fixed window boundary spike cụ thể là bao nhiêu request trong 2 phút?',
@@ -2850,6 +2885,9 @@ Cache như tủ lạnh: max-age là hạn sử dụng, ETag là tem kiểm tra c
 ### Trả lời miệng 1 phút
 "Cache-Control với max-age/s-maxage điều khiển TTL client/CDN; ETag cho conditional 304; Vary phân biệt theo header; stale-while-revalidate trả stale trong khi revalidate. CDN cho public/shared, browser cho personalized."
 
+### Ví dụ đời thực
+API danh mục sản phẩm (thay đổi vài lần mỗi giờ) nhận 6.000 request/giây, gần như toàn bộ đi thẳng vào service. Thêm {{Cache-Control: public, max-age=60, stale-while-revalidate=300}} và {{ETag}} (hash nội dung): CDN phục vụ 94% request, service chỉ còn khoảng 350 request/giây; khi cache hết hạn, CDN vẫn trả bản cũ ngay trong lúc làm mới ở nền nên người dùng không thấy độ trễ. Sự cố đi kèm: API "giỏ hàng của tôi" được cấu hình nhầm cùng rule CDN với {{public}} → một người dùng thấy giỏ hàng của người khác (CDN cache theo URL, không theo người). Sửa: dữ liệu cá nhân luôn {{Cache-Control: private, no-store}}; với phản hồi khác nhau theo ngôn ngữ thì đặt {{Vary: Accept-Language}} để CDN lưu bản riêng; kiểm tra header cache trong test tự động cho mọi endpoint có dữ liệu người dùng.
+
 > Senior tip: dùng versioned URL cho static assets (immutable, max-age=1y) và short TTL cho API dynamic; đừng cache authenticated response ở shared cache.`,
     follow: [
       'stale-while-revalidate khác gì stale-if-error và khi nào dùng cả hai?',
@@ -2896,6 +2934,9 @@ Gateway như lễ tân tòa nhà: kiểm tra giấy tờ, điều hướng khác
 
 ### Trả lời miệng 1 phút
 "API gateway là entry point: routing, TLS, auth, rate limit, circuit breaker, transform, aggregation. Service mesh xử lý east-west với mTLS ở sidecar. Gateway cho north-south, mesh cho east-west; kết hợp khi cần cả hai."
+
+### Ví dụ đời thực
+Một hệ thống 25 microservice, mỗi service tự kiểm tra JWT, tự rate limit, tự cấu hình CORS — mỗi service một kiểu, có service quên kiểm tra hạn token. Đưa **Spring Cloud Gateway** (hoặc Kong) vào: xác thực token và rate limit tập trung ở gateway, định tuyến theo path, gắn {{X-Request-Id}}/traceparent, thống nhất CORS và body lỗi. Bài học sau 3 tháng: (1) một dev đưa **logic nghiệp vụ** vào filter gateway (tính phí vận chuyển) → mỗi thay đổi nghiệp vụ phải deploy gateway, rủi ro cho toàn hệ thống — chuyển lại về service; (2) service phía sau vẫn phải kiểm tra **quyền** (authorization) vì gateway chỉ biết "ai", không biết "được làm gì với tài nguyên nào"; (3) gateway chạy tối thiểu 3 replica, có circuit breaker theo route để một service chậm không làm cạn tài nguyên của gateway. Service mesh (Istio, Linkerd) được cân nhắc sau cho mTLS và retry giữa các service nội bộ — vấn đề **đông–tây**, khác với gateway xử lý traffic **bắc–nam**.
 
 > Senior tip: đừng nhét business logic vào gateway; giữ gateway stateless và thin; BFF cho mobile/web riêng biệt để tránh coupling client với backend evolution.`,
     follow: [
