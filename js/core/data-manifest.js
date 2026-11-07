@@ -48,7 +48,7 @@
       bank: ['questions', 'glossary'],
       flash: ['questions', 'glossary'],
       quiz: ['index'],                                        // setup from the light index; the view awaits 'quiz' on start
-      exam: ['quiz', 'exams'],                                // glossary arrives via prefetch (term tooltips re-index on load)
+      exam: ['index', 'exams'],                               // pick screen from the light index; the view awaits 'quiz' for the rest
       algo: ['algos', 'glossary'],
       mock: ['questions', 'algos'],
       companies: ['companies', 'questions'],                  // App.stats()
