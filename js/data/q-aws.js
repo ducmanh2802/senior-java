@@ -3689,5 +3689,148 @@ Mọi pod trên node dùng cùng instance profile của node -> nếu một pod 
     'Khi nào Aurora Serverless v2 phù hợp?'
   ],
   tags: ['Aurora', 'RDS Proxy', 'Lambda', 'failover', 'lead']
-}
+},
+{
+  id: 'aws-055',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Case study SA) Hoá đơn AWS của công ty tăng từ 18.000 lên 31.000 USD trong một tháng mà traffic chỉ tăng 10%. Giám đốc yêu cầu giải thích và kế hoạch giảm trong 2 tuần. Bạn điều tra và xử lý thế nào?',
+  a: `**Tóm tắt:** Tôi coi đây là một sự cố có quy trình: **khoanh vùng** bằng Cost Explorer (theo dịch vụ → tài khoản → usage type → tag), tìm **2–3 dòng chi phí tăng nhiều nhất** (thường chiếm 80% phần tăng), tìm **nguyên nhân kỹ thuật** của từng dòng (NAT, data transfer liên AZ, log, tài nguyên quên tắt, cấu hình autoscaling), sửa theo thứ tự "nhanh – an toàn – lớn", rồi dựng **cơ chế phòng ngừa**: tag bắt buộc, ngân sách theo team, Cost Anomaly Detection, review chi phí trong quy trình thiết kế.
+
+### Bước 1 — Khoanh vùng trong 1–2 ngày
+- **Cost Explorer**: so tháng này với tháng trước theo *Service*, rồi *Usage type* (ví dụ {{NatGateway-Bytes}}, {{DataTransfer-Regional-Bytes}}, {{DataProcessing-Bytes}} của CloudWatch Logs).
+- **CUR / Data Exports** vào Athena khi cần chi tiết theo resource ID và theo giờ (biết chính xác ngày nào bắt đầu tăng → đối chiếu với lịch deploy).
+- Lọc theo **tag** team/service; phần "untagged" lớn là một phát hiện riêng.
+
+### Bước 2 — Các nguyên nhân hay gặp và cách xác nhận
+| Dòng chi phí tăng | Nguyên nhân hay gặp | Cách xác nhận |
+|---|---|---|
+| NAT Gateway (data processing) | Pod kéo image, gọi S3/DynamoDB qua NAT | VPC Flow Logs theo đích; thiếu VPC endpoint |
+| Data transfer liên AZ | Service gọi chéo AZ, Kafka/DB replica khác AZ | Usage type {{DataTransfer-Regional-Bytes}} |
+| CloudWatch Logs ingestion | Bật DEBUG, log body request | Log group có lượng ingest tăng đột biến |
+| EC2/EBS | Môi trường test quên tắt, volume/snapshot mồ côi | Trusted Advisor, Compute Optimizer, tag thiếu owner |
+| RDS | Instance phóng to "tạm thời" không thu lại, IOPS provisioned thừa | Metric CPU/IOPS thấp kéo dài |
+
+### Bước 3 — Ví dụ đời thực (phân tích thật)
+Phần tăng 13.000 USD gồm:
+- **NAT Gateway +5.200 USD**: sau khi chuyển sang EKS, mỗi node kéo image 1,2GB từ ECR qua NAT mỗi lần scale (autoscaler tạo/xoá node liên tục). Sửa: VPC endpoint cho ECR, S3 (gateway endpoint miễn phí), giảm kích thước image, giữ node ổn định hơn.
+- **CloudWatch Logs +3.800 USD**: một service bật DEBUG và log toàn bộ payload, 9TB/tháng. Sửa: về INFO, sampling, retention 14 ngày, log ít giá trị chuyển sang S3.
+- **Data transfer liên AZ +2.100 USD**: Kafka consumer đọc từ broker khác AZ. Sửa: bật {{client.rack}} (đọc từ follower cùng AZ).
+- **Môi trường quên tắt +1.600 USD**: 3 cụm load test chạy suốt tháng. Sửa: TTL tag + Lambda tắt tự động ngoài giờ.
+Sau 2 tuần hoá đơn tháng tiếp theo về 17.400 USD (thấp hơn cả trước sự cố) mà không ảnh hưởng hiệu năng.
+
+### Bước 4 — Phòng ngừa
+- Tag bắt buộc (owner, service, env) bằng SCP/Tag Policy; tài nguyên không tag bị cảnh báo.
+- **AWS Budgets** theo tài khoản/team, **Cost Anomaly Detection** cảnh báo qua Slack trong ngày.
+- Dashboard chi phí theo service gửi cho từng team hằng tuần (showback).
+- Thêm câu hỏi chi phí vào design review: "luồng dữ liệu này đi qua NAT, qua AZ, qua region bao nhiêu GB/tháng?".
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xử lý tăng chi phí như một sự cố. Đầu tiên khoanh vùng bằng Cost Explorer theo dịch vụ, rồi usage type, rồi tag, và dùng Cost and Usage Report trong Athena để biết chính xác ngày bắt đầu tăng và resource nào, đối chiếu với lịch deploy. Thường hai ba dòng chiếm phần lớn mức tăng. Sau đó tìm nguyên nhân kỹ thuật cho từng dòng: NAT gateway tăng vì thiếu VPC endpoint cho S3 hay ECR, data transfer liên AZ do service hay consumer gọi chéo AZ, CloudWatch Logs tăng vì ai đó bật DEBUG, tài nguyên test quên tắt. Tôi sửa theo thứ tự nhanh và an toàn trước, đo lại sau mỗi thay đổi. Cuối cùng là cơ chế để không lặp lại: tag bắt buộc, budget và Cost Anomaly Detection cảnh báo trong ngày, báo cáo chi phí theo team, và đưa câu hỏi chi phí vào design review."
+
+> Senior tip: đặt **chi phí trên mỗi đơn vị nghiệp vụ** (USD trên 1.000 giao dịch, trên mỗi khách hàng hoạt động) làm chỉ số theo dõi. Tổng hoá đơn tăng khi kinh doanh tăng là bình thường; chi phí trên mỗi giao dịch tăng mới là vấn đề kiến trúc.`,
+  follow: [
+    'Vì sao data transfer liên AZ hay bị bỏ qua, và bạn giảm nó thế nào mà không hy sinh HA?',
+    'Savings Plans và Reserved Instances: khi nào cam kết, cam kết bao nhiêu phần trăm?',
+    'Bạn thuyết phục các team tự chịu trách nhiệm chi phí (showback/chargeback) ra sao?'
+  ],
+  tags: ['AWS', 'FinOps', 'cost', 'case study', 'solution architect']
+},
+{
+  id: 'aws-056',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Case study SA) Bạn thiết kế nền tảng SaaS B2B trên AWS cho 800 doanh nghiệp, trong đó 5 khách lớn yêu cầu cô lập dữ liệu mạnh và cam kết hiệu năng riêng. Bạn chọn mô hình silo, pool hay bridge, cô lập tenant bằng gì, và tính chi phí theo tenant ra sao?',
+  a: `**Tóm tắt:** Tôi dùng mô hình **lai (bridge)**: đa số tenant chạy **pool** (dùng chung hạ tầng, dữ liệu tách bằng tenant_id + kiểm soát truy cập theo tenant), các khách lớn hoặc có yêu cầu tuân thủ chạy **silo** (tài khoản/VPC/DB riêng, cùng một codebase và pipeline). Cô lập trong pool bằng nhiều lớp: **danh tính mang tenant** (claim trong token), **IAM theo thuộc tính (ABAC) với session tag** để mỗi request chỉ truy cập được dữ liệu của tenant đó, RLS hoặc partition key theo tenant ở tầng dữ liệu. Chi phí theo tenant đo bằng **metering** ở ứng dụng kết hợp tag/tài khoản cho silo.
+
+### Ba mô hình
+| Mô hình | Cô lập | Chi phí / tenant | Vận hành | Hợp với |
+|---|---|---|---|---|
+| Silo | Mạnh nhất (tài khoản/DB riêng) | Cao | Nhiều bản triển khai | Khách lớn, yêu cầu pháp lý |
+| Pool | Logic (tenant_id, IAM, RLS) | Thấp | Một bản triển khai | Đa số khách nhỏ và vừa |
+| Bridge | Kết hợp theo tầng hoặc theo nhóm khách | Trung bình | Phức tạp hơn | Thực tế phổ biến nhất |
+
+### Cô lập trong pool — nhiều lớp
+1. **Danh tính**: người dùng đăng nhập qua Cognito/IdP; token mang {{tenant_id}}; API Gateway/ứng dụng không bao giờ tin tenant_id gửi từ client.
+2. **IAM ABAC**: service assume role với **session tag** {{tenant_id}}; policy chỉ cho truy cập DynamoDB item có partition key bắt đầu bằng tenant đó (điều kiện {{dynamodb:LeadingKeys}}) hoặc prefix S3 của tenant — lỗi code quên điều kiện cũng không đọc được tenant khác.
+3. **Dữ liệu**: PostgreSQL RLS theo tenant (biến phiên đặt đầu transaction), hoặc schema/DB riêng cho tenant lớn; khoá KMS riêng cho tenant yêu cầu.
+4. **Noisy neighbor**: rate limit và quota theo tenant (API Gateway usage plan, hoặc token bucket trong ứng dụng), hàng đợi theo tenant cho job nặng.
+
+### Silo cho khách lớn
+Mỗi khách lớn một **tài khoản AWS** trong OU riêng, dựng bằng cùng Terraform module/pipeline (tenant onboarding tự động); deploy theo "wave": pool trước, silo sau, có thể giữ khách lớn ở phiên bản chậm hơn một nhịp theo hợp đồng.
+
+### Chi phí theo tenant
+- Silo: tài khoản riêng → chi phí rõ ràng qua Cost Explorer.
+- Pool: ứng dụng **ghi metric sử dụng theo tenant** (số request, thời gian CPU ước tính, GB lưu trữ, số token AI) rồi phân bổ chi phí dùng chung theo tỉ lệ. Kết quả dùng cho định giá gói và phát hiện tenant lỗ.
+
+### Ví dụ đời thực
+Một SaaS kế toán ban đầu chạy 100% pool. Khi ký với một tập đoàn lớn, họ yêu cầu DB riêng, khoá mã hoá riêng và SLA riêng; một khách khác chạy báo cáo cuối năm làm chậm mọi tenant khác 40 phút. Chuyển sang bridge: 6 khách lớn sang silo (tài khoản riêng, Aurora riêng, KMS key riêng), pool cho 790 khách còn lại với ABAC + RLS và quota báo cáo theo tenant. Metering cho thấy 3% tenant chiếm 41% chi phí pool → điều chỉnh bảng giá theo mức dùng. Không còn sự cố "một tenant làm chậm cả hệ thống".
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thường chọn mô hình lai. Đa số tenant nhỏ và vừa chạy pool để tối ưu chi phí và vận hành; khách lớn hoặc có yêu cầu tuân thủ chạy silo với tài khoản, DB và khoá mã hoá riêng, nhưng cùng một codebase và pipeline, onboarding tự động bằng Terraform. Trong pool, tôi cô lập nhiều lớp: tenant lấy từ token chứ không tin client; service truy cập dữ liệu bằng role có session tag tenant, policy IAM chỉ cho đọc partition hay prefix của tenant đó, nên lỗi code cũng không lộ dữ liệu tenant khác; tầng DB thêm RLS. Noisy neighbor xử lý bằng quota và rate limit theo tenant. Chi phí silo thì rõ theo tài khoản, còn pool thì ứng dụng ghi metric sử dụng theo tenant để phân bổ, dùng cho định giá và phát hiện tenant lỗ."
+
+> Senior tip: viết một test tự động "tenant A không thấy dữ liệu tenant B" chạy trên **mọi** API và cả job nền, ở mỗi lần deploy. Rò rỉ chéo tenant là sự cố có thể chấm dứt một doanh nghiệp SaaS, và nó thường xuất hiện ở chỗ ít ai nghĩ tới như export, cache, search index.`,
+  follow: [
+    'Bạn chuyển một tenant từ pool sang silo mà không downtime thế nào?',
+    'Cache và search index (ElastiCache, OpenSearch) cô lập theo tenant ra sao?',
+    'Deploy phiên bản mới cho hàng trăm tenant silo một cách an toàn thế nào?'
+  ],
+  tags: ['AWS', 'multi-tenant', 'SaaS', 'ABAC', 'case study', 'solution architect']
+},
+{
+  id: 'aws-057',
+  topic: 'aws',
+  level: 'senior',
+  q: '(Case study SA) Một sự kiện mở bán vé dự kiến 400.000 người vào cùng lúc trong 5 phút đầu (gấp 50 lần bình thường). Hệ thống dùng CloudFront, API Gateway, Lambda và ECS. Những giới hạn (quota) nào sẽ gãy trước, và bạn thiết kế để không sập thế nào?',
+  a: `**Tóm tắt:** Ở tải đột biến, thứ gãy trước thường **không phải CPU** mà là **quota và tốc độ scale**: Lambda concurrency của tài khoản (mặc định 1.000/region), tốc độ scale của Lambda và ECS, throttle của API Gateway, connection của DB, rate limit của đối tác thanh toán. Thiết kế: **hàng chờ ảo (waiting room)** ở cửa vào để chỉ cho số người hệ thống chịu được đi vào, **tách phần đọc** sang CDN/cache, **đệm phần ghi** bằng SQS, **giữ chỗ nguyên tử** trong DB/Redis, **scale trước** và **xin tăng quota trước** hàng tuần.
+
+### Những gì gãy trước (kiểm tra trước sự kiện)
+| Thành phần | Giới hạn cần kiểm tra |
+|---|---|
+| Lambda | Concurrency tài khoản (mặc định 1.000/region, xin tăng); tốc độ scale mỗi hàm (thêm khoảng 1.000 concurrency mỗi 10 giây); cold start Java (SnapStart) |
+| API Gateway | Throttle mặc định của tài khoản (khoảng 10.000 rps, burst 5.000 — xin tăng), throttle theo stage/method |
+| ECS/EKS | Thời gian thêm task/node (phút), giới hạn IP trong subnet, quota vCPU Fargate |
+| DB | Max connections, IOPS, khoá dòng trên tồn kho vé |
+| Đối tác | Rate limit cổng thanh toán, SMS OTP |
+| Tài khoản | Service Quotas khác: ENI, NAT bandwidth, KMS request rate |
+
+### Kiến trúc
+~~~seq
+title: Mở bán vé với hàng chờ ảo
+actors: User | CloudFront | WaitingRoom | API | Queue | Worker
+User -> CloudFront: vào trang sự kiện (trang tĩnh, cache)
+CloudFront -> WaitingRoom: xin lượt vào
+WaitingRoom --> User: số thứ tự, chờ tới lượt
+WaitingRoom --> User: token vào cửa (có hạn 10 phút)
+User -> API: giữ chỗ (kèm token)
+API -> API: giữ chỗ nguyên tử (Redis/DB), trả mã giữ chỗ
+API -> Queue: đơn chờ thanh toán
+Queue -> Worker: xử lý thanh toán theo tốc độ cổng cho phép
+~~~
+- **Waiting room** (giải pháp AWS Virtual Waiting Room hoặc dịch vụ tương đương): cho vào theo nhịp đã load test được (ví dụ 2.000 người/phút), công bằng theo thứ tự, chặn bot bằng token có chữ ký.
+- **Đọc**: trang sự kiện, sơ đồ chỗ ngồi là tĩnh trên CloudFront; số chỗ còn lại làm mới mỗi vài giây từ cache.
+- **Giữ chỗ**: thao tác nguyên tử, có thời hạn 10 phút, hết hạn thì trả lại.
+- **Thanh toán**: bất đồng bộ qua SQS, worker gọi cổng thanh toán theo hạn mức; người dùng thấy "đang xử lý".
+- **Scale trước**: provisioned concurrency cho Lambda nóng, tăng số task ECS tối thiểu từ 1 giờ trước, warm DB/cache.
+
+### Ví dụ đời thực
+Lần mở bán đầu tiên không có waiting room: trong 90 giây, Lambda chạm giới hạn 1.000 concurrency, API Gateway trả 429 hàng loạt, client tự retry làm tải tăng gấp 3; DB hết connection; trang trắng 12 phút, mạng xã hội tràn phàn nàn. Lần sau: xin tăng Lambda concurrency lên 5.000 và API Gateway trước 3 tuần, waiting room cho vào 3.000 người/phút, giữ chỗ bằng Redis + xác nhận bằng UPDATE có điều kiện trong DB, thanh toán qua SQS. Đỉnh 420.000 người, không lỗi 5xx đáng kể, bán hết 18.000 vé trong 41 phút, không bán vượt.
+
+### Pitfall
+- Chỉ load test ứng dụng mà quên quota tài khoản và đối tác.
+- Trông chờ autoscaling phản ứng kịp với đột biến trong vài chục giây.
+- Client retry không có backoff → tự DDoS.
+- Waiting room nhưng API phía sau không kiểm tra token → bot đi vòng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với đột biến gấp 50 lần, thứ gãy trước thường là quota và tốc độ scale chứ không phải CPU: concurrency Lambda của tài khoản mặc định một nghìn mỗi region, tốc độ thêm concurrency, throttle của API Gateway, thời gian thêm task ECS, connection DB và rate limit cổng thanh toán. Nên tôi kiểm kê các giới hạn đó và xin tăng quota từ nhiều tuần trước. Về kiến trúc, tôi đặt hàng chờ ảo ở cửa vào để chỉ cho số người đã load test được đi vào, với token có chữ ký mà API kiểm tra. Phần đọc đưa lên CloudFront và cache. Giữ chỗ là thao tác nguyên tử có thời hạn. Thanh toán đẩy vào SQS để worker xử lý theo hạn mức của cổng. Tôi scale trước bằng provisioned concurrency và số task tối thiểu, và client retry có backoff."
+
+> Senior tip: mở **Service Quotas** và liệt kê mọi quota mà luồng sự kiện chạm tới, ghi giá trị hiện tại, giá trị cần, ngày xin tăng. Quota là loại giới hạn không hiện ra trong load test ở môi trường khác tài khoản — và xin tăng có thể mất nhiều ngày.`,
+  follow: [
+    'Provisioned concurrency và SnapStart khác nhau thế nào cho Lambda Java?',
+    'Bạn load test ở quy mô 400.000 người dùng mà không tốn quá nhiều tiền thế nào?',
+    'Nếu cổng thanh toán chậm giữa sự kiện, giữ chỗ hết hạn thì xử lý công bằng ra sao?'
+  ],
+  tags: ['AWS', 'scalability', 'quota', 'waiting room', 'case study', 'solution architect']
+},
 )
