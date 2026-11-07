@@ -577,6 +577,12 @@ public void run() { ... }
 - lockAtLeastFor quan trọng: tránh nhiều pod cùng giây nhận lock khi đồng hồ hệ thống xê dịch.
 - Đừng dùng lock trong process (local mutex) — với nhiều pod nó vô dụng.
 
+### Ví dụ đời thực
+Job tính lãi tiết kiệm hằng đêm chạy trên 3 pod với {{@Scheduled}}. Sau khi tăng replica từ 1 lên 3, một đêm **lãi được cộng 3 lần** cho khoảng 41.000 tài khoản (tổng chênh 1,9 tỷ đồng, phải đảo bút toán). Một đêm khác job crash ở 70% vì DB failover và chạy lại **từ đầu** — các tài khoản đã cộng lãi bị cộng lần nữa. Thiết kế lại: (1) chỉ một instance chạy nhờ **ShedLock** (khoá trong bảng DB, có {{lockAtMostFor}}); (2) job xử lý theo lô 1.000 tài khoản, mỗi lô một transaction, ghi **checkpoint** (id tài khoản cuối của lô) trong bảng {{job_progress}}; (3) mỗi bút toán lãi có **khoá idempotent** {{(account_id, interest_date)}} với unique constraint, nên chạy lại không bao giờ cộng hai lần; (4) cảnh báo nếu job không hoàn tất trước 05:00. Spring Batch cung cấp sẵn (2) qua JobRepository nếu muốn dùng framework.
+
+### Trả lời mẫu khi phỏng vấn
+"Hai vấn đề cần giải riêng. Chạy trùng: khi có nhiều instance, mỗi instance đều kích hoạt scheduler, nên tôi đảm bảo chỉ một nơi chạy, bằng distributed lock như ShedLock với bảng khoá trong DB và thời hạn khoá tối đa, hoặc chuyển job sang Kubernetes CronJob với concurrencyPolicy Forbid. Nhưng khoá có thể hết hạn hoặc lỗi, nên job vẫn phải idempotent: mỗi kết quả ghi ra có khoá nghiệp vụ duy nhất, như tài khoản cộng ngày tính lãi, với unique constraint để chạy lại không tạo trùng. Mất tiến độ: xử lý theo lô, mỗi lô một transaction, ghi checkpoint sau mỗi lô để restart tiếp từ chỗ dừng; Spring Batch có sẵn cơ chế này. Cuối cùng là giám sát: cảnh báo khi job không hoàn tất đúng hạn, và đối soát kết quả."
+
 > Senior tip: hai lớp an toàn: khóa giải quyết chạy trùng, idempotency giải quyết chạy lại. Mọi job tôi viết đều có sẵn INSERT ON CONFLICT DO NOTHING với unique key nghiệp vụ — job restart lần thứ ba vẫn đúng như lần nhất, không double ghi.`,
   follow: [
     'ShedLock so với leader election (K8s Lease): khi nào chọn loại nào?',
@@ -615,6 +621,12 @@ public void run() { ... }
 - Gửi lại cho email đã unsubscribe là vi phạm CAN-SPAM/GDPR — suppression list phải được đọc trước khi gửi, cache ở worker.
 - Campaign lớn cần test nội bộ trước (subset ~100 user) để bắt lỗi template trước khi thousands email sai ra đi.
 
+### Ví dụ đời thực
+Chiến dịch thông báo khuyến mãi tới 1,2 triệu khách: bản đầu một vòng lặp gọi API của nhà cung cấp email (ESP) với 200 thread → trong 3 phút đầu bắn 60.000 email, ESP trả 429 rồi **tạm khoá tài khoản** vì vượt hạn mức và tỉ lệ bounce cao (danh sách cũ có 8% địa chỉ chết) — kéo theo email OTP giao dịch (dùng chung tài khoản ESP) cũng không gửi được trong 2 giờ. Thiết kế lại: tách **tài khoản/IP gửi riêng** cho email giao dịch và email marketing; đưa yêu cầu gửi vào hàng đợi (SQS/Kafka), worker gửi theo **token bucket** khớp hạn mức ESP (ví dụ 100 email/giây), tôn trọng {{Retry-After}}; làm sạch danh sách trước (loại bounce cứng, người đã huỷ đăng ký); mỗi thông báo có khoá idempotent {{(campaign_id, user_id)}} để retry không gửi trùng; theo dõi tỉ lệ bounce và khiếu nại spam, tự dừng chiến dịch nếu vượt ngưỡng. Chiến dịch tiếp theo gửi xong 1,2 triệu email trong khoảng 3,5 giờ, không bị khoá, email OTP không bị ảnh hưởng.
+
+### Trả lời mẫu khi phỏng vấn
+"Gửi một triệu thông báo là bài toán xếp hàng và giới hạn tốc độ. Tôi đưa yêu cầu gửi vào hàng đợi, worker lấy ra và gửi theo token bucket khớp với hạn mức của nhà cung cấp, tôn trọng 429 và Retry-After, có retry với backoff. Mỗi thông báo có khoá idempotent theo chiến dịch và người nhận, để retry hay chạy lại không gửi trùng. Rất quan trọng là tách luồng: email giao dịch như OTP dùng tài khoản hoặc IP gửi riêng, ưu tiên cao, để chiến dịch marketing có sự cố cũng không làm hỏng OTP. Trước khi gửi, tôi làm sạch danh sách để giữ uy tín tên miền gửi, và theo dõi tỉ lệ bounce, khiếu nại spam để tự dừng khi vượt ngưỡng. Lịch gửi có thể chia theo múi giờ hoặc theo đợt để không dồn tải về hệ thống của mình khi người dùng bấm vào link."
+
 > Senior tip: email hàng triệu này không phải bài toán throughput mà là bài toán quota: tôi luôn xếp campaign lớn ra giờ thấp điểm và gửi chậm 10k email/phút — gửi chậm hơn 2 giờ chấp nhận được, bị block tài khoản ESP một đêm thì không; luôn một nút dừng khẩn để halt toàn bộ campaign khi phát hiện template sai.`,
   follow: [
     'Retry khi SES trả lỗi quota — backoff strategy thiết kế thế nào?',
@@ -652,6 +664,12 @@ public void run() { ... }
 - Tránh coordinated omission làm p99 thấp giả — đo theo như client thực tế gửi request, không đo theo lịch server.
 - Rollback muộn vì còn debug trên prod là sai lầm kinh điển — giữ quy tắc: khôi phục trước, tìm nguyên nhân sau.
 
+### Ví dụ đời thực
+Deploy phiên bản mới lúc 14:00, p99 từ 200ms lên 2 giây sau 10 phút, CPU tăng từ 40% lên 85%. Quyết định trong 5 phút đầu: SLO bị vi phạm, chưa có giả thuyết → **rollback** (Argo CD revert, 4 phút), p99 trở về bình thường. Điều tra sau trên staging với tải ghi lại: profiler cho thấy 45% CPU nằm trong {{Pattern.compile}} — một dev chuyển validation sang dùng {{String.matches(regex)}} trong vòng lặp nóng (mỗi lần gọi biên dịch lại regex). Sửa thành {{static final Pattern}}, thêm benchmark cho hàm validate vào CI. Quy trình được bổ sung: **canary 5%** trong 15 phút với ngưỡng tự động rollback (p99 tăng > 30% hoặc lỗi > 1%), so sánh CPU/allocation giữa canary và bản cũ trên dashboard.
+
+### Trả lời mẫu khi phỏng vấn
+"Quy tắc đầu tiên: nếu đang vi phạm SLO và ảnh hưởng người dùng mà chưa có giả thuyết rõ trong vài phút, tôi rollback trước, điều tra sau, vì thời gian ảnh hưởng quan trọng hơn việc tìm ra nguyên nhân ngay. Điều tra tôi làm theo thứ tự: khoanh thời điểm so với lúc deploy; xem p50 so với p99 và tài nguyên: CPU tăng thì có thể là code tốn CPU hơn, CPU bình thường thì là chờ I/O hay lock; so trace trước và sau để tìm span phình ra; xem diff của bản deploy gồm code, cấu hình, thư viện, migration; tái hiện trên staging với tải giống thật và dùng profiler. Để lần sau phát hiện sớm hơn, tôi dùng canary với ngưỡng tự động rollback dựa trên p99 và tỉ lệ lỗi, và có benchmark cho đường nóng trong CI."
+
 > Senior tip: quy trình oncall của tôi: phút 1–5 rollback hoặc tắt feature flag; phút 5–30 điều tra flame graph trên bản rollback. Lần đầu tôi oncall đã chậm rollback 30 phút vì cố debug trực tiếp trên prod — từ đó tôi giữ nguyên tắc: khôi phục trước, tìm nguyên nhân sau.`,
   follow: [
     'Nếu có canary deployment, quy trình dần dần roll out đảm bảo như nào để phát hiện regression trước?'
@@ -688,6 +706,12 @@ public void run() { ... }
 - MaxRAMPercentage cao (> 80%) cực dễ OOMKilled vì native không nằm trong heap.
 - Quên mount volume cho heap dump: ghi vào filesystem ephemeral, dễ đẩy disk đầy và mất file dump.
 - Không bật GC log trước deployment là mất thông tin quan trọng; bật dưới {{-Xlog:gc*:file=/logs/gc.log:time}} luôn luôn có sẵn.
+
+### Ví dụ đời thực
+Pod Java bị restart vài giờ một lần với lý do **OOMKilled** (exit code 137), nhưng log ứng dụng **không có** {{OutOfMemoryError}} và heap chỉ dùng 60% của {{-Xmx}}. Phân biệt hai loại: OOMKilled là **kernel/cgroup giết** process vì tổng bộ nhớ container vượt limit; {{OutOfMemoryError}} là JVM hết heap. Ở đây limit 2GB, {{-Xmx1800m}} cố định → heap 1,8GB cộng metaspace, thread stack (300 thread × 1MB), code cache, direct buffer của Netty (khoảng 300MB) vượt 2GB. Bật Native Memory Tracking ({{-XX:NativeMemoryTracking=summary}} + {{jcmd VM.native_memory}}) xác nhận phần ngoài heap khoảng 650MB. Sửa: bỏ {{-Xmx}} cố định, dùng {{-XX:MaxRAMPercentage=70}}, giới hạn {{-XX:MaxDirectMemorySize}}, giảm số thread; thêm {{-XX:+HeapDumpOnOutOfMemoryError}} ghi vào volume để trường hợp OOM heap thật có bằng chứng. Không còn OOMKilled trong 2 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Đầu tiên tôi phân biệt hai loại. OOMKilled, exit code 137, là container vượt memory limit và bị kernel giết, thường không để lại dấu vết gì trong log Java. OutOfMemoryError là JVM hết một vùng nhớ như heap hay metaspace, có stack trace và có thể lấy heap dump. Với OOMKilled, tôi nhớ rằng bộ nhớ của JVM không chỉ là heap: còn metaspace, stack của mỗi thread, code cache, direct buffer, bộ nhớ native của thư viện. Nếu Xmx đặt sát limit thì phần còn lại không có chỗ. Tôi dùng Native Memory Tracking để đo, chuyển sang MaxRAMPercentage khoảng 70 đến 75%, giới hạn direct memory. Với OutOfMemoryError heap, tôi bật HeapDumpOnOutOfMemoryError ghi vào volume bền, phân tích bằng MAT để tìm leak hoặc đối tượng chiếm nhiều nhất."
 
 > Senior tip: quy tắc khi tôi cấp JVM on K8s: memory limit = heap × 1.25 + vài trăm MB (metaspace + threads + Netty). Một pod Xmx 1g với limit 1g sẽ OOMKilled trong vài ngày giờ cao điểm GC. Bật NativeMemoryTracking trên staging trước prod để biết native cache của app riêng bao nhiêu MB.`,
   follow: [
@@ -727,6 +751,12 @@ public void run() { ... }
 - Heap dump live trên JVM lớn gây stop-the-world dài — dump giờ thấp điểm hoặc dùng HeapDumpOnOutOfMemoryError (tự động).
 - Cache TTL dài mà key sinh ra vô hạn là menu với leak rất kín đáo, monitor eviction và size để catch early.
 - Leak rất chậm (10MB/ngày) khó tái hiện trong chu kỳ sprint ngắn — soak test ít nhất một tuần là bắt buộc trước release.
+
+### Ví dụ đời thực
+Service gợi ý tăng khoảng 200MB heap mỗi ngày, Old Gen sau mỗi Full GC cao dần, phải restart mỗi tuần. Lấy **hai heap dump cách nhau 6 giờ** ({{jcmd <pid> GC.heap_dump}}) và so trong Eclipse MAT: lớp tăng nhiều nhất là {{ConcurrentHashMap$Node}} trong một {{static Map<String, List<Recommendation>>}} dùng làm cache "tạm" — khoá là {{userId + ":" + sessionId}}, không bao giờ bị xoá. Dominator tree: map đó giữ 2,3GB. Sửa: thay bằng Caffeine với {{maximumSize(200_000)}} và {{expireAfterAccess(30 phút)}}, thêm metric kích thước cache. Một lỗi phụ tìm được trong cùng dump: {{ThreadLocal}} chứa đối tượng người dùng không được {{remove()}} sau request trong thread pool — dữ liệu sống mãi theo thread và có nguy cơ rò sang request của người khác; sửa bằng {{try/finally remove()}}. Heap ổn định quanh 1,1GB.
+
+### Trả lời mẫu khi phỏng vấn
+"Bộ nhớ tăng đều theo ngày gần như chắc chắn là có thứ được giữ lại mãi. Tôi xác nhận bằng GC log hoặc metric: heap sau mỗi lần GC lớn tăng dần chứ không chỉ heap đang dùng. Sau đó lấy hai heap dump cách nhau vài giờ, mở bằng Eclipse MAT, so sánh xem lớp nào tăng nhiều nhất, dùng dominator tree để thấy đối tượng nào giữ nhiều bộ nhớ nhất và đường tới GC root để biết ai đang giữ nó. Thủ phạm hay gặp: cache tự viết bằng map static không có giới hạn hay hết hạn, ThreadLocal không remove trong thread pool, listener hoặc callback đăng ký mà không gỡ, collection tích luỹ trong singleton. Cách sửa là dùng cache có giới hạn như Caffeine, luôn remove ThreadLocal trong finally, và thêm metric kích thước cho mọi cấu trúc tích luỹ."
 
 > Senior tip: Dominator Tree thường giúp lần theo object giữ retained heap lớn, nhưng native leak cần công cụ khác. Nếu buộc phải restart định kỳ để giảm tác động, coi đó là biện pháp tạm có cảnh báo và thời hạn; vẫn cần tìm nguyên nhân và theo dõi xu hướng bộ nhớ.`,
   follow: [
@@ -773,6 +803,12 @@ Retry rt = Retry.of("partnerA", retryCfg);                  // 2 lần, backoff 
 - Circuit breaker nhạy quá thường xuyên mở làm dịch vụ tốt bị dừng — set theo SLO thực tế + health probe riêng.
 - Bulkhead trong process không cứu nếu DB cũng bị chặn bởi cùng luồng chờ — rule: không gọi HTTP trong transaction.
 
+### Ví dụ đời thực
+Dịch vụ tra cứu mã số thuế của bên thứ ba (dùng khi khách doanh nghiệp đăng ký) thỉnh thoảng chậm 20–30 giây. Service đăng ký gọi đồng bộ với timeout mặc định của RestTemplate (vô hạn) → thread Tomcat bị giữ, cạn pool, và cả các API **không liên quan** (đăng nhập, xem hồ sơ) trong cùng service cũng lỗi. Bảo vệ nhiều lớp: timeout 2 giây; Resilience4j circuit breaker + bulkhead riêng cho dịch vụ này (tối đa 20 lời gọi đồng thời); **fallback có nghiệp vụ**: cho phép tạo tài khoản ở trạng thái "chờ xác minh mã số thuế", job nền xác minh lại sau; cache kết quả tra cứu 24 giờ (mã số thuế ít thay đổi). Kèm dashboard riêng cho từng nhà cung cấp và SLA trong hợp đồng. Lần nhà cung cấp gặp sự cố 3 giờ sau đó, việc đăng ký vẫn hoạt động, 1.100 tài khoản được xác minh bù trong 20 phút sau khi họ phục hồi.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi coi mọi dịch vụ bên thứ ba là sẽ chậm và sẽ lỗi, và bảo vệ theo lớp. Timeout ngắn và rõ ràng cho cả kết nối lẫn đọc, không bao giờ để mặc định vô hạn. Bulkhead, tức giới hạn số lời gọi đồng thời riêng cho mỗi nhà cung cấp, để một bên chậm không chiếm hết thread của cả service. Circuit breaker để thất bại nhanh khi họ đang hỏng và cho họ thời gian hồi phục. Retry có giới hạn với backoff, chỉ cho lỗi tạm thời và thao tác idempotent. Quan trọng nhất là fallback có ý nghĩa nghiệp vụ: chuyển sang trạng thái chờ và xử lý bù bằng job nền, dùng dữ liệu cache, hoặc nhà cung cấp dự phòng, thay vì báo lỗi cho người dùng. Những gì không cần ngay thì chuyển sang bất đồng bộ qua hàng đợi. Và có dashboard, cảnh báo riêng cho từng nhà cung cấp."
+
 > Senior tip: timeout + retry.backoff + circuit breaker phải có ngay từ ngày đầu, không phải thêm sau khi lỗi. Tôi từng thấy một đối tác thanh toán p99 4s kéo sụp cả cụm vì 20 thread gọi đồng thời timeout 30s; thêm Bulkhead 5 + timeout 3s + CB mất 2 giờ coding và cứu nhiều đêm oncall.`,
   follow: [
     'Timeout bao nhiêu là hợp lý cho từng loại call (xác thực thẻ so với payment)?',
@@ -816,6 +852,12 @@ Object v = localCache.get(key, k -> loadWithRedisLock(k));
 - Serve stale quá lâu làm dữ liệu sai lệch (giá, tồn kho) — chỉ dùng cho dạng dữ liệu thoáng, không dùng cho số dư.
 - Stampede còn rơi lại sau Redis failover (cache trống hết) — cần cả kịch bản warm-up sau restart.
 
+### Ví dụ đời thực
+Trang chủ thương mại điện tử cache danh sách "sản phẩm nổi bật" trong Redis với TTL 10 phút. Đúng 20:00 khi khuyến mãi bắt đầu, key hết hạn, **3.000 request đồng thời** thấy cache miss và cùng chạy truy vấn nặng (1,2 giây) → DB CPU 100%, mọi API khác chậm theo, cửa hàng gần như đứng 4 phút (cache stampede). Sửa: (1) chỉ **một** request được nạp lại ({{SET key:lock NX PX 5000}} trên Redis, request khác trả bản cũ hoặc chờ ngắn); (2) **làm mới trước khi hết hạn** — giữ bản cũ thêm 5 phút, nạp lại nền khi còn 1 phút (Caffeine {{refreshAfterWrite}} cho cache tầng ứng dụng); (3) TTL có **jitter ngẫu nhiên** ±20% để các key không hết hạn cùng lúc; (4) cache 2 tầng: Caffeine trong JVM (30 giây) trước Redis. Khi Redis bị sự cố 15 phút sau đó, tầng Caffeine cùng giới hạn đồng thời vào DB (semaphore) giữ cho trang chủ vẫn chạy với dữ liệu hơi cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Cache stampede là khi một key nóng hết hạn và hàng nghìn request cùng lúc thấy miss, cùng đi vào DB tính lại một kết quả đắt, làm DB quá tải. Tôi chống bằng nhiều cách kết hợp. Chỉ cho một request nạp lại, các request khác dùng bản cũ hoặc chờ ngắn, bằng khoá trên Redis với SET NX có hạn, hoặc cơ chế gộp request của cache trong JVM. Làm mới trước khi hết hạn: giữ bản cũ thêm một khoảng và nạp lại nền, như refreshAfterWrite của Caffeine. Thêm jitter ngẫu nhiên vào TTL để các key không cùng hết hạn. Về Redis down: ứng dụng phải chịu được, timeout ngắn khi gọi Redis, circuit breaker, có cache tầng hai trong JVM cho dữ liệu nóng, và giới hạn số request đồng thời được phép đi thẳng vào DB, chấp nhận dữ liệu hơi cũ thay vì làm sập DB."
+
 > Senior tip: công thức chuẩn của tôi: TTL + jitter, Caffeine lớp 2, lock per-key khi miss, XFetch refresh sớm. Với key nóng (banner chính), tôi cho refresh background mỗi 1–2 phút và không bao giờ để key expire — hết bài toán stampede, không cần đoán TTL.`,
   follow: [
     'XFetch probabilistic early refresh hoạt động thế nào, tham số k chọn sao theo tham vị quan trọng của key?',
@@ -854,6 +896,17 @@ Object v = localCache.get(key, k -> loadWithRedisLock(k));
 - Quên quota bên thứ ba là cap cứng — design theo nó (queue + backoff), không chỉ scale infra của mình.
 - Cache invalidation đúng lúc căng có thể hạ cả site — hot data precomputed theo version key, không xóa bằng TTL ngắn.
 - HPA reactive không theo kịp 10x trong 15 phút — schedule scaling + keep-warm là bắt buộc, CPU trigger chỉ là nguồn phụ.
+
+### Ví dụ đời thực
+Sàn thương mại điện tử chuẩn bị ngày 11/11 với dự báo tải gấp 10 lần (từ 800 lên 8.000 request/giây vào giờ mở bán). Kế hoạch 6 tuần:
+- **Tuần 1–2**: liệt kê hành trình quan trọng (xem sản phẩm, giỏ hàng, thanh toán); load test từng hành trình ở 12.000 rps → tìm ra 3 điểm gãy: pool DB (tổng pool các pod vượt {{max_connections}}), một truy vấn tồn kho thiếu index, giới hạn API của cổng thanh toán (2.000 giao dịch/phút — phải đàm phán nâng).
+- **Tuần 3–4**: sửa, thêm PgBouncer, cache danh mục ở CDN, hàng đợi cho xử lý sau thanh toán (email, điểm thưởng), feature flag tắt được tính năng không thiết yếu (gợi ý, đánh giá).
+- **Tuần 5**: tăng trước số node và replica (không trông chờ autoscaling phản ứng kịp lúc 0 giờ), diễn tập sự cố (tắt một replica DB, làm chậm cổng thanh toán).
+- **Ngày sự kiện**: đóng băng deploy, phòng trực có runbook và kênh liên lạc với đối tác.
+Kết quả: đỉnh thực tế 9.400 rps, p99 thanh toán 420ms; khi cổng thanh toán chậm lúc 0:07, hàng đợi đặt hàng và trạng thái "đang xử lý" giữ trải nghiệm ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu từ con số: tải dự kiến theo từng hành trình quan trọng, nhân hệ số an toàn, và mục tiêu p99, tỉ lệ lỗi. Sau đó load test từng hành trình trên môi trường giống production để tìm điểm gãy đầu tiên, thường là connection DB, một truy vấn thiếu index, hay giới hạn của đối tác như cổng thanh toán, rồi sửa và test lại. Các biện pháp tôi hay dùng: cache và CDN cho dữ liệu đọc nhiều, đưa xử lý không cần ngay sang hàng đợi, feature flag để tắt tính năng không thiết yếu, rate limit và hàng chờ ảo ở cửa vào để bảo vệ hệ thống. Tôi scale trước thay vì trông chờ autoscaling phản ứng kịp, diễn tập sự cố, và trao đổi trước với đối tác về hạn mức. Ngày sự kiện thì đóng băng thay đổi, có phòng trực với runbook và dashboard theo hành trình."
 
 > Senior tip: hệ thống nào chưa sống 10x là hệ thống chưa được test 10x — tôi luôn tổ chức game day (diễn tập cache down, đối tác down, pod scale fail) trước sự kiện lớn, chấm điểm từng kịch bản; ngày G tôi chỉ theo runbook và ghi lại hệ số để có lần kế hoạch sau càng chắc.`,
   follow: [
@@ -905,6 +958,12 @@ WHERE id = :pid AND status = 'PENDING';
 - Bảo mật: key phải gắn với user_id; luôn kiểm request_hash trước khi trả cached response, tránh trả kết quả cũ cho request khác nội dung.
 - Key TTL quá ngắn (< thời gian retry thực) gây double; TTL dài chỉ tốn lưu trữ — ưu tiên an toàn.
 
+### Ví dụ đời thực
+App bán vé: trên mạng 3G, request thanh toán mất 12 giây, app hiển thị spinner rồi timeout ở 10 giây và **tự retry**; người dùng còn bấm lại lần nữa. Server nhận 3 request, mỗi cái tạo một lệnh trừ tiền thẻ → khoảng 0,4% đơn bị trừ tiền 2–3 lần, chi phí hoàn tiền và khiếu nại lớn. Sửa theo nhiều lớp: (1) client sinh **Idempotency-Key** (UUID) **một lần cho mỗi ý định thanh toán**, gửi lại cùng key khi retry; (2) server lưu {{(idempotency_key, request_hash, status, response)}} với unique constraint — request trùng key đang xử lý thì trả 409/202, đã xong thì trả lại **đúng response cũ**, cùng key mà nội dung khác thì 422; (3) gửi key này sang cổng thanh toán (đa số cổng hỗ trợ idempotency key) để chính cổng cũng không trừ hai lần; (4) UI khoá nút sau lần bấm đầu. Tỉ lệ trừ tiền trùng về 0; đối soát hằng ngày xác nhận.
+
+### Trả lời mẫu khi phỏng vấn
+"Bấm hai lần và retry sau timeout là chuyện chắc chắn xảy ra, nên API thanh toán phải idempotent. Client sinh một idempotency key cho mỗi ý định thanh toán và gửi lại đúng key đó mỗi lần retry. Server lưu key cùng hash của nội dung request, trạng thái và response trong bảng có unique constraint, ghi cùng transaction với việc tạo giao dịch. Request đến với key đã hoàn tất thì trả lại đúng response cũ; key đang xử lý thì trả 409 hoặc 202 để client hỏi lại sau; cùng key mà nội dung khác thì báo lỗi. Tôi truyền key tiếp sang cổng thanh toán vì đa số cổng hỗ trợ, để không trừ hai lần ở phía họ. UI khoá nút chỉ là lớp phụ, không thay thế được idempotency phía server. Cuối cùng là đối soát hằng ngày với cổng thanh toán."
+
 > Senior tip: trả lời có cấu trúc 3 tầng luôn ghi điểm phỏng vấn: (1) idempotency key cho retry an toàn, (2) unique constraint DB chống race giữa các node, (3) state machine để chỉ một transition được chạy. Trường hợp thực tế tôi từng làm với MoMo gateway: mọi retry trong 24h bắt buộc trả cùng kết quả — kể cả khi tiền đã qua đối tác.`,
   follow: [
     'Nếu gateway trả timeout (chưa biết kết quả) sẽ xử lý thế nào kết hợp với idempotency?',
@@ -946,6 +1005,12 @@ ON CONFLICT (event_id) DO NOTHING;
 - {{max.poll.interval.ms}} quá ngắn khi xử lý lâu → rebalance loop, chiếm thêm duplicate; idempotency chịu đựng trường hợp này — hoặc tăng interval.
 - Đừng kỳ vọng exactly-once tự động từ Kafka — consumer idempotent là bắt buộc; exactly-once semantics chỉ hỗ trợ trong phạm vi producer-consumer nhất định.
 - Khi Partition count tăng/re-partition, cùng key có thể đổi partition — resequencer cần nguồn đáng tin, không chỉ thứ tự receive.
+
+### Ví dụ đời thực
+Consumer cập nhật trạng thái đơn hàng từ topic {{order-events}}. Hai lỗi cùng lúc: (1) **trùng**: sau mỗi lần rebalance (deploy, scale), khoảng vài trăm sự kiện được xử lý lại vì offset chưa kịp commit → email "đơn đã giao" gửi hai lần; (2) **sai thứ tự**: producer dùng key ngẫu nhiên, các sự kiện của cùng một đơn rơi vào partition khác nhau → "DELIVERED" được xử lý trước "SHIPPED", trạng thái cuối cùng sai là SHIPPED cho khoảng 0,2% đơn. Sửa: key message = {{orderId}} (cùng đơn → cùng partition → giữ thứ tự); consumer lưu {{eventId}} đã xử lý (bảng processed_events với unique constraint, cùng transaction với cập nhật đơn); mỗi sự kiện mang **version/sequence** của đơn, consumer bỏ qua sự kiện có version cũ hơn trạng thái hiện tại; commit offset sau khi xử lý xong. Producer bật idempotence (mặc định từ Kafka 3.0) để không tạo bản trùng khi retry.
+
+### Trả lời mẫu khi phỏng vấn
+"Kafka đảm bảo at-least-once theo mặc định, nên trùng lặp là chuyện bình thường: consumer xử lý xong nhưng chưa commit offset thì gặp rebalance hay crash, message được giao lại. Tôi chống trùng bằng consumer idempotent: lưu eventId đã xử lý với unique constraint trong cùng transaction với thay đổi nghiệp vụ, hoặc thiết kế thao tác tự nó idempotent như ghi đè trạng thái theo version. Về thứ tự, Kafka chỉ đảm bảo thứ tự trong một partition, nên các sự kiện của cùng một thực thể phải có cùng key, ví dụ orderId. Thêm vào đó, sự kiện mang version hoặc sequence để consumer bỏ qua sự kiện cũ hơn trạng thái hiện tại, phòng khi producer gửi lại hoặc xử lý song song. Producer bật idempotence, và nếu cần xử lý song song trong partition thì phải song song theo key."
 
 > Senior tip: duplicate không phải là bug của Kafka mà là thách thức thiết kế của hệ phân tán; rule tôi đưa vào code review: "mọi event phải có event_id từ nguồn và source_ts" — hai trường này khiến việc debug và reconciliation sau này dễ đi gấp trăm lần.
 `,
