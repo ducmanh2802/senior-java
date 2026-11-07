@@ -1,0 +1,23 @@
+# T1029 — Dịch sang tiếng Anh: lessons-api (1 mục)
+
+Status: DONE
+Agent: opencode
+Owns: `js/i18n/lessons-api-4.en.js`
+
+Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/lessons-api.js`: **lesson-api-006**.
+
+Viết vào `js/i18n/lessons-api-4.en.js`, trong `App.i18n.content({ ... })`, mỗi mục một key là id, giá trị là object chỉ gồm các field dịch: **title, goals, body, exercises[].title, exercises[].prompt, exercises[].hints, exercises[].explain, check[].q, check[].options, check[].explain**. Mảng object (vd `exercises`, `check`) viết đủ phần tử theo đúng thứ tự, mỗi phần tử chỉ chứa field dịch (code như starter/tests/reference KHÔNG chép vào).
+
+Yêu cầu dịch:
+- Tiếng Anh kỹ thuật tự nhiên, chính xác như tài liệu của một senior engineer; giữ nguyên ý, độ dài và độ chi tiết (KHÔNG tóm tắt, không bỏ đoạn, không thêm ý mới).
+- **Thuật ngữ chuyên ngành giữ nguyên** (HashMap, idempotency key, isolation level…); tên riêng, số liệu, đơn vị giữ nguyên. Các nhãn cố định: "**Tóm tắt:**" → "**Summary:**", "> Senior tip:" giữ nguyên, "### Lưu ý khi phỏng vấn" → "### Interview notes".
+- Giữ NGUYÊN markup (`**`, `{{code}}`, `###`, `- `, `1. `, `>`, bảng `|`, `~~~lang` … `~~~`). Trong code block: giữ code, chỉ dịch comment tiếng Việt.
+- Dùng template literal cho chuỗi dài; KHÔNG có ký tự backtick bên trong, KHÔNG viết `${` (nếu bản gốc có `\${` thì giữ nguyên), `\` phải escape như bản gốc.
+- `node --check js/i18n/lessons-api-4.en.js` và `node scripts/check-i18n.js lessons-api-4` → OK, rồi `Status: DONE`.
+
+## Notes
+- Translated `lesson-api-006` (title, goals, body, 1 exercise [title/prompt/hints/explain], 4 check items [q/options/explain]) into English in `js/i18n/lessons-api-4.en.js` following the `lessons-api-3.en.js` overlay format and markup rules.
+- Kept all technical terms, code, test/reference/starter code out of the overlay, preserved markup (`**`, `{{...}}`, headings, lists, blockquotes, tables, `~~~` blocks). Translated Vietnamese strings/comments inside body code blocks (Java/seq/java snippets) to English; preserved `\${` escaping style where present in source patterns (none required).
+- Checks: `node --check js/i18n/lessons-api-4.en.js` OK (no output); `node scripts/check-i18n.js lessons-api-4` → `OK — 1 mục đã dịch.`.
+- `node scripts/validate.js` loads data and reports existing unrelated issues outside owned files: pre-existing ERROR `q-banking.js: banking-014.a: sơ đồ ~~~seq lỗi: cần 2–6 actors (đang có 8)` and unrelated warnings (`modern-033` short answer, `path.js` lessons not in PATH). Did not modify any non-owned files. No git commit, no browser, no process kills.
+Reviewed-by: check-i18n (translation, no LLM review)
