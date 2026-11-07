@@ -2648,4 +2648,598 @@ class Editor {
   related: ['architecture-002'],
   tags: ['text-editor', 'command-pattern', 'undo-redo', 'command-merge', 'bounded-history', 'LLD'],
 },
+
+{
+  id: 'lesson-architecture-009',
+  track: 'architecture',
+  order: 9,
+  title: 'Consistent hashing và virtual node: phân tán key, thêm/bớt node chỉ di chuyển ~1/N',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích bài toán chia key vào nhiều node và vì sao modulo đơn giản phá vỡ khi cluster thay đổi',
+    'Mô tả consistent hashing: vòng băm, ánh xạ key/node, và vì sao thêm/bớt node chỉ di chuyển khoảng 1/N key',
+    'Hiểu virtual node (vnode) cân bằng tải và tự mô phỏng HashRing bằng Java thuần với TreeMap',
+  ],
+  body: `**Tóm tắt:** Consistent hashing đặt node và key lên cùng một "vòng" băm; mỗi key thuộc về node kế tiếp trên vòng. Khi thêm hoặc bớt một node, chỉ các key nằm trên cung ảnh hưởng bị di chuyển (kỳ vọng ~1/N), thay vì phải xáo trộn gần như toàn bộ như cách chia {{hash(key) % N}}. Virtual node (vnode) gán nhiều vị trí cho mỗi node vật lý để phân bố đều hơn.
+
+### Vấn đề: chia dữ liệu/cache vào nhiều máy
+Giả sử bạn có một hệ thống cache (giống Redis dùng làm cache, nhưng ở đây ta nói về nguyên lý phân tán) gồm N máy. Mỗi key (ví dụ mã người dùng) cần được đặt trên đúng một máy để tra cứu nhanh. **Thuật ngữ:** **node** là một máy/chủ thể lưu dữ liệu trong cụm (như một server cache). **Shard/partition** là phần dữ liệu mà một node chịu trách nhiệm.
+
+Cách ngây thơ: {{nodeIndex = hash(key) % N}}. Ví dụ 3 node, key "user42" có hash 125 thì {{125 % 3 = 2}} → node 2. Cách này nhanh và đều nếu hash tốt. Nhưng khi cluster thay đổi thì sao?
+
+### Vì sao modulo % N vỡ khi thêm/bớt node
+Khi N đổi (thêm 1 máy mới: N=3→4, hoặc 1 máy hỏng: N=3→2), mẫu số của phép chia dư đổi, nên **gần như mọi key** ra chỉ số khác. Kết quả: cache miss hàng loạt, tất cả request đổ về database gốc cùng lúc — hiện tượng gọi là *cache stampede* (bầy đàn đập vào DB). Với dữ liệu có trạng thái (sharded database), bạn phải di chuyển gần như toàn bộ dữ liệu.
+
+~~~text
+3 node (mod 3):  hash 5->2, hash 7->1, hash 8->2
+4 node (mod 4):  hash 5->1, hash 7->3, hash 8->0   (gần hết đổi chỗ)
+~~~
+
+Ta cần một cách ánh xạ mà khi N thay đổi, chỉ một phần nhỏ key phải di chuyển.
+
+### Consistent hashing: vòng băm
+Consistent hashing (Karger và cộng sự, 1997; nổi tiếng qua Amazon Dynamo) dùng một không gian băm có cấu trúc **vòng**:
+
+1. Chọn một hàm băm {{H}} cho ra giá trị trong khoảng cố định, ví dụ 0..2^32-1, và coi khoảng đó nối đầu-cuối thành một vòng tròn (0 đứng cạnh giá trị lớn nhất).
+2. **Đặt node lên vòng:** băm tên/địa chỉ mỗi node → mỗi node có một vị trí (góc) trên vòng.
+3. **Đặt key lên vòng:** băm key → key có một vị trí trên vòng.
+4. **Quy tắc ánh xạ:** đi theo chiều kim đồng hồ từ vị trí của key, gặp **node đầu tiên** thì key thuộc node đó. (Nếu vượt quá điểm lớn nhất trên vòng thì quay về node nhỏ nhất — vòng "cuốn".)
+
+~~~text
+            0
+        N_C(20)
+     k1(15)   k2(30)
+   N_A(350)       N_B(90)
+            200
+
+k1(15) đi xuôi gặp N_C(20)  -> N_C
+k2(30) đi xuôi gặp N_B(90)  -> N_B
+k3(100) đi xuôi gặp N_A(350)-> N_A (quấn vòng qua 0)
+~~~
+
+### Vì sao thêm/bớt node chỉ di chuyển ~1/N key
+- **Thêm node D** vào giữa B và A: chỉ những key trước đây đi từ B tới A mà nay gặp D trước — tức các key trên **cung B→D** — chuyển sang D. Các key khác giữ nguyên. Trung bình cung đó dài 1/N vòng.
+- **Bớt node B**: chỉ các key đang thuộc B chuyển sang node kế tiếp (A). Các key của node khác không đổi.
+
+Đây là điểm mấu chốt: thay đổi cục bộ (1 node) chỉ gây di chuyển cục bộ (~1/N dữ liệu). So với modulo, đây là khác biệt giữa "đổ lại cả kho" và "chuyển một ngăn".
+
+### Vấn đề phân bố không đều và virtual node
+Với ít node vật lý, vài điểm băm ngẫu nhiên có thể dồn về một phía vòng → một node gánh rất nhiều key, node khác gần rỗng (mất cân bằng tải). Giải pháp: **virtual node (vnode)** — mỗi node vật lý được gán **V vị trí** trên vòng (ví dụ 100–200 vnode), bằng cách băm các tên giả như {{nodeA#0}}, {{nodeA#1}}, ..., {{nodeA#199}}. V lớn → mỗi node chiếm nhiều cung nhỏ rải khắp vòng → tải cân bằng hơn (xấp xỉ đều). Khi node A rời cụm, ta xóa tất cả vnode của A; các key trên các cung nhỏ đó rải sang nhiều node khác nhau thay vì dồn vào một node.
+
+### Cơ chế thật trong các hệ thống (tên thật)
+- **Amazon Dynamo** (bài báo 2007) dùng consistent hashing + vnode để phân vùng dữ liệu; đây là nguồn gốc làm kỹ thuật này phổ biến.
+- **Apache Cassandra**: mỗi node sở hữu các *token* (vị trí vnode) trên vòng; cấu hình {{num_tokens}} (vnode). Partitioner (ví dụ {{Murmur3Partitioner}}) băm partition key thành token.
+- **Riak** và **Akka Cluster** ({{ConsistentHashingRouter}} / {{ConsistentHash}} trong thư viện) cũng dùng vòng băm + vnode.
+- **Ketama** là thuật toán consistent hashing dùng trong các client memcached.
+- **Redis Cluster** thì **không** dùng vòng consistent hashing kiểu này: nó dùng 16384 *hash slot*, gán dải slot cố định cho mỗi master ({{CRC16(key) mod 16384}}). Mục tiêu tương tự (di chuyển ít khi thay đổi), cơ chế khác — phỏng vấn senior hay phân biệt hai cách.
+
+### Bản mô phỏng trong bài tập (đơn giản hoá)
+Bài tập tự viết {{HashRing}} bằng JDK thuần:
+- Dùng {{TreeMap<Integer, String>}} (cây đỏ-đen có thứ tự) để lưu {{vị trí vnode → tên node vật lý}}. Tra "node kế tiếp theo chiều kim đồng hồ" chính là {{ceilingEntry(hash)}}; nếu null thì cuốn vòng bằng {{firstEntry()}}. Đây đúng vai trò của vòng.
+- **Hàm băm xác định**: dùng {{key.hashCode() & 0x7fffffff}} (xóa bit dấu) để kết quả ổn định, không phụ thuộc thời gian hay random — test mới deterministic. (Hệ thống thật dùng Murmur3/xxHash phân tán tốt hơn; {{String.hashCode()}} đủ cho mô phỏng.)
+- Không có mạng, không có replication, không có health-check. Mục tiêu: hiểu cơ chế ánh xạ và tỉ lệ di chuyển.
+
+~~~java
+// Ý tưởng tra cứu trên vòng bằng TreeMap (O(log V*N))
+int h = hash(key);
+Map.Entry<Integer, String> e = ring.ceilingEntry(h); // node đầu tiên >= h
+if (e == null) e = ring.firstEntry();                // cuốn vòng
+return e.getValue();                                  // tên node vật lý
+~~~
+
+### Lỗi hay gặp
+- **Quên cuốn vòng:** key có hash lớn hơn mọi vnode → {{ceilingEntry}} trả null. Phải lấy {{firstEntry()}}.
+- **Quá ít vnode:** 1 vnode mỗi node → phân bố lệch, một node có thể nhận gấp đôi node khác.
+- **Hàm băm không ổn định/ngẫu nhiên:** mỗi lần chạy ra mapping khác, cache không tìm lại được dữ liệu. Hash phải là hàm thuần (pure function) của đầu vào.
+- **Nhầm "di chuyển 1/N" là tuyệt đối:** đó là kỳ vọng khi hash đều và vnode đủ nhiều; thực tế dao động, vnode giúp giảm phương sai.
+
+### Liên hệ phỏng vấn
+Trả lời gọn: "Hash thường {{mod N}} phải remap gần hết khi đổi N. Consistent hashing đặt key và node trên vòng băm, key đi xuôi gặp node đầu tiên; thêm/bớt một node chỉ ảnh hưởng key trên cung kề, kỳ vọng ~1/N key di chuyển. Dùng virtual node để cân bằng tải. Cassandra dùng vnode/token trên vòng; Redis Cluster dùng 16384 hash slot — cùng mục tiêu giảm di chuyển, cơ chế khác." Có thể vẽ nhanh vòng và chỉ cung di chuyển.
+
+> Senior tip: Trong production, "di chuyển key" với cache chỉ nghĩa là cache miss tạm thời (chấp nhận được, có thể *warm up* dần). Nhưng với dữ liệu lưu bền (sharded DB), di chuyển 1/N dữ liệu khi thêm node vẫn là hàng chục GB và cần cơ chế *rebalancing* an toàn, giới hạn băng thông, và không làm gián đoạn đọc/ghi. Consistent hashing giảm *lượng* phải chuyển, chứ không tự làm việc chuyển đó.
+`,
+  exercises: [
+    {
+      title: 'Cài HashRing consistent hashing với virtual node',
+      prompt: `Hoàn thiện {{HashRing}} mô phỏng consistent hashing:
+
+- {{HashRing(int ringSize, int virtualNodesPerNode)}}: {{ringSize}} là kích thước không gian băm (dùng {{hash % ringSize}} để đưa vị trí vào [0, ringSize-1]); {{virtualNodesPerNode}} là số vnode cho mỗi node vật lý.
+- {{int hash(String s)}}: trả về {{(s.hashCode() & 0x7fffffff) % ringSize}} (xác định, không âm).
+- {{void addNode(String nodeId)}}: thêm {{virtualNodesPerNode}} vnode. Vị trí vnode thứ {{i}} (i từ 0) là {{hash(nodeId + "#" + i)}}. Ghi nhận {{nodeId}} là một node vật lý. (Nếu hash trùng vị trí đã có, ghi đè cũng chấp nhận được với dữ liệu bài này.)
+- {{void removeNode(String nodeId)}}: xóa toàn bộ vnode của {{nodeId}} khỏi vòng và khỏi tập node vật lý.
+- {{String getNode(String key)}}: trả về node vật lý sở hữu {{key}} (node kế tiếp theo chiều kim đồng hồ: {{ceilingEntry}} theo hash của key, null thì {{firstEntry}}). Vòng rỗng trả về {{null}}.
+- {{int nodeCount()}}: số node vật lý.
+- {{int vnodeCount()}}: tổng số vnode trên vòng.
+
+Dùng {{TreeMap<Integer, String>}} cho vòng. Không dùng thư viện ngoài, không random/thời gian.`,
+      starter: `import java.util.*;
+
+class HashRing {
+    private final int ringSize;
+    private final int vnodes;
+    private final TreeMap<Integer, String> ring = new TreeMap<>();
+    private final Set<String> physical = new LinkedHashSet<>();
+
+    HashRing(int ringSize, int virtualNodesPerNode) {
+        this.ringSize = ringSize;
+        this.vnodes = virtualNodesPerNode;
+    }
+
+    int hash(String s) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void addNode(String nodeId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void removeNode(String nodeId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String getNode(String key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int nodeCount() { return physical.size(); }
+
+    int vnodeCount() { return ring.size(); }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int p = 0, n = 0;
+    static void check(String name, boolean ok) {
+        n++; if (ok) { p++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name);
+    }
+    static void eq(Object e, Object a) { check("eq " + e, Objects.equals(e, a)); }
+
+    public static void main(String[] args) {
+        HashRing r = new HashRing(1_000_000, 500);
+        r.addNode("A"); r.addNode("B"); r.addNode("C");
+        check("3 physical nodes", r.nodeCount() == 3);
+        check("vnodes created", r.vnodeCount() == 1500);
+
+        check("same key same node", Objects.equals(r.getNode("user42"), r.getNode("user42")));
+        check("mapping not null", r.getNode("order-99") != null);
+
+        int[] counts = new int[3];
+        String[] nodes = {"A", "B", "C"};
+        for (int i = 0; i < 9000; i++) {
+            String owner = r.getNode("key-" + i);
+            for (int j = 0; j < 3; j++) if (nodes[j].equals(owner)) counts[j]++;
+        }
+        for (int j = 0; j < 3; j++) {
+            check(nodes[j] + " roughly balanced got=" + counts[j], counts[j] >= 1000 && counts[j] <= 5000);
+        }
+
+        String[] before = new String[6000];
+        for (int i = 0; i < before.length; i++) before[i] = r.getNode("k-" + i);
+        r.addNode("D");
+        int moved = 0;
+        Map<String, Integer> after = new HashMap<>();
+        for (int i = 0; i < before.length; i++) {
+            String now = r.getNode("k-" + i);
+            if (!now.equals(before[i])) moved++;
+            after.merge(now, 1, Integer::sum);
+        }
+        double ratio = moved / (double) before.length;
+        check("moved ratio ~1/4 actual=" + ratio, ratio >= 0.10 && ratio <= 0.45);
+        check("D receives keys", after.getOrDefault("D", 0) > 300);
+
+        r.removeNode("B");
+        check("2 physical left? no 3", r.nodeCount() == 3);
+        check("vnodes after remove", r.vnodeCount() == 1500);
+        check("removed node never returned", !"B".equals(r.getNode("user42")) && !"B".equals(r.getNode("order-99")));
+        for (int i = 0; i < 2000; i++) check("no B for k" + i, !"B".equals(r.getNode("k-" + i)));
+
+        HashRing empty = new HashRing(1000, 10);
+        check("empty ring null", empty.getNode("x") == null);
+        empty.addNode("X");
+        check("single node owns all", "X".equals(empty.getNode("a")) && "X".equals(empty.getNode("zzzz")));
+
+        System.out.println("RESULT " + p + "/" + n);
+    }
+}`,
+      reference: `import java.util.*;
+
+class HashRing {
+    private final int ringSize;
+    private final int vnodes;
+    private final TreeMap<Integer, String> ring = new TreeMap<>();
+    private final Set<String> physical = new LinkedHashSet<>();
+
+    HashRing(int ringSize, int virtualNodesPerNode) {
+        this.ringSize = ringSize;
+        this.vnodes = virtualNodesPerNode;
+    }
+
+    int hash(String s) {
+        // xoa bit dau de khong am, dua vao [0, ringSize)
+        return (s.hashCode() & 0x7fffffff) % ringSize;
+    }
+
+    void addNode(String nodeId) {
+        if (nodeId == null) return;
+        physical.add(nodeId);
+        for (int i = 0; i < vnodes; i++) {
+            // moi vnode la mot vi tri tren vong
+            int pos = hash(nodeId + "#" + i);
+            ring.put(pos, nodeId);
+        }
+    }
+
+    void removeNode(String nodeId) {
+        if (nodeId == null) return;
+        physical.remove(nodeId);
+        for (int i = 0; i < vnodes; i++) {
+            int pos = hash(nodeId + "#" + i);
+            // chi xoa neu vi tri nay van thuoc nodeId (tranh xoa nham do va cham hiem)
+            if (nodeId.equals(ring.get(pos))) ring.remove(pos);
+        }
+    }
+
+    String getNode(String key) {
+        if (ring.isEmpty()) return null;
+        int h = hash(key);
+        // node dau tien theo chieu kim dong ho (>= h)
+        Map.Entry<Integer, String> e = ring.ceilingEntry(h);
+        if (e == null) e = ring.firstEntry(); // cuon vong
+        return e.getValue();
+    }
+
+    int nodeCount() { return physical.size(); }
+
+    int vnodeCount() { return ring.size(); }
+}`,
+      hints: [
+        'TreeMap có {{ceilingEntry(key)}} trả về entry có khóa nhỏ nhất >= key (node kế tiếp trên vòng). Nếu null, dùng {{firstEntry()}} để cuốn vòng.',
+        'Mỗi vnode: {{ring.put(hash(nodeId + "#" + i), nodeId)}} với i từ 0 đến virtualNodesPerNode-1. Nhớ thêm/xóa {{physical}}.',
+        'Hash xác định: {{(s.hashCode() & 0x7fffffff) % ringSize}}. {{& 0x7fffffff}} xóa bit dấu của {{hashCode()}} (có thể âm).',
+      ],
+      explain: `TreeMap giữ các vị trí vnode đã sắp xếp, nên {{ceilingEntry}} tìm node kế tiếp trong O(log M) với M là tổng vnode — đúng thao tác "đi xuôi trên vòng". Phép {{& 0x7fffffff}} biến hash âm thành dương (giữ 31 bit thấp) để phép {{% ringSize}} cho chỉ số hợp lệ.
+
+Lỗi hay gặp:
+- Quên cuốn vòng: key có hash lớn hơn mọi vnode → {{ceilingEntry}} null → NullPointerException; phải lấy {{firstEntry()}}.
+- Dùng hàm băm ngẫu nhiên hoặc phụ thuộc thời gian: mapping đổi mỗi lần chạy, vi phạm "xác định" và làm hỏng tính chất tra cứu lại.
+- Vnode quá ít (1–2): tải lệch rõ. Vnode nhiều (100–200) cho phân bố xấp xỉ đều nhưng tốn bộ nhớ và làm {{add/removeNode}} chậm hơn (vẫn chấp nhận được vì thay đổi topology hiếm).
+- Khi xóa node, nếu có va chạm hash vnode hiếm, xóa theo vị trí cần kiểm tra chủ sở hữu để không xóa nhầm vnode của node khác.
+
+Về tỉ lệ di chuyển: thêm node thứ N+1 (từ N lên N+1) thì kỳ vọng 1/(N+1) key chuyển sang node mới; test chấp nhận biên rộng vì hash của {{String.hashCode()}} không hoàn hảo, nhưng xu hướng phải đúng.`
+    },
+  ],
+  check: [
+    {
+      q: 'So với {{hash(key) % N}}, lợi ích cốt lõi của consistent hashing khi thêm 1 node vào cụm N node là gì?',
+      options: [
+        'Tính hash nhanh hơn',
+        'Chỉ khoảng 1/N key phải di chuyển thay vì gần như toàn bộ',
+        'Không bao giờ có cache miss',
+        'Không cần hàm băm nữa',
+      ],
+      answer: 1,
+      explain: `Thêm một node chỉ chia nhỏ cung kề trên vòng nên chỉ các key trên cung đó đổi chủ (~1/N). Modulo đổi mẫu số làm gần hết key đổi chỉ số. Hash vẫn cần và cache miss tạm thời khi key di chuyển vẫn có thể xảy ra.`
+    },
+    {
+      q: 'Virtual node (vnode) giải quyết vấn đề gì trong consistent hashing?',
+      options: [
+        'Mã hóa dữ liệu trên vòng',
+        'Giảm va chạm băm về 0',
+        'Cân bằng tải khi ít node vật lý tạo ra các cung rất lệch trên vòng',
+        'Thay thế hoàn toàn TreeMap',
+      ],
+      answer: 2,
+      explain: `Mỗi node vật lý nhận nhiều vị trí rải khắp vòng nên mỗi node sở hữu nhiều cung nhỏ, tổng tải xấp xỉ đều. Vnode không loại bỏ va chạm băm, không mã hóa, và vẫn cần cấu trúc tra cứu có thứ tự (như TreeMap) để tìm node kế tiếp.`
+    },
+    {
+      q: 'Trong cài đặt {{HashRing}} dùng {{TreeMap}}, vì sao {{ceilingEntry(h)}} trả về {{null}} thì phải lấy {{firstEntry()}}?',
+      options: [
+        'Vì TreeMap bị lỗi khi key lớn',
+        'Vì vòng băm cuốn: key có hash lớn hơn mọi vnode thì thuộc về vnode nhỏ nhất (quay qua điểm 0)',
+        'Vì firstEntry luôn là node nhanh nhất',
+        'Vì ceilingEntry không dùng được với số nguyên',
+      ],
+      answer: 1,
+      explain: `Không gian băm là vòng (đầu nối cuối). Hash lớn hơn vị trí vnode cuối cùng nghĩa là đi xuôi sẽ vượt đỉnh vòng và gặp vnode có vị trí nhỏ nhất đầu tiên. Bỏ bước này gây null/lỗi cho một phần key.`
+    },
+  ],
+  related: ['design-032', 'architecture-001'],
+  tags: ['consistent-hashing', 'virtual-node', 'sharding', 'distributed-systems', 'cassandra'],
+},
+{
+  id: 'lesson-architecture-010',
+  track: 'architecture',
+  order: 10,
+  title: 'Distributed lock, GC pause và fencing token: vì sao khóa có TTL vẫn ghi đè dữ liệu',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hiểu distributed lock (khóa phân tán) dùng để làm gì và tại sao TTL/hết hạn vẫn để hai client cùng ghi',
+    'Giải thích kịch bản GC pause (hoặc stop-the-world) khiến lock hết hạn trong khi client vẫn nghĩ mình giữ lock',
+    'Cài fencing token tăng đơn điệu và để storage từ chối token cũ, ngăn ghi đè sai',
+  ],
+  body: `**Tóm tắt:** Distributed lock (khóa phân tán) cố đảm bảo chỉ một tiến trình sửa một tài nguyên dùng chung. Nhưng khóa thường có TTL (thời gian sống) để tránh kẹt khi client chết; nếu client A bị **tạm dừng** lâu (GC pause, trễ mạng) quá TTL, lock hết hạn và client B được cấp lock. A tỉnh dậy rồi ghi đè dữ liệu của B. **Fencing token** (token rào chắn) là một số tăng đơn điệu cấp kèm mỗi lần giữ lock: hệ thống lưu trữ chỉ chấp nhận ghi có token **lớn hơn** mọi token đã thấy, nên ghi trễ của A (token cũ) bị từ chối.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Distributed lock (khóa phân tán):** cơ chế "chỉ một người được làm" nhưng các bên chạy trên **nhiều máy khác nhau** (không chia sẻ bộ nhớ). Ví dụ: chỉ một worker được xử lý đơn hàng #123. (Khác lock trong 1 tiến trình Java như {{synchronized}}.)
+- **TTL (time to live, thời gian sống):** lock tự hết hạn sau X giây nếu không gia hạn, để client bị crash không giữ lock mãi mãi.
+- **Lease (hợp đồng thuê):** quyền giữ lock có thời hạn, giống TTL.
+- **GC pause / stop-the-world:** bộ dọn rác (Garbage Collector) của JVM tạm dừng mọi thread ứng dụng để dọn bộ nhớ. Có thể kéo dài từ mili-giây tới vài giây (hoặc hơn với heap lớn/cấu hình tệ). Trong lúc đó client "đóng băng", không gửi được heartbeat gia hạn lock.
+- **Fencing token:** một con số tăng dần (1, 2, 3, ...) được cấp mỗi lần ai đó nhận lock; dùng như "số thứ tự lượt", bên nhận ghi chỉ chấp nhận lượt mới hơn.
+
+### Cơ chế khóa phân tán thật (tên thật, để hình dung)
+- **Redis {{SET resource value NX PX 30000}}**: ghi key chỉ khi chưa tồn tại (NX) với TTL 30s (PX). Mở rộng: *Redlock* (thuật toán của Redis) lấy lock trên nhiều instance. Cần cẩn trọng: gia hạn, clock drift, và vẫn có tranh cãi về độ an toàn tuyệt đối.
+- **ZooKeeper**: tạo *ephemeral sequential node* (node tạm, có số thứ tự tăng). Client giữ lock khi node của nó có số nhỏ nhất; số thứ tự đó tự nhiên là một fencing token tăng. Session hết hạn thì node tạm biến mất.
+- **etcd**: cung cấp {{Lease}} (có TTL, cần {{KeepAlive}}) và giao dịch so sánh-sửa (compare-and-swap) để cầm lock an toàn hơn.
+- Thư viện Java: **Redisson** (Redis lock, có watchdog gia hạn) hay **Curator** (ZooKeeper recipes).
+
+Bài tập mô phỏng bản chất tối thiểu bằng Java thuần (một tiến trình), đủ để thấy **vì sao TTL một mình chưa đủ**.
+
+### Kịch bản lỗi: GC pause đánh bại TTL
+~~~seq
+title: GC pause lam lock het han, ghi de sai (khong co fencing)
+actors: A | Lock | B | Storage
+A -> Lock: acquire(resource)
+Lock -> A: cap lock (token 1)
+note A..A: A bi GC pause / tre mang dai hon TTL
+Lock -> Lock: lock het han (TTL)
+B -> Lock: acquire(resource)
+Lock -> B: cap lock (token 2)
+B -> Storage: write(data B)
+Storage -> B: OK (ghi B)
+note A..A: A tinh day, van nghi minh giu lock
+A -> Storage: write(data A)
+Storage -> A: OK nhung GHI DE B  (sai!)
+~~~
+
+Điểm nguy hiểm: **lock service không thể phân biệt** "A còn sống nhưng đang pause" với "A đã chết". TTL hết → nhường lock là đúng để hệ thống không kẹt; nhưng A không biết mình đã mất lock. Nếu chỉ tin "tôi đang giữ lock" rồi ghi thẳng, dữ liệu hỏng.
+
+### Fencing token giải quyết thế nào
+Lock service cấp một số **tăng đơn điệu** mỗi lần {{acquire}} thành công: A nhận 1, B nhận 2. Client phải gửi kèm token khi ghi vào storage. **Storage** nhớ token lớn nhất đã chấp nhận cho resource đó và **từ chối mọi ghi có token nhỏ hơn** (token đã "lạc hậu"):
+
+~~~text
+Storage da chap nhan token 2 (ghi cua B)
+A gui write(token=1, data A)  -> 1 < 2  -> TU CHOI  (an toan)
+~~~
+
+~~~seq
+title: Fencing token ngan ghi de
+actors: A | Lock | B | Storage
+A -> Lock: acquire
+Lock -> A: token=1
+B -> Lock: acquire (sau khi A het han)
+Lock -> B: token=2
+B -> Storage: write(token=2, dataB)
+Storage -> B: OK (max=2)
+A -> Storage: write(token=1, dataA)  (A tinh day tre)
+Storage -> A: TU CHOI vi 1 < 2
+~~~
+
+**Ai kiểm tra token?** Chính **storage/tài nguyên** (nơi ghi thực sự) phải kiểm tra — không phải chỉ client tự kiểm tra. Vì client A đang sai nhận thức. Đây là điểm Martin Kleppmann nhấn mạnh khi phân tích Redlock: lock chỉ là "gợi ý", còn tính đúng cần fencing ở tầng lưu trữ.
+
+### Bản mô phỏng (đơn giản hoá)
+- {{LockService.acquire(resource)}} luôn cấp token tăng dần ({{++counter}}) và ghi nhận người giữ. {{simulateExpiry(resource)}} mô phỏng TTL hết hạn (xóa người giữ) mà **không** cần ngủ/chờ — deterministic.
+- {{Storage.write(resource, token, value)}} chấp nhận nếu {{token >= token lớn nhất đã thấy}} cho resource đó, cập nhật max và lưu giá trị; ngược lại trả về {{false}} (từ chối token lạc hậu). Dùng {{>=}} hay {{>}}: token lặp lại cùng giá trị hiếm khi hợp lệ trong luồng đúng, nhưng để an toàn tuyệt đối có thể dùng {{>}}; bài này quy ước **từ chối khi token < maxSeen** (token cũ), token mới hơn hoặc bằng max hiện tại sau ghi đầu được chấp nhận theo luật tăng — xem đề bài tập cho quy tắc chính xác.
+- **Không** mô phỏng: mạng, clock, nhiều instance lock, gia hạn lease, Redlock quorum. Mục tiêu: thấy rõ "pause → mất lock → ghi trễ" và "token cũ bị chặn".
+
+### Lỗi hay gặp
+- **Chỉ dựa TTL mà không fencing:** đủ cho tối ưu hóa (tránh 2 worker làm trùng việc tốn kém) nhưng **không đủ** nếu ghi sai sẽ hỏng dữ liệu tiền/bất biến.
+- **Client tự so sánh token:** vô nghĩa nếu client là bên bị pause/sai.
+- **Token không tăng đơn điệu toàn cục theo resource:** nếu cấp token ngẫu nhiên hoặc giảm, storage không biết cái nào mới hơn.
+- **Gia hạn lock (watchdog) không thay thế fencing:** giảm xác suất hết hạn, nhưng không loại trừ pause dài hơn mọi ngưỡng hoặc phân mảnh mạng.
+
+### Liên hệ phỏng vấn
+Trả lời mẫu (ý chính): "Distributed lock thường có TTL để tránh deadlock khi client chết. Nhưng client có thể bị GC pause dài hơn TTL: lock hết hạn, client khác lấy lock và ghi; client cũ tỉnh dậy vẫn ghi → mất dữ liệu. TTL/lease chỉ giảm rủi ro, không đảm bảo correctness. Cần fencing token: lock service cấp số tăng đơn điệu mỗi lần acquire, client gửi token khi ghi, storage chỉ nhận token >= max đã thấy nên ghi trễ (token cũ) bị từ chối. ZooKeeper có sequential node làm token tự nhiên; với Redis thì phải tự thiết kế fencing ở storage. Phân biệt: lock cho efficiency (đỡ trùng việc) có thể chỉ TTL; lock bảo vệ correctness dữ liệu phải có fencing."
+
+> Senior tip: Trước khi chọn distributed lock, hỏi: "Nếu hai thằng cùng chạy một lúc, hậu quả là gì?" Nếu chỉ là gửi email trùng hay tính lại cache (idempotent/chịu được) thì lock + TTL đơn giản là đủ. Nếu là trừ tiền, ghi đè trạng thái đơn hàng, cấp quyền — hãy thiết kế **fencing/điều kiện ghi** ở tầng dữ liệu (so sánh version/token, {{UPDATE ... WHERE version = ?}} / optimistic lock, hoặc storage tự kiểm tra token). Đừng biến lock phân tán thành "bùa hộ mệnh" cho correctness.
+`,
+  exercises: [
+    {
+      title: 'LockService cấp fencing token và Storage từ chối token cũ',
+      prompt: `Mô phỏng distributed lock + fencing token (xác định, không ngủ/chờ):
+
+{{class LockService}}
+- {{long acquire(String resource)}}: cấp quyền giữ {{resource}} và trả về **fencing token** là số nguyên dương **tăng dần toàn cục** qua mọi lần acquire (lần 1 trả 1, lần 2 trả 2, ...), không phụ thuộc resource.
+- {{void simulateExpiry(String resource)}}: mô phỏng lock của {{resource}} hết hạn/nhường chỗ (dùng để dựng kịch bản client bị pause). Không đổi bộ đếm token.
+- {{Long currentToken(String resource)}}: token đang giữ {{resource}}, hoặc {{null}} nếu đang trống (tuỳ chọn kiểm tra).
+
+{{class Storage}}
+- {{boolean write(String resource, long token, String value)}}: nếu {{token}} **nhỏ hơn** token lớn nhất đã từng chấp nhận cho {{resource}} thì từ chối, trả về {{false}}. Ngược lại chấp nhận: cập nhật max token của resource, lưu {{value}}, trả về {{true}}. (Resource chưa từng ghi thì chấp nhận token hợp lệ đầu tiên.)
+- {{String read(String resource)}}: giá trị hiện tại, hoặc {{null}}.
+
+Kịch bản cần dựng được (xác định): A acquire → token t1; simulateExpiry; B acquire → token t2 > t1; B write(t2) OK; A write(t1) bị từ chối; giá trị vẫn là của B; A write(t1) lần nữa vẫn bị từ chối.`,
+      starter: `import java.util.*;
+
+class LockService {
+    private long nextToken = 0;
+    private final Map<String, Long> held = new HashMap<>();
+
+    long acquire(String resource) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void simulateExpiry(String resource) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Long currentToken(String resource) {
+        return held.get(resource);
+    }
+}
+
+class Storage {
+    private final Map<String, Long> maxSeen = new HashMap<>();
+    private final Map<String, String> data = new HashMap<>();
+
+    boolean write(String resource, long token, String value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String read(String resource) {
+        return data.get(resource);
+    }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int p = 0, n = 0;
+    static void check(String name, boolean ok) {
+        n++; if (ok) { p++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name);
+    }
+
+    public static void main(String[] args) {
+        LockService lock = new LockService();
+        Storage st = new Storage();
+
+        long t1 = lock.acquire("order#1");
+        check("token positive", t1 >= 1);
+        long t2 = lock.acquire("order#1");
+        check("monotonic global", t2 > t1);
+        long t3 = lock.acquire("order#2");
+        check("across resources monotonic", t3 > t2);
+
+        LockService lock2 = new LockService();
+        Storage st2 = new Storage();
+        long a = lock2.acquire("res");
+        lock2.simulateExpiry("res"); // A bi pause, lock het han
+        long b = lock2.acquire("res");
+        check("B gets newer token", b > a);
+        check("B write ok", st2.write("res", b, "B"));
+        check("A stale write rejected", !st2.write("res", a, "A"));
+        check("value remains B", "B".equals(st2.read("res")));
+        check("A stale again rejected", !st2.write("res", a, "A2"));
+        check("still B", "B".equals(st2.read("res")));
+
+        // nhieu vong pause
+        long c = 0;
+        for (int i = 0; i < 3; i++) {
+            lock2.simulateExpiry("res");
+            c = lock2.acquire("res");
+            check("round write ok " + i, st2.write("res", c, "v" + i));
+        }
+        check("old a rejected after rounds", !st2.write("res", a, "old"));
+        check("old b rejected after rounds", !st2.write("res", b, "oldB"));
+        check("latest value", "v2".equals(st2.read("res")));
+
+        // resource doc lap
+        Storage st3 = new Storage();
+        LockService lock3 = new LockService();
+        long x1 = lock3.acquire("X");
+        long y1 = lock3.acquire("Y");
+        st3.write("X", x1, "x1");
+        lock3.simulateExpiry("X");
+        long x2 = lock3.acquire("X");
+        st3.write("X", x2, "x2");
+        check("Y unaffected", st3.write("Y", y1, "y1"));
+        check("Y value", "y1".equals(st3.read("Y")));
+        check("X stale rejected independent", !st3.write("X", x1, "bad"));
+
+        // first write on fresh resource accepted
+        Storage st4 = new Storage();
+        check("fresh write ok", st4.write("r", 5L, "five"));
+        check("fresh read", "five".equals(st4.read("r")));
+        check("older rejected", !st4.write("r", 4L, "four"));
+
+        System.out.println("RESULT " + p + "/" + n);
+    }
+}`,
+      reference: `import java.util.*;
+
+class LockService {
+    private long nextToken = 0;
+    private final Map<String, Long> held = new HashMap<>();
+
+    long acquire(String resource) {
+        // token tang dan toan cuc: moi lan giu lock la mot "luot" moi
+        long t = ++nextToken;
+        held.put(resource, t);
+        return t;
+    }
+
+    void simulateExpiry(String resource) {
+        // mo phong TTL het han / client bi pause mat lock (xac dinh, khong sleep)
+        held.remove(resource);
+    }
+
+    Long currentToken(String resource) {
+        return held.get(resource);
+    }
+}
+
+class Storage {
+    private final Map<String, Long> maxSeen = new HashMap<>();
+    private final Map<String, String> data = new HashMap<>();
+
+    boolean write(String resource, long token, String value) {
+        Long max = maxSeen.get(resource);
+        // fencing: tu choi token cu (lac hau hon token lon nhat da chap nhan)
+        if (max != null && token < max) return false;
+        maxSeen.put(resource, token);
+        data.put(resource, value);
+        return true;
+    }
+
+    String read(String resource) {
+        return data.get(resource);
+    }
+}`,
+      hints: [
+        'LockService chỉ cần một bộ đếm {{long nextToken}} tăng bằng {{++nextToken}} mỗi lần {{acquire}}, trả về giá trị đó (tăng toàn cục qua mọi resource). {{simulateExpiry}} chỉ xóa trạng thái giữ lock.',
+        'Storage giữ {{maxSeen}} theo resource. Nếu đã có max và {{token < max}} thì trả {{false}}; ngược lại cập nhật {{maxSeen}} và {{data}} rồi trả {{true}}.',
+        'Kịch bản pause: A acquire (t1) → {{simulateExpiry}} → B acquire (t2) → B write(t2) OK → A write(t1) phải bị từ chối nhờ {{t1 < t2}}.',
+      ],
+      explain: `{{LockService}} mô phỏng việc cấp lease có danh tính tăng dần. Điểm quan trọng là token tăng **đơn điệu**: token sinh ra sau luôn lớn hơn trước, nên "mới hơn" so sánh được bằng số học. {{simulateExpiry}} cho phép dựng tình huống A mất lock mà không cần chờ thời gian thật, nên test deterministic.
+
+{{Storage}} là bên **thực thi fencing**: nó không tin client, nó chỉ tin thứ tự token. Khi B đã ghi với token lớn hơn, mọi token nhỏ hơn bị coi là "cổ" và bị chặn — kể cả A gửi lại nhiều lần. Mỗi resource có max riêng nên lock/resource khác nhau không ảnh hưởng nhau.
+
+Lỗi hay gặp:
+- Cấp token theo từng resource riêng lẻ nhưng so sánh sai ngữ cảnh, hoặc quên tăng đơn điệu (dùng random) → storage không phân biệt mới/cũ.
+- Kiểm tra fencing ở client thay vì ở storage → client bị pause vẫn tự cho phép mình ghi.
+- Dùng {{token <= maxSeen}} từ chối cả trường hợp hợp lệ ngoài ý muốn, hoặc quên cập nhật maxSeen khi chấp nhận. Đề bài quy ước rõ "từ chối token nhỏ hơn token lớn nhất đã chấp nhận" ({{token < max}}) — đủ để chặn A (t1) sau khi B (t2) đã được chấp nhận.
+
+Giới hạn mô phỏng: hệ thống thật cần storage hỗ trợ kiểm tra có điều kiện (ví dụ ghi nếu version khớp), và phải xử lý crash giữa chừng, retry, clock; nhưng nguyên lý fencing token giữ nguyên.`
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao distributed lock chỉ có TTL (không có fencing token) vẫn có thể gây ghi đè dữ liệu sai?',
+      options: [
+        'Vì TTL làm lock nhanh hơn',
+        'Vì client giữ lock có thể bị GC pause dài hơn TTL, lock hết hạn cấp cho client khác, rồi client cũ tỉnh dậy vẫn ghi đè',
+        'Vì TTL luôn bằng 0',
+        'Vì hai client không bao giờ bị pause',
+      ],
+      answer: 1,
+      explain: `Lock service hết TTL và cấp lock mới là hành vi đúng để tránh kẹt, nhưng client bị pause không biết mình đã mất lock. Không có cơ chế nào ở storage để từ chối ghi trễ thì dữ liệu bị ghi đè.`
+    },
+    {
+      q: 'Trong cơ chế fencing token, thành phần nào BẮT BUỘC phải kiểm tra token để đảm bảo an toàn?',
+      options: [
+        'Chỉ client đang ghi',
+        'Chỉ lock service',
+        'Hệ thống lưu trữ/tài nguyên nhận lệnh ghi (storage)',
+        'Trình cân bằng tải (load balancer)',
+      ],
+      answer: 2,
+      explain: `Client bị pause có thể tin sai rằng mình còn lock, nên tự kiểm tra là không đủ. Storage là nơi ghi thực sự và phải từ chối token cũ (nhỏ hơn max đã thấy). Lock service cấp token nhưng không thay storage chặn ghi trễ.`
+    },
+    {
+      q: 'Fencing token cần tính chất nào để storage phân biệt được ghi mới và ghi cũ?',
+      options: [
+        'Ngẫu nhiên mỗi lần',
+        'Tăng đơn điệu (đơn điệu tăng) theo mỗi lần cấp lock thành công',
+        'Luôn bằng TTL của lock',
+        'Giống nhau cho mọi client',
+      ],
+      answer: 1,
+      explain: `Token tăng đơn điệu cho phép so sánh: token lớn hơn là lượt mới hơn. Token ngẫu nhiên/giống nhau không so được mới-cũ; gắn với TTL cũng không tạo thứ tự giữa các lần acquire.`
+    },
+  ],
+  related: ['architecture-001', 'design-032'],
+  tags: ['distributed-lock', 'fencing-token', 'redis', 'zookeeper', 'concurrency', 'gc-pause'],
+}
+
 );

@@ -1646,6 +1646,8 @@ window.DATA_INDEX = {
     {"id":"lesson-architecture-006","track":"architecture","order":6,"title":"Splitwise: Strategy chia tiền net balance và tối giản số giao dịch thanh toán","level":"mid","minutes":35},
     {"id":"lesson-architecture-007","track":"architecture","order":7,"title":"Logging framework: filter theo level, Decorator định dạng và nhiều appender","level":"senior","minutes":35},
     {"id":"lesson-architecture-008","track":"architecture","order":8,"title":"Text editor Undo/Redo: Command pattern, giới hạn lịch sử và gộp thao tác gõ","level":"mid","minutes":30},
+    {"id":"lesson-architecture-009","track":"architecture","order":9,"title":"Consistent hashing và virtual node: phân tán key, thêm/bớt node chỉ di chuyển ~1/N","level":"senior","minutes":35},
+    {"id":"lesson-architecture-010","track":"architecture","order":10,"title":"Distributed lock, GC pause và fencing token: vì sao khóa có TTL vẫn ghi đè dữ liệu","level":"senior","minutes":35},
     {"id":"lesson-ai-001","track":"ai","order":1,"title":"AI Engineering Foundations: gọi LLM API, xử lý lỗi và đo chất lượng","level":"senior","minutes":45},
     {"id":"lesson-ai-002","track":"ai","order":2,"title":"Che dữ liệu cá nhân (PII) trước khi gửi LLM","level":"senior","minutes":35},
     {"id":"lesson-ai-003","track":"ai","order":3,"title":"RAG mini từ gốc","level":"senior","minutes":40},
