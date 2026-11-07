@@ -3008,7 +3008,10 @@ Mặc định capacity 16, load factor 0.75, threshold 12. Khi thêm phần tử
 },
 {
   id: 'qz-modern-025', topic: 'modern',
-  q: `Record sau có những đặc điểm nào?`,
+  q: `Record sau có những đặc điểm nào?
+~~~java
+public record Money(String currency, long amount) { }
+~~~`,
   options: [
     `Là final class, component là private final, có constructor canonical, equals/hashCode/toString tự sinh`,
     `Có thể kế thừa class khác`,
@@ -3140,47 +3143,62 @@ Stage phụ thuộc bị bỏ qua và truyền exception (bọc CompletionExcept
 },
 {
   id: 'qz-jvm-025', topic: 'jvm',
-  q: `Service latency p99 < 10ms, heap 32GB, Java 21. Lựa chọn GC hợp lý?`,
+  q: `Một Spring Boot service chạy Java 21 trong container Kubernetes có memory limit 2 GiB, máy host có 64 GB RAM. Không đặt {{-Xmx}} hay cờ heap nào. Heap tối đa mặc định của JVM là bao nhiêu?`,
   options: [
-    `Generational ZGC (-XX:+UseZGC -XX:+ZGenerational)`,
-    `Parallel GC`,
-    `G1 với MaxGCPauseMillis=1`,
-    `Serial GC`,
+    `Khoảng 16 GB (25% RAM của máy host), nên pod dễ bị OOMKilled`,
+    `Khoảng 512 MB: JVM đọc memory limit của cgroup và mặc định lấy {{MaxRAMPercentage}} = 25% của 2 GiB`,
+    `Đúng 2 GiB, JVM dùng toàn bộ limit làm heap`,
+    `JVM không khởi động được nếu không đặt {{-Xmx}} trong container`
   ],
-  answer: 0,
-  explain: `**Đáp án đúng: Generational ZGC.**
+  answer: 1,
+  explain: `**Đáp án đúng: khoảng 512 MB (25% của limit).**
 
 ### Vì sao đúng
-ZGC pause thường dưới 1ms và không tăng theo heap size; generational (Java 21) tách young/old, giảm CPU so với ZGC cũ. Trade-off: tốn CPU hơn và cần heap dư.
+Từ JDK 10 (và được backport về 8u191), JVM **nhận biết container**: nó đọc memory limit và CPU quota từ cgroup (v1 hoặc v2) thay vì đọc RAM của máy host. Heap tối đa mặc định bằng {{MaxRAMPercentage}} (mặc định 25%) của bộ nhớ nhìn thấy: 25% × 2 GiB = 512 MB. Phần còn lại dành cho metaspace, thread stack, code cache, direct buffer và bộ nhớ native của GC.
 
 ### Vì sao các phương án còn lại sai
-- **Parallel GC**: stop-the-world trên 32GB rất dài.
-- **G1 MaxGCPauseMillis=1**: mục tiêu mềm, vẫn vượt.
-- **Serial GC**: pause còn dài hơn.
+- **16 GB theo RAM host**: đó là hành vi của JVM cũ (Java 8 trước 8u191). Hành vi này từng gây OOMKilled hàng loạt.
+- **Toàn bộ 2 GiB**: JVM cần bộ nhớ ngoài heap; nếu heap chiếm hết limit thì tổng bộ nhớ của process vượt limit và kernel giết pod.
+- **Không khởi động được**: JVM luôn có giá trị mặc định.
 
-> Senior tip: xác nhận latency do GC bằng GC log/JFR trước khi đổi; nhiều khi thủ phạm là TTSP hoặc allocation.`
+### Cấu hình hay dùng
+~~~yaml
+resources:
+  limits:
+    memory: 2Gi
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: "-XX:MaxRAMPercentage=75"   # heap khoảng 1.5 GiB, chừa khoảng 512 MiB cho phần ngoài heap
+~~~
+
+> Senior tip: 25% mặc định thường quá thấp cho service chỉ chạy một JVM; 60–75% là mức hay dùng. Nếu pod vẫn bị OOMKilled dù heap chưa đầy, hãy đo bộ nhớ ngoài heap bằng {{-XX:NativeMemoryTracking=summary}} và {{jcmd <pid> VM.native_memory}}.`
 },
 {
   id: 'qz-jvm-026', topic: 'jvm',
-  q: `GC pause nhỏ nhưng ứng dụng khựng lâu. Nguyên nhân có thể là?`,
+  q: `Một ứng dụng nạp script Groovy và tạo dynamic proxy liên tục. Sau vài ngày nó chết với {{java.lang.OutOfMemoryError: Metaspace}} (có đặt {{-XX:MaxMetaspaceSize=512m}}), trong khi heap còn trống nhiều. Nguyên nhân gốc thường gặp nhất là gì?`,
   options: [
-    `Time-to-safepoint lớn (TTSP)`,
-    `GC log sai`,
-    `ZGC concurrent phase`,
-    `JIT deoptimize toàn bộ`,
+    `Heap quá nhỏ; tăng {{-Xmx}} sẽ hết lỗi`,
+    `Metaspace nằm trong heap nên chỉ cần ép Full GC định kỳ`,
+    `Rò rỉ ClassLoader: class chỉ được giải phóng khỏi Metaspace khi ClassLoader nạp nó bị GC, mà vẫn còn một tham chiếu giữ ClassLoader (static cache, ThreadLocal, thread chưa dừng)`,
+    `Do quá nhiều String intern`
   ],
-  answer: 0,
-  explain: `**Đáp án đúng: TTSP lớn.**
+  answer: 2,
+  explain: `**Đáp án đúng: ClassLoader bị giữ lại nên class không unload được.**
 
 ### Vì sao đúng
-GC stop-the-world cần mọi thread dừng tại safepoint. {{Reaching safepoint}} trong safepoint log cho thấy thời gian chờ thread cuối tới safepoint; GC chỉ chạy sau đó. Nguyên nhân: vòng lặp JIT không có poll, copy mảng lớn, swap/page fault.
+Metaspace (từ Java 8, thay cho PermGen) chứa **metadata của class** và nằm trong bộ nhớ native, ngoài heap. Một class chỉ được gỡ khỏi Metaspace khi **cả ClassLoader** đã nạp nó trở thành rác. Mỗi script Groovy hoặc mỗi loại proxy sinh ra thường đi kèm class mới, đôi khi cả ClassLoader mới. Chỉ cần một đường tham chiếu còn giữ lại một object, thì class của nó, ClassLoader của class đó, và mọi class mà ClassLoader ấy nạp đều bị giữ lại. Đường tham chiếu đó có thể là một cache static, một {{ThreadLocal}} trên thread của pool, hay một thread do code đã nạp tạo ra mà chưa dừng.
+
+### Cách điều tra
+- {{jcmd <pid> VM.classloader_stats}} hoặc {{jcmd <pid> VM.metaspace}}: ClassLoader nào giữ nhiều class.
+- Heap dump, mở trong Eclipse MAT: tìm nhiều instance của cùng một ClassLoader rồi xem "Path to GC Roots".
+- {{-Xlog:class+unload}}: xác nhận class có được unload hay không.
 
 ### Vì sao các phương án còn lại sai
-- **GC log sai**: GC log đo đúng phần GC.
-- **ZGC concurrent**: không làm treo thread ứng dụng.
-- **Deoptimize toàn bộ**: không phải nguyên nhân chính.
+- **Tăng -Xmx**: Metaspace không nằm trong heap nên tăng heap không giúp gì.
+- **Ép Full GC**: GC vẫn chạy, nhưng không thu hồi được class mà ClassLoader còn được tham chiếu.
+- **String intern**: chuỗi intern nằm trên heap (từ Java 7), không nằm trong Metaspace.
 
-> Senior tip: bật -Xlog:safepoint và so sánh Total với At safepoint; JFR có event SafepointBegin.`
+> Senior tip: luôn đặt {{MaxMetaspaceSize}} (mặc định không giới hạn) để lỗi lộ ra sớm, thay vì để process ăn hết RAM rồi bị OOMKilled. Với Groovy, nên cache script đã compile thay vì compile lại mỗi lần chạy.`
 },
 {
   id: 'qz-core-027', topic: 'core',
@@ -3317,11 +3335,10 @@ System.out.println(m);
   id: 'qz-concurrency-028', topic: 'concurrency',
   q: `Đoạn code sau có vấn đề gì?
 ~~~java
-ExecutorService ex = Executors.newFixedThreadPool(2);
 CompletableFuture<Integer> f = CompletableFuture.supplyAsync(() -> {
     if (true) throw new IllegalStateException("boom");
     return 1;
-}, ex);
+});
 f.thenApply(x -> x + 1).exceptionally(e -> -1);
 System.out.println(f.join());
 ~~~`,
@@ -3341,55 +3358,57 @@ System.out.println(f.join());
 
 ### Vì sao các phương án còn lại sai
 - **-1**: chỉ future chained mới có giá trị -1, không phải f.
-- **0/ treo**: join() không treo khi future đã hoàn thành (kể cả exceptional).
+- **0**: không có nhánh nào trả về 0.
+- **Treo**: join() chờ tới khi f hoàn thành (ở đây là hoàn thành với exception) rồi ném lỗi, không treo. Task chạy trên {{ForkJoinPool.commonPool()}} gồm daemon thread nên JVM vẫn thoát được.
 
-> Senior tip: luôn lưu biến cho chained future nếu cần xử lý exception; hoặc dùng whenComplete/handle để vừa log vừa trả giá trị.`
+> Senior tip: luôn lưu biến cho future đã nối chuỗi nếu cần xử lý exception, hoặc dùng whenComplete/handle để vừa log vừa trả giá trị. Nếu truyền executor riêng (ví dụ {{Executors.newFixedThreadPool}}) thì nhớ {{shutdown()}}: thread của pool đó không phải daemon, quên shutdown thì JVM không thoát.`
 },
 {
   id: 'qz-jvm-027', topic: 'jvm',
-  q: `G1 GC chọn region nào để thu hồi đầu tiên trong một chu kỳ?`,
+  q: `Trong một mixed collection của G1, collection set (các region sẽ được dọn trong lần pause này) gồm những gì?`,
   options: [
-    `Region có garbage nhiều nhất (garbage-first)`,
-    `Region mới nhất (youngest)`,
-    `Region lớn nhất (humongous)`,
-    `Region theo thứ tự allocation`
+    `Toàn bộ young region, cộng thêm một số old region được chọn theo thứ tự nhiều rác nhất trước, sao cho vừa với pause target`,
+    `Chỉ các old region nhiều rác nhất; young region đợi tới lần young GC sau`,
+    `Chỉ các humongous region, vì chúng chiếm nhiều bộ nhớ nhất`,
+    `Mọi region của heap, theo thứ tự allocation`
   ],
   answer: 0,
-  explain: `**Đáp án đúng: region có garbage nhiều nhất.**
+  explain: `**Đáp án đúng: toàn bộ young cộng một phần old nhiều rác nhất.**
 
 ### Vì sao đúng
-G1 chia heap thành các region cùng kích thước. Nó ưu tiên thu hồi các region có tỷ lệ rác cao nhất (garbage-first) để đạt pause target, nên tên là Garbage-First.
+G1 chia heap thành các region cùng kích thước (1–32 MB). Mọi lần pause dọn rác (young hoặc mixed) đều dọn **tất cả** young region (eden và survivor). Sau một chu kỳ concurrent marking, G1 biết mỗi old region còn bao nhiêu dữ liệu sống; trong các mixed collection tiếp theo, nó thêm dần các old region có **nhiều rác nhất** (ít dữ liệu sống nhất nên copy rẻ nhất), trong giới hạn ước lượng sao cho pause không vượt {{MaxGCPauseMillis}}. "Garbage-First" chính là cách chọn old region này.
 
 ### Vì sao các phương án còn lại sai
-- **youngest**: young gen được thu hồi thường xuyên nhưng không phải tiêu chí chọn region đầu tiên.
-- **humongous**: humongous region xử lý riêng, không ưu tiên.
-- **allocation order**: không phải.
+- **Chỉ old region**: young region luôn nằm trong collection set.
+- **Chỉ humongous**: humongous region (object lớn hơn nửa region) được thu hồi khi chết, thường từ lúc cleanup hoặc eager reclaim, chứ không phải tiêu chí của mixed collection.
+- **Mọi region**: dọn toàn heap chỉ xảy ra ở Full GC, là trường hợp G1 cố tránh.
 
-> Senior tip: đặt -XX:MaxGCPauseMillis hợp lý; G1 sẽ trade-off throughput.`
+> Senior tip: các tham số {{G1MixedGCCountTarget}} và {{G1HeapWastePercent}} quyết định số lần mixed GC và lượng rác chấp nhận bỏ lại. Thấy Full GC trong log G1 thường nghĩa là marking bắt đầu quá muộn ({{InitiatingHeapOccupancyPercent}}) hoặc heap quá chật.`
 },
 {
   id: 'qz-modern-030', topic: 'modern',
-  q: `Virtual thread bị pin khi nào? (Chọn 2)`,
+  q: `Team chuyển một service I/O-bound sang virtual thread (Java 21). Thực hành nào đúng? (Chọn 2)`,
   options: [
-    `Khi chạy synchronized block`,
-    `Khi gọi Thread.sleep`,
-    `Khi thực hiện I/O blocking`,
-    `Khi gọi native method`,
-    `Khi tạo object mới`
+    `Không pool virtual thread: mỗi task một thread mới, ví dụ {{Executors.newVirtualThreadPerTaskExecutor()}}`,
+    `Giới hạn truy cập tài nguyên khan hiếm (DB, API đối tác) bằng {{Semaphore}} hoặc kích thước connection pool, thay vì giới hạn số thread`,
+    `Đặt pool virtual thread cố định bằng số core CPU để tránh quá tải`,
+    `Lưu object nặng (ví dụ buffer lớn) trong {{ThreadLocal}} để tái sử dụng giữa các request như với thread pool thường`,
+    `Chuyển cả tác vụ CPU-bound (nén ảnh, mã hoá) sang virtual thread vì chúng nhanh hơn platform thread`
   ],
   multi: true,
-  answer: [0, 3],
-  explain: `**Đáp án đúng: synchronized block và native method.**
+  answer: [0, 1],
+  explain: `**Đáp án đúng: 0 và 1.**
 
 ### Vì sao đúng
-Virtual thread bị pin (không thể unmount khỏi carrier thread) khi vào synchronized block/monitor hoặc native method. I/O blocking và sleep sẽ unmount bình thường.
+- **Không pool**: virtual thread rất rẻ (stack nằm trên heap, chỉ lớn theo nhu cầu), tạo và huỷ gần như không tốn gì. Pool sinh ra để tiết kiệm thread đắt; pool virtual thread chỉ thêm phức tạp và giới hạn vô ích.
+- **Giới hạn tài nguyên, không giới hạn thread**: trước đây kích thước thread pool vô tình đóng vai trò giới hạn tải. Khi mỗi request có một thread riêng thì giới hạn đó mất, và 10.000 request có thể cùng đổ vào DB. Hãy đặt giới hạn ngay tại tài nguyên: {{Semaphore}}, connection pool, rate limiter.
 
 ### Vì sao các phương án còn lại sai
-- **Thread.sleep**: unmount, không pin.
-- **I/O blocking**: unmount.
-- **tạo object**: không pin.
+- **Pool cố định bằng số core**: biến virtual thread thành platform thread đắt tiền; với I/O-bound, throughput bị chặn ở số core.
+- **ThreadLocal để tái sử dụng**: mỗi task là một thread mới nên không có gì để tái dùng. Mỗi thread lại tạo object nặng của riêng nó, với hàng trăm nghìn thread thì tốn rất nhiều bộ nhớ. Muốn chia sẻ ngữ cảnh chỉ đọc, xem {{ScopedValue}} (chính thức từ JDK 25).
+- **CPU-bound**: virtual thread không làm CPU chạy nhanh hơn; với việc tính toán thuần, platform thread pool cỡ bằng số core vẫn là lựa chọn đúng.
 
-> Senior tip: dùng ReentrantLock thay synchronized trong code chạy trên virtual thread để tránh pinning.`
+> Senior tip: trên JDK 21–23, nhớ kiểm tra pinning ({{synchronized}} quanh I/O) bằng JFR event {{jdk.VirtualThreadPinned}} trước khi rollout.`
 },
 {
   id: 'qz-collections-028', topic: 'collections',
