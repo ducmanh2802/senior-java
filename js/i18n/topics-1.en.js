@@ -27,4 +27,5 @@ App.i18n.content({
   'testing': { name: 'Testing & Quality', group: 'Soft skills' },
   'behavioral': { name: 'Leadership & Behavioral', group: 'Soft skills' },
   'english': { name: 'English Interview', group: 'Soft skills' },
+  'remote': { name: 'Remote & Freelance (Upwork)', group: 'Soft skills' },
 });

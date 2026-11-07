@@ -1371,6 +1371,7 @@ window.DATA_INDEX = {
     ["autotest-043","autotest","senior"],
     ["autotest-044","autotest","lead"],
     ["autotest-045","autotest","lead"],
+    ["remote-001","remote","mid"],
   ],
   algos: [
     {"id":"algo-001","title":"Two Sum","difficulty":"easy","pattern":"Hash Map"},
