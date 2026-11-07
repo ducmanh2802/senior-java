@@ -2881,4 +2881,131 @@ Trợ lý soạn email cho nhân viên bán hàng: giờ cao điểm 300 ngườ
   ],
   tags: ['LLM', 'virtual threads', 'concurrency', 'rate limit', 'streaming']
 },
+{
+  id: 'ai-047',
+  topic: 'ai',
+  level: 'lead',
+  q: '(Case study SA) Sau 3 tháng ra mắt, chi phí LLM của ứng dụng tăng từ 2.000 lên 28.000 USD/tháng trong khi số người dùng chỉ tăng gấp 3. CFO yêu cầu giảm ít nhất một nửa mà không làm giảm chất lượng. Bạn làm thế nào?',
+  a: `**Tóm tắt:** Không thể tối ưu thứ không đo được, nên bước đầu là **đo token và chi phí theo tính năng, theo tenant, theo loại request**. Thường phần lớn chi phí đến từ vài nguyên nhân: **prompt phình to** (lịch sử hội thoại, RAG chèn quá nhiều đoạn), **dùng model lớn cho việc đơn giản**, **gọi lặp lại** cùng nội dung, **output không giới hạn**, và **việc nền chạy đồng bộ**. Đòn bẩy theo thứ tự: cắt token thừa → **định tuyến model** (model nhỏ trước) → **cache** (prompt caching của provider, cache câu trả lời) → **batch inference** cho việc không cần ngay → giới hạn và hạn mức theo người dùng. Mỗi thay đổi đi qua **bộ đánh giá chất lượng** trước khi bật.
+
+### Bước 1 — Đo
+Một **LLM gateway** nội bộ (hoặc lớp bao quanh client) ghi cho mỗi lời gọi: tính năng, tenant, model, input tokens, output tokens, cached tokens, thời gian, chi phí ước tính. Xuất metric và log (không ghi nội dung nhạy cảm). Sau 3 ngày có bảng: tính năng nào tốn nhất, request nào dài nhất, tỉ lệ request lặp lại.
+
+### Bước 2 — Các đòn bẩy
+| Đòn bẩy | Cơ chế | Mức giảm điển hình |
+|---|---|---|
+| Cắt prompt | Tóm tắt lịch sử thay vì gửi nguyên, RAG lấy 4 đoạn thay vì 20, bỏ hướng dẫn trùng | 30–60% input |
+| Định tuyến model | Phân loại độ khó; câu dễ dùng model nhỏ, rẻ hơn hàng chục lần | 40–70% |
+| Prompt caching | Phần đầu prompt cố định (system prompt, tài liệu) được provider cache, tính giá thấp hơn nhiều | lớn với prompt dài lặp lại |
+| Cache câu trả lời | Câu hỏi giống hệt (hoặc gần giống, có kiểm soát) trả kết quả đã có | tuỳ tỉ lệ lặp |
+| Batch inference | Việc nền (tóm tắt, phân loại hàng loạt) gửi theo lô, giá thấp hơn đáng kể (Bedrock batch khoảng 50% so với on-demand với model hỗ trợ) | 50% phần đó |
+| Giới hạn output | max tokens theo tính năng, yêu cầu định dạng ngắn | 10–30% output |
+| Hạn mức người dùng | Quota theo gói, chặn lạm dụng | chặn đuôi dài |
+
+### Bước 3 — Giữ chất lượng
+Bộ **golden set** (vài trăm câu hỏi thật có đáp án/tiêu chí) chấm tự động cho mọi thay đổi model hoặc prompt; bật dần theo phần trăm người dùng (canary) và theo dõi tỉ lệ người dùng bấm "không hài lòng", tỉ lệ hỏi lại.
+
+### Ví dụ đời thực
+Trợ lý hỏi đáp chính sách cho nhân viên ngân hàng: đo cho thấy (1) mỗi lượt gửi **toàn bộ** lịch sử hội thoại — trung bình 9.000 token input; (2) RAG chèn 15 đoạn; (3) mọi câu dùng model lớn nhất; (4) job tóm tắt cuộc gọi đêm chạy on-demand. Thay đổi: cửa sổ 6 lượt + tóm tắt phần cũ, RAG còn 5 đoạn có re-rank, router gửi 70% câu hỏi đơn giản sang model nhỏ, bật prompt caching cho system prompt dài 3.000 token, tóm tắt cuộc gọi chuyển sang batch. Chi phí còn 9.800 USD/tháng (giảm 65%); điểm golden set 91% → 90,5%, tỉ lệ "không hài lòng" không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu bằng đo: đưa mọi lời gọi LLM qua một gateway ghi token input, output, token được cache, model và chi phí theo từng tính năng và tenant. Sau vài ngày sẽ thấy tiền đi đâu, thường là prompt phình to do gửi nguyên lịch sử hay RAG chèn quá nhiều đoạn, model lớn dùng cho việc đơn giản, và việc nền chạy theo giá on-demand. Sau đó tôi dùng các đòn bẩy theo thứ tự: cắt token thừa, định tuyến model để câu dễ đi model nhỏ, bật prompt caching cho phần prompt cố định dài, cache câu trả lời lặp lại, chuyển việc không cần ngay sang batch inference rẻ hơn, giới hạn output và hạn mức theo người dùng. Mọi thay đổi đều qua bộ golden set chấm tự động và bật dần bằng canary, để giảm chi phí mà chất lượng không tụt."
+
+> Senior tip: đưa **chi phí AI trên mỗi đơn vị giá trị** (USD trên mỗi cuộc hội thoại được giải quyết, trên mỗi hồ sơ xử lý xong) vào dashboard sản phẩm ngay từ ngày ra mắt. Chi phí AI tăng theo cách dùng, không theo số người dùng — phát hiện sớm rẻ hơn rất nhiều so với cắt giảm khi đã gấp 10.`,
+  follow: [
+    'Bạn thiết kế router chọn model theo độ khó câu hỏi thế nào, và đo nó có sai không ra sao?',
+    'Cache câu trả lời theo ngữ nghĩa (semantic cache) có rủi ro gì với dữ liệu theo người dùng?',
+    'Khi nào nên cân nhắc tự host model mã nguồn mở thay vì gọi API?'
+  ],
+  tags: ['LLM', 'cost', 'FinOps', 'Bedrock', 'case study', 'solution architect']
+},
+{
+  id: 'ai-048',
+  topic: 'ai',
+  level: 'senior',
+  q: '(Case study SA) Công ty bảo hiểm nhận 1 triệu hồ sơ bồi thường mỗi tháng (ảnh hoá đơn, giấy ra viện, đơn thuốc). Họ muốn tự động trích xuất thông tin và duyệt nhanh, nhưng sai sót có thể gây chi trả sai. Bạn thiết kế pipeline trên AWS thế nào?',
+  a: `**Tóm tắt:** Pipeline bất đồng bộ nhiều tầng: **nhận và phân loại** tài liệu → **OCR/trích xuất có cấu trúc** (Amazon Textract cho bảng, form, truy vấn theo trường) → **LLM chuẩn hoá và đối chiếu nghiệp vụ** (output theo schema, kiểm tra chéo giữa các giấy tờ) → **quy tắc nghiệp vụ xác định** (deterministic) → **định tuyến theo độ tin cậy**: chắc chắn thì tự duyệt, không chắc thì đưa **người duyệt** (Amazon A2I hoặc công cụ nội bộ). Mọi quyết định có **bằng chứng** (vị trí trên ảnh, giá trị trích xuất, quy tắc đã áp dụng) để kiểm toán; kết quả người duyệt quay lại làm dữ liệu đánh giá.
+
+### Kiến trúc
+~~~seq
+title: Pipeline hồ sơ bồi thường
+actors: App | S3 | StepFn | Textract | LLM | Reviewer
+App -> S3: tải ảnh hồ sơ (presigned URL)
+S3 -> StepFn: sự kiện ObjectCreated -> bắt đầu quy trình
+StepFn -> Textract: AnalyzeDocument (forms, tables, queries)
+StepFn -> LLM: chuẩn hoá theo schema, đối chiếu giấy tờ
+StepFn -> StepFn: quy tắc nghiệp vụ + điểm tin cậy
+StepFn -> Reviewer: nếu tin cậy thấp: duyệt tay (task token)
+Reviewer --> StepFn: xác nhận / sửa
+~~~
+- **Step Functions** điều phối: retry từng bước, chờ người duyệt bằng task token, lưu trạng thái.
+- **Textract**: trích xuất có toạ độ và confidence cho từng trường; dùng Queries để hỏi trực tiếp "Tổng tiền?", "Ngày ra viện?".
+- **LLM** (Bedrock): chuẩn hoá tên thuốc, mã bệnh, đối chiếu "hoá đơn có khớp đơn thuốc và giấy ra viện không", trả JSON theo schema; **không** để LLM tự quyết số tiền chi trả.
+- **Quy tắc xác định**: hạn mức hợp đồng, danh mục loại trừ, trùng hoá đơn (hash ảnh + số hoá đơn).
+
+### Định tuyến theo độ tin cậy
+| Điều kiện | Xử lý |
+|---|---|
+| Mọi trường quan trọng confidence cao, quy tắc qua, số tiền dưới ngưỡng | Tự duyệt |
+| Một trường confidence thấp hoặc giấy tờ không khớp | Người duyệt chỉ kiểm tra trường đó (giao diện chỉ đúng vùng ảnh) |
+| Số tiền lớn, dấu hiệu gian lận | Luôn duyệt tay hai cấp |
+Ngưỡng được hiệu chỉnh từ dữ liệu: đo tỉ lệ sai của nhóm tự duyệt trên mẫu kiểm tra ngẫu nhiên hằng tuần.
+
+### Ví dụ đời thực
+Pilot với 50.000 hồ sơ: 58% tự duyệt với tỉ lệ sai 0,3% (kiểm tra mẫu 2.000 hồ sơ), thấp hơn tỉ lệ sai của quy trình nhập tay trước đó (1,1%); thời gian xử lý trung bình từ 3 ngày còn 4 giờ. Người duyệt chỉ sửa trường bị đánh dấu nên năng suất tăng gấp 3. Chi phí trích xuất + LLM khoảng 0,06 USD/hồ sơ. Một bài học: ảnh chụp nghiêng/mờ chiếm phần lớn lỗi → thêm bước kiểm tra chất lượng ảnh ngay trên app, yêu cầu chụp lại trước khi gửi.
+
+### Pitfall
+- Để LLM quyết định số tiền chi trả → không giải thích được, khó kiểm toán.
+- Tin confidence của mô hình mà không hiệu chỉnh bằng dữ liệu thật.
+- Gửi dữ liệu sức khoẻ ra ngoài vùng hoặc ghi vào log.
+- Không lưu bằng chứng (vị trí, giá trị gốc) cho mỗi quyết định.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế một pipeline bất đồng bộ do Step Functions điều phối. Ảnh tải thẳng lên S3 bằng presigned URL, sự kiện kích hoạt quy trình. Textract trích xuất form, bảng và trả lời các truy vấn theo trường, kèm toạ độ và confidence. LLM trên Bedrock chuẩn hoá dữ liệu theo schema và đối chiếu chéo giữa các giấy tờ, nhưng không quyết định số tiền; quyết định do quy tắc nghiệp vụ xác định như hạn mức, loại trừ, trùng hoá đơn. Sau đó định tuyến theo độ tin cậy: chắc chắn và số tiền nhỏ thì tự duyệt, có trường không chắc thì người duyệt chỉ kiểm tra đúng trường đó, số tiền lớn hay nghi gian lận thì duyệt hai cấp. Ngưỡng được hiệu chỉnh bằng kiểm tra mẫu ngẫu nhiên hằng tuần, và mọi quyết định đều lưu bằng chứng để kiểm toán."
+
+> Senior tip: đo và báo cáo **tỉ lệ sai của nhóm tự duyệt** bằng kiểm tra mẫu ngẫu nhiên mỗi tuần, so với quy trình thủ công cũ. Con số này — không phải độ chính xác OCR — là thứ thuyết phục được bộ phận rủi ro cho phép mở rộng tự động hoá.`,
+  follow: [
+    'Bạn hiệu chỉnh ngưỡng confidence để cân bằng tỉ lệ tự duyệt và rủi ro sai thế nào?',
+    'Phát hiện hoá đơn bị chỉnh sửa hoặc nộp trùng ở nhiều hồ sơ ra sao?',
+    'Dữ liệu người duyệt sửa được dùng để cải thiện hệ thống thế nào?'
+  ],
+  tags: ['document AI', 'Textract', 'Bedrock', 'Step Functions', 'human-in-the-loop', 'case study']
+},
+{
+  id: 'ai-049',
+  topic: 'ai',
+  level: 'lead',
+  q: '(Case study SA) Đội vận hành muốn một AI agent đọc cảnh báo, tra log/metric trên AWS và tự thực hiện runbook (restart service, scale, rollback) để giảm thời gian xử lý sự cố đêm. Là SA, bạn thiết kế quyền hạn, an toàn và kiểm soát thế nào?',
+  a: `**Tóm tắt:** Thiết kế theo nguyên tắc **"đọc rộng, ghi hẹp, ghi phải có cổng"**: agent được **quyền chỉ đọc** (CloudWatch, logs, X-Ray, describe) để chẩn đoán; các hành động thay đổi hệ thống chỉ được thực hiện qua **một tập công cụ runbook có tên, có tham số được kiểm tra, có giới hạn phạm vi** (không có quyền "chạy lệnh tuỳ ý"), mỗi hành động có **mức rủi ro** quyết định cần **người phê duyệt** hay không; mọi bước được **audit**; có **giới hạn tần suất và phạm vi ảnh hưởng** (blast radius) và nút **dừng khẩn cấp**.
+
+### Kiến trúc
+- **Kích hoạt**: alarm CloudWatch → EventBridge → agent nhận ngữ cảnh (alarm, service, thời điểm).
+- **Chẩn đoán (read-only)**: role chỉ đọc với quyền {{cloudwatch:GetMetricData}}, {{logs:StartQuery}}, {{xray:GetTraceSummaries}}, {{ecs:Describe*}}; agent tóm tắt giả thuyết kèm bằng chứng (truy vấn đã chạy, số liệu).
+- **Hành động**: không gọi API AWS trực tiếp; gọi **Systems Manager Automation runbook** đã được duyệt (ví dụ "restart ECS service X", "rollback deployment Y về phiên bản trước", "scale tối đa thêm 2 task"). Mỗi runbook có IAM role riêng chỉ đủ cho việc đó, tham số được validate (service phải thuộc danh sách cho phép).
+- **Phê duyệt**: hành động rủi ro thấp (restart một task, tăng 1–2 task trong giới hạn) có thể tự chạy ngoài giờ theo chính sách; rủi ro cao (rollback, thay đổi DB, thay đổi mạng) gửi Slack/PagerDuty cho người trực bấm duyệt, có hết hạn.
+- **Giới hạn**: tối đa N hành động mỗi giờ, không chạy song song trên cùng service, không chạm production DB; vượt giới hạn thì dừng và gọi người.
+- **Audit**: mọi bước (prompt tóm tắt, công cụ gọi, tham số, kết quả) ghi vào log bất biến, gắn với incident.
+
+### Phòng các rủi ro đặc thù của LLM
+| Rủi ro | Kiểm soát |
+|---|---|
+| Ảo giác dẫn tới hành động sai | Hành động phải dẫn chứng metric/log; runbook có điều kiện tiên quyết tự kiểm tra |
+| Prompt injection qua nội dung log (log chứa "ignore previous instructions…") | Coi log là dữ liệu không tin cậy; quyền ghi không phụ thuộc vào nội dung log; công cụ có allowlist |
+| Vòng lặp hành động | Giới hạn số bước, cooldown, kiểm tra trạng thái sau mỗi hành động |
+| Quyền quá rộng | Không có role AdministratorAccess; SCP chặn các hành động nguy hiểm cho role của agent |
+
+### Ví dụ đời thực
+Một công ty thương mại điện tử thử nghiệm agent 3 tháng: giai đoạn 1 chỉ chẩn đoán và đề xuất (không hành động) — người trực xác nhận đề xuất đúng ở 74% sự cố, thời gian tìm nguyên nhân giảm từ trung bình 28 phút còn 9 phút. Giai đoạn 2 cho phép tự chạy 3 runbook rủi ro thấp (restart task lỗi, xoá cache, scale +2 task) với giới hạn 5 lần/giờ; các hành động khác cần duyệt. Một lần log chứa đoạn văn bản giống lệnh do người dùng nhập vào form — agent đề xuất hành động lạ nhưng không thể thực hiện vì không có công cụ tương ứng. Số lần phải đánh thức người trực vào ban đêm giảm 40%.
+
+### Trả lời mẫu khi phỏng vấn
+"Nguyên tắc của tôi là đọc rộng, ghi hẹp, và ghi phải qua cổng. Agent có role chỉ đọc để chẩn đoán từ metric, log, trace, và phải trình bày giả thuyết kèm bằng chứng. Các hành động thay đổi hệ thống không đi qua API AWS tuỳ ý mà qua một tập runbook đã được duyệt, như Systems Manager Automation, mỗi runbook có role riêng chỉ đủ cho việc đó và tham số được kiểm tra theo danh sách cho phép. Mỗi hành động có mức rủi ro: rủi ro thấp có thể tự chạy trong giới hạn tần suất, rủi ro cao cần người trực duyệt. Có giới hạn số bước, cooldown, nút dừng khẩn cấp, SCP chặn hành động nguy hiểm cho role của agent, và audit toàn bộ. Log được coi là dữ liệu không tin cậy để chống prompt injection. Tôi triển khai theo giai đoạn: chỉ đề xuất trước, đo độ chính xác, rồi mới cho tự hành động với runbook rủi ro thấp."
+
+> Senior tip: bắt đầu bằng chế độ **"shadow"** — agent chỉ ghi lại hành động nó *sẽ* làm, người trực so với việc họ thật sự làm. Sau vài chục sự cố, bạn có số liệu thật để quyết định runbook nào đủ an toàn cho tự động hoá, thay vì tranh luận cảm tính.`,
+  follow: [
+    'Bạn đánh giá độ chính xác chẩn đoán của agent trước khi cho nó hành động thế nào?',
+    'Prompt injection qua log hoặc ticket có thể gây hại gì, và chặn ở đâu?',
+    'Ai chịu trách nhiệm khi agent thực hiện một hành động gây sự cố?'
+  ],
+  tags: ['AI agent', 'AIOps', 'AWS', 'security', 'guardrails', 'case study', 'solution architect']
+},
 );
