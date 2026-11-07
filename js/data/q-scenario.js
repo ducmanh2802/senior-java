@@ -4881,33 +4881,54 @@ Trước khi sửa: viết test gọi method với case gây bug, chạy thấy 
   topic: 'scenario',
   level: 'senior',
   q: 'Batch job/cron đêm (EOD, đối soát, báo cáo) chạy chậm dần theo năm. Bạn điều tra và tối ưu mà không làm hỏng dữ liệu?',
-  a: `**Tóm tắt:** không tối ưu "vội" — đo baseline, tìm nút thắt (SQL, I/O, lock), tối ưu an toàn (index, partition, cursor), chạy song song có kiểm soát, luôn backup/verify số liệu đối soát.
+  a: `**Tóm tắt:** Batch chậm dần theo năm gần như luôn do **khối lượng dữ liệu tăng mà cách truy cập không đổi**: query quét cả bảng, một transaction khổng lồ, đọc hết vào RAM, xử lý tuần tự. Tôi đo từng step để tìm nút thắt, sửa theo thứ tự rủi ro thấp → cao (index, keyset + chunk commit, partition, song song có kiểm soát), và bắt buộc **đối soát số liệu trước/sau** để chứng minh không làm hỏng dữ liệu.
 
-### Làm rõ yêu cầu
-- Job xử lý gì, phụ thuộc gì, có deadline phải hoàn thành trước giờ mở cửa?
-- Dữ liệu tăng thế nào, có phân vùng không?
-- Có thể test trên bản sao dữ liệu không?
+### Vì sao batch "chậm dần" chứ không chậm đột ngột
+Một job EOD viết năm đầu cho 2 triệu giao dịch chạy 20 phút. Ba năm sau bảng có 60 triệu dòng. Các nguyên nhân điển hình:
+- **Query quét toàn bảng**: điều kiện {{WHERE created_at::date = :day}} bọc cột trong hàm nên không dùng được index → mỗi đêm quét 60 triệu dòng để lấy 80 nghìn dòng.
+- **OFFSET pagination**: {{LIMIT 1000 OFFSET 500000}} buộc DB đọc rồi bỏ 500 nghìn dòng; càng về cuối càng chậm (O(n²) tổng thể).
+- **Một transaction cho cả job**: giữ lock lâu, sinh nhiều dead tuple, rollback ở phút 90 là mất trắng.
+- **Đọc hết vào List**: heap phình, GC full liên tục.
+- **Thống kê (statistics) cũ**: planner ước lượng sai số dòng, chọn nested loop thay hash join.
 
-### Điều tra
-- **Thời gian** — đo từng step, log thời gian bắt đầu/kết thúc mỗi giai đoạn.
-- **SQL** — {{EXPLAIN (ANALYZE)}} các query chính, index có dùng không, statistic cũ?
-- **Tài nguyên** — CPU/IO/wait, lock/block, temp tablespace.
-- **Dữ liệu** — số lượng bản ghi qua các năm, dead rows, fragmentation.
+### Bước 1 — Đo trước khi sửa
+- Log thời gian từng step (đọc, tính, ghi) và số dòng mỗi step; với Spring Batch đã có sẵn bảng {{BATCH_STEP_EXECUTION}} (read/write count, start/end time).
+- Lấy top query theo tổng thời gian bằng {{pg_stat_statements}}, rồi {{EXPLAIN (ANALYZE, BUFFERS)}} trên bản sao dữ liệu production.
+- Xem tài nguyên trong khung giờ chạy: CPU, IO wait, lock wait ({{pg_locks}}), GC log của JVM.
 
-### Giải pháp an toàn
-- **Index phù hợp** — thêm index cho điều kiện filter/join của batch (không cần cho UI).
-- **Xử lý theo batch nhỏ** — thay vì 1 transaction lớn, commit theo chunk (vd 1000-10000) để giảm lock.
-- **Cursor/streaming** — tránh load toàn bộ vào List.
-- **Phân vùng** — xử lý theo partition tháng/năm.
-- **Parallel có kiểm soát** — chia theo range ID, giới hạn thread.
-- **Đối soát** — so sánh tổng trước/sau (số bản ghi, tổng tiền) bắt buộc.
+### Bước 2 — Sửa theo thứ tự rủi ro
+~~~sql
+-- Sai: hàm bọc cột -> Seq Scan
+SELECT * FROM txn WHERE created_at::date = '2026-11-06';
+-- Đúng: range trên cột gốc -> Index Scan
+SELECT * FROM txn
+WHERE created_at >= '2026-11-06' AND created_at < '2026-11-07'
+  AND id > :lastId          -- keyset: nhớ id cuối của chunk trước
+ORDER BY id LIMIT 5000;
+~~~
+- **Keyset + chunk commit**: mỗi chunk 1.000–10.000 dòng một transaction; lưu checkpoint (id cuối) để job chạy lại được từ giữa (restartable).
+- **Streaming**: {{JdbcCursorItemReader}} hoặc {{fetchSize}} thay vì {{findAll()}}.
+- **Ghi theo lô**: JDBC batch ({{reWriteBatchedInserts=true}} với PostgreSQL), tắt identity generation kiểu IDENTITY nếu dùng Hibernate batch.
+- **Partition theo tháng** khi bảng quá lớn: job chỉ chạm partition hôm nay; dữ liệu cũ archive.
+- **Song song có kiểm soát**: chia theo range id hoặc theo chi nhánh, 4–8 worker, không vượt pool connection; mỗi phần phải độc lập (không cập nhật cùng dòng).
+
+### Bước 3 — Chứng minh không hỏng dữ liệu
+- Chạy bản cũ và bản mới trên cùng snapshot, so **số dòng, tổng tiền, checksum theo chi nhánh**; lệch 1 đồng là chưa được release.
+- Job phải **idempotent**: chạy lại một ngày không cộng tiền hai lần (upsert theo khoá nghiệp vụ, hoặc xoá-ghi lại trong cùng transaction của chunk).
+
+### Ví dụ đời thực
+Job đối soát EOD của một ví điện tử chạy từ 01:00, SLA xong trước 05:00. Năm thứ ba job mất 3 giờ 40 phút, có đêm vượt SLA. Đo thấy 70% thời gian nằm ở một query lọc {{DATE(created_at)}} (Seq Scan 58 triệu dòng) và OFFSET pagination. Sửa thành range + keyset, thêm index {{(created_at, id)}}, commit mỗi 5.000 dòng, ghi JDBC batch, chia 6 worker theo chi nhánh. Kết quả: **3h40 → 22 phút**, heap đỉnh từ 6GB xuống 900MB; đối soát song song 7 đêm khớp 100% tổng tiền trước khi tắt bản cũ.
 
 ### Pitfall
-- **Sửa trực tiếp production data logic** — phải test trên copy.
-- **1 transaction khổng lồ** — dễ rollback mất thời gian, giữ lock lâu.
-- **Không đối soát** — tối ưu xong nhưng dữ liệu sai là thảm họa.
+- Tối ưu thẳng trên production mà không có snapshot để so.
+- Song song hoá khi các phần đụng cùng dòng → deadlock, sai số dư.
+- Tạo index trên bảng lớn bằng {{CREATE INDEX}} thường (khoá ghi) thay vì {{CONCURRENTLY}}.
+- Quên rằng job chạy cùng giờ backup/vacuum → tranh IO.
 
-> Senior tip: tối ưu batch an toàn nhất là "đo → giả thuyết → thử nhỏ → đo lại". Luôn có số liệu đối soát trước khi và sau khi chạy.`,
+### Trả lời mẫu khi phỏng vấn
+"Batch chậm dần theo năm thì tôi nghĩ ngay đến dữ liệu tăng mà cách truy cập vẫn như năm đầu. Tôi không đoán: tôi bật thời gian từng step, lấy top query từ pg_stat_statements và chạy EXPLAIN ANALYZE trên bản sao production. Thường thủ phạm là điều kiện bọc hàm làm mất index, OFFSET pagination, và một transaction khổng lồ. Tôi sửa theo thứ tự rủi ro: viết lại điều kiện theo range, chuyển sang keyset, commit theo chunk vài nghìn dòng có checkpoint để job restart được, đọc bằng cursor và ghi bằng JDBC batch. Nếu vẫn chưa đủ thì mới partition theo tháng hoặc chia worker theo range không chồng nhau. Quan trọng nhất là chứng minh không hỏng dữ liệu: chạy bản cũ và mới trên cùng snapshot, so số dòng, tổng tiền, checksum theo chi nhánh, và job phải idempotent. Ở dự án trước, cách này đưa job đối soát từ gần 4 tiếng xuống khoảng 20 phút."
+
+> Senior tip: thêm cảnh báo "thời gian chạy job tăng > 20% so với trung bình 7 ngày" ngay khi job còn nhanh. Batch hiếm khi chết đột ngột — nó chậm dần cho đến một đêm vượt SLA, và lúc đó bạn sửa trong áp lực.`,
   follow: [
     'Khi nào nên dùng parallel vs sequential cho batch?',
     'Làm sao đảm bảo tính toàn vẹn dữ liệu sau tối ưu?'
@@ -4919,29 +4940,50 @@ Trước khi sửa: viết test gọi method với case gây bug, chạy thấy 
   topic: 'scenario',
   level: 'senior',
   q: 'Nâng cấp thư viện có CVE (Log4Shell-style) trên hàng chục service cũ. Bạn tổ chức thế nào?',
-  a: `**Tóm tắt:** inventory toàn bộ, đánh giá mức độ ảnh hưởng/khả năng khai thác, ưu tiên cao nhất, nâng cấp có kiểm thử hồi quy, phối hợp đồng bộ, có rollback plan.
+  a: `**Tóm tắt:** Với CVE nghiêm trọng trên hàng chục service, tôi chạy nó như một sự cố: **inventory tự động** (SBOM + dependency tree, cả transitive và image), **phân loại theo khả năng bị khai thác**, áp **mitigation tạm** trong vài giờ cho service lộ ra Internet, rồi **nâng cấp tập trung** qua BOM/parent POM, kiểm thử hồi quy và deploy theo đợt, cuối cùng **scan lại để chứng minh** đã hết.
 
-### Làm rõ yêu cầu
-- CVE severity (Critical/High), CVSS, có exploit công khai không?
-- Ảnh hưởng runtime hay chỉ compile?
-- Có thể patch nhanh hay phải nâng version lớn?
+### Vì sao khó hơn "đổi một số version"
+- **Transitive dependency**: service không khai báo log4j nhưng kéo vào qua một thư viện khác; nhìn pom.xml là không thấy.
+- **Nhiều bản sao**: fat jar, shaded jar (class bị đổi package), base image Docker, agent APM, công cụ chạy cạnh (Logstash, Elasticsearch).
+- **Service cũ**: Java 8, Spring Boot 1.x; nâng lên bản vá có khi kéo theo breaking change.
+- **Áp lực thời gian**: exploit công khai nghĩa là bị quét trong vài giờ.
 
-### Quy trình
-- **Inventory** — liệt kê tất cả service, pom.xml/build, dependency tree ({{mvn dependency:tree}}, {{gradle dependencies}}). Tìm cả transitive dependency.
-- **Assessment** — xác định service nào dùng thư viện bị ảnh hưởng, có code path dễ bị khai thác không, môi trường public hay internal.
-- **Prioritization** — Critical + public/exposed trước, internal sau.
-- **Remediation** — ưu tiên nâng version fix, hoặc exclude + thêm version an toàn, hoặc áp dụng mitigations (WAF/config) tạm thời nếu không nâng ngay được.
-- **Testing** — build, unit test, smoke test, regression quan trọng.
-- **Deployment** — phối hợp theo change window, triển khai dần (canary) nếu có thể.
-- **Verification** — scan lại (dependency check), xác nhận không còn vulnerable version.
+### Quy trình theo giờ
+1. **0–2 giờ — Inventory**: chạy {{mvn dependency:tree -Dincludes=org.apache.logging.log4j}} hoặc {{gradle dependencyInsight}} trên mọi repo bằng script; tốt hơn là đã có SBOM (CycloneDX) cho mỗi build và tra một lần. Scan image registry bằng Trivy/Grype để bắt cả jar trong image.
+2. **2–4 giờ — Đánh giá**: service nào public, service nào có code path bị khai thác (ví dụ log chuỗi do người dùng gửi lên), CVSS và có exploit công khai không.
+3. **Mitigation tạm** cho nhóm nguy hiểm: rule WAF chặn payload, tắt tính năng bị lỗi bằng cấu hình nếu nhà cung cấp hướng dẫn, chặn egress ra Internet từ service.
+4. **Nâng cấp tập trung**: bump version trong **BOM/parent POM chung** hoặc {{dependencyManagement}}, ép version cả transitive; service không dùng parent chung thì mở PR tự động (Renovate/Dependabot).
+5. **Kiểm thử**: build + unit test + smoke test tự động; service quan trọng chạy regression.
+6. **Deploy theo đợt**: public trước, internal sau; canary nếu có.
+7. **Xác minh**: scan lại toàn bộ artifact và image; dashboard "số service còn vulnerable" về 0 mới đóng sự cố.
+
+~~~xml
+<!-- parent POM: ép mọi module dùng bản vá, kể cả transitive -->
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-bom</artifactId>
+      <version>2.17.1</version>
+      <type>pom</type><scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+~~~
+
+### Ví dụ đời thực
+Tháng 12/2021 (Log4Shell), một công ty có 42 service Java. Script quét dependency tree tìm ra 17 service dính log4j-core 2.x, trong đó 6 service public; 4 service khác chỉ phát hiện qua scan image vì jar nằm trong agent và shaded jar. Trong 3 giờ đầu bật rule WAF cho 6 service public; trong 36 giờ nâng lên bản vá qua parent POM, 3 service Spring Boot 1.5 cần sửa cấu hình logging thủ công. Sau sự cố, team bắt buộc sinh SBOM mỗi build và gắn scan vào CI — lần CVE sau inventory chỉ mất 10 phút.
 
 ### Pitfall
-- **Chỉ fix một nơi** — dễ bỏ transitive dependency.
-- **Nâng version lớn gây breaking** — cần đọc changelog, test kỹ.
-- **Chỉ scan không fix** — phải có timeline rõ ràng.
-- **Quên container image** — base image cũng có thể chứa thư viện cũ.
+- Chỉ sửa pom mà quên base image và agent.
+- Nâng một service, service khác vẫn kéo bản cũ qua thư viện nội bộ chưa release lại.
+- Tắt cảnh báo scan vì "nhiễu" — lần sau CVE thật bị chìm.
+- Không có danh sách owner từng service → mất nửa ngày tìm người merge.
 
-> Senior tip: với CVE Critical, "patch nhanh an toàn" quan trọng hơn "patch hoàn hảo". Nếu không thể nâng ngay, áp dụng mitigation tạm thời và có kế hoạch nâng đầy đủ.`,
+### Trả lời mẫu khi phỏng vấn
+"Tôi xử lý CVE nghiêm trọng như một incident. Việc đầu tiên là inventory tự động chứ không hỏi từng team: quét dependency tree mọi repo và scan image registry, vì thư viện hay nằm ở transitive, shaded jar hoặc base image. Sau đó tôi phân loại theo khả năng bị khai thác: service public và có code path bị ảnh hưởng thì làm trước, và áp mitigation tạm trong vài giờ như rule WAF hoặc chặn egress. Phần nâng cấp tôi làm tập trung qua BOM hoặc parent POM để ép version cả transitive, service lẻ thì mở PR tự động. Mỗi service phải qua build, test, smoke test rồi deploy theo đợt. Sự cố chỉ đóng khi scan lại toàn bộ artifact cho kết quả bằng không. Bài học dài hạn là sinh SBOM mỗi build và có scan trong CI, để lần sau inventory mất vài phút chứ không phải một ngày."
+
+> Senior tip: thứ quyết định tốc độ phản ứng CVE không phải lúc sự cố xảy ra mà là chuẩn bị trước: parent POM/BOM chung, SBOM mỗi build, Renovate bật sẵn và bảng owner của từng service. Đề xuất những thứ này khi chưa có cháy.`,
   follow: [
     'Làm sao tìm transitive dependency bị ảnh hưởng?',
     'Khi nâng version gây conflict, bạn xử lý thế nào?'
@@ -4953,32 +4995,48 @@ Trước khi sửa: viết test gọi method với case gây bug, chạy thấy 
   topic: 'scenario',
   level: 'senior',
   q: 'Thuyết phục quản lý trả nợ kỹ thuật (tech debt): đo lường, đề xuất từng bước thay vì viết lại toàn bộ. Bạn làm thế nào?',
-  a: `**Tóm tắt:** đừng nói "viết lại", hãy nói "giảm rủi ro + tiết kiệm chi phí". Đo lường tác động, chọn điểm đau nhất, đề xuất strangler fig, chứng minh bằng con số nhỏ trước khi mở rộng.
+  a: `**Tóm tắt:** Quản lý không mua "code sạch", họ mua **giảm rủi ro và tăng tốc độ giao tính năng**. Tôi đo chi phí của nợ kỹ thuật bằng số liệu kinh doanh (lead time, số sự cố, giờ on-call), chọn **một điểm đau lớn nhất**, đề xuất trả nợ **từng bước** (strangler fig, 15–20% capacity mỗi sprint) với một thử nghiệm nhỏ có đo trước/sau, rồi mới xin mở rộng.
 
-### Làm rõ yêu cầu
-- Tech debt nào gây thiệt hại nhất (bug, chậm, khó thay đổi)?
-- Có thời gian/refactor budget không?
-- Làm sao đo ROI?
+### Vì sao "viết lại toàn bộ" hầu như luôn bị từ chối (và nên bị từ chối)
+- Viết lại = nhiều tháng không có tính năng mới, trong khi hệ thống cũ vẫn phải bảo trì song song.
+- Code cũ chứa hàng trăm quy tắc nghiệp vụ không có tài liệu; bản mới dễ bỏ sót và gây lỗi mà hệ cũ đã sửa từ lâu.
+- Rủi ro dồn vào một lần chuyển đổi (big bang). Strangler fig rải rủi ro ra nhiều bước nhỏ có thể quay lui.
 
-### Cách thuyết phục
-- **Đo lường** — thời gian fix bug, thời gian thêm feature, số incident liên quan module cũ, chi phí oncall.
-- **Chọn "pain point"** — chỉ 1 module gây nhiều đau nhất, không liệt kê 100 thứ.
-- **Đề xuất incremental** — Strangler Fig: bao quanh module cũ bằng facade, dần thay thế từng phần, giữ hoạt động bình thường.
-- **Chứng minh nhỏ** — làm POC 1-2 tuần, đo thời gian trước/sau (vd thêm feature nhanh hơn bao nhiêu).
-- **Tính toán** — "Mỗi tháng tốn X giờ fix, nếu giảm 50% tiết kiệm Y triệu/năm".
+### Bước 1 — Đo chi phí bằng ngôn ngữ của quản lý
+| Chỉ số | Lấy từ đâu | Ví dụ |
+|---|---|---|
+| Lead time thay đổi module X | Jira/Git (ticket mở → deploy) | 9 ngày so với 3 ngày ở module khác |
+| Sự cố liên quan | Postmortem, incident tool | 7/12 sự cố P1–P2 năm nay |
+| Giờ on-call | Lịch trực, PagerDuty | 30 giờ/tháng |
+| Tỉ lệ bug quay lại | Bug tracker | 25% bug sửa xong lại mở |
+Quy ra tiền: 30 giờ on-call × chi phí giờ công + thời gian tính năng ra chậm.
 
-### Strangler Fig ngắn gọn
-1. Xác định boundary rõ ràng (API/interface)
-2. Tạo module mới bên cạnh
-3. Route traffic dần sang module mới (feature flag)
-4. Tắt dần module cũ
+### Bước 2 — Chọn một điểm đau, không đưa danh sách 50 món nợ
+Dùng ma trận **mức đau × tần suất thay đổi** (code xấu nhưng không ai sửa thì chưa đáng trả). Module vừa nhiều sự cố vừa thay đổi hằng tuần là ứng viên số một.
+
+### Bước 3 — Đề xuất từng bước, có điểm dừng
+1. Viết characterization test bao hành vi hiện tại của module.
+2. Dựng facade/anti-corruption layer trước module cũ.
+3. Chuyển từng luồng sang code mới sau feature flag, so kết quả hai bên (shadow/dual run).
+4. Tắt dần luồng cũ khi số liệu ổn.
+Xin **15–20% capacity mỗi sprint** thay vì một dự án riêng; mỗi bước có thể dừng mà không bỏ dở.
+
+### Bước 4 — Chứng minh nhỏ trước
+Pilot 2–3 tuần cho luồng đau nhất, báo cáo số trước/sau. Một con số thật thuyết phục hơn mười slide.
+
+### Ví dụ đời thực
+Module tính phí của một hệ thống cho vay: 1 file 4.000 dòng, thêm một loại phí mất trung bình 8 ngày, 5 sự cố tính sai phí trong 6 tháng (mỗi lần hoàn tiền và xử lý khiếu nại tốn khoảng 40 giờ công). Đề xuất "viết lại" bị từ chối năm trước. Lần này team trình bày số liệu trên, xin 20% capacity trong 2 sprint để tách "phí phạt trả chậm" ra sau feature flag, chạy song song so kết quả 2 tuần. Kết quả: thêm loại phí mới còn 2 ngày, 0 sự cố tính phí trong quý tiếp theo; quản lý tự đề nghị tiếp tục cho các loại phí còn lại.
 
 ### Pitfall
-- **"Viết lại sạch hơn"** — thiếu thuyết phục.
-- **Big bang rewrite** — rủi ro rất cao, gần như luôn trễ và tốn hơn.
-- **Không đo** — khó chứng minh giá trị.
+- Nói "vi phạm SOLID", "code bẩn" — người nghe không thấy tác động kinh doanh.
+- Trả nợ ở module ít ai đụng tới: tốn công nhưng không ai thấy kết quả.
+- Không đo baseline trước khi làm → không chứng minh được giá trị.
+- Refactor không có test bao quanh → gây sự cố, mất luôn lòng tin.
 
-> Senior tip: quản lý hiểu "rủi ro kinh doanh" tốt hơn "clean code". Hãy nói "giảm thời gian outage", "giảm chi phí oncall", "ra tính năng nhanh hơn" thay vì "vi phạm SOLID".`,
+### Trả lời mẫu khi phỏng vấn
+"Tôi không bao giờ mở đầu bằng 'chúng ta cần viết lại'. Tôi đo trước: lead time để thay đổi module đó so với phần còn lại, số sự cố liên quan, giờ on-call và tỉ lệ bug quay lại, rồi quy ra thời gian và tiền. Sau đó tôi chọn đúng một điểm đau, là chỗ vừa hay hỏng vừa thay đổi thường xuyên, chứ không đưa ra danh sách năm mươi món nợ. Đề xuất của tôi luôn là từng bước: viết characterization test, dựng facade, chuyển từng luồng sang code mới sau feature flag, chạy song song để so kết quả, rồi tắt dần code cũ. Tôi xin một tỉ lệ capacity cố định, khoảng 15 đến 20%, và cam kết báo cáo số liệu sau một pilot hai, ba tuần. Ở dự án trước, cách này giúp thời gian thêm một loại phí giảm từ 8 ngày xuống 2 ngày, và chính quản lý đề nghị làm tiếp."
+
+> Senior tip: ghi lại "thuế nợ kỹ thuật" ngay trong ước lượng hằng ngày, ví dụ "task này 3 ngày, trong đó 2 ngày vì module X". Sau vài sprint bạn có dữ liệu thật để thuyết phục mà không cần một cuộc họp riêng.`,
   follow: [
     'Strangler Fig khác Big Bang rewrite thế nào?',
     'Làm sao đo ROI của refactor một cách khách quan?'
@@ -4990,31 +5048,52 @@ Trước khi sửa: viết test gọi method với case gây bug, chạy thấy 
   topic: 'scenario',
   level: 'senior',
   q: 'Làm việc với nhiều team/vendor (core banking hãng ngoài, DBA team, hạ tầng): ai chịu trách nhiệm gì, viết yêu cầu sao cho được xử lý?',
-  a: `**Tóm tắt:** rõ ràng RACI (Responsible/Accountable/Consulted/Informed), viết yêu cầu ngắn gọn có context/impact, cung cấp evidence, follow-up đúng kênh, tôn trọng quyền của team khác.
+  a: `**Tóm tắt:** Làm việc với nhiều team/vendor hiệu quả dựa trên ba thứ: **rõ trách nhiệm** (RACI, ai sở hữu hệ thống nào và SLA của họ), **yêu cầu tự đứng được** (bối cảnh, việc cụ thể, bằng chứng, tác động, tiêu chí xong, hạn), và **theo dõi qua đúng kênh** kèm lộ trình escalate được thống nhất trước — không phải nhắn riêng và chờ.
 
-### Làm rõ yêu cầu
-- Mỗi bên có scope gì, SLA phản hồi?
-- Kênh liên lạc chính (ticket system)?
-- Ai phê duyệt?
+### Vì sao yêu cầu thường bị "treo"
+- Team nhận có hàng chục ticket; ticket thiếu thông tin bị đẩy xuống cuối hàng vì họ phải hỏi lại.
+- Không ai biết ai là người quyết định (accountable), nên ticket trôi giữa các team.
+- Yêu cầu gửi qua chat cá nhân → không có SLA, người nhận nghỉ phép là mất dấu.
+- Vendor (core banking của hãng ngoài) làm theo hợp đồng: việc không ghi rõ trong phạm vi là "out of scope".
 
-### Cách viết yêu cầu hiệu quả
-- **Context** — tại sao cần (incident/feature), ảnh hưởng gì?
-- **Mô tả cụ thể** — hành động cần làm, không "giúp em xem".
-- **Evidence** — log, screenshot, trace ID, SQL plan.
-- **Impact/Urgency** — P1/P2 nếu khẩn cấp.
-- **Acceptance criteria** — khi nào coi là xong?
-- **Env** — prod/staging, thời gian cần?
+### RACI cho một thay đổi điển hình
+| Việc | Dev team | DBA | Hạ tầng | Vendor core |
+|---|---|---|---|---|
+| Thêm index bảng giao dịch | R (viết script, đo) | A (duyệt, chạy) | I | — |
+| Mở firewall tới API core | C | — | A/R | I |
+| Đổi format message ISO 8583 | C | — | — | A/R (theo change request) |
+Thống nhất bảng này ở đầu dự án và đặt trong wiki.
 
-### Ví dụ tốt
-"DBA team giúp em tạo index CONCURRENTLY trên bảng TRANSACTIONS (prod) theo script đính kèm. Ảnh hưởng: API list chậm từ 5s xuống mục tiêu <500ms. Cần review/approve trong khung release window 22:00-02:00."
+### Mẫu yêu cầu "tự đứng được"
+~~~text
+Tiêu đề: [PROD] Tạo index cho bảng TRANSACTIONS – API sao kê chậm 5s
+Bối cảnh: API GET /statements p95 = 5,2s từ 01/11 (dashboard: link).
+Việc cần làm: chạy script đính kèm (CREATE INDEX CONCURRENTLY ... ON transactions(account_id, created_at)).
+Bằng chứng: EXPLAIN ANALYZE trước/sau trên staging (Seq Scan 48 triệu dòng -> Index Scan, 5,1s -> 40ms).
+Tác động nếu chậm: 3% request timeout, ~200 khiếu nại/ngày.
+Rủi ro & rollback: CONCURRENTLY không khoá ghi; rollback = DROP INDEX CONCURRENTLY.
+Thời hạn: trong release window 22:00–02:00 thứ Năm.
+Xong khi: index ở trạng thái valid, p95 < 500ms trong 24h.
+~~~
+
+### Theo dõi và escalate
+- Một kênh chính thức (Jira/ServiceNow), chat chỉ để báo "đã tạo ticket X".
+- Thống nhất trước **khi nào escalate**: ví dụ P1 không phản hồi sau 30 phút, P3 quá SLA 2 ngày → báo trưởng nhóm của họ, kèm ticket và tác động. Escalate là quy trình, không phải "mách".
+- Với vendor: mọi yêu cầu ngoài phạm vi đi qua change request có ước lượng chi phí; ghi biên bản họp và gửi lại để hai bên xác nhận.
+
+### Ví dụ đời thực
+Dự án mở API cho ví điện tử tích hợp core banking của hãng nước ngoài: 4 tuần đầu trôi qua chỉ vì firewall và tài khoản test — mỗi ticket bị hỏi lại 2–3 vòng. Team lập RACI, dùng mẫu yêu cầu ở trên và họp đồng bộ 15 phút hai lần mỗi tuần với đại diện từng bên. Thời gian xử lý trung bình một yêu cầu liên team giảm từ **6 ngày xuống 1,5 ngày**; dự án kịp go-live đúng hạn ngân hàng nhà nước yêu cầu.
 
 ### Pitfall
-- **Yêu cầu mơ hồ** — "fix performance" không đủ.
-- **Gửi nhiều kênh cùng lúc** — gây nhầm lẫn.
-- **Không follow RACI** — hỏi sai người.
-- **Bỏ qua quy trình** — mỗi team có quy trình riêng.
+- Viết "nhờ anh xem giúp hệ thống chậm" — không có việc cụ thể để làm.
+- Gửi cùng một yêu cầu qua 3 kênh → trùng lặp, mất dấu.
+- Escalate ngay lần đầu chậm → mất thiện chí lâu dài.
+- Thoả thuận miệng với vendor không có biên bản → tranh cãi phạm vi lúc nghiệm thu.
 
-> Senior tip: viết yêu cầu như viết ticket cho chính mình nếu đổi vai trò. Cung cấp đủ thông tin để họ không phải hỏi lại 3 lần.`,
+### Trả lời mẫu khi phỏng vấn
+"Với nhiều team và vendor, tôi làm rõ ba thứ từ sớm. Thứ nhất là trách nhiệm: tôi lập bảng RACI cho các loại việc thường gặp, như ai viết script, ai duyệt, ai chạy, và SLA phản hồi của mỗi bên. Thứ hai là chất lượng yêu cầu: mỗi ticket tôi gửi đều tự đứng được, có bối cảnh, việc cụ thể, bằng chứng như EXPLAIN hay trace ID, tác động kinh doanh, cách rollback, thời hạn và tiêu chí thế nào là xong. Người nhận không phải hỏi lại thì ticket được xử lý nhanh hơn hẳn. Thứ ba là theo dõi qua đúng kênh, và thống nhất trước khi nào thì escalate, để escalate thành quy trình chứ không thành xung đột. Với vendor, mọi thứ ngoài phạm vi đi qua change request có biên bản. Ở dự án tích hợp core banking, cách làm này giảm thời gian xử lý yêu cầu liên team từ khoảng 6 ngày xuống 1,5 ngày."
+
+> Senior tip: ghi lại thời gian chờ team khác trong mỗi sprint. Khi chờ đợi chiếm 30–40% lead time, con số đó là lý lẽ mạnh nhất để xin một người đầu mối cố định, chứ không phải lời phàn nàn.`,
   follow: [
     'Khi nào nên escalate thay vì chờ?',
     'Làm sao xử lý khi vendor từ chối với lý do "out of scope"?'
@@ -5026,34 +5105,48 @@ Trước khi sửa: viết test gọi method với case gây bug, chạy thấy 
   topic: 'scenario',
   level: 'senior',
   q: 'Cần tài liệu hoá và chuyển giao hệ thống để không trở thành "người duy nhất biết". Bạn làm gì?',
-  a: `**Tóm tắt:** tập trung vào thứ thực tế dùng được (runbook, architecture diagram đơn giản, ADR, danh sách liên hệ), không viết tài liệu 100 trang. Ưu tiên theo "nếu tôi vắng 1 tuần, người khác làm được gì?".
+  a: `**Tóm tắt:** Mục tiêu không phải "viết thật nhiều tài liệu" mà là **bus factor > 1**: người khác vận hành, sửa lỗi và ra quyết định được khi tôi vắng. Tôi ưu tiên những tài liệu dùng được lúc 2 giờ sáng (runbook, sơ đồ hệ thống một trang, ADR, bảng cấu hình/bí mật), rồi chuyển giao bằng **shadow → pair → reverse shadow** và kiểm chứng bằng một buổi diễn tập sự cố do người nhận tự xử lý.
 
-### Làm rõ yêu cầu
-- Ai sẽ tiếp nhận? Level kinh nghiệm?
-- Thời gian chuyển giao?
-- Những thứ quan trọng nhất?
+### Vì sao "người duy nhất biết" là rủi ro tổ chức
+- Mỗi sự cố phải gọi đúng một người → thời gian khắc phục (MTTR) phụ thuộc lịch nghỉ của họ.
+- Kiến thức nằm trong đầu thì không được review: quyết định cũ không ai biết vì sao, nên không ai dám đổi.
+- Chính bạn bị khoá lại: không được giao việc mới, không nghỉ phép yên được.
 
-### Tài liệu cần làm
-- **Runbook** — cách start/stop, health check, common issues + fix, rollback, escalation.
-- **System overview** — sơ đồ đơn giản (components, DB, external), luồng chính.
-- **Architecture Decision Record (ADR)** — quyết định quan trọng + lý do + trade-off.
-- **Config & secrets** — nơi config, cách lấy, ai có quyền.
-- **Batch/cron** — lịch chạy, phụ thuộc, cách debug.
-- **Contacts** — người liên hệ theo module.
-- **Known gotchas** — "đừng động chỗ này", workaround cũ.
+### Ưu tiên theo câu hỏi "nếu tôi vắng một tuần"
+| Tài liệu | Trả lời câu hỏi | Độ dài hợp lý |
+|---|---|---|
+| Runbook | Hệ thống hỏng kiểu X thì làm gì, kiểm tra ở đâu, rollback thế nào | 1 trang / loại sự cố |
+| Sơ đồ hệ thống | Có những thành phần nào, gọi nhau ra sao, dữ liệu nằm đâu | 1 sơ đồ + chú thích |
+| ADR | Vì sao chọn A mà không chọn B | 1 trang / quyết định |
+| Cấu hình & bí mật | Cấu hình ở đâu, ai có quyền, xoay vòng secret thế nào | bảng |
+| Batch/cron | Lịch chạy, phụ thuộc, chạy lại an toàn thế nào | bảng |
+| "Gotchas" | Những chỗ đừng đụng và lý do | danh sách ngắn |
+Một mục runbook tốt có: triệu chứng, dashboard/log cần xem (link thật), lệnh kiểm tra, cách xử lý, khi nào escalate và gọi ai.
 
-### Quy trình
-- **Shadow** — để người kế nhiệm quan sát xử lý ticket thực tế cùng bạn.
-- **Pair** — cùng làm 2-3 lần.
-- **Handover review** — đi qua runbook, thử scenario giả định.
-- **Document as you go** — ghi ngay khi xử lý, đừng chờ cuối.
+### Chuyển giao theo ba nấc
+1. **Shadow** (1–2 tuần): người nhận ngồi cùng khi bạn xử lý ticket, deploy, sự cố; ghi lại câu hỏi.
+2. **Pair**: hai người cùng làm, người nhận cầm bàn phím.
+3. **Reverse shadow**: người nhận làm chính, bạn chỉ quan sát và chỉ lên tiếng khi sắp có rủi ro.
+Kết thúc bằng **game day**: giả lập một sự cố (tắt replica, làm đầy queue) và người nhận xử lý chỉ bằng runbook. Chỗ nào họ bí là chỗ tài liệu còn thiếu.
+
+### Giữ tài liệu sống
+- Tài liệu nằm cạnh code (thư mục {{docs/}} trong repo, review cùng PR) thay vì wiki bị lãng quên.
+- Sau mỗi sự cố, postmortem có một action "cập nhật runbook".
+- Ghi ngày rà soát gần nhất ở đầu mỗi runbook.
+
+### Ví dụ đời thực
+Một dev là người duy nhất hiểu hệ thống đối soát với ngân hàng đối tác; 9/10 sự cố trong năm đều gọi người này, MTTR trung bình 95 phút (phần lớn là thời gian chờ liên lạc được). Trong 6 tuần, dev viết 8 runbook theo 8 loại sự cố đã gặp, một sơ đồ luồng file đối soát, 5 ADR cho các quyết định gây tranh cãi, rồi chuyển giao theo ba nấc cho 2 người. Game day đầu tiên lộ ra thiếu bước xin cấp lại file từ đối tác — bổ sung ngay. Quý sau: 6 sự cố đều do người khác xử lý, MTTR **95 → 30 phút**, và dev đó được chuyển sang dẫn dắt dự án mới.
 
 ### Pitfall
-- **Viết quá chi tiết** — nhanh lỗi thời.
-- **Chỉ mô tả code** — nên mô tả "cách vận hành".
-- **Không cập nhật** — tài liệu cũ còn nguy hiểm hơn không có.
+- Viết tài liệu mô tả code từng class — lỗi thời sau vài sprint và không ai đọc.
+- Viết một lần cuối dự án rồi bỏ — tài liệu sai còn nguy hiểm hơn không có.
+- Chỉ đưa link tài liệu mà không chuyển giao thực hành.
+- Giữ lại "bí quyết" để thấy mình quan trọng — về lâu dài chính là thứ cản bạn được giao việc lớn hơn.
 
-> Senior tip: mục tiêu là "bus factor > 1". Nếu chỉ có 1 người hiểu hệ thống, đó là rủi ro tổ chức chứ không phải "kiến thức riêng".`,
+### Trả lời mẫu khi phỏng vấn
+"Tôi coi việc là người duy nhất biết một hệ thống là rủi ro, cho cả công ty và cho chính tôi. Cách tôi làm là tự hỏi: nếu tôi vắng một tuần thì người khác cần gì để vận hành được. Câu trả lời thường là runbook cho từng loại sự cố đã gặp, một sơ đồ hệ thống một trang, vài ADR giải thích vì sao các quyết định quan trọng được đưa ra, và bảng cấu hình, quyền truy cập, lịch batch. Tôi để tài liệu trong repo để review cùng code. Rồi tôi chuyển giao theo ba nấc: người nhận ngồi xem tôi làm, sau đó hai người cùng làm, cuối cùng họ làm chính còn tôi quan sát. Kết thúc là một buổi diễn tập sự cố mà họ chỉ được dùng runbook. Lần gần nhất, cách này đưa thời gian xử lý sự cố từ khoảng 95 phút xuống 30 phút, vì không còn phải chờ gọi được tôi."
+
+> Senior tip: đo bus factor bằng câu hỏi đơn giản trong retro: "sự cố nào tháng này chỉ một người xử lý được?". Danh sách đó chính là backlog chuyển giao, và nó thuyết phục quản lý dành thời gian hơn mọi lời giải thích.`,
   follow: [
     'Sự khác biệt giữa runbook và design doc?',
     'Làm sao đảm bảo tài liệu được dùng thật?'
@@ -5065,30 +5158,45 @@ Trước khi sửa: viết test gọi method với case gây bug, chạy thấy 
   topic: 'scenario',
   level: 'senior',
   q: 'Phỏng vấn: "Hãy kể kinh nghiệm maintain hệ thống cũ" sao cho thể hiện năng lực Senior mà không nói xấu người khác?',
-  a: `**Tóm tắt:** dùng STAR (Situation/Task/Action/Result) với số liệu cụ thể, tập trung vào cách bạn giảm rủi ro, giúp team vận hành tốt hơn, chứ không chỉ "fix bug". Tránh chê code cũ, nhấn mạnh học hỏi và cải tiến an toàn.
+  a: `**Tóm tắt:** Kể theo **STAR** nhưng đặt trọng tâm vào **cách tôi giảm rủi ro khi thay đổi một hệ thống không ai dám đụng**: đo trước, viết test bao hành vi cũ, thay đổi nhỏ có đường lui, chia sẻ kiến thức — kết thúc bằng con số. Tôn trọng người viết trước ("hệ thống phục vụ tốt nhu cầu lúc đó, nay khối lượng đã khác"), không chê code.
 
-### Cấu trúc STAR
-- **S (Situation)** — ngắn gọn: hệ thống cũ, ngữ cảnh
-- **T (Task)** — nhiệm vụ của bạn
-- **A (Action)** — hành động cụ thể (quan sát, characterization test, thay đổi nhỏ, rollback plan...)
-- **R (Result)** — kết quả đo được (thời gian giảm, incident giảm, knowledge chia sẻ...)
+### Interviewer thực sự muốn nghe gì
+Câu hỏi về hệ thống cũ là bài kiểm tra **tính chín chắn**, không phải kỹ năng sửa bug:
+- Bạn có làm việc an toàn trên production không (đo, test, rollback)?
+- Bạn có tự đưa ra cải tiến hay chỉ làm theo ticket?
+- Bạn có giúp team (tài liệu, chuyển giao) hay giữ kiến thức cho riêng mình?
+- Bạn có thái độ tôn trọng với quyết định của người đi trước không?
 
-### Ví dụ câu trả lời
-*"Khi join team, có hệ thống batch EOD chạy chậm dần, mỗi ngày mất thêm 15-20 phút (S). Nhiệm vụ là đảm bảo hoàn thành trước giờ mở cửa (T). Tôi đo baseline, thêm index phù hợp, xử lý theo batch chunk thay vì transaction lớn, và thêm đối soát số liệu (A). Kết quả: thời gian chạy giảm từ 2h15 xuống 35 phút, không có sai lệch dữ liệu, và tôi viết runbook để người khác có thể vận hành (R)."*
+### Khung câu chuyện
+| Phần | Thời lượng | Nội dung |
+|---|---|---|
+| S — Situation | ~15 giây | Hệ thống gì, tuổi đời, quy mô, vấn đề đo được |
+| T — Task | ~10 giây | Bạn chịu trách nhiệm gì |
+| A — Action | ~60 giây | 3–4 hành động cụ thể, dùng "tôi" |
+| R — Result | ~15 giây | Con số + điều team nhận được lâu dài |
 
-### Lời khuyên
-- **Dùng số liệu** — thời gian, số ticket, % giảm, số người được train.
-- **Tập trung hành động** — "tôi đã làm gì", không "hệ thống tệ thế nào".
-- **Thể hiện mindset** — an toàn, đo lường, chia sẻ kiến thức.
-- **Tránh tiêu cực** — nói "cơ hội cải tiến" thay vì "code xấu".
-- **Kết nối với Senior** — giảm rủi ro, bảo vệ production, giúp team.
+Các hành động thể hiện level Senior: đo baseline trước khi sửa; viết **characterization test** (test ghi lại hành vi hiện tại, kể cả hành vi lạ) trước khi refactor; thay đổi sau feature flag và chạy song song; viết runbook; đề xuất cải tiến tiếp theo có số liệu.
+
+### Cách nói về code cũ mà không chê
+| Tránh | Nói thay bằng |
+|---|---|
+| "Code cũ rất tệ, không ai hiểu" | "Hệ thống được viết cho khối lượng 10 lần nhỏ hơn hiện nay" |
+| "Người trước làm ẩu" | "Thiếu test nên mọi thay đổi đều rủi ro, tôi bắt đầu từ việc bao test" |
+| "Tôi phải sửa hết" | "Tôi chọn phần gây nhiều sự cố nhất để cải tiến trước" |
+
+### Ví dụ đời thực (câu trả lời mẫu dạng STAR)
+S: hệ thống tính hoa hồng đại lý 8 năm tuổi, mỗi tháng 2–3 khiếu nại tính sai, mỗi lần sửa mất 3–4 ngày vì không có test. T: tôi được giao giảm sai sót và rút ngắn thời gian thay đổi. A: tôi lấy dữ liệu 6 tháng làm bộ characterization test (1.200 trường hợp đầu vào/đầu ra thật); tách phần tính toán ra khỏi phần truy vấn; mỗi thay đổi chạy song song với code cũ 2 tuần và so kết quả; viết tài liệu quy tắc hoa hồng cùng nghiệp vụ. R: khiếu nại tính sai **từ 2–3 xuống 0 trong 2 quý**, thời gian thêm một quy tắc mới **từ 4 ngày xuống 1 ngày**, và hai đồng nghiệp đã tự xử lý thay đổi mà không cần tôi.
 
 ### Pitfall
-- **Chỉ nói "fix bug"** — quá hời hợt.
-- **Nói xấu cũ** — tạo ấn tượng tiêu cực.
-- **Không có kết quả** — thiếu impact.
+- Kể chung chung "tôi maintain và fix bug" — không có hành động hay kết quả.
+- Dùng "chúng tôi" suốt câu chuyện — interviewer không biết phần của bạn.
+- Kể quá dài phần bối cảnh, hết giờ trước khi tới phần hành động.
+- Nói tiêu cực về team cũ — dấu hiệu đỏ rõ nhất với người phỏng vấn.
 
-> Senior tip: nhà tuyển dụng muốn biết "bạn xử lý hệ thống cũ thế nào để cả team yên tâm". Hãy kể câu chuyện về việc giảm rủi ro và giúp người khác, đó là dấu hiệu rõ của Senior.`,
+### Trả lời mẫu khi phỏng vấn
+"Ở công ty trước, tôi nhận một hệ thống tính hoa hồng đại lý đã chạy tám năm. Nó phục vụ tốt lúc đầu, nhưng khối lượng tăng nhiều và không có test, nên mỗi tháng có hai, ba khiếu nại tính sai và mỗi lần sửa mất ba, bốn ngày. Tôi được giao giảm sai sót. Việc đầu tiên tôi làm không phải là sửa, mà là lấy dữ liệu sáu tháng làm bộ characterization test khoảng 1.200 trường hợp, để mọi thay đổi đều được so với hành vi cũ. Sau đó tôi tách phần tính toán khỏi phần truy vấn, và mỗi thay đổi đều chạy song song với code cũ hai tuần trước khi bật hẳn. Tôi cũng ngồi với bên nghiệp vụ để viết tài liệu quy tắc. Kết quả là hai quý liền không còn khiếu nại tính sai, thêm một quy tắc mới chỉ mất một ngày, và hai đồng nghiệp đã tự xử lý thay đổi mà không cần tôi."
+
+> Senior tip: chuẩn bị sẵn 2 câu chuyện về hệ thống cũ — một về cải thiện hiệu năng/độ ổn định, một về chuyển giao kiến thức. Phần lớn câu hỏi behavioral về "legacy", "kỹ thuật nợ", "làm việc với code người khác" đều dùng lại được hai câu chuyện này.`,
   follow: [
     'Làm sao chuyển "sửa bug" thành câu chuyện có impact?',
     'Nên nhấn mạnh gì nhất khi kể kinh nghiệm maintain?'
@@ -5838,28 +5946,49 @@ CREATE INDEX ON events_2026_05 (user_id, created_at);
   topic: 'scenario',
   level: 'senior',
   q: 'p99 latency của API tăng gấp 5 sau deploy mới, nhưng CPU và RAM của pod vẫn bình thường. Bạn điều tra từng bước thế nào?',
-  a: `**Tóm tắt:** Khi CPU và RAM vẫn bình thường mà {{p99 latency}} tăng mạnh sau deploy, nguyên nhân thường là chờ I/O (database, HTTP downstream), lock contention, GC pause, hoặc thay đổi serialization/config làm request đi theo đường chậm hơn. Cần điều tra theo thứ tự, không đoán mò.
+  a: `**Tóm tắt:** CPU và RAM bình thường mà p99 tăng gấp 5 nghĩa là request đang **chờ** chứ không phải **tính**: chờ DB, chờ connection pool, chờ service downstream, chờ lock hoặc GC pause. Tôi khoanh thời điểm, so trace trước/sau deploy để tìm span phình ra, kiểm tra pool và lock, rồi đối chiếu diff của bản deploy. Nếu vi phạm SLA, **rollback trước, điều tra sau**.
 
-### Cái gì → tại sao cần điều tra
-- {{p99}} (percentile 99) phản ánh trải nghiệm của 1% request chậm nhất, rất nhạy với chờ đợi bên ngoài.
-- CPU/RAM bình thường cho thấy không phải "tính toán nhiều", mà có thể là "chờ nhiều".
+### Vì sao CPU bình thường vẫn chậm được
+Thread đang chờ I/O hoặc chờ lock không tốn CPU. Một service 200 thread, nếu mỗi request phải chờ thêm 400ms cho một connection DB, CPU vẫn chỉ 20% nhưng p99 nhảy vọt. p99 đặc biệt nhạy với hàng đợi: khi pool gần đầy, một phần nhỏ request xếp hàng lâu trong khi p50 gần như không đổi — đó là dấu hiệu kinh điển của tranh chấp tài nguyên.
 
 ### Điều tra từng bước
-1. **Gắn timeline**: So sánh biểu đồ {{p99/p50/error rate}} theo phút trước/sau thời điểm deploy. Xác định thời điểm bắt đầu tăng chính xác.
-2. **Tìm span chậm nhất**: Dùng APM (Application Performance Monitoring) trace, so sánh trace trước và sau deploy. Xem span nào có thời gian tăng nhiều nhất (DB query, gọi HTTP, serialization, v.v.).
-3. **Kiểm tra I/O**: Xem thời gian chờ DB ({{DB wait time}}), trạng thái connection pool (pending/active/max), latency của service downstream.
-4. **Kiểm tra JVM**: Xem GC pause (đặc biệt {{p99 GC pause}}), {{safepoint}} và lock contention (thread dump/JFR).
-5. **Kiểm tra thay đổi**: Đối chiếu diff deploy (code, config: timeout/pool/batch, dependency, schema migration, feature flag).
+1. **Khoanh thời điểm**: overlay p50/p99/error rate với mốc deploy. p50 không đổi mà p99 tăng → nghi hàng đợi/lock; cả p50 tăng → mỗi request đều làm thêm việc.
+2. **So trace**: lấy 20 trace chậm nhất trước và sau deploy (Jaeger/Tempo/Datadog). Span nào phình ra? Số span DB mỗi request có tăng không (dấu hiệu N+1 mới)?
+3. **Connection pool**: metric Hikari {{hikaricp_connections_pending}}, {{hikaricp_connections_acquire_seconds}}. Pending > 0 kéo dài → pool cạn (transaction dài hơn, hoặc gọi HTTP trong transaction).
+4. **Downstream**: latency và timeout của từng client HTTP; bản mới có gọi thêm service nào không?
+5. **JVM**: GC pause p99 (GC log, JFR); thread dump vài lần cách nhau 5 giây — nhiều thread {{BLOCKED}} cùng một monitor là lock contention; với virtual thread kiểm tra pinning bằng sự kiện JFR {{jdk.VirtualThreadPinned}}.
+6. **Diff deploy**: code, cấu hình (timeout, pool size), phiên bản thư viện, migration (index bị xoá?), feature flag.
 
-### Ví dụ thực tế
-- Thêm {{toString()}} chi tiết trên entity lớn khiến {{Jackson}} serialize chậm hơn đáng kể.
-- Thêm validation gọi DB cho mỗi request làm tăng số round-trip I/O dù CPU thấp.
+~~~seq
+title: p99 tăng nhưng CPU thấp
+actors: Client | API | Hikari | DB
+Client -> API: GET /orders
+API -> Hikari: getConnection()
+note Hikari: pool 10/10 đang bận, chờ 380ms
+Hikari --> API: connection
+API -> DB: SELECT (20ms)
+DB --> API: rows
+API --> Client: 200 sau 420ms
+~~~
 
-### Cách xử lý
-- **Nếu nghiêm trọng (vượt SLA)**: cân nhắc rollback trước khi debug sâu.
-- **Nếu có thể debug**: ưu tiên tối ưu đúng span chậm nhất thay vì "tối ưu tất cả". Thêm metric theo span để phát hiện sớm sau này.
+### Ví dụ đời thực
+Sau một deploy, p99 của API đặt hàng từ 180ms lên 950ms, p50 gần như giữ nguyên 60ms, CPU 25%. Trace cho thấy span DB không đổi nhưng xuất hiện khoảng chờ trước span đầu tiên; metric Hikari pending lên 30–40. Diff deploy: một dev thêm lời gọi API chấm điểm gian lận (khoảng 300ms) **bên trong** method {{@Transactional}}, nên mỗi request giữ connection lâu gấp 5 lần, pool 10 connection cạn. Rollback trong 8 phút; bản sửa chuyển lời gọi ra ngoài transaction, p99 về 190ms. Sau đó team thêm cảnh báo khi {{connections_pending > 0}} quá 2 phút.
 
-> Senior tip: Khi CPU/RAM bình thường mà p99 tăng, đừng bắt đầu từ heap - hãy bắt đầu từ trace và I/O wait.`,
+### Khi nào rollback ngay
+- Vi phạm SLO và đang ảnh hưởng người dùng thật.
+- Không có giả thuyết rõ trong 10–15 phút đầu.
+Rollback trước giúp thời gian ảnh hưởng ngắn; bản lỗi vẫn điều tra được trên staging với cùng tải hoặc bằng trace đã thu.
+
+### Pitfall
+- Tăng pool size để "chữa" — DB nhận thêm tải, vấn đề dời sang chỗ khác.
+- Chỉ nhìn trung bình (avg) — che mất đuôi p99.
+- Bắt đầu từ heap dump trong khi triệu chứng là chờ I/O.
+- Không có trace/metric pool từ trước → mất nhiều giờ đoán.
+
+### Trả lời mẫu khi phỏng vấn
+"CPU và RAM bình thường mà p99 tăng thì tôi nghĩ request đang chờ chứ không phải đang tính. Việc đầu tiên tôi xem là đã vi phạm SLO chưa: nếu đang ảnh hưởng người dùng mà chưa có giả thuyết rõ thì tôi rollback trước. Song song, tôi so p50 với p99: p50 giữ nguyên còn p99 tăng thường là hàng đợi, như pool cạn hoặc lock. Tôi so trace chậm nhất trước và sau deploy để xem span nào phình ra hoặc có thêm span DB, xem metric pending của Hikari, latency của từng downstream, GC pause và vài thread dump liên tiếp để tìm thread BLOCKED. Cuối cùng tôi đối chiếu diff: code, cấu hình timeout, pool, thư viện, migration. Một lần tôi gặp đúng trường hợp này: ai đó thêm một lời gọi HTTP 300ms bên trong transaction, pool cạn, p99 từ 180 lên gần 1 giây. Chuyển lời gọi ra ngoài transaction là p99 về bình thường."
+
+> Senior tip: dashboard của mỗi service nên có sẵn ba biểu đồ cạnh nhau — p50/p99, pool pending và GC pause — kèm vạch đánh dấu deploy. Với ba biểu đồ đó, 80% sự cố "chậm mà CPU thấp" được khoanh vùng trong vài phút.`,
   follow: ['Làm sao phát hiện I/O wait trong JVM bằng công cụ gì?', 'Khi nào nên rollback thay vì tiếp tục debug?'],
   tags: ['p99', 'latency', 'troubleshooting', 'APM']
 },
@@ -5868,22 +5997,57 @@ CREATE INDEX ON events_2026_05 (user_id, created_at);
   topic: 'scenario',
   level: 'senior',
   q: 'Một service downstream chậm kéo sập toàn hệ thống (cascading failure): dấu hiệu và cách cắt lan truyền thế nào?',
-  a: `**Tóm tắt:** {{Cascading failure}} (lan truyền lỗi/sự cố) xảy ra khi một dependency chậm khiến thread/connection bị giữ, làm pool cạn và ảnh hưởng service gọi tới nó. Cần ngăn lan truyền bằng {{timeout}}, {{circuit breaker}}, {{bulkhead}} và {{fallback}}.
+  a: `**Tóm tắt:** Cascading failure xảy ra khi một dependency chậm làm thread và connection của bên gọi bị giữ lại, pool cạn, và bên gọi cũng chậm theo — lan dần lên tới gateway. Cắt lan truyền bằng **timeout ngắn có ngân sách**, **circuit breaker** để thất bại nhanh, **bulkhead** để cô lập tài nguyên theo dependency, **fallback** có chủ đích, **retry có giới hạn** và **load shedding** ở cửa vào.
 
-### Dấu hiệu
-- {{Thread pool}} active gần max, queue đầy, request bắt đầu chờ lâu.
-- Connection pool có nhiều pending, xuất hiện timeout kết nối/đọc.
-- Latency p99 tăng trên nhiều service, error rate tăng dù traffic không đổi đột ngột.
+### Cơ chế lan truyền, từng bước
+1. Service Payment chậm từ 100ms lên 5s.
+2. Order Service gọi Payment không có timeout hợp lý: mỗi request giữ một thread Tomcat (mặc định tối đa 200) trong 5s.
+3. Với 100 request/giây, sau khoảng 2 giây cả 200 thread đều đang chờ → Order không phục vụ được cả những API **không liên quan** đến Payment.
+4. Gateway và các service gọi Order cũng bắt đầu chờ → toàn hệ thống chậm.
+5. Retry ở mỗi tầng nhân tải lên Payment đang yếu → nó không thể hồi phục (retry storm).
 
-### Cách cắt lan truyền
-1. **Timeout ngắn**: đặt {{connect timeout}} và {{read timeout}} hợp lý (không để vô hạn).
-2. **Circuit breaker**: dùng {{Resilience4j}} (hoặc tương đương). Mở khi tỷ lệ lỗi/timeout vượt ngưỡng, sau thời gian {{half-open}} thử lại.
-3. **Bulkhead**: giới hạn số request đồng thời tới từng dependency (tránh một dependency chiếm hết pool).
-4. **Fallback**: trả dữ liệu cache cũ ({{stale cache}}), giá trị mặc định an toàn, hoặc message "tạm thời không khả dụng" thay vì chờ vô hạn.
-5. **Retry có điều kiện**: chỉ retry lỗi có thể retry (network) với {{exponential backoff}} + {{jitter}}. KHÔNG retry lỗi nghiệp vụ.
-6. **Tránh gọi HTTP trong transaction**: giữ transaction ngắn, tránh giữ lock khi chờ dependency.
+### Dấu hiệu nhận biết
+- Thread pool/connection pool của nhiều service gần max cùng lúc; hàng đợi tăng.
+- Latency tăng lan dần theo chiều gọi, bắt nguồn từ một dependency.
+- Lỗi timeout tăng trong khi CPU các service vẫn thấp.
 
-> Senior tip: {{Timeout}} + {{circuit breaker}} phải được đặt từ ngày đầu. Nếu không có timeout, retry/backoff cũng vô nghĩa.`,
+### Các lớp phòng vệ
+| Cơ chế | Chặn được gì | Cấu hình gợi ý |
+|---|---|---|
+| Timeout | Thread bị giữ vô hạn | connect 1s, read ≈ p99 bình thường × 2–3 |
+| Circuit breaker | Tiếp tục gọi vào service đang hỏng | mở khi lỗi/chậm > 50% trong 20–50 lời gọi |
+| Bulkhead | Một dependency chiếm hết thread | giới hạn số lời gọi đồng thời theo dependency |
+| Fallback | Người dùng nhận lỗi trắng | dữ liệu cache cũ, giá trị mặc định, xử lý sau |
+| Retry giới hạn | Lỗi mạng thoáng qua | tối đa 2 lần, backoff + jitter, chỉ cho lời gọi idempotent |
+| Load shedding | Quá tải ở cửa vào | trả 503 sớm khi hàng đợi vượt ngưỡng |
+
+~~~java
+// Resilience4j (Spring Boot 3): thứ tự áp dụng mặc định Retry(CircuitBreaker(Bulkhead(call)))
+@CircuitBreaker(name = "payment", fallbackMethod = "paymentPending")
+@Bulkhead(name = "payment")                 // tối đa N lời gọi đồng thời tới Payment
+public PaymentResult charge(Order o) {
+    return paymentClient.charge(o);         // client đã đặt read timeout 2s
+}
+PaymentResult paymentPending(Order o, Throwable t) {
+    // không giả vờ thành công: ghi nhận PENDING, xử lý lại bằng job/queue
+    return PaymentResult.pending(o.id());
+}
+~~~
+**Ngân sách timeout**: nếu gateway cho tổng cộng 3s, các tầng bên dưới phải có timeout nhỏ hơn (ví dụ 2s, rồi 1s); tầng dưới timeout dài hơn tầng trên thì vô nghĩa vì bên gọi đã bỏ đi.
+
+### Ví dụ đời thực
+Ngày khuyến mãi, nhà cung cấp gợi ý sản phẩm chậm lên 8s. Trang chi tiết sản phẩm gọi nó đồng bộ, không timeout; trong 4 phút toàn bộ thread của Product Service bị giữ, trang thanh toán (cùng service) lỗi 503, doanh thu giờ đó giảm khoảng 35%. Sau sự cố: timeout 300ms cho gợi ý, bulkhead 20 lời gọi đồng thời, fallback trả danh sách "bán chạy" đã cache. Lần nhà cung cấp chậm tiếp theo, trang vẫn tải trong 400ms, chỉ phần gợi ý là dữ liệu cache; không ai bị ảnh hưởng thanh toán.
+
+### Pitfall
+- Retry ở mọi tầng: 3 tầng × 3 lần = 27 lời gọi vào service đang yếu.
+- Fallback "giả thành công" cho thao tác tiền → sai dữ liệu.
+- Circuit breaker cấu hình nhưng không có metric/cảnh báo khi mở → không ai biết.
+- Gọi HTTP bên trong transaction DB → giữ cả connection DB, lan sang DB.
+
+### Trả lời mẫu khi phỏng vấn
+"Cascading failure là khi một dependency chậm làm bên gọi giữ thread và connection, pool cạn, và bên gọi cũng chậm theo, kể cả những API không liên quan. Dấu hiệu là pool của nhiều service cùng gần max, latency lan dần theo chiều gọi, CPU vẫn thấp. Để cắt lan truyền tôi dùng nhiều lớp. Timeout ngắn và theo ngân sách: tầng dưới luôn nhỏ hơn tầng trên. Circuit breaker để thất bại nhanh khi dependency đang hỏng, cho nó thời gian hồi phục. Bulkhead để một dependency không chiếm hết thread. Fallback có chủ đích, ví dụ dữ liệu cache hoặc trạng thái pending, không giả vờ thành công với thao tác tiền. Retry chỉ vài lần, có backoff và jitter, và chỉ ở một tầng để tránh retry storm. Ở cửa vào thì load shedding. Một lần nhà cung cấp gợi ý sản phẩm chậm 8 giây làm sập cả trang thanh toán; sau khi thêm timeout 300ms, bulkhead và fallback, lần sau nó chậm thì người dùng gần như không nhận ra."
+
+> Senior tip: diễn tập bằng cách tiêm độ trễ (Toxiproxy, chaos experiment) vào từng dependency trên staging mỗi quý. Cấu hình resilience không được thử thì thường sai đúng vào ngày nó cần chạy.`,
   follow: ['Timeout bao nhiêu là hợp lý cho từng trường hợp?', 'Khi circuit breaker mở, traffic có vẫn được gửi không?'],
   tags: ['cascading-failure', 'resilience', 'circuit-breaker', 'bulkhead']
 },
