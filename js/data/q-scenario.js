@@ -33,6 +33,12 @@ CREATE INDEX CONCURRENTLY idx_txn_tenant_status_time
 - Thứ tự cột trong composite index sai thì vô dụng với query này dù cùng bộ cột.
 - Plan trên môi trường test khác production (data shape, statistics); luôn kiểm chứng bằng slow query log sau deploy.
 
+### Ví dụ đời thực
+API "lịch sử đơn hàng của khách" chạy 5,1 giây trên bảng {{orders}} 50 triệu dòng. {{EXPLAIN (ANALYZE, BUFFERS)}}: Seq Scan, lọc {{customer_id = 812331}} bỏ 49,99 triệu dòng, rồi sort theo {{created_at}}. Có index trên {{customer_id}} nhưng câu lệnh viết {{WHERE customer_id::text = :id}} (ORM map tham số sai kiểu) nên index không dùng được. Các bước xử lý: (1) sửa kiểu tham số → Index Scan nhưng vẫn sort 18.000 dòng của khách lớn (180ms); (2) tạo {{CREATE INDEX CONCURRENTLY ON orders (customer_id, created_at DESC)}} → đọc thẳng 20 dòng đầu, 3ms; (3) API đổi sang keyset pagination; (4) thêm cảnh báo slow query > 500ms từ {{pg_stat_statements}}. p95 của API: 5,1 giây → 25ms; CPU DB giảm 35% vì truy vấn này chạy rất thường xuyên.
+
+### Trả lời mẫu khi phỏng vấn
+"Trước hết tôi xác nhận phạm vi: query nào, chạy bao nhiêu lần, ảnh hưởng bao nhiêu người, có cần giảm thiệt hại ngay không, ví dụ tạm giới hạn khoảng thời gian tra cứu. Sau đó tôi lấy đúng câu SQL thật, kèm tham số, và chạy EXPLAIN ANALYZE với BUFFERS trên bản sao production. Tôi xem node nào tốn thời gian, ước lượng số dòng so với thực tế, có seq scan hay sort lớn không. Nguyên nhân hay gặp là thiếu index phù hợp, điều kiện làm mất index như hàm hay ép kiểu, thống kê cũ, hoặc OFFSET sâu. Cách sửa theo thứ tự rủi ro: sửa câu truy vấn, tạo index composite khớp cả điều kiện lọc lẫn sắp xếp bằng CREATE INDEX CONCURRENTLY, đổi sang keyset pagination, và nếu là truy vấn báo cáo thì chuyển sang replica. Cuối cùng là cảnh báo slow query để phát hiện sớm lần sau."
+
 > Senior tip: tôi từng giảm một API list giao dịch từ 8s xuống 120ms trên bảng 60 triệu dòng chỉ bằng index (tenant_id, status, created_at DESC); trước đó cả team đã bàn chuyển sang Elasticsearch. Index đúng vẫn là giải pháp rẻ và an toàn nhất — chỉ cân nhắc cache/replica sau khi index đã tối ưu.`,
   follow: [
     'Tạo index online trên bảng này ảnh hưởng thế nào đến write throughput và bạn đo ra sao?',
@@ -116,6 +122,12 @@ CREATE INDEX CONCURRENTLY idx_orders_source ON orders (source);
 - Backfill bằng UPDATE đại trà làm WAL/binlog phình, replication lag tăng — theo dõi lag và tạm dừng khi vượt ngưỡng.
 - Với bảng có nhiều FK hoặc bảng con, khoá có thể lan truyền — đánh giá theo thứ tự bảng cha trước.
 
+### Ví dụ đời thực
+Cần thêm cột {{risk_score}} và index trên bảng {{transactions}} 200 triệu dòng (PostgreSQL 15). Lần thử đầu trên staging: {{ALTER TABLE ... ADD COLUMN risk_score int NOT NULL DEFAULT 0}} — chạy ngay vì từ PostgreSQL 11 default hằng số chỉ ghi vào metadata; nhưng lệnh vẫn cần khoá ACCESS EXCLUSIVE trong chốc lát, và trên production nó **xếp hàng sau một truy vấn báo cáo dài 6 phút**, kéo theo mọi truy vấn khác xếp sau nó → API giao dịch đứng 40 giây. Làm lại đúng cách: {{SET lock_timeout = '3s'}} + retry tự động cho DDL; chạy vào giờ thấp điểm sau khi kiểm tra không có transaction dài ({{pg_stat_activity}}); index tạo bằng {{CREATE INDEX CONCURRENTLY}} (chạy 25 phút, không chặn ghi; kiểm tra index không ở trạng thái INVALID sau khi xong). Ứng dụng phát hành theo thứ tự: migration thêm cột trước, code dùng cột sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân loại thao tác. Thêm cột nullable hoặc có default hằng số trên PostgreSQL 11 trở lên chỉ đổi metadata nên rất nhanh; nhưng mọi ALTER TABLE vẫn cần khoá độc quyền trong chốc lát, và nguy hiểm nhất là lệnh DDL xếp hàng sau một transaction dài rồi chặn mọi truy vấn phía sau. Nên tôi luôn đặt lock_timeout vài giây kèm retry, và kiểm tra không có transaction dài trước khi chạy. Index thì tạo bằng CREATE INDEX CONCURRENTLY, không chặn ghi, chạy ngoài transaction, và kiểm tra không bị INVALID nếu lỗi giữa chừng. Ràng buộc NOT NULL hay khoá ngoại thì thêm dạng NOT VALID rồi VALIDATE sau. Phía ứng dụng, tôi theo expand và contract: thêm cột trước, code mới dùng cột sau, và không bao giờ đổi tên hay xoá cột trong cùng release với code dùng nó."
+
 > Senior tip: quy tắc của tôi trước mọi DDL trên bảng lớn là {{SET lock_timeout}} ngắn + vòng retry; chỉ một query dài 300ms đủ làm DDL chờ, và DDL chờ sẽ phong tỏa cả hàng đợi query phía sau. Tôi từng thấy {{ALTER TABLE ADD COLUMN}} khuya cao điểm (thiếu lock_timeout) đóng băng hệ thống nhiều phút.`,
   follow: [
     'Thêm constraint NOT NULL lên cột đã có trên bảng 200 triệu dòng (PostgreSQL) — liệt kê các bước?',
@@ -157,6 +169,12 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY daily_revenue;
 - Read replica vẫn chung cụm phần cứng nếu cùng cụm — giảm tải nhẹ hơn mong đợi; phải replica độc lập và monitoring lag.
 - {{REFRESH ... CONCURRENTLY}} cần unique index; refresh bảng lớn tự nó nặng, đặt lịch giờ thấp điểm.
 - Warehouse là thêm hạ tầng phức tạp — chỉ mở khi report xác thực là nút cổ chai thật, không phải phòng hờ.
+
+### Ví dụ đời thực
+Báo cáo cuối ngày (tổng hợp 30 triệu giao dịch theo merchant, kênh, giờ) chạy lúc 18:00 trên DB chính, mất 25 phút, đẩy CPU DB lên 95% và p99 API thanh toán từ 120ms lên 2,8 giây trong suốt thời gian đó. Thêm vào đó, transaction dài của báo cáo làm autovacuum không dọn được dead tuple, bảng phình 15%. Giải pháp theo bước: (1) chuyển báo cáo sang **read replica** riêng cho báo cáo, đặt {{hot_standby_feedback}} cân nhắc kỹ và {{max_standby_streaming_delay}} hợp lý để truy vấn dài không bị huỷ; (2) thay vì quét lại cả ngày, duy trì bảng **tổng hợp tăng dần** mỗi 15 phút (chỉ xử lý giao dịch mới); (3) về lâu dài đẩy dữ liệu sang kho phân tích (ClickHouse/BigQuery) bằng CDC. API thanh toán không còn bị ảnh hưởng; báo cáo cuối ngày còn 40 giây vì phần lớn đã được tổng hợp trước.
+
+### Trả lời mẫu khi phỏng vấn
+"Báo cáo nặng và giao dịch không nên tranh tài nguyên trên cùng một DB. Việc đầu tiên là đo: báo cáo tốn CPU, IO hay khoá, chạy bao lâu, ảnh hưởng p99 của API bao nhiêu. Ngắn hạn, tôi chuyển báo cáo sang read replica dành riêng, chấp nhận dữ liệu trễ vài giây, cấu hình để truy vấn dài trên replica không bị huỷ và không làm phình bảng trên primary. Trung hạn, tôi tối ưu bản thân báo cáo: index phù hợp, và quan trọng hơn là tổng hợp tăng dần, chỉ xử lý dữ liệu mới mỗi vài phút thay vì quét lại cả ngày. Dài hạn, nếu nhu cầu phân tích tăng, tôi đưa dữ liệu sang kho phân tích chuyên dụng qua CDC. Nếu buộc phải chạy trên primary, tôi giới hạn tài nguyên, chạy giờ thấp điểm và chia nhỏ theo khoảng thời gian."
 
 > Senior tip: hiện tượng "report làm chậm API" thường do buffer cache eviction — seq scan bảng 10GB đuổi cache nóng. Một materialized view cỡ 50 dòng (doanh thu/ngày) đủ trả báo cáo dưới 100ms, chưa cần warehouse đắt đỏ.`,
   follow: [
@@ -202,6 +220,12 @@ COMMIT;
 - Retry vô hạn khi xung đột rất nóng làm tăng CPU — đặt max attempts + alert.
 - Đừng vội chuyển Serializable: giảm concurrency nặng; ưu tiên sửa thứ tự khóa trong code.
 
+### Ví dụ đời thực
+Hệ thống kho có deadlock 5–10 lần mỗi giờ cao điểm. Log PostgreSQL cho thấy hai loại câu lệnh luôn đi cặp: {{UPDATE inventory ... WHERE sku = ?}} từ luồng **đặt hàng** (giỏ hàng nhiều SKU, cập nhật theo thứ tự khách thêm vào giỏ) và từ luồng **nhập kho** (cập nhật theo thứ tự trong phiếu nhập). Hai luồng khoá cùng tập SKU theo thứ tự khác nhau. Sửa: sắp danh sách SKU theo mã trước khi cập nhật ở **cả hai** luồng; giảm thời gian giữ khoá bằng cách đưa lời gọi tính phí vận chuyển ra khỏi transaction; thêm retry 2 lần cho lỗi deadlock (SQLState 40P01). Deadlock giảm về 0–1 lần mỗi ngày. Bài học: tìm **các cặp câu lệnh** trong log deadlock, không chỉ một câu.
+
+### Trả lời mẫu khi phỏng vấn
+"Deadlock là vòng chờ khoá giữa các transaction; DB tự phát hiện và huỷ một bên, nên triệu chứng là một tỉ lệ nhỏ request lỗi lúc cao điểm. Tôi bắt đầu từ log deadlock của DB, PostgreSQL ghi chi tiết các process và câu lệnh liên quan, để tìm cặp câu lệnh tạo vòng. Nguyên nhân hay gặp nhất là hai luồng khoá cùng một tập dòng theo thứ tự khác nhau, như chuyển tiền hai chiều hay cập nhật nhiều SKU theo thứ tự khác nhau. Cách sửa gốc là khoá theo một thứ tự nhất quán, ví dụ sắp theo id; giữ transaction ngắn, không gọi dịch vụ ngoài bên trong; đảm bảo có index để không khoá thừa dòng. Retry có giới hạn cho lỗi deadlock là lưới an toàn. Tôi theo dõi số deadlock theo giờ để biết sửa đã hiệu quả chưa."
+
 > Senior tip: nếu deadlock log cho thấy transaction giữ lock trong lúc gọi HTTP, chuyển network call ra ngoài transaction hoặc dùng outbox; thêm retry có giới hạn, backoff và jitter cho lỗi deadlock có thể retry.`,
   follow: [
     'Deadlock với lock wait timeout: phân biệt và xử lý hai loại này khác nhau thế nào?',
@@ -239,6 +263,12 @@ COMMIT;
 - Tăng pool size vô tội vạ làm DB overload và lock contention tăng — nhiều connection không có nghĩa là nhanh hơn.
 - {{maxLifetime}} phải ngắn hơn {{wait_timeout}} MySQL và idle timeout của LB/proxy, nếu không connection trong pool chết bên dưới gây lỗi lẻ khó debug.
 - Không thu thập metrics Hikari là mù mát — sự cố như thế thường đã có sóng cảnh báo nhỏ cả tuần trước đó.
+
+### Ví dụ đời thực
+Lúc 20:00 mỗi tối (giờ chạy khuyến mãi), API lỗi {{Connection is not available, request timed out after 30000ms}}. Metric Hikari: {{active=20/20}}, {{pending=180}}, nhưng DB CPU chỉ 30% và số truy vấn đang chạy thấp. Thread dump cho thấy 20 thread đang giữ connection và **chờ HTTP** tới dịch vụ khuyến mãi (mất 4–8 giây lúc tải cao) — lời gọi nằm **bên trong** method {{@Transactional}}. Mỗi request giữ connection gấp 40 lần thời gian cần thiết. Sửa: tách lời gọi HTTP ra trước transaction, đặt timeout 800ms + circuit breaker cho dịch vụ khuyến mãi, bật {{leakDetectionThreshold}} trên staging để bắt các chỗ tương tự (tìm thêm 2 chỗ). Không tăng pool size. Lỗi biến mất; thời gian giữ connection trung bình từ 3,2 giây xuống 40ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Lỗi này nghĩa là thread chờ quá 30 giây mà không lấy được connection từ pool Hikari, tức mọi connection đang bị dùng. Tôi xem metric active, idle, pending của pool và so với tải DB: nếu DB đang quá tải thì vấn đề ở query chậm; nếu DB rảnh mà pool vẫn đầy thì connection đang bị giữ lâu vì lý do khác. Nguyên nhân hay gặp là gọi HTTP hay xử lý nặng bên trong transaction, transaction quá dài, rò rỉ connection không đóng trên nhánh lỗi, hoặc REQUIRES_NEW cần hai connection mỗi luồng. Tôi dùng thread dump để xem các thread giữ connection đang làm gì, bật leakDetectionThreshold để tìm chỗ không trả connection. Tăng pool size chỉ là giải pháp cuối, vì DB có giới hạn connection và thường chỉ dời điểm nghẽn sang DB."
 
 > Senior tip: khi pool cạn, tìm connection đang ở đâu: dùng pg_stat_activity để xem query và thời gian chạy, rồi thread dump/APM để nối connection với luồng ứng dụng. Phân biệt query chậm, transaction giữ connection lâu và leak trước khi đổi pool size.`,
   follow: [
@@ -286,6 +316,12 @@ DELETE FROM logs WHERE id IN (
 - DELETE khối lượng lớn mà chưa VACUUM làm dead tuples phình, làm chậm mọi query kế tiếp.
 - Bảng archive cũng cần thiết kế schema/index từ đầu để phục vụ audit truy vấn cái cần về sau.
 
+### Ví dụ đời thực
+Bảng {{audit_events}} 300 triệu dòng (1,1TB), chỉ cần giữ 13 tháng. Lần thử đầu: {{DELETE FROM audit_events WHERE created_at < ...}} một câu → chạy 3 giờ, sinh 400GB WAL, replica tụt 2 giờ, bảng không nhỏ đi (DELETE chỉ đánh dấu dead tuple), phải huỷ. Làm lại: (1) xuất dữ liệu cũ ra S3 dạng Parquet theo tháng (để còn tra cứu khi kiểm toán), kiểm tra số dòng khớp; (2) xoá theo lô 10.000 dòng theo khoá chính, nghỉ giữa các lô, tự dừng khi replica lag > 10 giây; (3) chuyển bảng sang **partition theo tháng** cho dữ liệu mới — từ đó việc dọn dữ liệu chỉ là {{DETACH PARTITION}} + {{DROP TABLE}} trong vài giây, không sinh WAL lớn; (4) {{pg_repack}} để thu hồi dung lượng cho phần cũ không cần khoá lâu. Đĩa giảm từ 1,1TB còn 380GB, không ảnh hưởng người dùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Một câu DELETE khổng lồ là cách nhanh nhất làm sập DB: transaction dài, sinh lượng WAL rất lớn làm replica tụt lại, khoá và bloat, mà bảng cũng không nhỏ đi vì DELETE chỉ đánh dấu dòng chết. Tôi làm theo bước: xác nhận yêu cầu lưu trữ và kiểm toán, xuất dữ liệu cũ ra kho rẻ như S3 dạng Parquet và kiểm tra số dòng, rồi xoá theo lô nhỏ theo khoá chính, có nghỉ giữa các lô và tự dừng khi replica lag cao. Sau đó thu hồi dung lượng bằng pg_repack hoặc VACUUM FULL vào lúc phù hợp. Về lâu dài, tôi chuyển bảng sang partition theo thời gian, vì khi đó dọn dữ liệu cũ chỉ là detach rồi drop một partition, mất vài giây và gần như không sinh WAL. Dữ liệu dạng log hay sự kiện nên được thiết kế partition từ đầu."
+
 > Senior tip: thời hạn lưu trữ phụ thuộc loại hồ sơ và quy định áp dụng; chốt retention với pháp chế/tuân thủ trước khi xóa. Có thể phân tầng hot, archive và object storage, nhưng phải giữ khả năng tra cứu, kiểm soát truy cập và bằng chứng toàn vẹn theo yêu cầu.`,
   follow: [
     'So sánh DELETE theo batch và CREATE TABLE AS SELECT + rename trên bảng 300 triệu dòng?',
@@ -326,6 +362,12 @@ WHERE sku = :sku AND qty >= :take;
 - Optimistic lock với hot key (SKU hot sale) gây nhiều retry / lỗi báo cho khách hàng; với hot key dùng SQL nguyên tử hoặc hàng đợi theo SKU.
 - Đừng quên {{qty >= :take}} trong WHERE — nếu thiếu, hai update đồng thời sẽ sinh kết quả âm.
 - Update nguyên tử chỉ giải quyết một bước; nếu một luồng chạm nhiều bảng thì cần transaction + business check kèm bên trong.
+
+### Ví dụ đời thực
+Hệ thống điểm thưởng: hai sự kiện "cộng điểm" cho cùng một khách đến từ hai consumer Kafka khác nhau (mua hàng và đánh giá sản phẩm) gần như cùng lúc. Code {{Wallet w = repo.findById(id); w.setPoints(w.getPoints() + delta); repo.save(w);}} → khoảng 0,3% lần cộng điểm bị mất, khách khiếu nại "thiếu điểm". Vì phép tính chỉ là cộng, team đổi thành câu lệnh nguyên tử {{UPDATE wallet SET points = points + :delta WHERE id = :id}} (repository {{@Modifying}} query). Với màn hình nhân viên CSKH chỉnh điểm thủ công (form có nhiều trường), dùng {{@Version}} và trả 409 khi xung đột. Đối soát điểm với bảng lịch sử sự kiện phát hiện và bù 2.400 lần cộng bị mất trước đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Lost update xảy ra khi hai bên cùng đọc giá trị, cùng tính ở ứng dụng rồi cùng ghi, lần ghi sau đè mất lần ghi trước; ở mức isolation mặc định DB không báo lỗi. Tôi chọn cách sửa theo loại thao tác. Nếu phép tính biểu diễn được bằng SQL như cộng trừ số lượng, tôi đẩy nó vào một câu UPDATE nguyên tử, có điều kiện nếu cần như không cho âm. Nếu là chỉnh sửa nhiều trường qua form, tôi dùng optimistic locking với cột version, trả 409 để người dùng tải lại. Nếu xung đột thường xuyên và logic phức tạp, tôi dùng SELECT FOR UPDATE với transaction ngắn và thứ tự khoá cố định. Ngoài ra, khi phát hiện lost update trên production, tôi đối soát với nguồn sự kiện gốc để bù dữ liệu đã sai."
 
 > Senior tip: nguyên tắc của tôi là 'mọi cập nhật tính toán được thì gom về một câu SQL nguyên tử khi có thể' — giảm đáng kể logic race ở app và loại trừ lost update từ gốc. Với flash sale, thêm hàng đợi theo SKU cũng là người bạn tốt.`,
   follow: [
@@ -375,6 +417,12 @@ try (Reader r = new BufferedReader(new InputStreamReader(in, UTF_8), 1 << 16)) {
 - POI đọc .xlsx lớn phải dùng event API streaming ({{XSSFReader}} + SAX) hoặc thư viện như excel-streaming-reader/FastExcel thay {{XSSFWorkbook}} (load cả file); {{SXSSF}} chỉ dùng để **ghi** streaming, không đọc được.
 - Hibernate với IDENTITY vô hiệu JDBC batch — lỗi phổ biến khiến import chậm 50 lần.
 
+### Ví dụ đời thực
+Import danh sách 1,2 triệu khách hàng từ Excel của đối tác. Bản đầu đọc cả file bằng Apache POI kiểu DOM (heap 6GB, OOM), rồi {{save()}} từng dòng qua JPA (ước tính 9 giờ). Làm lại: (1) đọc **streaming** (SAX/{{XSSF}} event API hoặc chuyển đối tác sang CSV); (2) validate từng dòng, dòng lỗi ghi vào file lỗi kèm số dòng và lý do thay vì dừng cả job; (3) ghi vào **bảng staging** bằng {{COPY}}/JDBC batch 5.000 dòng (khoảng 3 phút); (4) một câu {{INSERT ... SELECT ... ON CONFLICT (external_id) DO UPDATE}} từ staging sang bảng chính, theo lô, để chạy lại an toàn (idempotent theo mã khách của đối tác); (5) lưu trạng thái job (đã đọc tới dòng nào, bao nhiêu lỗi). Tổng thời gian 7 phút, 1.830 dòng lỗi được trả lại cho đối tác sửa, chạy lại lần hai không tạo bản ghi trùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với file một triệu dòng, tôi thiết kế ba yêu cầu: không tải cả file vào bộ nhớ, ghi nhanh, và chạy lại được an toàn. Tôi đọc streaming, với Excel dùng event API thay vì đọc cả workbook. Mỗi dòng được validate, dòng lỗi ghi vào báo cáo lỗi kèm số dòng và lý do thay vì làm hỏng cả job. Dữ liệu hợp lệ ghi vào bảng staging bằng COPY hoặc JDBC batch, nhanh hơn rất nhiều so với save từng entity. Sau đó chuyển từ staging sang bảng chính bằng INSERT SELECT với ON CONFLICT theo khoá nghiệp vụ, nên chạy lại không tạo trùng. Job lưu trạng thái tiến độ để tiếp tục khi lỗi, chạy bất đồng bộ, người dùng xem tiến độ và tải file lỗi. Với nhu cầu lặp lại, Spring Batch cung cấp sẵn chunk, skip, restart."
+
 > Senior tip: trên PostgreSQL, COPY 1 triệu dòng chạy 8–12 giây trong khi JPA save từng dòng mất hơn 10 phút; staging + COPY là gói giải pháp tối thiểu cho hệ thống import lớn. Chi tiết hay bị quên: từ chối file trùng hash ngay ở endpoint trước khi worker phía sau lãng phí.`,
   follow: [
     'Nếu business bắt buộc all-or-nothing trên 1 triệu dòng thì thiết kế rollback thế nào?',
@@ -423,6 +471,12 @@ s3.putObject(req, RequestBody.fromFile(tmpFile)); // SDK v2, upload từ file: R
 - CSV injection: giá trị bắt đầu bằng {{= + - @}} có thể chạy công thức trong Excel — prefix bằng dấu nháy đơn.
 - Excel cứng max 1.048.576 dòng — tách part theo 500k dòng và nén .zip để user tải gộp.
 
+### Ví dụ đời thực
+Nút "Xuất CSV" cho 5 triệu dòng giao dịch: bản đầu {{findAll()}} vào List rồi dựng chuỗi CSV trong bộ nhớ → OOM, pod restart, mọi người dùng khác bị ảnh hưởng. Thiết kế lại thành **job bất đồng bộ**: API trả {{202 Accepted}} kèm id job; worker đọc bằng cursor ({{fetchSize=5000}}, hoặc JdbcTemplate với RowCallbackHandler) và ghi thẳng ra luồng nén gzip **upload multipart lên S3** (không qua đĩa local); xong thì tạo **presigned URL** hết hạn sau 24 giờ và gửi thông báo cho người dùng. Giới hạn: mỗi người tối đa 2 job đồng thời; truy vấn chạy trên read replica. Bộ nhớ worker ổn định khoảng 200MB; xuất 5 triệu dòng mất khoảng 3 phút, file nén 420MB. Lưu ý bảo mật: cột chứa giá trị bắt đầu bằng {{=}}, {{+}}, {{-}}, {{@}} được thêm dấu nháy để tránh **CSV injection** khi mở bằng Excel.
+
+### Trả lời mẫu khi phỏng vấn
+"Xuất năm triệu dòng không thể làm đồng bộ trong một request rồi dựng cả file trong bộ nhớ. Tôi biến nó thành job bất đồng bộ: API trả 202 kèm id để theo dõi, một worker đọc dữ liệu bằng cursor hoặc streaming với fetch size hợp lý trên read replica, ghi từng dòng thẳng vào luồng nén rồi upload multipart lên S3, nên bộ nhớ không phụ thuộc kích thước dữ liệu. Xong thì tạo presigned URL có hạn và thông báo cho người dùng. Tôi giới hạn số job đồng thời mỗi người, có tiến độ và khả năng huỷ, và xử lý CSV injection cho các ô bắt đầu bằng dấu bằng hay cộng trừ. Nếu dữ liệu nhỏ hơn và cần tải ngay, có thể stream trực tiếp qua StreamingResponseBody, nhưng vẫn phải đọc bằng cursor."
+
 > Senior tip: quy tắc của tôi: export nào ước tính trên 100k dòng đều chuyển thành async job + presigned URL; HTTP sync chỉ chịu tải nhỏ. Export lớn là dạng bài OOM kinh điển của Java — tôi từng thấy hệ thống OOM nhiều lần chỉ vì một user nhấn nút export bảng 8 triệu dòng báo cáo doanh thu.`,
   follow: [
     'Giới hạn số job export chạy đồng thời để chống user spam nút export?',
@@ -459,6 +513,26 @@ s3.putObject(req, RequestBody.fromFile(tmpFile)); // SDK v2, upload từ file: R
 - Presign URL có hạn (tối đa 7 ngày, nên dùng 24h); resume cần xin lại URL cho phần chưa xong.
 - CORS phải cấu hình cho presigned upload; phải test bằng trình duyệt thật, không chỉ Postman/curl.
 - Tách ba bucket: upload-raw / quarantine / clean; chỉ bucket clean được app đọc — fail-safe khi quét lỗi.
+
+### Luồng upload trực tiếp lên S3 (multipart)
+~~~seq
+title: Upload file 2GB có thể tiếp tục khi lỗi mạng
+actors: Browser | Backend | S3
+Browser -> Backend: POST /uploads (tên, kích thước, hash)
+Backend -> S3: CreateMultipartUpload
+Backend --> Browser: uploadId + presigned URL cho từng phần 10MB
+Browser -> S3: PUT phần 1..200 (song song 4 phần)
+S3 --> Browser: ETag của từng phần
+Browser -> Backend: POST /uploads/id/complete (danh sách ETag)
+Backend -> S3: CompleteMultipartUpload
+Backend -> Backend: quét virus, kiểm tra hash, đánh dấu READY
+~~~
+
+### Ví dụ đời thực
+Hệ thống hồ sơ bảo hiểm cho đại lý tải lên video và hồ sơ scan tới 2GB. Bản đầu upload qua backend (Spring {{MultipartFile}}): mỗi file chiếm thread và đĩa tạm của pod trong 10–20 phút, mất mạng ở 95% là phải tải lại từ đầu; 4G yếu ở tỉnh khiến 30% lần tải thất bại. Chuyển sang luồng trên: trình duyệt tải trực tiếp lên S3 bằng presigned URL theo phần 10MB, phần lỗi được tải lại riêng, có thể tiếp tục sau khi tắt trình duyệt (lưu uploadId). Backend chỉ điều phối. Lifecycle rule tự huỷ multipart upload dang dở sau 3 ngày (tránh tính tiền phần rác). Tỉ lệ thất bại còn khoảng 2%, backend không còn bị chiếm thread.
+
+### Trả lời mẫu khi phỏng vấn
+"Với file lớn, tôi không cho dữ liệu đi qua backend. Backend chỉ điều phối: tạo multipart upload trên S3 và cấp presigned URL cho từng phần, ví dụ mỗi phần mười megabyte; trình duyệt tải trực tiếp các phần lên S3, song song vài phần, phần nào lỗi thì tải lại riêng phần đó, và lưu uploadId để tiếp tục sau khi mất mạng hay tắt trình duyệt. Khi đủ phần, client gửi danh sách ETag để backend hoàn tất upload. Sau đó file được xử lý bất đồng bộ: kiểm tra hash, quét virus, kiểm tra định dạng, rồi mới đánh dấu sẵn sàng. Tôi giới hạn kích thước và loại file, presigned URL có hạn ngắn và gắn với đúng object key, và đặt lifecycle rule để dọn các multipart upload dang dở."
 
 > Senior tip: khi chuyển sang upload thẳng S3, service chỉ còn cấp presigned URL và nhận callback, nên CPU/RAM/băng thông dành cho file lớn gần như biến mất khỏi service (đo trước/sau để có con số của chính hệ thống bạn). Chọn part size/concurrency bằng đo đạc trên client và mạng mục tiêu; giới hạn số part đồng thời để không làm cạn băng thông/connection của thiết bị. Retry từng part giúp tiếp tục upload mà không gửi lại toàn file.`,
   follow: [
