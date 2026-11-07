@@ -1,6 +1,6 @@
 # T1045 — Thêm dấu tiếng Việt: algo.js
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/algo.js`
 
@@ -24,3 +24,9 @@ Nghiệm thu:
 - `node scripts/build-light-index.js` rồi `node scripts/validate.js` → OK. KHÔNG commit. Ghi `Status: DONE` (sửa dòng Status ở đầu file) + số dòng đã sửa vào Notes.
 
 ## Notes
+- Đã thêm dấu cho **37 dòng** comment không dấu trong `js/data/algo.js` (phạm vi algo-093 → algo-137, bao gồm các comment trong `solution`, `tests`, và helper).
+- `node scripts/find-nodiac.js js/data/algo.js` → **0 dòng** nghi không dấu.
+- `node scripts/test-algos.js` → **Harness OK: 134 · lỗi: 0**.
+- `node scripts/build-light-index.js` → OK (189.3 KB).
+- `node scripts/validate.js` → vẫn còn **3 lỗi sẵn có** (pre-existing, ngoài phạm vi task) ở `js/data/q-banking.js`: `banking-005.a`, `banking-010.a`, `banking-014.a` (sơ đồ `~~~seq` có 7/8 actors > giới hạn 6). Không thuộc file sở hữu (`js/data/algo.js`), không sửa.
+Reviewed-by: verify-only (code/UI task)
