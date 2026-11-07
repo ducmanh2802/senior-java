@@ -5376,28 +5376,56 @@ Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiệ
     topic: 'scenario',
     level: 'senior',
     q: 'Interviewer ở Ninjavan hỏi: thiết kế Feature Flags bật/tắt feature cho một tập user, tối ưu performance — bạn làm thế nào?',
-    a: `**Tóm tắt:** Feature Flag là công tắc on/off cho tính năng, có thể bật theo user/segment; lưu DB + cache Redis, evaluate bằng hash bucket, refresh định kỳ.
+    a: `**Tóm tắt:** Feature Flag (cờ tính năng — công tắc bật/tắt một tính năng trong code mà không cần deploy lại) cho phép rollout dần theo user/segment; thiết kế tối ưu bằng cách lưu cấu hình ở DB (nguồn sự thật), cache Redis + in-memory SDK để evaluate < 1ms, và dùng hash bucket để chia traffic ổn định.
 
-### Bối cảnh
-- Rollout dần, A/B test, kill switch khi sự cố.
-- Evaluate flag không được thêm > vài ms vào request path.
+### Bối cảnh thực tế
+Hệ thống logistics (giống Ninjavan) có 50k RPS (request mỗi giây). Team muốn:
+- Bật tính năng "tính phí mới" cho 5% user trước, sau đó tăng dần.
+- A/B test (thử nghiệm so sánh 2 phiên bản) để đo conversion.
+- Kill switch (công tắc tắt khẩn cấp) khi tính năng mới gây lỗi p99 latency (độ trễ ở mức 99% request) tăng vọt.
 
-### Cách làm
-1. Model: Flag (key, default, rules), Override (user/segment).
-2. Storage: Redis cache + DB; TTL 30s; invalidate qua pub/sub.
-3. Evaluate: hash userId vào bucket 0..99, so sánh rollout %; segment rules (country, plan).
-4. SDK cache in-memory với refresh.
+Yêu cầu: evaluate flag không được thêm quá 1–2ms vào mỗi request, và không được gọi DB mỗi lần.
 
-### Trade-off
-| Storage | Ưu | Nhược |
-| SQL | ACID, dễ query | join chậm khi nhiều rule |
-| NoSQL | scale tốt | eventual consistency |
+### Cơ chế hoạt động từng bước
+1. **Mô hình dữ liệu** (DB là source of truth — nguồn dữ liệu chính xác nhất):
+   - {{flags(id, key, description, default_value, rollout_percent, rules_json, owner, expires_at, updated_at)}}
+   - {{flag_overrides(flag_id, target_type, target_id, value)}} để ép bật/tắt cho user/segment cụ thể.
+2. **Đọc cấu hình nhanh**: SDK (thư viện nhúng vào app) giữ cache in-memory (trong RAM của tiến trình). Mỗi 10–30s poll DB hoặc nhận invalidate qua Redis Pub/Sub (cơ chế publish/subscribe — kênh thông báo realtime). Không gọi DB trong request path.
+3. **Evaluate (quyết định bật/tắt)**:
+~~~java
+// Hash ổn định: cùng userId luôn rơi vào cùng bucket
+int bucket = Math.floorMod(userId.hashCode(), 100); // 0..99, hashCode ổn định cho String
+boolean on = (bucket < flag.rolloutPercent());
+if (override != null) on = override; // ép theo user/segment
+~~~
+4. **Segment rules** (nhóm người dùng): đánh giá theo thuộc tính (country, plan, appVersion). Thứ tự ưu tiên: override cụ thể > rule segment > rollout % > default.
 
-### Pitfall
-- Flag tích tụ → cleanup định kỳ.
-- Không audit ai bật/tắt → sự cố không truy vết.
+### Luồng tổng quan
+~~~seq
+title: Evaluate Feature Flag (không chạm DB trong request)
+actors: Client | App | SDK Cache | Redis
+Client -> App: request (userId=U123)
+App -> SDK Cache: isEnabled("new_fee", U123)
+SDK Cache -> SDK Cache: hash bucket + rules (RAM)
+SDK Cache --> App: true/false (<1ms)
+App --> Client: response theo flag
+note SDK Cache..Redis: refresh 30s hoặc pub/sub invalidate
+~~~
 
-> Senior tip: Feature flag là technical debt có chủ đích; đặt expiry date và owner cho mỗi flag.`,
+### Bảng trade-off
+| Phương án | Ưu | Nhược | Khi dùng |
+| DB mỗi request | Luôn mới nhất | +5–20ms, DB quá tải | Không dùng ở scale lớn |
+| Redis cache + TTL | Nhanh (~1ms), đơn giản | Trễ tối đa TTL khi đổi | Phổ biến nhất |
+| In-memory SDK + pub/sub | <0.1ms, không hit Redis | Phức tạp hơn, eventual consistency (nhất quán sau một khoảng trễ) | High traffic, cần tối ưu |
+| SaaS (LaunchDarkly/Unleash) | Đầy đủ UI, audit, targeting | Chi phí, phụ thuộc bên thứ 3 | Team muốn tốc độ triển khai |
+
+### Pitfall thực tế trên production
+- **Flag tích tụ thành nợ kỹ thuật**: hàng trăm flag cũ không ai dọn, code rẽ nhánh chằng chịt. Quy tắc: mỗi flag phải có {{owner}} và {{expires_at}}; job cảnh báo flag quá hạn.
+- **Không audit**: ai bật/tắt lúc nào? Bắt buộc ghi audit log (flag_key, actor, old/new, time) để truy vết khi sự cố.
+- **Hash không ổn định khi đổi thuật toán/seed**: user đang ở nhóm A bỗng nhảy sang B giữa phiên → trải nghiệm vỡ. Dùng hash ổn định (Murmur3) và không đổi seed.
+- **Evaluate khác nhau giữa các service**: nếu mỗi service tự implement, kết quả lệch. Chuẩn hóa bằng SDK chung.
+
+> Senior tip: Xem feature flag là "technical debt có chủ đích" — đặt expiry date và owner ngay khi tạo. Ở 50k RPS, in-memory cache + pub/sub invalidate giúp p99 evaluate < 0.5ms; dùng Redis làm lớp chia sẻ cấu hình, không đặt Redis trong hot path của từng request nếu có thể tránh.`,
     follow: ['Làm sao rollout an toàn 1% → 100%?', 'Kill switch khác feature flag thế nào?'],
     tags: ['feature-flag', 'system-design'],
     refs: [{ type: 'article', title: 'voz interview review Ninjavan', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-1#post-22629633' }]
@@ -5407,29 +5435,43 @@ Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiệ
     topic: 'scenario',
     level: 'senior',
     q: 'Interviewer hỏi: API bị spam, làm sao rate limit hiệu quả ở scale lớn?',
-    a: `**Tóm tắt:** Rate limit dùng Token Bucket/Sliding Window trên Redis theo user/IP/API key; trả 429 + Retry-After.
+    a: `**Tóm tắt:** Rate limiting (giới hạn tốc độ — chặn client gửi quá nhiều request trong một khoảng thời gian) nên đặt ở tầng gateway và dùng thuật toán Token Bucket hoặc Sliding Window trên Redis (kho key-value trong RAM, dùng làm bộ đếm chia sẻ giữa nhiều instance) để atomic (thao tác không bị xen ngang); trả HTTP 429 kèm {{Retry-After}} để client biết khi nào thử lại.
 
-### Khái niệm
-- Token Bucket: xô token refill đều; request tốn 1 token.
-- Sliding Window: đếm request trong cửa sổ trượt.
+### Bối cảnh thực tế
+API public nhận 20k RPS bình thường, nhưng một bot gửi 2k RPS vào endpoint {{/login}} và {{/otp}} → CPU tăng, DB connection pool cạn, user thật bị timeout. Mục tiêu: chặn abuse (lạm dụng) mà không ảnh hưởng user hợp lệ.
 
-### Cách làm
-1. Key: userId hoặc ip hoặc apiKey.
-2. Redis: INCR + EXPIRE (fixed window); sorted set (sliding).
-3. Distributed: Lua script atomic.
-4. Response: HTTP 429, header Retry-After.
+### Cơ chế thuật toán (từng bước)
+1. **Token Bucket (xô token)**: tưởng tượng một xô chứa tối đa N token, mỗi giây nạp thêm R token. Mỗi request lấy 1 token; hết token → từ chối. Cho phép burst (bùng nổ ngắn) nhưng giới hạn tốc độ trung bình.
+2. **Fixed Window (cửa sổ cố định)**: đếm request trong mỗi phút (vd 10:00:00–10:00:59). Đơn giản nhưng có lỗi burst ở biên: 100 req cuối phút 1 + 100 req đầu phút 2 = 200 req trong 2 giây.
+3. **Sliding Window (cửa sổ trượt)**: tính theo khoảng thời gian trượt (vd 60 giây gần nhất) → mượt hơn, nhưng tốn bộ nhớ hơn (lưu timestamp từng request hoặc dùng 2 counter).
 
-### Trade-off
-| Thuật toán | Ưu | Nhược |
-| Fixed window | đơn giản | burst biên cửa sổ |
-| Sliding window | mượt | tốn memory |
-| Token bucket | linh hoạt | tune phức tạp |
+~~~java
+// Fixed window đơn giản với Redis (atomic bằng Lua nếu cần chính xác)
+String key = "rl:user:" + userId + ":" + (System.currentTimeMillis() / 60000);
+Long count = redis.incr(key);              // tăng 1, atomic
+if (count == 1) redis.expire(key, 60);     // đặt TTL 60s cho key mới
+if (count > 100) throw new TooManyRequests(); // quá 100 req/phút
+~~~
 
-### Pitfall
-- Rate limit ở app layer bị bypass nếu nhiều instance → centralize ở gateway/Redis.
-- Key theo IP làm NAT user bị chặn nhầm.
+### Triển khai ở scale lớn
+- **Đặt ở đâu**: API Gateway / reverse proxy (Nginx, Kong, Envoy) chặn sớm nhất, trước khi vào app/DB. App layer chỉ làm rate limit bổ sung theo business (vd giới hạn gửi OTP/user).
+- **Key phân loại**: {{userId}} (đã đăng nhập), {{apiKey}} (đối tác), {{ip}} (chưa đăng nhập). Kết hợp nhiều tầng: global + per-user + per-endpoint.
+- **Distributed (nhiều instance)**: dùng Redis chung + Lua script để {{INCR+EXPIRE}} atomic, tránh race (2 instance cùng đọc count cũ).
 
-> Senior tip: Rate limit là bảo vệ, không phải business logic; đặt limit khác nhau cho read/write và tier.`,
+### Bảng trade-off
+| Thuật toán | Ưu | Nhược | Phù hợp |
+| Fixed window | Rất đơn giản, ít memory | Burst ở biên cửa sổ | Endpoint ít nhạy cảm |
+| Sliding window log | Chính xác, mượt | Tốn memory (lưu từng req) | Traffic vừa |
+| Sliding window counter | Mượt, tiết kiệm | Xấp xỉ | Phổ biến production |
+| Token bucket | Cho phép burst có kiểm soát | Tune refill/rate phức tạp | API cần burst hợp lệ |
+
+### Pitfall thực tế trên production
+- **Rate limit chỉ ở app, nhiều instance**: mỗi instance tự đếm → tổng thực tế = limit × số instance. Phải centralize (tập trung) ở gateway/Redis.
+- **Key theo IP sau NAT (mạng chia sẻ IP)**: cả văn phòng/công ty dùng chung 1 IP bị chặn nhầm. Với user đã login, ưu tiên key theo {{userId}}/{{apiKey}}.
+- **Không trả {{Retry-After}}**: client retry ngay lập tức → tạo "retry storm" làm tệ hơn. Luôn trả 429 + header {{Retry-After}} (giây) và hỗ trợ exponential backoff (lùi thời gian thử lại theo cấp số nhân).
+- **Quên whitelist**: health-check, partner quan trọng, webhook callback bị chặn → gián đoạn dịch vụ.
+
+> Senior tip: Đặt limit khác nhau theo hành vi: read (GET) rộng hơn write (POST), endpoint nhạy cảm (login/OTP) chặt hơn (vd 5/phút/user). Ở 20k RPS, dùng Redis Cluster + Lua script; theo dõi metric {{rate_limit_rejected_total}} để tune — nếu user thật bị chặn nhiều, limit đang quá chặt.`,
     follow: ['Rate limit theo tier free/pro thế nào?', 'Throttling vs rate limiting?'],
     tags: ['rate-limit', 'redis', 'api']
   },
@@ -5438,27 +5480,63 @@ Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiệ
     topic: 'scenario',
     level: 'senior',
     q: 'Interviewer hỏi: đặt vé concert, 2 user cùng lúc mua ghế cuối — xử lý concurrency thế nào?',
-    a: `**Tóm tắt:** Dùng pessimistic lock (SELECT ... FOR UPDATE) hoặc optimistic lock (version column) trên ghế; kết hợp idempotency key và transaction.
+    a: `**Tóm tắt:** Khi 2 user cùng mua ghế cuối, phải đảm bảo chỉ 1 người thành công bằng lock ở mức DB (pessimistic {{SELECT FOR UPDATE}} hoặc optimistic lock bằng cột {{version}}) kết hợp trạng thái ghế có TTL (giữ chỗ tạm thời) và idempotency key (khóa chống gửi trùng request) để tránh trừ tiền 2 lần.
 
-### Cơ chế
-- Pessimistic: lock row ghế khi bắt đầu checkout; user khác chờ/timeout.
-- Optimistic: update ... where version = ?; nếu 0 row → conflict, retry.
+### Bối cảnh thực tế
+Sự kiện concert mở bán 10:00, 50k user cùng vào, một ghế {{A1}} còn đúng 1. Hai request gần như đồng thời cùng đọc "AVAILABLE" rồi cùng ghi "SOLD" → bán trùng (oversell), hậu quả hoàn tiền + khiếu nại.
 
-### Cách làm
-1. Trạng thái ghế: AVAILABLE/HELD/SOLD.
-2. Hold ghế với TTL (5 phút) qua Redis/DB.
-3. Payment thành công → SOLD; thất bại/hết TTL → release.
+### Cơ chế bên trong và vì sao
+Vấn đề gốc là **race condition** (đua tranh — kết quả phụ thuộc thứ tự thực thi không kiểm soát). Cần biến thao tác "kiểm tra còn trống → giữ ghế" thành một đơn vị an toàn.
 
-### Trade-off
-| Cách | Ưu | Nhược |
-| Pessimistic | an toàn | throughput thấp |
-| Optimistic | throughput cao | retry storm |
+1. **Pessimistic lock (khóa bi quan — khóa trước rồi làm)**:
+~~~sql
+BEGIN;
+-- Khóa dòng ghế; transaction khác chạm dòng này sẽ CHỜ đến khi commit/rollback
+SELECT status, version FROM seats WHERE id = 42 FOR UPDATE;
+-- Kiểm tra: nếu vẫn AVAILABLE thì giữ
+UPDATE seats SET status = 'HELD', hold_until = NOW() + INTERVAL '5 min', holder = :user
+WHERE id = 42 AND status = 'AVAILABLE';
+COMMIT;
+~~~
+{{FOR UPDATE}} lấy exclusive lock (khóa độc quyền) trên row. Request thứ 2 bị block; khi request 1 commit, request 2 đọc lại thấy {{HELD}} → trả "ghế đã có người giữ".
+2. **Optimistic lock (khóa lạc quan — không khóa, kiểm tra khi ghi)**: thêm cột {{version}}. Không ai bị chờ; ai ghi trước thắng.
+~~~sql
+-- Đọc: status=AVAILABLE, version=7
+UPDATE seats SET status='HELD', version=version+1, holder=:user
+WHERE id=42 AND status='AVAILABLE' AND version=7;
+-- affected rows = 1 → thành công; = 0 → có người khác đổi trước, báo conflict
+~~~
+3. **Hold với TTL (time-to-live — thời gian sống)**: chuyển {{AVAILABLE → HELD}} (giữ chỗ 5 phút) thay vì bán thẳng. Job định kỳ hoặc check {{hold_until}} để trả ghế về {{AVAILABLE}} nếu không thanh toán kịp.
 
-### Pitfall
-- Deadlock khi lock nhiều ghế → lock theo thứ tự id.
-- Hold không release → ghế "ma".
+### Luồng tổng quan
+~~~seq
+title: Giữ ghế cuối (pessimistic lock)
+actors: UserA | API | DB | UserB
+UserA -> API: chọn ghế A1
+API -> DB: SELECT FOR UPDATE (lock row A1)
+DB --> API: AVAILABLE
+UserB -> API: chọn ghế A1
+API -> DB: SELECT FOR UPDATE (chờ lock)
+API -> DB: UPDATE A1 = HELD (UserA)
+API --> UserA: giữ chỗ 5 phút
+DB --> API: trả lock, thấy HELD
+API --> UserB: ghế đã có người giữ
+~~~
 
-> Senior tip: Kết hợp optimistic lock + idempotency key; monitor conflict rate.`,
+### Bảng trade-off
+| Cách | Ưu | Nhược | Khi dùng |
+| Pessimistic (FOR UPDATE) | An toàn tuyệt đối, logic đơn giản | Throughput thấp, có thể deadlock/timeout khi hot row | Ghế cuối, số lượng rất ít, cần chắc chắn |
+| Optimistic (version) | Không block, throughput cao | Conflict nhiều khi tranh chấp cao → retry storm | Tranh chấp vừa phải |
+| Distributed lock (Redis SETNX) | Giảm tải DB | Phức tạp, cần xử lý lock hết hạn giữa chừng | Kết hợp, không thay thế DB truth |
+| Queue tuần tự hóa | Không race | Độ trễ cao, UX chờ | Flash sale cực lớn |
+
+### Pitfall thực tế trên production
+- **Deadlock khi giữ nhiều ghế**: user chọn A1,A2; user khác chọn A2,A1 → mỗi bên giữ 1 lock chờ lock kia. Cách tránh: luôn lock theo thứ tự {{id}} tăng dần trong cùng transaction.
+- **Ghế "ma" (HELD mãi)**: user giữ chỗ rồi thoát app, không thanh toán. Bắt buộc có TTL + job release ({{WHERE status='HELD' AND hold_until < NOW()}}) và release khi payment fail/timeout.
+- **Double charge (trừ tiền 2 lần)**: client retry vì mạng chậm. Dùng {{idempotency key}} (client gửi key duy nhất cho mỗi lần checkout; server lưu kết quả, request trùng trả kết quả cũ) ở bước thanh toán.
+- **Tin cache "còn ghế"**: UI hiển thị từ cache → user bấm mua mới phát hiện hết. Cache chỉ để hiển thị, quyết định cuối cùng luôn dựa trên DB trong transaction.
+
+> Senior tip: Với ghế cuối (tranh chấp cực cao trên đúng 1 row), pessimistic {{FOR UPDATE}} + TTL hold đơn giản và an toàn nhất. Đo conflict/lock-wait time; nếu p99 lock-wait > 500ms thì cân nhắc queue. Luôn thêm idempotency key ở payment và ghi audit log (ai giữ/mua ghế nào, lúc nào) để đối soát.`,
     follow: ['Idempotency key thiết kế thế nào?', 'Làm sao tránh double charge?'],
     tags: ['concurrency', 'locking', 'booking']
   },
@@ -5467,26 +5545,56 @@ Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiệ
     topic: 'scenario',
     level: 'mid',
     q: 'Interviewer hỏi: giải thích index trong DB, B-Tree vs Binary Tree, kiểm tra cột đã index chưa?',
-    a: `**Tóm tắt:** Index là cấu trúc phụ (thường B-Tree) giúp tìm nhanh; B-Tree cân bằng, phù hợp range query; kiểm tra qua EXPLAIN và catalog.
+    a: `**Tóm tắt:** Index (chỉ mục — cấu trúc dữ liệu phụ giúp DB tìm dòng nhanh mà không quét cả bảng, giống mục lục sách) thường dùng B-Tree vì nó cân bằng và hỗ trợ cả tìm bằng (=) lẫn khoảng (<, >, BETWEEN, ORDER BY). Kiểm tra index bằng {{EXPLAIN (ANALYZE)}} và tra catalog hệ thống ({{pg_indexes}}, {{SHOW INDEX}}).
 
-### Khái niệm
-- B-Tree: cây cân bằng, mỗi node nhiều key; hỗ trợ =, <, >, BETWEEN, ORDER BY.
-- Binary tree: mỗi node 2 con; dễ lệch, không phù hợp disk.
+### Vì sao cần index (cơ chế từng bước)
+Bảng {{orders}} có 10 triệu dòng, query {{WHERE user_id = 123}}:
+- **Không index**: DB phải sequential scan (quét tuần tự) 10 triệu dòng → đọc rất nhiều trang đĩa, chậm (giây).
+- **Có index B-Tree trên {{user_id}}**: DB đi từ gốc cây xuống lá theo giá trị 123 (vài bước, vì cây nông), lấy con trỏ (row pointer/ctid) tới đúng dòng → chỉ đọc vài trang (ms).
 
-### Kiểm tra index
-~~~sql
-EXPLAIN ANALYZE SELECT ...;
-SELECT * FROM pg_indexes WHERE tablename='t';
+### B-Tree là gì, khác Binary Tree (cây nhị phân) thế nào
+- **B-Tree (Balanced Tree — cây cân bằng bậc cao)**: mỗi node chứa **nhiều key** và nhiều con; mọi lá ở cùng độ sâu (cân bằng). Vì dữ liệu DB nằm trên đĩa (I/O theo trang 4KB/8KB), một node chứa nhiều key giúp **giảm số lần đọc đĩa**. Tìm kiếm O(log_m N) với m lớn → cây rất nông (hàng chục triệu dòng chỉ ~3–4 tầng).
+- **Binary Tree (cây nhị phân, mỗi node 2 con)**: nếu dữ liệu vào tăng dần có thể lệch thành một đường thẳng (degenerate) → O(N). Cây cân bằng (AVL/Red-Black) tốt trong RAM, nhưng mỗi node ít key → quá nhiều lần đọc đĩa khi dữ liệu lớn.
+
+~~~text
+B-Tree (đơn giản hóa, bậc 3) trên user_id:
+            [ 50 | 100 ]
+           /     |      \
+     [10|30]   [60|80]  [110|150]   <- node lá trỏ tới row
+Tìm user_id=80: 50?100? -> giữa -> 60?80? -> tới row (3 bước)
 ~~~
 
-### Khi nào không dùng index
-- Bảng nhỏ; cột cardinality thấp (boolean); write-heavy.
+### Kiểm tra cột đã index chưa
+~~~sql
+-- PostgreSQL: xem kế hoạch thực thi (có dùng index không, tốn bao lâu)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM orders WHERE user_id = 123 AND status = 'PAID';
 
-### Pitfall
-- Index không được dùng do implicit cast hoặc function trên cột.
-- Quá nhiều index làm chậm write.
+-- Liệt kê index trên bảng
+SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'orders';
+~~~
+~~~sql
+-- MySQL
+EXPLAIN SELECT * FROM orders WHERE user_id = 123;
+SHOW INDEX FROM orders;
+~~~
+Trong {{EXPLAIN}}, thấy {{Index Scan}} / {{Bitmap Index Scan}} (PG) hoặc {{ref/range}} dùng key (MySQL) là index đang hoạt động; thấy {{Seq Scan}} / {{ALL}} là đang quét hết bảng.
 
-> Senior tip: Index là đánh đổi read/write; đo plan thật, đừng đoán.`,
+### Bảng trade-off: khi nào nên / không nên tạo index
+| Tình huống | Nên index? | Vì sao |
+| Cột hay lọc/join/sort (WHERE, JOIN, ORDER BY) | Có | Giảm dòng phải đọc |
+| Bảng nhỏ (vài nghìn dòng) | Thường không | Seq scan trong RAM còn nhanh, index thêm chi phí |
+| Cột cardinality thấp (ít giá trị phân biệt, vd boolean, gender) | Thường không | Trả về quá nhiều dòng, planner bỏ qua index |
+| Bảng ghi rất nhiều (INSERT/UPDATE liên tục) | Cân nhắc | Mỗi lần ghi phải cập nhật mọi index → chậm write |
+| Cột hay bọc hàm {{WHERE lower(email)=...}} | Cần index hàm | Index trên {{email}} thường không dùng được |
+
+### Pitfall thực tế trên production
+- **Index "có" nhưng không được dùng**: do implicit cast ({{WHERE user_id = '123'}} khi cột là int), bọc hàm lên cột, hoặc so sánh không khớp kiểu collation. Luôn xác minh bằng {{EXPLAIN ANALYZE}}.
+- **Tạo quá nhiều index**: query read nhanh hơn nhưng {{INSERT/UPDATE/DELETE}} chậm rõ rệt, tốn dung lượng. Nguyên tắc: chỉ index cột phục vụ query thật, theo dõi index không ai dùng ({{pg_stat_user_indexes}}).
+- **Composite index (chỉ mục nhiều cột) sai thứ tự**: index {{(a,b)}} giúp {{WHERE a=?}} và {{WHERE a=? AND b=?}}, nhưng **không** giúp {{WHERE b=?}} đứng một mình (quy tắc leftmost prefix — tiền tố trái).
+- **Quên {{ANALYZE}}**: thống kê cũ khiến planner chọn nhầm plan (bỏ index). Sau import dữ liệu lớn, chạy {{ANALYZE}}.
+
+> Senior tip: Index là đánh đổi read/write — đừng tạo theo cảm giác. Quy trình: lấy query chậm từ slow log/pg_stat_statements → {{EXPLAIN (ANALYZE, BUFFERS)}} → thêm đúng 1 index phục vụ query đó → đo lại. Trên bảng chục triệu dòng, một index đúng có thể đưa query từ ~3s xuống < 20ms.`,
     follow: ['Composite index thứ tự cột?', 'Index covering là gì?'],
     tags: ['index', 'database', 'btree']
   },
@@ -5495,26 +5603,53 @@ SELECT * FROM pg_indexes WHERE tablename='t';
     topic: 'scenario',
     level: 'senior',
     q: 'Interviewer hỏi: isolation levels khác nhau thế nào, locking level ra sao?',
-    a: `**Tóm tắt:** Isolation levels (Read Uncommitted/Committed/Repeatable Read/Serializable) kiểm soát dirty/non-repeatable/phantom reads; locking (row/table, shared/exclusive) là cơ chế.
+    a: `**Tóm tắt:** Isolation level (mức cô lập — quy tắc kiểm soát transaction này nhìn thấy thay đổi của transaction khác như thế nào) gồm 4 mức từ thấp đến cao (Read Uncommitted, Read Committed, Repeatable Read, Serializable), đánh đổi giữa tính đúng và hiệu năng. Locking (cơ chế khóa — giữ tài nguyên để tránh ghi đè nhau) là cách DB hiện thực hóa mức cô lập, gồm shared/exclusive lock ở mức row hoặc table.
 
-### Bảng
-| Level | Dirty | Non-repeatable | Phantom |
-| Read Uncommitted | có | có | có |
-| Read Committed | không | có | có |
-| Repeatable Read | không | không | có* |
-| Serializable | không | không | không |
+### Bối cảnh thực tế
+Hệ thống chuyển tiền: transaction T1 đọc số dư 10 triệu, T2 cũng đọc 10 triệu và rút 8 triệu rồi commit, T1 trừ 5 triệu dựa trên số dư cũ → số dư âm. Đây là hậu quả của cô lập không đủ.
 
-*InnoDB RR cũng chặn phantom bằng gap lock.
+### Ba hiện tượng bất thường (vì sao cần isolation)
+- **Dirty read (đọc bẩn)**: đọc dữ liệu mà transaction khác vừa ghi nhưng **chưa commit** (có thể bị rollback).
+- **Non-repeatable read (đọc không lặp lại)**: cùng 1 query trong 1 transaction, chạy 2 lần cho kết quả khác vì transaction khác đã {{UPDATE/DELETE}} và commit giữa chừng.
+- **Phantom read (đọc bóng ma)**: cùng 1 query khoảng ({{WHERE amount > 100}}), lần 2 thấy thêm **dòng mới** vì transaction khác {{INSERT}} và commit.
 
-### Locking
-- Shared (S) cho read; Exclusive (X) cho write.
-- Row-level vs table-level; deadlock khi lock vòng.
+### Bảng isolation level
+| Level | Dirty read | Non-repeatable | Phantom | Hiệu năng |
+| Read Uncommitted | Có thể | Có thể | Có thể | Cao nhất (hiếm dùng) |
+| Read Committed (mặc định PostgreSQL) | Không | Có thể | Có thể | Tốt, phổ biến |
+| Repeatable Read (mặc định MySQL/InnoDB) | Không | Không | Có thể* | Trung bình |
+| Serializable | Không | Không | Không | Thấp nhất, an toàn nhất |
 
-### Pitfall
-- Chọn Serializable cho mọi thứ → throughput thấp.
-- Long transaction giữ lock → contention.
+*MySQL InnoDB ở Repeatable Read dùng MVCC (đa phiên bản — mỗi transaction thấy snapshot riêng) + gap lock (khóa khoảng trống giữa các key) nên thực tế chặn được nhiều trường hợp phantom; PostgreSQL RR cũng dùng snapshot nhưng phantom theo chuẩn SQL vẫn có thể bàn luận tùy kịch bản.
 
-> Senior tip: Mặc định Read Committed + explicit lock khi cần; đo contention.`,
+### Locking level (cơ chế khóa)
+- **Shared lock (S, khóa chia sẻ)**: cho phép đọc, chặn ghi. Nhiều transaction có thể cùng giữ S.
+- **Exclusive lock (X, khóa độc quyền)**: cho ghi; chặn cả S và X khác. {{UPDATE/DELETE}} và {{SELECT ... FOR UPDATE}} lấy X.
+- **Mức row vs table**: row-level lock (khóa từng dòng) cho phép concurrency cao; table-level khóa cả bảng, an toàn nhưng gây nghẽn. DB hiện đại (PostgreSQL, InnoDB) ưu tiên row-level.
+- **Deadlock (khóa vòng)**: T1 giữ lock A chờ B, T2 giữ lock B chờ A. DB tự phát hiện (sau ~1s tùy cấu hình) và abort một transaction (trả lỗi). Tránh bằng cách khóa theo thứ tự cố định và giữ transaction ngắn.
+
+~~~sql
+-- Lấy exclusive lock tường minh khi cần "đọc rồi ghi" an toàn
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE; -- khóa row id=1
+UPDATE accounts SET balance = balance - 500000 WHERE id = 1;
+COMMIT;
+~~~
+
+### Bảng trade-off: chọn mức nào
+| Nhu cầu | Mức gợi ý | Ghi chú |
+| API đọc thông thường, báo cáo gần đúng | Read Committed | Mặc định tốt, ít contention |
+| Đọc rồi ghi dựa trên giá trị vừa đọc (chuyển tiền) | Read Committed + {{FOR UPDATE}} | Rõ ràng, hiệu quả |
+| Cần snapshot nhất quán trong suốt transaction dài | Repeatable Read | Tránh non-repeatable read |
+| Nghiệp vụ cực kỳ nhạy cảm (sổ cái) | Serializable hoặc kiểm tra ràng buộc ở DB | Chậm, chỉ dùng khi cần |
+
+### Pitfall thực tế trên production
+- **"Mặc định là an toàn"**: Read Committed vẫn cho phép non-repeatable read; logic "đọc số dư → trừ" không có {{FOR UPDATE}} vẫn bị race condition.
+- **Nâng Serializable cho mọi thứ**: throughput giảm mạnh, lỗi serialization failure (PG) buộc retry → phức tạp. Chỉ nâng đúng chỗ cần.
+- **Transaction dài giữ lock**: mở transaction, gọi API ngoài, rồi mới commit → giữ row lock hàng chục giây, request khác xếp hàng, p99 tăng vọt. Quy tắc: transaction càng ngắn càng tốt, không gọi mạng bên trong transaction.
+- **Nhầm isolation với atomicity**: isolation là giữa các transaction song song; atomicity (A trong ACID) là tất-cả-hoặc-không trong 1 transaction.
+
+> Senior tip: Thực dụng nhất là giữ Read Committed và dùng {{SELECT ... FOR UPDATE}} / ràng buộc {{UNIQUE}} / {{CHECK}} đúng chỗ "đọc-rồi-ghi". Theo dõi {{pg_stat_activity}} (lock chờ) và deadlock count; nếu lock-wait p99 > 200ms, rà lại transaction dài và thứ tự khóa.`,
     follow: ['MVCC hoạt động thế nào?', 'Gap lock là gì?'],
     tags: ['isolation', 'transaction', 'locking']
   },
@@ -5523,24 +5658,51 @@ SELECT * FROM pg_indexes WHERE tablename='t';
     topic: 'scenario',
     level: 'senior',
     q: 'Interviewer hỏi: khi nào dùng Kafka thay vì REST/RPC, trade-off ra sao?',
-    a: `**Tóm tắt:** Kafka là log phân tán, phù hợp event streaming, decoupling, replay; REST/RPC cho request/response đồng bộ.
+    a: `**Tóm tắt:** Kafka (nền tảng event streaming — hàng đợi/nhật ký sự kiện phân tán, lưu message theo thứ tự và cho đọc lại) phù hợp khi cần xử lý bất đồng bộ, tách rời producer/consumer, chịu tải lớn và replay (đọc lại) sự kiện; REST/RPC (gọi hàm/HTTP đồng bộ — gửi request và chờ response ngay) phù hợp khi cần kết quả tức thì và luồng đơn giản.
 
-### So sánh
-| Tiêu chí | Kafka | REST/RPC |
-| Coupling | lỏng | chặt |
-| Latency | ms-seconds | ms |
-| Ordering | per-partition | không đảm bảo |
-| Replay | có | không |
+### Bối cảnh thực tế
+Đơn hàng vừa tạo cần: trừ kho, gửi email, cộng điểm loyalty, đẩy analytics. Nếu service Order gọi lần lượt Inventory, Email, Loyalty, Analytics bằng REST: (1) Order phải chờ tất cả → chậm; (2) Email lỗi làm cả đơn hàng thất bại dù đơn đã hợp lệ; (3) thêm consumer mới phải sửa Order. Kafka giải quyết bằng cách Order chỉ phát 1 event {{OrderCreated}}.
 
-### Khi dùng Kafka
-- Event sourcing, audit log, analytics pipeline, async task.
-- Cần decouple producer/consumer, scale độc lập.
+### Cơ chế hoạt động (từng bước, dễ hiểu)
+- **Producer** (bên gửi) ghi message vào một **topic** (chủ đề/kênh). Topic chia thành nhiều **partition** (phân vùng) để song song hóa.
+- Kafka lưu message tuần tự trên đĩa theo offset (vị trí). Khác hàng đợi truyền thống: message **không bị xóa ngay sau khi đọc** (giữ theo retention, vd 7 ngày) → consumer có thể đọc lại.
+- **Consumer group**: nhiều instance cùng group chia nhau các partition → scale ngang. Mỗi partition chỉ có 1 consumer trong group xử lý tại 1 thời điểm → đảm bảo **thứ tự trong 1 partition** (thường chọn key = {{orderId}} để event cùng đơn đi cùng partition).
 
-### Pitfall
-- Dùng Kafka cho request/response đơn giản → phức tạp không cần thiết.
-- Không idempotent consumer → duplicate xử lý.
+~~~seq
+title: Order tạo xong, các bên xử lý bất đồng bộ
+actors: Client | OrderSvc | Kafka | Inventory | Email
+Client -> OrderSvc: POST /orders
+OrderSvc -> Kafka: publish OrderCreated (key=orderId)
+OrderSvc --> Client: 201 Created (nhanh)
+Kafka -> Inventory: consume OrderCreated
+Inventory -> Inventory: trừ kho
+Kafka -> Email: consume OrderCreated
+Email -> Email: gửi xác nhận
+~~~
 
-> Senior tip: Bắt đầu bằng REST; chuyển Kafka khi cần async/replay/scale.`,
+### Bảng trade-off
+| Tiêu chí | Kafka (event/async) | REST/RPC (sync) |
+| Phản hồi cho client | Không có kết quả nghiệp vụ ngay (chấp nhận sau) | Có response ngay |
+| Coupling (phụ thuộc) | Lỏng: producer không biết consumer | Chặt: caller phải biết callee |
+| Độ trễ end-to-end | Thường cao hơn (ms–giây) | Thấp cho 1 hop (ms) |
+| Chịu lỗi | Consumer chết, sống lại đọc tiếp từ offset | Callee chết → caller lỗi (cần retry/circuit breaker) |
+| Thứ tự | Chỉ đảm bảo trong 1 partition | Không có khái niệm stream |
+| Replay/ audit | Có (đọc lại offset cũ) | Không |
+| Vận hành | Phức tạp (cluster, schema, monitoring) | Đơn giản hơn |
+
+### Khi nào dùng Kafka, khi nào dùng REST/RPC
+- **Dùng Kafka**: sự kiện nghiệp vụ cần nhiều bên tiêu thụ (OrderCreated), pipeline dữ liệu/analytics, audit log, tích hợp service cần tách rời, tải đột biến muốn "đệm" (buffer), cần replay.
+- **Dùng REST/RPC**: cần câu trả lời ngay để tiếp tục (login trả token, kiểm tra số dư trước khi cho rút), thao tác CRUD đơn giản, 1–1 request/response, team nhỏ chưa có năng lực vận hành Kafka.
+- **Kết hợp**: REST để nhận request + trả ack nhanh, phía sau phát event Kafka cho xử lý nặng.
+
+### Pitfall thực tế trên production
+- **Dùng Kafka cho mọi thứ**: gọi kiểu request/response bắt buộc kết quả ngay qua Kafka (request-reply topic) phức tạp, khó debug. Giữ REST cho sync.
+- **Consumer không idempotent (chạy lại cho cùng kết quả)**: Kafka đảm bảo at-least-once (có thể giao trùng). Nếu trừ kho 2 lần cho cùng event → sai nghiệp vụ. Xử lý bằng idempotency key (lưu {{eventId}} đã xử lý) hoặc thao tác upsert.
+- **Sai partition key**: key null/random → event cùng {{orderId}} rơi khác partition → mất thứ tự. Chọn key theo thực thể cần giữ thứ tự.
+- **Không quản lý schema**: producer đổi format message làm consumer vỡ. Dùng Schema Registry (Avro/Protobuf/JSON Schema) và quy tắc tương thích.
+- **Consumer lag (tụt lại)**: consumer xử lý chậm, backlog tăng. Monitor {{consumer lag}}; scale consumer (tối đa bằng số partition) hoặc tối ưu xử lý.
+
+> Senior tip: Quyết định theo câu hỏi "caller có cần kết quả ngay để trả user không?" — có thì REST/gRPC, không thì cân nhắc Kafka. Bắt đầu đơn giản, chuyển sang Kafka khi thấy nhu cầu thật về decoupling/replay/buffer. Luôn làm consumer idempotent và theo dõi consumer lag (cảnh báo nếu lag > ngưỡng, vd 10k message hoặc > 60s).`,
     follow: ['Consumer group là gì?', 'Exactly-once semantics?'],
     tags: ['kafka', 'messaging', 'architecture']
   },
@@ -5549,23 +5711,59 @@ SELECT * FROM pg_indexes WHERE tablename='t';
     topic: 'scenario',
     level: 'mid',
     q: 'Interviewer hỏi: Redis cache, cache cái gì, xử lý cache hit/miss thế nào?',
-    a: `**Tóm tắt:** Cache dữ liệu ít thay đổi, đọc nhiều; hit trả từ cache, miss query DB rồi set cache; xử lý invalidation và stampede.
+    a: `**Tóm tắt:** Redis cache (bộ nhớ đệm trong RAM — lưu tạm bản sao dữ liệu để đọc nhanh, tránh gọi DB lặp lại) dùng cho dữ liệu đọc nhiều, ít thay đổi (cấu hình, profile, danh mục). Mẫu phổ biến là cache-aside: hit (có trong cache) thì trả ngay, miss (không có) thì đọc DB, ghi vào cache kèm TTL (thời gian sống), rồi trả; đồng thời phải xử lý invalidation (xóa cache khi dữ liệu đổi) và các lỗi cache stampede/penetration.
 
-### Chiến lược
-- Cache-aside: app tự get/set.
-- Write-through: ghi DB + cache cùng lúc.
-- TTL + invalidation qua event.
+### Bối cảnh thực tế
+Trang chi tiết sản phẩm gọi 6 query DB, 5k RPS giờ cao điểm → DB CPU 90%, p99 800ms. 95% request đọc cùng bộ sản phẩm hot, dữ liệu chỉ đổi khi seller cập nhật (vài lần/giờ). Cache giúp trả phần lớn từ RAM (sub-millisecond).
 
-### Cache hit/miss
-- Hit: trả ngay.
-- Miss: query DB, set cache với TTL, trả.
+### Cache cái gì (tiêu chí)
+- **Đọc nhiều, ghi ít**: tỉ lệ read:write cao (vd 100:1). Dữ liệu ghi liên tục, cần chính xác tuyệt đối (số dư tài khoản) → không cache hoặc cache rất cẩn thận.
+- **Tính được lại**: mất cache không mất dữ liệu gốc (DB vẫn là source of truth).
+- **Dung lượng vừa**: object không quá lớn; key có quy ước rõ ({{product:42}}, {{user:42:profile}}).
 
-### Pitfall
-- Cache stampede khi TTL hết đồng loạt → jitter TTL, locking.
-- Stale data → invalidation rõ ràng.
-- Cache penetration (key không tồn tại) → bloom filter/null cache.
+### Cơ chế cache hit/miss (cache-aside, từng bước)
+~~~java
+String key = "product:" + id;
+Product p = redis.get(key);            // 1) thử đọc cache
+if (p != null) return p;               // 2) HIT: trả ngay (nhanh)
+p = db.findProduct(id);                // 3) MISS: đọc DB (nguồn thật)
+if (p != null) {
+    redis.setex(key, 300, serialize(p)); // 4) ghi cache, TTL 300s
+} else {
+    redis.setex(key, 60, "__NULL__");    // 4b) cache giá trị rỗng ngắn (chống penetration)
+}
+return p;
+~~~
+- **Write-through**: ghi DB và cập nhật cache cùng lúc (dữ liệu mới hơn, code phức tạp hơn).
+- **Invalidation khi ghi**: khi seller cập nhật sản phẩm → xóa key {{product:42}} (lệnh {{DEL}}) để lần đọc sau miss và lấy dữ liệu mới. "Xóa" an toàn hơn "cập nhật cache" vì tránh ghi giá trị cũ do race.
 
-> Senior tip: Cache là tối ưu, không phải nguồn đúng; luôn có fallback DB.`,
+~~~seq
+title: Cache-aside hit/miss
+actors: Client | App | Redis | DB
+Client -> App: GET /products/42
+App -> Redis: GET product:42
+Redis --> App: MISS
+App -> DB: SELECT product 42
+DB --> App: row
+App -> Redis: SETEX product:42 300s
+App --> Client: product
+~~~
+
+### Bảng trade-off chiến lược
+| Chiến lược | Ưu | Nhược | Khi dùng |
+| Cache-aside | Đơn giản, chỉ cache dữ liệu được đọc | Lần đầu miss chậm, có thể stale | Phổ biến nhất |
+| Write-through | Cache luôn tươi sau ghi | Ghi chậm hơn (2 nơi), cache dữ liệu ít đọc | Cần đọc ngay sau ghi |
+| Write-behind (ghi DB async) | Ghi rất nhanh | Rủi ro mất dữ liệu nếu cache chết trước khi flush | Chấp nhận rủi ro, throughput ghi cực cao |
+| TTL only (không invalidate chủ động) | Đơn giản | Dữ liệu cũ tối đa = TTL | Dữ liệu chấp nhận trễ |
+
+### Pitfall thực tế trên production
+- **Cache stampede (đàn thú dồn dập)**: key hot hết TTL đúng lúc, hàng nghìn request cùng miss → đồng loạt đánh DB, DB sập. Cách giảm: jitter TTL (thêm ngẫu nhiên ±10%), mutex/lock chỉ 1 request rebuild cache, hoặc soft-TTL (trả cũ trong lúc refresh nền).
+- **Cache avalanche (sập tuyết lở)**: nhiều key hết TTL cùng thời điểm (vd deploy set cùng TTL). Thêm jitter và tránh set TTL giống hệt nhau.
+- **Stale data (dữ liệu cũ)**: cập nhật DB nhưng quên xóa cache → user thấy dữ liệu cũ. Quy tắc: mọi đường ghi phải invalidate key liên quan; chấp nhận eventual consistency trong TTL nếu dùng TTL-only.
+- **Cache penetration (xuyên thủng)**: query id không tồn tại → luôn miss → luôn chọc DB. Cache giá trị null ngắn (30–60s) hoặc dùng Bloom filter (bộ lọc xác suất) để chặn key chắc chắn không có.
+- **Object lớn/serialization chậm**: cache cả entity nặng tốn RAM và CPU. Chỉ cache field cần thiết, chọn format gọn (JSON/protobuf).
+
+> Senior tip: Cache là lớp tối ưu, **DB vẫn là nguồn sự thật** — mọi luồng phải chạy đúng khi Redis rỗng hoặc chết (fallback DB, có thể chậm hơn nhưng không lỗi). Đặt TTL mọi key (tránh key sống mãi rò rỉ RAM), theo dõi hit ratio (mục tiêu thường > 90% cho key hot) và memory {{used/max}}; p99 đọc cache Redis nội mạng thường < 2ms.`,
     follow: ['Cache avalanche là gì?', 'Write-behind cache?'],
     tags: ['redis', 'cache', 'performance']
   },
@@ -5574,24 +5772,62 @@ SELECT * FROM pg_indexes WHERE tablename='t';
     topic: 'scenario',
     level: 'senior',
     q: 'Interviewer hỏi: tối ưu query trên bảng tỷ bản ghi đã có index đầy đủ nhưng vẫn chậm — bạn làm gì?',
-    a: `**Tóm tắt:** Kiểm tra index có thực sự được dùng (EXPLAIN), partition theo thời gian, rewrite query, kiểm tra statistics và I/O.
+    a: `**Tóm tắt:** "Đã có index" không có nghĩa planner (bộ chọn kế hoạch thực thi của DB) sẽ dùng. Phải kiểm chứng bằng {{EXPLAIN (ANALYZE, BUFFERS)}} để xem DB thực sự quét gì, tốn bao lâu, đọc bao nhiêu trang; sau đó tối ưu theo nguyên nhân: index không khớp query, dữ liệu quá lớn cần partition (phân vùng bảng), statistics cũ, query viết tệ, hoặc I/O/sort tràn bộ nhớ.
 
-### Điều tra
-- EXPLAIN (ANALYZE, BUFFERS): Seq Scan? Sort spill?
-- Statistics cũ → ANALYZE.
-- Index không khớp do function/cast.
+### Bối cảnh thực tế
+Bảng {{events}} 1,2 tỷ bản ghi (log hành vi 18 tháng). Query "lấy 100 event của user trong 7 ngày" có index {{(user_id, created_at)}} nhưng p99 vẫn 4–6 giây, DB I/O chờ cao giờ cao điểm.
 
-### Giải pháp
-1. Partition theo thời gian (range) cho dữ liệu lớn.
-2. Rewrite: tránh SELECT *, function trên cột.
-3. Covering index cho hot query.
-4. Read replica cho list nặng.
+### Điều tra từng bước (triệu chứng → kiểm tra → nguyên nhân)
+1. **Xem kế hoạch thật** (đừng đoán):
+~~~sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, type, created_at
+FROM events
+WHERE user_id = 42
+  AND created_at >= NOW() - INTERVAL '7 days'
+ORDER BY created_at DESC
+LIMIT 100;
+~~~
+2. **Đọc các dấu hiệu trong plan**:
+   - {{Seq Scan}} trên bảng lớn → index không được dùng.
+   - {{Index Scan}} nhưng {{actual time}} cao, {{buffers read}} lớn → index dùng nhưng vẫn đọc quá nhiều dòng/trang (selectivity kém, hoặc phải "lọc lại" nhiều).
+   - {{Sort Method: external merge Disk}} → bộ nhớ {{work_mem}} không đủ, sort tràn ra đĩa.
+   - {{rows estimated}} lệch xa {{actual rows}} → statistics (thống kê phân bố dữ liệu) cũ, planner chọn sai plan.
+3. **Vì sao index "đầy đủ" vẫn không dùng/không nhanh**:
+   - Bọc hàm lên cột: {{WHERE DATE(created_at)=...}} làm index {{(created_at)}} vô dụng → viết lại {{created_at >= ... AND created_at < ...}}.
+   - Implicit cast kiểu: {{WHERE user_id = '42'}} khi cột {{bigint}}.
+   - Thứ tự composite index sai (leftmost prefix): index {{(created_at, user_id)}} không giúp {{WHERE user_id = 42}}.
+   - Planner ước tính trả về quá nhiều dòng → quyết định Seq Scan rẻ hơn (đôi khi đúng, đôi khi do stats cũ).
 
-### Pitfall
-- Chuyển non-partition → partition cần kế hoạch migrate.
-- Index "đầy đủ" nhưng planner không chọn → verify.
+### Giải pháp (ngắn hạn → dài hạn)
+- **Sửa query/index cho khớp**: đúng thứ tự {{(user_id, created_at)}}, bỏ hàm/cast trên cột lọc, chỉ {{SELECT}} cột cần (tránh {{SELECT *}}). Dùng **covering index** (chỉ mục chứa luôn cột trả về, vd {{(user_id, created_at) INCLUDE (id, type)}} ở PostgreSQL) để Index Only Scan, không phải đọc bảng.
+- **Cập nhật statistics**: {{ANALYZE events;}} (hoặc tăng autovacuum/analyze). Nếu planner vẫn chọn sai sau khi stats đúng, mới cân nhắc gợi ý ({{pg_hint_plan}}) như biện pháp tạm.
+- **Partition (phân vùng) theo thời gian**: bảng 1,2 tỷ dòng, truy vấn chủ yếu 7–30 ngày gần nhất → partition RANGE theo tháng/tuần. Planner dùng **partition pruning** (bỏ qua các phân vùng không liên quan) nên chỉ quét vài partition thay vì cả bảng. Kết hợp index cục bộ trên mỗi partition.
+~~~sql
+-- Ví dụ ý tưởng (PostgreSQL declarative partitioning)
+CREATE TABLE events (id bigint, user_id bigint, created_at timestamptz, type text)
+PARTITION BY RANGE (created_at);
+CREATE TABLE events_2026_05 PARTITION OF events
+  FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
+CREATE INDEX ON events_2026_05 (user_id, created_at);
+~~~
+- **Giảm dữ liệu phải xử lý**: keyset/cursor pagination thay vì {{OFFSET}} lớn; pre-aggregate (bảng tổng hợp) hoặc materialized view (view lưu vật lý kết quả) cho báo cáo; archive dữ liệu cũ sang bảng/kho lạnh.
 
-> Senior tip: Luôn verify bằng plan thực tế, không tin giả định "đã có index".`,
+### Bảng trade-off
+| Giải pháp | Ưu | Nhược | Khi dùng |
+| Sửa index/query | Nhanh, ít rủi ro | Không cứu nổi nếu scan quá nhiều dữ liệu | Luôn thử đầu tiên |
+| Covering index | Giảm đọc bảng (heap fetch) | Tốn dung lượng, chậm write | Query hot, cột trả về ít |
+| Partition theo thời gian | Pruning mạnh, dễ drop dữ liệu cũ | Migrate bảng lớn phức tạp, cần khóa partition key | Bảng tỷ dòng, query theo thời gian |
+| Read replica (bản sao chỉ đọc) | Tách tải đọc khỏi primary | Replication lag (trễ sao chép) | List/báo cáo nặng |
+| Sharding (chia ngang nhiều DB) | Scale vượt 1 máy | Rất phức tạp (join, transaction xuyên shard) | Cực lớn, giải pháp cuối |
+
+### Pitfall thực tế trên production
+- **Tin "đã có index" mà không kiểm chứng**: luôn tin {{EXPLAIN ANALYZE}} thực tế, không tin giả định.
+- **Partition mà quên partition key trong WHERE**: query {{WHERE user_id=42}} (không lọc {{created_at}}) trên bảng partition theo thời gian → quét mọi partition, không pruning. Thiết kế query và partition key phải đi cùng nhau.
+- **Migrate sang partition trên bảng live tỷ dòng**: lock lâu, downtime. Cần kế hoạch (tạo bảng mới partitioned, backfill theo batch, dual-write/cutover) và đo trên staging.
+- **{{OFFSET 1000000}}**: DB vẫn phải đọc & bỏ qua 1 triệu dòng. Dùng keyset pagination ({{WHERE (created_at,id) < (:c,:i) ORDER BY created_at DESC, id DESC LIMIT 100}}).
+
+> Senior tip: Quy trình cố định: (1) {{EXPLAIN (ANALYZE, BUFFERS)}} + so estimated vs actual, (2) sửa query/index cho sargable (lọc dùng được index), (3) {{ANALYZE}} cập nhật stats, (4) nếu vẫn phải chạm quá nhiều dòng → partition/prune dữ liệu. Trên bảng ~1 tỷ dòng partition đúng theo tháng, query 7 ngày thường giảm từ quét cả bảng xuống < 2% dữ liệu và p99 từ giây về vài chục ms.`,
     follow: ['Partition pruning là gì?', 'Khi nào dùng materialized view?'],
     tags: ['database', 'partition', 'performance']
   }
