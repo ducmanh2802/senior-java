@@ -151,7 +151,7 @@ window.PATH_PLATFORM = [
     goal: `Pipeline là "dây chuyền sản xuất" mà platform team cung cấp cho các đội. Mục tiêu: thiết kế pipeline nhanh, an toàn, không cần secret dài hạn.
 - **Học:** GitHub Actions/GitLab CI, cache, artifact, test song song, quality gate (Sonar), quét lỗ hổng (Trivy, dependency check), SBOM, OIDC để lấy quyền cloud, trunk-based và versioning.
 - **Đạt được:** pipeline PR dưới 10 phút, không có access key trong biến CI.`,
-    lessons: [],
+    lessons: ['lesson-devops-018', 'lesson-devops-019'],
     questions: ['devops-010', 'devops-020', 'devops-027', 'devops-031', 'devops-072', 'devops-096', 'devops-099', 'devops-103'],
     quizTopics: ['devops'], requires: ['pf-02'],
     project: `**Pipeline mẫu:** GitHub Actions cho service của bạn: build + unit test + integration test (Testcontainers) + quality gate + quét image (Trivy) + sinh SBOM + push image lên registry, xác thực bằng **OIDC** (không lưu access key). Pipeline tái sử dụng được (reusable workflow) để service khác gọi lại chỉ bằng vài dòng. Ghi lại thời gian pipeline trước/sau khi bật cache và chạy song song.`,
@@ -221,7 +221,7 @@ window.PATH_PLATFORM = [
     goal: `Platform Engineering khác DevOps ở chỗ coi nền tảng là **sản phẩm cho developer**: đo trải nghiệm, giảm thời gian từ ý tưởng đến production. Mục tiêu: một developer tạo service mới chạy được trên production trong một buổi sáng.
 - **Học:** golden path / paved road, Internal Developer Portal (Backstage: software template, catalog, TechDocs), chỉ số DORA, đo trải nghiệm dev (khảo sát, thời gian onboard), multi-tenant cluster, chi phí theo đội, viết tài liệu và thuyết phục các đội dùng nền tảng.
 - **Đạt được:** hồ sơ đủ để ứng tuyển Platform Engineer / DevOps mid–senior, và một câu chuyện STAR có số liệu về nền tảng bạn dựng.`,
-    lessons: [],
+    lessons: ['lesson-devops-020', 'lesson-devops-021'],
     questions: ['devops-011', 'devops-023', 'devops-048', 'devops-055', 'devops-075', 'devops-119', 'devops-126', 'devops-127'],
     quizTopics: ['devops'], requires: ['pf-09'],
     project: `**Mini IDP:** Backstage (hoặc một CLI/template repo nếu muốn gọn) với template "Spring Boot service mới": tạo repo có sẵn Dockerfile, pipeline từ chặng 3, Helm values dùng chart chung, Argo CD application, dashboard và SLO từ chặng 7, rào chắn từ chặng 8, tài liệu TechDocs. Đo **thời gian từ lúc bấm tạo tới lúc service chạy trên môi trường dev** (mục tiêu dưới 30 phút) và viết case study một trang cho CV: vấn đề, thiết kế, con số trước/sau.`,

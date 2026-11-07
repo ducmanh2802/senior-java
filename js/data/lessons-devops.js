@@ -4742,4 +4742,671 @@ Khi PVC Pending, kiểm tra theo thứ tự: kubectl describe pvc để xem even
   related: ['devops-002','devops-004'],
   tags: ['Kubernetes','PVC','PV','StorageClass','Storage'],
 },
+{
+  id: 'lesson-devops-018',
+  track: 'devops',
+  order: 18,
+  title: 'Pipeline như code: đồ thị phụ thuộc (DAG), chạy song song và phát hiện vòng lặp',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Hiểu vì sao pipeline CI/CD thực chất là một đồ thị phụ thuộc giữa các bước (job)',
+    'Tự lập lịch các bước thành từng "đợt" chạy song song từ danh sách phụ thuộc',
+    'Phát hiện phụ thuộc vòng và phụ thuộc vào bước không tồn tại trước khi pipeline chạy',
+    'Biết các đòn bẩy làm pipeline nhanh: song song, cache, chỉ chạy phần bị ảnh hưởng',
+  ],
+  body: `### Pipeline là gì, nhìn dưới góc độ dữ liệu
+Một pipeline CI/CD gồm nhiều **bước (job)**: checkout, build, unit test, integration test, quét lỗ hổng, build image, push image, deploy. Một số bước **phụ thuộc** bước khác (không thể build image trước khi build jar), một số bước **độc lập** (unit test và quét dependency có thể chạy cùng lúc). Viết ra dữ liệu:
+~~~text
+build:        (không phụ thuộc)
+unit-test:    build
+it-test:      build
+dep-scan:     (không phụ thuộc)
+image:        unit-test, it-test
+image-scan:   image
+deploy-dev:   image-scan, dep-scan
+~~~
+Đây là một **đồ thị có hướng không chu trình** (DAG — Directed Acyclic Graph): mỗi bước là một đỉnh, mỗi phụ thuộc là một cạnh. GitHub Actions ({{needs:}}), GitLab CI ({{needs:}} hoặc stages), Jenkins (stage + parallel), Argo Workflows, Airflow đều mô hình hoá pipeline theo cách này.
+
+### Lập lịch theo "đợt" (topological levels)
+Ý tưởng (thuật toán Kahn theo tầng):
+1. Đợt 1 = mọi bước **không còn phụ thuộc chưa xong**.
+2. Coi đợt 1 đã xong, xoá chúng khỏi danh sách phụ thuộc của các bước còn lại.
+3. Đợt 2 = các bước giờ đã hết phụ thuộc. Lặp lại tới khi hết bước.
+Với ví dụ trên: đợt 1 = build, dep-scan; đợt 2 = it-test, unit-test; đợt 3 = image; đợt 4 = image-scan; đợt 5 = deploy-dev. Các bước trong cùng một đợt **chạy song song** được. Thời gian pipeline ≈ tổng thời gian bước **lâu nhất** của mỗi đợt (đường găng — critical path), không phải tổng mọi bước.
+
+### Hai lỗi cấu hình phải phát hiện trước khi chạy
+- **Phụ thuộc vòng**: A cần B, B cần A → không bước nào bắt đầu được; pipeline treo hoặc báo lỗi khó hiểu. Thuật toán trên phát hiện được: nếu tới lúc không còn bước nào hết phụ thuộc mà vẫn còn bước chưa xếp → có vòng.
+- **Phụ thuộc vào bước không tồn tại** (gõ sai tên "unit-tests" thay vì "unit-test"): phải báo lỗi rõ ràng ngay, không bỏ qua im lặng.
+
+### Làm pipeline nhanh hơn
+| Đòn bẩy | Ý tưởng | Lưu ý |
+|---|---|---|
+| Song song | Bước độc lập chạy cùng đợt | Bị giới hạn số runner |
+| Rút ngắn đường găng | Tối ưu bước dài nhất của mỗi đợt | Tối ưu bước không nằm trên đường găng không làm pipeline nhanh hơn |
+| Cache theo khoá nội dung | Khoá = hash của file lock (pom.xml, gradle.lockfile); khoá đổi mới tải lại dependency | Khoá sai thì cache cũ gây lỗi khó hiểu |
+| Chỉ chạy phần bị ảnh hưởng | Monorepo: chỉ build module có thay đổi | Phải an toàn mặc định: thay đổi file chung thì chạy hết |
+| Chia nhỏ test | Integration test chia nhiều shard | Shard cân bằng theo thời gian chạy |
+
+~~~java
+// Đường găng: thời gian pipeline theo đợt (giả sử runner không giới hạn)
+long total = 0;
+for (List<String> wave : waves) {
+    long longest = 0;
+    for (String step : wave) longest = Math.max(longest, durationSec.get(step));
+    total += longest;   // các bước trong đợt chạy song song -> chỉ tính bước lâu nhất
+}
+~~~
+
+> Trong platform team, bạn không viết pipeline cho từng service mà viết **pipeline dùng lại được** (reusable workflow, template). Kiểm tra DAG ngay khi đọc cấu hình giúp mọi đội nhận lỗi cấu hình trong vài giây thay vì sau 10 phút chờ runner.
+
+### Liên hệ phỏng vấn
+Câu hỏi "làm sao giảm pipeline từ 40 phút xuống 10 phút?" thực chất hỏi bạn có nhìn pipeline như một DAG không: tìm đường găng, song song hoá bước độc lập, cache đúng khoá, chỉ chạy phần bị ảnh hưởng. Nói được "thời gian pipeline bằng tổng bước dài nhất của mỗi đợt, nên tối ưu bước ngoài đường găng không giúp gì" là tín hiệu Senior rõ ràng.`,
+  exercises: [{
+    title: 'Lập lịch pipeline thành các đợt chạy song song',
+    prompt: `Viết {{PipelinePlanner.plan(Map<String, List<String>> deps)}}: key là tên bước, value là danh sách bước nó phụ thuộc.
+- Trả về danh sách các **đợt**: mỗi đợt là danh sách bước có thể chạy song song, các bước trong một đợt **sắp xếp theo thứ tự chữ cái**.
+- Một bước vào đợt sớm nhất có thể (mọi phụ thuộc đã nằm ở các đợt trước).
+- Phụ thuộc vào bước không có trong map → ném {{IllegalArgumentException}} với message chứa tên bước bị thiếu.
+- Có vòng phụ thuộc → ném {{IllegalArgumentException}} với message chứa chữ {{cycle}}.`,
+    starter: `class PipelinePlanner {
+    List<List<String>> plan(Map<String, List<String>> deps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Map<String, List<String>> sample() {
+        Map<String, List<String>> d = new LinkedHashMap<>();
+        d.put("build", List.of());
+        d.put("unit-test", List.of("build"));
+        d.put("it-test", List.of("build"));
+        d.put("dep-scan", List.of());
+        d.put("image", List.of("unit-test", "it-test"));
+        d.put("image-scan", List.of("image"));
+        d.put("deploy-dev", List.of("image-scan", "dep-scan"));
+        return d;
+    }
+    public static void main(String[] args) {
+        PipelinePlanner p = new PipelinePlanner();
+        check("dot_song_song", () -> eq(List.of(
+            List.of("build", "dep-scan"), List.of("it-test", "unit-test"), List.of("image"),
+            List.of("image-scan"), List.of("deploy-dev")), p.plan(sample())));
+        check("mot_buoc", () -> eq(List.of(List.of("lint")), p.plan(Map.of("lint", List.of()))));
+        check("rong", () -> eq(List.of(), p.plan(Map.of())));
+        check("phu_thuoc_khong_ton_tai", () -> {
+            Map<String, List<String>> d = new HashMap<>(sample());
+            d.put("deploy-prod", List.of("smoke-tests"));
+            try { p.plan(d); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException e) {
+                if (e.getMessage() == null || !e.getMessage().contains("smoke-tests")) throw new AssertionError("message phải chứa smoke-tests: " + e.getMessage());
+            }
+        });
+        check("vong_phu_thuoc", () -> {
+            Map<String, List<String>> d = new HashMap<>();
+            d.put("a", List.of("c")); d.put("b", List.of("a")); d.put("c", List.of("b")); d.put("x", List.of());
+            try { p.plan(d); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException e) {
+                if (e.getMessage() == null || !e.getMessage().contains("cycle")) throw new AssertionError("message phải chứa cycle: " + e.getMessage());
+            }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class PipelinePlanner {
+    List<List<String>> plan(Map<String, List<String>> deps) {
+        // 1. kiểm tra phụ thuộc trỏ tới bước không tồn tại
+        for (Map.Entry<String, List<String>> e : deps.entrySet())
+            for (String d : e.getValue())
+                if (!deps.containsKey(d)) throw new IllegalArgumentException("step " + e.getKey() + " depends on unknown step " + d);
+        // 2. đếm số phụ thuộc chưa xong của mỗi bước
+        Map<String, Integer> remaining = new HashMap<>();
+        Map<String, List<String>> dependents = new HashMap<>();
+        for (Map.Entry<String, List<String>> e : deps.entrySet()) {
+            remaining.put(e.getKey(), new HashSet<>(e.getValue()).size());
+            for (String d : new HashSet<>(e.getValue())) dependents.computeIfAbsent(d, k -> new ArrayList<>()).add(e.getKey());
+        }
+        List<List<String>> waves = new ArrayList<>();
+        List<String> ready = new ArrayList<>();
+        for (Map.Entry<String, Integer> e : remaining.entrySet()) if (e.getValue() == 0) ready.add(e.getKey());
+        int placed = 0;
+        while (!ready.isEmpty()) {
+            Collections.sort(ready);                       // thứ tự ổn định trong một đợt
+            waves.add(List.copyOf(ready));
+            placed += ready.size();
+            List<String> next = new ArrayList<>();
+            for (String done : ready)                      // "xong" cả đợt -> giảm bộ đếm của các bước phụ thuộc
+                for (String dep : dependents.getOrDefault(done, List.of()))
+                    if (remaining.merge(dep, -1, Integer::sum) == 0) next.add(dep);
+            ready = next;
+        }
+        // 3. còn bước chưa xếp mà không bước nào hết phụ thuộc -> có vòng
+        if (placed < deps.size()) throw new IllegalArgumentException("dependency cycle detected");
+        return waves;
+    }
+}`,
+    hints: [
+      'Đếm cho mỗi bước số phụ thuộc chưa xong; đợt đầu là các bước có số đếm bằng 0.',
+      'Sau mỗi đợt, giảm số đếm của các bước phụ thuộc vào bước vừa xong; bước nào về 0 thì vào đợt sau.',
+      'Nếu hết bước sẵn sàng mà tổng số bước đã xếp nhỏ hơn tổng số bước thì có vòng.',
+    ],
+    explain: `Lời giải là **thuật toán Kahn theo tầng**: đếm số phụ thuộc chưa xong (in-degree), đưa các bước có số đếm 0 vào một đợt, "hoàn thành" cả đợt rồi giảm bộ đếm của các bước phụ thuộc. Độ phức tạp O(số bước + số cạnh).
+- Kiểm tra bước không tồn tại **trước**, để báo lỗi đúng nguyên nhân thay vì báo "cycle".
+- Dùng {{HashSet}} khi đếm để một phụ thuộc bị khai báo trùng không làm sai bộ đếm.
+- Sắp xếp trong mỗi đợt để kết quả **xác định** (deterministic) — quan trọng cho test và cho log dễ đọc.
+Lỗi hay gặp: duyệt đệ quy DFS mà không đánh dấu "đang thăm" nên không phát hiện vòng; xếp từng bước thay vì từng đợt nên mất thông tin bước nào chạy song song được.`,
+  }],
+  check: [
+    { q: 'Pipeline có 3 đợt; thời gian các bước: đợt 1 {4, 2} phút, đợt 2 {6, 1, 3} phút, đợt 3 {2} phút. Với runner không giới hạn, pipeline mất bao lâu?', options: ['12 phút', '18 phút', '6 phút', '10 phút'], answer: 0, explain: 'Mỗi đợt chạy song song nên chỉ tính bước lâu nhất: 4 + 6 + 2 = 12 phút. 18 phút là tổng mọi bước (chạy tuần tự). 6 phút chỉ là bước lâu nhất một đợt. 10 phút bỏ sót đợt 3 hoặc tính sai.' },
+    { q: 'Bạn tối ưu bước "dep-scan" từ 3 phút xuống 1 phút nhưng pipeline vẫn mất đúng thời gian như cũ. Giải thích hợp lý nhất?', options: ['dep-scan không nằm trên đường găng: bước khác cùng đợt vẫn lâu hơn', 'Cache bị hỏng', 'Runner chạy tuần tự nên mọi tối ưu đều vô nghĩa', 'Pipeline có vòng phụ thuộc'], answer: 0, explain: 'Thời gian một đợt bằng bước lâu nhất của đợt đó; rút ngắn bước không phải lâu nhất không đổi tổng. Cache hỏng thường làm chậm hơn chứ không giữ nguyên. Nếu chạy tuần tự thì tối ưu bất kỳ bước nào cũng giảm tổng. Có vòng thì pipeline không chạy được.' },
+    { q: 'Khoá cache dependency Maven tốt nhất nên dựa trên gì?', options: ['Hash nội dung pom.xml (và file lock nếu có)', 'Tên nhánh git', 'Ngày chạy pipeline', 'Số build tăng dần'], answer: 0, explain: 'Khoá theo nội dung file khai báo dependency: dependency không đổi thì dùng lại cache, đổi thì tải mới. Theo nhánh làm mọi nhánh mới tải lại từ đầu. Theo ngày hay số build thì gần như không bao giờ trúng cache.' },
+  ],
+  related: ['devops-010', 'devops-020', 'devops-072'],
+  tags: ['CI/CD', 'pipeline', 'DAG', 'topological sort', 'platform engineering'],
+},
+{
+  id: 'lesson-devops-019',
+  track: 'devops',
+  order: 19,
+  title: 'Quality gate: chặn merge theo ngưỡng coverage, lỗ hổng và ngoại lệ có hạn dùng',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Hiểu quality gate là chính sách tự động quyết định một thay đổi có được merge/deploy hay không',
+    'Thiết kế quy tắc gate: test, coverage code mới, lỗ hổng theo mức nghiêm trọng',
+    'Xử lý ngoại lệ (waiver) có hạn dùng thay vì tắt gate',
+    'Trả về lý do rõ ràng để developer biết phải sửa gì',
+  ],
+  body: `### Quality gate là gì
+Quality gate là **cổng tự động** trong pipeline: đọc kết quả của các bước (test, coverage, quét lỗ hổng, quét bí mật) rồi quyết định **PASS** (được merge/deploy) hay **FAIL** (bị chặn), kèm **lý do**. SonarQube có "Quality Gate", GitHub/GitLab có required status checks, công cụ quét như Trivy có {{--exit-code}} theo mức nghiêm trọng. Platform team thường cung cấp **một chính sách chung** cho mọi service thay vì để mỗi đội tự đặt.
+
+### Thiết kế quy tắc hợp lý
+| Quy tắc | Vì sao | Bẫy |
+|---|---|---|
+| Không có test fail | Hiển nhiên | Test flaky làm mọi người muốn tắt gate — sửa flaky, đừng tắt gate |
+| Coverage **trên code mới** ≥ 80% | Không bắt đội sửa hết code cũ mới được merge | Coverage tổng cả repo làm gate vô nghĩa với codebase cũ |
+| Không có lỗ hổng **CRITICAL** chưa xử lý | Rủi ro bị khai thác cao | Lỗ hổng trong thư viện chưa có bản vá |
+| Số lỗ hổng HIGH ≤ ngưỡng | Kiểm soát dần | Ngưỡng quá chặt khi mới áp dụng → mọi PR đỏ |
+| Không có secret trong code | Lộ credential | Báo động giả với chuỗi test |
+
+### Ngoại lệ có hạn dùng (waiver)
+Khi một lỗ hổng CRITICAL nằm trong thư viện **chưa có bản vá** và đã đánh giá là không bị khai thác trong ngữ cảnh của bạn, đội cần một cách tiếp tục làm việc **mà không tắt cả gate**. Cách đúng là **waiver**: ngoại lệ cho đúng mã lỗ hổng đó, có lý do, người duyệt và **ngày hết hạn**. Hết hạn mà chưa xử lý → gate lại chặn. Waiver không có hạn sẽ tồn tại mãi và gate dần mất ý nghĩa.
+
+~~~java
+// Waiver còn hiệu lực đến hết ngày expires (so sánh theo ngày, dễ hiểu với người duyệt)
+boolean active(Waiver w, LocalDate today) {
+    return !today.isAfter(w.expires());   // hôm nay <= expires
+}
+~~~
+Truyền {{LocalDate today}} vào thay vì gọi {{LocalDate.now()}} bên trong: hàm trở nên **xác định** và test được (xem bài Clock injection).
+
+### Trả lý do, không chỉ PASS/FAIL
+Developer cần biết **phải sửa gì**: "COVERAGE: 72% < 80% trên code mới", "CRITICAL: CVE-2024-1234 trong thư viện X (không có waiver)". Gate chỉ in "FAILED" khiến mọi người tìm cách đi vòng. Thứ tự lý do ổn định giúp so sánh giữa các lần chạy.
+
+> Ở quy mô platform, chính sách gate nên được **quản lý như code** (file cấu hình trong repo chung, có review) và **áp dụng dần**: chế độ cảnh báo vài tuần (chỉ báo, không chặn) rồi mới bật chặn — nếu không, ngày đầu tiên 80% PR đỏ và các đội sẽ phản đối cả nền tảng.
+
+### Liên hệ phỏng vấn
+Câu hỏi "bạn thiết kế quality gate cho 30 service thế nào?" kiểm tra bạn có cân bằng giữa an toàn và tốc độ: coverage trên code mới thay vì toàn repo, chặn theo mức nghiêm trọng, waiver có hạn và có người duyệt, bật dần từ chế độ cảnh báo, và trả lý do rõ ràng cho developer.`,
+  exercises: [{
+    title: 'Đánh giá quality gate với waiver có hạn dùng',
+    prompt: `Viết {{QualityGate.evaluate(report, policy, waivers, today)}} trả về {{GateResult(boolean passed, List<String> reasons)}}. Kiểm tra theo **đúng thứ tự** và thêm lý do:
+1. {{report.failedTests() > 0}} → {{"TESTS_FAILED"}}
+2. {{report.newCodeCoverage() < policy.minNewCoverage()}} → {{"COVERAGE"}}
+3. Mỗi finding mức {{CRITICAL}} **không có waiver còn hạn** → {{"CRITICAL:" + id}} (theo thứ tự xuất hiện trong report)
+4. Số finding mức {{HIGH}} không có waiver còn hạn **lớn hơn** {{policy.maxHigh()}} → {{"HIGH_COUNT"}}
+Waiver còn hạn khi {{findingId}} khớp và {{today}} không sau {{expires}}. {{passed}} là true khi không có lý do nào.`,
+    starter: `import java.time.LocalDate;
+
+record Finding(String id, String severity) {}
+record Waiver(String findingId, LocalDate expires) {}
+record Report(int failedTests, double newCodeCoverage, List<Finding> findings) {}
+record Policy(double minNewCoverage, int maxHigh) {}
+record GateResult(boolean passed, List<String> reasons) {}
+
+class QualityGate {
+    GateResult evaluate(Report report, Policy policy, List<Waiver> waivers, LocalDate today) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `import java.time.LocalDate;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        QualityGate g = new QualityGate();
+        Policy pol = new Policy(80.0, 2);
+        LocalDate today = LocalDate.of(2026, 11, 7);
+        check("sach_se_pass", () -> {
+            GateResult r = g.evaluate(new Report(0, 85.0, List.of(new Finding("CVE-1", "LOW"))), pol, List.of(), today);
+            eq(true, r.passed()); eq(List.of(), r.reasons());
+        });
+        check("critical_co_waiver_con_han", () -> {
+            Report rep = new Report(0, 90.0, List.of(new Finding("CVE-9", "CRITICAL")));
+            GateResult r = g.evaluate(rep, pol, List.of(new Waiver("CVE-9", LocalDate.of(2026, 11, 7))), today);
+            eq(true, r.passed());
+        });
+        check("waiver_het_han_bi_chan", () -> {
+            Report rep = new Report(0, 90.0, List.of(new Finding("CVE-9", "CRITICAL")));
+            GateResult r = g.evaluate(rep, pol, List.of(new Waiver("CVE-9", LocalDate.of(2026, 11, 6))), today);
+            eq(false, r.passed()); eq(List.of("CRITICAL:CVE-9"), r.reasons());
+        });
+        check("nhieu_ly_do_dung_thu_tu", () -> {
+            Report rep = new Report(2, 71.5, List.of(
+                new Finding("CVE-A", "HIGH"), new Finding("CVE-C1", "CRITICAL"), new Finding("CVE-B", "HIGH"),
+                new Finding("CVE-C2", "CRITICAL"), new Finding("CVE-D", "HIGH")));
+            GateResult r = g.evaluate(rep, pol, List.of(), today);
+            eq(List.of("TESTS_FAILED", "COVERAGE", "CRITICAL:CVE-C1", "CRITICAL:CVE-C2", "HIGH_COUNT"), r.reasons());
+        });
+        check("high_duoc_waiver_khong_tinh", () -> {
+            Report rep = new Report(0, 95.0, List.of(new Finding("H1", "HIGH"), new Finding("H2", "HIGH"), new Finding("H3", "HIGH")));
+            GateResult r = g.evaluate(rep, pol, List.of(new Waiver("H3", LocalDate.of(2027, 1, 1))), today);
+            eq(true, r.passed());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `import java.time.LocalDate;
+
+record Finding(String id, String severity) {}
+record Waiver(String findingId, LocalDate expires) {}
+record Report(int failedTests, double newCodeCoverage, List<Finding> findings) {}
+record Policy(double minNewCoverage, int maxHigh) {}
+record GateResult(boolean passed, List<String> reasons) {}
+
+class QualityGate {
+    GateResult evaluate(Report report, Policy policy, List<Waiver> waivers, LocalDate today) {
+        // id của các finding đang được waiver còn hạn (hết ngày expires vẫn còn hiệu lực)
+        Set<String> waived = new HashSet<>();
+        for (Waiver w : waivers) if (!today.isAfter(w.expires())) waived.add(w.findingId());
+        List<String> reasons = new ArrayList<>();
+        if (report.failedTests() > 0) reasons.add("TESTS_FAILED");
+        if (report.newCodeCoverage() < policy.minNewCoverage()) reasons.add("COVERAGE");
+        int high = 0;
+        for (Finding f : report.findings()) {
+            if (waived.contains(f.id())) continue;          // ngoại lệ có hạn: bỏ qua finding này
+            if (f.severity().equals("CRITICAL")) reasons.add("CRITICAL:" + f.id());
+            else if (f.severity().equals("HIGH")) high++;
+        }
+        if (high > policy.maxHigh()) reasons.add("HIGH_COUNT");
+        return new GateResult(reasons.isEmpty(), List.copyOf(reasons));
+    }
+}`,
+    hints: [
+      'Tạo trước một Set chứa id các finding có waiver còn hạn: !today.isAfter(expires).',
+      'Duyệt findings theo thứ tự report; bỏ qua finding có trong Set; CRITICAL thêm lý do ngay, HIGH thì đếm.',
+      'Thêm HIGH_COUNT sau cùng, khi số HIGH chưa waiver lớn hơn maxHigh.',
+    ],
+    explain: `Tách **dữ liệu** (report, policy, waiver, today) khỏi **logic** giúp gate xác định và test được: không gọi {{LocalDate.now()}} bên trong. Waiver được chuẩn hoá thành một {{Set}} id còn hạn trước khi duyệt, nên mỗi finding chỉ cần một phép tra O(1).
+- Quy ước "còn hạn đến hết ngày expires" ({{!today.isAfter(expires)}}) phải được ghi rõ trong tài liệu chính sách, vì người duyệt hiểu ngày theo cách đó.
+- Thứ tự lý do ổn định giúp diff giữa các lần chạy dễ đọc.
+Lỗi hay gặp: dùng {{today.isBefore(expires)}} làm waiver hết hiệu lực sớm một ngày; đếm cả HIGH đã được waiver; trả về chỉ một lý do đầu tiên khiến developer phải sửa từng vòng.`,
+  }],
+  check: [
+    { q: 'Vì sao nên đặt ngưỡng coverage trên **code mới** thay vì toàn bộ repo cho một codebase cũ?', options: ['Để mọi PR mới phải có test mà không bắt đội sửa hết code cũ trước khi được merge', 'Vì coverage toàn repo không đo được', 'Vì code cũ không chạy test được', 'Để tăng tốc pipeline'], answer: 0, explain: 'Coverage toàn repo của codebase cũ thường thấp, đặt ngưỡng cao sẽ chặn mọi PR dù PR đó có test tốt; đo trên code mới tạo áp lực đúng chỗ. Coverage toàn repo vẫn đo được. Code cũ vẫn chạy test được. Ngưỡng không ảnh hưởng tốc độ pipeline.' },
+    { q: 'Một CVE CRITICAL trong thư viện chưa có bản vá chặn mọi PR. Cách xử lý đúng?', options: ['Tạo waiver cho đúng CVE đó, có lý do, người duyệt và ngày hết hạn', 'Tắt quét lỗ hổng cho tới khi có bản vá', 'Hạ mức CRITICAL thành HIGH trong cấu hình', 'Cho phép merge thủ công không cần gate'], answer: 0, explain: 'Waiver có hạn giữ gate hoạt động cho mọi lỗ hổng khác và tự chặn lại khi hết hạn. Tắt quét hay bỏ gate làm mất bảo vệ hoàn toàn. Đổi mức nghiêm trọng là che giấu rủi ro và ảnh hưởng mọi CVE khác.' },
+    { q: 'Platform team muốn áp dụng quality gate mới cho 30 service. Cách triển khai ít gây phản đối nhất?', options: ['Chạy chế độ cảnh báo vài tuần, công bố số liệu, rồi mới bật chặn', 'Bật chặn ngay cho tất cả để tạo kỷ luật', 'Để mỗi đội tự chọn có dùng gate hay không', 'Chỉ áp dụng cho service mới, service cũ không bao giờ áp dụng'], answer: 0, explain: 'Chế độ cảnh báo cho các đội thời gian sửa và cho platform dữ liệu để điều chỉnh ngưỡng. Bật chặn ngay thường làm phần lớn PR đỏ trong ngày đầu. Tự chọn dẫn tới không ai dùng. Bỏ hẳn service cũ để lại rủi ro lớn nhất không được kiểm soát.' },
+  ],
+  related: ['devops-099', 'devops-103', 'devops-031'],
+  tags: ['CI/CD', 'quality gate', 'security scanning', 'policy', 'platform engineering'],
+},
+{
+  id: 'lesson-devops-020',
+  track: 'devops',
+  order: 20,
+  title: 'Golden path: template tạo service mới với tham số được kiểm tra',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hiểu golden path / paved road: con đường chuẩn, dễ nhất để một đội tạo và vận hành service',
+    'Thiết kế template sinh service mới (code, pipeline, Helm values, dashboard) từ vài tham số',
+    'Kiểm tra tham số đầu vào chặt chẽ để không sinh ra service sai chuẩn',
+    'Phát hiện placeholder chưa được thay trước khi tạo repo',
+  ],
+  body: `### Golden path là gì
+Một công ty có 40 service: mỗi đội tự viết Dockerfile, pipeline, Helm chart, dashboard theo cách riêng → 40 cách làm, mỗi lần nâng cấp phải sửa 40 nơi, người mới mất nhiều ngày để hiểu. **Golden path** (hay paved road) là **con đường chuẩn được nền tảng hỗ trợ**: dùng nó thì mọi thứ có sẵn và được bảo trì; đi đường khác vẫn được nhưng đội tự chịu trách nhiệm. Không phải luật cấm — là con đường **dễ nhất**.
+
+### Template tạo service mới
+Trong Backstage gọi là **software template**; ở công ty nhỏ có thể là một repo mẫu + script. Người dùng nhập vài tham số, template sinh ra:
+~~~text
+Tham số: name = payment-reconciler, team = payments, port = 8080
+Sinh ra:
+  payment-reconciler/
+    pom.xml                     (groupId, artifactId theo name)
+    Dockerfile                  (image chuẩn, user không phải root)
+    .github/workflows/ci.yml    (gọi reusable workflow của platform)
+    deploy/values.yaml          (Helm values cho chart chung: tên, team, port, probe)
+    catalog-info.yaml           (đăng ký vào service catalog: owner = payments)
+    docs/index.md               (tài liệu khởi đầu)
+~~~
+Mỗi file trong template chứa **placeholder** như {{__NAME__}}, {{__TEAM__}}, {{__PORT__}}; công cụ thay bằng giá trị thật — cả trong **nội dung** lẫn **đường dẫn file**.
+
+### Kiểm tra tham số: lỗi ở đây nhân lên ở mọi nơi
+Tên service xuất hiện trong DNS, tên Kubernetes object, tên repo, metric. Kubernetes yêu cầu tên dạng DNS label: chữ thường, số và dấu gạch ngang, bắt đầu bằng chữ, không kết thúc bằng gạch ngang, tối đa 63 ký tự. Platform thường đặt quy tắc chặt hơn (ví dụ 3–30 ký tự, không có hai gạch ngang liền nhau). Kiểm tra **trước khi sinh**, báo lỗi rõ trường nào sai.
+| Tham số | Quy tắc | Vì sao |
+|---|---|---|
+| name | 3–30 ký tự, a-z0-9 và "-", bắt đầu bằng chữ, không "--", không kết thúc "-" | Hợp lệ cho DNS, Kubernetes, repo |
+| team | Không rỗng (và nằm trong danh sách đội) | Mọi service phải có chủ sở hữu để on-call |
+| port | Số nguyên 1024–65535 | Không dùng cổng đặc quyền, không ngoài khoảng |
+
+### Placeholder bị bỏ sót
+Template được nhiều người sửa; ai đó thêm {{__REGION__}} vào một file nhưng quên thêm tham số. Nếu không kiểm tra, service sinh ra chứa chuỗi {{__REGION__}} và lỗi lúc deploy, rất khó hiểu. Sau khi render, **quét lại** mọi file: còn mẫu {{__CHỮ_HOA__}} nào thì dừng và báo lỗi.
+
+~~~java
+// Thay placeholder trong cả đường dẫn lẫn nội dung
+String render(String text, Map<String, String> values) {
+    String out = text;
+    for (Map.Entry<String, String> e : values.entrySet())
+        out = out.replace(e.getKey(), e.getValue());   // replace thay mọi lần xuất hiện, không dùng regex
+    return out;
+}
+~~~
+
+> Đo golden path như một sản phẩm: **thời gian từ lúc bấm "tạo service" tới khi service chạy trên môi trường dev**, tỉ lệ service mới dùng template, số lần đội phải hỏi platform team. Nếu template khó dùng hơn tự làm, các đội sẽ không dùng nó.
+
+### Liên hệ phỏng vấn
+"Bạn chuẩn hoá cách 20 đội tạo service thế nào?" — câu trả lời Senior: golden path là con đường dễ nhất chứ không phải luật cấm; template sinh đủ code, pipeline, deploy, dashboard, catalog; kiểm tra tham số chặt; phiên bản hoá template và cách cập nhật service đã sinh; đo thời gian onboard và tỉ lệ sử dụng.`,
+  exercises: [{
+    title: 'Render template service mới với kiểm tra tham số',
+    prompt: `Viết {{ServiceScaffolder.render(templates, params)}}: {{templates}} là map đường dẫn → nội dung, có các placeholder {{__NAME__}}, {{__TEAM__}}, {{__PORT__}}. Trả về {{TreeMap}} đường dẫn → nội dung đã thay (thay trong **cả đường dẫn lẫn nội dung**).
+- {{name}}: 3–30 ký tự, chỉ gồm chữ thường a–z, số, dấu "-"; bắt đầu bằng chữ; không kết thúc bằng "-"; không có "--". Sai → {{IllegalArgumentException}} với message chứa {{name}}.
+- {{team}}: không null, không rỗng sau trim. Sai → {{IllegalArgumentException}} chứa {{team}}.
+- {{port}}: số nguyên trong 1024–65535. Sai (kể cả không phải số) → {{IllegalArgumentException}} chứa {{port}}.
+- Sau khi thay, nếu bất kỳ đường dẫn hay nội dung nào còn chuỗi dạng {{__X__}} (hai gạch dưới, một hoặc nhiều **chữ hoa** A–Z hoặc dấu "_", hai gạch dưới) → {{IllegalStateException}}.`,
+    starter: `class ServiceScaffolder {
+    Map<String, String> render(Map<String, String> templates, Map<String, String> params) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expectIae(Runnable r, String field) {
+        try { r.run(); throw new AssertionError("phải ném IllegalArgumentException cho " + field); }
+        catch (IllegalArgumentException e) {
+            if (e.getMessage() == null || !e.getMessage().contains(field)) throw new AssertionError("message phải chứa " + field + ": " + e.getMessage());
+        }
+    }
+    static Map<String, String> tpl() {
+        Map<String, String> t = new HashMap<>();
+        t.put("deploy/values.yaml", "name: __NAME__ | team: __TEAM__ | port: __PORT__");
+        t.put("src/__NAME__/README.md", "Service __NAME__ owned by __TEAM__");
+        return t;
+    }
+    static Map<String, String> params(String name, String team, String port) {
+        Map<String, String> p = new HashMap<>();
+        p.put("name", name); p.put("team", team); p.put("port", port);
+        return p;
+    }
+    public static void main(String[] args) {
+        ServiceScaffolder s = new ServiceScaffolder();
+        check("render_ca_duong_dan_va_noi_dung", () -> {
+            Map<String, String> out = s.render(tpl(), params("payment-reconciler", "payments", "8080"));
+            Map<String, String> exp = new TreeMap<>();
+            exp.put("deploy/values.yaml", "name: payment-reconciler | team: payments | port: 8080");
+            exp.put("src/payment-reconciler/README.md", "Service payment-reconciler owned by payments");
+            eq(exp, out);
+            eq(TreeMap.class, out.getClass());
+        });
+        check("ten_khong_hop_le", () -> {
+            for (String bad : new String[] { "Payment", "pa", "9svc", "svc-", "svc--x", "svc_x", "a-very-very-long-service-name-xyz" })
+                expectIae(() -> s.render(tpl(), params(bad, "payments", "8080")), "name");
+        });
+        check("team_rong", () -> expectIae(() -> s.render(tpl(), params("orders", "   ", "8080")), "team"));
+        check("port_sai", () -> {
+            for (String bad : new String[] { "80", "70000", "abc" })
+                expectIae(() -> s.render(tpl(), params("orders", "core", bad)), "port");
+        });
+        check("placeholder_bi_bo_sot", () -> {
+            Map<String, String> t = tpl();
+            t.put("deploy/region.txt", "region: __REGION__");
+            try { s.render(t, params("orders", "core", "8080")); throw new AssertionError("phải ném IllegalStateException"); }
+            catch (IllegalStateException e) { /* ok */ }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class ServiceScaffolder {
+    Map<String, String> render(Map<String, String> templates, Map<String, String> params) {
+        String name = params.get("name"), team = params.get("team"), port = params.get("port");
+        if (!validName(name)) throw new IllegalArgumentException("invalid name: " + name);
+        if (team == null || team.trim().isEmpty()) throw new IllegalArgumentException("team is required");
+        int p;
+        try { p = Integer.parseInt(port); } catch (NumberFormatException | NullPointerException e) { throw new IllegalArgumentException("port must be a number"); }
+        if (p < 1024 || p > 65535) throw new IllegalArgumentException("port out of range: " + p);
+        Map<String, String> values = Map.of("__NAME__", name, "__TEAM__", team.trim(), "__PORT__", String.valueOf(p));
+        Map<String, String> out = new TreeMap<>();
+        for (Map.Entry<String, String> e : templates.entrySet()) {
+            String path = fill(e.getKey(), values), body = fill(e.getValue(), values);
+            if (hasPlaceholder(path) || hasPlaceholder(body)) throw new IllegalStateException("unresolved placeholder in " + path);
+            out.put(path, body);
+        }
+        return out;
+    }
+
+    private static String fill(String text, Map<String, String> values) {
+        String out = text;
+        for (Map.Entry<String, String> v : values.entrySet()) out = out.replace(v.getKey(), v.getValue());
+        return out;
+    }
+
+    private static boolean validName(String n) {
+        if (n == null || n.length() < 3 || n.length() > 30) return false;
+        if (n.charAt(0) < 'a' || n.charAt(0) > 'z') return false;          // bắt đầu bằng chữ thường
+        if (n.endsWith("-") || n.contains("--")) return false;
+        for (char c : n.toCharArray())
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+        return true;
+    }
+
+    // tìm mẫu __X__ với X gồm chữ hoa A-Z hoặc "_" (ít nhất một ký tự), không dùng regex
+    private static boolean hasPlaceholder(String s) {
+        int i = s.indexOf("__");
+        while (i >= 0) {
+            int j = i + 2, k = j;
+            while (k < s.length() && ((s.charAt(k) >= 'A' && s.charAt(k) <= 'Z') || s.charAt(k) == '_')) k++;
+            // lùi lại để chuỗi kết thúc đúng bằng "__"
+            while (k - j >= 3 && s.startsWith("__", k - 2)) {
+                String inner = s.substring(j, k - 2);
+                boolean hasLetter = false;
+                for (char c : inner.toCharArray()) if (c >= 'A' && c <= 'Z') hasLetter = true;
+                if (hasLetter) return true;
+                k--;
+            }
+            i = s.indexOf("__", i + 1);
+        }
+        return false;
+    }
+}`,
+    hints: [
+      'Kiểm tra name, team, port trước khi render; mỗi lỗi ném IllegalArgumentException có tên trường trong message.',
+      'Dùng String.replace (không phải replaceAll) để thay placeholder trong cả key lẫn value.',
+      'Sau khi thay, quét chuỗi tìm "__" + chữ hoa + "__"; tìm thấy thì ném IllegalStateException.',
+    ],
+    explain: `Hai ý chính: **kiểm tra đầu vào trước khi sinh** và **kiểm tra đầu ra sau khi sinh**.
+- Kiểm tra tên bằng vòng lặp ký tự rõ ràng (có thể dùng regex trong code thật), lưu ý các luật dễ quên: không kết thúc bằng "-", không có "--", bắt đầu bằng chữ.
+- {{Integer.parseInt}} ném {{NumberFormatException}} với "abc" — bắt và chuyển thành {{IllegalArgumentException}} có tên trường để người dùng hiểu.
+- Trả {{TreeMap}} để thứ tự file ổn định khi in ra hoặc commit.
+- Quét placeholder còn sót sau khi render là lưới an toàn khi template được nhiều người sửa.
+Lỗi hay gặp: dùng {{replaceAll}} khiến chuỗi giá trị có ký tự đặc biệt bị hiểu như regex; quên thay placeholder trong **đường dẫn file**; chỉ kiểm tra độ dài tên mà bỏ qua ký tự hợp lệ.`,
+  }],
+  check: [
+    { q: 'Điều gì phân biệt golden path với một "quy định bắt buộc"?', options: ['Golden path là con đường dễ nhất được nền tảng hỗ trợ; đi đường khác vẫn được nhưng đội tự chịu trách nhiệm', 'Golden path cấm mọi cách làm khác', 'Golden path chỉ là tài liệu hướng dẫn, không có công cụ', 'Golden path chỉ áp dụng cho service mới viết bằng Java'], answer: 0, explain: 'Golden path thu hút bằng sự tiện lợi và hỗ trợ, không cấm. Cấm mọi cách khác là quy định cứng và thường gây phản ứng. Golden path đi kèm công cụ như template và pipeline chứ không chỉ tài liệu. Nó không giới hạn ở một ngôn ngữ.' },
+    { q: 'Vì sao phải quét placeholder còn sót sau khi render template?', options: ['Template do nhiều người sửa; một placeholder mới thiếu tham số sẽ lọt vào service và gây lỗi khó hiểu lúc deploy', 'Để tăng tốc render', 'Vì String.replace không thay được mọi lần xuất hiện', 'Để kiểm tra tên service hợp lệ'], answer: 0, explain: 'Quét sau render bắt lỗi template trước khi tạo repo. Nó không giúp tăng tốc. String.replace thay mọi lần xuất hiện. Kiểm tra tên là việc kiểm tra đầu vào, làm trước khi render.' },
+    { q: 'Chỉ số nào phản ánh tốt nhất chất lượng golden path từ góc nhìn developer?', options: ['Thời gian từ lúc tạo service tới khi nó chạy trên môi trường dev', 'Số dòng code trong template', 'Số service đang chạy trong cluster', 'Số lần platform team deploy mỗi tuần'], answer: 0, explain: 'Golden path phục vụ developer nên đo trải nghiệm của họ: thời gian tới service chạy được. Số dòng template không nói lên giá trị. Số service đang chạy phụ thuộc nhiều yếu tố khác. Tần suất deploy của platform team không đo trải nghiệm người dùng nền tảng.' },
+  ],
+  related: ['devops-119', 'devops-055', 'devops-023'],
+  tags: ['golden path', 'template', 'Backstage', 'internal developer platform', 'platform engineering'],
+},
+{
+  id: 'lesson-devops-021',
+  track: 'devops',
+  order: 21,
+  title: 'Đo nền tảng như sản phẩm: tính 4 chỉ số DORA từ dữ liệu deploy và sự cố',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Hiểu 4 chỉ số DORA: tần suất deploy, lead time thay đổi, tỉ lệ thay đổi gây lỗi, thời gian khôi phục',
+    'Tự tính các chỉ số từ dữ liệu thô (thời điểm commit, deploy, sự cố)',
+    'Biết vì sao dùng trung vị cho lead time và cách tránh các bẫy khi đo',
+    'Dùng chỉ số để chứng minh giá trị của platform, không dùng để chấm điểm cá nhân',
+  ],
+  body: `### Vì sao platform team phải đo
+Platform là **sản phẩm nội bộ**: nếu không đo, bạn không chứng minh được nó giúp các đội nhanh và an toàn hơn, và không biết nên đầu tư vào đâu. Nghiên cứu DORA (DevOps Research and Assessment) đề xuất 4 chỉ số cân bằng giữa **tốc độ** và **ổn định**:
+| Chỉ số | Câu hỏi | Cách tính đơn giản |
+|---|---|---|
+| Deployment frequency | Deploy lên production thường xuyên thế nào? | Số lần deploy / số ngày |
+| Lead time for changes | Từ commit tới production mất bao lâu? | Trung vị của (thời điểm deploy − thời điểm commit) |
+| Change failure rate | Bao nhiêu phần trăm deploy gây sự cố? | Số deploy gây sự cố / tổng số deploy |
+| Time to restore (MTTR) | Khi có sự cố, khôi phục mất bao lâu? | Trung bình (thời điểm khôi phục − thời điểm bắt đầu) |
+Hai chỉ số đầu đo **tốc độ**, hai chỉ số sau đo **ổn định**. Một đội deploy nhiều mà sự cố liên tục, hay ổn định mà một tháng mới deploy một lần, đều chưa tốt.
+
+### Vì sao lead time dùng trung vị
+Lead time có **đuôi dài**: phần lớn thay đổi lên production trong vài giờ, nhưng thỉnh thoảng có thay đổi nằm chờ 3 tuần (nhánh bị quên). Trung bình bị kéo lệch bởi vài giá trị lớn; **trung vị** (median) phản ánh trải nghiệm điển hình. Với số phần tử chẵn, trung vị là trung bình của hai giá trị giữa.
+
+~~~java
+// Trung vị của danh sách thời lượng (giây)
+List<Long> xs = new ArrayList<>(secs);
+Collections.sort(xs);
+int n = xs.size();
+long median = n % 2 == 1 ? xs.get(n / 2) : (xs.get(n / 2 - 1) + xs.get(n / 2)) / 2;
+~~~
+
+### Bẫy khi đo
+- **Định nghĩa "sự cố"** phải thống nhất (rollback, hotfix, incident P1–P2) — nếu không mỗi đội đếm một kiểu.
+- **Không chia cho 0**: khoảng thời gian không có deploy hay không có sự cố phải trả về giá trị hợp lý (0 hoặc rỗng), không ném lỗi.
+- **Lấy dữ liệu tự động** từ hệ thống (Git, pipeline, công cụ incident), không nhập tay.
+- **Không dùng để chấm điểm cá nhân hay so sánh đội**: chỉ số sẽ bị "làm đẹp" (chia nhỏ deploy vô nghĩa, không khai báo sự cố). Dùng để thấy xu hướng và tìm điểm nghẽn.
+
+> Câu chuyện mạnh nhất cho CV của platform engineer có dạng: "sau khi đưa golden path và canary tự động vào, lead time trung vị giảm từ 4 ngày xuống 6 giờ, change failure rate từ 18% xuống 6%". Bài tập dưới đây chính là cách bạn tính ra những con số đó.
+
+### Liên hệ phỏng vấn
+"Làm sao bạn biết nền tảng của mình có giá trị?" — trả lời bằng chỉ số DORA đo tự động trước và sau, kết hợp khảo sát trải nghiệm developer, và nêu rõ chỉ số dùng để cải tiến hệ thống chứ không để đánh giá cá nhân.`,
+  exercises: [{
+    title: 'Tính 4 chỉ số DORA',
+    prompt: `Viết các method của {{DoraCalculator}}:
+- {{deploysPerDay(List<Deploy> deploys, int days)}}: số deploy / days (double). {{days <= 0}} → {{IllegalArgumentException}}.
+- {{medianLeadTime(List<Deploy> deploys)}}: trung vị của {{deployedAt − committedAt}} (tính theo giây; số phần tử chẵn thì lấy trung bình hai giá trị giữa, chia nguyên). Danh sách rỗng → {{Duration.ZERO}}.
+- {{changeFailureRate(List<Deploy> deploys)}}: tỉ lệ deploy có {{causedIncident == true}} (0.0 nếu rỗng).
+- {{meanTimeToRestore(List<Incident> incidents)}}: trung bình {{resolvedAt − startedAt}} theo giây (chia nguyên); rỗng → {{Duration.ZERO}}.`,
+    starter: `import java.time.Duration;
+import java.time.Instant;
+
+record Deploy(Instant committedAt, Instant deployedAt, boolean causedIncident) {}
+record Incident(Instant startedAt, Instant resolvedAt) {}
+
+class DoraCalculator {
+    double deploysPerDay(List<Deploy> deploys, int days) { throw new UnsupportedOperationException("TODO"); }
+    Duration medianLeadTime(List<Deploy> deploys) { throw new UnsupportedOperationException("TODO"); }
+    double changeFailureRate(List<Deploy> deploys) { throw new UnsupportedOperationException("TODO"); }
+    Duration meanTimeToRestore(List<Incident> incidents) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `import java.time.Duration;
+import java.time.Instant;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final Instant T0 = Instant.parse("2026-11-01T00:00:00Z");
+    static Deploy d(long commitH, long deployH, boolean fail) { return new Deploy(T0.plusSeconds(commitH * 3600), T0.plusSeconds(deployH * 3600), fail); }
+    public static void main(String[] args) {
+        DoraCalculator c = new DoraCalculator();
+        List<Deploy> ds = List.of(d(0, 2, false), d(1, 7, true), d(3, 4, false), d(5, 77, false));
+        check("tan_suat_deploy", () -> eq(0.5, c.deploysPerDay(ds, 8)));
+        check("days_khong_hop_le", () -> {
+            try { c.deploysPerDay(ds, 0); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException e) { /* ok */ }
+        });
+        check("trung_vi_lead_time_chan", () -> eq(Duration.ofHours(4), c.medianLeadTime(ds)));   // 1h,2h,6h,72h -> (2h+6h)/2
+        check("trung_vi_lead_time_le", () -> eq(Duration.ofHours(2), c.medianLeadTime(ds.subList(0, 3))));  // 2h,6h,1h -> 2h
+        check("lead_time_rong", () -> eq(Duration.ZERO, c.medianLeadTime(List.of())));
+        check("change_failure_rate", () -> { eq(0.25, c.changeFailureRate(ds)); eq(0.0, c.changeFailureRate(List.of())); });
+        check("mttr", () -> {
+            List<Incident> inc = List.of(new Incident(T0, T0.plusSeconds(1800)), new Incident(T0, T0.plusSeconds(5400)));
+            eq(Duration.ofMinutes(60), c.meanTimeToRestore(inc));
+            eq(Duration.ZERO, c.meanTimeToRestore(List.of()));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `import java.time.Duration;
+import java.time.Instant;
+
+record Deploy(Instant committedAt, Instant deployedAt, boolean causedIncident) {}
+record Incident(Instant startedAt, Instant resolvedAt) {}
+
+class DoraCalculator {
+    double deploysPerDay(List<Deploy> deploys, int days) {
+        if (days <= 0) throw new IllegalArgumentException("days must be > 0");
+        return (double) deploys.size() / days;
+    }
+
+    Duration medianLeadTime(List<Deploy> deploys) {
+        if (deploys.isEmpty()) return Duration.ZERO;
+        List<Long> secs = new ArrayList<>();
+        for (Deploy d : deploys) secs.add(Duration.between(d.committedAt(), d.deployedAt()).getSeconds());
+        Collections.sort(secs);
+        int n = secs.size();
+        long m = n % 2 == 1 ? secs.get(n / 2) : (secs.get(n / 2 - 1) + secs.get(n / 2)) / 2;   // trung vị: không bị đuôi dài kéo lệch
+        return Duration.ofSeconds(m);
+    }
+
+    double changeFailureRate(List<Deploy> deploys) {
+        if (deploys.isEmpty()) return 0.0;
+        long failed = deploys.stream().filter(Deploy::causedIncident).count();
+        return (double) failed / deploys.size();
+    }
+
+    Duration meanTimeToRestore(List<Incident> incidents) {
+        if (incidents.isEmpty()) return Duration.ZERO;
+        long sum = 0;
+        for (Incident i : incidents) sum += Duration.between(i.startedAt(), i.resolvedAt()).getSeconds();
+        return Duration.ofSeconds(sum / incidents.size());
+    }
+}`,
+    hints: [
+      'Duration.between(a, b).getSeconds() cho thời lượng theo giây.',
+      'Trung vị: sắp xếp, số phần tử lẻ lấy phần tử giữa, chẵn lấy trung bình hai phần tử giữa.',
+      'Xử lý danh sách rỗng trước để không chia cho 0.',
+    ],
+    explain: `Các chỉ số đều là phép tính đơn giản; phần khó nằm ở **định nghĩa và dữ liệu**. Code tách rõ từng chỉ số, xử lý trường hợp rỗng, và dùng **trung vị** cho lead time vì phân phối có đuôi dài: trong test, một thay đổi chờ 72 giờ kéo trung bình lên 20,25 giờ trong khi trung vị là 4 giờ — gần với trải nghiệm thật hơn.
+Lỗi hay gặp: dùng trung bình cho lead time; quên trường hợp danh sách rỗng (chia cho 0 ra NaN); tính change failure rate trên số sự cố thay vì số deploy; dùng {{toHours()}} làm mất phần lẻ.`,
+  }],
+  check: [
+    { q: 'Lead time của 5 thay đổi: 1h, 2h, 3h, 4h, 200h. Vì sao nên báo cáo trung vị thay vì trung bình?', options: ['Trung vị 3h phản ánh trải nghiệm điển hình; trung bình 42h bị một giá trị lớn kéo lệch', 'Trung bình khó tính hơn', 'Trung vị luôn lớn hơn trung bình', 'DORA cấm dùng trung bình'], answer: 0, explain: 'Phân phối có đuôi dài nên trung bình (42h) không đại diện cho đa số thay đổi; trung vị (3h) thì có. Độ khó tính toán không phải lý do. Trung vị không luôn lớn hơn trung bình — ở đây nhỏ hơn nhiều. Không có quy định cấm.' },
+    { q: 'Chỉ số DORA nào đo độ ổn định?', options: ['Change failure rate và time to restore', 'Deployment frequency và lead time', 'Chỉ deployment frequency', 'Số dòng code mỗi tuần'], answer: 0, explain: 'Tỉ lệ thay đổi gây lỗi và thời gian khôi phục đo ổn định; tần suất deploy và lead time đo tốc độ. Số dòng code không phải chỉ số DORA và không phản ánh giá trị.' },
+    { q: 'Ban lãnh đạo muốn xếp hạng từng developer theo chỉ số DORA. Phản hồi phù hợp nhất?', options: ['Chỉ số dùng cho hệ thống và đội để thấy xu hướng; xếp hạng cá nhân sẽ khiến chỉ số bị làm đẹp và mất giá trị', 'Đồng ý vì chỉ số khách quan', 'Chỉ xếp hạng theo deployment frequency', 'Xếp hạng nhưng không công bố'], answer: 0, explain: 'Khi chỉ số thành mục tiêu đánh giá cá nhân, người ta tối ưu con số (chia nhỏ deploy, không báo sự cố) thay vì kết quả thật. Chỉ dùng một chỉ số tốc độ còn khuyến khích bỏ qua ổn định. Xếp hạng kín vẫn tạo động cơ làm đẹp số liệu.' },
+  ],
+  related: ['devops-126', 'devops-127', 'devops-075'],
+  tags: ['DORA', 'metrics', 'platform as product', 'platform engineering'],
+},
 );

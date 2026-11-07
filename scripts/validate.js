@@ -474,6 +474,7 @@ for (const s of pathStages) {
 repeatedLessons.forEach(lid => err('path.js', `lesson "${lid}" xuất hiện nhiều lần trong PATH`));
 // warning: lessons not in any path stage
 const pathLessonIds = new Set(allLessonIds);
+(sandbox.window.PATH_PLATFORM || []).forEach(s => (s.lessons || []).forEach(l => pathLessonIds.add(l)));
 const missingInPath = [];
 for (const lid of lessonIds) {
   if (!pathLessonIds.has(lid)) missingInPath.push(lid);
