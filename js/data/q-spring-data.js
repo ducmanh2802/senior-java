@@ -5882,14 +5882,25 @@ Bulk JPQL update/delete chạy trực tiếp ở DB và bỏ qua dirty checking 
 ### Nguyên nhân theo luồng
 Repository load entity cùng association lazy chưa khởi tạo. Transaction service commit, persistence context đóng hoặc entity detached. Controller/Jackson serialize quan hệ; proxy cần session để query, nhưng session không còn. Đây không phải lỗi mapping ngẫu nhiên mà là fetch plan không khớp với nơi dữ liệu được tiêu thụ.
 
+### Bước giải thích cho người mới
+- Persistence context (Session/EntityManager) là vùng nhớ tạm giữ entity đang managed trong một transaction. Association lazy được biểu diễn bằng proxy; proxy chỉ thực sự query DB khi bạn gọi getter và context còn mở.
+- Khi transaction kết thúc, entity chuyển sang detached. Proxy mất quyền truy cập session; gọi getter ném {{LazyInitializationException}}.
+- OSIV đăng ký một filter servlet mở session từ đầu request đến khi response hoàn tất, nên proxy vẫn query được trong quá trình render JSON. Nó giải quyết triệu chứng chứ không giải quyết fetch plan.
+
 ### Lựa chọn
 - Dùng DTO projection cho response API: chỉ lấy cột cần thiết, tránh để serialization quyết định SQL.
 - Dùng fetch join hoặc {{@EntityGraph}} cho use case cụ thể, kiểm tra số query và pagination.
-- Khởi tạo association bên trong transaction nếu logic thực sự cần nó.
-- Open Session in View có thể hữu ích ở ứng dụng server-rendered đơn giản, nhưng nên hiểu rõ query phát sinh ở view và kiểm soát bằng metric/log.
+- Khởi tạo association bên trong transaction nếu logic thực sự cần nó ({{Hibernate.initialize}}).
+- OSIV có thể hữu ích ở ứng dụng server-rendered đơn giản, nhưng nên hiểu rõ query phát sinh ở view và kiểm soát bằng metric/log.
+
+### Ví dụ đời thực
+Endpoint endpoint /orders/{id} trả Order kèm items. Ban đầu service load Order rồi controller serialize; items lazy → LIE. Bật OSIV: hết lỗi nhưng mỗi request serialize 50 order items tạo 51 query, p99 latency 480ms. Chuyển sang DTO projection với JOIN FETCH items: 1 query, p99 35ms. Test với 200 order đồng thời: connection pool từ 80% xuống 12%.
 
 ### Pitfall production
-Spring Boot **bật OSIV mặc định** ({{spring.jpa.open-in-view=true}}) và in cảnh báo lúc khởi động; với REST API nên đặt {{false}} để lỗi fetch plan lộ ra sớm. Bật OSIV không đảm bảo transaction nghiệp vụ kéo dài; nó chỉ giữ persistence context mở, nên lazy query có thể chạy sau commit với transaction khác/autocommit tùy cấu hình. Serialize danh sách 100 entity rồi đọc mỗi collection có thể tạo 101 query. Trả entity cũng làm lộ cấu trúc nội bộ và nguy cơ recursion trong hai chiều association.
+Spring Boot **bật OSIV mặc định** ({{spring.jpa.open-in-view=true}}) và in cảnh báo lúc khởi động; với REST API nên đặt {{false}} để lỗi fetch plan lộ ra sớm. OSIV không kéo dài transaction nghiệp vụ; lazy query có thể chạy sau commit với autocommit tùy cấu hình. Serialize danh sách 100 entity rồi đọc mỗi collection tạo 101 query. Trả entity lộ cấu trúc nội bộ và nguy cơ recursion trong association hai chiều.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi gặp LIE khi service trả entity detached rồi serializer đọc association lazy. Nguyên nhân là fetch plan không khớp nơi tiêu thụ dữ liệu. OSIV giữ session mở suốt request nên proxy vẫn query được, nhưng đó là vá triệu chứng: SQL phát sinh trong view, N+1 khó thấy, transaction không còn bao phủ. Với REST API tôi tắt OSIV, trả DTO projection với fetch plan rõ ràng, và bật SQL statistics trong test để bắt N+1. Hết exception chưa chứng minh endpoint hiệu quả; phải đo query count và latency.
 
 > Senior tip: API service nên trả DTO với fetch plan được review. Bật thống kê SQL hoặc datasource proxy trong test để phát hiện N+1; việc hết exception chưa chứng minh endpoint hiệu quả.`,
   follow: ['OSIV có giữ transaction DB mở suốt HTTP request không?', 'Bạn phát hiện N+1 phát sinh trong quá trình JSON serialization thế nào?'],
@@ -5900,8 +5911,13 @@ Spring Boot **bật OSIV mặc định** ({{spring.jpa.open-in-view=true}}) và 
   q: 'Hai request cùng sửa một entity có {{@Version}}. Optimistic locking hoạt động ra sao, và retry nên đặt ở đâu để không ghi đè dữ liệu mới?',
   a: `**Tóm tắt:** Hibernate dùng cột version trong câu update: update chỉ thành công nếu version DB vẫn bằng version entity đã đọc. Nếu request khác commit trước, row count bằng 0 và Hibernate báo optimistic lock conflict. Retry phải chạy lại toàn bộ use case trong transaction mới, đọc lại dữ liệu mới và quyết định nghiệp vụ; không chỉ gửi lại câu update cũ.
 
-### Ví dụ cơ chế
+### Cơ chế theo ví dụ
 Hai transaction cùng đọc số dư version 7. T1 cập nhật với điều kiện {{where id=? and version=7}}, tăng version lên 8 và commit. T2 cũng update version 7; điều kiện không match (update trả về 0 row), Hibernate ném {{StaleObjectStateException}} / JPA {{OptimisticLockException}}, Spring dịch thành {{ObjectOptimisticLockingFailureException}}, thay vì âm thầm overwrite. Version có thể là số nguyên hoặc timestamp; numeric version thường biểu đạt thứ tự rõ hơn.
+
+### Bước giải thích cho người mới
+- Optimistic locking giả định conflict hiếm, không khóa DB row khi đọc. Nó thêm điều kiện version vào UPDATE.
+- Khi hai transaction đọc cùng version rồi cùng ghi, transaction commit sau sẽ thất bại vì version DB đã đổi.
+- Lỗi được ném ở flush/commit, transaction bị đánh dấu rollback-only; không có partial write.
 
 ### Retry an toàn
 - Chỉ retry lỗi transient/conflict có giới hạn lần, backoff có jitter.
@@ -5909,8 +5925,14 @@ Hai transaction cùng đọc số dư version 7. T1 cập nhật với điều k
 - Đọc lại state và kiểm tra invariant nghiệp vụ trước khi áp dụng lại lệnh.
 - Với lệnh không idempotent (trừ tiền, cộng điểm), cần idempotency key hoặc ghi nhận command để retry không nhân đôi tác dụng.
 
+### Ví dụ đời thực
+Hai cashier cùng sửa cùng đơn hàng ORD-999 version 12. Cashier A commit trước → version 13. Cashier B flush → OptimisticLockException. Hệ thống retry: đọc lại ORD-999 (version 13), áp dụng thay đổi của B trên state mới, commit. Nếu conflict liên tục 3 lần → trả 409 cho người dùng. Đo: 0.3% request conflict, 99.7% retry thành công lần đầu.
+
 ### Pitfall production
 Retry bên trong cùng transaction đã marked rollback-only thường không cứu được transaction. Retry mù có thể tạo livelock khi nhiều client tranh cùng hot row; cần giới hạn và phản hồi conflict cho caller khi không thể tự hòa giải. Bulk update/native SQL thường không tự áp dụng version semantics như entity update.
+
+### Trả lời mẫu khi phỏng vấn
+Optimistic locking dùng cột version trong UPDATE với điều kiện where version bằng giá trị đã đọc. Transaction commit sau sẽ thất bại với OptimisticLockException thay vì ghi đè. Retry phải ở ngoài transaction, mở transaction mới, đọc lại state mới và áp dụng lại logic; với thao tác không idempotent cần idempotency key. Tôi giới hạn số lần retry có backoff, và trả conflict cho caller khi không hòa giải được. Optimistic lock phù hợp conflict hiếm; row nóng liên tục thì cân nhắc pessimistic lock hoặc atomic update có điều kiện.
 
 > Senior tip: dùng optimistic lock khi conflict tương đối hiếm; nếu một row nóng bị tranh chấp liên tục, đo tỷ lệ conflict và cân nhắc serialize theo key hoặc atomic update có điều kiện thay vì retry vô hạn.`,
   follow: ['Vì sao retry cần transaction mới?', 'Khi nào pessimistic lock hợp lý hơn optimistic locking?'],
@@ -5922,15 +5944,26 @@ Retry bên trong cùng transaction đã marked rollback-only thường không c�
   a: `**Tóm tắt:** Hibernate JDBC batching gom nhiều prepared statement cùng dạng để gửi theo batch; cấu hình {{hibernate.jdbc.batch_size}} và flush/clear theo chunk giúp giảm round trip và memory. Với {{IDENTITY}}, DB phải tạo row để trả generated key cho từng insert, khiến Hibernate thường phải insert ngay để lấy ID, nên batching insert bị hạn chế hoặc vô hiệu.
 
 ### Cấu hình và ghi dữ liệu
-Đặt batch size phù hợp (thường bắt đầu khoảng vài chục, sau đó đo), bật {{hibernate.order_inserts=true}}/{{hibernate.order_updates=true}} để gom statement cùng bảng, và bật batch rewrite của driver nếu có ({{reWriteBatchedInserts=true}} với PostgreSQL JDBC, {{rewriteBatchedStatements=true}} với MySQL Connector/J), và tránh SQL statement shape thay đổi liên tục. Persistence context vẫn giữ entity nên xử lý theo chunk: persist N entity, flush, clear rồi tiếp tục. Hibernate có thể sắp xếp insert/update theo entity để tăng batch tương thích; kiểm tra config và SQL log trên DB/driver thật.
+Đặt batch size phù hợp (thường bắt đầu khoảng vài chục, sau đó đo), bật {{hibernate.order_inserts=true}}/{{hibernate.order_updates=true}} để gom statement cùng bảng, và bật batch rewrite của driver nếu có ({{reWriteBatchedInserts=true}} với PostgreSQL JDBC, {{rewriteBatchedStatements=true}} với MySQL Connector/J). Persistence context vẫn giữ entity nên xử lý theo chunk: persist N entity, flush, clear rồi tiếp tục. Hibernate có thể sắp xếp insert/update theo entity để tăng batch tương thích.
+
+### Bước giải thích cho người mới
+- Mặc định mỗi persist + flush sinh 1 INSERT và 1 round-trip mạng tới DB. 100k dòng = 100k RTT.
+- Batching gom N statement cùng dạng vào 1 executeBatch, giảm RTT và parse overhead.
+- order_inserts sắp xếp entity theo type để statement cùng dạng nằm liên tiếp, tăng khả năng gom.
 
 ### ID generation
 Sequence cho phép lấy ID trước insert, nên Hibernate có thể gom insert; sequence allocation/block size cần cân đối round trip và khoảng trống ID. {{IDENTITY}} cần giá trị do DB sinh sau từng row insert để gán vào entity, vì thế thường buộc insert sớm. Không đổi strategy chỉ vì batch: cân nhắc portability, schema và semantics ID.
 
+### Ví dụ đời thực
+Import 100k user với batch_size=50, order_inserts=true, sequence allocationSize=50: 2000 batch, thời gian 4.2s thay vì 48s (mỗi insert round-trip 0.5ms). Heap ổn định ~120MB nhờ flush/clear mỗi 1000. Với IDENTITY: 100k round-trip, 52s, heap tăng dần.
+
 ### Pitfall production
 Batching giảm network round trip nhưng không giảm số index update, WAL hay constraint check. Batch quá lớn tăng transaction duration, lock và khả năng rollback tốn kém. Mixed inserts cho nhiều entity type có thể chia nhỏ batch. Batching không hoạt động như mong đợi nếu code gọi query giữa chừng gây flush hoặc cấu hình driver không hỗ trợ.
 
-> Senior tip: đo batch execution count, heap, transaction time và DB write latency; so với insert thường ở cùng dữ liệu. Luôn thử trên đúng JDBC driver/version và xác nhận generated IDs đúng, vì benchmark H2 không đại diện production database.`,
+### Trả lời mẫu khi phỏng vấn
+Hibernate batching gom statement cùng dạng qua JDBC executeBatch; cấu hình batch_size, order_inserts/updates và batch rewrite của driver. IDENTITY phá batching vì DB sinh ID sau insert, Hibernate phải insert ngay để lấy key. Dùng sequence với allocationSize hoặc pooled optimizer để cấp phát ID trước, cho phép gom. Xử lý theo chunk flush+clear để giới hạn persistence context. Đo batch count, heap, transaction time và DB latency; test trên đúng driver/version, không tin benchmark H2.
+
+> Senior tip: đo batch execution count, heap, transaction time và DB write latency; so với insert thường ở cùng dữ liệu. Luôn thử trên đúng JDBC driver/version và xác nhận generated IDs đúng.`,
   follow: ['Tại sao phải clear persistence context khi import hàng triệu dòng?', 'Sequence allocation ảnh hưởng round trip và khoảng trống ID ra sao?'],
   tags: ['hibernate.jdbc.batch_size', 'JDBC batching', 'IDENTITY', 'sequence']
 },
@@ -5942,6 +5975,11 @@ Batching giảm network round trip nhưng không giảm số index update, WAL h
 ### Cách chọn
 EntityGraph phù hợp khi muốn giữ query repository dễ đọc và chọn association cần fetch theo từng method. Spring Data mặc định dùng {{EntityGraphType.FETCH}} (attribute không liệt kê trong graph coi như LAZY); {{LOAD}} giữ fetch type khai báo trong mapping cho attribute không liệt kê. JOIN FETCH hữu ích khi query cần điều kiện/sắp xếp gắn với association, nhưng fetch đồng thời hai collection kiểu {{List}} (bag) sẽ gặp {{MultipleBagFetchException}}, và kể cả dùng {{Set}} thì vẫn tạo tích Đề-các (cartesian product) rất nhiều row.
 
+### Bước giải thích cho người mới
+- Fetch plan quyết định association nào được load cùng query root, tránh N+1.
+- Collection fetch join nhân số row SQL theo số child; DB trả nhiều row cho cùng root.
+- Hibernate phân trang trên row SQL; nếu row nhân bản, page size không còn tương ứng số root entity.
+
 ### Pagination an toàn
 1. Page ID của root entity bằng query có giới hạn và thứ tự ổn định.
 2. Query thứ hai fetch các association cần thiết cho tập ID đó, dùng IN.
@@ -5949,8 +5987,14 @@ EntityGraph phù hợp khi muốn giữ query repository dễ đọc và chọn 
 
 Có thể đặt {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} để Hibernate ném exception thay vì âm thầm paginate trong memory. Với to-many, batch fetching hoặc DTO projection cũng là lựa chọn tùy shape response.
 
+### Ví dụ đời thực
+Màn hình danh sách đơn hàng 20 root, mỗi đơn 15 item. JOIN FETCH items → 300 row SQL, Hibernate cảnh báo HHH000104 và load toàn bộ vào memory để page. Chuyển sang two-query pagination: query ID page 20 row, query items WHERE order_id IN (...) → 2 query, p99 40ms, heap ổn định.
+
 ### Pitfall production
 Một trang 20 root có thể thành hàng nghìn SQL rows nếu mỗi root có nhiều child; phân trang trên rows không đồng nghĩa phân trang root. Cảnh báo bị bỏ qua trong môi trường dữ liệu nhỏ nhưng production heap/latency tăng đột biến. Sorting theo cột child cũng cần định nghĩa rõ một root có nhiều giá trị thì thứ tự tính thế nào.
+
+### Trả lời mẫu khi phỏng vấn
+EntityGraph khai báo fetch plan theo use case và giữ repository dễ đọc; JOIN FETCH đặt join trực tiếp trong JPQL, hữu ích khi cần điều kiện/sort theo association. Cả hai giảm N+1 nhưng collection fetch join nhân row SQL và pagination có thể thành HHH000104: Hibernate load toàn bộ result vào memory. Tôi dùng two-query pagination: page ID root trước, sau đó fetch association cho tập ID bằng IN, giữ thứ tự và count query riêng. Bật fail_on_pagination_over_collection_fetch để fail sớm thay vì âm thầm.
 
 > Senior tip: test với volume và fan-out gần production, assert query count lẫn SQL có LIMIT/OFFSET ở DB. Khi thấy HHH000104, xử lý fetch plan trước khi tăng heap hoặc tắt cảnh báo.`,
   follow: ['Vì sao fetch join một collection vẫn có thể làm page sai?', 'Bạn thiết kế count query cho trang dữ liệu có quan hệ to-many thế nào?'],
@@ -5971,8 +6015,14 @@ First-level cache là persistence context của một Session và luôn gắn v�
 
 Tránh hoặc rất thận trọng với số dư, trạng thái đơn hàng thay đổi liên tục, dữ liệu tenant nhạy cảm, entity có payload lớn, hoặc nhiều node không có invalidation đáng tin. Cache vùng phân tán thêm network hop và vận hành; cache local từng node có thể trả dữ liệu khác nhau.
 
+### Ví dụ đời thực
+Bảng Country 250 dòng, đọc 50k lần/phút, cập nhật 1 lần/tuần. Bật L2 cache READ_WRITE: DB load giảm 92%, p99 8ms→2ms. Ngược lại, bảng Order status cập nhật liên tục: query cache hit ratio 3%, overhead serialization làm p99 tăng 15ms → tắt cache, chỉ giữ index.
+
 ### Pitfall production
 Bulk SQL hoặc cập nhật từ ứng dụng khác có thể làm cache stale nếu Hibernate không biết invalidation. Cache stampede khi key hết hạn đồng loạt tạo tải DB đột biến. Entity cache không tự làm query nhanh nếu query vẫn quét DB để tìm ID. Không cache để che một query thiếu index hoặc N+1 chưa được sửa.
+
+### Trả lời mẫu khi phỏng vấn
+Second-level cache chia sẻ entity/collection giữa các Session, phù hợp dữ liệu đọc nhiều ghi ít với invalidation rõ ràng. First-level cache là persistence context per session. Query cache lưu danh sách ID và phụ thuộc entity cache; Hibernate invalidate theo timestamp bảng khi ghi qua Hibernate, nên bảng ghi thường xuyên thì query cache miss liên tục. Tôi bắt đầu với một entity danh mục có SLA freshness, bật statistics, đo hit ratio và eviction. Nếu không mô tả được ai invalidate, khi nào stale chấp nhận và cách đo hit ratio, chưa bật cache đó.
 
 > Senior tip: bắt đầu bằng một entity danh mục có SLA freshness cụ thể, bật statistics và thử invalidate khi ghi từ mọi đường đi. Nếu không thể mô tả ai invalidate, khi nào stale được chấp nhận và cách đo hit ratio, chưa nên bật cache đó.`,
   follow: ['Bulk update/native SQL ảnh hưởng second-level cache thế nào?', 'Local cache và distributed cache khác nhau ra sao khi chạy nhiều node?'],
@@ -6683,12 +6733,12 @@ Chuyển export sang hot standby để primary không bị tranh I/O. Bẫy: que
   topic: 'jpa',
   level: 'senior',
   q: 'Batch insert 100k dong voi Hibernate: cau hinh hibernate.jdbc.batch_size, vi sao dung IDENTITY lam id strategy thi batching bi tat, va pooled optimizer giai quyet gi?',
-  a: `**Tom tat:** Bat {{hibernate.jdbc.batch_size=50}} + {{hibernate.order_inserts=true}}; dung sequence/table id voi {{allocationSize}} hoac pooled optimizer; IDENTITY strategy tat batching vi Hibernate phai INSERT ngay de lay id sinh o DB.
+  a: `**Tóm tắt:** Bat {{hibernate.jdbc.batch_size=50}} + {{hibernate.order_inserts=true}}; dung sequence/table id voi {{allocationSize}} hoac pooled optimizer; IDENTITY strategy tat batching vi Hibernate phai INSERT ngay de lay id sinh o DB.
 
-### Vi sao can batch
+### Vì sao cần batch
 Moi persist + flush mac dinh sinh 1 INSERT + 1 round-trip. 100k dong = 100k network RTT. Batch gom nhieu INSERT vao 1 PreparedStatement.addBatch/executeBatch.
 
-### Cau hinh
+### Cấu hình
 ~~~yaml
 spring.jpa.properties.hibernate.jdbc.batch_size: 50
 spring.jpa.properties.hibernate.order_inserts: true
@@ -6696,10 +6746,10 @@ spring.jpa.properties.hibernate.order_updates: true
 ~~~
 {{order_inserts}} sap xep entity cung loai de gom batch.
 
-### Vi sao IDENTITY tat batching
+### Vì sao IDENTITY tắt batching
 Voi {{@GeneratedValue(strategy = GenerationType.IDENTITY)}}, id sinh o DB. Hibernate phai thuc thi INSERT ngay de lay id tra ve, nen khong gom duoc.
 
-### Giai phap: sequence/table + pooled optimizer
+### Giải pháp: sequence/table + pooled optimizer
 Dung sequence (PostgreSQL) hoac table generator, voi {{allocationSize}} (vi du 50). Hibernate cap phat truoc 50 id trong 1 lan nextval. Hibernate 6 ho tro pooled/pooled-lo optimizer: goi 1 lan lay block, giam RTT sequence.
 
 ~~~java
@@ -6709,12 +6759,29 @@ Dung sequence (PostgreSQL) hoac table generator, voi {{allocationSize}} (vi du 5
 private Long id;
 ~~~
 
+### Ví dụ đời thực
+Import 100k user: batch_size=50 + sequence allocationSize=50 → 2000 batch, 4.2s, heap ổn định ~120MB nhờ flush/clear mỗi 1000. Với IDENTITY: 100k round-trip, 52s, heap tăng dần. Bật batch rewrite driver (reWriteBatchedInserts) giảm thêm 30%.
+
 ### Pitfall
 - Batch size qua lon -> memory + transaction dai; 20-50 thuong hop ly.
 - Flush/clear giua lo lon de tranh persistence context phinh to (OOM).
 - @Version optimistic lock van hoat dong nhung check version moi statement.
 
-> Senior tip: do PreparedStatement batch count trong statistics; neu van 1 statement/entity thi kiem tra id strategy va order_inserts.`,
+### Trả lời mẫu khi phỏng vấn
+Hibernate batching gom statement cùng dạng qua JDBC executeBatch; cấu hình batch_size, order_inserts/updates và batch rewrite của driver. IDENTITY phá batching vì DB sinh ID sau insert, Hibernate phải insert ngay để lấy key. Dùng sequence với allocationSize hoặc pooled optimizer để cấp phát ID trước, cho phép gom. Xử lý theo chunk flush+clear để giới hạn persistence context. Đo batch count, heap, transaction time và DB latency; test trên đúng driver/version.
+
+> Senior tip: do PreparedStatement batch count trong statistics; neu van 1 statement/entity thi kiem tra id strategy va order_inserts.
+
+### Khác biệt pooled và pooled-lo optimizer
+- pooled: lấy block ID bằng SELECT nextval, Hibernate tự chia ID trong block; ít round-trip sequence.
+- pooled-lo: tương tự nhưng ID được cấp theo kiểu "low" (ID nhỏ nằm trong block), phù hợp khi DB sequence increment lớn và muốn ID liên tục hơn.
+- allocationSize phải khớp increment sequence ở DB, nếu không Hibernate có thể cấp trùng ID.
+
+### Khi nào batching không giúp
+- Insert đơn lẻ hoặc transaction rất nhỏ.
+- Nhiều entity type xen kẽ và không order_inserts.
+- DB bottleneck ở index/WAL thay vì network.
+- Cần lấy ID ngay để dùng trong cùng transaction cho entity khác.`,
   follow: ['Khi nao batching khong giup?', 'Lam sao do so round-trip thuc te?', 'Khac biet pooled va pooled-lo optimizer?'],
   tags: ['jpa', 'batch', 'hibernate', 'IDENTITY', 'sequence', 'pooled optimizer'],
 },
@@ -6723,14 +6790,14 @@ private Long id;
   topic: 'jpa',
   level: 'senior',
   q: 'Second-level cache va query cache trong Hibernate 6: khi nao bat, khi nao HAI, va invalidation hoat dong the nao?',
-  a: `**Tom tat:** L2 cache luu entity/region theo id; query cache luu ket qua query (chi id list) va phu thuoc region cua entity. Bat cho du lieu doc nhieu, ghi it; HAI khi ghi thuong xuyen, phan tan, hoac du lieu thay doi ngoai Hibernate.
+  a: `**Tóm tắt:** L2 cache luu entity/region theo id; query cache luu ket qua query (chi id list) va phu thuoc region cua entity. Bat cho du lieu doc nhieu, ghi it; HAI khi ghi thuong xuyen, phan tan, hoac du lieu thay doi ngoai Hibernate.
 
-### Co che
+### Cơ chế
 - L1 cache = persistence context (mac dinh, per transaction/session).
 - L2 cache = shared across sessions, provider (Caffeine, Redis, Infinispan).
 - Query cache: cache ket qua query duoi dang list id; khi doc lai, load entity tu L2 cache. Neu entity khong o L2, query cache vo dung.
 
-### Khi nao HAI
+### Khi nào HAI
 - Du lieu ghi thuong xuyen -> invalidation lien tuc, overhead.
 - Cluster nhieu node -> cache coherence phuc tap, stale risk.
 - Thay doi du lieu bang SQL truc tiep/JDBC -> cache khong biet, stale.
@@ -6739,18 +6806,34 @@ private Long id;
 ### Invalidation
 Hibernate tu invalidate region khi entity update/delete qua persistence context. Bulk JPQL update/delete KHONG invalidate L2 cache (bay) -> phai clear() hoac evict region thu cong.
 
-### Cau hinh toi thieu
+### Cấu hình tối thiểu
 ~~~yaml
 spring.jpa.properties.hibernate.cache.use_second_level_cache: true
 spring.jpa.properties.hibernate.cache.region.factory_class: org.hibernate.cache.jcache.JCacheRegionFactory
 ~~~
 Entity: {{@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)}}.
 
+### Ví dụ đời thực
+Bảng Country 250 dòng đọc 50k lần/phút, cập nhật 1 lần/tuần: L2 cache READ_WRITE giảm DB load 92%, p99 8ms→2ms. Bảng Order status cập nhật liên tục: query cache hit ratio 3%, overhead serialization làm p99 tăng 15ms → tắt query cache, chỉ giữ L2 cho entity hot.
+
 ### Pitfall
 - READ_WRITE dung soft lock; NONSTRICT_READ_WRITE cho du lieu it ghi.
 - Query cache can {{@QueryHints(hint = "org.hibernate.cacheable", value = "true")}}.
+- Cache stampede khi key hết hạn đồng loạt tạo tải DB đột biến.
 
-> Senior tip: do hit/miss ratio; neu < 70% thi tat query cache, chi giu L2 cho entity hot.`,
+### Trả lời mẫu khi phỏng vấn
+L2 cache chia sẻ entity/region giữa các Session, phù hợp dữ liệu đọc nhiều ghi ít với invalidation rõ ràng. Query cache lưu danh sách ID và phụ thuộc entity cache; Hibernate invalidate theo timestamp bảng khi ghi qua Hibernate, nên bảng ghi thường xuyên thì query cache miss liên tục. Bulk JPQL update/delete không invalidate L2 cache, phải evict region thủ công. Tôi bật statistics, đo hit ratio; nếu dưới 70% thì tắt query cache, chỉ giữ L2 cho entity hot. Cân nhắc topology: local cache từng node có thể stale, distributed cache thêm network hop.
+
+> Senior tip: do hit/miss ratio; neu < 70% thi tat query cache, chi giu L2 cho entity hot. Evict region sau bulk update va kiem tra consistency cross-node.
+
+### So sánh Caffeine vs Redis cho L2 cache
+- Caffeine: in-process, latency thấp, không network hop, nhưng mỗi node cache riêng → stale risk khi nhiều node, invalidation phải broadcast.
+- Redis: shared cache, nhất quán cross-node, nhưng thêm network latency và vận hành; phù hợp dữ liệu cần coherence nghiêm ngặt.
+
+### Khi nào dùng READ_WRITE vs NONSTRICT_READ_WRITE
+- READ_WRITE: dùng soft lock, an toàn với concurrent update, overhead cao hơn.
+- NONSTRICT_READ_WRITE: chấp nhận stale ngắn, phù hợp dữ liệu ít ghi và không cần lock nghiêm ngặt.
+- TRANSACTIONAL: tích hợp JTA transaction, dùng trong môi trường JTA.`,
   follow: ['So sanh Caffeine vs Redis cho L2 cache?', 'Lam sao evict region sau bulk update?', 'Cache stampede xu ly the nao?'],
   tags: ['jpa', 'second-level cache', 'query cache', 'invalidation', 'Hibernate 6'],
 },
