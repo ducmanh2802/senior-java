@@ -7900,33 +7900,65 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'mid',
     q: 'GitLab CI: stages, jobs, cache vs artifacts, runner shell/docker và biến bảo mật masked/protected hoạt động thế nào?',
-    a: `**Tóm tắt:** Stage chạy tuần tự, job trong stage chạy song song; cache tăng tốc build, artifacts truyền kết quả giữa stage; runner thực thi; biến masked/protected che secret.
+    a: `**Tóm tắt:** GitLab CI chạy pipeline theo stage (tuần tự) và job (song song trong stage); cache tái dùng dependency giữa run, artifacts truyền file giữa stage; runner (shell/docker) thực thi; biến masked/protected che secret.
 
-### Stages & jobs
-- stages: build, test, deploy.
-- Job có script, image, rules.
+### Stage & job
+- stages khai báo trong .gitlab-ci.yml, ví dụ build, test, deploy; stage sau chỉ chạy khi stage trước pass.
+- Job trong cùng stage chạy song song, mỗi job có script, image, rules, timeout.
+- Dùng needs để DAG: job deploy không cần chờ toàn stage test nếu chỉ phụ thuộc build.
 
 ### Cache vs artifacts
-- cache: dependencies (Maven .m2) tái sử dụng giữa pipeline.
-- artifacts: file build/test report truyền stage sau, expire sau N ngày.
+- cache: thư mục dependency (Maven .m2, npm node_modules) lưu trên runner/storage, tái dùng giữa pipeline để build nhanh; key theo lock file (pom.xml hash).
+- artifacts: file kết quả build/test report cần truyền sang stage sau hoặc download; có expire_in (mặc định 30 ngày) để tiết kiệm storage.
+- Sai lầm: cache artifact lớn (target/) làm chậm; artifacts chứa secret.
 
 ### Runner
-- shared vs specific; executor shell/docker.
-- Docker executor: mỗi job trong container sạch.
+- shared runner (GitLab cung cấp) vs specific runner (tự host) cho workload nặng/bảo mật.
+- executor shell: chạy trên máy host, nhanh nhưng bẩn (state leak).
+- executor docker: mỗi job trong container sạch, image chỉ định (maven:3.9-eclipse-temurin-17).
+- Kubernetes executor: scale pod theo job.
 
 ### Biến bảo mật
-- CI/CD variables masked (không in log), protected (chỉ protected branch).
-- secret từ Vault/external.
+- CI/CD Variables: masked (giá trị không in ra log, thay bằng [MASKED]), protected (chỉ inject vào protected branch/tag).
+- Secret nên lấy từ Vault/external secrets, không hard-code.
+- Predefined variables: CI_COMMIT_SHA, CI_REGISTRY_IMAGE.
 
 ### Triển khai theo môi trường
-- environment: name, url.
-- manual approval: when: manual + rules.
+- environment: name, url; GitLab tạo deployment record và rollback UI.
+- when: manual + rules để gate production cần approval.
+- Canary/blue-green qua kubectl/helm trong script.
+
+### Ví dụ .gitlab-ci.yml
+~~~yaml
+stages: [build, test, deploy]
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+cache:
+  key: \${CI_COMMIT_REF_SLUG}
+  paths: [.m2/repository]
+build:
+  stage: build
+  image: maven:3.9-eclipse-temurin-17
+  script: mvn -B package -DskipTests
+  artifacts:
+    paths: [target/*.jar]
+    expire_in: 1 week
+test:
+  stage: test
+  script: mvn -B test
+deploy:
+  stage: deploy
+  environment: { name: production, url: https://app.example.com }
+  when: manual
+  script: kubectl set image deployment/app app=$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+~~~
 
 ### Trên production
-- Sai lầm: cache chứa secret hoặc artifact quá lớn.
-- Kiểm tra: pipeline duration, cache hit rate.
+- Sai lầm: cache chứa secret hoặc artifact quá lớn; runner shared bị noisy neighbor.
+- Kiểm tra: pipeline duration, cache hit rate (GitLab metrics), artifact storage.
+- Bảo mật: protected variables, runner tag restrict, audit log.
 
-> Senior tip: Dùng needs để DAG pipeline, giảm thời gian; artifacts expire để tiết kiệm storage.`,
+> Senior tip: Dùng needs để DAG pipeline giảm thời gian; artifacts expire để tiết kiệm storage; tách build/test/deploy image để cache layer hiệu quả.`,
     follow: ['Cache key nên thiết kế thế nào cho Maven/Gradle?', 'Làm sao tránh leak secret trong log?', 'Rollback pipeline khi deploy fail?'],
     tags: ['GitLabCI', 'Pipeline', 'Secrets']
   }
@@ -7935,30 +7967,50 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'Jenkinsfile declarative: agent, stages, shared library; so sánh với GitLab CI/GitHub Actions?',
-    a: `**Tóm tắt:** Jenkins tự host, declarative pipeline định nghĩa stage/agent; shared library tái sử dụng; so với GitLab/GitHub Actions là SaaS/integrated.
+    a: `**Tóm tắt:** Jenkins là CI server tự host, pipeline khai báo trong Jenkinsfile (declarative/scripted); agent chỉ định nơi chạy; shared library tái sử dụng logic; so với GitLab CI/GitHub Actions là dịch vụ tích hợp SaaS.
 
 ### Jenkinsfile declarative
-- pipeline { agent any; stages { stage('Build'){ steps { sh 'mvn...' } } } }
-- agent: any/label/docker.
-- post: always/success/failure.
+- pipeline { agent any; stages { stage('Build'){ steps { sh 'mvn -B package' } } } }
+- agent: any, label, docker, kubernetes; quyết định nơi job chạy.
+- post: always/success/failure/unstable để cleanup/notify.
+- environment, credentials(), options (timeout, retry).
 
 ### Shared library
-- vars/, src/; @Library('lib') _.
-- Tái sử dụng across repos.
+- Repo chứa vars/ (global functions) và src/ (classes); nạp bằng @Library('lib') _.
+- Version theo branch/tag; tái sử dụng across repos, tránh copy-paste.
+- Unit test library bằng Jenkins Pipeline Unit.
 
 ### So sánh
 | Tiêu chí | Jenkins | GitLab CI | GitHub Actions |
 |---|---|---|---|
-| Hosting | Tự quản | SaaS/self | SaaS |
-| Config | Jenkinsfile | .gitlab-ci.yml | workflow yaml |
-| Plugin | Rất nhiều | Built-in | Marketplace |
-| Secret | Credentials store | Variables | Secrets |
+| Hosting | Tự quản (controller + agent) | SaaS/self-managed | SaaS |
+| Config | Jenkinsfile | .gitlab-ci.yml | .github/workflows/*.yml |
+| Plugin | Rất nhiều (plugin hell risk) | Built-in phong phú | Marketplace actions |
+| Secret | Credentials store + binding | CI/CD Variables | Repository/Org Secrets |
+| Scale | Controller bottleneck nếu không phân tán | Managed runners | Hosted runners + self-hosted |
+
+### Ví dụ Jenkinsfile
+~~~groovy
+pipeline {
+  agent { docker { image 'maven:3.9-eclipse-temurin-17' } }
+  stages {
+    stage('Build') { steps { sh 'mvn -B package -DskipTests' } }
+    stage('Test') { steps { sh 'mvn -B test' } }
+    stage('Deploy') {
+      when { branch 'main' }
+      steps { sh 'kubectl apply -f k8s/' }
+    }
+  }
+  post { always { junit 'target/surefire-reports/*.xml' } }
+}
+~~~
 
 ### Trên production
-- Sai lầm: Jenkins controller bottleneck, plugin conflict.
-- Kiểm tra: queue time, agent utilization.
+- Sai lầm: Jenkins controller bottleneck, plugin conflict/version drift, agent offline.
+- Kiểm tra: queue time, agent utilization, plugin update cadence.
+- Bảo mật: least privilege credentials, RBAC, audit.
 
-> Senior tip: Jenkins phù hợp enterprise legacy; greenfield ưu tiên GitHub Actions/GitLab CI.`,
+> Senior tip: Jenkins phù hợp enterprise legacy/complex on-prem; greenfield ưu tiên GitHub Actions/GitLab CI để giảm vận hành; nếu dùng Jenkins, giữ plugin tối thiểu và version lock.`,
     follow: ['Khi nào chọn self-hosted runner?', 'Cách version shared library?', 'Blue ocean vs classic UI?'],
     tags: ['Jenkins', 'CI', 'Comparison']
   }
@@ -7967,29 +8019,43 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'SonarQube quality gate: coverage, code smell, chặn merge khi không đạt; cấu hình cho Maven/Gradle?',
-    a: `**Tóm tắt:** SonarQube phân tích code và áp dụng quality gate (coverage, bugs, vulnerabilities); fail gate chặn merge qua webhook/PR decoration.
+    a: `**Tóm tắt:** SonarQube scanner phân tích code gửi report lên server; quality gate áp điều kiện trên metric (coverage, bugs, vulnerabilities, smells); fail gate chặn merge qua PR decoration + required status check.
 
 ### Cơ chế
-- Scanner gửi report lên server.
-- Quality gate: conditions on metrics.
-- PR decoration comment trên MR/PR.
+- Scanner (Maven/Gradle/CLI) chạy trong CI, gửi report + source lên SonarQube server.
+- Server tính metric và so với quality gate profile.
+- PR decoration: comment kết quả + link; required check fail nếu gate fail.
+- Phân biệt "Overall code" vs "New code" (leak period) để không bị legacy debt chặn.
 
 ### Maven
-- mvn sonar:sonar -Dsonar.projectKey=...
-- jacoco agent để coverage.
+- mvn sonar:sonar -Dsonar.projectKey=app -Dsonar.host.url=... -Dsonar.token=...
+- Coverage: jacoco agent (prepare-agent) + report; sonar.jacoco.reportPaths.
+- Fail build nếu gate fail: sonar.qualitygate.wait=true.
 
 ### Gradle
-- sonarqube plugin, jacoco.
+- plugin org.sonarqube; gradle sonarqube.
+- jacoco plugin generate report; sonar.coverage.jacoco.xmlReportPaths.
 
 ### Chặn merge
-- GitLab: require pipeline success + external status check.
-- GitHub: branch protection required checks.
+- GitLab: require pipeline success + external status check "SonarQube" trên protected branch.
+- GitHub: branch protection required checks; SonarCloud PR decoration.
+- Ngưỡng thường: new code coverage ≥ 80%, 0 new blocker/critical.
+
+### Ví dụ Maven
+~~~bash
+mvn -B verify sonar:sonar \\
+  -Dsonar.projectKey=myapp \\
+  -Dsonar.host.url=https://sonar.example.com \\
+  -Dsonar.token=$SONAR_TOKEN \\
+  -Dsonar.qualitygate.wait=true
+~~~
 
 ### Trên production
-- Sai lầm: coverage threshold 0 ban đầu rồi không tăng.
-- Kiểm tra: gate pass rate, new code coverage.
+- Sai lầm: coverage threshold 0 ban đầu rồi không tăng; gate chỉ warning không block.
+- Kiểm tra: gate pass rate, new code coverage trend, false positive count.
+- Bảo mật: token masked, SonarQube HTTPS, RBAC.
 
-> Senior tip: Dùng "new code" period để tránh legacy debt chặn delivery.`,
+> Senior tip: Dùng "new code" period (leak period) để tránh legacy debt chặn delivery; tăng ngưỡng coverage dần theo quý.`,
     follow: ['Làm sao xử lý false positive?', 'Coverage nên đo unit hay integration?', 'SonarLint trong IDE?'],
     tags: ['SonarQube', 'QualityGate', 'Maven', 'Gradle']
   }
@@ -7998,34 +8064,55 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'Build image Java trong pipeline: multi-stage Dockerfile, layer cache, tag theo commit SHA, đẩy lên registry và quét lỗ hổng Trivy?',
-    a: `**Tóm tắt:** Multi-stage giảm kích thước; layer cache tăng tốc; tag SHA truy vết; push Harbor/ECR; Trivy quét CVE.
+    a: `**Tóm tắt:** Build image Java bằng multi-stage Dockerfile (build stage Maven/Gradle, runtime stage JRE slim) để giảm size; layer cache bằng cách copy pom trước download deps; tag theo commit SHA; push Harbor/ECR; Trivy quét CVE và fail pipeline nếu critical.
 
 ### Multi-stage Dockerfile
-- Build stage: Maven/Gradle.
-- Runtime stage: JRE slim.
-- COPY --from=build.
+- Build stage: image maven/gradle, compile + package.
+- Runtime stage: eclipse-temurin JRE slim hoặc distroless; COPY --from=build target/*.jar app.jar.
+- Kết quả image chỉ chứa JRE + jar, không có Maven/source.
 
 ### Layer cache
-- Copy pom trước, download deps, rồi copy source.
-- BuildKit cache mounts.
+- Copy pom.xml/build.gradle trước, RUN mvn dependency:go-offline, rồi copy source → tận dụng cache khi chỉ đổi code.
+- BuildKit cache mounts: --mount=type=cache,target=/root/.m2 để cache Maven repo giữa build.
+- Thứ tự instruction: ít thay đổi trước, thay đổi nhiều sau.
 
 ### Tag
-- image:tag = commit SHA short + version.
-- latest chỉ cho dev.
+- image:tag = commit SHA short (7-8 ký tự) + semantic version (1.2.3).
+- latest chỉ dùng dev; production luôn tag cụ thể để rollback.
+- Reproducible: build args (BUILD_DATE, VCS_REF) cho OCI labels.
 
 ### Registry
-- Harbor/ECR; docker login with token.
-- Retention policy.
+- Harbor/ECR/GitLab Registry; docker login với robot account/token (masked variable).
+- Retention policy: giữ N version gần nhất, xóa untagged.
+- Image signing: Cosign (sigstore) cho supply chain security.
 
 ### Trivy
-- trivy image --severity HIGH,CRITICAL.
-- Fail pipeline nếu CVE critical.
+- trivy image --severity HIGH,CRITICAL --exit-code 1 image:tag.
+- Quét cả OS package và Java dependency (qua Trivy Java analyzer).
+- Fail pipeline nếu CVE critical; exception list có hạn + justification.
+
+### Ví dụ Dockerfile
+~~~dockerfile
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -B dependency:go-offline
+COPY src ./src
+RUN mvn -B package -DskipTests
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+USER 1000
+ENTRYPOINT ["java","-jar","app.jar"]
+~~~
 
 ### Trên production
-- Sai lầm: root user, secret trong layer.
-- Kiểm tra: image size, scan report.
+- Sai lầm: root user, secret trong layer (ENV password), image base cũ.
+- Kiểm tra: image size, scan report, không có secret (trivy secret scan).
+- Base image update strategy: rebuild định kỳ theo base image digest.
 
-> Senior tip: Dùng distroless JRE để giảm attack surface.`,
+> Senior tip: Dùng distroless JRE để giảm attack surface; tag theo SHA để truy vết 1:1 với commit; bật image signing + verify ở deploy.`,
     follow: ['Làm sao cache Maven trong Docker build?', 'Image signing Cosign?', 'Base image update strategy?'],
     tags: ['Docker', 'CI', 'Trivy', 'Registry']
   }
@@ -8034,26 +8121,41 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'Triển khai bán tự động vs tự động hoàn toàn và rollback nhanh khi lỗi?',
-    a: `**Tóm tắt:** Bán tự động cần manual approval cho prod; tự động hoàn toàn deploy mỗi commit; rollback qua previous image/tag hoặc Helm rollback.
+    a: `**Tóm tắt:** Bán tự động (semi-auto) cần manual approval cho production; tự động hoàn toàn (full CD) deploy mỗi commit sau test; rollback nhanh qua previous image tag, Helm rollback hoặc kubectl rollout undo; migration DB phải backward-compatible.
 
 ### Bán tự động
-- Auto deploy dev/staging; manual prod.
-- Phù hợp regulated environments.
+- Auto deploy dev/staging; production cần approval (when: manual hoặc environment approval).
+- Phù hợp regulated environment (finance, healthcare) cần audit/change advisory board.
+- Giảm rủi ro nhưng chậm feedback.
 
 ### Tự động hoàn toàn
-- CD pipeline deploy prod sau test.
-- Cần feature flag, monitoring, auto rollback.
+- CD pipeline deploy production sau test pass + gate; mỗi commit = deploy.
+- Cần feature flag, monitoring, auto rollback để an toàn.
+- DORA elite: deploy frequency cao, lead time thấp.
 
 ### Rollback
-- Kubernetes: kubectl rollout undo.
-- Helm: helm rollback.
-- Image tag previous.
+- Kubernetes: kubectl rollout undo deployment/app; hoặc set image về previous tag.
+- Helm: helm rollback release revision.
+- ArgoCD: sync về git commit trước.
+- Database: expand/contract migration để rollback code không phá schema (add column nullable trước, drop sau).
+
+### Ví dụ rollback
+~~~bash
+# Kubernetes
+kubectl rollout undo deployment/app -n prod
+kubectl rollout status deployment/app -n prod
+
+# Helm
+helm history app -n prod
+helm rollback app 42 -n prod
+~~~
 
 ### Trên production
-- Sai lầm: không có runbook rollback, migration DB không tương thích.
-- Kiểm tra: rollback time, SLO.
+- Sai lầm: không có runbook rollback, migration DB không tương thích, không test rollback.
+- Kiểm tra: rollback time (MTTR), SLO, deploy success rate.
+- Feature flag vs deploy rollback: flag tắt feature nhanh hơn rollback image.
 
-> Senior tip: Expand/contract migration để rollback an toàn.`,
+> Senior tip: Expand/contract migration để rollback an toàn; luôn giữ previous image tag và test rollback trong staging; đo thời gian rollback < 5 phút.`,
     follow: ['Database migration rollback strategy?', 'Feature flag vs deploy rollback?', 'Canary vs blue-green?'],
     tags: ['CD', 'Rollback', 'Deployment']
   }
@@ -8062,28 +8164,46 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'lead',
     q: 'Release management: release branch, hotfix, versioning SemVer và coordination nhiều service?',
-    a: `**Tóm tắt:** SemVer cho library/API; release branch stabilize; hotfix từ main; coordination qua contract tests và changelog.
+    a: `**Tóm tắt:** SemVer cho library/API (MAJOR.MINOR.PATCH); release branch stabilize trước release; hotfix từ main; coordination nhiều service qua versioned API, contract test và changelog tự động.
 
 ### SemVer
-- MAJOR.MINOR.PATCH.
-- Breaking change → MAJOR.
+- MAJOR: breaking change (API incompatible).
+- MINOR: feature mới backward-compatible.
+- PATCH: bug fix.
+- Pre-release (1.2.3-rc.1) và build metadata.
 
 ### Release branch
-- release/1.2.0 từ develop/main.
-- Bug fix cherry-pick.
+- release/1.2.0 từ develop/main khi feature freeze.
+- Chỉ bug fix cherry-pick vào release branch; merge back vào main.
+- Tag v1.2.0 khi release.
 
 ### Hotfix
-- hotfix/* từ main, merge main + develop.
+- hotfix/* từ main (production), fix minimal, merge vào main và develop.
+- Patch version bump (1.2.1).
+- Trigger pipeline release tự động.
 
-### Multi-service
-- Independent deploy with versioned API.
-- Contract testing.
+### Multi-service coordination
+- Independent deploy với versioned API (URL /v1, /v2) để không lock-step.
+- Contract testing (Pact) giữa consumer/provider để phát hiện breaking change trước deploy.
+- Changelog tự động từ conventional commits (semantic-release).
+- API deprecation policy: announce, sunset date, monitoring usage.
+
+### Ví dụ conventional commit + release
+~~~bash
+# commit
+feat(order): add cancel endpoint
+fix(payment): handle timeout retry
+
+# semantic-release tự bump minor/major và publish
+npx semantic-release
+~~~
 
 ### Trên production
-- Sai lầm: release branch sống lâu, drift.
-- Kiểm tra: release frequency, hotfix count.
+- Sai lầm: release branch sống lâu gây drift; hotfix không merge back.
+- Kiểm tra: release frequency, hotfix count, lead time.
+- Trunk-based + feature flag giảm nhu cầu release branch.
 
-> Senior tip: Trunk-based + feature flag giảm nhu cầu release branch.`,
+> Senior tip: Trunk-based development + feature flag cho phần lớn team; giữ release branch chỉ cho regulated product; contract test bắt buộc cho multi-service.`,
     follow: ['Làm sao communicate breaking change?', 'Deprecation policy?', 'Release notes automation?'],
     tags: ['Release', 'SemVer', 'Hotfix', 'Leadership']
   }
@@ -8092,28 +8212,45 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'lead',
     q: 'Bảo mật pipeline: secret scanning, dependency scanning, SAST/DAST và policy as code?',
-    a: `**Tóm tắt:** Pipeline phải scan secret, dependency, code; policy as code enforce; least privilege runner.
+    a: `**Tóm tắt:** Pipeline bảo mật gồm secret scanning (gitleaks), dependency scanning (OWASP/Snyk + SBOM), SAST (SonarQube/Semgrep), DAST (OWASP ZAP); policy as code (OPA/Conftest) enforce rule; runner least privilege; scan phải block, không chỉ report.
 
 ### Secret scanning
-- gitleaks/trufflehog.
-- Pre-commit hooks.
+- gitleaks/trufflehog quét commit và working tree tìm API key, token, password.
+- Pre-commit hook chặn commit secret trước khi push.
+- Nếu leak: revoke key, rotate, scrub history (git filter-repo) + notify.
 
 ### Dependency scanning
-- OWASP Dependency-Check, Snyk.
-- SBOM.
+- OWASP Dependency-Check, Snyk, Trivy fs; so CVE với NVD.
+- SBOM (CycloneDX/SPDX) lưu artifact để audit.
+- Fail nếu CVE critical/high chưa được accept (exception có expiry).
 
 ### SAST/DAST
-- SonarQube SAST; OWASP ZAP DAST.
+- SAST: SonarQube, Semgrep phân tích source tìm SQL injection, XSS, insecure deserialization.
+- DAST: OWASP ZAP scan running app (staging) tìm runtime vulnerability.
+- IAST: agent trong app kết hợp SAST+DAST.
 
 ### Policy as code
-- OPA/Conftest.
-- Enforce image signature, no root.
+- OPA/Conftest kiểm tra Dockerfile/K8s manifest: no root user, image signed, resource limits.
+- Enforce ở CI gate; policy version-controlled.
+- Admission controller (Kyverno/Gatekeeper) enforce runtime.
+
+### Ví dụ pipeline security
+~~~yaml
+security:
+  stage: test
+  script:
+    - gitleaks detect --source . --exit-code 1
+    - trivy fs --severity HIGH,CRITICAL --exit-code 1 .
+    - semgrep ci --config auto
+  allow_failure: false
+~~~
 
 ### Trên production
-- Sai lầm: scan chỉ report không block.
-- Kiểm tra: findings trend, MTTR.
+- Sai lầm: scan chỉ report không block; alert fatigue; exception vĩnh viễn.
+- Kiểm tra: findings trend, MTTR, % pipeline block.
+- Shift-left: scan sớm trong PR, không chỉ pipeline main.
 
-> Senior tip: Shift-left: scan sớm trong PR, không chỉ pipeline main.`,
+> Senior tip: Secret scanning + dependency scanning là baseline bắt buộc; policy as code turning security into automated gate; review exception list định kỳ.`,
     follow: ['SBOM nên lưu ở đâu?', 'Image signing verification runtime?', 'Compliance audit?'],
     tags: ['Security', 'Pipeline', 'SAST', 'Policy']
   }
@@ -10187,33 +10324,51 @@ Helm chart thường có deployment, service, ingress, hpa, pdb, configmap, secr
     topic: 'devops',
     level: 'lead',
     q: 'Observability trên K8s: metrics/logs/traces cho Java service triển khai thế nào? Prometheus/Grafana/Loki/Tempo hay managed?',
-    a: `**Tóm tắt:** Triển khai observability trên K8s gồm metrics (Prometheus), logs (Loki/Fluent Bit), traces (Tempo/OTel). Managed (Datadog, CloudWatch) giảm vận hành nhưng chi phí cao.
+    a: `**Tóm tắt:** Observability trên K8s cho Java service gồm metrics (Prometheus scrape Actuator), logs (Fluent Bit → Loki, structured JSON), traces (OpenTelemetry → Tempo); managed (Datadog/CloudWatch) giảm vận hành nhưng chi phí cao; bắt đầu self-hosted metrics+logs+traceId.
 
 ### Metrics
-- Prometheus scrape /actuator/prometheus (Micrometer).
-- Grafana dashboard.
-- Alertmanager rules.
+- Spring Boot Actuator + Micrometer expose /actuator/prometheus (JVM heap/GC, thread, HTTP p95/p99, Hikari pool).
+- Prometheus scrape theo ServiceMonitor (Prometheus Operator) hoặc static config.
+- Grafana dashboard + Alertmanager rule theo SLO (error rate, latency).
+- Giữ cardinality thấp: không label user id/request id; dùng exemplar để link trace.
 
 ### Logs
-- Fluent Bit DaemonSet ship log từ node/Pod.
-- Loki lưu trữ theo label.
-- Structured JSON log từ Spring Boot.
+- Fluent Bit DaemonSet ship log từ node/Pod (stdout) tới Loki.
+- Spring Boot log JSON (logstash-logback-encoder) với traceId/spanId để correlate.
+- Loki label theo namespace/app; query LogQL.
+- Retention 7-30 ngày; archive sang S3/GCS.
 
 ### Traces
-- OpenTelemetry SDK trong app, OTLP exporter.
-- Tempo/Jaeger lưu trace.
-- Correlate traceId với log.
+- OpenTelemetry SDK trong app (otel-javaagent hoặc manual), OTLP exporter tới collector.
+- Collector deploy DaemonSet/Deployment, batch + tail sampling.
+- Tempo/Jaeger lưu trace; Grafana explore correlate trace ↔ log ↔ metric.
 
 ### Managed vs self-hosted
-- Self-hosted: kiểm soát, chi phí infra thấp nhưng vận hành nặng.
-- Managed: Datadog, New Relic, CloudWatch: nhanh nhưng chi phí theo host/log volume.
+- Self-hosted: kiểm soát, chi phí infra thấp nhưng vận hành nặng (storage, retention, upgrade).
+- Managed: Datadog, New Relic, CloudWatch, Grafana Cloud: nhanh, tích hợp nhưng chi phí theo host/log volume/MTU.
+- Hybrid: self-hosted metrics/logs + managed tracing cho team nhỏ.
+
+### Ví dụ OTel collector
+~~~yaml
+receivers:
+  otlp:
+    protocols: { grpc: { endpoint: 0.0.0.0:4317 } }
+processors:
+  batch: { timeout: 5s }
+exporters:
+  otlp/tempo: { endpoint: tempo:4317 }
+service:
+  pipelines:
+    traces: { receivers: [otlp], processors: [batch], exporters: [otlp/tempo] }
+~~~
 
 ### Trên production
-- Giữ cardinality thấp (không label user id).
-- Retention: metrics 15d, logs 7-30d, traces 7d.
-- Alert theo SLO, không alert noise.
+- Giữ cardinality thấp (không label user id) để tránh Prometheus OOM.
+- Retention: metrics 15d, logs 7-30d, traces 7d; archive cold storage.
+- Alert theo SLO (burn rate), không alert noise; runbook kèm alert.
+- Sampling trace (tail-based) để giữ cost.
 
-> Senior tip: Bắt đầu với metrics + structured logs + traceId trong log; thêm distributed tracing khi có nhu cầu debug cross-service thực sự.`,
+> Senior tip: Bắt đầu với metrics + structured logs + traceId trong log; thêm distributed tracing khi có nhu cầu debug cross-service thực sự; đo cost per service.`,
     follow: [
       'Làm sao tránh cardinality explosion trong Prometheus?',
       'OpenTelemetry collector deploy thế nào trên K8s?',
