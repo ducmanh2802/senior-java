@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-08
+
+### Nội dung
+- T1045 (auto-committed after kilo review + verify)
+- T1015 (auto-committed after kilo review + verify)
+- T1013 (auto-committed after kilo review + verify)
+- T1011 (auto-committed after kilo review + verify)
+- T1009 (auto-committed after kilo review + verify)
+- T1007 (auto-committed after kilo review + verify)
+- T1006 (auto-committed after kilo review + verify)
+- T1005 (auto-committed after kilo review + verify)
+- T1004 (auto-committed after kilo review + verify)
+- T1003 (auto-committed after kilo review + verify)
+- T1002 (auto-committed after kilo review + verify)
+- T1001 (auto-committed after kilo review + verify)
+- T1000 (auto-committed after kilo review + verify)
+- T729 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+
+
+
 ## 2026-11-07
 
 ### Nội dung
