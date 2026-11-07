@@ -2630,4 +2630,376 @@ Sau khi có kết quả, bước quyết định vẫn là **đọc entry của 
   related: ['concurrency-006', 'concurrency-021', 'concurrency-031', 'jvm-006'],
   tags: ['thread dump', 'jstack', 'jcmd', 'deadlock', 'BLOCKED', 'WAITING', 'monitor', 'ReentrantLock', 'lock contention'],
 },
+{
+  id: 'lesson-jvm-008',
+  track: 'jvm',
+  order: 8,
+  title: 'GC thế hệ thu nhỏ: eden, survivor, tuổi object và premature promotion',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Mô tả được young generation gồm Eden và hai Survivor và object di chuyển thế nào giữa chúng',
+    'Giải thích được minor GC copy các object còn sống sang Survivor rồi tăng tuổi',
+    'Hiểu được promotion sang old generation khi tuổi vượt MaxTenuringThreshold hoặc Survivor đầy',
+    'Nhận diện được premature promotion và tác động của nó tới full GC',
+  ],
+  body: `**Tóm tắt:** Young generation (thế hệ trẻ) trong heap chia thành Eden và hai vùng Survivor. Object mới sinh ra ở Eden; khi Eden đầy, minor GC copy các object còn sống sang Survivor và tăng "tuổi" (số lần sống sót). Object vượt ngưỡng tuổi hoặc khi Survivor đầy sẽ bị promote (thăng hạng) sang old generation (thế hệ già). Cơ chế copy giúp thu gom rác nhanh và chống phân mảnh, nhưng nếu Survivor quá nhỏ sẽ gây premature promotion (thăng hạng sớm), làm old đầy nhanh và dẫn tới full GC/pause dài.
+
+### 1) Các khái niệm cần hiểu trước (giải thích từ đầu)
+
+- **JVM (Java Virtual Machine)**: máy ảo chạy chương trình Java; nó quản lý bộ nhớ thay cho lập trình viên.
+- **Heap**: vùng bộ nhớ trên RAM mà JVM dùng để lưu các **object** (đối tượng — thực thể dữ liệu tạo ra bằng {{new}}, ví dụ {{new Order()}}).
+- **GC / Garbage Collector (bộ thu gom rác)**: cơ chế tự động của JVM tìm và giải phóng bộ nhớ của các object không còn được dùng nữa, để bạn không phải {{free}} tay như C/C++.
+- **Root (gốc)**: điểm xuất phát mà GC dùng để xét "còn dùng hay không" — ví dụ biến local trên stack của thread đang chạy, field {{static}}, tham chiếu JNI. Một object được coi là **reachable** (chạm tới được) nếu đi theo chuỗi tham chiếu từ root vẫn tới được nó; object không reachable là "rác".
+- **Pause (dừng tạm)**: khoảng thời gian ứng dụng bị dừng để GC làm việc (tùy collector có thể dừng ngắn hoặc gần như không dừng, nhưng minor GC truyền thống thường có pause ngắn).
+- **Phân mảnh (fragmentation)**: bộ nhớ trống bị chia thành nhiều mảnh nhỏ rời rạc, khó cấp phát object lớn liền mạch.
+
+### 2) Vì sao heap lại chia thành các thế hệ (generational)?
+
+Quan sát thực tế (gọi là **weak generational hypothesis** — giả thuyết thế hệ yếu): **đa số object "chết trẻ"**. Ví dụ trong một request HTTP, bạn tạo {{DTO}}, {{String}}, {{List}} tạm; request xong là chúng không còn ai giữ tham chiếu → thành rác ngay.
+
+Nếu GC quét toàn bộ heap mỗi lần thì rất tốn công, dù phần lớn object vừa tạo đã chết. Vì vậy JVM chia heap thành:
+- **Young generation (thế hệ trẻ)**: nơi object mới sinh ra; GC quét vùng này thường xuyên.
+- **Old generation / Tenured (thế hệ già)**: nơi chứa object đã sống sót qua nhiều lần GC (thường là cache, session, cấu trúc sống lâu).
+
+Quét riêng young gen nhanh vì vùng nhỏ và tỉ lệ chết cao.
+
+### 3) Cấu trúc bên trong Young generation: Eden + 2 Survivor
+
+Young generation không phải một khối liền mà gồm 3 vùng:
+
+~~~text
+Young Generation
++---------------------------+-----------+-----------+
+|           Eden            |    S0     |    S1     |
+|   (nơi object mới sinh)   | (from/to) | (from/to) |
++---------------------------+-----------+-----------+
+                               ^           ^
+                               |           |
+                     tại 1 thời điểm chỉ 1 vùng
+                     chứa object sống; vùng kia rỗng
+~~~
+
+- **Eden**: "vườn địa đàng" — mọi object mới ({{new}}) được cấp phát ở đây. Cấp phát trong Eden thường là **bump-the-pointer** (dịch con trỏ cấp phát lên một đoạn): cực nhanh. Để tránh tranh chấp giữa nhiều thread, JVM cấp cho mỗi thread một mảnh nhỏ riêng gọi là **TLAB (Thread-Local Allocation Buffer)** — vùng đệm cấp phát cục bộ theo thread.
+- **Survivor S0 và S1** (còn gọi là from-space / to-space): hai vùng kích thước bằng nhau. Tại một thời điểm, chỉ **một** vùng Survivor chứa object sống sót; vùng còn lại để trống, dành cho lần GC kế tiếp.
+
+### 4) Minor GC hoạt động thế nào (copy, không sweep)
+
+**Minor GC** (còn gọi là young GC) xảy ra khi **Eden đầy**. Nó dùng chiến lược **copying collector** (bộ thu gom kiểu sao chép) thay vì "sweep" (quét và đánh dấu xóa tại chỗ):
+
+1. JVM xác định các object **còn sống** (reachable) trong Eden và Survivor đang active bằng cách lần theo tham chiếu từ root. Lưu ý: một object ở old gen có thể trỏ vào young gen; JVM dùng cấu trúc phụ như **card table** (bảng thẻ — đánh dấu vùng old gen có ghi tham chiếu vào young) hoặc **remembered set** (tập nhớ — G1 dùng theo vùng/region) để không phải quét cả old gen khi chạy minor GC.
+2. Copy các object sống sang **Survivor trống** (to-space). Mỗi object có một **age** (tuổi, lưu trong object header) — tăng lên 1 mỗi lần sống sót qua minor GC.
+3. Sau khi copy xong, **toàn bộ Eden và Survivor cũ** được coi là rỗng trong nháy mắt. Không cần duyệt từng object chết → thu hồi rất nhanh.
+
+Ví dụ luồng di chuyển (đơn giản hóa):
+
+~~~text
+Trước minor GC:
+Eden: [A][B][C][D][E] (đầy)   S0(active): [F]   S1: (rỗng)
+Roots chỉ còn chạm tới A, C, F
+
+Sau minor GC:
+Eden: (rỗng)                   S0: (rỗng)        S1(active): [A(age1)][C(age1)][F(age2)]
+B,D,E biến mất (không copy). F tăng tuổi vì đã sống sót thêm 1 lần.
+~~~
+
+### 5) Promotion (thăng hạng) sang Old generation: khi nào?
+
+Object không ở young mãi. Nó được **promote** (chuyển) sang old generation khi:
+- **Tuổi vượt ngưỡng** {{-XX:MaxTenuringThreshold}}: trên HotSpot giá trị tối đa là 15 (vì tuổi lưu trong 4 bit của object header). Mặc định thường là 15. "Vượt ngưỡng" nghĩa là sau khi tăng tuổi, {{age > threshold}} → promote. (JVM cũng có cơ chế **adaptive tenuring** tự điều chỉnh ngưỡng thực tế dựa trên lượng object sống trong Survivor.)
+- **Object quá lớn**: một số cấu hình/collector cho phép cấp phát trực tiếp vào old gen để tránh copy tốn kém (ví dụ cơ chế pretenure; với G1, object rất lớn thành "humongous region").
+- **Survivor không đủ chỗ** (xem mục 6): promote sớm.
+
+### 6) Premature promotion — nguy cơ hay gặp trên production
+
+**Premature promotion** (thăng hạng sớm) xảy ra khi **Survivor không đủ chứa** toàn bộ object sống sót qua minor GC. JVM buộc phải đẩy một phần object sang old generation dù chúng có thể sẽ chết ở lần GC sau.
+
+Hậu quả: old generation đầy nhanh hơn → kích hoạt **major GC / old GC / full GC** (tùy collector; hiểu đơn giản là GC phải xử lý vùng old, thường tốn thời gian và gây pause dài hơn minor GC) sớm hơn → latency (độ trễ) tăng đột ngột.
+
+Nguyên nhân thường gặp:
+- Young gen hoặc Survivor quá nhỏ (tuning sai {{-XX:NewRatio}}, {{-XX:SurvivorRatio}}, {{-Xmn}}).
+- **Allocation rate** (tốc độ cấp phát object, ví dụ MB/giây) tăng đột biến do traffic hoặc code tạo nhiều object tạm.
+- Một đợt request tạo nhiều object sống tạm thời lâu hơn 1 chu kỳ minor GC.
+
+G1 GC có cơ chế **adaptive** tự chỉnh kích thước young gen theo mục tiêu pause ({{-XX:MaxGCPauseMillis}}), nhưng vẫn cần theo dõi.
+
+### 7) Vì sao copy lại tốt (và đánh đổi gì)?
+
+- **Nhanh với rác nhiều**: chỉ đụng vào object sống; object chết không tốn công xử lý. Sau GC, Eden rỗng → cấp phát lại bằng bump-pointer, rất nhanh.
+- **Chống phân mảnh**: object sống được dồn liền nhau vào Survivor/to-space.
+- **Đánh đổi**: tốn thêm bộ nhớ cho vùng đích (cần Survivor trống); phải cập nhật mọi tham chiếu trỏ tới object đã bị di chuyển (forwarding).
+
+### 8) Lỗi hay gặp / dấu hiệu trên production
+
+- Old gen tăng đều sau mỗi lần full GC, **live set** (tập object thực sự còn sống) không giảm → nghi ngờ **memory leak** (rò rỉ bộ nhớ: giữ tham chiếu không cần thiết), không phải chỉ "thiếu heap".
+- Allocation rate cao nhưng minor GC pause vẫn thấp, old gen ổn định → young gen đang làm việc tốt.
+- Pause dài xuất hiện dù heap còn trống → kiểm tra premature promotion, kích thước Survivor, hoặc full GC do metaspace/explicit GC (tùy cấu hình).
+
+> Senior tip: Trước khi tăng {{-Xmx}}, hãy xem GC log ({{-Xlog:gc*}} trên JDK 9+) và allocation rate. Nếu old gen tăng đều qua các full GC, lấy heap dump và tìm **retained set** (tập object bị giữ lại) bằng dominator tree; "thêm RAM" chỉ hoãn crash. Nếu nghi premature promotion, kiểm tra kích thước Survivor và pattern tạo object theo request.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Minor GC khác major/full GC thế nào?", "Khi nào object được promote?", "Premature promotion là gì và xử lý thế nào?". Trả lời theo chuỗi **Eden đầy → copy object sống → tăng tuổi → promote khi vượt ngưỡng / Survivor đầy**, kèm 1 ví dụ allocation rate, sẽ thuyết phục hơn liệt kê tên collector. Bài tập dưới đây bắt bạn tự mô phỏng MiniHeap với {{allocate/minorGc}} trên đồ thị tham chiếu để hiểu đúng reachability, tuổi và promotion.`,
+  exercises: [
+    {
+      title: 'MiniHeap mô phỏng generational GC',
+      prompt: `Hoàn thiện {{MiniHeap}} mô phỏng young generation với Eden và hai Survivor.
+
+Yêu cầu:
+- {{allocate(id)}}: tạo object mới trong Eden; id trùng ném {{IllegalArgumentException}}.
+- {{addRef(from, to)}}: thêm tham chiếu; nếu id không tồn tại ném {{IllegalArgumentException}}.
+    - {{minorGc(roots, tenuringThreshold)}}: copy object sống từ Eden + Survivor hiện tại sang Survivor còn lại, tăng tuổi; object có tuổi > tenuringThreshold được promote sang old; trả về số object được promote.
+- {{edenSize()}} / {{survivorSize()}} / {{oldSize()}}: số object ở mỗi vùng.
+- {{isInOld(id)}}: true nếu object đã promote.
+
+Minor GC phải xử lý chu trình và đồ thị chia sẻ đúng như GC reachability.`,
+      starter: `class MiniHeap {
+    static final class Obj {
+        final int id;
+        final List<Integer> refs = new ArrayList<>();
+        int age;
+        boolean inOld;
+        Obj(int id) { this.id = id; }
+    }
+
+    private final Map<Integer, Obj> objects = new LinkedHashMap<>();
+    private final Set<Integer> eden = new LinkedHashSet<>();
+    private final Set<Integer> survivorA = new LinkedHashSet<>();
+    private final Set<Integer> survivorB = new LinkedHashSet<>();
+    private Set<Integer> activeSurvivor = survivorA;
+    private Set<Integer> inactiveSurvivor = survivorB;
+
+    Obj allocate(int id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void addRef(int from, int to) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int minorGc(Set<Integer> roots, int tenuringThreshold) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int edenSize() { return eden.size(); }
+    int survivorSize() { return activeSurvivor.size(); }
+    int oldSize() {
+        int n = 0;
+        for (Obj o : objects.values()) if (o.inOld) n++;
+        return n;
+    }
+    boolean isInOld(int id) {
+        Obj o = objects.get(id);
+        return o != null && o.inOld;
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void throwsIae(Runnable r) {
+        try { r.run(); } catch (IllegalArgumentException e) { return; }
+        throw new AssertionError("phải ném IllegalArgumentException");
+    }
+    public static void main(String[] args) {
+        check("allocate và addRef cơ bản", () -> {
+            MiniHeap h = new MiniHeap();
+            h.allocate(1); h.allocate(2);
+            h.addRef(1, 2);
+            eq(2, h.edenSize());
+            throwsIae(() -> h.allocate(1));
+            throwsIae(() -> h.addRef(1, 99));
+        });
+        check("minor GC copy object sống sang survivor", () -> {
+            MiniHeap h = new MiniHeap();
+            h.allocate(1); h.allocate(2); h.allocate(3);
+            h.addRef(1, 2);
+            int promoted = h.minorGc(Set.of(1), 10);
+            eq(0, promoted);
+            eq(0, h.edenSize());
+            eq(2, h.survivorSize());
+            eq(0, h.oldSize());
+        });
+        check("object chết không được copy", () -> {
+            MiniHeap h = new MiniHeap();
+            h.allocate(1); h.allocate(2);
+            int promoted = h.minorGc(Set.of(), 10);
+            eq(0, promoted);
+            eq(0, h.edenSize());
+            eq(0, h.survivorSize());
+            eq(0, h.oldSize());
+        });
+        check("promotion khi tuổi vượt threshold", () -> {
+            MiniHeap h = new MiniHeap();
+            h.allocate(1);
+            h.minorGc(Set.of(1), 1);
+            eq(1, h.survivorSize());
+            int promoted = h.minorGc(Set.of(1), 1);
+            eq(1, promoted);
+            eq(1, h.oldSize());
+            eq(0, h.survivorSize());
+        });
+        check("chu trình và đồ thị chia sẻ được xử lý đúng", () -> {
+            MiniHeap h = new MiniHeap();
+            h.allocate(1); h.allocate(2); h.allocate(3);
+            h.addRef(1, 2); h.addRef(2, 3); h.addRef(3, 1);
+            h.allocate(4);
+            h.addRef(1, 4);
+            int promoted = h.minorGc(Set.of(1), 10);
+            eq(0, promoted);
+            eq(4, h.survivorSize());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class MiniHeap {
+    static final class Obj {
+        final int id;
+        final List<Integer> refs = new ArrayList<>();
+        int age;
+        boolean inOld;
+        Obj(int id) { this.id = id; }
+    }
+
+    private final Map<Integer, Obj> objects = new LinkedHashMap<>();
+    private final Set<Integer> eden = new LinkedHashSet<>();
+    private final Set<Integer> survivorA = new LinkedHashSet<>();
+    private final Set<Integer> survivorB = new LinkedHashSet<>();
+    private Set<Integer> activeSurvivor = survivorA;
+    private Set<Integer> inactiveSurvivor = survivorB;
+
+    Obj allocate(int id) {
+        if (objects.containsKey(id)) throw new IllegalArgumentException("duplicate id " + id);
+        Obj o = new Obj(id);
+        objects.put(id, o);
+        eden.add(id);
+        return o;
+    }
+
+    void addRef(int from, int to) {
+        Obj a = objects.get(from);
+        Obj b = objects.get(to);
+        if (a == null || b == null) throw new IllegalArgumentException("unknown object");
+        a.refs.add(to);
+    }
+
+    int minorGc(Set<Integer> roots, int tenuringThreshold) {
+        Set<Integer> live = new LinkedHashSet<>();
+        Deque<Integer> stack = new ArrayDeque<>();
+        for (int r : roots) if (!objects.containsKey(r)) throw new IllegalArgumentException("unknown root " + r);
+        for (int r : roots) stack.push(r);
+        while (!stack.isEmpty()) {
+            Obj o = objects.get(stack.pop());
+            if (o == null || live.contains(o.id) || o.inOld) continue;
+            live.add(o.id);
+            for (int next : o.refs) stack.push(next);
+        }
+        int promoted = 0;
+        Set<Integer> target = inactiveSurvivor;
+        target.clear();
+        for (int id : live) {
+            Obj o = objects.get(id);
+            if (o.inOld) continue;
+            if (eden.contains(id) || activeSurvivor.contains(id)) {
+                o.age++;
+                if (o.age > tenuringThreshold) {
+                    o.inOld = true;
+                    promoted++;
+                } else {
+                    target.add(id);
+                }
+            }
+        }
+        eden.clear();
+        activeSurvivor.clear();
+        Set<Integer> tmp = activeSurvivor;
+        activeSurvivor = inactiveSurvivor;
+        inactiveSurvivor = tmp;
+        inactiveSurvivor.clear();
+        return promoted;
+    }
+
+    int edenSize() { return eden.size(); }
+    int survivorSize() { return activeSurvivor.size(); }
+    int oldSize() {
+        int n = 0;
+        for (Obj o : objects.values()) if (o.inOld) n++;
+        return n;
+    }
+    boolean isInOld(int id) {
+        Obj o = objects.get(id);
+        return o != null && o.inOld;
+    }
+}`,
+      hints: [
+        'Minor GC là reachability từ roots: DFS/BFS trên refs, bỏ qua object đã inOld.',
+        'Object sống được copy sang survivor còn lại: tăng age, nếu age >= threshold thì promote (inOld = true).',
+        'Sau GC: Eden và survivor cũ rỗng; hoán đổi active/inactive survivor.',
+      ],
+      explain: `Minor GC mô phỏng cơ chế copy collector: chỉ đi theo cạnh từ root để tìm object sống, rồi copy chúng sang survivor mới. Object chết không được copy nên biến mất trong nháy mắt. Tuổi tăng mỗi lần sống sót; vượt threshold thì promote sang old.
+
+Lỗi hay gặp:
+- Không reset survivor cũ: object chết vẫn còn trong danh sách, size báo sai.
+- Hoán đổi active/inactive sai thứ tự: survivorSize trả về vùng rỗng.
+- Quên bỏ qua object đã inOld: promote lại nhiều lần.
+- Không xử lý chu trình: DFS phải đánh dấu visited (dùng Set live) để không lặp vô hạn.
+
+Trong JVM thật, minor GC còn phải xét tham chiếu từ old generation vào young (card table / remembered set), và object quá lớn có thể được allocate trực tiếp trong old.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Minor GC (young GC) trong generational collector chủ yếu làm gì?',
+      options: [
+        'Quét (sweep) toàn bộ heap rồi dồn (compact) mọi object',
+        'Copy các object còn sống từ Eden/Survivor sang Survivor còn lại, đồng thời tăng tuổi (age)',
+        'Thu hồi object trong old generation (thế hệ già)',
+        'Xoá metadata class trong metaspace',
+      ],
+      answer: 1,
+      explain: `**Đúng (B):** Minor GC chỉ xử lý **young generation** (Eden + Survivor). Nó tìm các object còn **reachable** (chạm tới từ root) rồi **copy** sang Survivor trống, tăng **age** (tuổi — số lần sống sót). Sau đó Eden và Survivor cũ được coi là rỗng, nên thu hồi rác rất nhanh mà không phải duyệt từng object chết.
+
+**Sai (A):** "Sweep toàn bộ heap + compact" mô tả kiểu full/major GC (tùy collector), phạm vi là cả heap/old gen, thường tốn thời gian và gây pause dài hơn.
+**Sai (C):** Old generation không phải đối tượng chính của minor GC (minor GC chỉ cần card table/remembered set để biết tham chiếu old→young).
+**Sai (D):** Metaspace (lưu metadata class) có cơ chế thu hồi riêng, không phải việc của minor GC young gen.`,
+    },
+    {
+      q: 'Premature promotion (thăng hạng sớm) xảy ra khi nào?',
+      options: [
+        'Khi Survivor không đủ chỗ chứa object sống sót nên một phần bị đẩy sang old generation sớm',
+        'Khi object vừa được tạo có tuổi (age) bằng 0',
+        'Khi Eden được cấu hình quá lớn',
+        'Khi full GC chạy quá thường xuyên',
+      ],
+      answer: 0,
+      explain: `**Đúng (A):** Sau minor GC, mọi object sống phải được copy sang Survivor trống. Nếu lượng object sống lớn hơn sức chứa Survivor, JVM không còn chỗ copy → buộc phải **promote sớm** một phần sang old generation, dù các object đó lẽ ra có thể chết ở lần minor GC sau. Hậu quả: old đầy nhanh → full/major GC sớm hơn → pause dài.
+
+**Sai (B):** Object mới sinh ở Eden có tuổi 0 là bình thường; đây không phải premature promotion.
+**Sai (C):** Eden lớn không trực tiếp gây premature promotion; vấn đề nằm ở Survivor/young sizing và lượng object sống sót.
+**Sai (D):** Full GC chạy thường xuyên thường là **hậu quả** (do old đầy, đôi khi vì premature promotion/memory leak), không phải nguyên nhân gây premature promotion.`,
+    },
+    {
+      q: 'Object thường được promote sang old generation khi nào (theo cơ chế tuổi)?',
+      options: [
+        'Ngay khi nó được tạo bằng từ khóa new',
+        'Khi tuổi (age) của nó vượt ngưỡng MaxTenuringThreshold sau các lần sống sót qua minor GC',
+        'Khi nó được gán vào một biến static',
+        'Khi minor GC không chạy được vì thiếu bộ nhớ',
+      ],
+      answer: 1,
+      explain: `**Đúng (B):** Mỗi lần object sống sót qua minor GC, **age** tăng 1. Khi {{age > -XX:MaxTenuringThreshold}} (giá trị tối đa 15 trên HotSpot vì lưu trong 4 bit object header; mặc định thường 15) thì object được promote sang old. Đây là cơ chế "đủ lâu thì chuyển sang thế hệ già".
+
+**Sai (A):** {{new}} cấp phát ở Eden (young gen), không vào thẳng old (trừ trường hợp đặc biệt như object rất lớn/humongous tùy collector).
+**Sai (C):** Biến {{static}} là một **root** giữ tham chiếu, làm object dễ sống lâu, nhưng bản thân việc gán vào static không tự động promote; promotion vẫn theo cơ chế GC/tuổi hoặc chính sách cấp phát.
+**Sai (D):** Minor GC "không chạy được" không phải quy tắc promote; nếu GC không thu hồi đủ bộ nhớ, JVM sẽ ném {{OutOfMemoryError}} (tùy tình huống).`,
+    },
+  ],
+  related: ['jvm-002', 'jvm-004', 'jvm-005'],
+  tags: ['GC', 'generational', 'minor GC', 'promotion', 'Survivor', 'Eden'],
+},
 );
