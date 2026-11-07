@@ -923,7 +923,7 @@ Tuple mà không snapshot nào còn có thể cần gọi là **dead tuple**. VA
 Điều kiện 1 có một hệ quả sống còn: **VACUUM không được phép xoá tuple mà một snapshot đang mở còn cần.** Nên chỉ cần một transaction mở lâu là cả bảng bắt đầu phình:
 
 ~~~sql
--- Ai dang giu "xmin horizon" (ngan cach thu nhat khi bang phinh bat thuong)?
+-- Ai đang giữ "xmin horizon" (ngăn chặn thứ nhất khi bảng phình bất thường)?
 SELECT pid, state, now() - xact_start AS mo_du_ra, left(query, 60) AS cau_lenh
 FROM pg_stat_activity
 WHERE xact_start IS NOT NULL
@@ -1062,7 +1062,7 @@ class MvccTable {
     }
 
     void update(int xid, int value) {
-        closeOpen(xid);                       // khong xoa ban cu, chi dong dau cua no lai
+        closeOpen(xid);                       // không xóa bản cũ, chỉ đóng đầu của nó lại
         rows.add(new Version(xid, 0, value)); // ban moi la mot tuple khac, cung id
     }
 
@@ -1146,14 +1146,14 @@ Trong PostgreSQL, log sống ở thư mục **pg_wal**, gồm các file segment 
 
 ### Commit thật ra là chuyện gì
 ~~~seq
-title: Duong di cua mot UPDATE, tu luc chay den khi duoc coi la ben
+title: Đường đi của một UPDATE, từ lúc chạy đến khi được coi là bền
 actors: App | Backend | WAL | File du lieu
 App -> Backend: UPDATE account SET balance = 12 WHERE id = 42
 Backend -> Backend: sua tuple trong shared buffers, page tro nen dirty
 Backend -> WAL: ghi record thay doi, nhan LSN 100
 App -> Backend: COMMIT
 Backend -> WAL: ghi record COMMIT roi fsync ca log
-WAL --> App: OK, giao dich cua ban da ben
+WAL --> App: OK, giao dịch của bạn đã bền
 note File du lieu: page chua hang 42 van la trang cu, chua bi ghi
 Backend -> File du lieu: checkpoint sau nay moi ghi page do
 ~~~
