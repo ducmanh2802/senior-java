@@ -2703,46 +2703,42 @@ Neu ELB 4xx tang dot bien con target 4xx khong doi -> loi o edge/client; neu tar
   id: 'aws-033',
   topic: 'aws',
   level: 'senior',
-  q: 'Chuyen du lieu giua cac region: S3 Cross-Region Replication, chi phi data transfer, va cac lua chon cho DB (cross-region read replica, Aurora Global Database, DMS).',
-  a: `**Tom tat:** S3 CRR replicate object moi sang region khac (can versioning, IAM role); object cu dung Batch Replication; RTC cho SLA. DB: cross-region read replica (lag giay-phut), Aurora Global Database (lag < 1s, RPO thap), DMS cho migrate/dong bo lien tuc.
+  q: 'Chuyển dữ liệu giữa các region: S3 Cross-Region Replication, chi phí data transfer, và các lựa chọn cho DB (cross-region read replica, Aurora Global Database, DMS). Bạn chọn thế nào?',
+  a: `**Tóm tắt:** Với object, dùng **S3 Replication** (Cross-Region Replication, cần bật versioning; có thể bật **Replication Time Control** để cam kết 99,99% object trong 15 phút). Với database: **cross-region read replica** (RDS) cho đọc gần người dùng và DR đơn giản; **Aurora Global Database** cho DR với độ trễ replication thường dưới 1 giây và failover nhanh; **DMS** khi cần chuyển đổi, lọc dữ liệu hoặc khác engine. Luôn tính **chi phí data transfer liên vùng** (tính theo GB, nhân với số lần sao chép) vì nó thường là khoản bất ngờ nhất trên hoá đơn.
 
-### S3 Cross-Region Replication (CRR)
-- Bat versioning ca source va destination bucket.
-- Tao IAM role cho S3 replicate.
-- Chi replicate object **moi** sau khi bat; object cu dung **S3 Batch Replication**.
-- Ho tro filter prefix/tag, encryption (SSE-S3/SSE-KMS), delete marker replication (tuy chon).
-- **Replication Time Control (RTC)**: SLA 99.99% object replicate trong 15 phut, co metric.
+### S3 Replication hoạt động thế nào
+- Cần **versioning** ở cả bucket nguồn và đích; replication chạy bất đồng bộ cho object **mới** sau khi bật (object cũ dùng **S3 Batch Replication**).
+- Có thể đổi storage class ở đích (ví dụ Glacier cho bản DR), đổi owner, sao chép sang tài khoản khác (tốt cho bảo vệ khỏi xoá do tài khoản nguồn bị chiếm).
+- **Delete marker** mặc định **không** được sao chép (cấu hình được); xoá theo version thì không bao giờ được sao chép — nhờ vậy xoá nhầm ở nguồn không tự lan sang đích, trừ khi bạn chủ động bật.
+- Object mã hoá SSE-KMS cần quyền với khoá KMS ở region đích.
 
-### Chi phi
-- Data transfer out tu source region: ~0.02 USD/GB (tuy region).
-- Request charges o destination.
-- Storage o destination.
-- RTC them phi.
-Tinh truoc: 10TB/thang x 0.02 = 200 USD + storage.
+### Database giữa các region
+| Lựa chọn | Độ trễ sao chép | Failover | Khi dùng |
+|---|---|---|---|
+| RDS cross-region read replica | Vài giây (async) | Promote thủ công thành DB độc lập | Đọc gần người dùng, DR đơn giản |
+| Aurora Global Database | Thường dưới 1 giây (sao chép ở tầng storage) | Managed failover (không mất dữ liệu khi có kế hoạch) hoặc detach-and-promote khi sự cố, RTO cỡ phút | DR nghiêm túc, đọc toàn cầu |
+| DMS (full load + CDC) | Giây tới phút | Không phải công cụ failover | Đổi engine, lọc/biến đổi, migration |
+| DynamoDB Global Tables | Thường dưới 1 giây | Ghi được ở mọi region (last writer wins) | Dữ liệu key-value đa region |
 
-### DB giua region
-- **Cross-region read replica (RDS)**: async replication, lag thuong giay den phut; co the promote thanh primary (RPO = lag, RTO phut). Phu hop DR warm standby.
-- **Aurora Global Database**: primary region + secondary region, lag thuong < 1s, RPO thap; failover region ~1 phut (managed). Chi phi storage nhan ban.
-- **DMS**: full load + CDC de dong bo lien tuc giua DB khac engine/on-prem va AWS; dung khi migrate hoac keeping in sync. Khong phai HA solution.
+### Chi phí cần tính
+- Data transfer liên vùng tính **mỗi GB** gửi đi (bảng giá thay đổi theo cặp region) — sao chép 5TB/tháng là một khoản đáng kể; cộng thêm phí request và phí RTC nếu bật.
+- Aurora Global Database tính thêm phí I/O replication và instance ở region phụ.
+- Giảm chi phí: chỉ sao chép prefix/tag cần thiết, nén, đưa bản DR vào storage class rẻ.
 
-### Khi nao chon cai nao
-- Can DR voi RPO < 1s va RTO < 1 phut -> Aurora Global.
-- DB engine co dinh (Oracle/SQL Server) -> cross-region read replica hoac Multi-AZ DB cluster + snapshot copy.
-- Migrate tu on-prem -> DMS full load + CDC.
-- Object luu tru -> S3 CRR + RTC.
+### Ví dụ đời thực
+Một công ty bảo hiểm cần RPO dưới 1 phút và RTO dưới 1 giờ cho DR sang region khác. Ban đầu dùng snapshot RDS sao chép mỗi 6 giờ (RPO 6 giờ — không đạt). Chuyển sang Aurora Global Database cho DB chính (lag đo được 300–800ms), S3 Replication có RTC cho hồ sơ scan, sao chép sang **tài khoản DR riêng** với Object Lock để chống ransomware. Diễn tập failover hằng quý: RTO thực tế 22 phút (phần lớn là đổi DNS và khởi động ứng dụng ở region phụ). Chi phí data transfer liên vùng khoảng 1.100 USD/tháng — được duyệt vì thấp hơn nhiều so với rủi ro.
 
 ### Pitfall
-- CRR khong replicate object da ton tai truoc khi bat (can Batch).
-- KMS key phai grant cho role replicate o ca hai region.
-- Aurora Global secondary khong nhan write; app phai redirect sau failover.
-- DMS CDC lag tang khi transaction lon; monitor CloudWatch.
+- Quên rằng replication không sao chép object có sẵn trước khi bật.
+- Bật sao chép delete marker mà không có Object Lock → xoá nhầm lan sang bản DR.
+- Không đo replication lag → nghĩ RPO là 1 giây nhưng thực tế là 10 phút lúc cao điểm.
+- Chỉ sao chép dữ liệu mà không chuẩn bị hạ tầng, cấu hình, secret ở region phụ.
 
-> Senior tip: voi ngan hang, dinh nghia RPO/RTO truoc roi moi chon cong nghe. Aurora Global cho RPO < 1s, nhung chi phi va complexity cao; nhieu he thong chi can RDS cross-region replica + snapshot copy la du va re hon nhieu.`,
-  follow: [
-    'S3 CRR voi delete marker va versioning: rui ro xoa nham lan sang region khac?',
-    'Aurora Global Database failover tu dong vs thu cong khac nhau the nao?',
-    'Cach do replication lag va alert cho DB cross-region?'
-  ],
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo RPO, RTO và loại dữ liệu. Với object trên S3, tôi dùng S3 Replication, cần versioning, có thể bật Replication Time Control để có cam kết thời gian, sao chép sang tài khoản khác và bật Object Lock ở đích để chống xoá nhầm hoặc ransomware; object có sẵn thì dùng Batch Replication. Với database: RDS cross-region read replica cho đọc gần người dùng và DR đơn giản, phải promote thủ công; Aurora Global Database khi cần DR nghiêm túc, lag thường dưới một giây và có managed failover; DMS khi cần đổi engine hoặc biến đổi dữ liệu. Tôi luôn tính chi phí data transfer liên vùng vì nó tính theo từng GB, đo replication lag và cảnh báo, và diễn tập failover định kỳ để biết RTO thật chứ không phải RTO trên giấy."
+
+> Senior tip: DR không chỉ là dữ liệu. Danh sách kiểm tra của tôi luôn có: AMI/image, secret và khoá KMS ở region phụ, quota dịch vụ, DNS, và runbook đã diễn tập. Thiếu một mục là RTO tăng từ phút thành giờ.`,
+  follow: ['S3 CRR với delete marker và versioning: rủi ro xoá nhầm lan sang region khác?', 'Aurora Global Database: managed failover và detach-and-promote khác nhau thế nào?', 'Bạn đo replication lag và đặt cảnh báo cho DB cross-region ra sao?'],
   tags: ['S3', 'CRR', 'Aurora-Global', 'DMS', 'cross-region', 'DR', 'replication']
 },
 {
@@ -2798,147 +2794,114 @@ Tinh truoc: 10TB/thang x 0.02 = 200 USD + storage.
   id: 'aws-035',
   topic: 'aws',
   level: 'senior',
-  q: 'Ket noi nhieu VPC: VPC peering (khong transitive) vs Transit Gateway (route table, phan vung) vs PrivateLink. CIDR trung nhau thi xu ly the nao?',
-  a: `**Tom tat:** Peering don gian, re, nhung khong transitive va phai manage route tung cap. TGW tap trung, ho tro transitive routing va phan vung bang route table. PrivateLink expose service cu the khong can peering full network. CIDR trung -> dung PrivateLink, NAT, hoac re-IP.
+  q: 'Kết nối nhiều VPC: VPC peering (không transitive) vs Transit Gateway (route table, phân vùng) vs PrivateLink. CIDR trùng nhau thì xử lý thế nào?',
+  a: `**Tóm tắt:** **VPC peering** kết nối trực tiếp hai VPC, rẻ, không có băng thông giới hạn riêng nhưng **không transitive** (A–B và B–C không cho A tới C) nên với nhiều VPC thành mạng lưới khó quản lý. **Transit Gateway (TGW)** là "router trung tâm" kiểu hub-and-spoke, có **route table** để phân vùng (prod không thấy non-prod), hợp khi có từ vài chục VPC trở lên và kết nối on-prem. **PrivateLink** chia sẻ **một dịch vụ cụ thể** (sau NLB) cho VPC khác qua Interface Endpoint, chỉ một chiều, và **không quan tâm CIDR trùng nhau**.
 
-### VPC Peering
-- Ket noi 1-1 giua hai VPC (cung hoac khac account/region).
-- **Khong transitive**: A peering B, B peering C khong co nghia A den C.
-- Moi VPC them route tro CIDR cua VPC kia qua peering connection.
-- Security Group co the reference peer SG (cung region).
-- Chi phi: data transfer cross-AZ/region; peering connection mien phi.
-- Phu hop: it VPC, ket noi don gian.
+### So sánh
+| Tiêu chí | VPC Peering | Transit Gateway | PrivateLink |
+|---|---|---|---|
+| Mô hình | Điểm–điểm | Hub-and-spoke | Dịch vụ → người dùng dịch vụ |
+| Transitive | Không | Có (theo route table) | Không áp dụng |
+| CIDR trùng | Không được | Không được (trong cùng route domain) | Được |
+| Chi phí | Chỉ data transfer | Phí mỗi attachment theo giờ + mỗi GB xử lý | Phí endpoint theo giờ + mỗi GB |
+| Phạm vi truy cập | Toàn VPC (theo security group) | Toàn VPC (theo route + SG) | Chỉ một dịch vụ |
 
-### Transit Gateway (TGW)
-- Hub trung tam: nhieu VPC attach vao TGW; routing qua TGW route table.
-- **Transitive**: VPC A den VPC C qua TGW.
-- **Phan vung**: nhieu route table, associate/disassociate attachment; vi du prod va non-prod tach biet.
-- Ho tro VPN, DX attach.
-- Chi phi: theo attachment/gio + data processing USD/GB.
-- Phu hop: nhieu VPC, multi-account, hybrid.
+### Transit Gateway và phân vùng
+Mỗi VPC là một attachment; mỗi attachment **liên kết** (associate) với một route table và **lan truyền** (propagate) route của nó vào một hoặc nhiều route table. Ví dụ: route table "prod" chỉ chứa route của các VPC prod và VPC dịch vụ dùng chung; route table "nonprod" tương tự; VPC kiểm tra traffic (firewall) đặt ở giữa nếu cần kiểm soát luồng đông–tây. Kết hợp với **AWS RAM** để chia sẻ TGW cho nhiều tài khoản trong Organization.
 
-### PrivateLink (VPC Endpoint Service)
-- Expose mot service (NLB) tu provider VPC cho consumer VPC qua endpoint ENI.
-- Consumer chi thay IP private cua endpoint; khong can peering full CIDR.
-- Ho tro cross-account, cross-region (qua TGW/peering).
-- Phu hop: share service cu the (API, DB) ma khong mo toan mang.
+### CIDR trùng nhau
+- PrivateLink: không cần quan tâm — người dùng thấy dịch vụ qua IP của endpoint trong VPC của họ.
+- Nếu buộc phải định tuyến giữa các mạng trùng CIDR: **private NAT gateway** để dịch địa chỉ sang một dải không trùng, hoặc đánh lại IP (tốn kém nhưng dứt điểm).
+- Phòng ngừa: quản lý IP tập trung bằng **VPC IPAM**, cấp dải không trùng cho mọi VPC mới.
 
-### CIDR trung nhau
-- Peering/TGW **khong** ho tro CIDR overlap -> route ambiguous.
-- Giai phap:
-  1. **Re-IP**: doi CIDR mot VPC (ton cong nhung sach).
-  2. **PrivateLink**: expose service qua endpoint, khong can route CIDR.
-  3. **NAT/Proxy**: proxy traffic qua host co IP rieng.
-  4. **TGW + NAT**: NAT gateway o TGW? (AWS khong NAT giua VPC; dung appliance).
-- Banking thuong plan CIDR centrally (IPAM) de tranh overlap ngay tu dau.
+### Ví dụ đời thực
+Một công ty có 38 VPC nối với nhau bằng 120 peering, mỗi lần thêm VPC phải sửa route table ở hàng chục nơi; một lần cấu hình sai khiến môi trường test truy cập được DB production. Chuyển sang Transit Gateway với 3 route table (prod, nonprod, shared), VPC IPAM cho dải mới, và PrivateLink để cung cấp API nội bộ cho hai công ty con có CIDR trùng với mạng chính. Thêm VPC mới còn khoảng 15 phút qua Terraform; kiểm tra đường đi bằng VPC Reachability Analyzer xác nhận không còn đường từ nonprod tới DB prod. Chi phí mạng tăng khoảng 900 USD/tháng do phí xử lý của TGW — chấp nhận để đổi lấy khả năng quản lý và cô lập.
 
 ### Pitfall
-- Peering route phai them ca hai chieu; quen mot chieu -> timeout im lang.
-- TGW default route table associate tat ca attachment -> rui ro lateral movement; nen tach route table.
-- PrivateLink chi TCP; UDP khong ho tro (tru mot so service).
+- Lưới peering chằng chịt với nhiều VPC → khó kiểm soát, dễ mở nhầm đường.
+- Một route table TGW cho tất cả → prod và non-prod thấy nhau.
+- Cấp CIDR tuỳ tiện → không thể nối mạng sau này.
+- Dùng PrivateLink cho nhu cầu cần truy cập toàn mạng (nó chỉ cho một dịch vụ).
 
-> Senior tip: voi landing zone ngan hang, dung TGW lam backbone voi route table theo environment (prod/nonprod/shared), va PrivateLink cho service dung chung (auth, logging). Luon dung IPAM de cap CIDR tu dau — re-IP sau nay la ac mong.`,
-  follow: [
-    'TGW route table: cach implement segmentation prod vs non-prod?',
-    'PrivateLink vs peering: khi nao chon cai nao cho database sharing?',
-    'VPC Lattice la gi va khac TGW/PrivateLink the nao?'
-  ],
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo số lượng VPC và loại nhu cầu. Vài VPC cần nói chuyện trực tiếp thì VPC peering, đơn giản và rẻ, nhưng không transitive nên số kết nối tăng theo bình phương. Từ vài chục VPC trở lên hoặc có kết nối về on-prem, tôi dùng Transit Gateway làm trung tâm, và dùng route table của nó để phân vùng: prod chỉ thấy prod và các dịch vụ dùng chung, non-prod tách riêng, chia sẻ cho nhiều tài khoản qua RAM. Khi chỉ cần cung cấp một dịch vụ cho VPC khác, nhất là của đơn vị khác hay có CIDR trùng, tôi dùng PrivateLink qua NLB và Interface Endpoint, chỉ lộ đúng dịch vụ đó. CIDR trùng mà phải định tuyến thì dùng private NAT gateway hoặc đánh lại IP; còn phòng ngừa là quản lý IP tập trung bằng VPC IPAM."
+
+> Senior tip: chạy VPC Reachability Analyzer cho các cặp "không bao giờ được nói chuyện" (non-prod → DB prod) như một bài kiểm tra định kỳ trong CI. Thay đổi mạng sai thường im lặng cho tới khi có sự cố bảo mật.`,
+  follow: ['Dùng route table của Transit Gateway để tách prod và non-prod thế nào?', 'PrivateLink vs peering: khi nào chọn cái nào để chia sẻ một dịch vụ?', 'VPC Lattice là gì và khác Transit Gateway, PrivateLink ra sao?'],
   tags: ['VPC-peering', 'Transit-Gateway', 'PrivateLink', 'CIDR', 'segmentation', 'networking']
 },
 {
   id: 'aws-036',
   topic: 'aws',
   level: 'mid',
-  q: 'Nhieu EC2/ECS can share chung storage: EFS, FSx, S3. Khi nao dung cai nao?',
-  a: `**Tom tat:** EFS cho file system POSIX chia se NFS giua nhieu EC2/ECS trong region (multi-AZ). FSx cho workload chuyen biet (Windows SMB, Lustre HPC, NetApp). S3 la object storage, khong phai file system POSIX—dung khi app ho tro S3 API.
+  q: 'Nhiều EC2/ECS cần dùng chung storage: EFS, FSx, S3 hay EBS Multi-Attach? Khi nào dùng cái nào?',
+  a: `**Tóm tắt:** **EFS** là file system NFS dùng chung, co giãn tự động, mount từ nhiều EC2/ECS/EKS/Lambda ở nhiều AZ — hợp cho file dùng chung kiểu Linux. **FSx** là file system chuyên dụng: **FSx for Windows** (SMB, Active Directory), **FSx for Lustre** (hiệu năng rất cao cho HPC/ML, liên kết với S3), **FSx for NetApp ONTAP / OpenZFS** (tính năng doanh nghiệp, snapshot, NFS/SMB). **S3** là object storage — không phải file system, nhưng là lựa chọn rẻ và bền nhất khi ứng dụng đọc/ghi cả object qua API. **EBS Multi-Attach** chỉ cho ứng dụng tự quản lý ghi đồng thời (cluster file system), hiếm khi đúng cho ứng dụng web.
 
-### EFS (Elastic File System)
-- NFSv4, POSIX-compliant, tu scale capacity.
-- Mount target theo tung AZ (moi AZ co ENI); EC2/ECS mount qua NFS.
-- Throughput mode: Bursting (mac dinh, theo size) hoac Provisioned (dat truoc).
-- Performance mode: General Purpose vs Max I/O.
-- ECS: mount EFS volume vao container (task definition volume).
-- Multi-AZ by default; du lieu replicate trong region.
-- Use case: shared config, upload file, CMS, home directory.
-
-### FSx
-- **FSx for Windows File Server**: SMB, Active Directory, ACL Windows. Dung cho app Windows/.NET legacy.
-- **FSx for Lustre**: HPC, ML training, throughput cuc cao, tich hop S3 (lazy load).
-- **FSx for NetApp ONTAP**: enterprise NAS, snapshot, replication.
-- **FSx for OpenZFS**: Linux workload can ZFS feature.
-
-### S3
-- Object storage, khong phai file system POSIX. Khong mount nhu NFS (co the qua Mountpoint for S3 nhung read-heavy, khong POSIX day du).
-- Dung khi app doc/ghi qua SDK (upload, backup, data lake, static asset).
-- Re nhat cho luu tru lon; durability 11 nines.
-
-### Bang chon nhanh
-| Nhu cau | Chon |
+### Chọn nhanh
+| Nhu cầu | Lựa chọn |
 |---|---|
-| Nhieu Linux container/EC2 share file POSIX | EFS |
-| App Windows can SMB/AD | FSx Windows |
-| HPC/ML training throughput lon | FSx Lustre |
-| Upload/backup/data lake, app dung SDK | S3 |
-| Database file (Oracle) | EBS (khong share) hoac FSx |
+| Nhiều container Linux cùng đọc/ghi thư mục chung (upload tạm, cấu hình, nội dung CMS) | EFS |
+| Ứng dụng Windows, chia sẻ SMB, tích hợp AD | FSx for Windows File Server |
+| Huấn luyện ML, xử lý dữ liệu lớn cần hàng trăm GB/s | FSx for Lustre (liên kết S3) |
+| Di chuyển NAS doanh nghiệp, cần snapshot, clone, đa giao thức | FSx for NetApp ONTAP |
+| Lưu file người dùng, ảnh, tài liệu, backup, data lake | S3 |
+| Cơ sở dữ liệu / ứng dụng cluster tự điều phối ghi | EBS (Multi-Attach chỉ với io1/io2 và file system cluster) |
+
+### EFS cần biết
+- Storage class Standard và Infrequent Access/Archive với lifecycle tự chuyển file ít dùng sang lớp rẻ.
+- Throughput: **Elastic** (tự co giãn theo nhu cầu, khuyến nghị cho đa số), **Bursting** (theo dung lượng lưu trữ, dễ hết credit với file system nhỏ), **Provisioned** (đặt trước).
+- Độ trễ cao hơn EBS (mili giây mỗi thao tác) → không hợp cho DB hay nhiều file nhỏ thao tác dày đặc.
+- Với ECS/EKS: mount qua EFS CSI driver hoặc cấu hình volume của task; dùng **access point** để giới hạn thư mục và UID/GID cho từng ứng dụng, cấp quyền bằng IAM.
+
+### Ví dụ đời thực
+Một CMS chạy 6 container cần thư mục ảnh dùng chung, ban đầu dùng EFS chế độ Bursting với 20GB dữ liệu: throughput nền rất thấp, hết burst credit vào giờ cao điểm → trang tải ảnh 5–10 giây. Đổi EFS sang Elastic throughput giải quyết ngay, nhưng phân tích kỹ hơn cho thấy ảnh chỉ được ghi một lần và đọc nhiều: chuyển ảnh sang **S3 + CloudFront**, ứng dụng upload qua presigned URL; EFS chỉ còn giữ vài file cấu hình. Chi phí storage giảm khoảng 70%, ảnh tải dưới 100ms qua CDN, các container không còn phụ thuộc mount dùng chung khi scale.
 
 ### Pitfall
-- EFS throughput theo size: volume nho ma IO cao -> provisioned throughput.
-- Mount target phai cung AZ voi EC2 de tranh cross-AZ latency/chi phi.
-- S3 khong co rename/append POSIX; app phai thiet ke theo object.
-- EFS backup qua AWS Backup (khong tu dong).
+- Dùng EFS cho DB hoặc build có hàng triệu file nhỏ → rất chậm.
+- EFS Bursting với dung lượng nhỏ → hết credit.
+- Coi S3 như file system (đổi tên thư mục là sao chép từng object; không có khoá file).
+- EBS Multi-Attach với ext4/xfs thường → hỏng dữ liệu khi nhiều máy cùng ghi.
 
-> Senior tip: banking thuong dung S3 cho document/scan, EFS cho shared config va file tam giua service, FSx cho legacy Windows. Dung co gang mount S3 nhu file system cho DB hay app can POSIX—se gap loi concurrency va performance.`,
-  follow: [
-    'EFS throughput mode Bursting vs Provisioned khac nhau the nao?',
-    'Cach mount EFS vao ECS task va IAM permission?',
-    'Khi nao dung EBS multi-attach thay vi EFS?'
-  ],
+### Trả lời mẫu khi phỏng vấn
+"Tôi xuất phát từ cách ứng dụng truy cập dữ liệu. Nếu nhiều container Linux cần đọc ghi một thư mục chung như file system thật, tôi dùng EFS: NFS, mount từ nhiều AZ, tự co giãn, với chế độ throughput Elastic và access point để giới hạn từng ứng dụng; lưu ý độ trễ cao hơn ổ đĩa, không hợp cho DB. Ứng dụng Windows cần SMB và AD thì FSx for Windows; xử lý dữ liệu lớn cần throughput cực cao thì FSx for Lustre; chuyển NAS doanh nghiệp thì FSx for NetApp ONTAP. Còn nếu dữ liệu là file người dùng như ảnh, tài liệu, ghi một lần đọc nhiều, tôi ưu tiên S3, thường kèm CloudFront và presigned URL, vì rẻ, bền và không ràng buộc container vào một mount chung. EBS Multi-Attach chỉ dành cho phần mềm cluster tự điều phối ghi."
+
+> Senior tip: trước khi chọn file system dùng chung, hỏi "ứng dụng có thật sự cần ngữ nghĩa file system không?". Rất nhiều trường hợp chỉ cần object storage, và bỏ được mount dùng chung giúp kiến trúc đơn giản và dễ scale hơn hẳn.`,
+  follow: ['EFS throughput mode Bursting, Elastic và Provisioned khác nhau thế nào?', 'Mount EFS vào ECS task và cấp quyền IAM ra sao?', 'Khi nào dùng EBS Multi-Attach thay vì EFS?'],
   tags: ['EFS', 'FSx', 'S3', 'storage', 'NFS', 'ECS']
 },
 {
   id: 'aws-037',
   topic: 'aws',
   level: 'senior',
-  q: 'Dung moi truong cho mot app dap ung HA va co backup: tu VPC, subnet da AZ, ALB, ASG/ECS/EKS, RDS Multi-AZ, AWS Backup, secrets, logging. Liet ke thu tu trien khai va vi sao.',
-  a: `**Tom tat:** Thu tu: account/landing zone -> network (VPC, subnet, NAT, SG) -> IAM/secret -> compute platform -> data (RDS Multi-AZ) -> load balancer -> CI/CD -> observability/backup -> DR test. Vi ha tang nen phai co truoc khi app chay.
+  q: 'Dựng môi trường cho một ứng dụng đáp ứng HA và có backup: từ VPC, subnet đa AZ, ALB, ECS/EKS, RDS Multi-AZ, AWS Backup, secrets, logging. Liệt kê thứ tự triển khai và vì sao.',
+  a: `**Tóm tắt:** Tôi dựng theo thứ tự **nền móng → dữ liệu → tính toán → lối vào → vận hành**: tài khoản và IAM, VPC đa AZ (subnet public/private/data), security group và endpoint; KMS, secret; RDS Multi-AZ và AWS Backup; ECS/EKS chạy trên subnet private ở ít nhất 2–3 AZ; ALB và WAF; DNS và chứng chỉ; cuối cùng là logging, metric, cảnh báo và diễn tập. Thứ tự này đảm bảo mỗi lớp chỉ phụ thuộc vào lớp đã có, và mọi thứ được tạo bằng **Infrastructure as Code** (Terraform/CDK) để dựng lại được.
 
-### Thu tu trien khai
-1. **Account & guardrail**: landing zone, SCP, log archive.
-2. **Network**: VPC, public/private subnet da AZ, IGW, NAT Gateway, route table, SG co ban. Vi moi tai nguyen can mang.
-3. **IAM & secrets**: role cho ECS task, secret trong Secrets Manager/SSM Parameter Store, KMS key. Vi app can credential truoc khi chay.
-4. **Compute platform**: ECS cluster/EKS hoac ASG + launch template, AMI, user-data.
-5. **Data layer**: RDS Multi-AZ (hoac Aurora), subnet group, parameter group, backup retention. Vi app phu thuoc DB; tao truoc de connection string san.
-6. **Load balancer**: ALB, target group, listener, health check, certificate ACM. Vi traffic vao qua ALB.
-7. **CI/CD**: pipeline build image, push ECR, deploy.
-8. **Observability**: CloudWatch log group, metric, alarm, X-Ray/OTel, VPC Flow Logs.
-9. **Backup & DR**: AWS Backup plan (RDS, EFS, EBS), cross-region copy, restore test.
-10. **Security review**: WAF, GuardDuty, Config rules, penetration test.
+### Thứ tự triển khai
+1. **Tài khoản và quản trị**: tài khoản riêng cho prod, SCP cơ bản, IAM Identity Center, CloudTrail bật cho mọi region.
+2. **Mạng**: VPC với 3 AZ; subnet public (ALB, NAT), private (ứng dụng), data (DB, không có route ra Internet); NAT gateway mỗi AZ (tránh một AZ hỏng kéo theo mất mạng ra ngoài); VPC endpoint cho S3, ECR, Secrets Manager, CloudWatch (giảm phí NAT, không ra Internet).
+3. **Mã hoá và secret**: khoá KMS theo mục đích, Secrets Manager cho mật khẩu DB (có rotation).
+4. **Dữ liệu**: RDS/Aurora **Multi-AZ** (bản standby đồng bộ ở AZ khác, failover tự động 1–2 phút), parameter group, mã hoá, deletion protection; **AWS Backup** với backup plan, vault mã hoá, **Vault Lock** chống xoá, sao chép sang region/tài khoản khác.
+5. **Tính toán**: ECS Fargate hoặc EKS trải trên các AZ, autoscaling, task role riêng từng service, image từ ECR có quét lỗ hổng.
+6. **Lối vào**: ALB đa AZ, health check đúng (endpoint readiness nhẹ), HTTPS với ACM, WAF; Route 53.
+7. **Vận hành**: log tập trung (CloudWatch Logs/OpenSearch), metric và alarm (5xx, latency, DB CPU, replica lag), dashboard, runbook; **diễn tập** failover DB và khôi phục từ backup.
 
-### Vi sao thu tu nay
-- Network va IAM la nen; khong co chung khong tao duoc tai nguyen khac.
-- Data truoc compute de app start khong fail do thieu DB.
-- Observability va backup sau cung vi can biet tai nguyen nao ton tai.
-- DR test cuoi cung vi can toan bo stack.
+### Vì sao thứ tự này
+Mạng và quyền là thứ khó thay đổi nhất về sau (đổi CIDR hay cấu trúc subnet gần như phải dựng lại), nên làm đúng trước. Dữ liệu cần mã hoá và backup **từ ngày đầu** — bật mã hoá cho RDS đã tồn tại phải qua snapshot và khôi phục. Lối vào để sau cùng để không mở ra Internet khi các lớp bên dưới chưa sẵn sàng.
 
-### HA chi tiet
-- Subnet it nhat 2 AZ (khuyen nghi 3).
-- ALB trai qua nhieu AZ; target dang ky o nhieu AZ.
-- RDS Multi-AZ: standby synchronous, failover 1-2 phut.
-- ASG min instance >= 2 o cac AZ khac nhau.
-- Stateless app de scale horizontal.
+### Ví dụ đời thực
+Một startup dựng hệ thống trên một AZ, một NAT gateway, RDS Single-AZ, backup là snapshot tự động 7 ngày trong cùng tài khoản. Sự cố AZ năm đó làm hệ thống ngừng 3 giờ; một lần khác, script dọn dẹp xoá nhầm DB và snapshot tự động đi theo. Dựng lại theo thứ tự trên bằng Terraform: 3 AZ, NAT mỗi AZ, Aurora Multi-AZ, AWS Backup giữ 35 ngày với Vault Lock và bản sao ở tài khoản DR. Diễn tập: failover DB mất 40 giây với lỗi ứng dụng dưới 1 phút; khôi phục toàn bộ DB từ backup sang tài khoản DR mất 55 phút — được ghi vào runbook.
 
 ### Pitfall
-- Tao RDS truoc khi co subnet group -> phai recreate.
-- Quen backup retention va PITR -> khong restore duoc.
-- Secret rotation chua cau hinh -> secret cu het han gay outage.
-- Health check qua strict -> instance bi terminate lien tuc.
+- Một NAT gateway cho mọi AZ → mất AZ đó là mất đường ra ngoài.
+- Health check ALB gọi endpoint kiểm tra cả DB → DB chậm là ALB đánh dấu mọi target hỏng.
+- Backup cùng tài khoản, không khoá → bị xoá cùng lúc với dữ liệu.
+- Tạo tay trên console → không dựng lại được khi cần.
 
-> Senior tip: viet toan bo ha tang bang IaC (Terraform/CDK) va deploy qua pipeline; manual console chi cho PoC. Banking yeu cau moi thay doi co approval va audit trail—console change la rui ro audit.`,
-  follow: [
-    'RDS Multi-AZ vs Read Replica: khac nhau the nao?',
-    'Cach thiet ke health check cho ALB de tranh false positive?',
-    'AWS Backup: retention, vault lock, cross-region copy hoat dong the nao?'
-  ],
+### Trả lời mẫu khi phỏng vấn
+"Tôi dựng theo thứ tự nền móng trước. Đầu tiên là tài khoản, IAM và CloudTrail. Tiếp theo là VPC trải ba AZ với subnet public cho ALB và NAT, private cho ứng dụng, data cho DB, NAT mỗi AZ và VPC endpoint cho các dịch vụ AWS; mạng làm trước vì về sau rất khó thay đổi. Rồi KMS và Secrets Manager. Sau đó là dữ liệu: RDS hoặc Aurora Multi-AZ có mã hoá, deletion protection, và AWS Backup với Vault Lock, sao chép sang tài khoản hoặc region khác. Tiếp là tính toán: ECS hoặc EKS trên subnet private trải các AZ, có autoscaling và role riêng mỗi service. Sau cùng mới mở lối vào: ALB với health check nhẹ, HTTPS, WAF, Route 53. Mọi thứ bằng Terraform, và kết thúc bằng logging, alarm, runbook cùng diễn tập failover và khôi phục backup."
+
+> Senior tip: backup chỉ đáng tin khi đã khôi phục thử. Tôi đặt lịch AWS Backup **restore testing** (hoặc một job tự viết) khôi phục định kỳ sang môi trường tạm và chạy kiểm tra dữ liệu — và ghi lại thời gian khôi phục thực tế làm RTO.`,
+  follow: ['RDS Multi-AZ khác Read Replica thế nào?', 'Thiết kế health check cho ALB thế nào để tránh báo lỗi sai?', 'AWS Backup: retention, Vault Lock, cross-region copy hoạt động ra sao?'],
   tags: ['HA', 'architecture', 'VPC', 'RDS', 'ALB', 'backup', 'IaC', 'banking']
 },
 {
@@ -2989,105 +2952,76 @@ Trieu chung: TCP handshake SYN den server OK, nhung client khong nhan SYN-ACK ->
   id: 'aws-039',
   topic: 'aws',
   level: 'lead',
-  q: '(lead) Landing zone cho ngan hang chuyen len cloud: Control Tower, account vending, SCP guardrail, log archive/audit account, network account tap trung.',
-  a: `**Tom tat:** Landing zone = nen tang multi-account: Control Tower tu dong dung OU, guardrail SCP, account vending cho team, log archive/audit account tap trung, network account chua TGW/DX/VPN. Muc tieu: isolation, audit, compliance banking.
+  q: '(lead) Landing zone cho ngân hàng chuyển lên cloud: Control Tower, account vending, SCP guardrail, tài khoản log archive/audit, tài khoản network tập trung. Bạn thiết kế thế nào?',
+  a: `**Tóm tắt:** Landing zone là **khung nhiều tài khoản AWS đã được quản trị sẵn** trước khi đưa workload lên: AWS Organizations với cấu trúc **OU** (Security, Infrastructure, Workloads Prod/NonProd, Sandbox), **Control Tower** để dựng và quản lý guardrail, **account vending** (Account Factory hoặc AFT) để cấp tài khoản mới theo chuẩn, **SCP** chặn những gì không bao giờ được phép, tài khoản **Log Archive** và **Audit** tách biệt, và tài khoản **Network** tập trung (Transit Gateway, kết nối on-prem, kiểm soát egress).
 
-### Control Tower
-- Tu dong dung landing zone theo best practice AWS: OU (Security, Sandbox, Workloads), account (Log archive, Audit).
-- **Account Factory**: vending account moi qua Service Catalog, tu apply guardrail va baseline.
-- **Guardrails**: preventive (SCP) va detective (Config rules + SNS).
-- Dashboard compliance.
+### Cấu trúc gợi ý cho ngân hàng
+~~~text
+Root (management account: chỉ dùng cho Organizations, billing)
+├── Security OU: Log Archive, Audit (Security Tooling: GuardDuty, Security Hub, Config tổng hợp)
+├── Infrastructure OU: Network (TGW, Direct Connect, egress firewall), Shared Services (CI/CD, ECR)
+├── Workloads OU
+│   ├── Prod OU: core-payments-prod, cards-prod, ...
+│   └── NonProd OU: core-payments-dev, ...-uat
+├── Sandbox OU: tài khoản thử nghiệm có ngân sách giới hạn
+└── Suspended OU: tài khoản chờ đóng
+~~~
 
-### OU structure goi y (banking)
-- **Security OU**: Log archive, Audit account.
-- **Infrastructure OU**: Network account, Shared services.
-- **Workloads OU**: Prod, Non-prod (per domain).
-- **Sandbox OU**: dev ca nhan (guardrail chat).
+### SCP guardrail (ví dụ)
+- Chỉ cho phép các **region được phê duyệt** (dữ liệu khách hàng ở Việt Nam/Singapore theo quy định).
+- Cấm tắt CloudTrail, GuardDuty, Config; cấm xoá log trong tài khoản Log Archive.
+- Cấm tạo IAM user có access key dài hạn ở tài khoản workload; bắt buộc mã hoá khi tạo EBS/S3.
+SCP chỉ **giới hạn** quyền tối đa (không cấp quyền), áp cho mọi principal trong tài khoản kể cả admin — trừ management account.
 
-### SCP guardrail (Service Control Policy)
-- Ap o OU/account, gioi han max permission (khong grant, chi deny).
-- Vi du: deny region ngoai approved (chi ap-southeast-1), deny disable CloudTrail, deny leave organization, deny create access key cho root.
-- SCP khong anh huong service-linked role.
+### Account vending
+Tài khoản mới được tạo qua **Account Factory** (Service Catalog) hoặc **AFT** (Account Factory for Terraform: yêu cầu tài khoản bằng file Terraform trong Git, pipeline tự tạo và áp baseline). Baseline gồm: VPC theo dải IPAM, kết nối TGW, role cho CI/CD (cross-account, tin cậy tài khoản Shared Services bằng OIDC), SSO permission set, ngân sách và cảnh báo.
 
-### Log archive / audit account
-- **Log archive**: nhan CloudTrail, VPC Flow Logs, Config tu moi account qua organization trail; bucket immutable (Object Lock), retention 7 nam.
-- **Audit**: Security Hub, GuardDuty findings, cross-account read-only role cho auditor.
-- Tach khoi workload account de tamper-proof.
+### Log archive và audit
+CloudTrail tổ chức, Config, VPC Flow Logs đổ về bucket S3 trong tài khoản Log Archive với Object Lock; đội bảo mật làm việc trong tài khoản Audit với quyền đọc chéo; không ai ở đội ứng dụng có quyền xoá log.
 
-### Network account tap trung
-- Chua TGW, DX, VPN, DNS resolver, firewall (Network Firewall).
-- Workload VPC attach TGW; traffic giua VPC va on-prem di qua network account.
-- Centralized egress: NAT Gateway va proxy o network account -> kiem soat outbound.
-- IPAM cap CIDR centrally.
+### Ví dụ đời thực
+Một ngân hàng bắt đầu cloud bằng **một** tài khoản chung cho mọi dự án: quyền admin rải rác, chi phí không tách được, một dev tạo bucket public trong cùng tài khoản với dữ liệu thật. Kiểm toán nội bộ yêu cầu dừng mở rộng. Dựng landing zone bằng Control Tower + AFT trong 8 tuần: 4 OU, SCP chặn region ngoài danh sách và chặn tắt CloudTrail, tài khoản riêng cho từng hệ thống mỗi môi trường. Sau 1 năm có 46 tài khoản, mỗi tài khoản mới được cấp trong khoảng 40 phút với đầy đủ baseline; đợt kiểm tra của cơ quan quản lý không có phát hiện mức cao về quản trị cloud.
 
 ### Pitfall
-- SCP deny qua rong -> break service (vi du deny region nhung service can global endpoint).
-- Account vending khong tu dong apply SCP neu OU sai.
-- Log archive bucket phai Object Lock compliance mode de audit.
-- Networking centralized tang latency neu khong dat TGW attachment dung AZ.
+- Chạy workload trong management account.
+- SCP quá chặt áp lên OU prod mà chưa thử ở nonprod → chặn cả deploy.
+- Không có chiến lược IP từ đầu → các VPC trùng CIDR, không nối được.
+- Cho phép tạo tài khoản ngoài quy trình vending → tài khoản thiếu baseline.
 
-> Senior tip: banking regulator yeu cau segregation of duties va audit trail. Landing zone voi log archive immutable va SCP guardrail la minimum viable compliance. Hay bat dau voi Control Tower (it custom) roi moi build custom (AFT) khi can scale.`,
-  follow: [
-    'AWS Organizations vs Control Tower: khi nao dung cai nao?',
-    'Account Factory for Terraform (AFT) la gi va khac Account Factory?',
-    'Cach implement cross-account role cho CI/CD deploy?'
-  ],
+### Trả lời mẫu khi phỏng vấn
+"Landing zone là nền tảng nhiều tài khoản được quản trị sẵn trước khi đưa workload lên. Tôi dùng AWS Organizations với các OU: Security chứa tài khoản Log Archive và Audit, Infrastructure chứa tài khoản Network với Transit Gateway và Direct Connect, Shared Services cho CI/CD, Workloads tách Prod và NonProd, và Sandbox. Control Tower dựng và giám sát các guardrail; SCP chặn những gì không bao giờ được phép như dùng region ngoài danh sách, tắt CloudTrail hay GuardDuty, tạo access key dài hạn. Tài khoản mới được cấp qua Account Factory hoặc AFT để luôn có baseline: VPC theo IPAM, kết nối TGW, role cho CI/CD, SSO, ngân sách. Log tập trung về tài khoản Log Archive với Object Lock, và đội ứng dụng không có quyền xoá. Mỗi hệ thống mỗi môi trường một tài khoản để giới hạn phạm vi ảnh hưởng và tách chi phí."`,
+  follow: ['AWS Organizations và Control Tower: khi nào dùng cái nào?', 'Account Factory for Terraform (AFT) là gì, khác Account Factory thế nào?', 'Thiết kế cross-account role cho CI/CD deploy ra sao?'],
   tags: ['landing-zone', 'Control-Tower', 'SCP', 'multi-account', 'compliance', 'banking', 'lead']
 },
 {
   id: 'aws-040',
   topic: 'aws',
   level: 'lead',
-  q: '(lead) Migrate database tu on-prem len AWS voi downtime toi thieu: DMS full load + CDC, SCT khi doi engine, kiem tra du lieu, ke hoach cutover va rollback.',
-  a: `**Tom tat:** Dung DMS full load + CDC de dong bo lien tuc; SCT neu doi engine; validate du lieu bang DMS validation va checksum; cutover = dung ghi -> cho CDC lag 0 -> verify -> doi connection string -> smoke test; rollback = giu DB on-prem sync nguoc (CDC reverse) trong cua so 72h.
+  q: '(lead) Migrate database từ on-prem lên AWS với downtime tối thiểu: DMS full load + CDC, SCT khi đổi engine, kiểm tra dữ liệu, kế hoạch cutover và rollback.',
+  a: `**Tóm tắt:** Để downtime tối thiểu: **DMS full load + CDC** (chép toàn bộ rồi đồng bộ liên tục thay đổi) giữ DB mới bám sát DB cũ trong nhiều ngày; **SCT** (Schema Conversion Tool) chuyển schema và code khi **đổi engine** (Oracle → PostgreSQL); **kiểm tra dữ liệu** bằng DMS data validation và so sánh tổng/checksum; **cutover** trong một khung ngắn: dừng ghi, chờ CDC đuổi kịp, kiểm tra, chuyển ứng dụng; **rollback** bằng cách giữ đường đồng bộ ngược (CDC từ mới về cũ) trong một thời gian.
 
-### DMS full load + CDC
-- **Full load**: copy toan bo du lieu ban dau (bulk).
-- **CDC (Change Data Capture)**: sau full load, DMS doc transaction log (binlog/WAL/redo) va apply thay doi lien tuc -> target luon dong bo.
-- Replication instance dat o AWS (hoac on-prem neu firewall). Endpoint source/target.
-- Monitor: CDCLatencySource/Target, FullLoadThroughput.
+### Từng bước
+1. **Đánh giá**: kích thước, tốc độ thay đổi (GB/giờ redo/binlog), tính năng đặc thù (PL/SQL, sequence, kiểu dữ liệu), yêu cầu downtime. Cùng engine (MySQL → RDS MySQL, PostgreSQL → Aurora PostgreSQL) thì **native replication** thường đơn giản và nhanh hơn DMS.
+2. **Chuyển schema**: SCT tạo báo cáo mức độ chuyển đổi tự động; phần không tự chuyển được (package PL/SQL, hàm riêng) phải viết lại và test. Tạo schema đích **không có** foreign key và trigger trong lúc full load (bật lại sau).
+3. **Full load + CDC**: DMS replication instance đủ lớn; bật supplemental logging (Oracle) hoặc binlog dạng ROW (MySQL) ở nguồn; CDC chạy liên tục sau full load.
+4. **Kiểm tra dữ liệu**: DMS data validation; thêm so sánh số dòng, tổng tiền, checksum theo bảng/khoảng; chạy test ứng dụng trên DB mới (bản sao).
+5. **Cutover**: thông báo, chuyển ứng dụng sang chế độ chỉ đọc hoặc bảo trì, chờ CDC latency về 0, kiểm tra lần cuối, **đặt lại sequence** ở đích lớn hơn giá trị lớn nhất hiện có, đổi chuỗi kết nối (qua DNS/secret), bật lại trigger/FK, mở ghi.
+6. **Rollback**: giữ một task CDC **ngược** (mới → cũ) vài ngày; nếu có sự cố, chuyển ứng dụng về DB cũ mà không mất dữ liệu đã ghi sau cutover.
 
-### SCT (Schema Conversion Tool)
-- Dung khi doi engine (Oracle -> Aurora PostgreSQL, SQL Server -> RDS).
-- Convert schema, stored procedure, function; bao cao assessment (action items).
-- Mot so object phai sua thu cong (packages, custom types).
-- Neu cung engine (Oracle -> RDS Oracle) thi khong can SCT.
-
-### Kiem tra du lieu
-- DMS data validation: so sanh row count va checksum giua source/target.
-- Tu viet query checksum (hash aggregate) cho bang quan trong.
-- Test application tren target (read-only) truoc cutover.
-- Performance test tren target.
-
-### Ke hoach cutover
-1. T-7 ngay: freeze schema change; dien tap cutover tren staging.
-2. T-1 ngay: ha TTL DNS/connection string; thong bao user.
-3. Cutover window:
-   a. Dung ghi app (maintenance page) hoac redirect read-only.
-   b. Cho CDC lag ve 0 (monitor).
-   c. Validate checksum cuoi.
-   d. Doi connection string/DNS sang target.
-   e. Smoke test (login, transaction mau).
-   f. Mo traffic.
-4. Giu CDC reverse (target->source) trong 72h de rollback.
-
-### Rollback
-- Neu phat hien loi trong 72h: doi connection string ve source (van sync tu target qua CDC reverse).
-- Dieu kien rollback: data corruption, performance khong dat, loi nghiep vu.
-- Sau 72h on dinh: tat replication, decommission source (sau backup).
+### Ví dụ đời thực
+Chuyển Oracle 2,4TB (hệ thống quản lý khoản vay) sang Aurora PostgreSQL. SCT tự chuyển được khoảng 80% schema và code; 140 package PL/SQL được viết lại thành logic ứng dụng hoặc hàm PL/pgSQL. Full load mất 19 giờ, CDC chạy 3 tuần song song. Hai sự cố trong lúc diễn tập: (1) kiểu {{NUMBER}} không có độ chính xác được map sang {{numeric}} làm truy vấn chậm — đổi sang {{bigint}}/{{numeric(p,s)}} cụ thể; (2) sequence ở đích chưa được đặt lại → lỗi trùng khoá ngay sau cutover thử. Cutover thật: 35 phút chỉ đọc; CDC ngược giữ 7 ngày nhưng không cần dùng. Chi phí license Oracle tiết kiệm khoảng 60% so với trước.
 
 ### Pitfall
-- DMS CDC lag tang khi co long transaction/bulk update -> plan maintenance window du lon.
-- LOB columns lon lam full load cham; dung LOB mode phu hop.
-- Timezone/collation khac nhau giua source/target gay mismatch.
-- Forgot to migrate sequences/identity -> duplicate key sau cutover.
+- Không bật supplemental logging hoặc binlog đúng định dạng → CDC thiếu thay đổi.
+- Full load với FK và trigger bật → lỗi thứ tự và chậm.
+- Quên sequence/identity, LOB lớn, múi giờ của kiểu ngày giờ.
+- Không có đường rollback ngoài "khôi phục backup" → rollback nghĩa là mất dữ liệu sau cutover.
 
-> Senior tip: downtime toi thieu khong phai "khong downtime" — banking thuong chap nhan 30-60 phut maintenance window vao dem. Quan trong la co rollback ro rang va da dien tap. Hay do thoi gian tung buoc trong lan dien tap dau; lan dau luon lau gap 2-3 lan du kien.`,
-  follow: [
-    'Khi nao nen dung native replication thay vi DMS?',
-    'Cach xu ly sequence/identity khi migrate Oracle sang PostgreSQL?',
-    'Blue/green deployment cho database tren AWS hoat dong the nao?'
-  ],
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu bằng đánh giá: kích thước, tốc độ thay đổi, có đổi engine không và downtime chấp nhận được. Cùng engine thì native replication thường đơn giản hơn; đổi engine như Oracle sang PostgreSQL thì dùng SCT để chuyển schema và code, phần không tự chuyển được thì viết lại và test. Dữ liệu dùng DMS full load rồi CDC để DB mới bám sát DB cũ nhiều ngày, với supplemental logging hoặc binlog ROW ở nguồn, và tắt khoá ngoại, trigger ở đích trong lúc load. Kiểm tra dữ liệu bằng DMS validation cộng so sánh số dòng, tổng, checksum. Cutover trong khung ngắn: chuyển ứng dụng sang chỉ đọc, chờ CDC về không, kiểm tra, đặt lại sequence, đổi kết nối, bật lại ràng buộc. Rollback thì giữ một luồng CDC ngược từ DB mới về DB cũ trong vài ngày, để quay lại mà không mất dữ liệu."
+
+> Senior tip: diễn tập cutover **ít nhất hai lần** trên bản sao với đúng các bước và đồng hồ bấm giờ. Lần diễn tập đầu luôn lộ ra vài chi tiết như sequence, quyền, chuỗi kết nối cứng trong một job quên — và thời gian thật thường gấp đôi dự tính.`,
+  follow: ['Khi nào nên dùng native replication thay vì DMS?', 'Xử lý sequence/identity khi migrate Oracle sang PostgreSQL thế nào?', 'Blue/green deployment cho database trên AWS hoạt động ra sao?'],
   tags: ['DMS', 'SCT', 'migration', 'CDC', 'cutover', 'rollback', 'database', 'lead']
 },
 {
