@@ -6048,34 +6048,54 @@ Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
   topic: 'devops',
   level: 'lead',
   q: '(lead) Load test một app trước go-live từ góc DevOps: môi trường, công cụ, chỉ số, tìm bottleneck ở tầng hạ tầng (LB, DB connection, node).',
-  a: `**Tóm tắt:** Load test trước go-live: môi trường giống production (scale nhỏ hơn nhưng topology giống), công cụ k6/JMeter/Gatling, chỉ số latency p95/p99, error rate, throughput, resource; tìm bottleneck ở LB connection, DB pool, node CPU/mem, GC.
+  a: `**Tóm tắt:** Load test trước go-live chỉ có giá trị khi trả lời được câu hỏi kinh doanh: "chịu được tải dự kiến × hệ số an toàn với p99 và tỉ lệ lỗi trong SLO không, và **cái gì gãy đầu tiên**?". Tôi định nghĩa mục tiêu từ số liệu thật, dựng môi trường cùng topology với production, chạy theo bậc (baseline → load → stress → soak → spike), theo dõi **USE** (utilization, saturation, errors) của từng tầng: load balancer, node, pool connection, DB.
 
-### Môi trường
-- Staging mirror production: cùng instance type, DB size tỷ lệ, network.
-- Dữ liệu test realistic (seed DB).
-- Warm-up JVM/GC trước đo.
+### Bước 1 — Mục tiêu đo được
+- Lấy từ số liệu: peak hiện tại hoặc dự báo marketing, nhân hệ số 2–3 cho ngày đặc biệt. Ví dụ: 1.200 request/giây, p99 < 400ms, lỗi < 0,1%.
+- **Mô hình tải** theo hành vi thật: 70% xem sản phẩm, 20% tìm kiếm, 8% thêm giỏ, 2% thanh toán — không bắn một endpoint duy nhất.
 
-### Công cụ
-- k6, JMeter, Gatling, wrk; phân phối load từ nhiều region.
-- Chaos: inject latency to dependency.
+### Bước 2 — Môi trường
+- Cùng loại instance, cùng số tầng (LB → ingress → app → pool → DB), cùng cấu hình JVM và giới hạn container; có thể nhỏ hơn về số node nhưng phải biết tỉ lệ để ngoại suy.
+- Dữ liệu cỡ thật: DB 50GB với 5GB làm planner chọn plan khác, cache hit rate khác.
+- Dependency bên ngoài (cổng thanh toán, SMS) thay bằng mock có độ trễ giống thật — không bắn tải vào đối tác.
+- Máy sinh tải đủ mạnh và phân tán: một máy k6 bị nghẽn CPU sẽ cho số liệu sai.
 
-### Chỉ số
-- Throughput (RPS), latency p50/p95/p99, error rate.
-- Resource: CPU/mem/node, DB connections/queries, GC pause, thread pool.
-- Saturation: queue depth, connection pool usage.
+### Bước 3 — Các loại test
+| Loại | Mục đích | Ví dụ |
+|---|---|---|
+| Load | Đạt mục tiêu ổn định không | 1.200 rps trong 30 phút |
+| Stress | Điểm gãy và cách gãy | Tăng 10% mỗi 5 phút đến khi lỗi |
+| Spike | Đột biến, autoscaling kịp không | 200 → 2.000 rps trong 30 giây |
+| Soak | Leak, tăng dần theo thời gian | 70% tải trong 8–12 giờ |
 
-### Tìm bottleneck hạ tầng
-- LB: connection limit, TLS handshake cost, target health.
-- DB: connection pool exhausted, slow query, lock contention.
-- Node: CPU throttling, memory pressure, disk I/O, network bandwidth.
-- App: thread pool, GC, connection leak.
+~~~javascript
+// k6: tăng dần và tự đánh giá đạt/không đạt theo SLO
+export const options = {
+  stages: [{ duration: '5m', target: 600 }, { duration: '20m', target: 1200 }, { duration: '5m', target: 0 }],
+  thresholds: { http_req_duration: ['p(99)<400'], http_req_failed: ['rate<0.001'] },
+};
+~~~
+
+### Bước 4 — Tìm bottleneck theo tầng
+- **Load balancer/ingress**: số connection, lỗi 502/504, thời gian TLS handshake, giới hạn connection của ingress controller.
+- **Node**: CPU throttling, memory pressure, conntrack table, băng thông mạng.
+- **App**: thread pool (Tomcat busy threads), GC pause, Hikari pending.
+- **DB**: số connection, top query ({{pg_stat_statements}}), lock wait, IOPS, replica lag.
+Quy tắc: tài nguyên **bão hoà** (saturation) đầu tiên — hàng đợi bắt đầu tăng — chính là bottleneck, không phải tài nguyên có % cao nhất.
+
+### Ví dụ đời thực
+Trước đợt mở bán vé concert, mục tiêu 3.000 rps cho API giữ chỗ. Lần chạy đầu gãy ở 900 rps: p99 vọt lên 6s nhưng CPU app chỉ 35%. Metric cho thấy Hikari pending 200+ và DB đạt giới hạn {{max_connections}} = 300 vì 30 pod × pool 10. Thêm PgBouncer (transaction mode), giảm pool mỗi pod xuống 6, sửa một query thiếu index: lần hai đạt 3.400 rps, p99 280ms. Soak test 10 giờ phát hiện heap tăng đều do cache không giới hạn — sửa trước ngày mở bán. Ngày thật đạt peak 2.700 rps, không lỗi.
 
 ### Pitfall
-- Test từ 1 máy → network bottleneck giả.
-- Không warm-up → cold start méo số liệu.
-- Chỉ đo average latency → che p99.
+- Bắn tải từ một máy, hoặc từ cùng mạng nội bộ không qua LB thật.
+- Không warm-up JVM; đo luôn cả giai đoạn JIT biên dịch.
+- Chỉ nhìn trung bình; bỏ qua p99 và tỉ lệ lỗi.
+- Quên giới hạn của bên thứ ba (rate limit cổng thanh toán) → production gãy chỗ chưa test.
 
-> Senior tip: Định nghĩa SLO trước (p99 < X ms, error < 0.1%) và dừng test khi đạt; lưu baseline để so sánh sau deploy; chạy soak test (nhiều giờ) để phát hiện memory leak.`,
+### Trả lời mẫu khi phỏng vấn
+"Trước go-live tôi bắt đầu từ mục tiêu đo được: tải peak dự kiến nhân hệ số an toàn, cùng ngưỡng p99 và tỉ lệ lỗi, và một mô hình tải giống hành vi người dùng thật chứ không bắn một endpoint. Môi trường phải cùng topology với production: cùng loại instance, cùng giới hạn container, dữ liệu cỡ thật, dependency bên ngoài thay bằng mock có độ trễ giống thật. Tôi chạy theo bậc: load test ở mức mục tiêu, stress để tìm điểm gãy, spike để xem autoscaling, và soak nhiều giờ để bắt leak. Trong lúc chạy tôi theo dõi từng tầng, từ load balancer, node, thread pool, connection pool đến DB, và tìm tài nguyên bão hoà đầu tiên, tức là chỗ hàng đợi bắt đầu tăng. Một lần CPU app chỉ 35% mà p99 lên 6 giây; nguyên nhân là tổng pool của 30 pod vượt max_connections của DB. Thêm PgBouncer và giảm pool là đạt mục tiêu."
+
+> Senior tip: lưu kết quả mỗi lần load test (rps tối đa, p99, tài nguyên gãy đầu tiên) thành bảng lịch sử và chạy lại sau mỗi thay đổi lớn. Khi capacity giảm 20% giữa hai release, bạn biết ngay trước khi người dùng biết.`,
   follow: [
     'Khác nhau giữa load test, stress test, soak test, spike test?',
     'Làm sao load test an toàn trên production (canary load)?',
@@ -7852,40 +7872,48 @@ Replicas nhỏ (2-3) cẩn thận với {{minAvailable}} tuyệt đối; đảm 
     topic: 'devops',
     level: 'mid',
     q: 'So sánh GitFlow và trunk-based development cho team Java backend: khi nào chọn cái nào, và quy tắc branch/commit/MR ra sao?',
-    a: `**Tóm tắt:** GitFlow phù hợp release theo chu kỳ với nhiều version song song; trunk-based phù hợp deploy liên tục với feature flag. Team nhỏ nên trunk-based + MR ngắn.
+    a: `**Tóm tắt:** **Trunk-based** (một nhánh chính, nhánh tính năng sống ngắn dưới 1–2 ngày, tính năng chưa xong ẩn sau feature flag) hợp với service backend deploy liên tục. **GitFlow** (develop, release, hotfix) hợp khi phải phát hành theo đợt và duy trì nhiều phiên bản song song, như app mobile hoặc phần mềm cài tại khách hàng. Với team Java backend làm SaaS/microservice, tôi chọn trunk-based kèm quy tắc MR nhỏ, CI bắt buộc xanh và branch protection.
 
-### Vì sao cần workflow
-Không có quy ước → conflict lớn, review khó, release hỗn loạn. Workflow = hợp đồng về cách thay đổi vào main.
+### Vì sao cần quy ước nhánh
+Không có quy ước, mỗi người giữ nhánh riêng hàng tuần → merge conflict lớn, review 2.000 dòng không ai đọc kỹ, và ngày release là ngày "ghép" đầy rủi ro. Quy ước nhánh là thoả thuận về **cách thay đổi đi vào production**.
 
-### GitFlow
-- Branch: main (production), develop, feature/*, release/*, hotfix/*.
-- Release branch: gom các feature, stabilize, tag.
-- Hotfix: từ main, merge về main và develop.
-- Phù hợp: phần mềm desktop/mobile, nhiều version hỗ trợ.
+### GitFlow vận hành ra sao
+- {{main}} chỉ chứa code đã release (có tag); {{develop}} là nơi tích hợp.
+- {{feature/*}} tách từ develop; {{release/*}} tách ra để ổn định trước khi phát hành; {{hotfix/*}} tách từ main, merge về cả main và develop.
+- Ưu: kiểm soát phát hành rõ, hỗ trợ nhiều phiên bản. Nhược: nhiều nhánh sống lâu, merge hai chiều dễ quên, độ trễ từ commit tới production dài.
 
-### Trunk-based
-- Chỉ main + short-lived branch (≤ 1 ngày) + feature flag.
-- Merge nhỏ, thường xuyên; CI chạy mỗi commit.
-- Phù hợp: SaaS deploy liên tục.
+### Trunk-based vận hành ra sao
+- Mọi người tích hợp vào {{main}} ít nhất mỗi ngày qua MR nhỏ; CI chạy mỗi commit; main luôn deploy được.
+- Tính năng dở dang ẩn sau **feature flag** (cấu hình, Unleash, LaunchDarkly…), bật dần theo nhóm người dùng.
+- Hotfix: sửa trên main rồi deploy như mọi thay đổi khác; nếu cần vá bản cũ thì cherry-pick vào nhánh release ngắn hạn.
 
-### Quy tắc chung
-- Commit message conventional commits: feat/fix/chore.
-- MR nhỏ (< 400 dòng), review bắt buộc, CI green.
-- Branch protection: không push trực tiếp main.
-
-### Bảng so sánh
 | Tiêu chí | GitFlow | Trunk-based |
 |---|---|---|
-| Tần suất release | Tuần/tháng | Nhiều lần/ngày |
-| Độ phức tạp | Cao | Thấp |
-| Feature flag | Không bắt buộc | Bắt buộc |
-| Phù hợp team | Lớn, release cố định | Agile, CD |
+| Tần suất phát hành | Theo đợt (tuần/tháng) | Nhiều lần mỗi ngày |
+| Nhánh sống lâu | Nhiều | Gần như không |
+| Merge conflict | Lớn, dồn cuối | Nhỏ, liên tục |
+| Feature flag | Không bắt buộc | Bắt buộc với việc dở dang |
+| Hợp với | Mobile, on-premise, nhiều phiên bản | SaaS, microservice |
 
-### Trên production
-- Sai lầm: branch tồn tại hàng tuần → merge conflict lớn.
-- Kiểm tra: thời gian sống branch trung bình, số MR/ngày.
+### Quy tắc MR/commit tôi áp dụng
+- MR dưới khoảng 400 dòng thay đổi, một mục đích; có mô tả "vì sao" và cách test.
+- Branch protection: không push thẳng main, ít nhất 1 review, CI xanh (build, test, scan) mới được merge, nhánh phải cập nhật với main.
+- Commit theo Conventional Commits ({{feat:}}, {{fix:}}, {{chore:}}) để sinh changelog và tự tăng version.
+- Feature flag có **chủ sở hữu và ngày hết hạn**; xoá flag sau khi bật 100% vài tuần.
 
-> Senior tip: Trunk-based + feature flag cho phép dark launch và rollback bằng flag mà không revert code.`,
+### Ví dụ đời thực
+Team 8 dev backend dùng GitFlow: release 2 tuần một lần, ngày release thường mất cả buổi chiều xử lý conflict từ 10–15 nhánh feature sống trung bình 9 ngày; 1/3 lần release có hotfix trong 24 giờ. Chuyển sang trunk-based: nhánh sống trung bình 1,2 ngày, MR trung bình 180 dòng, deploy 3–5 lần mỗi ngày, tính năng lớn ẩn sau flag. Sau 3 tháng, lead time từ commit tới production giảm **từ 8 ngày xuống dưới 1 ngày**, tỉ lệ deploy gây sự cố giảm từ 30% xuống khoảng 8% (đo theo số deploy cần rollback/hotfix).
+
+### Pitfall
+- Gọi là trunk-based nhưng nhánh vẫn sống cả tuần.
+- Feature flag không bao giờ xoá → code đầy nhánh if chết, tổ hợp flag không ai test.
+- Trunk-based mà CI chậm 40 phút hoặc test không đáng tin → main hay đỏ, mọi người sợ merge.
+- Dùng GitFlow cho service chỉ có một phiên bản production → thêm nghi thức mà không thêm giá trị.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo cách sản phẩm được phát hành. Nếu phải phát hành theo đợt và duy trì nhiều phiên bản song song, như app mobile hay phần mềm cài tại khách hàng, thì GitFlow hợp lý vì có nhánh release và hotfix rõ ràng. Còn với service backend deploy liên tục, tôi chọn trunk-based: mọi người tích hợp vào main ít nhất mỗi ngày qua MR nhỏ, CI chạy mỗi commit, main luôn deploy được, việc dở dang thì ẩn sau feature flag. Quy tắc đi kèm là MR dưới khoảng 400 dòng, branch protection với review và CI xanh bắt buộc, Conventional Commits để sinh changelog, và mỗi feature flag có người chịu trách nhiệm và hạn xoá. Ở team trước, chuyển từ GitFlow sang trunk-based giúp lead time từ commit tới production giảm từ khoảng 8 ngày xuống dưới 1 ngày, và ngày release không còn là ngày giải quyết conflict."
+
+> Senior tip: đo hai con số trước khi tranh luận về mô hình nhánh: tuổi trung bình của nhánh khi merge và kích thước MR trung bình. Nhánh trên 3 ngày hoặc MR trên 800 dòng là vấn đề, dù team đang gọi quy trình của mình là gì.`,
     follow: [
       'Feature flag nên quản lý ở đâu và lifecycle ra sao?',
       'Làm sao xử lý hotfix trong trunk-based?',
@@ -8261,58 +8289,79 @@ security:
     topic: 'devops',
     level: 'mid',
     q: 'Prometheus + node_exporter + Micrometer (Spring Boot Actuator) + Grafana giám sát app Java như thế nào?',
-    a: `**Tóm tắt:** Prometheus kéo (scrape) metric từ node_exporter (máy) và Actuator (app Java) rồi Grafana vẽ biểu đồ; metric Java quan trọng: JVM heap/GC, thread, HTTP p95/p99, Hikari pool.
+    a: `**Tóm tắt:** Prometheus **kéo (scrape)** metric theo chu kỳ từ các endpoint: **node_exporter** cho máy (CPU, RAM, disk, network) và **Spring Boot Actuator + Micrometer** cho ứng dụng ({{/actuator/prometheus}}: JVM, HTTP, Hikari, metric nghiệp vụ). Grafana truy vấn Prometheus bằng PromQL để vẽ dashboard và cảnh báo. Ba điều quyết định chất lượng: **histogram để có p95/p99**, **tag chuẩn** (application, env), và **kiểm soát cardinality**.
 
-### Các thành phần
-- **Prometheus**: time-series DB, tự scrape endpoint theo chu kỳ (pull model).
-- **node_exporter**: daemon trên host, xuất metric CPU/RAM/disk/network.
-- **Micrometer + Spring Boot Actuator**: app Java xuất metric JVM và HTTP tại {{/actuator/prometheus}}.
-- **Grafana**: dashboard, alert rule, biểu đồ.
+### Luồng dữ liệu
+~~~seq
+title: Metric từ app Java tới dashboard
+actors: Prometheus | App | NodeExp | Grafana
+Prometheus -> App: GET /actuator/prometheus (mỗi 15s)
+App --> Prometheus: jvm_*, http_server_requests_*, hikaricp_*
+Prometheus -> NodeExp: GET :9100/metrics
+NodeExp --> Prometheus: node_cpu_*, node_memory_*
+Grafana -> Prometheus: PromQL query
+Prometheus --> Grafana: chuỗi thời gian
+~~~
+Mô hình **pull**: Prometheus biết target nào sống hay chết ({{up == 0}}); trên Kubernetes target được phát hiện tự động qua service discovery hoặc ServiceMonitor (Prometheus Operator).
 
-### Cài Actuator
+### Cấu hình Spring Boot 3
 ~~~yaml
-# application.yml
+# cần dependency io.micrometer:micrometer-registry-prometheus
 management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,prometheus
+  endpoints.web.exposure.include: health,info,prometheus
   metrics:
     tags:
-      application: order-service
+      application: order-service      # tag chung cho mọi metric
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true    # xuất bucket để tính p95/p99 ở Prometheus
 ~~~
-~~~xml
-<!-- pom.xml -->
-<dependency>
-  <groupId>io.micrometer</groupId>
-  <artifactId>micrometer-registry-prometheus</artifactId>
-</dependency>
-~~~
+Không bật histogram thì chỉ có count/sum/max — tính được trung bình nhưng **không** tính được p99 gộp nhiều pod.
 
-### Prometheus scrape config
-~~~yaml
-scrape_configs:
-  - job_name: 'node'
-    static_configs:
-      - targets: ['node-exporter:9100']
-  - job_name: 'springboot'
-    metrics_path: '/actuator/prometheus'
-    static_configs:
-      - targets: ['order-service:8080']
+### Metric nghiệp vụ tự định nghĩa
+~~~java
+@Component
+class OrderMetrics {
+  private final Counter placed;
+  OrderMetrics(MeterRegistry r) {
+    // tag có tập giá trị nhỏ, cố định: channel = web|app|pos
+    placed = Counter.builder("orders.placed").tag("channel", "web").register(r);
+  }
+  void onPlaced() { placed.increment(); }   // xuất ra: orders_placed_total
+}
 ~~~
 
-### Metric Java quan trọng
-- {{jvm_memory_used_bytes}} / {{jvm_memory_max_bytes}} (heap).
-- {{jvm_gc_pause_seconds}} (GC pause).
-- {{jvm_threads_live_threads}}.
-- {{http_server_requests_seconds}} histogram → p95/p99.
-- {{hikaricp_connections_active}} / {{hikaricp_connections_max}}.
+### PromQL cần biết
+~~~text
+p99 theo service:
+histogram_quantile(0.99, sum by (le, application) (rate(http_server_requests_seconds_bucket[5m])))
+Heap đang dùng / tối đa:
+sum(jvm_memory_used_bytes{area="heap"}) / sum(jvm_memory_max_bytes{area="heap"})
+Pool sắp cạn:
+hikaricp_connections_pending > 0
+~~~
 
-### Trên production
-- Sai lầm: chỉ xem CPU, bỏ qua GC pause và Hikari pool.
-- Kiểm tra: dashboard JVM + alert khi heap > 85% liên tục 5 phút.
+### Dashboard tối thiểu cho mỗi service
+| Nhóm | Metric |
+|---|---|
+| Traffic & lỗi | rps, tỉ lệ 5xx, p50/p95/p99 theo URI |
+| JVM | heap sau GC, {{jvm_gc_pause_seconds}}, số thread |
+| Pool | Hikari active/idle/pending, thời gian lấy connection |
+| Máy/Pod | CPU, CPU throttling, memory so với limit |
 
-> Senior tip: Tag metric bằng application + env để filter dashboard; cardinality cao (user id) sẽ làm Prometheus nổ bộ nhớ.`,
+### Ví dụ đời thực
+Một team có Prometheus nhưng chỉ xem CPU/RAM. Sự cố p99 tăng gấp 4 lần kéo dài 2 giờ vì không ai thấy nguyên nhân. Sau đó họ bật histogram cho {{http.server.requests}}, thêm panel Hikari pending và GC pause. Lần tương tự tiếp theo, panel Hikari pending > 0 chỉ ra pool cạn ngay trong 5 phút đầu. Một lần khác, Prometheus tốn 14GB RAM vì ai đó thêm tag {{userId}} vào metric: 2 triệu chuỗi thời gian mới; xoá tag đó, bộ nhớ về 3GB.
+
+### Pitfall
+- Tag có giá trị không giới hạn (userId, orderId, URL có id) → **bùng nổ cardinality**. Micrometer dùng URI template (dạng /orders/{id}) nên an toàn, trừ khi bạn tự build tag từ path thật.
+- Lộ {{/actuator}} ra Internet — chỉ mở trên cổng quản trị nội bộ.
+- Lấy trung bình của p99 giữa các pod — sai về toán học; phải tính từ histogram.
+- Scrape interval quá ngắn với hàng nghìn target → Prometheus quá tải.
+
+### Trả lời mẫu khi phỏng vấn
+"Prometheus kéo metric theo chu kỳ từ các endpoint. node_exporter cung cấp metric máy, còn ứng dụng Spring Boot 3 thêm micrometer-registry-prometheus và mở endpoint actuator/prometheus, xuất sẵn metric JVM, HTTP, Hikari. Grafana truy vấn bằng PromQL để vẽ dashboard và cảnh báo. Có ba điều tôi luôn làm. Một là bật percentiles-histogram cho http.server.requests, vì không có bucket thì không tính được p99 gộp nhiều pod. Hai là tag chuẩn như application và env để lọc. Ba là kiểm soát cardinality: không bao giờ đưa userId hay orderId vào tag. Dashboard tối thiểu của tôi có rps, tỉ lệ lỗi, p99 theo URI, heap sau GC, GC pause, Hikari pending và CPU throttling. Tôi từng gặp Prometheus ăn 14GB RAM chỉ vì một tag userId tạo ra hai triệu chuỗi thời gian."
+
+> Senior tip: thêm một panel "Hikari pending" và một panel "CPU throttling" vào mọi dashboard service ngay từ đầu. Hai panel này giải thích nhiều sự cố latency hơn mọi biểu đồ CPU/RAM cộng lại.`,
     follow: ['Pull vs push metric?', 'Cardinality là gì?', 'Prometheus retention bao lâu?'],
     tags: ['Prometheus', 'Grafana', 'Micrometer', 'Observability']
   }
@@ -8322,42 +8371,57 @@ scrape_configs:
     topic: 'devops',
     level: 'mid',
     q: 'Alertmanager gửi Telegram/Slack, tránh alert fatigue, SLO-based alert như thế nào?',
-    a: `**Tóm tắt:** Alertmanager nhóm và định tuyến alert; tránh fatigue bằng ngưỡng hợp lý, for:, grouping; SLO-based alert theo error budget thay vì ngưỡng tĩnh.
+    a: `**Tóm tắt:** Alertmanager nhận alert từ Prometheus, **gộp** (group), **khử trùng** (dedupe), **dập** (inhibit) và **định tuyến** (route) tới Slack/Telegram/PagerDuty. Chống alert fatigue bằng nguyên tắc: **chỉ gọi người khi người dùng đang hoặc sắp bị ảnh hưởng và cần hành động ngay**; mọi thứ khác thành ticket hoặc dashboard. Alert dựa trên SLO (tỉ lệ lỗi, độ trễ người dùng cảm nhận) thay cho ngưỡng nguyên nhân như "CPU > 80%".
 
-### Alertmanager
-- Nhận alert từ Prometheus, dedupe, group, route tới receiver (Slack/Telegram/PagerDuty).
-- Inhibit: alert cha dập alert con.
-- Silence: tắt tạm thời khi bảo trì.
+### Alertmanager làm gì với một alert
+1. **Group**: 30 pod cùng lỗi → một tin nhắn "OrderService: 30 instance", gom theo {{group_by: [alertname, service]}}.
+2. **Chờ và nhắc lại**: {{group_wait}} (chờ gom), {{group_interval}} (gửi cập nhật), {{repeat_interval}} (nhắc lại nếu chưa xử lý).
+3. **Inhibit**: khi alert "cluster mất kết nối DB" đang bật, dập các alert "API lỗi" phát sinh từ nó.
+4. **Silence**: tắt có thời hạn khi bảo trì, kèm người tạo và lý do.
+5. **Route** theo nhãn: {{severity=page}} → PagerDuty/điện thoại; {{severity=ticket}} → kênh Slack của team.
 
-### Ví dụ rule
 ~~~yaml
-groups:
-  - name: slo
-    rules:
-      - alert: HighErrorRate
-        expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m])) > 0.01
-        for: 10m
-        labels:
-          severity: page
-        annotations:
-          summary: "Error rate > 1% trong 10 phút"
+route:
+  receiver: slack-team
+  group_by: [alertname, service]
+  group_wait: 30s
+  repeat_interval: 4h
+  routes:
+    - matchers: [ severity="page" ]
+      receiver: pagerduty-oncall
+inhibit_rules:
+  - source_matchers: [ alertname="DatabaseDown" ]
+    target_matchers: [ severity="page" ]
+    equal: [ cluster ]
 ~~~
 
-### for: và ngưỡng
-- {{for:}} tránh flapping (alert phải đúng liên tục N phút mới fire).
-- Ngưỡng: đặt theo SLO, không quá nhạy.
-- Group by service để tránh spam.
+### Vì sao alert fatigue nguy hiểm
+Khi 90% alert là nhiễu, người trực học cách bỏ qua — và bỏ qua luôn alert thật. Các nguồn nhiễu hay gặp: ngưỡng tĩnh theo nguyên nhân (CPU 80% nhưng người dùng không sao), không có {{for:}} nên alert nhấp nháy, alert không ai sở hữu, alert không có hướng dẫn xử lý.
 
-### SLO-based alert
-- SLO: 99.9% availability → error budget 0.1%.
-- Alert khi đốt error budget nhanh (burn rate) thay vì CPU > 80%.
-- Multi-window: 1h + 6h burn rate.
+### Quy tắc viết một alert tốt
+- **Triệu chứng hơn nguyên nhân**: "tỉ lệ lỗi checkout > 2%" thay vì "CPU cao". Nguyên nhân để trên dashboard.
+- Có {{for: 5m}} hoặc dài hơn để bỏ dao động ngắn.
+- Mỗi alert có **runbook link**, chủ sở hữu, mức độ.
+- Alert phải **hành động được**: nếu câu trả lời là "chờ xem" thì đó không phải alert gọi người.
+- Ngưỡng từ SLO; với SLO thì dùng **burn rate** (tốc độ tiêu error budget) thay ngưỡng cố định (xem devops-110).
 
-### Trên production
-- Sai lầm: alert mọi metric → on-call mệt, bỏ qua alert thật.
-- Kiểm tra: alert firing count, MTTA, false positive rate.
+### Telegram/Slack trong thực tế
+- Slack: receiver {{slack_configs}} với webhook; Telegram: receiver {{telegram_configs}} (có sẵn từ Alertmanager 0.24) với bot token và chat id.
+- Kênh "page" và kênh "ticket" tách riêng; kênh page chỉ dành cho việc cần làm ngay.
 
-> Senior tip: Mỗi alert phải có runbook link trong annotation; alert không có hành động = noise.`,
+### Ví dụ đời thực
+Team on-call nhận trung bình 140 alert mỗi tuần, chỉ 9 cái cần hành động; một sự cố thật bị trễ 40 phút vì chìm giữa nhiễu. Rà lại: xoá 31 rule CPU/RAM/disk ngưỡng tĩnh (chuyển thành dashboard), thêm {{for}} cho mọi rule, gom theo service, inhibit theo cluster, thay bằng 6 alert SLO cho 3 hành trình chính (đăng nhập, tìm kiếm, thanh toán). Kết quả: còn khoảng 12 alert/tuần, 10 cái cần hành động; thời gian phản hồi trung bình giảm từ 25 phút xuống 6 phút.
+
+### Pitfall
+- Gửi mọi alert vào một kênh chung → không ai đọc.
+- Silence không thời hạn rồi quên → mất cảnh báo thật nhiều tuần.
+- Alert dựa trên metric có thể biến mất (pod chết thì không còn metric) mà không có alert {{absent()}} hoặc {{up == 0}}.
+- Không review alert định kỳ.
+
+### Trả lời mẫu khi phỏng vấn
+"Alertmanager nhận alert từ Prometheus rồi gộp, khử trùng, dập và định tuyến. Gộp theo service để ba mươi pod lỗi thành một tin nhắn; inhibit để khi DB chết thì không bắn thêm hàng chục alert API; silence có thời hạn khi bảo trì; route theo mức độ: page thì gọi người trực, ticket thì vào kênh Slack của team. Để chống alert fatigue, tôi theo nguyên tắc chỉ gọi người khi người dùng đang hoặc sắp bị ảnh hưởng và cần hành động ngay. Vì vậy tôi alert theo triệu chứng như tỉ lệ lỗi hay độ trễ của hành trình chính, dựa trên SLO và burn rate, còn CPU hay RAM để trên dashboard. Mỗi alert có for để bỏ dao động, có runbook và chủ sở hữu. Ở team trước, rà lại theo cách này giảm từ khoảng 140 xuống 12 alert mỗi tuần, và thời gian phản hồi giảm từ 25 xuống 6 phút."
+
+> Senior tip: mỗi tháng xuất danh sách alert đã bắn kèm cột "có hành động gì không". Alert nào ba tháng liền không dẫn tới hành động thì xoá hoặc hạ xuống ticket — đây là cách rẻ nhất giữ cho on-call còn đáng tin.`,
     follow: ['PagerDuty escalation?', 'Silence vs inhibit?', 'Burn rate là gì?'],
     tags: ['Alertmanager', 'SLO', 'Alerting']
   }
@@ -8367,42 +8431,53 @@ groups:
     topic: 'devops',
     level: 'senior',
     q: 'Logging tập trung: ELK/EFK vs Loki, log JSON, correlation id, retention và chi phí?',
-    a: `**Tóm tắt:** Log có cấu trúc JSON + correlation id để truy vết; ELK mạnh search nhưng nặng/đắt; Loki rẻ và nhanh cho label-based; retention theo tier để kiểm soát chi phí.
+    a: `**Tóm tắt:** Logging tập trung cần ba thứ: **log có cấu trúc (JSON)** để truy vấn theo trường, **correlation/trace id** để nối mọi dòng log của một request qua nhiều service, và **chiến lược lưu trữ theo giá trị** (log nóng ngắn hạn, log lạnh rẻ, log debug ít). **ELK/EFK** đánh index toàn văn — tìm kiếm mạnh nhưng tốn tài nguyên; **Loki** chỉ đánh index nhãn và lưu nội dung nén trên object storage — rẻ hơn nhiều nhưng truy vấn văn bản chậm hơn.
 
-### Log có cấu trúc
-- JSON: timestamp, level, service, traceId, message, fields.
-- Spring: logback + logstash-encoder.
-~~~xml
-<dependency>
-  <groupId>net.logstash.logback</groupId>
-  <artifactId>logstash-logback-encoder</artifactId>
-</dependency>
+### Log JSON trong Spring Boot 3
+Từ Spring Boot 3.4 có structured logging sẵn:
+~~~yaml
+logging:
+  structured:
+    format:
+      console: ecs        # hoặc logstash, gelf; in mỗi dòng là một JSON
 ~~~
-~~~xml
-<appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
-  <encoder class="net.logstash.logback.encoder.LogstashEncoder"/>
-</appender>
-~~~
+Phiên bản cũ hơn dùng logstash-logback-encoder. Kết quả là các trường {{level}}, {{logger}}, {{message}}, {{traceId}}, {{spanId}}, {{service}} truy vấn được trực tiếp, không cần regex.
 
-### Correlation id
-- Filter thêm X-Request-Id vào MDC; propagate qua Feign/RestTemplate.
-- Log mọi dòng cùng traceId → search một chuỗi thấy toàn flow.
+### Correlation id / trace id
+- Với Micrometer Tracing (Spring Boot 3), {{traceId}} và {{spanId}} tự đưa vào MDC và tự truyền qua header W3C {{traceparent}} khi gọi bằng RestClient/WebClient/Kafka đã được instrument.
+- {{traceId}}: id của cả hành trình request qua mọi service; {{spanId}}: id của một đoạn công việc trong hành trình đó.
+- Trả {{traceId}} trong header response hoặc thông báo lỗi để bộ phận hỗ trợ đưa lại cho dev.
+- Cẩn thận với thread pool/{{@Async}}: context không tự đi theo nếu executor không được bọc (context propagation).
 
-### ELK vs EFK vs Loki
-- ELK: Elasticsearch + Logstash + Kibana, search full-text mạnh, tốn RAM/disk.
-- EFK: thay Logstash bằng Fluentd/Fluent Bit (nhẹ hơn).
-- Loki: chỉ index label, không full-text → rẻ, nhanh cho filter theo service/env; Grafana tích hợp.
+### ELK/EFK hay Loki
+| Tiêu chí | ELK / EFK (Elasticsearch) | Loki |
+|---|---|---|
+| Index | Toàn văn mọi trường | Chỉ nhãn (service, env, level) |
+| Truy vấn | Tìm kiếm tự do rất nhanh, aggregation mạnh | Lọc theo nhãn rồi quét nội dung |
+| Chi phí | Cao: RAM, SSD, bản sao | Thấp: nén, lưu S3/GCS |
+| Vận hành | Phức tạp (shard, mapping, heap) | Đơn giản hơn |
+| Hợp với | Cần phân tích log sâu, bảo mật/SIEM | Debug theo service, đi cùng Grafana |
+EFK = thay Logstash bằng Fluentd/Fluent Bit (nhẹ hơn, phổ biến trên Kubernetes).
 
 ### Retention và chi phí
-- Hot 7 ngày (SSD), warm 30 ngày, cold 90-365 ngày (S3/Glacier).
-- Sampling: debug/info chỉ giữ 1-7 ngày, error giữ lâu hơn.
-- Tránh log payload nhạy cảm (PII).
+- Phân tầng: 7–14 ngày nóng (truy vấn nhanh), 30–90 ngày ấm/lạnh, lưu dài hạn trên S3 nếu có yêu cầu pháp lý.
+- Giảm khối lượng tại nguồn: tắt DEBUG ở production, gộp log lặp, **sampling** log thành công (giữ 100% lỗi, 5–10% request thành công).
+- Index Lifecycle Management (Elasticsearch) hoặc retention theo tenant/stream (Loki).
+- Không log body request và dữ liệu cá nhân — vừa tốn tiền vừa rủi ro pháp lý.
 
-### Trên production
-- Sai lầm: log toàn bộ body request → chi phí lưu và rò rỉ.
-- Kiểm tra: index size, ingestion rate, query latency p95.
+### Ví dụ đời thực
+Một công ty 40 microservice ghi 1,2TB log mỗi ngày vào Elasticsearch: cụm 18 node, khoảng 22.000 USD/tháng; 60% khối lượng là log INFO "request thành công" và log body. Họ chuyển log ứng dụng sang Loki + S3, giữ Elasticsearch nhỏ cho log bảo mật/audit, bỏ log body, sampling 10% log thành công. Khối lượng còn 380GB/ngày, chi phí logging giảm khoảng 70%. Nhờ {{traceId}} trong mọi dòng log, thời gian tìm nguyên nhân một lỗi xuyên 5 service giảm từ khoảng 40 phút xuống 5 phút.
 
-> Senior tip: Log level INFO mặc định, DEBUG chỉ bật tạm thời qua Actuator /loggers khi điều tra.`,
+### Pitfall
+- Log text tự do → phải viết regex parse, dễ vỡ khi đổi format.
+- Đưa giá trị nhiều biến thể (userId, traceId) làm **nhãn** trong Loki → bùng nổ stream, Loki chậm và tốn.
+- Mapping động trong Elasticsearch: một trường lúc là số lúc là chuỗi → log bị loại bỏ.
+- Mất traceId khi chuyển sang thread khác hoặc qua Kafka chưa instrument.
+
+### Trả lời mẫu khi phỏng vấn
+"Logging tập trung với tôi có ba trụ cột. Thứ nhất là log JSON có cấu trúc, Spring Boot 3.4 đã có structured logging sẵn, để truy vấn theo trường chứ không phải regex. Thứ hai là trace id: Micrometer Tracing đưa traceId và spanId vào MDC và truyền qua header traceparent, nên một request qua năm service vẫn nối được, tôi còn trả traceId trong response lỗi để support gửi lại. Thứ ba là chi phí: phân tầng retention, tắt DEBUG, sampling log thành công, và không log body. Về công cụ, Elasticsearch đánh index toàn văn nên tìm kiếm và phân tích mạnh nhưng tốn RAM và SSD; Loki chỉ index nhãn và lưu nội dung nén trên object storage nên rẻ hơn nhiều, hợp với debug theo service cùng Grafana. Ở công ty trước, chuyển log ứng dụng sang Loki, bỏ log body và sampling giúp giảm khoảng 70% chi phí logging."
+
+> Senior tip: tính chi phí log theo **service** mỗi tháng và gửi cho từng team. Khi team thấy service của họ chiếm 35% hoá đơn logging vì log body, họ tự sửa nhanh hơn mọi quy định chung.`,
     follow: ['TraceId vs SpanId?', 'Log sampling?', 'Chi phí Elasticsearch?'],
     tags: ['Logging', 'ELK', 'Loki', 'Observability']
   }
@@ -8412,42 +8487,51 @@ groups:
     topic: 'devops',
     level: 'senior',
     q: 'High availability: Keepalived + VIP (VRRP), HAProxy/Nginx active-passive, DB replication + failover, split-brain?',
-    a: `**Tóm tắt:** HA dùng VIP (VRRP/Keepalived) để chuyển IP sang node sống; LB active-passive; DB replication + failover tự động; split-brain là rủi ro khi cả hai node nghĩ mình là primary.
+    a: `**Tóm tắt:** HA kiểu truyền thống trên máy ảo/bare-metal gồm hai lớp: **lớp vào** dùng Keepalived (giao thức VRRP) giữ một **VIP** (IP ảo) trên một trong hai máy HAProxy/Nginx, máy kia dự phòng; **lớp dữ liệu** dùng replication và một bộ điều phối failover (Patroni cho PostgreSQL, Orchestrator/MySQL InnoDB Cluster cho MySQL). Rủi ro lớn nhất là **split-brain** — hai bên cùng nghĩ mình là chính — nên mọi quyết định failover phải dựa trên **quorum** và **fencing**.
 
-### Keepalived + VIP
-- VRRP: nhiều router chia sẻ một Virtual IP; master gửi heartbeat; backup takeover khi master chết.
-~~~conf
+### Keepalived + VIP hoạt động thế nào
+- Hai máy chạy Keepalived, mỗi máy có priority (ví dụ 150 và 100). Máy MASTER gửi quảng bá VRRP mỗi giây; VIP gắn vào card mạng của nó.
+- Script kiểm tra ({{vrrp_script}}, ví dụ {{pidof haproxy}} hoặc gọi health endpoint) trừ priority khi HAProxy chết.
+- Máy BACKUP không nghe thấy quảng bá trong khoảng 3 lần chu kỳ → tự nhận VIP và gửi gratuitous ARP để switch cập nhật. Thời gian chuyển thường 1–3 giây.
+~~~text
 vrrp_instance VI_1 {
-    state MASTER
-    interface eth0
-    virtual_router_id 51
-    priority 100
-    advert_int 1
-    authentication { auth_type PASS; auth_pass secret }
-    virtual_ipaddress { 10.0.0.100/24 }
+  state BACKUP            # cả hai để BACKUP + nopreempt để tránh giật qua lại
+  interface eth0
+  virtual_router_id 51
+  priority 150
+  nopreempt
+  virtual_ipaddress { 10.0.0.100/24 }
+  track_script { chk_haproxy }
 }
 ~~~
-- Backup priority thấp hơn (90).
+Trên cloud thường không dùng VRRP (mạng không cho gratuitous ARP tuỳ ý) mà dùng load balancer có sẵn (AWS NLB/ALB) hoặc chuyển Elastic IP bằng API.
 
 ### HAProxy/Nginx active-passive
-- Hai LB, VIP trỏ tới active; passive standby.
-- Health check backend; failover VIP khi active chết.
+Chỉ máy giữ VIP nhận traffic; cấu hình hai máy phải giống hệt (đồng bộ bằng Ansible/Git). HAProxy kiểm tra sức khoẻ backend ({{option httpchk}}) và loại server lỗi. Active-active (hai VIP + DNS) tăng công suất nhưng phức tạp hơn.
 
 ### DB replication + failover
-- PostgreSQL streaming replication: primary → standby (async/sync).
-- Failover: Patroni/repmgr tự promote standby; app reconnect qua VIP/proxy.
-- Semi-sync MySQL: primary chờ ít nhất 1 replica ack.
+- PostgreSQL streaming replication: primary gửi WAL cho standby. **Async**: nhanh nhưng có thể mất vài giây dữ liệu khi failover; **sync** ({{synchronous_standby_names}}): không mất dữ liệu đã commit, đổi lại độ trễ ghi.
+- **Patroni**: mỗi node chạy agent, dùng DCS (etcd/Consul) giữ **leader lock** có TTL. Chỉ node giữ lock được làm primary; primary mất lock thì tự hạ xuống. Ứng dụng kết nối qua HAProxy hỏi REST API của Patroni ({{/primary}}) để biết node nào là primary.
 
-### Split-brain
-- Mạng phân mảnh: hai node đều nghĩ mình primary → ghi dữ liệu khác nhau → corrupt.
-- Giải pháp: quorum (ít nhất N/2+1), fencing (STONITH), witness/arbiter, lease.
-- PostgreSQL Patroni dùng DCS (etcd/Consul) làm arbiter.
+### Split-brain và cách chặn
+Mạng giữa hai máy đứt nhưng cả hai vẫn sống → cả hai nhận VIP hoặc cả hai nhận ghi → dữ liệu phân kỳ, rất khó hợp nhất.
+- **Quorum**: quyết định cần đa số (3 hoặc 5 node etcd); phía thiểu số không được làm primary.
+- **Fencing/STONITH**: chắc chắn node cũ đã chết hoặc bị cô lập (tắt nguồn qua IPMI, gỡ quyền ghi storage) trước khi node mới nhận vai.
+- Watchdog: Patroni có thể dùng watchdog phần cứng/softdog để tự khởi động lại node mất lock.
 
-### Trên production
-- Sai lầm: replication async + failover tự động mà không fencing → split-brain.
-- Kiểm tra: replication lag, failover drill định kỳ.
+### Ví dụ đời thực
+Một ngân hàng chạy PostgreSQL hai node với script failover tự viết dựa trên ping. Một lần switch lỗi khiến hai node không thấy nhau 40 giây: script nâng standby lên primary trong khi primary cũ vẫn nhận ghi từ một nhóm ứng dụng → 1.700 giao dịch nằm lệch trên hai node, mất 2 ngày đối soát thủ công. Thiết kế lại: 3 node PostgreSQL + Patroni + 3 node etcd ở ba vùng, một standby đồng bộ, HAProxy định tuyến theo {{/primary}}. Diễn tập hàng quý: failover trung bình 12 giây, không mất giao dịch đã commit, không còn split-brain.
 
-> Senior tip: HA không chỉ uptime; phải test failover thực tế, không chỉ assume config đúng.`,
+### Pitfall
+- Hai node + "ping" để quyết định failover — không có quorum thì không phân biệt được "bên kia chết" với "mạng đứt".
+- Bật preempt để máy chính giật lại VIP ngay khi sống lại → chuyển qua lại liên tục.
+- Không bao giờ diễn tập failover → ngày thật mới phát hiện cấu hình sai.
+- Ứng dụng cache địa chỉ DB/DNS lâu → failover xong vẫn ghi vào node cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia làm hai lớp. Lớp vào dùng Keepalived với VRRP giữ một IP ảo trên một trong hai máy HAProxy; máy chính chết hoặc HAProxy chết thì script kiểm tra hạ priority, máy dự phòng nhận VIP và gửi gratuitous ARP, thường mất một đến ba giây. Lớp dữ liệu dùng replication, với PostgreSQL thì streaming replication và Patroni điều phối: các node tranh một leader lock trong etcd, chỉ node giữ lock mới được làm primary, và HAProxy hỏi Patroni để biết đâu là primary. Điều tôi chú trọng nhất là split-brain. Hai node quyết định bằng ping là không an toàn, vì không phân biệt được bên kia chết hay mạng đứt. Phải có quorum, ít nhất ba node etcd, và fencing để chắc chắn node cũ không còn nhận ghi. Tôi cũng chọn rõ async hay sync replication theo yêu cầu mất dữ liệu, và diễn tập failover định kỳ."
+
+> Senior tip: đo và ghi lại hai con số sau mỗi lần diễn tập: thời gian failover thực tế và lượng dữ liệu mất (RPO thực tế). Cam kết RTO/RPO trên giấy mà chưa từng đo thì chỉ là hy vọng.`,
     follow: ['Patroni là gì?', 'Quorum majority?', 'STONITH?'],
     tags: ['HA', 'Keepalived', 'VRRP', 'PostgreSQL']
   }
@@ -8457,39 +8541,55 @@ vrrp_instance VI_1 {
     topic: 'devops',
     level: 'senior',
     q: 'Giám sát database (PostgreSQL/MySQL exporter): slow query, connection, replication lag?',
-    a: `**Tóm tắt:** Dùng postgres_exporter/mysql_exporter để Prometheus scrape metric DB; cảnh báo slow query, connection saturation, replication lag; kết hợp pg_stat_statements.
+    a: `**Tóm tắt:** Giám sát DB cần trả lời bốn câu: **DB có đang quá tải không** (connection, CPU, IO), **query nào tốn nhất** (pg_stat_statements / performance_schema), **có ai đang chặn ai không** (lock, transaction dài), và **replica có theo kịp không** (replication lag). Dùng **postgres_exporter** hoặc **mysqld_exporter** cho Prometheus, cộng slow query log và một dashboard có cảnh báo cho từng nhóm.
 
-### Exporter
-- postgres_exporter: scrape {{pg_stat_activity}}, {{pg_stat_database}}, replication lag.
-- mysqld_exporter: threads, slow queries, replication lag.
-
-### Prometheus scrape
-~~~yaml
-scrape_configs:
-  - job_name: 'postgres'
-    static_configs:
-      - targets: ['postgres-exporter:9187']
-~~~
+### Exporter và dữ liệu nguồn
+- **postgres_exporter** đọc các view hệ thống: {{pg_stat_database}} (commit, rollback, deadlock, temp file), {{pg_stat_activity}} (connection theo trạng thái), {{pg_stat_replication}}, {{pg_locks}}; có thể thêm truy vấn tuỳ biến.
+- **mysqld_exporter** đọc {{SHOW GLOBAL STATUS}}, {{performance_schema}}, trạng thái replication.
+- Tài khoản exporter chỉ cần quyền đọc thống kê (PostgreSQL: role {{pg_monitor}}).
 
 ### Slow query
-- Bật {{pg_stat_statements}} extension; query {{calls}}, {{total_exec_time}}, {{mean_exec_time}}.
-- Alert: query mean > 1s hoặc total time tăng đột biến.
-- PostgreSQL: {{log_min_duration_statement = 1000}} để log query > 1s.
+- PostgreSQL: bật extension {{pg_stat_statements}} để có thống kê tổng hợp theo dạng câu lệnh (số lần gọi, tổng/trung bình thời gian, số dòng, block đọc). Sắp theo **tổng thời gian**, không theo thời gian một lần: câu 5ms gọi 2 triệu lần mỗi giờ tốn hơn câu 3 giây gọi 10 lần.
+- {{log_min_duration_statement = 500}} ghi câu chạy lâu hơn 500ms; {{auto_explain}} ghi luôn plan của câu chậm.
+- MySQL: {{slow_query_log}} + {{long_query_time}}, phân tích bằng pt-query-digest.
+~~~sql
+SELECT left(query, 80) AS q, calls, round(total_exec_time) AS total_ms,
+       round(mean_exec_time, 1) AS mean_ms, rows
+FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
+~~~
 
 ### Connection
-- {{pg_stat_activity_count}} vs {{max_connections}}.
-- Alert khi > 80% max connections.
+- Theo dõi số connection theo trạng thái: {{active}}, {{idle}}, **{{idle in transaction}}** (giữ khoá và chặn vacuum — rất nguy hiểm).
+- So với {{max_connections}}: mỗi connection PostgreSQL là một process, vài trăm connection đã tốn đáng kể RAM. Tổng pool của mọi pod phải nhỏ hơn giới hạn; nhiều pod thì dùng PgBouncer.
+- Đặt {{idle_in_transaction_session_timeout}} để tự cắt session bỏ quên.
 
 ### Replication lag
-- {{pg_replication_lag}} (seconds) hoặc byte lag.
-- Alert lag > 30s (async) hoặc > 0 (sync).
-- MySQL: {{Seconds_Behind_Master}}.
+- PostgreSQL: trên primary xem {{pg_stat_replication}} ({{replay_lag}}, chênh lệch LSN); trên replica {{now() - pg_last_xact_replay_timestamp()}} (lưu ý khi primary không có ghi thì con số này tăng dù không thật sự trễ).
+- Nguyên nhân lag: batch ghi lớn, replica thiếu IO, query dài trên replica xung đột với replay.
+- Ứng dụng đọc từ replica phải chịu được dữ liệu cũ vài giây, hoặc đọc primary ngay sau khi ghi (read-your-writes).
 
-### Trên production
-- Sai lầm: không index → slow query đột ngột.
-- Kiểm tra: EXPLAIN ANALYZE, vacuum/analyze, connection pool size.
+### Cảnh báo nên có
+| Cảnh báo | Ngưỡng gợi ý |
+|---|---|
+| Connection gần đầy | > 80% max_connections trong 5 phút |
+| Transaction dài | > 5 phút (chặn vacuum, giữ khoá) |
+| Replication lag | > 30 giây trong 5 phút |
+| Deadlock | tăng bất thường so với mức nền |
+| Disk/WAL | dung lượng còn < 20% |
 
-> Senior tip: Slow query thường do thiếu index hoặc N+1 từ app; giám sát DB phải đi kèm giám sát app query.`,
+### Ví dụ đời thực
+DB PostgreSQL của một sàn thương mại điện tử: CPU 90% mỗi trưa, team định nâng cấp instance (thêm 1.800 USD/tháng). pg_stat_statements cho thấy một câu đếm giỏ hàng chỉ 4ms nhưng gọi 6 triệu lần/giờ, chiếm 38% tổng thời gian DB. Cache kết quả 30 giây ở Redis → CPU trưa còn 45%, không cần nâng cấp. Cùng đợt đó, cảnh báo "idle in transaction > 5 phút" bắt được một job báo cáo quên commit, vốn làm bảng đơn hàng phình 40% vì vacuum không dọn được.
+
+### Pitfall
+- Chỉ bật slow query log → bỏ sót câu nhanh nhưng gọi cực nhiều.
+- Không reset/so sánh pg_stat_statements theo thời gian → không biết query nào mới xấu đi.
+- Exporter dùng tài khoản superuser.
+- Đọc từ replica mà không giám sát lag → người dùng thấy dữ liệu cũ, tưởng mất dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi giám sát DB theo bốn câu hỏi. DB có quá tải không: connection theo trạng thái, CPU, IO. Query nào tốn nhất: tôi dùng pg_stat_statements và sắp theo tổng thời gian chứ không theo thời gian một lần, vì câu 4 mili giây gọi hàng triệu lần thường tốn hơn câu 3 giây hiếm khi chạy; kèm slow query log và auto_explain cho câu chậm. Có ai chặn ai không: lock và transaction dài, đặc biệt trạng thái idle in transaction vì nó giữ khoá và chặn vacuum. Replica có theo kịp không: replay lag từ pg_stat_replication. Dữ liệu đưa vào Prometheus qua postgres_exporter với role pg_monitor, dashboard có cảnh báo cho connection trên 80%, transaction dài trên 5 phút, lag trên 30 giây. Có lần nhờ pg_stat_statements mà team bỏ được kế hoạch nâng cấp DB 1.800 USD mỗi tháng, chỉ bằng cách cache một câu đếm gọi 6 triệu lần mỗi giờ."
+
+> Senior tip: chụp top 20 của pg_stat_statements mỗi tuần và lưu lại. So sánh tuần này với tuần trước là cách nhanh nhất phát hiện một release vừa làm xấu đi một query, trước khi nó thành sự cố.`,
     follow: ['pg_stat_statements?', 'Connection pool tuning?', 'Vacuum là gì?'],
     tags: ['Database', 'PostgreSQL', 'MySQL', 'Monitoring']
   }
@@ -8499,44 +8599,57 @@ scrape_configs:
     topic: 'devops',
     level: 'lead',
     q: 'Uptime/synthetic check và trang status nội bộ xây dựng thế nào?',
-    a: `**Tóm tắt:** Synthetic check chủ động probe endpoint (HTTP/TCP) từ nhiều vị trí; trang status nội bộ tổng hợp health; phân biệt uptime đơn giản và SLO availability.
+    a: `**Tóm tắt:** Synthetic check là **robot đóng vai người dùng**, gọi các hành trình quan trọng từ bên ngoài theo chu kỳ (đăng nhập, tìm kiếm, thanh toán thử) để phát hiện sự cố **trước khi người dùng báo**, kể cả lúc đêm không có traffic. Trang status nội bộ tổng hợp tình trạng từng dịch vụ và sự cố đang xử lý, giúp các team và bộ phận hỗ trợ không phải hỏi nhau "có phải hệ thống đang lỗi không?".
 
-### Synthetic check
-- Blackbox exporter (Prometheus) probe HTTP/TCP/ICMP.
+### Vì sao cần synthetic khi đã có metric
+- Metric phía server chỉ thấy request **đã tới**. DNS sai, chứng chỉ TLS hết hạn, CDN lỗi, firewall chặn → server không thấy gì, metric vẫn xanh.
+- Ban đêm traffic thấp: tỉ lệ lỗi trên 3 request không có ý nghĩa; robot cho tín hiệu đều đặn.
+- Đo từ góc người dùng: nhiều vùng địa lý, nhiều nhà mạng.
+
+### Các mức synthetic check
+| Mức | Kiểm tra | Công cụ |
+|---|---|---|
+| Ping/HTTP | Endpoint trả 200, thời gian, hạn chứng chỉ | Prometheus blackbox_exporter, Uptime Kuma |
+| API hành trình | Chuỗi gọi: đăng nhập → lấy token → tìm sản phẩm → tạo giỏ | k6/script chạy định kỳ, Checkly |
+| Trình duyệt | Kịch bản UI thật bằng Playwright | Checkly, Datadog Synthetics, CloudWatch Synthetics |
+
 ~~~yaml
-scrape_configs:
-  - job_name: 'blackbox'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
-      - targets:
-          - https://api.example.com/health
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+# blackbox_exporter module: kiểm tra HTTP và nội dung trả về
+modules:
+  http_api:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: [200]
+      fail_if_body_not_matches_regexp: ['"status":"UP"']
+# Cảnh báo chứng chỉ sắp hết hạn: probe_ssl_earliest_cert_expiry - time() < 14 * 86400
 ~~~
-- Alert khi probe_success == 0 trong 2 phút.
+
+### Nguyên tắc thiết kế
+- Dùng **tài khoản test riêng**, dữ liệu được đánh dấu và tự dọn; thanh toán thử dùng sandbox hoặc số tiền hoàn ngay.
+- Chạy từ ít nhất 2–3 vị trí; chỉ cảnh báo khi **nhiều vị trí** cùng lỗi để tránh nhiễu do mạng một nơi.
+- Kiểm tra **nội dung**, không chỉ mã 200 (trang lỗi vẫn có thể trả 200).
+- Liveness/readiness của Kubernetes là kiểm tra **bên trong**; synthetic là kiểm tra **bên ngoài** — cần cả hai.
 
 ### Trang status nội bộ
-- Tổng hợp health của service: DB, Redis, Kafka, external API.
-- Spring Actuator {{/actuator/health}} với health indicators.
-- Dashboard Grafana hoặc trang đơn giản hiển thị status.
+- Danh sách dịch vụ theo hành trình nghiệp vụ (Đăng nhập, Thanh toán, Báo cáo…), trạng thái xanh/vàng/đỏ lấy tự động từ synthetic và SLO.
+- Sự cố đang mở: ảnh hưởng gì, ai đang xử lý, cập nhật gần nhất, kênh liên lạc.
+- Lịch bảo trì sắp tới; lịch sử sự cố và uptime 90 ngày.
+- Công cụ: Statuspage, Upptime, Uptime Kuma, hoặc trang tự dựng đọc từ Prometheus. Trang status công khai cho khách hàng thì chỉ cập nhật bởi người (tránh hiển thị nhiễu).
 
-### Availability vs uptime
-- Uptime: service up (process sống).
-- Availability: user thực sự dùng được (latency < SLO, error rate < ngưỡng).
-- Synthetic check đo availability từ góc user.
+### Ví dụ đời thực
+Một nền tảng B2B bị khách báo "không đăng nhập được" lúc 7 giờ sáng — chứng chỉ TLS của domain SSO hết hạn lúc 0 giờ, metric server vẫn xanh vì không request nào tới được. Sau sự cố: 14 synthetic check (8 API hành trình, 6 trang UI bằng Playwright) chạy mỗi phút từ 3 vùng, cảnh báo chứng chỉ trước 14 ngày, trang status nội bộ cho đội CSKH. Trong 6 tháng tiếp theo, 5/7 sự cố được phát hiện bởi synthetic trước khi có khách báo, thời gian phát hiện trung bình từ 38 phút xuống 3 phút; số câu hỏi "hệ thống có lỗi không" vào kênh kỹ thuật giảm rõ rệt.
 
-### Trên production
-- Sai lầm: health check chỉ trả 200 mà không kiểm tra dependency → false green.
-- Kiểm tra: health check sâu (DB query, Redis ping) nhưng không quá chậm.
+### Pitfall
+- Robot dùng tài khoản thật hoặc tạo đơn thật không dọn → sai số liệu kinh doanh.
+- Kịch bản UI giòn (selector thay đổi) → báo động giả liên tục.
+- Chỉ kiểm tra trang chủ.
+- Trang status cập nhật thủ công và bị quên khi đang rối vì sự cố.
 
-> Senior tip: Health check phải nhanh (< 1s) và không phụ thuộc service ngoài nặng; deep check riêng cho readiness.`,
+### Trả lời mẫu khi phỏng vấn
+"Synthetic check là robot đóng vai người dùng, gọi các hành trình quan trọng từ bên ngoài theo chu kỳ. Nó bổ sung cho metric phía server, vì những lỗi như DNS sai, chứng chỉ hết hạn hay CDN hỏng thì server không thấy request nào và metric vẫn xanh, còn ban đêm traffic thấp thì tỉ lệ lỗi không đáng tin. Tôi làm ba mức: blackbox_exporter cho HTTP và hạn chứng chỉ, script API chạy chuỗi đăng nhập tới thanh toán thử, và vài kịch bản Playwright cho trang quan trọng. Robot dùng tài khoản test riêng, kiểm tra nội dung chứ không chỉ mã 200, chạy từ nhiều vùng và chỉ cảnh báo khi nhiều vùng cùng lỗi. Trang status nội bộ lấy trạng thái tự động từ synthetic và SLO, kèm sự cố đang mở và người phụ trách. Ở công ty trước, sau khi làm vậy, phần lớn sự cố được phát hiện trước khi khách báo, thời gian phát hiện từ khoảng 38 phút xuống 3 phút."
+
+> Senior tip: viết synthetic check cho **mọi sự cố từng xảy ra** mà monitoring hiện tại không bắt được. Sau một năm, bộ check đó phản ánh chính xác những cách hệ thống của bạn thật sự hỏng.`,
     follow: ['Liveness vs readiness?', 'Blackbox exporter?', 'SLI/SLO/SLA?'],
     tags: ['Uptime', 'Synthetic', 'HealthCheck', 'SLO']
   }
@@ -8546,35 +8659,59 @@ scrape_configs:
     topic: 'devops',
     level: 'lead',
     q: 'SLO, SLI, error budget và cách đặt alert dựa trên error budget burn rate?',
-    a: `**Tóm tắt:** SLI đo chất lượng (latency, availability), SLO là mục tiêu, error budget là phần được phép sai; alert theo burn rate thay vì ngưỡng tĩnh để phát hiện sự cố nhanh.
+    a: `**Tóm tắt:** **SLI** là chỉ số đo trải nghiệm (tỉ lệ request thành công và đủ nhanh), **SLO** là mục tiêu cho SLI trong một cửa sổ thời gian (99,9% trong 30 ngày), **error budget** là phần được phép hỏng (0,1% ≈ 43 phút/30 ngày). Cảnh báo theo **burn rate** — tốc độ tiêu ngân sách lỗi so với tốc độ "đều đặn" — dùng **nhiều cửa sổ** để vừa bắt nhanh sự cố lớn vừa bắt được sự cố âm ỉ, mà ít báo động giả. **Error budget policy** biến con số thành quyết định: hết ngân sách thì ưu tiên độ ổn định hơn tính năng.
 
-### Định nghĩa
-- **SLI** (Service Level Indicator): metric đo (ví dụ % request < 300ms).
-- **SLO** (Service Level Objective): mục tiêu (99.9% request < 300ms).
-- **SLA** (Service Level Agreement): hợp đồng với khách, thường thấp hơn SLO.
-- **Error budget**: 100% - SLO = 0.1% được phép fail.
+### Định nghĩa bằng ví dụ
+- **SLI** = request tốt / tổng request. "Tốt" = không phải 5xx và nhanh hơn 300ms, đo ở load balancer hoặc gateway (gần người dùng).
+- **SLO** = 99,9% request tốt trong 30 ngày trượt.
+- **Error budget** = 0,1% × số request. Với 100 triệu request/tháng → được phép 100.000 request xấu.
+- **SLA** là cam kết hợp đồng (có đền bù), thường lỏng hơn SLO nội bộ (ví dụ SLA 99,5%).
 
-### Burn rate
-- Tốc độ đốt error budget. Burn rate 1 = đều, 14.4 = đốt hết budget trong 2 ngày (1h window).
-- Multi-window burn rate alert: alert nếu burn rate cao trong cả window ngắn và dài → tránh false positive.
+### Burn rate là gì
+Burn rate = tỉ lệ lỗi hiện tại / tỉ lệ lỗi cho phép.
+~~~text
+SLO 99.9% -> tỉ lệ lỗi cho phép 0.1%
+Tỉ lệ lỗi đang là 1.44% -> burn rate = 14.4
+=> với tốc độ này, ngân sách 30 ngày cạn sau 30 / 14.4 ≈ 2 ngày
+   và trong 1 giờ đã tiêu 1h × 14.4 / 720h = 2% ngân sách tháng
+~~~
+Ngưỡng tĩnh "lỗi > 1%" không biết SLO là gì; burn rate gắn cảnh báo trực tiếp với mức độ nghiêm trọng thật.
 
-### Ví dụ Prometheus
+### Cảnh báo nhiều cửa sổ (theo Google SRE Workbook)
+| Mức | Burn rate | Cửa sổ dài / ngắn | Ý nghĩa | Hành động |
+|---|---|---|---|---|
+| Page | 14,4 | 1 giờ / 5 phút | Tiêu 2% ngân sách trong 1 giờ | Gọi người trực |
+| Page | 6 | 6 giờ / 30 phút | Tiêu 5% trong 6 giờ | Gọi người trực |
+| Ticket | 1 | 3 ngày / 6 giờ | Âm ỉ, sẽ hết ngân sách cuối kỳ | Xử lý giờ hành chính |
+Cửa sổ dài chống báo động giả; cửa sổ ngắn giúp cảnh báo **tắt nhanh** khi đã hết lỗi.
+
 ~~~yaml
-- alert: HighBurnRate
+# recording rule: tỉ lệ lỗi theo cửa sổ (lặp lại cho 5m, 30m, 6h...)
+- record: slo:error_ratio:rate1h
   expr: |
-    (sum(rate(http_requests_total{status=~"5.."}[1h])) / sum(rate(http_requests_total[1h]))) > 14.4 * 0.001)
-    and
-    (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 14.4 * 0.001
-  for: 2m
-  labels:
-    severity: page
+    sum(rate(http_server_requests_seconds_count{application="checkout",status=~"5.."}[1h]))
+    / sum(rate(http_server_requests_seconds_count{application="checkout"}[1h]))
+- alert: CheckoutErrorBudgetFastBurn
+  expr: slo:error_ratio:rate1h > (14.4 * 0.001) and slo:error_ratio:rate5m > (14.4 * 0.001)
+  labels: { severity: page }
 ~~~
 
-### Trên production
-- Sai lầm: đặt SLO 99.99% không cần thiết → error budget quá nhỏ, alert liên tục.
-- Kiểm tra: error budget còn lại, burn rate trend.
+### Error budget policy
+Thoả thuận viết sẵn giữa product và kỹ thuật: còn ngân sách → deploy bình thường, chấp nhận thử nghiệm; tiêu hết → đóng băng tính năng rủi ro, dồn người vào độ ổn định cho tới khi SLI hồi phục; sự cố tiêu hơn 20% ngân sách → bắt buộc postmortem.
 
-> Senior tip: SLO nên dựa trên user experience, không phải infra metric; review SLO quarterly.`,
+### Ví dụ đời thực
+Service thanh toán trước đây cảnh báo khi "5xx > 1% trong 5 phút": bắn khoảng 25 lần/tháng, phần lớn tự hết sau vài phút; trong khi một lỗi âm ỉ 0,3% kéo dài 9 ngày không ai biết, tiêu gần hết ngân sách. Chuyển sang SLO 99,9% với cảnh báo đa cửa sổ: page còn 2–3 lần/tháng, đều là sự cố thật; lỗi âm ỉ được bắt bởi cảnh báo ticket sau khoảng 6 giờ. Khi ngân sách tháng 3 cạn, policy khiến team hoãn một tính năng 2 tuần để sửa retry và timeout — ba tháng sau đó không còn tháng nào vượt ngân sách.
+
+### Pitfall
+- SLO 100% hoặc 99,99% cho mọi thứ — không còn ngân sách để thay đổi, hoặc không thể đạt.
+- Đo SLI ở tầng quá sâu (một pod) thay vì gần người dùng.
+- Tính tỉ lệ khi traffic rất thấp: 1 lỗi / 3 request = 33% → báo động giả; cần ngưỡng số request tối thiểu hoặc synthetic.
+- Có SLO nhưng không có policy → con số chỉ để trang trí.
+
+### Trả lời mẫu khi phỏng vấn
+"SLI là chỉ số đo trải nghiệm người dùng, ví dụ tỉ lệ request không lỗi và nhanh hơn 300 mili giây, đo ở gateway. SLO là mục tiêu cho chỉ số đó, như 99,9% trong 30 ngày, và error budget là phần được phép hỏng, tức khoảng 43 phút mỗi tháng. Tôi cảnh báo theo burn rate, tức tỉ lệ lỗi hiện tại chia cho tỉ lệ lỗi cho phép. Burn rate 14,4 trong một giờ nghĩa là đã tiêu 2% ngân sách tháng, đáng để gọi người trực. Tôi dùng nhiều cửa sổ: 1 giờ kèm 5 phút và 6 giờ kèm 30 phút cho page, 3 ngày cho ticket; cửa sổ dài chống báo động giả, cửa sổ ngắn giúp cảnh báo tắt nhanh. Quan trọng không kém là error budget policy: hết ngân sách thì ưu tiên độ ổn định hơn tính năng. Ở service thanh toán trước đây, cách này giảm page từ 25 xuống 2–3 lần mỗi tháng mà còn bắt được lỗi âm ỉ trước kia bị bỏ sót."
+
+> Senior tip: bắt đầu với một SLO cho **một hành trình quan trọng nhất** (thường là thanh toán hoặc đăng nhập) và một policy được product ký đồng ý. Một SLO được tôn trọng có giá trị hơn mười SLO không ai nhìn.`,
     follow: ['Error budget policy?', 'Multi-window alert?', 'SLA penalty?'],
     tags: ['SLO', 'SLI', 'ErrorBudget', 'Alerting']
   }
