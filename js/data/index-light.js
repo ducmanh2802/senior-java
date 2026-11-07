@@ -1632,6 +1632,8 @@ window.DATA_INDEX = {
     {"id":"lesson-api-005","track":"api","order":5,"title":"Phân trang API: cursor (keyset) vs offset/limit","level":"senior","minutes":35},
     {"id":"lesson-api-006","track":"api","order":6,"title":"429 Too Many Requests: Retry-After, RateLimit-* và client tôn trọng giới hạn","level":"senior","minutes":40},
     {"id":"lesson-api-007","track":"api","order":7,"title":"Tiến hoá API mà không làm hỏng client: breaking change, tolerant reader, versioning, Sunset","level":"senior","minutes":40},
+    {"id":"lesson-api-008","track":"api","order":8,"title":"Rate limiter phân tán: sliding window counter vs token bucket, burst ở ranh giới","level":"senior","minutes":45},
+    {"id":"lesson-api-009","track":"api","order":9,"title":"ETag + If-Match: conditional GET/PUT và chặn lost update (412/428)","level":"senior","minutes":45},
     {"id":"lesson-devops-001","track":"devops","order":1,"title":"JVM trong container: MaxRAMPercentage, CPU limit và sizing heap/thread pool","level":"mid","minutes":30},
     {"id":"lesson-devops-002","track":"devops","order":2,"title":"Liveness, readiness, startup probe và state machine graceful shutdown","level":"mid","minutes":30},
     {"id":"lesson-devops-003","track":"devops","order":3,"title":"Rolling, blue-green, canary: hash ổn định chia traffic và tự rollback theo error rate","level":"senior","minutes":35},
