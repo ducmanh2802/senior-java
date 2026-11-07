@@ -1577,6 +1577,8 @@ window.DATA_INDEX = {
     {"id":"lesson-microservices-007","track":"microservices","order":7,"title":"Partial success khi xoá: 207 Multi-Status và compensation ledger","level":"senior","minutes":40},
     {"id":"lesson-microservices-008","track":"microservices","order":8,"title":"Saga engine tổng quát: compensation ngược thứ tự, idempotent và state log","level":"senior","minutes":45},
     {"id":"lesson-microservices-009","track":"microservices","order":9,"title":"Timeout budget và deadline propagation: đừng để chuỗi gọi tự giết nhau","level":"senior","minutes":40},
+    {"id":"lesson-microservices-010","track":"microservices","order":10,"title":"Mô phỏng Kafka: partition log, offset và chiến lược commit","level":"senior","minutes":45},
+    {"id":"lesson-microservices-011","track":"microservices","order":11,"title":"Idempotent producer: sequence number, dedup và lỗi OUT_OF_ORDER","level":"senior","minutes":40},
     {"id":"lesson-db-001","track":"db","order":1,"title":"Isolation level qua lịch xen kẽ: dirty read, non-repeatable read và lost update","level":"senior","minutes":30},
     {"id":"lesson-db-002","track":"db","order":2,"title":"Optimistic locking: version check và retry có giới hạn","level":"senior","minutes":25},
     {"id":"lesson-db-003","track":"db","order":3,"title":"B-tree index và full scan: đếm phép so sánh, hiểu chọn lọc","level":"mid","minutes":25},
