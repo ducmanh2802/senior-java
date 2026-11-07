@@ -692,6 +692,12 @@ int index = (n - 1) & hash;          // n là capacity
 - Key phải có {{hashCode}} ổn định; key mutable làm entry "mất tích".
 - {{HashMap}} cho phép 1 key null và nhiều value null; {{Hashtable}}/{{ConcurrentHashMap}} thì không.
 
+### Ví dụ đời thực
+Một service đối soát nạp 2 triệu giao dịch vào {{HashMap<TxKey, Tx>}} mỗi đêm. Job chậm dần từ 4 lên 25 phút dù dữ liệu chỉ tăng 30%. Profiler cho thấy phần lớn thời gian nằm trong {{TxKey.equals}}. Nguyên nhân: {{TxKey}} tự viết {{hashCode()}} chỉ dựa trên {{bankCode}} (khoảng 40 giá trị) → 2 triệu key dồn vào khoảng 40 bucket; key không implements {{Comparable}} nên cây đỏ-đen phải dùng {{tieBreakOrder}} và duyệt nhiều nhánh. Sửa {{hashCode}} dùng {{Objects.hash(bankCode, txId, date)}} (hoặc chuyển {{TxKey}} sang record), khởi tạo capacity theo số phần tử dự kiến: job còn 2 phút 40 giây, heap cũng giảm vì không còn hàng nghìn {{TreeNode}} (mỗi TreeNode nặng gần gấp đôi Node).
+
+### Trả lời mẫu khi phỏng vấn
+"HashMap là một mảng bucket. Khi put, nó lấy hashCode của key, trộn 16 bit cao xuống 16 bit thấp bằng XOR để bit cao cũng ảnh hưởng tới vị trí, rồi tính index bằng n trừ 1 AND hash, vì capacity luôn là luỹ thừa của 2. Mỗi bucket là danh sách liên kết; từ Java 8, bucket dài từ 8 phần tử trở lên và bảng đã ít nhất 64 bucket thì chuyển thành cây đỏ-đen để worst case là log n thay vì n, chủ yếu để chống hash flooding. Khi số phần tử vượt capacity nhân load factor 0,75, bảng gấp đôi và mỗi bucket tách thành hai nhóm theo một bit của hash, không cần tính lại hash. Thực tế tôi chú ý ba điều: hashCode của key phải phân bố tốt và ổn định, key không được thay đổi sau khi put, và đặt capacity ban đầu cho map lớn. HashMap không thread-safe, dùng đồng thời thì phải chọn ConcurrentHashMap."
+
 > Senior tip: đặt capacity ban đầu cho map lớn (ví dụ map cấu hình 100k entry) để tránh 10+ lần resize lúc khởi động; và nếu nghi ngờ hash flooding từ input người dùng, dùng key kiểu {{String}} với salt hoặc giới hạn kích thước request.`,
   follow: [
     'Vì sao capacity phải là luỹ thừa của 2 và load factor 0.75?',
@@ -784,6 +790,12 @@ synchronized (f) {                     // f = node đầu bucket
 - {{LinkedList}} còn được dùng làm {{Deque}} trong một số code cũ, nhưng {{ArrayDeque}} nhanh hơn ~vài lần trong benchmark.
 - Đừng chọn collection dựa trên Big-O thuần; hằng số và bộ nhớ quyết định rất nhiều.
 
+### Ví dụ đời thực
+Một service xếp hạng sản phẩm giữ danh sách 300.000 ứng viên trong {{LinkedList}} vì "thường xuyên xoá phần tử bị loại". Code thực tế lại gọi {{list.get(i)}} trong vòng lặp for theo index → mỗi lần get duyệt từ đầu, tổng chi phí O(n²); request xếp hạng mất 4–9 giây. Đổi sang {{ArrayList}} và lọc bằng {{removeIf}} (một lần dịch mảng, O(n)): còn khoảng 35ms. Heap của danh sách cũng giảm từ khoảng 12MB (node + header) xuống khoảng 1,5MB cho mảng reference.
+
+### Trả lời mẫu khi phỏng vấn
+"ArrayList lưu reference trong một mảng liên tục nên truy cập theo index là O(1), và duyệt tuần tự rất nhanh vì CPU đọc theo cache line 64 byte, các phần tử liền nhau nên gần như luôn trúng cache. Thêm vào cuối là amortized O(1), chèn hay xoá ở giữa thì phải dịch mảng. LinkedList thì mỗi phần tử là một node riêng có prev, next, nên mỗi phần tử tốn thêm khoảng 24 đến 32 byte và duyệt là đuổi theo con trỏ, mỗi bước có thể cache miss; get theo index là O(n). Về lý thuyết LinkedList thắng khi chèn xoá giữa danh sách lúc đã có iterator ở đúng chỗ, nhưng thực tế việc đi tới chỗ đó vẫn O(n). Nên tôi gần như luôn dùng ArrayList, cần queue hay stack thì ArrayDeque, và nếu nghi ngờ thì đo bằng JMH trên dữ liệu thật."
+
 > Senior tip: nếu thấy {{LinkedList}} trong code, hỏi ngay "có thật sự cần chèn/xoá giữa với iterator không?"; 90% trường hợp đổi sang {{ArrayList}} hoặc {{ArrayDeque}} sẽ nhanh hơn và giảm heap. Đo bằng JMH trên dữ liệu thật thay vì tin cảm giác.`,
   follow: [
     'Vì sao {{ArrayDeque}} thường thay được {{LinkedList}} làm queue/stack?',
@@ -836,6 +848,15 @@ list.removeIf(String::isEmpty);
 - Bắt CME rồi bỏ qua là che bug; CME là tín hiệu logic sai, không phải lỗi tạm thời để retry.
 - Duyệt {{subList}} rồi sửa list gốc cũng gây CME.
 - Sửa collection trong {{forEach}} của chính nó cũng CME (trừ concurrent).
+
+### Bên trong: modCount nằm ở đâu
+{{modCount}} là một field {{int}} thường (không {{volatile}}) trong {{AbstractList}}/{{HashMap}}; nó tăng khi **cấu trúc** thay đổi (thêm, xoá, resize), không tăng khi {{set}} giá trị tại chỗ. Vì không có đồng bộ, ở môi trường đa luồng thread khác có thể **không thấy** giá trị mới → CME không được bảo đảm; dữ liệu có thể hỏng mà không có exception nào. Đó là lý do Javadoc gọi đây là "best-effort", chỉ dùng để phát hiện bug, không để dựa vào cho tính đúng đắn.
+
+### Ví dụ đời thực
+Một scheduler giữ {{ArrayList<Job>}} dùng chung giữa thread lập lịch và thread API "huỷ job". Thỉnh thoảng (khoảng 3 lần/ngày) scheduler chết với CME; có lần không ném gì nhưng một job bị chạy hai lần. Đổi sang {{CopyOnWriteArrayList}} (danh sách nhỏ, đọc nhiều, sửa ít) cho danh sách job, và thao tác huỷ chuyển sang đặt cờ {{cancelled}} trên job thay vì xoá khỏi list khi đang duyệt. Không còn CME hay job chạy trùng trong 6 tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Collection thông thường như ArrayList, HashMap có field modCount tăng mỗi khi cấu trúc thay đổi. Iterator ghi lại giá trị đó lúc tạo và kiểm tra ở mỗi next; lệch thì ném ConcurrentModificationException. Điều này xảy ra ngay cả trong một thread, ví dụ remove trong vòng for-each. Cách đúng là xoá qua iterator.remove, hoặc dùng removeIf, replaceAll, compute. Lưu ý for theo index rồi remove không ném lỗi nhưng bỏ sót phần tử. Cơ chế này chỉ là best-effort: modCount không volatile nên đa luồng có thể không phát hiện gì mà dữ liệu vẫn hỏng. Với đa luồng tôi dùng collection concurrent: ConcurrentHashMap có iterator weakly consistent không ném lỗi, CopyOnWriteArrayList duyệt trên snapshot. Còn synchronizedList thì iterator vẫn fail-fast, phải tự đặt synchronized quanh cả vòng lặp."
 
 > Senior tip: trong code review, ưu tiên {{removeIf}}/{{computeIfAbsent}} vì vừa gọn vừa tránh CME; với CHM, đừng dựa vào {{size()}} để dừng vòng lặp trong môi trường đồng thời — dùng kết quả trả về của thao tác hoặc đếm cục bộ.`,
   follow: [
@@ -890,6 +911,12 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
 - Redis/Memcached nếu cache phân tán; cần chính sách invalidate rõ ràng.
 - Với cache trong JVM, luôn đặt **maximumSize** để tránh OOM; cache không giới hạn là bom hẹn giờ.
 
+### Ví dụ đời thực
+Một service tra cứu tỉ giá dùng {{LinkedHashMap}} access-order làm LRU 10.000 phần tử, bọc {{Collections.synchronizedMap}}. Dưới 2.000 request/giây, p99 lên 300ms: mọi {{get}} đều là thao tác ghi (di chuyển entry ra cuối danh sách) nên phải lấy cùng một khoá — hàng trăm thread xếp hàng. Chuyển sang Caffeine ({{maximumSize(10_000)}}, {{expireAfterWrite(5 phút)}}, {{recordStats()}}): p99 còn 4ms, hit rate đo được 97%. Thống kê còn cho thấy một job đêm quét toàn bộ mã tiền tệ cũ làm sạch cache LRU cũ mỗi đêm — chính sách W-TinyLFU của Caffeine giữ được các key nóng qua đợt quét đó.
+
+### Trả lời mẫu khi phỏng vấn
+"LinkedHashMap nối các entry bằng một danh sách liên kết đôi. Khi khởi tạo với accessOrder bằng true, mỗi lần get hay put sẽ chuyển entry đó ra cuối danh sách, nên đầu danh sách luôn là entry lâu nhất không được dùng. Override removeEldestEntry trả về size lớn hơn giới hạn thì sau mỗi lần thêm, entry đầu bị xoá, thế là có LRU trong vài dòng. Nhưng tôi không dùng nó trong production cho cache dùng chung. Nó không thread-safe, và vì get cũng sửa danh sách nên bọc synchronized biến mọi lần đọc thành tuần tự. Nó không có TTL, không có thống kê, và LRU dễ bị một lần quét làm sạch cache. Production tôi dùng Caffeine: thread-safe, có maximumSize, expire, thống kê hit rate và chính sách W-TinyLFU tốt hơn LRU."
+
 > Senior tip: đừng tự viết LRU bằng LinkedHashMap trong service production trừ khi cache rất nhỏ và chỉ một thread truy cập. Caffeine không chỉ nhanh hơn mà còn tránh được pattern scan làm sạch cache, và có metric để biết cache có hiệu quả hay không.`,
   follow: [
     'Vì sao access-order {{get}} có thể gây CME khi duyệt map?',
@@ -933,6 +960,12 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
 - {{TreeMap}}: O(log n), có thứ tự, memory cao hơn, không cho null key (mặc định).
 - {{HashMap}}: O(1) trung bình, không thứ tự; {{LinkedHashMap}} giữ thứ tự chèn/access.
 - Nếu chỉ cần sắp xếp khi in ra, dùng HashMap rồi sort lúc cần sẽ nhanh hơn cho write-heavy.
+
+### Ví dụ đời thực
+Một hệ thống tính phí theo bậc dùng {{TreeMap<BigDecimal, Fee>}} với key là ngưỡng số tiền và tra bằng {{floorEntry(amount)}}. Cấu hình nhập từ Excel có hai dòng "1000000" và "1000000.00" với hai mức phí khác nhau (lỗi nhập liệu); vì {{compareTo}} coi hai giá trị bằng nhau, dòng sau **ghi đè** dòng trước mà không báo lỗi — 6 tuần tính sai phí cho khoảng 1,2% giao dịch. Sửa: chuẩn hoá key bằng {{setScale(2)}} khi nạp, **báo lỗi** nếu {{put}} trả về giá trị cũ khác null (phát hiện trùng), và thêm test cho cấu hình. {{floorEntry}} vẫn là cách tra bậc gọn nhất — đổi sang danh sách sắp xếp + duyệt tuyến tính trước đó chậm hơn 20 lần với 5.000 bậc.
+
+### Trả lời mẫu khi phỏng vấn
+"TreeMap là cây đỏ-đen giữ key theo thứ tự, mọi thao tác O(log n). Tôi dùng nó khi cần truy vấn theo khoảng hoặc tìm phần tử gần nhất: floorKey, ceilingKey, subMap, headMap, ví dụ tra bậc phí theo số tiền hay tìm khung giờ. Điểm quan trọng là TreeMap không dùng equals và hashCode mà dùng compareTo hoặc comparator để xác định key. Nếu comparator trả về 0 cho hai key mà equals coi là khác nhau, map sẽ coi chúng là một, put sau ghi đè put trước và không có lỗi nào. Ví dụ comparator theo độ dài chuỗi, hoặc BigDecimal 1.0 và 1.00 có compareTo bằng 0 nhưng equals khác. Vì vậy comparator phải nhất quán với equals, tôi chuẩn hoá scale của BigDecimal trước khi làm key, và kiểm tra giá trị trả về của put để phát hiện trùng."
 
 > Senior tip: khi dùng comparator tùy biến, viết unit test khẳng định các key **khác nhau** vẫn là phần tử riêng biệt; đây là loại bug không ném exception, chỉ làm mất record và cực khó phát hiện. Với BigDecimal, luôn normalize ({{stripTrailingZeros}}) trước khi làm key, ví dụ {{bd.stripTrailingZeros().toPlainString()}} — riêng {{toPlainString}} không normalize ("1.0" và "1.00" vẫn khác nhau).`,
   follow: [
@@ -1096,6 +1129,23 @@ List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
 - **Comparator phức tạp**: nếu comparator chậm, log n nhân thêm hằng số lớn; cân nhắc pre-compute key.
 - **Memory**: mảng mở rộng 2x khi đầy; presize {{new PriorityQueue<>(initialCapacity)}} nếu biết K.
 
+### Bên trong: vì sao top-K dùng min-heap
+Để giữ **K phần tử lớn nhất**, dùng **min-heap** kích thước K: đỉnh heap là phần tử nhỏ nhất trong K phần tử đang giữ — tức "ngưỡng" để vào top. Phần tử mới lớn hơn đỉnh thì {{poll}} đỉnh rồi {{offer}} phần tử mới (O(log K)); nhỏ hơn thì bỏ qua (O(1)). Tổng chi phí O(n log K), bộ nhớ O(K). Heap lưu trong mảng: con của vị trí i ở 2i+1 và 2i+2, nên không cần object node, rất thân thiện cache. Khởi tạo heap từ một mảng có sẵn (heapify) chỉ O(n) — nhanh hơn chèn từng phần tử.
+
+~~~java
+PriorityQueue<Item> top = new PriorityQueue<>(k, Comparator.comparingLong(Item::score));
+for (Item it : stream) {
+    if (top.size() < k) top.offer(it);
+    else if (it.score() > top.peek().score()) { top.poll(); top.offer(it); }
+}
+~~~
+
+### Ví dụ đời thực
+Dashboard "top 100 merchant theo doanh thu 5 phút" ban đầu sort toàn bộ 2 triệu bản ghi mỗi lần làm mới (O(n log n), cấp phát danh sách lớn) — mất 1,8 giây và tạo nhiều rác. Đổi sang min-heap 100 phần tử khi duyệt: 120ms, gần như không cấp phát thêm. Khi hệ thống chia thành 8 node, mỗi node tính top 100 cục bộ rồi gửi về node tổng hợp gộp 800 phần tử — kết quả đúng vì top-K toàn cục chắc chắn nằm trong hợp các top-K cục bộ (với tổng doanh thu đã gộp theo merchant trước).
+
+### Trả lời mẫu khi phỏng vấn
+"PriorityQueue là binary heap lưu trong mảng, mặc định là min-heap theo natural ordering hoặc comparator. offer và poll là log n vì phải đẩy phần tử lên hoặc xuống cây, peek là O(1). Iterator của nó không theo thứ tự ưu tiên, muốn có thứ tự thì phải poll lần lượt. Với bài top K trên luồng dữ liệu lớn, tôi giữ một min-heap đúng K phần tử: đỉnh heap là ngưỡng để vào top, phần tử mới lớn hơn đỉnh thì thay đỉnh, nhỏ hơn thì bỏ. Như vậy chi phí là n log K và bộ nhớ chỉ O(K), không phải sort cả dữ liệu. Khi dữ liệu phân tán, mỗi node tính top K cục bộ rồi gộp. PriorityQueue không thread-safe; cần dùng đồng thời thì có PriorityBlockingQueue."
+
 > Senior tip: với top-K thực tế (log analytics, monitoring), dùng {{PriorityQueue}} + stream processing; nếu cần top-K phân tán, mỗi node tính local top-K rồi merge. Với K rất lớn, cân nhắc {{TreeSet}} (O(log n) nhưng memory cao hơn) hoặc approximate algorithm (Count-Min Sketch, t-Digest).`,
   follow: [
     'Vì sao {{PriorityQueue}} dùng min-heap cho bài toán top-K lớn nhất?',
@@ -1153,6 +1203,15 @@ List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
 - Cần blocking + priority: **PriorityBlockingQueue**.
 - Handoff trực tiếp: **SynchronousQueue**.
 
+### Bên trong: mảng vòng của ArrayDeque
+{{ArrayDeque}} giữ một mảng và hai chỉ số {{head}}, {{tail}}. {{addFirst}} lùi head (quay vòng về cuối mảng khi xuống dưới 0), {{addLast}} tiến tail; khi head gặp tail, mảng được nhân đôi và các phần tử được sắp lại. Không có node riêng cho từng phần tử, không có khoá, nên push/pop gần như chỉ là một phép gán và một phép tăng chỉ số. {{Stack}} thì kế thừa {{Vector}}: **mọi** method có {{synchronized}}, và vì là {{Vector}} nên lộ cả {{get(i)}}, {{add(i, x)}} — có thể chèn vào giữa "stack", phá vỡ ý nghĩa của cấu trúc dữ liệu.
+
+### Ví dụ đời thực
+Một parser biểu thức tính phí (dùng trong mọi request tính giá) dùng {{Stack<Token>}}. Profiler cho thấy khoảng 6% CPU của service nằm trong các lời gọi {{synchronized}} của {{Vector}} không cần thiết, cùng các {{Integer}} boxing. Đổi sang {{ArrayDeque<Token>}} (và mảng {{int[]}} tự quản lý cho stack số): thời gian parse giảm khoảng 40%, CPU service giảm 4%. Code review sau đó thêm quy tắc chặn {{java.util.Stack}} bằng ArchUnit.
+
+### Trả lời mẫu khi phỏng vấn
+"Để làm stack hay queue tôi dùng ArrayDeque. Nó là mảng vòng với hai chỉ số đầu và cuối, thêm bớt ở hai đầu là O(1) amortized, không tạo node cho từng phần tử nên tiết kiệm bộ nhớ và thân thiện cache, và không có khoá. Stack thì là lớp legacy kế thừa Vector: mọi method đều synchronized nên tốn chi phí khoá không cần thiết, và vì kế thừa Vector nên lộ cả các method truy cập theo index, có thể chèn vào giữa stack, sai về mặt thiết kế. LinkedList làm được Deque nhưng mỗi phần tử là một node, tốn bộ nhớ và chậm hơn khi duyệt. Lưu ý ArrayDeque không cho phần tử null và không thread-safe; cần dùng đồng thời thì chọn ConcurrentLinkedDeque hoặc một BlockingQueue."
+
 > Senior tip: trong code review, thấy {{new Stack()}} hoặc {{new LinkedList()}} dùng làm stack/queue là cơ hội refactor sang {{ArrayDeque}} — nhanh hơn, nhẹ hơn, API hiện đại ({{push}}/{{pop}}/{{peek}} cho stack, {{offer}}/{{poll}}/{{peek}} cho queue).`,
   follow: [
     'Vì sao {{ArrayDeque}} không cho null trong khi {{LinkedList}} cho phép?',
@@ -1208,6 +1267,15 @@ List<String> copy = List.copyOf(source);       // immutable copy (Java 10)
 - Truyền {{unmodifiableList}} cho API bên ngoài mà quên list gốc còn bị mutate nội bộ ⇒ caller thấy dữ liệu "immutable" vẫn thay đổi.
 - {{List.copyOf(null)}} ném NPE; {{Collections.unmodifiableList(null)}} ném NPE.
 - {{List.of}} không implement {{RandomAccess}} (đánh giá tuần tự), nhưng truy cập index O(1) do mảng backing.
+
+### Bên trong: List.of trả về class gì
+{{List.of(a, b)}} trả về các class nội bộ được tối ưu theo kích thước ({{ImmutableCollections.List12}} cho 1–2 phần tử, {{ListN}} cho nhiều hơn) — không có mảng dư, không có modCount. Mọi method sửa đổi ném {{UnsupportedOperationException}}. {{List.copyOf(x)}} **không sao chép** nếu x đã là list bất biến kiểu này (trả về chính nó), còn lại tạo bản sao — vì vậy gọi {{copyOf}} nhiều lần ở các tầng gần như miễn phí. {{contains(null)}} trên {{List.of}} ném NPE (cấm null hoàn toàn), khác với {{ArrayList}}. {{Collections.unmodifiableList}} chỉ là lớp bọc chuyển tiếp lời gọi tới list gốc.
+
+### Ví dụ đời thực
+Một service quyền truy cập trả {{Collections.unmodifiableList(roles)}} cho các module khác, tin rằng "đã bất biến". Một module khác giữ list này để kiểm tra quyền; trong khi đó service gốc **xoá và nạp lại** {{roles}} khi cấu hình thay đổi → trong khoảng vài mili giây list rỗng, vài request bị từ chối 403 ngẫu nhiên (khoảng 50 lỗi mỗi lần reload). Đổi sang tạo list mới rồi thay reference ({{this.roles = List.copyOf(newRoles)}}, field volatile) — người đọc hoặc thấy list cũ hoặc thấy list mới, không bao giờ thấy trạng thái nửa vời.
+
+### Trả lời mẫu khi phỏng vấn
+"List.of tạo list bất biến thật: không thêm, xoá, sửa được, cấm cả phần tử null, và được tối ưu theo kích thước. List.copyOf tạo bản sao bất biến, nếu đầu vào đã là list bất biến thì trả luôn chính nó nên rất rẻ. Collections.unmodifiableList chỉ là một view chỉ đọc bọc list gốc: người cầm view không sửa được, nhưng nếu list gốc bị sửa thì view thấy thay đổi ngay. Còn new ArrayList từ list khác là bản sao có thể sửa. Tôi chọn theo mục đích: API public trả về List.copyOf để bất biến thật, defensive copy ở constructor cũng dùng copyOf, unmodifiableList chỉ khi cố ý muốn người đọc thấy cập nhật mới nhất. Cần chú ý List.of ném NPE với null, kể cả contains null, nên dữ liệu có thể chứa null phải xử lý trước."
 
 > Senior tip: API public trả về collection **luôn dùng {{List.copyOf}}/{{Set.copyOf}}/{{Map.copyOf}}** (Java 10+) để đảm bảo immutable thực sự; nội bộ dùng {{ArrayList}}/{{HashMap}} mutable. Đừng dùng {{unmodifiableList}} cho API public trừ khi có lý do mạnh (performance cực đoan, list lớn, không muốn copy).`,
   follow: [
@@ -1512,6 +1580,15 @@ User u2 = opt.orElseGet(() -> loadFromDb());
 - So sánh {{opt == Optional.empty()}} sai; dùng {{isEmpty()}} (Java 11) hoặc {{isPresent()}}.
 - {{Optional}} trong entity JPA gây lỗi mapping; trong Jackson cần {{Jdk8Module}}.
 - Lạm dụng {{Optional}} cho mọi thứ làm code rối và chậm; đôi khi trả null có kiểm soát + {{@Nullable}} lại thực dụng hơn.
+
+### Bên trong: chi phí của Optional
+{{Optional}} là một object thật (khoảng 16 byte) trừ {{Optional.empty()}} là singleton. Trả về Optional từ method nóng tạo rác mỗi lần gọi — thường JIT loại bỏ được nhờ escape analysis nếu method được inline, nhưng không phải lúc nào cũng vậy. {{Optional}} **không Serializable** (cố ý), nên đặt làm field của entity/DTO làm hỏng serialization và một số framework. Với kiểu nguyên thuỷ, dùng {{OptionalInt}}/{{OptionalLong}} để tránh boxing. Từ Java 9 có {{or()}}, {{ifPresentOrElse()}}, {{stream()}}; Java 10 có {{orElseThrow()}} không tham số — tên rõ ràng hơn {{get()}}.
+
+### Ví dụ đời thực
+Một service tính khuyến mãi viết {{repo.findById(id).orElse(loadDefaultPromotion())}} — {{loadDefaultPromotion()}} gọi DB và API đối tác. Vì {{orElse}} **luôn** tính tham số, mỗi request (kể cả khi đã tìm thấy khuyến mãi) đều gọi thêm DB và API: 3.000 lời gọi thừa mỗi phút, đối tác cảnh báo vượt hạn mức. Đổi sang {{orElseGet(this::loadDefaultPromotion)}}: lời gọi tới đối tác giảm 92%, p99 giảm 70ms. Sau đó team thêm rule Sonar cảnh báo {{orElse}} với tham số là lời gọi method.
+
+### Trả lời mẫu khi phỏng vấn
+"Optional được thiết kế làm kiểu trả về để buộc caller xử lý trường hợp không có giá trị, ví dụ repository findById. Tôi không dùng nó làm field, vì nó không Serializable và làm phức tạp entity, DTO; không dùng làm tham số, vì caller vẫn có thể truyền null; và không bọc collection, vì list rỗng đã diễn đạt được việc không có gì. orElse luôn tính giá trị mặc định kể cả khi Optional có giá trị, còn orElseGet chỉ gọi supplier khi rỗng, nên giá trị mặc định đắt như gọi DB thì phải dùng orElseGet. of ném NPE nếu truyền null, ofNullable thì chấp nhận null. Tôi tránh get trần, dùng orElseThrow với exception có ý nghĩa, và với chuỗi xử lý thì dùng map, flatMap, filter thay vì isPresent rồi get."
 
 > Senior tip: dùng {{Optional}} ở tầng service/repository, còn ở tầng controller/DTO hãy chuyển về giá trị hoặc lỗi rõ ràng. Đừng bọc Optional quanh collection — trả {{List.of()}} rỗng để caller không phải xử lý hai tầng "không có".`,
   follow: [
@@ -2093,6 +2170,15 @@ new BigDecimal("1.0").compareTo(new BigDecimal("1.00")); // 0 (giá trị bằng
 - Dùng {{double}} trung gian trong công thức ({{bd.add(BigDecimal.valueOf(0.1))}}) rồi convert về {{BigDecimal}} — sai số vẫn lạ.
 - Lưu DB: cột {{NUMERIC(19,4)}} hoặc {{DECIMAL}}; đừng dùng {{FLOAT}}/{{DOUBLE}}. Hibernate mapping {{@Column(precision = 19, scale = 4)}}.
 - Tiền tệ đa ngoại tệ: luôn kèm {{Currency}} (ISO 4217), không cộng/trừ tiền tệ khác nhau.
+
+### Bên trong: BigDecimal lưu gì
+{{BigDecimal}} = **unscaledValue** (số nguyên {{BigInteger}}, hoặc {{long}} nội bộ khi đủ nhỏ) × 10 mũ âm **scale**. Ví dụ 12.50 là (1250, scale 2); 12.5 là (125, scale 1) — cùng giá trị số nhưng khác biểu diễn, vì vậy {{equals}} (so cả scale) trả false còn {{compareTo}} trả 0. {{double}} thì lưu theo hệ nhị phân: 0.1 không có biểu diễn hữu hạn (như 1/3 trong hệ thập phân), nên luôn là giá trị xấp xỉ. Phép chia {{divide(x)}} không có scale/rounding sẽ ném {{ArithmeticException}} nếu kết quả là số thập phân vô hạn (ví dụ 10/3) — luôn truyền scale và {{RoundingMode}}. Tạo từ {{new BigDecimal(0.1)}} mang theo sai số của double; dùng {{BigDecimal.valueOf(0.1)}} hoặc từ chuỗi.
+
+### Ví dụ đời thực
+Một ví điện tử chia hoàn tiền 100.000đ cho 3 người bằng {{double}} rồi làm tròn từng phần: 33.333,33 × 3 = 99.999,99 — mỗi giao dịch "rơi" 0,01đ, sau 2 triệu giao dịch lệch đối soát khoảng 20.000đ và mất 3 ngày để tìm nguyên nhân. Sửa: dùng {{BigDecimal}} với scale 0 (VND không có phần lẻ), chia {{divide(3, 0, RoundingMode.DOWN)}} cho hai phần đầu, phần cuối = tổng trừ các phần đã chia (người cuối nhận 33.334đ) — tổng luôn đúng tuyệt đối. Gói logic trong record {{Money}} với {{Currency}} để scale đúng theo từng loại tiền (VND 0, USD 2).
+
+### Trả lời mẫu khi phỏng vấn
+"Tiền tệ tôi luôn dùng BigDecimal, không bao giờ double. double lưu theo hệ nhị phân nên 0,1 chỉ là giá trị xấp xỉ, cộng dồn nhiều giao dịch sẽ lệch đối soát. BigDecimal lưu một số nguyên không dấu phẩy cùng scale, nên biểu diễn chính xác số thập phân. Tôi luôn tạo từ chuỗi hoặc valueOf, không dùng constructor nhận double vì nó mang theo sai số. Phép chia phải chỉ rõ scale và RoundingMode, nếu không chia 10 cho 3 sẽ ném ArithmeticException; ngân hàng thường dùng HALF_EVEN hoặc theo quy định nghiệp vụ. So sánh thì dùng compareTo, vì equals so cả scale nên 12.5 khác 12.50. Khi chia tiền cho nhiều phần, tôi tính phần cuối bằng tổng trừ các phần trước để không thất thoát. Và tôi gói vào một record Money có Currency để làm tròn đúng theo từng loại tiền."
 
 > Senior tip: viết wrapper {{Money}} (record {{Money(BigDecimal amount, Currency currency)}}) với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ để tránh rải rác {{RoundingMode.HALF_UP}} khắp codebase.`,
   follow: [
