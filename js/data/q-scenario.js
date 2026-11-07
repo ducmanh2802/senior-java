@@ -2141,6 +2141,12 @@ ResponseEntity<?> claim(@PathVariable long id, Principal user) {
 - Redis {{INCR}} rồi {{EXPIRE}} riêng biệt có crash window; dùng Lua hoặc cấu trúc có TTL atomic.
 - Ngưỡng cứng toàn cục không thích ứng campaign; phát hành limit config có version và rollback.
 
+### Ví dụ đời thực
+Chương trình "mỗi tài khoản 1 coupon 100k": bot tạo hàng nghìn tài khoản mới qua số điện thoại ảo và gọi API cấp coupon 3.000 lần/giây từ dải IP của nhà cung cấp cloud. Giới hạn 10 request/phút theo IP chặn nhầm cả toà văn phòng 800 nhân viên dùng chung một IP NAT (khiếu nại từ khách doanh nghiệp), còn giới hạn theo user thì vô dụng vì mỗi bot là một user mới. Thiết kế nhiều tín hiệu: giới hạn theo **thiết bị** (fingerprint ký từ app), theo **tuổi tài khoản** (tài khoản dưới 24 giờ cần thêm xác minh), theo **ASN/dải IP cloud**, CAPTCHA khi điểm rủi ro cao, và giới hạn **tổng ngân sách** coupon theo phút để thiệt hại tối đa có trần. Coupon chỉ "kích hoạt" khi có giao dịch thật. Tỉ lệ coupon bị bot lấy giảm từ khoảng 60% xuống dưới 5%; văn phòng dùng chung NAT không còn bị chặn.
+
+### Trả lời mẫu khi phỏng vấn
+"Một khoá giới hạn duy nhất luôn có điểm mù: theo IP thì chặn nhầm người dùng chung NAT, theo user thì bot tạo user mới là lọt. Tôi kết hợp nhiều tín hiệu thành điểm rủi ro: thiết bị qua fingerprint có ký, tuổi và lịch sử tài khoản, IP và ASN, đặc biệt là dải IP của nhà cung cấp cloud, hành vi như tốc độ thao tác. Rủi ro thấp thì cho qua, trung bình thì thêm thử thách như CAPTCHA hay OTP, cao thì chặn. Tôi đặt thêm một trần ngân sách toàn cục theo phút để thiệt hại tối đa luôn có giới hạn, và thiết kế phần thưởng chỉ có giá trị khi có giao dịch thật. Đo lường bằng tỉ lệ coupon được dùng bởi tài khoản đáng tin, tỉ lệ chặn nhầm, và có cơ chế mở chặn nhanh cho khách hàng hợp lệ."
+
 > Senior tip: thử rule trên traffic shadow trước khi enforce; phân tích false positive theo ASN, account age và conversion để chỉnh ngưỡng thay vì chọn con số đẹp trên giấy.
 `,
   follow: ['Bạn tin header client IP thế nào khi có nhiều proxy/CDN?', 'Nếu Redis rate limiter không truy cập được thì endpoint coupon nên fail-open hay fail-closed?'],
@@ -2179,6 +2185,12 @@ Spring Data Redis có {{RedisScript}} và executor quản lý serialization/cach
 - Lua atomicity không đồng nghĩa durability: failover/asynchronous replication có thể mất acknowledged write theo cấu hình.
 - Script chạy lâu làm tăng latency toàn Redis; không quét collection lớn trong Lua.
 - Lock timeout ngắn tạo lỗi giả; timeout dài giữ waiter và gây queueing. Đừng lock quanh HTTP/DB chậm.
+
+### Ví dụ đời thực
+Campaign iPhone giá sốc: 5.000 request/giây tranh **một** key tồn kho. Team bọc "đọc tồn kho → kiểm tra → trừ" bằng Redisson lock: mỗi thao tác mất 3 round-trip (lấy khoá, thao tác, nhả khoá) và **tuần tự hoá** mọi request → throughput tối đa khoảng 800 lần/giây, hàng nghìn request timeout, trong khi khoá cũng không giúp gì thêm vì Redis vốn xử lý lệnh đơn luồng. Đổi sang **một script Lua** (hoặc lệnh {{DECRBY}} rồi kiểm tra kết quả âm thì {{INCRBY}} trả lại): kiểm tra và trừ trong một lệnh nguyên tử, khoảng 50.000 lần/giây trên một instance Redis. Key nóng còn được **chia nhỏ** thành 10 key con (mỗi key giữ một phần tồn kho, request chọn ngẫu nhiên, hết thì thử key khác) để giảm tranh chấp trên một shard Redis Cluster. DB vẫn xác nhận cuối cùng bằng UPDATE có điều kiện.
+
+### Trả lời mẫu khi phỏng vấn
+"Với thao tác đọc, kiểm tra, trừ trên một key Redis, khoá phân tán là thừa và còn làm chậm: Redis thực thi mỗi lệnh và mỗi script Lua một cách nguyên tử, nên tôi gói logic vào một script Lua hoặc dùng DECRBY rồi xử lý kết quả âm, một round-trip thay vì ba, không tuần tự hoá qua khoá. Khoá phân tán như Redisson chỉ cần khi phải phối hợp nhiều tài nguyên hoặc một đoạn logic dài không gói được vào Redis, và khi đó phải chịu chi phí và rủi ro của khoá: hết hạn giữa chừng, cần fencing token. Với key cực nóng, tôi chia tồn kho thành nhiều key con để phân tán tải trên cluster. Và Redis chỉ là lớp nhanh phía trước; nguồn sự thật cuối cùng vẫn là DB với cập nhật có điều kiện."
 
 > Senior tip: benchmark phân phối theo SKU, không chỉ tổng QPS; p99 của một hot key quyết định trải nghiệm flash sale nhiều hơn throughput trung bình.
 `,
@@ -2220,6 +2232,12 @@ Nếu cần cập nhật quantity và refreshed TTL đồng bộ, dùng Lua thay
 - Trong Redis Cluster, một cart là một key nên luôn nằm trọn trong một slot. Hash tag (phần trong ngoặc nhọn của tên key) chỉ cần khi muốn gom nhiều key của cùng user vào một slot để chạy Lua/MULTI; đừng dùng một tag chung cho mọi user, vì mọi cart sẽ dồn về một node và tạo hotspot.
 - Không tin price gửi từ browser hoặc lưu trong cart; client có thể sửa payload.
 - Xóa cart khi quantity về 0 phải xử lý race với request thêm cùng lúc.
+
+### Ví dụ đời thực
+Giỏ hàng lưu dạng một chuỗi JSON trong key {{cart:<userId>}}. App gửi song song hai request (đổi số lượng áo, thêm quần): mỗi request {{GET}} chuỗi, sửa trong Java, {{SET}} lại → request ghi sau đè mất thay đổi của request trước. Khoảng 1,5% lượt thêm vào giỏ trên app bị "mất". Đổi mô hình sang **Redis Hash**: {{HSET cart:<userId> sku-123 2}} — mỗi sản phẩm là một field, mỗi lệnh chỉ chạm field của nó, các thay đổi khác nhau không còn đè nhau; tăng số lượng dùng {{HINCRBY}} nguyên tử; TTL đặt trên cả key. Với thao tác cần kiểm tra nhiều field cùng lúc (giới hạn tối đa 50 sản phẩm), dùng script Lua. Lỗi mất sản phẩm về 0; payload mạng mỗi lần sửa cũng nhỏ hơn nhiều vì không phải gửi cả giỏ.
+
+### Trả lời mẫu khi phỏng vấn
+"Lưu cả giỏ hàng thành một chuỗi JSON nghĩa là mọi thay đổi đều phải đọc cả chuỗi, sửa trong ứng dụng rồi ghi đè cả chuỗi, nên hai request đồng thời sửa hai sản phẩm khác nhau vẫn đè mất nhau, đó là lost update. Tôi đổi mô hình dữ liệu cho khớp với cách cập nhật: dùng Redis Hash, mỗi sản phẩm là một field, HSET hay HINCRBY chỉ chạm đúng field đó và nguyên tử, nên các thay đổi độc lập không còn xung đột, payload cũng nhỏ hơn. Với ràng buộc trên toàn giỏ như số sản phẩm tối đa, tôi dùng script Lua để kiểm tra và ghi trong một bước. Nếu buộc phải giữ dạng JSON, có thể dùng WATCH với MULTI EXEC để làm optimistic locking và thử lại, nhưng thay đổi cấu trúc dữ liệu thường là giải pháp gọn hơn."
 
 > Senior tip: test song song hai request trên cùng user và SKU, rồi nhiều thiết bị trên các SKU khác nhau; kiểm tra dữ liệu sau khi Redis reconnect, không chỉ unit test tuần tự.
 `,
@@ -2265,6 +2283,12 @@ Outbox đảm bảo event invalidation không mất giữa DB commit và publish
 - Dual write DB+Redis trực tiếp có cửa sổ crash; retry một phần không bảo đảm atomicity.
 - Đừng dùng cache làm nguồn tồn kho/giá khi quyết định thanh toán; kiểm tra lại trong transaction.
 
+### Ví dụ đời thực
+Service sản phẩm theo mẫu "cập nhật DB rồi ghi cache mới". Hai admin sửa giá gần như cùng lúc trên hai instance: instance A ghi DB giá 100, instance B ghi DB giá 120, nhưng B ghi cache **trước** A → cache giữ 100 trong khi DB là 120 suốt 1 giờ (TTL). Đổi sang **"cập nhật DB rồi xoá cache"** (cache-aside): lần đọc sau nạp lại từ DB. Vẫn còn race hiếm: một request đọc đang nạp giá cũ vào cache đúng lúc vừa xoá → dùng **xoá trễ lần hai** sau 500ms, và TTL ngắn hơn (5 phút) làm lưới an toàn. Cuối cùng chuyển sang **CDC**: Debezium đọc binlog MySQL, phát sự kiện thay đổi, một consumer xoá/cập nhật cache theo thứ tự binlog — cache không còn lệch quá vài trăm mili giây, và không phụ thuộc vào việc mọi chỗ ghi DB đều nhớ xoá cache.
+
+### Trả lời mẫu khi phỏng vấn
+"Cập nhật DB rồi ghi giá trị mới vào cache dễ sai khi có nhiều instance: thứ tự ghi DB và thứ tự ghi cache có thể khác nhau, nên cache giữ giá trị cũ. Mẫu an toàn hơn là cache-aside: cập nhật DB rồi xoá cache, lần đọc sau nạp lại từ DB. Vẫn có race hiếm khi một request đọc nạp giá trị cũ ngay sau lúc xoá, nên tôi thêm xoá trễ lần hai và TTL hợp lý làm lưới an toàn. Với hệ thống cần nhất quán tốt hơn, tôi dùng CDC: đọc binlog hoặc WAL và cập nhật hoặc xoá cache theo đúng thứ tự thay đổi trong DB, không phụ thuộc mọi đoạn code ghi DB đều nhớ xử lý cache. Và tôi luôn xác định dữ liệu nào chấp nhận cũ bao lâu; dữ liệu như số dư thì không đọc từ cache để ra quyết định."
+
 > Senior tip: gắn version vào metrics/log cache hit để quan sát stale read; đo tỷ lệ và thời lượng lệch trước khi chọn giải pháp phức tạp hơn.
 `,
   follow: ['Bạn làm gì nếu outbox consumer bị lag 10 phút?', 'Khi nào stale cache là lỗi nghiệp vụ nghiêm trọng thay vì chỉ lỗi hiển thị?'],
@@ -2305,6 +2329,12 @@ Inbox unique theo eventId chặn duplicate trong cùng transaction. Version guar
 - Retry topic riêng có thể đảo thứ tự: event sau chạy trước event đang retry.
 - Commit offset trước DB commit có thể mất event; commit sau DB có thể giao trùng, vì vậy handler phải idempotent.
 - Đặt {{concurrency}} của listener lớn hơn số partition chỉ tạo consumer ngồi rảnh, không tăng throughput. Còn nếu tự đẩy record sang thread pool để xử lý async, thứ tự cùng key bị phá ngay, trừ khi bạn serialize theo key (mỗi key một hàng đợi) và chỉ commit offset khi mọi record trước đó đã xong.
+
+### Ví dụ đời thực
+Consumer đơn hàng dùng 1 partition-consumer nhưng xử lý **song song bằng thread pool 16 luồng** để tăng tốc. Các sự kiện CREATED và PAID của cùng một đơn đến liên tiếp và chạy trên hai luồng khác nhau → PAID ghi trước, CREATED ghi sau đè trạng thái về CREATED; khoảng 0,1% đơn "kẹt" ở trạng thái chưa thanh toán dù khách đã trả tiền. Sửa: (1) producer dùng key = {{orderId}}; (2) trong consumer, phân luồng theo **hash(orderId) % 16** — cùng một đơn luôn vào cùng một luồng (hàng đợi riêng), khác đơn vẫn song song; (3) commit offset chỉ tới vị trí mà mọi message phía trước đã xử lý xong (theo dõi offset hoàn thành theo partition); (4) DB chặn chuyển trạng thái lùi bằng điều kiện {{WHERE status_version < :newVersion}}. Thư viện Confluent Parallel Consumer làm sẵn (2) và (3) theo chế độ KEY ordering.
+
+### Trả lời mẫu khi phỏng vấn
+"Kafka chỉ đảm bảo thứ tự trong một partition, và chỉ khi consumer xử lý tuần tự. Để giữ thứ tự theo aggregate mà vẫn mở rộng, tôi làm ba việc. Producer dùng id của aggregate, như orderId, làm key, nên mọi sự kiện của một đơn vào cùng partition. Nếu cần song song trong một partition, tôi phân luồng theo hash của key, để cùng một đơn luôn đi vào cùng một hàng đợi và luồng, còn các đơn khác chạy song song; offset chỉ được commit tới vị trí mà mọi message trước đó đã xử lý xong. Cuối cùng, phía DB có lớp bảo vệ: mỗi sự kiện mang version, cập nhật kèm điều kiện version mới lớn hơn version hiện tại, nên sự kiện đến muộn không làm trạng thái lùi lại. Tăng số partition cũng giúp mở rộng mà vẫn giữ thứ tự theo key."
 
 > Senior tip: log aggregate ID, event ID, partition/offset và version; khi điều tra lệch trạng thái có thể dựng lại chính xác chuỗi đã apply.
 `,
@@ -2348,6 +2378,12 @@ Giới hạn tổng dung lượng/user, số session đồng thời, loại file
 - Gọi finalize hai lần phải idempotent; đừng tạo hai processing job.
 - Multipart upload chưa hoàn tất vẫn tốn storage; bắt buộc lifecycle cleanup.
 
+### Ví dụ đời thực
+API upload video bảo hành (tới 1GB) dùng Spring {{MultipartFile}} với cấu hình giữ file trong bộ nhớ: 5 người upload cùng lúc là pod 2GB bị OOMKilled; người dùng ở vùng mạng yếu phải tải lại từ đầu sau mỗi lần mất kết nối. Thiết kế lại theo giao thức **tus** (upload có thể tiếp tục): {{POST}} tạo phiên upload trả về URL; client gửi các khúc 5MB bằng {{PATCH}} kèm {{Upload-Offset}}; mất mạng thì {{HEAD}} để hỏi server đã nhận tới đâu rồi gửi tiếp. Server **stream** từng khúc thẳng sang S3 multipart, không giữ trong heap ({{spring.servlet.multipart}} chỉ dùng cho file nhỏ). Giới hạn kích thước tổng, loại file, số phiên đồng thời mỗi người; phiên dở dang hết hạn sau 24 giờ. Bộ nhớ mỗi upload còn khoảng 5MB thay vì 1GB; tỉ lệ upload thành công ở vùng mạng yếu từ 70% lên 98%.
+
+### Trả lời mẫu khi phỏng vấn
+"Giữ cả file trong heap là sai từ gốc: bộ nhớ tỉ lệ với kích thước file nhân số người upload đồng thời. Tôi thiết kế upload theo khúc có thể tiếp tục: client tạo một phiên upload, gửi từng khúc vài megabyte kèm vị trí offset, server stream mỗi khúc thẳng xuống storage như S3 multipart mà không giữ trong bộ nhớ, và khi mất mạng client hỏi server đã nhận tới đâu để gửi tiếp. Giao thức tus là chuẩn mở cho việc này; hoặc tốt hơn với S3 là cho client tải trực tiếp bằng presigned URL từng phần, backend chỉ điều phối. Bảo vệ: giới hạn kích thước, loại file, số phiên mỗi người, phiên dở dang có hạn và được dọn, kiểm tra hash và quét virus sau khi hoàn tất. Trạng thái phiên lưu ở chỗ dùng chung để mọi instance đều tiếp tục được."
+
 > Senior tip: dashboard theo dõi số session orphan, bytes dang dở, retry rate và checksum failure; đây thường là nguồn tăng storage âm thầm sau khi feature chạy lâu.
 `,
   follow: ['Làm sao ngăn user finalize một upload session của user khác?', 'Bạn kiểm tra checksum toàn file khi dùng multipart object storage ra sao?'],
@@ -2379,6 +2415,12 @@ Redis Lua atomicity chỉ bảo đảm trong phạm vi một Redis primary, khô
 - Failover/restore từ snapshot cũ có thể làm region tin rằng còn quota đã dùng; fencing epoch giúp từ chối epoch cũ ở authority.
 - “TTL quota lease” nguy hiểm nếu region bị pause dài rồi hoạt động lại sau khi quota đã tái cấp nơi khác.
 - Đồng bộ đồng hồ không đủ để chứng minh lease cũ đã dừng; dùng epoch/coordination có fencing.
+
+### Ví dụ đời thực
+Đợt phát 1 triệu coupon toàn cầu ở 3 region. Bản đầu dùng một bộ đếm trung tâm ở us-east: mỗi lần cấp coupon từ châu Á phải gọi liên vùng (~200ms), và khi mạng liên vùng chập chờn 6 phút thì châu Á **không cấp được gì**. Đổi sang **escrow quota**: tổng 1 triệu được chia trước theo dự báo (Mỹ 400k, châu Âu 300k, châu Á 300k); mỗi region cấp từ phần của mình bằng Redis cục bộ (nhanh, không cần liên vùng); một bộ điều phối định kỳ (mỗi 30 giây, khi mạng ổn) **cân bằng lại** phần dư giữa các region; khi bị chia cắt, mỗi region chỉ tiêu tối đa phần đã được giao — **không bao giờ vượt tổng**. Đánh đổi: có thể còn dư vài nghìn coupon ở region ít nhu cầu khi đợt kết thúc. Kết quả: không cấp vượt tổng, độ trễ cấp coupon ở châu Á từ 220ms còn 15ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Một bộ đếm toàn cục duy nhất buộc mọi lần cấp phải liên vùng, chậm, và khi mạng chia cắt thì các region ở xa ngừng hoạt động; còn để mỗi region tự đếm không phối hợp thì có thể cấp vượt tổng. Tôi dùng cách chia quota trước, giống escrow: tổng hạn mức chia thành phần cho từng region theo dự báo nhu cầu, mỗi region cấp từ phần của mình bằng bộ đếm cục bộ, nhanh và không cần liên vùng. Một bộ điều phối định kỳ cân bằng lại phần dư khi mạng ổn định. Khi mạng bị chia cắt, mỗi region chỉ tiêu tối đa phần đã giữ, nên tổng không bao giờ vượt; cái giá là có thể dư một ít ở region ít nhu cầu. Đây là cách chọn tính sẵn sàng mà vẫn giữ được bất biến quan trọng nhất là không vượt tổng."
 
 > Senior tip: viết invariant số coupon phát hành ≤ campaign cap thành reconciliation query và alert độc lập với dashboard ứng dụng; chuẩn bị nút đóng campaign toàn cục trước ngày mở bán.
 `,
@@ -4718,6 +4760,12 @@ public class AccessCounter {
 - Chỉ tổng toàn cục: một {{LongAdder}}.
 - Cần snapshot nhất quán nhiều key: copy map rồi tổng, hoặc dùng {{AtomicLongMap}} (Guava).
 
+### Ví dụ đời thực
+Đoạn đếm lượt truy cập kiểu "get rồi put" trên {{ConcurrentHashMap}} được AI sinh và merge vào service thống kê. Dưới 2.000 request/giây, số lượt đếm **thấp hơn** log truy cập khoảng 7% — vì {{ConcurrentHashMap}} chỉ an toàn cho **từng** thao tác, còn chuỗi "đọc → cộng → ghi" vẫn là hai thao tác riêng có thể bị chen giữa. Sửa bằng {{counts.merge(userId, 1L, Long::sum)}} (nguyên tử trên từng key), hoặc {{computeIfAbsent(userId, k -> new LongAdder()).increment()}} khi một key rất nóng (LongAdder chia bộ đếm thành nhiều ô để giảm tranh chấp). Map còn **không bao giờ bị xoá** → với 3 triệu user/ngày, heap tăng dần; chuyển sang Caffeine có hết hạn hoặc đẩy số đếm sang Redis {{INCR}}. Test mới: 16 luồng × 100.000 lần tăng, kiểm tra tổng đúng tuyệt đối.
+
+### Trả lời mẫu khi phỏng vấn
+"Lỗi chính là race condition dù dùng ConcurrentHashMap: map chỉ đảm bảo an toàn cho từng thao tác riêng lẻ, còn chuỗi get, cộng một, put là ba bước tách rời, hai luồng có thể cùng đọc một giá trị và ghi đè nhau, nên số đếm bị thiếu. Cách sửa là dùng thao tác nguyên tử trên map như merge với Long sum, hoặc computeIfAbsent tạo LongAdder rồi increment khi có key rất nóng. Lỗi thứ hai là map tăng mãi không có giới hạn hay hết hạn, sẽ thành memory leak với nhiều user; nên dùng cache có giới hạn hoặc đưa bộ đếm ra Redis nếu nhiều instance cần chung số liệu. Khi review code do AI sinh, tôi đặc biệt kiểm tra các chuỗi thao tác kiểm tra rồi hành động trên cấu trúc dùng chung, và yêu cầu test đồng thời chứng minh tổng đúng."
+
 > Senior tip: khi review code AI sinh ra, tôi luôn hỏi "đoạn này có thể chạy concurrent không?" — AI hay viết code đúng single-thread. ConcurrentHashMap chỉ bảo vệ chính map, không bảo vệ logic check-then-act của bạn; phải dùng compute/merge/Atomic* mới an toàn.`,
   follow: [
     'LongAdder khác AtomicLong thế nào, khi nào chọn cái nào?',
@@ -4936,6 +4984,12 @@ public class UserCache {
 ### Cách nói khi review
 "Em thấy ba vấn đề: SimpleDateFormat không thread-safe dùng chung static (corrupt ngày), HashMap không thread-safe, và cache không giới hạn/TTL (leak + stale). Em đề xuất Caffeine (size+TTL) và DateTimeFormatter immutable. Nếu không thêm lib, dùng ConcurrentHashMap + manual eviction."
 
+### Ví dụ đời thực
+Đoạn code có {{static final SimpleDateFormat}} dùng chung và cache {{static HashMap}} không giới hạn được merge vào service báo cáo. Triệu chứng sau 2 tuần: thỉnh thoảng báo cáo có ngày lạ như "2026-00-31" hoặc {{NumberFormatException}}/{{ArrayIndexOutOfBoundsException}} trong {{SimpleDateFormat.parse}} — vì lớp này giữ trạng thái nội bộ ({{Calendar}}) và **không thread-safe**; hai request parse cùng lúc làm hỏng trạng thái của nhau. Đồng thời {{HashMap}} static bị nhiều luồng ghi đồng thời làm hỏng cấu trúc và heap tăng không ngừng. Sửa: {{DateTimeFormatter}} (bất biến, thread-safe) với {{LocalDate}}; cache thay bằng Caffeine có giới hạn và hết hạn (hoặc {{ConcurrentHashMap}} nếu thật sự chỉ là bảng tra nhỏ cố định). Thêm detekt/SpotBugs rule bắt {{SimpleDateFormat}} trong field static (STCAL_STATIC_SIMPLE_DATE_FORMAT_INSTANCE).
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xếp lỗi theo mức nghiêm trọng. Nghiêm trọng nhất là SimpleDateFormat static dùng chung: lớp này giữ trạng thái nội bộ khi parse và format nên không thread-safe, dưới tải sẽ cho ra ngày sai hoặc exception lạ, rất khó tái hiện. Sửa bằng DateTimeFormatter của java.time, bất biến và an toàn cho nhiều luồng. Thứ hai là cache static dùng HashMap: ghi đồng thời làm hỏng cấu trúc map, và không có giới hạn hay hết hạn nên thành memory leak, dữ liệu cũ không bao giờ được làm mới. Sửa bằng Caffeine có maximumSize và thời gian hết hạn. Khi góp ý trong review, tôi giải thích rõ hậu quả trên production và đưa đoạn code sửa, đồng thời đề xuất rule static analysis để bắt lỗi này tự động, thay vì chỉ trông vào người review."
+
 > Senior tip: khi review code AI sinh ra có cache/static field, tôi luôn hỏi "thread-safe không, có giới hạn kích thước không, có TTL không, có stale không?" — bốn câu này bắt được phần lớn bug cache production.`,
   follow: [
     'Caffeine khác Guava Cache thế nào?',
@@ -5009,6 +5063,12 @@ Giả sử bạn thấy một Struts Action xử lý "chuyển khoản". Thay v�
 - **Sửa ngay mà không ghi** — phải ghi đầy đủ log điều tra (ai, khi nào, câu query).
 - **Bỏ qua Problem** — fix thủ công mãi mà không khắc phục gốc sẽ tái diễn.
 - **Thay đổi ngoài change window** — hầu hết công ty lớn cấm, trừ trường hợp P1 khẩn cấp có quy trình riêng.
+
+### Ví dụ đời thực
+8:15 sáng thứ Hai, 23 khách báo "số dư bị trừ nhưng giao dịch thất bại". **Incident** (P1 vì ảnh hưởng tiền của nhiều khách): mở kênh sự cố, chỉ định người chỉ huy, xác nhận phạm vi trong 15 phút (412 giao dịch từ 7:40, cùng một ngân hàng đối tác), giảm thiệt hại bằng cách **tạm chuyển** giao dịch sang trạng thái chờ thay vì báo thất bại, cập nhật cho CSKH mỗi 30 phút. Khôi phục lúc 9:30 khi đối tác sửa xong. **Problem**: phân tích nguyên nhân gốc — hệ thống coi timeout từ đối tác là thất bại nhưng không hoàn tiền tạm giữ; 412 khoản được hoàn trong ngày sau đối soát. **Change**: sửa logic xử lý timeout (trạng thái chưa xác định + hỏi lại), qua quy trình thay đổi có test, phê duyệt, deploy giờ thấp điểm, có kế hoạch rollback. Postmortem không đổ lỗi, 6 hành động khắc phục có người chịu trách nhiệm và hạn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách ba quy trình. Incident là khôi phục dịch vụ nhanh nhất có thể: phân loại mức độ theo ảnh hưởng, với sai số dư của nhiều khách là P1; mở kênh sự cố, có người chỉ huy, xác định phạm vi, giảm thiệt hại trước, ví dụ chặn luồng lỗi hay chuyển giao dịch sang trạng thái chờ, và cập nhật định kỳ cho CSKH, quản lý theo SLA phản hồi và xử lý. Problem là tìm nguyên nhân gốc sau khi đã ổn định: phân tích log, dữ liệu, đối soát để sửa đúng từng tài khoản bị ảnh hưởng. Change là đưa bản sửa vào production qua quy trình có kiểm soát: test, phê duyệt, khung giờ deploy, kế hoạch rollback. Kết thúc bằng postmortem không đổ lỗi với hành động có người chịu trách nhiệm và hạn hoàn thành. Với lỗi liên quan tiền, mọi điều chỉnh số dư đều là bút toán mới có duyệt và audit."
 
 > Senior tip: câu trả lời phỏng vấn mạnh là "tôi ưu tiên containment trước, điều tra read-only, ghi mọi bằng chứng, và chỉ sửa qua Change được duyệt (hoặc theo quy trình khẩn cấp)".`,
   follow: [
@@ -5453,6 +5513,9 @@ DB audit: transfer_id, status, actor, timestamp
 ### Cách trả lời phỏng vấn (English)
 *"I focus on tracing one real business flow end-to-end first - from UI to DB. I shadow the BA, read the audit/history tables to understand state transitions, and map exceptions. That way I learn the business rules and the system together, not in isolation."*
 
+### Trả lời mẫu khi phỏng vấn
+"Tuần đầu tôi ưu tiên hiểu luồng nghiệp vụ hơn đọc code từ đầu tới cuối. Ngày đầu tôi hỏi tech lead ba luồng quan trọng nhất về doanh thu và rủi ro, ví dụ đặt hàng, thanh toán, hoàn tiền, và xin sơ đồ hệ thống nếu có. Sau đó tôi đi theo từng luồng từ đầu đến cuối: dùng thử sản phẩm trên staging, rồi theo một request thật qua trace hoặc log, từ API, qua service, xuống bảng DB và message Kafka. Tôi đọc schema các bảng chính, các trạng thái và chuyển trạng thái, và ghi lại câu hỏi để hỏi BA hoặc người viết code trong các buổi ngắn. Tôi cũng xem các sự cố gần đây và runbook, vì chúng cho thấy hệ thống hay hỏng ở đâu. Cuối tuần tôi viết lại tài liệu ngắn về các luồng đó và nhờ team sửa, vừa kiểm tra hiểu biết của mình vừa để lại giá trị cho người đến sau. Và tôi nhận một ticket nhỏ ngay tuần đầu để đi hết quy trình deploy."
+
 > Senior tip: Nguyên tắc vàng là "follow the data". Đừng theo call stack vô tội vạ - hãy theo 1 giao dịch thật trong DB (tìm 1 transfer_id) rồi lần ngược lại xem nó đi qua những service nào. Cách này nhanh gấp 3-5 lần so với đọc toàn bộ service.`,
   follow: [
     'Làm sao phân biệt luồng chính và luồng ngoại lệ khi trace?',
@@ -5498,6 +5561,9 @@ Rule: chỉ PENDING mới được cập nhật, COMPLETED là immutable
 - **Chỉ đọc DDL**: DDL không cho biết quy trình thực tế. Luôn xem dữ liệu mẫu.
 - **Bỏ qua history table**: Thường quan trọng hơn bảng chính để hiểu "cách vận hành".
 - **Giả định relationship**: Phải verify bằng data (vd có orphan record không?) trước khi kết luận.
+
+### Trả lời mẫu khi phỏng vấn
+"Schema là tài liệu trung thực nhất về nghiệp vụ, vì code có thể nói dối nhưng dữ liệu thì không. Tôi bắt đầu từ các bảng lớn nhất và được ghi nhiều nhất, xem qua thống kê của DB, vì đó thường là thực thể cốt lõi như giao dịch hay đơn hàng. Tôi vẽ quan hệ qua khoá ngoại, hoặc qua các cột kiểu xxx_id nếu không có ràng buộc. Tôi đặc biệt chú ý các cột trạng thái và giá trị thực tế của chúng bằng câu GROUP BY, vì đó là máy trạng thái của nghiệp vụ; các ràng buộc unique, check cho biết quy tắc bất biến; các cột thời gian và cột version cho biết vòng đời và cách chống ghi đè. Tôi theo một bản ghi thật qua các bảng, ví dụ một lệnh chuyển tiền từ lúc tạo tới lúc hạch toán. Những chỗ lạ như cột không dùng, giá trị trạng thái không có trong code, tôi ghi lại thành câu hỏi cho người hiểu nghiệp vụ."
 
 > Senior tip: Một kỹ thuật hiệu quả là "reverse engineer từ transaction". Tìm 1 giao dịch thành công gần nhất trong bảng transaction chính, truy vết tất cả bảng có liên quan qua FK/ref_no, vẽ mối quan hệ. Sau 2-3 giao dịch như vậy bạn sẽ hiểu 80% domain model.`,
   follow: [
@@ -5550,6 +5616,9 @@ Thay vì đọc spec dài dòng, cả team cùng dán sticky note lên bảng: a
 - **Tranh luận quá sớm**: Giai đoạn 1 chỉ brainstorm, sắp xếp sau.
 - **Quá chi tiết kỹ thuật**: Tập trung nghiệp vụ, đừng nói về REST/queue ngay.
 
+### Trả lời mẫu khi phỏng vấn
+"Event Storming là một buổi làm việc chung giữa dev, BA, nghiệp vụ, trong đó mọi người viết các sự kiện nghiệp vụ đã xảy ra, ở thì quá khứ như 'đơn đã được đặt', 'thanh toán đã được xác nhận', lên giấy dán màu cam, rồi sắp theo dòng thời gian. Sau đó thêm lệnh gây ra sự kiện, tác nhân, các quy tắc và hệ thống bên ngoài, và đánh dấu những chỗ có tranh cãi hay câu hỏi. Khi vào team mới, tôi dùng một buổi mini một đến hai tiếng cho một luồng quan trọng: nó cho tôi bức tranh toàn cảnh nhanh hơn nhiều so với đọc tài liệu, và quan trọng hơn là làm lộ ra những chỗ mà chính các bên đang hiểu khác nhau. Kết quả là danh sách sự kiện, ranh giới nghiệp vụ có thể thành bounded context, và các câu hỏi mở. Tôi chụp lại và chuyển thành tài liệu ngắn để team cùng giữ."
+
 > Senior tip: Bạn không cần tổ chức Event Storming đầy đủ. Chỉ cần mượn 30 phút của BA/PO, vẽ timeline trên giấy/board với 5-10 event quan trọng nhất của luồng bạn đang tìm hiểu. Thường nhanh hơn đọc cả tài liệu thiết kế.`,
   follow: [
     'Sự khác biệt giữa Event Storming và Sequence Diagram?',
@@ -5595,6 +5664,12 @@ Thay vì đọc spec dài dòng, cả team cùng dán sticky note lên bảng: a
 - **Không chuẩn bị context**: Luôn show log/DB row/screenshot trước khi hỏi.
 - **Quên ghi chú**: Sau cuộc trò chuyện cập nhật ngay vào doc cá nhân/team.
 
+### Ví dụ đời thực
+Dev mới hỏi BA: "Logic hoàn tiền là gì?" — câu hỏi quá rộng, nhận lại 20 phút giải thích chung chung. Hỏi lại theo **ví dụ cụ thể**: "Khách mua 3 món tổng 500 nghìn, dùng coupon 50 nghìn, trả lại 1 món giá 200 nghìn — hoàn bao nhiêu và coupon xử lý thế nào?" → BA phải dừng lại kiểm tra và phát hiện chính đội nghiệp vụ có hai cách hiểu khác nhau (chia coupon theo tỉ lệ hay trừ hết vào món còn lại). Quy tắc được chốt bằng văn bản với 4 ví dụ số, thành test case. Sau đó dev dùng mẫu: "Tôi hiểu là … đúng không? Trường hợp … thì sao?" và gửi tóm tắt sau mỗi buổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chưa hiểu domain, tôi chuẩn bị trước thay vì hỏi những câu rộng như 'logic này là gì'. Tôi đọc tài liệu và dùng thử sản phẩm trước, rồi hỏi bằng ví dụ cụ thể có con số: trường hợp này thì kết quả là bao nhiêu, và trường hợp biên thì sao. Câu hỏi bằng ví dụ khiến người trả lời phải nghĩ kỹ, và thường làm lộ ra chỗ chính nghiệp vụ chưa thống nhất. Tôi hay nhắc lại cách hiểu của mình để họ xác nhận, hỏi về mục tiêu, vì sao có quy tắc này, ai bị ảnh hưởng nếu sai. Tôi gom câu hỏi lại để hỏi theo đợt, tôn trọng thời gian của họ, và sau mỗi buổi gửi bản tóm tắt kèm ví dụ để xác nhận bằng văn bản; những ví dụ đó sau thành test case."
+
 > Senior tip: Quy tắc "show, don't ask". Thay vì hỏi "luồng thế nào?", hãy vẽ sơ đồ bạn đã trace được và hỏi "Sơ đồ này có đúng với thực tế không? Có gì thiếu sót không?". Cách này tiết kiệm thời gian cho cả hai bên rất nhiều.`,
   follow: [
     'Làm sao hỏi về rule phức tạp mà không làm phiền BA quá nhiều?',
@@ -5634,6 +5709,9 @@ Thay vì đọc spec dài dòng, cả team cùng dán sticky note lên bảng: a
 - **Chỉ nói "đọc code"**: Cho thấy tư duy kỹ thuật thuần túy
 - **Không nhấn mạnh ngoại lệ**: Thiếu chiều sâu
 - **Trả lời quá dài**: Giữ 1-2 phút là đủ
+
+### Ví dụ đời thực
+Hai ứng viên cùng được hỏi câu này. Ứng viên A: "Em sẽ đọc tài liệu và code thật kỹ" — interviewer ghi "thụ động". Ứng viên B kể một lần thật: vào dự án bảo hiểm, tuần đầu theo một hồ sơ bồi thường từ app tới DB qua trace, tổ chức một buổi Event Storming 2 giờ với nghiệp vụ, phát hiện 3 quy tắc ẩn trong stored procedure, và sau 3 tuần đã tự sửa được lỗi tính tiền bồi thường mà người cũ để lại; còn viết tài liệu luồng mà team dùng cho người mới. Interviewer hỏi tiếp về cách tìm quy tắc ẩn — đúng phần B chuẩn bị kỹ nhất. Bài học: câu trả lời Senior có **phương pháp + một câu chuyện có kết quả đo được + giá trị để lại cho team**.
 
 > Senior tip: Nhà tuyển dụng muốn nghe "bạn có biết cách học nhanh domain mới mà không phụ thuộc vào người hướng dẫn mãi mãi không?". Câu trả lời trên chứng minh bạn chủ động, có phương pháp và quan tâm đến vận hành thực tế.`,
   follow: [
@@ -5684,6 +5762,9 @@ Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiệ
 - **Tin hoàn toàn vào spec**: Thường spec đã cũ, code mới nhất là nguồn đúng hơn.
 - **Chỉ đọc happy path**: Validation nằm rải rác, dễ bỏ sót.
 - **Không ghi lại**: Sau 1 tháng quên mất rule đã tìm được.
+
+### Trả lời mẫu khi phỏng vấn
+"Quy tắc nghiệp vụ ẩn thường nằm ở những chỗ ít ai nhìn: điều kiện if lồng nhau trong code cũ, stored procedure và trigger trong DB, ràng buộc và giá trị mặc định của bảng, file cấu hình và bảng tham số, job batch chạy đêm, và cả trong đầu những người lâu năm. Tôi phát hiện chúng bằng vài cách. Đọc dữ liệu thật: phân phối giá trị của các cột trạng thái hay số tiền thường lộ ra quy tắc như hạn mức hay làm tròn. Đọc lịch sử sự cố và ticket bug, vì nhiều quy tắc sinh ra từ một sự cố trong quá khứ. Viết characterization test với dữ liệu thật để ghi lại hành vi hiện tại. Và hỏi người vận hành, CSKH những trường hợp đặc biệt họ hay xử lý tay. Mỗi quy tắc tìm được tôi ghi lại kèm nguồn, ví dụ và người xác nhận, trong một tài liệu chung của team."
 
 > Senior tip: Rule vàng là "code là specification đang chạy". Nếu spec và code khác nhau, hãy tin code (sau khi xác nhận với BA). Và đừng quên ghi nguồn (file:line) để dễ tra sau này.`,
   follow: [
