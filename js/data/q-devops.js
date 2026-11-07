@@ -10713,6 +10713,12 @@ postgresql:
 - Sai lầm: etcd cùng node với Postgres → mất node = mất cả DB và DCS → không failover.
 - Kiểm tra: {{patronictl -c /etc/patroni.yml list}}; {{etcdctl endpoint health}}; HAProxy stats page; test failover bằng {{patronictl pause}} / kill primary.
 
+### Ví dụ đời thực
+Một ngân hàng chạy PostgreSQL 3 node với Patroni + etcd 3 node + HAProxy. Diễn tập: tắt nguồn node primary lúc 2 giờ chiều. Patroni trên primary cũ mất leader key trong etcd (TTL 30 giây), một replica giành leader key và tự promote; HAProxy kiểm tra {{/primary}} của Patroni (cổng REST 8008) mỗi 3 giây và chuyển traffic ghi sang node mới. Tổng thời gian ghi bị gián đoạn đo được khoảng 35 giây. Ứng dụng Spring Boot kết nối qua HAProxy với Hikari {{connectionTimeout}} 5 giây và retry nên chỉ khoảng 0,4% request lỗi trong cửa sổ đó. Bài học từ lần diễn tập trước: {{maximum_lag_on_failover}} để quá lớn khiến một replica tụt xa được chọn làm primary — giảm xuống để không mất dữ liệu đáng kể khi failover; bật thêm một replica đồng bộ ({{synchronous_mode}}) cho dữ liệu giao dịch.
+
+### Trả lời mẫu khi phỏng vấn
+"Patroni là agent chạy cạnh mỗi node PostgreSQL, dùng một DCS như etcd để bầu leader: node giữ leader key có TTL trong etcd là primary, phải gia hạn liên tục; mất key thì tự hạ xuống, nhờ đó tránh hai primary. Khi primary chết, key hết hạn, replica khoẻ nhất và không tụt quá ngưỡng lag sẽ giành key và promote. etcd cần ba hoặc năm node để có quorum. HAProxy đứng trước, kiểm tra REST API của Patroni ở endpoint primary để chỉ gửi traffic ghi tới node đang là primary, và có thể có cổng riêng cho đọc từ replica. Ứng dụng Java kết nối qua HAProxy, cấu hình timeout kết nối ngắn và retry có giới hạn. Tôi chọn đồng bộ hay bất đồng bộ theo yêu cầu mất dữ liệu, và luôn diễn tập failover để đo thời gian gián đoạn thật."
+
 > Senior tip: Failover tự động chỉ an toàn khi DCS có quorum và fencing; luôn drill failover định kỳ, đo RTO thực tế (thường 30-60s) và RPO (data loss do async replication).`,
     follow: ['etcd quorum cần bao nhiêu node?', 'targetServerType=primary làm gì?', 'Làm sao tránh split-brain khi mạng phân mảnh?'],
     tags: ['PostgreSQL', 'Patroni', 'etcd', 'HAProxy', 'HA']
