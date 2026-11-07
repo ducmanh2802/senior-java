@@ -16,6 +16,7 @@
       'path.pfIntro': '10 chặng trong khoảng 48 tuần (8–10 giờ/tuần). Mỗi chặng có bài học, câu hỏi chốt chặng và một dự án thực hành để đưa vào CV; chặng sau dùng lại kết quả chặng trước.',
       'path.trackJava': 'Java → Senior', 'path.trackPlatform': 'Java → Platform Engineer', 'path.tracksAria': 'Chọn lộ trình',
       'path.project': 'Dự án thực hành',
+      'path.basics': 'Kiến thức nền cần có (tài liệu chính thức)',
       'path.overall': 'Tiến độ tổng',
       'path.overallAria': 'Tiến độ lộ trình',
       'path.stagesDone': '{done}/{total} chặng đã xong',
@@ -52,6 +53,7 @@
       'path.pfIntro': '10 stages over about 48 weeks (8–10 hours a week). Each stage has lessons, key questions and a hands-on project for your CV; later stages build on earlier ones.',
       'path.trackJava': 'Java → Senior', 'path.trackPlatform': 'Java → Platform Engineer', 'path.tracksAria': 'Choose a path',
       'path.project': 'Hands-on project',
+      'path.basics': 'Core knowledge to have (official docs)',
       'path.overall': 'Overall progress',
       'path.overallAria': 'Path progress',
       'path.stagesDone': '{done}/{total} stages done',
@@ -191,7 +193,9 @@
     const project = x.s.project ? `<div class="path-project"><h4 class="path-h">🛠️ ${esc(tr('project'))}</h4>
         <div class="md">${App.md(x.s.project)}</div></div>` : '';
     const topic = encodeURIComponent(flashTopic(x));
-    return `${goal}${project}
+    const basicsList = (window.PATH_BASICS || {})[x.s.id] || [];
+    const basics = basicsList.length ? `<div class="path-basics"><h4 class="path-h">📚 ${esc(tr('basics'))}</h4><ul class="path-list">${basicsList.map(b => `<li><a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">${esc(b.t)}</a> — ${esc(b.d)} <span class="muted small">(${esc(b.src)})</span></li>`).join('')}</ul></div>` : '';
+    return `${goal}${basics}${project}
       <div class="path-cols">
         <div class="path-block">${lessonsHtml(x)}</div>
         <div class="path-block">${questionsHtml(x)}</div>

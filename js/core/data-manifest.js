@@ -38,6 +38,7 @@
       projects: ['projects.js'],
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
       bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
+      pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
       aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js'],
     },
@@ -61,7 +62,7 @@
       'legal/terms': [],
       interview: ['questions', 'companies'],                  // seeds from the bank + company presets
       learn: ['lessons', 'questions', 'glossary'],
-      path: ['lessons', 'questions', 'glossary'],
+      path: ['lessons', 'questions', 'glossary', 'pathbasics'],
       speak: ['drills'],
       news: [],
       sd: ['sd', 'questions', 'glossary'],

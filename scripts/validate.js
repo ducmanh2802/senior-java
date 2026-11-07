@@ -513,6 +513,24 @@ if (missingInPath.length) warn('path.js', `có ${missingInPath.length} bài họ
   }
 }
 
+// ---- path basics (window.PATH_BASICS: kiến thức nền + link cho từng chặng; link check: scratch/manual) ----
+{
+  const B = sandbox.window.PATH_BASICS || {};
+  const stageIds = new Set([...(sandbox.window.PATH || []), ...(sandbox.window.PATH_PLATFORM || [])].map(x => x.id));
+  for (const [sid, list] of Object.entries(B)) {
+    const bf = 'path-basics.js';
+    if (!stageIds.has(sid)) err(bf, `${sid}: không có chặng này trong PATH / PATH_PLATFORM`);
+    if (!Array.isArray(list) || !list.length) { err(bf, `${sid}: cần ít nhất 1 mục`); continue; }
+    list.forEach((b, i) => {
+      if (!b || typeof b.t !== 'string' || !b.t.trim() || /[\[\]]/.test(b.t)) err(bf, `${sid}[${i}]: t (đầu mục) bắt buộc, không chứa [ ]`);
+      if (!b || typeof b.d !== 'string' || !b.d.trim()) err(bf, `${sid}[${i}]: thiếu d (cần nắm gì)`);
+      if (!b || typeof b.url !== 'string' || !/^https:\/\//.test(b.url)) err(bf, `${sid}[${i}]: url phải là https`);
+      if (!b || typeof b.src !== 'string' || !b.src.trim()) err(bf, `${sid}[${i}]: thiếu src (nguồn)`);
+      Object.keys(b || {}).forEach(k => { if (!['t', 'd', 'url', 'src'].includes(k)) err(bf, `${sid}[${i}]: field lạ "${k}"`); });
+    });
+  }
+}
+
 // ---- drills (window.DRILLS) ----
 const DRILL_KINDS = new Set(['shadow', 'qa', 'term']);
 const DRILL_THEMES = new Set(['intro', 'tech', 'behavioral', 'design', 'project', 'negotiation', 'smalltalk']);
