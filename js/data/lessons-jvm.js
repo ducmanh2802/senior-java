@@ -2215,9 +2215,9 @@ Lock-1 --> T-A: holder = T-A
 T-B -> Lock-2: synchronized(accB)
 Lock-2 --> T-B: holder = T-B
 T-A -> Lock-2: synchronized(accB)
-Lock-2 --> T-A: khong tra loi, T-A BLOCKED
+Lock-2 --> T-A: không trả lời, T-A BLOCKED
 T-B -> Lock-1: synchronized(accA)
-Lock-1 --> T-B: khong tra loi, T-B BLOCKED
+Lock-1 --> T-B: không trả lời, T-B BLOCKED
 note T-A..T-B: Chu trinh cho: T-A -> Lock-2 -> T-B -> Lock-1 -> T-A
 ~~~
 
