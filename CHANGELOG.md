@@ -3,6 +3,21 @@
 ## 2026-11-07
 
 ### Nội dung
+- T127 (auto-committed after kilo review + verify)
+- T110 (auto-committed after kilo review + verify)
+- T854 (auto-committed after kilo review + verify)
+- T114 (auto-committed after kilo review + verify)
+- T852 (auto-committed after kilo review + verify)
+- T851 (auto-committed after kilo review + verify)
+- T714 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Backdrops per section: home = dev desk with Mac mini M4 Pro, English practice = call with colleagues abroad, study = income in USD
+
+
+## 2026-11-07
+
+### Nội dung
 
 
 ### Ứng dụng
