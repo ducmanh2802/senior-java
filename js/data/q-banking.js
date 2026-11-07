@@ -2726,33 +2726,61 @@ Một ngân hàng số chỉ chống trùng ở gateway bằng Redis TTL 5 phút
   topic: 'banking',
   level: 'lead',
   q: 'Bảo mật và tuân thủ nâng cao: mã hóa dữ liệu thẻ (tokenization, HSM), audit log bất biến và PCI DSS trong kiến trúc microservices như thế nào?',
-  a: `**Tóm tắt:** Trong kiến trúc các dịch vụ độc lập (microservices), bảo vệ dữ liệu thẻ đòi hỏi mã hóa giả (tokenization) ở ranh giới hệ thống, HSM lưu khóa, nhật ký kiểm tra bất biến tập trung, và phạm vi tuân thủ PCI DSS tối thiểu (chỉ dịch vụ vault nằm trong phạm vi). Các dịch vụ khác chỉ dùng token, không bao giờ chạm số thẻ thật (PAN).
+  a: `**Tóm tắt:** Trong microservices, bảo vệ số thẻ bằng tokenization (thay PAN bằng token ngẫu nhiên), mã hóa và lưu khóa trong HSM, ghi nhật ký kiểm tra append-only, và giữ phạm vi PCI DSS nhỏ nhất: chỉ vault chạm PAN, các dịch vụ khác chỉ giữ token.
 
-### Kien truc
-- Dich vu vault: dich vu duy rien chạm so the thiet (PAN), ma hoa va luu trong HSM, cung cap token cho cac dich vu khac.
-- Cac dich vu khac (thanh toan, don hang...) chi dung token, khong bao giu xem PAN.
-- Pham vi PCI DSS chi bao ham dich vu vault -> giam chi phi va cong viec tuan thu.
+### Tokenization và HSM (giải thích từ đầu)
+PAN là số thẻ thật (16 chữ số), dữ liệu nhạy cảm nhất: kẻ có PAN có thể mượn thẻ khách hàng. Tokenization thay PAN bằng token — chuỗi ngẫu nhiên không có nghĩa (ví dụ tok_abc123xyz), chỉ vault biết token ánh xạ PAN nào.
 
-### Luong ma hoa gia (tokenization)
-1. Khach gui so the thiet den dich vu vault (qua ket noi bao mat TLS).
-2. Dich vu vault ma hoa PAN bang HSM, luu PAN thiet, tra ve token.
-3. Cac dich vu khac dung token cho moi thao tac.
-4. Khi can thanh toan (charge), dich vu thanh toan gui token den vault; vault thuc hien thu tien qua cong thanh toan.
+Khách nhập thẻ vào app, app gửi PAN qua TLS đến vault; vault dùng HSM mã hóa PAN, lưu PAN đã mã hóa, trả về token. App lưu token, không lưu PAN. Các dịch vụ khác (payment, đơn hàng…) chỉ lưu token. Khi charge, payment gửi token cho vault; vault giải mã lấy PAN rồi gọi cổng thanh toán.
 
-### Nhat ky kiem tra bat bien
-- Moi truy cap token/PAN duoc ghi vao nhat ky kiem tra tap trung, chi duoc them (append-only).
-- Nhat ky luu luu tren luu tru khong duoc sua hoac xoa (WORM: ghi mot lan, doc nhieu lan).
-- Gui nhat ky theo quy dinh (vi du 7 nam).
+HSM là thiết bị phần cứng lưu khóa, mã hóa/giải mã bên trong, khóa không bao giờ xuất ra ngoài dạng rõ ràng.
 
-### Lỗi hay gặp
-- Dich vu ngoai vault cung ghi so the vao nhat ky -> mo rong pham vi PCI DSS.
-- Token khong duoc bao ve -> ke xau lay token va so the thiet.
-- Nhat ky kiem tra co the sua -> mat bang chung khi co su co.
-- Khong dung HSM -> khoa ma hoa luu trong file cau hinh, de bi lot.
+### PCI DSS và phạm vi kiểm tra (scope)
+PCI DSS là tiêu chuẩn bảo mật bắt buộc đối với đơn vị lưu, xử lý hoặc truyền PAN. PAN ở nhiều dịch vụ = nhiều dịch vụ trong phạm vi kiểm tra. Chỉ vault chạm PAN → chỉ vault nằm trong phạm vi PCI DSS; các dịch vụ khác chỉ giữ token, nằm ngoài phạm vi, giảm chi phí tuân thủ.
 
-> Senior tip: Trong pho van, hay nhen mat nguyen tac "tiet low it nhat" (least exposure): chi dich vu vault cham so the thiet, moi dich vu khac chi giu token. Day la cach giam pham vi PCI DSS va giam ru ro neu mot dich vu bi xam nhap.
+### Nhật ký kiểm tra bất biến (append-only / WORM)
+Mọi truy cập PAN hoặc token phải được ghi log: ai, lúc nào, làm gì. Log append-only: chỉ thêm dòng mới, không sửa/xóa. Lưu dạng WORM (ghi một lần, đọc nhiều lần, không sửa/xóa), giữ ít nhất 7 năm.
 
-> Cụm từ: WORM (ghi mot lan doc nhieu lan) la luu tru chi cho phep ghi du lieu mot lan, doc duoc nhieu lan nhung khong duoc sua hoac xoa.
+### Code minh hoạ: dịch vụ vault Java
+~~~java
+class CardVaultService {
+    private final HsmClient hsm; // gọi HSM
+    private final TokenRepository tokens; // mapping token <-> PAN đã mã hóa
+
+    String issueToken(String pan) {
+        String encryptedPan = hsm.encrypt(pan); // mã hóa PAN bằng HSM
+        String token = TokenGenerator.random(); // token ngẫu nhiên
+        tokens.save(token, encryptedPan); // chỉ vault lấy được PAN
+        return token;
+    }
+
+    String detokenize(String token) {
+        String encryptedPan = tokens.findByToken(token); // lấy PAN đã mã hóa
+        return hsm.decrypt(encryptedPan); // giải mã bằng HSM, trả về PAN
+    }
+}
+~~~
+
+### Khi nào dùng và khi nào không dùng
+Dùng khi hệ thống tự lưu PAN hoặc phải tuân thủ PCI DSS. Không cần tự triển khai vault nếu chỉ nhận thanh toán qua cổng bên thứ ba (Stripe, MoMo, VNPAY) và không lưu PAN.
+Trade-off: lưu PAN tại mỗi dịch vụ đơn giản nhưng rò rỉ PAN làm toàn bộ hệ thống nằm trong phạm vi PCI DSS; tokenization + vault chỉ để vault trong phạm vi PCI DSS, thêm độ trễ gọi vault; thêm HSM bảo mật khóa phần cứng nhưng chi phí cao hơn.
+
+### Pitfall production hay gặp
+- Dịch vụ khác ghi PAN vào log hoặc trường mở rộng → mở rộng phạm vi PCI DSS.
+- Token không kiểm tra quyền truy cập → kẻ có token gọi vault lấy PAN.
+- Không dùng HSM → khóa trong file cấu hình, dễ lộ khi source bị truy cập.
+- Log có thể sửa → mất bằng chứng khi sự cố.
+
+### Ví dụ đời thực (production)
+Ngân hàng ABC xử lý 2.000 giao dịch thẻ/giây (QPS) vào giờ cao điểm, latency dưới 200 ms. Trước đây payment lưu PAN rõ ràng, toàn bộ hệ thống payment trong phạm vi PCI DSS. Sau vault + tokenization: payment chỉ lưu token, duy nhất vault chạm PAN, phạm vi thu hẹp xuống 3 máy chủ vault. Dịch vụ khác bị xâm nhập → hacker chỉ có token, không dùng được.
+
+### Trả lời mẫu khi phỏng vấn (khoảng 60–90 giây)
+"Trong kiến trúc microservices, em bảo vệ số thẻ bằng tokenization: thay PAN bằng token ngẫu nhiên, chỉ vault biết ánh xạ và được phép lấy PAN khi cần. Mã hóa và lưu khóa trong HSM, khóa không ra ngoài thiết bị. Mọi truy cập PAN hoặc token được ghi log append-only, lưu WORM, giữ ít nhất 7 năm. Chỉ vault nằm trong phạm vi PCI DSS, các dịch vụ khác chỉ giữ token, nằm ngoài phạm vi kiểm tra, giảm chi phí tuân thủ. Nếu dịch vụ khác bị xâm nhập, hacker chỉ có token, không dùng được nếu không gọi được vault. Khuyến nghị: mã hóa toàn bộ dữ liệu truyền, dùng log WORM, không cache PAN rõ ràng. Giải pháp này giảm phạm vi tuân thủ, giảm rủi ro sự cố và đảm bảo latency thấp dưới 200 ms."
+
+> Cụm từ: PAN là số thẻ thật (16 chữ số), dữ liệu nhạy cảm nhất.
+> Cụm từ: WORM là lưu trữ ghi một lần, đọc nhiều lần, không sửa/xóa.
+
+> Senior tip: Nhấn mạnh nguyên tắc "tiết lộ ít nhất" (least exposure): chỉ vault chạm PAN, mỗi dịch vụ khác chỉ giữ token — cách giảm phạm vi PCI DSS khi một dịch vụ bị xâm nhập. Luôn định nghĩa hành động khi vault gặp sự cố trước khi triển khai production.
   `,
   follow: [
     'Tại sao chỉ vault service nên trong PCI scope?',
