@@ -1517,6 +1517,8 @@ window.DATA_INDEX = {
     {"id":"lesson-concurrency-007","track":"concurrency","order":7,"title":"Rate limiter và Semaphore: giới hạn tốc độ và giới hạn số việc đồng thời","level":"senior","minutes":40},
     {"id":"lesson-concurrency-008","track":"concurrency","order":8,"title":"Producer–consumer với BlockingQueue: bounded queue, backpressure, poison pill và Kafka consumer lag","level":"senior","minutes":35},
     {"id":"lesson-concurrency-009","track":"concurrency","order":9,"title":"ConcurrentHashMap và cache thread-safe: computeIfAbsent atomic, single-flight chống thundering herd","level":"senior","minutes":35},
+    {"id":"lesson-concurrency-010","track":"concurrency","order":10,"title":"Tự viết lock kiểu AQS: state, CAS, hàng đợi và reentrant","level":"senior","minutes":45},
+    {"id":"lesson-concurrency-011","track":"concurrency","order":11,"title":"Lock-free Treiber stack và vấn đề ABA (AtomicStampedReference)","level":"senior","minutes":45},
     {"id":"lesson-spring-001","track":"spring","order":1,"title":"IoC và DI: container quản lý object","level":"mid","minutes":30},
     {"id":"lesson-spring-002","track":"spring","order":2,"title":"AOP và proxy: lời gọi nội bộ bỏ qua advice","level":"senior","minutes":30},
     {"id":"lesson-spring-003","track":"spring","order":3,"title":"@Transactional: propagation và rollback","level":"senior","minutes":35},
