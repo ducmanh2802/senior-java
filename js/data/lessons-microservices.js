@@ -1109,7 +1109,7 @@ SELECT * FROM saga_state
 
 ### Khung engine tổng quát
 ~~~java
-// Buoc van hanh theo sagaId de moi lenh giu duoc idempotency key cua no
+// Bước vận hành theo sagaId để mỗi lệnh giữ được idempotency key của nó
 record Step(String name, SagaAction action, SagaAction compensate) {}
 interface SagaAction { void run(String sagaId) throws Exception; }
 
@@ -1118,7 +1118,7 @@ void advance(Saga saga) {
         Step s = saga.steps().get(saga.step());
         try {
             s.action().run(saga.id());
-            saga.markDone(s.name());        // ghi saga_state truoc hoac cung luc phat lenh ke tiep
+            saga.markDone(s.name());        // ghi saga_state trước hoặc cùng lúc phát lệnh kế tiếp
             saga.step(saga.step() + 1);
         } catch (TimeoutException e) {
             saga.markUnknown(s.name());     // UNKNOWN: truy van ket qua, khong doan that bai
@@ -1439,11 +1439,11 @@ Payment:      cap hop Bank 1200ms, giữ 700ms còn lại để ghi kết quả 
 ~~~
 Code phía gọi (kiểu RestTemplate/Feign interceptor):
 ~~~java
-// Timeout hop ke tiep = min(cap cua minh, budget con lai - du phong cho viec cua minh)
+// Timeout hộp kế tiếp = min(cap của mình, budget còn lại - dự phòng cho việc của mình)
 long remaining = budget.remainingMillis();          // doc tu header X-Deadline
 long hopTimeout = Math.min(1200, remaining - 300);  // cap 1.2s, giu 300ms duoi
 if (hopTimeout <= 0) {
-    return failFast("deadline exhausted");          // het gio: goi tiep cung khong kip xong, dung goi
+    return failFast("deadline exhausted");          // hết giờ: gọi tiếp cũng không kịp xong, dừng gọi
 }
 requestConfig.setResponseTimeout(Duration.ofMillis(hopTimeout));
 ~~~
@@ -1576,7 +1576,7 @@ Vẽ chain 4 hop với budget 3000ms, chỉ ra công thức chia timeout từng 
     long t=chain.timeoutForCall(500,0);
     if(t==0) { used.add(0L); continue; }
     used.add(t);
-    now.set(now.get()+t);                        // moi hop dung het timeout cua no
+    now.set(now.get()+t);                        // mỗi hộp dùng hết timeout của nó
    }
    eq(List.of(500L,500L,0L,0L),used);
   });
@@ -1739,13 +1739,13 @@ Nêu rõ: partition log + offset, group assignment (range/round-robin), hai hư�
   ck("append returns offsets",()->{MiniKafka k=new MiniKafka();eq(0,k.append("o",0,"a"));eq(1,k.append("o",0,"b"));eq(0,k.append("o",1,"x"));});
   ck("poll advances position",()->{MiniKafka k=new MiniKafka();k.append("o",0,"a");k.append("o",0,"b");k.append("o",0,"c");eq(List.of("a","b"),k.poll("g","o",0,2));eq(2,k.position("g","o",0));eq(List.of("c"),k.poll("g","o",0,5));});
   ck("at-most-once loses on crash",()->{MiniKafka k=new MiniKafka();k.append("o",0,"m1");k.append("o",0,"m2");List<String> batch=k.poll("g","o",0,10);
-   k.commit("g","o",0,k.position("g","o",0)); // commit TRUOC xu ly
-   // crash: khong xu ly batch, restart
+   k.commit("g","o",0,k.position("g","o",0)); // commit TRƯỚC xử lý
+   // crash: không xử lý batch, restart
    k.resetToCommitted("g","o",0);
    eq(List.of(),k.poll("g","o",0,10)); // m1,m2 bi mat
   });
   ck("at-least-once duplicates on crash",()->{MiniKafka k=new MiniKafka();k.append("o",0,"m1");k.append("o",0,"m2");List<String> batch=k.poll("g","o",0,10);
-   // da xu ly batch nhung crash TRUOC commit
+   // đã xử lý batch nhưng crash TRƯỚC commit
    k.resetToCommitted("g","o",0);
    eq(List.of("m1","m2"),k.poll("g","o",0,10)); // doc lai -> trung
    k.commit("g","o",0,k.position("g","o",0));k.resetToCommitted("g","o",0);eq(List.of(),k.poll("g","o",0,10));
@@ -1899,7 +1899,7 @@ Trình bày: PID + sequence per partition, cách broker phân biệt retry hợp
         if (cur != null && seq == cur) {
             return "DUPLICATE"; // retry an toan: da co ban ghi, khong ghi them
         }
-        return "OUT_OF_ORDER"; // seq < last hoac nhay coc: khong chap nhan
+        return "OUT_OF_ORDER"; // seq < last hoặc nhảy cóc: không chấp nhận
     }
     synchronized int size() { return log.size(); }
     synchronized long lastSeq(int pid) { return last.getOrDefault(pid, -1L); }

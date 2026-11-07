@@ -8,3 +8,4 @@ Owns: `js/data/lessons-microservices.js`
 
 ## Notes
  Giữ nguyên, không cần làm lại.
+Reviewed-by: kilo (T292R)
