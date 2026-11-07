@@ -480,6 +480,38 @@ for (const lid of lessonIds) {
 }
 if (missingInPath.length) warn('path.js', `có ${missingInPath.length} bài học không nằm trong PATH: ${missingInPath.slice(0, 10).join(', ')}${missingInPath.length > 10 ? ' ...' : ''}`);
 
+// ---- path track 2 (window.PATH_PLATFORM, #/path/platform) ----
+{
+  const pf = sandbox.window.PATH_PLATFORM || [];
+  const seen = new Set(), seenLessons = new Set();
+  let prevOrder = 0;
+  for (const s of pf) {
+    const sid = s.id || '(no id)';
+    if (!/^pf-\d{2}$/.test(s.id || '') || seen.has(s.id)) err(PATH_FILE, `${sid}: id phải dạng pf-NN và không trùng`);
+    seen.add(s.id);
+    if (!Number.isInteger(s.order) || s.order <= prevOrder) err(PATH_FILE, `${sid}: order phải là số nguyên tăng dần`);
+    prevOrder = s.order || prevOrder;
+    if (!validPhases.has(s.phase)) err(PATH_FILE, `${sid}: phase phải là Nền tảng | Vững vàng | Senior`);
+    ['title', 'weeks', 'goal', 'project'].forEach(k => { if (typeof s[k] !== 'string' || !s[k].trim()) err(PATH_FILE, `${sid}: thiếu ${k}`); });
+    if (typeof s.project === 'string' && s.project.length < 150) err(PATH_FILE, `${sid}: project cần mô tả cụ thể (≥ 150 ký tự)`);
+    if (!Array.isArray(s.lessons)) err(PATH_FILE, `${sid}: lessons phải là mảng (có thể rỗng)`);
+    else s.lessons.forEach(lid => {
+      if (!lessonIds.has(lid)) err(PATH_FILE, `${sid}: lesson "${lid}" không tồn tại`);
+      if (seenLessons.has(lid)) err(PATH_FILE, `${sid}: lesson "${lid}" lặp lại trong PATH_PLATFORM`);
+      seenLessons.add(lid);
+    });
+    if (!Array.isArray(s.questions) || s.questions.length < 4 || s.questions.length > 8) err(PATH_FILE, `${sid}: questions cần 4–8 câu`);
+    else s.questions.forEach(q => { if (!questionIds.has(q)) err(PATH_FILE, `${sid}: question "${q}" không tồn tại`); });
+    if (!Array.isArray(s.quizTopics) || !s.quizTopics.length) err(PATH_FILE, `${sid}: quizTopics phải có ít nhất 1 topic`);
+    else s.quizTopics.forEach(t => { if (!topicIds.has(t)) err(PATH_FILE, `${sid}: quizTopics "${t}" không tồn tại`); });
+    if (!Array.isArray(s.requires)) err(PATH_FILE, `${sid}: requires phải là mảng`);
+    else s.requires.forEach(r => { const st = pf.find(x => x.id === r); if (!st || st.order >= s.order) err(PATH_FILE, `${sid}: requires "${r}" phải là chặng đứng trước trong PATH_PLATFORM`); });
+    const allowed = new Set(['id', 'order', 'phase', 'title', 'weeks', 'goal', 'project', 'lessons', 'questions', 'quizTopics', 'requires']);
+    Object.keys(s || {}).forEach(k => { if (!allowed.has(k)) err(PATH_FILE, `${sid}: field lạ "${k}"`); });
+    ['goal', 'project'].forEach(k => checkMarkup(PATH_FILE, sid, k, s[k]));
+  }
+}
+
 // ---- drills (window.DRILLS) ----
 const DRILL_KINDS = new Set(['shadow', 'qa', 'term']);
 const DRILL_THEMES = new Set(['intro', 'tech', 'behavioral', 'design', 'project', 'negotiation', 'smalltalk']);
