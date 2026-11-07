@@ -2581,15 +2581,15 @@ class ErrorBudget {
 HPA **không** phản ứng theo từng request. Chu kỳ mặc định là **15 giây**: cứ 15s đo và chỉnh một lần, giống máy lạnh đọc nhiệt độ mỗi chục giây chứ không chỉnh van liên tục. Điều này cực quan trọng khi phỏng vấn: giữa lúc tải tăng và lúc Pod mới nhận traffic, bạn có **một khoảng trễ hữu cơ** (15s đo + 30-120s boot + warm-up), và mọi quyết định sizing phải tính khoảng trễ đó.
 
 ~~~seq
-title: Mot vong reconcile cua HPA (15 giay)
+title: Một vòng reconcile của HPA (15 giây)
 actors: HPA | metrics-server | kubelet | Deployment
-HPA -> metrics-server: hoi CPU trung binh cua cac Pod
-metrics-server -> kubelet: lay so do tai tu cgroup
-kubelet --> metrics-server: CPU usage tung Pod
-metrics-server --> HPA: CPU trung binh, quy ve % theo request
-HPA -> HPA: tinh desired va ap tolerance + clamp
+HPA -> metrics-server: hỏi CPU trung bình của các Pod
+metrics-server -> kubelet: lấy số đo tải từ cgroup
+kubelet --> metrics-server: CPU usage từng Pod
+metrics-server --> HPA: CPU trung bình, quy về % theo request
+HPA -> HPA: tính desired và áp tolerance + clamp
 HPA -> Deployment: ghi replicas = desired
-note HPA..Deployment: scale xuong phai cho het stabilization window
+note HPA..Deployment: scale xuống phải chờ hết stabilization window
 ~~~
 
 ### Công thức cốt lõi và vì sao nó là phép chia
@@ -2783,7 +2783,7 @@ public class Main {
             HpaSim h = new HpaSim(2, 10, 50, new FakeClock(0));
             eq(10, h.observe(4, 1000));
         });
-        check("min clamp san tai trong, scale down dau tien khong bi giu", () -> {
+        check("min clamp sẵn tại trong, scale down đầu tiên không bị giữ", () -> {
             HpaSim h = new HpaSim(2, 10, 50, new FakeClock(0));
             eq(2, h.observe(6, 5));
         });
@@ -2794,7 +2794,7 @@ public class Main {
             c.advanceSeconds(100);
             eq(6, h.observe(6, 25));
         });
-        check("scale down duoc phep sau khi window het han", () -> {
+        check("scale down được phép sau khi window hết hạn", () -> {
             FakeClock c = new FakeClock(0);
             HpaSim h = new HpaSim(2, 20, 50, c);
             eq(6, h.observe(2, 150));
@@ -2870,16 +2870,16 @@ class HpaSim {
         int held = raw;
         for (long[] entry : history) {
             int value = (int) entry[1];
-            if (value > held) held = value;       // de xuat lon nhat trong cua so
+            if (value > held) held = value;       // đề xuất lớn nhất trong cửa sổ
         }
         return held;
     }
 }`,
       hints: [
-        'Buoc tolerance: dung {{Math.abs(ratio - 1.0) <= TOLERANCE}} truoc khi kip {{Math.ceil}}; neu nam trong vung chet thi desired = currentReplicas.',
-        'Lich su la cac cap {{(timestampMillis, recommendation)}}; ham {{clock.millis()}} cho thoi gian gia lap, khong dung {{System.currentTimeMillis()}}.',
-        'Chi ap dung "lay gia tri lon nhat trong cua so" khi {{raw < currentReplicas}}; scale up thi tra {{raw}} lien.',
-        'Xoa ban ghi cu: {{while (!history.isEmpty() && now - history.peekFirst()[0] > windowMillis) history.removeFirst();}}',
+'Bước tolerance: dùng {{Math.abs(ratio - 1.0) <= TOLERANCE}} trước khi kịp {{Math.ceil}}; nếu nằm trong vùng chết thì desired = currentReplicas.',
+'Lịch sử là các cặp {{(timestampMillis, recommendation)}}; hàm {{clock.millis()}} cho thời gian giả lập, không dùng {{System.currentTimeMillis()}}.',
+'Chỉ áp dụng "lấy giá trị lớn nhất trong cửa sổ" khi {{raw < currentReplicas}}; scale up thì trả {{raw}} liền.',
+'Xóa bản ghi cũ: {{while (!history.isEmpty() && now - history.peekFirst()[0] > windowMillis) history.removeFirst();}}',
       ],
       explain: `Đây là nguyên văn những gì controller làm, chỉ bỏ phần gọi metrics-server. Ba lớp xử lý chồng nhau: (1) {{ceil}} đảm bảo không cố tình vượt target; (2) tolerance biến ±10% thành nhiễu được tha, chặn flapping; (3) stabilization window làm scale down **chậm hơn** scale up, bằng cách lấy đề xuất lớn nhất còn sống trong cửa sổ — nên một đỉnh tải 30s không đủ để bạn bỏ Pod, và một cụm vừa phình lên phải "nguội" đủ 300s mới được co.
 
@@ -2922,7 +2922,7 @@ Bài {{lesson-devops-003}} đã dạy phần **routing**: chia {{10}}% traffic s
 - {{ROLLBACK}} — tín hiệu xấu, hạ {{0}}% ngay (bản cũ vẫn còn chạy nên rollback chỉ là đổi weight, nhanh hơn nhiều so với deploy lại).
 
 ~~~seq
-title: Canary analysis tu dong trong mot chu ky
+title: Canary analysis tự động trong một chu kỳ
 actors: Gateway | Stable | Canary | Prometheus | Analyzer
 Gateway -> Canary: 10 phan tram traffic theo userId
 Gateway -> Stable: 90 phan tram traffic con lai
@@ -3028,7 +3028,7 @@ final class Metrics {
 
     Metrics(long requests, double errorRate, double p95Millis) {
         if (requests < 0) throw new IllegalArgumentException("requests phai >= 0");
-        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phai trong 0..1");
+        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phải trong 0..1");
         if (p95Millis < 0) throw new IllegalArgumentException("p95Millis phai >= 0");
         this.requests = requests;
         this.errorRate = errorRate;
@@ -3076,22 +3076,22 @@ public class Main {
         check("canary lanh o buoc 10 thi PROMOTE", () -> {
             dec(Decision.PROMOTE, j.decide(new Metrics(1000, 0.002, 90), new Metrics(200, 0.003, 100), 10));
         });
-        check("qua it request thi CONTINUE du loi 20 phan tram", () -> {
+        check("quá ít request thì CONTINUE dù lỗi 20 phần trăm", () -> {
             dec(Decision.CONTINUE, j.decide(new Metrics(1000, 0.002, 90), new Metrics(50, 0.20, 900), 10));
         });
         check("baseline qua it mau thi cung CONTINUE", () -> {
             dec(Decision.CONTINUE, j.decide(new Metrics(30, 0.001, 90), new Metrics(500, 0.002, 95), 10));
         });
-        check("buoc lon hon doi nhieu bang chung hon", () -> {
+        check("bước lớn hơn đòi nhiều bằng chứng hơn", () -> {
             Metrics base = new Metrics(1000, 0.002, 90);
             Metrics can = new Metrics(150, 0.002, 92);
             dec(Decision.PROMOTE, j.decide(base, can, 25));
             dec(Decision.CONTINUE, j.decide(base, can, 50));
         });
-        check("regression tuong doi cua error rate thi ROLLBACK", () -> {
+        check("regression tương đối của error rate thì ROLLBACK", () -> {
             dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.002, 90), new Metrics(400, 0.015, 95), 25));
         });
-        check("vuot tran tuy doi cua error rate thi ROLLBACK", () -> {
+        check("vượt trần tương đối của error rate thì ROLLBACK", () -> {
             dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.010, 90), new Metrics(600, 0.080, 95), 25));
         });
         check("baseline da benh nang khong bi phat canary", () -> {
@@ -3100,7 +3100,7 @@ public class Main {
         check("p95 regression thi ROLLBACK", () -> {
             dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.002, 100), new Metrics(500, 0.002, 200), 25));
         });
-        check("noise duoi san khong bi coi la loi", () -> {
+        check("noise dưới sàn không bị coi là lỗi", () -> {
             dec(Decision.PROMOTE, j.decide(new Metrics(1000, 0.0, 40), new Metrics(500, 0.008, 55), 25));
         });
         check("rollout lanh manh duoc bo 4 buoc", () -> {
@@ -3145,7 +3145,7 @@ final class Metrics {
 
     Metrics(long requests, double errorRate, double p95Millis) {
         if (requests < 0) throw new IllegalArgumentException("requests phai >= 0");
-        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phai trong 0..1");
+        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phải trong 0..1");
         if (p95Millis < 0) throw new IllegalArgumentException("p95Millis phai >= 0");
         this.requests = requests;
         this.errorRate = errorRate;
@@ -3162,7 +3162,7 @@ class CanaryJudge {
     static final double REL_FACTOR = 1.5;
 
     long requiredSamples(int step) {
-        if (step < 1 || step > 100) throw new IllegalArgumentException("step phai trong 1..100");
+        if (step < 1 || step > 100) throw new IllegalArgumentException("step phải trong 1..100");
         return MIN_SAMPLES * Math.max(1L, (long) Math.ceil(step / 25.0));
     }
 
@@ -3193,10 +3193,10 @@ class CanaryJudge {
     }
 }`,
       hints: [
-        'Cuoi cung theo thu tu: kiem mau toi thieu truoc, roi kiem vi pham, roi PROMOTE. Chua du mau thi khong duoc quyet dinh gi ca.',
-        'requiredSamples: dung {{Math.ceil(step / 25.0)}} (chia cho so thuc 25.0, khong phai 25 nguyen) roi nhan MIN_SAMPLES.',
-        'breach dung cho ca error rate va p95: {{canary > ceiling && baseline <= ceiling}} la nhanh tuy doi, {{canary > floor && canary > baseline * REL_FACTOR}} la nhanh tuong doi.',
-        'rollout: dung {{break}} ngay khi quyet dinh khac PROMOTE, neu khong test "dung o buoc rollback" se thay 4 phan tu thay vi 2.',
+'Cuối cùng theo thứ tự: kiểm mẫu tối thiểu trước, rồi kiểm vi phạm, rồi PROMOTE. Chưa đủ mẫu thì không được quyết định gì cả.',
+'requiredSamples: dùng {{Math.ceil(step / 25.0)}} (chia cho số thực 25.0, không phải 25 nguyên) rồi nhân MIN_SAMPLES.',
+'breach dùng cho cả error rate và p95: {{canary > ceiling && baseline <= ceiling}} là nhánh tuyệt đối, {{canary > floor && canary > baseline * REL_FACTOR}} là nhánh tương đối.',
+'rollout: dùng {{break}} ngay khi quyết định khác PROMOTE, nếu không test "dừng ở bước rollback" sẽ thấy 4 phần tử thay vì 2.',
       ],
       explain: `Ba nhịp của {{decide}} chính là cách Argo Rollouts/Flagger đặt {{AnalysisTemplate}}. Nhịp 1 (mẫu tối thiểu) chặn false positive kinh điển: 3 lỗi trên 12 request là 25% error rate nhưng chưa có nghĩa gì về mặt thống kê. Nhịp 2 đặt **hai lớp ngưỡng chồng nhau**: trần tuyệt đối bắt thảm họa, hệ số tương đối bắt regression mà ngưỡng tuyệt đối bỏ sót; cả hai đều cần một điều kiện phụ — trần tuyệt đối chỉ được quyền giết khi baseline chưa vượt trần (không phạt canary vì bệnh sẵn), còn so sánh tương đối chỉ được quyền kết luận khi canary vượt một sàn tuyệt đối nhỏ (tránh "1.5 x 0 = 0" làm một request lỗi thành tội đồ). Nhịp 3 tăng số mẫu theo bước, vì blast radius tăng thì yêu cầu bằng chứng phải tăng.
 
@@ -3280,7 +3280,7 @@ actors: Client | Gateway | Order | Payment | Logs
 Client -> Gateway: POST /orders chua co header traceparent
 Gateway -> Gateway: sinh traceId roi dat vao MDC
 Gateway -> Order: traceparent: 00-traceId-spanId-01
-Order -> Payment: goi thanh toan, van dung traceId nay
+Order -> Payment: gọi thanh toán, vẫn dùng traceId này
 Order --> Gateway: 502 PAYMENT_DECLINED
 Payment --> Logs: moi dong log deu mang traceId
 note Logs..Logs: tra mot traceId ra ca hanh trinh
@@ -3409,13 +3409,13 @@ Ba chỗ bài này chấm điểm bạn:
       starter: `import java.util.*;
 import java.util.concurrent.*;
 
-/** Ban toi gian cua MDC: mot map gan voi thread dang chay. DA DUNG - khong can sua. */
+/** Bản tối giản của MDC: một map gắn với thread đang chạy. ĐÃ ĐÚNG - không cần sửa. */
 final class LogContext {
     private static final ThreadLocal<Map<String, String>> CTX =
             ThreadLocal.withInitial(() -> new HashMap<String, String>());
 
     static void put(String key, String value) {
-        if (key == null) throw new IllegalArgumentException("key khong duoc null");
+        if (key == null) throw new IllegalArgumentException("key không được null");
         if (value == null) CTX.get().remove(key);
         else CTX.get().put(key, value);
     }
@@ -3424,7 +3424,7 @@ final class LogContext {
         return key == null ? null : CTX.get().get(key);
     }
 
-    /** Ban sao map cua thread hien tai: sua no khong anh huong context. */
+    /** Bản sao map của thread hiện tại: sửa nó không ảnh hưởng context. */
     static Map<String, String> snapshot() {
         return new HashMap<String, String>(CTX.get());
     }
@@ -3498,14 +3498,14 @@ public class Main {
     }
 
     public static void main(String[] args) {
-        check("worker thay duoc traceId cua caller", () -> {
+        check("worker thấy được traceId của caller", () -> {
             LogContext.clear();
             LogContext.put("traceId", "T-100");
             MdcExecutor ex = oneThreadPool();
             eq("T-100", call(ex, () -> LogContext.get("traceId")));
             ex.shutdown();
         });
-        check("worker duoc don sach sau khi task chay xong", () -> {
+        check("worker được dọn sạch sau khi task chạy xong", () -> {
             LogContext.clear();
             LogContext.put("traceId", "T-200");
             MdcExecutor ex = oneThreadPool();
@@ -3560,7 +3560,7 @@ public class Main {
             eq(Boolean.TRUE, call(ex, () -> LogContext.isEmpty()));
             ex.shutdown();
         });
-        check("submit Runnable khong gia tri van truyen duoc context", () -> {
+        check("submit Runnable không giá trị vẫn truyền được context", () -> {
             LogContext.clear();
             LogContext.put("traceId", "R7");
             MdcExecutor ex = oneThreadPool();
@@ -3586,7 +3586,7 @@ public class Main {
             catch (IllegalArgumentException expected) { }
             ex.shutdown();
         });
-        check("caller co context rong van chay va giu gia tri tra ve", () -> {
+        check("caller có context rỗng vẫn chạy và giữ giá trị trả về", () -> {
             LogContext.clear();
             MdcExecutor ex = oneThreadPool();
             eq("ok", call(ex, () -> "ok"));
@@ -3599,13 +3599,13 @@ public class Main {
       reference: `import java.util.*;
 import java.util.concurrent.*;
 
-/** Ban toi gian cua MDC: mot map gan voi thread dang chay. */
+/** Bản tối giản của MDC: một map gắn với thread đang chạy. */
 final class LogContext {
     private static final ThreadLocal<Map<String, String>> CTX =
             ThreadLocal.withInitial(() -> new HashMap<String, String>());
 
     static void put(String key, String value) {
-        if (key == null) throw new IllegalArgumentException("key khong duoc null");
+        if (key == null) throw new IllegalArgumentException("key không được null");
         if (value == null) CTX.get().remove(key);
         else CTX.get().put(key, value);
     }
@@ -3636,13 +3636,13 @@ class MdcExecutor {
     private final ExecutorService delegate;
 
     MdcExecutor(ExecutorService delegate) {
-        if (delegate == null) throw new IllegalArgumentException("delegate khong duoc null");
+        if (delegate == null) throw new IllegalArgumentException("delegate không được null");
         this.delegate = delegate;
     }
 
     static Runnable wrap(Runnable task) {
-        if (task == null) throw new IllegalArgumentException("task khong duoc null");
-        final Map<String, String> captured = LogContext.snapshot();   // chup LUC WRAP, khong phai luc chay
+if (task == null) throw new IllegalArgumentException("task không được null");
+final Map<String, String> captured = LogContext.snapshot();   // chụp LÚC WRAP, không phải lúc chạy
         return () -> {
             Map<String, String> previous = LogContext.snapshot();     // thread nay co the dang mang viec khac
             LogContext.restore(captured);
@@ -3655,7 +3655,7 @@ class MdcExecutor {
     }
 
     static <T> Callable<T> wrapCallable(Callable<T> task) {
-        if (task == null) throw new IllegalArgumentException("task khong duoc null");
+        if (task == null) throw new IllegalArgumentException("task không được null");
         final Map<String, String> captured = LogContext.snapshot();
         return () -> {
             Map<String, String> previous = LogContext.snapshot();
@@ -3685,11 +3685,11 @@ class MdcExecutor {
     }
 }`,
       hints: [
-        'wrap(Runnable): dong {{LogContext.snapshot()}} dat NGOAI lambda, ngay trong than wrap, nhu vay no chay tren thread goi va duoc chup truoc khi task bi delay.',
-        'Trong lambda tra ve: lu truoc {{Map<String, String> previous = LogContext.snapshot()}}, roi {{LogContext.restore(captured)}}, chay task trong try, va {{LogContext.restore(previous)}} o finally.',
-        'submit(Callable) phai di qua wrapCallable chu khong qua wrap: wrap tra ve Runnable nen gia tri tra ve cua task bi mat.',
-        'Case "dau vao null": nem IllegalArgumentException truong hop null o constructor, wrap va wrapCallable, thi execute/submit tu dung vi chung goi wrap.',
-        'Neu case "task nem exception van duoc khoi phoi ve cu" FAIL, chac chan ban da dat {{restore}} ngoai {{finally}} hoac quen {{finally}}.',
+'wrap(Runnable): dòng {{LogContext.snapshot()}} đặt NGOÀI lambda, ngay trong thân wrap, như vậy nó chạy trên thread gọi và được chụp trước khi task bị delay.',
+'Trong lambda trả về: lưu trước {{Map<String, String> previous = LogContext.snapshot()}}, rồi {{LogContext.restore(captured)}}, chạy task trong try, và {{LogContext.restore(previous)}} ở finally.',
+'submit(Callable) phải đi qua wrapCallable chứ không qua wrap: wrap trả về Runnable nên giá trị trả về của task bị mất.',
+'Case "đầu vào null": ném IllegalArgumentException trường hợp null ở constructor, wrap và wrapCallable, thì execute/submit tự đúng vì chúng gọi wrap.',
+        'Nếu case "task ném exception vẫn được khôi phục về cũ" FAIL, chắc chắn bạn đã đặt {{restore}} ngoài {{finally}} hoặc quên {{finally}}.',
       ],
       explain: `Bốn dòng chụp - đặt - chạy - khôi phục là toàn bộ nội dung của một {{TaskDecorator}}, của {{ContextSnapshot}} trong Micrometer context-propagation và của {{Context.current().wrap(runnable)}} trong OpenTelemetry. Viết một lần trong code thuần thì bạn hiểu tại sao các thư viện kia tồn tại, và hiểu tại sao nó **không** hoạt động khi bạn quên.
 
@@ -3784,7 +3784,7 @@ Chọn độ rộng bucket: quá nhỏ (1 giây) thì nhiều bucket chỉ có v
 ### Một request sinh ra những dòng log nào
 
 ~~~seq
-title: Duong di cua mot dong access log
+title: Đường đi của một dòng access log
 actors: Client | Gateway | Order | NodeLog | Agent
 Client -> Gateway: GET /api/orders
 Gateway -> Order: forward, kem traceparent
@@ -3792,7 +3792,7 @@ Order --> Gateway: 500 sau 1240 ms
 Order -> NodeLog: in log JSON ra stdout
 NodeLog -> Agent: doc file log cua container
 Agent -> Agent: gan metadata roi day ve Loki
-note NodeLog..Agent: stdout cua container duoc luu thanh file tren node
+note NodeLog..Agent: stdout của container được lưu thành file trên node
 ~~~
 
 Cái hay bị bỏ quên: **latency**. Nhiều cấu hình nginx/gateway mặc định không ghi thời gian xử lý, hoặc chỉ ghi thời gian tính từ lúc nhận request chứ không tính lúc hàng đã ghi ra client (streaming, large payload). Nếu log không có trường latency thì không có p95 nào cả, và đó là việc phải sửa **trước khi** có sự cố, không phải trong sự cố.
@@ -3825,10 +3825,10 @@ static double p95(List<Long> latencies) {
     List<Long> sorted = new ArrayList<Long>(latencies);
     Collections.sort(sorted);
     int n = sorted.size();
-    int rank = (95 * n + 99) / 100;            // bang ceil(95n/100), dung so nguyen
+    int rank = (95 * n + 99) / 100;            // bằng ceil(95n/100), dùng số nguyên
     if (rank < 1) rank = 1;
     if (rank > n) rank = n;
-    return sorted.get(rank - 1).doubleValue(); // nearest-rank: lay mot mau THAT, khong noi suy
+    return sorted.get(rank - 1).doubleValue(); // nearest-rank: lấy một mẫu THẬT, không nội suy
 }
 ~~~
 
@@ -3853,7 +3853,7 @@ Cũng đừng lấy p95 của **toàn service** làm chỉ số duy nhất: endp
 # PromQL: ti le 5xx theo endpoint trong 5 phut gan nhat
 sum by (uri) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
   / sum by (uri) (rate(http_server_requests_seconds_count[5m]))
-# p95 theo endpoint, dung histogram cua Micrometer
+# p95 theo endpoint, dùng histogram của Micrometer
 histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket[5m])))
 ~~~
 
@@ -3892,7 +3892,7 @@ Với câu "hệ thống không có observability, bạn làm gì?", trả lời
 Check-list tự kiểm trước khi chạy test: {{p95}} của 20 mẫu {{10, 20, ..., 200}} phải là **190**; một phút không có request nào phải trả **0.0** chứ không ném lỗi; endpoint chỉ có 4xx phải **vắng mặt** trong danh sách top.`,
       starter: `import java.util.*;
 
-/** Mot dong log da parse. DA DUNG - khong can sua. */
+/** Một dòng log đã parse. ĐÃ ĐÚNG - không cần sửa. */
 final class LogLine {
     final String minute;     // "2026-05-04T10:15"
     final String method;     // "GET"
@@ -3906,11 +3906,11 @@ final class LogLine {
         if (method == null || method.isEmpty())
             throw new IllegalArgumentException("thieu method");
         if (path == null || path.isEmpty() || path.charAt(0) != '/')
-            throw new IllegalArgumentException("path phai bat dau bang dau /");
+            throw new IllegalArgumentException("path phải bắt đầu bằng dấu /");
         if (status < 100 || status > 599)
             throw new IllegalArgumentException("status ngoai 100..599: " + status);
         if (latencyMs < 0)
-            throw new IllegalArgumentException("latencyMs khong duoc am");
+            throw new IllegalArgumentException("latencyMs không được âm");
         this.minute = minute;
         this.method = method;
         this.path = path;
@@ -4045,7 +4045,7 @@ public class Main {
             eq(Long.valueOf(1L), Long.valueOf(b16.total));
             eq(Long.valueOf(1L), Long.valueOf(b16.errors));
         });
-        check("errorRate theo phut va phut khong du lieu tra zero", () -> {
+        check("errorRate theo phút và phút không dữ liệu trả zero", () -> {
             List<String> l = ls(
                 "2026-05-04T10:15:01Z GET /a 500 10",
                 "2026-05-04T10:15:02Z GET /a 200 20",
@@ -4059,10 +4059,10 @@ public class Main {
             try { AccessLogStats.statsByMinute(null); throw new AssertionError("lines null phai bi tu choi"); }
             catch (IllegalArgumentException expected) { }
         });
-        check("p95 nearest-rank 20 mau la 190 chu khong phai 200", () -> {
+        check("p95 nearest-rank 20 mẫu là 190 chứ không phải 200", () -> {
             eqd(190.0, AccessLogStats.p95(ramp20(), "GET /api/orders"));
         });
-        check("p95 mot mau va endpoint khong ton tai", () -> {
+        check("p95 một mẫu và endpoint không tồn tại", () -> {
             List<String> one = ls("2026-05-04T10:15:01Z GET /x 200 100");
             eqd(100.0, AccessLogStats.p95(one, "GET /x"));
             eqd(0.0, AccessLogStats.p95(one, "GET /khong-co"));
@@ -4091,7 +4091,7 @@ public class Main {
             eq(Long.valueOf(2L), m.get("GET /orders"));
             eq(null, m.get("POST /search"));
         });
-        check("top endpoint sap theo loi giam dan bang thi A-Z", () -> {
+        check("top endpoint sắp theo lỗi giảm dần bằng thì A-Z", () -> {
             List<String> l = new ArrayList<String>();
             l.addAll(errorsFor("POST /alpha", 5, 500));
             l.addAll(errorsFor("GET /bravo", 5, 503));
@@ -4142,11 +4142,11 @@ final class LogLine {
         if (method == null || method.isEmpty())
             throw new IllegalArgumentException("thieu method");
         if (path == null || path.isEmpty() || path.charAt(0) != '/')
-            throw new IllegalArgumentException("path phai bat dau bang dau /");
+            throw new IllegalArgumentException("path phải bắt đầu bằng dấu /");
         if (status < 100 || status > 599)
             throw new IllegalArgumentException("status ngoai 100..599: " + status);
         if (latencyMs < 0)
-            throw new IllegalArgumentException("latencyMs khong duoc am");
+            throw new IllegalArgumentException("latencyMs không được âm");
         this.minute = minute;
         this.method = method;
         this.path = path;
@@ -4177,10 +4177,10 @@ final class Bucket {
 
 class AccessLogStats {
     static LogLine parse(String line) {
-        if (line == null) throw new IllegalArgumentException("line khong duoc null");
+        if (line == null) throw new IllegalArgumentException("line không được null");
         String[] t = line.trim().split(" +");
         if (t.length != 5)
-            throw new IllegalArgumentException("can 5 truong, duoc " + t.length + " trong: " + line);
+            throw new IllegalArgumentException("cần 5 trường, được " + t.length + " trong: " + line);
         String ts = t[0];
         if (ts.length() < 16 || ts.charAt(10) != 'T')
             throw new IllegalArgumentException("timestamp phai dang 2026-05-04T10:15:32Z: " + ts);
@@ -4196,7 +4196,7 @@ class AccessLogStats {
     }
 
     static Map<String, Bucket> statsByMinute(List<String> lines) {
-        if (lines == null) throw new IllegalArgumentException("lines khong duoc null");
+        if (lines == null) throw new IllegalArgumentException("lines không được null");
         Map<String, long[]> raw = new TreeMap<String, long[]>();
         for (String l : lines) {
             if (l == null || l.trim().isEmpty()) continue;
@@ -4213,7 +4213,7 @@ class AccessLogStats {
     }
 
     static double errorRate(List<String> lines, String minute) {
-        if (minute == null) throw new IllegalArgumentException("minute khong duoc null");
+        if (minute == null) throw new IllegalArgumentException("minute không được null");
         Bucket b = statsByMinute(lines).get(minute);
         return b == null ? 0.0 : b.errorRate();
     }
@@ -4236,7 +4236,7 @@ class AccessLogStats {
     }
 
     static Map<String, Long> errorsByEndpoint(List<String> lines) {
-        if (lines == null) throw new IllegalArgumentException("lines khong duoc null");
+        if (lines == null) throw new IllegalArgumentException("lines không được null");
         Map<String, Long> m = new HashMap<String, Long>();
         for (String l : lines) {
             if (l == null || l.trim().isEmpty()) continue;
@@ -4261,11 +4261,11 @@ class AccessLogStats {
     }
 }`,
       hints: [
-        'parse: dung {{line.trim().split(" +")}} (day nay khong chua dau \, " +" la regex mot hay nhieu khoang trang), roi kiem {{t.length == 5}} va {{t[0].charAt(10)}}.',
-        'statsByMinute: dem bang {{Map<String, long[]}} voi {{long[2]}} = {total, errors}, dung {{TreeMap}} de phut duoc sap theo thu tu thoi gian.',
-        'errorRate: goi {{statsByMinute(lines).get(minute)}}; khac null tra {{b.errorRate()}}, bang null tra 0.0. Dung viet vong dem thu hai.',
-        'p95: loc {{endpoint.equals(p.endpoint())}}, {{Collections.sort}}, {{rank = (95 * n + 99) / 100}} roi tra {{vals.get(rank - 1)}}.',
-        'topErrorEndpoints: comparator phai tra {{Long.compare(b.getValue(), a.getValue())}} (dao) truoc, chi khi bang nhau moi {{a.getKey().compareTo(b.getKey())}}.',
+'parse: dùng {{line.trim().split(" +")}} (dãy này không chứa dấu \, " +" là regex một hay nhiều khoảng trắng), rồi kiểm {{t.length == 5}} và {{t[0].charAt(10)}}.',
+'statsByMinute: đếm bằng {{Map<String, long[]>}} với {{long[2]}} = {total, errors}, dùng {{TreeMap}} để phút được sắp theo thứ tự thời gian.',
+'errorRate: gọi {{statsByMinute(lines).get(minute)}}; khác null trả {{b.errorRate()}}, bằng null trả 0.0. Đừng viết vòng đếm thứ hai.',
+'p95: lọc {{endpoint.equals(p.endpoint())}}, {{Collections.sort}}, {{rank = (95 * n + 99) / 100}} rồi trả {{vals.get(rank - 1)}}.',
+'topErrorEndpoints: comparator phải trả {{Long.compare(b.getValue(), a.getValue())}} (đảo) trước, chỉ khi bằng nhau mới {{a.getKey().compareTo(b.getKey())}}.',
       ],
       explain: `Bốn hàm thống kê chia sẻ đúng một khuôn: **lọc - nhóm - đếm - sắp**. Đây chính xác là những gì {{group by}} trong SQL và {{sum by (uri)}}, {{rate()}} trong PromQL làm; viết được nó bằng tay một lần thì bạn hiểu tại sao dashboard cần các label và tại sao cardinality của label lại đắt.
 
