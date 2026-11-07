@@ -4543,11 +4543,7 @@ Khong bao giờ dua Testcontainers vao ung dung production chay tren Kubernetes 
 - Cac lop test ghi vao cung schema va chay dong bo: fail ngau nhien, mat hang ngay debug.
 
 > Senior tip: trinh biet quyet dinh nay voi lead bang so cua chinh team: suite repository 300 test chay 4 phut 20 giay voi Postgres container dung chung so voi 1 phut 10 giay voi H2; trong 12 thang qua chung ta bat duoc 4 loi SQL chi loi tren Postgres, moi lan sua production mat khoang mot ngay. Do là lap luan cua ky su co kinh nghiem.`,
-  follow: [
-    'Ryuk container bi tat thi ban xu ly don container nhu the nao tren runner self-hosted?',
-    'Lam sao chay Testcontainers tren GitHub Actions runner khong co Docker daemon?',
-    'Can bang giua test nhanh (H2 embed) va test chinh (Testcontainers) trong mot module the nao?'
-  ],
+  follow: ['Ryuk bị tắt (ví dụ trên runner self-hosted hạn chế quyền), bạn dọn container rác như thế nào?', 'Làm sao chạy Testcontainers trên CI không có Docker daemon cục bộ (Docker-in-Docker, Testcontainers Cloud)?', 'Cân bằng giữa test nhanh và test chạy trên DB thật trong cùng một module thế nào?'],
   tags: ['Testcontainers', 'Ryuk', 'reuse-container', 'singleton-container', 'CI'],
   refs: [{ type: 'doc', title: 'Testcontainers documentation', url: 'https://testcontainers.org' }]
 },
@@ -4555,472 +4551,381 @@ Khong bao giờ dua Testcontainers vao ung dung production chay tren Kubernetes 
   id: 'testing-042',
   topic: 'testing',
   level: 'senior',
-  q: 'Mot test fail khoang 1 lan tren 30 lan chay ma khong co thay doi code. Ban phan loai nguyen nhan flaky test the nao, va quy trinh dieu tra co he thong de sua tuc goc la gi?',
-  a: `**Tom tat:** Flaky test la cung mot commit, cung input, nhung ket qua khac nhau giua cac lan chay. Flaky luon co mot ngoai khong xac dinh nam sau: thoi gian, thu tu thuc thi, du lieu dung chung, hoac tac vu async chua xong. Cach xu ly dung khong phai "chay lai cho xanh" nhung la tai hien co chu dich, co lap nguyen nhan, sua tuc goc, va co quy trinh team de khong de flaky tich luu lam mat nien tin vao CI.
+  q: 'API thanh toán của bạn hỗ trợ idempotency key. Bạn viết test thế nào để chứng minh nhiều request cùng key đến đồng thời chỉ trừ tiền đúng một lần?',
+  a: `**Tóm tắt:** Test idempotency phải tái hiện đúng điều kiện gây lỗi thật: **nhiều request cùng idempotency key đến gần như đồng thời**, chạy trên **DB thật** (Testcontainers) vì cơ chế chống trùng nằm ở unique constraint và transaction của DB. Test thả N thread cùng lúc bằng {{CountDownLatch}}, rồi khẳng định trạng thái cuối: đúng **một** bút toán, số dư trừ đúng **một** lần, các request còn lại nhận cùng kết quả hoặc 409.
 
-### Phan loai nguyen nhan flaky
-| Nhom | Dau hieu nhan biet | Vi du thuc te |
-|---|---|---|
-| Thoi gian | fail vao nua dem, cuoi thang, ngay 29/2, hoac khi may CI chay cham | assert elapsed < 100 ms, goi Instant.now() truc tiep, Thread.sleep |
-| Thu tu thuc thi | do khi chay song song, xanh khi chay mot class duy nhat | test A tao du lieu, test B doc du lieu do; bien static dung chung |
-| Du lieu dung chung | do khi co test khac chay truoc, do sau khi ai do seed DB | moi test dung dong id = 1 trong cung bang |
-| Tac vu async | assert truoc khi message/event xu li xong | Kafka listener, @Async, CompletableFuture chua ket thuc |
-| Port va mang | Address already in use, fail khi hai job chong nhau | hardcode cong 8080, localhost giai quyet thanh IPv6 ::1 |
-| Mu gio / locale | "may toi dung, CI sai" | String.format, toLowerCase voi chu I tieng Tho, mu gio khac |
+### Vì sao test tuần tự không đủ
+Test kiểu "gọi API hai lần liên tiếp, lần hai trả kết quả cũ" chỉ kiểm tra nhánh **đã có bản ghi**. Lỗi thật trên production xảy ra khi hai request đến cách nhau vài mili giây: cả hai cùng đọc "chưa có key", cả hai cùng trừ tiền (check-then-act). Chỉ chạy song song mới lộ ra lỗi này. Và phải dùng **cùng loại DB** với production: H2 xử lý lock và isolation khác PostgreSQL, nên test có thể xanh trên H2 mà vẫn sai trên Postgres.
 
-Nguyen nhan cuoi cung hai khi la bug thuc cua code production (race condition, deadlock, timeout qua sat) ma test vo tin loi ra — thi phai sua code, khong phai sua test.
-
-### Quy trinh dieu tra 5 buoc
-Buoc 1 - Xac nhan flaky. Chay lai dung commit do 20-50 lan, dem so lan do:
-~~~bash
-for i in $(seq 1 20); do
-  mvn -q test -Dtest=OrderServiceIT || echo "red run $i"
-done
-~~~
-Neu so lan do nho hon tong so lan chay => flaky xac nhan.
-
-Buoc 2 - Tai hien co chu dich. Doi thu tu chay test, doi mu gio, doi locale, chay tren may khac. Muc tuoc lam flaky fail lien tuc; neu khong tai hien duoc, van la flaky chi can quan sat them.
-
-Buoc 3 - Co lap nguyen nhan. Chay mot class test don le, tat parallel test, comment bo cac test khac trong cung class. Nguyen nhan thuong nam o chia chung state giua cac test.
-
-Buoc 4 - Tim ngoai khong xac dinh. Dung bang phan loai tren: inject Clock thay Instant.now(), thay Thread.sleep bang Awaitility, tach bien static, dat seed co dinh cho random, dung port dong, moi test tu tao du lieu rieng.
-
-Buoc 5 - Sua tuc goc va chot. Chay 50 lan xanh o 2 thu tu va 2 mu gio; them regression test de flaky khong tai phat.
-
-### Vi du sua flaky thoi gian
+### Cách tạo race có chủ đích
 ~~~java
-// Sai: phu thuoc gio he thong
-boolean isExpired = Instant.now().isAfter(voucher.expiresAt());
-
-// Dung: inject dong ho, test gan dong ho co dinh
-boolean isExpired(Clock clock) {
-    return Instant.now(clock).isAfter(voucher.expiresAt());
+@Test
+void sameKeyConcurrentRequestsChargeOnce() throws Exception {
+    int threads = 20;
+    var start = new CountDownLatch(1);
+    var pool = Executors.newFixedThreadPool(threads);
+    List<Future<Integer>> results = new ArrayList<>();
+    for (int i = 0; i < threads; i++) {
+        results.add(pool.submit(() -> {
+            start.await();                                   // mọi thread chờ ở vạch xuất phát
+            return client.charge("key-123", 100_000).statusCode();
+        }));
+    }
+    start.countDown();                                       // thả cùng lúc để tạo tranh chấp
+    pool.shutdown();
+    assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS)); // có timeout, không treo CI
+    for (var f : results) assertThat(f.get()).isIn(200, 409);
+    assertThat(ledgerRepo.countByIdempotencyKey("key-123")).isEqualTo(1); // đúng 1 bút toán
+    assertThat(walletRepo.balance(USER_ID)).isEqualTo(INITIAL - 100_000); // trừ đúng 1 lần
 }
-// Test
-Clock fixed = Clock.fixed(Instant.parse("2026-03-01T10:00:00Z"), ZoneOffset.UTC);
 ~~~
+Điểm mấu chốt: **assert trạng thái cuối trong DB**, không chỉ HTTP status. Lặp test nhiều lần (ví dụ {{@RepeatedTest(20)}}) để code sai lộ lỗi ổn định thay vì thỉnh thoảng.
 
-### Vi du sua flaky async
-~~~java
-// Sai: cho cang 2 giay roi assert
-Thread.sleep(2000);
-assertThat(order.getStatus()).isEqualTo(Status.PAID);
+### Các tình huống cần có
+| Tình huống | Kỳ vọng |
+|---|---|
+| Cùng key, cùng body, đồng thời | 1 bút toán; các request khác trả cùng kết quả hoặc 409 "đang xử lý" |
+| Cùng key, **khác** body | 422: key đã dùng cho request khác (tránh nhầm lẫn của client) |
+| Request đầu lỗi giữa chừng (DB rollback) | Gọi lại cùng key được xử lý lại, không bị kẹt trạng thái "đang xử lý" mãi |
+| Key hết hạn lưu (ví dụ sau 24 giờ) | Hành vi đúng như tài liệu API mô tả |
+| Consumer Kafka nhận trùng message | Xử lý 1 lần nhờ bảng processed_message với unique key |
 
-// Dung: cho theo dieu kien, that nhanh khi het thoi gian
-await().atMost(Duration.ofSeconds(3))
-       .pollInterval(Duration.ofMillis(50))
-       .untilAsserted(() ->
-           assertThat(orderRepository.findById(id).orElseThrow().getStatus())
-               .isEqualTo(Status.PAID));
-~~~
+### Ví dụ đời thực
+Ví điện tử có test idempotency gọi tuần tự, luôn xanh. Production ghi nhận 37 giao dịch bị trừ tiền hai lần trong một tháng, đều khi app mobile retry sau 2 giây do mạng chậm. Đọc code: service kiểm tra {{findByKey}} rồi mới insert, không có unique constraint. Team viết test song song như trên: code cũ fail 20/20 lần (có lần tạo 4 bút toán). Sửa: unique constraint trên idempotency key, insert bản ghi "PROCESSING" trước khi trừ tiền trong cùng transaction, bắt lỗi trùng khoá và trả kết quả đã lưu. Test xanh 200/200 lần chạy lặp; không còn trừ tiền trùng.
 
-### Tai sao "chay lai cho xanh" la cai the nhat
-Retry bien do thanh xanh nhung giu nguyen rui ro. Team bat dau bo qua trang thai CI do, luc do moi toi uu ve toc do deu vo nghia. Neu bat buoc phai retry do su co ha tang, hay tach retry sang job rieng va canh bao khi ti le retry tang.
+### Sai lầm hay gặp
+- Chạy test này trên H2 hoặc mock repository: không có lock và constraint thật nên không chứng minh được gì.
+- Dùng {{Thread.sleep}} để "tạo" đồng thời: không xác định, lúc lộ lúc không.
+- Chỉ assert status code: hai request đều 200 nhưng ledger có 2 dòng vẫn lọt.
+- Đặt {{@Transactional}} trên class test: các thread khác không thấy dữ liệu chưa commit, kết quả sai lệch.
 
-### Tren production
-Theo doi flaky rate: so lan CI do khong kem thay doi code chia cho tong so lan chay. Ngung duoi duoi 0,5% moi thang. Neu vuot, dung mot tinh nang de don flaky. Flaky bi cach ly (quarantine) ma khong co han chot thi khong bao ve gi ca - qua han hay viet lai o tang thap hon hoac xoa.
+### Trả lời mẫu khi phỏng vấn
+"Tôi test idempotency theo đúng điều kiện gây lỗi thật trên production, tức nhiều request cùng key đến gần như cùng lúc, vì test gọi tuần tự chỉ kiểm tra nhánh đã có bản ghi. Tôi dùng Testcontainers với đúng PostgreSQL như production, vì cơ chế chống trùng nằm ở unique constraint và transaction. Trong test, hai mươi thread chờ một CountDownLatch rồi được thả cùng lúc, gọi API với cùng key; executor có timeout để không treo CI. Sau đó tôi không chỉ kiểm tra status mà kiểm tra trạng thái cuối trong DB: đúng một bút toán, số dư chỉ trừ một lần. Tôi thêm các tình huống cùng key khác body, request đầu lỗi giữa chừng, và chạy lặp nhiều lần để code sai lộ lỗi ổn định. Tôi tránh đặt Transactional trên class test vì các thread khác không thấy dữ liệu chưa commit."
 
-> Senior tip: con số flaky rate là lập luận dễ hiểu nhất với quản lý. Khi developer bấm "rerun" theo phản xạ, pipeline đã mất tác dụng — đó là lúc bạn cần nguồn lực để dọn, và flaky rate là lập luận dễ hiểu nhất với quản lý.`,
-  follow: [
-    'Ban dung cong cu nao de theo doi flaky tung test id va ai doc bao cao hang thang?',
-    'Flaky test o tang E2E, ban ha no xu tang thap hon bang cach nao?',
-    'Flaky thuc chat la race condition o code production, ban xu ly the nao voi deadline?'
-  ],
-  tags: ['flaky-test', 'determinism', 'Awaitility', 'investigation', 'CI']
+> Senior tip: hãy chạy test đồng thời này trên **code cũ trước khi sửa** và giữ ảnh chụp kết quả fail. Một test chưa bao giờ đỏ trên code lỗi thì chưa chứng minh được gì; với tiền, bằng chứng đó còn giúp thuyết phục ưu tiên sửa.`,
+  follow: ['Vì sao test này phải chạy trên PostgreSQL thật thay vì H2 hoặc mock repository?', 'Nếu request đầu tiên lỗi giữa chừng, request gọi lại cùng key phải xử lý ra sao và test thế nào?', 'Bạn test consumer Kafka nhận trùng message theo cách tương tự như thế nào?'],
+  tags: ['idempotency', 'concurrency', 'Testcontainers', 'CountDownLatch', 'payment']
 },
 {
   id: 'testing-043',
   topic: 'testing',
   level: 'senior',
-  q: 'Mutation testing voi PIT (Pitest) sinh mutant tu dau, tinh diem nhu the nao, va ban dung ket qua mutation score lam gi thay vi chi nhin coverage?',
-  a: `**Tom tat:** Coverage chi noi dong code da duoc chay, khong noi test co bat loi hay khong. PIT sua bytecode cua class thanh cac ban "sai co chu dich" goi la mutant (doi >= thanh >, doi phep cong thanh tru, bo mot loi goi, tra gia tri khac), roi chay lai test. Test do => mutant bichet (test cua ban co y nghia). Test xanh => mutant song sot (ban thieu mot assert quan trong). Mutation score = mutant bi chet / tong mutant duoc xet. Dung mutation score lam backlog "test can bo sung", khong phai muc tieu 100%.
+  q: 'Làm sao phát hiện thay đổi phá vỡ hợp đồng API (đổi tên trường, đổi định dạng ngày) trước khi app mobile cũ bị hỏng? Snapshot/approval test cho JSON response hoạt động thế nào?',
+  a: `**Tóm tắt:** Snapshot (approval) test lưu response JSON đã được duyệt vào file, mỗi lần chạy so sánh response mới với file đó. Nó bắt **thay đổi ngoài ý muốn** của API: đổi tên trường, đổi kiểu, mất trường, đổi định dạng ngày. Để kiểm tra **tương thích ngược**, so sánh ở chế độ **lenient** (cho phép thêm trường, không cho mất/đổi trường), loại trừ trường động như thời gian và id, và kết hợp với so sánh OpenAPI spec trong CI.
 
-### PIT chay nam buoc
-1. Doc bytecode cua class trong targetClasses, sinh mutant theo tung mutation operator.
-2. Doc du lieu coverage de biet test nao cham toi class nao => moi mutant chi chay cac test lien quan, khong chay ca suite (day là ly do PIT nhanh hon tuong tuong).
-3. Nap mutant vao JVM tach bie, chay cac test da chon.
-4. Test do => killed. Test xanh => survived. Test treo => tinh la killed (co timeout bao ve).
-5. In bao cao HTML (target/pit-reports): danh sach mutant song sot kem so dong code - day la danh sach issue cu the nhat cho team.
+### Vấn đề nó giải quyết
+Unit test thường assert vài trường quan trọng; không ai assert đủ 40 trường của một response. Khi dev refactor DTO, đổi {{@JsonProperty}}, nâng Jackson hay đổi cấu hình {{ObjectMapper}} (ví dụ ngày thành số thay vì chuỗi ISO), các client mobile cũ có thể hỏng mà test vẫn xanh. Snapshot test phủ **toàn bộ hình dạng** response với chi phí viết rất thấp.
 
-Operator hay gap: doi toan tu so sanh, doi + - *, bo loi goi phuong thuc tra void, thay gia tri tra ve bang 0/1/null/true, phu dinh dieu kien, doi tang giam bien.
+### Cơ chế so sánh và chế độ
+Spring Boot test đã kèm JSONAssert. Chế độ **STRICT** yêu cầu khớp hoàn toàn (không thừa trường, mảng đúng thứ tự). Chế độ **LENIENT** cho phép response thực tế có **thêm** trường và mảng khác thứ tự. Đây đúng là định nghĩa tương thích ngược cho client đọc JSON bỏ qua trường lạ: thêm trường là an toàn, xoá hoặc đổi tên là phá vỡ.
 
-### Vi du: 100% line coverage nhung mutation score hon mot nua
-Code tinh phi giao dich:
 ~~~java
-BigDecimal fee(BigDecimal amount, Tier tier) {
-    BigDecimal discount = switch (tier) {
-        case VIP   -> amount.multiply(new BigDecimal("0.10"));
-        case GOLD  -> amount.multiply(new BigDecimal("0.05"));
-        default    -> BigDecimal.ZERO;
-    };
-    return amount.subtract(discount);
+@Test
+void orderDetailResponseIsBackwardCompatible() throws Exception {
+    String actual = mvc.perform(get("/api/v1/orders/{id}", ORDER_ID))
+        .andExpect(status().isOk())
+        .andReturn().getResponse().getContentAsString();
+    String approved = Files.readString(Path.of("src/test/resources/approved/order-detail.json"));
+    // Bỏ qua trường động; LENIENT: cho phép thêm trường mới, cấm mất/đổi trường cũ
+    var comparator = new CustomComparator(JSONCompareMode.LENIENT,
+        new Customization("createdAt", (a, b) -> true),
+        new Customization("traceId", (a, b) -> true));
+    JSONAssert.assertEquals(approved, actual, comparator);
 }
 ~~~
-Team chi co mot test: tier = VIP, amount 1.000.000, ky vong 900.000. Moi dong deu chay => line coverage 100%. PIT sinh khoang 12 mutant, ket qua minh hoa:
 
-| Mutant | Ket qua | Test can viet them |
-|---|---|---|
-| VIP: 0.10 -> 0.11 | killed | da co |
-| GOLD: 0.05 -> 0.06 | survived | test GOLD 1.000.000 -> 950.000 |
-| default: ZERO -> amount | survived | test BRONZE khong duoc giam |
-| subtract -> add | killed | da co |
-| bo lenh multiply o nhanh VIP | survived | assert chat gia tri tra ve, khong chi "khong nem loi" |
-| dao thu tu nhanh switch | survived | test ca ba hang trong mot bang du lieu |
+### Quy trình cập nhật snapshot
+- Thay đổi **có chủ đích** (thêm trường): cập nhật file approved trong cùng PR, reviewer thấy diff JSON rõ ràng.
+- Thay đổi **phá vỡ** (xoá, đổi tên, đổi kiểu): không sửa snapshot mà tạo version mới ({{/api/v2}}) hoặc giữ trường cũ có đánh dấu deprecated một thời gian.
+- Dữ liệu test cố định (Clock cố định, id cố định) để snapshot không đổi mỗi lần chạy.
+- Ở tầng spec: sinh OpenAPI từ code và chạy công cụ so sánh spec (ví dụ openapi-diff) giữa nhánh chính và PR, fail nếu có breaking change.
 
-Khoang 7/12 bi chet => mutation score khoang 58% dù line coverage 100%. Bang mutant song sot chi thang: thieu hai nhanh con lai va thue assert tren gia tri tra ve.
+### Ví dụ đời thực
+Team nâng Spring Boot, cấu hình mặc định của Jackson cho {{OffsetDateTime}} đổi định dạng múi giờ; một lần khác dev đổi tên {{totalAmount}} thành {{total}} khi refactor. Lần thứ hai làm app Android bản cũ (vẫn chiếm 30% người dùng) hiện tổng tiền bằng 0 trong 2 ngày. Team thêm snapshot test cho 25 endpoint mà mobile dùng, chế độ lenient, cộng kiểm tra OpenAPI diff trong CI. Trong 6 tháng sau, CI chặn 4 thay đổi phá vỡ; 3 trong số đó dev không hề biết mình đã đổi hợp đồng API.
 
-### Cau hinh Maven
-~~~xml
-<plugin>
-  <groupId>org.pitest</groupId>
-  <artifactId>pitest-maven</artifactId>
-  <configuration>
-    <targetClasses>
-      <param>com.acme.order.domain.*</param>
-    </targetClasses>
-    <mutationThreshold>70</mutationThreshold>
-    <outputFormats>
-      <param>HTML</param>
-    </outputFormats>
-  </configuration>
-</plugin>
-~~~
-Spring Boot 3.x + JUnit 5 can them pitest-junit5-plugin vi PIT can engine rieng de chay test JUnit 5.
+### Sai lầm hay gặp
+- Dùng STRICT cho mọi thứ: thêm một trường cũng đỏ, dev quen cập nhật snapshot mù.
+- Snapshot chứa thời gian, UUID ngẫu nhiên: đỏ mỗi lần chạy.
+- Tự động "approve" snapshot mới trong CI: mất toàn bộ giá trị của test.
+- Snapshot quá lớn (cả danh sách 500 phần tử): diff không ai đọc nổi; chỉ cần 2–3 phần tử đại diện.
 
-### Chay tren CI
-- Chi chay PIT cho module domain/lo nghiep vu, khong chay toan bo repo - thoi gian chay tang gap nhieu lan so voi test thuong.
-- Dat mutationThreshold lam quality gate (vi du 70% tren module domain).
-- Bat withHistory de lan sau chi xet lai mutant cua code da doi - cong tac giam thoi gian manh nhat.
-- Nhiep hop ly: nightly cho module lo, hoac theo PR tren module o dinh; khong chay tren test E2E nang vi moi mutant khoi dong ca context se chậm kinh hoang.
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng snapshot test để khoá hình dạng của response API mà client đang phụ thuộc. Response được so với file JSON đã duyệt nằm trong repo; thay đổi có chủ đích thì cập nhật file trong cùng PR để reviewer thấy diff. Để kiểm tra tương thích ngược, tôi so ở chế độ lenient của JSONAssert: thêm trường mới vẫn qua, còn xoá, đổi tên hay đổi kiểu một trường thì fail, đúng với định nghĩa không phá client cũ. Các trường động như thời gian hay trace id được loại khỏi so sánh, và dữ liệu test dùng Clock và id cố định để snapshot ổn định. Ở tầng hợp đồng, tôi so sánh OpenAPI spec giữa PR và nhánh chính để chặn breaking change. Nếu thật sự cần phá vỡ, tôi tạo version mới hoặc giữ trường cũ có deprecation thay vì sửa snapshot."
 
-### Bai the
-- Dat KPI mutation score toan cong ty => sinh test rac chi de chet mutant (cung canh benh cua coverage).
-- Mutant tuong duong (sua code nhung hanh vi khong doi, vi du x + 0, tach if (a && b) thanh hai if long nhau) van hien la survived; PIT khong tu nhan ra, ban phai doc bao cao HTML va loai bo. 100% la bat kha thi, khong phai muc tieu.
-- Doc chi so tong ma khong mo bao cao HTML: gia tri nam o danh sach mutant song sot, khong o con so.
-
-### Tren production
-Mutant song sot nhat hay gap la "lenh goi bi bo" va "dieu kien phu dinh thieu" - chinh la chỗ code production hay sai. Hay bien moi mutant song sot thanh mot issue nho "them assert". Sau hai quy, team khong con viet test "de co assert" nua.
-
-> Senior tip: dung PIT theo diff. Chay nightly tren module lo, lay mutant song sut cua code thay doi trong quy, bien moi mutant thanh mot issue nho. Mutation score se tu tang ma khong can ai ra lenh.`,
-  follow: [
-    'Ban uoc luong thoi gian chay PIT cho module 20.000 dong the nao truoc khi de xuat voi team?',
-    'Mutant song sut nao dan lo nhat: toan tu so sanh hay loi goi bi bo, vi sao?',
-    'Co nen dat mutation threshold lam gate chan merge khong, va o muc nao hop ly cho code moi?'
-  ],
-  tags: ['PIT', 'mutation-testing', 'coverage', 'quality-gate', 'test-debt'],
-  refs: [{ type: 'doc', title: 'Pitest - mutation testing system', url: 'https://pitest.org' }]
+> Senior tip: ưu tiên snapshot cho các endpoint **mobile** dùng, vì bạn không thể ép người dùng cập nhật app. Web frontend deploy cùng lúc với backend thì sửa được nhanh; app trên điện thoại khách thì phải sống chung với hợp đồng cũ nhiều tháng.`,
+  follow: ['Chế độ LENIENT và STRICT của JSONAssert khác nhau thế nào, và vì sao LENIENT khớp với định nghĩa tương thích ngược?', 'Bạn xử lý trường động (thời gian, UUID) trong snapshot ra sao?', 'Khi bắt buộc phải thay đổi phá vỡ, bạn làm gì thay vì cập nhật snapshot?'],
+  tags: ['snapshot-testing', 'approval-testing', 'JSONAssert', 'backward-compatibility', 'OpenAPI']
 },
 {
   id: 'testing-044',
   topic: 'testing',
   level: 'senior',
-  q: 'Contract testing giua consumer va provider (Pact / Spring Cloud Contract) chay trong pipeline nhu the nao? Vi sao no chan breaking change ngay tren CI, va no khong bat duoc gi?',
-  a: `**Tom tat:** Contract test kiem tra hinh dang API giua hai service khong can chay ca hai cung luc. Huong consumer-driven (Pact): consumer viet ky yeu request/response, test voi mot mock server duoc tuong tu tu chinh pact, roi publish pact len Pact Broker. Provider CI keo pact ve, verify bang ung dung thuc + provider state (du lieu seed truoc moi interaction). Neu provider tra loi khac khop pact, build provider do truoc khi deploy, va cong can-i-deploy chan ca hai phia.
+  q: 'Service của bạn gọi API của đối tác (thanh toán, vận chuyển). Bạn test timeout, retry, circuit breaker và các lỗi mạng của client đó thế nào mà không gọi đối tác thật?',
+  a: `**Tóm tắt:** Code gọi đối tác (cổng thanh toán, vận chuyển) phải được test với **lỗi mạng giả lập**: chậm, ngắt kết nối, 5xx, 429, response sai định dạng. WireMock chạy một HTTP server thật trong test, nên client đi qua đúng stack thật (timeout của HTTP client, retry, circuit breaker, deserialize). Test kiểm tra: timeout có hiệu lực, retry đúng số lần và **chỉ** với lỗi tạm thời, idempotency key giữ nguyên giữa các lần retry, và circuit breaker mở khi lỗi liên tục.
 
-### Ba artefact
-| Artefact | Ai tao | Chua gi |
+### Vì sao không mock interface của client
+Nếu mock {{PaymentClient}} bằng Mockito, bạn bỏ qua đúng những phần hay hỏng: cấu hình timeout của {{RestClient}}/{{WebClient}}, Resilience4j bọc quanh, mapping lỗi HTTP sang exception, parse JSON. WireMock đặt ranh giới ở **dây mạng**: code của bạn chạy y như production, chỉ có server bên kia là giả.
+
+### Các tình huống lỗi WireMock tạo được
+| Tình huống | Cách tạo | Kỳ vọng ở client |
 |---|---|---|
-| Pact file (JSON) | Consumer (sinh sau khi test chay) | ten consumer/provider, danh sach interaction (method, path, header, body kem matcher), phien ban commit |
-| Provider state | Provider khai bao | du lieu can seed truoc khi gia lap request, vi du "don OD-999 khong ton tai" |
-| Verification result | Provider CI | pact version nao duoc provider version nao verify, pass hay fail |
+| Đối tác chậm | {{withFixedDelay(5000)}} | Timeout sau 2 giây, không chờ 5 giây |
+| Ngắt kết nối | {{withFault(Fault.CONNECTION_RESET_BY_PEER)}} | Retry nếu an toàn, lỗi rõ ràng nếu hết lượt |
+| 503 rồi 200 | Scenario có trạng thái | Retry 1 lần rồi thành công |
+| 400 nghiệp vụ | status 400 + body lỗi | Không retry, map thành lỗi nghiệp vụ |
+| 429 + Retry-After | header Retry-After | Chờ đúng hoặc trả lỗi tạm thời |
+| JSON thiếu trường | body sai schema | Lỗi parse được xử lý, không NPE |
 
-Broker chi la database kem UI + API luu ba cai do, plus ma tran "version nao tuong chiet voi version nao".
+### Ví dụ test retry giữ idempotency key
+~~~java
+@RegisterExtension
+static WireMockExtension wm = WireMockExtension.newInstance()
+    .options(wireMockConfig().dynamicPort()).build();
 
-### Matcher quan trong
-Consumer khong nen hardcode gia tri cu the trong pact, neu khong provider verify se fail vi du lieu test cua ho khac:
-- like("123"): chap nhan moi chuoi.
-- term(pattern, example): phai khop regex, vi du ma don OD-[0-9]+.
-- eachLike(item): mang co it nhat mot phan tu, kiem tra hinh dang phan tu.
+@DynamicPropertySource
+static void props(DynamicPropertyRegistry r) { r.add("partner.base-url", wm::baseUrl); }
 
-### Luong CI day du (~~~seq)
-~~~seq
-title: Consumer-driven contract test
-actors: Consumer CI | Pact Broker | Provider CI | Pipeline deploy
-Consumer CI -> Pact Broker: publish pact theo commit
-Provider CI -> Pact Broker: keo pact cua consumer
-Provider CI -> Provider CI: verify ung dung thuc + provider state
-Provider CI -> Pact Broker: ghi ket qua verify
-Pipeline deploy -> Pact Broker: hoi can-i-deploy
-Pact Broker --> Pipeline deploy: OK hoac BLOCK
+@Test
+void retriesOnceOn503AndKeepsIdempotencyKey() {
+    wm.stubFor(post("/pay").inScenario("flaky").whenScenarioStateIs(STARTED)
+        .willReturn(aResponse().withStatus(503)).willSetStateTo("recovered"));
+    wm.stubFor(post("/pay").inScenario("flaky").whenScenarioStateIs("recovered")
+        .willReturn(okJson("{\\"status\\":\\"PAID\\"}")));
+
+    var result = paymentClient.pay("ord-1", 100_000);
+
+    assertThat(result.status()).isEqualTo("PAID");
+    wm.verify(2, postRequestedFor(urlEqualTo("/pay"))
+        .withHeader("Idempotency-Key", equalTo("ord-1")));   // cùng key ở cả 2 lần
+}
 ~~~
+Test timeout nên đo thời gian bằng giới hạn trên rộng (ví dụ {{assertTimeoutPreemptively}} 4 giây cho timeout cấu hình 2 giây) để không flaky trên CI chậm.
 
-### Ba chinh sach an toan
-1. Pending pacts: pact moi cua consumer ma provider chua tuong tu verify => provider build fail co chu dich, ep provider verify truoc khi consumer duoc deploy.
-2. Backwards compatibility: pact moi khong duoc phe request/response ma consumer dang chay production dang dung.
-3. can-i-deploy dat o pipeline deploy cua ca hai phia: consumer chi duoc len khi provider da verify; provider chi duoc len khi con dap ung pact cua consumer production.
+### Ví dụ đời thực
+Service đặt vé gọi hãng bay qua HTTP. Cấu hình retry 3 lần cho mọi lỗi, kể cả timeout của POST đặt chỗ, và không có idempotency key. Khi hãng bay chậm, một khách bị giữ 3 chỗ, tổng cộng 140 chỗ bị giữ thừa trong một buổi tối. Team viết bộ test WireMock: delay 5 giây với timeout 2 giây, 503 rồi 200, reset kết nối. Test lộ ra 2 lỗi: timeout đọc không được cấu hình (client chờ mặc định rất lâu), và retry POST không có key. Sau khi sửa (timeout 2 giây, retry chỉ cho 503/429 và lỗi kết nối, key theo mã đơn, circuit breaker mở khi 50% lỗi trong 20 lời gọi), sự cố tương tự không lặp lại.
 
-Voi Spring Cloud Contract (huong nguoc: provider viet contract), framework sinh san stub WireMock cho consumer va test phia provider, khong can broker rieng, nhung phat hanh artifact stub len Nexus/Maven.
+### Sai lầm hay gặp
+- Chỉ test đường thành công với WireMock: bỏ lỡ toàn bộ giá trị của nó.
+- Retry cả lỗi 400: gửi lại request sai vô ích và có thể bị đối tác chặn.
+- Dùng port cố định: test song song va chạm; luôn dùng dynamic port.
+- Test circuit breaker phụ thuộc thời gian thật: cấu hình cửa sổ nhỏ trong profile test và reset breaker giữa các test.
 
-### Bat duoc gi / khong bat duoc gi
-| Bat duoc | Khong bat duoc |
-|---|---|
-| Doi ten field, doi kieu du lieu, bo field bat buoc | Nghiep vu sai (tinh tien nham, tru nham hang) |
-| Doi path/method/endpoint, doi ma status | Noi dung du lieu, thu tu nhieu loi goi |
-| Header/authorization moi bi thieu | Timeout, retry, cau hinh resilience |
-| Response mang rong/null o field consumer giua dinh co | Hieu nang, lock, rang buoc DB |
+### Trả lời mẫu khi phỏng vấn
+"Với code gọi đối tác, tôi không mock interface client mà dùng WireMock làm server HTTP giả, để code đi qua đúng stack thật: timeout của HTTP client, retry, circuit breaker và parse JSON. Tôi viết test cho từng loại lỗi: đối tác chậm hơn timeout, ngắt kết nối, 503 rồi thành công, 400 nghiệp vụ, 429 có Retry-After, và response sai định dạng. Với mỗi loại tôi kiểm tra client phản ứng đúng: timeout có hiệu lực, chỉ retry lỗi tạm thời, không retry lỗi 400, và quan trọng với POST là idempotency key giữ nguyên giữa các lần retry, kiểm tra bằng verify số request và header. Circuit breaker được test với cửa sổ nhỏ trong profile test. WireMock dùng port động để chạy song song an toàn. Ngoài ra tôi có contract test hoặc sandbox chạy định kỳ để biết khi đối tác đổi API."
 
-### Bai the hay gap
-- Contract test khong thay cho integration test: chung minh "hinh dang API", khong chung minh "hai service lam viec cung dung". Van can ket qua E2E man.
-- Chi mo ta happy path: nhanh 4xx (not found, validation) moi là chỗ hay voi, consumer phai xu li no.
-- Pact phinh vo han: moi test sinh mot interaction => provider verify 500 case chậm. Gom cac case quan trong, don pact cua version consumer da ngung chay production.
-- Khong co quyen ghi broker: broker can auth theo pipeline, khong phai ai cung publish pact rac.
-- Verify tren DB rong (khong co provider state): moi case loi khong duoc kiem.
-
-### Tren production
-Gia tri cua contract test chi thuc su khi team thay no do. Dinh 30 phut demo trong tech-sharing: doi mot field o response cua provider, chay pipeline, cho thay build chan o buoc verify va can-i-deploy tu choi deploy consumer. Mot lan nhu nay co suc trong hon moi slide ve microservices.
-
-> Senior tip: lap ma tran phan quyen resource x vai tro va dam bao moi o deu co test; o "nguoi dung A doc du lieu nguoi dung B" la o nguy hiem nhat va khong bao zuat hien o test happy path.`,
-  follow: [
-    'Ban luu pact va verification result o dau khi team co 12 service, va ai duoc quyen xoa version pact cu?',
-    'Voi Spring Cloud Contract, stub duoc phat hanh the nao va consumer lay stub do vao test ra sao?',
-    'Lam sao them mot field moi o response khong phe consumer dang chay production?'
-  ],
-  tags: ['contract-testing', 'Pact', 'SpringCloudContract', 'can-i-deploy', 'provider-state'],
-  refs: [
-    { type: 'doc', title: 'Pact documentation', url: 'https://docs.pact.io' },
-    { type: 'doc', title: 'Spring Cloud Contract', url: 'https://spring.io/projects/spring-cloud-contract' }
-  ]
+> Senior tip: mỗi lần có sự cố với đối tác, hãy thêm đúng tình huống đó thành một stub WireMock. Sau một năm bạn có bộ "bảo tàng sự cố" chạy mỗi PR, và mọi thay đổi cấu hình timeout hay retry đều được kiểm chứng trước khi lên production.`,
+  follow: ['Vì sao dùng WireMock tốt hơn mock interface client bằng Mockito trong trường hợp này?', 'Retry một request POST có rủi ro gì, và test nào chứng minh bạn đã xử lý đúng?', 'Bạn test circuit breaker mà không phụ thuộc thời gian thật như thế nào?'],
+  tags: ['WireMock', 'retry', 'timeout', 'circuit-breaker', 'fault-injection']
 },
 {
   id: 'testing-045',
   topic: 'testing',
   level: 'senior',
-  q: '@WebMvcTest, @DataJpaTest va @SpringBootTest khac nhau the nao ve toc do, va context caching cua Spring hoat dong the nao de ban tang toc suite ma khong hy sinh do tin cay?',
-  a: `**Tom tat:** @WebMvcTest chi nap tang web (controller, validation, JSON), @DataJpaTest chi nap JPA va repository, con @SpringBootTest nap toan bo application context. Spring TestContext framework cache lai ApplicationContext va tai dung cho cac test cung cau hinh. Suite chậm chậm thuong do context bi day lai nhieu lan (@DirtiesContext phe cache), test o tang qua cao, hoac phu thu I/O thic. Truoc khi toi uu hay xem thoi gian nam o dau.
+  q: 'Bạn test tầng cache (Spring Cache, Redis) thế nào để chắc chắn cache thật sự được dùng, bị xoá đúng lúc khi dữ liệu đổi, và không lỗi serialize khi chạy trên Redis?',
+  a: `**Tóm tắt:** Test tầng cache phải kiểm tra bốn điều: cache **thật sự được dùng** (lần gọi thứ hai không chạm DB), cache **bị xoá đúng lúc** khi dữ liệu đổi (không trả dữ liệu cũ), **key không va chạm** giữa các method, và **serialize/TTL đúng** với Redis thật. Hai lỗi phổ biến nhất mà chỉ test mới bắt được: gọi method {{@Cacheable}} từ chính class đó (không qua proxy nên cache không chạy) và object không serialize được khi chuyển từ cache trong bộ nhớ sang Redis.
 
-### Anh xa layer → loai test
-| Layer | Loai test | Annotation | DB mac dinh | Thoi gian |
-|---|---|---|---|---|
-| Domain / service thuần | Unit | khong co | khong | < 50 ms |
-| Controller + validation + JSON | Slice web | @WebMvcTest | khong | 1-2 giay |
-| Repository + JPQL | Slice JPA | @DataJpaTest | embed (H2/HSQLDB) | 2-4 giay |
-| Chi Jackson serialize | Slice JSON | @JsonTest | khong | duoi 1 giay |
-| Toan bo app, filter thuc, async | Full context | @SpringBootTest | theo config | 10-30 giay |
+### Vì sao cache hay "âm thầm" sai
+Spring Cache hoạt động qua **proxy**: lời gọi từ bean khác đi qua proxy, proxy kiểm tra cache rồi mới gọi method thật. Lời gọi nội bộ ({{this.findProduct()}}) bỏ qua proxy, nên cache không bao giờ được dùng. Không có lỗi nào, chỉ là DB vẫn chịu toàn bộ tải. Ngược lại, quên {{@CacheEvict}} khi cập nhật thì người dùng thấy giá cũ suốt thời gian TTL. Cả hai đều chạy "đúng" trong test chức năng thông thường, nên cần test riêng cho hành vi cache.
 
-Luu ý: @DataJpaTest tu thay DataSource bang database embed. Muon test tren Postgres thuc phai them @AutoConfigureTestDatabase(replace = Replace.NONE) roi noi Testcontainers - neu khong ban tuong dang test Postgres nhat thuc la H2.
-
-### Context caching hoat dong the nao
-Spring cache ApplicationContext va tai dung neu cac test cung MergedContextConfiguration: cung active profiles, cung property sources, cung context customizers, cung initializer, cung loai test.
-- Mac dinh cache toi da 32 context (spring.test.context.cache.maxSize).
-- @DirtiesContext (o class hoac method) xoa context khoi cache => lan chay sau phai day lai tu dau. Day la thu pham so mot cua suite chậm chậm.
-- @TestPropertySource khac nhau giua cac class => moi class mot context rieng. Gom cac test can property khac nhau vao cung mot class se re hon nhieu.
-- Test long (@Nested) thuong dung chung context cua class ngoai nen re hon mot class rieng.
-
-### Tai sao suite chậm chậm dan
-1. Context day lai nhieu lan: thoi gian gan bang so lop test x mot giay. Xu ly: gom test cung cau hinh, bo @DirtiesContext.
-2. Test o tang qua cao: moi test deu la @SpringBootTest. Xu ly: ha xuong slice hoac unit.
-3. Phu thu I/O thic: test cho mang, sleep, retry. Xu ly: WireMock, container dung chung, du lieu tinh.
-4. Chay tuan tu: CPU rang ma suite van dai. Xu ly: bat parallel cua JUnit 5:
-~~~text
-junit.jupiter.execution.parallel.enabled=true
-junit.jupiter.execution.parallel.mode.default=concurrent
-junit.jupiter.execution.parallel.mode.classes.default=concurrent
-~~~
-
-### Checklist tang toc
-1. Doc truoc: xem bao cao Surefire/Gradle de biet lop nao chi nhieu thoi gian, khong toi uu cam tinh.
-2. Gom test theo cau hinh, khong theo tinh nang - cung mot class test cung profile.
-3. Bo @DirtiesContext: thay bang cach tu don du lieu (rollback, truncate, xoá cache qua API cua ung dung).
-4. Bat parallel cua JUnit 5 (xem cau hinh o tren).
-5. Sharding o CI khi suite van lon: chia theo nhom lop test de chay nhieu job song song.
-
-### Vi du slice web
+### Test cache được dùng và bị xoá
 ~~~java
-@WebMvcTest(OrderController.class)
-class OrderControllerTest {
-    @Autowired MockMvc mvc;
-    @MockitoBean OrderService;   // Spring Boot 3.4+; @MockBean da bi deprecated
+@SpringBootTest
+class ProductCacheTest {
+    @Autowired ProductService service;
+    @Autowired CacheManager cacheManager;
+    @MockitoSpyBean ProductRepository repo;     // Spring Boot 3.4+; bản cũ dùng @SpyBean
 
-    @Test void create_returns_201() throws Exception {
-        given(service.create(any())).willReturn(OrderResponse.of("OD-1"));
-        mvc.perform(post("/api/orders").contentType(APPLICATION_JSON).content("{}"))
-           .andExpect(status().isCreated());
+    @BeforeEach void clear() { cacheManager.getCache("products").clear(); }
+
+    @Test
+    void secondReadHitsCacheAndUpdateEvicts() {
+        service.getProduct(42L);
+        service.getProduct(42L);
+        verify(repo, times(1)).findById(42L);   // lần 2 lấy từ cache
+
+        service.updatePrice(42L, new BigDecimal("199000"));   // có @CacheEvict
+        assertThat(service.getProduct(42L).price()).isEqualByComparingTo("199000");
+        verify(repo, times(2)).findById(42L);   // sau evict phải đọc lại DB
     }
 }
 ~~~
+Ở đây dùng spy và verify là hợp lý vì **số lần chạm DB chính là hành vi** cần kiểm tra.
 
-### Bai the hay gap
-- Bat parallel khi test van dung chung du lieu hoac static state => test flaky moi, suite cung luc chậm chậm cung khong on dinh.
-- Test @Transactional voi luong bat dong bo: rollback chi ap dung cho thread test, task chay o thread khac khong duoc rollback => du lieu loti va test sau bi anh huong.
-- Toi uu bang cach bo bot test de pipeline xanh, hoac dung @Timeout de "xu ly" test treo: che trieu chung va lam team mat nien tin vao CI.
-- Day context cho moi test method do @DirtiesContext(classMode = AFTER_EACH_TEST_METHOD) hoac moi test lai doi @MockitoBean/property => mat het loi ich cua cache. Bat log org.springframework.test.context.cache=DEBUG de xem so lan cache hit/miss.
+### Test với Redis thật
+Cache trong bộ nhớ không serialize object nên che giấu lỗi. Dùng Testcontainers Redis trong một bộ test riêng để kiểm tra: object đọc ra từ Redis bằng object ghi vào (record, BigDecimal, ngày giờ), TTL được đặt (kiểm tra {{redisTemplate.getExpire("products::42")}} lớn hơn 0 và không vượt cấu hình), và key có prefix đúng. Lưu ý: khi đổi cấu trúc class, dữ liệu cũ trong Redis có thể không đọc được sau deploy. Cần test đọc một giá trị được ghi theo định dạng cũ, hoặc đổi prefix key theo version.
 
-### Tren production
-Dat muc tieu p95 thoi gian mot test va ti le flaky cung luc. Mot suite chay 3 phut nhung 5% test do ngau nhien vẫn là pipeline hỏng, vi team se hoc bo qua trang thai CI do - va luc do moi toi uu ve toc do deu vo nghia. Muc tieu CI duoi 10 phut la hop ly cho mot microservice.
+### Ví dụ đời thực
+Trang chi tiết sản phẩm có {{@Cacheable}} nhưng DB vẫn nhận 3.000 query/giây giờ cao điểm. Test như trên (verify số lần gọi repository) fail ngay: method được gọi qua {{this}} trong cùng service. Sửa bằng cách tách method cache sang bean riêng; query DB giảm còn khoảng 200/giây. Ba tuần sau, chuyển từ Caffeine sang Redis để chia sẻ cache giữa 8 pod: production lỗi {{SerializationException}} vì một DTO không serialize được. Team thêm bộ test Redis bằng Testcontainers vào CI; lần đổi DTO tiếp theo, lỗi tương tự bị chặn ở PR.
 
-> Senior tip: khong toi uu "cho co so lieu". Hay doc bao cao Surefire truoc, roi moi quyet din cho cat.`,
-  follow: [
-    'Ban doc va phan tich thoi gian test bang cong cu nao (Surefire report, JFR, flamegraph)?',
-    'Khi nao ban chap nhan da doi: giu test o tang cao de co do tin cay, dù suite chậm chậm?',
-    'Ban co dung test sharding o CI khong, va chia theo tieu chi nao?'
-  ],
-  tags: ['WebMvcTest', 'DataJpaTest', 'SpringBootTest', 'context-cache', 'parallel-testing']
+### Sai lầm hay gặp
+- Không clear cache giữa các test: test sau "ăn" dữ liệu của test trước, kết quả phụ thuộc thứ tự.
+- Tắt cache trong profile test ({{spring.cache.type=none}}) rồi không có test nào bật nó lên.
+- Hai method khác nhau dùng chung tên cache và cùng tham số, nên trả nhầm kiểu dữ liệu.
+- Chờ TTL hết hạn bằng sleep: chậm và flaky; kiểm tra TTL đã được đặt là đủ.
+
+### Trả lời mẫu khi phỏng vấn
+"Với tầng cache, tôi kiểm tra bốn điều. Thứ nhất, cache thật sự được dùng: gọi hai lần và verify repository chỉ bị gọi một lần. Test này bắt được lỗi self-invocation, khi method Cacheable được gọi từ chính class đó nên không qua proxy. Thứ hai, cache bị xoá đúng lúc: cập nhật dữ liệu rồi đọc lại phải thấy giá trị mới. Thứ ba, key không va chạm giữa các method. Thứ tư, với Redis tôi có bộ test Testcontainers riêng để kiểm tra serialize và deserialize đúng, TTL được đặt và prefix key đúng, vì cache trong bộ nhớ không serialize nên che giấu lỗi. Tôi luôn clear cache giữa các test, và không chờ TTL bằng sleep mà kiểm tra thời gian hết hạn đã được đặt. Ở đây verify số lần gọi DB là hợp lý vì đó chính là hành vi cần kiểm tra."
+
+> Senior tip: khi đổi cấu trúc object được cache trong Redis, hãy **đổi prefix key theo version** (ví dụ products-v2). Deploy rolling sẽ có bản cũ và bản mới cùng đọc một cache; prefix riêng tránh cả lỗi deserialize lẫn việc bản cũ đọc dữ liệu định dạng mới.`,
+  follow: ['Vì sao gọi method @Cacheable từ chính class đó không dùng cache, và test nào bắt được lỗi này?', 'Khi đổi cấu trúc DTO được cache, deploy rolling có rủi ro gì với dữ liệu cũ trong Redis?', 'Bạn kiểm tra TTL mà không phải sleep chờ hết hạn như thế nào?'],
+  tags: ['Spring Cache', 'Redis', 'Testcontainers', 'self-invocation', 'cache-eviction']
 },
 {
   id: 'testing-046',
   topic: 'testing',
   level: 'lead',
-  q: '(Lead) Chien luoc test cho he microservice nen chon hinh kim tu thap hay hinh ong chuong (honeycomb)? Test tren moi truong thuc va feature flag vai tro gi trong chien luoc nay?',
-  a: `**Tom tat:** Voi he microservice, phan lon bug nam o duong bien tich hop (HTTP, SQL, message broker) khong phai logic thuan don le, nen hinh ong chuong (integration dai, unit man, E2E man) thich hop hon hinh kim tu thap. Chien luoc phai di kem voi test tren moi truong thuc gan production, va dung feature flag de kich dan tinh nang thay vi bat ca he cung luc.
+  q: '(Lead) Làm sao giữ kiến trúc không bị mục dần qua từng PR (controller gọi thẳng repository, vòng phụ thuộc giữa module)? Bạn dùng ArchUnit thế nào, kể cả trên codebase cũ đã có nhiều vi phạm?',
+  a: `**Tóm tắt:** ArchUnit biến **quy tắc kiến trúc** thành unit test chạy trong CI: controller không gọi thẳng repository, domain không phụ thuộc Spring, không có vòng phụ thuộc giữa các module, không dùng field injection. Nó đọc bytecode của các class đã biên dịch và kiểm tra quan hệ phụ thuộc, nên phát hiện vi phạm ngay ở PR thay vì sau 6 tháng khi kiến trúc đã mục. Với codebase cũ có sẵn vi phạm, dùng **freeze** để chỉ chặn vi phạm mới.
 
-### Hinh kim tu thap vs hinh ong chuong
-| | Hinh kim tu thap (Mike Cohn) | Hinh ong chuong (Cindy Sridharan) |
-|---|---|---|
-| Hinh dang | rat nhieu unit, it integration, rat it E2E | unit man, integration dai, E2E man |
-| Quan diem | bug tap trung o logic nghiep vu | phan lon bug nam o duong bien tich hop |
-| Khi nao dung | domain phuc tap, nhieu quy tuc thuan | service co it logic, nhieu I/O (DB, cache, broker, HTTP) |
+### Vì sao cần tự động hoá
+Quy tắc kiến trúc thường nằm trong tài liệu hoặc trong đầu người lead. Mỗi PR chỉ vi phạm một chút ("controller gọi repository cho nhanh"), reviewer bận bỏ qua, và sau một năm module nào cũng phụ thuộc vào nhau. Không thể tách service hay thay tầng persistence nữa. ArchUnit chuyển quy tắc thành test: vi phạm làm build đỏ với thông báo chỉ rõ class và dòng phụ thuộc.
 
-Voi microservice Spring Boot, ong chuong là mac dinh hop ly: framework da cap san cac tang giua re tien (WebMvcTest, DataJpaTest) nen khong can day hinh hang rieng.
+### Ví dụ bộ quy tắc
+~~~java
+@AnalyzeClasses(packages = "com.shop", importOptions = ImportOption.DoNotIncludeTests.class)
+class ArchitectureTest {
 
-### Ti le goi y cho microservice
-| Loai | Ti le | Thoi gian moi test | Kiem gi |
-|---|---|---|---|
-| Unit (domain thuan) | 40% | duoi 50 ms | quy tac nghiep vu |
-| Slice (web/JPA) | 30% | 1-3 giay | controller, validation, repository |
-| Integration (Testcontainers) | 15% | 5-15 giay | wiring, DB thuc, message |
-| Contract | 10% | 2-5 giay | hinh dang API giua service |
-| E2E | 5% | theo phut | luong tien quan trong nhat |
+    @ArchTest   // phân tầng: web -> service -> repository, không đi ngược
+    static final ArchRule layers = layeredArchitecture().consideringAllDependencies()
+        .layer("Web").definedBy("..web..")
+        .layer("Service").definedBy("..service..")
+        .layer("Persistence").definedBy("..repository..")
+        .whereLayer("Web").mayNotBeAccessedByAnyLayer()
+        .whereLayer("Service").mayOnlyBeAccessedByLayers("Web")
+        .whereLayer("Persistence").mayOnlyBeAccessedByLayers("Service");
 
-### Test tren moi truong thuc
-Staging phai gan production: cung kich thuoc du lieu (vi du 10% khach hang chiem 60% don), cung instance type, cung JVM/GC, cung so instance, tat autoscaling khi doc. Moi truong test phai rieng, khong dung chung DB voi moi truong QA (trafic Qam lam nhieu so lieu). Integration test dung Testcontainers cho Postgres/Kafka; E2E chay tren staging voi du lieu thuc da an dan.
+    @ArchTest   // các module nghiệp vụ không phụ thuộc vòng
+    static final ArchRule noCycles = slices().matching("com.shop.(*)..").should().beFreeOfCycles();
 
-### Feature flag la cong cu test
-Feature flag (co bat/tat tinh nang theo cau hinh, khong can deploy lai) dung de:
-- Canary: bat tinh nang moi cho 1% -> 10% -> 50% -> 100% traffic, theo doi p95 va error rate tai moi moc.
-- Dark launch: chay duong moi song song voi duong cu, so sanh ket qua nhung khong hien cho nguoi dung.
-- Rollback tuc thi: tat tinh nang bang flag khi co su co, khong can deploy lai code.
+    @ArchTest   // domain thuần, không dính framework
+    static final ArchRule pureDomain = noClasses().that().resideInAPackage("..domain..")
+        .should().dependOnClassesThat().resideInAPackage("org.springframework..");
 
-### Tren production
-Luon trinh biet so lieu truoc/sau. "p95 API dat hang giam tu 1,9 giay xuong 210 ms sau khi them index va bat canary" là cau tra loi cua ky su. Feature flag can dashboard va audit log de biet ai bat/tat cai gi.
+    @ArchTest
+    static final ArchRule noFieldInjection = GeneralCodingRules.NO_CLASSES_SHOULD_USE_FIELD_INJECTION;
+}
+~~~
 
-### Bai the hay gap
-- E2E qua nhieu => chậm chậm, flaky, team bat dau bo qua CI do.
-- Contract test khong thay cho integration test: kiem tra hinh dang API, khong kiem tra nghiep vu cuoi cung.
-- Feature flag khong xoa sau khi tinh nang o dinh => no ky thuat, code re nhanh kho duy tri.
-- Staging khac production ve kich thuoc du lieu => so lieu tinh toan sai, quyet dinh sai.
+### Áp dụng cho codebase cũ: freeze
+Bật quy tắc mới trên code 5 năm tuổi có thể ra 300 vi phạm. Bọc quy tắc bằng {{FreezingArchRule.freeze(rule)}}: lần chạy đầu ghi các vi phạm hiện có vào một "violation store" (file trong repo), các lần sau chỉ fail với **vi phạm mới**; vi phạm cũ được sửa sẽ tự biến khỏi store. Team giảm dần nợ mà không phải dừng mọi việc để sửa 300 chỗ.
 
-> Senior tip: bat đầu tu lich su bug cua team. Neu 70% bug den tu SQL va mapping HTTP<->domain, hay dau tư slice test va integration test, khong phai viet them unit test cho domain. Do là huong hoan dao cua "test nhieu hon".`,
-  follow: [
-    'Ban phan loai bug den tu tang nao de quyet dinh dau tu test o layer nao?',
-    'E2E nen bao phong luong nao o he microservice?',
-    'Feature flag ban xoa khi nao, va ai duoc quyen bat/tat flag tren production?'
-  ],
-  tags: ['microservices', 'test-honeycomb', 'feature-flag', 'canary', 'staging']
+### Quy tắc nào đáng viết
+| Quy tắc | Lý do |
+|---|---|
+| Phân tầng, không vòng phụ thuộc | Giữ khả năng tách module/service |
+| Domain không phụ thuộc framework | Dễ test, dễ nâng cấp framework |
+| Module A chỉ gọi module B qua package api | Giữ ranh giới modular monolith |
+| Không dùng API cấm ({{java.util.Date}}, {{System.out}}) | Thống nhất chuẩn code |
+| Class {{@Entity}} không ra khỏi tầng service | Tránh lộ entity qua API, lazy loading lỗi |
+
+### Ví dụ đời thực
+Modular monolith 40 dev, 6 module nghiệp vụ. Khi định tách module "billing" thành service riêng, team phát hiện 140 chỗ module khác gọi thẳng vào class nội bộ của billing, ước tính 3 tháng để gỡ. Team thêm ArchUnit: mỗi module chỉ được gọi module khác qua package {{api}}, không vòng phụ thuộc; freeze các vi phạm hiện có. Mỗi sprint gỡ 15–20 vi phạm; vi phạm mới bị chặn ở PR (khoảng 2–3 lần mỗi tháng, đều là dev mới chưa biết quy ước). Sau 5 tháng store còn 0 vi phạm cho billing, việc tách service mất 3 tuần.
+
+### Sai lầm hay gặp
+- Viết quá nhiều quy tắc chi li ngay từ đầu: team phản đối, tắt test.
+- Không ghi lý do ({{because(...)}}): dev không hiểu vì sao bị chặn nên tìm cách lách.
+- Phân tích cả class test: test thường được phép phụ thuộc rộng hơn, gây báo sai.
+- Bật quy tắc trên code cũ mà không freeze: build đỏ hàng trăm lỗi, quy tắc bị gỡ ngay.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng ArchUnit để biến quy tắc kiến trúc thành test chạy trong CI, vì quy tắc chỉ nằm trong tài liệu sẽ bị vi phạm dần qua từng PR. ArchUnit đọc bytecode và kiểm tra phụ thuộc giữa các class, nên tôi viết được các quy tắc như phân tầng web, service, repository không đi ngược; không có vòng phụ thuộc giữa module; domain không phụ thuộc Spring; module chỉ gọi nhau qua package api; không dùng field injection. Mỗi quy tắc có lý do kèm theo để thông báo lỗi tự giải thích. Với codebase cũ có sẵn nhiều vi phạm, tôi dùng freeze: ghi lại vi phạm hiện có, chỉ chặn vi phạm mới, và giảm dần nợ mỗi sprint. Tôi bắt đầu với ba bốn quy tắc quan trọng nhất cho mục tiêu kiến trúc, như chuẩn bị tách service, thay vì viết cả chục quy tắc chi li."
+
+> Senior tip: hãy gắn mỗi quy tắc ArchUnit với một **mục tiêu kiến trúc cụ thể** mà team đồng ý (ví dụ "tách được billing trong quý 3"). Quy tắc có mục tiêu thì được tôn trọng; quy tắc chỉ vì sở thích của lead sẽ bị coi là quan liêu và bị lách.`,
+  follow: ['FreezingArchRule hoạt động thế nào và vì sao cần nó khi áp dụng cho code cũ?', 'Quy tắc nào bạn coi là đáng viết nhất cho một modular monolith chuẩn bị tách service?', 'Làm sao để team không coi các quy tắc kiến trúc là quan liêu và tìm cách lách?'],
+  tags: ['ArchUnit', 'architecture-test', 'modular-monolith', 'FreezingArchRule', 'dependency-rules']
 },
 {
   id: 'testing-047',
   topic: 'testing',
   level: 'lead',
-  q: '(Lead) Lam sao kiem thu end-to-end tren he nhieu microservice ma khong cham CI? Du lieu test cach ly ra sao, va ban cam bang contract test va E2E nhu the nao?',
-  a: `**Tom tat:** Khong the mock het provider o he nhieu service, nhung cung khong the chay E2E nan moi PR. Chien luoc hieu qua la ba tang: contract test kiem tra hinh dang API nhanh, E2E man chi bao phong luong quan trong nhat tren moi truong thuc gan production, va synthetic check chay lien tuuc tu ngoai vao production. Moi test E2E phai tu tao duieu cua minh va dung topic/group id rieng de khong nhieu test khac.
+  q: '(Lead) Làm sao kiểm thử end-to-end trên hệ nhiều microservice mà không làm chậm CI? Dữ liệu test cách ly ra sao, và bạn cân bằng contract test với E2E như thế nào?',
+  a: `**Tóm tắt:** Không thể chạy E2E toàn hệ thống trên mỗi PR mà vẫn giữ CI nhanh. Chiến lược là ba tầng: **contract test** trên mỗi PR để bắt lỗi hợp đồng giữa service trong vài phút; **một số ít E2E** cho các luồng nghiệp vụ quan trọng nhất, chạy trên môi trường gần production theo lịch hoặc trước release; **synthetic check** chạy liên tục trên production. Mỗi E2E tự tạo dữ liệu riêng, dùng định danh riêng theo lần chạy, và chờ kết quả bất đồng bộ bằng polling có điều kiện thay vì sleep.
 
-### Ba tang kiem thu he nhieu service
-| Tang | Muc tuoc | Thoi gian | Chan merge? |
+### Ba tầng kiểm thử
+| Tầng | Mục tiêu | Thời gian | Chặn merge? |
 |---|---|---|---|
-| Contract (Pact / Spring Cloud Contract) | hinh dang request/response giua hai service | 2-5 giay | co |
-| E2E man | luong quan trong (dat hang -> thanh toan -> doi soat) | 1-5 phut | co, nhung nho ngưỡng |
-| Synthetic production | kiem tra lien tuuc tu ngoai vao production | theo phut | khong (canh bao) |
+| Contract test (Pact, Spring Cloud Contract) | Hình dạng request/response giữa từng cặp service | Vài phút, mỗi PR | Có |
+| E2E luồng critical (10–30 luồng) | Luồng nghiệp vụ xuyên nhiều service trên môi trường thật | 15–40 phút, nightly hoặc trước release | Chặn release |
+| Synthetic check | Production vẫn chạy đúng từ góc nhìn người dùng | Vài phút một lần, liên tục | Cảnh báo, kích hoạt rollback |
 
-### Du lieu test cach ly
-Moi test E2E phai tu tao duieu cua minh:
-- Don hang, khach hang dung id ngau nhien co seed co dinh de tai hien loi.
-- Voi Kafka, moi test dung ten topic hoac consumer group id rieng (prefix theo test id) de thong diep cua test truoc khong lot sang test sau.
-- Dung transaction rollback hoac truncate bang theo thu tu foreign key sau moi test.
-- Tuyet doi khong dung seed du lieu chung cho nhieu test.
+### Cô lập dữ liệu khi nhiều E2E chạy song song
+Môi trường staging dùng chung cho nhiều team và nhiều lần chạy. Mỗi E2E phải tự tạo dữ liệu qua API (khách hàng, sản phẩm, ví) với định danh gắn mã lần chạy ({{e2e-run-8812-...}}), không dựa vào dữ liệu có sẵn. Với Kafka, test đọc kết quả qua API của service đích chứ không tự consume topic bằng consumer group dùng chung, vì như vậy sẽ "cướp" message của service thật. Một job dọn dẹp xoá dữ liệu e2e cũ theo tiền tố.
 
-### Staging gan production nhu the nao
-- Cung kich thuoc du lieu production va cung phan bo (10% khach hang chiem 60% don).
-- Cung instance type, cung JVM va GC flags, cung so instance.
-- Tat autoscaling trong luc doc, neu khong ban doc chinh thuat toan scale chong khong phai he thong.
-- Moi truong perf/staging rieng, khong dung chung DB voi QA.
-
-### Vi du E2E man (Java)
+### Chờ bất đồng bộ đúng cách
+Luồng nhiều service thường bất đồng bộ (đặt hàng → thanh toán → kho qua event). Không dùng {{Thread.sleep(10000)}}: lúc thì thiếu, lúc thì phí. Dùng polling có điều kiện và giới hạn:
 ~~~java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers
-class CheckoutFlowE2E {
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    @Autowired TestRestTemplate rest;
-    @Autowired KafkaTemplate<String, Object> kafka;
-
-    @Test void order_payment_reconciliation() {
-        String orderId = "OD-" + UUID.randomUUID();   // du lieu rieng, tranh va cham test khac
-        // 1. dat hang
-        rest.postForObject("/api/orders", request, Order.class);
-        // 2. publish su kien thanh thanh toan vao topic rieng cua test
-        kafka.send("payment." + orderId, orderId, paymentEvent);
-        // 3. cho doi su xu li bang Awaitility, khong Thread.sleep
-        await().atMost(Duration.ofSeconds(10))
-               .untilAsserted(() -> assertThat(reconciliation.findByOrderId(orderId).getStatus())
-                   .isEqualTo(Status.RECONCILED));
-    }
-}
+String orderId = api.placeOrder(customerId, sku, 2);
+await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(500))
+    .untilAsserted(() -> assertThat(api.getOrder(orderId).status()).isEqualTo("CONFIRMED"));
+assertThat(api.getStock(sku).reserved()).isEqualTo(2);   // kho đã giữ đúng số lượng
 ~~~
+Mỗi request E2E gửi kèm header trace id; khi fail, báo cáo in trace id để mở thẳng trace phân tán và biết service nào gây lỗi.
 
-### Cam bang contract va E2E
-Contract test bat loi som tren CI (doi ten field, doi kieu du lieu) voi chi phi thap. E2E man bat loi nghiep vu giua cac service (order tao xong nhung payment khong nhan duoc event). Luat tong quat: mot E2E cho moi luong tien quan trong, khong phai bao phong moi man hinh. Neu mot E2E flaky, hay ha no xu tang contract hoac integration thay vi de no chan merge.
+### Môi trường
+- **Staging dùng chung**: rẻ, nhưng dễ bị nhiễu bởi deploy của team khác. Cần lịch deploy và dữ liệu cô lập.
+- **Môi trường tạm theo PR** (ephemeral): dựng service thay đổi, các service khác dùng bản ổn định. Sạch hơn nhưng tốn hạ tầng; phù hợp khi đã có Kubernetes và IaC tốt.
+- Chạy E2E chọn lọc theo service bị thay đổi để rút ngắn thời gian.
 
-### Tren production
-Synthetic check (robot goi API quan trong moi 5 phut, assert status va noi dung chinh) là lop bao ve cuoi cung. Hop voi error budget: neu loi vuot ngưỡng trong quy, dung tinh nang moi va tap trung o din he thong.
+### Ví dụ đời thực
+Hệ 15 service có 220 E2E chạy trên mỗi PR, mất 70 phút, đỏ khoảng 40% số lần chạy; dev quen merge khi E2E đỏ. Team chuyển kiểm tra hình dạng API sang contract test (chạy 4 phút mỗi PR), giữ 24 E2E cho các luồng đặt hàng, thanh toán, hoàn tiền, đăng nhập; dữ liệu tạo theo lần chạy; thay sleep bằng Awaitility; chạy nightly và trước release. Thời gian PR còn 12 phút, tỉ lệ E2E đỏ không do bug còn 3%, và khi đỏ thì trace id chỉ thẳng vào service lỗi. Synthetic check đặt hàng thử mỗi 5 phút trên production với tài khoản test được đánh dấu riêng.
 
-### Bai the hay gap
-- Chay E2E tren moi PR => PR mat 20 phut, moi nguoi push nhieu lan, tang tai CI.
-- Chi test happy path => bo sot nhanh loi (4xx, message deserialize that bai).
-- Du lieu dung chung giua nhieu test => fail ngau nhien khi chay song song.
-- Hardcode endpoint va cong => test khong di chuyen duoc giua cac moi truong.
+### Sai lầm hay gặp
+- Dùng E2E để kiểm tra mọi biến thể nghiệp vụ: chậm, giòn; biến thể nên ở unit/integration test.
+- Dữ liệu dùng chung giữa các lần chạy: E2E chạy song song phá dữ liệu của nhau.
+- Không có cách điều tra khi fail: thiếu trace id, log tập trung, nên mỗi lần đỏ mất nửa ngày.
+- E2E đỏ nhưng không ai chịu trách nhiệm xử lý: tín hiệu bị bỏ qua.
 
-> Senior tip: E2E tot nhat la luong quan trong nhat cua he thong (vi du dat hang -> thanh toan -> doi soat), khong phai thu bao phong moi man hinh. Mot E2E dung cho co gia tri hon muoi E2E chậm chậm va flaky.`,
-  follow: [
-    'Lam sao kiem soat offset Kafka khi consumer chay nhieu instance va moi message chi xu li mot lan?',
-    'Ban dung Avro hay JSON cho message schema, va vi sao?',
-    'Khi mot E2E flaky, ban ha no xu tang nao va viet lai the nao?'
-  ],
+### Trả lời mẫu khi phỏng vấn
+"Tôi không chạy E2E toàn hệ thống trên mỗi PR vì chậm và đỏ ngẫu nhiên nhiều, khiến dev mất niềm tin. Tôi chia ba tầng. Mỗi PR chạy contract test giữa từng cặp service, chỉ vài phút, chặn được phần lớn lỗi tích hợp như đổi tên trường. E2E chỉ giữ cho khoảng hai chục luồng nghiệp vụ quan trọng nhất, chạy nightly và trước release trên môi trường gần production. Mỗi E2E tự tạo dữ liệu qua API với định danh theo lần chạy, chờ kết quả bất đồng bộ bằng polling có giới hạn như Awaitility thay vì sleep, và gửi trace id để khi đỏ biết ngay service nào lỗi. Cuối cùng, synthetic check chạy liên tục trên production với tài khoản test được đánh dấu. Mỗi E2E đỏ đều có người trực chịu trách nhiệm xử lý trong ngày."
+
+> Senior tip: hãy đo **tỉ lệ E2E đỏ không do bug** và coi nó là chỉ số sức khoẻ của bộ test. Trên khoảng 5%, dev bắt đầu bỏ qua tín hiệu đỏ; khi đó cắt bớt E2E hoặc sửa nguồn flaky có giá trị hơn viết thêm test mới.`,
+  follow: ['Bạn chờ kết quả của luồng bất đồng bộ qua Kafka trong E2E thế nào để không flaky?', 'Môi trường tạm theo PR (ephemeral) và staging dùng chung: khi nào chọn cái nào?', 'Khi một E2E đỏ, làm sao biết nhanh service nào gây lỗi?'],
   tags: ['E2E', 'microservices', 'staging', 'synthetic-monitoring', 'test-data-isolation']
 },
 {
   id: 'testing-048',
   topic: 'testing',
   level: 'lead',
-  q: '(Lead) Khong the test het moi truong truoc deploy. Canary release, synthetic monitoring va feature flag bien production thanh noi tuc tiep kiem thu an toan nhu the nao, va observability vai tro gi nhu mot tin hieu kiem thu lien tuc?',
-  a: `**Tom tat:** Canary release dua ban moi den mot phuong nho nguoi dung, synthetic monitoring kiem tra lien tuuc tu ngoai, va feature flag bat/tat tinh nang khong can deploy lai. Ba cai nay bien production thanh noi tuc tiep kiem thu an toan: neu p95, error rate hoac CPU vuot ngưỡng, he thong rollback tu dong. Observability (metric, log, trace) khong chi la dashboard cho SRE - do la tin hieu kiem thu lien tuc cho biet ban moi hay ban cu dang giu chat luong.
+  q: '(Lead) Không thể test hết mọi tình huống trước khi deploy. Canary release, synthetic monitoring và feature flag biến production thành tầng kiểm thử an toàn như thế nào?',
+  a: `**Tóm tắt:** Không môi trường test nào giống hệt production về dữ liệu, tải và tích hợp. Vì vậy team trưởng thành coi **production là tầng kiểm thử cuối có kiểm soát**: canary đưa bản mới tới một phần nhỏ traffic và **tự động so sánh** metric với bản cũ để quyết định đi tiếp hay rollback; synthetic monitoring chạy kịch bản người dùng giả liên tục; feature flag tách việc deploy khỏi việc bật tính năng và cho phép tắt tức thì. Điều kiện tiên quyết là observability tốt và rollback nhanh.
 
-### Canary release
-Trien khai ban moi cho 1-5% traffic truoc, roi tang dan 10%, 50%, 100%. Tai moi moc so sanh p95/p99, error rate, CPU va bo nho voi ban cu (baseline). Neu bat ki chi so nao vuot ngưỡng (vi du p95 tang tren 20% hay error rate vuot 0,1%), he thong rollback tu dong ve ban cu. Canary can mot cua so thoi gian du dai (thuong 15-30 phut) de nhan biet su co tre nhom loi ro r bo nho.
+### Canary có phân tích tự động
+Bản mới nhận 5% traffic, chạy một khoảng thời gian, hệ thống so sánh error rate, latency p95/p99 và metric nghiệp vụ (tỉ lệ thanh toán thành công) giữa canary và bản ổn định. Vượt ngưỡng thì tự rollback, không cần người thức dậy lúc 2 giờ sáng. Ví dụ với Argo Rollouts:
+~~~yaml
+strategy:
+  canary:
+    steps:
+      - setWeight: 5
+      - pause: {duration: 10m}
+      - analysis:
+          templates:
+            - templateName: error-rate-and-p99   # truy vấn Prometheus, fail thì rollback
+      - setWeight: 25
+      - pause: {duration: 10m}
+      - setWeight: 100
+~~~
+Điểm quan trọng: so sánh **canary với baseline cùng thời điểm**, không so với ngưỡng tuyệt đối, vì traffic thay đổi theo giờ. Với 5% traffic ít request, cần đủ thời gian để số liệu có ý nghĩa thống kê.
 
 ### Synthetic monitoring
-Robot goi API quan trong (dang nhap, dat hang, thanh toan) moi 5 phut tu ngoai he thong, assert ma status va noi dung chinh cua response. Synthetic khac voi RUM (thuc nguoi dung): synthetic kiem tra duong di chu dong ngay khi khong co nguoi dung thuc, va bat duoc su co truoc khi khach khieu nai. Luu ý: synthetic chi assert status 200 la chua du, phai assert noi dung nghiep vu (vi du response co ma don, tong tien dung).
+Kịch bản tự động (đăng nhập, tìm sản phẩm, đặt hàng thử) chạy vài phút một lần từ nhiều vùng, ví dụ CloudWatch Synthetics hoặc script k6/Playwright theo lịch. Nó phát hiện lỗi **trước khi người dùng thật gặp**, kể cả lúc ít traffic như nửa đêm. Tài khoản synthetic phải được đánh dấu để loại khỏi báo cáo doanh thu và không kích hoạt giao hàng thật hay trừ tiền thật.
 
-### Feature flag lam cong cu kiem thu
-Bat tinh nang moi cho nhom noi truoc (dogfooding), roi mo rong 10% user ngoai, sau 100%. Neu co su co, tat flag ngay la rollback tuc thi khong can deploy lai code. Sau khi tinh nang o dinh trong mot hoac hai tuan, hay xoa flag de tranh no ky thuat (code re nhanh kho kiem thu).
+### Feature flag
+Deploy code ở trạng thái tắt, bật dần theo nhóm: nhân viên nội bộ → 1% → 10% → 100%. Khi có lỗi, tắt flag trong vài giây thay vì rollback deploy. Mỗi flag cần chủ sở hữu và hạn gỡ; flag sống mãi trở thành nợ kỹ thuật và tạo ra các tổ hợp không ai test.
 
-### Error budget
-Neu so luong loi trong quy vuot ngưỡng da tho uan (vi du error rate > 0,1% hay p99 > 800 ms), dung viec trien khai tinh nang moi va tap trung o din. Error budget bu bat team phai noi chuyen ve da doi giua tinh nang moi va chat luong.
+### Ví dụ đời thực
+Một sàn thương mại điện tử deploy bản mới của service tính giá. Tất cả test ở staging xanh. Canary 5% sau 8 phút cho thấy tỉ lệ đặt hàng thành công của nhóm canary thấp hơn bản ổn định 2,3 điểm phần trăm, trong khi error rate HTTP không đổi: bản mới trả giá sai cho sản phẩm có nhiều tầng khuyến mãi, khách bỏ giỏ hàng. Phân tích tự động theo metric nghiệp vụ rollback sau 10 phút; khoảng 1.800 lượt xem bị ảnh hưởng thay vì toàn bộ người dùng. Từ đó team thêm metric nghiệp vụ vào mọi analysis template, và thêm kịch bản synthetic "giỏ hàng nhiều khuyến mãi".
 
-### Bang so sanh phuong an phat hanh
-| Phuong an | Khi dung | Uu nhu diem |
-|---|---|---|
-| Canary | co luong user du lon, can an toan | can chi so va rollback tu dong |
-| Blue-green | can chuyen toan bo traffic ngay | tuc gap hai co so ha tang |
-| Rolling update | dich vu khong trang thai | khong de rollback tung phan user |
+### Sai lầm hay gặp
+- Canary không có phân tích tự động: người phải ngồi nhìn dashboard, dễ bỏ sót.
+- Chỉ nhìn error rate HTTP: lỗi nghiệp vụ (giá sai, trả 200 nhưng dữ liệu sai) lọt qua.
+- Migration DB không tương thích ngược: rollback code nhưng schema đã đổi, canary vô nghĩa.
+- Synthetic dùng tài khoản thật hoặc không đánh dấu: làm sai số liệu kinh doanh, có thể tạo đơn thật.
 
-### Tren production
-Dashboard on-call phai hien thi p95, p99, error rate, va saturation (CPU, bo nho, connection pool). Moi su co can co runbook: dieu gi kiem tra dau tien, ai goi, khi nao rollback. Observability khong co alert thi khong co gia tri - hay thiet lap alert tren p95 va error rate, khong chi tren "server co song hay khong".
+### Trả lời mẫu khi phỏng vấn
+"Tôi coi production là tầng kiểm thử cuối có kiểm soát, vì staging không bao giờ giống hệt về dữ liệu và tải. Có ba công cụ chính. Canary đưa bản mới tới một phần nhỏ traffic và tự động so sánh với bản ổn định cùng thời điểm, không chỉ error rate và latency mà cả metric nghiệp vụ như tỉ lệ thanh toán thành công; vượt ngưỡng thì tự rollback. Synthetic monitoring chạy kịch bản người dùng chính vài phút một lần, phát hiện lỗi cả khi ít traffic, với tài khoản test được đánh dấu để không ảnh hưởng số liệu và không tạo giao dịch thật. Feature flag tách deploy khỏi phát hành, bật dần theo nhóm và tắt được trong vài giây; mỗi flag có chủ và hạn gỡ. Điều kiện tiên quyết là observability đủ tốt, migration tương thích ngược, và rollback nhanh."
 
-### Bai the hay gap
-- Canary khong co dieu kien dung (abort condition) => khi su co xay ra khong ai biet khi nao rollback.
-- Feature flag ma khong xoa => no ky thuat, logic re nhanh kho kiem thu.
-- Synthetic check chi kiem tra status 200 => bo sot loi nghiep vu (tra 200 nhung noi dung sai).
-- Chi so production khong du luu luu dai han => khong biet he thong co tot hon hay xau hon theo thoi gian.
-
-> Senior tip: cau noi tao uy tin nhat o van de nay la mot cau co ba con so va mot co che: "them index (status, created_at) cho danh sach don hang => p95 giam tu 1,9 giay xuong 210 ms o 800 RPS, DB CPU tu 78% xuong 23%". Khi phai bao ve ngân sach cho moi truong kiem thu lien tuc (dat tien nhat), hay quy ve chi phi loi: "moi lan nghẽn khi mo ban lam mat khoang X don trong 20 phut; mot gio moi truong kiem thu moi tuan re hon rat nhieu".`,
-  follow: [
-    'Ban dat ngưỡng canary the nao khi CI runner hay dao dong?',
-    'Synthetic monitoring va RUM khac nhau o diem nao, va ban dung ca hai the nao?',
-    'Ban xoa feature flag sau khi nao, va ai duoc quyen xoa?'
-  ],
+> Senior tip: canary chỉ an toàn khi **thay đổi schema tương thích ngược** (expand → migrate → contract). Hãy đưa câu hỏi "bản cũ có chạy được với schema mới không?" vào checklist review của mọi PR có migration; nếu câu trả lời là không, canary và rollback đều không cứu được bạn.`,
+  follow: ['Phân tích canary tự động nên so sánh những metric nào, và vì sao so với baseline cùng thời điểm?', 'Synthetic monitoring và RUM khác nhau thế nào, bạn dùng cả hai ra sao?', 'Ai được quyền gỡ feature flag, và bạn ngăn flag sống mãi thành nợ kỹ thuật thế nào?'],
   tags: ['canary', 'synthetic-monitoring', 'feature-flag', 'observability', 'error-budget']
 },
 
