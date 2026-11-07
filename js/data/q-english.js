@@ -7475,6 +7475,765 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   follow: ['Which questions reveal team health?', 'How do you close an interview?'],
   tags: ['behavioral', 'questions', 'english'],
   lang: 'en'
+},
+{
+  id: 'english-152',
+  topic: 'english',
+  level: 'mid',
+  q: 'You have a discovery call with a new freelance client. What questions do you ask to clarify requirements, how do you paraphrase to confirm understanding, and how do you close the call with clear next steps?',
+  a: `**Tóm tắt:** Một **discovery call** (cuộc gọi khám phá: cuộc gọi đầu tiên để hiểu khách cần gì trước khi báo giá hay viết code) thành công có 3 phần: (1) hỏi câu hỏi đúng để làm rõ mục tiêu, phạm vi, ràng buộc; (2) **paraphrase** (diễn đạt lại bằng lời của mình) để xác nhận bạn hiểu đúng; (3) chốt **next steps** (bước tiếp theo) cụ thể với thời gian. Nói chậm, tránh thuật ngữ, và tóm tắt bằng văn bản sau cuộc gọi.
+
+### Mẫu trả lời nói (dùng được ngay)
+"Thank you for taking the time to meet today. Before we talk about solutions, I would like to understand your goals and the current situation.
+
+To clarify the requirements, I would ask a few questions. First, what problem are you trying to solve, and who will use this product? Second, what does success look like - for example, faster processing, fewer errors, or more users? Third, what are the constraints: budget range, deadline, existing systems we must integrate with, and any security or compliance needs? Fourth, what is already built, and what is the highest priority for the first release?
+
+After they answer, I paraphrase to confirm. I would say: 'Let me make sure I understand correctly. You need an internal dashboard for your operations team to track orders in near real time. The first version should show today orders, status, and basic filters. You already have a PostgreSQL database, and you want this delivered in six weeks. Is that accurate, or did I miss anything?'
+
+To close the call, I propose clear next steps: 'Based on what we discussed, I will send a short summary of the requirements and my assumptions today. By Wednesday, I will share a rough estimate with scope, timeline, risks, and two options if needed. After you review it, we can schedule a 20-minute follow-up to confirm the plan. Does that timeline work for you?'"
+
+### Cấu trúc discovery call (từng bước)
+### 1) Mở đầu: đặt mục tiêu cuộc gọi
+- **Cái gì:** Nói rõ bạn muốn hiểu vấn đề, không nhảy vào giải pháp.
+- **Vì sao cần:** Khách thường mô tả giải pháp ("build me an app") thay vì vấn đề; nếu hiểu sai từ đầu, bạn sẽ làm sai thứ họ cần.
+- **Câu hữu ích:** "My goal today is to understand your needs so I can propose the right approach."
+
+### 2) Hỏi để làm rõ (theo nhóm)
+| Nhóm | Câu hỏi mẫu | Mục đích |
+|---|---|---|
+| Mục tiêu | "What problem are we solving?" "What does success look like in three months?" | Tránh làm tính năng không ai dùng |
+| Người dùng | "Who will use this day to day?" "How technical are they?" | Quyết định độ phức tạp giao diện/quy trình |
+| Phạm vi | "What must be in the first release?" "What can wait?" | Chống **scope creep** (phạm vi bị phình ra: thêm việc liên tục ngoài thỏa thuận) |
+| Ràng buộc | "What is the deadline and budget range?" "Any systems we must integrate with?" | Đánh giá khả thi |
+| Rủi ro | "What has been tried before?" "What worries you most?" | Phát hiện bẫy sớm |
+
+### 3) Paraphrase: xác nhận hiểu đúng
+- **Cái gì:** Nhắc lại yêu cầu bằng lời của bạn, rồi hỏi "Did I get that right?"
+- **Vì sao cần:** Tiếng Anh không phải tiếng mẹ đẻ của cả hai bên, khác múi giờ, khác ngữ cảnh - dễ hiểu sai. Paraphrase biến hiểu ngầm thành hiểu rõ.
+- **Kỹ thuật:** Dùng con số, tên vai trò, deadline cụ thể. Tránh lặp y nguyên câu khách nói (nghe như vẹt, không chứng minh bạn hiểu).
+- **Ví dụ:** "So, if I understand correctly, you need X for Y users by Z date, and A is out of scope for now. Is that right?"
+
+### 4) Chốt next steps
+- **Cái gì:** Ai làm gì, vào khi nào, bằng kênh nào (email, Slack, tài liệu).
+- **Vì sao cần:** Cuộc gọi không có next steps thường "chết" - không ai biết bước sau. Với freelance/remote, next steps là hợp đồng miệng miệng tạm thời.
+- **Ví dụ:** "I will send a written summary today. I will share an estimate by Wednesday. Can we book a 20-minute follow-up on Thursday?"
+
+### Cụm từ hữu ích
+- **discovery call**: cuộc gọi khám phá nhu cầu
+- **clarify the requirements**: làm rõ yêu cầu
+- **paraphrase / confirm my understanding**: diễn đạt lại / xác nhận tôi hiểu đúng
+- **assumptions and constraints**: giả định và ràng buộc
+- **out of scope for the first release**: ngoài phạm vi bản phát hành đầu
+- **next steps and timeline**: bước tiếp theo và mốc thời gian
+- **written summary**: bản tóm tắt bằng văn bản
+
+### Lỗi người Việt hay mắc
+- **Nhảy vào giải pháp quá sớm:** Khách vừa nói xong đã kể về Spring Boot, microservices. Hãy hỏi vấn đề trước. Tiếng Anh hay dùng: "Before suggesting a solution, could I ask a few questions?"
+- **Không paraphrase:** Im lặng gật đầu vì ngại. Nếu không chắc, hỏi: "Could you clarify what you mean by 'real time'?"
+- **Dịch từng chữ:** "I will do for you quickly" nghe mơ hồ. Nói cụ thể: "I can deliver a first version in two weeks."
+- **Kết thúc mơ hồ:** "I will contact you later" - khi nào? Hãy nói "I will email you the summary by 5 PM Vietnam time today."
+- **Quá trang trọng hoặc quá suồng sã:** Tránh "Dear Sir" kiểu cũ trong call; tránh "yeah no worries bro". Giữ lịch sự, rõ ràng: "Thank you" / "That makes sense" / "I appreciate your time."
+
+### Phiên bản ngắn để nói (30-45 giây)
+"Thanks for your time today. I would like to ask a few questions about your goals, users, deadline, and constraints. Let me confirm: you need X for Y, delivered by Z, and A is out of scope for now - is that correct? I will send a written summary today and a rough estimate by Wednesday. Can we schedule a short follow-up on Thursday?"
+
+### Phiên bản viết (email/Slack sau cuộc gọi)
+"Hi [Name], thank you for the discovery call today. Here is my understanding: Goal - [goal]. Users - [users]. First release scope - [scope]. Out of scope for now - [items]. Constraints - [deadline/budget/integrations]. Assumptions - [assumptions]. Next steps: I will share a rough estimate by [date]. Please reply if anything above is incorrect. Best, [Your Name]"
+
+> Senior tip: Với freelance/remote, discovery call không chỉ lấy yêu cầu mà còn kiểm tra "độ lành" của khách: họ có trả lời rõ không, có tôn trọng ranh giới không, quyết định ai là người chốt. Ghi chú các giả định bằng văn bản ngay sau call - nhiều tranh chấp về scope sau này bắt nguồn từ việc chỉ nói miệng.`,
+  follow: [
+    'How do you handle a client who gives vague answers like "make it fast and modern"?',
+    'What red flags would you look for during a discovery call with a new client?',
+    'How would you paraphrase if you are not sure you understood a technical constraint?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'discovery', 'communication'],
+  lang: 'en'
+},
+{
+  id: 'english-153',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you give a time and cost estimate to a non-technical client, including assumptions and risks, without sounding vague or overconfident?',
+  a: `**Tóm tắt:** Một **estimate** (ước lượng: dự đoán thời gian/chi phí dựa trên thông tin hiện có, không phải cam kết chắc chắn) tốt cho khách không rành kỹ thuật phải gồm: phạm vi rõ, giả định, rủi ro, và khoảng (range) thay vì một con số duy nhất. Giải thích bằng kết quả nghiệp vụ, nêu cái gì làm thay đổi ước lượng, và đề xuất cách giảm rủi ro (chia giai đoạn, kiểm tra sớm).
+
+### Mẫu trả lời nói (dùng được ngay)
+"Based on what we discussed, here is my estimate for the first release.
+
+The scope includes user login, the orders dashboard, and CSV export. I estimate this will take about four to six weeks and cost between X and Y. I am giving a range because the final effort depends on a few assumptions.
+
+My assumptions are: we will use your existing PostgreSQL database; your team can provide API access or sample data within the first week; and the design will be based on a simple template, not a fully custom design. If any of these change, the timeline and cost may change as well.
+
+The main risks are integration delays, unclear requirements, and data quality issues. For example, if the database structure is different from what we expect, connecting the dashboard may take longer. To reduce risk, I suggest we start with a one-week discovery and prototype. After that, I can confirm a more precise estimate.
+
+I will also flag any scope changes early, so there are no surprises. Would you like me to send this estimate in writing with the assumptions listed clearly?"
+
+### Cấu trúc estimate dễ hiểu cho khách không kỹ thuật
+### 1) Nêu phạm vi trước (scope)
+- **Cái gì:** Liệt kê tính năng nằm trong ước lượng và tính năng không nằm trong.
+- **Vì sao cần:** Khách nghe "6 weeks" nhưng tưởng gồm mọi thứ. Phạm vi mơ hồ là nguồn gốc tranh chấp.
+- **Ví dụ:** "This estimate covers A, B, and C. It does not include mobile apps, payment integration, or data migration."
+
+### 2) Đưa khoảng, không đưa một số
+- **Cái gì:** "4 to 6 weeks" thay vì "5 weeks".
+- **Vì sao cần:** Phần mềm có bất định (uncertainty). Một con số tạo kỳ vọng sai; khi trượt, khách mất tin. Khoảng thể hiện sự trung thực có kiểm soát.
+- **Đời thường:** Giống thợ sửa nhà nói "2 đến 3 ngày tùy tình trạng ống nước sau khi mở tường" - họ chưa biết điều ẩn.
+
+### 3) Liệt kê giả định (assumptions)
+- **Cái gì:** Điều bạn coi là đúng để ước lượng có nghĩa.
+- **Vì sao cần:** Khi giả định sai, ước lượng sai - và đó không phải "bạn làm chậm", đó là đầu vào thay đổi.
+- **Ví dụ giả định:** khách cung cấp quyền truy cập đúng hạn; có một người quyết định; yêu cầu không đổi sau khi chốt; dữ liệu mẫu sẵn có.
+
+### 4) Nêu rủi ro và cách giảm rủi ro
+| Rủi ro | Ảnh hưởng | Cách giảm |
+|---|---|---|
+| Yêu cầu chưa rõ | Làm lại, trễ | Viết summary + xác nhận trước khi code |
+| Tích hợp hệ thống cũ | Thời gian tăng | Kiểm tra truy cập/dữ liệu ở tuần 1 |
+| Dữ liệu bẩn/thiếu | Export/dashboard sai | Lấy mẫu dữ liệu sớm |
+| Thêm tính năng giữa chừng | **Scope creep** | Mọi thay đổi đi qua bước đánh giá impact |
+
+### 5) Đề xuất bước tiếp
+- Chia nhỏ: discovery/prototype → estimate chắc hơn → triển khai.
+- Gửi bản viết: khách không rành kỹ thuật cần tài liệu để đọc lại và hỏi nội bộ.
+
+### Cụm từ hữu ích
+- **rough estimate / detailed estimate**: ước lượng sơ bộ / chi tiết
+- **range (four to six weeks)**: khoảng (bốn đến sáu tuần)
+- **assumptions**: giả định
+- **dependencies**: phụ thuộc (việc bên khác phải xong trước)
+- **risk and mitigation**: rủi ro và cách giảm thiểu
+- **flag scope changes early**: báo sớm các thay đổi phạm vi
+- **no surprises**: không có bất ngờ
+
+### Lỗi người Việt hay mắc
+- **Nói một con số để "cho chắc":** "It will take 10 days" rồi gặp rủi ro. Hãy dùng range và giải thích.
+- **Dùng quá nhiều thuật ngữ:** "We need to refactor the microservice and set up CI/CD" với khách không kỹ thuật sẽ gây hoang mang. Nói kết quả: "We need about one week to connect to your existing system safely."
+- **Không viết giả định:** Giả định chỉ nói miệng sẽ bị quên. Luôn gửi văn bản.
+- **Ngại nói về rủi ro vì sợ mất khách:** Khách trưởng thành đánh giá cao sự minh bạch. Nói rủi ro kèm cách xử lý thể hiện bạn có kinh nghiệm.
+- **Dịch từng chữ:** "I think maybe can finish fast" nghe thiếu tự tin. Nói: "My current estimate is four to six weeks, based on these assumptions."
+
+### Phiên bản ngắn để nói (30-45 giây)
+"For the scope we discussed - A, B, and C - I estimate four to six weeks, in the range of X to Y. This assumes we get system access and sample data in week one and the scope stays the same. The main risks are integration delays and unclear requirements. I suggest a one-week discovery first so I can confirm a more precise estimate. I will send the details in writing today."
+
+### Phiên bản viết (email/Slack)
+"Subject: Estimate for [Project] - first release. Scope: [A, B, C]. Out of scope: [items]. Estimate: [time range], [cost range]. Assumptions: [1-3]. Risks: [1-3] with mitigation. Next step: confirm scope and schedule a one-week discovery starting [date]. Any scope change will be reviewed for impact on timeline and cost before work begins."
+
+> Senior tip: Đừng mặc cả bằng cách âm thầm cắt chất lượng (bỏ test, bỏ xử lý lỗi) - nợ kỹ thuật sẽ quay lại làm bạn trễ hơn. Khi khách muốn rẻ hơn hoặc nhanh hơn, thương lượng bằng **phạm vi**: "If we need to fit two weeks, I recommend we deliver only A and B first, and move C to phase two." Luôn ghi "estimate, not a fixed commitment" trừ khi bạn đã ký hợp đồng fixed-price với phạm vi khóa chặt.`,
+  follow: [
+    'How would you respond if the client says your estimate is too high and asks you to cut it in half?',
+    'What is the difference between a fixed-price estimate and a time-and-materials estimate, and how would you explain it?',
+    'How do you update an estimate when a key assumption turns out to be wrong?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'estimate', 'risk'],
+  lang: 'en'
+},
+{
+  id: 'english-154',
+  topic: 'english',
+  level: 'mid',
+  q: 'A client keeps adding new requests outside the agreed scope (scope creep). How do you push back politely while keeping a good relationship?',
+  a: `**Tóm tắt:** **Scope creep** (phạm vi bị phình ra: khách liên tục thêm việc mới ngoài phần đã thỏa thuận) là bình thường trong freelance/remote. Đẩy lùi lịch sự không phải nói "No" thô lỗ, mà là: công nhận nhu cầu, chỉ ra tác động lên thời gian/chi phí/phạm vi, và đưa lựa chọn rõ (thêm vào giai đoạn sau, đổi ưu tiên, hoặc báo giá thêm). Luôn dựa trên thỏa thuận bằng văn bản.
+
+### Mẫu trả lời nói (dùng được ngay)
+"I understand why this feature would be useful, and I can see how it could help your team.
+
+At the same time, this request is outside the scope we agreed on for the current release. Adding it now would affect the timeline and the cost. If we include it in this phase, I estimate it would add about one extra week.
+
+I can suggest three options. Option one: we keep the current scope and deliver on the planned date, and I add this request to phase two. Option two: we replace a lower-priority item in the current scope with this new request, so the timeline stays similar. Option three: I prepare a separate estimate for this feature, and we treat it as an additional piece of work.
+
+Which option works best for you? I can send a short summary of the impact so you can decide."
+
+### Giải thích từng phần (vì sao nói như vậy)
+### 1) Công nhận trước (acknowledge)
+- **Cái gì:** "I understand why..." / "That makes sense..."
+- **Vì sao cần:** Khách không cảm thấy bị từ chối; cuộc nói chuyện vẫn hợp tác. Đời thường: giống bác sĩ nghe triệu chứng trước khi nói "thuốc này không phù hợp".
+- **Lưu ý:** Công nhận nhu cầu khác với đồng ý làm miễn phí.
+
+### 2) Nêu sự thật dựa trên thỏa thuận
+- **Cái gì:** "This is outside the scope we agreed on for the current release."
+- **Vì sao cần:** Đưa cuộc nói chuyện về phạm vi đã chốt, không phải về cảm xúc. Nếu có tài liệu (proposal, email xác nhận), nhắc nhẹ: "Based on the scope we confirmed on [date]..."
+- **Thuật ngữ:** **scope** = phạm vi công việc; **deliverable** = thứ bàn giao.
+
+### 3) Nêu tác động (impact)
+- **Cái gì:** Thời gian, chi phí, rủi ro chất lượng.
+- **Vì sao cần:** Khách không rành kỹ thuật có thể nghĩ "just a small change" (chỉ sửa nhỏ). Bạn cần dịch tác động: "It also affects testing and the release date."
+
+### 4) Đưa lựa chọn (options), không chỉ nói "No"
+| Lựa chọn | Khi nào phù hợp | Câu mẫu |
+|---|---|---|
+| Đưa sang phase 2 | Tính năng hữu ích nhưng không gấp | "We can schedule it for the next release." |
+| Đổi ưu tiên (swap) | Deadline cố định | "We can replace item C with this, if C can wait." |
+| Báo giá thêm (change request) | Khách muốn làm ngay | "I can send a separate estimate for this work." |
+
+### 5) Xin quyết định và xác nhận bằng văn bản
+- "Which option do you prefer?" - trả quyền quyết định cho khách (họ chọn đánh đổi).
+- Sau call: gửi email tóm tắt lựa chọn đã chọn để tránh hiểu sai.
+
+### Cụm từ hữu ích
+- **scope creep**: phạm vi bị phình ra
+- **outside the agreed scope**: ngoài phạm vi đã thỏa thuận
+- **impact on timeline and cost**: tác động lên thời gian và chi phí
+- **change request**: yêu cầu thay đổi (thường kèm đánh giá tác động)
+- **trade-off / prioritize**: đánh đổi / ưu tiên
+- **phase two / next release**: giai đoạn hai / bản phát hành tiếp
+- **keep the relationship positive**: giữ quan hệ tích cực
+
+### Lỗi người Việt hay mắc
+- **Nói "Yes" ngay vì ngại:** Đồng ý miệng để giữ hòa khí, rồi quá tải và trễ deadline - cuối cùng quan hệ còn xấu hơn. Hãy lịch sự nhưng rõ.
+- **Nói "No" cứng:** "I cannot do that. It is not in scope." - đúng ý nhưng nghe gây hấn. Thêm acknowledge + options.
+- **Không nêu tác động cụ thể:** "It will take more time" mơ hồ. Nói "about one extra week" hoặc "I need to review and send an estimate by tomorrow."
+- **Chỉ nói miệng:** Khách quên, tuần sau lại hỏi. Luôn xác nhận lựa chọn bằng email/Slack.
+- **Dịch từng chữ:** "I very busy cannot add more" (sai ngữ pháp, nghe thô). Nói: "I want to make sure we deliver the current scope with good quality. Adding this now would affect the timeline."
+
+### Phiên bản ngắn để nói (30-45 giây)
+"I understand why this would be helpful. This request is outside the scope we agreed on, so adding it now would affect the timeline and cost. I can suggest three options: move it to phase two, replace a lower-priority item, or treat it as a separate change request with a new estimate. Which option works best for you?"
+
+### Phiên bản viết (email/Slack)
+"Hi [Name], thanks for sharing the request about [feature]. I see the value. Since this is outside the current agreed scope, it would affect our timeline/cost. Options: (1) keep current scope and deliver on [date], add this to phase two; (2) swap it with [lower-priority item]; (3) I send a separate estimate for this change request. Please let me know your preferred option, and I will confirm the plan in writing."
+
+> Senior tip: Phòng scope creep tốt hơn chữa: ngay từ discovery (english-152) hãy ghi rõ "in scope / out of scope" và cách xử lý change request. Khi khách quen thêm "việc nhỏ", hãy gộp các thay đổi nhỏ và báo tác động tích lũy - nhiều thay đổi nhỏ vẫn làm trễ release. Giữ giọng hợp tác ("help you choose the best option") thay vì giọng phòng thủ.`,
+  follow: [
+    'What if the client says "it is just a small change, can you do it quickly for free"?',
+    'How do you document and track scope changes in a remote freelance project?',
+    'How would you handle scope creep when there is no written contract or scope document?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'scope-creep', 'negotiation'],
+  lang: 'en'
+},
+{
+  id: 'english-155',
+  topic: 'english',
+  level: 'senior',
+  q: 'You need to deliver bad news to a non-technical client: either a delayed deadline or a serious production bug. How do you explain it clearly, take responsibility, and propose a plan?',
+  a: `**Tóm tắt:** Tin xấu (trễ deadline hoặc **production bug** nghiêm trọng: lỗi xảy ra trên hệ thống thật đang phục vụ người dùng) cần được báo **sớm, rõ, có trách nhiệm**. Với khách không rành kỹ thuật: nói tác động trước, nguyên nhân ngắn gọn bằng ngôn ngữ đời thường, tránh đổ lỗi, và đưa kế hoạch hành động với mốc thời gian + cách bạn sẽ cập nhật. Mục tiêu: khách tin bạn đang kiểm soát tình huống.
+
+### Mẫu trả lời nói - trễ deadline
+"Hi [Name], I want to give you an early update. We will not be able to release on Friday as planned. I expect we will need about five more business days, with a new target of next Friday.
+
+The reason is that during final testing we found an issue that could cause some orders to be processed twice in rare cases. I know this is disappointing, and I take responsibility for not catching this risk earlier.
+
+The impact is limited to the release date. The work already completed is still valid, and no customer data has been affected. Our plan is: fix the issue by Tuesday, re-test the full payment flow by Thursday, and release on Friday. I will send you a short progress update every day at 4 PM your time until release.
+
+I chose to delay rather than release with this risk, because incorrect orders would create a bigger problem for your customers. Please let me know if this new date affects any plans on your side, and I will help adjust."
+
+### Mẫu trả lời nói - bug production nghiêm trọng
+"Hi [Name], I need to inform you about a production issue we found today.
+
+What happened: between 9:10 and 9:40 AM, some customers may have seen an error when submitting orders. About 3 percent of order attempts were affected. We have already applied a temporary fix, and the system is stable now.
+
+What this means for your business: some customers may need to retry their order. We are checking logs to confirm whether any order was charged twice or lost. I will share a confirmed impact report within two hours.
+
+Why it happened, in simple terms: a change we released this morning exposed a weakness in how the system handles repeated requests. I am responsible for the release process, and I should have added a stronger safety check.
+
+Next steps: finish the impact check, send you the confirmed numbers, apply a permanent fix today, and add extra checks so this type of issue is caught before release. I will update you every 30 minutes until the impact check is complete. Do you want me to also prepare a short message you can share with affected customers?"
+
+### Cấu trúc tin xấu (đi từng bước)
+### 1) Nói thẳng, sớm
+- **Cái gì:** "I want to give you an early update." / "I need to inform you about an issue."
+- **Vì sao cần:** Khách ghét bị bất ngờ sát deadline. Báo sớm cho họ thời gian điều chỉnh kế hoạch (marketing, vận hành).
+
+### 2) Tác động (impact) trước, chi tiết kỹ thuật sau
+- **Cái gì:** Ai bị ảnh hưởng, bao nhiêu, bao lâu, dữ liệu/tiền có an toàn không.
+- **Vì sao cần:** Khách không kỹ thuật quan tâm "việc kinh doanh của tôi bị sao?" Tránh mở đầu bằng stack trace hay tên thư viện.
+
+### 3) Nguyên nhân ngắn gọn, không đổ lỗi
+- **Cái gì:** Một hai câu, ngôn ngữ đời thường. "A change exposed a weakness in how the system handles repeated requests."
+- **Vì sao cần:** Đổ lỗi (đổ cho team khác, cho khách, cho "the server") làm mất tin. Nhận trách nhiệm phần bạn kiểm soát.
+- **Thuật ngữ:** **root cause** (nguyên nhân gốc) có thể nói sau trong báo cáo chi tiết; lúc báo tin xấu, ưu tiên rõ ràng.
+
+### 4) Kế hoạch + mốc thời gian + nhịp cập nhật
+- Hành động gì, xong khi nào, ai xác nhận.
+- "I will update you every 30 minutes / daily at 4 PM." - nhịp cập nhật giảm lo âu cho khách.
+
+### Bảng: nên nói / tránh nói
+| Tình huống | Tránh | Nên nói |
+|---|---|---|
+| Chưa biết hết | "I don't know, maybe server problem" | "We have stabilized the system. I am confirming the exact impact and will report back in two hours." |
+| Lỗi do mình | "Someone on my team made a mistake" | "I take responsibility for the release process." |
+| Khách hoảng | "This is very serious!!!" (gây hoảng) | "The system is stable now. Here is the confirmed impact and our next steps." |
+| Kỹ thuật sâu | "NullPointerException in the idempotency interceptor" | "The system sometimes processed the same request twice." |
+
+### Cụm từ hữu ích
+- **early update / heads-up**: cập nhật sớm / báo trước
+- **production issue / outage**: sự cố trên hệ thống thật / gián đoạn dịch vụ
+- **impact**: tác động
+- **temporary fix / permanent fix**: sửa tạm / sửa dứt điểm
+- **take responsibility**: nhận trách nhiệm
+- **confirmed numbers**: số liệu đã xác nhận
+- **next update at...**: cập nhật tiếp theo lúc...
+
+### Lỗi người Việt hay mắc
+- **Giấu tin xấu đến phút cuối:** Hy vọng "sửa kịp" rồi im lặng - khi trễ thật, khách không còn thời gian ứng phó.
+- **Đổ lỗi:** "The QA did not test enough" / "The client changed requirements" - kể cả đúng một phần, lúc đang báo tin xấu hãy tập trung vào giải pháp và phần bạn kiểm soát.
+- **Xin lỗi quá nhiều, không có kế hoạch:** "I am so sorry sorry sorry" lặp lại nghe mất kiểm soát. Xin lỗi một lần ngắn gọn, rồi chuyển sang hành động.
+- **Dùng thuật ngữ gây hoảng:** "database corrupted" khi thực ra chỉ là một truy vấn chậm - hãy chính xác nhưng dễ hiểu.
+- **Thì động từ lộn xộn:** Tả sự cố đã xảy ra dùng quá khứ: "The issue started at 9:10 AM and affected 3 percent of requests." Kế hoạch dùng tương lai/hiện tại: "We will send an update every 30 minutes."
+
+### Phiên bản ngắn để nói (30-45 giây)
+"Hi [Name], early update: we found a production issue affecting about 3 percent of orders between 9:10 and 9:40 AM. We have applied a temporary fix and the system is stable now. I am confirming the exact impact and will send a report within two hours. Next, we will apply a permanent fix today and add checks to prevent this. I will update you every 30 minutes until the impact check is done."
+
+### Phiên bản viết (email/Slack)
+"Subject: Production update - [service] [date/time]. Summary: [impact, who affected, time window]. Current status: stable / mitigated at [time]. Confirmed impact: [numbers or 'checking, update by HH:MM']. Cause (plain language): [1-2 sentences]. Actions: (1) [done], (2) [in progress, ETA], (3) [prevention]. Next update: [time]. I take responsibility for [part you own] and will keep you informed."
+
+> Senior tip: Khi có bug production, hãy tách 3 câu hỏi khách luôn hỏi: "Hệ thống ổn chưa?", "Khách hàng/tiền/dữ liệu có mất không?", "Khi nào có báo cáo chắc chắn?" Trả lời 3 câu đó trong 30 giây đầu. Đừng suy đoán số liệu - nói "checking, confirmed report by 11:30" tốt hơn đoán sai rồi phải sửa lại.`,
+  follow: [
+    'How would you answer if the client asks "Can you guarantee this will never happen again"?',
+    'What should you do if you do not yet know the full impact but the client is demanding details now?',
+    'How do you follow up after the incident is resolved to rebuild trust?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'incident', 'bad-news'],
+  lang: 'en'
+},
+{
+  id: 'english-156',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you write a clear daily async update and a weekly report for a remote client or team?',
+  a: `**Tóm tắt:** Làm việc **remote** (từ xa, không cùng văn phòng) và **async** (bất đồng bộ: không cần trả lời ngay, người khác đọc khi họ online) đòi hỏi cập nhật viết rõ ràng. **Daily update** (cập nhật hằng ngày) nên ngắn: đã làm, sẽ làm, vướng mắc. **Weekly report** (báo cáo tuần) tóm tắt tiến độ, rủi ro, quyết định cần khách đưa ra, và kế hoạch tuần sau. Viết để người đọc không cần họp thêm vẫn hiểu.
+
+### Mẫu trả lời nói (giải thích cách bạn làm)
+"For daily updates, I keep them short and predictable so the client can scan them quickly. I usually share three parts: what I completed yesterday, what I plan to do today, and whether I have any blockers. If there is a blocker, I also say what I need and by when.
+
+For weekly reports, I focus on outcomes, not just activity. I summarize what was delivered, what is in progress, what risks or decisions need attention, and the plan for next week. I include links to demos, pull requests, or documents so the client can verify progress without a meeting."
+
+### Mẫu daily async update (Slack/email)
+"Daily update - [Date] - [Project]
+- Done yesterday: Completed the order filter API and added tests for date range and status. PR: [link].
+- Plan today: Connect the dashboard table to the new API and handle empty/error states.
+- Blockers: I need sample data for cancelled orders to verify the filter. Could you share it by 2 PM UTC today? If not, I will proceed with mock data and note the assumption.
+- ETA / risk: Still on track for Friday demo."
+
+### Mẫu weekly report
+"Weekly report - [Week of Date] - [Project]
+
+1. Summary
+- Goal this week: deliver the first version of the orders dashboard.
+- Status: On track / At risk / Delayed (choose one). Current progress: about 70 percent of phase 1.
+
+2. Completed this week
+- Orders list with filters (status, date range).
+- CSV export for the current view.
+- Basic error handling and loading states.
+- Demo link: [link].
+
+3. In progress
+- Role-based access (admin vs viewer): 60 percent, target completion Wednesday next week.
+
+4. Risks and blockers
+- Risk: Production database access is still pending. Impact: may delay final integration testing by 2 days. Mitigation: I am using staging data now; need access by Tuesday.
+- Decision needed: Should cancelled orders be visible to viewer role? Please confirm by Monday.
+
+5. Plan for next week
+- Finish role-based access.
+- Run integration testing with production-like data.
+- Prepare release checklist and handover notes.
+
+6. Time / budget note (if relevant)
+- Hours used this week: X. Estimated remaining for phase 1: Y."
+
+### Giải thích từ gốc: vì sao async update quan trọng
+- **Cái gì:** Tin nhắn/báo cáo viết để đọc sau, không cần họp.
+- **Vì sao cần:** Khách ở múi giờ khác (ví dụ Mỹ cách Việt Nam 11-12 tiếng). Nếu mọi thứ cần họp, dự án chậm và mệt. Update tốt tạo **visibility** (tầm nhìn: khách biết việc đang tiến triển).
+- **Đời thường:** Giống bảng tiến độ công trình dán ở cổng - chủ nhà đi làm về vẫn biết hôm nay làm tới đâu.
+- **Lỗi hay gặp:** Chỉ báo "đang làm" (mơ hồ) hoặc báo quá dài (không ai đọc). Hãy cụ thể, có link, có ETA.
+
+### Cụm từ hữu ích
+- **async update**: cập nhật bất đồng bộ
+- **on track / at risk / delayed**: đúng tiến độ / có rủi ro / chậm
+- **blocker**: thứ đang chặn tiến độ (cần ai đó gỡ)
+- **ETA (estimated time of arrival)**: thời gian dự kiến hoàn thành
+- **decision needed**: cần quyết định (từ khách/quản lý)
+- **action item**: việc cần làm cụ thể
+- **demo / deliverable**: bản demo / sản phẩm bàn giao
+
+### Lỗi người Việt hay mắc
+- **Viết "I am working on it" mỗi ngày:** Khách không biết "it" là gì và tiến độ ra sao. Nêu kết quả cụ thể: "Completed X, tested Y."
+- **Không nêu blocker sớm:** Tự vật lộn 3 ngày rồi báo trễ. Hãy nói blocker ngay, kèm điều bạn cần.
+- **Weekly report chỉ liệt kê việc đã làm:** Khách cần cả rủi ro và quyết định. Thêm "Decision needed by Monday."
+- **Dùng thì sai:** Đã xong dùng quá khứ: "Completed / Fixed / Sent". Kế hoạch dùng tương lai hoặc hiện tại: "I will connect..." / "Plan today: connect..."
+- **Quá trang trọng hoặc copy template máy móc:** Viết tự nhiên, rõ. Tránh câu rỗng: "I hope this email finds you well" trong daily update - đi thẳng vào nội dung.
+
+### Phiên bản ngắn để nói (nếu khách hỏi bạn cập nhật thế nào)
+"I send a short daily async update with what I finished, what I plan next, and any blockers with what I need. Every week I send a report with progress, risks, decisions needed, and next week plan, plus links to demos or pull requests so you can review without an extra meeting."
+
+### Phiên bản viết (chat cực ngắn khi bận)
+"Update [date]: Done - [result + link]. Today - [task]. Blocker - [none / need X by Y]. ETA - on track for [date]."
+
+> Senior tip: Hãy gửi update vào cùng một thời điểm mỗi ngày (theo múi giờ khách) để tạo thói quen - khách không phải hỏi "how is it going?". Với weekly report, luôn có mục "Decision needed" kể cả khi là "None this week" - điều này cho khách thấy bạn chủ động quản lý rủi ro, không chỉ viết code.`,
+  follow: [
+    'What should you do when you have no visible progress to report because you were debugging all day?',
+    'How do you write an update when you missed the planned goal for the week?',
+    'How would you adjust your update style for a very technical CTO versus a non-technical founder?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'async', 'reporting'],
+  lang: 'en'
+},
+{
+  id: 'english-157',
+  topic: 'english',
+  level: 'senior',
+  q: 'You receive harsh feedback from a client or an uncomfortable code review comment. How do you respond professionally in English and move the work forward?',
+  a: `**Tóm tắt:** Phản hồi chuyên nghiệp khi nhận feedback gay gắt (harsh feedback) dựa trên 4 bước: **pause** (dừng, không trả lời nóng), **clarify** (làm rõ vấn đề cụ thể), **respond to the issue, not the tone** (trả lời vào vấn đề, không đấu lại giọng điệu), và **commit to action** (cam kết hành động). Mục tiêu là bảo vệ chất lượng công việc và quan hệ, không phải "thắng" cuộc tranh luận.
+
+### Mẫu trả lời nói (khi feedback qua cuộc gọi)
+"Thank you for sharing this feedback. I can hear that this caused frustration, and I want to understand it clearly so I can fix it.
+
+Could you help me pinpoint the main issues? For example, is the concern about the missed deadline, the quality of the release, or the way I communicated updates? I want to make sure I address the right problem.
+
+If the issue is [specific issue], I agree that it is not acceptable. Here is what I propose: I will [action 1] by [time], [action 2] by [time], and I will update you at [time]. If I misunderstood anything, please correct me."
+
+### Mẫu trả lời viết (email/Slack, khi feedback gay gắt)
+"Hi [Name], thank you for the feedback. I understand your concern about [specific issue]. I would like to address it directly.
+
+What I understand: [paraphrase the concern in neutral language]. What I will do: (1) [action] by [time], (2) [action] by [time]. What I need from you (if anything): [clarification/data/decision]. I will send the next update at [time]. If I missed part of your concern, please let me know and I will adjust the plan."
+
+### Mẫu trả lời code review khó chịu (bình luận công khai)
+- Bình luận gốc (khó chịu): "This code is terrible. Did you even test it?"
+- Trả lời chuyên nghiệp: "Thanks for reviewing. You are right that this path needs stronger testing. I missed the case where [case]. I will add tests for [cases] and refactor [part] to make the logic clearer. I will push an update today. If you see other risky cases, I would appreciate specific examples so I can cover them."
+
+### Giải thích từng bước
+### 1) Dừng lại (pause)
+- **Cái gì:** Không trả lời ngay khi đang tức. Với chat: đợi 10-20 phút, đọc lại.
+- **Vì sao cần:** Phản ứng cảm xúc làm tình hình xấu hơn. Remote không có ngữ điệu khuôn mặt, chữ viết dễ bị đọc nặng hơn ý bạn.
+- **Đời thường:** Giống lái xe bị bấm còi - nếu bấm lại ngay, va chạm leo thang.
+
+### 2) Làm rõ (clarify)
+- **Cái gì:** Tách cảm xúc khỏi sự thật. Hỏi ví dụ cụ thể.
+- **Câu mẫu:** "Could you share a specific example?" / "Which part of the deliverable did not meet your expectations?"
+- **Vì sao cần:** Feedback mơ hồ ("this is bad") không thể sửa. Feedback cụ thể ("the report misses cancelled orders") có thể hành động.
+
+### 3) Trả lời vào vấn đề, không vào giọng điệu
+- **Cái gì:** Không viết "Your tone is rude." trong lúc đang cần giải quyết việc.
+- **Vì sao cần:** Tranh luận về giọng điệu thường làm mất trọng tâm. Nếu có vấn đề thật, sửa vấn đề sẽ giảm căng thẳng. (Nếu hành vi lặp lại và vượt ranh giới, đó là vấn đề khác - cần nói riêng, bình tĩnh, có bằng chứng.)
+- **Kỹ thuật:** **Paraphrase** mối quan tâm bằng ngôn ngữ trung tính.
+
+### 4) Cam kết hành động (commit to action)
+- Nêu việc sẽ làm, thời gian, cách cập nhật. Hành động cụ thể khôi phục tin tưởng nhanh hơn lời giải thích dài.
+
+### Cụm từ hữu ích
+- **I appreciate the feedback**: tôi cảm ơn phản hồi
+- **I want to understand the concern clearly**: tôi muốn hiểu rõ mối quan ngại
+- **Could you share a specific example?**: bạn có thể cho ví dụ cụ thể không?
+- **You are right that...**: bạn đúng ở điểm... (thừa nhận phần hợp lý)
+- **Here is what I will do...**: đây là điều tôi sẽ làm...
+- **If I misunderstood, please correct me**: nếu tôi hiểu sai, xin sửa cho tôi
+
+### Lỗi người Việt hay mắc
+- **Phản ứng phòng thủ:** "But you did not give me clear requirements" - kể cả đúng, nói ngay lúc bị góp ý nghe như đổ lỗi. Hãy xử lý vấn đề trước; bàn về quy trình sau khi bình tĩnh.
+- **Im lặng vì sợ:** Không trả lời làm khách nghĩ bạn bỏ mặc. Ít nhất xác nhận: "I have received your feedback and I will respond with a plan by 3 PM."
+- **Dịch từng chữ:** "You say wrong with me" (sai). Nói: "I see it differently, but I may be missing context. Could we review the example together?"
+- **Xin lỗi chung chung:** "Sorry for everything" - không rõ sửa gì. Xin lỗi cụ thể nếu bạn sai: "I am sorry I missed the update yesterday."
+- **Quá cảm xúc trong văn bản:** Viết hoa, nhiều dấu chấm than, hoặc câu dài công kích. Remote text không có giọng nói - hãy viết ngắn, trung tính.
+
+### Phiên bản ngắn để nói (30-45 giây)
+"Thank you for the feedback. I want to understand the main concern clearly - could you point to a specific example? If the issue is [issue], I agree it needs to be fixed. I will [action] by [time] and update you at [time]. Please let me know if I missed anything."
+
+### Phiên bản viết (Slack ngắn)
+"Thanks for the feedback. I understand the concern is [issue]. I will [action] by [time] and share an update at [time]. If I missed part of your point, please share a specific example and I will address it."
+
+> Senior tip: Phân biệt "feedback khó nghe nhưng đúng" với "hành vi thiếu tôn trọng lặp lại". Với cái trước, tập trung sửa việc và học. Với cái sau, giữ bình tĩnh, trả lời vào công việc bằng văn bản (để có dấu vết), và nếu cần thì đặt ranh giới riêng tư: "I want to resolve this. I can do my best work when we keep the discussion focused on the issue." Đừng tranh cãi công khai dài dòng.`,
+  follow: [
+    'How would you respond if the client\'s harsh feedback is based on a misunderstanding of what was agreed?',
+    'What do you do if a code reviewer repeatedly leaves sarcastic or personal comments?',
+    'How can you ask for clearer, more actionable feedback without sounding defensive?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'feedback', 'conflict'],
+  lang: 'en'
+},
+{
+  id: 'english-158',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you negotiate a rate increase with a long-term freelance client in a professional, low-drama way?',
+  a: `**Tóm tắt:** Đàm phán **rate increase** (tăng mức phí/giá theo giờ hoặc theo dự án) với khách lâu năm cần dựa trên **giá trị và bằng chứng**, không dựa trên cảm xúc hay nhu cầu cá nhân. Chuẩn bị: thành quả đã tạo ra, phạm vi trách nhiệm đã tăng, mức thị trường, và thời điểm hợp lý. Đưa đề xuất rõ (mức mới, từ khi nào, áp dụng cho phạm vi nào), giữ giọng hợp tác, và chuẩn bị phương án nếu khách từ chối.
+
+### Mẫu trả lời nói (dùng được ngay)
+"I have really valued working with you over the past year, and I would like to discuss my rate for upcoming work.
+
+Over that time, my responsibilities have grown. In addition to backend development, I now handle release planning, production issue triage, and coordination with your other vendors. For example, in the last quarter I helped reduce checkout errors by improving retry handling and added monitoring that cut our response time to incidents.
+
+Based on the current scope and market rates for this level of responsibility, I would like to adjust my rate from X to Y, starting from [date, usually 30 days notice]. This new rate would apply to new work and renewals after that date. Existing work already agreed at the current rate can stay the same, so there is no surprise.
+
+I understand budget matters, so if needed we can also discuss options, such as keeping the current rate for a smaller scope or prioritizing the highest-value tasks. How does that sound to you?"
+
+### Chuẩn bị trước khi đàm phán (từng bước)
+### 1) Thu thập bằng chứng giá trị
+- **Cái gì:** Kết quả đo được (giảm lỗi, tăng tốc độ, tiết kiệm thời gian vận hành), phạm vi việc bạn đang làm, phản hồi tốt.
+- **Vì sao cần:** "I need more money" yếu. "I now own X, delivered Y, reduced Z" mạnh và dễ khách chấp nhận.
+- **Ví dụ:** "delivered 12 releases with no major rollback", "reduced API response time from 800 ms to 250 ms".
+
+### 2) Chọn thời điểm
+- Tốt: trước khi gia hạn hợp đồng, sau khi hoàn thành mốc lớn, khi phạm vi tăng rõ.
+- Tránh: ngay sau sự cố bạn gây ra, hoặc khi khách đang cắt ngân sách gấp (vẫn có thể nói, nhưng cần nhạy).
+
+### 3) Đưa con số rõ và thời gian chuyển tiếp
+- **Cái gì:** Từ X lên Y, hiệu lực từ ngày nào. Cho **notice** (thông báo trước, thường 30 ngày) để khách có thời gian.
+- **Vì sao cần:** Mơ hồ ("I want a higher rate") tạo thương lượng kéo dài. Rõ ràng thể hiện chuyên nghiệp.
+
+### 4) Chuẩn bị phương án B (BATNA nhẹ)
+- **BATNA** (Best Alternative To a Negotiated Agreement: phương án tốt nhất nếu không đạt thỏa thuận) - bạn không cần nói từ này, nhưng cần biết giới hạn của mình.
+- Phương án hợp tác: giảm phạm vi, giảm giờ, ưu tiên việc giá trị cao, hoặc giữ rate cũ cho gói nhỏ hơn.
+- Giới hạn cá nhân: mức thấp nhất bạn chấp nhận (không nói với khách, nhưng tự biết).
+
+### Bảng: nên / tránh
+| Tránh | Nên |
+|---|---|
+| "Everything is more expensive now" (chỉ lý do cá nhân) | "My responsibilities and the value delivered have increased: [examples]." |
+| Đe dọa: "Pay more or I leave" | "I would like to continue working together, and here is the rate that fits the current scope." |
+| Tăng đột ngột từ ngày mai | "I propose the new rate starting [30 days from now]." |
+| Xin lỗi vì đòi tăng | Tự tin, bình tĩnh: "I would like to discuss adjusting my rate." |
+
+### Cụm từ hữu ích
+- **adjust my rate**: điều chỉnh mức phí (nhẹ nhàng hơn "increase my price")
+- **based on scope and responsibilities**: dựa trên phạm vi và trách nhiệm
+- **market rate**: mức giá thị trường
+- **effective from [date]**: có hiệu lực từ [ngày]
+- **30 days notice**: thông báo trước 30 ngày
+- **renewal / new scope**: gia hạn / phạm vi mới
+- **I value our working relationship**: tôi trân trọng quan hệ hợp tác
+
+### Lỗi người Việt hay mắc
+- **Ngại nói về tiền:** Chờ khách tự đề nghị - thường sẽ không xảy ra. Đàm phán là bình thường trong kinh doanh.
+- **Kể khó khăn cá nhân:** "My rent increased" - khách có thể thông cảm nhưng quyết định ngân sách dựa trên giá trị. Hãy dẫn bằng giá trị.
+- **Đưa tối hậu thư khi đang nóng:** Làm hỏng quan hệ lâu năm. Giữ giọng hợp tác.
+- **Không cho thời gian chuyển tiếp:** Tăng ngay lập tức gây sốc. 30 ngày là lịch sự.
+- **Dịch từng chữ:** "I want you pay me more money" (thô, sai). Nói: "I would like to discuss adjusting my rate to reflect the current scope."
+
+### Phiên bản ngắn để nói (30-45 giây)
+"I have enjoyed working with you this past year. My responsibilities have grown to include [X, Y], and I delivered [result]. I would like to adjust my rate from X to Y starting [date, 30 days out], applied to new work after that date. I would like to keep working together - if budget is tight, we can also discuss adjusting scope. How does that sound?"
+
+### Phiên bản viết (email)
+"Subject: Rate discussion for upcoming work. Hi [Name], I value our collaboration over the past [time]. As my scope has expanded to include [responsibilities] and I delivered [results], I would like to adjust my rate from [X] to [Y], effective [date, 30 days notice], for new work/renewals after that date. Existing agreed work can remain at the current rate. If helpful, I am open to discussing scope options to fit your budget. I would be glad to continue our work together. Best, [Your Name]"
+
+> Senior tip: Đừng đợi đến khi kiệt sức mới đàm phán - lúc đó bạn dễ đưa tối hậu thư. Hãy đặt lịch review rate định kỳ (ví dụ mỗi 6-12 tháng hoặc mỗi lần gia hạn). Với khách lâu năm, "apply to new work after [date]" giúp họ không cảm thấy bị bất ngờ; đồng thời cho thấy bạn tôn trọng thỏa thuận cũ.`,
+  follow: [
+    'What would you do if the client says they cannot afford the new rate but wants to keep the same scope?',
+    'How do you justify a rate increase when you do not have hard metrics like revenue impact?',
+    'How would you respond if the client asks why you did not mention this earlier?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'negotiation', 'rate'],
+  lang: 'en'
+},
+{
+  id: 'english-159',
+  topic: 'english',
+  level: 'senior',
+  q: 'At the end of a freelance contract, how do you ask for a review or testimonial? And how do you follow up politely when the client goes silent?',
+  a: `**Tóm tắt:** Xin **review/testimonial** (đánh giá/lời chứng thực: nhận xét công khai về chất lượng làm việc của bạn) hiệu quả nhất là ngay khi dự án kết thúc tốt - bạn nhắc kết quả cụ thể, làm việc xin review trở nên dễ (gợi ý điểm họ có thể viết), và đưa link trực tiếp. Khi khách im lặng, **follow up** (nhắc lại) lịch sự, ngắn, cách nhau vài ngày, và biết dừng đúng lúc để giữ quan hệ.
+
+### Mẫu trả lời nói (cuối buổi bàn giao/kết thúc)
+"Before we wrap up, I wanted to say I have enjoyed working with you on this project. We delivered [result], and I am glad we hit [milestone].
+
+If you are happy with the work, would you be open to writing a short review? It really helps me as a freelancer. If it is easier, I can suggest a few points you could mention, such as communication, delivery quality, or how we handled [specific challenge]. There is no pressure at all - only if you feel comfortable."
+
+### Mẫu xin review (email/Slack)
+"Subject: Thank you + a quick request. Hi [Name], thank you again for the opportunity to work on [project]. I am glad we delivered [specific result, e.g., the dashboard launch on time and reduced manual reporting]. If you were satisfied with the collaboration, would you mind leaving a short review here: [direct link]? If helpful, you could mention: (1) the problem we solved, (2) how communication/timelines went, (3) the outcome. Of course, only if you feel comfortable. Either way, I appreciate working with you. Best, [Your Name]"
+
+### Mẫu follow up khi khách im lặng (lần 1 - sau 4-5 ngày)
+"Hi [Name], just a gentle follow-up on my note below. If you have a moment, a short review here would mean a lot: [link]. If now is not a good time, no worries at all. Thanks again for the collaboration."
+
+### Mẫu follow up (lần 2 - sau thêm 7-10 ngày, lần cuối)
+"Hi [Name], checking in one last time in case this got buried. If you are able to leave a short review, here is the link: [link]. If not, I completely understand - thank you again for working together. I would be happy to collaborate again in the future."
+
+### Giải thích từ gốc
+### Vì sao xin review quan trọng với freelance/remote
+- **Cái gì:** Lời chứng thực công khai giảm rủi ro cho khách mới (họ chưa biết bạn).
+- **Vì sao cần:** Khách remote không gặp bạn trực tiếp, nên họ dựa nhiều vào review, portfolio, và cách bạn giao tiếp.
+- **Đời thường:** Giống đánh giá quán ăn - người mới yên tâm hơn khi thấy nhiều người từng dùng.
+
+### Làm sao để dễ được review
+- **Chọn thời điểm:** Ngay sau bàn giao thành công, khi khách vừa thấy giá trị.
+- **Giảm công sức cho khách:** Gửi link trực tiếp, gợi ý 2-3 điểm. Khách bận; càng dễ càng có khả năng họ làm.
+- **Nhắc kết quả cụ thể:** "delivered X, achieved Y" giúp họ nhớ và viết dễ hơn.
+- **Không gây áp lực:** "Only if you feel comfortable" - tôn trọng quyền chọn.
+
+### Follow up khi im lặng: nhịp và giới hạn
+| Lần | Thời điểm | Giọng điệu | Mục đích |
+|---|---|---|---|
+| 1 | 4-5 ngày sau | Nhẹ nhàng, "gentle follow-up" | Tin nhắn có thể bị chôn (buried) |
+| 2 | Thêm 7-10 ngày | "one last time", cho lối thoát | Nhắc lần cuối, không làm phiền |
+| 3? | Không nên | - | Quá nhiều lần gây khó chịu, hại quan hệ |
+
+- **Vì sao khách im lặng:** bận, quên, không chắc viết gì, hoặc không hài lòng (hiếm nếu kết thúc tốt). Đừng suy diễn tiêu cực ngay.
+
+### Cụm từ hữu ích
+- **testimonial / review / reference**: lời chứng thực / đánh giá / người tham chiếu
+- **wrap up the project**: kết thúc dự án
+- **If you feel comfortable**: nếu bạn cảm thấy thoải mái (không ép)
+- **gentle follow-up**: nhắc nhẹ
+- **in case this got buried**: phòng trường hợp tin nhắn bị chôn (do quá nhiều tin)
+- **no pressure / no worries at all**: không áp lực / không sao cả
+- **keep the door open**: giữ cửa cho hợp tác sau
+
+### Lỗi người Việt hay mắc
+- **Ngại xin:** Sợ bị từ chối nên không xin - mất cơ hội xây dựng uy tín. Xin lịch sự là bình thường.
+- **Xin quá chung chung:** "Can you give me a review?" - khách không biết viết gì. Hãy gợi ý điểm và gửi link.
+- **Follow up quá dày:** Nhắn mỗi ngày nghe như đòi. 2 lần là đủ.
+- **Giọng trách móc:** "I sent you the link last week but you did not reply." - làm hỏng quan hệ. Hãy giả định họ bận: "in case this got buried."
+- **Dịch từng chữ:** "Please you give me good review" (sai, nghe ép). Nói: "If you were satisfied with the work, would you mind leaving a short review?"
+
+### Phiên bản ngắn để nói (30-45 giây)
+"I have enjoyed working with you on this project. If you are happy with the results, would you be open to leaving a short review? I can send a direct link and a few suggested points to make it easy. No pressure at all."
+
+### Phiên bản viết (follow-up ngắn nhất)
+"Hi [Name], gentle follow-up: if you have a moment, a short review here would mean a lot: [link]. If now is not a good time, no worries. Thanks again."
+
+> Senior tip: Xin review là một phần của kết thúc dự án chuyên nghiệp, giống như bàn giao tài liệu. Hãy xin khi mọi thứ còn "nóng" - sau 1-2 tháng khách quên chi tiết. Nếu khách có góp ý riêng (không muốn viết công khai), tôn trọng điều đó và xin phép dùng làm tham chiếu riêng (reference) thay vì review công khai.`,
+  follow: [
+    'What would you do if the client says they are happy but company policy does not allow public reviews?',
+    'How do you ask for a testimonial without making it sound transactional?',
+    'How should you respond if the client leaves a review that is positive but includes an inaccurate detail?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'testimonial', 'follow-up'],
+  lang: 'en'
+},
+{
+  id: 'english-160',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you explain a technical decision (for example, choosing PostgreSQL instead of MongoDB) to a client\'s CTO in clear English?',
+  a: `**Tóm tắt:** Khi giải thích quyết định kỹ thuật cho **CTO** (Chief Technology Officer: người chịu trách nhiệm kỹ thuật cấp cao của công ty khách), bạn cần nói ở mức **trade-off và tác động kinh doanh**, không sa vào chi tiết triển khai. Cấu trúc tốt: bối cảnh và yêu cầu, các lựa chọn đã cân nhắc, lý do chọn, rủi ro/cái giá phải trả, và khi nào bạn sẽ chọn khác. Với ví dụ PostgreSQL vs MongoDB: nhấn mạnh mô hình dữ liệu, tính nhất quán giao dịch, truy vấn, và chi phí vận hành - gắn với nhu cầu thực của khách.
+
+### Mẫu trả lời nói (dùng được ngay)
+"Thanks for asking about this decision. I recommended PostgreSQL for this system, and I want to explain the trade-offs clearly.
+
+First, the context: your core data is highly structured - customers, orders, payments, and relationships between them. You also need reliable transactions. For example, when an order is created and inventory is updated, those changes must succeed or fail together. You need reporting queries, filters, and joins across these entities.
+
+I considered MongoDB because it can be flexible when data shape changes often and when documents are mostly read as a whole. That can be useful for content, logs, or fast-changing prototypes.
+
+I chose PostgreSQL because it fits your requirements better. PostgreSQL is a **relational database** (cơ sở dữ liệu quan hệ: lưu dữ liệu thành bảng có hàng/cột, liên kết với nhau) with strong **ACID transactions** (ACID: tập tính chất giúp giao dịch đáng tin cậy - toàn vẹn khi ghi, kể cả khi lỗi xảy ra). It handles joins and reporting well, and it also supports JSON fields if we need limited flexibility later. For a small team, it also reduces operational complexity because one mature system can cover most needs.
+
+The trade-off is that schema changes require more planning. If your data model changes frequently, we need a clear migration process. Also, if you later need very high-volume document storage or horizontal scaling patterns specific to MongoDB, we should revisit the decision.
+
+So my recommendation is PostgreSQL now, with clear schema migrations and indexes based on real query patterns. If requirements change significantly, we can re-evaluate with evidence rather than assumptions. Does this align with your priorities around consistency and reporting?"
+
+### Giải thích từ gốc: PostgreSQL vs MongoDB (gắn với quyết định)
+### Hai công nghệ là gì (nói cho người 4 năm Java nhưng chưa va chạm nhiều)
+- **PostgreSQL** (thường gọi Postgres): cơ sở dữ liệu quan hệ mã nguồn mở. Dữ liệu nằm trong **table** (bảng). Bảng có **schema** (lược đồ: định nghĩa cột nào, kiểu dữ liệu gì, ràng buộc gì) - giống bảng Excel có quy tắc chặt. Liên kết bảng bằng khóa (foreign key).
+- **MongoDB**: cơ sở dữ liệu tài liệu (document database). Dữ liệu thường lưu dạng **document** (tài liệu) giống JSON - mỗi bản ghi có thể linh hoạt trường hơn trong một số cách dùng. Phù hợp khi đọc/ghi cả "cụm" dữ liệu như một tài liệu.
+- **Đời thường:** Postgres giống hồ sơ kế toán có mẫu biểu chuẩn (dễ đối chiếu, cộng trừ chính xác). MongoDB giống hồ sơ dạng thư mục linh hoạt (mỗi hồ sơ có thể kèm giấy tờ khác nhau).
+
+### Vì sao chọn cái nào: tiêu chí
+| Tiêu chí | PostgreSQL thường mạnh khi | MongoDB thường mạnh khi |
+|---|---|---|
+| Mô hình dữ liệu | Quan hệ rõ: đơn hàng - khách - thanh toán | Tài liệu tự chứa, cấu trúc hay đổi |
+| Giao dịch | Cần ACID mạnh, nhiều bảng cùng lúc | Một số mẫu ghi tài liệu đơn giản (tùy thiết kế) |
+| Truy vấn | Join, báo cáo, lọc phức tạp | Truy vấn theo tài liệu/cụm dữ liệu |
+| Tính nhất quán | Quan trọng (tiền, tồn kho) | Có thể chấp nhận mô hình khác tùy use case |
+| Vận hành | Một hệ thống quen thuộc cho nhiều team | Cần hiểu mô hình sharding/replica theo cách riêng |
+
+**Lưu ý kỹ thuật:** Cả hai đều tiến hóa (Postgres có JSONB; MongoDB có transaction nhiều tài liệu trong nhiều tình huống). Quyết định phải dựa trên **yêu cầu thật** và năng lực vận hành của team, không dựa trên khẩu hiệu.
+
+### Cách nói với CTO (khác nói với junior)
+- CTO quan tâm: rủi ro, chi phí dài hạn, tốc độ team, khả năng tuyển người, vận hành, bảo mật, lock-in.
+- Tránh: kể tên API/lớp Java, tranh luận "cái nào ngầu hơn".
+- Nên: "Given your requirements around consistency, reporting, and team size, I recommend..." và nêu khi nào sẽ đổi quyết định.
+
+### Cụm từ hữu ích
+- **trade-off**: đánh đổi (được cái này, mất/chịu cái kia)
+- **requirements and constraints**: yêu cầu và ràng buộc
+- **operational complexity**: độ phức tạp vận hành
+- **time to market**: thời gian đưa ra thị trường
+- **revisit the decision with evidence**: xem lại quyết định dựa trên bằng chứng
+- **align with priorities**: phù hợp với ưu tiên
+- **migration path**: đường chuyển đổi (nếu đổi công nghệ sau này)
+
+### Lỗi người Việt hay mắc
+- **Biến thành fanboy công nghệ:** "MongoDB is bad" / "SQL is old" - nghe thiếu chín chắn. CTO muốn người ra quyết định có lý do.
+- **Nói quá chi tiết kỹ thuật:** giải thích B-tree, WAL, replica set ngay từ đầu - chưa cần. Bắt đầu từ tác động nghiệp vụ.
+- **Không nêu trade-off:** Chỉ nói điểm mạnh của lựa chọn mình thích. Quyết định lead-level luôn có cái giá.
+- **Không gắn với bối cảnh khách:** Quyết định đúng cho startup log analytics có thể sai cho hệ thống đơn hàng/tài chính.
+- **Dịch từng chữ:** "I choose Postgres because it is strong" - mơ hồ. Nói rõ "strong" là gì: "strong transactional guarantees for payments and orders."
+
+### Phiên bản ngắn để nói (45-60 giây)
+"Given your structured data, reporting needs, and the importance of reliable transactions for orders and payments, I recommend PostgreSQL. I considered MongoDB for flexibility, but your current requirements fit a relational model better and keep operations simpler for a small team. The trade-off is that schema changes need planned migrations. If your data becomes highly document-based at large scale, we should revisit the decision with real evidence."
+
+### Phiên bản viết (email/Slack hoặc tài liệu quyết định ngắn)
+"Subject: Database decision - [project]. Context: [data shape, transaction/reporting needs]. Options considered: PostgreSQL, MongoDB. Recommendation: PostgreSQL. Reasons: [fit with structured relations, ACID transactions, reporting/joins, team operations]. Trade-offs: [schema migration discipline, revisit triggers]. Decision review trigger: [e.g., document volume/scale or access pattern changes significantly]."
+
+> Senior tip: Với CTO, câu mạnh nhất thường là "Here is when I would choose the other option." Nó cho thấy bạn không bảo vệ cái tôi mà bảo vệ quyết định phù hợp ngữ cảnh. Nếu có thể, đề xuất **ADR** (Architecture Decision Record: tài liệu ngắn ghi lại bối cảnh, quyết định, lý do, hậu quả) để team sau này hiểu vì sao chọn - tránh tranh luận lặp lại.`,
+  follow: [
+    'How would your recommendation change if the product was an event logging platform with very flexible fields?',
+    'How do you explain the cost and operational impact of this decision, not just technical fit?',
+    'What would you do if the CTO strongly prefers MongoDB because their team already knows it?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'cto', 'architecture', 'database'],
+  lang: 'en'
+},
+{
+  id: 'english-161',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you handle small talk at the start and end of a remote call, and what do you say when you cannot hear clearly because of accent or an unstable connection?',
+  a: `**Tóm tắt:** **Small talk** (nói chuyện xã giao ngắn: vài câu thân thiện trước/sau cuộc họp, không phải nội dung chính) giúp xây dựng quan hệ trong remote/freelance, nhưng cần ngắn, an toàn và tôn trọng thời gian. Khi không nghe rõ vì **accent** (giọng vùng/giọng địa phương) hoặc mạng chập chờn, hãy xin làm rõ lịch sự, cụ thể và không đổ lỗi - mục tiêu là hiểu đúng, không phải tỏ ra nghe giỏi.
+
+### Mẫu trả lời nói - mở đầu cuộc gọi
+"Hi [Name], good morning. Can you hear me clearly? Great. How has your week been so far?" (nghe ngắn) "Glad to hear that. I know we have 30 minutes today, so shall we start with the project update?"
+
+Nếu họ bận hoặc đi thẳng vào việc: "Sure, let us jump right in. Today I would like to cover [agenda]."
+
+### Mẫu trả lời nói - kết thúc cuộc gọi
+"That covers everything I wanted to discuss. Just to confirm the next steps: I will send the summary today, and you will review it by Thursday. Is there anything else you would like to cover before we finish?" (dừng nghe) "Thanks again for your time. Have a great rest of your day."
+
+### Mẫu xử lý khi không nghe rõ (accent hoặc mạng)
+- Mạng chập chờn: "Sorry, your audio cut out for a moment. Could you please repeat the last part after 'the deadline'?"
+- Không nghe rõ từ/câu: "I want to make sure I understood you correctly. Did you say we should postpone the release to next Tuesday?"
+- Nói quá nhanh/khó nghe: "Could you please say that a little more slowly? I want to make sure I get the details right."
+- Vẫn chưa rõ sau 2 lần: "Would you mind typing that key point in the chat? I want to confirm the number/date correctly." (xin viết số, ngày, tên riêng vào chat)
+- Cần tóm tắt lại: "Let me repeat what I heard: [your paraphrase]. Is that correct?"
+
+### Giải thích từ gốc
+### Small talk: cái gì, vì sao, ranh giới
+- **Cái gì:** 1-2 câu chào hỏi, hỏi thăm nhẹ (thời tiết, cuối tuần, lịch họp bận - tùy văn hóa), rồi chuyển vào mục tiêu cuộc gọi.
+- **Vì sao cần:** Với remote, bạn không có tương tác hành lang. Small talk ngắn tạo cảm giác hợp tác, giảm căng thẳng - đặc biệt với khách mới.
+- **Ranh giới an toàn:** công việc, dự án, lịch chung, thời tiết. Tránh chủ đề nhạy cảm: chính trị, tôn giáo, sức khỏe cá nhân, tiền bạc cá nhân, tuổi tác, gia đình riêng tư - trừ khi khách chủ động chia sẻ ở mức họ thoải mái.
+- **Lỗi hay gặp:** Small talk quá dài làm mất thời gian; hoặc cứng nhắc vào thẳng vấn đề khi khách đang tạo kết nối.
+
+### Không nghe rõ: kỹ thuật giao tiếp
+- **Cái gì:** Xin lặp lại/nhắc lại/chậm lại/viết vào chat.
+- **Vì sao cần:** Giả vờ hiểu rồi làm sai yêu cầu tốn kém hơn nhiều so với hỏi lại 10 giây. Đây là kỹ năng chuyên nghiệp, không phải điểm yếu.
+- **Đời thường:** Giống nghe địa chỉ giao hàng qua điện thoại bị nhiễu - bạn sẽ xin đọc lại số nhà, không đoán.
+- **Mẹo:** Xin lặp "phần cuối sau..." (cụ thể) thay vì "Can you repeat everything?" (khó cho người nói). Nhắc lại số, ngày, tên riêng bằng paraphrase.
+
+### Bảng: tình huống và câu nên dùng
+| Tình huống | Tránh | Nên dùng |
+|---|---|---|
+| Mất âm thanh | "Your internet is bad" (đổ lỗi) | "Your audio cut out for a moment. Could you repeat the last part?" |
+| Giọng khó nghe | "I cannot understand your accent" (thô) | "Could you please say that a little more slowly? I want to get the details right." |
+| Không chắc số/ngày | Gật đầu đoán | "Did you say Tuesday the 12th? Could you type the date in chat?" |
+| Cần kết thúc | Cúp máy đột ngột | "Just to confirm next steps... Thanks for your time." |
+
+### Cụm từ hữu ích
+- **Can you hear me clearly?**: bạn nghe tôi rõ không?
+- **Shall we jump right in?**: chúng ta vào việc luôn nhé? (khi khách bận)
+- **Your audio cut out**: âm thanh của bạn bị ngắt
+- **Could you repeat the last part?**: bạn lặp lại phần cuối được không?
+- **I want to make sure I understood correctly**: tôi muốn chắc là mình hiểu đúng
+- **Would you mind typing that in the chat?**: bạn có thể gõ vào chat được không?
+- **Just to confirm the next steps**: xác nhận lại bước tiếp theo
+- **Thanks for your time / Have a great day**: cảm ơn thời gian của bạn / chúc một ngày tốt
+
+### Lỗi người Việt hay mắc
+- **Im lặng khi không nghe rõ:** Gật "yes" vì ngại, rồi đoán sai. Hỏi lại là bình thường trong cuộc gọi quốc tế.
+- **Đổ lỗi cho accent:** "Your English is difficult" - rất thô. Hãy nhận trách nhiệm về việc bạn cần nghe rõ: "Could you say that a bit more slowly? I want to make sure I get it right."
+- **Small talk quá riêng tư:** Hỏi thu nhập, hôn nhân, tuổi. Giữ an toàn, nhẹ nhàng.
+- **Kết thúc abrupt (đột ngột):** "OK bye" khi chưa chốt next steps. Luôn tóm tắt bước tiếp theo.
+- **Dịch từng chữ:** "I no hear you" (sai, thô). Nói: "Sorry, I did not catch that."
+- **Nói quá nhanh khi lo lắng:** Khi mạng lag hoặc bạn căng thẳng, hãy chậm lại - đặc biệt với tên, số, ngày, thuật ngữ.
+
+### Phiên bản ngắn để nói (30-45 giây)
+"Hi [Name], can you hear me clearly? Great - I know we have 30 minutes, so let us start with [topic]." (Nếu không nghe rõ) "Sorry, the audio cut out. Could you repeat the last part, or type the date in chat? I want to make sure I get it right." (Kết thúc) "Just to confirm next steps: I will do X by [date]. Thanks for your time."
+
+### Phiên bản viết (chat khi âm thanh kém)
+"Sorry - I am having trouble hearing the audio. Could you please type the key points here (especially dates/numbers)? I will confirm once I have them. Thanks."
+
+> Senior tip: Trong remote call với khách quốc tế, hãy bật camera nếu phù hợp văn hóa cuộc họp, nhìn vào agenda, và xác nhận next steps bằng lời + bằng văn bản sau cuộc gọi. Khi xin lặp lại, **cụ thể hóa** phần bạn cần ("the number after 'budget'" / "the deadline you mentioned") - điều này tôn trọng thời gian họ và cho thấy bạn đang lắng nghe chủ động, không phải ngắt quãng.`,
+  follow: [
+    'How do you politely interrupt when you need to clarify something without sounding rude?',
+    'What small talk topics are usually safe with international clients, and which should you avoid?',
+    'How would you handle a situation where the connection keeps failing and the call cannot continue?'
+  ],
+  tags: ['english', 'freelance', 'remote', 'client', 'small-talk', 'communication'],
+  lang: 'en'
 }
 
 );
