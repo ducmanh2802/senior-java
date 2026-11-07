@@ -849,7 +849,7 @@ Test sẽ dùng harness để chạy 300 trial với seed 42, kiểm tra kết q
                 if (!m.contains("fails at trial 3") || !m.contains("seed=45") || !m.contains("trial=3"))
                     throw new AssertionError("message sai: " + m);
                 if (!(e.getCause() instanceof IllegalStateException)) throw new AssertionError("mat cause goc: " + e.getCause());
-                eq(4, calls[0]);                          // dung lai ngay o trial loi
+                eq(4, calls[0]);                          // dừng lại ngay ở trial lỗi
                 return;
             }
             throw new AssertionError("mong đợi AssertionError từ harness");
@@ -1716,10 +1716,10 @@ Property: "tổng danh sách phải nhỏ hơn 10" ({{xs -> sum(xs) < 10}}). Gen
 [1, 2, 3, 4, 5]  tong 15  vi phạm          (bắt đầu)
    bo idx 0 -> [2, 3, 4, 5]  tong 14  van vi pham  -> chap nhan, quay lai dau
    bo idx 0 -> [3, 4, 5]     tong 12  van vi pham  -> chap nhan, quay lai dau
-   bo idx 0 -> [4, 5]       tong 9   -> DAT property (9 < 10) : khong duoc bo
-   bo idx 1 -> [3, 5]       tong 8   -> DAT property          : khong duoc bo
-   bo idx 2 -> [3, 4]       tong 7   -> DAT property          : khong duoc bo
--> khong bo duoc phan tu nao nua => dung. Phan vi du toi gian: [3, 4, 5]
+   bo idx 0 -> [4, 5]       tong 9   -> DAT property (9 < 10) : không được bỏ
+   bo idx 1 -> [3, 5]       tong 8   -> DAT property          : không được bỏ
+   bo idx 2 -> [3, 4]       tong 7   -> DAT property          : không được bỏ
+-> không bỏ được phần tử nào nữa => đúng. Phần ví dụ tối giản: [3, 4, 5]
 ~~~
 
 Chú ý kết quả **không phải** bộ ba có tổng lớn nhất — thuật toán tham lam chỉ hứa "không bỏ thêm được phần tử nào", không hứa "nhỏ nhất có thể trên mọi hướng". Muốn chắc chắn tối ưu toàn cục, bạn phải thử thêm hướng khác (giảm giá trị từng phần tử, hoán vị) hoặc quay lui. Trong thực tế, tham lam một hướng đã đủ biến case 200 phần tử thành 3 phần tử, và đó là lý do jqwik cũng chạy greedy với giới hạn số bước.
@@ -1835,7 +1835,7 @@ Gợi ý debug: property "{{tổng nhỏ hơn 10}}" áp vào {{[1, 2, 3, 4, 5]}}
         });
         check("seeded generator finds a counterexample and shrinking reduces it to one element", () -> {
             Optional<List<Integer>> got = Prop.forAll(42L, 200, Main::randomList, xs -> !hasEven(xs));
-            if (got.isEmpty()) throw new AssertionError("seed 42 voi 200 trial phai sinh duoc so chan");
+            if (got.isEmpty()) throw new AssertionError("seed 42 với 200 trial phải sinh được số chẵn");
             eq(1, got.get().size());
             int v = got.get().get(0);
             if (v % 2 != 0) throw new AssertionError("phan tu con lai van phai lam property sai: " + v);
@@ -1858,7 +1858,7 @@ Gợi ý debug: property "{{tổng nhỏ hơn 10}}" áp vào {{[1, 2, 3, 4, 5]}}
             for (long seed = 1L; seed <= 12L; seed++) {
                 Optional<List<Integer>> got = Prop.forAll(seed, 60, Main::randomList, xs -> sum(xs) < -100);
                 if (got.isPresent() && !violates(got.get(), xs -> sum(xs) < -100))
-                    throw new AssertionError("shrink tra ve case DA dung: seed " + seed + " " + got.get());
+                    throw new AssertionError("shrink trả về case ĐÃ đúng: seed " + seed + " " + got.get());
             }
         });
         check("forAll rejects non-positive trials", () -> {
