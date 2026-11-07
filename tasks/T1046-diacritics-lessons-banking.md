@@ -1,6 +1,6 @@
 # T1046 — Thêm dấu tiếng Việt: lessons-banking.js
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/lessons-banking.js`
 
@@ -24,3 +24,13 @@ Nghiệm thu:
 - `node scripts/build-light-index.js` rồi `node scripts/validate.js` → OK. KHÔNG commit. Ghi `Status: DONE` (sửa dòng Status ở đầu file) + số dòng đã sửa vào Notes.
 
 ## Notes
+
+Đã thêm dấu đầy đủ, đúng chính tả cho 31 dòng trong `js/data/lessons-banking.js`:
+- 4 dòng trong sơ đồ `~~~seq` (actors/note text)
+- 27 dòng comment trong code Java (reference, starter, tests) và markup
+- 4 dòng còn lại là chuỗi string literal bên trong `tests` (ví dụ `"SYS/opening am thi van duoc ghi"`) — theo quy tắc task **không đổi string literal**, giữ nguyên.
+Kết quả: `node scripts/find-nodiac.js js/data/lessons-banking.js` còn 4 dòng (chỉ là string literal trong test harness, không phải comment/markup).
+`node scripts/test-lessons.js` → 220/220 OK.
+`node scripts/build-light-index.js` → OK.
+`node scripts/validate.js` → OK (không lỗi; 3 cảnh báo sơ đồ actors > 6 thuộc file `q-banking.js`, không phải file của task này).
+Reviewed-by: kilo (T1046R)
