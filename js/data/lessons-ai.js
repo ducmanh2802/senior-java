@@ -991,7 +991,7 @@ Map<String, String> byCiteId = Map.of("1", "QS-01#12", "2", "QS-01#13");
 
 ### 8. Sơ đồ luồng một câu hỏi RAG
 ~~~seq
-title: Mot cau hoi RAG di qua nhung dau
+title: Một câu hỏi RAG đi qua những đâu
 actors: User | API | Embed | VectorDB | Rank | LLM
 User -> API: Hoi: the Platinum mat phi gi
 API -> Embed: Sinh vector cho cau hoi
@@ -1003,7 +1003,7 @@ Rank --> API: Top 5 chunk
 API -> LLM: Prompt + 5 chunk co nhan [1..5]
 LLM --> API: Cau tra loi co trich dan
 API --> User: Tra loi kem link tai lieu
-note API: Loc theo quyen nguoi dung truoc khi lay top-k
+note API: Lọc theo quyền người dùng trước khi lấy top-k
 ~~~
 
 ### 9. Lỗi hay gặp trên production
@@ -1148,7 +1148,7 @@ Với 10 từ {{alpha beta gamma delta epsilon zeta eta theta iota kappa}}, {{si
         for (int start = 0; start < ws.size(); start += step) {
             int end = Math.min(start + size, ws.size());
             chunks.add(String.join(" ", ws.subList(start, end)));
-            if (end == ws.size()) break;                 // chunk nay da cham cuoi tai lieu: dung, khong tao thua
+            if (end == ws.size()) break;                 // chunk này đã chạm cuối tài liệu: dừng, không tạo thừa
         }
         return chunks;
     }
@@ -1698,12 +1698,12 @@ Ví dụ: {{systemPrompt = "SYS"}} (1 token), các lượt {{u1, a1, u2, a2, u3}
         if (hasSystem()) {
             Message sys = new Message("system", systemPrompt);
             out.add(sys);
-            used += sys.tokens();                     // system luon duoc giu, du no mot minh da vuot budget
+            used += sys.tokens();                     // system luôn được giữ, dù nó một mình đã vượt budget
         }
         int first = turns.size();
         for (int i = turns.size() - 1; i >= 0; i--) {  // di nguoc tu luot moi nhat: giu suffix dai nhat con vua
             int t = turns.get(i).tokens();
-            if (used + t > maxTokens) break;          // dung tai day, khong "nhay qua" luot to de lay luot cu
+            if (used + t > maxTokens) break;          // dừng tại đây, không "nhảy qua" lượt to để lấy lượt cũ
             used += t;
             first = i;
         }
@@ -1861,7 +1861,7 @@ Ví dụ với {{maxAttempts = 3, baseDelayMs = 200, maxDelayMs = 30000}}: delay
         long delay = Math.min(baseDelayMs, maxDelayMs);
         for (int i = 1; i < attemptsSoFar && delay < maxDelayMs; i++) {
             long next = delay * 2;
-            delay = (next <= delay || next > maxDelayMs) ? maxDelayMs : next;   // dung nhan khi cham cap: khong tran so
+            delay = (next <= delay || next > maxDelayMs) ? maxDelayMs : next;   // dừng nhận khi chạm cap: không tràn số
         }
         return delay;
     }
@@ -2029,7 +2029,7 @@ Ví dụ với {{maxAttempts = 3, baseDelayMs = 200, maxDelayMs = 30000}}: delay
         State s = state(nowMillis);
         if (s == State.OPEN) return false;
         if (s == State.HALF_OPEN) {
-            if (probeInFlight) return false;             // chi mot probe dang chay
+            if (probeInFlight) return false;             // chỉ một probe đang chạy
             state = State.HALF_OPEN;
             probeInFlight = true;
             return true;
@@ -2054,7 +2054,7 @@ Ví dụ với {{maxAttempts = 3, baseDelayMs = 200, maxDelayMs = 30000}}: delay
             probeInFlight = false;
             return;
         }
-        if (state(nowMillis) == State.OPEN) return;       // request bi chan: khong dem them loi
+        if (state(nowMillis) == State.OPEN) return;       // request bị chặn: không đếm thêm lỗi
         consecutiveFailures++;
         if (consecutiveFailures >= failureThreshold) {
             state = State.OPEN;
