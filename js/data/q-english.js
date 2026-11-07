@@ -2133,27 +2133,43 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'Walk me through a system you designed recently. (2-3 minutes)',
-  a: `**Tóm tắt:** Theo thứ tự **vấn đề → ràng buộc chính (tải, latency, nhất quán) → kiến trúc → một trade-off → kết quả đo được**. Đừng kể theo dòng thời gian; dùng số liệu thật của bạn (ví dụ dưới đây chỉ là mẫu).
+  a: `**Tóm tắt:** Kể theo khung **problem → constraints → design → one key trade-off → measurable result → what I'd change**, không kể theo dòng thời gian. Nói rõ **vai trò của bạn** ("I proposed…", "I owned…"), dùng 2–3 con số thật, và chủ động nêu một trade-off — đó là tín hiệu Senior mà interviewer tìm.
 
-### Sample answer
-"Sure. Last year I redesigned our order placement flow. The problem was that the order API called payment, inventory and fraud services one after another, synchronously. At peak — around 300 orders per second during sales — p99 latency went above three seconds, and if any one service was slow, the whole order failed.
+### Interviewer muốn nghe gì
+- Bạn hiểu **vì sao** hệ thống cần thay đổi (vấn đề kinh doanh, số liệu), không chỉ công nghệ.
+- Bạn biết **ràng buộc** nào quyết định thiết kế (latency, consistency, chi phí, team).
+- Bạn nhìn thấy **trade-off** và cái giá phải trả.
+- Bạn đo **kết quả** và học được gì.
 
-The key constraint was that we couldn't lose or double-charge an order. So the API now does just one thing synchronously: it saves the order and an outbox record in the same database transaction, and returns 'order received'. A small publisher reads the outbox and sends an event to Kafka. Payment and inventory consumers process it idempotently, using the order ID as the key. A saga coordinates the steps, and if payment fails, it releases the reserved stock — that's a compensating action, not a real rollback.
+### Model answer (60–90 seconds)
+"Sure. Last year I redesigned our order placement flow. The order API used to call payment, inventory and fraud services one after another, synchronously. During sales, at around 300 orders per second, p99 latency went above three seconds, and if any one service was slow, the whole order failed.
 
-We kept the fraud check synchronous, because the business wanted to reject risky orders before accepting them.
+The key constraint was that we could never lose an order or charge a customer twice. So I proposed a simpler synchronous path: the API saves the order and an outbox record in one database transaction and returns 'order received'. A publisher sends the event to Kafka, and payment and inventory consumers process it idempotently, using the order ID as the key. If payment fails, a compensating step releases the reserved stock.
 
-The trade-off is that customers now see a 'pending' state for a few seconds, and we have to operate retries, consumer lag alerts and a nightly reconciliation job. In return, p99 for the order API dropped to about 250 milliseconds, and a slow inventory service no longer fails orders."
+The trade-off is that customers see a 'pending' status for a few seconds, and we now operate consumer-lag alerts and a nightly reconciliation job. In return, p99 dropped to about 250 milliseconds, and a slow inventory service no longer fails orders. If traffic doubled, I'd look at partition count and the publisher's throughput first."
+
+### Short version (30 seconds)
+"I redesigned our order flow from synchronous calls to an outbox plus Kafka. The main constraint was no lost or duplicate orders. We accepted a few seconds of 'pending' status, and p99 dropped from over three seconds to about 250 milliseconds."
+
+### Real-life example
+Một ứng viên kể 5 phút về lịch sử dự án ("first we used Spring 4, then we migrated…") và hết giờ trước khi tới phần thiết kế. Lần sau họ luyện khung 6 bước trên, bấm giờ 90 giây, chuẩn bị sẵn một sơ đồ 4 ô để vẽ khi phỏng vấn online: interviewer hỏi tiếp sâu hơn về idempotency và reconciliation — đúng chỗ ứng viên mạnh.
 
 ### Cụm từ hữu ích
-- "The main bottleneck was..."
-- "The key constraint was..."
-- "I traded X for Y because..."
-- "The result was..."
+- "The main bottleneck was…" — nút thắt chính là…
+- "The key constraint was…" — ràng buộc quan trọng nhất là…
+- "I proposed / I owned / I led…" — nêu rõ phần của bạn.
+- "We traded X for Y because…" — chúng tôi đánh đổi X lấy Y vì…
+- "In return, …" — đổi lại, …
+- "If I did it again, I would…" — nếu làm lại, tôi sẽ…
 
 ### Lỗi người Việt hay mắc
-- Nói theo thứ tự thời gian thay vì theo vấn đề → giải pháp → kết quả; người nghe mất mạch.
-- Dùng "we did" cho mọi việc, không nêu rõ vai trò của bạn.
-- Bỏ qua trade-off, nghe như quảng cáo.`,
+- Kể theo thời gian ("first… then… after that…") thay vì theo vấn đề → giải pháp → kết quả.
+- Dùng "we" cho mọi thứ → interviewer không biết bạn làm gì.
+- Sai thì: "Last year I redesign…" → **"Last year I redesigned…"** (quá khứ cho việc đã xong).
+- "The latency is very high" khi kể chuyện cũ → **"The latency was above three seconds"** (quá khứ + con số cụ thể).
+- Đọc thuộc lòng nghe như đọc bài; hãy nhớ khung và số liệu, không nhớ từng chữ.
+
+> Senior tip: chuẩn bị **hai** hệ thống để kể — một về hiệu năng/độ tin cậy, một về tích hợp hoặc dữ liệu — mỗi cái có sẵn câu "if traffic doubled…" và "what I'd change". Hai câu này là follow-up gần như chắc chắn.`,
   follow: ['What would you change if traffic doubled?', 'How did you test consistency?'],
   tags: ['system-design', 'speaking', 'interview'],
   lang: 'en',
@@ -2163,27 +2179,45 @@ The trade-off is that customers now see a 'pending' state for a few seconds, and
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a production incident you handled. (STAR, past tense)',
-  a: `**Tóm tắt:** Kể theo STAR, **toàn bộ ở thì quá khứ**: Situation (ảnh hưởng tới người dùng) → Task (trách nhiệm của bạn) → Action (bằng chứng tìm ra nguyên nhân, vì sao chọn cách giảm thiệt hại đó) → Result (thời gian phục hồi, dữ liệu có bị ảnh hưởng không) + phòng ngừa. Mọi con số phải khớp với timeline thật của sự cố.
+  a: `**Tóm tắt:** Dùng **STAR** ở **thì quá khứ**: Situation (1–2 câu, có số liệu tác động) → Task (vai trò của bạn) → Action (3–4 hành động cụ thể, ưu tiên **giảm thiệt hại trước, tìm nguyên nhân sau**) → Result (con số + việc làm để không tái diễn). Kết bằng bài học, không đổ lỗi cho ai.
 
-### Sample answer
-"**Situation:** After a routine deployment on a Tuesday morning, our notification service fell behind. Consumer lag on the order-events topic grew from almost zero to about 400,000 messages in an hour, so customers got their order confirmations up to 50 minutes late.
+### Interviewer muốn nghe gì
+- Bạn **bình tĩnh và có thứ tự**: khoanh vùng, giảm thiệt hại (rollback, feature flag), rồi mới điều tra.
+- Bạn **giao tiếp** trong lúc sự cố (cập nhật stakeholder).
+- Bạn **sửa gốc** và **phòng ngừa** (postmortem, alert, test).
+- Văn hoá **blameless** — không đổ lỗi cá nhân.
 
-**Task:** I owned that service, so I led the investigation.
+### Model answer (60–90 seconds)
+"One Friday evening, our payment API started timing out. About fifteen percent of checkouts were failing, and that was during a promotion. I was the on-call engineer.
 
-**Action:** The logs showed the consumer group rebalancing every few minutes. The new release had added a call to a template service for each message, so processing a batch of 500 records now took longer than {{max.poll.interval.ms}}, which is five minutes by default. Kafka treated the consumer as dead, rebalanced, and the next consumer got the same batch again — so we were stuck in a loop. To mitigate, I rolled back the release, because that was the fastest safe option and the change was backward compatible. Lag started dropping within ten minutes.
+First, I focused on reducing the impact. The errors started right after a deployment, so I rolled it back within ten minutes, and the failure rate went down to normal. I posted updates in the incident channel every fifteen minutes so support knew what to tell customers.
 
-**Result:** We were fully caught up after about 40 minutes. Because the consumer was idempotent, the reprocessed messages didn't send duplicate emails — we checked that against the email provider's logs. Afterwards I reduced {{max.poll.records}}, cached the templates, and added an alert on consumer lag and on rebalance rate."
+Then I looked for the root cause. The traces showed that the new version called a fraud-check service inside a database transaction. Each request held a connection for about 300 milliseconds longer, so the connection pool ran out under peak traffic.
+
+We moved the call outside the transaction, added an alert on pending connections, and added a load test for checkout to our release checklist. In the postmortem, we agreed that any new remote call in a transactional method needs a reviewer from the platform team. We haven't had a similar incident since."
+
+### Short version (30 seconds)
+"During a promotion, fifteen percent of checkouts failed after a deployment. I rolled back within ten minutes, then found that a new remote call inside a transaction was exhausting the connection pool. We moved the call out, added an alert and a load test, and it hasn't happened again."
+
+### Real-life example
+Ứng viên kể sự cố bằng thì hiện tại và "we" suốt câu chuyện: "We see errors, we check logs, we fix it". Interviewer hỏi lại 3 lần "What did **you** do?". Sau khi luyện lại với "I rolled back… I noticed… I proposed…", câu trả lời ngắn hơn 30% nhưng rõ vai trò hơn hẳn.
 
 ### Cụm từ hữu ích
-- "The symptom was..."
-- "I first checked..."
-- "The root cause turned out to be..."
-- "To prevent recurrence, we..."
+- "I was the on-call engineer / I was leading the investigation."
+- "My first priority was to reduce the impact."
+- "I rolled back the release / I disabled the feature flag."
+- "The root cause turned out to be…"
+- "To prevent it from happening again, we…"
+- "In the postmortem, we agreed that…"
 
 ### Lỗi người Việt hay mắc
-- Dùng hiện tại thay vì quá khứ cho sự cố đã xử lý.
-- Nói "we fixed" mà không nói bạn làm gì cụ thể.
-- Bỏ phần prevention, interviewer không thấy bạn học được gì.`,
+- Dùng thì hiện tại: "The API is down, I check the log" → **"The API was down, so I checked the logs."**
+- "I fixed the bug" quá chung → nói rõ **cái gì** và **bằng chứng** nào dẫn tới nguyên nhân.
+- Đổ lỗi: "A junior deployed bad code" → **"A change went out without a load test, so we added one."**
+- Thiếu con số: "many errors" → **"about fifteen percent of checkouts failed."**
+- Nhầm "rollback" (danh từ) và "roll back" (động từ): **"I rolled back the release"**, **"the rollback took ten minutes."**
+
+> Senior tip: kết thúc câu chuyện sự cố bằng **một thay đổi về quy trình** (alert, checklist, review rule), không chỉ bản vá code. Đó là chi tiết phân biệt người sửa lỗi với người làm hệ thống tốt lên.`,
   follow: ['How did you communicate during the incident?', 'What would you do differently?'],
   tags: ['incident', 'star', 'speaking'],
   lang: 'en',
@@ -2193,21 +2227,43 @@ The trade-off is that customers now see a 'pending' state for a few seconds, and
   topic: 'english',
   level: 'senior',
   q: 'Explain the trade-off between Kafka and REST to a non-technical manager.',
-  a: `**Tóm tắt:** So sánh bằng tác động kinh doanh — có cần câu trả lời ngay không, hai hệ thống phụ thuộc nhau đến đâu, lỗi được xử lý thế nào — kèm một phép so sánh đời thường dễ hiểu.
+  a: `**Tóm tắt:** Với người không làm kỹ thuật, so sánh bằng **hình ảnh quen thuộc** và **hệ quả kinh doanh**, không bằng thuật ngữ: REST giống **gọi điện thoại** (chờ câu trả lời ngay), Kafka giống **gửi thư vào hộp thư chung** (người gửi đi làm việc khác, người nhận xử lý sau, nhiều người cùng đọc được). Sau đó nói rõ **khi nào chọn cái nào** và **cái giá** của mỗi lựa chọn.
 
-### Sample answer
-REST is like asking a colleague a question and waiting for the reply: it fits when the caller needs an immediate result, but the caller depends on the other service being reachable and responsive. Kafka is closer to leaving a durable message for another team to process: the producer and consumer can work at different times, which can absorb bursts when the system is provisioned and monitored for them. It does not guarantee that either service cannot fail, and it adds operational work such as retries, duplicate handling, lag monitoring, and eventual consistency. I would choose based on whether the business needs an immediate answer and whether asynchronous processing is acceptable, not on traffic peaks alone.
+### Interviewer muốn nghe gì
+- Bạn **đơn giản hoá** được mà không nói sai.
+- Bạn nói theo **hệ quả** người nghe quan tâm: tốc độ phản hồi, độ tin cậy, chi phí, rủi ro.
+- Bạn đưa ra **khuyến nghị** rõ ràng, không chỉ liệt kê.
+
+### Model answer (60–90 seconds)
+"Let me use a simple comparison. A REST call is like a phone call. The order system calls the payment system and waits on the line until it gets an answer. That's great when we need the answer right now — for example, 'Is this card valid?' But if the payment system is slow or down, the order system is stuck waiting too.
+
+Kafka is more like dropping a letter into a shared mailbox. The order system writes 'a new order was placed' and immediately moves on. The email service, the warehouse and the analytics team can each pick up that letter in their own time. If the warehouse system is down for ten minutes, the letters just wait in the mailbox; nothing is lost.
+
+So the trade-off is this: REST is simpler and gives an immediate answer, but it ties systems together. Kafka keeps systems independent and handles spikes better, but the result isn't instant, and it's one more system we need to run and monitor.
+
+My recommendation is to use REST when the user is waiting for an answer, and Kafka for things that can happen a few seconds later, like emails, stock updates and reports."
+
+### Short version (30 seconds)
+"REST is like a phone call: you get an answer right away, but you're stuck if the other side is slow. Kafka is like a shared mailbox: you drop the message and move on, and several teams can read it later. I'd use REST when the customer is waiting, and Kafka for everything that can happen a few seconds later."
+
+### Real-life example
+Một tech lead xin ngân sách vận hành Kafka bằng slide về "partitions, consumer groups, exactly-once". Giám đốc vận hành không duyệt. Lần sau họ trình bày bằng ví dụ "hộp thư chung" và một con số: "last Black Friday, a 12-minute warehouse outage cancelled 1,400 orders; with a mailbox, those orders would simply have waited". Ngân sách được duyệt trong buổi họp.
 
 ### Cụm từ hữu ích
-- "Think of it as..."
-- "The benefit is...; the cost is..."
-- "For this case, X fits because..."
-- "We can revisit if..."
+- "Let me use a simple comparison / an analogy."
+- "In business terms, this means…"
+- "The trade-off is this: …"
+- "That's great when… but…"
+- "My recommendation is to…"
+- "Nothing is lost; it just waits."
 
 ### Lỗi người Việt hay mắc
-- Dùng thuật ngữ kỹ thuật (throughput, partition, consumer group) với người không chuyên.
-- Chỉ nói ưu điểm, không nói chi phí.
-- Không đưa ví dụ cụ thể từ hệ thống của công ty.`,
+- Dùng thuật ngữ khi giải thích cho người ngoài ngành: "asynchronous decoupled event streaming" → **"the systems don't have to wait for each other."**
+- Thiếu khuyến nghị cuối cùng → người nghe không biết phải quyết định gì.
+- "Kafka is more better" → **"Kafka is better for…"** (không dùng more + better).
+- "It can make the system don't wait" → **"It means the system doesn't have to wait."**
+
+> Senior tip: chuẩn bị sẵn một phép so sánh và **một con số thiệt hại thật** cho mỗi quyết định kỹ thuật lớn bạn từng đề xuất. Người quản lý nhớ câu chuyện và con số lâu hơn mọi sơ đồ kiến trúc.`,
   follow: ['How do you monitor Kafka lag?', 'When would you switch back to REST?'],
   tags: ['communication', 'kafka', 'tradeoff'],
   lang: 'en',
@@ -2301,30 +2357,45 @@ Việc chuẩn bị kỹ lưỡng cho câu hỏi này giúp bạn thể hiện s
   topic: 'english',
   level: 'senior',
   q: 'How do you answer salary expectation and negotiation questions?',
-  a: `**Tóm tắt:** Đưa ra khoảng lương đã tìm hiểu kỹ, nói theo tổng thu nhập (total compensation), và hỏi khoảng ngân sách của họ trước khi chốt.
+  a: `**Tóm tắt:** Đừng nói con số **trước** khi biết đủ về vai trò, và khi phải nói thì đưa **một khoảng có cơ sở** (dựa trên dữ liệu thị trường và phạm vi công việc), nói **gross hay net, theo tháng hay năm**, kèm sự linh hoạt về tổng gói (bonus, remote, đào tạo). Giọng **bình tĩnh, tự tin, không xin lỗi** — đàm phán là chuyện bình thường.
 
-### Sample answer
-I would say: "Based on comparable roles, my experience, and the responsibilities we have discussed, I am targeting a total compensation range of [your researched range]. I am open to discussing the mix of base pay and any benefits or variable compensation that apply to this role. Could you share the budgeted range for the position?" Research the relevant location and level; do not assume equity or a bonus is part of the package.
+### Interviewer muốn nghe gì
+- Bạn **hiểu giá trị thị trường** của mình, không đoán.
+- Bạn **hợp lý và linh hoạt** — không phải người sẽ rời đi vì 5%.
+- Bạn nói rõ ràng: tiền tệ, gross/net, đơn vị thời gian.
 
-### Chi tiết và VÌ SAO
-Đàm phán lương là kỹ năng thể hiện sự tự tin và sự hiểu biết về giá trị của bản thân trên thị trường.
-- **Nghiên cứu thị trường (Research):** Biết rõ mức lương của vị trí tương đương, trình độ tương đương ở khu vực đó trước khi đi phỏng vấn.
-- **Tránh con số đơn nhất (Range):** Đưa ra một khoảng lương (range) thay vì một con số cố định để linh hoạt hơn.
-- **Tập trung vào tổng đãi ngộ (Total compensation):** Lương cơ bản chỉ là một phần, hãy cân nhắc thêm bonus, cổ phiếu (equity), phụ cấp, và cơ hội phát triển.
-- **Hỏi ngược lại (Turn around):** Nếu họ hỏi quá sớm, hãy hỏi lại khoảng budget của họ để hai bên biết có khớp nhau hay không, tránh mất thời gian.
+### Model answer (60–90 seconds)
+Khi bị hỏi sớm (vòng HR đầu tiên):
+"I'd like to learn a bit more about the scope of the role and the team before I give a precise number. Could you share the budgeted range for this position?"
 
-Điều này không phải là mặc cả, mà là đàm phán dựa trên giá trị và thị trường. Luôn giữ thái độ hợp tác và chuyên nghiệp.
+Khi họ hỏi lại và bạn cần đưa con số:
+"Sure. Based on the scope we've discussed — leading the payment services and mentoring two developers — and on market data for senior Java roles in Ho Chi Minh City, I'm looking for a gross monthly salary in the range of 75 to 85 million VND. I'm flexible within that range depending on the bonus structure, remote days and the learning budget."
+
+Khi nhận offer thấp hơn mong đợi:
+"Thank you, I'm really excited about this role. The offer is a bit below what I expected, given the on-call responsibility and my experience with Kafka at scale. Is there flexibility to move the base closer to 82 million? If the base is fixed, could we look at a sign-on bonus or a salary review after six months?"
+
+### Short version (30 seconds)
+"Based on the role's scope and market data, I'm looking for 75 to 85 million VND gross per month. I'm flexible within that range depending on the overall package."
+
+### Real-life example
+Một dev 5 năm kinh nghiệm nói ngay ở vòng HR: "I want 50 million" (không rõ gross/net), sau đó mới biết vai trò có on-call và quản lý 2 người; con số đã nói trở thành mức trần. Lần phỏng vấn sau, họ hỏi range trước, tra số liệu từ báo cáo lương của các trang tuyển dụng và đồng nghiệp, đưa khoảng có lý do — offer cuối cùng cao hơn lần trước khoảng 25%.
 
 ### Cụm từ hữu ích
-- "Based on market data..."
-- "I am targeting a range of..."
-- "I am flexible on the mix..."
-- "Could you share the band?"
+- "Could you share the budgeted range for this role?"
+- "Based on the scope of the role and market data, …"
+- "I'm looking for a gross monthly salary in the range of…"
+- "I'm flexible depending on the overall package."
+- "Is there any flexibility on the base salary?"
+- "Could we agree on a salary review after six months?"
 
 ### Lỗi người Việt hay mắc
-- Đưa số quá thấp vì ngại, sau đó hối hận.
-- Nói "whatever you think is fair" → mất đòn bẩy.
-- Chỉ nói lương cơ bản, bỏ qua bonus, equity, remote allowance.`,
+- Không nói rõ gross/net và theo tháng hay năm → hai bên hiểu khác nhau.
+- Xin lỗi khi đàm phán: "Sorry, I know it's high but…" → bỏ "sorry", nói lý do.
+- "I want salary 80 million" → **"I'm looking for a salary of 80 million VND gross per month."**
+- "Can you increase more?" → **"Is there any flexibility to increase the base?"**
+- Chấp nhận ngay tại chỗ → **"Thank you. Could I have a day or two to review the full offer?"**
+
+> Senior tip: luôn hỏi offer **bằng văn bản** và so sánh theo **tổng thu nhập năm** (lương × số tháng, bonus, bảo hiểm, phụ cấp, ngày remote). Hai offer cùng lương tháng có thể chênh nhau 15–20% khi tính cả năm.`,
   follow: ['How do you handle a low offer?', 'When do you negotiate beyond salary?'],
   tags: ['negotiation', 'career', 'interview'],
   lang: 'en',
@@ -2334,29 +2405,54 @@ I would say: "Based on comparable roles, my experience, and the responsibilities
   topic: 'english',
   level: 'mid',
   q: 'What questions should you ask the interviewer at the end?',
-  a: `**Tóm tắt:** Hỏi về tiêu chí thành công, sức khoẻ của team và thách thức thật; tránh những câu đã có câu trả lời trên website.
+  a: `**Tóm tắt:** Câu hỏi cuối là **một phần của bài đánh giá**: chọn 2–3 câu cho thấy bạn nghĩ như người sẽ làm việc đó (team, cách làm việc, thử thách thực tế, kỳ vọng 90 ngày), và câu bạn **thật sự cần biết** để quyết định. Tránh câu có sẵn trên website hoặc chỉ hỏi về lương, nghỉ phép ở vòng kỹ thuật.
 
-### Sample answer
-Choose questions that are still unanswered and fit the interview stage. For example: "What would success look like in the first few months?" or "What technical challenge is the team prioritizing?" Ask about on-call expectations, compensation, or leave when the interviewer or process makes those topics appropriate; none is inherently off limits. You can close with: "Is there anything about my experience you would like me to clarify?" That invites useful discussion without pressuring the interviewer.
+### Interviewer muốn nghe gì
+- Bạn **quan tâm thật** tới công việc, không chỉ tới offer.
+- Bạn biết **hỏi đúng người**: kỹ thuật với engineer, phát triển nghề nghiệp với manager, phúc lợi với HR.
+- Câu hỏi giúp họ thấy bạn **đã hình dung** mình làm vai trò đó.
 
-### Chi tiết và VÌ SAO
-Đây là cơ hội cuối cùng để bạn ghi điểm. Đừng chỉ hỏi để cho có, hãy hỏi những câu cho thấy bạn thực sự muốn hiểu công việc và văn hóa của công ty.
-- **Sự thành công (Success metrics):** Hỏi về kỳ vọng của họ trong 6 tháng tới giúp bạn hình dung được tiêu chuẩn của công ty.
-- **Thử thách kỹ thuật (Challenges):** Hiểu được vấn đề lớn nhất của team giúp bạn thấy được thực trạng (nợ kỹ thuật, vấn đề hạ tầng...).
-- **Cân bằng cuộc sống (Team health):** Hỏi về on-call và cân bằng công việc giúp bạn đánh giá xem đây có phải là môi trường lành mạnh hay không.
+### Model answer (60–90 seconds)
+"Yes, I have a few questions.
 
-Câu hỏi cuối cùng phải thể hiện sự chuyên nghiệp, chuẩn bị kỹ lưỡng và tư duy của một người thực sự muốn đóng góp lâu dài.
+First, what would success look like for this role in the first three months? What would you expect me to have delivered or learned by then?
+
+Second, what's the biggest technical challenge the team is facing right now? For example, is it scaling, reliability, or paying down technical debt?
+
+And third, how does the team handle production issues? Is there an on-call rotation, and how are postmortems done?
+
+If there's time, I'd also love to know how decisions about architecture are made — is it mostly within the team, or is there a central architecture group?"
+
+### Câu hỏi theo người phỏng vấn
+| Người phỏng vấn | Câu nên hỏi |
+|---|---|
+| Engineer | "What does a typical deployment look like, from merge to production?" |
+| Tech lead | "What's one thing you'd like to change about how the team works?" |
+| Engineering manager | "How do you support engineers who want to grow into a lead role?" |
+| HR | "What are the next steps, and when can I expect to hear back?" |
+
+### Short version (30 seconds)
+"What would success look like in the first three months? And what's the biggest technical challenge the team is facing right now?"
+
+### Real-life example
+Một ứng viên hỏi "What does your company do?" — thông tin có trên trang chủ — và để lại ấn tượng chưa chuẩn bị. Ứng viên khác hỏi "How does the team handle on-call, and what was the last major incident like?" và nhận được 10 phút chia sẻ thật về hệ thống; interviewer ghi trong feedback "asks the right questions, thinks like an owner". Câu trả lời còn giúp ứng viên biết team đang có vấn đề vận hành lớn — thông tin quan trọng để đàm phán và quyết định.
 
 ### Cụm từ hữu ích
-- "What does success look like..."
-- "What is the biggest challenge..."
-- "How do you measure..."
-- "Is there anything that concerns you..."
+- "What would success look like in the first 90 days?"
+- "What's the biggest challenge the team is facing right now?"
+- "How are technical decisions made here?"
+- "What do you enjoy most about working here?"
+- "Is there anything about my background that you'd like me to clarify?"
+- "What are the next steps in the process?"
 
 ### Lỗi người Việt hay mắc
-- Nói "I have no questions" → thiếu chủ động.
-- Hỏi lương/ngày nghỉ với technical interviewer khi họ không phụ trách chuyện đó → để dành cho recruiter hoặc khi được hỏi.
-- Hỏi câu trả lời có sẵn trên website.`,
+- "No, I don't have any questions" → nghe như không quan tâm; luôn chuẩn bị ít nhất 2 câu.
+- Câu hỏi quá dài, nhiều ý gộp → hỏi từng câu ngắn.
+- "Can you tell me about the salary and OT?" ở vòng kỹ thuật → để dành cho HR.
+- "What is the challenge of team?" → **"What's the biggest challenge the team is facing?"**
+- "How many people in team?" → **"How many people are on the team?"**
+
+> Senior tip: câu "Is there anything about my background that you'd like me to clarify?" cho bạn cơ hội sửa một ấn tượng sai **ngay trong buổi phỏng vấn** — nhiều ứng viên được gỡ điểm nhờ câu này.`,
   follow: ['How do you close an interview professionally?', 'What follow-up email should you send?'],
   tags: ['interview', 'closing', 'soft-skills'],
   lang: 'en',
@@ -2366,29 +2462,43 @@ Câu hỏi cuối cùng phải thể hiện sự chuyên nghiệp, chuẩn bị 
   topic: 'english',
   level: 'senior',
   q: 'How do you clarify an ambiguous requirement with a stakeholder?',
-  a: `**Tóm tắt:** Nhắc lại mục tiêu bằng lời của mình, nêu các giả định, và đề xuất một bước kiểm chứng nhỏ trước khi bắt tay vào làm.
+  a: `**Tóm tắt:** Khi yêu cầu mơ hồ, đừng đoán và đừng hỏi "What do you mean?". Hãy **nhắc lại cách bạn hiểu**, hỏi về **mục tiêu và người dùng**, đưa **ví dụ cụ thể / trường hợp biên** để họ chọn, rồi **xác nhận bằng văn bản** (acceptance criteria). Câu trả lời phỏng vấn nên kể một tình huống thật theo các bước đó.
 
-### Sample answer
-I would say: "Let me make sure I understand. The goal is to reduce failed payments by 20 percent this quarter. I'm assuming we mean failures caused by timeouts, not fraud declines, and that we're allowed to change the retry policy. Before I build anything, I'd like to spend two days analyzing the failure reasons and then share a one-page proposal. Does that match what you had in mind?" This avoids building the wrong thing and shows ownership.
+### Interviewer muốn nghe gì
+- Bạn hỏi về **"why"** (mục tiêu kinh doanh) trước **"how"**.
+- Bạn biến yêu cầu mơ hồ thành **thứ kiểm chứng được**.
+- Bạn giao tiếp lịch sự với người không làm kỹ thuật và **ghi lại thoả thuận**.
 
-### Chi tiết và VÌ SAO
-Sự mơ hồ là kẻ thù của hiệu suất. Đừng bắt tay vào làm khi yêu cầu chưa rõ ràng, vì chi phí để sửa lại sau này sẽ cao gấp nhiều lần.
-- **Xác nhận mục tiêu (Restate goal):** Để chắc chắn bạn và stakeholder đang cùng nhìn về một hướng.
-- **Nêu giả định (Assumptions):** Giả định giúp làm rõ các ranh giới của vấn đề.
-- **Đề xuất bước kiểm chứng (Validation step):** Thay vì hỏi ngược lại "làm thế nào?", hãy đề xuất một cách giải quyết nhỏ để họ xác nhận.
+### Model answer (60–90 seconds)
+"Last quarter, our product manager asked for 'a faster export feature'. That could mean many things, so I set up a short call.
 
-Cách tiếp cận này thể hiện tư duy của một kỹ sư senior: không chỉ thực hiện công việc, mà còn tối ưu hóa giá trị kinh doanh.
+First, I repeated what I understood: 'Just to make sure I understand correctly, customers find the CSV export too slow — is that right?' Then I asked about the goal: who uses it, how big the files are, and what 'fast enough' means for them.
+
+It turned out the real problem was that exports over 100,000 rows timed out after 30 seconds, and finance needed them every Monday. So I offered two options with examples: make the export run in the background and email a download link, or limit exports to one month of data. The PM chose the background option.
+
+After the call, I wrote the acceptance criteria in the ticket — for example, 'an export of 500,000 rows completes within five minutes and the user receives an email' — and asked the PM to confirm. That saved us from building the wrong thing, and the feature shipped in one sprint."
+
+### Short version (30 seconds)
+"When a requirement is vague, I restate what I understood, ask about the goal and the users, offer concrete options with examples, and then confirm the acceptance criteria in writing. That way we build the right thing the first time."
+
+### Real-life example
+Một team nhận yêu cầu "add search to the admin page", tự xây full-text search bằng Elasticsearch mất 3 tuần. Người dùng thật ra chỉ cần tìm theo **mã đơn hàng chính xác** — một câu query có index là đủ. Sau lần đó, team áp dụng quy tắc: mọi ticket mơ hồ phải có ít nhất 2 ví dụ input/output được người yêu cầu xác nhận trước khi ước lượng.
 
 ### Cụm từ hữu ích
-- "Let me make sure I understand..."
-- "I assume that..."
-- "Before I build, I will..."
-- "Does that match..."
+- "Just to make sure I understand correctly, …"
+- "What problem are we trying to solve for the user?"
+- "Could you give me an example of…?"
+- "What would 'fast enough' look like for you?"
+- "We have two options: … Which one fits better?"
+- "I'll write this down in the ticket — could you confirm it?"
 
 ### Lỗi người Việt hay mắc
-- Giả định rồi code luôn, sau đó làm lại.
-- Hỏi "what do you want?" mà không đề xuất phương án.
-- Không ghi lại quyết định, tranh cãi sau này.`,
+- "What do you mean?" nghe hơi cộc → **"Could you tell me a bit more about…?"**
+- Im lặng làm theo cách hiểu của mình vì ngại hỏi.
+- Hỏi quá kỹ thuật với PM: "Should we use async processing?" → **"Is it OK if the export arrives by email a few minutes later?"**
+- "I want to confirm again your requirement" → **"I'd like to confirm the requirement."**
+
+> Senior tip: thói quen "viết lại yêu cầu thành 2–3 ví dụ cụ thể và xin xác nhận" mất 10 phút nhưng tiết kiệm hàng tuần làm lại. Hãy nhắc nó trong phỏng vấn kèm một ví dụ thật — interviewer rất thích con số "saved us X weeks".`,
   follow: ['How do you handle conflicting stakeholders?', 'What if requirements change mid-sprint?'],
   tags: ['requirements', 'communication', 'stakeholders'],
   lang: 'en',
@@ -2398,28 +2508,41 @@ Cách tiếp cận này thể hiện tư duy của một kỹ sư senior: không
   topic: 'english',
   level: 'senior',
   q: 'How do you give and receive code review feedback?',
-  a: `**Tóm tắt:** Góp ý vào code và tác động của nó (không vào con người), dùng câu hỏi, và tách rõ góp ý bắt buộc sửa (blocking) với góp ý nhỏ (non-blocking).
+  a: `**Tóm tắt:** Khi **đưa** feedback: nói về **code và hệ quả**, không về người; phân biệt rõ **bắt buộc** và **gợi ý**; hỏi thay vì ra lệnh khi không chắc. Khi **nhận** feedback: cảm ơn, hỏi rõ nếu chưa hiểu, sửa hoặc giải thích lý do bằng dữ liệu, không phòng thủ. Câu trả lời phỏng vấn nên có nguyên tắc + một ví dụ cụ thể.
 
-### Sample answer
-When giving feedback, focus on correctness, maintainability, and risk; let configured automation handle style where practical. Explain the impact and suggest a path forward, for example: "Could this query load more rows than expected? What does the plan look like for the largest tenant?" Mark severity using the team's review conventions rather than assuming every team uses the same labels. When receiving feedback, ask about the underlying concern, verify it, and explain your reasoning with evidence if you still disagree.
+### Interviewer muốn nghe gì
+- Bạn review để **cải thiện code và giúp người khác giỏi lên**, không để thể hiện.
+- Bạn biết **ưu tiên** (đúng đắn, bảo mật, dễ bảo trì) hơn sở thích cá nhân.
+- Bạn **nhận phản biện** một cách chuyên nghiệp.
 
-### Chi tiết và VÌ SAO
-Code review là quá trình học tập chung, không phải là cuộc chiến giữa reviewer và author.
-- **Góp ý (Giving feedback):** Hãy tập trung vào những thứ ảnh hưởng tới hệ thống như hiệu năng, bảo mật, tính dễ bảo trì. Dùng câu hỏi để người khác tự suy nghĩ, tránh áp đặt.
-- **Nhận feedback:** Hãy cởi mở và coi đó là cơ hội để cải thiện bản thân và code. Đừng phòng thủ (defensive). Nếu không đồng ý, hãy đưa ra lý lẽ dựa trên kỹ thuật chứ không phải sở thích cá nhân.
+### Model answer (60–90 seconds)
+"When I give feedback, I focus on the code and its impact, not on the person. I usually label my comments: 'blocking' for things like a missing transaction or a security issue, and 'nit' or 'suggestion' for style. If I'm not sure, I ask a question instead of giving an order — for example, 'What happens if this list is empty?' I also try to point out something done well, so the review doesn't feel like a list of mistakes.
 
-Mục tiêu cuối cùng là chất lượng của sản phẩm, không phải việc ai là người chiến thắng.
+When I receive feedback, I start from the assumption that the reviewer is trying to help. If I don't understand a comment, I ask for an example. If I disagree, I explain my reasons with data, and if we still can't agree after two rounds, we jump on a quick call instead of writing long threads.
+
+For example, a colleague once pointed out that my retry logic could charge a customer twice. My first reaction was to defend it, but he was right. I added an idempotency key and thanked him in the PR. Since then, I've added 'retries on payment calls' to our review checklist."
+
+### Short version (30 seconds)
+"I give feedback on the code, not the person, and I label comments as blocking or suggestions. When I receive feedback, I assume good intent, ask questions if I'm unsure, and move long debates to a quick call."
+
+### Real-life example
+Một team có review rất gắt: comment kiểu "This is wrong. Rewrite." — junior sợ mở PR, PR dồn lại to dần. Team thống nhất quy ước nhãn (blocking / suggestion / nit / question) và quy tắc "quá 2 vòng tranh luận thì gọi 10 phút". Sau 2 tháng, kích thước PR trung bình giảm một nửa, thời gian chờ review giảm từ 2 ngày xuống 6 giờ.
 
 ### Cụm từ hữu ích
-- "Could this... become an issue..."
-- "Nit: ..."
-- "Blocking: ..."
-- "The reason I chose... is..."
+- "Blocking: this needs a transaction, otherwise…"
+- "Suggestion / nit: we could extract this into a method."
+- "What happens if…?" / "Have you considered…?"
+- "Nice approach here — much easier to read."
+- "Good catch, thanks! I'll fix it."
+- "I see your point. My concern is… Could we discuss it quickly on a call?"
 
 ### Lỗi người Việt hay mắc
-- Comment "this is wrong" không giải thích.
-- Nhận xét cá nhân thay vì code.
-- Im lặng khi không đồng ý, rồi làm theo không vui.`,
+- Viết quá ngắn, nghe như ra lệnh: "Change this." → **"Could we change this to…? It avoids…"**
+- Dùng "you" đổ lỗi: "You forgot the null check" → **"This could throw an NPE when the list is empty."**
+- Khi nhận feedback: "No, it's correct" → **"I chose this because… but I'm open to changing it."**
+- "Thanks for your review my code" → **"Thanks for reviewing my code."**
+
+> Senior tip: nêu trong phỏng vấn một **checklist review** bạn từng tạo hoặc cải thiện (transaction, idempotency, logging dữ liệu nhạy cảm, migration). Nó cho thấy bạn biến kinh nghiệm review thành tài sản của cả team.`,
   follow: ['How do you review a large PR?', 'How do you handle a stubborn reviewer?'],
   tags: ['code-review', 'teamwork', 'communication'],
   lang: 'en',
@@ -2429,33 +2552,50 @@ Mục tiêu cuối cùng là chất lượng của sản phẩm, không phải v
   topic: 'english',
   level: 'mid',
   q: 'Describe a weakness honestly in an interview.',
-  a: `**Tóm tắt:** Nêu một điểm yếu có thật nhưng không chí mạng cho vị trí, cho thấy bạn đã làm gì để cải thiện và có bằng chứng tiến bộ; tránh kiểu khoe khéo (humble-brag).
+  a: `**Tóm tắt:** Chọn một điểm yếu **thật** nhưng **không phải kỹ năng cốt lõi** của vị trí, cho thấy bạn **nhận ra nó thế nào**, **đang làm gì cụ thể** để cải thiện và **đã tiến bộ ra sao** (có bằng chứng). Tránh "I'm a perfectionist" hay "I work too hard" — interviewer nghe hàng trăm lần và coi là né tránh.
 
-### Sample answer
-"One thing I've been working on is speaking up early in design discussions. I used to keep my concerns to myself in meetings and raise them later in code review. On one project, I noticed a problem with the data model during the design review but didn't say anything, and we had to rework two weeks of code later.
+### Interviewer muốn nghe gì
+- Bạn **tự nhận thức** được mình.
+- Bạn **chủ động cải thiện**, có hành động và kết quả đo được.
+- Điểm yếu đó **không phá vỡ** vai trò đang tuyển.
 
-Since then, I've changed two things. I read the design doc before the meeting and write down my questions, and I make a point of raising at least one of them during the discussion. My manager has noticed the difference — in my last review, she mentioned that I'm contributing much more in design sessions. I'm still more comfortable writing than speaking, especially in English, but it's getting easier."
+### Model answer (60–90 seconds)
+"One weakness I've been working on is that I used to take on too much work myself instead of delegating. As I became more senior, I'd often fix things quickly on my own because it felt faster.
 
-(Hãy chọn điểm yếu thật của bạn; ví dụ trên chỉ là mẫu cấu trúc.)
+I realized it was a problem during a release last year. I was the only person who understood our payment reconciliation job, and when I got sick for three days, the team was blocked.
 
-### Chi tiết và VÌ SAO
-Interviewer hỏi câu này không phải để tìm lỗi, mà để xem bạn có khả năng tự nhận thức (self-awareness) và tinh thần cầu tiến hay không.
-- **Điểm yếu thật (Real weakness):** Đừng nói "tôi quá hoàn hảo", hãy nói một điểm yếu thật nhưng không gây nguy hiểm cho vị trí ứng tuyển.
-- **Hành động cải thiện (Improvement):** Đây là phần quan trọng nhất. Bạn đã làm gì để khắc phục nó?
-- **Kết quả (Evidence):** Cho thấy tiến bộ cụ thể.
+Since then, I've made a few concrete changes. When I pick up a complex task, I pair with a teammate for at least part of it. I write a short runbook for every job I own. And in sprint planning, I deliberately give the tasks I know best to someone else and offer to review instead.
 
-Tư duy này cho thấy bạn là một kỹ sư có tinh thần học hỏi và không ngừng tự hoàn thiện.
+It's still something I watch, but the results are clear: two other engineers can now handle the reconciliation job, and in our last retrospective the team said knowledge sharing had improved a lot."
+
+### Short version (30 seconds)
+"I used to do too much myself instead of delegating. After I became a bottleneck during a release, I started pairing, writing runbooks and handing my familiar tasks to teammates. Now two other engineers can run the jobs I used to own alone."
+
+### Các điểm yếu "an toàn" mà vẫn thật
+| Điểm yếu | Cách cải thiện có thể kể |
+|---|---|
+| Ngại nói trong cuộc họp lớn / bằng tiếng Anh | Chuẩn bị trước 3 ý, luyện nói hằng tuần, chủ động trình bày demo |
+| Ôm việc, ít delegate | Pairing, runbook, giao việc mình giỏi cho người khác |
+| Ước lượng quá lạc quan | Ghi lại ước lượng vs thực tế, thêm buffer, chia nhỏ task |
+| Đi quá sâu vào chi tiết kỹ thuật | Đặt timebox, hỏi "what's the decision we need?" |
+
+### Real-life example
+Một ứng viên trả lời "My weakness is I'm too detail-oriented" — interviewer hỏi tiếp "Give me an example where that hurt your team" và ứng viên lúng túng. Lần sau, họ chọn điểm yếu thật về **trình bày bằng tiếng Anh**, kể việc tham gia nhóm luyện nói mỗi tuần và tự nhận demo sprint — kèm kết quả: "I've presented four sprint demos to our client in English this quarter". Feedback ghi nhận "self-aware and proactive".
 
 ### Cụm từ hữu ích
-- "I used to..."
-- "The impact was..."
-- "I now..."
-- "Evidence of progress is..."
+- "One area I've been working on is…"
+- "I realized it was a problem when…"
+- "Since then, I've made a few concrete changes: …"
+- "It's still something I keep an eye on, but…"
+- "The result is that…"
 
 ### Lỗi người Việt hay mắc
-- Nói "I work too hard" → humble-brag, interviewer không tin.
-- Chọn điểm yếu chí mạng cho vị trí (ví dụ backend nói không thích database).
-- Không có hành động cải thiện.`,
+- Chọn điểm yếu cốt lõi của vị trí ("I'm not good at Java" cho vị trí Senior Java).
+- Chỉ nêu điểm yếu, không có hành động cải thiện.
+- "My weakness is I am shy" quá chung → nói cụ thể tình huống và cách khắc phục.
+- "I am improving it by myself" → **"I've been improving it by…"** (+ hành động cụ thể).
+
+> Senior tip: chọn điểm yếu có **câu chuyện tiến bộ kèm con số hoặc phản hồi từ người khác**. Interviewer không chấm điểm yếu — họ chấm khả năng tự sửa của bạn.`,
   follow: ['What is your greatest strength?', 'How do you handle feedback about a weakness?'],
   tags: ['self-awareness', 'interview', 'soft-skills'],
   lang: 'en',
@@ -2465,35 +2605,43 @@ Tư duy này cho thấy bạn là một kỹ sư có tinh thần học hỏi và
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a time you mentored a junior developer.',
-  a: `**Tóm tắt:** Mô tả khoảng trống của người được mentor, cách bạn hỗ trợ, và sự tiến bộ có thể thấy được của họ.
+  a: `**Tóm tắt:** Kể theo **STAR** với trọng tâm là **người được mentor tiến bộ thế nào**, không phải bạn giỏi ra sao. Nêu rõ **điểm xuất phát** của họ, **phương pháp** bạn dùng (pairing, review có giải thích, giao việc tăng dần, buổi 1-1), và **kết quả đo được** (họ tự làm được gì, nhận trách nhiệm gì).
 
-### Sample answer
-"Last year a junior developer joined our team, and she was technically solid but nervous about anything touching production. She avoided on-call and asked someone else to deploy her changes.
+### Interviewer muốn nghe gì
+- Bạn **điều chỉnh cách dạy** theo từng người.
+- Bạn **trao quyền dần dần** thay vì làm hộ.
+- Bạn đo tiến bộ bằng **kết quả cụ thể**, không chỉ cảm nhận.
 
-First, I asked her what exactly worried her. It turned out she didn't know how to tell whether a deployment was healthy. So we paired on a few real releases, and I talked through what I was looking at — error rates, latency, and the logs — and why.
+### Model answer (60–90 seconds)
+"Last year, a junior developer joined our team straight from university. She was strong in algorithms but had never worked with Spring Boot or production systems, and her first pull requests took a week to merge because of many review rounds.
 
-Next, I gave her a small, low-risk service to own, with a runbook, and I reviewed her first few deployments. After about two months, she joined the on-call rotation as a secondary, and by the end of the quarter she was handling incidents on that service on her own. She even updated the runbook herself.
+I suggested a simple plan. For the first month, we paired for an hour every day on real tickets, and I explained the 'why' behind our patterns — for example, why we use transactions in the service layer and not in controllers. In code reviews, I wrote fewer but longer comments with links to examples, instead of many short corrections. Every two weeks, we had a short one-on-one to choose the next skill — testing, then SQL performance, then on-call.
 
-What I learned is that the gap was confidence, not knowledge, so the right approach was safe practice, not more lectures."
+I also gave her tasks that were slightly harder each time, and I resisted the urge to fix things myself.
 
-### Chi tiết và VÌ SAO
-Việc mentor không phải chỉ là "dạy kỹ thuật", mà là tạo ra môi trường để người khác phát triển.
-- **Chẩn đoán (Diagnose):** Trước hết phải hiểu người kia thiếu gì (kiến thức nền, sự tự tin, hay khả năng quản lý thời gian).
-- **Thiết kế trải nghiệm (Structure):** Đừng làm hộ, hãy tạo ra các "cơ hội an toàn" để họ tự trải nghiệm và rút ra bài học.
-- **Đo lường (Measure):** Mentor hiệu quả là khi người được mentor có thể tự xử lý công việc mà không cần bạn.
+After four months, her PRs were usually merged in one or two rounds. After six months, she joined the on-call rotation, and she later led a small feature that cut our report generation time by half. Now she mentors our newest intern."
 
-Người mentor giỏi là người biết rút lui đúng lúc, nhường lại sân khấu cho người khác tỏa sáng.
+### Short version (30 seconds)
+"I mentored a junior who had never worked with Spring or production systems. We paired daily for a month, I explained the reasons behind our patterns, and I gave her slightly harder tasks each sprint. After six months, she was on the on-call rotation and leading a small feature."
+
+### Real-life example
+Một senior "mentor" bằng cách sửa luôn code của junior trong PR "cho nhanh". Sau 6 tháng junior vẫn không tự làm được task trung bình. Khi chuyển sang pairing có giải thích, giao việc tăng dần và để junior tự sửa theo comment, chỉ sau một quý junior tự xử lý được ticket sự cố cấp 2 — và senior được đánh giá cao ở mục "growing others" trong review hiệu suất.
 
 ### Cụm từ hữu ích
-- "The gap was..."
-- "I paired with them on..."
-- "I gave them ownership of..."
-- "The result was..."
+- "When she joined, she was strong in… but had never…"
+- "I suggested a simple plan: …"
+- "I explained the 'why' behind…"
+- "I gave her slightly harder tasks each time."
+- "I resisted the urge to fix things myself."
+- "After six months, she was able to…"
 
 ### Lỗi người Việt hay mắc
-- Nói "I taught them everything" → thiếu khiêm tốn.
-- Không có số liệu chứng minh tiến bộ.
-- Chỉ nói lý thuyết, không có ví dụ cụ thể.`,
+- Kể về bản thân nhiều hơn người được mentor.
+- Không có kết quả: "I helped him a lot" → **"After three months, he could handle on-call alone."**
+- "I teach him every day" (sai thì) → **"I taught him / We paired every day."**
+- "She has improved very much" → **"She improved a lot"** hoặc **"Her PRs went from five review rounds to one or two."**
+
+> Senior tip: giữ một ghi chú ngắn về những người bạn từng mentor (điểm xuất phát, cách làm, kết quả). Khi phỏng vấn vị trí Lead, bạn sẽ có sẵn 2–3 câu chuyện với số liệu thật thay vì nhớ mang máng.`,
   follow: ['How do you handle a mentee who resists feedback?', 'How do you balance mentoring with delivery?'],
   tags: ['mentoring', 'leadership', 'soft-skills'],
   lang: 'en',
@@ -7172,34 +7320,45 @@ Cloud --> CI: resources match desired state
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a time you had a conflict with a teammate. How did you handle it?',
-  a: `**Tóm tắt:** I once disagreed with a teammate about whether to refactor a service during a feature sprint. I set up a 1:1, focused on the shared goal, proposed a small proof-of-concept, and we agreed to defer the big refactor. Result: feature shipped on time and refactor landed next sprint.
+  a: `**Tóm tắt:** Chọn một xung đột **về công việc** (thiết kế, ưu tiên, cách làm), không phải chuyện cá nhân. Kể bằng **STAR**: hai quan điểm là gì, bạn **lắng nghe và tìm hiểu lý do** của người kia thế nào, hai bên **dùng dữ liệu hoặc thử nghiệm** để quyết định ra sao, kết quả và **quan hệ sau đó**. Không đổ lỗi, không kể mình "thắng".
 
-### STAR structure
-- **Situation:** Describe context briefly: team, project, deadline.
-- **Task:** Your responsibility.
-- **Action:** What YOU did (use "I", not "we").
-- **Result:** Measurable outcome + what you learned.
+### Interviewer muốn nghe gì
+- Bạn **tách vấn đề khỏi con người**.
+- Bạn **lắng nghe** và có thể đổi ý khi có bằng chứng.
+- Bạn đưa tranh luận về **dữ liệu, thử nghiệm, tiêu chí chung**.
+- Quan hệ làm việc **tốt hơn hoặc vẫn tốt** sau xung đột.
 
-### Useful phrases
-- "I noticed..." / "I raised the concern that..." / "We agreed to..."
+### Model answer (60–90 seconds)
+"In my last project, another senior engineer and I disagreed on how to handle notifications. He wanted to call the notification service synchronously from the order API, because it was simpler. I wanted to publish an event to Kafka, because notification outages had caused failed orders before.
 
-### Common mistakes (Vietnamese speakers)
-- Overusing "we" — interviewers want YOUR contribution.
-- Jumping to result without action.
+The discussion became tense in a design review, so I suggested we talk one-on-one. I asked him what worried him about the event approach, and he explained that the team had little experience operating Kafka consumers, and he was afraid of silent failures. That was a fair point I hadn't considered.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+We agreed on clear criteria — order success rate, latency, and operational effort — and ran a small proof of concept for one week. The event approach kept orders working when we stopped the notification service, and we addressed his concern by adding a dead-letter queue and a consumer-lag alert.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+We went with that design, and he actually wrote the runbook for it. We've worked very well together since then, and we now use the same 'criteria first' approach for other design decisions."
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+### Short version (30 seconds)
+"A colleague and I disagreed about synchronous calls versus Kafka for notifications. I asked about his concerns, we agreed on criteria and ran a one-week proof of concept. We chose the event approach with the safeguards he suggested, and he wrote the runbook."
 
-> Senior tip: Pick a real, modest conflict; avoid blaming others. Show empathy and data-driven resolution.`,
+### Real-life example
+Một ứng viên kể xung đột theo kiểu "my teammate was wrong and finally the manager agreed with me" — interviewer ghi nhận "low collaboration". Khi kể lại cùng câu chuyện nhưng nhấn vào việc hỏi lý do của đồng nghiệp, thống nhất tiêu chí và thử nghiệm, kèm chi tiết "he wrote the runbook", câu trả lời trở thành điểm mạnh.
+
+### Cụm từ hữu ích
+- "We disagreed on how to…"
+- "I suggested we talk one-on-one."
+- "I asked what worried him about…"
+- "That was a fair point I hadn't considered."
+- "We agreed on clear criteria: …"
+- "We've worked well together since then."
+
+### Lỗi người Việt hay mắc
+- Kể xung đột cá nhân hoặc chê đồng nghiệp.
+- Kết thúc bằng "I was right" — hãy kết bằng kết quả cho team và quan hệ.
+- "We argued very much" → **"We had a strong disagreement."**
+- "He don't agree with me" → **"He didn't agree with me."**
+- Dùng "fight" cho tranh luận công việc → dùng **"disagreement"**, **"different views"**.
+
+> Senior tip: câu chuyện xung đột mạnh nhất là câu chuyện mà **bạn đã thay đổi một phần quan điểm** nhờ người kia. Nó cho thấy bạn ra quyết định bằng lý lẽ, không bằng cái tôi.`,
   follow: ['How do you handle conflicts in code review?', 'Tell me about a time you changed your mind after discussion.'],
   tags: ['behavioral', 'conflict', 'star', 'english'],
   lang: 'en'
