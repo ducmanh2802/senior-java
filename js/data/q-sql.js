@@ -2869,12 +2869,12 @@ Vì sao phải khoá dòng product: hai transaction cùng kiểm tra "không ch�
   a: `**Tóm tắt:** Planner ước lượng số dòng trả về (cardinality) bằng thống kê cột: **n_distinct** (số giá trị khác nhau), **histogram** (phân bố giá trị), **correlation** (độ sắp xếp so với heap). Nếu ước lượng << tổng số dòng, chọn index scan; nếu ~ toàn bảng, chọn seq scan. Khi các cột có **tương quan** (city + zip), planner mặc định nhân selectivity từng cột → ước lượng sai → phải dùng {{CREATE STATISTICS}}.
 
 ### Thống kê PostgreSQL lưu ở đâu
-Sau {{ANALYZE}}, mỗi cột có một hàng trong {{pg_statistic}}:
-- {{stanullfrac}}: tỷ lệ NULL.
-- {{stadistinct}}: n_distinct (âm nếu tỷ lệ so với tổng dòng).
-- {{stakind1..5}}: loại thống kê: histogram, MCV (most common values), correlation...
-- {{stavalues1}}: danh sách giá trị phổ biến + tần suất.
-- {{stahistbounds}}: biên histogram.
+Sau {{ANALYZE}}, mỗi cột có một hàng trong catalog {{pg_statistic}} (lưu dạng "khe" stakind/stanumbers/stavalues, khó đọc); thực tế nên xem qua view {{pg_stats}}:
+- {{null_frac}}: tỷ lệ NULL.
+- {{n_distinct}}: số giá trị khác nhau (số âm nghĩa là tỷ lệ so với tổng dòng, ví dụ -1 là mọi giá trị đều khác nhau).
+- {{most_common_vals}} / {{most_common_freqs}}: danh sách giá trị phổ biến (MCV) và tần suất.
+- {{histogram_bounds}}: biên histogram cho phần giá trị ngoài MCV.
+- {{correlation}}: mức độ thứ tự giá trị cột khớp thứ tự vật lý trên đĩa.
 
 ### Selectivity là gì
 Selectivity = tỷ lệ dòng thoả điều kiện. Ví dụ {{WHERE status='PAID'}}: nếu 'PAID' xuất hiện 30% số dòng → selectivity 0.3. Planner nhân selectivity với tổng số dòng để ra rows ước lượng. Nếu rows << tổng → index scan có lợi; nếu rows ~ tổng → seq scan rẻ hơn vì tránh random I/O.
@@ -2902,7 +2902,7 @@ Planner giả định các điều kiện độc lập: {{P(city='HCM' AND zip L
 - Fix: {{ANALYZE table;}} sau bulk load; tăng {{default_statistics_target}}; tạo extended statistics; dùng {{SET plan_cache_mode = force_custom_plan}} cho prepared statement.
 
 ### Ví dụ đời thực
-Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND district = 'Cầu Giấy'}} chạy 9 giây vì planner chọn Seq Scan. EXPLAIN cho thấy ước lượng **1.200 dòng** nhưng thực tế **380.000** — planner nhân hai selectivity như thể hai cột độc lập, trong khi district phụ thuộc hoàn toàn vào city. Với ước lượng sai đó nó lại chọn nested loop cho bước join tiếp theo. Sửa: {{CREATE STATISTICS orders_city_district (dependencies, ndistinct) ON city, district FROM orders; ANALYZE orders;}} → ước lượng 360.000, planner đổi sang hash join + index phù hợp, 9 giây → 650ms. Một lần khác, sau khi import 5 triệu dòng mới qua đêm, autovacuum chưa kịp ANALYZE nên thống kê cũ — thêm bước {{ANALYZE}} cuối job import.
+Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND district = 'Cầu Giấy'}} rồi join sang bảng order_items chạy 9 giây. EXPLAIN cho thấy ước lượng **1.200 dòng** nhưng thực tế **380.000** — planner nhân hai selectivity như thể hai cột độc lập, trong khi district phụ thuộc hoàn toàn vào city. Tin rằng chỉ có 1.200 dòng, nó chọn Index Scan rồi nested loop sang order_items, thành 380.000 lần tra index ngẫu nhiên. Sửa: {{CREATE STATISTICS orders_city_district (dependencies, ndistinct) ON city, district FROM orders; ANALYZE orders;}} → ước lượng 360.000, planner đổi sang hash join + index phù hợp, 9 giây → 650ms. Một lần khác, sau khi import 5 triệu dòng mới qua đêm, autovacuum chưa kịp ANALYZE nên thống kê cũ — thêm bước {{ANALYZE}} cuối job import.
 
 ### Trả lời mẫu khi phỏng vấn
 "Planner PostgreSQL chọn kế hoạch theo chi phí ước lượng, dựa trên thống kê trong pg_statistic, xem qua view pg_stats: tỉ lệ null, n_distinct, danh sách giá trị phổ biến nhất kèm tần suất, và histogram cho phần còn lại. Selectivity là tỉ lệ dòng thoả điều kiện; nhân với số dòng ra ước lượng, và ước lượng quyết định chọn index scan hay seq scan, nested loop hay hash join. Vấn đề hay gặp là các cột có tương quan: planner mặc định coi chúng độc lập và nhân selectivity, nên ước lượng thấp hơn thực tế nhiều lần. CREATE STATISTICS với dependencies hoặc ndistinct, hay mcv, giúp planner hiểu tương quan đó. Khi query chậm, tôi chạy EXPLAIN ANALYZE so số dòng ước lượng với thực tế; lệch hàng chục lần là dấu hiệu thống kê sai, cần ANALYZE, tăng statistics target cho cột lệch hoặc thêm extended statistics."
@@ -2938,14 +2938,14 @@ Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND di
 ### Merge join
 - Cần cả hai input đã sort theo join key.
 - Nếu đã có index theo key → sort miễn phí; nếu chưa → sort (external sort, có thể spill).
-- Chọn khi: input đã sort, hoặc range join ({{a.x BETWEEN b.lo AND b.hi}}), hoặc planner muốn tránh hash memory.
+- Chọn khi: input đã sort sẵn theo khoá join (có index phù hợp), dữ liệu rất lớn mà hash không vừa bộ nhớ, hoặc kết quả cần sắp theo khoá join. Chỉ áp dụng cho điều kiện bằng; join theo khoảng trong PostgreSQL luôn là nested loop.
 - Ưu: output đã sort theo join key → hữu ích cho ORDER BY tiếp theo.
 
 ### Bảng so sánh
 | Tiêu chí | Nested loop | Hash join | Merge join |
 |---|---|---|---|
 | Equi-join | ok | tốt nhất | tốt |
-| Range join | tốt | không | tốt |
+| Range join ({{a.x BETWEEN b.lo AND b.hi}}) | lựa chọn duy nhất | không | không (PostgreSQL chỉ merge join với điều kiện bằng) |
 | Cần index | thường có | không | không (cần sort) |
 | Memory | thấp | cao (work_mem) | trung bình |
 | Streaming | có | không (build xong mới probe) | có |
@@ -3119,7 +3119,7 @@ Màn hình quản trị cho phép nhảy tới trang bất kỳ của 30 triệu
 Index trên (a, b, c) sort theo a rồi b rồi c. Query:
 - {{WHERE a=1}} → dùng index (prefix a).
 - {{WHERE a=1 AND b=2}} → dùng index.
-- {{WHERE b=2}} → KHÔNG dùng index (không có prefix a). Phải tạo index riêng trên b.
+- {{WHERE b=2}} → thường KHÔNG dùng được index (không có prefix a), nên tạo index riêng trên b. Ngoại lệ: PostgreSQL 18+ và MySQL 8.0.13+ có **skip scan**, dùng được index khi cột a có ít giá trị khác nhau (nhảy qua từng giá trị a); đừng thiết kế dựa vào nó cho truy vấn nóng.
 - {{WHERE a=1 AND c=3}} → dùng prefix a, filter c sau.
 
 ### Thứ tự cột: equality trước, range sau
@@ -3147,7 +3147,7 @@ Index (user_id, created_at DESC) → planner đi index theo thứ tự, lấy 20
 Cần visibility map đánh dấu page "all visible" → sau VACUUM. Nếu không, phải fetch heap để check visibility → mất lợi ích.
 
 ### Trên production
-- Triệu chứng: query có index nhưng vẫn chậm; EXPLAIN hiện "Index Scan" với "Heap Fetches" lớn.
+- Triệu chứng: query có index nhưng vẫn chậm; EXPLAIN hiện "Index Only Scan" với "Heap Fetches" lớn (visibility map chưa cập nhật), hoặc "Index Scan" phải đọc heap nhiều vì index thiếu cột.
 - Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; xem "Index Only Scan" vs "Index Scan".
 - Fix: VACUUM ANALYZE; INCLUDE cột payload; partial index cho subset hot; tránh index thừa (mỗi index làm chậm write).
 
@@ -3177,7 +3177,10 @@ Index trên {{email}} lưu giá trị gốc. Query {{WHERE lower(email) = 'a@b.c
 Fix: expression index {{CREATE INDEX ON users (lower(email));}} và query phải khớp chính xác expression.
 
 ### Implicit cast
-Cột {{phone VARCHAR}}, query {{WHERE phone = 12345}} (số). DB cast cột sang số: {{WHERE phone::integer = 12345}} → hàm trên cột → mất index. Hoặc cast literal: {{WHERE phone = '12345'}} → dùng index. Luôn so sánh cùng kiểu.
+Cột {{phone VARCHAR}}, query {{WHERE phone = 12345}} (số). Hành vi khác nhau theo DB:
+- **MySQL** và **Oracle** tự ép kiểu **cột** sang số để so sánh (tương đương bọc hàm quanh cột) → mất index, quét toàn bảng, lại còn khớp sai ('012345' bằng 12345).
+- **PostgreSQL** không tự ép kiểu trong trường hợp này mà báo lỗi {{operator does not exist: character varying = integer}}; lỗi tương tự khi JDBC gửi tham số chuỗi cho cột số.
+Cách đúng ở mọi DB: so sánh cùng kiểu ({{WHERE phone = '12345'}}), và kiểu tham số Java khớp kiểu cột.
 
 ### OR làm mất index
 {{WHERE status='PAID' OR created_at > '2025-01-01'}}: nếu hai điều kiện dùng index khác nhau, planner có thể chọn seq scan vì bitmap OR tốn kém, hoặc không merge được. 
@@ -3200,7 +3203,7 @@ Trade-off: index lớn, write chậm; phù hợp search text vừa phải. Searc
 - Fix: expression index; cast literal đúng kiểu; pg_trgm GIN; hoặc chuyển search sang ES.
 
 ### Ví dụ đời thực
-Tìm khách hàng theo email chạy 4 giây dù có index {{customers(email)}}. Code Hibernate sinh {{WHERE lower(email) = lower(?)}} (tìm không phân biệt hoa thường) → hàm bọc cột, index thường không dùng được. Sửa: index biểu thức {{CREATE INDEX ON customers (lower(email))}} → 2ms. Một trường hợp khác: cột {{phone}} kiểu {{varchar}} nhưng Java truyền tham số kiểu số qua native query → PostgreSQL ép kiểu cột sang số để so sánh ({{phone::numeric = 912345678}}), mất index; sửa kiểu tham số thành chuỗi. Ô tìm kiếm "chứa từ khoá" dùng {{LIKE '%nguyen%'}} trên 6 triệu tên khách (4,5 giây) → thêm extension {{pg_trgm}} và index GIN {{gin_trgm_ops}}: 40ms; với tiếng Việt có dấu, kết hợp {{unaccent}} trong một index biểu thức để tìm được cả khi người dùng gõ không dấu.
+Tìm khách hàng theo email chạy 4 giây dù có index {{customers(email)}}. Code Hibernate sinh {{WHERE lower(email) = lower(?)}} (tìm không phân biệt hoa thường) → hàm bọc cột, index thường không dùng được. Sửa: index biểu thức {{CREATE INDEX ON customers (lower(email))}} → 2ms. Một trường hợp khác (hệ thống MySQL cũ): cột {{phone}} kiểu {{varchar}} nhưng Java truyền tham số kiểu số qua native query → MySQL ép kiểu cột sang số để so sánh, mất index và quét 6 triệu dòng; sửa kiểu tham số thành chuỗi. Ô tìm kiếm "chứa từ khoá" dùng {{LIKE '%nguyen%'}} trên 6 triệu tên khách (4,5 giây) → thêm extension {{pg_trgm}} và index GIN {{gin_trgm_ops}}: 40ms; với tiếng Việt có dấu, kết hợp {{unaccent}} trong một index biểu thức để tìm được cả khi người dùng gõ không dấu.
 
 ### Trả lời mẫu khi phỏng vấn
 "Index B-tree lưu giá trị gốc của cột, nên khi điều kiện bọc cột trong hàm như lower hay date, hoặc DB phải ép kiểu cột vì tham số khác kiểu, nó không dùng được index đó. Cách sửa là viết điều kiện trên cột gốc, ví dụ dùng khoảng thời gian thay vì date của cột, truyền tham số đúng kiểu, hoặc tạo index biểu thức như index trên lower của email. Điều kiện OR giữa các cột khác nhau thường làm planner bỏ index hoặc phải dùng bitmap OR; có thể viết lại thành UNION ALL. LIKE với ký tự đại diện ở đầu chuỗi không dùng được B-tree vì không biết bắt đầu từ đâu; dùng pg_trgm với index GIN hoặc full-text search. Khi gặp query có index mà vẫn seq scan, tôi xem EXPLAIN để biết điều kiện thật sự được áp dụng, rồi kiểm tra hàm, kiểu dữ liệu, collation."
