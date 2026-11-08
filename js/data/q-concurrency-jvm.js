@@ -680,9 +680,6 @@ try {
 ### Trả lời miệng 1 phút
 "ThreadLocal cho mỗi thread một bản giá trị riêng, tôi hay dùng cho context của request như MDC hay security context. Bên trong, mỗi Thread có một ThreadLocalMap, key là tham chiếu yếu tới ThreadLocal còn value là tham chiếu mạnh. Trong thread pool, thread sống suốt đời app nên nếu không remove thì value nằm mãi, vừa rò heap vừa có thể để request sau đọc nhầm dữ liệu của request trước, và trên Tomcat còn gây leak classloader khi redeploy. Vì vậy tôi luôn set ở filter và remove trong finally ở cùng chỗ. Với Java 21 và virtual thread, tôi giữ ThreadLocal thật nhỏ và hướng tới ScopedValue."
 
-### Ví dụ đời thực
-Một service Spring Boot 3 với 8 instance, mỗi instance chạy Tomcat 200 thread, dùng ThreadLocal để lưu MDC requestId và userId cho mọi request. Sau khi deploy canary, QA báo "thỉnh thoảng user A thấy dữ liệu user B" — tần suất rất thấp, khoảng 1 trong 10.000 request, không tái hiện được trong test. Điều tra: bật async-profiler + thread dump, thấy Tomcat thread reused request sau request; kiểm tra filter thấy code set MDC ở đầu request nhưng remove chỉ ở happy path, exception path đi qua @ExceptionHandler bỏ qua finally. Kết quả: 1 request ném exception để MDC userId cũ còn lại, request kế tiếp reuse thread đọc userId cũ và trả dữ liệu sai user. Sửa: chuyển remove vào finally trong filter; thêm test concurrency giả lập 1000 request với 10 thread reuse và assert MDC cleared. Sau sửa: 0 case cross-user trong 1 triệu request load test; p99 không đổi; thêm metric "mdc_missing_total" để phát hiện sớm. Bài học: ThreadLocal leak không phải chỉ OOM, còn là bug bảo mật cross-tenant rất khó tái hiện.
-
 > Senior tip: một vụ "user A thấy data user B" gây ấn tượng cho tôi: MDC có userId của request trước bị giữ lại trong thread, một filter sau đó đọc MDC mà không set — 1 trong 10k request rơi vào trường hợp này. Sau đó team tôi review bắt buộc {{set(}} và {{remove}} phải đi cùng nhau trong cùng method.`,
   follow: [
     'ThreadLocalMap dùng WeakReference cho key — vì sao value vẫn leak?',
@@ -769,9 +766,6 @@ Ví dụ số (cỡ độ lớn, tuỳ máy): 16 thread cùng tăng counter, Ato
 
 ### Trả lời miệng 1 phút
 "CAS là lệnh nguyên tử của CPU: chỉ ghi giá trị mới nếu giá trị hiện tại vẫn như mình đã đọc. AtomicInteger dùng nó trong vòng lặp: đọc, tính, CAS, thất bại thì thử lại, nên không có thread nào bị ngủ. Hạn chế đầu tiên là ABA: giá trị đổi rồi đổi về như cũ thì CAS không biết; tôi xử lý bằng AtomicStampedReference hoặc version number. Hạn chế thứ hai là khi tranh chấp cao, nhiều thread CAS cùng một cache line nên fail liên tục; LongAdder giải quyết bằng cách chia thành nhiều cell rồi cộng khi đọc. Nên metric thì tôi dùng LongAdder, còn giá trị cần chính xác từng thời điểm như sinh ID thì dùng AtomicLong."
-
-### Ví dụ đời thực
-Một API thanh toán fan-out 5 call song song mỗi request (balance, limit, fraud, profile, notify) dùng AtomicInteger làm counter tổng số call để quyết định "all done". Under load 2000 rps, intermittently counter bị lệch 1-2, dẫn đến request treo chờ completion mà không bao giờ gọi callback → timeout 30s. Điều tra: async-profiler thấy CAS fail loop chiếm CPU; code dùng check-then-act {{if (counter.get() == 5) complete()}} thay vì CAS conditional. Sửa: đổi sang CountDownLatch hoặc AtomicInteger với decrementAndGet() + compare zero; thêm JMH benchmark xác nhận throughput tăng 4x và không treo. Sau sửa: p99 từ 30s về 80ms; 0 timeout trong 24h soak test 5000 rps. Bài học: CAS chỉ bảo vệ một thao tác đơn, check-then-act là race condition cổ điển; AtomicStampedReference giải ABA cho lock-free stack nhưng với counter đơn giản thì decrementAndGet là đủ.
 
 > Senior tip: rule code review: counter cho metrics → LongAdder; giá trị chuẩn từng thời điểm (token bucket rate limiter, sinh ID) → AtomicLong. Trong async-profiler, nếu thấy vòng CAS của AtomicLong chiếm CPU khi tranh chấp cao — đó là chỗ LongAdder thay thế thoải mái.`,
   follow: [
