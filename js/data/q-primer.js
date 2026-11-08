@@ -637,6 +637,19 @@ Người dùng: "Query lấy đơn hàng tháng này sao chậm vậy?"
 ### Trả lời miệng 1 phút
 "MCP là chuẩn mở để ứng dụng AI kết nối với công cụ và dữ liệu, giống cổng USB-C: tôi viết một MCP server cung cấp tools để AI gọi, resources để AI đọc và prompts mẫu, và mọi host hỗ trợ MCP như Claude Code hay Claude Desktop đều dùng được. Giao tiếp theo JSON-RPC qua stdio cho công cụ local, hoặc HTTP cho server từ xa. Khi thiết kế, tôi chú trọng tên và mô tả tool nói rõ khi nào dùng, input schema chặt, output gọn và lỗi rõ ràng. Về bảo mật, tôi coi dữ liệu trả về là không tin cậy vì có thể chứa prompt injection, nên giới hạn quyền ngay ở tầng hệ thống, ví dụ DB user chỉ SELECT, có auth và audit log."
 
+### Ví dụ đời thực
+**Bối cảnh:** Team backend có database reporting 80 bảng, và dữ liệu analyst thường phải hỏi dev "cho em query doanh thu theo tháng". Dev mất 2–3 giờ/ngày copy-paste SQL.
+
+**Triệu chứng:** Không có sự cố production, nhưng throughput của team analytics bị chặn vì phụ thuộc dev.
+
+**Điều tra:** Xem log query thực tế người dùng hay hỏi → 5 câu SQL lặp lại 80% trường hợp. Kiểm tra MCP server mẫu của dự án để xác nhận schema tool.
+
+**Nguyên nhân gốc:** Không có "cổng" chuẩn để AI tự đọc schema và chạy EXPLAIN; mọi request phải đi qua dev.
+
+**Cách xử lý:** Viết MCP server "db-inspector" với 3 tool: {{describe_table}}, {{explain_query}}, {{run_select}}. DB user chỉ có quyền SELECT trên schema read-only. Output {{explain_query}} cắt bớt ở 2KB. Thêm audit log ghi ai gọi tool nào với tham số gì.
+
+**Kết quả đo được:** Sau 2 tuần, 70% câu hỏi analytics tự xử lý qua Claude Code; thời gian dev dành cho ad-hoc query giảm từ 2,5 giờ/ngày xuống 15 phút. Không có incident dữ liệu vì DB user chỉ SELECT.
+
 > Senior tip: khi kể về MCP trong phỏng vấn, hãy nhấn mạnh **thiết kế quyền ở tầng hạ tầng chứ không ở prompt**: "dù model bị lừa, tool vẫn không thể ghi dữ liệu". Câu đó cho thấy bạn hiểu rủi ro thật của AI agent.`,
   follow: ['Tool và resource trong MCP khác nhau thế nào?', 'Bạn phòng prompt injection cho một MCP server đọc dữ liệu khách hàng ra sao?'],
   tags: ['MCP', 'Model Context Protocol', 'tools', 'AI agent', 'nhập môn']
@@ -703,6 +716,19 @@ git push origin main
 
 ### Trả lời miệng 1 phút
 "Git là hệ thống quản lý phiên bản phân tán, mọi nơi có toàn bộ lịch sử. Thao tác hằng ngày của tôi là: tạo nhánh cho từng tính năng, sửa code rồi {{git add}} để chọn thay đổi vào staging, {{git commit}} với message rõ lý do, và {{git push}} lên remote. Khi nhánh chính có thay đổi mới, tôi {{git pull}} để lấy về và merge. Gặp conflict thì tôi mở file, đọc các đoạn được Git đánh dấu, giữ nội dung đúng, xoá dòng mốc rồi {{git add}} và commit để hoàn tất merge. Tôi không rebase hay force push trên nhánh chung, và luôn kiểm tra {{.gitignore}} để không đẩy secret lên."
+
+### Ví dụ đời thực
+**Bối cảnh:** Dự án e-commerce, 6 dev làm song song trên nhánh feature. Một dev commit secret AWS vào nhánh riêng rồi merge PR.
+
+**Triệu chứng:** Alert từ AWS GuardDuty phát hiện key bị dùng ở IP lạ sau 40 phút.
+
+**Điều tra:** {{git log --all -S "AKIA"}} tìm commit chứa key; {{git branch --contains <hash>}} xác định nhánh nào đã merge. Kiểm tra CloudTrail để biết key đã bị dùng làm gì.
+
+**Nguyên nhân gốc:** Secret commit lên remote, dù sau đó dev xoá commit bằng rebase, key vẫn còn trong lịch sử và đã bị clone.
+
+**Cách xử lý:** Revoke key ngay lập tức (không đợi xoá lịch sử); rotate secret mới qua Secrets Manager; thêm pre-commit hook quét secret; bật branch protection bắt buộc review; ghi postmortem.
+
+**Kết quả đo được:** Key cũ vô hiệu trong 12 phút; không có dữ liệu bị rò rỉ; sau đó 3 tháng không có commit secret nào lọt qua hook.
 
 > Senior tip: luyện {{git log --oneline --graph --all}} mỗi tuần một lần — nhìn được hình cây lịch sử giúp bạn hiểu chuyện gì đang xảy ra giữa các nhánh, và là kỹ năng phân biệt người "biết dùng Git" với người "chỉ nhớ vài lệnh". Trong team, squash merge + ràng buộc branch protection (bắt buộc review, cấm force push) giữ lịch sử gọn mà vẫn an toàn.`,
   follow: ['Merge và rebase khác nhau về lịch sử ra sao, khi nào dùng cái nào?', 'Bạn xử lý một commit chứa secret đã lỡ push lên remote thế nào?', 'Fast-forward merge là gì, khi nào Git không fast-forward được?'],
@@ -772,6 +798,19 @@ chown app:app app.properties  # đổi chủ sở hữu sang user app
 
 ### Trả lời miệng 1 phút
 "Process là chương trình đang chạy có PID; service là tiến trình do systemd quản lý, tự khởi động và tự restart khi lỗi; port là cổng số mà tiến trình lắng nghe. Khi nghi ngờ sự cố, tôi dùng {{ps -ef | grep java}} tìm tiến trình, {{top}} xem CPU/RAM, {{ss -tlnp}} xem cổng bị chiếm bởi ai, {{journalctl -u}} hoặc {{tail -f}} xem log quanh thời điểm lỗi. Tôi dừng tiến trình bằng {{kill}} để app tắt graceful, {{kill -9}} chỉ là phương án cuối. Về quyền file, tôi cấp vừa đủ qua {{chmod}}/{{chown}} và không bao giờ chạy app production bằng root."
+
+### Ví dụ đời thực
+**Bối cảnh:** Production API đột ngột trả 502; on-call SSH vào server app.
+
+**Triệu chứng:** Người dùng thấy 502 Bad Gateway; Nginx error log ghi {{connect() failed (111: Connection refused)}}.
+
+**Điều tra:** 30 giây đầu chạy {{uname -a}}, {{ss -tlnp | head}}, {{df -h}}, {{free -m}}, {{uptime}}. Kết quả: disk 100% đầy vì log rotation tắt; app Java crash vì không ghi được log. {{ps -ef | grep java}} không thấy process.
+
+**Nguyên nhân gốc:** Log file lớn dần đến đầy đĩa; app không start lại được do không còn chỗ ghi.
+
+**Cách xử lý:** Xoá log cũ bằng {{truncate -s 0}} và {{logrotate -f}}; restart service; bật alert disk > 80%; thêm log rotation trong Logback.
+
+**Kết quả đo được:** Service up sau 4 phút; p99 về 200ms; alert disk fire trước khi đầy 3 tuần sau.
 
 > Senior tip: khi SSH vào server lạ, mất 30 giây đầu để chạy {{uname -a}}, {{ss -tlnp | head}}, {{df -h}}, {{free -m}} và {{uptime}} — "ảnh chụp" hiện trạng máy; nhiều sự cố (đĩa đầy, RAM cạn, load cao) lộ ra ngay từ 5 lệnh đó trước khi bạn mở log.`,
   follow: ['Khác nhau giữa SIGTERM và SIGKILL, vì sao Spring Boot cần graceful shutdown?', 'Bạn chẩn đoán app Java bị treo (không phản hồi) trên Linux thế nào?', 'Quyền file 644 và 640 khác nhau ra sao, khi nào dùng cái nào?'],
@@ -863,6 +902,19 @@ curl -v https://api.example.com/orders/42
 ### Trả lời miệng 1 phút
 "HTTP gồm request có method, path, header và body, response có status code, header và body. Status 2xx là thành công, 4xx là lỗi phía client (401 chưa đăng nhập, 403 thiếu quyền), 5xx là lỗi phía server. Keep-alive (mặc định ở HTTP/1.1) cho phép dùng lại kết nối TCP cho nhiều request, và HTTP/2 còn multiplex nhiều request trên một kết nối. HTTPS chạy HTTP trong lớp TLS: bắt tay xác thực server qua chứng chỉ rồi mã hoá symmetric toàn bộ phiên. Khi viết HTTP client trong Spring Boot, tôi luôn đặt timeout và xử lý đúng idempotency cho các method không an toàn."
 
+### Ví dụ đời thực
+**Bối cảnh:** Client mobile báo "đôi khi API trả 200 nhưng dữ liệu sai"; backend không thấy lỗi trong log.
+
+**Triệu chứng:** Intermittent wrong data; monitoring chỉ thấy 200 OK.
+
+**Điều tra:** Bật log {{X-Request-Id}} xuyên suốt; kiểm tra response header {{Cache-Control}}. Phát hiện response cá nhân hoá không có {{Cache-Control: private, no-store}}; CDN cache response của user A và trả cho user B.
+
+**Nguyên nhân gốc:** Thiếu header cache-control cho endpoint cá nhân hoá.
+
+**Cách xử lý:** Thêm {{Cache-Control: private, no-store}} ở endpoint; thêm test kiểm tra header; purge cache CDN.
+
+**Kết quả đo được:** Sau deploy, incident wrong-data về 0 trong 2 tuần; cache hit rate của endpoint public không đổi.
+
 > Senior tip: khi điều tra sự cố, đọc **đúng response header** ({{X-Request-Id}}, {{Server-Timing}}, {{Retry-After}}) trước khi đọc body — chúng cho biết request đi qua tầng nào, mất bao nhiêu thời gian, và nên retry sau bao lâu. Đây là kỹ năng điều tra API mà junior thường bỏ qua.`,
   follow: ['GET, POST, PUT, PATCH khác nhau thế nào về idempotency và khi nào dùng cái nào?', 'HTTPS bắt tay TLS gồm những bước nào, vì sao cần cả hai loại khoá asymmetric và symmetric?', '401 và 403 khác nhau thế nào, Spring Security trả hai mã này khi nào?'],
   tags: ['HTTP', 'HTTPS', 'TLS', 'header', 'status code', 'keep-alive', 'nhập môn']
@@ -945,6 +997,19 @@ Ví dụ project của bạn khai báo {{A}} và {{C}}; cây là {{app→A→X 1
 
 ### Trả lời miệng 1 phút
 "Maven và Gradle đều khai báo dependency theo tọa độ groupId, artifactId, version, tự tải transitive dependencies và build theo lifecycle — Maven có các phase cố định từ compile tới package và deploy, Gradle dùng task graph với daemon và cache. Scope quyết định dependency dùng ở đâu: test chỉ dùng khi test, provided thì không đóng vào artifact. Với xung đột version, Maven theo độ gần còn Gradle theo version mới nhất; tôi chặn việc này bằng BOM của Spring Boot qua dependencyManagement để chốt version toàn bộ dự án ở một chỗ."
+
+### Ví dụ đời thực
+**Bối cảnh:** Nâng Spring Boot từ 3.2 lên 3.3; build xanh nhưng runtime {{NoSuchMethodError}} ở production.
+
+**Triệu chứng:** App crash khi gọi endpoint upload; stack trace {{NoSuchMethodError: org.apache.tomcat...}}.
+
+**Điều tra:** {{mvn dependency:tree}} cho thấy hai version Tomcat (10.1.18 và 10.1.24) do transitive dependency; Maven chọn version gần gốc theo nearest-wins, không phải mới nhất.
+
+**Nguyên nhân gốc:** Xung đột version Tomcat do dependency không được chốt.
+
+**Cách xử lý:** Thêm Spring Boot BOM qua {{dependencyManagement}}; chạy {{mvn dependency:tree}} lại; thêm OWASP dependency-check vào CI.
+
+**Kết quả đo được:** Build vẫn xanh; runtime không còn NoSuchMethodError; CI bắt được 1 CVE trong 1 tháng sau.
 
 > Senior tip: thêm {{dependency-check}} (OWASP) hoặc SCA của CI vào pipeline để phát hiện thư viện dính lỗ hổng; kết hợp {{dependency:tree}} khi nâng version — nâng một starter có thể kéo theo hàng chục thư viện transitive, phải chạy test đầy đủ chứ không chỉ "build xanh".`,
   follow: ['Dependency scope provided khác runtime thế nào, vì sao servlet-api là provided?', 'Maven chọn version gần nhất, Gradle chọn version mới nhất — hệ quả và cách cưỡng chế ra sao?', 'BOM (dependencyManagement) giải quyết vấn đề gì mà khai báo version từng dependency không giải quyết được?'],
@@ -1034,6 +1099,19 @@ Cân bằng tải ở tầng Nginx thường đủ; khi lên Kubernetes thì Ser
 
 ### Trả lời miệng 1 phút
 "Nginx là reverse proxy: client chỉ nói chuyện với Nginx, Nginx chuyển request tới các instance backend và chia tải đều. Nó đảm nhận TLS termination để backend không lo chứng chỉ, phục vụ static file, và thêm các lớp như rate limit, giới hạn dung lượng upload. Tôi cấu hình bằng {{upstream}} để khai báo nhóm backend, {{proxy_pass}} để chuyển, và {{proxy_set_header}} để backend biết IP thật cũng như scheme https của client. Với endpoint chạy lâu, tôi tăng {{proxy_read_timeout}} thay vì để 504 cắt ngang."
+
+### Ví dụ đời thực
+**Bối cảnh:** Endpoint export báo cáo 5 phút trả 504 Gateway Timeout sau khi deploy Nginx mới.
+
+**Triệu chứng:** User thấy 504; Nginx error log {{upstream timed out (110: Connection timed out)}}.
+
+**Điều tra:** {{ss -tlnp}} backend đang listen; {{tail -f}} backend log cho thấy query chạy 4 phút 30 giây. So sánh {{proxy_read_timeout}} = 60s.
+
+**Nguyên nhân gốc:** Timeout Nginx mặc định 60s ngắn hơn thời gian xử lý.
+
+**Cách xử lý:** Tăng {{proxy_read_timeout 300s}} cho location export; hoặc chuyển sang async job + polling. Thêm {{X-Request-Id}} log xuyên suốt.
+
+**Kết quả đo được:** Export thành công; p99 endpoint thường không đổi; không còn 504.
 
 > Senior tip: khi backend trả 502/504, kiểm tra {{proxy_read_timeout}} và trạng thái backend trước khi đinh ninh "code lỗi"; và luôn log {{X-Request-Id}} xuyên suốt Nginx → backend → log hệ thống để truy vết một request cụ thể. Đây là kỹ năng điều tra sự cố production rất hay được phỏng vấn.`,
   follow: ['Reverse proxy khác forward proxy thế nào?', 'Nginx trả 502 Bad Gateway, bạn chẩn đoán theo trình tự nào?', 'X-Forwarded-For và X-Forwarded-Proto dùng để làm gì, thiếu chúng thì hệ quả gì?'],
