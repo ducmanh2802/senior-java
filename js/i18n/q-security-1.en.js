@@ -196,6 +196,18 @@ The annotation value must be a compile-time constant, so runtime variables canno
 - **Payload (claims)**: {{sub}} (subject/userId), {{exp}} (expiry Unix timestamp), {{iat}} (issued at), {{iss}} (issuer), {{aud}} (audience), {{jti}} (JWT ID), custom claims ({{roles}}, {{permissions}}, {{token_version}}).
 - **Signature**: {{base64url(header) + "." + base64url(payload)}} signed with the private key (RS256) or the secret (HS256).
 
+The diagram below shows the resource server verifying a JWT with JWKS:
+
+~~~seq
+title: JWT verification at resource server
+actors: Client | Resource Server | Auth Server
+Client -> Resource Server: GET /api (Bearer JWT)
+Resource Server -> Auth Server: fetch public keys from JWKS
+Auth Server --> Resource Server: JWKS (public keys)
+Resource Server --> Client: 200 OK or 401 error
+note Client..Auth Server: verify signature + exp + iss + aud
+~~~
+
 ### HS256 vs RS256 — which one to choose?
 | Criterion | HS256 (HMAC-SHA256) | RS256 (RSA-SHA256) |
 |---|---|---|
@@ -272,6 +284,21 @@ public TokenPair refresh(RefreshRequest req) {
 | Resource Owner Password | Legacy migration only — removed in OAuth 2.1, RFC 9700: MUST NOT | Yes | Yes | Yes | No |
 
 > OAuth 2.1 / RFC 9700 recommends PKCE for **every** client using Authorization Code, including confidential clients (web backends), not just SPA/mobile.
+
+The diagram below shows the Authorization Code + PKCE flow for an SPA:
+
+~~~seq
+title: OAuth2 Authorization Code + PKCE
+actors: SPA | Auth Server | DB
+SPA -> Auth Server: /authorize?code_challenge&state
+Auth Server --> SPA: login/consent
+Auth Server --> SPA: redirect ?code&state
+SPA -> Auth Server: /token (code + verifier)
+Auth Server -> DB: verify code
+DB --> Auth Server: result
+Auth Server --> SPA: access + refresh token
+note SPA..DB: PKCE blocks authorization code theft
+~~~
 
 ### Authorization Code + PKCE (RFC 7636) — SPA & Mobile
 1. The app generates {{code_verifier}} (43-128 random chars) → {{code_challenge = BASE64URL(SHA256(code_verifier))}}.
@@ -415,6 +442,18 @@ $argon2id$v=19$m=65536,t=3,p=4$c2FsdA$hash
 - The victim logs in at {{bank.com}} → gets a {{JSESSIONID}} cookie.
 - An attacker's page at {{evil.com}} embeds {{<form action="https://bank.com/transfer" method="POST">}} → the victim clicks → the browser sends {{JSESSIONID}} along → the transfer succeeds.
 - The key ingredient: **the browser attaches the cookie** to cross-origin requests by itself.
+
+The diagram below shows a CSRF attack:
+
+~~~seq
+title: CSRF attack
+actors: Victim | Evil Site | Bank
+Victim -> Evil Site: views malicious page
+Evil Site --> Victim: hidden form POST /transfer
+Victim -> Bank: POST /transfer (cookie attached)
+Bank --> Victim: transfer succeeds
+note Victim..Bank: browser auto-sends session cookie
+~~~
 
 ### SameSite cookies — first line of defense (Chrome/Edge 80+ treat cookies with no declared SameSite as Lax; Firefox/Safari have not enabled this default — always set it explicitly)
 | Value | Behavior | CSRF protection |
