@@ -6272,7 +6272,7 @@ public class Point {
   topic: 'concurrency',
   level: 'senior',
   q: 'Bên trong {{CompletableFuture}} có gì: kết quả và chuỗi callback được lưu thế nào, **thread nào** thật sự chạy {{thenApply}}, {{thenApplyAsync}} thay đổi điều gì trong cấu trúc đó, và vì sao callback nặng có thể làm nghẽn cả HTTP client?',
-  a: `**Tóm tắt:** Mỗi CompletableFuture chỉ giữ hai thứ: một field **result** (giá trị, hoặc một wrapper {{AltResult}} chứa lỗi, hoặc null = chưa xong) và một **stack liên kết** các node {{Completion}} — mỗi node là một bước đã đăng ký. Khi có ai gọi {{complete(v)}}, chính thread đó chạy {{postComplete()}} và **thực thi luôn toàn bộ stack callback** ngay trên thread của mình. nên câu trả lời cho "thread nào chạy callback" là: thread nào complete future trước, hoặc thread gọi {{thenApply}} nếu future đã xong từ trước. {{thenApplyAsync(fn)}} không đổi logic, nó chỉ đổi chỗ **đăng ký**: node được gắn executor, khi tới phiên thì submit task vào executor đó (mặc định là asyncPool của {{ForkJoinPool.commonPool}}). Hệ quả thực chiến: đặt code nặng/blocking vào callback không truyền thống là tự nguyện chiếm thread của thư viện IO.
+  a: `**Tóm tắt:** Mỗi CompletableFuture chỉ giữ hai thứ: một field **result** (giá trị, hoặc một wrapper {{AltResult}} chứa lỗi, hoặc null = chưa xong) và một **stack liên kết** các node {{Completion}} — mỗi node là một bước đã đăng ký. Khi có ai gọi {{complete(v)}}, chính thread đó chạy {{postComplete()}} và **thực thi luôn toàn bộ stack callback** ngay trên thread của mình. nên câu trả lời cho "thread nào chạy callback" là: thread nào complete future trước, hoặc thread gọi {{thenApply}} nếu future đã xong từ trước. {{thenApplyAsync(fn)}} không đổi logic, nó chỉ đổi chỗ **đăng ký**: node được gắn executor, khi tới phiên thì submit task vào executor đó (mặc định là {{ForkJoinPool.commonPool()}}). Hệ quả thực chiến: đặt code nặng/blocking vào callback không có Async là tự nguyện chiếm thread của thư viện I/O.
 
 ### Hiểu nhanh
 Dây chuyền xếp hàng ở bưu điện: người vừa làm xong việc của mình **đứng lại nhắc và làm luôn bước kế tiếp** cho người sau, thay vì ném vào một hàng đợi chung. Nhanh và không tốn chi phí điều phối — nhưng nếu bước kế tiếp là khiêng một thùng hàng nặng, thì người vừa xong việc bị kẹt tại chỗ, và cả dây chuyền phía trên anh ta (xe tải, cửa kéo hàng) cũng kẹt theo.
@@ -6282,7 +6282,7 @@ Dây chuyền xếp hàng ở bưu điện: người vừa làm xong việc củ
 - **Completion / stack của callback**: mỗi lần gọi {{thenApply}}… tạo một node giữ (hàm, executor, node tiếp theo) và được CAS vào field {{next}} — một Treiber stack (ngăn xếp lock-free).
 - **postComplete()**: hàm chạy khi state đổi từ "chưa xong" sang "đã xong"; nó lần qua toàn stack và kích hoạt từng bước **bằng thread hiện tại**.
 - **NOW vs FUT mode**: hai cách một node được "bắn": chạy ngay (NOW, trên thread hiện tại) hoặc chuyển cho executor rồi chạy (FUT). Đây chính là khác biệt {{thenApply}}/{{thenApplyAsync}} ở mức code.
-- **asyncPool**: executor mặc định cho các hàm *Async — {{ForkJoinPool.commonPool().asyncPool(...)}}; nếu commonPool có parallelism = 0 (cấu hình {{-Djava.util.concurrent.ForkJoinPool.common.parallelism=0}}) thì JDK dùng một executor tạo thread mới cho từng task, để async path không bị vô hiệu.
+- **ASYNC_POOL**: executor mặc định cho các hàm *Async (field nội bộ của CompletableFuture). Nếu parallelism của common pool lớn hơn 1 thì đó là {{ForkJoinPool.commonPool()}}; nếu chỉ là 1 (ví dụ container 2 CPU) hoặc bị cấu hình về 0/1 bằng {{-Djava.util.concurrent.ForkJoinPool.common.parallelism}}, JDK dùng {{ThreadPerTaskExecutor}}: mỗi task một thread mới, không giới hạn.
 - **Delayer**: một daemon thread nội bộ ({{CompletableFutureDelayScheduler}}) phục vụ {{orTimeout}} và {{completeOnTimeout}}.
 - **managedBlock**: cách {{get}}/{{join}} "báo" cho ForkJoinPool rằng mình sẽ block, để pool bổ sung thread dự phòng thay vì chết chùm.
 
@@ -6306,7 +6306,7 @@ cf = CompletableFuture.supplyAsync(fetch, ioPool)
 | Cách viết | Callback chạy trên |
 |---|---|
 | {{thenApply}} / {{thenAccept}} / {{thenCompose}} | thread hoàn thành future (hoặc thread gọi nếu đã xong) — **không xác định trước** |
-| {{thenApplyAsync(fn)}} | asyncPool (mặc định {{ForkJoinPool.commonPool}}) |
+| {{thenApplyAsync(fn)}} | ASYNC_POOL (thường là {{ForkJoinPool.commonPool}}) |
 | {{thenApplyAsync(fn, executor)}} | thread của executor đó; executor từ chối → future hoàn thành bằng {{RejectedExecutionException}} |
 | {{whenComplete}} / {{handle}} | như {{thenApply}}, thêm biến thể *Async |
 | {{get}} / {{join}} | block thread hiện tại (join ném {{CompletionException}}, get ném {{ExecutionException}}) |
@@ -6322,7 +6322,7 @@ cf = CompletableFuture.supplyAsync(fetch, ioPool)
 - **Mất ngữ cảnh theo thread**: {{ThreadLocal}}, {{SecurityContext}}, MDC của log không tự đi theo callback. Dấu hiệu: log của bước sau mất traceId, hoặc {{@Transactional}} "biến mất" vì transaction bind với thread. Cách xử lý: truyền context tường minh trong pipeline, hoặc bọc executor bằng decorator copy context ({{TaskDecorator}} trong Spring) và **luôn** chạy các bước phụ thuộc context trên *Async với pool của bạn.
 - **Chiếm thread của thư viện IO**: với client NIO (Reactor/Netty, Kafka client, JDBC async), thread hoàn thành CF thường là **event-loop**. Chạy {{Thread.sleep}}, parse JSON lớn, hay gọi DB đồng bộ trong {{thenApply}} sẽ làm event-loop nghẽn → timeout dây chuyền cho mọi request khác. Quy tắc: callback trong chain trả lời API chỉ được tính toán nhẹ; gì đó blocking thì chuyển sang *Async với pool riêng có tên.
 - **Tách pool theo loại việc**: tự tạo pool với {{ThreadFactory}} đặt tên rõ để đọc dump nhanh ("http-callback-3" thay vì "ForkJoinPool.commonPool-worker-9"). Dùng pool riêng thay vì commonPool cho công việc blocking để không chia sẻ hàng đợi với parallel stream của code khác.
-- **Chết vì "bỏ phiếu" lẫn nhau**: {{pool.submit(...).thenCompose(x -> ...pool...)}} với pool nhỏ có thể deadlock (toàn bộ worker đang block chờ {{get}} của task nằm trong chính hàng đợi của nó). Đây là triệu chứng "CPU 0%, không lỗi, không timeout".
+- **Chết vì chờ lẫn nhau**: task chạy trên pool nhỏ (ví dụ {{supplyAsync(..., pool)}}) mà bên trong lại {{join()}}/{{get()}} một future khác cũng cần chính pool đó để chạy: khi mọi worker đều đang chờ, task con nằm mãi trong hàng đợi và pool deadlock. Đây là triệu chứng "CPU 0%, không lỗi, không timeout".
 - **Đo**: nếu thấy p99 của toàn bộ endpoint tăng theo một callback nặng, dùng async-profiler wall-clock và tìm khung {{CompletableFuture.postComplete}} / {{CompletableFuture.uniApply}} — nó nói cho bạn biết callback đang bị chạy trên thread nào.
 
 ### Lỗi hay gặp
@@ -6332,7 +6332,7 @@ cf = CompletableFuture.supplyAsync(fetch, ioPool)
 - Chờ {{get()}} mà không timeout trên thread xử lý request → thread pool cạn, service treo dù downstream nhanh.
 
 ### Trả lời phỏng vấn 1 phút
-"Bên trong CF là một field result (kèm wrapper AltResult cho lỗi) và một stack các node Completion đăng ký theo kiểu lock-free. Khi {{complete}} được gọi, chính thread đó chạy {{postComplete}} và thi hành các node: node nào không có executor thì chạy ngay NOW trên thread hiện tại, node *Async thì được submit FUT vào executor. Nên thread của {{thenApply}} là **không xác định** — nó là thread đã hoàn thành future, thường là thread của HTTP client hay của DB driver; đó chính xác là lý do tôi không bao giờ đặt blocking work vào callback không-async. {{thenApplyAsync}} cho tôi kiểm soát vị trí chạy; mặc định nó dùng asyncPool của commonPool, nên trên server tôi luôn truyền pool riêng có tên, có giới hạn, và tôi xử lý {{RejectedExecutionException}} vì executor từ chối sẽ hoàn thành future bằng lỗi đó."
+"Bên trong CF là một field result (kèm wrapper AltResult cho lỗi) và một stack các node Completion đăng ký theo kiểu lock-free. Khi {{complete}} được gọi, chính thread đó chạy {{postComplete}} và thi hành các node: node nào không có executor thì chạy ngay NOW trên thread hiện tại, node *Async thì được submit FUT vào executor. Nên thread của {{thenApply}} là **không xác định** — nó là thread đã hoàn thành future, thường là thread của HTTP client hay của DB driver; đó chính xác là lý do tôi không bao giờ đặt blocking work vào callback không-async. {{thenApplyAsync}} cho tôi kiểm soát vị trí chạy; mặc định nó dùng commonPool, nên trên server tôi luôn truyền pool riêng có tên, có giới hạn, và tôi xử lý {{RejectedExecutionException}} vì executor từ chối sẽ hoàn thành future bằng lỗi đó."
 
 > Senior tip: nếu phải chọn một quy trình cho team: (1) mọi chain gọi ra ngoài dùng {{orTimeout}} và {{completeOnTimeout}}, (2) mọi callback nặng đi {{*Async}} với pool riêng, (3) không dùng commonPool cho I/O, (4) luôn có {{handle}} ở cuối chain để ghi log một lần. Bốn quy tắc này diệt được phần lớn sự cố liên quan CompletableFuture mà không cần ai hiểu internals.`,
   follow: [
@@ -6351,7 +6351,7 @@ cf = CompletableFuture.supplyAsync(fetch, ioPool)
   topic: 'concurrency',
   level: 'senior',
   q: 'Reordering xảy ra ở đâu và vì sao: store buffer, invalidate queue của CPU và JIT compiler cùng đổi thứ tự lệnh ra sao, loại memory barrier nào chặn từng kiểu, và tại sao code "đúng trên laptop x86" có thể sai trên AWS Graviton?',
-  a: `**Tóm tắt:** Có ba thủ phạm đổi thứ tự thao tác memory: (1) **store buffer** — CPU không chờ cache line về tay mới ghi tiếp, nó cất ghi vào hàng đợi riêng rồi làm tiếp, nên chính thread thấy "đã ghi" còn người khác chưa thấy; (2) **invalidate queue** — lời vô hiệu hoá từ core khác được xếp hàng chờ thay vì dừng core ngay; (3) **compiler/JIT** — C2 được phép đổi chỗ các lệnh mà nó chứng minh là không phụ thuộc dữ liệu/điều kiện. JMM không mô tả "lệnh chạy theo thứ tự nào", nó mô tả **cạnh happens-before**: cái gì được phép nhìn thấy cái gì. Trên x86 (mô hình TSO) ba kiểu đổi chỗ load-load, load-store, store-store đã bị cấm bởi phần cứng, nên JVM chỉ phải phát ra fence cho kiểu **StoreLoad**: volatile write = ghi + fence (trên x86 thường là {{lock addl $0x0,(%rsp)}} — một lock-prefixed no-op, cũng là full fence), volatile read = đọc + fence. Trên ARM/RISC-V (mô hình yếu) cả bốn kiểu đều có thể xảy ra, JVM phải chèn {{ldar}}/{{stlr}} hoặc {{dmb}} — và đó là lý do bug thật sự xuất hiện khi bạn port service sang Graviton.
+  a: `**Tóm tắt:** Có ba thủ phạm đổi thứ tự thao tác memory: (1) **store buffer** — CPU không chờ cache line về tay mới ghi tiếp, nó cất ghi vào hàng đợi riêng rồi làm tiếp, nên chính thread thấy "đã ghi" còn người khác chưa thấy; (2) **invalidate queue** — lời vô hiệu hoá từ core khác được xếp hàng chờ thay vì dừng core ngay; (3) **compiler/JIT** — C2 được phép đổi chỗ các lệnh mà nó chứng minh là không phụ thuộc dữ liệu/điều kiện. JMM không mô tả "lệnh chạy theo thứ tự nào", nó mô tả **cạnh happens-before**: cái gì được phép nhìn thấy cái gì. Trên x86 (mô hình TSO) ba kiểu đổi chỗ load-load, load-store, store-store đã bị cấm bởi phần cứng, nên JVM chỉ phải phát ra fence cho kiểu **StoreLoad**: volatile write = ghi + fence (trên x86 thường là {{lock addl $0x0,(%rsp)}} — một lock-prefixed no-op, cũng là full fence), còn volatile read trên x86 chỉ là một lệnh đọc bình thường (TSO đã đảm bảo thứ tự cần thiết), JIT chỉ không được đổi chỗ nó. Trên ARM/RISC-V (mô hình yếu) cả bốn kiểu đều có thể xảy ra, JVM phải chèn {{ldar}}/{{stlr}} hoặc {{dmb}} — và đó là lý do bug thật sự xuất hiện khi bạn port service sang Graviton.
 
 ### Hiểu nhanh
 Bạn gửi thư: bỏ thư vào **sọt thư của nhà mình** (store buffer) rồi quay đi — với bạn, thư đã "gửi rồi", nhưng người nhận chưa thấy gì, và lá thư vẫn còn có thể bị đẩy ra sau một lần bạn đi xem hộp thư (read). Fence giống quy định "trước khi nhìn hộp thư của người khác, phải đẩy hết thư trong sọt ra".
@@ -6379,7 +6379,7 @@ Core 1                          Core 2
   store x=1 -> [store buffer 1]     store y=1 -> [store buffer 2]
   load  y    <- cache line (y=0)    load  x    <- cache line (x=0)
   ... buffer 1 moi flush, du som    ... buffer 2 moi flush, du som
-Ket luan: ca hai cung thay 0, khong co data race ve mặt logic bien nhung khong co happens-before.
+Ket luan: ca hai cung thay 0. Day chinh la data race: khong co happens-before giua ghi va doc.
 ~~~
 Đặt {{volatile}} cho x và y thì hàng đợi bị chặn: ghi + StoreLoad fence, đọc trước khi đọc khác → ít nhất một thread thấy 1.
 
@@ -6426,7 +6426,7 @@ Trên x86, ba hàng đầu tiên gần như miễn phí vì phần cứng TSO đ
   a: `**Tóm tắt:** Một virtual thread **không** phải một OS thread: nó là object {{VirtualThread}} trong heap cộng với một **continuation** — stack của đoạn code đang chạy. Khi virtual thread block, JVM **đóng băng (freeze)** các frame từ stack native của carrier thread xuống **stack chunk** trên heap, rồi **unmount**: carrier thread (một worker của ForkJoinPool nội bộ) quay về làm việc khác. Khi dữ liệu sẵn sàng, scheduler lấy một carrier bất kỳ, **rã đông (thaw)** chunk về stack native rồi chạy tiếp đúng chỗ dừng — đó là lý do 1 triệu virtual thread chỉ tốn heap (vài KB mỗi cái) chứ không tốn 1 MB stack + một kernel thread mỗi cái. **Pinning** nghĩa là carrier không nhả được vì stack của virtual thread còn bị "neo" vào tài nguyên của chính carrier: (1) đang ở trong {{synchronized}} mà block, (2) đang có frame native (JNI, một số lời gọi hệ thống) trên stack. JEP 491 trong **JDK 24** xử lý trường hợp (1): monitor giờ được "đóng băng" cùng continuation, nên {{synchronized}} quanh code blocking không còn pin carrier nữa.
 
 ### Hiểu nhanh
-Nhà hàng có 8 nhân viên (carrier) và 5.000 khách (virtual thread). Thay vì mỗi bàn một nhân viên đứng đợi bếp — mô hình platform thread — nhân viên ghi lại "bàn 12 đang ở món 2, dở at trang 3" rồi đi bàn khác (freeze + unmount). Bếp gọi số, một nhân viên bất kỳ quay lại bàn 12, đọc tờ ghi chú và phục vụ tiếp (thaw + mount). Chỉ khi khách cần nhân viên đứng ngay tại bàn (frame native) thì mới không bỏ được.
+Nhà hàng có 8 nhân viên (carrier) và 5.000 khách (virtual thread). Thay vì mỗi bàn một nhân viên đứng đợi bếp — mô hình platform thread — nhân viên ghi lại "bàn 12 đang ở món 2, dở ở trang 3" rồi đi bàn khác (freeze + unmount). Bếp gọi số, một nhân viên bất kỳ quay lại bàn 12, đọc tờ ghi chú và phục vụ tiếp (thaw + mount). Chỉ khi khách cần nhân viên đứng ngay tại bàn (frame native) thì mới không bỏ được.
 
 ### Thuật ngữ
 - **Continuation**: đối tượng nội bộ ({{jdk.internal.vm.Continuation}}) biểu diễn "một đoạn chạy có thể dừng và tiếp tục": có {{run()}}, {{yield()}}, và stack của riêng nó.
@@ -6436,7 +6436,7 @@ Nhà hàng có 8 nhân viên (carrier) và 5.000 khách (virtual thread). Thay v
 - **Carrier thread**: platform thread, thông thường là worker của {{ForkJoinPool}} riêng của hệ thống virtual thread; chính nó mới là thứ CPU nhìn thấy.
 - **Scheduler**: ForkJoinPool nội bộ. Parallelism mặc định = {{Runtime.availableProcessors()}}, chỉnh bằng hệ property {{jdk.virtualThreadScheduler.parallelism}}; {{jdk.virtualThreadScheduler.maxPoolSize}} cho phép thêm thread bù khi carrier bị block trong native code; {{jdk.virtualThreadScheduler.idleTimeout}} quy định bao lâu thì thread bù bị huỷ.
 - **Pinned**: trạng thái virtual thread **không được** unmount, nên carrier phải nằm chờ theo; tài nguyên thật sự bị chiếm là một carrier.
-- **JEP 444 / JEP 491**: 444 = virtual threads (JDK 21); 491 = "Synchronized blocks may pin carriers" được khắc phục (JDK 24).
+- **JEP 444 / JEP 491**: 444 = Virtual Threads (chính thức ở JDK 21); 491 = "Synchronize Virtual Threads without Pinning" (JDK 24): synchronized không còn pin carrier.
 
 ### Chuyện gì xảy ra khi một virtual thread đọc socket
 ~~~seq
@@ -6469,11 +6469,11 @@ Vấn đề nằm ở ObjectMonitor của JVM (mô hình monitor HotSpot đượ
 | Cần gì để nhanh | pool đủ lớn | driver/library phải non-blocking thật sự (JDBC, socket, JNI) |
 
 ### Trên production
-- **Bật và đo bằng JFR**: event {{jdk.VirtualThreadPinned}} có ngưỡng thời lượng; xem bằng {{jfr print --events jdk.VirtualThreadPinned recording.jfc}} hoặc {{jcmd <pid> JFR.dump}}. Ở JDK 21–23 còn có {{-Djdk.tracePinnedThreads=full}} in ra stack tại chỗ pin (flag này đã hết giá trị ở JDK 24 vì lý do phổ biến nhất bị loại bỏ).
-- **Triệu chứng điển hình**: bật virtual threads cho một endpoint I/O-bound nhưng throughput không tăng, CPU của các carrier luôn 100%, latency tăng theo số request đồng thời → tìm chỗ {{synchronized}} bao lời gọi blocking (driver JDBC cũ, code gọi JNI, thư viện chỉ giữ {{synchronized}} lúc init) và pinning do native frame.
+- **Bật và đo bằng JFR**: event {{jdk.VirtualThreadPinned}} có ngưỡng thời lượng; xem bằng {{jfr print --events jdk.VirtualThreadPinned recording.jfr}} (file ghi bằng {{jcmd <pid> JFR.dump}}). Ở JDK 21–23 còn có {{-Djdk.tracePinnedThreads=full}} in ra stack tại chỗ pin; JDK 24 đã bỏ system property này, dùng event JFR thay thế.
+- **Triệu chứng điển hình**: bật virtual threads cho một endpoint I/O-bound nhưng throughput không tăng, **CPU thấp** trong khi mọi carrier đều đang bị chiếm (pinned, nằm chờ I/O), latency tăng theo số request đồng thời → tìm chỗ {{synchronized}} bao lời gọi blocking (driver JDBC cũ, code gọi JNI, thư viện chỉ giữ {{synchronized}} lúc init) và pinning do native frame.
 - **Cấu hình carrier**: nếu phần lớn thời gian là pinning không sửa được (thư viện native), tăng {{jdk.virtualThreadScheduler.parallelism}} là giảm đau, nhưng đừng đặt nó quá lớn so với số core vì carrier block vẫn chiếm CPU scheduling.
 - **Không "pool" virtual thread**: {{Executors.newVirtualThreadPerTaskExecutor()}} là đúng; gộp 1 triệu task vào một pool 10 virtual thread chỉ tái tạo lại deadlock của pool platform. Giới hạn concurrency bằng {{Semaphore}} (ví dụ 200 request đồng thời xuống DB) — connection pool vẫn là trần tuyệt đối, virtual thread không nhân bản thêm connection.
-- **Context**: log MDC/{{SecurityContext}} và {{ThreadLocal}}-based instrumentation phải được viết lại quanh virtual thread ({{ScopedValue}} là hướng đi, vẫn preview ở JDK 21–23); Spring Boot 3.2+ có {{spring.threads.virtual.enabled=true}} cho web MVC server.
+- **Context**: log MDC/{{SecurityContext}} và {{ThreadLocal}}-based instrumentation phải được viết lại quanh virtual thread ({{ScopedValue}} là hướng đi: preview ở JDK 21–24, chính thức từ JDK 25); Spring Boot 3.2+ có {{spring.threads.virtual.enabled=true}} cho web MVC server.
 - **KPI thật**: trước/sau khi bật, so sánh requests/giây trên mỗi core, p99 và số thread OS trong container ({{/proc}} hoặc metric {{process.threads}}). Virtual thread thắng ở **cùng một số core phục vụ nhiều request đang chờ**, không thắng ở tốc độ từng request.
 
 ### Lỗi hay gặp
@@ -6485,7 +6485,7 @@ Vấn đề nằm ở ObjectMonitor của JVM (mô hình monitor HotSpot đượ
 ### Trả lời miệng 1 phút
 "Virtual thread là continuation: stack của đoạn code nằm trong stack chunk trên heap, và JVM mount/rã đông nó lên một carrier thread là worker của một ForkJoinPool nội bộ có parallelism bằng số core. Khi block, frame bị đóng băng, carrier được trả về pool, nên chi phí mỗi thread chỉ còn vài KB và số lượng thread không còn là tài nguyên quý. Pinning là khi carrier không nhả được vì stack còn neo vào tài nguyên của carrier: ở JDK 21 là {{synchronized}} quanh code block và frame native; JEP 491 trong JDK 24 loại bỏ trường hợp {{synchronized}}. Khi áp dụng tôi đo bằng JFR event {{jdk.VirtualThreadPinned}}, không pool virtual thread, giới hạn concurrency bằng semaphore, và luôn nhớ connection pool là trần thật sự — lợi ích là throughput trên mỗi core khi phần lớn thời gian là chờ IO, không phải tốc độ từng request."
 
-> Senior tip: câu phân biệt người từng chạy virtual thread trên production là: "bạn có thấy {{maxPoolSize}}/pinning trong JFR không, và driver JDBC của bạn có path {{synchronized}} không?" Vì nếu còn pin, toàn bộ mô hình M:N bị suy hoá về pool platform thread, và dấu hiệu là CPU carrier 100% với p99 tăng theo concurrency — thứ mà benchmark "1 triệu thread" không bao giờ cho bạn thấy.`,
+> Senior tip: câu phân biệt người từng chạy virtual thread trên production là: "bạn có thấy {{maxPoolSize}}/pinning trong JFR không, và driver JDBC của bạn có path {{synchronized}} không?" Vì nếu còn pin, toàn bộ mô hình M:N bị suy hoá về pool platform thread, và dấu hiệu là CPU thấp, mọi carrier đều bị chiếm, p99 tăng theo concurrency — thứ mà benchmark "1 triệu thread" không bao giờ cho bạn thấy.`,
   follow: [
     'Stack chunk phình ra và co lại thế nào khi stack của bạn đệ quy sâu; hệ quả với {{StackOverflowError}} là gì?',
     'Vì sao {{LockSupport.park}}, {{ReentrantLock}} và {{BlockingQueue}} không pin carrier trong khi {{synchronized}} thì có (trước JDK 24)?',
@@ -6511,7 +6511,7 @@ Cửa phòng có một **bảng ghi trạng thái** ngay trên cánh (mark word)
 - **Mark word**: 8 byte header của object; các trạng thái khoá được phân biệt bằng bit thấp. identity hash code (31 bit) cũng sống ở đây — đó là lý do nó xung đột với các chế độ khoá nhẹ.
 - **Thin lock / stack lock**: khoá do **một** thread giữ, thông tin nằm trong frame (LockRecord) thay vì trong object.
 - **Displaced mark word**: bản sao mark word cũ được cất đi khi lock bị chiếm; khôi phục khi nhả.
-- **Inflation / deflation**: chuyển thin lock → ObjectMonitor, và ngược lại (deflate xảy ra tại safepoint khi monitor không còn ai chờ).
+- **Inflation / deflation**: chuyển thin lock → ObjectMonitor, và ngược lại. Từ JDK 15, deflate được làm bất đồng bộ bởi thread nền ({{MonitorDeflationThread}}) khi monitor không còn ai dùng, không cần dừng JVM tại safepoint như trước.
 - **ObjectMonitor**: cấu trúc native của HotSpot, dùng mutex/condvar của OS cho thread thật sự ngủ; là thứ đứng sau {{BLOCKED}} và {{WAITING}} trong thread dump.
 - **Biased locking**: "khoá thiên vị" — mặc định ghi tên thread vào mark word để lần vào sau chỉ cần kiểm tra, khỏi CAS; mất vì chi phí revoke.
 - **Lock elision / coarsening**: tối ưu của C2 — xoá lock khi escape analysis chứng minh object không rò khỏi thread, hoặc gộp hai lock liền nhau; cả hai đều **không phải hợp đồng**.
@@ -6521,24 +6521,24 @@ Cửa phòng có một **bảng ghi trạng thái** ngay trên cánh (mark word)
 ~~~text
 63                              32 31        3  2  1 0
 [ unused / identity hash (31 bit) ][age 4][biased][lock bits]
-  lock bits = 01 : unlocked
-  lock bits = 00 : thin (stack) lock  -> 8 byte tiep theo = con tro toi LockRecord
-  lock bits = 10 : heavyweight        -> tro toi ObjectMonitor
-  lock bits = 11 : biased              -> ( JDK <= 15, da bi go )
+  lock bits = 01 : unlocked (bit biased = 1 + 01 la biased lock, JDK cu, da go o JDK 18)
+  lock bits = 00 : thin (stack) lock  -> phan con lai cua mark word = con tro toi LockRecord
+  lock bits = 10 : heavyweight        -> phan con lai tro toi ObjectMonitor
+  lock bits = 11 : marked             -> GC dung tam thoi
 Khi thin lock, frame cua thread giu:
   LockRecord { address cua object | displaced mark word | owner | rec_count | ... }
 Vòng fast path: CAS mark word (word swap) -> thành công, không cấp phát, không syscall.
 Thread 2 tranh chan: inflate -> ObjectMonitor { _owner, _EntryList, _WaitSet, _recursions }
 ~~~
-Điểm đáng chú ý: displaced mark word nằm trong **stack** của thread, nên lock nhẹ có chi phí bộ nhớ gần bằng không và tự biến mất khi method return. Ngược lại ObjectMonitor là bộ nhớ native, và mỗi lần block là một round-trip xuống OS.
+Điểm đáng chú ý: displaced mark word nằm trong **stack** của thread, nên lock nhẹ có chi phí bộ nhớ gần bằng không và tự biến mất khi method return. Lưu ý phiên bản: mô tả trên là "stack locking" kinh điển. Từ JDK 23, HotSpot mặc định dùng **lightweight locking** (cờ {{LockingMode}}): thay vì chép mark word vào LockRecord, mỗi thread giữ một "lock stack" nhỏ ghi các object nó đang khoá, còn mark word chỉ đổi bit khoá. Ý tưởng tầng nhẹ/tầng nặng giữ nguyên. Ngược lại ObjectMonitor là bộ nhớ native, và mỗi lần block là một round-trip xuống OS.
 
 ### Từng bước của một {{synchronized}} block
-1. C2 phát hành {{monitorenter}}; fast path thử "word swap" mark word: nếu object đang unlocked, CAS thành công → thin lock, ghi LockRecord.
+1. Gặp bytecode {{monitorenter}} (javac sinh ra cho synchronized block), JVM thử fast path "word swap" mark word: nếu object đang unlocked, CAS thành công → thin lock, ghi LockRecord.
 2. Nếu object đã là thin lock của **chính thread** này → tăng {{rec_count}} (reentrant), không CAS phức tạp.
 3. Nếu là thin lock của thread khác, hoặc CAS thất bại vì lý do khác → **inflate**: tạo ObjectMonitor, đặt {{_owner}}, chuyển người đang giữ lock vào monitor, thread hiện tại vào {{_EntryList}} và block (thread state BLOCKED trong dump).
 4. Bên trong block, {{lockObj.wait()}}: nhả lock hoàn toàn ({{recursions}} về 0), chuyển thread vào {{_WaitSet}}, park; thread state WAITING.
 5. {{notify()}} chọn một (hoặc all) thread trong _WaitSet và chuyển về _EntryList; **không** trao lock. Người được notify phải tranh lock lại từ đầu — vì vậy await phải ở trong vòng lặp {{while}}.
-6. {{monitorexit}} (kể cả đường exception, JVM có Exception table) → nếu còn người trong _EntryList thì chuyển owner; nếu không, monitor có thể bị deflate ở safepoint kế tiếp.
+6. {{monitorexit}} (kể cả đường exception, JVM có Exception table) → nếu còn người trong _EntryList thì chuyển owner; nếu không, monitor có thể bị thread nền deflate về sau.
 
 ### Bảng: chế độ và hệ quả
 | Trạng thái | Dữ liệu nằm ở | Chi phí vào/ra | Ai thấy trong dump |
@@ -6552,7 +6552,7 @@ Thread 2 tranh chan: inflate -> ObjectMonitor { _owner, _EntryList, _WaitSet, _r
 ### Trên production
 - **Đọc dump là chính**: {{jcmd <pid> Thread.print}} (nhiều lần cách nhau 1 giây) cho thấy ai {{locked <0x...>}}, ai {{waiting for monitor entry on <0x...>}}; chuỗi "A chờ lock của B, B chờ lock của C" = deadlock, JVM tự phát hiện và in "Found one Java-level deadlock".
 - **Đo contention**: JFR event {{jdk.JavaMonitorEnter}} (có ngưỡng thời lượng, chỉ ghi khi thực sự phải chờ) và {{jdk.JavaMonitorWait}}; async-profiler {{-e lock}} lấy đúng các event đó và cho flame graph "ai chờ lock nào". Đây là cách có bằng chứng thay vì đoán.
-- **Flag liên quan, nói đúng sự thật**: {{-XX:+UseHeavyMonitors}} ép mọi monitor thành heavyweight (chẩn đoán lỗi liên quan tới lock nhẹ, hiệu năng giảm mạnh, chỉ dùng trong điều tra); {{-XX:-EliminateLocks}} tắt lock elision của JIT khi bạn muốn chắc lock luôn tồn tại để đo. {{-XX:BiasedLockingStartupDelay}} chỉ còn ý nghĩa lịch sử (JDK ≤ 15/17 tuỳ bản).
+- **Flag liên quan, nói đúng sự thật**: ở JDK cũ, {{-XX:+UseHeavyMonitors}} ép mọi monitor thành heavyweight (chỉ dùng khi điều tra lỗi liên quan tới lock nhẹ; từ JDK 21 chế độ này chuyển sang cờ {{LockingMode}}); {{-XX:-EliminateLocks}} tắt lock elision của JIT khi bạn muốn chắc lock luôn tồn tại để đo. {{-XX:BiasedLockingStartupDelay}} chỉ còn ý nghĩa lịch sử (JDK ≤ 15/17 tuỳ bản).
 - ** hashCode làm hỏng lock nhẹ**: gọi {{System.identityHashCode(obj)}} trên object đang bị thin lock buộc JVM inflate, vì mark word đã bị chiếm. Triệu chứng: thêm log {{obj.toString()}} (mặc định in hash code!) vào đường nóng mà latency tăng. Đây là lý do "log object ra log" trong critical section đắt hơn vẻ ngoài.
 - **Không khoá trên object chia sẻ ngoài tầm kiểm soát**: String literal, {{Integer.valueOf}} cache, {{Boolean}}, {{Class}} — dễ gây deadlock với code khác (kể cả thư viện). Luôn tạo {{private final Object lock = new Object();}}.
 
@@ -6567,11 +6567,7 @@ Thread 2 tranh chan: inflate -> ObjectMonitor { _owner, _EntryList, _WaitSet, _r
 "{{synchronized}} được JVM cài đặt theo từng bậc: object có mark word giữ trạng thái khoá; vào lock khi không tranh chấp là một CAS đổi mark word sang thin lock, với displaced header nằm trong LockRecord của stack — không cấp phát, không syscall. Có thread thứ hai tranh thì lock inflate thành ObjectMonitor với EntryList và WaitSet; {{wait()}} chuyển sang WaitSet, {{notify()}} đưa về EntryList chứ không trao lock, nên await phải ở trong while. Biased locking từng tồn tại để tối ưu lock một-thread nhưng bị gỡ ở JDK 18 vì chi phí revoke tại safepoint. Khi cần chứng minh contention tôi dùng JFR {{jdk.JavaMonitorEnter}} hoặc async-profiler {{-e lock}}, và đọc {{jcmd Thread.print}} để thấy ai đang {{locked}} và ai đang {{waiting for monitor entry}}."
 
 > Senior tip: ba chi tiết "tôi đã thấy trên production" khiến câu trả lời đáng tin hơn mọi lý thuyết: (1) thêm một dòng log in {{obj.toString()}} làm tăng p99 vì nó tính identity hash code và ép inflate; (2) {{synchronized}} trong driver/thư viện kết hợp virtual thread là nguồn pinning trước JDK 24; (3) phần lớn "lock contention" thực chất là **giữ lock khi gọi I/O** — giải pháp là thu nhỏ critical section hoặc chuyển sang cấu trúc single-writer, không phải đổi loại khoá.`,
-  follow: [
-    'Điều gì xảy ra khi object có lock nhẹ bị gọi {{hashCode()}} lần đầu sau khi đã inflate — và vì sao {{identity hash}} là 31 bit?',
-    'Deflation của ObjectMonitor diễn ra khi nào, vì sao cần safepoint, và hệ quả với latency đuôi (tail latency)?',
-    'C2 xoá lock bằng escape analysis trong điều kiện nào, và làm sao kiểm chứng rằng lock còn tồn tại?',
-  ],
+  follow: ['Vì sao gọi hashCode() (identity hash) trên object đang bị thin lock buộc JVM inflate, và identity hash chiếm bao nhiêu bit?', 'Deflation của ObjectMonitor diễn ra khi nào, và vì sao JDK 15 chuyển nó sang thread nền thay vì làm tại safepoint?', 'C2 xoá lock bằng escape analysis trong điều kiện nào, và làm sao kiểm chứng rằng lock còn tồn tại?'],
   tags: ['synchronized', 'mark word', 'ObjectMonitor', 'biased locking', 'lock inflation'],
   refs: [
     { type: 'doc', title: 'JEP 374: Deprecate the Biased Synchronization Mechanism', url: 'https://openjdk.org/jeps/374' },
@@ -6583,7 +6579,7 @@ Thread 2 tranh chan: inflate -> ObjectMonitor { _owner, _EntryList, _WaitSet, _r
   topic: 'concurrency',
   level: 'senior',
   q: '{{VarHandle}} là gì, có các chế độ truy cập bộ nhớ nào, và dùng khi nào thay cho {{Unsafe}} hay các lớp {{java.util.concurrent.atomic}}?',
-  a: `**Tóm tắt:** {{VarHandle}} (Java 9+) là cách chính thức thay {{sun.misc.Unsafe}} để đọc, ghi và so sánh-thay (CAS) trực tiếp trường của object, đồng thời kiểm soát thứ tự bộ nhớ. Có các chế độ truy cập: volatile (ghi và đọc đều tạo quan hệ happens-before), release/acquire (chỉ một chiều, rẻ hơn volatile), opaque (không ordering), và các rào bộ nhớ fullFence/loadFence/storeFence. Dùng khi cần CAS trực tiếp trên trường hoặc muốn thứ tự bộ nhớ tuỳ chỉnh với chi phí thấp hơn volatile; phần lớn code nghiệp vụ vẫn nên dùng {{AtomicInteger}} hay {{ConcurrentHashMap}} thay vì tự viết VarHandle.
+  a: `**Tóm tắt:** {{VarHandle}} (Java 9+) là cách chính thức thay {{sun.misc.Unsafe}} để đọc, ghi và so sánh-thay (CAS) trực tiếp trường của object, đồng thời kiểm soát thứ tự bộ nhớ. Bốn chế độ từ yếu tới mạnh: plain (như field thường), opaque (đọc/ghi từng biến nhất quán nhưng không ràng buộc thứ tự với biến khác), release/acquire (ghi release + đọc acquire tạo happens-before cho mẫu "ghi dữ liệu rồi bật cờ"), volatile (release/acquire cộng thêm thứ tự toàn cục giữa mọi thao tác volatile, chặn cả reordering StoreLoad); kèm các rào bộ nhớ fullFence/loadFence/storeFence. Dùng khi cần CAS trực tiếp trên trường hoặc muốn thứ tự bộ nhớ tuỳ chỉnh với chi phí thấp hơn volatile; phần lớn code nghiệp vụ vẫn nên dùng {{AtomicInteger}} hay {{ConcurrentHashMap}} thay vì tự viết VarHandle.
 
 ### Hiểu nhanh
 Hãy tưởng tượng mỗi trường của object là một ô giấy trong bảng ghi công ty. {{AtomicInteger}} giống một ô đã được sản xuất sẵn với quy tắc cố định (chỉ cộng, chỉ lấy giá trị mới nhất...). {{VarHandle}} giống bộ đèn soi và bút viết trực tiếp vào ô giấy: bạn có thể đọc ô, ghi ô, hoặc "nếu ô vẫn là giá trị A thì ghi giá trị B" — và bạn quy định xem việc ghi này phải đẩy công việc trước đó ra hay không, tương đương đưa tin cho thread khác theo quy tắc bạn chọn.
@@ -6601,9 +6597,9 @@ Hãy tưởng tượng mỗi trường của object là một ô giấy trong b�
 ### Các chế độ truy cập và khi nào dùng
 VarHandle cung cấp ba nhóm phương thức cho mỗi trường:
 
-1. **volatile mode** ({{getVolatile}}/{{setVolatile}}/{{compareAndSet}} volatile): ghi release, đọc acquire, tạo happens-before hai chiều. Tương đương trường {{volatile}}.
-2. **release/acquire mode** ({{setRelease}}/{{getAcquire}}): ghi release đảm bảo mọi ghi trước đó đã đẩy ra khi bước này hoàn thành; đọc acquire đảm bảo mọi đọc sau này thấy bản mới nhất. Chỉ một chiều, rẻ hơn volatile trên một số kiến trúc, phù hợp cho cờ "dữ liệu đã xong, có thể đọc".
-3. **opaque mode** ({{getOpaque}}/{{setOpaque}}): không có ordering, chỉ đảm bảo nguyên tử. Dùng cho bộ đếm thống kê không quan trọng thứ tự.
+1. **volatile mode** ({{getVolatile}}/{{setVolatile}}/{{compareAndSet}}): tương đương trường {{volatile}}: có đủ release/acquire và thêm **thứ tự toàn cục** (sequential consistency) giữa mọi thao tác volatile, tức là chặn cả trường hợp "ghi rồi đọc biến khác" bị đổi chỗ (StoreLoad).
+2. **release/acquire mode** ({{setRelease}}/{{getAcquire}}): mọi ghi trước setRelease được thread đọc thấy nếu nó đọc được giá trị đó bằng getAcquire. Rẻ hơn volatile (trên x86, setRelease không cần fence), đủ cho cờ "dữ liệu đã xong, có thể đọc"; không đủ cho thuật toán cần thứ tự toàn cục như Dekker.
+3. **opaque mode** ({{getOpaque}}/{{setOpaque}}): đảm bảo nguyên tử và giá trị mới cuối cùng sẽ được thấy, nhưng không ràng buộc thứ tự với các biến khác. Dùng cho bộ đếm thống kê, cờ tiến độ chỉ để quan sát.
 4. **Rào bộ nhớ**: {{fullFence()}} cấm đổi thứ tự ở cả hai bên; {{loadFence()}} cho các đọc trước; {{storeFence()}} cho các ghi trước. Rào đắt, chỉ dùng khi thực sự cần.
 
 ### Ví dụ: công bố cờ bằng release/acquire
@@ -6650,9 +6646,9 @@ Lý do: ghi {{VALUE}} trước, bật cờ {{READY}} sau bằng setRelease. Thre
 
 | Chế độ | Ví dụ method | Tạo happens-before? | Chi phí | Dùng khi |
 |---|---|---|---|---|
-| volatile | setVolatile/getVolatile | Có, hai chiều | Cao nhất | Cờ dừng, publish object |
-| release/acquire | setRelease/getAcquire | Có, một chiều | Thấp hơn volatile | Cờ "dữ liệu đã sẵn sàng" |
-| opaque | setOpaque/getOpaque | Không | Thấp nhất | Bộ đếm thống kê, không quan tâm thứ tự |
+| volatile | setVolatile/getVolatile | Có, cộng thứ tự toàn cục | Cao nhất | Mặc định an toàn, thuật toán cần thứ tự toàn cục |
+| release/acquire | setRelease/getAcquire | Có, giữa cặp release và acquire | Thấp hơn volatile | Cờ "dữ liệu đã sẵn sàng" |
+| opaque | setOpaque/getOpaque | Không | Thấp | Bộ đếm thống kê, không quan tâm thứ tự |
 
 ### Trên production
 - Hiếm khi cần VarHandle trong code nghiệp vụ: các lớp java.util.concurrent đã vận dụng đúng và được tối ưu bởi JVM.
@@ -6660,14 +6656,14 @@ Lý do: ghi {{VALUE}} trước, bật cờ {{READY}} sau bằng setRelease. Thre
 - {{sun.misc.Unsafe}} vẫn có thể dùng qua reflection nhưng bị cảnh báo và có thể bị chặn trong moduleization; VarHandle là cách được khuyến khích.
 
 ### Lỗi hay gặp
-- **Nhầm getAcquire với getVolatile**: getAcquire chỉ đảm bảo thứ tự với các ghi release trước đó, không phải tất cả ghi trước đó trong thread khác. Cách tránh: ghi dữ liệu bằng setRelease trước khi bật cờ.
+- **Dùng release/acquire cho thuật toán cần thứ tự toàn cục**: ví dụ hai thread mỗi bên ghi cờ của mình rồi đọc cờ bên kia (kiểu Dekker): release/acquire cho phép cả hai cùng đọc thấy giá trị cũ. Cách tránh: dùng volatile (hoặc lock) cho kiểu thuật toán này.
 - **Dùng opaque cho cờ điều khiển**: opaque không ordering, thread đọc có thể thấy cờ mới nhưng dữ liệu cũ. Cách tránh: release/acquire hoặc volatile.
 - **Quên rằng VarHandle không tự khởi tạo**: phải qua {{MethodHandles.lookup().findVarHandle(...)}} và ném checked exception trong static block.
 
 ### Trả lời phỏng vấn 1 phút
-"VarHandle là cách công khai thay Unsafe để thao tác trực tiếp trường object, với các chế độ truy cập chọn được thứ tự bộ nhớ: volatile (ghi-đọc đều happens-before), release/acquire (chỉ một chiều, rẻ hơn), opaque (không ordering), và các rào bộ nhớ fullFence/loadFence/storeFence. Tôi dùng release/acquire cho mẫu 'ghi dữ liệu rồi bật cờ' để thread đọc thấy cờ mới thì chắc chắn thấy dữ liệu mới, chi phí thấp hơn volatile. Phần lớn thời gian tôi vẫn dùng AtomicInteger/ConcurrentHashMap, chỉ dùng VarHandle khi cần CAS trực tiếp trên trường hoặc đã đo thấy volatile là nút thắt."
+"VarHandle là cách công khai thay Unsafe để thao tác trực tiếp trường object, với các chế độ truy cập chọn được thứ tự bộ nhớ: volatile (có thứ tự toàn cục), release/acquire (đủ cho mẫu publish, rẻ hơn), opaque (chỉ nguyên tử, không ràng buộc thứ tự), và các rào bộ nhớ fullFence/loadFence/storeFence. Tôi dùng release/acquire cho mẫu 'ghi dữ liệu rồi bật cờ' để thread đọc thấy cờ mới thì chắc chắn thấy dữ liệu mới, chi phí thấp hơn volatile. Phần lớn thời gian tôi vẫn dùng AtomicInteger/ConcurrentHashMap, chỉ dùng VarHandle khi cần CAS trực tiếp trên trường hoặc đã đo thấy volatile là nút thắt."
 
-> Senior tip: VarHandle không làm ma thuật — nó chỉ biểu lộ rõ ràng những gì JMM cho phép. Khi phỏng vấn hỏi "volatile vs release/acquire khác nhau thế nào", câu trả lời chuẩn: volatile tạo happens-before hai chiều (ghi release + đọc acquire) nên đắt hơn trên một số kiến trúc; release/acquire chỉ một chiều và đủ cho mẫu publisher/subscriber cờ. Hãy trả lời với ví dụ cụ thể và kèm lời khuyên "đo trước khi tối ưu".`,
+> Senior tip: VarHandle không làm ma thuật — nó chỉ biểu lộ rõ ràng những gì JMM cho phép. Khi phỏng vấn hỏi "volatile vs release/acquire khác nhau thế nào", câu trả lời chuẩn: volatile gồm release/acquire cộng thêm thứ tự toàn cục giữa các thao tác volatile (phải chặn cả StoreLoad, nên ghi volatile cần full fence), vì vậy đắt hơn; release/acquire đủ cho mẫu publisher/subscriber cờ. Hãy trả lời với ví dụ cụ thể và kèm lời khuyên "đo trước khi tối ưu".`,
   follow: [
     'Vì sao release/acquire rẻ hơn volatile trên một số kiến trúc CPU?',
     'VarHandle.compareAndSet khác AtomicInteger.compareAndSet ở điểm nào?',
@@ -6706,8 +6702,8 @@ Tìm khóa:
 
 Chèn:
 1. Tìm vị trí chèn ở mỗi lớp, lưu các node predecessors.
-2. Random quyết định số lớp cho node mới (xấp xỉ 50% node lên một lớp, càng cao càng ít).
-3. Dùng CAS cập nhật liên kết từ lớp cao nhất xuống lớp 0; nếu CAS thất bại (thread khác vừa thay đổi) thì đọc lại predecessors và thử lại.
+2. CAS chèn node vào **lớp dưới cùng** trước: đây là thời điểm phần tử chính thức "tồn tại" với mọi thread. Nếu CAS thất bại (thread khác vừa thay đổi) thì tìm lại vị trí và thử lại.
+3. Sau đó random quyết định có thêm tầng index hay không (trong JDK khoảng 1/4 node có index, mỗi tầng cao hơn giảm một nửa), rồi nối các tầng index từ dưới lên, cũng bằng CAS.
 
 Xóa: tương tự chèn, đánh dấu node bị xóa rồi CAS bỏ qua liên kết.
 
@@ -6723,7 +6719,7 @@ public class SkipListDemo {
         map.put(3, "ba");
         map.put(9, "chin");
         System.out.println(map.get(5));              // lua, O(log n)
-        System.out.println(map.subMap(4, true, 8, false)); // [5=>lua], xem khoảng không khoá toàn bảng
+        System.out.println(map.subMap(4, true, 8, false)); // {5=lua}: xem khoảng, không khoá toàn bảng
         map.forEach((k, v) -> System.out.println(k + "=" + v));
     }
 }
@@ -6744,7 +6740,7 @@ public class SkipListDemo {
 - Đo ghi: skip list có nhiều liên kết nên tốn bộ nhớ hơn HashMap, mỗi node giữ mảng tham chiếu theo số lớp.
 
 ### Lỗi hay gặp
-- **Fallback comparator null**: khóa không thể so sánh (không implements Comparable và không truyền Comparator) thì ném NullPointerException khi chèn phần tử thứ hai. Cách tránh: luôn dùng Comparable hoặc truyền Comparator.
+- **Key không so sánh được**: key không implements Comparable và không truyền Comparator thì ném ClassCastException; key null thì ném NullPointerException (map này cấm null). Cách tránh: dùng key Comparable hoặc truyền Comparator.
 - **Tưởng iterator xem mọi thay đổi**: iterator yếu có thể bỏ qua phần tử xóa sau khi tạo hoặc thấy phần tử mới thêm. Cách tránh: không dựa vào iterator để thống kê chính xác, hoặc snapshot trước.
 - **Ghi nhiều vào cùng vùng**: nhiều thread chèn khóa gần nhau vẫn tranh chấp liên kết node, throughput giảm. Cách tránh: chia khóa sao cho phân tán.
 
