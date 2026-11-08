@@ -1,11 +1,11 @@
 /*
- * English translation of js/data/q-scenario.js — task T660. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-scenario.js — task T1197 redo. Format: js/core/i18n.js (content overlay).
  * ids: scenario-104 scenario-105 scenario-106 scenario-107 scenario-108
  */
 App.i18n.content({
   'scenario-104': {
-    q: 'How do you read a database schema to understand the business quickly when joining a new project?',
-    a: `**Summary:** a database schema usually carries the business "language" hidden inside it. Instead of reading every table, focus on the core tables, the relationships, the status values and the history tables — that lets you rebuild the business process without having to ask about everything.
+    q: 'How do you read a database schema to quickly understand the business when joining a new project?',
+    a: `**Summary:** a database schema usually hides the business "language" inside it. Instead of reading every table, focus on the core tables, the relationships, the status columns and the history tables — that lets you reconstruct the business process without having to ask about everything.
 
 ### Real-world context
 In an insurance project, the {{policies}} table has a {{status}} column with values PENDING/ACTIVE/LAPSED/CANCELLED/EXPIRED. The {{policy_status_history}} table shows the exact chain of state transitions. From that alone you already understand the policy approval process without reading a 100-page spec.
@@ -13,7 +13,7 @@ In an insurance project, the {{policies}} table has a {{status}} column with val
 ### How to read a schema
 1. **Find the core "entities"**: look for tables that many FKs point to, or short-named tables with clear business meaning (orders, accounts, policies, claims). These are usually the aggregate root.
 2. **Read the status column**: list every value it can take (enum or CHECK constraint), then find the matching history/audit table. That pair is the hidden state machine.
-3. **Find the history tables**: {{*_history}}, {{audit_*}}, {{*_logs}} tell you who did what, when, and how the state changed.
+3. **Find the history tables**: {{*_history}}, {{audit_*}}, {{*_logs}} show who did what, when, and how the state changed.
 4. **Analyse the relationships**: FKs are the business relationships (1:N, N:N). e.g. {{orders}} - {{order_items}} reveals the cart/order model.
 5. **Read real data (read-only!)**: query a few sample rows on UAT/staging to see actual values, data formats, and whether test data is mixed in.
 
@@ -38,6 +38,9 @@ Rule: only PENDING rows may be updated, COMPLETED is immutable
 - **Reading only the DDL**: DDL never shows the real process. Always look at sample data too.
 - **Skipping the history table**: it is often more informative than the main table for understanding "how the system is operated".
 - **Assuming a relationship**: verify it with data (are there orphan records, for instance?) before drawing a conclusion.
+
+### Sample interview answer
+"Schema is the most honest document about the business, because code can lie but data cannot. I start from the largest and most-written tables, checked via DB statistics, because those are usually the core entities such as transactions or orders. I draw relationships through foreign keys, or through columns named xxx_id when no constraint exists. I pay special attention to status columns and their actual values with a GROUP BY query, because those are the business state machine; CHECK and UNIQUE constraints reveal invariant rules; timestamp and version columns reveal the lifecycle and how overwrites are prevented. I follow one real record through the tables, for example a money transfer from creation to posting. Wherever I see oddities like unused columns or status values not found in code, I write them down as questions for the business expert."
 
 > Senior tip: One very effective technique is "reverse engineer from a transaction". Pick the most recent successful transaction in the main transaction table, trace every table it touches through FK/ref_no, and draw the relationships. After two or three such transactions you understand about 80% of the domain model.`,
     follow: [
@@ -86,6 +89,9 @@ Instead of reading a long spec, the whole team sticks notes on a board: everyone
 - **Arguing too early**: phase 1 is brainstorming only, sorting comes later.
 - **Too technical**: stay on the business side, do not talk about REST or queues right away.
 
+### Sample interview answer
+"Event Storming is a joint session of dev, BA and business, where everyone writes business events that have already happened, in past tense like 'order placed', 'payment confirmed', on orange sticky notes, then arranges them along a timeline. Then we add the commands that caused each event, the actors, the rules and external systems, and mark the spots of disagreement or open questions. When joining a new team I run a one-to-two-hour mini session for one important flow: it gives me the big picture much faster than reading documents, and more importantly it surfaces the places where the parties actually understand things differently. The output is a list of events, bounded contexts that can become domain boundaries, and open questions. I capture it and turn it into a short document the team keeps."
+
 > Senior tip: You do not need a full Event Storming. Borrow 30 minutes from the BA/PO and sketch a timeline on paper or a board with the 5-10 most important events of the flow you are trying to learn. That is usually faster than reading a whole design document.`,
     follow: [
       'What is the difference between Event Storming and a Sequence Diagram?',
@@ -121,6 +127,9 @@ Instead of reading a long spec, the whole team sticks notes on a board: everyone
 **BA:** "When the amount exceeds the limit for that customer type. For example a regular customer has a limit of 50 million VND per day; above that an Approver must sign off."
 **You:** "So who is the Approver? Is there an SLA for the approval?"
 **BA:** "Usually the Team Leader, with a 30-minute SLA during office hours..."
+
+### Real-world example
+A new dev asked the BA "What is the refund logic?" — too broad a question, and got 20 minutes of generic explanation. Asked again with a concrete example: "A customer buys 3 items totalling 500k, uses a 50k coupon, and returns 1 item worth 200k — how much is refunded and how is the coupon handled?" — the BA had to stop and check, and discovered the business team itself had two different understandings (split the coupon proportionally vs deduct it entirely from the remaining items). The rule was pinned down in writing with 4 numeric examples, becoming test cases. Afterwards the dev used the pattern: "I understand it as ... is that right? And what about the case where ...?" and sent a summary after each session.
 
 ### Common mistakes
 - **Asking ten things at once**: pick the one or two most important questions each time.
@@ -162,6 +171,9 @@ Instead of reading a long spec, the whole team sticks notes on a board: everyone
 - **Saying only "I read the code"**: shows purely technical thinking
 - **Not mentioning exceptions**: lacks depth
 - **Answering too long**: one to two minutes is enough
+
+### Real-world example
+Two candidates were asked the same question. Candidate A: "I will read the documentation and code very carefully" — the interviewer wrote "passive". Candidate B told a real story: joining an insurance project, in the first week tracing a claims file from app to DB via trace, running a 2-hour Event Storming with the business side, discovering 3 hidden rules inside stored procedures, and after 3 weeks fixing a claims-calculation bug left by the previous owner; also writing a flow document the team used for onboarding. The interviewer then asked about how the hidden rules were found — exactly the part B had prepared most. Lesson: a Senior answer has **a method + a story with measurable outcome + value left for the team**.
 
 > Senior tip: what the interviewer wants to hear is "does this person know how to pick up a new domain quickly without depending on a mentor forever?". The answer above proves you are proactive, methodical, and interested in how the system really runs.`,
     follow: [
@@ -208,6 +220,9 @@ Keep your own glossary in the format: {{Rule ID}} | {{Description}} | {{Conditio
 - **Trusting the spec completely**: the spec is usually stale, the code is the more accurate source.
 - **Reading only the happy path**: validation is scattered, so it is easy to miss.
 - **Not writing it down**: after one month you have forgotten the rules you found.
+
+### Sample interview answer
+"Hidden business rules usually live in the least-read places: nested if conditions in old code, stored procedures and triggers in the DB, table constraints and defaults, config files and parameter tables, batch jobs running at night, and in the heads of long-tenured people. I discover them in several ways. Read real data: the distribution of status or amount columns often reveals rules like limits or rounding. Read incident history and bug tickets, because many rules were born from a past incident. Write characterization tests against real data to capture current behaviour. And ask operations and customer-support staff about the special cases they handle by hand. Each rule I find I record with its source, examples and the person who confirmed it, in a shared team document."
 
 > Senior tip: the golden rule is "code is the running specification". When spec and code disagree, trust the code (after confirming with the BA). And never skip recording the source (file:line) so you can look it up later.`,
     follow: [
