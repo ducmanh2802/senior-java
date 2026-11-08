@@ -52,6 +52,9 @@ Giả sử luồng "đặt hàng": 200 unit test chạy 20 giây; 50 API test ch
 ### Trả lời phỏng vấn thế nào
 Nêu rõ: "Tôi ưu tiên unit và API trước vì nhanh, ổn định, ROI cao; UI E2E chỉ cho luồng critical. Tôi chọn pyramid hay trophy tuỳ ngữ cảnh – với web nhiều tích hợp tôi nghiêng về trophy (integration/API dày). Với team dev+QA tôi phân chia ownership và đo flaky/time để điều chỉnh." Đưa ví dụ số liệu hoặc trải nghiệm thật.
 
+### Ví dụ đời thực
+Một team web Java có khoảng 200 test UI Selenium chạy trên Chrome khi gửi mã (pull request), mỗi lần mất 40 phút và thường có 5-8 test đỏ ngẫu nhiên vì phần tử bị che hoặc trang chưa tải xong. Dev quen bỏ qua CI đỏ và merge sau khi chạy lại, nên lỗi giao diện lọt ra production. Trưởng team ghi lại số liệu hai tuần: 150 test UI chiếm 35 phút, 40 test API REST Assured chạy 3 phút, 10 unit test chạy 20 giây; 6 trên 8 test flaky là UI. Họ quyết định: giữ 20 test UI quan trọng nhất (đăng nhập, thanh toán), viết lại 80 test quy tắc giảm giá và tồn kho thành API test, xóa 100 test UI trùng lặp hoặc ít giá trị. Sau một tháng: suite PR từ 40 xuống 8 phút, flaky rate từ 6% xuống dưới 1%, và team bắt được lỗi giao diện thật qua 20 test UI còn lại thay vì bỏ qua toàn bộ CI. Thời gian phản hồi giảm từ 40 phút xuống 8 phút.
+
 > Senior tip: Đừng tranh luận giáo điều pyramid vs trophy. Hãy dùng dữ liệu pipeline của bạn (thời gian, flaky rate, defect leakage – lỗi lọt ra production) để quyết định tầng nào cần đầu tư thêm, và sẵn sàng xoá test automation có ROI âm.`,
   follow: [
     'Một UI test flaky liên tục: bạn sửa, cô lập hay xoá? Tiêu chí quyết định là gì?',
