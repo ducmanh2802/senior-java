@@ -35,6 +35,18 @@ Throughout this, I would rely on metrics and load tests to confirm each bottlene
 - Jumping straight to microservices or sharding while skipping the cheap wins: caching and read replicas.
 - Forgetting to say "stateless" when describing horizontal scaling of the API layer — the interviewer will ask how sessions work.
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through the answer in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: Anchor your answer on "find the bottleneck first" and "measure before changing". "I would load test to reproduce the ten-times scenario and fix the measured bottleneck, not the assumed one" — this single sentence shows you avoid blind optimisation and separates a senior from a memoriser.`,
     follow: [
       'How would you decide between adding read replicas and adding a cache first?',
@@ -73,6 +85,18 @@ Once we agree on the top priorities - for instance, correctness for payments and
 - Skipping clarification and drawing immediately — you then build for requirements the interviewer never gave.
 - Mixing the two categories: "fast" is non-functional, "a user can upload a photo" is functional.
 - Firing twenty questions one after another — ask 2-3 questions as a group, then summarize.
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through the answer in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Force an early priority order: "If we have to choose, is correctness or latency more important?" — it makes trade-offs surface up front (payments → correctness, feeds → latency). Close the opening with the scope summary: it is the verbal "contract" every later design decision is checked against, and it protects you when the interviewer later adds a surprise requirement.`,
     follow: [
@@ -114,6 +138,18 @@ So I would adapt the design in that direction. Does that address the risk you ha
 - Over-defensive: "No, my design is correct" — you lose the collaboration score even when you are technically right.
 - Agreeing instantly with every suggestion and abandoning your reasoning — that reads as having no opinions of your own. Balance: acknowledge + defend + adapt.
 - Not restating the interviewer's point, so you answer a different question than the one they asked.
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through the answer in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Sometimes the interviewer suggests a worse approach on purpose, to see whether you can hold a well-reasoned position. If the requirements support your choice, say "I would stick with X in this case because..." and spell out the exact condition that would flip you to Y ("if the downstream latency became unpredictable, I would move to the queue"). The close: "it depends on the requirement, and here is the condition that would change my choice."`,
     follow: [
