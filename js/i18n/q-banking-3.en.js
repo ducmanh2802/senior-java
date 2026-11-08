@@ -355,7 +355,7 @@ The classic trap: comparing only totals. Short 1 billion in account A and over 1
 ~~~text
 Final dry run #4 summary  (all 2,113,402 accounts)
 MATCH            2,113,398
-EXPLAINED             4   (3 dormant accounts manually reconciled, 1 fee order - already on file)
+EXPLAINED             4   (3 dormant accounts manually reconciled, 1 fee order - minutes on file)
 UNEXPLAINED           0   <-- the condition required to cut over: must be zero
 GL total vs balance total:  difference 0
 Unexpected negative balances: 0

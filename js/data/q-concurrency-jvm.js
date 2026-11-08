@@ -5791,9 +5791,9 @@ Service tổng hợp giá gọi 5 nhà cung cấp bằng {{supplyAsync(() -> cli
 ### Cách đọc nhanh GC log (ý tưởng)
 | Thông tin | Cách diễn giải |
 |---|---|
-| {{[GC pause (G1 Evacuation Pause) (young)]}} | Young GC thông thường |
-| {{[GC pause (G1 Evacuation Pause) (mixed)]}} | Mixed GC |
-| {{[Full GC (Allocation Failure)]}} | Full GC - cần điều tra nguyên nhân |
+| {{Pause Young (Normal)}} (JDK 8: {{GC pause (G1 Evacuation Pause) (young)}}) | Young GC thông thường |
+| {{Pause Young (Mixed)}} (JDK 8: {{(mixed)}}) | Mixed GC |
+| {{Pause Full (...)}} (JDK 8: {{Full GC (Allocation Failure)}}) | Full GC - cần điều tra nguyên nhân |
 | {{Humongous regions}} | Nhiều object lớn có thể gây vấn đề |
 | Thời gian pause | So sánh với {{MaxGCPauseMillis}} để thấy có vượt không |
 
@@ -5814,10 +5814,10 @@ Service tổng hợp giá gọi 5 nhà cung cấp bằng {{supplyAsync(() -> cli
 [...][warn][gc      ] GC(1601) To-space exhausted
 [...][info][gc      ] GC(1601) Pause Full (G1 Compaction Pause) 8150M->5200M(8192M) 3842.117ms
 ~~~
-Đọc: Young xoá hết Eden (410→0 region); Old tăng 16 region (object sống đủ lâu được đẩy lên); "Concurrent Start" do **humongous allocation** (object lớn hơn nửa region) bắt đầu chu kỳ marking; "Mixed" dọn thêm vùng Old nhiều rác; **To-space exhausted** = không còn chỗ để copy object sống → tiếp theo là **Full GC 3,8 giây**.
+Đọc: Young xoá hết Eden (410→0 region); Old tăng 16 region (object sống đủ lâu được đẩy lên); "Concurrent Start" do **humongous allocation** (object lớn hơn nửa region) bắt đầu chu kỳ marking; "Mixed" dọn thêm vùng Old nhiều rác; **To-space exhausted** = không còn chỗ để copy object sống → tiếp theo là **Full GC 3,8 giây**. (Từ JDK 21 log ghi sự kiện này là "Evacuation Failure".)
 
 ### Ví dụ đời thực
-Service xuất báo cáo có Full GC 3–4 giây mỗi giờ. Log cho thấy nhiều "G1 Humongous Allocation": mỗi báo cáo tạo một {{byte[]}} 30–60MB (tải cả file vào bộ nhớ) — region 4MB nên mỗi mảng chiếm hàng chục region liên tiếp, phân mảnh heap, cuối cùng to-space exhausted. Sửa: stream file ra response thay vì dựng mảng lớn; tạm thời tăng {{-XX:G1HeapRegionSize=16m}}. Full GC biến mất, pause Young ổn định 30–50ms.
+Service xuất báo cáo có Full GC 3–4 giây mỗi giờ. Log cho thấy nhiều "G1 Humongous Allocation": mỗi báo cáo tạo một {{byte[]}} 30–60MB (tải cả file vào bộ nhớ) — region 4MB nên mỗi mảng chiếm hàng chục region liên tiếp, phân mảnh heap, cuối cùng to-space exhausted. Sửa: stream file ra response thay vì dựng mảng lớn. (Tăng {{-XX:G1HeapRegionSize}} lên 16 hay 32MB không cứu được trường hợp này: mảng 30–60MB vẫn lớn hơn nửa region nên vẫn là humongous; tăng region chỉ giúp khi object lớn chỉ vài MB.) Full GC biến mất, pause Young ổn định 30–50ms.
 
 ### Trả lời mẫu khi phỏng vấn
 "G1 chia heap thành các region cùng kích thước và có ba loại pause chính. Young pause dọn Eden và Survivor, copy object còn sống sang survivor hoặc lên Old, thường vài chục mili giây. Khi Old đầy tới ngưỡng, G1 chạy marking đồng thời, bắt đầu bằng một Young pause có nhãn Concurrent Start, rồi sau đó là các Mixed pause dọn thêm những region Old nhiều rác. Full GC là dấu hiệu xấu: G1 không theo kịp, thường đi kèm To-space exhausted, và dừng cả heap nhiều giây. Khi đọc log, tôi xem thời gian pause, heap trước và sau, nguyên nhân trong ngoặc như Humongous Allocation, và Old tăng dần qua các chu kỳ để nghi leak. Humongous allocation, tức object lớn hơn nửa region, là nguyên nhân hay gặp của Full GC; sửa ở code bằng streaming thay vì dựng mảng lớn."
@@ -7340,7 +7340,7 @@ Nếu longWork() chạy 5 giây trong khi period 2 giây: lần thứ 2 bị tr�
 Hãy tưởng tượng cả công ty phải dừng làm việc để kiểm kê kho. Người quản lý hô "tất cả dừng lại", nhưng một nhân viên đang chạy trên máy chạy bộ không nhìn đồng hồ nên không dừng. Cả công ty phải chờ nhân viên đó nhìn thấy tín hiệu. Safepoint là tín hiệu dừng; TTSP là thời gian chờ nhân viên "nhìn thấy tín hiệu".
 
 ### Cơ chế
-1. JVM chèn các điểm safepoint vào bytecode (method entry, backward branch, loop back edge) để thread có thể dừng.
+1. Interpreter kiểm tra yêu cầu dừng giữa các bytecode; còn code đã JIT thì JIT chèn **safepoint poll** vào native code ở các vị trí như lúc return khỏi method và ở cạnh quay lại của vòng lặp (loop back edge), để thread có thể dừng.
 2. Khi cần safepoint, JVM đặt cờ; thread khi đi qua điểm safepoint sẽ kiểm tra cờ và dừng.
 3. Counted loop (vòng for với số lần lặp đã biết) có thể bị JIT tối ưu và không chèn poll safepoint trong thân loop → thread không dừng cho tới khi loop kết thúc.
 4. Vì sao counted loop không poll: để loop chạy nhanh, JIT bỏ poll; trade-off là TTSP có thể tăng.
@@ -7502,7 +7502,7 @@ Giả định: dịch vụ API Java 17, heap 8 GB, ~3.000 req/s, object sống n
   topic: 'jvm',
   level: 'lead',
   q: 'ZGC generational (Java 21): colored pointers, load barrier, concurrent relocation; khi nào chọn ZGC vs G1.',
-  a: `**Tóm tắt:** ZGC thế hệ (generational, JEP 439 từ Java 21, mặc định từ JDK 23) là GC độ trễ thấp: phần lớn công việc đánh dấu, di chuyển (relocate) object diễn ra song song với luồng ứng dụng, nên pause thường rất ngắn (thường dưới 1 ms) ngay cả heap lớn. Nó dùng colored pointers (mã hóa trạng thái GC ngay trong bit của con trỏ), load barrier (kiểm tra khi đọc tham chiếu) và concurrent relocation. Chọn ZGC khi mục tiêu là tail latency/p99 nghiêm ngặt hoặc heap rất lớn; chọn G1 khi cần throughput tổng thể tốt, vận hành quen thuộc, hoặc workload không quá nhạy latency.
+  a: `**Tóm tắt:** ZGC thế hệ (generational, JEP 439 từ Java 21; từ JDK 23 bật {{-XX:+UseZGC}} là chạy chế độ generational theo mặc định (JEP 474), JDK 24 bỏ hẳn chế độ cũ; còn GC mặc định của JVM vẫn là G1) là GC độ trễ thấp: phần lớn công việc đánh dấu, di chuyển (relocate) object diễn ra song song với luồng ứng dụng, nên pause thường rất ngắn (thường dưới 1 ms) ngay cả heap lớn. Nó dùng colored pointers (mã hóa trạng thái GC ngay trong bit của con trỏ), load barrier (kiểm tra khi đọc tham chiếu) và concurrent relocation. Chọn ZGC khi mục tiêu là tail latency/p99 nghiêm ngặt hoặc heap rất lớn; chọn G1 khi cần throughput tổng thể tốt, vận hành quen thuộc, hoặc workload không quá nhạy latency.
 
 ### Thuật ngữ (giải thích lần đầu)
 - **GC pause (STW - Stop-The-World)**: khoảng thời gian JVM tạm dừng luồng ứng dụng để làm việc GC.
@@ -7522,7 +7522,7 @@ Với heap lớn (chục đến trăm GB) và yêu cầu p99 thấp, GC truyền
 2. **Load barrier.** Mỗi khi ứng dụng tải (load) một tham chiếu từ heap/stack theo ngữ cảnh cần thiết, barrier kiểm tra metadata. Nếu object đã được relocate, barrier giúp lấy đúng địa chỉ mới (self-healing/remap). Vì chạy khi đọc, nó có chi phí nhỏ nhưng phân tán.
 3. **Concurrent marking.** ZGC đánh dấu object còn sống song song với ứng dụng.
 4. **Concurrent relocation (compaction).** ZGC di chuyển object sống sang region mới để giải phóng vùng nhớ và giảm phân mảnh, vẫn song song với ứng dụng. Ứng dụng có thể đọc object đang/đã di chuyển nhờ load barrier.
-5. **Generational (Java 21).** ZGC generational gom young generation thường xuyên (object chết trẻ) và gom old ít hơn. Điều này cải thiện hiệu quả so với ZGC non-generational trước đó vì phù hợp đặc tính "đa số object chết sớm".
+5. **Generational (Java 21).** ZGC generational gom young generation thường xuyên (object chết trẻ) và gom old ít hơn. Điều này cải thiện hiệu quả so với ZGC non-generational trước đó vì phù hợp đặc tính "đa số object chết sớm". Để biết tham chiếu nào từ old trỏ sang young, bản generational thêm **store barrier** (chạy khi ghi tham chiếu) bên cạnh load barrier.
 
 ### ZGC vs G1: chọn thế nào
 | Tiêu chí | G1 | ZGC generational |
@@ -7545,7 +7545,7 @@ Giả định: hệ thống pricing/gợi ý giá, Java 21, heap 32 GB, 2.500 re
 - **Không đo trên workload thật**: benchmark vi mô không phản ánh allocation/pause thực tế.
 
 ### Trả lời mẫu khi phỏng vấn
-"ZGC generational (Java 21+, mặc định từ JDK 23) hướng tới độ trễ rất thấp bằng cách làm phần lớn công việc GC song song với ứng dụng. Nó dùng colored pointers để gắn metadata trạng thái vào con trỏ, load barrier để kiểm tra khi đọc tham chiếu và sửa khi object đã được relocate, cùng concurrent relocation để di chuyển object mà không cần dừng ứng dụng lâu. Chế độ generational giúp tận dụng đặc tính object chết trẻ nên hiệu quả hơn. Tôi chọn ZGC khi SLO p99/p999 rất nghiêm ngặt hoặc heap lớn và G1 đã gây pause ảnh hưởng rõ; chọn G1 khi cần throughput ổn, vận hành đơn giản và latency hiện tại đạt yêu cầu. Trước khi đổi collector, tôi luôn đo bằng GC log/JFR trên workload thật để xem pause, throughput và chi phí CPU."
+"ZGC generational (có từ Java 21, là chế độ mặc định của ZGC từ JDK 23) hướng tới độ trễ rất thấp bằng cách làm phần lớn công việc GC song song với ứng dụng. Nó dùng colored pointers để gắn metadata trạng thái vào con trỏ, load barrier để kiểm tra khi đọc tham chiếu và sửa khi object đã được relocate, cùng concurrent relocation để di chuyển object mà không cần dừng ứng dụng lâu. Chế độ generational giúp tận dụng đặc tính object chết trẻ nên hiệu quả hơn. Tôi chọn ZGC khi SLO p99/p999 rất nghiêm ngặt hoặc heap lớn và G1 đã gây pause ảnh hưởng rõ; chọn G1 khi cần throughput ổn, vận hành đơn giản và latency hiện tại đạt yêu cầu. Trước khi đổi collector, tôi luôn đo bằng GC log/JFR trên workload thật để xem pause, throughput và chi phí CPU."
 
 > Senior tip: thay GC là quyết định có đánh đổi. Hãy có baseline (p99, throughput, CPU, allocation rate) trước và sau; nếu chỉ nhìn "pause thấp hơn" mà bỏ qua CPU/chi phí hạ tầng, bạn có thể tối ưu sai mục tiêu.`,
   follow: ['Load barrier ảnh hưởng hiệu năng thế nào?', 'Khi nào G1 là lựa chọn đủ tốt thay vì ZGC?'],
@@ -7557,33 +7557,58 @@ Giả định: hệ thống pricing/gợi ý giá, Java 21, heap 32 GB, 2.500 re
   topic: 'jvm',
   level: 'senior',
   q: 'JVM trong container: UseContainerSupport, MaxRAMPercentage, active processor count, OOMKilled vs OutOfMemoryError, native memory.',
-  a: `**Tóm tắt:** JVM trong container đọc limit của container (cgroup) nhờ UseContainerSupport (mặc định bật từ JDK 8u191+). MaxRAMPercentage đặt heap = % RAM container. Active processor count ảnh hưởng thread pool mặc định. OOMKilled là kernel kill process (hết memory cgroup) còn OutOfMemoryError là JVM ném exception khi heap đầy. Native memory (metaspace, thread stack, code cache) nằm ngoài heap và theo dõi bằng -XX:NativeMemoryTracking + jcmd VM.native_memory.
+  a: `**Tóm tắt:** Từ JDK 10 (backport về 8u191), JVM đọc giới hạn CPU và memory của container từ cgroup ({{-XX:+UseContainerSupport}}, bật mặc định), nên "RAM của máy" với JVM là **memory limit của pod**. Heap mặc định chỉ bằng 25% limit ({{MaxRAMPercentage=25}}), thường quá nhỏ cho service; tôi đặt khoảng 60–75% và để phần còn lại cho **bộ nhớ ngoài heap** (metaspace, thread stack, code cache, direct buffer, GC). Hai kiểu "chết vì bộ nhớ" khác hẳn nhau: **OutOfMemoryError** là JVM tự ném khi heap (hoặc metaspace, direct memory) hết, có stack trace và heap dump; **OOMKilled** là kernel giết cả process vì tổng RSS vượt limit, không có dòng log Java nào.
 
-### Hiểu nhanh
-Container giống một căn phòng có trần thấp; JVM phải biết trần thấp để không xây tủ cao chạm trần. Nếu không biết, JVM xây tủ cao → bị đập đầu (OOMKilled).
+### JVM biết gì về container
+| Thông tin | JVM đọc từ đâu | Ảnh hưởng tới |
+|---|---|---|
+| Memory limit | cgroup v1 {{memory.limit_in_bytes}} hoặc v2 {{memory.max}} | Heap mặc định, các ngưỡng ergonomics |
+| CPU limit (quota) | {{cpu.max}} (v2) hoặc cfs quota/period (v1) | {{Runtime.availableProcessors()}} |
+| CPU request (shares) | Không còn dùng từ JDK 19 (mặc định trước đó cũng đã bỏ ở các bản mới) | Không ảnh hưởng |
 
-### Cơ chế
-1. UseContainerSupport: JVM đọc cgroup memory/CPU limit.
-2. MaxRAMPercentage: heap = % của limit (mặc định ~25% trước, nên đặt ~75%).
-3. Active processor count: số CPU container → affect ForkJoinPool/commonPool parallelism và GC thread.
-4. OOMKilled: kernel kill khi vượt cgroup memory; không có stack trace Java.
-5. OutOfMemoryError: JVM heap đầy, ném exception.
-6. Native memory: metaspace, thread stack, code cache, direct buffer; NMT theo dõi.
+{{availableProcessors()}} quyết định rất nhiều thứ: số thread GC song song, parallelism của {{ForkJoinPool.commonPool()}} (bằng số CPU trừ 1), số thread mặc định của nhiều thư viện, và cả việc JVM tự chọn GC: máy dưới 2 CPU hoặc dưới khoảng 1792 MB thì JVM tự dùng **Serial GC** thay vì G1. Pod {{limits.cpu: 1}} và limit 1 GiB sẽ âm thầm chạy Serial GC.
 
-### Trên production
-- Triệu chứng: pod restart không log, OOMKilled trong k8s events; hoặc OOM heap.
-- Đo: kubectl describe pod; jcmd VM.native_memory summary.
-- Tuning: MaxRAMPercentage=75, -XX:NativeMemoryTracking=summary, giới hạn thread/direct buffer.
+Kiểm tra JVM thấy gì: {{java -XX:+PrintFlagsFinal -version | grep -E "MaxHeapSize|UseSerialGC|UseG1GC"}} và {{java -Xlog:os+container=info -version}} trong chính image đó.
 
-### Lỗi hay gặp
-- MaxRAMPercentage mặc định thấp → heap nhỏ, throughput thấp.
-- Thread leak → native memory tăng → OOMKilled.
+### Ngân sách bộ nhớ của một pod 2 GiB
+~~~text
+limit 2048 MiB
+ ├─ heap (MaxRAMPercentage=70)        ~1430 MiB
+ ├─ metaspace (Spring Boot vừa)        ~150 MiB
+ ├─ code cache (JIT)                    ~50 MiB
+ ├─ thread stack: 200 thread x 1 MiB  ~200 MiB (chỉ tính phần đã chạm tới)
+ ├─ GC structures (G1 remembered set)  ~50-100 MiB
+ └─ direct buffer, malloc của thư viện  còn lại
+~~~
+Đặt heap 90% limit gần như chắc chắn bị OOMKilled khi tải cao: heap chưa đầy nên JVM không ném OOM, nhưng tổng RSS đã vượt limit.
 
-### Trả lời miệng 1 phút
-"UseContainerSupport làm JVM đọc limit container. MaxRAMPercentage đặt heap theo % RAM. OOMKilled là kernel kill, OutOfMemoryError là JVM exception. Native memory theo dõi bằng NMT + jcmd."
+### OutOfMemoryError và OOMKilled
+| | OutOfMemoryError | OOMKilled |
+|---|---|---|
+| Ai ra tay | JVM | Kernel (cgroup OOM killer) |
+| Dấu vết | Exception + stack trace trong log, heap dump nếu bật {{-XX:+HeapDumpOnOutOfMemoryError}} | Pod restart, {{kubectl describe pod}} ghi {{Last State: Terminated, Reason: OOMKilled, Exit Code: 137}}, log Java dừng đột ngột |
+| Nguyên nhân thường gặp | Heap leak, heap quá nhỏ, metaspace leak, direct buffer | Heap đặt quá sát limit, thread quá nhiều, native leak (thư viện C, direct buffer không giới hạn) |
+| Điều tra | Heap dump với Eclipse MAT | NMT, so RSS với heap committed |
 
-> Senior tip: OOMKilled không có stack trace; luôn bật NMT summary trong production để điều tra.`,
-  follow: ['Cách phân biệt OOMKilled và OutOfMemoryError?', 'NMT summary đọc thế nào?'],
+Mẹo: thêm {{-XX:+ExitOnOutOfMemoryError}} để pod restart sạch ngay khi gặp OOM, thay vì chạy tiếp ở trạng thái hỏng.
+
+### Điều tra bộ nhớ ngoài heap
+~~~bash
+# bật lúc khởi động (tốn khoảng 5-10% hiệu năng ở mức detail, summary nhẹ hơn)
+-XX:NativeMemoryTracking=summary
+jcmd 1 VM.native_memory baseline        # chụp mốc
+jcmd 1 VM.native_memory summary.diff    # sau vài giờ: vùng nào tăng
+~~~
+Các mục cần nhìn: {{Java Heap}} (committed), {{Class}} (metaspace), {{Thread}} (số thread x stack), {{Code}}, {{GC}}, {{Internal}}/{{Other}} (direct buffer). Lưu ý NMT **không** thấy bộ nhớ do thư viện native tự cấp (ví dụ một số driver nén, glibc arena); nếu RSS lớn hơn hẳn tổng NMT, nghi glibc malloc arena (thử {{MALLOC_ARENA_MAX=2}}) hoặc thư viện JNI.
+
+### Ví dụ đời thực
+Service thanh toán chạy pod limit 2 GiB với {{-Xmx1800m}} (copy từ máy ảo cũ). Mỗi ngày 2–3 pod bị OOMKilled vào giờ cao điểm, không có OutOfMemoryError, không có heap dump. NMT cho thấy heap committed 1,8 GiB, metaspace 160 MiB, 340 thread (pool Tomcat 200 + pool gọi đối tác không giới hạn) chiếm khoảng 300 MiB stack, cộng code cache và GC: tổng khoảng 2,4 GiB, vượt limit. Sửa: bỏ {{-Xmx}}, dùng {{-XX:MaxRAMPercentage=70}} (khoảng 1,4 GiB heap), giới hạn pool gọi đối tác 50 thread, thêm {{-XX:+ExitOnOutOfMemoryError}} và alert khi {{container_memory_working_set_bytes}} vượt 90% limit. Heap dump sau đó cho thấy heap thật sự chỉ dùng khoảng 900 MiB. Hai tháng không còn OOMKilled.
+
+### Trả lời mẫu khi phỏng vấn
+"Từ JDK 10 và 8u191, JVM đọc giới hạn của container từ cgroup, nên memory limit và CPU limit của pod là thứ JVM coi là tài nguyên máy. Mặc định heap chỉ bằng 25% limit, nên tôi đặt MaxRAMPercentage khoảng 60 đến 75% thay vì Xmx cứng, để phần còn lại cho metaspace, thread stack, code cache và direct buffer. Tôi luôn phân biệt hai loại lỗi: OutOfMemoryError là JVM ném khi heap hết, có stack trace và heap dump; OOMKilled là kernel giết process vì tổng bộ nhớ vượt limit, không có log Java, nhận ra qua exit code 137 trong kubectl describe. Với OOMKilled tôi bật Native Memory Tracking, so heap committed với RSS và tìm vùng nào tăng, thường là quá nhiều thread hoặc heap đặt quá sát limit. CPU limit cũng quan trọng: dưới 2 CPU JVM tự chọn Serial GC và common pool rất nhỏ, nên tôi kiểm tra cấu hình thực tế bằng PrintFlagsFinal."
+
+> Senior tip: tôi luôn chạy {{java -XX:+PrintFlagsFinal -version}} **bên trong image và với đúng limit của pod** trước khi lên production: đã nhiều lần phát hiện service chạy Serial GC vì {{limits.cpu: 1}}, hoặc heap chỉ 256 MiB trên pod 1 GiB vì không ai đặt MaxRAMPercentage. Quy tắc ngón tay cái của tôi: heap khoảng 70% limit, alert ở 90% working set, và mọi thread pool đều có giới hạn.`,
+  follow: ['Pod bị restart với exit code 137 mà log Java không có lỗi gì: bạn điều tra theo thứ tự nào?', 'Vì sao đặt -Xmx bằng 90% memory limit gần như chắc chắn bị OOMKilled khi tải cao?', 'CPU limit của pod ảnh hưởng thế nào tới GC được chọn và kích thước common pool?'],
   tags: ['container', 'cgroup', 'OOMKilled', 'NMT']
 }
 ,
