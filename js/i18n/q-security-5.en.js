@@ -1,14 +1,15 @@
 /*
- * English translation of js/data/q-security.js — task T656. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-security.js — task T1206 (redo after VI content update).
+ * Format: js/core/i18n.js (content overlay).
  * ids: security-025 security-026 security-027 security-028 security-029 security-030 security-031 security-032
  */
 App.i18n.content({
   'security-025': {
     q: "Managing secrets (DB password, API key) in production: how do you use Vault/AWS Secrets Manager, rotate a DB secret without downtime, and avoid leaking secrets into env/logs?",
-    a: `**Summary:** Never keep secrets in code or in git; read them from a secret manager at runtime, cache them briefly, rotate through dual-credential (two parallel DB users) and only then revoke the old one, once the app is already using the new credential.
+    a: `**Summary:** Never keep secrets in code or in git; read them from a secret manager at runtime, cache them briefly, rotate through dual-credential (two parallel DB users) and only then revoke the old one once the app is already using the new credential.
 
 ### What a secret manager is
-A secret manager (HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager) is a store purpose-built for secrets, with audit trail, versioning, automatic rotation and access control based on IAM (AWS's identity/permission system). The app does not hardcode the secret; it calls an API to fetch the secret at startup, or has the secret mounted as a file/volume.
+A secret manager (HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager) is a store purpose-built for secrets, with audit trail, versioning, automatic rotation and access control based on IAM. The app does not hardcode the secret; it calls an API to fetch the secret at startup, or has the secret mounted as a file/volume.
 
 ### Why plain env vars are not enough
 Env vars leak easily: {{/proc/<pid>/environ}}, core dumps, crash logs, Docker inspect, CI artifacts. A secret manager lets you revoke/rotate on demand and audit who read the value.
@@ -46,6 +47,12 @@ Vault can hand out DB credentials that live for 1 hour and are revoked automatic
 - Partial rotation failure: half the pods still hold the old credential → keep both DB users active until you have verified.
 - Secrets in a Kubernetes configmap (base64 only, not encrypted) — use Sealed Secrets/External Secrets Operator.
 
+### Real-world example
+A company stored the production DB password in a Deployment environment variable (a Kubernetes Secret that is base64 only, not encrypted at rest in etcd) and **printed the full configuration at startup** for debugging. Logs were shipped to a system 120 people could read → the DB password leaked into logs for 8 months. Once discovered, they had to rotate urgently: because the app only read the secret at startup, changing the password broke connections for every pod. The redesign: the secret lives in AWS Secrets Manager, synced into pods by the External Secrets Operator; rotation uses the **alternating two-user** pattern (create/change the password of user B while the app still uses user A, update the secret, rolling restart, then disable user A) so there is no downtime; the Actuator {{/env}} endpoint is internal-only and Spring masks sensitive values by default; a scanner hunts for password-like strings in logs. The 90-day rotation is now an automated 15-minute pipeline.
+
+### Sample interview answer
+"A secret must never live in code, in a config file inside Git, or in an image. I put it in a secret manager like Vault or AWS Secrets Manager and the application fetches it through an integration such as Spring Cloud AWS, Vault, or External Secrets syncing into a Kubernetes Secret, with per-service access via an IAM role. Plain environment variables leak easily through startup logs, crash dumps, debug endpoints, or a pod describe, so they must be restricted. To rotate a DB password without downtime I use two alternating credentials: create or change the password of the second user while the app still uses the first, update the secret, rolling restart or refresh the pool, then disable the old user. Even better are short-lived dynamic credentials such as Vault dynamic secrets or IAM authentication for RDS. And always mask secrets in logs and add an automated scanner."
+
 > Senior tip: I treat a secret as something "with a use-by date", not something "configured once". Every secret must have an owner, a TTL and a rotation procedure that has been tested in staging before production ever needs it.`,
     follow: [
       "Vault dynamic secret vs static secret: when to choose which, and what is the latency trade-off?",
@@ -59,7 +66,7 @@ Vault can hand out DB credentials that live for 1 hour and are revoked automatic
 
 ### One-way TLS vs mTLS
 - One-way TLS: the client verifies the server (the server's certificate). The server has no idea who the client is → you authenticate with a token/API key.
-- mTLS (mutual TLS): both sides present a certificate and verify each other. Identity = the certificate (a SPIFFE ID), no token needed.
+- mTLS: both sides present a certificate and verify each other. Identity = the certificate (a SPIFFE ID), no token needed.
 
 ### Why microservices need mTLS
 Inside a cluster, services call services over the internal network. A token can be stolen and replayed; a certificate is bound to the workload identity, is harder to steal and rotates automatically.
@@ -89,6 +96,15 @@ After authentication via mTLS, enforce authorization: an {{AuthorizationPolicy}}
 - Debugging is harder: traffic is encrypted → use mesh tap/telemetry.
 - A wrong trust domain → cross-cluster calls fail.
 
+### Under the hood: what mTLS adds to the handshake
+One-way TLS: the client checks the server's certificate (correct hostname, signed by a trusted CA). mTLS adds a step where the server sends a **CertificateRequest**, the client sends its own certificate and proves possession of its private key (by signing handshake data); the server verifies the client certificate against an internal CA. In a service mesh, the **sidecar** (Envoy) does this on behalf of the application; the identity is usually a **SPIFFE ID** such as {{spiffe://cluster.local/ns/payments/sa/payment-api}} bound to a ServiceAccount, with short-lived certificates (a few hours) rotated automatically — the application knows nothing about it.
+
+### Real-world example
+A bank trusted the "internal network is safe" assumption: internal services called each other over plain HTTP with no authentication. A penetration test compromised a marketing-service pod (through a library vulnerability) and then called the internal money-transfer API directly. After that: Istio was enabled with **STRICT** mTLS for the payments namespace and an {{AuthorizationPolicy}} that allows only the {{order-service}} identity to call {{/internal/transfer}}. On the next test, the compromised pod could no longer reach the payments service (no valid certificate, no permission). Operational lesson: they ran in **PERMISSIVE** mode for 2 weeks first (accepting both plaintext and mTLS) and watched metrics to find clients without a sidecar, then switched to STRICT — avoiding breaking old jobs.
+
+### Sample interview answer
+"One-way TLS only proves who the server is; mTLS requires the client to present a certificate too, so both sides authenticate each other and you get a service identity to authorize against. In microservices I need mTLS when I do not want to trust the internal network: a compromised pod must not be able to freely call sensitive APIs. Managing certificates for dozens of services by hand is hard, so a service mesh like Istio or Linkerd handles it through a sidecar: it issues an identity per ServiceAccount following the SPIFFE standard, issues short-lived certificates and rotates them before expiry, with no application restart. Combined with authorization policy based on identity, only the permitted service can call a sensitive endpoint. When rolling out, I run permissive mode for a while to detect clients that are not ready, then enable strict."
+
 > Senior tip: mTLS solves "who is calling me" at the network layer; you still need authorization at the application layer for business rules. The mesh is infrastructure, it does not replace domain-level authorization.`,
     follow: [
       "Compare Istio vs Linkerd: when do you choose which?",
@@ -106,7 +122,7 @@ After authentication via mTLS, enforce authorization: an {{AuthorizationPolicy}}
 
 ### The keys you limit on
 - IP (easy to defeat with NAT/VPN).
-- Username/account (stops credential stuffing — attacker replays leaked user/password pairs).
+- Username/account (stops credential stuffing).
 - Device fingerprint / user-agent.
 - Phone number (for OTP).
 
@@ -136,6 +152,12 @@ Use Redis with an atomic Lua script (INCR + EXPIRE) to count across many instanc
 - The attacker rotates IPs (botnet) → you need device fingerprinting + behavioural signals.
 - Permanent lockout is abused by attackers to DoS the victim → use gradual lockout + unlock via email.
 
+### Real-world example
+A banking app was hit by **credential stuffing**: attackers tried 2 million email/password pairs leaked from other sites, distributed across 40,000 IPs, only a few attempts per IP — the IP rate limit (100/minute) did not catch it. About 900 accounts were taken over before detection. Multi-layer defenses: rate limit per **account** (5 consecutive failures → backoff with increasing wait, never a hard lock to avoid attackers locking out other people's accounts), per **device** (fingerprint) and per IP/ASN; CAPTCHA when the risk score is high; check passwords against breach lists; notify on login from a new device; require OTP for new devices. OTP: at most 5 wrong entries per code, the code expires after 2-5 minutes, cap resends per phone number. The attackers' login success rate dropped close to zero while real users were barely affected.
+
+### Sample interview answer
+"I design two layers. The gateway or WAF layer blocks raw traffic: limits by IP, by network range, and stops bots. The application layer limits by business context the gateway does not know: per account, per phone number receiving the OTP, per device. Credential stuffing is usually spread across tens of thousands of IPs, so IP limiting alone is not enough; for the account I use exponential backoff instead of a hard lock, so an attacker cannot lock out someone else's account. I add CAPTCHA when risk is high, breach-password checks, and step-up authentication for new devices. For OTP: wrong-attempt count per code, a short expiry, and a resend cap. Counters live in Redis with atomic operations, for example a Lua script for a token bucket, and I have metrics and alerts when the failed-login rate spikes."
+
 > Senior tip: in banking, rate limiting is a compensating control, not the primary control. What matters more is MFA, transaction signing and anomaly monitoring. I design rate limits to buy time for detection, not to "block absolutely everything".`,
     follow: [
       "How do you implement distributed rate limiting accurately with a Redis cluster?",
@@ -153,7 +175,7 @@ The attacker does not attack your app directly, they come through a compromised 
 ### SBOM (Software Bill of Materials)
 An inventory of every component (library, version, license) inside an artifact. Standards: SPDX/CycloneDX. Generated with Syft/Trivy. Stored next to the release so you can trace back when a new CVE appears.
 
-### Dependency scanning (SCA = Software Composition Analysis)
+### Dependency scanning (SCA)
 - Direct: declared in pom.xml.
 - Transitive: resolve the whole dependency tree ({{mvn dependency:tree}}).
 - Tools: OWASP Dependency-Check, Snyk, Trivy, GitHub Dependabot.
@@ -180,6 +202,12 @@ An inventory of every component (library, version, license) inside an artifact. 
 - Scanning only direct dependencies → you miss transitive ones (log4shell sat in a transitive dep).
 - A permanent CVE allowlist → security debt.
 - Signing images but never verifying at deploy → the signature is meaningless.
+
+### Real-world example
+In March 2024 the **xz-utils** backdoor (CVE-2024-3094) was disclosed. The team got the executive question: "are we affected?". Because they generated an **SBOM** (CycloneDX) for every image in CI and stored it in Dependency-Track, they answered in **15 minutes**: 0 production images used the affected versions (5.6.0/5.6.1), 2 dev images did — rebuilt immediately. Another incident the same year: an npm package had its maintainer account hijacked in frontend tooling; thanks to version pinning via a lockfile and pulling libraries through an **internal proxy registry** (Nexus/Artifactory) with a 7-day quarantine policy for new versions, the malicious version never entered the build. Production images were **signed with cosign** and an admission controller (Kyverno) rejected any image without a valid signature — blocking even a manual push to the registry.
+
+### Sample interview answer
+"A supply chain attack is when an attacker comes in through something we trust: a library, a build tool, a base image, a registry. I defend in layers. An SBOM is generated in CI for every artifact and stored centrally so that when a new CVE appears we immediately know which services are affected. Dependency scanning such as Dependabot, Renovate, Trivy, or OWASP Dependency-Check runs on both direct and transitive dependencies; for a transitive CVE I force the version through dependencyManagement or a BOM, and if no fix exists I assess exploitability and apply mitigations. Libraries are pulled through an internal proxy registry and versions are pinned. Images are signed with cosign and the cluster only runs images with a valid signature via an admission controller. The build pipeline moves toward SLSA levels: isolated builds with provenance."
 
 > Senior tip: supply chain is a "trust but verify" problem. I do not trust the registry or the dependency; I verify at deploy time through an admission policy and audit the provenance. If nothing is verified at runtime, everything before that is just paperwork.`,
     follow: [
@@ -226,6 +254,15 @@ Store {{argon2(legacy_hash(password))}} immediately (a batch migration), without
 - Comparing hashes with == → timing leak; use a constant-time comparison (frameworks already do this).
 - Forgetting a pepper rotation plan.
 
+### Under the hood: why slow hashing is safer
+SHA-256 is designed to be **fast**: a modern GPU computes billions of SHA-256 hashes per second, so an attacker with a stolen hash table can try all common 8-character passwords in a few hours. bcrypt has a **cost factor** (each +1 doubles the time); Argon2id is also **memory-hard**, which makes GPUs/ASICs far less effective. A random salt per password renders rainbow tables useless and makes two users with the same password produce different hashes. Spring Security's {{DelegatingPasswordEncoder}} stores the hash with an algorithm id prefix in curly braces (for example bcrypt, argon2) at the start of the hash string, so multiple algorithms can coexist and {{upgradeEncoding()}} tells you which hashes still need upgrading.
+
+### Real-world example
+A commerce system with 3 million accounts used {{SHA1(salt + password)}}. They migrated without forcing users to change passwords in two steps: (1) immediately **wrapped** every old hash as {{bcrypt(sha1_legacy_hash)}} and marked the type as "wrapped" — after one night no weak hash sat bare in the DB; (2) on every successful login, compute a fresh {{argon2id(password)}} hash from the password just entered and replace it. After 6 months, 78% of accounts were on the new format; the rest were still protected by the bcrypt wrapper. Argon2id parameters were chosen so that one hash took about 200-300 ms on the login server, with rate limiting to prevent CPU-DoS abuse.
+
+### Sample interview answer
+"Passwords must be stored with a slow, salted hash such as bcrypt or Argon2id, not MD5, SHA1, or SHA-256, because those are designed to be fast and a GPU can try billions per second. A random salt per password defeats rainbow tables; a pepper is a shared secret kept outside the DB, for example in a KMS, so a DB leak alone is not enough to crack passwords. Argon2id is also memory-hard, making GPUs less effective; I choose parameters following OWASP guidance and measure so that one hash takes a few hundred milliseconds. To migrate old hashes without forcing a password change, I do it in two steps: immediately wrap old hashes with a strong algorithm so the DB holds no bare weak hashes, then on successful login recompute a proper hash from the password just entered. Spring Security's DelegatingPasswordEncoder supports multiple formats coexisting."
+
 > Senior tip: I set a benchmark: the login hash must take < 200ms on production hardware. If Argon2 parameters push login to 800ms, do users leave and does the attacker still brute-force offline? No — an offline attacker is not rate limited, so higher parameters are still worth it; but you have to balance against UX.`,
     follow: [
       "Argon2id vs bcrypt: benchmarks on the JVM, which library is good (BouncyCastle, Spring Security)?",
@@ -242,10 +279,10 @@ Store {{argon2(legacy_hash(password))}} immediately (a batch migration), without
 - Nobody (not even admin/DBA) can edit or delete it.
 - Integrity can be proven to an auditor/forensic investigator.
 
-### Immutable storage (WORM = Write Once, Read Many)
+### Immutable storage (WORM)
 - AWS S3 Object Lock (Compliance mode): the object cannot be deleted or modified during the retention period, not even by the root account.
 - Azure Immutable Blob, GCP bucket retention.
-- An append-only database table with UPDATE/DELETE privileges revoked; but a DBA can still bypass that → you need a hash chain + an external copy on top.
+- A database append-only table with UPDATE/DELETE privileges revoked; but a DBA can still bypass that → you need a hash chain + an external copy on top.
 
 ### Hash chain (blockchain-like)
 Each audit record:
@@ -285,6 +322,15 @@ Modify one record → the hash no longer matches → detected. Delete a record �
 - The audit log gets huge → sampling? No — finance needs everything. Use columnar storage (Parquet) + daily partitions.
 - Missing idempotency: a retried request writes a duplicate audit row → use an idempotency key.
 
+### Under the hood: how a hash chain detects tampering
+Each audit record stores {{hash = SHA-256(record content + hash of previous record)}}. Editing or deleting any record in the middle changes its hash, and every record after it **no longer verifies** when the chain is recomputed from the start. But someone with DB write access can **recompute the whole chain** — so periodically (for example hourly) you "anchor" the latest hash to a place they do not control: WORM storage (S3 Object Lock in compliance mode), a third party, or sign it with a key in an HSM/KMS that the DB operations team cannot use.
+
+### Real-world example
+During an internal fraud investigation at a financial company, an operator was suspected of changing limits for some customers and then **deleting the corresponding audit rows** from the {{audit_log}} table (they had DBA access). There was no evidence because the audit table was a regular table. After the incident: audit events were written through a dedicated service to Kafka → stored in parallel in PostgreSQL (for querying) and S3 Object Lock (the immutable 7-year copy); each record carried a hash chain, and every hour the latest hash was signed with a KMS key only the audit service could use; a nightly verification job compared the chain in the DB with the copy on S3. Three months later, the job detected a manual audit-data edit (caused by a buggy cleanup script) within 24 hours.
+
+### Sample interview answer
+"A financial audit log needs three properties: completeness — who did what, when, to which data, and from where; tamper-evidence, or at least detection of tampering; and retention for as long as regulation requires. For storage I write the original copy to immutable storage such as S3 Object Lock in compliance mode, in parallel with a DB for querying. To detect tampering, each record contains a hash of itself plus the previous record's hash, so editing one record breaks the chain after it; and because someone with DB access can recompute the whole chain, I periodically anchor the latest hash externally, signed with a KMS or HSM key the operations team cannot use. Separation of duties: operations cannot write to the audit store. I never log secrets or full card data in the audit, and I run a periodic chain-verification job."
+
 > Senior tip: an audit log is evidence, not a debug log. I design it so an independent auditor can verify integrity without trusting our system. If the auditor has to trust our DBA, the audit is worthless.`,
     follow: [
       "Hash chain vs Merkle tree: when do you use which?",
@@ -300,7 +346,7 @@ Modify one record → the hash no longer matches → detected. Delete a record �
 STRIDE = Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege. Each letter is one class of attack you must consider.
 
 ### Step 1: Scope & actors
-The transfer feature: user (mobile/web), API gateway, transfer service, account service, ledger DB, notification, fraud engine, bank partner (ACH/SWIFT). Draw the trust boundaries: internet ↔ edge ↔ internal ↔ DB ↔ external partner. A trust boundary is where an attacker crosses from a zone you control into one you do not.
+The transfer feature: user (mobile/web), API gateway, transfer service, account service, ledger DB, notification, fraud engine, bank partner (ACH/SWIFT). Draw the trust boundaries: internet ↔ edge ↔ internal ↔ DB ↔ external partner.
 
 ### Step 2: Data Flow Diagram (DFD)
 Nodes: process, data store, external entity, data flow. Number every flow (F1: user→gateway, F2: gateway→transfer service, ...). Trust boundaries are the places that need controls.
@@ -312,7 +358,7 @@ Example, flow F3 transfer service → ledger DB:
 - Repudiation: the user denies having sent the money? → audit log + non-repudiation (OTP/biometric approval).
 - Information disclosure: logs containing account numbers? → masking.
 - DoS: flooding the transfer endpoint → rate limit + queue.
-- Elevation of Privilege: user A transfers from account B? → ownership check (a BOLA control).
+- EoP: user A transfers from account B? → ownership check (a BOLA control).
 
 ### Step 4: Risk ranking
 Use likelihood × impact (or DREAD). Example: "EoP: transfer from someone else's account" = critical impact, medium likelihood → priority P1. "DoS on notification" = low.
@@ -321,7 +367,7 @@ Use likelihood × impact (or DREAD). Example: "EoP: transfer from someone else's
 Each threat maps to a concrete control (code, config, process) + an owner + a deadline. Example, the threat "replay OTP" → the control "OTP single-use + 3-minute TTL + bound to the transaction id".
 
 ### Step 6: Verification
-- Unit/integration tests for the control (an ownership-check test).
+- Unit/integration test for the control (an ownership-check test).
 - Penetration test / red team for the top threats.
 - Monitoring & alerting for anomalies (velocity, amount outliers).
 
@@ -338,6 +384,16 @@ For every new feature that touches sensitive data or money; for big changes; per
 - A threat model that is too generic ("SQL injection") → not actionable. Be specific down to the flow and the control.
 - Doing it once and forgetting it → it goes stale. Review whenever the architecture changes.
 - Only developers take part, no security/ops → threats get missed.
+
+### Real-world example
+A "transfer by QR" feature was threat-modeled in a 2-hour session with dev, QA, security, and product. Applying STRIDE to the data flow diagram surfaced 14 threats; the three highest-ranked ones had all occurred at other companies:
+- **Tampering**: the QR encodes the amount and an attacker pastes a fake QR over a shop's real one → controls: display the verified recipient name from the server before confirmation, use a dynamically signed QR.
+- **Spoofing/Elevation**: the confirm-transfer API accepted {{fromAccountId}} from the client → control: take the source account from the token, not from the request (BOLA).
+- **Repudiation**: the customer claims "I didn't transfer" → controls: audit includes device, location, biometric authentication, and device-side transaction signing.
+Each control became a ticket with acceptance criteria and automated security tests. When a pre-launch penetration test ran, no high-severity finding fell in the flows that had been threat-modeled.
+
+### Sample interview answer
+"I do threat modeling at design time, not after the code is done. Step one is to define scope, the assets to protect such as money and customer data, and the actors. Step two is to draw a data flow diagram with trust boundaries: app, gateway, service, DB, partner. Step three applies STRIDE to each component and flow: spoofing identity, tampering data, repudiation, information disclosure, denial of service, elevation of privilege. Step four ranks risks by likelihood and impact. Step five turns each important threat into a concrete control with a ticket and acceptance criteria, for example taking the source account from the token rather than the request. Step six verifies with security tests and a penetration test. The output is the diagram, a ranked threat list with status, and the control tickets; the document is updated whenever the feature changes."
 
 > Senior tip: the most valuable outcome of threat modeling is not the list of threats but the shared understanding the team builds about what is dangerous. I run a 90-minute session with a whiteboard and come out with 10-15 concrete threats, not 100 generic ones.`,
     follow: [
@@ -383,6 +439,12 @@ For every new feature that touches sensitive data or money; for big changes; per
 - Checking only the role, not the object → BOLA.
 - Checking the object only in the controller while internal services call the repository directly → bypass.
 - A JWT with {{alg: none}} or HS256 with a guessable secret → authentication bypass.
+
+### Real-world example
+A wallet's {{GET /api/statements/:statementId}} API only checked "is logged in" and then returned the statement by id — the id was a sequential integer. A security researcher changed the id and downloaded other people's statements (**BOLA**, the #1 issue in the OWASP API Top 10). The same review found **BFLA**: the admin endpoint {{POST /api/admin/refunds}} was hidden in the UI but had no server-side role check. Fixes: every query includes the owner ({{findByIdAndOwnerId(id, currentUserId)}}, return 404 instead of 403 when not found to avoid revealing existence), {{@PreAuthorize("hasRole('REFUND_ADMIN')")}} and place all admin endpoints under a separate {{SecurityFilterChain}} that requires the role; public ids switched to UUIDs (reduces guessing, **does not** replace authorization). Added an automated test: for every endpoint with a resource id, logging in as user A and accessing user B's resource must return 404.
+
+### Sample interview answer
+"BOLA, Broken Object Level Authorization, is when an authenticated user can access an object they do not own just by changing an id in the request; it is the most common API flaw. I prevent it by making every id-based query include the owner condition taken from the token, or by checking authorization via PreAuthorize calling a bean that verifies ownership; if not found I return 404. BFLA, Broken Function Level Authorization, is when a regular user can call a function meant for another role, such as an admin endpoint only hidden in the UI; I prevent it with server-side role checks per endpoint, ideally grouping admin endpoints under a separate security filter chain. Broken Authentication is a flaw in authentication itself: tokens that skip signature, expiry, or audience checks, or no login attempt limiting. I always have automated tests where user A accesses user B's resource for every endpoint."
 
 > Senior tip: authorization is two-dimensional: function-level (are you allowed to perform this action?) and object-level (does this object belong to you?). Many systems do one dimension well and forget the other. I require a test matrix covering both in CI.`,
     follow: [
