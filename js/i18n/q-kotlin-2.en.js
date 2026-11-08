@@ -267,7 +267,7 @@ Without markers, nested lambdas can access the wrong outer receiver:
 @DslMarker
 annotation class RouteDsl
 
-@DslMarker
+@RouteDsl
 class RouteBuilder {
     fun get(path: String, block: RouteBuilder.() -> Unit) { /* ... */ }
 }
@@ -293,6 +293,12 @@ Java sees extensions as static methods in a facade class named after the file, e
 - {{internal}} by default; public only if truly shared API.
 - No extensions on {{Any}}/{{Any?}}.
 - Test nullable receivers and member name collisions.
+
+### Real-world example
+A codebase has nearly 400 scattered extension functions, many with the same name but different behavior ({{String.toMoney()}} in three packages: one rounds, one truncates, one interprets comma as decimal part). Bug: the reconciliation report used the wrong import, off by 0.4% of total amount. The team set conventions: shared extensions only in one module {{common-ext}} with a README listing them; names must clearly state behavior ({{toMoneyRoundedHalfUp}}); no extensions with side effects (calling DB, HTTP) — those must be injectable services; detekt checks for duplicate names. Test DSL configuration uses {{@DslMarker}} to avoid calling functions from the outer scope by mistake. After 2 months, about 120 extensions remain, with no duplicate names.
+
+### Sample interview answer
+"Extensions are convenient but because they are resolved at compile time by import and receiver type, abusing them creates ghost APIs: the reader thinks it's behavior of the class, two extensions with the same name in two packages give different results depending on import. My convention is: extensions only for pure utilities like format, mapping, with no side effects such as calling DB or HTTP, because those need to be injected and mockable; place shared extensions in one clear module with documentation; names must clearly state behavior; no name collisions with members or other extensions. For DSL I use @DslMarker to avoid calling functions from the outer scope, and limit operator overloading and custom infix. Detekt and the review checklist help keep this convention."
 
 > Senior tip: If an extension needs mocking, transactions, or environment configuration, it is no longer an extension — turn it into a bean. This rule keeps code testable and avoids naming conflicts when upgrading libraries.` ,
     follow: ['What happens if a library adds a member with the same name as an extension?', 'What does {{@DslMarker}} prevent in nested DSLs?', 'Why are extensions with side effects harder to test than services?']
@@ -351,8 +357,8 @@ Do not convert back and forth frequently in the hot path; choose the boundary (a
     follow: ['What part of the pipeline does {{flowOn}} affect?', 'How do you bridge Reactor Context and CoroutineContext?', 'Why can infinite Flows hang tests?']
   },
   'kotlin-018': {
-    q: 'You are migrating a multi-module Spring Boot system from Java to Kotlin. What technical points in build, annotation processing, and API boundaries determine success?',
-    a: `**Summary:** Migrate by module/bounded context, maintain clear Java boundaries, and prioritize new or low-change modules. The hard part isn't Kotlin syntax, but multi-language builds, annotation processing (kapt/KSP), Spring/JPA proxies, boundary nullability, and binary compatibility of public APIs.
+    q: 'You are gradually migrating a multi-module Spring Boot system from Java to Kotlin. What technical points in build, annotation processing, and API boundaries determine success or failure?',
+    a: `**Summary:** Migrate gradually by module/bounded context, keep Java boundaries clear, and prioritize new or low-change modules. The hard part is not Kotlin syntax, but multi-language builds, annotation processing (kapt/KSP), Spring/JPA proxies, nullability at boundaries, and binary compatibility of public APIs.
 
 ### Module strategy
 - Choose leaf modules or new modules with low coupling; avoid Java ↔ Kotlin circular dependencies between modules.
@@ -365,7 +371,7 @@ Do not convert back and forth frequently in the hot path; choose the boundary (a
 - KSP is faster and Kotlin-first but only works with supported processors; check MapStruct, Hibernate metamodel, Dagger/Hilt before migrating.
 - Spring Framework 6.1 removed the mechanism to read parameter names from debug info: Java code must be compiled with {{-parameters}}. With Kotlin, Spring reads parameter names via kotlin-reflect, but {{javaParameters = true}} (Spring Boot Gradle plugin enables this) should still be used to avoid errors binding {{@PathVariable}}/{{@RequestParam}} without explicit names.
 - Configure {{kotlin("plugin.spring")}}, {{kotlin("plugin.jpa")}}, all-open/no-arg; verify plugin versions match the compiler.
-- {{jvm-default}} must be consistent across modules; changes affect interface default methods when called from Java.
+- {{jvm-default}} must be consistent across modules; changing it affects interface default methods when called from Java.
 - Pin Kotlin stdlib, use BOM, measure build time before/after; kapt is usually the biggest cost.
 
 ### Java ↔ Kotlin boundary APIs
@@ -382,17 +388,17 @@ Do not convert back and forth frequently in the hot path; choose the boundary (a
 - MockK understands Kotlin better (final classes, {{suspend}}, objects, extensions); Mockito 5 mocks final classes via inline mock makers but is less natural with {{suspend}}. Use {{runTest}} instead of {{runBlocking}} in coroutine tests.
 - Measure APM/agent coroutine context support before rollout.
 
-### Operation and team
+### Operations and team
 - Coding conventions, ktlint/detekt, review checklist for interop; avoid "Kotlin written like Java" and overly clever DSLs.
-- Pair programming, ownership of build plugins, rollback plans.
+- Pair programming, owner of build plugins, rollback documentation.
 - Measure lead time, defect escape, build time, p95; do not measure by number of lines.
 - Keep rollback capability: new modules can be reverted without affecting old ones.
 
 ### Pitfall
-- Big-bang rewrites. Running both kapt and KSP in the same module is allowed (common during migration), but it multiplies build time and is prone to confusion about which processor generates what; have a plan to remove kapt.
+- Big-bang rewrite. Running both kapt and KSP in the same module is allowed (common during gradual migration), but it multiplies build time and is prone to confusion about which processor generates what; have a plan to remove kapt.
 - Forgetting {{javaParameters}} or the Kotlin module — runtime errors only appear in real environments.
 - Upgrading the Kotlin compiler but forgetting Spring/JPA plugins; proxies and no-arg break.
-- Public Kotlin APIs changing signatures silently when adding default parameters or changing nullability.
+- Public Kotlin APIs silently change signatures when adding default parameters or changing nullability.
 
 > Senior tip: Choose a bounded context with a clear API, migrate it together with tests and observability, then compare metrics against baseline before expanding. Investing early in build/annotation processing and Java interop conventions is much cheaper than fixing proxy/deserialization errors scattered around later.` ,
     follow: ['Why is Java source generated by annotation processors hard to see from Kotlin in the same round?', 'What criteria do you use to choose between kapt and KSP?', 'What Kotlin constructs should not appear in public APIs for Java?']
