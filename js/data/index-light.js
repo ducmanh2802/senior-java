@@ -1837,6 +1837,8 @@ window.DATA_INDEX = {
     {"id":"sd-013","title":"Gợi ý từ khoá (autocomplete) cho ô tìm kiếm"},
     {"id":"sd-014","title":"Hệ thống hẹn giờ thực thi hàng chục triệu job"},
     {"id":"sd-015","title":"Gọi xe: tìm tài xế gần nhất theo thời gian thực"},
+    {"id":"sd-016","title":"Flash sale: 1.000 sản phẩm, 200.000 người bấm mua cùng lúc"},
+    {"id":"sd-017","title":"Hệ thống voucher và mã giảm giá có giới hạn lượt dùng"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

@@ -1860,5 +1860,216 @@ WHERE driver_id = :d AND status = 'AVAILABLE';
     'Chuyển sang ghép theo lô mỗi 2 giây: thuật toán và trade-off là gì?'
   ],
   related: ['design-010']
-}
+},
+{
+  id: 'sd-016',
+  title: 'Flash sale: 1.000 sản phẩm, 200.000 người bấm mua cùng lúc',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Sàn thương mại điện tử chạy flash sale 0 giờ: 1.000 chiếc điện thoại giá 1 triệu đồng (giá gốc 20 triệu), mỗi tài khoản chỉ được mua 1 chiếc. Dự kiến 200.000 người dùng mở app chờ, khoảng 50.000 request/giây trong 10 giây đầu. Yêu cầu: **không bán vượt số lượng (oversell)**, không để một người mua hai chiếc, hệ thống chính (giỏ hàng, thanh toán của các đơn khác) không bị sập theo, đơn giữ chỗ mà không thanh toán trong 10 phút thì trả hàng về kho. Bạn có 45 phút. Hãy thiết kế.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: số lượng hàng (1.000), giới hạn mỗi người (1), thời gian giữ chỗ chờ thanh toán (10 phút), có cần công bằng theo thứ tự đến không (thường chỉ cần "không oversell", không cần FIFO tuyệt đối). Non-functional: peak 50.000 RPS, p99 phản hồi "thành công/hết hàng" dưới 1 giây, không ảnh hưởng hệ thống khác. Hỏi: có chống bot không, thanh toán qua cổng nào, có cho huỷ đơn không. Out-of-scope: gợi ý sản phẩm, livestream.` },
+    { name: 'Estimation', minutes: 5, guide: `50.000 RPS nhưng chỉ 1.000 request "thành công": 98% request chỉ cần trả "hết hàng" thật rẻ. Một DB quan hệ chịu vài nghìn UPDATE/giây trên **một dòng** tồn kho là trần (lock hàng đợi); Redis single-thread làm được khoảng 100.000 lệnh đơn giản/giây. Đơn giữ chỗ: 1.000 bản ghi, không đáng kể. Băng thông: 50.000 × 2 KB ≈ 100 MB/s ở edge, phải chặn sớm ở CDN/gateway.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /flash-sales/{saleId}/reservations (Idempotency-Key, userId từ token) → 201 {reservationId, expiresAt} hoặc 409 SOLD_OUT / 409 ALREADY_BOUGHT. GET /flash-sales/{saleId} (trạng thái, còn hàng hay không, qua cache). POST /reservations/{id}/pay. Dữ liệu: Redis key stock:{saleId} (số nguyên), set buyers:{saleId}; DB bảng reservation (id, sale_id, user_id, status PENDING/PAID/EXPIRED, expires_at, UNIQUE(sale_id, user_id)).` },
+    { name: 'High-level design', minutes: 15, guide: `CDN + trang tĩnh đếm ngược; gateway rate limit theo user/IP và chặn trước giờ mở; Redis Lua trừ kho nguyên tử + kiểm tra người mua; ghi reservation qua Kafka (hoặc ghi DB trực tiếp vì chỉ 1.000 dòng); worker hết hạn trả kho; thanh toán đi luồng thường. Tách hạ tầng flash sale (cluster Redis, service riêng) khỏi hệ thống đặt hàng chính.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: script Lua bảo đảm "kiểm tra + trừ" nguyên tử; Redis mất dữ liệu khi failover thì sao (đối soát với DB, giới hạn bằng UNIQUE và CHECK trong DB); trả hàng khi hết hạn và race với thanh toán đến muộn; chống bot (captcha, token xếp hàng, giới hạn thiết bị); hot key Redis; quan sát và kill switch.` }
+  ],
+  rubric: [
+    'Nhận ra 98% request là "hết hàng" và phải trả lời rẻ ở tầng ngoài (cache, gateway, Redis)',
+    'Không trừ tồn kho trực tiếp bằng UPDATE trên một dòng DB ở 50.000 RPS; giải thích hot row/lock',
+    'Trừ kho nguyên tử trong Redis (Lua hoặc DECR có kiểm tra) kèm chống mua trùng mỗi người',
+    'Ràng buộc cuối ở DB: UNIQUE(sale_id, user_id) và tổng đơn không vượt số lượng (đối soát)',
+    'Giữ chỗ có hạn, worker hết hạn trả kho, xử lý race thanh toán đến muộn bằng trạng thái có điều kiện',
+    'Idempotency cho request đặt chỗ và thanh toán',
+    'Rate limit, chống bot, chặn trước giờ mở bán ở edge',
+    'Cô lập hạ tầng flash sale khỏi hệ thống chính (bulkhead), có kill switch',
+    'Xử lý Redis failover/mất dữ liệu và đối soát sau sale',
+    'Giám sát: số còn lại, tỉ lệ 409, độ trễ, lỗi; nêu trade-off FIFO và công bằng'
+  ],
+  reference: `**Tóm tắt:** Flash sale là bài toán **chặn tải sớm** và **trừ kho nguyên tử**. 50.000 request/giây nhưng chỉ 1.000 request thành công, nên thiết kế phải trả lời "hết hàng" thật rẻ ở tầng ngoài cùng, và chỉ để một số nhỏ request chạm tới nơi trừ kho. Trừ kho làm trong Redis bằng script Lua (kiểm tra còn hàng, kiểm tra người này chưa mua, trừ, ghi nhận, tất cả trong một bước nguyên tử). Database giữ ràng buộc cuối cùng (UNIQUE theo người mua) và là nguồn sự thật cho đơn; giữ chỗ có hạn 10 phút, hết hạn thì trả kho.
+
+### Vì sao không trừ kho bằng database
+~~~sql
+UPDATE flash_stock SET remaining = remaining - 1 WHERE sale_id = 7 AND remaining > 0;
+~~~
+Câu này đúng về logic nhưng mọi request đều tranh **một dòng**: mỗi UPDATE giữ row lock tới khi commit, các request khác xếp hàng. Thực tế một dòng nóng chỉ chịu vài nghìn lượt/giây; 50.000 request/giây sẽ làm hàng đợi lock dài, connection pool cạn, và kéo sập cả các API khác dùng chung database. Redis xử lý lệnh tuần tự trên một thread, mỗi lệnh vài micro giây, nên chịu được khoảng 100.000 thao tác/giây trên một key mà không cần lock.
+
+### Kiến trúc
+~~~text
+Client --> CDN (trang tĩnh, đếm ngược, trạng thái còn/hết cache 1s)
+   |
+   v
+API Gateway: chặn trước giờ mở, rate limit 1 req/2s mỗi user, captcha/token xếp hàng
+   |
+   v
+Flash Sale Service (cluster riêng) --Lua--> Redis (stock:7, buyers:7)
+   |  thành công (tối đa ~1.000 lần)
+   v
+Ghi reservation vào DB (UNIQUE sale_id+user_id)  ---> Kafka "reservation-created"
+   |                                                     |
+   v                                                     v
+Trả 201 + reservationId                     Payment flow thường / thông báo
+                                                         |
+Expiry worker: quét reservation PENDING quá hạn --> trả kho (Redis INCR) + EXPIRED
+~~~
+- Trang sản phẩm và trạng thái "còn hàng/hết hàng" phục vụ từ CDN/cache, cập nhật mỗi giây, nên phần lớn người dùng không chạm vào backend.
+- Khi Redis báo hết, service bật cờ **sold_out** trong bộ nhớ: mọi request sau trả 409 ngay, không gọi Redis nữa.
+
+### Trừ kho nguyên tử bằng Lua
+~~~text
+-- KEYS[1] = stock:{sale}, KEYS[2] = buyers:{sale}, ARGV[1] = userId
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then return -2 end   -- đã mua
+local left = tonumber(redis.call('GET', KEYS[1]))
+if left <= 0 then return -1 end                                        -- hết hàng
+redis.call('DECR', KEYS[1])
+redis.call('SADD', KEYS[2], ARGV[1])
+return left - 1
+~~~
+Redis chạy cả script như một lệnh duy nhất, không lệnh nào chen giữa "kiểm tra" và "trừ", nên không thể bán vượt. Hai key dùng chung hash tag (đặt phần sale id trong dấu ngoặc nhọn, ví dụ stock:{7} và buyers:{7}) để nằm cùng một slot khi chạy Redis Cluster.
+
+### Ghi đơn và ràng buộc cuối
+Sau khi Lua trả thành công, service ghi bảng reservation:
+~~~sql
+CREATE TABLE reservation (
+  id          UUID PRIMARY KEY,
+  sale_id     BIGINT NOT NULL,
+  user_id     BIGINT NOT NULL,
+  status      VARCHAR(16) NOT NULL,      -- PENDING, PAID, EXPIRED, CANCELLED
+  expires_at  TIMESTAMPTZ NOT NULL,
+  UNIQUE (sale_id, user_id)              -- lưới an toàn cuối: một người một đơn
+);
+~~~
+Chỉ khoảng 1.000 lần ghi, database chịu thoải mái. Nếu ghi DB lỗi sau khi Redis đã trừ, service gọi script hoàn kho (INCR và SREM) rồi trả lỗi; một job đối soát định kỳ so số lượng trong Redis với số reservation PENDING/PAID để sửa lệch.
+
+### Hết hạn giữ chỗ và race với thanh toán
+~~~sql
+-- worker mỗi 10 giây
+UPDATE reservation SET status = 'EXPIRED'
+WHERE status = 'PENDING' AND expires_at < now()
+RETURNING sale_id, user_id;            -- với mỗi dòng: Redis INCR stock, SREM buyers
+-- thanh toán xác nhận
+UPDATE reservation SET status = 'PAID' WHERE id = ? AND status = 'PENDING';
+~~~
+Cả hai đều là cập nhật **có điều kiện trên trạng thái**: nếu thanh toán đến đúng lúc worker vừa đánh EXPIRED, câu UPDATE của thanh toán ảnh hưởng 0 dòng, service hoàn tiền tự động (hoặc cho phép mua nếu kho còn), không bao giờ có hai trạng thái cùng thắng.
+
+### Chống bot và công bằng
+- Chặn ở gateway trước giờ mở (request tới sớm trả 425/403 ngay), token mua do trang chờ cấp kèm captcha.
+- Rate limit theo user, thiết bị, IP; giới hạn một tài khoản xác thực số điện thoại.
+- Hàng đợi ảo (virtual waiting room) nếu cần công bằng theo thứ tự: người dùng nhận số thứ tự, chỉ một nhóm được vào trang mua mỗi giây. Đổi lại tốn công vận hành; nhiều sàn chấp nhận "ai nhanh hơn thì được" kèm chống bot.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Redis primary chết, replica chưa kịp nhận vài lệnh DECR | Kho trong Redis lớn hơn thực tế, có thể bán vượt vài chiếc | UNIQUE trong DB chặn mua trùng; đối soát tổng reservation, vượt thì huỷ đơn cuối kèm voucher xin lỗi; dùng WAIT 1 0 sau script nếu chấp nhận trễ thêm |
+| Ghi DB lỗi sau khi Redis trừ | Kho "mất" một chiếc | Hoàn kho ngay trong luồng lỗi + job đối soát |
+| Service flash sale quá tải | Lỗi 5xx | Cluster riêng, autoscale trước giờ G, kill switch tắt sale mà không ảnh hưởng hệ thống chính |
+| Bot spam | Người thật không mua được | Captcha, token, rate limit, phát hiện bất thường |
+
+### Giám sát
+Số còn lại theo thời gian thực, tỉ lệ 201/409/429/5xx, p99 latency, số reservation PENDING sắp hết hạn, số lệch khi đối soát Redis với DB. Diễn tập tải (load test 2 lần peak) một tuần trước sự kiện.
+
+> Senior tip: điều quan trọng nhất khi trả lời bài này là nói rõ **đâu là nguồn sự thật cho mỗi thứ**: Redis là nguồn sự thật cho "còn được bán không" trong lúc sale (nhanh, chấp nhận lệch nhỏ khi failover), database là nguồn sự thật cho "ai đã mua" (UNIQUE, bền vững), và một job đối soát nối hai bên. Interviewer thường hỏi tiếp "Redis chết thì sao", và câu trả lời tốt luôn có con số: lệch tối đa bao nhiêu chiếc và xử lý phần lệch thế nào với khách.`,
+  followups: [
+    'Nếu yêu cầu tuyệt đối không được bán vượt dù chỉ một chiếc kể cả khi Redis failover, bạn đổi thiết kế thế nào và mất gì?',
+    'Thay vì 1 sản phẩm, flash sale có 500 sản phẩm khác nhau cùng mở lúc 0 giờ: hot key và phân bổ Redis thay đổi ra sao?',
+    'Làm sao triển khai hàng đợi ảo (waiting room) để công bằng theo thứ tự đến?',
+    'Khách đã thanh toán nhưng đơn bị đánh hết hạn do callback cổng thanh toán đến muộn: luồng xử lý thế nào?'
+  ],
+  related: ['design-004', 'scenario-049', 'scenario-051', 'scenario-008']
+},
+{
+  id: 'sd-017',
+  title: 'Hệ thống voucher và mã giảm giá có giới hạn lượt dùng',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống voucher cho sàn thương mại điện tử: marketing tạo chiến dịch (giảm 50.000 đồng cho đơn từ 300.000, tối đa 100.000 lượt toàn hệ thống, mỗi khách 1 lượt, hiệu lực 7 ngày), khách "lưu" voucher vào ví rồi áp dụng khi thanh toán. Quy mô: 30 triệu khách, 2.000 đơn/giây giờ cao điểm, một chiến dịch lớn có thể có 1 triệu lượt lưu trong 5 phút đầu. Yêu cầu: **không vượt tổng lượt**, không dùng một voucher hai lần, đơn huỷ thì hoàn lượt. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt loại voucher: mã công khai (nhập tay) và voucher cá nhân (đã lưu vào ví); điều kiện áp dụng (giá trị đơn tối thiểu, ngành hàng, kênh thanh toán); giới hạn: tổng lượt, mỗi khách, theo ngày; có cộng dồn nhiều voucher không. Vòng đời: tạo → phát/lưu → giữ (reserve) khi tạo đơn → dùng (redeem) khi thanh toán thành công → hoàn khi huỷ. Non-functional: kiểm tra voucher dưới 50 ms, không vượt lượt, audit đầy đủ.` },
+    { name: 'Estimation', minutes: 5, guide: `30 triệu khách × trung bình 10 voucher trong ví = 300 triệu dòng user_voucher (khoảng 100 byte/dòng ≈ 30 GB, cần partition theo user). 2.000 đơn/giây, mỗi đơn kiểm tra 3–5 voucher ứng viên → 10.000 lượt đọc/giây (cache được). Lượt lưu đột biến 1 triệu trong 5 phút ≈ 3.300 ghi/giây trên **một** bộ đếm tổng lượt: hot counter.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /vouchers/{campaignId}/claim (Idempotency-Key) → lưu vào ví. GET /wallet/vouchers?cartValue=... → danh sách áp dụng được. POST /orders (kèm voucherIds) → reserve. Bảng campaign (id, rule JSON, total_quota, per_user_limit, starts_at, ends_at); user_voucher (user_id, campaign_id, status CLAIMED/RESERVED/USED/EXPIRED, order_id, version) PK (user_id, campaign_id); voucher_ledger (append-only: claim, reserve, redeem, release).` },
+    { name: 'High-level design', minutes: 15, guide: `Voucher service tách khỏi Order service; rule engine đánh giá điều kiện; quota counter trong Redis (hoặc chia nhỏ quota thành nhiều shard) cho lượt lưu; user_voucher trong DB phân vùng theo user; reserve trong cùng luồng tạo đơn bằng saga/TCC: reserve khi tạo đơn, confirm khi thanh toán, release khi huỷ hoặc quá hạn; outbox để đồng bộ sự kiện.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: hot counter tổng lượt (Redis DECR, quota sharding, cấp phát theo lô cho từng instance); idempotency khi khách bấm lưu nhiều lần; race áp dụng cùng một voucher cho hai đơn song song (UPDATE có điều kiện trên trạng thái); hoàn lượt khi huỷ và chống gian lận (tạo đơn rồi huỷ để giữ voucher); mã công khai bị lộ; đối soát ngân sách marketing.` }
+  ],
+  rubric: [
+    'Phân biệt rõ vòng đời claim, reserve, redeem, release và trạng thái tương ứng',
+    'Chống vượt tổng lượt với hot counter: Redis nguyên tử hoặc chia quota theo shard/lô, có đối soát',
+    'Chống dùng trùng: UPDATE có điều kiện trên trạng thái/version, UNIQUE theo (user, campaign)',
+    'Reserve khi tạo đơn, confirm khi thanh toán, release khi huỷ hoặc hết hạn (saga/TCC)',
+    'Idempotency cho claim và cho reserve theo orderId',
+    'Rule engine đánh giá điều kiện áp dụng, cache campaign',
+    'Dữ liệu ví phân vùng theo user, ước lượng dung lượng',
+    'Ledger append-only để audit và đối soát ngân sách',
+    'Chống gian lận: giới hạn theo thiết bị/tài khoản, mã công khai bị lộ',
+    'Nêu trade-off nhất quán chặt và hiệu năng'
+  ],
+  reference: `**Tóm tắt:** Voucher là bài toán **đếm có giới hạn dưới tải cao** cộng **máy trạng thái không được chạy hai lần**. Tách vòng đời thành bốn bước: **claim** (lưu vào ví, trừ quota tổng), **reserve** (gắn vào đơn khi tạo đơn), **redeem** (xác nhận khi thanh toán thành công), **release** (hoàn khi đơn huỷ hoặc giữ chỗ hết hạn). Quota tổng là một hot counter nên đặt ở Redis (DECR nguyên tử) hoặc chia thành nhiều shard; mọi chuyển trạng thái của từng voucher là UPDATE có điều kiện trong DB để không thể dùng hai lần. Mọi thay đổi ghi vào ledger append-only để đối soát ngân sách marketing.
+
+### Vòng đời và trạng thái
+~~~text
+           claim                 reserve(orderId)            redeem(orderId)
+(campaign) -----> CLAIMED  ---------------------> RESERVED ------------------> USED
+                     ^                                |
+                     |        release (huỷ đơn, hết hạn giữ 30 phút)
+                     +--------------------------------+
+CLAIMED --(hết hạn chiến dịch)--> EXPIRED
+~~~
+Mỗi mũi tên là một câu UPDATE có điều kiện trên trạng thái hiện tại:
+~~~sql
+-- reserve: chỉ thành công nếu voucher đang CLAIMED và còn hạn
+UPDATE user_voucher
+SET status = 'RESERVED', order_id = :orderId, reserved_at = now()
+WHERE user_id = :userId AND campaign_id = :campaignId
+  AND status = 'CLAIMED' AND expires_at > now();
+-- 0 dòng => voucher đã được dùng cho đơn khác hoặc hết hạn => từ chối
+~~~
+Hai đơn song song cùng dùng một voucher: chỉ một câu UPDATE thắng, câu kia ảnh hưởng 0 dòng. Gọi lại reserve với cùng orderId (retry) phải trả thành công: kiểm tra {{status = 'RESERVED' AND order_id = :orderId}} trước khi báo lỗi.
+
+### Quota tổng: hot counter
+Một triệu lượt claim trong 5 phút đổ vào **một** bộ đếm. Ba lựa chọn:
+| Cách | Thông lượng | Độ chính xác | Ghi chú |
+|---|---|---|---|
+| UPDATE campaign SET remaining = remaining - 1 WHERE remaining > 0 | Vài nghìn/giây trên một dòng | Tuyệt đối | Lock dòng nóng, dễ nghẽn |
+| Redis DECR (Lua kiểm tra không âm) | Khoảng 100.000/giây | Lệch nhỏ khi failover | Đối soát với ledger |
+| Chia quota thành 16 shard (16 key hoặc 16 dòng), chọn shard ngẫu nhiên | Gấp 16 lần | Tuyệt đối nếu ở DB | Khi một shard hết thì thử shard khác |
+Thực tế: Redis DECR cho đường nóng, DB ghi user_voucher với PK (user_id, campaign_id) bảo đảm mỗi người một lượt, job đối soát mỗi phút so tổng claim trong DB với quota.
+
+### Kiến trúc
+~~~text
+App --> API Gateway --> Voucher Service --(DECR quota)--> Redis
+                          |  rule engine (campaign cache 30s)
+                          v
+                  DB user_voucher (partition theo hash user_id) + voucher_ledger
+                          ^
+Order Service --reserve/confirm/release (đồng bộ, idempotent theo orderId)--+
+                          |
+                     outbox --> Kafka (voucher-events) --> báo cáo ngân sách, CRM
+~~~
+- **Áp dụng khi checkout**: Order Service gọi reserve trong luồng tạo đơn (đồng bộ, timeout 200 ms); thanh toán thành công thì gọi redeem; đơn huỷ hoặc không thanh toán sau 30 phút thì release. Đây là saga dạng TCC: Try (reserve), Confirm (redeem), Cancel (release).
+- **Rule engine**: điều kiện (giá trị đơn tối thiểu, ngành hàng, kênh thanh toán, khung giờ) lưu dạng JSON có version, cache theo campaign; đánh giá trên snapshot giỏ hàng gửi kèm.
+
+### Chống gian lận
+- Mã công khai bị đăng lên mạng: giới hạn theo tài khoản đã xác thực, thiết bị, phương thức thanh toán; mã cá nhân gắn với user thay vì mã chung.
+- Tạo đơn rồi huỷ để "giữ" voucher: reserve có hạn 30 phút; huỷ nhiều lần thì hạ mức ưu tiên hoặc không hoàn lượt.
+- Bot claim hàng loạt: rate limit, captcha khi claim chiến dịch lớn.
+
+### Đối soát ngân sách
+voucher_ledger ghi mọi sự kiện (claim, reserve, redeem, release) kèm số tiền giảm. Báo cáo cuối ngày: tổng redeem × giá trị giảm phải khớp chi phí marketing ghi nhận ở kế toán; số CLAIMED + RESERVED + USED không vượt quota.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Redis mất vài DECR khi failover | Có thể vượt quota vài lượt | Đối soát, chặn claim khi DB vượt quota, chấp nhận lệch nhỏ đã thống nhất với marketing |
+| Order Service gọi reserve timeout | Không biết đã reserve chưa | Retry cùng orderId (idempotent), release theo hạn nếu đơn không tạo |
+| Đơn huỷ nhưng sự kiện huỷ bị mất | Voucher kẹt RESERVED | Job quét RESERVED quá hạn đối chiếu trạng thái đơn |
+| Campaign sửa điều kiện khi đang chạy | Đơn cũ/mới đánh giá khác nhau | Rule có version, đơn lưu version đã áp dụng |
+
+> Senior tip: hãy nói rõ voucher là **tiền** của công ty: mọi lượt dùng phải có dấu vết trong ledger và đối soát được với kế toán. Interviewer đánh giá cao ứng viên chủ động hỏi "lệch quota bao nhiêu lượt thì marketing chấp nhận được", vì câu trả lời quyết định chọn Redis (nhanh, lệch nhỏ khi sự cố) hay counter chia shard trong DB (chậm hơn, chính xác tuyệt đối).`,
+  followups: [
+    'Cho phép cộng dồn tối đa 3 voucher (một của shop, một của sàn, một freeship): chọn tổ hợp tốt nhất cho khách thế nào?',
+    'Marketing muốn tăng quota giữa chiến dịch hoặc dừng khẩn cấp: thiết kế thay đổi ra sao?',
+    'Hoàn tiền một phần cho đơn đã dùng voucher: phân bổ giá trị giảm cho từng sản phẩm thế nào?',
+    'Làm sao phát hiện và chặn nhóm tài khoản ảo săn voucher?'
+  ],
+  related: ['scenario-050', 'scenario-056', 'design-004']
+},
 ];
