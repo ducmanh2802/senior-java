@@ -1191,7 +1191,18 @@ Spring AMQP mặc định dùng ack mode AUTO: hàm trả về bình thường t
 ### Trả lời miệng 1 phút
 "RabbitMQ là message broker: producer gửi vào exchange, exchange phân phát theo binding vào queue, consumer đọc và ack để xác nhận xử lý xong. Nếu consumer chết trước khi ack, message được giao lại, nên consumer phải idempotent; poison message thì đưa sang DLQ để không chặn hàng. Tôi dùng RabbitMQ cho hàng đợi công việc và pub-sub router linh hoạt, còn luồng sự kiện cần đọc lại và throughput cao thì chọn Kafka. Khi cấu hình, tôi bật durable queue, persistent message và giới hạn prefetch để chia đều việc."
 
-> Senior tip: RabbitMQ Management UI (cổng 15672) cho thấy ngay độ sâu queue, tỉ lệ redeliver và kết nối consumer — hãy mở nó mỗi lần deploy để "nhìn" hàng đợi trước khi người dùng phàn nàn. Và với Spring Boot, bật publisher confirms ({{spring.rabbitmq.publisher-confirm-type=correlated}}) để biết message đã thực sự tới broker, chứ không chỉ "đã gọi gửi".`,
+### Ví dụ đời thực
+  **Triệu chứng:** Dịch vụ email xác nhận (consumer {{notification-email}}) bỏ sót email. Queue {{order.events}} trên RabbitMQ Management UI tăng từ ~200 lên 12.000 message trong 2 giờ, dù producer chỉ ~50 msg/giây. Tỉ lệ {{redeliver}} nhảy từ <1% lên 38%. Users phàn nàn "đã thanh toán nhưng chưa nhận email".
+
+  **Điều tra:** Mở Management UI → queue {{order.events}} thấy {{Messages ready}} tăng vọt, {{Messages unacknowledged}} dao động. Tab Consumers: instance {{notification-email-v2}} báo redeliver liên tục. Log consumer (Spring AMQP, ack AUTO) thấy {{NullPointerException}} khi parse message thiếu field {{couponCode=null}} — field mới thêm trong deploy trước. Vì {{default-requeue-rejected=true}} (mặc định), message reject → requeue ngay → message đó quay vòng mãi. Với {{prefetch=100}} (mặc định), consumer ôm 100 message; message đầu là poison → consumer kẹt, không xử lý message sau.
+
+  **Nguyên nhân gốc:** (1) Poison message: dữ liệu thiếu field mới, consumer throw. (2) Auto-requeue=default true → message lặp mãi thay vì loại bỏ. (3) Không DLQ để tách message lỗi. (4) Prefetch 100 → một consumer bị poison message thì không phân phát lại message khác cho consumer khác.
+
+  **Cách xử lý:** (1) Bật retry có giới hạn: {{spring.rabbitmq.listener.simple.retry.enabled=true}}, {{max-attempts=3}}; sau hết lượt → reject không requeue. (2) Cấu hình dead-letter exchange: {{x-dead-letter-exchange=order.dl}}, {{x-dead-letter-routing-key=order.failed}}. (3) {{default-requeue-rejected=false}}. (4) Giảm prefetch xuống 10-20. (5) Idempotency: bảng {{processed_events}} check event id trước khi gửi email.
+
+  **Kết quả đo được:** Queue giảm từ 12.000 xuống <500 trong ~30 phút. Redeliver từ 38% xuống <0,5%. Message lỗi tự vào DLQ, xử lý bởi job nightly. Không còn email bỏ sót do poison message.
+
+  > Senior tip: RabbitMQ Management UI (cổng 15672) cho thấy ngay độ sâu queue, tỉ lệ redeliver và kết nối consumer — hãy mở nó mỗi lần deploy để "nhìn" hàng đợi trước khi người dùng phàn nàn. Và với Spring Boot, bật publisher confirms ({{spring.rabbitmq.publisher-confirm-type=correlated}}) để biết message đã thực sự tới broker, chứ không chỉ "đã gọi gửi".`,
   follow: ['Ack và nack khác nhau thế nào, khi nào message bị redeliver?', 'Bạn xử lý thế nào khi consumer RabbitMQ bị crash giữa chừng và cần đảm bảo không mất việc?', 'Kafka khác RabbitMQ về mô hình lưu trữ và đọc lại ra sao, khi nào chọn cái nào?'],
   tags: ['RabbitMQ', 'exchange', 'queue', 'ack', 'message broker', 'nhập môn']
 },
@@ -1271,7 +1282,20 @@ Với dependency {{spring-boot-starter-oauth2-client}} và {{http.oauth2Login(Cu
 ### Trả lời miệng 1 phút
 "OAuth2 là giao thức ủy quyền: client không biết mật khẩu user mà nhận access token từ authorization server để gọi resource server. OIDC xây trên OAuth2 và thêm id_token để xác thực user là ai. Luồng authorization code gồm: user đăng nhập và đồng ý tại authorization server, server redirect về app kèm mã code, backend đổi code lấy access token và id_token, rồi verify id_token để đăng nhập. Tôi luôn dùng PKCE cho client public, validate state chống CSRF, và chỉ lưu secret ở backend."
 
-> Senior tip: khi chọn nhà cung cấp identity, đừng chỉ so số tính năng — hãy xem **cửa sổ thu hồi token** và hỗ trợ refresh token rotation; "đăng xuất khỏi mọi thiết bị" hay "khóa tài khoản bị đánh cắp" có nhanh hay không phụ thuộc vào cấu hình này, và là câu hỏi phỏng vấn thực tế cho Senior.`,
+### Ví dụ đời thực
+  **Bối cảnh:** App web của công ty có tính năng "đăng nhập bằng Google". Đội backend vừa triển khai bản mới với Spring Security OAuth2 Client.
+
+  **Triệu chứng:** User báo "bấm đăng nhập Google xong, bị quay về trang login, không vào được". Lượng báo tăng nhanh; ~30% người dùng không đăng nhập được. Khi debug, dev thấy redirect tới Google thành công, Google trả code về redirect_uri, nhưng backend báo "invalid_grant" khi đổi token.
+
+  **Điều tra:** Kiểm tra log backend (filter {{OAuth2LoginAuthenticationProvider}}): {{invalid_grant}} — nghĩa là code đã dùng hoặc expired. Kiểm tra {{state}}: log ghi {{state mismatch}} ở một số request. Kiểm tra cookie session: app dùng {{SameSite=Lax}} nhưng redirect_uri của app khác (tên domain mới) nên cookie không gửi khi redirect về domain mới. Đồng thời, trong CI, {{client_secret}} được inject bằng env var nhưng deploy production lại quên set → secret rỗng, Google reject.
+
+  **Nguyên nhân gốc:** (1) {{state}} mismatch do cookie {{SameSite}} không gửi cross-site khi redirect về domain mới (khoảng cách deploy). (2) {{client_secret}} rỗng trên production do env var quên set. (3) Code được dùng 1 lần: dev debug nhiều lần bằng cùng redirect_uri → code đã hết hạn.
+
+  **Cách xử lý:** (1) Set {{client_secret}} trong Secrets Manager, validate deploy script check non-empty. (2) Chuyển sang cookie-based session (backend giữ token) thay vì localStorage, hoặc set {{SameSite=None; Secure}} nếu cần cross-site. (3) Kích hoạt PKCE ({{authorization_code+PKCE}}) để client public không cần secret. (4) Validate {{state}} bắt buộc; nếu mismatch → redirect về login, không tự động retry.
+
+  **Kết quả đo được:** Sau deploy, tỉ lệ đăng nhập thành công từ ~70% lên 99,2%. {{invalid_grant}} giảm về 0; không còn {{state mismatch}}. Dev debug code nhanh hơn nhờ PKCE (không cần secret).
+
+  > Senior tip: khi chọn nhà cung cấp identity, đừng chỉ so số tính năng — hãy xem **cửa sổ thu hồi token** và hỗ trợ refresh token rotation; "đăng xuất khỏi mọi thiết bị" hay "khóa tài khoản bị đánh cắp" có nhanh hay không phụ thuộc vào cấu hình này, và là câu hỏi phỏng vấn thực tế cho Senior.`,
   follow: ['OAuth2 và OIDC khác nhau thế nào, vì sao đăng nhập bằng Google cần OIDC?', 'PKCE giải quyết vấn đề gì, nó hoạt động ra sao?', 'Access token và id_token khác nhau về mục đích và cách kiểm tra ra sao?'],
   tags: ['OAuth2', 'OIDC', 'authorization code', 'token', 'nhập môn']
 },
@@ -1348,7 +1372,20 @@ Spring Boot 3.x không có starter gRPC trong bộ starter chuẩn. Lựa chọn
 ### Trả lời miệng 1 phút
 "gRPC là RPC dùng protobuf làm định dạng message và HTTP/2 làm giao thức. Protobuf là IDL: khai báo message và service một lần trong file .proto, protoc sinh code Java cho cả client và server, message mã hoá nhị phân kèm số thứ tự field nên rất nhỏ. HTTP/2 cho phép multiplex nhiều stream trên một kết nối và nén header, nên độ trễ và băng thông tốt hơn REST/JSON. Tôi chọn gRPC cho service nội bộ cần hiệu năng hoặc streaming, giữ REST cho API công khai; và luôn đặt deadline khi gọi, không tái sử dụng số field protobuf."
 
-> Senior tip: với hệ thống nhiều service, một kiến trúc phổ biến là **REST ở biên (client) + gRPC bên trong**; và nếu cần quan sát, dùng interceptor của gRPC để gắn trace context (OpenTelemetry) — thiếu nó, distributed tracing sẽ "mù" với mọi luồng gRPC, rất khó điều tra sự cố.`,
+### Ví dụ đời thực
+  **Bối cảnh:** Hệ thống thanh toán nội bộ: {{payment-service}} (Java, gRPC) gọi {{fraud-service}} (Go, gRPC) để kiểm tra gian dận. Gọi ~500 req/s, p99 latency 12ms. Sau khi thêm 1 service mới, p99 tăng lên 85ms, và một số request timeout (deadline 100ms).
+
+  **Triệu chứng:** p99 tăng; metric {{grpc_client_latency}} (Prometheus) cho thấy 80% thời gian ở {{fraud-service}} handling. Kiểm tra interceptor: trace OpenTelemetry chỉ thấy 60% request có trace — trace "mù" với gRPC.
+
+  **Điều tra:** (1) Kiểm tra load balancing: client gRPC dùng {{round_robin}} nhưng kết nối HTTP/2 giữ lâu; 1 instance {{fraud-service}} nhận 70% traffic do connection affinity. (2) Kiểm tra deadline: client không set deadline → downstream treo kéo sập upstream. (3) Kiểm tra interceptor: không gắn trace context vào gRPC metadata → distributed tracing mất một phần.
+
+  **Nguyên nhân gốc:** (1) Connection affinity: HTTP/2 multiplex nhưng một client có thể dồn vào một server. (2) Thiếu deadline khi gọi gRPC → downstream treo kéo sập cả upstream. (3) Thiếu interceptor gRPC để gắn trace context → distributed tracing "mù" với mọi luồng gRPC.
+
+  **Cách xử lý:** (1) Client-side LB: {{round_robin}} hoặc service mesh (Istio/Linkerd). (2) Đặt deadline: {{withDeadlineAfter(Duration.ofMillis(80))}}. (3) Thêm gRPC interceptor để gắn trace context (OpenTelemetry). (4) Thêm retry có giới hạn: chỉ retry trên các error có thể retry được (UNAVAILABLE, RESOURCE_EXHAUSTED), không retry DEADLINE_EXCEEDED.
+
+  **Kết quả đo được:** p99 giảm từ 85ms xuống 18ms. Tỉ lệ request timeout từ 5% xuống 0%. Trace coverage từ 60% lên 99%.
+
+  > Senior tip: với hệ thống nhiều service, một kiến trúc phổ biến là **REST ở biên (client) + gRPC bên trong**; và nếu cần quan sát, dùng interceptor của gRPC để gắn trace context (OpenTelemetry) — thiếu nó, distributed tracing sẽ "mù" với mọi luồng gRPC, rất khó điều tra sự cố.`,
   follow: ['Protobuf mã hoá nhị phân thế nào, vì sao số thứ tự field quan trọng cho tương thích?', 'Deadline và retry nên cấu hình thế nào khi gọi gRPC, vì sao không retry mọi lỗi?', 'Khi nào cần API gateway dịch giữa gRPC và REST?'],
   tags: ['gRPC', 'protobuf', 'HTTP/2', 'RPC', 'nhập môn']
 },
@@ -1437,7 +1474,20 @@ Công thức chọn: **PostgreSQL là nguồn dữ liệu chính (source of trut
 ### Trả lời miệng 1 phút
 "Elasticsearch dùng inverted index: từ khoá trỏ tới danh sách tài liệu chứa nó, nên tìm full-text nhanh dù dữ liệu lớn. Mapping mô tả kiểu từng trường, và tôi phân biệt text (tìm full-text) với keyword (filter/sort/aggregate). Analyzer quyết định text được tokenize ra sao, quan trọng với tiếng Việt. Tôi chỉ thêm ES khi bài toán là tìm kiếm mờ, facet phức tạp trên dữ liệu lớn; còn transaction và nguồn dữ liệu chính vẫn để ở PostgreSQL, đồng bộ sang ES bằng CDC."
 
-> Senior tip: đo **cluster health và phân bổ shard** trước khi mở rộng node; và với tiếng Việt, hãy tự kiểm tra analyzer ("Khách sạn" vs "khach san" có khớp không) ngay từ đầu — sai analyzer chỉ lộ ra khi đã có dữ liệu và chi phí reindex rất đắt.`,
+### Ví dụ đời thực
+  **Bối cảnh:** App tìm kiếm sản phẩm (10 triệu sản phẩm). Ban đầu dùng PostgreSQL {{LIKE '%...%'}}. Sau khi dữ liệu tăng, trang tìm kiếm thường mất 5-10 giây khi người dùng gõ từ khóa.
+
+  **Triệu chứng:** Trang tìm kiếm bị chậm (p99 8s). PostgreSQL log thấy query {{SELECT ... FROM products WHERE name ILIKE '%điện thoại%'}} quét toàn bảng (Seq Scan). CPU DB 90%. Người dùng bỏ đi.
+
+  **Điều tra:** Kiểm tra EXPLAIN: Seq Scan trên 10 triệu dòng. Kiểm tra index: không có index cho {{name}}. Kiểm tra ES: chưa dùng ES; chỉ dùng PostgreSQL.
+
+  **Nguyên nhân gốc:** Dùng {{LIKE '%...%'}} trên bảng lớn → B-tree index không dùng được (ký tự {{%}} ở đầu). PostgreSQL phải quét toàn bảng mỗi truy vấn. Với 10 triệu sản phẩm, mỗi query mất vài giây.
+
+  **Cách xử lý:** (1) Triển khai Elasticsearch làm bản sao tối ưu cho tìm kiếm. (2) Đồng bộ bằng CDC (Debezium) hoặc outbox. (3) Mapping: {{name}} là {{text}} với analyzer tiếng Việt (bỏ dấu, viết thường), {{category}} là {{keyword}} (filter/sort/aggregate). (4) Dùng alias để reindex không downtime. (5) Giữ PostgreSQL là nguồn dữ liệu chính (source of truth), chỉ dùng ES để tìm kiếm.
+
+  **Kết quả đo được:** Sau khi triển khai, p99 tìm kiếm từ 8s xuống 80ms. CPU DB từ 90% xuống 30%. Tỉ lệ bỏ đi do chậm từ 40% xuống <5%.
+
+  > Senior tip: đo **cluster health và phân bổ shard** trước khi mở rộng node; và với tiếng Việt, hãy tự kiểm tra analyzer ("Khách sạn" vs "khach san" có khớp không) ngay từ đầu — sai analyzer chỉ lộ ra khi đã có dữ liệu và chi phí reindex rất đắt.`,
   follow: ['Text và keyword khác nhau thế nào, khi nào cần dùng cả hai cho một trường?', 'PostgreSQL và Elasticsearch nên đồng bộ theo hướng nào, vì sao không ghi trực tiếp vào ES?', 'Analyzer sai thì hậu quả và cách sửa (reindex) ra sao?'],
   tags: ['Elasticsearch', 'inverted index', 'mapping', 'full-text search', 'nhập môn']
 },
@@ -1529,7 +1579,20 @@ Cấu hình ({{application-dev.yml}}, {{application-prod.yml}}) và **secret** (
 ### Trả lời miệng 1 phút
 "Continuous integration là mỗi commit đều được build và test tự động để phát hiện lỗi sớm; continuous delivery đảm bảo mọi thay đổi qua pipeline đều sẵn sàng release, còn continuous deployment thì tự động lên production. Pipeline của tôi gồm build, unit test, quality gate, đóng gói artifact, rồi deploy qua DEV, SIT/UAT và PROD với smoke test cuối. Nguyên tắc then chốt là build một lần: cùng một artifact đi qua các môi trường, chỉ đổi cấu hình và secret. Và tôi luôn có kế hoạch rollback, không bao giờ deploy mà không có đường lui."
 
-> Senior tip: theo dõi **lead time** và **change failure rate** (hai chỉ số DORA) — chúng cho biết pipeline của bạn thực sự hiệu quả đến đâu. Pipeline nhanh (< 10 phút) và ổn định là nền tảng để cả team release nhiều lần mỗi ngày thay vì "release cuối tuần đầy rủi ro".`,
+### Ví dụ đời thực
+  **Bối cảnh:** Team backend 6 người, mỗi commit đều chạy pipeline. Sau khi tăng số dev, pipeline thường xuyên bị timeout (GitHub Actions 6h limit). Build image Docker mất 14 phút, test integration mất 10 phút. Dev phải chờ 24 phút để biết code có xanh không.
+
+  **Triệu chứng:** Pipeline timeout; CI wait time tăng từ 5 phút lên 24 phút. Dev bỏ qua test, merge không check. Release cuối tuần bị rollback do test flaky.
+
+  **Điều tra:** Kiểm tra pipeline: (1) Build stage: {{mvn package}} không dùng cache (mỗi build lại tải dependency). (2) Test stage: test integration chạy trên DEV environment, không mock. (3) Deploy stage: build lại image ở mỗi môi trường (DEV, SIT, PROD) — vi phạm "build once, deploy many".
+
+  **Nguyên nhân gốc:** (1) Không dùng cache dependency. (2) Test integration chậm do environment thật. (3) Build lại ở mỗi môi trường → artifact UAT khác artifact PROD.
+
+  **Cách xử lý:** (1) Dùng cache dependency: {{actions/cache}} hoặc Docker layer cache. (2) Tách test unit (nhanh, mock) và test integration (chạy song song trên DEV). (3) Build image 1 lần, artifact đi qua DEV → SIT → PROD, chỉ đổi config. (4) Dùng {{actions/upload-artifact}} và {{actions/download-artifact}} để giữ artifact.
+
+  **Kết quả đo được:** Pipeline từ 24 phút xuống 6 phút. Tỉ lệ merge không check từ 30% xuống 0%. Release cuối tuần không còn rollback do test flaky.
+
+  > Senior tip: theo dõi **lead time** và **change failure rate** (hai chỉ số DORA) — chúng cho biết pipeline của bạn thực sự hiệu quả đến đâu. Pipeline nhanh (< 10 phút) và ổn định là nền tảng để cả team release nhiều lần mỗi ngày thay vì "release cuối tuần đầy rủi ro".`,
   follow: ['Continuous delivery và continuous deployment khác nhau thế nào?', 'Artifact nên được promote qua các môi trường ra sao để đảm bảo "đã test cái gì thì deploy cái đó"?', 'Đặt database migration ở stage nào của pipeline để không downtime?'],
   tags: ['CI/CD', 'pipeline', 'artifact', 'môi trường', 'nhập môn']
 },
