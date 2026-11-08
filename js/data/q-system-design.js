@@ -4981,9 +4981,55 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế notification service đa kênh.',
-  a: `**Tóm tắt:** at-least-once + dedup theo (dedupKey,channel), hàng đợi theo kênh, ưu tiên, retry+jitter, circuit breaker.
+  a: `**Tóm tắt:** Notification service đa kênh cần đảm bảo at-least-once delivery (mỗi thông báo sẽ được gửi ít nhất một lần), khử trùng theo cặp (dedupKey, channel), hàng đợi riêng từng kênh, priority, retry với backoff + jitter, circuit breaker cho provider downstream.
 
-> Senior tip: OTP ưu tiên.` ,
+### 1. Vì sao at-least-once chứ không exactly-once?
+
+Exactly-once across network là bất khả thi (Two Generals). At-least-once + dedup là pattern thực dụng: producer retry khi không nhận ACK, consumer dedup khi thấy dedupKey đã xử lý.
+
+### 2. Dedup key
+
+dedupKey = hash(userId + templateId + businessEventId + channel). Lưu trong Redis SETNX với TTL 24h; nếu key tồn tại → skip.
+
+### 3. Hàng đợi theo kênh
+
+Mỗi kênh (email/SMS/push/in-app) một queue riêng vì:
+- SLA khác (OTP SMS < 5s, email có thể 30s).
+- Provider khác.
+- Rate limit khác.
+
+Priority queue: OTP > transactional > marketing.
+
+### 4. Retry + jitter
+
+Exponential backoff 1s,2s,4s,... + full jitter để tránh thundering herd khi provider phục hồi.
+
+### 5. Circuit breaker
+
+Khi error rate > 50% trong 10s → open 30s → half-open probe. Tránh spam provider chết.
+
+### 6. OTP ưu tiên
+
+OTP bypass marketing queue, dùng queue riêng với worker dedicated, retry nhanh hơn.
+
+~~~seq
+title: Luồng gửi notification
+actors: App | Notification Service | Queue | Provider
+App -> Notification Service: event (userId, template)
+Notification Service -> Notification Service: dedup check
+Notification Service -> Queue: enqueue per channel
+Queue -> Provider: send
+Provider --> Queue: ACK / fail
+Queue -> Notification Service: retry on fail
+~~~
+
+### Pitfall
+
+- Dedup TTL quá ngắn → gửi trùng sau restart.
+- Không idempotent provider call → retry gửi 2 lần.
+- Marketing flood OTP queue → starve OTP.
+
+> Senior tip: OTP phải đi queue riêng với worker dedicated và SLA < 5s; marketing có thể bị delay. Jitter full (random 0..backoff) chứ không equal jitter, để tránh đồng bộ retry.` ,
   follow: ['OTP ưu tiên thế nào?','Tại sao cần jitter?'],
   tags: ['notification','queue','dedup']
 },
@@ -4992,7 +5038,39 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế leaderboard realtime.',
-  a: `**Tóm tắt:** Redis ZSET, ZINCRBY atomic, ZREVRANGE/ZREVRANK, DB source of truth.`,
+  a: `**Tóm tắt:** Leaderboard realtime dùng Redis Sorted Set (ZSET): ZINCRBY atomic để cộng điểm, ZREVRANGE lấy top, ZREVRANK lấy thứ hạng user, DB là source of truth để khôi phục.
+
+### 1. Vì sao Redis ZSET?
+
+ZSET lưu member-score và tự sort O(log N) mỗi op. In-memory → latency ms. Phù hợp leaderboard cần update liên tục.
+
+### 2. Các lệnh chính
+
+- ZINCRBY lb score userId → cộng điểm atomic.
+- ZREVRANGE lb 0 9 WITHSCORES → top 10.
+- ZREVRANK lb userId → thứ hạng (0-based).
+- ZSCORE lb userId → điểm hiện tại.
+
+### 3. Tie-breaker
+
+Redis tie-break theo member string lexicographically. Nếu muốn tie-break theo thời gian đạt điểm, encode score thành composite: score * 1e9 + (MAX_TS - ts) để người đạt sớm xếp trên.
+
+### 4. Khôi phục sau crash
+
+Redis là cache; DB lưu score history. Khi Redis mất: rebuild ZSET từ DB (batch). Hoặc dùng Redis persistence (AOF everysec) + replica.
+
+### 5. Scale
+
+- Sharding theo leaderboard key (global vs per-game).
+- Nếu leaderboard quá lớn (triệu user) → top-N only in Redis, rank chính xác cho top; user thường dùng approximate rank qua bucket.
+
+### Pitfall
+
+- Dùng INCR trên String rồi SORT → O(N log N) mỗi query → chậm.
+- Không persist → mất data khi restart.
+- Hot key single leaderboard → bottleneck; partition.
+
+> Senior tip: Luôn có DB source of truth + rebuild script; Redis chỉ là view. Tie-break encode vào score để deterministic, tránh race.` ,
   follow: ['Tie-breaker?', 'Khôi phục?'],
   tags: ['leaderboard','redis']
 },
@@ -5001,7 +5079,36 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế chat 1-1 và nhóm realtime.',
-  a: `**Tóm tắt:** WebSocket, lưu trước broadcast, fan-out hybrid, presence, push khi offline.`,
+  a: `**Tóm tắt:** Chat realtime dùng WebSocket, lưu message trước rồi broadcast, fan-out hybrid (direct cho nhóm nhỏ, pub/sub cho nhóm lớn), presence tracking, push notification khi offline.
+
+### 1. Lưu trước broadcast
+
+Persist message vào DB trước khi broadcast để đảm bảo durability và ordering; client ACK bằng message id.
+
+### 2. Fan-out hybrid
+
+- Nhóm nhỏ (< 1000): server fan-out trực tiếp tới connection của từng member.
+- Nhóm lớn (celebrity channel): pub/sub qua Redis/Kafka, client subscribe topic.
+
+### 3. Presence
+
+Heartbeat mỗi 30s; TTL 60s trong Redis. Offline → push notification.
+
+### 4. Reconnect
+
+Client exponential backoff reconnect; resume từ lastMessageId (cursor) để không mất message.
+
+### 5. Ordering
+
+Per-conversation sequence number; client reorder theo seq.
+
+### Pitfall
+
+- Broadcast trước persist → mất message khi crash.
+- Presence storm với triệu connection → dùng distributed presence.
+- WebSocket sticky session → load balancer phải consistent hash.
+
+> Senior tip: Luôn persist-first + cursor-based resume; presence là best-effort, không block message delivery.` ,
   follow: ['Fan-out?', 'Reconnect?'],
   tags: ['chat','websocket']
 },
@@ -5010,7 +5117,40 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế news feed với celebrity.',
-  a: `**Tóm tắt:** Hybrid fan-out, cursor-based pagination.`,
+  a: `**Tóm tắt:** News feed celebrity dùng hybrid fan-out: push cho user thường (write-time fan-out), pull cho celebrity (read-time merge), cursor-based pagination.
+
+### 1. Vấn đề celebrity
+
+Fan-out on write cho celebrity có triệu follower → write amplification lớn, chậm. Fan-out on read cho tất cả → read chậm cho mọi user.
+
+### 2. Hybrid
+
+- User thường: write-time fan-out vào feed cache của follower.
+- Celebrity: không fan-out; khi follower đọc feed, merge celebrity posts on read.
+
+### 3. Cursor-based pagination
+
+Dùng cursor (timestamp+id) thay vì OFFSET để tránh skip/duplicate khi data thay đổi. OFFSET lớn → O(N) scan.
+
+### 4. Ranking
+
+Score = affinity + recency + engagement; top-K merge từ nhiều source.
+
+### 5. Cache & invalidation
+
+Feed cache TTL ngắn; celebrity post invalidate follower feeds lazily.
+
+### 6. Monitoring
+
+Track fan-out lag, feed freshness, read latency p99.
+
+### Pitfall
+
+- Cache stampede khi celebrity post → coalescing.
+- Cursor không stable khi clock skew → dùng snowflake id.
+- Hot celebrity post → thundering herd.
+
+> Senior tip: Hybrid fan-out là trade-off write vs read; chọn threshold follower count (ví dụ 10k) để chuyển sang pull.` ,
   follow: ['Tại sao hybrid?', 'Cursor khác OFFSET?'],
   tags: ['news-feed','fan-out']
 },
@@ -5019,7 +5159,46 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế lưu file có deduplication.',
-  a: `**Tóm tắt:** Content-addressable, chunking, reference counting.`,
+  a: `**Tóm tắt:** File storage dedup dùng content-addressable storage (CAS): hash content làm id, chunking để dedup partial, reference counting để GC.
+
+### 1. Content-addressable
+
+File id = SHA-256(content). Upload cùng content → cùng id → skip lưu, tăng ref count.
+
+### 2. Chunking
+
+Chia file thành chunk (ví dụ 4MB) để dedup partial (delta). Hữu ích cho backup/versioning.
+
+### 3. Reference counting
+
+Mỗi file/chunk có ref count; khi 0 → GC (soft delete + hard delete sau TTL).
+
+### 4. Integrity
+
+Verify hash sau upload/download; corruption → re-fetch từ replica.
+
+### 5. Storage tiers
+
+Hot (SSD) cho recent, cold (S3 Glacier) cho archive.
+
+### 6. Upload flow
+
+Client hash → check existence → upload missing chunks → commit manifest.
+
+### 7. Concurrency & consistency
+
+Manifest commit dùng optimistic locking trên file id; conflict → retry. Chunk upload idempotent theo chunk hash.
+
+### 8. Cost optimization
+
+Tiering + lifecycle policy tự động chuyển cold sau 30 ngày không truy cập.
+
+### Pitfall extra
+
+- Orphan chunks khi upload fail → GC sweep.
+- Dedup cross-tenant phải cẩn thận privacy (hash leak existence) → salt per tenant.
+
+> Senior tip: CAS + ref count là nền tảng của Dropbox/borg; luôn có GC job và integrity check.` ,
   follow: ['Tại sao chunking?', 'Reference counting?'],
   tags: ['dedup','chunking']
 },
@@ -5028,8 +5207,868 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'lead',
   q: 'Thiết kế đặt vé chống overbook.',
-  a: `**Tóm tắt:** Hold TTL + SELECT FOR UPDATE, expiry worker, confirm atomic.`,
+  a: `**Tóm tắt:** Đặt vé chống overbook dùng hold TTL + SELECT FOR UPDATE, expiry worker giải phóng ghế hết hạn, confirm atomic chuyển hold → booked.
+
+### 1. Hold phase
+
+User chọn ghế → INSERT hold với expires_at = now + 10min, status=HOLD. Dùng SELECT FOR UPDATE trên seat row để serialize concurrent hold.
+
+### 2. Expiry worker
+
+Job định kỳ UPDATE seat SET status=AVAILABLE WHERE status=HOLD AND expires_at < now.
+
+### 3. Confirm
+
+Payment success → UPDATE seat SET status=BOOKED WHERE id=? AND status=HOLD AND expires_at > now (conditional). Nếu 0 rows → hold expired → fail.
+
+### 4. Pessimistic vs optimistic
+
+- Pessimistic (FOR UPDATE): serialize, an toàn, throughput thấp.
+- Optimistic (version column): throughput cao, retry khi conflict; phù hợp low contention.
+
+### Pitfall
+
+- Hold TTL quá ngắn → user chưa thanh toán xong.
+- Expiry worker race với confirm → conditional update bảo vệ.
+- Over-sell nếu không conditional.
+
+> Senior tip: Luôn conditional update với status check; expiry worker chỉ là cleanup, không phải authority.` ,
   follow: ['Pessimistic vs optimistic?', 'Hold hết hạn?'],
   tags: ['ticketing','overbook']
+},
+{
+  id: 'architecture-031',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Distributed lock bằng Redis (SET NX PX) trông đơn giản nhưng tại sao nó không an toàn tuyệt đối? Giải thích từng bước các kịch bản hỏng (GC pause, clock), cơ chế fencing token hoạt động ra sao, và khi nào nên dùng DB row lock thay thế.',
+  a: `**Tóm tắt:** Distributed lock (khóa phân tán - cơ chế đảm bảo tại một thời điểm chỉ một tiến trình trên nhiều máy được làm một việc) bằng Redis {{SET key token NX PX ttl}} đủ cho mục tiêu "giảm trùng lặp", nhưng **không đủ** cho mục tiêu "không bao giờ ghi đè sai" khi không có fencing token (số thứ tự tăng dần mà tài nguyên đích kiểm tra). Nguyên nhân gốc: lock hết hạn theo thời gian trong khi client vẫn đang giữ quyền truy cập tài nguyên; GC pause, clock skew, hoặc mạng chậm có thể khiến client cũ ghi đè client mới. Với dữ liệu quan trọng (tiền, tồn kho), ưu tiên ràng buộc DB (row lock, conditional update) thay vì lock Redis thuần.
+
+### Thuật ngữ nền (đọc nếu chưa quen)
+- **GC pause / stop-the-world (STW):** khoảng thời gian máy ảo Java (JVM) tạm dừng mọi thread ứng dụng để dọn rác bộ nhớ. Với heap lớn, pause có thể kéo dài từ vài trăm mili-giây đến hàng chục giây.
+- **Clock skew (lệch đồng hồ):** các máy chủ có giờ hệ thống khác nhau do NTP đồng bộ không hoàn hảo hoặc bước nhảy giờ; hai máy có thể lệch vài mili-giây đến vài giây.
+- **TTL (Time To Live):** thời gian sống của key; hết TTL Redis tự xóa key (tức lock tự hết hạn).
+- **Nguyên tử (atomic):** thao tác được thực hiện trọn vẹn, không bị xen giữa bởi thao tác khác.
+
+### Redis lock cơ bản: từng bước bên trong
+Mục tiêu: chỉ một worker xử lý job {{report:2026-11}}.
+1. Worker A tạo token ngẫu nhiên {{tA = uuid()}} (để chỉ chính A mới được nhả lock của A).
+2. A gửi: {{SET lock:report:2026-11 tA NX PX 30000}}.
+   - {{NX}} (Not eXists): chỉ đặt nếu key chưa tồn tại. Redis xử lý lệnh này đơn luồng (single-threaded event loop) nên hai lệnh SET NX đến cùng lúc không thể cùng thành công - đây là điểm "nguyên tử" tạo nên mutual exclusion (loại trừ lẫn nhau).
+   - {{PX 30000}}: TTL 30 giây. Redis lưu thời điểm hết hạn và xóa key khi đến hạn (active + passive expiry).
+3. Nếu trả {{OK}}, A giữ lock; nếu {{nil}}, A không giữ lock.
+4. A làm việc (ví dụ tính báo cáo 8 giây), ghi kết quả.
+5. A nhả lock: **không được** {{DEL lock:report:2026-11}} trần, vì nếu lock đã hết hạn và B đã vào, A sẽ xóa lock của B. Phải dùng Lua script (chạy nguyên tử trong Redis):
+~~~text
+-- KEYS[1]=lock key, ARGV[1]=token
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0  -- lock đã thuộc về người khác, không xóa
+end
+~~~
+
+### Vì sao vẫn không an toàn: 3 kịch bản hỏng
+**Kịch bản 1 - GC pause / process treo (phổ biến nhất):**
+~~~text
+t=0s   A acquire lock (TTL 30s), token=tA
+t=1s   A bắt đầu ghi báo cáo (nhiều object, heap căng)
+t=2s   JVM của A vào Full GC stop-the-world, mọi thread A đứng im
+t=30s  Redis xóa lock (TTL hết) - A không biết, đang bị treo
+t=31s  B acquire lock, token=tB, bắt đầu ghi
+t=40s  B ghi xong báo cáo phiên bản V2
+t=42s  GC của A kết thúc, A tỉnh dậy, vẫn "nghĩ" mình giữ lock
+t=43s  A ghi đè báo cáo -> V2 bị mất, dữ liệu sai
+~~~
+Tăng TTL (ví dụ 5 phút) chỉ giảm xác suất, không loại bỏ: GC pause dài, VM bị swap, container bị CPU throttle đều có thể vượt TTL. Giảm thời gian xử lý cũng không đảm bảo.
+
+**Kịch bản 2 - Clock skew / bước nhảy thời gian (NTP):**
+Redis tính TTL theo đồng hồ monotonic của chính nó (tốt), nhưng nếu bạn tự kiểm tra "còn bao lâu" bằng đồng hồ ứng dụng lệch, hoặc trong thiết lập phức tạp (Redlock dùng thời gian cục bộ để ước lượng), bước nhảy NTP có thể làm bạn đánh giá sai thời gian còn lại. Độc lập hơn, nếu TTL được quản lý bởi tầng ứng dụng dựa trên {{System.currentTimeMillis()}} (wall clock, có thể nhảy lùi/tiến), logic gia hạn/hết hạn sẽ sai.
+
+**Kịch bản 3 - Mất lock khi failover (Redis không durable):**
+Nếu dùng Redis master-replica bất đồng bộ (async replication): A acquire trên master, master chưa kịp replicate key lock sang replica thì master chết; replica được thăng lên master nhưng không có key lock -> B acquire được. Hai client cùng giữ lock.
+
+### Fencing token: cơ chế sửa đúng gốc rễ
+Lock một mình chỉ là "lời hứa mềm". Cần **fencing token**: một số nguyên tăng dần, cấp mỗi lần acquire thành công, và **tài nguyên đích phải từ chối token cũ**.
+~~~text
+Bước 1: Lấy token tăng dần (nguồn cấp phát phải có thứ tự)
+  - Redis: token = INCR fence:report:2026-11  -> ví dụ A nhận 33
+  - Hoặc dùng DB sequence / etcd revision
+Bước 2: A acquire lock kèm token 33, bắt đầu làm việc
+Bước 3: A bị GC pause, lock hết hạn, B acquire -> nhận token 34
+Bước 4: B ghi vào storage: "ghi V2 nếu token >= token_đã_thấy"
+  -> storage đang nhớ token_max=0, nhận 34 -> chấp nhận, cập nhật token_max=34
+Bước 5: A tỉnh dậy, ghi với token 33
+  -> storage thấy 33 < 34 -> TỪ CHỐI (stale writer)
+~~~
+Ví dụ kiểm tra fencing ở DB (Postgres):
+~~~sql
+-- Bảng lưu token cao nhất đã chấp nhận cho mỗi tài nguyên
+UPDATE report_output
+   SET content = ?, fence_token = 34
+ WHERE report_id = '2026-11'
+   AND fence_token < 34;  -- chỉ ghi nếu token mới hơn
+-- affected rows = 0 => bị từ chối, client biết mình đã mất lock
+~~~
+**Điểm mấu chốt:** nếu tài nguyên đích không thể kiểm tra token (ghi file S3 thuần, gọi API bên thứ ba không hỗ trợ version), fencing token không áp dụng được - khi đó lock Redis **không bảo vệ được** tính đúng đắn.
+
+### Khi nào dùng DB row lock thay thế
+| Nhu cầu | Lựa chọn | Vì sao |
+|---|---|---|
+| Tránh hai job chạy trùng, chấp nhận hiếm khi trùng | Redis SET NX PX + token + TTL + handler idempotent | Rẻ, đủ cho "best effort" |
+| Cập nhật đúng một hàng dữ liệu (tồn kho, số dư) | {{SELECT ... FOR UPDATE}} hoặc {{UPDATE ... WHERE điều_kiện}} trong transaction DB | DB là nguồn sự thật, atomic ở mức row, không cần lock ngoài |
+| Xử lý job hàng đợi trong Postgres | {{SELECT ... FOR UPDATE SKIP LOCKED}} | Claim nguyên tử, không lock chéo, tích hợp sẵn fencing bằng điều kiện |
+| Khóa logic theo tenant/user trong 1 DB | Postgres {{pg_advisory_xact_lock(key)}} | Lock gắn transaction, tự nhả khi commit/rollback, không lệ thuộc Redis |
+| Tọa độ giữa nhiều hệ thống không chung DB | Redis/etcd + fencing token ở mọi storage đích | Chỉ khi thật sự cần cross-system |
+
+Ví dụ DB row lock thay Redis cho trừ tồn kho (đúng hơn, đơn giản hơn):
+~~~sql
+UPDATE inventory
+   SET available = available - 1
+ WHERE sku = 'SKU-1' AND available >= 1;
+-- affected rows = 1 => thành công; 0 => hết hàng
+-- Không cần lock Redis, không lo GC pause ghi đè
+~~~
+
+### Trên production
+- **Triệu chứng:** báo cáo bị ghi đè ngẫu nhiên, job chạy trùng (hai dòng log "started" cùng jobId), tồn kho âm hiếm khi (nếu dùng lock thay vì điều kiện DB). Tỉ lệ lỗi tăng vào lúc GC căng (heap đầy, promotion failure) hoặc khi NTP bước giờ.
+- **Cách đo:** log {{lock_acquire, token, lease_ms, lock_release}}; metric thời gian giữ lock và số lần release trả 0 (mất lock). Correlate với GC log ({{-Xlog:gc*:file=gc.log}} JDK 17+) - nếu mất lock trùng thời điểm STW dài, đó là bằng chứng.
+- **Tuning/cấu hình có thật (Redis):** dùng {{PX}} (ms) thay {{EX}}; đặt TTL >= 3-5x p99 thời gian xử lý; watchdog gia hạn (Redisson {{RLock}} có watchdog mặc định 30s, gia hạn mỗi 10s) nhưng **watchdog không cứu process bị treo hoàn toàn** (STW, SIGSTOP). Bật {{appendonly yes}} và chấp nhận lock có thể mất khi failover nếu dùng async replication; cần correctness thì dùng replication có xác nhận hoặc chuyển sang hệ consensus.
+- **Nguyên tắc vận hành:** handler phía sau lock phải **idempotent** (chạy 2 lần cho cùng kết quả) - đó là lưới an toàn cuối khi lock thất bại.
+
+> Senior tip: Tôi coi Redis lock là "đèn giao thông gợi ý", còn fencing token + ràng buộc DB là "rào chắn vật lý". Trong phỏng vấn, nếu bạn nói "dùng Redis lock" mà không nhắc GC pause và fencing, interviewer senior sẽ đào tiếp; nếu bạn chủ động nói "lock chỉ giảm trùng, tính đúng đắn nằm ở conditional write với token/version", đó là câu trả lời của người đã từng bị mất dữ liệu.`,
+  follow: ['Redisson watchdog gia hạn lock tự động; nó có giải quyết được kịch bản GC stop-the-world 40 giây không? Vì sao?', 'Bạn thiết kế fencing token khi storage đích là một API HTTP bên thứ ba không hỗ trợ version/compare-and-swap như thế nào?', 'Postgres advisory lock khác row lock (SELECT FOR UPDATE) ở điểm nào, và khi nào advisory lock phù hợp hơn?'],
+  refs: [{"type":"article","title":"How to do distributed locking (Martin Kleppmann)","url":"https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"},{"type":"doc","title":"Redis: Distributed Locks","url":"https://redis.io/docs/latest/develop/use/patterns/distributed-locks/"}],
+},
+{
+  id: 'architecture-032',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Giải thích consensus Raft ở mức đủ hiểu để vận hành: leader election, log replication và quorum hoạt động từng bước thế nào? Liên hệ với etcd và Kafka KRaft - tại sao chúng cần Raft và điều gì xảy ra khi leader chết?',
+  a: `**Tóm tắt:** Consensus (đồng thuận - các nút trong cụm thống nhất cùng một giá trị/thứ tự dù có nút chết hoặc mạng chậm) là bài toán cốt lõi của hệ phân tán. Raft là thuật toán consensus được thiết kế để dễ hiểu: một cụm bầu ra **leader** duy nhất, mọi ghi đi qua leader, leader sao chép log (nhật ký lệnh) sang follower và chỉ **commit** khi đa số (quorum) đã nhận. etcd dùng Raft để lưu metadata/cấu hình nhất quán; Kafka KRaft dùng biến thể dựa trên Raft (metadata quorum) để thay ZooKeeper quản lý metadata broker/topic.
+
+### Thuật ngữ nền
+- **Node (nút):** một tiến trình/server tham gia cụm (ví dụ một instance etcd).
+- **Quorum (đa số):** số nút tối thiểu phải đồng ý để quyết định có hiệu lực. Cụm N nút, quorum = floor(N/2)+1. Ví dụ N=3 -> 2; N=5 -> 3.
+- **Log (nhật ký):** danh sách lệnh có thứ tự, mỗi mục có {{index}} và {{term}} (nhiệm kỳ).
+- **Term (nhiệm kỳ):** số nguyên tăng dần; mỗi lần bầu cử bắt đầu term mới. Term giúp phân biệt leader cũ/mới.
+- **Commit:** một mục log được coi là chắc chắn khi leader biết nó đã được sao chép tới quorum; sau commit, trạng thái máy (state machine) mới áp dụng lệnh.
+
+### Cấu trúc dữ liệu Raft nhìn từ bên trong
+Mỗi nút giữ:
+~~~text
+persistent (lưu đĩa, sống qua restart):
+  currentTerm = 5          -- term hiện tại
+  votedFor = nodeB         -- đã bầu cho ai trong term này (hoặc null)
+  log[] = [ {idx:1,term:1,cmd:x}, {idx:2,term:3,cmd:y}, ... ]
+
+volatile (trong RAM):
+  commitIndex = 7          -- index cao nhất đã commit
+  lastApplied = 7          -- index cao nhất đã áp dụng vào state machine
+Leader thêm:
+  nextIndex[follower]      -- index tiếp theo sẽ gửi cho follower
+  matchIndex[follower]     -- index cao nhất follower đã xác nhận
+~~~
+
+### 1) Leader election - bầu leader từng bước
+Trạng thái nút: {{Follower}} (mặc định) / {{Candidate}} / {{Leader}}.
+~~~seq
+title: Raft - Leader election (3 nút)
+actors: F1 | F2 | F3
+note F1..F3: Ban đầu đều Follower, nhận heartbeat từ leader cũ
+F1 -> F1: Hết election timeout (ngẫu nhiên, ví dụ 150-300ms)
+F1 -> F1: Chuyển Candidate, term=6, tự bầu cho mình
+F1 -> F2: RequestVote(term=6, lastLogIndex,lastLogTerm)
+F1 -> F3: RequestVote(term=6, lastLogIndex,lastLogTerm)
+F2 -> F1: VoteGranted (log F1 ít nhất mới bằng F2)
+F3 -> F1: VoteGranted
+F1 -> F1: Đạt quorum (2/3) -> thành Leader term 6
+F1 -> F2: AppendEntries rỗng (heartbeat)
+F1 -> F3: AppendEntries rỗng (heartbeat)
+~~~
+Quy tắc quan trọng:
+- Mỗi nút chỉ bầu **1 phiếu mỗi term** (tránh 2 leader cùng term).
+- Follower chỉ bầu cho candidate có log **ít nhất cập nhật bằng** mình (so sánh {{lastLogTerm}} rồi {{lastLogIndex}}). Điều này ngăn leader mới thiếu dữ liệu đã commit.
+- **Election timeout ngẫu nhiên** (randomized) giảm xác suất hai nút cùng ứng cử -> split vote. Nếu split vote, hết timeout lại bầu term mới.
+- Khi nhận message có {{term}} cao hơn, nút lập tức hạ xuống Follower và cập nhật {{currentTerm}}.
+
+### 2) Log replication - sao chép log từng bước
+Mọi lệnh ghi từ client chỉ đi vào **leader**.
+~~~seq
+title: Raft - ghi thành công (commit khi đủ quorum)
+actors: Client | Leader | F1 | F2
+Client -> Leader: PUT x=5
+Leader -> Leader: Append {idx:8,term:6,cmd:PUT x=5} vào log local
+Leader -> F1: AppendEntries(prevIdx=7,prevTerm=5, entries=[idx8], leaderCommit=7)
+Leader -> F2: AppendEntries(prevIdx=7,prevTerm=5, entries=[idx8], leaderCommit=7)
+F1 -> F1: Kiểm tra prevIdx/prevTerm khớp -> append idx8
+F1 -> Leader: Success (matchIndex=8)
+Leader -> Leader: Đếm ack: leader+F1 = 2/3 (quorum) -> commitIndex=8
+F2 -> Leader: Success
+Leader -> Client: OK (đã commit)
+Leader -> F1: Heartbeat kèm leaderCommit=8 -> F1 apply idx8
+~~~
+Nếu log follower lệch (thiếu mục): leader phát hiện qua {{prevLogIndex/prevLogTerm}} không khớp, giảm {{nextIndex}} của follower đó và gửi lại từ điểm khớp (backtrack) cho đến khi đồng bộ.
+
+### 3) Vì sao quorum (đa số) là chìa khóa
+Quorum đảm bảo **giao nhau** (intersection): bất kỳ hai tập đa số nào cũng có ít nhất 1 nút chung. Nút chung đó mang thông tin về mục đã commit, nên leader mới (được bầu bởi đa số) chắc chắn có log chứa mọi mục đã commit. Đây là nền tảng an toàn (safety) của Raft.
+- N=3 chịu được 1 nút chết; N=5 chịu được 2. Tăng N tăng chịu lỗi nhưng tăng độ trễ ghi (phải chờ nhiều ack) và chi phí.
+- Nếu mất quorum (ví dụ 2/3 nút chết), cụm **không bầu được leader mới và không nhận ghi** - đây là chọn C (consistency) thay vì A (availability) khi partition theo CAP.
+
+### Liên hệ etcd
+- **etcd** (kho key-value phân tán, dùng bởi Kubernetes lưu toàn bộ trạng thái cluster) chạy Raft: ghi {{kubectl apply}} -> API server ghi etcd -> chỉ thành công khi quorum etcd commit. Vì vậy etcd cần 3 hoặc 5 thành viên, đặt trên failure domain khác nhau.
+- Đọc có thể {{linearizable}} (qua leader, chắc chắn mới nhất) hoặc {{serializable}} (từ follower, nhanh hơn nhưng có thể hơi cũ) tùy cấu hình client.
+
+### Liên hệ Kafka KRaft
+- Trước đây Kafka dùng **ZooKeeper** (hệ consensus riêng) để lưu metadata: broker nào sống, partition leader ở đâu, topic config. KRaft (Kafka Raft Metadata mode) thay ZooKeeper bằng một **controller quorum** chạy giao thức dựa trên Raft, lưu metadata trong một internal log topic ({{@metadata}}).
+- Điều xảy ra khi controller leader chết: các controller còn lại bầu leader mới bằng quorum; metadata đã commit không mất. Broker tiếp tục phục vụ produce/consume dựa trên metadata đã biết, nhưng thay đổi metadata (tạo topic, bầu partition leader mới) phải chờ controller quorum ổn.
+- Lợi ích thực tế: bỏ phụ thuộc ZooKeeper, mở rộng số partition tốt hơn, thời gian khôi phục controller nhanh và nhất quán hơn.
+
+### Trên production
+- **Triệu chứng khi quorum mất:** etcd báo {{etcdserver: no leader}}, {{request timed out}}; Kubernetes API server lỗi ghi; Kafka controller không bầu được leader, không tạo topic mới. Ứng dụng phía trên có thể vẫn đọc cache nhưng không thay đổi trạng thái cluster.
+- **Cách đo:** metric etcd {{etcd_server_has_leader}}, {{etcd_server_leader_changes_seen_total}} (tăng bất thường = bầu lại liên tục), {{etcd_disk_wal_fsync_duration_seconds}} (đĩa chậm làm chậm commit). Kafka: {{ActiveControllerCount}} (phải = 1 trên toàn cụm).
+- **Tuning/cấu hình có thật:** election timeout phải lớn hơn thời gian round-trip mạng và thời gian fsync đĩa; etcd khuyến nghị SSD, tách đĩa WAL; không đặt cụm 2 nút (mất 1 là mất quorum). Giám sát leader change: bầu lại thường xuyên thường do mạng không ổn, GC pause trên node controller, hoặc đĩa chậm.
+- **Trade-off cốt lõi:** Raft chọn an toàn và dễ hiểu, đổi lại ghi phải qua leader (leader là điểm nóng ghi) và độ trễ ghi >= 1 round-trip đến quorum.
+
+> Senior tip: Khi ai đó nói "dùng Raft nên dữ liệu luôn an toàn", hãy hỏi thêm: quorum có còn không, đĩa có fsync trước khi ack không, và client đọc từ leader hay follower. Raft đảm bảo an toàn theo mô hình giả định (crash fault, không Byzantine); cấu hình sai (tắt fsync, cụm 2 nút, network bất ổn) vẫn mất dữ liệu.`,
+  follow: ['Nếu hai node cùng thành Candidate do split vote, Raft đảm bảo không có hai leader cùng commit một index khác nhau như thế nào?', 'Linearizable read trong Raft (read qua leader) khác gì với đọc từ follower, và ReadIndex/lease read giải quyết ra sao?', 'Khi Kafka chuyển từ ZooKeeper sang KRaft, rủi ro vận hành chính trong quá trình migration là gì và tại sao metadata quorum phải tách biệt với data broker?'],
+  refs: [{"type":"doc","title":"The Raft Consensus Algorithm","url":"https://raft.github.io/"},{"type":"doc","title":"etcd: Why etcd","url":"https://etcd.io/docs/v3.5/learning/why/"}],
+},
+{
+  id: 'architecture-033',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Thời gian trong hệ phân tán: tại sao không thể dùng timestamp đồng hồ máy để sắp xếp sự kiện một cách đáng tin cậy? Giải thích clock skew, NTP, Lamport clock và vector clock từng bước, kèm ví dụ khi sắp xếp sai gây hậu quả trong ngân hàng/thương mại điện tử.',
+  a: `**Tóm tắt:** Trong hệ phân tán không có đồng hồ toàn cục hoàn hảo. Đồng hồ máy (wall clock) bị **clock skew** (lệch giữa các máy) và có thể nhảy lùi/tiến khi NTP hiệu chỉnh, nên sắp xếp sự kiện chỉ bằng timestamp máy có thể cho thứ tự sai nhân quả. **Lamport clock** cho thứ tự logic nhất quán với quan hệ "xảy ra trước" nhưng không phân biệt được hai sự kiện song song. **Vector clock** phát hiện được quan hệ nhân quả và concurrency (song song). Trong thực tế: dùng đồng hồ vật lý cho hiển thị/log gần đúng, dùng version/logical clock/HLC cho thứ tự nhân quả và giải quyết xung đột.
+
+### Thuật ngữ nền
+- **Wall clock (đồng hồ tường):** giờ thực tế trên máy, ví dụ {{2026-11-07T10:00:01Z}}; lấy bằng {{System.currentTimeMillis()}} (Java) - có thể nhảy do NTP.
+- **Monotonic clock (đồng hồ đơn điệu):** chỉ tăng, không nhảy lùi, dùng để đo khoảng thời gian; {{System.nanoTime()}} - **không** dùng để so sánh giữa các máy.
+- **Clock skew:** độ lệch giữa đồng hồ hai máy tại cùng thời điểm (ví dụ máy A nhanh hơn B 120ms).
+- **Clock drift:** tốc độ đồng hồ chạy nhanh/chậm so với chuẩn do phần cứng thạch anh.
+- **NTP (Network Time Protocol):** giao thức đồng bộ giờ qua mạng; máy hỏi NTP server và chỉnh đồng hồ. Độ chính xác điển hình vài mili-giây trong LAN, chục mili-giây qua Internet; NTP có thể **bước nhảy** (step) hoặc **chỉnh từ từ** (slew) - bước nhảy làm timestamp lùi/tiến đột ngột.
+- **Happened-before (xảy ra trước), ký hiệu A -> B:** A có thể ảnh hưởng B (cùng tiến trình theo thứ tự, hoặc gửi/nhận message). Nếu không A->B và không B->A thì A, B **concurrent** (song song).
+
+### Vì sao timestamp máy không đủ: ví dụ từng bước
+Hệ thống ngân hàng: hai giao dịch trên cùng tài khoản, số dư ban đầu 1.000.000đ.
+~~~text
+Máy A (đồng hồ NHANH hơn thực tế 500ms):
+  10:00:01.600 A ghi "rút 800.000đ" (thực tế xảy ra lúc 10:00:01.100)
+
+Máy B (đồng hồ ĐÚNG):
+  10:00:01.300 B ghi "nạp 200.000đ" (thực tế xảy ra lúc 10:00:01.300)
+
+Nếu sắp xếp theo timestamp máy: A(1.600) sau B(1.300)
+  -> hiểu nhầm nạp trước, rút sau (đúng ngẫu nhiên ở đây)
+Nhưng nếu A nhanh hơn 600ms:
+  A(1.700) vẫn sau? A ghi 1.700, B ghi 1.300 -> rút sau nạp.
+Nếu B ghi lúc 10:00:01.800 (thực tế 1.800) nhưng NTP bước lùi B 300ms:
+  B timestamp thành 1.500 -> hệ thống nghĩ nạp xảy ra trước rút? thứ tự đảo.
+~~~
+Trong thương mại điện tử: "đặt hàng" (máy web) và "hủy đơn" (máy worker) có thể bị sắp sai -> hệ thống hủy một đơn chưa được ghi nhận, hoặc hoàn tiền sai. Log ghép từ nhiều máy theo timestamp sẽ kể sai câu chuyện sự cố.
+
+### Lamport clock - đồng hồ logic (thứ tự nhất quán với nhân quả)
+Mỗi tiến trình giữ bộ đếm số nguyên {{L}}.
+~~~text
+Quy tắc:
+1. Trước mỗi sự kiện nội bộ: L = L + 1
+2. Khi gửi message m: L = L + 1; gửi kèm timestamp t=L
+3. Khi nhận message có timestamp t: L = max(L, t) + 1
+
+Ví dụ 3 tiến trình P1,P2,P3 (bắt đầu đều L=0):
+P1: e1(L=1) --gửi m(t=2)-->        e4(L=3)
+P2:                 nhận m: L=max(0,2)+1=3, e2(L=3) --gửi n(t=4)-->
+P3:                                  nhận n: L=max(0,4)+1=5, e3(L=5)
+
+Thứ tự Lamport: e1(1), m(2), e2(3), e4(3), n(4), e3(5)
+~~~
+Tính chất: nếu {{A -> B}} (nhân quả) thì {{L(A) < L(B)}}. **Nhưng chiều ngược lại không đúng**: {{L(e2)=3, L(e4)=3}} bằng nhau nên không nói được e2 (ở P2) và e4 (ở P1) ai xảy ra trước - hai sự kiện đó **concurrent** (song song). Lamport clock **không phát hiện concurrency**.
+
+### Vector clock - phát hiện nhân quả và song song
+Mỗi tiến trình {{Pi}} giữ vector {{V[i]}} có N phần tử (N tiến trình).
+~~~text
+Quy tắc:
+1. Sự kiện nội bộ tại Pi: V[i] = V[i] + 1
+2. Gửi message: V[i] = V[i] + 1; gửi kèm V
+3. Nhận message kèm Vmsg tại Pi:
+     V[j] = max(V[j], Vmsg[j]) với mọi j; rồi V[i] = V[i] + 1
+
+So sánh V và W:
+  V <= W nếu mọi k: V[k] <= W[k]
+  V <  W nếu V <= W và tồn tại k: V[k] < W[k]  (V xảy ra trước W)
+  Song song (concurrent) nếu không V<W và không W<V
+
+Ví dụ:
+P1: (1,0,0) --gửi--> (2,0,0)
+P2:             nhận -> (2,1,0) --gửi--> (2,2,0)
+P3: (0,0,1)  (sự kiện độc lập, không nhận message)
+
+So sánh (2,2,0) với (0,0,1):
+  (2,2,0) có phần tử 1,2 lớn hơn nhưng phần tử 3 = 0 < 1
+  (0,0,1) có phần tử 3 lớn hơn -> KHÔNG cái nào <= cái kia => SONG SONG
+~~~
+Vector clock cho biết chính xác hai phiên bản dữ liệu có quan hệ nhân quả hay xung đột concurrent (cần merge/resolve). Nhược điểm: vector lớn khi nhiều tiến trình (phải nén, dùng dotted version vector trong thực tế như Riak).
+
+### Áp dụng thực tế
+| Bài toán | Cách dùng thời gian |
+|---|---|
+| Hiển thị "gửi lúc 10:01" | Wall clock (chấp nhận sai lệch nhỏ) |
+| Sắp xếp log nhiều máy để debug | Wall clock + ghi rõ offset NTP; chấp nhận gần đúng, đối chiếu thêm request/correlation id |
+| Thứ tự giao dịch tiền trong 1 tài khoản | Một nguồn sự thật (DB sequence/serializable transaction) hoặc single-writer per account - **không** dùng timestamp máy |
+| Phát hiện xung đột ghi song song (eventual consistency) | Version, vector clock/dotted version, hoặc last-write-wins có hiểu rủi ro |
+| Phiên bản trong Raft/etcd | {{term}} + {{index}} (thứ tự logic toàn cụm qua consensus) |
+| Deadline/timeout | Monotonic clock ({{nanoTime}}) để đo khoảng, không dùng wall clock |
+
+### Trên production
+- **Triệu chứng do clock sai:** token/session hết hạn sớm hoặc sống quá lâu; log timeline đảo lộn gây chẩn đoán sai sự cố; last-write-wins chọn sai bản ghi "mới hơn"; chứng chỉ TLS bị từ chối (not yet valid/expired) khi clock lệch mạnh.
+- **Cách đo:** theo dõi offset NTP ({{chronyc tracking}} trên Linux: field {{System time}}; hoặc metric node exporter {{node_timex_offset_seconds}}). Cảnh báo khi lệch > 50-100ms trong datacenter.
+- **Tuning/cấu hình có thật:** chạy {{chrony}} hoặc {{ntpd}} trên mọi node; ưu tiên NTP server nội bộ; cấu hình chrony tránh step nhảy lớn khi đang chạy (slew) trừ khi lệch quá ngưỡng an toàn; trong JVM không dùng {{currentTimeMillis}} cho logic timeout quan trọng - dùng {{nanoTime}} hoặc thư viện deadline.
+- **Nguyên tắc:** với dữ liệu tiền/banking, **không bao giờ** quyết định đúng-sai nghiệp vụ dựa vào so sánh timestamp từ hai máy khác nhau; dùng transaction DB, sequence, hoặc consensus.
+
+> Senior tip: Câu trả lời senior không phải "dùng NTP cho chính xác". NTP giảm skew nhưng không xóa nó về 0 và không sửa được bước nhảy. Câu trả lời đúng là: nhận ra bài toán cần **thứ tự vật lý** hay **thứ tự nhân quả**; nhân quả thì dùng logical clock/version/consensus, còn vật lý chỉ dùng cho hiển thị và chấp nhận sai số đo được.`,
+  follow: ['Google Spanner dùng TrueTime với khoảng bất định [earliest, latest] để đạt external consistency; ý tưởng "chờ hết bất định" giải quyết clock skew ra sao và đánh đổi gì?', 'Hybrid Logical Clock (HLC) kết hợp wall clock và Lamport clock như thế nào, và vì sao nó hữu ích cho database phân tán (ví dụ CockroachDB)?', 'Trong hệ event sourcing, bạn gắn thứ tự sự kiện bằng timestamp hay sequence number; khi nào cần cả hai và mỗi cái dùng cho mục đích gì?'],
+  refs: [{"type":"doc","title":"chrony documentation (clock synchronization)","url":"https://chrony-project.org/documentation.html"},{"type":"article","title":"Time, Clocks, and the Ordering of Events (Lamport)","url":"https://lamport.azurewebsites.net/pubs/time-clocks.pdf"}],
+},
+{
+  id: 'architecture-034',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Consistent hashing (băm nhất quán) và virtual node giải quyết vấn đề gì khi thêm/bớt node trong cụm cache hoặc storage phân tán? Giải thích cấu trúc vòng băm, cách định tuyến key, và vì sao rebalancing ít tốn kém hơn băm modulo.',
+  a: `**Tóm tắt:** Consistent hashing (băm nhất quán - kỹ thuật ánh xạ key và node lên cùng một vòng băm để khi số node đổi, chỉ một phần nhỏ key phải di chuyển) giải quyết bài toán: {{hash(key) % N}} khiến gần như **mọi key đổi chỗ** khi N thay đổi. Với consistent hashing, thêm 1 node chỉ làm di chuyển khoảng {{1/(N+1)}} key. **Virtual node** (vnode - mỗi node vật lý chiếm nhiều vị trí trên vòng) khắc phục phân bố lệch khi ít node hoặc khi node có sức mạnh khác nhau.
+
+### Bối cảnh: vì sao modulo gây thảm họa khi scale
+Giả sử 3 node cache (N=3), key {{user:42}} đi vào node {{hash(user:42) % 3 = 1}}.
+~~~text
+Trước (N=3):  key K -> hash(K) % 3
+  user:42 (hash 10) % 3 = 1  -> Node1
+  user:17 (hash 11) % 3 = 2  -> Node2
+  user:99 (hash 12) % 3 = 0  -> Node0
+
+Thêm Node3 (N=4):  key K -> hash(K) % 4
+  user:42 (10 % 4 = 2) -> Node2  (ĐỔI CHỖ)
+  user:17 (11 % 4 = 3) -> Node3  (ĐỔI CHỖ)
+  user:99 (12 % 4 = 0) -> Node0  (giữ nguyên)
+~~~
+Gần {{~75%}} key bị remap (kỳ vọng {{(N)/(N+1)}}). Hậu quả: cache miss hàng loạt (cache stampede) dồn vào DB, có thể làm sập hệ thống ngay lúc bạn vừa scale up - ngược mục đích.
+
+### Consistent hashing: cấu trúc vòng băm từng bước
+**Bước 1 - Vòng băm (hash ring):** chọn hàm băm có không gian lớn (ví dụ MD5 128-bit hoặc 32-bit), tưởng tượng giá trị băm nằm trên một vòng tròn khép kín {{0 -> 2^32-1 -> 0}}.
+~~~text
+              0
+          .---+---.
+       .-'         '-.
+   330 '-.         .-'  40
+                 /
+       N-A *-----* key:user42 (hash=55) -> đi xuôi chiều kim đồng hồ
+          /    /
+      200*   *-* 90
+          '-' '-'
+           N-C  N-B
+
+Vị trí node (băm tên/IP node): N-A=330, N-B=90, N-C=200
+Vị trí key: user42=55
+~~~
+**Bước 2 - Đặt node lên vòng:** {{pos(N-A)=hash("nodeA")}}, {{pos(N-B)=hash("nodeB")}}, {{pos(N-C)=hash("nodeC")}}.
+**Bước 3 - Định tuyến key:** băm key được vị trí {{p = hash(key)}}. Đi **xuôi chiều kim đồng hồ** trên vòng từ {{p}} đến gặp node đầu tiên -> key thuộc node đó.
+~~~text
+user42 -> hash=55  -> gặp N-B tại 90 đầu tiên  => lưu ở N-B
+user17 -> hash=150 -> gặp N-C tại 200         => lưu ở N-C
+user99 -> hash=350 -> vòng qua 0, gặp N-A 330  => lưu ở N-A
+~~~
+**Cấu trúc dữ liệu thực thi:** lưu vị trí node trong cây tìm kiếm cân bằng (sorted map / TreeMap trong Java) để tra cứu "node kế tiếp" theo {{ceiling(hash(key))}} trong {{O(log M)}} (M = số vnode).
+
+### Thêm/bớt node: chỉ di chuyển phần nhỏ
+~~~text
+Thêm N-D tại vị trí 60 (giữa 55 và 90):
+  Trước: key 55 -> N-B(90)
+  Sau:   key 55 -> N-D(60)  (CHỈ các key nằm giữa N-A(330 qua vòng) và N-D(60)? 
+         chính xác: key có hash trong khoảng (330, 60] trên vòng giờ thuộc N-D
+         thay vì trước đó thuộc N-B. Chỉ đoạn cung đó bị ảnh hưởng.)
+
+Xóa N-B(90):
+  Các key từng thuộc N-B (khoảng (60,90]) chuyển sang N-C(200).
+~~~
+Kỳ vọng: thêm 1 node vào cụm N node chỉ di chuyển {{K/(N+1)}} key (K tổng key). Bỏ 1 node chỉ ảnh hưởng key của chính node đó. Đây là khác biệt cốt lõi so với modulo.
+
+### Virtual node (vnode): vì sao cần
+Vấn đề khi ít node vật lý: 3 node chỉ tạo 3 điểm trên vòng -> các cung rất lệch (node A có thể "sở hữu" 70% vòng, B 10%). Node mạnh/yếu cũng bị đối xử ngang nhau.
+~~~text
+Giải pháp: mỗi node vật lý có V vnode (ví dụ V=150)
+  N-A -> hash("N-A#1"), hash("N-A#2"), ..., hash("N-A#150") rải đều trên vòng
+  N-B -> hash("N-B#1")..hash("N-B#150")
+  N-C -> hash("N-C#1")..hash("N-C#150")
+
+Key vẫn map tới vnode gần nhất theo chiều kim đồng hồ,
+nhưng vnode được quy chiếu về node vật lý (N-A, N-B, N-C).
+~~~
+Lợi ích:
+- **Phân bố đều hơn:** luật số lớn - nhiều điểm ngẫu nhiên rải đều hơn.
+- **Node heterogenous:** node mạnh gấp đôi cho 300 vnode, node yếu 75 vnode.
+- **Rebalance mịn khi node chết:** key của node chết rải sang nhiều node khác (mỗi vnode đổ vào node kế tiếp khác nhau) thay vì dồn hết vào 1 hàng xóm.
+
+### Áp dụng thực tế
+- **Redis Cluster:** dùng 16384 hash slot (một dạng phân mảnh cố định, tư tưởng tương tự chia miền đều); key map qua {{CRC16(key) mod 16384}} vào slot, slot gán cho node. Thêm node -> migrate một số slot (và key trong slot) thủ công/reshard.
+- **Cassandra / Dynamo / Riak:** consistent hashing + vnode để phân vùng token ring; replica đặt trên N vnode kế tiếp thuộc node vật lý khác.
+- **Client-side cache sharding:** thư viện (memcached client, ketama) dùng consistent hashing để chọn server.
+
+### Trên production
+- **Triệu chứng:** thêm node cache nhưng DB vẫn spike (remap quá nhiều do modulo hoặc vnode quá ít); một node nhận tải gấp 3 node khác (vòng lệch, quá ít vnode); sau rebalance, latency tăng do cold cache trên key vừa di chuyển.
+- **Cách đo:** phân bố key/QPS theo node (phải gần đều); tỉ lệ cache hit trước/sau thêm node; thời gian và lượng dữ liệu di chuyển khi reshard. Redis Cluster: {{CLUSTER NODES}}, {{redis-cli --cluster check}}.
+- **Tuning/cấu hình có thật:** chọn số vnode đủ lớn (thường 100-256/node vật lý tùy hệ) để cân bằng chi phí bộ nhớ metadata; khi thêm node mới, **warm up** dần (shadow traffic hoặc prefill) trước khi nhận full traffic để tránh cache stampede; dùng replication factor >= 2 để node chết không mất dữ liệu, chỉ cần promote replica.
+- **Lưu ý:** consistent hashing giải quyết "key nào đi đâu"; nó **không** tự xử lý replication, consistency, hay chuyển dữ liệu - tầng lưu trữ phải có cơ chế migrate (Redis reshard, Cassandra streaming).
+
+> Senior tip: Khi thiết kế sharding, tôi luôn hỏi "thêm 1 node thì bao nhiêu % dữ liệu phải di chuyển và mất bao lâu". Consistent hashing cho câu trả lời ~1/N; modulo cho ~100%. Nhưng đừng dừng ở đó: rebalance an toàn còn cần giới hạn tốc độ migrate, ưu tiên replica, và kế hoạch chống cache stampede khi key vừa đổi chỗ.`,
+  follow: ['Hash slot của Redis Cluster (16384 slot cố định) khác gì với consistent hashing + vnode truyền thống, và vì sao Redis chọn cách đó?', 'Khi một node chết đột ngột, làm sao đảm bảo key của nó vẫn phục vụ được (replication) và rebalancing xảy ra an toàn mà không gây overload?', 'Hot key (một key được đọc cực nhiều) có được consistent hashing giải quyết không? Nếu không, bạn xử lý hot key trên cụm sharded thế nào?'],
+  refs: [{"type":"doc","title":"Redis Cluster specification (hash slots)","url":"https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/"}],
+},
+{
+  id: 'architecture-035',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'So sánh các consistency model: linearizable, sequential, causal và eventual. Giải thích từng mô hình bằng ví dụ thật trong ngân hàng/thương mại điện tử (số dư, đơn hàng, tồn kho hiển thị), và vì sao "mạnh hơn" luôn có cái giá về độ trễ/khả dụng.',
+  a: `**Tóm tắt:** Consistency model (mô hình nhất quán - cam kết về việc các nút/tiến trình nhìn thấy dữ liệu theo thứ tự nào) là "hợp đồng" giữa hệ thống và người dùng. **Linearizable** (tuyến tính hóa) mạnh nhất: mọi thao tác như xảy ra tức thì tại một thời điểm, dễ suy luận nhưng tốn độ trễ và giảm khả dụng khi lỗi mạng. **Sequential** giữ cùng thứ tự quan sát, không ràng buộc thời gian thực. **Causal** chỉ giữ thứ tự nhân quả, cho phép song song độc lập. **Eventual** chỉ hứa cuối cùng hội tụ. Chọn mô hình theo tác động nghiệp vụ của việc đọc sai, không chọn theo "càng mạnh càng tốt".
+
+### Thuật ngữ nền
+- **Replica (bản sao):** nhiều nút giữ bản sao dữ liệu để tăng chịu lỗi/tốc độ đọc.
+- **Latency (độ trễ):** thời gian từ lúc gửi yêu cầu đến lúc nhận kết quả.
+- **Availability (khả dụng):** hệ thống vẫn trả lời (không lỗi) khi có nút/mạng hỏng.
+
+### Phổ mô hình từ mạnh đến yếu (nhìn theo "thứ tự được bảo đảm")
+~~~text
+Mạnh hơn  <----------------------------------------------  Yếu hơn
+Linearizable > Sequential > Causal > Read-your-writes > Eventual
+   (đắt: chờ phối hợp/quorum, có thể từ chối khi partition)
+   (rẻ: phản hồi nhanh, chịu được partition, nhưng đọc có thể cũ/xung đột)
+~~~
+
+### 1) Linearizable (tuyến tính hóa)
+Cam kết: tồn tại một thứ tự toàn cục của mọi thao tác, và thứ tự đó **khớp thời gian thực**. Nếu thao tác A hoàn thành trước khi B bắt đầu (theo thời gian thực), mọi người thấy A trước B. Mỗi đọc trả về giá trị của ghi gần nhất đã hoàn tất.
+~~~text
+Ví dụ ngân hàng - chuyển tiền giữa hai tài khoản:
+t1: Client chuyển 500k từ A(1tr) sang B(0)
+    [txn: A=500k, B=500k] COMMIT (linearizable)
+t2 (sau khi t1 hoàn tất): Client đọc số dư A -> PHẢI thấy 500k
+Không bao giờ thấy trạng thái giữa chừng (A đã trừ, B chưa cộng)
+~~~
+**Vì sao đắt:** ghi/đọc thường phải qua leader hoặc chờ quorum (Raft, Paxos). Nếu mạng partition, nút thiểu số phải từ chối phục vụ để không trả dữ liệu cũ -> hy sinh availability (CP theo CAP).
+**Khi dùng:** số dư ví, ledger, trừ tồn kho, khóa/điều phối (etcd/ZooKeeper), bất kỳ nơi "đọc sai một lần = thiệt hại tiền/pháp lý".
+
+### 2) Sequential consistency (nhất quán tuần tự)
+Cam kết: mọi tiến trình thấy **cùng một thứ tự** các thao tác, và thứ tự của mỗi tiến trình được giữ; nhưng thứ tự toàn cục **không nhất thiết khớp thời gian thực**.
+~~~text
+P1: write(x,1) hoàn tất lúc 10:00:01
+P2: (bắt đầu lúc 10:00:02) read(x) có thể thấy 0 rồi mới thấy 1
+    miễn là MỌI tiến trình đều thấy cùng kịch bản (0 rồi 1)
+~~~
+Khác linearizable ở ràng buộc thời gian thực. Ít hệ thực tế quảng cáo "sequential thuần"; hữu ích để hiểu nền tảng lý thuyết. Một số hệ cung cấp sequential khi đọc từ replica theo cùng thứ tự log.
+
+### 3) Causal consistency (nhất quán nhân quả)
+Cam kết: nếu {{A -> B}} (nhân quả: B đọc/nhận kết quả của A, hoặc cùng client theo thứ tự), mọi nơi thấy A trước B. Các thao tác **song song** (không liên quan) có thể được thấy theo thứ tự khác nhau ở các replica khác nhau.
+~~~text
+Ví dụ thương mại điện tử - bình luận trả lời:
+User X: đăng "Áo này đẹp" (sự kiện A)
+User Y: đọc A, trả lời "Mua ở đâu?" (sự kiện B, có nhân quả A->B)
+User Z: đăng "Ship nhanh không?" (sự kiện C, song song, không liên quan A,B)
+
+Causal đảm bảo: không ai thấy B ("Mua ở đâu?") trước A ("Áo này đẹp")
+Cho phép: một replica thấy C trước A, replica khác thấy A trước C (vì C song song)
+~~~
+**Vì sao rẻ hơn linearizable:** không cần phối hợp toàn cục cho thao tác song song; có thể dùng metadata nhân quả (vector clock, dependency tracking). **Đổi lại:** không đủ cho bài toán cần một thứ tự toàn cục duy nhất (ví dụ hai người cùng mua món hàng cuối cùng).
+**Khi dùng:** mạng xã hội, bình luận, giỏ hàng cộng tác, hệ thống "read-your-writes" mở rộng.
+
+### 4) Eventual consistency (nhất quán cuối cùng)
+Cam kết: nếu không có ghi mới, **cuối cùng** mọi replica hội tụ về cùng giá trị. Không hứa khi nào, và trong lúc hội tụ các replica có thể trả giá trị khác nhau.
+~~~text
+Ví dụ thương mại điện tử - hiển thị tồn kho trên trang sản phẩm:
+Kho thật: 3 sản phẩm
+Replica Asia (chậm 2s): hiển thị "còn 5"
+Replica EU: hiển thị "còn 3"
+Vài giây sau không ghi thêm: cả hai hội tụ về 3
+~~~
+**Khi dùng:** số lượt xem, tồn kho hiển thị (gần đúng - nhưng **trừ kho thực sự** khi đặt hàng phải linearizable/điều kiện), feed, cache, analytics.
+**Cạm bẫy:** eventual cần cơ chế chống phân kỳ vĩnh viễn (anti-entropy, read repair, conflict resolution). "Last write wins" dùng timestamp máy sẽ sai khi clock skew - cần version có ý nghĩa nhân quả.
+
+### Áp dụng ngân hàng / thương mại điện tử
+| Dữ liệu | Mô hình tối thiểu hợp lý | Vì sao | Công nghệ ví dụ |
+|---|---|---|---|
+| Số dư, ledger, chuyển tiền | Linearizable / serializable transaction | Sai 1 đồng = sự cố pháp lý; không được đọc số dư cũ để quyết định rút | Postgres (transaction), Spanner |
+| Trừ tồn kho khi chốt đơn | Linearizable (conditional write) | Tránh bán quá (oversell) | {{UPDATE .. WHERE stock>=1}}, Redis Lua atomic (với chốt DB) |
+| Tồn kho hiển thị trên trang | Eventual (vài giây) | Sai hiển thị chấp nhận được; chốt đơn mới kiểm tra thật | Cache/replica, search index |
+| Lịch sử đơn hàng của chính user | Read-your-writes | User vừa đặt phải thấy đơn của mình | Đọc primary sau ghi, session token |
+| Giỏ hàng | Causal / read-your-writes | Thêm rồi xem phải thấy; merge concurrent giữa thiết bị | DynamoDB, versioned cart |
+| Feed khuyến mãi | Eventual | Trễ vài giây không ảnh hưởng | CDN, replica, cache |
+
+### Trên production
+- **Triệu chứng chọn sai mô hình:** (quá yếu) user thấy "đặt hàng thành công" nhưng mở lịch sử không có (chưa read-your-writes); bán quá tồn kho (trừ kho eventual). (quá mạnh) p99 ghi cao, cụm từ chối ghi khi mất 1 node/quorum, latency cross-region lớn.
+- **Cách đo:** đo replication lag (Postgres {{pg_stat_replication}}: {{write_lag, flush_lag, replay_lag}}; metric {{seconds_behind_master}}); tỉ lệ đọc stale (so sánh version); lỗi timeout do chờ quorum.
+- **Tuning/cấu hình có thật:** Postgres đọc replica chấp nhận lag -> route đọc quan trọng về primary hoặc dùng {{synchronous_commit}} + synchronous standby (đánh đổi latency). Cassandra có tunable consistency per query ({{ONE/QUORUM/ALL}}). DynamoDB có {{ConsistentRead}}. Luôn ghi rõ trong code/query: đọc này chấp nhận stale bao nhiêu.
+- **Nguyên tắc:** vẽ bảng dữ liệu và gắn mô hình cho từng loại; "toàn hệ thống linearizable" hoặc "toàn hệ thống eventual" đều thường là sai.
+
+> Senior tip: Trong phỏng vấn, đừng chỉ liệt kê định nghĩa. Hãy lấy một luồng thật (đặt hàng: giữ chỗ -> trừ kho -> ghi đơn -> hiện lịch sử -> cập nhật trang sản phẩm) và chỉ ra mỗi bước cần consistency nào. Đó là cách chứng minh bạn chọn mô hình theo nghiệp vụ, không theo giáo trình.`,
+  follow: ['Read-your-writes và monotonic reads là session guarantee; bạn triển khai read-your-writes khi đọc đi qua replica (replication lag) bằng cách nào?', 'Tại sao last-write-wins (LWW) dùng timestamp máy nguy hiểm trong eventual consistency, và CRDT/version vector cải thiện điều gì?', 'Một hệ thống có thể cung cấp linearizable cho một phần dữ liệu và eventual cho phần khác trong cùng kiến trúc không? Ranh giới và rủi ro là gì?'],
+  refs: [{"type":"doc","title":"Jepsen: Consistency Models","url":"https://jepsen.io/consistency"}],
+},
+{
+  id: 'architecture-036',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Thundering herd, cache stampede và retry storm: ba hiện tượng khuếch đại tải này khác nhau thế nào, cơ chế gây ra từng cái ra sao, và bạn thiết kế phòng chống bằng request coalescing, jitter, circuit breaker, load shedding như thế nào trên production?',
+  a: `**Tóm tắt:** **Thundering herd** (đàn thú dồn ập - nhiều tiến trình cùng thức dậy tranh một tài nguyên), **cache stampede** (cache hết hạn -> nhiều request cùng đổ về DB), và **retry storm** (lỗi -> mọi client cùng retry -> làm hệ thống tệ hơn) là ba dạng **khuếch đại tải** (load amplification): một sự kiện nhỏ tạo ra N lần công việc. Phòng chống dựa trên 4 kỹ thuật bổ trợ nhau: **request coalescing** (gộp yêu cầu trùng), **jitter** (ngẫu nhiên hóa thời điểm), **circuit breaker** (ngắt mạch khi downstream lỗi), **load shedding** (chủ động từ chối bớt khi quá tải).
+
+### Thuật ngữ nền
+- **Downstream:** hệ thống/phụ thuộc mà bạn gọi tới (DB, service khác). **Upstream:** nơi gọi vào bạn.
+- **Cache miss:** tra cache không có dữ liệu, phải lấy từ nguồn gốc (thường là DB).
+- **Backoff:** chờ lâu dần giữa các lần retry. **Exponential backoff:** thời gian chờ tăng theo lũy thừa (1s, 2s, 4s...).
+
+### 1) Cache stampede - cơ chế từng bước
+~~~text
+Bối cảnh: key "hot:product:99" được 5.000 req/s đọc, cache TTL hết hạn lúc t=10s.
+
+t=9.999  5.000 req/s đều HIT cache -> DB 0 req/s
+t=10.000 TTL hết, key bị xóa
+t=10.001 5.000 req đồng thời MISS cache
+         -> cả 5.000 req cùng gọi DB: SELECT * FROM product WHERE id=99
+         -> DB QPS spike 0 -> 5.000 (hoặc hơn do pile-up)
+         -> DB chậm/sập -> các req timeout -> user lỗi hàng loạt
+t=10.050 một req may mắn lấy được từ DB, set lại cache
+         -> nhưng 4.999 req khác đã gửi/đang gửi query
+~~~
+Đây là khuếch đại: 1 key hết hạn -> 5.000 truy vấn DB giống hệt nhau.
+
+### 2) Thundering herd (tổng quát)
+Xảy ra khi nhiều worker chờ cùng một tín hiệu và cùng thức dậy: ví dụ hàng nghìn process chờ cùng lock/file descriptor (cấp OS), hoặc hàng nghìn client được hẹn "retry sau 30s" và cùng retry đúng giây 30. Trong kiến trúc dịch vụ, stampede là một dạng herd; herd còn gặp ở: leader election timeout trùng nhau (nếu không random), cron job cùng giờ 00:00, reconnect đồng loạt sau khi DB phục hồi.
+
+### 3) Retry storm - cơ chế từng bước
+~~~text
+Bối cảnh: Service A gọi Service B (đang quá tải, p99 5s, nhiều timeout).
+Mỗi request A có retry 3 lần, không backoff/jitter.
+
+t=0   1.000 req/s tới A -> gọi B -> B quá tải, 60% timeout
+t=1s  600 req timeout + 600 retry ngay lập tức = 1.600 req/s tới B
+      -> B càng quá tải, 80% timeout
+t=2s  1.280 timeout + retry -> ~2.300 req/s -> B sập hoàn toàn
+A cũng cạn connection/thread vì chờ B -> A sập theo (cascade failure)
+~~~
+Khuếch đại: lỗi một phần -> retry biến thành tấn công từ chính hệ thống (self-DDoS).
+
+### Phòng chống 1: Request coalescing (gộp yêu cầu)
+Chỉ cho **một** request đi load dữ liệu khi cache miss; các request khác chờ kết quả đó (singleflight).
+~~~java
+// Ý tưởng (dùng lock per-key, ví dụ Redis SET NX hoặc local map)
+String key = "product:99";
+Product v = cache.get(key);
+if (v != null) return v;
+
+String lockKey = "lock:" + key;
+// NX: chỉ set nếu chưa có; PX: TTL lock ngắn (tránh deadlock nếu holder chết)
+boolean won = redis.setIfAbsent(lockKey, "1", Duration.ofMillis(3000));
+if (won) {
+  try {
+    Product p = db.load(99);               // chỉ 1 req chạm DB
+    long ttl = 600 + rand.nextInt(60);      // jitter TTL (xem dưới)
+    cache.set(key, p, Duration.ofSeconds(ttl));
+    return p;
+  } finally { redis.delete(lockKey); }
+} else {
+  Thread.sleep(50);                         // chờ ngắn rồi đọc lại cache
+  return getWithCoalescing(key);            // hoặc trả stale nếu có
 }
+~~~
+Lưu ý: cần TTL cho lock; có thể dùng thư viện local singleflight (per-instance) + cache L1 để giảm round-trip Redis. Biến thể: **stale-while-revalidate** - trả dữ liệu cũ hết hạn ngay, một luồng nền làm mới.
+
+### Phòng chống 2: Jitter (ngẫu nhiên hóa)
+Jitter phá sự đồng bộ.
+~~~text
+TTL cache: base=600s -> ttl = 600 + random(0,60) giây
+  => 10.000 key không hết hạn cùng lúc (chống avalanche)
+
+Retry backoff + full jitter (công thức phổ biến):
+  base=1s, cap=30s, attempt=n
+  sleep = random(0, min(cap, base * 2^n))
+  attempt1: random(0,2s), attempt2: random(0,4s), attempt3: random(0,8s)...
+  => các client dàn đều, không dồn lại cùng thời điểm
+
+Election/reconnect timeout: 150ms + random(0,150ms) (Raft dùng cách này)
+~~~
+Bảng so sánh backoff (tư duy): không backoff -> storm; backoff cố định -> herd theo nhịp; exponential + jitter -> dàn đều.
+
+### Phòng chống 3: Circuit breaker (ngắt mạch)
+Ngắt mạch (giống cầu dao điện): khi downstream lỗi quá ngưỡng, **ngừng gọi** một lúc để downstream hồi phục, thay vì tiếp tục dội request.
+~~~text
+Trạng thái:
+  CLOSED (đóng, bình thường): gọi đi; đếm lỗi
+    -> tỉ lệ lỗi vượt ngưỡng (ví dụ 50% trên 20 req) => OPEN
+  OPEN (mở, ngắt): từ chối ngay (fail fast) hoặc trả fallback, KHÔNG gọi downstream
+    -> sau thời gian chờ (ví dụ 30s) => HALF_OPEN
+  HALF_OPEN (thử): cho vài req thăm dò
+    -> thành công => CLOSED; thất bại => OPEN
+~~~
+Thư viện Java thực tế: **Resilience4j** ({{CircuitBreaker}}, {{Bulkhead}}, {{Retry}}, {{RateLimiter}}). Kết hợp: retry chỉ với lỗi tạm thời và **đặt trong** circuit breaker (không retry khi mạch mở); đặt timeout ngắn để không giữ thread.
+
+### Phòng chống 4: Load shedding (chủ động cắt tải)
+Khi quá tải, **từ chối bớt** request có kiểm soát để phần còn lại được phục vụ đúng, thay vì cố gắng xử lý hết rồi sập cả cụm.
+~~~text
+Cách làm (từ rẻ đến tinh vi):
+- Giới hạn concurrency/bulkhead: tối đa 50 req đồng thời tới DB; vượt -> 503
+- Hàng đợi có giới hạn: queue đầy -> từ chối (không xếp hàng vô hạn)
+- Từ chối theo ưu tiên: giữ request thanh toán, cắt request gợi ý/analytics
+- Shed theo độ trễ: nếu p99 nội bộ vượt ngưỡng, trả 503 + Retry-After
+- Rate limit ở gateway (token bucket) như lớp ngoài cùng
+~~~
+Nguyên tắc: {{503 nhanh}} + {{Retry-After}} (kèm jitter phía client) tốt hơn {{timeout chậm}} sau 30s, vì timeout giữ tài nguyên (thread, connection) lâu hơn.
+
+### Phối hợp trên production
+~~~text
+Client -> [Rate limit + jitter retry] -> Gateway -> [Bulkhead + Timeout]
+       -> Service [Circuit breaker -> Downstream]
+       -> Cache [Coalescing + TTL jitter + stale fallback] -> DB
+~~~
+Mỗi lớp chặn một dạng khuếch đại; không có lớp nào thay thế được tất cả.
+
+### Trên production
+- **Triệu chứng:** DB QPS spike nhọn theo chu kỳ TTL; latency tăng đột biến rồi lan sang service khác (cascade); metric retry count tăng cùng lúc error rate; CPU/connection pool cạn dù traffic user không tăng tương ứng.
+- **Cách đo:** dashboard cache hit/miss theo thời gian (stampede thấy miss spike nhọn), DB QPS, tỉ lệ retry, trạng thái circuit breaker (Resilience4j expose metric), tỉ lệ 503 do shedding. So sánh {{traffic vào}} vs {{traffic ra downstream}} - nếu ra >> vào là đang khuếch đại.
+- **Tuning/cấu hình có thật:** Resilience4j {{CircuitBreakerConfig}} ({{failureRateThreshold}}, {{waitDurationInOpenState}}, {{slidingWindowSize}}), {{RetryConfig}} ({{maxAttempts}}, {{waitDuration}}, {{IntervalFunction.ofExponentialRandomBackoff}}), {{BulkheadConfig}} ({{maxConcurrentCalls}}). DB connection pool (HikariCP {{maximumPoolSize}}) là bulkhead tự nhiên - đừng đặt quá lớn.
+- **Runbook:** khi storm xảy ra, ưu tiên (1) bật shedding/rate limit hạ traffic vào, (2) mở circuit breaker thủ công nếu cần bảo vệ downstream, (3) kiểm tra retry config của caller, (4) sau khi ổn mới tắt dần.
+
+> Senior tip: Retry là liều thuốc có thể thành độc dược. Quy tắc tôi dùng: chỉ retry lỗi **tạm thời** (timeout, 503, connection reset), không retry lỗi **xác định** (400, 401, logic fail), luôn có backoff+jitter+giới hạn số lần, và tổng thời gian retry phải nằm trong deadline của request gốc. Nếu mọi tầng đều retry mù, một lỗi 1% có thể nhân lên thành outage 100%.`,
+  follow: ['Làm sao phân biệt trên dashboard một spike do traffic thật tăng (user đông) với spike do cache stampede hoặc retry storm?', 'Bulkhead pattern (cô lập tài nguyên) bổ sung cho circuit breaker như thế nào, và bạn chia bulkhead theo gì (theo downstream, theo loại request)?', 'Stale-while-revalidate trả dữ liệu cũ có rủi ro nghiệp vụ gì? Những loại dữ liệu nào tuyệt đối không được dùng cơ chế này?'],
+},
+{
+  id: 'architecture-037',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Ở góc độ lead, bạn chọn cơ chế phối hợp phân tán nào cho từng bài toán: Redis lock, etcd/ZooKeeper lease, hay ràng buộc DB? Phân tích trade-off qua case leader election của scheduler, claim job, và cập nhật tồn kho - kèm cơ chế lease/heartbeat/fencing end-to-end.',
+  a: `**Tóm tắt:** Không có "distributed lock tốt nhất", chỉ có cơ chế **đủ đúng** cho từng mức hậu quả. Lead cần chọn theo câu hỏi: "nếu hai tiến trình cùng chạy, thiệt hại là gì?". Trùng job báo cáo (gây tốn CPU) chấp nhận best-effort; trùng trừ tiền là thảm họa - phải có fencing ở tầng dữ liệu. Ba họ công cụ: **Redis lock** (rẻ, nhanh, best-effort), **etcd/ZooKeeper** (consensus, lease + session, phù hợp leader election/coordination), **DB constraint/transaction** (nguồn sự thật, fencing tự nhiên bằng điều kiện/version).
+
+### Khung ra quyết định
+~~~text
+Hậu quả nếu chạy trùng?
+  |-- Nhẹ (tốn tài nguyên, gửi mail trùng có thể chấp nhận)
+  |     -> Redis SET NX PX + handler idempotent
+  |-- Trung bình (dữ liệu sai nhưng sửa/đối soát được)
+  |     -> etcd/ZooKeeper lease HOẶC DB claim (SKIP LOCKED) + idempotent
+  |-- Nặng (mất tiền, oversell, vi phạm hợp đồng)
+        -> KHÔNG tin lock phân tán thuần
+           Dùng: transaction DB + conditional write + unique/version (fencing)
+~~~
+
+### Case 1: Leader election cho scheduler (chỉ 1 node điều phối cron)
+Mục tiêu: trong 5 instance scheduler, chỉ 1 instance "materialize" cron thành job mỗi phút. Nếu hiếm khi 2 instance cùng chạy, job có {{UNIQUE(name, scheduled_at)}} nên chỉ 1 insert thành công -> chấp nhận được.
+**Chọn:** etcd lease hoặc DB advisory/lease table.
+~~~seq
+title: Leader election bằng lease (etcd/DB)
+actors: S1 | S2 | etcd
+S1 -> etcd: grant lease TTL=15s -> leaseId=7
+S1 -> etcd: put leader=S1 với leaseId=7 (thành công nếu key trống)
+S1 -> S1: Trở thành leader, materialize cron
+S1 -> etcd: keepAlive leaseId=7 (gia hạn mỗi 5s)
+S1 -> etcd: keepAlive leaseId=7 (heartbeat tiếp)
+note S2: S2 thử put leader -> thất bại, watch key leader
+S1 -> S1: S1 chết (không keepAlive)
+etcd -> etcd: Lease 7 hết TTL -> xóa key leader
+etcd -> S2: Watch notify: leader key bị xóa
+S2 -> etcd: put leader=S2 với lease mới -> thành leader
+~~~
+**Cơ chế lease:** lease là "hợp đồng có hạn"; sống sót nhờ heartbeat gia hạn. Nếu leader treo (GC pause dài, mạng tách), heartbeat không đến -> lease hết -> leader bị thu hồi. Đây là **fail-safe** (an toàn khi im lặng) nhưng có cửa sổ: trong khoảng pause, leader cũ có thể vẫn đang hành động.
+**Fencing:** gắn {{leaseId}}/revision tăng dần vào hành động ghi (ví dụ ghi job kèm {{fence = leaseRevision}}; consumer kiểm tra). etcd cung cấp {{mod_revision}}/transaction compare-and-swap tự nhiên.
+
+### Case 2: Claim job từ hàng đợi trong Postgres
+Mục tiêu: 20 worker lấy job, không ai lấy trùng.
+~~~sql
+-- Mỗi worker chạy trong transaction ngắn (chỉ claim)
+UPDATE job
+   SET status = 'RUNNING',
+       worker_id = 'w7',
+       lease_until = now() + interval '5 minutes',
+       attempts = attempts + 1,
+       fence = fence + 1            -- fencing token tăng dần
+ WHERE id = (
+   SELECT id FROM job
+    WHERE status = 'PENDING' AND next_run_at <= now()
+    ORDER BY next_run_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED          -- bỏ qua hàng đang bị lock
+ )
+ RETURNING *;
+~~~
+Worker xử lý xong ghi kết quả **có điều kiện fencing**:
+~~~sql
+UPDATE job SET status = 'DONE', result = ?
+ WHERE id = ? AND worker_id = 'w7' AND fence = ? AND status = 'RUNNING';
+-- affected rows = 0 => worker đã mất lease, bỏ kết quả (stale)
+~~~
+**Vì sao tốt:** không cần Redis/etcd; DB vừa là queue vừa là nguồn fencing. {{SKIP LOCKED}} cho throughput cao (worker không chờ nhau). Lease {{lease_until}} + reaper xử lý worker chết.
+
+### Case 3: Cập nhật tồn kho (không dùng lock phân tán)
+~~~sql
+-- Đúng: conditional write nguyên tử trong DB, không race condition
+UPDATE inventory
+   SET available = available - 1
+ WHERE sku = 'SKU-1' AND available >= 1;
+-- affected rows = 1 => giữ hàng thành công
+-- Không Redis lock, không lo GC pause, không lo clock
+~~~
+Nếu phải phối hợp nhiều hệ thống (giữ kho ở inventory-service, trừ ví ở payment-service): dùng **saga + idempotency + outbox**; mỗi bước tự bảo vệ bằng ràng buộc DB cục bộ và bút toán bù (compensate). Distributed lock bao trùm saga là anti-pattern (giữ lock qua network call = mong manh).
+
+### So sánh nhanh
+| Tiêu chí | Redis lock (SET NX PX) | etcd/ZooKeeper lease | DB conditional/row lock |
+|---|---|---|---|
+| Độ trễ | Rất thấp (sub-ms) | Thấp-vừa (ms, qua consensus) | Vừa (ms, phụ thuộc txn) |
+| Đúng đắn khi client treo | Yếu nếu không fencing | Tốt hơn (session/lease) + fencing | Tốt (txn gắn kết nối; fencing bằng điều kiện) |
+| Chịu lỗi hạ tầng | Mất lock nếu failover async | Chịu được nếu còn quorum | Theo HA của DB |
+| Vận hành | Đơn giản | Cụm consensus cần chăm sóc | Tận dụng DB sẵn có |
+| Phù hợp | Best-effort dedup | Leader election, coordination | Dữ liệu nghiệp vụ là nguồn sự thật |
+
+### Trên production
+- **Triệu chứng chọn sai:** dùng Redis lock cho tồn kho -> oversell hiếm gặp khó tái hiện; dùng etcd cho mọi thứ -> độ trễ tăng, etcd thành bottleneck; giữ {{SELECT FOR UPDATE}} lâu qua HTTP call -> deadlock/connection pool cạn.
+- **Cách đo:** thời gian giữ lock/lease; số lần fencing từ chối (stale writer) - con số > 0 là bình thường nhỏ, tăng vọt là có worker treo; tỉ lệ job chạy trùng; p99 transaction DB.
+- **Tuning/cấu hình có thật:** lease TTL đủ lớn hơn chu kỳ heartbeat (thường heartbeat = TTL/3); timeout xử lý < TTL hoặc có cơ chế checkpoint/fencing; Postgres {{lock_timeout}}, {{statement_timeout}} để tránh giữ lock vô hạn. Với scheduler dùng DB, index {{(status, next_run_at)}} partial cho PENDING.
+- **Review thiết kế (lead):** với mỗi "lock" trong sơ đồ, đặt câu hỏi "fencing ở đâu, idempotency ở đâu, hậu quả nếu trùng là gì". Nếu câu trả lời là "Redis lo", đó là rủi ro cần ghi nhận.
+
+> Senior tip: Lead giỏi không phải người biết nhiều loại lock, mà là người **thiết kế để không cần lock** cho đường dẫn tiền/dữ liệu quan trọng: dùng conditional write, unique constraint, single-writer partition, hoặc idempotency key. Lock phân tán dành cho coordination (ai là leader, ai claim việc) - còn correctness của dữ liệu phải tự bảo vệ ở tầng lưu trữ.`,
+  follow: ['Trong Kubernetes, leader election (client-go) dùng Lease object trên API server; cơ chế này ánh xạ thế nào sang lease/heartbeat/fencing bạn vừa mô tả?', 'Khi worker bị GC pause vượt lease TTL rồi tỉnh dậy, ngoài fencing token ở DB, bạn cần xử lý gì với side effect bên ngoài (gọi API payment, gửi email)?', 'Bạn thuyết phục team chuyển từ "Redis lock bọc quanh logic trừ kho" sang "conditional update + idempotency" như thế nào (rủi ro, migration, kiểm chứng)?'],
+},
+{
+  id: 'architecture-038',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Giải thích linearizability sâu hơn ở mức cơ chế: read/write quorum, leader-based read, và vì sao đọc từ replica có thể trả dữ liệu cũ dù ghi đã "thành công"? Phân tích đánh đổi latency vs correctness trong ngân hàng (đọc số dư) và thương mại điện tử (xác nhận đơn) qua từng lựa chọn kỹ thuật.',
+  a: `**Tóm tắt:** Một ghi được "thành công" chưa chắc mọi nơi đọc thấy ngay - điều đó phụ thuộc vào **đường đọc** và **mô hình nhất quán**. Linearizable (tuyến tính hóa - đọc luôn thấy ghi mới nhất đã hoàn tất theo thời gian thực) đạt được bằng cách buộc đọc và ghi đi qua cùng một thứ tự toàn cục (leader/quorum có phối hợp). Đọc từ replica rẻ và nhanh nhưng có thể stale (cũ) do replication lag. Lead phải chọn theo tác động nghiệp vụ: đọc số dư để quyết định cho rút tiền phải linearizable; hiển thị "đơn đã đặt" có thể read-your-writes; danh sách gợi ý chỉ cần eventual.
+
+### Cơ chế 1: Leader-based replication và cửa sổ stale
+~~~seq
+title: Ghi thành công nhưng đọc replica bị stale
+actors: ClientW | Leader | F1(replica) | ClientR
+ClientW -> Leader: write(x=10)
+Leader -> Leader: ghi local log/index
+Leader -> F1: replicate x=10 (async)
+Leader -> ClientW: OK (ack sau khi leader ghi / hoặc sau quorum)
+note F1: F1 chưa kịp áp dụng (replication lag 200ms)
+ClientR -> F1: read(x)
+F1 -> ClientR: x=5 (STALE - cũ)
+F1 -> F1: áp dụng x=10 (trễ 200ms)
+~~~
+**"Ghi thành công" nghĩa là gì** phụ thuộc cấu hình ack:
+- Ack khi leader ghi: nhanh nhất, nhưng leader chết trước khi replicate -> mất ghi đã ack.
+- Ack khi quorum (đa số) ghi: an toàn hơn (ghi sống qua mất leader), nhưng đọc từ follower ngoài quorum vẫn có thể stale cho đến khi follower đuổi kịp.
+
+### Cơ chế 2: Quorum read/write (R + W > N)
+Với N replica, ghi cần W ack, đọc hỏi R replica, chọn giá trị có version mới nhất.
+~~~text
+N=3 (replica A,B,C), mỗi bản ghi có version tăng dần
+Chọn W=2, R=2 => R+W=4 > 3 => giao nhau ít nhất 1 replica
+
+Ghi x=10 (version v3): ghi vào A,B thành công (W=2) -> ack
+Đọc: hỏi B,C (R=2) -> nhận (B: v3=10), (C: v2=5) -> chọn v3=10 (mới nhất)
+
+Vì sao an toàn? Tập ghi {A,B} và tập đọc {B,C} giao nhau tại B,
+B đã có v3 nên đọc thấy v3.
+~~~
+**Cạm bẫy thực tế:**
+- Cần **version/timestamp đáng tin** để chọn "mới nhất" (không dùng wall clock lệch - xem clock skew; dùng version đơn điệu từ leader/log index).
+- Chưa chắc linearizable theo thời gian thực trong mọi triển khai (xung đột concurrent, repair). Dynamo-style quorum thường cho eventual/tunable; linearizable cần thêm (ví dụ read repair cẩn thận, hoặc giao thức kiểu Raft).
+- {{W=1}} (ghi nhanh) + {{R=1}} (đọc nhanh): {{1+1 <= 3}} -> có thể đọc stale. Nhanh nhưng yếu.
+
+### Cơ chế 3: Linearizable read qua leader/consensus
+~~~text
+Cách A - Đọc qua leader: mọi read gửi tới leader -> leader biết commitIndex mới nhất.
+  Đắt: leader thành bottleneck đọc; latency cao nếu client xa leader.
+
+Cách B - ReadIndex (Raft): follower hỏi leader "commitIndex hiện tại là bao nhiêu?",
+  chờ local apply đến index đó rồi trả đọc. Không chuyển dữ liệu qua leader,
+  nhưng vẫn 1 round-trip tới leader để xác nhận.
+
+Cách C - Lease read: leader giữ "lease" (cam kết còn là leader trong khoảng thời gian
+  an toàn dựa trên clock/heartbeat). Trong lease, leader đọc local không cần hỏi quorum.
+  Rủi ro: nếu giả định clock/lease sai, có thể đọc stale trong trường hợp hiếm.
+
+Cách D - Đọc follower kèm version tối thiểu (read-your-writes):
+  client gửi kèm "tôi cần thấy ít nhất version v3 (vừa ghi)";
+  follower chờ đuổi kịp v3 rồi trả lời. Không linearizable toàn cục, nhưng đủ cho session.
+~~~
+
+### Áp dụng ngân hàng: đọc số dư để quyết định rút tiền
+~~~text
+Kịch bản nguy hiểm (stale read):
+  Số dư thật = 500k (vừa rút còn 500k, ghi đã commit trên leader)
+  App đọc số dư từ replica stale -> thấy 1.000k
+  App cho phép rút 800k -> ghi lệnh rút
+  -> Nếu không có ràng buộc DB: overspend. Nếu có: lệnh rút bị từ chối muộn (UX tệ)
+
+Thiết kế đúng (chọn 1 hoặc kết hợp):
+  1. Đọc số dư phục vụ quyết định ghi -> đọc linearizable (primary/ReadIndex)
+  2. Quyết định cho phép rút nằm trong DB: 
+     UPDATE account SET balance = balance - 800000
+      WHERE id=? AND balance >= 800000;  (fencing bằng điều kiện)
+     -> kể cả đọc hiển thị stale, thao tác tiền vẫn đúng
+  3. Hiển thị số dư "tham khảo" có thể stale vài trăm ms, ghi chú "đang cập nhật"
+~~~
+**Nguyên tắc ngân hàng:** đường dẫn **ghi tiền/quyết định tiền** phải dựa trên nguồn sự thật có điều kiện tuyến tính hóa; đường dẫn **hiển thị** có thể nới lỏng.
+
+### Áp dụng thương mại điện tử: xác nhận đơn
+~~~text
+Luồng: User bấm "Đặt hàng" -> ghi đơn (commit) -> redirect trang "Đơn #123 thành công"
+Vấn đề: trang xác nhận đọc từ replica -> chưa thấy đơn #123 -> "Không tìm thấy đơn"
+  (user hoảng, bấm lại -> nguy cơ đặt trùng nếu không idempotent)
+
+Giải pháp theo mức:
+  - Read-your-writes: sau ghi, đọc đơn #123 từ primary (hoặc kèm version) trong phiên đó
+  - Trả thẳng dữ liệu đơn trong response của request tạo đơn (không cần đọc lại)
+  - Idempotency key cho nút đặt hàng để bấm lại không tạo đơn trùng
+  - Eventual cho danh sách "tất cả đơn hàng" (trễ 1s chấp nhận được)
+~~~
+
+### Bảng đánh đổi
+| Cách đọc | Độ trễ | Tải leader | Đảm bảo | Dùng cho |
+|---|---|---|---|---|
+| Local replica | Thấp nhất | Không | Eventual (stale) | Gợi ý, feed, analytics |
+| Replica + chờ version | Thấp-vừa | Không (trừ check) | Read-your-writes | Trang xác nhận sau ghi |
+| ReadIndex / quorum read | Vừa | Có (nhẹ) | Linearizable | Đọc phục vụ quyết định quan trọng |
+| Qua leader / txn serializable | Cao hơn | Có (nhiều) | Linearizable/serializable | Tiền, tồn kho chốt đơn |
+
+### Trên production
+- **Triệu chứng stale read:** "tôi vừa lưu mà mở lại không thấy", đơn xác nhận 404 thoáng qua, số dư hiển thị nhảy lên xuống. Tăng khi replica lag cao (mạng, replica yếu, ghi burst).
+- **Cách đo:** {{replication lag}} (byte/seconds); sampled consistency check (ghi giá trị + version, đọc từ replica, đo thời gian đến khi thấy); tỉ lệ lỗi "not found sau create" theo route đọc.
+- **Tuning/cấu hình có thật:** Postgres {{synchronous_standby_names}} cho replica đồng bộ (linearizable hơn nhưng tăng latency ghi, giảm availability khi standby chết); route đọc/ghi ở tầng ứng dụng ({{@Transactional(readOnly=true)}} tới replica chỉ cho truy vấn chấp nhận stale). CockroachDB/Spanner cung cấp bounded/strong staleness tùy câu lệnh.
+- **Thiết kế API:** endpoint ghi trả về resource + version; client dùng version đó cho lần đọc sau. Đừng buộc client "đợi 1 giây rồi load lại" - đó là che giấu vấn đề consistency bằng timing.
+
+> Senior tip: Câu hỏi lead không phải "chọn CP hay AP", mà là "với từng câu query trong luồng này, stale tối đa chấp nhận bao nhiêu và hậu quả nếu vượt?". Tôi thường vẽ luồng đặt hàng và gắn nhãn từng chỗ đọc: {{[linearizable]}}, {{[read-your-writes]}}, {{[eventual 2s]}}. Bảng đó vừa là thiết kế, vừa là hợp đồng với team và là cơ sở chọn hạ tầng.`,
+  follow: ['Synchronous replication (standby sync) trong Postgres cải thiện linearizable read như thế nào và đánh đổi availability/latency ra sao khi standby chậm hoặc chết?', 'Read-your-writes triển khai bằng cách "ghi nhớ version đã ghi vào session/cookie và gửi kèm request đọc" có rủi ro gì khi user đổi thiết bị hoặc session bị xoay?', 'Trong CockroachDB/Spanner, bounded staleness read cho phép đọc dữ liệu "cũ tối đa X giây" nhanh hơn; bạn chọn X và xác định query nào được dùng bounded staleness dựa trên tiêu chí gì?'],
+}
+  ,
+  {
+    id: 'design-036',
+    topic: 'design',
+    level: 'senior',
+    q: 'Proxy, Decorator và Adapter khác nhau thế nào? Ví dụ Spring AOP, java.io, HandlerAdapter.',
+    a: `**Tóm tắt:** Proxy kiểm soát truy cập (Spring AOP), Decorator thêm trách nhiệm (java.io streams), Adapter chuyển đổi interface (Spring MVC HandlerAdapter).
+
+### 1. Proxy
+
+Kiểm soát truy cập tới object thật: lazy init, access control, logging, transaction. Spring AOP dùng proxy (JDK dynamic proxy hoặc CGLIB). Gọi tự thân không đi qua proxy → khuyên lệnh không chạy.
+
+### 2. Decorator
+
+Thêm trách nhiệm động mà không đổi interface. java.io: BufferedInputStream bao bọc InputStream, thêm buffer. Có thể xếp nhiều decorator.
+
+### 3. Adapter
+
+Chuyển interface của class thành interface client mong đợi. Spring MVC: HandlerAdapter chuyển Controller method thành HandlerExecutionChain invocation.
+
+### 4. So sánh
+
+- Proxy: cùng interface, kiểm soát.
+- Decorator: cùng interface, thêm hành vi.
+- Adapter: khác interface, chuyển đổi.
+
+### Cạm bẫy
+
+- Decorator lồng sâu → khó gỡ lỗi.
+- Proxy gọi tự thân (Spring AOP).
+- Adapter lạm dụng → thiết kế quá phức tạp.
+
+> Senior tip: Proxy = kiểm soát, Decorator = thêm, Adapter = chuyển. Nhớ bẫy gọi tự thân của Spring AOP.` ,
+    follow: ['Spring AOP gọi tự thân vì sao không chạy?', 'Decorator trong java.io có nhược điểm gì?', 'Adapter khác Facade thế nào?'],
+    tags: ['design-patterns','proxy','decorator','adapter']
+  }
 );
