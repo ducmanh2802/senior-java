@@ -77,7 +77,10 @@ Mỗi module có schema riêng trong chung một instance DB. Sau này tách ser
 ### Trả lời miệng 1 phút
 "Với team 5 người, domain còn đổi và deadline 3 tháng, tôi chọn modular monolith. Tức là một ứng dụng, một pipeline deploy, nhưng code chia module theo bounded context, module chỉ gọi nhau qua API public, mỗi module có schema riêng, và tôi enforce bằng ArchUnit trong CI. Lý do: microservices biến lời gọi hàm thành lời gọi mạng, mất transaction ACID, và mỗi service cần pipeline, dashboard, on-call riêng; với 5 người đó là chi phí lớn hơn lợi ích. Tôi chỉ tách khi có bằng chứng: một module cần scale riêng, cần tài nguyên khác, hoặc team chặn release của nhau. Kinh nghiệm của tôi là tách muộn mà boundary đúng dễ hơn nhiều so với tách sớm rồi phải gộp lại."
 
-> Senior tip: chi phí thật của microservices không nằm ở code mà nằm ở ops: mỗi service thêm một dashboard, một pipeline, một runbook on-call. Hãy tách theo đau thật, không theo CV.`,
+### Ví dụ đời thực
+  Công ty thương mại điện tử nhỏ (6 dev) khởi công năm 2022 với **modular monolith**: một jar, PostgreSQL chung, package theo bounded context (catalog, order, payment, shipping). Năm 2023, trước Black Friday, đơn hàng tăng 10 lần (từ 200 req/phút lên 2000 req/phút). Triệu chứng: toàn bộ ứng dụng chạy trên 1 instance 4 CPU/16GB, CPU đạt 95%, response time p99 tăng từ 200ms lên 3s. Điều tra: {{kubectl top pod}} thấy app-monolith dùng 3,8/4 CPU; {{SELECT count(*) FROM pg_stat_activity}} thấy 60 kết nối đang wait trên lock của bảng orders; {{ArchUnit}} trong CI phát hiện module payment vẫn JOIN thẳng bảng orders của module order (violation). Nguyên nhân gốc: một monolith không thể scale từng module; và modular monolith trên giấy (module order vẫn truy cập bảng của payment) khiến tách service sau này khó. Xử lý: (1) thêm 2 instance app để load balance, (2) sửa ArchUnit rule và refactor order không JOIN payment table, (3) chuẩn bị roadmap: khi order module cần scale riêng (dự kiến Q1 2024), tách order-service ra với DB riêng. Kết quả: sau khi thêm instance, p99 giảm về 350ms; việc enforce ArchUnit giúp phát hiện 7 violation trong 1 tháng. Đây là minh chứng: modular monolith đã giải quyết vấn đề scale tạm thời, và boundary enforced bằng ArchUnit giúp chuẩn bị cho việc tách service mà không phải viết lại.
+
+  > Senior tip: chi phí thật của microservices không nằm ở code mà nằm ở ops: mỗi service thêm một dashboard, một pipeline, một runbook on-call. Hãy tách theo đau thật, không theo CV.`,
   follow: [
     'Nếu bắt buộc phải tách một module ra sớm, bạn chọn module nào và lấy tiêu chí gì?',
     'Modular monolith khác gì so với SOA (ESB) về centralization?',
@@ -143,7 +146,10 @@ Order Service                   Payment Service
 ### Trả lời miệng 1 phút
 "Share chung schema giữa hai team là coupling ngầm: schema trở thành contract mà không ai version hay kiểm tra, nên đổi một cột là team kia lỗi runtime; hai service cũng không scale riêng được và chịu chung blast radius của DB. Tôi áp dụng database-per-service: mỗi bảng có đúng một service sở hữu, service khác đọc qua API composition hoặc CQRS read model và ghi qua API/event. Để vẽ boundary tôi dùng event storming và ubiquitous language: khi cùng một từ như Customer mang hai nghĩa, đó là hai bounded context. Trade-off là thêm latency và eventual consistency. Khi gỡ DB chung, tôi làm từng bước: gán chủ sở hữu, tách DB user, thu hồi quyền, rồi mới tách hẳn."
 
-> Senior tip: tín hiệu đỏ lớn nhất là "2 service phải luôn deploy cùng nhau": khi đó chúng thực chất là một service, hãy gộp lại thay vì vờ tách.`,
+### Ví dụ đời thực
+  Một công ty fintech có 2 service: **Order Service** và **Payment Service**, cùng truy cập chung schema {{public}} trong PostgreSQL. Năm 2023 team payment đổi tên cột {{amount}} thành {{amount_minor}} (đổi sang đơn vị cent), deploy schema migration. Team order không biết, deploy xong thì order-service lỗi ngay: {{column "amount" does not exist}}. Điều tra: {{pg_stat_activity}} thấy query từ order-service fail liên tục; migration log của payment-service ghi "ALTER TABLE transactions RENAME COLUMN amount TO amount_minor"; code order-service có {{SELECT amount FROM transactions}}. Nguyên nhân gốc: schema chung là contract không có version, không có compile-time check. Xử lý: (1) rollback migration, (2) chia schema riêng: payment-schema cho payment-service, order-schema cho order-service, (3) order-service chuyển sang đọc payment qua REST /payments/{id} thay vì JOIN. Kết quả: sau 2 tuần, hai service deploy độc lập, không còn lỗi schema; nhưng thêm 1 hop network (order → payment API) làm latency tăng 40ms. Đây là minh chứng: database-per-service giải quyết coupling schema nhưng trade-off là network call.
+
+  > Senior tip: tín hiệu đỏ lớn nhất là "2 service phải luôn deploy cùng nhau": khi đó chúng thực chất là một service, hãy gộp lại thay vì vờ tách.`,
   follow: [
     'Nếu hai bounded context cần dữ liệu khách hàng, bạn chọn shared kernel hay anti-corruption layer? Vì sao?',
     'API composition và CQRS read model khác nhau khi nào, chi phí nào lớn hơn?',
@@ -211,6 +217,9 @@ Mỗi service sẵn sàng 99,9%:
 
 ### Trả lời miệng 1 phút
 "Tôi đánh giá theo ba loại coupling. Thời gian: đồng bộ buộc hai bên cùng sống cùng lúc. Availability: chuỗi đồng bộ có xác suất thành công bằng tích từng mắt xích, nên 10 hop mỗi cái 99,9% chỉ còn khoảng 99%. Dữ liệu: REST buộc contract chặt, event chỉ chia sẻ điều đã xảy ra. Vì vậy tôi dùng REST hoặc gRPC cho query cần kết quả ngay, gRPC cho nội bộ hiệu năng cao, còn tác vụ phụ, nghiệp vụ dài và fan-out thì dùng event. Trade-off của async là eventual consistency và phải có idempotency. Kinh nghiệm của tôi: call đồng bộ nào cũng phải có timeout và circuit breaker, message nào cũng phải idempotent."
+
+### Ví dụ đời thực
+  Hệ thống giao hàng 20 service: {{Client → API Gateway → Order Service → Payment Service → Shipping Service → Notification Service}}. Năm 2023, trong cao điểm trưa, Payment Service tăng latency từ 200ms lên 5s (do connection pool cạn). Triệu chứng: order request timeout, người dùng thấy "504 Gateway Timeout". Điều tra: {{kubectl top pods}} thấy payment-service CPU 95%, {{Jaeger trace}} thấy 3 hop đồng bộ (order → payment → shipping) mỗi hop thêm 1,5s; tính toán: 0,999^3 ≈ 99,7% success rate → khoảng 43 phút lỗi/ngày. Nguyên gốc: chuỗi đồng bộ 3 hop không chịu được spike, và availability coupling lan ra. Xử lý: (1) chuyển {{CreateShipment}} và {{SendInvoice}} từ đồng bộ sang Kafka event (bất đồng bộ, trả 202 Accepted ngay), (2) thêm circuit breaker với threshold 50% error, timeout 800ms, (3) payment-service scale từ 2 lên 6 pod. Kết quả: chuỗi đồng bộ còn 1 hop (order → payment), p99 giảm từ 5s xuống 600ms, và người dùng không còn thấy 504. Đây là minh chứng: availability coupling là thứ nguy hiểm nhất, và bất đồng bộ giải quyết được nó mà không làm mất tính tức thì của phần còn lại.
 
 > Senior tip: đồng bộ luôn phải có timeout (thường dưới 1 giây cho call nội bộ), bất đồng bộ luôn phải có idempotency + chiến lược thứ tự. Thiếu một trong hai là bạn chưa xong.`,
   follow: [
@@ -293,6 +302,9 @@ Công nghệ Java: choreography dùng Kafka + Spring Kafka/Spring Cloud Stream; 
 ### Trả lời miệng 1 phút
 "Tôi không dùng 2PC vì participant phải giữ lock chờ coordinator; coordinator chết giữa hai phase là lock treo, throughput thấp, và Kafka hay REST API cũng không tham gia XA được. Tôi dùng Saga: mỗi service commit local transaction rồi phát event qua outbox, nếu một bước fail thì chạy compensation ngược lại như refund, release stock. Với flow ngắn 3 service cùng team tôi dùng choreography; flow dài, cross-team thì orchestration với Temporal hoặc bảng saga state để thấy rõ trạng thái và tập trung timeout. Trade-off là mất isolation, nên tôi dùng semantic lock và reservation có TTL. Kinh nghiệm của tôi: compensation phải idempotent và luôn có đường xử lý tay."
 
+### Ví dụ đời thực
+  Công ty bán hàng đa kênh (Order, Payment, Inventory) chạy Saga cho đơn hàng: ReserveStock → ChargePayment → CreateShipment. Năm 2023, trong Black Friday, Payment Service chậm 5s do connection pool cạn, và 10% payment fail. Saga orchestrator (Temporal) retry 3 lần rồi compensation: CancelShipment → RefundPayment → ReleaseStock. Triệu chứng: khách hàng nhận được 2 email "đơn hàng đã được tạo" và 1 email "đơn hàng đã bị hủy", nhưng trong DB đơn hàng ở trạng thái CANCELLED dù kho đã gửi hàng. Điều tra: Temporal workflow log thấy RefundPayment chạy 2 lần (retry + compensation overlap) vì payment service không idempotent; CancelShipment chạy trước khi CreateShipment hoàn thành (compensation thứ tự bị reverse). Nguyên gốc: compensation không idempotent và thứ tự compensation bị reverse do retry. Xử lý: (1) payment API thêm idempotency key (UUID client-side), (2) compensation enforce thứ tự: compensation chỉ chạy sau step N-1, (3) saga log lưu trong DB cùng transaction với orchestrator. Kết quả: sau 1 tuần, không còn double-refund; customer service ticket giảm từ 500 xuống 50/tuần. Đây là minh chứng: Saga mất isolation và compensation phải idempotent + đúng thứ tự.
+
 > Senior tip: luôn lưu **saga log** (trạng thái từng bước) trong cùng DB với orchestrator, để sau crash biết chính xác đang ở bước nào. Không có log thì không ai dám restart.`,
   follow: [
     'Saga mất isolation thì bạn ngăn oversell bằng cách nào cụ thể trong code?',
@@ -310,6 +322,21 @@ Công nghệ Java: choreography dùng Kafka + Spring Kafka/Spring Cloud Stream; 
 
 ### Hiểu nhanh
 Bạn vừa chốt một đơn hàng và phải làm hai việc: ghi vào sổ cái và gọi điện báo kho. Nếu bạn ghi sổ xong thì bị mất điện trước khi gọi, kho không bao giờ biết có đơn. Nếu gọi kho trước rồi mới ghi sổ mà ghi sổ thất bại, kho chuẩn bị hàng cho một đơn không tồn tại. Outbox là: ghi đơn **và** dòng "cần báo kho" vào **cùng một trang sổ**, xong một lần là chắc chắn cả hai cùng có. Sau đó một nhân viên chuyên trách (relay) đọc các dòng "cần báo" và gọi kho, gọi lại nếu chưa được.
+
+Sơ đồ dưới đây: ghi DB và publish event qua CDC không mất:
+
+~~~seq
+title: Outbox + CDC: ghi event không mất
+actors: App | OrdersDB | Debezium | Kafka | Consumer
+App -> OrdersDB: save order + outbox row
+OrdersDB --> App: commit
+OrdersDB -> Debezium: WAL có outbox row
+Debezium -> Kafka: publish order.created
+Kafka --> Debezium: ack
+Kafka -> Consumer: consumer nhận event
+Consumer --> Kafka: commit offset
+note Debezium..Kafka: restart → gửi lại, consumer idempotent
+~~~
 
 ### Thuật ngữ
 - **Dual write**: một thao tác nghiệp vụ ghi vào hai hệ thống độc lập (DB và broker) mà không có transaction chung.
@@ -363,6 +390,9 @@ App ─► [orders DB: orders + outbox] ─(WAL / logical replication)─► Deb
 ### Trả lời miệng 1 phút
 "Ghi DB và publish Kafka là dual write vì hai hệ thống không chung transaction: crash giữa hai bước thì hoặc mất event, hoặc phát event cho dữ liệu đã rollback, và AFTER_COMMIT listener cũng không cứu được. Tôi dùng Transactional Outbox: trong cùng transaction tôi ghi đơn hàng và một dòng outbox chứa event. Sau đó Debezium đọc WAL, dùng Outbox Event Router đẩy event ra topic với key là aggregateId để giữ thứ tự. Nếu không muốn vận hành Kafka Connect thì polling với SKIP LOCKED cũng ổn. Trade-off là at-least-once nên consumer phải idempotent. Thực tế tôi luôn giám sát lag của connector và replication slot, vì connector chết là business bị chậm theo."
 
+### Ví dụ đời thực
+  Hệ thống e-commerce 50 dev, Orders Service ghi PostgreSQL và publish event lên Kafka topic order.events sau khi commit. Năm 2023, một lần deploy mới thêm field discountId vào Order aggregate, developer viết: orderRepo.save(order); kafkaTemplate.send("order.events", order.getId(), order).get();. Kết quả: 1% request crash giữa hai bước (kafkaTemplate.send throw), event bị mất, và 0,5% request commit xong nhưng publish throw → event ảo (đơn hàng trong DB nhưng không ai nhận được event để cập nhật read model). Triệu chứng: read model (dashboard doanh số) thiếu 1,5% đơn hàng, customer service không tìm thấy đơn. Điều tra: log thấy exception KafkaTimeoutException; audit log thấy order có nhưng event không có. Nguyên gốc: dual-write problem – hai hệ thống không chung transaction. Xử lý: (1) refactor placeOrder() dùng Transactional Outbox – ghi order + outbox row trong cùng @Transactional, (2) Debezium Outbox Event Router đọc WAL và publish order.events với key = orderId, (3) consumer idempotent (processed_event table). Kết quả: sau 2 tuần, không còn event mất hay event ảo; dashboard doanh số chính xác 99,99%; độ trễ thêm khoảng 100ms do relay. Đây là minh chứng: Outbox + CDC giải quyết dual-write bằng nguyên tử DB.
+
 > Senior tip: dùng CDC cho outbox là chuyện bình thường, nhưng nó thêm một thành phần (Kafka Connect cluster) phải monitor như service thật: lag của connector cũng là lag của business.`,
   follow: [
     'Outbox và event table ở domain model có phải là một không, nên đặt trong schema nào?',
@@ -384,6 +414,21 @@ App ─► [orders DB: orders + outbox] ─(WAL / logical replication)─► Deb
 
 ### Hiểu nhanh
 Bạn chuyển khoản qua app, mạng chập chờn, app quay mãi rồi báo lỗi. Bạn không biết tiền đã đi hay chưa, nên bấm lại. Nếu ngân hàng xử lý "ngây thơ", bạn mất tiền hai lần. Ngân hàng tử tế gán cho mỗi lệnh một **mã phiếu** (idempotency key): lần bấm thứ hai mang cùng mã, ngân hàng tra sổ thấy "mã này đã làm rồi" và trả lại đúng biên lai cũ. Đó là exactly-once effect: gửi nhiều lần, tiền chỉ đi một lần.
+
+Sơ đồ dưới đây: idempotency key prevents double charge:
+
+~~~seq
+title: Idempotency key: gửi nhiều lần chỉ charge 1
+actors: Client | API | PaymentGW | IdemTable
+Client -> API: POST /charge (key K)
+API -> IdemTable: insert key K (unique)
+IdemTable --> API: ok → xử lý
+API -> PaymentGW: charge với key K
+PaymentGW --> API: receipt
+API -> IdemTable: lưu response
+Client -> API: retry POST /charge (key K)
+API -> IdemTable: tìm thấy K → trả response cũ
+~~~
 
 ### Thuật ngữ
 - **At-most-once / at-least-once / exactly-once**: message được xử lý tối đa 1 lần / ít nhất 1 lần / đúng 1 lần.
@@ -451,6 +496,9 @@ ON CONFLICT (order_id) DO NOTHING;   -- MySQL: INSERT IGNORE / ON DUPLICATE KEY 
 ### Trả lời miệng 1 phút
 "Exactly-once end-to-end là không thể vì bên gửi không phân biệt được mất message với mất ack, nên mọi hệ thống thực tế đều là at-least-once. Tôi biến nó thành exactly-once effect bằng idempotency. Ở API, client gửi Idempotency-Key, server insert key với unique constraint, xử lý và lưu response trong cùng transaction, request trùng nhận lại response cũ. Ở consumer, tôi dedup theo message id hoặc upsert theo natural key, cùng transaction với business write, rồi mới commit offset. Kafka transactions chỉ cho exactly-once trong luồng topic sang topic. Kinh nghiệm của tôi là đo số bản trùng bị chặn: nó khác 0 là bình thường."
 
+### Ví dụ đời thực
+  Hệ thống thanh toán fintech: client gọi POST /charges với Idempotency-Key header. Năm 2023, một lần network chập chờn, client retry 3 lần cùng key. Server code cũ: check key → nếu chưa có thì charge → lưu response. Kết quả: 2% request bị charge 2 lần (do check-then-insert race: 2 request song song cùng thấy key chưa có, cùng gọi payment gateway). Triệu chứng: khách hàng bị trừ tiền 2 lần, ticket tăng 300/tuần. Điều tra: payment gateway report thấy 2 charge với cùng merchant_reference; server log thấy 2 request cùng timestamp, cả 2 đều insert key thành công (do không có UNIQUE constraint). Nguyên gốc: check-then-insert không atomic, và không có UNIQUE constraint. Xử lý: (1) idemRepo.insert(key, hash) với UNIQUE(key) – request thứ hai nhận DuplicateKeyException, (2) lưu response trong cùng transaction, (3) retry request nhận lại response cũ. Kết quả: sau 1 tuần, double-charge xuống 0; ticket giảm còn 10/tuần. Đây là minh chứng: idempotency key phải dựa trên UNIQUE constraint của DB, không dựa vào check-then-insert.
+
 > Senior tip: measure = số bản ghi trùng/"duplicate suppressed" mỗi phút. Con số này luôn khác 0 trong hệ thống healthy; bằng 0 nghĩa là bạn chưa bật retry, không phải là bạn đã exactly-once.`,
   follow: [
     'Idempotency key nên lưu trong Redis hay DB, vì sao?',
@@ -472,6 +520,20 @@ ON CONFLICT (order_id) DO NOTHING;   -- MySQL: INSERT IGNORE / ON DUPLICATE KEY 
 
 ### Hiểu nhanh
 Hãy nghĩ tới tổng đài chăm sóc khách hàng gọi ra cho 10 đối tác. **Timeout**: gọi quá 30 giây không ai nghe thì cúp máy. **Retry**: cúp rồi thử lại, nhưng chờ một lúc và tối đa 3 lần, không gọi dồn dập. **Circuit breaker**: nếu đối tác X 10 cuộc thì 6 cuộc không nghe, tạm ngừng gọi X trong 30 giây, khách hỏi tới X thì báo ngay "đang bận". **Bulkhead**: chỉ cho tối đa 5 nhân viên cùng gọi X, để X có "treo máy" thì các nhân viên còn lại vẫn phục vụ đối tác khác. **Fallback**: khi không gọi được, trả lời khách bằng thông tin dự phòng.
+
+Sơ đồ dưới đây: chuỗi call có timeout, breaker, fallback:
+
+~~~seq
+title: Resilience4j: timeout → breaker → fallback
+actors: Client | OrderSvc | PaymentAPI | Fallback
+Client -> OrderSvc: charge(order)
+OrderSvc -> PaymentAPI: POST /charges
+PaymentAPI --> OrderSvc: 201 receipt
+OrderSvc --> Client: receipt
+note OrderSvc..Fallback: timeout/lỗi → breaker mở
+OrderSvc -> Fallback: trả receipt.pending
+Fallback --> Client: degrade an toàn
+~~~
 
 ### Thuật ngữ
 - **Timeout / TimeLimiter**: giới hạn thời gian chờ một call; TimeLimiter của Resilience4j dùng cho call bất đồng bộ (CompletableFuture).
@@ -585,6 +647,27 @@ Tomcat 200 thread, 10 downstream: bulkhead 25/downstream
   q: 'Đêm qua một dependency chậm dần, cả hệ thống timeout rồi cụm chết theo. Đây là retry storm/cascading failure thế nào? Bạn ngăn bằng những gì?',
   a: `**Tóm tắt:** đây là **retry amplification** dẫn tới **cascading failure**: mỗi tầng retry 3 lần thì dependency nhận tới 4 lần tải đúng lúc nó đang yếu; thêm timeout quá dài làm thread của upstream bị giữ lâu, **thread pool cạn kiệt**, và service vô tội chết dù bản thân không có lỗi. Ngăn bằng: timeout ngắn trong một deadline tổng, retry có giới hạn + jitter + retry budget, circuit breaker, bulkhead, backpressure (429/503 + Retry-After) và health check không phụ thuộc downstream.
 
+Sơ đồ dưới đây: retry storm khi dependency B chậm:
+
+~~~seq
+title: Retry storm: 3 retry × 3 tầng
+actors: Client | C | A | B
+Client -> C: request
+C -> A: request
+A -> B: call
+B --> A: slow
+A -> B: retry 1
+A -> B: retry 2
+A -> B: retry 3
+C -> A: retry 1
+C -> A: retry 2
+C -> A: retry 3
+Client -> C: retry 1
+Client -> C: retry 2
+Client -> C: retry 3
+note A..B: B nhận tới 64 call → thread pool cạn
+~~~
+
 ### Hiểu nhanh
 Một quầy thu ngân bị chậm vì máy in hóa đơn kẹt. Người xếp hàng sốt ruột, cứ 10 giây lại có người chen lên hỏi "xong chưa?", mỗi câu hỏi làm thu ngân chậm thêm. Hàng dài ra, tràn sang quầy bên cạnh, cả siêu thị tắc. Đó là retry storm. Cách xử lý đúng: treo biển "quầy tạm dừng, quay lại sau 5 phút" (circuit breaker + Retry-After), giới hạn số người được hỏi lại (retry budget), và tách hàng riêng cho từng quầy (bulkhead) để quầy kẹt không làm tắc cả siêu thị.
 
@@ -669,6 +752,23 @@ Hình dung Kafka như **băng chuyền có đánh số** ở nhà máy, chia th�
 - **Static membership**: consumer có {{group.instance.id}} cố định, restart nhanh không gây rebalance.
 - **Poison pill**: message mà lần nào xử lý cũng lỗi (sai format, dữ liệu vi phạm).
 - **DLQ / DLT**: dead letter queue/topic, nơi chứa message không xử lý được để xem và replay sau.
+
+Sơ đồ dưới đây: consumer group chia partition, poison pill đi DLQ:
+
+~~~seq
+title: Kafka consumer group + DLQ
+actors: Producer | P0 | P1 | ConsumerA | ConsumerB | DLT
+Producer -> P0: order.created (key o1)
+Producer -> P1: order.created (key o2)
+P0 -> ConsumerA: poll offset 41
+ConsumerA -> ConsumerA: xử lý lỗi
+ConsumerA -> P0: retry → fail
+ConsumerA -> DLT: poison pill
+ConsumerA -> P0: commit offset
+P1 -> ConsumerB: poll
+ConsumerB --> P1: ack
+note ConsumerA..DLT: partition không đứng, lag theo từng partition
+~~~
 
 ### Partition và ordering
 1. **Producer chọn partition theo key**: {{toPositive(murmur2(keyBytes)) % numPartitions}}. Cùng key thì cùng partition, nên mọi event của cùng order_id được giữ đúng thứ tự. Message không có key thì được rải theo sticky partitioner, không có thứ tự theo nghiệp vụ.
@@ -806,6 +906,22 @@ SNS order ──┼──► SQS billing-queue ──► billing worker
   q: 'Giải thích vai trò của API Gateway và BFF, chúng khác nhau ở đâu? So sánh client-side load balancing với server-side (Kubernetes) và service discovery.',
   a: `**Tóm tắt:** **API Gateway** là cửa ngõ hạ tầng chung cho mọi client (TLS, xác thực, rate limit, routing); **BFF** (Backend For Frontend) là tầng gộp dữ liệu **theo từng trải nghiệm** (web, mobile), chứa logic phục vụ giao diện. Về load balancing: **client-side** (client tự chọn instance từ registry) linh hoạt nhưng client phải thông minh; **server-side** (Kubernetes Service, load balancer) đơn giản, kiểm soát tập trung. Trên Kubernetes, Service + DNS + readiness probe đã là service discovery.
 
+Sơ đồ dưới đây: API Gateway + BFF:
+
+~~~seq
+title: API Gateway + BFF: client gom dữ liệu
+actors: Mobile | API Gateway | BFF-mobile | OrderSvc | ProductSvc
+Mobile -> API Gateway: request
+API Gateway -> BFF-mobile: forward
+BFF-mobile -> OrderSvc: GET /orders
+BFF-mobile -> ProductSvc: GET /products
+OrderSvc --> BFF-mobile: orders
+ProductSvc --> BFF-mobile: products
+BFF-mobile -> BFF-mobile: gộp + cắt gọt
+BFF-mobile --> API Gateway: response
+API Gateway --> Mobile: payload nhẹ
+~~~
+
 ### Hiểu nhanh
 Một tòa nhà văn phòng có **quầy lễ tân ở sảnh** (API Gateway): kiểm tra thẻ, giới hạn khách, chỉ đường lên tầng; lễ tân không làm việc chuyên môn của công ty nào. **BFF** giống **trợ lý riêng** cho từng loại khách: khách VIP (mobile) cần bản tóm tắt gọn, khách đối tác (web) cần bộ hồ sơ đầy đủ; trợ lý đi gom tài liệu từ nhiều phòng rồi đưa đúng thứ khách cần. Service discovery là **bảng chỉ dẫn** cho biết phòng nào đang mở ở đâu; load balancer là người **chia khách** đều cho các nhân viên đang rảnh.
 
@@ -893,6 +1009,21 @@ Web ────┘ (TLS, JWT,     └─► BFF-web ────┴─► revie
   level: 'senior',
   q: 'Bạn xây dựng observability cho hệ thống 30 microservices thế nào? Phân biệt RED/USE, correlation id và OpenTelemetry, chỉ ra bẫy cardinality.',
   a: `**Tóm tắt:** metrics cho **xu hướng**, logs cho **chi tiết từng sự kiện**, traces cho **hành trình một request xuyên các service**. RED (Rate, Errors, Duration) đo theo endpoint/service, USE (Utilization, Saturation, Errors) đo theo tài nguyên; correlation id (trace_id theo chuẩn W3C) là sợi dây nối log với trace. Với 30 service, tôi chuẩn hóa bằng OpenTelemetry/Micrometer, giữ label metric có cardinality thấp và alert theo SLO burn rate.
+
+Sơ đồ dưới đây: trace id truyền qua HTTP và Kafka header:
+
+~~~seq
+title: Correlation id: traceparent truyền qua service
+actors: Gateway | OrderSvc | PaymentSvc | Kafka | NotifySvc
+Gateway -> OrderSvc: traceparent header
+OrderSvc --> Gateway: response
+OrderSvc -> PaymentSvc: traceparent header
+PaymentSvc --> OrderSvc: response
+OrderSvc -> Kafka: publish event + header traceparent
+Kafka -> NotifySvc: consumer nhận header
+NotifySvc -> Kafka: commit offset
+note Gateway..NotifySvc: cùng trace id 4bf92f… truyền toàn bộ
+~~~
 
 ### Hiểu nhanh
 Hãy tưởng tượng một hệ thống giao hàng 30 kho. **Metrics** là bảng tổng hợp mỗi giờ: bao nhiêu đơn đi, bao nhiêu đơn trễ; nhìn là biết "có chuyện", nhưng không biết đơn nào. **Logs** là sổ ghi chép chi tiết của từng kho. **Trace** là **mã vận đơn**: dán lên kiện hàng từ lúc nhận, đi qua kho nào cũng quét, nên tra một mã là thấy toàn bộ hành trình và chỗ nào bị giữ lâu. Correlation id chính là mã vận đơn được in luôn vào sổ của mọi kho, để từ trace nhảy sang đúng dòng log.
@@ -983,6 +1114,18 @@ thêm label user_id (1 triệu user)  = 1,2 tỉ series             → sập
   ],
   q: 'Hai service nội bộ gọi nhau. Bạn chọn OAuth2 client credentials, mTLS hay service mesh? Giải thích trade-off và cách phân quyền từng phía.',
 a: `**Tóm tắt:** **mTLS** trả lời câu hỏi "đây là service nào" (danh tính ở mức workload, chứng minh bằng certificate), **OAuth2 client credentials** trả lời "service này được làm gì" (quyền theo scope/audience trong JWT). Hai thứ bổ sung cho nhau, không thay thế nhau: service mesh lo transport + danh tính (auto mTLS), còn ứng dụng vẫn lo authorization nghiệp vụ + audit. Mesh không thay được app.
+
+Sơ đồ dưới đây: OAuth2 client credentials flow:
+
+~~~seq
+title: OAuth2 client credentials: ServiceA gọi ServiceB
+actors: ServiceA | IdP | ServiceB
+ServiceA -> IdP: POST /token (client_id, secret)
+IdP --> ServiceA: access_token (scope orders.read)
+ServiceA -> ServiceB: GET /orders + Bearer token
+ServiceB -> ServiceB: verify signature, audience, scope
+ServiceB --> ServiceA: 200 orders
+~~~
 
 ### Hiểu nhanh
 Hãy nghĩ tới một tòa nhà công ty. **mTLS** giống **thẻ nhân viên có chip**: cửa từ đọc thẻ, biết chắc bạn là "anh A phòng kế toán", không ai giả được bằng lời nói. **OAuth2 token** giống **giấy phép công tác** có ghi rõ "được vào kho, chỉ được xem, hết hạn lúc 15:00". Có thẻ nhân viên chưa chắc được vào kho; có giấy phép mà không có thẻ thì không qua được cổng. **Service mesh** giống **đội bảo vệ** đứng ở mọi cửa, tự kiểm thẻ giùm từng phòng, nhưng việc "anh A có được duyệt chi 1 tỷ không" vẫn do phòng tài chính quyết định.
@@ -1335,6 +1478,20 @@ Cây sung bóp cổ (strangler fig) mọc bám quanh một cây chủ, rễ củ
 - **Reconciliation job**: job so sánh dữ liệu hai phía, báo lệch.
 - **Shadow traffic**: nhân bản request sang service mới để so kết quả, không trả về cho user.
 - **Branch by abstraction**: tạo interface trong code monolith, đổi implementation từ module cũ sang client gọi service mới.
+
+Sơ đồ dưới đây: strangler fig từng bước:
+
+~~~seq
+title: Strangler fig: facade + canary + CDC
+actors: Client | Facade | Monolith | CatalogSvc | Debezium | CatalogDB
+Client -> Facade: /api/catalog/*
+Facade -> CatalogSvc: 5% traffic
+CatalogSvc --> Facade: response
+Facade -> Monolith: 95% traffic
+Monolith -> Debezium: CDC đồng bộ
+Debezium -> CatalogDB: replicate data
+note Facade..CatalogSvc: rollback = đổi route
+~~~
 
 ### Kế hoạch từng bước
 1. **Đo và phủ test trước khi đụng**: distributed tracing + test tích hợp cho đúng use case sẽ tách. Vì sao: monolith không có test thì tách là đánh bạc; tracing cho biết ai đang gọi gì.
@@ -2043,6 +2200,22 @@ headers.set("x-request-timeout-ms", String.valueOf(remaining));
 - **gRPC**: deadline nằm trong {{Context}} và được propagate tự động khi gọi tiếp trong cùng context.
 - **DB**: có thể đặt query timeout theo thời gian còn lại (JDBC {{Statement.setQueryTimeout}}, PostgreSQL {{statement_timeout}}).
 
+Sơ đồ dưới đây: deadline propagation giảm timeout theo chiều sâu:
+
+~~~seq
+title: Deadline propagation: timeout giảm dần
+actors: Client | Gateway | OrderSvc | Payment | External
+Client -> Gateway: deadline 5s
+Gateway -> OrderSvc: timeout 4,5s
+OrderSvc -> Payment: timeout 3,5s
+Payment -> External: timeout 1,5s
+External --> Payment: ok
+Payment --> OrderSvc: ok
+OrderSvc --> Gateway: ok
+Gateway --> Client: response
+note External..Client: hết hạn ở đâu thì dừng ở đó
+~~~
+
 ### Timeout giảm dần theo chiều sâu
 | Hop | Service | Timeout ví dụ | Lý do |
 |---|---|---|---|
@@ -2105,6 +2278,21 @@ Con tàu có **vách ngăn kín nước** (bulkhead): một khoang thủng thì 
 Không bulkhead:  [200 thread] ──► Payment chậm: 200/200 kẹt → cả service chết
 Có bulkhead:     Payment ≤ 25 │ Catalog ≤ 50 │ User ≤ 50 │ còn lại cho việc khác
                  Payment chậm: 25 kẹt, call thứ 26 → BulkheadFullException → fallback
+~~~
+
+Sơ đồ dưới đây: bulkhead cô lập từng dependency:
+
+~~~seq
+title: Bulkhead: Payment chậm không làm kẹt Catalog
+actors: Client | OrderSvc | PaymentAPI | CatalogAPI
+Client -> OrderSvc: request
+OrderSvc -> PaymentAPI: charge
+PaymentAPI --> OrderSvc: chậm
+OrderSvc -> CatalogAPI: list
+CatalogAPI --> OrderSvc: nhanh
+OrderSvc -> OrderSvc: fallback cho Payment
+OrderSvc --> Client: partial response
+note OrderSvc..PaymentAPI: chỉ 25 call đồng thời
 ~~~
 
 ### Thread pool isolation (Resilience4j)
@@ -3883,5 +4071,694 @@ Trạng thái phát hành: early access ở Kafka 4.0, preview ở 4.1. Trước
     { type: 'doc', title: 'Kafka documentation', url: 'https://kafka.apache.org/documentation/' }
   ]
 }
-);
+,
+{
+  id: 'microservices-050',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Bạn cấu hình Kafka topic thanh toán với {{replication.factor=3}}, {{acks=all}}, {{min.insync.replicas=2}}. Hãy giải thích cơ chế replication từng bước: leader/follower, ISR, high watermark, và những kịch bản nào vẫn có thể **mất dữ liệu đã ack** hoặc **mất dữ liệu chưa kịp ack**?',
+  a: `**Tóm tắt:** Mỗi partition có 1 **leader** (nhận đọc/ghi) và các **follower** sao chép log từ leader; **ISR** (In-Sync Replicas) là tập replica đang bắt kịp leader. Với {{acks=all}} + {{min.insync.replicas=2}}, producer chỉ nhận ack khi leader và ít nhất 1 follower khác đã ghi vào log cục bộ. **High watermark** (HWM) là offset cao nhất mà mọi replica trong ISR đã có; consumer chỉ đọc tới HWM. Mất dữ liệu đã ack vẫn xảy ra nếu {{unclean.leader.election.enable=true}} và mọi ISR chết, buộc bầu một follower lạc hậu làm leader.
 
+### Hiểu nhanh (ví dụ đời thường)
+Hãy tưởng tượng một **sổ cái** ở quầy thu ngân (leader). Có 2 nhân viên khác (follower) ngồi chép lại từng dòng vào sổ phụ của mình. Chỉ khi **ít nhất 1 nhân viên chép phụ xác nhận đã ghi** (acks=all, min ISR=2 nghĩa là leader + 1 follower) thì thu ngân mới nói "đã nhận tiền" với khách. Khách chỉ được phép đọc báo cáo tới dòng mà **các replica trong ISR đều đã có** (high watermark), vì dòng chỉ leader có có thể biến mất nếu leader bị hỏng.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Replica**: bản sao của một partition (một phần của topic), mỗi bản nằm trên một broker (máy chủ Kafka) khác.
+- **Leader**: replica duy nhất xử lý mọi request đọc/ghi của partition đó.
+- **Follower**: replica chỉ sao chép (fetch - kéo dữ liệu) từ leader, không phục vụ client trực tiếp.
+- **ISR (In-Sync Replicas)**: tập replica (gồm leader) mà độ trễ sao chép nằm trong ngưỡng {{replica.lag.time.max.ms}} (mặc định 30 giây). Follower quá chậm bị đuổi khỏi ISR.
+- **HW (High Watermark)**: offset lớn nhất mà **tất cả** replica trong ISR đã ghi; dữ liệu trên HW chưa "committed" với consumer.
+- **LEO (Log End Offset)**: offset kế tiếp sẽ ghi trên từng replica.
+- **Unclean leader election**: cho phép bầu leader từ replica **không** thuộc ISR (có thể thiếu dữ liệu) - đánh đổi an toàn dữ liệu lấy tính sẵn sàng.
+
+### Bên trong: dữ liệu trông thế nào
+Mỗi replica là một **log** (chuỗi file segment trên đĩa, ghi nối đuôi - append-only), mỗi message có offset tăng dần:
+~~~text
+Broker 1 (Leader,  P0)  LEO=105  HW=102:  [98][99][100][101][102][103][104]
+Broker 2 (Follower,P0)  LEO=103  HW=102:  [98][99][100][101][102][103]      (đang fetch 104)
+Broker 3 (Follower,P0)  LEO=102  HW=102:  [98][99][100][101][102]           (chậm -> sắp bị đuổi ISR)
+
+ISR = {Broker1, Broker2} (Broker3 lag > 30s -> bị loại)
+Consumer chỉ thấy tới offset 102 (HW). Offset 103,104 chưa "commit".
+~~~
+
+### Chuyện gì xảy ra theo thứ tự (produce với acks=all)
+1. Producer gửi batch tới **leader** của partition.
+2. Leader append vào log cục bộ (LEO leader tăng).
+3. Follower liên tục gửi **Fetch request** tới leader (cơ chế giống consumer nội bộ), leader trả về dữ liệu mới.
+4. Mỗi follower append vào log cục bộ, báo lại vị trí đã bắt kịp.
+5. Leader tính **HW = min(LEO của mọi replica trong ISR)**. Vì sao lấy min? Chỉ offset mà *mọi* ISR đều có mới an toàn nếu leader chết.
+6. Khi HW >= offset của batch producer gửi **và** số replica trong ISR >= {{min.insync.replicas}}, leader trả **ack** cho producer.
+7. HW mới được lan truyền cho follower trong fetch response tiếp theo.
+
+~~~seq
+title: Produce acks=all, min.insync.replicas=2 (RF=3)
+actors: Producer | Leader(B1) | Follower(B2) | Follower(B3)
+Producer -> Leader(B1): Produce(batch, acks=all)
+Leader(B1) -> Leader(B1): append log, LEO=105
+Follower(B2) -> Leader(B1): Fetch(offset=103)
+Leader(B1) --> Follower(B2): data [103..104]
+Follower(B2) -> Follower(B2): append, LEO=105
+Follower(B3) -> Leader(B1): Fetch(offset=102)
+Leader(B1) --> Follower(B3): data [102..104] (chậm)
+Leader(B1) -> Leader(B1): ISR={B1,B2}, HW=min(105,105)=105
+Leader(B1) --> Producer: ack (HW>=batch, ISR>=2)
+note Leader(B1)..Follower(B3): B3 lag quá 30s -> rời ISR, không chặn ack
+~~~
+
+### Mất dữ liệu xảy ra khi nào? (bảng kịch bản)
+| Kịch bản | Cấu hình | Kết quả | Vì sao |
+|---|---|---|---|
+| Leader chết, ISR còn follower bắt kịp | {{acks=all}}, {{min.insync.replicas=2}}, {{unclean.leader.election.enable=false}} | **Không mất** dữ liệu đã ack | Leader mới bầu từ ISR, ISR đã có >= HW |
+| Leader chết, mọi follower đều rời ISR; unclean **tắt** | như trên, {{unclean=false}} | Partition **ngừng ghi** (producer lỗi {{NotEnoughReplicas}}), **không mất** | Kafka ưu tiên an toàn, chấp nhận không sẵn sàng |
+| Leader chết, mọi follower rời ISR; unclean **bật** | {{unclean.leader.election.enable=true}} | **Mất** dữ liệu đã ack | Bầu follower lạc hậu (LEO thấp) làm leader, HW bị cắt xuống LEO của nó; dữ liệu leader cũ có nhưng follower mới không có bị mất vĩnh viễn |
+| {{acks=1}} (chỉ leader ack) | {{acks=1}} | **Mất** dữ liệu đã ack nếu leader chết trước khi follower fetch | Producer nghĩ thành công nhưng chỉ leader có bản ghi |
+| {{acks=all}} nhưng {{min.insync.replicas=1}} | mặc định nguy hiểm | **Mất** nếu leader (ISR chỉ còn nó) chết sau ack, trước khi follower kịp chép | "all" lúc đó chỉ là leader |
+| {{acks=0}} | fire-and-forget | **Mất** im lặng | Producer không chờ, không biết lỗi |
+
+### Trade-off mà Kafka chọn
+- {{unclean.leader.election.enable}} (cần kiểm tra broker config): **false** = ưu tiên **durability** (không mất), chấp nhận downtime; **true** = ưu tiên **availability**, chấp nhận mất.
+- {{min.insync.replicas}} cao (2 với RF=3) tăng an toàn nhưng giảm khả năng ghi khi broker hỏng. Điểm cân bằng kinh điển: RF=3, minISR=2 chịu được 1 broker chết mà vẫn ghi an toàn.
+
+### Trên production
+- **Triệu chứng:** producer thấy {{NotEnoughReplicasException}}/{{NotEnoughReplicasAfterAppendException}} -> ISR đang < minISR (broker chậm, GC dài, đĩa đầy). Consumer lag tăng đột ngột sau failover -> nghi unclean election.
+- **Đo:** metric {{kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions}} (phải = 0), {{IsrShrinksPerSec}}/{{IsrExpandsPerSec}}, {{UncleanLeaderElectionsPerSec}} (**phải luôn = 0** trên hệ thống quan trọng).
+- **Tuning/cấu hình có thật:** {{replication.factor=3}}, {{min.insync.replicas=2}}, {{unclean.leader.election.enable=false}}, producer {{acks=all}}, {{enable.idempotence=true}}. Đặt {{replica.lag.time.max.ms}} đủ lớn để tránh ISR flap do GC tạm thời (mặc định 30s thường ổn; đừng hạ thấp bừa).
+
+~~~text
+# Kiểm tra nhanh (kafka-topics.sh --describe)
+Topic: payments  Partition: 0  Leader: 1  Replicas: 1,2,3  Isr: 1,2
+# Isr thiếu 3 -> broker 3 đang lag; nếu leader 1 chết lúc này, chỉ 2 lên thay -> vẫn an toàn (minISR=2)
+~~~
+
+> Senior tip: trên cụm thanh toán/log audit, tôi đặt alert cứng {{UncleanLeaderElectionsPerSec > 0}} và coi đó là incident severity cao, vì nó đồng nghĩa có thể đã mất dữ liệu committed. Đồng thời theo dõi {{UnderReplicatedPartitions}} liên tục; URP > 0 kéo dài nghĩa là bạn đang sống nhờ "1 bản sao cuối" — một broker nữa là outage hoặc mất dữ liệu.`,
+  follow: ["Nếu {{min.insync.replicas=2}} mà 2 broker chết cùng lúc, producer nhận lỗi gì và ứng dụng nên xử lý ra sao (retry, buffer, fail open/close)?", "High watermark khác gì {{log.end.offset}}? Vì sao consumer không được đọc vượt HW?", "Follower fetching về bản chất giống consumer poll. Thiết kế này giúp Kafka đạt throughput cao như thế nào so với leader chủ động push?"],
+  tags: ["Kafka", "replication", "ISR", "acks", "min.insync.replicas", "high watermark", "unclean leader election"],
+  refs: [{"type": "doc", "title": "Kafka: Replication", "url": "https://kafka.apache.org/documentation/#replication"}, {"type": "doc", "title": "Kafka design: Message delivery semantics", "url": "https://kafka.apache.org/documentation/#semantics"}]
+},
+{
+  id: 'microservices-051',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Giải thích cơ chế **idempotent producer** ({{PID}}, sequence number, epoch) và **Kafka transactions** (read-process-write exactly-once). Khi nào EOS vẫn **không** đảm bảo exactly-once end-to-end, đặc biệt khi có side effect ra ngoài Kafka (gọi REST, ghi DB)?',
+  a: `**Tóm tắt:** Idempotent producer gán mỗi producer một **PID** (Producer ID) và đánh **sequence number** tăng dần cho từng (PID, partition); broker chỉ chấp nhận sequence đúng kế tiếp nên retry không tạo bản trùng. Kafka **transactions** mở rộng điều này: dùng {{transactional.id}} + **transaction coordinator** để ghi nguyên tử vào nhiều partition và commit offset consumer (read-process-write), đạt exactly-once **trong phạm vi Kafka**. Nhưng nếu bước xử lý gọi REST/ghi DB/email, Kafka không kiểm soát được side effect đó — retry vẫn có thể thực hiện side effect hai lần.
+
+### Hiểu nhanh (ví dụ đời thường)
+- **Idempotent producer** giống **đánh số trang** khi fax: trang 1,2,3. Nếu máy gửi tưởng mất trang 2 nên gửi lại, máy nhận thấy "trang 2 tôi đã có" thì bỏ qua bản trùng.
+- **Transaction** giống **chuyển khoản nội bộ một ngân hàng**: trừ A, cộng B, đánh dấu "đã xử lý lệnh này" — cả 3 cùng thành công hoặc cùng thất bại. Nhưng nếu bước giữa là "gọi điện nhờ ngân hàng khác chuyển tiền", ngân hàng của bạn không thể rút lại cuộc gọi đó khi rollback.
+
+### Thuật ngữ (giải thích lần đầu)
+- **PID (Producer ID)**: định danh duy nhất broker cấp cho producer; gắn với mọi batch.
+- **Sequence number**: số thứ tự mỗi batch trên một (PID, partition), bắt đầu từ 0.
+- **Producer epoch**: số tăng khi producer "hồi sinh" (fencing) để vô hiệu PID/epoch cũ, tránh zombie (tiến trình cũ sống lại gây ghi rác).
+- **Idempotence**: thực hiện nhiều lần cho cùng kết quả một lần.
+- **Transaction coordinator**: broker đảm nhiệm quản lý trạng thái transaction cho một {{transactional.id}}.
+- **Transaction log ({{__transaction_state}})**: topic nội bộ (ẩn) lưu trạng thái transaction.
+- **EOS (Exactly-Once Semantics)**: ngữ nghĩa "xử lý đúng một lần" — trong Kafka nghĩa là ghi/đọc/commit offset nguyên tử.
+
+### Idempotent producer: bên trong từng bước
+Trạng thái broker giữ **theo (PID, partition)**: {{lastSeq}}.
+1. Producer khởi động, xin broker cấp **PID** (và epoch). (Từ Kafka 3.0, {{enable.idempotence=true}} là mặc định, {{acks}} buộc phải {{all}}).
+2. Gửi batch đầu tới partition P0: {{(PID=42, epoch=0, partition=P0, baseSeq=0, records=5)}}.
+3. Broker thấy {{baseSeq == lastSeq[P0]+1}} (hoặc 0) -> append, cập nhật {{lastSeq[P0]=4}}, trả ack.
+4. Mạng lỗi, producer **không nhận ack** -> retry cùng batch (cùng sequence).
+5. Broker thấy {{baseSeq <= lastSeq}} -> **duplicate**, trả ack nhưng **không ghi lại**. Đây là chỗ chống trùng.
+
+~~~text
+(PID=42, P0)  gửi seq=0..4  -> broker ghi, lastSeq=4
+              ack mất -> retry seq=0..4
+              broker: 0 <= 4  => DUPLICATE, bỏ qua, vẫn ack OK  (không ghi 2 lần)
+~~~
+
+~~~java
+// Kafka producer (Java client) - idempotence mặc định Kafka 3.x
+Properties p = new Properties();
+p.put("bootstrap.servers", "broker:9092");
+p.put("enable.idempotence", "true");   // mặc định true từ 3.0
+p.put("acks", "all");                   // bắt buộc khi idempotence
+p.put("max.in.flight.requests.per.connection", "5"); // an toàn với idempotence
+p.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+p.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+// Producer tự xin PID, tự gắn sequence
+~~~
+
+**Zombie fencing:** nếu producer cũ bị pause (GC dài) rồi "sống lại" sau khi producer mới đã khởi động, producer mới có thể lấy epoch cao hơn; broker từ chối batch mang epoch cũ.
+
+### Kafka transactions: read-process-write (EOS trong Kafka)
+Bài toán: đọc từ topic {{orders}}, xử lý, ghi {{payments}}, và commit offset của {{orders}} — tất cả như **một đơn vị**.
+1. Cấu hình {{transactional.id}} (ổn định theo instance). Producer đăng ký với **transaction coordinator** -> lấy PID + epoch, **fence** producer cũ cùng transactional.id.
+2. {{initTransactions()}}; {{beginTransaction()}}.
+3. {{send()}} tới nhiều partition/topic: mỗi batch mang (PID, epoch) và được đánh dấu "thuộc transaction T".
+4. {{sendOffsetsToTransaction(offsets, consumerGroupMetadata)}}: ghi marker commit offset vào {{__consumer_offsets}} **như một phần của transaction**.
+5. {{commitTransaction()}}: coordinator ghi PREPARE_COMMIT vào {{__transaction_state}}, rồi ghi **control marker (COMMIT)** vào mọi partition liên quan, rồi COMPLETE_COMMIT.
+6. Consumer cấu hình {{isolation.level=read_committed}} chỉ thấy message sau COMMIT marker (dựa trên **LSO - Last Stable Offset**).
+
+~~~seq
+title: Kafka transaction read-process-write (EOS trong Kafka)
+actors: Consumer | App | TxnProducer | Coordinator | OutTopic | OffsetsTopic
+Consumer -> App: poll record (orders)
+App -> TxnProducer: beginTransaction
+App -> TxnProducer: send(payment) -> OutTopic
+App -> TxnProducer: sendOffsetsToTransaction -> OffsetsTopic
+App -> Coordinator: commitTransaction
+Coordinator -> OutTopic: write COMMIT marker
+Coordinator -> OffsetsTopic: write COMMIT marker
+Coordinator --> App: committed
+note App..OutTopic: read_committed consumer chỉ thấy sau COMMIT
+~~~
+
+~~~java
+p.put("transactional.id", "pay-worker-1"); // ổn định, duy nhất mỗi worker
+try (KafkaProducer<String,String> prod = new KafkaProducer<>(p)) {
+  prod.initTransactions();
+  while (running) {
+    ConsumerRecords<String,String> recs = consumer.poll(Duration.ofMillis(500));
+    prod.beginTransaction();
+    try {
+      for (var r : recs) { prod.send(new ProducerRecord<>("payments", r.key(), process(r))); }
+      prod.sendOffsetsToTransaction(currentOffsets(recs), consumer.groupMetadata());
+      prod.commitTransaction();
+    } catch (Exception e) { prod.abortTransaction(); }
+  }
+}
+~~~
+
+### Giới hạn: side effect ra ngoài Kafka (vì sao EOS gãy)
+Transaction Kafka **chỉ bao phủ**: (1) ghi vào Kafka topic, (2) commit offset consumer trong Kafka. Nó **không** bao phủ:
+- Ghi DB (Postgres/MySQL) — không có 2PC giữa Kafka coordinator và DB.
+- Gọi REST/HTTP tới hệ thống khác.
+- Gửi email/SMS, gọi payment gateway, ghi file/S3.
+
+~~~text
+beginTransaction
+  poll order
+  send("payments", ...)        <-- trong transaction Kafka: OK, abort được
+  jdbc.update("INSERT ...")    <-- NGOÀI Kafka: đã commit vào DB thì abortTransaction KHÔNG hoàn tác
+  http.post(paymentGateway)    <-- NGOÀI Kafka: đã trừ tiền thật
+commitTransaction  (nếu crash trước đây -> abort -> nhưng DB/HTTP đã xảy ra?)
+~~~
+Vì sao: Kafka coordinator chỉ biết ghi control marker vào log Kafka; nó không có cách "undo" một HTTP call hay một DB commit bên ngoài. **Trade-off**: đổi lấy throughput/đơn giản, EOS thu hẹp phạm vi.
+
+**Cách xử lý đúng:** quay lại **at-least-once + idempotency** ở đích (idempotency key gửi sang payment gateway, upsert/dedup table ở DB) — xem microservices-005/006.
+
+### So sánh nhanh
+| Cơ chế | Chống trùng gì | Phạm vi | Chi phí |
+|---|---|---|---|
+| Idempotent producer | Trùng do producer retry (cùng partition) | Một session producer -> partition | Rất thấp (mặc định bật) |
+| Transactions (EOS) | Trùng + đọc/ghi/offset nguyên tử | Nhiều partition/topic **trong Kafka** | Cao hơn (chờ marker, LSO) |
+| Idempotency key / outbox | Trùng end-to-end, kể cả ngoài Kafka | Hệ thống của bạn | Thiết kế app + bảng/logic |
+
+### Trên production
+- **Triệu chứng:** {{InvalidProducerEpoch}} / producer bị fenced -> có instance khác cùng {{transactional.id}}. Consumer "kẹt" không thấy dữ liệu mới -> có transaction mở treo, LSO không tiến; kiểm tra {{transaction.timeout.ms}}.
+- **Đo:** {{OpenTransactions}}, thời gian transaction, lỗi {{ProducerFenced}}.
+- **Tuning/cấu hình:** {{transactional.id}} phải **ổn định và duy nhất** per worker; {{transaction.timeout.ms}} đủ cho processing nhưng không quá dài. Consumer bắt buộc {{isolation.level=read_committed}} (mặc định {{read_uncommitted}}!).
+- **Sai lầm hay gặp:** dùng transactions nhưng vẫn gọi DB/HTTP bên trong mà không idempotent -> tưởng "exactly-once" nhưng thực ra vẫn trùng side effect.
+
+> Senior tip: tôi dùng Kafka transactions **chỉ** cho pipeline thuần Kafka (consume->transform->produce). Ngay khi có ghi DB hoặc gọi service ngoài, tôi bỏ transaction Kafka, chuyển sang at-least-once + idempotent consumer/outbox — đơn giản hơn, dễ lý giải đúng hơn, và không tạo ảo giác "EOS end-to-end".`,
+  follow: ["Tại sao {{transactional.id}} phải ổn định qua restart? Điều gì xảy ra nếu mỗi lần deploy sinh một id mới?", "Consumer đặt {{isolation.level=read_uncommitted}} thì thấy gì khác? Vì sao đây là mặc định?", "So sánh chi phí latency của transaction (chờ COMMIT marker, LSO) với at-least-once thuần. Khi nào bạn chấp nhận trả chi phí đó?"],
+  tags: ["Kafka", "idempotent producer", "PID", "sequence number", "transactions", "EOS", "exactly-once"],
+  refs: [{"type": "doc", "title": "Kafka: Idempotent Producer", "url": "https://kafka.apache.org/documentation/#design_idempotence"}, {"type": "doc", "title": "Kafka: Transactions", "url": "https://kafka.apache.org/documentation/#semantics"}, {"type": "doc", "title": "KIP-98: Exactly Once Delivery and Transactional Messaging", "url": "https://cwiki.apache.org/confluence/display/KAFKA/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging"}]
+},
+{
+  id: 'microservices-052',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Sau khi deploy, consumer group Kafka liên tục **rebalance**: lag tăng vọt, throughput rơi, log đầy {{CommitFailedException}}. Giải thích cơ chế rebalance (eager vs cooperative-sticky), vai trò {{max.poll.interval.ms}} / {{session.timeout.ms}}, và cách dùng **static membership** để dừng rebalance loop.',
+  a: `**Tóm tắt:** **Rebalance** là quá trình consumer group phân chia lại partition cho các member khi nhóm thay đổi (join/leave/crash/topic thêm partition). Kiểu **eager** thu hồi hết partition rồi gán lại (stop-the-world tạm thời); **cooperative-sticky** (incremental) chỉ thu hồi/gán phần thay đổi nên ít gián đoạn. {{max.poll.interval.ms}} quá ngắn so với thời gian xử lý batch khiến consumer bị coi là "chết" -> bị đá khỏi group -> rebalance -> tạo **rebalance loop**. **Static membership** ({{group.instance.id}}) cho phép instance restart trong cửa sổ timeout mà không kích hoạt rebalance.
+
+### Hiểu nhanh (ví dụ đời thường)
+Một nhóm shipper (consumer group) chia nhau các khu phố (partition), mỗi khu chỉ 1 người. **Rebalance** giống buổi họp "chia lại tuyến" khi có người nghỉ việc hoặc người mới vào. Kiểu **eager**: mọi người nộp lại hết tuyến, đứng chờ phân công lại — trong lúc họp không ai giao hàng. Kiểu **cooperative**: chỉ người bị ảnh hưởng đổi tuyến, người khác giao tiếp. Nếu một shipper xử lý một đơn quá lâu mà không "báo cáo" (không gọi {{poll()}}), quản lý tưởng anh ta biến mất nên mở họp chia lại tuyến — tạo vòng lặp hỗn loạn.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Consumer group**: tập consumer cùng {{group.id}} chia nhau partition; 1 partition chỉ gán cho 1 consumer trong group.
+- **Group coordinator**: broker quản lý thành viên và trạng thái group.
+- **Group leader** (phía consumer): member được chọn để tính phân công partition (theo {{partition.assignment.strategy}}).
+- **Rebalance**: lần phân công lại partition.
+- **Eager rebalance**: mọi member trả lại toàn bộ partition trước khi nhận gán mới.
+- **Cooperative (incremental) rebalance**: thu hồi/gán dần ({{CooperativeStickyAssignor}}).
+- **Static membership**: member có {{group.instance.id}} cố định, restart nhanh không bị xem là rời group.
+- **Heartbeat**: tín hiệu nền báo "tôi còn sống".
+
+### Cơ chế rebalance từng bước (eager, rút gọn)
+1. Member join/leave/crash hoặc metadata thay đổi -> coordinator mở phiên rebalance.
+2. Coordinator yêu cầu mọi member **rejoin**. Mỗi member gửi {{JoinGroup}}.
+3. Coordinator chọn **group leader**, trả danh sách member cho leader.
+4. Group leader chạy assignor, tính phân công -> gửi {{SyncGroup}} kèm assignment.
+5. Mọi member nhận assignment mới. **Trong bước 2-5, partition đã bị thu hồi: không ai tiêu thụ** (eager).
+
+~~~seq
+title: Eager rebalance (rút gọn)
+actors: ConsumerA | ConsumerB | Coordinator
+ConsumerB -> Coordinator: JoinGroup (B vào group)
+Coordinator -> ConsumerA: yêu cầu rejoin
+Coordinator -> ConsumerB: yêu cầu rejoin
+ConsumerA -> Coordinator: JoinGroup + revoke ALL partitions
+ConsumerB -> Coordinator: JoinGroup
+Coordinator -> ConsumerA: SyncGroup (leader tính assignment)
+ConsumerA --> ConsumerA: nhận [P0]
+ConsumerB --> ConsumerB: nhận [P1]
+note ConsumerA..ConsumerB: khoảng trống: không partition nào được consume
+~~~
+
+**Cooperative-sticky:** hai pha — pha 1 thu hồi chỉ partition "thừa", member khác vẫn consume; pha 2 gán partition thu hồi cho member mới.
+
+~~~java
+props.put("group.id", "pay-workers");
+props.put("partition.assignment.strategy",
+  "org.apache.kafka.clients.consumer.CooperativeStickyAssignor"); // incremental
+props.put("session.timeout.ms", "45000");    // "chết" nếu mất heartbeat quá lâu
+props.put("heartbeat.interval.ms", "3000");  // nên <= 1/3 session.timeout
+props.put("max.poll.interval.ms", "300000"); // 5 phút: tối đa giữa 2 lần poll()
+props.put("max.poll.records", "200");        // giảm batch nếu xử lý chậm
+props.put("enable.auto.commit", "false");
+~~~
+
+### Rebalance loop do {{max.poll.interval.ms}}
+1. {{max.poll.records=500}}, mỗi record xử lý 2s -> batch mất 1000s.
+2. {{max.poll.interval.ms}} mặc định 300s. Quá 5 phút không gọi {{poll()}} -> consumer bị coi **không responsive** (heartbeat thread vẫn sống; heartbeat chứng minh process sống, poll chứng minh *xử lý được*).
+3. Coordinator đá consumer -> **rebalance**. Partition gán cho consumer khác.
+4. Consumer kia nhận lại **offset chưa commit** -> xử lý lại batch nặng -> lại quá 5 phút -> **loop**.
+5. Triệu chứng kèm: {{CommitFailedException}} (commit khi đã mất partition).
+
+~~~text
+poll(500 rec) -> xử lý 1000s > max.poll.interval 300s
+  -> kick A -> rebalance -> B nhận lại offset cũ -> xử lý 1000s -> kick B ... (lặp)
+~~~
+**Sửa:** tăng {{max.poll.interval.ms}} *hoặc* (tốt hơn) giảm {{max.poll.records}}/tối ưu xử lý.
+
+### Static membership
+Không có static id: restart -> rời group -> rebalance; lên lại -> join -> rebalance nữa (2 lần).
+Có {{group.instance.id}} cố định: restart trong {{session.timeout.ms}} -> coordinator **giữ chỗ** partition, không rebalance; lên lại với cùng id -> nhận lại partition cũ.
+
+~~~java
+props.put("group.instance.id", "pay-worker-" + instanceIndex); // cố định, duy nhất
+~~~
+
+### Eager vs Cooperative
+| Tiêu chí | Eager | Cooperative-sticky |
+|---|---|---|
+| Thu hồi | Toàn bộ, mọi member dừng | Chỉ phần thay đổi |
+| Gián đoạn | Stop-the-world | Nhỏ hơn nhiều |
+| Trạng thái local (cache theo partition) | Mất hết | Giữ được (sticky) |
+| Khi dùng | Group nhỏ, ít thay đổi | Group lớn, deploy thường xuyên |
+
+### Trên production
+- **Triệu chứng:** lag tăng vọt theo nhịp deploy; log {{Revoking previously assigned partitions}}, {{CommitFailedException}}.
+- **Đo:** {{rebalance-latency-avg/max}}, {{rebalance-rate-per-hour}}, {{assigned-partitions}} dao động.
+- **Tuning:** dùng {{CooperativeStickyAssignor}}; đặt {{max.poll.interval.ms}} > p99 thời gian xử lý batch; giảm {{max.poll.records}}; bật static membership; {{heartbeat.interval.ms}} ~ 1/3 {{session.timeout.ms}}.
+- **Pitfall:** commit trước khi xử lý xong -> mất message; nâng {{max.poll.interval.ms}} quá lớn che giấu xử lý chậm.
+
+> Senior tip: khi điều tra rebalance loop, tôi lấy **ba số**: p99 thời gian xử lý một {{poll()}} batch, {{max.poll.interval.ms}}, và {{rebalance-rate-per-hour}}. Nếu p99 > max.poll.interval là nguyên nhân gần như chắc chắn. Đừng vội tăng timeout — hãy giảm {{max.poll.records}} hoặc tối ưu đường nóng trước.`,
+  follow: ["Tại sao heartbeat thread sống vẫn không cứu được consumer bị đá vì {{max.poll.interval.ms}}? Hai cơ chế này bảo vệ điều gì khác nhau?", "Cooperative-sticky giúp ích gì khi consumer giữ cache local gắn với partition (stateful processing)?", "Khi số partition tăng (thêm partition vào topic đang có), rebalance xảy ra thế nào và có rủi ro gì với ordering key?"],
+  tags: ["Kafka", "consumer group", "rebalance", "cooperative-sticky", "static membership", "max.poll.interval.ms"],
+  refs: [{"type": "doc", "title": "Kafka Consumer Configs", "url": "https://kafka.apache.org/documentation/#consumerconfigs"}, {"type": "doc", "title": "KIP-429: Incremental Rebalance Protocol", "url": "https://cwiki.apache.org/confluence/display/KAFKA/KIP-429%3A+Kafka+Consumer+Incremental+Rebalance+Protocol"}, {"type": "doc", "title": "KIP-345: Static Membership", "url": "https://cwiki.apache.org/confluence/display/KAFKA/KIP-345%3A+Introduce+static+membership+protocol+to+reduce+consumer+rebalances"}]
+},
+{
+  id: 'microservices-053',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Hệ thống đơn hàng cần xử lý các sự kiện của **cùng một orderId theo đúng thứ tự**. Bạn giải thích vì sao dùng partition key đảm bảo thứ tự, điều gì xảy ra khi **hot partition** (một key quá lớn), và vì sao đưa message lỗi sang **retry topic** có thể **đảo thứ tự**? Cách xử lý?',
+  a: `**Tóm tắt:** Kafka chỉ đảm bảo thứ tự **trong một partition**. Gửi message với **key = orderId** -> cùng key luôn vào cùng partition (băm - hash) nên các sự kiện của một đơn hàng được xử lý tuần tự. **Hot partition** xảy ra khi một key chiếm lượng lớn traffic, làm một partition/consumer quá tải. **Retry topic** tách message lỗi ra topic khác để không chặn partition chính, nhưng message lỗi (event A) bị đẩy sang retry trong khi event B (cùng order) tiếp tục chạy ở main -> **đảo thứ tự**. Xử lý bằng: per-key blocking, retry tại chỗ có giới hạn, hoặc state machine chấp nhận lệch thứ tự.
+
+### Hiểu nhanh (ví dụ đời thường)
+Partition giống **các làn thu phí**: xe cùng biển số hợp đồng (cùng key) luôn đi một làn -> vào/ra đúng thứ tự. Một công ty vận tải (hot key) đổ 80% xe vào một làn, làn đó kẹt. Khi một xe hỏng, bạn kéo nó sang **làn sửa chữa** (retry topic) để làn chính thông, nhưng xe sau của cùng đoàn đã chạy qua trước -> đến đích sai thứ tự.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Partition key**: trường dùng để chọn partition; Kafka mặc định: {{partition = murmur2(key) % numPartitions}}.
+- **Ordering guarantee**: thứ tự append == thứ tự consume, chỉ trong 1 partition.
+- **Hot partition / hot key (data skew)**: phân bố key lệch, một partition nhận traffic áp đảo.
+- **Retry topic**: topic riêng để xử lý lại message lỗi sau delay (non-blocking retry).
+- **DLQ/DLT (Dead Letter Topic)**: nơi chứa message thất bại vĩnh viễn sau N lần retry.
+- **Head-of-line blocking**: message đầu hàng lỗi chặn mọi message sau.
+
+### Cơ chế: key -> partition -> thứ tự
+~~~java
+// LUÔN gửi key = aggregate id cần giữ thứ tự
+producer.send(new ProducerRecord<>("orders", orderId, toJson(event)));
+// partition = murmur2(orderId) % numPartitions
+// => mọi event cùng orderId -> cùng partition -> cùng consumer -> tuần tự
+~~~
+~~~text
+orderId=O1:  [Created, Paid, Shipped]  --hash--> partition 2  --> consumer A (tuần tự)
+orderId=O2:  [Created, Cancelled]      --hash--> partition 0  --> consumer B
+~~~
+Vì sao: đảm bảo thứ tự toàn cục buộc 1 partition duy nhất -> giết throughput. Trade-off: **thứ tự theo key**.
+**Cảnh báo:** {{hash % N}} thay đổi khi N đổi -> tăng partition topic đang dùng key-ordering có thể vỡ thứ tự.
+
+### Hot partition
+Một tenant "big-corp" chiếm 60% traffic -> 60% vào 1 partition -> consumer đó bão hòa. Scale thêm consumer **không giúp** (1 partition vẫn chỉ 1 consumer).
+~~~text
+P0 (big-corp, 60k msg/s) -> consumer A: CPU 100%, lag tăng
+P1 (others,   10k msg/s) -> consumer B: CPU 15%
+P2 (others,   10k msg/s) -> consumer C: CPU 15%  (consumer D: idle)
+~~~
+Cách xử lý: scale dọc/tối ưu consumer; **key salting** rải tải nhưng **phá thứ tự** (chỉ dùng nếu downstream tự reorder); tách hot tenant ra topic riêng.
+
+### Retry topic đảo thứ tự
+~~~text
+Main partition 2:  [A:Paid,O1](lỗi->retry topic)  [B:Shipped,O1]  [C:Done,O1]
+                        |                              |               |
+                        v                              v               v
+                     retry topic                    xử lý ngay      xử lý ngay
+                     (chờ 5s, retry A)                (TRƯỚC A!)
+Kết quả O1: Shipped chạy trước Paid -> TRẠNG THÁI SAI
+~~~
+Vì sao: A rời partition chính để không chặn, còn B,C (cùng key) vẫn chạy tiếp -> vượt mặt A.
+
+### Cách xử lý
+| Cách | Ý tưởng | Đánh đổi |
+|---|---|---|
+| **Per-key blocking** | Key O1 đang in-retry -> park message mới của O1, nhả sau khi A xong/DLT | Phức tạp, cần state theo key; đúng thứ tự |
+| **Retry tại chỗ giới hạn** | Retry nhanh vài lần inline, fail thì DLT | Chặn partition một lúc; đơn giản, đúng thứ tự |
+| **State machine chấp nhận lệch thứ tự** | Nghiệp vụ chấp nhận "Shipped đến trước Paid" (pending) | Đòi hỏi nghiệp vụ cho phép |
+| **Sequence number trong payload** | Gắn số thứ tự per-order, consumer buffer/reorder | Tốn state, timeout nếu mất số |
+
+~~~java
+@RetryableTopic(attempts = "4", backoff = @Backoff(delay = 2000, multiplier = 3),
+                dltTopicSuffix = "-dlt", autoCreateTopics = "true")
+@KafkaListener(topics = "orders", groupId = "order-worker")
+public void handle(String payload, @Header(KafkaHeaders.RECEIVED_KEY) String orderId) {
+  process(payload); // exception -> retry/dlt
+  // Cần cơ chế bổ sung nếu phải giữ thứ tự tuyệt đối theo orderId khi retry xảy ra
+}
+~~~
+
+### Trên production
+- **Triệu chứng:** lag/CPU lệch rõ giữa consumer (1 cao, còn lại thấp) = hot partition. Sai trạng thái đơn hàng = đảo thứ tự do retry.
+- **Đo:** lag **theo partition**, throughput theo partition; phân bố key (sample). Monitor DLT (có message = cần can thiệp).
+- **Pitfall:** dùng {{null}} key cho dữ liệu cần thứ tự; dùng non-blocking retry mà không xét thứ tự theo key. Retry phía producer (idempotence bật) không đảo thứ tự — khác retry topic phía consumer.
+
+> Senior tip: trước khi bật {{@RetryableTopic}} cho luồng order/payment, tôi luôn hỏi: "nếu event B vượt event A của cùng key, state machine có hỏng không?" Nếu có, tôi chọn per-key blocking hoặc retry inline giới hạn — đổi throughput lấy tính đúng, vì sai trạng thái đơn hàng còn đắt hơn lag.`,
+  follow: ["Nếu tăng partition từ 6 lên 12 để giảm tải, bạn migrate topic đang dùng key-ordering như thế nào để không vỡ thứ tự?", "Thiết kế state machine cho đơn hàng thế nào để chịu được event đến lệch thứ tự (ví dụ nhận Shipped trước Paid)?", "Khi nào bạn chọn {{null}} key? Ảnh hưởng của default partitioner 'sticky' (Kafka mới) với null key là gì?"],
+  tags: ["Kafka", "ordering", "partition key", "hot partition", "retry topic", "DLQ", "head-of-line blocking"],
+  refs: [{"type": "doc", "title": "Kafka: Producer partitioning", "url": "https://kafka.apache.org/documentation/#producerconfigs_partitioner.class"}]
+},
+{
+  id: 'microservices-054',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Bạn dùng **Outbox + CDC (Debezium)** để phát event từ PostgreSQL ra Kafka. Hãy giải thích cơ chế **đọc WAL** từng bước, làm sao giữ **thứ tự theo aggregate**, và thiết kế **dedup phía consumer** (inbox/dedup table) để xử lý duplicate khi connector restart.',
+  a: `**Tóm tắt:** Debezium kết nối PostgreSQL qua **logical replication**: DB ghi mọi thay đổi vào **WAL** (Write-Ahead Log); Debezium dùng **replication slot** để stream các thay đổi đã commit theo thứ tự WAL, dùng **LSN** làm vị trí. Ghi order row + outbox row trong **cùng transaction** đảm bảo cả hai xuất hiện cùng thứ tự commit. Đặt **Kafka key = aggregateId** để mọi event của một aggregate vào cùng partition (giữ thứ tự theo aggregate). CDC là **at-least-once** (restart có thể phát lại), nên consumer cần **inbox/dedup table** (lưu eventId đã xử lý, unique) trong cùng transaction với nghiệp vụ.
+
+### Hiểu nhanh (ví dụ đời thường)
+- **WAL** giống **camera an ninh ghi liên tục** mọi thay đổi: Debezium xem băng camera (log) theo thứ tự thời gian, không polling.
+- **Outbox**: khi ghi order, đồng thời bỏ **phiếu thông báo** vào hộp thư (outbox row) — cùng lúc, cùng transaction. Camera thấy cả hai.
+- **Replication slot** là **dấu trang** của Debezium trên cuộn băng: để DB không xóa đoạn băng Debezium chưa xem.
+- **Inbox/dedup**: người nhận đánh dấu "phiếu #E123 đã xử lý"; bưu tá giao trùng thì bỏ qua.
+
+### Thuật ngữ (giải thích lần đầu)
+- **WAL (Write-Ahead Log)**: nhật ký ghi trước của PostgreSQL — mọi thay đổi ghi WAL trước; logical decoding đọc WAL thành thay đổi hàng.
+- **Logical replication / decoding**: giải mã WAL ở mức hàng (INSERT/UPDATE/DELETE).
+- **Replication slot**: giữ lại WAL segments chưa đọc và lưu vị trí (restart LSN).
+- **LSN (Log Sequence Number)**: vị trí byte trong WAL, tăng đơn điệu — dùng làm checkpoint.
+- **CDC (Change Data Capture)**: bắt thay đổi dữ liệu từ log DB.
+- **Inbox table / dedup table**: bảng phía consumer lưu id event đã xử lý để loại trùng.
+
+### Đọc WAL từng bước
+1. App: {{INSERT orders...; INSERT outbox_events(...); COMMIT}}. Cả hai vào **cùng commit WAL record**.
+2. Postgres ghi WAL (tuần tự). Commit chỉ thành công khi WAL flush — WAL là nguồn sự thật về *thứ tự commit*.
+3. Debezium giữ **replication slot** ({{pgoutput}}) và stream từ **LSN** đã lưu. Slot: "đừng xóa WAL trước LSN này".
+4. Logical decoding chuyển WAL record thành change event ({{op=c, table=outbox_events, after=row}}).
+5. Debezium (SMT Outbox Event Router) map {{aggregate_id -> Kafka key}}, publish.
+6. Sau khi Kafka ack, Debezium **advance LSN** (checkpoint). Vì sao *sau* ack: crash trước checkpoint -> restart từ LSN cũ -> **phát lại** (at-least-once).
+
+~~~seq
+title: Outbox + Debezium WAL -> Kafka -> Consumer dedup
+actors: App | PostgreSQL(WAL) | Debezium | Kafka | Consumer | ConsumerDB
+App -> PostgreSQL(WAL): BEGIN; INSERT order; INSERT outbox; COMMIT
+PostgreSQL(WAL) -> Debezium: stream WAL (LSN) via replication slot
+Debezium -> Kafka: produce event (key=aggregateId)
+Kafka --> Debezium: ack
+Debezium -> PostgreSQL(WAL): advance slot LSN (checkpoint)
+Kafka -> Consumer: deliver event (có thể trùng sau restart)
+Consumer -> ConsumerDB: tx: INSERT inbox(eventId) UNIQUE + apply nghiệp vụ
+ConsumerDB --> Consumer: commit (trùng -> conflict -> bỏ qua)
+~~~
+
+### Giữ thứ tự theo aggregate
+- Cùng transaction commit -> WAL cùng thứ tự commit.
+- Debezium đặt {{key = aggregate_id}} -> {{hash(key)%N}} -> **mọi event cùng aggregate vào cùng partition** -> consumer đọc tuần tự. Thứ tự *theo aggregate* (không toàn cục).
+
+~~~sql
+CREATE TABLE outbox_events (
+  id            UUID PRIMARY KEY,          -- eventId, dùng dedup
+  aggregate_type TEXT NOT NULL,
+  aggregate_id   TEXT NOT NULL,            -- -> Kafka key
+  event_type     TEXT NOT NULL,
+  payload        JSONB NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- App: INSERT order + INSERT outbox_events trong CÙNG transaction
+~~~
+
+### Dedup phía consumer (inbox table)
+CDC at-least-once -> consumer **phải** idempotent. Ghi inbox và xử lý nghiệp vụ **cùng 1 transaction DB**.
+~~~sql
+CREATE TABLE inbox_events (
+  event_id   UUID PRIMARY KEY,   -- UNIQUE: trùng -> conflict
+  processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+~~~java
+@Transactional
+public void onEvent(OrderEvent evt) {
+  // 1) ghi inbox; trùng -> bỏ qua
+  int inserted = jdbc.update(
+    "INSERT INTO inbox_events(event_id) VALUES (?) ON CONFLICT DO NOTHING", evt.id());
+  if (inserted == 0) return;
+  // 2) áp dụng nghiệp vụ CÙNG transaction
+  jdbc.update("UPDATE read_model ... WHERE order_id=?", evt.aggregateId());
+}
+~~~
+
+### Trên production
+- **Triệu chứng:** replication slot lag tăng, đĩa Postgres đầy (WAL bị giữ lại). Duplicate event nếu thiếu inbox.
+- **Đo:** {{pg_replication_slots}} ({{wal_lag}}, {{confirmed_flush_lsn}}), Debezium {{MilliSecondsBehindSource}}, tỉ lệ inbox conflict.
+- **Tuning:** {{max_slot_wal_keep_size}} chặn slot giữ WAL vô hạn (chấp nhận invalidate -> re-snapshot). {{heartbeat.interval.ms}}/{{heartbeat.action.query}} để slot tiến khi bảng ít thay đổi.
+- **Pitfall:** thiếu {{REPLICA IDENTITY}}; quên quyền replication; nhiều task cùng slot; consumer không inbox.
+
+> Senior tip: giám sát **WAL retention do replication slot** như một SLO hạ tầng. Đặt {{max_slot_wal_keep_size}}, alert khi {{wal_lag}} vượt ngưỡng, và có runbook "invalidate slot + re-snapshot" — CDC an toàn chỉ khi bạn vận hành được slot.`,
+  follow: ["Nếu phải re-snapshot vì slot bị invalidate, làm sao tránh consumer xử lý trùng hàng loạt dữ liệu cũ?", "Tại sao {{aggregate_id}} làm Kafka key đủ cho thứ tự theo aggregate nhưng không đủ cho thứ tự toàn cục? Khi nào cần total order?", "So sánh dedup bằng inbox table (DB) với dedup bằng Redis SETNX (TTL). Trường hợp nào Redis làm mất tính đúng?"],
+  tags: ["Kafka", "CDC", "Debezium", "WAL", "outbox", "inbox", "idempotent consumer", "replication slot"],
+  refs: [{"type": "doc", "title": "Debezium: PostgreSQL connector", "url": "https://debezium.io/documentation/reference/stable/connectors/postgresql.html"}, {"type": "doc", "title": "Debezium: Outbox Event Router", "url": "https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html"}, {"type": "doc", "title": "PostgreSQL: Logical Replication", "url": "https://www.postgresql.org/docs/current/logicaldecoding-explanation.html"}]
+},
+{
+  id: 'microservices-055',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Dashboard báo **consumer lag** của một group tăng liên tục. Bạn đo lag thế nào (theo partition), giải thích vì sao **thêm consumer vượt số partition không giúp gì**, và dùng các cơ chế nào để tạo **backpressure**/giảm lag an toàn?',
+  a: `**Tóm tắt:** **Consumer lag** = {{log end offset (LEO)}} của partition trừ {{committed offset}} của group — số message còn tồn đọng. Lag phải xem **theo từng partition** vì tổng có thể che mất một partition kẹt (hot key). Trong một group, **1 partition chỉ gán cho tối đa 1 consumer**, nên thêm consumer vượt số partition sẽ cho consumer dư **idle**. Giảm lag bằng: tăng partition (cẩn thận với key ordering) + scale consumer tương ứng, tăng tốc xử lý/giảm {{max.poll.records}}, hoặc backpressure ({{pause}}/{{resume}}, giới hạn fetch).
+
+### Hiểu nhanh (ví dụ đời thường)
+Partition là **làn hàng** ở siêu thị, consumer là **thu ngân**. Lag là **số khách đang xếp hàng**. Có 3 làn thì tối đa 3 thu ngân; thuê thêm người thứ 4 thì đứng chơi vì **không có làn thứ 4**. Muốn hết hàng nhanh: mở thêm làn (tăng partition, nhưng khách có thẻ cố định làn thì phải cẩn thận), quét nhanh hơn (tối ưu), hoặc bớt số món mỗi lượt (giảm batch). Kho quá tải -> **tạm dừng nhận khách** (pause).
+
+### Thuật ngữ (giải thích lần đầu)
+- **LEO (Log End Offset)**: offset kế tiếp sẽ ghi vào partition (phía broker).
+- **Committed offset**: offset group đã xác nhận xử lý xong (lưu trong {{__consumer_offsets}}).
+- **Consumer lag**: {{LEO - committed offset}} (số record chưa xử lý xong). **Time lag** = độ trễ thời gian so với message mới nhất.
+- **Backpressure**: cơ chế điều tiết khi downstream quá tải.
+- **Pause/Resume**: tạm ngừng fetch partition mà **không** rời group (không rebalance).
+
+### Lag theo partition
+~~~text
+Topic orders, 4 partitions, group "pay-workers":
+
+Partition  LEO     Committed  Lag
+P0         10,500   10,480     20
+P1         10,490   10,470     20
+P2         10,520    8,100  2,420   <-- kẹt (hot key / xử lý chậm)
+P3         10,505   10,490     15
+
+Tổng lag = 2,475 nhưng P2 là vấn đề thật. Luôn xem theo partition.
+~~~
+Lag tăng không chỉ vì consumer chậm — cũng có thể do producer burst.
+
+### Vì sao thêm consumer > số partition không giúp
+**1 partition chỉ gán cho đúng 1 consumer** (giữ thứ tự). 4 partition + 6 consumer: 4 người làm, 2 **idle**.
+~~~text
+4 partitions, 6 consumers:  [C1->P0, C2->P1, C3->P2, C4->P3, C5->idle, C6->idle]
+Muốn dùng C5,C6: phải tăng topic lên >= 6 partition (đánh đổi ordering với key)
+~~~
+
+### Cách giảm lag
+1. **Tăng song song đúng cách:** tăng partition (lưu ý: phá {{hash(key)%N}} -> ảnh hưởng ordering) rồi scale consumer.
+2. **Tăng tốc xử lý:** tối ưu (DB batch, tránh N+1), giảm {{max.poll.records}} nếu record nặng.
+3. **Song song trong consumer (cẩn thận):** thread pool + commit offset theo thứ tự hoàn thành — dễ sai. An toàn hơn: 1 thread/partition.
+4. **Backpressure:** {{pause(partitions)}} khi hàng đợi nội bộ đầy (giữ assignment, không rebalance); {{resume()}} khi hạ tải. Giới hạn {{fetch.max.bytes}}, {{max.poll.records}}.
+
+~~~java
+ConsumerRecords<String,String> recs = consumer.poll(Duration.ofMillis(500));
+int queued = internalQueue.size();
+if (queued > HIGH_WATERMARK) {
+  consumer.pause(consumer.assignment());   // ngừng fetch, vẫn giữ partition
+} else if (queued < LOW_WATERMARK) {
+  consumer.resume(consumer.assignment());
+}
+// Vẫn phải gọi poll() định kỳ để heartbeat/group hoạt động đúng
+for (var r : recs) internalQueue.put(r);
+~~~
+
+### Đo lag
+~~~text
+kafka-consumer-groups.sh --bootstrap-server broker:9092 \
+  --describe --group pay-workers
+# Cột: TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG CONSUMER-ID ...
+~~~
+- **Burrow** đánh giá lag (OK/WARN/STALL) theo tiến triển. Client metric: {{records-lag}}, {{records-lag-max}} per partition.
+
+### Trên production
+- **Triệu chứng:** lag tăng đều (consumer không theo kịp) hoặc lag kẹt 1 partition (hot key/lỗi/rebalance loop).
+- **Đo:** lag theo partition, {{records-consumed-rate}}, thời gian xử lý, rebalance rate. Alert trên "lag chỉ 1 partition".
+- **Tuning:** {{max.poll.records}}, {{fetch.min.bytes}}/{{fetch.max.wait.ms}}. Burst producer -> lag tăng tạm thời chấp nhận nếu *slope* lag giảm dần.
+- **Pitfall:** chỉ nhìn tổng lag; scale consumer quên trần partition; xử lý song song rồi commit offset sai thứ tự.
+
+> Senior tip: alert theo **xu hướng** (lag slope dương kéo dài) và theo **phân phối** (max lag partition / median > ngưỡng), không chỉ tổng lag. Và nhớ: {{consumer throughput tổng}} >= {{producer throughput}} + biên burst, nếu không lag là tất yếu về toán.`,
+  follow: ["Làm sao phân biệt lag tăng do producer burst tạm thời với lag tăng do consumer thực sự không theo kịp? Bạn nhìn metric nào?", "Nếu buộc phải tăng partition để scale, bạn xử lý rủi ro thay đổi {{hash(key)%N}} với dữ liệu cần ordering theo key ra sao?", "Pause/resume khác gì với việc consumer rời group? Khi nào pause gây rebalance gián tiếp?"],
+  tags: ["Kafka", "consumer lag", "backpressure", "partition", "scaling", "pause resume"],
+  refs: [{"type": "doc", "title": "Kafka Consumer Configs (fetch/poll)", "url": "https://kafka.apache.org/documentation/#consumerconfigs"}, {"type": "doc", "title": "Kafka: Monitoring", "url": "https://kafka.apache.org/documentation/#monitoring"}]
+},
+{
+  id: 'microservices-056',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Sự cố mất điện luân phiên làm cụm Kafka 3 broker (RF=3) chỉ còn 1 broker sống, và dữ liệu đã được producer ack trước đó bị mất sau khi cụm phục hồi. Hãy truy vết **chính xác** cơ chế gây mất: ISR co rút, {{unclean.leader.election.enable}}, high watermark bị truncate, và nêu bộ cấu hình + quy trình vận hành để ngăn lặp lại.',
+  a: `**Tóm tắt:** Kịch bản điển hình: follower lần lượt chậm/rớt -> **ISR co** còn mỗi leader; nếu {{min.insync.replicas}} không đủ chặt, dữ liệu "đã ack" có thể chỉ nằm ở leader. Khi leader chết và {{unclean.leader.election.enable=true}}, một follower **lạc hậu** được bầu làm leader -> **high watermark** bị hạ xuống theo LEO follower mới, và các offset vượt HW trên log cũ bị **truncate** khi broker cũ quay lại. Message từng được ack coi như committed biến mất. Ngăn bằng: {{acks=all}}, {{min.insync.replicas=2}}, {{unclean.leader.election.enable=false}}, RF>=3.
+
+### Hiểu nhanh (ví dụ đời thường)
+Ba người cùng giữ sổ (3 replica). Hai người phụ đi vắng (rớt ISR), chỉ còn trưởng nhóm ghi sổ và vẫn phát biên nhận (nếu cấu hình lỏng). Trưởng nhóm mất sổ (broker chết). Chọn tạm một người phụ **lâu ngày không cập nhật** lên làm trưởng (unclean election) — sổ thiếu dòng gần đây. Trưởng nhóm cũ tìm lại sổ phải **xé bỏ** các dòng mình có mà trưởng nhóm mới không công nhận (truncate về HW mới). Biên nhận đã phát? Dòng tiền không còn trong sổ chính thức.
+
+### Thuật ngữ (giải thích lần đầu)
+- **ISR co rút (shrink)**: follower bị loại khỏi ISR khi {{replica.lag.time.max.ms}} bị vượt.
+- **Unclean leader election**: bầu leader từ replica ngoài ISR — đổi availability lấy durability.
+- **Truncation**: follower/leader cũ rejoin, cắt log về **HW** của leader hiện tại, bỏ phần "thừa" chưa committed.
+- **Leader epoch**: số tăng mỗi lần bầu leader, xác định vùng log hợp lệ, tránh truncate sai (KIP-101).
+
+### Truy vết từng bước (timeline)
+RF=3 (B1 leader, B2,B3 follower), cấu hình xấu: {{acks=all}} nhưng {{min.insync.replicas=1}}, {{unclean.leader.election.enable=true}}.
+~~~text
+T0: ISR={B1,B2,B3}, HW=100. Ghi 101..120 -> HW=120, ack OK.
+T1: B3 chậm -> ISR={B1,B2}.
+T2: B2 chết -> ISR={B1}. minISR=1 nên B1 VẪN ack producer!
+T3: Ghi 121..140, chỉ B1 có -> ack trả về (đã ack!). B2 có tới 120; B3 có tới ~110.
+T4: B1 chết. Cụm còn B3 sống (LEO~110).
+T5: unclean=true -> B3 được bầu leader. HW'=110. Offset 111..140 "mất" khỏi view committed.
+T6: B2,B1 quay lại, TRUNCATE 111..140 về 110. Dữ liệu 121..140 mất vĩnh viễn.
+~~~
+
+~~~seq
+title: Mất dữ liệu đã ack do ISR co + unclean election
+actors: Producer | B1(Leader) | B2(Follower) | B3(Follower lag)
+Producer -> B1(Leader): write 121..140 (acks=all,minISR=1)
+B1(Leader) --> Producer: ack (ISR chỉ còn B1)
+note B1(Leader)..B2(Follower): B2 chết, B3 lag -> ISR={B1}
+B1(Leader) -> B1(Leader): B1 chết (chỉ B1 có 121..140)
+B3(Follower lag) -> B3(Follower lag): unclean election -> Leader, HW=110
+B2(Follower) -> B3(Follower lag): rejoin, TRUNCATE 111..120 về 110
+note Producer..B3(Follower lag): 121..140 từng ack nhưng mất vĩnh viễn
+~~~
+
+### Leader epoch
+Follower rejoin dùng **leader epoch** (KIP-101) để truncate chính xác tới ranh giới epoch, tránh cắt nhầm dữ liệu committed. Nhưng epoch **không cứu** dữ liệu mà leader mới (unclean) vốn không có — dữ liệu chỉ leader cũ có vẫn mất.
+
+### Bộ cấu hình ngăn mất dữ liệu (durability-first)
+| Cấu hình | Giá trị an toàn (RF=3) | Ý nghĩa |
+|---|---|---|
+| {{replication.factor}} | 3 | 3 bản sao |
+| {{min.insync.replicas}} | 2 | "all" phải gồm >=2 replica |
+| {{unclean.leader.election.enable}} | false | Không bầu leader ngoài ISR |
+| Producer {{acks}} | all | Chờ ISR ghi |
+| Producer {{enable.idempotence}} | true | Chống trùng khi retry |
+
+~~~java
+props.put("acks", "all");
+props.put("enable.idempotence", "true");
+props.put("retries", Integer.MAX_VALUE);
+props.put("delivery.timeout.ms", 120000);
+props.put("max.in.flight.requests.per.connection", "5");
+// App PHẢI xử lý lỗi gửi - nếu minISR không đủ sẽ nhận NotEnoughReplicas
+~~~
+
+**Trade-off:** {{minISR=2, unclean=false}}, nếu 2/3 broker chết -> partition **không nhận ghi** ({{NotEnoughReplicas}}). Dữ liệu tiền/audit: **không nhận ghi**.
+
+### Trên production
+- **Triệu chứng:** sau failover offset/đối soát hụt; unclean election metric nhảy.
+- **Đo:** {{UnderReplicatedPartitions}}, {{UnderMinIsrPartitionCount}}, {{IsrShrinks/ExpandsPerSec}}, {{UncleanLeaderElectionsPerSec}}. Alert trang ngay nếu unclean election > 0.
+- **Vận hành:** 3 broker trên 3 failure domain (AZ/rack). Kiểm tra {{kafka-configs.sh}}; topic critical có RF/minISR đúng.
+- **Bẫy:** tin "acks=all là đủ" mà quên {{min.insync.replicas}} mặc định 1; bật unclean tạm rồi quên tắt; broker/topic override lệch.
+
+> Senior tip: tôi coi {{unclean.leader.election.enable=false}} + {{min.insync.replicas=2}} + {{acks=all}} là "bộ ba bất biến" cho topic quan trọng và viết kiểm tra cấu hình tự động so với baseline. Đa số sự cố mất dữ liệu Kafka là do cấu hình lệch khỏi bộ ba này.`,
+  follow: ["Tại sao {{acks=all}} một mình chưa đủ nếu {{min.insync.replicas=1}}? Mô tả kịch bản mất dữ liệu cụ thể.", "Khi 2/3 broker chết và {{unclean=false}}, ứng dụng nhận lỗi gì? Bạn thiết kế (retry, lưu đệm, fail open/close) thế nào để không mất yêu cầu người dùng?", "Leader epoch (KIP-101) giải quyết vấn đề truncate sai nào so với dùng high watermark thuần? Nó có ngăn được mất dữ liệu do unclean election không?"],
+  tags: ["Kafka", "data loss", "unclean leader election", "ISR", "high watermark", "truncate", "durability"],
+  refs: [{"type": "doc", "title": "Kafka Topic Configs", "url": "https://kafka.apache.org/documentation/#topicconfigs"}, {"type": "doc", "title": "Kafka: Replication", "url": "https://kafka.apache.org/documentation/#replication"}, {"type": "doc", "title": "KIP-101: Leader Epoch", "url": "https://cwiki.apache.org/confluence/display/KAFKA/KIP-101+-+Alter+Replication+Protocol+to+use+Leader+Epoch+rather+than+High+Watermark+for+Truncation"}]
+},
+{
+  id: 'microservices-057',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Một luồng Kafka dùng **transactional producer** (EOS) để consume-transform-produce. Dù Kafka báo commit thành công, downstream vẫn thỉnh thoảng thấy **tác dụng lặp** (gửi thông báo hai lần, ghi bản ghi trùng ở hệ ngoài). Giải thích vì sao **EOS trong Kafka không bao phủ side effect ngoài Kafka**, và bạn thiết kế effectively-once ra sao khi phải gọi HTTP/ghi DB?',
+  a: `**Tóm tắt:** Kafka transactions đảm bảo ghi topic output + commit offset input là **nguyên tử trong Kafka** (nhờ transaction coordinator, control marker, {{read_committed}}). Nhưng mọi thứ ngoài Kafka — HTTP call, ghi DB, gửi email — nằm ngoài tầm kiểm soát của coordinator: coordinator không thể rollback một HTTP đã gửi. Nếu xử lý gọi HTTP rồi crash trước {{commitTransaction}}, lần retry sẽ **gọi HTTP lần nữa**. Vì vậy cần **effectively-once** = at-least-once + **idempotency ở biên** (idempotency key, dedup/inbox, upsert) cho mọi side effect ngoài.
+
+### Hiểu nhanh (ví dụ đời thường)
+Kafka transaction giống **giao dịch nội bộ một ngân hàng**: chuyển tiền giữa hai tài khoản trong cùng ngân hàng, sổ cái nội bộ đảm bảo hoặc cả hai hoặc không. Nhưng bước "gọi điện sang ngân hàng khác" (HTTP ngoài) ngân hàng nội bộ không thể "rút lại". Nhân viên gọi xong rồi bị ngất trước khi chốt sổ (crash trước commit), ca sau làm lại sẽ **gọi điện lần nữa**. Cách đúng: mỗi cuộc gọi kèm **mã giao dịch duy nhất**; ngân hàng kia thấy mã trùng thì không chuyển lần hai.
+
+### Thuật ngữ (giải thích lần đầu)
+- **EOS trong Kafka**: exactly-once *trong phạm vi Kafka topics + consumer offsets*.
+- **Side effect ngoài**: hành động ảnh hưởng hệ thống không tham gia transaction Kafka (DB, HTTP, email).
+- **Effectively-once**: hệ quả quan sát được xảy ra đúng một lần, dù bên dưới là at-least-once + idempotency.
+- **Idempotency key**: mã định danh duy nhất cho một đơn vị công việc, gửi kèm để đích nhận ra trùng.
+
+### Cơ chế: vì sao trùng xảy ra
+~~~text
+Lần 1 (offset=50): beginTx -> http.post(notify,O1) [ngoài tx, đã gửi] -> CRASH trước commitTx
+  => abort -> offset 50 chưa commit
+Lần 2 (retry, offset 50): beginTx -> http.post(notify,O1) [GỬI LẦN 2, TRÙNG] -> commitTx
+  => Kafka "thành công", nhưng notify đã x2
+~~~
+{{commitTransaction}} chỉ ghi control markers vào Kafka; nó không có giao thức với {{notifyService}}.
+
+~~~seq
+title: EOS Kafka vs side effect ngoài (trùng)
+actors: App(Worker) | KafkaTxn | Notify(HTTP)
+App(Worker) -> KafkaTxn: beginTx, consume offset=50
+App(Worker) -> Notify(HTTP): POST notify O1 (ngoài tx) (1)
+App(Worker) -> App(Worker): CRASH trước commitTx
+note App(Worker)..KafkaTxn: abort -> offset 50 chưa commit
+App(Worker) -> KafkaTxn: retry consume offset=50
+App(Worker) -> Notify(HTTP): POST notify O1 (ngoài tx) (2) TRÙNG
+App(Worker) -> KafkaTxn: commitTx (Kafka OK, notify đã x2)
+~~~
+
+### Thiết kế effectively-once
+1. **Idempotency key gửi tới đích:** key ổn định từ input ({{eventId}} hoặc {{topic-partition-offset}}), gửi header {{Idempotency-Key}}. Đích lưu key (unique), trùng thì no-op trả kết quả cũ.
+~~~java
+// Key ổn định per record (KHÔNG dùng random mỗi lần retry)
+String idemKey = record.topic()+"-"+record.partition()+"-"+record.offset();
+HttpRequest req = HttpRequest.newBuilder(uri)
+  .header("Idempotency-Key", idemKey)
+  .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+// notifyService: insert key unique -> nếu trùng thì no-op, trả 200
+~~~
+2. **Outbox/intent tại DB:** ghi "intent" vào DB (cùng tx DB) rồi relay riêng gửi HTTP idempotent.
+3. **Inbox + upsert ở đích:** {{INSERT inbox(eventId) ON CONFLICT DO NOTHING}} + upsert nghiệp vụ.
+4. **Chấp nhận và bù trừ:** tác dụng khó đảo (email) đôi khi chấp nhận hiếm trùng + bù trừ.
+
+### So sánh
+| Cách | Khi nào | Hạn chế |
+|---|---|---|
+| Kafka EOS thuần | Chỉ đọc/ghi Kafka | Không áp dụng khi có HTTP/DB ngoài |
+| Idempotency key tới đích | Đích hỗ trợ/bạn sở hữu | Cần hợp đồng API; key phải ổn định |
+| Outbox + relay | Tách DB out và HTTP out | Thêm độ trễ, thêm thành phần |
+| At-least-once + inbox | Đơn giản, đích là DB bạn sở hữu | Ít "ảo giác" hơn |
+
+### Trên production
+- **Triệu chứng:** gửi notify 2 lần cùng order; khách nhận 2 email/SMS. Trùng thời điểm rebalance/deploy/crash.
+- **Đo:** tỉ lệ duplicate theo idempotency key; đối soát event input vs side effect output (phải 1:1).
+- **Tuning:** key ổn định (eventId nghiệp vụ bền hơn offset khi reset offset). TTL lưu key dedup đủ dài hơn cửa sổ retry tối đa.
+- **Pitfall:** dùng {{UUID.randomUUID()}} mỗi lần retry -> vô dụng. Tin {{commitTransaction}} bảo vệ HTTP.
+
+> Senior tip: **Kafka transaction chỉ bọc thứ Kafka kiểm soát**. Có bất kỳ {{http.*}}, {{jdbc.*}} tới hệ ngoài, gửi mail, hay SDK cloud nào trong đường đi -> coi toàn bộ là at-least-once và thiết kế idempotency end-to-end. Đừng để "đã bật EOS" là bằng chứng không trùng.`,
+  follow: ["Idempotency key nên lấy từ {{(topic,partition,offset)}} hay từ {{eventId}} nghiệp vụ? Ảnh hưởng khi topic bị compact hoặc consumer reset offset?", "Nếu đích (third-party) không hỗ trợ idempotency key, bạn thiết kế lớp chống trùng ở phía bạn thế nào?", "Khi nào bạn chọn bỏ Kafka transaction và chỉ dùng at-least-once + idempotent consumer? Đánh đổi vận hành/độ trễ?"],
+  tags: ["Kafka", "EOS", "transactions", "idempotency", "side effects", "exactly-once", "effectively-once"],
+  refs: [{"type": "doc", "title": "Kafka: Transactions and Exactly-Once Semantics", "url": "https://kafka.apache.org/documentation/#semantics"}, {"type": "doc", "title": "Microservices.io: Idempotent Consumer", "url": "https://microservices.io/patterns/communication-style/idempotent-consumer.html"}]
+}
+);
