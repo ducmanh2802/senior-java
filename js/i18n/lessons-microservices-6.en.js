@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/lessons-microservices.js — task T454. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-microservices.js — task T1115. Format: js/core/i18n.js (content overlay).
  * ids: lesson-microservices-007
  */
 App.i18n.content({
@@ -13,39 +13,39 @@ App.i18n.content({
     body: `**Summary:** Deleting a batch of data that lives in the DB, an object store and downstream systems cannot be a single transaction. The orchestrator runs each id in the order DB → blob → notify, returning 200 when everything succeeds and 207 with per-id detail when something fails. Every step that has already succeeded is written to a compensation ledger; retries rely on per-id progress so nothing is deleted or notified twice.
 
 ### Why all-or-nothing is impossible
-The three systems have their own transactions and no shared commit protocol. Delete the DB row and then fail to delete the blob and the row is gone while the file remains; roll back the DB and you may not be able to restore a blob that was already deleted. 2PC does not fit because object stores and downstream systems usually do not support it, hold locks for a long time, and network failures leave it hanging. The practical approach is a saga: accept the intermediate state, record what has been done, and have a way to finish or compensate.
+The three systems have their own transactions and no shared commit protocol. Delete the DB row and then fail to delete the blob and the row is gone while the file remains; roll back the DB and you may not be able to restore a blob that was already deleted. 2PC (two-phase commit - a distributed protocol that tries to make multiple systems commit or roll back together) does not fit because object stores and downstream systems usually do not support it, it holds locks for a long time, and network failures leave it hanging. The practical approach is a saga (a sequence of local steps where each completed step can be compensated if a later step fails): accept the intermediate state, record what has been done, and have a way to finish or compensate.
 
 ### Order and status codes
-- DB first: if the row does not exist, treat it as already deleted (idempotent) and skip the remaining steps.
-- Blob after the DB: this avoids leaving an orphan blob when the row deletion fails.
+- DB first: if the row does not exist, treat it as already deleted (idempotent - calling it again has the same effect as calling it once), and skip the remaining steps.
+- Blob after the DB: this avoids leaving an orphan blob (a file with no matching DB record) when the row deletion fails.
 - Notify last: tell downstream only once the data is really gone.
 
-Return 200 when every id is 200. A single failing id is enough to return 207 Multi-Status, where each id in {{detail}} carries its own code and msg. The client must read line by line and must not treat 207 as success.
+Return 200 when every id is 200. A single failing id is enough to return 207 Multi-Status (an HTTP status meaning "mixed results, check each item"), where each id in {{detail}} carries its own code and msg. The client must read line by line and must not treat 207 as success.
 
 ### Progress and compensation
-Each id has a set of steps that are already done. A retry skips the finished steps, so the DB delete is not called a second time. When a step fails, the steps that succeeded before it are written to the ledger:
+Each id has a set of steps that are already done. A retry skips the finished steps, so the DB delete is not called a second time. When a step fails, the steps that succeeded before it are written to the ledger (a durable log of pending compensation work):
 
 ~~~text
 id=ord-7: db=OK, blob=FAIL
 ledger: compensation.delete.row(ord-7)
 ~~~
 
-That token is not an instant rollback; it marks work that needs to be reconciled. reconcile reads the ledger, retries the missing step (blob, then notify) and removes the entry when it is done. The client gets 207 straight away, while the system still has a path to completion that does not delete the row again.
+That token is not an instant rollback; it marks work that needs to be reconciled (brought to a consistent final state later). reconcile reads the ledger, retries the missing step (blob, then notify) and removes the entry when it is done. The client gets 207 straight away, while the system still has a path to completion that does not delete the row again.
 
 ### Production
-The ledger and progress must be durable (a saga/outbox table), not held in RAM as in the exercise. Every step needs idempotency on the partner side: deleting a missing row returns success, deleting a missing blob returns success, notify uses an idempotency key. The orchestrator can resume after a crash thanks to the stored state. Do not call downstream systems inside a long DB transaction; persist the state first, call outside the transaction, then update.
+The ledger and progress must be durable (a saga/outbox table in the database), not held in RAM as in the exercise. Every step needs idempotency on the partner side: deleting a missing row returns success, deleting a missing blob returns success, notify uses an idempotency key (a unique key so the receiver can ignore duplicates). The orchestrator can resume after a crash thanks to the stored state. Do not call downstream systems inside a long DB transaction; persist the state first, call outside the transaction, then update.
 
 ### Pitfalls
 - Returning 200 even though some ids failed: the user believes everything was deleted.
 - No ledger: orphan blobs, and nobody knows they need cleaning up.
 - Retries without progress: deletes and notifies repeat, which is especially dangerous for notify sending email.
 - A ledger that lives only in RAM: a restart loses it and the data is stuck half-way.
-- Hard deletion right away: hard to recover when a later step fails; many systems use soft delete plus a cleanup job once they are certain.
+- Hard deletion right away: hard to recover when a later step fails; many systems use soft delete (mark as deleted, keep the row) plus a cleanup job once they are certain.
 
 ### Interview notes
 State clearly why you chose 207 over 500, the order of the three steps, what the ledger records, what retries rely on, and which cases reconcile handles. Then describe how to make each tier idempotent so retries are safe.
 
-> Senior tip: set metrics on ids stuck for more than N minutes and on ledger entry age; alert when the ledger grows while reconcile does not shrink it. For large batches, work in small chunks and return 202 with a job id instead of holding the request too long.
+> Senior tip: set metrics on ids stuck for more than N minutes and on ledger entry age; alert when the ledger grows while reconcile does not shrink it. For large batches, work in small chunks and return 202 with a job id (an HTTP pattern for "accepted, processing in background") instead of holding the request too long.
 `,
     exercises: [{
       title: 'Delete orchestrator: 207, per-id progress and reconcile',
