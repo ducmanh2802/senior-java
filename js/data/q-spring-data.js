@@ -8563,7 +8563,7 @@ Ví dụ: chèn 10 triệu dòng UUID v4 vào khóa chính InnoDB. Mỗi dòng m
 - Cách đo: pg_stat_user_indexes (cột idx_scan = 0 trong thời gian dài → chỉ mục không dùng, hãy xóa), bộ mở rộng pgstattuple xem bloat, EXPLAIN xem Heap Fetches cao trên index-only scan.
 - Khắc phục: đổi khóa chính sang UUID v7 hoặc khóa tăng dần (cần migration dữ liệu), hoặc đặt fillfactor thấp hơn (ví dụ 80) để để chỗ trong trang cho ghi ngẫu nhiên (chỉ PostgreSQL). REINDEX CONCURRENTLY để thu gom chỉ mục bị phình mà không khóa bảng đọc/ghi.
 
-> Senior tip: khi nhận khiếu nại "insert chậm dần nhưng schema không đổi", hãy đo kích thước chỉ mục và tỉ lệ fill của trang trước khi đổ lỗi cho cứng cáp hay mã ứng dụng. Một chỉ mục không dùng đến (idx_scan = 0 trong thời gian dài) vừa ocupa đĩa vừa làm chậm mọi câu ghi – hãy xóa nó.`,
+> Senior tip: khi nhận khiếu nại "insert chậm dần nhưng schema không đổi", hãy đo kích thước chỉ mục và tỉ lệ lấp đầy của trang trước khi đổ lỗi cho phần cứng hay mã ứng dụng. Một chỉ mục không dùng đến (idx_scan = 0 trong thời gian dài) vừa chiếm đĩa vừa làm chậm mọi câu ghi – hãy xóa nó.`,
   follow: [
     'Tại sao chỉ mục trên cột có ít giá trị khác nhau (cardinality thấp) thường không được dùng?',
     'Visibility map bị cũ thì index-only scan bị ảnh hưởng như thế nào, và VACUUM vai trò gì?',
@@ -8584,19 +8584,20 @@ Ví dụ: chèn 10 triệu dòng UUID v4 vào khóa chính InnoDB. Mỗi dòng m
   a: `**Tóm tắt:** Khi ứng dụng lệnh COMMIT, cơ sở dữ liệu không trả "thành công" trước khi nhật ký thay đổi (WAL – Write-Ahead Log, hay redo log ở MySQL) đã được ghi xuống ổ cứng qua fsync; trang dữ liệu thực sự được ghi chậm sau bởi quy trình nền. Đây là lý do commit bền vững: mất điện sau khi nhận thông báo thành công, dữ liệu đã an toàn trong WAL và có thể replay lại khi khởi động. synchronous_commit quyết định commit chờ đến đâu: on (chờ fsync trên primary, an toàn nhất, chậm nhất), remote_write (chờ replica nhận WAL), remote_apply (chờ replica áp dụng xong, chậm nhất nhưng đọc replica ngay sau commit không lạc), off (không chờ, nhanh nhất nhưng có thể mất giao dịch vừa commit khi mất điện). full_page_writes ghi toàn bộ ảnh chụp trang vào WAL lần đầu trang bị sửa sau mỗi checkpoint, để phòng trang bị "rách" (torn page) khi hệ thống ngừng đột ngột giữa lúc ghi trang 8KB. Checkpoint spikes là hiện tượng nhiều trang đã sửa cùng lúc bị đẩy xuống đĩa trong khoảng thời gian ngắn → ổ đĩa bị ép, latency truy vấn nhảy cao.
 
 ### WAL và fsync, từng bước
-1. Ứ dụng gửi COMMIT.
+1. Ứng dụng gửi COMMIT.
 2. Cơ sở dữ liệu viết bản ghi WAL chứa mọi thay đổi của giao dịch.
 3. Gọi fsync để buộc hệ điều hành ghi WAL từ bộ nhớ đệm xuống ổ cứng và đợi xác nhận.
 4. Chỉ sau đó mới trả kết quả thành công cho ứng dụng. Vì sao: nếu mất điện vào thời điểm này, WAL vẫn an toàn trên đĩa.
 5. Trang dữ liệu được ghi vào file dữ liệu sau đó bởi background writer và checkpoint, không phải ngay khi commit.
 
-### synchronous_commit: 4 mức
+### synchronous_commit: các mức chính
+Lưu ý: ngoài bốn mức trong bảng còn có {{local}} (chỉ chờ fsync trên primary, kể cả khi có replica đồng bộ). Khi đã cấu hình {{synchronous_standby_names}}, mức {{on}} còn chờ replica đồng bộ ghi WAL xuống đĩa của nó.
 | Giá trị | Chờ đợi | Mất dữ liệu khi hỏng | Độ trễ commit |
 |---|---|---|---|
 | on (mặc định PostgreSQL) | fsync WAL trên primary | Giao dịch chưa fsync | Trung bình |
 | remote_write | Replica đã nhận WAL | Cả primary và replica hỏng | Cao hơn |
 | remote_apply | Replica đã áp dụng WAL | Cả primary và replica hỏng | Cao nhất |
-| off | Không chờ | Giao dịch vừa commit chưa fsync | Nhất thấp |
+| off | Không chờ | Giao dịch vừa commit chưa fsync (tối đa khoảng 3 lần wal_writer_delay) | Thấp nhất |
 
 MySQL InnoDB tương đương: innodb_flush_log_at_trx_commit = 1 (fsync mỗi commit, an toàn), 2 (ghi vào bộ nhớ đệm hệ điều hành, fsync mỗi giây), 0 (không chờ, nhanh nhất, có thể mất 1 giây dữ liệu khi mất điện).
 
@@ -8604,14 +8605,14 @@ MySQL InnoDB tương đương: innodb_flush_log_at_trx_commit = 1 (fsync mỗi c
 Khi ghi một trang 8KB, hệ thống có thể ghi nửa mới nửa cũ nếu mất điện giữa chừng (trang rách – torn page), làm hỏng chỉ mục. PostgreSQL giảm rủi ro bằng cách, lần đầu một trang được sửa sau mỗi checkpoint, ghi toàn bộ ảnh chụp trang vào WAL (full_page_writes = on). Chi phí: WAL lớn hơn nhiều khi ghi nhiều. Có thể tắt nếu hệ thống file đảm bảo ghi nguyên trang (ví dụ ZFS), nhưng đối với hệ thống thường dùng nên để bật và không tắt mà không thử nghiệm kỹ.
 
 ### Checkpoint và tại sao spike
-Checkpoint là quá trình đẩy trang đã sửa từ bộ nhớ đệm xuống file dữ liệu, rồi ghi vị trí bắt đầu replay WAL (điểm checkpoint) để crash recovery sau này chỉ cần replay WAL từ điểm đó. Điều khiển bởi checkpoint_timeout (mặc định 5 phút, checkpoint định kỳ), max_wal_size (mặc định 1GB, WAL quá lớn buộc checkpoint sớm), checkpoint_completion_target (mặc định 0.5, trải checkpoint qua 50% khoảng thời gian để phân tán ghi). Khi hệ thống ghi nhiều: trang đã sửa lũy lên nhanh → checkpoint phải giải phóng lượng lớn trong ít thời gian → ổ đĩa bị ép, các truy vấn đọc/ghi bị chờ → latency nhảy (checkpoint spike). WAL cũng tăng cho đến khi checkpoint xong; nếu có replication slot bị treo, WAL không được xóa → thư mục pg_wal đầy (liên quan câu về WAL/slot CDC).
+Checkpoint là quá trình đẩy trang đã sửa từ bộ nhớ đệm xuống file dữ liệu, rồi ghi vị trí bắt đầu replay WAL (điểm checkpoint) để crash recovery sau này chỉ cần replay WAL từ điểm đó. Điều khiển bởi checkpoint_timeout (mặc định 5 phút, checkpoint định kỳ), max_wal_size (mặc định 1GB, WAL quá lớn buộc checkpoint sớm), checkpoint_completion_target (mặc định 0.9 từ PostgreSQL 14, trước đó 0.5: trải việc ghi của checkpoint qua 90% khoảng thời gian giữa hai checkpoint). Khi hệ thống ghi nhiều: trang đã sửa dồn lên nhanh → checkpoint phải giải phóng lượng lớn trong ít thời gian → ổ đĩa bị ép, các truy vấn đọc/ghi bị chờ → latency nhảy (checkpoint spike). WAL cũng tăng cho đến khi checkpoint xong; nếu có replication slot bị treo, WAL không được xóa → thư mục pg_wal đầy (liên quan câu về WAL/slot CDC).
 
 ### Trên production
-- Theo dõi: pg_stat_bgwriter (checkpoints_timed là định kỳ, checkpoints_req là do WAL đầy – nhiều checkpoints_req là dấu hiệu ghi quá nhiều), kích thước pg_wal, buffers_checkpoint (số trang ghi trong mỗi checkpoint).
-- Nếu thấy spike: chia nhỏ batch ghi, tránh cập nhật cùng hàng lớn đồng thời, xem xét tăng max_wal_size (dùng nhiều dung lượng WAL để ít checkpoint hơn) và checkpoint_completion_target cao hơn (ví dụ 0.9) để trải đều ghi.
+- Theo dõi: pg_stat_bgwriter đến PostgreSQL 16 (checkpoints_timed là định kỳ, checkpoints_req là do WAL đầy – nhiều checkpoints_req là dấu hiệu ghi quá nhiều; buffers_checkpoint là số trang checkpoint đã ghi); từ PostgreSQL 17 các cột này chuyển sang view pg_stat_checkpointer (num_timed, num_requested, buffers_written). Theo dõi thêm kích thước pg_wal và bật log_checkpoints.
+- Nếu thấy spike: chia nhỏ batch ghi, tránh cập nhật cùng hàng lớn đồng thời, xem xét tăng max_wal_size (dùng nhiều dung lượng WAL để ít checkpoint hơn) và kiểm tra checkpoint_completion_target đang ở 0.9 (trên bản cũ hơn 14 thường cần đặt lại).
 - Không bao giờ tắt fsync (PostgreSQL fsync = off) trên production: commit sẽ được báo thành công trước khi dữ liệu xuống đĩa, mất điện có thể làm hỏng dữ liệu, không chỉ mất giao dịch gần nhất.
 
-> Senior tip: commit bền vững có giá tiền (mỗi commit chờ ổ cứng ghi, thường vài đến mười miligiây). Hãy nhóm nhiều thao tác vào một giao dịch thay vì commit từng dòng, và đặt synchronous_commit = off chỉ cho chức năng chịu được mất vài giao dịch gần nhất (ví dụ nhấp chuột theo dõi, log vprès) – không bao giờ dùng cho dữ liệu tiền tệ.`,
+> Senior tip: commit bền vững có giá tiền (mỗi commit chờ ổ cứng ghi, thường vài đến mười miligiây). Hãy nhóm nhiều thao tác vào một giao dịch thay vì commit từng dòng, và đặt synchronous_commit = off chỉ cho chức năng chịu được mất vài giao dịch gần nhất (ví dụ sự kiện theo dõi lượt nhấp, log hành vi) – không bao giờ dùng cho dữ liệu tiền tệ.`,
   follow: [
     'Tại sao commit chưa fsync lại có thể mất dữ liệu khi mất điện, và fsync = off nguy hiểm hơn thế nào?',
     'full_page_writes làm WAL tăng bao nhiêu, và khi nào có thể tắt một cách an toàn?',
@@ -8629,7 +8630,7 @@ Checkpoint là quá trình đẩy trang đã sửa từ bộ nhớ đệm xuốn
   topic: 'db',
   level: 'senior',
   q: 'Trong MySQL InnoDB, tại sao chỉ mục phụ luôn dẫn trở lại chỉ mục nhóm, và gap lock / next-key lock ở mức REPEATABLE READ lại gây deadlock khi nhiều yêu cầu chèn dữ liệu cùng lúc? Đọc SHOW ENGINE INNODB STATUS thế nào để tìm nguyên nhân, và sửa thế nào?',
-  a: `**Tóm tắt:** InnoDB lưu bảng dưới dạng chỉ mục nhóm (clustered index): nút lá của chỉ mục theo khóa chính chứa toàn bộ dữ liệu dòng, nên tìm theo khóa chính chỉ cần đi qua một cây. Chỉ mục phụ lưu các khóa của nó kèm giá trị khóa chính, nên đọc qua chỉ mục phụ mất hai bước: tìm trong chỉ mục phụ để có khóa chính, rồi tra clustered index để lấy toàn bộ dòng. Ở mức REPEATABLE READ (mặc định MySQL), InnoDB dùng khoá khoảng (gap lock) để chặn các dòng mới chèn vào khoảng đã đọc, và khoá next-key lock (khoá khoảng cộng bản ghi) để chặn cả bản ghi hiện tại. Khi hai giao dịch chèn cùng giá trị khóa duy nhất, mỗi bên lấy khoá chèn vào cùng khoảng rồi chờ nhau đọc bản ghi chưa commit của bên kia → deadlock. MySQL chọn một giao dịch làm bị thương (victim), rollback và trả lỗi 1213 (SQLSTATE 40001); ứng dụng phải bắt lỗi và thử lại bằng giao dịch mới.
+  a: `**Tóm tắt:** InnoDB lưu bảng dưới dạng chỉ mục nhóm (clustered index): nút lá của chỉ mục theo khóa chính chứa toàn bộ dữ liệu dòng, nên tìm theo khóa chính chỉ cần đi qua một cây. Chỉ mục phụ lưu các khóa của nó kèm giá trị khóa chính, nên đọc qua chỉ mục phụ mất hai bước: tìm trong chỉ mục phụ để có khóa chính, rồi tra clustered index để lấy toàn bộ dòng. Ở mức REPEATABLE READ (mặc định MySQL), InnoDB dùng khoá khoảng (gap lock) để chặn các dòng mới chèn vào khoảng đã đọc, và khoá next-key lock (khoá khoảng cộng bản ghi) để chặn cả bản ghi hiện tại. Deadlock khi chèn thường đến từ hai mẫu: (1) nhiều giao dịch cùng chèn một khóa duy nhất mà giao dịch giữ khóa đó rollback, các giao dịch đang chờ cùng giữ shared lock rồi cùng xin exclusive lock; (2) hai batch chèn/cập nhật các khóa theo thứ tự ngược nhau. MySQL chọn một giao dịch làm bị thương (victim), rollback và trả lỗi 1213 (SQLSTATE 40001); ứng dụng phải bắt lỗi và thử lại bằng giao dịch mới.
 
 ### Chỉ mục nhóm và chỉ mục phụ
 - Chỉ mục nhóm: theo khóa chính (nếu không khai báo, InnoDB tạo khóa ẩn 6 byte). Lá chứa toàn bộ cột của dòng. Ứng dụng đọc theo khóa chính = một lần đi từ gốc xuống lá.
@@ -8642,16 +8643,17 @@ InnoDB khoá hàng trên các bản ghi đã đọc/sửa, giữ tới khi commi
 - Khoá next-key lock: khoảng cộng bản ghi đầu tiên sau khoảng.
 - Khoá chèn mục đích (insert intention lock): loại khoá đặc biệt khi chèn, không xung đột với nhau trong cùng khoảng, nhưng khi kiểm tra trùng khóa duy nhất mỗi giao dịch phải lấy khoá trên bản ghi đang được chèn của bên kia.
 
-Deadlock ví dụ (hai yêu cầu đặt mã đơn hàng giống nhau):
+Deadlock ví dụ (ba yêu cầu cùng đặt mã đơn 'ORD-100', ví dụ có trong tài liệu MySQL):
 ~~~
-T1: INSERT INTO orders (code, ...) VALUES ('ORD-100', ...)
-    -- 1. lấy insert intention lock trên khoảng chứa 'ORD-100'
-T2: INSERT INTO orders (code, ...) VALUES ('ORD-100', ...)
-    -- 2. lấy insert intention lock trên cùng khoảng (không xung đột)
-T1: -- 3. duyệt chỉ mục duy nhất, thấy 'ORD-100' của T2 chưa commit -> chờ T2 (X lock trên bản ghi)
-T2: -- 4. duyệt chỉ mục, thấy 'ORD-100' của T1 chưa commit -> chờ T1   => VÒNG CHỜ
-MySQL: phát hiện vòng, rollback T2 (victim), trả lỗi 1213, T1 chạy tiếp
+T1: INSERT ... VALUES ('ORD-100')   -- chèn được, giữ X lock trên bản ghi mới (chưa commit)
+T2: INSERT ... VALUES ('ORD-100')   -- phát hiện trùng khóa -> xin S lock trên bản ghi đó, CHỜ T1
+T3: INSERT ... VALUES ('ORD-100')   -- tương tự, xin S lock, CHỜ T1
+T1: ROLLBACK                         -- bản ghi biến mất, T2 và T3 cùng được cấp S lock
+T2: muốn chèn -> cần X lock, nhưng T3 đang giữ S lock -> chờ T3
+T3: muốn chèn -> cần X lock, nhưng T2 đang giữ S lock -> chờ T2   => VÒNG CHỜ
+MySQL: phát hiện vòng, rollback một bên (victim), trả lỗi 1213, bên kia chèn thành công
 ~~~
+Mẫu hay gặp không kém: T1 chèn khóa A rồi B, T2 chèn khóa B rồi A trong cùng transaction; sắp xếp khóa trước khi ghi là đủ để loại bỏ.
 
 ### Đọc SHOW ENGINE INNODB STATUS
 Chạy SHOW ENGINE INNODB STATUS; và xem mục LATEST DETECTED DEADLOCK. Trong đó:
@@ -8669,12 +8671,12 @@ Dựa vào hai câu SQL và hai chỉ mục liên quan, bạn biết deadlock do
 ### Trên production
 - Triệu chứng: lỗi 1213 bursts khi nhiều người cùng đặt hàng hoặc đăng ký mã duy nhất.
 - Cách theo dõi: SHOW ENGINE INNODB STATUS khi cần chi tiết; information_schema.innodb_trx xem giao dịch mở lâu.
-- Không khắc phục bằng cách tắt gap lock (đặt isolation READ COMMITTED) một cách loang láng: sẽ mất tính nhất quán phantom; chỉ đổi khi nghiệp vụ chấp nhận và đã hiểu hậu quả.
+- Không khắc phục bằng cách tắt gap lock (đặt isolation READ COMMITTED) một cách tuỳ tiện: sẽ mất tính nhất quán phantom; chỉ đổi khi nghiệp vụ chấp nhận và đã hiểu hậu quả.
 
 > Senior tip: deadlock không phải lỗi của cơ sở dữ liệu, mà là tín hiệu hai giao dịch đang tranh chấp tài nguyên theo thứ tự không ổn định. Mục tiêu không phải "không bao giờ deadlock" (không thể với ghi song song), mà là giảm tần suất và đảm bảo ứng dụng biết bắt lỗi và thử lại đúng cách.`,
   follow: [
     'Tại sao chỉ mục phụ của InnoDB luôn chứa giá trị khóa chính, và điều đó ảnh hưởng thế nào đến việc chọn khóa chính?',
-    'Khi nào gap lock gây deadlock mà insert intention lock không genug để phòng được?',
+    'Khi nào gap lock gây deadlock mà insert intention lock không đủ để phòng được?',
     'Làm sao phân biệt deadlock (1213) và lock wait timeout (1205) trong log MySQL?'
   ],
   tags: ['InnoDB', 'clustered index', 'gap lock', 'next-key lock', 'deadlock', 'REPEATABLE READ'],
@@ -8699,7 +8701,7 @@ Ví dụ số liệu: 400 request/giây, mỗi request giữ kết nối 20ms �
 
 ### Tại sao pool lớn lại chậm
 - Hàng chờ: sử dụng gần 100% thì thời gian chờ tăng phi tuyến, không tuyến tính.
-- Chuyển đổi ngữ cảnh: cơ sở dữ liệu xử lý mỗi kết nối bằng một luồng/quá trình (PostgreSQL một quá trình mỗi kết nối), quá nhiều liên tục chuyển ngữ tốn CPU.
+- Chuyển đổi ngữ cảnh: cơ sở dữ liệu xử lý mỗi kết nối bằng một luồng/quá trình (PostgreSQL một quá trình mỗi kết nối), quá nhiều kết nối làm hệ điều hành liên tục chuyển ngữ cảnh, tốn CPU.
 - Tranh chấp khóa và buffer pool: nhiều truy vấn cùng chạy xóa trang của nhau trong buffer pool, mức lỗi đọc từ đĩa tăng.
 - Bộ nhớ: mỗi kết nối PostgreSQL chiếm vài megabyte RAM ngay cả khi không làm gì.
 
@@ -8711,13 +8713,13 @@ Ví dụ số liệu: 400 request/giây, mỗi request giữ kết nối 20ms �
 | idle-timeout | Thời gian kết nối rỗi mới được đóng (tối thiểu 10 giây) | 10 phút |
 | leak-detection-threshold | Giữ kết nối quá lâu thì ghi stack trace nơi mượn | Bật, ví dụ 60 giây |
 
-maxLifetime ngẫu nhiên hóa một chút (Hikari tự làm) để tránh hàng chục instance cùng thay mới kết nối cùng một lúc (thundering herd). maxLifetime cũng phải ngắn hơn wait_timeout của MySQL (mặc định 28.800 giây) và idle_in_transaction_session_timeout nếu dùng PostgreSQL, để không giữ kết nối chết.
+maxLifetime ngẫu nhiên hóa một chút (Hikari tự làm) để tránh hàng chục instance cùng thay mới kết nối cùng một lúc (thundering herd). maxLifetime cũng phải ngắn hơn wait_timeout của MySQL (mặc định 28.800 giây) và idle_session_timeout nếu PostgreSQL (14+) có đặt, để không giữ kết nối đã bị phía server đóng.
 
 ### Đo trên production
 Theo dõi chỉ số HikariCP: hikaricp.connections.pending (số luồng đang chờ lấy kết nối), connections.usage (tỷ lệ sử dụng), connections.acquire (thời gian chờ). Nếu pending > 0 thường xuyên, không nên tăng pool ngay – hãy tìm giao dịch giữ kết nối lâu (Open Session In View, gọi API khác bên trong @Transactional), vì tăng pool chỉ đưa tắc nghẽn từ ứng dụng xuống cơ sở dữ liệu.
 
 ### Trên production
-- Với luồng ảo (Java 21+): số luồng có thể rất lớn nhưng kết nối cơ sở dữ liệu vẫn hữu hạn → đặt pool nhỏ (thường 5–10), theo dõi pending; nhiều instance chia sẻ một cơ sở dữ liệu hãy cân nhắc PgBouncer hoặc RDS Proxy thay vì salas pool mỗi instance.
+- Với luồng ảo (Java 21+): số luồng có thể rất lớn nhưng kết nối cơ sở dữ liệu vẫn hữu hạn → đặt pool nhỏ (thường 5–10), theo dõi pending; nhiều instance chia sẻ một cơ sở dữ liệu hãy cân nhắc PgBouncer hoặc RDS Proxy thay vì tăng pool ở mỗi instance.
 - spring.jpa.open-in-view = true (mặc định) giữ kết nối suốt khi render JSON → pool cạn dù truy vấn nhanh. Hãy đặt false và load đủ dữ liệu trong dịch vụ.
 
 > Senior tip: chỉ số quan trọng nhất của pool kết nối là thời gian chờ và số luồng đang chờ, không phải số kết nối hiện có. Pool lớn không làm cơ sở dữ liệu nhanh hơn; nó chỉ chia nhỏ thời gian CPU của cơ sở dữ liệu cho nhiều yêu cầu hơn. Khi thấy chờ kết nối, việc đầu tiên là tìm truy vấn giữ giao dịch lâu.`,
@@ -8738,32 +8740,32 @@ Theo dõi chỉ số HikariCP: hikaricp.connections.pending (số luồng đang 
   topic: 'db',
   level: 'senior',
   q: 'Replication lag là gì, và sao sau khi ghi xong ứng dụng đọc replica lại không thấy dữ liệu vừa ghi? Bạn đo lag thế nào, và đảm bảo "đọc lại chính dữ liệu mình vừa ghi" (read-your-writes) trong Spring thế nào?',
-  a: `**Tóm tắt:** Replication lag là khoảng thời gian giữa khi giao dịch commit trên primary (node ghi) và khi dữ liệu đó được ghi vào replica (node chỉ đọc). Nhờ nó, người dùng vừa chuyển tiền xong làm mới màn hình mà không thấy giao dịch – bản ghi chưa kịp được dẫn truyền từ primary sang replica. Dẫn truyền vật lý (streaming replication, mặc định PostgreSQL/MySQL) hoạt động bất đồng bộ: primary viết WAL/redo log, rồi đưa các bản ghi WAL qua mạng cho replica replay. Vì vậy commit trên primary trả thành công ngay, không cần chờ replica; lag có thể là vài miligiây đến vài phút tùy tải và tốc độ ổ đĩa replica. Đảm bảo đọc lại chính dữ liệu mình vừa ghi (read-your-writes) bằng ba cách: đọc từ primary ngay sau khi ghi của chính người dùng đó, route dính session (sticky routing) trong một thời gian nhẹ sau khi ghi, hoặc chờ replica phát sinh đến vị trí WAL (LSN) đã ghi trước khi cho đọc replica. Dữ liệu tài chính (số dư, trạng thái đơn) nên luôn đọc primary.
+  a: `**Tóm tắt:** Replication lag là khoảng thời gian giữa khi giao dịch commit trên primary (node ghi) và khi dữ liệu đó được ghi vào replica (node chỉ đọc). Vì nó, người dùng vừa chuyển tiền xong làm mới màn hình mà không thấy giao dịch – bản ghi chưa kịp được dẫn truyền từ primary sang replica. Dẫn truyền vật lý (streaming replication, mặc định PostgreSQL/MySQL) hoạt động bất đồng bộ: primary viết WAL/redo log, rồi đưa các bản ghi WAL qua mạng cho replica replay. Vì vậy commit trên primary trả thành công ngay, không cần chờ replica; lag có thể là vài miligiây đến vài phút tùy tải và tốc độ ổ đĩa replica. Đảm bảo đọc lại chính dữ liệu mình vừa ghi (read-your-writes) bằng ba cách: đọc từ primary ngay sau khi ghi của chính người dùng đó, route dính session (sticky routing) trong một thời gian nhẹ sau khi ghi, hoặc chờ replica phát sinh đến vị trí WAL (LSN) đã ghi trước khi cho đọc replica. Dữ liệu tài chính (số dư, trạng thái đơn) nên luôn đọc primary.
 
 ### Dẫn truyền từng bước
-1. Ứ dụng commit trên primary.
+1. Ứng dụng commit trên primary.
 2. Primary viết thay đổi vào WAL và fsync, rồi trả thành công cho ứng dụng.
 3. WAL sender trên primary gửi bản ghi WAL qua mạng cho WAL receiver trên replica.
 4. Replica viết WAL nhận được vào ổ cứng của mình (flush), sau đó replay vào dữ liệu (trang dữ liệu được cập nhật).
 5. Khoảng thời gian giữa bước 2 và bước 4 là replication lag.
 
 ### Đo lag thế nào
-PostgreSQL: xem cột write_lsn, flush_lsn, replay_lsn trong view pg_stat_replication, so với pg_current_wal_lsn() trên primary (vị trí WAL hiện tại). Khoảng cách byte (hoặc pg_last_wal_replay_lsn() trên replica so với LSN đã ghi) cho biết lag. MySQL: chạy SHOW REPLICA STATUS; trên replica, xem Seconds_Behind_Master (giây chậm so với primary) và so sánh Read_Master_Log_Pos với Exec_Master_Log_Pos.
+PostgreSQL: xem cột write_lsn, flush_lsn, replay_lsn trong view pg_stat_replication, so với pg_current_wal_lsn() trên primary (vị trí WAL hiện tại). Khoảng cách byte (hoặc pg_last_wal_replay_lsn() trên replica so với LSN đã ghi) cho biết lag. MySQL 8.0.22+: chạy SHOW REPLICA STATUS; trên replica, xem Seconds_Behind_Source (giây chậm so với primary) và so sánh Read_Source_Log_Pos với Exec_Source_Log_Pos (bản cũ: SHOW SLAVE STATUS với các trường *_Master_*). Seconds_Behind_Source chỉ là ước lượng; đo chính xác hơn bằng bảng heartbeat (ví dụ pt-heartbeat).
 
 ### Ba cách đảm bảo read-your-writes
 1. Đọc primary sau khi ghi: đối với dữ liệu của chính người dùng (hồ sơ, số dư), luôn đọc primary trong vài giây sau khi ghi. Đơn giản và an toàn nhất.
-2. Sticky routing: sau khi người dùng ghi, gán session của người đó đến primary trong khoảng thời gian (ví dụ 30 giây–5 phút), các request đọc của session này đi primary, hiện tại mới về replica.
+2. Sticky routing: sau khi người dùng ghi, gán session của người đó đến primary trong khoảng thời gian (ví dụ 30 giây–5 phút), các request đọc của session này đi primary, hết khoảng thời gian đó mới về replica.
 3. Cổng LSN: sau commit trên primary, ứng dụng lưu LSN vừa ghi (pg_current_wal_lsn()). Các đọc sau đó chỉ được route sang replica khi pg_last_wal_replay_lsn() trên replica lớn hơn hoặc bằng LSN đã lưu; nếu chưa, đọc primary. Triển khai trong Spring qua AbstractRoutingDataSource: chọn primary cho @Transactional ghi và các đọc kèm theo, replica cho @Transactional(readOnly = true) khi cổng LSN mở.
 
 ### Khi dùng dẫn truyền đồng bộ
-synchronous_standby_names + synchronous_commit = remote_apply làm commit chờ replica áp dụng xong, do đó đọc replica ngay sau commit không bị lạc. Code giá: latency commit tăng (chờ vòng qua mạng), và nếu không có replica đồng bộ sẵn sàng, commit có thể bị chặn.
+synchronous_standby_names + synchronous_commit = remote_apply làm commit chờ replica áp dụng xong, do đó đọc replica ngay sau commit không bị lạc. Cái giá: latency commit tăng (chờ vòng qua mạng), và nếu không có replica đồng bộ sẵn sàng, commit có thể bị chặn.
 
 ### Trên production
 - Triệu chứng lag: khiếu nại "vừa cập nhật không thấy", bản ghi mới trên primary chưa có trên replica khi báo cáo chạy replica.
 - Nguyên nhân lag: replica chậm replay (CPU/ổ đĩa yếu hơn), mạng, giao dịch lớn giữ WAL, truy vấn dài trên replica bị hủy do tranh chấp recovery (canceling statement due to conflict with recovery), replication slot bị treo giữ WAL không được xóa (thư mục pg_wal tăng, liên quan câu về WAL/slot CDC).
 - Cách khắc phục: nâng cấp replica, chia nhỏ giao dịch lớn, bật hot_standby_feedback = on nếu chấp nhận replica trễ hơn để bảo vệ truy vấn dài, theo dõi pg_replication_slots và xóa slot không dùng.
 
-> Senior tip: đừng để mọi đọc đều đi replica theo kiểu "mất dữ liệu vài giây cũng được" mà không hỏi stakeholder. Dữ liệu tài chính và thao tác ngay sau khi ghi của chính người dùng phải đọc primary; phần phân tích, báo cáo, dashboard nội bộ thì đọc replica kèm thông báo "dữ liệu có thể trễ vài phút". Trong Spring, hãy biểu định rõ nguồn dữ liệu bằng AbstractRoutingDataSource thay vì để mỗi dịch vụ tự đoán.`,
+> Senior tip: đừng để mọi đọc đều đi replica theo kiểu "mất dữ liệu vài giây cũng được" mà không hỏi stakeholder. Dữ liệu tài chính và thao tác ngay sau khi ghi của chính người dùng phải đọc primary; phần phân tích, báo cáo, dashboard nội bộ thì đọc replica kèm thông báo "dữ liệu có thể trễ vài phút". Trong Spring, hãy xác định rõ nguồn dữ liệu bằng AbstractRoutingDataSource thay vì để mỗi dịch vụ tự đoán.`,
   follow: [
     'Tại sao commit trên primary trả thành công ngay dù replica chưa có dữ liệu, và điều đó có vấn đề gì?',
     'pg_last_wal_replay_lsn() và pg_current_wal_lsn() dùng để làm gì khi đo lag?',
@@ -8781,7 +8783,7 @@ synchronous_standby_names + synchronous_commit = remote_apply làm commit chờ 
   topic: 'db',
   level: 'lead',
   q: 'Phân vùng theo thời gian (range partitioning) giúp gì và khi nào lại không giúp? Hãy nói về partition pruning, xóa dữ liệu cũ, và những ràng buộc trên khóa chính/chỉ mục duy nhất.',
-  a: `**Tóm tắt:** Phân vùng chia một bảng lớn thành nhiều phân vùng nhỏ, mỗi phân vùng chứa một phạm vi dữ liệu (ví dụ bảng đơn hàng 800 triệu dòng, mỗi tháng một phân vùng theo created_at). Khi câu truy vấn có điều kiện trên cột phân vùng, trình lập kế hoạch thực hiện partition pruning (cắt phân vùng): loại bỏ các phân vùng chắc chắn không chứa dữ liệu khớp, chỉ quét các phân vùng liên quan. Lợi ích lớn nhất là xóa dữ liệu cũ bằng DROP hoặc DETACH phân vùng (milli giây, không ghi WAL hàng triệu dòng, không làm bloat bảng) thay vì DELETE hàng triệu dòng. Mỗi phân vùng nhỏ hơn nên chỉ mục vừa vào bộ nhớ đệm, vacuum sớm xong. Phân vùng không giúp khi truy vấn không có cột phân vùng (phải quét tất cả phân vùng, thường kém hơn bảng thông thường), khi quá nhiều phân vụ nhỏ (thời gian lên kế hoạch và bộ nhớ tăng), hoặc khi phân vùng mặc định (DEFAULT) trở thành bệ chứa mọi thứ. Ràng buộc quan trọng: khóa chính và chỉ mục duy nhất phải chứa cột phân vùng, nên khóa chính thành (id, created_at), và mọi truy cập theo id độc lập cần biết thời gian hoặc quét tất cả phân vùng.
+  a: `**Tóm tắt:** Phân vùng chia một bảng lớn thành nhiều phân vùng nhỏ, mỗi phân vùng chứa một phạm vi dữ liệu (ví dụ bảng đơn hàng 800 triệu dòng, mỗi tháng một phân vùng theo created_at). Khi câu truy vấn có điều kiện trên cột phân vùng, trình lập kế hoạch thực hiện partition pruning (cắt phân vùng): loại bỏ các phân vùng chắc chắn không chứa dữ liệu khớp, chỉ quét các phân vùng liên quan. Lợi ích lớn nhất là xóa dữ liệu cũ bằng DROP hoặc DETACH phân vùng (milli giây, không ghi WAL hàng triệu dòng, không làm bloat bảng) thay vì DELETE hàng triệu dòng. Mỗi phân vùng nhỏ hơn nên chỉ mục vừa vào bộ nhớ đệm, vacuum sớm xong. Phân vùng không giúp khi truy vấn không có cột phân vùng (phải quét tất cả phân vùng, thường kém hơn bảng thông thường), khi quá nhiều phân vùng nhỏ (thời gian lên kế hoạch và bộ nhớ tăng), hoặc khi phân vùng mặc định (DEFAULT) trở thành bệ chứa mọi thứ. Ràng buộc quan trọng: khóa chính và chỉ mục duy nhất phải chứa cột phân vùng, nên khóa chính thành (id, created_at), và mọi truy cập theo id độc lập cần biết thời gian hoặc quét tất cả phân vùng.
 
 ### Phân vùng và partition pruning
 Ví dụ bảng đơn hàng phân vùng theo tháng:
@@ -8789,7 +8791,7 @@ Ví dụ bảng đơn hàng phân vùng theo tháng:
 orders_2026_01  orders_2026_02  ...  orders_2026_06
 (created_at 01/2026) (02/2026) ... (06/2026)
 ~~~
-Câu SELECT * FROM orders WHERE created_at >= '2026-05-01' AND created_at < '2026-06-01' chỉ quét phân vùng tháng 5 và tháng 6 (PostgreSQL còn có runtime pruning khi tham số được biết khi chạy). Câu không có điều kiện thời gian, ví dụ WHERE customer_id = ?, phải quét tất cả phân vùng.
+Câu SELECT * FROM orders WHERE created_at >= '2026-05-01' AND created_at < '2026-06-01' chỉ quét phân vùng tháng 5 (PostgreSQL còn có runtime pruning khi tham số chỉ được biết lúc chạy, ví dụ prepared statement). Câu không có điều kiện thời gian, ví dụ WHERE customer_id = ?, phải quét tất cả phân vùng.
 
 ### Khi phân vùng giúp
 - Xóa dữ liệu cũ: DETACH PARTITION rồi DROP TABLE mất vài mili giây cho hàng trăm triệu dòng, không sinh WAL hàng triệu dòng và không làm replica trễ; tương đương DELETE có thể mất vài giờ, sinh WAL khổng lồ và để lại bloat.
@@ -8800,10 +8802,10 @@ Câu SELECT * FROM orders WHERE created_at >= '2026-05-01' AND created_at < '202
 ### Khi phân vùng không giúp (và có thể hại)
 | Tình huống | Tại sao |
 |---|---|
-| Truy vấn không có cột phân vùng | Quét tất cả phân vụ, có thêm chi phí mở từng phân vụ |
-| Quá nhiều phân vụ nhỏ (vài nghìn) | Thời gian lên kế hoạch tăng, bộ nhớ dùng nhiều, plan kém |
+| Truy vấn không có cột phân vùng | Quét tất cả phân vùng, có thêm chi phí mở từng phân vùng |
+| Quá nhiều phân vùng nhỏ (vài nghìn) | Thời gian lên kế hoạch tăng, bộ nhớ dùng nhiều, plan kém |
 | Phân vùng DEFAULT nhận dư | Các giá trị không khớp nào cũng rơi vào DEFAULT, bảng này lớn không kiểm soát |
-| Truy cập theo khóa chính không kèm thời gian | Khóa chính phải chứa cột phân vùng → truy cập theo id đơn lẻ quét nhiều phân vụ |
+| Truy cập theo khóa chính không kèm thời gian | Khóa chính phải chứa cột phân vùng → truy cập theo id đơn lẻ quét nhiều phân vùng |
 | Join phân vùng với bảng không phân vùng | Tối ưu hóa kém, có thể không dùng partition-wise |
 
 ### Điều vận hành
@@ -8813,11 +8815,11 @@ Câu SELECT * FROM orders WHERE created_at >= '2026-05-01' AND created_at < '202
 - MySQL 8 phân vùng gốc (native partitioning): mỗi phân vùng là một file tablespace riêng, khóa duy nhất/khóa chính cũng phải chứa cột phân vùng, và bảng phân vùng không hỗ trợ khóa ngoại (foreign key).
 
 ### Trên production
-- Triệu chứng phân vùng sai: truy vấn theo customer_id trên bảng 800 triệu dòng chậm hơn sau khi phân vùng (vì quét 72 phân vụ).
-- Cách kiểm chứng: EXPLAIN (ANALYZE, BUFFERS) xem plan có node Append với ít phân vụ (đúng) hay quét toàn bộ (sai).
-- Khi nào không nên phân vùng: bảng dưới vài chục triệu dòng, truy vấn chủ yếu theo khóa ngẫu nhiên, hoặc đội chưa sẵn sàng vận hành thêm phân vụ.
+- Triệu chứng phân vùng sai: truy vấn theo customer_id trên bảng 800 triệu dòng chậm hơn sau khi phân vùng (vì quét 72 phân vùng).
+- Cách kiểm chứng: EXPLAIN (ANALYZE, BUFFERS) xem plan có node Append với ít phân vùng (đúng) hay quét toàn bộ (sai).
+- Khi nào không nên phân vùng: bảng dưới vài chục triệu dòng, truy vấn chủ yếu theo khóa ngẫu nhiên, hoặc đội chưa sẵn sàng vận hành thêm phân vùng.
 
-> Senior tip: phân vùng là công cụ vận hành (xóa dữ liệu cũ, chia chỉ mục) nhiều hơn là công cụ làm truy vấn nhanh. Hãy chỉ phân vùng khi bảng lớn đến mức DELETE Monthly làm replica trễ hay vacuum không kịp, và khi phần lớn truy vấn nóng đều lọc theo cột thời gian. Nếu không chắc, hãy bắt đầu bằng chỉ mục tốt và lưu trữ bảng lịch sử sang bảng phân vùng riêng sau.`,
+> Senior tip: phân vùng là công cụ vận hành (xóa dữ liệu cũ, chia chỉ mục) nhiều hơn là công cụ làm truy vấn nhanh. Hãy chỉ phân vùng khi bảng lớn đến mức DELETE dữ liệu cũ hằng tháng làm replica trễ hay vacuum không kịp, và khi phần lớn truy vấn nóng đều lọc theo cột thời gian. Nếu không chắc, hãy bắt đầu bằng chỉ mục tốt và lưu trữ bảng lịch sử sang bảng phân vùng riêng sau.`,
   follow: [
     'Tại sao khóa chính của bảng phân vùng phải chứa cột phân vùng, và hậu quả của điều đó là gì?',
     'Partition pruning chạy ở thời điểm lập kế hoạch hay khi chạy truy vấn, và khác nhau thế nào?',
@@ -8835,13 +8837,13 @@ Câu SELECT * FROM orders WHERE created_at >= '2026-05-01' AND created_at < '202
   topic: 'db',
   level: 'senior',
   q: 'Index-only scan là gì, và sao đôi khi EXPLAIN vẫn cho thấy đọc heap (Heap Fetches cao)? Visibility map và VACUUM liên quan thế nào, và index bloat được xử lý ra sao?',
-  a: `**Tóm tắt:** Index-only scan trả kết quả trực tiếp từ chỉ mục, không đọc bảng dữ liệu (heap). Để xảy ra, hai điều kiện: (1) mọi cột câu lệnh cần đều nằm trong chỉ mục (covering index; PostgreSQL 11+ dùng INCLUDE, InnoDB secondary index đã chứa khóa chính), và (2) ở PostgreSQL, tất cả dòng trên trang heap đều được đánh dấu "hết hạn nhìn thấy cho mọi giao dịch" trong visibility map (VM). VM được VACUUM cập nhật; giao dịch dài chặn VACUUM → VM cũ → index-only scan vẫn phải vào heap kiểm tra (cột Heap Fetches trong EXPLAIN ANALYZE cao thay vì bằng 0). Index bloat: phiên bản dòng cũ chưa dọn dở làm chỉ mục lớn hơn cần thiết, quét chậm và tốn RAM. Khắc phục: autovacuum đúng mức, VACUUM FULL (dùng khoá bảng, cần downtime), pg_repack (trực tuyến), REINDEX CONCURRENTLY (chỉ mục), và fillfactor để để chỗ trong trang cho cập nhật (HOT update không sửa chỉ mục).
+  a: `**Tóm tắt:** Index-only scan trả kết quả trực tiếp từ chỉ mục, không đọc bảng dữ liệu (heap). Để xảy ra, hai điều kiện: (1) mọi cột câu lệnh cần đều nằm trong chỉ mục (covering index; PostgreSQL 11+ dùng INCLUDE, InnoDB secondary index đã chứa khóa chính), và (2) ở PostgreSQL, tất cả dòng trên trang heap đều được đánh dấu "hết hạn nhìn thấy cho mọi giao dịch" trong visibility map (VM). VM được VACUUM cập nhật; giao dịch dài chặn VACUUM → VM cũ → index-only scan vẫn phải vào heap kiểm tra (cột Heap Fetches trong EXPLAIN ANALYZE cao thay vì bằng 0). Index bloat: các entry trỏ tới phiên bản dòng cũ chưa được dọn làm chỉ mục lớn hơn cần thiết, quét chậm và tốn RAM. Khắc phục: autovacuum đúng mức, VACUUM FULL (dùng khoá bảng, cần downtime), pg_repack (trực tuyến), REINDEX CONCURRENTLY (chỉ mục), và fillfactor để để chỗ trong trang cho cập nhật (HOT update không sửa chỉ mục).
 
 ### Index-only scan là gì
 Thay vì chỉ mục → heap → trả dòng, cơ sở dữ liệu chỉ đọc chỉ mục và trả ngay. Ví dụ chỉ mục (customer_id, created_at) INCLUDE (amount) cho câu SELECT customer_id, created_at, amount FROM orders WHERE customer_id = ? trả lời hoàn toàn từ chỉ mục. Ở MySQL/InnoDB, chỉ mục phụ đã chứa giá trị khóa chính, nên nếu câu chọn chỉ các cột trong chỉ mục phụ cộng khóa chính, cũng có thể index-only scan.
 
 ### Visibility map (PostgreSQL)
-Mỗi trang heap có một bit trong visibility map đánh dấu "mọi dòng trên trang này đều nhìn thấy được cho mọi giao dịch hiện tại và sau này". Bit này được đặt bởi VACUUM khi xác định các bản dùng trên trang đã cũ đủ (không có giao dịch nào chạy lâu hơn cần xem chúng).
+Mỗi trang heap có một bit trong visibility map đánh dấu "mọi dòng trên trang này đều nhìn thấy được cho mọi giao dịch hiện tại và sau này". Bit này được đặt bởi VACUUM khi xác định các phiên bản dòng trên trang đã đủ cũ (không có giao dịch nào chạy lâu hơn cần xem chúng).
 - Nếu VM mới: index-only scan bỏ qua heap, Heap Fetches = 0.
 - Nếu VM cũ (trang vừa được cập nhật, hoặc giao dịch dài chặn VACUUM dọn trang): index-only scan vẫn phải đọc heap xem từng dòng có nhìn thấy được không → Heap Fetches cao.
 Ví dụ số liệu: bảng 50 triệu dòng, index-only scan lý tưởng đọc 2.000 trang chỉ mục; nếu VM cũ, hệ thống đọc thêm 2.000 trang heap → latency gấp đôi.
@@ -8849,12 +8851,12 @@ Ví dụ số liệu: bảng 50 triệu dòng, index-only scan lý tưởng đ�
 ### Index bloat và VACUUM
 PostgreSQL không ghi đè dòng cũ khi cập nhật: nó chèn bản mới và đánh dấu bản cũ "chết" (dead tuple). Các bản chết trong chỉ mục vẫn được quét cho đến khi VACUUM dọn. Index bloat xảy ra khi:
 - Giao dịch dài giữ snapshot cũ → VACUUM không dọn được bản chết liên quan.
-- Cập nhật các cột có trong chỉ mục → tạo chỉ mục mới, chỉ mục cũ phải chờ dọn.
+- Cập nhật (không phải HOT) tạo phiên bản dòng mới nên mọi chỉ mục đều có thêm entry mới, entry cũ phải chờ VACUUM dọn.
 - pg_stat_user_tables cột n_dead_tup cho biết số bản chết chờ dọn.
 
 ### Xử lý trên production
 - VACUUM (không khoá đọc/ghi): dọn bản chết, có thể tái sử dụng không gian trong file nhưng không thu nhỏ file.
-- VACUUM FULL: viết lại toàn bảng, thu nhỏ file, nhưng cần khoá exclusif (không đọc/ghi trong khoảng đó) → thường chạy giờ thấp điểm.
+- VACUUM FULL: viết lại toàn bảng, thu nhỏ file, nhưng cần khoá ACCESS EXCLUSIVE (không đọc/ghi được trong suốt thời gian chạy) → thường chạy giờ thấp điểm.
 - pg_repack: viết lại bảng và chỉ mục trực tuyến, không khoá lâu, cần thêm không gian đĩa bằng kích thước bảng.
 - REINDEX CONCURRENTLY: xây lại chỉ mục bị bloat mà không khóa đọc/ghi chỉ mục (chỉ PostgreSQL), cần nhiều CPU/I/O trong thời gian xây.
 - fillfactor: đặt thấp hơn 100 (ví dụ 80) trên bảng có cập nhật thường xuyên để để chỗ trong trang; cập nhật không đổi cột chỉ mục thì dùng HOT (Heap-Only Tuple), không phải cập nhật chỉ mục → ít bloat hơn.
@@ -8889,7 +8891,8 @@ Mỗi phiên bản dòng trong PostgreSQL lưu xmin (giao dịch tạo ra) và x
 ### Vacuum freeze và sự cố chỉ đọc
 VACUUM quét bảng, freeze các phiên bản cũ, và cập nhật datfrozenxid của cơ sở dữ liệu (XID cũ nhất chưa freeze). Các ngưỡng quan trọng:
 - autovacuum_freeze_max_age (mặc định 200 triệu giao dịch): bắt đầu autovacuum freeze tập trung.
-- Khi oldest_xid tới hơn 1,5 tỷ giao dịch (và đặc biệt là gần 2 tỷ): PostgreSQL ép cơ sở dữ liệu chỉ đọc cho đến khi freeze xong – không ghi nào được, ứng dụng viết sẽ lỗi.
+- vacuum_failsafe_age (PostgreSQL 14+, mặc định 1,6 tỷ): autovacuum chuyển sang chế độ khẩn cấp, bỏ qua giới hạn tốc độ để freeze cho kịp.
+- Khi chỉ còn khoảng 40 triệu XID trước điểm wraparound, PostgreSQL ghi cảnh báo vào log ở mỗi giao dịch; khi chỉ còn khoảng 3 triệu, nó từ chối mọi lệnh cấp XID mới (không ghi được) cho tới khi VACUUM freeze xong.
 - Giao dịch dài (ví dụ @Transactional mở hàng giờ, công cụ SQL để mở ở chế độ manual commit) giữ xmin cũ → VACUUM không freeze được bản cần → oldest_xid dừng lại, tiến gần ngưỡng wraparound.
 
 ### MySQL đường khác: purge lag
@@ -8902,7 +8905,7 @@ MySQL InnoDB không dùng XID 32-bit cho phiên bản dòng theo cách đó, nê
 PostgreSQL:
 - Giữ giao dịch ngắn, tránh @Transactional bao các lời gọi HTTP chậm.
 - Đặt idle_in_transaction_session_timeout (ví dụ 60 giây) để ngắt session quên commit.
-- Theo dõi SELECT datname, oldest_xid FROM pg_database; và pg_stat_activity tìm giao dịch chạy lâu.
+- Theo dõi SELECT datname, age(datfrozenxid) FROM pg_database; (cảnh báo khi vượt khoảng 500 triệu và tăng đều) và pg_stat_activity tìm giao dịch chạy lâu, cùng replication slot và prepared transaction bị bỏ quên (cũng giữ XID cũ).
 - Vacuum thường xuyên cho bảng cập nhật nhiều; có thể giảm autovacuum_vacuum_scale_factor xuống 0,02–0,05.
 
 MySQL:
@@ -8914,7 +8917,7 @@ MySQL:
 - Cách cứu: chạy VACUUM (hoặc VACUUM FREEZE) trên các bảng bị kẹt; sau sự cố, sửa giao dịch dài là nguyên nhân gốc.
 - Triệu chứng MySQL: History list length tăng lên hàng nghìn, throughput ghi giảm, truy vấn đọc chậm dần.
 
-> Senior tip: wraparound không xảy ra do dữ liệu quá lớn, mà do "giao dịch chạy quá lâu". Một công cụ SQL được mở trong code và quên đóng có thể làm oldest_xid dừng lại hàng nghìn transaction và dẫn toàn bộ hệ thống đến nguy cơ chỉ đọc. Quy tắc vàng: mọi transaction trong code ứng dụng phải ngắn, và có cảnh báo tự động khi transaction mở quá 60 giây.`,
+> Senior tip: wraparound không xảy ra do dữ liệu quá lớn, mà do "giao dịch chạy quá lâu". Một phiên SQL mở transaction rồi bỏ quên (công cụ quản trị để chế độ manual commit, code quên commit) có thể chặn freeze suốt nhiều ngày và đẩy cả hệ thống tới nguy cơ ngừng ghi. Quy tắc vàng: mọi transaction trong code ứng dụng phải ngắn, và có cảnh báo tự động khi transaction mở quá 60 giây.`,
   follow: [
     'Tại sao PostgreSQL buộc phải freeze các phiên bản dòng cũ trước khi XID vòng quay?',
     'Giao dịch dài (@Transactional mở hàng giờ) ảnh hưởng thế nào đến oldest_xid và vacuum?',
