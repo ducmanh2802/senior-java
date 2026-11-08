@@ -5,7 +5,7 @@
 App.i18n.content({
   'jpa-018': {
     q: 'JPA, Hibernate and Spring Data JPA: what is the relationship between the three, and what is each one responsible for?',
-    a: `**Summary:** The three are **three different layers**. **JPA (Jakarta Persistence)** is the **specification (interface)** – it defines the API ({{EntityManager}}, {{Entity}}, {{@Entity}}, {{@Table}}, JPQL, Criteria API). **Hibernate** is the most widely used JPA **provider (implementation)** – it fully implements JPA and adds its own features ({{@Filter}}, {{@BatchSize}}, Envers, custom type, L2 cache). **Spring Data JPA** is the **layer above** – it generates repository interfaces, derived query methods, {{@Query}}, paging, auditing – and it **uses Hibernate as the default provider**.
+    a: `**Summary:** These are **three different layers**. **JPA (Jakarta Persistence)** is the **standard (specification/interface)** – it defines the API ({{EntityManager}}, {{Entity}}, {{@Entity}}, {{@Table}}, JPQL, Criteria API). **Hibernate** is the most popular JPA **provider (implementation)** – it fully implements JPA and adds its own features ({{@Filter}}, {{@BatchSize}}, Envers, custom types, L2 cache). **Spring Data JPA** is an **abstraction layer on top** – it generates repository interfaces, derived query methods, {{@Query}}, paging and auditing – and it **uses Hibernate as the default provider**.
 
 ### The relationship
 ~~~text
@@ -23,19 +23,23 @@ JPA Spec (Jakarta Persistence API)
 |---|---|---|
 | **JPA Spec** | Defines annotations, interfaces, JPQL | {{@Entity}}, {{EntityManager}}, {{@NamedQuery}} |
 | **Hibernate** | Implements JPA, manages session, cache, SQL generation | {{Session}}, {{HibernateCriteriaBuilder}}, {{@BatchSize}}, Envers |
-| **Spring Data JPA** | Removes boilerplate, repository interface, query derivation | {{JpaRepository}}, {{findByNameLike}}, {{@Query}}, {{Pageable}} |
+| **Spring Data JPA** | Reduces boilerplate, repository interface, query derivation | {{JpaRepository}}, {{findByNameLike}}, {{@Query}}, {{Pageable}} |
 
 ### When to use which
-- **JPA API directly** ({{EntityManager}}): you need fine-grained control (flush, clear, lock mode, complex native queries).
-- **Hibernate API** ({{Session}}, {{StatelessSession}}): you need Hibernate-only features ({{@Filter}}, {{@Formula}}, Envers, custom type).
+- **JPA API directly** ({{EntityManager}}): when you need fine-grained control (flush, clear, lock mode, complex native queries).
+- **Hibernate API** ({{Session}}, {{StatelessSession}}): when you need Hibernate-only features ({{@Filter}}, {{@Formula}}, Envers, custom types).
 - **Spring Data JPA** ({{JpaRepository}}): 90% of cases are CRUD and ordinary queries – shorter code, easier tests.
 
 ### Production pitfalls
-- Calling {{entityManager.unwrap(Session.class)}} to reach the Hibernate API – this ties the code tightly to Hibernate and makes switching provider later hard.
-- Using Spring Data JPA without understanding what SQL JPQL/Hibernate generates ⇒ N+1, slow queries, wrong fetch plans.
-- Spring Data JPA does **not** replace Hibernate – it is a wrapper. Only by understanding Hibernate can you debug performance incidents.
+- Calling {{entityManager.unwrap(Session.class)}} to use the Hibernate API – this couples the code tightly to Hibernate, making it hard to switch providers later.
+- Using Spring Data JPA without understanding what SQL JPQL/Hibernate generates ⇒ N+1, slow queries, wrong fetch plan.
+- Spring Data JPA does **not** replace Hibernate – it is a wrapper. You only debug performance incidents properly once you understand Hibernate.
 
-> Senior tip: in an interview, a good answer is: "JPA is the interface, Hibernate is the implementation, Spring Data JPA is the repository abstraction that uses Hibernate. I mostly write Spring Data JPA, but when I need to tune performance I use {{EntityManager}} or the Hibernate {{Session}} directly, and I always read the generated SQL with {{show-sql}} or {{p6spy}}."`,
+### Real-world example
+A junior developer writes {{interface OrderRepository extends JpaRepository<Order, Long>}} and the method {{findByCustomerEmailAndStatusOrderByCreatedAtDesc}} — Spring Data **generates** JPQL from the method name at startup; **Hibernate** translates that JPQL into SQL for PostgreSQL; JPA is just the standard API ({{EntityManager}}, annotations) that Hibernate implements. When the query is slow, the developer tweaks "Spring Data" without realising they must look at the SQL Hibernate generates: turning on {{spring.jpa.show-sql}} (or, better, logging {{org.hibernate.SQL}} + datasource-proxy) reveals a 3-table JOIN missing an index. Adding the index {{(customer_email, status, created_at)}}: 2.1 seconds → 12 ms. Lesson for a new team: query issues live at the Hibernate layer (generated SQL), repository configuration issues live at the Spring Data layer, and persistence context behaviour belongs to JPA/Hibernate.
+
+### Sample interview answer
+"JPA, now called Jakarta Persistence, is a specification: it defines annotations such as Entity, Id and OneToMany, the EntityManager interface, JPQL and entity lifecycle rules, but it ships no running code. Hibernate is a JPA implementation: it does the real work – generating SQL for the database dialect, the persistence context, dirty checking, caching and lazy loading – and it also adds features beyond the standard. Spring Data JPA is the top layer that reduces code: repository interfaces, query generation from method names, pagination, projections and integration with Spring transactions; underneath it still calls Hibernate's EntityManager. When debugging, I know which layer the problem belongs to: slow queries mean inspecting the SQL Hibernate generates, odd repository behaviour points to Spring Data, and entity, flush or lazy issues are JPA and Hibernate."`,
     follow: [
       'Can Spring Data JPA run on a provider other than Hibernate (e.g. EclipseLink)?',
       'Why is Spring Data JPA called an "abstraction" rather than an "implementation"?'
@@ -43,7 +47,7 @@ JPA Spec (Jakarta Persistence API)
   },
   'jpa-019': {
     q: 'How do {{save}}, {{saveAndFlush}}, {{persist}} and {{merge}} differ? What is the difference between {{findById}} and {{getReferenceById}}?',
-    a: `**Summary:** These are the five methods that confuse many developers. {{save}} (Spring Data) = {{persist}} when the entity is new (null id) or {{merge}} when it already has an id – **it always returns a managed entity**. {{saveAndFlush}} = {{save}} + {{flush}} immediately. {{persist}} (JPA) is only for **new (transient)** entities and throws an exception if the id already exists. {{merge}} (JPA) copies the state from a detached entity onto a managed instance – **returns the copy**, while the original entity stays detached. {{findById}} returns an {{Optional}} and **loads immediately** (SELECT). {{getReferenceById}} returns a **proxy** (no DB query) – use it when you only need to set the FK and do not need the entity data.
+    a: `**Summary:** These are the five methods that confuse many developers. {{save}} (Spring Data) = {{persist}} when the entity is new (null id) or {{merge}} when it already has an id – **it always returns a managed entity**. {{saveAndFlush}} = {{save}} + {{flush}} immediately. {{persist}} (JPA) is only for **new (transient)** entities and throws an exception if the id already exists. {{merge}} (JPA) copies the state from a detached entity onto a managed instance – **it returns the copy**, while the original entity stays detached. {{findById}} returns an {{Optional}} and **loads immediately** (SELECT). {{getReferenceById}} returns a **proxy** (no DB query) – use it when you only need to set a foreign key and do not need the entity data.
 
 ### Detailed comparison
 | Method | Origin | New entity (transient) | Entity already having an id (detached) | Returns | Flush |
@@ -67,10 +71,14 @@ Order ref = orderRepo.getReferenceById(id);    // throws EntityNotFoundException
 ### Production pitfalls
 - **{{save}} on a detached entity that has an id** -> calls {{merge}} -> creates a copy -> the original entity is no longer updated -> the "saved but the changes never show up" bug.
 - **{{merge}} returns a copy** – if you keep a reference to the original entity and keep editing it, those changes will **not** be saved.
-- **{{getReferenceById}} used in the wrong place** (when the data must actually be read) -> throws an exception while rendering the view / serializing JSON.
+- **{{getReferenceById}} used in the wrong place** (when the data must actually be read) -> throws an exception while rendering the view / serialising JSON.
 - {{saveAndFlush}} is used to obtain a generated id right away (e.g. IDENTITY) – but with IDENTITY {{save}} already executes the INSERT to fetch the id (even without flushing the other changes).
 
-> Senior tip: simple rule: **use {{save}} by default** (Spring Data). Only use {{saveAndFlush}} when you need the generated id immediately or need to see constraint violations right away. Do not use {{persist}}/{{merge}} directly unless you are writing a custom repository. For FKs, use {{getReferenceById}} to avoid a redundant SELECT.`,
+### Real-world example
+An API that creates a comment needs to attach it to a post: the code calls {{postRepository.findById(postId).orElseThrow()}} just to get a reference for {{comment.setPost(post)}} → every request runs an extra SELECT that loads the whole post (including a large content column), 4,000 requests per minute. Switching to {{getReferenceById(postId)}}: Hibernate returns a proxy holding only the id, the comment INSERT uses that id directly, and no SELECT is issued. The opposite mistake appeared elsewhere: using {{getReferenceById}} for a non-existent id and then reading {{post.getTitle()}} outside a transaction → {{EntityNotFoundException}}/{{LazyInitializationException}} on access, much harder to reason about than checking existence immediately. In another case, an import called {{save()}} for 50,000 entities with pre-assigned ids (not auto-generated): Spring Data treated them as "not new" and called {{merge}} → one SELECT before every INSERT. Adding {{@Version}} (or implementing {{Persistable.isNew()}}) so Spring Data uses {{persist}}: import time dropped from 6 minutes to 50 seconds.
+
+### Sample interview answer
+"persist puts a new entity into the persistence context; that exact object becomes managed and the INSERT happens on flush. merge copies the state of an object, often detached, into a managed instance and returns that managed instance; the object passed in stays unmanaged, and for an entity not yet in the context merge usually does a SELECT first. Spring Data's save calls persist if the entity is considered new, otherwise merge; with a pre-assigned id Spring Data cannot tell it is new, so it calls merge with an extra SELECT, which you fix with @Version or Persistable. saveAndFlush flushes immediately, useful when you need constraint violations to surface right away. findById queries the DB and returns an Optional; getReferenceById returns a proxy holding only the id with no query, which is great for assigning a relationship, but accessing a field on a non-existent id fails later."`,
     follow: [
       'Why does {{merge}} return a copy instead of updating the original entity?',
       'When does {{getReferenceById}} throw an exception, and what type of exception is it?'
@@ -398,14 +406,14 @@ CREATE INDEX idx_log_created_brin ON transaction_log USING brin (created_at)
     a: `**Summary:** Partitioning by time range is the classic answer for a large transactional table: data is split by {{RANGE}} on a time column, each partition being a child table. When a query has a condition on the partition column, the planner **prunes** – it drops the unrelated partitions entirely. The biggest benefit is not read speed but **deleting old data almost instantly** with {{DROP TABLE partition}} instead of {{DELETE}}-ing tens of millions of rows. The price: every **unique constraint** must **contain the partition column**.
 
 ### Quick intuition
-Partitioning is like storing **invoices in one box per month** instead of piling them all into one warehouse. When you need March invoices you only open the March box (pruning). When the 5-year retention ends you **throw away the whole box** for the oldest month (drop partition) instead of pulling out one sheet at a time (DELETE). But there is one rule: to guarantee "no duplicate invoice numbers", each box can only check inside itself – so the unique key must include the **month**, because the DB has no shared ledger to check across boxes.
+Partitioning is like storing **invoices in one box per month** instead of piling them all into one warehouse. When you need March invoices you only open the March box (pruning). When the 5-year retention ends you **throw away the whole box** for the oldest month (drop partition) instead of pulling out one sheet at a time (DELETE). But there is one rule: to guarantee "no duplicate invoice numbers", each box can only check inside itself – so the unique key must include the **month**, because the database has no shared ledger to check across boxes.
 
 ### Terms
-- **Partitioned table (parent)**: a logical table that stores no data, it only routes rows into partitions.
+- **Partitioned table (parent)**: a logical table that stores no data; it only routes rows into partitions.
 - **Partition key**: the column (or expression) that decides which partition a row belongs to, here {{created_at}}.
 - **Partition pruning**: eliminating partitions that cannot contain matching data – at plan time or at execution time.
-- **DEFAULT partition**: a partition that catches every row outside all ranges.
-- **ATTACH / DETACH**: attaching an existing table as a partition / detaching a partition into a standalone table.
+- **DEFAULT partition**: a partition that catches every row outside all defined ranges.
+- **ATTACH / DETACH**: attach an existing table as a partition / detach a partition into a standalone table.
 - **Global index**: a single index spanning every partition – PostgreSQL **does not have** one, each partition has its own index.
 - **Metadata lock**: (MySQL) a lock on the table definition; DDL needs it and will block queries while waiting.
 
@@ -431,13 +439,13 @@ CREATE TABLE transaction_log (
     created_at  timestamptz NOT NULL,
     account_id  bigint      NOT NULL,
     amount      numeric(18,2) NOT NULL,
-    PRIMARY KEY (id, created_at)      -- mandatory: must contain the partition column
+    PRIMARY KEY (id, created_at)      -- must include the partition column
 ) PARTITION BY RANGE (created_at);
 
 CREATE TABLE transaction_log_2026_01 PARTITION OF transaction_log
     FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
 
--- default partition: a safety net in case you forget to create one
+-- default partition: a safety net when you forget to create one
 CREATE TABLE transaction_log_default PARTITION OF transaction_log DEFAULT;
 ~~~
 
@@ -447,57 +455,41 @@ CREATE TABLE transaction_log_default PARTITION OF transaction_log DEFAULT;
 SELECT sum(amount) FROM transaction_log
 WHERE created_at >= '2026-01-01' AND created_at < '2026-02-01';
 ~~~
-For pruning to work, the condition on the partition column must be **inside the query**. Verify with {{EXPLAIN}} – the plan will only list the relevant partitions.
-- With a **prepared statement**, the planner may switch to a "generic plan" after several executions; pruning then cannot happen at plan time, but PostgreSQL 11+ still prunes at execution time (runtime pruning – the plan shows {{Subplans Removed}}). A condition using a function such as {{now()}} can likewise only be pruned at execution time.
+For pruning to work, the condition on the partition column must **be in the query**. Verify with {{EXPLAIN}} – the plan will list only the relevant partitions.
+- With a **prepared statement**, the planner may choose a "generic plan" after several executions; it then cannot prune at plan time, but PostgreSQL 11+ still prunes at execution time (runtime pruning – the plan shows {{Subplans Removed}}). Conditions using functions like {{now()}} are also only pruned at execution time.
 
 ### Day-to-day partition management
-- **Pre-create**: always create next month's partition from a cron job. If no partition holds the new data and there is no {{DEFAULT}} partition, every {{INSERT}} will **fail**.
-- **Detach/attach partitions** (PostgreSQL 14+):
+- **Create ahead**: always create the next month's partition with a cron job. If no partition covers the new data and there is no {{DEFAULT}} partition, every {{INSERT}} will **fail**.
+- **Detach/attach** (PostgreSQL 14+):
 ~~~sql
--- detach a partition in order to process old data (fast, no long lock)
-ALTER TABLE transaction_log DETACH PARTITION transaction_log_2025_01 CONCURRENTLY;
-
--- re-attach the partition once it has been processed
-ALTER TABLE transaction_log ATTACH PARTITION transaction_log_2025_01
-    FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+ALTER TABLE transaction_log
+    DETACH PARTITION transaction_log_2024_01 CONCURRENTLY;  -- no long table lock
+DROP TABLE transaction_log_2024_01;  -- free space instantly
 ~~~
-Note: {{DETACH ... CONCURRENTLY}} cannot run inside a transaction block and **cannot be used when the table has a DEFAULT partition**. {{ATTACH PARTITION}} (PG 12+) only takes {{SHARE UPDATE EXCLUSIVE}} on the parent, but the attached table is locked and scanned to verify constraints (the DEFAULT partition is scanned as well if one exists). Tip: pre-create a {{CHECK}} constraint matching the value range so PostgreSQL can skip that scan.
-- **Delete old data**: {{DROP TABLE transaction_log_2024_01;}} – almost instant, because it only unlinks files instead of writing millions of rows.
-- **Patch wrongly dated data**: you can {{ATTACH}} a table that already contains data into the matching partition (if the table lacks an index matching the parent's, PostgreSQL creates one during the attach – time-consuming and holding locks, so create the index beforehand).
+- **Move cold data** to a cheap tablespace, or detach and archive to S3 as Parquet.
 
-### Important constraints
-1. **The unique constraint must contain the partition column**. This is the most painful part:
-   - If the original table uses {{PRIMARY KEY (id)}}, you **cannot** partition by {{created_at}}.
-   - Common fix: change it to {{PRIMARY KEY (id, created_at)}}. But then the application cannot find a row by {{id}} alone without knowing {{created_at}} ⇒ the entire access path must be redesigned.
-   - Alternative: partition by a **hash** of {{id}} instead of by time – uniqueness on {{id}} is kept, but the benefit of dropping by time is lost.
-2. **Foreign keys to partitioned tables**: supported since PostgreSQL 12+, but check your actual version.
-3. **Index**: creating an index on the partitioned table automatically creates an index on **every** partition. With many partitions the number of small indexes grows quickly and write overhead rises accordingly.
-4. **DEFAULT partition**: dangerous, because data that lands there makes it bloat, many queries end up reading it, and each time a new partition is created PostgreSQL must scan DEFAULT to make sure no row belongs to the new range (duplicates make the create command fail). Alert when the default partition holds data.
-
-### How MySQL differs from PostgreSQL
-- MySQL 8 supports {{PARTITION BY RANGE}} and {{RANGE COLUMNS}} and also has partition pruning.
-- Stricter rules: **every** unique key (including the primary key) must contain **all** the partition key columns, and partitioned tables do **not** support foreign keys.
-- MySQL has no {{DETACH}}/{{ATTACH}} like PostgreSQL; instead it uses {{ALTER TABLE ... EXCHANGE PARTITION}} or {{DROP PARTITION}}, both DDL that need a metadata lock.
-- MySQL 8 only supports partitioning with InnoDB (native partitioning); each partition is still its own {{.ibd}} tablespace file.
-
-### Production pitfalls
-- **Forgetting to create a partition** ⇒ every write to the table fails. Have an alert when next month's partition does not exist yet.
-- **Queries without a partition key condition** read all partitions ⇒ worse performance than a plain table. For log tables, always require a time range in the API.
-- **Bloated partition (skew)**: if data is not evenly distributed across months (e.g. a promotion campaign), that partition becomes very large.
-- **Partitioned tables carry overhead**: every statement has to go through the partitions' "append node" ⇒ a small cost compared to a normal table. For small tables partitioning can make things slower.
+### The primary-key constraint and schema redesign
+- PostgreSQL has **no global index**: every unique constraint / primary key must **include the partition key**. {{PRIMARY KEY (id)}} on a partitioned table is **not allowed** – you are forced to use {{PRIMARY KEY (id, created_at)}}.
+- Consequence: {{id}} alone is **no longer globally unique**. If the business needs a unique id (idempotency, FK, API), move global uniqueness to the **application layer** (Snowflake / UUID v7) or accept the compound key.
+- **Foreign key**: another table cannot reference a partitioned table with a plain FK in all situations (FKs to a partitioned table are supported, but must reference a column set covered by a unique constraint that includes the partition key).
+- **MySQL InnoDB note** (by contrast): there is no DEFAULT partition and there is partition-level locking, but DDL such as {{ADD PARTITION}} still takes a **metadata lock** – at high QPS this can block every query on the table. PostgreSQL with {{DETACH ... CONCURRENTLY}} does better here.
 
 ### Common mistakes
-- **Looking up by {{id}} without {{created_at}}**: the plan scans the index of every partition (30+ index lookups). Symptom – the "get transaction by id" API gets slow after partitioning. How to avoid: put {{created_at}} into the API/URL key, or encode the time in the id (UUIDv7/snowflake) so the partition can be inferred.
-- **A Hibernate entity with the new composite PK**: forgetting to change the mapping to {{@IdClass}}/{{@EmbeddedId}}. How to avoid: change the mapping together with the migration, or keep {{@Id}} on id while understanding that uniqueness is now only guaranteed by the sequence.
-- **Creating an index on the parent after dozens of large partitions exist**: the command holds a write lock for a very long time ({{CONCURRENTLY}} cannot be used directly on the parent). How to avoid: create the index {{ON ONLY}} on the parent, build it {{CONCURRENTLY}} on each partition, then {{ALTER INDEX ... ATTACH PARTITION}}.
+- **Forgetting the next month's partition** and having no DEFAULT partition → midnight INSERTs fail (an incident at the turn of the month).
+- **Keeping a DEFAULT partition and letting it fill up**: it is never pruned and becomes "a giant partition that holds everything" → defeats the purpose of partitioning. A DEFAULT partition should exist only as a safety net and trigger an alert when it contains rows.
+- **Querying without a condition on the partition column** → the planner scans every partition (partition-wise scan) → slower than a regular table.
+- **Too many partitions** (per day over many years, or by customer_id with many customers): planning time grows, the catalog becomes bloated, and each partition opens a file descriptor. A practical rule of thumb: keep it under a few thousand partitions.
+- **UPDATE changes the partition key** (moving a row to another month): PostgreSQL deletes the old row and inserts a new one, which is expensive and can break assumptions.
+- **Believing {{(id, created_at)}} guarantees unique {{id}}**: it does not – {{id=1}} can exist in two different months.
 
-### One-minute spoken answer
-"For an 800-million-row transaction table I partition by RANGE on created_at, one partition per month. When a query has a time condition the planner prunes and reads only the relevant partitions, including runtime pruning with parameters. The biggest win is deleting old data with detach and drop partition, almost instantly, without the WAL and bloat that DELETE produces. Day-to-day operations include pre-creating partitions with a job and alerting when the DEFAULT partition holds data. The most painful constraint is that unique and primary keys must contain the partition column, so the PK becomes (id, created_at) and every access path by id must know the time. My experience is that you decide this key design before the table grows, because changing it later is very expensive."
+### Real-world example
+A {{transaction_log}} table had 800 million rows, queries by the past 7 days took 40 seconds, and deleting data older than 24 months with {{DELETE}} ran for 6 hours, generated hundreds of GB of WAL and caused replica lag. Migrating to monthly RANGE partitioning: the daily job creates the next 2 months and a dashboard alert fires if the DEFAULT partition is not empty. Queries that always filter {{created_at}} now scan 1–2 partitions (≈ 27 million rows, index in RAM) in under 2 seconds. Once a month the oldest partition is {{DETACHed CONCURRENTLY}} and {{DROP}}ped – done in milliseconds with no WAL and no replica lag. The redesign cost: the primary key became {{(id, created_at)}} and the global unique {{id}} moved to a Snowflake id generated by the application.
 
-> Senior tip: before partitioning, answer three questions: **(1) how often do I delete old data?** (this is the real reason to partition) **(2) can the unique constraint contain the partition column?** If not, you have to change the key design – that change is very expensive, so decide early. **(3) how many partitions will there be after 3 years?**`,
+### Sample interview answer
+"With 800 million rows and monthly deletion, I use declarative range partitioning on created_at, one partition per month. Queries must include a time condition so the planner can prune to one or two partitions. Retention becomes DETACH CONCURRENTLY then DROP, which finishes in milliseconds without the WAL and bloat of deleting tens of millions of rows. The main PostgreSQL constraint is that there is no global index, so every primary key or unique constraint must include the partition key; a plain unique id is not possible at the database level, so I generate globally unique ids in the application, for example Snowflake, and use a compound key. I also automate creating future partitions, keep the DEFAULT partition empty and monitored, and verify pruning with EXPLAIN."`,
     follow: [
-      'Why must a unique constraint contain the partition column, and how does that affect the primary key?',
-      'How do you handle data for a month whose partition has not been created, without taking the system down?'
+      'What is the difference between partitioning and sharding, and when do you choose each?',
+      'How do you migrate an 800-million-row table to partitioning with near-zero downtime?'
     ]
   },
   'db-015': {
