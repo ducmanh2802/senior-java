@@ -15,11 +15,9 @@ App.i18n.content({
     body: `**Summary:** **WAL** (Write-Ahead Log — a log written before) is an append-only file holding a description of every change plus BEGIN/COMMIT/ABORT records. The core rule: the change description must be **durable on disk before** the transaction is reported as committed, while the real data page may be written later, when idle. So a power loss only loses what was never committed; what was committed is recovered by **redo replaying** the log.
 
 ### The problem: one transaction touches many pages scattered around
-
 Imagine a business operation updating 40 rows across three tables. Data is organized into **pages** of 8 KB, so those 40 rows land in more than a dozen pages at different positions across several files. If the database required those pages to be on disk before returning "commit", each commit would need dozens of seeks plus dozens of **fsync** calls (a command asking the OS to flush everything it is buffering to the device, and only replying once the device confirms it received it all). On a hard disk one fsync costs a few ms to over a dozen ms: commits take 50–100 ms, the whole system does only a few dozen transactions per second. Worse, the same row being updated 100 times a day means rewriting the whole 8 KB page for a few changed bytes.
 
 ### A few terms to agree on first
-
 | Term | Meaning, easy to picture |
 |---|---|
 | **page** (sometimes called a block) | an 8 KB chunk, the smallest unit the database reads/writes with the OS. Like a notebook page: you do not edit one letter, you copy the whole page into RAM, edit it, then write it back. |
@@ -31,7 +29,6 @@ Imagine a business operation updating 40 rows across three tables. Data is organ
 | **transaction abort / rollback** | a transaction ending without committing; its changes are discarded. |
 
 ### The two rules of the write-ahead log
-
 1. Before reporting commit to the client, every log record describing that transaction's changes has been fsynced to disk.
 2. A page is only written to the data file after the records describing its changes are durable.
 
@@ -40,7 +37,6 @@ Thanks to these two rules, writes become **sequential appends** to one log file 
 In PostgreSQL the log lives in the **pg_wal** directory, made of 16 MB segment files. Each record has an **LSN** (Log Sequence Number) — essentially the byte offset from the start of the log stream — used as a "clock" to know which record came before which, and so a replica can say "I have received up to here".
 
 ### What commit really is
-
 ~~~seq
 title: An UPDATE's path, from execution to being considered durable
 actors: App | Backend | WAL | Data file
@@ -57,7 +53,6 @@ Backend -> Data file: checkpoint writes that page later
 The COMMIT record whose fsync completed is the **point of no return**. Everything else — writing pages, cleaning dead tuples, updating statistics — happens after that and failing also does not lose committed data. Because a transaction only waits for exactly one fsync, PostgreSQL batches many waiting transactions into one fsync (**group commit**); that is why commit throughput rises sharply under moderate load.
 
 ### What happens if we crash at each point
-
 | Crash timing | Result on reopen |
 |---|---|
 | Before the COMMIT record is fsynced | the transaction disappears entirely; the client never received OK, so nobody was misled |
@@ -68,7 +63,6 @@ The COMMIT record whose fsync completed is the **point of no return**. Everythin
 A nice observation: **no undo is needed for a dead transaction**. Its changes live in RAM and die with the process; if part of them was "stolen" and written down into a page (the database is allowed to flush dirty pages of an uncommitted transaction), then on recovery the replay from WAL overwrites and erases the trace. Atomicity and durability are both solved by one mechanism.
 
 ### Checkpoint: reclaiming log and bounding recovery time
-
 If you always had to replay the whole log since the beginning of time, recovery would take hours. **Checkpoint** solves that: the database writes every dirty page to the data file, fsyncs, then writes a CHECKPOINT record. From that point older log is no longer needed for recovery and the pg_wal segments before it are reused. Two default parameters: {{checkpoint_timeout}} = 5 minutes, {{max_wal_size}} = 1 GB — whichever is hit first triggers the checkpoint. Its cost is an I/O storm, so PostgreSQL spreads the writes over {{checkpoint_completion_target}} = 0.9.
 
 | Configuration | Consequence |
@@ -78,11 +72,9 @@ If you always had to replay the whole log since the beginning of time, recovery 
 | {{wal_level = logical}} | log carries extra information for CDC (Debezium), WAL volume rises clearly |
 
 ### Why pg_wal fills the disk
-
 Log is only reused once nobody needs it any more. Three common log holders: a **replication slot** not yet consumed (the standby died but the slot stayed), {{archive_command}} failing repeatedly, and a long transaction pushing the point that must be kept (the xmin horizon) backwards — the topic of the previous lesson. This is a very real incident: a 400 GB pg_wal directory while data does not grow, and the culprit is usually a lonely slot, not the workload.
 
 ### Java: commit is a record, not data already written
-
 ~~~java
 long lsn = 0;
 Map<String, String> buffers = new HashMap<>();          // shared buffers: RAM, dies with the process
@@ -96,11 +88,9 @@ fsync(log);                                             // THE POINT OF NO RETUR
 The exercise below is exactly the "reopen the machine" part: given a list of records, compute what state the database ends up with.
 
 ### Durability is bought with what
-
 {{synchronous_commit = on}} (default): wait for fsync, costing about one fsync per commit but losing no transaction that was reported OK when the machine crashes. {{off}}: the OS flushes on its own, dozens of times faster, but if the **machine crashes** (power loss, kernel panic) a few transactions that were reported OK may be lost — still consistent, just losing what the database promised. {{remote_write}} / {{remote_apply}}: wait for a replica, used when not even the death of the whole server is acceptable. A mature answer: choose based on the cost of one lost record, and for money transactions do not turn off {{synchronous_commit}}.
 
 ### Common pitfalls
-
 - Thinking commit means the data "is already in the table file"; to verify, kill the process mid-way and reopen — you will see WAL did the work.
 - Turning off {{synchronous_commit}} for a fast job and not telling anyone, only remembering when data is lost.
 - Not enabling {{archive_command}} / WAL-based backup: you can only recover to the oldest backup, losing a whole day of data.
@@ -108,7 +98,6 @@ The exercise below is exactly the "reopen the machine" part: given a list of rec
 - Benchmarking on a dev machine with an enterprise SSD that protects itself on power loss → beautiful fsync numbers; cloud disks or spinning disks are many times slower, and production numbers must be re-measured from scratch.
 
 ### Interview notes
-
 Tell it as cause and effect, not memorised abbreviations: (1) writing pages immediately costs too much random I/O and fsync, (2) WAL records changes sequentially and the two write-ahead rules, (3) commit is a COMMIT record plus fsync while the page stays in RAM, (4) on crash replay redo from the nearest checkpoint, uncommitted transactions die with RAM so no undo is needed, (5) full page write guards against torn pages, (6) checkpoint balances recovery time against write amplification, (7) {{synchronous_commit}} and {{max_wal_size}}/pg_wal are two tuning questions often asked. End by verifying: committed records per second and fsync latency, WAL generated per hour, the oldest slot's age in {{pg_replication_slots}}.
 
 > Senior tip: with a Java application, "committed" does not mean "message sent". To make the business operation and the database durable together, write an outbox table **in the same transaction** then let a relay read and send after commit, with an idempotency key — because after fsync there is still a small window before the client receives OK, and Kafka does not guarantee exactly-once delivery.`,
@@ -137,6 +126,7 @@ No threads, no sleep, no real I/O. Same input always gives same output.`,
       {q: 'What does a checkpoint do?', options: ['Ensures all changes are in WAL and lets log before it be reused, while bounding recovery time', 'Deletes all uncommitted transactions', 'Compresses pg_wal into a single file', 'Disables full page writes'], answer: 0, explain: 'After a checkpoint the dirty pages are already on the data file, so the older log no longer needs to be replayed and pg_wal can wrap around.'},
     ],
   },
+
   'lesson-db-010': {
     title: 'A mini B+ tree: leaf nodes, splitting nodes, and range scan along the leaf chain',
     goals: [
