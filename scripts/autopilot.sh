@@ -24,6 +24,9 @@ scan_open() {
   local t id o
   for t in $(grep -L '^Status: DONE' tasks/T*.md); do
     id=$(basename "$t" | cut -d- -f1)
+    # a TODO chained task whose dep is not committed yet cannot have started: its files are not half-done
+    dep=$(grep -m1 '^After:' "$t" | awk '{print $2}')
+    [ -n "$dep" ] && grep -q "^Status: TODO$" "$t" && [ ! -d "logs/claim/$id" ] && [ -n "$(git status --porcelain -- tasks/"$dep"-*.md 2>/dev/null)" ] && continue
     for o in $(owns "$t"); do OPEN[$o]+=" $id"; done
   done
 }
