@@ -108,6 +108,15 @@ String fee(Payment p) {
 | Visitor pattern | Forced to update | High | Compile-time (with discipline) |
 | Sealed + switch pattern | Compiler reports every missing spot | Low | Compile-time |
 
+### Real-world example
+- Symptoms: a payment service silently returned the default fee for a newly added {{Wallet}} type in one of three {{if-else}} chains → undercharged fees for 2 weeks, ~8,000 transactions affected.
+- Investigation: traced by payment method logs; the third fee-calculation path never got the {{Wallet}} branch.
+- Fix: migrated the payment hierarchy to {{sealed interface Payment permits Card, Cash, Wallet}} + {{record}} variants and replaced all fee/routing switches with exhaustive switch expressions (no {{default}}). Adding any future type now fails compilation at every affected switch.
+- Result: the class of "forgotten branch" bugs was eliminated for this domain; the next type addition surfaced 4 compile errors that were fixed in one PR.
+
+### Sample interview answer
+Sealed classes in Java 17 let you declare a closed set of permitted subtypes, and since Java 21 pattern matching for switch can be exhaustive over that set. In practice, I model closed domains like payment types or order states as a sealed interface with record variants, then use a switch expression. The key benefit is compile-time safety: when we add a new subtype, I update {{permits}} and the compiler immediately flags every switch that is missing a branch, so we do not rely on runtime discovery. I avoid a catch-all {{default}} on fully closed hierarchies because it hides that signal. I am also careful about {{null}} handling, case dominance order, and {{when}} guards, since a guarded case may not cover the whole subtype.
+
 > Senior tip: model "closed" domains (order states, event kinds, processing results) with {{sealed interface}} + {{record}} for each variant, then use exhaustive switch expressions. When someone adds a new variant, let the compiler lead the way — that is a bigger design benefit than the syntax. Only use {{default}} when you truly accept "unknown types" (e.g. reading future data), and in that case log/warn instead of swallowing silently.`,
     follow: [
       'Why does a pattern switch over a sealed type usually not need {{default}}, and when do you still need it?',
