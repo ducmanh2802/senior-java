@@ -1,23 +1,23 @@
 /*
- * English translation of js/data/lessons-testing.js — task T466. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-testing.js — task T1134. Format: js/core/i18n.js (content overlay).
  * ids: lesson-testing-004
  */
 App.i18n.content({
   'lesson-testing-004': {
-    title: 'A homegrown harness: verifyAll, barrier abort and the NOT RUN state',
+    title: 'Homegrown harness: verifyAll, barrier abort, and the NOT RUN state',
     goals: [
-      'Write a runner that runs every case and collects PASS/FAIL instead of stopping at the first failure',
-      'Tell SKIP apart from NOT RUN and explain why a case that never ran must never count as PASS',
-      'Design a RESULT line with an honest denominator and use it as a quality gate in CI',
+      'Write a runner that executes all cases and collects PASS/FAIL, rather than stopping at the first failure.',
+      'Distinguish SKIP from NOT RUN, and explain why a case that has not run should never be counted as PASS.',
+      'Design a RESULT line with an honest denominator and use it as a quality gate in CI.',
     ],
-    body: `**Summary:** A homegrown test harness usually breaks in one of two ways: fail-fast reports only the first failing case, so you go through many fix-then-rerun cycles; or — worse — it turns cases that never ran into "passed", so the pipeline is green while nothing was actually verified. A correct runner must run every case, record a separate status per case (PASS, FAIL, SKIP, NOT RUN) and aggregate them into a RESULT line with an honest denominator.
+    body: `**Summary:** Homegrown test harnesses usually break in one of two ways: fail-fast reports only the first failing case, forcing you through many fix-then-rerun cycles; or — worse — it turns cases that never ran into "passed," making the pipeline green while nothing was actually verified. A correct runner must run every case, record a separate status per case (PASS, FAIL, SKIP, NOT RUN), and aggregate them into a RESULT line with an honest denominator.
 
 ### Why fail-fast blinds you
 A runner of the form {{for (Case c : cases) c.run();}} stops as soon as the first case throws. On a dev machine that looks fast, but when a refactor breaks 12 cases you only see case 3. You fix it, rerun, see case 7, fix again... Each CI round takes a few minutes, and you have no idea how far you are from "green". Worse, some bugs only appear when cases run together, so stopping early hides interactions between them.
 
 JUnit and most mature runners take the **verifyAll** approach: run each case, record the result, and only then aggregate. In return, each case must be **independent**: a case must not leave dirty data behind, must not close shared resources, must not assume an order. Without isolation, running every case creates cascading failures that are harder to reproduce than with fail-fast.
 
-A subtle point: verifyAll does not mean ignoring fatal errors. If the JVM runs out of memory, overflows the stack or the process is killed, the runner cannot continue. In that situation the remaining cases must be recorded as **NOT RUN**, never silently treated as passed.
+A subtle point: verifyAll does not mean ignoring fatal errors. If the JVM runs out of memory, overflows the stack, or the process is killed, the runner cannot continue. In that situation the remaining cases must be recorded as **NOT RUN**, never silently treated as passed.
 
 ### Four states, not two
 Most homegrown harnesses only have two counters: pass and fail. That is the source of the incorrect reports.
@@ -55,7 +55,7 @@ Both reduce coverage, but the cause and the handling are different:
 - **SKIP** is a deliberate, known decision with a reason: "this test only runs when Docker is available", "only runs on release day", "the feature is behind a feature flag". The test author owns it.
 - **NOT RUN** is an operational incident: the runner died, the barrier closed, a global timeout fired, the process was killed. Nobody actively decided to drop this case.
 
-So do not merge them into a single "skipped" column. A sudden spike in skips usually means a feature flag was turned off by mistake or an environment condition changed; a sudden spike in not_run means the test infrastructure is in trouble. Both deserve their own alert. In particular, a permanent skip is a hidden bug: attach an owner, a ticket and an expiry date to every conditional skip.
+So do not merge them into a single "skipped" column. A sudden spike in skips usually means a feature flag was turned off by mistake or an environment condition changed; a sudden spike in not_run means the test infrastructure is in trouble. Both deserve their own alert. In particular, a permanent skip is a hidden bug: attach an owner, a ticket, and an expiry date to every conditional skip.
 
 ### skipIf must take the date from outside
 A common variant is a test that only runs on a specific date, for example a release-day smoke test. If the test calls {{LocalDate.now()}} internally, the suite becomes dependent on the real clock: green today, red tomorrow, and CI in another timezone gives yet another result. The right way is to pass the date in:
@@ -74,7 +74,7 @@ This keeps the harness's own tests deterministic too: they produce the same resu
 
 ### The report must carry enough to act on
 A line saying "1 test failed" helps nobody fix anything. Each result should carry:
-- A **case name** that is unique and describes the behaviour, not {{test1}}, {{test2}}.
+- A **case name** that is unique and describes the behavior, not {{test1}}, {{test2}}.
 - An explicit **status**, separating PASS, FAIL, SKIP, NOT RUN; exceptions include their type and message.
 - **Detail**: expected/actual, exception type and message, seed for property-based tests.
 - **Run order** or an id so the case can be reproduced when it depends on the environment.
@@ -89,7 +89,7 @@ The exit code only says how the process ended; it says nothing about how many te
 - The skip count does not exceed the agreed threshold, and every new skip has a ticket.
 - No case runs for too long without a timeout.
 
-In the Java ecosystem, Surefire/Failsafe prints {{Tests run: X, Failures: Y, Errors: Z, Skipped: W}}; parse all four numbers instead of just looking at the build's green colour. With a homegrown harness, the {{RESULT passed/total (skipped, not_run)}} line is your machine-readable contract.
+In the Java ecosystem, Surefire/Failsafe prints {{Tests run: X, Failures: Y, Errors: Z, Skipped: W}}; parse all four numbers instead of just looking at the build's green color. With a homegrown harness, the {{RESULT passed/total (skipped, not_run)}} line is your machine-readable contract.
 
 ### Common production traps
 - **Catching {{Throwable}} and continuing**: swallowing {{OutOfMemoryError}} and {{StackOverflowError}} leaves the JVM in an unreliable state. The small harness in this lesson catches {{Throwable}} to demonstrate reporting, but production code must rethrow {{VirtualMachineError}} and let the outer layer mark the rest as NOT RUN.
