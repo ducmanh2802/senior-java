@@ -162,10 +162,10 @@ void reconcile() {
   },
   'aws-030': {
     q: 'You lead the migration of an on-premise system (12 Spring Boot services on VMs, one 3 TB Oracle) to AWS in 9 months, with a maximum downtime cutover of 1 hour. How do you choose strategies for each part (rehost, replatform, refactor…), how do you move the database, and how do you plan for cutover and rollback?',
-    a: `**Summary:** Classify each component according to the **7 R** (retire, retain, rehost, relocate, repurchase, replatform, refactor) based on business value and risk — most Spring Boot services undergo **replatform** (container to ECS/EKS, change config, no rewrite), only refactor where there's a clear reason. Use **AWS DMS** to move the database with **full load + CDC** (continuous synchronization) to cutover with only a few minutes of write stop; deciding between Oracle → RDS for Oracle (lower risk) or → Aurora PostgreSQL (save license, effort to convert schema/PLSQL) is a separate decision. Cutover follows a **rehearsed runbook**, clear go/no-go criteria, and a **rollback path** (reverse sync back to on-prem) for the first few days.
+    a: `**Summary:** Classify each component according to the **7 R** (retire, retain, rehost, relocate, repurchase, replatform, refactor) based on business value and risk — most Spring Boot services undergo **replatform** (container to ECS/EKS, change config, no rewrite), only refactor where there's a clear reason. Use **AWS DMS** to move the database with **full load + CDC** (continuous synchronization) to cutover with only a few minutes of write stop; deciding between Oracle → RDS for Oracle (lower risk) or → Aurora PostgreSQL (save license, effort to convert schema/PLSQL) is a separate decision. Cutover follows a **runbook with rehearsals**, clear go/no-go criteria, and a **rollback path** (reverse sync back to on-prem) for the first few days.
 
 ### Quick Understanding
-Migrating a system to the cloud is like **moving a restaurant that is still open to a new location**. Some dishes move with the original pot (rehost), some change the stove but keep the recipe (replatform), some redo the recipe (refactor), and some are removed from the menu (retire). The ingredient warehouse (database) is the hardest part: you can't close for a week to move, so carry inventory gradually (full load), for each new shipment, deliver to both warehouses (CDC), and on opening day, close for one hour only for the final inventory check.
+Migrating a system to the cloud is like **moving a restaurant that is still open to a new location**. Some dishes move with the original pot (rehost), some change the stove but keep the recipe (replatform), some redo the recipe (refactor), and some are removed from the menu (retire). The ingredient warehouse (database) is the hardest part: you cannot close for a week to move, so carry inventory gradually (full load), for each new shipment, deliver to both warehouses (CDC), and on opening day, close for one hour only for the final inventory check.
 
 ### Terminology
 - **Rehost**: Move original VM to EC2 (e.g., using AWS Application Migration Service), no code changes.
@@ -190,11 +190,11 @@ Month 1-2        3-4            5-7                 8            9
       Assessment → Landing zone → Wave 1..3 services → DB Rehearsal → DB Cutover
                   DX/VPN         (replatform ECS)     2-3 times    1h window
 DB:   Oracle on-prem ══ DMS full load ══ CDC continuously ════════╗
-                                                                ╚═► target (RDS/Aurora)
-                                                      after cutover: reverse CDC → on-prem (rollback)
+                                                               ╚═► target (RDS/Aurora)
+                                                     after cutover: reverse CDC → on-prem (rollback)
 ~~~
 
-### Choose Strategy
+### Choose strategy
 | Component | Strategy | Reason |
 |---|---|---|
 | 10 stateless Spring Boot services | Replatform → ECS Fargate | Jar already packaged, containerize fast, skip OS patching |
@@ -205,13 +205,13 @@ DB:   Oracle on-prem ══ DMS full load ══ CDC continuously ════�
 
 ### Common Mistakes
 - **Changing everything at once** (cloud + container + PostgreSQL + microservices). Symptom: don't know which layer causes errors, project delayed. Fix: one type of change per wave.
-- **Not measuring bandwidth for full load.** 3 TB over 200 Mbps VPN takes over a day; CDC can't catch up if daily changes are large. Fix: calculate beforehand, consider Direct Connect or initial load via backup/Snowball then CDC from that point.
+- **Not measuring bandwidth for full load.** 3 TB over 200 Mbps VPN takes over a day; CDC cannot catch up if daily changes are large. Fix: calculate beforehand, consider Direct Connect or initial load via backup/Snowball then CDC from that point.
 - **Ignoring LOBs and data types.** DMS has limits with large LOBs and specific custom types; discovery during cutover is too late. Fix: run trial full load early, read error/validation reports.
 - **Sequences and triggers at destination.** After cutover, sequence not incremented → primary key conflict. Fix: cutover step "reset sequences", disable triggers at destination during CDC then re-enable.
 - **No rollback path.** Symptom: error found after 6 hours, new data only on AWS, cannot go back. Fix: reverse CDC and time-limited rollback criteria.
 
 ### 1-minute interview answer
-"I start with dependency assessment and load measurement, then classify components into 7Rs: most Spring Boot services replatform to ECS because jars are already ready, low-value components are retired, parts dependent on on-prem are retained temporarily. The infrastructure includes a landing zone and Direct Connect or VPN with sufficient bandwidth. For the database, I don't change the engine at the same time as the infrastructure: move Oracle to RDS for Oracle first, use DMS full load plus CDC for continuous synchronization, with data validation and rehearsal cutovers at least twice to measure time. The one-hour window includes stopping writes, waiting for CDC lag to reach 0, verifying checksums, changing internal DNS, and smoke testing. After cutover, I enable reverse CDC back to on-prem and maintain a 72-hour rollback criteria."
+"I start with dependency assessment and load measurement, then classify components into 7Rs: most Spring Boot services replatform to ECS because jars are already ready, low-value components are retired, parts dependent on on-prem are retained temporarily. The infrastructure includes a landing zone and Direct Connect or VPN with sufficient bandwidth. For the database, I do not change the engine at the same time as the infrastructure: move Oracle to RDS for Oracle first, use DMS full load plus CDC for continuous synchronization, with data validation and rehearsal cutovers at least twice to measure time. The one-hour window includes stopping writes, waiting for CDC lag to reach 0, verifying checksums, changing internal DNS, and smoke testing. After cutover, I enable reverse CDC back to on-prem and maintain a 72-hour rollback criteria."
 
 > Senior tip: what determines success is usually the **cutover runbook** not the technology: step-by-step with assigned owners, expected times from rehearsals, go/no-go points, and designated decision-makers for rollback. Rehearse thoroughly in an environment similar to production at least twice — the first time always reveals tasks taking three times as long (resetting sequences, rebuilding indexes, changing DNS in old systems no one remembers).`,
     follow: [
