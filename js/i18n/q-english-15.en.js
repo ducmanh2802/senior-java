@@ -5,18 +5,18 @@
 App.i18n.content({
   'english-129': {
     q: 'Describe the architecture of a service you ran on AWS. How would you explain the main components and how traffic flows through them?',
-    a: `**Summary (30-second spoken answer):** I would start from the user request and trace it through the edge, the compute layer, the data stores, and the async parts. For a typical Java/Spring Boot service on AWS, that means an entry point like an **ALB** (Application Load Balancer — an application-tier load balancer that receives requests and distributes them across instances), compute on **ECS/EKS/EC2** (running containers or virtual machines), data in **RDS** (Relational Database Service — a relational database managed by AWS) and a cache like **ElastiCache/Redis**, plus **S3** for files and an async path with **SQS/SNS** when needed.
+    a: `**Summary (30-second spoken answer):** I would start from the user request and trace it through the edge, the compute layer, the data stores, and the async parts. For a typical Java/Spring Boot service on AWS, that means an entry point like an **ALB** (Application Load Balancer — an application-layer load balancer that receives requests and distributes them across multiple instances), compute on **ECS/EKS/EC2** (ways to run containers/virtual machines), data in **RDS** (Relational Database Service — a relational database managed by AWS) and a cache like **ElastiCache/Redis**, plus **S3** for files and an async path with **SQS/SNS** when needed.
 
 ### Key terms (explained for beginners)
-- **Region / Availability Zone (AZ)** (geographic region / isolated data center within a region): A Region is a geographic area (for example {{ap-southeast-1}} Singapore); each Region has multiple AZs — separate data centers. Running across multiple AZs helps the service survive when an AZ fails.
-- **VPC** (Virtual Private Cloud — isolated virtual network): your isolated "neighborhood" network on AWS; you divide it into public subnets (receive traffic from the internet) and private subnets (internal only, where the app and database run).
-- **Security group** (instance-level firewall): rules allowing traffic in or out by port and source (for example, only the ALB may call the app on port 8080).
+- **Region / Availability Zone (AZ)** (region / availability zone): A Region is a geographic area (for example {{ap-southeast-1}} Singapore); each Region has multiple AZs — separate data centers. Running across multiple AZs helps the service survive when one AZ has a problem.
+- **VPC** (Virtual Private Cloud — isolated virtual network): your isolated "neighborhood" network on AWS; you split it into public subnets (receive traffic from the internet) and private subnets (internal only, where the app and database run).
+- **Security group** (instance-level firewall): rules that allow traffic in or out by port and source (for example, only the ALB is allowed to call the app on port 8080).
 
 ### Traffic flow (step by step)
 1. **DNS & edge:** Route 53 (DNS) resolves the domain; CloudFront (CDN — content delivery network, caches content close to users) can front static assets. TLS terminates at the edge or at the ALB.
 2. **Load balancing:** The ALB receives HTTPS, routes by path/host, and forwards to healthy targets across AZs (health check — a periodic check that an instance is still alive).
 3. **Compute:** The Spring Boot service runs as containers (ECS Fargate/EKS) or on EC2 in private subnets, scaled by CPU or request count (Auto Scaling).
-4. **Data:** Relational data in RDS (often Multi-AZ for failover — automatically switching to the backup when the primary node fails). Hot data is cached in Redis to cut latency and DB load. Objects/files go to S3.
+4. **Data:** Relational data lives in RDS (often Multi-AZ for failover — automatically switching to a standby when the primary node fails). Hot data is cached in Redis to cut latency and DB load. Objects/files go to S3.
 5. **Async & integration:** Non-urgent work goes to SQS (queue — a waiting line, processed later) or events via SNS/EventBridge, consumed by workers.
 6. **Observability:** Logs/metrics/traces go to CloudWatch (or an OpenTelemetry backend) with alarms on SLOs.
 
@@ -42,7 +42,7 @@ App --> User: HTTPS response
 
 ### Common pitfalls
 - Putting the database in a public subnet or opening security groups too wide.
-- Single-AZ setup presented as "highly available".
+- A single-AZ setup presented as "highly available".
 - No timeout/retry/circuit-breaker between App and downstreams, so one slow dependency stalls threads.
 
 ### Useful phrases
@@ -52,10 +52,22 @@ App --> User: HTTPS response
 
 ### Common mistakes (Vietnamese speakers)
 - Listing service names without explaining the flow — always trace one request end to end.
-- Saying "AWS handles everything" — clarify the shared responsibility (AWS secures the infrastructure; you secure configuration, IAM, data).
+- Saying "AWS handles everything" — clarify the shared responsibility (AWS secures the infrastructure; you secure configuration, IAM, and data).
 - Confusing "region" and "availability zone".
 
-> Senior tip: Interviewers care less about memorizing every AWS product and more about **why** each piece exists: where TLS ends, how you achieve high availability (multi-AZ, health checks), how you protect data (private subnets, IAM least privilege — grant exactly the minimum permissions needed), and what happens when a component fails. Name concrete numbers if you can (p95 latency target, RPS, failover time).`,
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through the flow in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
+> Senior tip: Interviewers care less about memorizing every AWS product and more about **why** each piece exists: where TLS ends, how you achieve high availability (multi-AZ, health checks), how you protect data (private subnets, IAM least privilege — granting only the minimum permissions needed), and what happens when a component fails. Name concrete numbers if you can (p95 latency target, RPS, failover time).`,
     follow: [
         'How would this architecture change if you needed to handle ten times the traffic?',
         'Where would you terminate TLS, and how do you manage secrets like database credentials?',
@@ -102,6 +114,18 @@ Our action items were: add an EXPLAIN/performance check for queries touching lar
 - Using present tense for a past incident — keep past simple/past continuous: "we rolled back", "errors were increasing".
 - Saying "root reason"; the standard term is "root cause".
 - Overusing "very very serious" — quantify instead: "error rate rose to 8 percent for 13 minutes".
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through the timeline in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Strong candidates separate **mitigation** from **resolution** and show they protect users first. Quantify impact and timing (MTTD/MTTR), name one or two systemic fixes (tests, gates, alerts), and close the loop by saying how you verified the action items worked. That signals operational maturity, not just firefighting.`,
     follow: [
