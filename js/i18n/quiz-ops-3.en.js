@@ -157,26 +157,26 @@ The TTL (for example {{spring.cache.redis.time-to-live=10m}}) is a safety net: e
 > Senior tip: in Spring Boot, a web app that signs users in uses {{spring-boot-starter-oauth2-client}}, while an API that validates tokens uses {{spring-boot-starter-oauth2-resource-server}}; mixing up these two roles is a very common mistake when you are just starting out.`
   },
   'qz-primer-010': {
-    q: 'The team says "we already have Continuous Delivery", but someone else says "that is not Continuous Deployment yet". What is the difference between the two ideas?',
+    q: 'The team says "we already have Continuous Delivery", but someone else says "that is not Continuous Deployment yet". What is the difference between the two concepts?',
     options: [
-      'Continuous Delivery: every change that goes through the pipeline is **ready** to be deployed to production, but the step that puts it there needs a human to approve; Continuous Deployment: changes that pass all tests are **automatically** pushed to production',
-      'The two ideas are the same, only the name differs',
-      'Continuous Delivery is running unit tests, Continuous Deployment is running integration tests',
+      'Continuous Delivery: every change that passes the pipeline is in a state that is **ready** to deploy to production, but the step that actually puts it into production requires a human to approve it; Continuous Deployment: a change that passes all tests is **automatically** put into production',
+      'The two concepts are the same, only the name is different',
+      'Continuous Delivery means running unit tests, Continuous Deployment means running integration tests',
       'Continuous Deployment means deploying once a week on a schedule'
     ],
-    explain: `**Summary:** both automate building, testing and packaging. They differ in the **last step**: Delivery stops and waits for a human decision; Deployment automatically ships to production whenever the pipeline is green.
+    explain: `**Summary:** both automate building, testing, and packaging. The difference is in the **final step**: Delivery stops and waits for a human decision; Deployment automatically takes the change to production every time the pipeline is green (all checks pass).
 
 ~~~text
 commit -> build -> unit test -> integration test -> deploy staging -> [manual approval] -> production   (Delivery)
 commit -> build -> unit test -> integration test -> deploy staging -> automatic -> production           (Deployment)
 ~~~
-Continuous Integration is the part before that: everyone merges into the main branch often, and every merge builds and tests automatically.
+Continuous Integration (CI) is the part that comes before this: everyone merges into the main branch frequently, and every merge is built and tested automatically.
 
 ### Why the other options are wrong
-- **The same**: the difference in the production approval step is significant; it decides how much automation you have and how much you trust the tests.
-- **Unit test vs integration test**: both models run every kind of test; that is pipeline content, not a definition.
-- **Weekly scheduled deploy**: scheduled deploys are not "continuous"; Continuous Deployment ships as soon as each change is ready, possibly many times a day.
+- **The same**: the difference in the production approval step is significant. It determines how much automation you have and how much trust you place in your tests.
+- **Unit test vs integration test**: both models run every kind of test (unit, integration, and often more); that is pipeline content, not the definition of the two concepts.
+- **Deploy weekly on a schedule**: scheduled deployment is not "continuous". Continuous Deployment ships as soon as each change is ready, which can mean many times a day.
 
-> Senior tip: moving to Continuous Deployment requires trustworthy automated tests, feature flags to separate "deploy" from "release the feature", plus canaries and automatic rollback. Without those, keeping a manual approval step is the sensible choice.`
+> Senior tip: moving to Continuous Deployment requires trustworthy automated tests, feature flags to separate "deploy the code" from "turn the feature on for users", canaries, and automatic rollback. Without those safety nets, keeping a manual approval step is the sensible choice.`
   }
 });
