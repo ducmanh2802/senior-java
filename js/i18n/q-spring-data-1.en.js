@@ -1,16 +1,17 @@
 /*
- * English translation of js/data/q-spring-data.js — task T173. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-spring-data.js — task T173, redone by T1214 for spring-001, spring-003, spring-004, spring-005, spring-006, spring-011.
+ * Format: js/core/i18n.js (content overlay).
  * ids: spring-001 spring-002 spring-003 spring-004 spring-005 spring-006 spring-007 spring-008 spring-009 spring-010 spring-011
  */
 App.i18n.content({
   'spring-001': {
-    q: `How does IoC/DI work in Spring? What is the difference between constructor injection and field injection, and when should you choose each?`,
-    a: `**Summary:** IoC (Inversion of Control) reverses the creation authority: instead of a class creating its dependencies itself, the Spring container (ApplicationContext) is responsible for creating objects and "injecting" dependencies. DI (Dependency Injection) is the concrete implementation of IoC. In Spring, **constructor injection is the default choice**: dependencies are explicit, testable with {{new}}, and missing dependencies fail at app startup rather than in production.
+    q: `How does IoC/DI work in Spring? How do constructor injection and field injection differ, and when should you choose each?`,
+    a: `**Summary:** IoC (Inversion of Control) reverses creation authority: instead of a class creating its own dependencies, the Spring container (ApplicationContext) is responsible for creating objects and "injecting" dependencies. DI (Dependency Injection) is the concrete implementation of IoC. In Spring, **constructor injection is the default choice**: dependencies are explicit, testable with {{new}}, and missing dependencies surface at app startup rather than in production.
 
 ### Three dependency injection styles
-1. **Constructor injection** – Spring selects the constructor; since Spring Framework 4.3, no {{@Autowired}} is needed if the class has only one constructor.
+1. **Constructor injection** – Spring picks the constructor; since Spring Framework 4.3, no {{@Autowired}} is needed if the class has only one constructor.
 2. **Setter injection** – for non-mandatory dependencies, or when reassignment is needed after creation.
-3. **Field injection** – Spring assigns directly into the field via reflection, without going through the constructor.
+3. **Field injection** – Spring assigns directly into the field via reflection, bypassing the constructor.
 
 ### Comparison
 | Criterion | Constructor | Field |
@@ -43,14 +44,23 @@ public class BadOrderService {
 - Case forced to avoid circular dependency with {{@Lazy}} – this is technical debt and should be refactored.
 
 ### Pitfall production
-- A constructor with 10–15 parameters is a sign that the class violates SRP. Fix by splitting the service by use case, or grouping related properties into a command object.
-- Using Lombok {{@Data}} generates both {{@RequiredArgsConstructor}} and {{equals}}/{{hashCode}} based on **all** fields → with JPA entities it causes N+1 and logic errors (see the question on entity equals/hashCode).
+- A constructor with 10–15 parameters signals the class violates SRP. Fix by splitting the service by use case, or grouping related properties into a command object.
+- Lombok {{@Data}} generates both {{@RequiredArgsConstructor}} and {{equals}}/{{hashCode}} based on **all** fields → with JPA entities it causes N+1 and logic errors (see the question on entity equals/hashCode).
 - Inject **interface** when you have one implementation, so it's easy to switch to a mock or a second implementation without changing the call site.
 
-> Senior tip: the practical rule for team code review: forbid {{@Autowired}} on fields, enforce constructor injection. The reason is not just "style" – field injection hides the dependency list when reading code and is the most common source of circular dependency that Spring must hide with proxies. A repo can enforce this with a Checkstyle {{IllegalAnnotation}} rule or an ArchUnit test.`,
+### Inside: how the container builds beans
+At startup, Spring (1) scans and reads configuration into **BeanDefinition**s (recipes for creating beans, objects not yet created), (2) runs {{BeanFactoryPostProcessor}} (e.g. replacing config placeholders with real values), (3) for each singleton: chooses the constructor → **resolves dependencies by type** (if multiple beans of the same type, considers {{@Primary}}, {{@Qualifier}}, parameter names) → creates the object → injects fields/setters → calls init callbacks → lets {{BeanPostProcessor}} wrap the proxy (AOP, transaction). With constructor injection, dependencies must exist **before** the object exists, so dependency cycles surface immediately at startup; with field injection, the object is created empty and fields are assigned later via reflection — that's why field injection "hides" dependency cycles and lets objects exist in a state missing dependencies.
+
+### Real-world example
+A service class {{OrderService}} with 14 {{@Autowired}} fields. Unit tests had to boot the whole Spring context (40 seconds) because there was no way to inject mocks except via reflection; a test that forgot to mock one field caused NPE in another test. Switching to constructor injection (Lombok {{@RequiredArgsConstructor}} with final fields): the 14-parameter constructor **exposed** that the class does too much, and the team split it into 3 services; unit tests ran without Spring (down from 40 seconds to under 1 second for the whole test class). In the same sprint, a dependency cycle {{OrderService ↔ PaymentService}} surfaced immediately at startup — previously hidden by field injection.
+
+### Sample interview answer
+"IoC means I don't create dependencies myself; the container creates and injects them. Spring reads configuration into BeanDefinitions, then for each bean picks a constructor, resolves dependencies by type, considers Primary or Qualifier when multiple candidates exist, creates the object, injects, runs init callbacks, and lets BeanPostProcessor wrap a proxy such as for transactions. I use constructor injection as default: fields can be final, the object is never in a state missing dependencies, unit tests only need new with mocks without Spring, and dependency cycles surface at startup. A constructor with too many parameters signals the class does too much. Field injection is only acceptable in test code; setter injection is for truly optional dependencies."
+
+> Senior tip: a practical team rule for code review: forbid {{@Autowired}} on fields, require constructor injection. The reason is not just "style" — field injection hides the dependency list when reading code and is the most common source of circular dependencies that Spring has to hide with proxies. A repo can enforce this with a Checkstyle {{IllegalAnnotation}} rule or an ArchUnit test.`,
     follow: [
-      'Why did Spring Framework 4.3 remove the {{@Autowired}} requirement when a class has only one constructor?',
-      'Does constructor injection make the app start slower, and why?'
+      'Why did Spring Framework 4.3 drop the {{@Autowired}} requirement when a class has only one constructor?',
+      'Does constructor injection slow down app startup, and why?'
     ],
   },
   'spring-002': {
@@ -105,8 +115,8 @@ Features based on proxies such as {{@Transactional}}, {{@Async}}, {{@Cacheable}}
     ],
   },
   'spring-003': {
-    q: `How do bean scopes differ in Spring? What problem does injecting a {{prototype}} bean into a {{singleton}} bean cause, and how can it be fixed?`,
-    a: `**Summary:** {{singleton}} is the default (1 instance per ApplicationContext), {{prototype}} creates a new instance each time it is requested, and {{request}}/{{session}}/{{application}} are tied to web scopes. The classic problem: a singleton holds **one** reference to the prototype, so every use gets back the same first instance – violating the "new instance each time" semantics. The standard fix is {{ObjectProvider<T>}} or {{@Lookup}}.
+    q: `How do bean scopes differ in Spring? What problem does injecting a {{prototype}} bean into a {{singleton}} bean cause, and how to fix it?`,
+    a: `**Summary:** {{singleton}} is the default (1 instance per ApplicationContext), {{prototype}} creates a new instance each time it is requested, and {{request}}/{{session}}/{{application}} are tied to web scopes. The classic problem: a singleton holds **one** reference to the prototype, so every use returns the same first instance — violating the "new instance each time" semantics. The standard fix is {{ObjectProvider<T>}} or {{@Lookup}}.
 
 ### Scope table
 | Scope | Instance count | Lifecycle managed by Spring |
@@ -138,26 +148,35 @@ public class ReportRunner {
 
 Other options:
 - {{jakarta.inject.Provider<T>}} (JSR-330 standard): equivalent to {{ObjectProvider}} but does not depend on Spring API; call {{get()}} to get a new instance.
-- {{@Lookup}}: method that returns the prototype type, Spring generates a proxy so each call creates a new instance (requires the host bean to be proxyable).
-- {{@Scope(value = "prototype", proxyMode = ScopedProxyMode.TARGET_CLASS)}}: inject a **proxy**, each method call on the proxy creates the real instance.
+- {{@Lookup}}: method returning the prototype type; Spring generates a proxy so each call creates a new instance (requires the host bean to be proxyable).
+- {{@Scope(value = "prototype", proxyMode = ScopedProxyMode.TARGET_CLASS)}}: inject a **proxy**; each method call on the proxy creates the real instance.
 
 ### Pitfall production
-- Prototype beans are **not** managed by Spring lifecycle like singletons: {{@PreDestroy}} does not run by default, connections/threads opened in them will leak. If cleanup is needed, manage it yourself (try-with-resources) or use Spring 6 destroy callback registration.
-- A prototype that contains singleton dependencies is safe; the opposite (singleton containing prototype) requires {{ObjectProvider}}.
-- Singleton with state (counter, non-synchronized cache) is the source of many race condition bugs – every bean should be stateless by default.
+- Prototype beans are **not** managed by the Spring lifecycle like singletons: {{@PreDestroy}} does not run by default, connections/threads opened in them leak. If cleanup is needed, manage it yourself (try-with-resources) or use Spring 6 destroy-callback registration.
+- A prototype containing singleton dependencies is safe; the reverse (singleton containing prototype) requires {{ObjectProvider}}.
+- Singleton holding state (counter, unsynchronized cache) is the source of many race-condition bugs — every bean should be stateless by default.
 
-> Senior tip: in code review, inspect which beans hold state and which are injected into singletons. The simple rule: **default beans must be stateless and thread-safe**; if state is needed, use a narrower scope (request/session) or a thread-safe shared structure (Atomic, ConcurrentHashMap).`,
+### Inside: how scoped proxy works
+When declaring {{@Scope(value = "request", proxyMode = ScopedProxyMode.TARGET_CLASS)}} (or using {{@RequestScope}}), Spring injects **a proxy** (CGLIB subclass) into the singleton instead of the real object. Each method call on the proxy asks the current scope ("which request is being processed?") to fetch **the right instance** of that request, then forwards the call. For {{prototype}} there is no "current scope", so the proxy creates a new instance **on every method call** — usually not what you want; use {{ObjectProvider<T>.getObject()}} to actively fetch a new instance exactly when needed.
+
+### Real-world example
+A bean {{PriceCalculator}} holding temporary state (list of applied promotions) declared {{prototype}} to "get a new instance each time", but injected into {{CheckoutService}} singleton → in practice only **one** instance shared by all requests. Under load, customer A's promotion leaked into customer B's invoice (about 0.2% of orders at peak). Fix: remove state from the bean (pass context via parameters); for places that still need a stateful object, create it via {{ObjectProvider}} inside the method. Add a test firing 50 concurrent requests with different data and verify no cross-contamination.
+
+### Sample interview answer
+"Singleton is one instance for the whole container and is the default; prototype creates a new instance every time the container is asked; request and session are tied to the HTTP lifecycle. The problem injecting a prototype into a singleton is that injection happens only once, when the singleton is created, so the singleton keeps a single prototype instance forever — and if it has state, that state is shared across requests. The fix is to fetch the instance when needed via ObjectProvider or @Lookup, or use a scoped proxy for request scope — a proxy that looks up the instance of the current request on every call. But the best approach is usually to design stateless singletons and pass request data via parameters."
+
+> Senior tip: in code review, check which beans hold state and which beans are injected into singletons. Simple rule: **default beans must be stateless and thread-safe**; if state is needed, use a narrower scope (request/session) or a thread-safe shared structure (Atomic, ConcurrentHashMap).`,
     follow: [
       'Why does Spring not call {{@PreDestroy}} for prototype beans? How do you handle resources in that case?',
       'What is the difference between {{ObjectProvider}} and {{@Lookup}}? When should you use each?'
     ],
   },
   'spring-004': {
-    q: `How does {{@Transactional}} work through proxies? Why does calling a {{@Transactional}} method from within the same class fail to create a transaction, and what is the rollback rule for checked exceptions?`,
-    a: `**Summary:** {{@Transactional}} does not "label and then auto-activate" – Spring creates a **proxy** around the bean, and {{TransactionInterceptor}} only runs when the method is called **through the proxy**. So self-invocation ({{this.method()}}) does not go through the proxy → no transaction. For rollback: by default only {{RuntimeException}} and {{Error}} trigger rollback; checked exceptions will **commit** unless {{rollbackFor}} is declared.
+    q: `How does {{@Transactional}} work through proxies? Why does calling a {{@Transactional}} method from within the same class not create a transaction, and what is the rollback rule for checked exceptions?`,
+    a: `**Summary:** {{@Transactional}} does not "mark and auto-activate" — Spring creates a **proxy** around the bean, and {{TransactionInterceptor}} only runs when the method is called **through the proxy**. So self-invocation ({{this.method()}}) does not go through the proxy → no transaction. For rollback: by default only {{RuntimeException}} and {{Error}} trigger rollback; checked exceptions **commit** unless {{rollbackFor}} is declared.
 
 ### Proxy mechanism
-1. Container creates the target bean (usually the real class, no annotations).
+1. The container creates the target bean (usually the real class, no annotations).
 2. Because of {{@Transactional}}, {{AbstractAutoProxyCreator}} wraps the target in a proxy (CGLIB by default in Spring Boot, JDK proxy by default in Spring Framework).
 3. When code calls {{service.placeOrder()}}, the call enters the proxy → interceptor opens or joins a transaction → delegates to the real method → commit/rollback.
 
@@ -193,20 +212,26 @@ public void importFile(InputStream in) throws IOException { /* ... */ }
 ~~~
 
 ### Pitfall production
-- The exception must **escape** the method to trigger rollback. Catching and swallowing it (no rethrow) causes the transaction to commit despite an error.
+- The exception must **escape** the method to trigger rollback. Catching and swallowing it (no rethrow) makes the transaction commit despite an error.
 - {{private}}, {{final}} or {{static}} methods cannot be proxied → {{@Transactional}} is silently ignored.
 - Place {{@Transactional}} at the service layer, not on controllers or repositories (repositories usually have a default transaction).
-- {{readOnly = true}} helps Hibernate avoid dirty-checking and can be optimized by the DB; use it for queries.
-- If the proxy uses interface-based (JDK proxy), you must inject via the interface, not by concrete class.
+- {{readOnly = true}} helps Hibernate skip dirty-checking and can be optimized by the DB; use it for queries.
+- If the proxy is interface-based (JDK proxy), inject via the interface, not the concrete class.
 
-> Senior tip: when debugging transactions, check 3 things in order: (1) is the method {{public}} and the class not {{final}}?, (2) is the call going through a proxy or is it self-invocation?, (3) is the exception being swallowed? Add {{logging.level.org.springframework.transaction=DEBUG}} to see transactions starting/committing or rolling back.`,
+### Real-world example
+A seat-booking service has method {{public void bookAll(List<Seat> seats)}} looping and calling {{this.bookOne(seat)}} — {{bookOne}} has {{@Transactional(propagation = REQUIRES_NEW)}} so "each seat its own transaction, a failed seat doesn't affect others". In reality the {{this}} call bypasses the proxy: there is no separate transaction; every seat runs in {{bookAll}}'s transaction (or no transaction if {{bookAll}} has no annotation) → one failed seat rolls back the whole order, or conversely a booked seat cannot be rolled back. Another bug in the same service: {{SeatTakenException extends Exception}} (checked) is thrown but the transaction still **commits** because Spring defaults to rolling back only unchecked exceptions. Fix: move {{bookOne}} to a separate bean {{SeatBookingService}}, change the exception to unchecked (or {{rollbackFor = SeatTakenException.class}}), and add an integration test verifying data after an error.
+
+### Sample interview answer
+"@Transactional works via proxy: Spring creates a proxy wrapping the bean, and calls going through the proxy open a transaction, call the real method, then commit or rollback. When one method in the same class calls another via this, the call does not go through the proxy, so the annotation on the called method is completely ignored — including propagation and readOnly. The fix is to move the method to another bean, or inject the bean into itself via proxy, or use TransactionTemplate for the part that needs its own transaction. Private or final methods cannot be proxied either. For rollback, Spring defaults to rolling back only RuntimeException and Error; checked exceptions still commit unless rollbackFor is declared. So I use unchecked business exceptions, and always have an integration test checking data after an error."
+
+> Senior tip: when debugging transactions, check 3 things in order: (1) is the method {{public}} and the class not {{final}}?, (2) is the call going through a proxy or is it self-invocation?, (3) is the exception being swallowed? Add {{logging.level.org.springframework.transaction=DEBUG}} to see transactions starting, committing, or rolling back.`,
     follow: [
       'Why is {{@Transactional}} on a {{private}} method silently ignored?',
       'When should you use {{TransactionTemplate}} instead of {{@Transactional}}?'
     ],
   },
   'spring-005': {
-    q: `Compare {{@Transactional}} propagation levels ({{REQUIRED}}, {{REQUIRES_NEW}}, {{NESTED}}...): how does each behave when a parent transaction already exists, and when should each be used?`,
+    q: `Compare {{@Transactional}} propagation levels ({{REQUIRED}}, {{REQUIRES_NEW}}, {{NESTED}}…): how does each behave when a parent transaction already exists, and when should each be used?`,
     a: `**Summary:** Propagation defines how a nested transaction behaves inside another. {{REQUIRED}} (default) – joins the existing transaction; if none exists, creates a new one. {{REQUIRES_NEW}} – **suspends** the outer transaction, creates a completely new transaction with a different connection, commits independently. {{NESTED}} – creates a **savepoint** inside the current transaction; rollback only rolls back to the savepoint, not the whole transaction.
 
 ### Comparison table
@@ -232,23 +257,29 @@ public class AuditService {
 
 ### When to use which
 - **REQUIRED**: default, correct for most service methods. Parent and child are one transaction – success means everything succeeds.
-- **REQUIRES_NEW**: write audit/log that must exist regardless; or independent work. Note: the inner transaction does **not** see uncommitted data from the outer transaction, and if it updates a row that the outer transaction locks, it will wait on itself (lock timeout).
-- **NESTED**: partial rollback is needed but other work must be kept. Only works when the platform supports **savepoint** (PostgreSQL, MySQL InnoDB yes; some others no). JPA support is limited.
+- **REQUIRES_NEW**: write audit/log that must exist regardless; or independent work. Note: the inner transaction does **not** see uncommitted data from the outer transaction, and if it updates a row locked by the outer transaction, it will wait on itself (lock timeout).
+- **NESTED**: partial rollback needed but other work must be kept. Only works when the platform supports **savepoint** (PostgreSQL, MySQL InnoDB yes; some others no). JPA support is limited.
 
 ### Pitfall production
 - {{REQUIRES_NEW}} needs **an additional connection** from the pool (parent holds 1). With a small HikariCP pool, concurrent requests can exhaust the pool → "Connection is not available" error.
-- {{REQUIRES_NEW}} creates inconsistency: inner commits before outer rolls back ⇒ the written data remains. Use only when the business accepts this (log, notification).
+- {{REQUIRES_NEW}} creates inconsistency: inner commits before outer rolls back ⇒ written data remains. Use only when the business accepts this (log, notification).
 - {{NESTED}} may not work as expected with JPA due to limited provider support; test on your actual DB.
-- Propagation only works when called **through a proxy** – self-invocation will break it too.
+- Propagation only works when called **through a proxy** – self-invocation breaks it too.
 
-> Senior tip: before adding {{REQUIRES_NEW}}, ask: "Does the child transaction really need to survive when the parent rolls back?" If the answer is no, use {{REQUIRED}}. Once you use {{REQUIRES_NEW}}, always check the connection pool size and set a timeout for connection waits.`,
+### Real-world example
+A payment service writes an audit log with {{REQUIRES_NEW}} so the audit survives even if the business transaction rolls back — correct purpose. But audit was called **inside a loop** processing 200 transactions of a batch; each REQUIRES_NEW **suspended** the outer transaction (still holding its connection) and **took a second connection**. With 20 threads processing batches in parallel and a 20-connection pool, each thread held 1 connection and waited for a second → everything hung (pool deadlock), HikariCP logged "Connection is not available". Fix: batch the audit writes, write once after the main transaction ends ({{@TransactionalEventListener(phase = AFTER_COMPLETION)}} or an outbox table), and size the pool to at least threads × connections per thread plus headroom. No more hanging.
+
+### Sample interview answer
+"REQUIRED is the default: if a transaction exists, join it; otherwise create one. If a method inside throws, the whole transaction is marked rollback-only. REQUIRES_NEW suspends the outer transaction and opens an independent one with its own connection; commit or rollback separately — good for audit logs or recording errors that must survive when the main business transaction rolls back; the price is two connections at once, which can exhaust the pool if used in a loop or with many threads. NESTED uses a savepoint inside the same transaction and connection, allowing partial rollback; it needs driver and transaction manager support such as JDBC, and usually not with JPA. SUPPORTS, NOT_SUPPORTED, MANDATORY, NEVER are used less often. I use REQUIRED for most cases, REQUIRES_NEW sparingly, and often replace it with an event after commit."
+
+> Senior tip: before adding {{REQUIRES_NEW}}, ask "Does the child transaction really need to survive when the parent rolls back?". If the answer is no, use {{REQUIRED}}. Once you use {{REQUIRES_NEW}}, always check the connection pool size and set a timeout for connection waits.`,
     follow: [
       'What happens when a child transaction uses {{REQUIRES_NEW}} and commits successfully but the parent rolls back?',
       'Why does {{NESTED}} not work on every database?'
     ],
   },
   'spring-006': {
-    q: `How does Spring AOP create proxies using JDK dynamic proxy and CGLIB? What limitations of AOP do you often encounter in production?`,
+    q: `How does Spring AOP create proxies using JDK dynamic proxy and CGLIB? What AOP limitations do you often encounter in production?`,
     a: `**Summary:** Spring creates proxies at bean initialization time via {{BeanPostProcessor}}. There are two mechanisms: **JDK dynamic proxy** (proxy by interface) and **CGLIB** (generate a subclass). Spring Framework defaults to JDK proxy if the class has an interface; Spring Boot defaults to CGLIB ({{spring.aop.proxy-target-class=true}}). Both **cannot** proxy {{private}}, {{final}} and {{static}} methods, and both are "disabled" by self-invocation.
 
 ### Comparison
@@ -283,9 +314,20 @@ public class LoggingAspect {
 5. **Proxy + equals/hashCode**: CGLIB proxy can make {{equals}} compare differently from the real entity.
 
 ### When not to use AOP
-When the logic needs to run in many places but is not a "cross-cutting concern" (e.g. specific business logic), use composition – one service calling another service – which is clearer and easier to test.
+When the logic needs to run in many places but is not a "cross-cutting concern" (e.g. specific business logic), use composition — one service calling another service — which is clearer and easier to test.
 
-> Senior tip: AOP easily creates a "magic" feeling. Safe team rules: use AOP only for clearly defined **cross-cutting concerns** (logging, metrics, retry, security, audit), always declare {{@Order}} to avoid ambiguous ordering, and write tests that prove the advice actually runs (many AOP bugs slip through review only because no test touches it).`,
+### Inside: how the two proxy types are created
+- **JDK dynamic proxy**: creates at runtime a new class **implementing the bean's interfaces**; every call goes to {{InvocationHandler}}. Only methods in the interface can be proxied; injecting by **concrete class** fails because the proxy is not that class.
+- **CGLIB**: creates a **subclass** of the bean (generates bytecode), overriding methods to insert advice. Cannot override {{final}}, {{private}}, {{static}} methods; a {{final}} class cannot be proxied. Spring Boot defaults to CGLIB ({{spring.aop.proxy-target-class=true}}) to avoid errors injecting by concrete class.
+Advice only runs when the call **goes through the proxy** — internal calls via {{this}} do not.
+
+### Real-world example
+A team wrote a custom {{@Timed}} aspect to measure timing of custom repository methods. The dashboard showed half the methods "never called". Cause: those methods were {{final}} (an old code convention "methods not overridden stay final") and some were called internally within the same class — CGLIB cannot intercept those. Also a logging aspect used a too-broad pointcut {{execution(* com.shop..*(..))}}, wrapping tiny beans called millions of times per minute → CPU rose 9%. Fix: use the built-in Micrometer {{@Observed}}/{{@Timed}}, remove {{final}} from methods to measure, and narrow the pointcut by annotation. CPU returned to normal.
+
+### Sample interview answer
+"Spring AOP uses proxies. JDK dynamic proxy creates a new class implementing the bean's interfaces, so it can only intercept methods in the interface, and injecting by concrete class fails. CGLIB creates a subclass of the bean, so it can intercept methods not in the interface, but cannot override final, private, static methods, and cannot proxy a final class; Spring Boot defaults to CGLIB. The most common production limitation is self-invocation: calling a method via this does not go through the proxy, so your transaction, cache, async, or aspect does not run. Also overly broad pointcuts waste CPU, and ordering between aspects (e.g. transaction vs retry) must be declared with @Order. For things that need to intercept internal calls or require high performance, I write explicit code instead of AOP."
+
+> Senior tip: AOP easily creates a "magic" feeling. Safe team rules: use AOP only for clearly defined **cross-cutting concerns** (logging, metrics, retry, security, audit), always declare {{@Order}} to avoid ambiguous ordering, and write tests proving the advice actually runs — many AOP bugs pass review only because no test touches them.`,
     follow: [
       'When should you choose JDK proxy over CGLIB in a Spring Boot project?',
       'Why do {{@Async}} and {{@Cacheable}} suffer from the same self-invocation limitation as AOP?'
@@ -376,7 +418,7 @@ With field/setter injection, the container can: create A (without injecting B) �
 - Event-driven: if you publish an event inside the same transaction and the listener uses {{@EventListener}} (not {{@TransactionalEventListener}}), the listener runs **before commit** – it reads uncommitted data and can cause deadlocks.
 - Prototype-scoped cycles are not solved; cycles between third-party library beans cannot be fixed – you must change the integration approach.
 
-> Senior tip: treat circular dependency as a **design warning**, not a configuration error. In review, ask: "Is this module knowing too much about the other module?" In banking systems with many layers (controller → service → repository → integration), cycles usually appear where a lower layer tries to call back to an upper layer – the correct fix is to extract an abstraction or use an event bus.`,
+> Senior tip: treat circular dependency as a **design warning**, not a configuration error. In review, ask: "Is this module knowing too much about the other module?". In banking systems with many layers (controller → service → repository → integration), cycles usually appear where a lower layer tries to call back to an upper layer – the correct fix is to extract an abstraction or use an event bus.`,
     follow: [
       'Are there cases where accepting a circular dependency with {{@Lazy}} is acceptable?',
       'How do you detect cycles in a large project besides waiting for the app to fail at startup?'
@@ -528,9 +570,19 @@ For repeating tasks ({{fixedRate}}/{{fixedDelay}}/{{cron}}), Spring wraps the ta
 - For long jobs: separate "fetch data" and "write result", write in batches so the transaction does not stay open too long.
 - Job writing files/reports: write to a temporary file then rename, so nobody reads an incomplete file.
 
+### Real-world example
+A service running 3 pods had {{@Scheduled(cron = "0 0 2 * * *")}} sending debt-reminder emails. After scaling to 3 pods, customers received **3 identical emails** every morning — 18,000 duplicate emails, the email provider warned about spam. At the same time, the job ran at 9 AM Vietnam time instead of 2 AM because the container used UTC. Another job ({{fixedRate}} every 1 minute) had one run lasting 7 minutes due to a slow DB; since the scheduler default has only **one thread**, every other job in the service was delayed 7 minutes. Fix:
+- {{@Scheduled(cron = "0 0 2 * * *", zone = "Asia/Ho_Chi_Minh")}};
+- ShedLock ({{@SchedulerLock(name = "debtReminder", lockAtMostFor = "30m", lockAtLeastFor = "5m")}}) with a lock table in the DB so only one pod runs;
+- {{spring.task.scheduling.pool.size=4}};
+- the job catches and logs exceptions, with success/failure metrics to alert when the job doesn't run.
+
+### Sample interview answer
+"With @Scheduled I check four things. Timezone: cron runs by the JVM timezone, containers are usually UTC, so I declare the zone explicitly. Multiple instances: every pod runs the job, so for a job that must run only once I use ShedLock with a DB lock, or move to a dedicated scheduler such as Kubernetes CronJob or Quartz cluster, and still design the job idempotent. Long tasks: the scheduler default has one thread, so a slow job delays every other job; I increase the pool size or push heavy work to a separate executor, and distinguish fixedRate from fixedDelay. Exceptions: errors in a job are only logged and the job runs again next time, so I catch them, log with context, and set metrics plus alerts when the job doesn't succeed within the expected window."
+
 > Senior tip: treat every scheduled job as a **mini distributed system**: it may run concurrently (multiple instances), re-run (retry), and run late (deployment, GC pause). Design with "at-least-once + idempotent" so the system survives all three. If the job is important, use a batch framework (Quartz, Spring Batch) instead of {{@Scheduled}}.`,
     follow: [
-      'Why can {{fixedRate}} cause tasks to pile up compared to {{fixedDelay}}?',
+      'Why can {{fixedRate}} cause runs to pile up compared to {{fixedDelay}}?',
       'How do you ensure a scheduled job is idempotent?'
     ],
   }
