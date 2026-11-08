@@ -42,7 +42,7 @@ spring:
   },
   "spring-035": {
     q: "How does Flyway distinguish between versioned (V__) and repeatable (R__) migrations? What is the purpose of the checksum in the history table, how do you handle \"checksum mismatch\" errors, and is it ever allowed to modify an already executed migration file?",
-    a: `**Summary:** Versioned (V__) migrations run exactly once in version order; repeatable (R__) migrations run whenever content changes and always after remaining versioned migrations. The checksum is recorded in the {{flyway_schema_history}} table; a \"checksum mismatch\" error means the file changed after it was executed - the standard way to handle it is **to add a new migration**, not to modify the old file; {{repair}} is only used when intentional and reviewed.
+    a: `**Summary:** Versioned (V__) migrations run exactly once in version order; repeatable (R__) migrations run whenever content changes and always after remaining versioned migrations. The checksum is recorded in the {{flyway_schema_history}} table; a "checksum mismatch" error means the file changed after it was executed - the standard way to handle it is **to add a new migration**, not to modify the old file; {{repair}} is only used when intentional and reviewed.
 
 ### Two types and checksum
 - **Versioned** {{V1__create_order.sql}}, {{V1.2__add_outbox.sql}}: each version runs at most once, marked in history; schema state is summarized in a single version - "DB is at Vx" is sufficient for the whole team to understand.
@@ -68,7 +68,12 @@ Checksum is the **file content hash**, recorded when the migration runs. Validat
 - Making it a habit to call repair whenever validate fails causes checksum to lose its role as a warning; repair must be a reviewed decision, not a spray-and-pray.
 - Merging migrations from multiple services in a shared schema: version numbers could collide; define version ranges per service or separate location folders per service.
 
-> Senior tip: enforce policy with CI: periodically run {{flyway validate}} on a DB built from scratch from V1 to the latest version and on a staging snapshot; any file drifting from those two paths will be revealed before reaching prod.`,
+### Real-world example
+A developer edited {{V12__add_index.sql}} that had already run on staging (adding {{CONCURRENTLY}} for "safety"). On the next production deploy, the app failed to start: {{Validate failed: Migration checksum mismatch for migration version 12}} - production ran the old V12 content, but the file now differed. The team handled it by: (1) **reverting** V12 to the exact content that had run; (2) creating {{V13}} for the new change; (3) using {{flyway repair}} only on individual dev environments. Another lesson: {{CREATE INDEX CONCURRENTLY}} cannot run inside a transaction - with PostgreSQL, Flyway needs that migration to run outside a transaction (Flyway auto-detects some statements; if not, split the file and configure according to the Flyway version in use). After the incident, the team added a CI rule: run {{flyway validate}} against a snapshot of the production schema for every PR that includes migration files.
+
+### Sample interview answer
+"Versioned migrations use the V prefix and a version number, run exactly once in order, and are used for schema and data changes. Repeatable migrations use the R prefix, run again whenever their content changes (after all versioned migrations), and fit views, functions, and stored procedures. Flyway stores the checksum of each executed file in the flyway_schema_history table; on startup, validate compares checksums with current files to detect if someone edited a migration that already ran, because different environments would end up with different schemas. When I see a checksum mismatch, I do not edit the history table - I find out why the file changed: usually revert the file to its old content and put the new change into a new migration. repair is only used intentionally, such as in a dev environment. The rule is: never modify a migration that has already run in a shared environment."
+`,
     follow: ["What does Flyway repair do and when is it safe to use?", "Why should multi-step migrations on MySQL remember the implicit commit of DDL?"]
   },
   "spring-036": {
@@ -108,7 +113,7 @@ JsonMapper jsonMapper() {
 No need for a separate bean, just adjust yaml: {{spring.jackson.serialization.*}}, {{spring.jackson.default-property-inclusion}}. ObjectMapper after configuration is **thread-safe**: create it once in the app lifecycle.
 
 ### Production pitfall
-- {{@JsonInclude(NON_NULL)}} makes fields with null values disappear entirely from JSON; client distinguishes \"key does not exist\" from \"key = null\", so changing this configuration is a change to the API contract.
+- {{@JsonInclude(NON_NULL)}} makes fields with null values disappear entirely from JSON; client distinguishes "key does not exist" from "key = null", so changing this configuration is a change to the API contract.
 - Disabling {{FAIL_ON_EMPTY_BEANS}} for quietness will mask DTO classes entirely missing getters, output becomes empty {{}}. Check the current ObjectMapper configuration before deciding to disable it.
 - A static util {{new ObjectMapper()}} flowing from an old service to many call paths: in the same app, one area returns ISO, another returns timestamp - two ObjectMappers, two configurations.
 - Creating a new ObjectMapper per request is wasteful and easily drifts; configure it once or via a single bean.
@@ -156,7 +161,7 @@ Infinite recursion on old entities could use {{@JsonManagedReference}}/{{@JsonBa
   },
   "spring-038": {
     q: "The service runs stably locally but in prod, the next boot blows up with \"Migration checksum mismatch\", while a few infrequently used routes report \"column does not exist\". The prod schema has drifted from migration files: how does drift form, how do you handle it when it reveals itself, and what policy prevents it from recurring?",
-    a: `**Summary:** Schema drift is when an environment's real DB differs from what migration files describe: an ALTER run manually to fix an incident, another service's script, late merges, or old restores. It reveals itself in two faces: boot failure at validation (checksum mismatch) or runtime error \"column does not exist\" on rarely visited API paths. I handle it with a process of so-diff - forward-fix - repair with review, and prevent recurrence with a policy of \"schema only goes through migrations\" combined with flyway validation in CI.
+    a: `**Summary:** Schema drift is when an environment's real DB differs from what migration files describe: an ALTER run manually to fix an incident, another service's script, late merges, or old restores. It reveals itself in two faces: boot failure at validation (checksum mismatch) or runtime error "column does not exist" on rarely visited API paths. I handle it with a process of so-diff - forward-fix - repair with review, and prevent recurrence with a policy of "schema only goes through migrations" combined with flyway validation in CI.
 
 ### How drift forms
 1. **Off-hours incident**: DBA ALTERs prod for speed (add index, change type, add column) without a corresponding migration - prod runs immediately, every other env lacks it.
@@ -164,26 +169,26 @@ Infinite recursion on old entities could use {{@JsonManagedReference}}/{{@JsonBa
 3. **Long-lived branches**: V file edited after it ran in some env, or late merge causes chaotic version order - combined with checksum mismatch at boot.
 4. **Restore/snapshot**: schema restored to old state, Flyway history table follows old state or desynchronizes.
 
-Prod \"running fine at that moment\" is why drift hides for so long - error explodes on the next boot, or only on rarely called API paths after several days.
+Prod "running fine at that moment" is why drift hides for so long - error explodes on the next boot, or only on rarely called API paths after several days.
 
 ### Handling process when drift reveals itself
 1. **Freeze schema changes** until a plan is in place; stop pending deployments.
 2. **Diff**: dump prod schema (pg_dump --schema-only) and build a clean schema from V1 to the latest version, then diff every table, column, index, constraint; list every drifted object and its source.
-3. **Forward-fix**: changes that must be kept are normalized into new migrations; residual fragments are cleaned up via migrations - absolutely do not ALTER manually \"for speed\" ever again.
-4. **Repair with review** if checksums mismatched because files were edited: after deciding step 3, use repair to re-stamp the history, with backup. Do not use repair to \"restore synchronization\" without knowing how much is drifted.
+3. **Forward-fix**: changes that must be kept are normalized into new migrations; residual fragments are cleaned up via migrations - absolutely do not ALTER manually "for speed" ever again.
+4. **Repair with review** if checksums mismatched because files were edited: after deciding step 3, use repair to re-stamp the history, with backup. Do not use repair to "restore synchronization" without knowing how much is drifted.
 5. **Return to convention**: from then on, every env uses the same migration chain; if any environment must hold special schema, that difference must be described by a separate migration, not left out of the system.
 
 ### Preventing recurrence
-- **Policy**: every schema change must be via PR containing migration files; DBA users or \"operators\" do not have free DDL rights, ALTER requests must be via ticket and lead to a migration.
+- **Policy**: every schema change must be via PR containing migration files; DBA users or "operators" do not have free DDL rights, ALTER requests must be via ticket and lead to a migration.
 - **Two-way CI**: flyway validate on a DB built from scratch from V1 (catches broken files, order, conflicts), and periodic validation (nightly) on staging/prod snapshots to catch drift outside of code.
 - **History monitoring**: new lines in {{flyway_schema_history}} not from the deploy pipeline is a red flag; set alert for that event.
 
 ### Production pitfall
 - Two teams with shared schema but not partitioning version/folders: someone edits another team's file, checksum blows up unexpectedly.
-- Repair used as bleach whenever it blows: checksum mechanism loses its role as a warning that \"something changed outside the process\".
+- Repair used as bleach whenever it blows: checksum mechanism loses its role as a warning that "something changed outside the process".
 - Enabling {{baseline-on-migrate}} to suppress errors: each env is deemed valid with different real schemas - drift is not fixed but listed as official state.
 
-> Senior tip: do not measure drift in \"how many columns drifted\" - measure it by time from drift appearance to CI alert. With nightly validation policy on snapshots, an off-hours manual ALTER is seen the next morning; without it, drift can live for weeks and explode at the moment of a major release.`,
+> Senior tip: do not measure drift in "how many columns drifted" - measure it by time from drift appearance to CI alert. With nightly validation policy on snapshots, an off-hours manual ALTER is seen the next morning; without it, drift can live for weeks and explode at the moment of a major release.`,
     follow: ["What does {{flyway repair}} fix in the history table?", "What tool do you use to build schema diff between prod and migration code?"]
   },
   "jpa-028": {
@@ -191,7 +196,7 @@ Prod \"running fine at that moment\" is why drift hides for so long - error expl
     a: `**Summary:** Boot has three overlapping mechanisms for schema/seed setup: Hibernate {{ddl-auto}}, init scripts ({{schema.sql}}/{{data.sql}}), and migration tools (Flyway). Mixing all three is a classic source of ordering errors. Two key points: {{spring.sql.init.mode}} defaults to embedded, so on real DBs data.sql is ignored unless {{always}} is enabled; while {{spring.jpa.defer-datasource-initialization}} pushes script execution after Hibernate schema ({{ddl-auto}}) instead of before. When Flyway is present, schema and seed should consistently belong to migrations.
 
 ### When each mechanism runs
-- {{spring.sql.init.mode}} defaults to **embedded**: scripts only run automatically on embedded DBs (H2/HSQL). On real PostgreSQL, unless {{always}} is set, data.sql is ignored completely - the most common cause of \"added seed but see nothing\", and it happens silently without error.
+- {{spring.sql.init.mode}} defaults to **embedded**: scripts only run automatically on embedded DBs (H2/HSQL). On real PostgreSQL, unless {{always}} is set, data.sql is ignored completely - the most common cause of "added seed but see nothing", and it happens silently without error.
 - {{spring.jpa.defer-datasource-initialization=true}}: defers init scripts to run **after** Hibernate creates schema ({{ddl-auto}}) instead of before; fits the flow of Hibernate schema creation then seeding with raw SQL. But with Flyway present, Hibernate should not be the one creating schema (set {{ddl-auto}} to none/validate), so deferring becomes redundant unless mixed intentionally.
 - Relative order between init scripts and Flyway/Liquibase changed between Boot versions; if both mechanisms must coexist, verify with integration tests on the exact Boot version running.
 
@@ -203,11 +208,16 @@ Prod \"running fine at that moment\" is why drift hides for so long - error expl
 | Extra script.sql alongside Flyway | convenient for quick loading when needed | adds another source of ordering to maintain |
 
 ### Production pitfall
-- Scripts running before migrations -> INSERT into non-existent table, boot blows up; or conversely, silently ignored in prod (embedded mode) while H2 test still runs: data \"lives\" in dev, \"dies\" in prod without any exceptions.
+- Scripts running before migrations -> INSERT into non-existent table, boot blows up; or conversely, silently ignored in prod (embedded mode) while H2 test still runs: data "lives" in dev, "dies" in prod without any exceptions.
 - Leaving {{ddl-auto=update}} in prod because schema drifts from migration: Hibernate auto-adds columns making schema drift from Flyway, and validation only scrutinizes migration files - this type of drift lies outside the radar.
 - Seeding reference data (categories, roles, configs) via data.sql: prod needs the same identifier but the script is not guaranteed to run; IDs drift between envs causing FKs to break. Put seed in migrations - versioned for one-time, repeatable for idempotent content.
 
-> Senior tip: remember the rule of three: schema only comes from migrations, init scripts attach to dev/test profiles via {{spring.sql.init.mode}}, all cross-env seeds reside in Flyway; and integration tests run real PostgreSQL (testcontainers) instead of leaving H2 to mask real ordering.`,
+### Real-world example
+A team added {{data.sql}} to seed a province catalog; it worked locally with H2 but showed no data on PostgreSQL - because since Spring Boot 2.5, init scripts only run by default on **embedded** DBs ({{spring.sql.init.mode=embedded}}). A developer set {{mode=always}} and {{spring.jpa.defer-datasource-initialization=true}} -> on production, {{data.sql}} ran **on every boot**, duplicate INSERTs caused boot failures on the second deploy; earlier on staging, the script ran **before** Flyway and reported that the table did not exist. The final decision: production and staging use **Flyway only** for both schema and reference data (migration {{V20__seed_provinces.sql}} uses {{INSERT ... ON CONFLICT DO NOTHING}}), {{spring.sql.init.mode=never}}, Hibernate {{ddl-auto=validate}}; test data is loaded in tests via {{@Sql}} or Testcontainers.
+
+### Sample interview answer
+"Spring Boot has three mechanisms that can create schema or data: schema.sql/data.sql init scripts, Hibernate ddl-auto, and migration tools like Flyway or Liquibase. Init scripts run by default only on embedded DBs; to run on a real DB you must set spring.sql.init.mode to always. They run on every boot and by default before Hibernate initializes, unless you enable defer-datasource-initialization. Flyway runs before the EntityManagerFactory is ready. Mixing these mechanisms easily causes ordering issues and repeated execution. My rule is to choose one path: production uses Flyway for both schema and reference data, written idempotently, ddl-auto set to validate, init scripts disabled; test data is loaded in tests via @Sql or Testcontainers."
+`,
     follow: ["Why does {{spring.sql.init.mode}} default to embedded on real DBs?", "Why should reference data seeding be via migration instead of init scripts?"]
   },
   "jpa-029": {
@@ -240,7 +250,7 @@ JPQL does not understand JSON structure; when condition by key is needed, use na
 @Query(value = "select p.* from product p where p.attributes ->> 'brand' = :brand", nativeQuery = true)
 List<Product> findByBrand(@Param("brand") String brand);
 ~~~
-GIN index created in migration for truly necessary query patterns; each GIN makes every INSERT/UPDATE heavier, so create only based on measured query frequency, not \"just in case\".
+GIN index created in migration for truly necessary query patterns; each GIN makes every INSERT/UPDATE heavier, so create only based on measured query frequency, not "just in case".
 
 ### Trade-off
 | Criteria | JSONB column | Relational subtable |
@@ -251,11 +261,11 @@ GIN index created in migration for truly necessary query patterns; each GIN make
 | When to choose | customizable attributes per type | core data frequently queried |
 
 ### Production pitfall
-- No constraint inside jsonb: adding \"required\" field then silently let old records lack it; validate shape when decoding or backfill via migration.
+- No constraint inside jsonb: adding "required" field then silently let old records lack it; validate shape when decoding or backfill via migration.
 - UPDATE on jsonb column re-issues entire value (MVCC writes new row): large payloads on hot rows cause bloat, adding work for vacuum.
-- GIN index \"just in case\": measure {{pg_stat_user_indexes}}; indices no one uses only waste write and storage.
+- GIN index "just in case": measure {{pg_stat_user_indexes}}; indices no one uses only waste write and storage.
 
-> Senior tip: jsonb is for data with \"changing shapes\"; when a key starts being queried hotly or business constraints tighten, move it to a real column (or generated column) and keep jsonb for the truly extensible parts.`,
+> Senior tip: jsonb is for data with "changing shapes"; when a key starts being queried hotly or business constraints tighten, move it to a real column (or generated column) and keep jsonb for the truly extensible parts.`,
     follow: ["How does snapshot cost of JSON column increase with payload size?", "When should a JSON key be moved into a real column or subtable?"]
   },
   "db-031": {
@@ -266,12 +276,12 @@ GIN index created in migration for truly necessary query patterns; each GIN make
 Advisory lock is like **a meeting room key hanging at the reception** (PostgreSQL): three employees (3 pods) all want to use the room at 9 o'clock, whoever reaches the reception first takes the key, the other two see the hook empty and turn back - no job runs this round. The key isn't attached to anything in the room (not attached to a table), just a number everyone agrees on the meaning. **Session-level** type means you must return the key yourself; **transaction-level** type means the key automatically returns to the hook when you finish the meeting (commit/rollback). If the key holder faints (connection closes), the receptionist automatically reclaims the key.
 
 ### Terminology
-- **Advisory lock**: \"consultative\" lock with meaning defined by the application, PostgreSQL only manages who holds which key.
+- **Advisory lock**: "consultative" lock with meaning defined by the application, PostgreSQL only manages who holds which key.
 - **Session-level / transaction-level**: lock belongs to the connection (held until unlock/close) / belongs to the transaction (released upon commit/rollback).
 - **pg_try_***: variant that does not wait - returns true/false immediately.
 - **Connection pool**: pool of reused connections; two consecutive statements outside a transaction might pass through two different connections.
 - **ShedLock**: Java library locking {{@Scheduled}} jobs using a lock table (or Redis, Mongo...) with duration {{lockAtMostFor}}.
-- **Leader election**: select one instance to be the \"runner\" in the cluster.
+- **Leader election**: select one instance to be the "runner" in the cluster.
 - **pg_locks**: system view listing held/waiting locks.
 
 ### A job run on 3 pods, step-by-step
@@ -282,12 +292,12 @@ Advisory lock is like **a meeting room key hanging at the reception** (PostgreSQ
 09:00:00 - 09:00:40  pod-A runs job in transaction (holds 1 connection, 1 lock)
 09:00:40.010  pod-A: COMMIT -> lock 71801 auto-releases
 If pod-A is killed at 09:00:20 -> TCP closes -> backend ends -> lock released
-(if network \"hangs\" instead of closing, only released upon TCP keepalive/timeout detection)
+(if network "hangs" instead of closing, only released upon TCP keepalive/timeout detection)
 ~~~
-1. **Open transaction and try to take non-waiting lock**. Why try: rule is \"exactly one\", no need to queue; losing pod skips this round.
+1. **Open transaction and try to take non-waiting lock**. Why try: rule is "exactly one", no need to queue; losing pod skips this round.
 2. **Work in same transaction**. Why: Spring binds one connection for the transaction, lock and work go along the same session.
 3. **Commit/rollback auto-releases lock**. Why safe: no path forgets to unlock, even during exceptions.
-4. **Process death loses lock per connection**. Why better than file lock: no \"zombie lock\" needing manual cleanup.
+4. **Process death loses lock per connection**. Why better than file lock: no "zombie lock" needing manual cleanup.
 5. **Trade-off**: transaction held throughout job - 40-minute job holds connection and old snapshot (blocks VACUUM). For long jobs, consider acquiring lock on separate connection held outside pool, or ShedLock with {{lockAtMostFor}}.
 
 ### Comparison and choosing
@@ -301,4 +311,3 @@ If pod-A is killed at 09:00:20 -> TCP closes -> backend ends -> lock released
     follow: ["Does {{pg_advisory_xact_lock}} block VACUUM if held too long?", "In what case is ShedLock better than PostgreSQL advisory locks?"]
   }
 });
-
