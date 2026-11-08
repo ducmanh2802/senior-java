@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-08",
+  "intro": "Hôm nay nghiêng về JDK 28: JEP 544 đưa code đã biên dịch sẵn vào AOT cache, value classes (JEP 401) vào preview và pool cho confined arena. Ngoài ra có hai bài Spring AI 2.1 về message parts và embedding tự cấp, cùng cảnh báo cần xử lý về chứng chỉ eMudhra trong cacerts của JDK.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "JEP 544: AOT cache lưu cả native code để JVM nóng nhanh hơn (JDK 28)",
+      "title": "JEP 544: Ahead-of-Time Code Compilation",
+      "url": "https://openjdk.org/jeps/544",
+      "source": "OpenJDK",
+      "category": "tech",
+      "summary": "JEP 544 (trạng thái Integrated, mục tiêu JDK 28) mở rộng AOT cache sẵn có: lần chạy huấn luyện với {{-XX:AOTCacheOutput}} lưu thêm native code do C1 và C2 sinh ra cùng class đã nạp và profile. Lần chạy production dùng {{-XX:AOTCache}} nạp luôn code này thay vì biên dịch lại method nóng. Nếu thiếu, không tương thích hoặc bị deoptimize thì JVM quay về interpreter và JIT. AOT code chỉ dùng khi CPU và GC trùng với lần huấn luyện.",
+      "why": "Service Spring Boot trên Kubernetes hay chịu thời gian warm-up sau mỗi lần scale hoặc deploy. Tính năng này không cần đổi code, nhưng bạn phải đưa bước huấn luyện vào pipeline build image và đảm bảo kiến trúc CPU ở production khớp.",
+      "interview_q": "Pod Spring Boot của bạn mất vài phút mới đạt hiệu năng đỉnh sau mỗi lần scale-out. So sánh CDS/AOT cache, CRaC và GraalVM native image, bạn chọn gì và vì sao?",
+      "related": ["jvm-008", "jvm-017"],
+      "tags": ["jdk28", "aot", "startup"]
+    },
+    {
+      "title_vi": "Value classes vào preview ở JDK 28: những chỗ code Java hiện tại có thể vỡ",
+      "title": "Quality Outreach Heads-up - JDK 28: Value Classes",
+      "url": "https://inside.java/2026/10/27/quality-heads-up/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "JEP 401 đưa value classes vào preview ở JDK 28. Khi bật preview, 30 class JDK (Integer, Optional, các kiểu {{java.time}}…) trở thành value class: {{==}} so sánh theo giá trị, synchronized trên chúng bị cấm, và {{WeakHashMap}} hay {{java.lang.ref}} ném {{IdentityException}}. Một số thay đổi áp dụng cả cho code biên dịch không preview. Constructor của record dùng {{this}} có thể lỗi biên dịch. Tác giả khuyên chạy build và test trên JDK 28 ở cả hai chế độ.",
+      "why": "Thư viện và framework nội bộ thường có {{synchronized}} trên Integer, so sánh {{==}} Optional hoặc dùng {{WeakHashMap}} với kiểu java.time. Test sớm trên JDK 28 giúp biết trước chỗ nào phụ thuộc vào identity của object.",
+      "interview_q": "Value class khác class thường ở điểm nào về identity? Những đoạn code nào trong dự án Java của bạn sẽ hỏng khi {{Integer}} hay {{LocalDate}} mất identity?",
+      "related": [],
+      "tags": ["valhalla", "jdk28"]
+    },
+    {
+      "title_vi": "JDK 28: confined arena cấp phát vùng nhớ nhỏ nhanh hơn nhiều lần nhờ pool",
+      "title": "Allocating Off-Heap Memory: Typically 6-18x Faster in JDK 28",
+      "url": "https://inside.java/2026/10/23/confined-pools/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Từ JDK 28, cấp phát nhỏ trong {{Arena.ofConfined()}} lấy từ pool native memory thay vì allocator thông thường, không cần đổi code. Mỗi platform thread giữ cache pool (mặc định bốn pool 64 byte), vùng đã dùng được xoá trước khi tái sử dụng. Benchmark JMH trên các nền tảng cho thấy cấp phát 5 và 20 byte nhanh khoảng 7 đến 19 lần; trên 64 byte gần như không đổi. Bài lưu ý microbenchmark không chuyển thẳng thành tăng tốc cả ứng dụng.",
+      "why": "Ai dùng Foreign Function & Memory API cho I/O hay native interop sẽ được lợi miễn phí. Cần nhớ đóng arena không còn gọi {{free}} ngay, nên công cụ theo dõi malloc/free có thể cho số liệu khác trước.",
+      "interview_q": "Bạn cần cấp phát nhiều buffer off-heap ngắn hạn trong service Java. So sánh {{ByteBuffer.allocateDirect}} với Foreign Memory API về vòng đời và rủi ro rò rỉ.",
+      "related": [],
+      "tags": ["ffm", "jdk28", "performance"]
+    },
+    {
+      "title_vi": "Spring AI 2.1: Message Parts giữ nguyên reasoning của model khi gửi lại hội thoại",
+      "title": "Spring AI 2.1 Message Parts: Reasoning That Survives the Round Trip",
+      "url": "https://spring.io/blog/2026/10/28/spring-ai-message-parts-reasoning-replay",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Model có reasoning trả về thinking block, chữ ký hoặc dữ liệu mã hoá phải được gửi lại đúng thứ tự, nếu không có thể bị lỗi 400 hoặc mất ngữ cảnh. Spring AI 2.1 lưu nội dung message thành danh sách {{MessagePart}} có thứ tự (TextPart, ReasoningPart, ToolCallPart, ToolResultPart, MediaPart, UnknownPart) và replay theo từng provider. Reasoning của vendor này không được gửi cho vendor khác. Lịch sử lưu trước 2.1 không có reasoning part.",
+      "why": "Nếu bạn tự lưu lịch sử chat vào DB, việc chỉ giữ text sẽ làm mất reasoning khi gọi tiếp. Cần lưu đủ part và attribute, và tính đến việc đổi provider giữa chừng.",
+      "interview_q": "Chatbot dùng model reasoning và tool calling gặp lỗi 400 ở lượt gọi thứ hai. Bạn điều tra thế nào và thiết kế lưu lịch sử hội thoại ra sao?",
+      "related": ["ai-003"],
+      "tags": ["spring-ai", "llm"]
+    },
+    {
+      "title_vi": "Spring AI 2.1: tự cấp embedding cho vector store bằng upsert",
+      "title": "Using Your Own Embeddings in Spring AI 2.1",
+      "url": "https://spring.io/blog/2026/10/28/spring-ai-upsert-own-embeddings",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Trước đây {{VectorStore.add()}} luôn tạo embedding bằng model của store. Spring AI 2.1 thêm {{VectorStore.upsert(List<EmbeddedDocument>)}} để ghi vector do ứng dụng cung cấp và {{similaritySearch(float[], SearchRequest)}} để tìm bằng vector truy vấn. Dùng ID ổn định để ghi đè thay vì tạo bản trùng; một lần ghi không mang tính transaction nên lỗi thì retry cả danh sách. Tính đến 2.1.0-RC1, PGvector, Redis, Elasticsearch, Qdrant và OpenSearch hỗ trợ.",
+      "why": "Hữu ích khi embedding sinh ở pipeline riêng, dùng model đa phương thức, hoặc khi cần tái lập chỉ mục sau khi đổi model mà không gọi lại model trong store.",
+      "interview_q": "Hệ RAG của bạn sắp đổi embedding model và nguồn tài liệu thay đổi hằng ngày. Bạn tái lập chỉ mục và đảm bảo idempotent thế nào?",
+      "related": ["ai-002"],
+      "tags": ["spring-ai", "rag", "vector"]
+    },
+    {
+      "title_vi": "Chứng chỉ eMudhra bị lộ khoá: kiểm tra và xử lý cacerts của JDK",
+      "title": "Compromised Certificates and OpenJDK Java Runtimes",
+      "url": "https://openjdk.org/emudhra",
+      "source": "OpenJDK",
+      "category": "tech",
+      "summary": "Khoá riêng của tám intermediate CA của eMudhra bị lộ. Trang của OpenJDK hướng dẫn chạy {{CheckCerts.java}} (JDK 8 trở lên) để kiểm tra runtime. Cách xử lý ưu tiên là cập nhật JDK có bản vá (release note nhắc JDK-8395690). Nếu chưa có thì xoá bốn root cert liên quan khỏi {{cacerts}} bằng {{keytool -delete}}, rồi restart, hoặc bật kiểm tra revocation với {{-Dcom.sun.net.ssl.checkRevocation=true}}. Runtime theo OS như Debian cần thao tác riêng.",
+      "why": "Image container thường đóng JDK cũ nhiều tháng và truststore nằm sẵn trong image. Bạn cần biết service nào đang chạy JDK nào và có quy trình rebuild image nhanh khi có cảnh báo như thế này.",
+      "interview_q": "Một CA bị lộ khoá và JDK trong 40 image của bạn đang tin CA đó. Bạn kiểm tra phạm vi ảnh hưởng và xử lý khẩn cấp thế nào?",
+      "related": [],
+      "tags": ["security", "tls", "jdk"]
+    }
+  ]
+}
