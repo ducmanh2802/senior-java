@@ -293,6 +293,12 @@ Choose a **real but manageable** weakness, and always have: example + impact + i
 - **Skipping success criteria:** technically done but does not meet the need.
 - **No early feedback:** going far down the wrong path.
 
+### Real-world example
+A backend developer was assigned to build a data sync pipeline from PostgreSQL to OpenSearch using CDC (Debezium + Kafka Connect) within 3 weeks — never used either before. Day 1: clarify success criteria (latency under 5 seconds, no lost events on restart) and who in the company has used Kafka Connect. Days 2–3: read official docs, run an example with Docker Compose locally. End of week 1: demo one working table and report risks seen (initial snapshot is slow with a 50-million-row table, need to change replication slot configuration managed by the DBA). Week 2: work with the DBA on the replication slot, add lag monitoring. Week 3: rehearse connector restart, confirm no lost events, write a 2-page operations doc. Finished 2 days late but reported from end of week 1 so no one was surprised; the doc later helped the next person handle a new table in 1 day.
+
+### Interview sample answer
+"First I clarify the goal and success criteria, deadline, and what is required versus what can be dropped — without a clear destination, learning any amount can still go the wrong direction. Next I do a quick survey for one or two days: read official docs, run a small example, and ask who in the company has done similar work so I do not repeat their mistakes. Then I break the work into small milestones, build something runnable as early as possible — usually in the first week — to get feedback and expose real risks. I report progress and risks early, even when I see a delay, so the lead has time to adjust scope or add people. Finally I write down what I learned as a short doc for the team. That way I learn fast and do not let inexperience become a project risk."
+
 > Senior tip: in the interview, emphasise "I will time-box the learning and set an early checkpoint". This shows controlled work — very valuable when assigned unfamiliar tasks.`,
     follow: [
       'How do you decide between figuring it out yourself and asking early to avoid wasting time?',
