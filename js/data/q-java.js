@@ -5866,7 +5866,7 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 
 ### Sealed + exhaustiveness
 - sealed interface Shape permits Circle, Rect, Triangle.
-- switch (shape) { case Circle c -> ...; case Rect r -> ...; case Triangle t -> ...; } không cần default; compiler biết hết subtype.
+        case Triangle t -> "Tam giác " + t.a() + "/" + t.b() + "/" + t.c();
 - Nếu thêm subtype mới vào permits, mọi switch không default sẽ lỗi compile → refactor an toàn.
 
 ### Pitfall production
@@ -6967,7 +6967,7 @@ String label = switch (status) {       // status có thể null
   id: 'modern-043',
   topic: 'modern',
   level: 'senior',
-  q: 'Record: canonical/compact constructor, bat bien nong (shallow), equals/hashCode, DTO/JPA.',
+  q: 'Record: canonical và compact constructor, bất biến nông (shallow), equals/hashCode, và dùng record cho DTO hay JPA entity?',
   a: `**Tóm tắt:** {{record}} (Java 16) là lớp bất biến "mang dữ liệu", compiler tự sinh constructor, accessor, {{equals/hashCode/toString}}; **compact constructor** cho phép validate/chuẩn hóa tham số trước khi gán; nhưng tính bất biến chỉ là **nông (shallow)** - nếu component là {{List/Map}} có thể sửa được thì record vẫn bị thay đổi gián tiếp. Record rất hợp làm DTO (Data Transfer Object - đối tượng chuyển dữ liệu), **không** phù hợp làm JPA entity (thực thể ánh xạ bảng CSDL).
 
 ### Record là gì và vì sao cần
@@ -7029,7 +7029,7 @@ public record Order(String id, List<String> items) {
   id: 'modern-044',
   topic: 'modern',
   level: 'lead',
-  q: 'Sealed + pattern matching switch: exhaustiveness, compiler kiem tra, loi ich khi them subtype moi.',
+  q: 'Sealed + pattern matching switch: compiler kiểm tra exhaustiveness thế nào, và lợi ích gì khi thêm subtype mới?',
   a: `**Tóm tắt:** {{sealed}} (Java 17) giới hạn chính xác tập lớp con được phép; kết hợp **pattern matching for switch** (Java 21) thì compiler có thể kiểm tra **exhaustive** (đã xử lý hết mọi kiểu con) ngay lúc biên dịch. Lợi ích lớn nhất: khi thêm subtype mới vào hierarchy, mọi {{switch}} expression thiếu nhánh sẽ **lỗi compile** - bạn được compiler "dẫn đi sửa" thay vì phát hiện bug ở runtime.
 
 ### Sealed là gì và vì sao cần
@@ -7087,7 +7087,7 @@ String fee(Payment p) {
   id: 'modern-045',
   topic: 'modern',
   level: 'senior',
-  q: 'Sealed class va pattern matching for switch (Java 21): exhaustiveness dam bao gi va pitfall khi migrate tu if-else/visitor.',
+  q: 'Sealed class và pattern matching for switch (Java 21): exhaustiveness đảm bảo gì, và có những pitfall nào khi migrate từ if-else hoặc visitor?',
   a: `**Tóm tắt:** Từ Java 21, {{sealed}} (giới hạn tập lớp con) kết hợp pattern matching cho {{switch}} cho phép compiler kiểm tra exhaustive (phủ hết mọi trường hợp) ngay lúc biên dịch. Khi migrate từ chuỗi {{if-else instanceof}} hoặc từ visitor pattern, bạn được code gọn hơn và an toàn hơn khi thêm type mới, nhưng phải chú ý {{null}}, thứ tự case, và chỉ dùng cho domain thật sự "đóng".
 
 ### Cái gì và vì sao cần (bối cảnh migrate)
@@ -7114,7 +7114,7 @@ String render(Shape s) {
         case Circle c -> "O r=" + c.r();
         case Rect r   -> "[] " + r.w() + "x" + r.h();
         case Triangle t -> "/\\";
-    }; // thiếu Triangle -> LỖI COMPILE (compiler dẫn đi sửa)
+    }; // nếu xoá nhánh Triangle -> LỖI COMPILE (compiler dẫn đi sửa)
 }
 ~~~
 
@@ -7149,7 +7149,7 @@ String render(Shape s) {
   id: 'modern-046',
   topic: 'modern',
   level: 'lead',
-  q: 'Tu Java 8 len 21: lo trinh migrate va tinh nang dang gia nhat.',
+  q: 'Nâng từ Java 8 lên 21: lộ trình migrate ra sao và những tính năng nào đáng giá nhất?',
   a: `**Tóm tắt:** Lộ trình an toàn nhất là đi theo các bản **LTS** (Long-Term Support - bản hỗ trợ dài hạn: 8→11→17→21), mỗi bước có baseline đo lường, quét tương thích tự động, chạy song song CI, và rollout có canary/rollback. Giá trị lớn nhất khi lên 21 không chỉ là cú pháp ({{record/sealed/pattern matching}}) mà còn ở runtime (GC hiện đại, **virtual thread** cho I/O) và bảo mật nền tảng (strong encapsulation).
 
 ### Vì sao đi từng LTS thay vì nhảy 8→21
