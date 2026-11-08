@@ -240,58 +240,112 @@ Walk through the 10.00 split three ways, explain why 3.33 × 3 is off, then desc
   'lesson-core-005': {
     title: `String, StringBuilder and the string pool`,
     goals: [
-      'Explain String immutability and the string pool',
-      'Choose StringBuilder for repeated concatenation',
-      'Normalize and mask identity data safely'
+      'Explain why String is immutable and what the string pool does',
+      'Choose StringBuilder for repeated concatenation in a loop',
+      'Normalize and mask identity data safely without losing leading zeros'
     ],
-    body: `**Summary:** {{String}} is immutable, so it can be shared safely and used as a key; repeated concatenation in a loop can create many intermediate objects, so use {{StringBuilder}}. The string pool canonicalizes some literals; compare content with {{equals}}, never rely on identity or call {{intern}} casually.
+    body: `**Summary:** A {{String}} is an immutable object: once created, its characters never change. Immutability (the value cannot be modified after creation) makes a String safe to share across code and safe to use as a key in a {{HashMap}} (a key-value map that uses hash codes for fast lookup). Repeated concatenation (joining text together) in a loop can create many temporary objects, so use {{StringBuilder}} (a mutable, growable character buffer) for that case. The string pool (a special JVM memory area that reuses some string literals) can share identical literals; compare text content with {{equals}}, never with {{==}} for content, and avoid calling {{intern}} (forcing a string into the pool) unless you have measured a clear benefit.
 
-### String and the pool
-A String stores content that never changes after creation. {{concat}} does not modify the old string but returns a new one; this keeps the hash cache, sharing, and key usage stable. A literal such as {{"java"}} is placed in the pool; the compiler may fold constant literals. {{new String("java")}} creates a separate object even though the content is equal.
+### String immutability and the pool
+**What:** A String holds a sequence of characters that does not change after the object is created. **Why it matters:** if the content could change, a String used as a map key could silently move to the wrong bucket, and shared references would see unexpected edits (like two people editing the same document when you thought each had a copy). **How it works:** methods such as {{concat}} or {{substring}} do not modify the original string; they return a new String (or sometimes a shared representation internally), so the original remains stable.
+
+A string literal like {{"java"}} is stored in the string pool. The pool is a canonicalization (deduplication) mechanism: the JVM can reuse one shared instance for the same literal. The compiler may also fold constant expressions (e.g. {{"ja" + "va"}}) at compile time. {{new String("java")}} explicitly creates a separate heap object even if the characters are identical.
 
 ~~~java
-String a = "java", b = new String("java");
-boolean sameText = a.equals(b); // true
-boolean sameObject = a == b;    // false
+String a = "java";                 // literal: comes from the pool
+String b = new String("java");     // explicit new object on the heap
+boolean sameText = a.equals(b);    // true: same character content
+boolean sameObject = (a == b);     // false: different object identities
 ~~~
 
-{{==}} on references checks whether they are the same object, not whether they hold the same characters. {{intern()}} requests the canonical string from the pool, but keeping strings in the pool has a cost and is usually unnecessary in applications. Use it only after measuring cardinality and the memory benefit.
+{{==}} on references checks object identity (same memory object), not character content. This is a common production bug: two values look the same in logs but {{==}} returns false. Use {{Objects.equals(a, b)}} or {{a.equals(b)}} (with null care) for content.
 
-### The cost of concatenation
-Inside a loop, {{result += part}} creates a new string each time because String is immutable; the total number of copied characters can grow quadratically as the result grows incrementally. {{StringBuilder}} keeps a mutable buffer, expands it as needed, then creates the final String via {{toString}}. The Java compiler optimizes simple concatenation within a single expression, but it cannot fold arbitrary concatenation across loop iterations.
+{{intern()}} asks the JVM for the canonical pooled instance with the same content. It can reduce memory only when the same few values repeat enormously; otherwise it adds overhead and can increase pressure on pool-related structures. Treat it as a measured optimization, not a default habit.
+
+### The cost of concatenation in a loop
+**What goes wrong:** {{result += part}} inside a loop looks simple, but String is immutable. Each iteration creates a new String containing all previous characters plus the new part, then discards the old intermediate string for garbage collection (GC, automatic memory cleanup). **Why it is expensive:** copying grows with the result size. For n parts, total copied work can approach O(n²) (quadratic growth) instead of O(n).
+
+~~~java
+// Risky in a large loop: creates many intermediate String objects
+String result = "";
+for (String part : parts) {
+    result += part; // new String each iteration
+}
+
+// Better: one mutable buffer reused across iterations
+StringBuilder sb = new StringBuilder(expectedTotalLength);
+for (String part : parts) {
+    sb.append(part);
+}
+String result = sb.toString(); // create the final String once
+~~~
+
+The Java compiler can optimize simple concatenation in a single expression (it may use a builder behind the scenes), but it cannot generally merge concatenations across arbitrary loop iterations. When you concatenate repeatedly, make the intent explicit with {{StringBuilder}}.
 
 | Approach | Use when | Note |
 |---|---|---|
-| {{+}} | short, readable expressions | the compiler usually optimizes it |
-| {{StringBuilder}} | repeated concatenation in one thread | not thread-safe |
-| {{StringBuffer}} | legacy API needing per-operation synchronization | synchronization does not make a whole business operation atomic |
+| {{+}} | short, readable expressions outside hot loops | compiler often optimizes a single expression |
+| {{StringBuilder}} | repeated concatenation in one thread | mutable buffer, not thread-safe (not safe for concurrent unsynchronized use) |
+| {{StringBuffer}} | legacy API needing per-method synchronization | synchronization (locking per call) does not make a whole multi-step business operation atomic |
 
-### Normalization and masking
-Define normalization per domain: card numbers may drop spaces/hyphens but must not drop arbitrary characters; account numbers may keep leading zeros, so never parse them into a long. Masking keeps only the necessary suffix and never logs the original value. Use a builder with an expected capacity to avoid repeated buffer allocation.
+### Normalization and masking (identity data)
+**Normalization** means converting input into a single, agreed form before validation (e.g. remove spaces/hyphens from a card number). **Masking** means hiding most of a sensitive value while keeping a small part useful for support (e.g. {{****7890}}). Both must follow a clear domain contract.
 
-Immutable Java strings also have a downside: you cannot reliably erase every copy of a password from the heap. For short-lived secrets, a char[] API lets the caller overwrite the data, although GC/serialization/logging still demand care. Do not use a String for a credential and then trust that {{null}} erases the memory immediately.
+- A card number may allow spaces and hyphens to be removed, but you must not silently drop arbitrary characters, or two different inputs could collapse into the same identifier.
+- An account number may keep leading zeros. Never parse it into a numeric type like {{long}} for storage/formatting if leading zeros matter, because numeric parsing loses them ({{0012}} becomes {{12}}).
+- Mask at the boundary (as early as safely possible, before logging/metrics/traces) and never log the original raw value.
+
+~~~java
+// Example idea: normalize (remove allowed separators) -> validate -> mask -> log
+String clean = normalize(raw);     // keep leading zeros, reject bad chars
+validate(clean);
+String masked = maskKeepLast4(clean);
+log.info("account={}", masked);    // safe to log
+~~~
+
+Immutable Java strings have a security downside: you cannot reliably erase every copy of sensitive data (like a password) from heap memory. For short-lived secrets, a {{char[]}} API lets the caller overwrite the array contents, although garbage collection, serialization, and logging still require care. Do not store credentials in a long-lived String and assume setting it to {{null}} immediately wipes memory.
 
 ### Production pitfalls
-- Logging a request before masking: the data has already left the safe path; mask at the boundary before logging.
-- {{substring}} is not Unicode normalization. Characters that look alike may have different code points; international business logic must pick a specific Unicode normalization.
-- Masking by character count instead of by normalized digit characters can expose more than intended.
-- Never use {{==}} for content, and do not rely on the pool to fix comparison bugs.
-- A StringBuilder can grow its buffer and keep sensitive data in memory; avoid writing it to logs/debug output.
+- Logging before masking: once written to logs, the data has left the safe path and may be replicated to log systems.
+- {{substring}} is not Unicode normalization. Characters that look identical to humans can have different code points (internal numeric codes for characters); international flows may need an explicit Unicode normalization form (NFC/NFD) chosen by the business.
+- Masking by raw character count instead of by normalized digit/letter characters can reveal more than intended.
+- Never use {{==}} to compare content; do not rely on the string pool to "fix" equality bugs.
+- A {{StringBuilder}} can retain a large internal buffer; avoid writing builder contents into logs or debug dumps when they may hold sensitive data.
 
-### Interview notes
-Compare loop concatenation with a builder, explain that the pool is not a business cache, then describe the order normalize → validate → mask → log without losing leading zeros.`,
+### Interview framing
+A strong answer walks through: (1) immutability and why {{==}} differs from {{equals}}, (2) loop concatenation cost versus {{StringBuilder}}, (3) why {{intern}} is not a general cache, and (4) the safe order **normalize -> validate -> mask -> log** while preserving leading zeros.`,
     exercises: [{
       title: 'Normalize and mask an account string',
-      prompt: `Write {{Mask.account(String raw)}}: remove spaces and hyphens, require at least 4 ASCII letters/digits, preserve leading zeros; return {{*}} for every character except the last 4. A null or malformed input throws IllegalArgumentException.`,
+      prompt: `Implement {{Mask.account(String raw)}}: remove spaces and hyphens, require at least 4 ASCII letters/digits (A-Z, a-z, 0-9) after normalization, preserve leading zeros; return {{*}} for every character except the last 4. A null or malformed input throws IllegalArgumentException.`,
       hints: [
-        'Do not parse into a number because that loses leading zeros; filter characters into a StringBuilder.',
-        'Compute the four-character suffix and build the masked result only after normalization.'
+        'Do not parse the value into a number type, because parsing drops leading zeros; filter characters into a StringBuilder.',
+        'Normalize first, validate the length/characters, then compute the last-4 suffix and build the masked result.'
       ],
-      explain: `Normalization must follow an explicit input contract; here only ASCII spaces and hyphens may be removed. Any character outside ASCII alphanumeric is rejected rather than silently deleted, so two different identifiers never collapse into one. The builder keeps the complexity linear at O(n) and creates no new string per character.`
+      explain: `The input contract is explicit: only ASCII spaces and hyphens may be removed. Any character outside ASCII alphanumeric is rejected instead of silently deleted, so two different identifiers cannot accidentally become the same string. Using a {{StringBuilder}} keeps the work linear (O(n), proportional to input length) and avoids creating a new String for every character. Masking happens after normalization so the "last 4" characters are counted from the cleaned identifier.`
     }],
     check: [
-      { q: 'Pick the correct Java rule.', options: ['Option A', 'Option B', 'Option C', 'Option D'], explain: 'This option follows the mechanism described above.' },
-      { q: 'Which choice avoids the production pitfall?', options: ['Option A', 'Option B', 'Option C', 'Option D'], explain: 'This choice preserves the stated invariant.' }
+      {
+        q: 'Why is {{result += part}} inside a large loop often a bad choice for building a long String?',
+        options: [
+          'Because String is immutable, each iteration can create a new String and copy characters, leading to quadratic growth in work',
+          'Because {{+}} is not allowed in Java loops',
+          'Because StringBuilder cannot produce a String result',
+          'Because the string pool automatically prevents all intermediate objects'
+        ],
+        answer: 0,
+        explain: 'A String cannot be modified in place. Repeated {{+=}} typically creates many intermediate strings and copies growing amounts of data. {{StringBuilder}} keeps a mutable buffer and appends in amortized linear time for the whole loop.'
+      },
+      {
+        q: 'Which approach correctly compares two String values by their text content?',
+        options: [
+          'Use {{==}} because the string pool makes all equal strings the same object',
+          '{{a.equals(b)}} (or {{Objects.equals(a, b)}} for null safety) compares character content',
+          'Call {{intern()}} on both values and then always use {{+}} to compare',
+          'Parse both strings into {{long}} values first'
+        ],
+        answer: 1,
+        explain: '{{==}} checks reference identity, not content. Equal text may or may not be the same object depending on how the strings were created. {{equals}} (and {{Objects.equals}}) compares the actual characters; parsing to a number is wrong for identifiers with leading zeros or non-numeric content.'
+      }
     ]
   }
 });
