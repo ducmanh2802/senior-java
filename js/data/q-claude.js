@@ -59,6 +59,9 @@ content-type: application/json
 - **Đặt max_tokens quá thấp** → câu trả lời bị cắt, {{stop_reason}} là {{max_tokens}}.
 - **Mảng messages bắt đầu bằng assistant** → không hợp lệ; tin nhắn đầu phải là user.
 
+### Ví dụ đời thực
+Sáng nay chatbot hỗ trợ của team bắt đầu nhận phàn nàn: "bot quên đơn hàng mình hỏi cách đây 2 lượt". Dashboard ghi nhận **stop_reason = end_turn** bình thường nhưng **input_tokens mỗi request chỉ ~200** thay vì ~2.000 như thường (khi gửi full history). Kiểm tra log application: một deploy lúc 06:00 sáng thay đổi hàm {{buildMessages()}} – thay vì {{history.concat(newUserMsg)}} thì ghi đè {{history = [newUserMsg]}}. Mỗi request chỉ gửi tin nhắn user hiện tại, system prompt và lịch sử bị mất. Khắc phục: revert commit, thêm unit test {{assertEquals(history.size(), expectedSize)}} vào CI, và bật alert khi {{input_tokens < 500}} trên route chat (ngưỡng thường 1.500+). Sau fix: input_tokens quay về ~2.100, tỷ lệ phàn nàn "quên ngữ cảnh" về 0%, chi phí input tăng nhẹ do gửi thêm history nhưng được bù bằng prompt caching (cache read 92%).
+
 ### Trả lời miệng 1 phút
 "Messages API là một endpoint duy nhất, nhận model, max_tokens, system prompt và mảng messages user/assistant, trả về các content block cùng stop_reason và usage. Điểm quan trọng nhất là nó stateless: server không giữ hội thoại, nên tôi lưu lịch sử ở backend và gửi lại toàn bộ mỗi lượt. Hệ quả là chi phí input tăng theo độ dài hội thoại, nên tôi dùng prompt caching cho phần đầu ổn định và tóm tắt lịch sử khi gần đầy context. Khi parse response tôi luôn kiểm tra type của từng block và stop_reason, không giả định chỉ có text."
 
@@ -111,6 +114,9 @@ switch (resp.stopReason()) {
 - **Retry cùng request khi max_tokens** → bị cắt y hệt lần trước.
 - **Retry vô hạn khi refusal** → tốn tiền và vẫn bị từ chối.
 - **Coi pause_turn là lỗi** → mất kết quả web search hay code execution đang chạy dở.
+
+### Ví dụ đời thực
+Đêm qua pipeline "trích xuất hoá đơn" chạy batch 5.000 file báo lỗi parse JSON tăng vọt từ 0.2% lên 18%. Log cho thấy các record lỗi đều có **stop_reason = max_tokens** và output token = 1.024 (chạm trần {{max_tokens}} cấu hình). Nguyên nhân: prompt mới thêm yêu cầu "giải thích từng trường" làm output trung bình tăng từ 600 lên 1.200 token, vượt quá trần 1.024. Code cũ chỉ đọc {{content[0].text}} rồi {{JSON.parse()}} mà không kiểm tra {{stop_reason}}, nên JSON bị cắt giữa chừng (ví dụ chuỗi JSON thiếu dấu ngoặc đóng) ném exception. Fix: trước khi parse, kiểm tra nếu {{stopReason}} là {{max_tokens}} thì retry với budget lớn hơn; đồng thời nâng {{max_tokens}} lên 2.048 cho route này. Kết quả: tỷ lệ parse error giảm xuống 0.1%, chi phí output tăng ~15% nhưng trong ngân sách.
 
 ### Trả lời miệng 1 phút
 "Tôi luôn switch theo stop_reason trước khi dùng content. end_turn thì dùng bình thường. max_tokens nghĩa là output bị cắt nên tôi không parse, mà gọi lại với trần lớn hơn hoặc yêu cầu ngắn lại, và có metric đếm số lần bị cắt. tool_use là tín hiệu chạy vòng lặp agent: thực thi tool, gửi tool_result với đúng tool_use_id rồi gọi tiếp. pause_turn là server tool tạm dừng, chỉ cần gửi lại content để chạy tiếp. Còn refusal thì đọc stop_details, báo người dùng và có thể bật fallback, tuyệt đối không retry mù quáng."
@@ -188,6 +194,9 @@ public SseEmitter stream(@RequestParam String q) {
 - **Không xử lý event error giữa chừng** → lưu câu trả lời cụt vào DB.
 - **Giữ thread chờ quá lâu** trên server servlet → cạn thread pool khi đông người dùng; cân nhắc WebFlux hoặc virtual threads.
 
+### Ví dụ đời thực
+Sáng nay feature "chat stream" trên production bị report: "chữ hiện ra hết một lần sau 15 giây chờ". Kiểm tra access log Nginx: response status 200, Content-Type {{text/event-stream}}, nhưng header **Content-Length** xuất hiện và body chỉ có một chunk lớn sau 15s. Nguyên nhân: Nginx mặc định bật {{proxy_buffering on}}, gom toàn bộ SSE rồi trả một lần. Fix: thêm header {{X-Accel-Buffering: no}} vào response Spring (hoặc tắt buffering ở Nginx location {{/chat/stream}}). Kiểm tra lại bằng {{curl -N}}: TTFT (time to first token — thời gian nhận token đầu tiên) từ 15.000ms giảm xuống 320ms, chữ chạy mượt. Bổ sung test tích hợp: gọi stream endpoint bằng client HTTP, assert nhận được chunk đầu tiên trong 1 giây. Với Spring MVC {{SseEmitter}}, đảm bảo gửi dữ liệu qua {{emitter.send(SseEmitter.event().data(text))}} để response giữ đúng dạng SSE.
+
 ### Trả lời miệng 1 phút
 "Tôi bật stream true, API trả SSE với thứ tự message_start, rồi content_block_start, nhiều content_block_delta, content_block_stop, rồi message_delta chứa stop_reason và usage, cuối cùng message_stop. Backend Spring mở SseEmitter hoặc Flux tới trình duyệt và đẩy từng text_delta ngay khi nhận, đồng thời gom text để lưu khi xong. Tôi xử lý cả event error giữa chừng và không lưu câu trả lời dở. Với tool, input đến dạng input_json_delta nên tôi nối chuỗi rồi mới parse. Ngoài ra phải tắt buffering ở proxy, nếu không streaming vô nghĩa."
 
@@ -256,6 +265,9 @@ Supplier<Answer> call = Retry.decorateSupplier(retry,
 - **Retry chồng retry**: SDK mặc định đã retry 2 lần (408/409/429/5xx), bạn lại bọc thêm 5 lần → 18 lần gọi cho một request. Hãy chọn một tầng chịu trách nhiệm retry.
 - **Nhiều instance cùng tiêu chung một hạn mức** mà không có hàng đợi chung → 429 liên tục khi tải cao.
 
+### Ví dụ đời thực
+Giờ cao điểm 19h hôm qua, feature "tóm tắt đơn hàng" bị 429 đột biến: tỷ lệ **429** từ 0.3% nhảy lên 42% trong 5 phút. Metric cho thấy hàng nghìn client retry **cùng lúc** sau khoảng 1 giây, tạo thundering herd (hiệu ứng "bầy đàn" — nhiều client đổ lại cùng thời điểm). Log server: mỗi instance tự retry thêm 2 lần, cộng với retry mặc định của SDK → một request gốc có thể sinh ra nhiều lần gọi, làm tải thực tăng gấp nhiều lần. Fix: (1) chỉ giữ retry ở **một tầng** (gateway Resilience4j) với {{exponentialRandomBackoff(2000, 2.0, 0.5)}} (2s, 4s, 8s ±50%), tối đa 3 lần, và tắt retry chồng chéo ở tầng khác; (2) thêm circuit breaker: 50% lỗi trong 60s → mở mạch, trả fallback "AI bận" thay vì retry; (3) queue Redis + worker 8 luồng giới hạn 120 RPM (dưới hạn mức 150 RPM). Kết quả: tỷ lệ 429 giảm 42% → 0.8%, p95 latency ổn định ~2.1s, chi phí do retry giảm rõ rệt.
+
 ### Trả lời miệng 1 phút
 "429 là tôi vượt hạn mức của tổ chức, server trả retry-after nên tôi chờ đúng thời gian đó và giảm tốc gửi. 529 là Anthropic quá tải tạm thời, không phải lỗi của tôi. Cả hai tôi retry bằng exponential backoff có jitter, tối đa vài lần và có trần tổng thời gian; 400, 401, 404 thì không bao giờ retry. Bên ngoài có circuit breaker để khi lỗi kéo dài thì trả thông báo hoặc chuyển model dự phòng thay vì treo request. Tôi cũng chú ý SDK đã tự retry 2 lần nên không bọc thêm nhiều tầng."
 
@@ -309,6 +321,9 @@ Ghi chú: với đa số model hiện hành, token đọc từ prompt cache **kh
 - **Chỉ đếm request, quên token**: vài request với tài liệu 200K token đủ ăn hết ITPM.
 - **max_tokens đặt rất lớn "cho chắc"**: một số cách tính hạn mức dựa trên ước lượng output; hãy để max_tokens sát nhu cầu thực.
 - **Retry đồng loạt khi 429** mà không có jitter → bão retry.
+
+### Ví dụ đời thực
+Sáng nay dự án mở rộng thị trường mới, traffic chatbot tăng **gấp 12** trong 2 tiếng (marketing chạy quảng cáo). Dashboard Anthropic: **ITPM remaining** từ 1.2M token/phút xuống 45K, **RPM remaining** từ 800 xuống 120. Hệ thống 8 instance Spring Boot tự gọi Claude → 429 liên tục, người dùng thấy "AI bận". Nguyên nhân: mỗi instance tự giới hạn 50 RPM (8 × 50 = 400 < 800 limit) nhưng **không điều tiết token**; một request kèm tài liệu 150K token × 40 req/phút = 6M ITPM > limit 2M. Fix khẩn: (1) bật **prompt caching** cho system prompt 30K token (cache read 90%); (2) đẩy job "tóm tắt đơn hàng" sang **Batch API** (giảm 50% chi phí, không tính vào rate limit realtime); (3) deploy gateway Redis queue + token bucket: worker 4 luồng, ITPM target 1.5M (dưới limit 20%), RPM target 100. Kết quả: 429 rate 18% → 0.4%, chi phí token input giảm 68% nhờ caching, chi phí Batch route giảm 50%. Alert: {{remaining / limit < 0.2}} ping Slack #ai-ops.
 
 ### Trả lời miệng 1 phút
 "Hạn mức tính theo ba chiều là request, input token và output token mỗi phút, vượt chiều nào cũng 429, và response có header ratelimit remaining để theo dõi. Khi tải tăng gấp 10, tôi không để từng instance gọi thẳng mà đưa qua hàng đợi với token bucket dùng chung trong Redis, chạy thấp hơn hạn mức một chút. Việc không gấp tôi chuyển sang Batch API, rẻ hơn một nửa. Tôi giảm token bằng prompt caching, cắt lịch sử và chọn model nhỏ cho route đơn giản. Khi hàng đợi quá dài thì trả lỗi bận sớm thay vì để timeout."
@@ -370,6 +385,9 @@ Xem {{usage}} của response:
 - **Đặt câu hỏi người dùng trước tài liệu** → prefix thay đổi mỗi request, cache vô dụng.
 - **Nhét timestamp hoặc id request vào system prompt** → prefix đổi từng byte, cache hit bằng 0.
 - **Đổi danh sách tools hoặc thứ tự tools** giữa các request → tools nằm đầu prefix nên làm vỡ toàn bộ cache.
+
+### Ví dụ đời thực
+Tuần trước deploy feature "hỏi đáp tài liệu sản phẩm": cache hit rate trên route này **từ 94% rơi xuống 3%** sau một PR thêm "thời gian hiện tại" vào system prompt ({{"Hôm nay là " + LocalDateTime.now()}}). Kiểm tra {{usage}}: {{cache_creation_input_tokens}} ~70K mỗi request, {{cache_read_input_tokens}} ≈ 0. Log request body: phần system prompt thay đổi mỗi giây → prefix không bao giờ khớp. Fix: xóa timestamp khỏi system prompt, chuyển câu hỏi người dùng kèm ngữ cảnh thời gian vào user message. Deploy hotfix: cache hit rate quay về 91% trong 10 phút, chi phí input giảm từ $18/giờ xuống $1.6/giờ. Bổ sung test CI: assert phần system prompt của 2 request liên tiếp **giống hệt byte-per-byte** (so sánh SHA-256) để bắt silent invalidator trước khi merge.
 
 ### Trả lời miệng 1 phút
 "Prompt caching lưu prefix của prompt; request sau có prefix giống hệt sẽ đọc từ cache với giá khoảng một phần mười và độ trễ thấp hơn. Thứ tự render là tools, system rồi messages, nên tôi đặt mọi thứ ổn định như system prompt và tài liệu lên trước, gắn cache_control ở block cuối phần ổn định, còn câu hỏi người dùng nằm sau. TTL mặc định 5 phút và được làm mới mỗi lần dùng, có thể chọn 1 giờ nếu lưu lượng thưa. Tôi kiểm chứng bằng cache_read_input_tokens trong usage, và cảnh giác các thứ làm vỡ prefix như timestamp hay thay đổi thứ tự tools."
