@@ -8122,7 +8122,7 @@ List<Order> rows = em.createQuery(
 
 ### Bước 2: Luồng theo thứ tự (request điển hình)
 1. Request vào web layer → interceptor/filter OSIV **bind** EntityManager vào thread.
-2. Controller gọi service {{@Transactional}}: mở transaction, lấy connection khi cần, chạy nghiệp vụ, **commit/rollback → đóng transaction** (connection thường trả pool tùy cơ chế), nhưng EntityManager vẫn gắn thread (Session vẫn mở).
+2. Controller gọi service {{@Transactional}}: mở transaction, lấy connection, chạy nghiệp vụ, **commit/rollback → đóng transaction**, nhưng EntityManager vẫn gắn thread (Session vẫn mở). Với cấu hình mặc định của Spring cho Hibernate (chế độ giữ connection {{DELAYED_ACQUISITION_AND_HOLD}}), connection đã lấy **không** trả về pool sau commit mà bị giữ tới khi EntityManager đóng, tức là tới cuối request.
 3. Controller trả entity hoặc view render: serializer/template truy cập {{order.getItems()}} (LAZY) → Hibernate kích hoạt lazy load → **cần thực thi SQL** → có thể phải lấy connection (ngoài transaction cũ) → chạy query.
 4. Sau khi response hoàn tất → OSIV **close** EntityManager.
 
@@ -8136,7 +8136,7 @@ List<Order> rows = em.createQuery(
 Spring Boot ưu tiên "ứng dụng chạy được nhanh" với template/controller đơn giản: tránh lỗi LAZY bất ngờ cho người mới. Đánh đổi: che thiết kế kém (entity rò rỉ ra web), và chi phí tài nguyên không rõ ràng. Đó là lý do nhiều hệ thống production **tắt**.
 
 ### Hậu quả giữ connection/tài nguyên
-- **Cạn connection pool** (HikariCP): nếu mỗi request chạm LAZY muộn, thời gian "mượn connection" rải rác và khó dự đoán; dưới tải cao pool cạn → timeout.
+- **Cạn connection pool** (HikariCP): connection bị giữ suốt phần còn lại của request, kể cả lúc gọi API bên ngoài, render JSON hay chờ client chậm; dưới tải cao pool cạn → timeout, dù DB gần như rảnh.
 - **N+1 ẩn**: vòng lặp serialize list entity kích hoạt hàng trăm query.
 - **Boundary mờ**: query chạy ngoài {{@Transactional}} → khó lý luận isolation/locking.
 - **Hiệu năng đo sai**: thời gian service nhanh nhưng tổng thời gian DB kéo dài ở tầng render.
@@ -8183,7 +8183,7 @@ spring:
   id: 'jpa-045',
   topic: 'jpa',
   level: 'lead',
-  q: 'Second-level cache (L2 - bộ nhớ đệm cấp 2, chia sẻ giữa các SessionFactory/session) và query cache (cache kết quả truy vấn) của Hibernate hoạt động thế nào, vì sao trong cluster (nhiều instance ứng dụng) chúng có thể hại nhiều hơn lợi, và bạn thiết kế invalidation (làm mất hiệu lực cache) ra sao?',
+  q: '(Lead) Second-level cache (bộ nhớ đệm cấp 2, dùng chung giữa các session của một SessionFactory) và query cache của Hibernate hoạt động thế nào, vì sao trong cluster nhiều instance chúng có thể hại nhiều hơn lợi, và bạn thiết kế invalidation ra sao?',
   a: `**Tóm tắt:** L2 cache lưu **trạng thái entity theo id** (hoặc dữ liệu disassembled) để tránh đọc DB lặp lại; query cache lưu **danh sách id/khóa kết quả** của một query (thường phải đi kèm L2 entity regions để hữu ích). Khi có nhiều node, dữ liệu bị sửa ở node A thì cache node B **stale** (cũ) nếu không đồng bộ; query cache còn nhạy với mọi thay đổi bảng liên quan → invalidation ồn, hit rate thấp. Thực tế nhiều hệ thống ưu tiên cache tầng ứng dụng (Redis/Caffeine) với khóa nghiệp vụ rõ ràng, TTL/invalid event, và chỉ dùng L2 cho dữ liệu tham chiếu đọc cực nhiều, gần như bất biến.
 
 ### Bước 1: Thuật ngữ
@@ -8259,7 +8259,7 @@ spring:
   topic: 'jpa',
   level: 'senior',
   q: 'Hibernate 6 xử lý query thế nào qua SQM (Semantic Query Model - mô hình ngữ nghĩa truy vấn) và query plan cache (cache kế hoạch truy vấn)? {{hibernate.query.in_clause_parameter_padding}} giải quyết vấn đề gì, và bạn cần lưu ý gì khi bật?',
-  a: `**Tóm tắt:** Từ Hibernate 6, HQL/Criteria được phân tích thành **SQM** (cây ngữ nghĩa gắn với model entity), sau đó chuyển thành **SQL AST** và SQL cuối cùng; kế hoạch biên dịch (plan) có thể được **cache** để tránh parse/translate lặp lại. Vấn đề thực tế: câu {{IN (:ids)}} với số lượng tham số thay đổi tạo ra **nhiều SQL text khác nhau** → nhiều plan/statement cache entry (ở Hibernate và/hoặc DB) → tốn bộ nhớ, giảm hiệu quả. {{hibernate.query.in_clause_parameter_padding}} (mặc định có thể bật tùy version/config) **đệm** số tham số {{IN}} lên các kích thước "bậc" (power-of-two hoặc mức padding) để tái dùng SQL/plan.
+  a: `**Tóm tắt:** Từ Hibernate 6, HQL/Criteria được phân tích thành **SQM** (cây ngữ nghĩa gắn với model entity), sau đó chuyển thành **SQL AST** và SQL cuối cùng; kế hoạch biên dịch (plan) có thể được **cache** để tránh parse/translate lặp lại. Vấn đề thực tế: câu {{IN (:ids)}} với số lượng tham số thay đổi tạo ra **nhiều SQL text khác nhau** → nhiều plan/statement cache entry (ở Hibernate và/hoặc DB) → tốn bộ nhớ, giảm hiệu quả. {{hibernate.query.in_clause_parameter_padding}} (mặc định **tắt**, phải bật tường minh) **đệm** số tham số {{IN}} lên các kích thước "bậc" (power-of-two hoặc mức padding) để tái dùng SQL/plan.
 
 ### Bước 1: Thuật ngữ
 - **SQM (Semantic Query Model)**: biểu diễn truy vấn ở mức "ý nghĩa" (entity, attribute, join) thay vì chuỗi SQL thô — giúp Hibernate 6 hiểu và tối ưu tốt hơn.
