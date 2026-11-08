@@ -395,51 +395,70 @@ A single signal does not prove the company has problems; several at the same tim
   },
   'behavioral-029': {
     q: 'You have 2 weeks before a Senior Java interview at a company you really want to join, and you are still working full time. How do you plan the revision?',
-    a: `**Summary:** Revise **against the JD, not broadly**. On day one, turn the JD into a weighted list of topics plus your own gaps; split the middle 10 days across core technical topics, algorithms, system design and STAR stories; book **2 mock sessions** to measure yourself; the last 2 days are light review, company research and rest. Roughly 2-3 hours per workday, 5-6 hours at the weekend.
+    a: `**Summary:** Revise **against the JD (Job Description — the list of skills and responsibilities the company published for the role), not broadly**. On day one, turn the JD into a weighted list of topics plus your own gaps; split the middle 10 days across core technical topics, algorithms, system design and STAR stories (STAR = Situation, Task, Action, Result — a simple structure for telling a real work story with a clear outcome). Book **2 mock interviews** (practice interviews that simulate the real round) to measure yourself; keep the last 2 days for light review, company research and rest. Plan roughly 2–3 hours per workday and 5–6 hours on weekend days.
 
-### What the company is assessing
-The company grades exactly what the JD says, plus a few classics for the senior level (concurrency, transactions, system design, production incidents). Covering the 70% that matters beats skimming 100% of Java.
+### What the interviewer is assessing
+The company grades exactly what the JD states, plus a few classics for the senior level (concurrency — handling multiple tasks at the same time; transactions — a group of database operations that must all succeed or all fail together; system design — planning how the parts of a system fit and scale; and production incidents — real outages or bugs in the live system). Covering the 70% that matters most beats skimming 100% of Java at a shallow level.
 
-### Day 1: analyse the JD
-Underline each skill, weight it 1-3 by how much the JD emphasises it, and rate where you are now:
-| Skill in the JD | Weight | Your current level (1-5) | Priority |
+### Step by step: how to build the plan
+1. **Day 1 — analyse the JD.** Underline every skill mentioned. Give each skill a weight from 1 to 3 based on how strongly the JD emphasises it (3 = mentioned repeatedly or marked required). Rate your current level from 1 to 5 honestly. Priority goes to **high weight + low level**.
+2. **Days 2–6 — close the biggest gaps.** Study the highest-priority topics first (for example Kafka — a distributed message queue, meaning a system that passes events between services reliably; concurrency; transactions). Speak your answers out loud, do not just read.
+3. **Day 7 — Mock 1.** One hour technical plus 30 minutes behavioural. Record or note every weak answer; this becomes your repair list.
+4. **Days 8–9 — system design.** Work through 2 prompts close to the company's domain (for example "design an order system that handles traffic spikes" if the company is e-commerce).
+5. **Day 10 — write STAR stories.** Prepare 6–8 stories you can reuse across questions.
+6. **Day 11 — Mock 2.** Focus on the weak points found in Mock 1 and check whether they improved.
+7. **Day 12 — company research.** Understand the product, the engineering blog, and recent news so you can ask sharp questions and tailor examples.
+8. **Day 13 — light review.** Skim your notes, prepare 3–5 questions to ask the interviewer, and check your setup (laptop, internet, quiet room) if the interview is remote.
+9. **Day 14 — rest.** Sleep enough. Working memory (your brain's short-term scratchpad used to reason during an interview) drops clearly when you are short on sleep.
+
+### Day 1: analyse the JD (example)
+| Skill in the JD | Weight | Your current level (1–5) | Priority |
 |---|---|---|---|
 | Spring Boot, microservices | 3 | 4 | Quick pass |
 | Kafka, event processing | 3 | 2 | **Deep revision** |
 | PostgreSQL, query tuning | 2 | 3 | Medium |
 | AWS | 1 | 2 | Key concepts only |
-High weight plus low level is where you put the most hours.
+
+High weight plus low level is where you spend the most hours.
 
 ### The 14-day schedule
 | Day | Main content | In parallel every day |
 |---|---|---|
-| 1 | JD analysis, gap list, choose the questions | |
-| 2-6 | Highest-priority topics (Kafka, concurrency, transactions) | 1-2 algorithm problems, due flashcards |
-| 7 | **Mock 1**: 1 hour technical + 30 minutes behavioural | Write down the weak answers |
-| 8-9 | System design: 2 prompts close to the company's domain | |
-| 10 | Write 6-8 STAR stories | |
-| 11 | **Mock 2**, focused on the weak points from Mock 1 | |
+| 1 | JD analysis, gap list, choose questions | |
+| 2–6 | Highest-priority topics (Kafka, concurrency, transactions) | 1–2 algorithm problems, review due flashcards (spaced repetition cards that come back when you are about to forget) |
+| 7 | **Mock 1**: 1 hour technical + 30 minutes behavioural | Write down weak answers |
+| 8–9 | System design: 2 prompts close to the company's domain | |
+| 10 | Write 6–8 STAR stories | |
+| 11 | **Mock 2**, focused on weak points from Mock 1 | |
 | 12 | Company research: product, engineering blog, recent news | |
-| 13 | Light note review, prepare the questions you will ask back, check equipment | |
+| 13 | Light note review, prepare questions to ask back, check equipment | |
 | 14 | Rest, sleep enough | |
 
 ### The minimum STAR story set
-A production incident, a technical disagreement, one failure, the hardest project, one time you led or mentored, one time you improved something on your own initiative. Each story should be usable for 2-3 different questions.
+Prepare at least these 6 stories (each should be reusable for 2–3 different questions): a production incident, a technical disagreement, one failure and what you learned, the hardest project, one time you led or mentored someone, and one time you improved something on your own initiative.
 
 ### Company research
-- The product, the business model, the main customers.
-- Engineering blog, conference talks, public repos: know what they use and what problems they are wrestling with.
-- Recent news: funding, results, restructuring.
-- The interviewers on LinkedIn: which area they work in, so you can predict the questions.
+- The product, the business model, and the main customers.
+- Engineering blog, conference talks, public repos: learn what technologies they use and which problems they are solving.
+- Recent news: funding, business results, restructuring.
+- Interviewers on LinkedIn (if shared): which area they work in, to anticipate likely questions.
 
-### Things to avoid
-- Revising all of Java from the beginning: the 2 weeks are gone before you touch what the JD emphasises.
-- Only reading, never **speaking out loud**: understanding is nothing like answering fluently.
-- Skipping mocks because you feel shy: a mock is the only way to discover that you ramble or hesitate.
-- Staying up late the night before: working memory drops visibly when you lack sleep.
-- Ignoring behavioural questions because "being good technically is enough".
+### Common mistakes
+- Revising all of Java from page one: two weeks disappear before you touch what the JD emphasises.
+- Only reading and never **speaking out loud**: understanding a topic is very different from answering it fluently under time pressure.
+- Skipping mocks because you feel shy: a mock interview is the only reliable way to discover that you ramble, freeze, or miss key points.
+- Staying up late the night before: lack of sleep hurts recall and reasoning speed.
+- Ignoring behavioural questions because "being strong technically is enough" — senior rounds always include them.
 
-> Senior tip: Use the questions in this app's own bank: filter by the topics in the JD, answer out loud in 2 minutes before opening the reference answer, self-grade Known / Needs review. The spaced-repetition schedule brings the weak ones back exactly when they are due. If you have several interviews in the same month, repeat the JD → gaps → mock cycle for each company; the shared part (STAR, concurrency) gets stronger with every round.`,
+### Real-world example
+A Java developer with 5 years of experience gets a technical interview scheduled in 14 days. The JD highlights Kafka, PostgreSQL, Kubernetes (a system that runs and manages containers — packaged applications — across many machines), and "designing systems that handle load." On day 1 he self-rates: Spring and JPA 4/5, Kafka 2/5, system design 2/5, and no STAR stories written down.
+
+Plan: Monday–Friday evenings, 2 hours each (1 hour closing a knowledge gap, 1 hour speaking answers or solving 1 algorithm problem). Weekends, 5 hours for system design and mocks. Mock 1 (day 6) scores 2.5/5: Kafka answers are vague and one story runs 4 minutes with no numbers. Fix: study consumer groups, rebalancing, and exactly-once delivery in Kafka; cut the story to 2 minutes in STAR form with concrete numbers. Mock 2 (day 11) scores 3.8/5. Day 13 is only light note review and questions to ask back; day 14 is rest and a full night's sleep. Result: he passes the real round, with the strongest feedback on the production-incident story.
+
+### Sample interview answer
+"I would revise against the JD, not try to cover everything. On day one I break the JD into a weighted skill list, rate myself on each item, and pick about five high-weight gaps to focus on. Because I am still working full time, I set aside around two hours on weeknights and five hours on weekend days: on weeknights I split the time between studying a gap and practicing answers out loud or solving an algorithm problem; on weekends I do system design and mock interviews. I prepare five to six STAR stories with real numbers for common themes like a production incident, a technical disagreement, leading others, a mistake and its lesson, and a hard project. I schedule two mocks — one in the middle to find weak spots, and one near the end to confirm they improved. In the last two days I only review lightly, research the company's product and architecture, prepare questions to ask, and get enough sleep. I also let my team know in advance so I can reduce overtime during those two weeks."
+
+> Senior tip: Use the questions in this app's own bank: filter by the topics in the JD, answer out loud for 2 minutes before opening the reference answer, then self-grade Known / Needs review. The spaced-repetition schedule brings weak questions back at the right time. If you have several interviews in the same month, repeat the JD → gaps → mock cycle for each company; the shared parts (STAR stories, concurrency) get stronger with every round.`,
     follow: [
       'If only 3 days are left, what do you cut?',
       'Where do you find people to mock interview with, and what criteria do you ask them to grade on?',
