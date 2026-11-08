@@ -54,7 +54,7 @@ Every ledger has two kinds of accounts:
 - **Customer accounts** ({{CA/...}}): wallets, payment accounts. **They must not go negative**, because a negative balance means the bank lent beyond the approved limit. A posting that drives one negative ⇒ {{IllegalStateException}}.
 - **Internal / suspense accounts** ({{SYS/...}}): fees, the pending-reconciliation account (suspense), opening balances. **They may go negative**, because they reflect the bank's own cash flow, not some depositor's money.
 
-Look at the table above again: with only Lan and Minh, total debits 101,100 ≠ total credits 100,000 — 1,100 is missing. The {{SYS/fee}} account is exactly the "place" for that 1,100 dong. This is why double-entry is mandatory: **every dong must have an owner at every moment**, even while it is in transit.
+Looking at the table above: if you had only Lan and Minh, total debits 101,100 ≠ total credits 100,000 — 1,100 would be missing. The {{SYS/fee}} account is exactly the "place" for that 1,100 dong. This is why double-entry is mandatory: **every dong must have an owner at every moment**, even while it is in transit.
 
 ### Balance = sum of entries
 
