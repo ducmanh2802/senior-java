@@ -5482,4 +5482,117 @@ Lead -> Team: Chuẩn hóa template, review, vận hành
   ],
   tags: ['change-management', 'migration', 'mentoring', 'leadership', 'STAR']
 },
+{
+  id: 'behavioral-053',
+  topic: 'behavioral',
+  level: 'mid',
+  q: 'Bạn vừa bị layoff (cắt giảm nhân sự) và đã nghỉ 3 tháng. HR hỏi: "Vì sao bạn rời công ty cũ? Ba tháng qua bạn làm gì?" Bạn trả lời thế nào để không bị đánh giá là năng lực kém hay đang tuyệt vọng?',
+  a: `**Tóm tắt:** Nói thẳng và ngắn: layoff là quyết định kinh doanh (cắt team/dự án), **không phải đánh giá cá nhân**, kèm một bằng chứng khách quan (cả team bị cắt, có thư giới thiệu). Sau đó chuyển ngay sang **việc bạn đã làm trong thời gian nghỉ** (ôn hệ thống, dự án nhỏ, chứng chỉ) và **vì sao bạn muốn vị trí này**. Câu chuyện chỉ chiếm 20 giây; 80% còn lại là về giá trị bạn mang lại.
+
+### Interviewer thật sự đang kiểm tra điều gì
+Khi nghe "layoff", người phỏng vấn không quan tâm chuyện công ty cũ. Họ lo 3 rủi ro:
+1. **Bạn bị cho nghỉ vì làm kém?** Layoff thường chọn người theo dự án, chi phí, hoặc đánh giá hiệu suất. Họ cần biết bạn thuộc nhóm nào.
+2. **Bạn có cay cú, tiêu cực không?** Người nói xấu công ty cũ sẽ nói xấu công ty mới. Đây là điểm trừ nặng nhất.
+3. **Bạn có bị "rỉ sét" và có đang nhận bừa mọi việc không?** Nghỉ lâu mà không làm gì, hoặc nói "em cần việc gấp", khiến họ nghĩ bạn sẽ đi ngay khi có chỗ tốt hơn.
+
+Vì vậy câu trả lời tốt phải trả lời đủ cả 3 lo ngại, theo đúng thứ tự đó.
+
+### Cấu trúc 3 phần (công thức nói 60 giây)
+| Phần | Nội dung | Thời lượng |
+|---|---|---|
+| 1. Sự thật | Công ty cắt giảm X% / đóng dự án Y, team bạn bị ảnh hưởng | 1–2 câu |
+| 2. Bằng chứng | Bạn được giữ đến cuối dự án, có thư giới thiệu, manager sẵn sàng làm reference | 1 câu |
+| 3. Hướng tới | Thời gian nghỉ bạn làm gì cụ thể + vì sao chọn công ty này | 3–4 câu |
+
+Các lỗi hay gặp nhất là đảo tỉ lệ: kể lể 2 phút về chuyện công ty quản lý tệ, rồi chỉ nói một câu về điều mình muốn.
+
+### Thời gian nghỉ: biến "khoảng trống" thành bằng chứng
+Ba tháng là bình thường trong thị trường khó; điều quan trọng là bạn **có thể kể cụ thể** đã làm gì. Ví dụ những việc có giá trị khi nói:
+- **Ôn sâu một mảng** mà công việc cũ ít đụng tới: concurrency, tuning PostgreSQL, Kafka. Nói được "tôi tự dựng lại lỗi N+1 và đo được số query giảm từ 101 xuống 2" có giá trị hơn "tôi có ôn lại Spring".
+- **Một dự án nhỏ trên GitHub** có README rõ ràng, có test, có CI. Interviewer có thể mở ra xem ngay.
+- **Chứng chỉ** (AWS, Java) nếu nó khớp với JD.
+- **Việc cá nhân chính đáng** (chăm người thân) chỉ cần nói một câu, không cần giải thích thêm.
+
+Không nên nói: "em nghỉ ngơi cho khoẻ" (nghe như không chủ động), hoặc bịa ra công việc freelance không kiểm chứng được.
+
+### Những câu tuyệt đối tránh
+- "Công ty quản lý kém nên mới phải cắt người" → bạn đang chỉ trích.
+- "Em không hiểu sao em bị chọn" → nghe như bạn bị đánh giá thấp.
+- "Em cần việc gấp, lương bao nhiêu cũng được" → mất vị thế khi deal lương.
+- Nói dối là mình tự nghỉ: thị trường Việt Nam nhỏ, HR hay gọi kiểm tra chéo (reference check), bị phát hiện là loại ngay.
+
+### Nếu bạn nằm trong nhóm bị chọn vì hiệu suất
+Đừng nói dối, nhưng cũng không cần tự nhận "em làm kém". Nói về **bối cảnh và bài học**: "Đợt cắt giảm có xét đánh giá năm; năm đó tôi bị chuyển dự án hai lần nên kết quả chưa nổi bật. Bài học của tôi là chủ động thống nhất mục tiêu đo được với manager từ đầu quý, và tôi đã áp dụng khi..." Câu trả lời kiểu này cho thấy bạn tự nhận thức và có thay đổi.
+
+### Ví dụ đời thực
+Một dev Java 5 năm ở công ty fintech bị cắt khi công ty đóng mảng cho vay (cả team 12 người). Ba lần phỏng vấn đầu, anh kể chuyện công ty "đốt tiền rồi cắt người" mất gần 2 phút, và cả ba lần đều trượt ở vòng HR. Sau khi tập lại theo cấu trúc 3 phần (20 giây sự thật, 1 câu bằng chứng là thư giới thiệu của engineering manager, phần còn lại kể dự án chuyển tiền có idempotency anh tự làm trong 6 tuần nghỉ), anh qua vòng HR ở 4/5 công ty tiếp theo và nhận offer sau 7 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Dạ, tháng 8 công ty em đóng mảng cho vay tiêu dùng vì không đạt mục tiêu tăng trưởng, nên toàn bộ team backend của mảng đó, 12 người, bị cắt giảm, trong đó có em. Em vẫn được giữ lại đến khi bàn giao xong hệ thống đối soát, và anh engineering manager cũ sẵn sàng làm người tham chiếu nếu anh chị cần.
+
+Ba tháng vừa rồi em dùng để lấp những chỗ công việc cũ ít đụng tới. Em ôn lại concurrency và transaction trong PostgreSQL, rồi tự làm một service chuyển tiền nhỏ có idempotency key, outbox gửi sự kiện qua Kafka và test chạy trên Testcontainers. Em để code và phần giải thích trên GitHub, anh chị có thể xem. Em cũng thi xong chứng chỉ AWS Developer Associate.
+
+Em chọn ứng tuyển bên mình vì team đang xây hệ thống thanh toán, đúng mảng em có 3 năm kinh nghiệm và muốn đi sâu hơn. Em không tìm một chỗ tạm, mà tìm một nơi có thể gắn bó và đóng góp lâu dài."
+
+> Senior tip: Viết sẵn câu trả lời này ra giấy, đọc to và bấm giờ đến khi dưới 60 giây; phần "sự thật" không quá 2 câu. Xin manager cũ một tin nhắn LinkedIn recommendation ngay trong tuần bị layoff, khi họ còn nhớ rõ việc của bạn: đó là bằng chứng khách quan mạnh nhất.`,
+  follow: [
+    'Nếu interviewer hỏi thẳng "Vì sao công ty chọn bạn chứ không phải người khác?", bạn trả lời thế nào?',
+    'Bạn đã nghỉ 8 tháng thay vì 3 tháng: câu trả lời thay đổi ra sao?',
+    'Bạn kể lại câu chuyện này bằng tiếng Anh trong 45 giây thế nào?'
+  ],
+  tags: ['layoff', 'career-gap', 'HR-round', 'storytelling', 'behavioral']
+},
+{
+  id: 'behavioral-054',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn đang không có việc sau layoff. HR hỏi "Lương cũ của bạn bao nhiêu?" và đưa ra offer thấp hơn mức cũ 15%. Bạn deal lương thế nào khi vị thế đang yếu, và khi nào nên nhận offer thấp hơn?',
+  a: `**Tóm tắt:** Không mở đầu bằng lương cũ; đưa ra **khoảng lương mong muốn dựa trên thị trường cho vị trí mới** (có số liệu). Khi bị ép, nói thật con số **tổng thu nhập** chứ không nói dối. Với offer thấp, đàm phán theo **các khoản linh hoạt** (lương tháng 13, review lương sau 6 tháng, ngày bắt đầu, phụ cấp), và quyết định nhận hay không dựa trên **số tháng tài chính còn trụ được** và chất lượng công việc, chứ không theo cảm xúc.
+
+### Vì sao vị thế "đang thất nghiệp" yếu, và yếu đến đâu
+HR biết người đang nghỉ việc ít lựa chọn hơn, nên hay hỏi lương cũ để neo (anchor) offer gần mức đó hoặc thấp hơn. Nhưng vị thế của bạn không yếu như bạn nghĩ:
+- Công ty đã tốn 3–5 vòng phỏng vấn để chọn bạn. Tuyển lại người khác mất thêm 1–2 tháng và chi phí headhunter thường 15–20% lương năm.
+- Ngân sách cho vị trí thường là một **khoảng**, không phải một con số. Offer đầu tiên hầu như luôn thấp hơn mức trần.
+- Bạn có thể **bắt đầu ngay**, đó là lợi thế thật với team đang thiếu người.
+
+### Trả lời câu "Lương cũ của bạn bao nhiêu?"
+Mục tiêu là chuyển cuộc nói chuyện từ "quá khứ của bạn" sang "giá trị của vị trí này":
+1. **Lần đầu, chuyển hướng:** "Em muốn trao đổi dựa trên phạm vi công việc ở đây. Với vị trí Senior backend như JD, em mong muốn khoảng 45–50 triệu gross, dựa trên khảo sát lương của TopDev/ITviec năm nay và các offer em đang có."
+2. **Nếu bị hỏi lại lần hai, nói thật nhưng đầy đủ:** dùng **tổng thu nhập năm** (lương, tháng 13, thưởng, phụ cấp), không chỉ lương tháng. Ví dụ "Tổng thu nhập năm của em khoảng 620 triệu, gồm 40 triệu/tháng, lương tháng 13 và thưởng hiệu suất 2 tháng."
+3. **Không bao giờ nói khống:** HR có thể yêu cầu xác nhận thu nhập hoặc hỏi reference; bị phát hiện là mất offer và mất uy tín.
+
+### Bảng các khoản có thể đàm phán (ngoài lương tháng)
+| Khoản | Vì sao dễ được chấp nhận | Cách hỏi |
+|---|---|---|
+| Review lương sau 6 tháng có cam kết | Công ty không phải tăng ngân sách ngay | "Nếu sau 6 tháng em đạt mục tiêu A, B thì mức điều chỉnh là bao nhiêu? Ghi vào offer letter được không?" |
+| Lương tháng 13, thưởng cố định | Thường nằm ở ngân sách khác | Hỏi rõ thưởng cam kết hay tuỳ kết quả |
+| Signing bonus (thưởng ký hợp đồng) | Chi một lần, không ảnh hưởng thang lương | Bù phần chênh lệch năm đầu |
+| Ngày phép, remote, thiết bị, bảo hiểm sức khoẻ | Chi phí thấp với công ty | Hỏi sau khi đã chốt lương |
+| Level/title | Ảnh hưởng mức lương các năm sau | "Với kinh nghiệm X, em mong được xếp level Senior thay vì Middle" |
+
+### Khi nào nên nhận offer thấp hơn
+Đây là quyết định tài chính, nên tính bằng số:
+- **Số tháng còn trụ được (runway)** = tiền tiết kiệm / chi tiêu hàng tháng. Nếu dưới 3 tháng, một offer thấp hơn 10–15% nhưng ổn định thường đáng nhận.
+- **Chênh lệch thật**: 15% của 40 triệu là 6 triệu/tháng, khoảng 72 triệu/năm. Một tháng thất nghiệp thêm mất 40 triệu. Nếu tìm offer tốt hơn mất trên 2 tháng, nhận ngay thường có lợi hơn.
+- **Chất lượng công việc**: công nghệ, mức độ học hỏi, sự ổn định của công ty. Một vị trí giúp bạn có kinh nghiệm hệ thống lớn có thể giúp lương tăng nhanh ở lần chuyển việc sau.
+- **Không nhận** nếu công ty có dấu hiệu sắp cắt giảm tiếp (đóng băng tuyển, trễ lương, đổi CEO liên tục): bạn có thể bị layoff lần hai.
+
+### Ví dụ đời thực
+Một dev Java 6 năm bị layoff, lương cũ 42 triệu. Offer đầu tiên là 36 triệu (thấp hơn 14%). Anh không từ chối mà trả lời bằng email: cảm ơn, nêu mức thị trường 45–50 triệu kèm 2 nguồn khảo sát, đề xuất 44 triệu hoặc 40 triệu kèm review lương sau 6 tháng có ghi trong offer. Công ty trả lời trong 2 ngày: 41 triệu, signing bonus 20 triệu, review sau 6 tháng. Tổng năm đầu cao hơn offer ban đầu khoảng 80 triệu, chỉ nhờ một email.
+
+### Trả lời mẫu khi phỏng vấn
+"Dạ, em cảm ơn anh chị đã gửi offer, em rất muốn tham gia team thanh toán. Về mức lương, em xin trao đổi thẳng thắn. Tổng thu nhập năm vừa rồi của em khoảng 620 triệu, gồm lương tháng, tháng 13 và thưởng. Theo khảo sát của TopDev và ITviec năm nay, vị trí Senior backend Java với 6 năm kinh nghiệm ở mảng fintech nằm trong khoảng 45 đến 50 triệu gross.
+
+Em hiểu bên mình có khung ngân sách. Em đề xuất hai phương án: một là 44 triệu; hai là 40 triệu, kèm cam kết review lương sau 6 tháng dựa trên các mục tiêu cụ thể mà mình thống nhất ngay bây giờ, và được ghi vào offer letter. Em có thể bắt đầu ngay từ tuần sau, nên team sẽ có người ngay cho dự án đang triển khai.
+
+Nếu cả hai phương án đều khó, anh chị cho em biết phần nào linh hoạt được, ví dụ signing bonus hoặc level, để mình tìm điểm chung."
+
+> Senior tip: Luôn trả lời offer bằng email sau khi đã ngủ một đêm, không chốt ngay qua điện thoại. Chuẩn bị trước bảng runway của bạn (tiết kiệm / chi tiêu tháng): khi biết rõ mình còn trụ được 5 tháng, bạn sẽ đàm phán bình tĩnh hơn hẳn. Thực tế phần lớn công ty Việt Nam tăng được 5–10% so với offer đầu nếu ứng viên đưa ra con số có dẫn chứng.`,
+  follow: [
+    'Nếu HR nói "đây là mức cuối cùng, không thương lượng được", bạn làm gì tiếp?',
+    'Bạn đang chờ kết quả công ty B nhưng công ty A yêu cầu trả lời trong 2 ngày: xử lý thế nào?',
+    'Khi chuyển từ outsourcing sang product, bạn trình bày chênh lệch lương thế nào?'
+  ],
+  tags: ['layoff', 'salary-negotiation', 'offer', 'HR-round', 'career']
+},
 );

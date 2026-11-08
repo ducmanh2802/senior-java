@@ -1212,6 +1212,8 @@ window.DATA_INDEX = {
     ["behavioral-050","behavioral","lead"],
     ["behavioral-051","behavioral","senior"],
     ["behavioral-052","behavioral","lead"],
+    ["behavioral-053","behavioral","mid"],
+    ["behavioral-054","behavioral","senior"],
     ["english-001","english","mid","en","Tell me about yourself. Give the short version you would use at the start of a Senior Java backend interview."],
     ["english-002","english","senior","en","Walk me through your current project and its architecture. How would you explain it to another backend engineer?"],
     ["english-003","english","mid","en","Why are you leaving your current job, and why do you want to join us?"],
