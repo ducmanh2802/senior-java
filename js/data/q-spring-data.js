@@ -7350,7 +7350,7 @@ Lưu ý phiên bản: Boot 3.x dùng file .imports; trước Boot 2.7 dùng key 
 |---|---|
 | @ConditionalOnMissingBean | Chỉ đăng ký nếu chưa có bean cùng type do user define |
 | @ConditionalOnClass | Chỉ đăng ký nếu class có trong classpath |
-| @ConditionalOnProperty | Bật/tắt theo property, matchIfMissing = true |
+| @ConditionalOnProperty | Bật/tắt theo giá trị property; matchIfMissing quyết định kết quả khi property không được khai báo (mặc định false) |
 | @ConditionalOnBean | Chỉ đăng ký nếu đã có bean khác (phụ thuộc thứ tự) |
 | @ConditionalOnWebApplication | Chỉ áp dụng cho ứng dụng web |
 
@@ -7520,13 +7520,13 @@ ex.setTaskDecorator(runnable -> {
 spring.main.lazy-initialization=true: bean chỉ được tạo khi lần đầu được yêu cầu. Giảm thời gian start và memory ban đầu, nhưng lỗi cấu hình (missing bean, sai property) chỉ lộ ra lúc runtime thay vì lúc start, và request đầu tiên sẽ chậm. Phù hợp cho dev/local; production thường muốn fail-fast.
 
 ### CDS (Boot 3.3+)
-CDS cho phép JVM lưu class metadata đã parse/verify vào archive (.jsa), dùng lại giữa các lần start → giảm thời gian class loading. Boot 3.3 hỗ trợ tạo CDS archive tự động (spring.context.checkpoint). Giới hạn: phải chạy cùng JDK version, cùng classpath; không hỗ trợ mọi agent; lợi ích vừa phải (thường 20-40% start nhanh hơn) nhưng không thay đổi throughput.
+CDS cho phép JVM lưu class metadata đã parse/verify vào archive (.jsa), dùng lại giữa các lần start → giảm thời gian class loading. Boot 3.3 hỗ trợ tạo CDS archive bằng một lần chạy huấn luyện (training run): giải nén jar bằng {{java -Djarmode=tools -jar app.jar extract}}, chạy {{java -XX:ArchiveClassesAtExit=app.jsa -Dspring.context.exit=onRefresh -jar app.jar}} để ứng dụng khởi động xong rồi thoát, sau đó chạy thật với {{-XX:SharedArchiveFile=app.jsa}}. Từ JDK 24, Project Leyden thêm AOT cache (JEP 483) lưu cả class đã nạp và link sẵn, tăng tốc mạnh hơn CDS. Giới hạn: phải chạy cùng JDK version, cùng classpath; không hỗ trợ mọi agent; lợi ích vừa phải (thường 20-40% start nhanh hơn) nhưng không thay đổi throughput.
 
 ### AOT + GraalVM native image
 AOT xử lý Spring tại build time: bean definition, proxy, reflection metadata được sinh sẵn. GraalVM native image biên dịch thành binary native → start cực nhanh (ms), memory footprint thấp, nhưng build lâu (phút), binary lớn, và reflection/dynamic proxy phải khai báo rõ (reachability metadata). Spring Boot 3 hỗ trợ native image qua spring-boot-maven-plugin (native profile). Pitfall: code dùng reflection không khai báo sẽ fail runtime; test coverage phải cao vì lỗi chỉ lộ khi chạy native.
 
 ### CRaC (Coordinated Restore at Checkpoint)
-CRaC cho phép JVM checkpoint toàn bộ trạng thái (heap + threads) vào file, rồi restore cực nhanh. Spring Boot 3.2+ hỗ trợ checkpoint (spring.context.checkpoint=onRefresh hoặc always). Khác với native image: vẫn chạy trên JVM nên throughput và tương thích tốt hơn, nhưng checkpoint file lớn, restore phải cùng môi trường, và resource (socket, file handle) phải đóng/mở lại qua Resource interface của CRaC.
+CRaC cho phép JVM checkpoint toàn bộ trạng thái (heap + threads) vào file, rồi restore cực nhanh. Spring Boot 3.2+ (Spring Framework 6.1) hỗ trợ checkpoint tự động khi khởi động bằng {{-Dspring.context.checkpoint=onRefresh}}, hoặc chụp thủ công lúc đang chạy bằng {{jcmd <pid> JDK.checkpoint}}; cần JDK có hỗ trợ CRaC (ví dụ Azul Zulu, BellSoft Liberica bản CRaC) và chỉ chạy trên Linux. Khác với native image: vẫn chạy trên JVM nên throughput và tương thích tốt hơn, nhưng checkpoint file lớn, restore phải cùng môi trường, và resource (socket, file handle) phải đóng/mở lại qua Resource interface của CRaC.
 
 ### Bảng trade-off
 | Phương pháp | Start | Throughput | Build time | Tương thích |
@@ -7636,7 +7636,7 @@ Một nhóm đang viết lại service thông báo đẩy (push notification) �
 - finishRefresh start SmartLifecycle theo phase tăng dần khi start, và phase giảm dần khi stop → thứ tự shutdown ngược với startup.
 - ApplicationReadyEvent fire sau finishRefresh (và sau CommandLineRunner) → đây là thời điểm an toàn để warm-up và health check.
 
-> Senior tip: khi app start chậm, hãy bật spring.jmx.enabled và đo thời gian từng phase, hoặc dùng startup endpoint (/actuator/startup) để xem timeline bean. Phase 11 (pre-instantiate) thường là chỗ tốn thời gian nhất – lazy init có thể giúp nhưng đánh đổi fail-fast.`,
+> Senior tip: khi app start chậm, cấu hình {{BufferingApplicationStartup}} ({{app.setApplicationStartup(new BufferingApplicationStartup(2048))}}) rồi xem {{/actuator/startup}} để có timeline từng bước và từng bean, hoặc ghi JFR với {{FlightRecorderApplicationStartup}}. Phase 11 (pre-instantiate) thường là chỗ tốn thời gian nhất – lazy init có thể giúp nhưng đánh đổi fail-fast.`,
   follow: [
     'Tại sao BeanPostProcessor bean phải là static @Bean?',
     'Sự khác biệt giữa ContextRefreshedEvent và ApplicationReadyEvent là gì?'
