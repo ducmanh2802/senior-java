@@ -66,6 +66,12 @@ Ví dụ số liệu: 2 thread, mỗi thread {{counter++}} 100.000 lần trên b
 ### Trả lời miệng 1 phút
 "happens-before là quy tắc của Java Memory Model: nếu A happens-before B thì B chắc chắn thấy mọi thứ A đã ghi. Lý do cần nó là CPU có cache riêng từng core và JIT được phép xếp lại lệnh, nên không có quy tắc thì thread này có thể đọc giá trị cũ của thread kia. Các nguồn happens-before hay dùng là unlock trước lock trên cùng monitor, ghi volatile trước đọc volatile, start và join của thread, và tính bắc cầu. volatile cho tôi visibility và ordering nên rất hợp làm cờ dừng hay publish một object; nhưng nó không làm count++ nguyên tử vì đó là ba bước đọc, cộng, ghi. Trong thực tế, cờ thì tôi dùng volatile, đếm thì dùng AtomicInteger hoặc LongAdder, còn bất biến nhiều field thì dùng lock hoặc object immutable."
 
+### Ví dụ đời thực
+Một service Spring Boot xử lý webhook thanh toán. Team dùng cờ {{volatile boolean shuttingDown}} để worker dừng khi deploy. Ban đầu cờ không volatile: trên laptop test 1000 lần đều dừng đúng, nhưng trên production ARM (AWS Graviton) một worker thỉnh thoảng không dừng, giữ connection DB đến timeout 30 giây, và alert "thread stuck" xuất hiện 1-2 lần/tuần. Điều tra: thread dump thấy worker vẫn trong while(!shuttingDown), JIT đã hoist biến ra ngoài vòng; thêm -XX:+PrintCompilation cho thấy method được compile sau ~10k lần gọi. Sửa: đánh dấu volatile, redeploy, alert biến mất hoàn toàn trong 30 ngày theo dõi. Đồng thời đổi counter thống kê từ volatile int sang LongAdder vì metric bị lệch ~3% dưới tải 2000 rps.
+
+### Trả lời mẫu khi phỏng vấn
+"happens-before là quy tắc của Java Memory Model: nếu A happens-before B thì B chắc chắn thấy mọi thứ A đã ghi. Lý do cần nó là CPU có cache riêng từng core và JIT được phép xếp lại lệnh, nên không có quy tắc thì thread này có thể đọc giá trị cũ của thread kia. Các nguồn happens-before hay dùng là unlock trước lock trên cùng monitor, ghi volatile trước đọc volatile, start và join của thread, và tính bắc cầu. volatile cho tôi visibility và ordering nên rất hợp làm cờ dừng hay publish một object; nhưng nó không làm count++ nguyên tử vì đó là ba bước đọc, cộng, ghi. Trong thực tế, cờ thì tôi dùng volatile, đếm thì dùng AtomicInteger hoặc LongAdder, còn bất biến nhiều field thì dùng lock hoặc object immutable."
+
 > Senior tip: phỏng vấn hay hỏi "volatile rồi mà vẫn sai thì do đâu?" — câu trả lời chuẩn: volatile chỉ đảm bảo thấy giá trị, không đảm bảo tính toàn vẹn của phép nhiều bước; cần lock, Atomic hoặc object bất biến. Khi review code concurrent, tôi yêu cầu tác giả chỉ ra được **cạnh happens-before cụ thể** nối writer với reader; không chỉ ra được thì code đó đang "đúng nhờ may mắn" (thường là nhờ x86, và sẽ lộ bug khi chạy trên ARM như AWS Graviton).`,
   follow: [
     'Vì sao double-checked locking bắt buộc dùng {{volatile}}?',
@@ -136,6 +142,12 @@ if (lock.tryLock(200, TimeUnit.MILLISECONDS)) {
 - **Lock trong JVM cho dữ liệu nằm ở DB**: chạy 3 pod là 3 lock riêng, không bảo vệ được gì. Cách tránh: khoá/điều kiện ở tầng DB.
 
 ### Trả lời miệng 1 phút
+"Mặc định tôi dùng synchronized vì gọn, không thể quên unlock, và JVM tối ưu tốt khi không tranh chấp. Khi cần tryLock có timeout để tránh deadlock, cần chờ mà ngắt được, cần fair, hoặc cần nhiều Condition, tôi chuyển sang ReentrantLock — nó xây trên AQS và CAS, đổi lại phải unlock trong finally. ReadWriteLock cho phép nhiều reader song song, chỉ có lợi khi đọc áp đảo và đoạn đọc đủ dài. StampedLock thêm optimistic read, nhanh nhất cho read-heavy nhưng không reentrant và dễ dùng sai. Kinh nghiệm của tôi là không chọn theo lý thuyết mà đo bằng JMH trên tải thật; nhiều lần đổi về synchronized mà throughput không giảm."
+
+### Ví dụ đời thực
+Một service inventory giữ tồn kho trong ConcurrentHashMap và dùng ReentrantReadWriteLock bảo vệ thao tác reserve. Ban đầu team chọn ReadWriteLock vì "đọc nhiều hơn ghi", nhưng profiling JMH cho thấy đoạn readLock chỉ giữ 200 ns, chi phí quản lý lock còn lớn hơn nên throughput thấp hơn synchronized 12%. Sau khi đổi sang synchronized, p99 cải thiện từ 18 ms xuống 11 ms ở 800 rps. Sau đó xuất hiện bug: một method recursive gọi lại chính nó trong khi giữ lock — với StampedLock tự deadlock ngay, còn ReentrantLock thì chạy được. Quyết định cuối cùng: giữ synchronized cho path chính, chỉ dùng ReentrantLock ở chỗ cần tryLock timeout khi gọi sang payment service.
+
+### Trả lời mẫu khi phỏng vấn
 "Mặc định tôi dùng synchronized vì gọn, không thể quên unlock, và JVM tối ưu tốt khi không tranh chấp. Khi cần tryLock có timeout để tránh deadlock, cần chờ mà ngắt được, cần fair, hoặc cần nhiều Condition, tôi chuyển sang ReentrantLock — nó xây trên AQS và CAS, đổi lại phải unlock trong finally. ReadWriteLock cho phép nhiều reader song song, chỉ có lợi khi đọc áp đảo và đoạn đọc đủ dài. StampedLock thêm optimistic read, nhanh nhất cho read-heavy nhưng không reentrant và dễ dùng sai. Kinh nghiệm của tôi là không chọn theo lý thuyết mà đo bằng JMH trên tải thật; nhiều lần đổi về synchronized mà throughput không giảm."
 
 > Senior tip: đừng chọn lock theo whiteboard — benchmark với JMH trên profile thật. Tôi từng thấy module migrate JDK 8 lên 17 đổi ReentrantLock về synchronized: throughput không giảm, code gọn đi nhiều. Thêm một lưu ý cho Java 21: với virtual thread, block I/O bên trong synchronized làm virtual thread bị **pin** vào carrier thread, nên khi đó ReentrantLock là lựa chọn an toàn hơn; từ JDK 24 (JEP 491) hạn chế này đã được gỡ cho synchronized.`,
@@ -228,6 +240,12 @@ new ThreadPoolExecutor(
 ### Trả lời miệng 1 phút
 "ThreadPoolExecutor xử lý submit theo thứ tự: chưa đủ core thì tạo thread, đủ core thì vào queue, queue đầy mới tạo thêm tới max, max rồi thì reject. Điểm hay bị hiểu sai là queue được ưu tiên trước thread vượt core, nên dùng queue vô hạn thì max coi như vô nghĩa và burst sẽ thành latency rồi OOM. Policy tôi hay dùng là AbortPolicy để fail fast trả 503, hoặc CallerRunsPolicy cho batch nội bộ để có backpressure. Sizing thì CPU-bound bằng số core, IO-bound theo core nhân một cộng W trên C, rồi kiểm chứng bằng Little's law và metric queue size, active count. Trên production tôi luôn yêu cầu queue bounded, policy ghi rõ và thread có tên."
 
+### Ví dụ đời thực
+API search sản phẩm với core 4, max 8, queue 100. Một chiến dịch flash sale đẩy burst 110 request cùng lúc: 4 task chạy, 100 nằm queue, 4 thread thời vụ chạy thêm 4 task, 2 request bị reject với 503. Before: dùng Executors.newFixedThreadPool(4) với queue vô hạn → p99 từ 80 ms lên 9 s, heap tăng dần rồi OOM sau 2 giờ. Sau: đổi sang ThreadPoolExecutor với queue bounded 100 và CallerRunsPolicy, p99 giữ dưới 200 ms, không còn OOM; metric queue.size() alert khi > 70% giúp scale consumer trước khi reject.
+
+### Trả lời mẫu khi phỏng vấn
+"ThreadPoolExecutor xử lý submit theo thứ tự: chưa đủ core thì tạo thread, đủ core thì vào queue, queue đầy mới tạo thêm tới max, max rồi thì reject. Điểm hay bị hiểu sai là queue được ưu tiên trước thread vượt core, nên dùng queue vô hạn thì max coi như vô nghĩa và burst sẽ thành latency rồi OOM. Policy tôi hay dùng là AbortPolicy để fail fast trả 503, hoặc CallerRunsPolicy cho batch nội bộ để có backpressure. Sizing thì CPU-bound bằng số core, IO-bound theo core nhân một cộng W trên C, rồi kiểm chứng bằng Little's law và metric queue size, active count. Trên production tôi luôn yêu cầu queue bounded, policy ghi rõ và thread có tên."
+
 > Senior tip: tôi luôn đưa ra con số mẫu: với API ngoài 100 rps và latency 200 ms, concurrency cap = 20 theo Little's law; rate limiter 100 rps chặn burst. Câu trả lời thiếu số và thiếu cách đo là thiếu nửa điểm ở vị trí senior.`,
   follow: [
     'Vì sao JDK check queue trước khi tạo thread vượt core?',
@@ -312,6 +330,12 @@ Rule tôi áp cho team khi review: mọi pool trên production phải có (1) qu
 ### Trả lời miệng 1 phút
 "Tôi không dùng Executors.newFixedThreadPool hay newCachedThreadPool trên production vì cả hai đều không có giới hạn ở chỗ nguy hiểm nhất. Fixed pool dùng LinkedBlockingQueue vô hạn, nên khi burst, task xếp hàng mãi, latency tăng tới hàng trăm giây rồi OOM heap, và max pool không bao giờ được dùng. Cached pool dùng SynchronousQueue với max bằng Integer.MAX_VALUE, nên burst tạo hàng nghìn thread và OOM vì không tạo được native thread. Thay vào đó tôi tự tạo ThreadPoolExecutor với queue bounded, rejection policy rõ ràng, thread có tên và metric. Từ Java 21, với task I/O có thể dùng virtual thread, nhưng vẫn giới hạn bằng semaphore hoặc connection pool."
 
+### Ví dụ đời thực
+Một batch import CSV dùng Executors.newCachedThreadPool để xử lý từng dòng. Trong giờ cao điểm file 200k dòng → JVM tạo 4000 native thread, OS từ chối tạo thêm ("unable to create native thread"), service crash. Sau khi đổi sang ThreadPoolExecutor với core 8, max 32, queue 500 và rejection AbortPolicy, import chạy ổn định; throughput thực tế 1200 dòng/s, p99 task latency 250 ms. Memory RSS giảm từ 2.8 GB xuống 900 MB.
+
+### Trả lời mẫu khi phỏng vấn
+"newFixedThreadPool dùng LinkedBlockingQueue không giới hạn nên burst phình queue, p99 trượt dài rồi OOM; newCachedThreadPool max là Integer.MAX_VALUE với SynchronousQueue nên burst tạo hàng nghìn thread rồi OOM unable to create native thread. Production nên tự dựng ThreadPoolExecutor với queue bounded, rejection policy có chủ đích và thread có tên. Tôi luôn audit codebase grep Executors.new để thay thế trước khi deploy."
+
 > Senior tip: vụ thực tế tôi điều tra: p99 nhảy từ 80 ms lên 9 s không phải vì code chậm mà vì queue vô hạn nuốt 200k task sau một khoảng traffic spike. Fail fast với rejection công khai tốt hơn âm thầm xếp hàng vô hạn nhiều.`,
   follow: [
     'CallerRunsPolicy dùng cùng Netty event loop — risk thế nào?',
@@ -391,6 +415,12 @@ Ví dụ số: gọi 3 dịch vụ giá, lần lượt mất 120 ms, 80 ms, 300 
 
 ### Trả lời miệng 1 phút
 "thenApply là map, dùng khi bước sau trả về giá trị thường; thenCompose là flatMap, dùng khi bước sau tự trả về CompletableFuture để tránh lồng future trong future. Muốn chạy song song nhiều call thì tôi supplyAsync từng cái rồi allOf, sau đó join từng cái để gom kết quả — lưu ý allOf không fail-fast. Lỗi thì exceptionally để fallback, handle để chuẩn hoá cả hai nhánh, whenComplete để log. Điểm quan trọng nhất là executor: các hàm Async không truyền executor chạy trên commonPool dùng chung cả JVM, nên mọi IO tôi đều truyền executor riêng có giới hạn, và chỉ join ở tầng ngoài cùng."
+
+### Ví dụ đời thực
+Endpoint tổng hợp đơn hàng gọi 3 service: price (120 ms), inventory (80 ms), shipping (300 ms). Tuần tự mất 500 ms; dùng supplyAsync + allOf mất 300 ms (bằng call chậm nhất), throughput tăng 1.7x. Lỗi hay gặp: dùng thenApply(r -> fetchAsync(r.id)) tạo CF lồng, code compile nhưng runtime trả về CF<CF<Detail>> và caller join() sai. Sửa bằng thenCompose. Một incident khác: callback blocking gọi DB trong thenApply không truyền executor → chạy trên thread hoàn thành HTTP, block Netty event loop, p99 tăng 10x. Sửa: truyền ioExecutor riêng.
+
+### Trả lời mẫu khi phỏng vấn
+"thenApply là map biến giá trị thành giá trị; thenCompose là flatMap dùng khi bước tiếp theo tự nó trả về CompletableFuture để không bị lồng. allOf chờ nhiều future rồi gom kết quả bằng join. Lỗi xử lý bằng exceptionally, handle hoặc whenComplete. Không truyền executor thì callback không-async chạy trên thread vừa hoàn thành bước trước, còn các hàm async chạy trên commonPool — task blocking bắt buộc phải dùng executor riêng. Kinh nghiệm của tôi là quy ước callback then* chỉ non-blocking, mọi IO đi qua supplyAsync với ioExecutor riêng."
 
 > Senior tip: quy ước của tôi: callback then* chỉ non-blocking; mọi IO đi qua supplyAsync(fn, ioExecutor) riêng; join/get chỉ ở tầng biên (controller, batch-finish). Thiết kế này giúp tránh "CF hell" và deadlock tự tạo chung commonPool.`,
   follow: [
@@ -487,6 +517,12 @@ synchronized (a) { synchronized (b) { transfer(from, to, amount); } }
 
 ### Trả lời miệng 1 phút
 "Deadlock cần đủ bốn điều kiện Coffman: mutual exclusion, hold and wait, no preemption và circular wait, nên chỉ cần phá một điều kiện. Cách tôi hay dùng nhất là lock ordering, ví dụ chuyển tiền thì luôn khoá tài khoản id nhỏ trước, để không bao giờ có vòng chờ; chỗ nào không áp được thứ tự thì dùng tryLock có timeout rồi nhả và retry. Trên production tôi chụp jstack hai ba lần, JVM sẽ in Found one Java-level deadlock; còn nếu treo mà không báo deadlock thì tìm thread đứng yên ở cùng stack qua nhiều dump. Livelock khác ở chỗ thread vẫn chạy, CPU cao mà không tiến; starvation là hệ thống vẫn chạy nhưng một số thread mãi không tới lượt."
+
+### Ví dụ đời thực
+Một transaction chuyển tiền giữ lock DB theo thứ tự account A rồi B. Hai request ngược chiều A→B và B→A cùng lúc → deadlock MySQL, app thấy lỗi generic, một transaction bị rollback. Trước khi bật innodb_print_all_deadlocks, team mất 2 tuần debug. Sau khi bật, log cho thấy lock order không nhất quán. Sửa: chuẩn hoá thứ tự lock theo accountId tăng dần, deadlock giảm về 0 trong 60 ngày theo dõi. Đồng thời thêm retry 3 lần với backoff cho transaction bị deadlock.
+
+### Trả lời mẫu khi phỏng vấn
+"Deadlock xảy ra khi hai thread giữ tài nguyên và chờ tài nguyên của nhau. Điều kiện Coffman cần bốn thứ: mutual exclusion, hold and wait, no preemption, circular wait. Cách phòng: lock ordering nhất quán, lock timeout với tryLock, tránh gọi callback khi đang giữ lock, và không giữ lock qua I/O. Trong DB, MySQL tự resolve bằng cách rollback một transaction; app chỉ thấy lỗi generic nên phải bật innodb_print_all_deadlocks để điều tra. Kinh nghiệm của tôi là luôn log và retry transaction bị deadlock thay vì fail request ngay."
 
 > Senior tip: deadlock DB là dạng khó nhất: MySQL tự resolve (rollback 1 transaction) nhưng app chỉ thấy lỗi generic. Bật innodb_print_all_deadlocks để log mọi deadlock vào error log — một deadlock app gặp chỉ là một trong hàng trăm DB log ra.`,
   follow: [
