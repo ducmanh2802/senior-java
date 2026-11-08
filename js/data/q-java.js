@@ -5725,7 +5725,7 @@ Map<String, User> byEmail = users.stream()
         User::email,
         u -> u,
         (a, b) -> b,              // hoặc merge theo updatedAt
-        LinkedHashMap::new));     // giữ thứ nếu cần
+        LinkedHashMap::new));     // giữ thứ tự nếu cần
 ~~~
 - Key trùng: bản không có merge function ném {{IllegalStateException}} ("Duplicate key ...", từ Java 9 kèm cả hai value).
 - Value null: **NPE** — bản 2 tham số kiểm tra {{requireNonNull(value)}}, bản có merge function dùng {{Map.merge}} vốn cấm value null; lọc bằng {{filter(Objects::nonNull)}} hoặc thay bằng sentinel.
@@ -5803,31 +5803,31 @@ Map<String, User> byEmail = users.stream()
   id: 'modern-031',
   topic: 'modern',
   level: 'mid',
-  q: 'Sequenced collections (Java 21) thêm gì so với List/Set cũ?',
-  a: `**Tóm tắt:** Java 21 thêm interface SequencedCollection (và SequencedSet/SequencedMap) chuẩn hoá thao tác đầu/cuối và đảo chiều: first(), last(), addFirst/addLast, removeFirst/removeLast, reversed(); reversed() trả về **view** không copy.
+  q: 'Sequenced collections (Java 21) thêm gì so với List/Set cũ, và giải quyết vấn đề gì khi bạn viết code xử lý collection có thứ tự?',
+  a: `**Tóm tắt:** Java 21 (JEP 431) thêm interface SequencedCollection (và SequencedSet/SequencedMap) chuẩn hoá thao tác đầu/cuối và đảo chiều: getFirst(), getLast(), addFirst/addLast, removeFirst/removeLast, reversed(); reversed() trả về **view** không copy.
 
 ### Bối cảnh: trước Java 21 mỗi collection một kiểu
 - ArrayList: get(0), get(size()-1).
 - ArrayDeque: peekFirst/peekLast, pollFirst/pollLast.
-- LinkedHashSet: không có first()/last() trực tiếp trước đây (phải iterator.next()).
+- LinkedHashSet/LinkedHashMap: trước đây không có cách lấy phần tử đầu/cuối trực tiếp (đầu phải dùng iterator().next(), cuối phải duyệt hết).
 - Kết quả: code generic xử lý "collection có thứ tự" rất lộn xộn, phải instanceof và cast.
 
 ### Vì sao cần SequencedCollection
 - Thống nhất API cho mọi collection có thứ tự (List, Deque, LinkedHashSet, SortedSet...).
-- first()/last() O(1) thay vì get(0) O(1) cho ArrayList nhưng O(n) cho LinkedList.
+- getFirst()/getLast() cùng một tên cho mọi loại, thay vì get(0), peekFirst(), iterator().next() tuỳ loại; với LinkedHashSet/LinkedHashMap, lấy phần tử cuối từ O(n) thành O(1).
 - reversed() cho phép duyệt ngược mà không cấp phát list mới.
 
 ### Cách hoạt động
-- SequencedCollection extends Collection, thêm first/last/addFirst/addLast/removeFirst/removeLast/reversed.
+- SequencedCollection extends Collection, thêm getFirst/getLast/addFirst/addLast/removeFirst/removeLast/reversed.
 - SequencedSet extends Set + SequencedCollection.
-- SequencedMap extends Map với sequencedEntrySet, firstEntry, lastEntry, reversed.
+- SequencedMap extends Map với firstEntry, lastEntry, pollFirstEntry, putFirst/putLast, sequencedKeySet/sequencedValues/sequencedEntrySet, reversed.
 - reversed() trả về **view** đảo thứ tự: thay đổi view phản ánh vào gốc và ngược lại; không copy.
 
 ### Ví dụ
 ~~~java
 SequencedCollection<String> c = new ArrayList<>(List.of("a","b","c"));
-System.out.println(c.first());   // a
-System.out.println(c.last());    // c
+System.out.println(c.getFirst());   // a
+System.out.println(c.getLast());    // c
 for (String s : c.reversed()) { // c, b, a (view)
     System.out.println(s);
 }
@@ -5844,8 +5844,8 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 - Concurrent modification: reversed() view cũng fail-fast như gốc.
 - SequencedMap.reversed() đảo entry order; cẩn thận khi serialize JSON expecting insertion order.
 
-> Senior tip: dùng SequencedCollection trong API nội bộ thay vì List khi cần first/last; reversed() là view nên nếu trả ra ngoài, copy để tránh caller mutate gốc. Trong code review, tìm get(size()-1) và thay bằng last().`,
-  follow: ['reversed() có phải copy không?', 'SequencedMap khác gì?'],
+> Senior tip: dùng SequencedCollection trong API nội bộ thay vì List khi cần first/last; reversed() là view nên nếu trả ra ngoài, copy để tránh caller mutate gốc. Trong code review, tìm get(size()-1) và thay bằng getLast().`,
+  follow: ['reversed() có phải copy không, và rủi ro gì khi trả nó ra ngoài?', 'SequencedMap thêm những thao tác nào cho LinkedHashMap và TreeMap?'],
   tags: ['Java 21', 'SequencedCollection', 'collections']
 },
 {
@@ -5888,7 +5888,7 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
   topic: 'modern',
   level: 'senior',
   q: 'String templates (JEP 430) hiện trạng ra sao? Có nên dùng trong production không?',
-  a: `**Tóm tắt:** String templates (JEP 430) là preview trong JDK 21 và đã bị rút (withdrawn) khỏi JDK 22; KHÔNG dùng trong production. Dùng text blocks + String.formatted/MessageFormat.
+  a: `**Tóm tắt:** String templates là preview ở JDK 21 (JEP 430), preview lần hai ở JDK 22 (JEP 459), rồi bị rút lại và **gỡ bỏ hoàn toàn từ JDK 23** để thiết kế lại; hiện không có trong bất kỳ bản JDK nào. KHÔNG dùng trong production. Dùng text blocks + String.formatted/MessageFormat.
 
 ### Vì sao cần biết
 - Nhiều tutorial cũ còn nhắc \\"\\"\\" là "string templates" — sai: đó là text blocks (Java 15).
@@ -5916,12 +5916,12 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
   topic: 'modern',
   level: 'senior',
   q: 'Scoped values và structured concurrency (preview) giải quyết vấn đề gì của ThreadLocal?',
-  a: `**Tóm tắt:** ScopedValue là ThreadLocal bất biến với phạm vi lexical; StructuredTaskScope quản lý task con theo cấu trúc → dễ hủy, propagate exception. Cả hai preview trong JDK 21, chưa production.
+  a: `**Tóm tắt:** ScopedValue là ThreadLocal bất biến với phạm vi lexical; StructuredTaskScope quản lý task con theo cấu trúc → dễ hủy, propagate exception. Cả hai còn preview ở JDK 21 (LTS). ScopedValue chính thức từ JDK 25 (JEP 506); StructuredTaskScope vẫn là preview và đã được thiết kế lại API ở JDK 25 (JEP 505).
 
 ### ThreadLocal vấn đề
 - Mutable: bất kỳ code nào có thể set → khó truy vết.
 - Dễ leak nếu không remove() trong finally.
-- Không tự propagate sang thread con; với virtual threads số lượng lớn → tốn bộ nhớ (mỗi VT copy ThreadLocal map).
+- Không tự propagate sang thread con (trừ InheritableThreadLocal, vốn copy giá trị khi tạo thread); với virtual threads số lượng lớn → tốn bộ nhớ (mỗi VT có map ThreadLocal riêng).
 
 ### ScopedValue
 - ScopedValue.where(KEY, val).run(() -> ...) → value chỉ tồn tại trong block; immutable.
@@ -5933,11 +5933,11 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 - Exception propagate rõ ràng; lifecycle gắn với scope block.
 
 ### Pitfall
-- Preview → không production; API có thể đổi.
-- StructuredTaskScope chưa stable; syntax sẽ thay đổi.
+- Trên JDK 21 cả hai là preview (cần --enable-preview) → không dùng cho production; trên JDK 25 dùng được ScopedValue.
+- StructuredTaskScope vẫn preview: API ở JDK 25 (StructuredTaskScope.open + Joiner) khác hẳn JDK 21.
 - ThreadLocal vẫn cần cho thư viện chưa hỗ trợ ScopedValue.
 
-> Senior tip: học khái niệm để chuẩn bị; production vẫn dùng ThreadLocal + ExecutorService có cleanup/remove trong finally; khi migrate, đo memory với virtual threads.`,
+> Senior tip: trên JDK 21, production vẫn dùng ThreadLocal + ExecutorService có remove() trong finally; khi lên JDK 25, chuyển context request (userId, traceId) sang ScopedValue. Khi migrate sang virtual thread, đo memory của ThreadLocal.`,
   follow: ['ThreadLocal leak ở đâu?', 'Virtual threads + ThreadLocal?'],
   tags: ['Java 21', 'scoped values', 'structured concurrency', 'preview']
 },
@@ -5963,7 +5963,8 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 
 ### Pitfall production
 - Chọn GC theo workload: throughput vs latency; đo với tải thật.
-- ZGC không compact theo region như G1? pause vẫn < 1ms nhưng CPU footprint.
+- ZGC vẫn compact heap (di chuyển object đồng thời với ứng dụng), nên không phân mảnh; cái giá là CPU cho barrier và cần heap dư: nếu tốc độ cấp phát vượt tốc độ GC dọn, thread ứng dụng bị chặn (allocation stall), triệu chứng là latency tăng dù pause log vẫn dưới 1 ms.
+- JDK 24 đã bỏ hẳn chế độ non-generational (JEP 490); cờ -XX:+ZGenerational không còn ý nghĩa.
 - GC log (-Xlog:gc*) để phân tích; không đổi GC mà không đo.
 
 > Senior tip: bắt đầu G1 default; chuyển ZGC chỉ khi p99 latency yêu cầu và có benchmark; generational ZGC là bước tiến nhưng vẫn cần tuning heap size và allocation rate.`,
