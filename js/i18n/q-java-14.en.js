@@ -4,161 +4,207 @@
  */
 App.i18n.content({
   'modern-031': {
-    q: `What do sequenced collections (Java 21) add compared to the older List/Set API?`,
-    a: `**Summary:** Java 21 adds the SequencedCollection interface with first()/last()/reversed(); reversed() is a view, not a copy.
+    q: `Sequenced collections (Java 21) add what compared to the older List/Set API?`,
+    a: `**Summary:** Java 21 introduces the {{SequencedCollection}} interface (and its siblings {{SequencedSet}} and {{SequencedMap}}) to standardize order-based operations. It provides clear APIs for accessing/manipulating the first and last elements, and reversing the collection, with {{reversed()}} returning an efficient view rather than a copy.
 
-### Why it is needed
-- Before Java 21, getting the first/last element of a LinkedHashSet or a Deque was inconsistent (get(0), getLast, peekFirst).
-- SequencedCollection standardises the whole family: first(), last(), addFirst/addLast, removeFirst/removeLast, reversed().
+### The Problem: Before Java 21
+- Different collections had different APIs for the same concept: {{List}} used {{get(0)}} and {{get(size()-1)}}, {{ArrayDeque}} used {{peekFirst()}} and {{peekLast()}}, while {{LinkedHashSet}} lacked a direct way to access the first/last element without an iterator.
+- Developers had to use {{instanceof}} or rely on specific implementations, making generic code messy and hard to maintain.
 
-### How it works
-- List, Deque, LinkedHashSet and SequencedSet implement the interface.
-- reversed() returns a reversed view with no copy → changing the view changes the backing collection.
+### The Solution: SequencedCollection
+- The new {{SequencedCollection<E>}} interface standardizes:
+  - {{first()}}, {{last()}} (O(1) for most implementations).
+  - {{addFirst(E)}}, {{addLast(E)}}.
+  - {{removeFirst()}}, {{removeLast()}}.
+  - {{reversed()}} (returns a view with the same elements in reverse order).
+- {{List}}, {{Deque}}, {{LinkedHashSet}}, and {{SortedSet}} now implement this interface.
 
-### Pitfall
-- reversed() is a view: sorting the reversed view and then mutating the original will affect it.
-- A Set has no index at all, only first/last.
+### Real-World Example
+~~~java
+SequencedCollection<String> items = new ArrayList<>(List.of("a", "b", "c"));
+System.out.println(items.first()); // "a"
+System.out.println(items.last());  // "c"
 
-> Senior tip: use reversed() to iterate backwards without copying a big list; watch out for concurrent modification.`,
+// Iterate backwards efficiently (view, no copy)
+for (String s : items.reversed()) {
+    System.out.println(s); // "c", "b", "a"
+}
+
+items.addFirst("z"); // items is now ["z", "a", "b", "c"]
+~~~
+
+### Pitfalls & Best Practices
+- {{reversed()}} is a **view**: Modifying the original collection reflects in the reversed view, and vice versa. This can lead to bugs if you expect a snapshot.
+- **Copying**: If you need an independent snapshot, explicitly copy: {{new ArrayList<>(items.reversed())}}.
+- **Sets**: Remember that {{SequencedSet}} does not have index-based access ({{get(i)}}).
+
+### Interview Answer
+"Before Java 21, handling ordered collections like {{ArrayList}} or {{LinkedHashSet}} was inconsistent because there wasn't a unified API to access or manipulate the first and last elements. {{SequencedCollection}} solves this by providing standard methods like {{first()}}, {{last()}}, and the ability to add/remove from both ends. A key point is that {{reversed()}} returns a view, not a copy, making reverse iteration efficient even for large collections, though you must remember it's a view and modifications to the original collection will affect the reversed version."
+
+> Senior tip: Replace manual {{get(size()-1)}} calls with {{last()}} for better readability. Always be clear whether you are using a view ({{reversed()}}) or need a snapshot (copy).`,
     follow: ['Is reversed() a copy?', 'What is different about SequencedMap?'],
   },
   'modern-032': {
     q: `How do record patterns and switch-pattern exhaustiveness work with a sealed class?`,
-    a: `**Summary:** A record pattern destructures a record inside pattern matching; a switch over a sealed type is exhaustiveness-checked by the compiler — a missing case is a compile error.
+    a: `**Summary:** A record pattern destructures a record inside pattern matching; a switch over a sealed type is exhaustiveness-checked by the compiler — a missing case is a compile error, forcing you to handle all possible subtypes.
 
 ### Why it is needed
-- Before, you wrote instanceof + an explicit cast + getter calls. Java 21 lets you write if (o instanceof Point(int x,int y)).
-- A sealed class limits its own subtypes, so the compiler knows the complete set of cases.
+- Traditionally, you had to write {{instanceof}} followed by an explicit cast and getter calls. Java 21 allows you to write {{if (o instanceof Point(int x, int y))}}.
+- A sealed class limits its own subtypes, allowing the compiler to verify if all cases are covered in a {{switch}}.
 
 ### How it works
-- switch (shape) { case Circle c -> ...; case Rect r -> ...; } needs no default when the type is sealed.
-- Record patterns nest: case Line(Point p1, Point p2) pulls the components apart in one step.
+- **Record patterns**: Deconstructs a record into its components.
+- **Switch exhaustiveness**: {{switch (shape) { case Circle c -> ...; case Rect r -> ...; }}} does not require a {{default}} case if the type is sealed because the compiler knows all possible cases. If you add a new subtype, the compiler reports all unhandled cases.
 
 ### Pitfall
-- A switch over a non-sealed type still needs a default.
-- Pattern matching for primitives is not complete yet.
+- A {{switch}} over a non-sealed type still needs a {{default}} case to be exhaustive.
+- Pattern matching for primitives is not fully complete yet.
+- Records work best for domain modeling; avoid overusing destructuring for complex objects.
 
-> Senior tip: combine sealed + record + a switch expression to model your domain; the compiler then reports every missing case when you add a new subtype.`,
+### Interview Answer
+"Record patterns let us deconstruct objects directly in {{instanceof}} or {{switch}}, significantly reducing boilerplate code like manual casts. Combined with sealed classes, Java's {{switch}} becomes exhaustive, meaning the compiler can check if every possible subtype is handled. If I add a new subtype to a sealed class, any unhandled {{switch}} expression will immediately fail to compile, which acts as a great safeguard against bugs when domain models expand."
+
+> Senior tip: Combine {{sealed}} classes, {{record}} types, and {{switch}} expressions to model your domain safely; the compiler will actively help you maintain consistency when adding new subtypes.`,
     follow: ['What is a sealed class?', 'When do you need a default in a switch?'],
   },
   'modern-033': {
     q: `What is the current status of string templates (JEP 430)? Should you use them in production?`,
-    a: `**Summary:** String templates were a preview feature in JDK 21 and were withdrawn from JDK 22; do NOT use them in production. Use text blocks + formatted, or String.formatted.
+    a: `**Summary:** String templates were a preview feature in JDK 21 and were withdrawn in JDK 22; they are NOT currently slated for stable release. DO NOT use them in production. Use {{Text Blocks}} with {{String.formatted()}} or {{MessageFormat}} instead.
 
-### Why you need to know this
-- Many tutorials still show \\"\\"\\" as if it were a string template — it is only a text block.
-- Preview/withdrawn status changes from one JDK to the next; production only uses stable APIs.
+### Why it is important
+- Many online tutorials still show {{"\"\"\""}} as if it were a string template—that is incorrect; those are {{Text Blocks}} (introduced in Java 15).
+- Preview/withdrawn features change between JDK releases; only use stable APIs in production code.
 
-### The safe way
-- Use text blocks for SQL/JSON.
-- Use String.formatted or MessageFormat for interpolation.
-- Do not turn on --enable-preview in production.
+### The Safe Alternatives
+- Use **Text Blocks** for SQL/JSON to handle multi-line strings cleanly.
+- Use {{String.formatted()}} or {{MessageFormat}} for string interpolation in stable code.
+- Avoid enabling {{--enable-preview}} in production builds, as the compiled bytecode may not be compatible with different JDK versions.
 
-### Pitfall
-- Turning on preview in prod → the compiled class will not run on any other JDK release.
-- Confusing a text block with a string template.
+### Pitfalls
+- Confusion: mistaking Text Blocks for string templates.
+- **Preview feature risk**: enabling preview features in production makes your application tightly coupled to a specific (and potentially unstable) JDK version, causing major issues during future upgrades or runtime environment changes.
 
-> Senior tip: follow the JEPs, but only merge a feature once it is stable; state the JDK target explicitly in the pom.`,
+### Interview Answer
+"String templates were introduced as a preview in JDK 21 but were subsequently withdrawn in later releases, so they are not currently suitable for production use. I stick to Text Blocks for readable multi-line string handling, combined with {{String.formatted()}} or {{MessageFormat}} for interpolation. My rule of thumb is to never enable {{--enable-preview}} in production because it ties the code to a specific, potentially unstable JDK version and complicates future maintenance."
+
+> Senior tip: Always check the JEP status; for production, only merge features once they are marked as 'Final' or 'Stable'. Clearly state the target JDK version in your build configuration.`,
     follow: ['Text block vs string templates?', 'When would you enable preview?'],
   },
   'modern-034': {
-    q: `Which problems of ThreadLocal do scoped values and structured concurrency (preview) solve?`,
-    a: `**Summary:** ScopedValue is an immutable ThreadLocal with a lexical scope; StructuredTaskScope groups child tasks by structure → easy to cancel, easy to propagate exceptions.
+    q: `Which problems of ThreadLocal do Scoped Values and Structured Concurrency (preview) solve?`,
+    a: `**Summary:** {{ScopedValue}} is an immutable {{ThreadLocal}} with lexical scope, avoiding leaks and making cleanup automatic. {{StructuredTaskScope}} groups child tasks into a single unit of work, ensuring all tasks within that structure are managed (cancelled, joined, or monitored) together, which prevents task leakage and orphan tasks.
 
-### Why it is needed
-- ThreadLocal is mutable, leaks easily, is awkward to clean up, and does not propagate to child threads by itself.
-- With many virtual threads, ThreadLocal costs memory.
+### The Problem with ThreadLocal
+- **Mutables**: Any code can call {{set()}} on a {{ThreadLocal}}, making it hard to track where values are modified.
+- **Leaks**: They require manual cleanup ({{remove()}}), which is easy to forget in {{finally}} blocks.
+- **Virtual Threads**: With millions of virtual threads, {{ThreadLocal}} objects create significant memory overhead as each thread carries its own map of values.
 
-### How it works
-- ScopedValue.where(KEY, val).run(() -> ...) → the value only exists inside that block.
-- StructuredTaskScope: fork the tasks, join them; the whole scope is cancelled when one task fails.
+### The Solution
+- **ScopedValue**: Defines values that exist only within a specific block (lexical scope). It is immutable and automatically inherited by child tasks.
+- **StructuredTaskScope**: Forks tasks within a scope, allowing you to easily join them or cancel the entire scope if one task fails, providing structured exception handling.
 
-### Pitfall
-- Both are preview → not for production.
-- StructuredTaskScope is not a stable API yet.
+### Pitfalls
+- Both are currently **preview features**—they are not ready for production code yet.
+- {{StructuredTaskScope}} API continues to evolve.
 
-> Senior tip: learn the concepts now to be ready; production still uses ThreadLocal + an ExecutorService with explicit cleanup.`,
+### Interview Answer
+"{{ThreadLocal}} is problematic because it's mutable, prone to memory leaks if cleanup is forgotten, and expensive when using virtual threads. {{ScopedValue}} solves this by providing immutable, lexically-scoped values that are automatically cleaned up and inherited. {{StructuredTaskScope}} provides better task lifecycle management, ensuring that all subtasks are accounted for and cancelled if the parent fails. While these are currently preview features, they represent the future of manageable concurrency in Java."
+
+> Senior tip: Keep monitoring these features, but continue using {{ThreadLocal}} with explicit cleanup in {{finally}} blocks for current production workloads until these alternatives become stable.`,
     follow: ['Where does ThreadLocal leak?', 'Virtual threads + ThreadLocal?'],
   },
   'modern-035': {
     q: `What does Generational ZGC (Java 21) improve compared with the older ZGC?`,
-    a: `**Summary:** Generational ZGC adds a young/old generation → less CPU overhead and shorter pause times for workloads with lots of short-lived objects; enable it with -XX:+UseZGC -XX:+ZGenerational.
+    a: `**Summary:** Generational ZGC adds a young/old generation to ZGC, which significantly reduces CPU overhead and improves pause times for workloads with many short-lived objects. It is enabled with {{-XX:+UseZGC -XX:+ZGenerational}} in Java 21; it became the default ZGC implementation in Java 23+.
 
-### Why it is needed
-- The old non-generational ZGC scanned the entire heap on every cycle → high CPU usage when object churn is large.
-- The generational version exploits the weak generational hypothesis (most objects die young).
+### The Problem with Non-Generational ZGC
+- The older non-generational ZGC scanned the entire heap on every collection cycle.
+- This resulted in high CPU usage for workloads where many objects are allocated and die quickly (high churn).
 
-### How to enable
-- JDK 21+: -XX:+UseZGC -XX:+ZGenerational.
-- JDK 23+: generational is the default.
+### The Solution: Generational ZGC
+- It applies the **Weak Generational Hypothesis**: most objects die young.
+- By separating the heap into young and old generations, it can collect young objects more frequently and efficiently, drastically reducing the effort needed for old generation collection.
 
-### Pitfall
-- ZGC does not compact region-by-region the way G1 does? Pauses still stay under 1ms, but the price shows up as CPU footprint.
-- Choose the GC from the workload: throughput vs latency.
+### Pitfalls & Best Practices
+- **CPU vs Latency**: ZGC prioritizes low latency (sub-millisecond pauses), but it generally requires more CPU overhead compared to G1 (the default GC for most applications).
+- **GC Choice**: Always choose your Garbage Collector based on your specific workload requirements (throughput vs. latency).
+- **Measurement**: Never change the GC without measuring the impact on your real workload.
 
-> Senior tip: measure on your real workload; G1 is still the safe default for most applications; ZGC is for latency-sensitive ones.`,
-    follow: ['G1 vs ZGC — how do they compare?', 'When would you use Shenandoah?'],
+### Interview Answer
+"Generational ZGC, introduced as a stable feature in JDK 21, adds generational capability to ZGC. Previously, ZGC scanned the whole heap, which was inefficient for high-churn applications. By separating young and old objects, it collects young ones more efficiently based on the generational hypothesis. It’s ideal for latency-sensitive applications that require sub-millisecond pauses, but you should still measure it against G1—the default for most applications—because the CPU footprint of ZGC can be higher."
+
+> Senior tip: Start with G1 as the default GC. Only move to ZGC if your p99 latency requirements strictly demand it and you've benchmarked the CPU overhead."`,
+    follow: ['So sánh G1 vs ZGC?', 'Khi nào dùng Shenandoah?'],
   },
   'core-035': {
     q: `What steps does an upgrade roadmap from a Java 8/11 project to Java 21 include — jdeps, --add-opens, old libraries?`,
-    a: `**Summary:** The steps are: upgrade the JDK used to build → run the tests → use jdeps/jdeprscan to find removed APIs → handle --add-opens for reflection → update the libraries → enable preview? no. Tune the GC last.
+    a: `**Summary:** Upgrading to Java 21 is a structured process: 1. Update the JDK used in the build, 2. Run existing tests, 3. Use {{jdeps}} and {{jdeprscan}} to identify removed or deprecated APIs, 4. Resolve issues with deep reflection (e.g., {{--add-opens}}), 5. Update major dependencies (Spring Boot 3, Hibernate 6), 6. Enable a suitable GC and monitor metrics. Avoid enabling preview features in production.
 
-### Detailed steps
-1. Install JDK 21 and set source/target 21 in the build.
-2. Run the full test suite; fix compile errors (javax→jakarta when moving to Spring 6).
-3. Run jdeps --jdk-internals to find use of internal JDK APIs.
-4. Run jdeprscan to find APIs deprecated for removal.
-5. If an old library uses deep reflection: add --add-opens module/pkg=ALL-UNNAMED as a temporary measure.
-6. Update the dependencies (Spring Boot 3, Hibernate 6).
-7. Enable a suitable GC and measure.
+### Detailed Steps
+1. **Infrastructure**: Install JDK 21 and set {{source/target}} to 21 in build tools (Maven/Gradle).
+2. **Compile & Test**: Run the full suite. Address compile errors, such as {{javax.*}} to {{jakarta.*}} namespaces if migrating to Spring Boot 3.
+3. **Analyze**:
+   - {{jdeps --jdk-internals}}: Identifies usage of internal JDK APIs that may have been removed or encapsulated.
+   - {{jdeprscan}}: Identifies usage of APIs deprecated for removal.
+4. **Reflection/Encapsulation**: If third-party libraries use deep reflection (common in older libs), add {{--add-opens module/package=ALL-UNNAMED}} as a temporary workaround. *Prioritize refactoring these away.*
+5. **Update Dependencies**: Update core frameworks (Spring, Hibernate, etc.) to versions compatible with Java 21.
+6. **Performance Tuning**: Configure a suitable Garbage Collector and monitor p99 latency, GC pauses, and memory usage under load.
 
-### Pitfall
-- --add-opens is only a workaround; refactor so you no longer need it.
-- Pre-JPMS libraries are not module-aware.
+### Pitfalls
+- **{{--add-opens}} as a permanent solution**: This is a workaround, not a fix. Maintain a backlog for refactoring.
+- **Dependency Issues**: Not all libraries are modularity-aware or compatible with JDK 21+.
 
-> Senior tip: migrate small services first; keep a dual build (JDK 11 and 21) in CI for a while.`,
+### Interview Answer
+"Upgrading to Java 21 isn't just about changing the JDK version; it's a structured engineering process. I start by updating the JDK and running tests to catch breaking changes. I use tools like {{jdeps}} and {{jdeprscan}} to proactively find internal or deprecated API usage. I handle deep reflection issues—common in older libraries—by temporarily adding {{--add-opens}} while maintaining a refactor backlog to remove them later. Finally, I update core dependencies, tune the GC, and thoroughly monitor metrics like latency and memory to ensure performance parity before fully rolling out."
+
+> Senior tip: Migrate small services first; keep a dual build (JDK 11 and 21) in CI for a while."`,
     follow: ['How do you read jdeps output?', 'When do you need --add-exports?'],
   },
   'modern-037': {
     q: `How do text blocks help in SQL/JSON tests, and what should you know about indentation?`,
-    a: `**Summary:** A text block (""") holds a multi-line string; indentation is stripped according to the least-indented line; \\s keeps a trailing space; it makes SQL/JSON tests readable.
+    a: `**Summary:** A text block ({{"\"\"\""}}) holds a multi-line string; indentation is stripped according to the least-indented line; {{ \s}} preserves trailing space; it makes SQL/JSON tests highly readable.
 
 ### Why it is needed
-- Before, you concatenated strings and escaped quotes — very noisy.
-- A text block keeps the formatting, so SQL/JSON stays readable.
+- Traditionally, you had to concatenate strings and manually escape quotes—which is noisy and error-prone.
+- A text block keeps the formatting, so SQL/JSON remains human-readable.
 
 ### How it works
-- The first line after the opening """ must be a line break (or \\).
-- The minimum indentation is stripped; use {{stripIndent}} when you need that behaviour.
-- Escapes: \\\\ for a backslash, \\" for a quote inside the block — a single quote needs no escape in a text block.
+- The first line after the opening {{"\"\"\""}} must be a line break (or {{ \}} for continuation).
+- The minimum indentation is automatically stripped. Align the closing {{"\"\"\""}} with your code for predictable indentation removal.
+- **Escapes**: {{ \\}} for a backslash, {{"\""}} for a quote—note that a single quote inside a text block needs **no** escape!
 
-### Pitfall
-- Trailing whitespace is stripped unless you write \\s.
-- Mixing indentation levels gives a result that is not what you intended.
+### Pitfalls & Best Practices
+- **Trailing whitespace**: It is automatically stripped unless you explicitly use {{ \s}}.
+- **Indentation**: Mixing spaces and tabs or misaligning indentation levels often results in unexpected string content.
 
-> Senior tip: line the closing """ up with the code so the indentation is stripped correctly; write a snapshot test to compare the output.`,
+### Interview Answer
+"Text blocks, introduced in Java 15, allow us to represent multi-line strings without cumbersome concatenation and escaping, making SQL queries and JSON payloads much more readable. The key is that the compiler automatically strips the minimum common indentation, which is why aligning the closing {{ \"\"\"}} with the opening code is crucial. It simplifies testing and documentation, and I use {{ \s}} when I need to explicitly preserve trailing whitespace."
+
+> Senior tip: Align the closing {{"\"\"\""}} with the code so the indentation is stripped correctly; write a snapshot test to compare the output."`,
     follow: ['Is a text block a compile-time constant?'],
   },
   'modern-038': {
     q: `(Lead) An LTS upgrade policy for 30 services: how do you keep it synchronised and safe?`,
-    a: `**Summary:** Write a policy: a standard JDK version, a timeline split into waves, a CI matrix, canary deploys and rollback; use jdeps/jdeprscan and contract tests; track metrics before and after.
+    a: `**Summary:** Treating an LTS upgrade as a project with clear owner, playbook, and metrics, not just "bumping a version." Split the upgrade into waves (pilot → non-critical → core) and implement a CI matrix, canary deploys, and rollback plans. Use {{jdeps}}/{{jdeprscan}} and contract tests to ensure safety; track metrics (latency, error rate, GC pause) before and after.
 
-### Why it is needed
-- 30 services cannot be upgraded at the same time; you need waves and clear criteria.
-- The risks: old libraries, reflection, and a GC change that moves latency.
+### Why it is important
+- 30 services cannot be upgraded at the same time. You need a controlled approach with waves.
+- Risks include outdated libraries, reflection issues (strong encapsulation), and GC behavioral changes that affect latency.
 
 ### How to do it
-1. Standardise the build (Maven/Gradle plugin, JDK 21).
-2. Wave 1: low-traffic, non-critical services; wave 2: core services; wave 3: the rest.
-3. Per service: test + staging + canary 5% → full rollout.
-4. Track p99 latency, GC pause time and error rate; roll back on any regression.
-5. Document every --add-opens as temporary and keep a refactor backlog.
+1. **Standardise**: Define a JDK 21 baseline, a build toolchain (Maven/Gradle), and prohibit internal API usage.
+2. **Waves**: Start with low-traffic services, then core, then the rest.
+3. **Rollout**: Use canary deploys (5% traffic) and strictly monitor p99 latency, error rates, and GC pause times. Roll back immediately if regressions occur.
+4. **Tooling**: Use {{jdeps}}/{{jdeprscan}} to identify issues early, and SCA (Software Composition Analysis) for dependency CVEs.
 
-### Pitfall
-- No rollback plan.
-- Ignoring dependency CVEs.
+### Pitfalls
+- **No rollback plan**: Always keep the old image ready for a quick rollback.
+- **Ignoring Dependency CVEs**: Treat the upgrade as an opportunity to also address security debt.
 
-> Senior tip: put the "JDK 21 LTS baseline" in an RFC; review it quarterly; freeze new versions for stability.`,
+### Interview Answer
+"I treat LTS upgrades as a project, not just a version bump. I establish a standard JDK baseline and rollout in waves, starting with non-critical services. I utilize {{jdeps}} and {{jdeprscan}} to identify incompatible APIs early and use canary deployments (5% traffic) to validate each service in production while monitoring p99 latency, GC pauses, and error rates. The most crucial part is a clear rollback plan and treating the upgrade as an opportunity to also clean up technical debt and address dependency security vulnerabilities."
+
+> Senior tip: Treat the LTS upgrade as an RFC (Request for Comments) with a clear owner and a documented playbook; freeze new feature deployments during high-risk upgrade waves."`,
     follow: ['How do you measure a regression after an upgrade?'],
   },
 });
