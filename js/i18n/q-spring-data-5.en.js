@@ -185,18 +185,18 @@ int deleteOldAuditLogs(@Param("cutoff") Instant cutoff);
   },
   'jpa-013': {
     q: 'You must import 1 million transaction history rows from a CSV file. With Hibernate, which bulk-write strategy do you choose: {{jdbc.batch_size}}, {{StatelessSession}}, or skip JPA entirely? What configurations and pitfalls are essential?',
-    a: `**Summary:** For 1M rows, the goal is **minimize round-trips** and **prevent persistence context bloat**. Mandatory config: {{hibernate.jdbc.batch_size}}, {{hibernate.order_inserts}}, {{hibernate.jdbc.batch_versioned_data}} (if entity has {{@Version}}), plus periodic {{flush()}} + {{clear()}}. At this scale, {{StatelessSession}} is a strong choice: it **skips the persistence context**, no dirty-check, no cascade. If data must be read back for validation, use {{JdbcTemplate}} or PostgreSQL COPY.
+    a: `**Summary:** For 1 million rows, the goal is to **reduce round-trips** (each trip between app and DB has network and parsing overhead) and to **keep the persistence context from growing unbounded** (the persistence context is Hibernate's in-memory map of managed entities; if it holds 1M rows, you get an OutOfMemoryError). The mandatory configuration is {{hibernate.jdbc.batch_size}}, {{hibernate.order_inserts}}, and {{hibernate.jdbc.batch_versioned_data}} (needed when entities use {{@Version}} for optimistic locking), plus periodic {{flush()}} + {{clear()}}. At this scale, {{StatelessSession}} is a strong choice: it **bypasses the persistence context entirely** — no dirty checking, no cascade, no first-level cache. If you must read data back to validate during the import, use {{JdbcTemplate}} or a database-native bulk loader like PostgreSQL COPY.
 
-### Comparison
+### Comparing the options
 | Approach | Speed | Bypasses persistence context | Notes |
 |---|---|---|---|
-| {{save()}} + flush/clear | Medium | No | Still pays dirty-check overhead |
+| {{save()}} + flush/clear | Medium | No | Still pays dirty-checking overhead on managed entities |
 | {{StatelessSession}} | Fast | **Yes** | No cascade, no dirty check, no L1 cache |
-| {{JdbcTemplate.batchUpdate}} | Very fast | N/A | Bypasses Hibernate entirely |
-| PostgreSQL COPY | Fastest | – | Needs privileges, special handling |
-| Spring Batch chunk | Varies | Configurable | Has checkpoint, restartable |
+| {{JdbcTemplate.batchUpdate}} | Very fast | N/A | Bypasses Hibernate completely |
+| PostgreSQL COPY | Fastest | – | Needs DB privileges and special handling |
+| Spring Batch chunk | Varies | Configurable | Adds checkpointing and restartability |
 
-### Batch config
+### Batch configuration
 ~~~yaml
 spring:
   jpa:
@@ -208,21 +208,21 @@ spring:
         order_inserts: true
         order_updates: true
 ~~~
-- {{batch_size}} only works when **many identical statements** are batched together. That's why {{order_inserts}} matters: if you insert {{Transaction}} and {{TransactionItem}} alternating, without {{order_inserts}} Hibernate sends statements interleaved and batching is nearly useless.
-- **Generate ids upfront** to enable batching: {{IDENTITY}} forces Hibernate to fetch generated key after each insert ⇒ loses batching.
-- {{batch_size}} isn't magic: ramp up and measure. 50–500 is common starting point; too large holds many statements in memory.
+- {{batch_size}} only works when **many identical statements** are grouped together. That is why {{order_inserts}} matters: if you insert {{Transaction}} and {{TransactionItem}} in alternating order, without {{order_inserts}} Hibernate must send statements interleaved and batching becomes almost useless.
+- **Generate IDs upfront** to enable batching: {{IDENTITY}} (auto-increment at the DB) forces Hibernate to fetch the generated key after every insert, so batching is lost. Use {{SEQUENCE}} or a pre-allocated ID strategy instead.
+- {{batch_size}} is not a magic number: ramp up and measure. A range of 50–500 is a common starting point; too large keeps many statements in memory.
 
 ### StatelessSession
 ~~~java
 StatelessSession session = sessionFactory.openStatelessSession();
 Transaction tx = session.beginTransaction();
 try (BufferedReader reader = Files.newBufferedReader(path)) {
-    reader.readLine();                 // skip header
+    reader.readLine();                 // skip header row
     String line;
-    while ((line = reader.readLine()) != null) {   // stream line by line, no full RAM load
+    while ((line = reader.readLine()) != null) {   // stream line by line, do not load all into RAM
         TxHistory row = mapper.toEntity(line);
-        session.insert(row);           // direct insert, no context
-        // no persistence context ⇒ no periodic flush/clear needed
+        session.insert(row);           // direct insert, no persistence context
+        // no persistence context, so no periodic flush/clear needed
     }
     tx.commit();
 } catch (Exception e) {
@@ -232,19 +232,19 @@ try (BufferedReader reader = Files.newBufferedReader(path)) {
     session.close();
 }
 ~~~
-Key {{StatelessSession}} traits:
-- **No persistence context**: {{session.get(...)}} always hits DB, no identity map, no dirty checking.
-- **No cascade support**: must insert child entities manually in order.
-- **No lazy loading**: everything must be set manually.
-- **Hibernate 6 supports JDBC batching** for StatelessSession (via {{hibernate.jdbc.batch_size}} or {{setJdbcBatchSize()}}) – enable SQL/JDBC logging to confirm batching actually happens on your version.
+Key {{StatelessSession}} traits to remember:
+- **No persistence context**: {{session.get(...)}} always hits the DB, there is no identity map and no dirty checking.
+- **No cascade support**: you must insert child entities manually in the correct order.
+- **No lazy loading**: every association must be set explicitly.
+- **Hibernate 6 supports JDBC batching** for {{StatelessSession}} (via {{hibernate.jdbc.batch_size}} or {{setJdbcBatchSize()}}). Enable SQL/JDBC logging to confirm batching actually happens on the version you run.
 
-### Pitfall production
-- **Reading entire file into RAM** then writing: 1M rows causes OOM. Stream line by line with {{BufferedReader}} or streaming CSV parser.
-- **Overly long transaction**: holding 1M rows in one transaction bloats undo log/WAL, blocks vacuum, prolongs commit.
-- **Non-idempotent retry**: if job fails mid-way and restarts, duplicate rows are created. Use upsert by business key, or staging table + status flag.
-- **Indexes on target table**: every index adds per-row cost. For one-time load into new table, drop secondary indexes and recreate after load; but keep unique indexes needed for upsert/deduplication.
+### Production pitfalls
+- **Reading the entire file into RAM** before writing: a 1M-row file will cause OOM. Stream line by line with {{BufferedReader}} or a streaming CSV parser.
+- **Overly long transaction**: holding 1M rows in one transaction bloats the undo log/WAL (write-ahead log), blocks vacuum, and prolongs commit time.
+- **Non-idempotent retry**: if the job fails midway and restarts, duplicate rows are created. Use upsert by a business key, or load into a staging table with a status flag.
+- **Indexes on the target table**: every index adds per-row insert cost. For a large one-time load into a fresh table, you can drop secondary indexes and recreate them after the load — but keep unique indexes needed for upsert/deduplication.
 
-> Senior tip: with 1M rows, the most important question isn't "which library" but **"does this data need to be read back during the write?"**.`,
+> Senior tip: with 1 million rows, the most important question is not "which library to use" but **"does this data need to be read back during the write?"** If yes, pick an approach that preserves that capability (e.g., {{JdbcTemplate}} with explicit queries); if no, {{StatelessSession}} or COPY gives the best throughput.`,
     follow: [
       'Why does {{@GeneratedValue(strategy = GenerationType.IDENTITY)}} break JDBC batching effectiveness?',
       'How does {{StatelessSession}} differ from a regular {{EntityManager}} and what are the consequences?'
@@ -313,19 +313,19 @@ List<OrderRow> countItems(@Param("cid") Long customerId);
     ]
   },
   'jpa-015': {
-    q: 'The data model has {{Customer}} as {{Individual}} or {{Company}}. Which JPA inheritance strategy do you choose – {{SINGLE_TABLE}}, {{JOINED}}, or {{TABLE_PER_CLASS}} – and what are the trade-offs?',
-    a: `**Summary:** JPA has three inheritance strategies, each producing a different physical layout. {{SINGLE_TABLE}}: **one** table holds columns from both parent and children, distinguished by a **discriminator** column – fastest, simplest queries but wide table with many nullable columns. {{JOINED}}: **each class gets its own table**, child has FK to parent – well normalized, per-branch constraints, but reads require joins and writes insert into multiple tables. {{TABLE_PER_CLASS}}: **each class a standalone table**, no parent table – polymorphic queries need {{UNION ALL}}, so very slow and pagination nearly unusable. For most business systems, {{SINGLE_TABLE}} is the default; switch to {{JOINED}} when branches have many unique attributes or need separate constraints.
+    q: 'The data model has {{Customer}} as either {{Individual}} or {{Company}}. Which JPA inheritance strategy do you choose – {{SINGLE_TABLE}}, {{JOINED}}, or {{TABLE_PER_CLASS}} – and what are the trade-offs of each?',
+    a: `**Summary:** JPA provides three inheritance strategies, and each maps to a different physical database layout. {{SINGLE_TABLE}} puts **one** table with columns from the parent and all children, distinguished by a **discriminator** column (a column that stores which subtype a row represents) – fastest reads and simple queries, but the table becomes wide with many nullable columns. {{JOINED}} creates **one table per class**, where each child table has a foreign key pointing to the parent table – well normalized with per-branch constraints, but reads require joins and writes insert into multiple tables. {{TABLE_PER_CLASS}} creates **one standalone table per concrete class** with no parent table – polymorphic queries (queries against the parent type that return any subtype) must use {{UNION ALL}}, which is very slow and makes pagination nearly unusable. For most business systems, {{SINGLE_TABLE}} is the default; switch to {{JOINED}} when each branch has many unique attributes or needs its own constraints.
 
-### Three Strategies
+### Three strategies compared
 | Criteria | {{SINGLE_TABLE}} | {{JOINED}} | {{TABLE_PER_CLASS}} |
 |---|---|---|---|
-| Table count | 1 | 1 + child classes | 1 per class |
-| Read query | 1 table, fast | Join parent–child (polymorphic: outer join all children) | {{UNION ALL}} across tables |
-| Write | 1 {{INSERT}} | {{INSERT}} to parent + child | {{INSERT}} to 1 table |
-| Per-branch constraints | Hard (applies to whole table) | Easy (each table own constraints) | Easy |
+| Table count | 1 | 1 + number of child classes | 1 per concrete class |
+| Read query | 1 table, fast | Join parent–child (polymorphic: outer join all child tables) | {{UNION ALL}} across tables |
+| Write | 1 {{INSERT}} | {{INSERT}} into parent + child | {{INSERT}} into 1 table |
+| Per-branch constraints | Hard (applies to the whole table) | Easy (each table has its own constraints) | Easy |
 | Wide table / nullables | Wide, many nulls | Narrow, normalized | Narrow, duplicate columns |
-| Polymorphic pagination | Easy | Supported, many joins | Nearly unusable |
-| Polymorphic query | Easy (filter discriminator) | Slower (outer join all children) | Must union |
+| Polymorphic pagination | Easy | Supported, but many joins | Nearly unusable |
+| Polymorphic query | Easy (filter by discriminator) | Slower (outer join all child tables) | Must union |
 
 ### Example
 ~~~java
@@ -341,7 +341,7 @@ public abstract class Customer {
 
 @Entity
 public class Individual extends Customer {
-    @Column private String idNumber;        // only for individuals
+    @Column private String idNumber;        // only applies to individual customers
     private LocalDate birthDate;
 }
 
@@ -351,9 +351,9 @@ public class Company extends Customer {
     private Instant registeredAt;
 }
 ~~~
-With {{SINGLE_TABLE}}, table {{customer}} has {{customer_type}} plus {{id_number}}, {{birth_date}}, {{tax_code}}, {{registered_at}}. Inserting an {{Individual}} leaves {{Company}} columns NULL.
+With {{SINGLE_TABLE}}, the {{customer}} table has a {{customer_type}} column plus {{id_number}}, {{birth_date}}, {{tax_code}}, {{registered_at}}. When inserting an {{Individual}}, the {{Company}} columns are NULL.
 
-Note: {{@DiscriminatorValue}} allows custom discriminator codes (e.g., {{"INDIVIDUAL"}} instead of class name) – use short, **stable** codes, because changing discriminator after data exists breaks existing data.
+Note: {{@DiscriminatorValue}} lets you set a custom discriminator code (e.g., {{"INDIVIDUAL"}} instead of the class name). Use short, **stable** codes, because changing the discriminator after data exists will break existing rows.
 
 ### Polymorphic query
 ~~~java
@@ -361,55 +361,55 @@ Note: {{@DiscriminatorValue}} allows custom discriminator codes (e.g., {{"INDIVI
 List<Customer> all = em.createQuery("select c from Customer c", Customer.class).getResultList();
 
 List<Customer> companies = em.createQuery(
-    "select c from Customer c where type(c) = Company.class", Customer.class).getResultList();
+    "select c from Customer c where type(c) = Company", Customer.class).getResultList();
 ~~~
 
-### When to choose what
-- {{SINGLE_TABLE}}: **shallow** inheritance, total columns across branches small (under a few dozen), read-heavy write-light. Default choice.
-- {{JOINED}}: each branch has **many unique attributes** and needs separate constraints (e.g., {{Company.taxCode}} must be NOT NULL and unique), or need per-branch partitioning/access control.
-- {{TABLE_PER_CLASS}}: rarely used. Only sensible when child classes are **almost unrelated** and **polymorphic queries almost never happen**. Note: this strategy cannot use {{GenerationType.IDENTITY}} (id must be unique across all tables, use sequence).
-- {{@MappedSuperclass}}: not true inheritance – used to pull common fields (address, audit info) into a base class **without** creating a table.
+### When to choose which
+- {{SINGLE_TABLE}}: a **shallow** inheritance tree, total columns across all branches are small (under a few dozen), read-heavy and write-light. This is the default choice.
+- {{JOINED}}: each branch has **many unique attributes** and needs its own constraints (e.g., {{Company.taxCode}} must be NOT NULL and unique), or you need per-branch partitioning/access control.
+- {{TABLE_PER_CLASS}}: rarely used. Only sensible when child classes are **almost unrelated** and you **almost never query polymorphically**. Note: this strategy cannot use {{GenerationType.IDENTITY}} (IDs must be unique across all tables; use a sequence).
+- {{@MappedSuperclass}}: not true inheritance — it is used to share common fields (address, audit info) in a base class **without** creating its own table.
 
-### Pitfall production
-- {{SINGLE_TABLE}} with many branches creates a "sparse table" with many NULL columns. When inheritance tree grows, consider splitting.
-- Adding a column to a child class affects **all** other classes in the same table. On large tables, adding NOT NULL with default requires care (see schema migration question).
-- Constraints on parent class apply to **all** children: declaring {{@NotNull}} on a parent field means every branch must have it.
-- With {{JOINED}}, reading an object joins 2-3 tables; missing indexes on FKs costs I/O. Ensure indexes on all FK columns.
+### Production pitfalls
+- {{SINGLE_TABLE}} with many branches creates a "sparse table" with many NULL columns. When the inheritance tree grows large, consider splitting.
+- Adding a new column to a child class affects **all** other classes in the same table. On large tables, adding a NOT NULL column with a default requires careful migration (see the schema migration question).
+- Constraints declared on the parent class apply to **all** children: declaring {{@NotNull}} on a parent field means every branch must have it.
+- With {{JOINED}}, reading one object joins 2–3 tables; missing indexes on foreign keys cost I/O. Make sure every foreign key column is indexed.
 
-> Senior tip: deciding between {{SINGLE_TABLE}} and {{JOINED}} should hinge on "**which branch has a constraint I need the DB to enforce?**".`,
+> Senior tip: the decision between {{SINGLE_TABLE}} and {{JOINED}} should hinge on the question "**which branch has a constraint that I need the database to enforce?**" If the answer is "none that matter," {{SINGLE_TABLE}} wins on simplicity and performance.`,
     follow: [
       'Why is {{@MappedSuperclass}} not considered table inheritance in JPA?',
-      'When must you migrate from {{SINGLE_TABLE}} to {{JOINED}} and what does it cost?'
+      'When must you migrate from {{SINGLE_TABLE}} to {{JOINED}}, and what does that migration cost?'
     ]
   },
   'jpa-016': {
-    q: 'What does {{@Transactional(readOnly = true)}} actually do with Hibernate and with the connection? If you want reads to go to a read replica, how does Spring\'s routing mechanism work?',
-    a: `**Summary:** {{readOnly = true}} is a **hint to two different layers**. With Hibernate, it sets the session to {{FlushMode.MANUAL}} ⇒ **disables dirty checking**, no extra {{UPDATE}}s – this is the main benefit. With JDBC, it calls {{Connection.setReadOnly(true)}}; whether the server honors it depends on the system, so verify via server SQL logs. {{readOnly = true}} does **not** automatically route to a read replica – that must be built separately using {{AbstractRoutingDataSource}}.
+    q: 'What does {{@Transactional(readOnly = true)}} actually do with Hibernate and with the database connection? If you want reads to go to a read replica, how does Spring\'s routing mechanism work?',
+    a: `**Summary:** {{readOnly = true}} is a **hint to two different layers**, not a single switch. With Hibernate (the JPA provider that manages entities and generates SQL), it sets the session to {{FlushMode.MANUAL}}, which **disables dirty checking** (dirty checking is Hibernate's process of comparing entity snapshots to detect changes and generate {{UPDATE}} statements) — so no extra {{UPDATE}}s are emitted. That is the main benefit. With JDBC (the low-level database connection API), it calls {{Connection.setReadOnly(true)}}; whether the database server actually enforces this depends on the driver and server, so you must verify with server-side SQL logs. What {{readOnly = true}} does **not** do is automatically route reads to a read replica (a read-only copy of the primary database used to offload read traffic) — that routing must be built explicitly using {{AbstractRoutingDataSource}}.
 
 ### What Hibernate does
-1. Sets {{FlushMode.MANUAL}}: Hibernate **does not** auto-flush. Direct consequence: no {{UPDATE}} from dirty checking ⇒ saves CPU and write traffic.
-2. Skips pre-query flush ⇒ but also means **in-memory changes won't be pushed to DB**.
-3. Other optimizations: skips snapshot creation for dirty checking, and with PostgreSQL driver may map to server-level read-only transaction.
+1. Sets {{FlushMode.MANUAL}}: Hibernate **does not** auto-flush. Direct consequence: no {{UPDATE}} from dirty checking, which saves CPU and write traffic.
+2. Skips the pre-query flush step, but that also means **in-memory changes will not be pushed to the database** inside that transaction.
+3. Other optimizations may apply: skipping snapshot creation for dirty checking, and with the PostgreSQL driver it may map to a server-level read-only transaction.
 
 ### What JDBC does
-- {{Connection.setReadOnly(true)}} is a **hint**. With PostgreSQL, the driver may translate it to a read-only transaction; with MySQL Connector/J it may also push {{SET SESSION TRANSACTION READ ONLY}} depending on driver config.
-- Real benefit when server enforces read-only: write queries are **rejected** ⇒ acts as a "safety net" catching bugs, not a performance optimization.
+- {{Connection.setReadOnly(true)}} is a **hint**. With PostgreSQL, the driver may translate it into a read-only transaction; with MySQL Connector/J it may also push {{SET SESSION TRANSACTION READ ONLY}} depending on driver configuration.
+- The real benefit when the server enforces read-only: write queries are **rejected**. This acts as a "safety net" that catches bugs, not as a performance optimization.
 
 ### What Spring Data JPA does automatically
-{{SimpleJpaRepository}} marks read methods as read-only and write methods as read-write. Problem: placing {{@Transactional}} (defaults to read-write) at the service layer **overrides** the repository's read-only flag ⇒ loses the benefit entirely.
+{{SimpleJpaRepository}} (the default repository implementation) marks read methods as read-only and write methods as read-write. A common problem: placing {{@Transactional}} (which defaults to read-write) at the service layer **overrides** the repository's read-only flag, so you lose the benefit entirely.
 
-### Biggest trap: MANUAL flush swallows changes
-Because {{FlushMode.MANUAL}}, if someone calls {{save()}} inside a read-only transaction, the change is **not flushed** ⇒ commit succeeds but data remains old, **with no error**. This is a terrifying silent bug.
+### Biggest trap: MANUAL flush silently swallows changes
+Because {{FlushMode.MANUAL}} is active, if someone calls {{save()}} inside a read-only transaction, the change is **not flushed**. The commit succeeds but the data in the database remains unchanged, **with no error thrown**. This is a terrifying silent bug.
 - Team convention: read-only methods **never** write.
-- Use {{@Transactional(readOnly = true)}} with a test: if DB enforces read-only, the error surfaces immediately.
-- Don't enable read-only on shared repository (has both read/write methods); only enable on **service** methods or read-only repositories.
+- Use {{@Transactional(readOnly = true)}} together with a test: if the database enforces read-only, the error will surface immediately.
+- Do not enable read-only on a shared repository that has both read and write methods; enable it only on **service** methods or on repositories that are truly read-only.
 
-### Routing to read replica
+### Routing to a read replica
 ~~~java
 public class RoutingDataSource extends AbstractRoutingDataSource {
     @Override
     protected Object determineCurrentLookupKey() {
-        // read inside read-only transaction -> route to replica
+        // if running inside a read-only transaction, route to replica
         return TransactionSynchronizationManager.isCurrentTransactionReadOnly() ? "replica" : "primary";
     }
 }
@@ -422,27 +422,27 @@ DataSource dataSource() {
     RoutingDataSource routing = new RoutingDataSource();
     routing.setTargetDataSources(targets);
     routing.setDefaultTargetDataSource(primaryDataSource);
-    // LazyConnectionDataSourceProxy: so actual connection opens AFTER routing decision
+    // LazyConnectionDataSourceProxy: defer the actual connection until after routing is decided
     return new LazyConnectionDataSourceProxy(routing);
 }
 ~~~
-Three technical points:
-- Must wrap with {{LazyConnectionDataSourceProxy}}, otherwise connection opens too early (at transaction start) before read-only flag is determined.
-- {{determineCurrentLookupKey()}} is called **every time** a connection is borrowed.
-- With **JPA**, every operation must be inside a transaction for the read-only flag to take effect.
-- Hibernate may open its own connections for some operations (e.g., reading metadata at startup, {{TableGenerator}} generating id in separate transaction) – verify those go to primary.
-- Need **separate pools** for primary and replica: they are different systems, sharing one pool is wrong.
+Three technical points to remember:
+- You must wrap the routing datasource with {{LazyConnectionDataSourceProxy}}. Otherwise the connection is opened too early (at transaction start) before the read-only flag has been determined.
+- {{determineCurrentLookupKey()}} is called **every time** a connection is borrowed from the pool.
+- With **JPA**, every operation must run inside a transaction for the read-only flag to take effect.
+- **Hibernate may open its own connections** for certain operations (e.g., reading metadata at startup, or a {{TableGenerator}} that generates IDs in a separate transaction). Verify that these go to the primary.
+- Use **separate connection pools** for primary and replica: they are different systems, and sharing one pool is wrong.
 
-### Pitfall production
-- **Reading from replica after write** won't see the new data (replication lag). For financial data (balances, transaction status), always read from primary.
-- **Offload heavy reads** (reports, exports) to replica, but **don't** make core business flows depend on replica.
-- If app-level cache is populated from replica, data will be staler – account for this in TTL design.
-- Enabling read-only on **all** read methods can break read-then-write in same transaction (e.g., read to validate then update). Only enable on truly read-only methods.
+### Production pitfalls
+- **Reading from a replica right after a write** will not see the newly written data because of replication lag (the delay before changes propagate from primary to replica). For financial data such as balances, limits, and transaction statuses, always read from the primary.
+- **Offload heavy read queries** (reports, exports) to the replica, but **do not** make core business flows depend on the replica.
+- If an application-level cache is populated from the replica, cached data will be staler. Account for that in your TTL (time-to-live) design.
+- Enabling read-only on **all** read methods can break read-then-write flows within the same transaction (e.g., read to validate then update). Only enable it on methods that are truly read-only.
 
-> Senior tip: separate two decisions: **"does this query need to write?"** (use {{readOnly}} to save CPU) and **"is stale data acceptable?"** (decides replica routing). In banking, balances, limits, and transaction statuses must always read from primary.`,
+> Senior tip: separate two decisions: **"does this query need to write?"** (use {{readOnly}} to save CPU and catch accidental writes) and **"is stale data acceptable for this read?"** (that decides replica routing). In a banking system, balances, limits, and transaction statuses must always be read from the primary, even if a read-only method looks tempting for performance.`,
     follow: [
-      'Why can {{@Transactional(readOnly = true)}} lose data changes without throwing an error?',
-      'How do you handle reading from replica right after a write to guarantee read-your-writes?'
+      'Why can {{@Transactional(readOnly = true)}} cause data changes to be lost without throwing an error?',
+      'How do you handle reading from a replica right after a write to guarantee read-your-writes consistency?'
     ]
   },
   'jpa-017': {
