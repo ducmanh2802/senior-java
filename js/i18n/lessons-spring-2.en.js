@@ -64,8 +64,8 @@ Rules: versioned run in ascending version order; same version with different che
     title: 'Jackson-style JSON Mapper: Reflection, Annotations, and Strict Mode Against Silent Field Loss',
     goals: [
       'Use reflection to serialize objects guided by annotations',
-      'Understand visibility rules: why a private field without getter or annotation is silently dropped',
-      'Implement a strict mode to detect dropped fields, and know the corresponding real Jackson flags'
+      'Understand visibility rules: why a private field without a getter and without an annotation is silently dropped',
+      'Implement a strict mode to detect dropped fields, and learn the corresponding flags in real Jackson'
     ],
     body: `**Summary:** Jackson uses reflection to find an object's "properties" (public fields, public getters, or items with {{@JsonProperty}}) and annotations to decide JSON field names. A private field with no getter and no annotation is **silently ignored** — the JSON lacks the data with no error. This lesson builds a small mapper to understand the mechanism, plus a strict mode that turns silent drops into exceptions.
 
