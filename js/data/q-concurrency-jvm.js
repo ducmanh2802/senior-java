@@ -5972,6 +5972,7 @@ Quầy vé có một cây bút (**state**). Khách tới sau không gào tại q
 - **waitStatus** của Node: SIGNAL (-1) = "khi tôi nhả lock thì đánh thức người ngay sau"; CANCELLED (1) = bỏ cuộc vì timeout/interrupt; CONDITION (-2) = đang nằm trong condition queue của await(); PROPAGATE (-3) = cờ lan tín hiệu ở mode shared (Semaphore, readLock).
 
 ### Từng bước: hai thread cùng lock()
+Lưu ý phiên bản: các tên method dưới đây ({{addWaiter}}, {{acquireQueued}}, {{shouldParkAfterFailedAcquire}}, {{unparkSuccessor}}) là cài đặt JDK 8–13. Từ JDK 14, Doug Lea viết lại AQS (JDK-8229442): gộp thành một method {{acquire(...)}} duy nhất, node có các lớp con {{ExclusiveNode}}/{{SharedNode}}/{{ConditionNode}}, cờ trạng thái là bit {{WAITING}}/{{CANCELLED}}/{{COND}} thay cho waitStatus SIGNAL/-1. Ý tưởng (state + CAS, hàng đợi FIFO, park/unpark, người được đánh thức phải tự CAS lại) giữ nguyên, nên trình tự dưới đây vẫn là cách giải thích đúng.
 ~~~text
 T1: lock() -> CAS state 0->1 OK -> owner = T1 -> lam viec
 T2: lock() -> CAS state 0->1 FAIL (state da = 1)
@@ -5991,7 +5992,7 @@ Hai chi tiết thiết kế đáng nói: (1) thread được đánh thức vẫn
 
 ### Fair vs non-fair, nằm ở đúng một dòng
 ~~~java
-// NonfairSync — ban mac dinh
+// NonfairSync (JDK 8; từ JDK 14 đường tắt này nằm trong initialTryLock())
 public void lock() {
     if (compareAndSetState(0, 1)) setExclusiveOwnerThread(Thread.currentThread());
     else acquire(1);            // chưa được thì mới xếp hàng
@@ -6008,9 +6009,9 @@ if (c == 0) {
 Mỗi {{Condition}} có hàng đợi riêng (node waitStatus = CONDITION). {{await()}} đặt state = 0 (nhả hết lock kể cả phần reentrant), đưa node vào condition queue rồi park; {{signal()}} **không** trao lock, nó chỉ chuyển node về sync queue — người vừa được đánh thức vẫn phải tranh CAS state.
 
 ### Trên production
-- Thread dump ({{jcmd <pid> Thread.print}}) gọi thẳng tên AQS: khung {{LockSupport.park}}, {{AbstractQueuedSynchronizer.acquireQueued}} và dòng {{- parking to wait for <0x00007f...> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)}} — địa chỉ này khớp với object ở khung {{- locked <0x...>}} của thread đang giữ lock.
+- Thread dump ({{jcmd <pid> Thread.print -l}}) gọi thẳng tên AQS: thread chờ có khung {{LockSupport.park}}, {{AbstractQueuedSynchronizer.acquire}} và dòng {{- parking to wait for <0x00000006c2b1d4e8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)}}. Thread đang giữ lock **không** có dòng {{- locked}} (dòng đó chỉ dành cho monitor của synchronized); muốn biết ai giữ, xem mục {{Locked ownable synchronizers}} ở cuối mỗi thread (cần cờ {{-l}}), tìm đúng địa chỉ {{<0x00000006c2b1d4e8>}}. Dòng {{(a ...$ConditionObject)}} nghĩa là thread đang {{await()}} trên Condition, không phải đang chờ lock.
 - Đếm người xếp hàng bằng API public {{ReentrantLock.getQueueLength()}} / {{hasQueuedThreads()}} (tài liệu JDK ghi rõ: dùng để **giám sát**, không để điều khiển logic). Export {{getQueueLength()}} thành metric là cách nhanh nhất để chứng minh "p99 cao vì chờ lock".
-- JFR {{jdk.JavaMonitorEnter}} chỉ bắt monitor của {{synchronized}}; lock AQS phải xem qua async-profiler {{-e lock}} hoặc flame graph wall-clock.
+- JFR {{jdk.JavaMonitorEnter}} chỉ bắt monitor của {{synchronized}}; chờ trên lock AQS hiện ra ở event {{jdk.ThreadPark}} (kèm class của lock), hoặc dùng async-profiler {{-e lock}}.
 - Triệu chứng phải sửa code chứ không sửa flag: {{getQueueLength()}} > 0 kéo dài, CPU thấp, p99 cao → thân critical section quá dài (gọi HTTP, đọc DB, serialize JSON trong lock). Bật fair chỉ đổi thứ tự, không rút ngắn thời gian giữ lock.
 - Quên {{unlock()}} trong {{finally}}: khác {{synchronized}}, ReentrantLock không tự nhả → treo toàn bộ luồng phía sau. Và await() phải nằm trong vòng {{while}} kiểm tra điều kiện, không phải {{if}}.
 - Đọc dump sai trạng thái: thread chờ trong AQS ở trạng thái WAITING (park), còn BLOCKED là của monitor {{synchronized}} — hai hướng điều tra khác nhau.
@@ -6053,7 +6054,7 @@ Thư viện chia sách thành 64 kệ nhỏ. Thủ thư không khoá cả thư v
 3. tab = table (đọc volatile một lần, dùng làm "ảnh" nhất quán cho vòng lặp)
    - nếu tab == null -> initTable(): CAS sizeCtl 0 -> -1; ai thắng thì khởi tạo mảng 16 ô,
      người kia quay vòng lặp đọc lại table (không ai phóng to mảng hai lần)
-4. i = (tab.length - 1) & h        -> vì đồ dùng khi kích thước table lũy thừa của 2
+4. i = (tab.length - 1) & h        -> dùng phép AND được vì kích thước table luôn là lũy thừa của 2
 5. f = tabAt(tab, i)               -> đọc volatile của phần tử mảng (không phải lấy cả mảng ra rồi đọc)
    a) f == null  -> CAS tab[i] null -> new Node(h, key, value)
         thành công -> xong (đây là fast path: không một cái lock nào)
@@ -6066,9 +6067,10 @@ Thư viện chia sách thành 64 kệ nhỏ. Thủ thư không khoá cả thư v
         không thấy -> nối node vào dưới chuỗi (hoặc thêm vào cây)
         neu binCount >= 8 -> treeifyBin(tab, i)
       }
-      khi cập nhật key đã có, node được nối TRƯỚC khi value cũ bị ghi đè,
-      nên get() của thread khác không bao giờ nhìn thấy node có value null
-6. addCount(1L, binCount): tăng bộ đếm, và có thể kẹp đôi bảng nếu vượt ngưỡng
+      node mới được tạo đầy đủ (hash, key, value) rồi mới nối vào chuỗi bằng một lần
+      ghi volatile, nên get() của thread khác không bao giờ thấy node nửa vời;
+      cập nhật key đã có chỉ là một lần ghi volatile vào field val
+6. addCount(1L, binCount): tăng bộ đếm, và có thể nhân đôi bảng nếu vượt ngưỡng
 ~~~
 
 ### Vì sao lại chia hai chế độ CAS / synchronized
@@ -6078,7 +6080,7 @@ Thư viện chia sách thành 64 kệ nhỏ. Thủ thư không khoá cả thư v
 - Cache line: hai key hash ra cùng bucket thì node đầu của nó nằm chung cache line và mọi thao tác đều ping-pong line đó. Đây là lý do hashCode kém chất lượng làm map chậm phi tuyến, dù không có lock toàn cục nào.
 
 ### Đọc thì thế nào
-{{get}}: đọc volatile table (một lần), đọc volatile node tại {{tab[i]}}, rồi duyệt chuỗi qua {{next}} volatile; không lock, không CAS. Với TreeBin, nó đọc volatile root và chỉ {{synchronized}} khi cần. Hệ quả: bạn thấy một **snapshot nhất quán** (không bao giờ thấy chuỗi bị xé nửa), nhưng không có hợp đồng "tôi thấy đúng trạng thái tại thời điểm tôi gọi".
+{{get}}: đọc volatile table (một lần), đọc volatile node tại {{tab[i]}}, rồi duyệt chuỗi qua {{next}} volatile; không lock, không CAS. Với bucket đã thành cây ({{TreeBin}}), TreeBin có khoá đọc/ghi nhẹ riêng ({{lockState}}): khi đang có writer sửa cây, {{get}} không chờ mà duyệt danh sách liên kết song song (chậm hơn nhưng vẫn đúng). Hệ quả: bạn thấy một **snapshot nhất quán** (không bao giờ thấy chuỗi bị xé nửa), nhưng không có hợp đồng "tôi thấy đúng trạng thái tại thời điểm tôi gọi".
 
 ### Bảng so sánh
 | Cách | Khoá ở mức | Hệ quả |
@@ -6123,23 +6125,23 @@ Siêu thị chuyển sang mặt bằng mới mà không đóng cửa. Người p
 - **sizeCtl**: int điều khiển vòng đời bảng. {{0}} = chưa init (sẽ là 16); {{-1}} = đang init; số âm khác = đang resize, phần bit cao chứa **resizeStamp** nhận dạng đợt resize, phần bit thấp đếm số thread đang giúp; số dương = **ngưỡng** đầy kế tiếp = {{n - (n >>> 2)}} (load factor 0.75).
 - **resizeStamp(n)**: một con số dẫn từ kích thước bảng cũ, dùng làm "mã số ca chuyển nhà"; thread sau đọc {{sizeCtl}}, thấy stamp khớp thì biết mình đang giúp đúng đợt, không phải đợt đã kết thúc.
 - **ForwardingNode**: node đặc biệt có {{hash = MOVED (-2)}}, giữ tham chiếu {{nextTable}} — nghĩa là "bucket này đã nằm ở bảng mới".
-- **transferIndex / stride**: con trỏ chia bảng cũ thành các đoạn; mỗi lần CAS lấy một đoạn, đoạn tối thiểu vài ô (công thức trong JDK lấy {{n >>> 3}} chia cho {{NCPU + 1}} và không dưới 2) để thread ít cũng làm đủ việc, không tranh nhau từng ô.
+- **transferIndex / stride**: con trỏ chia bảng cũ thành các đoạn; mỗi lần CAS lấy một đoạn; độ dài đoạn ({{stride}}) là {{(n >>> 3) / NCPU}} khi có nhiều CPU, tối thiểu 16 ô ({{MIN_TRANSFER_STRIDE}}), để các thread không tranh nhau từng ô.
 - **CounterCell**: ô đếm riêng được đệm bằng annotation nội bộ {{jdk.internal.vm.annotation.Contended}} để mỗi thread ghi vào cache line của mình.
 - **sumCount / mappingCount**: cộng {{baseCount}} với mọi cell đang tồn tại.
 
 ### Chuyện gì xảy ra theo thứ tự
 ~~~seq
 title: put() chạm ngưỡng sizeCtl khi bảng đang có 8 thread ghi
-actors: Writer A | sizeCtl | Table cu | Table moi | Writer B
-Writer A -> sizeCtl: CAS doc cu -> (resizeStamp | 1) de claim resize
-Writer A -> Table moi: tao mang gap doi
-Writer A -> Table cu: gan ForwardingNode (MOVED) cho doan minh lam
-Writer A -> Table cu: copy node sang Table moi, tang sizeCtl len 2 (so giup)
-Writer B -> Table cu: gap bucket co hash = MOVED
-Writer B -> sizeCtl: tang so thread dang giup, nhan doan tiep theo qua transferIndex
-Writer B -> Table moi: ghi phan cua minh
-Writer A -> sizeCtl: CAP sizeCtl = nguong moi (n - n/4), bo table moi vao table
-Writer B -> Table moi: ghi tiep binh thuong sau khi resize xong
+actors: Writer A | sizeCtl | Table cũ | Table mới | Writer B
+Writer A -> sizeCtl: CAS thành (stamp << 16) + 2 để nhận resize
+Writer A -> Table mới: tạo mảng gấp đôi
+Writer A -> Table cũ: nhận một đoạn qua transferIndex
+Writer A -> Table mới: chuyển node, để ForwardingNode ở ô cũ
+Writer B -> Table cũ: gặp bucket có hash = MOVED
+Writer B -> sizeCtl: CAS +1 (thêm một thread giúp)
+Writer B -> Table mới: chuyển đoạn của mình rồi CAS -1
+Writer A -> sizeCtl: thread cuối gán table mới, ngưỡng = n - n/4
+Writer B -> Table mới: ghi tiếp bình thường
 ~~~
 Ba bất biến làm nên tính đúng:
 1. **Không có lock toàn bảng.** Mỗi bucket chỉ được "chạm" bởi đúng một thread tại một thời điểm, thread đó hoặc là owner của đoạn hoặc là thread ghi bình thường đã khoá node đầu.
@@ -6154,13 +6156,13 @@ Nếu một biến {{count}} volatile được mọi thread CAS tăng, thì mỗ
 |---|---|
 | {{if (map.size() < MAX) map.put(...)}} | Không chặn được phình to: hai thread cùng thấy size = MAX-1. Cần {{compute}}/{{merge}} với logic giới hạn, hoặc cấu trúc khác |
 | Map 5 triệu entry, thêm liên tục | Resize nhiều lần; mỗi lần tạo bảng mới gấp đôi → đỉnh memory và áp lực GC trong vài giây |
-| {{new ConcurrentHashMap<>(1000, 0.75f, 64)}} | Tham số thứ ba {{concurrencyLevel}} bị **bỏ qua** từ Java 8 (tài liệu API ghi rõ), đừng kỳ vọng nó đặt số lock |
-| {{putAll}} / {{Collectors.toConcurrentMap}} khối lượng lớn | JDK dùng {{ReservationNode}} và các hàm reduce/accumulate theo bucket để nhiều thread ghi song song, không giữ một lock toàn cục |
+| {{new ConcurrentHashMap<>(1000, 0.75f, 64)}} | Từ Java 8, tham số thứ ba {{concurrencyLevel}} chỉ còn là **gợi ý kích thước ban đầu** (capacity ít nhất bằng nó), không còn quyết định số lock như 16 segment của Java 7 |
+| {{putAll}} khối lượng lớn | Gọi {{tryPresize}} để nới bảng một lần trước, rồi put từng phần tử; vẫn không có lock toàn cục |
 | {{mappingCount()}} so với {{size()}} | {{mappingCount()}} trả {{long}}, nên dùng khi map có thể vượt 2 tỷ phần tử; {{size()}} trả {{int}} và sẽ là Integer.MAX_VALUE khi tràn |
 
 ### Trên production
 - **Định cỡ trước.** Với map cache nhiều triệu key, hãy dựng với dung lượng dự tính (JDK tự {{tableSizeFor(expected / loadFactor)}}) để tránh chuỗi resize; hoặc tải toàn bộ dữ liệu lúc khởi động bằng một thread rồi mới mở cho traffic.
-- **Nhận biết bằng chứng.** Đỉnh RTT đều đặn theo nhịp tăng trưởng của map, kèm allocation rate tăng trong GC log ({{-Xlog:gc*}}, hoặc JFR event {{jdk.JavaHeapOperation}}/{{jdk.ObjectAllocationInNewTLAB}}), thường là resize chứ không phải "map chậm".
+- **Nhận biết bằng chứng.** Đỉnh latency đều đặn theo nhịp tăng trưởng của map, kèm allocation rate tăng trong GC log ({{-Xlog:gc*}}) hoặc JFR ({{jdk.ObjectAllocationSample}}, {{jdk.GarbageCollection}}), thường là resize chứ không phải "map chậm".
 - **Đỉnh memory** trong đợt resize ≈ bảng cũ + bảng mới cùng tồn tại; nếu pod đang sát limit, resize đúng giờ cao điểm có thể gây OOMKill. Đây là lý do nên đặt {{-XX:MaxRAMPercentage}} dư cho service có cache in-heap lớn (kết hợp với tuning heap trong topic jvm).
 - **Bucket hoá tree:** resize còn làm **tách cây** (untreeify) khi chuỗi ngắn lại, nên bạn có thể thấy chi phí cây biến mất sau khi nới bảng.
 - **Không dùng {{size()}} trong vòng lặp nóng** để "chọc" từng phần tử; nếu cần thống kê định kỳ, đọc {{mappingCount()}} một lần rồi export metric.
@@ -6168,7 +6170,7 @@ Nếu một biến {{count}} volatile được mọi thread CAS tăng, thì mỗ
 ### Trả lời miệng 1 phút
 "Resize của ConcurrentHashMap là một thuật toán song song có điều phối: thread đầu tiên CAS vào {{sizeCtl}} để claim đợt resize kèm một resizeStamp, tạo bảng gấp đôi, rồi chia bảng cũ thành các đoạn qua {{transferIndex}}. Bucket đã chuyển được để lại {{ForwardingNode}} với hash MOVED, nên {{get}} nhảy sang bảng mới còn {{put}} gọi {{helpTransfer}} để nhận một đoạn về làm — resize do vậy chia đều cho mọi thread đang đi ngang, không có lock toàn bảng. Bộ đếm cũng striped: {{baseCount}} cộng mảng {{CounterCell}} được đệm cache line theo kiểu LongAdder, nên ghi không giành nhau một line, nhưng {{size()}} chỉ là tổng tại một thời điểm, không tuyến tính. Hệ quả thực chiến: định cỡ map trước để tránh resize giông bão, dùng {{mappingCount()}} cho map lớn, và đừng dùng {{size()}} như một phép kiểm tra nguyên tử."
 
-> Senior tip: chỗ câu này phân biệt người đọc source với người đọc blog là hai chi tiết nhỏ: {{concurrencyLevel}} đã bị bỏ qua từ Java 8, và {{size()}} là {{sumCount()}} chứ không phải một counter nguyên tử. Nói thêm được "đỉnh RTT theo nhịp resize, không phải theo QPS" là dấu hiệu bạn từng xử lý sự cố cache in-heap phình to trên production.`,
+> Senior tip: chỗ câu này phân biệt người đọc source với người đọc blog là hai chi tiết nhỏ: {{concurrencyLevel}} từ Java 8 chỉ còn là gợi ý kích thước, và {{size()}} là {{sumCount()}} chứ không phải một counter nguyên tử. Nói thêm được "đỉnh RTT theo nhịp resize, không phải theo QPS" là dấu hiệu bạn từng xử lý sự cố cache in-heap phình to trên production.`,
   follow: [
     'Điều gì bảo đảm {{get}} trong lúc resize không trả về null giả (false negative)?',
     'Vì sao CounterCell chọn chỉ số theo probe của thread thay vì round-robin, và LongAdder chia sẻ ý tưởng này ra sao?',
@@ -6194,14 +6196,14 @@ Nếu một biến {{count}} volatile được mọi thread CAS tăng, thì mỗ
 - **stamp**: số long trả về từ {{tryOptimisticRead()}}, {{readLock()}}, {{writeLock()}}. Nó vừa là "tem" của mode optimistic, vừa là **chìa** để unlock ở mode read/write (vì vậy {{unlockRead(stamp)}} cần đúng stamp đã lấy).
 - **validate(stamp)**: so các bit version/reader của stamp với state hiện tại, không khoá gì cả. Trả true = "không có writer xen vào khoảng đọc của tôi".
 - **tryConvertToWriteLock(stamp)**: thử nâng cấp từ optimistic (hoặc read) lên write **một cách không chặn**; thất bại thì phải {{writeLock()}}.
-- **AQS Sync bên trong**: khi thật sự phải chờ (writeLock bị blocked, readLock có writer đang chờ), StampedLock rơi về hàng đợi AQS như các lock khác; chỉ có optimistic path và read path không tranh chấp là không đụng tới hàng đợi.
+- **Hàng đợi riêng**: StampedLock **không** dựa trên AQS. Khi thật sự phải chờ (writeLock bị chặn, readLock gặp writer), nó dùng hàng đợi chờ riêng theo cùng ý tưởng CLH; optimistic path và read path không tranh chấp không đụng tới hàng đợi.
 - **Hold counter (so sánh với ReadWriteLock)**: ReentrantReadWriteLock chia một int state thành 16 bit write + 16 bit read, và để tránh mọi reader CAS cùng một biến, nó giữ {{firstReader}} cùng {{cachedReads}} và một {{ThreadLocalHoldCounter}} — đó là lý do read lock của RRWL rẻ hơn "naive RW lock" nhưng vẫn mắc hơn optimistic path của StampedLock.
 
 ### Pattern chuẩn
 ~~~java
 public class Point {
     private final StampedLock sl = new StampedLock();
-    private volatile int x, y;          // volatile: doc o mode optimistic can nhin thay write cuoi
+    private int x, y;                   // không cần volatile: validate() có fence, xem giải thích dưới
 
     public int distanceFromOrigin() {
         long stamp = sl.tryOptimisticRead();          // khong khoa gi ca
@@ -6228,7 +6230,7 @@ public class Point {
     }
 }
 ~~~
-Điểm mấu chốt của pattern: **đọc tất cả vào biến cục bộ trước khi validate**, vì sau khi validate fail bạn không còn quyền gì để đọc tiếp mà không lấy lock. Và vì optimistic path không tạo cạnh happens-before giữa write và read, các field được đọc ở chế độ này nên là volatile (hoặc dữ liệu phải là object bất biến được publish qua một tham chiếu volatile) — đây là bẫy tinh vi mà tài liệu JDK cảnh báo.
+Điểm mấu chốt của pattern: **đọc tất cả vào biến cục bộ trước khi validate**, vì sau khi validate fail bạn không còn quyền gì để đọc tiếp mà không lấy lock. Field **không cần** volatile (ví dụ Point trong Javadoc của StampedLock dùng field thường): {{tryOptimisticRead}} và {{validate}} có memory fence, nên nếu validate trả true thì các giá trị đã đọc là một snapshot nhất quán. Bẫy thật nằm ở chỗ khác: **trước** khi validate, giá trị đọc được có thể là rác (nửa cũ nửa mới), nên không được dùng chúng để làm gì (gọi method trên object vừa đọc, chia cho số vừa đọc, đánh index mảng) cho tới khi validate xong.
 
 ### Bảng so sánh
 | | ReentrantReadWriteLock | StampedLock |
@@ -6242,7 +6244,7 @@ public class Point {
 | Khi nào thắng | đọc nhiều, ghi thỉnh thoảng, API quen thuộc | đọc **rất** nhiều + profile chỉ rõ contention ở read lock |
 
 ### Trên production
-- **Đo trước, đổi sau.** Bật JFR {{jdk.JavaMonitorEnter}} hoặc async-profiler {{-e lock}}/wall-clock, tìm khung {{ReentrantReadWriteLock$Sync.tryAcquireShared}} / {{park}} lặp lại. Nếu read lock chỉ chiếm 1% mẫu, StampedLock không cứu được gì.
+- **Đo trước, đổi sau.** Dùng JFR {{jdk.ThreadPark}} hoặc async-profiler {{-e lock}}/wall-clock, tìm khung {{ReentrantReadWriteLock$Sync.tryAcquireShared}} / {{park}} lặp lại. Nếu read lock chỉ chiếm 1% mẫu, StampedLock không cứu được gì.
 - **Ghi nhiều thì StampedLock tệ hơn**: mỗi write làm mọi stamp cũ fail, reader lại rơi về readLock — đường đi dài hơn cả RRWL.
 - **Nghiện "đọc không lock" dễ sinh bug khó thấy**: một writer nhỏ, chạy giữa hai lần đọc field, khiến snapshot gồm nửa cũ nửa mới. Test phải có thread ghi thật (đóng góp từ câu về test đồng thời), không chỉ test đọc.
 - **Cân nhắc phương án đơn giản hơn**: với config/danh sách ít đổi,{{volatile}} trỏ tới một object **bất biến** (copy-on-write) cho cùng lợi ích "đọc không lock" mà không cần stamp, không cần validate, và không thể dùng sai. Đây là cách tôi chọn nếu tỷ lệ ghi dưới ~1% và dữ liệu vừa trong một snapshot.
@@ -6255,14 +6257,10 @@ public class Point {
 - Tin rằng {{validate}} true = "dữ liệu tôi đọc là mới nhất tính tới lúc này" — nó chỉ nói "không có write nào **xen giữa**", writer sau đó vẫn có thể đổi ngay tức khắc.
 
 ### Trả lời miệng 1 phút
-"Optimistic read của StampedLock lấy một stamp mã hoá version của lock, đọc dữ liệu vào biến cục bộ, rồi validate: nếu không writer nào đi qua thì stamp vẫn hợp lệ và dữ liệu dùng được, nếu có thì quay lại đọc bằng {{readLock()}}. Nó rẻ vì path đọc không tranh chấp **không ghi gì vào state**, nên không có cache line ping-pong giữa các reader. Nhưng nó không reentrant, không có Condition, không có fairness, dùng sai thì fail im lặng, và field được đọc phải volatile để visibility đúng. Vì vậy tôi chỉ dùng khi profile chỉ rõ contention ở read lock của một cấu trúc đọc-nhiều-ghi-ít; còn lại {{ReadWriteLock}} hoặc một snapshot bất biến sau {{volatile}} là lựa chọn an toàn hơn."
+"Optimistic read của StampedLock lấy một stamp mã hoá version của lock, đọc dữ liệu vào biến cục bộ, rồi validate: nếu không writer nào đi qua thì stamp vẫn hợp lệ và dữ liệu dùng được, nếu có thì quay lại đọc bằng {{readLock()}}. Nó rẻ vì path đọc không tranh chấp **không ghi gì vào state**, nên không có cache line ping-pong giữa các reader. Nhưng nó không reentrant, không có Condition, không có fairness, dùng sai thì fail im lặng, và giá trị đọc trước khi validate có thể là rác nên không được dùng tới khi validate xong. Vì vậy tôi chỉ dùng khi profile chỉ rõ contention ở read lock của một cấu trúc đọc-nhiều-ghi-ít; còn lại {{ReadWriteLock}} hoặc một snapshot bất biến sau {{volatile}} là lựa chọn an toàn hơn."
 
 > Senior tip: câu chuyện thật của StampedLock không phải tốc độ mà là **tính dễ sửa sai**. Nó nhanh hơn ở micro-benchmark, nhưng mọi bug đều âm thầm và chỉ lộ khi có write. Trước khi đổi, hãy thử copy-on-write ({{volatile}} tham chiếu tới object bất biến): đạt cùng hiệu quả "đọc zero-lock", mà code review không cần hiểu về stamp.`,
-  follow: [
-    'Vì sao ReentrantReadWriteLock phải dùng hold counter và {{firstReader}} thay vì chỉ CAS một biến read count?',
-    'Optimistic read không tạo cạnh happens-before — hệ quả cụ thể với field không volatile là gì, và volatile có đủ ở cả hai chiều?',
-    'Điều gì xảy ra với writer khi reader optimistic chạy quá lâu (đọc 500MB trong vùng optimistic)? Có starvation không?',
-  ],
+  follow: ['Vì sao ReentrantReadWriteLock phải dùng hold counter và firstReader thay vì chỉ CAS một biến read count?', 'Vì sao giá trị đọc ở mode optimistic có thể là rác, và những thao tác nào tuyệt đối không được làm với chúng trước khi validate?', 'Điều gì xảy ra với writer khi reader optimistic chạy quá lâu? Có starvation không?'],
   tags: ['StampedLock', 'optimistic read', 'ReadWriteLock', 'copy-on-write'],
   refs: [
     { type: 'doc', title: 'StampedLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/StampedLock.html' },
