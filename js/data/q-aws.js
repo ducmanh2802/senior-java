@@ -2622,7 +2622,7 @@ DB:   Oracle on-prem ══ DMS full load ══ CDC liên tục ═════
   id: 'aws-031',
   topic: 'aws',
   level: 'mid',
-  q: 'Route 53 ho tro cac ban ghi A, AAAA, CNAME, Alias va MX/TXT. Vi sao khong dat CNAME o apex (root domain), va TTL anh huong the nao khi cutover?',
+  q: 'Route 53 hỗ trợ các bản ghi A, AAAA, CNAME, Alias và MX/TXT. Vì sao không đặt CNAME ở apex (root domain), và TTL ảnh hưởng thế nào khi cutover?',
   a: `**Tóm tắt:** DNS (Domain Name System - hệ thống "danh bạ" đổi tên miền như {{app.example.com}} thành địa chỉ IP để máy tính kết nối được) trên Route 53 có các bản ghi A/AAAA (tên -> IP), CNAME (tên -> tên khác), MX (máy chủ mail), TXT (xác thực) và Alias (đặc thù Route 53). Không đặt CNAME ở apex (tên miền gốc, ví dụ {{example.com}}) vì chuẩn DNS cấm CNAME đi cùng các bản ghi khác tại cùng tên; dùng Alias trỏ tới tài nguyên AWS. TTL (Time To Live - thời gian resolver/ISP được cache bản ghi) phải hạ thấp trước cutover (chuyển đổi hệ thống) để client nhận IP mới nhanh, rồi nâng lên sau khi ổn định để giảm chi phí và tải DNS.
 
 ### Cái gì và vì sao cần hiểu rõ từng loại bản ghi
@@ -2675,18 +2675,14 @@ Hệ thống ngân hàng chuyển frontend từ on-prem (A record {{203.0.113.10
 "DNS trên Route 53 có A/AAAA trỏ tên tới IP, CNAME trỏ tên tới tên khác, MX cho mail, TXT cho xác thực, và Alias là bản ghi đặc thù AWS trỏ tới tài nguyên như ALB hay CloudFront. Em không đặt CNAME ở apex vì theo RFC, một tên có CNAME thì không được có bản ghi khác, trong khi apex bắt buộc có NS và SOA nên sẽ xung đột gây SERVFAIL; giải pháp là dùng Alias A/AAAA ở apex. Về TTL, đó là thời gian resolver cache bản ghi. Khi cutover em hạ TTL xuống 60-300 giây từ 24-48 giờ trước để cache cũ hết hạn, rồi mới đổi bản ghi; sau khi ổn định em nâng TTL lại để giảm truy vấn và chi phí. Thực tế có ISP cache cứng nên em luôn giữ hệ cũ chạy song song một lúc và xem đây là điểm rollback nhanh nhất - chỉ cần đổi bản ghi ngược lại."
 
 > Senior tip: Trước mọi cutover DNS, ghi lại giá trị và TTL hiện tại, dùng {{dig +trace}} kiểm tra propagation, và giữ đường rollback (hệ cũ còn chạy) trong vài giờ. Với ngân hàng, DNS là nút rollback nhanh nhất nhưng cũng dễ gây sự cố dây chuyền nếu quên MX/TXT.`,
-  follow: [
-    'Khac biet giua weighted, latency, failover routing policy cua Route 53?',
-    'Health check cua Route 53 hoat dong the nao va khi nao failover?',
-    'Khi migrate domain tu on-prem DNS sang Route 53, thu tu lam the nao de khong downtime?'
-  ],
+  follow: ['Khác biệt giữa weighted, latency, failover routing policy của Route 53?', 'Health check của Route 53 hoạt động thế nào và khi nào failover?', 'Khi migrate domain từ DNS on-prem sang Route 53, làm theo thứ tự nào để không downtime?'],
   tags: ['DNS', 'Route53', 'Alias', 'TTL', 'cutover']
 },
 {
   id: 'aws-032',
   topic: 'aws',
   level: 'senior',
-  q: 'Request qua ALB tra ve HTTP 400 trong khi backend van song va traffic lon. Nguyen nhan nao, va phan biet ALB tu tra loi voi target tra loi bang metric va access log?',
+  q: 'Request qua ALB trả về HTTP 400 trong khi backend vẫn sống và traffic lớn. Nguyên nhân nào, và phân biệt ALB tự trả lời với target trả lời bằng metric và access log thế nào?',
   a: `**Tóm tắt:** HTTP 400 qua ALB (Application Load Balancer - bộ cân bằng tải tầng ứng dụng HTTP/HTTPS của AWS) có thể do ALB tự từ chối (request/header sai chuẩn, Host header bất thường, header/URI quá lớn, cơ chế chống HTTP desync chặn) hoặc do target (ứng dụng backend, ví dụ Spring Boot) trả 400 (validate lỗi, JSON sai). Phân biệt bằng hai metric CloudWatch: {{HTTPCode_ELB_4XX_Count}} (ALB tự sinh) và {{HTTPCode_Target_4XX_Count}} (target trả), kết hợp ALB access log để xem {{elb_status_code}} và {{target_status_code}}.
 
 ### Cái gì và vì sao phải phân biệt hai nguồn 400
@@ -2741,11 +2737,7 @@ SpringBoot --> Client: 400 (Target-side) nếu validate lỗi
 "Khi ALB trả HTTP 400, em tách hai khả năng: ALB tự từ chối hoặc target ứng dụng trả về. ALB-side thường do header/request sai chuẩn, vượt giới hạn kích thước header/URI, Host header bất thường hoặc cơ chế chống HTTP desync chặn request mơ hồ. Target-side thường là lỗi validate hoặc parse JSON trong Spring Boot. Em khoanh vùng nhanh bằng CloudWatch: {{HTTPCode_ELB_4XX_Count}} là lỗi do ALB sinh ra, {{HTTPCode_Target_4XX_Count}} là lỗi target trả; so sánh hai metric trong khung một phút là biết hướng. Sau đó em đọc ALB access log: nếu {{target_status_code}} là dấu gạch ngang thì request không tới backend. Em từng gặp case JWT làm header vượt giới hạn, metric ELB 4xx tăng còn target 4xx phẳng, fix bằng cách rút gọn claim và loại cookie dư thừa."
 
 > Senior tip: Luôn bật ALB access log và đặt alarm cho {{HTTPCode_ELB_4XX_Count}} lẫn {{HTTPCode_Target_4XX_Count}}. Khi sự cố, 30 giây đầu nhìn hai metric để biết "lỗi ở cửa" hay "lỗi ở nhà", tránh điều tra sai tầng.`,
-  follow: [
-    'ALB tra 502/503/504 khac nhau the nao va nguyen nhan?',
-    'Cach cau hinh connection draining va deregistration delay?',
-    'Khi nao dung NLB thay ALB (TCP/UDP, static IP, PrivateLink)?'
-  ],
+  follow: ['ALB trả 502/503/504 khác nhau thế nào và nguyên nhân là gì?', 'Cấu hình connection draining và deregistration delay thế nào?', 'Khi nào dùng NLB thay ALB (TCP/UDP, static IP, PrivateLink)?'],
   tags: ['ALB', 'HTTP400', 'desync', 'CloudWatch', 'access-log', 'troubleshooting']
 },
 {
@@ -2794,7 +2786,7 @@ Một công ty bảo hiểm cần RPO dưới 1 phút và RTO dưới 1 giờ ch
   id: 'aws-034',
   topic: 'aws',
   level: 'senior',
-  q: 'Ket noi private tu on-premise len AWS: Site-to-Site VPN vs Direct Connect (private/transit VIF, DX + VPN backup). So sanh thoi gian trien khai, bang thong, do tre, chi phi.',
+  q: 'Kết nối private từ on-premise lên AWS: Site-to-Site VPN vs Direct Connect (private/transit VIF, DX + VPN backup). So sánh thời gian triển khai, băng thông, độ trễ, chi phí.',
   a: `**Tóm tắt:** Để kết nối private từ on-premise (hạ tầng tại chỗ, ví dụ data center công ty) lên AWS, hai lựa chọn chính là Site-to-Site VPN (mã hóa IPsec qua Internet, triển khai nhanh, rẻ nhưng băng thông/độ trễ biến động) và Direct Connect - DX (đường truyền riêng vật lý, ổn định, băng thông lớn, độ trễ thấp nhưng triển khai tuần-tháng và chi phí cao). Thực tế production thường dùng DX làm đường chính và VPN làm dự phòng (failover qua BGP - giao thức định tuyến động).
 
 ### Cái gì: các thành phần chính
@@ -2850,11 +2842,7 @@ Ngân hàng có core on-prem, chuyển dần service sang AWS (3 VPC: prod, non-
 "Khi kết nối private từ on-prem lên AWS, em cân nhắc Site-to-Site VPN và Direct Connect. VPN chạy IPsec qua Internet, dựng được trong vài giờ, chi phí thấp nhưng băng thông và độ trễ biến động. Direct Connect là đường vật lý riêng, độ trễ ổn định, băng thông lớn và có SLA, nhưng mất vài tuần triển khai và chi phí cao hơn; DX không mã hóa mặc định nên với ngân hàng em xem thêm MACsec hoặc IPsec. Thực tế em hay chọn DX làm đường chính và VPN làm dự phòng, dùng BGP để failover tự động. Khi thiết kế em chú ý MTU để tránh fragmentation trên VPN, kiểm tra capacity đường backup, và luôn diễn tập failover thật trước go-live vì BGP hội tụ có thể mất vài chục giây và ứng dụng phải chịu được."
 
 > Senior tip: Đừng chỉ vẽ sơ đồ HA - hãy diễn tập rút đường chính. Với ngân hàng, yêu cầu dual DX ở hai location khác nhau + VPN backup là phổ biến, nhưng giá trị thật nằm ở việc đã test failover và đo được thời gian hội tụ BGP.`,
-  follow: [
-    'BGP route advertisement va AS path prepending dung de uu tien DX the nao?',
-    'Khi DX down, VPN backup co du bang thong khong? Plan capacity ra sao?',
-    'Direct Connect Gateway dung de ket noi nhieu region the nao?'
-  ],
+  follow: ['BGP route advertisement và AS path prepending dùng để ưu tiên DX thế nào?', 'Khi DX down, VPN backup có đủ băng thông không? Lên kế hoạch capacity ra sao?', 'Direct Connect Gateway dùng để kết nối nhiều region thế nào?'],
   tags: ['VPN', 'DirectConnect', 'BGP', 'hybrid', 'networking', 'banking']
 },
 {
@@ -2975,7 +2963,7 @@ Một startup dựng hệ thống trên một AZ, một NAT gateway, RDS Single-
   id: 'aws-038',
   topic: 'aws',
   level: 'senior',
-  q: 'Security Group stateful vs NACL stateless trong su co thuc te: ephemeral port bi NACL chan chieu ve, cach debug bang VPC Flow Logs va Reachability Analyzer.',
+  q: 'Security Group stateful vs NACL stateless trong sự cố thực tế: ephemeral port bị NACL chặn chiều về, cách debug bằng VPC Flow Logs và Reachability Analyzer.',
   a: `**Tóm tắt:** Security Group (SG - tường lửa gắn vào ENI/tài nguyên, ví dụ EC2) là **stateful** (có nhớ trạng thái kết nối: cho phép chiều đi thì tự cho phép chiều về), còn NACL (Network ACL - tường lửa gắn vào subnet) là **stateless** (không nhớ, phải khai báo rule cả hai chiều). Sự cố kinh điển: NACL cho phép inbound tới server nhưng chặn outbound ephemeral port (cổng tạm, dải 1024-65535) khiến phản hồi không về được -> client timeout dù server đã xử lý. Debug bằng VPC Flow Logs (thấy {{REJECT}}) và VPC Reachability Analyzer (chỉ ra hop/rule chặn).
 
 ### Cái gì và vì sao hai lớp này dễ gây nhầm
@@ -3029,11 +3017,7 @@ Hệ thống nội bộ ngân hàng: service A (subnet app) gọi service B (sub
 "Security Group là stateful nên nếu cho phép request đi vào, phản hồi tự được phép đi ra. NACL gắn ở subnet là stateless, phải khai báo rule cả inbound và outbound cho từng chiều. Sự cố em hay gặp là NACL cho inbound tới port 443 nhưng quên outbound dải ephemeral 1024-65535, nên server nhận request nhưng phản hồi về client bị NACL chặn, dẫn tới timeout dù backend vẫn sống. Khi debug em bật VPC Flow Logs để tìm bản ghi REJECT theo 5-tuple và xác định port đích là ephemeral; sau đó dùng Reachability Analyzer để chỉ ra đúng NACL hoặc route table nào chặn. Cách phòng ngừa là chuẩn hóa rule NACL, ưu tiên kiểm soát chi tiết bằng SG, và luôn test kết nối sau thay đổi mạng."
 
 > Senior tip: Với môi trường ngân hàng, nhiều đội giữ NACL gần như allow-all và kiểm soát bằng SG để tránh outage khó debug; nếu compliance bắt buộc NACL, hãy chuẩn hóa template mở ephemeral 1024-65535 có chủ đích và review mọi thay đổi qua IaC + kiểm thử tự động.`,
-  follow: [
-    'Khi nao can dung NACL thay vi chi SG?',
-    'VPC Flow Logs format va cach query bang Athena?',
-    'Reachability Analyzer khac Network Access Analyzer the nao?'
-  ],
+  follow: ['Khi nào cần dùng NACL thay vì chỉ SG?', 'Định dạng VPC Flow Logs và cách query bằng Athena?', 'Reachability Analyzer khác Network Access Analyzer thế nào?'],
   tags: ['Security-Group', 'NACL', 'Flow-Logs', 'Reachability-Analyzer', 'troubleshooting', 'networking']
 },
 {
