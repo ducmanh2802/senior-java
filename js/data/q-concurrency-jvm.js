@@ -6771,20 +6771,20 @@ Giống một bảng thông báo trên tường. Ai muốn xem thì chỉ cần 
 ### Thuật ngữ
 - **Copy-on-write**: ghi bằng cách sao chép toàn bộ cấu trúc, sửa bản sao, rồi thay tham chiếu; đọc luôn thấy một bản nhất quán mà không khoá.
 - **Snapshot iterator**: iterator giữ tham chiếu mảng tại thời điểm tạo, nội dung không đổi trong suốt vòng đời iterator.
-- **ReentrantLock**: khoá dùng để bảo vệ hành động ghi, chỉ một thread ghi tại một thời điểm.
+- **Khoá ghi**: chỉ một thread ghi tại một thời điểm. JDK 8 dùng {{ReentrantLock}}; từ JDK 9 là {{synchronized}} trên một object lock nội bộ.
 - **ConcurrentModificationException**: lỗi collection đơn luồng ném khi cấu trúc thay đổi trong khi duyệt.
-- **Tham chiếu mảng**: mảng trong Java là object, gán tham chiếu là thao tác nguyên tử (tham chiếu object là át chủ thể).
+- **Tham chiếu mảng volatile**: field {{array}} bên trong được khai báo {{volatile}}. Gán tham chiếu vốn nguyên tử, còn volatile bảo đảm thread đọc thấy mảng mới **cùng toàn bộ nội dung** đã được chép vào nó (happens-before giữa ghi và đọc).
 
 ### Hoạt động từng bước
 
 Đọc (get/size/iterator):
-1. Lấy tham chiếu mảng nội bộ (array) — tham chiếu object đọc nguyên tử, không khoá.
+1. Đọc volatile tham chiếu mảng nội bộ (array), không khoá.
 2. Truy cập phần tử tại chỉ số trên mảng đó. Mảng không bao giờ được sửa chỗ nên thấy giá trị nhất quán.
 
 Ghi (add/set/remove):
-1. Lấy khoá ReentrantLock (chỉ một thread ghi).
+1. Lấy khoá ghi (chỉ một thread ghi).
 2. Đọc mảng hiện tại, sao chép ra mảng mới (dùng Arrays.copyOf), sửa bản sao.
-3. Gán tham chiếu nội bộ = mảng mới (tham chiếu object ghi nguyên tử).
+3. Ghi volatile: tham chiếu nội bộ = mảng mới. Mọi thread đọc sau đó thấy mảng mới với nội dung đầy đủ.
 4. Nhả khoá. Đọc cũ vẫn thấy mảng cũ, đọc mới thấy mảng mới.
 
 Iterator:
@@ -6827,7 +6827,7 @@ public class ListenerListDemo {
 - Iterator snapshot: nếu listener thêm listener khác trong khi đang thông báo, listener mới không được gọi trong chu kỳ này (không thấy trong snapshot) — thường là mong muốn, tránh đệ quy vô hạn.
 
 ### Lỗi hay gặp
-- **T tưởng iterator thấy danh sách mới nhất**: iterator giữ ảnh chụp cũ, phần tử thêm sau tạo iterator không được duyệt. Cách tránh: nếu cần thấy mới nhất, lấy iterator mới hoặc dùng cấu trúc khác.
+- **Tưởng iterator thấy danh sách mới nhất**: iterator giữ ảnh chụp cũ, phần tử thêm sau tạo iterator không được duyệt. Cách tránh: nếu cần thấy mới nhất, lấy iterator mới hoặc dùng cấu trúc khác.
 - **Ghi nhiều liên tục**: mỗi add/set/remove sao chép toàn bộ mảng, latency tăng theo kích thước danh sách. Cách tránh: điều tiết ghi, hoặc dùng ConcurrentLinkedQueue nếu thứ tự không quan trọng.
 - **Giữ tham chiếu iterator lâu**: iterator không invalid nhưng nội dung cũ; code sau này giả định iterator phản ánh trạng thái hiện tại sẽ bị sai. Cách tránh: tạo iterator gần lúc sử dụng.
 
@@ -6856,7 +6856,7 @@ public class ListenerListDemo {
 Giống hai người giao hàng trực tiếp tại cửa hàng: người A mang hàng tới, người B lấy hàng ngay, không có kệ chứa hàng ở giữa. A không thể bỏ hàng trên kệ mà đi; B không thể lấy hàng nếu không có ai mang tới. Cả hai phải gặp nhau cùng lúc. "Công bằng" giống máy lấy số tại quầy: ai đến trước lấy số trước. "Không công bằng" giống ai tới lượt quầy trống trước được phục vụ trước, kể cả người sau đến hơn.
 
 ### Thuật ngữ
-- **Handoff (giao trực tiếp)**: producer và consumer bắt tay, phần tử không nằm trong hàng đợi thậm chí một ngáf thời gian.
+- **Handoff (giao trực tiếp)**: producer và consumer bắt tay, phần tử không nằm trong hàng đợi dù chỉ một khoảnh khắc.
 - **Sức chứa 0 (capacity 0)**: hàng đợi không chứa phần tử, put/take phải khớp cặp.
 - **Transfer (chuyển giao)**: phương thức nội bộ của SynchronousQueue thực hiện handoff, có thể chờ vô hạn hoặc có timeout.
 - **Chính sách công bằng (fair)**: handoff theo thứ tự thread gọi đến (FIFO).
@@ -6910,16 +6910,16 @@ public class HandoffDemo {
 |---|---|---|---|
 | Chứa phần tử | Không (0) | Có (bounded) | Có (bounded/vô hạn) |
 | Producer khi không có consumer | Chờ handoff | Chờ hoặc xếp hàng | Xếp hàng |
-| Dùng khi | Cần xử lý ngay, tạo thread theo request | Giới hạn số chờ | Xếp hàng Aufgabe |
+| Dùng khi | Cần xử lý ngay, tạo thread theo request | Giới hạn số chờ | Xếp hàng công việc |
 | Ví dụ JDK | Executors.newCachedThreadPool | ThreadPoolExecutor tùy chỉnh | newFixedThreadPool (mặc định) |
 
 ### Trên production
 - Executors.newCachedThreadPool dùng SynchronousQueue: mỗi task cần chạy ngay, nếu không có thread rảnh thì tạo thread mới (tối đa Integer.MAX_VALUE) — nên chỉ dùng cho task ngắn, không burst vô hạn, sẵn sàng OOM native thread.
 - Dùng khi producer và consumer xử lý cùng nhịp (ví dụ worker nhận job từ feeder ngay khi feeder xong chuẩn bị).
-- Không dùng khi cần đệm burst: không chở được phần tử, burst sẽ làm caller chờ ngay.
+- Không dùng khi cần đệm burst: không chứa được phần tử, burst sẽ làm caller chờ ngay.
 
 ### Lỗi hay gặp
-- **Tưởng SynchronousQueue "lưu" được task**: put sẽ chãi mãi nếu không có consumer, thread caller treo. Cách tránh: dùng offer(timeout) hoặc ArrayBlockingQueue nếu cần đệm.
+- **Tưởng SynchronousQueue "lưu" được task**: put sẽ chờ mãi nếu không có consumer, thread caller treo. Cách tránh: dùng offer(timeout) hoặc ArrayBlockingQueue nếu cần đệm.
 - **Dùng newCachedThreadPool burst lớn**: mỗi task tạo thread, dễ OOM "unable to create native thread". Cách tránh: dùng ThreadPoolExecutor bounded hoặc virtual thread + semaphore.
 - **Fair queue tốn hơn**: công bằng phải duy trì hàng FIFO và đánh thức đúng thread, throughput thấp hơn non-fair khi tranh chấp cao. Cách tránh: chỉ bật fair khi thấy starvation rõ rệt.
 
@@ -6951,7 +6951,7 @@ Giống một quán ăn có 5 đầu bếp nấu 5 món khác nhau, và một ng
 - **CompletionService**: giao diện lấy kết quả task khi nào xong thì lấy nó (take/poll).
 - **ExecutorCompletionService**: triển khai gói Executor + BlockingQueue<Future> làm hàng hoàn thành.
 - **FutureTask**: Future chạy được, khi task xong thì đặt kết quả vào Future.
-- **Take/poll**: take chãi mãi cho tới khi có task xong; poll trả về ngay null nếu chưa có.
+- **Take/poll**: take chờ mãi cho tới khi có task xong; poll trả về ngay null nếu chưa có.
 - **Fail-fast**: dừng xử lý khi có lỗi đầu tiên thay vì chờ hết.
 - **Wait-all**: đợi tất cả task xong mới xử lý (như CompletableFuture.allOf).
 
@@ -6959,7 +6959,7 @@ Giống một quán ăn có 5 đầu bếp nấu 5 món khác nhau, và một ng
 
 1. Tạo ExecutorCompletionService(executor).
 2. submit(task1)...submit(taskN): mỗi task được bọc trong FutureTask, gửi executor chạy, và FutureTask được đăng ký để khi xong thì put vào hàng hoàn thành.
-3. take(): lấy Future của task nào xong trước. Nếu chưa có task xong, chãi mãi.
+3. take(): lấy Future của task nào xong trước. Nếu chưa có task xong, chờ mãi.
 4. future.get(): lấy kết quả (hoặc ném ExecutionException nếu task lỗi).
 5. Lặp take() N lần để thu thập tất cả kết quả.
 
@@ -7017,21 +7017,21 @@ public class CompletionServiceDemo {
 ### Trên production
 - Dùng cho fan-out gọi nhiều dịch vụ, lấy kết quả đầu tiên đạt chất lượng (ví dụ gọi 3 cache server, lấy cái nào phản hồi trước).
 - Luôn shutdown executor sau dùng; Future.get() nên có timeout để không treo nếu task treo.
-- Take() chãi mãi: kết hợp với poll(timeout) hoặc kiểm tra số task còn lại để tránh treo vĩnh viễn nếu một task không bao giờ xong.
+- Take() chờ mãi: kết hợp với poll(timeout) hoặc kiểm tra số task còn lại để tránh treo vĩnh viễn nếu một task không bao giờ xong.
 
 ### Lỗi hay gặp
-- **Gọi take() nhiều hơn số task đã submit**: take() chãi mãi vì không đủ Future trên hàng hoàn thành. Cách tránh: take đúng số lần đã submit, hoặc dùng poll(timeout).
+- **Gọi take() nhiều hơn số task đã submit**: take() chờ mãi vì không đủ Future trên hàng hoàn thành. Cách tránh: take đúng số lần đã submit, hoặc dùng poll(timeout).
 - **Task lỗi mà không gọi get()**: exception nằm trong Future, không ai thấy, tương tự submit() mà không get(). Cách tránh: luôn get() mỗi Future lấy từ ecs.
 - **Future.cancel(true) không dừng task nếu task không kiểm tra interrupt**: tương tự ExecutorService, task phải hợp tác với interrupt.
 
 ### Trả lời phỏng vấn 1 phút
-"ExecutorCompletionService gói Executor với hàng đợi hoàn thành: submit N task, rồi take() lấy Future của task nào xong trước. Không phải đợi tất cả (wait-all), nên phù hợp lấy N kết quả đầu tiên hoặc fail-fast. Nên sai khác CompletableFuture.allOf — allOf đợi tất cả xong mới hoàn tất, còn CompletionService xử lý từng task khi xong. Lưu ý luôn get() mỗi Future để thấy lỗi, và take() phải đúng số lần submit để không treo mãi."
+"ExecutorCompletionService gói Executor với hàng đợi hoàn thành: submit N task, rồi take() lấy Future của task nào xong trước. Không phải đợi tất cả (wait-all), nên phù hợp lấy N kết quả đầu tiên hoặc fail-fast. Nó khác CompletableFuture.allOf: allOf đợi tất cả xong mới hoàn tất, còn CompletionService xử lý từng task khi xong. Lưu ý luôn get() mỗi Future để thấy lỗi, và take() phải đúng số lần submit để không treo mãi."
 
 > Senior tip: nếu cần "task đầu tiên thành công thì hủy các task còn lại", hãy tự hủy các Future còn lại trong khối catch, vì ExecutorCompletionService không tự hủy. Và với CompletableFuture, allOf là sự lựa chọn gọn hơn khi tổng hợp nhiều call sau khi tất cả xong; CompletionService thắng khi muốn xử lý kịp thời từng kết quả.`,
   follow: [
     'ExecutorCompletionService khác CompletableFuture.allOf ở điểm nào?',
     'Vì sao phải gọi get() trên mỗi Future lấy từ CompletionService?',
-    'take() chãi mãi — làm sao tránh treo nếu một task không bao giờ xong?'
+    'take() chờ mãi — làm sao tránh treo nếu một task không bao giờ xong?'
   ],
   tags: ['ExecutorCompletionService', 'CompletionService', 'Future', 'fail-fast'],
   refs: [
@@ -7050,17 +7050,17 @@ Giống hai người ở hai đầu một cái hầm, mỗi người cầm một
 
 ### Thuật ngữ
 - **Rendezvous (hẹn gặp)**: hai bên đều phải đến điểm hẹn thì sự kiện mới xảy ra; một bên đến trước phải chờ.
-- **exchange(v)**: gửi đối tượng v đi, nhận đối tượng của bên kia về; chãi mãi cho tới khi có partner.
+- **exchange(v)**: gửi đối tượng v đi, nhận đối tượng của bên kia về; chờ mãi cho tới khi có partner.
 - **Double-buffer (bộ đệm kép)**: hai mảng luân phiên, một bên viết vào một mảng, bên kia đọc mảng kia, rồi tráo nhau.
 - **BlockingQueue**: hàng đợi chứa phần tử, producer đưa vào, consumer lấy ra, không nhất thiết phải gặp trực tiếp.
-- **Exchanger vs BlockingQueue**: Exchanger một chiều trao đổi hai chiều (hai bên đều nhận), BlockingQueue một chiều (producer đưa, consumer lấy) và có đệm.
+- **Exchanger vs BlockingQueue**: Exchanger trao đổi hai chiều (hai bên đều nhận), BlockingQueue một chiều (producer đưa, consumer lấy) và có đệm.
 
 ### Hoạt động từng bước
 
 1. Thread A gọi exchange(objA): nếu chưa có thread B → A chờ (đăng ký vào chỗ trống).
 2. Thread B gọi exchange(objB): thấy A đang chờ → khớp cặp ngay: B nhận objA, A nhận objB, cả hai tiếp tục.
-3. Nếu cả hai cùng gọi: whichever đến đăng ký trước, kia đến khớp.
-4. Có timeout: exchange(v, timeout, unit) chãi tối đa thời gian, hết giờ ném TimeoutException.
+3. Nếu cả hai cùng gọi: bên nào đăng ký trước thì chờ, bên đến sau khớp cặp.
+4. Có timeout: exchange(v, timeout, unit) chờ tối đa thời gian, hết giờ ném TimeoutException.
 
 ### Ví dụ code: pipeline double-buffer
 
@@ -7077,7 +7077,7 @@ public class DoubleBufferDemo {
         char[] buf = new char[SIZE];
         while (true) {
             fill(buf);                    // ghi vào buf của mình
-            buf = exchanger.exchange(buf); // nhận buffer trống từ reader, trả buf đã đọc
+            buf = exchanger.exchange(buf); // đưa buf vừa ghi đầy, nhận lại buffer reader đã đọc xong
         }
     }
 
@@ -7085,7 +7085,7 @@ public class DoubleBufferDemo {
     static void reader() throws InterruptedException {
         char[] buf = new char[SIZE];
         while (true) {
-            buf = exchanger.exchange(buf); // nhận buffer đã ghi từ writer, trả buf trống
+            buf = exchanger.exchange(buf); // đưa buf đã đọc xong, nhận buffer writer vừa ghi đầy
             process(buf);
         }
     }
@@ -7106,11 +7106,11 @@ public class DoubleBufferDemo {
 
 ### Trên production
 - Dùng cho pipeline xử lý luồng dữ liệu lớn (ví dụ mã hóa/giải mã khối, nén, đọc file lớn): một thread đọc dữ liệu vào buffer, thread khác xử lý, exchange để tráo buffer, không copy dữ liệu giữa các thread.
-- exchange() chãi mãi: nếu một bên treo, kia cũng treo. Dùng overload có timeout và xử lý TimeoutException.
+- exchange() chờ mãi: nếu một bên treo, kia cũng treo. Dùng overload có timeout và xử lý TimeoutException.
 - Exchanger không dùng cho nhiều hơn hai người gọi cùng lúc không xác định: kỳ vọng đúng hai bên khớp cặp.
 
 ### Lỗi hay gặp
-- **Một bên gọi exchange nhiều lần, kia ít hơn**: bên gọi nhiều sẽ chãi mãi đợi partner. Cách tránh: thiết kế hai bên cuộn đồng bộ, hoặc dùng BlockingQueue nếu tốc độ khác nhau.
+- **Một bên gọi exchange nhiều lần, kia ít hơn**: bên gọi nhiều sẽ chờ mãi đợi partner. Cách tránh: thiết kế hai bên cuộn đồng bộ, hoặc dùng BlockingQueue nếu tốc độ khác nhau.
 - **Quên trả buffer đúng**: sau exchange, mỗi bên nhận buffer của kia; nếu viết nhầm vào buffer cũ thì ghi đè dữ liệu đang được kia đọc → hỏng dữ liệu. Cách tránh: luôn dùng đối tượng nhận lại từ exchange().
 - **exchange() không timeout**: nếu partner crash, bên kia treo vĩnh viễn. Cách tránh: exchange(v, timeout, unit).
 
@@ -7136,7 +7136,7 @@ public class DoubleBufferDemo {
   a: `**Tóm tắt:** {{Phaser}} là điểm hẹn linh hoạt: số thành viên có thể thay đổi giữa các pha (register/deregister), mỗi pha có số thứ tự, thread gọi arrive() để báo đã đến rồi có thể tiếp tục, hoặc arriveAndAwaitAdvance() để chờ đủ thành viên mới vào pha tiếp theo. Hook onAdvance() chạy khi đủ thành viên chuyển pha, dùng để quyết định tiếp tục hay kết thúc. Khác CyclicBarrier: số thành viên cố định, tất cả phải chờ ở mỗi điểm hẹn; Phaser cho phép thành viên chậm hơn, vào chậm, ra sớm, và pha tiếp tục cho những người đã đến.
 
 ### Hiểu nhanh
-Giống một nhóm du lịch hẹn nhau ở mỗi điểm nghỉ: trong CyclicBarrier, tất cả đều phải đủ người tại điểm nghỉ mới cùng đi chặng tiếp theo, số người cố định. Trong Phaser, số người có thể tăng (kích thêm bạn bè trên đường) hoặc giảm (mẹo về nhà giữa chừng); mỗi người báo đã đến điểm nghỉ (arrive), người muốn cùng nhóm đi tiếp thì chờ đủ (arriveAndAwaitAdvance); tour guide (onAdvance) quyết định chặng tiếp theo có tiếp hay kết thúc tour.
+Giống một nhóm du lịch hẹn nhau ở mỗi điểm nghỉ: trong CyclicBarrier, tất cả đều phải đủ người tại điểm nghỉ mới cùng đi chặng tiếp theo, số người cố định. Trong Phaser, số người có thể tăng (rủ thêm bạn bè trên đường) hoặc giảm (có người về nhà giữa chừng); mỗi người báo đã đến điểm nghỉ (arrive), người muốn cùng nhóm đi tiếp thì chờ đủ (arriveAndAwaitAdvance); tour guide (onAdvance) quyết định chặng tiếp theo có tiếp hay kết thúc tour.
 
 ### Thuật ngữ
 - **Phaser**: điểm hẹn nhiều pha, số thành viên thay đổi được.
@@ -7150,7 +7150,7 @@ Giống một nhóm du lịch hẹn nhau ở mỗi điểm nghỉ: trong CyclicB
 
 ### Hoạt động từng bước
 
-1. Tạo Phaser: new Phaser() (có 1 party là chính thread tạo) hoặc new Phaser(1).
+1. Tạo Phaser: new Phaser() có 0 party; new Phaser(1) có sẵn 1 party (thường là thread điều phối, ví dụ main).
 2. Các worker register(): số party tăng.
 3. Mỗi worker làm công việc pha 1, rồi arriveAndAwaitAdvance(): báo đến và chờ.
 4. Khi đủ party báo đến → số pha tăng 1, onAdvance() chạy, tất cả worker được đánh thức sang pha 2.
@@ -7171,6 +7171,7 @@ public class PhaserDemo {
 
         List<Thread> workers = new ArrayList<>();
         for (int i = 0; i < parties; i++) {
+            phaser.register();                      // đăng ký worker TRƯỚC khi start, nếu không arrive sẽ ném IllegalStateException
             Thread t = new Thread(() -> {
                 for (int phase = 0; phase < 3; phase++) {
                     doWork();                       // làm công việc pha này
@@ -7217,9 +7218,9 @@ public class PhaserDemo {
 - Nếu tất cả worker dùng arriveAndAwaitAdvance, một worker chậm làm toàn bộ nhóm chờ ở mỗi pha — giảm payload mỗi pha hoặc chia nhỏ công việc.
 
 ### Lỗi hay gặp
-- **register() sau khi phaser kết thúc**: ném IllegalStateException. Cách tránh: kiểm tra isTerminated() trước khi register.
+- **Worker quên register()**: gọi arrive trên phaser khi chưa đăng ký thì ném IllegalStateException, hoặc tệ hơn là đếm sai số party. Còn register() sau khi phaser đã kết thúc thì không có tác dụng (trả về số âm). Cách tránh: register trước khi start thread, kiểm tra isTerminated().
 - **arrive() không chờ mà code giả định đã chuyển pha**: chỉ arriveAndAwaitAdvance() mới chờ. Cách tránh: dùng đúng method theo ý muốn.
-- **Phaser không bao giờ kết thúc**: onAdvance luôn trả false và party không về 0 → thread chãi mãi. Cách tránh: thiết kế điều kiện kết thúc trong onAdvance.
+- **Phaser không bao giờ kết thúc**: onAdvance luôn trả false và party không về 0 → thread chờ mãi. Cách tránh: thiết kế điều kiện kết thúc trong onAdvance.
 
 ### Trả lời phỏng vấn 1 phút
 "Phaser là điểm hẹn nhiều pha cho phép số thành viên thay đổi: register() thêm thành viên, deregister() bỏ, arrive() báo đến không chờ, arriveAndAwaitAdvance() báo đến và chờ đủ thành viên chuyển pha, onAdvance() hook chạy khi đủ thành viên chuyển pha để quyết định tiếp tục hay kết thúc. Khác CyclicBarrier: số thành viên cố định và tất cả phải chờ; Phaser linh hoạt hơn, hợp cho pipeline nhiều giai đoạn với số worker thay đổi. Lưu ý arrive() không chờ, và phải thiết kế điều kiện kết thúc để phaser không treo mãi."
@@ -7228,7 +7229,7 @@ public class PhaserDemo {
   follow: [
     'Phaser khác CyclicBarrier ở điểm nào, và chọn cái nào khi nào?',
     'arrive() vs arriveAndAwaitAdvance(): chờ hay không chờ?',
-    'Làm sao để phaser kết thúc thay vì chãi mãi?'
+    'Làm sao để phaser kết thúc thay vì chờ mãi?'
   ],
   tags: ['Phaser', 'barrier', 'multi-phase', 'synchronizer'],
   refs: [
@@ -7240,18 +7241,18 @@ public class PhaserDemo {
   topic: 'concurrency',
   level: 'lead',
   q: '{{ScheduledThreadPoolExecutor}} và {{DelayQueue}} hoạt động bên trong ra sao: tại sao scheduleAtFixedRate bị trễ chồng chéo khi một lần chạy lâu, và khác scheduleWithFixedDelay ra sao?',
-  a: `**Tóm tắt:** {{ScheduledThreadPoolExecutor}} chạy task định kỳ bên trong {{DelayQueue}}: hàng đợi sắp xếp task theo thời gian chạy tiếp theo, worker lấy task khi đến giờ, chạy xong thì nếu là định kỳ thì chèn lại task vào queue với thời gian mới. scheduleAtFixedRate tính thời gian chạy tiếp theo từ **lần chạy trước được lên lịch** (bị trễ chồng chéo nếu một lần chạy lâu: các lần sau chạy sát nhau để bù); scheduleWithFixedDelay tính từ **khi lần trước kết thúc** (khoảng nghỉ cố định giữa các lần). Một lần chạy lâu chèn toàn bộ hàng đợi định kỳ.
+  a: `**Tóm tắt:** {{ScheduledThreadPoolExecutor}} giữ task trong một hàng đợi trì hoãn nội bộ ({{DelayedWorkQueue}}, cùng ý tưởng với {{DelayQueue}}: một heap sắp theo thời điểm chạy): hàng đợi sắp xếp task theo thời gian chạy tiếp theo, worker lấy task khi đến giờ, chạy xong thì nếu là định kỳ thì chèn lại task vào queue với thời gian mới. scheduleAtFixedRate tính thời gian chạy tiếp theo từ **lần chạy trước được lên lịch** (bị trễ chồng chéo nếu một lần chạy lâu: các lần sau chạy sát nhau để bù); scheduleWithFixedDelay tính từ **khi lần trước kết thúc** (khoảng nghỉ cố định giữa các lần). Khi pool ít thread, một lần chạy lâu chặn các task định kỳ khác.
 
 ### Hiểu nhanh
 Giống một người đặt đồng hồ báo thức cho việc làm mỗi ngày: scheduleAtFixedRate đặt báo thức theo lịch (7 giờ sáng hôm nay, 7 giờ sáng ngày mai) — nếu hôm nay làm việc từ 7 giờ đến 9 giờ (lâu), ngày mai báo thức vẫn 7 giờ nên hai ngày chạy sát nhau để bù. scheduleWithFixedDelay đặt báo thức 24 giờ sau khi hôm nay xong việc (9 giờ hôm nay → 9 giờ ngày mai) — luôn có khoảng nghỉ giữa các lần. Cả hai dùng một cái "kệ đặt công việc theo giờ" (DelayQueue): công việc nào đến giờ thì lấy ra làm.
 
 ### Thuật ngữ
 - **ScheduledThreadPoolExecutor**: executor chạy task sau trễ hoặc định kỳ, dùng ScheduledFutureTask.
-- **DelayQueue**: hàng đợi sắp xếp theo thời điểm hết hạn (delay), take() chãi cho tới khi phần tử đầu đến giờ.
+- **DelayQueue / DelayedWorkQueue**: hàng đợi sắp xếp theo thời điểm hết hạn (delay), take() chờ cho tới khi phần tử đầu đến giờ. ScheduledThreadPoolExecutor dùng bản nội bộ DelayedWorkQueue.
 - **scheduleAtFixedRate**: lặp theo nhịp cố định tính từ thời điểm lên lịch lần trước.
 - **scheduleWithFixedDelay**: lặp có khoảng nghỉ cố định tính từ khi lần trước kết thúc.
 - **ScheduledFutureTask**: task định kỳ, giữ thời gian chạy tiếp theo và khoảng lặp.
-- **Head-of-line blocking (chẹn đầu hàng)**: một task lâu chèn các task sau đó trong hàng định kỳ.
+- **Head-of-line blocking (chặn đầu hàng)**: một task lâu chặn các task sau đó trong hàng định kỳ.
 
 ### Hoạt động từng bước
 
@@ -7303,23 +7304,23 @@ Nếu longWork() chạy 5 giây trong khi period 2 giây: lần thứ 2 bị tr�
 | Rủi ro | Các lần chạy sát nhau nếu task lâu | Chu kỳ tổng dài hơn |
 
 ### Trên production
-- Một task định kỳ chạy lâu chèn các lần sau (fixedRate): giảm payload task, chia nhỏ, hoặc dùng scheduleWithFixedDelay nếu cần khoảng nghỉ.
-- Tách executor theo mức độ quan trọng: job thanh toán có scheduler riêng, không bị job báo cáo chèn.
-- Java 21: có thể dùng virtual thread cho task định kỳ I/O, nhưng vẫn cần giới hạn số task đang chạy (semaphore) để không quũng tài nguyên phía sau.
+- Một task định kỳ chạy lâu chặn các lần sau (fixedRate): giảm payload task, chia nhỏ, hoặc dùng scheduleWithFixedDelay nếu cần khoảng nghỉ.
+- Tách executor theo mức độ quan trọng: job thanh toán có scheduler riêng, không bị job báo cáo chặn.
+- Java 21: có thể dùng virtual thread cho task định kỳ I/O, nhưng vẫn cần giới hạn số task đang chạy (semaphore) để không làm quá tải tài nguyên phía sau.
 - shutdownNow() interrupt các task đang chạy; task không kiểm tra interrupt vẫn chạy tiếp.
 
 ### Lỗi hay gặp
-- **Một task định kỳ chạy lâu làm chèn các lần sau (fixedRate)**: worker đơn (hoặc ít worker) chạy tuần tự các ScheduledFutureTask. Cách tránh: số worker >= số task định kỳ chạy đồng thời, hoặc dùng scheduleWithFixedDelay.
+- **Một task định kỳ chạy lâu làm chặn các lần sau (fixedRate)**: worker đơn (hoặc ít worker) chạy tuần tự các ScheduledFutureTask. Cách tránh: số worker >= số task định kỳ chạy đồng thời, hoặc dùng scheduleWithFixedDelay.
 - **Future.cancel(true) không dừng task nếu task không kiểm tra interrupt**: tương tự ExecutorService. Cách tránh: task kiểm tra Thread.interrupted().
 - **Lỗi trong task định kỳ (ScheduledThreadPoolExecutor)**: exception làm task dừng lặp, không ném ra ngoài, không log trừ khi lấy Future.get(). Cách tránh: try/catch bao toàn thân task, log và metric.
 
 ### Trả lời phỏng vấn 1 phút
-"ScheduledThreadPoolExecutor dùng DelayQueue sắp xếp task định kỳ theo thời gian chạy tiếp theo, worker lấy khi đến giờ. scheduleAtFixedRate tính lần sau từ thời gian được lên lịch trước (bị trễ chồng chéo nếu một lần chạy lâu), còn scheduleWithFixedDelay tính từ khi lần trước kết thúc (luôn có khoảng nghỉ). Một task lâu chèn toàn bộ hàng đợi định kỳ nên tách executor theo mức quan trọng và gói task bằng try/catch log metric. Nếu task chạy lâu, hãy chia nhỏ hoặc chuyển sang fixedDelay."
+"ScheduledThreadPoolExecutor dùng DelayQueue sắp xếp task định kỳ theo thời gian chạy tiếp theo, worker lấy khi đến giờ. scheduleAtFixedRate tính lần sau từ thời gian được lên lịch trước (bị trễ chồng chéo nếu một lần chạy lâu), còn scheduleWithFixedDelay tính từ khi lần trước kết thúc (luôn có khoảng nghỉ). Một task lâu có thể chặn các task định kỳ khác nên tách executor theo mức quan trọng và gói task bằng try/catch log metric. Nếu task chạy lâu, hãy chia nhỏ hoặc chuyển sang fixedDelay."
 
-> Senior tip: trong production, việc quan trọng không chỉ chọn fixedRate hay fixedDelay mà là **giới hạn số task định kỳ chạy đồng thời** và **luôn bọc task bằng try/catch log metric** — task định kỳ ném exception thì dừng lặp âm thầm, không ai biết trừ khi bạn đo "lần chạy thành công gần nhất". Hãy dùng scheduler riêng cho từng tier công việc để job ít quan trọng không chèn job quan trọng.`,
+> Senior tip: trong production, việc quan trọng không chỉ chọn fixedRate hay fixedDelay mà là **giới hạn số task định kỳ chạy đồng thời** và **luôn bọc task bằng try/catch log metric** — task định kỳ ném exception thì dừng lặp âm thầm, không ai biết trừ khi bạn đo "lần chạy thành công gần nhất". Hãy dùng scheduler riêng cho từng tier công việc để job ít quan trọng không chặn job quan trọng.`,
   follow: [
     'scheduleAtFixedRate và scheduleWithFixedDelay khác nhau khi một lần chạy bị chậm ra sao?',
-    'Một task định kỳ chạy lâu làm chèn các lần sau — xử lý thế nào?',
+    'Một task định kỳ chạy lâu làm chặn các lần sau — xử lý thế nào?',
     'Lỗi trong task định kỳ ScheduledThreadPoolExecutor có được log không?'
   ],
   tags: ['ScheduledThreadPoolExecutor', 'DelayQueue', 'fixedRate', 'fixedDelay'],
