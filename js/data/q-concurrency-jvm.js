@@ -5574,7 +5574,7 @@ Giả sử trung bình request chờ DB ~80ms, xử lý logic ~20ms. Nếu DB ch
 | {{corePoolSize}}/{{maxPoolSize}} | Bắt đầu nhỏ, đo bằng p95/p99 | Chỉ tăng khi queue depth bắt đầu tăng đều và throughput chưa đạt mục tiêu |
 | {{workQueue}} | Dùng {{ArrayBlockingQueue}} có giới hạn (không dùng unbounded {{LinkedBlockingQueue}} vô hạn) | Tránh OOM khi traffic tăng đột ngột |
 | {{RejectedExecutionHandler}} | {{CallerRunsPolicy}} hoặc trả 503/backpressure rõ ràng | {{CallerRunsPolicy}} giúp giảm áp lực tạm thời nhưng làm caller chậm; với API public thường tốt hơn là trả lỗi có {{Retry-After}} |
-| Riêng cho từng {{@Async}} | Luôn dùng {{Executor}} cấu hình riêng, không dùng default {{SimpleAsyncTaskExecutor}} | Tránh thread không giới hạn |
+| Riêng cho từng {{@Async}} | Khai báo {{ThreadPoolTaskExecutor}} riêng, có tên, có giới hạn queue | Spring thuần (không Boot) mặc định dùng {{SimpleAsyncTaskExecutor}}: mỗi task một thread mới, không giới hạn. Spring Boot cấu hình sẵn pool nhưng {{spring.task.execution.pool.queue-capacity}} mặc định không giới hạn, nên vẫn cần đặt lại |
 
 ### Pitfall thực tế
 - Sao chép số liệu "hot" từ blog mà không đo môi trường bạn.
@@ -5611,11 +5611,12 @@ Service gửi thông báo dùng {{Executors.newFixedThreadPool(20)}} để gọi
 ### Ví dụ minh hoạ
 ~~~java
 try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-    Future<String> f1 = scope.fork(() -> callServiceA());
-    Future<String> f2 = scope.fork(() -> callServiceB());
-    scope.join();           // chờ tất cả hoặc bị hủy khi có lỗi
-    scope.throwIfFailed();  // ném nếu bất kỳ task fail
-    // dùng f1.resultNow(), f2.resultNow()
+    // Java 21 (JEP 453): fork trả về Subtask, không phải Future
+    StructuredTaskScope.Subtask<String> a = scope.fork(() -> callServiceA());
+    StructuredTaskScope.Subtask<String> b = scope.fork(() -> callServiceB());
+    scope.join();           // chờ tất cả, hoặc dừng sớm khi có nhánh lỗi
+    scope.throwIfFailed();  // ném ExecutionException nếu có nhánh lỗi
+    return a.get() + b.get();   // chỉ gọi get() sau join(), khi nhánh đã thành công
 }
 ~~~
 Nếu {{callServiceA}} ném exception, {{scope.join()}} sẽ kích hoạt hủy (cancel) {{callServiceB}} nếu đang chạy, tránh lãng phí tài nguyên.
@@ -5658,7 +5659,7 @@ API "trang chủ cá nhân hoá" gọi song song 4 service bằng {{CompletableF
 ### Cái gì → tại sao cần → hoạt động thế nào
 - **Cache/biến cục bộ:** mỗi CPU có cache, JVM có thể sắp xếp lại lệnh (reordering) để tối ưu. Nếu không có ràng buộc, thread B có thể không thấy ghi của thread A, hoặc thấy theo thứ tự khác.
 - **Data race:** xảy ra khi ít nhất hai thread truy cập cùng một biến không {{volatile}}, không đồng bộ, và ít nhất một thread ghi. JMM không đảm bảo gì trong trường hợp này.
-- **Happens-before:** nếu A happens-before B, thì mọi thay đổi của A trước A đều có thể nhìn thấy bởi B sau B, và các lệnh liên quan không được sắp xếp ngược lại làm vi phạm quy tắc đó.
+- **Happens-before:** nếu A happens-before B, thì mọi thao tác ghi xảy ra trước A (và chính A) đều được thread thực hiện B nhìn thấy khi chạy B; JIT và CPU không được sắp xếp lại lệnh theo cách phá vỡ đảm bảo này.
 
 ### Các nguồn tạo happens-before quan trọng
 | Hành động | Giải thích |
@@ -5760,13 +5761,13 @@ CompletableFuture.allOf(cf1, cf2, cf3)
 - Quên truyền MDC → log thiếu trace id trong thread pool khác.
 
 ### Bên trong: thread nào chạy callback
-{{thenApply}} (không có Async) chạy trên **thread hoàn thành future** — nếu future đã xong thì chạy luôn trên **thread gọi** {{thenApply}}. Nghĩa là một callback nặng có thể chạy trên thread của HTTP client (event loop) hoặc thread request. {{thenApplyAsync}} không truyền executor thì chạy trên {{ForkJoinPool.commonPool()}} — pool dùng chung cả JVM, kích thước bằng số core trừ 1; trong container 2 CPU chỉ có **1 thread**. Một tác vụ I/O chặn trong common pool làm nghẽn mọi parallel stream và mọi {{CompletableFuture}} khác trong ứng dụng.
+{{thenApply}} (không có Async) chạy trên **thread hoàn thành future** — nếu future đã xong thì chạy luôn trên **thread gọi** {{thenApply}}. Nghĩa là một callback nặng có thể chạy trên thread của HTTP client (event loop) hoặc thread request. {{thenApplyAsync}} không truyền executor thì chạy trên {{ForkJoinPool.commonPool()}} — pool dùng chung cả JVM, kích thước bằng số core trừ 1; container 4 CPU chỉ có **3 thread**. Một tác vụ I/O chặn trong common pool làm nghẽn mọi parallel stream và mọi {{CompletableFuture}} khác trong ứng dụng. Trường hợp đặc biệt: khi parallelism của common pool chỉ là 1 (container 2 CPU), {{CompletableFuture}} không dùng common pool mà tạo **một thread mới cho mỗi task** (ThreadPerTaskExecutor), tức là số thread không có giới hạn.
 
 ### Ví dụ đời thực
-Service tổng hợp giá gọi 5 nhà cung cấp bằng {{supplyAsync(() -> client.quote(...))}} không truyền executor. Trên pod 2 vCPU, common pool chỉ có 1 thread → 5 lời gọi chạy **tuần tự**, p95 3,4 giây thay vì khoảng 700ms. Đồng thời traceId và MDC không theo sang thread của pool nên log không nối được với request. Sửa: executor riêng có giới hạn (hoặc virtual thread executor), {{orTimeout(800ms)}} cho từng nhà cung cấp kèm {{exceptionally}} trả "không có báo giá", bọc executor bằng context propagation (Micrometer {{ContextExecutorService}}) để giữ traceId. p95 còn 820ms, nhà cung cấp chậm không làm hỏng cả request.
+Service tổng hợp giá gọi 5 nhà cung cấp bằng {{supplyAsync(() -> client.quote(...))}} không truyền executor. Trên pod 4 vCPU, common pool chỉ có 3 thread, lại dùng chung với parallel stream của job báo cáo → các lời gọi phải xếp hàng chờ thread, p95 3,4 giây thay vì khoảng 700ms. Đồng thời traceId và MDC không theo sang thread của pool nên log không nối được với request. Sửa: executor riêng có giới hạn (hoặc virtual thread executor), {{orTimeout(800ms)}} cho từng nhà cung cấp kèm {{exceptionally}} trả "không có báo giá", bọc executor bằng context propagation (Micrometer {{ContextExecutorService}}) để giữ traceId. p95 còn 820ms, nhà cung cấp chậm không làm hỏng cả request.
 
 ### Trả lời mẫu khi phỏng vấn
-"Với CompletableFuture, việc đầu tiên tôi làm là không dùng common pool cho I/O: nó dùng chung cả JVM, kích thước bằng số core trừ một, trong container nhỏ có khi chỉ một thread, nên một lời gọi chặn làm nghẽn mọi thứ khác. Tôi truyền executor riêng có giới hạn hoặc virtual thread executor. Lưu ý thenApply không Async chạy trên thread hoàn thành future, có thể là thread của HTTP client. Mỗi nhánh có timeout riêng bằng orTimeout hoặc completeOnTimeout, và xử lý lỗi bằng exceptionally hoặc handle để trả giá trị dự phòng có chủ đích, không để lỗi bị nuốt. Khi gộp bằng allOf thì nhớ allOf không trả kết quả, phải join từng future. Cuối cùng là ngữ cảnh: MDC, traceId, SecurityContext không tự sang thread khác, nên tôi bọc executor bằng context propagation."
+"Với CompletableFuture, việc đầu tiên tôi làm là không dùng common pool cho I/O: nó dùng chung cả JVM, kích thước bằng số core trừ một, container 4 CPU chỉ có 3 thread, nên vài lời gọi chặn làm nghẽn mọi thứ khác; còn container 2 CPU thì CompletableFuture lại tạo thread mới cho mỗi task, không giới hạn. Tôi truyền executor riêng có giới hạn hoặc virtual thread executor. Lưu ý thenApply không Async chạy trên thread hoàn thành future, có thể là thread của HTTP client. Mỗi nhánh có timeout riêng bằng orTimeout hoặc completeOnTimeout, và xử lý lỗi bằng exceptionally hoặc handle để trả giá trị dự phòng có chủ đích, không để lỗi bị nuốt. Khi gộp bằng allOf thì nhớ allOf không trả kết quả, phải join từng future. Cuối cùng là ngữ cảnh: MDC, traceId, SecurityContext không tự sang thread khác, nên tôi bọc executor bằng context propagation."
 
 > Senior tip: Luôn đo p95/p99 để đặt timeout và kích thước pool. Ưu tiên rõ ràng về error/fallback thay vì "nuốt" exception im lặng. Nếu cần truyền ngữ cảnh phức tạp, cân nhắc các thư viện hoặc wrapper executor.`
   ,
