@@ -12,6 +12,7 @@ App.i18n.content({
       'Explain smoke / sanity / regression suites and the QA vs SDET roles in a team',
     ],
     body: `### Manual testing and automation testing
+
 **Testing** = run the program with a given input and compare the **actual result** with the **expected result**. A **test case** consists of: precondition, steps, data, and expected result.
 
 **Manual testing**: a real person follows a checklist. **Automation testing**: a program (script) does it instead — opens a browser or calls HTTP, enters data, clicks buttons, reads the result, and prints **PASS/FAIL**. The script runs many times, in many environments, without a person — that is its whole essence: **amplifying mental labor into repeatable execution**.
@@ -67,8 +68,8 @@ Automation multiplies the value of a good test case — and multiplies the cost 
 
 ~~~text
 age:   ... 17  18  19 ... 39 ... 59  60  61 ...
-       invalid| valid begin |  | valid end |invalid
-       min-1    min   min+1  mid         max-1 max  max+1
+        invalid| valid begin |  | valid end |invalid
+        min-1    min   min+1  mid         max-1 max  max+1
 ~~~
 
 **3. Decision table.** When the result depends on **a combination of multiple conditions**, list rules and generate cases from rules — avoiding missed combinations. Registration form with 3 conditions:
@@ -275,7 +276,7 @@ This is the core of a locator engine: real DOM adds pseudo-classes, shadow DOM, 
           'Two independent selectors',
           'First segment ignored',
         ],
-        explain: "Space = descendant combinator: find button#submit inside the subtree of form.login, at any depth. In real CSS, direct child uses the > operator — outside this lesson's selector subset.",
+        explain: 'Space = descendant combinator: find button#submit inside the subtree of form.login, at any depth. In real CSS, direct child uses the > operator — outside this lesson\'s selector subset.',
       },
       {
         q: 'Why is {{/html/body/div[3]/button[1]}} considered a bad locator?',
@@ -285,7 +286,7 @@ This is the core of a locator engine: real DOM adds pseudo-classes, shadow DOM, 
           'It is always slower than id',
           'The browser rejects paths with numbers',
         ],
-        explain: "It encodes the **current physical position** in the DOM instead of the element's meaning. A banner inserted at body shifts the whole locator to div[4].",
+        explain: 'It encodes the **current physical position** in the DOM instead of the element\'s meaning. A banner inserted at body shifts the whole locator to div[4].',
       },
       {
         q: 'What is the architectural difference between Playwright Locator and Selenium findElement?',
@@ -295,7 +296,7 @@ This is the core of a locator engine: real DOM adds pseudo-classes, shadow DOM, 
           'Locator does not need a browser',
           'findElement waits until the element is visible',
         ],
-        explain: "Because it re-resolves on every use, when the DOM re-renders the locator finds the new node — that is the basis of auto-wait. Selenium's WebElement is a stale reference: DOM change = stale.",
+        explain: 'Because it re-resolves on every use, when the DOM re-renders the locator finds the new node — that is the basis of auto-wait. Selenium\'s WebElement is a stale reference: DOM change = stale.',
       },
     ],
   },
