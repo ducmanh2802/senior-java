@@ -60,6 +60,28 @@ Quick question: are you on Spring Data JPA or plain Hibernate?
 - Trao đổi hoặc nhận thanh toán ngoài nền tảng khi khách đề nghị: vi phạm điều khoản, mất bảo vệ thanh toán, và là dấu hiệu lừa đảo phổ biến.
 - Không theo dõi tỉ lệ được phản hồi: gửi khoảng 20 proposal mà không ai trả lời thì phải sửa profile hoặc cách viết, chứ không phải gửi thêm.
 
+### Ví dụ đời thực
+
+**Tình huống:** Một bạn Java backend mới 4 năm kinh nghiệm tạo profile Upwork với title "Software Developer" chung chung, không có review. Trong 2 tuần đầu bạn gửi 15 proposal copy-paste với mức giá 5 USD/giờ nhưng chỉ nhận được 1 phản hồi mơ hồ.
+
+**Triệu chứng:** Tỉ lệ phản hồi (response rate) cực thấp, hầu hết client bỏ qua. Khi xem lại, 2 dòng đầu proposal không nhắc đến vấn đề cụ thể trong job.
+
+**Điều tra:** Bạn dùng bảng đơn giản theo dõi (job, ngày gửi, Connects, có phản hồi không). Sau khi rà soát 10 job gần nhất, bạn thấy rằng 7 job trong số đó yêu cầu fix bug hoặc tối ưu API — đúng thế mạnh backend Java của bạn, nhưng proposal lại nói chung chung về "làm web app".
+
+**Nguyên nhân gốc:** Profile quá rộng (không nói rõ bạn giải quyết vấn đề gì), proposal mở đầu bằng giới thiệu bản thân thay vì vấn đề khách hàng, và bạn chọn job không đủ khớp với bằng chứng có sẵn.
+
+**Cách xử lý:** 
+1. **Sửa profile:** Đổi title thành {{code|Java / Spring Boot Backend Engineer | REST APIs, PostgreSQL, AWS}}. Viết overview 2 dòng đầu nói rõ bạn giúp fix API chậm, sửa bug, tối ưu query.
+2. **Chuẩn bị bằng chứng:** Lấy 2 dự án cá nhân trên GitHub có README rõ ràng, mỗi dự án viết 3 dòng: vấn đề → bạn làm gì → kết quả (ví dụ p95 giảm từ 1,8s xuống 120ms).
+3. **Chọn job lọc kỹ:** Chỉ gửi cho job đăng trong 24 giờ, có mô tả cụ thể, client xác minh thanh toán. Ưu tiên job nhỏ rõ phạm vi (fix bug/thêm endpoint).
+4. **Viết proposal tailored:** Mở đầu bằng 1 câu nhắc đúng vấn đề trong job, nêu 2–3 bước cụ thể, đính kèm link GitHub sát vấn đề, hỏi 1 câu làm rõ.
+
+**Kết quả đo được:** Sau 3 tuần áp dụng cách trên, bạn gửi 12 proposal (thay vì 15) nhưng tỉ lệ phản hồi tăng từ ~7% lên ~33%. Trong đó có 2 cuộc trò chuyện, 1 interview video call và cuối cùng có hợp đồng đầu tiên với review 5 sao. Số Connects tiêu tốn hiệu quả hơn đáng kể.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi hiểu rằng với người chưa có review trên Upwork, khách hàng sẽ chọn người ít rủi ro nhất cho đúng vấn đề họ cần giải quyết, chứ không phải người giỏi nhất. Vì vậy, thay vì chạy theo giá thấp, tôi tập trung làm profile thật hẹp: dùng title nói rõ tôi giúp giải quyết vấn đề gì, viết overview mở đầu bằng giá trị tôi mang lại, và đính kèm 2–3 dự án có bằng chứng số liệu cụ thể. Với mỗi proposal, tôi chỉ mất vài phút đọc kỹ job post, tìm đúng điểm đau của khách, mở đầu bằng câu nhắc vấn đề đó, đề xuất 2–3 bước ngắn gọn để xử lý, và hỏi một câu làm rõ để mở cuộc trò chuyện. Tôi cũng theo dõi proposal trong bảng đơn giản để rút kinh nghiệm sau mỗi 20–30 lần gửi. Quan trọng nhất là tôi chỉ chọn job nhỏ, phạm vi rõ ràng để có cơ hội giao hàng thành công và nhận review đầu tiên — từ đó mới có thể tăng giá một cách có căn cứ sau này."
+
 > Senior tip: theo dõi proposal bằng một bảng đơn giản (job, ngày gửi, Connects, có phản hồi không, lý do). Sau 20–30 proposal, mẫu số liệu sẽ cho biết loại job và kiểu mở đầu nào hiệu quả. Phí, giá Connects và chính sách của Upwork thay đổi theo thời gian, nên luôn kiểm tra trang trợ giúp chính thức trước khi tính giá.`,
   follow: [
     'Bạn đặt giá giờ (hourly rate) khởi điểm thế nào khi chưa có review, và khi nào thì tăng?',
@@ -141,6 +163,28 @@ Best,
 - [ ] Chuẩn bị 1 case study có số liệu (trước/sau) để dùng khi tăng giá.
 - [ ] Với khách cũ, soạn mẫu tin nhắn tăng giá, báo trước 2–4 tuần.
 - [ ] Sau mỗi hợp đồng, ghi lại: giờ làm, kết quả, feedback — dùng làm bằng chứng lần tăng giá sau.
+
+### Ví dụ đời thực
+
+**Tình huống:** Một dev Java 4 năm ở Việt Nam mới vào Upwork, chưa có review. Anh ấy rất muốn có hợp đồng đầu tiên nên đặt hourly rate 5 USD/giờ với lý do "mua review". Sau khi nhận job đầu tiên với giá quá thấp, khách liên tục yêu cầu thêm việc, phản hồi chậm, và khi anh muốn tăng giá sau 3 tháng, khách từ chối thẳng thừng vì đã quen mức cũ.
+
+**Triệu chứng:** Mỗi giờ làm thực tế bị kéo dài hơn dự kiến do scope leo thang, effective hourly rate (tính cả thời gian viết proposal) chỉ còn khoảng 9–10 USD/giờ dù rate niêm yết 5 USD/giờ. Anh ấy kiệt sức, không còn động lực, và rất ngại thương lượng tăng giá.
+
+**Điều tra:** Anh ấy bắt đầu ghi lại giờ billable vs không billable, theo dõi kết quả đo được của từng job, và khảo sát 12 profile Java/Spring Boot cùng level để so sánh mức giá thị trường.
+
+**Nguyên nhân gốc:** Đặt giá dưới sàn để "mua review" thu hút khách săn giá rẻ, không tính net rate sau phí dịch vụ, không chuẩn bị bằng chứng để tăng giá, và không đặt ra ranh giới về scope từ đầu.
+
+**Cách xử lý:**
+1. **Tính lại giá:** Ước tính chi phí sinh hoạt + thời gian không billable, tính rate cần thiết để có net rate bền vững (vượt trên mức phí dịch vụ 10%).
+2. **Xây bằng chứng:** Ghi lại tất cả kết quả đo được (ví dụ tối ưu API từ 1,8s xuống 120ms) để dùng làm case study.
+3. **Chọn job thông minh hơn:** Thay vì đua giá, gửi proposal chất lượng cho job nhỏ rõ phạm vi với rate bền vững.
+4. **Thương lượng tăng giá có căn cứ:** Với khách cũ đáng tin, báo trước 2–4 tuần kèm lý do và kết quả đã đạt được, đề xuất ngày áp dụng rõ ràng.
+
+**Kết quả đo được:** Sau khi điều chỉnh sang rate 18–22 USD/giờ (phù hợp với thị trường và bằng chứng), anh ấy nhận ít proposal hơn nhưng tỉ lệ phỏng vấn cao hơn. Effective hourly rate thực tế tăng từ ~10 USD/giờ lên ~16–18 USD/giờ. Với khách cũ đã có quan hệ tốt, sau khi trình bày kết quả đo được, khách đồng ý tăng từ 20 USD/giờ lên 25 USD/giờ mà vẫn tiếp tục hợp tác.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi không bao giờ đặt giá chỉ để 'mua review'. Thay vào đó, tôi bắt đầu bằng việc khảo sát thị trường, tính mức sàn cá nhân (chi phí + thời gian không billable chia cho giờ billable), và đảm bảo net rate sau phí dịch vụ vẫn bền vững. Với người mới chưa có review, tôi chọn mức khởi điểm hợp lý dựa trên portfolio có bằng chứng, không phải đáy thị trường. Quan trọng hơn là chọn job nhỏ, phạm vi rõ ràng để giao hàng tốt và nhận review chất lượng. Khi đã có review tốt và kết quả đo được, tôi tăng giá theo bằng chứng — với khách mới thì tăng trực tiếp trên profile, với khách cũ thì báo trước 2–4 tuần, nêu rõ lý do và kết quả đạt được. Tôi luôn theo dõi effective hourly rate (bao gồm cả thời gian viết proposal) hàng tuần, vì đó mới là con số thực tế phản ánh thu nhập của mình."
 
 > Senior tip: hãy nghĩ theo "effective hourly rate" (thu nhập thực tế mỗi giờ, gồm cả thời gian viết proposal, họp, sửa miễn phí). Nếu rate niêm yết 20 USD/giờ nhưng chỉ 60% thời gian là billable, effective rate chỉ khoảng 12 USD/giờ. Theo dõi con số này hàng tuần; khi effective rate giảm vì bạn giỏi lên nhưng giá đứng yên, đó là lúc tăng giá có căn cứ.`,
   follow: [
