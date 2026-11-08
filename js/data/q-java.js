@@ -23,7 +23,7 @@
 | Liên hệ hash | {{equals}} true ⇒ {{hashCode}} bằng nhau |
 
 ### Ví dụ đời thực (production)
-Giả định một dịch vụ phiên đăng nhập dùng {{HashSet<SessionToken>}} (tập hợp không trùng) để kiểm tra token đang hoạt động, ~50.000 token, ~3.000 QPS tra cứu. Dev tạo class {{SessionToken}} có field {{value}} và override {{equals}} so sánh {{value}}, nhưng quên override {{hashCode}} (dùng mặc định của {{Object}} - dựa trên địa chỉ bộ nhớ). Hậu quả: cùng một chuỗi token tạo thành 2 object Java khác nhau → {{hashCode}} mặc định khác → {{set.contains(tokenMoi)}} trả {{false}} dù token hợp lệ đã có trong set. Triệu chứng: người dùng bị đăng xuất ngẫu nhiên, tỷ lệ lỗi 401 tăng từ ~0,1% lên ~8% sau deploy. Điều tra: log cho thấy token "không tìm thấy" nhưng truy vấn DB xác nhận token còn hiệu lực; viết unit test {{set.add(t1); assert set.contains(new Token(t1.value));}} → fail. Cách sửa: thêm override {{hashCode()}} dùng {{Objects.hash(value)}} (đúng các field tham gia equals), hoặc đổi sang {{record SessionToken(String value)}} (Java 16+, record tự sinh {{equals}}/{{hashCode}} đúng contract). Kết quả: lỗi 401 về mức bình thường, p99 tra cứu token vẫn < 1ms.
+Giả định một dịch vụ phiên đăng nhập dùng {{HashSet<SessionToken>}} (tập hợp không trùng) để kiểm tra token đang hoạt động, ~50.000 token, ~3.000 QPS tra cứu. Dev tạo class {{SessionToken}} có field {{value}} và override {{equals}} so sánh {{value}}, nhưng quên override {{hashCode}} (dùng mặc định của {{Object}}: identity hash, khác nhau cho mỗi object; HotSpot hiện sinh nó bằng số ngẫu nhiên chứ không phải địa chỉ bộ nhớ). Hậu quả: cùng một chuỗi token tạo thành 2 object Java khác nhau → {{hashCode}} mặc định khác → {{set.contains(tokenMoi)}} trả {{false}} dù token hợp lệ đã có trong set. Triệu chứng: người dùng bị đăng xuất ngẫu nhiên, tỷ lệ lỗi 401 tăng từ ~0,1% lên ~8% sau deploy. Điều tra: log cho thấy token "không tìm thấy" nhưng truy vấn DB xác nhận token còn hiệu lực; viết unit test {{set.add(t1); assert set.contains(new Token(t1.value));}} → fail. Cách sửa: thêm override {{hashCode()}} dùng {{Objects.hash(value)}} (đúng các field tham gia equals), hoặc đổi sang {{record SessionToken(String value)}} (Java 16+, record tự sinh {{equals}}/{{hashCode}} đúng contract). Kết quả: lỗi 401 về mức bình thường, p99 tra cứu token vẫn < 1ms.
 
 ~~~java
 // BAD: override equals, quên hashCode -> vi phạm contract
@@ -2137,7 +2137,7 @@ String priority(Order o) {
 ### Vì sao không dùng double
 - {{double}} tuân theo IEEE 754 nhị phân: số thập phân hữu hạn (0.1, 0.01, 19.99) thường thành số lặp vô hạn trong nhị phân ⇒ sai số tròn tích lũy.
 - Ví dụ kinh điển: {{0.1 + 0.2 = 0.30000000000000004}}; tính lãi, chiết khấu, tiền tệ ngoại tệ sẽ lệch cent và cộng dồn qua ngàn giao dịch thành số lớn.
-- Các chuẩn kế toán/ngân hàng (ISO 4217, PCI DSS) yêu cầu độ chính xác tuyệt đối; {{double}} không đáp ứng được.
+- Nghiệp vụ kế toán/ngân hàng yêu cầu số tiền khớp tuyệt đối tới đơn vị nhỏ nhất của tiền tệ (số chữ số thập phân của mỗi loại tiền theo ISO 4217: VND 0, USD 2, JPY 0); {{double}} không đáp ứng được.
 
 ### BigDecimal cơ bản
 ~~~java
@@ -4040,7 +4040,7 @@ Team chọn cách thứ ba cho dữ liệu đã biết, giữ String Deduplicati
 Viết test cho entity mới, sau persist, proxy, detached và hai instance cùng id. Không dùng mutable field, timestamp hay toàn bộ object graph.
 
 ### Bên trong: vì sao entity "biến mất" khỏi HashSet
-{{HashSet}} xếp object vào bucket theo {{hashCode()}} **tại thời điểm add**. Entity mới có {{id = null}} → nếu {{hashCode()}} dựa vào id thì hash là của null (ví dụ 0). Sau {{persist}} và flush, Hibernate gán id = 42 → {{hashCode()}} giờ khác, nhưng object vẫn nằm ở bucket cũ. {{set.contains(entity)}} tìm ở bucket mới → false; {{set.remove(entity)}} không xoá được. Với {{@OneToMany Set<Item>}}, Hibernate có thể thêm trùng hoặc không xoá được phần tử con. Cách phổ biến (theo hướng dẫn của Vlad Mihalcea): {{equals}} so id khi id khác null, {{hashCode()}} trả **hằng số theo class** ({{getClass().hashCode()}}) — mọi entity cùng loại chung một bucket (chỉ chấp nhận được với collection nhỏ), đổi lại an toàn suốt vòng đời. Nếu có business key bất biến (mã đơn hàng, số tài khoản) thì dùng nó là tốt nhất.
+{{HashSet}} xếp object vào bucket theo {{hashCode()}} **tại thời điểm add**. Entity mới có {{id = null}} → nếu {{hashCode()}} dựa vào id thì hash là của null (ví dụ 0). Sau {{persist}} và flush, Hibernate gán id = 42 → {{hashCode()}} giờ khác, nhưng object vẫn nằm ở bucket cũ. {{set.contains(entity)}} tìm ở bucket mới → false; {{set.remove(entity)}} không xoá được. Với {{@OneToMany Set<Item>}}, Hibernate có thể thêm trùng hoặc không xoá được phần tử con. Cách phổ biến (theo hướng dẫn của Vlad Mihalcea): {{equals}} so id khi id khác null, {{hashCode()}} trả **hằng số theo class** ({{Account.class.hashCode()}}, không dùng {{getClass()}} vì proxy là subclass nên cho hash khác) — mọi entity cùng loại chung một bucket (chỉ chấp nhận được với collection nhỏ), đổi lại an toàn suốt vòng đời. Nếu có business key bất biến (mã đơn hàng, số tài khoản) thì dùng nó là tốt nhất.
 
 ### Ví dụ đời thực
 Một đơn hàng có {{Set<OrderLine>}}; {{OrderLine}} dùng Lombok {{@Data}} (equals/hashCode theo mọi field, kể cả id và quan hệ). Thêm dòng mới rồi lưu: sau flush, hash đổi; gọi {{lines.remove(line)}} để xoá dòng vừa thêm không có tác dụng — khách bị tính tiền cho món đã bỏ khỏi giỏ (khoảng 90 đơn trong một ngày). Ngoài ra {{@Data}} gọi {{toString}} trên quan hệ hai chiều gây {{StackOverflowError}} khi log. Sửa: bỏ {{@Data}} khỏi entity, viết equals/hashCode theo mẫu "id + hằng số class", {{toString}} chỉ in id; thêm test persist → contains → remove.
@@ -5349,7 +5349,7 @@ long sum = hugeArray.parallelStream().mapToLong(this::heavyCpu).sum();
   a: `**Tóm tắt:** Với entity JPA, equality phải giữ ổn định qua vòng đời transient → managed → detached. Nếu hashCode phụ thuộc vào id tự sinh (null trước persist), entity đã add vào HashSet sẽ bị "lạc" khi id được gán. Với kế thừa, dùng {{getClass()}} chặt chẽ hơn {{instanceof}} về tính đối xứng, nhưng cần cân nhắc proxy Hibernate.
 
 ### Vấn đề với id tự sinh
-- Khi {{new Entity()}} thì id là null. Nếu hashCode dựa trên id, hai entity mới tạo có cùng hashCode (null) → bị coi là trùng trong HashSet.
+- Khi {{new Entity()}} thì id là null. Nếu hashCode dựa trên id và equals so id bằng {{Objects.equals}} (hai null coi là bằng), hai entity mới tạo khác nhau bị coi là trùng → HashSet chỉ giữ một.
 - Sau {{persist}}, id được gán → hashCode đổi → entity nằm ở bucket cũ, {{contains()}} và {{remove()}} không tìm thấy.
 - Đây là bug thật: add entity vào Set, persist, rồi remove → không xoá được, memory leak.
 
@@ -5369,7 +5369,7 @@ long sum = hugeArray.parallelStream().mapToLong(this::heavyCpu).sum();
 // instanceof: cho phép proxy (subclass) so sánh được
 if (!(o instanceof Entity e)) return false;
 ~~~
-- {{getClass()}} đảm bảo tính đối xứng: nếu a.equals(b) thì b.equals(a) luôn. Với {{instanceof}}, subclass có thể equals superclass nhưng superclass không equals subclass → vi phạm đối xứng.
+- {{getClass()}} đảm bảo tính đối xứng: nếu a.equals(b) thì b.equals(a) luôn. Với {{instanceof}} ở lớp cha, object lớp cha có thể equals object lớp con (vì lớp con instanceof lớp cha); nếu lớp con lại override equals thêm điều kiện riêng thì chiều ngược lại trả false → vi phạm đối xứng.
 - Tuy nhiên Hibernate lazy proxy là subclass của entity → {{getClass()}} coi proxy và entity thật là khác nhau. Vì vậy cần {{instanceof}} hoặc {{Hibernate.getClass(o)}}.
 
 ### Strategy an toàn
@@ -5388,7 +5388,7 @@ if (!(o instanceof Entity e)) return false;
 
 ### Pitfall
 - Dùng {{@Data}} (Lombok) sinh hashCode theo mọi field, trong đó có id → entity bị mất khỏi Set sau persist.
-- Đưa entity vào Set trước khi persist rồi gọi {{set}} để thay đổi → hashCode đổi.
+- Đưa entity vào Set rồi gọi setter đổi field tham gia hashCode → hashCode đổi, entity lạc bucket.
 
 ### Ví dụ đời thực
 Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Policy}}; {{equals}} của {{Policy}} dùng {{instanceof}} và so {{policyNumber}}, còn {{LifePolicy}} override {{equals}} so thêm {{beneficiary}}. Kết quả: {{policy.equals(lifePolicy)}} là true nhưng {{lifePolicy.equals(policy)}} là false — vi phạm tính đối xứng; một {{HashSet<Policy>}} dùng để loại trùng khi import lúc giữ, lúc bỏ hợp đồng tuỳ thứ tự đọc file, 1.300 hợp đồng bị nhân đôi trong báo cáo quý. Sửa: equality chỉ dựa trên business key {{policyNumber}} khai báo {{final}} ở lớp cha, lớp con không override equals. Với Hibernate proxy, so sánh bằng {{Hibernate.getClass(o)}} thay vì {{getClass()}} trực tiếp để proxy và entity thật vẫn bằng nhau.
@@ -5405,7 +5405,7 @@ Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Poli
   topic: 'core',
   level: 'lead',
   q: 'Generics: PECS, type erasure, heap pollution, {{@SafeVarargs}} và ảnh hưởng khi viết thư viện/API thế nào?',
-  a: `**Tóm tắt:** Generics chỉ kiểm tra lúc compile rồi bị xoá (type erasure) khỏi bytecode. PECS là quy tắc chọn wildcard: Producer Extends, Consumer Super. Heap pollution xảy ra khi trộn raw type với generic, khiến mảng chứa phần tử sai kiểu. {{@SafeVarargs}} chỉ được dùng cho method static/final/private và là cam kết của người viết — compiler không thể kiểm tra được.
+  a: `**Tóm tắt:** Generics chỉ kiểm tra lúc compile rồi bị xoá (type erasure) khỏi bytecode. PECS là quy tắc chọn wildcard: Producer Extends, Consumer Super. Heap pollution là khi một biến kiểu generic trỏ tới object không đúng kiểu đó (thường do raw type, unchecked cast hoặc varargs generic); lỗi chỉ nổ ra sau đó, ở chỗ đọc. {{@SafeVarargs}} chỉ đặt được trên constructor và method static/final/private (private từ Java 9), và là cam kết của người viết — compiler không kiểm tra được thân method.
 
 ### Type erasure
 - {{List<String>}} và {{List<Integer>}} cùng là {{List}} trong bytecode; không thể {{new T()}}, {{instanceof T}}, hay overload chỉ khác type parameter.
@@ -5420,8 +5420,8 @@ Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Poli
 - Ví dụ kinh điển: {{Collections.copy(List<? super T> dest, List<? extends T> src)}}.
 
 ### Heap pollution
-- Xảy ra khi một mảng generic chứa phần tử không đúng kiểu, nhưng do erasure nên runtime không phát hiện.
-- Ví dụ: {{List<String>[] = new List<?>[10]}} → assign {{List<Integer>}} vào mảng này là runtime error.
+- Xảy ra khi một biến kiểu generic (hoặc mảng generic) trỏ tới object không đúng kiểu, nhưng do erasure nên runtime không phát hiện ngay.
+- Ví dụ: {{List<String>[] arr = (List<String>[]) new List<?>[10];}} rồi qua một biến {{Object[]}} gán {{List.of(42)}} vào {{arr[0]}}: JVM **không** chặn (runtime chỉ thấy mảng {{List[]}}), đó chính là heap pollution; {{ClassCastException}} chỉ nổ khi sau này đọc {{arr[0].get(0)}} ra String.
 - Dùng raw type ({{List}} không tham số) rồi add element generic vào: {{list.add(123)}} thành công vì raw type bỏ qua kiểm tra, nhưng {{list.get(0)}} sẽ nổ {{ClassCastException}} khi cast.
 - {{@SafeVarargs}} là cam kết: chỉ cho static/final/private method; nếu method không final và có varargs của generic array, caller có thể ghi array khác và gây heap pollution sau này.
 
@@ -5431,12 +5431,12 @@ Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Poli
 - Tránh varargs generic trong public method nếu không thể đảm bảo an toàn → dùng collection thay vì varargs.
 
 ### Ví dụ đời thực
-Một thư viện tiện ích nội bộ có method {{static <T> List<T> listOf(T... items)}} đánh dấu {{@SafeVarargs}} nhưng bên trong **lưu mảng varargs vào một field** để tái sử dụng. Khi được gọi với kiểu generic ({{listOf(List.of(1), List.of(2))}}), mảng thực chất là {{Object[]}}; một chỗ khác ghi phần tử sai kiểu vào mảng đó (heap pollution) và {{ClassCastException}} nổ ở một service khác, xa chỗ gây lỗi, khiến team mất một ngày truy. Sửa: không giữ hay trả ra mảng varargs ({{List.copyOf(Arrays.asList(items))}}), chỉ đặt {{@SafeVarargs}} khi method chỉ **đọc** phần tử. Thêm {{-Xlint:unchecked}} vào build để mọi cảnh báo unchecked trở thành lỗi trong thư viện dùng chung.
+Một thư viện tiện ích nội bộ có method {{static <T> List<T> listOf(T... items)}} đánh dấu {{@SafeVarargs}} nhưng bên trong **lưu mảng varargs vào một field** để tái sử dụng. Khi được gọi với kiểu generic ({{listOf(List.of(1), List.of(2))}}), mảng thực chất là {{Object[]}}; một chỗ khác ghi phần tử sai kiểu vào mảng đó (heap pollution) và {{ClassCastException}} nổ ở một service khác, xa chỗ gây lỗi, khiến team mất một ngày truy. Sửa: không giữ hay trả ra mảng varargs ({{List.copyOf(Arrays.asList(items))}}), chỉ đặt {{@SafeVarargs}} khi method chỉ **đọc** phần tử. Thêm {{-Xlint:unchecked -Werror}} vào build để mọi cảnh báo unchecked trở thành lỗi trong thư viện dùng chung.
 
 ### Trả lời mẫu khi phỏng vấn
 "Generic chỉ được kiểm tra lúc biên dịch rồi bị xoá, nên runtime không biết List đó chứa gì. Khi viết API, tôi theo PECS: tham số chỉ để đọc dùng extends, chỉ để ghi dùng super, như Collections.copy, còn kiểu trả về thì cụ thể. Heap pollution là khi một biến generic trỏ tới object không đúng kiểu, thường do raw type hoặc varargs generic: varargs tạo mảng, mà mảng generic thực chất là mảng Object, nên ai đó có thể nhét phần tử sai kiểu vào và ClassCastException nổ ở chỗ khác. @SafeVarargs chỉ là lời cam kết của người viết rằng method không ghi vào mảng varargs và không để nó thoát ra ngoài; compiler không kiểm tra. Trong thư viện dùng chung tôi bật Xlint unchecked như lỗi và tránh raw type hoàn toàn."
 
-> Senior tip: khi thiết kế thư viện, luôn dùng wildcard ở input (PECS) và type cụ thể ở output. {{@SafeVarargs}} chỉ là cam kết — nếu method không final/static/private, compiler sẽ cảnh báo. Không bao giờ tạo mảng generic {{new T[]}}; dùng {{List<List<T>>}} hoặc {{Array.newInstance}} + cast có kiểm soát.`,
+> Senior tip: khi thiết kế thư viện, luôn dùng wildcard ở input (PECS) và type cụ thể ở output. {{@SafeVarargs}} chỉ là cam kết — đặt nó lên method có thể override (không final/static/private) là lỗi biên dịch. Không bao giờ tạo mảng generic {{new T[]}}; dùng {{List<List<T>>}} hoặc {{Array.newInstance}} + cast có kiểm soát.`,
   follow: ['Tại sao không thể tạo mảng generic new T[]?', 'Heap pollution xảy ra thế nào và phát hiện ra sao?', 'Khi nào dùng @SafeVarargs và tại sao chỉ cho static/final/private?'],
   tags: ['generics', 'type erasure', 'PECS', 'heap pollution', 'SafeVarargs']
 },
@@ -5450,7 +5450,7 @@ Một thư viện tiện ích nội bộ có method {{static <T> List<T> listOf(
 ### Vì sao không dùng double
 - {{double}} tuân theo IEEE 754 nhị phân: số thập phân hữu hạn (0.1, 19.99) thường thành số lặp vô hạn trong nhị phân ⇒ sai số tròn tích lũy.
 - Ví dụ kinh điển: {{0.1 + 0.2 = 0.30000000000000004}}; tính lãi, chiết khấu sẽ lệch cent và cộng dồn qua nghìn giao dịch thành số lớn.
-- Các chuẩn kế toán/ngân hàng (ISO 4217, PCI DSS) yêu cầu độ chính xác tuyệt đối; {{double}} không đáp ứng được.
+- Nghiệp vụ kế toán/ngân hàng yêu cầu số tiền khớp tuyệt đối tới đơn vị nhỏ nhất của tiền tệ (số chữ số thập phân của mỗi loại tiền theo ISO 4217: VND 0, USD 2, JPY 0); {{double}} không đáp ứng được.
 
 ### BigDecimal cơ bản
 ~~~java
@@ -5462,7 +5462,7 @@ BigDecimal bad = new BigDecimal(0.1);   // 0.10000000000000000555...
 BigDecimal good = BigDecimal.valueOf(0.1); // dùng Double.toString -> "0.1"
 ~~~
 - Luôn dùng constructor nhận {{String}} hoặc {{BigDecimal.valueOf(double)}}.
-- {{scale}} = số chữ số sau dấu phẩy; âm nghĩa là nhân 10^|scale|}.
+- {{scale}} = số chữ số sau dấu phẩy; scale âm nghĩa là giá trị = unscaledValue × 10^|scale| (ví dụ 1E+3 có scale -3).
 
 ### equals vs compareTo
 ~~~java
@@ -5474,18 +5474,25 @@ new BigDecimal("1.0").compareTo(new BigDecimal("1.00")); // 0 (giá trị bằng
 - {{signum()}} trả -1/0/1 tiện cho điều kiện.
 
 ### Phép chia và bug "lệch 1 xu"
-- {{divide(divisor)}} không chỉ định scale sẽ nthrows {{ArithmeticException}} nếu không chia hết (non-terminating decimal).
+- {{divide(divisor)}} không chỉ định scale sẽ ném {{ArithmeticException}} nếu không chia hết (non-terminating decimal).
 - {{divide(divisor, scale, RoundingMode.HALF_UP)}} luôn chỉ định scale và rounding mode.
-- Bug "lệch 1 xu" xảy ra khi: dùng {{double}} trung gian, hoặc rounding mode không phù hợp (ví dụ {{HALF_DOWN}} khi should là {{HALF_UP}}), hoặc scale khác nhau giữa các bước tính.
-- Tính tổng nhiều khoản với tỷ lệ phần trăm: mỗi khoản round riêng rẽ → lệch lũyỹ. Cách đúng: tính tổng bằng {{BigDecimal}} rồi round một lần cuối.
+- Bug "lệch 1 xu" xảy ra khi: dùng {{double}} trung gian, hoặc rounding mode không phù hợp (ví dụ dùng {{HALF_DOWN}} trong khi quy định là {{HALF_UP}}), hoặc scale khác nhau giữa các bước tính.
+- Tính tổng nhiều khoản với tỷ lệ phần trăm: mỗi khoản round riêng rẽ → lệch tích luỹ. Cách đúng: tính tổng bằng {{BigDecimal}} rồi round một lần cuối; còn khi buộc phải chia một số tiền thành nhiều phần (chia hoá đơn, phân bổ phí), làm tròn từng phần rồi dồn phần dư vào một phần để tổng luôn khớp.
 
 ### Pitfall production
 - Quên {{divide}} kèm scale + rounding ⇒ exception lúc runtime khi chia 10/3.
 - Lưu DB: cột {{NUMERIC(19,4)}} hoặc {{DECIMAL}}; đừng dùng {{FLOAT}}/{{DOUBLE}}. Hibernate mapping {{@Column(precision = 19, scale = 4)}}.
 - Tiền tệ đa ngoại tệ: luôn kèm {{Currency}} (ISO 4217), không cộng/trừ tiền tệ khác nhau.
 - Tự viết {{Money}} wrapper (record {{Money(BigDecimal amount, Currency currency)}}) với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ.
+- {{BigDecimal}} làm key của {{HashMap}}/{{HashSet}}: {{1.0}} và {{1.00}} là hai key khác nhau vì equals xét scale. Chuẩn hoá scale ({{setScale}}) trước khi làm key, hoặc dùng {{TreeMap}} (dựa trên compareTo).
 
-> Senior tip: viết wrapper {{Money}} với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ để tránh rải rác {{RoundingMode.HALF_UP}} throughout codebase. Với báo cáo tài chính, {{RoundingMode.HALF_EVEN}} (banker's rounding) là chuẩn kế toán, nhưng phải đồng bộ toàn hệ thống.`,
+### Ví dụ đời thực
+Một ví điện tử tính phí rút tiền 1,1% bằng {{double}} rồi {{Math.round}}: báo cáo đối soát cuối tháng lệch 1,8 triệu đồng trên 2,3 triệu giao dịch so với file của ngân hàng (ngân hàng làm tròn HALF_UP trên số thập phân chính xác). Ngoài ra, chức năng chia hoá đơn nhóm chia 100.000 đồng cho 3 người được 33.333 × 3 = 99.999. Sửa: toàn bộ tính tiền chuyển sang {{BigDecimal}} tạo từ String, phí làm tròn {{setScale(0, RoundingMode.HALF_UP)}} theo đúng hợp đồng với ngân hàng, chia hoá đơn dồn phần dư 1 đồng cho người đầu tiên; thêm test đối chiếu với file mẫu của ngân hàng. Tháng sau đối soát khớp 100%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tiền tôi luôn dùng BigDecimal tạo từ String hoặc valueOf, không bao giờ từ double, vì double là số nhị phân nên 0,1 cộng 0,2 không ra 0,3. Ba điểm hay sai: thứ nhất, equals so cả scale nên 1.0 khác 1.00, logic nghiệp vụ phải dùng compareTo, và cẩn thận khi dùng BigDecimal làm key của HashMap. Thứ hai, phép chia không hết mà không truyền scale và RoundingMode sẽ ném ArithmeticException, nên mọi phép chia phải có scale và rounding mode rõ ràng. Thứ ba, chọn chế độ làm tròn theo hợp đồng nghiệp vụ, HALF_UP hay HALF_EVEN, và làm tròn ở đúng bước: tính tổng rồi làm tròn một lần; khi phải chia một khoản tiền thành nhiều phần thì dồn phần dư vào một phần để tổng luôn khớp. Tôi gom toàn bộ vào một value object Money có currency, để quy tắc làm tròn nằm ở một chỗ, và lưu DB bằng NUMERIC chứ không bao giờ FLOAT."
+
+> Senior tip: viết wrapper {{Money}} với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ để tránh rải rác {{RoundingMode.HALF_UP}} khắp codebase. Với báo cáo tài chính, {{RoundingMode.HALF_EVEN}} (banker's rounding) là chuẩn kế toán, nhưng phải đồng bộ toàn hệ thống.`,
   follow: ['Tại sao BigDecimal("1.00").equals(BigDecimal("1.0")) trả false?', 'Khi nào dùng RoundingMode.HALF_EVEN thay vì HALF_UP?', 'Làm sao tránh bug lệch 1 xu khi tính tổng nhiều khoản với tỷ lệ phần trăm?'],
   tags: ['BigDecimal', 'money', 'rounding', 'equals', 'compareTo']
 },
@@ -5943,28 +5950,44 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
   topic: 'core',
   level: 'senior',
   q: 'Lộ trình nâng cấp dự án Java 8/11 lên Java 21 gồm những bước nào? jdeps, --add-opens, thư viện cũ?',
-  a: `**Tóm tắt:** Nâng Java 8/11 → 21 theo bước: cài JDK 21, đổi source/target, chạy test, jdeps/jdeprscan tìm API bị xoá, xử lý --add-opens cho reflection, cập nhật thư viện (Spring Boot 3/Hibernate 6), tune GC. Không bật preview trong production.
+  a: `**Tóm tắt:** Nâng Java 8/11 lên 21 có ba lớp việc: (1) **build và thư viện**: JDK 21 trong CI, nâng các plugin và thư viện dùng bytecode/reflection (Lombok, Mockito, ByteBuddy, APM agent) lên bản hỗ trợ class file 65; (2) **API và encapsulation**: tìm chỗ dùng API nội bộ JDK hoặc API đã bị xoá bằng {{jdeps}} và {{jdeprscan}}, xử lý lỗi {{InaccessibleObjectException}} do JDK 17 đã khoá chặt API nội bộ (JEP 403); (3) **runtime**: GC mặc định, cờ JVM đã bị bỏ, container awareness. Nếu đang ở Spring Boot 2 thì thường đi kèm nâng Spring Boot 3 (bắt buộc Java 17+, đổi javax sang jakarta), đó mới là phần tốn công nhất.
 
-### Các bước chi tiết
-1. Cài JDK 21 trong CI; đổi maven.compiler.source/target = 21 (hoặc Gradle java.toolchain).
-2. Chạy full test; sửa compile errors (javax→jakarta nếu Spring 6).
-3. jdeps --jdk-internals tìm dùng internal API.
-4. jdeprscan tìm deprecated-for-removal.
-5. Nếu thư viện cũ dùng reflection sâu: thêm --add-opens module/pkg=ALL-UNNAMED tạm thời.
-6. Cập nhật dependency (Spring Boot 3, Hibernate 6, Lombok, Mockito).
-7. Bật GC phù hợp, đo latency/memory.
+### Những gì thay đổi giữa 8 và 21
+| Thay đổi | Từ bản | Ảnh hưởng thường gặp |
+|---|---|---|
+| Module system (JPMS) | 9 | Reflection vào {{sun.*}}, {{jdk.internal.*}} bị chặn dần |
+| Xoá Java EE modules (JAXB, JAX-WS, javax.annotation) | 11 (JEP 320) | {{ClassNotFoundException: javax.xml.bind.JAXBContext}}: thêm dependency jakarta.xml.bind |
+| Xoá Nashorn | 15 | Script engine JavaScript không còn |
+| Strongly encapsulate JDK internals | 16 (JEP 396), 17 bỏ luôn cờ {{--illegal-access}} (JEP 403) | {{InaccessibleObjectException}} khi thư viện cũ reflection vào JDK |
+| Xoá CMS GC | 14 | Cờ {{-XX:+UseConcMarkSweepGC}} làm JVM không khởi động |
+| Biased locking bị tắt/bỏ | 15/18 | Gần như không ảnh hưởng, có thể thay đổi hiệu năng lock |
+| {{SecurityManager}} deprecated for removal | 17 | Thư viện cũ gọi nó in cảnh báo |
 
-### Pitfall
-- --add-opens chỉ workaround; refactor để không cần.
-- Thư viện pre-JPMS không module-aware.
-- Nhảy thẳng 8→21 làm gỡ lỗi khó; đi từng LTS.
-- Reflection/bytecode instrumentation (APM, Lombok cũ) dễ vỡ.
+### Lộ trình từng bước
+1. **Kiểm kê**: chạy {{jdeps --jdk-internals --multi-release 21 -cp 'libs/*' app.jar}} để tìm code (của bạn và của thư viện) dùng API nội bộ; {{jdeprscan --release 21 app.jar}} tìm API deprecated for removal.
+2. **Nâng build trước, chưa đổi bytecode**: chạy build trên JDK 21 nhưng vẫn {{--release 8}} hoặc {{--release 11}}. Nâng Maven/Gradle plugin, Lombok (từ 1.18.30 cho JDK 21), Mockito 5, ByteBuddy, JaCoCo (từ 0.8.11 cho JDK 21). Bước này tách lỗi "công cụ build" khỏi lỗi "code".
+3. **Chạy test và ứng dụng trên runtime 21** với bytecode cũ: lộ ra lỗi reflection, cờ JVM đã bị bỏ, khác biệt hành vi.
+4. **Xử lý encapsulation đúng cách**: nâng thư viện là cách chính. {{--add-opens java.base/java.lang=ALL-UNNAMED}} chỉ là băng cá nhân tạm thời; ghi lại từng dòng và có ticket gỡ.
+5. **Đổi {{--release 21}}** rồi mới dần dùng tính năng mới (record, switch pattern, text block, virtual thread), không gộp vào cùng PR nâng cấp.
+6. **Spring Boot 2 lên 3** (nếu có): đi qua 2.7 trước, sửa hết deprecation, rồi lên 3.x; dùng OpenRewrite recipe để đổi {{javax.*}} sang {{jakarta.*}} tự động; kiểm tra Hibernate 6 (thay đổi HQL, kiểu id, sequence).
+7. **Runtime**: rà cờ JVM trong Dockerfile/Helm (bỏ CMS, {{PermSize}}, {{-XX:+UseCGroupMemoryLimitForHeap}}), dùng {{-XX:MaxRAMPercentage}}, đo lại GC (G1 trên 21 tốt hơn nhiều so với 8).
 
-### Rollout
-- Chạy song song JDK cũ/mới trong CI; smoke test staging; blue-green deploy; theo dõi GC, p99, memory.
+### Ví dụ lỗi và cách đọc
+~~~text
+java.lang.reflect.InaccessibleObjectException: Unable to make field private final
+  byte[] java.lang.String.value accessible: module java.base does not "opens java.lang"
+  to unnamed module @6d06d69c
+~~~
+Đọc: một thư viện (thường là bản cũ của serializer, mocking hoặc bytecode library) đang reflection vào field private của JDK. Cách sửa đúng là nâng thư viện; tạm thời có thể thêm {{--add-opens java.base/java.lang=ALL-UNNAMED}} để mở đúng package đó.
 
-> Senior tip: migrate theo service nhỏ trước; giữ dual build một thời gian; dùng OpenRewrite để tự động hoá một phần; jdeprscan để tìm API sắp bỏ.`,
-  follow: ['jdeps output đọc thế nào?', 'Khi nào cần --add-exports?'],
+### Ví dụ đời thực
+Một hệ thống core banking gồm 14 service Java 8 + Spring Boot 2.3. Team làm theo thứ tự: một service ít phụ thuộc làm thí điểm, build trên JDK 21 với {{--release 8}} trước. Lỗi đầu tiên không nằm ở code mà ở Lombok 1.18.12 và JaCoCo 0.8.5 không đọc được JDK mới; nâng xong là qua. Chạy runtime 21 lộ 3 chỗ {{InaccessibleObjectException}} từ một thư viện XML cũ và Kryo; nâng thư viện giải quyết 2, chỗ còn lại thêm {{--add-opens}} kèm ticket. Phần tốn công nhất là Spring Boot 3: 1.900 import javax được OpenRewrite đổi tự động, nhưng 40 câu HQL phải sửa tay vì Hibernate 6 chặt hơn. Sau khi lên production, G1 trên JDK 21 giảm p99 GC pause từ 180 ms xuống 45 ms và RAM mỗi pod giảm 15%. Cả 14 service mất 4 tháng, không có sự cố nào do nâng cấp.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia việc nâng Java 8 lên 21 thành ba lớp. Đầu tiên là build: chạy build trên JDK 21 nhưng vẫn giữ release 8, nâng plugin và các thư viện thao tác bytecode như Lombok, Mockito, JaCoCo, APM agent, vì đây là chỗ hỏng đầu tiên. Thứ hai là API: dùng jdeps với tùy chọn jdk-internals để tìm chỗ dùng API nội bộ, jdeprscan để tìm API sắp bị xoá; từ JDK 17 các API nội bộ bị khoá hẳn nên thư viện cũ reflection vào JDK sẽ ném InaccessibleObjectException, cách đúng là nâng thư viện, add-opens chỉ là tạm thời và phải có ticket gỡ. Các module Java EE như JAXB cũng đã bị xoá từ Java 11 nên phải thêm dependency. Thứ ba là runtime: bỏ cờ JVM cũ như CMS, đo lại GC và bộ nhớ. Nếu kèm Spring Boot 3 thì đi qua 2.7 trước, dùng OpenRewrite đổi javax sang jakarta. Tôi làm thí điểm một service trước, không trộn việc dùng tính năng ngôn ngữ mới vào cùng đợt nâng cấp."
+
+> Senior tip: tách nâng cấp thành hai mốc rõ ràng: "chạy được trên JDK 21 với bytecode cũ" và "biên dịch release 21". Mốc đầu tiên giải quyết 80% rủi ro và có thể rollback chỉ bằng đổi base image. Và luôn chạy smoke test **có gắn APM agent**: agent cũ không hiểu class file mới là lý do số một khiến service không khởi động được sau nâng cấp.`,
+  follow: ['Đọc output của jdeps --jdk-internals thế nào, và bạn xử lý từng loại phát hiện ra sao?', 'Vì sao --add-opens chỉ nên là giải pháp tạm, và làm sao để không quên gỡ nó?', 'Nâng Spring Boot 2 lên 3 cùng lúc với Java 21 hay tách hai đợt? Vì sao?'],
   tags: ['migration', 'Java 21', 'jdeps', 'upgrade']
 },
 {
