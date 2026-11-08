@@ -278,6 +278,19 @@ spring:
 3. **Alternating users** ({{app_user}} and {{app_user_clone}}): each rotation changes the password of the user **not currently in use**, then transfers AWSCURRENT to that user. The old user still works until the next rotation cycle → the app has an entire cycle to refresh. This is the safer choice for production DBs.
 4. Consumers always read {{AWSCURRENT}}; {{AWSPREVIOUS}} is just a label for rollback, it does not mean the old password still works (with single user, it died).
 
+The diagram below illustrates secret rotation via AWS Secrets Manager:
+
+~~~seq
+title: AWS Secrets Manager secret rotation
+actors: App | Secrets Manager | Lambda | DB
+App -> Secrets Manager: get secret (AWSCURRENT)
+App -> DB: connect with current password
+Lambda -> Secrets Manager: create new password
+Lambda -> DB: change user password
+Lambda -> Secrets Manager: move AWSCURRENT to new
+note App..DB: connection pool must re-read secret
+~~~
+
 ### Biggest pitfall: connection pool holding old credentials
 - HikariCP creates connections with passwords at the time of creation; existing connections live long and continue using the opened session. When the DB changes password, **new** connections created by the pool will fail if the app hasn't read the new secret.
 - Solution: periodically re-read secret (every few minutes) and set {{maxLifetime}} much lower than the rotation period (rotation 30 days, maxLifetime 20–30 mins is plenty). {{validationTimeout}} (default 5s, checks when borrowing connection) can stay default, don't extend it.
