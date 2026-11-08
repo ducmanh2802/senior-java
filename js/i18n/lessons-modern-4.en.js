@@ -4,7 +4,7 @@
  */
 App.i18n.content({
   'lesson-modern-007': {
-    title: 'Fan-out: calling several services in parallel with CompletableFuture, timeout, fallback and virtual threads',
+    title: 'Fan-out calling several services in parallel: CompletableFuture, timeout, fallback, and virtual threads',
     goals: [
       'Know why calling 3 services sequentially adds their times up, while fan-out shrinks the total to the slowest service',
       'Use supplyAsync with a dedicated executor, allOf to wait, and exceptionally/completeOnTimeout for fallback and timeout',
