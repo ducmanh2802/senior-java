@@ -5,17 +5,17 @@
 App.i18n.content({
   'scenario-027': {
     q: 'A money transfer through a partner times out and the result is unknown (unknown state). How do you handle it?',
-    a: `**Summary:** the core principle: a timeout does not mean failure — write PENDING into the ledger, then call the partner's inquiry API with backoff; if the partner has no inquiry API, use the reconciliation file as the authoritative source; only mark SETTLED when the partner confirms; FAILED and refund only when there is confirmation from the partner; alert when PENDING transactions hang too long.
+    a: `**Summary:** core principle: a timeout does not mean failure — write PENDING into the ledger, then call the partner's inquiry API with backoff; if the partner has no inquiry API, use the reconciliation file as the authoritative source; mark SETTLED only when the partner confirms; FAILED and refund only when confirmed by the partner; alert when PENDING transactions hang too long.
 
 ### Clarify requirements
-- Does the partner have an inquiry API? What is the settlement SLA (seconds/minutes)?
-- What is the partner's settlement cut-off time (23:30?), and what is the legal regulation on refund when the state is unknown?
-- What is the rate limit of the partner's inquiry API?
+- Does the partner have an inquiry API? Settlement SLA (seconds/minutes)?
+- Partner's settlement cut-off time (23:30?), legal regulation on refund when state is unknown?
+- What is the partner's inquiry API rate limit?
 
 ### Investigation / Analysis
 - Draw the state machine: NEW → SENT → PENDING → (SETTLED | FAILED_CONFIRMED | REFUNDED); list which actor decides each transition.
-- Observe transactions with PENDING > X minutes per day — is the partner overloaded or is it a network bug?
-- Check the inquiry rate limit: if polling is dense, it may be blocked by the partner, killing the refund flow.
+- Observe PENDING transactions hanging more than X minutes per day — partner overloaded or network bug?
+- Check inquiry rate limit: dense polling may be blocked by the partner, killing the refund flow.
 
 ### Solution
 - State machine + scheduled inquiry job:
@@ -29,15 +29,34 @@ for (Tx t : job.repoPending()) {
   }
 }
 ~~~
-- Every transition has a condition (WHERE status = 'PENDING') to run only once; txn_ref is unique to prevent duplicates.
-- If the partner has no inquiry API: wait for the T+1 reconciliation file as the authoritative source; before that, the transaction stays PENDING (do not decide failure on your own); when a user calls, respond with pending — do not say it failed.
-- Refund (when the partner confirms failure): create a refund transaction with its own txn_ref, derived from the ledger; if the partner does not process the refund, record it as pending and handle it through reconciliation.
-- Alarm: number of PENDING transactions exceeds threshold (e.g., > 5 in 10 minutes) — alert on-call immediately; the end-of-day reconciliation report must include all PENDING transactions.
+- Every transition has a condition (WHERE status = 'PENDING') to run only once; txn_ref unique prevents duplicates.
+- If the partner has no inquiry API: wait for the T+1 reconciliation file as the authoritative source; before that, the transaction stays PENDING (do not decide failure on your own); if the user calls, respond pending — do not say failed.
+- Refund (when the partner confirms failure): create a refund transaction with its own txn_ref, derived from the ledger; if the partner does not process the refund, record it as pending and handle via reconciliation.
+- Alarm: number of PENDING transactions exceeds threshold (e.g., > 5 in 10 minutes) — alert on-call immediately; end-of-day reconciliation report must include all PENDING transactions.
+
+### State machine flow for unknown status
+~~~seq
+title: Money transfer to partner timed out
+actors: App | Transfer | Partner | Recon
+App -> Transfer: POST /transfers (idempotency key)
+Transfer -> Transfer: temporarily hold funds, status PENDING
+Transfer -> Partner: send command, ref=TRF-9921
+note Transfer..Partner: 30s timeout, no response
+Transfer --> App: 202 processing (not reporting failure)
+Transfer -> Partner: check status TRF-9921 (after 1, 5, 15 minutes)
+Partner --> Transfer: SUCCESS -> completed, official debit
+Recon -> Transfer: end of day: still PENDING then investigate
+~~~
 
 ### Trade-off & pitfall
 - Do not mark FAILED based on timeout when the partner has not confirmed — if the money actually went through and you refund, you lose real money.
-- Dense inquiry polling can be blocked by the partner (rate limit); always use backoff + jitter, and batch inquiry if the API supports it.
-- Log enough detail for each case (ref, amount, each inquiry step) — in future disputes with the partner, you need a timeline down to the millisecond.
+- Dense inquiry polling can be blocked by the partner (rate limit); always use backoff + jitter, batch inquiry if the API supports it.
+
+### Real-world example
+A wallet marked **failed and refunded immediately** when calling the partner bank timed out. In reality about 60% of those timed-out commands had **succeeded** at the partner bank — the receiver got the money, the sender got refunded: about 300 million dong lost every month before reconciliation detected it. Fixed with the flow above: timeout → status **UNKNOWN/PENDING**, keep the temporary hold; job checks status by reference with backoff; refund only when the partner confirms **failure** or end-of-day reconciliation concludes there is no transaction; resend only when the partner supports idempotency by reference. Loss down to zero; complaints "money deducted but not delivered" decreased because the app clearly shows status "processing".
+
+### Sample interview answer
+"A timeout does not mean failure — it just means unknown. So I never refund immediately on timeout: the transaction goes to unknown status, the money stays on hold, and the user sees processing. Every command sent to the partner has a unique reference generated by us, so we can check status and the partner can deduplicate if we need to resend. A job checks status by reference with backoff; only when the partner confirms success do we complete, confirms failure do we refund. If still unclear after the inquiry window, the transaction goes into end-of-day reconciliation for investigation. I only resend the command when the partner guarantees idempotency by reference, otherwise there is risk of sending twice."
 
 > Senior tip: the principle I always apply when designing payments is three certain states: SETTLED (money arrived), FAILED_CONFIRMED (partner confirmed), PENDING (unknown); any refund action must have partner confirmation — the safest approach is 'wait + inquiry', not deciding unilaterally.`,
     follow: [
@@ -91,33 +110,39 @@ CREATE INDEX idx_audit_entity ON audit_log (entity_type, entity_id, ts DESC);
     ]
   },
   'scenario-029': {
-    q: 'Customer data security requirements in banking: at-rest/in-transit encryption, masking, authorization, OTP/2FA, PCI DSS. How do you design the overall approach?',
+    q: 'Banking customer data security requirements: at-rest/in-transit encryption, masking, authorization, OTP/2FA, PCI DSS. How do you design the overall approach?',
     a: `**Summary:** classify data first (PII, financial, credentials) then design in layers: at-rest encryption (KMS + TDE, envelope for sensitive fields), in-transit (TLS 1.2+ on every hop, optional mTLS), tokenization for card numbers (reduce PCI scope), masking in UI/log, RBAC least-privilege + audit, risk-based OTP/2FA. No single layer is enough — defense must be layered.
 
 ### Clarify requirements
 - Data types: PII (name, national ID, phone), financial (card number, account number), behavior; define three sensitivity levels.
-- Legal requirements: PCI DSS if cards are involved, Decree 13 for PII, State Bank storage regulations?
+- Legal requirements: PCI DSS if cards involved, Decree 13 for PII, State Bank storage regulations?
 - Who accesses prod: how many devs/DBAs have access? Who is the internal app admin?
 
 ### Investigation / Analysis
 - Scan all storage points: DB (TDE/EBS), object storage (S3 SSE-KMS), backups, logs, cache, data warehouse — has each layer been encrypted?
-- Check the data path: does the internal API return data that is not needed? Does a full request body containing PII exist in logs without masking?
+- Check the data path: does the internal API return unneeded data? Does a full request body containing PII exist in logs without masking?
 - Authentication: passwords (bcrypt/argon2), SMS OTP vs TOTP, risk-based (unfamiliar device requires OTP).
 
 ### Solution
 - **At-rest:** KMS (AWS KMS) manages CMK + envelope encryption for very sensitive fields (national ID, credentials); DB enables TDE/encrypted EBS; backups encrypted with separate keys in a separate permission scope.
-- **In-transit:** TLS 1.2+ with strong cipher on every hop, internal service-to-service mTLS (Istio/server cert) if needed; automatic certificate rotation.
+- **In-transit:** TLS 1.2+ with strong cipher on every hop, internal service-to-service mTLS (Istio/server certificate) if needed; automatic certificate rotation.
 - **Cardholder data:** tokenization via PSP — token replaces PAN at storage time; do not store PAN; storing CVV is strictly prohibited by PCI DSS; store account number with AES-256-GCM per record with its own KDF.
 - **Access:** RBAC least-privilege; audit every access to sensitive data; just-in-time access for production DB (request permission, expires after 1 hour).
-- **App:** masking in UI and logs ({{**** 5678}} for cards); OTP/2FA for large transactions (SMS + TOTP backup, anti-SIM-swap with device fingerprint, trusted device list).
+- **App:** masking in UI and logs (**** 5678 for cards); OTP/2FA for large transactions (SMS + TOTP backup, anti-SIM-swap with device fingerprint, trusted device list).
 - **Log:** standard log schema without PII/secrets; automatic regex scan for national ID/card on samples.
 
 ### Trade-off & pitfall
 - Unencrypted backups/dumps are the most common mistake — backups and SQL dumps must follow the same encryption standard; verify down to every character.
-- Cache (Redis) remains plaintext when DB is encrypted — use key-level encrypted serializer or encrypt the value before caching.
+- Cache (Redis) remains plaintext when DB is encrypted — use key-level encrypted serializer or encrypt value before caching.
 - Broad IAM (all devs read DB) breaks security from the inside — set a standard: "time-to-detect who read row X" as a security KPI.
 
-> Senior tip: for banking, I always start with a data classification matrix; the common team mistake is encrypting the DB but leaving logs and cache in plaintext — add an automatic regex scan job for national IDs/cards on log samples before declaring it "secure"; pre-commit scan is only the first defense line.`,
+### Real-world example
+A digital bank preparing PCI DSS evaluation for a card feature. Audit found the full card number (PAN) in **7 places**: transaction table, app logs, analytics DB copy, partner export file, Redis cache, support ticket, test environment (production data copy). Redesigned to **narrow scope**: card number goes only into a dedicated **tokenization vault** (separate network, key in HSM); all other systems keep only **token** and last 4 digits; logs centrally masked; test environment uses dummy data; sensitive data access via temporary approved permissions, every view audited. PCI scope reduced from about 40 services to 3; evaluation passed the first time.
+
+### Sample interview answer
+"I design by minimization: sensitive data should be kept in as few places as possible. For card numbers, I use tokenization: only one isolated vault stores actual card numbers, encryption keys in HSM or KMS, other systems keep only token and last four digits, so PCI DSS scope shrinks. In-transit encryption with TLS everywhere, mTLS between sensitive services; at-rest encryption at disk and DB levels, plus field-level encryption for very sensitive data like national ID. Display and logs masked. Permissions least-privilege, sensitive data access is temporary with approval and audited. User authentication with 2FA, OTP with attempt limits. Test environment does not use real data. Comply with regulations like Decree 13 on personal data."
+
+> Senior tip: for banking, I always start with a data classification matrix; the common team mistake is encrypting the DB but leaving logs and cache in plaintext — add an automatic regex scan job for national IDs/cards on log samples before declaring "secure"; pre-commit scan is only the first defense line.`,
     follow: [
       'Tokenization vs field-level encryption for card numbers — when to choose each?',
       'SMS OTP vs TOTP: what is the SIM-swap risk with SMS OTP, and what design should be chosen for Vietnamese banks?'
@@ -125,70 +150,82 @@ CREATE INDEX idx_audit_entity ON audit_log (entity_type, entity_id, ts DESC);
   },
   'scenario-030': {
     q: 'End-of-day batch calculates interest/fees for millions of accounts: must be correct, rerunnable (re-runnable), and not duplicate. How do you design it?',
-    a: `**Summary:** three properties: correct (key = account_id + accrual_date is unique — rerunning does not duplicate), rerunnable (checkpoint by partition, restart from unfinished part), reconciliation (dry-run + total reconciliation report for accounting). Implement with Spring Batch chunk by partition, UPSERT with ON CONFLICT DO NOTHING, business_date provided by scheduler rather than now() per JVM.
+    a: `**Summary:** three properties: correct (key = account_id + accrual_date unique — rerunning does not duplicate), rerunnable (checkpoint by partition, restart from unfinished part), reconciliation (dry-run + total reconciliation report for accounting). Implement with Spring Batch chunk by partition, UPSERT with ON CONFLICT DO NOTHING, business_date provided by scheduler rather than now() per JVM.
 
 ### Clarify requirements
-- Adjustment of interest formulas per State Bank regulations (calculated by daily balance, actual days, February rules, holidays)? Different account groups have different rules.
-- SLA: run time (23:00?), is there a deadline (by 06:00 next morning the balance must be updated for linked systems)?
-- Volume: millions of accounts × transactions per account; distribution by account type and region?
+- Interest formula adjustment per State Bank regulations (calculated by daily balance, actual days, February rules, holidays)? Different account groups have different rules.
+- SLA: run time (23:00?), deadline (by 06:00 next morning balance must be updated for linked systems)?
+- Volume: millions of accounts times transactions per account; distribution by account type and region?
 
 ### Investigation / Analysis
-- Prior team jobs: have they ever run with duplicates or calculated twice, and what was the concrete cause (restarted job, chunk committed then failed)?
-- Measure each stage: reading data vs calculating per account — which is the bottleneck?
+- Prior team jobs: have they ever run with duplicates or calculated twice, concrete cause (restarted job, chunk committed then failed)?
+- Measure each stage: reading data versus calculating per account — which is the bottleneck?
 
 ### Solution
-- Spring Batch: chunk of 5,000–10,000 accounts by partition by id range (or region), step reader within each range; each record is read, calculated, and written atomically with the business key:
+- Spring Batch: chunk of 5,000–10,000 accounts by partition by id range (or region), step reader within each range; each record read, calculated, written atomically with business key:
 ~~~sql
 INSERT INTO interest_accrued (account_id, accrual_date, amount)
 VALUES (?, ?, ?)
 ON CONFLICT (account_id, accrual_date) DO NOTHING;
 -- unique key prevents duplicate writes when rerunning
--- balance update also within the same chunk (check rowsAffected)
+-- balance update also within same chunk (check rowsAffected)
 ~~~
-- Checkpoint: save completed partitions in a job_run table; restart runs only unfinished parts; the job does not use now() per JVM chunk but receives business_date from the scheduler parameter (prevents a pod crossing 00:00 so two chunks belong to different days).
-- Dry-run mode: calculate interest but do not commit — print a total report by account type for accounting verification; if deviation exceeds threshold, block commit.
-- After commit: reconcile record count + total value by range against the accounting report; alert immediately if there is a discrepancy.
+- Checkpoint: save completed partitions in job_run table; restart runs only unfinished parts; job receives business_date from scheduler parameter (prevents pod crossing 00:00 so two chunks belong to different days).
+- Dry-run mode: calculate interest but do not commit — print total report by account type for accounting verification; if deviation exceeds threshold, block commit.
+- After commit: reconcile record count plus total value by range against accounting report; alert immediately if discrepancy.
 
 ### Trade-off & pitfall
 - {{WHERE NOT EXISTS}} per row is slow — use staging / MERGE / ON CONFLICT for bulk.
-- Updating the same account balance within one large transaction creates lock contention with online deposit flows — chunks lock by partition; keep chunks small to match the lock pattern.
-- Business date must be provided by the scheduler (parameter), not taken from the JVM clock — avoid a pod crossing 00:00 causing two chunks to belong to different days.
+- Updating the same account balance within one large transaction creates lock contention with online deposit flows — chunks lock by partition; keep chunks small to match lock pattern.
+- Business date must be provided by scheduler (parameter), not JVM clock — avoid pod crossing 00:00 causing two chunks belonging to different days.
 
-> Senior tip: the most common error in interest jobs is rerunning: the business key (account_id + accrual_date) must be unique from the design day; my experience is to always set restart to read from the checkpoint table to continue correctly, and rely on UPSERT instead of counting from a list in the app.`,
+### Real-world example
+Interest batch for 6 million savings accounts, about 50 minutes nightly. Once DB failover at minute 31, job restarted manually **from the beginning** → 3.6 million accounts had interest added **twice**, had to reverse entries all morning. Redesigned: (1) each interest result written to table {{interest_postings}} with **unique constraint** {{(account_id, value_date)}} — rerun rejects or skips duplicates ({{ON CONFLICT DO NOTHING}}); (2) process by account **partition** (e.g., 64 groups by hash id), each group separate status in table {{batch_partition_status}}, parallel with limit; (3) each batch of 1,000 accounts one transaction, checkpoint; (4) end with **total check**: number of accounts calculated equals number eligible, total interest matches independent SQL query total. Next incident, job automatically continued from remaining 41 groups, not duplicating a single dong.
+
+### Sample interview answer
+"Interest batch must be correct, rerunnable, and not duplicate. Correct: interest logic thoroughly tested with edge cases like month-end, leap year, intraday balance changes, rounding per regulations, plus independent total check at the end. Not duplicate: each result has unique business key, e.g., account plus value date, with unique constraint, so running again any number of times writes only once. Rerunnable: accounts divided into groups, each group separate status, processed in small batches with checkpoint, so on error only unfinished part continues. Parallelism limited to avoid overloading DB, run on data frozen at cut-off time. Finally alert if job doesn't finish on time and reconciliation report for business."
+
+> Senior tip: most common error in interest jobs is rerun: business key (account_id + accrual_date) must be unique from design day; my experience is always set restart to read from checkpoint table to continue correctly, and rely on UPSERT instead of counting from app list.`,
     follow: [
-      'If the batch fails at chunk 60 of 100 and an operator restarts it — where does it resume, and how is the checkpoint stored?',
-      'If an account has a miscalculated interest (from a previous batch) — how is a reversal entry recorded in the same session?'
+      'If batch fails at chunk 60 of 100 and operator restarts — where does it resume, how is checkpoint stored?',
+      'If an account has miscalculated interest (from previous batch) — how is reversal entry recorded in same session?'
     ]
   },
   'scenario-031': {
-    q: 'Payday: traffic spikes suddenly on both the bank partner API and the partner has a fixed cap. How do you prepare and respond?',
-    a: `**Summary:** it cannot be solved by scaling alone — prepare three locks: (1) pre-scale infrastructure on schedule before the peak hour; (2) control incoming load: per-user rate limit, queue for non-blocking flows, waiting room when near saturation; (3) degraded mode with feature flags that disable non-essential features; the most important is to respect the partner quota (bank gateway/NAPAS) because it is a hard cap.
+    q: 'Payday: traffic spikes suddenly on both the bank partner API and partner has fixed cap. How do you prepare and respond?',
+    a: `**Summary:** cannot be solved by scaling alone — prepare three locks: (1) pre-scale infrastructure on schedule before peak hour; (2) control incoming load: per-user rate limit, queue for non-blocking flows, waiting room when near saturation; (3) degraded mode with feature flags disabling non-essential features; most important is respecting partner quota (bank gateway/NAPAS) because it is a hard cap.
 
 ### Clarify requirements
-- Traffic profile: peak RPS, duration, read/write ratio, which flow increases the most (transfer, balance lookup, statement)?
+- Traffic profile: peak RPS, duration, read/write ratio, which flow increases most (transfer, balance lookup, statement)?
 - Which features have absolute SLO (transfer, login), which can be temporarily disabled (export, recommendation)?
-- What is the partner transfer TPS quota, and can it be increased by contract?
+- Partner transfer TPS quota, can it be increased by contract?
 
 ### Investigation / Analysis
-- Load test with a 10x profile, not just per endpoint — need the end-to-end path: from user, through app, queue, to partner.
+- Load test with 10x profile, not just per endpoint — need end-to-end path: from user, through app, queue, to partner.
 - Identify caps at each layer: LB connection, K8s node pool, DB connections, partner gateway TPS limit, ESP/SMS quota.
-- Identify the real bottleneck: if DB connections are the bottleneck then scaling the app does not solve it; if the partner gateway is the cap, then designing a queue + backpressure between you and the partner is the main task.
+- Identify real bottleneck: if DB connections bottleneck then scaling app does not solve it; if partner gateway is cap then queue + backpressure between you and partner is main task.
 
 ### Solution
-- **Pre-scale:** increase min replicas on schedule before peak time, pre-keep node pool capacity, warm up caches + connections; CDN for statics.
-- **Incoming control:** per-user rate limit (token bucket) and tiered APIs: priority (1) transfer/login, (2) balance lookup, (3) non-essential features; when the partner gateway is near quota, put extra transfers into SQS and respond to the user "processing — SMS will be sent when complete".
-- **Waiting room:** when near saturation, a queue with a sequence number and periodic progress updates for the user.
+- **Pre-scale:** increase min replicas on schedule before peak time, keep node pool capacity, warm up caches + connections; CDN for statics.
+- **Incoming control:** per-user rate limit (token bucket) and tiered APIs: priority (1) transfer/login, (2) balance lookup, (3) non-essential features; when partner gateway near quota, put extra transfers into SQS and respond to user "processing — SMS will be sent when complete".
+- **Waiting room:** near saturation, queue with sequence number and periodic progress updates for user.
 - **Degrade:** disable feature flags in order (recommendation → export → detailed history), keep login + balance + transfer.
 - **Runbook + on-call:** pre-packaged config with pre-made decisions (which limits to increase, what to disable, which queue to open); SLO-based alerts; dashboard tracking partner quotas.
 
 ### Trade-off & pitfall
-- The partner gateway limit is a hard cap — the design must follow it (queue by quota + tracker), not just scale your own infrastructure.
-- Cache invalidation at the peak time can kill the site — hot config is precomputed by version key, not deleted at the crisis time.
-- Partner quota tracking must be measured data (dashboard), not based on feeling — otherwise you will often exceed the limit before you know it.
+- Partner gateway limit is hard cap — design must follow it (queue by quota + tracker), not just scale own infrastructure.
+- Cache invalidation at peak can kill site — hot config precomputed by version key, not deleted at crisis time.
+- Partner quota tracking must be measured data (dashboard), not feeling — otherwise exceed limit before knowing.
 
-> Senior tip: payday is not just a scaling problem but an incoming load control and partner quota problem — I once participated in a large bank release with a partner gateway fixed at 50 TPS: only a backpressure queue allowed the app to handle 200 TPS without missing the reconciliation deadline.`,
+### Real-world example
+25th of every month (payday), transfer volume jumps 8x from 8:00 to 10:00, while partner interbank transfer API limits **300 commands per second**. Last year system sent all commands directly → partner returned 429 errors and some timeouts, customers saw "transaction failed" and resent → duplicate transactions and complaints. This year: transfer commands recorded immediately (temporary hold, status "processing"), put into **queue**; single sender throttles via token bucket 280 commands per second (safety margin), prioritizes small-value and personal commands, retry with backoff on 429; app shows estimated time. Negotiated with partner temporary limit increase to 450 commands per second during that window. Queue peaked at 42,000 commands, processed in 12 minutes, no duplicate transactions.
+
+### Sample interview answer
+"When partner has hard cap, I don't let sudden surge go straight to them. Prepare: forecast load from previous months' data, load test transfer flow, negotiate temporary limit with partner. Architecture: transfer command received and recorded immediately, temporary hold, status processing, then into queue; single sender throttles per partner quota with safety margin, retry with backoff on 429, idempotency by reference so retry doesn't send twice. Can prioritize by command type. User side: app clearly shows status and estimated time so they don't resend. On the day: monitor queue length, partner error rate, and direct contact channel with their team."
+
+> Senior tip: payday is not just scaling problem but incoming load control and partner quota problem — I once participated in a large bank release with partner gateway fixed at 50 TPS: only backpressure queue allowed app to handle 200 TPS without missing reconciliation deadline.`,
     follow: [
-      'Per-user and per-account-group rate limit: how is the token bucket implemented — at the gateway or service, in detail?'
+      'Per-user and per-account-group rate limit: how is token bucket implemented — at gateway or service, in detail?'
     ]
   },
   'scenario-032': {
@@ -336,24 +373,55 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
     ]
   },
   'scenario-038': {
-    q: 'Redis is full, eviction deletes session/lock: maxmemory-policy, separate clusters by purpose — how to handle?',
-    a: `**Summary:** A single Redis instance shared for session, cache, and lock — when full, eviction deletes session/lock, causing logout/lost lock. Solution: separate Redis by purpose, set maxmemory-policy appropriate for each type, and monitor memory.
+    q: 'Redis memory full, eviction deletes session/lock: maxmemory-policy, split clusters by purpose — how to handle?',
+    a: `**Summary:** Redis (in-memory key-value store, very fast) when reaching {{maxmemory}} applies {{maxmemory-policy}} (key eviction policy). If one Redis is shared for **cache** (recomputable data), **session** (login session) and **distributed lock** (lock preventing multiple processes from contending for the same resource), eviction may delete session/lock → user logged out, lock lost causing duplicate processing. Correct approach: split workload by data-loss and reliability requirements, choose suitable policy per type, set intentional TTL (time to live, lifetime), monitor memory and eviction, and design lock with fencing (preventing an old lock from beating a new lock).
 
-### Mechanism
-- Redis has noeviction, allkeys-lru/lfu/random, and volatile-lru/lfu/random/ttl; volatile only selects keys with a TTL. With noeviction, write commands that need more memory will fail when the limit is reached.
-- Session/lock should not be evicted; cache can be.
+### Redis eviction mechanism (easy to understand)
+- {{maxmemory}}: RAM limit used by Redis dataset. When more memory is needed for new writes, Redis checks the policy.
+- Common policies:
+  - {{noeviction}}: do not delete keys; write commands error when full (app receives error) — safe for data that must not be silently lost, but caller must handle errors.
+  - {{allkeys-lru/lfu/random}}: choose from **all** keys to evict by LRU (least recently used), LFU (least frequently used), or random.
+  - {{volatile-lru/lfu/random/ttl}}: choose only keys **with TTL**. If no suitable TTL key exists, eviction may not happen as expected → still risky.
+- Why session/lock is dangerous when evicted:
+  - Session lost → user must log in again, cart/temporary state lost.
+  - Lock key lost → two workers both think they hold the lock → duplicate business processing (send email twice, charge money twice if no other protection).
 
-### Solution
-- Separate deployments according to data loss requirements, latency, and eviction. Session may need persistence/HA according to policy, but persistence is not a backup. Lock needs TTL, appropriate fencing/consistency, and error handling on writes.
-- Set maxmemory and maxmemory-policy per instance.
-- Monitor memory, evicted_keys, OOM errors, and hit rate; set thresholds according to headroom and growth rate, do not assume 80% is the right threshold for every workload.
-- Session: use Redis with persistence (RDB/AOF) and replicas.
+### Step-by-step handling
+1. **Classify data:** recreatable (HTTP cache, computed result) versus losing it causes incidents (session, lock, idempotency key depending on design).
+2. **Split by purpose:** at least separate **cache** from **session/lock**. Can be separate instance/cluster or managed service. Redis Cluster only supports database 0; "logical DB" or key prefix **does not** create separate eviction/memory policy — do not use prefix to replace infrastructure split.
+3. **Choose policy:**
+   - Pure cache: {{allkeys-lru}} or {{allkeys-lfu}} usually fine; accept miss.
+   - Session/lock: design so important keys are not silently evicted; {{volatile-*}} safe only if **all** keys to keep are not in the wrongly evicted group and capacity is managed — practically usually needs separate instance plus monitoring. {{noeviction}} forces explicit write error handling.
+4. **Intentional TTL:** session has TTL (e.g., 30 minutes idle, per business); lock **must** have TTL to avoid deadlock when process dies, but TTL alone is not enough against lock loss from eviction — still need separation and safe design.
+5. **Safer lock:** use tested algorithm/library (e.g., Redisson lock, or fencing token pattern as required). Avoid writing {{SETNX}} without TTL/without mechanism against stale holder.
+6. **Monitor:** {{used_memory}}, {{maxmemory}}, {{evicted_keys}}, {{rejected_connections}}/OOM errors, cache hit rate. Set thresholds by growth rate and headroom (e.g., alert when nearing limit and eviction rising), do not assume 80% is the right threshold for every workload.
+7. **Session persistence:** if session is important, use replication/HA and consider persistence (RDB/AOF) per RPO/RTO; persistence **does not replace backup**.
 
-### Trade-off & pitfall
-- Multiple deployments increase complexity. Redis Cluster only supports database 0; logical DB indexes do not isolate resources, and key prefixes do not create separate eviction policies.
-- A noeviction instance that fills up → write failures; scale before it fills.
+~~~text
+Suggested architecture (example)
+  App
+   ├── Redis A (cache): allkeys-lru, can evict, accept miss
+   └── Redis B (session + lock/idempotency): separate instance, separate policy/capacity,
+       monitor eviction = 0 for important keys, lock with TTL + fencing / safe design
+~~~
 
-> Senior tip: volatile policies can still evict session/lock keys that have a TTL; key prefixes do not protect keys from eviction.`,
+### Real-world example
+- **Context (reasonable assumption):** e-commerce app uses one 8 GB Redis cluster for product cache, user sessions (~120,000 active sessions), and distributed lock for inventory deduction. Session TTL 24 hours, lock TTL 10 seconds.
+- **Incident:** sale campaign causes cache keys to surge; Redis reaches {{maxmemory}} with {{allkeys-lru}}. Within 18 minutes, {{evicted_keys}} rises about 45,000; ~3,200 login sessions deleted → users report "logged out"; some lock keys evicted causing 27 orders processed duplicate at downstream step (detected late via idempotency check).
+- **Investigation:** metrics show memory full, eviction rises exactly when cache surges; session keys not distinguished from cache keys in same instance.
+- **Handling:** split Redis cache (4 GB, {{allkeys-lru}}) and Redis session/lock (4 GB, capacity monitored, alert eviction > 0); review lock using library with TTL and safer mechanism; add idempotency key for inventory deduction / order step; dashboard alerts {{evicted_keys}} and {{used_memory/maxmemory}}.
+- **Result:** next sale, cache still evicts normally when full but does not affect sessions; no mass logout; no duplicate orders from lost lock.
+
+### Practical pitfalls
+- {{volatile-lru}} thought absolutely safe: only considers keys with TTL; session/lock with TTL can still be in evictable group if same instance and policy / memory pressure allow.
+- Key prefix does not isolate eviction: {{sess:*}} and {{cache:*}} on same instance still contend for same {{maxmemory}}.
+- {{noeviction}} without app error handling: write failure can cascade.
+- Lock without fencing: TTL alone not enough for every distributed scenario; need token / version / fencing per severity.
+
+### Sample interview answer
+"If Redis runs out of memory and eviction deletes session or lock, I see this as an operational design flaw: the same Redis handles both disposable data like cache and sensitive data like login sessions or distributed locks. I would classify data by consequence of loss, then split workloads — at least separate cache from session and lock — because logical database or key prefix does not create separate eviction boundary. For cache I can use allkeys-lru or allkeys-lfu and accept cache miss. For session and lock, I need suitable capacity, policy, and monitoring so they are not silently evicted; lock must also have TTL and safe mechanism like fencing or a tested library, because eviction or network delay can let two processes enter the danger zone. I also set intentional TTL, monitor used_memory, evicted_keys and write errors, alert early by growth rate instead of fixed percentage. For important sessions, consider replication and persistence per RPO/RTO, but persistence is not backup replacement. Goal: cache can be sacrificed, session and lock must not disappear silently."
+
+> Senior tip: alert {{evicted_keys > 0}} on Redis used for session/lock is "fire alarm". If that workload truly must not be evicted, any eviction is incident to investigate, not normal.`,
     follow: [
       'Redis Cluster vs Sentinel for HA?',
       'Distributed lock with Redis Redlock?'
