@@ -2072,4 +2072,186 @@ voucher_ledger ghi mọi sự kiện (claim, reserve, redeem, release) kèm số
   ],
   related: ['scenario-050', 'scenario-056', 'design-004']
 },
+{
+  id: 'sd-018',
+  title: 'Hệ thống đặt lệnh và khớp lệnh chứng khoán',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Công ty chứng khoán muốn xây hệ thống nhận lệnh mua/bán cổ phiếu từ app và **khớp lệnh nội bộ** (order book theo từng mã) trong giờ giao dịch. Quy mô: 2 triệu tài khoản, 1.500 mã, giờ mở cửa 30.000 lệnh/giây, mã nóng nhất chiếm 15% lượng lệnh. Yêu cầu: khớp theo **ưu tiên giá rồi thời gian**, trả xác nhận đặt lệnh dưới 50 ms, kiểm tra sức mua/số dư chứng khoán trước khi nhận lệnh, không được khớp sai hay mất lệnh khi một máy chết, kết quả phải tái lập được cho kiểm toán. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt loại lệnh (LO giới hạn, MP thị trường, huỷ, sửa), phiên (khớp liên tục, ATO/ATC khớp định kỳ có thể out-of-scope), đơn vị giá (bước giá), lô. Kiểm tra trước giao dịch: sức mua (tiền), số dư chứng khoán khả dụng (bán). Non-functional: p99 nhận lệnh 50 ms, khớp tuần tự xác định (deterministic), sẵn sàng cao trong giờ giao dịch, audit 10 năm. Hỏi rõ: nội bộ hay chuyển lên sở; ở đây giả định khớp nội bộ.` },
+    { name: 'Estimation', minutes: 5, guide: `30.000 lệnh/giây toàn hệ thống, mã nóng 4.500 lệnh/giây. Một engine khớp lệnh đơn luồng trong bộ nhớ xử lý hàng trăm nghìn lệnh/giây (thao tác trên cây giá + hàng đợi), nên một luồng cho một mã là đủ, chia 1.500 mã cho vài chục engine. Lưu trữ: 30.000 × 6,5 giờ ≈ 700 triệu sự kiện/ngày × 200 byte ≈ 140 GB/ngày cho log sự kiện.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /orders {clientOrderId, symbol, side, type, price, qty} → 202 {orderId, status: ACCEPTED} hoặc 422 (thiếu sức mua). DELETE /orders/{id}. Luồng sự kiện về app qua WebSocket: ACCEPTED, PARTIALLY_FILLED, FILLED, CANCELLED, REJECTED. Dữ liệu: order (id, account, symbol, side, price, qty, filled_qty, status, seq), trade (id, buy_order, sell_order, price, qty, seq), sổ cái tiền và chứng khoán (append-only), log sự kiện đầu vào theo mã (sequence number).` },
+    { name: 'High-level design', minutes: 15, guide: `Gateway → Order Service (xác thực, idempotency, kiểm tra rủi ro: phong toả tiền/chứng khoán) → ghi lệnh vào log có thứ tự theo mã (Kafka partition theo symbol hoặc journal riêng) → Matching Engine đơn luồng cho mỗi nhóm mã, state trong RAM, đọc log tuần tự → phát sự kiện khớp → Settlement/Ledger cập nhật tiền và chứng khoán → Notification qua WebSocket. Engine dự phòng đọc cùng log để sẵn sàng thay thế.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: cấu trúc order book (TreeMap theo giá + hàng đợi FIFO mỗi mức giá), vì sao đơn luồng mỗi mã (xác định, không lock); event sourcing và tái lập sau khi engine chết (snapshot + replay từ offset); phong toả sức mua trước khi gửi lệnh vào engine và giải phóng khi huỷ; huỷ lệnh đi cùng hàng đợi với đặt lệnh để giữ thứ tự; tránh khớp hai lần khi failover (engine dự phòng chỉ phát sự kiện sau khi nhận quyền leader, sự kiện có seq để downstream khử trùng).` }
+  ],
+  rubric: [
+    'Order book theo mã: mức giá sắp xếp, hàng đợi FIFO trong cùng mức giá, ưu tiên giá rồi thời gian',
+    'Engine khớp lệnh đơn luồng cho mỗi mã (hoặc nhóm mã), state trong bộ nhớ, giải thích vì sao không dùng DB lock',
+    'Log đầu vào có thứ tự (sequence) theo mã làm nguồn sự thật, event sourcing để tái lập',
+    'Snapshot định kỳ + replay khi khôi phục, engine dự phòng hot standby',
+    'Kiểm tra và phong toả sức mua/chứng khoán trước khi lệnh vào engine; giải phóng khi huỷ/khớp',
+    'Huỷ và sửa lệnh đi cùng log với đặt lệnh để giữ thứ tự xác định',
+    'Idempotency theo clientOrderId; sự kiện có seq để downstream khử trùng',
+    'Sổ cái tiền/chứng khoán append-only, đối soát cuối ngày',
+    'Phân bổ mã cho engine, xử lý mã nóng',
+    'Audit, tái lập kết quả khớp, giám sát độ trễ end-to-end'
+  ],
+  reference: `**Tóm tắt:** Trái tim là **matching engine đơn luồng cho mỗi mã chứng khoán**, giữ order book trong RAM và xử lý lệnh tuần tự từ một **log đầu vào có số thứ tự**. Đơn luồng nghe có vẻ chậm nhưng ngược lại: không lock, không tranh chấp, mỗi lệnh chỉ vài micro giây, và quan trọng nhất là **xác định**: cùng một log đầu vào luôn cho cùng kết quả khớp, nên khôi phục sau sự cố và kiểm toán chỉ là replay log. Mọi kiểm tra tiền và chứng khoán (phong toả sức mua) làm **trước** khi lệnh vào log, để engine chỉ lo khớp.
+
+### Order book của một mã
+~~~text
+          BÁN (ask)  giá tăng dần
+  25.300 | [S7 1.000] [S9 500]          <- giá bán thấp nhất được ưu tiên
+  25.200 | [S3 2.000]
+  ---------------------------------
+  25.100 | [B4 1.500] [B8 300]          <- giá mua cao nhất được ưu tiên
+  25.000 | [B1 1.000] [B2 700] [B6 400]
+          MUA (bid)  giá giảm dần
+Mỗi mức giá: hàng đợi FIFO theo thời gian vào sổ
+~~~
+Cấu trúc: hai cây sắp theo giá (Java {{TreeMap<Long, ArrayDeque<Order>>}}, giá lưu bằng số nguyên theo bước giá) và một map orderId → order để huỷ nhanh. Lệnh mua giá 25.300 khối lượng 1.200 đến: khớp 1.000 với S7 rồi 200 với S9 ở mức 25.300 (giá của lệnh đang chờ), phần còn lại của S9 vẫn nằm sổ.
+
+### Vì sao đơn luồng
+- Khớp lệnh về bản chất là tuần tự: lệnh sau phụ thuộc trạng thái sổ sau lệnh trước. Song song hoá trong cùng một mã chỉ thêm lock mà không thêm thông lượng.
+- Không lock, dữ liệu nằm gọn trong cache CPU: một luồng xử lý hàng trăm nghìn lệnh mỗi giây. Mã nóng nhất 4.500 lệnh/giây còn rất xa trần.
+- Song song **giữa các mã**: 1.500 mã chia cho khoảng 20 engine (theo hash hoặc theo tải), mỗi engine một luồng khớp chính.
+
+### Luồng xử lý
+~~~seq
+title: Đặt lệnh mua và khớp
+actors: App | Order Service | Risk | Log | Engine | Ledger
+App -> Order Service: POST /orders (clientOrderId)
+Order Service -> Risk: phong toả sức mua = giá x khối lượng + phí
+Risk --> Order Service: OK, đã phong toả
+Order Service -> Log: append NEW_ORDER (seq theo mã)
+Order Service --> App: 202 ACCEPTED
+Log -> Engine: đọc tuần tự theo seq
+Engine -> Engine: khớp theo giá rồi thời gian
+Engine -> Log: append TRADE, ORDER_UPDATED (seq đầu ra)
+Log -> Ledger: chuyển tiền và chứng khoán, giải phóng phong toả thừa
+Ledger --> App: thông báo khớp qua WebSocket
+~~~
+- **Log đầu vào** là nguồn sự thật: Kafka topic phân vùng theo mã (một partition giữ thứ tự cho một nhóm mã) hoặc journal chuyên dụng có replication. Order Service chỉ trả 202 sau khi lệnh đã ghi bền vào log (acks=all).
+- **Huỷ và sửa lệnh** cũng là sự kiện trong cùng log, nên thứ tự giữa "đặt" và "huỷ" luôn xác định.
+- **Idempotency**: clientOrderId duy nhất theo tài khoản; gửi lại cùng clientOrderId trả kết quả cũ.
+
+### Kiểm tra trước giao dịch
+Lệnh mua: phong toả tiền = giá × khối lượng + phí ước tính, trong sổ cái tiền (UPDATE có điều kiện số dư khả dụng ≥ số cần phong toả). Lệnh bán: phong toả chứng khoán khả dụng. Khi khớp ở giá tốt hơn hoặc huỷ phần còn lại, Ledger giải phóng phần phong toả thừa. Engine không bao giờ phải hỏi "có đủ tiền không", nên không có I/O trong vòng khớp.
+
+### Khôi phục và sẵn sàng cao
+- Engine chính ghi **snapshot** order book mỗi vài phút kèm seq cuối cùng đã xử lý.
+- Engine dự phòng đọc cùng log, giữ state song song (hot standby) nhưng **không phát** sự kiện đầu ra.
+- Engine chính chết: cơ chế bầu leader (ví dụ lease trong etcd/ZooKeeper) chuyển quyền; engine dự phòng tiếp tục từ seq đã xử lý, đầu ra mang seq nên downstream khử trùng nếu có sự kiện bị phát hai lần quanh thời điểm chuyển.
+- Mất cả hai: dựng engine mới từ snapshot cuối + replay log từ seq đó; vì xử lý xác định nên kết quả trùng khớp tuyệt đối.
+
+### Lưu trữ và kiểm toán
+Log đầu vào và log đầu ra lưu dài hạn (object storage, 10 năm). Kiểm toán viên có thể replay một ngày giao dịch và so sánh từng trade. Sổ cái tiền và chứng khoán append-only, đối soát cuối ngày: tổng tiền phong toả bằng tổng giá trị lệnh đang chờ, tổng trade khớp với Ledger.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Engine chính chết giữa phiên | Gián đoạn vài giây | Hot standby nhận quyền, tiếp tục từ seq |
+| Sự kiện đầu ra phát trùng khi failover | Ledger cộng hai lần | Ledger khử trùng theo (symbol, seq đầu ra) |
+| Risk phong toả thành công nhưng ghi log lỗi | Tiền bị giữ mà không có lệnh | Giải phóng ngay trong luồng lỗi + job đối soát phong toả mồ côi |
+| Mã nóng vượt năng lực một engine | Độ trễ tăng | Tách mã đó ra engine riêng, tối ưu cấu trúc dữ liệu, không tách một mã ra nhiều luồng |
+
+> Senior tip: câu hỏi kiểm tra tư duy lead nhất là "vì sao không dùng database với SELECT FOR UPDATE để khớp lệnh". Hãy trả lời bằng ba ý: khớp lệnh là tuần tự theo bản chất nên lock chỉ thêm chi phí; engine trong RAM đơn luồng nhanh hơn hàng trăm lần; và quan trọng nhất là tính **xác định** từ log có thứ tự, thứ biến khôi phục và kiểm toán thành bài toán replay. Đây là cùng ý tưởng với kiến trúc LMAX nổi tiếng trong ngành tài chính.`,
+  followups: [
+    'Phiên ATO/ATC khớp lệnh định kỳ (tìm một mức giá khớp nhiều nhất) khác khớp liên tục thế nào về thuật toán và thiết kế?',
+    'Làm sao gửi lệnh lên sở giao dịch thay vì khớp nội bộ mà vẫn giữ thứ tự và không gửi trùng?',
+    'Nhà đầu tư huỷ lệnh đúng lúc lệnh đang được khớp: kết quả xác định thế nào?',
+    'Bạn đo và đảm bảo p99 độ trễ end-to-end dưới 50 ms ra sao?'
+  ],
+  related: ['design-017']
+},
+{
+  id: 'sd-019',
+  title: 'Bảng xếp hạng thời gian thực cho game và mini-app khuyến mãi',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Ví điện tử chạy mini-game khuyến mãi 7 ngày: người chơi kiếm điểm qua giao dịch và nhiệm vụ, xem **top 100** toàn quốc, **thứ hạng của chính mình** và **những người xung quanh mình**, cập nhật gần thời gian thực. Quy mô: 10 triệu người chơi, 5.000 sự kiện cộng điểm/giây lúc cao điểm, 50.000 lượt xem bảng xếp hạng/giây. Kết thúc chiến dịch phải chốt kết quả chính xác để trao thưởng, chống gian lận điểm. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: điểm chỉ tăng hay có thể giảm; xếp hạng khi bằng điểm (ai đạt trước xếp trên); độ trễ chấp nhận được (vài giây); có bảng theo tỉnh/bạn bè không; chốt kết quả lúc nào và có đóng băng điểm không. Non-functional: đọc 50.000/giây p99 dưới 100 ms, ghi 5.000/giây, kết quả trao thưởng chính xác tuyệt đối và kiểm toán được.` },
+    { name: 'Estimation', minutes: 5, guide: `10 triệu thành viên trong một Redis sorted set: mỗi phần tử khoảng 60–100 byte (skiplist + hash), tổng khoảng 1 GB, vừa một instance. ZINCRBY 5.000/giây và ZREVRANK/ZREVRANGE 50.000/giây đều O(log N) với N = 10 triệu (khoảng 24 bước), một Redis xử lý được; top 100 cache 1 giây giảm phần lớn lượt đọc.` },
+    { name: 'API & data model', minutes: 5, guide: `GET /leaderboards/{campaign}/top?limit=100; GET /leaderboards/{campaign}/me (rank, score, 5 người trên/dưới). Sự kiện vào: Kafka topic point-events {eventId, userId, delta, source, occurredAt}. Lưu bền: bảng point_ledger (event_id PK, user_id, delta, source, created_at) append-only; bảng user_score (user_id, score, reached_at) là kết quả tổng hợp.` },
+    { name: 'High-level design', minutes: 15, guide: `Nguồn sự kiện (giao dịch, nhiệm vụ) → Kafka → Score Service: khử trùng theo eventId, ghi point_ledger (DB, nguồn sự thật), cập nhật Redis sorted set (ZINCRBY) → Leaderboard API đọc Redis, cache top 100 trong 1 giây ở API/CDN. Chốt kết quả: tính lại từ point_ledger, không lấy thẳng từ Redis.` },
+    { name: 'Deep dive', minutes: 15, guide: `Tie-break bằng điểm kết hợp thời gian (score * 10^k + (Tmax - t)); khử trùng sự kiện; Redis mất dữ liệu thì dựng lại từ ledger; scale khi 100 triệu người (shard theo dải điểm hoặc tính rank xấp xỉ); bảng theo tỉnh/bạn bè; chống gian lận (giới hạn điểm/ngày, phát hiện bất thường, đóng băng trước khi chốt).` }
+  ],
+  rubric: [
+    'Dùng sorted set (Redis ZSET) với ZINCRBY, ZREVRANK, ZREVRANGE và giải thích độ phức tạp O(log N)',
+    'Xử lý bằng điểm: mã hoá thời gian đạt điểm vào score hoặc khoá phụ',
+    'Nguồn sự thật bền vững (point ledger) tách khỏi Redis; dựng lại Redis từ ledger',
+    'Khử trùng sự kiện cộng điểm (idempotency theo eventId)',
+    'Cache top 100 ngắn hạn để giảm tải đọc',
+    '"Người xung quanh tôi" bằng ZREVRANK rồi ZREVRANGE quanh vị trí đó',
+    'Chốt kết quả trao thưởng từ ledger, có đóng băng và kiểm toán',
+    'Chống gian lận: giới hạn, phát hiện bất thường, xem xét trước khi trao thưởng',
+    'Phương án scale khi số người chơi vượt một instance',
+    'Giám sát độ trễ cập nhật, lệch giữa Redis và ledger'
+  ],
+  reference: `**Tóm tắt:** Dùng **Redis sorted set** làm chỉ mục xếp hạng: ZINCRBY cộng điểm, ZREVRANGE lấy top, ZREVRANK lấy hạng của tôi, tất cả O(log N), với 10 triệu người chỉ khoảng 24 bước so sánh. Nhưng Redis **không** là nguồn sự thật: mọi lần cộng điểm được ghi vào **point ledger** append-only trong database (khử trùng theo eventId), Redis chỉ là bản chiếu có thể dựng lại. Kết quả trao thưởng tính lại từ ledger sau khi đóng băng, không lấy thẳng từ Redis.
+
+### Vì sao sorted set
+Sorted set của Redis là skiplist kết hợp hash: tìm vị trí, chèn, cập nhật điểm đều O(log N); lấy hạng của một phần tử cũng O(log N) nhờ skiplist lưu số phần tử bỏ qua ở mỗi tầng. Database quan hệ trả lời "hạng của user X" phải đếm {{COUNT(*) WHERE score > x}}, chậm dần theo số người chơi và không chịu được 50.000 lượt/giây.
+~~~text
+ZINCRBY lb:summer 30 user:42             -- cộng 30 điểm
+ZREVRANGE lb:summer 0 99 WITHSCORES      -- top 100
+ZREVRANK lb:summer user:42               -- hạng của tôi (0 là hạng nhất)
+ZREVRANGE lb:summer (r-5) (r+5)          -- 5 người trên, 5 người dưới quanh hạng r
+~~~
+
+### Bằng điểm thì ai đứng trên
+Yêu cầu "ai đạt điểm trước xếp trên". Sorted set khi bằng điểm sắp theo thứ tự từ điển của member, không theo thời gian. Cách phổ biến: mã hoá thời gian vào score.
+~~~text
+score_lưu = điểm * 10^7 + (T_kết_thúc - thời_điểm_đạt_điểm_tính_bằng_giây)
+~~~
+Ai đạt cùng điểm sớm hơn có phần thời gian lớn hơn nên xếp trên. Score của Redis là số double, chính xác tuyệt đối tới 2^53 (khoảng 9 × 10^15), nên với khoảng 7 ngày (khoảng 605.000 giây, cần 10^6) và điểm tới 10^8 vẫn an toàn; tính kỹ biên trước khi chọn hệ số. Vì score lưu đã chứa thời gian, cộng điểm phải đọc điểm hiện tại từ ledger/hash rồi ghi lại score mới bằng một script Lua, không dùng ZINCRBY thô.
+
+### Kiến trúc
+~~~text
+Giao dịch, nhiệm vụ --> Kafka point-events (partition theo userId)
+                              |
+                              v
+                       Score Service
+       1) INSERT point_ledger (event_id PK) -- trùng thì bỏ qua
+       2) cập nhật user_score (DB) cùng transaction
+       3) Lua: tính score mã hoá -> ZADD lb:summer
+                              |
+App --> Leaderboard API --> Redis (ZSET)      Top 100 cache 1 giây (API + CDN)
+~~~
+- Partition Kafka theo userId để sự kiện của một người xử lý tuần tự, không race khi tính điểm mới.
+- Thứ tự: ghi DB trước, Redis sau. Redis lỗi thì sự kiện vẫn đã an toàn trong ledger; một job đồng bộ lại.
+- Đọc top 100: 50.000 lượt/giây nhưng kết quả giống nhau cho mọi người, cache 1 giây giảm tải Redis còn vài lượt/giây; chỉ "hạng của tôi" mới thật sự đi vào Redis.
+
+### Dựng lại và chốt kết quả
+- Redis mất dữ liệu: dựng lại sorted set từ bảng user_score (10 triệu dòng, vài phút với pipeline ZADD theo lô).
+- Đối soát mỗi giờ: lấy mẫu người chơi, so điểm trong Redis với user_score.
+- Kết thúc chiến dịch: **đóng băng** (ngừng nhận sự kiện có thời điểm sau giờ kết thúc), chờ consumer xử lý hết lag, tính bảng xếp hạng cuối từ user_score bằng SQL (ORDER BY score DESC, reached_at ASC), lưu snapshot kèm hash để kiểm toán, rồi mới công bố.
+
+### Chống gian lận
+- Giới hạn điểm theo ngày và theo nguồn; sự kiện chỉ đến từ hệ thống nội bộ (giao dịch đã quyết toán), không nhận điểm từ client.
+- Phát hiện bất thường: tăng điểm đột biến, nhiều tài khoản cùng thiết bị, giao dịch vòng tròn giữa các tài khoản.
+- Top người thắng giải được xét duyệt trước khi trao thưởng.
+
+### Scale khi 100 triệu người
+Một sorted set 100 triệu phần tử khoảng 10 GB, vẫn chạy được trên một instance lớn nhưng là điểm nghẽn ghi. Phương án: chia nhiều sorted set theo dải điểm (người điểm thấp ở set riêng, hạng = số người ở các set trên + hạng trong set), hoặc chấp nhận **hạng xấp xỉ** cho người ngoài top 10.000 ("bạn ở top 15%") tính từ histogram điểm, chỉ giữ chính xác cho nhóm đầu.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Sự kiện cộng điểm gửi lặp | Điểm bị cộng hai lần | event_id là khoá chính trong ledger, trùng thì bỏ qua |
+| Redis failover mất vài cập nhật | Hạng hiển thị lệch tạm thời | Đồng bộ lại từ user_score, kết quả chốt từ DB |
+| Consumer lag lúc cao điểm | Bảng chậm cập nhật vài chục giây | Theo dõi lag, scale consumer theo số partition |
+| Gian lận điểm | Trao thưởng sai | Giới hạn, phát hiện bất thường, duyệt trước khi trao |
+
+> Senior tip: điểm phân biệt câu trả lời senior là tách bạch "hiển thị" và "trao thưởng". Redis cho trải nghiệm thời gian thực và được phép lệch vài giây; còn danh sách người nhận giải phải tính lại từ ledger bền vững sau khi đóng băng, có snapshot và hash để kiểm toán. Nói được điều này cùng cách xử lý bằng điểm theo thời gian là đủ thuyết phục interviewer.`,
+  followups: [
+    'Thêm bảng xếp hạng theo tỉnh và theo danh sách bạn bè (mỗi người vài trăm bạn): thiết kế thay đổi thế nào?',
+    'Điểm có thể bị trừ (hoàn giao dịch): ảnh hưởng gì tới thiết kế và tie-break?',
+    'Làm sao hiển thị "bạn vừa vượt 3 người" ngay sau khi cộng điểm mà không quá tải Redis?',
+    'Với 500 triệu người chơi toàn cầu, bạn tính hạng gần đúng thế nào?'
+  ],
+  related: ['design-031']
+},
 ];
