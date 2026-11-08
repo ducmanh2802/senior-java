@@ -32,8 +32,11 @@ App.i18n.content({
 - An exercise that is too long (4 hours), so good candidates drop out.
 - Not assessing the ability to work with devs/PO (an SDET needs a lot of communication).
 
-### How to answer in an interview
-Describe how you set up the interview (questions, exercise, criteria) and the reason for each part. Give an example if you have interviewed, or been interviewed, for an SDET role.
+### Real-world example
+One company hired SDETs with Selenium theory questions and a 6-hour take-home: 40% of candidates dropped out at the exercise step, and the two who were hired both wrote tests with hard sleeps and no idea how to isolate data. The new process: round 1 (60 minutes) live coding of 2-3 API tests with REST Assured for an existing registration endpoint, including the duplicate-email case; round 2 (45 minutes) reading a real flaky test (anonymised) and finding the cause; round 3 discussing the test strategy for a money-transfer feature and how to work with devs. Grading uses a rubric of the 5 criteria, each scored 1-4, with two interviewers grading independently and then comparing. Completion rate of the process rose to 85%; after one year, all 3 hires received good reviews.
+
+### Sample interview answer
+"I assess an SDET on three fronts: test thinking, coding skill, and working with devs. On test thinking, I give a feature like money transfer and ask what they would test, what to prioritise, and at which layer; a strong candidate immediately thinks of edge cases, concurrency, and idempotency, not just the success path. On coding, I run a short live session of about an hour: a few API tests for an existing endpoint, plus reading a real flaky test to find the cause; I watch how they assert, isolate data, and wait correctly. I avoid very long take-homes because they lose strong candidates. On collaboration, I ask about a disagreement with a dev over a bug. Each criterion has a clear rubric, and two interviewers grade independently to reduce bias. I pick people with risk thinking and collaboration skills over people who know many tools."
 
 > Senior tip: A good SDET is not the person who writes the most scripts, but the one who helps the team reduce release risk with quality code. Pick people with test thinking and collaboration skills, not just people who can run a tool.`,
     follow: [
