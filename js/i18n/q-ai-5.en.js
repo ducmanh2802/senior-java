@@ -39,12 +39,35 @@ App.i18n.content({
 - Handoff without context, which forces the customer to retell the whole story.
 - Letting the model "know" a balance because it was put in the prompt, instead of calling a guarded tool.
 
-> Senior tip: in a bank, design the chatbot as a very smart receptionist: it answers product questions excellently, but anything involving money or identity must go through a controlled counter. Correct citations and the honesty to say "not found" matter more than a fluent, elegant answer.`,
+### Flow of a question that requires authentication
+~~~seq
+title: Bank chatbot: a question that needs authentication
+actors: Customer | Chatbot | Auth | CoreBank | LLM
+Customer -> Chatbot: What is my account balance?
+Chatbot -> Chatbot: Classify intent: personal data
+Chatbot -> Auth: Check session: authentication level?
+Auth --> Chatbot: Logged in, no OTP yet
+Chatbot --> Customer: Request OTP verification
+Customer -> Auth: Enter OTP
+Auth --> Chatbot: Strong session, scope: balance:read
+Chatbot -> CoreBank: Tool getBalance(customerId from session)
+CoreBank --> Chatbot: Balance (not through the LLM)
+Chatbot --> Customer: Show balance from a fixed template
+~~~
+The key point: **customerId is taken from the authenticated session**, never from the user's words nor from a parameter the model generated; the balance is rendered from a fixed template, and the LLM never needs to see the number. That way, even if prompt injection made the model "want" to look up someone else's account, the tool would still return only the data of the currently logged-in customer.
+
+### Real-world example
+In the first internal pilot week, measured over 2,000 questions: 7% of answers about fee schedules were wrong because the index contained both old and new fee schedules, and retrieval picked a chunk from an expired version. Fix: every chunk carries {{effectiveFrom}}/{{effectiveTo}}, queries always filter by the current date and the customer's segment, and expired documents are removed from the search index but kept for audit. The fee-schedule error rate dropped below 1%. A threshold was also set: if the top chunk's re-rank score is below 0.5, the bot answers "no accurate information found" and suggests a handoff to a human agent; the handoff rate is about 18%, acceptable for the business.
+
+### Sample interview answer
+"I split the chatbot into two parts with different trust levels. The product Q&A part uses RAG over versioned documents that carry an effective date and a customer segment; answers are mandatory with citations, and when retrieval is weak the bot says it did not find the information and hands off to a human agent. The personal-data part, such as balances and transactions, does not go through RAG but through a controlled tool: the session must be strongly authenticated, for example with an OTP, the tool takes the customer code from the session rather than from the user's words or a parameter the model generated, and the result is rendered from a template. The reason is that an LLM can be prompt-injected or confused; if the model were allowed to decide data access on its own, a single trick sentence could leak another person's information. I hand off to a human agent when the customer complains, requests a transaction, confidence is low, or the same issue repeats. Every session is audited: prompt version, chunks used, handoff decision."
+
+> Senior tip: in a bank, design the chatbot like a very smart receptionist: it answers product questions excellently, but anything involving money or identity must go through a controlled counter. Correct citations and the honesty to say "not found" matter more than a fluent, elegant answer.`,
     follow: [
       'Why should you not put a customer balance into the prompt even after authentication?',
       'How do you handle fee-schedule documents with different effective dates inside the same index?',
       'What must be passed along on handoff to a human agent so no context is lost?'
-    ]
+    ],
   },
   'ai-031': {
     q: 'Extracting data from paperwork (eKYC, insurance claim files, invoices): how would you design OCR + LLM structured output, re-checking with rules, and human-in-the-loop?',
@@ -89,12 +112,32 @@ App.i18n.content({
 - Not storing the original image/bbox -> impossible to audit later in a dispute.
 - PII in OCR/LLM logs: mask it before shipping if your policy requires it.
 
+### Why every field needs evidence
+The LLM can over-normalise: faced with a blurry invoice it may fill in a plausible amount that is not actually in the image. That is why the schema requires each field to return both a **value** and a **source**: the original OCR text span or the bbox coordinates. The follow-up check then verifies that the normalised value can be derived from that source (for example "1.250.000đ" -> 1250000). If they do not match, or there is no source, the field is flagged as suspicious and routed to a human reviewer. This turns a "made-up" error into a **detectable** error.
+
+~~~java
+// Extracted result for one field: value + evidence + confidence
+record Field<T>(T value, String sourceText, double ocrConfidence) {}
+
+boolean needsReview(Field<java.math.BigDecimal> total, java.math.BigDecimal sumLines) {
+    if (total.sourceText() == null) return true;                 // no evidence
+    if (total.ocrConfidence() < 0.85) return true;               // OCR not confident
+    return total.value().compareTo(sumLines) != 0;               // total differs from sum of lines
+}
+~~~
+
+### Real-world example
+A health-insurance claims system processes about 3,000 files a day. The first version auto-approved whenever the model reported "high confidence": a straight-through rate of 70%, but a sample check of 500 auto-approved files showed a 2.4% error rate on the amount — mostly because discounted lines on invoices were skipped. Fix: stop trusting the model's self-reported confidence; instead apply the rule **total = sum of lines - discount**, match each field against its source, and use per-word OCR confidence. The straight-through rate fell to 58%, but the error rate on auto-approved files fell to 0.3%; average processing time still dropped from 2 days to 4 hours.
+
+### Sample interview answer
+"I design a multi-layer pipeline and never let the LLM be the final source of truth. First, pre-process the image and run OCR to get text with coordinates and per-word confidence. Then the LLM extracts into a strict JSON schema, and every field must include the source text span. Next, a rule engine checks: ID-number format, valid dates, total equals the sum of lines, and the value must match the source span. Any field missing evidence, with low OCR confidence, or failing a rule goes to a human reviewer, with the UI highlighting the exact region on the image for fast review. I do not trust confidence reported by the model itself. The main metrics are straight-through rate and the error rate on auto-approved cases, measured through periodic sampling. Reviewer corrections are stored as evaluation data for the next prompt version."
+
 > Senior tip: track straight-through rate (the share of cases auto-approved) and the error rate on auto-approved cases separately. A good extraction system is not the one that automates the most, but the one that automates a lot while making very few mistakes — and that always leaves an exit ramp back to a human reviewer.`,
     follow: [
       'How do you set the confidence threshold to balance automation against risk?',
       'When OCR is wrong but the LLM guesses right, should the system auto-approve?',
       'How would you audit a field that was extracted wrongly six months earlier?'
-    ]
+    ],
   },
   'ai-032': {
     q: 'AI-assisted programming in a large company (Copilot/Claude Code): how should you manage the source-code policy, reviewing code written by AI, measuring productivity, and the license/secret risks?',
@@ -133,11 +176,20 @@ App.i18n.content({
 - Use AI to read unfamiliar code, to write test skeletons, for small refactors — not to design a large architecture on its own.
 - Always run the code and the tests; do not assume it is correct.
 
+### Common leak mechanisms
+Leaks rarely happen because someone deliberately pastes a secret into chat. More often, an agent-style tool reads a file such as {{.env}}, {{application-local.yml}} or a log containing a token while gathering context, then sends that content to the provider's server. So the policy must be technical, not just on paper: file ignore rules for AI tools (most tools can exclude files/folders), secrets must not live in the repo (use a Secrets Manager/Vault), pre-commit and CI secret scanning (gitleaks, trufflehog), and only enterprise tiers with a clear commitment not to train on company data and a defined data-retention period.
+
+### Real-world example
+A company with 300 developers rolled out an AI assistant. In the first month, CI secret scanning caught 14 PRs containing real API keys — partly because AI-generated sample code copied a key from a local config file. Six PRs also added suspicious dependencies, one of them a package whose name was close to a popular library but was not the official one. Measures: block merge when gitleaks reports, an internal allowlist registry (a Maven proxy that only allows already-approved artifacts), exclusion rules for config directories, and a 30-minute training for the whole team. Three months later: only 1 PR per month with a secret (blocked in CI), no dependencies outside the allowlist. Productivity measured by PR lead time down 22%, post-release defect rate unchanged.
+
+### Sample interview answer
+"I manage it in three layers. The policy layer: a list of approved tools, enterprise tiers that do not train on company data, and clear rules about which data may not be sent. The technical layer, because a paper policy is not enough: secrets do not live in the repo, sensitive files are excluded from the tool's context, CI scans secrets and dependencies, an internal registry only allows approved artifacts to block fake packages, and license scanning runs. The process layer: AI-written code is reviewed like anyone else's, small PRs, tests present, and the author can explain it. On measuring productivity, I do not count lines of code or accepted suggestions because they are easy to game; I measure PR lead time, review time, post-release defect rate and developer surveys, compared over a long enough window, say a quarter."
+
 > Senior tip: measure quality, not speed. A team that uses AI well has smaller PRs, better tests and fewer production bugs — not a team that commits more code. If lines of code go up while quality does not, AI is generating technical debt.`,
     follow: [
       'Why should you not use lines of code to measure the effectiveness of an AI assistant?',
       'How do you detect that AI-written code carries a license risk?',
       'Which tasks should you not hand to an AI coding assistant?'
-    ]
-  },
+    ],
+  }
 });

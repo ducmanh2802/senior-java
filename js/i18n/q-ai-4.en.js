@@ -123,15 +123,33 @@ A 10-step process where each step the model is correct 95% of the time yields on
   },
   'ai-029': {
     q: 'You set up a bank chatbot to look up customer transactions using tool calling in Spring AI. How does the framework execute tools internally, how do you pass customer identity, handle tool errors, and limit loops?',
-    a: `**Summary:** The model does not run code: it only returns a **tool call request** (name + JSON parameters) based on the tool description; Spring AI executes the Java method, sends the result back to the model, and loops until the model answers in text. Customer identity goes through **ToolContext** (not sent to the model), never as a parameter filled by the model. Tool errors must be cleaned before reaching the model; set a round limit or use approval steps to control the loop.
+    a: `**Summary:** The LLM (Large Language Model, an AI that generates text) does **not** run your Java code. It only returns a **tool call request** — the tool name plus JSON parameters — based on the tool descriptions you provide. Spring AI (a Spring framework library for integrating AI models into Java apps) executes the Java method, sends the result back to the model, and repeats until the model answers in plain text. Customer identity is passed via **ToolContext** (a per-call map of trusted data that is not sent to the model), never as a parameter the model fills in. Tool errors must be sanitized before reaching the model; limit the loop with a max-round count or user-controlled execution.
 
-### Inside one turn with tools
-1. ChatClient sends the prompt with **tool definitions**: name, description, JSON schema generated from the method signature and {{@ToolParam}}. Definitions travel with every call, so 20 tools can cost thousands of tokens per turn.
-2. Model returns a tool call: name {{recentTransactions}}, parameters days = 30.
-3. Spring AI calls the method, converts the result to JSON, and adds it to the conversation as a tool response.
-4. Call the model again with the full conversation: each tool turn adds another model call, and context grows longer.
+### What tool calling is and why it is needed
+**What:** Tool calling (also called function calling) lets the model ask your application to run a specific function and return data, like a waiter taking an order to the kitchen instead of cooking.
+**Why:** The model cannot access your database or internal services. To answer "show my last 10 transactions," it must ask a trusted backend method to fetch that data.
+**How it works at a high level:** You register Java methods as tools with descriptions. The model reads those descriptions, decides which tool to call and with what arguments, and your framework executes the real code.
 
-### Code
+### Inside one turn with tools (step by step)
+1. **Send definitions:** ChatClient (Spring AI's fluent API for chat requests) sends the user prompt together with **tool definitions**: each tool's name, description, and a JSON schema generated from the Java method signature and {{@ToolParam}} annotations. Definitions are sent on every model call, so 20 tools can cost thousands of tokens per turn (a token is a small chunk of text the model bills and processes).
+2. **Model requests a tool:** The model returns a structured tool call, e.g. name {{recentTransactions}} with parameter {{days = 30}}. It does not execute anything.
+3. **Framework executes Java:** Spring AI matches the name to your method, deserializes the JSON arguments, invokes the method, serializes the return value to JSON, and appends it to the conversation as a tool response message.
+4. **Model sees the result:** Spring AI calls the model again with the full conversation (original prompt + tool call + tool result). The model may call more tools or produce a final text answer. Each round means another model API call and a longer context (the conversation text sent to the model).
+
+~~~seq
+title: One tool-calling turn in Spring AI
+actors: User | ChatClient | LLM | AccountTools
+User -> ChatClient: Show my recent transactions
+ChatClient -> LLM: prompt + tool definitions
+LLM --> ChatClient: tool_call recentTransactions(days=30)
+ChatClient -> AccountTools: invoke method (customerId from ToolContext)
+AccountTools --> ChatClient: JSON result (masked)
+ChatClient -> LLM: conversation + tool result
+LLM --> ChatClient: final text answer
+ChatClient --> User: Here are your last transactions...
+~~~
+
+### Code example
 ~~~java
 class AccountTools {
     private final TransactionService txs;
@@ -141,11 +159,13 @@ class AccountTools {
         + "Use when the customer asks about their own transactions.")
     List<TxView> recentTransactions(
             @ToolParam(description = "Lookback days, from 1 to 90") int days,
-            ToolContext ctx) {                                  // not included in the schema sent to the model
+            ToolContext ctx) {                                  // ctx is NOT in the schema sent to the model
+        // Identity comes from the authenticated session, never from model input
         String customerId = (String) ctx.getContext().get("customerId");
-        int d = Math.max(1, Math.min(days, 90));                // model may pass out-of-range values
+        // Treat model-provided args like untrusted input: clamp to a safe range
+        int d = Math.max(1, Math.min(days, 90));
         return txs.recent(customerId, d, 10).stream()
-            .map(TxView::masked)                                // mask counterparty account, drop extra fields
+            .map(TxView::masked)                                // mask counterparty account, drop sensitive fields
             .toList();
     }
 }
@@ -157,31 +177,41 @@ String reply = chatClient.prompt()
     .call().content();
 ~~~
 
-### Tool errors
-- By default, RuntimeException messages are sent back to the model. The message may contain SQL, internal table names, or customer data and could leak into context and answers; LangChain4j behaves similarly by default.
-- Throw with a standardized message ("No transactions found in 90 days"), or set {{spring.ai.tools.throw-exception-on-error=true}} to return errors to you, or install your own {{ToolExecutionExceptionProcessor}}.
+### Passing customer identity safely
+- **Why ToolContext:** If {{customerId}} were a normal {{@ToolParam}}, the model could invent or change it (prompt injection: a user tricks the model into doing something unsafe). With ToolContext, your server injects the real identity from the authenticated session; the model never sees or controls it.
+- **Rule:** Any authorization boundary (who can access what) must be enforced in code. The model only decides *which* tool to request.
 
-### Loop control
-- By default ChatClient runs the loop until the model stops calling tools. To set a round limit, or to require confirmation before a tool writes or traces each step, use **user-controlled tool execution**: Spring AI 1.0 sets {{internalToolExecutionEnabled(false)}} in {{ToolCallingChatOptions}}, then call {{ToolCallingManager.executeToolCalls(...)}} in your own loop (2.x changes the switch).
-- {{returnDirect = true}}: tool result is returned directly to the caller, not back to the model; useful when the UI displays the transaction list directly, saving tokens and avoiding data in context. Only effective when all tools in that turn have returnDirect enabled.
+### Handling tool errors
+- **Default behavior:** A {{RuntimeException}} message may be sent back to the model as the tool result. That message can contain SQL, internal table names, stack details, or customer data — leaking into context and possibly into the user-facing answer. (LangChain4j, another Java AI library, behaves similarly by default.)
+- **Safer options:** Throw exceptions with standardized, non-sensitive messages (e.g. "No transactions found in 90 days"); or set {{spring.ai.tools.throw-exception-on-error=true}} to handle errors in your code; or provide a custom {{ToolExecutionExceptionProcessor}} to transform exceptions before they reach the model.
+- **Also validate inputs:** The model may pass out-of-range values (days = 9999) or unexpected types. Validate like any external input.
 
-### Limits of tool calling
-| Limit | Impact | Reduction |
+### Limiting loops
+- **Default:** ChatClient runs the tool loop until the model stops requesting tools. A confused model or a bad tool result can cause long chains, high latency, and token cost.
+- **User-controlled tool execution:** To enforce a max number of rounds, require human approval before write operations, or trace each step, disable automatic execution and run the loop yourself. In Spring AI 1.0, set {{internalToolExecutionEnabled(false)}} in {{ToolCallingChatOptions}} and call {{ToolCallingManager.executeToolCalls(...)}} in your own loop (Spring AI 2.x changes how this is enabled — check the version you use).
+- **returnDirect:** Set {{returnDirect = true}} on a tool when the UI should display the raw result (e.g. a transaction table) without another model call. This saves tokens and avoids putting sensitive data back into model context. It only takes effect if all tools in that turn have {{returnDirect}} enabled.
+
+### Limits and trade-offs
+| Limit | What happens | How to reduce |
 |---|---|---|
-| Many tools | Model picks wrong, costs token definitions | Under 10 tools per context, select by intent |
-| Many rounds | Latency accumulates, context bloats | Make tools return enough data in one call, set round limit |
-| Model-generated parameters | Out of range, fake IDs | Validate like external input; IDs from session |
-| Non-deterministic | Same question, different tool chain | Evaluate with scenarios, assert on tool calls |
+| Too many tools | Model picks wrong tool; definition tokens grow | Keep under ~10 tools per context; select tools by intent |
+| Too many rounds | Latency adds up; context bloats | Return enough data per call; set a round cap |
+| Model-generated params | Out of range, fake IDs | Validate as untrusted input; take IDs from session |
+| Non-deterministic | Same question, different tool chain | Evaluate with scenarios; assert on tool calls in tests |
 
-### Production pitfalls
-- Vague tool descriptions ("get customer data"): model calls it for every question.
-- Tool returns raw JPA entities: exposes sensitive fields, may trigger lazy loading outside the transaction.
+### Common production mistakes
+- Vague descriptions like "get customer data" — the model may call it for unrelated questions. Write precise descriptions stating *when* to use the tool.
+- Returning raw JPA entities — exposes sensitive fields and may trigger lazy loading outside a transaction. Return small DTOs/views with masking.
+- Forgetting that every tool round costs latency and tokens — measure end-to-end time and token usage.
 
-> Senior tip: design tools like a public API for an untrusted client: clear names and descriptions, narrow parameters, small masked results, permissions from the session. The model should only decide **what to call**; **what is allowed** is always decided by code.`,
+### Interview-style answer (sample)
+"In Spring AI, tool calling means the model does not execute code. It returns a tool call request with a name and JSON arguments based on the tool definitions I send. The framework invokes the matching Java method, serializes the result, appends it as a tool response, and calls the model again until it produces a final answer. For a bank chatbot, I never let the model supply customer identity. I pass the authenticated customer ID through ToolContext so it is enforced by code and not visible in the model schema. I also treat tool arguments as untrusted input and clamp values like the day range. For errors, I avoid leaking internal details by returning sanitized messages or handling exceptions with a custom processor. To control loops, I can cap rounds or use user-controlled execution, and for display-only results I use returnDirect to skip an extra model call. The key principle is: the model decides what to call; my code decides what is allowed."
+
+> Senior tip: Design tools like a public API for an untrusted client: clear names and descriptions, narrow parameters, small masked results, and permissions taken from the session. The model should only decide **what to call**; **what is allowed** is always enforced by code.`,
     follow: [
-      'The model requests parallel tool calls in one turn: how do you handle timeout and partial errors?',
-      'How do you write tests to know the model picks the right tool with the right parameters?',
-      'How does declaring a tool with @Tool differ from providing tools via an MCP server?'
+      'If the model requests parallel tool calls in one turn, how do you handle timeouts and partial failures?',
+      'How do you test that the model selects the right tool with the right parameters?',
+      'How does declaring a tool with @Tool in the application differ from providing tools via an MCP server?'
     ]
   }
 });
