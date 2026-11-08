@@ -89,6 +89,17 @@ volumes:
 ### Trả lời miệng 1 phút
 "Docker đóng gói ứng dụng cùng toàn bộ môi trường chạy thành image. Container là một tiến trình được cô lập chạy từ image đó, nên dev, test và prod chạy y hệt nhau. Với Spring Boot, tôi viết Dockerfile multi-stage: giai đoạn đầu build bằng Maven, giai đoạn hai chỉ copy file jar vào image JRE nhỏ gọn, chạy bằng user không phải root, đặt MaxRAMPercentage để JVM tôn trọng giới hạn RAM của container. Dữ liệu cần giữ lại thì để trong volume, secret truyền lúc chạy chứ không nhúng vào image, và tag image theo phiên bản cụ thể để dễ rollback."
 
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi lần đội phát triển sửa một dòng code Java và đẩy lên CI, thời gian build image Docker tăng lên ~14 phút (trước đó ~3 phút). Pipeline thường xuyên chờ lâu, làm chậm vòng phản hồi. Ổ đĩa runner CI cũng đầy nhanh vì xuất hiện nhiều layer lớn.
+
+**Điều tra:** Xem log build thấy bước {{mvn package}} tải lại gần như toàn bộ dependency từ mạng ở mỗi lần build. Kiểm tra Dockerfile phát hiện thứ tự lệnh: {{COPY . .}} (toàn bộ mã nguồn) đặt trước {{RUN mvn -DskipTests package}}. Như vậy, bất kỳ thay đổi file nào trong thư mục cũng làm layer COPY thay đổi, khiến Docker **không dùng được cache** cho các bước phía sau, bao gồm bước tải dependency. Kiểm tra thêm: image cuối cùng dùng base image chứa cả JDK và mã nguồn, dung lượng ~780MB.
+
+**Nguyên nhân gốc:** (1) Thứ tự layer không tối ưu: sao chép mã nguồn biến đổi thường xuyên trước khi cài dependency tương đối ổn định, phá cache layer. (2) Không dùng multi-stage build: giai đoạn runtime mang theo công cụ build và artifact thừa.
+
+**Cách xử lý:** (1) Viết lại Dockerfile theo multi-stage: giai đoạn build COPY {{pom.xml}} (và file cấu hình build cần thiết) trước, chạy {{mvn dependency:go-offline}} hoặc bước tải dependency để tạo layer cache; sau đó mới COPY {{src}} và build jar. Giai đoạn runtime chỉ dùng image JRE nhỏ (ví dụ {{eclipse-temurin:17-jre}}), {{COPY --from=build}} đúng file jar. (2) Tạo user không phải root, đặt {{JAVA_TOOL_OPTIONS}}/{{-XX:MaxRAMPercentage}} phù hợp. (3) Thêm {{.dockerignore}} để loại {{target/}}, {{.git/}}, file không cần thiết. (4) Tag image theo phiên bản/commit, thêm bước quét lỗ hổng image (Trivy) trong CI.
+
+**Kết quả đo được:** Khi chỉ đổi mã nguồn Java, thời gian build image giảm từ ~14 phút xuống ~2 phút 40 giây nhờ cache dependency. Dung lượng image runtime giảm từ ~780MB xuống ~210MB. Pipeline ổn định hơn, và không còn bước tải lại toàn bộ dependency trên mỗi commit.
+
 > Senior tip: thêm bước quét lỗ hổng image (ví dụ Trivy) vào CI và chỉ cho phép deploy image đã quét. Đó là câu trả lời "bảo mật chuỗi cung ứng" mà interviewer Senior rất thích nghe.`,
   follow: ['Container khác máy ảo (VM) thế nào?', 'Làm sao giảm kích thước image Spring Boot?'],
   tags: ['Docker', 'container', 'image', 'Dockerfile', 'nhập môn']
@@ -177,7 +188,18 @@ kubectl rollout undo deploy/orders -n shop    # quay lại bản trước
 - Vì sao pod bị OOMKilled dù heap còn trống? (Tổng bộ nhớ của JVM gồm heap, metaspace, thread stack, direct buffer, nên có thể vượt limit.)
 
 ### Trả lời miệng 1 phút
-"Kubernetes là hệ thống điều phối container: tôi khai báo trạng thái mong muốn, ví dụ Deployment 3 replica của image phiên bản 1.4, và K8s tự giữ đúng trạng thái đó, tạo lại pod chết và rolling update khi có bản mới. Pod là đơn vị chạy tạm thời; Service cho một tên DNS ổn định và cân bằng tải giữa các pod; Ingress đưa traffic HTTP từ ngoài vào. Với Spring Boot, tôi đặt requests và limits phù hợp với bộ nhớ JVM, readiness probe vào actuator readiness để chỉ nhận traffic khi sẵn sàng, liveness chỉ kiểm tra tiến trình còn sống, bật graceful shutdown, và cấu hình qua ConfigMap, Secret."
+"Kubernetes là hệ thống điều phối container: tôi khai báo trạng thái mong muốn, ví dụ Deployment 3 replica của image phiên bản 1.4, và K8s tự giữ đúng trạng thái đó, tạo lại pod chết và rolling update khi có bản mới. Pod là đơn vị chạy tạm thời; Service cho một tên DNS ổn định và cân bằng tải giữa các pod; Ingress đưa traffic HTTP từ ngoài vào. Với Spring Boot, tôi đặt requests và limits phù hợp với bộ nhớ JVM, readiness probe vào actuator readiness để chỉ nhận traffic khi sẵn sàng, liveness probe chỉ kiểm tra tiến trình còn sống, bật graceful shutdown, và cấu hình qua ConfigMap, Secret."
+
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi bật autoscaling và chạy vài giờ dưới tải trung bình, một số pod của service {{order-api}} bị **OOMKilled** rồi khởi động lại liên tục ({{CrashLoopBackOff}} ngắn hạn xen kẽ). Người dùng thấy lỗi 502 ngắt quãng. Dashboard JVM trong pod cho thấy heap "chỉ" dùng khoảng 450MB trước khi chết, trong khi giới hạn bộ nhớ container đặt là 512Mi.
+
+**Điều tra:** Xem sự kiện bằng {{kubectl describe pod <pod>}} thấy {{Last State: Terminated, Reason: OOMKilled, Exit Code: 137}}. Kiểm tra {{kubectl top pod}} và metric {{container_memory_working_set_bytes}} (Prometheus/cAdvisor) cho thấy bộ nhớ thực tế tiến sát 512Mi. Kiểm tra cách chạy JVM: container dùng image JDK 17, nhưng không đặt {{-XX:MaxRAMPercentage}}; heap mặc định chọn theo công thức cũ, cộng thêm **metaspace**, thread stack (mỗi thread vài trăm KB), bộ nhớ direct buffer (NIO), và bộ nhớ native của thư viện — tổng vượt 512Mi dù heap báo chỉ ~450MB.
+
+**Nguyên nhân gốc:** Đặt **memory limit** container thấp hơn tổng bộ nhớ mà JVM + native thực sự cần. Kubernetes cgroups giết tiến trình khi vượt limit (OOMKilled), không phải OutOfMemoryError trong heap Java. Giới hạn 512Mi không đủ cho heap 450MB cộng các vùng nhớ ngoài heap.
+
+**Cách xử lý:** (1) Điều chỉnh tài nguyên: đặt {{requests.memory}} sát mức dùng ổn định và {{limits.memory}} đủ dư, ví dụ 768Mi hoặc 1Gi tùy đo đạc. (2) Cấu hình JVM tôn trọng container: {{-XX:MaxRAMPercentage=70.0}} (để lại ~30% cho metaspace/thread/direct/native) và, nếu cần, giới hạn {{-XX:MaxMetaspaceSize}}, {{-Xss}}. (3) Tách probe: **liveness** chỉ kiểm tra tiến trình còn sống (ví dụ endpoint nhẹ/Actuator liveness), **readiness** dùng {{/actuator/health/readiness}} để ngừng nhận traffic khi app chưa sẵn sàng; tránh liveness gọi DB gây restart dây chuyền. (4) Bật {{server.shutdown=graceful}} và {{preStop}} hook phù hợp để giảm lỗi khi rolling update.
+
+**Kết quả đo được:** Sau khi tăng limit lên 1Gi và đặt {{MaxRAMPercentage=70}}, trong 7 ngày không còn OOMKilled. {{container_memory_working_set_bytes}} ổn định quanh 620–700Mi dưới tải đỉnh; tỉ lệ 502 do pod restart giảm về 0 trong cửa sổ triển khai.
 
 > Senior tip: đặt **PodDisruptionBudget** và chạy pod rải trên nhiều zone. Khi cụm nâng cấp node, nó đảm bảo không bao giờ tắt cùng lúc quá nhiều pod của bạn. Đây là chi tiết vận hành phân biệt người "đã chạy K8s thật" với người chỉ đọc tài liệu.`,
   follow: ['Readiness và liveness probe khác nhau thế nào?', 'Pod bị OOMKilled dù heap còn trống, vì sao?'],
@@ -269,6 +291,17 @@ class InventoryListener {
 ### Trả lời miệng 1 phút
 "Kafka là một log sự kiện phân tán: producer ghi nối đuôi vào topic, topic chia thành partition để song song, mỗi sự kiện có offset. Sự kiện không bị xoá khi đọc mà giữ theo retention, nên nhiều consumer group đọc độc lập và có thể đọc lại. Thứ tự chỉ đảm bảo trong một partition, nên tôi đặt key là id thực thể, ví dụ orderId. Trong một group, mỗi partition do một consumer xử lý, nên độ song song bằng số partition. Tôi dùng at-least-once, commit sau khi xử lý, nên consumer phải idempotent, và dùng outbox để không mất sự kiện khi vừa ghi DB vừa phát Kafka."
 
+### Ví dụ đời thực
+**Triệu chứng:** Dịch vụ thông báo (notification) gửi email xác nhận đơn hàng chậm dần: lúc 10:00 trễ ~10 giây, đến 11:15 trễ hơn 25 phút. Người dùng phàn nàn "đã thanh toán nhưng chưa nhận email". API đặt hàng vẫn hoạt động bình thường.
+
+**Điều tra:** Kiểm tra consumer lag của group {{notification-service}} (qua công cụ quản trị Kafka/burrow hoặc metric lag phơi ra từ client) thấy lag trên topic {{order-events}} tăng đều từ vài trăm lên ~180.000 message, tập trung ở cả 6 partition. Log consumer cho thấy mỗi lần xử lý một sự kiện, listener gọi API email bên ngoài và mất 3–8 giây; đồng thời xuất hiện cảnh báo liên quan đến việc consumer không kịp gửi heartbeat/poll trong khoảng thời gian cấu hình {{max.poll.interval.ms}}. Kafka kích hoạt **rebalance**: các partition bị thu hồi rồi gán lại, làm một phần message xử lý dở bị giao lại.
+
+**Nguyên nhân gốc:** (1) Listener xử lý tuần tự và quá chậm (gọi đồng bộ API bên ngoài) nên throughput thực tế ~0,3 msg/giây mỗi consumer, trong khi producer đẩy ~12 msg/giây. (2) Xử lý vượt {{max.poll.interval.ms}} gây rebalance lặp lại, càng làm giảm tốc độ tiêu thụ. (3) Một số email bị gửi trùng vì message giao lại (at-least-once) nhưng bước gửi chưa idempotent.
+
+**Cách xử lý:** (1) Tách việc gọi API email ra khỏi listener: consumer chỉ ghi bản ghi "cần gửi" vào DB/bảng outbox nội bộ hoặc đẩy sang một luồng xử lý có kiểm soát, commit offset sau khi ghi nhận thành công. (2) Tăng số consumer instance trong group lên tối đa bằng số partition (6), và điều chỉnh {{max.poll.records}} cho phù hợp thời gian xử lý. (3) Thêm idempotency key (ví dụ {{orderId + eventType}}) và bảng {{processed_events}} để bỏ qua bản trùng. (4) Cấu hình **dead-letter topic** cho message lỗi sau N lần retry để không chặn partition.
+
+**Kết quả đo được:** Sau thay đổi, lag giảm từ 180.000 về dưới 200 trong ~40 phút, thời gian trễ email ổn định 5–15 giây. Rebalance không còn tái diễn (theo log group coordinator). Tỉ lệ email trùng do giao lại giảm về 0 nhờ kiểm tra idempotency.
+
 > Senior tip: theo dõi **consumer lag** (khoảng cách giữa offset mới nhất và offset đã xử lý) cho từng group. Lag tăng đều là chỉ báo sớm nhất cho thấy consumer chậm hoặc kẹt, trước khi người dùng thấy dữ liệu bị trễ.`,
   follow: ['Kafka đảm bảo thứ tự như thế nào?', 'Outbox pattern giải quyết vấn đề gì?', 'Kafka khác RabbitMQ ra sao?'],
   tags: ['Kafka', 'partition', 'consumer group', 'offset', 'nhập môn']
@@ -339,6 +372,17 @@ class ProductService {
 
 ### Trả lời miệng 1 phút
 "Redis là kho key-value trong RAM, độ trễ dưới mili giây, có nhiều kiểu dữ liệu như string, hash, list, set, sorted set, stream và hỗ trợ TTL. Trong backend tôi dùng nó cho cache, rate limit, session, khoá phân tán và bảng xếp hạng, nhưng DB vẫn là nguồn dữ liệu chuẩn. Cache tôi làm theo cache-aside: Cacheable để đọc, khi cập nhật thì ghi DB rồi xoá cache, luôn có TTL. Tôi cẩn thận với cache stampede khi key hot hết hạn, tránh lệnh KEYS và big key vì Redis xử lý lệnh đơn luồng."
+
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi tối khoảng 20:00, trang chi tiết sản phẩm hot (key {{product:8821}}) bị chậm đột ngột: p95 API {{GET /products/8821}} tăng từ 18ms lên 1,4 giây trong vòng 30–60 giây, rồi tự bình thường. DB Postgres ghi nhận một cụm truy vấn giống hệt {{SELECT ... FROM products WHERE id = 8821}} tăng gấp ~40 lần so với bình thường.
+
+**Điều tra:** Metric Redis ({{INFO stats}}, theo dõi qua exporter) cho thấy {{keyspace_misses}} tăng vọt đúng thời điểm sự cố, trong khi {{keyspace_hits}} tụt mạnh; key {{product:8821}} biến mất rồi xuất hiện lại (do TTL hết). Log ứng dụng cho thấy hàng chục request đồng thời cùng rơi vào nhánh "cache miss" của cache-aside. Không có lệnh {{KEYS}} chậm trong {{SLOWLOG}}; CPU Redis ổn định.
+
+**Nguyên nhân gốc:** **Cache stampede** (còn gọi là thundering herd): key hot hết TTL đúng lúc có nhiều request đồng thời. Vì Redis single-threaded xử lý lệnh nhưng bản chất ở đây là cache-aside ở tầng app, tất cả request miss đều đồng thời truy vấn DB để dựng lại cùng một giá trị, gây "đập" DB.
+
+**Cách xử lý:** (1) Áp dụng **mutex khi tái nạp**: request đầu tiên lấy một lock ngắn trong Redis ({{SET lock:product:8821 1 NX PX 3000}}), chỉ nó truy vấn DB và đặt lại cache; các request khác chờ/ngủ ngắn rồi đọc lại hoặc chấp nhận dữ liệu cũ tạm thời. (2) Thêm **jitter** cho TTL (ví dụ TTL cơ sở 600s ± 60s ngẫu nhiên) để các key hot không hết hạn cùng lúc. (3) Với key cực hot, cân nhắc "logical expiry": lưu thời hạn mềm trong value, trả dữ liệu cũ ngay và làm mới bất đồng bộ. (4) Đặt alert khi {{keyspace_miss}}/tổng request của cache name vượt ngưỡng.
+
+**Kết quả đo được:** Sau 1 tuần, đỉnh p95 {{GET /products/8821}} vào khung 20:00 còn 42ms, số truy vấn DB trùng lặp cho cùng key giảm từ ~40 xuống 1–2 mỗi lần hết hạn, hit rate cache name {{product}} tăng từ 78% lên 96%.
 
 > Senior tip: đo **hit rate** của từng cache name. Cache có hit rate dưới khoảng 50–60% thường chỉ thêm độ phức tạp và rủi ro dữ liệu cũ mà không giảm tải đáng kể cho DB. Đừng ngại bỏ nó.`,
   follow: ['Làm sao giữ cache và DB nhất quán khi cập nhật?', 'Cache stampede là gì và xử lý thế nào?'],
@@ -420,6 +464,17 @@ s3.putObject(PutObjectRequest.builder().bucket("reports-prod").key("2026/10/repo
 ### Trả lời miệng 1 phút
 "Với một app Spring Boot trên AWS, tôi đặt load balancer ALB ở subnet public, các container chạy trên ECS Fargate hoặc EKS ở subnet private trải ít nhất hai AZ, và DB là RDS Postgres Multi-AZ chỉ cho app truy cập qua Security Group. Image để trên ECR. Quyền gọi S3 hay SQS cấp qua IAM role theo least privilege, không bao giờ dùng access key trong code; mật khẩu DB để trong Secrets Manager. Log và metric lên CloudWatch, có alarm cho lỗi và độ trễ, kèm budget alarm để kiểm soát chi phí. Việc bất đồng bộ thì đẩy qua SQS cho worker xử lý."
 
+### Ví dụ đời thực
+**Triệu chứng:** Lúc 02:10 (giờ thấp điểm), một AZ trong vùng {{ap-southeast-1}} gặp sự cố phần cứng. Ứng dụng thanh toán bắt đầu trả HTTP 503 ngắt quãng; khoảng 18% request thất bại trong 4 phút, dù CPU trung bình toàn cụm trước đó chỉ 40%.
+
+**Điều tra:** Kiểm tra ALB target health thấy toàn bộ target ở subnet AZ-b chuyển {{unhealthy}}. Trên ECS service, số task chạy giảm từ 6 xuống 3 vì cả 3 task còn lại nằm ở AZ-b (sai sót khi triển khai ban đầu chỉ gắn 1 subnet private). Kiểm tra RDS: instance chính cũng đặt ở AZ-b, Multi-AZ chưa bật nên failover thủ công phải đợi tạo standby. CloudWatch alarm {{ALB-TargetResponseTime}} và {{HTTPCode_Target_5XX_Count}} đã bắn nhưng chưa có runbook gắn kèm.
+
+**Nguyên nhân gốc:** Kiến trúc "giả đa AZ": subnet khai báo đủ nhưng ECS service và RDS đều gắn vào một AZ. Khi AZ đó lỗi, không còn tài nguyên dự phòng; ALB còn route nhưng không còn target khỏe.
+
+**Cách xử lý:** (1) Sửa ECS service để chạy trên 2 subnet private ở 2 AZ, đặt {{desiredCount=6}} và bật spread theo AZ; thêm **Application Auto Scaling** theo CPU/request. (2) Bật RDS Multi-AZ và xác nhận endpoint không đổi khi failover. (3) Rà soát Security Group DB: chỉ cho phép inbound từ SG của app, bỏ mọi rule {{0.0.0.0/0}}. (4) Thêm runbook vào alarm và kiểm tra bằng bài test failover có lên lịch.
+
+**Kết quả đo được:** 6 tuần sau, khi thực hiện bài test tắt AZ-b có chủ đích, ALB chuyển 100% traffic sang AZ-a trong khoảng 40 giây, tỉ lệ 5xx đỉnh 0,6% trong 1 phút, không mất dữ liệu (RDS failover ~70 giây, app retry theo backoff). Mục tiêu RTO < 2 phút đạt được.
+
 > Senior tip: khi phỏng vấn, nhắc tới **chi phí**: NAT Gateway, data transfer giữa các AZ và log CloudWatch là ba khoản hay làm hoá đơn tăng bất ngờ. Người từng vận hành thật luôn nhớ chúng.`,
   follow: ['ECS, EKS và Lambda: khi nào chọn cái nào?', 'Làm sao cấp quyền S3 cho app mà không dùng access key?'],
   tags: ['AWS', 'IAM', 'VPC', 'ECS', 'S3', 'RDS', 'nhập môn']
@@ -497,6 +552,17 @@ Timer.builder("payment.call").register(registry).record(() -> paymentClient.char
 
 ### Trả lời miệng 1 phút
 "Tôi dùng ba trụ cột. Metric để biết có vấn đề hay không, với RED là rate, errors, duration theo percentile cho mỗi API, cộng metric JVM, connection pool và metric nghiệp vụ, qua Actuator, Micrometer, Prometheus và Grafana. Trace để biết chậm ở service nào, qua Micrometer Tracing với OpenTelemetry, có lấy mẫu. Log JSON có traceId để đọc chi tiết, gom về một nơi. Alert dựa trên SLO theo triệu chứng người dùng thấy. Tôi tránh nhãn có cardinality cao như userId, và không log dữ liệu nhạy cảm."
+
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi ra bản mới lúc 14:05, tỉ lệ lỗi 5xx của API {{POST /orders}} tăng từ 0,1% lên 4,8% trong 6 phút. p99 thời gian phản hồi nhảy từ 420ms lên 6,2 giây. Người dùng báo "đặt hàng thất bại", nhưng CPU của pod vẫn chỉ khoảng 35%.
+
+**Điều tra:** Trên Grafana, bảng RED theo endpoint cho thấy chỉ {{POST /orders}} bất thường. Metric {{hikaricp_connections_pending}} tăng vọt lên 48 (bằng kích thước pool), trong khi {{hikaricp_connections_active}} kẹt ở 48 và không giảm — dấu hiệu request đang chờ connection. Mở một trace chậm trong Jaeger/Tempo: span {{jdbc.execute}} chiếm 5,9 giây; span con trỏ tới truy vấn kiểm tra tồn kho. Log JSON lọc theo {{traceId}} của trace đó cho thấy câu lệnh chạy với tham số {{sku_id}} mới thêm trong bản phát hành.
+
+**Nguyên nhân gốc:** Bản mới bổ sung truy vấn tồn kho theo {{sku_id}} nhưng chưa có index trên cột này. Bảng {{inventory}} khoảng 12 triệu dòng, nên truy vấn quét tuần tự, giữ connection pool quá lâu và làm các request khác xếp hàng chờ.
+
+**Cách xử lý:** Thêm index {{CREATE INDEX CONCURRENTLY idx_inventory_sku_id ON inventory(sku_id)}} (chạy không khóa ghi trên PostgreSQL), xác nhận bằng {{EXPLAIN ANALYZE}} chuyển từ Seq Scan sang Index Scan. Đồng thời đặt {{spring.datasource.hikari.connection-timeout}} hợp lý và alert khi {{hikaricp_connections_pending}} vượt ngưỡng 5 phút liên tục.
+
+**Kết quả đo được:** Sau 8 phút từ lúc thêm index, p99 {{POST /orders}} giảm về 380ms, tỉ lệ 5xx còn 0,08%, {{hikaricp_connections_pending}} về 0. Không cần rollback hay tăng số pod.
 
 > Senior tip: mỗi khi xử lý xong sự cố, hãy hỏi "metric hoặc alert nào lẽ ra đã báo sớm hơn?" rồi thêm nó vào. Hệ thống quan sát tốt được xây dần từ các postmortem, không phải từ một lần cấu hình.`,
   follow: ['Vì sao đo p95/p99 thay vì trung bình?', 'SLO, SLI, SLA khác nhau thế nào?'],
