@@ -5252,7 +5252,7 @@ Giả định hệ thống thanh toán xử lý ~120.000 giao dịch/ngày với
 |---|---|---|
 | DTO/Request/Response | Rất tốt | Bất biến, ngắn gọn, an toàn khi truyền qua tầng. |
 | JPA Projection (constructor expression, interface-based ít gặp hơn) | Thường tốt | Hibernate/JPA có thể map constructor của record cho projection query. |
-| Value Object (domain) | Rất tốt | Phù hợp với immmutability, {{equals}} theo giá trị. |
+| Value Object (domain) | Rất tốt | Phù hợp với immutability, {{equals}} theo giá trị. |
 | Map key | Rất tốt | {{equals}}/{{hashCode}} bất biến → an toàn, không lo "mất" entry như key mutable. |
 | Embeddable ({{@Embeddable}}) | Cẩn thận/Tùy provider | Một số provider hỗ trợ, nhưng không phổ biến và có giới hạn. Cần kiểm tra kỹ. |
 | JPA Entity ({{@Entity}}) | Không khuyến khích | Xem chi tiết bên dưới. |
@@ -5304,7 +5304,7 @@ Một team chuyển toàn bộ DTO sang record — tốt — nhưng cũng dùng 
 | Có side effect (ghi vào {{ArrayList}}/biến chia sẻ) | Race condition (tranh chấp dữ liệu), kết quả sai/thiếu phần tử; {{ArrayList}} không thread-safe |
 
 ### Ví dụ đời thực (production)
-Giả định một API tổng hợp báo cáo: với mỗi trong ~50 ID, gọi HTTP tới service khác (latency trung bình 120ms) rồi ghép kết quả. Dev đổi {{ids.stream()}} thành {{ids.parallelStream().map(id -> httpClient.get(id))...}} kỳ vọng nhanh hơn. Trên máy 8 lõi, {{commonPool}} có ~7 thread. 7 request đầu chạy, 43 request còn lại xếp hàng chờ trong pool - nhưng tệ hơn: một luồng khác trong cùng ứng dụng dùng {{CompletableFuture.supplyAsync(...)}} (mặc định cũng ăn {{commonPool}}) để xử lý tác vụ nền. Kết quả: p99 của API báo cáo giảm nhẹ (từ ~6s xuống ~4,5s) nhưng p99 của các endpoint khác tăng đột biến từ 80ms lên 900ms trong giờ cao điểm, vì worker bị giữ để chờ HTTP. Điều tra: thread dump thấy nhiều thread {{ForkJoinPool.commonPool-worker-*}} ở trạng thái {{WAITING}} trong socket read. Cách sửa: bỏ {{parallelStream}} cho đường I/O; dùng {{CompletableFuture.supplyAsync(() -> httpClient.get(id), ioExecutor)}} với {{ioExecutor}} là {{Executors.newFixedThreadPool(32)}} (hoặc virtual threads ở Java 21) tách biệt, giới hạn concurrency. Kết quả: API báo cáo ~1,2s (32 request song song thực sự, không chặn pool chung), endpoint khác về p99 85ms.
+Giả định một API tổng hợp báo cáo: với mỗi trong ~50 ID, gọi HTTP tới service khác (latency trung bình 120ms) rồi ghép kết quả. Dev đổi {{ids.stream()}} thành {{ids.parallelStream().map(id -> httpClient.get(id))...}} kỳ vọng nhanh hơn. Trên máy 8 lõi, {{commonPool}} có ~7 thread. 7 request đầu chạy, 43 request còn lại xếp hàng chờ trong pool - nhưng tệ hơn: một luồng khác trong cùng ứng dụng dùng {{CompletableFuture.supplyAsync(...)}} (mặc định cũng ăn {{commonPool}}) để xử lý tác vụ nền. Kết quả: p99 của API báo cáo giảm nhẹ (từ ~6s xuống ~4,5s) nhưng p99 của các endpoint khác tăng đột biến từ 80ms lên 900ms trong giờ cao điểm, vì worker bị giữ để chờ HTTP. Điều tra: thread dump thấy mọi thread {{ForkJoinPool.commonPool-worker-*}} đều nằm trong socket read (trạng thái hiển thị là RUNNABLE vì đang chờ I/O trong native code, dễ bị đọc nhầm là "đang làm việc"). Cách sửa: bỏ {{parallelStream}} cho đường I/O; dùng {{CompletableFuture.supplyAsync(() -> httpClient.get(id), ioExecutor)}} với {{ioExecutor}} là {{Executors.newFixedThreadPool(32)}} (hoặc virtual threads ở Java 21) tách biệt, giới hạn concurrency. Kết quả: API báo cáo ~1,2s (32 request song song thực sự, không chặn pool chung), endpoint khác về p99 85ms.
 
 ~~~java
 import java.util.List;
@@ -5612,41 +5612,66 @@ Báo cáo xếp hạng đại lý thỉnh thoảng lỗi 500 với thông báo "
   topic: 'modern',
   level: 'lead',
   q: 'Virtual threads (Java 21) cho service I/O-bound: khi nào dùng, chuyển đổi thế nào, pinning, {{ThreadLocal}}, giới hạn concurrency bằng {{Semaphore}}?',
-  a: `**Tóm tắt:** Virtual thread (VT) là một loại thread do JVM tạo ra với chi phí khởi tạo rất thấp (chỉ một object trên heap, stack được lưu dưới dạng chunk). VT phù hợp với code I/O-bound (gọi DB, HTTP, file, message queue) vì khi bị block (như {{socket.read}}), JVM có thể unmount stack VT lên heap và reuse carrier thread cho VT khác. Pinning xảy ra khi VT chạy trong {{synchronized}} block hoặc gọi native method — carrier thread không thể được giải phóng. {{ThreadLocal}} với hàng triệu VT sẽ tốn nhiều bộ nhớ. {{Semaphore}} vẫn cần để giới hạn concurrency tới downstream (DB connection pool, API rate limit).
+  a: `**Tóm tắt:** Virtual thread (JEP 444, chính thức từ Java 21) là thread do JVM quản lý: rẻ tới mức tạo một thread cho mỗi request. Khi code block ở I/O, JVM "tháo" virtual thread khỏi carrier thread (một platform thread trong ForkJoinPool nội bộ) để carrier chạy việc khác. Dùng cho service **I/O-bound** có nhiều request đồng thời, viết code blocking bình thường mà vẫn scale. Ba điều phải canh: **pinning** (JDK 21–23: block bên trong {{synchronized}} giữ luôn carrier; JDK 24 đã sửa bằng JEP 491), **ThreadLocal** (mỗi virtual thread một bản, hàng triệu thread là hàng triệu bản), và **giới hạn đồng thời tới downstream** bằng {{Semaphore}} vì không còn thread pool nào chặn hộ bạn.
 
-### VT vs platform thread
-- Platform thread: một thread tương ứng một OS thread; chi phí cao (stack 1MB, context switch do OS).
-- Virtual thread: hàng nghìn/hàng triệu VT chạy trên một lượng nhỏ platform thread (carrier threads). VT bị block thì không làmcarrier thread bị block.
-- VT giải quyết vấn đề: viết code blocking (thread.sleep, synchronized, blocking I/O) một cách tự nhiên mà vẫn scale được nhiều đồng thời.
+### Vì sao virtual thread scale được
+| | Platform thread | Virtual thread |
+|---|---|---|
+| Ánh xạ | 1:1 với thread của OS | Nhiều virtual thread trên vài carrier (mặc định số carrier = số CPU) |
+| Bộ nhớ | Stack cố định (thường 1 MB dự trữ) | Stack nằm trên heap, chỉ lớn bằng phần đang dùng |
+| Khi block I/O | OS thread nằm chờ | Unmount, carrier rảnh để chạy virtual thread khác |
+| Số lượng thực tế | Vài nghìn | Hàng trăm nghìn tới hàng triệu |
+
+Với thread pool 200 thread, service gọi API mất 200 ms chỉ phục vụ tối đa khoảng 1.000 request/giây dù CPU rảnh (định luật Little: 200 / 0,2 s). Với virtual thread, giới hạn đó biến mất; giới hạn thật trở thành downstream (DB, API đối tác) và CPU.
 
 ### Chuyển đổi
-- Dùng {{Executors.newVirtualThreadPerTaskExecutor()}} để thay {{Executors.newFixedThreadPool}}.
-- Spring Boot 3.5+ hỗ trợ VT thông qua {{spring.threads.virtual.enabled=true}} (tự động dùng VT cho {{@RestController}}).
-- VT không nhanh hơn cho CPU-bound: nếu code tính toán nặng, VT không giúp; vẫn cần phân bố trên nhiều core.
+~~~java
+// Thay pool cố định bằng một virtual thread cho mỗi task
+try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
+    List<Future<Quote>> fs = providers.stream()
+        .map(p -> exec.submit(() -> p.quote(req)))   // code blocking bình thường
+        .toList();
+    // ... get() từng future có timeout
+}   // close() chờ mọi task xong
+~~~
+- Spring Boot **3.2+**: {{spring.threads.virtual.enabled=true}} để Tomcat/Jetty xử lý request, {{@Async}}, scheduler và listener Kafka/Rabbit chạy trên virtual thread.
+- **Không pool virtual thread**: tạo mới cho mỗi task là đúng thiết kế; pool 10 virtual thread chỉ tái tạo giới hạn cũ.
+- CPU-bound (nén, mã hoá, tính toán) không được lợi gì: vẫn chỉ có số core đó.
 
 ### Pinning
-- Pinning xảy ra khi VT chạy trong {{synchronized}} block hoặc gọi native method: JVM không thể unmount VT vì stack có thể bị truy cập bởi native code.
-- Giải pháp: dùng {{ReentrantLock}} thay vì {{synchronized}} (đặc biệt là trong code quan trọng).
-- Từ Java 24, pinning được giảm bớt nhờ cải tiến (JEP 487: Silently absorb pinning events; JEP 491: virtual thread-friendly synchronized).
+Virtual thread bị **pin** khi không thể unmount, nên carrier bị giữ trong lúc nó block:
+- JDK 21–23: block (I/O, {{sleep}}, {{wait}}) **bên trong {{synchronized}}**. Cách xử lý ở các bản này: đổi sang {{ReentrantLock}} ở chỗ có I/O trong vùng khoá, hoặc nâng thư viện (driver JDBC, HTTP client) lên bản đã bỏ synchronized quanh I/O.
+- JDK 24+ (JEP 491): {{synchronized}} không còn pin nữa.
+- Mọi phiên bản: đang ở trong native frame (JNI) hoặc một số thao tác file của OS.
+- Phát hiện: JFR event {{jdk.VirtualThreadPinned}}; JDK 21–23 có thêm {{-Djdk.tracePinnedThreads=full}}. Triệu chứng: throughput không tăng, **CPU thấp** nhưng mọi carrier đều đang bị chiếm, p99 tăng theo số request đồng thời.
 
 ### ThreadLocal và ScopedValue
-- {{ThreadLocal}} với hàng triệu VT sẽ tạo hàng triệu entry → tốn bộ nhớ và có thể leak.
-- {{ScopedValue}} (Java 20, preview; chốt từ 24) là thay thế an toàn hơn: giá trị được truyền theo scope, không phải mỗi VT một entry.
-- Nếu phải dùng ThreadLocal: chỉ dùng cho dữ liệu ngắn, và dọn dẹp bằng {{remove()}}.
+- Mỗi virtual thread có bản ThreadLocal riêng. Cache object đắt (buffer, {{SimpleDateFormat}}) trong ThreadLocal vốn để tái sử dụng giữa các request trên cùng thread pool, giờ mất tác dụng và tốn bộ nhớ gấp bội.
+- Context nhỏ (traceId, user) trong ThreadLocal vẫn chạy đúng, nhớ {{remove()}}.
+- {{ScopedValue}}: incubator ở Java 20, preview Java 21–24, **chính thức từ Java 25**; truyền context bất biến theo phạm vi, rẻ và không rò.
 
-### Semaphore và giới hạn concurrency
-- VT không tự giới hạn số lượng đồng thời: tạo 10.000 VT không thành vấn đề, nhưng 10.000 kết nối DB thì có.
-- Dùng {{Semaphore}} để giới hạn số request đồng thời tới downstream (connection pool, rate limit).
-- Ví dụ: {{Semaphore(20)}} để tối đa 20 request cùng lúc tới core banking API.
+### Giới hạn đồng thời tới downstream
+~~~java
+private final Semaphore dbPermits = new Semaphore(20);   // bằng maximumPoolSize của HikariCP
 
-### Pitfall
-- Dùng VT cho CPU-bound: không giúp, chỉ làm chậm thêm do overhead unmount/mount.
-- Block VT trong {{synchronized}}: carrier thread bị giữ, giảm hiệu năng.
-- Quên giới hạn concurrency: tạo quá nhiều kết nối DB → exhaust connection pool.
-- Debug stack trace dài do VT stack là sự kết hợp của carrier stack và virtual stack chunk.
+Order load(long id) throws InterruptedException {
+    if (!dbPermits.tryAcquire(500, TimeUnit.MILLISECONDS)) {
+        throw new ServiceBusyException("DB busy");          // fail nhanh thay vì xếp hàng vô hạn
+    }
+    try { return repo.findById(id); }
+    finally { dbPermits.release(); }
+}
+~~~
+Không có semaphore, 10.000 virtual thread cùng chờ 20 connection: request xếp hàng trong pool connection tới timeout, p99 tăng vọt, và API đối tác bị dội gấp nhiều lần.
 
-> Senior tip: dùng VT cho mọi I/O-bound code, nhưng luôn đo lường: số lượng connection/Thread pool tới downstream, CPU usage, và memory. Nếu downstream đã có connection pool (ví dụ HikariCP max 20), đặt {{Semaphore}} tương đương để tránh overflow. VT không thay thế kiến trúc, chỉ đơn giản hóa viết code blocking. Với service hiện tại, bật VT có thể giảm latency p99 rõ rệt khi tải cao do giảm overhead tạo thread.`,
-  follow: ['Pinning là gì và khi nào xảy ra?', 'Tại sao dùng ReentrantLock thay synchronized tốt hơn với virtual thread?', 'Khi nào vẫn cần giới hạn concurrency dù dùng virtual thread?'],
+### Ví dụ đời thực
+Service tổng hợp báo giá vận chuyển gọi 6 hãng (200–800 ms mỗi lời gọi), Tomcat 200 thread, peak 900 request/giây: thread pool cạn, p99 4,8 giây dù CPU chỉ 35%. Bật {{spring.threads.virtual.enabled=true}} trên JDK 21 lần đầu **không cải thiện**: JFR có hàng nghìn {{jdk.VirtualThreadPinned}} từ một HTTP client cũ dùng {{synchronized}} quanh việc đọc socket. Nâng client lên bản dùng ReentrantLock, thêm {{Semaphore}} 50 cho mỗi hãng theo hợp đồng rate limit. Kết quả: p99 còn 1,1 giây, CPU 60%, số thread OS giảm từ 260 xuống 40. Sau khi lên JDK 25, team bỏ được lo lắng về synchronized nhưng giữ nguyên semaphore.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual thread chính thức từ Java 21, rẻ tới mức tạo một thread cho mỗi request. Khi code block ở I/O, JVM tháo virtual thread khỏi carrier để carrier chạy việc khác, nên service I/O-bound phục vụ được nhiều request đồng thời hơn hẳn với code blocking bình thường, không cần reactive. Nó không giúp gì cho việc nặng CPU. Để chuyển đổi tôi dùng newVirtualThreadPerTaskExecutor hoặc spring.threads.virtual.enabled từ Spring Boot 3.2, và không pool virtual thread. Ba điểm tôi luôn kiểm tra: pinning, trên JDK 21 đến 23 là block bên trong synchronized, tôi đo bằng JFR event VirtualThreadPinned và thay bằng ReentrantLock hoặc nâng thư viện, còn JDK 24 đã sửa; ThreadLocal, vì mỗi virtual thread một bản nên không dùng ThreadLocal để cache object đắt; và giới hạn đồng thời, vì không còn thread pool chặn hộ, tôi dùng Semaphore khớp với connection pool hoặc rate limit của đối tác."
+
+> Senior tip: lợi ích của virtual thread là **throughput khi nhiều request cùng chờ I/O**, không phải làm một request nhanh hơn. Trước khi bật, tôi đo ba thứ: số request đồng thời lúc peak, số thread OS và JFR pinning; sau khi bật, việc đầu tiên là đặt semaphore cho từng downstream, vì sự cố hay gặp nhất là chính service của mình dội sập DB hoặc đối tác bằng lượng đồng thời mà trước đây thread pool đã vô tình giới hạn.`,
+  follow: ['Pinning là gì, khi nào xảy ra trên JDK 21 và JEP 491 ở JDK 24 thay đổi gì?', 'Vì sao vẫn phải giới hạn đồng thời bằng Semaphore dù virtual thread gần như miễn phí?', 'ThreadLocal dùng để cache object đắt có vấn đề gì khi chuyển sang virtual thread?'],
   tags: ['virtual thread', 'pinning', 'ThreadLocal', 'ScopedValue', 'Semaphore']
 },
 {
@@ -6590,7 +6615,7 @@ ArrayList 10 phần tử (compressed oops):
   -> duyệt tuần tự, CPU prefetch được; các object Integer vẫn nằm rải rác
 
 LinkedList 10 phần tử:
-  node0 [prev|item|next]  node1 [prev|item|next]  ...   mỗi node ~32 byte
+  node0 [prev|item|next]  node1 [prev|item|next]  ...   mỗi node 24 byte (header 12 + 3 reference)
   -> được cấp phát theo thời gian nên vị trí trên heap gần như ngẫu nhiên
   -> mỗi bước duyệt là một lần đọc con trỏ không dự đoán được
 ~~~
@@ -6629,7 +6654,7 @@ public class ListBench {
 | Duyệt lấy tổng | ~15-30 µs | ~120-250 µs |
 | {{get(i)}} ngẫu nhiên | cỡ nano giây (phép tính index) | cỡ micro giây (đi bộ tới i) |
 | Chèn vào giữa | memmove mảng reference, vài µs, không cấp phát object | tìm node O(n) + đổi 3 con trỏ + 1 object mới |
-| Bộ nhớ riêng cho cấu trúc | 4 byte mỗi slot reference | ~32 byte mỗi node, cộng dấu vết cấp phát |
+| Bộ nhớ riêng cho cấu trúc | 4 byte mỗi slot reference | 24 byte mỗi node (compressed oops), cộng dấu vết cấp phát |
 - Điều ngược đời: {{add(index, e)}} của **cả hai** đều O(n) — ArrayList vì memmove, LinkedList vì phải **đi tới** vị trí. LinkedList chỉ rẻ khi bạn đã có {{ListIterator}} nằm đúng chỗ đó (ví dụ vừa {{next()}} xong rồi {{remove()}}).
 
 ### Bẫy làm số liệu sai
