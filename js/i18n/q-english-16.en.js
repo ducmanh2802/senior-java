@@ -156,10 +156,10 @@ Cloud --> CI: resources match desired state
     a: `**Summary (30-second spoken answer):** I ask specific, respectful questions about how the team builds, deploys, and operates software: release process, on-call, incident handling, ownership, and how developers and operations collaborate. Good questions show I care about reliability and teamwork, and they also help me judge whether the environment is healthy.
 
 ### Key terms (explained on first use)
-- **DevOps culture**: how Dev (development) and Ops (operations) work together — sharing responsibility for keeping software running reliably, instead of blaming each other across team boundaries.
-- **Ownership**: who is responsible for a service after it is deployed. In mature teams the team that writes the code also runs it — often summarized as "you build it, you run it."
-- **Toil**: repetitive, manual operational work that has little long-term value (for example, restarting the same service by hand every week). Mature teams look for ways to automate toil.
-- **Blameless postmortem**: an incident review that focuses on process and system causes, not on blaming individuals, so people feel safe reporting problems.
+- **DevOps culture** (DevOps culture): how Dev (development) and Ops (operations) collaborate — sharing responsibility for keeping software running stably, instead of blaming each other.
+- **Ownership** (ownership): who is responsible for a service after deploy (often the team that writes the code also runs it — "you build it, you run it").
+- **Toil** (toil): repetitive, manual operational work with little long-term value; mature teams look for ways to automate toil.
+- **Blameless postmortem** (blameless postmortem): analyzing an incident focusing on process/system, not blaming individuals.
 
 ### Strong questions to ask (with why they matter)
 | Question | What it reveals |

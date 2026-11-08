@@ -7787,7 +7787,7 @@ public void pay(Long id) {
 - Cách giảm: xử lý theo lô nhỏ (ví dụ 500), gọi {{em.flush(); em.clear();}} sau mỗi lô; dùng **StatelessSession** (phiên không trạng thái - không giữ snapshot, không dirty check) cho batch/import.
 
 ### Bước 5: Bytecode enhancement (dirty tracking)
-- **Bytecode enhancement**: cơ chế Hibernate (plugin Maven/Gradle {{hibernate-enhancement-maven-plugin}}) chèn mã vào class entity lúc build để entity tự "báo" field nào đổi (thay vì Hibernate phải quét hết).
+- **Bytecode enhancement**: cơ chế Hibernate (Maven plugin {{org.hibernate.orm.tooling:hibernate-enhance-maven-plugin}}, hoặc Gradle plugin {{org.hibernate.orm}}) chèn mã vào class entity lúc build để entity tự "báo" field nào đổi (thay vì Hibernate phải quét hết).
 - Lợi ích: bỏ qua so sánh field không đổi; kết hợp {{enableLazyInitialization}} có thể cải thiện lazy loading thuộc tính.
 - Đánh đổi: thêm bước build, mã sinh ra khó debug hơn, cần cấu hình nhất quán giữa môi trường.
 
@@ -7802,7 +7802,7 @@ List<Order> rows = em.createQuery("select o from Order o", Order.class)
 @QueryHints(@QueryHint(name = "org.hibernate.readOnly", value = "true"))
 List<Order> findReport();
 ~~~
-- Lưu ý: {{@Transactional(readOnly = true)}} đặt {{FlushMode.MANUAL}} (tắt auto-flush) và gợi ý JDBC; còn hint {{org.hibernate.readOnly}} tác động trực tiếp lên việc giữ snapshot của entity. Hai thứ bổ sung nhau, không hoàn toàn giống nhau.
+- Lưu ý: với Spring 5.1+ và Hibernate, {{@Transactional(readOnly = true)}} vừa đặt {{FlushMode.MANUAL}} (tắt auto-flush), vừa gọi {{session.setDefaultReadOnly(true)}}: mọi entity load trong transaction đó đều ở chế độ read-only, không giữ snapshot. Vì vậy với transaction chỉ đọc, readOnly = true đã đủ; hint {{org.hibernate.readOnly}} dùng khi chỉ muốn một query cụ thể là read-only bên trong transaction có ghi.
 
 ### Trên production
 - **Triệu chứng:** CPU spike trên app server khi xử lý batch; GC nhiều; thời gian flush tăng tuyến tính theo kích thước job; heap dump thấy hàng chục nghìn {{EntityEntry}} và mảng {{loadedState}}.
@@ -7852,7 +7852,7 @@ List<Order> findReport();
 |---|---|---|
 | {{AUTO}} (mặc định) | Trước commit; và trước query JPQL/Criteria/Native nếu Hibernate xác định query có thể đọc bảng bị ảnh hưởng | Cân bằng đúng dữ liệu và hiệu năng |
 | {{COMMIT}} | Chỉ trước commit | Query có thể thấy dữ liệu cũ trong cùng persistence context |
-| {{MANUAL}} (Hibernate, tương đương NEVER JPA) | Chỉ khi gọi {{flush()}} | Dùng cho read-only/batch; giảm dirty checking khi kết hợp đúng |
+| {{MANUAL}} (chỉ có ở Hibernate; JPA chỉ định nghĩa AUTO và COMMIT; thay cho NEVER đã deprecated) | Chỉ khi gọi {{flush()}} | Dùng cho read-only/batch; Spring đặt chế độ này khi transaction readOnly |
 
 ~~~java
 @Transactional
@@ -7955,8 +7955,8 @@ Hibernate chọn **snapshot comparison** vì đơn giản, đúng với mọi ki
 ~~~
 
 ### Read-only hint
-- {{query.setHint("org.hibernate.readOnly", true)}} hoặc dùng {{jakarta.persistence.QueryHints}} tương ứng: Hibernate có thể **không giữ snapshot** / không dirty-check entity trả về → tiết kiệm RAM/CPU cho báo cáo.
-- {{@Transactional(readOnly=true)}} (Spring) thường đặt {{FlushMode.MANUAL}} với Hibernate: ngăn flush tự động; kết hợp tốt cho truy vấn.
+- {{query.setHint("org.hibernate.readOnly", true)}} (hằng số {{HibernateHints.HINT_READ_ONLY}} trong Hibernate 6; JPA chuẩn không có hint read-only): Hibernate **không giữ snapshot** / không dirty-check entity trả về → tiết kiệm RAM/CPU cho báo cáo.
+- {{@Transactional(readOnly=true)}} (Spring 5.1+) đặt {{FlushMode.MANUAL}} và {{session.setDefaultReadOnly(true)}} với Hibernate: không flush tự động và mọi entity load trong transaction đều read-only.
 
 | Cách | Tác dụng chính | Khi dùng |
 |---|---|---|
@@ -7988,7 +7988,7 @@ Hibernate chọn **snapshot comparison** vì đơn giản, đúng với mọi ki
   topic: 'jpa',
   level: 'senior',
   q: 'FlushMode (chế độ flush) AUTO hoạt động thế nào, đặc biệt là auto-flush trước khi chạy JPQL/HQL? Persistence context có thể gây "thấy dữ liệu mình vừa sửa trong bộ nhớ" ra sao, và vì sao đôi khi bạn gặp flush ngoài ý muốn làm chậm request?',
-  a: `**Tóm tắt:** {{FlushMode.AUTO}} (mặc định của Hibernate/JPA trong nhiều cấu hình) cho phép Hibernate **tự flush** trước commit và **trước khi thực thi JPQL/HQL** nếu thay đổi trong persistence context có thể ảnh hưởng kết quả truy vấn (thường xét theo bảng/không gian entity liên quan). Điều này giúp query nhìn thấy thay đổi chưa commit trong cùng unit of work, nhưng có thể gây flush tốn kém hoặc lỗi ràng buộc sớm. {{FlushMode.COMMIT}} (hoặc {{MANUAL}} trong Hibernate API cũ) chỉ flush lúc commit/flush thủ công — nhanh hơn cho luồng đọc nhưng dễ trả kết quả "cũ" so với thay đổi trong bộ nhớ.
+  a: `**Tóm tắt:** {{FlushMode.AUTO}} (mặc định của Hibernate/JPA trong nhiều cấu hình) cho phép Hibernate **tự flush** trước commit và **trước khi thực thi JPQL/HQL** nếu thay đổi trong persistence context có thể ảnh hưởng kết quả truy vấn (thường xét theo bảng/không gian entity liên quan). Điều này giúp query nhìn thấy thay đổi chưa commit trong cùng unit of work, nhưng có thể gây flush tốn kém hoặc lỗi ràng buộc sớm. {{FlushMode.COMMIT}} chỉ flush lúc commit, còn {{MANUAL}} (chỉ có ở Hibernate) chỉ flush khi gọi {{flush()}}; cả hai — nhanh hơn cho luồng đọc nhưng dễ trả kết quả "cũ" so với thay đổi trong bộ nhớ.
 
 ### Bước 1: Thuật ngữ
 - **FlushMode**: chính sách "khi nào đồng bộ context xuống DB".
@@ -8021,7 +8021,7 @@ Hibernate ưu tiên **tính đúng** cho unit of work: lập trình viên kỳ v
 | {{COMMIT}} | Chủ yếu lúc commit | Ít flush bất ngờ | Query có thể bỏ lỡ thay đổi RAM |
 | {{MANUAL}} (Hibernate) | Chỉ khi gọi {{flush()}} | Kiểm soát tối đa | Dễ quên, dễ sai |
 
-- Có thể đặt per query: {{query.setHint("jakarta.persistence.flushMode", FlushModeType.COMMIT)}} (kiểm tra constant/provider bạn dùng).
+- Có thể đặt per query bằng API chuẩn: {{query.setFlushMode(FlushModeType.COMMIT)}}, hoặc cho cả EntityManager: {{em.setFlushMode(FlushModeType.COMMIT)}}. Spring Data: {{@QueryHints(@QueryHint(name = "org.hibernate.flushMode", value = "COMMIT"))}}.
 - Với {{@Transactional(readOnly=true)}}, Spring/Hibernate thường hướng tới {{MANUAL}} semantics — phù hợp đọc.
 
 ### Tương tác với native SQL
