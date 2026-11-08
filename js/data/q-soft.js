@@ -3868,7 +3868,6 @@ Nguồn tham khảo lương: trên voz 2025–2026 có bài chia sẻ cá nhân 
   ],
   tags: ['offer', 'compensation', 'negotiation', 'career'],
   refs: [
-    { type: 'article', title: 'voz.vn: Tổng hợp chia sẻ mức lương phần 2', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/' }
   ],
 },
 {
@@ -4480,69 +4479,69 @@ Một team có 1.900 unit test với Mockito (coverage 85%), 12 integration test
 Khi code gọi new PostgreSQLContainer<>("postgres:16-alpine"):
 
 1. Testcontainers kết nối tới Docker socket (/var/run/docker.sock trên Linux) và hỏi Docker có image postgres:16-alpine chưa; nếu chưa thì pull về.
-2. Docker tạo container, Testcontainers yêu cầu Docker cap mot port ngau nhien tren may host, gan sang port 5432 ben trong container. Test khong biet port truoc, phai lay tu pg.getJdbcUrl() sau khi container san sang.
-3. Testcontainers doi container bao san sang: quet log container tim dong "database system is ready to accept connections", hoac chay lenh pg_isready ben trong container.
-4. Sau khi san sang, Testcontainers tra URL ket noi (JDBC URL) cho Spring, test viet nhu binh thuong voi spring.datasource.url.
+2. Docker tạo container, Testcontainers yêu cầu Docker cấp một port ngẫu nhiên trên máy host, gán sang port 5432 bên trong container. Test không biết port trước, phải lấy từ pg.getJdbcUrl() sau khi container sẵn sàng.
+3. Testcontainers đợi container báo sẵn sàng: quét log container tìm dòng "database system is ready to accept connections", hoặc chạy lệnh pg_isready bên trong container.
+4. Sau khi sẵn sàng, Testcontainers trả URL kết nối (JDBC URL) cho Spring, test viết như bình thường với spring.datasource.url.
 
-Container song cho den khi test xong hoac JVM tat.
+Container sống cho đến khi test xong hoặc JVM tắt.
 
-### Ryuk: cong don rac, khong phai la tu chon
-Ryuk la container Go nho chay cung mang voi container chinh. Moi container chinh dang ky minh voi Ryuk; khi JVM tat, Testcontainers goi API HTTP cua Ryuk de Ryuk don container chinh. Neu ban tat Ryuk (disableRyuk()), container chinh khong duoc don tu dong va ban phai xoá bang tay. Neu JVM bi kill -9 hoac may mat dien, Ryuk khong nhan lenh don -> container rac con lai, o Docker day tren runner self-hosted, cac chay sau that bai vi het dung luong.
+### Ryuk: công dọn rác, không phải là tuỳ chọn
+Ryuk là container Go nhỏ chạy cùng mạng với container chính. Mỗi container chính đăng ký mình với Ryuk; khi JVM tắt, Testcontainers gọi API HTTP của Ryuk để Ryuk dọn container chính. Nếu bạn tắt Ryuk (disableRyuk()), container chính không được dọn tự động và bạn phải xoá bằng tay. Nếu JVM bị kill -9 hoặc máy mất điện, Ryuk không nhận lệnh dọn -> container rác còn lại, ổ Docker đầy trên runner self-hosted, các chạy sau thất bại vì hết dung lượng.
 
-### Reuse container: giu container giua cac lan chay local
-Mac dinh, moi lan chay mvn test Testcontainers tao moi roi don container => moi suite cho pull image va khoi dong container (hang mot giay den nhuc giay). Bat reuse bang:
-- withReuse(true) tren container, va
-- dong testcontainers.reuse.enable=true trong file ~/.testcontainers.properties.
+### Reuse container: giữ container giữa các lần chạy local
+Mặc định, mỗi lần chạy mvn test Testcontainers tạo mới rồi dọn container => mỗi suite chờ pull image và khởi động container (hàng một giây đến nhúc giây). Bật reuse bằng:
+- withReuse(true) trên container, và
+- dòng testcontainers.reuse.enable=true trong file ~/.testcontainers.properties.
 
-Testcontainers se dat ten co dinh cho container; lan chay sau no kiem tra container da ton tại va dang chay thi dung lai, khong khoi dong lai. Chi nen bat tren may dev. Tren CI tat reuse: moi job la moi truong sach, container tai dung se mang du lieu cu cua lan chay truoc vao va lam test fail lung tung.
+Testcontainers sẽ đặt tên cố định cho container; lần chạy sau nó kiểm tra container đã tồn tại và đang chạy thì dùng lại, không khởi động lại. Chỉ nên bật trên máy dev. Trên CI tắt reuse: mỗi job là môi trường sạch, container tái dùng sẽ mang dữ liệu cũ của lần chạy trước vào và làm test fail lung tung.
 
-### Singleton container: mot container cho ca suite
-Danh dau container static final de JUnit khoi dong mot lan cho toan bo class test, hoac de container trong class cha tuong abstract de nhieu class con chia chung:
+### Singleton container: một container cho cả suite
+Đánh dấu container static final để JUnit khởi động một lần cho toàn bộ class test, hoặc để container trong class cha trừu tượng abstract để nhiều class con chia chung:
 ~~~java
 @Testcontainers
 abstract class PgIT {
     @Container
-    @ServiceConnection                       // Spring Boot 3.1+: tu nap url/username/password
+    @ServiceConnection                       // Spring Boot 3.1+: tự nạp url/username/password
     static final PostgreSQLContainer<?> PG =
         new PostgreSQLContainer<>("postgres:16-alpine");
 }
 
 class OrderRepositoryIT extends PgIT {
-    // 60 test, khoi dong them container nao
+    // 60 test, khởi động thêm container nào
 }
 ~~~
-@ServiceConnection (Spring Boot 3.1+) tu gan spring.datasource.* vao ung dung test, khong can khai bao @DynamicPropertySource bang tay.
+@ServiceConnection (Spring Boot 3.1+) tự gán spring.datasource.* vào ứng dụng test, không cần khai báo @DynamicPropertySource bằng tay.
 
-### Chay nhieu test song song tren CI
-- Luon de Docker cap port dong; khong hardcode cong 5432, neu khong hai job chay cung luc tren cung runner se gap Address already in use.
-- Runner CI phai co Docker daemon. GitHub Actions co the dung service containers; neu runner khong co Docker, dung Testcontainers Cloud hoac chap nhan chay test tren database embed voi ghi ro han che.
-- Gioi lu bo nho runner: moi container Postgres tuc it nhat tram tram MB; chay qua nhieu job song song tren runner nho gay OOM.
-- Co Docker khong nghia chay duoc Testcontainers: runner phai mount Docker socket hoac co quyen privileged.
+### Chạy nhiều test song song trên CI
+- Luôn để Docker cấp port động; không hardcode cổng 5432, nếu không hai job chạy cùng lúc trên cùng runner sẽ gặp Address already in use.
+- Runner CI phải có Docker daemon. GitHub Actions có thể dùng service containers; nếu runner không có Docker, dùng Testcontainers Cloud hoặc chấp nhận chạy test trên database embed với ghi rõ hạn chế.
+- Giới hạn bộ nhớ runner: mỗi container Postgres tốn ít nhất trăm trăm MB; chạy quá nhiều job song song trên runner nhỏ gây OOM.
+- Có Docker không nghĩa chạy được Testcontainers: runner phải mount Docker socket hoặc có quyền privileged.
 
-### So lieu chi phi thuc te
-| Thanh thuc | Thoi gian |
+### Số liệu chi phí thực tế
+| Thành phần | Thời gian |
 |---|---|
-| Pull image postgres:16-alpine (>100 MB) | lan dau 15-40 giay, co layer cache gan 0 |
-| Khoi dong container toi khi pg_isready OK | 3-6 giay |
-| Ryuk container | 1-2 giay, khoi dong mot lan |
-| Chay migration tren schema rong | 1-5 giay |
+| Pull image postgres:16-alpine (>100 MB) | lần đầu 15-40 giây, có layer cache gần 0 |
+| Khởi động container tới khi pg_isready OK | 3-6 giây |
+| Ryuk container | 1-2 giây, khởi động một lần |
+| Chạy migration trên schema rỗng | 1-5 giây |
 
-Mot module 300 test repository dung chung mot container chậm chậm hon H2 khoang 8-15 giay tong cong, khong phai chậm chậm 300 lan.
+Một module 300 test repository dùng chung một container chậm hơn H2 khoảng 8-15 giây tổng cộng, không phải chậm 300 lần.
 
-### Tren production
-Khong bao giờ dua Testcontainers vao ung dung production chay tren Kubernetes hay server thuc - no la cong cu test. Luc loi tren CI, hay xem:
-- Cannot connect to the Docker daemon -> runner khong co Docker hoac khong mount socket.
-- Container khong don sau test fail -> Ryuk bi tat hoac JVM crash; kiem tra docker ps va don container rac.
-- Day o /var/lib/docker tren runner self-hosted -> do container rac tich luu.
+### Trên production
+Không bao giờ đưa Testcontainers vào ứng dụng production chạy trên Kubernetes hay server thực - nó là công cụ test. Lúc lỗi trên CI, hãy xem:
+- Cannot connect to the Docker daemon -> runner không có Docker hoặc không mount socket.
+- Container không dọn sau test fail -> Ryuk bị tắt hoặc JVM crash; kiểm tra docker ps và dọn container rác.
+- Đầy ổ /var/lib/docker trên runner self-hosted -> do container rác tích luỹ.
 
-### Bai the hay gap
-- Dung image tag latest: image doi lien tuc, Docker layer cache vo dung, build khong tai lap. Luon pin phien ban (postgres:16-alpine).
-- Container khong khai bao static hoac moi test class mot container: CI khoi dong hang tram container, day o.
-- Bat reuse.enable=true tren CI: du lieu cu loti giua cac job.
-- Bo Ryuk de cho nhanh: container rac tich luu, runner chet vi het o.
-- Cac lop test ghi vao cung schema va chay dong bo: fail ngau nhien, mat hang ngay debug.
+### Bẫy hay gặp
+- Dùng image tag latest: image đổi liên tục, Docker layer cache vô dụng, build không tái lập. Luôn pin phiên bản (postgres:16-alpine).
+- Container không khai báo static hoặc mỗi test class một container: CI khởi động hàng trăm container, đầy ổ.
+- Bật reuse.enable=true trên CI: dữ liệu cũ lọt giữa các job.
+- Bỏ Ryuk để cho nhanh: container rác tích luỹ, runner chết vì hết ổ.
+- Các lớp test ghi vào cùng schema và chạy đồng bộ: fail ngẫu nhiên, mất hàng ngày debug.
 
-> Senior tip: trinh biet quyet dinh nay voi lead bang so cua chinh team: suite repository 300 test chay 4 phut 20 giay voi Postgres container dung chung so voi 1 phut 10 giay voi H2; trong 12 thang qua chung ta bat duoc 4 loi SQL chi loi tren Postgres, moi lan sua production mat khoang mot ngay. Do là lap luan cua ky su co kinh nghiem.`,
+> Senior tip: trình bày quyết định này với lead bằng số của chính team: suite repository 300 test chạy 4 phút 20 giây với Postgres container dùng chung so với 1 phút 10 giây với H2; trong 12 tháng qua chúng ta bắt được 4 lỗi SQL chỉ lỗi trên Postgres, mỗi lần sửa production mất khoảng một ngày. Đó là lập luận của kỹ sư có kinh nghiệm.`,
   follow: ['Ryuk bị tắt (ví dụ trên runner self-hosted hạn chế quyền), bạn dọn container rác như thế nào?', 'Làm sao chạy Testcontainers trên CI không có Docker daemon cục bộ (Docker-in-Docker, Testcontainers Cloud)?', 'Cân bằng giữa test nhanh và test chạy trên DB thật trong cùng một module thế nào?'],
   tags: ['Testcontainers', 'Ryuk', 'reuse-container', 'singleton-container', 'CI'],
   refs: [{ type: 'doc', title: 'Testcontainers documentation', url: 'https://testcontainers.org' }]
