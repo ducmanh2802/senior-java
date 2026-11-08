@@ -4,7 +4,7 @@
  */
 App.i18n.content({
   'collections-002': {
-    q: `How does {{ConcurrentHashMap}} work in Java 8 (CAS + synchronized on the bin)? Why is {{size()}} not exactly accurate and why are null keys/values forbidden?`,
+    q: "How does {{ConcurrentHashMap}} work in Java 8 (CAS + synchronized on the bin)? Why is {{size()}} not exactly accurate and why are null keys/values forbidden?",
     a: `**Summary:** Java 8 drops segments; it uses **CAS** for insertion into an empty bucket and **synchronized on the first node** on collision; the counter uses {{baseCount}} + {{CounterCell}}, so {{size()}} is a concurrently updated estimate; null is banned to avoid ambiguity between "key absent" and "key present with null value" and to keep lock-free reads simple.
 
 ### From Java 7 to Java 8
@@ -42,50 +42,56 @@ synchronized (f) {                     // f = first node of bucket
 
 > Senior tip: CHM is excellent for config/registry maps with many reads, but it is not a replacement for a cache with eviction. For hot keys, consider {{LongAdder}} / {{striped lock}} instead of {{compute}} on the same key, because all threads will queue on the same bucket.`,
     follow: [
-      `Why can {{computeIfAbsent}} cause deadlock if the mapping function updates the same map?`,
-      `What does {{ConcurrentHashMap}} guarantee for its iterator and {{size()}}?`,
-      `When should {{Collections.synchronizedMap}} be preferred over CHM?`
+      "Why can {{computeIfAbsent}} cause deadlock if the mapping function updates the same map?",
+      "What does {{ConcurrentHashMap}} guarantee for its iterator and {{size()}}?",
+      "When should {{Collections.synchronizedMap}} be preferred over CHM?"
     ]
   },
   'collections-003': {
-    q: `{{ArrayList}} vs {{LinkedList}}: how does cache locality affect them, and when does {{LinkedList}} really win?`,
-    a: `**Summary:** {{ArrayList}} stores elements in a contiguous array, so sequential traversal is extremely fast thanks to cache locality and random access O(1); {{LinkedList}} uses scattered nodes, each with a header + 2 references, so traversal is slow and memory-heavy. {{LinkedList}} almost never wins in real workloads; {{ArrayDeque}} is usually better for queue/stack.
+    q: "{{ArrayList}} vs {{LinkedList}}: how does cache locality affect performance, and when does {{LinkedList}} actually win?",
+    a: `**Summary:** {{ArrayList}} stores elements in a contiguous array, so sequential iteration is extremely fast thanks to cache locality and random access is O(1); {{LinkedList}} is a chain of scattered nodes, each paying for an object header + 2 references, making iteration slow and memory-heavy. {{LinkedList}} almost never wins in real workloads; {{ArrayDeque}} is usually better for queue/stack.
 
-### Inside
-- {{ArrayList}}: {{Object[] elementData}} + {{size}}. Append amortized O(1); insert/delete middle O(n) due to {{System.arraycopy}} shifting elements. When full, grow by ~1.5x ({{oldCapacity + (oldCapacity >> 1)}}).
-- {{LinkedList}}: node {{prev, item, next}}; each node is a separate object. {{get(i)}} O(n) (traverse from head or tail); add/remove at ends O(1); remove via {{Iterator}} O(1) because the node is already known.
+### Internals
+- {{ArrayList}}: {{Object[] elementData}} + {{size}}. Appending is amortized O(1); inserting/removing in the middle is O(n) because {{System.arraycopy}} shifts elements. When full it grows by ~1.5x ({{oldCapacity + (oldCapacity >> 1)}}).
+- {{LinkedList}}: nodes {{prev, item, next}}; each node is a separate object. {{get(i)}} is O(n) (walks from head or tail); add/remove at the ends is O(1); remove via an {{Iterator}} is O(1) because the node is already known.
 
 ### Cache locality
-- CPU reads by cache line (typically 64 bytes). The {{Object[]}} array is contiguous, so sequential access almost always hits cache; JIT also optimizes array loops well.
-- Each LinkedList node lives on the heap and may be scattered; accessing {{next}} is **pointer chasing**, and each step can cause a cache miss. Traversing 1 million elements can be many times slower than ArrayList despite the same O(n).
-- Memory: LinkedList node costs object header (~16 bytes) + 3 references (~12-24 bytes depending on compressed oops) ≈ 32-40 bytes per element; ArrayList only stores references inside the array (4-8 bytes) plus array overhead.
+- The CPU reads memory in cache lines (typically 64 bytes). The {{Object[]}} array is contiguous, so sequential iteration almost always hits the cache; the JIT also optimizes array loops well.
+- Each LinkedList node is a separate object on the heap and may be scattered; following {{next}} is **pointer chasing**, and each step can be a cache miss. Iterating 1 million elements can be many times slower than ArrayList despite the same O(n).
+- Memory: a LinkedList node costs an object header (~16 bytes) + 3 references (~12-24 bytes depending on compressed oops) ≈ 32-40 bytes/element; ArrayList only costs a reference inside the array (4-8 bytes) + array overhead.
 
 ### When LinkedList makes sense
-- Need both {{List}} and {{Deque}}, many insertions/removals at both ends, and **no** index access. But {{ArrayDeque}} can do this faster and with less memory.
-- Remove in the middle when you already have a {{ListIterator}} at the exact position (O(1) for the removal operation), but the cost to **reach** that position is still O(n), and locality is poor.
-- Very large lists with continuous middle insertions/deletions and no index need — rare in backend; usually a different structure (skip list, tree, queue) is better.
+- You need both {{List}} and {{Deque}}, with many insertions/removals at both ends, and **no** index access. But {{ArrayDeque}} does this faster and with less memory.
+- Removing an element in the middle when you already hold a {{ListIterator}} at that exact position (the removal itself is O(1)), but the cost to **reach** that position is still O(n), and locality is still poor.
+- A very large list with continuous middle insert/remove and no index needs — rare in backend code; a different structure (skip list, tree, queue) is usually better.
 
-### Real world
-- Most backend code uses {{ArrayList}}; queue/stack uses {{ArrayDeque}}; priority uses {{PriorityQueue}}; concurrent queue uses {{ArrayBlockingQueue}} / {{LinkedBlockingQueue}}.
-- {{LinkedList}} is sometimes used as a {{Deque}} in older code, but {{ArrayDeque}} is ~several times faster in benchmarks.
-- Don't pick a collection based on pure Big-O; constants and memory matter a lot.
+### In practice
+- Most backend code uses {{ArrayList}}; queue/stack use {{ArrayDeque}}; priority uses {{PriorityQueue}}; concurrent queues use {{ArrayBlockingQueue}}/{{LinkedBlockingQueue}}.
+- {{LinkedList}} still appears as a {{Deque}} in some older code, but {{ArrayDeque}} is ~a few times faster in benchmarks.
+- Do not choose a collection by Big-O alone; constants and memory dominate in practice.
 
-> Senior tip: if you see {{LinkedList}} in code, ask immediately "is middle insertion/removal with an iterator truly needed?"; 90% of cases switching to {{ArrayList}} or {{ArrayDeque}} will be faster and reduce heap. Measure with JMH on real data instead of gut feeling.`,
+### Real-world example
+A product-ranking service kept 300,000 candidates in a {{LinkedList}} because it "often removes eliminated items". The actual code called {{list.get(i)}} in an index-based for loop, so each get walked from the head for O(n²) total; ranking requests took 4-9 seconds. Switching to {{ArrayList}} and filtering with {{removeIf}} (a single array shift, O(n)) brought it down to ~35 ms. Heap for the list also dropped from ~12 MB (nodes + headers) to ~1.5 MB for the reference array.
+
+### Sample interview answer
+"ArrayList stores references in a contiguous array, so index access is O(1) and sequential iteration is very fast because the CPU reads 64-byte cache lines and adjacent elements usually hit the cache. Appending is amortized O(1), while inserting or removing in the middle shifts the array. LinkedList gives each element its own node with prev and next, so each element costs about 24 to 32 extra bytes and iteration is pointer chasing where each step can miss the cache; index access is O(n). In theory LinkedList wins for middle insert/remove when you already have an iterator at the spot, but reaching that spot is still O(n). So I almost always use ArrayList, ArrayDeque for queues and stacks, and if I am unsure I measure with JMH on real data."
+
+> Senior tip: if you see {{LinkedList}} in code, ask immediately "is middle insert/remove with an iterator actually needed?"; in 90% of cases switching to {{ArrayList}} or {{ArrayDeque}} is faster and cuts heap. Measure with JMH on real data instead of trusting intuition.`,
     follow: [
-      `Why does {{ArrayDeque}} usually replace {{LinkedList}} as queue/stack?`,
-      `What is the memory impact of ArrayList's 1.5x growth?`,
-      `When should you initialize {{ArrayList}} with a preset capacity?`
+      "Why can {{ArrayDeque}} usually replace {{LinkedList}} as a queue/stack?",
+      "How does ArrayList growing by 1.5x affect memory?",
+      "When should you initialize an {{ArrayList}} with a preset capacity?"
     ]
   },
   'collections-004': {
-    q: `Fail-fast and fail-safe iterators: how are they different? When does {{ConcurrentModificationException}} occur and how to avoid it?`,
-    a: `**Summary:** fail-fast iterator checks {{modCount}} and throws {{ConcurrentModificationException}} if the collection is modified outside the iterator; fail-safe (weakly consistent) such as {{ConcurrentHashMap}} or snapshot such as {{CopyOnWriteArrayList}} does not throw but may see old/incomplete data.
+    q: "How do fail-fast and fail-safe iterators differ? When does {{ConcurrentModificationException}} occur and how do you avoid it?",
+    a: `**Summary:** a fail-fast iterator checks {{modCount}} and throws {{ConcurrentModificationException}} if the collection is structurally modified outside the iterator; fail-safe (weakly consistent) iterators like {{ConcurrentHashMap}} or snapshot-based ones like {{CopyOnWriteArrayList}} do not throw but may see stale/incomplete data.
 
 ### Fail-fast
-- {{ArrayList}}, {{HashMap}}, {{HashSet}}... have a {{modCount}} field that increases on every structural change.
-- Iterator stores {{expectedModCount}}; each {{next()}} / {{remove()}} compares it, and any mismatch throws CME immediately.
-- This is **best-effort detection**, not a synchronization mechanism: it does not guarantee detection of every case, especially multi-threaded.
-- CME can happen even in **a single thread** when using for-each and calling {{list.remove(x)}} or {{map.put}} concurrently.
+- {{ArrayList}}, {{HashMap}}, {{HashSet}}... keep a {{modCount}} field that increments on every structural change.
+- The iterator stores {{expectedModCount}}; on each {{next()}}/{{remove()}} it compares, and throws CME immediately if they differ.
+- This is **best-effort detection**, not a synchronization mechanism: it does not guarantee detection in every case, especially across threads.
+- CME can happen even in a **single thread** when you for-each and also call {{list.remove(x)}} or {{map.put}}.
 
 ~~~java
 for (String s : list) {
@@ -97,43 +103,53 @@ while (it.hasNext()) if (it.next().isEmpty()) it.remove();
 // or concise:
 list.removeIf(String::isEmpty);
 ~~~
-- {{list.remove(int)}} differs from {{it.remove()}}; only the iterator knows to update {{expectedModCount}}.
-- {{for (int i...)}} followed by {{remove(i)}} does not throw but **skips** an element due to index shift — a silent bug worse than CME.
+
+- {{list.remove(int)}} is different from {{it.remove()}}; only the iterator knows to update {{expectedModCount}}.
+- {{for (int i...)}} followed by {{remove(i)}} does not throw but **skips** an element because indexes shift — a silent bug worse than CME.
 
 ### Fail-safe / weakly consistent
-- {{ConcurrentHashMap}}: iterator does not throw CME, reflects state at a point in time; may or may not see ongoing changes. {{size()}} is also only an estimate.
-- {{CopyOnWriteArrayList}}: iterator works on a **snapshot** of the array at creation time; modifications to the list do not affect the iterator, but the iterator does not support {{remove}}.
-- {{Collections.synchronizedList}}: iterator is **still fail-fast**; to traverse safely you must wrap the entire loop in {{synchronized (list)}} (per Javadoc).
-- {{ConcurrentSkipListMap}} is weakly consistent similarly.
+- {{ConcurrentHashMap}}: the iterator does not throw CME and reflects state at some point in time; it may or may not see concurrent changes. {{size()}} is also only an estimate.
+- {{CopyOnWriteArrayList}}: the iterator works on a **snapshot** of the array taken at creation; mutating the list does not affect the iterator, but the iterator does not support {{remove}}.
+- {{Collections.synchronizedList}}: the iterator is **still fail-fast**; to iterate safely you must hold {{synchronized (list)}} around the whole loop (per the Javadoc).
+- {{ConcurrentSkipListMap}} is weakly consistent in a similar way.
 
 ### How to avoid
-- Modify through the iterator ({{it.remove()}}, {{it.set()}}).
+- Mutate through the iterator ({{it.remove()}}, {{it.set()}}).
 - Use {{removeIf}}, {{replaceAll}}, {{computeIfPresent}}.
-- For maps, use {{entrySet().removeIf}}, {{map.compute}} instead of removing in for-each.
-- Multi-threaded: use the correct concurrent collection, or copy to a new list before iterating if only a snapshot is needed.
-- Do not assume {{Collections.synchronizedList}} makes the iterator safe.
+- With maps, use {{entrySet().removeIf}} or {{map.compute}} instead of removing in a for-each.
+- Multi-threaded: use the right concurrent collection, or copy to a new list before iterating if you only need a snapshot.
+- Do not assume {{Collections.synchronizedList}} makes iteration safe.
 
-### Pitfall
-- Catching CME and ignoring it hides a bug; CME signals a logic error, not a temporary failure to retry.
-- Iterating over {{subList}} and then modifying the parent list also causes CME.
-- Modifying the collection inside its own {{forEach}} also throws CME (except for concurrent collections).
+### Pitfalls
+- Catching CME and ignoring it hides a bug; CME signals broken logic, not a transient error to retry.
+- Iterating a {{subList}} and mutating the backing list also causes CME.
+- Mutating the collection inside its own {{forEach}} also throws CME (except concurrent collections).
 
-> Senior tip: in code review, prefer {{removeIf}} / {{computeIfAbsent}} because they are concise and avoid CME; with CHM, don't rely on {{size()}} to exit a loop in concurrent environments — use the operation result or count locally.`,
+### Internals: where modCount lives
+{{modCount}} is a plain {{int}} field (not {{volatile}}) in {{AbstractList}}/{{HashMap}}; it increments on **structural** changes (add, remove, resize), not on an in-place {{set}}. Because there is no synchronization, another thread in a concurrent setting may **not see** the new value, so CME is not guaranteed; data can be corrupted with no exception at all. That is why the Javadoc calls it "best-effort" — useful to detect bugs, not to rely on for correctness.
+
+### Real-world example
+A scheduler shared an {{ArrayList<Job>}} between a scheduling thread and an API thread that "cancels jobs". Occasionally (about 3 times/day) the scheduler died with CME; once nothing was thrown but a job ran twice. The fix was {{CopyOnWriteArrayList}} (small list, many reads, few writes) for the job list, and cancellation switched to setting a {{cancelled}} flag on the job instead of removing it from the list while iterating. No CME or duplicate runs in the 6 months after.
+
+### Sample interview answer
+"Regular collections like ArrayList and HashMap have a modCount field that increments on every structural change. An iterator records that value at creation and checks it on each next; if it differs it throws ConcurrentModificationException. This happens even in one thread, for example removing inside a for-each. The right fix is iterator.remove, or removeIf, replaceAll, compute. Note that an index-based for with remove does not throw but silently skips elements. This mechanism is only best-effort: modCount is not volatile so with multiple threads you might get no detection while data is still corrupted. With multiple threads I use concurrent collections: ConcurrentHashMap gives a weakly consistent iterator that does not throw, CopyOnWriteArrayList iterates over a snapshot. A synchronizedList still has a fail-fast iterator, so you must hold synchronized around the whole loop yourself."
+
+> Senior tip: in code review, prefer {{removeIf}}/{{computeIfAbsent}} because they are concise and avoid CME; with CHM, do not rely on {{size()}} to stop a loop in a concurrent setting — use the operation's return value or a local counter.`,
     follow: [
-      `Why can {{Collections.synchronizedList}} still throw CME during iteration?`,
-      `Does {{CopyOnWriteArrayList}} iterator support {{remove}}, and why?`,
-      `In a multi-threaded app is CME always caused by multi-threading?`
+      "Why can {{Collections.synchronizedList}} still throw CME during iteration?",
+      "Does a {{CopyOnWriteArrayList}} iterator support {{remove}}, and why?",
+      "In a multi-threaded app, is CME always caused by multiple threads?"
     ]
   },
   'collections-005': {
-    q: `How do you use {{LinkedHashMap}} as an LRU cache? How do {{removeEldestEntry}} and access-order work, and should it be used in production?`,
-    a: `**Summary:** enable {{accessOrder = true}} so that each {{get}} / {{put}} moves the entry to the end of the list, override {{removeEldestEntry}} to return {{size() > capacity}} to auto-remove the oldest entry; simple but **not thread-safe** and without stats/expiry, so production usually uses Caffeine.
+    q: "How do you use {{LinkedHashMap}} as an LRU cache? How do {{removeEldestEntry}} and access-order work, and should you use it in production?",
+    a: `**Summary:** enable {{accessOrder = true}} so each {{get}}/{{put}} moves the entry to the end of the list, override {{removeEldestEntry}} to return {{size() > capacity}} to auto-remove the eldest; simple but **not thread-safe** and lacking stats/expiry, so production usually uses Caffeine.
 
 ### Mechanism
-- {{LinkedHashMap}} extends {{HashMap}} and links entries with a doubly-linked list ({{before}} / {{after}}).
-- By default **insertion-order**; constructor {{LinkedHashMap(int capacity, float loadFactor, boolean accessOrder)}} with {{accessOrder = true}} switches to **access-order**.
-- In access-order, {{get}} and {{put}} (including {{getOrDefault}}, {{compute}}) count as "access" and move the entry to the end.
-- {{removeEldestEntry(Map.Entry)}} is called after each insertion; return {{true}} and the entry at the **head** (least recently used) is removed.
+- {{LinkedHashMap}} extends {{HashMap}} and links entries with a doubly-linked list ({{before}}/{{after}}).
+- Default is **insertion-order**; the constructor {{LinkedHashMap(int capacity, float loadFactor, boolean accessOrder)}} with {{accessOrder = true}} switches to **access-order**.
+- In access-order, {{get}} and {{put}} (including {{getOrDefault}}, {{compute}}) count as access and move the entry to the end.
+- {{removeEldestEntry(Map.Entry)}} is called after each insertion; returning {{true}} removes the **first** entry (least recently used).
 
 ~~~java
 class LruCache<K, V> extends LinkedHashMap<K, V> {
@@ -148,67 +164,79 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
 }
 ~~~
 
-- You can override {{removeEldestEntry}} to return false for certain keys (pinning) or log on eviction.
+- You can override {{removeEldestEntry}} to return false for certain keys (pin an entry) or log on eviction.
 
-### Limits
-- **Not thread-safe**: concurrent {{get}} changes the linked list (access-order) ⇒ must wrap with {{synchronized}} or use {{Collections.synchronizedMap}}; but then all operations are sequential, losing the benefit.
-- **No TTL**: only evicts by size, not by time.
-- **No statistics**: hit rate, eviction count must be counted manually.
-- **No better policy than LRU**: LRU is vulnerable to "cache pollution" from a sequential scan (each new item pushes out old cache).
-- **Memory overhead**: adds 2 references per entry compared to HashMap; for large caches with small entries the overhead is significant.
-- {{get}} in access-order is a **structural modification** for iterator purposes: iterating and calling {{get}} concurrently can cause CME in the same thread.
+### Limitations
+- **Not thread-safe**: concurrent {{get}} calls still mutate the linked list (access-order), so you must wrap with {{synchronized}} or {{Collections.synchronizedMap}}; but then every operation becomes sequential, losing the benefit.
+- **No TTL**: evicts only by size, not by time.
+- **No statistics**: hit rate and eviction count must be tracked manually.
+- **No policy better than LRU**: LRU is vulnerable to "cache pollution" from a single sequential scan (each new item pushes the whole cache out).
+- **Memory overhead**: 2 extra references per entry compared to HashMap; significant for large caches with small entries.
+- In access-order, {{get}} is a **structural modification** in terms of iteration: iterating and calling {{get}} at the same time can cause CME in the same thread.
 
 ### Production
-- Use **Caffeine**: {{Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(...).recordStats().build()}}, supports W-TinyLFU (better than LRU), async loading, stats, thread-safe.
+- Use **Caffeine**: {{Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(...).recordStats().build()}}, with W-TinyLFU (better than LRU), async loading, stats, and thread safety.
 - Or Guava Cache (simpler, fewer features than Caffeine).
-- Redis / Memcached if distributed cache; need clear invalidation policy.
-- For in-JVM caches always set **maximumSize** to avoid OOM; an unlimited cache is a timed bomb.
+- Redis/Memcached for distributed caching; define a clear invalidation policy.
+- For in-JVM caches, always set **maximumSize** to avoid OOM; an unbounded cache is a time bomb.
 
-> Senior tip: don't write an LRU with LinkedHashMap in a production service unless the cache is very small and only one thread accesses it. Caffeine is not only faster but also avoids the scan-cleaning pattern, and provides metrics to know if the cache is effective.`,
+### Real-world example
+A currency-rate lookup service used an access-order {{LinkedHashMap}} LRU of 10,000 entries wrapped in {{Collections.synchronizedMap}}. Under 2,000 requests/second, p99 rose to 300 ms: every {{get}} is a write (moving the entry to the end of the list) so they all take the same lock and hundreds of threads queue up. After switching to Caffeine ({{maximumSize(10_000)}}, {{expireAfterWrite(5 minutes)}}, {{recordStats()}}): p99 dropped to 4 ms and hit rate measured 97%. Stats also revealed a nightly job scanning all currency codes that had been wiping the old LRU every night — Caffeine's W-TinyLFU kept the hot keys through that scan.
+
+### Sample interview answer
+"LinkedHashMap links entries with a doubly-linked list. Initialized with accessOrder true, every get or put moves that entry to the end, so the head is always the least recently used. Override removeEldestEntry to return size greater than the limit and the head is removed after each insert — that gives you an LRU in a few lines. But I do not use it in production for a shared cache. It is not thread-safe, and because get also mutates the list, wrapping with synchronized turns every read into a serialized operation. It has no TTL, no stats, and LRU is easily polluted by a single scan. In production I use Caffeine: thread-safe, with maximumSize, expiry, hit-rate stats, and the W-TinyLFU policy which beats LRU."
+
+> Senior tip: do not hand-roll an LRU with LinkedHashMap in a production service unless the cache is tiny and accessed by a single thread. Caffeine is not only faster but also avoids scan-induced cache eviction and provides metrics to know whether the cache is effective.`,
     follow: [
-      `Why can access-order {{get}} cause CME when iterating over the map?`,
-      `What are the drawbacks of LRU compared to LFU / W-TinyLFU?`,
-      `How do you add TTL to a custom LinkedHashMap cache?`
+      "Why can an access-order {{get}} cause CME while iterating the map?",
+      "What drawbacks does LRU have compared to LFU/W-TinyLFU?",
+      "How would you add TTL to a hand-written LinkedHashMap cache?"
     ]
   },
   'collections-006': {
-    q: `When should {{TreeMap}} / {{NavigableMap}} be used? Why must the comparator be consistent with {{equals}} and what happens if it isn't?`,
-    a: `**Summary:** {{TreeMap}} is a red-black tree that keeps keys in order, allowing range / floor / ceiling queries in O(log n); the comparator (or {{compareTo}}) must be consistent with {{equals}}, otherwise the map/set will treat two different keys as one and **silently lose data**.
+    q: "When should you use {{TreeMap}}/{{NavigableMap}}? Why must the comparator be consistent with {{equals}}, and what happens if it is not?",
+    a: `**Summary:** {{TreeMap}} is a red-black tree that keeps keys in order, supporting range/floor/ceiling queries in O(log n); the comparator (or {{compareTo}}) must be consistent with {{equals}}, otherwise the map/set will treat two different keys as one and **silently lose data**.
 
 ### NavigableMap
-- {{firstKey}}, {{lastKey}}, {{floorKey(k)}} (≤ k), {{ceilingKey(k)}} (≥ k), {{lowerKey}}, {{higherKey}}.
-- {{headMap(k, inclusive)}}, {{tailMap}}, {{subMap(from, to)}} are **views** — changes to the view affect the parent map.
-- {{pollFirstEntry}}, {{pollLastEntry}} are convenient for priority queues with removal.
-- {{descendingMap}} reverses order; {{TreeSet}} is similar for sets.
+- {{firstKey}}, {{lastKey}}, {{floorKey(k)}} (<= k), {{ceilingKey(k)}} (>= k), {{lowerKey}}, {{higherKey}}.
+- {{headMap(k, inclusive)}}, {{tailMap}}, {{subMap(from, to)}} are **views** — mutating a view affects the backing map.
+- {{pollFirstEntry}}, {{pollLastEntry}} are handy for a priority queue with removal.
+- {{descendingMap}} reverses order; {{TreeSet}} is the set counterpart.
 
-### Use case
-- Range queries in memory: find time windows, price buckets, versions ≥ X.
-- Small leaderboard, simple scheduler (but production should use a heap / Redis sorted set).
-- Group by intervals: {{subMap(from, true, to, false)}}.
-- Find nearest neighbor (1D).
+### Use cases
+- In-memory range queries: find a time window, price bucket, or version >= X.
+- Small leaderboards or simple schedulers (but in production prefer a heap/Redis sorted set).
+- Grouping by intervals: {{subMap(from, true, to, false)}}.
+- Finding the nearest neighbor (1 dimension).
 
 ### Comparator and equals
-- {{TreeMap}} does **not use** {{equals}} / {{hashCode}} to identify keys; it uses {{compare()}}.
-- If {{compare(a, b) == 0}} but {{a.equals(b)}} is false, the map treats them as the **same key**: {{put(b, ...)}} overwrites the value of {{a}}, {{size()}} does not increase, {{get(b)}} returns a's value. This violates the {{Map}} contract.
-- Classic example: {{new TreeSet<>(Comparator.comparing(String::length))}} — "ab" and "cd" have the same length 2, so only one is kept.
-- The comparator must also be **transitive** and **consistent**: otherwise the red-black tree can become unbalanced or searches can fail.
-- For keys with natural {{compareTo}}: ensure {{compareTo == 0}} ⇔ {{equals == true}}. {{BigDecimal}} is a famous trap: {{new BigDecimal("1.0").equals(new BigDecimal("1.00"))}} is false but {{compareTo}} is 0 ⇒ using it as a TreeMap key will merge them.
-- Null: {{TreeMap}} does not allow null keys unless the comparator handles it; natural ordering throws NPE.
+- {{TreeMap}} does **not** use {{equals}}/{{hashCode}} to identify keys; it uses {{compare()}}.
+- If {{compare(a, b) == 0}} but {{a.equals(b)}} is false, the map treats them as the **same key**: {{put(b, ...)}} overwrites a's value, {{size()}} does not grow, {{get(b)}} returns a's value. This violates the {{Map}} contract.
+- Classic example: {{new TreeSet<>(Comparator.comparing(String::length))}} — "ab" and "cd" both have length 2, so only one is kept.
+- The comparator must also be **transitive** and **consistent**: otherwise the red-black tree can lose balance or search incorrectly.
+- For keys with a natural {{compareTo}}: ensure {{compareTo == 0}} ⇔ {{equals == true}}. {{BigDecimal}} is the famous trap: {{new BigDecimal("1.0").equals(new BigDecimal("1.00"))}} is false but {{compareTo}} is 0, so using it as a TreeMap key will merge them.
+- Null: {{TreeMap}} does not allow null keys unless the comparator handles null; natural ordering throws NPE.
 
 ### Difference from HashMap
 - {{TreeMap}}: O(log n), ordered, higher memory, no null key by default.
-- {{HashMap}}: O(1) average, unordered; {{LinkedHashMap}} preserves insertion / access order.
-- If sorting is only needed for output, use HashMap and sort when needed — faster for write-heavy workloads.
+- {{HashMap}}: O(1) average, unordered; {{LinkedHashMap}} keeps insertion/access order.
+- If you only need sorting at output time, using HashMap and sorting on demand is faster for write-heavy workloads.
 
-> Senior tip: when using a custom comparator, write unit tests asserting that **different** keys remain separate elements; this is the kind of bug that throws no exception but silently loses records and is extremely hard to detect. With BigDecimal, always normalize ({{stripTrailingZeros}}) before using as a key, e.g. {{bd.stripTrailingZeros().toPlainString()}} — note {{toPlainString}} alone does not normalize ("1.0" and "1.00" remain different).`,
+### Real-world example
+A tiered-fee system used {{TreeMap<BigDecimal, Fee>}} with amount thresholds as keys and looked up tiers via {{floorEntry(amount)}}. The configuration imported from Excel had two rows, "1000000" and "1000000.00", with different fee rates (a data-entry error); because {{compareTo}} considers them equal, the later row **overwrote** the earlier one with no error — ~1.2% of transactions were charged the wrong fee for 6 weeks. Fix: normalize keys with {{setScale(2)}} on load, **error out** if {{put}} returns a non-null previous value (duplicate detection), and add a test for the config. {{floorEntry}} was still the cleanest way to look up tiers — switching to a sorted list + linear scan had been 20x slower with 5,000 tiers.
+
+### Sample interview answer
+"TreeMap is a red-black tree that keeps keys ordered, with O(log n) operations. I use it when I need range queries or nearest-element lookups: floorKey, ceilingKey, subMap, headMap, for example finding a fee tier by amount or a time window. The key point is that TreeMap does not use equals and hashCode; it uses compareTo or the comparator to identify keys. If the comparator returns 0 for two keys that equals considers different, the map treats them as the same key, the later put overwrites the earlier one, and there is no error. Examples are a comparator by string length, or BigDecimal 1.0 and 1.00 where compareTo is 0 but equals differs. So the comparator must be consistent with equals; I normalize BigDecimal scale before using it as a key and check the return value of put to detect duplicates."
+
+> Senior tip: when using a custom comparator, write a unit test asserting that **different** keys remain separate entries; this is the kind of bug that throws no exception and only silently drops records, making it very hard to detect. With BigDecimal, always normalize ({{stripTrailingZeros}}) before using as a key, e.g. {{bd.stripTrailingZeros().toPlainString()}} — {{toPlainString}} alone does not normalize ("1.0" and "1.00" stay different).`,
     follow: [
-      `Why is {{BigDecimal}} a trap when used as a TreeMap key?`,
-      `Is {{subMap}} a view or a copy, and how does that affect behavior?`,
-      `When should you use {{TreeMap}} instead of sorting a {{HashMap}} when needed?`
+      "Why is {{BigDecimal}} a trap as a {{TreeMap}} key?",
+      "Is {{subMap}} a view or a copy, and what does that imply?",
+      "When should you use {{TreeMap}} instead of sorting a {{HashMap}} on demand?"
     ]
   },
   'collections-007': {
-    q: `When should {{CopyOnWriteArrayList}} and {{BlockingQueue}} be used? Compare {{ArrayBlockingQueue}}, {{LinkedBlockingQueue}}, {{SynchronousQueue}}.`,
+    q: "When should {{CopyOnWriteArrayList}} and {{BlockingQueue}} be used? Compare {{ArrayBlockingQueue}}, {{LinkedBlockingQueue}}, {{SynchronousQueue}}.",
     a: `**Summary:** {{CopyOnWriteArrayList}} copies the entire array on every write, reads without locking — suitable for listener lists that are **read-heavy, write-very-rare**; {{BlockingQueue}} is for producer-consumer patterns; choose by bounded/unbounded, throughput, and handoff mechanism.
 
 ### CopyOnWriteArrayList
@@ -248,13 +276,13 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
 
 > Senior tip: for thread pools, always create your own {{ThreadPoolExecutor}} with a bounded queue and named threads; don't use {{Executors.newFixedThreadPool}} defaults because the unbounded queue hides overload until OOM. Monitor {{queue.size()}} and {{take}} wait times to detect bottlenecks early.`,
     follow: [
-      `Why can {{Executors.newFixedThreadPool}} cause OOM when load increases?`,
-      `How does {{SynchronousQueue}} work when no consumer is waiting?`,
-      `When is {{CopyOnWriteArrayList}} a bad choice despite many reads?`
+      "Why can {{Executors.newFixedThreadPool}} cause OOM when load increases?",
+      "How does {{SynchronousQueue}} work when no consumer is waiting?",
+      "When is {{CopyOnWriteArrayList}} a bad choice despite many reads?"
     ]
   },
   'collections-008': {
-    q: `Need to store 10 million elements in memory — which collection to choose? Analyze memory footprint, boxing and primitive collections.`,
+    q: "Need to store 10 million elements in memory — which collection to choose? Analyze memory footprint, boxing and primitive collections.",
     a: `**Summary:** with 10 million elements, **boxing and node overhead** decide hundreds of MB; prefer primitive arrays ({{int[]}}) or primitive collections (Eclipse Collections, fastutil) over {{ArrayList<Integer>}} or {{HashMap<Integer, ...>}}; if objects must be used, pick continuous arrays and presize.
 
 ### Quick memory math
@@ -293,29 +321,29 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
 
 > Senior tip: before choosing a collection, estimate memory with a simple formula and check with JOL; if it exceeds ~30-40% of expected heap, redesign (primitive collection, chunking, or don't hold everything in RAM). This is an architecture decision, not just micro-optimization.`,
     follow: [
-      `Why does {{HashMap<Integer, V>}} use much more memory than a naive calculation suggests?`,
-      `When should you choose a primitive array instead of a primitive collection?`,
-      `How do you measure exact footprint of a collection with JOL?`
+      "Why does {{HashMap<Integer, V>}} use much more memory than a naive calculation suggests?",
+      "When should you choose a primitive array instead of a primitive collection?",
+      "How do you measure exact footprint of a collection with JOL?"
     ]
   },
   'collections-009': {
-    q: `{{PriorityQueue}}: internal heap, top-K on large data streams, complexity.`,
-    a: `**Summary:** {{PriorityQueue}} is a min-heap (binary heap) backed by an array, O(log n) for offer/poll, O(1) peek; used for top-K (keep K largest / smallest elements) on large streams with O(K) memory; not thread-safe, no null allowed, iterator does not guarantee order.
+    q: "{{PriorityQueue}}: internal heap, the top-K problem on large data streams, and complexity.",
+    a: `**Summary:** {{PriorityQueue}} is a min-heap (binary heap) backed by an array, O(log n) for offer/poll and O(1) for peek; use it for top-K (keep the K largest/smallest elements) over a large stream with O(K) memory; it is not thread-safe, disallows null, and its iterator does not guarantee order.
 
 ### Heap structure
 - Array {{Object[] queue}}; parent at i, children at 2i+1, 2i+2.
-- {{offer}}: add at end, sift-up (bubble up) comparing with parent.
-- {{poll}}: take root, move last to root, sift-down (trickle down).
-- {{peek}}: return root without removal.
-- Not a BST — only guarantees parent ≤ children (min-heap), not full ordering.
+- {{offer}}: append, sift-up (bubble up) comparing with the parent.
+- {{poll}}: take the root, move the last element to the root, sift-down (trickle down).
+- {{peek}}: return the root without removing it.
+- Not a BST — it only guarantees parent <= children (min-heap), not a total order.
 
-### Top-K on large streams
-- Problem: find K largest elements from a stream of N elements (N >> K, e.g. N=1B, K=100).
-- Solution: min-heap of size K. Iterate stream:
+### Top-K on a large stream
+- Problem: find the K largest elements from a stream of N elements (N >> K, e.g. N=1 billion, K=100).
+- Solution: a min-heap of size K. Scan the stream:
   - Heap size < K: {{offer}} directly.
-  - Heap size = K: if new element > root (min), {{poll}} then {{offer}} new.
-- Result: heap holds the K largest elements, root is the smallest in top-K.
-- Complexity: O(N log K) time, O(K) memory — better than sort O(N log N) when K << N.
+  - Heap size = K: if the new element > root (the minimum), {{poll}} then {{offer}} the new element.
+- Result: the heap holds the K largest elements, and the root is the smallest among the top-K.
+- Complexity: O(N log K) time, O(K) memory — better than sorting O(N log N) when K << N.
 
 ~~~java
 // Top 100 largest numbers
@@ -330,51 +358,68 @@ List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
 ### Complexity
 | Operation | Complexity |
 |---|---|
-| {{offer}} / {{add}} | O(log n) |
-| {{poll}} / {{remove}} | O(log n) |
+| {{offer}}/{{add}} | O(log n) |
+| {{poll}}/{{remove}} | O(log n) |
 | {{peek}} | O(1) |
-| {{contains}} | O(n) (scan array) |
-| {{size}} / {{isEmpty}} | O(1) |
-| Build heap from collection | O(n) (heapify) |
+| {{contains}} | O(n) (array scan) |
+| {{size}}/{{isEmpty}} | O(1) |
+| Build heap from a collection | O(n) (heapify) |
 
-### Pitfall
-- **No null allowed**: throws NPE immediately on {{offer(null)}}.
+### Pitfalls
+- **No null**: throws NPE immediately on {{offer(null)}}.
 - **Not thread-safe**: use {{PriorityBlockingQueue}} for multi-threading.
-- **Iterator not sorted**: {{iterator()}} scans the heap array, not in priority order; to get sorted output use {{stream().sorted()}} or poll all.
-- **Slow comparator**: if the comparator is slow, log n multiplies by a large constant; consider pre-computing a sort key.
-- **Memory**: array doubles when full; presize with {{new PriorityQueue<>(initialCapacity)}} if K is known.
+- **Iterator not sorted**: {{iterator()}} walks the heap array, not in priority order; to get sorted output use {{stream().sorted()}} or poll everything.
+- **Slow comparator**: if the comparator is expensive, log n is multiplied by a large constant; consider pre-computing the key.
+- **Memory**: the array doubles when full; presize with {{new PriorityQueue<>(initialCapacity)}} if K is known.
 
-> Senior tip: for real-world top-K (log analytics, monitoring), use {{PriorityQueue}} + stream processing; if distributed top-K is needed, each node computes local top-K then merges. For very large K, consider {{TreeSet}} (O(log n) but higher memory) or approximate algorithms (Count-Min Sketch, t-Digest).`,
+### Internals: why top-K uses a min-heap
+To keep the **K largest** elements, use a **min-heap** of size K: the heap root is the smallest of the K elements currently kept — the "threshold" to enter the top. A new element larger than the root replaces the root via {{poll}} + {{offer}} (O(log K)); a smaller one is discarded (O(1)). Total cost O(n log K), memory O(K). The heap lives in an array: children of index i are at 2i+1 and 2i+2, so no per-element node objects and very cache-friendly. Building a heap from an existing array (heapify) is O(n) — faster than inserting elements one by one.
+
+~~~java
+PriorityQueue<Item> top = new PriorityQueue<>(k, Comparator.comparingLong(Item::score));
+for (Item it : stream) {
+    if (top.size() < k) top.offer(it);
+    else if (it.score() > top.peek().score()) { top.poll(); top.offer(it); }
+}
+~~~
+
+### Real-world example
+A "top 100 merchants by revenue in 5 minutes" dashboard originally sorted all 2 million records on each refresh (O(n log n), allocating a large list) — 1.8 seconds and a lot of garbage. Switching to a min-heap of 100 elements during the scan: 120 ms with almost no extra allocation. When the system was split across 8 nodes, each node computed its local top 100 and sent them to an aggregator that merged 800 elements — correct because the global top-K must lie within the union of local top-K sets (with per-merchant revenue pre-aggregated).
+
+### Sample interview answer
+"PriorityQueue is a binary heap backed by an array, a min-heap by default using natural ordering or a comparator. offer and poll are log n because they sift an element up or down the tree, peek is O(1). Its iterator is not in priority order; to get sorted output you must poll elements out. For top K over a large data stream I keep a min-heap of exactly K elements: the root is the threshold to enter the top, a new element larger than the root replaces it, a smaller one is dropped. That costs n log K time and only O(K) memory, instead of sorting all the data. With distributed data, each node computes a local top K and they are merged. PriorityQueue is not thread-safe; for concurrent use there is PriorityBlockingQueue."
+
+> Senior tip: for real-world top-K (log analytics, monitoring), use {{PriorityQueue}} + stream processing; for distributed top-K, each node computes a local top-K and merges. For very large K, consider {{TreeSet}} (O(log n) but higher memory) or an approximate algorithm (Count-Min Sketch, t-Digest).`,
     follow: [
-      `Why does {{PriorityQueue}} use a min-heap for the largest-top-K problem?`,
-      `How does {{PriorityBlockingQueue}} differ from {{PriorityQueue}}?`,
-      `When should you use {{TreeSet}} instead of {{PriorityQueue}}?`
+      "Why does {{PriorityQueue}} use a min-heap for the largest top-K problem?",
+      "How does {{PriorityBlockingQueue}} differ from {{PriorityQueue}}?",
+      "When should you use {{TreeSet}} instead of {{PriorityQueue}}?"
     ]
   },
   'collections-010': {
-    q: `{{ArrayDeque}} vs {{Stack}} / {{LinkedList}} as stack / queue; why is {{Stack}} discouraged?`,
-    a: `**Summary:** {{ArrayDeque}} is the modern choice for stack / queue: circular array, O(1) amortized push/pop/offer/poll, cache-friendly, unsynchronized, no null allowed; {{Stack}} extends {{Vector}} (synced, legacy), {{LinkedList}} is memory-heavy and cache-missing — both should be avoided.
+    q: "{{ArrayDeque}} vs {{Stack}}/{{LinkedList}} as a stack/queue; why is {{Stack}} discouraged?",
+    a: `**Summary:** {{ArrayDeque}} is the modern choice for stack/queue: a circular array, O(1) amortized push/pop/offer/poll, cache-friendly, unsynchronized, no nulls; {{Stack}} extends {{Vector}} (synchronized, legacy), {{LinkedList}} is memory-heavy and cache-miss prone — both are discouraged.
 
-### Stack — legacy, don't use
-- Extends {{Vector}}: every method is {{synchronized}} ⇒ unnecessary lock cost for single-thread use.
-- Inherits {{Vector}} methods like {{get}}, {{set}}, {{insert}} at arbitrary positions — breaks the LIFO stack semantics.
-- {{push}} / {{pop}} are synchronized individually, not atomic batches.
-- JavaDoc recommends: **"A more complete and consistent set of LIFO stack operations is provided by the Deque interface and its implementations."**
+### Stack — legacy, do not use
+- Extends {{Vector}}: every method is {{synchronized}}, paying an unnecessary lock cost in single-threaded code.
+- Inherits {{Vector}} and thus exposes {{get}}, {{set}}, {{insert}} in the middle — breaking stack (LIFO) semantics.
+- {{push}}/{{pop}} are synchronized per method, with no atomic batch support.
+- The JavaDoc recommends: **"A more complete and consistent set of LIFO stack operations is provided by the Deque interface and its implementations."**
 
-### LinkedList — expensive for stack / queue
-- Separate node objects: header + 2 references + data ≈ 32-40 bytes per entry (vs 4-8 bytes for a reference in an array).
-- Pointer chasing: each {{pop}} / {{poll}} accesses {{next}} / {{prev}} — many cache misses.
-- Implements both {{List}} and {{Deque}}; used as {{Deque}} it carries unnecessary methods like {{get(i)}}, {{add(i, e)}} O(n).
-- Only preferred when you need a {{ListIterator}} to remove in the middle O(1) **and** you already have the pointer at that position.
+### LinkedList — expensive as a stack/queue
+- Separate node objects: header + 2 references + data ≈ 32-40 bytes/entry (vs 4-8 bytes for a reference in an array).
+- Pointer chasing: each {{pop}}/{{poll}} follows {{next}}/{{prev}} — many cache misses.
+- Implements both {{List}} and {{Deque}}; used as a {{Deque}} it carries unnecessary {{get(i)}} and {{add(i, e)}} O(n) methods.
+- Only preferable when you need a {{ListIterator}} to remove in the middle in O(1) **and** you already hold the pointer at that position.
 
 ### ArrayDeque — the standard choice
 - Circular array {{Object[] elements}} + {{head}}, {{tail}} indexes.
-- {{push}} / {{addFirst}} / {{offerFirst}}: decrement head, write.
-- {{pop}} / {{removeFirst}} / {{pollFirst}}: read head, increment head.
-- {{offerLast}} / {{pollLast}} similarly for queue.
-- Resize: array doubles when full (copy 2 arrays due to circular layout).
-- **No null allowed** (to distinguish empty slot from null value).
-- **Not thread-safe**: use {{ConcurrentLinkedDeque}} or external sync if needed.
+- {{push}}/{{addFirst}}/{{offerFirst}}: decrement head, write.
+- {{pop}}/{{removeFirst}}/{{pollFirst}}: read head, increment head.
+- {{offerLast}}/{{pollLast}} work similarly for a queue.
+- Resize: the array doubles when full (copies in two segments because it is circular).
+- **No nulls allowed** (to distinguish an empty slot from a null value).
+- **Not thread-safe**: use {{ConcurrentLinkedDeque}} or external synchronization if needed.
 - Implements {{Deque}}, {{Queue}}, {{Cloneable}}, {{Serializable}}.
 
 ### Quick comparison
@@ -382,46 +427,55 @@ List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
 |---|---|---|---|
 | Push/Pop | O(1) sync | O(1) | O(1) amortized |
 | Memory/entry | ~40 bytes (Vector) | ~32-40 bytes | 4-8 bytes (ref) |
-| Cache locality | Good (array) | Bad (node) | Very good (array) |
+| Cache locality | Good (array) | Poor (nodes) | Very good (array) |
 | Null allowed | Yes | Yes | **No** |
 | Thread-safe | Yes (sync) | No | No |
 
 ### When to use what
-- Stack / Queue single-thread: **ArrayDeque**.
-- Bounded multi-thread queue: **ArrayBlockingQueue**.
-- Unbounded multi-thread queue: **LinkedBlockingQueue** (with a bound!).
+- Single-thread stack/queue: **ArrayDeque**.
+- Multi-thread bounded queue: **ArrayBlockingQueue**.
+- Multi-thread unbounded queue: **LinkedBlockingQueue** (with a bound!).
 - Need priority: **PriorityQueue** / **PriorityBlockingQueue**.
 - Need blocking + priority: **PriorityBlockingQueue**.
 - Direct handoff: **SynchronousQueue**.
 
-> Senior tip: in code review, seeing {{new Stack()}} or {{new LinkedList()}} used as stack / queue is a refactoring opportunity to {{ArrayDeque}} — faster, lighter, modern API ({{push}} / {{pop}} / {{peek}} for stack, {{offer}} / {{poll}} / {{peek}} for queue).`,
+### Internals: ArrayDeque's circular array
+{{ArrayDeque}} keeps an array and two indexes, {{head}} and {{tail}}. {{addFirst}} moves head back (wrapping to the end of the array when it goes below 0), {{addLast}} moves tail forward; when head meets tail the array doubles and elements are rearranged. No per-element node, no lock, so push/pop is nearly just an assignment and an index increment. {{Stack}} inherits {{Vector}}: **every** method is {{synchronized}}, and as a {{Vector}} it also exposes {{get(i)}} and {{add(i, x)}} — you can insert into the middle of a "stack", breaking the data structure's meaning.
+
+### Real-world example
+A fee-expression parser (used on every pricing request) used a {{Stack<Token>}}. The profiler showed ~6% of service CPU spent in unnecessary {{synchronized}} calls of {{Vector}}, plus {{Integer}} boxing. Switching to {{ArrayDeque<Token>}} (and a self-managed {{int[]}} for the numeric stack): parse time dropped ~40% and service CPU dropped 4%. A later code review added an ArchUnit rule banning {{java.util.Stack}}.
+
+### Sample interview answer
+"For a stack or queue I use ArrayDeque. It is a circular array with head and tail indexes, add and remove at both ends are O(1) amortized, it creates no per-element node so it saves memory and is cache-friendly, and it has no lock. Stack is a legacy class extending Vector: every method is synchronized so it pays an unnecessary lock cost, and because it inherits Vector it exposes index-based methods, so you can insert into the middle of a stack, which is wrong by design. LinkedList can act as a Deque but each element is a node, so it uses more memory and is slower to iterate. Note that ArrayDeque does not allow nulls and is not thread-safe; for concurrent use pick ConcurrentLinkedDeque or a BlockingQueue."
+
+> Senior tip: in code review, seeing {{new Stack()}} or {{new LinkedList()}} used as a stack/queue is a refactoring opportunity to {{ArrayDeque}} — faster, lighter, and a modern API ({{push}}/{{pop}}/{{peek}} for stack, {{offer}}/{{poll}}/{{peek}} for queue).`,
     follow: [
-      `Why does {{ArrayDeque}} not allow null while {{LinkedList}} does?`,
-      `How does {{ArrayDeque}} resize when the circular array is full?`,
-      `When is {{ConcurrentLinkedDeque}} more appropriate than {{ArrayBlockingQueue}}?`
+      "Why does {{ArrayDeque}} disallow null while {{LinkedList}} allows it?",
+      "How does {{ArrayDeque}} resize when the circular array is full?",
+      "When is {{ConcurrentLinkedDeque}} more appropriate than {{ArrayBlockingQueue}}?"
     ]
   },
   'collections-011': {
-    q: `{{List.of}} vs {{Collections.unmodifiableList}} vs copy: truly immutable or just a view; null and NPE.`,
-    a: `**Summary:** {{List.of}} (Java 9+) creates a **truly immutable** list (cannot add/remove/set, no null allowed); {{Collections.unmodifiableList}} is only a **view** over the source list (source changes reflect in the view); manual copy ({{new ArrayList<>(src)}}) creates a mutable copy. Choose by need: immutable API uses {{List.of}} / {{List.copyOf}}, defensive copy uses {{new ArrayList<>}}, read-only view uses {{unmodifiableList}}.
+    q: "{{List.of}} vs {{Collections.unmodifiableList}} vs copy: truly immutable or just a view; null and NPE.",
+    a: `**Summary:** {{List.of}} (Java 9+) creates a **truly immutable** list (no add/remove/set, no nulls); {{Collections.unmodifiableList}} is only a **view** over the original list (mutating the original changes the view); a manual copy ({{new ArrayList<>(src)}}) creates a mutable copy. Choose by need: immutable API uses {{List.of}}/{{List.copyOf}}, defensive copy uses {{new ArrayList<>}}, read-only view uses {{unmodifiableList}}.
 
 ### List.of / List.copyOf (Java 9/10)
-- {{List.of(a, b, c)}}: immutable, fixed-size, **no null** (throws NPE), does not support {{add}} / {{remove}} / {{set}} / {{sort}}.
-- {{List.copyOf(list)}}: copies the source into an immutable list; if the source is already immutable it may return itself (optimization).
-- Internally: uses {{ImmutableCollections.ListN}} (compact, no extra fields), supports serialization.
-- Null: any null element ⇒ NPE immediately upon creation — catches bugs early.
+- {{List.of(a, b, c)}}: immutable, fixed-size, **no nulls** (throws NPE), does not support {{add}}/{{remove}}/{{set}}/{{sort}}.
+- {{List.copyOf(list)}}: copies the source into an immutable list; if the source is already immutable it may return it directly (optimization).
+- Internally uses {{ImmutableCollections.ListN}} (compact, no extra fields), with serialization support.
+- Null: any null element throws NPE at creation — catching bad data early.
 
 ### Collections.unmodifiableList
 ~~~java
 List<String> mutable = new ArrayList<>(List.of("a", "b"));
 List<String> view = Collections.unmodifiableList(mutable);
 mutable.add("c");           // OK
-System.out.println(view);   // [a, b, c] — view sees change!
+System.out.println(view);   // [a, b, c] — the view sees the change!
 ~~~
-- Only **wraps** the source list, does not copy; mutating methods ({{add}}, {{set}}, {{remove}}, {{sort}}) throw {{UnsupportedOperationException}}.
-- Source remains mutable ⇒ view is not safe if the source is shared and modified.
-- Allows null if the source allows it.
-- Use when: you want to expose a read-only view to callers but need to mutate internally; or temporarily wrap legacy APIs.
+- Only **wraps** the original list, no copy; mutating methods ({{add}}, {{set}}, {{remove}}, {{sort}}) throw {{UnsupportedOperationException}}.
+- The original stays mutable, so the view is unsafe if the original is shared and mutated.
+- Allows null if the original allows it.
+- Use when: you want to expose a read-only view to callers but still need to mutate internally; or to temporarily wrap a legacy API.
 
 ### Manual copy
 ~~~java
@@ -429,32 +483,41 @@ List<String> copy = new ArrayList<>(source);   // shallow copy, mutable
 List<String> copy = List.copyOf(source);       // immutable copy (Java 10)
 ~~~
 - {{new ArrayList<>(source)}}: shallow copy, fully independent, mutable, allows null.
-- Use for defensive copy in constructors / setters when you need ownership.
+- Use for a defensive copy in a constructor/setter when you need to own the data.
 
 ### Quick comparison
-| Property | List.of / copyOf | unmodifiableList | new ArrayList() |
+| Property | List.of/copyOf | unmodifiableList | new ArrayList() |
 |---|---|---|---|
 | Immutable | **Yes** | View (source mutable) | No |
-| Null allowed | **No** | Per source | Yes |
+| Null allowed | **No** | Follows source | Yes |
 | Copy or view | Copy | View | Copy |
 | Memory | Optimized (compact) | Lightweight wrapper | New array + refs |
 | Serialization | Supported | Supported | Supported |
 
-### Pitfall
-- Using {{List.of}} for DTO / response when data may contain null ⇒ NPE at runtime; filter null first or use {{new ArrayList<>}}.
-- Passing {{unmodifiableList}} to external APIs while forgetting the source can still be mutated internally ⇒ caller sees "immutable" data that changes.
+### Pitfalls
+- Using {{List.of}} for a DTO/response whose data may contain null throws NPE at runtime; filter nulls first or use {{new ArrayList<>}}.
+- Passing {{unmodifiableList}} to an external API while forgetting the original is still mutated internally means the caller sees "immutable" data that changes.
 - {{List.copyOf(null)}} throws NPE; {{Collections.unmodifiableList(null)}} throws NPE.
-- {{List.of}} does not implement {{RandomAccess}} (sequential access is evaluated), but index access is O(1) due to array backing.
+- {{List.of}} does not implement {{RandomAccess}} (evaluated sequentially), but index access is O(1) because it is array-backed.
 
-> Senior tip: public APIs returning collections should **always use {{List.copyOf}} / {{Set.copyOf}} / {{Map.copyOf}}** (Java 10+) to guarantee true immutability; internally use mutable {{ArrayList}} / {{HashMap}}. Don't use {{unmodifiableList}} for public APIs unless there is a strong reason (extreme performance, huge list, don't want to copy).`,
+### Internals: what List.of returns
+{{List.of(a, b)}} returns internal classes optimized by size ({{ImmutableCollections.List12}} for 1-2 elements, {{ListN}} for more) — no spare array, no modCount. Every mutating method throws {{UnsupportedOperationException}}. {{List.copyOf(x)}} does **not copy** if x is already an immutable list of this kind (it returns it directly), otherwise it copies — so calling {{copyOf}} repeatedly across layers is nearly free. {{contains(null)}} on {{List.of}} throws NPE (nulls are banned entirely), unlike {{ArrayList}}. {{Collections.unmodifiableList}} is just a wrapper that forwards calls to the original list.
+
+### Real-world example
+An access-control service returned {{Collections.unmodifiableList(roles)}} to other modules, believing it was "immutable". Another module kept that list to check permissions; meanwhile the service **cleared and reloaded** {{roles}} when configuration changed, so for a few milliseconds the list was empty and some requests were randomly rejected with 403 (about 50 errors per reload). Fix: create a new list and swap the reference ({{this.roles = List.copyOf(newRoles)}}, volatile field) — readers see either the old list or the new one, never a half-empty state.
+
+### Sample interview answer
+"List.of creates a truly immutable list: you cannot add, remove, or set elements, it disallows nulls, and it is optimized by size. List.copyOf creates an immutable copy, and if the input is already an immutable list it returns it directly so it is cheap. Collections.unmodifiableList is only a read-only view wrapping the original: the holder cannot mutate it, but if the original is mutated the view sees the change immediately. new ArrayList from another list is a mutable copy. I choose by purpose: public APIs return List.copyOf for true immutability, defensive copies in constructors also use copyOf, and unmodifiableList only when I intentionally want readers to see the latest updates. Note that List.of throws NPE on nulls, including contains(null), so data that may contain null must be handled first."
+
+> Senior tip: a public API returning a collection should **always use {{List.copyOf}}/{{Set.copyOf}}/{{Map.copyOf}}** (Java 10+) to guarantee true immutability; internally use mutable {{ArrayList}}/{{HashMap}}. Do not use {{unmodifiableList}} for a public API unless there is a strong reason (extreme performance, huge list, want to avoid a copy).`,
     follow: [
-      `Why does {{List.of}} forbid null while {{ArrayList}} allows it?`,
-      `Does {{List.copyOf}} optimize when the source is already immutable?`,
-      `How do you create an immutable list that allows null (if truly needed)?`
+      "Why does {{List.of}} disallow null while {{ArrayList}} allows it?",
+      "Does {{List.copyOf}} optimize when the source is already immutable?",
+      "How would you create an immutable list that can contain null (if truly needed)?"
     ]
   },
   'collections-012': {
-    q: `{{WeakHashMap}}, {{IdentityHashMap}}: mechanism and real use cases (class-key cache, graph traversal).`,
+    q: "{{WeakHashMap}}, {{IdentityHashMap}}: mechanism and real use cases (class-key cache, graph traversal).",
     a: `**Summary:** {{WeakHashMap}} uses {{WeakReference}} for keys — entries disappear when the key has no strong reference (good for metadata cache by class / object); {{IdentityHashMap}} uses {{==}} instead of {{equals}} / {{hashCode}} (good for graph traversal, object identity). Neither is thread-safe.
 
 ### WeakHashMap
@@ -506,9 +569,9 @@ Meta getMeta(Class<?> clazz) {
 
 > Senior tip: {{WeakHashMap}} is a "safety net" for lightweight metadata caches, not a replacement for production caches (Caffeine). {{IdentityHashMap}} is rare but irreplaceable when identity semantics are needed — don't try to hack {{equals}} / {{hashCode}} to achieve the same thing.`,
     follow: [
-      `Why should a {{WeakHashMap}} value not hold a reference back to the key?`,
-      `How does {{IdentityHashMap}} use {{System.identityHashCode}} — how are collisions handled?`,
-      `When should you use {{WeakHashMap}} instead of manually managing {{ReferenceQueue}} + {{WeakReference}}?`
+      "Why should a {{WeakHashMap}} value not hold a reference back to the key?",
+      "How does {{IdentityHashMap}} use {{System.identityHashCode}} — how are collisions handled?",
+      "When should you use {{WeakHashMap}} instead of manually managing {{ReferenceQueue}} + {{WeakReference}}?"
     ]
   }
 });
