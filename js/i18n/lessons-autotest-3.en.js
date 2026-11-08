@@ -36,7 +36,7 @@ class SearchSmokeTest {
     BrowserContext context;                    // per-test state: one context per test
     Page page;
 
-    @BeforeAll static void startBrowser() {    // START + static: JUnit 5 requires this (see section below)
+    @BeforeAll static void startBrowser() {    // static by default: JUnit 5 requires this (see below)
         playwright = Playwright.create();
         browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true));
     }
@@ -52,7 +52,7 @@ class SearchSmokeTest {
 
     @Test void searchFindsJavaBook() {
         page.navigate("https://shop.example/search?q=java");
-        assertThat(page.getByTestId("result-count")).containsText("ket qua");
+        assertThat(page.getByTestId("result-count")).containsText("results");
     }
 }
 ~~~
@@ -67,7 +67,7 @@ JUnit 5 also has a **per-test** style (@BeforeAll/@AfterAll via {{Lifecycle.PER_
 ### JUnit 5 or TestNG
 | Aspect | JUnit 5 | TestNG |
 |---|---|---|
-| Status | De facto standard, largest ecosystem | Common in legacy Selenium suites, still widely used by VN companies |
+| Status | De facto standard, largest ecosystem | Common in legacy Selenium suites, still widely used by companies |
 | Lifecycle | @BeforeAll/@BeforeEach/@BeforeSuite | @BeforeSuite/@BeforeClass/@BeforeMethod (+ alwaysRun) |
 | Data-driven | @ParameterizedTest + @CsvSource/@MethodSource | @DataProvider |
 | Skip/select | @Disabled, @Tag, tag expression | @Test(enabled=false), groups/excludedGroups |
@@ -92,7 +92,7 @@ void adds(int a, int b, int expected) {
 }
 
 @ParameterizedTest
-@MethodSource("loginCases")                          // route: complex data (objects, paths)
+@MethodSource("loginCases")                          // source: complex data (objects, paths)
 void loginFlow(LoginCase c) {
     LoginPage login = new LoginPage(page).open().as(c.user, c.pass);
     if (c.expectError) assertThat(login.errorBox()).isVisible();
