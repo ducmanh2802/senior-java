@@ -5501,11 +5501,11 @@ Một ví điện tử tính phí rút tiền 1,1% bằng {{double}} rồi {{Mat
   topic: 'collections',
   level: 'senior',
   q: '{{Iterator}} fail-fast, {{ConcurrentModificationException}} trong đơn luồng, {{removeIf}} và {{CopyOnWriteArrayList}}: khi nào hợp?',
-  a: `**Tóm tắt:** Fail-fast iterator kiểm tra {{modCount}} và nthrows {{ConcurrentModificationException}} nếu collection bị sửa ngoài iterator. Fail-safe (weakly consistent) như {{ConcurrentHashMap}} hay snapshot như {{CopyOnWriteArrayList}} thì không nthrows nhưng có thể thấy dữ liệu cũ/không đầy đủ.
+  a: `**Tóm tắt:** Fail-fast iterator kiểm tra {{modCount}} và ném {{ConcurrentModificationException}} nếu collection bị sửa ngoài iterator. Fail-safe (weakly consistent) như {{ConcurrentHashMap}} hay snapshot như {{CopyOnWriteArrayList}} thì không ném nhưng có thể thấy dữ liệu cũ/không đầy đủ.
 
 ### Fail-fast cơ chế
 - {{ArrayList}}, {{HashMap}}, {{HashSet}}... có field {{modCount}} tăng mỗi lần thay đổi cấu trúc.
-- Iterator lưu {{expectedModCount}}; mỗi {{next()}}/{{remove()}} so sánh, lệch thì nthrows CME ngay.
+- Iterator lưu {{expectedModCount}}; mỗi {{next()}}/{{remove()}} so sánh, lệch thì ném CME ngay.
 - Đây là **best-effort detection**, không phải cơ chế đồng bộ: không đảm bảo phát hiện mọi trường hợp, nhất là đa luồng.
 - CME có thể xảy ra cả trong **một thread** khi vừa for-each vừa {{list.remove(x)}} hoặc {{map.put}}.
 
@@ -5522,7 +5522,7 @@ for (String s : l2) {
     if (s.equals("b")) l2.remove(s);
 }
 System.out.println(l2);
-// Output: [a, c]   -> KHÔNG nthrows lỗi, và "c" không bao giờ được kiểm tra
+// Output: [a, c]   -> KHÔNG ném lỗi, và "c" không bao giờ được kiểm tra
 ~~~
 Vì sao trường hợp 2 không lỗi: sau khi xoá "b", size còn 2, con trỏ {{cursor}} của iterator cũng là 2. {{hasNext()}} chỉ kiểm tra {{cursor != size}} nên trả về false và vòng lặp kết thúc trước khi {{next()}} kịp kiểm tra {{modCount}}. Code "chạy được" nhưng bỏ sót phần tử cuối, một bug im lặng nguy hiểm hơn cả CME.
 
@@ -5536,7 +5536,7 @@ balances.entrySet().removeIf(e -> e.getValue().signum() == 0);
 
 ### CopyOnWriteArrayList
 - Mọi thao tác ghi ({{add}}, {{set}}, {{remove}}) tạo mảng mới rồi thay reference {{volatile}}; đọc không lock.
-- Iterator là **snapshot**: không nthrows CME, không {{remove}}; có thể thấy dữ liệu cũ.
+- Iterator là **snapshot**: không ném CME, không {{remove}}; có thể thấy dữ liệu cũ.
 - Chi phí ghi O(n) cả về thời gian và bộ nhớ; ghi liên tục ⇒ GC pressure rất lớn.
 - Hợp: danh sách listener/observer ít thay đổi, cấu hình read-mostly. Không hợp: cache, queue, collection lớn cập nhật thường xuyên.
 
@@ -5584,15 +5584,15 @@ orders.sort(cmp);
 
 ### TreeMap "mất" phần tử
 - {{TreeMap}} không dùng {{equals}}/{{hashCode}} để định danh key; nó dùng {{compare()}}.
-- Nếu comparator không symmetric hoặc transitive, cây đỏ-đen có thể mất cân bằng hoặc tìm kiếm sai.
-- Null: {{TreeMap}} không cho key null trừ khi comparator xử lý null; natural ordering nthrows NPE.
+- Nếu comparator không symmetric hoặc transitive, cây đỏ-đen vẫn cân bằng nhưng đặt và tìm phần tử sai chỗ: {{get}} trả null cho key vừa put, {{containsKey}} lúc đúng lúc sai.
+- Null: {{TreeMap}} không cho key null trừ khi comparator xử lý null; natural ordering ném NPE.
 - {{subMap}}, {{headMap}}, {{tailMap}} là view — thay đổi view ảnh hưởng map gốc.
 
 ### Pitfall
-- Comparator dựa trên field nullable mà không xử lý null: {{a.getName().compareTo(b.getName())}} nthrows NPE hoặc vi phạm transitivity khi null xen vào.
+- Comparator dựa trên field nullable mà không xử lý null: {{a.getName().compareTo(b.getName())}} ném NPE hoặc vi phạm transitivity khi null xen vào.
 - Logic so sánh phức tạp sai: {{(a, b) -> a.x < b.x ? -1 : 1}} (quên case bằng nhau trả 0).
 - So sánh float/double với NaN: {{Double.compare}} xử lý NaN, nhưng tự viết {{a < b ? -1 : 1}} sai với NaN.
-- Primitive array sort không stable: {{Arrays.sort(int[])}} dùng quicksort; muốn stable dùng {{Integer[]}} hoặc {{List.sort}}.
+- {{Arrays.sort(int[])}} dùng Dual-Pivot Quicksort (không stable), nhưng với primitive thì stable không có ý nghĩa vì hai số bằng nhau không phân biệt được. Sắp xếp object ({{Arrays.sort(Object[])}}, {{List.sort}}) dùng TimSort và **stable**, nên sắp theo nhiều khoá bằng nhiều lần sort liên tiếp vẫn đúng.
 
 ### Bên trong: TimSort phát hiện comparator sai
 {{List.sort}}/{{Arrays.sort}} cho object dùng TimSort, giả định comparator tuân thủ hợp đồng (đối xứng, bắc cầu). Khi phát hiện vi phạm trong lúc gộp các đoạn đã sắp xếp, nó ném {{IllegalArgumentException: Comparison method violates its general contract!}} — nhưng **chỉ khi dữ liệu đủ lớn và rơi đúng thứ tự** (thường từ vài chục phần tử trở lên), nên lỗi hay lọt qua test nhỏ. Nguồn vi phạm hay gặp: trừ hai số để so sánh ({{a - b}} tràn số với int lớn), comparator không xử lý null nhất quán, so sánh theo field có thể thay đổi trong lúc sắp xếp, so sánh double có NaN. Dùng {{Comparator.comparingInt}}, {{Integer.compare}}, {{Comparator.nullsLast(...)}} thay vì tự viết.
@@ -5603,7 +5603,7 @@ Báo cáo xếp hạng đại lý thỉnh thoảng lỗi 500 với thông báo "
 ### Trả lời mẫu khi phỏng vấn
 "Comparator phải tuân thủ hợp đồng: đối xứng, bắc cầu và nhất quán. Tôi xây comparator bằng các factory như comparing, comparingLong, thenComparing, reversed, và nullsFirst hoặc nullsLast để xử lý null rõ ràng, thay vì tự viết phép trừ, vì trừ hai số lớn có thể tràn số và đổi dấu. Nếu comparator vi phạm hợp đồng, TimSort có thể ném IllegalArgumentException, nhưng chỉ khi dữ liệu đủ lớn nên lỗi hay lọt test. Với TreeMap và TreeSet thì nguy hiểm hơn: chúng dùng compare chứ không dùng equals, nên nếu compare trả về 0 cho hai phần tử khác nhau, phần tử sau ghi đè phần tử trước, mất dữ liệu âm thầm. Vì vậy tôi luôn thêm khoá phụ như id vào cuối chuỗi so sánh để chỉ trả 0 khi thật sự là cùng một phần tử."
 
-> Senior tip: khi dùng comparator tùy biến, viết unit test khẳng định các key **khác nhau** vẫn là phần tử riêng biệt; đây là loại bug không nthrows exception, chỉ làm mất record và cực khó phát hiện. Với BigDecimal, luôn normalize ({{stripTrailingZeros}}) trước khi làm key. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
+> Senior tip: khi dùng comparator tùy biến, viết unit test khẳng định các key **khác nhau** vẫn là phần tử riêng biệt; đây là loại bug không ném exception, chỉ làm mất record và cực khó phát hiện. Với BigDecimal, luôn normalize ({{stripTrailingZeros}}) trước khi làm key. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
   follow: ['Comparable và Comparator khác nhau thế nào?', 'Tại sao TreeMap không dùng equals/hashCode?', 'Comparator không consistent with equals gây ra vấn đề gì?'],
   tags: ['Comparator', 'Comparable', 'TreeMap', 'TreeSet', 'sorting']
 },
@@ -5741,13 +5741,13 @@ Map<String, User> byEmail = users.stream()
 ### Switch expression (Java 14)
 - Dùng {{->}} không fallthrough, không cần {{break}}; có thể dùng block + {{yield}}.
 - Bắt buộc bao phủ hết (exhaustive) cho expression; enum/String phải có default nếu không đủ.
-- Selector null: nthrows NPE nếu không có {{case null}} (với switch trên reference type).
+- Selector null: ném NPE nếu không có {{case null}} (với switch trên reference type).
 - Có thể trả giá trị trực tiếp, giảm biến tạm và lỗi gán thiếu nhánh.
 - Switch statement vẫn có thể dùng cú pháp cũ; nên chuyển dần sang arrow để tránh fallthrough.
 - Với enum, thêm hằng số mới mà quên case sẽ lỗi compile ở switch expression — lợi ích lớn khi refactor.
 
 ### SequencedCollection (Java 21)
-- {{getFirst()}} / {{getLast()}}: lấy phần tử đầu/cuối (nthrows {{NoSuchElementException}} nếu rỗng).
+- {{getFirst()}} / {{getLast()}}: lấy phần tử đầu/cuối (ném {{NoSuchElementException}} nếu rỗng).
 - {{addFirst(E)}} / {{addLast(E)}}: thêm đầu/cuối (optional, {{UnsupportedOperationException}} nếu immutable).
 - {{removeFirst()}} / {{removeLast()}}: xoá đầu/cuối (optional).
 - {{reversed()}}: trả **view** đảo ngược (read-only, không copy, thay đổi gốc ảnh hưởng view).
@@ -6213,7 +6213,7 @@ BootstrapMethods:
 | Anonymous class | cấp phát object + interface dispatch (tra method qua bảng ảo/interface) |
 
 ### Trên production
-- Stack trace: dòng {{com.example.Foo$Lambda$14/0x...lambda$apply$0(Foo.java:57)}} cho biết lambda của class nào, dòng nào. Không có file .class trên đĩa; muốn đọc code thì mở {{Foo.class}} bằng javap/IDE và xem method {{lambda$...}}.
+- Stack trace: dòng {{at com.example.Foo.lambda$apply$0(Foo.java:57)}} là method tổng hợp chứa thân lambda, cho biết class và dòng. Frame của lớp ẩn ({{Foo$$Lambda/0x...}}) mặc định bị giấu, chỉ hiện khi bật {{-XX:+ShowHiddenFrames}}. Lớp ẩn không có file .class trên đĩa; muốn đọc code thì mở {{Foo.class}} bằng javap/IDE và xem method {{lambda$...}}.
 - Lambda **không** serialize được nếu functional interface không kế thừa {{Serializable}}; kể cả khi serialize được thì dạng thức phụ thuộc triển khai nội bộ — đừng đưa lambda vào protocol hay file cấu hình.
 - Lambda không có danh tính: {{a.equals(b)}}/{{a == b}} giữa hai lambda "giống nhau" là vô nghĩa, đừng dùng lambda làm key trong map.
 - Đây là kỹ thuật các thư viện mapping dùng để thay {{Method.invoke}} ở hot path: compile getter/setter thành {{Function}} một lần bằng {{LambdaMetafactory}} rồi tái dùng nghìn lần.
@@ -6270,8 +6270,9 @@ class Beta  { static { Alpha.prep(); } static int size = 1; static void prep() {
 ~~~
 T1 cầm khoá init của Alpha rồi gọi {{Beta.prep}} → cần init Beta → chặn trên khoá mà T2 đang giữ. T2 cầm khoá Beta rồi gọi {{Alpha.prep}} → chặn trên khoá Alpha. Chu trình khoá **không nằm trong code của bạn** ở dạng một {{synchronized}} nào, nên không có object lock để grep.
 
+Lưu ý khi đọc: trên nhiều bản JDK, thread đang chờ class init **không** hiện BLOCKED mà hiện RUNNABLE hoặc {{in Object.wait()}} với dòng chờ trên object {{java.lang.Class}}; các bản JDK mới in rõ tên class đang chờ khởi tạo.
 ~~~text
-jstack excerpt (câu chữ thay đổi theo bản JDK):
+jstack excerpt (minh hoạ, câu chữ thay đổi theo bản JDK):
 "pool-1-thread-1" BLOCKED
    - waiting for the initialization of class Beta ... held by "pool-1-thread-2"
 "pool-1-thread-2" BLOCKED
@@ -6281,7 +6282,7 @@ jstack excerpt (câu chữ thay đổi theo bản JDK):
 ### Bẫy thường gặp
 - {{static final int X = compute();}} **không** là hằng compile-time nên vẫn trigger {{<clinit>}}; chỉ literal như {{= 5}} mới được inline.
 - {{<clinit>}} ném lỗi: lần đầu thấy {{ExceptionInInitializerError}} (có cause), mọi lần sau thấy {{NoClassDefFoundError: Could not initialize class com.x.Foo}} **không còn cause**, và class ở trạng thái Failed cho tới khi ClassLoader đó chết — không "tự khỏi".
-- Static block tạo thread mới mà thread đó chạm lại class của mình: gần như chắc chắn deadlock, vì thread mới chờ init xong còn init thì chờ thread mới.
+- Static block tạo thread mới mà thread đó chạm lại class của mình, rồi static block **chờ** thread đó ({{join()}}, {{Future.get()}}, latch): chắc chắn deadlock, vì thread mới chờ init xong còn init thì chờ thread mới.
 - Enum constant được tạo ngay trong {{<clinit>}} của class enum, nên một enum có static block gọi sang class khác là mầm chu trình.
 
 ### Trên production
@@ -6357,13 +6358,13 @@ newTab[11]: C -> D            (11 = 3 + 8)
 
 ### Load factor 0.75 đứng ở đâu trong phép tính
 - {{threshold = capacity * 0.75}}. Muốn chứa N phần tử mà không resize, capacity phải là luỹ thừa 2 nhỏ nhất sao cho {{capacity * 0.75 >= N}}.
-- Ví dụ 100.000 phần tử: 131072 × 0.75 = 98304 < 100000, nên bảng thật là 262144 slot ≈ 1 MB mảng reference (4 byte/slot với compressed oops). Với 8 triệu phần tử, capacity 2^23 slot ≈ 32 MB **chỉ riêng mảng bảng**.
-- Công thức capacity khởi tạo hay dùng: {{new HashMap<>((int)(N / 0.75f) + 1)}}; viết {{new HashMap<>(N)}} thì vẫn còn resize vì N chưa chia cho load factor.
+- Ví dụ 100.000 phần tử: 131072 × 0.75 = 98304 < 100000, nên bảng thật là 262144 slot ≈ 1 MB mảng reference (4 byte/slot với compressed oops). Với 8 triệu phần tử: 2^23 × 0.75 ≈ 6,3 triệu chưa đủ, nên capacity là 2^24 slot ≈ 64 MB **chỉ riêng mảng bảng**.
+- Công thức capacity khởi tạo hay dùng: {{new HashMap<>((int)(N / 0.75f) + 1)}}; viết {{new HashMap<>(N)}} thì vẫn còn resize vì N chưa chia cho load factor. Từ Java 19 có sẵn {{HashMap.newHashMap(N)}} (và {{HashSet.newHashSet(N)}}) tính đúng giúp bạn.
 - Javadoc của HashMap nói 0.75 là thoả hiệp time/space cho đa số trường hợp: giảm xuống 0.5 thì chuỗi ngắn hơn nhưng tốn bộ nhớ và cache hơn, chỉ đáng cân nhắc khi profiling chỉ vào {{HashMap.getNode}}.
 
 ### Trên production
 - Triệu chứng: một thread chiếm CPU cao, flame graph có {{java.util.HashMap.resize}}, kèm spike cấp phát mảng lớn. Với G1, mảng table lớn hơn nửa region là **humongous allocation** (cấp phát "khổng lồ" — object quá lớn phải đặt riêng, GC xử lý kém hơn) — thấy rõ qua {{jcmd <pid> GC.heap_info}} và log {{-Xlog:gc*}}.
-- Warm-up (giai đoạn khởi động): service nạp vài trăm nghìn entry lúc khởi động sẽ resize ~18 lần liên tiếp nếu không đặt capacity; đặt đúng thường giảm rõ thời gian boot và số young GC (GC vùng nhớ trẻ, dọn object sống ngắn).
+- Warm-up (giai đoạn khởi động): service nạp vài trăm nghìn entry lúc khởi động sẽ resize khoảng 14 lần liên tiếp (16 lên 262.144) nếu không đặt capacity; đặt đúng thường giảm rõ thời gian boot và số young GC (GC vùng nhớ trẻ, dọn object sống ngắn).
 - Pitfall: resize **không** atomic; một thread resize trong khi thread khác ghi là mất dữ liệu và {{size}} lệch — Java 8 hết bug vòng lặp chứ không hết bug đồng bộ.
 - Pitfall: nếu phân bố hash xấu thì resize không cứu được; dựng histogram bucket trên mẫu key trước khi đổ tiền vào capacity.
 
@@ -6383,7 +6384,7 @@ newTab[11]: C -> D            (11 = 3 + 8)
   topic: 'collections',
   level: 'senior',
   q: 'Spliterator làm gì, và vì sao parallelStream trên LinkedList hoặc trên stream dựng từ Iterator lại không nhanh hơn (thậm chí chậm hơn)?',
-  a: `**Tóm tắt:** {{Spliterator}} (split + iterator) là API chia đôi nguồn dữ liệu để ForkJoinPool (pool thread chia-nhỏ-việc kiểu work-stealing) làm song song. Mỗi nguồn mô tả đặc điểm bằng characteristics ({{SIZED}}, {{SUBSIZED}}, {{ORDERED}}, {{CONCURRENT}}, {{DISTINCT}}, {{NONNULL}}) và quyết định có chia được không trong {{trySplit()}}. {{ArrayList}} chia O(1) theo index; {{LinkedList}} mỗi lần chia phải đi bộ tới phần tử giữa qua các con trỏ rải rác (pointer chase — nhảy theo con trỏ, hay gây cache miss); nguồn từ {{Iterator}} thì {{trySplit}} trả null và "parallel" của bạn chạy đúng một task.
+  a: `**Tóm tắt:** {{Spliterator}} (split + iterator) là API chia đôi nguồn dữ liệu để ForkJoinPool (pool thread chia-nhỏ-việc kiểu work-stealing) làm song song. Mỗi nguồn mô tả đặc điểm bằng characteristics ({{SIZED}}, {{SUBSIZED}}, {{ORDERED}}, {{CONCURRENT}}, {{DISTINCT}}, {{NONNULL}}) và quyết định có chia được không trong {{trySplit()}}. {{ArrayList}} chia O(1) theo index; {{LinkedList}} và nguồn dựng từ {{Iterator}} không chia đôi được, nên {{trySplit}} chia **theo lô**: đi bộ tuần tự qua 1024 phần tử đầu (lần sau 2048, rồi tăng dần) để chép vào một mảng và giao mảng đó cho task khác. Việc đọc nguồn vẫn tuần tự qua các con trỏ rải rác (pointer chase — nhảy theo con trỏ, hay gây cache miss), nên chỉ phần xử lý sau đó mới song song.
 
 ### Stream song song chạy thế nào
 1. {{stream.parallel()}} lấy {{spliterator()}} của nguồn.
@@ -6395,17 +6396,17 @@ newTab[11]: C -> D            (11 = 3 + 8)
 | Nguồn | trySplit làm gì | Chi phí chia | Characteristics tiêu biểu |
 |---|---|---|---|
 | {{ArrayList}}, mảng | cắt khoảng index [gốc, giữa) | O(1) mỗi mảnh | SIZED, SUBSIZED, ORDERED |
-| {{HashMap}}, {{HashSet}} | quét node tới giữa bảng | O(số node đã quét) mỗi mảnh | SIZED |
-| {{LinkedList}} | gọi {{node(index)}} để tìm node giữa | O(k) mỗi lần chia, lặp theo số tầng chia | SIZED, ORDERED |
-| {{spliteratorUnknownSize(iterator, 0)}} | trả null: không chia được | không chia | không SIZED |
-| {{Stream.iterate}}/{{generate}} không {{limit}} | không có kích thước để chia | vô nghĩa, có thể ném IllegalStateException | không SIZED |
+| {{HashMap}}, {{HashSet}} | chia theo dải chỉ số bucket | O(1), nhưng số phần tử mỗi mảnh không đều | SIZED (không SUBSIZED) |
+| {{LinkedList}} | đi bộ chép một lô (1024, 2048...) node vào mảng | O(kích thước lô) mỗi lần, đọc tuần tự | SIZED, ORDERED |
+| {{spliteratorUnknownSize(iterator, 0)}} | chép một lô phần tử từ iterator vào mảng | như trên, không biết tổng kích thước | không SIZED |
+| {{Stream.iterate}}/{{generate}} | nguồn vô hạn, chia theo lô | parallel kèm {{limit}} trên stream ordered thường rất chậm | không SIZED |
 | {{ConcurrentHashMap}} | chia theo dải bucket | rẻ, an toàn khi có thread khác ghi | CONCURRENT |
 
 ### Vì sao parallel trên LinkedList thường chậm hơn
-- Chia đôi danh sách cần node ở giữa, và {{node(i)}} đi bộ từ đầu hoặc cuối tuỳ bên gần hơn → mỗi lần chia tốn cỡ k/2 bước pointer chase.
-- Với p mảnh, tổng chi phí chia cỡ O(n log p) lần đi qua con trỏ, trong khi một vòng {{for}} tuần tự chỉ duyệt list **một lần** O(n) và prefetch được.
-- Nói cách khác: mỗi lần "chia" trên {{LinkedList}} là một chuyến đi bộ qua heap. Parallel chỉ có lãi khi công việc trên mỗi phần tử đủ lớn so với chi phí chia, ví dụ 1 ms gọi API cho mỗi phần tử.
-- Nguồn dựng từ {{Iterator}} (JDBC stream, {{Scanner}}) không bao giờ nhanh khi bật parallel vì {{trySplit}} trả null: bạn chỉ trả thêm chi phí quản lý task.
+- {{LinkedList}} không có cách nhảy tới giữa, nên mỗi lần chia là đi bộ qua cả một lô node (pointer chase) và **chép** chúng sang mảng; bước này chỉ một thread làm được.
+- Lô tăng dần (1024, 2048, 3072...) nên các mảnh không đều: mảnh cuối có thể rất lớn hoặc rất nhỏ, work stealing kém hiệu quả.
+- Một vòng {{for}} tuần tự chỉ duyệt list **một lần** và không phải chép gì. Parallel chỉ có lãi khi công việc trên mỗi phần tử đủ lớn so với chi phí đi bộ và chép, ví dụ 1 ms tính toán cho mỗi phần tử.
+- Nguồn dựng từ {{Iterator}} (JDBC stream, {{Scanner}}) cũng chia theo lô như vậy, và việc đọc nguồn luôn tuần tự: với việc nhẹ trên mỗi phần tử, bật parallel chỉ thêm chi phí chép và quản lý task.
 
 ### Tự viết Spliterator đúng
 ~~~java
@@ -6439,11 +6440,7 @@ final class RangeSpliterator implements Spliterator.OfLong {
 - Pitfall: tích luỹ vào {{ArrayList}}/{{HashMap}} chia sẻ từ nhiều mảnh; phải dùng {{collect}} với supplier và combiner đúng.
 
 > Senior tip: trước khi bật parallel, trả lời ba câu: nguồn có chia được không ({{trySplit}} của nó làm gì), mỗi phần tử đáng bao nhiêu việc, và bước gộp có tốn không. Với dữ liệu đã nằm trong bộ nhớ, {{ArrayList}} + vòng for tuần tự thường còn nhanh hơn parallel trên {{LinkedList}}; cần song song quy mô lớn thì tách executor riêng thay vì chiếm common pool.`,
-  follow: [
-    'Khai SIZED nhưng estimateSize không chính xác thì thuật toán chia hỏng thế nào?',
-    'Vì sao stream dựng từ Iterator/JDBC không bao giờ nhanh khi bật parallel?',
-    'Bạn thiết kế spliterator cho một nguồn chia đắt (snapshot vào skip list, range theo thời gian) ra sao?'
-  ],
+  follow: ['Khai SIZED nhưng estimateSize không chính xác thì thuật toán chia hỏng thế nào?', 'Vì sao stream dựng từ Iterator/JDBC hiếm khi nhanh hơn khi bật parallel, dù trySplit vẫn chia theo lô?', 'Bạn thiết kế spliterator cho một nguồn chia đắt (range theo thời gian, dữ liệu phân trang) ra sao?'],
   tags: ['Spliterator', 'parallel stream', 'ForkJoinPool', 'LinkedList', 'trySplit'],
   refs: [
     { type: 'doc', title: 'Spliterator (Java SE 21 API Specification)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Spliterator.html' }
