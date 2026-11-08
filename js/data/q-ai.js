@@ -43,6 +43,12 @@ String user = "CONTEXT:\\n" + context + "\\n\\nCÂU HỎI: " + question;
 - Đo chất lượng bằng eval, không bằng cảm nhận vài lần thử.
 - Với dữ liệu thay đổi nhanh, RAG tốt hơn fine-tune vì cập nhật tài liệu không cần train lại.
 
+### Ví dụ đời thực
+Hệ thống chatbot tư vấn sản phẩm của một cửa hàng điện tử dùng LLM để trả lời khách. Ban đầu đội dev nhồi toàn bộ danh mục 5000 sản phẩm vào mỗi prompt, trong khi context window là 8000 token. Token là đơn vị văn bản sau khi tokenizer (bộ tách từ) cắt văn bản, khoảng 3-4 ký tự tiếng Anh một token; tiếng Việt thường tốn nhiều token hơn do dấu và cách tách từ. Context window là số token tối đa mô hình xử lý trong một lần gọi, bao gồm cả đầu vào và đầu ra. Triệu chứng: chatbot chậm (8 giây một lượt), trả giá sản phẩm sai khoảng 15% lượt hỏi, và chi phí tăng gấp ba vì mỗi lượt gửi khoảng 12000 token. Điều tra: xem log kích thước prompt và bảng chi phí của nhà cung cấp, đọc lại transcript (bản ghi hội thoại) thấy model bịa giá khi sản phẩm nằm ở giữa danh sách dài (lost in the middle, hiện tượng thông tin quan trọng bị chìm ở giữa context). Nguyên nhân gốc: nhồi toàn bộ tài liệu vào prompt thay vì chỉ lấy đoạn liên quan, và không giới hạn độ dài đầu ra. Cách xử lý: áp dụng RAG (truy xuất đoạn liên quan rồi mới sinh câu trả lời), chỉ đưa top 3-5 sản phẩm liên quan nhất vào context, đặt temperature 0.2 (đầu ra ổn định, ít ngẫu nhiên) và max_tokens 500. Kết quả đo được: chi phí giảm khoảng 70%, latency (độ trễ) p95 xuống 2 giây, tỉ lệ trả giá sai xuống dưới 5%.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chia làm ba phần. Nhất, token là đơn vị nhỏ nhất mà mô hình đọc, ví dụ câu tiếng Anh ngắn có thể tách thành ba đến năm token, và tiếng Việt thường tốn nhiều hơn do dấu; mọi chi phí và giới hạn đều tính theo token. Hai, context window là bộ nhớ ngắn hạn của một lần gọi, bao gồm cả đầu vào và đầu ra, nên hội thoại dài cần tóm tắt hoặc dùng cửa sổ trượt. Ba, temperature điều chỉnh độ ngẫu nhiên: thấp cho mã hoặc trích xuất dữ liệu, cao hơn cho sáng tạo. Hallucination là khi mô hình sinh văn bản mượt mà nhưng sai sự thật, vì nó tối ưu xác suất từ tiếp theo chứ không tra cứu thực tế. Trong production, em sẽ dùng RAG để cung cấp ngữ cảnh đáng tin, giới hạn độ dài đầu ra, validate schema (kiểm tra cấu trúc dữ liệu), và luôn giả định mô hình có thể bịa, nên cần fallback và con người kiểm tra các hành động quan trọng."
+
 > Senior tip: hãy viết prompt như viết API contract: nói rõ vai trò, dữ liệu được phép dùng, định dạng đầu ra, và điều gì phải từ chối. Phần lớn "AI trả lời ngu" là do prompt thiếu ràng buộc, không phải do model yếu.`,
   follow: [
     'Vì sao temperature 0 vẫn có thể cho kết quả khác nhau giữa các lần gọi?',
@@ -128,6 +134,12 @@ Assistant assistant = AiServices.builder(Assistant.class)
 - Không có rate limit/fallback khi nhà cung cấp lỗi 429/500.
 - Dùng SDK cũ hoặc API không tồn tại; khóa version và đọc changelog khi nâng cấp.
 
+### Ví dụ đời thực
+Hệ thống phân loại ticket hỗ trợ kỹ thuật dùng Spring AI để trích xuất loại lỗi và mức ưu tiên từ văn bản khách hàng. Ban đầu dev parse chuỗi JSON bằng regex, đôi khi model thêm văn bản giải thích quanh JSON nên parser lỗi và request thất bại. Structured output là cách yêu cầu mô hình trả dữ liệu theo cấu trúc đã định, chẳng hạn record Ticket với ba trường, thay vì văn bản tự do. Triệu chứng: khoảng 40 phản hồi một trăm bị hỏng JSON. Điều tra: log phản hồi thô từ mô hình, thấy các chuỗi như Dưới đây là kết quả: {...}. Nguyên nhân: không định nghĩa schema rõ ràng và không validate đầu ra. Cách xử lý: dùng ChatClient với entity(Ticket.class), kèm BeanOutputConverter của Spring AI, validate bằng Jackson và Bean Validation; nếu sai, retry một lần với thông báo sửa lỗi, rồi fallback về phản hồi an toàn. Kết quả: tỉ lệ JSON hợp lệ từ 60 phần trăm lên trên 98 phần trăm, ít cuộc gọi lại hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyên hai thư viện này không phải là đối thủ cạnh tranh trực tiếp, mà là hai cách đóng gói khả năng tương tự. Spring AI phù hợp khi dự án đã dùng Spring Boot vì cấu hình qua application.yml, tích hợp Micrometer và quan sát nguyên mẫu. LangChain4j mạnh hơn về AiServices, cho phép khai báo giao diện Java và tự sinh triển khai, và về tool calling. Cả hai đều hỗ trợ structured output và nhiều nhà cung cấp model. Em khuyên không nên parse JSON bằng regex, mà hãy định nghĩa schema nhỏ, validate bằng Jackson, retry một lần khi sai và fallback. Prompt nên được lưu thành tài liệu có version, có test hồi quy, và mỗi thay đổi phải chạy eval trước khi deploy. Với đội Spring, em sẽ chọn Spring AI nhưng vẫn bao quanh nó một lớp service mỏng để thay đổi nhà cung cấp dễ dàng."
+
 > Senior tip: với đội Spring, Spring AI cho tốc độ tích hợp nhanh nhất, nhưng hãy giữ một lớp service mỏng bao quanh ChatClient để có thể đổi model/nhà cung cấp mà không sửa khắp nơi. Đừng để abstraction rò rỉ vào domain logic.`,
   follow: [
     'Khi nào nên dùng ChatModel low-level thay vì ChatClient?',
@@ -190,6 +202,12 @@ Thực tế: **RAG trước**, fine-tune sau khi đã có dữ liệu đánh gi�
 - Nhồi 20 chunk vào prompt: tăng nhiễu và chi phí; re-rank rồi chọn ít.
 - Không xử lý "không tìm thấy": model bịa câu trả lời từ kiến thức chung.
 
+### Ví dụ đời thực
+Hệ thống hỏi đáp tài liệu nhân sự dùng RAG để trả lời về chính sách lương và nghỉ phép. RAG là Retrieval-Augmented Generation (truy xuất đoạn tài liệu liên quan rồi đưa vào mô hình để sinh câu trả lời), thay vì để mô hình nhớ tất cả kiến thức. Triệu chứng: chatbot trích chính sách lương năm 2022 đã bị thay thế, và đôi khi không nêu nguồn. Điều tra: index (chỉ mục tìm kiếm) không lưu phiên bản tài liệu, chunk (đoạn văn bản được cắt nhỏ) cắt giữa bảng lương nên mất ngữ cảnh, và không có re-ranking (xếp hạng lại các đoạn tìm được). Nguyên nhân gốc: chỉ dùng tìm kiếm vector thô, metadata (thông tin mô tả như ngày, phòng ban, phiên bản) thiếu ngày và phòng ban, nhồi mười hai đoạn vào prompt. Cách xử lý: chia chunk theo heading (đề mục) khoảng 300-800 token, nhúng bằng cùng một mô hình embedding (mô hình chuyển văn bản thành vector số biểu diễn ý nghĩa) cho cả ingestion (nạp dữ liệu) và truy vấn, lưu vào vector store (kho lưu vector để tìm đoạn gần nghĩa) kèm metadata phiên bản và ngày, dùng hybrid search (tìm kiếm lai, kết hợp từ khóa và vector), rồi re-ranking lấy 3-5 đoạn tốt nhất. Kết quả: độ chính xác câu trả lời từ 60% lên 90%, và mô hình có trích dẫn docId nên người dùng kiểm tra được nguồn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em giải thích RAG theo sáu bước. Một là ingest: đọc tài liệu, làm sạch, chia chunk nhỏ. Hai là embed: biến chunk thành vector bằng mô hình embedding. Ba là store: lưu vector và metadata vào vector store. Bốn là retrieve: embed câu hỏi, tìm top-k đoạn gần nhất. Năm là augment: gộp đoạn vào prompt kèm hướng dẫn trích dẫn. Sáu là generate: mô hình trả lời dựa trên ngữ cảnh. Chunking quá nhỏ mất ngữ cảnh, quá lớn tốn token và nhiễu; kích thước thực dụng là 300-800 token với chồng chéo 10-20%. RAG chọn khi kiến thức thay đổi thường xuyên và cần trích dẫn nguồn. Fine-tune (huấn luyện thêm mô hình trên dữ liệu riêng) chọn khi cần thay đổi giọng điệu hoặc định dạng đầu ra, và giảm độ dài prompt. Thực tế, em dùng RAG trước, mới đến fine-tune sau khi có bộ đánh giá và prompt ổn định."
+
 > Senior tip: chất lượng RAG phụ thuộc thứ tự: dữ liệu sạch > chunking/metadata > retrieval > re-rank > prompt. Đừng đổi model đắt tiền khi chunking đang cắt giữa bảng và metadata thiếu phiên bản.`,
   follow: [
     'Vì sao phải dùng cùng embedding model cho ingest và query?',
@@ -203,7 +221,7 @@ Thực tế: **RAG trước**, fine-tune sau khi đã có dữ liệu đánh gi�
   topic: 'ai',
   level: 'senior',
   q: 'Prompt engineering cho production: system prompt, few-shot, output schema và prompt versioning nên được thiết kế và vận hành thế nào?',
-  a: `**Tóm tắt:** prompt production là một artefact phần mềm: có cấu trúc rõ (vai trò, ràng buộc, dữ liệu, định dạng đầu ra), có ví dụ khi cần, có schema kiểm tra được, có version và có test hồi quy. Mục tiêu không phải prompt "hay" mà là hành vi ổn định, đo được và thay đổi an toàn.
+  a: `**Tóm tắt:** prompt production là một thành phần (artifact) phần mềm: có cấu trúc rõ (vai trò, ràng buộc, dữ liệu, định dạng đầu ra), có ví dụ khi cần, có schema kiểm tra được, có version và có test hồi quy. Mục tiêu không phải prompt "hay" mà là hành vi ổn định, đo được và thay đổi an toàn.
 
 ### Cấu trúc một prompt tốt
 1. **Vai trò và phạm vi**: mô hình là ai, được làm gì, không được làm gì.
@@ -256,6 +274,12 @@ if (a.insufficientContext()) return fallbackAnswer();
 - Đổi model mà không chạy lại eval: hành vi thay đổi âm thầm.
 - Nhồi quá nhiều quy tắc mâu thuẫn: model chọn quy tắc cuối hoặc bỏ qua.
 - Không giới hạn max output: chi phí và latency tăng không kiểm soát.
+
+### Ví dụ đời thực
+Dịch vụ trích xuất ý định từ email khách hàng dùng một prompt đơn lẻ để phân loại thành bốn nhãn. Sau khi đội đổi sang mô hình mới, đầu ra bỗng thay từ JSON sang văn bản tự do, parser (bộ phân tích cú pháp) lỗi và toàn bộ hàng chờ xử lý bị kẹt. System prompt là phần đặt quy tắc bất biến, ví dụ chỉ dựa trên tài liệu được cung cấp và không tiết lộ hướng dẫn hệ thống. Few-shot là đưa hai đến năm ví dụ trong prompt để dạy định dạng. Output schema là cấu trúc đầu ra đã định, ví dụ record Answer với trường câu trả lời và danh sách trích dẫn. Triệu chứng: không có diff (so sánh khác biệt) giữa các bản prompt, đội không biết bản cũ như thế nào nên không thể rollback (quay lại bản cũ). Điều tra: chạy lại golden set (tập dữ liệu chuẩn) một trăm trường hợp, thấy phiên bản mới thất bại trên ba mươi trường hợp. Nguyên nhân: đổi mô hình không chạy lại đánh giá, và few-shot chỉ có ví dụ dễ nên mô hình sụp với trường hợp thật. Cách xử lý: lưu prompt thành file {{system-v2.txt}} kèm changelog, log phiên bản prompt, phiên bản mô hình và trace ID cho mỗi cuộc gọi, giữ bản cũ để rollback qua cờ cấu hình (feature flag). Kết quả: phát hiện lỗi trong phát triển thay vì từ người dùng, rollback trong mười phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Em xem prompt production như một thành phần (artifact) phần mềm, cần cấu trúc rõ, có version và có test. Một prompt tốt gồm vai trò và phạm vi, nguồn sự thật, nhiệm vụ cụ thể, ràng buộc, định dạng đầu ra và ví dụ few-shot nếu cần. System prompt nên ngắn, chứa quy tắc không đổi, và không nhét dữ liệu động vào đó vì mô hình có thể hiểu nhầm thành chỉ thị. Few-shot dùng hai đến năm ví dụ đa dạng, bao gồm cả trường hợp phải từ chối. Output schema nên nhỏ, có trường bắt buộc và enum, validate bằng Jackson thay vì tin mô hình. Versioning lưu prompt theo file có tên phiên bản, mỗi version đi kèm changelog (nhật ký thay đổi) và kết quả eval (đánh giá), và log trace ID để tái hiện từng câu trả lời. Lỗi hay gặp là nhồi quá nhiều quy tắc mâu thuẫn, đổi mô hình không chạy lại eval, và để prompt rải rác trong code khiến không thể rollback."
 
 > Senior tip: hãy coi prompt như code có test. Một golden set 50–200 case + so sánh output giữa hai version rẻ hơn nhiều so với việc phát hiện lỗi từ người dùng. Và luôn có đường lui: prompt version + model version + feature flag.`,
   follow: [
@@ -317,7 +341,13 @@ class OrderTools {
 - Không log tool call: không thể điều tra vì sao agent làm hành động sai.
 - Cấp MCP server quyền rộng (đọc toàn bộ filesystem, DB): một prompt injection có thể lợi dụng.
 
-> Senior tip: hãy bắt đầu bằng workflow cố định + 2–3 tool an toàn, đo chất lượng, rồi mới mở rộng autonomy. Mọi tool có side effect nên có "chế độ dry-run" và audit log; đó là khác biệt giữa demo và hệ thống chạy thật.`,
+### Ví dụ đời thực
+Trợ lý ảo tra cứu đơn hàng cho sàn thương mại điện tử có tool gọi API trạng thái đơn và tool hủy đơn. Ban đầu hai tool đều được mô hình tự quyết định gọi, và tool hủy không yêu cầu xác nhận từ con người. Triệu chứng: khi khách hỏi tình trạng đơn hàng ORD-1024, mô hình vô tình gọi hủy đơn, gây thất thoát đơn hàng. Tool calling là khả năng mô hình yêu cầu ứng dụng chạy một hàm với tham số có cấu trúc, chẳng hạn mã đơn, rồi ứng dụng gửi kết quả lại. Agent là vòng lặp mà mô hình tự chọn tool cho đến khi xong, khác workflow là các bước được lập trình viên định nghĩa trước. Điều tra: xem audit log, thấy tool hủy được gọi mà không có sự đồng ý. Nguyên nhân: mô tả tool mơ hồ, tool có tác động bên ngoài không thể hoàn tác không cần xác nhận, và vòng lặp agent không giới hạn. Cách xử lý: tách tool chỉ đọc và tool ghi, yêu cầu xác nhận trước khi hủy, dùng chế độ dry-run, giới hạn mười vòng lặp và ghi log mọi lời gọi tool. Kết quả: không còn sự cố hủy nhầm, và quy trình làm việc cố định có độ trễ thấp hơn agent tự do.
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyên bắt đầu bằng workflow cố định, tức các bước được lập trình sẵn, và chỉ bổ sung tool calling khi cần. Tool calling (gọi công cụ) hoạt động khi ứng dụng gửi mô hình danh sách công cụ kèm mô tả và schema tham số; mô hình không tự chạy code mà chỉ trả về tên công cụ và tham số, ứng dụng thực thi rồi gửi kết quả lại. Agent (tác tử tự hành) khác ở chỗ mô hình tự lập kế hoạch và lặp, linh hoạt nhưng khó dự đoán và dễ lặp vô hạn. Trong production, em sẽ giới hạn số vòng lặp, ngân sách token, và timeout. MCP là Model Context Protocol (giao thức chuẩn để ứng dụng LLM kết nối với máy chủ cung cấp công cụ và tài nguyên), giúp viết một lần dùng cho nhiều ứng dụng. Mọi tool có tác động bên ngoài nên có chế độ dry-run (chạy thử không gây thay đổi thật) và audit log (nhật ký kiểm toán), và cần kiểm tra tham số do mô hình sinh ra để tránh prompt injection (chèn chỉ thị độc hại)."
+
+> Senior tip: hãy bắt đầu bằng workflow cố định + 2-3 tool an toàn, đo chất lượng, rồi mới mở rộng autonomy. Mọi tool có side effect nên có "chế độ dry-run" và audit log; đó là khác biệt giữa demo và hệ thống chạy thật.`,
   follow: [
     'Vì sao nên ưu tiên workflow hơn agent trong production?',
     'Bạn bảo vệ tool có side effect khỏi tham số do model sinh ra thế nào?',
@@ -372,6 +402,12 @@ class OrderTools {
 - Judge có thiên lệch độ dài/định dạng: rubric phải nói rõ.
 - Eval chạy một lần rồi bỏ: model và dữ liệu thay đổi.
 - Tối ưu một metric (ví dụ recall) làm hỏng metric khác (latency, chi phí).
+
+### Ví dụ đời thực
+Đội dev xây chatbot tư vấn giao hàng và thay đổi prompt mỗi tuần dựa trên cảm nhận. Một tuần sửa lỗi câu trả lời sai về phí ship, nhưng tuần sau khách phàn nàn chatbot lại phản hồi sai thời gian giao ở vùng xa. Golden dataset (tập dữ liệu chuẩn) gồm đầu vào và tiêu chí đúng, dùng để đo chất lượng có số liệu thay vì cảm tính. LLM-as-judge là dùng một mô hình mạnh chấm điểm câu trả lời theo rubric (bảng tiêu chí chấm), chẳng hạn câu trả lời có được hỗ trợ bởi ngữ cảnh hay không. Regression test (kiểm thử hồi quy) là chạy lại toàn bộ đánh giá mỗi khi đổi prompt, mô hình hoặc truy xuất để phát hiện tụt chất lượng. Triệu chứng: demo mười câu ổn nhưng hàng nghìn biến thể trong production không được kiểm tra. Điều tra: xây tập một trăm trường hợp từ ticket thật, chạy LLM-as-judge, thấy điểm giảm từ 3,8 xuống 2,5 sau bản đổi mới. Nguyên nhân: không có bộ dữ liệu chuẩn, chỉ đánh giá vài câu chọn sẵn. Cách xử lý: tạo golden set 100-200 trường hợp bao gồm phổ biến, biên (edge case), phải từ chối, thiếu ngữ cảnh và prompt injection; đặt metric (chỉ số đo) {{recall@k}} (tỉ lệ tìm được đoạn đúng trong top k), độ trung thực và tỉ lệ JSON hợp lệ; chạy regression trong CI (tích hợp liên tục) và chặn merge (hợp nhất mã) nếu giảm quá 5%. Kết quả: phát hiện sớm lỗi trước khi triển khai, chất lượng ổn định theo thời gian.
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyên xây đánh giá trước khi tối ưu prompt. Golden dataset bắt đầu 50-200 trường hợp lấy từ câu hỏi thật, bao gồm phổ biến, biên (edge case), phải từ chối và thiếu ngữ cảnh. LLM-as-judge dùng mô hình mạnh chấm theo rubric rõ, và cần kiểm chứng judge với mẫu người chấm để tránh thiên lệch. Metric cho RAG gồm {{recall@k}} (tỉ lệ tìm được đoạn đúng trong top k), độ trung thực với ngữ cảnh (faithfulness) và tỉ lệ JSON hợp lệ; với phân loại thì dùng accuracy hoặc F1. Regression test (kiểm thử hồi quy) chạy lại toàn bộ đánh giá mỗi khi đổi prompt, mô hình hoặc chỉ mục, so sánh với baseline (mức tham chiếu) và chặn merge (hợp nhất mã) nếu giảm quá ngưỡng. Đánh giá ngoại tuyến (offline eval) không thay thế theo dõi người dùng thực, nên em cũng theo dõi tỉ lệ phản hồi xấu và tỉ lệ fallback. Cuối cùng, em đo cùng lúc chất lượng, chi phí và độ trễ, vì cải thiện 2% độ chính xác nhưng gấp ba chi phí thường không đáng."
 
 > Senior tip: hãy xây eval trước khi tối ưu prompt. Một bộ 100 case tốt + rubric rõ ràng đáng giá hơn hàng tuần thử cảm tính. Và đừng quên đo chi phí/latency cùng chất lượng — một cải tiến 2% accuracy mà gấp ba chi phí thường không đáng.`,
   follow: [
