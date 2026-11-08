@@ -91,53 +91,59 @@ In practice: always have status API (source of truth), add webhook or SSE as opt
     ]
   },
   'design-029': {
-    q: 'Design a system for background jobs (sending emails, resizing images, synchronizing with partners). Compare DB-based queues, Redis Streams, message brokers (RabbitMQ/SQS), and Kafka, and when do you choose which?',
-    a: `**Summary:** Choose based on 4 questions: does the job need to be recorded in the **same transaction** as business data? Does it need **ack/retry/delay per job**? What is the required **throughput**? And is **replay / multiple consumers** needed? DB-based queues excel in consistency and simplicity; Redis Streams excel in low latency but have weaker durability; RabbitMQ/SQS are standard work queues; Kafka is for event streams rather than job queues.
+    q: 'A system needs to run background jobs (sending emails, resizing images, synchronizing with partners). How do you compare DB table queues, Redis Streams, message brokers (RabbitMQ/SQS), and Kafka, and when do you choose which?',
+    a: `**Summary:** Choose based on 4 questions: must the job be written in the **same transaction** as the business data, do you need **ack/retry/delay per job**, what is the **throughput**, and do you need **replay / multiple consumers**? A DB table wins on consistency and simplicity; Redis Streams wins on latency but has weaker durability; RabbitMQ/SQS are standard work queues; Kafka fits event streams more than job queues.
 
 ### 1. DB table (SELECT ... FOR UPDATE SKIP LOCKED)
-- Mechanism: Each job is a row; worker claims using {{FOR UPDATE SKIP LOCKED}} so multiple workers don't take the same job; lease + reaper reclaims hung jobs.
-- Biggest strength: **INSERT job within the same transaction** as business data. If the order commits, the email job definitely exists; if it rolls back, the job vanishes. No dual-write issues.
-- Queryable: "Show me failed jobs for tenant X this week" is just a SQL query.
-- Limitations: Each job involves multiple UPDATEs; polling creates load on the main DB. Usually sufficient for tens to hundreds of jobs/s; measure if higher. PostgreSQL suffers from bloat due to frequent UPDATE/DELETE, needs good autovacuum or partitioning by day. {{LISTEN/NOTIFY}} can wake up workers instead of thick polling.
+- Mechanism: a job is a row; workers claim it using {{FOR UPDATE SKIP LOCKED}} so multiple workers do not pick the same job; a lease + reaper reclaims stuck jobs.
+- Biggest strength: **INSERT the job in the same transaction** as the business data. If the order commits, the email job is guaranteed to exist; if it rolls back, the job disappears too. No dual-write.
+- Queryable: "which jobs failed for tenant X this week" is just a SQL query.
+- Limitations: each job involves multiple UPDATEs; workers polling continuously create load on the main DB. Usually enough for tens to a few hundred jobs/s; measure beyond that. PostgreSQL can bloat from frequent UPDATE/DELETE, so good autovacuum or partitioning by day is needed. {{LISTEN/NOTIFY}} can wake workers instead of aggressive polling.
 
 ### 2. Redis Streams
-- Mechanism: {{XADD jobs * ...}} adds job; consumer group reads via {{XREADGROUP}}; each delivered message stays in **PEL (pending entries list)** until worker {{XACK}}. If worker dies, another uses {{XAUTOCLAIM}} to receive pending messages; {{XPENDING}} shows retry counts, used to push poison messages to DLQ.
-- Strengths: Low latency (milliseconds), high throughput, ready if Redis is already used.
-- Weaknesses: Data in RAM; AOF with {{appendfsync everysec}} can lose ~1s of commits; asynchronous replication means failover might lose already-acked jobs. No built-in delay/retry schedule; must build manually (e.g., sorted set by time). Stream must be truncated ({{MAXLEN}}) to avoid filling RAM.
+- Mechanism: {{XADD jobs * ...}} adds a job; a consumer group reads with {{XREADGROUP}}; each delivered message stays in the **PEL (pending entries list)** until the worker {{XACK}}s it. If a worker dies, another worker uses {{XAUTOCLAIM}} to take back messages pending too long; {{XPENDING}} shows delivery counts, useful to move poison messages out.
+~~~text
+XADD jobs * type email to a@x.com          -> 1730000000000-0
+XREADGROUP GROUP workers w1 COUNT 10 BLOCK 5000 STREAMS jobs >
+XACK jobs workers 1730000000000-0
+XAUTOCLAIM jobs workers w2 60000 0-0 COUNT 10   -- reclaim jobs pending > 60s
+~~~
+- Strengths: low latency (milliseconds), high throughput, available if you already use Redis.
+- Weaknesses: data lives in RAM; AOF with {{appendfsync everysec}} can lose about 1 second of writes; asynchronous replication means a failover can lose jobs that were already acknowledged as written. No built-in scheduled delay/retry; you must build it yourself (for example, a sorted set keyed by run time). The stream must be trimmed ({{MAXLEN}}) or it can fill RAM.
 
-### 3. Message broker: RabbitMQ, SQS
-- **SQS**: message is hidden in **visibility timeout**; delete on success, otherwise becomes visible again for retry. After {{maxReceiveCount}}, moves to DLQ (redrive policy). Delay up to 15 mins, retention up to 14 days. No operational overhead.
-- **RabbitMQ**: manual ack/nack, {{prefetch}} limits jobs held per worker, dead-letter exchange, TTL, priority; use **quorum queues** for node fault tolerance.
-- Strengths: True work queue semantics: worker takes work when idle, acks per job, retry/DLQ built-in, free worker scaling.
-- Weaknesses: Not in same transaction as DB, needs outbox for sync with business data; cannot replay already-acked jobs.
+### 3. Message brokers: RabbitMQ, SQS
+- **SQS**: receive a message and it becomes hidden for the **visibility timeout**; delete it when done, otherwise it becomes visible again for retry. After {{maxReceiveCount}} it moves to a DLQ (redrive policy). Delay up to 15 minutes, message retention up to 14 days. No infrastructure to operate.
+- **RabbitMQ**: manual ack/nack, {{prefetch}} limits how many messages each worker holds, dead-letter exchange, TTL, priority; use a **quorum queue** to tolerate node loss.
+- Strengths: true work-queue semantics: idle workers take work, ack each job, retry/DLQ are built in, workers scale freely.
+- Weaknesses: not in the same transaction as the DB, so an outbox is needed if the job must stay perfectly in sync with business data; you cannot replay jobs that were already acked.
 
 ### 4. Kafka
-- Best when jobs are essentially **reactions to an event** already in Kafka, requiring multiple independent consumers and replay.
-- Not for long, uneven jobs: head-of-line blocking by partition, worker count limited by partitions, retry/DLQ must be built using sub-topics. Share groups (Kafka 4.x) improve this but are new and don't guarantee ordering.
+- A good fit when a job is really a **reaction to an event** that already lives in Kafka, and you need multiple independent consumers and replay.
+- A poor fit for long, uneven jobs: head-of-line blocking per partition, worker count limited by partitions, and retry/DLQ must be built with extra topics. Share groups (Kafka 4.x) improve this, but they are still new and do not preserve ordering.
 
-### Comparison Table
-| Criteria | DB Table | Redis Streams | RabbitMQ / SQS | Kafka |
+### Comparison
+| Criteria | DB table | Redis Streams | RabbitMQ / SQS | Kafka |
 |---|---|---|---|---|
-| Enqueue in DB transaction | **Yes** | No | No (needs outbox) | No (needs outbox) |
-| Ack/retry per job | self-built, easy | PEL + XAUTOCLAIM | **Native** | No (consumer group) |
-| Delay / schedule | **Easy** ({{run_after}}) | self-built | Yes (limited) | self-built |
-| Durability | High (WAL) | Medium | High (quorum / SQS) | High |
-| Throughput | Low–Medium | High | Medium–High | Very High |
-| Replay | query again | limited | No | **Yes** |
-| OpEx | None | Redis ready | Medium / Near 0 (SQS) | High |
+| Enqueue in the same DB transaction | **yes** | no | no (needs outbox) | no (needs outbox) |
+| Per-job ack/retry | self-built, easy | PEL + XAUTOCLAIM | **built in** | no (consumer group) |
+| Delay / scheduled run | **easy** ({{run_after}}) | self-built | yes (limited) | self-built |
+| Durability | high (WAL) | medium | high (quorum queue / SQS) | high |
+| Throughput | low–medium | high | medium–high | very high |
+| Replay | query again | within MAXLEN limit | no | **yes** |
+| Extra operations | none | Redis already there | medium / near 0 (SQS) | high |
 
 ### How to choose
-1. Job must match business data transactionally, tens of jobs/s: **DB Table**. No extra infra.
-2. On AWS, independent jobs, needs retry/DLQ/delay: **SQS**. If job generated from DB transaction, use outbox to push to SQS.
-3. Complex routing, priority, on-prem: **RabbitMQ**.
-4. Low latency (ms), idempotent jobs, already using Redis: **Redis Streams**.
-5. Job is an event reaction requiring replay and multiple consumers: **Kafka**, possibly bridged to a queue for heavy lifting.
+1. The job must stay perfectly in sync with business data, tens of jobs/s: **DB table**. No extra infrastructure.
+2. On AWS, independent jobs that need retry/DLQ/delay: **SQS**. If the job is produced from a DB transaction, use an outbox to push to SQS.
+3. Need complex routing, priority, on-prem: **RabbitMQ**.
+4. Need millisecond latency, can tolerate very small loss and jobs are idempotent, already have Redis: **Redis Streams**.
+5. The job is a consequence of an event that multiple systems must consume, and you need replay: **Kafka**, possibly bridged to a queue for the heavy work.
 
-### Production Pitfalls
-- Choosing Kafka for "email queue" then writing custom retry topics, DLT, delay: costs much more than SQS.
-- Using Redis List ({{LPUSH}}/{{BRPOP}}) as queue: worker death after pop means **job loss**, no PEL. Use Streams or patterns with processing lists.
-- DB queue in main DB, worker polls 100 times/s per pod: DB wastes CPU returning "no jobs". Use LISTEN/NOTIFY or less aggressive polling.
+### Production pitfalls
+- Choosing Kafka for an "email queue" and then having to build retry topics, a DLT, and delay yourself: it costs many times more than SQS.
+- Using a Redis List ({{LPUSH}}/{{BRPOP}}) as a queue: if a worker dies after popping, the job is **lost** because there is no PEL. Streams, or a pattern with a processing list, are safe.
+- Putting the DB queue in the same DB as business data while workers poll 100 times/s per pod: the DB burns CPU just to answer "no jobs".
 
-> Senior tip: at every choice, the actual semantics are **at-least-once**, so an idempotent handler is mandatory, not optional. Start with DB table or SQS; only move to more complex things when metrics (job age, DB load, throughput) show it's needed, and document the reason with an ADR.`
+> Senior tip: in every option the real semantics are **at-least-once**, so an idempotent handler is mandatory, not optional. Start with a DB table or SQS; move to something more complex only when metrics (job age, DB load, throughput) show it is needed, and record the reason with an ADR.`
   }
 });
