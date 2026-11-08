@@ -208,6 +208,19 @@ public String hybridEncrypt(String plain, PublicKey rsaPublic) throws GeneralSec
 - The server verifies the client's cert chain against its truststore.
 - Used for: **service-to-service** (zero-trust), a **bank's partner APIs**, **device authentication**.
 
+The diagram below illustrates the mTLS (mutual TLS) handshake:
+
+~~~seq
+title: mTLS handshake
+actors: Client | Server
+Client -> Server: ClientHello + key_share
+Server --> Client: ServerHello + cert + CertificateVerify
+Client -> Server: client cert + CertificateVerify
+Client --> Server: Finished (app data keys)
+Server --> Client: Finished (app data keys)
+note Client..Server: server requires client cert
+~~~
+
 ### Keystore vs Truststore in Java
 | | **Keystore** ({{-Djavax.net.ssl.keyStore}}) | **Truststore** ({{-Djavax.net.ssl.trustStore}}) |
 |---|---|---|
@@ -284,6 +297,19 @@ public boolean verify(String payload, String timestamp, String nonce, String sig
 }
 ~~~
 
+The diagram below illustrates request signing with HMAC between a bank and a partner:
+
+~~~seq
+title: HMAC request signing
+actors: Bank | Partner | Redis
+Bank -> Partner: request, timestamp, nonce, signature
+Partner -> Redis: check nonce
+Redis --> Partner: nonce unused
+Partner -> Partner: verify HMAC + timestamp
+Partner --> Bank: 200 OK or 401
+note Bank..Partner: check time window + nonce TTL
+~~~
+
 ### Digital Signature (Asymmetric) — Non-repudiation, Partner/Banking
 - Sender: the private key (RSA-PSS/ECDSA-P256) signs payload + timestamp + nonce.
 - Receiver: the public key (X.509 cert) verifies.
@@ -347,6 +373,18 @@ public boolean verify(String payload, String timestamp, String nonce, String sig
 - Vector: an API fetches a URL from user input (webhooks, avatar URLs, document import, PDF generators).
 - Targets: {{http://169.254.169.254}} (AWS metadata), {{http://localhost:8080}}, {{http://127.0.0.1}}, private IP ranges, internal services.
 - Impact: credential theft (IAM role), internal service enumeration, RCE via an internal admin panel.
+
+The diagram below illustrates an SSRF attack stealing credentials from cloud metadata:
+
+~~~seq
+title: SSRF stealing metadata credentials
+actors: Attacker | App | Metadata
+Attacker -> App: fetch user-supplied URL
+App -> Metadata: request IAM credentials
+Metadata --> App: return IAM role credentials
+App --> Attacker: response includes leaked data
+note Attacker..Metadata: enforce host allowlist
+~~~
 
 ~~~java
 // ❌ DANGEROUS
