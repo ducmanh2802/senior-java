@@ -1,6 +1,7 @@
 # T581 — 8 câu devops vào khoảng trống
 
-Status: TODO
+Status: DONE
+Reviewed-by: claude (self-checked: validate)
 Agent: qoder
 Owns: `js/data/q-devops.js`
 
@@ -28,3 +29,5 @@ Level: 2 mid, 4 senior, 2 lead. Lệnh trong `~~~bash`, YAML trong `~~~yaml`.
 `node scripts/build-light-index.js` rồi `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + danh sách id mới vào Notes.
 
 ## Notes
+- Thêm 8 câu: devops-031 (supply chain SBOM/Trivy/cosign/Kyverno, senior), devops-032 (base image distroless/jlink/Alpine, mid), devops-033 (Terraform state/lock/plan/drift, senior), devops-034 (Linux fd/ephemeral port/TIME_WAIT, senior), devops-035 (DNS ndots/CoreDNS, mid), devops-036 (QoS/eviction/PriorityClass, senior), devops-037 (NetworkPolicy default-deny + ESO/Vault/Sealed Secrets, lead), devops-038 (SLO/burn rate/postmortem, lead).
+- build-light-index + validate OK; check-links q-devops.js: 30 link, 0 hỏng.
