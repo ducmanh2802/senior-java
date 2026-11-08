@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/lessons-autotest.js — task T766. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-autotest.js — task T766/T1083. Format: js/core/i18n.js (content overlay).
  * ids: lesson-autotest-010
  */
 App.i18n.content({
