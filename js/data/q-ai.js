@@ -1388,6 +1388,12 @@ Regex không bắt được hết (số đọc thành chữ trong transcript, t�
 - Đánh giá định kỳ: tỷ lệ tóm tắt sai, bịa thông tin, rò PII lọt masking (quét output và log).
 - Kill switch cho từng use case.
 
+### Ví dụ đời thực
+Một ngân hàng triển khai trợ lý tóm tắt cuộc gọi tổng đài. Tuần đầu, kiểm toán phát hiện 3% bản tóm tắt còn chứa số tài khoản đầy đủ và 0,4% chứa CCCD vì regex masking bỏ sót tên đọc thành chữ trong transcript. Triệu chứng: log gateway chỉ lưu bản đã pseudonymize nên không thấy rõ, nhưng audit mẫu ngẫu nhiên phát hiện. Điều tra: so sánh prompt gốc với bản gửi nhà cung cấp, phát hiện masking chạy sau khi ghép context; một số regex không xử lý số có khoảng trắng. Nguyên nhân gốc: masking là lớp giảm rủi ro chứ không phải bảo đảm, và không có test regression cho các mẫu PII tiếng Việt. Cách xử lý: thêm NER cho tên/địa chỉ, chuẩn hoá số (bỏ khoảng trắng) trước regex, thêm bộ test 200 mẫu PII, và thêm quét output để phát hiện dãy số dài còn sót. Kết quả: tỉ lệ rò PII xuống dưới 0,05%, không còn case CCCD đầy đủ trong bản tóm tắt.
+
+### Trả lời mẫu khi phỏng vấn
+"Với vai trò kiến trúc sư, tôi coi mọi lời gọi LLM là chuyển dữ liệu cho bên thứ ba. Mọi request đi qua một gateway nội bộ duy nhất: phân loại dữ liệu, pseudonymize PII bằng nhãn ổn định trong phạm vi request, chỉ cho phép model và region đã duyệt, và ghi audit đầy đủ. Dữ liệu nhạy cảm nhất chỉ dùng model chạy trong hạ tầng được phê duyệt. Masking dùng regex cộng NER, nhưng tôi không hứa là tuyệt đối, nên vẫn cần hợp đồng và quét output. Data residency và audit cũng phải được chứng minh với pháp chế và kiểm toán. LLM chỉ hỗ trợ, không tự ra quyết định, và có kill switch từng use case."
+
 > Senior tip: hội đồng rủi ro sẽ không duyệt "chúng tôi dùng ChatGPT", nhưng thường duyệt "mọi lời gọi đi qua một gateway, dữ liệu được phân loại, PII được thay thế trước khi gửi, model chạy ở region đã duyệt, có audit và người chịu trách nhiệm". Hãy làm gateway trước use case đầu tiên; mỗi use case sau đó chỉ còn là một policy mới.`,
   follow: [
     'Masking làm giảm chất lượng tóm tắt (model không biết ai là ai): bạn cân bằng thế nào?',
@@ -1458,6 +1464,12 @@ RetryTemplate của Spring AI 1.0 dùng exponential backoff theo cấu hình, kh
 - Retry lỗi 400 "vượt context window": lần nào cũng lỗi.
 - Fallback sang model chưa eval: output khác định dạng, parser lỗi hàng loạt.
 
+### Ví dụ đời thực
+Service Spring Boot gọi LLM cho trợ lý nội bộ. Một buổi sáng giờ cao điểm, nhà cung cấp trả 503 liên tục; RetryTemplate mặc định thử 10 lần với backoff tối đa 3 phút, thread Tomcat bị giữ và pool cạn sau 4 phút, API trả 503 toàn hệ thống. Triệu chứng: thread dump thấy hàng trăm thread WAITING trong RestClient.read, metric http.server.requests p99 tăng vọt. Điều tra: xem cấu hình spring.ai.retry, thấy max-attempts 10 và max-interval 3 phút. Nguyên nhân gốc: retry quá nhiều ở tầng Spring AI cộng thiếu read timeout và bulkhead. Cách xử lý: giảm max-attempts xuống 2, đặt read timeout 8 giây, thêm circuit breaker với slow call threshold 15 giây, bulkhead semaphore và fallback sang model nhỏ đã eval. Kết quả: khi provider sập, service trả fallback trong 1 giây thay vì treo 19 phút, thread pool giữ nguyên.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi gọi LLM từ Spring Boot, tôi bắt đầu từ ngân sách thời gian của request: mỗi lần gọi tối đa khoảng 8 giây để tổng dưới SLA 20 giây. Retry chỉ 1-2 lần cho lỗi tạm thời, và chỉ ở một tầng để tránh retry storm. 429 tôi coi là backpressure: rate limiter phía mình và hàng đợi cho job nền, tôn trọng Retry-After. Circuit breaker tính cả slow call, bulkhead semaphore từ chối ngay khi hết chỗ, fallback sang model đã eval. 4xx không retry và không làm mở mạch. Kết quả là hệ thống hỏng nhanh và rõ ràng thay vì treo."
+
 > Senior tip: hãy ghi "ngân sách" cho từng luồng: thời gian tối đa, số lần thử, số lời gọi đồng thời, token/phút. Khi provider gặp sự cố, hệ thống tốt là hệ thống **hỏng nhanh và rõ ràng**: trả fallback sau 1 giây tốt hơn nhiều so với treo 19 phút.`,
   follow: [
     'Vì sao không thể retry trong suốt khi đã stream một phần câu trả lời cho người dùng?',
@@ -1519,6 +1531,12 @@ String chat(@PathVariable UUID conversationId, @RequestBody Ask ask,
 - Chỉ test với một user nên không bao giờ thấy lỗi.
 - Conversation id tăng dần, dễ đoán.
 - Lên nhiều instance mà vẫn dùng memory in-process: khách đổi instance là "mất trí nhớ", rồi ai đó vá vội bằng cách nới lỏng khoá.
+
+### Ví dụ đời thực
+Chatbot ngân hàng thêm tính năng nhớ hội thoại. Sau một tuần, khách A nhận được câu trả lời nhắc tới giao dịch của khách B. Triệu chứng: log prompt cho thấy context chứa message của user khác. Điều tra: conversation id được lấy từ param URL do client gửi, không kiểm quyền; hai user dùng cùng id mặc định vì advisor không được truyền id. Nguyên nhân gốc: thiếu ownership check và dùng id mặc định chung. Cách xử lý: server sinh conversation id gắn với user đã xác thực, query findByIdAndOwnerId, khoá memory gồm userId, thêm test hai user xen kẽ và log prompt đã mask. Kết quả: không còn rò chéo, test tự động bắt được khi regression.
+
+### Trả lời mẫu khi phỏng vấn
+"Memory của LLM thực ra là các message cũ được ứng dụng nạp lại vào prompt theo một khoá hội thoại. Rò rỉ chéo gần như luôn do khoá sai: id mặc định dùng chung, id lấy từ client không kiểm quyền, hoặc memory dùng chung. Cách đúng: id do server sinh và gắn với user đã xác thực, kiểm quyền sở hữu mỗi request, memory có giới hạn kích thước và TTL, tách memory khỏi lịch sử audit. Conversation id nên được coi như resource id trong REST: có owner và không đoán được."
 
 > Senior tip: hãy coi conversation id như resource id trong REST: có owner, kiểm quyền mỗi lần dùng, không đoán được. Và log (đã mask) prompt thực sự gửi đi cho một mẫu request: lỗi rò memory nhìn vào prompt là thấy ngay, nhìn vào code thì rất khó.`,
   follow: [
@@ -1596,6 +1614,12 @@ Index HNSW cho kiểu {{vector}} tối đa 2.000 chiều; model 3.072 chiều ph
 - Thiếu cột embed_model: đổi model xong không biết hàng nào đã chuyển.
 - Đổi chunker mà không đưa version chunker vào hash: index lẫn hai kiểu chunk.
 
+### Ví dụ đời thực
+Hệ RAG trên PostgreSQL + pgvector với 2 triệu chunk, tài liệu nguồn thay đổi mỗi ngày. Một lần deploy đổi embedding model mà không version hoá, recall@k tụt từ 92% xuống 61%, và một số chunk cũ lẫn với chunk mới trong cùng truy vấn. Triệu chứng: dashboard recall@k giảm, log cho thấy embed_model null ở 30% hàng. Điều tra: thiếu cột embed_model và hash chunker. Nguyên nhân gốc: index vector không được coi là dữ liệu dẫn xuất có version. Cách xử lý: thêm cột embed_model và content_hash, blue/green theo cột embedding_v2, backfill nền có rate limit, CREATE INDEX CONCURRENTLY, so recall@k trên golden set rồi chuyển bằng feature flag. Kết quả: recall@k trở lại 93%, có rollback trong vài phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Index vector là dữ liệu dẫn xuất có version: mỗi chunk lưu doc_id, hash nội dung, tên embedding model và metadata quyền. Cập nhật tăng dần bằng so hash, chỉ embed đoạn thay đổi, ghi DB trong transaction ngắn. Đổi model theo kiểu blue/green: cột hoặc bảng mới, backfill nền, build index song song, so recall rồi mới chuyển truy vấn. Với pgvector, điều kiện WHERE được áp sau khi quét index, nên cần iterative scan hoặc partial index khi filter chặt. Và nhớ xoá chunk ngay khi tài liệu bị thu hồi quyền."
+
 > Senior tip: theo dõi ba con số: độ trễ ingest (sửa tài liệu xong bao lâu thì tìm thấy), số chunk theo embed_model, recall@k trên golden set sau mỗi thay đổi. Lợi thế lớn của pgvector là chunk nằm cùng database với dữ liệu nghiệp vụ, nên xoá tài liệu và cập nhật quyền có thể làm trong cùng một transaction.`,
   follow: [
     'Khi nào bạn chuyển từ pgvector sang một vector database chuyên dụng?',
@@ -1662,6 +1686,12 @@ Chạy image {{pgvector/pgvector:pg16}}, nạp 50–100 chunk với **vector đ�
 - API key thật cho mọi job CI: tốn tiền, dễ lộ key qua pipeline của fork.
 - Eval trên chính các ví dụ đã dùng để viết prompt: điểm cao giả.
 
+### Ví dụ đời thực
+Team thêm tính năng trích xuất dữ liệu từ email khách vào CRM. Test gọi model thật trong CI chạy 20 phút và tốn 40 USD mỗi lần, lúc pass lúc fail nên PR bị block. Triệu chứng: suite flaky, chi phí CI tăng. Điều tra: unit test mock deep stubs fluent API, nên không bắt được lỗi parse; eval không có golden set. Cách xử lý: stub ChatModel bằng lambda giữ ChatClient thật, adapter test với WireMock phát lại response thật, Testcontainers pgvector với vector tính sẵn, và eval trên golden set 200 case theo tỉ lệ. Kết quả: CI unit/integration chạy dưới 3 phút không tốn tiền, eval chỉ chạy khi đổi prompt/model và nightly.
+
+### Trả lời mẫu khi phỏng vấn
+"Với tính năng LLM, tôi tách hai câu hỏi: code của mình có đúng không và model có trả lời đủ tốt không. Code tất định test bằng model giả mỗi commit, giữ ChatClient thật để advisor vẫn chạy. Adapter test với HTTP ghi sẵn bắt được lỗi đổi model sang alias latest. Tích hợp dùng Testcontainers pgvector với vector tính sẵn. Eval với model thật trên golden set theo tỉ lệ, cache theo prompt version và model. Test tất định chặn merge, eval tạo báo cáo so với baseline."
+
 > Senior tip: để test tất định chặn merge, còn eval tạo báo cáo so với baseline và chỉ chặn khi tụt quá ngưỡng đã thống nhất. Mỗi lỗi chất lượng từ production nên thành một case trong golden set, giống như mỗi bug logic thành một unit test.`,
   follow: [
     'Bạn xử lý case eval lúc pass lúc fail giữa các lần chạy thế nào?',
@@ -1718,6 +1748,12 @@ Rollback bằng feature flag theo từng tính năng, giữ model cũ tới hế
 - Model mới chặt hơn về an toàn: tỉ lệ từ chối câu hỏi hợp lệ tăng.
 - Giữ nguyên prompt cũ: prompt tối ưu cho model này chưa chắc tốt cho model kia; version prompt theo model.
 - Đổi embedding model là chuyện khác hẳn: phải re-index toàn bộ.
+
+### Ví dụ đời thực
+Nhà cung cấp thông báo model đang dùng cho 6 tính năng sẽ ngừng hỗ trợ sau 90 ngày. Team không có golden set và prompt hardcode model alias latest, nên lần chuyển trước mất 3 tháng và recall tụt mà không ai biết. Triệu chứng: không có số liệu để chứng minh chất lượng. Cách xử lý: kiểm kê 6 tính năng với model id và prompt version, dựng golden set 100-300 case, eval offline với metric cứng là hard gate, so sánh cặp có đảo vị trí bằng judge, shadow traffic rồi canary 5% đến 100%, rollback bằng feature flag. Kết quả: chuyển xong trong 2 tuần, có dashboard canary và quy trình tái sử dụng cho lần sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Đổi model là một release có rủi ro, không phải sửa một dòng config. Tôi kiểm kê nơi dùng model và ghim version cụ thể. Eval offline trên golden set: metric cứng trước, so sánh cặp bằng LLM-as-judge có khử thiên lệch sau. Chỉnh prompt riêng cho model mới. Shadow hoặc canary trên traffic thật với guardrail metric và rollback bằng feature flag. Quyết định dựa trên số liệu có ý nghĩa thống kê, không phải cảm tính."
 
 > Senior tip: biến lần chuyển model đầu tiên thành quy trình dùng lại được: golden set theo tính năng, script so sánh cặp, dashboard canary, feature flag. Model sẽ còn bị thay vài lần mỗi năm; đội có quy trình đổi trong hai tuần, đội không có thì mỗi lần là một sự cố.`,
   follow: [
