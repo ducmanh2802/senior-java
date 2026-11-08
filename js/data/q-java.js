@@ -5866,7 +5866,7 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 
 ### Sealed + exhaustiveness
 - sealed interface Shape permits Circle, Rect, Triangle.
-        case Triangle t -> "Tam giác " + t.a() + "/" + t.b() + "/" + t.c();
+- switch (shape) { case Circle c -> ...; case Rect r -> ...; case Triangle t -> ...; } không cần default; compiler biết hết subtype.
 - Nếu thêm subtype mới vào permits, mọi switch không default sẽ lỗi compile → refactor an toàn.
 
 ### Pitfall production
@@ -7113,7 +7113,7 @@ String render(Shape s) {
     return switch (s) {
         case Circle c -> "O r=" + c.r();
         case Rect r   -> "[] " + r.w() + "x" + r.h();
-        case Triangle t -> "/\\";
+        case Triangle t -> "Tam giác " + t.a() + "/" + t.b() + "/" + t.c();
     }; // nếu xoá nhánh Triangle -> LỖI COMPILE (compiler dẫn đi sửa)
 }
 ~~~
