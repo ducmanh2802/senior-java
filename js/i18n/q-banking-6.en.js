@@ -116,7 +116,7 @@ WHERE customer_id = :cid AND business_date = :bdate AND limit_type = :type
 ~~~
 ~~~java
 int rows = jdbc.update(ATOMIC_RESERVE_SQL, amount, cid, bdate, type, amount);
-if (rows == 0) throw new LimitExceededException("Vuot han muc ngay");
+if (rows == 0) throw new LimitExceededException("Daily limit exceeded");
 ~~~
 Pros: consistent with the transaction DB; no extra infra. Note: ensure correct index; if one customer is extremely "hot", it can become a bottleneck (lock/contention on one row) — acceptable since limits are per customer.
 
@@ -139,15 +139,15 @@ Risks: Redis is memory; need a durability strategy (persistence), handling data 
 - Daily reset: when entering a new {{business_date}}, new day record {{used=0}} (create lazily on first transaction using {{INSERT ... ON CONFLICT DO NOTHING}}).
 
 ~~~seq
-title: Reserve han muc ngay (atomic, chong vuot)
+title: Reserve daily limit (atomic, prevent exceed)
 actors: App | LimitService | DB | PaymentSvc
-App -> LimitService: chuyen 800000 (idempo_key=K1)
-LimitService -> DB: kiem tra idempo_key K1 da xu ly?
-DB --> LimitService: chua
+App -> LimitService: transfer 800000 (idempo_key=K1)
+LimitService -> DB: check idempo_key K1 already processed?
+DB --> LimitService: no
 LimitService -> DB: UPDATE ... SET used=used+800000 WHERE used+800000<=limit
-DB --> LimitService: 1 row (OK) hoac 0 row (vuot)
-LimitService -> PaymentSvc: OK -> tiep tuc chuyen tien
-LimitService --> App: thanh cong hoac tu choi "vuot han muc ngay"
+DB --> LimitService: 1 row (OK) or 0 row (exceeded)
+LimitService -> PaymentSvc: OK -> continue transfer
+LimitService --> App: success or reject "daily limit exceeded"
 ~~~
 
 ### Common pitfalls
