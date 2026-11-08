@@ -21,10 +21,10 @@ prompt="$prompt LUẬT SHELL TRÊN WINDOWS: KHÔNG BAO GIỜ gọi trực tiếp
 bak="logs/backup/$id-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$bak"
 for f in $(grep -m1 '^Owns:' "$file" | grep -o '`[^`]*`' | tr -d '`'); do [ -f "$f" ] && cp "$f" "$bak/"; done
 # Guard (2026-11-08): free agents sometimes rewrite files they do not own (a translation task overwrote q-api.js,
-# q-kotlin.js and lessons-autotest.js with its English chunk). Snapshot js/css/scripts before the run; afterwards
+# q-kotlin.js and lessons-autotest.js with its English chunk). Snapshot js/css (not scripts: integrator edits them while agents run) before the run; afterwards
 # restore every changed file that neither this task nor another running task (claim / review lock) owns.
-find js css scripts index.html -type f ! -name index-light.js -print0 2>/dev/null | xargs -0 md5sum > "$bak/before.md5"
-tar cf "$bak/snap.tar" js css scripts index.html 2>/dev/null
+find js css index.html -type f ! -name index-light.js -print0 2>/dev/null | xargs -0 md5sum > "$bak/before.md5"
+tar cf "$bak/snap.tar" js css index.html 2>/dev/null
 # Free models sometimes hang silently (process alive, no output). Run the agent in the background and stop it BY PID
 # when logs/<id>.log has not changed for $STALL seconds; the caller then sees the task still TODO and retries later.
 run_agent() {

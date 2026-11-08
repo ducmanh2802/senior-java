@@ -19,8 +19,10 @@ dirty() { local f; for f in $(owns "$1"); do [ -n "$(git status --porcelain -- "
 # a file also owned by an unfinished task holds that task's half-done work: never commit it.
 # OPEN[file]="ids of unfinished tasks owning it", rebuilt once per round (scanning ~400 task files per check was minutes on Windows)
 declare -A OPEN
+declare -A COMMITTED   # task files already committed with Status: DONE: finished, their owned files now hold OTHER tasks' work
 scan_open() {
   OPEN=()
+  COMMITTED=(); local c; for c in $(git grep -l "^Status: DONE[[:space:]]*$" HEAD -- tasks/ 2>/dev/null | sed "s#^HEAD:##"); do COMMITTED[$c]=1; done
   local t id o
   for t in $(grep -L '^Status: DONE' tasks/T*.md); do
     id=$(basename "$t" | cut -d- -f1)
@@ -120,6 +122,7 @@ while true; do
     # ONLY_RE='-en-' limits autopilot to matching task files (e.g. while Claude edits files owned by old DONE tasks)
     [ -n "${ONLY_RE:-}" ] && ! [[ "$f" =~ $ONLY_RE ]] && continue
     grep -q '^Status: DONE$' "$f" || continue
+    [ -n "${COMMITTED[$f]:-}" ] && continue
     grep -q '^Verify-failed:' "$f" && continue
     dirty "$f" || continue
     open_owner "$f" "$id" >/dev/null && continue
