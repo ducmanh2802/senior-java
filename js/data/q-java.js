@@ -6028,7 +6028,7 @@ Một hệ thống core banking gồm 14 service Java 8 + Spring Boot 2.3. Team 
 - Text block giữ format, dễ đọc SQL/JSON trong test.
 
 ### Cách hoạt động
-- Dòng đầu sau \"\"\" phải là newline (hoặc \\).
+- Sau dấu \"\"\" mở bắt buộc phải xuống dòng; nội dung bắt đầu từ dòng kế tiếp.
 - Indentation tối thiểu bị strip; closing \"\"\" thẳng hàng với code để strip đúng.
 - Escape: \\\\ cho backslash; quote không cần escape trong block.
 - \\s giữ trailing whitespace; \\ (line continuation) nối dòng.
@@ -6689,7 +6689,7 @@ public class ListBench {
   id: 'modern-039',
   topic: 'modern',
   level: 'senior',
-  q: 'Virtual threads (Java 21) khi migrate tu platform thread: ThreadLocal nang, JDBC pool nut that, semaphore gioi han dong thoi.',
+  q: 'Khi migrate từ platform thread sang virtual thread (Java 21), bạn xử lý thế nào ba vấn đề: ThreadLocal nặng, connection pool JDBC thành nút thắt, và giới hạn đồng thời bằng semaphore?',
   a: `**Tóm tắt:** Virtual thread (luồng ảo - thread nhẹ do JVM quản lý, chính thức từ Java 21/JEP 444) giúp xử lý rất nhiều tác vụ I/O chờ (gọi DB, HTTP) bằng code blocking quen thuộc, nhưng khi migrate từ platform thread (thread của hệ điều hành, nặng và ít) bạn sẽ đụng 3 nút thắt mới: {{ThreadLocal}} phình bộ nhớ, connection pool JDBC (bộ kết nối CSDL tái sử dụng) trở thành giới hạn thật, và phải dùng semaphore/bulkhead (cơ chế giới hạn số tác vụ chạy đồng thời) để bảo vệ tài nguyên hạ nguồn.
 
 ### Cái gì và vì sao virtual thread khác
@@ -6717,7 +6717,7 @@ try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
 - Cách xử lý:
   - Luôn {{remove()}} trong {{finally}} (với virtual thread số lượng lớn, quên remove = rò rỉ theo vòng đời task).
   - Truyền dữ liệu qua tham số method thay vì ngầm qua ThreadLocal.
-  - Cân nhắc **ScopedValue** (Java 21 preview, ổn định dần ở các bản sau): giá trị bất biến theo phạm vi (scope), kế thừa an toàn cho virtual thread con, không "nhân bản nặng" như ThreadLocal. Kiểm tra trạng thái preview/final theo đúng JDK bạn dùng.
+  - Cân nhắc **ScopedValue** (preview ở Java 21–24, chính thức từ Java 25): giá trị bất biến theo phạm vi (scope), kế thừa an toàn cho virtual thread con, không "nhân bản nặng" như ThreadLocal.
 
 ### Bước 3 - JDBC pool là nút thắt thật
 - Virtual thread cho phép 10.000 request đồng thời, nhưng database (CSDL) thường chỉ chịu vài chục đến vài trăm connection. {{HikariCP}} (pool JDBC phổ biến) mặc định nhỏ (thường 10). Kết quả: 9.990 virtual thread xếp hàng chờ connection → latency tăng, timeout dồn dập.
@@ -6765,7 +6765,7 @@ try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
   id: 'modern-040',
   topic: 'modern',
   level: 'lead',
-  q: 'Structured concurrency va ScopedValue (Java 21+): trang thai preview/final theo JDK, loi ich va cach dung dung.',
+  q: 'Structured concurrency và ScopedValue (Java 21+): trạng thái preview/final theo từng bản JDK, lợi ích gì và dùng thế nào cho đúng?',
   a: `**Tóm tắt:** Java 21 giới thiệu (dạng preview - xem ghi chú) hai cơ chế đi kèm virtual thread (luồng ảo - thread nhẹ do JVM quản lý): **Structured Concurrency** qua {{StructuredTaskScope}} giúp chạy nhiều subtask (tác vụ con) như một đơn vị có vòng đời rõ ràng (bắt đầu cùng nhau, chờ cùng nhau, huỷ/lỗi thì dọn dẹp cùng nhau); và **ScopedValue** cho phép truyền dữ liệu bất biến theo "phạm vi" (scope) xuống các subtask/thread con an toàn, hiệu quả hơn {{ThreadLocal}} (biến gắn theo thread truyền thống). Lưu ý phiên bản: ở Java 21 chúng là **preview** (cần bật {{--enable-preview}}); {{ScopedValue}} đã thành final ở Java 25, còn {{StructuredTaskScope}} vẫn tiến hoá qua các JDK.
 
 ### Cái gì - vì sao cần
@@ -6819,7 +6819,7 @@ Giả định API chi tiết đơn hàng (p99 mục tiêu 300ms) cần gọi 3 d
 "Structured Concurrency và ScopedValue là hai tính năng đi cùng virtual thread từ Java 21, hiện bắt đầu ở dạng preview nên cần chú ý trạng thái theo phiên bản JDK. StructuredTaskScope cho phép mình fork nhiều subtask trong một scope rồi join như một đơn vị: nếu một subtask lỗi thì có thể huỷ các subtask còn lại, và khi thoát scope thì đảm bảo không còn việc chạy ngầm - khác với ExecutorService nơi mình phải tự quản lý Future và rất dễ rò rỉ tác vụ. ScopedValue thì thay ThreadLocal cho dữ liệu bất biến theo phạm vi như requestId: nó bind trong scope, tự truyền xuống subtask con kể cả virtual thread, và tự hết hiệu lực khi ra khỏi scope nên không có nguy cơ quên remove gây leak như ThreadLocal trên pool. Thực tế tôi dùng pattern này để gọi song song vài dịch vụ và gộp kết quả, vừa giảm latency vừa làm lỗi và huỷ gọn gàng hơn. Khi áp dụng tôi luôn kiểm tra phiên bản JDK và bật enable-preview nếu còn preview, đồng thời chỉ dùng ScopedValue cho dữ liệu immutable."
 
 > Senior tip: coi structured concurrency là "structured programming cho concurrency" - vòng đời subtask đi theo cấu trúc khối code. Trước khi dùng production: xác nhận trạng thái (preview/final) trên đúng JDK bạn chạy, vì {{StructuredTaskScope}} từng đổi API giữa các bản preview; {{ScopedValue}} đã ổn định hơn (final từ Java 25).`,
-  follow: ['Vi sao ScopedValue hieu qua hon ThreadLocal?', 'ShutdownOnFailure khac ShutdownOnSuccess?', 'Khi nao van dung ExecutorService?'],
+  follow: ['Vì sao ScopedValue hiệu quả và an toàn hơn ThreadLocal?', 'ShutdownOnFailure khác ShutdownOnSuccess thế nào (API Java 21)?', 'Khi nào vẫn nên dùng ExecutorService thay cho structured concurrency?'],
   tags: ['structured concurrency', 'ScopedValue', 'StructuredTaskScope', 'preview'],
   refs: [{ type: 'doc', title: 'JEP 453: Structured Concurrency', url: 'https://openjdk.org/jeps/453' }]
 },
@@ -6827,7 +6827,7 @@ Giả định API chi tiết đơn hàng (p99 mục tiêu 300ms) cần gọi 3 d
   id: 'modern-041',
   topic: 'modern',
   level: 'senior',
-  q: 'Stream nang cao: tu viet Collector, gatherers (JDK 24) va vi sao parallel stream khong phai luc nao cung nhanh.',
+  q: 'Stream nâng cao: tự viết Collector, Gatherers (JDK 24), và vì sao parallel stream không phải lúc nào cũng nhanh?',
   a: `**Tóm tắt:** Ba mảng nâng cao của Stream (luồng xử lý dữ liệu tuần tự trên collection): (1) tự viết {{Collector}} (bộ gom kết quả) để tuỳ biến cách thu thập - phải hiểu đúng hợp đồng {{supplier/accumulator/combiner/finisher}}; (2) **Gatherers** (JDK 24, {{Stream.gather}}) cho phép viết phép biến đổi trung gian (intermediate operation) tuỳ chỉnh, kiểu "lọc/nhóm/biến đổi" mà API cũ không có sẵn; (3) {{parallel stream}} không phải lúc nào cũng nhanh - nó chậm khi dữ liệu nhỏ, nguồn khó chia, có blocking I/O, hoặc công việc mỗi phần tử quá nhẹ so với chi phí chia/gộp. Luôn đo trước khi bật parallel.
 
 ### 1) Tự viết Collector - cái gì, vì sao, cơ chế
@@ -6884,14 +6884,14 @@ Giả định job tổng hợp log giao dịch: 2 triệu bản ghi, mỗi bản
 
 ### Pitfall production
 - **Combiner sai chỉ lộ khi parallel:** unit test chạy tuần tự vẫn pass; phải test với {{parallelStream()}} hoặc dữ liệu đủ để framework song song hoá.
-- **Dùng {{mapConcurrent}} gatherer cho blocking nặng:** nó giới hạn concurrency nhưng vẫn chạy trên hạ tầng stream - với blocking I/O lớn, cân nhắc tách sang executor/virtual thread rõ ràng.
+- **Hiểu đúng {{mapConcurrent}}:** nó chạy hàm cho mỗi phần tử trên một virtual thread với số lượng đồng thời tối đa bạn chọn, và **giữ thứ tự** kết quả, nên hợp cho gọi I/O trong stream. Nhưng một phần tử chậm sẽ chặn việc phát kết quả phía sau nó; với luồng việc lớn cần timeout, retry, theo dõi riêng thì dùng executor/virtual thread tường minh.
 - **Tối ưu sớm:** đo bằng benchmark (JMH) trên dữ liệu thật; "parallel" không phải công tắc thần kỳ.
 
 ### Trả lời mẫu khi phỏng vấn
 "Với Stream nâng cao, tôi chia ba phần. Một là tự viết Collector khi cần tuỳ biến cách gom: phải nắm hợp đồng supplier tạo thùng, accumulator thêm phần tử, combiner gộp hai thùng - combiner đặc biệt quan trọng vì khi chạy parallel mỗi thread gom riêng rồi mới gộp, sai combiner là ra kết quả sai. Hai là từ JDK 24 có Gatherers cho phép viết intermediate operation tuỳ chỉnh như windowFixed, windowSliding hay mapConcurrent, thay vì phải lạm dụng collector hay trick. Ba là parallel stream không phải lúc nào cũng nhanh: nó dùng chung ForkJoinPool.commonPool, tốn chi phí chia và gộp, nên chỉ có lợi khi CPU-bound, dữ liệu lớn, nguồn dễ chia như ArrayList, và pipeline không blocking. Với I/O hay dữ liệu nhỏ, nó thường chậm hơn và còn gây tranh chấp pool. Nguyên tắc của tôi là mặc định tuần tự, chỉ bật parallel khi có benchmark chứng minh lợi ích trên dữ liệu thực tế."
 
 > Senior tip: test {{Collector}} tự viết với cả {{stream()}} và {{parallelStream()}} - combiner sai là loại bug "âm thầm". Với gatherers, kiểm tra phiên bản JDK (cần 24+). Trước khi dùng {{parallel()}}, đo bằng JMH; đừng tin cảm giác. (Tham khảo: JEP 485 - Stream Gatherers.)`,
-  follow: ['Combiner cua Collector can lam gi?', 'Gatherers.mapConcurrent khac parallel stream?', 'Lam sao do parallel stream?'],
+  follow: ['Combiner của Collector cần làm gì, và vì sao bug ở combiner chỉ lộ khi chạy parallel?', 'Gatherers.mapConcurrent khác parallel stream thế nào?', 'Bạn đo hiệu năng parallel stream thế nào cho đáng tin?'],
   tags: ['Stream', 'Collector', 'gatherers', 'parallel', 'JDK 24'],
   refs: [{ type: 'doc', title: 'JEP 485: Stream Gatherers', url: 'https://openjdk.org/jeps/485' }]
 },
