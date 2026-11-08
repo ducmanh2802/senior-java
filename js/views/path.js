@@ -12,6 +12,11 @@
       'path.title': 'Lộ trình học',
       'path.heading': 'Lộ trình học Java junior → Senior',
       'path.intro': 'Học theo thứ tự từng chặng: bài học có bài tập tự chấm, rồi câu hỏi chốt chặng.',
+      'path.pfHeading': 'Lộ trình Java backend → Platform Engineer',
+      'path.pfIntro': '10 chặng trong khoảng 48 tuần (8–10 giờ/tuần). Mỗi chặng có bài học, câu hỏi chốt chặng và một dự án thực hành để đưa vào CV; chặng sau dùng lại kết quả chặng trước.',
+      'path.trackJava': 'Java → Senior', 'path.trackPlatform': 'Java → Platform Engineer', 'path.tracksAria': 'Chọn lộ trình',
+      'path.project': 'Dự án thực hành',
+      'path.basics': 'Kiến thức nền cần có (tài liệu chính thức)',
       'path.overall': 'Tiến độ tổng',
       'path.overallAria': 'Tiến độ lộ trình',
       'path.stagesDone': '{done}/{total} chặng đã xong',
@@ -44,6 +49,11 @@
       'path.title': 'Learning path',
       'path.heading': 'Learning path: Java junior → Senior',
       'path.intro': 'Study stage by stage: lessons with self-graded exercises, then the stage key questions.',
+      'path.pfHeading': 'Java backend → Platform Engineer path',
+      'path.pfIntro': '10 stages over about 48 weeks (8–10 hours a week). Each stage has lessons, key questions and a hands-on project for your CV; later stages build on earlier ones.',
+      'path.trackJava': 'Java → Senior', 'path.trackPlatform': 'Java → Platform Engineer', 'path.tracksAria': 'Choose a path',
+      'path.project': 'Hands-on project',
+      'path.basics': 'Core knowledge to have (official docs)',
       'path.overall': 'Overall progress',
       'path.overallAria': 'Path progress',
       'path.stagesDone': '{done}/{total} stages done',
@@ -79,9 +89,13 @@
 
   // open stages + "study ahead" choices survive re-renders (language switch, route re-entry);
   // the current stage re-opens itself as progress moves unless the user closed it by hand
-  const state = { open: null, closed: {}, peek: {} };
+  // two tracks share this view: #/path (Java → Senior, window.PATH) and #/path/platform (window.PATH_PLATFORM)
+  let track = 'java';
+  const states = {};
+  let state = { open: null, closed: {}, peek: {} };
+  const trackData = () => (track === 'platform' ? window.PATH_PLATFORM : window.PATH) || [];
 
-  const stages = () => (window.PATH || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  const stages = () => trackData().slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   const lessonById = id => App.lessons().find(l => l.id === id) || null;
   const questionById = id => App.questions().find(q => q.id === id) || null;
   const isKnown = id => App.store.getStatus(id) === 'known';
@@ -176,8 +190,12 @@
 
   function bodyHtml(x) {
     const goal = x.s.goal ? `<div class="md path-goal">${App.md(x.s.goal)}</div>` : '';
+    const project = x.s.project ? `<div class="path-project"><h4 class="path-h">🛠️ ${esc(tr('project'))}</h4>
+        <div class="md">${App.md(x.s.project)}</div></div>` : '';
     const topic = encodeURIComponent(flashTopic(x));
-    return `${goal}
+    const basicsList = (window.PATH_BASICS || {})[x.s.id] || [];
+    const basics = basicsList.length ? `<div class="path-basics"><h4 class="path-h">📚 ${esc(tr('basics'))}</h4><ul class="path-list">${basicsList.map(b => `<li><a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">${esc(b.t)}</a> — ${esc(b.d)} <span class="muted small">(${esc(b.src)})</span></li>`).join('')}</ul></div>` : '';
+    return `${goal}${basics}${project}
       <div class="path-cols">
         <div class="path-block">${lessonsHtml(x)}</div>
         <div class="path-block">${questionsHtml(x)}</div>
@@ -218,10 +236,18 @@
 
   App.registerView('path', {
     get title() { return tr('title'); },
-    render(root) {
+    render(root, params) {
+      track = params && params[0] === 'platform' ? 'platform' : 'java';
+      state = states[track] || (states[track] = { open: null, closed: {}, peek: {} });
+      const heading = tr(track === 'platform' ? 'pfHeading' : 'heading');
+      const intro = tr(track === 'platform' ? 'pfIntro' : 'intro');
+      const tracksHtml = `<nav class="chips path-tracks" aria-label="${esc(tr('tracksAria'))}">
+          <a class="chip${track === 'java' ? ' active' : ''}" href="#/path">☕ ${esc(tr('trackJava'))}</a>
+          <a class="chip${track === 'platform' ? ' active' : ''}" href="#/path/platform">🧱 ${esc(tr('trackPlatform'))}</a>
+        </nav>`;
       const info = allInfo();
       if (!info.list.length) {
-        root.innerHTML = `<div class="page-head"><h1>${esc(tr('heading'))}</h1></div>
+        root.innerHTML = `<div class="page-head"><h1>${esc(heading)}</h1></div>${tracksHtml}
           <div class="empty"><h2>${esc(tr('empty'))}</h2><p>${esc(tr('emptyHint'))}</p></div>`;
         return () => {};
       }
@@ -256,10 +282,11 @@
       root.innerHTML = `
         <div class="page-head">
           <div>
-            <h1>${esc(tr('heading'))}</h1>
-            <p>${esc(tr('intro'))}</p>
+            <h1>${esc(heading)}</h1>
+            <p>${esc(intro)}</p>
           </div>
         </div>
+        ${tracksHtml}
         <section class="card path-overall">
           <div class="path-ov-head">
             <b>${esc(tr('overall'))}</b>

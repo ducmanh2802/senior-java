@@ -1,5 +1,209 @@
 # Changelog
 
+## 2026-11-08
+
+### Nội dung
+- T1034 (auto-committed after kilo review + verify)
+- T1032 (auto-committed after kilo review + verify)
+- T1031 (auto-committed after kilo review + verify)
+- T1030 (auto-committed after kilo review + verify)
+- T1029 (auto-committed after kilo review + verify)
+- T1028 (auto-committed after kilo review + verify)
+- T1027 (auto-committed after kilo review + verify)
+- T1026 (auto-committed after kilo review + verify)
+- T1025 (auto-committed after kilo review + verify)
+- T1024 (auto-committed after kilo review + verify)
+- T1023 (auto-committed after kilo review + verify)
+- T1022 (auto-committed after kilo review + verify)
+- T1021 (auto-committed after kilo review + verify)
+- T1020 (auto-committed after kilo review + verify)
+- T1019 (auto-committed after kilo review + verify)
+- T1018 (auto-committed after kilo review + verify)
+- T1017 (auto-committed after kilo review + verify)
+- T1016 (auto-committed after kilo review + verify)
+- T1014 (auto-committed after kilo review + verify)
+- T1012 (auto-committed after kilo review + verify)
+- T773 (auto-committed after kilo review + verify)
+- T578 (auto-committed after kilo review + verify)
+- T327 (auto-committed after kilo review + verify)
+- T139 (auto-committed after kilo review + verify)
+- T138 (auto-committed after kilo review + verify)
+- T135 (auto-committed after kilo review + verify)
+- T133 (auto-committed after kilo review + verify)
+- T1047 (auto-committed after kilo review + verify)
+- T1046 (auto-committed after kilo review + verify)
+- T1010 (auto-committed after kilo review + verify)
+- T1008 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+
+
+
+## 2026-11-08
+
+### Nội dung
+- T1045 (auto-committed after kilo review + verify)
+- T1015 (auto-committed after kilo review + verify)
+- T1013 (auto-committed after kilo review + verify)
+- T1011 (auto-committed after kilo review + verify)
+- T1009 (auto-committed after kilo review + verify)
+- T1007 (auto-committed after kilo review + verify)
+- T1006 (auto-committed after kilo review + verify)
+- T1005 (auto-committed after kilo review + verify)
+- T1004 (auto-committed after kilo review + verify)
+- T1003 (auto-committed after kilo review + verify)
+- T1002 (auto-committed after kilo review + verify)
+- T1001 (auto-committed after kilo review + verify)
+- T1000 (auto-committed after kilo review + verify)
+- T729 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+
+
+
+## 2026-11-07
+
+### Nội dung
+- T139 (auto-committed after kilo review + verify)
+- T887 (auto-committed after kilo review + verify)
+- T782 (auto-committed after kilo review + verify)
+- T579 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- UI: dark theme by default
+
+
+## 2026-11-07
+
+### Nội dung
+- T142 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- UI: section colours, shared header strip, career goal + 4 area cards on home; richer content standard
+
+
+## 2026-11-07
+
+### Nội dung
+
+
+### Ứng dụng
+- Home backdrop: MacBook Pro on the left, Mac mini M4 on the right
+
+
+## 2026-11-07
+
+### Nội dung
+- T118 (auto-committed after kilo review + verify)
+- T877 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Backdrops: photos for Practice (code on screen) and Career (handshake, remote work with sea view); mock + companies share the video-call photos
+
+
+## 2026-11-07
+
+### Nội dung
+
+
+### Ứng dụng
+- Backdrops: real photos in the side gutters, no text
+
+
+## 2026-11-07
+
+### Nội dung
+- T127 (auto-committed after kilo review + verify)
+- T110 (auto-committed after kilo review + verify)
+- T854 (auto-committed after kilo review + verify)
+- T114 (auto-committed after kilo review + verify)
+- T852 (auto-committed after kilo review + verify)
+- T851 (auto-committed after kilo review + verify)
+- T714 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Backdrops per section: home = dev desk with Mac mini M4 Pro, English practice = call with colleagues abroad, study = income in USD
+
+
+## 2026-11-07
+
+### Nội dung
+
+
+### Ứng dụng
+- Topic remote: Remote & Freelance (Upwork) + seed question remote-001 (Claude)
+
+
+## 2026-11-07
+
+### Nội dung
+- T293 (auto-committed after kilo review + verify)
+- T133 (auto-committed after kilo review + verify)
+- T849 (auto-committed after kilo review + verify)
+- T848 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Nav: 4 purpose groups (Learn / Practice / Interview / Career) with a one-line description per item
+
+
+## 2026-11-07
+
+### Nội dung
+- T847 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+
+
+
+## 2026-11-07
+
+### Nội dung
+
+
+### Ứng dụng
+- Review: earlier free-model quiz in quiz-java (qz-*-025..030) by Claude
+
+
+## 2026-11-07
+
+### Nội dung
+
+
+### Ứng dụng
+- Review: fact-check deep quiz (T860, T861) by Claude
+
+
+## 2026-11-07
+
+### Nội dung
+- T596 (auto-committed after kilo review + verify)
+- T862 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- #/exam: route awaits the light index (177 KB) instead of the quiz pool (1.65 MB)
+
+
+## 2026-11-07
+
+### Nội dung
+
+
+### Ứng dụng
+- T862 jobs view (finished by Claude) + quiz route loads 174 KB instead of 1.9 MB
+
+
+## 2026-11-07
+
+### Nội dung
+- T128 (auto-committed after kilo review + verify)
+- T812 (auto-committed after kilo review + verify)
+- T811 (auto-committed after kilo review + verify)
+- T810 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+
+
+
 ## 2026-11-07
 
 ### Nội dung

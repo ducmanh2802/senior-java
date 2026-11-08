@@ -2564,4 +2564,274 @@ Xử lý lỗi       -> để message hiện lại (hoặc gửi DLQ sau maxRece
 
 > Senior tip: Nguyên tắc an toàn: xử lý xong mới DeleteMessage; thiết kế consumer idempotent; dùng DLQ (Dead Letter Queue) với {{maxReceiveCount}} cho message lỗi lặp lại. Theo dõi {{ApproximateAgeOfOldestMessage}} và số message trong DLQ.`
 }
+,
+{
+  id: 'qz-devops-059', topic: 'devops', multi: true,
+  q: "Pod backend trả 502 qua Ingress. kubectl get endpoints backend thấy endpoint rỗng, readiness probe fail. Chọn các nguyên nhân hợp lý (Chọn 2)",
+  options: [
+    'Readiness probe sai port/path nên pod không Ready',
+    'Service selector không match label của Pod',
+    'Ingress backend servicePort sai (targetPort)',
+    'CPU limit quá thấp nên pod bị kill',
+    'Pod đang Running nhưng container chưa listen port'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Endpoint rỗng nghĩa Service không chọn được Pod nào (selector mismatch) hoặc Pod chưa Ready (readiness fail). Ingress 502 thường do không có endpoint Ready.
+
+### Vì sao các phương án còn lại sai
+- Ingress backend port sai thường cho 502/503 nhưng endpoint vẫn có (service có pod Ready); ở đây endpoint rỗng nên không phải nguyên nhân chính.
+- CPU limit thấp gây throttling/OOM, không làm endpoint rỗng.
+- Pod Running nhưng chưa listen port là readiness fail (đã bao gồm trong readiness).
+
+> Senior tip: debug: kubectl get ep, describe pod events, kiểm tra readiness httpGet path/port; đảm bảo targetPort khớp containerPort.`
+},
+{
+  id: 'qz-devops-060', topic: 'devops',
+  q: "ConfigMap đã update bằng kubectl apply, nhưng pod vẫn dùng giá trị cũ. Lệnh nào làm pod nhận config mới?",
+  options: [
+    'kubectl rollout restart deployment/<name>',
+    'kubectl apply -f configmap.yaml lại',
+    'Chờ kubelet tự refresh (không cần làm gì)',
+    'kubectl delete pod để recreate'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** ConfigMap mount volume được kubelet sync định kỳ (~1 phút) nhưng env từ ConfigMap chỉ inject lúc pod start. Cách chuẩn: rollout restart deployment để recreate pod với config mới.
+
+### Vì sao các phương án còn lại sai
+- apply lại ConfigMap không tự restart pod.
+- kubelet sync volume mount có delay và không áp dụng env.
+- delete pod thủ công works nhưng không quản lý, rollout restart an toàn hơn.
+
+> Senior tip: dùng checksum annotation trong pod template để auto-rollout khi config thay đổi; hoặc mount file và reload trong app.`
+},
+{
+  id: 'qz-devops-061', topic: 'devops',
+  q: "App Java khởi động 90s (Spring Boot). Readiness probe initialDelaySeconds=10, periodSeconds=5, failureThreshold=3. Kết quả?",
+  options: [
+    'Pod bị kill/restart vì readiness fail liên tục trong lúc khởi động',
+    'Pod Ready ngay sau 10s',
+    'Probe tự chờ đến khi app ready',
+    'Liveness kill pod sau 90s'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Readiness probe bắt đầu sau 10s, fail liên tục → pod không Ready; nếu có liveness probe tương tự thì pod bị restart. Dùng startupProbe cho app khởi động chậm.
+
+### Vì sao các phương án còn lại sai
+- Không Ready ngay sau 10s vì app chưa listen.
+- Probe không tự chờ; cần startupProbe hoặc initialDelaySeconds đủ lớn.
+- Liveness chỉ kill nếu probe fail; nếu không có liveness thì không kill.
+
+> Senior tip: dùng startupProbe với failureThreshold cao (vd 30 x 10s) để che thời gian khởi động; readiness chỉ check sau khi startup pass.`
+},
+{
+  id: 'qz-devops-062', topic: 'devops',
+  q: "Rolling update Deployment với maxUnavailable=1, replicas=3. Số pod tối thiểu available trong quá trình update?",
+  options: ['1', '2', '3', '0'],
+  answer: 1,
+  explain: `**Tóm tắt:** maxUnavailable=1 → tại mọi thời điểm không quá 1 pod unavailable so với desired (3), nên tối thiểu 2 pod available.
+
+### Vì sao các phương án còn lại sai
+- 1 là số unavailable tối đa, không phải available.
+- 3 chỉ khi maxUnavailable=0 (không cho phép downtime).
+- 0 không hợp lý vì đang update.
+
+> Senior tip: kết hợp maxSurge để tăng tốc; với DB migration backward-compatible để zero-downtime.`
+},
+{
+  id: 'qz-devops-063', topic: 'devops',
+  q: "Khi drain node, PodDisruptionBudget minAvailable=2 với 3 replicas. Kết quả drain?",
+  options: [
+    'Chỉ evict 1 pod, drain bị block cho đến khi có node khác',
+    'Evict tất cả 3 pod',
+    'Drain thành công ngay',
+    'PDB bị ignore'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** PDB minAvailable=2 → không được evict nếu số available < 2. Với 3 replicas chỉ có thể evict 1 pod, drain chờ pod được reschedule elsewhere.
+
+### Vì sao các phương án còn lại sai
+- Evict tất cả vi phạm PDB.
+- Drain ngay chỉ khi PDB cho phép.
+- PDB không bị ignore (trừ force).
+
+> Senior tip: đặt PDB cho workload critical; drain node với --ignore-daemonsets --delete-emptydir-data; theo dõi disruption.`
+},
+{
+  id: 'qz-devops-064', topic: 'devops',
+  q: "PVC Pending với storageClassName không tồn tại và không có default StorageClass. Nguyên nhân?",
+  options: [
+    'Không có StorageClass phù hợp / WaitForFirstConsumer',
+    'Node không đủ CPU',
+    'Image pull fail',
+    'RBAC thiếu quyền'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** PVC Pending thường do không có StorageClass matching hoặc WaitForFirstConsumer chờ pod schedule. Kiểm tra kubectl get sc, kubectl describe pvc.
+
+### Vì sao các phương án còn lại sai
+- CPU thiếu làm pod Pending, không PVC.
+- Image pull fail làm pod ErrImagePull.
+- RBAC thiếu làm forbidden, không PVC pending.
+
+> Senior tip: đặt default StorageClass; dùng WaitForFirstConsumer cho topology-aware provisioning; kiểm tra provisioner logs.`
+},
+{
+  id: 'qz-devops-065', topic: 'devops', multi: true,
+  q: "RoleBinding trong namespace team-a bind tới ClusterRole pod-reader. Hiệu lực của quyền? (Chọn 2)",
+  options: [
+    'Chỉ đọc pod trong namespace team-a',
+    'Đọc pod mọi namespace',
+    'Có quyền cluster-scoped (node, PV)',
+    'RoleBinding chỉ hiệu lực trong namespace team-a'
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** RoleBinding luôn giới hạn trong namespace của nó, dù ClusterRole chứa quyền cluster-wide; quyền cluster-scoped trong ClusterRole bị bỏ qua khi bind qua RoleBinding.
+
+### Vì sao các phương án còn lại sai
+- Đọc pod mọi namespace cần ClusterRoleBinding.
+- Quyền cluster-scoped (node/PV) chỉ qua ClusterRoleBinding.
+
+> Senior tip: pattern: ClusterRole định nghĩa quyền, RoleBinding cấp trong namespace; ClusterRoleBinding cấp toàn cụm. Least privilege.`
+},
+{
+  id: 'qz-devops-066', topic: 'devops',
+  q: "Pod bị OOMKilled. Nguyên nhân và phân biệt với CPU throttling?",
+  options: [
+    'Vượt memory limit → kernel kill; CPU vượt limit chỉ throttling, không kill',
+    'Vượt CPU limit → kill',
+    'OOMKilled do GC pause',
+    'CPU throttling cũng kill pod'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Memory là hard limit: vượt → OOMKilled. CPU là soft limit (throttling), không kill pod. Set requests/limits hợp lý, monitor usage.
+
+### Vì sao các phương án còn lại sai
+- CPU limit không kill.
+- GC pause không trực tiếp OOM (có thể gây OOM nếu heap quá lớn).
+- CPU throttling không kill.
+
+> Senior tip: Java heap nên < container memory limit (để lại cho metaspace/thread); dùng -XX:MaxRAMPercentage. Theo dõi throttling via container_cpu_cfs_throttled_seconds.`
+},
+{
+  id: 'qz-devops-067', topic: 'devops',
+  q: "Patroni failover: primary down. JDBC URL dùng targetServerType=primary với nhiều host. Client sẽ làm gì?",
+  options: [
+    'Thử từng host, kết nối host là primary mới sau failover',
+    'Luôn kết nối host đầu tiên',
+    'Fail ngay nếu host đầu tiên down',
+    'Cần restart app'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** PostgreSQL JDBC multi-host với targetServerType=primary sẽ iterate hosts, chọn host đang là primary (sau Patroni promote). Không cần restart app nếu retry/reconnect.
+
+### Vì sao các phương án còn lại sai
+- Không chỉ host đầu tiên; driver thử list.
+- Không fail ngay nếu có retry.
+- App không cần restart nếu connection pool reconnect.
+
+> Senior tip: set loadBalanceHosts=false, connectTimeout, socketTimeout; dùng HikariCP + validation query; Patroni DCS (etcd/consul) đảm bảo single primary.`
+},
+{
+  id: 'qz-devops-068', topic: 'devops',
+  q: "Quorum trong cluster N node. Số node lẻ tối thiểu để chịu được f failure?",
+  options: ['2f+1', 'f+1', '2f', 'f'],
+  answer: 0,
+  explain: `**Tóm tắt:** Quorum cần majority: N ≥ 2f+1 để chịu f failure (vd 3 node chịu 1 fail, 5 node chịu 2).
+
+### Vì sao các phương án còn lại sai
+- f+1 không đủ majority trong nhiều trường hợp.
+- 2f thiếu 1.
+- f quá ít.
+
+> Senior tip: luôn dùng số node lẻ cho etcd/consul/ZK; witness node cho 2-site; tránh split-brain.`
+},
+{
+  id: 'qz-devops-069', topic: 'devops',
+  q: "Redis Sentinel: client kết nối sentinel. Khi master failover, client làm sao tìm master mới?",
+  options: [
+    'Sentinel thông báo master mới; client subscribe + query sentinel',
+    'Client tự scan tất cả node',
+    'Cần restart client',
+    'Slave tự promote và client biết qua DNS'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Sentinel giám sát, bầu master mới và thông báo qua pub/sub + command SENTINEL get-master-addr-by-name. Client hỗ trợ Sentinel (Jedis/Lettuce) tự cập nhật.
+
+### Vì sao các phương án còn lại sai
+- Client không tự scan.
+- Không cần restart nếu client hỗ trợ Sentinel.
+- DNS không phải cơ chế chính.
+
+> Senior tip: dùng Lettuce với Sentinel config; set readFrom REPLICA cho read scaling; attention: failover có downtime ngắn.`
+},
+{
+  id: 'qz-devops-070', topic: 'devops',
+  q: "Kafka: min.insync.replicas=2, acks=all, replication.factor=3. Mất bao nhiêu broker vẫn ghi được?",
+  options: ['0 broker (không mất)', '1 broker', '2 broker', '3 broker'],
+  answer: 1,
+  explain: `**Tóm tắt:** Cần ít nhất min.insync.replicas (2) replica ack. RF=3, mất 1 broker còn 2 in-sync → ghi được. Mất 2 → còn 1 < 2 → NotEnoughReplicas.
+
+### Vì sao các phương án còn lại sai
+- Mất 0 không phải câu trả lời về khả năng chịu lỗi.
+- Mất 2 broker làm không đủ ISR.
+- Mất 3 broker không còn cluster.
+
+> Senior tip: trade-off durability vs availability; theo dõi UnderReplicatedPartitions; không set min.insync.replicas=RF (sẽ mất availability khi 1 broker down).`
+},
+{
+  id: 'qz-devops-071', topic: 'devops',
+  q: "Galera cluster: node B commit transaction nhưng certification fail. Kết quả?",
+  options: [
+    'Transaction rollback trên node B, cluster tiếp tục',
+    'Toàn cluster rollback',
+    'Node B bị kick khỏi cluster',
+    'Transaction vẫn commit trên node B'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Galera certification-based replication: nếu conflict (certification fail), transaction bị rollback trên node thực thi; cluster không bị ảnh hưởng. Ứng dụng cần retry.
+
+### Vì sao các phương án còn lại sai
+- Không rollback toàn cluster.
+- Node không bị kick chỉ vì 1 conflict.
+- Transaction không commit nếu cert fail.
+
+> Senior tip: giảm conflict bằng partitioning writes theo node/key; retry transaction ở app; wsrep_cert_deps_distance theo dõi.`
+},
+{
+  id: 'qz-devops-072', topic: 'devops', multi: true,
+  q: "Elasticsearch split-brain prevention. Cấu hình đúng? (Chọn 2)",
+  options: [
+    'Số master-eligible node lẻ (3/5)',
+    'discovery.seed_hosts đúng',
+    'Tắt replication',
+    'Mỗi node master-eligible'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Cần số master-eligible lẻ và seed hosts đúng để bầu master với quorum. ES 7+ tự quản lý (no minimum_master_nodes). Replication không liên quan split-brain.
+
+### Vì sao các phương án còn lại sai
+- Tắt replication không ngăn split-brain.
+- Tất cả node master-eligible làm tăng rủi ro và voting complexity (best practice: dedicated master nodes).
+
+> Senior tip: dùng 3 dedicated master nodes; theo dõi cluster health; split-brain gây duplicate data và mất mát.`
+},
+{
+  id: 'qz-devops-073', topic: 'devops',
+  q: "RPO và RTO khác nhau thế nào?",
+  options: [
+    'RPO = mất bao nhiêu dữ liệu chấp nhận được; RTO = thời gian khôi phục chấp nhận được',
+    'RPO = thời gian khôi phục; RTO = mất dữ liệu',
+    'Cả hai đều là thời gian khôi phục',
+    'Cả hai đều là mất dữ liệu'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** RPO (Recovery Point Objective) là lượng dữ liệu có thể mất; RTO (Recovery Time Objective) là thời gian hệ thống phải khôi phục. Thiết kế backup/DR theo cả hai.
+
+### Vì sao các phương án còn lại sai
+- Đảo ngược định nghĩa.
+- Không phải cùng khái niệm.
+
+> Senior tip: RPO thấp → replication/sync backup; RTO thấp → failover tự động, runbook, chaos testing. Đo bằng drill định kỳ.`
+}
+
 );

@@ -107,7 +107,12 @@ h3 { font-size: 1.1rem; }
   display: grid; gap: 2px; background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 14%, transparent);
 }
-.nav-menu a { border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text); }
+.nav-menu { width: 330px; max-width: calc(100vw - 24px); }
+.nav-menu a { border-radius: var(--radius-sm); padding: 7px 12px; color: var(--text); display: grid; gap: 1px; white-space: normal; }
+/* one-line description under each menu item, so people see what each section contains */
+.nav-menu small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.35; }
+.nav-menu a.active small { color: var(--accent); }
+.nav-home-i { display: none; }
 .nav-group:not([open]) .nav-menu { display: none; }
 .icon-btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); width: 34px; height: 34px; border-radius: 50%; cursor: pointer; font-size: 16px; flex: none; }
 @media (max-width: 640px) {
@@ -115,9 +120,18 @@ h3 { font-size: 1.1rem; }
   .topbar-inner { flex-wrap: wrap; row-gap: 6px; }
   .nav { order: 3; flex-basis: 100%; justify-content: space-between; }
   .nav { gap: 0; font-size: 14px; }
-  .nav a, .nav summary { padding: 6px 7px; }
-  .nav summary::after { margin-left: 2px; }
-  .nav-group:last-child .nav-menu { left: auto; right: 0; }
+  .nav a, .nav summary { padding: 6px 6px; }
+  .nav summary::after { margin-left: 1px; }
+  .nav-home-i { display: inline; }
+  .nav-home-t { display: none; }
+  /* dropdowns span the bar width instead of hanging off the right edge */
+  .topbar-inner { position: relative; }
+  .nav-group { position: static; }
+  .nav-menu { left: 8px; right: 8px; top: 100%; width: auto; max-width: none; max-height: 75vh; overflow-y: auto; }
+}
+@media (max-width: 380px) {
+  .nav { font-size: 13px; }
+  .nav summary::after { content: none; }
 }
 
 /* ---------- buttons ---------- */
@@ -268,6 +282,30 @@ body::after {   /* the trail: dots climbing from the bottom-left to the summit *
   --trail: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 380' preserveAspectRatio='xMidYMax slice'%3E%3Cpath fill='none' stroke='%23000' stroke-width='5' stroke-linecap='round' stroke-dasharray='1 16' d='M140 380C260 340 380 330 470 300S600 250 650 225 760 190 800 150 860 80 900 44'/%3E%3C/svg%3E");
 }
 @media print { body::before, body::after { display: none; } }
+/* ---------- per-section side photos (wide screens): real photos in the empty gutters left/right of the 1120px
+ * content column, fading toward the text. home = MacBook Pro + Mac mini M4, interview/English = video calls, study = USD,
+ * practice = code on screen, career = handshake + remote work with a sea view.
+ * Photos: Unsplash License (free use), see assets/bg/CREDITS.md. Narrower screens keep the mountain. */
+@media (min-width: 1400px) {
+  body:has(> main.view-dashboard)::before, body:has(> main.view-speak)::before, body:has(> main.view-interview)::before, body:has(> main.view-mock)::before, body:has(> main.view-companies)::before, body:has(> main.view-path)::before, body:has(> main.view-roadmap)::before, body:has(> main.view-learn)::before, body:has(> main.view-bank)::before, body:has(> main.view-flash)::before, body:has(> main.view-aws)::before, body:has(> main.view-quiz)::before, body:has(> main.view-exam)::before, body:has(> main.view-algo)::before, body:has(> main.view-labs)::before, body:has(> main.view-bugs)::before, body:has(> main.view-sd)::before, body:has(> main.view-sdlc)::before, body:has(> main.view-projects)::before, body:has(> main.view-jobs)::before, body:has(> main.view-career)::before, body:has(> main.view-news)::before, body:has(> main.view-dashboard)::after, body:has(> main.view-speak)::after, body:has(> main.view-interview)::after, body:has(> main.view-mock)::after, body:has(> main.view-companies)::after, body:has(> main.view-path)::after, body:has(> main.view-roadmap)::after, body:has(> main.view-learn)::after, body:has(> main.view-bank)::after, body:has(> main.view-flash)::after, body:has(> main.view-aws)::after, body:has(> main.view-quiz)::after, body:has(> main.view-exam)::after, body:has(> main.view-algo)::after, body:has(> main.view-labs)::after, body:has(> main.view-bugs)::after, body:has(> main.view-sd)::after, body:has(> main.view-sdlc)::after, body:has(> main.view-projects)::after, body:has(> main.view-jobs)::after, body:has(> main.view-career)::after, body:has(> main.view-news)::after {
+    top: 76px; bottom: 16px; height: auto; width: min(calc((100vw - var(--maxw)) / 2 - 24px), 380px);
+    opacity: .9; border-radius: 18px; background-color: transparent; background-position: center; background-size: cover; background-repeat: no-repeat;
+  }
+  body:has(> main.view-dashboard)::before, body:has(> main.view-speak)::before, body:has(> main.view-interview)::before, body:has(> main.view-mock)::before, body:has(> main.view-companies)::before, body:has(> main.view-path)::before, body:has(> main.view-roadmap)::before, body:has(> main.view-learn)::before, body:has(> main.view-bank)::before, body:has(> main.view-flash)::before, body:has(> main.view-aws)::before, body:has(> main.view-quiz)::before, body:has(> main.view-exam)::before, body:has(> main.view-algo)::before, body:has(> main.view-labs)::before, body:has(> main.view-bugs)::before, body:has(> main.view-sd)::before, body:has(> main.view-sdlc)::before, body:has(> main.view-projects)::before, body:has(> main.view-jobs)::before, body:has(> main.view-career)::before, body:has(> main.view-news)::before { left: 12px; right: auto; -webkit-mask: linear-gradient(to right, #000 55%, transparent); mask: linear-gradient(to right, #000 55%, transparent); }
+  body:has(> main.view-dashboard)::after, body:has(> main.view-speak)::after, body:has(> main.view-interview)::after, body:has(> main.view-mock)::after, body:has(> main.view-companies)::after, body:has(> main.view-path)::after, body:has(> main.view-roadmap)::after, body:has(> main.view-learn)::after, body:has(> main.view-bank)::after, body:has(> main.view-flash)::after, body:has(> main.view-aws)::after, body:has(> main.view-quiz)::after, body:has(> main.view-exam)::after, body:has(> main.view-algo)::after, body:has(> main.view-labs)::after, body:has(> main.view-bugs)::after, body:has(> main.view-sd)::after, body:has(> main.view-sdlc)::after, body:has(> main.view-projects)::after, body:has(> main.view-jobs)::after, body:has(> main.view-career)::after, body:has(> main.view-news)::after { right: 12px; left: auto; -webkit-mask: linear-gradient(to left, #000 55%, transparent); mask: linear-gradient(to left, #000 55%, transparent); }
+  body:has(> main.view-dashboard)::before { background-image: url("../assets/bg/home-l.webp"); }
+  body:has(> main.view-dashboard)::after { background-image: url("../assets/bg/home-r.webp"); }
+  body:has(> main.view-speak)::before, body:has(> main.view-interview)::before, body:has(> main.view-mock)::before, body:has(> main.view-companies)::before { background-image: url("../assets/bg/talk-l.webp"); }
+  body:has(> main.view-speak)::after, body:has(> main.view-interview)::after, body:has(> main.view-mock)::after, body:has(> main.view-companies)::after { background-image: url("../assets/bg/talk-r.webp"); }
+  body:has(> main.view-path)::before, body:has(> main.view-roadmap)::before, body:has(> main.view-learn)::before, body:has(> main.view-bank)::before, body:has(> main.view-flash)::before, body:has(> main.view-aws)::before { background-image: url("../assets/bg/study-l.webp"); }
+  body:has(> main.view-path)::after, body:has(> main.view-roadmap)::after, body:has(> main.view-learn)::after, body:has(> main.view-bank)::after, body:has(> main.view-flash)::after, body:has(> main.view-aws)::after { background-image: url("../assets/bg/study-r.webp"); }
+  body:has(> main.view-quiz)::before, body:has(> main.view-exam)::before, body:has(> main.view-algo)::before, body:has(> main.view-labs)::before, body:has(> main.view-bugs)::before, body:has(> main.view-sd)::before, body:has(> main.view-sdlc)::before, body:has(> main.view-projects)::before { background-image: url("../assets/bg/practice-l.webp"); }
+  body:has(> main.view-quiz)::after, body:has(> main.view-exam)::after, body:has(> main.view-algo)::after, body:has(> main.view-labs)::after, body:has(> main.view-bugs)::after, body:has(> main.view-sd)::after, body:has(> main.view-sdlc)::after, body:has(> main.view-projects)::after { background-image: url("../assets/bg/practice-r.webp"); }
+  body:has(> main.view-jobs)::before, body:has(> main.view-career)::before, body:has(> main.view-news)::before { background-image: url("../assets/bg/career-l.webp"); }
+  body:has(> main.view-jobs)::after, body:has(> main.view-career)::after, body:has(> main.view-news)::after { background-image: url("../assets/bg/career-r.webp"); }
+}
+@media (min-width: 1400px) and (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body::before, :root:not([data-theme="light"]) body::after { filter: brightness(.75); } }
+@media (min-width: 1400px) { :root[data-theme="dark"] body::before, :root[data-theme="dark"] body::after { filter: brightness(.75); } }
 
 /* ---------- visual refresh (2026-11-04): layered on top, tokens only ---------- */
 body { background: var(--bg); min-height: 100vh; }
@@ -319,3 +357,46 @@ details > summary { transition: color .15s; }
 .sq-step.sq-dim { opacity: .12; }
 .sq-step.sq-cur .sq-label, .sq-step.sq-cur .sq-note-t { font-weight: 700; fill: var(--accent); }
 .sq-step.sq-cur .sq-line { stroke: var(--accent); stroke-width: 2.5; }
+
+/* ---------- section palettes (2026-11-07): body[data-group] is set by the router from the nav group ----------
+ * learn (Học) keeps the Java orange; practice = blue, interview = violet, career = teal. Every accent-coloured
+ * thing (buttons, chips, active nav, progress, diagrams, mountain) follows the section. */
+[data-group="practice"] { --accent: #2563eb; --accent-2: #06b6d4; --accent-soft: #e3ecfd; --accent-text: #ffffff; --glow: rgba(37, 99, 235, .10); }
+[data-group="interview"] { --accent: #7c3aed; --accent-2: #db2777; --accent-soft: #efe8fd; --accent-text: #ffffff; --glow: rgba(124, 58, 237, .10); }
+[data-group="career"] { --accent: #0f766e; --accent-2: #10b981; --accent-soft: #d8f3ee; --accent-text: #ffffff; --glow: rgba(15, 118, 110, .10); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) [data-group="practice"] { --accent: #6ea8ff; --accent-2: #22d3ee; --accent-soft: #162843; --accent-text: #0a1222; }
+  :root:not([data-theme="light"]) [data-group="interview"] { --accent: #b197fc; --accent-2: #f472b6; --accent-soft: #2a2045; --accent-text: #150d26; }
+  :root:not([data-theme="light"]) [data-group="career"] { --accent: #2dd4bf; --accent-2: #34d399; --accent-soft: #10302c; --accent-text: #06201c; }
+}
+:root[data-theme="dark"] [data-group="practice"] { --accent: #6ea8ff; --accent-2: #22d3ee; --accent-soft: #162843; --accent-text: #0a1222; }
+:root[data-theme="dark"] [data-group="interview"] { --accent: #b197fc; --accent-2: #f472b6; --accent-soft: #2a2045; --accent-text: #150d26; }
+:root[data-theme="dark"] [data-group="career"] { --accent: #2dd4bf; --accent-2: #34d399; --accent-soft: #10302c; --accent-text: #06201c; }
+
+/* ---------- shared header strip (#secbar): "group › page — description" above every view except home ---------- */
+.secbar { padding-top: 18px; padding-bottom: 0; }
+.secbar-inner {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 10px 16px;
+  border-radius: var(--radius); background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+.secbar-group { font-size: .78rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.secbar-sep { color: var(--muted); }
+.secbar-page { font-weight: 700; color: var(--text); }
+.secbar-desc { color: var(--muted); font-size: .9rem; flex-basis: 100%; }
+@media (min-width: 720px) { .secbar-desc { flex-basis: auto; } .secbar-desc::before { content: '— '; } }
+.secbar + main.container { padding-top: 16px; }
+
+/* ---------- polish: headings, page heads, cards ---------- */
+.page-head h1 { position: relative; padding-bottom: 8px; }
+.page-head h1::after { content: ''; position: absolute; left: 0; bottom: 0; width: 56px; height: 4px; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.card:hover { border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); }
+.card h2, .card h3 { letter-spacing: -.01em; }
+.md h3 { padding-left: 10px; border-left: 3px solid var(--accent); }
+@media (max-width: 640px) {
+  .secbar { padding-top: 12px; }
+  .secbar-inner { padding: 8px 12px; }
+  .card { padding: 16px; }
+  .page-head { margin-bottom: 14px; }
+}

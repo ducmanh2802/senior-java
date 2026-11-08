@@ -791,9 +791,9 @@ class Ledger {
             delta.merge(e.account, signed, Long::sum);
         }
         if (debits != credits) throw new IllegalArgumentException("Lech Neh/Coh: " + debits + " khac " + credits);
-        for (Map.Entry<String, Long> d : delta.entrySet()) {            // KIEM TRA TRUOC, chua ghi gi ca
+        for (Map.Entry<String, Long> d : delta.entrySet()) {            // KIỂM TRA TRƯỚC, chưa ghi gì cả
             String acc = d.getKey();
-            if (!acc.startsWith("CA/")) continue;                       // tai khoan noi bo duoc phep am
+            if (!acc.startsWith("CA/")) continue;                       // tài khoản nội bộ được phép âm
             long after = balance(acc) + d.getValue();
             if (after < 0) throw new IllegalStateException("Thieu hut " + acc + ": so du sau khi ghi = " + after);
         }
@@ -1018,8 +1018,8 @@ class TransferStateMachine {
         check("null event -> IllegalArgumentException", expect(IllegalArgumentException.class, () -> a.apply(null)), "");
 
         TransferStateMachine b = new TransferStateMachine();
-        check("PENDING khong duoc nhan CONFIRM_SUCCESS", expect(IllegalStateException.class, () -> b.apply(Event.CONFIRM_SUCCESS)), "khong duoc nhay coc");
-        check("PENDING khong duoc nhan CONFIRM_FAILURE", expect(IllegalStateException.class, () -> b.apply(Event.CONFIRM_FAILURE)), "");
+        check("PENDING_khong_duoc_nhan_CONFIRM_SUCCESS", expect(IllegalStateException.class, () -> b.apply(Event.CONFIRM_SUCCESS)), "không được nhảy cóc");
+        check("PENDING_khong_duoc_nhan_CONFIRM_FAILURE", expect(IllegalStateException.class, () -> b.apply(Event.CONFIRM_FAILURE)), "");
         b.apply(Event.TIMEOUT);
         check("PENDING -> TIMEOUT", b.state() == State.TIMEOUT, "state=" + b.state());
         b.apply(Event.TIMEOUT);
@@ -1033,7 +1033,7 @@ class TransferStateMachine {
         check("FAILED lap tai NEEDS_INQUIRY la no-op", b.state() == State.NEEDS_INQUIRY && b.history().size() == 2, "history=" + b.history());
         b.apply(Event.CONFIRM_SUCCESS);
         check("CONFIRM_SUCCESS -> SUCCESS", b.state() == State.SUCCESS && b.history().size() == 3, "history=" + b.history());
-        check("da SUCCESS khong con nhan CONFIRM", expect(IllegalStateException.class, () -> b.apply(Event.CONFIRM_FAILURE)), "");
+        check("da_SUCCESS_khong_con_nhan_CONFIRM", expect(IllegalStateException.class, () -> b.apply(Event.CONFIRM_FAILURE)), "");
 
         TransferStateMachine c = new TransferStateMachine();
         c.apply(Event.TIMEOUT);
@@ -1044,7 +1044,7 @@ class TransferStateMachine {
         check("FAILED khong the dao thanh SUCCESS", expect(IllegalStateException.class, () -> c.apply(Event.SUCCESS)), "");
         check("FAILED khong the timeout nua", expect(IllegalStateException.class, () -> c.apply(Event.TIMEOUT)), "");
         check("state sau khi bi tu choi van co dinh", c.state() == State.FAILED && c.history().size() == 2, "history=" + c.history());
-        check("FAILED khong nhan CONFIRM", expect(IllegalStateException.class, () -> c.apply(Event.CONFIRM_SUCCESS)), "");
+        check("FAILED_khong_nhan_CONFIRM", expect(IllegalStateException.class, () -> c.apply(Event.CONFIRM_SUCCESS)), "");
 
         System.out.println("RESULT " + passed + "/" + total);
     }
@@ -1063,8 +1063,8 @@ class TransferStateMachine {
 
     List<String> history() { return new ArrayList<>(history); }
 
-    // Bang chuyen tiep tap trung: tra ve trang thai dich, hoac null neu su kien khong hop le.
-    // Tra ve dung trang thai hien tai nghia la callback trung -> no-op.
+    // Bảng chuyển tiếp tập trung: trả về trạng thái đích, hoặc null nếu sự kiện không hợp lệ.
+    // Trả về đúng trạng thái hiện tại nghĩa là callback trùng -> no-op.
     private State next(State from, Event e) {
         switch (from) {
             case PENDING:
@@ -1077,7 +1077,7 @@ class TransferStateMachine {
             case TIMEOUT:
                 switch (e) {
                     case SUCCESS: return State.NEEDS_INQUIRY;   // ket qua muon: khong tu cong tien
-                    case FAILED: return State.FAILED;           // doi tac khang dinh khong nhan
+                    case FAILED: return State.FAILED;           // đối tác khẳng định không nhận
                     case TIMEOUT: return State.TIMEOUT;         // trung -> no-op
                     default: return null;
                 }
@@ -1195,7 +1195,7 @@ Bốn động từ của một khoản giữ:
 BigDecimal a = new BigDecimal("0.1");      // tao TU CHUOI
 BigDecimal b = new BigDecimal("0.2");
 System.out.println(a.add(b));              // 0.3  -> chinh xac tuyet doi
-System.out.println(0.1 + 0.2 == 0.3);      // false -> so thuc nhi phan khong bieu dien duoc 0.1
+System.out.println(0.1 + 0.2 == 0.3);      // false -> số thực nhị phân không biểu diễn được 0.1
 ~~~
 
 > Lưu ý: {{new BigDecimal("0.1")}} khác hoàn toàn {{new BigDecimal(0.1)}}. Bản nhận {{double}} nhét luôn hạt nhiễu nhị phân vào số học của bạn (0.1000000000000000055511151231257827021181583488...). Tức là bạn tưởng mình dùng BigDecimal nhưng thật ra vẫn đang dùng double. Luôn khởi tạo **từ chuỗi**, hoặc dùng {{BigDecimal.valueOf(double)}} (bản này đi qua chuỗi nên an toàn).
@@ -1238,7 +1238,7 @@ actors: App | KhachSan | ToChucThe | HoldLedger
 App -> KhachSan: hoa don 300.000, le tan giu 4.000.000
 KhachSan -> ToChucThe: authorization holdId H1 so tien 4.000.000
 ToChucThe -> HoldLedger: authorise(H1, CA/lan, 4.000.000)
-HoldLedger -> HoldLedger: kha dung 12.000.000 co du khong
+HoldLedger -> HoldLedger: khả dụng 12.000.000 có đủ không
 HoldLedger --> ToChucThe: OK, kha dung con 8.000.000
 ToChucThe --> KhachSan: approved, in hoa don cho khach
 note HoldLedger: so du cai do van la 12.000.000
@@ -1354,7 +1354,7 @@ class HoldLedger {
             "kha_dung=" + l1.availableBalance("CA/lan"));
         check("capture_lan_hai_la_no_op", !l1.capture("H1", new BigDecimal("3000000")), "hold da dong phai tra false");
         check("capture_lan_hai_khong_tru_them_tien", l1.ledgerBalance("CA/lan").compareTo(new BigDecimal("9000000")) == 0, "ledger=" + l1.ledgerBalance("CA/lan"));
-        check("capture_idempotent_khong_mo_lai_hold", !l1.authorise("H1", "CA/lan", new BigDecimal("100000")), "holdId da dung roi thi retry khong duoc mo lai");
+        check("capture_idempotent_khong_mo_lai_hold", !l1.authorise("H1", "CA/lan", new BigDecimal("100000")), "holdId đã dùng rồi thì retry không được mở lại");
 
         HoldLedger l2 = new HoldLedger();
         l2.deposit("CA/hung", new BigDecimal("5000000"));
@@ -1365,8 +1365,8 @@ class HoldLedger {
         check("release_giu_nguyen_so_du", l2.ledgerBalance("CA/hung").compareTo(new BigDecimal("5000000")) == 0, "ledger=" + l2.ledgerBalance("CA/hung"));
         check("release_khoi_kha_dung", l2.availableBalance("CA/hung").compareTo(new BigDecimal("5000000")) == 0, "kha_dung=" + l2.availableBalance("CA/hung"));
         check("release_hai_lan_la_no_op", !l2.release("X1"), "");
-        check("release_khong_mo_lai_hold", !l2.authorise("X1", "CA/hung", new BigDecimal("500000")), "holdId da dung roi");
-        check("mo_lai_holdId_da_dong_du_soi_tien_nho_cung_khong_duoc", !l2.authorise("X1", "CA/hung", new BigDecimal("0.6")), "0.6 lam tron ra 1 dong nhung holdId da dong thi van no_op");
+        check("release_khong_mo_lai_hold", !l2.authorise("X1", "CA/hung", new BigDecimal("500000")), "holdId đã dùng rồi");
+        check("mo_lai_holdId_da_dong_du_soi_tien_nho_cung_khong_duoc", !l2.authorise("X1", "CA/hung", new BigDecimal("0.6")), "0.6 làm tròn ra 1 đồng nhưng holdId đã đóng thì vẫn no_op");
 
         HoldLedger l3 = new HoldLedger();
         l3.deposit("CA/vi", new BigDecimal("1000000"));
@@ -1409,15 +1409,15 @@ class HoldLedger {
 
     void deposit(String account, BigDecimal amount) {
         BigDecimal v = vnd(amount);
-        if (v.signum() < 0) throw new IllegalArgumentException("so tien nap vao khong duoc am");
+        if (v.signum() < 0) throw new IllegalArgumentException("số tiền nạp vào không được âm");
         ledger.merge(account, v, BigDecimal::add);
     }
 
     boolean authorise(String holdId, String account, BigDecimal amount) {
         BigDecimal v = vnd(amount);
-        if (v.signum() <= 0) throw new IllegalArgumentException("so tien giu phai duong sau khi lam tron");
+        if (v.signum() <= 0) throw new IllegalArgumentException("số tiền giữ phải dương sau khi làm tròn");
         if (openHolds.containsKey(holdId) || closedHolds.contains(holdId)) return false;
-        if (availableBalance(account).compareTo(v) < 0) throw new IllegalStateException("khong du so du kha dung de giu tien");
+        if (availableBalance(account).compareTo(v) < 0) throw new IllegalStateException("không đủ số dư khả dụng để giữ tiền");
         openHolds.put(holdId, v);
         holdOwner.put(holdId, account);
         return true;
@@ -1425,13 +1425,13 @@ class HoldLedger {
 
     boolean capture(String holdId, BigDecimal actual) {
         BigDecimal v = vnd(actual);
-        if (v.signum() < 0) throw new IllegalArgumentException("so tien chot khong duoc am");
+        if (v.signum() < 0) throw new IllegalArgumentException("số tiền chốt không được âm");
         if (!openHolds.containsKey(holdId)) {
             if (closedHolds.contains(holdId)) return false;
             throw new IllegalArgumentException("holdId khong ton tai");
         }
         BigDecimal held = openHolds.get(holdId);
-        if (v.compareTo(held) > 0) throw new IllegalArgumentException("so tien chot vuot so da giu");
+        if (v.compareTo(held) > 0) throw new IllegalArgumentException("số tiền chốt vượt số đã giữ");
         String account = holdOwner.remove(holdId);
         openHolds.remove(holdId);
         closedHolds.add(holdId);
@@ -1669,7 +1669,7 @@ class DailyLimit {
     private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
 
     DailyLimit(Clock clock, long limitPerDay) {
-        if (limitPerDay < 0) throw new IllegalArgumentException("limitPerDay phai khong am");
+        if (limitPerDay < 0) throw new IllegalArgumentException("limitPerDay phải không âm");
         this.clock = clock;
         this.limitPerDay = limitPerDay;
     }
@@ -1726,7 +1726,7 @@ class DailyLimit {
         catch (Exception ex) { return type.isInstance(ex); }
     }
 
-    // Test chay trong 2 phut nen can thay "hom nay la ngay nao": cai ham today() de quay sang ngay ke tiep.
+    // Test chạy trong 2 phút nên cần thay "hôm nay là ngày nào": cài ham today() để quay sang ngày kế tiếp.
     static final class OnDay extends DailyLimit {
         private LocalDate day;
         OnDay(LocalDate firstDay, long limitPerDay) {
@@ -1764,14 +1764,14 @@ class DailyLimit {
         d2.tryConsume("CA/y", 1000);
         check("bucket_tao_mot_lan_per_account", d2.trackedAccounts() == 2, "tracked=" + d2.trackedAccounts());
 
-        // ngay duoc tinh theo vung gio cua Clock, khong phai UTC
+        // ngày được tính theo vùng giờ của Clock, không phải UTC
         DailyLimit dl2 = new DailyLimit(Clock.fixed(Instant.parse("2026-11-05T17:30:00Z"), vn), 100000);
         check("nua_dem_utc_la_ngay_moi_cua_VN", dl2.tryConsume("CA/a", 70000)
             && dl2.spentOn("CA/a", LocalDate.of(2026, 11, 6)) == 70000
             && dl2.spentOn("CA/a", LocalDate.of(2026, 11, 5)) == 0,
             "spent 06/11=" + dl2.spentOn("CA/a", LocalDate.of(2026, 11, 6)) + " 05/11=" + dl2.spentOn("CA/a", LocalDate.of(2026, 11, 5)));
 
-        // reset khi sang ngay moi: han muc duoc lam lai, ngay cu van giu duoc de doi soat
+        // reset khi sang ngày mới: hạn mức được làm lại, ngày cũ vẫn giữ được để đối chiếu
         OnDay dl3 = new OnDay(LocalDate.of(2026, 11, 5), 50000);
         dl3.tryConsume("CA/a", 50000);
         long yesterday = dl3.spent("CA/a");
@@ -1802,7 +1802,7 @@ class DailyLimit {
         check("khong_bao_gio_vuot_han_muc_voi_16_thread", badSuccess == 0 && badSpent == 0,
             "rounds sai so lenh=" + badSuccess + ", rounds sai so du=" + badSpent + ", nhieu lenh nhat mot vong=" + maxSuccess);
 
-        // Nhieu tai khoan song song: tai khoan nay khong duoc chan/lan tai khoan kia
+        // Nhiều tài khoản song song: tài khoản này không được chan lan tai khoan kia
         int accs = 16, threadsPer = 4, wrong = 0;
         DailyLimit ml = new DailyLimit(Clock.systemUTC(), 10000);
         CountDownLatch g2 = new CountDownLatch(1);
@@ -1831,7 +1831,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 class DailyLimit {
-    /** Moi tai khoan co mot Bucket rieng: object nay duoc dung lam khoa, nen cac tai khoan khong chan nhau. */
+    /** Mỗi tài khoản có một Bucket riêng: object này dùng làm khóa, nên các tài khoản không chăn nhau. */
     static final class Bucket {
         private final Map<LocalDate, Long> byDay = new HashMap<>();
 
@@ -1857,7 +1857,7 @@ class DailyLimit {
     private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
 
     DailyLimit(Clock clock, long limitPerDay) {
-        if (limitPerDay < 0) throw new IllegalArgumentException("limitPerDay phai khong am");
+        if (limitPerDay < 0) throw new IllegalArgumentException("limitPerDay phải không âm");
         this.clock = clock;
         this.limitPerDay = limitPerDay;
     }
@@ -1875,7 +1875,7 @@ class DailyLimit {
         if (amount <= 0) throw new IllegalArgumentException("so tien phai duong");
         Bucket b = bucket(account);
         LocalDate day = today();
-        synchronized (b) {                 // mot vung nguyen tu cho ca KIEM TRA lan GHI
+        synchronized (b) {                 // một vùng nguyên tử cho cả KIEM TRA và GHI
             return b.tryAdd(amount, limitPerDay, day);
         }
     }
@@ -2152,7 +2152,7 @@ class EodJob {
     static BigDecimal bd(String s) { return new BigDecimal(s); }
     static boolean eq(BigDecimal a, String s) { return a.compareTo(bd(s)) == 0; }
 
-    // Bat "hom nay" trong tay test: cai today() de quay sang ngay ke tiep ma khong phai doi gio may.
+    // Bắt "hôm nay" trong tay test: cài today() để quay sang ngày kế tiếp mà không phải đổi giờ máy.
     static final class OnDay extends EodJob {
         private LocalDate day;
         OnDay(Accrual a, LocalDate first) {
@@ -2196,7 +2196,7 @@ class EodJob {
         check("maxAccounts_0_bi_tu_choi", expect(IllegalArgumentException.class, () -> job.run(books("A002", "1000000"), 0)), "");
         check("balance_null_bi_tu_choi_khong_ghi", expect(IllegalArgumentException.class, () -> job.accrue("A009", null)) && eq(job.accrued("A009"), "0"), "");
 
-        // run ca danh sach 4 tai khoan, A004 duoc 0 dong van phai duoc danh dau la xong
+        // chạy cả danh sách 4 tài khoản, A004 được 0 đồng vẫn phải được đánh dấu là xong
         EodJob j2 = new EodJob(ac, day5);
         Map<String, BigDecimal> four = books("A001", "100000000", "A002", "1000000", "A003", "500000", "A004", "1");
         check("run_xet_ca_bon", j2.run(four, 10) == 4, "checkpoint=" + j2.checkpoint());
@@ -2206,7 +2206,7 @@ class EodJob {
         check("tai_khoan_0_dong_cung_duoc_danh_dau", j2.alreadyAccruedToday("A004"), "");
         check("run_lai_khong_tinh_them", j2.run(four, 10) == 0 && eq(j2.accrued("A001"), "10958.90"), "tong=" + j2.accrued("A001"));
 
-        // checkpoint di dung buoc: 5 tai khoan, moi dot 2
+        // checkpoint đi đúng bước: 5 tài khoản, mỗi lần 2
         EodJob j3 = new EodJob(ac, day5);
         Map<String, BigDecimal> five = books("A001", "1000000", "A002", "1000000", "A003", "1000000", "A004", "1000000", "A005", "1000000");
         check("chunk_1", j3.run(five, 2) == 2 && "A002".equals(j3.checkpoint()), "checkpoint=" + j3.checkpoint());
@@ -2215,13 +2215,13 @@ class EodJob {
         check("chunk_4_khong_con_gi", j3.run(five, 5) == 0, "checkpoint=" + j3.checkpoint());
         check("moi_tai_khoan_dung_109_59", eq(j3.accrued("A005"), "109.59"), "A005=" + j3.accrued("A005"));
 
-        // checkpoint mat (node moi chua biet gi) nhung tien khong duoc trai tay hai lan
+        // checkpoint mất (node mới chưa biết gì) nhưng tiền không được trao tay hai lần
         j3.resetCheckpoint();
         check("reset_checkpoint_ve_null", j3.checkpoint() == null, "checkpoint=" + j3.checkpoint());
         int again = j3.run(five, 5);
         check("checkpoint_mat_van_khong_chi_tien_hai_lan", again == 0 && eq(j3.accrued("A001"), "109.59"), "so ghi=" + again + " tong=" + j3.accrued("A001"));
 
-        // du lieu ban o giua danh sach: bo qua, checkpoint van tien, failed khong trung lap
+        // dữ liệu giữa danh sách: bỏ qua, checkpoint vẫn tiến, failed không trùng lặp
         EodJob j4 = new EodJob(ac, day5);
         Map<String, BigDecimal> dirty = books("A001", "1000000", "A002", "1000000", "B_BAD", "-500000", "C003", "1000000");
         check("loi_du_lieu_khong_lam_ket_job", j4.run(dirty, 10) == 3 && "C003".equals(j4.checkpoint()), "checkpoint=" + j4.checkpoint());
@@ -2315,7 +2315,7 @@ class EodJob {
             if (checkpoint != null && id.compareTo(checkpoint) <= 0) continue;
             if (examined == maxAccounts) break;
             examined++;
-            checkpoint = id;              // checkpoint buoc tien, ke ca khi tai khoan loi -> job khong bi ket
+            checkpoint = id;              // checkpoint bước tiên, kể cả khi tài khoản lỗi -> job không bị kẹt
             try {
                 if (accrue(id, balances.get(id))) credited++;
             } catch (IllegalArgumentException dirtyData) {

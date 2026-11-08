@@ -127,7 +127,7 @@
   function examById(id) {
     const ex = exams().find(x => x.id === id);
     if (ex) return ex;
-    if (!App.quiz().some(q => q.topic === id)) return null;
+    if (!App.lite('quiz').some(q => q.topic === id)) return null;
     const tp = App.topic(id) || { name: id, icon: '' };
     return { id: id, title: tp.name, icon: tp.icon || '', topics: { [id]: 1 }, count: 53, minutes: 120, passScore: 720 };
   }
@@ -150,7 +150,8 @@
   }
   function stripTag(text) { return String(text || '').replace(/^\s*\[[^\]]+\]\s*/, ''); }
   function answerOf(q) { return Array.isArray(q.answer) ? q.answer.slice() : [q.answer]; }
-  function pool(ex) { const ids = topicIds(ex || E.exam); return App.quiz().filter(q => ids.indexOf(q.topic) >= 0); }
+  // light {id, topic} objects until the quiz group is loaded (enough for sizes on the pick screen), full ones after
+  function pool(ex) { const ids = topicIds(ex || E.exam); return App.lite('quiz').filter(q => ids.indexOf(q.topic) >= 0); }
   const examSize = ex => Math.min(ex.count, pool(ex).length);
   const examMinutes = (ex, n) => Math.max(10, Math.round(ex.minutes * n / ex.count));
   const passLabel = ex => (ex.passScore ? ex.passScore + '/1000' : ex.passPct + '%');
@@ -458,8 +459,18 @@
       (wrongHtml ? '<section><h3>' + t('exam.wrongList', { n: wrong.length }) + '</h3>' + wrongHtml + '</section>' : '<section class="card"><p>' + t('exam.perfect') + '</p></section>');
   }
 
+  // The route awaits only the light index: the pick screen needs pool sizes ({id, topic}), every other screen
+  // needs question text (domain tags, options), so the ~1.7 MB quiz group is loaded the first time one opens.
+  let viewGen = 0;
   function render() {
     if (!rootEl) return;
+    if (E.phase !== 'pick' && !App.hasData(['quiz'])) {
+      const gen = viewGen;
+      rootEl.innerHTML = '<div class="empty" role="status" aria-busy="true">…</div>';
+      App.need(['glossary']);   // term tooltips: not awaited, they re-index when the group arrives
+      App.need(['quiz']).then(() => { if (gen === viewGen) render(); });
+      return;
+    }
     rootEl.innerHTML = E.phase === 'pick' ? pickHtml() : E.phase === 'exam' ? examHtml() : E.phase === 'result' ? resultHtml() : setupHtml();
   }
 
@@ -502,6 +513,7 @@
     get title() { return App.t('exam.title'); },
     render(root, params) {
       rootEl = root;
+      viewGen++;
       stopTimer();
       const id = params && params[0];
       E.exam = id ? examById(id) : null;

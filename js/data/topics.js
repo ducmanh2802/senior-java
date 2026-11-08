@@ -29,4 +29,5 @@ window.TOPICS = [
   { id: 'autotest',      name: 'Automation Test (QA → SDET)', icon: '🤖', group: 'Soft skills',  file: 'q-autotest.js' },
   { id: 'behavioral',    name: 'Leadership & Behavioral',    icon: '🤝', group: 'Soft skills',  file: 'q-soft.js' },
   { id: 'english',       name: 'Phỏng vấn tiếng Anh',        icon: '🇬🇧', group: 'Soft skills',  file: 'q-english.js' },
+  { id: 'remote',        name: 'Remote & Freelance (Upwork)', icon: '🌍', group: 'Soft skills',  file: 'q-remote.js' },
 ];

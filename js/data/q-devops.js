@@ -5740,32 +5740,52 @@ Em xây runbook theo vòng đời Detect, Triage, Mitigate, Communicate, Resolve
   topic: 'devops',
   level: 'mid',
   q: 'Giải thích user, group, quyền rwx/octal, sudo/sudoers, setuid, umask; cấp quyền tối thiểu cho user deploy thế nào?',
-  a: `**Tóm tắt:** Linux quản lý truy cập bằng user/group và 3 nhóm quyền r/w/x cho owner/group/other; cấp quyền tối thiểu cho deploy user = user riêng, group riêng, sudo chỉ các lệnh cụ thể, umask 027, không setuid bừa.
+  a: `**Tóm tắt:** Linux kiểm soát "ai được làm gì với file nào" bằng ba lớp: (1) danh tính (user/group), (2) 3 nhóm quyền đọc-ghi-chạy (r, w, x) cho owner/group/other biểu diễn bằng số octal, và (3) sudo/sudoers để cấp phép chạy lệnh với đặc quyền cao theo danh sách tường minh. Cho user deploy, áp dụng least privilege: user riêng, group riêng, umask thắt chặt, sudo chỉ vài lệnh systemctl/journalctl, tuyệt đối không setuid và không chmod 777.
 
-### Khái niệm cơ bản
-- **User**: mỗi tài khoản có UID; /etc/passwd lưu UID, home, shell.
-- **Group**: tập user; /etc/group. Một user có primary group + supplementary groups.
-- **Quyền rwx**: read (đọc nội dung/list dir), write (sửa/tạo/xoá), execute (chạy file/vào dir).
-- **Octal**: r=4, w=2, x=1; ví dụ 755 = rwxr-xr-x, 640 = rw-r-----.
-- **sudo**: chạy lệnh với quyền root theo chính sách /etc/sudoers (sửa bằng visudo).
-- **sudoers**: định nghĩa ai được chạy lệnh nào trên host nào với tư cách ai.
-- **setuid**: bit đặc biệt (4xxx) khiến file chạy với UID owner (ví dụ passwd). Rủi ro bảo mật lớn.
-- **umask**: mặt nạ quyền mặc định khi tạo file (022 → file 644, dir 755; 027 → file 640, dir 750).
+### Cái gì: hệ thống quyền Linux, giải thích như dạy người mới
+Hãy tưởng tượng một tòa nhà văn phòng: **user** là thẻ ra vào của từng người (mỗi thẻ có một mã số UID, lưu trong {{/etc/passwd}}). **Group** là phòng ban (lưu trong {{/etc/group}}); một người có 1 nhóm chính (primary group) và có thể thuộc thêm nhiều nhóm phụ (supplementary groups), giống người vừa thuộc "phòng deploy" vừa thuộc "phòng app". Mỗi căn phòng (file/thư mục) có 3 ổ khóa gắn với 3 nhóm người: **owner** (chủ), **group** (phòng ban), **other** (mọi người khác).
 
-### Cấp quyền tối thiểu cho deploy user
-1. Tạo user deploy riêng: useradd -m -s /bin/bash deploy.
-2. Tạo group app và thêm deploy: usermod -aG app deploy.
-3. Thư mục app thuộc group app, mode 2750 (setgid để file mới kế thừa group): chown -R root:app /opt/app && chmod 2750 /opt/app.
-4. sudoers chỉ cho lệnh cần thiết: deploy ALL=(root) NOPASSWD: /bin/systemctl restart myapp, /bin/journalctl -u myapp. Sửa bằng visudo; không cho sudo su hay sudo bash.
-5. umask 027 trong ~/.bashrc của deploy.
-6. Private key deploy mode 600.
+Mỗi ổ khóa có 3 bit quyền: **r (read, =4)** đọc nội dung file hoặc liệt kê thư mục; **w (write, =2)** sửa file hoặc tạo/xóa file trong thư mục; **x (execute, =1)** chạy file như chương trình, hoặc (với thư mục) được "bước vào" thư mục đó bằng {{cd}}. Ghép lại thành số **octal** (cơ số 8): {{rwxr-xr-x}} = 7,5,5 = {{755}}; {{rw-r-----}} = 6,4,0 = {{640}}. Ví dụ {{ls -l}} in {{-rw-r----- 1 root app deploy.jar}} nghĩa là owner (root) đọc-ghi, group (app) chỉ đọc, người khác không được gì.
 
-### Pitfall
-- chmod -R 777 là anti-pattern.
-- sudo NOPASSWD cho apt/yum = root thực sự.
-- setuid trên script shell bị kernel bỏ qua.
+**sudo** (superuser do): cho phép một user thường chạy lệnh với quyền của root (hoặc user khác) theo **chính sách** trong {{/etc/sudoers}}. File này phải sửa bằng {{visudo}} (lệnh kiểm tra cú pháp trước khi lưu, tránh việc gõ sai làm bạn bị khóa khỏi sudo). **setuid** là một bit đặc biệt (số 4 ở đầu, ví dụ {{4755}}) khiến file chạy với UID của owner thay vì UID người chạy; lệnh {{/usr/bin/passwd}} cần setuid-root để sửa {{/etc/shadow}}, nhưng setuid trên chương trình tự viết là lỗ hổng leo thang đặc quyền nghiêm trọng. **umask** là "mặt nạ" trừ bớt quyền mặc định khi tạo file mới: quyền gốc file là 666, thư mục 777; umask {{022}} cho ra file 644, dir 755; umask {{027}} (an toàn hơn) cho ra file 640, dir 750 — group chỉ đọc, other không có quyền.
 
-> Senior tip: Nguyên tắc least privilege: deploy user không cần root shell, chỉ cần restart service và đọc log. Audit sudoers định kỳ (sudo -l -U deploy).`,
+### Cách cấp quyền tối thiểu cho user deploy (least privilege)
+Nguyên tắc **least privilege** (đặc quyền tối thiểu): chỉ cấp đúng những quyền cần để hoàn thành công việc, không hơn. Từng bước:
+~~~bash
+# 1) Tạo user deploy riêng, có home, shell bash; không dùng root để deploy
+sudo useradd -m -s /bin/bash deploy
+# 2) Tạo group app, thêm deploy vào group (supplementary, không đổi primary)
+sudo groupadd app
+sudo usermod -aG app deploy
+# 3) Thư mục app: owner root, group app. 2750 = setgid(2)+rwx cho owner+rx cho group
+#    setgid trên thư mục: file mới tạo bên trong tự kế thừa group "app"
+sudo chown -R root:app /opt/myapp
+sudo chmod 2750 /opt/myapp
+# 4) umask 027 cho deploy: file mới 640, dir 750 (other = 0)
+echo 'umask 027' | sudo tee -a /home/deploy/.bashrc
+# 5) Private key SSH của deploy chỉ owner đọc được
+chmod 600 /home/deploy/.ssh/id_ed25519
+~~~
+Cấp sudo **chỉ đúng lệnh cần thiết** (sửa bằng {{visudo}}, file drop-in {{/etc/sudoers.d/deploy}}):
+~~~text
+# deploy chỉ được restart 1 service và đọc log của nó, chạy không cần mật khẩu
+deploy ALL=(root) NOPASSWD: /bin/systemctl restart myapp, /bin/systemctl status myapp, /bin/journalctl -u myapp
+~~~
+Tuyệt đối không cho {{sudo su}}, {{sudo bash}}, {{sudo vi}}, {{sudo /bin/sh}} hay {{NOPASSWD: ALL}}: bất kỳ lệnh nào mở được shell/editor đều tương đương root hoàn toàn.
+
+### Ví dụ đời thực
+Tình huống (giả định hợp lý): startup 8 người, 1 server {{/opt/orders}} chạy service Java, 3 dev chia sẻ tài khoản {{ubuntu}} có {{NOPASSWD: ALL}} để "deploy cho nhanh". Một dev chạy nhầm script dọn log chứa {{rm -rf / var/log}} (dấu cách thừa) lúc 2h sáng, xóa nhầm thư mục hệ thống; service chết, MTTR 4 giờ vì phải dựng lại server. Sau sự cố: tạo user {{deploy}} + group {{orders}}; {{/opt/orders}} chuyển {{root:orders 2750}}; sudoers chỉ còn {{systemctl restart orders}} và {{journalctl -u orders}}; tắt SSH password, chỉ key ed25519 {{600}}; umask {{027}}. Kết quả: 3 tháng sau không còn "deploy nhầm quyền", audit {{sudo -l -U deploy}} cho ra đúng 3 lệnh được phép; thời gian cấp quyền cho dev mới giảm từ "cho luôn root" xuống checklist 5 phút.
+
+### Pitfall production
+- {{chmod -R 777 /opt/app}}: mọi user trên máy (kể cả tiến trình bị chiếm quyền) ghi đè được JAR/config, tương đương mở cửa backdoor. Tương tự, {{chown -R deploy:deploy /etc}} là thảm họa.
+- Cấp sudo cho {{apt}}, {{yum}}, {{docker}}, {{find}} hoặc {{less}}: đều có cách thoát ra shell root ({{docker run -v /:/host -it alpine sh}}, {{less !sh}}).
+- setuid trên script shell bị kernel bỏ qua vì lý do bảo mật, nhưng setuid trên binary C tự biên dịch thì có hiệu lực — đừng làm.
+- ACL ({{setfacl/getfacl}}) ghi đè cảm giác "đã chmod đúng" vì quyền thực tế = ACL mask; luôn kiểm tra bằng {{getfacl}} khi quyền lạ.
+
+### Trả lời mẫu khi phỏng vấn
+Linux gắn mỗi file với một owner, một group, và 3 nhóm quyền r, w, x cho owner, group, other; em đọc bằng {{ls -l}} và biểu diễn octal như 640 hay 750. Để cấp quyền tối thiểu cho user deploy, em không dùng tài khoản chung và không bao giờ cấp root. Em tạo user {{deploy}} riêng và group {{app}}; thư mục ứng dụng đặt {{root:app}} với mode {{2750}} có setgid để file mới tự kế thừa group. Trong sudoers, em chỉ cho phép đúng vài lệnh như {{systemctl restart myapp}} và {{journalctl -u myapp}} với NOPASSWD, tuyệt đối không cho {{sudo bash}} hay {{NOPASSWD: ALL}} vì chúng tương đương root. Em đặt umask {{027}} để file mới mặc định không mở cho other, và private key SSH để mode {{600}}. setuid em tránh hoàn toàn trên chương trình tự viết vì đó là đường leo thang đặc quyền. Sau khi cấu hình, em xác minh bằng {{sudo -l -U deploy}} và {{getfacl}}; trên production em audit sudoers định kỳ. Theo kinh nghiệm, gần như mọi sự cố "deploy xóa nhầm" em từng gặp đều bắt nguồn từ việc cấp quyền rộng hơn mức cần.
+
+> Senior tip: least privilege là checklist có thể kiểm toán: {{sudo -l -U deploy}} phải ra đúng vài lệnh, {{find / -perm -4000 -user root}} liệt kê file setuid-root để rà soát, và bất kỳ thay đổi sudoers nào cũng đi qua pull request + {{visudo}}. Trên server nhiều người, dùng SSH certificate hoặc nhóm LDAP thay vì tài khoản chia sẻ, để thu hồi quyền tức thì khi người rời team.`,
   follow: [
     'Khác nhau giữa chmod và chown? Khi nào dùng ACL (setfacl)?',
     'setgid bit trên thư mục có tác dụng gì với file mới tạo?',
@@ -5778,36 +5798,59 @@ Em xây runbook theo vòng đời Detect, Triage, Mitigate, Communicate, Resolve
   topic: 'devops',
   level: 'senior',
   q: 'Viết bash script deploy xử lý lỗi: set -euo pipefail, trap ERR/EXIT, exit code, retry có giới hạn, log, idempotent.',
-  a: `**Tóm tắt:** Script deploy đáng tin cậy = set -euo pipefail để fail-fast, trap để dọn dẹp/log, retry có giới hạn cho thao tác mạng, log có timestamp, và các bước idempotent (chạy lại không hại).
+  a: `**Tóm tắt:** Script deploy bash đáng tin cậy phải "fail-fast" ({{set -euo pipefail}}), luôn dọn dẹp dù thành công hay lỗi ({{trap}}), thử lại có giới hạn với backoff cho thao tác mạng, ghi log có timestamp và deploy id để truy vết, và thiết kế **idempotent** (chạy lại nhiều lần cho cùng kết quả, không hỏng thêm). Thêm khóa chống chạy chồng ({{flock}}) và exit code phân loại để CI/CD phản ứng đúng.
 
-### set -euo pipefail
-- set -e: thoát ngay khi lệnh fail.
-- set -u: lỗi nếu dùng biến chưa khai báo.
-- set -o pipefail: pipeline fail nếu bất kỳ lệnh nào fail (không chỉ lệnh cuối).
+### Cái gì → vì sao cần → hoạt động thế nào
+**Idempotent** (lũy đẳng): một thao tác chạy 1 lần hay 10 lần đều đưa hệ thống về cùng một trạng thái đích, giống nút "bật đèn" — bấm lần hai không làm gì thêm. Deploy hay bị chạy lại (CI retry, người thao tác bấm lại khi nghi ngờ), nên script không idempotent sẽ deploy chồng, ghi đè sai version, hoặc mở 2 process cùng lúc.
 
-### trap
-- trap cleanup EXIT: chạy cleanup khi script kết thúc (thành công hay lỗi).
-- trap 'echo "fail at line LINENO" >&2' ERR: log dòng lỗi.
+Từng "tấm lưới an toàn" trong bash:
+- {{set -e}}: thoát ngay khi một lệnh trả exit code khác 0 (fail-fast), thay vì lặng lẽ chạy tiếp bước sau trên nền tảng đã hỏng.
+- {{set -u}}: coi biến chưa khai báo là lỗi (tránh {{rm -rf "$TYPO_DIR"/}} xóa nhầm khi biến rỗng).
+- {{set -o pipefail}}: trong pipeline {{a | b | c}}, mặc định bash chỉ lấy exit code của lệnh cuối; {{pipefail}} làm cả pipeline fail nếu bất kỳ lệnh nào fail.
+- {{trap cleanup EXIT}}: chạy hàm {{cleanup}} khi script kết thúc, dù thoát thành công, do {{set -e}}, hay do tín hiệu — dùng để xóa lock, file tạm.
+- {{trap 'on_err $LINENO' ERR}}: ghi log dòng bị lỗi. Lưu ý {{ERR}} không kích hoạt trong điều kiện {{if}}/{{while}} và không bắt được tín hiệu {{INT/TERM}}, nên cần thêm {{trap cleanup INT TERM}}.
+- **Retry có giới hạn + backoff** (chờ tăng dần): thao tác mạng (curl health, kéo image, scp) có thể lỗi thoáng qua; thử lại vài lần với thời gian chờ nhân đôi (2s, 4s, 8s) giúp tự hồi phục, nhưng phải có {{max}} để không treo vô hạn.
 
-### Retry có giới hạn
-retry() { local n=0 max=5 delay=2; until "$@"; do n=$((n+1)); [ $n -ge $max ] && return 1; sleep $delay; delay=$((delay*2)); done; }
-Dùng cho curl health check, pull image, scp.
+### Ví dụ script (rút gọn, chạy được)
+~~~bash
+#!/usr/bin/env bash
+set -euo pipefail
+DEPLOY_ID="\${DEPLOY_ID:-$(date +%Y%m%d%H%M%S)-$RANDOM}"
+LOCK=/var/lock/deploy-myapp.lock
+LOG=/var/log/deploy-myapp.log
+APP_DIR=/opt/myapp/releases/$DEPLOY_ID
+log() { printf '[%s] [%s] %s\n' "$(date -Is)" "$DEPLOY_ID" "$*" | tee -a "$LOG"; }
+cleanup() { log "cleanup (exit $?)"; rm -f "$LOCK.tmp" 2>/dev/null || true; }
+on_err()  { log "ERROR at line $1"; }
+trap cleanup EXIT; trap 'on_err $LINENO' ERR; trap cleanup INT TERM
+# Khóa chống chạy chồng: cùng lúc chỉ 1 deploy
+exec 9>"$LOCK"; flock -n 9 || { log "deploy khác đang chạy"; exit 2; }
+retry() { local n=0 max=5 d=2; until "$@"; do n=$((n+1)); [ $n -ge $max ] && return 1; log "retry $n/$max"; sleep $d; d=$((d*2)); done; }
+# Idempotent: nếu version đã active thì bỏ qua
+[ "$(readlink -f /opt/myapp/current 2>/dev/null || true)" = "$APP_DIR" ] && { log "đã ở đúng version"; exit 0; }
+mkdir -p "$APP_DIR"
+retry curl -fsS "https://repo.internal/myapp/$DEPLOY_ID.jar" -o "$APP_DIR/app.jar"
+ln -sfn "$APP_DIR" /opt/myapp/current           # atomic: đổi symlink, rollback = trỏ lại
+sudo systemctl restart myapp
+retry curl -fsS http://127.0.0.1:8080/actuator/health | grep -q UP || { log "health fail"; exit 3; }
+log "deploy OK"
+~~~
+Exit code phân loại: {{0}} ok, {{1}} lỗi chung, {{2}} bị khóa (deploy khác đang chạy), {{3}} health check fail — để CI/CD biết có nên retry hay rollback.
 
-### Log
-- exec > >(tee -a /var/log/deploy.log) 2>&1 hoặc function log() { echo "[$(date -Is)] $*"; }.
-- Thêm correlation id (deploy id) để truy vết.
+### Ví dụ đời thực
+Tình huống (giả định): team 6 người deploy thủ công bằng script cũ không có {{set -e}}; bước {{scp}} artifact lỗi mạng nhưng script vẫn chạy tiếp {{systemctl restart}} với JAR cũ/broken, 1h sáng service trả 500 cho ~2.000 request (5 phút) trước khi ai nhận ra. Viết lại với {{set -euo pipefail}}, {{retry}} cho scp/curl (max 5, backoff 2s→32s), {{flock}} chống chạy chồng, deploy vào thư mục version rồi {{ln -sfn}} (atomic), và health check sau restart. 6 tháng sau, 140 lần deploy: 9 lần tự hồi phục nhờ retry (mạng chập chờn), 2 lần health fail tự thoát code 3 và pipeline rollback trong 40 giây, 0 sự cố "deploy chồng" nhờ lock. Thời gian điều tra sự cố deploy giảm từ ~30 phút xuống < 5 phút nhờ log có {{DEPLOY_ID}} + số dòng lỗi.
 
-### Idempotent
-- Kiểm tra trước khi làm: nếu file/service đã đúng trạng thái thì skip.
-- Dùng checksum/version để quyết định có deploy không.
-- Atomic: deploy vào thư mục mới rồi symlink switch, rollback = đổi symlink.
+### Pitfall production
+- {{set -e}} bị "tắt" trong vế điều kiện {{if cmd; then}} và trong hàm gọi từ {{if}} — lỗi im lặng. Kiểm tra {{rc=$?}} tường minh khi cần.
+- Quên {{flock}}: 2 pipeline chạy cùng lúc ghi đè {{current}} symlink, kết quả là version ngẫu nhiên.
+- {{trap ERR}} không chạy khi bị {{kill -9}} (SIGKILL không bắt được) — chấp nhận, nhưng {{INT/TERM}} phải bắt.
+- Retry vô hạn hoặc không backoff: dội request vào registry/DB đang lỗi, làm sự cố nặng thêm (thundering herd).
+- Deploy "ghi đè tại chỗ" (copy đè JAR đang chạy) không idempotent và không rollback được; luôn deploy sang thư mục mới rồi đổi symlink atomically.
 
-### Pitfall
-- set -e không bắt lỗi trong if/while condition; cần kiểm tra rõ.
-- trap ERR không chạy nếu exit do signal; thêm trap cho INT/TERM.
-- Retry vô hạn gây hang; luôn có max.
+### Trả lời mẫu khi phỏng vấn
+Khi viết script deploy bash cho production, em luôn bắt đầu với {{set -euo pipefail}} để script fail-fast: {{-e}} thoát khi lệnh lỗi, {{-u}} báo biến chưa khai báo để tránh xóa nhầm đường dẫn rỗng, và {{pipefail}} để lỗi trong pipeline không bị nuốt. Em dùng {{trap cleanup EXIT}} để luôn dọn dẹp lock và file tạm, {{trap}} {{ERR}} để log đúng số dòng lỗi, và thêm trap cho {{INT/TERM}} vì {{ERR}} không bắt được tín hiệu. Với thao tác mạng như kéo artifact hay health check, em bọc bằng hàm retry có giới hạn, ví dụ tối đa 5 lần với backoff nhân đôi, để tự vượt lỗi thoáng qua nhưng không treo vô hạn. Em thiết kế idempotent: kiểm tra nếu version đã active thì bỏ qua, deploy vào thư mục theo version rồi đổi {{ln -sfn}} atomically để rollback chỉ là trỏ lại symlink cũ. Em thêm {{flock}} để hai lần deploy không chạy chồng, ghi log có timestamp và {{DEPLOY_ID}}, và trả exit code phân loại (0 ok, 2 lock, 3 health fail) để CI/CD quyết định retry hay rollback. Điểm em nhấn mạnh với team: script deploy phải chạy lại an toàn, vì CI sẽ retry và con người sẽ bấm lại.
 
-> Senior tip: Script deploy production nên có --dry-run, lock file (flock) để tránh 2 deploy chạy cùng lúc, và exit code rõ ràng (0 ok, 1 lỗi chung, 2 lock, 3 health fail) để CI/CD phân loại.`,
+> Senior tip: coi script deploy như code sản phẩm: chạy {{shellcheck}} (lint) và {{bash -n}} (cú pháp) trong CI, có {{--dry-run}} để in lệnh sẽ chạy, và kiểm tra idempotency bằng cách chạy 2 lần liên tiếp trên staging — lần hai phải thoát 0 mà không đổi trạng thái. Với deploy quan trọng, cân nhắc chuyển sang Ansible/systemd unit có sẵn idempotency thay vì bash thuần.`,
   follow: [
     'Khác nhau giữa trap EXIT và trap ERR?',
     'Làm sao đảm bảo chỉ một instance deploy chạy cùng lúc (flock)?',
@@ -5820,24 +5863,36 @@ Dùng cho curl health check, pull image, scp.
   topic: 'devops',
   level: 'senior',
   q: 'So sánh Deployment, ReplicaSet, StatefulSet, DaemonSet: cơ chế bên trong và ví dụ dùng cho app Spring, Kafka/DB, log agent.',
-  a: `**Tóm tắt:** Deployment quản lý ReplicaSet để rollout app stateless; ReplicaSet giữ số pod; StatefulSet cho workload stateful với identity/PVC ổn định và rollout có thứ tự; DaemonSet chạy 1 pod trên mỗi node.
+  a: `**Tóm tắt:** Bốn workload controller của Kubernetes giải 4 bài toán khác nhau: **ReplicaSet** giữ đúng số pod; **Deployment** bọc ReplicaSet để rollout/rollback app **stateless**; **StatefulSet** dành cho app **stateful** cần danh tính mạng/đĩa ổn định ({{web-0}}, {{web-1}}) và khởi động/tắt có thứ tự; **DaemonSet** chạy đúng 1 pod trên mỗi (hoặc nhóm) node cho tác vụ cấp node như log/metrics agent. Chọn sai controller (ví dụ Deployment cho DB) dẫn tới mất dữ liệu hoặc lệch identity.
 
-### Cơ chế bên trong
-- **ReplicaSet**: controller so sánh số pod thực tế với replicas, tạo/xoá pod theo selector. Có ownerReferences trỏ tới Deployment.
-- **Deployment**: quản lý ReplicaSet, thực hiện rolling update, rollback bằng revision history.
-- **StatefulSet**: pod có tên ổn định (web-0, web-1), PVC riêng theo ordinal, rollout có thứ tự, phù hợp DB/Kafka/ZooKeeper.
-- **DaemonSet**: đảm bảo 1 pod trên mỗi node, dùng cho log/metrics agent, CNI, storage.
+### Cái gì → vì sao cần → hoạt động thế nào
+Hãy hình dung 4 kiểu "sắp xếp nhân sự": Deployment giống đội giao hàng — ai cũng thay thế được, cần 10 người thì giữ 10, đổi đồng phục (image mới) thì thay dần từng người (rolling). StatefulSet giống dãy tủ gửi đồ có số cố định: {{web-0}} luôn là tủ số 0 gắn với ổ cứng số 0, kể cả khi tủ bị thay, nên đồ không lẫn. DaemonSet giống bảo vệ trực mỗi tầng: mỗi tầng (node) đúng 1 người, thêm tầng mới tự có bảo vệ.
 
-### Ví dụ
-- App Spring Boot stateless → Deployment + HPA.
-- Kafka broker → StatefulSet + PVC.
-- Fluent Bit/log agent → DaemonSet.
+- **ReplicaSet**: vòng lặp điều khiển so khớp {{spec.replicas}} với số pod thực tế khớp {{selector}}; thiếu thì tạo, thừa thì xóa. Bạn hiếm khi tạo ReplicaSet trực tiếp; nó có {{ownerReferences}} trỏ về Deployment.
+- **Deployment**: quản lý ReplicaSet. Khi đổi image, nó tạo ReplicaSet mới, tăng dần pod mới và giảm pod cũ theo {{maxSurge}} (pod dư tạm thời cho phép) và {{maxUnavailable}} (pod được phép vắng trong lúc rollout); giữ {{revisionHistoryLimit}} ReplicaSet cũ để {{kubectl rollout undo}}.
+- **StatefulSet**: pod có tên thứ tự ổn định {{<name>-0..N-1}}; mỗi pod gắn 1 **PVC** riêng qua {{volumeClaimTemplates}} (ổ cứng đi theo danh tính pod). Scale-up/rollout theo thứ tự tăng dần, scale-down theo thứ tự giảm dần ({{N-1}} trước). Cần một **headless Service** ({{clusterIP: None}}) để cấp DNS ổn định {{web-0.db.default.svc}}.
+- **DaemonSet**: đảm bảo 1 pod trên mọi node thỏa điều kiện (hoặc dùng {{nodeSelector/tolerations}} để chọn nhóm node). Node mới join cluster tự được gắn pod.
 
-### Pitfall
-- Dùng Deployment cho DB sẽ mất identity/PVC mapping.
-- StatefulSet scale down không tự xoá PVC; cần dọn thủ công.
+| Controller | Trạng thái | Danh tính pod/PVC | Thứ tự rollout | Ví dụ điển hình |
+|---|---|---|---|---|
+| Deployment (+RS) | stateless | ngẫu nhiên, thay thế được | song song (theo surge) | Spring Boot API, worker stateless |
+| StatefulSet | stateful | ổn định (ordinal + PVC riêng) | có thứ tự | Kafka/Zookeeper, PostgreSQL, Redis cluster |
+| DaemonSet | node-level | gắn theo node | theo node | Fluent Bit, Node Exporter, CNI agent |
 
-> Senior tip: Chọn workload type theo state + identity: stateless → Deployment; stateful + identity → StatefulSet; node-level agent → DaemonSet.`,
+### Ví dụ đời thực
+Tình huống (giả định): team 12 người chạy 1 service Spring Boot (stateless, 15.000 RPS giờ cao điểm) và cụm Kafka 3 broker + 1 DaemonSet Fluent Bit thu log. Spring Boot dùng Deployment {{replicas=6}}, HPA scale 6→18 theo CPU 70%; rollout image mới mất ~4 phút với {{maxSurge=25%, maxUnavailable=0}} nên không rớt request. Kafka dùng StatefulSet {{kafka-0..2}}, mỗi broker gắn PVC 500 GB qua {{volumeClaimTemplates}}; khi {{kafka-1}} bị reschedule sang node khác, nó vẫn mount lại đúng PVC của {{kafka-1}} nên partition dữ liệu không lẫn. Fluent Bit DaemonSet tự xuất hiện trên 3 node mới khi cụm autoscale, bảo đảm 100% node có log shipper. Một lần team thử chuyển Kafka sang Deployment "cho đơn giản": pod mới nhận tên ngẫu nhiên, không gắn lại đúng PVC, broker ID lệch, 2 partition mất leader 12 phút. Bài học: controller phải khớp bản chất state.
+
+### Pitfall production
+- Dùng Deployment cho DB/Kafka: pod thay thế được nhưng dữ liệu thì không — mất ánh xạ pod↔PVC, rủi ro mất dữ liệu hoặc split-brain.
+- StatefulSet scale down **không tự xóa PVC** (an toàn, tránh mất dữ liệu); PVC mồ côi tích lại tốn tiền — cần quy trình dọn thủ công/có kiểm soát.
+- Quên headless Service cho StatefulSet: pod không có DNS ổn định, các broker không tìm nhau.
+- DaemonSet + tài nguyên node eo hẹp: mỗi node tốn thêm RAM/CPU cố định; quên {{resources requests/limits}} cho agent làm node hết chỗ.
+- Dùng {{Recreate}} strategy cho Deployment có state ngoài ý muốn: downtime 100% trong lúc rollout.
+
+### Trả lời mẫu khi phỏng vấn
+Em chọn controller Kubernetes dựa trên trạng thái và danh tính của workload. ReplicaSet là lớp giữ đúng số pod, nhưng thực tế em dùng Deployment để bọc nó, vì Deployment cho rolling update và rollback cho ứng dụng stateless như Spring Boot; mỗi pod thay thế được, em cấu hình {{maxSurge}} và {{maxUnavailable}} để rollout không downtime. Với workload stateful như Kafka hay cơ sở dữ liệu, em dùng StatefulSet vì nó cấp tên ổn định {{pod-0, pod-1}} và gắn mỗi pod với một PVC riêng qua {{volumeClaimTemplates}}, kèm headless Service để có DNS cố định; thứ tự khởi động và tắt có kiểm soát, nên broker không mất ánh xạ dữ liệu. Với tác vụ cần chạy trên từng node như log shipper hay metrics agent, em dùng DaemonSet để mỗi node luôn có đúng một pod, và node mới join tự được triển khai. Sai lầm em hay thấy là dùng Deployment cho DB: pod mới không gắn lại đúng đĩa, rất dễ gây sự cố dữ liệu. Nói ngắn gọn: stateless thì Deployment, stateful có danh tính thì StatefulSet, tác vụ cấp node thì DaemonSet.
+
+> Senior tip: hỏi 3 câu trước khi chọn: (1) pod có thay thế nhau được không? (2) dữ liệu có gắn danh tính pod không? (3) có cần đúng 1 bản trên mỗi node không? Câu trả lời lần lượt dẫn tới Deployment / StatefulSet / DaemonSet. Với job chạy một lần hoặc theo lịch, dùng {{Job/CronJob}} thay vì giữ pod sống mãi.`,
   follow: [
     'Rolling update của Deployment hoạt động thế nào (maxSurge, maxUnavailable)?',
     'Khi nào dùng Job/CronJob thay vì Deployment?',
@@ -5850,30 +5905,35 @@ Dùng cho curl health check, pull image, scp.
   topic: 'devops',
   level: 'senior',
   q: 'Các loại Service (ClusterIP, NodePort, LoadBalancer, ExternalName, headless) và đưa request từ ngoài vào cluster (Ingress, Gateway API, AWS LB Controller), khi nào dùng cái nào?',
-  a: `**Tóm tắt:** Service cung cấp endpoint ổn định cho pod; ClusterIP nội bộ, NodePort mở port node, LoadBalancer tạo LB cloud, ExternalName alias DNS, headless cho discovery trực tiếp. Từ ngoài vào dùng Ingress/Gateway API + AWS LB Controller.
+  a: `**Tóm tắt:** Kubernetes **Service** cho một địa chỉ ổn định (IP/DNS) và cân bằng tải tới nhóm pod thay đổi liên tục. 5 loại: {{ClusterIP}} (nội bộ, mặc định), {{NodePort}} (mở port trên mọi node), {{LoadBalancer}} (nhờ cloud cấp LB), {{ExternalName}} (bí danh DNS ra ngoài), **headless** ({{clusterIP: None}}, trả thẳng IP pod cho service discovery). Đưa traffic từ Internet vào cụm: dùng **Ingress** (L7, qua controller) hoặc **Gateway API** (chuẩn mới, linh hoạt hơn), trên AWS thường gắn **AWS Load Balancer Controller** để tạo ALB/NLB thật.
 
-### Các loại Service
-- **ClusterIP**: IP nội bộ cluster, default. Dùng giao tiếp service-to-service.
-- **NodePort**: mở port 30000-32767 trên mọi node; truy cập qua node IP:port.
-- **LoadBalancer**: provision LB cloud (AWS NLB/ALB) trỏ vào service.
-- **ExternalName**: CNAME tới DNS ngoài (không proxy).
-- **Headless (clusterIP: None)**: trả DNS A records của pod; dùng StatefulSet discovery, gRPC.
+### Cái gì → vì sao cần → hoạt động thế nào
+Pod có IP tạm: chết là đổi IP. Service đứng trước như "số tổng đài" cố định, dùng {{selector}} (label) để tìm pod khỏe và chia tải. Dưới nắp capo, {{kube-proxy}} (iptables/IPVS) hoặc eBPF cài rule định tuyến từ ClusterIP tới pod.
 
-### Đưa request từ ngoài vào
-- **Ingress**: L7 routing (host/path) qua Ingress controller (nginx, ALB).
-- **Gateway API**: chuẩn mới, hỗ trợ HTTPRoute/GRPCRoute, role separation.
-- **AWS Load Balancer Controller**: tạo ALB/NLB từ Ingress/Gateway/Service.
+| Loại | Phạm vi | Cơ chế | Dùng khi |
+|---|---|---|---|
+| ClusterIP | trong cluster | IP ảo nội bộ + DNS {{svc.ns.svc}} | service-to-service (mặc định) |
+| NodePort | ngoài, qua node | mở port 30000-32767 trên mọi node | on-prem không có cloud LB, hoặc làm backend cho LB ngoài |
+| LoadBalancer | ngoài, qua cloud LB | cloud provision NLB/ALB trỏ vào NodePort/Pod | expose 1 service ra Internet nhanh; tốn 1 LB/service |
+| ExternalName | nội bộ (alias) | CNAME tới DNS ngoài, không proxy | trỏ tên nội bộ tới RDS/SaaS, hỗ trợ migrate dần |
+| Headless (None) | trong cluster | DNS trả A record từng pod, không có VIP | StatefulSet discovery, client-side LB, gRPC |
 
-### Khi nào dùng
-- API public → Ingress/ALB + ClusterIP service.
-- TCP/UDP hoặc gRPC streaming → NLB hoặc Gateway.
-- Service mesh/internal → ClusterIP + mesh.
+Đưa HTTP/HTTPS từ ngoài vào ở lớp 7 (nhìn được host/path/header): **Ingress** định nghĩa rule ({{host/path → Service}}) và cần 1 Ingress Controller (nginx, AWS ALB) thực thi. **Gateway API** là chuẩn kế thừa: tách vai trò hạ tầng ({{GatewayClass/Gateway}} do platform quản) và định tuyến ({{HTTPRoute/GRPCRoute}} do team app quản), hỗ trợ canary, header match, gRPC tốt hơn Ingress. Trên AWS, **AWS Load Balancer Controller** reconcile Ingress/Gateway/Service (type LoadBalancer, annotation NLB) thành ALB/NLB thật.
 
-### Pitfall
-- NodePort range và firewall.
-- LoadBalancer mỗi service = nhiều LB → chi phí; gom qua Ingress.
+### Ví dụ đời thực
+Tình huống (giả định): nền tảng ngân hàng số, 14 microservice Spring Boot, 40.000 RPS giờ cao điểm. Ban đầu mỗi service public tạo 1 {{Service type LoadBalancer}} → 14 ALB, ~14 × 25 USD/tháng (~350 USD/tháng) chưa kể LCU. Tái cấu trúc: mọi service nội bộ dùng {{ClusterIP}}; 1 Ingress (AWS LBC, scheme internet-facing) gom 10 host/path rule vào 1 ALB, chi phí còn ~45 USD/tháng; service gRPC thanh toán dùng Gateway API {{GRPCRoute}} gắn NLB (L4) vì ALB HTTP rule không hợp streaming hai chiều. Cụm Redis 6 node dùng headless Service để client tự discovery từng pod. Khi di chuyển DB từ on-prem sang RDS, tạo {{ExternalName}} trỏ {{db.internal}} → endpoint RDS, app không đổi connection string.
 
-> Senior tip: Ưu tiên Gateway API cho dự án mới; Ingress vẫn phổ biến. Dùng ExternalName để migrate dần dependency ngoài.`,
+### Pitfall production
+- "Mỗi service một LoadBalancer": nổ chi phí và quota LB; gom bằng Ingress/Gateway + {{ClusterIP}}.
+- NodePort mở port trên **mọi** node (kể cả node không chạy pod đó) và cần mở firewall/security group — bề mặt tấn công tăng.
+- Headless + client cache DNS: pod chết nhưng client vẫn giữ IP cũ; cần client hỗ trợ re-resolve hoặc dùng DNS TTL ngắn.
+- ExternalName chỉ là CNAME: không có health check, không proxy TLS tới đích; và một số resolver/case cross-namespace có hành vi dễ gây nhầm.
+- AWS LBC cần quyền IAM (IRSA) và subnet tag đúng; thiếu tag {{kubernetes.io/role/elb}} là ALB không provision được, khó debug nếu không đọc log controller.
+
+### Trả lời mẫu khi phỏng vấn
+Khi thiết kế mạng trong Kubernetes, em bắt đầu từ câu hỏi traffic đi từ đâu tới đâu. Giữa các service trong cluster, em dùng {{ClusterIP}} vì nó cho DNS và IP ổn định, đây là mặc định an toàn. Em tránh {{NodePort}} cho traffic public vì mở port trên mọi node, trừ khi chạy on-prem không có cloud LB. {{Service type LoadBalancer}} tiện nhưng mỗi service một LB nên chi phí cao; vì vậy với HTTP/HTTPS em gom bằng Ingress hoặc Gateway API đứng trước các {{ClusterIP}} service. Trên AWS, em dùng AWS Load Balancer Controller để Ingress tạo ALB và các route gRPC/TCP gắn NLB. Em chọn Gateway API cho dự án mới vì nó tách vai trò platform và app, hỗ trợ {{HTTPRoute/GRPCRoute}} và canary tốt hơn Ingress, dù Ingress vẫn rất phổ biến. Với workload như StatefulSet hay gRPC cần client-side load balancing, em dùng headless Service để DNS trả thẳng IP pod. Còn {{ExternalName}} em dùng như một alias khi migrate dependency ra ngoài, ví dụ trỏ tới RDS, giúp đổi hạ tầng mà không sửa cấu hình ứng dụng.
+
+> Senior tip: quy tắc chi phí/độ an toàn: nội bộ = {{ClusterIP}}, HTTP public = 1 Ingress/Gateway gom nhiều route, chỉ dùng {{LoadBalancer}}/NodePort khi có lý do L4 cụ thể. Trên AWS, gắn {{target-type: ip}} với ALB để bỏ 1 hop NodePort; và luôn kiểm tra IAM IRSA + subnet tag khi LB "pending" — 80% lỗi nằm ở đó, không phải ở manifest Service.`,
   follow: [
     'Khác nhau giữa Ingress và Service LoadBalancer về cost và tính năng?',
     'Gateway API giải quyết hạn chế gì của Ingress?',
@@ -5886,26 +5946,38 @@ Dùng cho curl health check, pull image, scp.
   topic: 'devops',
   level: 'mid',
   q: 'Hệ thống monitoring gồm những thành phần nào (metrics, logs, traces, alerting, dashboard, on-call) và luồng dữ liệu đi qua từng thành phần?',
-  a: `**Tóm tắt:** Monitoring = metrics (số liệu) + logs (sự kiện) + traces (đường đi request) + alerting (cảnh báo) + dashboard (trực quan) + on-call (phản ứng). Luồng: app → agent/collector → storage → query → dashboard/alert → on-call.
+  a: `**Tóm tắt:** Monitoring/observability hiện đại đứng trên 3 trụ cột dữ liệu — **metrics** (số đo theo thời gian), **logs** (sự kiện rời rạc), **traces** (đường đi một request qua nhiều service) — cộng 3 lớp vận hành: **dashboard** (nhìn), **alerting** (báo khi bất thường), **on-call** (con người phản ứng theo runbook). Luồng chuẩn: ứng dụng phát tín hiệu → agent/collector thu thập → hệ lưu trữ → truy vấn → dashboard/alert → on-call. Thiếu một trụ cột thì phát hiện được nhưng không truy ra nguyên nhân.
 
-### Thành phần
-- **Metrics**: số liệu time-series (CPU, RPS, latency p99). Prometheus/Grafana/CloudWatch.
-- **Logs**: dòng sự kiện có timestamp, level, context. Fluent Bit → Loki/Elasticsearch/CloudWatch Logs.
-- **Traces**: distributed tracing (OpenTelemetry) theo traceId/spanId.
-- **Alerting**: rule trên metrics/logs → Alertmanager/PagerDuty.
-- **Dashboard**: Grafana panels.
-- **On-call**: rotation, escalation, runbook.
+### Cái gì → vì sao cần → hoạt động thế nào
+Giải thích từng khái niệm như cho người mới:
+- **Metrics** (chỉ số): chuỗi số theo thời gian, ví dụ CPU 72%, RPS 1.200, latency p99 350 ms. Nhẹ, rẻ, hợp để vẽ xu hướng và đặt ngưỡng cảnh báo. Công cụ quen: Prometheus (lưu/truy vấn) + Grafana (vẽ).
+- **Logs** (nhật ký): dòng chữ ghi "chuyện gì vừa xảy ra" kèm thời điểm, mức (INFO/ERROR), ngữ cảnh. Dùng để biết chi tiết lỗi (stack trace, tham số). Luồng thường: app ghi ra stdout → runtime ghi file → Fluent Bit (DaemonSet) đọc, parse, gắn nhãn → đẩy về Loki/Elasticsearch/CloudWatch Logs.
+- **Traces** (vết phân tán): khi 1 request đi qua API → Order → Payment → DB, trace gắn cho nó một {{traceId}} duy nhất và mỗi bước là một {{span}} có thời gian; nhìn trace biết request chậm ở khúc nào. Chuẩn mở là **OpenTelemetry (OTel)**, backend thường là Tempo/Jaeger.
+- **Alerting**: luật trên metrics/logs ("p99 > 1s trong 5 phút" hoặc "ERROR > 50/phút") → Alertmanager/PagerDuty gửi thông báo. **Dashboard**: bảng Grafana tổng hợp. **On-call**: lịch trực luân phiên, kèm **runbook** (sổ tay xử lý từng loại cảnh báo).
 
-### Luồng dữ liệu
-App emit metrics (Prometheus scrape / push OTLP) → Prometheus remote_write → storage (Thanos/Mimir) → Grafana query → dashboard.
-Logs: app stdout → container runtime → Fluent Bit DaemonSet → parse/label → Loki → Grafana.
-Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
+Liên kết 3 trụ cột nhờ **correlation id** ({{traceId}}): log có {{traceId}}, metric exemplar trỏ {{traceId}}, trace là nguồn gốc — bấm từ alert sang dashboard sang trace sang đúng dòng log.
 
-### Pitfall
-- Chỉ có metrics không đủ để root cause; cần logs+traces.
-- Alert fatigue: quá nhiều alert → bỏ qua.
+~~~text
+[App, OTel SDK] --metrics/logs/traces--> [OTel Collector / Prometheus scrape / Fluent Bit]
+        -> [Lưu trữ: Prometheus|Mimir, Loki, Tempo]
+        -> [Grafana truy vấn + Dashboard]
+        -> [Rule Alert] -> [Alertmanager/PagerDuty] -> [On-call + runbook]
+~~~
 
-> Senior tip: Chuẩn hoá OpenTelemetry để vendor-neutral; correlation id (traceId) xuyên suốt log/metrics/traces.`,
+### Ví dụ đời thực
+Tình huống (giả định): sàn thương mại, 20 service Java, ~25.000 RPS ban ngày. 11:05 latency checkout p99 vọt từ 180 ms lên 2,4 giây, tỉ lệ lỗi 3%. Alert "p99 > 1s 5 phút" (Alertmanager → PagerDuty) đánh thức on-call. Người trực mở dashboard: RPS bình thường nhưng latency chỉ tăng ở service Payment → nghi ngờ phụ thuộc. Bấm trace của một request chậm (traceId lấy từ log mẫu): span {{Payment → DB}} chiếm 2,1 giây. Lọc log theo {{traceId}} thấy {{timeout acquiring connection from pool}}; metric {{hikaricp_connections_pending}} tăng vọt. Nguyên nhân: pool DB Payment đặt {{maxPoolSize=10}} trong khi deploy mới tăng thread lên 80. Xử lý: nâng pool tạm lên 40, thêm PgBouncer, deploy lại trong 18 phút; p99 về 190 ms, lỗi về 0%. Toàn bộ điều tra mất 14 phút vì 3 trụ cột liên kết bằng {{traceId}}; nếu chỉ có metrics, team đã mất > 1 giờ mò từng service.
+
+### Pitfall production
+- **Chỉ có metrics, thiếu logs/traces**: biết "chậm" nhưng không biết "chậm ở đâu, vì sao".
+- **Alert fatigue** (mệt vì cảnh báo): hàng chục alert ầm ĩ, đa số không cần hành động → on-call bắt đầu lờ, bỏ sót alert thật. Chỉ alert trên triệu chứng ảnh hưởng người dùng (SLO), gắn runbook.
+- **Log không có cấu trúc/ngữ cảnh**: {{System.out.println}} không có {{traceId}}, {{userId}}, {{orderId}} → không lọc nổi.
+- **Chi phí log phình**: giữ DEBUG 90 ngày cho hệ lớn có thể tốn hàng nghìn USD/tháng; cần retention phân tầng và sampling.
+- **Dashboard đẹp nhưng không ai sở hữu**: không gắn team chịu trách nhiệm, không có alert đi kèm.
+
+### Trả lời mẫu khi phỏng vấn
+Em xây monitoring theo ba trụ cột. Metrics là số đo theo thời gian như RPS, latency p99, error rate — em dùng Prometheus và Grafana để phát hiện xu hướng và đặt alert, vì nó nhẹ và rẻ. Logs là sự kiện chi tiết để điều tra, em cho app ghi JSON ra stdout, Fluent Bit chạy dạng DaemonSet thu và đẩy về Loki, và luôn gắn {{traceId}} để lọc. Traces cho thấy một request đi qua những service nào và chậm ở đâu, em dùng OpenTelemetry SDK và collector đẩy về Tempo. Ba trụ cột nối với nhau bằng {{traceId}} nên từ một alert em có thể đi thẳng tới dashboard, rồi trace, rồi đúng dòng log. Trên lớp vận hành, em chỉ tạo alert gắn với triệu chứng ảnh hưởng người dùng và kèm runbook, để tránh alert fatigue cho người on-call. Ví dụ thực tế, nhờ traceId em từng khoanh vùng lỗi checkout xuống đúng span chờ connection pool DB trong chưa tới 15 phút. Theo em, monitoring tốt không phải nhiều biểu đồ, mà là rút ngắn được thời gian phát hiện và thời gian tìm nguyên nhân.
+
+> Senior tip: đo monitoring bằng MTTD/MTTR, không phải bằng số dashboard. Ưu tiên chuẩn hóa OpenTelemetry (một bộ SDK cho metrics+logs+traces) để tránh khóa chặt vào nhà cung cấp, và áp dụng RED (Rate, Errors, Duration) cho service + USE (Utilization, Saturation, Errors) cho hạ tầng — đủ phủ 80% tình huống trước khi nghĩ tới thứ phức tạp hơn.`,
   follow: [
     'RED method và USE method là gì?',
     'Khi nào dùng push vs pull cho metrics?',
@@ -5918,27 +5990,36 @@ Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
   topic: 'devops',
   level: 'senior',
   q: 'Cơ chế thu thập logs và metrics: pull (Prometheus scrape) vs push, agent DaemonSet (Fluent Bit), parse/label, retention và chi phí, cardinality.',
-  a: `**Tóm tắt:** Prometheus pull scrape endpoint /metrics; push qua Pushgateway/OTLP cho job ngắn. Fluent Bit DaemonSet tail log file, parse, gắn label, gửi Loki. Cardinality (số combination label) quyết định chi phí và performance.
+  a: `**Tóm tắt:** Có hai cách đưa dữ liệu giám sát về hệ thống: **pull** (Prometheus chủ động scrape endpoint {{/metrics}} của target theo chu kỳ) và **push** (ứng dụng/agent chủ động đẩy). Log thường đi theo push: **Fluent Bit** (DaemonSet, nhẹ) đọc file log trên node, parse, gắn nhãn, đẩy về Loki/Elasticsearch. Chi phí vận hành bị chi phối bởi **cardinality** — số tổ hợp nhãn (label) khác nhau của time series — và chính sách **retention** (giữ bao lâu).
 
-### Pull vs push
-- **Pull**: Prometheus scrape target theo interval; target phải expose endpoint. Dễ phát hiện target down (scrape fail).
-- **Push**: app push (Pushgateway cho batch job, OTLP cho OTel). Cần cho job ngắn sống.
+### Cái gì → vì sao cần → hoạt động thế nào
+**Pull (Prometheus scrape):** Prometheus giữ danh sách target (service discovery từ Kubernetes), định kỳ (ví dụ 15s) gửi HTTP GET tới {{/metrics}} để lấy số liệu định dạng text. Lợi ích: Prometheus biết target "chết" khi scrape fail; app chỉ cần mở endpoint, không cần biết địa chỉ hệ giám sát. Hạn chế: job chạy ngắn (batch/CronJob) có thể kết thúc trước khi bị scrape. **Push:** app đẩy dữ liệu đi. Dùng **Pushgateway** cho job ngắn, hoặc **OTLP** (giao thức OpenTelemetry) qua OTel Collector cho metrics/traces/logs chuẩn hóa — Collector trung gian giúp buffer, retry, đổi backend mà không sửa app.
 
-### Fluent Bit DaemonSet
-- Chạy trên mỗi node, tail /var/log/containers/*.log.
-- Parse (JSON/regex), filter, enrich (k8s metadata), output tới Loki/Elasticsearch.
-- Buffer và retry khi backend down.
+**Fluent Bit DaemonSet:** DaemonSet = 1 pod mỗi node. Fluent Bit "đuôi" (tail) file {{/var/log/containers/*.log}} do container runtime ghi ra, **parse** (tách JSON, hoặc regex cho log text), **filter/enrich** (gắn metadata Kubernetes: pod, namespace, label), rồi **output** về Loki/Elasticsearch. Nó có bộ đệm và retry khi backend tạm ngưng.
 
-### Retention và chi phí
-- Logs: hot 7-14 ngày, cold (S3) 90+ ngày; sampling debug logs.
-- Metrics: high-res 15d, downsample 90d+.
-- Cardinality: số distinct label combinations. Label cao cardinality (user_id, request_id) → blow-up storage/query.
+**Retention & chi phí:** log giữ "nóng" 7–14 ngày để tra cứu nhanh, chuyển "lạnh" (S3/object storage) 30–90+ ngày; metrics giữ độ phân giải cao 15 ngày rồi downsample. **Cardinality** (độ đa trị nhãn): mỗi tổ hợp giá trị label tạo 1 **time series** riêng. Nhãn có giá trị bị chặn ({{status_code}} ~50 giá trị, {{endpoint}} đã chuẩn hóa ~200) thì ổn; nhãn như {{user_id}}, {{request_id}}, {{email}} có hàng triệu giá trị → "cardinality explosion" (bùng nổ series) làm Prometheus tốn RAM/disk, query chậm, thậm chí OOM.
 
-### Pitfall
-- Gắn request_id vào metric label → cardinality explosion.
-- Không set retention → chi phí tăng.
+| Nhãn | Số giá trị ước lượng | Cardinality | Đặt ở đâu |
+|---|---|---|---|
+| {{method}}, {{status}} | chục | an toàn | metric label |
+| {{endpoint}} (đã chuẩn hóa, bỏ ID) | trăm | chấp nhận được | metric label |
+| {{user_id}}, {{order_id}} | triệu | nổ | log/traces |
+| {{trace_id}}, {{request_id}} | vô hạn | nổ | log/traces (correlation) |
 
-> Senior tip: Quy tắc: metric label chỉ cho dimension có bounded values (status code, endpoint normalized). High-cardinality data đưa vào logs/traces, không metrics.`,
+### Ví dụ đời thực
+Tình huống (giả định): hệ 10 service Spring Boot, 8.000 RPS, Prometheus giữ 15 ngày. Một dev thêm label {{user_id}} và {{path_raw}} (chứa {{/orders/12345}}) vào metric HTTP để "lọc cho tiện" — mỗi request sinh tổ hợp mới. Trong 6 giờ, active series tăng từ ~120.000 lên ~9.500.000; RAM Prometheus (cấp 8 GB) tăng vọt, process OOM-kill, mất 2 giờ dữ liệu metrics và alert im lặng đúng lúc có sự cố thật. Cách xử lý: (1) xóa 2 label gây nổ, chuẩn hóa {{path}} thành template /orders/{id}; (2) đẩy {{user_id/order_id}} vào log JSON và trace (có {{traceId}}); (3) đặt rule cảnh báo {{prometheus_tsdb_head_series}} > 1.000.000. Kết quả: series ổn định ~180.000, RAM Prometheus ~2,2 GB, chi phí lưu trữ giảm ~60%. Log chuyển sang Fluent Bit + Loki, giữ 14 ngày nóng + 60 ngày lạnh trên S3, tiết kiệm ~400 USD/tháng so với giữ full Elasticsearch.
+
+### Pitfall production
+- Gắn {{request_id/trace_id/user_id}} vào metric label: bùng nổ cardinality chắc chắn — đây là lỗi gặp nhiều nhất.
+- Không đặt retention: log/metric tích lũy vô hạn, hóa đơn cloud tăng bất ngờ.
+- Fluent Bit mất buffer khi node chết đột ngột: log trong bộ đệm RAM mất; bật {{storage.type filesystem}} nếu cần đảm bảo hơn (đánh đổi disk I/O).
+- Sampling log (chỉ giữ 1%) tiết kiệm tiền nhưng có thể bỏ đúng dòng lỗi hiếm; giữ 100% log mức ERROR, sampling INFO/DEBUG.
+- Parse log sai (regex không khớp sau khi đổi format): log rơi vào "unparsed", không query được theo field.
+
+### Trả lời mẫu khi phỏng vấn
+Em phân biệt rõ pull và push. Với metrics của service chạy lâu, em dùng Prometheus pull: service mở {{/metrics}} và Prometheus scrape theo chu kỳ, lợi ích là dễ phát hiện target down. Với job ngắn như CronJob, em dùng push qua Pushgateway hoặc gửi OTLP tới OpenTelemetry Collector, vì job có thể chết trước lần scrape tiếp theo. Với logs, em cho app ghi JSON ra stdout; Fluent Bit chạy dạng DaemonSet trên mỗi node, tail file container, parse và gắn metadata Kubernetes rồi đẩy về Loki, có buffer và retry khi backend lỗi. Về chi phí, em quản hai thứ: retention phân tầng (log nóng 7–14 ngày, lạnh lên object storage) và cardinality của metrics. Em chỉ đặt label có giá trị bị chặn như status code hay endpoint đã chuẩn hóa; những thứ định danh cao như {{user_id}} hay {{request_id}} em đưa vào logs và traces, gắn {{traceId}} để liên kết. Em từng xử lý một vụ bùng nổ series vì gắn {{user_id}} vào metric, Prometheus OOM và alert im lặng — từ đó em luôn đặt cảnh báo trên {{tsdb_head_series}}. Tóm lại, đúng kênh cho đúng loại dữ liệu là chìa khóa của chi phí và độ tin cậy.
+
+> Senior tip: đặt "ngân sách cardinality" (ví dụ < 500k series/Prometheus) và alert trên {{prometheus_tsdb_head_series}} + {{scrape_duration_seconds}}; review label mới trong code review như review schema DB. Chuẩn hóa endpoint (/orders/{id}) ở tầng instrumentation hoặc dùng recording rule, đừng nhét giá trị thô vào label. Với log, giữ 100% ERROR, sampling có chủ đích cho INFO — và kiểm tra lại truy vết được sự cố hiếm trước khi bật sampling.`,
   follow: [
     'Làm sao detect cardinality explosion (Prometheus TSDB head)?',
     'Fluent Bit vs Fluentd: khi nào chọn cái nào?',
@@ -5951,29 +6032,31 @@ Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
   topic: 'devops',
   level: 'senior',
   q: 'Scale app dựa trên yếu tố gì: CPU, RAM (vì sao scale theo RAM với JVM thường sai), RPS, queue lag, custom metrics; HPA/KEDA/Cluster Autoscaler/Karpenter.',
-  a: `**Tóm tắt:** Scale nên dựa trên bottleneck thực tế: CPU cho compute, RPS/latency cho web, queue lag cho worker. Scale theo RAM với JVM thường sai vì heap cố định và GC; dùng custom metrics (RPS, lag) với HPA/KEDA, node scale bằng Cluster Autoscaler/Karpenter.
+  a: `**Tóm tắt:** Scale app phải bám vào **điểm nghẽn thực tế** (bottleneck): CPU cho tác vụ tính toán, RPS/latency cho web, **queue lag** cho worker. Scale theo **RAM với JVM gần như luôn sai** vì heap cố định ({{-Xmx}}) và GC làm mức dùng dao động — RAM không phản ánh tải. Công cụ: **HPA** scale số pod theo metric (CPU/custom/external), **KEDA** scale theo sự kiện (queue lag, cron) và có thể scale về 0, **Cluster Autoscaler/Karpenter** thêm node khi pod bị pending.
 
-### Vì sao scale theo RAM với JVM sai
-- JVM heap size cố định (-Xmx), RAM used ≈ heap + metaspace + off-heap; không tăng theo load ngay.
-- GC dọn heap → used RAM dao động; scale theo RAM gây scale không cần thiết hoặc chậm.
+### Cái gì → vì sao cần → hoạt động thế nào
+**Bottleneck** (nút thắt cổ chai) là khâu chậm nhất quyết định tốc độ cả dây chuyền — thêm tài nguyên ở khâu khác không giúp. Nên đo end-to-end (LB → app → DB) trước khi chọn metric.
 
-### Yếu tố scale
-- CPU utilization (HPA target 70%).
-- RPS / latency p99 (custom metrics từ Prometheus).
-- Queue lag (Kafka/RabbitMQ) cho worker.
-- In-flight requests.
+Vì sao **RAM với JVM sai**: JVM cấp heap gần cố định theo {{-Xmx}}. Sau khi heap lớn lên, mức RAM dùng ~ (heap + metaspace + off-heap + thread stack) và **không tăng tuyến tính theo RPS**; garbage collector (GC) dọn rác khiến đồ thị RAM dao động lên xuống. Đặt HPA theo RAM dẫn tới: scale lên muộn (heap đã "đầy" sẵn), hoặc scale lên/xuống vô nghĩa theo nhịp GC. Metric đúng hơn cho JVM web: CPU, RPS, latency p99, hoặc số request đang xử lý.
 
-### Công cụ
-- **HPA**: scale pod theo metrics (CPU/mem/custom/external).
-- **KEDA**: event-driven autoscaling (queue lag, cron) scale to zero.
-- **Cluster Autoscaler**: thêm node khi pod pending.
-- **Karpenter**: provision node nhanh theo pod requirement, spot-friendly.
+- **HPA (Horizontal Pod Autoscaler):** tính {{desiredReplicas = ceil(current * currentMetric / target)}}. Hỗ trợ metric CPU/memory (resource), custom (từ Prometheus Adapter), external. Yêu cầu {{resources.requests}} được khai báo đúng (đặc biệt CPU) vì % utilization tính trên request.
+- **KEDA (Kubernetes Event-driven Autoscaling):** mở rộng HPA, có sẵn scaler cho Kafka lag, RabbitMQ, SQS, cron...; điểm mạnh là **scale to zero** khi không có việc (tiết kiệm) và scale lên khi có sự kiện.
+- **Cluster Autoscaler:** thấy pod Pending vì thiếu tài nguyên node → thêm node (chậm, phút). **Karpenter** (AWS) provision node nhanh, chọn đúng loại instance theo nhu cầu pod, tận dụng spot tốt hơn.
 
-### Pitfall
-- HPA cần requests/limits đúng; nếu requests quá thấp → scale sai.
-- Scale out nhưng DB connection pool cạn → bottleneck dời.
+### Ví dụ đời thực
+Tình huống (giả định): service xử lý đơn hàng, 3 pod Spring Boot ({{-Xmx=2g}}, request CPU 500m), lưu DB RDS {{max_connections=150}}. Ban đầu HPA scale theo RAM target 75%: giờ cao điểm 12.000 RPS, RAM pod vẫn ~78% (heap cố định) nên HPA nhảy 3→10 pod theo dao động GC, nhưng latency p99 vẫn 1,8 giây — bottleneck thật là CPU serialize JSON và pool DB ({{Hikari maximumPoolSize=30/pod}}, 10 pod = 300 kết nối > 150). Sửa: (1) HPA theo CPU target 65% + custom metric RPS/pod (mục tiêu 800 RPS/pod, lấy từ Prometheus); (2) hạ pool còn 12/pod (10 pod × 12 = 120 < 150) và bật PgBouncer; (3) thêm KEDA cho consumer Kafka tính shipping theo {{lagThreshold=1000}} (scale 0→6). Kết quả: giờ cao điểm ổn định 8–9 pod, p99 220 ms, 0 lỗi {{too many connections}}; ban đêm consumer về 0 pod tiết kiệm ~35% chi phí compute worker.
 
-> Senior tip: Đo bottleneck end-to-end (LB → app → DB) trước khi chọn metric scale; thường là DB connection hoặc CPU, không phải RAM.`,
+### Pitfall production
+- Scale pod nhưng quên **DB connection pool**: tổng {{pod * poolSize}} vượt {{max_connections}} → app lỗi kết nối, thêm pod làm tệ hơn. Luôn tính trần kết nối hoặc dùng pooler (PgBouncer/RDS Proxy).
+- {{requests}} khai báo sai: request quá thấp → HPA nghĩ CPU % cao bất thường; request quá cao → lãng phí và node scale thừa.
+- HPA + scale nhanh theo metric nhiễu → "flapping" (lên xuống liên tục); đặt {{stabilizationWindowSeconds}}.
+- Cluster Autoscaler thêm node mất 2–5 phút; traffic tăng đột biến vẫn timeout trong lúc chờ — cần kết hợp headroom (buffer pod/node) hoặc Karpenter.
+- KEDA scale to zero: request đầu tiên gặp cold start (vài chục giây với JVM) — chấp nhận được cho worker nền, không hợp API latency nhạy.
+
+### Trả lời mẫu khi phỏng vấn
+Khi quyết định scale, em luôn tìm bottleneck trước thay vì chọn metric theo thói quen. Với API tính toán, em scale theo CPU; với API web chịu tải, em thích RPS hoặc latency p99 vì nó phản ánh trải nghiệm người dùng. Với worker xử lý hàng đợi, em scale theo queue lag — ví dụ dùng KEDA đọc lag Kafka để scale ra và scale về 0 khi hết việc. Em đặc biệt tránh scale theo RAM với JVM, vì heap thường cố định theo {{-Xmx}} và GC làm mức dùng dao động, nên RAM không tương quan với tải và HPA sẽ phản ứng sai. Về công cụ, em dùng HPA cho pod với custom metric từ Prometheus, KEDA cho autoscaling theo sự kiện, và Cluster Autoscaler hoặc Karpenter để thêm node khi pod pending; Karpenter tiện hơn khi cần provision nhanh và chọn đúng loại instance. Một lỗi em luôn kiểm tra là nhân số pod với connection pool: scale out mà vượt {{max_connections}} của DB thì hệ thống gãy, nên em tính trần hoặc dùng PgBouncer. Quan điểm của em: scale đúng metric chỉ có ý nghĩa khi cả chuỗi phụ thuộc, đặc biệt là DB, cùng chịu được.
+
+> Senior tip: đặt công thức an toàn trước khi bật autoscale: {{maxPods * poolSizePerPod <= DB_max_connections * 0,8}} và kiểm tra bằng load test. Kết hợp HPA (pod) + Karpenter (node) + buffer tối thiểu ({{minReplicas}} hoặc overprovisioning pod) để vừa tiết kiệm vừa chịu được burst; và nhớ JVM cold start vài chục giây nên API nhạy latency đừng scale về 0.`,
   follow: [
     'Karpenter khác Cluster Autoscaler ở điểm nào?'
   ],
@@ -5984,28 +6067,38 @@ Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
   topic: 'devops',
   level: 'senior',
   q: 'Luồng pipeline CI/CD và downstream: pipeline phức tạp gọi sang repo khác (GitLab multi-project/parent-child, Jenkins upstream-downstream, GitHub Actions repository_dispatch/workflow_call), truyền artifact/version, xử lý khi downstream fail.',
-  a: `**Tóm tắt:** Pipeline phức tạp orchestrate nhiều repo: GitLab parent-child/multi-project, Jenkins upstream-downstream, GitHub Actions reusable workflow/repository_dispatch. Truyền version/artifact qua registry và API; downstream fail → retry/rollback/alert.
+  a: `**Tóm tắt:** CI/CD đa repo (microservice, thư viện dùng chung) cần cơ chế một pipeline **gọi/kích hoạt** pipeline ở repo khác và truyền **đúng phiên bản artifact**. Ba hệ phổ biến: GitLab (parent-child, multi-project trigger), Jenkins (upstream/downstream), GitHub Actions ({{workflow_call}} tái sử dụng, {{repository_dispatch}} kích hoạt chéo). Nguyên tắc cốt lõi: truyền **image tag/version bất biến** qua container registry (contract giữa repo), không copy source/artifact ad-hoc; downstream fail phải có retry/rollback/alert và mọi bước deploy **idempotent**.
 
-### Các cơ chế
-- **GitLab**: parent-child pipeline (trigger:include), multi-project pipeline (trigger:project), truyền variables qua variables.
-- **Jenkins**: build job → upstream/downstream, dùng artifact copy plugin hoặc Nexus/registry.
-- **GitHub Actions**: workflow_call (reusable workflow), repository_dispatch (event từ repo khác), workflow_run.
+### Cái gì → vì sao cần → hoạt động thế nào
+Khi hệ thống tách thành nhiều repo (service A, B, thư viện chung, manifest hạ tầng), một thay đổi có thể cần: build thư viện → build service dùng nó → deploy. Cần "đường ống nối ống".
 
-### Truyền artifact/version
-- Build image → push registry với tag version (git SHA + semver).
-- Downstream pull image theo tag; không copy artifact trực tiếp.
-- Truyền metadata qua API/variable (version, commit SHA).
+- **GitLab CI:** {{parent-child pipeline}} ({{trigger: include: local/file}}) tách pipeline lớn trong cùng repo; **multi-project pipeline** ({{trigger: project: group/repo, branch}}) gọi pipeline repo khác, truyền biến qua {{variables}} (ví dụ {{IMAGE_TAG: $CI_COMMIT_SHA}}).
+- **Jenkins:** job upstream chạy xong kích hoạt downstream; trao artifact bằng cách publish lên registry/Nexus hoặc (cũ hơn) Copy Artifact plugin. Hạn chế: cấu hình phân tán, khó theo dõi chuỗi.
+- **GitHub Actions:** {{workflow_call}} = reusable workflow (gọi như hàm, cùng lúc/lồng ghép, truyền {{inputs/secrets}} rõ kiểu) — hợp để chuẩn hóa bước build/deploy. {{repository_dispatch}} = gửi event HTTP sang repo khác để kích hoạt workflow — hợp khi upstream chỉ biết "đã có version mới". {{workflow_run}} lắng nghe workflow khác hoàn tất.
 
-### Xử lý downstream fail
-- Retry với backoff; nếu fail → rollback deploy trước đó.
-- Thông báo Slack/PagerDuty; block merge.
-- Idempotent deploy: chạy lại an toàn.
+Truyền artifact/version đúng cách: build ra image đẩy lên registry với tag **bất biến** ({{git SHA}} hoặc {{semver}}, tránh {{latest}}); downstream nhận tag và {{docker pull}}/{{helm --set image.tag=$TAG}}. Như vậy registry là **contract**: downstream không cần source của upstream.
 
-### Pitfall
-- Coupling chặt giữa repos → thay đổi một repo phá pipeline khác.
-- Secret sprawl: mỗi repo giữ secret riêng.
+| Cơ chế | Đồng bộ? | Truyền dữ liệu | Hợp khi |
+|---|---|---|---|
+| GitLab multi-project trigger | có (chờ/không chờ) | variables | điều phối deploy đa repo có kiểm soát |
+| GitHub {{workflow_call}} | có | inputs/secrets có kiểu | tái dùng logic chuẩn (build/deploy) |
+| GitHub {{repository_dispatch}} | không (fire event) | {{client_payload}} | upstream báo "có bản mới", repo đích tự quyết |
+| Jenkins upstream/downstream | có | artifact/Nexus | hệ Jenkins sẵn có (cần chuẩn hóa) |
 
-> Senior tip: Dùng container registry làm contract giữa repos; version là image tag; pipeline downstream chỉ cần tag, không cần source.`,
+### Ví dụ đời thực
+Tình huống (giả định): 9 repo service Java + 1 repo {{platform-deploy}} giữ Helm chart, 2–5 deploy/ngày. Luồng cũ: Jenkins upstream build service, copy JAR sang job downstream bằng plugin — 2 lần copy nhầm artifact cũ gây deploy sai version, mất 40 phút rollback. Luồng mới (GitHub Actions): repo service build image, tag {{app:<sha>}} + {{app:<semver>}}, push registry; gửi {{repository_dispatch}} (event {{image_published}}, payload {{service, tag, sha}}) sang {{platform-deploy}}; workflow deploy dùng đúng {{tag}} để {{helm upgrade}} và chạy smoke test. Downstream fail (smoke test lỗi) → workflow tự {{helm rollback}} về revision trước, gửi Slack, đánh dấu run fail (không auto-retry mù). 4 tháng, 180 deploy: 0 nhầm version, 3 rollback tự động trung bình 90 giây, thời gian truy vết "đang chạy version nào" = tra tag trên registry/pod (vài giây).
+
+### Pitfall production
+- **Coupling chặt**: upstream chờ đồng bộ chuỗi 5 repo → 1 repo flaky làm kẹt cả dây chuyền; chỉ đồng bộ ở điểm thật sự cần (deploy), còn lại bất đồng bộ.
+- Dùng tag {{latest}}: downstream kéo nhầm bản mới build giữa chừng → không tái lập được, không rollback chính xác.
+- **Secret sprawl**: mỗi repo giữ credential registry/cluster riêng, xoay key khổ; dùng OIDC (GitHub→cloud) hoặc secret tập trung có phạm vi hẹp.
+- Downstream fail nhưng upstream đã báo xanh: mất tín hiệu; nếu cần "gating", dùng trigger có chờ ({{strategy: depend}} trên GitLab) hoặc cơ chế promote.
+- Retry deploy không idempotent: tạo tài nguyên trùng, lệch trạng thái. {{helm upgrade --install}} và manifest idempotent là bắt buộc.
+
+### Trả lời mẫu khi phỏng vấn
+Với hệ nhiều repo, em coi container registry là hợp đồng giữa các pipeline. Repo upstream build và đẩy image với tag bất biến theo git SHA hoặc semver, rồi mới kích hoạt downstream; downstream chỉ nhận tag và deploy, không chạm vào source hay copy artifact ad-hoc. Trên GitHub Actions, em dùng {{workflow_call}} để tái sử dụng các bước build/deploy chuẩn có kiểu {{inputs/secrets}} rõ ràng, và dùng {{repository_dispatch}} khi một repo chỉ cần báo "đã phát hành version mới" để repo deploy tự chạy. Trên GitLab, em dùng multi-project trigger và truyền {{IMAGE_TAG}} qua variables; trên Jenkins là upstream/downstream nhưng em ưu tiên publish artifact lên registry thay vì Copy Artifact. Về xử lý lỗi, downstream fail thì gửi alert, chặn promote, và tự rollback về revision trước; mọi bước deploy phải idempotent nên retry an toàn. Em tránh coupling đồng bộ chuỗi dài và tuyệt đối tránh tag {{latest}}, vì nó làm mất khả năng tái lập và rollback. Mục tiêu của em là luôn trả lời được "production đang chạy đúng commit nào" chỉ bằng cách nhìn image tag.
+
+> Senior tip: "build một lần, promote cùng artifact" qua các môi trường (dev→staging→prod) — chỉ đổi config, không build lại, để đảm bảo bản test chính là bản chạy. Ghi {{sha}} + {{tag}} vào metadata deploy (annotation/label) để truy vết; và dùng OIDC cấp credential ngắn hạn cho pipeline thay vì secret dài hạn nằm rải rác trong nhiều repo.`,
   follow: [
     'Khi nào dùng reusable workflow vs repository_dispatch?',
     'Làm sao đảm bảo version consistency giữa nhiều repos?',
@@ -6018,24 +6111,41 @@ Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
   topic: 'devops',
   level: 'mid',
   q: 'Ansible vs Terraform: provisioning vs configuration management, inventory, playbook, idempotency, khi nào dùng cả hai?',
-  a: `**Tóm tắt:** Terraform provision hạ tầng (IaC, state) declarative; Ansible configure phần mềm/idempotent (agentless, SSH). Dùng Terraform tạo VM/K8s cluster, Ansible cài package/config app. Kết hợp: Terraform output inventory → Ansible run.
+  a: `**Tóm tắt:** **Terraform** và **Ansible** giải hai bài toán khác tầng: Terraform lo **provisioning** (dựng/cấp phát hạ tầng: VPC, EC2, RDS, cụm K8s) theo kiểu khai báo (declarative) và giữ **state** để biết thực tế đang có gì; Ansible lo **configuration management** (cài đặt/cấu hình phần mềm trên máy đã có: package, user, file cấu hình, service) theo playbook, **agentless** qua SSH, và dựa vào module **idempotent**. Chúng bổ trợ nhau: Terraform tạo hạ tầng → xuất inventory/IP → Ansible cấu hình phần mềm.
 
-### Khái niệm
-- **Provisioning**: tạo tài nguyên (VM, network, DB) → Terraform.
-- **Configuration management**: cài đặt/cấu hình phần mềm trên host → Ansible.
-- **Inventory**: danh sách host/group cho Ansible (static hoặc dynamic từ Terraform output).
-- **Playbook**: YAML mô tả task theo thứ tự, module idempotent.
-- **Idempotency**: chạy lại không thay đổi nếu đã đúng trạng thái.
+### Cái gì → vì sao cần → hoạt động thế nào
+**Provisioning** (cấp phát) trả lời "có những tài nguyên nào": máy chủ, mạng, load balancer, database quản lý. **Configuration management** (quản lý cấu hình) trả lời "trên tài nguyên đó chạy gì, cấu hình ra sao". Trộn lẫn hai việc bằng một công cụ thường khó bảo trì.
 
-### Khi nào dùng cả hai
-- Terraform tạo EC2 + security group + RDS → output IP → Ansible playbook cài Java, deploy app, config systemd.
-- Terraform cho infra lifecycle; Ansible cho app config và patching.
+- **Terraform (HCL, declarative):** bạn mô tả *trạng thái mong muốn* của hạ tầng; Terraform tính kế hoạch ({{plan}}) so với **state file** (bản đồ tài nguyên đang quản lý), rồi {{apply}} để tạo/sửa/xóa. State nên lưu xa (S3 + DynamoDB lock) để làm việc nhóm an toàn. Điểm mạnh: quản lý vòng đời hạ tầng, phát hiện drift.
+- **Ansible (YAML playbook, agentless):** điều khiển máy đích qua SSH/WinRM, không cần cài agent. **Inventory** là danh sách host/group (file tĩnh hoặc **dynamic inventory** lấy từ Terraform output/cloud). **Playbook** gồm các task gọi **module** ({{apt}}, {{template}}, {{systemd}}, {{user}}); module viết sẵn để idempotent — "đảm bảo gói có mặt, bản đúng" — nên chạy lại không đổi nếu đã đúng. Lưu ý: idempotency đến từ *module*, không tự có nếu bạn dùng task {{shell/command}} bừa bãi.
+- **Idempotent** (lũy đẳng): chạy 1 lần hay N lần cho cùng kết quả, không gây tác dụng phụ lặp.
 
-### Pitfall
-- Ansible không quản lý state hạ tầng → không biết drift; Terraform state cần remote backend + locking.
-- SSH key management và become (sudo) cần cẩn thận.
+~~~text
+[Terraform] --plan/apply--> [VPC, EC2, SG, RDS] --output (IP, endpoint)-->
+[dynamic inventory] --> [Ansible playbook] --SSH--> [cài JDK, deploy app, cấu hình systemd]
+~~~
 
-> Senior tip: Tách infra (Terraform) và config (Ansible); dùng dynamic inventory để không hardcode IP; kiểm tra idempotency bằng chạy playbook 2 lần.`,
+| Tiêu chí | Terraform | Ansible |
+|---|---|---|
+| Mục tiêu | provisioning hạ tầng | cấu hình phần mềm/OS |
+| Mô hình | declarative + state | playbook (task), agentless SSH |
+| Điểm mạnh | vòng đời tài nguyên, plan/preview | cấu hình chi tiết, ad-hoc, idempotent module |
+| Điểm yếu | cấu hình sâu trong OS kém linh hoạt | không quản lý state hạ tầng, khó phát hiện drift infra |
+
+### Ví dụ đời thực
+Tình huống (giả định): dựng môi trường staging cho app Java (2 EC2, 1 RDS PostgreSQL, 1 ALB) trên AWS. Terraform (state S3 + DynamoDB lock, 3 người cùng sửa qua PR) {{apply}} tạo hạ tầng trong ~6 phút, xuất {{private_ip}} 2 EC2 và endpoint RDS. Ansible dùng dynamic inventory đọc output đó, chạy playbook: cài JDK 21, tạo user {{app}}, render {{application.yml}} (endpoint RDS), cài service {{systemd}}, bật {{firewalld}} — mất ~4 phút. Chạy lại playbook lần 2: Ansible báo {{changed=0}} (idempotent). Một lần đổi {{instance_type}}: Terraform {{plan}} hiện đúng 1 thay đổi, {{apply}} thay máy; Ansible chạy lại cấu hình. So với cách cũ "SSH tay + ghi chú wiki", thời gian dựng lại staging giảm từ nửa ngày xuống ~15 phút, và 2 lần "quên mở port" biến mất vì security group nằm trong Terraform, được review như code.
+
+### Pitfall production
+- Terraform state lưu local/không lock: 2 người {{apply}} cùng lúc → hỏng state, tài nguyên mồ côi; luôn dùng remote backend + locking.
+- Ansible task dùng {{shell}} tùy tiện: mất idempotency (chạy lại thêm dòng trùng vào file, restart không cần thiết); ưu tiên module ({{lineinfile}}, {{template}}), dùng {{creates/removes}} nếu buộc phải shell.
+- Hardcode IP trong inventory: hạ tầng đổi là hỏng; dùng dynamic inventory.
+- Quản lý secret (mật khẩu DB, key): đừng commit plaintext; dùng Ansible Vault, SSM Parameter Store, hoặc truyền từ Terraform sensitive output qua kênh an toàn.
+- "Dùng Ansible tạo hạ tầng" hoặc "dùng Terraform cài từng gói trong VM": làm được nhưng đau — tool lệch mục tiêu.
+
+### Trả lời mẫu khi phỏng vấn
+Em phân tách Terraform và Ansible theo tầng trách nhiệm. Terraform em dùng cho provisioning hạ tầng: VPC, máy chủ, security group, RDS, cụm Kubernetes. Nó khai báo trạng thái mong muốn, có {{plan}} để xem trước và giữ state — em luôn đặt state trên remote backend có lock — nên quản lý được vòng đời tài nguyên và phát hiện drift. Ansible em dùng cho configuration management trên máy đã có: cài JDK, tạo user, render file cấu hình, quản lý service systemd. Ansible agentless qua SSH và em dựa vào các module idempotent, nên chạy playbook nhiều lần vẫn an toàn; em tránh lạm dụng {{shell}} vì nó làm mất idempotency. Trong thực tế em dùng cả hai: Terraform {{apply}} tạo hạ tầng và xuất output, Ansible lấy dynamic inventory từ output đó để cấu hình. Cách tách này giúp hạ tầng được review như code, còn cấu hình phần mềm lặp lại được. Với workload bất biến trên cloud, em cũng cân nhắc cloud-init hoặc image dựng sẵn (Packer) thay cho Ansible dài, tùy mức độ cần thay đổi sau khi cấp máy.
+
+> Senior tip: đường biên thực dụng: "tạo/xóa tài nguyên cloud" = Terraform, "trạng thái bên trong OS" = Ansible/Packer/cloud-init. Kiểm tra idempotency của Ansible bằng cách chạy playbook 2 lần — lần hai phải {{changed=0}}; và đừng để Terraform state chứa secret dạng plaintext (bật {{sensitive}}, mã hóa backend). Hai công cụ phối hợp tốt khi output của bên này là đầu vào có cấu trúc của bên kia, không dán thủ công.`,
   follow: [
     'Terraform state locking hoạt động thế nào (DynamoDB)?',
     'Ansible idempotency dựa trên module, không phải task viết tay — giải thích.',
@@ -6048,34 +6158,54 @@ Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
   topic: 'devops',
   level: 'lead',
   q: '(lead) Load test một app trước go-live từ góc DevOps: môi trường, công cụ, chỉ số, tìm bottleneck ở tầng hạ tầng (LB, DB connection, node).',
-  a: `**Tóm tắt:** Load test trước go-live: môi trường giống production (scale nhỏ hơn nhưng topology giống), công cụ k6/JMeter/Gatling, chỉ số latency p95/p99, error rate, throughput, resource; tìm bottleneck ở LB connection, DB pool, node CPU/mem, GC.
+  a: `**Tóm tắt:** Load test trước go-live chỉ có giá trị khi trả lời được câu hỏi kinh doanh: "chịu được tải dự kiến × hệ số an toàn với p99 và tỉ lệ lỗi trong SLO không, và **cái gì gãy đầu tiên**?". Tôi định nghĩa mục tiêu từ số liệu thật, dựng môi trường cùng topology với production, chạy theo bậc (baseline → load → stress → soak → spike), theo dõi **USE** (utilization, saturation, errors) của từng tầng: load balancer, node, pool connection, DB.
 
-### Môi trường
-- Staging mirror production: cùng instance type, DB size tỷ lệ, network.
-- Dữ liệu test realistic (seed DB).
-- Warm-up JVM/GC trước đo.
+### Bước 1 — Mục tiêu đo được
+- Lấy từ số liệu: peak hiện tại hoặc dự báo marketing, nhân hệ số 2–3 cho ngày đặc biệt. Ví dụ: 1.200 request/giây, p99 < 400ms, lỗi < 0,1%.
+- **Mô hình tải** theo hành vi thật: 70% xem sản phẩm, 20% tìm kiếm, 8% thêm giỏ, 2% thanh toán — không bắn một endpoint duy nhất.
 
-### Công cụ
-- k6, JMeter, Gatling, wrk; phân phối load từ nhiều region.
-- Chaos: inject latency to dependency.
+### Bước 2 — Môi trường
+- Cùng loại instance, cùng số tầng (LB → ingress → app → pool → DB), cùng cấu hình JVM và giới hạn container; có thể nhỏ hơn về số node nhưng phải biết tỉ lệ để ngoại suy.
+- Dữ liệu cỡ thật: DB 50GB với 5GB làm planner chọn plan khác, cache hit rate khác.
+- Dependency bên ngoài (cổng thanh toán, SMS) thay bằng mock có độ trễ giống thật — không bắn tải vào đối tác.
+- Máy sinh tải đủ mạnh và phân tán: một máy k6 bị nghẽn CPU sẽ cho số liệu sai.
 
-### Chỉ số
-- Throughput (RPS), latency p50/p95/p99, error rate.
-- Resource: CPU/mem/node, DB connections/queries, GC pause, thread pool.
-- Saturation: queue depth, connection pool usage.
+### Bước 3 — Các loại test
+| Loại | Mục đích | Ví dụ |
+|---|---|---|
+| Load | Đạt mục tiêu ổn định không | 1.200 rps trong 30 phút |
+| Stress | Điểm gãy và cách gãy | Tăng 10% mỗi 5 phút đến khi lỗi |
+| Spike | Đột biến, autoscaling kịp không | 200 → 2.000 rps trong 30 giây |
+| Soak | Leak, tăng dần theo thời gian | 70% tải trong 8–12 giờ |
 
-### Tìm bottleneck hạ tầng
-- LB: connection limit, TLS handshake cost, target health.
-- DB: connection pool exhausted, slow query, lock contention.
-- Node: CPU throttling, memory pressure, disk I/O, network bandwidth.
-- App: thread pool, GC, connection leak.
+~~~javascript
+// k6: tăng dần và tự đánh giá đạt/không đạt theo SLO
+export const options = {
+  stages: [{ duration: '5m', target: 600 }, { duration: '20m', target: 1200 }, { duration: '5m', target: 0 }],
+  thresholds: { http_req_duration: ['p(99)<400'], http_req_failed: ['rate<0.001'] },
+};
+~~~
+
+### Bước 4 — Tìm bottleneck theo tầng
+- **Load balancer/ingress**: số connection, lỗi 502/504, thời gian TLS handshake, giới hạn connection của ingress controller.
+- **Node**: CPU throttling, memory pressure, conntrack table, băng thông mạng.
+- **App**: thread pool (Tomcat busy threads), GC pause, Hikari pending.
+- **DB**: số connection, top query ({{pg_stat_statements}}), lock wait, IOPS, replica lag.
+Quy tắc: tài nguyên **bão hoà** (saturation) đầu tiên — hàng đợi bắt đầu tăng — chính là bottleneck, không phải tài nguyên có % cao nhất.
+
+### Ví dụ đời thực
+Trước đợt mở bán vé concert, mục tiêu 3.000 rps cho API giữ chỗ. Lần chạy đầu gãy ở 900 rps: p99 vọt lên 6s nhưng CPU app chỉ 35%. Metric cho thấy Hikari pending 200+ và DB đạt giới hạn {{max_connections}} = 300 vì 30 pod × pool 10. Thêm PgBouncer (transaction mode), giảm pool mỗi pod xuống 6, sửa một query thiếu index: lần hai đạt 3.400 rps, p99 280ms. Soak test 10 giờ phát hiện heap tăng đều do cache không giới hạn — sửa trước ngày mở bán. Ngày thật đạt peak 2.700 rps, không lỗi.
 
 ### Pitfall
-- Test từ 1 máy → network bottleneck giả.
-- Không warm-up → cold start méo số liệu.
-- Chỉ đo average latency → che p99.
+- Bắn tải từ một máy, hoặc từ cùng mạng nội bộ không qua LB thật.
+- Không warm-up JVM; đo luôn cả giai đoạn JIT biên dịch.
+- Chỉ nhìn trung bình; bỏ qua p99 và tỉ lệ lỗi.
+- Quên giới hạn của bên thứ ba (rate limit cổng thanh toán) → production gãy chỗ chưa test.
 
-> Senior tip: Định nghĩa SLO trước (p99 < X ms, error < 0.1%) và dừng test khi đạt; lưu baseline để so sánh sau deploy; chạy soak test (nhiều giờ) để phát hiện memory leak.`,
+### Trả lời mẫu khi phỏng vấn
+"Trước go-live tôi bắt đầu từ mục tiêu đo được: tải peak dự kiến nhân hệ số an toàn, cùng ngưỡng p99 và tỉ lệ lỗi, và một mô hình tải giống hành vi người dùng thật chứ không bắn một endpoint. Môi trường phải cùng topology với production: cùng loại instance, cùng giới hạn container, dữ liệu cỡ thật, dependency bên ngoài thay bằng mock có độ trễ giống thật. Tôi chạy theo bậc: load test ở mức mục tiêu, stress để tìm điểm gãy, spike để xem autoscaling, và soak nhiều giờ để bắt leak. Trong lúc chạy tôi theo dõi từng tầng, từ load balancer, node, thread pool, connection pool đến DB, và tìm tài nguyên bão hoà đầu tiên, tức là chỗ hàng đợi bắt đầu tăng. Một lần CPU app chỉ 35% mà p99 lên 6 giây; nguyên nhân là tổng pool của 30 pod vượt max_connections của DB. Thêm PgBouncer và giảm pool là đạt mục tiêu."
+
+> Senior tip: lưu kết quả mỗi lần load test (rps tối đa, p99, tài nguyên gãy đầu tiên) thành bảng lịch sử và chạy lại sau mỗi thay đổi lớn. Khi capacity giảm 20% giữa hai release, bạn biết ngay trước khi người dùng biết.`,
   follow: [
     'Khác nhau giữa load test, stress test, soak test, spike test?',
     'Làm sao load test an toàn trên production (canary load)?',
@@ -7852,40 +7982,48 @@ Replicas nhỏ (2-3) cẩn thận với {{minAvailable}} tuyệt đối; đảm 
     topic: 'devops',
     level: 'mid',
     q: 'So sánh GitFlow và trunk-based development cho team Java backend: khi nào chọn cái nào, và quy tắc branch/commit/MR ra sao?',
-    a: `**Tóm tắt:** GitFlow phù hợp release theo chu kỳ với nhiều version song song; trunk-based phù hợp deploy liên tục với feature flag. Team nhỏ nên trunk-based + MR ngắn.
+    a: `**Tóm tắt:** **Trunk-based** (một nhánh chính, nhánh tính năng sống ngắn dưới 1–2 ngày, tính năng chưa xong ẩn sau feature flag) hợp với service backend deploy liên tục. **GitFlow** (develop, release, hotfix) hợp khi phải phát hành theo đợt và duy trì nhiều phiên bản song song, như app mobile hoặc phần mềm cài tại khách hàng. Với team Java backend làm SaaS/microservice, tôi chọn trunk-based kèm quy tắc MR nhỏ, CI bắt buộc xanh và branch protection.
 
-### Vì sao cần workflow
-Không có quy ước → conflict lớn, review khó, release hỗn loạn. Workflow = hợp đồng về cách thay đổi vào main.
+### Vì sao cần quy ước nhánh
+Không có quy ước, mỗi người giữ nhánh riêng hàng tuần → merge conflict lớn, review 2.000 dòng không ai đọc kỹ, và ngày release là ngày "ghép" đầy rủi ro. Quy ước nhánh là thoả thuận về **cách thay đổi đi vào production**.
 
-### GitFlow
-- Branch: main (production), develop, feature/*, release/*, hotfix/*.
-- Release branch: gom các feature, stabilize, tag.
-- Hotfix: từ main, merge về main và develop.
-- Phù hợp: phần mềm desktop/mobile, nhiều version hỗ trợ.
+### GitFlow vận hành ra sao
+- {{main}} chỉ chứa code đã release (có tag); {{develop}} là nơi tích hợp.
+- {{feature/*}} tách từ develop; {{release/*}} tách ra để ổn định trước khi phát hành; {{hotfix/*}} tách từ main, merge về cả main và develop.
+- Ưu: kiểm soát phát hành rõ, hỗ trợ nhiều phiên bản. Nhược: nhiều nhánh sống lâu, merge hai chiều dễ quên, độ trễ từ commit tới production dài.
 
-### Trunk-based
-- Chỉ main + short-lived branch (≤ 1 ngày) + feature flag.
-- Merge nhỏ, thường xuyên; CI chạy mỗi commit.
-- Phù hợp: SaaS deploy liên tục.
+### Trunk-based vận hành ra sao
+- Mọi người tích hợp vào {{main}} ít nhất mỗi ngày qua MR nhỏ; CI chạy mỗi commit; main luôn deploy được.
+- Tính năng dở dang ẩn sau **feature flag** (cấu hình, Unleash, LaunchDarkly…), bật dần theo nhóm người dùng.
+- Hotfix: sửa trên main rồi deploy như mọi thay đổi khác; nếu cần vá bản cũ thì cherry-pick vào nhánh release ngắn hạn.
 
-### Quy tắc chung
-- Commit message conventional commits: feat/fix/chore.
-- MR nhỏ (< 400 dòng), review bắt buộc, CI green.
-- Branch protection: không push trực tiếp main.
-
-### Bảng so sánh
 | Tiêu chí | GitFlow | Trunk-based |
 |---|---|---|
-| Tần suất release | Tuần/tháng | Nhiều lần/ngày |
-| Độ phức tạp | Cao | Thấp |
-| Feature flag | Không bắt buộc | Bắt buộc |
-| Phù hợp team | Lớn, release cố định | Agile, CD |
+| Tần suất phát hành | Theo đợt (tuần/tháng) | Nhiều lần mỗi ngày |
+| Nhánh sống lâu | Nhiều | Gần như không |
+| Merge conflict | Lớn, dồn cuối | Nhỏ, liên tục |
+| Feature flag | Không bắt buộc | Bắt buộc với việc dở dang |
+| Hợp với | Mobile, on-premise, nhiều phiên bản | SaaS, microservice |
 
-### Trên production
-- Sai lầm: branch tồn tại hàng tuần → merge conflict lớn.
-- Kiểm tra: thời gian sống branch trung bình, số MR/ngày.
+### Quy tắc MR/commit tôi áp dụng
+- MR dưới khoảng 400 dòng thay đổi, một mục đích; có mô tả "vì sao" và cách test.
+- Branch protection: không push thẳng main, ít nhất 1 review, CI xanh (build, test, scan) mới được merge, nhánh phải cập nhật với main.
+- Commit theo Conventional Commits ({{feat:}}, {{fix:}}, {{chore:}}) để sinh changelog và tự tăng version.
+- Feature flag có **chủ sở hữu và ngày hết hạn**; xoá flag sau khi bật 100% vài tuần.
 
-> Senior tip: Trunk-based + feature flag cho phép dark launch và rollback bằng flag mà không revert code.`,
+### Ví dụ đời thực
+Team 8 dev backend dùng GitFlow: release 2 tuần một lần, ngày release thường mất cả buổi chiều xử lý conflict từ 10–15 nhánh feature sống trung bình 9 ngày; 1/3 lần release có hotfix trong 24 giờ. Chuyển sang trunk-based: nhánh sống trung bình 1,2 ngày, MR trung bình 180 dòng, deploy 3–5 lần mỗi ngày, tính năng lớn ẩn sau flag. Sau 3 tháng, lead time từ commit tới production giảm **từ 8 ngày xuống dưới 1 ngày**, tỉ lệ deploy gây sự cố giảm từ 30% xuống khoảng 8% (đo theo số deploy cần rollback/hotfix).
+
+### Pitfall
+- Gọi là trunk-based nhưng nhánh vẫn sống cả tuần.
+- Feature flag không bao giờ xoá → code đầy nhánh if chết, tổ hợp flag không ai test.
+- Trunk-based mà CI chậm 40 phút hoặc test không đáng tin → main hay đỏ, mọi người sợ merge.
+- Dùng GitFlow cho service chỉ có một phiên bản production → thêm nghi thức mà không thêm giá trị.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo cách sản phẩm được phát hành. Nếu phải phát hành theo đợt và duy trì nhiều phiên bản song song, như app mobile hay phần mềm cài tại khách hàng, thì GitFlow hợp lý vì có nhánh release và hotfix rõ ràng. Còn với service backend deploy liên tục, tôi chọn trunk-based: mọi người tích hợp vào main ít nhất mỗi ngày qua MR nhỏ, CI chạy mỗi commit, main luôn deploy được, việc dở dang thì ẩn sau feature flag. Quy tắc đi kèm là MR dưới khoảng 400 dòng, branch protection với review và CI xanh bắt buộc, Conventional Commits để sinh changelog, và mỗi feature flag có người chịu trách nhiệm và hạn xoá. Ở team trước, chuyển từ GitFlow sang trunk-based giúp lead time từ commit tới production giảm từ khoảng 8 ngày xuống dưới 1 ngày, và ngày release không còn là ngày giải quyết conflict."
+
+> Senior tip: đo hai con số trước khi tranh luận về mô hình nhánh: tuổi trung bình của nhánh khi merge và kích thước MR trung bình. Nhánh trên 3 ngày hoặc MR trên 800 dòng là vấn đề, dù team đang gọi quy trình của mình là gì.`,
     follow: [
       'Feature flag nên quản lý ở đâu và lifecycle ra sao?',
       'Làm sao xử lý hotfix trong trunk-based?',
@@ -7900,33 +8038,65 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'mid',
     q: 'GitLab CI: stages, jobs, cache vs artifacts, runner shell/docker và biến bảo mật masked/protected hoạt động thế nào?',
-    a: `**Tóm tắt:** Stage chạy tuần tự, job trong stage chạy song song; cache tăng tốc build, artifacts truyền kết quả giữa stage; runner thực thi; biến masked/protected che secret.
+    a: `**Tóm tắt:** GitLab CI chạy pipeline theo stage (tuần tự) và job (song song trong stage); cache tái dùng dependency giữa run, artifacts truyền file giữa stage; runner (shell/docker) thực thi; biến masked/protected che secret.
 
-### Stages & jobs
-- stages: build, test, deploy.
-- Job có script, image, rules.
+### Stage & job
+- stages khai báo trong .gitlab-ci.yml, ví dụ build, test, deploy; stage sau chỉ chạy khi stage trước pass.
+- Job trong cùng stage chạy song song, mỗi job có script, image, rules, timeout.
+- Dùng needs để DAG: job deploy không cần chờ toàn stage test nếu chỉ phụ thuộc build.
 
 ### Cache vs artifacts
-- cache: dependencies (Maven .m2) tái sử dụng giữa pipeline.
-- artifacts: file build/test report truyền stage sau, expire sau N ngày.
+- cache: thư mục dependency (Maven .m2, npm node_modules) lưu trên runner/storage, tái dùng giữa pipeline để build nhanh; key theo lock file (pom.xml hash).
+- artifacts: file kết quả build/test report cần truyền sang stage sau hoặc download; có expire_in (mặc định 30 ngày) để tiết kiệm storage.
+- Sai lầm: cache artifact lớn (target/) làm chậm; artifacts chứa secret.
 
 ### Runner
-- shared vs specific; executor shell/docker.
-- Docker executor: mỗi job trong container sạch.
+- shared runner (GitLab cung cấp) vs specific runner (tự host) cho workload nặng/bảo mật.
+- executor shell: chạy trên máy host, nhanh nhưng bẩn (state leak).
+- executor docker: mỗi job trong container sạch, image chỉ định (maven:3.9-eclipse-temurin-17).
+- Kubernetes executor: scale pod theo job.
 
 ### Biến bảo mật
-- CI/CD variables masked (không in log), protected (chỉ protected branch).
-- secret từ Vault/external.
+- CI/CD Variables: masked (giá trị không in ra log, thay bằng [MASKED]), protected (chỉ inject vào protected branch/tag).
+- Secret nên lấy từ Vault/external secrets, không hard-code.
+- Predefined variables: CI_COMMIT_SHA, CI_REGISTRY_IMAGE.
 
 ### Triển khai theo môi trường
-- environment: name, url.
-- manual approval: when: manual + rules.
+- environment: name, url; GitLab tạo deployment record và rollback UI.
+- when: manual + rules để gate production cần approval.
+- Canary/blue-green qua kubectl/helm trong script.
+
+### Ví dụ .gitlab-ci.yml
+~~~yaml
+stages: [build, test, deploy]
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+cache:
+  key: \${CI_COMMIT_REF_SLUG}
+  paths: [.m2/repository]
+build:
+  stage: build
+  image: maven:3.9-eclipse-temurin-17
+  script: mvn -B package -DskipTests
+  artifacts:
+    paths: [target/*.jar]
+    expire_in: 1 week
+test:
+  stage: test
+  script: mvn -B test
+deploy:
+  stage: deploy
+  environment: { name: production, url: https://app.example.com }
+  when: manual
+  script: kubectl set image deployment/app app=$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+~~~
 
 ### Trên production
-- Sai lầm: cache chứa secret hoặc artifact quá lớn.
-- Kiểm tra: pipeline duration, cache hit rate.
+- Sai lầm: cache chứa secret hoặc artifact quá lớn; runner shared bị noisy neighbor.
+- Kiểm tra: pipeline duration, cache hit rate (GitLab metrics), artifact storage.
+- Bảo mật: protected variables, runner tag restrict, audit log.
 
-> Senior tip: Dùng needs để DAG pipeline, giảm thời gian; artifacts expire để tiết kiệm storage.`,
+> Senior tip: Dùng needs để DAG pipeline giảm thời gian; artifacts expire để tiết kiệm storage; tách build/test/deploy image để cache layer hiệu quả.`,
     follow: ['Cache key nên thiết kế thế nào cho Maven/Gradle?', 'Làm sao tránh leak secret trong log?', 'Rollback pipeline khi deploy fail?'],
     tags: ['GitLabCI', 'Pipeline', 'Secrets']
   }
@@ -7935,30 +8105,50 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'Jenkinsfile declarative: agent, stages, shared library; so sánh với GitLab CI/GitHub Actions?',
-    a: `**Tóm tắt:** Jenkins tự host, declarative pipeline định nghĩa stage/agent; shared library tái sử dụng; so với GitLab/GitHub Actions là SaaS/integrated.
+    a: `**Tóm tắt:** Jenkins là CI server tự host, pipeline khai báo trong Jenkinsfile (declarative/scripted); agent chỉ định nơi chạy; shared library tái sử dụng logic; so với GitLab CI/GitHub Actions là dịch vụ tích hợp SaaS.
 
 ### Jenkinsfile declarative
-- pipeline { agent any; stages { stage('Build'){ steps { sh 'mvn...' } } } }
-- agent: any/label/docker.
-- post: always/success/failure.
+- pipeline { agent any; stages { stage('Build'){ steps { sh 'mvn -B package' } } } }
+- agent: any, label, docker, kubernetes; quyết định nơi job chạy.
+- post: always/success/failure/unstable để cleanup/notify.
+- environment, credentials(), options (timeout, retry).
 
 ### Shared library
-- vars/, src/; @Library('lib') _.
-- Tái sử dụng across repos.
+- Repo chứa vars/ (global functions) và src/ (classes); nạp bằng @Library('lib') _.
+- Version theo branch/tag; tái sử dụng across repos, tránh copy-paste.
+- Unit test library bằng Jenkins Pipeline Unit.
 
 ### So sánh
 | Tiêu chí | Jenkins | GitLab CI | GitHub Actions |
 |---|---|---|---|
-| Hosting | Tự quản | SaaS/self | SaaS |
-| Config | Jenkinsfile | .gitlab-ci.yml | workflow yaml |
-| Plugin | Rất nhiều | Built-in | Marketplace |
-| Secret | Credentials store | Variables | Secrets |
+| Hosting | Tự quản (controller + agent) | SaaS/self-managed | SaaS |
+| Config | Jenkinsfile | .gitlab-ci.yml | .github/workflows/*.yml |
+| Plugin | Rất nhiều (plugin hell risk) | Built-in phong phú | Marketplace actions |
+| Secret | Credentials store + binding | CI/CD Variables | Repository/Org Secrets |
+| Scale | Controller bottleneck nếu không phân tán | Managed runners | Hosted runners + self-hosted |
+
+### Ví dụ Jenkinsfile
+~~~groovy
+pipeline {
+  agent { docker { image 'maven:3.9-eclipse-temurin-17' } }
+  stages {
+    stage('Build') { steps { sh 'mvn -B package -DskipTests' } }
+    stage('Test') { steps { sh 'mvn -B test' } }
+    stage('Deploy') {
+      when { branch 'main' }
+      steps { sh 'kubectl apply -f k8s/' }
+    }
+  }
+  post { always { junit 'target/surefire-reports/*.xml' } }
+}
+~~~
 
 ### Trên production
-- Sai lầm: Jenkins controller bottleneck, plugin conflict.
-- Kiểm tra: queue time, agent utilization.
+- Sai lầm: Jenkins controller bottleneck, plugin conflict/version drift, agent offline.
+- Kiểm tra: queue time, agent utilization, plugin update cadence.
+- Bảo mật: least privilege credentials, RBAC, audit.
 
-> Senior tip: Jenkins phù hợp enterprise legacy; greenfield ưu tiên GitHub Actions/GitLab CI.`,
+> Senior tip: Jenkins phù hợp enterprise legacy/complex on-prem; greenfield ưu tiên GitHub Actions/GitLab CI để giảm vận hành; nếu dùng Jenkins, giữ plugin tối thiểu và version lock.`,
     follow: ['Khi nào chọn self-hosted runner?', 'Cách version shared library?', 'Blue ocean vs classic UI?'],
     tags: ['Jenkins', 'CI', 'Comparison']
   }
@@ -7967,29 +8157,43 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'SonarQube quality gate: coverage, code smell, chặn merge khi không đạt; cấu hình cho Maven/Gradle?',
-    a: `**Tóm tắt:** SonarQube phân tích code và áp dụng quality gate (coverage, bugs, vulnerabilities); fail gate chặn merge qua webhook/PR decoration.
+    a: `**Tóm tắt:** SonarQube scanner phân tích code gửi report lên server; quality gate áp điều kiện trên metric (coverage, bugs, vulnerabilities, smells); fail gate chặn merge qua PR decoration + required status check.
 
 ### Cơ chế
-- Scanner gửi report lên server.
-- Quality gate: conditions on metrics.
-- PR decoration comment trên MR/PR.
+- Scanner (Maven/Gradle/CLI) chạy trong CI, gửi report + source lên SonarQube server.
+- Server tính metric và so với quality gate profile.
+- PR decoration: comment kết quả + link; required check fail nếu gate fail.
+- Phân biệt "Overall code" vs "New code" (leak period) để không bị legacy debt chặn.
 
 ### Maven
-- mvn sonar:sonar -Dsonar.projectKey=...
-- jacoco agent để coverage.
+- mvn sonar:sonar -Dsonar.projectKey=app -Dsonar.host.url=... -Dsonar.token=...
+- Coverage: jacoco agent (prepare-agent) + report; sonar.jacoco.reportPaths.
+- Fail build nếu gate fail: sonar.qualitygate.wait=true.
 
 ### Gradle
-- sonarqube plugin, jacoco.
+- plugin org.sonarqube; gradle sonarqube.
+- jacoco plugin generate report; sonar.coverage.jacoco.xmlReportPaths.
 
 ### Chặn merge
-- GitLab: require pipeline success + external status check.
-- GitHub: branch protection required checks.
+- GitLab: require pipeline success + external status check "SonarQube" trên protected branch.
+- GitHub: branch protection required checks; SonarCloud PR decoration.
+- Ngưỡng thường: new code coverage ≥ 80%, 0 new blocker/critical.
+
+### Ví dụ Maven
+~~~bash
+mvn -B verify sonar:sonar \\
+  -Dsonar.projectKey=myapp \\
+  -Dsonar.host.url=https://sonar.example.com \\
+  -Dsonar.token=$SONAR_TOKEN \\
+  -Dsonar.qualitygate.wait=true
+~~~
 
 ### Trên production
-- Sai lầm: coverage threshold 0 ban đầu rồi không tăng.
-- Kiểm tra: gate pass rate, new code coverage.
+- Sai lầm: coverage threshold 0 ban đầu rồi không tăng; gate chỉ warning không block.
+- Kiểm tra: gate pass rate, new code coverage trend, false positive count.
+- Bảo mật: token masked, SonarQube HTTPS, RBAC.
 
-> Senior tip: Dùng "new code" period để tránh legacy debt chặn delivery.`,
+> Senior tip: Dùng "new code" period (leak period) để tránh legacy debt chặn delivery; tăng ngưỡng coverage dần theo quý.`,
     follow: ['Làm sao xử lý false positive?', 'Coverage nên đo unit hay integration?', 'SonarLint trong IDE?'],
     tags: ['SonarQube', 'QualityGate', 'Maven', 'Gradle']
   }
@@ -7998,34 +8202,55 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'Build image Java trong pipeline: multi-stage Dockerfile, layer cache, tag theo commit SHA, đẩy lên registry và quét lỗ hổng Trivy?',
-    a: `**Tóm tắt:** Multi-stage giảm kích thước; layer cache tăng tốc; tag SHA truy vết; push Harbor/ECR; Trivy quét CVE.
+    a: `**Tóm tắt:** Build image Java bằng multi-stage Dockerfile (build stage Maven/Gradle, runtime stage JRE slim) để giảm size; layer cache bằng cách copy pom trước download deps; tag theo commit SHA; push Harbor/ECR; Trivy quét CVE và fail pipeline nếu critical.
 
 ### Multi-stage Dockerfile
-- Build stage: Maven/Gradle.
-- Runtime stage: JRE slim.
-- COPY --from=build.
+- Build stage: image maven/gradle, compile + package.
+- Runtime stage: eclipse-temurin JRE slim hoặc distroless; COPY --from=build target/*.jar app.jar.
+- Kết quả image chỉ chứa JRE + jar, không có Maven/source.
 
 ### Layer cache
-- Copy pom trước, download deps, rồi copy source.
-- BuildKit cache mounts.
+- Copy pom.xml/build.gradle trước, RUN mvn dependency:go-offline, rồi copy source → tận dụng cache khi chỉ đổi code.
+- BuildKit cache mounts: --mount=type=cache,target=/root/.m2 để cache Maven repo giữa build.
+- Thứ tự instruction: ít thay đổi trước, thay đổi nhiều sau.
 
 ### Tag
-- image:tag = commit SHA short + version.
-- latest chỉ cho dev.
+- image:tag = commit SHA short (7-8 ký tự) + semantic version (1.2.3).
+- latest chỉ dùng dev; production luôn tag cụ thể để rollback.
+- Reproducible: build args (BUILD_DATE, VCS_REF) cho OCI labels.
 
 ### Registry
-- Harbor/ECR; docker login with token.
-- Retention policy.
+- Harbor/ECR/GitLab Registry; docker login với robot account/token (masked variable).
+- Retention policy: giữ N version gần nhất, xóa untagged.
+- Image signing: Cosign (sigstore) cho supply chain security.
 
 ### Trivy
-- trivy image --severity HIGH,CRITICAL.
-- Fail pipeline nếu CVE critical.
+- trivy image --severity HIGH,CRITICAL --exit-code 1 image:tag.
+- Quét cả OS package và Java dependency (qua Trivy Java analyzer).
+- Fail pipeline nếu CVE critical; exception list có hạn + justification.
+
+### Ví dụ Dockerfile
+~~~dockerfile
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -B dependency:go-offline
+COPY src ./src
+RUN mvn -B package -DskipTests
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+USER 1000
+ENTRYPOINT ["java","-jar","app.jar"]
+~~~
 
 ### Trên production
-- Sai lầm: root user, secret trong layer.
-- Kiểm tra: image size, scan report.
+- Sai lầm: root user, secret trong layer (ENV password), image base cũ.
+- Kiểm tra: image size, scan report, không có secret (trivy secret scan).
+- Base image update strategy: rebuild định kỳ theo base image digest.
 
-> Senior tip: Dùng distroless JRE để giảm attack surface.`,
+> Senior tip: Dùng distroless JRE để giảm attack surface; tag theo SHA để truy vết 1:1 với commit; bật image signing + verify ở deploy.`,
     follow: ['Làm sao cache Maven trong Docker build?', 'Image signing Cosign?', 'Base image update strategy?'],
     tags: ['Docker', 'CI', 'Trivy', 'Registry']
   }
@@ -8034,26 +8259,41 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'senior',
     q: 'Triển khai bán tự động vs tự động hoàn toàn và rollback nhanh khi lỗi?',
-    a: `**Tóm tắt:** Bán tự động cần manual approval cho prod; tự động hoàn toàn deploy mỗi commit; rollback qua previous image/tag hoặc Helm rollback.
+    a: `**Tóm tắt:** Bán tự động (semi-auto) cần manual approval cho production; tự động hoàn toàn (full CD) deploy mỗi commit sau test; rollback nhanh qua previous image tag, Helm rollback hoặc kubectl rollout undo; migration DB phải backward-compatible.
 
 ### Bán tự động
-- Auto deploy dev/staging; manual prod.
-- Phù hợp regulated environments.
+- Auto deploy dev/staging; production cần approval (when: manual hoặc environment approval).
+- Phù hợp regulated environment (finance, healthcare) cần audit/change advisory board.
+- Giảm rủi ro nhưng chậm feedback.
 
 ### Tự động hoàn toàn
-- CD pipeline deploy prod sau test.
-- Cần feature flag, monitoring, auto rollback.
+- CD pipeline deploy production sau test pass + gate; mỗi commit = deploy.
+- Cần feature flag, monitoring, auto rollback để an toàn.
+- DORA elite: deploy frequency cao, lead time thấp.
 
 ### Rollback
-- Kubernetes: kubectl rollout undo.
-- Helm: helm rollback.
-- Image tag previous.
+- Kubernetes: kubectl rollout undo deployment/app; hoặc set image về previous tag.
+- Helm: helm rollback release revision.
+- ArgoCD: sync về git commit trước.
+- Database: expand/contract migration để rollback code không phá schema (add column nullable trước, drop sau).
+
+### Ví dụ rollback
+~~~bash
+# Kubernetes
+kubectl rollout undo deployment/app -n prod
+kubectl rollout status deployment/app -n prod
+
+# Helm
+helm history app -n prod
+helm rollback app 42 -n prod
+~~~
 
 ### Trên production
-- Sai lầm: không có runbook rollback, migration DB không tương thích.
-- Kiểm tra: rollback time, SLO.
+- Sai lầm: không có runbook rollback, migration DB không tương thích, không test rollback.
+- Kiểm tra: rollback time (MTTR), SLO, deploy success rate.
+- Feature flag vs deploy rollback: flag tắt feature nhanh hơn rollback image.
 
-> Senior tip: Expand/contract migration để rollback an toàn.`,
+> Senior tip: Expand/contract migration để rollback an toàn; luôn giữ previous image tag và test rollback trong staging; đo thời gian rollback < 5 phút.`,
     follow: ['Database migration rollback strategy?', 'Feature flag vs deploy rollback?', 'Canary vs blue-green?'],
     tags: ['CD', 'Rollback', 'Deployment']
   }
@@ -8062,28 +8302,46 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'lead',
     q: 'Release management: release branch, hotfix, versioning SemVer và coordination nhiều service?',
-    a: `**Tóm tắt:** SemVer cho library/API; release branch stabilize; hotfix từ main; coordination qua contract tests và changelog.
+    a: `**Tóm tắt:** SemVer cho library/API (MAJOR.MINOR.PATCH); release branch stabilize trước release; hotfix từ main; coordination nhiều service qua versioned API, contract test và changelog tự động.
 
 ### SemVer
-- MAJOR.MINOR.PATCH.
-- Breaking change → MAJOR.
+- MAJOR: breaking change (API incompatible).
+- MINOR: feature mới backward-compatible.
+- PATCH: bug fix.
+- Pre-release (1.2.3-rc.1) và build metadata.
 
 ### Release branch
-- release/1.2.0 từ develop/main.
-- Bug fix cherry-pick.
+- release/1.2.0 từ develop/main khi feature freeze.
+- Chỉ bug fix cherry-pick vào release branch; merge back vào main.
+- Tag v1.2.0 khi release.
 
 ### Hotfix
-- hotfix/* từ main, merge main + develop.
+- hotfix/* từ main (production), fix minimal, merge vào main và develop.
+- Patch version bump (1.2.1).
+- Trigger pipeline release tự động.
 
-### Multi-service
-- Independent deploy with versioned API.
-- Contract testing.
+### Multi-service coordination
+- Independent deploy với versioned API (URL /v1, /v2) để không lock-step.
+- Contract testing (Pact) giữa consumer/provider để phát hiện breaking change trước deploy.
+- Changelog tự động từ conventional commits (semantic-release).
+- API deprecation policy: announce, sunset date, monitoring usage.
+
+### Ví dụ conventional commit + release
+~~~bash
+# commit
+feat(order): add cancel endpoint
+fix(payment): handle timeout retry
+
+# semantic-release tự bump minor/major và publish
+npx semantic-release
+~~~
 
 ### Trên production
-- Sai lầm: release branch sống lâu, drift.
-- Kiểm tra: release frequency, hotfix count.
+- Sai lầm: release branch sống lâu gây drift; hotfix không merge back.
+- Kiểm tra: release frequency, hotfix count, lead time.
+- Trunk-based + feature flag giảm nhu cầu release branch.
 
-> Senior tip: Trunk-based + feature flag giảm nhu cầu release branch.`,
+> Senior tip: Trunk-based development + feature flag cho phần lớn team; giữ release branch chỉ cho regulated product; contract test bắt buộc cho multi-service.`,
     follow: ['Làm sao communicate breaking change?', 'Deprecation policy?', 'Release notes automation?'],
     tags: ['Release', 'SemVer', 'Hotfix', 'Leadership']
   }
@@ -8092,28 +8350,45 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'lead',
     q: 'Bảo mật pipeline: secret scanning, dependency scanning, SAST/DAST và policy as code?',
-    a: `**Tóm tắt:** Pipeline phải scan secret, dependency, code; policy as code enforce; least privilege runner.
+    a: `**Tóm tắt:** Pipeline bảo mật gồm secret scanning (gitleaks), dependency scanning (OWASP/Snyk + SBOM), SAST (SonarQube/Semgrep), DAST (OWASP ZAP); policy as code (OPA/Conftest) enforce rule; runner least privilege; scan phải block, không chỉ report.
 
 ### Secret scanning
-- gitleaks/trufflehog.
-- Pre-commit hooks.
+- gitleaks/trufflehog quét commit và working tree tìm API key, token, password.
+- Pre-commit hook chặn commit secret trước khi push.
+- Nếu leak: revoke key, rotate, scrub history (git filter-repo) + notify.
 
 ### Dependency scanning
-- OWASP Dependency-Check, Snyk.
-- SBOM.
+- OWASP Dependency-Check, Snyk, Trivy fs; so CVE với NVD.
+- SBOM (CycloneDX/SPDX) lưu artifact để audit.
+- Fail nếu CVE critical/high chưa được accept (exception có expiry).
 
 ### SAST/DAST
-- SonarQube SAST; OWASP ZAP DAST.
+- SAST: SonarQube, Semgrep phân tích source tìm SQL injection, XSS, insecure deserialization.
+- DAST: OWASP ZAP scan running app (staging) tìm runtime vulnerability.
+- IAST: agent trong app kết hợp SAST+DAST.
 
 ### Policy as code
-- OPA/Conftest.
-- Enforce image signature, no root.
+- OPA/Conftest kiểm tra Dockerfile/K8s manifest: no root user, image signed, resource limits.
+- Enforce ở CI gate; policy version-controlled.
+- Admission controller (Kyverno/Gatekeeper) enforce runtime.
+
+### Ví dụ pipeline security
+~~~yaml
+security:
+  stage: test
+  script:
+    - gitleaks detect --source . --exit-code 1
+    - trivy fs --severity HIGH,CRITICAL --exit-code 1 .
+    - semgrep ci --config auto
+  allow_failure: false
+~~~
 
 ### Trên production
-- Sai lầm: scan chỉ report không block.
-- Kiểm tra: findings trend, MTTR.
+- Sai lầm: scan chỉ report không block; alert fatigue; exception vĩnh viễn.
+- Kiểm tra: findings trend, MTTR, % pipeline block.
+- Shift-left: scan sớm trong PR, không chỉ pipeline main.
 
-> Senior tip: Shift-left: scan sớm trong PR, không chỉ pipeline main.`,
+> Senior tip: Secret scanning + dependency scanning là baseline bắt buộc; policy as code turning security into automated gate; review exception list định kỳ.`,
     follow: ['SBOM nên lưu ở đâu?', 'Image signing verification runtime?', 'Compliance audit?'],
     tags: ['Security', 'Pipeline', 'SAST', 'Policy']
   }
@@ -8124,58 +8399,79 @@ Không có quy ước → conflict lớn, review khó, release hỗn loạn. Wor
     topic: 'devops',
     level: 'mid',
     q: 'Prometheus + node_exporter + Micrometer (Spring Boot Actuator) + Grafana giám sát app Java như thế nào?',
-    a: `**Tóm tắt:** Prometheus kéo (scrape) metric từ node_exporter (máy) và Actuator (app Java) rồi Grafana vẽ biểu đồ; metric Java quan trọng: JVM heap/GC, thread, HTTP p95/p99, Hikari pool.
+    a: `**Tóm tắt:** Prometheus **kéo (scrape)** metric theo chu kỳ từ các endpoint: **node_exporter** cho máy (CPU, RAM, disk, network) và **Spring Boot Actuator + Micrometer** cho ứng dụng ({{/actuator/prometheus}}: JVM, HTTP, Hikari, metric nghiệp vụ). Grafana truy vấn Prometheus bằng PromQL để vẽ dashboard và cảnh báo. Ba điều quyết định chất lượng: **histogram để có p95/p99**, **tag chuẩn** (application, env), và **kiểm soát cardinality**.
 
-### Các thành phần
-- **Prometheus**: time-series DB, tự scrape endpoint theo chu kỳ (pull model).
-- **node_exporter**: daemon trên host, xuất metric CPU/RAM/disk/network.
-- **Micrometer + Spring Boot Actuator**: app Java xuất metric JVM và HTTP tại {{/actuator/prometheus}}.
-- **Grafana**: dashboard, alert rule, biểu đồ.
+### Luồng dữ liệu
+~~~seq
+title: Metric từ app Java tới dashboard
+actors: Prometheus | App | NodeExp | Grafana
+Prometheus -> App: GET /actuator/prometheus (mỗi 15s)
+App --> Prometheus: jvm_*, http_server_requests_*, hikaricp_*
+Prometheus -> NodeExp: GET :9100/metrics
+NodeExp --> Prometheus: node_cpu_*, node_memory_*
+Grafana -> Prometheus: PromQL query
+Prometheus --> Grafana: chuỗi thời gian
+~~~
+Mô hình **pull**: Prometheus biết target nào sống hay chết ({{up == 0}}); trên Kubernetes target được phát hiện tự động qua service discovery hoặc ServiceMonitor (Prometheus Operator).
 
-### Cài Actuator
+### Cấu hình Spring Boot 3
 ~~~yaml
-# application.yml
+# cần dependency io.micrometer:micrometer-registry-prometheus
 management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,prometheus
+  endpoints.web.exposure.include: health,info,prometheus
   metrics:
     tags:
-      application: order-service
+      application: order-service      # tag chung cho mọi metric
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true    # xuất bucket để tính p95/p99 ở Prometheus
 ~~~
-~~~xml
-<!-- pom.xml -->
-<dependency>
-  <groupId>io.micrometer</groupId>
-  <artifactId>micrometer-registry-prometheus</artifactId>
-</dependency>
-~~~
+Không bật histogram thì chỉ có count/sum/max — tính được trung bình nhưng **không** tính được p99 gộp nhiều pod.
 
-### Prometheus scrape config
-~~~yaml
-scrape_configs:
-  - job_name: 'node'
-    static_configs:
-      - targets: ['node-exporter:9100']
-  - job_name: 'springboot'
-    metrics_path: '/actuator/prometheus'
-    static_configs:
-      - targets: ['order-service:8080']
+### Metric nghiệp vụ tự định nghĩa
+~~~java
+@Component
+class OrderMetrics {
+  private final Counter placed;
+  OrderMetrics(MeterRegistry r) {
+    // tag có tập giá trị nhỏ, cố định: channel = web|app|pos
+    placed = Counter.builder("orders.placed").tag("channel", "web").register(r);
+  }
+  void onPlaced() { placed.increment(); }   // xuất ra: orders_placed_total
+}
 ~~~
 
-### Metric Java quan trọng
-- {{jvm_memory_used_bytes}} / {{jvm_memory_max_bytes}} (heap).
-- {{jvm_gc_pause_seconds}} (GC pause).
-- {{jvm_threads_live_threads}}.
-- {{http_server_requests_seconds}} histogram → p95/p99.
-- {{hikaricp_connections_active}} / {{hikaricp_connections_max}}.
+### PromQL cần biết
+~~~text
+p99 theo service:
+histogram_quantile(0.99, sum by (le, application) (rate(http_server_requests_seconds_bucket[5m])))
+Heap đang dùng / tối đa:
+sum(jvm_memory_used_bytes{area="heap"}) / sum(jvm_memory_max_bytes{area="heap"})
+Pool sắp cạn:
+hikaricp_connections_pending > 0
+~~~
 
-### Trên production
-- Sai lầm: chỉ xem CPU, bỏ qua GC pause và Hikari pool.
-- Kiểm tra: dashboard JVM + alert khi heap > 85% liên tục 5 phút.
+### Dashboard tối thiểu cho mỗi service
+| Nhóm | Metric |
+|---|---|
+| Traffic & lỗi | rps, tỉ lệ 5xx, p50/p95/p99 theo URI |
+| JVM | heap sau GC, {{jvm_gc_pause_seconds}}, số thread |
+| Pool | Hikari active/idle/pending, thời gian lấy connection |
+| Máy/Pod | CPU, CPU throttling, memory so với limit |
 
-> Senior tip: Tag metric bằng application + env để filter dashboard; cardinality cao (user id) sẽ làm Prometheus nổ bộ nhớ.`,
+### Ví dụ đời thực
+Một team có Prometheus nhưng chỉ xem CPU/RAM. Sự cố p99 tăng gấp 4 lần kéo dài 2 giờ vì không ai thấy nguyên nhân. Sau đó họ bật histogram cho {{http.server.requests}}, thêm panel Hikari pending và GC pause. Lần tương tự tiếp theo, panel Hikari pending > 0 chỉ ra pool cạn ngay trong 5 phút đầu. Một lần khác, Prometheus tốn 14GB RAM vì ai đó thêm tag {{userId}} vào metric: 2 triệu chuỗi thời gian mới; xoá tag đó, bộ nhớ về 3GB.
+
+### Pitfall
+- Tag có giá trị không giới hạn (userId, orderId, URL có id) → **bùng nổ cardinality**. Micrometer dùng URI template (dạng /orders/{id}) nên an toàn, trừ khi bạn tự build tag từ path thật.
+- Lộ {{/actuator}} ra Internet — chỉ mở trên cổng quản trị nội bộ.
+- Lấy trung bình của p99 giữa các pod — sai về toán học; phải tính từ histogram.
+- Scrape interval quá ngắn với hàng nghìn target → Prometheus quá tải.
+
+### Trả lời mẫu khi phỏng vấn
+"Prometheus kéo metric theo chu kỳ từ các endpoint. node_exporter cung cấp metric máy, còn ứng dụng Spring Boot 3 thêm micrometer-registry-prometheus và mở endpoint actuator/prometheus, xuất sẵn metric JVM, HTTP, Hikari. Grafana truy vấn bằng PromQL để vẽ dashboard và cảnh báo. Có ba điều tôi luôn làm. Một là bật percentiles-histogram cho http.server.requests, vì không có bucket thì không tính được p99 gộp nhiều pod. Hai là tag chuẩn như application và env để lọc. Ba là kiểm soát cardinality: không bao giờ đưa userId hay orderId vào tag. Dashboard tối thiểu của tôi có rps, tỉ lệ lỗi, p99 theo URI, heap sau GC, GC pause, Hikari pending và CPU throttling. Tôi từng gặp Prometheus ăn 14GB RAM chỉ vì một tag userId tạo ra hai triệu chuỗi thời gian."
+
+> Senior tip: thêm một panel "Hikari pending" và một panel "CPU throttling" vào mọi dashboard service ngay từ đầu. Hai panel này giải thích nhiều sự cố latency hơn mọi biểu đồ CPU/RAM cộng lại.`,
     follow: ['Pull vs push metric?', 'Cardinality là gì?', 'Prometheus retention bao lâu?'],
     tags: ['Prometheus', 'Grafana', 'Micrometer', 'Observability']
   }
@@ -8185,42 +8481,57 @@ scrape_configs:
     topic: 'devops',
     level: 'mid',
     q: 'Alertmanager gửi Telegram/Slack, tránh alert fatigue, SLO-based alert như thế nào?',
-    a: `**Tóm tắt:** Alertmanager nhóm và định tuyến alert; tránh fatigue bằng ngưỡng hợp lý, for:, grouping; SLO-based alert theo error budget thay vì ngưỡng tĩnh.
+    a: `**Tóm tắt:** Alertmanager nhận alert từ Prometheus, **gộp** (group), **khử trùng** (dedupe), **dập** (inhibit) và **định tuyến** (route) tới Slack/Telegram/PagerDuty. Chống alert fatigue bằng nguyên tắc: **chỉ gọi người khi người dùng đang hoặc sắp bị ảnh hưởng và cần hành động ngay**; mọi thứ khác thành ticket hoặc dashboard. Alert dựa trên SLO (tỉ lệ lỗi, độ trễ người dùng cảm nhận) thay cho ngưỡng nguyên nhân như "CPU > 80%".
 
-### Alertmanager
-- Nhận alert từ Prometheus, dedupe, group, route tới receiver (Slack/Telegram/PagerDuty).
-- Inhibit: alert cha dập alert con.
-- Silence: tắt tạm thời khi bảo trì.
+### Alertmanager làm gì với một alert
+1. **Group**: 30 pod cùng lỗi → một tin nhắn "OrderService: 30 instance", gom theo {{group_by: [alertname, service]}}.
+2. **Chờ và nhắc lại**: {{group_wait}} (chờ gom), {{group_interval}} (gửi cập nhật), {{repeat_interval}} (nhắc lại nếu chưa xử lý).
+3. **Inhibit**: khi alert "cluster mất kết nối DB" đang bật, dập các alert "API lỗi" phát sinh từ nó.
+4. **Silence**: tắt có thời hạn khi bảo trì, kèm người tạo và lý do.
+5. **Route** theo nhãn: {{severity=page}} → PagerDuty/điện thoại; {{severity=ticket}} → kênh Slack của team.
 
-### Ví dụ rule
 ~~~yaml
-groups:
-  - name: slo
-    rules:
-      - alert: HighErrorRate
-        expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m])) > 0.01
-        for: 10m
-        labels:
-          severity: page
-        annotations:
-          summary: "Error rate > 1% trong 10 phút"
+route:
+  receiver: slack-team
+  group_by: [alertname, service]
+  group_wait: 30s
+  repeat_interval: 4h
+  routes:
+    - matchers: [ severity="page" ]
+      receiver: pagerduty-oncall
+inhibit_rules:
+  - source_matchers: [ alertname="DatabaseDown" ]
+    target_matchers: [ severity="page" ]
+    equal: [ cluster ]
 ~~~
 
-### for: và ngưỡng
-- {{for:}} tránh flapping (alert phải đúng liên tục N phút mới fire).
-- Ngưỡng: đặt theo SLO, không quá nhạy.
-- Group by service để tránh spam.
+### Vì sao alert fatigue nguy hiểm
+Khi 90% alert là nhiễu, người trực học cách bỏ qua — và bỏ qua luôn alert thật. Các nguồn nhiễu hay gặp: ngưỡng tĩnh theo nguyên nhân (CPU 80% nhưng người dùng không sao), không có {{for:}} nên alert nhấp nháy, alert không ai sở hữu, alert không có hướng dẫn xử lý.
 
-### SLO-based alert
-- SLO: 99.9% availability → error budget 0.1%.
-- Alert khi đốt error budget nhanh (burn rate) thay vì CPU > 80%.
-- Multi-window: 1h + 6h burn rate.
+### Quy tắc viết một alert tốt
+- **Triệu chứng hơn nguyên nhân**: "tỉ lệ lỗi checkout > 2%" thay vì "CPU cao". Nguyên nhân để trên dashboard.
+- Có {{for: 5m}} hoặc dài hơn để bỏ dao động ngắn.
+- Mỗi alert có **runbook link**, chủ sở hữu, mức độ.
+- Alert phải **hành động được**: nếu câu trả lời là "chờ xem" thì đó không phải alert gọi người.
+- Ngưỡng từ SLO; với SLO thì dùng **burn rate** (tốc độ tiêu error budget) thay ngưỡng cố định (xem devops-110).
 
-### Trên production
-- Sai lầm: alert mọi metric → on-call mệt, bỏ qua alert thật.
-- Kiểm tra: alert firing count, MTTA, false positive rate.
+### Telegram/Slack trong thực tế
+- Slack: receiver {{slack_configs}} với webhook; Telegram: receiver {{telegram_configs}} (có sẵn từ Alertmanager 0.24) với bot token và chat id.
+- Kênh "page" và kênh "ticket" tách riêng; kênh page chỉ dành cho việc cần làm ngay.
 
-> Senior tip: Mỗi alert phải có runbook link trong annotation; alert không có hành động = noise.`,
+### Ví dụ đời thực
+Team on-call nhận trung bình 140 alert mỗi tuần, chỉ 9 cái cần hành động; một sự cố thật bị trễ 40 phút vì chìm giữa nhiễu. Rà lại: xoá 31 rule CPU/RAM/disk ngưỡng tĩnh (chuyển thành dashboard), thêm {{for}} cho mọi rule, gom theo service, inhibit theo cluster, thay bằng 6 alert SLO cho 3 hành trình chính (đăng nhập, tìm kiếm, thanh toán). Kết quả: còn khoảng 12 alert/tuần, 10 cái cần hành động; thời gian phản hồi trung bình giảm từ 25 phút xuống 6 phút.
+
+### Pitfall
+- Gửi mọi alert vào một kênh chung → không ai đọc.
+- Silence không thời hạn rồi quên → mất cảnh báo thật nhiều tuần.
+- Alert dựa trên metric có thể biến mất (pod chết thì không còn metric) mà không có alert {{absent()}} hoặc {{up == 0}}.
+- Không review alert định kỳ.
+
+### Trả lời mẫu khi phỏng vấn
+"Alertmanager nhận alert từ Prometheus rồi gộp, khử trùng, dập và định tuyến. Gộp theo service để ba mươi pod lỗi thành một tin nhắn; inhibit để khi DB chết thì không bắn thêm hàng chục alert API; silence có thời hạn khi bảo trì; route theo mức độ: page thì gọi người trực, ticket thì vào kênh Slack của team. Để chống alert fatigue, tôi theo nguyên tắc chỉ gọi người khi người dùng đang hoặc sắp bị ảnh hưởng và cần hành động ngay. Vì vậy tôi alert theo triệu chứng như tỉ lệ lỗi hay độ trễ của hành trình chính, dựa trên SLO và burn rate, còn CPU hay RAM để trên dashboard. Mỗi alert có for để bỏ dao động, có runbook và chủ sở hữu. Ở team trước, rà lại theo cách này giảm từ khoảng 140 xuống 12 alert mỗi tuần, và thời gian phản hồi giảm từ 25 xuống 6 phút."
+
+> Senior tip: mỗi tháng xuất danh sách alert đã bắn kèm cột "có hành động gì không". Alert nào ba tháng liền không dẫn tới hành động thì xoá hoặc hạ xuống ticket — đây là cách rẻ nhất giữ cho on-call còn đáng tin.`,
     follow: ['PagerDuty escalation?', 'Silence vs inhibit?', 'Burn rate là gì?'],
     tags: ['Alertmanager', 'SLO', 'Alerting']
   }
@@ -8230,42 +8541,53 @@ groups:
     topic: 'devops',
     level: 'senior',
     q: 'Logging tập trung: ELK/EFK vs Loki, log JSON, correlation id, retention và chi phí?',
-    a: `**Tóm tắt:** Log có cấu trúc JSON + correlation id để truy vết; ELK mạnh search nhưng nặng/đắt; Loki rẻ và nhanh cho label-based; retention theo tier để kiểm soát chi phí.
+    a: `**Tóm tắt:** Logging tập trung cần ba thứ: **log có cấu trúc (JSON)** để truy vấn theo trường, **correlation/trace id** để nối mọi dòng log của một request qua nhiều service, và **chiến lược lưu trữ theo giá trị** (log nóng ngắn hạn, log lạnh rẻ, log debug ít). **ELK/EFK** đánh index toàn văn — tìm kiếm mạnh nhưng tốn tài nguyên; **Loki** chỉ đánh index nhãn và lưu nội dung nén trên object storage — rẻ hơn nhiều nhưng truy vấn văn bản chậm hơn.
 
-### Log có cấu trúc
-- JSON: timestamp, level, service, traceId, message, fields.
-- Spring: logback + logstash-encoder.
-~~~xml
-<dependency>
-  <groupId>net.logstash.logback</groupId>
-  <artifactId>logstash-logback-encoder</artifactId>
-</dependency>
+### Log JSON trong Spring Boot 3
+Từ Spring Boot 3.4 có structured logging sẵn:
+~~~yaml
+logging:
+  structured:
+    format:
+      console: ecs        # hoặc logstash, gelf; in mỗi dòng là một JSON
 ~~~
-~~~xml
-<appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
-  <encoder class="net.logstash.logback.encoder.LogstashEncoder"/>
-</appender>
-~~~
+Phiên bản cũ hơn dùng logstash-logback-encoder. Kết quả là các trường {{level}}, {{logger}}, {{message}}, {{traceId}}, {{spanId}}, {{service}} truy vấn được trực tiếp, không cần regex.
 
-### Correlation id
-- Filter thêm X-Request-Id vào MDC; propagate qua Feign/RestTemplate.
-- Log mọi dòng cùng traceId → search một chuỗi thấy toàn flow.
+### Correlation id / trace id
+- Với Micrometer Tracing (Spring Boot 3), {{traceId}} và {{spanId}} tự đưa vào MDC và tự truyền qua header W3C {{traceparent}} khi gọi bằng RestClient/WebClient/Kafka đã được instrument.
+- {{traceId}}: id của cả hành trình request qua mọi service; {{spanId}}: id của một đoạn công việc trong hành trình đó.
+- Trả {{traceId}} trong header response hoặc thông báo lỗi để bộ phận hỗ trợ đưa lại cho dev.
+- Cẩn thận với thread pool/{{@Async}}: context không tự đi theo nếu executor không được bọc (context propagation).
 
-### ELK vs EFK vs Loki
-- ELK: Elasticsearch + Logstash + Kibana, search full-text mạnh, tốn RAM/disk.
-- EFK: thay Logstash bằng Fluentd/Fluent Bit (nhẹ hơn).
-- Loki: chỉ index label, không full-text → rẻ, nhanh cho filter theo service/env; Grafana tích hợp.
+### ELK/EFK hay Loki
+| Tiêu chí | ELK / EFK (Elasticsearch) | Loki |
+|---|---|---|
+| Index | Toàn văn mọi trường | Chỉ nhãn (service, env, level) |
+| Truy vấn | Tìm kiếm tự do rất nhanh, aggregation mạnh | Lọc theo nhãn rồi quét nội dung |
+| Chi phí | Cao: RAM, SSD, bản sao | Thấp: nén, lưu S3/GCS |
+| Vận hành | Phức tạp (shard, mapping, heap) | Đơn giản hơn |
+| Hợp với | Cần phân tích log sâu, bảo mật/SIEM | Debug theo service, đi cùng Grafana |
+EFK = thay Logstash bằng Fluentd/Fluent Bit (nhẹ hơn, phổ biến trên Kubernetes).
 
 ### Retention và chi phí
-- Hot 7 ngày (SSD), warm 30 ngày, cold 90-365 ngày (S3/Glacier).
-- Sampling: debug/info chỉ giữ 1-7 ngày, error giữ lâu hơn.
-- Tránh log payload nhạy cảm (PII).
+- Phân tầng: 7–14 ngày nóng (truy vấn nhanh), 30–90 ngày ấm/lạnh, lưu dài hạn trên S3 nếu có yêu cầu pháp lý.
+- Giảm khối lượng tại nguồn: tắt DEBUG ở production, gộp log lặp, **sampling** log thành công (giữ 100% lỗi, 5–10% request thành công).
+- Index Lifecycle Management (Elasticsearch) hoặc retention theo tenant/stream (Loki).
+- Không log body request và dữ liệu cá nhân — vừa tốn tiền vừa rủi ro pháp lý.
 
-### Trên production
-- Sai lầm: log toàn bộ body request → chi phí lưu và rò rỉ.
-- Kiểm tra: index size, ingestion rate, query latency p95.
+### Ví dụ đời thực
+Một công ty 40 microservice ghi 1,2TB log mỗi ngày vào Elasticsearch: cụm 18 node, khoảng 22.000 USD/tháng; 60% khối lượng là log INFO "request thành công" và log body. Họ chuyển log ứng dụng sang Loki + S3, giữ Elasticsearch nhỏ cho log bảo mật/audit, bỏ log body, sampling 10% log thành công. Khối lượng còn 380GB/ngày, chi phí logging giảm khoảng 70%. Nhờ {{traceId}} trong mọi dòng log, thời gian tìm nguyên nhân một lỗi xuyên 5 service giảm từ khoảng 40 phút xuống 5 phút.
 
-> Senior tip: Log level INFO mặc định, DEBUG chỉ bật tạm thời qua Actuator /loggers khi điều tra.`,
+### Pitfall
+- Log text tự do → phải viết regex parse, dễ vỡ khi đổi format.
+- Đưa giá trị nhiều biến thể (userId, traceId) làm **nhãn** trong Loki → bùng nổ stream, Loki chậm và tốn.
+- Mapping động trong Elasticsearch: một trường lúc là số lúc là chuỗi → log bị loại bỏ.
+- Mất traceId khi chuyển sang thread khác hoặc qua Kafka chưa instrument.
+
+### Trả lời mẫu khi phỏng vấn
+"Logging tập trung với tôi có ba trụ cột. Thứ nhất là log JSON có cấu trúc, Spring Boot 3.4 đã có structured logging sẵn, để truy vấn theo trường chứ không phải regex. Thứ hai là trace id: Micrometer Tracing đưa traceId và spanId vào MDC và truyền qua header traceparent, nên một request qua năm service vẫn nối được, tôi còn trả traceId trong response lỗi để support gửi lại. Thứ ba là chi phí: phân tầng retention, tắt DEBUG, sampling log thành công, và không log body. Về công cụ, Elasticsearch đánh index toàn văn nên tìm kiếm và phân tích mạnh nhưng tốn RAM và SSD; Loki chỉ index nhãn và lưu nội dung nén trên object storage nên rẻ hơn nhiều, hợp với debug theo service cùng Grafana. Ở công ty trước, chuyển log ứng dụng sang Loki, bỏ log body và sampling giúp giảm khoảng 70% chi phí logging."
+
+> Senior tip: tính chi phí log theo **service** mỗi tháng và gửi cho từng team. Khi team thấy service của họ chiếm 35% hoá đơn logging vì log body, họ tự sửa nhanh hơn mọi quy định chung.`,
     follow: ['TraceId vs SpanId?', 'Log sampling?', 'Chi phí Elasticsearch?'],
     tags: ['Logging', 'ELK', 'Loki', 'Observability']
   }
@@ -8275,42 +8597,51 @@ groups:
     topic: 'devops',
     level: 'senior',
     q: 'High availability: Keepalived + VIP (VRRP), HAProxy/Nginx active-passive, DB replication + failover, split-brain?',
-    a: `**Tóm tắt:** HA dùng VIP (VRRP/Keepalived) để chuyển IP sang node sống; LB active-passive; DB replication + failover tự động; split-brain là rủi ro khi cả hai node nghĩ mình là primary.
+    a: `**Tóm tắt:** HA kiểu truyền thống trên máy ảo/bare-metal gồm hai lớp: **lớp vào** dùng Keepalived (giao thức VRRP) giữ một **VIP** (IP ảo) trên một trong hai máy HAProxy/Nginx, máy kia dự phòng; **lớp dữ liệu** dùng replication và một bộ điều phối failover (Patroni cho PostgreSQL, Orchestrator/MySQL InnoDB Cluster cho MySQL). Rủi ro lớn nhất là **split-brain** — hai bên cùng nghĩ mình là chính — nên mọi quyết định failover phải dựa trên **quorum** và **fencing**.
 
-### Keepalived + VIP
-- VRRP: nhiều router chia sẻ một Virtual IP; master gửi heartbeat; backup takeover khi master chết.
-~~~conf
+### Keepalived + VIP hoạt động thế nào
+- Hai máy chạy Keepalived, mỗi máy có priority (ví dụ 150 và 100). Máy MASTER gửi quảng bá VRRP mỗi giây; VIP gắn vào card mạng của nó.
+- Script kiểm tra ({{vrrp_script}}, ví dụ {{pidof haproxy}} hoặc gọi health endpoint) trừ priority khi HAProxy chết.
+- Máy BACKUP không nghe thấy quảng bá trong khoảng 3 lần chu kỳ → tự nhận VIP và gửi gratuitous ARP để switch cập nhật. Thời gian chuyển thường 1–3 giây.
+~~~text
 vrrp_instance VI_1 {
-    state MASTER
-    interface eth0
-    virtual_router_id 51
-    priority 100
-    advert_int 1
-    authentication { auth_type PASS; auth_pass secret }
-    virtual_ipaddress { 10.0.0.100/24 }
+  state BACKUP            # cả hai để BACKUP + nopreempt để tránh giật qua lại
+  interface eth0
+  virtual_router_id 51
+  priority 150
+  nopreempt
+  virtual_ipaddress { 10.0.0.100/24 }
+  track_script { chk_haproxy }
 }
 ~~~
-- Backup priority thấp hơn (90).
+Trên cloud thường không dùng VRRP (mạng không cho gratuitous ARP tuỳ ý) mà dùng load balancer có sẵn (AWS NLB/ALB) hoặc chuyển Elastic IP bằng API.
 
 ### HAProxy/Nginx active-passive
-- Hai LB, VIP trỏ tới active; passive standby.
-- Health check backend; failover VIP khi active chết.
+Chỉ máy giữ VIP nhận traffic; cấu hình hai máy phải giống hệt (đồng bộ bằng Ansible/Git). HAProxy kiểm tra sức khoẻ backend ({{option httpchk}}) và loại server lỗi. Active-active (hai VIP + DNS) tăng công suất nhưng phức tạp hơn.
 
 ### DB replication + failover
-- PostgreSQL streaming replication: primary → standby (async/sync).
-- Failover: Patroni/repmgr tự promote standby; app reconnect qua VIP/proxy.
-- Semi-sync MySQL: primary chờ ít nhất 1 replica ack.
+- PostgreSQL streaming replication: primary gửi WAL cho standby. **Async**: nhanh nhưng có thể mất vài giây dữ liệu khi failover; **sync** ({{synchronous_standby_names}}): không mất dữ liệu đã commit, đổi lại độ trễ ghi.
+- **Patroni**: mỗi node chạy agent, dùng DCS (etcd/Consul) giữ **leader lock** có TTL. Chỉ node giữ lock được làm primary; primary mất lock thì tự hạ xuống. Ứng dụng kết nối qua HAProxy hỏi REST API của Patroni ({{/primary}}) để biết node nào là primary.
 
-### Split-brain
-- Mạng phân mảnh: hai node đều nghĩ mình primary → ghi dữ liệu khác nhau → corrupt.
-- Giải pháp: quorum (ít nhất N/2+1), fencing (STONITH), witness/arbiter, lease.
-- PostgreSQL Patroni dùng DCS (etcd/Consul) làm arbiter.
+### Split-brain và cách chặn
+Mạng giữa hai máy đứt nhưng cả hai vẫn sống → cả hai nhận VIP hoặc cả hai nhận ghi → dữ liệu phân kỳ, rất khó hợp nhất.
+- **Quorum**: quyết định cần đa số (3 hoặc 5 node etcd); phía thiểu số không được làm primary.
+- **Fencing/STONITH**: chắc chắn node cũ đã chết hoặc bị cô lập (tắt nguồn qua IPMI, gỡ quyền ghi storage) trước khi node mới nhận vai.
+- Watchdog: Patroni có thể dùng watchdog phần cứng/softdog để tự khởi động lại node mất lock.
 
-### Trên production
-- Sai lầm: replication async + failover tự động mà không fencing → split-brain.
-- Kiểm tra: replication lag, failover drill định kỳ.
+### Ví dụ đời thực
+Một ngân hàng chạy PostgreSQL hai node với script failover tự viết dựa trên ping. Một lần switch lỗi khiến hai node không thấy nhau 40 giây: script nâng standby lên primary trong khi primary cũ vẫn nhận ghi từ một nhóm ứng dụng → 1.700 giao dịch nằm lệch trên hai node, mất 2 ngày đối soát thủ công. Thiết kế lại: 3 node PostgreSQL + Patroni + 3 node etcd ở ba vùng, một standby đồng bộ, HAProxy định tuyến theo {{/primary}}. Diễn tập hàng quý: failover trung bình 12 giây, không mất giao dịch đã commit, không còn split-brain.
 
-> Senior tip: HA không chỉ uptime; phải test failover thực tế, không chỉ assume config đúng.`,
+### Pitfall
+- Hai node + "ping" để quyết định failover — không có quorum thì không phân biệt được "bên kia chết" với "mạng đứt".
+- Bật preempt để máy chính giật lại VIP ngay khi sống lại → chuyển qua lại liên tục.
+- Không bao giờ diễn tập failover → ngày thật mới phát hiện cấu hình sai.
+- Ứng dụng cache địa chỉ DB/DNS lâu → failover xong vẫn ghi vào node cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia làm hai lớp. Lớp vào dùng Keepalived với VRRP giữ một IP ảo trên một trong hai máy HAProxy; máy chính chết hoặc HAProxy chết thì script kiểm tra hạ priority, máy dự phòng nhận VIP và gửi gratuitous ARP, thường mất một đến ba giây. Lớp dữ liệu dùng replication, với PostgreSQL thì streaming replication và Patroni điều phối: các node tranh một leader lock trong etcd, chỉ node giữ lock mới được làm primary, và HAProxy hỏi Patroni để biết đâu là primary. Điều tôi chú trọng nhất là split-brain. Hai node quyết định bằng ping là không an toàn, vì không phân biệt được bên kia chết hay mạng đứt. Phải có quorum, ít nhất ba node etcd, và fencing để chắc chắn node cũ không còn nhận ghi. Tôi cũng chọn rõ async hay sync replication theo yêu cầu mất dữ liệu, và diễn tập failover định kỳ."
+
+> Senior tip: đo và ghi lại hai con số sau mỗi lần diễn tập: thời gian failover thực tế và lượng dữ liệu mất (RPO thực tế). Cam kết RTO/RPO trên giấy mà chưa từng đo thì chỉ là hy vọng.`,
     follow: ['Patroni là gì?', 'Quorum majority?', 'STONITH?'],
     tags: ['HA', 'Keepalived', 'VRRP', 'PostgreSQL']
   }
@@ -8320,39 +8651,55 @@ vrrp_instance VI_1 {
     topic: 'devops',
     level: 'senior',
     q: 'Giám sát database (PostgreSQL/MySQL exporter): slow query, connection, replication lag?',
-    a: `**Tóm tắt:** Dùng postgres_exporter/mysql_exporter để Prometheus scrape metric DB; cảnh báo slow query, connection saturation, replication lag; kết hợp pg_stat_statements.
+    a: `**Tóm tắt:** Giám sát DB cần trả lời bốn câu: **DB có đang quá tải không** (connection, CPU, IO), **query nào tốn nhất** (pg_stat_statements / performance_schema), **có ai đang chặn ai không** (lock, transaction dài), và **replica có theo kịp không** (replication lag). Dùng **postgres_exporter** hoặc **mysqld_exporter** cho Prometheus, cộng slow query log và một dashboard có cảnh báo cho từng nhóm.
 
-### Exporter
-- postgres_exporter: scrape {{pg_stat_activity}}, {{pg_stat_database}}, replication lag.
-- mysqld_exporter: threads, slow queries, replication lag.
-
-### Prometheus scrape
-~~~yaml
-scrape_configs:
-  - job_name: 'postgres'
-    static_configs:
-      - targets: ['postgres-exporter:9187']
-~~~
+### Exporter và dữ liệu nguồn
+- **postgres_exporter** đọc các view hệ thống: {{pg_stat_database}} (commit, rollback, deadlock, temp file), {{pg_stat_activity}} (connection theo trạng thái), {{pg_stat_replication}}, {{pg_locks}}; có thể thêm truy vấn tuỳ biến.
+- **mysqld_exporter** đọc {{SHOW GLOBAL STATUS}}, {{performance_schema}}, trạng thái replication.
+- Tài khoản exporter chỉ cần quyền đọc thống kê (PostgreSQL: role {{pg_monitor}}).
 
 ### Slow query
-- Bật {{pg_stat_statements}} extension; query {{calls}}, {{total_exec_time}}, {{mean_exec_time}}.
-- Alert: query mean > 1s hoặc total time tăng đột biến.
-- PostgreSQL: {{log_min_duration_statement = 1000}} để log query > 1s.
+- PostgreSQL: bật extension {{pg_stat_statements}} để có thống kê tổng hợp theo dạng câu lệnh (số lần gọi, tổng/trung bình thời gian, số dòng, block đọc). Sắp theo **tổng thời gian**, không theo thời gian một lần: câu 5ms gọi 2 triệu lần mỗi giờ tốn hơn câu 3 giây gọi 10 lần.
+- {{log_min_duration_statement = 500}} ghi câu chạy lâu hơn 500ms; {{auto_explain}} ghi luôn plan của câu chậm.
+- MySQL: {{slow_query_log}} + {{long_query_time}}, phân tích bằng pt-query-digest.
+~~~sql
+SELECT left(query, 80) AS q, calls, round(total_exec_time) AS total_ms,
+       round(mean_exec_time, 1) AS mean_ms, rows
+FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
+~~~
 
 ### Connection
-- {{pg_stat_activity_count}} vs {{max_connections}}.
-- Alert khi > 80% max connections.
+- Theo dõi số connection theo trạng thái: {{active}}, {{idle}}, **{{idle in transaction}}** (giữ khoá và chặn vacuum — rất nguy hiểm).
+- So với {{max_connections}}: mỗi connection PostgreSQL là một process, vài trăm connection đã tốn đáng kể RAM. Tổng pool của mọi pod phải nhỏ hơn giới hạn; nhiều pod thì dùng PgBouncer.
+- Đặt {{idle_in_transaction_session_timeout}} để tự cắt session bỏ quên.
 
 ### Replication lag
-- {{pg_replication_lag}} (seconds) hoặc byte lag.
-- Alert lag > 30s (async) hoặc > 0 (sync).
-- MySQL: {{Seconds_Behind_Master}}.
+- PostgreSQL: trên primary xem {{pg_stat_replication}} ({{replay_lag}}, chênh lệch LSN); trên replica {{now() - pg_last_xact_replay_timestamp()}} (lưu ý khi primary không có ghi thì con số này tăng dù không thật sự trễ).
+- Nguyên nhân lag: batch ghi lớn, replica thiếu IO, query dài trên replica xung đột với replay.
+- Ứng dụng đọc từ replica phải chịu được dữ liệu cũ vài giây, hoặc đọc primary ngay sau khi ghi (read-your-writes).
 
-### Trên production
-- Sai lầm: không index → slow query đột ngột.
-- Kiểm tra: EXPLAIN ANALYZE, vacuum/analyze, connection pool size.
+### Cảnh báo nên có
+| Cảnh báo | Ngưỡng gợi ý |
+|---|---|
+| Connection gần đầy | > 80% max_connections trong 5 phút |
+| Transaction dài | > 5 phút (chặn vacuum, giữ khoá) |
+| Replication lag | > 30 giây trong 5 phút |
+| Deadlock | tăng bất thường so với mức nền |
+| Disk/WAL | dung lượng còn < 20% |
 
-> Senior tip: Slow query thường do thiếu index hoặc N+1 từ app; giám sát DB phải đi kèm giám sát app query.`,
+### Ví dụ đời thực
+DB PostgreSQL của một sàn thương mại điện tử: CPU 90% mỗi trưa, team định nâng cấp instance (thêm 1.800 USD/tháng). pg_stat_statements cho thấy một câu đếm giỏ hàng chỉ 4ms nhưng gọi 6 triệu lần/giờ, chiếm 38% tổng thời gian DB. Cache kết quả 30 giây ở Redis → CPU trưa còn 45%, không cần nâng cấp. Cùng đợt đó, cảnh báo "idle in transaction > 5 phút" bắt được một job báo cáo quên commit, vốn làm bảng đơn hàng phình 40% vì vacuum không dọn được.
+
+### Pitfall
+- Chỉ bật slow query log → bỏ sót câu nhanh nhưng gọi cực nhiều.
+- Không reset/so sánh pg_stat_statements theo thời gian → không biết query nào mới xấu đi.
+- Exporter dùng tài khoản superuser.
+- Đọc từ replica mà không giám sát lag → người dùng thấy dữ liệu cũ, tưởng mất dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi giám sát DB theo bốn câu hỏi. DB có quá tải không: connection theo trạng thái, CPU, IO. Query nào tốn nhất: tôi dùng pg_stat_statements và sắp theo tổng thời gian chứ không theo thời gian một lần, vì câu 4 mili giây gọi hàng triệu lần thường tốn hơn câu 3 giây hiếm khi chạy; kèm slow query log và auto_explain cho câu chậm. Có ai chặn ai không: lock và transaction dài, đặc biệt trạng thái idle in transaction vì nó giữ khoá và chặn vacuum. Replica có theo kịp không: replay lag từ pg_stat_replication. Dữ liệu đưa vào Prometheus qua postgres_exporter với role pg_monitor, dashboard có cảnh báo cho connection trên 80%, transaction dài trên 5 phút, lag trên 30 giây. Có lần nhờ pg_stat_statements mà team bỏ được kế hoạch nâng cấp DB 1.800 USD mỗi tháng, chỉ bằng cách cache một câu đếm gọi 6 triệu lần mỗi giờ."
+
+> Senior tip: chụp top 20 của pg_stat_statements mỗi tuần và lưu lại. So sánh tuần này với tuần trước là cách nhanh nhất phát hiện một release vừa làm xấu đi một query, trước khi nó thành sự cố.`,
     follow: ['pg_stat_statements?', 'Connection pool tuning?', 'Vacuum là gì?'],
     tags: ['Database', 'PostgreSQL', 'MySQL', 'Monitoring']
   }
@@ -8362,44 +8709,57 @@ scrape_configs:
     topic: 'devops',
     level: 'lead',
     q: 'Uptime/synthetic check và trang status nội bộ xây dựng thế nào?',
-    a: `**Tóm tắt:** Synthetic check chủ động probe endpoint (HTTP/TCP) từ nhiều vị trí; trang status nội bộ tổng hợp health; phân biệt uptime đơn giản và SLO availability.
+    a: `**Tóm tắt:** Synthetic check là **robot đóng vai người dùng**, gọi các hành trình quan trọng từ bên ngoài theo chu kỳ (đăng nhập, tìm kiếm, thanh toán thử) để phát hiện sự cố **trước khi người dùng báo**, kể cả lúc đêm không có traffic. Trang status nội bộ tổng hợp tình trạng từng dịch vụ và sự cố đang xử lý, giúp các team và bộ phận hỗ trợ không phải hỏi nhau "có phải hệ thống đang lỗi không?".
 
-### Synthetic check
-- Blackbox exporter (Prometheus) probe HTTP/TCP/ICMP.
+### Vì sao cần synthetic khi đã có metric
+- Metric phía server chỉ thấy request **đã tới**. DNS sai, chứng chỉ TLS hết hạn, CDN lỗi, firewall chặn → server không thấy gì, metric vẫn xanh.
+- Ban đêm traffic thấp: tỉ lệ lỗi trên 3 request không có ý nghĩa; robot cho tín hiệu đều đặn.
+- Đo từ góc người dùng: nhiều vùng địa lý, nhiều nhà mạng.
+
+### Các mức synthetic check
+| Mức | Kiểm tra | Công cụ |
+|---|---|---|
+| Ping/HTTP | Endpoint trả 200, thời gian, hạn chứng chỉ | Prometheus blackbox_exporter, Uptime Kuma |
+| API hành trình | Chuỗi gọi: đăng nhập → lấy token → tìm sản phẩm → tạo giỏ | k6/script chạy định kỳ, Checkly |
+| Trình duyệt | Kịch bản UI thật bằng Playwright | Checkly, Datadog Synthetics, CloudWatch Synthetics |
+
 ~~~yaml
-scrape_configs:
-  - job_name: 'blackbox'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
-      - targets:
-          - https://api.example.com/health
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+# blackbox_exporter module: kiểm tra HTTP và nội dung trả về
+modules:
+  http_api:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: [200]
+      fail_if_body_not_matches_regexp: ['"status":"UP"']
+# Cảnh báo chứng chỉ sắp hết hạn: probe_ssl_earliest_cert_expiry - time() < 14 * 86400
 ~~~
-- Alert khi probe_success == 0 trong 2 phút.
+
+### Nguyên tắc thiết kế
+- Dùng **tài khoản test riêng**, dữ liệu được đánh dấu và tự dọn; thanh toán thử dùng sandbox hoặc số tiền hoàn ngay.
+- Chạy từ ít nhất 2–3 vị trí; chỉ cảnh báo khi **nhiều vị trí** cùng lỗi để tránh nhiễu do mạng một nơi.
+- Kiểm tra **nội dung**, không chỉ mã 200 (trang lỗi vẫn có thể trả 200).
+- Liveness/readiness của Kubernetes là kiểm tra **bên trong**; synthetic là kiểm tra **bên ngoài** — cần cả hai.
 
 ### Trang status nội bộ
-- Tổng hợp health của service: DB, Redis, Kafka, external API.
-- Spring Actuator {{/actuator/health}} với health indicators.
-- Dashboard Grafana hoặc trang đơn giản hiển thị status.
+- Danh sách dịch vụ theo hành trình nghiệp vụ (Đăng nhập, Thanh toán, Báo cáo…), trạng thái xanh/vàng/đỏ lấy tự động từ synthetic và SLO.
+- Sự cố đang mở: ảnh hưởng gì, ai đang xử lý, cập nhật gần nhất, kênh liên lạc.
+- Lịch bảo trì sắp tới; lịch sử sự cố và uptime 90 ngày.
+- Công cụ: Statuspage, Upptime, Uptime Kuma, hoặc trang tự dựng đọc từ Prometheus. Trang status công khai cho khách hàng thì chỉ cập nhật bởi người (tránh hiển thị nhiễu).
 
-### Availability vs uptime
-- Uptime: service up (process sống).
-- Availability: user thực sự dùng được (latency < SLO, error rate < ngưỡng).
-- Synthetic check đo availability từ góc user.
+### Ví dụ đời thực
+Một nền tảng B2B bị khách báo "không đăng nhập được" lúc 7 giờ sáng — chứng chỉ TLS của domain SSO hết hạn lúc 0 giờ, metric server vẫn xanh vì không request nào tới được. Sau sự cố: 14 synthetic check (8 API hành trình, 6 trang UI bằng Playwright) chạy mỗi phút từ 3 vùng, cảnh báo chứng chỉ trước 14 ngày, trang status nội bộ cho đội CSKH. Trong 6 tháng tiếp theo, 5/7 sự cố được phát hiện bởi synthetic trước khi có khách báo, thời gian phát hiện trung bình từ 38 phút xuống 3 phút; số câu hỏi "hệ thống có lỗi không" vào kênh kỹ thuật giảm rõ rệt.
 
-### Trên production
-- Sai lầm: health check chỉ trả 200 mà không kiểm tra dependency → false green.
-- Kiểm tra: health check sâu (DB query, Redis ping) nhưng không quá chậm.
+### Pitfall
+- Robot dùng tài khoản thật hoặc tạo đơn thật không dọn → sai số liệu kinh doanh.
+- Kịch bản UI giòn (selector thay đổi) → báo động giả liên tục.
+- Chỉ kiểm tra trang chủ.
+- Trang status cập nhật thủ công và bị quên khi đang rối vì sự cố.
 
-> Senior tip: Health check phải nhanh (< 1s) và không phụ thuộc service ngoài nặng; deep check riêng cho readiness.`,
+### Trả lời mẫu khi phỏng vấn
+"Synthetic check là robot đóng vai người dùng, gọi các hành trình quan trọng từ bên ngoài theo chu kỳ. Nó bổ sung cho metric phía server, vì những lỗi như DNS sai, chứng chỉ hết hạn hay CDN hỏng thì server không thấy request nào và metric vẫn xanh, còn ban đêm traffic thấp thì tỉ lệ lỗi không đáng tin. Tôi làm ba mức: blackbox_exporter cho HTTP và hạn chứng chỉ, script API chạy chuỗi đăng nhập tới thanh toán thử, và vài kịch bản Playwright cho trang quan trọng. Robot dùng tài khoản test riêng, kiểm tra nội dung chứ không chỉ mã 200, chạy từ nhiều vùng và chỉ cảnh báo khi nhiều vùng cùng lỗi. Trang status nội bộ lấy trạng thái tự động từ synthetic và SLO, kèm sự cố đang mở và người phụ trách. Ở công ty trước, sau khi làm vậy, phần lớn sự cố được phát hiện trước khi khách báo, thời gian phát hiện từ khoảng 38 phút xuống 3 phút."
+
+> Senior tip: viết synthetic check cho **mọi sự cố từng xảy ra** mà monitoring hiện tại không bắt được. Sau một năm, bộ check đó phản ánh chính xác những cách hệ thống của bạn thật sự hỏng.`,
     follow: ['Liveness vs readiness?', 'Blackbox exporter?', 'SLI/SLO/SLA?'],
     tags: ['Uptime', 'Synthetic', 'HealthCheck', 'SLO']
   }
@@ -8409,35 +8769,59 @@ scrape_configs:
     topic: 'devops',
     level: 'lead',
     q: 'SLO, SLI, error budget và cách đặt alert dựa trên error budget burn rate?',
-    a: `**Tóm tắt:** SLI đo chất lượng (latency, availability), SLO là mục tiêu, error budget là phần được phép sai; alert theo burn rate thay vì ngưỡng tĩnh để phát hiện sự cố nhanh.
+    a: `**Tóm tắt:** **SLI** là chỉ số đo trải nghiệm (tỉ lệ request thành công và đủ nhanh), **SLO** là mục tiêu cho SLI trong một cửa sổ thời gian (99,9% trong 30 ngày), **error budget** là phần được phép hỏng (0,1% ≈ 43 phút/30 ngày). Cảnh báo theo **burn rate** — tốc độ tiêu ngân sách lỗi so với tốc độ "đều đặn" — dùng **nhiều cửa sổ** để vừa bắt nhanh sự cố lớn vừa bắt được sự cố âm ỉ, mà ít báo động giả. **Error budget policy** biến con số thành quyết định: hết ngân sách thì ưu tiên độ ổn định hơn tính năng.
 
-### Định nghĩa
-- **SLI** (Service Level Indicator): metric đo (ví dụ % request < 300ms).
-- **SLO** (Service Level Objective): mục tiêu (99.9% request < 300ms).
-- **SLA** (Service Level Agreement): hợp đồng với khách, thường thấp hơn SLO.
-- **Error budget**: 100% - SLO = 0.1% được phép fail.
+### Định nghĩa bằng ví dụ
+- **SLI** = request tốt / tổng request. "Tốt" = không phải 5xx và nhanh hơn 300ms, đo ở load balancer hoặc gateway (gần người dùng).
+- **SLO** = 99,9% request tốt trong 30 ngày trượt.
+- **Error budget** = 0,1% × số request. Với 100 triệu request/tháng → được phép 100.000 request xấu.
+- **SLA** là cam kết hợp đồng (có đền bù), thường lỏng hơn SLO nội bộ (ví dụ SLA 99,5%).
 
-### Burn rate
-- Tốc độ đốt error budget. Burn rate 1 = đều, 14.4 = đốt hết budget trong 2 ngày (1h window).
-- Multi-window burn rate alert: alert nếu burn rate cao trong cả window ngắn và dài → tránh false positive.
+### Burn rate là gì
+Burn rate = tỉ lệ lỗi hiện tại / tỉ lệ lỗi cho phép.
+~~~text
+SLO 99.9% -> tỉ lệ lỗi cho phép 0.1%
+Tỉ lệ lỗi đang là 1.44% -> burn rate = 14.4
+=> với tốc độ này, ngân sách 30 ngày cạn sau 30 / 14.4 ≈ 2 ngày
+   và trong 1 giờ đã tiêu 1h × 14.4 / 720h = 2% ngân sách tháng
+~~~
+Ngưỡng tĩnh "lỗi > 1%" không biết SLO là gì; burn rate gắn cảnh báo trực tiếp với mức độ nghiêm trọng thật.
 
-### Ví dụ Prometheus
+### Cảnh báo nhiều cửa sổ (theo Google SRE Workbook)
+| Mức | Burn rate | Cửa sổ dài / ngắn | Ý nghĩa | Hành động |
+|---|---|---|---|---|
+| Page | 14,4 | 1 giờ / 5 phút | Tiêu 2% ngân sách trong 1 giờ | Gọi người trực |
+| Page | 6 | 6 giờ / 30 phút | Tiêu 5% trong 6 giờ | Gọi người trực |
+| Ticket | 1 | 3 ngày / 6 giờ | Âm ỉ, sẽ hết ngân sách cuối kỳ | Xử lý giờ hành chính |
+Cửa sổ dài chống báo động giả; cửa sổ ngắn giúp cảnh báo **tắt nhanh** khi đã hết lỗi.
+
 ~~~yaml
-- alert: HighBurnRate
+# recording rule: tỉ lệ lỗi theo cửa sổ (lặp lại cho 5m, 30m, 6h...)
+- record: slo:error_ratio:rate1h
   expr: |
-    (sum(rate(http_requests_total{status=~"5.."}[1h])) / sum(rate(http_requests_total[1h]))) > 14.4 * 0.001)
-    and
-    (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 14.4 * 0.001
-  for: 2m
-  labels:
-    severity: page
+    sum(rate(http_server_requests_seconds_count{application="checkout",status=~"5.."}[1h]))
+    / sum(rate(http_server_requests_seconds_count{application="checkout"}[1h]))
+- alert: CheckoutErrorBudgetFastBurn
+  expr: slo:error_ratio:rate1h > (14.4 * 0.001) and slo:error_ratio:rate5m > (14.4 * 0.001)
+  labels: { severity: page }
 ~~~
 
-### Trên production
-- Sai lầm: đặt SLO 99.99% không cần thiết → error budget quá nhỏ, alert liên tục.
-- Kiểm tra: error budget còn lại, burn rate trend.
+### Error budget policy
+Thoả thuận viết sẵn giữa product và kỹ thuật: còn ngân sách → deploy bình thường, chấp nhận thử nghiệm; tiêu hết → đóng băng tính năng rủi ro, dồn người vào độ ổn định cho tới khi SLI hồi phục; sự cố tiêu hơn 20% ngân sách → bắt buộc postmortem.
 
-> Senior tip: SLO nên dựa trên user experience, không phải infra metric; review SLO quarterly.`,
+### Ví dụ đời thực
+Service thanh toán trước đây cảnh báo khi "5xx > 1% trong 5 phút": bắn khoảng 25 lần/tháng, phần lớn tự hết sau vài phút; trong khi một lỗi âm ỉ 0,3% kéo dài 9 ngày không ai biết, tiêu gần hết ngân sách. Chuyển sang SLO 99,9% với cảnh báo đa cửa sổ: page còn 2–3 lần/tháng, đều là sự cố thật; lỗi âm ỉ được bắt bởi cảnh báo ticket sau khoảng 6 giờ. Khi ngân sách tháng 3 cạn, policy khiến team hoãn một tính năng 2 tuần để sửa retry và timeout — ba tháng sau đó không còn tháng nào vượt ngân sách.
+
+### Pitfall
+- SLO 100% hoặc 99,99% cho mọi thứ — không còn ngân sách để thay đổi, hoặc không thể đạt.
+- Đo SLI ở tầng quá sâu (một pod) thay vì gần người dùng.
+- Tính tỉ lệ khi traffic rất thấp: 1 lỗi / 3 request = 33% → báo động giả; cần ngưỡng số request tối thiểu hoặc synthetic.
+- Có SLO nhưng không có policy → con số chỉ để trang trí.
+
+### Trả lời mẫu khi phỏng vấn
+"SLI là chỉ số đo trải nghiệm người dùng, ví dụ tỉ lệ request không lỗi và nhanh hơn 300 mili giây, đo ở gateway. SLO là mục tiêu cho chỉ số đó, như 99,9% trong 30 ngày, và error budget là phần được phép hỏng, tức khoảng 43 phút mỗi tháng. Tôi cảnh báo theo burn rate, tức tỉ lệ lỗi hiện tại chia cho tỉ lệ lỗi cho phép. Burn rate 14,4 trong một giờ nghĩa là đã tiêu 2% ngân sách tháng, đáng để gọi người trực. Tôi dùng nhiều cửa sổ: 1 giờ kèm 5 phút và 6 giờ kèm 30 phút cho page, 3 ngày cho ticket; cửa sổ dài chống báo động giả, cửa sổ ngắn giúp cảnh báo tắt nhanh. Quan trọng không kém là error budget policy: hết ngân sách thì ưu tiên độ ổn định hơn tính năng. Ở service thanh toán trước đây, cách này giảm page từ 25 xuống 2–3 lần mỗi tháng mà còn bắt được lỗi âm ỉ trước kia bị bỏ sót."
+
+> Senior tip: bắt đầu với một SLO cho **một hành trình quan trọng nhất** (thường là thanh toán hoặc đăng nhập) và một policy được product ký đồng ý. Một SLO được tôn trọng có giá trị hơn mười SLO không ai nhìn.`,
     follow: ['Error budget policy?', 'Multi-window alert?', 'SLA penalty?'],
     tags: ['SLO', 'SLI', 'ErrorBudget', 'Alerting']
   }
@@ -8447,47 +8831,61 @@ scrape_configs:
     topic: 'devops',
     level: 'lead',
     q: 'Distributed tracing: OpenTelemetry, Jaeger/Tempo, trace context propagation trong Spring Boot?',
-    a: `**Tóm tắt:** OpenTelemetry instrument app để sinh trace/span; propagate trace context qua HTTP header (W3C traceparent); backend Jaeger/Tempo lưu và hiển thị; giúp tìm bottleneck trong microservices.
+    a: `**Tóm tắt:** Distributed tracing ghi lại hành trình của một request qua nhiều service thành một **trace** gồm nhiều **span** (mỗi span là một đoạn việc: gọi HTTP, query DB, gửi Kafka). **OpenTelemetry** là chuẩn chung để sinh và gửi dữ liệu trace; **trace context** đi kèm request qua header W3C {{traceparent}}; **Jaeger/Tempo** lưu và hiển thị. Trong Spring Boot 3, Micrometer Tracing với bridge OpenTelemetry tự instrument phần lớn đường đi; việc của bạn là đảm bảo context không bị đứt và chọn **sampling** hợp lý.
 
-### Khái niệm
-- **Trace**: một request end-to-end qua nhiều service.
-- **Span**: một đơn vị công việc (HTTP call, DB query) với thời gian.
-- **Context propagation**: truyền traceId/spanId qua header để nối span.
-
-### OpenTelemetry trong Spring Boot 3
-- Thêm opentelemetry-spring-boot-starter.
-- Auto-instrument HTTP, JDBC, Kafka.
-- Exporter OTLP → Tempo/Jaeger.
-
-~~~xml
-<dependency>
-  <groupId>io.opentelemetry.instrumentation</groupId>
-  <artifactId>opentelemetry-spring-boot-starter</artifactId>
-</dependency>
+### Khái niệm, từng bước
+~~~seq
+title: Một trace qua 3 service
+actors: Gateway | Order | Payment | DB
+Gateway -> Order: POST /orders (traceparent: 00-T-A-01)
+Order -> DB: INSERT order (span B, cha là A)
+Order -> Payment: POST /charge (traceparent: 00-T-C-01)
+Payment -> DB: UPDATE wallet (span D, cha là C)
+Payment --> Order: 200
+Order --> Gateway: 201
 ~~~
+- **traceId (T)** giống nhau trên mọi span của hành trình; mỗi span có **spanId** riêng và id của span cha → dựng được cây thời gian.
+- Header {{traceparent}} có dạng {{00-<traceId 32 hex>-<spanId 16 hex>-<flags>}}; bit cuối của flags cho biết request có được lấy mẫu (sampled) hay không, để mọi service quyết định nhất quán.
+- **Baggage**: cặp key-value đi kèm context (ví dụ tenantId) — tiện nhưng bị gửi qua mọi lời gọi, không đưa dữ liệu nhạy cảm vào.
+
+### Spring Boot 3
 ~~~yaml
-otel:
-  exporter:
-    otlp:
-      endpoint: http://tempo:4317
-  traces:
-    sampler: parentbased_traceidratio
-    sampler.arg: 0.1
+# dependency: io.micrometer:micrometer-tracing-bridge-otel + io.opentelemetry:opentelemetry-exporter-otlp
+management:
+  tracing:
+    sampling:
+      probability: 0.1          # head sampling 10%; mặc định 0.1
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4318/v1/traces
 ~~~
-
-### W3C traceparent
-- Header: {{traceparent: 00-<traceId>-<spanId>-01}}.
-- Propagate qua Feign/RestTemplate/WebClient tự động với OTel.
+- RestClient/WebClient/RestTemplate **tạo từ builder do Spring cung cấp** (bean) mới được instrument; tự {{new RestTemplate()}} thì mất context.
+- Kafka: bật observation trên KafkaTemplate và listener container để context đi qua header message.
+- {{@Async}} và executor tự tạo: bọc bằng context propagation, nếu không span con mất cha.
+- traceId tự vào MDC → log và trace nối được với nhau.
 
 ### Sampling
-- 100% dev, 1-10% prod để giảm chi phí.
-- Tail-based sampling: giữ trace có lỗi/chậm.
+| Kiểu | Cách làm | Ưu / nhược |
+|---|---|---|
+| Head-based | Quyết định ở đầu request (ví dụ 10%) | Rẻ, đơn giản; có thể bỏ lỡ chính request lỗi |
+| Tail-based | OpenTelemetry Collector giữ toàn bộ span một lúc rồi quyết định: giữ 100% trace lỗi hoặc chậm, 5% trace bình thường | Giữ được trace quan trọng; Collector tốn RAM, cần định tuyến theo traceId |
 
-### Trên production
-- Sai lầm: trace mọi request → storage nổ.
-- Kiểm tra: trace latency, span count, sampling rate.
+### Jaeger hay Tempo
+Jaeger: giao diện tìm kiếm theo service/tag tốt, lưu trên Elasticsearch/Cassandra. Grafana Tempo: chỉ đánh index theo traceId, lưu trên object storage nên rẻ; tìm bằng TraceQL hoặc đi từ log (traceId) và exemplar trên biểu đồ metric sang trace.
 
-> Senior tip: Trace + metric + log (three pillars) liên kết bằng traceId; Grafana Tempo + Loki + Prometheus là stack phổ biến.`,
+### Ví dụ đời thực
+API đặt hàng p99 = 2,1s, mỗi team đều nói service của mình nhanh. Bật tracing với tail sampling (100% trace > 1s). Trace cho thấy Order gọi Inventory **tuần tự** cho từng dòng hàng (đơn trung bình 7 dòng × 180ms), và một lần gọi lại Pricing không cần thiết. Gộp thành một lời gọi batch và bỏ lời gọi thừa: p99 còn 420ms. Cũng nhờ trace, team phát hiện các lời gọi qua {{@Async}} bị đứt context — sửa executor để có cây span đầy đủ.
+
+### Pitfall
+- Một service không truyền header → trace đứt đôi, mất đúng đoạn cần xem.
+- Sampling 100% ở production lưu lượng lớn → chi phí lưu trữ bùng nổ.
+- Đặt attribute có cardinality cao hoặc dữ liệu cá nhân lên span.
+- Mỗi service một tỉ lệ sampling khác nhau mà không tôn trọng cờ sampled của cha.
+
+### Trả lời mẫu khi phỏng vấn
+"Distributed tracing ghi hành trình của một request thành một trace gồm nhiều span, mỗi span là một đoạn việc như gọi HTTP hay query DB, có traceId chung và id span cha để dựng cây thời gian. Context đi qua các service bằng header W3C traceparent, trong đó có cờ sampled để mọi service quyết định giống nhau. Trong Spring Boot 3 tôi dùng Micrometer Tracing với bridge OpenTelemetry, gửi qua OTLP tới Collector rồi lưu ở Tempo hoặc Jaeger. Những chỗ hay làm đứt context là client HTTP tự new thay vì lấy từ builder của Spring, executor của @Async, và Kafka chưa bật observation. Về sampling, head-based 10% rẻ nhưng có thể bỏ lỡ request lỗi, nên ở hệ thống quan trọng tôi dùng tail-based trên Collector: giữ hết trace lỗi và chậm, chỉ lấy mẫu trace bình thường. Lần gần nhất, trace chỉ ra Order gọi Inventory tuần tự từng dòng hàng; gộp thành một lời gọi là p99 giảm từ 2,1 giây xuống khoảng 400 mili giây."
+
+> Senior tip: đặt traceId vào header response và vào mọi thông báo lỗi trả cho client. Khi khách hàng hoặc QA báo lỗi kèm traceId, thời gian tìm nguyên nhân giảm từ hàng chục phút xuống vài phút.`,
     follow: ['Tail-based sampling?', 'Baggage?', 'Tempo vs Jaeger?'],
     tags: ['OpenTelemetry', 'Tracing', 'Tempo', 'Observability']
   }
@@ -9846,38 +10244,55 @@ kubectl get events -A --sort-by=.lastTimestamp | head
     topic: 'devops',
     level: 'mid',
     q: 'StorageClass, PV và PVC trong Kubernetes hoạt động thế nào? Dynamic provisioning là gì và access modes RWO/RWX/RWOP khác nhau ra sao?',
-    a: `**Tóm tắt:** PersistentVolume (PV) là tài nguyên lưu trữ cấp cluster; PersistentVolumeClaim (PVC) là yêu cầu của Pod; StorageClass là "bản thiết kế" cho dynamic provisioning, tự tạo PV khi có PVC.
+    a: `**Tóm tắt:** Filesystem của container mất khi Pod bị tạo lại, nên dữ liệu bền vững cần volume ngoài. **PersistentVolume (PV)** là một ổ đĩa thật trong cluster (EBS, disk của cloud, NFS…); **PersistentVolumeClaim (PVC)** là Pod "xin" một ổ có dung lượng và kiểu truy cập nhất định; **StorageClass** mô tả cách **tự tạo** PV khi có PVC (dynamic provisioning) qua CSI driver. Access mode quyết định bao nhiêu node được gắn ổ cùng lúc: **RWO** (một node), **RWX** (nhiều node), **RWOP** (đúng một Pod).
 
-### Bối cảnh
-Container filesystem là ephemeral (mất khi Pod restart). Stateful workload (DB, queue) cần lưu trữ bền. K8s tách "yêu cầu" (PVC) khỏi "tài nguyên" (PV) để linh hoạt.
-
-### Cơ chế từng bước
-1. Admin tạo StorageClass trỏ tới provisioner (ví dụ AWS EBS CSI).
-2. Dev tạo PVC khai báo dung lượng, accessMode.
-3. Controller quan sát PVC Pending → gọi provisioner tạo volume → tạo PV bound.
-4. Pod mount PVC; dữ liệu sống trên volume ngoài cluster.
+### Cơ chế dynamic provisioning, từng bước
+1. Bạn tạo PVC: 20Gi, {{ReadWriteOnce}}, {{storageClassName: gp3}}.
+2. Controller thấy PVC chưa có PV phù hợp → gọi **CSI driver** của StorageClass (ví dụ {{ebs.csi.aws.com}}) tạo ổ mới trên cloud.
+3. Một PV được tạo đại diện ổ đó và **bind** một-một với PVC.
+4. Khi Pod dùng PVC được xếp lên node, kubelet gắn (attach + mount) ổ vào node rồi vào container.
+~~~yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: { name: gp3 }
+provisioner: ebs.csi.aws.com
+parameters: { type: gp3 }
+reclaimPolicy: Retain                      # giữ ổ khi xoá PVC (dữ liệu quan trọng)
+volumeBindingMode: WaitForFirstConsumer    # chờ biết node/zone của Pod rồi mới tạo ổ
+allowVolumeExpansion: true
+~~~
+Static provisioning: admin tạo sẵn PV (ví dụ trỏ tới NFS có sẵn), PVC bind vào — dùng khi ổ đã tồn tại hoặc storage không có CSI tự tạo.
 
 ### Access modes
-- RWO (ReadWriteOnce): mount read-write trên một node. EBS thường RWO.
-- RWX (ReadWriteMany): nhiều node cùng mount. Cần NFS/EFS/CephFS.
-- RWOP (ReadWriteOncePod): chỉ một Pod (CSI mới hỗ trợ).
+| Mode | Nghĩa | Ví dụ storage |
+|---|---|---|
+| ReadWriteOnce (RWO) | Gắn đọc-ghi trên **một node** (nhiều Pod cùng node vẫn dùng được) | EBS, Persistent Disk |
+| ReadOnlyMany (ROX) | Nhiều node chỉ đọc | NFS, một số disk |
+| ReadWriteMany (RWX) | Nhiều node cùng đọc-ghi | EFS, NFS, CephFS, Azure Files |
+| ReadWriteOncePod (RWOP) | Đúng **một Pod** trong cả cluster (GA từ Kubernetes 1.29) | CSI hỗ trợ |
+Block storage (EBS) gần như luôn chỉ RWO; cần RWX thì dùng file storage (EFS) và chấp nhận latency cao hơn.
 
-### Reclaim policy
-- Delete: xoá volume khi PVC bị xoá (default cloud).
-- Retain: giữ dữ liệu, admin phải dọn tay. Dùng cho dữ liệu quan trọng.
+### Reclaim policy và binding mode
+- **Delete** (mặc định của nhiều StorageClass): xoá PVC là xoá luôn ổ và dữ liệu. **Retain**: giữ ổ, admin tự xử lý — dùng cho dữ liệu quan trọng.
+- **WaitForFirstConsumer**: tạo ổ ở đúng zone mà Pod được xếp. Với {{Immediate}}, ổ có thể tạo ở zone A trong khi Pod chỉ xếp được ở zone B → Pod Pending vì "volume node affinity conflict" (EBS không gắn chéo zone).
 
-### volumeBindingMode
-- WaitForFirstConsumer: trì hoãn bind đến khi Pod được schedule → đảm bảo volume tạo ở đúng AZ/node. Tránh PVC bound vào volume ở AZ khác.
+### Điều tra PVC/Pod Pending
+- {{kubectl describe pvc}}: sự kiện từ provisioner (sai tên StorageClass, hết quota, thiếu quyền IAM của CSI driver).
+- {{kubectl describe pod}}: lỗi attach/mount, xung đột zone, ổ RWO vẫn đang gắn ở node cũ (Multi-Attach error khi Pod chuyển node mà node cũ chưa nhả ổ).
 
-### PVC Pending điều tra
-~~~bash
-kubectl describe pvc <name>
-kubectl get storageclass
-kubectl get events -n <ns>
-~~~
-Nguyên nhân thường: không có StorageClass mặc định, provisioner lỗi, quota storage, topology mismatch.
+### Ví dụ đời thực
+Một team chạy Elasticsearch trên EKS, StorageClass để {{volumeBindingMode: Immediate}}. Sau khi một node ở zone ap-southeast-1a chết, Pod được xếp sang 1b nhưng ổ EBS nằm ở 1a → Pod Pending 3 giờ. Đổi sang {{WaitForFirstConsumer}}, thêm topology spread cho StatefulSet và chuyển {{reclaimPolicy}} sang Retain (trước đó một lệnh xoá namespace nhầm đã xoá luôn 400GB dữ liệu ở môi trường staging). Lần node chết tiếp theo, Pod khởi động lại trong cùng zone trên node khác sau khoảng 4 phút.
 
-> Senior tip: Luôn đặt volumeBindingMode WaitForFirstConsumer và reclaimPolicy Retain cho production DB; test restore định kỳ vì Retain không tự động xoá rác.`,
+### Pitfall
+- Dùng reclaim Delete cho dữ liệu quan trọng.
+- Nghĩ RWO là "một Pod" — thực ra là một node; muốn đúng một Pod dùng RWOP.
+- Ghi dữ liệu dùng chung qua NFS RWX cho workload cần IOPS cao → chậm và khoá file khó lường.
+- Quên {{allowVolumeExpansion}} → không mở rộng PVC tại chỗ được.
+
+### Trả lời mẫu khi phỏng vấn
+"Container mất filesystem khi Pod được tạo lại, nên dữ liệu bền vững phải nằm ở volume ngoài. PV là ổ thật trong cluster, PVC là yêu cầu của Pod về dung lượng và kiểu truy cập, còn StorageClass mô tả cách tự tạo PV qua CSI driver khi có PVC, đó là dynamic provisioning. Access mode RWO nghĩa là gắn đọc-ghi trên một node, RWX là nhiều node cùng ghi, cần file storage như EFS hay NFS, còn RWOP là đúng một Pod. Hai cấu hình tôi luôn kiểm tra là reclaimPolicy, Retain cho dữ liệu quan trọng để xoá PVC không mất dữ liệu, và volumeBindingMode WaitForFirstConsumer để ổ được tạo đúng zone của Pod. Tôi từng gặp Pod Pending ba giờ vì ổ EBS tạo ở zone A còn Pod chỉ xếp được ở zone B; đổi binding mode là hết."
+
+> Senior tip: với dữ liệu quan trọng trên Kubernetes, kết hợp ba thứ: StorageClass Retain, snapshot định kỳ qua VolumeSnapshot hoặc Velero, và một lần diễn tập khôi phục mỗi quý. Mất dữ liệu trên K8s thường do xoá nhầm, không phải do ổ hỏng.`,
     follow: [
       'Khi nào chọn static provisioning thay vì dynamic?',
       'Làm sao migrate PVC sang StorageClass mới mà không downtime?',
@@ -9894,27 +10309,56 @@ Nguyên nhân thường: không có StorageClass mặc định, provisioner lỗ
     topic: 'devops',
     level: 'senior',
     q: 'StatefulSet là gì? Khi nào dùng StatefulSet thay vì Deployment, và có nên chạy PostgreSQL/Redis trên K8s không?',
-    a: `**Tóm tắt:** StatefulSet cấp identity ổn định (pod-0, pod-1), DNS ổn định và volume riêng cho từng replica; dùng cho workload có trạng thái. Chạy DB trên K8s là trade-off giữa kiểm soát và vận hành.
+    a: `**Tóm tắt:** StatefulSet dành cho workload mà **từng replica có danh tính riêng**: tên Pod cố định ({{db-0}}, {{db-1}}), DNS cố định qua headless Service, **PVC riêng cho mỗi Pod** (volumeClaimTemplates) và thứ tự khởi động/dừng. Deployment coi các Pod là thay thế được cho nhau. Chạy PostgreSQL/Redis trên K8s **được**, nhưng nên qua **operator** trưởng thành (CloudNativePG, Zalando, Redis operator) và chỉ khi team đủ năng lực vận hành; nếu không, dịch vụ quản lý (RDS, ElastiCache) thường rẻ hơn tính theo công người.
 
-### Cơ chế
-- Mỗi Pod có hostname cố định: web-0, web-1.
-- Headless Service (clusterIP: None) tạo DNS record cho từng Pod.
-- volumeClaimTemplates: mỗi Pod có PVC riêng, không bị xoá khi Pod restart.
-- Thứ tự khởi động/terminate tuần tự (pod-0 trước pod-1) mặc định; có thể parallel.
+### StatefulSet khác Deployment ở đâu
+| Tiêu chí | Deployment | StatefulSet |
+|---|---|---|
+| Tên Pod | Ngẫu nhiên (order-7c9f-xk2p) | Cố định theo số thứ tự (db-0, db-1) |
+| Volume | Dùng chung một PVC hoặc không có | Mỗi Pod một PVC riêng, giữ nguyên khi Pod tạo lại |
+| DNS | Qua Service (cân bằng tải) | Từng Pod: db-0.db-headless.ns.svc.cluster.local |
+| Thứ tự | Song song | Mặc định tuần tự 0 → N khi tạo, N → 0 khi xoá |
+| Cập nhật | Rolling, tạo Pod mới trước | Rolling từ số lớn nhất về 0; có partition để canary |
+Headless Service ({{clusterIP: None}}) không cân bằng tải mà trả về IP từng Pod, để client biết chính xác Pod nào là primary.
 
-### So với Deployment
-Deployment: Pod vô danh, thay thế tuỳ ý, share volume. StatefulSet: identity + storage ổn định. Dùng cho DB, Kafka, ZooKeeper.
+~~~yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: redis }
+spec:
+  serviceName: redis-headless     # headless Service cho DNS từng Pod
+  replicas: 3
+  selector: { matchLabels: { app: redis } }
+  template: { metadata: { labels: { app: redis } }, spec: { containers: [ { name: redis, image: redis:7 } ] } }
+  volumeClaimTemplates:           # mỗi Pod một PVC: data-redis-0, data-redis-1...
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 10Gi } } }
+~~~
 
-### Chạy PostgreSQL/Redis trên K8s?
-Ưu: đồng nhất môi trường, GitOps, tiết kiệm chi phí, kiểm soát phiên bản.
-Nhược: backup/restore phức tạp, failover cần operator, storage I/O, noisy neighbor, vận hành DB là chuyên môn riêng.
+### Những điều StatefulSet KHÔNG làm
+Nó không biết replication, failover, backup hay nâng cấp phiên bản DB. Scale từ 3 xuống 2 chỉ xoá Pod {{redis-2}} (PVC vẫn giữ lại), không chuyển dữ liệu hay đổi primary. Phần "hiểu DB" do **operator** đảm nhận: tự cấu hình replication, failover, backup lên S3, nâng cấp từng node.
 
-### Thực tế
-- PostgreSQL: dùng CloudNativePG hoặc Zalando operator; Patroni cho HA. Managed (RDS/Aurora) thường an toàn hơn cho team nhỏ.
-- Redis: Redis Operator hoặc Bitnami chart; managed (ElastiCache/MemoryDB) cho production quan trọng.
-- Quyết định: nếu SLA cao và team nhỏ → managed; nếu cần tuỳ biến sâu hoặc on-prem → operator trên K8s.
+### Có nên chạy DB trên K8s?
+| Nên cân nhắc khi | Nên dùng dịch vụ quản lý khi |
+|---|---|
+| Chạy on-premise, không có RDS | Đang trên cloud, team nhỏ |
+| Cần nhiều DB nhỏ cho môi trường dev/test | DB production quan trọng, ít người biết vận hành |
+| Team có kinh nghiệm DB + K8s, dùng operator trưởng thành | Cần cam kết sẵn sàng và backup đã được kiểm chứng |
+Rủi ro thật: node bị drain khi nâng cấp cluster, Pod di chuyển phải gắn lại ổ, lỗi CSI; tuning bộ nhớ (shared_buffers vs limit), noisy neighbor.
 
-> Senior tip: Nếu chạy DB trên K8s, bắt buộc có backup tự động, tested restore, và runbook failover; đừng chỉ "cài chart rồi quên".`,
+### Ví dụ đời thực
+Một công ty tự chạy PostgreSQL bằng StatefulSet viết tay (không operator) trên cluster on-premise. Khi nâng cấp node, primary {{pg-0}} bị drain; không có gì tự chuyển primary → ghi bị lỗi 18 phút cho tới khi có người tay chỉnh. Chuyển sang CloudNativePG: 3 instance, failover tự động, backup liên tục WAL lên MinIO, PodDisruptionBudget chặn drain đồng loạt. Lần nâng cấp node tiếp theo: switchover có kiểm soát mất khoảng 6 giây. Với môi trường cloud của công ty con, họ vẫn chọn RDS vì chỉ có 2 người làm hạ tầng.
+
+### Pitfall
+- Dùng Deployment cho DB với một PVC RWO → Pod mới không gắn được ổ khi Pod cũ chưa chết hẳn.
+- Xoá StatefulSet nghĩ là xoá dữ liệu — PVC vẫn còn (và vẫn tính tiền); ngược lại xoá PVC là mất dữ liệu.
+- Không có PodDisruptionBudget → drain node có thể đưa nhiều replica xuống cùng lúc.
+- Coi StatefulSet là giải pháp HA cho DB.
+
+### Trả lời mẫu khi phỏng vấn
+"StatefulSet dùng khi từng replica có danh tính riêng. Mỗi Pod có tên cố định như db-0, db-1, có DNS riêng qua headless Service, có PVC riêng tạo từ volumeClaimTemplates và giữ nguyên khi Pod được tạo lại, và được khởi động, dừng theo thứ tự. Deployment thì coi các Pod là thay thế được cho nhau, hợp với service stateless. Điều quan trọng là StatefulSet không hiểu DB: nó không làm replication, failover hay backup. Vì vậy nếu chạy PostgreSQL hay Redis trên K8s, tôi dùng operator trưởng thành như CloudNativePG, kèm PodDisruptionBudget và backup ra object storage. Còn có nên chạy hay không thì tôi cân nhắc theo năng lực team: trên cloud với team nhỏ, RDS hay ElastiCache thường rẻ hơn khi tính công người; on-premise hoặc nhiều DB nhỏ cho dev/test thì operator rất hợp lý."
+
+> Senior tip: trước khi chạy DB production trên K8s, diễn tập ba tình huống: drain node đang chạy primary, xoá Pod primary, và khôi phục từ backup sang cluster khác. Nếu cả ba không trơn tru, dùng dịch vụ quản lý.`,
     follow: [
       'Headless Service khác Service thường thế nào?',
       'Làm sao scale down StatefulSet mà không mất dữ liệu?',
@@ -9931,54 +10375,62 @@ Nhược: backup/restore phức tạp, failover cần operator, storage I/O, noi
     topic: 'devops',
     level: 'senior',
     q: 'RBAC trong Kubernetes: Role/ClusterRole, RoleBinding, ServiceAccount hoạt động thế nào? Quyền tối thiểu cho pipeline CI deploy vào 1 namespace là gì?',
-    a: `**Tóm tắt:** RBAC kiểm soát ai (subject) được làm gì (verb) trên tài nguyên (resource) ở scope namespace (Role) hoặc cluster (ClusterRole). Pipeline nên có ServiceAccount riêng với Role giới hạn namespace.
+    a: `**Tóm tắt:** RBAC của Kubernetes trả lời câu hỏi **ai** (User/Group/ServiceAccount) **được làm gì** (verb: get, list, create, patch…) **trên tài nguyên nào** (deployments, secrets…) **ở phạm vi nào** (Role trong một namespace, ClusterRole toàn cluster). Binding gắn quyền với chủ thể. Pipeline CI deploy vào một namespace cần một **ServiceAccount riêng + Role giới hạn trong namespace đó**, chỉ đủ verb để cập nhật workload — không cluster-admin, không đọc Secret nếu không cần.
 
-### Khái niệm
-- Subject: User, Group, ServiceAccount.
-- Role: tập rule trong 1 namespace.
-- ClusterRole: rule cấp cluster (hoặc tái sử dụng cho nhiều namespace).
-- RoleBinding/ClusterRoleBinding: gắn subject với role.
+### Bốn đối tượng
+- **Role**: danh sách quyền trong **một namespace**.
+- **ClusterRole**: quyền cho tài nguyên cấp cluster (nodes, namespaces, CRD) hoặc một bộ quyền dùng lại ở nhiều namespace.
+- **RoleBinding**: gắn Role (hoặc ClusterRole) cho chủ thể **trong một namespace**.
+- **ClusterRoleBinding**: gắn ClusterRole cho chủ thể **trên toàn cluster** — mạnh, dùng hạn chế.
+RBAC chỉ có **cho phép** (không có deny); quyền là hợp của mọi binding.
 
-### Ví dụ Role tối thiểu cho deploy
+### Quyền tối thiểu cho CI deploy vào namespace shop
 ~~~yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata:
-  namespace: payments
-  name: deployer
+metadata: { name: ci-deployer, namespace: shop }
 rules:
-- apiGroups: ["apps"]
-  resources: ["deployments"]
-  verbs: ["get","list","patch","update"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get","list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]   # đổi image, xem rollout
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]                        # theo dõi rollout, không exec
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata:
-  namespace: payments
-  name: ci-deployer
-subjects:
-- kind: ServiceAccount
-  name: ci-deployer
-  namespace: ci
-roleRef:
-  kind: Role
-  name: deployer
-  apiGroup: rbac.authorization.k8s.io
+metadata: { name: ci-deployer, namespace: shop }
+subjects: [ { kind: ServiceAccount, name: ci-deployer, namespace: shop } ]
+roleRef: { kind: Role, name: ci-deployer, apiGroup: rbac.authorization.k8s.io }
 ~~~
+Không có {{secrets}}, {{pods/exec}}, {{delete}} namespace, {{roles}}/{{rolebindings}} (tránh tự nâng quyền). Nếu dùng Helm, nó cần thêm quyền với Secret (Helm lưu release dưới dạng Secret) — ghi rõ lý do.
 
-### Kiểm tra quyền
-~~~bash
-kubectl auth can-i patch deployment -n payments --as=system:serviceaccount:ci:ci-deployer
-kubectl auth can-i --list --as=...
-~~~
+### Kiểm tra và audit
+- {{kubectl auth can-i patch deployments -n shop --as=system:serviceaccount:shop:ci-deployer}} → yes/no.
+- {{kubectl auth can-i --list --as=...}} liệt kê toàn bộ quyền thực tế.
+- Bật audit log của API server; lưu manifest RBAC trong Git (GitOps) để mọi thay đổi qua review.
 
-### Rancher
-Rancher thêm lớp user/role/project ở trên K8s RBAC, đồng bộ xuống cluster. Phù hợp quản lý nhiều team nhưng vẫn nên hiểu RBAC gốc.
+### Token của ServiceAccount
+- Từ Kubernetes 1.24, token không còn tự tạo dưới dạng Secret vĩnh viễn; Pod nhận **token có thời hạn** (projected, tự xoay vòng).
+- Pod không cần gọi API thì đặt {{automountServiceAccountToken: false}} — container bị chiếm cũng không có token để gọi API.
+- CI bên ngoài cluster: ưu tiên định danh qua OIDC (ví dụ GitHub Actions OIDC → IAM → EKS access entry) thay vì token dài hạn dán vào biến CI; hoặc dùng GitOps để CI không cần quyền vào cluster.
 
-> Senior tip: Không dùng cluster-admin cho CI; bắt đầu từ quyền rỗng và thêm khi pipeline fail với lỗi Forbidden; lưu manifest RBAC trong Git.`,
+### Ví dụ đời thực
+Kiểm tra bảo mật một cluster phát hiện ServiceAccount của Jenkins có ClusterRoleBinding {{cluster-admin}}, token dài hạn nằm trong biến môi trường của 60 job. Một plugin Jenkins có lỗ hổng đồng nghĩa với toàn quyền cluster, kể cả đọc Secret DB production. Thay bằng mỗi namespace một ServiceAccount với Role như trên, token ngắn hạn, sau đó chuyển hẳn sang Argo CD (CI chỉ push image và sửa Git). Số chủ thể có quyền đọc Secret production giảm từ 14 xuống 3.
+
+### Pitfall
+- Cho CI quyền {{*}} trên {{*}} "cho nhanh".
+- Cho quyền tạo RoleBinding → chủ thể tự gán thêm quyền cho mình.
+- Quyền {{pods/exec}} ở production → ai có nó đọc được mọi secret mà Pod thấy.
+- Quên rằng quyền {{create pods}} đủ để chạy Pod dùng bất kỳ ServiceAccount nào trong namespace.
+
+### Trả lời mẫu khi phỏng vấn
+"RBAC trả lời câu hỏi ai được làm gì trên tài nguyên nào ở phạm vi nào. Role là quyền trong một namespace, ClusterRole cho tài nguyên cấp cluster hoặc bộ quyền dùng lại, RoleBinding và ClusterRoleBinding gắn quyền cho User, Group hay ServiceAccount. RBAC chỉ có cho phép, không có deny. Với pipeline CI deploy vào một namespace, tôi tạo ServiceAccount riêng và một Role trong đúng namespace đó, chỉ cho get, list, watch, patch deployments, cập nhật service và configmap, xem pod để theo dõi rollout. Không có quyền đọc secret, không exec, không tạo rolebinding để tránh tự nâng quyền. Tôi kiểm tra bằng kubectl auth can-i với as serviceaccount, và lưu RBAC trong Git để thay đổi qua review. Tốt hơn nữa là để CI không vào cluster: CI chỉ push image và sửa Git, còn Argo CD trong cluster làm việc deploy."
+
+> Senior tip: chạy {{kubectl auth can-i --list}} cho từng ServiceAccount định kỳ và so với danh sách mong đợi. Quyền RBAC chỉ tăng theo thời gian vì ai cũng "thêm cho chạy được" mà không ai bớt.`,
     follow: [
       'Khi nào cần ClusterRole thay vì Role?',
       'Làm sao audit thay đổi RBAC?',
@@ -9995,38 +10447,54 @@ Rancher thêm lớp user/role/project ở trên K8s RBAC, đồng bộ xuống c
     topic: 'devops',
     level: 'lead',
     q: 'Backup Kubernetes gồm những gì? Velero + object storage (MinIO/S3) hoạt động thế nào và diễn tập khôi phục ra sao?',
-    a: `**Tóm tắt:** Backup K8s phải bao gồm manifest (resource), dữ liệu PV và etcd/config. Velero backup resource + snapshot/file-system volume vào object storage, restore theo namespace/label.
+    a: `**Tóm tắt:** Backup Kubernetes gồm ba phần: **trạng thái cluster** (etcd hoặc toàn bộ manifest trong Git), **tài nguyên của ứng dụng** (Deployment, ConfigMap, Secret, CRD…) và **dữ liệu trong volume**. **Velero** sao lưu tài nguyên qua API server thành file lên object storage (S3/MinIO) và sao lưu volume bằng **snapshot** của storage hoặc **file-system backup** (Kopia). Backup chỉ có giá trị khi **đã khôi phục thử thành công** — diễn tập định kỳ sang một cluster khác và đo thời gian.
 
-### Backup gồm gì
-- Manifest: Deployment, Service, ConfigMap, Secret, CRD...
-- Dữ liệu: PV (DB data).
-- Cluster state: etcd (thường managed bởi cloud).
-- Cấu hình công cụ: Helm values, GitOps repo.
+### Backup gồm những gì
+| Thành phần | Cách sao lưu |
+|---|---|
+| Manifest ứng dụng | Git (GitOps) là nguồn chính; Velero là lưới an toàn (bắt cả thứ tạo tay) |
+| etcd (cluster tự quản) | {{etcdctl snapshot save}} định kỳ, lưu ngoài cluster, mã hoá |
+| Dữ liệu PV | Snapshot (CSI VolumeSnapshot, EBS snapshot) hoặc file-system backup |
+| Database | Backup ở tầng DB (pg_basebackup + WAL, operator backup) — nhất quán hơn snapshot đĩa |
+| Bên ngoài cluster | Secret trong vault, DNS, chứng chỉ, IAM — ghi rõ trong runbook |
+Cluster quản lý (EKS/GKE/AKS) thì nhà cung cấp lo etcd; bạn lo phần còn lại.
 
-### Velero
-- Backup: chụp resource qua API server + volume snapshot hoặc file-system backup (Restic/Kopia).
-- Storage: S3/MinIO bucket.
-- Schedule: CronSchedule.
-- Restore: chọn backup, namespace, label.
-
-### Snapshot vs file-system
-- Snapshot: nhanh, phụ thuộc CSI driver, cùng region.
-- File-system (Kopia): portable, chậm hơn, tốn CPU, backup mọi volume.
-
-### Ví dụ
+### Velero hoạt động thế nào
+1. Velero server chạy trong cluster; bạn tạo **Backup** hoặc **Schedule** (cron) chọn theo namespace/label.
+2. Velero đọc tài nguyên qua API server, nén thành tarball và đẩy lên **BackupStorageLocation** (bucket S3/MinIO).
+3. Với volume: gọi plugin snapshot của nhà cung cấp/CSI, hoặc dùng **file-system backup** (node agent đọc dữ liệu trong volume bằng Kopia) khi storage không có snapshot.
+4. **Restore**: tạo lại tài nguyên theo thứ tự hợp lý (namespace, CRD, PVC, rồi workload); mặc định **không ghi đè** tài nguyên đã tồn tại (có tuỳ chọn {{--existing-resource-policy=update}}).
 ~~~bash
-velero backup create daily --include-namespaces payments --storage-location default
-velero schedule create hourly --schedule="0 * * * *" --include-namespaces payments
-velero restore create --from-backup daily-2024...
+velero schedule create daily-shop --schedule="0 2 * * *"   --include-namespaces shop --ttl 720h          # giữ 30 ngày
+velero backup describe daily-shop-20261107020000 --details
+velero restore create --from-backup daily-shop-20261107020000   --namespace-mappings shop:shop-restore-test     # khôi phục sang namespace khác để kiểm tra
 ~~~
 
-### Diễn tập khôi phục
-1. Tạo namespace test, restore backup.
-2. Kiểm tra Pod Running, PVC bound, dữ liệu.
-3. Đo RTO/RPO.
-4. Ghi runbook.
+### Snapshot hay file-system backup
+| | Snapshot | File-system backup (Kopia) |
+|---|---|---|
+| Tốc độ | Nhanh, ở tầng storage | Chậm hơn, đọc từng file |
+| Khôi phục khác vùng/nhà cung cấp | Hạn chế (snapshot gắn với cloud/region) | Linh hoạt, dữ liệu nằm trong bucket |
+| Nhất quán ứng dụng | Crash-consistent; cần hook (fsfreeze, flush DB) | Đọc khi app đang ghi → cần hook |
+Velero hỗ trợ **pre/post hook** (ví dụ chạy lệnh flush/khóa ghi trước khi snapshot).
 
-> Senior tip: Backup chưa test restore thì chưa tồn tại; diễn tập hàng quý, đo thời gian thực tế và cập nhật runbook.`,
+### Diễn tập khôi phục
+- Mỗi quý: khôi phục bản backup mới nhất sang **cluster/namespace riêng**, chạy smoke test, kiểm tra dữ liệu (đếm dòng, checksum), ghi **thời gian khôi phục thực tế** so với RTO.
+- Bucket backup: bật versioning + **object lock**, tài khoản/region khác cluster chính — chống xoá nhầm và ransomware.
+
+### Ví dụ đời thực
+Một lệnh {{kubectl delete namespace}} chạy nhầm context xoá namespace production chứa 23 deployment và 6 PVC (reclaim Delete). Velero chạy hằng đêm nhưng chưa từng thử restore: lần restore đầu thất bại vì CRD của cert-manager chưa có trên cluster và plugin snapshot thiếu quyền IAM. Khôi phục mất 5 giờ 40 phút, mất 9 giờ dữ liệu từ bản backup lúc 2 giờ sáng. Sau sự cố: backup 4 giờ một lần, DB chuyển sang backup WAL liên tục, StorageClass Retain, diễn tập hằng quý. Lần diễn tập thứ ba khôi phục toàn bộ trong 38 phút.
+
+### Pitfall
+- Backup nằm cùng tài khoản/region với cluster → mất cả hai cùng lúc.
+- Chỉ backup manifest, quên dữ liệu volume (hoặc ngược lại).
+- Snapshot đĩa của DB đang ghi mà không hook → khôi phục ra dữ liệu hỏng.
+- Không bao giờ restore thử.
+
+### Trả lời mẫu khi phỏng vấn
+"Backup Kubernetes với tôi gồm ba phần: trạng thái cluster, tức etcd nếu tự quản lý hoặc toàn bộ manifest trong Git; tài nguyên ứng dụng; và dữ liệu trong volume. Tôi dùng Velero: nó đọc tài nguyên qua API server, đẩy lên bucket S3 hoặc MinIO theo lịch, còn volume thì dùng snapshot của storage hoặc file-system backup bằng Kopia khi cần khôi phục sang nơi khác. DB thì tôi backup ở tầng DB, như WAL liên tục, vì nhất quán hơn snapshot đĩa. Bucket backup đặt ở tài khoản và region khác, bật versioning và object lock. Quan trọng nhất là diễn tập: mỗi quý khôi phục sang một cluster hoặc namespace riêng, chạy smoke test, kiểm tra dữ liệu và đo thời gian thực tế so với RTO. Tôi từng thấy một team có backup hằng đêm nhưng lần restore đầu tiên thất bại vì thiếu CRD và quyền IAM, mất gần sáu tiếng."
+
+> Senior tip: đưa một bước "restore vào namespace tạm và chạy smoke test" thành job tự động hằng tuần. Backup chưa được khôi phục thử thì chỉ là một file chiếm chỗ.`,
     follow: [
       'Khi nào dùng snapshot thay vì file-system backup?',
       'Làm sao backup etcd trên cluster tự quản?',
@@ -10042,42 +10510,61 @@ velero restore create --from-backup daily-2024...
     topic: 'devops',
     level: 'mid',
     q: 'DaemonSet là gì? Taints/tolerations và nodeSelector/affinity dùng để đặt agent log/monitoring ở đâu?',
-    a: `**Tóm tắt:** DaemonSet đảm bảo mỗi node (hoặc subset) chạy một Pod. Taints/tolerations và affinity quyết định Pod chạy trên node nào.
+    a: `**Tóm tắt:** **DaemonSet** đảm bảo **mỗi node** (hoặc mỗi node thoả điều kiện) chạy đúng một Pod — dùng cho agent cấp node: thu log (Fluent Bit), metric máy (node-exporter), mạng (CNI), bảo mật. **nodeSelector/affinity** là Pod **chủ động chọn** node; **taint/toleration** là node **từ chối** Pod trừ khi Pod chịu được taint. Agent giám sát thường cần toleration rộng để chạy cả trên node đặc biệt (GPU, control plane).
 
-### DaemonSet
-- Chạy agent trên mọi node: log shipper (Fluent Bit), monitoring (node-exporter), CNI.
-- Khi node mới join, DaemonSet tự tạo Pod.
-- Khi node bị remove, Pod bị xoá.
+### DaemonSet vận hành ra sao
+- Controller tạo một Pod cho mỗi node phù hợp; node mới vào cluster thì tự có Pod, node rời đi thì Pod bị dọn.
+- Không có {{replicas}} — số Pod = số node phù hợp.
+- Cập nhật kiểu {{RollingUpdate}} với {{maxUnavailable}} (mặc định 1 node mỗi lần); có thể dùng {{maxSurge}} để chạy song song Pod mới trước khi dừng Pod cũ (tránh hở log).
+- Agent thường cần truy cập máy: {{hostPath}} (đọc /var/log/pods), {{hostNetwork}}, đôi khi quyền đặc biệt → phải giới hạn chặt.
 
-### Taints/Tolerations
-- Taint trên node: "không cho Pod thường chạy ở đây" (ví dụ node GPU/dedicated).
-- Toleration trên Pod: "tôi chấp nhận taint đó".
-- Dùng để cô lập workload và giữ node cho hệ thống.
+### Taint và toleration
+Taint gắn trên node: {{key=value:Effect}}.
+| Effect | Ý nghĩa |
+|---|---|
+| NoSchedule | Không xếp Pod mới thiếu toleration |
+| PreferNoSchedule | Tránh nếu có thể |
+| NoExecute | Đuổi luôn Pod đang chạy thiếu toleration |
+Ví dụ: node GPU có taint {{gpu=true:NoSchedule}} để chỉ job ML chạy trên đó. Control plane thường có taint {{node-role.kubernetes.io/control-plane:NoSchedule}}. Kubernetes cũng tự thêm taint khi node có vấn đề (not-ready, disk-pressure); DaemonSet controller tự thêm toleration cho các taint hệ thống này để agent không bị đuổi khi node gặp sự cố.
 
-### nodeSelector / affinity
-- nodeSelector: match label đơn giản.
-- nodeAffinity: điều kiện phức tạp (In, NotIn, Exists).
-- podAffinity/antiAffinity: phân tán Pod cùng/ khác node.
+### nodeSelector và affinity
+- **nodeSelector**: điều kiện bằng nhau đơn giản ({{disktype: ssd}}).
+- **nodeAffinity**: biểu thức phong phú hơn, có loại **bắt buộc** ({{requiredDuringSchedulingIgnoredDuringExecution}}) và **ưu tiên** ({{preferred...}}).
+- **podAntiAffinity/topologySpreadConstraints**: rải Pod của Deployment qua node/zone khác nhau (không cần cho DaemonSet vì đã một Pod mỗi node).
 
-### Ví dụ
 ~~~yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: fluent-bit, namespace: logging }
 spec:
+  selector: { matchLabels: { app: fluent-bit } }
+  updateStrategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 10% } }
   template:
+    metadata: { labels: { app: fluent-bit } }
     spec:
       tolerations:
-      - key: "dedicated"
-        operator: "Equal"
-        value: "monitoring"
-        effect: "NoSchedule"
-      nodeSelector:
-        node-role: monitoring
+        - operator: Exists            # chịu mọi taint: chạy cả node GPU, control plane
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:3.1
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 200Mi } }
+          volumeMounts: [ { name: varlog, mountPath: /var/log, readOnly: true } ]
+      volumes: [ { name: varlog, hostPath: { path: /var/log } } ]
 ~~~
 
-### Trên production
-- Agent monitoring phải tolerate taint control-plane? Tuỳ; tránh chạy trên master nếu không cần.
-- Kiểm tra: kubectl get ds -A, kubectl describe ds, events.
+### Ví dụ đời thực
+Một cluster thêm node pool GPU có taint {{nvidia.com/gpu:NoSchedule}}. Fluent Bit và node-exporter không có toleration nên không chạy trên các node mới; 3 tuần sau, job huấn luyện chết vì đầy đĩa mà không ai có log hay metric để điều tra. Thêm toleration {{operator: Exists}} cho agent giám sát, đặt request/limit hợp lý, thêm cảnh báo "số Pod DaemonSet sẵn sàng < số node". Đồng thời phát hiện Fluent Bit không có memory limit từng ăn 1,5GB khi Elasticsearch chậm — đặt limit và bật buffer ra đĩa.
 
-> Senior tip: Dùng DaemonSet cho agent node-level; dùng Deployment + affinity cho agent cần HA theo replica, không theo node.`,
+### Pitfall
+- Agent thiếu toleration → "điểm mù" trên node đặc biệt.
+- DaemonSet không có resource request → scheduler không tính phần agent, node bị quá tải.
+- Cập nhật DaemonSet {{maxUnavailable}} quá lớn → mất log trên nhiều node cùng lúc.
+- Dùng toleration {{Exists}} cho workload ứng dụng thường → Pod chạy vào node control plane hoặc node đắt tiền.
+
+### Trả lời mẫu khi phỏng vấn
+"DaemonSet đảm bảo mỗi node phù hợp chạy đúng một Pod, nên dùng cho agent cấp node như Fluent Bit thu log, node-exporter, CNI. Node mới vào thì tự có Pod, không cần replicas. Để quyết định Pod chạy ở đâu có hai chiều. nodeSelector và nodeAffinity là Pod chủ động chọn node theo nhãn, có loại bắt buộc và loại ưu tiên. Taint là node từ chối Pod, chỉ Pod có toleration tương ứng mới được xếp vào, ví dụ node GPU chỉ cho job ML. Với agent giám sát, tôi thường cho toleration rộng để chạy cả trên node GPU và control plane, nếu không sẽ có điểm mù. Tôi luôn đặt resource request và limit cho agent, cập nhật rolling với maxUnavailable nhỏ, và có cảnh báo khi số Pod sẵn sàng của DaemonSet nhỏ hơn số node."
+
+> Senior tip: thêm một cảnh báo so sánh {{kube_daemonset_status_number_ready}} với {{kube_daemonset_status_desired_number_scheduled}} cho mọi agent quan trọng. Thiếu agent trên một node là loại lỗi im lặng, chỉ lộ ra đúng lúc bạn cần log của node đó.`,
     follow: [
       'Khi nào dùng DaemonSet thay vì Deployment?',
       'Làm sao rolling update DaemonSet an toàn?',
@@ -10094,33 +10581,51 @@ spec:
     topic: 'devops',
     level: 'senior',
     q: 'GitOps với Argo CD/Flux khác CI đẩy kubectl apply thế nào? Drift detection là gì?',
-    a: `**Tóm tắt:** GitOps lấy Git làm nguồn chân lý duy nhất; controller trong cluster liên tục đồng bộ trạng thái cluster với Git và phát hiện drift. CI pushing kubectl apply là imperative và dễ drift.
+    a: `**Tóm tắt:** Với **CI push**, pipeline giữ quyền vào cluster và chạy {{kubectl apply}}/{{helm upgrade}} — trạng thái thật của cluster có thể lệch khỏi Git mà không ai biết. Với **GitOps** (Argo CD/Flux), Git là **nguồn sự thật duy nhất**; một controller **trong cluster** liên tục **kéo** Git và đưa cluster về đúng trạng thái đó. **Drift detection** là phát hiện chỗ cluster khác Git (ai đó sửa tay) và báo hoặc tự sửa lại (self-heal).
 
-### CI pushes kubectl
-- Pipeline build image → kubectl apply manifest.
-- Trạng thái cluster phụ thuộc pipeline; thay đổi tay không bị phát hiện.
-- Rollback = chạy lại pipeline cũ.
-
-### GitOps (Argo CD/Flux)
-- Manifest lưu trong Git (kustomize/helm).
-- Agent trong cluster pull và sync.
-- Drift detection: so sánh live state với Git; tự heal hoặc cảnh báo.
-- Audit: mọi thay đổi qua PR, ai làm gì.
-
-### So sánh
-| Tiêu chí | CI push | GitOps |
+### Hai mô hình
+~~~seq
+title: GitOps - CI chỉ sửa Git, Argo CD kéo về cluster
+actors: Dev | CI | GitRepo | ArgoCD | Cluster
+Dev -> CI: merge PR vào app repo
+CI -> CI: build, test, push image v1.4.2
+CI -> GitRepo: sửa image tag trong repo cấu hình
+ArgoCD -> GitRepo: poll / webhook: có commit mới
+ArgoCD -> Cluster: apply manifest, chờ healthy
+ArgoCD -> ArgoCD: so Git và cluster liên tục (drift)
+~~~
+| Tiêu chí | CI push | GitOps pull |
 |---|---|---|
-| Nguồn chân lý | Pipeline | Git |
-| Drift | Không phát hiện | Phát hiện/heal |
-| Quyền cluster | CI cần credential | Agent trong cluster |
-| Rollback | Pipeline | Git revert |
+| Quyền vào cluster | CI giữ credential mạnh | Chỉ controller trong cluster |
+| Trạng thái thật | Biết lúc deploy, sau đó có thể lệch | So sánh liên tục, hiển thị lệch |
+| Rollback | Chạy lại pipeline cũ | {{git revert}} |
+| Audit | Log pipeline | Lịch sử Git (ai, khi nào, review) |
+| Nhiều cluster | Mỗi cluster một bước pipeline | ApplicationSet sinh app cho nhiều cluster |
 
-### Drift detection
-- Argo CD: so sánh resource live với desired; status OutOfSync.
-- Có thể auto-sync hoặc manual.
-- Lưu ý: field do controller mutate (replicas bởi HPA) cần ignore để tránh false drift.
+### Drift detection hoạt động ra sao
+- Argo CD render manifest từ Git (YAML, Helm, Kustomize), so với live state, trạng thái app: **Synced** hoặc **OutOfSync** kèm diff.
+- {{syncPolicy.automated.selfHeal: true}}: tự apply lại khi có người sửa tay ({{kubectl edit}}); {{prune: true}}: xoá tài nguyên không còn trong Git.
+- Một số trường do hệ thống khác quản lý (ví dụ {{replicas}} khi có HPA) cần đưa vào {{ignoreDifferences}}, nếu không Argo CD và HPA "giằng co" nhau.
 
-> Senior tip: Bắt đầu GitOps với read-only mode (không auto-sync) để quan sát drift trước khi bật self-heal; tránh "auto-heal xoá hotfix khẩn cấp".`,
+### Secret trong GitOps
+Không commit secret dạng thường. Lựa chọn: **External Secrets Operator** (đồng bộ từ AWS Secrets Manager/Vault vào Secret của K8s), **Sealed Secrets** (mã hoá bằng khoá công khai của controller, chỉ cluster giải mã được), hoặc SOPS.
+
+### Khi nào vẫn giữ CI push
+Team nhỏ, một cluster, ít service; hoặc workload tạm (môi trường preview mỗi PR) — GitOps thêm một repo và một controller cần vận hành.
+
+### Ví dụ đời thực
+Một công ty 35 service, deploy bằng Jenkins chạy {{kubectl apply}}. Trong một sự cố, kỹ sư trực sửa tay limit bộ nhớ và biến môi trường của 4 deployment; 2 tuần sau một lần deploy ghi đè ngược lại, sự cố cũ tái diễn và mất 3 giờ mới hiểu vì sao. Chuyển sang Argo CD với selfHeal và cảnh báo OutOfSync: mọi thay đổi khẩn cấp phải là commit (có thể merge nhanh), rollback bằng revert mất khoảng 2 phút, credential cluster-admin bị gỡ khỏi Jenkins. Trong quý đầu, Argo CD phát hiện 11 lần sửa tay, tất cả được chuyển thành commit hoặc bị hoàn tác.
+
+### Pitfall
+- Bật selfHeal trong khi người trực vẫn quen sửa tay → thay đổi khẩn cấp bị hoàn tác giữa sự cố; cần quy trình "commit khẩn".
+- Không {{ignoreDifferences}} cho trường do HPA/operator quản lý.
+- Để image tag {{latest}} → Git không phản ánh thật phiên bản đang chạy.
+- Một repo cấu hình khổng lồ không phân quyền → ai cũng sửa được production.
+
+### Trả lời mẫu khi phỏng vấn
+"Với CI push, pipeline giữ quyền vào cluster và chạy kubectl apply hay helm upgrade; sau lần deploy, nếu ai đó sửa tay thì cluster lệch khỏi Git mà không ai biết. Với GitOps, Git là nguồn sự thật duy nhất: CI chỉ build, test, push image rồi sửa image tag trong repo cấu hình, còn Argo CD hoặc Flux chạy trong cluster kéo Git về và đưa cluster về đúng trạng thái đó. Drift detection là việc controller so liên tục giữa Git và cluster, đánh dấu OutOfSync kèm diff, và nếu bật selfHeal thì tự hoàn tác thay đổi tay. Lợi ích là CI không cần credential mạnh, rollback bằng git revert, audit bằng lịch sử Git. Cần lưu ý ignoreDifferences cho trường do HPA quản lý, và secret thì dùng External Secrets hoặc Sealed Secrets. Ở công ty trước, Argo CD phát hiện 11 lần sửa tay chỉ trong quý đầu."
+
+> Senior tip: khi đưa GitOps vào, viết sẵn quy trình "thay đổi khẩn trong sự cố" (PR một dòng, một người duyệt, merge trong 5 phút). Thiếu quy trình này, người trực sẽ tắt selfHeal ngay lần sự cố đầu tiên và không bao giờ bật lại.`,
     follow: [
       'Khi nào giữ CI push cho workload đơn giản?',
       'Làm sao xử lý secret trong GitOps (Sealed Secrets/ESO)?',
@@ -10137,40 +10642,65 @@ spec:
     topic: 'devops',
     level: 'lead',
     q: 'Helm chart và Kustomize khác nhau thế nào? Khi nào chọn cái nào cho Java service trên K8s?',
-    a: `**Tóm tắt:** Helm là package manager templating; Kustomize là patch overlay không template. Chọn Helm cho distributable chart, Kustomize cho overlay môi trường đơn giản.
+    a: `**Tóm tắt:** **Helm** là trình quản lý gói: chart là **template** (Go template) + {{values.yaml}}, cài thành **release** có phiên bản, nâng cấp và rollback được — hợp để **đóng gói phân phối** (chart dùng chung cho nhiều service, chart của bên thứ ba). **Kustomize** không dùng template: lấy YAML gốc (**base**) rồi áp **overlay/patch** theo môi trường — đơn giản, YAML luôn hợp lệ, có sẵn trong {{kubectl apply -k}}. Với Java service: một **chart chung** cho mọi Spring Boot service, hoặc Kustomize base + overlay khi team ít service và muốn đọc YAML thẳng.
 
-### Helm
-- Template Go text/template, values.yaml.
-- Chart repository, versioning, release history, rollback.
-- Phức tạp: debug template, drift.
+### Helm hoạt động thế nào
+- Chart: {{Chart.yaml}}, {{values.yaml}}, thư mục {{templates/}}; Helm render template với values thành manifest rồi apply.
+- Release lưu lịch sử (dưới dạng Secret trong namespace); {{helm rollback}} quay về revision cũ.
+- Dependency giữa chart, repository OCI để phân phối, hook (chạy job migrate trước khi nâng cấp).
+~~~yaml
+# templates/deployment.yaml (trích) - một chart dùng cho mọi Spring Boot service
+spec:
+  replicas: {{ .Values.replicas }}
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=70 {{ .Values.jvmExtraOpts }}"
+          readinessProbe: { httpGet: { path: /actuator/health/readiness, port: 8080 } }
+~~~
 
-### Kustomize
-- Base + overlays (patches).
-- Không cần template engine; giữ YAML gốc.
-- Tích hợp kubectl -k.
+### Kustomize hoạt động thế nào
+~~~text
+base/                  deployment.yaml, service.yaml, kustomization.yaml
+overlays/staging/      kustomization.yaml (replicas: 2, configMapGenerator)
+overlays/prod/         kustomization.yaml (replicas: 6, patch tăng memory, HPA)
+kubectl apply -k overlays/prod
+~~~
+Patch có hai kiểu: **strategic merge** (viết một phần YAML, gộp theo khoá) và **JSON 6902 patch** (thao tác op/path/value chính xác). {{configMapGenerator}} thêm hash vào tên ConfigMap → đổi cấu hình tự kích hoạt rolling restart.
 
 ### So sánh
 | Tiêu chí | Helm | Kustomize |
 |---|---|---|
-| Packaging | Mạnh | Yếu |
-| Rollback | Có | Không |
-| Độ phức tạp | Cao | Thấp |
-| Phù hợp | Thư viện chia sẻ | Overlay env |
+| Cơ chế | Template + values | Base + patch, không template |
+| Logic điều kiện, vòng lặp | Có (dễ bị lạm dụng) | Không (cố ý) |
+| Phiên bản, rollback | Release, {{helm rollback}} | Dựa vào Git |
+| Phân phối cho người khác | Rất tốt (repository) | Kém |
+| Độ dễ đọc | Template dày đặc khó đọc | YAML thuần |
+| Đi với Argo CD | Hỗ trợ | Hỗ trợ |
+Hai cách có thể kết hợp: Kustomize có {{helmCharts}} để render chart rồi patch thêm; Argo CD render cả hai.
 
-### Thực tế Java service
-- Team lớn, nhiều env, cần rollback → Helm + values per env.
-- Team nhỏ, manifest đơn giản → Kustomize overlay.
-- GitOps: cả hai đều được Argo/Flux hỗ trợ.
+### Gợi ý cho Java service
+- Nhiều service Spring Boot giống nhau → **một chart nội bộ** (probe Actuator, JVM options, resource, PodDisruptionBudget, ServiceMonitor) với values riêng mỗi service; sửa một chỗ áp dụng cho tất cả.
+- Ít service, mỗi cái khác nhau, team muốn đọc YAML thẳng → Kustomize base + overlay theo môi trường.
+- Kiểm tra trong CI: {{helm lint}}, {{helm template}} + kubeconform để validate schema, test giá trị đầu ra (helm-unittest).
 
-### Chi tiết so sánh khi triển khai Spring Boot
-Helm chart thường có deployment, service, ingress, hpa, pdb, configmap, secret template. Kustomize overlay chỉ patch image tag, replica, resource. Với Java, cần quan tâm JVM memory limit, readiness probe /actuator/health, graceful shutdown. Helm giúp đóng gói chuẩn cho nhiều service; Kustomize giữ đơn giản.
+### Ví dụ đời thực
+Một team có 22 service Spring Boot, mỗi service tự copy một bộ YAML. Khi cần thêm {{preStop}} sleep để graceful shutdown và đổi đường dẫn readiness sang Actuator, phải sửa 22 repo, sót 5 → các service đó tiếp tục rớt request mỗi lần deploy. Chuyển sang một chart nội bộ có version: lần thay đổi tiếp theo (thêm PodDisruptionBudget) chỉ là một release chart và bump version trong 22 file values qua Renovate — xong trong một ngày, không sót service nào.
 
 ### Pitfall
-- Helm template quá phức tạp khó debug: dùng helm template locally.
-- Kustomize patches sai strategic merge làm mất field.
-- Secret plaintext trong values; nên dùng SOPS/ESO.
+- Template Helm đầy {{if}} lồng nhau → không ai đọc nổi; giữ chart đơn giản, ít tuỳ chọn.
+- Đưa secret vào values.yaml commit Git.
+- Kustomize overlay chồng nhiều tầng → khó biết giá trị cuối cùng; dùng {{kustomize build}} để xem.
+- Nâng cấp Helm release lỗi giữa chừng để trạng thái {{pending-upgrade}} chặn các lần sau.
 
-> Senior tip: Không trộn Helm và Kustomize bừa; chọn một chuẩn team và viết README rõ ràng.`,
+### Trả lời mẫu khi phỏng vấn
+"Helm là trình quản lý gói: chart gồm template và values, cài thành release có phiên bản, nâng cấp và rollback được, nên rất hợp để đóng gói và phân phối, ví dụ một chart chung cho mọi service hoặc chart của bên thứ ba. Kustomize không có template: tôi viết YAML gốc làm base rồi patch theo môi trường bằng overlay, YAML luôn hợp lệ và đọc thẳng được, có sẵn trong kubectl. Với nhiều service Spring Boot giống nhau, tôi chọn một chart nội bộ đóng gói sẵn probe Actuator, JVM options, resource, PodDisruptionBudget, mỗi service chỉ có file values riêng; sửa một chỗ là áp dụng cho tất cả. Nếu ít service và mỗi cái một kiểu, Kustomize đơn giản hơn. Trong CI tôi chạy helm lint, render template rồi validate schema bằng kubeconform. Ở dự án trước, chuyển 22 service sang một chart chung giúp những thay đổi kiểu thêm preStop không còn bị sót service nào."
+
+> Senior tip: giữ chart nội bộ như một thư viện có semantic version và changelog. Service nâng version chart như nâng một dependency, có thể từng bước, thay vì mọi service cùng đổi một lúc khi chart thay đổi.`,
     follow: [
       'Helm values secrets nên quản lý thế nào?',
       'Kustomize patches strategic merge khác JSON patch?',
@@ -10187,33 +10717,51 @@ Helm chart thường có deployment, service, ingress, hpa, pdb, configmap, secr
     topic: 'devops',
     level: 'lead',
     q: 'Observability trên K8s: metrics/logs/traces cho Java service triển khai thế nào? Prometheus/Grafana/Loki/Tempo hay managed?',
-    a: `**Tóm tắt:** Triển khai observability trên K8s gồm metrics (Prometheus), logs (Loki/Fluent Bit), traces (Tempo/OTel). Managed (Datadog, CloudWatch) giảm vận hành nhưng chi phí cao.
+    a: `**Tóm tắt:** Observability trên K8s cho Java service gồm metrics (Prometheus scrape Actuator), logs (Fluent Bit → Loki, structured JSON), traces (OpenTelemetry → Tempo); managed (Datadog/CloudWatch) giảm vận hành nhưng chi phí cao; bắt đầu self-hosted metrics+logs+traceId.
 
 ### Metrics
-- Prometheus scrape /actuator/prometheus (Micrometer).
-- Grafana dashboard.
-- Alertmanager rules.
+- Spring Boot Actuator + Micrometer expose /actuator/prometheus (JVM heap/GC, thread, HTTP p95/p99, Hikari pool).
+- Prometheus scrape theo ServiceMonitor (Prometheus Operator) hoặc static config.
+- Grafana dashboard + Alertmanager rule theo SLO (error rate, latency).
+- Giữ cardinality thấp: không label user id/request id; dùng exemplar để link trace.
 
 ### Logs
-- Fluent Bit DaemonSet ship log từ node/Pod.
-- Loki lưu trữ theo label.
-- Structured JSON log từ Spring Boot.
+- Fluent Bit DaemonSet ship log từ node/Pod (stdout) tới Loki.
+- Spring Boot log JSON (logstash-logback-encoder) với traceId/spanId để correlate.
+- Loki label theo namespace/app; query LogQL.
+- Retention 7-30 ngày; archive sang S3/GCS.
 
 ### Traces
-- OpenTelemetry SDK trong app, OTLP exporter.
-- Tempo/Jaeger lưu trace.
-- Correlate traceId với log.
+- OpenTelemetry SDK trong app (otel-javaagent hoặc manual), OTLP exporter tới collector.
+- Collector deploy DaemonSet/Deployment, batch + tail sampling.
+- Tempo/Jaeger lưu trace; Grafana explore correlate trace ↔ log ↔ metric.
 
 ### Managed vs self-hosted
-- Self-hosted: kiểm soát, chi phí infra thấp nhưng vận hành nặng.
-- Managed: Datadog, New Relic, CloudWatch: nhanh nhưng chi phí theo host/log volume.
+- Self-hosted: kiểm soát, chi phí infra thấp nhưng vận hành nặng (storage, retention, upgrade).
+- Managed: Datadog, New Relic, CloudWatch, Grafana Cloud: nhanh, tích hợp nhưng chi phí theo host/log volume/MTU.
+- Hybrid: self-hosted metrics/logs + managed tracing cho team nhỏ.
+
+### Ví dụ OTel collector
+~~~yaml
+receivers:
+  otlp:
+    protocols: { grpc: { endpoint: 0.0.0.0:4317 } }
+processors:
+  batch: { timeout: 5s }
+exporters:
+  otlp/tempo: { endpoint: tempo:4317 }
+service:
+  pipelines:
+    traces: { receivers: [otlp], processors: [batch], exporters: [otlp/tempo] }
+~~~
 
 ### Trên production
-- Giữ cardinality thấp (không label user id).
-- Retention: metrics 15d, logs 7-30d, traces 7d.
-- Alert theo SLO, không alert noise.
+- Giữ cardinality thấp (không label user id) để tránh Prometheus OOM.
+- Retention: metrics 15d, logs 7-30d, traces 7d; archive cold storage.
+- Alert theo SLO (burn rate), không alert noise; runbook kèm alert.
+- Sampling trace (tail-based) để giữ cost.
 
-> Senior tip: Bắt đầu với metrics + structured logs + traceId trong log; thêm distributed tracing khi có nhu cầu debug cross-service thực sự.`,
+> Senior tip: Bắt đầu với metrics + structured logs + traceId trong log; thêm distributed tracing khi có nhu cầu debug cross-service thực sự; đo cost per service.`,
     follow: [
       'Làm sao tránh cardinality explosion trong Prometheus?',
       'OpenTelemetry collector deploy thế nào trên K8s?',
@@ -10275,6 +10823,12 @@ postgresql:
 - Sai lầm: etcd cùng node với Postgres → mất node = mất cả DB và DCS → không failover.
 - Kiểm tra: {{patronictl -c /etc/patroni.yml list}}; {{etcdctl endpoint health}}; HAProxy stats page; test failover bằng {{patronictl pause}} / kill primary.
 
+### Ví dụ đời thực
+Một ngân hàng chạy PostgreSQL 3 node với Patroni + etcd 3 node + HAProxy. Diễn tập: tắt nguồn node primary lúc 2 giờ chiều. Patroni trên primary cũ mất leader key trong etcd (TTL 30 giây), một replica giành leader key và tự promote; HAProxy kiểm tra {{/primary}} của Patroni (cổng REST 8008) mỗi 3 giây và chuyển traffic ghi sang node mới. Tổng thời gian ghi bị gián đoạn đo được khoảng 35 giây. Ứng dụng Spring Boot kết nối qua HAProxy với Hikari {{connectionTimeout}} 5 giây và retry nên chỉ khoảng 0,4% request lỗi trong cửa sổ đó. Bài học từ lần diễn tập trước: {{maximum_lag_on_failover}} để quá lớn khiến một replica tụt xa được chọn làm primary — giảm xuống để không mất dữ liệu đáng kể khi failover; bật thêm một replica đồng bộ ({{synchronous_mode}}) cho dữ liệu giao dịch.
+
+### Trả lời mẫu khi phỏng vấn
+"Patroni là agent chạy cạnh mỗi node PostgreSQL, dùng một DCS như etcd để bầu leader: node giữ leader key có TTL trong etcd là primary, phải gia hạn liên tục; mất key thì tự hạ xuống, nhờ đó tránh hai primary. Khi primary chết, key hết hạn, replica khoẻ nhất và không tụt quá ngưỡng lag sẽ giành key và promote. etcd cần ba hoặc năm node để có quorum. HAProxy đứng trước, kiểm tra REST API của Patroni ở endpoint primary để chỉ gửi traffic ghi tới node đang là primary, và có thể có cổng riêng cho đọc từ replica. Ứng dụng Java kết nối qua HAProxy, cấu hình timeout kết nối ngắn và retry có giới hạn. Tôi chọn đồng bộ hay bất đồng bộ theo yêu cầu mất dữ liệu, và luôn diễn tập failover để đo thời gian gián đoạn thật."
+
 > Senior tip: Failover tự động chỉ an toàn khi DCS có quorum và fencing; luôn drill failover định kỳ, đo RTO thực tế (thường 30-60s) và RPO (data loss do async replication).`,
     follow: ['etcd quorum cần bao nhiêu node?', 'targetServerType=primary làm gì?', 'Làm sao tránh split-brain khi mạng phân mảnh?'],
     tags: ['PostgreSQL', 'Patroni', 'etcd', 'HAProxy', 'HA']
@@ -10285,29 +10839,47 @@ postgresql:
     topic: 'devops',
     level: 'mid',
     q: 'MariaDB Galera Cluster hoạt động thế nào: replication đồng bộ, quorum, SST/IST?',
-    a: `**Tóm tắt:** Galera là multi-master synchronous replication: mỗi node nhận write, certify transaction qua cluster, commit cùng lúc; cần số node lẻ để quorum; node mới join dùng SST (full copy) hoặc IST (incremental).
+    a: `**Tóm tắt:** MariaDB Galera Cluster là **multi-primary đồng bộ (gần như)**: ghi vào node nào cũng được; khi commit, transaction được **phát (broadcast) tới mọi node** kèm write-set, mỗi node **certify** (kiểm tra xung đột) theo cùng một thứ tự toàn cục, rồi apply. Cần **số node lẻ (≥ 3)** để có **quorum** khi mạng chia cắt. Node mới hoặc tụt lại đồng bộ bằng **SST** (chép toàn bộ dữ liệu) hoặc **IST** (chỉ phần thiếu, lấy từ {{gcache}} của node khác).
 
-### Replication đồng bộ (wsrep)
-- Ứng dụng ghi vào bất kỳ node nào. Node đó broadcast write-set (thay đổi hàng) tới các node khác qua gcomm.
-- Mỗi node certify: kiểm tra xung đột (certification failure) → nếu OK thì apply commit; nếu conflict thì rollback transaction ở node gốc.
-- Commit chỉ thành công khi đạt quorum (majority node ack). Latency = round-trip chậm nhất trong cluster.
+### Commit diễn ra thế nào
+1. Client ghi vào node A; transaction chạy cục bộ như bình thường (khoá dòng chỉ trên A).
+2. Lúc COMMIT, A đóng gói **write-set** (các dòng thay đổi + khoá chính) và phát qua tầng giao tiếp nhóm với **thứ tự toàn cục** (mọi node nhận cùng thứ tự).
+3. Mỗi node **certify**: write-set này có đụng dòng mà một transaction đứng trước trong thứ tự toàn cục đã sửa (và node gốc chưa thấy) không? Quyết định là **xác định** — mọi node ra cùng kết quả mà không cần hỏi nhau.
+4. Qua certify: A trả OK cho client; các node khác apply bất đồng bộ (vì vậy gọi là "virtually synchronous": dữ liệu đã chắc chắn nhưng apply có thể trễ một chút). Không qua: A rollback và trả lỗi **deadlock** cho client.
+Hệ quả: hai người ghi **cùng dòng trên hai node khác nhau** → một bên nhận lỗi lúc commit (certification failure), dù không có khoá nào chờ nhau.
 
-### Quorum và số node lẻ
-- Quorum = floor(N/2)+1. Cluster 3 node cần 2 node sống. 2 node không đủ quorum → read-only (protect data).
-- Số node lẻ (3,5,7) để tránh tie (2 vs 2). Node lẻ cho phép majority rõ ràng.
+### Quorum
+- Mỗi phần mạng đếm số node mình thấy; phần có **đa số** tiếp tục là cluster chính (Primary Component), phần thiểu số chuyển sang **non-primary** và từ chối truy vấn — chống split-brain.
+- 2 node đứt mạng → mỗi bên 50%, không bên nào đa số → cả cluster ngừng. Vì vậy dùng 3 node, hoặc 2 node + **garbd** (Galera Arbitrator, chỉ bỏ phiếu, không lưu dữ liệu).
 
-### SST vs IST
-- SST (State Snapshot Transfer): node mới/full sync nhận toàn bộ data dump (mysqldump hoặc rsync/mariabackup). Chậm nhưng an toàn.
-- IST (Incremental State Transfer): node đã có data, chỉ nhận các transaction còn thiếu từ gcache (ring buffer). Nhanh; cần gcache đủ lớn.
-
-### Xung đột ghi (certification failure)
-- Hai node cùng update cùng row → một transaction bị rollback với error "Deadlock found" / certification failure. App phải retry.
+### SST và IST
+| | SST | IST |
+|---|---|---|
+| Khi nào | Node mới, hoặc tụt quá xa (gcache không còn phần thiếu) | Node vắng mặt ngắn, phần thiếu còn trong gcache |
+| Dữ liệu chuyển | Toàn bộ DB | Chỉ write-set thiếu |
+| Phương thức | {{mariabackup}} (không khoá donor lâu), rsync | Từ gcache của donor |
+| Thời gian | DB 100GB qua mạng 1Gbps ≈ 15–30 phút trở lên | Vài giây đến vài phút |
+Đặt {{gcache.size}} đủ lớn để chứa lượng ghi trong khoảng thời gian bảo trì thường gặp (ví dụ ghi 2GB/giờ, bảo trì 2 giờ → gcache ≥ 4–5GB) để node khởi động lại dùng IST thay vì SST.
 
 ### Trên production
-- Sai lầm: deploy 2 node → không có quorum majority rõ → split-brain risk.
-- Kiểm tra: {{SHOW STATUS LIKE 'wsrep_%'}}; {{wsrep_cluster_size}}, {{wsrep_ready}}, {{wsrep_local_state_comment}}; log: "New COMPONENT".
+- Ghi vào **một node** tại một thời điểm (qua ProxySQL/MaxScale) để tránh certification failure; các node khác phục vụ đọc và dự phòng.
+- Mọi bảng cần **khoá chính** (InnoDB); bảng không có khoá chính replicate rất chậm hoặc gây lỗi.
+- Transaction lớn (UPDATE hàng triệu dòng) → write-set khổng lồ, cả cluster chững lại; chia lô.
+- Theo dõi {{wsrep_cluster_size}}, {{wsrep_cluster_status}}, {{wsrep_local_recv_queue_avg}}, {{wsrep_flow_control_paused}} (node chậm kéo cả cluster chậm theo cơ chế flow control).
 
-> Senior tip: Galera tốt cho write-heavy multi-master nhưng certification failure yêu cầu app retry; với workload conflict cao, cân nhắc single-writer + async replica.`,
+### Ví dụ đời thực
+Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin vào cả 3. Giờ cao điểm có 2–3% giao dịch đặt phòng lỗi "deadlock found" dù log không có deadlock thật — đó là certification failure khi hai người đặt cùng phòng trên hai node. Chuyển sang ghi qua MaxScale vào một node chính (đọc vẫn chia đều), thêm retry cho lỗi certification: lỗi giảm còn dưới 0,05%. Đồng thời tăng {{gcache.size}} từ 128MB mặc định lên 4GB: lần vá OS tiếp theo, mỗi node quay lại bằng IST trong 40 giây thay vì SST 25 phút.
+
+### Pitfall
+- Cluster 2 node không arbitrator.
+- Ghi đa node rồi ngạc nhiên vì lỗi "deadlock" lúc commit.
+- gcache quá nhỏ → mỗi lần restart là một lần SST nặng, donor bị chậm.
+- Một node yếu hơn (đĩa chậm) → flow control làm cả cluster chậm theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Galera là cluster multi-primary đồng bộ. Transaction chạy cục bộ trên node nhận ghi; lúc commit, write-set được phát tới mọi node theo một thứ tự toàn cục, và mỗi node tự certify xem nó có xung đột với transaction đứng trước không. Vì thứ tự giống nhau nên mọi node ra cùng quyết định. Qua thì commit, không qua thì bên khởi tạo rollback và trả lỗi deadlock, nên ghi cùng dòng trên hai node sẽ có một bên lỗi lúc commit. Cluster cần số node lẻ, tối thiểu ba hoặc hai node cộng arbitrator, để phần đa số giữ quyền chính khi mạng chia cắt, còn phần thiểu số tự ngừng nhận truy vấn. Node mới hoặc tụt xa thì đồng bộ bằng SST, tức chép toàn bộ, thường bằng mariabackup; node vắng ngắn thì dùng IST lấy phần thiếu từ gcache. Thực tế tôi ghi vào một node qua ProxySQL hoặc MaxScale và đặt gcache đủ lớn để restart chỉ cần IST."
+
+> Senior tip: tính kích thước gcache từ lượng binlog/write-set sinh ra mỗi giờ nhân với thời gian bảo trì dài nhất bạn hay làm. Đổi một tham số này thường biến mỗi lần bảo trì từ "chờ 30 phút SST" thành "vài chục giây IST".`,
     follow: ['SST mất bao lâu với DB 100GB?', 'gcache size đặt bao nhiêu?', 'Galera vs Group Replication?'],
     tags: ['MariaDB', 'Galera', 'HA', 'Replication']
   }
@@ -10317,25 +10889,60 @@ postgresql:
     topic: 'devops',
     level: 'senior',
     q: 'Redis Sentinel: quorum, failover và client (Lettuce/Redisson) tự phát hiện master mới?',
-    a: `**Tóm tắt:** Sentinel là hệ thống giám sát + failover cho Redis single-master: nhiều Sentinel vote, đạt quorum thì promote replica; client (Lettuce/Redisson)subscribe Sentinel để biết master mới.
+    a: `**Tóm tắt:** Redis Sentinel là nhóm tiến trình **giám sát + tự failover** cho mô hình một master nhiều replica. Mỗi Sentinel ping master; khi đủ **quorum** Sentinel cùng thấy master "chết" (ODOWN), các Sentinel **bầu một leader** bằng **đa số**, leader chọn replica tốt nhất, promote nó và cấu hình lại các replica khác. Client như Lettuce/Redisson **không giữ địa chỉ master cố định** mà hỏi Sentinel và nghe thông báo đổi master để tự kết nối lại.
 
-### Quorum
-- Sentinel không phải data node, chỉ monitor. Cần ≥3 Sentinel (số lẻ) để majority vote. Quorum cấu hình: {{sentinel monitor mymaster 127.0.0.1 6379 2}} → cần 2 Sentinel đồng ý master down.
+### Quorum và đa số — hai khái niệm khác nhau
+- **quorum** (trong {{sentinel monitor mymaster 10.0.0.1 6379 2}}): số Sentinel phải đồng ý master không phản hồi để chuyển từ SDOWN (một Sentinel nghĩ là chết) sang **ODOWN** (đã đủ số đồng ý).
+- **Đa số** (majority) của toàn bộ Sentinel: cần để **bầu leader** thực hiện failover. Với 3 Sentinel thì cần 2.
+Vì vậy dùng **ít nhất 3 Sentinel trên 3 máy/zone khác nhau**; 2 Sentinel mất một cái là không còn đa số để failover.
 
-### Failover
-- Sentinel phát hiện master down (subjective down → objective down khi quorum đồng ý). Bầu leader Sentinel (Raft-like). Leader chọn replica tốt nhất (replication offset cao nhất, priority thấp nhất) và {{REPLICAOF NO ONE}}. Các Sentinel khác reconfigure replica theo master mới. Thông báo qua pub/sub channel.
+### Failover từng bước
+1. Master không trả lời quá {{down-after-milliseconds}} (ví dụ 5000) → SDOWN trên từng Sentinel.
+2. Đủ quorum → ODOWN; các Sentinel bầu leader (theo epoch, kiểu Raft đơn giản).
+3. Leader chọn replica: loại replica mất kết nối lâu, ưu tiên {{replica-priority}} thấp, rồi replica có **offset replication lớn nhất** (ít mất dữ liệu nhất).
+4. Gửi {{REPLICAOF NO ONE}} cho replica được chọn; các replica khác trỏ sang master mới; công bố cấu hình mới (kênh {{+switch-master}}).
+5. Master cũ quay lại → bị biến thành replica của master mới.
+Thời gian thường khoảng {{down-after-milliseconds}} + vài giây.
 
-### Client
-- Lettuce/Redisson kết nối tới Sentinel list, query {{SENTINEL get-master-addr-by-name}} để lấy master hiện tại; subscribe để reconnect khi failover. Spring Data Redis: {{RedisSentinelConfiguration}}.
+### Client tự phát hiện master mới
+~~~yaml
+spring:
+  data:
+    redis:
+      sentinel:
+        master: mymaster
+        nodes: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      timeout: 2s           # lệnh treo khi master chết sẽ lỗi nhanh thay vì chờ mãi
+~~~
+- **Lettuce** (mặc định trong Spring Boot): hỏi Sentinel địa chỉ master, theo dõi thay đổi và kết nối lại; có thể cấu hình đọc từ replica ({{ReadFrom.REPLICA_PREFERRED}}) khi chấp nhận dữ liệu hơi cũ.
+- **Redisson**: {{useSentinelServers()}} với danh sách Sentinel, tự cập nhật topology.
+- Trong lúc failover sẽ có vài giây lỗi → lệnh idempotent thì retry có backoff; lệnh không idempotent (INCR) cần cân nhắc.
 
-### Sentinel vs Redis Cluster
-- Sentinel: single master + replicas, data không sharding, đơn giản; phù hợp session/cache nhỏ. Cluster: sharding 16384 slot, multi-master, scale ngang; phức tạp hơn, client phải hỗ trợ MOVED/ASK redirect.
+### Mất dữ liệu khi failover
+Replication của Redis là **bất đồng bộ**: ghi đã trả OK trên master nhưng chưa tới replica sẽ mất khi failover. Giảm rủi ro bằng {{min-replicas-to-write 1}} và {{min-replicas-max-lag 10}} (master từ chối ghi khi không có replica theo kịp) — đổi lại có thể từ chối ghi khi replica gặp sự cố. Lệnh {{WAIT}} cho phép chờ ghi tới N replica với thao tác quan trọng.
 
-### Trên production
-- Sai lầm: Sentinel đặt cùng node với Redis → node chết = mất cả.
-- Kiểm tra: {{redis-cli -p 26379 SENTINEL master mymaster}}; {{SENTINEL ckquorum mymaster}}.
+### Sentinel hay Redis Cluster
+| | Sentinel | Redis Cluster |
+|---|---|---|
+| Dữ liệu | Toàn bộ trên một master | Chia 16.384 slot cho nhiều master |
+| Mở rộng ghi | Không | Có |
+| Failover | Do Sentinel | Do các master trong cluster bỏ phiếu |
+| Client | Hỏi Sentinel | Biết bản đồ slot, xử lý MOVED/ASK |
+| Hợp với | Dữ liệu vừa một máy, cần HA | Dữ liệu/lượng ghi lớn hơn một máy |
 
-> Senior tip: Sentinel failover thường 10-30s; app cần retry/idempotent; với cache, accept eventual consistency và fallback DB.`,
+### Ví dụ đời thực
+Một hệ thống session dùng 1 master + 1 replica + **2 Sentinel** đặt chung máy với Redis. Máy chứa master và một Sentinel chết: Sentinel còn lại không đủ đa số → **không failover**, đăng nhập lỗi 25 phút đến khi có người promote tay. Sửa: 3 Sentinel trên 3 zone, 2 replica, Lettuce cấu hình Sentinel với timeout 2s. Diễn tập tắt master: failover trong khoảng 7 giây, ứng dụng tự kết nối lại, chỉ khoảng 0,3% request lỗi trong lúc chuyển.
+
+### Pitfall
+- Hard-code IP master trong cấu hình ứng dụng.
+- Số Sentinel chẵn hoặc đặt cùng máy với master.
+- Không đặt timeout lệnh → thread treo khi master chết.
+- Dùng Redis làm nguồn dữ liệu duy nhất cho thứ không được mất (ví dụ số dư) mà quên replication bất đồng bộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Redis Sentinel là nhóm tiến trình giám sát và tự failover cho mô hình một master nhiều replica. Có hai ngưỡng khác nhau: quorum là số Sentinel cần đồng ý master đã chết, còn đa số toàn bộ Sentinel là để bầu leader thực hiện failover. Vì thế tôi luôn dùng ít nhất ba Sentinel trên ba zone. Leader chọn replica có độ ưu tiên phù hợp và offset replication lớn nhất, promote nó, trỏ các replica khác sang và công bố master mới. Phía Java, Lettuce trong Spring Boot cấu hình danh sách Sentinel thay vì địa chỉ master, tự hỏi master và kết nối lại khi đổi; tôi đặt timeout lệnh khoảng hai giây và retry có backoff cho lệnh idempotent. Cần nhớ replication bất đồng bộ nên có thể mất vài ghi cuối khi failover; min-replicas-to-write giảm rủi ro đó. Nếu dữ liệu hoặc lượng ghi vượt một máy thì chuyển sang Redis Cluster."
+
+> Senior tip: diễn tập bằng {{SENTINEL FAILOVER mymaster}} trên staging và đo hai con số — thời gian ứng dụng có lỗi và số lệnh lỗi. Nếu chưa từng đo, cấu hình timeout/retry phía client gần như chắc chắn chưa đúng.`,
     follow: ['Redis Cluster failover thế nào?', 'Sentinel quorum vs cluster quorum?', 'Lettuce auto-reconnect config?'],
     tags: ['Redis', 'Sentinel', 'HA']
   }
@@ -10345,27 +10952,43 @@ postgresql:
     topic: 'devops',
     level: 'senior',
     q: 'Kafka cluster HA: replication factor, min.insync.replicas, rack awareness, KRaft quorum?',
-    a: `**Tóm tắt:** Kafka HA dựa trên replication: mỗi partition có leader + replicas; RF=3 + min.insync.replicas=2 cho phép mất 1 broker vẫn ghi; rack awareness phân tán replica; KRaft thay ZooKeeper bằng controller quorum Raft.
+    a: `**Tóm tắt:** Kafka HA dựa trên **replication theo partition**: mỗi partition có một **leader** và các **follower**; tập follower theo kịp gọi là **ISR**. Cấu hình chuẩn cho dữ liệu quan trọng: **replication.factor = 3**, **min.insync.replicas = 2**, producer **acks=all** — mất 1 broker vẫn đọc ghi bình thường, không mất message đã xác nhận. **Rack awareness** đặt 3 bản sao ở 3 zone. **KRaft** (bắt buộc từ Kafka 4.0) thay ZooKeeper bằng một nhóm **controller** dùng giao thức đồng thuận Raft để giữ metadata.
 
-### Replication factor & min.insync.replicas
-- RF=3: mỗi partition có 3 bản copy trên 3 broker. Producer acks=all chờ tất cả ISR (in-sync replicas) ack.
-- min.insync.replicas=2: leader chỉ accept write khi ≥2 ISR sẵn sàng. Mất 1 broker → còn 2 ISR → vẫn ghi. Mất 2 broker → không đủ min.insync → producer lỗi (an toàn, tránh mất data).
-- ISR co giãn: broker chậm bị loại khỏi ISR; khi bắt kịp thì quay lại.
+### Replication, ISR và acks
+- Producer ghi vào leader; follower kéo dữ liệu từ leader. Follower tụt quá {{replica.lag.time.max.ms}} (mặc định 30 giây) bị loại khỏi ISR.
+- {{acks=all}}: leader chỉ trả OK khi **mọi replica trong ISR** đã có message. Kết hợp {{min.insync.replicas=2}}: nếu ISR còn dưới 2, leader **từ chối ghi** ({{NotEnoughReplicasException}}) thay vì nhận ghi chỉ một bản.
+- Từ Kafka 3.0, producer mặc định {{acks=all}} và {{enable.idempotence=true}} (chống trùng khi retry).
+
+| RF / min.insync | Mất 1 broker | Mất 2 broker |
+|---|---|---|
+| 3 / 2 | Đọc ghi bình thường | Ghi bị từ chối, đọc vẫn được (dữ liệu an toàn) |
+| 3 / 1 | Ghi bình thường | Vẫn ghi với 1 bản — mất broker đó là mất dữ liệu |
+| 2 / 2 | Ghi bị từ chối | — |
+
+### Unclean leader election
+{{unclean.leader.election.enable=false}} (mặc định): chỉ replica trong ISR mới được làm leader → không mất dữ liệu đã xác nhận, nhưng partition có thể **không khả dụng** nếu mọi ISR đều chết. Bật lên thì ưu tiên sẵn sàng hơn dữ liệu — chỉ hợp với log/metric chấp nhận mất.
 
 ### Rack awareness
-- Cấu hình {{broker.rack=rack1}}; Kafka đặt replica trên rack khác nhau → mất cả rack vẫn còn data.
+Đặt {{broker.rack=ap-southeast-1a}} cho từng broker → Kafka rải 3 bản sao của một partition lên 3 rack/zone khác nhau; mất cả một zone vẫn còn 2 bản. Consumer có thể đọc từ follower cùng zone ({{client.rack}} + {{replica.selector.class}}) để giảm chi phí mạng liên zone.
 
 ### KRaft
-- Kafka 3.x+ bỏ ZooKeeper, dùng KRaft: controller nodes (quorum Raft) quản lý metadata. Cần số controller lẻ (3 hoặc 5). Controller và broker có thể cùng process (combined) hoặc tách (dedicated).
+- Một nhóm controller (thường 3 hoặc 5) lưu metadata (topic, partition, ISR, cấu hình) trong một log nội bộ đồng thuận bằng Raft; một controller là leader.
+- Mất controller leader → bầu lại trong vài giây; cần đa số controller còn sống.
+- Lợi ích so với ZooKeeper: một hệ thống thay vì hai, failover metadata nhanh hơn, hỗ trợ số partition lớn hơn nhiều. Kafka 4.0 đã gỡ hẳn ZooKeeper.
 
-### Mất bao nhiêu broker vẫn ghi được
-- RF=3, min.insync=2: mất 1 broker vẫn ghi (2 ISR). Mất 2 broker: không ghi được (chỉ 1 ISR) nhưng đọc vẫn OK nếu còn replica.
+### Ví dụ đời thực
+Topic {{payment-events}} cấu hình RF=2, min.insync.replicas=1, producer acks=1 từ thời "làm nhanh". Khi nâng cấp rolling, một broker bị khởi động lại đúng lúc broker kia đang là leader với follower tụt hậu; unclean election không bật nhưng acks=1 khiến khoảng 1.900 message đã trả OK chỉ nằm trên leader cũ và mất khi nó hỏng đĩa. Đối soát thanh toán phát hiện lệch. Sửa: RF=3, min.insync.replicas=2, acks=all, rack awareness 3 zone, cảnh báo {{UnderReplicatedPartitions > 0}} và {{UnderMinIsrPartitionCount > 0}}. Các lần nâng cấp sau không mất message nào.
 
-### Trên production
-- Sai lầm: RF=3 nhưng min.insync=1 → mất 1 broker vẫn ghi nhưng có thể mất data nếu leader chết trước khi replicate.
-- Kiểm tra: {{kafka-topics.sh --describe}} (ISR list); {{kafka-metadata-quorum.sh --status}}.
+### Pitfall
+- RF=3 nhưng min.insync.replicas=1 → vẫn có lúc chỉ ghi một bản.
+- Đặt min.insync.replicas = RF → mất 1 broker là ngừng ghi.
+- Topic nội bộ ({{__consumer_offsets}}, topic của Kafka Streams/Connect) để RF thấp.
+- Không giám sát under-replicated partitions — chỉ biết khi đã mất dữ liệu.
 
-> Senior tip: HA Kafka = RF3 + min.insync2 + acks=all + rack awareness; test bằng kill broker và đo message loss.`,
+### Trả lời mẫu khi phỏng vấn
+"Kafka đạt HA bằng replication theo partition: mỗi partition có leader và follower, follower theo kịp nằm trong ISR. Với dữ liệu quan trọng tôi dùng replication factor 3, min.insync.replicas 2 và producer acks=all, từ Kafka 3 thì đây cũng là mặc định của producer cùng idempotence. Như vậy leader chỉ trả OK khi ít nhất hai bản đã có message; mất một broker vẫn ghi bình thường, mất hai thì Kafka từ chối ghi chứ không nhận ghi một bản. Tôi để unclean leader election tắt để không bao giờ chọn leader thiếu dữ liệu. Rack awareness đặt ba bản sao ở ba zone, nên mất cả zone vẫn còn hai bản. Metadata thì KRaft quản lý bằng một nhóm controller đồng thuận Raft, Kafka 4 đã bỏ ZooKeeper. Tôi luôn cảnh báo khi có under-replicated hoặc under-min-ISR partition."
+
+> Senior tip: kiểm tra định kỳ cấu hình thực tế của **mọi** topic ({{kafka-configs --describe}}) chứ không chỉ mặc định của broker. Topic được tạo tự động hoặc bởi framework thường mang RF và min.insync khác hẳn mặc định bạn tưởng.`,
     follow: ['ZooKeeper vs KRaft?', 'unclean.leader.election.enable làm gì?', 'Kafka replication lag alert?'],
     tags: ['Kafka', 'HA', 'KRaft']
   }
@@ -10375,25 +10998,41 @@ postgresql:
     topic: 'devops',
     level: 'lead',
     q: 'Elasticsearch cluster HA: master-eligible node, quorum, shard + replica, split-brain?',
-    a: `**Tóm tắt:** ES cluster dùng Zen2 discovery: master-eligible nodes bầu master qua quorum (majority); data phân shard + replica; split-brain được ngăn bằng quorum và voting configuration.
+    a: `**Tóm tắt:** Elasticsearch HA có hai lớp. **Lớp điều phối**: các node **master-eligible** bầu một master quản lý trạng thái cluster (index, mapping, vị trí shard) bằng **đa số** trong **voting configuration** — từ 7.x cluster tự quản lý danh sách này nên split-brain kiểu cũ không còn xảy ra nếu cấu hình đúng. **Lớp dữ liệu**: mỗi index chia thành **primary shard**, mỗi primary có **replica** đặt trên node khác (và zone khác) — mất node vẫn đọc ghi được, replica được dựng lại tự động.
 
-### Master-eligible & quorum
-- Node có role master. Cần số master-eligible lẻ (3,5). Quorum = majority. ES 7+ tự tính quorum từ voting config.
-- Master quản lý cluster state, shard allocation. Mất master → bầu master mới từ các node còn lại (nếu còn quorum).
+### Master và quorum
+- Dùng **3 node master-eligible chuyên dụng** (không chứa dữ liệu, cấu hình nhỏ) ở 3 zone; mất 1 vẫn còn đa số 2/3.
+- Elasticsearch 7+ tự điều chỉnh voting configuration khi thêm/bớt master-eligible; chỉ cần {{cluster.initial_master_nodes}} **khi khởi tạo cluster lần đầu** (rồi xoá khỏi cấu hình).
+- Trước 7.x phải tự đặt {{discovery.zen.minimum_master_nodes}} = N/2 + 1; đặt sai là nguồn split-brain kinh điển — hai master, hai phiên bản dữ liệu.
+- Master bận (GC dài, quá nhiều shard) → cluster chậm toàn bộ dù data node khoẻ.
 
-### Shard + replica
-- Index chia thành N primary shard. Mỗi primary có R replica shard trên node khác. Mất node chứa primary → replica promote thành primary.
-- Replica count quyết định fault tolerance: replica=1 cho phép mất 1 node chứa shard đó.
+### Shard và replica
+- Primary shard cố định khi tạo index (đổi phải reindex/split/shrink); replica đổi lúc nào cũng được.
+- Replica không bao giờ nằm cùng node với primary của nó; với **shard allocation awareness** ({{node.attr.zone}} + {{cluster.routing.allocation.awareness.attributes: zone}}) thì không cùng zone.
+- Ghi: vào primary rồi đồng bộ sang replica đang hoạt động. Đọc: primary hoặc replica, nên replica cũng tăng khả năng phục vụ tìm kiếm.
+- **Kích thước shard** nên khoảng 10–50GB; quá nhiều shard nhỏ làm master và heap quá tải.
 
-### Split-brain
-- Mạng phân mảnh: hai nhóm node đều bầu master → hai cluster state khác nhau → data diverge. ES ngăn bằng quorum: nhóm < majority không bầu master → read-only/down.
-- Voting config: có thể thêm tie-breaker node (master-eligible nhưng không data) để giữ quorum với số node chẵn.
+### Trạng thái cluster
+| Màu | Nghĩa |
+|---|---|
+| green | Mọi primary và replica đã được gán |
+| yellow | Mọi primary có, thiếu một số replica (đang ở mức rủi ro) |
+| red | Có primary chưa gán → một phần dữ liệu không đọc/ghi được |
+Điều tra bằng {{GET _cluster/allocation/explain}} — cho biết vì sao shard chưa được gán (đĩa vượt watermark, quy tắc awareness, node thiếu).
 
-### Trên production
-- Sai lầm: 2 master-eligible node → tie → split-brain.
-- Kiểm tra: {{GET _cluster/health}}, {{GET _cat/nodes}}, {{GET _cat/shards}}; log "master node changed".
+### Ví dụ đời thực
+Cụm log 9 node, cả 9 đều master-eligible kiêm data, 4.800 shard (đa số dưới 1GB do index theo ngày cho từng service). Mỗi lần GC dài trên node đang là master, cluster mất master 20–40 giây, ghi log bị dồn. Thiết kế lại: 3 master chuyên dụng (4GB heap) ở 3 zone, data node riêng, chuyển sang index theo tuần với rollover theo kích thước 40GB qua ILM, số shard giảm còn khoảng 600. Sau đó không còn lần mất master nào trong 6 tháng; một zone mất điện 2 giờ, cluster chuyển yellow rồi tự về green sau khi dựng lại replica.
 
-> Senior tip: Luôn dùng 3 master-eligible dedicated node nhỏ + data node riêng; monitor cluster health và unassigned shards.`,
+### Pitfall
+- 2 node master-eligible: mất 1 là mất đa số, cluster ngừng.
+- Để mọi node đều master-eligible trong cụm lớn → master chia tài nguyên với truy vấn nặng.
+- Replica = 0 cho dữ liệu cần giữ "vì tiết kiệm" → mất node là red.
+- Đĩa vượt watermark (mặc định 85%/90%/95%) → không gán shard mới, rồi index chuyển read-only.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi nhìn Elasticsearch HA ở hai lớp. Lớp điều phối là các node master-eligible bầu master bằng đa số trong voting configuration. Tôi dùng ba node master chuyên dụng ở ba zone, cấu hình nhỏ và không chứa dữ liệu, để mất một vẫn còn đa số và master không bị truy vấn nặng làm chậm. Từ bản 7 cluster tự quản lý voting configuration, chỉ cần initial_master_nodes khi khởi tạo lần đầu, nên split-brain kiểu đặt sai minimum_master_nodes ngày trước không còn. Lớp dữ liệu là primary shard và replica, replica không bao giờ cùng node với primary, và với allocation awareness theo zone thì không cùng zone. Tôi giữ shard khoảng 10 đến 50GB, dùng ILM để rollover. Khi cluster yellow hoặc red, tôi dùng allocation explain để biết vì sao shard chưa được gán, thường do watermark đĩa hoặc quy tắc awareness."
+
+> Senior tip: theo dõi **tổng số shard trên mỗi node** và kích thước shard trung bình hằng tuần. Phần lớn sự cố master không ổn định ở các cụm log bắt nguồn từ "quá nhiều shard nhỏ", chứ không phải thiếu phần cứng.`,
     follow: ['Dedicated master node sizing?', 'Shard size khuyến nghị?', 'Cross-cluster replication?'],
     tags: ['Elasticsearch', 'HA', 'Shards']
   }
@@ -10403,28 +11042,51 @@ postgresql:
     topic: 'devops',
     level: 'senior',
     q: 'MongoDB replica set HA: primary/secondary, election, write concern, fencing?',
-    a: `**Tóm tắt:** MongoDB replica set: một primary nhận write, secondary replicate qua oplog; primary chết → election bầu primary mới; write concern kiểm soát durability; fencing qua majority write concern.
+    a: `**Tóm tắt:** MongoDB replica set có **một primary** nhận ghi và các **secondary** sao chép bằng cách đọc **oplog** của primary. Primary mất liên lạc với đa số → các node bầu primary mới (giao thức dựa trên Raft) trong khoảng **10–12 giây**. **Write concern** quyết định một ghi được coi là xong khi nào: {{w: "majority"}} (mặc định từ MongoDB 5.0) đảm bảo ghi đã xác nhận **không bị rollback** khi failover. Primary cũ bị cô lập tự **step down** vì không còn thấy đa số — đó là cơ chế chống hai primary cùng nhận ghi.
 
-### Replication
-- Primary ghi vào oplog (capped collection). Secondary tail oplog và apply. Replication async mặc định; secondary có thể lag.
+### Replication và oplog
+- Mọi thay đổi trên primary ghi vào oplog (collection có kích thước giới hạn); secondary liên tục kéo và áp dụng.
+- **Oplog window** = khoảng thời gian oplog chứa được. Secondary tụt quá window phải đồng bộ lại từ đầu (initial sync) — đặt oplog đủ lớn cho bảo trì dài nhất.
 
 ### Election
-- Heartbeat giữa members. Primary không reachable → secondary có vote majority bầu primary mới. Cần số member lẻ (3,5,7) hoặc arbiter để majority.
-- Priority và votes: member có priority 0 không thể làm primary (dùng cho DR site).
+- Mỗi node gửi heartbeat 2 giây/lần; không thấy primary quá {{electionTimeoutMillis}} (mặc định 10 giây) → một secondary ứng cử, cần **phiếu đa số** các node có quyền bầu.
+- Node có {{priority}} cao hơn và dữ liệu mới hơn được ưu tiên; priority 0 không bao giờ làm primary (ví dụ node ở DC dự phòng).
+- **Arbiter**: chỉ bỏ phiếu, không có dữ liệu. Dùng khi chỉ đủ tiền cho 2 node dữ liệu, nhưng làm {{w: "majority"}} kém hiệu quả (P-S-A mất S thì majority ghi bị treo) → khuyến nghị 3 node dữ liệu.
 
-### Write concern
-- {{w: 1}}: primary ack (nhanh, có thể mất data nếu primary chết trước replicate).
-- {{w: "majority"}}: majority members ack (chậm hơn, durable). Kết hợp {{j: true}} để journal fsync.
-- Read concern: local/majority/linearizable cho read consistency.
+### Write concern và read concern
+| Thiết lập | Ý nghĩa | Rủi ro |
+|---|---|---|
+| w: 1 | Primary ghi xong là OK | Failover có thể rollback ghi chưa tới secondary |
+| w: "majority" | Đa số node đã ghi (kèm journal) | Chậm hơn vài ms; an toàn khi failover |
+| readConcern "majority" | Chỉ đọc dữ liệu đã được đa số xác nhận | Không đọc phải dữ liệu sẽ bị rollback |
+| readPreference secondary | Đọc từ secondary | Dữ liệu có thể cũ vài giây |
 
 ### Fencing
-- MongoDB dùng majority write concern + term (Raft-like) để tránh split-brain: primary cũ với term thấp bị step down khi thấy term cao hơn.
+Primary bị chia cắt khỏi đa số **tự hạ xuống secondary** sau khi không còn liên lạc được đa số, nên phía thiểu số không chấp nhận ghi majority. Có thể có một khoảng ngắn hai node cùng nghĩ mình là primary, nhưng ghi {{w: "majority"}} vào primary cũ sẽ không thể đạt đa số → không bao giờ được xác nhận. Đó là lý do quan trọng để dùng majority cho dữ liệu quan trọng.
 
-### Trên production
-- Sai lầm: w:1 + failover tự động → mất write chưa replicate.
-- Kiểm tra: {{rs.status()}}, {{rs.printReplicationInfo()}}; mongostat; oplog window.
+### Phía Java
+~~~java
+// Spring Data MongoDB / driver: retryable writes mặc định bật từ driver 3.6+
+MongoClientSettings settings = MongoClientSettings.builder()
+    .applyConnectionString(new ConnectionString(
+        "mongodb://m1,m2,m3/shop?replicaSet=rs0&w=majority&retryWrites=true"))
+    .readPreference(ReadPreference.primaryPreferred())
+    .build();   // driver tự phát hiện primary mới sau election và retry ghi một lần
+~~~
 
-> Senior tip: Production nên w:majority + j:true cho data quan trọng; monitor replication lag và oplog window.`,
+### Ví dụ đời thực
+Một app đặt lịch dùng MongoDB 3 node với {{w: 1}} do "cấu hình cũ". Một lần mạng chập chờn khiến primary bị cô lập 15 giây; trong lúc đó nó vẫn nhận khoảng 300 lượt đặt lịch, sau election các ghi này bị **rollback** (lưu vào thư mục rollback, không ai để ý) — khách hàng có tin nhắn xác nhận nhưng không có lịch. Chuyển sang {{w: "majority"}} với retryWrites, cảnh báo replication lag và theo dõi thư mục rollback. Latency ghi tăng khoảng 3ms; không còn lịch "biến mất".
+
+### Pitfall
+- Kiến trúc P-S-A (có arbiter) kèm write concern majority → treo ghi khi mất một node dữ liệu.
+- Đọc secondary cho luồng "vừa ghi xong đọc lại" → người dùng thấy dữ liệu cũ.
+- Oplog quá nhỏ → secondary bảo trì xong phải initial sync hàng giờ.
+- Chuỗi kết nối chỉ có một host → driver không tìm được primary mới.
+
+### Trả lời mẫu khi phỏng vấn
+"MongoDB replica set có một primary nhận ghi, các secondary kéo oplog của primary để sao chép. Nếu primary mất liên lạc với đa số quá khoảng 10 giây, các node bầu primary mới theo giao thức dựa trên Raft, ưu tiên node có priority cao và dữ liệu mới. Điều tôi quan tâm nhất là write concern: với dữ liệu quan trọng tôi dùng w majority, cũng là mặc định từ 5.0, để ghi đã xác nhận không bị rollback khi failover. Với w 1, primary bị cô lập vẫn nhận ghi và sau election những ghi đó bị rollback. Fencing ở đây là primary mất đa số tự step down, và ghi majority vào phía thiểu số không bao giờ được xác nhận. Tôi dùng ba node dữ liệu thay vì arbiter, chuỗi kết nối liệt kê đủ các host, bật retryWrites, và cân nhắc đọc secondary chỉ khi chấp nhận dữ liệu cũ vài giây."
+
+> Senior tip: kiểm tra ngay write concern thực tế ở chuỗi kết nối và ở mặc định của cluster ({{getDefaultRWConcern}}). Các hệ thống tạo trước MongoDB 5.0 thường vẫn chạy w 1 mà không ai biết.`,
     follow: ['Arbiter là gì, khi nào dùng?', 'Read preference primary/secondary?', 'Sharded cluster HA?'],
     tags: ['MongoDB', 'ReplicaSet', 'HA']
   }
@@ -10434,31 +11096,52 @@ postgresql:
     topic: 'devops',
     level: 'mid',
     q: 'Thiết kế chung HA: số node lẻ, quorum, fencing và kiểm thử failover định kỳ?',
-    a: `**Tóm tắt:** HA đúng cần: số node lẻ để majority rõ, quorum để quyết định, fencing để tránh split-brain, và drill failover định kỳ để đo RPO/RTO thực tế.
+    a: `**Tóm tắt:** HA đúng nghĩa cần bốn thứ: **số node bỏ phiếu lẻ** để luôn có đa số rõ ràng, **quorum** để chỉ phía đa số được ra quyết định, **fencing** để chắc chắn node cũ thôi nhận ghi trước khi node mới thay thế, và **diễn tập failover định kỳ** để đo RTO/RPO thực tế. Thiếu bất kỳ cái nào, hệ thống "có dự phòng" vẫn có thể ngừng hoạt động hoặc tệ hơn — hỏng dữ liệu do split-brain.
 
-### Số node lẻ
-- Quorum majority = floor(N/2)+1. Node lẻ (3,5,7) tránh tie. 3 node chịu được 1 failure; 5 node chịu 2 failure. Chi phí tăng, chọn theo SLO.
+### Vì sao số node lẻ
+Quorum = floor(N/2) + 1.
+| Số node | Quorum | Chịu được mất |
+|---|---|---|
+| 2 | 2 | 0 |
+| 3 | 2 | 1 |
+| 4 | 3 | 1 |
+| 5 | 3 | 2 |
+Node thứ 4 không tăng khả năng chịu lỗi so với 3, chỉ thêm chi phí và thêm một bên cần đồng ý. Với 2 site, đặt node thứ ba (hoặc một **witness/arbiter** nhẹ) ở site thứ ba để tránh tình huống 50/50.
 
-### Quorum
-- Quorum là số tối thiểu node phải đồng ý để thực hiện thay đổi (bầu leader, commit write). Nhóm < quorum không acting → tránh split-brain.
+### Quorum giải quyết vấn đề gì
+Khi mạng chia cắt, mỗi bên không phân biệt được "bên kia chết" hay "đường truyền đứt". Quy tắc đơn giản: **chỉ phía thấy đa số được làm chính**; phía thiểu số tự dừng nhận ghi. Ví dụ etcd, Patroni, Kafka KRaft, MongoDB, Elasticsearch, Redis Sentinel đều theo quy tắc này.
 
-### Fencing (STONITH)
-- Khi mạng phân mảnh, node cũ có thể vẫn nghĩ mình primary. Fencing forcibly kill node cũ (power off, network block) trước khi promote node mới. Ví dụ: IPMI, cloud API terminate instance, pg_ctl promote + revoke VIP.
-- Soft fencing: revoke lease trong DCS; hard fencing: kill node.
+### Fencing
+Quorum quyết định ai được làm chính, nhưng node cũ có thể **chưa biết** mình đã mất vai (đang GC dài, mạng chậm) và vẫn ghi. Fencing chặn điều đó:
+- **STONITH** ("bắn vào đầu node kia"): tắt nguồn qua IPMI/API cloud trước khi chuyển vai.
+- **Thu hồi quyền truy cập tài nguyên**: gỡ volume, đổi quyền storage, chặn IP.
+- **Fencing token**: mỗi lần đổi chủ tăng một số thứ tự; storage từ chối ghi mang token cũ.
+- **Lease có hạn**: node chính phải gia hạn lock; hết hạn mà không gia hạn được thì tự dừng (watchdog).
 
-### Kiểm thử failover (chaos)
-- Drill định kỳ: kill primary, network partition, disk full. Đo thời gian service recover (RTO) và data loss (RPO).
-- Chaos engineering: Netflix Chaos Monkey; LitmusChaos trên K8s.
+### RTO và RPO
+- **RTO** (Recovery Time Objective): tối đa bao lâu được ngừng dịch vụ.
+- **RPO** (Recovery Point Objective): tối đa bao nhiêu dữ liệu được mất (tính theo thời gian).
+Replication đồng bộ → RPO ≈ 0 nhưng ghi chậm hơn và phụ thuộc replica; bất đồng bộ → nhanh hơn nhưng RPO bằng độ trễ replication.
 
-### RPO / RTO
-- RPO (Recovery Point Objective): mất tối đa bao nhiêu data (giây/phút). RTO (Recovery Time Objective): downtime tối đa.
-- HA sync replication → RPO≈0 nhưng latency cao; async → RPO>0 nhưng nhanh hơn.
+### Diễn tập failover
+- Lịch định kỳ (quý), bắt đầu ở staging rồi production giờ thấp điểm, có kịch bản và người quan sát.
+- Các kịch bản: tắt node chính, chia cắt mạng, làm chậm đĩa, tắt cả một zone.
+- Đo: thời gian phát hiện, thời gian chuyển, lỗi phía ứng dụng, dữ liệu mất; so với RTO/RPO cam kết.
+- Công cụ: Chaos Mesh, LitmusChaos (Kubernetes), AWS Fault Injection Service, Toxiproxy cho độ trễ mạng.
 
-### Trên production
-- Sai lầm: cấu hình HA nhưng không drill → failover fail khi cần.
-- Kiểm tra: runbook, alert, dashboard; quarterly DR drill.
+### Ví dụ đời thực
+Một hệ thống có cụm DB 2 node "active-standby" với script failover dựa trên ping, cam kết RTO 5 phút. Lần diễn tập đầu tiên (chặn mạng giữa 2 node): cả hai cùng nhận vai chính, ứng dụng ghi vào cả hai trong 4 phút → phải đối soát thủ công. Thiết kế lại: 3 node + Patroni/etcd, fencing bằng watchdog, ứng dụng kết nối qua proxy hỏi node chính. Diễn tập lại hằng quý: RTO đo được 14–20 giây, RPO 0 (một replica đồng bộ), không còn split-brain.
 
-> Senior tip: HA không phải config mà là capability được chứng minh bằng drill; viết runbook và đo RTO/RPO thực tế.`,
+### Pitfall
+- Hai node tự quyết bằng ping/heartbeat lẫn nhau.
+- Đặt cả ba node quorum trong cùng một zone/rack.
+- Có HA trên giấy nhưng chưa từng diễn tập.
+- Ứng dụng không có retry/timeout hợp lý → failover 15 giây thành sự cố 15 phút phía người dùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với tôi HA cần bốn thứ. Thứ nhất là số node bỏ phiếu lẻ, vì quorum là quá bán: ba node chịu được mất một, năm node chịu được mất hai, còn node thứ tư không tăng khả năng chịu lỗi. Hai site thì đặt thêm một witness ở site thứ ba. Thứ hai là quorum: khi mạng chia cắt, chỉ phía thấy đa số được làm chính, phía thiểu số tự dừng ghi. Thứ ba là fencing, vì node cũ có thể chưa biết mình mất vai, ví dụ đang GC dài, nên phải tắt nó, thu quyền ghi hoặc dùng fencing token và lease có hạn. Thứ tư là diễn tập định kỳ: tắt node chính, chia cắt mạng, tắt cả zone, và đo thời gian chuyển cùng lượng dữ liệu mất so với RTO, RPO cam kết. Tôi từng thấy lần diễn tập đầu tiên của một cụm hai node làm lộ split-brain, cả hai cùng nhận ghi trong bốn phút. Thiết kế lại với ba node và Patroni thì RTO đo được dưới 20 giây."
+
+> Senior tip: mỗi lần diễn tập, ghi kết quả vào một bảng cố định (ngày, kịch bản, RTO đo được, RPO đo được, lỗi phía ứng dụng). Bảng này là bằng chứng mạnh nhất khi kiểm toán hoặc khi khách hàng hỏi về cam kết sẵn sàng.`,
     follow: ['Chaos testing tool nào?', 'RPO vs RTO khác gì?', 'Multi-region HA?'],
     tags: ['HA', 'Quorum', 'Fencing', 'Chaos']
   }
@@ -10468,34 +11151,44 @@ postgresql:
     topic: 'devops',
     level: 'lead',
     q: 'PostgreSQL vs MariaDB Galera vs MongoDB replica set: so sánh HA cho Java backend?',
-    a: `**Tóm tắt:** Postgres+Patroni (single-writer, sync/async replica) phù hợp OLTP mạnh; Galera (multi-master sync) phù hợp write phân tán nhưng conflict; Mongo (document, majority write concern) phù hợp flexible schema. Chọn theo workload và consistency.
+    a: `**Tóm tắt:** Cả ba đều cho HA nhưng với triết lý khác nhau. **PostgreSQL + Patroni**: một primary nhận ghi, replica đồng bộ hoặc bất đồng bộ, failover tự động — đơn giản để suy luận, transaction mạnh, hợp với OLTP như thanh toán, đơn hàng. **MariaDB Galera**: mọi node nhận ghi, đồng bộ gần như tức thời — đổi lại xung đột ghi khi nhiều node cùng sửa và mọi node chậm theo node chậm nhất. **MongoDB replica set**: một primary, failover tích hợp sẵn, write concern chọn theo từng thao tác — hợp với dữ liệu dạng document, schema thay đổi nhanh. Tôi chọn theo **mô hình dữ liệu và yêu cầu nhất quán**, sau đó mới đến HA.
 
-### Bảng so sánh
-| Tiêu chí | PostgreSQL+Patroni | MariaDB Galera | MongoDB Replica Set |
+### So sánh
+| Tiêu chí | PostgreSQL + Patroni | MariaDB Galera | MongoDB replica set |
 |---|---|---|---|
-| Mô hình | single primary + standby | multi-master sync | single primary + secondary |
-| Write | 1 node | bất kỳ node | 1 node (primary) |
-| Consistency | strong (sync) | strong (certification) | tunable (w/majority) |
-| Conflict | không (single writer) | certification failure | không (single writer) |
-| Failover | Patroni promote | cluster tự heal | election |
-| Scale read | replica | mọi node | secondary |
-| Schema | relational strict | relational | document flexible |
+| Mô hình ghi | Một primary | Nhiều primary | Một primary |
+| Replication | Streaming WAL, sync/async | Certification đồng bộ | Oplog, ghi xác nhận theo write concern |
+| Failover | Patroni + etcd, khoảng 10–30 giây | Không cần chuyển vai; node lỗi bị loại | Election tích hợp, khoảng 10–12 giây |
+| Mất dữ liệu khi failover | 0 với sync replica; vài giây với async | 0 với ghi đã commit | 0 với w: majority |
+| Xung đột ghi | Không (một chỗ ghi) | Certification failure khi ghi cùng dòng ở 2 node | Không (một chỗ ghi) |
+| Mở rộng ghi | Dọc, hoặc sharding (Citus) | Không thật sự (mọi node ghi mọi thứ) | Sharded cluster |
+| Hệ sinh thái Java | JPA/Hibernate, JDBC rất trưởng thành | JPA/JDBC | Spring Data MongoDB, driver |
 
 ### Khi nào chọn
-- OLTP transaction phức tạp, join, constraint → PostgreSQL.
-- Cần multi-master write ở nhiều site, conflict thấp → Galera.
-- Schema linh hoạt, document, horizontal scale → MongoDB.
+- **PostgreSQL**: dữ liệu quan hệ, ràng buộc, transaction nhiều bảng, báo cáo SQL — mặc định hợp lý cho đa số backend Java.
+- **Galera**: hệ thống sẵn có trên MySQL/MariaDB cần HA không phụ thuộc chuyển vai; vẫn nên **ghi vào một node** qua ProxySQL/MaxScale để tránh xung đột.
+- **MongoDB**: document lồng nhau, schema thay đổi thường xuyên, đọc ghi theo một aggregate; không hợp khi cần transaction phức tạp nhiều collection thường xuyên (có hỗ trợ nhưng tốn hơn).
+- Trên AWS: **Aurora PostgreSQL/MySQL** tách lưu trữ (6 bản sao trên 3 AZ) khỏi tính toán, failover thường dưới 30 giây — thường thay cho tự vận hành Patroni.
 
-### Java client
-- Postgres: JDBC + Hikari, targetServerType=primary.
-- MariaDB: JDBC Galera load balancing.
-- Mongo: Mongo Java Driver, read preference, write concern.
+### Phía ứng dụng Java — điều chung cho cả ba
+- **Kết nối qua endpoint ổn định**: HAProxy/PgBouncer theo primary, MaxScale/ProxySQL, chuỗi kết nối MongoDB liệt kê đủ host; JDBC PostgreSQL hỗ trợ nhiều host với {{targetServerType=primary}}.
+- **Pool phải loại kết nối chết nhanh**: Hikari {{maxLifetime}} ngắn hơn timeout của proxy/DB, {{connectionTimeout}} vài giây; không cache DNS quá lâu (JVM {{networkaddress.cache.ttl}}).
+- **Retry có kiểm soát** cho lỗi tạm thời trong lúc failover; chỉ retry thao tác idempotent hoặc cả transaction.
+- **Đọc từ replica** chỉ cho truy vấn chấp nhận dữ liệu cũ vài giây.
 
-### Trên production
-- Sai lầm: chọn Galera cho workload conflict cao → retry storm.
-- Kiểm tra: benchmark TPS, failover drill, replication lag.
+### Ví dụ đời thực
+Một nền tảng bán hàng dùng Galera 3 node, ghi round-robin; mỗi đợt khuyến mãi có 1–2% đơn lỗi "deadlock" do certification failure trên bảng tồn kho, và node có đĩa chậm kéo cả cụm chậm theo (flow control). Khi xây lại phần đơn hàng, team chọn **Aurora PostgreSQL** (một writer, hai reader): failover diễn tập đo được khoảng 25 giây, ứng dụng dùng JDBC driver AWS hỗ trợ failover nhanh. Phần catalog sản phẩm (thuộc tính khác nhau theo ngành hàng) chuyển sang MongoDB với w: majority. Đơn lỗi giờ cao điểm giảm xuống dưới 0,05%.
 
-> Senior tip: HA database là trade-off consistency/latency/complexity; bắt đầu managed (RDS/Aurora) nếu team nhỏ, tự host khi cần control.`,
+### Pitfall
+- Chọn DB theo "HA nghe xịn" thay vì theo mô hình dữ liệu.
+- Dùng Galera như multi-primary ghi tự do rồi ngạc nhiên vì lỗi deadlock.
+- MongoDB với w: 1 cho dữ liệu tiền.
+- Ứng dụng giữ kết nối tới primary cũ sau failover vì pool/DNS cache.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn DB trước hết theo mô hình dữ liệu và yêu cầu nhất quán, rồi mới đến HA. PostgreSQL với Patroni là một primary nhận ghi, replica đồng bộ hoặc bất đồng bộ, failover tự động qua etcd khoảng mười đến ba mươi giây; dễ suy luận, transaction mạnh, đó là lựa chọn mặc định của tôi cho OLTP như đơn hàng, thanh toán. Galera cho mọi node nhận ghi và đồng bộ gần như tức thời, nhưng ghi cùng dòng trên hai node sẽ lỗi certification, và node chậm kéo cả cụm chậm, nên thực tế tôi vẫn ghi vào một node. MongoDB replica set có election sẵn và write concern theo thao tác; dùng w majority thì không mất ghi đã xác nhận, hợp với dữ liệu dạng document. Trên AWS tôi thường dùng Aurora thay vì tự vận hành. Dù chọn gì, phía Java phải kết nối qua endpoint ổn định, pool loại kết nối chết nhanh và retry có kiểm soát lúc failover."
+
+> Senior tip: đo **thời gian ứng dụng phục hồi** sau failover, không chỉ thời gian DB failover. DB chuyển vai trong 20 giây nhưng pool giữ kết nối chết và DNS cache 60 giây có thể biến nó thành vài phút lỗi phía người dùng.`,
     follow: ['Aurora HA khác gì?', 'Multi-region DB strategy?', 'Connection pooling với HA DB?'],
     tags: ['PostgreSQL', 'MariaDB', 'MongoDB', 'HA', 'Comparison']
   }

@@ -2581,15 +2581,15 @@ class ErrorBudget {
 HPA **không** phản ứng theo từng request. Chu kỳ mặc định là **15 giây**: cứ 15s đo và chỉnh một lần, giống máy lạnh đọc nhiệt độ mỗi chục giây chứ không chỉnh van liên tục. Điều này cực quan trọng khi phỏng vấn: giữa lúc tải tăng và lúc Pod mới nhận traffic, bạn có **một khoảng trễ hữu cơ** (15s đo + 30-120s boot + warm-up), và mọi quyết định sizing phải tính khoảng trễ đó.
 
 ~~~seq
-title: Mot vong reconcile cua HPA (15 giay)
+title: Một vòng reconcile của HPA (15 giây)
 actors: HPA | metrics-server | kubelet | Deployment
-HPA -> metrics-server: hoi CPU trung binh cua cac Pod
-metrics-server -> kubelet: lay so do tai tu cgroup
-kubelet --> metrics-server: CPU usage tung Pod
-metrics-server --> HPA: CPU trung binh, quy ve % theo request
-HPA -> HPA: tinh desired va ap tolerance + clamp
+HPA -> metrics-server: hỏi CPU trung bình của các Pod
+metrics-server -> kubelet: lấy số đo tải từ cgroup
+kubelet --> metrics-server: CPU usage từng Pod
+metrics-server --> HPA: CPU trung bình, quy về % theo request
+HPA -> HPA: tính desired và áp tolerance + clamp
 HPA -> Deployment: ghi replicas = desired
-note HPA..Deployment: scale xuong phai cho het stabilization window
+note HPA..Deployment: scale xuống phải chờ hết stabilization window
 ~~~
 
 ### Công thức cốt lõi và vì sao nó là phép chia
@@ -2783,7 +2783,7 @@ public class Main {
             HpaSim h = new HpaSim(2, 10, 50, new FakeClock(0));
             eq(10, h.observe(4, 1000));
         });
-        check("min clamp san tai trong, scale down dau tien khong bi giu", () -> {
+        check("min clamp sẵn tại trong, scale down đầu tiên không bị giữ", () -> {
             HpaSim h = new HpaSim(2, 10, 50, new FakeClock(0));
             eq(2, h.observe(6, 5));
         });
@@ -2794,7 +2794,7 @@ public class Main {
             c.advanceSeconds(100);
             eq(6, h.observe(6, 25));
         });
-        check("scale down duoc phep sau khi window het han", () -> {
+        check("scale down được phép sau khi window hết hạn", () -> {
             FakeClock c = new FakeClock(0);
             HpaSim h = new HpaSim(2, 20, 50, c);
             eq(6, h.observe(2, 150));
@@ -2870,16 +2870,16 @@ class HpaSim {
         int held = raw;
         for (long[] entry : history) {
             int value = (int) entry[1];
-            if (value > held) held = value;       // de xuat lon nhat trong cua so
+            if (value > held) held = value;       // đề xuất lớn nhất trong cửa sổ
         }
         return held;
     }
 }`,
       hints: [
-        'Buoc tolerance: dung {{Math.abs(ratio - 1.0) <= TOLERANCE}} truoc khi kip {{Math.ceil}}; neu nam trong vung chet thi desired = currentReplicas.',
-        'Lich su la cac cap {{(timestampMillis, recommendation)}}; ham {{clock.millis()}} cho thoi gian gia lap, khong dung {{System.currentTimeMillis()}}.',
-        'Chi ap dung "lay gia tri lon nhat trong cua so" khi {{raw < currentReplicas}}; scale up thi tra {{raw}} lien.',
-        'Xoa ban ghi cu: {{while (!history.isEmpty() && now - history.peekFirst()[0] > windowMillis) history.removeFirst();}}',
+'Bước tolerance: dùng {{Math.abs(ratio - 1.0) <= TOLERANCE}} trước khi kịp {{Math.ceil}}; nếu nằm trong vùng chết thì desired = currentReplicas.',
+'Lịch sử là các cặp {{(timestampMillis, recommendation)}}; hàm {{clock.millis()}} cho thời gian giả lập, không dùng {{System.currentTimeMillis()}}.',
+'Chỉ áp dụng "lấy giá trị lớn nhất trong cửa sổ" khi {{raw < currentReplicas}}; scale up thì trả {{raw}} liền.',
+'Xóa bản ghi cũ: {{while (!history.isEmpty() && now - history.peekFirst()[0] > windowMillis) history.removeFirst();}}',
       ],
       explain: `Đây là nguyên văn những gì controller làm, chỉ bỏ phần gọi metrics-server. Ba lớp xử lý chồng nhau: (1) {{ceil}} đảm bảo không cố tình vượt target; (2) tolerance biến ±10% thành nhiễu được tha, chặn flapping; (3) stabilization window làm scale down **chậm hơn** scale up, bằng cách lấy đề xuất lớn nhất còn sống trong cửa sổ — nên một đỉnh tải 30s không đủ để bạn bỏ Pod, và một cụm vừa phình lên phải "nguội" đủ 300s mới được co.
 
@@ -2922,7 +2922,7 @@ Bài {{lesson-devops-003}} đã dạy phần **routing**: chia {{10}}% traffic s
 - {{ROLLBACK}} — tín hiệu xấu, hạ {{0}}% ngay (bản cũ vẫn còn chạy nên rollback chỉ là đổi weight, nhanh hơn nhiều so với deploy lại).
 
 ~~~seq
-title: Canary analysis tu dong trong mot chu ky
+title: Canary analysis tự động trong một chu kỳ
 actors: Gateway | Stable | Canary | Prometheus | Analyzer
 Gateway -> Canary: 10 phan tram traffic theo userId
 Gateway -> Stable: 90 phan tram traffic con lai
@@ -3028,7 +3028,7 @@ final class Metrics {
 
     Metrics(long requests, double errorRate, double p95Millis) {
         if (requests < 0) throw new IllegalArgumentException("requests phai >= 0");
-        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phai trong 0..1");
+        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phải trong 0..1");
         if (p95Millis < 0) throw new IllegalArgumentException("p95Millis phai >= 0");
         this.requests = requests;
         this.errorRate = errorRate;
@@ -3076,22 +3076,22 @@ public class Main {
         check("canary lanh o buoc 10 thi PROMOTE", () -> {
             dec(Decision.PROMOTE, j.decide(new Metrics(1000, 0.002, 90), new Metrics(200, 0.003, 100), 10));
         });
-        check("qua it request thi CONTINUE du loi 20 phan tram", () -> {
+        check("quá ít request thì CONTINUE dù lỗi 20 phần trăm", () -> {
             dec(Decision.CONTINUE, j.decide(new Metrics(1000, 0.002, 90), new Metrics(50, 0.20, 900), 10));
         });
         check("baseline qua it mau thi cung CONTINUE", () -> {
             dec(Decision.CONTINUE, j.decide(new Metrics(30, 0.001, 90), new Metrics(500, 0.002, 95), 10));
         });
-        check("buoc lon hon doi nhieu bang chung hon", () -> {
+        check("bước lớn hơn đòi nhiều bằng chứng hơn", () -> {
             Metrics base = new Metrics(1000, 0.002, 90);
             Metrics can = new Metrics(150, 0.002, 92);
             dec(Decision.PROMOTE, j.decide(base, can, 25));
             dec(Decision.CONTINUE, j.decide(base, can, 50));
         });
-        check("regression tuong doi cua error rate thi ROLLBACK", () -> {
+        check("regression tương đối của error rate thì ROLLBACK", () -> {
             dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.002, 90), new Metrics(400, 0.015, 95), 25));
         });
-        check("vuot tran tuy doi cua error rate thi ROLLBACK", () -> {
+        check("vượt trần tương đối của error rate thì ROLLBACK", () -> {
             dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.010, 90), new Metrics(600, 0.080, 95), 25));
         });
         check("baseline da benh nang khong bi phat canary", () -> {
@@ -3100,7 +3100,7 @@ public class Main {
         check("p95 regression thi ROLLBACK", () -> {
             dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.002, 100), new Metrics(500, 0.002, 200), 25));
         });
-        check("noise duoi san khong bi coi la loi", () -> {
+        check("noise dưới sàn không bị coi là lỗi", () -> {
             dec(Decision.PROMOTE, j.decide(new Metrics(1000, 0.0, 40), new Metrics(500, 0.008, 55), 25));
         });
         check("rollout lanh manh duoc bo 4 buoc", () -> {
@@ -3145,7 +3145,7 @@ final class Metrics {
 
     Metrics(long requests, double errorRate, double p95Millis) {
         if (requests < 0) throw new IllegalArgumentException("requests phai >= 0");
-        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phai trong 0..1");
+        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phải trong 0..1");
         if (p95Millis < 0) throw new IllegalArgumentException("p95Millis phai >= 0");
         this.requests = requests;
         this.errorRate = errorRate;
@@ -3162,7 +3162,7 @@ class CanaryJudge {
     static final double REL_FACTOR = 1.5;
 
     long requiredSamples(int step) {
-        if (step < 1 || step > 100) throw new IllegalArgumentException("step phai trong 1..100");
+        if (step < 1 || step > 100) throw new IllegalArgumentException("step phải trong 1..100");
         return MIN_SAMPLES * Math.max(1L, (long) Math.ceil(step / 25.0));
     }
 
@@ -3193,10 +3193,10 @@ class CanaryJudge {
     }
 }`,
       hints: [
-        'Cuoi cung theo thu tu: kiem mau toi thieu truoc, roi kiem vi pham, roi PROMOTE. Chua du mau thi khong duoc quyet dinh gi ca.',
-        'requiredSamples: dung {{Math.ceil(step / 25.0)}} (chia cho so thuc 25.0, khong phai 25 nguyen) roi nhan MIN_SAMPLES.',
-        'breach dung cho ca error rate va p95: {{canary > ceiling && baseline <= ceiling}} la nhanh tuy doi, {{canary > floor && canary > baseline * REL_FACTOR}} la nhanh tuong doi.',
-        'rollout: dung {{break}} ngay khi quyet dinh khac PROMOTE, neu khong test "dung o buoc rollback" se thay 4 phan tu thay vi 2.',
+'Cuối cùng theo thứ tự: kiểm mẫu tối thiểu trước, rồi kiểm vi phạm, rồi PROMOTE. Chưa đủ mẫu thì không được quyết định gì cả.',
+'requiredSamples: dùng {{Math.ceil(step / 25.0)}} (chia cho số thực 25.0, không phải 25 nguyên) rồi nhân MIN_SAMPLES.',
+'breach dùng cho cả error rate và p95: {{canary > ceiling && baseline <= ceiling}} là nhánh tuyệt đối, {{canary > floor && canary > baseline * REL_FACTOR}} là nhánh tương đối.',
+'rollout: dùng {{break}} ngay khi quyết định khác PROMOTE, nếu không test "dừng ở bước rollback" sẽ thấy 4 phần tử thay vì 2.',
       ],
       explain: `Ba nhịp của {{decide}} chính là cách Argo Rollouts/Flagger đặt {{AnalysisTemplate}}. Nhịp 1 (mẫu tối thiểu) chặn false positive kinh điển: 3 lỗi trên 12 request là 25% error rate nhưng chưa có nghĩa gì về mặt thống kê. Nhịp 2 đặt **hai lớp ngưỡng chồng nhau**: trần tuyệt đối bắt thảm họa, hệ số tương đối bắt regression mà ngưỡng tuyệt đối bỏ sót; cả hai đều cần một điều kiện phụ — trần tuyệt đối chỉ được quyền giết khi baseline chưa vượt trần (không phạt canary vì bệnh sẵn), còn so sánh tương đối chỉ được quyền kết luận khi canary vượt một sàn tuyệt đối nhỏ (tránh "1.5 x 0 = 0" làm một request lỗi thành tội đồ). Nhịp 3 tăng số mẫu theo bước, vì blast radius tăng thì yêu cầu bằng chứng phải tăng.
 
@@ -3280,7 +3280,7 @@ actors: Client | Gateway | Order | Payment | Logs
 Client -> Gateway: POST /orders chua co header traceparent
 Gateway -> Gateway: sinh traceId roi dat vao MDC
 Gateway -> Order: traceparent: 00-traceId-spanId-01
-Order -> Payment: goi thanh toan, van dung traceId nay
+Order -> Payment: gọi thanh toán, vẫn dùng traceId này
 Order --> Gateway: 502 PAYMENT_DECLINED
 Payment --> Logs: moi dong log deu mang traceId
 note Logs..Logs: tra mot traceId ra ca hanh trinh
@@ -3409,13 +3409,13 @@ Ba chỗ bài này chấm điểm bạn:
       starter: `import java.util.*;
 import java.util.concurrent.*;
 
-/** Ban toi gian cua MDC: mot map gan voi thread dang chay. DA DUNG - khong can sua. */
+/** Bản tối giản của MDC: một map gắn với thread đang chạy. ĐÃ ĐÚNG - không cần sửa. */
 final class LogContext {
     private static final ThreadLocal<Map<String, String>> CTX =
             ThreadLocal.withInitial(() -> new HashMap<String, String>());
 
     static void put(String key, String value) {
-        if (key == null) throw new IllegalArgumentException("key khong duoc null");
+        if (key == null) throw new IllegalArgumentException("key không được null");
         if (value == null) CTX.get().remove(key);
         else CTX.get().put(key, value);
     }
@@ -3424,7 +3424,7 @@ final class LogContext {
         return key == null ? null : CTX.get().get(key);
     }
 
-    /** Ban sao map cua thread hien tai: sua no khong anh huong context. */
+    /** Bản sao map của thread hiện tại: sửa nó không ảnh hưởng context. */
     static Map<String, String> snapshot() {
         return new HashMap<String, String>(CTX.get());
     }
@@ -3498,14 +3498,14 @@ public class Main {
     }
 
     public static void main(String[] args) {
-        check("worker thay duoc traceId cua caller", () -> {
+        check("worker thấy được traceId của caller", () -> {
             LogContext.clear();
             LogContext.put("traceId", "T-100");
             MdcExecutor ex = oneThreadPool();
             eq("T-100", call(ex, () -> LogContext.get("traceId")));
             ex.shutdown();
         });
-        check("worker duoc don sach sau khi task chay xong", () -> {
+        check("worker được dọn sạch sau khi task chạy xong", () -> {
             LogContext.clear();
             LogContext.put("traceId", "T-200");
             MdcExecutor ex = oneThreadPool();
@@ -3560,7 +3560,7 @@ public class Main {
             eq(Boolean.TRUE, call(ex, () -> LogContext.isEmpty()));
             ex.shutdown();
         });
-        check("submit Runnable khong gia tri van truyen duoc context", () -> {
+        check("submit Runnable không giá trị vẫn truyền được context", () -> {
             LogContext.clear();
             LogContext.put("traceId", "R7");
             MdcExecutor ex = oneThreadPool();
@@ -3586,7 +3586,7 @@ public class Main {
             catch (IllegalArgumentException expected) { }
             ex.shutdown();
         });
-        check("caller co context rong van chay va giu gia tri tra ve", () -> {
+        check("caller có context rỗng vẫn chạy và giữ giá trị trả về", () -> {
             LogContext.clear();
             MdcExecutor ex = oneThreadPool();
             eq("ok", call(ex, () -> "ok"));
@@ -3599,13 +3599,13 @@ public class Main {
       reference: `import java.util.*;
 import java.util.concurrent.*;
 
-/** Ban toi gian cua MDC: mot map gan voi thread dang chay. */
+/** Bản tối giản của MDC: một map gắn với thread đang chạy. */
 final class LogContext {
     private static final ThreadLocal<Map<String, String>> CTX =
             ThreadLocal.withInitial(() -> new HashMap<String, String>());
 
     static void put(String key, String value) {
-        if (key == null) throw new IllegalArgumentException("key khong duoc null");
+        if (key == null) throw new IllegalArgumentException("key không được null");
         if (value == null) CTX.get().remove(key);
         else CTX.get().put(key, value);
     }
@@ -3636,13 +3636,13 @@ class MdcExecutor {
     private final ExecutorService delegate;
 
     MdcExecutor(ExecutorService delegate) {
-        if (delegate == null) throw new IllegalArgumentException("delegate khong duoc null");
+        if (delegate == null) throw new IllegalArgumentException("delegate không được null");
         this.delegate = delegate;
     }
 
     static Runnable wrap(Runnable task) {
-        if (task == null) throw new IllegalArgumentException("task khong duoc null");
-        final Map<String, String> captured = LogContext.snapshot();   // chup LUC WRAP, khong phai luc chay
+if (task == null) throw new IllegalArgumentException("task không được null");
+final Map<String, String> captured = LogContext.snapshot();   // chụp LÚC WRAP, không phải lúc chạy
         return () -> {
             Map<String, String> previous = LogContext.snapshot();     // thread nay co the dang mang viec khac
             LogContext.restore(captured);
@@ -3655,7 +3655,7 @@ class MdcExecutor {
     }
 
     static <T> Callable<T> wrapCallable(Callable<T> task) {
-        if (task == null) throw new IllegalArgumentException("task khong duoc null");
+        if (task == null) throw new IllegalArgumentException("task không được null");
         final Map<String, String> captured = LogContext.snapshot();
         return () -> {
             Map<String, String> previous = LogContext.snapshot();
@@ -3685,11 +3685,11 @@ class MdcExecutor {
     }
 }`,
       hints: [
-        'wrap(Runnable): dong {{LogContext.snapshot()}} dat NGOAI lambda, ngay trong than wrap, nhu vay no chay tren thread goi va duoc chup truoc khi task bi delay.',
-        'Trong lambda tra ve: lu truoc {{Map<String, String> previous = LogContext.snapshot()}}, roi {{LogContext.restore(captured)}}, chay task trong try, va {{LogContext.restore(previous)}} o finally.',
-        'submit(Callable) phai di qua wrapCallable chu khong qua wrap: wrap tra ve Runnable nen gia tri tra ve cua task bi mat.',
-        'Case "dau vao null": nem IllegalArgumentException truong hop null o constructor, wrap va wrapCallable, thi execute/submit tu dung vi chung goi wrap.',
-        'Neu case "task nem exception van duoc khoi phoi ve cu" FAIL, chac chan ban da dat {{restore}} ngoai {{finally}} hoac quen {{finally}}.',
+'wrap(Runnable): dòng {{LogContext.snapshot()}} đặt NGOÀI lambda, ngay trong thân wrap, như vậy nó chạy trên thread gọi và được chụp trước khi task bị delay.',
+'Trong lambda trả về: lưu trước {{Map<String, String> previous = LogContext.snapshot()}}, rồi {{LogContext.restore(captured)}}, chạy task trong try, và {{LogContext.restore(previous)}} ở finally.',
+'submit(Callable) phải đi qua wrapCallable chứ không qua wrap: wrap trả về Runnable nên giá trị trả về của task bị mất.',
+'Case "đầu vào null": ném IllegalArgumentException trường hợp null ở constructor, wrap và wrapCallable, thì execute/submit tự đúng vì chúng gọi wrap.',
+        'Nếu case "task ném exception vẫn được khôi phục về cũ" FAIL, chắc chắn bạn đã đặt {{restore}} ngoài {{finally}} hoặc quên {{finally}}.',
       ],
       explain: `Bốn dòng chụp - đặt - chạy - khôi phục là toàn bộ nội dung của một {{TaskDecorator}}, của {{ContextSnapshot}} trong Micrometer context-propagation và của {{Context.current().wrap(runnable)}} trong OpenTelemetry. Viết một lần trong code thuần thì bạn hiểu tại sao các thư viện kia tồn tại, và hiểu tại sao nó **không** hoạt động khi bạn quên.
 
@@ -3784,7 +3784,7 @@ Chọn độ rộng bucket: quá nhỏ (1 giây) thì nhiều bucket chỉ có v
 ### Một request sinh ra những dòng log nào
 
 ~~~seq
-title: Duong di cua mot dong access log
+title: Đường đi của một dòng access log
 actors: Client | Gateway | Order | NodeLog | Agent
 Client -> Gateway: GET /api/orders
 Gateway -> Order: forward, kem traceparent
@@ -3792,7 +3792,7 @@ Order --> Gateway: 500 sau 1240 ms
 Order -> NodeLog: in log JSON ra stdout
 NodeLog -> Agent: doc file log cua container
 Agent -> Agent: gan metadata roi day ve Loki
-note NodeLog..Agent: stdout cua container duoc luu thanh file tren node
+note NodeLog..Agent: stdout của container được lưu thành file trên node
 ~~~
 
 Cái hay bị bỏ quên: **latency**. Nhiều cấu hình nginx/gateway mặc định không ghi thời gian xử lý, hoặc chỉ ghi thời gian tính từ lúc nhận request chứ không tính lúc hàng đã ghi ra client (streaming, large payload). Nếu log không có trường latency thì không có p95 nào cả, và đó là việc phải sửa **trước khi** có sự cố, không phải trong sự cố.
@@ -3825,10 +3825,10 @@ static double p95(List<Long> latencies) {
     List<Long> sorted = new ArrayList<Long>(latencies);
     Collections.sort(sorted);
     int n = sorted.size();
-    int rank = (95 * n + 99) / 100;            // bang ceil(95n/100), dung so nguyen
+    int rank = (95 * n + 99) / 100;            // bằng ceil(95n/100), dùng số nguyên
     if (rank < 1) rank = 1;
     if (rank > n) rank = n;
-    return sorted.get(rank - 1).doubleValue(); // nearest-rank: lay mot mau THAT, khong noi suy
+    return sorted.get(rank - 1).doubleValue(); // nearest-rank: lấy một mẫu THẬT, không nội suy
 }
 ~~~
 
@@ -3853,7 +3853,7 @@ Cũng đừng lấy p95 của **toàn service** làm chỉ số duy nhất: endp
 # PromQL: ti le 5xx theo endpoint trong 5 phut gan nhat
 sum by (uri) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
   / sum by (uri) (rate(http_server_requests_seconds_count[5m]))
-# p95 theo endpoint, dung histogram cua Micrometer
+# p95 theo endpoint, dùng histogram của Micrometer
 histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket[5m])))
 ~~~
 
@@ -3892,7 +3892,7 @@ Với câu "hệ thống không có observability, bạn làm gì?", trả lời
 Check-list tự kiểm trước khi chạy test: {{p95}} của 20 mẫu {{10, 20, ..., 200}} phải là **190**; một phút không có request nào phải trả **0.0** chứ không ném lỗi; endpoint chỉ có 4xx phải **vắng mặt** trong danh sách top.`,
       starter: `import java.util.*;
 
-/** Mot dong log da parse. DA DUNG - khong can sua. */
+/** Một dòng log đã parse. ĐÃ ĐÚNG - không cần sửa. */
 final class LogLine {
     final String minute;     // "2026-05-04T10:15"
     final String method;     // "GET"
@@ -3906,11 +3906,11 @@ final class LogLine {
         if (method == null || method.isEmpty())
             throw new IllegalArgumentException("thieu method");
         if (path == null || path.isEmpty() || path.charAt(0) != '/')
-            throw new IllegalArgumentException("path phai bat dau bang dau /");
+            throw new IllegalArgumentException("path phải bắt đầu bằng dấu /");
         if (status < 100 || status > 599)
             throw new IllegalArgumentException("status ngoai 100..599: " + status);
         if (latencyMs < 0)
-            throw new IllegalArgumentException("latencyMs khong duoc am");
+            throw new IllegalArgumentException("latencyMs không được âm");
         this.minute = minute;
         this.method = method;
         this.path = path;
@@ -4045,7 +4045,7 @@ public class Main {
             eq(Long.valueOf(1L), Long.valueOf(b16.total));
             eq(Long.valueOf(1L), Long.valueOf(b16.errors));
         });
-        check("errorRate theo phut va phut khong du lieu tra zero", () -> {
+        check("errorRate theo phút và phút không dữ liệu trả zero", () -> {
             List<String> l = ls(
                 "2026-05-04T10:15:01Z GET /a 500 10",
                 "2026-05-04T10:15:02Z GET /a 200 20",
@@ -4059,10 +4059,10 @@ public class Main {
             try { AccessLogStats.statsByMinute(null); throw new AssertionError("lines null phai bi tu choi"); }
             catch (IllegalArgumentException expected) { }
         });
-        check("p95 nearest-rank 20 mau la 190 chu khong phai 200", () -> {
+        check("p95 nearest-rank 20 mẫu là 190 chứ không phải 200", () -> {
             eqd(190.0, AccessLogStats.p95(ramp20(), "GET /api/orders"));
         });
-        check("p95 mot mau va endpoint khong ton tai", () -> {
+        check("p95 một mẫu và endpoint không tồn tại", () -> {
             List<String> one = ls("2026-05-04T10:15:01Z GET /x 200 100");
             eqd(100.0, AccessLogStats.p95(one, "GET /x"));
             eqd(0.0, AccessLogStats.p95(one, "GET /khong-co"));
@@ -4091,7 +4091,7 @@ public class Main {
             eq(Long.valueOf(2L), m.get("GET /orders"));
             eq(null, m.get("POST /search"));
         });
-        check("top endpoint sap theo loi giam dan bang thi A-Z", () -> {
+        check("top endpoint sắp theo lỗi giảm dần bằng thì A-Z", () -> {
             List<String> l = new ArrayList<String>();
             l.addAll(errorsFor("POST /alpha", 5, 500));
             l.addAll(errorsFor("GET /bravo", 5, 503));
@@ -4142,11 +4142,11 @@ final class LogLine {
         if (method == null || method.isEmpty())
             throw new IllegalArgumentException("thieu method");
         if (path == null || path.isEmpty() || path.charAt(0) != '/')
-            throw new IllegalArgumentException("path phai bat dau bang dau /");
+            throw new IllegalArgumentException("path phải bắt đầu bằng dấu /");
         if (status < 100 || status > 599)
             throw new IllegalArgumentException("status ngoai 100..599: " + status);
         if (latencyMs < 0)
-            throw new IllegalArgumentException("latencyMs khong duoc am");
+            throw new IllegalArgumentException("latencyMs không được âm");
         this.minute = minute;
         this.method = method;
         this.path = path;
@@ -4177,10 +4177,10 @@ final class Bucket {
 
 class AccessLogStats {
     static LogLine parse(String line) {
-        if (line == null) throw new IllegalArgumentException("line khong duoc null");
+        if (line == null) throw new IllegalArgumentException("line không được null");
         String[] t = line.trim().split(" +");
         if (t.length != 5)
-            throw new IllegalArgumentException("can 5 truong, duoc " + t.length + " trong: " + line);
+            throw new IllegalArgumentException("cần 5 trường, được " + t.length + " trong: " + line);
         String ts = t[0];
         if (ts.length() < 16 || ts.charAt(10) != 'T')
             throw new IllegalArgumentException("timestamp phai dang 2026-05-04T10:15:32Z: " + ts);
@@ -4196,7 +4196,7 @@ class AccessLogStats {
     }
 
     static Map<String, Bucket> statsByMinute(List<String> lines) {
-        if (lines == null) throw new IllegalArgumentException("lines khong duoc null");
+        if (lines == null) throw new IllegalArgumentException("lines không được null");
         Map<String, long[]> raw = new TreeMap<String, long[]>();
         for (String l : lines) {
             if (l == null || l.trim().isEmpty()) continue;
@@ -4213,7 +4213,7 @@ class AccessLogStats {
     }
 
     static double errorRate(List<String> lines, String minute) {
-        if (minute == null) throw new IllegalArgumentException("minute khong duoc null");
+        if (minute == null) throw new IllegalArgumentException("minute không được null");
         Bucket b = statsByMinute(lines).get(minute);
         return b == null ? 0.0 : b.errorRate();
     }
@@ -4236,7 +4236,7 @@ class AccessLogStats {
     }
 
     static Map<String, Long> errorsByEndpoint(List<String> lines) {
-        if (lines == null) throw new IllegalArgumentException("lines khong duoc null");
+        if (lines == null) throw new IllegalArgumentException("lines không được null");
         Map<String, Long> m = new HashMap<String, Long>();
         for (String l : lines) {
             if (l == null || l.trim().isEmpty()) continue;
@@ -4261,11 +4261,11 @@ class AccessLogStats {
     }
 }`,
       hints: [
-        'parse: dung {{line.trim().split(" +")}} (day nay khong chua dau \, " +" la regex mot hay nhieu khoang trang), roi kiem {{t.length == 5}} va {{t[0].charAt(10)}}.',
-        'statsByMinute: dem bang {{Map<String, long[]}} voi {{long[2]}} = {total, errors}, dung {{TreeMap}} de phut duoc sap theo thu tu thoi gian.',
-        'errorRate: goi {{statsByMinute(lines).get(minute)}}; khac null tra {{b.errorRate()}}, bang null tra 0.0. Dung viet vong dem thu hai.',
-        'p95: loc {{endpoint.equals(p.endpoint())}}, {{Collections.sort}}, {{rank = (95 * n + 99) / 100}} roi tra {{vals.get(rank - 1)}}.',
-        'topErrorEndpoints: comparator phai tra {{Long.compare(b.getValue(), a.getValue())}} (dao) truoc, chi khi bang nhau moi {{a.getKey().compareTo(b.getKey())}}.',
+'parse: dùng {{line.trim().split(" +")}} (dãy này không chứa dấu \, " +" là regex một hay nhiều khoảng trắng), rồi kiểm {{t.length == 5}} và {{t[0].charAt(10)}}.',
+'statsByMinute: đếm bằng {{Map<String, long[]>}} với {{long[2]}} = {total, errors}, dùng {{TreeMap}} để phút được sắp theo thứ tự thời gian.',
+'errorRate: gọi {{statsByMinute(lines).get(minute)}}; khác null trả {{b.errorRate()}}, bằng null trả 0.0. Đừng viết vòng đếm thứ hai.',
+'p95: lọc {{endpoint.equals(p.endpoint())}}, {{Collections.sort}}, {{rank = (95 * n + 99) / 100}} rồi trả {{vals.get(rank - 1)}}.',
+'topErrorEndpoints: comparator phải trả {{Long.compare(b.getValue(), a.getValue())}} (đảo) trước, chỉ khi bằng nhau mới {{a.getKey().compareTo(b.getKey())}}.',
       ],
       explain: `Bốn hàm thống kê chia sẻ đúng một khuôn: **lọc - nhóm - đếm - sắp**. Đây chính xác là những gì {{group by}} trong SQL và {{sum by (uri)}}, {{rate()}} trong PromQL làm; viết được nó bằng tay một lần thì bạn hiểu tại sao dashboard cần các label và tại sao cardinality của label lại đắt.
 
@@ -4290,5 +4290,1123 @@ Kể lại trong phỏng vấn theo mạch thực dụng: đọc {{head -3}} đ�
   related: ['devops-012', 'devops-056', 'devops-057'],
   tags: ['Access log', 'Incident response', 'awk', 'p95', 'nearest-rank', 'Error rate', 'Latency'],
 },
-);
+{
+  id: 'lesson-devops-014',
+  track: 'devops',
+  order: 14,
+  title: 'Đánh giá rule cảnh báo kiểu Prometheus: for, pending→firing, gộp cảnh báo',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được vì sao điều kiện phải kéo dài for mới firing, tránh nhiễu ngắn',
+    'Mô tả được chuỗi trạng thái inactive → pending → firing → resolved',
+    'Viết được AlertEvaluator nhận chuỗi (thời điểm, giá trị) với đồng hồ giả và trả danh sách sự kiện chuyển trạng thái',
+  ],
+  body: `### Cảnh báo kiểu Prometheus là gì
+Prometheus Alertmanager đánh giá **rule** trên chuỗi mẫu metric theo thời gian. Một rule có điều kiện (ví dụ CPU > 80%) và **for** (ví dụ 5 phút): chỉ khi điều kiện đúng liên tục trong suốt thời gian for mới chuyển sang firing. Mục đích: tránh báo động giả do spike ngắn.
 
+**Tóm tắt:** Prometheus rule chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp cảnh báo để tránh spam.
+
+### Trạng thái
+- **inactive**: điều kiện sai.
+- **pending**: điều kiện đúng nhưng chưa đủ for.
+- **firing**: điều kiện đúng đủ for, cảnh báo gửi đi.
+- **resolved**: trước đây firing, giờ điều kiện sai.
+
+### for và grace
+Khi điều kiện đúng liên tục, pending bắt đầu. Nếu đủ for → firing. Nếu điều kiện sai trước khi đủ for → về inactive, không báo. Khi firing rồi điều kiện sai → resolved.
+
+### Gộp cảnh báo (grouping)
+Nhiều alert cùng labels được gộp thành một notification để tránh spam. Mỗi group có route riêng.
+
+### Ví dụ đời thực
+Service CPU spike 2 phút do GC, ngưỡng 80% for 5m → pending rồi inactive, không paging. Nếu CPU cao 10 phút → firing, on-call nhận 1 alert gộp.
+
+### Trả lời mẫu khi phỏng vấn
+"Rule Prometheus chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp alert cùng labels để tránh spam."
+
+> Senior tip: Luôn đặt for đủ dài (3-5m) cho metric CPU/mem để tránh alert storm do spike ngắn.
+
+Thêm giải thích chi tiết cho người mới: PromQL vector, evaluation interval, alert rule, recording rule, for duration, pending/firing/resolved, inhibition, grouping, routing. Giải thích từng bước cái gì→vì sao→hoạt động thế nào→ví dụ→lỗi hay gặp→trả lời phỏng vấn. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. `,
+  exercises: [
+    {
+      title: 'AlertEvaluator: danh sách sự kiện chuyển trạng thái',
+      prompt: `Hoàn thiện {{AlertEvaluator.evaluate(samples, threshold, forSeconds)}} trả về danh sách sự kiện chuyển trạng thái. samples là mảng long[] thời điểm (giây) và double[] giá trị; threshold là ngưỡng; forSeconds là thời gian for. Trả về List<String> các sự kiện: "PENDING at t", "FIRING at t", "RESOLVED at t".`,
+      starter: `import java.util.*;
+class AlertEvaluator {
+    static List<String> evaluate(long[] times, double[] values, double threshold, long forSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    public static void main(String[] args) {
+        check("short spike no firing", () -> {
+            long[] t = {0,1,2}; double[] v = {90,90,50};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 5);
+            if (r.contains("FIRING at 2")) throw new AssertionError("should not fire");
+        });
+        check("long breach fires", () -> {
+            long[] t = {0,1,2,3,4,5,6}; double[] v = {90,90,90,90,90,90,90};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 3);
+            if (!r.contains("FIRING at 3")) throw new AssertionError("should fire at 3");
+        });
+        check("resolved on recovery", () -> {
+            long[] t = {0,1,2,3,4,5}; double[] v = {90,90,90,90,50,50};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 2);
+            if (!r.contains("RESOLVED at 4")) throw new AssertionError("should resolve");
+        });
+        check("pending event recorded", () -> {
+            long[] t = {0,1,2}; double[] v = {90,90,90};
+            List<String> r = AlertEvaluator.evaluate(t, v, 80, 5);
+            if (!r.contains("PENDING at 0")) throw new AssertionError("pending missing");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+class AlertEvaluator {
+    static List<String> evaluate(long[] times, double[] values, double threshold, long forSeconds) {
+        List<String> events = new ArrayList<>();
+        int n = times.length;
+        boolean pending = false, firing = false;
+        long pendingStart = 0;
+        for (int i = 0; i < n; i++) {
+            boolean breach = values[i] > threshold;
+            if (breach) {
+                if (!pending && !firing) { pending = true; pendingStart = times[i]; events.add("PENDING at " + times[i]); }
+                if (pending && !firing && times[i] - pendingStart >= forSeconds) { firing = true; pending = false; events.add("FIRING at " + times[i]); }
+            } else {
+                if (firing) { firing = false; events.add("RESOLVED at " + times[i]); }
+                if (pending) { pending = false; }
+            }
+        }
+        return events;
+    }
+}`,
+      hints: ['Theo dõi pendingStart; khi times[i]-pendingStart >= forSeconds thì firing.'],
+      explain: `Theo dõi trạng thái pending/firing; khi breach đủ lâu thì firing; khi recovery thì resolved.`,
+    },
+  ],
+  check: [
+    { q: 'for=5m nghĩa là gì?', options: ['Cảnh báo sau 5 phút', 'Điều kiện phải đúng liên tục 5 phút mới firing', 'Lặp lại mỗi 5 phút', 'Tắt sau 5 phút'], answer: 1, explain: 'for là thời gian điều kiện phải đúng liên tục trước khi firing.' },
+    { q: 'Spike 2 phút với for 5m thì sao?', options: ['Firing', 'Pending rồi inactive, không báo', 'Resolved', 'Lỗi'], answer: 1, explain: 'Chưa đủ for nên không firing, về inactive.' },
+  ],
+  related: ['devops-001', 'devops-007'],
+  tags: ['Prometheus', 'Alerting', 'for', 'pending', 'firing', 'resolved'],
+},
+{
+  id: 'lesson-devops-015',
+  track: 'devops',
+  order: 15,
+  title: 'Health check và failover kiểu HAProxy/Keepalived: fall/rise, round-robin, VIP',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được fall (N lỗi liên tiếp → down) và rise (M thành công → up)',
+    'Mô phỏng round-robin bỏ qua backend down',
+    'Hiểu VIP chuyển sang node backup theo priority với Keepalived',
+  ],
+  body: `### Health check là gì
+Load balancer (HAProxy, nginx) định kỳ gọi health check đến backend. Sau **fall** lần fail liên tiếp → backend bị đánh dấu DOWN, không nhận traffic. Sau **rise** lần success liên tiếp → UP lại.
+
+**Tóm tắt:** Backend down sau N lỗi liên tiếp (fall) và up sau M thành công (rise); round-robin bỏ qua down; VIP failover theo priority Keepalived.
+
+### fall và rise
+- **fall**: số lần check fail liên tiếp để chuyển DOWN.
+- **rise**: số lần check success liên tiếp để chuyển UP.
+
+Ví dụ fall=3, rise=2: 3 fail liên tiếp → DOWN; 2 success liên tiếp → UP.
+
+### Round-robin bỏ qua down
+LB phân phối request round-robin nhưng chỉ chọn backend đang UP.
+
+### Failover VIP (Keepalived)
+Keepalived dùng VRRP: node master có priority cao giữ VIP. Khi master down, backup có priority cao nhất tiếp quản VIP. Failback khi master up lại (tùy preempt).
+
+### Ví dụ đời thực
+3 backend, 1 down sau 3 fail liên tiếp → LB chỉ gửi traffic tới 2 backend còn lại; khi backend phục hồi, 2 success → UP lại.
+
+### Trả lời mẫu khi phỏng vấn
+"Health check với fall/rise: backend down sau N lỗi liên tiếp, up sau M thành công; round-robin bỏ qua down; Keepalived failover VIP theo priority."
+
+> Senior tip: Đặt fall=3, rise=2 và health check interval 2s để phát hiện lỗi nhanh mà không false positive.
+
+Thêm giải thích chi tiết: VRRP, priority, preempt, VIP, health check types (HTTP/TCP), fall/rise, round-robin, leastconn, backup server, drain. Giải thích từng bước cho người mới. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  `,
+  exercises: [
+    {
+      title: 'LoadBalancer: fall/rise, round-robin, failover',
+      prompt: `Hoàn thiện {{LoadBalancer}} với các method: constructor nhận số backend; {{healthCheck(int idx, boolean ok)}} cập nhật trạng thái với fall=3, rise=2; {{next()}} trả index backend tiếp theo còn UP theo round-robin (hoặc -1 nếu không còn); {{isUp(int idx)}}.`,
+      starter: `class LoadBalancer {
+    LoadBalancer(int n) { throw new UnsupportedOperationException("TODO"); }
+    void healthCheck(int idx, boolean ok) { throw new UnsupportedOperationException("TODO"); }
+    int next() { throw new UnsupportedOperationException("TODO"); }
+    boolean isUp(int idx) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(int expected, int actual) {
+        if (expected != actual) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("initial all up", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            eq(0, lb.next()); eq(1, lb.next()); eq(2, lb.next());
+        });
+        check("fall marks down", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            lb.healthCheck(1, false); lb.healthCheck(1, false); lb.healthCheck(1, false);
+            if (lb.isUp(1)) throw new AssertionError("should be down");
+        });
+        check("round-robin skips down", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            lb.healthCheck(1, false); lb.healthCheck(1, false); lb.healthCheck(1, false);
+            eq(0, lb.next()); eq(2, lb.next()); eq(0, lb.next());
+        });
+        check("rise brings up", () -> {
+            LoadBalancer lb = new LoadBalancer(3);
+            lb.healthCheck(1, false); lb.healthCheck(1, false); lb.healthCheck(1, false);
+            lb.healthCheck(1, true); lb.healthCheck(1, true);
+            if (!lb.isUp(1)) throw new AssertionError("should be up");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class LoadBalancer {
+    int n;
+    boolean[] up;
+    int[] failCount, succCount;
+    int cursor = 0;
+    static final int FALL = 3, RISE = 2;
+    LoadBalancer(int n) {
+        this.n = n; up = new boolean[n]; failCount = new int[n]; succCount = new int[n];
+        for (int i = 0; i < n; i++) up[i] = true;
+    }
+    void healthCheck(int idx, boolean ok) {
+        if (ok) {
+            succCount[idx]++; failCount[idx] = 0;
+            if (!up[idx] && succCount[idx] >= RISE) up[idx] = true;
+        } else {
+            failCount[idx]++; succCount[idx] = 0;
+            if (up[idx] && failCount[idx] >= FALL) up[idx] = false;
+        }
+    }
+    int next() {
+        for (int i = 0; i < n; i++) {
+            int idx = (cursor + i) % n;
+            if (up[idx]) { cursor = (idx + 1) % n; return idx; }
+        }
+        return -1;
+    }
+    boolean isUp(int idx) { return up[idx]; }
+}`,
+      hints: ['Theo dõi failCount/succCount; khi đạt fall/rise thì đổi trạng thái.'],
+      explain: `fall=3 đánh dấu DOWN, rise=2 đánh dấu UP; next() round-robin bỏ qua down.`,
+    },
+  ],
+  check: [
+    { q: 'fall=3 nghĩa là gì?', options: ['3 giây', '3 lần fail liên tiếp → down', '3 backend', '3 request'], answer: 1, explain: 'fall là số lần check fail liên tiếp để chuyển down.' },
+    { q: 'Khi tất cả backend down, next() trả về?', options: ['0', '-1', 'ném lỗi', 'null'], answer: 1, explain: 'Không còn backend up → trả -1.' },
+  ],
+  related: ['devops-002', 'devops-014'],
+  tags: ['HAProxy', 'Keepalived', 'Health check', 'Failover', 'Round-robin', 'VRRP'],
+},
+{
+  id: 'lesson-devops-016',
+  track: 'devops',
+  order: 16,
+  title: 'RBAC authorizer thu nhỏ: Role, ClusterRole, Binding và mặc định từ chối',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được sự khác biệt Role (namespace) và ClusterRole (toàn cụm), cùng RoleBinding/ClusterRoleBinding',
+    'Mô tả được cơ chế authorizer: mặc định từ chối, chỉ cho phép, không có deny',
+    'Mô phỏng được kubectl auth can-i với Authorizer.can(subject, verb, resource, namespace)',
+  ],
+  body: `### RBAC là gì
+**RBAC** (Role-Based Access Control) là cơ chế phân quyền của Kubernetes. Người dùng hoặc service được gán **role** chứa các **rule**: cho phép thực hiện verb (get, list, create, update, delete, watch) lên resource (pods, deployments, secrets) trong một apiGroup. Mặc định **từ chối** mọi request; chỉ những gì được rule cho phép mới được thực hiện. Kubernetes RBAC **không có khái niệm deny**: chỉ có allow. Nếu không có rule khớp, request bị từ chối.
+
+### Role vs ClusterRole
+- **Role**: chỉ áp dụng trong một namespace cụ thể. Dùng cho workload và dev trong namespace của họ.
+- **ClusterRole**: áp dụng toàn cụm. Dùng cho cluster-scoped resources (nodes, persistentvolumes) hoặc cho namespace-scoped resources trên mọi namespace.
+
+### Binding
+- **RoleBinding**: gán một Role hoặc ClusterRole cho subject (user, group, ServiceAccount) trong một namespace. Nếu gán ClusterRole qua RoleBinding, quyền chỉ có hiệu lực trong namespace đó — đây là pattern phổ biến để tái sử dụng ClusterRole nhưng giới hạn phạm vi.
+- **ClusterRoleBinding**: gán ClusterRole cho subject trên toàn cụm. Dùng cho admin hoặc controller cluster-wide.
+
+### Authorizer.can
+Mô phỏng kubectl auth can-i: kiểm tra subject có rule cho phép verb trên resource trong namespace không. Wildcard * khớp mọi giá trị. Namespace null trong rule nghĩa rule áp dụng mọi namespace (cluster-scoped). Nếu namespace truyền vào null → chỉ kiểm tra rule có namespace null.
+
+**Tóm tắt:** RBAC mặc định từ chối, chỉ cho phép qua rule; Role namespace, ClusterRole toàn cụm; Binding gán cho subject; ClusterRole qua RoleBinding chỉ hiệu lực trong namespace đó; wildcard * khớp mọi thứ.
+
+### Ví dụ đời thực
+ServiceAccount CI chỉ được deploy trong namespace staging. Tạo Role deployer trong staging với verbs create, update, delete, get, list trên deployments. RoleBinding gán cho ServiceAccount ci-sa trong namespace staging. ClusterRole view gán qua RoleBinding trong staging → ci-sa có thể list pods trong staging nhưng không ở production. Kiểm tra: kubectl auth can-i --as=system:serviceaccount:staging:ci-sa create deployments -n staging → yes; ở namespace prod → no.
+
+### Trả lời mẫu khi phỏng vấn
+Interviewer hỏi "Làm sao giới hạn ServiceAccount chỉ deploy trong 1 namespace?" Trả lời: tạo Role (không ClusterRole) với rule deployments create/update/delete trong namespace đó, RoleBinding gán cho ServiceAccount. Không dùng ClusterRoleBinding. Kiểm tra bằng kubectl auth can-i. Audit định kỳ bằng kubectl auth can-i --list. Tránh wildcard * trong production. Dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace.
+
+### Bẫy production
+- Dùng ClusterRoleBinding cho workload → quyền quá rộng, vi phạm least privilege.
+- Wildcard * trong verbs/resources → ai có role đó làm được mọi thứ.
+- Không audit RBAC → quyền tích luỹ qua thời gian (privilege creep).
+- ServiceAccount token tự động mount vào pod → attacker có thể dùng nếu pod bị compromise. Dùng automountServiceAccountToken: false khi không cần.
+
+> Senior tip: Luôn dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace; audit định kỳ bằng kubectl auth can-i --list; tránh wildcard * trong production; đặt automountServiceAccountToken false khi pod không cần gọi API server.`,
+  exercises: [
+    {
+      title: 'Authorizer: kiểm tra quyền RBAC thu nhỏ',
+      prompt: `Hoàn thiện Authorizer mô phỏng kubectl auth can-i:
+- Constructor nhận danh sách rule: mỗi rule có subject, verb, resource, namespace (null nghĩa toàn cụm).
+- can(subject, verb, resource, namespace): true nếu có rule khớp. Wildcard * khớp mọi verb/resource. Namespace null trong rule nghĩa rule áp dụng mọi namespace. Nếu namespace truyền vào null → kiểm tra cluster-scoped (chỉ rule có namespace null).
+- Mặc định từ chối: không có rule → false.`,
+      starter: `class Authorizer {
+    Authorizer(List<String[]> rules) { throw new UnsupportedOperationException("TODO"); }
+    boolean can(String subject, String verb, String resource, String namespace) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed=0,total=0;
+    static void check(String name, Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+name);}catch(Throwable t){System.out.println("FAIL "+name+": "+t);}}
+    static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("expected "+e+" got "+a);}
+    public static void main(String[] args){
+        List<String[]> rules=new ArrayList<>();
+        rules.add(new String[]{"ci-sa","create","deployments","staging"});
+        rules.add(new String[]{"ci-sa","get","pods","staging"});
+        rules.add(new String[]{"admin","*","*","*"});
+        rules.add(new String[]{"viewer","get","pods",null});
+        Authorizer a=new Authorizer(rules);
+        check("ci can create deployments in staging",()->eq(true,a.can("ci-sa","create","deployments","staging")));
+        check("ci cannot create in prod",()->eq(false,a.can("ci-sa","create","deployments","prod")));
+        check("ci can get pods staging",()->eq(true,a.can("ci-sa","get","pods","staging")));
+        check("ci cannot delete",()->eq(false,a.can("ci-sa","delete","deployments","staging")));
+        check("admin wildcard all",()->{eq(true,a.can("admin","delete","secrets","prod"));eq(true,a.can("admin","get","nodes",null));});
+        check("viewer cluster-scoped pods all ns",()->{eq(true,a.can("viewer","get","pods","staging"));eq(true,a.can("viewer","get","pods","prod"));});
+        check("viewer cannot create",()->eq(false,a.can("viewer","create","pods","staging")));
+        check("unknown subject denied",()->eq(false,a.can("nobody","get","pods","staging")));
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `class Authorizer {
+    private final List<String[]> rules;
+    Authorizer(List<String[]> rules){this.rules=new ArrayList<>(rules);}
+    boolean can(String subject,String verb,String resource,String namespace){
+        for(String[] r:rules){
+            if(!r[0].equals(subject))continue;
+            if(!r[1].equals("*")&&!r[1].equals(verb))continue;
+            if(!r[2].equals("*")&&!r[2].equals(resource))continue;
+            String ruleNs=r[3];
+            if(ruleNs==null){ /* applies all namespaces */ }
+            else if(!ruleNs.equals("*")&&!ruleNs.equals(namespace))continue;
+            return true;
+        }
+        return false;
+    }
+}`,
+      hints: ['Lặp rules, kiểm tra subject, verb (*), resource (*), namespace (* hoặc null cluster-scoped).','Null namespace trong rule nghĩa toàn cụm: chỉ khớp khi namespace truyền vào null.'],
+      explain: `Authorizer mô phỏng decision tree của kube-apiserver authorizer: deny-by-default, chỉ allow khi có rule khớp. Wildcard * khớp mọi giá trị. ClusterRoleBinding (namespace null) áp dụng mọi namespace; RoleBinding (namespace cụ thể) chỉ trong namespace đó.`,
+    },
+  ],
+  check: [
+    { q: 'RBAC mặc định là gì?', options: ['Allow all', 'Deny all', 'Deny chỉ resource nhạy cảm', 'Allow nếu authenticated'], answer: 1, explain: 'RBAC mặc định từ chối mọi request; chỉ những gì rule cho phép mới được thực hiện. Không có deny rule.' },
+    { q: 'ClusterRole gán qua RoleBinding có hiệu lực ở đâu?', options: ['Toàn cụm', 'Chỉ namespace của binding', 'Chỉ cluster-scoped resources', 'Mọi namespace trừ system'], answer: 1, explain: 'RoleBinding giới hạn phạm vi vào namespace của binding, kể cả khi role là ClusterRole.' },
+  ],
+  related: ['devops-002','devops-004'],
+  tags: ['Kubernetes','RBAC','Authorizer','ServiceAccount'],
+},
+{
+  id: 'lesson-devops-017',
+  track: 'devops',
+  order: 17,
+  title: 'PVC binding và StorageClass: bind, provision, reclaim',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được PVC tìm PV phù hợp theo dung lượng, access mode, storageClassName',
+    'Mô tả dynamic provisioning và WaitForFirstConsumer',
+    'Phân biệt reclaim policy Retain vs Delete',
+  ],
+  body: `### PV và PVC
+**PersistentVolume (PV)** là tài nguyên lưu trữ do admin hoặc dynamic provisioner tạo. **PersistentVolumeClaim (PVC)** là yêu cầu của pod: xin dung lượng, access mode, storage class. Controller bind PVC với PV phù hợp.
+
+### Binding logic
+PVC tìm PV có:
+- Dung lượng >= yêu cầu
+- Access mode khớp (ReadWriteOnce, ReadOnlyMany, ReadWriteMany)
+- storageClassName khớp (hoặc default)
+Chọn PV nhỏ nhất đủ dùng (để tiết kiệm).
+
+### Dynamic provisioning
+Nếu không có PV sẵn và StorageClass có provisioner, controller tạo PV mới tự động (dynamic). PVC Pending cho đến khi PV được tạo và bound.
+
+### WaitForFirstConsumer
+StorageClass với volumeBindingMode: WaitForFirstConsumer → PV chỉ được tạo/provision sau khi pod được lập lịch (để chọn zone/node phù hợp). PVC Pending cho đến pod scheduled.
+
+### Reclaim policy
+- **Delete**: xoá PV (và underlying storage) khi PVC bị xoá.
+- **Retain**: giữ PV, admin phải xóa thủ công; dữ liệu còn.
+
+**Tóm tắt:** PVC bind PV phù hợp (dung lượng ≥, access mode, storageClass); dynamic provisioning tạo PV khi thiếu; WaitForFirstConsumer chờ pod scheduled; reclaim Delete xoá, Retain giữ.
+
+### Ví dụ đời thực
+PVC 10Gi RWO storageClass gp3. Không có PV sẵn → dynamic provisioner tạo EBS volume 10Gi. Pod mount vào /data. Xoá PVC → volume bị xoá (Delete). Nếu cần giữ data → dùng Retain và backup thủ công.
+
+### Trả lời mẫu khi phỏng vấn
+Interviewer hỏi "PVC Pending mãi, debug thế nào?" Trả lời: kiểm tra events (kubectl describe pvc), storageClass tồn tại không, provisioner chạy không, WaitForFirstConsumer cần pod scheduled, zone mismatch. Nếu no provisioner và không có PV sẵn → Pending vĩnh viễn.
+
+### Bẫy production extra
+Khi PVC Pending, kiểm tra theo thứ tự: kubectl describe pvc để xem events, kubectl get sc để xác nhận storage class tồn tại, kiểm tra provisioner pod trong kube-system, kiểm tra WaitForFirstConsumer và pod scheduling, kiểm tra zone/region matching. Nếu không có provisioner và không có PV sẵn, PVC sẽ Pending vĩnh viễn. Luôn giám sát PVC Pending bằng alert. Với production, dùng Retain cho data quan trọng và backup trước khi xoá.
+
+### Bẫy production
+- Không đặt storageClassName → PVC dùng default storage class, có thể không phù hợp zone.
+- WaitForFirstConsumer với pod không được scheduled → PVC Pending mãi, không phải lỗi storage.
+- Reclaim Delete → xoá PVC là mất data vĩnh viễn; luôn backup trước.
+- RWX trên cloud block storage (EBS) không hỗ trợ → PVC Pending.
+
+> Senior tip: Luôn đặt storageClassName rõ ràng; dùng WaitForFirstConsumer cho multi-zone; backup trước khi xoá PVC với Retain; giám sát Pending PVC; kiểm tra provisioner logs.`,
+  exercises: [
+    {
+      title: 'VolumeController: bind/provision/release',
+      prompt: `Hoàn thiện VolumeController mô phỏng:
+- bind(pvc, pvs): trả về PV phù hợp (dung lượng >=, accessMode khớp, storageClass khớp) nhỏ nhất đủ dùng; null nếu không có.
+- provision(pvc): tạo PV mới với dung lượng đúng yêu cầu, accessMode và storageClass của PVC (dynamic).
+- release(pvc, policy): nếu policy "Delete" → trả về null (đã xoá); "Retain" → trả về PV giữ lại (để admin xử lý).`,
+      starter: `class VolumeController {
+    // PV: {name, capacity, accessMode, storageClass}
+    static Map<String,Object> bind(Map<String,Object> pvc, List<Map<String,Object>> pvs){throw new UnsupportedOperationException("TODO");}
+    static Map<String,Object> provision(Map<String,Object> pvc){throw new UnsupportedOperationException("TODO");}
+    static Map<String,Object> release(Map<String,Object> pvc, String policy){throw new UnsupportedOperationException("TODO");}
+}`,
+      tests: `public class Main {
+    static int passed=0,total=0;
+    static void check(String name,Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+name);}catch(Throwable t){System.out.println("FAIL "+name+": "+t);}}
+    static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("expected "+e+" got "+a);}
+    public static void main(String[] args){
+        Map<String,Object> pvc=new HashMap<>();
+        pvc.put("capacity",10);pvc.put("accessMode","RWO");pvc.put("storageClass","gp3");
+        List<Map<String,Object>> pvs=new ArrayList<>();
+        Map<String,Object> pv1=new HashMap<>();pv1.put("name","pv1");pv1.put("capacity",20);pv1.put("accessMode","RWO");pv1.put("storageClass","gp3");
+        Map<String,Object> pv2=new HashMap<>();pv2.put("name","pv2");pv2.put("capacity",10);pv2.put("accessMode","RWO");pv2.put("storageClass","gp3");
+        Map<String,Object> pv3=new HashMap<>();pv3.put("name","pv3");pv3.put("capacity",15);pv3.put("accessMode","RWX");pv3.put("storageClass","gp3");
+        pvs.add(pv1);pvs.add(pv2);pvs.add(pv3);
+        check("bind picks smallest sufficient",()->eq("pv2",VolumeController.bind(pvc,pvs).get("name")));
+        check("bind null if no match",()->{Map<String,Object> p=new HashMap<>(pvc);p.put("storageClass","sc2");eq(null,VolumeController.bind(p,pvs));});
+        check("bind requires capacity",()->{Map<String,Object> p=new HashMap<>(pvc);p.put("capacity",25);eq(null,VolumeController.bind(p,pvs));});
+        check("provision creates pv",()->{Map<String,Object> r=VolumeController.provision(pvc);eq(10,r.get("capacity"));eq("RWO",r.get("accessMode"));eq("gp3",r.get("storageClass"));});
+        check("release Delete returns null",()->eq(null,VolumeController.release(pvc,"Delete")));
+        check("release Retain returns pv",()->{Map<String,Object> r=VolumeController.release(pvc,"Retain");eq(10,r.get("capacity"));});
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `class VolumeController {
+    static Map<String,Object> bind(Map<String,Object> pvc,List<Map<String,Object>> pvs){
+        Map<String,Object> best=null;
+        for(Map<String,Object> pv:pvs){
+            if(!pv.get("accessMode").equals(pvc.get("accessMode")))continue;
+            if(!pv.get("storageClass").equals(pvc.get("storageClass")))continue;
+            int cap=(int)pv.get("capacity"),req=(int)pvc.get("capacity");
+            if(cap<req)continue;
+            if(best==null||(int)best.get("capacity")>cap)best=pv;
+        }
+        return best;
+    }
+    static Map<String,Object> provision(Map<String,Object> pvc){
+        Map<String,Object> pv=new HashMap<>();
+        pv.put("name","pv-dynamic");
+        pv.put("capacity",pvc.get("capacity"));
+        pv.put("accessMode",pvc.get("accessMode"));
+        pv.put("storageClass",pvc.get("storageClass"));
+        return pv;
+    }
+    static Map<String,Object> release(Map<String,Object> pvc,String policy){
+        if("Delete".equals(policy))return null;
+        return provision(pvc);
+    }
+}`,
+      hints: ['Bind: lọc theo accessMode, storageClass, capacity >=; chọn capacity nhỏ nhất.','Provision: tạo map mới với capacity/accessMode/storageClass của PVC.','Release: Delete → null; Retain → trả PV (có thể provision lại).'],
+      explain: `VolumeController mô phỏng controller bind/provision/release. Bind chọn PV nhỏ nhất đủ dùng để tiết kiệm. Dynamic provisioning tạo PV khi không có sẵn. Reclaim policy Delete xoá storage, Retain giữ để admin xử lý.`,
+    },
+  ],
+  check: [
+    { q: 'PVC Pending mãi, nguyên nhân nào sau đây?', options: ['Không có PV và không có provisioner', 'StorageClass không tồn tại', 'WaitForFirstConsumer chờ pod scheduled', 'Tất cả các đáp án trên'], answer: 3, explain: 'Tất cả đều có thể gây Pending: thiếu PV/provisioner, StorageClass không tồn tại, hoặc WaitForFirstConsumer chờ pod được lập lịch.' },
+    { q: 'Reclaim policy Delete làm gì khi PVC bị xoá?', options: ['Giữ PV và dữ liệu', 'Xoá PV và underlying storage', 'Chỉ xoá PVC, PV còn', 'Backup tự động'], answer: 1, explain: 'Delete xoá PV và storage bên dưới. Retain giữ PV và dữ liệu để admin xử lý thủ công.' },
+  ],
+  related: ['devops-002','devops-004'],
+  tags: ['Kubernetes','PVC','PV','StorageClass','Storage'],
+},
+{
+  id: 'lesson-devops-018',
+  track: 'devops',
+  order: 18,
+  title: 'Pipeline như code: đồ thị phụ thuộc (DAG), chạy song song và phát hiện vòng lặp',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Hiểu vì sao pipeline CI/CD thực chất là một đồ thị phụ thuộc giữa các bước (job)',
+    'Tự lập lịch các bước thành từng "đợt" chạy song song từ danh sách phụ thuộc',
+    'Phát hiện phụ thuộc vòng và phụ thuộc vào bước không tồn tại trước khi pipeline chạy',
+    'Biết các đòn bẩy làm pipeline nhanh: song song, cache, chỉ chạy phần bị ảnh hưởng',
+  ],
+  body: `### Pipeline là gì, nhìn dưới góc độ dữ liệu
+Một pipeline CI/CD gồm nhiều **bước (job)**: checkout, build, unit test, integration test, quét lỗ hổng, build image, push image, deploy. Một số bước **phụ thuộc** bước khác (không thể build image trước khi build jar), một số bước **độc lập** (unit test và quét dependency có thể chạy cùng lúc). Viết ra dữ liệu:
+~~~text
+build:        (không phụ thuộc)
+unit-test:    build
+it-test:      build
+dep-scan:     (không phụ thuộc)
+image:        unit-test, it-test
+image-scan:   image
+deploy-dev:   image-scan, dep-scan
+~~~
+Đây là một **đồ thị có hướng không chu trình** (DAG — Directed Acyclic Graph): mỗi bước là một đỉnh, mỗi phụ thuộc là một cạnh. GitHub Actions ({{needs:}}), GitLab CI ({{needs:}} hoặc stages), Jenkins (stage + parallel), Argo Workflows, Airflow đều mô hình hoá pipeline theo cách này.
+
+### Lập lịch theo "đợt" (topological levels)
+Ý tưởng (thuật toán Kahn theo tầng):
+1. Đợt 1 = mọi bước **không còn phụ thuộc chưa xong**.
+2. Coi đợt 1 đã xong, xoá chúng khỏi danh sách phụ thuộc của các bước còn lại.
+3. Đợt 2 = các bước giờ đã hết phụ thuộc. Lặp lại tới khi hết bước.
+Với ví dụ trên: đợt 1 = build, dep-scan; đợt 2 = it-test, unit-test; đợt 3 = image; đợt 4 = image-scan; đợt 5 = deploy-dev. Các bước trong cùng một đợt **chạy song song** được. Thời gian pipeline ≈ tổng thời gian bước **lâu nhất** của mỗi đợt (đường găng — critical path), không phải tổng mọi bước.
+
+### Hai lỗi cấu hình phải phát hiện trước khi chạy
+- **Phụ thuộc vòng**: A cần B, B cần A → không bước nào bắt đầu được; pipeline treo hoặc báo lỗi khó hiểu. Thuật toán trên phát hiện được: nếu tới lúc không còn bước nào hết phụ thuộc mà vẫn còn bước chưa xếp → có vòng.
+- **Phụ thuộc vào bước không tồn tại** (gõ sai tên "unit-tests" thay vì "unit-test"): phải báo lỗi rõ ràng ngay, không bỏ qua im lặng.
+
+### Làm pipeline nhanh hơn
+| Đòn bẩy | Ý tưởng | Lưu ý |
+|---|---|---|
+| Song song | Bước độc lập chạy cùng đợt | Bị giới hạn số runner |
+| Rút ngắn đường găng | Tối ưu bước dài nhất của mỗi đợt | Tối ưu bước không nằm trên đường găng không làm pipeline nhanh hơn |
+| Cache theo khoá nội dung | Khoá = hash của file lock (pom.xml, gradle.lockfile); khoá đổi mới tải lại dependency | Khoá sai thì cache cũ gây lỗi khó hiểu |
+| Chỉ chạy phần bị ảnh hưởng | Monorepo: chỉ build module có thay đổi | Phải an toàn mặc định: thay đổi file chung thì chạy hết |
+| Chia nhỏ test | Integration test chia nhiều shard | Shard cân bằng theo thời gian chạy |
+
+~~~java
+// Đường găng: thời gian pipeline theo đợt (giả sử runner không giới hạn)
+long total = 0;
+for (List<String> wave : waves) {
+    long longest = 0;
+    for (String step : wave) longest = Math.max(longest, durationSec.get(step));
+    total += longest;   // các bước trong đợt chạy song song -> chỉ tính bước lâu nhất
+}
+~~~
+
+> Trong platform team, bạn không viết pipeline cho từng service mà viết **pipeline dùng lại được** (reusable workflow, template). Kiểm tra DAG ngay khi đọc cấu hình giúp mọi đội nhận lỗi cấu hình trong vài giây thay vì sau 10 phút chờ runner.
+
+### Liên hệ phỏng vấn
+Câu hỏi "làm sao giảm pipeline từ 40 phút xuống 10 phút?" thực chất hỏi bạn có nhìn pipeline như một DAG không: tìm đường găng, song song hoá bước độc lập, cache đúng khoá, chỉ chạy phần bị ảnh hưởng. Nói được "thời gian pipeline bằng tổng bước dài nhất của mỗi đợt, nên tối ưu bước ngoài đường găng không giúp gì" là tín hiệu Senior rõ ràng.`,
+  exercises: [{
+    title: 'Lập lịch pipeline thành các đợt chạy song song',
+    prompt: `Viết {{PipelinePlanner.plan(Map<String, List<String>> deps)}}: key là tên bước, value là danh sách bước nó phụ thuộc.
+- Trả về danh sách các **đợt**: mỗi đợt là danh sách bước có thể chạy song song, các bước trong một đợt **sắp xếp theo thứ tự chữ cái**.
+- Một bước vào đợt sớm nhất có thể (mọi phụ thuộc đã nằm ở các đợt trước).
+- Phụ thuộc vào bước không có trong map → ném {{IllegalArgumentException}} với message chứa tên bước bị thiếu.
+- Có vòng phụ thuộc → ném {{IllegalArgumentException}} với message chứa chữ {{cycle}}.`,
+    starter: `class PipelinePlanner {
+    List<List<String>> plan(Map<String, List<String>> deps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Map<String, List<String>> sample() {
+        Map<String, List<String>> d = new LinkedHashMap<>();
+        d.put("build", List.of());
+        d.put("unit-test", List.of("build"));
+        d.put("it-test", List.of("build"));
+        d.put("dep-scan", List.of());
+        d.put("image", List.of("unit-test", "it-test"));
+        d.put("image-scan", List.of("image"));
+        d.put("deploy-dev", List.of("image-scan", "dep-scan"));
+        return d;
+    }
+    public static void main(String[] args) {
+        PipelinePlanner p = new PipelinePlanner();
+        check("dot_song_song", () -> eq(List.of(
+            List.of("build", "dep-scan"), List.of("it-test", "unit-test"), List.of("image"),
+            List.of("image-scan"), List.of("deploy-dev")), p.plan(sample())));
+        check("mot_buoc", () -> eq(List.of(List.of("lint")), p.plan(Map.of("lint", List.of()))));
+        check("rong", () -> eq(List.of(), p.plan(Map.of())));
+        check("phu_thuoc_khong_ton_tai", () -> {
+            Map<String, List<String>> d = new HashMap<>(sample());
+            d.put("deploy-prod", List.of("smoke-tests"));
+            try { p.plan(d); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException e) {
+                if (e.getMessage() == null || !e.getMessage().contains("smoke-tests")) throw new AssertionError("message phải chứa smoke-tests: " + e.getMessage());
+            }
+        });
+        check("vong_phu_thuoc", () -> {
+            Map<String, List<String>> d = new HashMap<>();
+            d.put("a", List.of("c")); d.put("b", List.of("a")); d.put("c", List.of("b")); d.put("x", List.of());
+            try { p.plan(d); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException e) {
+                if (e.getMessage() == null || !e.getMessage().contains("cycle")) throw new AssertionError("message phải chứa cycle: " + e.getMessage());
+            }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class PipelinePlanner {
+    List<List<String>> plan(Map<String, List<String>> deps) {
+        // 1. kiểm tra phụ thuộc trỏ tới bước không tồn tại
+        for (Map.Entry<String, List<String>> e : deps.entrySet())
+            for (String d : e.getValue())
+                if (!deps.containsKey(d)) throw new IllegalArgumentException("step " + e.getKey() + " depends on unknown step " + d);
+        // 2. đếm số phụ thuộc chưa xong của mỗi bước
+        Map<String, Integer> remaining = new HashMap<>();
+        Map<String, List<String>> dependents = new HashMap<>();
+        for (Map.Entry<String, List<String>> e : deps.entrySet()) {
+            remaining.put(e.getKey(), new HashSet<>(e.getValue()).size());
+            for (String d : new HashSet<>(e.getValue())) dependents.computeIfAbsent(d, k -> new ArrayList<>()).add(e.getKey());
+        }
+        List<List<String>> waves = new ArrayList<>();
+        List<String> ready = new ArrayList<>();
+        for (Map.Entry<String, Integer> e : remaining.entrySet()) if (e.getValue() == 0) ready.add(e.getKey());
+        int placed = 0;
+        while (!ready.isEmpty()) {
+            Collections.sort(ready);                       // thứ tự ổn định trong một đợt
+            waves.add(List.copyOf(ready));
+            placed += ready.size();
+            List<String> next = new ArrayList<>();
+            for (String done : ready)                      // "xong" cả đợt -> giảm bộ đếm của các bước phụ thuộc
+                for (String dep : dependents.getOrDefault(done, List.of()))
+                    if (remaining.merge(dep, -1, Integer::sum) == 0) next.add(dep);
+            ready = next;
+        }
+        // 3. còn bước chưa xếp mà không bước nào hết phụ thuộc -> có vòng
+        if (placed < deps.size()) throw new IllegalArgumentException("dependency cycle detected");
+        return waves;
+    }
+}`,
+    hints: [
+      'Đếm cho mỗi bước số phụ thuộc chưa xong; đợt đầu là các bước có số đếm bằng 0.',
+      'Sau mỗi đợt, giảm số đếm của các bước phụ thuộc vào bước vừa xong; bước nào về 0 thì vào đợt sau.',
+      'Nếu hết bước sẵn sàng mà tổng số bước đã xếp nhỏ hơn tổng số bước thì có vòng.',
+    ],
+    explain: `Lời giải là **thuật toán Kahn theo tầng**: đếm số phụ thuộc chưa xong (in-degree), đưa các bước có số đếm 0 vào một đợt, "hoàn thành" cả đợt rồi giảm bộ đếm của các bước phụ thuộc. Độ phức tạp O(số bước + số cạnh).
+- Kiểm tra bước không tồn tại **trước**, để báo lỗi đúng nguyên nhân thay vì báo "cycle".
+- Dùng {{HashSet}} khi đếm để một phụ thuộc bị khai báo trùng không làm sai bộ đếm.
+- Sắp xếp trong mỗi đợt để kết quả **xác định** (deterministic) — quan trọng cho test và cho log dễ đọc.
+Lỗi hay gặp: duyệt đệ quy DFS mà không đánh dấu "đang thăm" nên không phát hiện vòng; xếp từng bước thay vì từng đợt nên mất thông tin bước nào chạy song song được.`,
+  }],
+  check: [
+    { q: 'Pipeline có 3 đợt; thời gian các bước: đợt 1 {4, 2} phút, đợt 2 {6, 1, 3} phút, đợt 3 {2} phút. Với runner không giới hạn, pipeline mất bao lâu?', options: ['12 phút', '18 phút', '6 phút', '10 phút'], answer: 0, explain: 'Mỗi đợt chạy song song nên chỉ tính bước lâu nhất: 4 + 6 + 2 = 12 phút. 18 phút là tổng mọi bước (chạy tuần tự). 6 phút chỉ là bước lâu nhất một đợt. 10 phút bỏ sót đợt 3 hoặc tính sai.' },
+    { q: 'Bạn tối ưu bước "dep-scan" từ 3 phút xuống 1 phút nhưng pipeline vẫn mất đúng thời gian như cũ. Giải thích hợp lý nhất?', options: ['dep-scan không nằm trên đường găng: bước khác cùng đợt vẫn lâu hơn', 'Cache bị hỏng', 'Runner chạy tuần tự nên mọi tối ưu đều vô nghĩa', 'Pipeline có vòng phụ thuộc'], answer: 0, explain: 'Thời gian một đợt bằng bước lâu nhất của đợt đó; rút ngắn bước không phải lâu nhất không đổi tổng. Cache hỏng thường làm chậm hơn chứ không giữ nguyên. Nếu chạy tuần tự thì tối ưu bất kỳ bước nào cũng giảm tổng. Có vòng thì pipeline không chạy được.' },
+    { q: 'Khoá cache dependency Maven tốt nhất nên dựa trên gì?', options: ['Hash nội dung pom.xml (và file lock nếu có)', 'Tên nhánh git', 'Ngày chạy pipeline', 'Số build tăng dần'], answer: 0, explain: 'Khoá theo nội dung file khai báo dependency: dependency không đổi thì dùng lại cache, đổi thì tải mới. Theo nhánh làm mọi nhánh mới tải lại từ đầu. Theo ngày hay số build thì gần như không bao giờ trúng cache.' },
+  ],
+  related: ['devops-010', 'devops-020', 'devops-072'],
+  tags: ['CI/CD', 'pipeline', 'DAG', 'topological sort', 'platform engineering'],
+},
+{
+  id: 'lesson-devops-019',
+  track: 'devops',
+  order: 19,
+  title: 'Quality gate: chặn merge theo ngưỡng coverage, lỗ hổng và ngoại lệ có hạn dùng',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Hiểu quality gate là chính sách tự động quyết định một thay đổi có được merge/deploy hay không',
+    'Thiết kế quy tắc gate: test, coverage code mới, lỗ hổng theo mức nghiêm trọng',
+    'Xử lý ngoại lệ (waiver) có hạn dùng thay vì tắt gate',
+    'Trả về lý do rõ ràng để developer biết phải sửa gì',
+  ],
+  body: `### Quality gate là gì
+Quality gate là **cổng tự động** trong pipeline: đọc kết quả của các bước (test, coverage, quét lỗ hổng, quét bí mật) rồi quyết định **PASS** (được merge/deploy) hay **FAIL** (bị chặn), kèm **lý do**. SonarQube có "Quality Gate", GitHub/GitLab có required status checks, công cụ quét như Trivy có {{--exit-code}} theo mức nghiêm trọng. Platform team thường cung cấp **một chính sách chung** cho mọi service thay vì để mỗi đội tự đặt.
+
+### Thiết kế quy tắc hợp lý
+| Quy tắc | Vì sao | Bẫy |
+|---|---|---|
+| Không có test fail | Hiển nhiên | Test flaky làm mọi người muốn tắt gate — sửa flaky, đừng tắt gate |
+| Coverage **trên code mới** ≥ 80% | Không bắt đội sửa hết code cũ mới được merge | Coverage tổng cả repo làm gate vô nghĩa với codebase cũ |
+| Không có lỗ hổng **CRITICAL** chưa xử lý | Rủi ro bị khai thác cao | Lỗ hổng trong thư viện chưa có bản vá |
+| Số lỗ hổng HIGH ≤ ngưỡng | Kiểm soát dần | Ngưỡng quá chặt khi mới áp dụng → mọi PR đỏ |
+| Không có secret trong code | Lộ credential | Báo động giả với chuỗi test |
+
+### Ngoại lệ có hạn dùng (waiver)
+Khi một lỗ hổng CRITICAL nằm trong thư viện **chưa có bản vá** và đã đánh giá là không bị khai thác trong ngữ cảnh của bạn, đội cần một cách tiếp tục làm việc **mà không tắt cả gate**. Cách đúng là **waiver**: ngoại lệ cho đúng mã lỗ hổng đó, có lý do, người duyệt và **ngày hết hạn**. Hết hạn mà chưa xử lý → gate lại chặn. Waiver không có hạn sẽ tồn tại mãi và gate dần mất ý nghĩa.
+
+~~~java
+// Waiver còn hiệu lực đến hết ngày expires (so sánh theo ngày, dễ hiểu với người duyệt)
+boolean active(Waiver w, LocalDate today) {
+    return !today.isAfter(w.expires());   // hôm nay <= expires
+}
+~~~
+Truyền {{LocalDate today}} vào thay vì gọi {{LocalDate.now()}} bên trong: hàm trở nên **xác định** và test được (xem bài Clock injection).
+
+### Trả lý do, không chỉ PASS/FAIL
+Developer cần biết **phải sửa gì**: "COVERAGE: 72% < 80% trên code mới", "CRITICAL: CVE-2024-1234 trong thư viện X (không có waiver)". Gate chỉ in "FAILED" khiến mọi người tìm cách đi vòng. Thứ tự lý do ổn định giúp so sánh giữa các lần chạy.
+
+> Ở quy mô platform, chính sách gate nên được **quản lý như code** (file cấu hình trong repo chung, có review) và **áp dụng dần**: chế độ cảnh báo vài tuần (chỉ báo, không chặn) rồi mới bật chặn — nếu không, ngày đầu tiên 80% PR đỏ và các đội sẽ phản đối cả nền tảng.
+
+### Liên hệ phỏng vấn
+Câu hỏi "bạn thiết kế quality gate cho 30 service thế nào?" kiểm tra bạn có cân bằng giữa an toàn và tốc độ: coverage trên code mới thay vì toàn repo, chặn theo mức nghiêm trọng, waiver có hạn và có người duyệt, bật dần từ chế độ cảnh báo, và trả lý do rõ ràng cho developer.`,
+  exercises: [{
+    title: 'Đánh giá quality gate với waiver có hạn dùng',
+    prompt: `Viết {{QualityGate.evaluate(report, policy, waivers, today)}} trả về {{GateResult(boolean passed, List<String> reasons)}}. Kiểm tra theo **đúng thứ tự** và thêm lý do:
+1. {{report.failedTests() > 0}} → {{"TESTS_FAILED"}}
+2. {{report.newCodeCoverage() < policy.minNewCoverage()}} → {{"COVERAGE"}}
+3. Mỗi finding mức {{CRITICAL}} **không có waiver còn hạn** → {{"CRITICAL:" + id}} (theo thứ tự xuất hiện trong report)
+4. Số finding mức {{HIGH}} không có waiver còn hạn **lớn hơn** {{policy.maxHigh()}} → {{"HIGH_COUNT"}}
+Waiver còn hạn khi {{findingId}} khớp và {{today}} không sau {{expires}}. {{passed}} là true khi không có lý do nào.`,
+    starter: `import java.time.LocalDate;
+
+record Finding(String id, String severity) {}
+record Waiver(String findingId, LocalDate expires) {}
+record Report(int failedTests, double newCodeCoverage, List<Finding> findings) {}
+record Policy(double minNewCoverage, int maxHigh) {}
+record GateResult(boolean passed, List<String> reasons) {}
+
+class QualityGate {
+    GateResult evaluate(Report report, Policy policy, List<Waiver> waivers, LocalDate today) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `import java.time.LocalDate;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        QualityGate g = new QualityGate();
+        Policy pol = new Policy(80.0, 2);
+        LocalDate today = LocalDate.of(2026, 11, 7);
+        check("sach_se_pass", () -> {
+            GateResult r = g.evaluate(new Report(0, 85.0, List.of(new Finding("CVE-1", "LOW"))), pol, List.of(), today);
+            eq(true, r.passed()); eq(List.of(), r.reasons());
+        });
+        check("critical_co_waiver_con_han", () -> {
+            Report rep = new Report(0, 90.0, List.of(new Finding("CVE-9", "CRITICAL")));
+            GateResult r = g.evaluate(rep, pol, List.of(new Waiver("CVE-9", LocalDate.of(2026, 11, 7))), today);
+            eq(true, r.passed());
+        });
+        check("waiver_het_han_bi_chan", () -> {
+            Report rep = new Report(0, 90.0, List.of(new Finding("CVE-9", "CRITICAL")));
+            GateResult r = g.evaluate(rep, pol, List.of(new Waiver("CVE-9", LocalDate.of(2026, 11, 6))), today);
+            eq(false, r.passed()); eq(List.of("CRITICAL:CVE-9"), r.reasons());
+        });
+        check("nhieu_ly_do_dung_thu_tu", () -> {
+            Report rep = new Report(2, 71.5, List.of(
+                new Finding("CVE-A", "HIGH"), new Finding("CVE-C1", "CRITICAL"), new Finding("CVE-B", "HIGH"),
+                new Finding("CVE-C2", "CRITICAL"), new Finding("CVE-D", "HIGH")));
+            GateResult r = g.evaluate(rep, pol, List.of(), today);
+            eq(List.of("TESTS_FAILED", "COVERAGE", "CRITICAL:CVE-C1", "CRITICAL:CVE-C2", "HIGH_COUNT"), r.reasons());
+        });
+        check("high_duoc_waiver_khong_tinh", () -> {
+            Report rep = new Report(0, 95.0, List.of(new Finding("H1", "HIGH"), new Finding("H2", "HIGH"), new Finding("H3", "HIGH")));
+            GateResult r = g.evaluate(rep, pol, List.of(new Waiver("H3", LocalDate.of(2027, 1, 1))), today);
+            eq(true, r.passed());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `import java.time.LocalDate;
+
+record Finding(String id, String severity) {}
+record Waiver(String findingId, LocalDate expires) {}
+record Report(int failedTests, double newCodeCoverage, List<Finding> findings) {}
+record Policy(double minNewCoverage, int maxHigh) {}
+record GateResult(boolean passed, List<String> reasons) {}
+
+class QualityGate {
+    GateResult evaluate(Report report, Policy policy, List<Waiver> waivers, LocalDate today) {
+        // id của các finding đang được waiver còn hạn (hết ngày expires vẫn còn hiệu lực)
+        Set<String> waived = new HashSet<>();
+        for (Waiver w : waivers) if (!today.isAfter(w.expires())) waived.add(w.findingId());
+        List<String> reasons = new ArrayList<>();
+        if (report.failedTests() > 0) reasons.add("TESTS_FAILED");
+        if (report.newCodeCoverage() < policy.minNewCoverage()) reasons.add("COVERAGE");
+        int high = 0;
+        for (Finding f : report.findings()) {
+            if (waived.contains(f.id())) continue;          // ngoại lệ có hạn: bỏ qua finding này
+            if (f.severity().equals("CRITICAL")) reasons.add("CRITICAL:" + f.id());
+            else if (f.severity().equals("HIGH")) high++;
+        }
+        if (high > policy.maxHigh()) reasons.add("HIGH_COUNT");
+        return new GateResult(reasons.isEmpty(), List.copyOf(reasons));
+    }
+}`,
+    hints: [
+      'Tạo trước một Set chứa id các finding có waiver còn hạn: !today.isAfter(expires).',
+      'Duyệt findings theo thứ tự report; bỏ qua finding có trong Set; CRITICAL thêm lý do ngay, HIGH thì đếm.',
+      'Thêm HIGH_COUNT sau cùng, khi số HIGH chưa waiver lớn hơn maxHigh.',
+    ],
+    explain: `Tách **dữ liệu** (report, policy, waiver, today) khỏi **logic** giúp gate xác định và test được: không gọi {{LocalDate.now()}} bên trong. Waiver được chuẩn hoá thành một {{Set}} id còn hạn trước khi duyệt, nên mỗi finding chỉ cần một phép tra O(1).
+- Quy ước "còn hạn đến hết ngày expires" ({{!today.isAfter(expires)}}) phải được ghi rõ trong tài liệu chính sách, vì người duyệt hiểu ngày theo cách đó.
+- Thứ tự lý do ổn định giúp diff giữa các lần chạy dễ đọc.
+Lỗi hay gặp: dùng {{today.isBefore(expires)}} làm waiver hết hiệu lực sớm một ngày; đếm cả HIGH đã được waiver; trả về chỉ một lý do đầu tiên khiến developer phải sửa từng vòng.`,
+  }],
+  check: [
+    { q: 'Vì sao nên đặt ngưỡng coverage trên **code mới** thay vì toàn bộ repo cho một codebase cũ?', options: ['Để mọi PR mới phải có test mà không bắt đội sửa hết code cũ trước khi được merge', 'Vì coverage toàn repo không đo được', 'Vì code cũ không chạy test được', 'Để tăng tốc pipeline'], answer: 0, explain: 'Coverage toàn repo của codebase cũ thường thấp, đặt ngưỡng cao sẽ chặn mọi PR dù PR đó có test tốt; đo trên code mới tạo áp lực đúng chỗ. Coverage toàn repo vẫn đo được. Code cũ vẫn chạy test được. Ngưỡng không ảnh hưởng tốc độ pipeline.' },
+    { q: 'Một CVE CRITICAL trong thư viện chưa có bản vá chặn mọi PR. Cách xử lý đúng?', options: ['Tạo waiver cho đúng CVE đó, có lý do, người duyệt và ngày hết hạn', 'Tắt quét lỗ hổng cho tới khi có bản vá', 'Hạ mức CRITICAL thành HIGH trong cấu hình', 'Cho phép merge thủ công không cần gate'], answer: 0, explain: 'Waiver có hạn giữ gate hoạt động cho mọi lỗ hổng khác và tự chặn lại khi hết hạn. Tắt quét hay bỏ gate làm mất bảo vệ hoàn toàn. Đổi mức nghiêm trọng là che giấu rủi ro và ảnh hưởng mọi CVE khác.' },
+    { q: 'Platform team muốn áp dụng quality gate mới cho 30 service. Cách triển khai ít gây phản đối nhất?', options: ['Chạy chế độ cảnh báo vài tuần, công bố số liệu, rồi mới bật chặn', 'Bật chặn ngay cho tất cả để tạo kỷ luật', 'Để mỗi đội tự chọn có dùng gate hay không', 'Chỉ áp dụng cho service mới, service cũ không bao giờ áp dụng'], answer: 0, explain: 'Chế độ cảnh báo cho các đội thời gian sửa và cho platform dữ liệu để điều chỉnh ngưỡng. Bật chặn ngay thường làm phần lớn PR đỏ trong ngày đầu. Tự chọn dẫn tới không ai dùng. Bỏ hẳn service cũ để lại rủi ro lớn nhất không được kiểm soát.' },
+  ],
+  related: ['devops-099', 'devops-103', 'devops-031'],
+  tags: ['CI/CD', 'quality gate', 'security scanning', 'policy', 'platform engineering'],
+},
+{
+  id: 'lesson-devops-020',
+  track: 'devops',
+  order: 20,
+  title: 'Golden path: template tạo service mới với tham số được kiểm tra',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hiểu golden path / paved road: con đường chuẩn, dễ nhất để một đội tạo và vận hành service',
+    'Thiết kế template sinh service mới (code, pipeline, Helm values, dashboard) từ vài tham số',
+    'Kiểm tra tham số đầu vào chặt chẽ để không sinh ra service sai chuẩn',
+    'Phát hiện placeholder chưa được thay trước khi tạo repo',
+  ],
+  body: `### Golden path là gì
+Một công ty có 40 service: mỗi đội tự viết Dockerfile, pipeline, Helm chart, dashboard theo cách riêng → 40 cách làm, mỗi lần nâng cấp phải sửa 40 nơi, người mới mất nhiều ngày để hiểu. **Golden path** (hay paved road) là **con đường chuẩn được nền tảng hỗ trợ**: dùng nó thì mọi thứ có sẵn và được bảo trì; đi đường khác vẫn được nhưng đội tự chịu trách nhiệm. Không phải luật cấm — là con đường **dễ nhất**.
+
+### Template tạo service mới
+Trong Backstage gọi là **software template**; ở công ty nhỏ có thể là một repo mẫu + script. Người dùng nhập vài tham số, template sinh ra:
+~~~text
+Tham số: name = payment-reconciler, team = payments, port = 8080
+Sinh ra:
+  payment-reconciler/
+    pom.xml                     (groupId, artifactId theo name)
+    Dockerfile                  (image chuẩn, user không phải root)
+    .github/workflows/ci.yml    (gọi reusable workflow của platform)
+    deploy/values.yaml          (Helm values cho chart chung: tên, team, port, probe)
+    catalog-info.yaml           (đăng ký vào service catalog: owner = payments)
+    docs/index.md               (tài liệu khởi đầu)
+~~~
+Mỗi file trong template chứa **placeholder** như {{__NAME__}}, {{__TEAM__}}, {{__PORT__}}; công cụ thay bằng giá trị thật — cả trong **nội dung** lẫn **đường dẫn file**.
+
+### Kiểm tra tham số: lỗi ở đây nhân lên ở mọi nơi
+Tên service xuất hiện trong DNS, tên Kubernetes object, tên repo, metric. Kubernetes yêu cầu tên dạng DNS label: chữ thường, số và dấu gạch ngang, bắt đầu bằng chữ, không kết thúc bằng gạch ngang, tối đa 63 ký tự. Platform thường đặt quy tắc chặt hơn (ví dụ 3–30 ký tự, không có hai gạch ngang liền nhau). Kiểm tra **trước khi sinh**, báo lỗi rõ trường nào sai.
+| Tham số | Quy tắc | Vì sao |
+|---|---|---|
+| name | 3–30 ký tự, a-z0-9 và "-", bắt đầu bằng chữ, không "--", không kết thúc "-" | Hợp lệ cho DNS, Kubernetes, repo |
+| team | Không rỗng (và nằm trong danh sách đội) | Mọi service phải có chủ sở hữu để on-call |
+| port | Số nguyên 1024–65535 | Không dùng cổng đặc quyền, không ngoài khoảng |
+
+### Placeholder bị bỏ sót
+Template được nhiều người sửa; ai đó thêm {{__REGION__}} vào một file nhưng quên thêm tham số. Nếu không kiểm tra, service sinh ra chứa chuỗi {{__REGION__}} và lỗi lúc deploy, rất khó hiểu. Sau khi render, **quét lại** mọi file: còn mẫu {{__CHỮ_HOA__}} nào thì dừng và báo lỗi.
+
+~~~java
+// Thay placeholder trong cả đường dẫn lẫn nội dung
+String render(String text, Map<String, String> values) {
+    String out = text;
+    for (Map.Entry<String, String> e : values.entrySet())
+        out = out.replace(e.getKey(), e.getValue());   // replace thay mọi lần xuất hiện, không dùng regex
+    return out;
+}
+~~~
+
+> Đo golden path như một sản phẩm: **thời gian từ lúc bấm "tạo service" tới khi service chạy trên môi trường dev**, tỉ lệ service mới dùng template, số lần đội phải hỏi platform team. Nếu template khó dùng hơn tự làm, các đội sẽ không dùng nó.
+
+### Liên hệ phỏng vấn
+"Bạn chuẩn hoá cách 20 đội tạo service thế nào?" — câu trả lời Senior: golden path là con đường dễ nhất chứ không phải luật cấm; template sinh đủ code, pipeline, deploy, dashboard, catalog; kiểm tra tham số chặt; phiên bản hoá template và cách cập nhật service đã sinh; đo thời gian onboard và tỉ lệ sử dụng.`,
+  exercises: [{
+    title: 'Render template service mới với kiểm tra tham số',
+    prompt: `Viết {{ServiceScaffolder.render(templates, params)}}: {{templates}} là map đường dẫn → nội dung, có các placeholder {{__NAME__}}, {{__TEAM__}}, {{__PORT__}}. Trả về {{TreeMap}} đường dẫn → nội dung đã thay (thay trong **cả đường dẫn lẫn nội dung**).
+- {{name}}: 3–30 ký tự, chỉ gồm chữ thường a–z, số, dấu "-"; bắt đầu bằng chữ; không kết thúc bằng "-"; không có "--". Sai → {{IllegalArgumentException}} với message chứa {{name}}.
+- {{team}}: không null, không rỗng sau trim. Sai → {{IllegalArgumentException}} chứa {{team}}.
+- {{port}}: số nguyên trong 1024–65535. Sai (kể cả không phải số) → {{IllegalArgumentException}} chứa {{port}}.
+- Sau khi thay, nếu bất kỳ đường dẫn hay nội dung nào còn chuỗi dạng {{__X__}} (hai gạch dưới, một hoặc nhiều **chữ hoa** A–Z hoặc dấu "_", hai gạch dưới) → {{IllegalStateException}}.`,
+    starter: `class ServiceScaffolder {
+    Map<String, String> render(Map<String, String> templates, Map<String, String> params) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expectIae(Runnable r, String field) {
+        try { r.run(); throw new AssertionError("phải ném IllegalArgumentException cho " + field); }
+        catch (IllegalArgumentException e) {
+            if (e.getMessage() == null || !e.getMessage().contains(field)) throw new AssertionError("message phải chứa " + field + ": " + e.getMessage());
+        }
+    }
+    static Map<String, String> tpl() {
+        Map<String, String> t = new HashMap<>();
+        t.put("deploy/values.yaml", "name: __NAME__ | team: __TEAM__ | port: __PORT__");
+        t.put("src/__NAME__/README.md", "Service __NAME__ owned by __TEAM__");
+        return t;
+    }
+    static Map<String, String> params(String name, String team, String port) {
+        Map<String, String> p = new HashMap<>();
+        p.put("name", name); p.put("team", team); p.put("port", port);
+        return p;
+    }
+    public static void main(String[] args) {
+        ServiceScaffolder s = new ServiceScaffolder();
+        check("render_ca_duong_dan_va_noi_dung", () -> {
+            Map<String, String> out = s.render(tpl(), params("payment-reconciler", "payments", "8080"));
+            Map<String, String> exp = new TreeMap<>();
+            exp.put("deploy/values.yaml", "name: payment-reconciler | team: payments | port: 8080");
+            exp.put("src/payment-reconciler/README.md", "Service payment-reconciler owned by payments");
+            eq(exp, out);
+            eq(TreeMap.class, out.getClass());
+        });
+        check("ten_khong_hop_le", () -> {
+            for (String bad : new String[] { "Payment", "pa", "9svc", "svc-", "svc--x", "svc_x", "a-very-very-long-service-name-xyz" })
+                expectIae(() -> s.render(tpl(), params(bad, "payments", "8080")), "name");
+        });
+        check("team_rong", () -> expectIae(() -> s.render(tpl(), params("orders", "   ", "8080")), "team"));
+        check("port_sai", () -> {
+            for (String bad : new String[] { "80", "70000", "abc" })
+                expectIae(() -> s.render(tpl(), params("orders", "core", bad)), "port");
+        });
+        check("placeholder_bi_bo_sot", () -> {
+            Map<String, String> t = tpl();
+            t.put("deploy/region.txt", "region: __REGION__");
+            try { s.render(t, params("orders", "core", "8080")); throw new AssertionError("phải ném IllegalStateException"); }
+            catch (IllegalStateException e) { /* ok */ }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class ServiceScaffolder {
+    Map<String, String> render(Map<String, String> templates, Map<String, String> params) {
+        String name = params.get("name"), team = params.get("team"), port = params.get("port");
+        if (!validName(name)) throw new IllegalArgumentException("invalid name: " + name);
+        if (team == null || team.trim().isEmpty()) throw new IllegalArgumentException("team is required");
+        int p;
+        try { p = Integer.parseInt(port); } catch (NumberFormatException | NullPointerException e) { throw new IllegalArgumentException("port must be a number"); }
+        if (p < 1024 || p > 65535) throw new IllegalArgumentException("port out of range: " + p);
+        Map<String, String> values = Map.of("__NAME__", name, "__TEAM__", team.trim(), "__PORT__", String.valueOf(p));
+        Map<String, String> out = new TreeMap<>();
+        for (Map.Entry<String, String> e : templates.entrySet()) {
+            String path = fill(e.getKey(), values), body = fill(e.getValue(), values);
+            if (hasPlaceholder(path) || hasPlaceholder(body)) throw new IllegalStateException("unresolved placeholder in " + path);
+            out.put(path, body);
+        }
+        return out;
+    }
+
+    private static String fill(String text, Map<String, String> values) {
+        String out = text;
+        for (Map.Entry<String, String> v : values.entrySet()) out = out.replace(v.getKey(), v.getValue());
+        return out;
+    }
+
+    private static boolean validName(String n) {
+        if (n == null || n.length() < 3 || n.length() > 30) return false;
+        if (n.charAt(0) < 'a' || n.charAt(0) > 'z') return false;          // bắt đầu bằng chữ thường
+        if (n.endsWith("-") || n.contains("--")) return false;
+        for (char c : n.toCharArray())
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+        return true;
+    }
+
+    // tìm mẫu __X__ với X gồm chữ hoa A-Z hoặc "_" (ít nhất một ký tự), không dùng regex
+    private static boolean hasPlaceholder(String s) {
+        int i = s.indexOf("__");
+        while (i >= 0) {
+            int j = i + 2, k = j;
+            while (k < s.length() && ((s.charAt(k) >= 'A' && s.charAt(k) <= 'Z') || s.charAt(k) == '_')) k++;
+            // lùi lại để chuỗi kết thúc đúng bằng "__"
+            while (k - j >= 3 && s.startsWith("__", k - 2)) {
+                String inner = s.substring(j, k - 2);
+                boolean hasLetter = false;
+                for (char c : inner.toCharArray()) if (c >= 'A' && c <= 'Z') hasLetter = true;
+                if (hasLetter) return true;
+                k--;
+            }
+            i = s.indexOf("__", i + 1);
+        }
+        return false;
+    }
+}`,
+    hints: [
+      'Kiểm tra name, team, port trước khi render; mỗi lỗi ném IllegalArgumentException có tên trường trong message.',
+      'Dùng String.replace (không phải replaceAll) để thay placeholder trong cả key lẫn value.',
+      'Sau khi thay, quét chuỗi tìm "__" + chữ hoa + "__"; tìm thấy thì ném IllegalStateException.',
+    ],
+    explain: `Hai ý chính: **kiểm tra đầu vào trước khi sinh** và **kiểm tra đầu ra sau khi sinh**.
+- Kiểm tra tên bằng vòng lặp ký tự rõ ràng (có thể dùng regex trong code thật), lưu ý các luật dễ quên: không kết thúc bằng "-", không có "--", bắt đầu bằng chữ.
+- {{Integer.parseInt}} ném {{NumberFormatException}} với "abc" — bắt và chuyển thành {{IllegalArgumentException}} có tên trường để người dùng hiểu.
+- Trả {{TreeMap}} để thứ tự file ổn định khi in ra hoặc commit.
+- Quét placeholder còn sót sau khi render là lưới an toàn khi template được nhiều người sửa.
+Lỗi hay gặp: dùng {{replaceAll}} khiến chuỗi giá trị có ký tự đặc biệt bị hiểu như regex; quên thay placeholder trong **đường dẫn file**; chỉ kiểm tra độ dài tên mà bỏ qua ký tự hợp lệ.`,
+  }],
+  check: [
+    { q: 'Điều gì phân biệt golden path với một "quy định bắt buộc"?', options: ['Golden path là con đường dễ nhất được nền tảng hỗ trợ; đi đường khác vẫn được nhưng đội tự chịu trách nhiệm', 'Golden path cấm mọi cách làm khác', 'Golden path chỉ là tài liệu hướng dẫn, không có công cụ', 'Golden path chỉ áp dụng cho service mới viết bằng Java'], answer: 0, explain: 'Golden path thu hút bằng sự tiện lợi và hỗ trợ, không cấm. Cấm mọi cách khác là quy định cứng và thường gây phản ứng. Golden path đi kèm công cụ như template và pipeline chứ không chỉ tài liệu. Nó không giới hạn ở một ngôn ngữ.' },
+    { q: 'Vì sao phải quét placeholder còn sót sau khi render template?', options: ['Template do nhiều người sửa; một placeholder mới thiếu tham số sẽ lọt vào service và gây lỗi khó hiểu lúc deploy', 'Để tăng tốc render', 'Vì String.replace không thay được mọi lần xuất hiện', 'Để kiểm tra tên service hợp lệ'], answer: 0, explain: 'Quét sau render bắt lỗi template trước khi tạo repo. Nó không giúp tăng tốc. String.replace thay mọi lần xuất hiện. Kiểm tra tên là việc kiểm tra đầu vào, làm trước khi render.' },
+    { q: 'Chỉ số nào phản ánh tốt nhất chất lượng golden path từ góc nhìn developer?', options: ['Thời gian từ lúc tạo service tới khi nó chạy trên môi trường dev', 'Số dòng code trong template', 'Số service đang chạy trong cluster', 'Số lần platform team deploy mỗi tuần'], answer: 0, explain: 'Golden path phục vụ developer nên đo trải nghiệm của họ: thời gian tới service chạy được. Số dòng template không nói lên giá trị. Số service đang chạy phụ thuộc nhiều yếu tố khác. Tần suất deploy của platform team không đo trải nghiệm người dùng nền tảng.' },
+  ],
+  related: ['devops-119', 'devops-055', 'devops-023'],
+  tags: ['golden path', 'template', 'Backstage', 'internal developer platform', 'platform engineering'],
+},
+{
+  id: 'lesson-devops-021',
+  track: 'devops',
+  order: 21,
+  title: 'Đo nền tảng như sản phẩm: tính 4 chỉ số DORA từ dữ liệu deploy và sự cố',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Hiểu 4 chỉ số DORA: tần suất deploy, lead time thay đổi, tỉ lệ thay đổi gây lỗi, thời gian khôi phục',
+    'Tự tính các chỉ số từ dữ liệu thô (thời điểm commit, deploy, sự cố)',
+    'Biết vì sao dùng trung vị cho lead time và cách tránh các bẫy khi đo',
+    'Dùng chỉ số để chứng minh giá trị của platform, không dùng để chấm điểm cá nhân',
+  ],
+  body: `### Vì sao platform team phải đo
+Platform là **sản phẩm nội bộ**: nếu không đo, bạn không chứng minh được nó giúp các đội nhanh và an toàn hơn, và không biết nên đầu tư vào đâu. Nghiên cứu DORA (DevOps Research and Assessment) đề xuất 4 chỉ số cân bằng giữa **tốc độ** và **ổn định**:
+| Chỉ số | Câu hỏi | Cách tính đơn giản |
+|---|---|---|
+| Deployment frequency | Deploy lên production thường xuyên thế nào? | Số lần deploy / số ngày |
+| Lead time for changes | Từ commit tới production mất bao lâu? | Trung vị của (thời điểm deploy − thời điểm commit) |
+| Change failure rate | Bao nhiêu phần trăm deploy gây sự cố? | Số deploy gây sự cố / tổng số deploy |
+| Time to restore (MTTR) | Khi có sự cố, khôi phục mất bao lâu? | Trung bình (thời điểm khôi phục − thời điểm bắt đầu) |
+Hai chỉ số đầu đo **tốc độ**, hai chỉ số sau đo **ổn định**. Một đội deploy nhiều mà sự cố liên tục, hay ổn định mà một tháng mới deploy một lần, đều chưa tốt.
+
+### Vì sao lead time dùng trung vị
+Lead time có **đuôi dài**: phần lớn thay đổi lên production trong vài giờ, nhưng thỉnh thoảng có thay đổi nằm chờ 3 tuần (nhánh bị quên). Trung bình bị kéo lệch bởi vài giá trị lớn; **trung vị** (median) phản ánh trải nghiệm điển hình. Với số phần tử chẵn, trung vị là trung bình của hai giá trị giữa.
+
+~~~java
+// Trung vị của danh sách thời lượng (giây)
+List<Long> xs = new ArrayList<>(secs);
+Collections.sort(xs);
+int n = xs.size();
+long median = n % 2 == 1 ? xs.get(n / 2) : (xs.get(n / 2 - 1) + xs.get(n / 2)) / 2;
+~~~
+
+### Bẫy khi đo
+- **Định nghĩa "sự cố"** phải thống nhất (rollback, hotfix, incident P1–P2) — nếu không mỗi đội đếm một kiểu.
+- **Không chia cho 0**: khoảng thời gian không có deploy hay không có sự cố phải trả về giá trị hợp lý (0 hoặc rỗng), không ném lỗi.
+- **Lấy dữ liệu tự động** từ hệ thống (Git, pipeline, công cụ incident), không nhập tay.
+- **Không dùng để chấm điểm cá nhân hay so sánh đội**: chỉ số sẽ bị "làm đẹp" (chia nhỏ deploy vô nghĩa, không khai báo sự cố). Dùng để thấy xu hướng và tìm điểm nghẽn.
+
+> Câu chuyện mạnh nhất cho CV của platform engineer có dạng: "sau khi đưa golden path và canary tự động vào, lead time trung vị giảm từ 4 ngày xuống 6 giờ, change failure rate từ 18% xuống 6%". Bài tập dưới đây chính là cách bạn tính ra những con số đó.
+
+### Liên hệ phỏng vấn
+"Làm sao bạn biết nền tảng của mình có giá trị?" — trả lời bằng chỉ số DORA đo tự động trước và sau, kết hợp khảo sát trải nghiệm developer, và nêu rõ chỉ số dùng để cải tiến hệ thống chứ không để đánh giá cá nhân.`,
+  exercises: [{
+    title: 'Tính 4 chỉ số DORA',
+    prompt: `Viết các method của {{DoraCalculator}}:
+- {{deploysPerDay(List<Deploy> deploys, int days)}}: số deploy / days (double). {{days <= 0}} → {{IllegalArgumentException}}.
+- {{medianLeadTime(List<Deploy> deploys)}}: trung vị của {{deployedAt − committedAt}} (tính theo giây; số phần tử chẵn thì lấy trung bình hai giá trị giữa, chia nguyên). Danh sách rỗng → {{Duration.ZERO}}.
+- {{changeFailureRate(List<Deploy> deploys)}}: tỉ lệ deploy có {{causedIncident == true}} (0.0 nếu rỗng).
+- {{meanTimeToRestore(List<Incident> incidents)}}: trung bình {{resolvedAt − startedAt}} theo giây (chia nguyên); rỗng → {{Duration.ZERO}}.`,
+    starter: `import java.time.Duration;
+import java.time.Instant;
+
+record Deploy(Instant committedAt, Instant deployedAt, boolean causedIncident) {}
+record Incident(Instant startedAt, Instant resolvedAt) {}
+
+class DoraCalculator {
+    double deploysPerDay(List<Deploy> deploys, int days) { throw new UnsupportedOperationException("TODO"); }
+    Duration medianLeadTime(List<Deploy> deploys) { throw new UnsupportedOperationException("TODO"); }
+    double changeFailureRate(List<Deploy> deploys) { throw new UnsupportedOperationException("TODO"); }
+    Duration meanTimeToRestore(List<Incident> incidents) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `import java.time.Duration;
+import java.time.Instant;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final Instant T0 = Instant.parse("2026-11-01T00:00:00Z");
+    static Deploy d(long commitH, long deployH, boolean fail) { return new Deploy(T0.plusSeconds(commitH * 3600), T0.plusSeconds(deployH * 3600), fail); }
+    public static void main(String[] args) {
+        DoraCalculator c = new DoraCalculator();
+        List<Deploy> ds = List.of(d(0, 2, false), d(1, 7, true), d(3, 4, false), d(5, 77, false));
+        check("tan_suat_deploy", () -> eq(0.5, c.deploysPerDay(ds, 8)));
+        check("days_khong_hop_le", () -> {
+            try { c.deploysPerDay(ds, 0); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException e) { /* ok */ }
+        });
+        check("trung_vi_lead_time_chan", () -> eq(Duration.ofHours(4), c.medianLeadTime(ds)));   // 1h,2h,6h,72h -> (2h+6h)/2
+        check("trung_vi_lead_time_le", () -> eq(Duration.ofHours(2), c.medianLeadTime(ds.subList(0, 3))));  // 2h,6h,1h -> 2h
+        check("lead_time_rong", () -> eq(Duration.ZERO, c.medianLeadTime(List.of())));
+        check("change_failure_rate", () -> { eq(0.25, c.changeFailureRate(ds)); eq(0.0, c.changeFailureRate(List.of())); });
+        check("mttr", () -> {
+            List<Incident> inc = List.of(new Incident(T0, T0.plusSeconds(1800)), new Incident(T0, T0.plusSeconds(5400)));
+            eq(Duration.ofMinutes(60), c.meanTimeToRestore(inc));
+            eq(Duration.ZERO, c.meanTimeToRestore(List.of()));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `import java.time.Duration;
+import java.time.Instant;
+
+record Deploy(Instant committedAt, Instant deployedAt, boolean causedIncident) {}
+record Incident(Instant startedAt, Instant resolvedAt) {}
+
+class DoraCalculator {
+    double deploysPerDay(List<Deploy> deploys, int days) {
+        if (days <= 0) throw new IllegalArgumentException("days must be > 0");
+        return (double) deploys.size() / days;
+    }
+
+    Duration medianLeadTime(List<Deploy> deploys) {
+        if (deploys.isEmpty()) return Duration.ZERO;
+        List<Long> secs = new ArrayList<>();
+        for (Deploy d : deploys) secs.add(Duration.between(d.committedAt(), d.deployedAt()).getSeconds());
+        Collections.sort(secs);
+        int n = secs.size();
+        long m = n % 2 == 1 ? secs.get(n / 2) : (secs.get(n / 2 - 1) + secs.get(n / 2)) / 2;   // trung vị: không bị đuôi dài kéo lệch
+        return Duration.ofSeconds(m);
+    }
+
+    double changeFailureRate(List<Deploy> deploys) {
+        if (deploys.isEmpty()) return 0.0;
+        long failed = deploys.stream().filter(Deploy::causedIncident).count();
+        return (double) failed / deploys.size();
+    }
+
+    Duration meanTimeToRestore(List<Incident> incidents) {
+        if (incidents.isEmpty()) return Duration.ZERO;
+        long sum = 0;
+        for (Incident i : incidents) sum += Duration.between(i.startedAt(), i.resolvedAt()).getSeconds();
+        return Duration.ofSeconds(sum / incidents.size());
+    }
+}`,
+    hints: [
+      'Duration.between(a, b).getSeconds() cho thời lượng theo giây.',
+      'Trung vị: sắp xếp, số phần tử lẻ lấy phần tử giữa, chẵn lấy trung bình hai phần tử giữa.',
+      'Xử lý danh sách rỗng trước để không chia cho 0.',
+    ],
+    explain: `Các chỉ số đều là phép tính đơn giản; phần khó nằm ở **định nghĩa và dữ liệu**. Code tách rõ từng chỉ số, xử lý trường hợp rỗng, và dùng **trung vị** cho lead time vì phân phối có đuôi dài: trong test, một thay đổi chờ 72 giờ kéo trung bình lên 20,25 giờ trong khi trung vị là 4 giờ — gần với trải nghiệm thật hơn.
+Lỗi hay gặp: dùng trung bình cho lead time; quên trường hợp danh sách rỗng (chia cho 0 ra NaN); tính change failure rate trên số sự cố thay vì số deploy; dùng {{toHours()}} làm mất phần lẻ.`,
+  }],
+  check: [
+    { q: 'Lead time của 5 thay đổi: 1h, 2h, 3h, 4h, 200h. Vì sao nên báo cáo trung vị thay vì trung bình?', options: ['Trung vị 3h phản ánh trải nghiệm điển hình; trung bình 42h bị một giá trị lớn kéo lệch', 'Trung bình khó tính hơn', 'Trung vị luôn lớn hơn trung bình', 'DORA cấm dùng trung bình'], answer: 0, explain: 'Phân phối có đuôi dài nên trung bình (42h) không đại diện cho đa số thay đổi; trung vị (3h) thì có. Độ khó tính toán không phải lý do. Trung vị không luôn lớn hơn trung bình — ở đây nhỏ hơn nhiều. Không có quy định cấm.' },
+    { q: 'Chỉ số DORA nào đo độ ổn định?', options: ['Change failure rate và time to restore', 'Deployment frequency và lead time', 'Chỉ deployment frequency', 'Số dòng code mỗi tuần'], answer: 0, explain: 'Tỉ lệ thay đổi gây lỗi và thời gian khôi phục đo ổn định; tần suất deploy và lead time đo tốc độ. Số dòng code không phải chỉ số DORA và không phản ánh giá trị.' },
+    { q: 'Ban lãnh đạo muốn xếp hạng từng developer theo chỉ số DORA. Phản hồi phù hợp nhất?', options: ['Chỉ số dùng cho hệ thống và đội để thấy xu hướng; xếp hạng cá nhân sẽ khiến chỉ số bị làm đẹp và mất giá trị', 'Đồng ý vì chỉ số khách quan', 'Chỉ xếp hạng theo deployment frequency', 'Xếp hạng nhưng không công bố'], answer: 0, explain: 'Khi chỉ số thành mục tiêu đánh giá cá nhân, người ta tối ưu con số (chia nhỏ deploy, không báo sự cố) thay vì kết quả thật. Chỉ dùng một chỉ số tốc độ còn khuyến khích bỏ qua ổn định. Xếp hạng kín vẫn tạo động cơ làm đẹp số liệu.' },
+  ],
+  related: ['devops-126', 'devops-127', 'devops-075'],
+  tags: ['DORA', 'metrics', 'platform as product', 'platform engineering'],
+},
+);

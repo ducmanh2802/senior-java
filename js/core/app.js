@@ -147,11 +147,12 @@
   // without the heavy groups. App.lite(kind) returns the FULL list once its group is loaded (or when there is
   // no index, e.g. Node tools), otherwise compact objects: questions {id, topic, level[, lang, q]},
   // algos {id, title, difficulty, pattern}, lessons {id, track, order, title, level, minutes}, sd {id, title},
-  // drills {id, kind, q|term+example|en}, companies {id, name, focus}. Light objects carry __light = true.
-  const LITE_GROUP = { questions: 'questions', algos: 'algos', lessons: 'lessons', sd: 'sd', drills: 'drills', companies: 'companies' };
+  // drills {id, kind, q|term+example|en}, companies {id, name, focus}, quiz {id, topic}. Light objects carry __light = true.
+  const LITE_GROUP = { questions: 'questions', algos: 'algos', lessons: 'lessons', sd: 'sd', drills: 'drills', companies: 'companies', quiz: 'quiz' };
   const LITE_FULL = {
     questions: () => questions(), algos: () => algos(), lessons: () => lessons(),
     sd: () => window.SD_PROBLEMS || [], drills: () => window.DRILLS || [], companies: () => window.COMPANIES || [],
+    quiz: () => quiz(),
   };
   let liteCache = null;
   function lightIndex() {
@@ -166,6 +167,7 @@
       algos: obj(I.algos),
       lessons: obj(I.lessons).sort((a, b) => order.indexOf(a.track) - order.indexOf(b.track) || a.order - b.order),
       sd: obj(I.sd), drills: obj(I.drills), companies: obj(I.companies),
+      quiz: (I.quiz || []).map(r => mark({ id: r[0], topic: r[1] })),
     };
     liteCache = { src: I, lists };
     return lists;
@@ -466,6 +468,7 @@
     if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
     document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
     document.querySelectorAll('.nav-group[open]').forEach(d => d.removeAttribute('open'));
+    updateSection(name);
     const root = document.getElementById('main');
     root.innerHTML = '';
     root.className = 'container view-' + name;
@@ -486,6 +489,25 @@
     });
   }
 
+  // Section of the current route = its nav group (index.html). Sets body[data-group] (per-group colour palette in
+  // base.css) and fills the shared header strip #secbar: "group › page — one-line description", read from the nav
+  // markup so it follows the menu and the current language. Lives outside <main>, so views never overwrite it.
+  const SECTION = { study: ['learn', '📖'], practice: ['practice', '💪'], interviewGroup: ['interview', '🎤'], careerGroup: ['career', '💼'] };
+  function updateSection(name) {
+    const link = document.querySelector('.nav a[data-route="' + name + '"]');
+    const sum = link && link.closest('.nav-group') && link.closest('.nav-group').querySelector('summary');
+    const sec = sum && SECTION[(sum.dataset.i18n || '').replace('nav.', '')];
+    document.body.dataset.group = sec ? sec[0] : 'home';
+    const bar = document.getElementById('secbar');
+    if (!bar) return;
+    if (!sec) { bar.hidden = true; bar.innerHTML = ''; return; }
+    const page = link.querySelector('span'), desc = link.querySelector('small');
+    bar.innerHTML = '<div class="secbar-inner"><span class="secbar-group">' + sec[1] + ' ' + esc(sum.textContent.trim()) + '</span>' +
+      '<span class="secbar-sep" aria-hidden="true">›</span><span class="secbar-page">' + esc(page ? page.textContent : '') + '</span>' +
+      (desc && desc.textContent ? '<span class="secbar-desc">' + esc(desc.textContent) + '</span>' : '') + '</div>';
+    bar.hidden = false;
+  }
+
   function renderView(view, root, parts) {
     try {
       const c = view.render(root, parts.slice(1));
@@ -500,8 +522,7 @@
 
   // ---------- theme + footer ----------
   function applyTheme() {
-    if (data.theme) document.documentElement.setAttribute('data-theme', data.theme);
-    else document.documentElement.removeAttribute('data-theme');
+    document.documentElement.setAttribute('data-theme', data.theme || 'dark'); // default: dark
   }
 
   function initChrome() {
@@ -515,7 +536,7 @@
     applyTheme();
     const btn = document.getElementById('themeToggle');
     if (btn) btn.addEventListener('click', () => {
-      const dark = data.theme ? data.theme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const dark = (data.theme || 'dark') === 'dark';
       data.theme = dark ? 'light' : 'dark';
       store.save(); applyTheme();
     });

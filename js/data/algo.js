@@ -10190,13 +10190,13 @@ So sánh bình phương khoảng cách, không cần sqrt. Dùng **max-heap** th
 ~~~java
 class Solution {
     public int[][] kClosest(int[][] points, int k) {
-        // max-heap theo binh phuong khoang cach: root la diem XA nhat trong k diem gan nhat
+        // max-heap theo bình phương khoảng cách: root là điểm XA nhất trong k điểm gần nhất
         PriorityQueue<int[]> heap = new PriorityQueue<>(
             (a, b) -> Integer.compare(b[0] * b[0] + b[1] * b[1],
                                       a[0] * a[0] + a[1] * a[1]));
         for (int[] p : points) {
             heap.offer(p);
-            if (heap.size() > k) heap.poll();   // loai diem XA nhat
+            if (heap.size() > k) heap.poll();   // loại điểm XA nhất
         }
         return heap.toArray(new int[0][]);
     }
@@ -10546,7 +10546,7 @@ class Solution {
     public int knapsack(int[] weights, int[] values, int capacity) {
         int[] dp = new int[capacity + 1];
         for (int i = 0; i < weights.length; i++) {
-            // duyet nguoc: moi vat chi duoc dung MOT lan
+            // duyệt ngược: mỗi vật chỉ được dùng MỘT lần
             for (int w = capacity; w >= weights[i]; w--) {
                 dp[w] = Math.max(dp[w], dp[w - weights[i]] + values[i]);
             }
@@ -10655,7 +10655,7 @@ class Solution {
         dp[0] = true;   // conset rong co tong 0
         for (int x : nums) {
             for (int s = target; s >= x; s--) {
-                dp[s] = dp[s] || dp[s - x];   // lay x hoac khong lay x
+                dp[s] = dp[s] || dp[s - x];   // lấy x hoặc không lấy x
             }
         }
         return dp[target];
@@ -10755,7 +10755,7 @@ class Solution {
     public boolean canPartition(int[] nums) {
         int sum = 0;
         for (int x : nums) sum += x;
-        if (sum % 2 != 0) return false;   // tong le khong chia duoc doi
+        if (sum % 2 != 0) return false;   // tổng lẻ không chia được đôi
         int target = sum / 2;
         boolean[] dp = new boolean[target + 1];
         dp[0] = true;
@@ -10868,7 +10868,7 @@ class Solution {
         for (int s = sum / 2; s >= 0; s--) {
             if (dp[s]) return sum - 2 * s;   // sum - 2*s = |s - (sum - s)|
         }
-        return sum;   // khong dat duoc gi ngoai conset rong
+        return sum;   // không đạt được gì ngoài tập con rỗng
     }
 }
 ~~~
@@ -10961,10 +10961,10 @@ DP đếm 1 chiều: {{dp[s]}} = số conset có tổng {{s}}. {{dp[0] = 1}} (co
 class Solution {
     public int countSubsets(int[] nums, int target) {
         int[] dp = new int[target + 1];
-        dp[0] = 1;   // mot cach duy nhat de tong 0: khong chon gi
+        dp[0] = 1;   // một cách duy nhất để tổng 0: không chọn gì
         for (int x : nums) {
             for (int s = target; s >= x; s--) {
-                dp[s] += dp[s - x];   // them moi cach lay x vao cac cach cua s - x
+                dp[s] += dp[s - x];   // thêm mỗi cách lấy x vào các cách của s - x
             }
         }
         return dp[target];
@@ -11465,7 +11465,7 @@ class Solution {
             if (one != '0') cur += prev1;                // dung 1 chu so lam ma cuoi
             int two = (s.charAt(i - 2) - '0') * 10 + (one - '0');
             if (two >= 10 && two <= 26) cur += prev2;    // dung 2 chu so lam ma cuoi
-            prev2 = prev1;                               // dich cua so sang phai
+            prev2 = prev1;                               // dịch cửa sổ sang phải
             prev1 = cur;
         }
         return prev1;                                    // ways[n]
@@ -11616,7 +11616,7 @@ public class Main {
             else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
         } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    // adj[i] = danh sach val (1-based) cua neighbor cua node i+1
+    // adj[i] = danh sách val (1-based) của neighbor của node i+1
     static Node build(int[][] adj) {
         if (adj.length == 0) return null;
         Node[] ns = new Node[adj.length];
@@ -11631,7 +11631,7 @@ public class Main {
         while (!st.isEmpty()) for (Node nb : st.pop().neighbors) if (seen.add(nb)) st.push(nb);
         return seen;
     }
-    // "ok" neu copy co cung cau truc (giu thu tu neighbors) va khong dung chung node nao voi goc
+    // "ok" nếu copy có cùng cấu trúc (giữ thứ tự neighbors) và không dùng chung node nào với gốc
     static String check(Node orig, Node copy) {
         if (orig == null) return copy == null ? "ok" : "expected null";
         if (copy == null) return "copy is null";
@@ -11875,7 +11875,7 @@ class Solution {
                     q.add(new int[]{r, c});      // se lan tiep o phut sau
                 }
             }
-            minutes++;                           // xong mot lop = qua mot phut
+            minutes++;                           // xong một lớp = qua một phút
         }
         return fresh == 0 ? minutes : -1;
     }
@@ -12016,7 +12016,7 @@ Mỗi đỉnh vào/ra hàng đợi một lần, mỗi cạnh được xét một
             else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
         } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    // tra ve "valid" neu res la hoan vi cua 0..V-1 va moi canh u->v co u dung truoc v
+    // trả về "valid" nếu res là hoán vị của 0..V-1 và mỗi cạnh u->v có u đứng trước v
     static String check(int V, int[][] edges, int[] res) {
         if (res == null) return "null";
         if (res.length != V) return "length " + res.length + ": " + Arrays.toString(res);
@@ -12135,7 +12135,7 @@ O(V + E) thời gian và bộ nhớ, với V = số môn, E = số điều kiệ
             else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
         } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    // "valid" neu res la hoan vi 0..n-1 va moi [a,b] co b hoc truoc a
+    // "valid" nếu res là hoán vị 0..n-1 và mỗi [a,b] có b học trước a
     static String check(int n, int[][] pre, int[] res) {
         if (res == null) return "null";
         if (res.length != n) return "length " + res.length + ": " + Arrays.toString(res);
@@ -12265,7 +12265,7 @@ Gọi C = tổng số ký tự của mọi từ. Bước so sánh O(C); đồ th
             else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
         } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    // "valid" neu order chua dung moi chu xuat hien (moi chu 1 lan) va words duoc sap xep theo order
+    // "valid" nếu order chứa đúng mỗi chữ xuất hiện (mỗi chữ 1 lần) và words được sắp xếp theo order
     static String check(String[] words, String order) {
         Map<Character, Integer> pos = new HashMap<>();
         for (int i = 0; i < order.length(); i++) if (pos.put(order.charAt(i), i) != null) return "duplicate letter in " + order;
@@ -12347,7 +12347,7 @@ class Solution {
                 if (i > 0 && adj.get(seq[i - 1]).add(seq[i])) indeg[seq[i]]++; // canh moi
             }
         }
-        for (int v = 1; v <= n; v++) if (!seen[v]) return false; // thieu so -> khong xac dinh duoc
+        for (int v = 1; v <= n; v++) if (!seen[v]) return false; // thiếu số -> không xác định được
         Deque<Integer> q = new ArrayDeque<>();
         for (int v = 1; v <= n; v++) if (indeg[v] == 0) q.add(v);
         int idx = 0;
@@ -12477,7 +12477,7 @@ class Trie {
         return find(prefix) != null;        // chi can duong di ton tai
     }
 
-    // di theo s tu goc; tra ve node cuoi hoac null neu duong di bi dut
+    // đi theo s từ gốc; trả về node cuối hoặc null nếu đường đi bị đứt
     private Node find(String s) {
         Node cur = root;
         for (int i = 0; i < s.length() && cur != null; i++) {
@@ -12595,7 +12595,7 @@ Kết hợp **Trie** và **backtracking**:
 class Solution {
     private static class TrieNode {
         TrieNode[] next = new TrieNode[26];
-        String word;                        // khac null neu mot tu ket thuc tai day
+        String word;                        // khác null nếu một từ kết thúc tại đây
     }
 
     public List<String> findWords(char[][] board, String[] words) {
@@ -12744,7 +12744,7 @@ class Solution {
         return out.toString();
     }
 
-    // goc ngan nhat la tien to cua word, hoac chinh word neu khong co
+    // gốc ngắn nhất là tiền tố của word, hoặc chính word nếu không có
     private String shortestRoot(Node trie, String word) {
         Node cur = trie;
         for (int i = 0; i < word.length(); i++) {
@@ -12840,7 +12840,7 @@ Với mỗi tiền tố {{searchWord[0..i]}}:
 ~~~java
 class Solution {
     public List<List<String>> suggestedProducts(String[] products, String searchWord) {
-        String[] sorted = products.clone();        // khong sua mang cua nguoi goi
+        String[] sorted = products.clone();        // không sửa mảng của người gọi
         Arrays.sort(sorted);
         List<List<String>> result = new ArrayList<>();
         StringBuilder prefix = new StringBuilder();
@@ -12963,7 +12963,7 @@ class Solution {
     private int[] parent, rank;
 
     public boolean validTree(int n, int[][] edges) {
-        if (edges.length != n - 1) return false;   // cay phai co dung n-1 canh
+        if (edges.length != n - 1) return false;   // cây phải có đúng n-1 cạnh
         parent = new int[n];
         rank = new int[n];
         for (int i = 0; i < n; i++) parent[i] = i; // moi node la mot nhom rieng
@@ -12981,7 +12981,7 @@ class Solution {
         return x;
     }
 
-    // gop hai nhom; tra ve false neu da cung nhom
+    // gộp hai nhóm; trả về false nếu đã cùng nhóm
     private boolean union(int a, int b) {
         int ra = find(a), rb = find(b);
         if (ra == rb) return false;
@@ -13093,7 +13093,7 @@ class Solution {
         List<List<String>> result = new ArrayList<>();
         for (TreeSet<String> emails : groups.values()) {
             List<String> acc = new ArrayList<>();
-            acc.add(emailToName.get(emails.first()));  // ten cua nguoi nay
+            acc.add(emailToName.get(emails.first()));  // tên của người này
             acc.addAll(emails);
             result.add(acc);
         }
@@ -13142,7 +13142,7 @@ Gọi E = tổng số email. Union-Find O(E·α(E)) (coi như O(E)); sắp xếp
             else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
         } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    // thu tu cac account tuy y; email trong moi account PHAI da sap xep (khong sap lai)
+    // thứ tự các account tuỳ ý; email trong mỗi account PHẢI đã sắp xếp (không sắp lại)
     static List<String> norm(List<List<String>> accs) {
         List<String> r = new ArrayList<>();
         for (List<String> a : accs) r.add(a.toString());
@@ -13215,7 +13215,7 @@ class Solution {
             if (ra == rb) return e;                // da lien thong -> canh thua
             parent[ra] = rb;                       // gop hai nhom
         }
-        return new int[0];                         // khong xay ra voi input hop le
+        return new int[0];                         // không xảy ra với input hợp lệ
     }
 
     private int find(int[] parent, int x) {
@@ -13320,7 +13320,7 @@ class Solution {
         for (int b = 0; b < 32; b++) {           // xet tung bit, ke ca bit dau (31)
             int count = 0;
             for (int x : nums) {
-                count += (x >>> b) & 1;          // >>> dich khong dau: lay dung bit b
+                count += (x >>> b) & 1;          // >>> dịch không dấu: lấy đúng bit b
             }
             if (count % 3 != 0) res |= 1 << b;   // bit b thuoc so xuat hien 1 lan
         }
@@ -13516,7 +13516,7 @@ class Solution {
     public int[] countBits(int n) {
         int[] ans = new int[n + 1];             // ans[0] = 0
         for (int i = 1; i <= n; i++) {
-            ans[i] = ans[i >> 1] + (i & 1);      // bit 1 cua i/2 + bit cuoi cua i
+            ans[i] = ans[i >> 1] + (i & 1);      // bit 1 của i/2 + bit cuối của i
         }
         return ans;
     }
@@ -13705,7 +13705,7 @@ Xoay 90° theo chiều kim đồng hồ đưa {{(i, j)}} → {{(j, n-1-i)}}. Ta 
 class Solution {
     public void rotate(int[][] matrix) {
         int n = matrix.length;
-        // buoc 1: chuyen vi - chi doi nua tren duong cheo (j > i), neu khong se doi 2 lan = khong doi
+        // bước 1: chuyển vị - chỉ đổi nửa trên đường chéo (j > i), nếu không sẽ đổi 2 lần = không đổi
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
                 int tmp = matrix[i][j];
@@ -14338,11 +14338,11 @@ class Solution {
         int n = s.length();
         // isPal[j][i] = true neu s[j..i] la palindrome
         boolean[][] isPal = new boolean[n][n];
-        // j di tu phai sang trai de khi can isPal[j+1][i-1] thi o do da duoc tinh
+        // j đi từ phải sang trái để khi cần isPal[j+1][i-1] thì ô đó đã được tính
         for (int j = n - 1; j >= 0; j--) {
             for (int i = j; i < n; i++) {
                 isPal[j][i] = s.charAt(j) == s.charAt(i)
-                        && (i - j < 2 || isPal[j + 1][i - 1]); // doan dai 1-2 hoac phan trong la palindrome
+                        && (i - j < 2 || isPal[j + 1][i - 1]); // đoạn dài 1-2 hoặc phần trong là palindrome
             }
         }
         int[] cut = new int[n]; // cut[i] = so lan cat it nhat cho s[0..i]
@@ -14558,7 +14558,7 @@ class Solution {
             int diff = gas[i] - cost[i];
             total += diff;
             tank += diff;
-            if (tank < 0) {        // tu start khong toi duoc tram i + 1
+            if (tank < 0) {        // từ start không tới được trạm i + 1
                 start = i + 1;     // moi tram trong [start, i] deu bi loai
                 tank = 0;          // xuat phat lai voi binh rong
             }
@@ -14759,10 +14759,10 @@ Tham lam theo mép phải:
 class Solution {
     public int findMinArrowShots(int[][] points) {
         if (points.length == 0) return 0;
-        // Integer.compare: KHONG dung a[1] - b[1] vi co the tran so voi gia tri gan +-2^31
+        // Integer.compare: KHÔNG dùng a[1] - b[1] vì có thể tràn số với giá trị gần +-2^31
         Arrays.sort(points, (a, b) -> Integer.compare(a[1], b[1]));
         int arrows = 1;
-        int arrowX = points[0][1];        // ban tai mep phai cua qua dau tien
+        int arrowX = points[0][1];        // bắn tại mép phải của quả đầu tiên
         for (int i = 1; i < points.length; i++) {
             if (points[i][0] > arrowX) {  // mui ten cu nam ben trai qua bong nay
                 arrows++;
@@ -14926,7 +14926,7 @@ class Solution {
             else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
         } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    // tra ve so loi giai neu tat ca hop le va khong trung; nguoc lai mo ta loi
+    // trả về số lời giải nếu tất cả hợp lệ và không trùng; ngược lại mô tả lỗi
     static Object verify(int n, List<List<String>> sols) {
         Set<List<String>> seen = new HashSet<>();
         for (List<String> b : sols) {
@@ -15007,10 +15007,10 @@ class Solution {
         return false;
     }
 
-    // o (r, c) co khop word[k] va tu do ghep tiep duoc phan con lai khong
+    // ô (r, c) có khớp word[k] và từ đó ghép tiếp được phần còn lại không
     private boolean dfs(char[][] board, String word, int r, int c, int k) {
         if (r < 0 || r >= board.length || c < 0 || c >= board[0].length) return false;
-        if (board[r][c] != word.charAt(k)) return false;  // ky tu khong khop (hoac o dang ban '#')
+        if (board[r][c] != word.charAt(k)) return false;  // ký tự không khớp (hoặc ô đang bận '#')
         if (k == word.length() - 1) return true;          // da khop ky tu cuoi
         char saved = board[r][c];
         board[r][c] = '#';                                 // danh dau: o dang nam tren duong di
@@ -15158,7 +15158,7 @@ class Solution {
             else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
         } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    // chuan hoa: thu tu cac cach cat khong quan trong
+    // chuẩn hóa: thứ tự các cách cắt không quan trọng
     static List<String> norm(List<List<String>> parts) {
         List<String> r = new ArrayList<>();
         for (List<String> p : parts) r.add(String.join("|", p));

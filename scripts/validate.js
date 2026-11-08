@@ -46,6 +46,7 @@ for (const f of files) {
   (sandbox.window.QUIZ || []).slice(zBefore).forEach(q => { q.__file = f; });
   (sandbox.window.ALGOS || []).forEach(q => { q.__file = q.__file || f; });
   (sandbox.window.LABS || []).forEach(q => { q.__file = q.__file || f; });
+  (sandbox.window.BUGS || []).forEach(q => { q.__file = q.__file || f; });
   (sandbox.window.LESSONS || []).forEach(q => { q.__file = q.__file || f; });
 }
 
@@ -234,6 +235,33 @@ for (const z of sandbox.window.LABS || []) {
   const allowed = new Set(['id', 'category', 'title', 'level', 'scenario', 'artifacts', 'questions', 'hints', 'answer', 'rubric', 'tags', '__file']);
   Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
   ['scenario', 'answer'].forEach(k => checkMarkup(f, id, k, z[k]));
+}
+
+// ---- bug hunt (AGENTS.md section 17; runtime check: node scripts/test-bugs.js) ----
+const seenBug = new Set();
+const allQids = new Set((sandbox.window.QUESTIONS || []).map(q => q.id));
+for (const z of sandbox.window.BUGS || []) {
+  const f = z.__file || 'bugs', id = z.id || '(no id)';
+  if (!/^bug-\d{3}$/.test(z.id || '') || seenBug.has(z.id)) err(f, `bug id thiếu/trùng/sai dạng bug-NNN: ${id}`);
+  seenBug.add(z.id);
+  if (!LEVELS.has(z.level)) err(f, `${id}: level phải là mid|senior|lead`);
+  if (!['P1', 'P2', 'P3'].includes(z.severity)) err(f, `${id}: severity phải là P1|P2|P3`);
+  if (!Number.isInteger(z.minutes) || z.minutes < 5 || z.minutes > 120) err(f, `${id}: minutes phải là số nguyên 5..120`);
+  ['title', 'domain', 'story', 'starter', 'tests', 'reference', 'rootCause', 'fix'].forEach(k => { if (!z[k] || typeof z[k] !== 'string') err(f, `${id}: thiếu ${k}`); });
+  if (typeof z.story === 'string' && z.story.length < 300) err(f, `${id}: story cần ≥ 300 ký tự (bối cảnh + sự cố + số liệu)`);
+  if (typeof z.fix === 'string' && z.fix.length < 800) err(f, `${id}: fix cần ≥ 800 ký tự (cách sửa, production, phòng ngừa)`);
+  if (typeof z.tests === 'string' && !/public\s+class\s+Main\b/.test(z.tests)) err(f, `${id}: tests phải có public class Main`);
+  if (typeof z.tests === 'string' && !/RESULT/.test(z.tests)) err(f, `${id}: tests phải in "RESULT passed/total"`);
+  if (z.starter === z.reference) err(f, `${id}: starter và reference giống hệt nhau`);
+  if (!Array.isArray(z.hints) || z.hints.length < 2) err(f, `${id}: cần ≥ 2 hints`);
+  (z.artifacts || []).forEach((a, i) => {
+    if (!a || !a.name || !['text', 'java', 'sql', 'yaml', 'json', 'bash'].includes(a.lang) || typeof a.content !== 'string' || a.content.length < 80) err(f, `${id}.artifacts[${i}]: cần name, lang hợp lệ, content ≥ 80 ký tự`);
+  });
+  (z.related || []).forEach(q => { if (!allQids.has(q)) err(f, `${id}: related "${q}" không có trong ngân hàng câu hỏi`); });
+  const allowed = new Set(['id', 'title', 'domain', 'level', 'severity', 'minutes', 'story', 'artifacts', 'starter', 'tests', 'reference', 'hints', 'rootCause', 'fix', 'related', 'tags', '__file']);
+  Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
+  ['story', 'rootCause', 'fix'].forEach(k => checkMarkup(f, id, k, z[k]));
+  (z.hints || []).forEach((x, i) => checkMarkup(f, id, `hints[${i}]`, x));
 }
 
 // ---- lessons (AGENTS.md section 12) ----
@@ -446,11 +474,62 @@ for (const s of pathStages) {
 repeatedLessons.forEach(lid => err('path.js', `lesson "${lid}" xuất hiện nhiều lần trong PATH`));
 // warning: lessons not in any path stage
 const pathLessonIds = new Set(allLessonIds);
+(sandbox.window.PATH_PLATFORM || []).forEach(s => (s.lessons || []).forEach(l => pathLessonIds.add(l)));
 const missingInPath = [];
 for (const lid of lessonIds) {
   if (!pathLessonIds.has(lid)) missingInPath.push(lid);
 }
 if (missingInPath.length) warn('path.js', `có ${missingInPath.length} bài học không nằm trong PATH: ${missingInPath.slice(0, 10).join(', ')}${missingInPath.length > 10 ? ' ...' : ''}`);
+
+// ---- path track 2 (window.PATH_PLATFORM, #/path/platform) ----
+{
+  const pf = sandbox.window.PATH_PLATFORM || [];
+  const seen = new Set(), seenLessons = new Set();
+  let prevOrder = 0;
+  for (const s of pf) {
+    const sid = s.id || '(no id)';
+    if (!/^pf-\d{2}$/.test(s.id || '') || seen.has(s.id)) err(PATH_FILE, `${sid}: id phải dạng pf-NN và không trùng`);
+    seen.add(s.id);
+    if (!Number.isInteger(s.order) || s.order <= prevOrder) err(PATH_FILE, `${sid}: order phải là số nguyên tăng dần`);
+    prevOrder = s.order || prevOrder;
+    if (!validPhases.has(s.phase)) err(PATH_FILE, `${sid}: phase phải là Nền tảng | Vững vàng | Senior`);
+    ['title', 'weeks', 'goal', 'project'].forEach(k => { if (typeof s[k] !== 'string' || !s[k].trim()) err(PATH_FILE, `${sid}: thiếu ${k}`); });
+    if (typeof s.project === 'string' && s.project.length < 150) err(PATH_FILE, `${sid}: project cần mô tả cụ thể (≥ 150 ký tự)`);
+    if (!Array.isArray(s.lessons)) err(PATH_FILE, `${sid}: lessons phải là mảng (có thể rỗng)`);
+    else s.lessons.forEach(lid => {
+      if (!lessonIds.has(lid)) err(PATH_FILE, `${sid}: lesson "${lid}" không tồn tại`);
+      if (seenLessons.has(lid)) err(PATH_FILE, `${sid}: lesson "${lid}" lặp lại trong PATH_PLATFORM`);
+      seenLessons.add(lid);
+    });
+    if (!Array.isArray(s.questions) || s.questions.length < 4 || s.questions.length > 8) err(PATH_FILE, `${sid}: questions cần 4–8 câu`);
+    else s.questions.forEach(q => { if (!questionIds.has(q)) err(PATH_FILE, `${sid}: question "${q}" không tồn tại`); });
+    if (!Array.isArray(s.quizTopics) || !s.quizTopics.length) err(PATH_FILE, `${sid}: quizTopics phải có ít nhất 1 topic`);
+    else s.quizTopics.forEach(t => { if (!topicIds.has(t)) err(PATH_FILE, `${sid}: quizTopics "${t}" không tồn tại`); });
+    if (!Array.isArray(s.requires)) err(PATH_FILE, `${sid}: requires phải là mảng`);
+    else s.requires.forEach(r => { const st = pf.find(x => x.id === r); if (!st || st.order >= s.order) err(PATH_FILE, `${sid}: requires "${r}" phải là chặng đứng trước trong PATH_PLATFORM`); });
+    const allowed = new Set(['id', 'order', 'phase', 'title', 'weeks', 'goal', 'project', 'lessons', 'questions', 'quizTopics', 'requires']);
+    Object.keys(s || {}).forEach(k => { if (!allowed.has(k)) err(PATH_FILE, `${sid}: field lạ "${k}"`); });
+    ['goal', 'project'].forEach(k => checkMarkup(PATH_FILE, sid, k, s[k]));
+  }
+}
+
+// ---- path basics (window.PATH_BASICS: kiến thức nền + link cho từng chặng; link check: scratch/manual) ----
+{
+  const B = sandbox.window.PATH_BASICS || {};
+  const stageIds = new Set([...(sandbox.window.PATH || []), ...(sandbox.window.PATH_PLATFORM || [])].map(x => x.id));
+  for (const [sid, list] of Object.entries(B)) {
+    const bf = 'path-basics.js';
+    if (!stageIds.has(sid)) err(bf, `${sid}: không có chặng này trong PATH / PATH_PLATFORM`);
+    if (!Array.isArray(list) || !list.length) { err(bf, `${sid}: cần ít nhất 1 mục`); continue; }
+    list.forEach((b, i) => {
+      if (!b || typeof b.t !== 'string' || !b.t.trim() || /[\[\]]/.test(b.t)) err(bf, `${sid}[${i}]: t (đầu mục) bắt buộc, không chứa [ ]`);
+      if (!b || typeof b.d !== 'string' || !b.d.trim()) err(bf, `${sid}[${i}]: thiếu d (cần nắm gì)`);
+      if (!b || typeof b.url !== 'string' || !/^https:\/\//.test(b.url)) err(bf, `${sid}[${i}]: url phải là https`);
+      if (!b || typeof b.src !== 'string' || !b.src.trim()) err(bf, `${sid}[${i}]: thiếu src (nguồn)`);
+      Object.keys(b || {}).forEach(k => { if (!['t', 'd', 'url', 'src'].includes(k)) err(bf, `${sid}[${i}]: field lạ "${k}"`); });
+    });
+  }
+}
 
 // ---- drills (window.DRILLS) ----
 const DRILL_KINDS = new Set(['shadow', 'qa', 'term']);

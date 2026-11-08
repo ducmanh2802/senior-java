@@ -5582,6 +5582,15 @@ Giả sử trung bình request chờ DB ~80ms, xử lý logic ~20ms. Nếu DB ch
 - Queue không giới hạn → bộ nhớ phình, khó phát hiện saturation.
 - Chỉ nhìn CPU utilization: I/O-bound thường CPU thấp nhưng queue/saturation mới là dấu hiệu.
 
+### Bên trong: ThreadPoolExecutor nhận việc theo thứ tự nào
+Thứ tự **không** như nhiều người nghĩ: (1) còn dưới {{corePoolSize}} → tạo thread mới; (2) đủ core → **đưa vào hàng đợi**; (3) hàng đợi **đầy** mới tạo thêm thread tới {{maximumPoolSize}}; (4) vẫn đầy → {{RejectedExecutionHandler}}. Hệ quả: với {{LinkedBlockingQueue}} không giới hạn (mặc định của {{Executors.newFixedThreadPool}}), bước 3 không bao giờ xảy ra — {{maximumPoolSize}} vô nghĩa và hàng đợi phình vô hạn khi downstream chậm, độ trễ tăng mà không có lỗi nào. Công thức tham khảo cho I/O-bound: số thread ≈ số core × (1 + thời gian chờ / thời gian tính); nhưng **trần thật** là tài nguyên chậm nhất phía sau (pool connection DB, rate limit đối tác).
+
+### Ví dụ đời thực
+Service gửi thông báo dùng {{Executors.newFixedThreadPool(20)}} để gọi API SMS (bình thường 150ms). Ngày nhà cung cấp SMS chậm lên 5 giây, hàng đợi không giới hạn tích lên 1,4 triệu task, heap đầy, pod bị OOMKilled — mất luôn cả các task trong hàng đợi. Thiết kế lại: {{ThreadPoolExecutor(20, 40, 60s, ArrayBlockingQueue(2000), CallerRunsPolicy)}} cho luồng đồng bộ, còn gửi SMS chuyển qua Kafka để có chỗ chứa bền vững; thêm metric {{executor.queued}} và {{executor.active}} qua Micrometer {{ExecutorServiceMetrics}}. Lần nhà cung cấp chậm tiếp theo, hàng đợi chạm 2.000 thì hệ thống tự giảm tốc (backpressure), không mất task, không OOM.
+
+### Trả lời mẫu khi phỏng vấn
+"Với dịch vụ I/O-bound, số thread phải lớn hơn số core vì phần lớn thời gian thread chỉ chờ; công thức tham khảo là số core nhân với một cộng tỉ lệ thời gian chờ trên thời gian tính. Nhưng tôi luôn kiểm tra trần thật là tài nguyên phía sau: 100 thread mà pool connection DB chỉ có 20 thì 80 thread chỉ đứng chờ connection. Tôi luôn dùng hàng đợi có giới hạn, vì ThreadPoolExecutor chỉ tạo thêm thread khi hàng đợi đã đầy, nên hàng đợi không giới hạn làm maximumPoolSize vô nghĩa và có thể gây OOM khi downstream chậm. Tôi chọn rejection policy có chủ đích như CallerRunsPolicy để tạo backpressure, đặt tên thread, và đưa metric active, queued, rejected lên dashboard. Với Java 21, nếu chỉ là chờ I/O, virtual thread kèm semaphore giới hạn đồng thời thường đơn giản hơn tự tính kích thước pool."
+
 > Senior tip: Đừng tối ưu bằng cảm tính. Theo dõi {{queue depth}}, {{activeCount}}, {{completedTaskCount}}, {{rejected count}}, thời gian chờ connection, p95/p99 latency và tỷ lệ lỗi. Với hệ thống nhiều instance, cần tính cả tổng giới hạn tới downstream.`
   ,
   follow: ['Làm sao phát hiện saturation của thread pool?', 'Khi nào nên dùng virtual threads thay vì platform thread pool?', 'Tại sao queue không giới hạn nguy hiểm với I/O-bound?'],
@@ -5624,6 +5633,15 @@ Nếu {{callServiceA}} ném exception, {{scope.join()}} sẽ kích hoạt hủy 
 - **Chưa ổn định hoàn toàn**: tooling, IDE support và kinh nghiệm thực tế còn hạn chế.
 - **Không thay thế mọi thứ**: không giải quyết mọi bài toán concurrency, chỉ cải thiện cấu trúc và truyền hủy/lỗi.
 - **Tương thích**: cần JDK phù hợp và bật preview nếu dùng.
+
+### Tình trạng API (quan trọng khi trả lời)
+Structured concurrency là **preview** qua nhiều phiên bản: JEP 453 (Java 21), rồi các bản preview tiếp theo ở Java 22, 23, 24; ở Java 25 (JEP 505) API được thiết kế lại — tạo scope bằng {{StructuredTaskScope.open(...)}} với các **Joiner** thay cho các lớp con {{ShutdownOnFailure}}/{{ShutdownOnSuccess}} của bản Java 21. Muốn dùng phải bật {{--enable-preview}} và chấp nhận API có thể đổi. Vì vậy trong production, nhiều team vẫn dùng executor virtual thread + {{Future}} hoặc thư viện có cơ chế tương tự (Kotlin coroutine), và chỉ thử structured concurrency ở phần ít rủi ro.
+
+### Ví dụ đời thực
+API "trang chủ cá nhân hoá" gọi song song 4 service bằng {{CompletableFuture}}. Khi service gợi ý lỗi ngay lập tức, 3 lời gọi còn lại vẫn chạy tới hết timeout 2 giây — tốn thread, tốn quota của downstream; tệ hơn, một lời gọi bị "bỏ rơi" vẫn ghi log và metric sau khi request đã trả về, làm trace rối. Bản thử với structured concurrency (Java 21 preview, {{ShutdownOnFailure}}): lỗi của một nhánh làm scope **huỷ** các nhánh còn lại ngay, không còn task mồ côi, thread dump hiển thị quan hệ cha–con giữa các task. Số lời gọi thừa tới downstream khi có lỗi giảm khoảng 70%. Team giữ nó trong một service nội bộ chờ API ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Structured concurrency ràng buộc vòng đời của các tác vụ con vào một phạm vi, giống như khối try-with-resources: các tác vụ con được tạo trong scope phải kết thúc trước khi scope đóng, nếu một tác vụ lỗi thì các tác vụ còn lại bị huỷ, và lỗi được truyền lên cha. Nó giải quyết các vấn đề của CompletableFuture như task mồ côi chạy tiếp sau khi request đã trả về, lỗi bị nuốt, huỷ không lan truyền. Nó đi rất hợp với virtual thread. Nhưng tôi luôn nói rõ đây vẫn là preview: từ JEP 453 ở Java 21 qua nhiều bản preview, đến Java 25 API còn được thiết kế lại với StructuredTaskScope.open và Joiner. Vì vậy trong production tôi chỉ cân nhắc khi team chấp nhận enable-preview và theo dõi thay đổi API; còn không thì dùng virtual thread executor với Future và timeout rõ ràng."
 
 > Senior tip: Hãy thử nghiệm trong môi trường dev/test, so sánh với {{CompletableFuture}} về độ rõ ràng, khả năng hủy và dễ debug. Chỉ áp dụng production khi API đã chính thức (standard) và team hiểu rõ trade-off.`
   ,
@@ -5680,6 +5698,15 @@ public class Example {
 - Không nhầm {{volatile}} với atomic cho thao tác cộng/trừ ({{volatile int}} không an toàn cho {{count++}}).
 - "Safe publication" quan trọng: nếu không publish đúng cách, thread khác có thể thấy object chưa khởi tạo đầy đủ.
 
+### Bên trong: vì sao cần happens-before
+CPU có cache riêng mỗi core và **store buffer**; compiler JIT và CPU được phép **sắp xếp lại** lệnh miễn là kết quả trong **một** thread không đổi. Không có quan hệ happens-before, thread B có thể không bao giờ thấy giá trị thread A đã ghi (vẫn đọc bản trong cache/thanh ghi), hoặc thấy theo thứ tự khác. {{volatile}} ghi = "xả" mọi thay đổi trước đó ra cho thread đọc biến volatile đó sau này thấy (trên x86 là một lệnh fence khi ghi); {{synchronized}} unlock → lock tiếp theo trên cùng monitor tạo quan hệ tương tự; {{Thread.start()}}, {{join()}}, các lớp {{java.util.concurrent}} (put vào {{ConcurrentHashMap}} rồi get, {{CountDownLatch.countDown}} → {{await}}) cũng đảm bảo happens-before.
+
+### Ví dụ đời thực
+Một service có cờ dừng {{boolean running = true;}} (không volatile) cho worker đọc trong vòng lặp {{while (running) poll();}} và một hook shutdown đặt {{running = false}}. Trên máy dev worker dừng bình thường; trên production sau khi JIT tối ưu (C2 đưa việc đọc biến ra khỏi vòng lặp vì "không thấy ai đổi nó"), worker **không bao giờ dừng** — mỗi lần deploy pod treo 30 giây tới khi Kubernetes kill, mất các message đang xử lý dở. Sửa: {{volatile boolean running}} (hoặc {{AtomicBoolean}}); graceful shutdown chạy đúng trong 2 giây. Một chỗ khác dùng double-checked locking không volatile cho singleton cấu hình — thread khác thấy object "nửa khởi tạo" (field còn null) khoảng vài lần mỗi tuần; sửa bằng holder class idiom.
+
+### Trả lời mẫu khi phỏng vấn
+"Java Memory Model định nghĩa khi nào một thread được đảm bảo thấy dữ liệu thread khác đã ghi. Vì CPU có cache riêng và cả compiler lẫn CPU được phép sắp xếp lại lệnh, nếu không có quan hệ happens-before thì thread khác có thể không bao giờ thấy giá trị mới, hoặc thấy theo thứ tự lạ. Happens-before được tạo bởi: ghi biến volatile trước khi đọc biến đó, unlock trước lock trên cùng monitor, Thread.start và join, và các lớp trong java.util.concurrent. Data race là khi hai thread truy cập cùng biến, ít nhất một bên ghi, mà không có happens-before; kết quả là bug chỉ xuất hiện sau khi JIT tối ưu, như cờ dừng không volatile khiến worker không bao giờ dừng. Tôi ưu tiên dùng lớp có sẵn như AtomicBoolean, ConcurrentHashMap, và object bất biến với field final."
+
 > Senior tip: Ưu tiên thiết kế bất biến (immutable). Dùng {{final}}, publish object sau khi hoàn chỉnh, hạn chế chia sẻ mutable. Khi cần đồng bộ, chọn công cụ đúng: {{volatile}} cho visibility/flag, {{synchronized}}/{{Lock}} cho mutual exclusion, {{java.util.concurrent.atomic}} cho thao tác nguyên tử.`
   ,
   follow: ['Sự khác biệt giữa visibility và atomicity?', 'Safe publication là gì?', 'Tại sao final field có freeze semantics?'],
@@ -5732,6 +5759,15 @@ CompletableFuture.allOf(cf1, cf2, cf3)
 - Bỏ qua exception trong {{thenApply}}/{{thenAccept}} (có thể ẩn bug).
 - Quên truyền MDC → log thiếu trace id trong thread pool khác.
 
+### Bên trong: thread nào chạy callback
+{{thenApply}} (không có Async) chạy trên **thread hoàn thành future** — nếu future đã xong thì chạy luôn trên **thread gọi** {{thenApply}}. Nghĩa là một callback nặng có thể chạy trên thread của HTTP client (event loop) hoặc thread request. {{thenApplyAsync}} không truyền executor thì chạy trên {{ForkJoinPool.commonPool()}} — pool dùng chung cả JVM, kích thước bằng số core trừ 1; trong container 2 CPU chỉ có **1 thread**. Một tác vụ I/O chặn trong common pool làm nghẽn mọi parallel stream và mọi {{CompletableFuture}} khác trong ứng dụng.
+
+### Ví dụ đời thực
+Service tổng hợp giá gọi 5 nhà cung cấp bằng {{supplyAsync(() -> client.quote(...))}} không truyền executor. Trên pod 2 vCPU, common pool chỉ có 1 thread → 5 lời gọi chạy **tuần tự**, p95 3,4 giây thay vì khoảng 700ms. Đồng thời traceId và MDC không theo sang thread của pool nên log không nối được với request. Sửa: executor riêng có giới hạn (hoặc virtual thread executor), {{orTimeout(800ms)}} cho từng nhà cung cấp kèm {{exceptionally}} trả "không có báo giá", bọc executor bằng context propagation (Micrometer {{ContextExecutorService}}) để giữ traceId. p95 còn 820ms, nhà cung cấp chậm không làm hỏng cả request.
+
+### Trả lời mẫu khi phỏng vấn
+"Với CompletableFuture, việc đầu tiên tôi làm là không dùng common pool cho I/O: nó dùng chung cả JVM, kích thước bằng số core trừ một, trong container nhỏ có khi chỉ một thread, nên một lời gọi chặn làm nghẽn mọi thứ khác. Tôi truyền executor riêng có giới hạn hoặc virtual thread executor. Lưu ý thenApply không Async chạy trên thread hoàn thành future, có thể là thread của HTTP client. Mỗi nhánh có timeout riêng bằng orTimeout hoặc completeOnTimeout, và xử lý lỗi bằng exceptionally hoặc handle để trả giá trị dự phòng có chủ đích, không để lỗi bị nuốt. Khi gộp bằng allOf thì nhớ allOf không trả kết quả, phải join từng future. Cuối cùng là ngữ cảnh: MDC, traceId, SecurityContext không tự sang thread khác, nên tôi bọc executor bằng context propagation."
+
 > Senior tip: Luôn đo p95/p99 để đặt timeout và kích thước pool. Ưu tiên rõ ràng về error/fallback thay vì "nuốt" exception im lặng. Nếu cần truyền ngữ cảnh phức tạp, cân nhắc các thư viện hoặc wrapper executor.`
   ,
   follow: ['Sự khác biệt giữa exceptionally và handle?', 'allOf có tự hủy các future còn lại khi một cái fail không?', 'Làm sao propagate MDC qua CompletableFuture?'],
@@ -5766,6 +5802,25 @@ CompletableFuture.allOf(cf1, cf2, cf3)
 - Không bật GC log đủ chi tiết (trên JDK 11+ dùng {{Xlog:gc*:file=...}}).
 - Nhầm lẫn giữa "mixed" và "full" - mixed vẫn là collection có mục tiêu, full thường tồi tệ hơn.
 
+### Đọc một dòng log thật (JDK 17, -Xlog:gc*)
+~~~text
+[2026-11-07T10:15:02.114+0700][info][gc,start] GC(1532) Pause Young (Normal) (G1 Evacuation Pause)
+[...][info][gc,heap ] GC(1532) Eden regions: 410->0(408)
+[...][info][gc,heap ] GC(1532) Old regions: 1180->1196
+[...][info][gc      ] GC(1532) Pause Young (Normal) (G1 Evacuation Pause) 6020M->3810M(8192M) 48.512ms
+[...][info][gc      ] GC(1540) Pause Young (Concurrent Start) (G1 Humongous Allocation) 7100M->5900M(8192M) 61.2ms
+[...][info][gc      ] GC(1547) Pause Young (Mixed) (G1 Evacuation Pause) 6500M->4100M(8192M) 72.9ms
+[...][warn][gc      ] GC(1601) To-space exhausted
+[...][info][gc      ] GC(1601) Pause Full (G1 Compaction Pause) 8150M->5200M(8192M) 3842.117ms
+~~~
+Đọc: Young xoá hết Eden (410→0 region); Old tăng 16 region (object sống đủ lâu được đẩy lên); "Concurrent Start" do **humongous allocation** (object lớn hơn nửa region) bắt đầu chu kỳ marking; "Mixed" dọn thêm vùng Old nhiều rác; **To-space exhausted** = không còn chỗ để copy object sống → tiếp theo là **Full GC 3,8 giây**.
+
+### Ví dụ đời thực
+Service xuất báo cáo có Full GC 3–4 giây mỗi giờ. Log cho thấy nhiều "G1 Humongous Allocation": mỗi báo cáo tạo một {{byte[]}} 30–60MB (tải cả file vào bộ nhớ) — region 4MB nên mỗi mảng chiếm hàng chục region liên tiếp, phân mảnh heap, cuối cùng to-space exhausted. Sửa: stream file ra response thay vì dựng mảng lớn; tạm thời tăng {{-XX:G1HeapRegionSize=16m}}. Full GC biến mất, pause Young ổn định 30–50ms.
+
+### Trả lời mẫu khi phỏng vấn
+"G1 chia heap thành các region cùng kích thước và có ba loại pause chính. Young pause dọn Eden và Survivor, copy object còn sống sang survivor hoặc lên Old, thường vài chục mili giây. Khi Old đầy tới ngưỡng, G1 chạy marking đồng thời, bắt đầu bằng một Young pause có nhãn Concurrent Start, rồi sau đó là các Mixed pause dọn thêm những region Old nhiều rác. Full GC là dấu hiệu xấu: G1 không theo kịp, thường đi kèm To-space exhausted, và dừng cả heap nhiều giây. Khi đọc log, tôi xem thời gian pause, heap trước và sau, nguyên nhân trong ngoặc như Humongous Allocation, và Old tăng dần qua các chu kỳ để nghi leak. Humongous allocation, tức object lớn hơn nửa region, là nguyên nhân hay gặp của Full GC; sửa ở code bằng streaming thay vì dựng mảng lớn."
+
 > Senior tip: Bắt đầu với cấu hình mặc định của G1, bật GC log, theo dõi pause time, số lượng GC, heap usage. Nếu liên tục đạt Humongous allocation hoặc To-space exhausted, hãy xem kích thước object lớn, hoặc cân nhắc tăng region size/{{-Xmx}} hợp lý. Chỉ cân nhắc ZGC/Shenandoah khi thực sự cần pause cực ngắn và hiểu trade-off.`
   ,
   follow: ['Khi nào G1 chuyển từ Young sang Mixed GC?', 'Humongous object ảnh hưởng thế nào?', 'Sự khác biệt giữa G1 và ZGC về mục tiêu?'],
@@ -5798,6 +5853,15 @@ CompletableFuture.allOf(cf1, cf2, cf3)
 - Có warm-up iterations đủ (thường vài nghìn lượt hoặc theo thời gian).
 - Đo measurement iterations, báo cáo mean + stddev hoặc confidence interval.
 - Tránh đo System.out, I/O trong benchmark.
+
+### Bên trong: năm tầng và deoptimization
+HotSpot có các tầng: 0 (interpreter), 1–3 (C1, có hoặc không profiling), 4 (C2). Đường thường gặp: method chạy ở tầng 0 → đủ số lần gọi/vòng lặp thì C1 tầng 3 biên dịch **kèm thu thập profile** (kiểu thật của đối tượng, nhánh nào hay chạy) → đủ nóng thì C2 tầng 4 biên dịch tối ưu sâu dựa trên profile đó (inline, loại bỏ kiểm tra, escape analysis). Nếu giả định trong profile sai về sau (một lớp con mới xuất hiện, nhánh "không bao giờ chạy" bỗng chạy), JVM **deoptimize** — bỏ code đã tối ưu, quay về interpreter, rồi biên dịch lại. Đó là lý do benchmark mà chỉ dùng một loại dữ liệu có thể nhanh giả tạo.
+
+### Ví dụ đời thực
+Team so sánh hai cách serialize JSON bằng vòng lặp {{System.nanoTime()}} 1.000 lần trong {{main}}: cách A "nhanh gấp 3" → chọn A. Lên production không thấy khác biệt. Chạy lại bằng JMH (warm-up 5 vòng, fork 3, dùng {{Blackhole}} để kết quả không bị JIT loại bỏ): hai cách chênh nhau 8%, và lợi thế ban đầu chỉ do cách A được đo **sau** khi JIT đã làm nóng phần chung. Cũng phát hiện sau mỗi deploy p99 cao trong 2–3 phút đầu do code đang ở interpreter/C1 — team thêm bước warm-up (gọi các endpoint chính) trước khi readiness probe báo sẵn sàng, p99 trong 3 phút đầu giảm từ 900ms còn 180ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Tiered compilation kết hợp interpreter để khởi động nhanh, C1 để biên dịch nhanh kèm thu thập profile, và C2 để tối ưu sâu cho code nóng dựa trên profile đó, như inline hay loại bỏ kiểm tra. Nếu giả định trong profile sai về sau, JVM deoptimize về interpreter rồi biên dịch lại. Vì vậy benchmark kiểu tự viết vòng lặp với nanoTime thường sai: đo lẫn cả giai đoạn chưa biên dịch, JIT có thể xoá mất code có kết quả không dùng tới, và thứ tự chạy ảnh hưởng kết quả. Tôi dùng JMH với warm-up, nhiều fork, Blackhole, và dữ liệu đa dạng như thật. Ở production, hiệu ứng này cũng lộ ra thành p99 cao vài phút sau deploy, nên tôi warm-up trước khi readiness báo sẵn sàng, hoặc cân nhắc CDS, AOT cho thời gian khởi động."
 
 > Senior tip: Nếu bạn thấy "hiệu năng tăng sau vài phút chạy", đó là dấu hiệu JIT đang biên dịch. Khi debug hiệu năng thực tế, hãy quan tâm đến cả warm-up và behavior sau warm-up. Để điều tra JIT, có thể bật log biên dịch ({{-XX:+PrintCompilation}}) nhưng cẩn thận với overhead.`
   ,
@@ -5838,6 +5902,12 @@ CompletableFuture.allOf(cf1, cf2, cf3)
 - Hot redeploy trong production cực kỳ nguy hiểm với việc leak ClassLoader.
 - Không giới hạn {{MaxMetaspaceSize}} làm khó phát hiện sớm.
 
+### Ví dụ đời thực
+Một ứng dụng cho phép tải "plugin quy tắc tính phí" mới mà không cần restart: mỗi lần cập nhật tạo một {{URLClassLoader}} mới để nạp jar. Sau khoảng 40 lần cập nhật, Metaspace tăng từ 180MB lên 1,1GB rồi {{OutOfMemoryError: Metaspace}}. {{jcmd <pid> VM.classloader_stats}} cho thấy 41 classloader plugin còn sống dù chỉ một cái đang dùng. Heap dump (Eclipse MAT, "Duplicate Classes" và đường tới GC root của classloader cũ) chỉ ra nguyên nhân: plugin đăng ký một {{ThreadLocal}} và một listener vào {{static}} registry của ứng dụng mà không gỡ — mỗi tham chiếu đó giữ classloader cũ, kéo theo mọi class nó đã nạp. Sửa: plugin có {{close()}} gỡ listener và ThreadLocal, loader cũ được {{close()}} khi thay; thêm alert khi số class đã nạp ({{jvm_classes_loaded_classes}}) tăng liên tục. Metaspace ổn định quanh 200MB.
+
+### Trả lời mẫu khi phỏng vấn
+"Metaspace lưu metadata của class, và class chỉ được giải phóng khi cả classloader nạp nó bị GC thu hồi. Leak Metaspace hầu như luôn là leak classloader: một tham chiếu từ chỗ sống lâu, như static field, ThreadLocal của thread trong pool, listener đăng ký vào registry, hay thread do plugin tạo ra, giữ một object của classloader cũ, kéo theo toàn bộ class của nó. Hay gặp ở hệ thống hot reload plugin, redeploy trên app server, hoặc thư viện sinh class động như proxy, script engine. Tôi điều tra bằng metric số class đã nạp và Metaspace theo thời gian, jcmd VM.classloader_stats để đếm classloader, rồi heap dump với MAT, tìm đường tới GC root của classloader cũ. Đặt MaxMetaspaceSize để lỗi lộ ra sớm thay vì ăn hết bộ nhớ container."
+
 > Senior tip: Trong môi trường production, tránh hot redeploy. Nếu dùng container/app server, đảm bảo toàn bộ resources được giải phóng khi undeploy. Khi điều tra, hãy tập trung vào "ai đang giữ ClassLoader" chứ không chỉ "có bao nhiêu class". Một ClassLoader bị giữ sẽ giữ toàn bộ tất cả class load bởi nó.`
   ,
   follow: ['Sự khác biệt giữa PermGen và Metaspace?', 'Tại sao custom ClassLoader dễ gây leak?', 'Làm sao ngăn ClassLoader leak trong web app?'],
@@ -5869,11 +5939,1847 @@ CompletableFuture.allOf(cf1, cf2, cf3)
 - Chỉ tối ưu startup mà bỏ qua memory/throughput trong steady state.
 - CRaC yêu cầu môi trường hỗ trợ checkpoint/restore (không phải mọi K8s setup đều sẵn sàng).
 
+### Ví dụ đời thực
+Một service Spring Boot 3.3 trên Kubernetes khởi động 38 giây; khi tải tăng đột biến buổi sáng, HPA thêm pod nhưng pod mới sẵn sàng quá chậm, lỗi 503 kéo dài khoảng 1 phút mỗi ngày. Đo từng bước:
+- Bật **CDS** (Spring Boot 3.3+: chạy training run tạo archive rồi khởi động với {{-XX:SharedArchiveFile}}): 38 → 27 giây, không đổi code.
+- **Lazy initialization** cho một nhóm bean nặng ít dùng (báo cáo, export): 27 → 21 giây; nhưng lỗi cấu hình của các bean này giờ lộ ra lúc request đầu tiên — team thêm test khởi tạo đầy đủ trong CI.
+- Thu hẹp component scan và bỏ 2 auto-configuration không dùng: 21 → 17 giây.
+- Thử **GraalVM native image**: khởi động 0,3 giây, RAM giảm 60%, nhưng build mất 9 phút, 3 thư viện dùng reflection cần cấu hình thêm, và throughput đỉnh thấp hơn khoảng 15% so với JIT — team giữ JVM cho service này.
+Cùng với việc tăng {{minReplicas}} vào giờ cao điểm, lỗi 503 buổi sáng biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi đo trước xem thời gian khởi động đi đâu, bằng startup actuator của Spring Boot hoặc log thời gian từng bước, rồi chọn theo chi phí. Rẻ nhất là CDS, Spring Boot 3.3 hỗ trợ sẵn: lưu sẵn class đã parse nên giảm đáng kể mà không đổi code. Tiếp theo là thu hẹp component scan, bỏ auto-configuration không dùng, lazy initialization có chọn lọc cho bean nặng ít dùng, nhưng phải giữ một bài test khởi tạo đầy đủ để không giấu lỗi cấu hình. Spring AOT và GraalVM native image cho khởi động dưới một giây và ít RAM, đổi lại build lâu, reflection phải khai báo, throughput đỉnh có thể thấp hơn JIT. CRaC chụp lại trạng thái đã khởi động, cần hỗ trợ từ JDK và môi trường. Trên Kubernetes, tôi cũng kết hợp với startup probe đúng, readiness sau warm-up, và minReplicas hợp lý thay vì chỉ trông vào khởi động nhanh."
+
 > Senior tip: Hãy bắt đầu từ đo lường (startup time, memory, throughput). Trên hầu hết dự án enterprise, JVM + CDS + AOT là đủ. Native Image chỉ thực sự có giá trị khi cold start là vấn đề cực kỳ nghiêm trọng và bạn sẵn sàng đầu tư vào build/test phức tạp hơn.`
   ,
   follow: ['Sự khác biệt giữa startup time và time to first request?', 'Tại sao CRaC có thể tốt hơn Native Image cho một số trường hợp?', 'Những gì cần lưu ý khi dùng Native Image với Spring Data JPA/Hibernate?'],
   tags: ['startup', 'Kubernetes', 'CDS', 'Spring AOT', 'CRaC', 'GraalVM native image']
+},
+{
+  id: 'concurrency-038',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Đi sâu vào AbstractQueuedSynchronizer: state, hàng đợi CLH và park/unpark. Chuyện gì xảy ra **từng bước** khi hai thread cùng gọi {{ReentrantLock.lock()}}, và lock công bằng (fair) khác lock mặc định ở đúng chỗ nào trong code?',
+  a: `**Tóm tắt:** AQS là xương sống của gần như mọi khoá trong {{java.util.concurrent}}: ReentrantLock, Semaphore, CountDownLatch, ReadWriteLock. Nó chỉ gồm hai thứ: một biến **state** kiểu int được đổi bằng CAS, và một **hàng đợi hai chiều FIFO** (biến thể CLH) chứa node bao quanh thread đang chờ. Ai dùng chỉ cần viết vài hàm tryAcquire/tryRelease (đọc/ghi state theo ngữ nghĩa của mình); còn thử, xếp hàng, ngủ ({{LockSupport.park}}), đánh thức (unpark), bỏ cuộc khi timeout — AQS lo hết. ReentrantLock mặc định là **non-fair**: thread vừa tới được CAS cướp lock ngay khi state rỗng (barging); bản fair thêm đúng một điều kiện {{hasQueuedPredecessors()}} trước khi CAS, và đó là toàn bộ khác biệt — cũng là lý do fair chậm hơn.
+
+### Hiểu nhanh
+Quầy vé có một cây bút (**state**). Khách tới sau không gào tại quầy: ghi tên vào **sổ chờ** rồi đi uống cà phê (**park**); người trước trả bút thì nhân viên gọi đúng một người dậy (**unpark**). Sổ chờ là CLH queue, cây bút là state.
+
+### Thuật ngữ
+- **state**: int volatile của AQS, đổi bằng **CAS** (ghi chỉ thành công nếu giá trị vẫn như mình vừa đọc — nguyên tử mà không cần khoá). ReentrantLock dùng nó đếm số lần vào lại lock; Semaphore = số permit còn; CountDownLatch = số lần countDown còn phải chờ.
+- **CLH queue**: biến thể của hàng đợi spin-lock trong hệ điều hành — danh sách hai chiều FIFO, node head là dummy đại diện người đang giữ lock.
+- **waitStatus** của Node: SIGNAL (-1) = "khi tôi nhả lock thì đánh thức người ngay sau"; CANCELLED (1) = bỏ cuộc vì timeout/interrupt; CONDITION (-2) = đang nằm trong condition queue của await(); PROPAGATE (-3) = cờ lan tín hiệu ở mode shared (Semaphore, readLock).
+
+### Từng bước: hai thread cùng lock()
+~~~text
+T1: lock() -> CAS state 0->1 OK -> owner = T1 -> lam viec
+T2: lock() -> CAS state 0->1 FAIL (state da = 1)
+    addWaiter(Node.EXCLUSIVE): node = new Node(T2); CAS tail -> node (thua thi doc lai tail, thu lai)
+    node.prev = tail cu      (chi co prev duoc gan, next chua ai set)
+    acquireQueued(node):
+      - nếu node.prev == head -> tryAcquire thêm một lần nữa (vẫn được phép chen)
+      - shouldParkAfterFailedAcquire: CAS prev.waitStatus 0 -> SIGNAL
+        lan dau tra false de quay lai tryAcquire; lan sau moi ngu
+      - LockSupport.park(this)  -> T2 WAITING, khong tot CPU
+T1: unlock() -> tryRelease: state - 1 == 0 -> xoa owner -> true
+    unparkSuccessor(head): xoa waitStatus cua head, QUET TU TAIL nguoc len
+      tim node dau tien co waitStatus <= 0 (bo qua CANCELLED) -> unpark(node.thread)
+T2: ty -> ve acquireQueued -> prev == head -> tryAcquire CAS 0->1 OK -> tro thanh head moi
+~~~
+Hai chi tiết thiết kế đáng nói: (1) thread được đánh thức vẫn phải **tự giành** state bằng CAS — hàng đợi chỉ quyết định "ai được thử sớm", AQS không cầm lock hộ ai; (2) lý do quét từ tail là vì CAS chỉ đảm bảo con trỏ **prev**, không đảm bảo **next** của node trước đã được nối — đi từ tail thì chuỗi liên kết luôn nguyên vẹn. Ở trên, {{LockSupport.park}}/{{unpark}} là tầng thấp hơn Object.wait: không cần monitor, và unpark mang tính "xin visa" — nếu unpark chạy **trước** thì lần park sau trở về ngay, nên không có race "đánh thức hụt" như notify.
+
+### Fair vs non-fair, nằm ở đúng một dòng
+~~~java
+// NonfairSync — ban mac dinh
+public void lock() {
+    if (compareAndSetState(0, 1)) setExclusiveOwnerThread(Thread.currentThread());
+    else acquire(1);            // chưa được thì mới xếp hàng
 }
+// FairSync: không có đường tắt ở cửa, và trong tryAcquire chỉ thêm một điều kiện:
+if (c == 0) {
+    if (!hasQueuedPredecessors() &&        // "hàng đợi có ai đứng trước tôi không"
+        compareAndSetState(0, 1)) { ... }
+}
+~~~
+{{hasQueuedPredecessors()}} kiểm tra còn node hợp lệ nào đứng trước thread hiện tại trong hàng đợi. Non-fair cho phép **barging**: ngay khi lock được nhả, một thread đang chạy trên CPU có thể CAS cướp trước cả người vừa được unpark. Nó tốt cho throughput vì người thắng khỏi chu trình unpark + context switch (cỡ micro giây), đổi lại không có hợp đồng thứ tự — một thread có thể bị bỏ qua liên tục (starvation). Chỉ chọn {{new ReentrantLock(true)}} khi bạn **đo được** starvation, và chấp nhận throughput thấp hơn.
 
+### Condition queue — hàng đợi thứ hai
+Mỗi {{Condition}} có hàng đợi riêng (node waitStatus = CONDITION). {{await()}} đặt state = 0 (nhả hết lock kể cả phần reentrant), đưa node vào condition queue rồi park; {{signal()}} **không** trao lock, nó chỉ chuyển node về sync queue — người vừa được đánh thức vẫn phải tranh CAS state.
 
+### Trên production
+- Thread dump ({{jcmd <pid> Thread.print}}) gọi thẳng tên AQS: khung {{LockSupport.park}}, {{AbstractQueuedSynchronizer.acquireQueued}} và dòng {{- parking to wait for <0x00007f...> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)}} — địa chỉ này khớp với object ở khung {{- locked <0x...>}} của thread đang giữ lock.
+- Đếm người xếp hàng bằng API public {{ReentrantLock.getQueueLength()}} / {{hasQueuedThreads()}} (tài liệu JDK ghi rõ: dùng để **giám sát**, không để điều khiển logic). Export {{getQueueLength()}} thành metric là cách nhanh nhất để chứng minh "p99 cao vì chờ lock".
+- JFR {{jdk.JavaMonitorEnter}} chỉ bắt monitor của {{synchronized}}; lock AQS phải xem qua async-profiler {{-e lock}} hoặc flame graph wall-clock.
+- Triệu chứng phải sửa code chứ không sửa flag: {{getQueueLength()}} > 0 kéo dài, CPU thấp, p99 cao → thân critical section quá dài (gọi HTTP, đọc DB, serialize JSON trong lock). Bật fair chỉ đổi thứ tự, không rút ngắn thời gian giữ lock.
+- Quên {{unlock()}} trong {{finally}}: khác {{synchronized}}, ReentrantLock không tự nhả → treo toàn bộ luồng phía sau. Và await() phải nằm trong vòng {{while}} kiểm tra điều kiện, không phải {{if}}.
+- Đọc dump sai trạng thái: thread chờ trong AQS ở trạng thái WAITING (park), còn BLOCKED là của monitor {{synchronized}} — hai hướng điều tra khác nhau.
+
+> Senior tip: ba từ khoá ăn điểm trong phỏng vấn senior là **state – SIGNAL – unparkSuccessor**. Nói thêm được hai chi tiết "thread được đánh thức vẫn phải tự CAS giành lock" và "quét từ tail vì next chưa chắc đã được nối" chứng tỏ bạn đã đọc source hoặc đã debug dump thật, chứ không chỉ biết {{lock()}}/{{unlock()}}. Khi được hỏi miệng, trả lời theo đúng trình tự: CAS state → thêm node vào tail → đánh dấu SIGNAL → park → unpark successor → tranh lại CAS.`,
+  follow: [
+    'Vì sao AQS chọn park/unpark thay vì Object.wait/notify hoặc spin bằng {{Thread.onSpinWait()}}?',
+    'Semaphore và CountDownLatch dùng AQS ở mode shared khác exclusive thế nào, PROPAGATE sinh ra để làm gì?',
+    'Bản viết lại AQS gần đây trong OpenJDK gộp cờ của node vào một field long — nó cải thiện điều gì so với waitStatus + prev + next tách rời?',
+  ],
+  tags: ['AQS', 'ReentrantLock', 'park', 'CLH', 'fairness'],
+  refs: [
+    { type: 'doc', title: 'AbstractQueuedSynchronizer API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/AbstractQueuedSynchronizer.html' },
+    { type: 'doc', title: 'ReentrantLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html' },
+  ]
+},
+{
+  id: 'concurrency-039',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Trong {{ConcurrentHashMap}} Java 8+, chèn một phần tử xảy ra những bước nào ở mức node và cache line: vì sao chỗ thì CAS mà chỗ lại {{synchronized}}, vì sao khoá node đầu chứ không khoá cả bucket, và khi nào một bucket chuyển thành cây?',
+  a: `**Tóm tắt:** {{ConcurrentHashMap}} không khoá cả bảng, cũng không khoá 16 segment như Java 7. Mỗi bucket là một chuỗi node; khi bucket **rỗng** thì chèn bằng CAS (không có ai để tranh), khi bucket **đã có node** thì JVM {{synchronized}} trên đúng node đầu chuỗi — biến node đó thành lock của bucket. Đọc ({{get}}) hoàn toàn không khoá, dựa vào field volatile của mảng table và của node.next. Khi chuỗi dài tới 8 node **và** bảng đã có ít nhất 64 ô, bucket được treeify thành cây red-black; nếu bảng còn nhỏ thì resize trước để tách chuỗi ra. Muốn hiểu hiệu năng của map này phải hiểu ba thứ: hàm hash bị trộn thế nào, vì sao bucket nóng là điểm thắt, và vì sao hàm mapping của {{computeIfAbsent}} chạy **trong lúc đang giữ lock**.
+
+### Hiểu nhanh
+Thư viện chia sách thành 64 kệ nhỏ. Thủ thư không khoá cả thư viện: ai trả sách vào kệ trống thì đặt lên thẳng (một thao tác nhanh, không ai tranh). Kệ đã có sách thì người đó đứng trước kệ đó chờ, các kệ khác vẫn tự do. Người mượn sách (đọc) thì không cần chờ gì cả — kệ nào cũng có bảng chỉ dẫn cập nhật liên tục. Nếu một kệ chất quá 8 quyển và thư viện đã mở rộng đủ lớn, kệ đó đổi thành kệ hai tầng (tìm theo nhánh) để không phải đi hết 8 quyển.
+
+### Thuật ngữ
+- **bucket / bin**: một ô của mảng {{table}}, chứa tham chiếu tới node đầu của chuỗi (hoặc node gốc của cây).
+- **Node**: object {{Map.Entry}} bên trong, có field {{next}} volatile để đọc không cần khoá vẫn thấy chuỗi cập nhật.
+- **spread hash**: {{(h ^ (h >>> 16)) & HASH_BITS}} — trộn 16 bit cao xuống thấp vì chỉ số bucket lấy từ vài bit cuối; bit dấu bị xoá để hash âm thành cờ đặc biệt.
+- **MOVED (-2)**: giá trị hash của {{ForwardingNode}}, đánh dấu "bucket này đã bị chuyển sang bảng mới trong lúc resize".
+- **TREEIFY_THRESHOLD = 8**, **MIN_TREEIFY_CAPACITY = 64**, **UNTREEIFY_THRESHOLD = 6**: ngưỡng chuyển chuỗi thành cây và ngược lại.
+- **sizeCtl**: một int điều khiển init/resize (âm = đang khởi tạo/đang nới bảng, dương = ngưỡng đầy).
+- **ReservationNode**: node placeholder {{computeIfAbsent}} dùng để "giữ chỗ" bucket và phát hiện đệ quy.
+
+### Đường đi của một lệnh put (từng bước)
+~~~text
+1. kiem tra key/value khac null -> null la NullPointerException co tinh (map cam null)
+2. h = spread(key.hashCode())
+3. tab = table (đọc volatile một lần, dùng làm "ảnh" nhất quán cho vòng lặp)
+   - nếu tab == null -> initTable(): CAS sizeCtl 0 -> -1; ai thắng thì khởi tạo mảng 16 ô,
+     người kia quay vòng lặp đọc lại table (không ai phóng to mảng hai lần)
+4. i = (tab.length - 1) & h        -> vì đồ dùng khi kích thước table lũy thừa của 2
+5. f = tabAt(tab, i)               -> đọc volatile của phần tử mảng (không phải lấy cả mảng ra rồi đọc)
+   a) f == null  -> CAS tab[i] null -> new Node(h, key, value)
+        thành công -> xong (đây là fast path: không một cái lock nào)
+        that bai    -> co ai vua chen, quay buoc 3 doc lai
+   b) f.hash < 0 -> node dac biet: TreeBin / ReservationNode / ForwardingNode
+        ForwardingNode -> goi helpTransfer() de giup resize roi moi ghi
+   c) f la node binh thuong -> synchronized (f) {   // KHOA NODE DAU = KHOA CA BUCKET
+        duyet chuoi, dem binCount
+        thay key trung (equals) -> thay value
+        không thấy -> nối node vào dưới chuỗi (hoặc thêm vào cây)
+        neu binCount >= 8 -> treeifyBin(tab, i)
+      }
+      khi cập nhật key đã có, node được nối TRƯỚC khi value cũ bị ghi đè,
+      nên get() của thread khác không bao giờ nhìn thấy node có value null
+6. addCount(1L, binCount): tăng bộ đếm, và có thể kẹp đôi bảng nếu vượt ngưỡng
+~~~
+
+### Vì sao lại chia hai chế độ CAS / synchronized
+- CAS chỉ thắng khi **không có cạnh tranh**. Bucket rỗng thì cạnh tranh duy nhất là "ai được đặt node đầu" — CAS giải quyết gọn, không phải đánh thức ai.
+- Khi bucket đã có chuỗi thì thao tác là "đọc-duyệt-sửa-nối" — một vòng CAS retry sẽ cực kỳ tốn (mỗi lần fail phải duyệt lại từ đầu). Doug Lea chọn {{synchronized}} trên node đầu vì JVM đã tối ưu monitor không tranh chấp (CAS vào mark word), và vì nó cho phép giữ bất biến chuỗi một cách dễ đọc.
+- Khoá node đầu chứ không khoá {{tab[i]}} bằng array-wide lock, vì số lock = số bucket đang nóng, không phải 1 lock cho cả map. Hai thread ghi hai key khác bucket gần như không chạm nhau — đó là toàn bộ ý nghĩa "concurrent".
+- Cache line: hai key hash ra cùng bucket thì node đầu của nó nằm chung cache line và mọi thao tác đều ping-pong line đó. Đây là lý do hashCode kém chất lượng làm map chậm phi tuyến, dù không có lock toàn cục nào.
+
+### Đọc thì thế nào
+{{get}}: đọc volatile table (một lần), đọc volatile node tại {{tab[i]}}, rồi duyệt chuỗi qua {{next}} volatile; không lock, không CAS. Với TreeBin, nó đọc volatile root và chỉ {{synchronized}} khi cần. Hệ quả: bạn thấy một **snapshot nhất quán** (không bao giờ thấy chuỗi bị xé nửa), nhưng không có hợp đồng "tôi thấy đúng trạng thái tại thời điểm tôi gọi".
+
+### Bảng so sánh
+| Cách | Khoá ở mức | Hệ quả |
+|---|---|---|
+| {{Hashtable}} | một lock cho cả bảng | chỉ một thread ghi tại một thời điểm |
+| {{Collections.synchronizedMap}} | một lock cho cả map + iterator ngoài | như trên, iterator phải tự đồng bộ |
+| {{ConcurrentHashMap}} Java 7 | 16 segment | tối đa 16 vùng, chia không đều theo key |
+| {{ConcurrentHashMap}} Java 8+ | CAS bucket rỗng, khoá node đầu từng bucket | số vùng khoá = số bucket, tự lớn theo bảng |
+
+### Trên production
+- HashCode một hằng số (class không ghi lại {{hashCode}}, hoặc key sinh hash từ một field không đổi) là tai nạn kinh điển: mọi key dồn một bucket, mọi ghi đều tranh một lock, CPU lock cao mà {{size()}} vẫn đúng. Kiểm chứng: dựng một map tạm đếm số node theo bucket (debug/unit test), hoặc so sánh thời gian put khi key là String ngẫu nhiên so với key thật.
+- {{computeIfAbsent}} chạy hàm mapping **trong khi đang giữ lock của bucket**: nếu hàm đó gọi HTTP/DB, mọi key cùng bucket bị chặn theo; nếu nó sửa lại chính map này theo cùng bucket, map ném {{IllegalStateException}} "Recursive update". Quy tắc: hàm mapping phải thuần túy và nhanh; muốn tải dữ liệu thì dùng single-flight riêng ở ngoài.
+- Khởi tạo {{new ConcurrentHashMap<>(expectedSize)}} để giảm số lần resize với map lớn (nội dung resize nằm ở câu bên cạnh).
+- Iterator là **weakly consistent**: không ném ConcurrentModificationException, nhưng có thể bỏ sót hoặc thấy phần tử đã bị xoá. Đừng dùng nó để "chụp toàn bộ trạng thái nhất quán" — cần vậy thì snapshot thủ công hoặc dùng cấu trúc khác.
+- Đo tranh chấp: async-profiler {{-e lock}} hoặc JFR event {{jdk.JavaMonitorEnter}} sẽ cho thấy khung {{ConcurrentHashMap.putVal}} và monitor của node đầu — dấu hiệu bucket nóng, không phải "map chậm".
+
+### Trả lời phỏng vấn thế nào
+Nói theo ba nhịp: (1) chèn bucket rỗng = CAS, chèn vào bucket đã có = {{synchronized}} trên node đầu, đọc = lock-free nhờ volatile; (2) vì vậy mức song song bằng số bucket, và nút thắt duy nhất là bucket nóng; (3) cây chỉ xuất hiện khi chuỗi ≥ 8 **và** bảng ≥ 64 ô, nếu bảng nhỏ thì thay vào đó là resize. Nhắc thêm {{size()}} là ảnh chụp (không phải số tức thời tuyến tính) và {{computeIfAbsent}} giữ lock khi chạy hàm — đó là hai chỗ cho thấy bạn dùng map này trên production thật.
+
+> Senior tip: khi nghi ngờ {{ConcurrentHashMap}} là cổ chai, 90% là do **hash của key** hoặc do **hàm trong {{computeIfAbsent}}/{{compute}} gọi I/O**, chứ không phải do cấu trúc trong của map. Trước khi thay map bằng lock-free queue hay một cache ngoài, hãy in ra phân bố độ dài bucket — nếu một bucket chiếm 70% lưu lượng thì vấn đề nằm ở key, không phải ở map.`,
+  follow: [
+    'Vì sao {{ConcurrentHashMap}} cấm null key/value, trong khi {{HashMap}} cho phép?',
+    'Khi chuỗi bị treeify thì {{get}} và {{put}} thay đổi thế nào, chi phí so với chuỗi là gì, vì sao ngưỡng là 8?',
+    '{{computeIfAbsent}} và "kiểm tra rồi put" khác nhau ở đâu về tính nguyên tử, và {{putIfAbsent}} có cứu được bạn khỏi race không?',
+  ],
+  tags: ['ConcurrentHashMap', 'CAS', 'synchronized', 'treeify', 'computeIfAbsent'],
+  refs: [
+    { type: 'doc', title: 'ConcurrentHashMap API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html' },
+  ]
+},
+{
+  id: 'concurrency-040',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Resize của {{ConcurrentHashMap}} chạy **song song** như thế nào: một bảng đang nới bị khoá ở đâu, vì sao các thread khác vẫn ghi được, "nhiều thread cùng giúp chuyển" hoạt động ra sao, và vì sao {{size()}} được tính bằng một mảng cell thay vì một biến?',
+  a: `**Tóm tắt:** Resize không đóng bảng. Thread phát hiện bảng đầy dùng CAS trên {{sizeCtl}} để **claim** quyền resize (mã hoá thêm resizeStamp để phát hiện ai đang làm), tạo bảng mới gấp đôi rồi chia bảng cũ thành các **chunk** liên tiếp nhau; bất kỳ thread nào tình cờ đi qua một bucket đã chuyển (node có hash = MOVED) đều có thể **nhận một chunk về làm** ({{helpTransfer}}) — kể cả thread chỉ gọi {{get}} hay {{size}}. Bucket đã chuyển để lại một {{ForwardingNode}} trỏ sang bảng mới nên đọc vẫn đúng trong lúc resize. Đếm phần tử cũng chia để trị: {{baseCount}} + một mảng {{CounterCell}} được đệm cache line (đúng mô hình của LongAdder/Striped64), vì vậy {{size()}}/{{mappingCount()}} là tổng của các cell tại một thời điểm, **không phải** một phép đọc nguyên tử tuyến tính.
+
+### Hiểu nhanh
+Siêu thị chuyển sang mặt bằng mới mà không đóng cửa. Người phát hiện hết chỗ dán biển "đang chuyển" lên cửa, rồi khuân từng dãy kệ. Nhân viên đi ngang (kể cả khách đến hỏi đường) thấy dãy nào đã dán "đã sang bên kia" thì được giao luôn dãy đó khuân giúp. Quầy nào chưa khuân thì ghi-đè bán normal; quầy đã khuân thì có tờ chỉ đường "mới ở ô 137 của nhà bên" nên khách vẫn tìm được hàng.
+
+### Thuật ngữ
+- **sizeCtl**: int điều khiển vòng đời bảng. {{0}} = chưa init (sẽ là 16); {{-1}} = đang init; số âm khác = đang resize, phần bit cao chứa **resizeStamp** nhận dạng đợt resize, phần bit thấp đếm số thread đang giúp; số dương = **ngưỡng** đầy kế tiếp = {{n - (n >>> 2)}} (load factor 0.75).
+- **resizeStamp(n)**: một con số dẫn từ kích thước bảng cũ, dùng làm "mã số ca chuyển nhà"; thread sau đọc {{sizeCtl}}, thấy stamp khớp thì biết mình đang giúp đúng đợt, không phải đợt đã kết thúc.
+- **ForwardingNode**: node đặc biệt có {{hash = MOVED (-2)}}, giữ tham chiếu {{nextTable}} — nghĩa là "bucket này đã nằm ở bảng mới".
+- **transferIndex / stride**: con trỏ chia bảng cũ thành các đoạn; mỗi lần CAS lấy một đoạn, đoạn tối thiểu vài ô (công thức trong JDK lấy {{n >>> 3}} chia cho {{NCPU + 1}} và không dưới 2) để thread ít cũng làm đủ việc, không tranh nhau từng ô.
+- **CounterCell**: ô đếm riêng được đệm bằng annotation nội bộ {{jdk.internal.vm.annotation.Contended}} để mỗi thread ghi vào cache line của mình.
+- **sumCount / mappingCount**: cộng {{baseCount}} với mọi cell đang tồn tại.
+
+### Chuyện gì xảy ra theo thứ tự
+~~~seq
+title: put() chạm ngưỡng sizeCtl khi bảng đang có 8 thread ghi
+actors: Writer A | sizeCtl | Table cu | Table moi | Writer B
+Writer A -> sizeCtl: CAS doc cu -> (resizeStamp | 1) de claim resize
+Writer A -> Table moi: tao mang gap doi
+Writer A -> Table cu: gan ForwardingNode (MOVED) cho doan minh lam
+Writer A -> Table cu: copy node sang Table moi, tang sizeCtl len 2 (so giup)
+Writer B -> Table cu: gap bucket co hash = MOVED
+Writer B -> sizeCtl: tang so thread dang giup, nhan doan tiep theo qua transferIndex
+Writer B -> Table moi: ghi phan cua minh
+Writer A -> sizeCtl: CAP sizeCtl = nguong moi (n - n/4), bo table moi vao table
+Writer B -> Table moi: ghi tiep binh thuong sau khi resize xong
+~~~
+Ba bất biến làm nên tính đúng:
+1. **Không có lock toàn bảng.** Mỗi bucket chỉ được "chạm" bởi đúng một thread tại một thời điểm, thread đó hoặc là owner của đoạn hoặc là thread ghi bình thường đã khoá node đầu.
+2. **Đọc không bị chặn.** {{get}} gặp ForwardingNode thì chuyển sang tìm ở {{nextTable}}; vì vậy trong suốt đợt resize, đọc vẫn trả lời đúng, chỉ chậm thêm một bước nhảy.
+3. **Ghi bị hoãn, không mất.** {{putVal}} thấy {{f.hash < 0}} thì gọi {{helpTransfer}} rồi quay lại đầu vòng lặp — nên không ai ghi vào bảng cũ đã bị bỏ.
+
+### Vì sao chia counter thành cell
+Nếu một biến {{count}} volatile được mọi thread CAS tăng, thì mỗi lần ghi đều giành cùng một cache line (false sharing + CAS fail storm, giống hệt AtomicLong ở mức tranh chấp cao). Striped64/LongAdder giải quyết bằng {{baseCount}} cho path không tranh chấp và một mảng cell mở rộng tới cỡ số CPU; mỗi thread chọn cell theo **probe** riêng của thread (field nội bộ {{threadLocalRandomProbe}} trong Thread), nên hai thread ít khi cùng ô. Đổi lại: {{sum()}} phải cộng tất cả cell trong lúc chúng vẫn đổi, nên kết quả là ảnh chụp xấp xỉ.
+
+### Bảng: hệ quả thực tế
+| Tình huống | Điều xảy ra |
+|---|---|
+| {{if (map.size() < MAX) map.put(...)}} | Không chặn được phình to: hai thread cùng thấy size = MAX-1. Cần {{compute}}/{{merge}} với logic giới hạn, hoặc cấu trúc khác |
+| Map 5 triệu entry, thêm liên tục | Resize nhiều lần; mỗi lần tạo bảng mới gấp đôi → đỉnh memory và áp lực GC trong vài giây |
+| {{new ConcurrentHashMap<>(1000, 0.75f, 64)}} | Tham số thứ ba {{concurrencyLevel}} bị **bỏ qua** từ Java 8 (tài liệu API ghi rõ), đừng kỳ vọng nó đặt số lock |
+| {{putAll}} / {{Collectors.toConcurrentMap}} khối lượng lớn | JDK dùng {{ReservationNode}} và các hàm reduce/accumulate theo bucket để nhiều thread ghi song song, không giữ một lock toàn cục |
+| {{mappingCount()}} so với {{size()}} | {{mappingCount()}} trả {{long}}, nên dùng khi map có thể vượt 2 tỷ phần tử; {{size()}} trả {{int}} và sẽ là Integer.MAX_VALUE khi tràn |
+
+### Trên production
+- **Định cỡ trước.** Với map cache nhiều triệu key, hãy dựng với dung lượng dự tính (JDK tự {{tableSizeFor(expected / loadFactor)}}) để tránh chuỗi resize; hoặc tải toàn bộ dữ liệu lúc khởi động bằng một thread rồi mới mở cho traffic.
+- **Nhận biết bằng chứng.** Đỉnh RTT đều đặn theo nhịp tăng trưởng của map, kèm allocation rate tăng trong GC log ({{-Xlog:gc*}}, hoặc JFR event {{jdk.JavaHeapOperation}}/{{jdk.ObjectAllocationInNewTLAB}}), thường là resize chứ không phải "map chậm".
+- **Đỉnh memory** trong đợt resize ≈ bảng cũ + bảng mới cùng tồn tại; nếu pod đang sát limit, resize đúng giờ cao điểm có thể gây OOMKill. Đây là lý do nên đặt {{-XX:MaxRAMPercentage}} dư cho service có cache in-heap lớn (kết hợp với tuning heap trong topic jvm).
+- **Bucket hoá tree:** resize còn làm **tách cây** (untreeify) khi chuỗi ngắn lại, nên bạn có thể thấy chi phí cây biến mất sau khi nới bảng.
+- **Không dùng {{size()}} trong vòng lặp nóng** để "chọc" từng phần tử; nếu cần thống kê định kỳ, đọc {{mappingCount()}} một lần rồi export metric.
+
+### Trả lời miệng 1 phút
+"Resize của ConcurrentHashMap là một thuật toán song song có điều phối: thread đầu tiên CAS vào {{sizeCtl}} để claim đợt resize kèm một resizeStamp, tạo bảng gấp đôi, rồi chia bảng cũ thành các đoạn qua {{transferIndex}}. Bucket đã chuyển được để lại {{ForwardingNode}} với hash MOVED, nên {{get}} nhảy sang bảng mới còn {{put}} gọi {{helpTransfer}} để nhận một đoạn về làm — resize do vậy chia đều cho mọi thread đang đi ngang, không có lock toàn bảng. Bộ đếm cũng striped: {{baseCount}} cộng mảng {{CounterCell}} được đệm cache line theo kiểu LongAdder, nên ghi không giành nhau một line, nhưng {{size()}} chỉ là tổng tại một thời điểm, không tuyến tính. Hệ quả thực chiến: định cỡ map trước để tránh resize giông bão, dùng {{mappingCount()}} cho map lớn, và đừng dùng {{size()}} như một phép kiểm tra nguyên tử."
+
+> Senior tip: chỗ câu này phân biệt người đọc source với người đọc blog là hai chi tiết nhỏ: {{concurrencyLevel}} đã bị bỏ qua từ Java 8, và {{size()}} là {{sumCount()}} chứ không phải một counter nguyên tử. Nói thêm được "đỉnh RTT theo nhịp resize, không phải theo QPS" là dấu hiệu bạn từng xử lý sự cố cache in-heap phình to trên production.`,
+  follow: [
+    'Điều gì bảo đảm {{get}} trong lúc resize không trả về null giả (false negative)?',
+    'Vì sao CounterCell chọn chỉ số theo probe của thread thay vì round-robin, và LongAdder chia sẻ ý tưởng này ra sao?',
+    'Khi nào bạn chủ động {{mappingCount()}} + pre-size thay vì để map tự resize, và đo ngưỡng nào là hợp lý?',
+  ],
+  tags: ['ConcurrentHashMap', 'resize', 'helpTransfer', 'CounterCell', 'ForwardingNode'],
+  refs: [
+    { type: 'doc', title: 'ConcurrentHashMap API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html' },
+    { type: 'doc', title: 'LongAdder API (mô hình counter striped)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html' },
+  ]
+},
+{
+  id: 'concurrency-041',
+  topic: 'concurrency',
+  level: 'senior',
+  q: '{{StampedLock}} optimistic read hoạt động bên trong thế nào: stamp chứa gì, {{validate}} kiểm tra điều gì, upgrade từ optimistic sang write lock ra sao, và vì sao nó **không** phải lựa chọn mặc định thay cho {{ReadWriteLock}}?',
+  a: `**Tóm tắt:** Optimistic read là chế độ đọc **không ghi bất kỳ dấu vết nào** lên state của lock. Bạn lấy một **stamp** (một số long mang version của lock), đọc dữ liệu, rồi gọi {{validate(stamp)}}: nếu trong khoảng đó không có writer nào đi qua thì version chưa đổi → số liệu bạn đọc là một snapshot hợp lệ và bạn dùng luôn; nếu có writer thì {{validate}} trả false → bạn mới thật sự lấy {{readLock()}} và đọc lại. Toàn bộ cơ chế nằm trong cách StampedLock mã hoá state: một long chứa số reader, một bit writer và các bit version, writer flip bit và tăng version nên mọi stamp cũ tự hết hiệu lực. Cái giá phải trả: không reentrant, không có Condition, không có công bằng, và code đọc phải "sạch" — không được gọi callback hay đụng tới state ngoài lock.
+
+### Hiểu nhanh
+ Tem niêm phong trên hộp tài liệu. Bạn ghi lại mã tem, mở hé nắp xem nhanh rồi kiểm tra mã tem: tem còn nguyên nghĩa là trong lúc xem không ai đụng vào hộp, số bạn ghi là đáng tin; tem đã đổi nghĩa là có người vừa mở — bạn phải xin phép xem lại một cách chính thức. Optimistic read chính là "xem rồi kiểm tra tem", còn {{readLock()}} là "xin phép xem" trước khi mở.
+
+### Thuật ngữ
+- **stamp**: số long trả về từ {{tryOptimisticRead()}}, {{readLock()}}, {{writeLock()}}. Nó vừa là "tem" của mode optimistic, vừa là **chìa** để unlock ở mode read/write (vì vậy {{unlockRead(stamp)}} cần đúng stamp đã lấy).
+- **validate(stamp)**: so các bit version/reader của stamp với state hiện tại, không khoá gì cả. Trả true = "không có writer xen vào khoảng đọc của tôi".
+- **tryConvertToWriteLock(stamp)**: thử nâng cấp từ optimistic (hoặc read) lên write **một cách không chặn**; thất bại thì phải {{writeLock()}}.
+- **AQS Sync bên trong**: khi thật sự phải chờ (writeLock bị blocked, readLock có writer đang chờ), StampedLock rơi về hàng đợi AQS như các lock khác; chỉ có optimistic path và read path không tranh chấp là không đụng tới hàng đợi.
+- **Hold counter (so sánh với ReadWriteLock)**: ReentrantReadWriteLock chia một int state thành 16 bit write + 16 bit read, và để tránh mọi reader CAS cùng một biến, nó giữ {{firstReader}} cùng {{cachedReads}} và một {{ThreadLocalHoldCounter}} — đó là lý do read lock của RRWL rẻ hơn "naive RW lock" nhưng vẫn mắc hơn optimistic path của StampedLock.
+
+### Pattern chuẩn
+~~~java
+public class Point {
+    private final StampedLock sl = new StampedLock();
+    private volatile int x, y;          // volatile: doc o mode optimistic can nhin thay write cuoi
+
+    public int distanceFromOrigin() {
+        long stamp = sl.tryOptimisticRead();          // khong khoa gi ca
+        int curX = x, curY = y;                       // copy hết những gì cần dùng ra biến cục bộ
+        if (!sl.validate(stamp)) {                    // co writer xen vao?
+            stamp = sl.readLock();                    // quay ve doc "that"
+            try {
+                curX = x;
+                curY = y;
+            } finally {
+                sl.unlockRead(stamp);
+            }
+        }
+        return Math.abs(curX) + Math.abs(curY);
+    }
+
+    public void move(int dx, int dy) {
+        long stamp = sl.writeLock();                  // writer duy nhat, loai moi doc/ghi khac
+        try {
+            x += dx; y += dy;
+        } finally {
+            sl.unlockWrite(stamp);
+        }
+    }
+}
+~~~
+Điểm mấu chốt của pattern: **đọc tất cả vào biến cục bộ trước khi validate**, vì sau khi validate fail bạn không còn quyền gì để đọc tiếp mà không lấy lock. Và vì optimistic path không tạo cạnh happens-before giữa write và read, các field được đọc ở chế độ này nên là volatile (hoặc dữ liệu phải là object bất biến được publish qua một tham chiếu volatile) — đây là bẫy tinh vi mà tài liệu JDK cảnh báo.
+
+### Bảng so sánh
+| | ReentrantReadWriteLock | StampedLock |
+|---|---|---|
+| Reentrant | có | **không** (đè lên lock của chính mình → tự chặn) |
+| Condition / await | có | **không** |
+| Fairness | chọn được fair | không có |
+| Read lock không tranh chấp | CAS state (đỡ hơn nhiều nhờ hold counter) | không ghi gì cả (rẻ nhất) |
+| Upgrade optimistic → write | không có | {{tryConvertToWriteLock}} |
+| An toàn khi dùng sai | JVM báo IllegalMonitorStateException dễ hiểu | dùng sai stamp thường **im lặng**, bug chỉ lộ ra khi có write |
+| Khi nào thắng | đọc nhiều, ghi thỉnh thoảng, API quen thuộc | đọc **rất** nhiều + profile chỉ rõ contention ở read lock |
+
+### Trên production
+- **Đo trước, đổi sau.** Bật JFR {{jdk.JavaMonitorEnter}} hoặc async-profiler {{-e lock}}/wall-clock, tìm khung {{ReentrantReadWriteLock$Sync.tryAcquireShared}} / {{park}} lặp lại. Nếu read lock chỉ chiếm 1% mẫu, StampedLock không cứu được gì.
+- **Ghi nhiều thì StampedLock tệ hơn**: mỗi write làm mọi stamp cũ fail, reader lại rơi về readLock — đường đi dài hơn cả RRWL.
+- **Nghiện "đọc không lock" dễ sinh bug khó thấy**: một writer nhỏ, chạy giữa hai lần đọc field, khiến snapshot gồm nửa cũ nửa mới. Test phải có thread ghi thật (đóng góp từ câu về test đồng thời), không chỉ test đọc.
+- **Cân nhắc phương án đơn giản hơn**: với config/danh sách ít đổi,{{volatile}} trỏ tới một object **bất biến** (copy-on-write) cho cùng lợi ích "đọc không lock" mà không cần stamp, không cần validate, và không thể dùng sai. Đây là cách tôi chọn nếu tỷ lệ ghi dưới ~1% và dữ liệu vừa trong một snapshot.
+- Nếu bắt buộc dùng: encapsulate hoàn toàn lock trong một class nhỏ, không trả stamp ra ngoài, viết unit test cho cả hai nhánh validate true và false (bằng cách chèn writer đúng nhịp).
+
+### Lỗi hay gặp
+- Quên {{unlockRead(stamp)}} hoặc trả nhầm stamp → lock bị "rò", reader khác chờ mãi.
+- Gọi {{readLock()}} rồi trong vùng đọc lại gọi hàm khác lấy {{writeLock()}} trên cùng thread → deadlock tức thì (vì không reentrant).
+- Dùng optimistic read rồi **ghi** dữ liệu dựa trên nó: mode optimistic không cấp quyền ghi; phải convert sang write lock thành công rồi mới ghi.
+- Tin rằng {{validate}} true = "dữ liệu tôi đọc là mới nhất tính tới lúc này" — nó chỉ nói "không có write nào **xen giữa**", writer sau đó vẫn có thể đổi ngay tức khắc.
+
+### Trả lời miệng 1 phút
+"Optimistic read của StampedLock lấy một stamp mã hoá version của lock, đọc dữ liệu vào biến cục bộ, rồi validate: nếu không writer nào đi qua thì stamp vẫn hợp lệ và dữ liệu dùng được, nếu có thì quay lại đọc bằng {{readLock()}}. Nó rẻ vì path đọc không tranh chấp **không ghi gì vào state**, nên không có cache line ping-pong giữa các reader. Nhưng nó không reentrant, không có Condition, không có fairness, dùng sai thì fail im lặng, và field được đọc phải volatile để visibility đúng. Vì vậy tôi chỉ dùng khi profile chỉ rõ contention ở read lock của một cấu trúc đọc-nhiều-ghi-ít; còn lại {{ReadWriteLock}} hoặc một snapshot bất biến sau {{volatile}} là lựa chọn an toàn hơn."
+
+> Senior tip: câu chuyện thật của StampedLock không phải tốc độ mà là **tính dễ sửa sai**. Nó nhanh hơn ở micro-benchmark, nhưng mọi bug đều âm thầm và chỉ lộ khi có write. Trước khi đổi, hãy thử copy-on-write ({{volatile}} tham chiếu tới object bất biến): đạt cùng hiệu quả "đọc zero-lock", mà code review không cần hiểu về stamp.`,
+  follow: [
+    'Vì sao ReentrantReadWriteLock phải dùng hold counter và {{firstReader}} thay vì chỉ CAS một biến read count?',
+    'Optimistic read không tạo cạnh happens-before — hệ quả cụ thể với field không volatile là gì, và volatile có đủ ở cả hai chiều?',
+    'Điều gì xảy ra với writer khi reader optimistic chạy quá lâu (đọc 500MB trong vùng optimistic)? Có starvation không?',
+  ],
+  tags: ['StampedLock', 'optimistic read', 'ReadWriteLock', 'copy-on-write'],
+  refs: [
+    { type: 'doc', title: 'StampedLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/StampedLock.html' },
+    { type: 'doc', title: 'ReentrantReadWriteLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/ReentrantReadWriteLock.html' },
+  ]
+},
+{
+  id: 'concurrency-042',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bên trong {{CompletableFuture}} có gì: kết quả và chuỗi callback được lưu thế nào, **thread nào** thật sự chạy {{thenApply}}, {{thenApplyAsync}} thay đổi điều gì trong cấu trúc đó, và vì sao callback nặng có thể làm nghẽn cả HTTP client?',
+  a: `**Tóm tắt:** Mỗi CompletableFuture chỉ giữ hai thứ: một field **result** (giá trị, hoặc một wrapper {{AltResult}} chứa lỗi, hoặc null = chưa xong) và một **stack liên kết** các node {{Completion}} — mỗi node là một bước đã đăng ký. Khi có ai gọi {{complete(v)}}, chính thread đó chạy {{postComplete()}} và **thực thi luôn toàn bộ stack callback** ngay trên thread của mình. nên câu trả lời cho "thread nào chạy callback" là: thread nào complete future trước, hoặc thread gọi {{thenApply}} nếu future đã xong từ trước. {{thenApplyAsync(fn)}} không đổi logic, nó chỉ đổi chỗ **đăng ký**: node được gắn executor, khi tới phiên thì submit task vào executor đó (mặc định là asyncPool của {{ForkJoinPool.commonPool}}). Hệ quả thực chiến: đặt code nặng/blocking vào callback không truyền thống là tự nguyện chiếm thread của thư viện IO.
+
+### Hiểu nhanh
+Dây chuyền xếp hàng ở bưu điện: người vừa làm xong việc của mình **đứng lại nhắc và làm luôn bước kế tiếp** cho người sau, thay vì ném vào một hàng đợi chung. Nhanh và không tốn chi phí điều phối — nhưng nếu bước kế tiếp là khiêng một thùng hàng nặng, thì người vừa xong việc bị kẹt tại chỗ, và cả dây chuyền phía trên anh ta (xe tải, cửa kéo hàng) cũng kẹt theo.
+
+### Thuật ngữ
+- **result / AltResult**: một field tham chiếu chứa hoặc giá trị, hoặc {{AltResult(throwable)}} để mã hoá "hoàn thành với lỗi". Không có enum trạng thái riêng: null = chưa xong.
+- **Completion / stack của callback**: mỗi lần gọi {{thenApply}}… tạo một node giữ (hàm, executor, node tiếp theo) và được CAS vào field {{next}} — một Treiber stack (ngăn xếp lock-free).
+- **postComplete()**: hàm chạy khi state đổi từ "chưa xong" sang "đã xong"; nó lần qua toàn stack và kích hoạt từng bước **bằng thread hiện tại**.
+- **NOW vs FUT mode**: hai cách một node được "bắn": chạy ngay (NOW, trên thread hiện tại) hoặc chuyển cho executor rồi chạy (FUT). Đây chính là khác biệt {{thenApply}}/{{thenApplyAsync}} ở mức code.
+- **asyncPool**: executor mặc định cho các hàm *Async — {{ForkJoinPool.commonPool().asyncPool(...)}}; nếu commonPool có parallelism = 0 (cấu hình {{-Djava.util.concurrent.ForkJoinPool.common.parallelism=0}}) thì JDK dùng một executor tạo thread mới cho từng task, để async path không bị vô hiệu.
+- **Delayer**: một daemon thread nội bộ ({{CompletableFutureDelayScheduler}}) phục vụ {{orTimeout}} và {{completeOnTimeout}}.
+- **managedBlock**: cách {{get}}/{{join}} "báo" cho ForkJoinPool rằng mình sẽ block, để pool bổ sung thread dự phòng thay vì chết chùm.
+
+### Đường đi của một chuỗi
+~~~text
+cf = CompletableFuture.supplyAsync(fetch, ioPool)
+     .thenApply(parse)                // node A, executor = null
+     .thenApplyAsync(save, dbPool);   // node B, executor = dbPool
+
+1. ioPool-thread chạy fetch, xong thì gọi cf.complete(value)
+2. Chính ioPool-thread đó chạy postComplete():
+     - lấy node A: executor == null -> tryFire NOW -> chạy parse() TRỰC TIẾP trên ioPool-thread
+     - A xong, sinh cf2; node B chưa chạy vì còn chờ cf2 xong -> chỉ đẩy vào stack của cf2
+3. parse xong -> cf2.complete() -> thread vừa chạy parse (vẫn là ioPool-thread) chạy postComplete của cf2
+4. Node B có executor -> dbPool.submit(save) -> save() chạy trên dbPool-thread.
+=> parse() "đè nặng" lên thread của ioPool; save() ở thread của dbPool.
+   Nếu cf ĐÃ xong từ trước khi gọi thenApply thì A chạy ngay trên thread gọi.
+~~~
+
+### Bảng: API → thread chạy
+| Cách viết | Callback chạy trên |
+|---|---|
+| {{thenApply}} / {{thenAccept}} / {{thenCompose}} | thread hoàn thành future (hoặc thread gọi nếu đã xong) — **không xác định trước** |
+| {{thenApplyAsync(fn)}} | asyncPool (mặc định {{ForkJoinPool.commonPool}}) |
+| {{thenApplyAsync(fn, executor)}} | thread của executor đó; executor từ chối → future hoàn thành bằng {{RejectedExecutionException}} |
+| {{whenComplete}} / {{handle}} | như {{thenApply}}, thêm biến thể *Async |
+| {{get}} / {{join}} | block thread hiện tại (join ném {{CompletionException}}, get ném {{ExecutionException}}) |
+| {{orTimeout}}, {{completeOnTimeout}} | Delayer thread rồi executor của CF khi hoàn thành |
+| {{cancel(true)}} | chỉ hoàn thành bằng {{CancellationException}}; **không** interrupt công việc đang chạy |
+
+### Vì sao JDK chọn thiết kế "ai xong thì chạy tiếp"
+- Không tốn một lần submit + một hàng đợi cho mỗi bước: với pipeline 10 bước gọi 100k lần/giây, tiết kiệm 10 lần scheduling.
+- Không cần một pool "chuyên chạy callback" — pool đó nếu có thì cũng chỉ thêm một bước nhảy thread và mất tính xác định vị trí.
+- Trade-off: tính xác định bị đánh đổi lấy throughput. Callback ngắn, không đồng bộ, không phụ thuộc thread-local thì mô hình này tuyệt vời; ngược lại nó trở thành bug khó tái hiện vì "thread nào chạy" phụ thuộc timing.
+
+### Trên production
+- **Mất ngữ cảnh theo thread**: {{ThreadLocal}}, {{SecurityContext}}, MDC của log không tự đi theo callback. Dấu hiệu: log của bước sau mất traceId, hoặc {{@Transactional}} "biến mất" vì transaction bind với thread. Cách xử lý: truyền context tường minh trong pipeline, hoặc bọc executor bằng decorator copy context ({{TaskDecorator}} trong Spring) và **luôn** chạy các bước phụ thuộc context trên *Async với pool của bạn.
+- **Chiếm thread của thư viện IO**: với client NIO (Reactor/Netty, Kafka client, JDBC async), thread hoàn thành CF thường là **event-loop**. Chạy {{Thread.sleep}}, parse JSON lớn, hay gọi DB đồng bộ trong {{thenApply}} sẽ làm event-loop nghẽn → timeout dây chuyền cho mọi request khác. Quy tắc: callback trong chain trả lời API chỉ được tính toán nhẹ; gì đó blocking thì chuyển sang *Async với pool riêng có tên.
+- **Tách pool theo loại việc**: tự tạo pool với {{ThreadFactory}} đặt tên rõ để đọc dump nhanh ("http-callback-3" thay vì "ForkJoinPool.commonPool-worker-9"). Dùng pool riêng thay vì commonPool cho công việc blocking để không chia sẻ hàng đợi với parallel stream của code khác.
+- **Chết vì "bỏ phiếu" lẫn nhau**: {{pool.submit(...).thenCompose(x -> ...pool...)}} với pool nhỏ có thể deadlock (toàn bộ worker đang block chờ {{get}} của task nằm trong chính hàng đợi của nó). Đây là triệu chứng "CPU 0%, không lỗi, không timeout".
+- **Đo**: nếu thấy p99 của toàn bộ endpoint tăng theo một callback nặng, dùng async-profiler wall-clock và tìm khung {{CompletableFuture.postComplete}} / {{CompletableFuture.uniApply}} — nó nói cho bạn biết callback đang bị chạy trên thread nào.
+
+### Lỗi hay gặp
+- Nghĩ rằng {{thenApplyAsync}} = "chạy ở background" nói chung, mà không chỉ định executor → âm thầm vào commonPool, nơi parallel stream và các async khác đang dùng chung.
+- Bỏ {{exceptionally}}/{{handle}} ở cuối chain: lỗi đi ngầm tới {{join}} và bùng ra ở chỗ không liên quan, hoặc mất hẳn nếu không ai đọc future.
+- Dùng {{allOf}} rồi {{join}} từng cái mà không bọc lỗi: một bước fail kéo {{CompletionException}} chồng lớp khó đọc.
+- Chờ {{get()}} mà không timeout trên thread xử lý request → thread pool cạn, service treo dù downstream nhanh.
+
+### Trả lời phỏng vấn 1 phút
+"Bên trong CF là một field result (kèm wrapper AltResult cho lỗi) và một stack các node Completion đăng ký theo kiểu lock-free. Khi {{complete}} được gọi, chính thread đó chạy {{postComplete}} và thi hành các node: node nào không có executor thì chạy ngay NOW trên thread hiện tại, node *Async thì được submit FUT vào executor. Nên thread của {{thenApply}} là **không xác định** — nó là thread đã hoàn thành future, thường là thread của HTTP client hay của DB driver; đó chính xác là lý do tôi không bao giờ đặt blocking work vào callback không-async. {{thenApplyAsync}} cho tôi kiểm soát vị trí chạy; mặc định nó dùng asyncPool của commonPool, nên trên server tôi luôn truyền pool riêng có tên, có giới hạn, và tôi xử lý {{RejectedExecutionException}} vì executor từ chối sẽ hoàn thành future bằng lỗi đó."
+
+> Senior tip: nếu phải chọn một quy trình cho team: (1) mọi chain gọi ra ngoài dùng {{orTimeout}} và {{completeOnTimeout}}, (2) mọi callback nặng đi {{*Async}} với pool riêng, (3) không dùng commonPool cho I/O, (4) luôn có {{handle}} ở cuối chain để ghi log một lần. Bốn quy tắc này diệt được phần lớn sự cố liên quan CompletableFuture mà không cần ai hiểu internals.`,
+  follow: [
+    'Vì sao {{get}} phải gọi {{ForkJoinPool.managedBlock}}, và nếu nó không làm vậy thì chuyện gì xảy ra với commonPool?',
+    'Chênh lệch giữa {{exceptionally}}, {{handle}} và {{whenComplete}} khi lỗi đến từ chính hàm xử lý lỗi?',
+    '{{CompletableFuture}} với virtual thread thay đổi gì trong bức tranh "thread nào chạy callback"?',
+  ],
+  tags: ['CompletableFuture', 'callback', 'ForkJoinPool', 'commonPool', 'context propagation'],
+  refs: [
+    { type: 'doc', title: 'CompletableFuture API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CompletableFuture.html' },
+    { type: 'doc', title: 'ForkJoinPool API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinPool.html' },
+  ]
+},
+{
+  id: 'concurrency-043',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Reordering xảy ra ở đâu và vì sao: store buffer, invalidate queue của CPU và JIT compiler cùng đổi thứ tự lệnh ra sao, loại memory barrier nào chặn từng kiểu, và tại sao code "đúng trên laptop x86" có thể sai trên AWS Graviton?',
+  a: `**Tóm tắt:** Có ba thủ phạm đổi thứ tự thao tác memory: (1) **store buffer** — CPU không chờ cache line về tay mới ghi tiếp, nó cất ghi vào hàng đợi riêng rồi làm tiếp, nên chính thread thấy "đã ghi" còn người khác chưa thấy; (2) **invalidate queue** — lời vô hiệu hoá từ core khác được xếp hàng chờ thay vì dừng core ngay; (3) **compiler/JIT** — C2 được phép đổi chỗ các lệnh mà nó chứng minh là không phụ thuộc dữ liệu/điều kiện. JMM không mô tả "lệnh chạy theo thứ tự nào", nó mô tả **cạnh happens-before**: cái gì được phép nhìn thấy cái gì. Trên x86 (mô hình TSO) ba kiểu đổi chỗ load-load, load-store, store-store đã bị cấm bởi phần cứng, nên JVM chỉ phải phát ra fence cho kiểu **StoreLoad**: volatile write = ghi + fence (trên x86 thường là {{lock addl $0x0,(%rsp)}} — một lock-prefixed no-op, cũng là full fence), volatile read = đọc + fence. Trên ARM/RISC-V (mô hình yếu) cả bốn kiểu đều có thể xảy ra, JVM phải chèn {{ldar}}/{{stlr}} hoặc {{dmb}} — và đó là lý do bug thật sự xuất hiện khi bạn port service sang Graviton.
+
+### Hiểu nhanh
+Bạn gửi thư: bỏ thư vào **sọt thư của nhà mình** (store buffer) rồi quay đi — với bạn, thư đã "gửi rồi", nhưng người nhận chưa thấy gì, và lá thư vẫn còn có thể bị đẩy ra sau một lần bạn đi xem hộp thư (read). Fence giống quy định "trước khi nhìn hộp thư của người khác, phải đẩy hết thư trong sọt ra".
+
+### Thuật ngữ
+- **Store buffer**: hàng đợi các phép ghi chưa kịp áp dụng vào cache; tồn tại vì ghi vào cache đang bị core khác giữ tốn hàng chục tới hàng trăm chu kỳ.
+- **Store forwarding**: chính thread đọc lại địa chỉ vừa ghi thì thấy giá trị mới từ store buffer; thread khác thì chưa. Đây là nguồn gốc của kiểu đổi chỗ StoreLoad.
+- **Invalidate queue**: hàng đợi nhận thông báo "bản cache của mày bị vô hiệu" từ bus, xử lý trễ để không stall.
+- **Memory barrier (fence)**: lệnh buộc các thao tác memory trước/sau nó không được vượt qua nhau theo một cặp nào đó: LoadLoad, StoreStore, LoadStore, **StoreLoad** (đắt nhất, thường là {{mfence}} hoặc lệnh có prefix {{lock}}).
+- **Acquire/Release**: cách mô tả hiện đại — đọc-acquire đảm bảo mọi thao tác sau nó không "nhảy lên trước"; ghi-release đảm bảo mọi thao tác trước nó không "rơi xuống sau". volatile và lock của JMM tương ứng đúng cặp semantics này.
+- **TSO (Total Store Order)**: mô hình memory của x86, chỉ còn mỗi StoreLoad là được tự do.
+- **JCStress**: framework của OpenJDK chuyên tìm bug do reordering (khác JMH, cái này đo **kết quả** chứ không đo thời gian).
+
+### Kịch bản kinh điển: hai biến, hai thread
+~~~java
+// bien dau, tren x86 lan ARM
+int x = 0, y = 0;
+// Thread 1            // Thread 2
+x = 1;                  y = 1;
+r1 = y;                 r2 = x;
+~~~
+Không lock, không volatile: cả {{r1 == 0 && r2 == 0}} **là hợp lệ**, kể cả trên x86. Lý do không phải JIT mà là store buffer: mỗi thread ghi vào biến của mình (nằm trong store buffer, chưa tới cache line mà thread kia đang đọc), rồi đọc từ cache line đang bị core kia giữ. Kết quả "mỗi người tin mình ghi trước". Đây chính xác là bug mà {{Dekker's algorithm}} và mọi cờ "ready flag" không volatile gặp phải.
+~~~text
+Core 1                          Core 2
+  store x=1 -> [store buffer 1]     store y=1 -> [store buffer 2]
+  load  y    <- cache line (y=0)    load  x    <- cache line (x=0)
+  ... buffer 1 moi flush, du som    ... buffer 2 moi flush, du som
+Ket luan: ca hai cung thay 0, khong co data race ve mặt logic bien nhung khong co happens-before.
+~~~
+Đặt {{volatile}} cho x và y thì hàng đợi bị chặn: ghi + StoreLoad fence, đọc trước khi đọc khác → ít nhất một thread thấy 1.
+
+### JMM cho những cạnh nào (tra nhanh)
+| Cạnh happens-before | Fence JVM phải chèn | Ghi chú |
+|---|---|---|
+| {{unlock}} → {{lock}} cùng monitor | release/acquire; trên x86 fast path chỉ cần một lệnh có prefix {{lock}}, monitor thật thì có fence | {{synchronized}} cũng đẩy store buffer "về chỗ" |
+| volatile write → volatile read cùng field | StoreLoad fence ở write; trên x86 read thường không thêm fence nào | Đắt nhất trong các path, vì fence full |
+| {{Thread.start()}} → code trong {{run()}} | một lần thiết lập trước khi chạy, không phải mỗi thao tác | Đây là cách an toàn để "giao" dữ liệu cho thread mới |
+| code trong {{run()}} → {{Thread.join()}} thành công | tương tự, ở chiều về | Không có join/isAlive thì không có cạnh |
+| final field → lần đọc đầu tiên sau khi publish đúng | StoreStore fence ở cuối constructor ("freeze action") | Điều kiện: {{this}} không được rò rỉ trong constructor |
+| {{interrupt()}} → nơi ném {{InterruptedException}} | quy ước của JMM | |
+
+### Vì sao lại "sai trên ARM"
+Trên x86, ba hàng đầu tiên gần như miễn phí vì phần cứng TSO đã sắp xếp; bug reordering thường tự ẩn. ARM cho phép load và store đổi chỗ tự do hơn nhiều, nên các pattern "tự viết lock" (spin flag, sequence counter, {{Double-checked locking}} thiếu volatile, đọc hai field liên quan mà không khoá) lộ ra tức thì. Service chạy ổn 2 năm trên Intel rồi lỗi rải rác khi chuyển sang Graviton/Ampere — hoặc khi chạy test trên máy Mac ARM — gần như luôn thuộc nhóm này.
+
+### Trên production
+- **Không suy luận từ "CPU tôi không đổi chỗ"**. Hãy dựa vào cạnh happens-before: hoặc dùng volatile/atomic/lock, hoặc **single-writer** (chỉ một thread ghi field đó, các thread khác chỉ đọc qua snapshot bất biến) — cách thứ hai là những gì Disruptor và các ring buffer dùng.
+- **Bằng chứng thay vì tranh luận**: JCStress ({{@JCStressTest}} + {{@Outcome(accept = ...)}}) cho thấy chính xác tổ hợp kết quả được phép; chạy thêm trên cả x86 và ARM. Đây là công cụ JDK dùng để kiểm thử chính JMM.
+- **Xem JVM phát ra gì**: {{-XX:+UnlockDiagnosticVMOptions -XX:+PrintAssembly}} hoặc {{-XX:+LogCompilation}} để thấy fence được chèn quanh volatile access (nâng cao, chỉ khi thật sự cần).
+- **ARM cần test riêng trên CI** nếu bạn có kế hoạch chạy Graviton: một job ARM (AWS Graviton instance hoặc Docker {{--platform linux/arm64}}) chạy đúng bộ concurrency test sẽ bắt phần lớn lỗi này.
+- **{{final}} không phải "miễn phí"**: chỉ đảm bảo an toàn khi object được publish **đúng** (không rò {{this}} lúc constructor, tham chiếu tới object bất biến được publish qua volatile/final/lock). Nếu publish sai, mọi thứ đều vô giá trị.
+
+### Trả lời phỏng vấn 1 phút
+"Reordering có hai nguồn: phần cứng — store buffer làm ghi chưa tới cache nên chính thread thấy đã ghi trong khi core khác chưa, invalidate queue hoãn việc vô hiệu hoá bản cache; và compiler/JIT — C2 đổi chỗ lệnh khi chứng minh không phụ thuộc dữ liệu. JMM chặn bằng cách định nghĩa happens-before, và fence là cách hiện thực: bốn loại LoadLoad/StoreStore/LoadStore/StoreLoad, trong đó StoreLoad đắt nhất. Trên x86 theo TSO ba loại kia được đảm bảo miễn phí, nên volatile write chỉ cần một lệnh có prefix lock, còn trên ARM yếu hơn thì JVM phải chèn acquire/release thật — đó là lý do bug reordering thường hiện ra khi port sang Graviton. Tôi không lập luận theo CPU, tôi lập luận theo cạnh happens-before: volatile, lock, start/join, hoặc thiết kế single-writer với snapshot bất biến."
+
+> Senior tip: điều đáng nói nhất với vai trò lead không phải thuộc lòng bốn loại fence, mà là **quy trình**: code có tự-written lock/spin flag thì bắt buộc có test JCStress hoặc ít nhất chạy bộ test trên ARM trong CI, và code review phải hỏi "cạnh happens-before nào ở đây". Một dòng {{volatile}} rẻ hơn nhiều một sự cố "chỉ xảy ra 3 request trên 10 triệu" mà bạn không thể tái hiện.`,
+  follow: [
+    'Vì sao lock-prefixed instruction trên x86 đóng vai trò full fence, và nó khác {{mfence}} ở điểm gì?',
+    'Dependency (data/control) có bị phá vỡ bởi reordering không — vì sao {{load-acquire}} có thể dựa vào control dependency?',
+    'Nếu chỉ có {{volatile}} cho cờ ready, còn dữ liệu lớn thì đọc ở thread khác có bảo đảm thấy đủ? Kịch bản nào vẫn sai?',
+  ],
+  tags: ['JMM', 'reordering', 'store buffer', 'memory barrier', 'ARM', 'x86-TSO'],
+  refs: [
+    { type: 'doc', title: 'JSR-133 Cookbook for Compiler Writers', url: 'https://gee.cs.oswego.edu/dl/jmm/cookbook.html' },
+    { type: 'doc', title: 'JCStress (OpenJDK concurrency test framework)', url: 'https://github.com/openjdk/jcstress' },
+  ]
+},
+{
+  id: 'concurrency-044',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Bên trong virtual thread: continuation và stack chunk trông ra sao, mount/unmount xảy ra thế nào trên carrier thread, scheduler được cấu hình ra sao, pinning thật sự là gì và JEP 491 (JDK 24) thay đổi điều gì?',
+  a: `**Tóm tắt:** Một virtual thread **không** phải một OS thread: nó là object {{VirtualThread}} trong heap cộng với một **continuation** — stack của đoạn code đang chạy. Khi virtual thread block, JVM **đóng băng (freeze)** các frame từ stack native của carrier thread xuống **stack chunk** trên heap, rồi **unmount**: carrier thread (một worker của ForkJoinPool nội bộ) quay về làm việc khác. Khi dữ liệu sẵn sàng, scheduler lấy một carrier bất kỳ, **rã đông (thaw)** chunk về stack native rồi chạy tiếp đúng chỗ dừng — đó là lý do 1 triệu virtual thread chỉ tốn heap (vài KB mỗi cái) chứ không tốn 1 MB stack + một kernel thread mỗi cái. **Pinning** nghĩa là carrier không nhả được vì stack của virtual thread còn bị "neo" vào tài nguyên của chính carrier: (1) đang ở trong {{synchronized}} mà block, (2) đang có frame native (JNI, một số lời gọi hệ thống) trên stack. JEP 491 trong **JDK 24** xử lý trường hợp (1): monitor giờ được "đóng băng" cùng continuation, nên {{synchronized}} quanh code blocking không còn pin carrier nữa.
+
+### Hiểu nhanh
+Nhà hàng có 8 nhân viên (carrier) và 5.000 khách (virtual thread). Thay vì mỗi bàn một nhân viên đứng đợi bếp — mô hình platform thread — nhân viên ghi lại "bàn 12 đang ở món 2, dở at trang 3" rồi đi bàn khác (freeze + unmount). Bếp gọi số, một nhân viên bất kỳ quay lại bàn 12, đọc tờ ghi chú và phục vụ tiếp (thaw + mount). Chỉ khi khách cần nhân viên đứng ngay tại bàn (frame native) thì mới không bỏ được.
+
+### Thuật ngữ
+- **Continuation**: đối tượng nội bộ ({{jdk.internal.vm.Continuation}}) biểu diễn "một đoạn chạy có thể dừng và tiếp tục": có {{run()}}, {{yield()}}, và stack của riêng nó.
+- **Stack chunk**: mảnh chứa các frame đã đóng băng, nằm trên heap; khởi đầu nhỏ và **phình to / thu lại** theo độ sâu stack thực tế — chỗ này là bộ nhớ bạn trả cho "1 triệu thread".
+- **Freeze / thaw**: chuyển frame giữa stack native của carrier và stack chunk (ngược chiều nhau).
+- **Mount / unmount**: gán một virtual thread vào một carrier (mount) và gỡ ra (unmount) — về bản chất là freeze/thaw + đổi con trỏ trong {{Thread}} hiện tại.
+- **Carrier thread**: platform thread, thông thường là worker của {{ForkJoinPool}} riêng của hệ thống virtual thread; chính nó mới là thứ CPU nhìn thấy.
+- **Scheduler**: ForkJoinPool nội bộ. Parallelism mặc định = {{Runtime.availableProcessors()}}, chỉnh bằng hệ property {{jdk.virtualThreadScheduler.parallelism}}; {{jdk.virtualThreadScheduler.maxPoolSize}} cho phép thêm thread bù khi carrier bị block trong native code; {{jdk.virtualThreadScheduler.idleTimeout}} quy định bao lâu thì thread bù bị huỷ.
+- **Pinned**: trạng thái virtual thread **không được** unmount, nên carrier phải nằm chờ theo; tài nguyên thật sự bị chiếm là một carrier.
+- **JEP 444 / JEP 491**: 444 = virtual threads (JDK 21); 491 = "Synchronized blocks may pin carriers" được khắc phục (JDK 24).
+
+### Chuyện gì xảy ra khi một virtual thread đọc socket
+~~~seq
+title: Virtual thread block trong Socket.read
+actors: VirtualThread | Continuation | Carrier (FJP worker) | Poller | Kernel
+VirtualThread -> Carrier: dang chay tren carrier, goi read()
+Carrier -> Continuation: khong the block carrier -> freeze frame xuong stack chunk
+Carrier -> Poller: dang ky fd voi EPoll wait
+Carrier -> Carrier: unmount, quay ve lay task khac trong hang doi FJP
+Poller -> Kernel: epoll_wait
+Kernel -> Poller: socket co du lieu
+Poller -> VirtualThread: unpark, do virtual thread vao hang doi scheduler
+Carrier -> Continuation: mount tiep: thaw stack chunk ve stack native
+Carrier -> VirtualThread: chạy tiếp đúng sau read(), trả về kết quả
+~~~
+Ba hệ quả quan trọng: (1) thứ tự chạy không còn bị ràng buộc bởi một thread cụ thể — code của bạn có thể tiếp tục trên **carrier khác** (hoặc cùng carrier sau đó), nên mọi giả định "việc A và việc B chạy trên cùng thread" đều sai; (2) không có gì "tạo OS thread" khi bạn block, cái phải chờ là một task trong hàng đợi scheduler; (3) {{ThreadLocal}} và {{synchronized}} trở nên nguy hiểm hơn về hiệu năng/ngữ cảnh vì chúng gắn với carrier hoặc giữ carrier.
+
+### Vì sao {{synchronized}} từng pin carrier
+Vấn đề nằm ở ObjectMonitor của JVM (mô hình monitor HotSpot được thiết kế từ trước có Loom): khi thread block trong monitor, JVM cần nhả monitor và **điều đó được ghi vào cấu trúc dữ liệu của monitor gắn với platform thread đang giữ** (owner là carrier). Muốn đóng băng được virtual thread, JVM phải cho phép owner của monitor "đổi người" khi mount lại trên carrier khác — JDK 21 chưa làm. JEP 491 sửa bằng cách cho phép monitor bị đóng băng/giải đóng băng cùng continuation, tức {{synchronized}} không còn là lý do pin nữa (còn frame native thì vẫn pin, vì stack native theo định nghĩa không di chuyển được).
+
+### Bảng so sánh
+| | Platform thread pool | Virtual thread |
+|---|---|---|
+| Đơn vị lập lịch | OS thread, 1:1 | task của FJP nội bộ, M:N |
+| Chi phí mỗi thread | ~1 MB stack + kernel struct | vài KB heap, phình theo stack |
+| Block | chiếm thread OS, context switch | freeze + unmount, carrier rảnh |
+| Giới hạn | số thread (vài nghìn) | số lượng gần như không giới hạn, giới hạn thật là tài nguyên phía dưới |
+| ThreadLocal | chấp nhận được | nhớ: **một map cho mỗi thread**, 1 triệu thread = 1 triệu map |
+| CPU-bound | hợp lý | không giúp gì, chỉ thêm freeze/thaw |
+| Cần gì để nhanh | pool đủ lớn | driver/library phải non-blocking thật sự (JDBC, socket, JNI) |
+
+### Trên production
+- **Bật và đo bằng JFR**: event {{jdk.VirtualThreadPinned}} có ngưỡng thời lượng; xem bằng {{jfr print --events jdk.VirtualThreadPinned recording.jfc}} hoặc {{jcmd <pid> JFR.dump}}. Ở JDK 21–23 còn có {{-Djdk.tracePinnedThreads=full}} in ra stack tại chỗ pin (flag này đã hết giá trị ở JDK 24 vì lý do phổ biến nhất bị loại bỏ).
+- **Triệu chứng điển hình**: bật virtual threads cho một endpoint I/O-bound nhưng throughput không tăng, CPU của các carrier luôn 100%, latency tăng theo số request đồng thời → tìm chỗ {{synchronized}} bao lời gọi blocking (driver JDBC cũ, code gọi JNI, thư viện chỉ giữ {{synchronized}} lúc init) và pinning do native frame.
+- **Cấu hình carrier**: nếu phần lớn thời gian là pinning không sửa được (thư viện native), tăng {{jdk.virtualThreadScheduler.parallelism}} là giảm đau, nhưng đừng đặt nó quá lớn so với số core vì carrier block vẫn chiếm CPU scheduling.
+- **Không "pool" virtual thread**: {{Executors.newVirtualThreadPerTaskExecutor()}} là đúng; gộp 1 triệu task vào một pool 10 virtual thread chỉ tái tạo lại deadlock của pool platform. Giới hạn concurrency bằng {{Semaphore}} (ví dụ 200 request đồng thời xuống DB) — connection pool vẫn là trần tuyệt đối, virtual thread không nhân bản thêm connection.
+- **Context**: log MDC/{{SecurityContext}} và {{ThreadLocal}}-based instrumentation phải được viết lại quanh virtual thread ({{ScopedValue}} là hướng đi, vẫn preview ở JDK 21–23); Spring Boot 3.2+ có {{spring.threads.virtual.enabled=true}} cho web MVC server.
+- **KPI thật**: trước/sau khi bật, so sánh requests/giây trên mỗi core, p99 và số thread OS trong container ({{/proc}} hoặc metric {{process.threads}}). Virtual thread thắng ở **cùng một số core phục vụ nhiều request đang chờ**, không thắng ở tốc độ từng request.
+
+### Lỗi hay gặp
+- Di chuyển {{synchronized}} sang code blocking rồi quên rằng JDK 21–23 vẫn pin — phải kiểm tra bằng JFR chứ không phải bằng mắt.
+- Đặt {{ThreadLocal}} chứa object lớn (connection, buffer) với hy vọng "một triệu thread thì có một triệu connection": hết RAM và phá sập DB pool.
+- CPU-bound (parse, compress, loop) trên virtual thread: scheduler không giúp gì, chỉ thêm freeze/thaw.
+- Tin rằng {{BufferedReader.lines}}, {{Scanner}}... trên virtual thread luôn non-blocking: những đường đi qua native code hoặc {{synchronized}} trong JDK cũ vẫn có thể pin.
+
+### Trả lời miệng 1 phút
+"Virtual thread là continuation: stack của đoạn code nằm trong stack chunk trên heap, và JVM mount/rã đông nó lên một carrier thread là worker của một ForkJoinPool nội bộ có parallelism bằng số core. Khi block, frame bị đóng băng, carrier được trả về pool, nên chi phí mỗi thread chỉ còn vài KB và số lượng thread không còn là tài nguyên quý. Pinning là khi carrier không nhả được vì stack còn neo vào tài nguyên của carrier: ở JDK 21 là {{synchronized}} quanh code block và frame native; JEP 491 trong JDK 24 loại bỏ trường hợp {{synchronized}}. Khi áp dụng tôi đo bằng JFR event {{jdk.VirtualThreadPinned}}, không pool virtual thread, giới hạn concurrency bằng semaphore, và luôn nhớ connection pool là trần thật sự — lợi ích là throughput trên mỗi core khi phần lớn thời gian là chờ IO, không phải tốc độ từng request."
+
+> Senior tip: câu phân biệt người từng chạy virtual thread trên production là: "bạn có thấy {{maxPoolSize}}/pinning trong JFR không, và driver JDBC của bạn có path {{synchronized}} không?" Vì nếu còn pin, toàn bộ mô hình M:N bị suy hoá về pool platform thread, và dấu hiệu là CPU carrier 100% với p99 tăng theo concurrency — thứ mà benchmark "1 triệu thread" không bao giờ cho bạn thấy.`,
+  follow: [
+    'Stack chunk phình ra và co lại thế nào khi stack của bạn đệ quy sâu; hệ quả với {{StackOverflowError}} là gì?',
+    'Vì sao {{LockSupport.park}}, {{ReentrantLock}} và {{BlockingQueue}} không pin carrier trong khi {{synchronized}} thì có (trước JDK 24)?',
+    '{{ScopedValue}} giải quyết vấn đề gì của {{ThreadLocal}} trong thế giới M:N, và cơ chế gần như hoàn toàn là bất biến theo scope?',
+  ],
+  tags: ['virtual threads', 'Loom', 'continuation', 'carrier', 'JEP 491', 'pinning'],
+  refs: [
+    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
+    { type: 'doc', title: 'JEP 491: Synchronized Blocks May Pin Carriers', url: 'https://openjdk.org/jeps/491' },
+  ]
+},
+{
+  id: 'concurrency-045',
+  topic: 'concurrency',
+  level: 'lead',
+  q: '{{synchronized}} được cài đặt bên trong JVM ra sao: mark word của object chứa gì, chuyện gì xảy ra ở fast path không tranh chấp, khi nào lock bị inflate thành ObjectMonitor, vì sao biased locking bị gỡ ở JDK 18, và flag/debug nào cho phép bạn thấy điều đó?',
+  a: `**Tóm tắt:** Mọi object Java đều có một **mark word** 64 bit ở đầu header, chứa (tuỳ trạng thái) identity hash code, 4 bit "age" cho GC và **2 bit trạng thái khoá**. Không ai khoá → bit "unlocked", {{monitorenter}} chỉ là một CAS đổi mark word sang **thin lock** (stack lock): JVM ghi "displaced mark word" cũ vào một {{LockRecord}} trong frame của thread đang giữ lock — **không cấp phát object nào**, không syscall, và reenter chỉ tăng một counter. Khi có thread thứ hai tranh chấp thật, lock bị **inflate** thành **ObjectMonitor** (fat lock) với {{_owner}}, {{_EntryList}} (thread BLOCKED) và {{_WaitSet}} (thread WAITING sau {{wait()}}); {{notify()}} chuyển waiter từ _WaitSet về _EntryList chứ không trao lock. **Biased locking** — tối ưu cho code mà lock chỉ ever thuộc một thread — bị deprecated ở JDK 15 (JEP 374) và **gỡ ở JDK 18**, vì chi phí revocation (phải dừng cả JVM tại safepoint để "tước" lock) và vì nó vô dụng với code hiện đại.
+
+### Hiểu nhanh
+Cửa phòng có một **bảng ghi trạng thái** ngay trên cánh (mark word). Không ai trong phòng: bảng trống. Một người vào: người đó ghi "tôi đang ở trong, chìa khoá ở túi tôi" (thin lock) — không cần lắp ổ khoá thật, ai tới thấy bảng thì chờ. Hai người muốn vào cùng lúc: toà nhà lắp **ổ khoá thật** (ObjectMonitor) — có hàng đợi đứng ngoài (_EntryList) và một phòng chờ cho người bấm chuông nghỉ tạm (_WaitSet). Nếu sau đó không còn ai chờ, ổ khoá thật có thể bị tháo ra (deflate) trả về trạng thái nhẹ.
+
+### Thuật ngữ
+- **Mark word**: 8 byte header của object; các trạng thái khoá được phân biệt bằng bit thấp. identity hash code (31 bit) cũng sống ở đây — đó là lý do nó xung đột với các chế độ khoá nhẹ.
+- **Thin lock / stack lock**: khoá do **một** thread giữ, thông tin nằm trong frame (LockRecord) thay vì trong object.
+- **Displaced mark word**: bản sao mark word cũ được cất đi khi lock bị chiếm; khôi phục khi nhả.
+- **Inflation / deflation**: chuyển thin lock → ObjectMonitor, và ngược lại (deflate xảy ra tại safepoint khi monitor không còn ai chờ).
+- **ObjectMonitor**: cấu trúc native của HotSpot, dùng mutex/condvar của OS cho thread thật sự ngủ; là thứ đứng sau {{BLOCKED}} và {{WAITING}} trong thread dump.
+- **Biased locking**: "khoá thiên vị" — mặc định ghi tên thread vào mark word để lần vào sau chỉ cần kiểm tra, khỏi CAS; mất vì chi phí revoke.
+- **Lock elision / coarsening**: tối ưu của C2 — xoá lock khi escape analysis chứng minh object không rò khỏi thread, hoặc gộp hai lock liền nhau; cả hai đều **không phải hợp đồng**.
+- **{{monitorenter}} / {{monitorexit}}**: bytecode của {{synchronized}} block (method có cờ {{ACC_SYNCHRONIZED}}, JVM tự xử lý quanh toàn bộ method).
+
+### Layout mark word (gợi hình, HotSpot 64 bit)
+~~~text
+63                              32 31        3  2  1 0
+[ unused / identity hash (31 bit) ][age 4][biased][lock bits]
+  lock bits = 01 : unlocked
+  lock bits = 00 : thin (stack) lock  -> 8 byte tiep theo = con tro toi LockRecord
+  lock bits = 10 : heavyweight        -> tro toi ObjectMonitor
+  lock bits = 11 : biased              -> ( JDK <= 15, da bi go )
+Khi thin lock, frame cua thread giu:
+  LockRecord { address cua object | displaced mark word | owner | rec_count | ... }
+Vòng fast path: CAS mark word (word swap) -> thành công, không cấp phát, không syscall.
+Thread 2 tranh chan: inflate -> ObjectMonitor { _owner, _EntryList, _WaitSet, _recursions }
+~~~
+Điểm đáng chú ý: displaced mark word nằm trong **stack** của thread, nên lock nhẹ có chi phí bộ nhớ gần bằng không và tự biến mất khi method return. Ngược lại ObjectMonitor là bộ nhớ native, và mỗi lần block là một round-trip xuống OS.
+
+### Từng bước của một {{synchronized}} block
+1. C2 phát hành {{monitorenter}}; fast path thử "word swap" mark word: nếu object đang unlocked, CAS thành công → thin lock, ghi LockRecord.
+2. Nếu object đã là thin lock của **chính thread** này → tăng {{rec_count}} (reentrant), không CAS phức tạp.
+3. Nếu là thin lock của thread khác, hoặc CAS thất bại vì lý do khác → **inflate**: tạo ObjectMonitor, đặt {{_owner}}, chuyển người đang giữ lock vào monitor, thread hiện tại vào {{_EntryList}} và block (thread state BLOCKED trong dump).
+4. Bên trong block, {{lockObj.wait()}}: nhả lock hoàn toàn ({{recursions}} về 0), chuyển thread vào {{_WaitSet}}, park; thread state WAITING.
+5. {{notify()}} chọn một (hoặc all) thread trong _WaitSet và chuyển về _EntryList; **không** trao lock. Người được notify phải tranh lock lại từ đầu — vì vậy await phải ở trong vòng lặp {{while}}.
+6. {{monitorexit}} (kể cả đường exception, JVM có Exception table) → nếu còn người trong _EntryList thì chuyển owner; nếu không, monitor có thể bị deflate ở safepoint kế tiếp.
+
+### Bảng: chế độ và hệ quả
+| Trạng thái | Dữ liệu nằm ở | Chi phí vào/ra | Ai thấy trong dump |
+|---|---|---|---|
+| Unlocked | mark word | 0 | — |
+| Thin lock | mark word + LockRecord trong stack | 1 CAS, không cấp phát | {{- locked <0x...>}} |
+| Heavyweight | ObjectMonitor native | mutex/condvar OS, context switch | {{waiting for monitor entry}}, BLOCKED |
+| Biased (cũ) | tên thread trong mark word | ~0 khi cùng thread | đã gỡ ở JDK 18 |
+| Elided | không còn lock trong code | 0 | không thấy gì — JIT đã xoá |
+
+### Trên production
+- **Đọc dump là chính**: {{jcmd <pid> Thread.print}} (nhiều lần cách nhau 1 giây) cho thấy ai {{locked <0x...>}}, ai {{waiting for monitor entry on <0x...>}}; chuỗi "A chờ lock của B, B chờ lock của C" = deadlock, JVM tự phát hiện và in "Found one Java-level deadlock".
+- **Đo contention**: JFR event {{jdk.JavaMonitorEnter}} (có ngưỡng thời lượng, chỉ ghi khi thực sự phải chờ) và {{jdk.JavaMonitorWait}}; async-profiler {{-e lock}} lấy đúng các event đó và cho flame graph "ai chờ lock nào". Đây là cách có bằng chứng thay vì đoán.
+- **Flag liên quan, nói đúng sự thật**: {{-XX:+UseHeavyMonitors}} ép mọi monitor thành heavyweight (chẩn đoán lỗi liên quan tới lock nhẹ, hiệu năng giảm mạnh, chỉ dùng trong điều tra); {{-XX:-EliminateLocks}} tắt lock elision của JIT khi bạn muốn chắc lock luôn tồn tại để đo. {{-XX:BiasedLockingStartupDelay}} chỉ còn ý nghĩa lịch sử (JDK ≤ 15/17 tuỳ bản).
+- ** hashCode làm hỏng lock nhẹ**: gọi {{System.identityHashCode(obj)}} trên object đang bị thin lock buộc JVM inflate, vì mark word đã bị chiếm. Triệu chứng: thêm log {{obj.toString()}} (mặc định in hash code!) vào đường nóng mà latency tăng. Đây là lý do "log object ra log" trong critical section đắt hơn vẻ ngoài.
+- **Không khoá trên object chia sẻ ngoài tầm kiểm soát**: String literal, {{Integer.valueOf}} cache, {{Boolean}}, {{Class}} — dễ gây deadlock với code khác (kể cả thư viện). Luôn tạo {{private final Object lock = new Object();}}.
+
+### Lỗi hay gặp
+- Tin rằng {{synchronized}} "chậm" và đổi sang ReentrantLock một cách vô ích: ở chế độ không tranh chấp, cả hai đều chỉ là một CAS; ReentrantLock hơn ở chỗ cần {{tryLock}}/timeout/fair/Condition.
+- Dùng {{wait()}} ngoài {{while}} kiểm tra điều kiện → spurious wakeup, hoặc điều kiện bị thread khác lấy mất trước khi chạy tiếp.
+- {{notify()}} khi có nhiều loại waiter trên cùng một condition → "lost wakeup", cả hệ thống chờ tới timeout; an toàn hơn là {{notifyAll()}} hoặc chuyển sang {{Condition}} riêng cho từng loại.
+- Giữ lock khi gọi ra ngoài (HTTP, DB, log, callback của thư viện) → time giữ lock = latency của hệ ngoài; đây là nguyên nhân số một của contention không giải thích được.
+- Nghĩ "JIT xoá lock nên không cần nghĩ về khoá": elision không phải hợp đồng, đổi input/dữ liệu là lock quay lại.
+
+### Trả lời phỏng vấn 1 phút
+"{{synchronized}} được JVM cài đặt theo từng bậc: object có mark word giữ trạng thái khoá; vào lock khi không tranh chấp là một CAS đổi mark word sang thin lock, với displaced header nằm trong LockRecord của stack — không cấp phát, không syscall. Có thread thứ hai tranh thì lock inflate thành ObjectMonitor với EntryList và WaitSet; {{wait()}} chuyển sang WaitSet, {{notify()}} đưa về EntryList chứ không trao lock, nên await phải ở trong while. Biased locking từng tồn tại để tối ưu lock một-thread nhưng bị gỡ ở JDK 18 vì chi phí revoke tại safepoint. Khi cần chứng minh contention tôi dùng JFR {{jdk.JavaMonitorEnter}} hoặc async-profiler {{-e lock}}, và đọc {{jcmd Thread.print}} để thấy ai đang {{locked}} và ai đang {{waiting for monitor entry}}."
+
+> Senior tip: ba chi tiết "tôi đã thấy trên production" khiến câu trả lời đáng tin hơn mọi lý thuyết: (1) thêm một dòng log in {{obj.toString()}} làm tăng p99 vì nó tính identity hash code và ép inflate; (2) {{synchronized}} trong driver/thư viện kết hợp virtual thread là nguồn pinning trước JDK 24; (3) phần lớn "lock contention" thực chất là **giữ lock khi gọi I/O** — giải pháp là thu nhỏ critical section hoặc chuyển sang cấu trúc single-writer, không phải đổi loại khoá.`,
+  follow: [
+    'Điều gì xảy ra khi object có lock nhẹ bị gọi {{hashCode()}} lần đầu sau khi đã inflate — và vì sao {{identity hash}} là 31 bit?',
+    'Deflation của ObjectMonitor diễn ra khi nào, vì sao cần safepoint, và hệ quả với latency đuôi (tail latency)?',
+    'C2 xoá lock bằng escape analysis trong điều kiện nào, và làm sao kiểm chứng rằng lock còn tồn tại?',
+  ],
+  tags: ['synchronized', 'mark word', 'ObjectMonitor', 'biased locking', 'lock inflation'],
+  refs: [
+    { type: 'doc', title: 'JEP 374: Deprecate the Biased Synchronization Mechanism', url: 'https://openjdk.org/jeps/374' },
+    { type: 'doc', title: 'JEP 142: Reduce Cache Contention on Modern Hardware', url: 'https://openjdk.org/jeps/142' },
+  ]
+},
+{
+  id: 'concurrency-046',
+  topic: 'concurrency',
+  level: 'senior',
+  q: '{{VarHandle}} là gì, có các chế độ truy cập bộ nhớ nào, và dùng khi nào thay cho {{Unsafe}} hay các lớp {{java.util.concurrent.atomic}}?',
+  a: `**Tóm tắt:** {{VarHandle}} (Java 9+) là cách chính thức thay {{sun.misc.Unsafe}} để đọc, ghi và so sánh-thay (CAS) trực tiếp trường của object, đồng thời kiểm soát thứ tự bộ nhớ. Có các chế độ truy cập: volatile (ghi và đọc đều tạo quan hệ happens-before), release/acquire (chỉ một chiều, rẻ hơn volatile), opaque (không ordering), và các rào bộ nhớ fullFence/loadFence/storeFence. Dùng khi cần CAS trực tiếp trên trường hoặc muốn thứ tự bộ nhớ tuỳ chỉnh với chi phí thấp hơn volatile; phần lớn code nghiệp vụ vẫn nên dùng {{AtomicInteger}} hay {{ConcurrentHashMap}} thay vì tự viết VarHandle.
+
+### Hiểu nhanh
+Hãy tưởng tượng mỗi trường của object là một ô giấy trong bảng ghi công ty. {{AtomicInteger}} giống một ô đã được sản xuất sẵn với quy tắc cố định (chỉ cộng, chỉ lấy giá trị mới nhất...). {{VarHandle}} giống bộ đèn soi và bút viết trực tiếp vào ô giấy: bạn có thể đọc ô, ghi ô, hoặc "nếu ô vẫn là giá trị A thì ghi giá trị B" — và bạn quy định xem việc ghi này phải đẩy công việc trước đó ra hay không, tương đương đưa tin cho thread khác theo quy tắc bạn chọn.
+
+### Thuật ngữ
+- **VarHandle**: đối tượng trong java.lang.invoke thay Unsafe, thao tác trực tiếp vào trường object với chế độ truy cập chọn được.
+- **Access mode (chế độ truy cập)**: quy tắc thứ tự bộ nhớ kèm mỗi thao tác đọc/ghi/CAS.
+- **Happens-before**: nếu A happens-before B thì B chắc chắn thấy mọi thứ A đã ghi.
+- **Reordering (xếp lại lệnh)**: compiler, JIT hay CPU đổi thứ tự lệnh để nhanh hơn, miễn là trong một thread kết quả không đổi.
+- **Store buffer / invalidate queue**: bộ đệm của CPU core khi ghi và danh sách thông báo bản cache cũ phải hủy — lý do vì sao ghi ở core này có thể chưa thấy ở core kia.
+- **Fence / rào bộ nhớ**: lệnh cấm processor đổi thứ tự qua lại rào này.
+- **Unsafe**: class nội bộ JDK, truy cập memory không an toàn, bị giới hạn truy cập từ JDK 9+, VarHandle là thay thế công khai.
+- **CAS (compare-and-swap)**: lệnh CPU "ghi giá trị mới nếu giá trị hiện tại vẫn như đã đọc", nguyên tử mà không khoá.
+
+### Các chế độ truy cập và khi nào dùng
+VarHandle cung cấp ba nhóm phương thức cho mỗi trường:
+
+1. **volatile mode** ({{getVolatile}}/{{setVolatile}}/{{compareAndSet}} volatile): ghi release, đọc acquire, tạo happens-before hai chiều. Tương đương trường {{volatile}}.
+2. **release/acquire mode** ({{setRelease}}/{{getAcquire}}): ghi release đảm bảo mọi ghi trước đó đã đẩy ra khi bước này hoàn thành; đọc acquire đảm bảo mọi đọc sau này thấy bản mới nhất. Chỉ một chiều, rẻ hơn volatile trên một số kiến trúc, phù hợp cho cờ "dữ liệu đã xong, có thể đọc".
+3. **opaque mode** ({{getOpaque}}/{{setOpaque}}): không có ordering, chỉ đảm bảo nguyên tử. Dùng cho bộ đếm thống kê không quan trọng thứ tự.
+4. **Rào bộ nhớ**: {{fullFence()}} cấm đổi thứ tự ở cả hai bên; {{loadFence()}} cho các đọc trước; {{storeFence()}} cho các ghi trước. Rào đắt, chỉ dùng khi thực sự cần.
+
+### Ví dụ: công bố cờ bằng release/acquire
+
+~~~java
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+
+public class ReadyFlag {
+    private static final VarHandle READY;
+    private static final VarHandle VALUE;
+
+    static {
+        try {
+            READY = MethodHandles.lookup()
+                .findVarHandle(ReadyFlag.class, "ready", boolean.class);
+            VALUE = MethodHandles.lookup()
+                .findVarHandle(ReadyFlag.class, "value", int.class);
+        } catch (Exception e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    private boolean ready;
+    private int value;
+
+    public void publish(int v) {
+        VALUE.setOpaque(v);           // ghi dữ liệu trước
+        READY.setRelease(true);       // bật cờ release: mọi ghi trước đã đẩy ra
+    }
+
+    public boolean tryRead(int[] out) {
+        if ((boolean) READY.getAcquire()) {   // đọc acquire: thấy ready => chắc chắn thấy value mới
+            out[0] = (int) VALUE.getOpaque();
+            return true;
+        }
+        return false;
+    }
+}
+~~~
+Lý do: ghi {{VALUE}} trước, bật cờ {{READY}} sau bằng setRelease. Thread đọc thấy {{READY}} bằng getAcquire thì chắc chắn đã thấy {{VALUE}}. Nếu dùng trường thường (không VarHandle, không volatile), JIT/CPU có thể xếp lại: thread đọc thấy cờ bật nhưng value vẫn là giá trị cũ.
+
+### Bảng so sánh chế độ
+
+| Chế độ | Ví dụ method | Tạo happens-before? | Chi phí | Dùng khi |
+|---|---|---|---|---|
+| volatile | setVolatile/getVolatile | Có, hai chiều | Cao nhất | Cờ dừng, publish object |
+| release/acquire | setRelease/getAcquire | Có, một chiều | Thấp hơn volatile | Cờ "dữ liệu đã sẵn sàng" |
+| opaque | setOpaque/getOpaque | Không | Thấp nhất | Bộ đếm thống kê, không quan tâm thứ tự |
+
+### Trên production
+- Hiếm khi cần VarHandle trong code nghiệp vụ: các lớp java.util.concurrent đã vận dụng đúng và được tối ưu bởi JVM.
+- Nếu tự viết cấu trúc lock-free, hãy đo bằng async-profiler/JMH và chỉ dùng VarHandle khi bằng chứng thấy volatile/class atomic là nút thắt.
+- {{sun.misc.Unsafe}} vẫn có thể dùng qua reflection nhưng bị cảnh báo và có thể bị chặn trong moduleization; VarHandle là cách được khuyến khích.
+
+### Lỗi hay gặp
+- **Nhầm getAcquire với getVolatile**: getAcquire chỉ đảm bảo thứ tự với các ghi release trước đó, không phải tất cả ghi trước đó trong thread khác. Cách tránh: ghi dữ liệu bằng setRelease trước khi bật cờ.
+- **Dùng opaque cho cờ điều khiển**: opaque không ordering, thread đọc có thể thấy cờ mới nhưng dữ liệu cũ. Cách tránh: release/acquire hoặc volatile.
+- **Quên rằng VarHandle không tự khởi tạo**: phải qua {{MethodHandles.lookup().findVarHandle(...)}} và ném checked exception trong static block.
+
+### Trả lời phỏng vấn 1 phút
+"VarHandle là cách công khai thay Unsafe để thao tác trực tiếp trường object, với các chế độ truy cập chọn được thứ tự bộ nhớ: volatile (ghi-đọc đều happens-before), release/acquire (chỉ một chiều, rẻ hơn), opaque (không ordering), và các rào bộ nhớ fullFence/loadFence/storeFence. Tôi dùng release/acquire cho mẫu 'ghi dữ liệu rồi bật cờ' để thread đọc thấy cờ mới thì chắc chắn thấy dữ liệu mới, chi phí thấp hơn volatile. Phần lớn thời gian tôi vẫn dùng AtomicInteger/ConcurrentHashMap, chỉ dùng VarHandle khi cần CAS trực tiếp trên trường hoặc đã đo thấy volatile là nút thắt."
+
+> Senior tip: VarHandle không làm ma thuật — nó chỉ biểu lộ rõ ràng những gì JMM cho phép. Khi phỏng vấn hỏi "volatile vs release/acquire khác nhau thế nào", câu trả lời chuẩn: volatile tạo happens-before hai chiều (ghi release + đọc acquire) nên đắt hơn trên một số kiến trúc; release/acquire chỉ một chiều và đủ cho mẫu publisher/subscriber cờ. Hãy trả lời với ví dụ cụ thể và kèm lời khuyên "đo trước khi tối ưu".`,
+  follow: [
+    'Vì sao release/acquire rẻ hơn volatile trên một số kiến trúc CPU?',
+    'VarHandle.compareAndSet khác AtomicInteger.compareAndSet ở điểm nào?',
+    'Khi nào bạn chọn VarHandle thay cho các lớp java.util.concurrent.atomic?'
+  ],
+  tags: ['VarHandle', 'memory ordering', 'Unsafe', 'CAS', 'volatile'],
+  refs: [
+    { type: 'doc', title: 'VarHandle API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/invoke/VarHandle.html' }
+  ]
+},
+{
+  id: 'concurrency-047',
+  topic: 'concurrency',
+  level: 'senior',
+  q: '{{ConcurrentSkipListMap}} hoạt động bên trong ra sao: cấu trúc skip list, các level, vì sao không cần khoá toàn bảng, và iterator của nó "yếu" là gì?',
+  a: `**Tóm tắt:** {{ConcurrentSkipListMap}} là bản đồ có thứ tự, an toàn luồng, không khoá toàn bảng. Bên trong là skip list: mỗi node nằm trên nhiều lớp (level), lớp cao hơn chứa ít node hơn để "nhảy" nhanh. Việc chèn/xóa dùng CAS trên các liên kết node theo từng lớp, nên nhiều thread có thể làm việc trên vùng khác nhau đồng thời. Iterator là **yếu (weakly consistent)**: không ném ConcurrentModificationException, có thể thấy hoặc không thấy sự thay đổi sau khi tạo iterator, nhưng không bỏ qua phần tử đã đến được.
+
+### Hiểu nhanh
+Skip list giống một thang thép bên ngoài tòa nhà: lầu thường chạy từ trệt đến từng lầu (chậm), thang thép nhảy qua vài tầng một lần (nhanh). ConcurrentSkipListMap giữ nhiều "thang" này, mỗi node có thể xuất hiện ở một vài thang. Khi tìm khóa, bạn bắt đầu từ thang cao nhất, nhảy tới khi khóa lớn hơn mục tiêu, rồi xuống thang thấp hơn. Nhiều thread cùng tìm hoặc chèn ở vùng khác nhau không cần khoá chung vì mỗi liên kết node được cập nhật bằng CAS.
+
+### Thuật ngữ
+- **Skip list**: cấu trúc dữ liệu có nhiều lớp liên kết, lớp cao giúp bỏ qua nhiều phần tử, tìm kiếm O(log n) trung bình.
+- **Node / liên kết (link)**: mỗi phần tử giữ mảng tham chiếu tới node tiếp theo ở từng lớp.
+- **CAS**: so sánh-thay nguyên tử, cập nhật liên kết nếu vẫn như đã đọc.
+- **Weakly consistent iterator**: iterator không khoá, phản ánh trạng thái tại thời điểm tạo hoặc sau đó, không ném lỗi khi map thay đổi.
+- **ConcurrentModificationException**: lỗi các collection đơn luồng ném khi cấu trúc thay đổi trong khi duyệt.
+- **Khoá toàn bảng (global lock)**: một khoá bảo vệ toàn bộ map, chỉ một thread thao tác tại một thời điểm — dễ bị nút thắt.
+
+### Hoạt động từng bước
+
+Tìm khóa:
+1. Bắt đầu tại node sentinel (đầu), lớp cao nhất.
+2. Di chuyển qua liên kết cùng lớp trong khi khóa node tiếp theo <= khóa tìm.
+3. Khi khóa tiếp theo lớn, xuống một lớp, lặp lại cho tới lớp 0.
+4. Node ở lớp 0 sau vị trí cuối cùng là kết quả (hoặc không tồn tại).
+
+Chèn:
+1. Tìm vị trí chèn ở mỗi lớp, lưu các node predecessors.
+2. Random quyết định số lớp cho node mới (xấp xỉ 50% node lên một lớp, càng cao càng ít).
+3. Dùng CAS cập nhật liên kết từ lớp cao nhất xuống lớp 0; nếu CAS thất bại (thread khác vừa thay đổi) thì đọc lại predecessors và thử lại.
+
+Xóa: tương tự chèn, đánh dấu node bị xóa rồi CAS bỏ qua liên kết.
+
+### Ví dụ code
+
+~~~java
+import java.util.concurrent.ConcurrentSkipListMap;
+
+public class SkipListDemo {
+    public static void main(String[] args) {
+        ConcurrentSkipListMap<Integer, String> map = new ConcurrentSkipListMap<>();
+        map.put(5, "lua");          // tự giữ thứ tự: 3, 5, 9 ...
+        map.put(3, "ba");
+        map.put(9, "chin");
+        System.out.println(map.get(5));              // lua, O(log n)
+        System.out.println(map.subMap(4, true, 8, false)); // [5=>lua], xem khoảng không khoá toàn bảng
+        map.forEach((k, v) -> System.out.println(k + "=" + v));
+    }
+}
+~~~
+
+### Khi nào dùng / không dùng
+
+| | ConcurrentSkipListMap | ConcurrentHashMap |
+|---|---|---|
+| Thứ tự | Có (theo khóa) | Không |
+| Truy xuất khóa | O(log n) | O(1) trung bình |
+| Khoá | Không khoá toàn bảng, CAS theo liên kết | CAS bin rỗng, synchronized node đầu |
+| Dùng khi | Cần duyệt khoảng, theo thứ tự | Chỉ cần tra cứu, ghi nhiều |
+
+### Trên production
+- Dùng khi cần truy xuất theo khoảng (tìm tất cả đơn hàng từ mã A đến B) mà vẫn cho nhiều thread ghi.
+- Iterator yếu: nếu cần ảnh chụp cố định, hãy copy sang danh sách khác trước khi xử lý dài.
+- Đo ghi: skip list có nhiều liên kết nên tốn bộ nhớ hơn HashMap, mỗi node giữ mảng tham chiếu theo số lớp.
+
+### Lỗi hay gặp
+- **Fallback comparator null**: khóa không thể so sánh (không implements Comparable và không truyền Comparator) thì ném NullPointerException khi chèn phần tử thứ hai. Cách tránh: luôn dùng Comparable hoặc truyền Comparator.
+- **Tưởng iterator xem mọi thay đổi**: iterator yếu có thể bỏ qua phần tử xóa sau khi tạo hoặc thấy phần tử mới thêm. Cách tránh: không dựa vào iterator để thống kê chính xác, hoặc snapshot trước.
+- **Ghi nhiều vào cùng vùng**: nhiều thread chèn khóa gần nhau vẫn tranh chấp liên kết node, throughput giảm. Cách tránh: chia khóa sao cho phân tán.
+
+### Trả lời phỏng vấn 1 phút
+"ConcurrentSkipListMap là bản đồ có thứ tự an toàn luồng, không khoá toàn bảng. Bên trong là skip list: mỗi node nằm trên một vài lớp, lớp cao giúp nhảy qua nhiều phần tử để tìm O(log n). Chèn/xóa cập nhật liên kết bằng CAS theo từng lớp, nên nhiều thread làm việc vùng khác nhau không chặn nhau. Iterator là yếu: không ném ConcurrentModificationException, có thể thấy hay không thấy thay đổi sau khi tạo, nhưng không bỏ qua phần tử đã đến. Tôi dùng khi cần duyệt khoảng theo thứ tự khóa; nếu chỉ tra cứu thì ConcurrentHashMap nhanh hơn và nhẹ hơn."
+
+> Senior tip: skip list trade-off là bộ nhớ: mỗi node giữ mảng tham chiếu theo số lớp (thống kê trung bình ít hơn 2 nhưng có thể cao), và random số lớp cần nguồn ngẫu nhiên an toàn luồng (ThreadLocalRandom). Khi cần bản đồ có thứ tự đồng thời ghi cao, đây là lựa chọn chính thức của JDK; nếu thứ tự không quan trọng, ConcurrentHashMap là đường lối đầu tiên.`,
+  follow: [
+    'Skip list giữ thứ tự O(log n) mà không khoá toàn bảng được nhờ cơ chế nào?',
+    'Iterator yếu (weakly consistent) có thể bỏ qua phần tử mới thêm hay không, và lý do?',
+    'ConcurrentSkipListMap vs ConcurrentHashMap: chọn cái nào khi nào?'
+  ],
+  tags: ['ConcurrentSkipListMap', 'skip list', 'CAS', 'iterator'],
+  refs: [
+    { type: 'doc', title: 'ConcurrentSkipListMap API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentSkipListMap.html' }
+  ]
+},
+{
+  id: 'concurrency-048',
+  topic: 'concurrency',
+  level: 'senior',
+  q: '{{CopyOnWriteArrayList}} hoạt động thế nào: đọc không khoá, ghi sao chép toàn bộ mảng, iterator xem ảnh chụp, và dùng cho trường hợp nào?',
+  a: `**Tóm tắt:** {{CopyOnWriteArrayList}} là danh sách an toàn luồng mà **đọc hoàn toàn không khoá**: mỗi lần đọc lấy một tham chiếu tới mảng nội bộ (không bao giờ thay đổi sau khi tạo). Ghi (thêm/xóa/cập nhật) khoá toàn danh sách, sao chép toàn bộ mảng, sửa bản sao, rồi trỏ tham chiếu nội bộ tới bản mới. Iterator giữ tham chiếu mảng tại thời điểm tạo → xem **ảnh chụp (snapshot)**, không thấy thay đổi sau đó và không ném ConcurrentModificationException. Dùng cho danh sách đọc nhiều, ghi hiếm, ví dụ danh sách listener/subscriber.
+
+### Hiểu nhanh
+Giống một bảng thông báo trên tường. Ai muốn xem thì chỉ cần nhìn bảng đang lắp — không cần xin phép ai (đọc không khoá). Ai muốn sửa thì phải dán bảng vào tường khác, viết nội dung mới, rồi tháo bảng cũ ra lắp bảng mới; trong lúc đó mọi người vẫn xem bảng cũ bình thường. Mỗi người lấy một "bản sao" của bảng khi bắt đầu xem, nên sau này bảng trên tường thay đổi thì bản tay họ vẫn giữ nguyên nội dung lúc đầu.
+
+### Thuật ngữ
+- **Copy-on-write**: ghi bằng cách sao chép toàn bộ cấu trúc, sửa bản sao, rồi thay tham chiếu; đọc luôn thấy một bản nhất quán mà không khoá.
+- **Snapshot iterator**: iterator giữ tham chiếu mảng tại thời điểm tạo, nội dung không đổi trong suốt vòng đời iterator.
+- **ReentrantLock**: khoá dùng để bảo vệ hành động ghi, chỉ một thread ghi tại một thời điểm.
+- **ConcurrentModificationException**: lỗi collection đơn luồng ném khi cấu trúc thay đổi trong khi duyệt.
+- **Tham chiếu mảng**: mảng trong Java là object, gán tham chiếu là thao tác nguyên tử (tham chiếu object là át chủ thể).
+
+### Hoạt động từng bước
+
+Đọc (get/size/iterator):
+1. Lấy tham chiếu mảng nội bộ (array) — tham chiếu object đọc nguyên tử, không khoá.
+2. Truy cập phần tử tại chỉ số trên mảng đó. Mảng không bao giờ được sửa chỗ nên thấy giá trị nhất quán.
+
+Ghi (add/set/remove):
+1. Lấy khoá ReentrantLock (chỉ một thread ghi).
+2. Đọc mảng hiện tại, sao chép ra mảng mới (dùng Arrays.copyOf), sửa bản sao.
+3. Gán tham chiếu nội bộ = mảng mới (tham chiếu object ghi nguyên tử).
+4. Nhả khoá. Đọc cũ vẫn thấy mảng cũ, đọc mới thấy mảng mới.
+
+Iterator:
+1. Lấy tham chiếu mảng tại thời điểm tạo iterator.
+2. Duyệt trên mảng đó; mảng không bao giờ thay đổi nên iterator không bao giờ invalid.
+
+### Ví dụ code
+
+~~~java
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Iterator;
+
+public class ListenerListDemo {
+    private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
+
+    public void addListener(Runnable l) {
+        listeners.add(l);               // sao chép mảng, có khoá
+    }
+
+    public void notifyAllListeners() {
+        for (Runnable l : listeners) {  // iterator snapshot, không khoá
+            l.run();                    // nếu listener tự unregister trong khi chạy, iterator vẫn duyệt xong bản snapshot
+        }
+    }
+}
+~~~
+
+### Khi nào dùng / không dùng
+
+| | CopyOnWriteArrayList | ArrayList (đơn luồng) | ConcurrentHashMap + danh sách |
+|---|---|---|---|
+| Đọc | Không khoá, rất nhanh | Không khoá, nhanh | Không khoá |
+| Ghi | Sao chép toàn bộ mảng, chậm | Không an toàn luồng | Không áp dụng |
+| Iterator | Snapshot, không lỗi | Lỗi nếu thay đổi | Phụ thuộc |
+| Dùng khi | Danh sách listener, đọc áp đảo | Đơn luồng | Cập nhật thường xuyên |
+
+### Trên production
+- Dùng cho danh sách callback/listener: đọc rất nhiều (gọi listener mỗi sự kiện), ghi hiếm (đăng ký/hủy listener khi khởi động/thay đổi cấu hình).
+- Không dùng cho danh sách lớn ghi thường xuyên: mỗi ghi sao chép mảng cả ngàn phần tử tốn CPU và GC.
+- Iterator snapshot: nếu listener thêm listener khác trong khi đang thông báo, listener mới không được gọi trong chu kỳ này (không thấy trong snapshot) — thường là mong muốn, tránh đệ quy vô hạn.
+
+### Lỗi hay gặp
+- **T tưởng iterator thấy danh sách mới nhất**: iterator giữ ảnh chụp cũ, phần tử thêm sau tạo iterator không được duyệt. Cách tránh: nếu cần thấy mới nhất, lấy iterator mới hoặc dùng cấu trúc khác.
+- **Ghi nhiều liên tục**: mỗi add/set/remove sao chép toàn bộ mảng, latency tăng theo kích thước danh sách. Cách tránh: điều tiết ghi, hoặc dùng ConcurrentLinkedQueue nếu thứ tự không quan trọng.
+- **Giữ tham chiếu iterator lâu**: iterator không invalid nhưng nội dung cũ; code sau này giả định iterator phản ánh trạng thái hiện tại sẽ bị sai. Cách tránh: tạo iterator gần lúc sử dụng.
+
+### Trả lời phỏng vấn 1 phút
+"CopyOnWriteArrayList là danh sách đọc không khoá: mỗi đọc lấy tham chiếu mảng nội bộ và mảng không bao giờ bị sửa chỗ, nên đọc nhất quán và rất nhanh. Ghi khoá toàn danh sách, sao chép toàn bộ mảng, sửa bản sao rồi trỏ tham chiếu tới bản mới. Iterator giữ ảnh chụp mảng tại thời điểm tạo, không thấy thay đổi sau đó, không ném ConcurrentModificationException. Trade-off là đọc nhanh, ghi chậm (sao chép toàn bộ mảng), nên dùng cho danh sách listener/subscriber đọc nhiều ghi hiếm, không dùng cho danh sách lớn ghi thường xuyên."
+
+> Senior tip: mẫu thiết kế này gọi là "phát hành bản mới thay vì sửa chỗ" — giống công bố cấu hình bằng object bất biến. Trong Spring, danh sách event listener hay các callback cấu hình là nơi CopyOnWriteArrayList hợp lý; nếu danh sách có mấy nghìn phần tử và ghi mỗi giây, hãy nghĩ lại vì mỗi ghi sao chép mảng cả ngàn phần tử, gây spike CPU và GC.`,
+  follow: [
+    'Vì sao đọc CopyOnWriteArrayList không cần khoá mà vẫn an toàn?',
+    'Iterator của nó xem ảnh chụp (snapshot) hay trạng thái hiện tại?',
+    'Không nên dùng CopyOnWriteArrayList cho trường hợp nào?'
+  ],
+  tags: ['CopyOnWriteArrayList', 'copy-on-write', 'snapshot', 'listener'],
+  refs: [
+    { type: 'doc', title: 'CopyOnWriteArrayList API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html' }
+  ]
+},
+{
+  id: 'concurrency-049',
+  topic: 'concurrency',
+  level: 'senior',
+  q: '{{SynchronousQueue}} là hàng đợi không đệm: hai thread giao handoff trực tiếp, chính sách công bằng (fair) khác không công bằng ở đâu, và dùng trong trường hợp nào?',
+  a: `**Tóm tắt:** {{SynchronousQueue}} là hàng đợi sức chứa 0: không chứa phần tử nào, mỗi lần put phải đợi một take (hoặc ngược lại) để giao handoff trực tiếp. Có hai chính sách: không công bằng (non-fair, mặc định) — thread đến sau có thể lấy phần tử ngay trước thread đã chờ lâu; và công bằng (fair) — theo thứ tự FIFO. Dùng khi producer và consumer cần xử lý cặp ngay (handoff), ví dụ ThreadPoolExecutor cached pool tạo thread mới cho mỗi task thay vì xếp hàng.
+
+### Hiểu nhanh
+Giống hai người giao hàng trực tiếp tại cửa hàng: người A mang hàng tới, người B lấy hàng ngay, không có kệ chứa hàng ở giữa. A không thể bỏ hàng trên kệ mà đi; B không thể lấy hàng nếu không có ai mang tới. Cả hai phải gặp nhau cùng lúc. "Công bằng" giống máy lấy số tại quầy: ai đến trước lấy số trước. "Không công bằng" giống ai tới lượt quầy trống trước được phục vụ trước, kể cả người sau đến hơn.
+
+### Thuật ngữ
+- **Handoff (giao trực tiếp)**: producer và consumer bắt tay, phần tử không nằm trong hàng đợi thậm chí một ngáf thời gian.
+- **Sức chứa 0 (capacity 0)**: hàng đợi không chứa phần tử, put/take phải khớp cặp.
+- **Transfer (chuyển giao)**: phương thức nội bộ của SynchronousQueue thực hiện handoff, có thể chờ vô hạn hoặc có timeout.
+- **Chính sách công bằng (fair)**: handoff theo thứ tự thread gọi đến (FIFO).
+- **Chính sách không công bằng (non-fair)**: thread đang chạy trên CPU có thể chen ngang lấy handoff trước thread đã chờ.
+- **Exchanger**: tương tự nhưng hai người trao đổi đối tượng hai chiều; SynchronousQueue chỉ một chiều (producer đưa, consumer lấy).
+
+### Hoạt động từng bước
+
+Không công bằng (mặc định, dùng transfer stack kiểu LIFO):
+1. Producer gọi put(x): nếu có consumer đang chờ → giao x ngay, cả hai tiếp tục.
+2. Nếu không có consumer: producer đẩy yêu cầu vào stack (LIFO) và chờ.
+3. Consumer gọi take(): nếu stack có yêu cầu → lấy yêu cầu mới nhất (LIFO), giao hàng.
+4. Nếu stack trống: consumer đưa yêu cầu vào stack và chờ.
+5. Khi một bên đến, khớp cặp ngay; thread chờ được đánh thức.
+
+Công bằng (new SynchronousQueue(true)):
+1. Mọi yêu cầu chờ vào hàng đợi FIFO (LinkedTransferQueue-like fair queue).
+2. Handoff theo thứ tự đến, thread đã chờ lâu được ưu tiên.
+
+### Ví dụ code
+
+~~~java
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class HandoffDemo {
+    private static final SynchronousQueue<String> queue = new SynchronousQueue<>();
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread producer = new Thread(() -> {
+            try { queue.put("order-123"); System.out.println("đã giao"); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        Thread consumer = new Thread(() -> {
+            try { System.out.println("nhận: " + queue.take()); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        producer.start(); consumer.start();
+        producer.join(); consumer.join();
+    }
+
+    // SynchronousQueue dùng trong Executors.newCachedThreadPool():
+    // mỗi task không có thread rảnh => tạo thread mới (SynchronousQueue không chứa)
+}
+~~~
+
+### Khi nào dùng / không dùng
+
+| | SynchronousQueue | ArrayBlockingQueue | LinkedBlockingQueue |
+|---|---|---|---|
+| Chứa phần tử | Không (0) | Có (bounded) | Có (bounded/vô hạn) |
+| Producer khi không có consumer | Chờ handoff | Chờ hoặc xếp hàng | Xếp hàng |
+| Dùng khi | Cần xử lý ngay, tạo thread theo request | Giới hạn số chờ | Xếp hàng Aufgabe |
+| Ví dụ JDK | Executors.newCachedThreadPool | ThreadPoolExecutor tùy chỉnh | newFixedThreadPool (mặc định) |
+
+### Trên production
+- Executors.newCachedThreadPool dùng SynchronousQueue: mỗi task cần chạy ngay, nếu không có thread rảnh thì tạo thread mới (tối đa Integer.MAX_VALUE) — nên chỉ dùng cho task ngắn, không burst vô hạn, sẵn sàng OOM native thread.
+- Dùng khi producer và consumer xử lý cùng nhịp (ví dụ worker nhận job từ feeder ngay khi feeder xong chuẩn bị).
+- Không dùng khi cần đệm burst: không chở được phần tử, burst sẽ làm caller chờ ngay.
+
+### Lỗi hay gặp
+- **Tưởng SynchronousQueue "lưu" được task**: put sẽ chãi mãi nếu không có consumer, thread caller treo. Cách tránh: dùng offer(timeout) hoặc ArrayBlockingQueue nếu cần đệm.
+- **Dùng newCachedThreadPool burst lớn**: mỗi task tạo thread, dễ OOM "unable to create native thread". Cách tránh: dùng ThreadPoolExecutor bounded hoặc virtual thread + semaphore.
+- **Fair queue tốn hơn**: công bằng phải duy trì hàng FIFO và đánh thức đúng thread, throughput thấp hơn non-fair khi tranh chấp cao. Cách tránh: chỉ bật fair khi thấy starvation rõ rệt.
+
+### Trả lời phỏng vấn 1 phút
+"SynchronousQueue là hàng đợi không chứa phần tử nào: mỗi put phải khớp với một take để giao handoff trực tiếp, producer và consumer gặp nhau cùng lúc. Có hai chính sách: không công bằng (mặc định, LIFO, thread mới có thể chen trước) và công bằng (FIFO, theo thứ tự chờ). JDK dùng nó trong Executors.newCachedThreadPool để mỗi task tạo thread mới khi không có thread rảnh. Trade-off là không đệm burst, nên chỉ dùng khi producer/consumer xử lý cùng nhịp và task ngắn; burst lớn làm caller chờ hoặc tạo quá nhiều thread."
+
+> Senior tip: SynchronousQueue không phải "hàng đợi nhanh" trong mọi trường hợp — nó chặn producer cho đến khi consumer sẵn sàng, nên latency của producer = thời gian consumer xử lý task trước. Dùng khi bạn muốn backpressure ép người gửi chờ ngay, không phải để "tách" producer ra khỏi consumer.`,
+  follow: [
+    'SynchronousQueue không công bằng và công bằng khác nhau ở cấu trúc bên trong thế nào?',
+    'Vì sao Executors.newCachedThreadPool dùng SynchronousQueue và rủi ro là gì?',
+    'Khi nào chọn SynchronousQueue thay cho ArrayBlockingQueue?'
+  ],
+  tags: ['SynchronousQueue', 'handoff', 'bounded queue', 'cached thread pool'],
+  refs: [
+    { type: 'doc', title: 'SynchronousQueue API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/SynchronousQueue.html' }
+  ]
+},
+{
+  id: 'concurrency-050',
+  topic: 'concurrency',
+  level: 'senior',
+  q: '{{ExecutorCompletionService}} (CompletionService) là gì: gửi N task, lấy kết quả ngay khi có task xong, fail-fast hay wait-all, và khác CompletableFuture.allOf ở điểm nào?',
+  a: `**Tóm tắt:** {{ExecutorCompletionService}} gói một Executor và một hàng đợi hoàn thành: gửi N task, sau đó gọi take()/poll() để lấy Future của task nào xong trước thì lấy nó trước, không cần đợi toàn bộ. Dùng cho mẫu "lấy N kết quả đầu tiên" hoặc "fail-fast: task nào lỗi đầu tiên thì dừng". Không phải wait-all (không đợi tất cả xong mới trả) và khác CompletableFuture.allOf (allOf đợi tất cả, CompletableFuture.compose ghép chuỗi). Nội dung internals: mỗi task được bọc thành FutureTask, khi xong thì put Future vào completion queue.
+
+### Hiểu nhanh
+Giống một quán ăn có 5 đầu bếp nấu 5 món khác nhau, và một người gọi món lấy món nào xong trước thì mang ra khách trước. Không phải đợi tất cả 5 món xong mới bắt đầu giao (do đó khách nhận món đầu nhanh hơn), và không phải món nào nấu lỗi thì toàn bộ đơn bị hủy (trừ khi bạn tự quyết định hủy). ExecutorCompletionService là cái kệ "đã xong" ở đầu bếp: đầu bếp xong món thì đặt Future lên kệ, nhân viên lấy từ kệ theo thứ tự xong.
+
+### Thuật ngữ
+- **CompletionService**: giao diện lấy kết quả task khi nào xong thì lấy nó (take/poll).
+- **ExecutorCompletionService**: triển khai gói Executor + BlockingQueue<Future> làm hàng hoàn thành.
+- **FutureTask**: Future chạy được, khi task xong thì đặt kết quả vào Future.
+- **Take/poll**: take chãi mãi cho tới khi có task xong; poll trả về ngay null nếu chưa có.
+- **Fail-fast**: dừng xử lý khi có lỗi đầu tiên thay vì chờ hết.
+- **Wait-all**: đợi tất cả task xong mới xử lý (như CompletableFuture.allOf).
+
+### Hoạt động từng bước
+
+1. Tạo ExecutorCompletionService(executor).
+2. submit(task1)...submit(taskN): mỗi task được bọc trong FutureTask, gửi executor chạy, và FutureTask được đăng ký để khi xong thì put vào hàng hoàn thành.
+3. take(): lấy Future của task nào xong trước. Nếu chưa có task xong, chãi mãi.
+4. future.get(): lấy kết quả (hoặc ném ExecutionException nếu task lỗi).
+5. Lặp take() N lần để thu thập tất cả kết quả.
+
+### Ví dụ code
+
+~~~java
+import java.util.concurrent.*;
+import java.util.*;
+
+public class CompletionServiceDemo {
+    public static void main(String[] args) throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        ExecutorCompletionService<Integer> ecs = new ExecutorCompletionService<>(executor);
+
+        List<Integer> ids = List.of(101, 102, 103, 104);
+        for (int id : ids) {
+            int taskId = id;
+            ecs.submit(() -> process(taskId));   // mỗi task bọc FutureTask
+        }
+
+        // Lấy kết quả ngay khi có task xong (không đợi toàn bộ)
+        for (int i = 0; i < ids.size(); i++) {
+            Future<Integer> f = ecs.take();      // task nào xong trước, lấy nó trước
+            try {
+                System.out.println("xong: " + f.get());
+            } catch (ExecutionException e) {
+                System.err.println("task lỗi: " + e.getCause());
+            }
+        }
+        executor.shutdown();
+    }
+
+    static int process(int id) {
+        // giả lập công việc khác nhau
+        return id * 10;
+    }
+}
+~~~
+
+### Fail-fast vs wait-all
+
+- **Fail-fast**: submit N task, vòng lặp take() + get(); task đầu tiên lỗi ném ExecutionException ngay — bạn có thể hủy các task còn lại (future.cancel(true)) nếu không cần. Phù hợp "tìm kết quả đầu tiên thành công".
+- **Wait-all**: gọi take() N lần, thu thập tất cả (thành công và lỗi), xử lý sau. Phù hợp cần toàn bộ kết quả để tổng hợp.
+
+### So sánh CompletableFuture.allOf
+
+| | ExecutorCompletionService | CompletableFuture.allOf |
+|---|---|---|
+| Lấy kết quả | Khi nào xong thì lấy đó (take) | Đợi tất cả xong |
+| Lỗi | Task lỗi ném tại get() của Future đó | allOf hoàn tất bất thường nếu bất kỳ task nào lỗi |
+| Ghi nhận sớm | Có, xử lý từng task khi xong | Không, phải đợi hết |
+| Dùng khi | "N đầu tiên", fail-fast | Tổng hợp sau khi tất cả xong |
+| Chuỗi bước | Không hỗ trợ compose tự nhiên | Hỗ trợ thenApply/thenCompose |
+
+### Trên production
+- Dùng cho fan-out gọi nhiều dịch vụ, lấy kết quả đầu tiên đạt chất lượng (ví dụ gọi 3 cache server, lấy cái nào phản hồi trước).
+- Luôn shutdown executor sau dùng; Future.get() nên có timeout để không treo nếu task treo.
+- Take() chãi mãi: kết hợp với poll(timeout) hoặc kiểm tra số task còn lại để tránh treo vĩnh viễn nếu một task không bao giờ xong.
+
+### Lỗi hay gặp
+- **Gọi take() nhiều hơn số task đã submit**: take() chãi mãi vì không đủ Future trên hàng hoàn thành. Cách tránh: take đúng số lần đã submit, hoặc dùng poll(timeout).
+- **Task lỗi mà không gọi get()**: exception nằm trong Future, không ai thấy, tương tự submit() mà không get(). Cách tránh: luôn get() mỗi Future lấy từ ecs.
+- **Future.cancel(true) không dừng task nếu task không kiểm tra interrupt**: tương tự ExecutorService, task phải hợp tác với interrupt.
+
+### Trả lời phỏng vấn 1 phút
+"ExecutorCompletionService gói Executor với hàng đợi hoàn thành: submit N task, rồi take() lấy Future của task nào xong trước. Không phải đợi tất cả (wait-all), nên phù hợp lấy N kết quả đầu tiên hoặc fail-fast. Nên sai khác CompletableFuture.allOf — allOf đợi tất cả xong mới hoàn tất, còn CompletionService xử lý từng task khi xong. Lưu ý luôn get() mỗi Future để thấy lỗi, và take() phải đúng số lần submit để không treo mãi."
+
+> Senior tip: nếu cần "task đầu tiên thành công thì hủy các task còn lại", hãy tự hủy các Future còn lại trong khối catch, vì ExecutorCompletionService không tự hủy. Và với CompletableFuture, allOf là sự lựa chọn gọn hơn khi tổng hợp nhiều call sau khi tất cả xong; CompletionService thắng khi muốn xử lý kịp thời từng kết quả.`,
+  follow: [
+    'ExecutorCompletionService khác CompletableFuture.allOf ở điểm nào?',
+    'Vì sao phải gọi get() trên mỗi Future lấy từ CompletionService?',
+    'take() chãi mãi — làm sao tránh treo nếu một task không bao giờ xong?'
+  ],
+  tags: ['ExecutorCompletionService', 'CompletionService', 'Future', 'fail-fast'],
+  refs: [
+    { type: 'doc', title: 'ExecutorCompletionService API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorCompletionService.html' }
+  ]
+},
+{
+  id: 'concurrency-051',
+  topic: 'concurrency',
+  level: 'lead',
+  q: '{{Exchanger}} là gì: hai thread trao đổi dữ liệu trực tiếp qua exchange(), mô hình pipeline double-buffer, và khác BlockingQueue ở điểm nào?',
+  a: `**Tóm tắt:** {{Exchanger}} là điểm hẹn hai bên: hai thread gọi exchange(v), mỗi bên nhận dữ liệu của bên kia, gọi là rendezvous (hẹn gặp). Dùng cho mô hình pipeline double-buffer: người viết điền vào bộ đệm A trong khi người đọc đọc B, sau khi xong hai bên gọi exchange để tráo bộ đệm — viết tiếp vào B, đọc tiếp vào A, không bao giờ chạm cùng một mảng cùng lúc. Không có bộ đệm trung gian, khác BlockingQueue (có hàng chờ, producer/consumer không nhất thiết gặp trực tiếp).
+
+### Hiểu nhanh
+Giống hai người ở hai đầu một cái hầm, mỗi người cầm một thùng rỗng. Họ cùng đi vào giữa hầm, tráo thùng: người A nhận thùng đầy của B, người B nhận thùng rỗng của A, rồi mỗi người đi về phía của mình. Không có gian hàng trung gian lưu thùng; hai bên phải ở đó cùng lúc. exchange() giống ý "tôi đến đây rồi, hãy tráo thùng".
+
+### Thuật ngữ
+- **Rendezvous (hẹn gặp)**: hai bên đều phải đến điểm hẹn thì sự kiện mới xảy ra; một bên đến trước phải chờ.
+- **exchange(v)**: gửi đối tượng v đi, nhận đối tượng của bên kia về; chãi mãi cho tới khi có partner.
+- **Double-buffer (bộ đệm kép)**: hai mảng luân phiên, một bên viết vào một mảng, bên kia đọc mảng kia, rồi tráo nhau.
+- **BlockingQueue**: hàng đợi chứa phần tử, producer đưa vào, consumer lấy ra, không nhất thiết phải gặp trực tiếp.
+- **Exchanger vs BlockingQueue**: Exchanger một chiều trao đổi hai chiều (hai bên đều nhận), BlockingQueue một chiều (producer đưa, consumer lấy) và có đệm.
+
+### Hoạt động từng bước
+
+1. Thread A gọi exchange(objA): nếu chưa có thread B → A chờ (đăng ký vào chỗ trống).
+2. Thread B gọi exchange(objB): thấy A đang chờ → khớp cặp ngay: B nhận objA, A nhận objB, cả hai tiếp tục.
+3. Nếu cả hai cùng gọi: whichever đến đăng ký trước, kia đến khớp.
+4. Có timeout: exchange(v, timeout, unit) chãi tối đa thời gian, hết giờ ném TimeoutException.
+
+### Ví dụ code: pipeline double-buffer
+
+~~~java
+import java.util.Arrays;
+import java.util.concurrent.Exchanger;
+
+public class DoubleBufferDemo {
+    private static final Exchanger<char[]> exchanger = new Exchanger<>();
+    private static final int SIZE = 8192;
+
+    // Người viết: ghi vào buffer, rồi tráo với người đọc
+    static void writer() throws InterruptedException {
+        char[] buf = new char[SIZE];
+        while (true) {
+            fill(buf);                    // ghi vào buf của mình
+            buf = exchanger.exchange(buf); // nhận buffer trống từ reader, trả buf đã đọc
+        }
+    }
+
+    // Người đọc: xử lý buffer đã ghi, rồi tráo lại
+    static void reader() throws InterruptedException {
+        char[] buf = new char[SIZE];
+        while (true) {
+            buf = exchanger.exchange(buf); // nhận buffer đã ghi từ writer, trả buf trống
+            process(buf);
+        }
+    }
+
+    static void fill(char[] b) { Arrays.fill(b, 'x'); }
+    static void process(char[] b) { /* xử lý dữ liệu */ }
+}
+~~~
+
+### Khi nào dùng / không dùng
+
+| | Exchanger | BlockingQueue | SynchronousQueue |
+|---|---|---|---|
+| Số bên | Hai bên (tùy chọn) | Nhiều producer/consumer | Hai bên handoff |
+| Dữ liệu | Hai bên đều nhận | Producer đưa, consumer lấy | Producer đưa, consumer lấy |
+| Đệm | Không | Có | Không |
+| Dùng khi | Double-buffer pipeline | Xếp hàng task | Handoff đơn chiều |
+
+### Trên production
+- Dùng cho pipeline xử lý luồng dữ liệu lớn (ví dụ mã hóa/giải mã khối, nén, đọc file lớn): một thread đọc dữ liệu vào buffer, thread khác xử lý, exchange để tráo buffer, không copy dữ liệu giữa các thread.
+- exchange() chãi mãi: nếu một bên treo, kia cũng treo. Dùng overload có timeout và xử lý TimeoutException.
+- Exchanger không dùng cho nhiều hơn hai người gọi cùng lúc không xác định: kỳ vọng đúng hai bên khớp cặp.
+
+### Lỗi hay gặp
+- **Một bên gọi exchange nhiều lần, kia ít hơn**: bên gọi nhiều sẽ chãi mãi đợi partner. Cách tránh: thiết kế hai bên cuộn đồng bộ, hoặc dùng BlockingQueue nếu tốc độ khác nhau.
+- **Quên trả buffer đúng**: sau exchange, mỗi bên nhận buffer của kia; nếu viết nhầm vào buffer cũ thì ghi đè dữ liệu đang được kia đọc → hỏng dữ liệu. Cách tránh: luôn dùng đối tượng nhận lại từ exchange().
+- **exchange() không timeout**: nếu partner crash, bên kia treo vĩnh viễn. Cách tránh: exchange(v, timeout, unit).
+
+### Trả lời phỏng vấn 1 phút
+"Exchanger là điểm hẹn hai bên: gọi exchange(v) thì tôi gửi v đi và nhận đối tượng của partner về, cả hai phải đến điểm hẹn mới xảy ra. Mô hình điển hình là double-buffer pipeline: viết ghi vào buffer A, đọc xử lý buffer B, sau đó exchange tráo hai buffer, không copy dữ liệu và không chạm cùng mảng. Khác BlockingQueue: Exchanger không đệm, hai bên phải gặp trực tiếp, và cả hai đều nhận dữ liệu. Lưu ý luôn dùng đối tượng trả về từ exchange và dùng overload có timeout để không treo nếu partner lỗi."
+
+> Senior tip: Exchanger ít dùng nhưng rất hiệu quả cho pipeline xử lý khối dữ liệu lớn nơi chi phí copy là nút thắt (ví dụ nén, mã hóa, đọc/ghi file lớn). Nếu hai bên tốc độ xử lý khác nhau rõ rệt, BlockingQueue là lựa chọn tốt hơn vì có đệm để hấp thụ độ chênh lệch; Exchanger bắt hai bên cùng nhịp.`,
+  follow: [
+    'Exchanger khác BlockingQueue ở điểm nào, và chọn cái nào khi nào?',
+    'Vì sao phải dùng đối tượng trả về từ exchange() chứ không dùng buffer cũ?',
+    'Một bên treo thì bên kia xảy ra gì, xử lý thế nào?'
+  ],
+  tags: ['Exchanger', 'rendezvous', 'double-buffer', 'pipeline'],
+  refs: [
+    { type: 'doc', title: 'Exchanger API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Exchanger.html' }
+  ]
+},
+{
+  id: 'concurrency-052',
+  topic: 'concurrency',
+  level: 'lead',
+  q: '{{Phaser}} là điểm hẹn nhiều pha với số thành viên thay đổi: arrive/arriveAndAwaitAdvance, số pha, hook onAdvance, và khác CyclicBarrier ở điểm nào?',
+  a: `**Tóm tắt:** {{Phaser}} là điểm hẹn linh hoạt: số thành viên có thể thay đổi giữa các pha (register/deregister), mỗi pha có số thứ tự, thread gọi arrive() để báo đã đến rồi có thể tiếp tục, hoặc arriveAndAwaitAdvance() để chờ đủ thành viên mới vào pha tiếp theo. Hook onAdvance() chạy khi đủ thành viên chuyển pha, dùng để quyết định tiếp tục hay kết thúc. Khác CyclicBarrier: số thành viên cố định, tất cả phải chờ ở mỗi điểm hẹn; Phaser cho phép thành viên chậm hơn, vào chậm, ra sớm, và pha tiếp tục cho những người đã đến.
+
+### Hiểu nhanh
+Giống một nhóm du lịch hẹn nhau ở mỗi điểm nghỉ: trong CyclicBarrier, tất cả đều phải đủ người tại điểm nghỉ mới cùng đi chặng tiếp theo, số người cố định. Trong Phaser, số người có thể tăng (kích thêm bạn bè trên đường) hoặc giảm (mẹo về nhà giữa chừng); mỗi người báo đã đến điểm nghỉ (arrive), người muốn cùng nhóm đi tiếp thì chờ đủ (arriveAndAwaitAdvance); tour guide (onAdvance) quyết định chặng tiếp theo có tiếp hay kết thúc tour.
+
+### Thuật ngữ
+- **Phaser**: điểm hẹn nhiều pha, số thành viên thay đổi được.
+- **Party (thành viên)**: thread đã đăng ký tham gia phaser.
+- **register()/register(int parties)**: đăng ký một hoặc nhiều thành viên.
+- **arrive()**: báo đã đến điểm hẹn pha hiện tại, không chờ, tiếp tục làm việc khác.
+- **arriveAndAwaitAdvance()**: báo đã đến và chờ đủ thành viên mới chuyển pha.
+- **arriveAndDeregister()**: báo đến rồi rời khỏi phaser.
+- **onAdvance(phase, registeredParties)**: hook chạy khi đủ thành viên chuyển pha; trả về true để kết thúc phaser.
+- **Số pha (phase)**: số nguyên tăng mỗi khi đủ thành viên chuyển pha mới.
+
+### Hoạt động từng bước
+
+1. Tạo Phaser: new Phaser() (có 1 party là chính thread tạo) hoặc new Phaser(1).
+2. Các worker register(): số party tăng.
+3. Mỗi worker làm công việc pha 1, rồi arriveAndAwaitAdvance(): báo đến và chờ.
+4. Khi đủ party báo đến → số pha tăng 1, onAdvance() chạy, tất cả worker được đánh thức sang pha 2.
+5. Worker có thể register thêm (phía mới vào) hoặc arriveAndDeregister() (rời).
+6. Phaser kết thúc khi onAdvance trả về true hoặc số party về 0.
+
+### Ví dụ code
+
+~~~java
+import java.util.concurrent.Phaser;
+import java.util.List;
+import java.util.ArrayList;
+
+public class PhaserDemo {
+    public static void main(String[] args) throws InterruptedException {
+        int parties = 3;
+        Phaser phaser = new Phaser(1);  // 1 party là main thread
+
+        List<Thread> workers = new ArrayList<>();
+        for (int i = 0; i < parties; i++) {
+            Thread t = new Thread(() -> {
+                for (int phase = 0; phase < 3; phase++) {
+                    doWork();                       // làm công việc pha này
+                    phaser.arriveAndAwaitAdvance(); // chờ đủ người sang pha tiếp theo
+                }
+                phaser.arriveAndDeregister();       // xong, rời khỏi phaser
+            });
+            workers.add(t);
+            t.start();
+        }
+
+        // main cũng tham gia mỗi pha (do tạo với 1 party)
+        for (int phase = 0; phase < 3; phase++) {
+            doWork();
+            phaser.arriveAndAwaitAdvance();
+        }
+        phaser.arriveAndDeregister();
+
+        for (Thread t : workers) t.join();
+        System.out.println("Tất cả pha hoàn thành, pha cuối: " + phaser.getPhase());
+    }
+
+    static void doWork() { /* xử lý */ }
+}
+~~~
+
+### Phaser vs CyclicBarrier
+
+| | Phaser | CyclicBarrier |
+|---|---|---|
+| Số thành viên | Thay đổi được (register/deregister) | Cố định tại tạo |
+| Hành vi khi đến | arrive() không chờ, arriveAndAwaitAdvance() chờ | Tất cả await() chờ |
+| Pha | Có số thứ tự, onAdvance() hook | Không có số pha rõ ràng |
+| Kết thúc | onAdvance trả true hoặc party = 0 | Reset cho pha sau |
+
+### Khi nào dùng
+- Pipeline nhiều giai đoạn, số worker thay đổi giữa các giai đoạn (ví dụ giai đoạn 1 có 5 worker, giai đoạn 2 chỉ cần 2 worker).
+- Thành viên có thể vào chậm hoặc ra sớm mà không làm treo toàn bộ nhóm.
+- Cần hook quyết định khi đủ thành viên chuyển pha (onAdvance).
+
+### Trên production
+- onAdvance có thể trả true để chấm dứt phaser (ví dụ đủ số lần lặp, hoặc nhận tín hiệu dừng).
+- getPhase() cho biết pha hiện tại, dùng để theo dõi tiến độ.
+- Nếu tất cả worker dùng arriveAndAwaitAdvance, một worker chậm làm toàn bộ nhóm chờ ở mỗi pha — giảm payload mỗi pha hoặc chia nhỏ công việc.
+
+### Lỗi hay gặp
+- **register() sau khi phaser kết thúc**: ném IllegalStateException. Cách tránh: kiểm tra isTerminated() trước khi register.
+- **arrive() không chờ mà code giả định đã chuyển pha**: chỉ arriveAndAwaitAdvance() mới chờ. Cách tránh: dùng đúng method theo ý muốn.
+- **Phaser không bao giờ kết thúc**: onAdvance luôn trả false và party không về 0 → thread chãi mãi. Cách tránh: thiết kế điều kiện kết thúc trong onAdvance.
+
+### Trả lời phỏng vấn 1 phút
+"Phaser là điểm hẹn nhiều pha cho phép số thành viên thay đổi: register() thêm thành viên, deregister() bỏ, arrive() báo đến không chờ, arriveAndAwaitAdvance() báo đến và chờ đủ thành viên chuyển pha, onAdvance() hook chạy khi đủ thành viên chuyển pha để quyết định tiếp tục hay kết thúc. Khác CyclicBarrier: số thành viên cố định và tất cả phải chờ; Phaser linh hoạt hơn, hợp cho pipeline nhiều giai đoạn với số worker thay đổi. Lưu ý arrive() không chờ, và phải thiết kế điều kiện kết thúc để phaser không treo mãi."
+
+> Senior tip: Phaser mạnh nhưng phức tạp, phần lớn nhu cầu "đợi N công việc xong" dùng CountDownLatch, "nhóm chờ nhau mỗi pha" dùng CyclicBarrier. Chỉ dùng Phaser khi thực sự cần số thành viên thay đổi giữa các pha hoặc hook onAdvance để kiểm soát vòng đời; thêm phức tạp nghĩa là thêm chỗ bị hiểu sai trong code review.`,
+  follow: [
+    'Phaser khác CyclicBarrier ở điểm nào, và chọn cái nào khi nào?',
+    'arrive() vs arriveAndAwaitAdvance(): chờ hay không chờ?',
+    'Làm sao để phaser kết thúc thay vì chãi mãi?'
+  ],
+  tags: ['Phaser', 'barrier', 'multi-phase', 'synchronizer'],
+  refs: [
+    { type: 'doc', title: 'Phaser API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Phaser.html' }
+  ]
+},
+{
+  id: 'concurrency-053',
+  topic: 'concurrency',
+  level: 'lead',
+  q: '{{ScheduledThreadPoolExecutor}} và {{DelayQueue}} hoạt động bên trong ra sao: tại sao scheduleAtFixedRate bị trễ chồng chéo khi một lần chạy lâu, và khác scheduleWithFixedDelay ra sao?',
+  a: `**Tóm tắt:** {{ScheduledThreadPoolExecutor}} chạy task định kỳ bên trong {{DelayQueue}}: hàng đợi sắp xếp task theo thời gian chạy tiếp theo, worker lấy task khi đến giờ, chạy xong thì nếu là định kỳ thì chèn lại task vào queue với thời gian mới. scheduleAtFixedRate tính thời gian chạy tiếp theo từ **lần chạy trước được lên lịch** (bị trễ chồng chéo nếu một lần chạy lâu: các lần sau chạy sát nhau để bù); scheduleWithFixedDelay tính từ **khi lần trước kết thúc** (khoảng nghỉ cố định giữa các lần). Một lần chạy lâu chèn toàn bộ hàng đợi định kỳ.
+
+### Hiểu nhanh
+Giống một người đặt đồng hồ báo thức cho việc làm mỗi ngày: scheduleAtFixedRate đặt báo thức theo lịch (7 giờ sáng hôm nay, 7 giờ sáng ngày mai) — nếu hôm nay làm việc từ 7 giờ đến 9 giờ (lâu), ngày mai báo thức vẫn 7 giờ nên hai ngày chạy sát nhau để bù. scheduleWithFixedDelay đặt báo thức 24 giờ sau khi hôm nay xong việc (9 giờ hôm nay → 9 giờ ngày mai) — luôn có khoảng nghỉ giữa các lần. Cả hai dùng một cái "kệ đặt công việc theo giờ" (DelayQueue): công việc nào đến giờ thì lấy ra làm.
+
+### Thuật ngữ
+- **ScheduledThreadPoolExecutor**: executor chạy task sau trễ hoặc định kỳ, dùng ScheduledFutureTask.
+- **DelayQueue**: hàng đợi sắp xếp theo thời điểm hết hạn (delay), take() chãi cho tới khi phần tử đầu đến giờ.
+- **scheduleAtFixedRate**: lặp theo nhịp cố định tính từ thời điểm lên lịch lần trước.
+- **scheduleWithFixedDelay**: lặp có khoảng nghỉ cố định tính từ khi lần trước kết thúc.
+- **ScheduledFutureTask**: task định kỳ, giữ thời gian chạy tiếp theo và khoảng lặp.
+- **Head-of-line blocking (chẹn đầu hàng)**: một task lâu chèn các task sau đó trong hàng định kỳ.
+
+### Hoạt động từng bước
+
+scheduleAtFixedRate(task, initialDelay, period, unit):
+1. Tạo ScheduledFutureTask, thời gian chạy đầu tiên = now + initialDelay.
+2. Chèn vào DelayQueue theo thời điểm chạy.
+3. Worker lấy task khi đến giờ, chạy.
+4. Task xong, nếu chưa bị hủy: tính thời gian tiếp theo = lastScheduledTime + period (tính từ lần **được lên lịch**, không phải khi kết thúc).
+5. Chèn lại vào DelayQueue, lặp lại.
+
+scheduleWithFixedDelay:
+1. Tương tự, nhưng thời gian tiếp theo = now (khi kết thúc) + delay.
+2. Luôn có khoảng nghỉ {{delay}} sau khi lần trước xong.
+
+### Ví dụ code
+
+~~~java
+import java.util.concurrent.*;
+
+public class ScheduledDemo {
+    public static void main(String[] args) throws InterruptedException {
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+
+        // Chạy ngay, sau đó mỗi 2 giây (tính từ lần được lên lịch trước)
+        scheduler.scheduleAtFixedRate(() -> {
+            System.out.println("fixedRate: " + System.currentTimeMillis());
+            longWork(); // giả lập chạy lâu
+        }, 0, 2, TimeUnit.SECONDS);
+
+        Thread.sleep(15000);
+        scheduler.shutdownNow();
+    }
+
+    static void longWork() {
+        try { Thread.sleep(5000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+}
+~~~
+
+Nếu longWork() chạy 5 giây trong khi period 2 giây: lần thứ 2 bị trễ (vì worker đang bận), lần thứ 3 sẽ chạy sớm sau lần 2 để bù (theo lastScheduledTime + period) — có thể hai lần chạy sát nhau.
+
+### Khi nào dùng / không dùng
+
+| | scheduleAtFixedRate | scheduleWithFixedDelay |
+|---|---|---|
+| Tính toán lần sau | Từ lần được lên lịch trước | Từ khi lần trước kết thúc |
+| Khoảng cách giữa các lần | Bị biến động nếu task lâu | Luôn cố định (delay) |
+| Dùng khi | Cần cron-like (10:00, 10:05...) | Cần khoảng nghỉ giữa các lần |
+| Rủi ro | Các lần chạy sát nhau nếu task lâu | Chu kỳ tổng dài hơn |
+
+### Trên production
+- Một task định kỳ chạy lâu chèn các lần sau (fixedRate): giảm payload task, chia nhỏ, hoặc dùng scheduleWithFixedDelay nếu cần khoảng nghỉ.
+- Tách executor theo mức độ quan trọng: job thanh toán có scheduler riêng, không bị job báo cáo chèn.
+- Java 21: có thể dùng virtual thread cho task định kỳ I/O, nhưng vẫn cần giới hạn số task đang chạy (semaphore) để không quũng tài nguyên phía sau.
+- shutdownNow() interrupt các task đang chạy; task không kiểm tra interrupt vẫn chạy tiếp.
+
+### Lỗi hay gặp
+- **Một task định kỳ chạy lâu làm chèn các lần sau (fixedRate)**: worker đơn (hoặc ít worker) chạy tuần tự các ScheduledFutureTask. Cách tránh: số worker >= số task định kỳ chạy đồng thời, hoặc dùng scheduleWithFixedDelay.
+- **Future.cancel(true) không dừng task nếu task không kiểm tra interrupt**: tương tự ExecutorService. Cách tránh: task kiểm tra Thread.interrupted().
+- **Lỗi trong task định kỳ (ScheduledThreadPoolExecutor)**: exception làm task dừng lặp, không ném ra ngoài, không log trừ khi lấy Future.get(). Cách tránh: try/catch bao toàn thân task, log và metric.
+
+### Trả lời phỏng vấn 1 phút
+"ScheduledThreadPoolExecutor dùng DelayQueue sắp xếp task định kỳ theo thời gian chạy tiếp theo, worker lấy khi đến giờ. scheduleAtFixedRate tính lần sau từ thời gian được lên lịch trước (bị trễ chồng chéo nếu một lần chạy lâu), còn scheduleWithFixedDelay tính từ khi lần trước kết thúc (luôn có khoảng nghỉ). Một task lâu chèn toàn bộ hàng đợi định kỳ nên tách executor theo mức quan trọng và gói task bằng try/catch log metric. Nếu task chạy lâu, hãy chia nhỏ hoặc chuyển sang fixedDelay."
+
+> Senior tip: trong production, việc quan trọng không chỉ chọn fixedRate hay fixedDelay mà là **giới hạn số task định kỳ chạy đồng thời** và **luôn bọc task bằng try/catch log metric** — task định kỳ ném exception thì dừng lặp âm thầm, không ai biết trừ khi bạn đo "lần chạy thành công gần nhất". Hãy dùng scheduler riêng cho từng tier công việc để job ít quan trọng không chèn job quan trọng.`,
+  follow: [
+    'scheduleAtFixedRate và scheduleWithFixedDelay khác nhau khi một lần chạy bị chậm ra sao?',
+    'Một task định kỳ chạy lâu làm chèn các lần sau — xử lý thế nào?',
+    'Lỗi trong task định kỳ ScheduledThreadPoolExecutor có được log không?'
+  ],
+  tags: ['ScheduledThreadPoolExecutor', 'DelayQueue', 'fixedRate', 'fixedDelay'],
+  refs: [
+    { type: 'doc', title: 'ScheduledThreadPoolExecutor API (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ScheduledThreadPoolExecutor.html' }
+  ]
+}
+,
+{
+  id: 'jvm-037',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Safepoint là gì, time-to-safepoint (TTSP) là gì, vì sao một vòng lặp dài (counted loop) làm cả ứng dụng dừng?',
+  a: `**Tóm tắt:** Safepoint là thời điểm JVM dừng mọi thread Java để làm việc toàn cục (GC, deoptimization, class redefinition). Time-to-safepoint (TTSP) là thời gian từ khi JVM yêu cầu dừng tới khi thread cuối cùng thực sự dừng. Một vòng lặp dài không có điểm dừng (hoặc counted loop chưa được poll safepoint) khiến thread đó không thể dừng đúng lúc, nên JVM phải chờ, TTSP tăng, và toàn bộ app bị treo trong lúc chờ.
+
+### Hiểu nhanh
+Hãy tưởng tượng cả công ty phải dừng làm việc để kiểm kê kho. Người quản lý hô "tất cả dừng lại", nhưng một nhân viên đang chạy trên máy chạy bộ không nhìn đồng hồ nên không dừng. Cả công ty phải chờ nhân viên đó nhìn thấy tín hiệu. Safepoint là tín hiệu dừng; TTSP là thời gian chờ nhân viên "nhìn thấy tín hiệu".
+
+### Cơ chế
+1. JVM chèn các điểm safepoint vào bytecode (method entry, backward branch, loop back edge) để thread có thể dừng.
+2. Khi cần safepoint, JVM đặt cờ; thread khi đi qua điểm safepoint sẽ kiểm tra cờ và dừng.
+3. Counted loop (vòng for với số lần lặp đã biết) có thể bị JIT tối ưu và không chèn poll safepoint trong thân loop → thread không dừng cho tới khi loop kết thúc.
+4. Vì sao counted loop không poll: để loop chạy nhanh, JIT bỏ poll; trade-off là TTSP có thể tăng.
+5. JVM flag {{-Xlog:safepoint}} (Java 9+) in ra thời gian TTSP và thời gian dừng.
+
+### Trên production
+- Triệu chứng: pause bất thường, p99 tăng vọt, log safepoint cho thấy TTSP lớn.
+- Đo: {{-Xlog:safepoint*=info:file=safepoint.log}}; xem TTSP và total time.
+- Tuning: tránh vòng lặp dài không poll; chia nhỏ; dùng {{-XX:+UseCountedLoopSafepoints}} (chi phí cao hơn nhưng TTSP thấp hơn); trên Java 17+ mặc định đã bật cho một số trường hợp.
+
+### Lỗi hay gặp
+- Vòng lặp xử lý hàng triệu record không có điểm dừng → TTSP lớn.
+- JIT inline method lớn làm mất safepoint poll → pause không giải thích được.
+
+### Trả lời miệng 1 phút
+"Safepoint là thời điểm JVM dừng mọi thread để làm việc toàn cục như GC. TTSP là thời gian từ yêu cầu dừng tới khi thread cuối cùng dừng. Một vòng lặp dài, đặc biệt counted loop, có thể không có poll safepoint trong thân, nên thread không dừng đúng lúc, JVM phải chờ, TTSP tăng và cả app bị treo. Tôi đo bằng -Xlog:safepoint và nếu cần bật UseCountedLoopSafepoints."
+
+### Ví dụ đời thực
+Service tính điểm rủi ro có p99 thỉnh thoảng nhảy lên 1,5 giây dù GC log báo các lần GC chỉ 20ms. Bật {{-Xlog:safepoint}}: một số dòng có "Reaching safepoint: 1480 ms" — JVM phải chờ gần 1,5 giây để mọi thread dừng. Dùng async-profiler ở chế độ ghi nhận thread chậm vào safepoint, tìm ra một vòng lặp {{for (int i = 0; i < n; i++)}} xử lý mảng 50 triệu phần tử trong một batch nội bộ: vòng lặp đếm bằng {{int}} được C2 tối ưu **bỏ safepoint poll** bên trong. Sửa: chia batch thành các đoạn 100.000 phần tử. Từ JDK 10, cơ chế loop strip mining ({{-XX:+UseCountedLoopSafepoints}}, mặc định bật với G1 trên các JDK hiện đại) đã giảm vấn đề này, nhưng service vẫn chạy JDK 8 nên phải sửa trong code; sau khi nâng JDK 17, TTSP tối đa còn dưới 5ms.
+
+> Senior tip: TTSP lớn thường bị nhầm là GC pause; log safepoint phân biệt rõ. Một method có vòng lặp 10 triệu lần không poll có thể làm TTSP hàng trăm ms.`,
+  follow: ['Làm sao đo TTSP trên production?', 'Khi nào bật UseCountedLoopSafepoints?'],
+  tags: ['safepoint', 'TTSP', 'JIT']
+}
+,
+{
+  id: 'jvm-038',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'JIT tiered compilation (C1/C2, tier 0–4): inlining (MaxInlineSize, FreqInlineSize), deoptimization khi giả định sai (uncommon trap), warm-up khi deploy.',
+  a: `**Tóm tắt:** JVM dùng tiered compilation để cân bằng khởi động nhanh và hiệu năng ổn định: code chạy từ interpreter (tier 0) để thu thập profile, biên dịch nhanh bằng C1 (tier 1–3), rồi tối ưu mạnh bằng C2 (tier 4) cho hot method. Inlining gộp method nhỏ vào caller, giảm chi phí gọi và mở ra tối ưu sâu hơn; MaxInlineSize/FreqInlineSize là các ngưỡng quyết định. Khi giả định tối ưu sai, C2 rơi vào uncommon trap và deoptimize an toàn về interpreter. Sau deploy, ứng dụng cần warm-up.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Bytecode**: mã trung gian trong file .class mà JVM hiểu; không phải mã máy của CPU.
+- **Interpreter**: bộ thực thi bytecode từng bước, chạy ngay nhưng chậm hơn native code (mã máy).
+- **JIT (Just-In-Time compiler)**: trình biên dịch chạy ngay trong lúc ứng dụng đang chạy, biến bytecode "nóng" thành native code.
+- **Tiered compilation**: chiến lược dùng nhiều tầng biên dịch để vừa khởi động nhanh vừa tối ưu sâu về sau.
+- **Profile**: số liệu thống kê khi chạy thật (số lần gọi method, nhánh hay xảy ra, kiểu object thực tế).
+- **Hot method / hot path**: đoạn code chạy rất nhiều lần, đáng để tối ưu.
+- **Inlining**: thay lời gọi method bằng chính thân method tại chỗ gọi.
+- **Deoptimization**: hủy native code đã tối ưu và quay về interpreter khi giả định không còn đúng.
+- **Uncommon trap**: "bẫy" trong code C2 cho trường hợp hiếm; khi chạm tới, JVM kích hoạt deoptimization.
+- **Warm-up**: giai đoạn sau deploy để JIT thu thập profile và biên dịch hot path.
+
+### Vì sao cần cơ chế này
+Hãy tưởng tượng bạn mới vào bếp: ban đầu làm theo sách từng bước (chậm nhưng an toàn), quen dần thì làm nhanh hơn (C1), với món bán chạy nhất bạn tối ưu từng động tác (C2). Nếu có món hiếm, bạn quay lại làm cẩn thận theo sách (deoptimize). JVM làm vậy vì: (1) không biết trước code nào nóng; (2) C2 biên dịch chậm nên không thể dùng cho mọi thứ ngay; (3) tối ưu tốt nhất cần dữ liệu thật; (4) khi dữ liệu thay đổi, JVM phải quay lui an toàn.
+
+### Các tier (mức biên dịch)
+| Tier | Thực hiện | Đặc điểm |
+|---|---|---|
+| 0 | Interpreter | Chạy ngay, thu thập profile |
+| 1 | C1 | Biên dịch nhanh, ít tối ưu (method đơn giản) |
+| 2 | C1 + profiling nhẹ | Nhanh hơn interpreter, thu thập thêm dữ liệu |
+| 3 | C1 + profiling đầy đủ | Chuẩn bị profile tốt cho C2 |
+| 4 | C2 | Tối ưu mạnh dựa trên profile (inlining sâu, bỏ check thừa, tối ưu vòng lặp) |
+
+HotSpot mặc định bật tiered compilation. Method thường đi dần từ tier 0 lên tier 3, rồi lên tier 4 khi đủ nóng.
+
+### Inlining: MaxInlineSize và FreqInlineSize
+Inlining quan trọng vì không chỉ giảm chi phí gọi hàm. Khi thân method nằm ngay trong caller, JIT nhìn thấy bức tranh lớn hơn và có thể: loại bỏ nhánh chết, gộp hằng số, bỏ null check không cần thiết, hoặc áp dụng escape analysis.
+
+- **MaxInlineSize**: ngưỡng kích thước bytecode cho method "thường" được xem xét inline.
+- **FreqInlineSize**: ngưỡng lớn hơn cho call site rất nóng. Gọi nhiều lần nên lợi ích inline lớn hơn chi phí mã phình ra.
+- Đây là JVM flag dạng {{-XX:MaxInlineSize=...}} và {{-XX:FreqInlineSize=...}}. Giá trị mặc định tùy phiên bản/kiến trúc. Khi phỏng vấn, nêu đúng ý nghĩa và trade-off quan trọng hơn thuộc lòng con số.
+
+~~~java
+class Tax {
+    int rate() { return 10; } // method nhỏ, ứng viên tốt để inline
+}
+class PriceService {
+    long total(long price, Tax tax) {
+        // Sau inlining, JIT có thể "thấy" rate() = 10
+        return price + (price * tax.rate() / 100);
+    }
+}
+~~~
+
+### Deoptimization và uncommon trap
+C2 tối ưu dựa trên giả định (ví dụ: site này hầu như luôn là {{ArrayList}}, nhánh này hiếm xảy ra). Khi input hiếm vi phạm giả định, native code chạm **uncommon trap**: (1) JVM tạm dừng native frame; (2) khôi phục trạng thái về dạng interpreter hiểu được; (3) chạy tiếp bằng interpreter; (4) thu thập profile mới và có thể compile lại. Deoptimization an toàn, không phải lỗi. Nhưng nếu xảy ra liên tục (**deopt storm**) sẽ làm p99 tăng rõ.
+
+### Ví dụ đời thực
+Giả định: dịch vụ đặt hàng 8 pod, mỗi pod 2 vCPU, 2 GB heap, ~1.200 req/s ổn định, p99 = 90 ms. Lúc 09:00 deploy phiên bản mới, p99 tăng lên 520 ms trong 7 phút đầu dù CPU chỉ ~55%. JFR cho thấy nhiều {{Compilation}} và {{Deoptimization}} trên hot controller. Nguyên nhân: campaign làm một nhánh hiếm xuất hiện thường xuyên hơn; C2 compile theo profile cũ rồi deoptimize lặp lại. Xử lý: pre-warm sau health check, gửi 2.000 request tổng hợp vào 5 endpoint chính, có cả case hiếm. Kết quả: p99 chỉ tăng lên ~140 ms trong 90 giây rồi về 90 ms. SLA không bị ảnh hưởng.
+
+### Lỗi hay gặp
+- **Method quá lớn**: khó inline, JIT tối ưu kém. Tách hot path cho gọn.
+- **Đo benchmark khi chưa warm-up**: số liệu sai lệch. Dùng JMH hoặc warm-up thủ công.
+- **Deopt storm khi traffic đổi đột ngột**: theo dõi JFR event {{jdk.Deoptimization}}.
+- **Chỉnh flag JIT mù quáng** (đổi MaxInlineSize): có thể làm tệ hơn. Chỉ đổi khi có dữ liệu đo.
+
+### Trả lời mẫu khi phỏng vấn
+"JVM dùng tiered compilation để cân bằng giữa khởi động và hiệu năng. Ban đầu code chạy ở interpreter tier 0 để thu thập profile, sau đó C1 biên dịch nhanh ở tier 1 đến 3, và hot method lên C2 tier 4 để tối ưu mạnh dựa trên profile thật. Inlining rất quan trọng vì nó gộp method nhỏ vào caller, giảm chi phí gọi và giúp JIT nhìn thấy bức tranh lớn hơn; JIT dùng MaxInlineSize cho method thường và FreqInlineSize cho method nóng. Khi C2 dựa trên giả định sai, ví dụ một kiểu dữ liệu hiếm bỗng xuất hiện nhiều, native code chạm uncommon trap và JVM deoptimize an toàn về interpreter rồi compile lại. Trên production, tôi luôn tính đến warm-up sau deploy: pre-warm hot path, theo dõi JFR để xem compilation và deoptimization, và giữ hot method đủ gọn để dễ inline."
+
+> Senior tip: sau deploy, theo dõi p99 theo từng phút thay vì chỉ nhìn trung bình. p99 tăng rồi tự hạ thường là warm-up hoặc deopt. Tránh chỉnh flag {{-XX:MaxInlineSize}} hay tắt tiered compilation trên production nếu chưa có dữ liệu JFR chứng minh lợi ích.`,
+  follow: ['Làm sao phát hiện deoptimization storm trên production?', 'Tại sao pre-warm hiệu quả hơn chỉ chờ traffic thật?'],
+  tags: ['JIT', 'tiered compilation', 'inlining', 'deoptimization']
+}
+,
+{
+  id: 'jvm-039',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'G1 GC bên trong: region, remembered set, card table, write barrier, mixed GC, vì sao pause dự đoán được.',
+  a: `**Tóm tắt:** G1 (Garbage-First) chia heap thành nhiều region nhỏ thay vì một vùng young/old liền mạch. Để dọn một region mà không quét toàn bộ heap, G1 dùng remembered set (RSet) — sổ ghi "ai đang trỏ vào region này", được duy trì nhờ card table và write barrier. G1 chọn dọn các region có nhiều rác nhất trước (garbage-first) và ước lượng thời gian để giữ pause trong mục tiêu {{-XX:MaxGCPauseMillis}}. Vì vậy pause thường ngắn và tương đối dự đoán được.
+
+### Thuật ngữ (giải thích lần đầu)
+- **GC (Garbage Collection)**: cơ chế tự động thu hồi bộ nhớ của object không còn ai dùng.
+- **Heap**: vùng nhớ JVM dùng để cấp phát object.
+- **Region**: mảnh heap có kích thước cố định (thường 1–32 MB, JVM tự chọn theo heap); mỗi region có thể là Eden, Survivor, Old, hoặc Humongous.
+- **RSet (Remembered Set)**: cấu trúc dữ liệu ghi lại các tham chiếu từ region khác trỏ vào region này.
+- **Card table**: bảng đánh dấu các "ô" nhỏ (thường 512 byte) trong heap đã bị ghi đè tham chiếu; dùng để cập nhật RSet.
+- **Write barrier**: đoạn mã nhỏ JVM chèn vào mỗi lần ghi tham chiếu ({{obj.field = other}}) để cập nhật card table/RSet.
+- **Mixed GC**: đợt GC dọn cả young region và một số old region cùng lúc.
+- **Pause time goal**: mục tiêu thời gian dừng ứng dụng cho mỗi lần GC.
+- **Humongous object**: object lớn hơn 50% kích thước một region; G1 xếp vào humongous region riêng.
+
+### Vì sao G1 thiết kế như vậy
+GC cổ điển (như Parallel/Serial thế hệ cũ) thường phải quét vùng nhớ lớn, gây pause dài khi heap lớn. Tưởng tượng dọn một tòa nhà: thay vì mỗi lần dọn phải kiểm tra toàn bộ tòa nhà, bạn chia thành từng phòng (region) và mỗi phòng có sổ ghi "phòng nào đang giữ chìa/đồ liên quan tới phòng này" (RSet). Muốn dọn phòng A, bạn chỉ cần nhìn sổ của A, không cần lục hết tòa nhà. G1 làm đúng điều đó để pause ngắn và có thể kiểm soát.
+
+### Cơ chế hoạt động từng bước
+1. **Chia heap thành region.** Mỗi region đóng một vai trò (Eden/Survivor/Old/Humongous) và vai trò có thể thay đổi giữa các lần GC.
+2. **Young GC (Evacuation Pause).** Dọn Eden và Survivor: copy object còn sống sang Survivor hoặc Old region mới, giải phóng toàn bộ young region đã dọn. Pause thường ngắn.
+3. **Concurrent marking.** Khi heap dùng nhiều, G1 chạy đánh dấu song song với ứng dụng để tìm region old có nhiều rác (live ratio thấp).
+4. **Mixed GC.** Sau marking, G1 dọn young region cộng thêm một số old region có nhiều rác nhất. Đây là "garbage-first": dọn vùng cho lại nhiều bộ nhớ nhất trước.
+5. **Dự đoán pause.** G1 theo dõi thời gian dọn từng region trong quá khứ, ước lượng và chọn số region vừa đủ để tổng thời gian nằm trong {{MaxGCPauseMillis}} (mặc định thường 200 ms).
+
+### RSet, card table, write barrier
+Để dọn region A, G1 phải biết object sống trong A có được tham chiếu từ đâu. Quét toàn heap sẽ phá mục tiêu pause. Vì vậy:
+- **Card table** chia heap thành các card nhỏ (512 byte). Khi ứng dụng ghi {{x.field = y}}, **write barrier** đánh dấu card của {{x}} là "bẩn" (dirty).
+- Ở thời điểm phù hợp, G1 xử lý dirty card để cập nhật **RSet** của region chứa {{y}}: "region của x có tham chiếu trỏ vào region của y".
+- Chi phí: write barrier chạy rất thường xuyên (mọi lần ghi tham chiếu), nên có overhead nhỏ nhưng liên tục. RSet cũng tốn bộ nhớ (có thể vài % heap).
+
+~~~text
+Region 1 (Old)  ----ref---->  Region 7 (Old, nhiều rác)
+Region 3 (Young) ---ref--->  Region 7
+=> RSet của Region 7 ghi: {Region 1, Region 3}
+Khi mixed GC dọn Region 7: chỉ cần quét root + Region 1 + Region 3,
+không cần quét toàn bộ heap.
+~~~
+
+### Ví dụ đời thực
+Giả định: dịch vụ API Java 17, heap 8 GB, ~3.000 req/s, object sống ngắn nhiều (JSON/request context). Dùng G1 với {{-XX:MaxGCPauseMillis=200}}. Trạng thái ổn: young GC 20–40 ms, 8–12 lần/phút; mixed GC thỉnh thoảng 60–120 ms. Một ngày team phát hiện p99 tăng vọt 1–2 giây theo chu kỳ. GC log cho thấy có humongous allocation (object ~5 MB, trong khi region 4 MB) và to-space exhausted/evacuation failure. Nguyên nhân: một API trả về mảng byte lớn dựng trong bộ nhớ. Xử lý: chuyển sang stream/ghi từng phần (chunk) để tránh object khổng lồ, đồng thời xem xét {{-XX:G1HeapRegionSize}} phù hợp. Kết quả: humongous allocation biến mất, pause p99 ổn lại dưới 150 ms.
+
+### Lỗi hay gặp
+- **Humongous object** (object > 50% region): chiếm humongous region liên tiếp, khó thu hồi, có thể gây pause/Full GC bất lợi. Tránh tạo object cực lớn; dùng streaming/chia nhỏ.
+- **MaxGCPauseMillis đặt quá thấp** (ví dụ 20 ms) so với heap/tải: G1 không kịp đạt mục tiêu, có thể thu gom ít hơn, dẫn tới áp lực bộ nhớ. Đặt mục tiêu thực tế.
+- **Heap quá chật**: evacuation failure (không còn region trống để copy object sống). Tăng heap hoặc giảm allocation rate.
+- **Bỏ qua allocation rate**: GC tuning không cứu được code tạo rác quá nhiều. Dùng JFR/async-profiler xem allocation.
+
+### Trả lời mẫu khi phỏng vấn
+"G1 chia heap thành nhiều region để có thể thu gom từng phần thay vì quét toàn bộ heap. Mỗi region có remembered set ghi các tham chiếu trỏ vào nó, và G1 duy trì RSet nhờ card table cùng write barrier mỗi khi ứng dụng ghi tham chiếu. Young GC dọn Eden/Survivor bằng cách copy object sống; concurrent marking tìm old region có nhiều rác; mixed GC dọn cả young và một số old region nhiều rác nhất, đúng tinh thần garbage-first. Pause dự đoán được vì G1 đo thời gian dọn region trong quá khứ và chọn số region vừa đủ để nằm trong MaxGCPauseMillis. Trên production, tôi đọc GC log/JFR, tránh humongous object, và đặt mục tiêu pause thực tế thay vì quá thấp."
+
+> Senior tip: nếu p99 tăng theo chu kỳ, đừng vội đổi sang ZGC. Hãy kiểm tra allocation rate, humongous allocation và evacuation failure trong GC log trước. Nhiều trường hợp "GC chậm" thực ra là ứng dụng tạo rác quá nhanh hoặc tạo object quá lớn.`,
+  follow: ['Humongous object gây ảnh hưởng gì đến G1?', 'Khi nào G1 không đạt được MaxGCPauseMillis?'],
+  tags: ['G1', 'GC', 'region', 'RSet', 'write barrier']
+}
+,
+{
+  id: 'jvm-040',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'ZGC generational (Java 21): colored pointers, load barrier, concurrent relocation; khi nào chọn ZGC vs G1.',
+  a: `**Tóm tắt:** ZGC thế hệ (generational, JEP 439 từ Java 21, mặc định từ JDK 23) là GC độ trễ thấp: phần lớn công việc đánh dấu, di chuyển (relocate) object diễn ra song song với luồng ứng dụng, nên pause thường rất ngắn (thường dưới 1 ms) ngay cả heap lớn. Nó dùng colored pointers (mã hóa trạng thái GC ngay trong bit của con trỏ), load barrier (kiểm tra khi đọc tham chiếu) và concurrent relocation. Chọn ZGC khi mục tiêu là tail latency/p99 nghiêm ngặt hoặc heap rất lớn; chọn G1 khi cần throughput tổng thể tốt, vận hành quen thuộc, hoặc workload không quá nhạy latency.
+
+### Thuật ngữ (giải thích lần đầu)
+- **GC pause (STW - Stop-The-World)**: khoảng thời gian JVM tạm dừng luồng ứng dụng để làm việc GC.
+- **Latency / p99**: latency là độ trễ; p99 là mức độ trễ mà 99% request nhanh hơn (đuôi chậm).
+- **Throughput**: tổng lượng công việc hoàn thành; GC throughput cao nghĩa là ít thời gian CPU dành cho GC.
+- **Concurrent**: chạy song song/cùng thời gian với luồng ứng dụng (không phải lúc nào cũng STW).
+- **Colored pointer**: con trỏ (địa chỉ tham chiếu) có vài bit mang metadata trạng thái GC (ví dụ đã đánh dấu, đã remap).
+- **Load barrier**: mã JVM chèn khi ứng dụng đọc một tham chiếu; dùng để kiểm tra/sửa tham chiếu nếu object đã bị di chuyển.
+- **Relocation**: di chuyển object sang vùng nhớ mới để gom vùng trống (compaction), tránh phân mảnh.
+- **Generational**: chia object theo tuổi (young/old). Object mới chết sớm rất nhiều, nên gom young thường hiệu quả.
+
+### Vì sao ZGC ra đời
+Với heap lớn (chục đến trăm GB) và yêu cầu p99 thấp, GC truyền thống dễ gây pause dài khi phải quét/di chuyển nhiều dữ liệu. Hãy tưởng tượng đang dọn kho rất lớn mà bắt tất cả công nhân dừng làm việc: kho càng lớn, thời gian dừng càng lâu. ZGC chọn cách khác: vừa dọn vừa để công nhân tiếp tục làm, chỉ dừng rất ngắn để chốt các điểm gốc (roots). Đổi lại, ZGC phức tạp hơn và có overhead (barrier, thêm metadata).
+
+### Cơ chế chính (ở mức hiểu để phỏng vấn)
+1. **Colored pointers.** Thay vì chỉ lưu địa chỉ, con trỏ mang thêm "màu" (bit metadata) cho biết trạng thái liên quan tới GC (ví dụ: tham chiếu còn hợp lệ theo mapping hiện tại hay cần sửa). Nhờ đó ZGC biết khi nào cần xử lý tham chiếu.
+2. **Load barrier.** Mỗi khi ứng dụng tải (load) một tham chiếu từ heap/stack theo ngữ cảnh cần thiết, barrier kiểm tra metadata. Nếu object đã được relocate, barrier giúp lấy đúng địa chỉ mới (self-healing/remap). Vì chạy khi đọc, nó có chi phí nhỏ nhưng phân tán.
+3. **Concurrent marking.** ZGC đánh dấu object còn sống song song với ứng dụng.
+4. **Concurrent relocation (compaction).** ZGC di chuyển object sống sang region mới để giải phóng vùng nhớ và giảm phân mảnh, vẫn song song với ứng dụng. Ứng dụng có thể đọc object đang/đã di chuyển nhờ load barrier.
+5. **Generational (Java 21).** ZGC generational gom young generation thường xuyên (object chết trẻ) và gom old ít hơn. Điều này cải thiện hiệu quả so với ZGC non-generational trước đó vì phù hợp đặc tính "đa số object chết sớm".
+
+### ZGC vs G1: chọn thế nào
+| Tiêu chí | G1 | ZGC generational |
+|---|---|---|
+| Mục tiêu chính | Cân bằng throughput/latency | Latency rất thấp (pause ngắn) |
+| Pause điển hình | Vài chục đến vài trăm ms (tùy heap/tải) | Thường sub-millisecond đến rất thấp (tùy workload) |
+| Heap lớn | Tốt, nhưng pause có thể tăng | Thiết kế cho heap lớn với pause ổn định |
+| Overhead CPU/bộ nhớ | Thường thấp hơn, quen thuộc | Có overhead barrier/metadata; throughput có thể thấp hơn trong một số workload |
+| Độ trưởng thành vận hành | Rất phổ biến, mặc định nhiều môi trường | Cần đo kỹ; Java 21+ generational là lựa chọn chính |
+
+Quy tắc thực dụng: **đừng chọn theo "mới/ngầu"**. Chọn theo SLO (mục tiêu p99/p999), heap size, allocation rate, và kết quả benchmark/profiling thực tế.
+
+### Ví dụ đời thực
+Giả định: hệ thống pricing/gợi ý giá, Java 21, heap 32 GB, 2.500 req/s, SLO p99 < 120 ms. Dùng G1, phần lớn thời gian p99 ổn, nhưng khi traffic tăng và mixed GC xảy ra, có nhịp pause 180–350 ms làm p99 vượt SLO 2–3 lần/giờ. Allocation rate ~1.8 GB/s, chủ yếu object sống ngắn. Team thử ZGC generational trên môi trường staging với cùng traffic replay: pause GC giảm mạnh (quan sát dưới 1 ms phần lớn), p99 ổn định ~85–95 ms; CPU tổng thể tăng khoảng 6–8% do barrier/GC concurrent. Đánh đổi được chấp nhận vì SLO latency quan trọng hơn chi phí CPU. Trước khi lên production, team xác nhận bằng JFR và test 48 giờ.
+
+### Lỗi hay gặp
+- **Kỳ vọng throughput tăng khi chuyển ZGC**: ZGC tối ưu latency, có thể giảm throughput. Luôn đo.
+- **Allocation rate quá cao**: GC nào cũng vất vả nếu tạo rác quá nhanh. Tối ưu cấp phát trước.
+- **Heap sizing không phù hợp**: heap quá chật làm GC chạy liên tục. Đặt heap đủ và theo dõi.
+- **Không đo trên workload thật**: benchmark vi mô không phản ánh allocation/pause thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+"ZGC generational (Java 21+, mặc định từ JDK 23) hướng tới độ trễ rất thấp bằng cách làm phần lớn công việc GC song song với ứng dụng. Nó dùng colored pointers để gắn metadata trạng thái vào con trỏ, load barrier để kiểm tra khi đọc tham chiếu và sửa khi object đã được relocate, cùng concurrent relocation để di chuyển object mà không cần dừng ứng dụng lâu. Chế độ generational giúp tận dụng đặc tính object chết trẻ nên hiệu quả hơn. Tôi chọn ZGC khi SLO p99/p999 rất nghiêm ngặt hoặc heap lớn và G1 đã gây pause ảnh hưởng rõ; chọn G1 khi cần throughput ổn, vận hành đơn giản và latency hiện tại đạt yêu cầu. Trước khi đổi collector, tôi luôn đo bằng GC log/JFR trên workload thật để xem pause, throughput và chi phí CPU."
+
+> Senior tip: thay GC là quyết định có đánh đổi. Hãy có baseline (p99, throughput, CPU, allocation rate) trước và sau; nếu chỉ nhìn "pause thấp hơn" mà bỏ qua CPU/chi phí hạ tầng, bạn có thể tối ưu sai mục tiêu.`,
+  follow: ['Load barrier ảnh hưởng hiệu năng thế nào?', 'Khi nào G1 là lựa chọn đủ tốt thay vì ZGC?'],
+  tags: ['ZGC', 'GC', 'colored pointers', 'load barrier', 'latency']
+}
+,
+{
+  id: 'jvm-041',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'JVM trong container: UseContainerSupport, MaxRAMPercentage, active processor count, OOMKilled vs OutOfMemoryError, native memory.',
+  a: `**Tóm tắt:** JVM trong container đọc limit của container (cgroup) nhờ UseContainerSupport (mặc định bật từ JDK 8u191+). MaxRAMPercentage đặt heap = % RAM container. Active processor count ảnh hưởng thread pool mặc định. OOMKilled là kernel kill process (hết memory cgroup) còn OutOfMemoryError là JVM ném exception khi heap đầy. Native memory (metaspace, thread stack, code cache) nằm ngoài heap và theo dõi bằng -XX:NativeMemoryTracking + jcmd VM.native_memory.
+
+### Hiểu nhanh
+Container giống một căn phòng có trần thấp; JVM phải biết trần thấp để không xây tủ cao chạm trần. Nếu không biết, JVM xây tủ cao → bị đập đầu (OOMKilled).
+
+### Cơ chế
+1. UseContainerSupport: JVM đọc cgroup memory/CPU limit.
+2. MaxRAMPercentage: heap = % của limit (mặc định ~25% trước, nên đặt ~75%).
+3. Active processor count: số CPU container → affect ForkJoinPool/commonPool parallelism và GC thread.
+4. OOMKilled: kernel kill khi vượt cgroup memory; không có stack trace Java.
+5. OutOfMemoryError: JVM heap đầy, ném exception.
+6. Native memory: metaspace, thread stack, code cache, direct buffer; NMT theo dõi.
+
+### Trên production
+- Triệu chứng: pod restart không log, OOMKilled trong k8s events; hoặc OOM heap.
+- Đo: kubectl describe pod; jcmd VM.native_memory summary.
+- Tuning: MaxRAMPercentage=75, -XX:NativeMemoryTracking=summary, giới hạn thread/direct buffer.
+
+### Lỗi hay gặp
+- MaxRAMPercentage mặc định thấp → heap nhỏ, throughput thấp.
+- Thread leak → native memory tăng → OOMKilled.
+
+### Trả lời miệng 1 phút
+"UseContainerSupport làm JVM đọc limit container. MaxRAMPercentage đặt heap theo % RAM. OOMKilled là kernel kill, OutOfMemoryError là JVM exception. Native memory theo dõi bằng NMT + jcmd."
+
+> Senior tip: OOMKilled không có stack trace; luôn bật NMT summary trong production để điều tra.`,
+  follow: ['Cách phân biệt OOMKilled và OutOfMemoryError?', 'NMT summary đọc thế nào?'],
+  tags: ['container', 'cgroup', 'OOMKilled', 'NMT']
+}
+,
+{
+  id: 'jvm-042',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'JFR + JMC và async-profiler: profile allocation và lock contention trên production với overhead thấp; flame graph.',
+  a: `**Tóm tắt:** Để tìm nguyên nhân CPU cao, GC nhiều, latency tăng trên production, cần profiler có overhead thấp. **JFR (Java Flight Recorder)** là "hộp đen" của JVM: ghi sự kiện (GC, allocation, lock, safepoint, thread...) với chi phí thấp, có thể chạy liên tục. **JMC (Java Mission Control)** mở và phân tích file {{.jfr}}. **async-profiler** lấy mẫu stack trace theo CPU, allocation, lock và xuất **flame graph** để thấy nhanh hotspot. Ba công cụ bổ trợ nhau: JFR cho bức tranh toàn cảnh theo thời gian, async-profiler cho khoanh vùng nguyên nhân cụ thể.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Profiler**: công cụ đo chương trình đang tiêu tốn CPU, bộ nhớ, lock ở đâu.
+- **Overhead**: chi phí thêm do công cụ đo gây ra. Production cần overhead thấp.
+- **Sampling**: lấy mẫu định kỳ (ví dụ chụp stack trace theo chu kỳ) thay vì ghi mọi thứ.
+- **Allocation profiling**: đo nơi code cấp phát object nhiều, thường gây GC pressure (áp lực GC).
+- **Lock contention**: nhiều thread tranh cùng lock phải chờ nhau, làm tăng latency.
+- **Flame graph**: biểu đồ stack trace; **bề ngang** biểu thị tỷ lệ mẫu/thời gian, bề dọc là call stack.
+- **Hotspot**: đoạn code chiếm tỷ lệ lớn tài nguyên.
+
+### JFR (Java Flight Recorder)
+JFR tích hợp trong JVM (OpenJDK), ghi sự kiện như GC, allocation, thread, lock contention, safepoint, compilation. Ưu điểm: overhead thấp, phù hợp production.
+
+~~~text
+// Khởi động kèm recording
+-XX:StartFlightRecording=filename=app.jfr,dumponexit=true,settings=profile
+
+// Hoặc dùng jcmd khi đang chạy
+jcmd <pid> JFR.start settings=profile filename=/tmp/app.jfr duration=10m
+jcmd <pid> JFR.dump filename=/tmp/app.jfr
+jcmd <pid> JFR.stop
+~~~
+
+{{settings=profile}} thu thập chi tiết hơn {{default}} (overhead có thể nhỉnh hơn một chút, vẫn cần đánh giá theo hệ thống).
+
+### JMC (Java Mission Control)
+JMC phân tích file {{.jfr}}: biểu đồ CPU/heap/GC theo thời gian, allocation hot methods/classes, lock contention, thread, safepoint. JMC trả lời: "sự cố xảy ra lúc nào, trùng với GC/lock/allocation gì?".
+
+### async-profiler
+async-profiler lấy mẫu stack trace (thường ít bị safepoint bias hơn profiler cũ) và xuất flame graph HTML.
+~~~text
+./asprof -d 60 -e cpu   -f cpu.html   <pid>
+./asprof -d 60 -e alloc -f alloc.html <pid>
+./asprof -d 60 -e lock  -f lock.html  <pid>
+~~~
+
+### Đọc flame graph đúng cách
+- Trục dọc: call stack (hàm dưới gọi hàm trên).
+- Trục ngang: **chiều rộng** = tỷ lệ mẫu (CPU/allocation/lock). "Bức tường" rộng là hotspot.
+- Không đọc độ cao stack như thời gian. Hàm sâu không đồng nghĩa chậm.
+
+### Ví dụ đời thực
+Giả định: API tìm kiếm 6 pod, 4 vCPU/pod, 4 GB heap, p99 thường 110 ms. Sau release, CPU tăng 45% -> 78%, GC young tăng gấp đôi, p99 420 ms. JFR 15 phút (settings=profile) mở bằng JMC cho thấy allocation rate tăng mạnh, nhiều {{String}}/{{HashMap}} tạm. async-profiler {{-e alloc}} 60 giây cho flame graph chỉ hotspot ở {{buildResponse()}}: tạo map mới mỗi phần tử và serialize trung gian. Tối ưu: bỏ bước trung gian, giảm object tạm. Kết quả: allocation rate giảm ~55%, CPU ~50%, p99 ~130 ms. Không cần restart hay attach debugger.
+
+### Lỗi hay gặp
+- **Cấu hình profiler quá nặng**: sample quá dày làm overhead tăng. Chọn profile phù hợp.
+- **Đọc sai flame graph**: nhìn chiều cao thay vì chiều rộng.
+- **Chỉ profile CPU**: latency cao có thể do allocation/GC hoặc lock contention. Chọn mode {{alloc}}/{{lock}} khi phù hợp.
+- **Chụp sai thời điểm**: snapshot 60 giây phải rơi vào lúc có sự cố; JFR timeline giúp chọn đúng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi điều tra performance trên production, tôi ưu tiên công cụ overhead thấp. JFR là lựa chọn đầu tiên vì tích hợp trong JVM, ghi được GC, allocation, lock, safepoint và thread theo thời gian; tôi dùng JMC để phân tích file .jfr. Với hotspot cụ thể, tôi dùng async-profiler để lấy mẫu CPU, allocation hoặc lock contention và xuất flame graph. Khi đọc flame graph, tôi nhìn bề ngang vì nó biểu thị tỷ lệ mẫu, còn bề dọc chỉ là call stack. Tôi thường kết hợp: JFR cho bức tranh toàn cảnh theo timeline, async-profiler cho nguyên nhân ở method nào. Bước đầu tiên luôn là xác định bottleneck là CPU-bound, allocation/GC-bound, lock contention hay I/O, rồi chọn mode profile phù hợp."
+
+> Senior tip: đừng tối ưu trước khi biết bottleneck. CPU, allocation và lock contention có triệu chứng giống nhau (latency cao) nhưng cách sửa khác nhau. Sai mode profiler sẽ dẫn tới kết luận sai.`,
+  follow: ['Làm sao phân biệt bottleneck do allocation và do lock contention?', 'Khi nào nên dùng JFR continuous recording?'],
+  tags: ['JFR', 'JMC', 'async-profiler', 'flame graph', 'profiling']
+}
+,
+{
+  id: 'jvm-043',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Metaspace: class metadata, classloader leak, vì sao redeploy Tomcat làm metaspace tăng và cách xử lý.',
+  a: `**Tóm tắt:** **Metaspace** là vùng native memory (ngoài heap Java) lưu metadata của class: cấu trúc class, method, field, constant pool... (từ Java 8 thay PermGen). **Classloader leak** xảy ra khi một GC root vẫn giữ tham chiếu tới {{ClassLoader}} của ứng dụng đã redeploy, khiến GC không thể thu hồi classloader đó và toàn bộ class metadata liên quan. Trên Tomcat, mỗi lần redeploy tạo ClassLoader mới; nếu ClassLoader cũ bị leak, Metaspace tăng dần qua các lần deploy và có thể gây {{OutOfMemoryError: Metaspace}}.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Class metadata**: thông tin JVM cần để hiểu class (tên, method, bytecode metadata, constant pool...), không phải dữ liệu instance.
+- **Metaspace**: vùng native memory chứa class metadata. Không cố định kiểu PermGen, nhưng vẫn có thể cạn khi leak.
+- **ClassLoader**: thành phần nạp class. Trên Tomcat, mỗi webapp thường có ClassLoader riêng để cô lập.
+- **Redeploy**: gỡ bản cũ và nạp bản mới mà không restart toàn bộ JVM.
+- **Classloader leak**: ClassLoader cũ còn được tham chiếu nên GC không thu hồi; các class do nó nạp cũng không giải phóng.
+- **GC root**: điểm xuất phát để GC xác định object còn sống (thread stack, static field, JNI ref...). Nếu từ GC root còn đường tới ClassLoader cũ, nó vẫn sống.
+
+### Metaspace và vòng đời ClassLoader
+Khi JVM nạp class qua ClassLoader, metadata nằm trong Metaspace. Khi ClassLoader không còn tham chiếu và được GC, JVM có thể giải phóng metadata của các class do nó nạp. Vì vậy Metaspace phụ thuộc mạnh vào vòng đời ClassLoader — rất quan trọng khi redeploy.
+
+Cờ liên quan:
+- {{-XX:MetaspaceSize}}: ngưỡng kích hoạt GC/điều chỉnh metadata (không phải "kích thước cố định").
+- {{-XX:MaxMetaspaceSize}}: giới hạn tối đa Metaspace. Giúp fail fast khi leak, nhưng đặt quá thấp gây OOME giả.
+
+### Vì sao redeploy Tomcat làm Metaspace tăng
+1. Deploy webapp v1: Tomcat tạo WebappClassLoader W1, nạp class v1 -> Metaspace tăng.
+2. Redeploy v2: Tomcat tạo W2. Nếu sạch, W1 không còn tham chiếu -> GC thu hồi W1 -> metadata v1 giải phóng.
+3. Nếu có leak (ThreadLocal chưa {{remove()}}, thread nền chưa shutdown, JDBC driver/MBean đăng ký toàn cục chưa gỡ, cache static giữ object webapp...), GC root vẫn trỏ tới W1.
+4. W1 không GC được. Sau N lần redeploy, W1..Wn-1 còn sống -> Metaspace tích lũy -> {{OutOfMemoryError: Metaspace}}.
+
+Hãy tưởng tượng mỗi lần đổi người thuê (redeploy) bạn cấp chìa khóa mới (ClassLoader mới), nhưng người bảo vệ (thread pool server, sống lâu) vẫn giữ đồ của người thuê cũ (ThreadLocal/static ref). Phòng cũ không bao giờ dọn được.
+
+### Nguyên nhân leak phổ biến
+- **ThreadLocal không remove**: thread Tomcat pool sống qua redeploy; giá trị ThreadLocal giữ object/class webapp cũ.
+- **Thread/timer/executor tự tạo không shutdown**: thread nền còn chạy, giữ classloader cũ.
+- **Đăng ký toàn cục không gỡ**: JDBC driver, JMX MBean, logging hook, serialization hook.
+- **Cache static**: cache ở parent/common classloader chứa object webapp.
+- **Thư viện bên thứ ba**: cần kiểm tra phiên bản và cơ chế shutdown.
+
+### Cách phát hiện
+1. **Triệu chứng**: sau mỗi redeploy Metaspace/native memory tăng và không giảm; vài lần sau bị OOM Metaspace.
+2. **Theo dõi**: JFR, {{jcmd <pid> VM.metaspace}}, VisualVM/JMC.
+3. **Heap dump**: sau vài lần redeploy, dùng Eclipse MAT tìm nhiều ClassLoader cùng webapp, xem **Path to GC Roots** để biết ai giữ.
+4. **Tomcat log**: Tomcat có cảnh báo một số leak khi undeploy (không bao phủ hết).
+
+### Ví dụ đời thực
+Giả định: Tomcat chạy webapp nội bộ, redeploy 1–2 lần/ngày, heap 2 GB. Ban đầu Metaspace ~180 MB. Mỗi redeploy tăng 60–90 MB, Full GC không giảm. Lần redeploy thứ 12 gặp {{OutOfMemoryError: Metaspace}}. Heap dump (MAT) cho thấy 11 {{WebappClassLoader}} còn sống; GC root từ thread pool Tomcat tới {{ThreadLocal}} chứa {{UserContext}} của webapp cũ. Nguyên nhân: filter {{set}} ThreadLocal nhưng không {{remove()}} trong {{finally}}. Cách xử lý: luôn {{remove()}} ở {{finally}}, shutdown thread nền ở {{ServletContextListener.contextDestroyed}}, kiểm tra deregister JDBC/MBean. Kết quả: redeploy 20 lần, Metaspace dao động 170–210 MB, không tăng tích lũy.
+
+### Cách xử lý và phòng tránh
+- **Dọn khi undeploy**: {{contextDestroyed}} shutdown thread pool, timer, scheduler, client.
+- **ThreadLocal**: {{set}} đi kèm {{remove}} trong {{finally}}.
+- **Gỡ đăng ký toàn cục**: deregister JDBC driver, MBean, hook.
+- **Giới hạn/giám sát**: {{MaxMetaspaceSize}} hợp lý để phát hiện leak sớm.
+- **Giảm redeploy nóng dài hạn**: rolling restart process/pod là cách "sạch" nhất; redeploy nóng cần kỷ luật quản lý tài nguyên.
+
+### Trả lời mẫu khi phỏng vấn
+"Metaspace lưu class metadata trong native memory, thay PermGen từ Java 8. Trên Tomcat, mỗi lần redeploy tạo ClassLoader mới; nếu ClassLoader cũ được GC thì metadata cũ giải phóng. Classloader leak xảy ra khi còn GC root giữ ClassLoader cũ, ví dụ ThreadLocal chưa remove, thread nền chưa shutdown, hoặc đăng ký toàn cục như JDBC/MBean chưa gỡ. Khi đó Metaspace tăng dần sau mỗi redeploy và có thể gây OutOfMemoryError: Metaspace. Để xử lý, tôi theo dõi Metaspace bằng JFR hoặc jcmd, chụp heap dump và dùng MAT tìm ClassLoader còn sống rồi xem Path to GC Roots. Phòng tránh: luôn remove ThreadLocal trong finally, shutdown resource ở contextDestroyed, và đặt MaxMetaspaceSize để phát hiện leak sớm."
+
+> Senior tip: tiêu chuẩn "redeploy an toàn" là redeploy nhiều lần mà Metaspace và số ClassLoader webapp không tăng tích lũy. Chỉ test một lần redeploy có thể bỏ sót leak tích lũy chậm.`,
+  follow: ['Làm sao dùng heap dump/MAT để tìm classloader leak?', 'Tại sao ThreadLocal trong thread pool nguy hiểm khi redeploy?'],
+  tags: ['metaspace', 'classloader', 'memory leak', 'tomcat']
+}
+,
+{
+  id: 'jvm-044',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'GC tuning tổng thể: chọn collector theo workload, đọc GC log, heap sizing, pause target; khi nào đổi collector.',
+  a: `**Tóm tắt:** GC tuning là bài toán đo lường và đánh đổi, không phải "chọn cờ thần kỳ". Chọn collector theo workload: **Serial** cho app nhỏ/ít lõi; **Parallel** ưu tiên throughput; **G1** cân bằng, phổ biến cho server; **ZGC generational** (Java 21+) ưu tiên pause rất thấp/heap lớn. Đọc GC log/JFR để hiểu pause, tần suất, allocation rate, promotion. Heap sizing cần đủ rộng; thường đặt {{-Xms}}={{-Xmx}}. Đổi collector chỉ khi có dữ liệu cho thấy collector hiện tại không đạt SLO và đã loại trừ nguyên nhân do allocation/object lifecycle.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Workload**: đặc tính tải (request ngắn/dài, allocation rate, object sống lâu, yêu cầu latency hay throughput).
+- **Throughput**: tỷ lệ thời gian ứng dụng làm việc hữu ích (ít bị GC chiếm).
+- **Pause (STW)**: thời gian ứng dụng bị dừng do GC.
+- **Allocation rate**: tốc độ tạo object mới (MB/s). Cao -> GC thường xuyên.
+- **Promotion**: object sống qua young GC được đẩy sang old generation.
+- **GC log**: nhật ký GC; JDK 9+ dùng Unified Logging {{-Xlog:gc*}}.
+- **SLO**: mục tiêu mức dịch vụ (ví dụ p99 < 200 ms).
+
+### Chọn collector theo workload
+| Collector | Phù hợp | Đánh đổi |
+|---|---|---|
+| Serial | Heap nhỏ, 1 lõi, CLI/batch đơn giản | Pause dài khi heap/tải tăng |
+| Parallel | Batch/throughput, chấp nhận pause | Pause STW có thể lớn |
+| G1 | Server đa số, cần cân bằng | Pause khá, không thấp như ZGC |
+| ZGC generational | p99/p999 nghiêm ngặt, heap lớn | Overhead CPU/throughput có thể đổi; cần đo |
+
+Không có collector tốt nhất cho mọi bài. Senior trả lời: nêu tiêu chí, cách đo, rồi chọn.
+
+### Đọc GC log / quan sát
+~~~text
+-Xlog:gc*:file=gc.log:time,uptime,level,tags:filecount=5,filesize=20m
+~~~
+
+Chỉ số cần nhìn:
+- **Pause duration**: có vượt SLO p99 không?
+- **Frequency**: young GC quá dày thường do allocation rate cao hoặc heap/young nhỏ.
+- **Cause**: Allocation Failure, Humongous Allocation, Metadata GC Threshold...
+- **Heap before/after**: sau GC vẫn cao -> retention/leak hoặc heap nhỏ.
+- **Promotion/Old occupancy**: old tăng dần cần soi object sống lâu.
+
+Bổ sung JFR và metrics (Micrometer/Prometheus) để xem timeline cùng latency.
+
+### Heap sizing và pause target
+- **{{-Xms}} = {{-Xmx}}** trên server: tránh resize, giảm nhiễu.
+- Heap quá nhỏ: GC dày, throughput giảm, nguy cơ OOME.
+- Heap quá lớn: có thể che leak; với collector pause dài, pause có thể tăng.
+- **G1 pause target**: {{-XX:MaxGCPauseMillis=200}} là mục tiêu, không phải cam kết cứng. Đặt quá thấp có thể phản tác dụng.
+
+### Ví dụ đời thực
+Giả định: dịch vụ báo cáo Java 17, heap 6 GB, Parallel GC, spike tạo nhiều object tạm (export CSV/JSON). p99 thường 150 ms nhưng khi major pause xảy ra request giật 1.2–2.8 giây, 3–5 lần/giờ. GC log: allocation rate cao, pause dài. SLO p99 < 400 ms. Bước 1: tối ưu code (streaming CSV, bỏ chuỗi trung gian) -> allocation rate giảm 35%, pause còn 700–1200 ms. Bước 2: chuyển G1 với {{-Xms6g -Xmx6g}}, {{MaxGCPauseMillis=200}} (mục tiêu thực tế), đo traffic replay: pause đa số 40–140 ms, p99 ~220 ms. Không chọn ZGC vì SLO đã đạt và thay đổi tối thiểu.
+
+### Khi nào đổi collector
+Đổi khi: có baseline (pause, throughput, CPU, allocation); collector hiện tại không đạt SLO dù đã xử lý allocation/leak/sizing; đã benchmark trên workload thật.
+
+Không đổi khi: chưa đọc GC log/JFR; nguyên nhân gốc là allocation cao, leak, sizing sai; hoặc chỉ vì "blog nói nhanh hơn".
+
+### Lỗi hay gặp
+- **Copy-paste flag**: mỗi workload khác nhau.
+- **Chỉ nhìn pause, bỏ throughput/CPU**: low-pause GC có thể tốn CPU.
+- **Nhầm allocation rate cao với leak**: allocation cao -> GC dày; leak -> heap sau GC tăng dần.
+
+### Trả lời mẫu khi phỏng vấn
+"GC tuning của tôi bắt đầu từ SLO và đặc tính workload. Tôi chọn collector theo đánh đổi: Parallel cho throughput/batch, G1 cho cân bằng trên server, ZGC generational khi cần pause rất thấp với heap lớn. Tôi bật GC log và dùng JFR để đọc pause duration, frequency, allocation rate, promotion và nguyên nhân GC. Về heap sizing, tôi thường đặt Xms bằng Xmx trên server và đảm bảo heap đủ để GC không chạy quá dày; với G1 dùng MaxGCPauseMillis như mục tiêu thực tế. Tôi chỉ đổi collector khi có baseline và xác nhận vấn đề không đến từ allocation cao, leak hay sizing sai. GC tuning là đo, đổi một thứ, rồi đo lại."
+
+> Senior tip: thứ tự hiệu quả: (1) allocation rate có quá cao không, (2) có leak/retention không, (3) heap sizing phù hợp không, (4) mới chọn/đổi collector và tinh chỉnh flag. Đảo thứ tự này thường tốn thời gian và rủi ro.`,
+  follow: ['Làm sao phân biệt allocation rate cao với memory leak qua GC log?', 'MaxGCPauseMillis của G1 có phải cam kết cứng không?'],
+  tags: ['GC tuning', 'collector', 'heap', 'pause', 'GC log']
+}
 );

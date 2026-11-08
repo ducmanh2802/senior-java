@@ -96,3 +96,11 @@
   .view-path .path-continue .btn { flex: 1 1 100%; }
   .view-path .path-actions .btn { flex: 1 1 100%; }
 }
+
+/* track switch (#/path vs #/path/platform) + hands-on project block */
+.view-path .path-tracks { margin: 0 0 14px; }
+.view-path .path-project { margin: 10px 0 14px; padding: 12px 14px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 8px; }
+.view-path .path-project .path-h { margin-top: 0; }
+.view-path .path-basics { margin: 10px 0 14px; }
+.view-path .path-basics li { margin: 4px 0; line-height: 1.5; }
+.view-path .path-basics a { font-weight: 600; }

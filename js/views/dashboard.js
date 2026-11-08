@@ -38,6 +38,17 @@
       'dash.emptyPlan': 'Chưa có dữ liệu để lập kế hoạch.',
       'dash.start': 'Bắt đầu',
       'dash.doneAria': 'Đánh dấu đã xong: {title}',
+      'dash.cgTitle': 'Mục tiêu sự nghiệp', 'dash.cgSet': 'Đặt mục tiêu: vị trí bạn muốn và mức thu nhập (USD/giờ) nhắm tới.',
+      'dash.cgRole': 'Vị trí mục tiêu (vd: Senior Java Backend, remote)', 'dash.cgNow': 'Rate hiện tại (USD/giờ)', 'dash.cgTarget': 'Rate mục tiêu (USD/giờ)',
+      'dash.cgProgress': 'Đang ở ${now}/giờ · còn ${gap}/giờ nữa', 'dash.cgReached': 'Đã đạt mục tiêu ${target}/giờ 🎉 Đặt mục tiêu cao hơn?',
+      'dash.cgMonthly': '≈ ${m}/tháng nếu bill 100 giờ', 'dash.cgPlan': 'Lộ trình: kỹ năng, tiếng Anh, tìm khách',
+      'dash.secTitle': 'Hôm nay theo từng mảng',
+      'dash.secLearn': 'Học', 'dash.secPractice': 'Luyện', 'dash.secInterview': 'Phỏng vấn', 'dash.secCareer': 'Sự nghiệp',
+      'dash.secDue': '{n} câu đến hạn ôn', 'dash.secDueNone': 'Không có câu đến hạn', 'dash.secLesson': 'Bài tiếp theo: {t}',
+      'dash.secAlgo': 'Bài gợi ý: {t}', 'dash.secQuiz': '{n} lượt trắc nghiệm 7 ngày qua', 'dash.secAlgoNone': 'Làm một đề trắc nghiệm',
+      'dash.secMock': '{n} buổi phỏng vấn thử đã làm', 'dash.secSpeak': 'Luyện nói tiếng Anh 10 phút',
+      'dash.secJobs': '{n} việc đang theo dõi · {a} đã nộp', 'dash.secJobsNone': 'Xem tin tuyển dụng hôm nay',
+      'dash.secRemote': 'Freelance & remote: Upwork, tìm khách, giá',
       'dash.duration': '{n}′',
       'dash.pomoStart': '▶ 25 phút tập trung', 'dash.pomoPause': '⏸ Tạm dừng', 'dash.pomoResume': '▶ Tiếp tục',
       'dash.pomoReset': 'Đặt lại Pomodoro',
@@ -103,6 +114,17 @@
       'dash.emptyPlan': 'Not enough data to build a plan yet.',
       'dash.start': 'Start',
       'dash.doneAria': 'Mark as done: {title}',
+      'dash.cgTitle': 'Career goal', 'dash.cgSet': 'Set your goal: the role you want and the income (USD/hour) you aim for.',
+      'dash.cgRole': 'Target role (e.g. Senior Java Backend, remote)', 'dash.cgNow': 'Current rate (USD/hour)', 'dash.cgTarget': 'Target rate (USD/hour)',
+      'dash.cgProgress': 'Now ${now}/hour · ${gap}/hour to go', 'dash.cgReached': 'Target ${target}/hour reached 🎉 Aim higher?',
+      'dash.cgMonthly': '≈ ${m}/month at 100 billed hours', 'dash.cgPlan': 'Plan: skills, English, finding clients',
+      'dash.secTitle': 'Today, area by area',
+      'dash.secLearn': 'Learn', 'dash.secPractice': 'Practice', 'dash.secInterview': 'Interview', 'dash.secCareer': 'Career',
+      'dash.secDue': '{n} questions due', 'dash.secDueNone': 'Nothing due', 'dash.secLesson': 'Next lesson: {t}',
+      'dash.secAlgo': 'Suggested: {t}', 'dash.secQuiz': '{n} quiz runs in the last 7 days', 'dash.secAlgoNone': 'Take a quiz',
+      'dash.secMock': '{n} mock interviews done', 'dash.secSpeak': 'Speak English for 10 minutes',
+      'dash.secJobs': '{n} jobs followed · {a} applied', 'dash.secJobsNone': 'See today’s job digest',
+      'dash.secRemote': 'Freelance & remote: Upwork, clients, pricing',
       'dash.duration': '{n}′',
       'dash.pomoStart': '▶ 25-min focus', 'dash.pomoPause': '⏸ Pause', 'dash.pomoResume': '▶ Resume',
       'dash.pomoReset': 'Reset Pomodoro',
@@ -429,16 +451,53 @@
     '</section>';
   }
 
-  function quickHtml() {
-    const due = App.dueItems().length;
-    const weeks = allWeeks(), started = !!roadmapStart();
-    const tile = (href, ico, title, sub, hot) => '<a class="db-tile' + (hot ? ' hot' : '') + '" href="' + href + '"><span class="db-tile-ico" aria-hidden="true">' + ico + '</span>' +
-      '<b>' + title + '</b><span class="db-dim small">' + sub + '</span></a>';
-    return '<section class="db-quick" aria-label="' + App.esc(tr('quickTitle')) + '">' +
-      tile('#/flash/due', '🔁', tr('qDue'), due ? tr('qDueSub', { n: due }) : tr('qDueNone'), due > 0) +
-      tile('#/interview', '🎙️', tr('qInterview'), tr('qInterviewSub')) +
-      tile('#/sdlc', '🔄', tr('qSdlc'), tr('qSdlcSub')) +
-      tile('#/roadmap', '🗺️', tr('qRoadmap'), started ? tr('qRoadmapSub', { n: weekNumber(), total: weeks.length }) : tr('qRoadmapStart')) +
+  // ---------- career goal (role + USD rate) and the 4 area cards (Learn / Practice / Interview / Career) ----------
+  const money = n => '$' + Math.round(n).toLocaleString('en-US');
+  function careerHtml(editing) {
+    const g = App.store.data.careerGoal || {};
+    const target = Number(g.target) || 0, now = Number(g.now) || 0;
+    if (!editing && target > 0) {
+      const p = Math.min(100, pct(now, target));
+      const line = now >= target ? tr('cgReached', { target: money(target).slice(1) }) : tr('cgProgress', { now: money(now).slice(1), gap: money(target - now).slice(1) });
+      return '<section class="card db-career" data-group="career">' +
+        '<div class="db-career-head"><div><span class="db-career-k">💼 ' + tr('cgTitle') + '</span>' +
+          '<h2>' + App.esc(g.role || '') + ' <span class="db-career-rate">' + money(target) + '/h</span></h2>' +
+          '<span class="db-dim small">' + line + ' · ' + tr('cgMonthly', { m: money(target * 100).slice(1) }) + '</span></div>' +
+          '<div class="db-career-act"><a class="btn sm" href="#/bank/remote">🌍 ' + tr('cgPlan') + '</a>' +
+          '<button type="button" class="btn ghost sm" data-career-edit>' + tr('edit') + '</button></div></div>' +
+        '<div class="progress db-career-bar"><i class="accent" style="width:' + p + '%"></i></div>' +
+      '</section>';
+    }
+    return '<section class="card db-career" data-group="career"><form class="db-career-form" data-career-form>' +
+      '<div class="db-goal-q"><b>💼 ' + tr('cgTitle') + '</b><span class="db-dim small">' + tr('cgSet') + '</span></div>' +
+      '<input class="input" name="role" maxlength="80" required placeholder="' + App.esc(tr('cgRole')) + '" aria-label="' + App.esc(tr('cgRole')) + '" value="' + App.esc(g.role || '') + '">' +
+      '<input class="input" name="now" type="number" min="0" max="1000" step="1" placeholder="' + App.esc(tr('cgNow')) + '" aria-label="' + App.esc(tr('cgNow')) + '" value="' + (now || '') + '">' +
+      '<input class="input" name="target" type="number" min="1" max="1000" step="1" required placeholder="' + App.esc(tr('cgTarget')) + '" aria-label="' + App.esc(tr('cgTarget')) + '" value="' + (target || '') + '">' +
+      '<button type="submit" class="btn primary sm">' + tr('save') + '</button>' +
+    '</form></section>';
+  }
+
+  function sectionsHtml() {
+    const st = App.stats(), due = App.dueItems().length, lesson = nextLesson(), algo = pickAlgo();
+    const weekAgo = Date.now() - 7 * DAY;
+    const quizzes = (App.store.data.quizHistory || []).filter(r => r && r.at >= weekAgo).length;
+    const mocks = (App.store.data.mockHistory || []).length;
+    const jobs = (App.store.data.jobs || []).filter(j => j && !j.deleted);
+    const applied = jobs.filter(j => j.status && j.status !== 'watch').length;
+    const card = (group, ico, name, big, bigLbl, line, href, more) => '<a class="db-sec" data-group="' + group + '" href="' + href + '">' +
+      '<span class="db-sec-top"><span class="db-sec-ico" aria-hidden="true">' + ico + '</span><b>' + name + '</b></span>' +
+      '<span class="db-sec-big">' + big + '<small>' + bigLbl + '</small></span>' +
+      '<span class="db-sec-line">' + line + '</span>' + (more ? '<span class="db-dim small">' + more + '</span>' : '') + '</a>';
+    return '<section class="db-secs" aria-label="' + App.esc(tr('secTitle')) + '">' +
+      card('learn', '📖', tr('secLearn'), pct(st.known, st.total) + '%', tr('ready'),
+        due ? tr('secDue', { n: due }) : tr('secDueNone'), due ? '#/flash/due' : (lesson ? '#/learn/' + encodeURIComponent(lesson.id) : '#/learn'),
+        lesson ? App.esc(tr('secLesson', { t: lesson.title })) : '') +
+      card('practice', '💪', tr('secPractice'), String(quizzes), '/ 7d',
+        algo ? App.esc(tr('secAlgo', { t: algo.title })) : tr('secAlgoNone'), algo ? '#/algo/' + encodeURIComponent(algo.id) : '#/quiz',
+        tr('secQuiz', { n: quizzes })) +
+      card('interview', '🎤', tr('secInterview'), String(mocks), 'mock', tr('secSpeak'), '#/speak', tr('secMock', { n: mocks })) +
+      card('career', '💼', tr('secCareer'), String(jobs.length), 'jobs',
+        jobs.length ? tr('secJobs', { n: jobs.length, a: applied }) : tr('secJobsNone'), jobs.length ? '#/jobs/mine' : '#/jobs', tr('secRemote')) +
     '</section>';
   }
 
@@ -467,10 +526,14 @@
     get title() { return App.t('dash.title'); },
     render(root) {
       const pomo = { left: POMO, id: null, running: false };
-      let editing = false;
+      let editing = false, editingCareer = false;
       const paint = () => {
         const st = App.stats();
-        root.innerHTML = heroHtml(st, editing) + metricsHtml(st) + missionHtml(pomo) + quickHtml() + bottomHtml();
+        root.innerHTML = heroHtml(st, editing) + careerHtml(editingCareer) + metricsHtml(st) + sectionsHtml() + missionHtml(pomo) + bottomHtml();
+      };
+      const refreshCareer = () => {
+        const box = root.querySelector('.db-career');
+        if (box) box.outerHTML = careerHtml(editingCareer);
       };
       const paintPomo = () => {
         const time = root.querySelector('[data-pomo-time]');
@@ -493,6 +556,17 @@
       paint();
 
       const onSubmit = e => {
+        const cf = e.target.closest('[data-career-form]');
+        if (cf) {
+          e.preventDefault();
+          const v = new FormData(cf);
+          const num = k => Math.max(0, Math.min(1000, Number(v.get(k)) || 0));
+          App.store.data.careerGoal = { role: String(v.get('role') || '').trim().slice(0, 80), now: num('now'), target: num('target'), updatedAt: Date.now() };
+          App.store.save();
+          editingCareer = false;
+          refreshCareer();
+          return;
+        }
         const form = e.target.closest('[data-goal-form]');
         if (!form) return;
         e.preventDefault();
@@ -524,6 +598,7 @@
         }
         if (e.target.closest('[data-pomo-reset]')) { stopPomo(); pomo.left = POMO; paintPomo(); return; }
         if (e.target.closest('[data-goal-edit]')) { editing = true; refreshHero(); return; }
+        if (e.target.closest('[data-career-edit]')) { editingCareer = true; refreshCareer(); return; }
         if (e.target.closest('[data-goal-clear]')) {
           App.store.data.interviewPlan = { deleted: true, updatedAt: Date.now() };   // marker so sync does not bring it back
           App.store.save();

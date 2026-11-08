@@ -2901,6 +2901,12 @@ Planner giả định các điều kiện độc lập: {{P(city='HCM' AND zip L
 - Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; so sánh rows estimated vs actual.
 - Fix: {{ANALYZE table;}} sau bulk load; tăng {{default_statistics_target}}; tạo extended statistics; dùng {{SET plan_cache_mode = force_custom_plan}} cho prepared statement.
 
+### Ví dụ đời thực
+Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND district = 'Cầu Giấy'}} chạy 9 giây vì planner chọn Seq Scan. EXPLAIN cho thấy ước lượng **1.200 dòng** nhưng thực tế **380.000** — planner nhân hai selectivity như thể hai cột độc lập, trong khi district phụ thuộc hoàn toàn vào city. Với ước lượng sai đó nó lại chọn nested loop cho bước join tiếp theo. Sửa: {{CREATE STATISTICS orders_city_district (dependencies, ndistinct) ON city, district FROM orders; ANALYZE orders;}} → ước lượng 360.000, planner đổi sang hash join + index phù hợp, 9 giây → 650ms. Một lần khác, sau khi import 5 triệu dòng mới qua đêm, autovacuum chưa kịp ANALYZE nên thống kê cũ — thêm bước {{ANALYZE}} cuối job import.
+
+### Trả lời mẫu khi phỏng vấn
+"Planner PostgreSQL chọn kế hoạch theo chi phí ước lượng, dựa trên thống kê trong pg_statistic, xem qua view pg_stats: tỉ lệ null, n_distinct, danh sách giá trị phổ biến nhất kèm tần suất, và histogram cho phần còn lại. Selectivity là tỉ lệ dòng thoả điều kiện; nhân với số dòng ra ước lượng, và ước lượng quyết định chọn index scan hay seq scan, nested loop hay hash join. Vấn đề hay gặp là các cột có tương quan: planner mặc định coi chúng độc lập và nhân selectivity, nên ước lượng thấp hơn thực tế nhiều lần. CREATE STATISTICS với dependencies hoặc ndistinct, hay mcv, giúp planner hiểu tương quan đó. Khi query chậm, tôi chạy EXPLAIN ANALYZE so số dòng ước lượng với thực tế; lệch hàng chục lần là dấu hiệu thống kê sai, cần ANALYZE, tăng statistics target cho cột lệch hoặc thêm extended statistics."
+
 > Senior tip: Thống kê là "bản đồ" của planner. Query chậm không phải lúc nào cũng do thiếu index — đôi khi chỉ cần ANALYZE lại. Luôn đọc rows estimated vs actual trước khi thêm index.`,
   follow: [
     'Tại sao planner đôi khi chọn seq scan dù có index phù hợp, và bạn ép planner dùng index như thế nào (SET enable_seqscan)?',
@@ -2951,6 +2957,12 @@ EXPLAIN ANALYZE: {{Hash Join ... (actual time=... rows=...) (Batches: 8  Memory 
 - Triệu chứng: query join lớn chậm, temp files đầy disk.
 - Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}, xem {{Temp Read/Write}} trong BUFFERS.
 - Fix: tăng work_mem cho transaction; thêm index để planner chọn nested loop/merge; partition bảng; rewrite query filter sớm.
+
+### Ví dụ đời thực
+Báo cáo đối soát join {{transactions}} (8 triệu dòng/ngày) với {{settlements}} chạy 14 phút. EXPLAIN ANALYZE: {{Hash Join ... Batches: 64 (originally 1) Memory Usage: 4096kB}} và {{temp read=2.1M written=2.1M}} — bảng băm không vừa {{work_mem}} 4MB nên bị chia thành 64 lô và **tràn ra đĩa**. Đặt {{SET LOCAL work_mem = '256MB'}} **chỉ cho phiên chạy báo cáo** (không đổi toàn cục, vì work_mem áp dụng cho từng node sort/hash của từng kết nối — 200 kết nối × vài node × 256MB có thể làm DB hết RAM): Batches còn 1, thời gian còn 2 phút 10 giây. Đồng thời lọc theo ngày trước khi join để bảng băm nhỏ hơn. Một truy vấn khác dùng nested loop vì ước lượng sai chỉ 10 dòng ở bên ngoài nhưng thực tế 200.000 — sửa thống kê thì planner tự đổi sang hash join.
+
+### Trả lời mẫu khi phỏng vấn
+"Nested loop duyệt từng dòng bên ngoài và tìm dòng khớp bên trong, rất nhanh khi bên ngoài ít dòng và bên trong có index, nhưng thảm hoạ nếu bên ngoài thực tế lớn hơn ước lượng. Hash join dựng bảng băm từ bên nhỏ hơn rồi quét bên lớn, tốt cho join bằng trên dữ liệu lớn không có thứ tự sẵn; nếu bảng băm không vừa work_mem thì bị chia lô và ghi tạm ra đĩa, trong EXPLAIN ANALYZE thấy Batches lớn hơn 1 và temp read, written. Merge join cần hai bên đã sắp theo khoá join, hợp khi có index sắp sẵn hoặc dữ liệu rất lớn. Planner chọn theo ước lượng số dòng và chi phí, nên khi join chọn sai tôi kiểm tra ước lượng trước. Với work_mem, tôi tăng theo phiên cho báo cáo nặng bằng SET LOCAL thay vì toàn cục, vì nó được cấp cho từng node của từng kết nối."
 
 > Senior tip: Hash join spill ra đĩa là "kẻ giết hiệu năng thầm lặng". Một dòng {{Disk Usage: 2GB}} trong EXPLAIN thường là nguyên nhân query chậm 10x. Luôn đọc hết EXPLAIN, không chỉ thời gian.`,
   follow: [
@@ -3015,6 +3027,18 @@ Inner index scan loops=1000 → 1000 lookup, mỗi 0.04ms → 40ms. Nếu thêm 
 - Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; lưu plan vào file; so sánh với baseline.
 - Fix: theo bottleneck; không đoán. Dùng {{auto_explain}} để log plan của query chậm tự động: {{shared_preload_libraries = 'auto_explain'}} + {{auto_explain.log_min_duration = '1s'}}.
 
+### Ví dụ đời thực
+API lịch sử giao dịch p95 1,8 giây. Một node trong {{EXPLAIN (ANALYZE, BUFFERS)}}:
+~~~text
+Index Scan using idx_tx_account on transactions t
+  (cost=0.56..8.58 rows=1 width=96) (actual time=0.031..0.044 rows=12 loops=48210)
+  Buffers: shared hit=402118 read=91240
+~~~
+Đọc: ước lượng 1 dòng, thực tế 12 dòng **mỗi lần**, nhưng **loops=48.210** — node này chạy 48 nghìn lần (bên trong một nested loop), tổng thời gian ≈ 0,044ms × 48.210 ≈ 2,1 giây; {{read=91240}} là 91 nghìn block (khoảng 710MB) đọc từ đĩa thay vì từ shared buffers. Nguyên nhân: bên ngoài nested loop thực tế 48 nghìn dòng trong khi ước lượng 300. Sau khi thêm extended statistics và một index composite phù hợp, planner đổi sang hash join; truy vấn còn 120ms, {{read}} giảm còn vài trăm block.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi luôn dùng EXPLAIN với ANALYZE và BUFFERS, trên dữ liệu giống production, cẩn thận vì ANALYZE thực sự chạy câu lệnh, với UPDATE thì bọc trong transaction rồi rollback. Mỗi node tôi xem ba thứ. Một là rows ước lượng so với actual rows: lệch hàng chục lần nghĩa là thống kê sai và planner có thể đã chọn sai kế hoạch. Hai là loops: thời gian hiển thị là trung bình mỗi lần, phải nhân với loops mới ra tổng, node rẻ mà chạy hàng chục nghìn lần thường là thủ phạm. Ba là buffers: shared hit là đọc từ bộ nhớ, read là đọc đĩa, temp là tràn ra đĩa do work_mem. Tôi tìm node chiếm nhiều thời gian thực nhất, xem lý do, rồi quyết định sửa thống kê, thêm hay đổi index, hoặc viết lại truy vấn."
+
 > Senior tip: EXPLAIN là "X-quang" của query. Senior không đoán — senior đọc plan. Luôn bật auto_explain trên production để bắt plan của query chậm mà không cần tái hiện.`,
   follow: [
     'loops nhân với time như thế nào, và vì sao node có time nhỏ nhưng tổng lớn?',
@@ -3070,6 +3094,12 @@ Lấy 3 đơn lớn nhất mỗi user. Không có window function phải self-jo
 - Đo: EXPLAIN với OFFSET lớn; so sánh execution time trang 1 vs trang 100.
 - Fix: chuyển keyset pagination; thêm index composite (created_at, id); cache tổng số nếu UI cần "trang X/Y" (chấp nhận approximate).
 
+### Ví dụ đời thực
+Màn hình quản trị cho phép nhảy tới trang bất kỳ của 30 triệu giao dịch, mỗi trang 50 dòng. Trang 1 mất 8ms, trang 200.000 ({{OFFSET 10000000}}) mất **11 giây** và đọc 10 triệu dòng chỉ để bỏ đi; bot cào dữ liệu duyệt các trang sâu làm DB CPU 90%. Đổi API sang keyset: {{WHERE (created_at, id) < (:lastCreatedAt, :lastId) ORDER BY created_at DESC, id DESC LIMIT 50}} với index {{(created_at DESC, id DESC)}} — mọi trang đều khoảng 5ms; giao diện đổi từ "nhảy tới trang N" sang "trang trước/sau" + bộ lọc theo ngày. Báo cáo "top 3 giao dịch lớn nhất mỗi merchant" viết bằng {{ROW_NUMBER() OVER (PARTITION BY merchant_id ORDER BY amount DESC)}} trên 5 triệu dòng mất 6 giây vì phải sắp toàn bộ; với index {{(merchant_id, amount DESC)}} và {{LATERAL}} lấy 3 dòng mỗi merchant thì còn 300ms.
+
+### Trả lời mẫu khi phỏng vấn
+"OFFSET chậm dần vì DB vẫn phải tìm, sắp xếp và bỏ đi toàn bộ số dòng phía trước, nên trang càng sâu càng tốn, và kết quả còn bị lệch khi dữ liệu thay đổi trong lúc phân trang. Keyset pagination nhớ giá trị của dòng cuối trang trước, thường là cột sắp xếp kèm id để duy nhất, rồi lấy các dòng sau giá trị đó bằng điều kiện so sánh trên index, nên trang nào cũng nhanh như trang đầu. Đổi lại không nhảy được tới trang bất kỳ, và cần index khớp đúng thứ tự sắp xếp. Window function như ROW_NUMBER, RANK tính trên từng partition sau khi sắp theo ORDER BY trong OVER, nên chi phí chủ yếu là sắp xếp; frame quyết định tập dòng cho các hàm như SUM chạy lũy kế. Với top N mỗi nhóm trên dữ liệu lớn, tôi cân nhắc index phù hợp kèm LATERAL thay vì sắp toàn bộ."
+
 > Senior tip: OFFSET là "anti-pattern" cho pagination production. Keyset pagination là chuẩn cho feed vô hạn (Twitter, Instagram). Nếu UI bắt buộc số trang, cache count và chấp nhận sai số nhỏ.`,
   follow: [
     'RANK vs DENSE_RANK vs ROW_NUMBER khác nhau thế nào khi có giá trị bằng nhau?',
@@ -3121,6 +3151,12 @@ Cần visibility map đánh dấu page "all visible" → sau VACUUM. Nếu khôn
 - Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; xem "Index Only Scan" vs "Index Scan".
 - Fix: VACUUM ANALYZE; INCLUDE cột payload; partial index cho subset hot; tránh index thừa (mỗi index làm chậm write).
 
+### Ví dụ đời thực
+Truy vấn chính của màn hình đơn hàng: {{WHERE merchant_id = ? AND status = 'PENDING' ORDER BY created_at DESC LIMIT 20}}. Đã có 3 index đơn lẻ (merchant_id, status, created_at) nhưng p95 vẫn 900ms: planner dùng index merchant_id rồi lọc status và **sắp** 200.000 dòng của merchant lớn. Thay bằng một index composite {{(merchant_id, status, created_at DESC)}}: equality trước, cột sắp xếp sau → DB đọc thẳng 20 dòng đầu theo đúng thứ tự, 900ms → 3ms. Vì 97% đơn đã hoàn tất, chuyển thành **partial index** {{... WHERE status = 'PENDING'}}: kích thước index từ 2,4GB còn 90MB, ghi nhanh hơn. Sau đó xoá 2 index đơn lẻ không còn được dùng (kiểm tra bằng {{pg_stat_user_indexes.idx_scan = 0}} sau 30 ngày) — mỗi index thừa làm mọi INSERT/UPDATE chậm thêm.
+
+### Trả lời mẫu khi phỏng vấn
+"Index B-tree composite sắp theo cột đầu, rồi cột thứ hai trong cùng giá trị cột đầu, và cứ thế, nên dùng được cho điều kiện trên một tiền tố bên trái của danh sách cột. Quy tắc tôi theo: cột so sánh bằng đặt trước, cột khoảng hoặc cột sắp xếp đặt sau. Nếu index khớp cả điều kiện lọc lẫn ORDER BY, DB đọc thẳng N dòng đầu đúng thứ tự mà không phải sắp, rất hiệu quả với LIMIT. Partial index chỉ đánh index phần dữ liệu hay truy vấn, như đơn đang chờ xử lý, nên nhỏ và rẻ khi ghi. Covering index với INCLUDE thêm cột cần trả về để có index-only scan, cần visibility map được vacuum cập nhật. Tôi thiết kế index từ các truy vấn thật, kiểm chứng bằng EXPLAIN, và định kỳ xoá index không được dùng vì mỗi index làm chậm thao tác ghi."
+
 > Senior tip: Mỗi index là "thuế" trên mọi write. Senior không thêm index theo cảm tính — senior đọc query plan, đo, rồi thêm đúng index. Index thừa còn tệ hơn thiếu index vì làm chậm insert/update và phình storage.`,
   follow: [
     'Index-only scan yêu cầu visibility map thế nào, và VACUUM làm gì?',
@@ -3162,6 +3198,12 @@ Trade-off: index lớn, write chậm; phù hợp search text vừa phải. Searc
 - Triệu chứng: query có index nhưng EXPLAIN hiện Seq Scan; hoặc query LIKE '%...%' chậm.
 - Đo: EXPLAIN; kiểm tra kiểu dữ liệu cột vs literal; kiểm tra function trong WHERE.
 - Fix: expression index; cast literal đúng kiểu; pg_trgm GIN; hoặc chuyển search sang ES.
+
+### Ví dụ đời thực
+Tìm khách hàng theo email chạy 4 giây dù có index {{customers(email)}}. Code Hibernate sinh {{WHERE lower(email) = lower(?)}} (tìm không phân biệt hoa thường) → hàm bọc cột, index thường không dùng được. Sửa: index biểu thức {{CREATE INDEX ON customers (lower(email))}} → 2ms. Một trường hợp khác: cột {{phone}} kiểu {{varchar}} nhưng Java truyền tham số kiểu số qua native query → PostgreSQL ép kiểu cột sang số để so sánh ({{phone::numeric = 912345678}}), mất index; sửa kiểu tham số thành chuỗi. Ô tìm kiếm "chứa từ khoá" dùng {{LIKE '%nguyen%'}} trên 6 triệu tên khách (4,5 giây) → thêm extension {{pg_trgm}} và index GIN {{gin_trgm_ops}}: 40ms; với tiếng Việt có dấu, kết hợp {{unaccent}} trong một index biểu thức để tìm được cả khi người dùng gõ không dấu.
+
+### Trả lời mẫu khi phỏng vấn
+"Index B-tree lưu giá trị gốc của cột, nên khi điều kiện bọc cột trong hàm như lower hay date, hoặc DB phải ép kiểu cột vì tham số khác kiểu, nó không dùng được index đó. Cách sửa là viết điều kiện trên cột gốc, ví dụ dùng khoảng thời gian thay vì date của cột, truyền tham số đúng kiểu, hoặc tạo index biểu thức như index trên lower của email. Điều kiện OR giữa các cột khác nhau thường làm planner bỏ index hoặc phải dùng bitmap OR; có thể viết lại thành UNION ALL. LIKE với ký tự đại diện ở đầu chuỗi không dùng được B-tree vì không biết bắt đầu từ đâu; dùng pg_trgm với index GIN hoặc full-text search. Khi gặp query có index mà vẫn seq scan, tôi xem EXPLAIN để biết điều kiện thật sự được áp dụng, rồi kiểm tra hàm, kiểu dữ liệu, collation."
 
 > Senior tip: "Có index" không đồng nghĩa "dùng index". Index chỉ dùng được khi query khớp cấu trúc index. Một dấu {{%}} ở đầu chuỗi hay một hàm {{lower()}} là đủ để vô hiệu hoá index. Luôn đọc EXPLAIN, đừng tin vào sự tồn tại của index.`,
   follow: [
@@ -3215,6 +3257,12 @@ Với bảng rất lớn: partition by tenant_id (LIST) hoặc by hash. Lợi: p
 - Triệu chứng: data leak giữa tenant (security incident); query chậm khi một tenant lớn.
 - Đo: audit log truy vấn; pg_stat_activity; latency per tenant.
 - Fix: RLS bắt buộc; test integration kiểm tra leak; monitoring per tenant.
+
+### Ví dụ đời thực
+Một SaaS kế toán 3.000 tenant dùng bảng chung + cột {{tenant_id}}. Một endpoint báo cáo quên điều kiện {{tenant_id}} trong một query tự viết → khách hàng A xem được hoá đơn của khách hàng B (sự cố bảo mật nghiêm trọng, phải thông báo cho 14 khách). Sau sự cố: bật **Row-Level Security** trên các bảng có {{tenant_id}} với policy {{USING (tenant_id = current_setting('app.tenant_id')::bigint)}}, ứng dụng đặt {{SET LOCAL app.tenant_id}} ở đầu mỗi transaction (qua một interceptor của Spring); role của ứng dụng **không** có BYPASSRLS và không phải owner bảng (owner mặc định bỏ qua RLS trừ khi FORCE). Lưu ý với PgBouncer chế độ transaction: chỉ dùng {{SET LOCAL}} (theo transaction), không dùng {{SET}} theo phiên. Ba tenant lớn chiếm 40% tải được tách sang database riêng để tránh noisy neighbor.
+
+### Trả lời mẫu khi phỏng vấn
+"Có ba mô hình chính. Bảng chung với cột tenant_id rẻ nhất, dễ vận hành và mở rộng tới hàng nghìn tenant, nhưng rủi ro lớn nhất là quên điều kiện tenant gây lộ dữ liệu, và tenant lớn ảnh hưởng tenant nhỏ. Schema riêng cho mỗi tenant cô lập tốt hơn nhưng migration phải chạy trên hàng nghìn schema và số object trong catalog phình to. Database riêng cô lập mạnh nhất, hợp với khách lớn hoặc yêu cầu pháp lý, nhưng tốn chi phí và vận hành. Với bảng chung, tôi bật Row-Level Security của PostgreSQL làm lưới an toàn: policy so tenant_id với một biến phiên mà ứng dụng đặt bằng SET LOCAL đầu mỗi transaction, role ứng dụng không được bỏ qua RLS. Khi dùng PgBouncer chế độ transaction thì phải dùng SET LOCAL. Thực tế thường kết hợp: đa số tenant dùng chung, tenant lớn tách riêng."
 
 > Senior tip: Multi-tenant là bài toán "security + performance" cùng lúc. RLS là phòng tuyến cuối cùng — dù code quên filter, DB vẫn chặn. Nhưng đừng quên test RLS với user không phải owner, vì owner bypass RLS là bẫy kinh điển.`,
   follow: [

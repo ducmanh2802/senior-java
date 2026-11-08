@@ -31,7 +31,8 @@ function isFree(sha) {
 }
 
 function blame(file) {
-  const out = git(`blame --line-porcelain -- "${file}"`).split('\n');
+  // blame HEAD, not the working tree: agents may be mid-edit (uncommitted lines would blame to the 000… sha)
+  const out = git(`blame --line-porcelain HEAD -- "${file}"`).split('\n');
   const lines = [];
   let sha = null;
   for (const l of out) {

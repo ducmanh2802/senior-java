@@ -1654,4 +1654,270 @@ Bẫy khi cài: quên clamp {{remaining}} về 0 (test 1, 5 sẽ đỏ), so sán
   ], related: ['microservices-025', 'microservices-008', 'microservices-007'],
   tags: ['timeout budget', 'deadline propagation', 'retry storm', 'backoff', 'fail fast']
 }
+,
+{
+  id: 'lesson-microservices-010', track: 'microservices', order: 10,
+  title: 'Mô phỏng Kafka: partition log, offset và chiến lược commit', level: 'senior', minutes: 45,
+  goals: ['Giải thích partition log (nhật ký phân vùng) và offset (vị trí đọc) trong consumer group', 'Phân biệt commit offset trước và sau xử lý dẫn đến mất hay trùng message', 'Tự mô phỏng assign/poll/commit để quan sát at-least-once và at-most-once'],
+  body: `**Tóm tắt:** Kafka (hệ thống hàng đợi sự kiện phân tán, nơi producer gửi bản ghi và consumer đọc lại theo dòng) lưu message vào partition log (nhật ký phân vùng, dãy chỉ-ghi-thêm) theo offset (vị trí số thứ tự 0,1,2...). Consumer group (nhóm consumer dùng chung tên group để chia việc đọc) chia partition cho các consumer; consumer poll (kéo một lô bản ghi) và tự commit (ghi nhận vị trí đã đọc). Commit trước xử lý (at-most-once, nhiều nhất một lần) có thể mất message khi crash sau commit; commit sau xử lý (at-least-once, ít nhất một lần) có thể trùng khi crash trước commit. Bài này tự mô phỏng cơ chế thu nhỏ để thấy rõ đánh đổi.
+
+### Cơ chế thật (Kafka) - hiểu trước khi mô phỏng
+Topic (chủ đề, tên luồng dữ liệu) được chia thành nhiều partition. Mỗi partition là log bất biến theo thời gian: broker (máy chủ Kafka lưu dữ liệu) gán offset tăng dần cho từng bản ghi. Kafka đảm bảo mỗi partition trong một group chỉ gán cho tối đa 1 consumer tại một thời điểm (để giữ thứ tự trong partition).
+
+~~~seq
+title: Luồng đọc cơ bản (đơn giản hóa)
+actors: Producer | Broker/Partition | Consumer | OffsetStore
+Producer -> Broker/Partition: append(record) -> offset=5
+Consumer -> Broker/Partition: poll(from offset=3)
+Broker/Partition --> Consumer: records [3,4,5]
+Consumer -> Consumer: xử lý nghiệp vụ
+Consumer -> OffsetStore: commit(offset=6) (vị trí đọc tiếp)
+~~~
+
+Tên cấu hình thật (Kafka client Java, lớp {{KafkaConsumer}}):
+- {{enable.auto.commit}}: tự động commit theo chu kỳ (mặc định true, {{auto.commit.interval.ms}}). Tiện nhưng có thể commit vị trí chưa xử lý xong.
+- Commit thủ công: {{consumer.commitSync()}} / {{commitAsync()}} sau khi xử lý xong → hướng at-least-once.
+- {{auto.offset.reset}} ({{earliest}}/{{latest}}): chọn vị trí khi group chưa có offset đã commit.
+- Rebalance (cân bằng lại, gán lại partition khi consumer vào/rời group): gán bởi {{PartitionAssignor}}. {{RangeAssignor}} gán partition liên tiếp **theo từng topic** cho consumer (dễ lệch tải khi có nhiều topic). {{RoundRobinAssignor}} xoay vòng **tất cả partition của mọi topic** giữa consumer (cân bằng hơn). {{CooperativeStickyAssignor}} giảm gián đoạn bằng cách thu hồi/gán tăng dần. Khi revoke partition, {{ConsumerRebalanceListener.onPartitionsRevoked}} nên commit offset đã xử lý.
+
+Task yêu cầu nhắc "gán partition (range vs round-robin)": ý chính là Range chia liên tiếp theo topic, Round-robin phân phối xoay vòng. (Bản mô phỏng bài tập không cài rebalance/assigner, chỉ tập trung vào offset+commit; đây là điểm đơn giản hoá.)
+
+### Vì sao commit strategy quyết định mất hay trùng
+| Chiến lược | Khi commit | Crash ở đâu | Hậu quả |
+|---|---|---|---|
+| At-most-once (nhiều nhất một lần) | Trước xử lý | Sau commit, trước xử lý xong | Mất message (offset đã tiến, message bị bỏ qua) |
+| At-least-once (ít nhất một lần) | Sau xử lý | Sau xử lý, trước commit | Trùng message (offset chưa tiến, poll lại) |
+| Exactly-once (đúng một lần, phạm vi Kafka) | Transaction / EOS | Tuỳ | Cần {{transactional.id}}, {{isolation.level=read_committed}}; không tự bao DB ngoài |
+
+Kafka broker chỉ biết offset đã commit, không biết nghiệp vụ đã xử lý xong. Vì vậy at-least-once an toàn về mất dữ liệu, và consumer phải idempotent (xử lý lặp không gây tác dụng phụ hai lần, ví dụ dedup theo key/version).
+
+### Bản mô phỏng đơn giản hoá (Java thuần)
+{{MiniKafka}} chạy trong một JVM: partition là {{List<String>}} theo offset; mỗi group có committed offset và position đọc. Không có network, không có rebalance thật, không có nhiều consumer song song, không có retention/compaction, không mô phỏng auto-commit theo thời gian. "Crash" được mô phỏng bằng {{resetToCommitted}} (khởi động lại và đọc từ offset đã commit).
+
+~~~java
+// At-least-once: chỉ commit SAU khi xử lý thành công
+List<String> batch = k.poll("g", "orders", 0, 10);
+for (String m : batch) { handle(m); }     // crash ở đây → chưa commit
+k.commit("g", "orders", 0, k.position("g","orders",0));
+// handle ghi DB + crash trước commit → poll lại → trùng (cần idempotent)
+~~~
+
+### Lỗi hay gặp
+- Bật {{enable.auto.commit}} mà xử lý lâu hơn {{auto.commit.interval.ms}}: commit chạy nền có thể tiến offset của batch chưa xử lý hết.
+- Commit offset từng record thay vì batch: chậm; commit batch nhưng xử lý sai thứ tự so với offset commit.
+- Không xử lý rebalance: mất cơ hội commit offset đã xử lý trước khi partition bị thu hồi.
+- Nghĩ "exactly-once Kafka" là miễn phí: EOS chỉ bao produce/consume trong Kafka; ghi DB/JDBC ngoài vẫn cần idempotency/outbox.
+
+### Liên hệ phỏng vấn
+Nêu rõ: partition log + offset, group assignment (range/round-robin), hai hướng commit và hậu quả crash, vì sao chọn at-least-once + consumer idempotent. Nhắc {{enable.auto.commit}}, {{commitSync}}, {{ConsumerRebalanceListener}} và giới hạn EOS.
+
+> Senior tip: theo dõi {{consumer lag}} (offset mới nhất trừ offset đã commit) theo partition; lag tăng đột biến thường do xử lý chậm, rebalance, hoặc poison message chặn một partition.
+`,
+  exercises: [
+    {
+      title: 'MiniKafka: poll/commit và mất-trùng theo chiến lược',
+      prompt: `Cài {{MiniKafka}} mô phỏng partition log. {{append(topic, partition, message)}} thêm message vào cuối partition và trả offset (bắt đầu 0). {{poll(group, topic, partition, max)}} trả tối đa {{max}} message từ position hiện tại của group trên partition đó (chưa có position thì dùng committed offset, mặc định 0) và **tăng position** của group lên số message đã trả (mô phỏng đã đọc). {{commit(group, topic, partition, offset)}} đặt committed offset của group. {{position(group, topic, partition)}} trả position đọc hiện tại; {{committed(group, topic, partition)}} trả committed offset. {{resetToCommitted(group, topic, partition)}} đặt position = committed (mô phỏng consumer khởi động lại sau crash). Test kiểm tra: commit trước xử lý rồi reset → message bị bỏ qua (mất); xử lý xong nhưng chưa commit rồi reset → message đọc lại (trùng). Tất cả method {{synchronized}}.`,
+      starter: `class MiniKafka {
+    // topic -> partition -> list of messages (offset = index)
+    private final Map<String, Map<Integer, List<String>>> log = new HashMap<>();
+    // key group|topic|partition -> committed offset
+    private final Map<String, Integer> commits = new HashMap<>();
+    // key group|topic|partition -> read position
+    private final Map<String, Integer> pos = new HashMap<>();
+    private String key(String g, String t, int p) { return g + "|" + t + "|" + p; }
+    synchronized int append(String topic, int partition, String message) { throw new UnsupportedOperationException("TODO"); }
+    synchronized List<String> poll(String group, String topic, int partition, int max) { throw new UnsupportedOperationException("TODO"); }
+    synchronized void commit(String group, String topic, int partition, int offset) { throw new UnsupportedOperationException("TODO"); }
+    synchronized void resetToCommitted(String group, String topic, int partition) { throw new UnsupportedOperationException("TODO"); }
+    synchronized int position(String group, String topic, int partition) { throw new UnsupportedOperationException("TODO"); }
+    synchronized int committed(String group, String topic, int partition) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] z){
+  ck("append returns offsets",()->{MiniKafka k=new MiniKafka();eq(0,k.append("o",0,"a"));eq(1,k.append("o",0,"b"));eq(0,k.append("o",1,"x"));});
+  ck("poll advances position",()->{MiniKafka k=new MiniKafka();k.append("o",0,"a");k.append("o",0,"b");k.append("o",0,"c");eq(List.of("a","b"),k.poll("g","o",0,2));eq(2,k.position("g","o",0));eq(List.of("c"),k.poll("g","o",0,5));});
+  ck("at-most-once loses on crash",()->{MiniKafka k=new MiniKafka();k.append("o",0,"m1");k.append("o",0,"m2");List<String> batch=k.poll("g","o",0,10);
+   k.commit("g","o",0,k.position("g","o",0)); // commit TRUOC xu ly
+   // crash: khong xu ly batch, restart
+   k.resetToCommitted("g","o",0);
+   eq(List.of(),k.poll("g","o",0,10)); // m1,m2 bi mat
+  });
+  ck("at-least-once duplicates on crash",()->{MiniKafka k=new MiniKafka();k.append("o",0,"m1");k.append("o",0,"m2");List<String> batch=k.poll("g","o",0,10);
+   // da xu ly batch nhung crash TRUOC commit
+   k.resetToCommitted("g","o",0);
+   eq(List.of("m1","m2"),k.poll("g","o",0,10)); // doc lai -> trung
+   k.commit("g","o",0,k.position("g","o",0));k.resetToCommitted("g","o",0);eq(List.of(),k.poll("g","o",0,10));
+  });
+  ck("independent groups and partitions",()->{MiniKafka k=new MiniKafka();k.append("o",0,"a");k.append("o",1,"b");eq(List.of("a"),k.poll("g1","o",0,5));eq(List.of("b"),k.poll("g1","o",1,5));eq(List.of("a"),k.poll("g2","o",0,5));});
+  ck("poll beyond end returns empty",()->{MiniKafka k=new MiniKafka();k.append("o",0,"a");k.poll("g","o",0,5);k.commit("g","o",0,1);eq(List.of(),k.poll("g","o",0,5));});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+      reference: `class MiniKafka {
+    private final Map<String, Map<Integer, List<String>>> log = new HashMap<>();
+    private final Map<String, Integer> commits = new HashMap<>();
+    private final Map<String, Integer> pos = new HashMap<>();
+    private String key(String g, String t, int p) { return g + "|" + t + "|" + p; }
+    private List<String> part(String topic, int partition) {
+        return log.computeIfAbsent(topic, x -> new HashMap<>()).computeIfAbsent(partition, x -> new ArrayList<>());
+    }
+    synchronized int append(String topic, int partition, String message) {
+        List<String> l = part(topic, partition); l.add(message); return l.size() - 1;
+    }
+    synchronized List<String> poll(String group, String topic, int partition, int max) {
+        String k = key(group, topic, partition);
+        int from = pos.getOrDefault(k, commits.getOrDefault(k, 0));
+        List<String> l = part(topic, partition);
+        int to = Math.min(l.size(), from + Math.max(0, max));
+        if (from >= to) { pos.put(k, from); return List.of(); }
+        List<String> out = new ArrayList<>(l.subList(from, to));
+        pos.put(k, to);
+        return out;
+    }
+    synchronized void commit(String group, String topic, int partition, int offset) {
+        commits.put(key(group, topic, partition), Math.max(0, offset));
+    }
+    synchronized void resetToCommitted(String group, String topic, int partition) {
+        String k = key(group, topic, partition);
+        pos.put(k, commits.getOrDefault(k, 0));
+    }
+    synchronized int position(String group, String topic, int partition) {
+        String k = key(group, topic, partition);
+        return pos.getOrDefault(k, commits.getOrDefault(k, 0));
+    }
+    synchronized int committed(String group, String topic, int partition) {
+        return commits.getOrDefault(key(group, topic, partition), 0);
+    }
+}`,
+      hints: ['append lấy size trước khi add làm offset. poll đọc từ pos (hoặc committed nếu chưa có pos), copy subList, rồi đặt pos = vị trí sau phần đã trả.', 'resetToCommitted đặt pos = commits.getOrDefault(key,0) để mô phỏng restart đọc lại từ offset đã commit.', 'Các group/partition độc lập nhờ key ghép; committed mặc định 0.'],
+      explain: `Mô phỏng tách {{position}} (vị trí đang đọc trong bộ nhớ) và {{committed}} (vị trí bền vững mà group ghi nhận). Commit trước xử lý làm committed tiến ngay: reset mô phỏng crash sau đó khiến position quay về committed đã tiến → bỏ qua batch chưa xử lý (mất). Commit sau xử lý giữ committed cũ: reset sau crash khiến poll trả lại batch → trùng. Đây chính là at-most-once vs at-least-once.
+
+Trong Kafka thật, committed offset lưu trong topic nội bộ {{__consumer_offsets}}. {{poll()}} trả {{ConsumerRecords}}; {{commitSync}} thường commit offset = lastProcessed + 1. Rebalance có thể thu hồi partition nên cần commit offset đã xử lý. Bản mô phỏng bỏ qua network, serialization, nhiều consumer, rebalance thật, retention, và không mô phỏng {{enable.auto.commit}} theo thời gian.
+
+Lỗi hay gặp: nhầm "đã poll" với "đã xử lý xong"; commit offset của record chưa xử lý; dùng auto-commit với handler chậm; không làm consumer idempotent khi chọn at-least-once.`
+    }
+  ],
+  check: [
+    { q: 'Commit offset trước khi xử lý xong nghiệp vụ, rồi process crash. Hậu quả điển hình?', options: ['Message được xử lý lại (trùng)', 'Message bị bỏ qua vì offset đã tiến (mất)', 'Broker tự rollback offset', 'Consumer group bị xóa'], answer: 1, explain: 'Offset đã commit được coi là đã đọc; sau restart consumer tiếp tục từ offset mới nên batch chưa xử lý bị bỏ qua. Đây là at-most-once.' },
+    { q: 'Tại sao at-least-once thường đi kèm consumer idempotent?', options: ['Để tăng throughput', 'Vì crash trước commit có thể khiến cùng message được poll và xử lý lại', 'Vì Kafka xóa message sau poll', 'Vì offset luôn giảm'], answer: 1, explain: 'Commit sau xử lý an toàn hơn về mất dữ liệu nhưng tạo cửa sổ trùng khi crash trước commit; idempotency (dedup theo key/version) làm lần xử lý lại không gây tác dụng phụ hai lần.' },
+    { q: 'Exactly-once của Kafka (EOS/transaction) đảm bảo điều gì?', options: ['Mọi DB ngoài Kafka cũng exactly-once tự động', 'Phạm vi produce/consume trong Kafka theo cấu hình transaction; DB ngoài vẫn cần cơ chế riêng', 'Không bao giờ cần idempotent consumer', 'Tắt rebalance'], answer: 1, explain: 'Transactional producer và read_committed giúp tính nhất quán trong Kafka; ghi vào DB/JDBC hay gọi HTTP ngoài Kafka không nằm trong transaction Kafka nên vẫn cần outbox/idempotency key.' }
+  ],
+  related: ['microservices-001', 'microservices-002', 'concurrency-010'],
+  tags: ['Kafka', 'partition', 'offset', 'consumer group', 'at-least-once', 'commit']
+},
+{
+  id: 'lesson-microservices-011', track: 'microservices', order: 11,
+  title: 'Idempotent producer: sequence number, dedup và lỗi OUT_OF_ORDER', level: 'senior', minutes: 40,
+  goals: ['Giải thích producer id (PID) và sequence number trong idempotent producer của Kafka', 'Cài broker dedup: APPENDED, DUPLICATE, OUT_OF_ORDER', 'Nêu giới hạn của idempotent producer (phạm vi partition, phiên, retry)'],
+  body: `**Tóm tắt:** Khi producer (bên gửi) retry (thử gửi lại) vì timeout (hết thời gian chờ), broker có thể nhận cùng bản ghi hai lần. Idempotent producer (producer có khả năng gửi lặp an toàn) gắn mỗi producer một PID (producer ID, định danh phiên gửi) và mỗi bản ghi trên một partition một sequence number (số thứ tự tăng dần). Broker nhớ sequence cuối theo (PID, partition): seq lặp → DUPLICATE, seq nhảy cóc → OUT_OF_ORDER, đúng kế tiếp → APPENDED.
+
+### Cơ chế thật (Kafka)
+Bật {{enable.idempotence=true}} (mặc định true ở client mới) khiến producer được broker cấp {{PID}}. Với mỗi {{<topic, partition>}}, producer gán {{sequence number}} bắt đầu 0, tăng 1 mỗi bản ghi/batch thành công. Broker lưu {{(PID, partition) -> lastSeq}} (gắn với log).
+
+| Nhận (PID, seq) | Điều kiện (last là seq cuối đã append) | Kết quả |
+|---|---|---|
+| lần đầu / last chưa có | seq == 0 (mô phỏng đơn giản) | APPENDED, last=seq |
+| đúng kế tiếp | seq == last + 1 | APPENDED, last=seq |
+| trùng retry | seq == last | DUPLICATE (ack thành công, không ghi thêm) |
+| nhảy cóc / cũ bất thường | seq > last + 1 hoặc seq < last | OUT_OF_ORDER (lỗi) |
+
+~~~seq
+title: Retry tạo duplicate nhưng broker dedup
+actors: Producer(PID=7) | Broker | Log
+Producer(PID=7) -> Broker: append(partition, seq=3, msg)
+Broker -> Log: ghi msg (lastSeq=3)
+Broker -->> Producer(PID=7): ACK (mất trên mạng)
+Producer(PID=7) -> Broker: retry append(partition, seq=3, msg)
+Broker --> Broker: seq==lastSeq → DUPLICATE
+Broker -->> Producer(PID=7): ACK (không ghi lần 2)
+~~~
+
+Cấu hình liên quan (client mới thường tự đảm bảo khi bật idempotence): {{acks=all}}, {{retries}} đủ lớn (thực tế bị chặn bởi {{delivery.timeout.ms}}), và {{max.in.flight.requests.per.connection}} <= 5 (mặc định 5) để giữ thứ tự. Idempotence Kafka đảm bảo không trùng/không đảo thứ tự **trong phạm vi một phiên producer và một partition**. Producer restart lấy PID mới (trừ khi dùng {{transactional.id}} để fence phiên cũ); cross-partition/cross-topic exactly-once cần transaction API.
+
+### Vì sao OUT_OF_ORDER là lỗi nghiêm trọng
+Nếu broker nhận seq=5 khi last=3, có thể seq=4 đã mất. Chấp nhận seq=5 tạo lỗ hổng vĩnh viễn trong log. Kafka client có thể gặp {{OutOfOrderSequenceException}}: thường là dấu hiệu cấu hình/retry/in-flight bất thường, không nên âm thầm bỏ qua.
+
+### Bản mô phỏng đơn giản hoá
+{{Broker.append(pid, seq, msg)}} xử lý một partition logic duy nhất, không có topic/partition key, không có PID epoch fencing, không có batch, không có network. DUPLICATE trả về để test quan sát (thực tế vẫn là ack thành công).
+
+~~~java
+Broker b = new Broker();
+b.append(7, 0, "a"); // APPENDED
+b.append(7, 0, "a"); // DUPLICATE (retry)
+b.append(7, 1, "b"); // APPENDED
+~~~
+
+### Lỗi hay gặp
+- Nghĩ idempotent producer làm exactly-once end-to-end: consumer/DB ngoài vẫn thấy tác dụng lặp nếu pipeline không idempotent.
+- Cấu hình xung đột với idempotence (ví dụ {{acks!=all}} hoặc {{max.in.flight.requests.per.connection}} > 5) sẽ bị client từ chối ở phiên bản mới; nếu tắt idempotence và cho phép nhiều request in-flight, retry có thể đảo thứ tự.
+- Sequence là **per (PID, partition)**; không dùng chung giữa partition.
+- Nhầm DUPLICATE (an toàn, broker đã có) với OUT_OF_ORDER (cần xử lý lỗi).
+
+### Liên hệ phỏng vấn
+Trình bày: PID + sequence per partition, cách broker phân biệt retry hợp lệ và lỗ hổng, giới hạn phạm vi (phiên, partition). Nêu {{enable.idempotence}}, {{acks=all}}, {{transactional.id}} và vì sao consumer vẫn cần idempotent.
+
+> Senior tip: theo dõi producer {{record-error-rate}}, {{record-retry-rate}} và OutOfOrderSequence; retry tăng bất thường khi broker ổn định thường do timeout/in-flight hoặc mạng gây timeout giả.
+`,
+  exercises: [
+    {
+      title: 'Broker.append: APPENDED / DUPLICATE / OUT_OF_ORDER',
+      prompt: `Cài {{Broker}} với một partition logic. {{append(pid, seq, msg)}} xử lý bản ghi từ producer {{pid}} (int) có sequence {{seq}} (long, bắt đầu 0 cho mỗi pid) và trả một trong ba chuỗi: {{"APPENDED"}} nếu seq là số kế tiếp ({{lastSeq + 1}}, hoặc 0 nếu pid chưa ghi lần nào) → lưu msg và cập nhật lastSeq; {{"DUPLICATE"}} nếu {{seq == lastSeq}} (đã có, retry) → không lưu thêm; {{"OUT_OF_ORDER"}} nếu {{seq > lastSeq + 1}} (nhảy cóc) hoặc {{seq < lastSeq}} (cũ hơn last) → không lưu, không đổi lastSeq. {{size()}} trả số message đã append thành công. {{lastSeq(pid)}} trả lastSeq của pid, hoặc {{-1}} nếu chưa có. Method {{synchronized}}.`,
+      starter: `class Broker {
+    private final List<String> log = new ArrayList<>();
+    private final Map<Integer, Long> last = new HashMap<>();
+    synchronized String append(int pid, long seq, String msg) { throw new UnsupportedOperationException("TODO"); }
+    synchronized int size() { return log.size(); }
+    synchronized long lastSeq(int pid) { return last.getOrDefault(pid, -1L); }
+}`,
+      tests: `public class Main {
+ static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] z){
+  ck("first append seq 0",()->{Broker b=new Broker();eq("APPENDED",b.append(1,0,"a"));eq(1,b.size());eq(0L,b.lastSeq(1));});
+  ck("in order appends",()->{Broker b=new Broker();b.append(1,0,"a");eq("APPENDED",b.append(1,1,"b"));eq("APPENDED",b.append(1,2,"c"));eq(3,b.size());eq(2L,b.lastSeq(1));});
+  ck("duplicate retry",()->{Broker b=new Broker();b.append(1,0,"a");b.append(1,1,"b");eq("DUPLICATE",b.append(1,1,"b"));eq(2,b.size());eq(1L,b.lastSeq(1));});
+  ck("out of order gap",()->{Broker b=new Broker();b.append(1,0,"a");eq("OUT_OF_ORDER",b.append(1,2,"c"));eq(1,b.size());eq(0L,b.lastSeq(1));});
+  ck("old seq is out of order",()->{Broker b=new Broker();b.append(1,0,"a");b.append(1,1,"b");b.append(1,2,"c");eq("OUT_OF_ORDER",b.append(1,0,"a"));eq(3,b.size());});
+  ck("independent producers",()->{Broker b=new Broker();eq("APPENDED",b.append(1,0,"a"));eq("APPENDED",b.append(2,0,"x"));eq("DUPLICATE",b.append(1,0,"a"));eq("APPENDED",b.append(2,1,"y"));eq(3,b.size());eq(0L,b.lastSeq(1));eq(1L,b.lastSeq(2));});
+  ck("unknown pid starts at 0 only",()->{Broker b=new Broker();eq("OUT_OF_ORDER",b.append(9,1,"x"));eq(0,b.size());eq(-1L,b.lastSeq(9));});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+      reference: `class Broker {
+    private final List<String> log = new ArrayList<>();
+    private final Map<Integer, Long> last = new HashMap<>();
+    synchronized String append(int pid, long seq, String msg) {
+        Long cur = last.get(pid);
+        long expected = (cur == null) ? 0L : cur + 1L;
+        if (seq == expected) {
+            log.add(msg);
+            last.put(pid, seq);
+            return "APPENDED";
+        }
+        if (cur != null && seq == cur) {
+            return "DUPLICATE"; // retry an toan: da co ban ghi, khong ghi them
+        }
+        return "OUT_OF_ORDER"; // seq < last hoac nhay coc: khong chap nhan
+    }
+    synchronized int size() { return log.size(); }
+    synchronized long lastSeq(int pid) { return last.getOrDefault(pid, -1L); }
+}`,
+      hints: ['Với pid mới, expected = 0. Với pid đã có last, expected = last + 1. So seq với expected và last.', 'DUPLICATE chỉ khi pid đã tồn tại và seq == last. Nếu pid mới mà seq != 0 thì là OUT_OF_ORDER (nhảy cóc từ đầu).', 'OUT_OF_ORDER không đổi last và không ghi log.'],
+      explain: `State machine theo từng PID: lastSeq là mốc tin cậy. seq == expected → append và cập nhật; seq == last → retry của bản ghi đã commit nên chỉ ack DUPLICATE; còn lại (nhảy cóc hoặc lùi) → OUT_OF_ORDER vì chấp nhận sẽ tạo lỗ hổng/mâu thuẫn. Test "unknown pid starts at 0 only" nhấn mạnh không chấp nhận seq=1 khi chưa thấy seq=0.
+
+Trong Kafka thật, broker theo dõi {{(PID, baseSequence)}} cho batch trên partition; có PID epoch để fence producer cũ. Lỗi out-of-order có thể khiến producer fatal. Idempotence không thay thế idempotency nghiệp vụ. Mô phỏng gộp một partition, không epoch, không đối chiếu nội dung msg khi duplicate, dùng {{synchronized}} thay cơ chế log append thật.
+
+Lỗi hay gặp: coi seq < last là DUPLICATE; không tách state theo pid; append rồi mới kiểm tra; quên pid mới với seq > 0.`
+    }
+  ],
+  check: [
+    { q: 'Producer gửi lại (PID=5, seq=10) vì timeout ACK, broker đã có lastSeq=10. Kết quả đúng?', options: ['APPENDED thêm bản ghi thứ hai', 'DUPLICATE, không ghi thêm', 'OUT_OF_ORDER', 'Broker reset lastSeq'], answer: 1, explain: 'seq trùng lastSeq là retry của bản ghi đã được broker ghi nhận; broker trả thành công logic (dedup) nhưng không append lần hai.' },
+    { q: 'Broker có lastSeq=3 cho PID=5, nhận seq=5. Kết quả đúng?', options: ['APPENDED', 'DUPLICATE', 'OUT_OF_ORDER vì nhảy cóc qua seq=4', 'Tự điền seq=4'], answer: 2, explain: 'seq > lastSeq+1 tạo lỗ hổng (thiếu seq=4). Broker phải từ chối để bảo toàn tính liên tục sequence; im lặng chấp nhận sẽ che mất mất dữ liệu.' },
+    { q: 'Idempotent producer của Kafka (enable.idempotence) đảm bảo phạm vi nào?', options: ['Exactly-once cho mọi DB và HTTP gọi ra ngoài', 'Không trùng/đảo thứ tự trong phạm vi phiên producer + partition (cấu hình đúng)', 'Mọi consumer tự động idempotent', 'Không bao giờ retry'], answer: 1, explain: 'Đảm bảo dựa trên PID/sequence per partition; cross-partition transaction cần transactional.id. Hệ thống ngoài Kafka vẫn cần cơ chế idempotency riêng.' }
+  ],
+  related: ['microservices-002', 'microservices-001', 'core-015'],
+  tags: ['Kafka', 'idempotent producer', 'sequence number', 'dedup', 'exactly-once']
+}
 );

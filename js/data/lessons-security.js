@@ -506,7 +506,7 @@ final class Jwt {
     static String sign(String subject, String secret, long expiresAtSeconds) {
         String header = encode("{" + Q + "alg" + Q + ":" + Q + "HS256" + Q + "," + Q + "typ" + Q + ":" + Q + "JWT" + Q + "}");
         String payload = encode("{" + Q + "sub" + Q + ":" + Q + subject + Q + "," + Q + "exp" + Q + ":" + expiresAtSeconds + "}");
-        String input = header + "." + payload;                    // chi doan truoc dau cham thu 2 duoc ky
+        String input = header + "." + payload;                    // chỉ đoạn trước dấu chấm thứ 2 được ký
         return input + "." + encode(hmac(input, secret));
     }
 
@@ -1076,7 +1076,7 @@ final class SlidingWindow {
     }
 
     private long freeze(long nowMs) {
-        clock = Math.max(nowMs, clock);      // dong ho lu: cua so dong bang
+        clock = Math.max(nowMs, clock);      // đồng hồ lùi: cửa sổ đóng băng
         return clock;
     }
 
@@ -1533,7 +1533,7 @@ final class SessionStore {
     void disableTenant(String tenantId) { disabledTenants.add(tenantId); }
     boolean isTenantDisabled(String tenantId) { return disabledTenants.contains(tenantId); }
 
-    private String randomToken() {                       // 256 bit, khong doan duoc
+    private String randomToken() {                       // 256 bit, không đoán được
         byte[] b = new byte[32];
         random.nextBytes(b);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
@@ -1568,10 +1568,10 @@ final class SessionStore {
 
     ResolveResult resolve(Request req, long nowMs) {
         if (req == null || req.cookieSid == null) return fail(401, null);
-        Optional<Session> found = get(req.cookieSid, nowMs);        // khong co hoac het han (da xoa)
+        Optional<Session> found = get(req.cookieSid, nowMs);        // không có hoặc hết hạn (đã xóa)
         if (found.isEmpty()) return fail(401, null);
         Session s = found.get();
-        if (disabledTenants.contains(s.tenantId)) return fail(401, null);   // kiem tra truoc, khong NPE
+        if (disabledTenants.contains(s.tenantId)) return fail(401, null);   // kiểm tra trước, không NPE
         if (req.csrfToken == null || !MessageDigest.isEqual(
                 s.csrfToken.getBytes(StandardCharsets.UTF_8), req.csrfToken.getBytes(StandardCharsets.UTF_8))) {
             return fail(403, null);                                  // constant-time
@@ -1782,7 +1782,7 @@ Interviewer hay hỏi: "RBAC khác ABAC thế nào?", "làm sao chặn user A xe
     static void eq(Object expected, Object actual, String msg) {
         if (!Objects.equals(expected, actual)) throw new AssertionError(msg + ": expected " + expected + " got " + actual);
     }
-    // chu cai dau cua cac action duoc phep, theo thu tu READ, WRITE, DELETE, GRANT
+    // chữ cái đầu của các action được phép, theo thứ tự READ, WRITE, DELETE, GRANT
     static String perms(AccessChecker.Role r, AccessChecker.Domain d) {
         StringBuilder sb = new StringBuilder();
         for (AccessChecker.Action a : AccessChecker.Action.values())
@@ -1865,7 +1865,7 @@ final class AccessChecker {
     record Principal(String userId, String tenantId, Role role) {}
     record Resource(Domain domain, String tenantId, String ownerId) {}
 
-    // ma tran mac dinh: chi nhung gi liet ke o day moi duoc phep
+    // ma trận mặc định: chỉ những gì liệt kê ở đây mới được phép
     private static final Map<Role, Set<Action>> BASE = new EnumMap<>(Role.class);
     static {
         BASE.put(Role.OWNER, EnumSet.allOf(Action.class));
@@ -1976,15 +1976,15 @@ title: Authorization Code + PKCE cho SPA
 actors: App | AS | RS
 App -> App: tao code_verifier ngau nhien
 App -> AS: /authorize?code_challenge&state
-AS --> App: man hinh dang nhap va dong y
+AS --> App: màn hình đăng nhập và đồng ý
 AS --> App: redirect ?code&state
 App -> AS: /token (code + code_verifier)
-App -> App: kiem tra state khop
+App -> App: kiểm tra state khớp
 AS -> AS: SHA256(verifier) == challenge?
 AS --> App: access token + refresh token
 App -> RS: GET /api/orders (Bearer token)
-RS --> App: du lieu don hang
-note App..RS: code chi dung duoc 1 lan, TTL vai chuc giay
+RS --> App: dữ liệu đơn hàng
+note App..RS: code chỉ dùng được 1 lần, TTL vài chục giây
 ~~~
 
 **Bước 1.** App sinh {{code_verifier}} ngẫu nhiên, giữ trong bộ nhớ phiên làm việc ({{sessionStorage}}), rồi chuyển hướng trình duyệt tới AS:
@@ -2065,7 +2065,7 @@ Chỉ cần ba class JDK: {{SecureRandom}}, {{MessageDigest}}, {{java.util.Base6
 
 ~~~java
 byte[] raw = new byte[32];                                  // 256 bit entropy
-new SecureRandom().nextBytes(raw);                          // KHONG dung Math.random: seed doan duoc
+new SecureRandom().nextBytes(raw);                          // KHÔNG dùng Math.random: seed đoán được
 String verifier = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);   // 43 ky tu, A-Za-z0-9-_
 
 MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -2316,7 +2316,7 @@ final class Pkce {
 
     static String newVerifier(SecureRandom random) {
         byte[] raw = new byte[VERIFIER_BYTES];
-        random.nextBytes(raw);                                  // entropy that, khong phai Math.random
+        random.nextBytes(raw);                                  // entropy thật, không phải Math.random
         return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);   // 43 ky tu
     }
 
@@ -2371,7 +2371,7 @@ final class AuthServerSim {
     }
 
     String issueCode(String codeChallenge, long issuedAtEpochSec) {
-        byte[] raw = new byte[16];                              // >= 128 bit de code khong doan duoc
+        byte[] raw = new byte[16];                              // >= 128 bit để code không đoán được
         random.nextBytes(raw);
         String code = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
         codes.put(code, new Pending(codeChallenge, issuedAtEpochSec));
@@ -2515,7 +2515,7 @@ Vì {{GCM}} hay dùng IV ngẫu nhiên, phải tính khả năng **va chạm** (
 
 ~~~text
 lo luu = "v" + phienBanKhoa + ":" + base64( IV(12 byte) + ciphertext + tag(16 byte) )
-vi du  = v2:Sjao9xkQ0m1QY3p0Y2V...
+ví dụ  = v2:Sjao9xkQ0m1QY3p0Y2V...
 ~~~
 
 | Mảnh | Ai đọc được | Ghi chú |
@@ -2557,14 +2557,14 @@ Ba điều phải trả giá, nên nói rõ khi thiết kế:
 ~~~java
 Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
 byte[] iv = new byte[12];
-new SecureRandom().nextBytes(iv);                       // IV moi cho MOI lan
+new SecureRandom().nextBytes(iv);                       // IV mới cho MỖI lần
 c.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
 byte[] body = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));   // ciphertext || tag
 
-// khi decrypt: tag duoc kiem tra ben trong doFinal
+// khi decrypt: tag được kiểm tra bên trong doFinal
 Cipher d = Cipher.getInstance("AES/GCM/NoPadding");
 d.init(Cipher.DECRYPT_MODE, oldKey, new GCMParameterSpec(128, ivFromStorage));
-byte[] plain = d.doFinal(ctFromStorage, 12, ctFromStorage.length - 12);   // nem AEADBadTagException neu bi sua
+byte[] plain = d.doFinal(ctFromStorage, 12, ctFromStorage.length - 12);   // ném AEADBadTagException nếu bị sửa
 ~~~
 
 ### Cái giá phải trả
@@ -2785,7 +2785,7 @@ final class FieldCipher {
     private final SecureRandom random;
 
     FieldCipher(Map<Integer, SecretKey> keysByVersion, int currentVersion, SecureRandom random) {
-        this.keys = new HashMap<>(keysByVersion);            // copy: map ben ngoai bi doi thi van giai ma duoc
+        this.keys = new HashMap<>(keysByVersion);            // copy: map bên ngoài bị đổi thì vẫn giải mã được
         this.random = random;
         if (!keys.containsKey(currentVersion)) {
             throw new IllegalArgumentException("khong co key cho phien ban hien hanh: v" + currentVersion);
@@ -2812,7 +2812,7 @@ final class FieldCipher {
         if (all.length < IV_BYTES + TAG_BITS / 8) throw new IllegalArgumentException("ban ma qua ngan");
         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
         c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, all, 0, IV_BYTES));
-        // doFinal KIEM TAG va nem AEADBadTagException neu ban ma bi sua — de nguyen, khong boc
+        // doFinal KIỂM TAG và ném AEADBadTagException nếu bản mã bị sửa — để nguyên, không bọc
         byte[] plain = c.doFinal(all, IV_BYTES, all.length - IV_BYTES);
         return new String(plain, StandardCharsets.UTF_8);
     }
@@ -2820,7 +2820,7 @@ final class FieldCipher {
     String rotate(String stored) throws GeneralSecurityException {
         int cut = colonIndex(stored);
         if (Integer.parseInt(stored.substring(1, cut)) == currentVersion) return stored;   // idempotent
-        return encrypt(decrypt(stored));                     // doc bang khoa cu, ghi bang khoa moi
+        return encrypt(decrypt(stored));                     // đọc bằng khóa cũ, ghi bằng khóa mới
     }
 
     static String blindIndex(String plaintext, SecretKey hmacKey) {
@@ -3165,7 +3165,7 @@ Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. 
     }
 }`,
       tests: `public class Main {
-    // B la MOT ky tu backslash; dung no de ghep chu ky doi chuong ma khong phai viet nhieu lop escape
+    // B là MỘT ký tự backslash; dùng nó để ghép chữ ký dội chương mà không phải viết nhiều lớp escape
     static final String B = "\\\\";
     static int passed = 0, total = 0;
     static final Set<String> COLS = Set.of("id", "email", "status", "role", "name", "created_at", "amount_minor");
@@ -3285,7 +3285,7 @@ Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. 
         }
     }
 
-    private String resolve(String column) {                       // tra ve ten cot chuanhoa, khong phai input
+    private String resolve(String column) {                       // trả về tên cột chuẩn hóa, không phải input
         if (column == null) throw new IllegalArgumentException("column null");
         String real = columnWhitelist.get(column.toLowerCase(Locale.ROOT));
         if (real == null) throw new IllegalArgumentException("column khong nam trong whitelist: " + column);
@@ -3484,15 +3484,15 @@ Bài học: **đừng cố parse mọi biến thể của địa chỉ**, dễ s
 ~~~seq
 title: DNS rebinding - hai lần resolve cho hai kết quả
 actors: Attacker | App | DNS | Metadata
-Attacker -> App: tai anh tai http://evil.com/a.png
+Attacker -> App: tải ảnh tại http://evil.com/a.png
 App -> DNS: resolve evil.com
-DNS --> App: 1.2.3.4 (public, hop le)
-note App..DNS: TOCTOU: kiem tra xong, chua ket noi
-App -> DNS: resolve evil.com lan hai, luc connect
+DNS --> App: 1.2.3.4 (public, hợp lệ)
+note App..DNS: TOCTOU: kiểm tra xong, chưa kết nối
+App -> DNS: resolve evil.com lần hai, lúc connect
 DNS --> App: 169.254.169.254 (TTL = 0)
 App -> Metadata: GET /latest/meta-data/iam/security-credentials
 Metadata --> App: AccessKeyId, SecretAccessKey, Token
-App --> Attacker: 200 OK (va anh da nam trong log/response)
+App --> Attacker: 200 OK (và ảnh đã nằm trong log/response)
 ~~~
 
 Zone {{evil.com}} có TTL 0 nên lần resolve thứ hai trả địa chỉ khác: bạn kiểm tra một IP công khai, rồi kết nối tới IP nội bộ. Đây là lỗi **TOCTOU** (time-of-check to time-of-use). Không đóng được bằng cách "chỉ resolve một lần" nếu client tự resolve lại khi connect. Ba cách đóng, xếp theo độ tin cậy:
@@ -3695,8 +3695,8 @@ final class UrlGuard {
     }
 
     private final Resolver resolver;
-    private final Set<String> schemes;   // du lieu gia lap trong test, khong phai input nguoi dung
-    private final Set<String> domains;   // rong = khong gioi han ten mien
+    private final Set<String> schemes;   // dữ liệu giả lập trong test, không phải input người dùng
+    private final Set<String> domains;   // rỗng = không giới hạn tên miền
 
     UrlGuard(Resolver resolver, Set<String> allowedSchemes, Set<String> allowedDomains) {
         this.resolver = resolver;
@@ -3721,7 +3721,7 @@ final class UrlGuard {
         String scheme = uri.getScheme();
         if (scheme == null || !uri.isAbsolute()) return Verdict.BAD_URL;
         String rawHost = uri.getHost();
-        if (rawHost == null || rawHost.isBlank()) return Verdict.BAD_URL;      // file:///... khong co host
+        if (rawHost == null || rawHost.isBlank()) return Verdict.BAD_URL;      // file:///... không có host
         if (!schemes.contains(scheme.toLowerCase(Locale.ROOT))) return Verdict.BAD_SCHEME;
         if (uri.getUserInfo() != null) return Verdict.BAD_URL;
         String host = normalizeHost(rawHost);
@@ -3730,7 +3730,7 @@ final class UrlGuard {
         return resolveAndCheck(host);
     }
 
-    // tra ve null neu hostname khong dat chuan; nguoc lai la ban da chuan hoa
+    // trả về null nếu hostname không đạt chuẩn; ngược lại là bản đã chuẩn hóa
     private static String normalizeHost(String raw) {
         if (raw == null) return null;
         String host = raw.toLowerCase(Locale.ROOT);
@@ -3860,6 +3860,195 @@ Lỗi còn lại mà bài này **không** đóng được — và bạn nên nó
   ],
   related: ['security-011', 'security-001'],
   tags: ['SSRF', 'metadata endpoint', 'DNS rebinding', 'allowlist', 'egress control', 'IMDSv2'],
+},
+{
+  id: 'lesson-security-010',
+  track: 'security',
+  order: 10,
+  title: 'Tự ký và kiểm JWT HS256',
+  level: 'senior',
+  minutes: 40,
+  goals: ['Hiểu cấu trúc JWT và HMAC-SHA256', 'Tự ký/verify token trong Java', 'Phòng alg=none và chữ ký sai'],
+  body: `**Tóm tắt:** JWT = base64url(header).base64url(payload).base64url(HMAC(header.payload, secret)); verify phải so sánh chữ ký thời gian hằng và kiểm exp/nbf/alg.
+
+### JWT là gì
+JWT (JSON Web Token) là chuỗi 3 phần cách nhau bởi dấu chấm: header.payload.signature. Mỗi phần là base64url (base64 biến thể an toàn cho URL, không padding =).
+
+### Vì sao cần HMAC
+HMAC-SHA256 đảm bảo payload không bị sửa; secret chia sẻ giữa issuer và verifier.
+
+### Base64url trong Java
+Dùng Base64.getUrlEncoder().withoutPadding() và getUrlDecoder().
+
+### Ký
+~~~java
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+byte[] sig = mac.doFinal((h+"."+p).getBytes(StandardCharsets.UTF_8));
+~~~
+
+### Verify
+1. Tách 3 phần, decode.
+2. Parse header JSON, kiểm alg == "HS256" (từ chối alg=none, RS256...).
+3. Tính HMAC lại, so sánh bằng MessageDigest.isEqual (thời gian hằng, chống timing attack).
+4. Parse payload, kiểm exp (hết hạn) và nbf (chưa hiệu lực) với đồng hồ giả để test.
+
+### Đồng hồ giả
+Truyền Clock/Instant vào hàm verify thay vì System.currentTimeMillis() để test token hết hạn.
+### Tại sao alg phải kiểm trước HMAC
+Nếu attacker đổi alg thành none và xoá signature, server nếu không kiểm alg sẽ coi là hợp lệ. Kiểm alg trước khi tính HMAC cắt đứng bypass.
+
+### Rotation key
+Dùng kid header để chọn secret; rotation không làm token cũ vô hiệu ngay nếu giữ secret cũ trong thời gian grace.
+
+### Liên hệ phỏng vấn thêm
+Giải thích HMAC không mã hoá payload; base64url không có padding; secret >= 256 bit; timing attack; alg confusion.
+
+### Lỗi hay gặp
+- Dùng String.equals so sánh chữ ký → timing leak.
+- Không kiểm alg → alg=none bypass.
+- Không kiểm exp → token vĩnh viễn.
+- Base64 thường thay vì base64url → '+' '/' bị hỏng trong URL.
+
+### Ví dụ đầy đủ
+~~~java
+// sign
+String data = header + "." + payload;
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+String sig = Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(data.getBytes()));
+~~~
+
+### Interview answer
+Trả lời: JWT không mã hoá, HMAC đảm bảo integrity, verify alg/exp/nbf, compare constant-time.
+
+### Common pitfalls
+Quên kiểm exp, dùng base64 thường, so sánh bằng equals, alg confusion.
+
+### Production notes
+Log kid, monitor failed verify, rotate secret định kỳ, không để secret trong code.
+
+### Best practices
+Dùng constant-time compare, kiểm exp với tolerance nhỏ (clock skew), validate iss/aud.
+
+### Liên hệ phỏng vấn
+Nói rõ HMAC chỉ bảo toàn tính toàn vẹn, không mã hoá; secret phải đủ dài (>=256 bit); rotation key; kid header.`,
+  exercises: [
+    {
+      title: 'JWT sign/verify',
+      prompt: `Implement Jwt.sign(payloadJson, secret, nowEpochSec) và Jwt.verify(token, secret, nowEpochSec) trả boolean. Từ chối alg khác HS256, exp hết hạn, nbf chưa hiệu lực, chữ ký sai.`,
+      starter: `import java.util.*;\nimport java.nio.charset.StandardCharsets;\nimport javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass Jwt {\n  static String sign(String payloadJson, byte[] secret, long now) {\n    throw new UnsupportedOperationException("TODO");\n  }\n  static boolean verify(String token, byte[] secret, long now) {\n    throw new UnsupportedOperationException("TODO");\n  }\n}\n`,
+      tests: `public class Main {\n  static void eq(String a,String b){if(!a.equals(b))throw new AssertionError(a+" != "+b);}\n  static void t(boolean c,String m){if(!c)throw new AssertionError(m);}\n  public static void main(String[] a){\n    byte[] s="secretsecretsecretsecret".getBytes();\n    String tok=Jwt.sign("{\\"sub\\":\\"u1\\",\\"exp\\":200}",s,100);\n    t(Jwt.verify(tok,s,150),"valid");\n    t(!Jwt.verify(tok,s,250),"expired");\n    String bad=tok.substring(0,tok.lastIndexOf('.')+1)+"AAAA";\n    t(!Jwt.verify(bad,s,150),"bad sig");\n    String h=Base64.getUrlEncoder().withoutPadding().encodeToString("{\\"alg\\":\\"none\\",\\"typ\\":\\"JWT\\"}".getBytes());\n    String p=Base64.getUrlEncoder().withoutPadding().encodeToString("{\\"sub\\":\\"u1\\",\\"exp\\":200}".getBytes());\n    t(!Jwt.verify(h+"."+p+".",s,150),"alg none");\n    System.out.println("RESULT 4/4");\n  }\n}`,
+      reference: `import java.util.*;\nimport java.nio.charset.StandardCharsets;\nimport javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass Jwt {\n  static String b64e(byte[] b){return Base64.getUrlEncoder().withoutPadding().encodeToString(b);}\n  static byte[] b64d(String s){return Base64.getUrlDecoder().decode(s);}\n  static String sign(String payloadJson, byte[] secret, long now){\n    String h=b64e("{\\"alg\\":\\"HS256\\",\\"typ\\":\\"JWT\\"}".getBytes(StandardCharsets.UTF_8));\n    String p=b64e(payloadJson.getBytes(StandardCharsets.UTF_8));\n    String data=h+"."+p;\n    try{Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret,"HmacSHA256"));return data+"."+b64e(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));}\n    catch(Exception e){throw new RuntimeException(e);}\n  }\n  static boolean verify(String token, byte[] secret, long now){\n    String[] parts=token.split("\\\\.",-1);\n    if(parts.length!=3) return false;\n    try{\n      String hs=new String(b64d(parts[0]),StandardCharsets.UTF_8);\n      if(!hs.contains("\\"alg\\":\\"HS256\\"")) return false;\n      String ps=new String(b64d(parts[1]),StandardCharsets.UTF_8);\n      long exp=Long.MAX_VALUE,nbf=Long.MIN_VALUE;\n      int i=ps.indexOf("\\"exp\\""); if(i>=0){int c=ps.indexOf(':',i);int e=ps.indexOf(',',c); if(e<0)e=ps.indexOf('}',c); exp=Long.parseLong(ps.substring(c+1,e).trim());}\n      i=ps.indexOf("\\"nbf\\""); if(i>=0){int c=ps.indexOf(':',i);int e=ps.indexOf(',',c); if(e<0)e=ps.indexOf('}',c); nbf=Long.parseLong(ps.substring(c+1,e).trim());}\n      if(now>exp) return false;\n      if(now<nbf) return false;\n      Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret,"HmacSHA256"));\n      byte[] calc=mac.doFinal((parts[0]+"."+parts[1]).getBytes(StandardCharsets.UTF_8));\n      byte[] given=b64d(parts[2]);\n      return MessageDigest.isEqual(calc,given);\n    }catch(Exception e){return false;}\n  }\n}\n`,
+      hints: ['Dùng MessageDigest.isEqual', 'Kiểm alg trước khi tính HMAC'],
+      explain: 'Lời giải ký bằng HMAC và verify với so sánh thời gian hằng; parse exp/nbf đơn giản.',
+    },
+  ],
+  check: [
+    { q: 'Vì sao dùng MessageDigest.isEqual?', options: ['Nhanh hơn', 'Thời gian hằng, chống timing attack', 'Hỗ trợ unicode', 'Tự động hash'], answer: 1, explain: 'So sánh byte theo thời gian cố định, tránh leak thông tin qua timing.' },
+    { q: 'alg=none nguy hiểm vì?', options: ['Chậm', 'Bypass chữ ký', 'Tốn bộ nhớ', 'Không hỗ trợ UTF-8'], answer: 1, explain: 'Attacker xoá signature và đặt alg none; server không kiểm alg sẽ chấp nhận.' },
+  ],
+  related: [],
+  tags: ['JWT', 'HMAC', 'base64url'],
+},
+{
+  id: 'lesson-security-011',
+  track: 'security',
+  order: 11,
+  title: 'PKCE S256 cho OAuth public client',
+  level: 'senior',
+  minutes: 40,
+  goals: ['Hiểu PKCE và code_challenge S256', 'Mô phỏng authorize + token exchange', 'Chặn kẻ tấn công không có verifier'],
+  body: `**Tóm tắt:** PKCE: client tạo code_verifier ngẫu nhiên, gửi code_challenge = base64url(SHA256(verifier)); server lưu challenge khi authorize và kiểm verifier khi đổi code lấy token.
+
+### Vấn đề
+Public client (SPA/mobile) không giữ secret; authorization code có thể bị đánh cắp qua redirect. PKCE ràng buộc code với verifier chỉ client biết.
+
+### Luồng
+~~~seq
+title: PKCE
+actors: Client | AuthServer | Resource
+Client -> AuthServer: authorize + code_challenge
+AuthServer -> Client: code
+Client -> AuthServer: token + code + code_verifier
+AuthServer -> Client: access_token
+~~~
+
+### code_challenge
+code_challenge = BASE64URL(SHA-256(code_verifier)).
+
+### Server kiểm
+Lưu challenge theo code; khi token request, tính base64url(SHA256(verifier)) và so sánh thời gian hằng với challenge.
+
+### Lỗi hay gặp
+- Dùng plain method thay vì S256.
+### Chi tiết S256
+SHA-256 cho 256-bit output, base64url không padding. Verifier dài 43-128 ký tự từ [A-Z a-z 0-9 - . _ ~].
+
+### So sánh thời gian hằng
+MessageDigest.isEqual tránh timing leak khi so challenge.
+
+### Phòng CSRF
+Kết hợp state parameter; PKCE không thay state, hai cơ chế bổ sung.
+
+### Liên hệ phỏng vấn thêm
+PKCE bắt buộc cho public client theo OAuth 2.1; confidential client cũng nên dùng; code_verifier không được log.
+- Không kiểm verifier → PKCE vô nghĩa.
+- Verifier quá ngắn (<43 ký tự).
+
+### Ví dụ challenge
+~~~java
+MessageDigest md = MessageDigest.getInstance("SHA-256");
+byte[] d = md.digest(verifier.getBytes(StandardCharsets.UTF_8));
+String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(d);
+~~~
+
+### Extra5
+Use SecureRandom for verifier; length 43-128; charset unreserved.
+
+### Extra4
+Authorization server stores challenge; token endpoint recomputes and compares.
+
+### Extra3
+Public clients cannot keep secret; PKCE provides proof of possession.
+
+### Extra2
+Token endpoint validates code + verifier + redirect_uri; mismatch rejects.
+
+### Extra
+RFC 7636, OAuth 2.1 mandate PKCE, verifier entropy, challenge storage, replay protection.
+
+### Interview answer
+Trả lời: PKCE ràng buộc code với verifier, S256, bắt buộc public client, chống code interception.
+
+### Common pitfalls
+Dùng plain method, verifier ngắn, không kiểm verifier, replay code.
+
+### Production notes
+Log challenge, reject reuse code, enforce PKCE cho mọi public client, redirect exact.
+
+### Best practices
+Verifier sinh bằng SecureRandom, challenge S256, state chống CSRF, redirect URI exact match.
+
+### Liên hệ phỏng vấn
+PKCE bắt buộc cho public client (RFC 7636); kết hợp state chống CSRF.`,
+  exercises: [
+    {
+      title: 'AuthServer PKCE',
+      prompt: `Implement AuthServer với authorize(clientId, challenge) trả code, và token(code, verifier) trả token hoặc null nếu verifier sai.`,
+      starter: `import java.util.*;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass AuthServer {\n  private final Map<String,String> challenges=new HashMap<>();\n  private int counter=0;\n  String authorize(String clientId, String challenge){ throw new UnsupportedOperationException("TODO"); }\n  String token(String code, String verifier){ throw new UnsupportedOperationException("TODO"); }\n  static String challengeOf(String verifier){ throw new UnsupportedOperationException("TODO"); }\n}\n`,
+      tests: `public class Main {\n  static void t(boolean c,String m){if(!c)throw new AssertionError(m);}\n  public static void main(String[] a){\n    AuthServer s=new AuthServer();\n    String v="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";\n    String ch=AuthServer.challengeOf(v);\n    String code=s.authorize("c1",ch);\n    t(s.token(code,v)!=null,"valid verifier");\n    t(s.token(code,"wrongverifier")==null,"wrong verifier");\n    t(s.token(code,"")==null,"empty verifier");\n    t(s.token(code,v)==null,"replay rejected");\n    System.out.println("RESULT 4/4");\n  }\n}`,
+      reference: `import java.util.*;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass AuthServer {\n  private final Map<String,String> challenges=new HashMap<>();\n  private final Set<String> used=new HashSet<>();\n  private int counter=0;\n  String authorize(String clientId, String challenge){ String code="code"+(++counter); challenges.put(code,challenge); return code; }\n  String token(String code, String verifier){\n    String ch=challenges.get(code);\n    if(ch==null) return null;\n    if(used.contains(code)) return null;\n    if(!MessageDigest.isEqual(ch.getBytes(), challengeOf(verifier).getBytes())) return null;\n    used.add(code);\n    return "token-"+code;\n  }\n  static String challengeOf(String verifier){\n    try{MessageDigest md=MessageDigest.getInstance("SHA-256");byte[] d=md.digest(verifier.getBytes(java.nio.charset.StandardCharsets.UTF_8));return Base64.getUrlEncoder().withoutPadding().encodeToString(d);}\n    catch(Exception e){throw new RuntimeException(e);}\n  }\n}\n`,
+      hints: ['challenge = base64url(SHA256(verifier))', 'So sánh thời gian hằng'],
+      explain: 'Lời giải lưu challenge theo code, kiểm verifier và chống replay.',
+    },
+  ],
+  check: [
+    { q: 'PKCE bảo vệ chống gì?', options: ['CSRF', 'Đánh cắp authorization code trên public client', 'XSS', 'SQLi'], answer: 1, explain: 'Ràng buộc code với verifier chỉ client biết.' },
+    { q: 'PKCE method nên dùng?', options: ['plain', 'S256', 'MD5', 'SHA-1'], answer: 1, explain: 'S256 = base64url(SHA-256(verifier)).' },
+  ],
+  related: [],
+  tags: ['PKCE', 'OAuth', 'S256'],
 },
 );
 

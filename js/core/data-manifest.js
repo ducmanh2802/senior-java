@@ -22,7 +22,7 @@
       index: ['index-light.js'],
       questions: ['q-java.js', 'q-kotlin.js', 'q-concurrency-jvm.js', 'q-spring-data.js', 'q-sql.js', 'q-api.js',
         'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-banking.js', 'q-aws.js', 'q-ai.js',
-        'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js', 'q-autotest.js'],
+        'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js', 'q-autotest.js', 'q-remote.js'],
       quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js'],
       exams: ['exams.js'],                                    // exam registry (#/exam)
       algos: ['algo.js'],
@@ -37,6 +37,8 @@
       glossary: ['glossary-dist.js', 'glossary-java.js', 'glossary-infra.js'],
       projects: ['projects.js'],
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
+      bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
+      pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
       aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js'],
     },
@@ -47,8 +49,8 @@
       roadmap: ['index'],                                     // App.dueItems()
       bank: ['questions', 'glossary'],
       flash: ['questions', 'glossary'],
-      quiz: ['quiz', 'glossary'],
-      exam: ['quiz', 'exams', 'glossary'],
+      quiz: ['index'],                                        // setup from the light index; the view awaits 'quiz' on start
+      exam: ['index', 'exams'],                               // pick screen from the light index; the view awaits 'quiz' for the rest
       algo: ['algos', 'glossary'],
       mock: ['questions', 'algos'],
       companies: ['companies', 'questions'],                  // App.stats()
@@ -60,23 +62,24 @@
       'legal/terms': [],
       interview: ['questions', 'companies'],                  // seeds from the bank + company presets
       learn: ['lessons', 'questions', 'glossary'],
-      path: ['lessons', 'questions', 'glossary'],
+      path: ['lessons', 'questions', 'glossary', 'pathbasics'],
       speak: ['drills'],
       news: [],
       sd: ['sd', 'questions', 'glossary'],
       projects: ['projects', 'lessons', 'questions', 'glossary'],
       career: ['questions', 'companies'],
       sdlc: ['sdlc'],
+      bugs: ['bugs', 'questions', 'glossary'],               // related-questions widget
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
     },
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs', 'bugs'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)
-    prefetch: ['index', 'questions', 'glossary', 'lessons', 'algos', 'quiz', 'exams', 'companies', 'sd', 'drills', 'labs', 'projects', 'sdlc', 'aws'],
+    prefetch: ['index', 'questions', 'glossary', 'lessons', 'algos', 'quiz', 'exams', 'companies', 'sd', 'drills', 'labs', 'projects', 'sdlc', 'aws', 'bugs'],
   };
   /** Groups a resolved view needs: needsFor('legal', 'privacy') → routes['legal/privacy'] ?? routes.legal ?? []. */
   M.needsFor = function (view, param) {

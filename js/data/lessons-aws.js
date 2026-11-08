@@ -1156,7 +1156,7 @@ App -> RDS: SQL 5432 (SG db mo 5432 tu SG app)
 RDS --> App: result set
 App --> ALB: HTTP 200
 ALB --> Client: HTTP 200
-note App: app khong co IP public, ra ngoai phai qua NAT hoac endpoint
+note App: app không có IP public, ra ngoài phải qua NAT hoặc endpoint
 ~~~
 
 Chú ý cách tham chiếu khi viết rule SG: **SG cho phép theo SG khác**, không nhất thiết theo CIDR. Đặt ingress của RDS = "5432 từ security group của app" nghĩa là khi app scale thêm instance, bạn không phải sửa rule nào; ghi CIDR thì mỗi lần đổi dải subnet là một lần sửa.
@@ -1358,12 +1358,12 @@ class VpcFilter {
         long base = ipToLong(cidr.substring(0, slash));
         if (bits == 0) return true;                  // /0: moi IP deu thuoc cung mot dai
         int shift = 32 - bits;
-        return (base >>> shift) == (ipToLong(ip) >>> shift);  // dich khong dau, an toan voi bit cao
+        return (base >>> shift) == (ipToLong(ip) >>> shift);  // dịch không dấu, an toàn với bit cao
     }
 
     static String firstMatch(List<Rule> rules, String ip, int port) {
         return rules.stream()
-                .sorted(Comparator.comparingInt(Rule::number))   // so nho hon duoc xet truoc
+                .sorted(Comparator.comparingInt(Rule::number))   // số nhỏ hơn được xét trước
                 .filter(r -> matches(r, ip, port))
                 .map(r -> r.allow() ? "ALLOW" : "DENY")
                 .findFirst()
@@ -1377,15 +1377,15 @@ class VpcFilter {
     }
 
     String checkResponse(String clientIp, int clientPort) {
-        // SG stateful: phan hoi cua ket noi da duoc cho phep luon duoc ve, khong xet rule.
+        // SG stateful: phản hồi của kết nối đã được cho phép luôn được về, không xét rule.
         return "ALLOW".equals(firstMatch(naclOut, clientIp, clientPort)) ? "ALLOW" : "DENY_NACL_OUT";
     }
 }`,
       hints: [
         'Doi IP sang so theo cach co ban nhat: {{v = v * 256 + octet}} cho 4 octet. Vi du {{10.0.1.77}} = 10*16777216 + 0*65536 + 1*256 + 77.',
-        'Trong Java, ca {{int}} va {{long}} deu dung so bit dich chuyen co gioi han ({{int}} lay 5 bit thap, {{long}} lay 6 bit thap), nen {{long >> 32}} la dich 32 bit hop le. Voi {{/0}} thi {{shift = 32}} va ca 32 bit deu bi dich ra ngoai (ket qua phu thuoc cach ban xu ly day du); cach an toan: neu {{bits == 0}} tra ve {{true}}, nguoc lai dung {{(base >>> shift) == (ip >>> shift)}} voi {{long}} khong dau.',
-        'SG khong co rule deny: loc {{r.allow()}} truoc khi {{anyMatch}}, dung dung la {{anyMatch(matches)}}.',
-        'Thu tu cua checkRequest la SG truoc roi moi den NACL inbound; checkResponse khong nhac gi den SG.',
+        'Trong Java, cả {{int}} và {{long}} đều dùng số bit dịch chuyển có giới hạn ({{int}} lấy 5 bit thấp, {{long}} lấy 6 bit thấp), nên {{long >> 32}} là dịch 32 bit hop le. Voi {{/0}} thi {{shift = 32}} va ca 32 bit deu bi dich ra ngoai (ket qua phu thuoc cach ban xu ly day du); cach an toan: neu {{bits == 0}} tra ve {{true}}, nguoc lai dung {{(base >>> shift) == (ip >>> shift)}} voi {{long}} khong dau.',
+        'SG không có rule deny: lọc {{r.allow()}} trước khi {{anyMatch}}, đúng đúng là {{anyMatch(matches)}}.',
+        'Thứ tự của checkRequest là SG trước rồi mới đến NACL inbound; checkResponse không nhắc gì đến SG.',
       ],
       explain: `### Ba thu ban vua cai la ba thu gay loi nhai ngoai production
 - **{{cidrContains}}** là lý do "subnet này còn IP không" và "rule có bắt traffic kia không" luôn phải được tính bằng bit, không bằng mắt. {{10.0.1.0/24}} không chứa {{10.0.2.x}}, và {{10.0.0.0/16}} không chứa {{10.1.0.1}} — hai nhầm lẫn phổ biến khi đặt CIDR cho VPC mới rồi lớn lên không còn chỗ.
@@ -1458,7 +1458,7 @@ Dữ liệu là **item** (một JSON nhỏ, tối đa **400 KB**) trong một **
                         |
         items co cung pk nam CUNG MOT binh, sap theo sk:
           customer#C42 | order#1730000000001
-          customer#C42 | order#1730000000002     <- cung partition = doc duoc bang 1 Query
+          customer#C42 | order#1730000000002     <- cùng partition = đọc được bằng 1 Query
           customer#C42 | profile
 ~~~
 
@@ -1515,7 +1515,7 @@ Cần nhiều item/nhiều bảng cùng lúc thì dùng **TransactWriteItems** (
 @DynamoDbBean
 public class Order {
     private String pk;   // "customer#C42"          -> partition key
-    private String sk;   // "order#1730000000000"   -> sort key (epoch ms: so sanh duoc bang chuoi)
+    private String sk;   // "order#1730000000000"   -> sort key (epoch ms: so sánh được bằng chuỗi)
     private long totalCents;
     private String status;
     @DynamoDbPartitionKey public String getPk() { return pk; }
@@ -1590,7 +1590,7 @@ class FakeDynamo {
     private final Map<PKey, Map<String,String>> data = new LinkedHashMap<>();
 
     void put(String pk, String sk, Map<String,String> attrs) {
-        Map<String,String> copy = new TreeMap<>(attrs);   // ban sao, khong giu reference cua caller
+        Map<String,String> copy = new TreeMap<>(attrs);   // bản sao, không giữ reference của caller
         copy.put("v", "1");
         data.put(new PKey(pk, sk), copy);
     }
@@ -1745,11 +1745,11 @@ class FakeDynamo {
     }
 }`,
       hints: [
-        'Muon lay theo thu tu {{sk}} tang dan ma khong can thu cong sap xep: gom vao {{TreeMap<String, Item>}} voi key la {{sk}}, roi lay {{values()}} (bo vao {{ArrayList}} de co List).',
-        'Di qua tung phan tu cua {{data.entrySet()}} va kiem tra {{k.pk().equals(pk)}} cung {{k.sk().startsWith(skPrefix)}}. Voi {{skPrefix}} rong, {{startsWith("")}} luon dung nen pham vi la ca partition.',
-        'Version hien tai: item khong ton tai la 0; neu co thi {{Long.parseLong}} tu attribute {{"v"}}. So sanh **truoc khi** ghi, va khi reject thi khong duoc cham vao {{data}}.',
+        'Muốn lấy theo thứ tự {{sk}} tăng dần mà không cần thủ công sắp xếp: gom vào {{TreeMap<String, Item>}} với key là {{sk}}, rồi lấy {{values()}} (bỏ vào {{ArrayList}} de co List).',
+        'Đi qua từng phần tử của {{data.entrySet()}} và kiểm tra {{k.pk().equals(pk)}} cùng {{k.sk().startsWith(skPrefix)}}. Với {{skPrefix}} rỗng, {{startsWith("")}} luon dung nen pham vi la ca partition.',
+        'Version hiện tại: item không tồn tại là 0; nếu có thì {{Long.parseLong}} từ attribute {{"v"}}. So sánh **trước khi** ghi, và khi reject thì không được chạm vào {{data}}.',
         'Lam tron len boi so ma khong can so thuc: {{(s + 4095) / 4096}} cho block doc 4 KB, {{(s + 1023) / 1024}} cho block ghi 1 KB; {{Math.ceil}} tren so nguyen se ra 0 mai mai.',
-        'Doc eventually consistent = **mot nua** RCU: {{(units + 1) / 2}} (lam tron len de khong duoc tieu 0 cho mot batch khong rong).',
+        'Đọc eventually consistent = **một nửa** RCU: {{(units + 1) / 2}} (làm tròn lên để không được tiêu 0 cho một batch không rỗng).',
       ],
       explain: `### Cai ban vua viet chinh la ba dieu quyet dinh hieu nang va hoa don
 - **{{query}} chi doc MỘT partition** và trả kết quả đã sắp theo {{sk}}. Đó là toàn bộ lý do DynamoDB nhanh: nó biết chính xác bình chứa nào cần mở. {{Scan}} thì phải mở mọi bình — hãy tưởng tượng nó như {{SELECT *}} rồi lọc ở client, chi phí tỉ lệ với **kích thước bảng**, không phải số dòng thoả điều kiện.

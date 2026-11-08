@@ -34,7 +34,7 @@ Nhánh: mọi commit (autopilot, integrator) vào nhánh **`content`**, Vercel d
 4. **Không chạy `git commit` / `git push`** và không tạo branch. Người tích hợp sẽ review rồi commit.
 5. Không xoá hoặc ghi đè nội dung của người khác. File dữ liệu chỉ được **thêm** câu hỏi.
 6. Làm xong phải chạy `node scripts/validate.js` cho đến khi in ra `OK — không có lỗi.`
-   Thêm/sửa câu hỏi, bài học, algo, sd, drill hoặc công ty thì chạy trước `node scripts/build-light-index.js` (sinh lại `js/data/index-light.js` cho dashboard; validate báo lỗi nếu file này cũ).
+   Thêm/sửa câu hỏi, bài học, algo, sd, drill, câu trắc nghiệm (quiz) hoặc công ty thì chạy trước `node scripts/build-light-index.js` (sinh lại `js/data/index-light.js` cho dashboard; validate báo lỗi nếu file này cũ).
 7. Cuối cùng, cập nhật trạng thái trong file task của bạn: `Status: DONE`, kèm ghi chú ngắn.
 8. **TUYỆT ĐỐI KHÔNG kill tiến trình theo tên** (`taskkill /IM`, `Stop-Process -Name`, `Get-Process node | Stop-Process`, `pkill`, `killall`…).
    Máy này đang chạy nhiều agent và công cụ khác dùng `node`/`chrome`; kill theo tên sẽ tắt hết chúng và cả trình duyệt của người dùng.
@@ -138,7 +138,9 @@ Người đọc là dev Java 4–8 năm kinh nghiệm chuẩn bị phỏng vấn
     như đang dạy một người chưa biết), ví dụ minh hoạ cụ thể (code, số liệu, sơ đồ ASCII), so sánh/bảng trade-off,
     khi nào dùng / không dùng, **pitfall thực tế trên production**.
   - Code ngắn (≤ 30 dòng), có comment giải thích những dòng quan trọng.
-  - Độ dài khoảng **1500–4000 ký tự** (câu system design / tình huống có thể dài hơn).
+  - Có `### Ví dụ đời thực`: một tình huống production cụ thể có số liệu (triệu chứng → điều tra → xử lý → kết quả đo được).
+  - Có `### Trả lời mẫu khi phỏng vấn`: đoạn nói tự nhiên 60–90 giây (150–220 từ), như ứng viên Senior trả lời thật.
+  - Độ dài khoảng **3000–5000 ký tự** (câu system design / tình huống có thể dài hơn). Validator cảnh báo đáp án dưới 1500 ký tự.
 - Câu trắc nghiệm: `explain` giải thích vì sao đáp án đúng **và vì sao từng phương án sai** là sai.
 - Kết thúc bằng một `> Senior tip:` thể hiện góc nhìn kinh nghiệm thực tế: số liệu, tuning, case thật.
 - Nội dung phải **đúng kỹ thuật** với Java 17/21, Spring Boot 3.x, Hibernate 6 và AWS hiện hành. Không bịa API.
@@ -355,3 +357,21 @@ Mỗi kịch bản đưa người học đi trọn một tính năng thật. **B
   tags: ['…'] }
 ```
 Các giai đoạn phải nối nhau: số liệu, tên service, quyết định ở bước trước được dùng lại ở bước sau; lỗi ở `bugfix` phải bắt nguồn từ một quyết định/giả định ở các bước trước.
+
+## 17. Sửa bug thật: `window.BUGS` (`js/data/bugs.js`, view `#/bugs`)
+
+Mỗi bài mô phỏng một **bug nghiêm trọng trên production** của một dự án thật: người học đọc sự cố và artifact, chạy test để thấy bug, sửa code, viết RCA (AI chấm), rồi xem đáp án. **Bài mẫu: `bug-001`; đọc kỹ trước khi viết.**
+```js
+{ id: 'bug-009', title, domain: 'Ví điện tử / Fintech', level: 'mid|senior|lead', severity: 'P1|P2|P3', minutes: 20,
+  story: `markup ≥ 300 ký tự: bối cảnh dự án, sự cố có số liệu, nhiệm vụ`,
+  artifacts: [{ name, lang: 'text|java|sql|yaml|json|bash', content }],   // log, jstack, APM trace… giống thật, khớp với code
+  starter: 'Java: code dự án ĐANG LỖI, biên dịch được; phần hạ tầng ghi rõ "KHÔNG cần sửa"',
+  tests: 'public class Main { … tái hiện bug, in PASS/FAIL, cuối cùng RESULT passed/total; System.exit(0) nếu có thread }',
+  reference: 'Java: code đã sửa, pass 100% test',
+  hints: ['≥ 2, tăng dần'], rootCause: `markup: nguyên nhân gốc + dẫn chứng trích từ artifact`,
+  fix: `markup ≥ 800 ký tự: cách sửa, trên production thật, so sánh, phòng ngừa, liên hệ phỏng vấn`,
+  related: ['id câu hỏi có thật'], tags: ['…'] }
+```
+- Test phải **tái hiện bug một cách xác định** (dùng latch/barrier, fake repository đếm query, `Clock`/`Instant` cố định…), không dựa vào may rủi.
+- Chạy `node scripts/test-bugs.js`: reference pass hết (≥ 3 test), starter biên dịch được và **không** pass hết. Và `node scripts/validate.js` → OK.
+- Cùng quy tắc code như bài tập bài học (mục 12): chỉ JDK chuẩn, không class public ngoài `Main`, biên dịch được với Java 17.

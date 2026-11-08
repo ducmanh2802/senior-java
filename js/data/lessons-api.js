@@ -725,7 +725,7 @@ class IdempotencyStore {
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("idempotency key is required");
         }
-        // computeIfAbsent chay mapping function dung MOT lan cho moi key,
+        // computeIfAbsent chạy mapping function dùng MỘT lần cho mỗi key,
         // ke ca khi nhieu thread goi cung luc.
         Entry entry = cache.computeIfAbsent(key, k -> new Entry(body, action.get()));
         if (!entry.fingerprint.equals(body)) {
@@ -1444,7 +1444,7 @@ class TokenBucket {
         return true;
     }
 
-    // Con bao nhieu giay thi co lai du 1 token? Day chinh la gia tri cho Retry-After.
+    // Còn bao nhiêu giây thì có lại đủ 1 token? Đây chính là giá trị cho Retry-After.
     synchronized long retryAfterSeconds() {
         double missing = Math.max(0, 1 - tokens);
         return (long) Math.ceil(missing / CAPACITY * 60);
@@ -1656,7 +1656,7 @@ class RetryClient {
         };
     }
     public static void main(String[] args) {
-        check("429 roi 200: chi retry dung 1 lan, cho trong khoang backoff", () -> {
+        check("429 rồi 200: chỉ retry đúng 1 lần, chờ trong khoảng backoff", () -> {
             FakeClock clock = new FakeClock(1_000_000L);
             Recorder rec = new Recorder();
             RetryPolicy p = new RetryPolicy(5, 100, 2000, 7L);
@@ -1668,7 +1668,7 @@ class RetryClient {
             eq(1, Integer.valueOf(g.size()));
             inRange(50, 100, g.get(0));
         });
-        check("retry-after giay duoc ton that tuyet doi, bang qua jitter", () -> {
+        check("retry-after giây được tôn trọng tuyệt đối, bất chấp jitter", () -> {
             FakeClock clock = new FakeClock(1_000_000L);
             Recorder rec = new Recorder();
             RetryClient c = new RetryClient(
@@ -1739,7 +1739,7 @@ class RetryClient {
             eq(1, Integer.valueOf(rec.calls()));
             eq(0L, clock.now());
         });
-        check("mau khong retry duoc (500, 403) tra ve ngay lap tuc", () -> {
+        check("mẫu không retry được (500, 403) trả về ngay lập tức", () -> {
             FakeClock clock = new FakeClock(77L);
             Recorder rec = new Recorder();
             RetryClient c = new RetryClient(script(clock, rec, new Response(500), new Response(200)), clock, new RetryPolicy(4, 100, 900, 8L));
@@ -1861,7 +1861,7 @@ class RetryClient {
         return d / 2 + rnd.nextLong(d / 2 + 1);           // "equal jitter": nua co dinh, nua ngau nhien
     }
 
-    // tra ve null neu header vang hoac khong parse duoc (coi nhu server khong noi gi)
+    // trả về null nếu header vắng hoặc không parse được (coi như server không nói gì)
     static Long retryAfterMillis(String value, long nowMillis) {
         if (value == null || value.isBlank()) return null;
         String v = value.trim();
@@ -1998,7 +1998,7 @@ class AccountView {
     public String id;
     public Money amount;
 
-    // 2) Enum: khai bao mot gia tri mac dinh de gia tri moi cua server khong lam do app
+    // 2) Enum: khai báo một giá trị mặc định để giá trị mới của server không làm đổ app
     @JsonEnumDefaultValue
     public enum Status { NEW, PAID, VOID, UNKNOWN }
 }
@@ -2135,7 +2135,7 @@ class CompatChecker {
             eq(List.of(), r.risky());
             eq(List.of(), r.safe());
         });
-        check("them field optional la safe, khong phai breaking", () -> {
+        check("thêm field optional là safe, không phải breaking", () -> {
             CompatReport r = CompatChecker.diff(s("id", new Field("string", true)),
                 s("id", new Field("string", true), "nickname", new Field("string", false)));
             eq(List.of(), r.breaking());
@@ -2153,7 +2153,7 @@ class CompatChecker {
                 s("id", new Field("string", true)));
             eq(List.of("removed:balance"), r.breaking());
         });
-        check("doi kieu khong tu nhien la breaking, doi enum sang string khong sinh nhan enum", () -> {
+        check("đổi kiểu không tự nhiên là breaking, đổi enum sang string không sinh nhận enum", () -> {
             CompatReport r = CompatChecker.diff(s("amount", new Field("string", true)),
                 s("amount", new Field("int", true)));
             eq(List.of("retyped:amount:string->int"), r.breaking());
@@ -2162,7 +2162,7 @@ class CompatChecker {
                 s("status", new Field("string", true, ev("NEW", "PAID"))));
             eq(List.of("retyped:status:enum->string"), e.breaking());
         });
-        check("noi rong kieu so: van parse duoc nhung quy vao nhom rui ro", () -> {
+        check("nới rộng kiểu số: vẫn parse được nhưng quy vào nhóm rủi ro", () -> {
             CompatReport r = CompatChecker.diff(
                 s("amount", new Field("int", true), "rate", new Field("float", false), "big", new Field("long", false)),
                 s("amount", new Field("long", true), "rate", new Field("double", false), "big", new Field("string", false)));
@@ -2184,7 +2184,7 @@ class CompatChecker {
             eq(List.of("enum-value-added:status:DISPUTED", "enum-value-added:status:REFUNDED"), r.risky());
             eq(List.of(), r.safe());
         });
-        check("nhieu thay doi: moi danh sach sap xep tang dan va phan loai dung", () -> {
+        check("nhiều thay đổi: mỗi danh sách sắp xếp tăng dần và phân loại đúng", () -> {
             Map<String, Field> before = s(
                 "id", new Field("string", true),
                 "age", new Field("int", false),
@@ -2201,7 +2201,7 @@ class CompatChecker {
             eq(List.of("enum-value-added:kind:C"), r.risky());
             eq(List.of("added-optional:channel"), r.safe());
         });
-        check("mot field vua doi kieu vua thanh bat buoc: emit ca hai nhan", () -> {
+        check("một field vừa đổi kiểu vừa thành bắt buộc: emit cả hai nhãn", () -> {
             CompatReport r = CompatChecker.diff(s("count", new Field("int", false)), s("count", new Field("long", true)));
             eq(List.of("now-required:count"), r.breaking());
             eq(List.of("widened:count:int->long"), r.risky());
@@ -2324,5 +2324,725 @@ Trong dự án thật, bạn gần như không tự viết cái này: {{oasdiff}
   ],
   related: ['api-016', 'api-030', 'api-014'],
   tags: ['API versioning', 'breaking change', 'tolerant reader', 'deprecation', 'Sunset', 'contract test'],
+},
+{
+  id: 'lesson-api-008',
+  track: 'api',
+  order: 8,
+  title: 'Rate limiter phân tán: sliding window counter vs token bucket, burst ở ranh giới',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Giải thích được vì sao fixed window bị double-burst ở ranh giới và sliding window counter xấp xỉ khắc phục ra sao',
+    'So sánh token bucket và sliding window counter về độ chính xác, chi phí, khả năng chịu burst và nơi dùng phù hợp',
+    'Mô tả được cơ chế rate limit phân tán thật (Redis INCR/EXPIRE, Lua script nguyên tử, gateway) và điểm đơn giản hoá trong mô phỏng',
+    'Tự cài cả hai thuật toán với đồng hồ giả, xác định retryAfter và chặn burst ở ranh giới cửa sổ',
+  ],
+  body: `### Tóm tắt
+Hai thuật toán rate limit phổ biến nhất là **sliding window counter** (cửa sổ trượt bằng bộ đếm) và **token bucket** (lọ token). Cả hai đều trả lời câu hỏi "request này có được phép đi tiếp không?" nhưng đánh đổi khác nhau: sliding window counter rẻ và dễ hiểu, token bucket cho phép burst tự nhiên và cho biết chính xác khi nào có token lại. Ở cấp senior, bạn phải nói được cả công thức, cả lỗi ở ranh giới cửa sổ, và cả cách triển khai nguyên tử khi hệ thống chạy nhiều instance.
+
+### Nhắc lại các thuật ngữ (giải thích lần đầu trong ngữ cảnh bài này)
+- **Rate limiter (bộ giới hạn tốc độ)**: thành phần đứng trước nghiệp vụ, quyết định cho qua hay trả 429. Hình dung như nhân viên soát vé ở cổng: mỗi phút chỉ cho 100 người vào, người thứ 101 phải đợi lượt sau.
+- **Cửa sổ thời gian (time window)**: một khoảng thời gian cố định dùng để đếm, ví dụ 60 giây.
+- **Burst (bùng nổ ngắn)**: một loạt request dồn tới rất nhanh trong thời gian ngắn. Ứng dụng mobile hay burst khi vừa mở (gọi song song 5 API).
+- **Nguyên tử (atomic)**: một thao tác diễn ra trọn vẹn, không bị chen ngang bởi thao tác khác. Nếu "đọc rồi cộng rồi ghi" không nguyên tử, hai thread có thể cùng đọc 99, cùng cộng thành 100 và cùng cho qua, vượt hạn mức.
+- **Redis**: kho dữ liệu trong RAM, truy cập theo key, dùng chung cho nhiều instance ứng dụng. Lệnh {{INCR}} tăng số nguyên theo key và trả giá trị mới; {{EXPIRE}} đặt thời gian sống.
+- **Lua script trong Redis**: một đoạn mã nhỏ chạy bên trong Redis như một thao tác nguyên tử, dùng khi bạn cần "đọc - tính - ghi" liền mạch (ví dụ token bucket).
+- **Phân tán (distributed)**: nhiều instance ứng dụng cùng phục vụ; nếu mỗi instance giữ bộ đếm riêng thì hạn mức thực tế nhân lên theo số instance, nên bộ đếm phải đặt ở nơi dùng chung (Redis) hoặc ở gateway.
+
+### 1) Fixed window và lỗi double-burst ở ranh giới
+**Cái gì:** Fixed window chia thời gian thành các ô cố định (00:00-00:59, 01:00-01:59...) và đếm trong ô hiện tại. Hết ô thì đếm lại từ 0.
+
+**Vì sao bị lỗi ở ranh giới:** Hạn mức 100/phút. Ở giây 00:59 có 100 request được cho qua (ô thứ nhất). Sang 01:00 ô mới bắt đầu, thêm 100 request nữa được cho qua. Kết quả: 200 request trong 2 giây quanh ranh giới, dù mỗi ô riêng lẻ đều "đúng" 100/phút. Đây là **boundary burst** (bùng nổ ranh giới) - một lỗi kinh điển.
+
+~~~text
+Ô 1 [00:00 -------- 00:59]  100 req (dồn cuối ô)
+Ô 2 [01:00 -------- 01:59]  100 req (dồn đầu ô)
+                    ^^^
+            200 req trong ~2 giây quanh ranh giới
+~~~
+
+### 2) Sliding window counter: công thức xấp xỉ
+**Cái gì:** Thay vì chỉ nhìn ô hiện tại, ta kết hợp ô hiện tại với **tỉ lệ phần đã trôi qua** của ô trước.
+
+Giả sử cửa sổ 60 giây, đang ở giây thứ {{elapsed}} của ô hiện tại (0 ≤ elapsed < 60), ô trước có {{prevCount}} request, ô hiện tại có {{currCount}} request:
+- Tỉ lệ ô trước còn "chồng" lên cửa sổ trượt: {{weight = (60 - elapsed) / 60}}
+- Ước lượng số request trong 60 giây gần nhất: {{estimate = prevCount * weight + currCount}}
+- Cho qua nếu {{estimate < limit}}.
+
+**Ví dụ số:** limit 100, ô trước 100 request, đang ở giây 6 của ô mới (elapsed=6, weight=0.9), ô mới đã có 15 request. {{estimate = 100*0.9 + 15 = 105}} → từ chối. Nhờ vậy burst dồn ở đầu ô mới bị chặn bởi "vết" của ô trước.
+
+**Vì sao chỉ là xấp xỉ:** Ta giả định request của ô trước phân bố đều trong ô đó. Thực tế chúng có thể dồn cuối ô (chính là boundary burst) - công thức dùng {{prevCount * weight}} sẽ hơi "tha" hoặc hơi "chặt" tuỳ phân bố, nhưng sai số nhỏ và chi phí cực thấp (chỉ 2 bộ đếm + 1 phép nhân).
+
+**Triển khai thật (Redis, đơn giản hoá):** hai key theo mẫu {{rate:ID:prevWindow}} và {{rate:ID:currWindow}} (ID là định danh client, còn prevWindow/currWindow là chỉ số ô trước và ô hiện tại), mỗi key {{INCR}} khi có request và {{EXPIRE}} sau 2 cửa sổ để tự dọn rác. Đọc hai key, áp công thức. Để "đọc + quyết định" nhất quán khi nhiều instance cùng chạy, người ta dùng một Lua script (chạy nguyên tử trong Redis). Ở production lớn, gateway như NGINX, Kong, Envoy thường có sẵn bộ đếm kiểu này.
+
+### 3) Token bucket: lọ token và burst tự nhiên
+**Cái gì:** Một "lọ" có sức chứa {{capacity}} token. Lọ được nạp {{refillRate}} token mỗi giây (không vượt capacity). Mỗi request lấy 1 token; lọ cạn thì 429. Token không dùng hết được giữ lại đến tối đa capacity.
+
+**Vì sao cho phép burst tự nhiên:** Nếu hệ thống im 30 giây, lọ đầy; 10 request ập tới cùng lúc thì 10 request đầu lấy được token ngay (burst hợp lệ), request thứ 11 mới phải chờ lọ nạp. Điều này khớp hành vi thật: người dùng không nên bị phạt vì "để dành" quota.
+
+**Trạng thái tối thiểu:** chỉ cần {{tokens}} (số token hiện có, số thực) và {{lastRefillTime}} (mốc lần nạp gần nhất). Khi có request: nạp bù {{(now - lastRefillTime) * refillRate}} (giới hạn bởi capacity), cập nhật mốc, rồi thử trừ 1.
+
+**Tính retryAfter:** nếu thiếu {{missing}} token, thời gian chờ = {{missing / refillRate}}. Đây là giá trị chính xác cho header {{Retry-After}}.
+
+**Triển khai thật (Redis):** token bucket cần cập nhật {{tokens}} và {{lastRefillTime}} cùng lúc theo thời gian hiện tại - tức là "đọc, tính theo now, ghi" phải nguyên tử. Thực tế dùng Lua script trong Redis (hoặc Redis module chuyên dụng) và **truyền {{now}} từ client vào script làm tham số** để mọi instance tính trên cùng một mốc (script Lua trong Redis không nên tự gọi lệnh lấy giờ vì tính không xác định/khó tái lập; truyền thời gian vào giúp logic xác định hơn).
+
+~~~seq
+title: Token bucket phan tan bang Redis Lua (don gian hoa)
+actors: Client | App Instance A | App Instance B | Redis
+Client -> App Instance A: GET /orders (API key K)
+App Instance A -> Redis: EVAL token_bucket.lua key=rl:K now=t1
+note Redis: nap bu theo (t1-last), tru 1 token, ghi lai - nguyen tu
+Redis --> App Instance A: OK, con 9 token
+App Instance A --> Client: 200 OK
+Client -> App Instance B: GET /orders (API key K, cung luc)
+App Instance B -> Redis: EVAL token_bucket.lua key=rl:K now=t1
+Redis --> App Instance B: OK, con 8 token (thay A thay doi)
+App Instance B --> Client: 200 OK
+~~~
+
+### 4) So sánh nhanh
+| Tiêu chí | Sliding window counter | Token bucket |
+|---|---|---|
+| Bộ nhớ mỗi client | 2 bộ đếm + mốc cửa sổ | 2 số (tokens, lastRefill) |
+| Burst | Bị "kéo" bởi ô trước (chặn boundary burst khá tốt) | Cho phép burst tự nhiên tới capacity |
+| Độ chính xác | Xấp xỉ (giả định phân bố đều trong ô trước) | Chính xác theo thời gian thực |
+| retryAfter | Ước lượng (đến hết phần cửa sổ cần chờ) | Chính xác (thiếu bao nhiêu token / tốc độ nạp) |
+| Nguyên tử phân tán | 2 key, có thể dùng Lua; đôi khi chấp nhận sai số nhỏ | Cần Lua/script để đọc-tính-ghi liền mạch |
+| Hay dùng ở | Gateway cấu hình đơn giản, quota theo phút/giờ | API public, SDK, chỗ cần burst hợp lệ và Retry-After chính xác |
+
+### 5) Bản mô phỏng trong bài tập đơn giản hoá ở đâu
+- **Đồng hồ giả (fake clock):** bài tập truyền {{nowMillis}} vào từng lần gọi, không dùng {{System.nanoTime()}} hay {{Thread.sleep()}} để test xác định. Hệ thống thật dùng thời gian thực; hệ thống phân tán còn phải chấp nhận lệch đồng hồ nhỏ giữa các máy (dùng thời gian Redis hoặc chấp nhận sai số).
+- **Một tiến trình, một luồng quyết định:** bài tập không cần {{synchronized}}/Lua; mục tiêu là hiểu công thức. Hệ thống thật phải bảo đảm nguyên tử (Lua script, {{synchronized}}, hoặc cổng đơn tuyến).
+- **Key duy nhất:** bài tập mô phỏng một limiter; hệ thống thật có một bộ đếm/lọ cho mỗi API key (hoặc IP, hoặc cặp user+endpoint) và có TTL tự dọn key cũ.
+
+### Lỗi hay gặp
+- **Dùng fixed window mà tưởng đã an toàn:** boundary burst vẫn vượt gấp đôi hạn mức trong tích tắc.
+- **Token bucket không giới hạn capacity:** để {{tokens}} tăng vô hạn khi im lặng → sau đó burst khổng lồ, phá vỡ mục đích bảo vệ.
+- **Bộ đếm đặt trong bộ nhớ từng instance:** 8 instance → hạn mức thực tế gấp 8.
+- **Quên nguyên tử khi phân tán:** đọc-ghi tách rời gây vượt hạn mức dưới tải cao (race condition).
+- **Không trả {{Retry-After}}:** client đoán bừa, dễ tạo retry storm - bão gửi lại (nhiều client cùng retry ngay lập tức, làm quá tải nặng thêm; đã học ở bài 006).
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Thiết kế rate limiter cho API public chạy nhiều instance, 100 request/phút mỗi API key, cho phép burst ngắn." Trả lời có cấu trúc: (1) chọn thuật toán (token bucket vì cho burst hợp lệ + retryAfter chính xác, hoặc sliding window counter nếu chấp nhận xấp xỉ và muốn cực rẻ); (2) đặt bộ đếm ở Redis/gateway, dùng Lua script để nguyên tử; (3) key theo API key, TTL tự dọn; (4) trả 429 kèm {{Retry-After}} và {{RateLimit-*}}; (5) nói rõ đánh đổi (thêm ~1 round-trip Redis mỗi request, lệch đồng hồ nhỏ chấp nhận được). Nhắc được boundary burst của fixed window là điểm cộng lớn.
+
+> Senior tip: Thuật toán chỉ là nửa bài toán. Nửa còn lại là **vận hành**: giới hạn phải phân tầng (theo IP để chặn bot, theo API key để công bằng, theo endpoint vì {{POST /payments}} đắt hơn {{GET /health}}), phải có dashboard cho khách tự xem mức dùng, và phải đo được "bao nhiêu request bị chặn" để phân biệt khách xấu với khách tốt đang bị oan (dấu hiệu hạn mức đặt sai).`,
+  exercises: [
+    {
+      title: 'Cài SlidingWindowCounter và TokenBucket với đồng hồ giả, chặn boundary burst',
+      prompt: `Hoàn thiện hai class giới hạn tốc độ, cả hai dùng **đồng hồ giả** (tham số {{nowMillis}}, đơn vị mili-giây, không bao giờ đi lùi giữa các lần gọi trên cùng một instance). Không dùng {{Thread.sleep}}, không dùng {{System.nanoTime()}}, không I/O.
+
+1) {{class SlidingWindowCounter}}
+- Constructor: {{SlidingWindowCounter(int limit, long windowMillis)}} với {{limit > 0}}, {{windowMillis > 0}}.
+- {{boolean tryAcquire(long nowMillis)}}: trả về {{true}} nếu request được phép (và ghi nhận nó), {{false}} nếu vượt hạn mức.
+- {{long retryAfterMillis(long nowMillis)}}: số mili-giây cần chờ (làm tròn **lên** tới mili-giây) để ước lượng có thể được phép; trả 0 nếu hiện tại được phép.
+- Thuật toán: chia thời gian thành các ô cố định độ dài {{windowMillis}}. Ô hiện tại có chỉ số {{currIdx = floor(nowMillis / windowMillis)}}, thời gian đã trôi trong ô {{elapsed = nowMillis - currIdx*windowMillis}}. Gọi {{prev}} là số request đã ghi nhận của ô ngay trước ({{currIdx-1}}), {{curr}} là của ô hiện tại. Trọng số ô trước: {{weight = (windowMillis - elapsed) / (double) windowMillis}}. Ước lượng: {{estimate = prev*weight + curr}}.
+  - Cho phép (và tăng {{curr}}) khi {{estimate < limit}}. So sánh dùng {{<}} trên giá trị double.
+  - {{retryAfterMillis}}: nếu {{estimate < limit}} trả 0. Ngược lại, tìm thời gian chờ tối thiểu {{d >= 0}} (mili-giây) sao cho tại {{t = nowMillis + d}}, ước lượng < {{limit}}; nếu phải sang ô mới thì tính theo trạng thái ô tại {{t}}. Kết quả làm tròn lên ({{ceil}}). Không ghi nhận request.
+  - Khi chuyển sang ô mới, ô "hiện tại" cũ trở thành ô "trước"; nếu nhảy qua hơn 1 ô thì ô trước coi như 0.
+
+2) {{class TokenBucket}}
+- Constructor: {{TokenBucket(double capacity, double refillPerSecond)}} với {{capacity > 0}}, {{refillPerSecond > 0}}. Bắt đầu **đầy** ({{capacity}} token) tại thời điểm lần gọi đầu tiên.
+- {{boolean tryAcquire(long nowMillis)}}: nạp bù token theo thời gian trôi (không vượt {{capacity}}), cập nhật mốc thời gian, rồi nếu có >= 1 token thì trừ 1 và trả {{true}}, ngược lại {{false}}.
+- {{long retryAfterMillis(long nowMillis)}}: nếu đủ >= 1 token sau khi nạp bù (tính trên trạng thái giả định, **không** làm thay đổi state) thì 0; ngược lại trả thời gian chờ (làm tròn lên) để có đủ 1 token.
+
+Cả hai class phải hoạt động đúng khi {{nowMillis}} đứng yên (nhiều request cùng một mốc) và khi nhảy xa về phía trước.`,
+      starter: `class SlidingWindowCounter {
+    private final int limit;
+    private final long windowMillis;
+    // TODO: them cac truong can thiet (prevCount, currCount, currWindowIndex)
+
+    SlidingWindowCounter(int limit, long windowMillis) {
+        this.limit = limit;
+        this.windowMillis = windowMillis;
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean tryAcquire(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long retryAfterMillis(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
 }
+
+class TokenBucket {
+    private final double capacity;
+    private final double refillPerSecond;
+    // TODO: them cac truong can thiet (tokens, lastMillis, da khoi tao)
+
+    TokenBucket(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean tryAcquire(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long retryAfterMillis(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void inRange(long lo, long hi, long v) {
+        if (v < lo || v > hi) throw new AssertionError("expected in [" + lo + "," + hi + "] got " + v);
+    }
+    public static void main(String[] args) {
+        check("sliding: dưới hạn mức và vượt hạn mức trong cùng cửa sổ", () -> {
+            SlidingWindowCounter sw = new SlidingWindowCounter(3, 1000);
+            eq(true, sw.tryAcquire(0));
+            eq(true, sw.tryAcquire(100));
+            eq(true, sw.tryAcquire(200));
+            eq(false, sw.tryAcquire(300));
+            eq(false, sw.tryAcquire(300));
+        });
+        check("sliding: boundary burst bị chặn bởi cửa sổ trước", () -> {
+            SlidingWindowCounter sw = new SlidingWindowCounter(100, 1000);
+            for (int i = 0; i < 100; i++) eq(true, sw.tryAcquire(990));
+            eq(true, sw.tryAcquire(1006));
+            eq(false, sw.tryAcquire(1006));
+        });
+        check("sliding: cửa sổ trước trôi dần và reset khi sang xa", () -> {
+            SlidingWindowCounter sw = new SlidingWindowCounter(10, 1000);
+            for (int i = 0; i < 10; i++) sw.tryAcquire(0);
+            eq(false, sw.tryAcquire(0));
+            // tất cả req nằm ở cửa sổ hiện tại (prev=0, curr=10) nên phải sang qua ranh giới
+            // tai 1001ms: prev tro thanh 10, weight gan 0 -> estimate ~9.99 < 10
+            inRange(1001, 1100, sw.retryAfterMillis(0));
+            // vẫn trong cửa sổ 0: prev=0, curr=10 -> bị chặn
+            eq(false, sw.tryAcquire(500));
+            SlidingWindowCounter sw2 = new SlidingWindowCounter(2, 1000);
+            sw2.tryAcquire(0); sw2.tryAcquire(0);
+            eq(false, sw2.tryAcquire(0));
+            // sang cua so ke tiep (adjacent): prev van dem day du tai ranh gioi -> co the bi chan
+            eq(false, sw2.tryAcquire(1000));
+            // nhảy xa hơn 1 cửa sổ: dữ liệu cũ được bỏ, được phép lại
+            eq(true, sw2.tryAcquire(2500));
+        });
+        check("token: day luc dau, burst hop le toi capacity roi can", () -> {
+            TokenBucket tb = new TokenBucket(5, 1.0);
+            eq(true, tb.tryAcquire(0));
+            eq(true, tb.tryAcquire(0));
+            eq(true, tb.tryAcquire(0));
+            eq(true, tb.tryAcquire(0));
+            eq(true, tb.tryAcquire(0));
+            eq(false, tb.tryAcquire(0));
+            inRange(900, 1100, tb.retryAfterMillis(0));
+            eq(true, tb.tryAcquire(1000));
+        });
+        check("token: nap bu khong vuot capacity, retryAfter chinh xac", () -> {
+            TokenBucket tb = new TokenBucket(3, 2.0);
+            eq(true, tb.tryAcquire(0)); eq(true, tb.tryAcquire(0)); eq(true, tb.tryAcquire(0));
+            eq(false, tb.tryAcquire(0));
+            eq(true, tb.tryAcquire(10000)); eq(true, tb.tryAcquire(10000)); eq(true, tb.tryAcquire(10000));
+            eq(false, tb.tryAcquire(10000));
+            inRange(450, 550, tb.retryAfterMillis(10000));
+        });
+        check("token: retryAfterMillis khong lam thay doi state", () -> {
+            TokenBucket tb = new TokenBucket(2, 1.0);
+            eq(true, tb.tryAcquire(0)); eq(true, tb.tryAcquire(0));
+            eq(false, tb.tryAcquire(0));
+            long r1 = tb.retryAfterMillis(0);
+            long r2 = tb.retryAfterMillis(0);
+            eq(r1, r2);
+            eq(false, tb.tryAcquire(0));
+            eq(true, tb.tryAcquire(1000));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class SlidingWindowCounter {
+    private final int limit;
+    private final long windowMillis;
+    private long currWindowIndex = -1;
+    private long prevCount = 0;
+    private long currCount = 0;
+
+    SlidingWindowCounter(int limit, long windowMillis) {
+        this.limit = limit;
+        this.windowMillis = windowMillis;
+    }
+
+    private void rotate(long nowMillis) {
+        long idx = Math.floorDiv(nowMillis, windowMillis);
+        if (idx == currWindowIndex) return;
+        if (idx == currWindowIndex + 1) {
+            prevCount = currCount;
+        } else {
+            prevCount = 0;
+        }
+        currCount = 0;
+        currWindowIndex = idx;
+    }
+
+    private double estimate(long nowMillis) {
+        rotate(nowMillis);
+        long elapsed = nowMillis - currWindowIndex * windowMillis;
+        double weight = (windowMillis - elapsed) / (double) windowMillis;
+        return prevCount * weight + currCount;
+    }
+
+    boolean tryAcquire(long nowMillis) {
+        double est = estimate(nowMillis);
+        if (est < limit) {
+            currCount++;
+            return true;
+        }
+        return false;
+    }
+
+    long retryAfterMillis(long nowMillis) {
+        if (estimate(nowMillis) < limit) return 0;
+        for (long d = 1; d <= windowMillis * 2; d++) {
+            if (estimateAt(nowMillis + d) < limit) return d;
+        }
+        return windowMillis * 2;
+    }
+
+    private double estimateAt(long t) {
+        long idx = Math.floorDiv(t, windowMillis);
+        long p, c;
+        if (idx == currWindowIndex) { p = prevCount; c = currCount; }
+        else if (idx == currWindowIndex + 1) { p = currCount; c = 0; }
+        else { p = 0; c = 0; }
+        long elapsed = t - idx * windowMillis;
+        double weight = (windowMillis - elapsed) / (double) windowMillis;
+        return p * weight + c;
+    }
+}
+
+class TokenBucket {
+    private final double capacity;
+    private final double refillPerSecond;
+    private double tokens;
+    private long lastMillis;
+    private boolean initialized = false;
+
+    TokenBucket(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.tokens = capacity;
+    }
+
+    private void init(long nowMillis) {
+        if (!initialized) { lastMillis = nowMillis; initialized = true; }
+    }
+
+    private double refilled(long nowMillis) {
+        init(nowMillis);
+        long delta = nowMillis - lastMillis;
+        if (delta <= 0) return tokens;
+        double t = tokens + (delta / 1000.0) * refillPerSecond;
+        return t > capacity ? capacity : t;
+    }
+
+    boolean tryAcquire(long nowMillis) {
+        double t = refilled(nowMillis);
+        lastMillis = nowMillis;
+        if (t >= 1.0) { tokens = t - 1.0; return true; }
+        tokens = t;
+        return false;
+    }
+
+    long retryAfterMillis(long nowMillis) {
+        double t = refilled(nowMillis);
+        if (t >= 1.0) return 0;
+        double missing = 1.0 - t;
+        double seconds = missing / refillPerSecond;
+        return (long) Math.ceil(seconds * 1000.0);
+    }
+}`,
+      hints: [
+        'Sliding window: dùng {{Math.floorDiv(nowMillis, windowMillis)}} để lấy chỉ số ô. Khi {{idx}} nhảy quá 1 ô, đặt {{prevCount = 0}} vì ô liền trước không có dữ liệu.',
+        'Token bucket: tách hàm "nạp bù trả về số token giả định" dùng chung cho cả {{tryAcquire}} và {{retryAfterMillis}}; chỉ {{tryAcquire}} mới ghi {{lastMillis}} và {{tokens}}. Khởi tạo {{lastMillis}} ở lần gọi đầu tiên để bucket bắt đầu đầy đúng tại mốc đó.',
+        'Boundary burst: tại elapsed=6ms, window=1000ms, prev=100, curr=0, limit=100 thì estimate = 99.4, request đầu được chấp nhận nhưng request thứ hai (curr thành 1) phải bị chặn.',
+      ],
+      explain: `### Sliding window counter
+Điểm mấu chốt là {{rotate/estimate}}: khi sang ô kế tiếp thì đẩy {{currCount}} xuống {{prevCount}}; nếu nhảy xa hơn (im lặng lâu) thì {{prevCount}} phải về 0. Công thức {{prev * (windowMillis - elapsed) / windowMillis + curr}} là nội suy tuyến tính: ô trước càng xa (elapsed lớn, weight nhỏ) thì càng ít ảnh hưởng.
+
+### Token bucket
+Tách {{refilled(nowMillis)}} (tính thuần) giúp {{retryAfterMillis}} không làm bẩn trạng thái - lỗi hay gặp là hàm "xem trước" lại cập nhật {{lastMillis}} khiến {{tryAcquire}} sau tính sai. Giới hạn bởi {{capacity}} là bắt buộc: không có nó, sau thời gian im lặng {{tokens}} tăng vô hạn và một burst khổng lồ sẽ lọt qua.
+
+### Vì sao dùng {{nowMillis}} giả
+Test phải xác định (deterministic): cùng đầu vào cho cùng kết quả. Truyền đồng hồ giả cho phép dựng chính xác tình huống boundary (990ms rồi 1006ms). Hệ thống thật dùng thời gian thực/Redis và phải chấp nhận lệch đồng hồ nhỏ.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao fixed window (100 request/phút) vẫn có thể cho qua 200 request trong khoảng 2 giây?',
+      options: [
+        'Vì bộ đếm bị tràn số nguyên ở ranh giới phút',
+        'Vì 100 request dồn cuối ô trước và 100 request dồn đầu ô sau đều hợp lệ trong từng ô riêng lẻ (boundary burst)',
+        'Vì fixed window không bao giờ reset bộ đếm',
+        'Vì client có thể gửi song song nhiều kết nối',
+      ],
+      answer: 1,
+      explain: 'Fixed window reset bộ đếm theo từng ô cố định độc lập. 100 request hợp lệ lúc 00:59 (ô 1) và 100 request hợp lệ lúc 01:00 (ô 2) cộng lại thành 200 request trong ~2 giây quanh ranh giới. Sliding window counter khắc phục bằng cách nhân tỉ lệ ô trước.',
+    },
+    {
+      q: 'Trong sliding window counter, {{estimate = prevCount * weight + currCount}} đang giả định điều gì?',
+      options: [
+        'Mọi request của ô hiện tại đều đến ở cuối ô',
+        'Request của ô trước phân bố đều trong ô đó (nên phần còn chồng lên cửa sổ trượt tỉ lệ với weight)',
+        'Mỗi client chỉ gửi đúng 1 request mỗi ô',
+        'Đồng hồ các server luôn khớp tuyệt đối',
+      ],
+      answer: 1,
+      explain: 'Công thức ngầm giả định request ô trước rải đều, nên chỉ là xấp xỉ (sai số nhỏ), đổi lại chi phí cực thấp: chỉ 2 bộ đếm.',
+    },
+    {
+      q: 'Ưu điểm nổi bật của token bucket so với sliding window counter là gì?',
+      options: [
+        'Không bao giờ cần lưu trạng thái',
+        'Cho phép burst tự nhiên tới capacity (quota "để dành") và tính retryAfter chính xác theo tốc độ nạp',
+        'Luôn chính xác tuyệt đối mà không cần thao tác nguyên tử khi phân tán',
+        'Không thể bị vượt hạn mức trong mọi trường hợp',
+      ],
+      answer: 1,
+      explain: 'Token bucket giữ lại token chưa dùng (tối đa capacity) nên chấp nhận burst hợp lệ, và retryAfter = token thiếu / tốc độ nạp là chính xác. Khi phân tán nó vẫn cần cập nhật nguyên tử (Lua script).',
+    },
+    {
+      q: 'Khi triển khai rate limiter cho ứng dụng chạy 6 instance, vì sao bộ đếm trong biến JVM là sai?',
+      options: [
+        'Vì JVM không hỗ trợ số nguyên đủ lớn',
+        'Vì mỗi instance giữ bộ đếm riêng nên hạn mức thực tế nhân lên và còn phụ thuộc cách load balancer phân phối',
+        'Vì biến JVM không thread-safe',
+        'Vì chỉ gateway mới đọc được HTTP header',
+      ],
+      answer: 1,
+      explain: 'Trạng thái giới hạn tốc độ phải dùng chung (Redis/gateway). Bộ đếm cục bộ từng instance làm vỡ hạn mức tổng; thao tác cập nhật còn phải nguyên tử để tránh race condition.',
+    },
+  ],
+  related: ['api-014', 'api-036', 'api-038'],
+  tags: ['rate limiting', 'sliding window', 'token bucket', 'Redis', 'distributed', '429', 'Retry-After'],
+},
+{
+  id: 'lesson-api-009',
+  track: 'api',
+  order: 9,
+  title: 'ETag + If-Match: conditional GET/PUT và chặn lost update (412/428)',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Giải thích được ETag (strong/weak), If-None-Match cho cache 304 và If-Match cho optimistic concurrency 412',
+    'Phân biệt 412 Precondition Failed, 428 Precondition Required, 409 Conflict và 404 Not Found trong luồng cập nhật',
+    'Mô tả được cơ chế thật (Spring ResponseEntity.eTag/WebRequest.checkNotModified, JPA @Version, header ETag) và điểm đơn giản hoá',
+    'Cài ResourceStore xử lý GET/PUT có điều kiện, đảm bảo lost update bị chặn bằng kiểm tra version nguyên tử theo ngữ nghĩa',
+  ],
+  body: `### Tóm tắt
+**ETag** (entity tag) là "dấu vân tay phiên bản" của một tài nguyên HTTP. Kết hợp với header điều kiện, nó giải quyết hai bài toán: (1) {{If-None-Match}} cho phép client dùng lại bản cache và nhận **304 Not Modified** (tiết kiệm băng thông); (2) {{If-Match}} cho phép server từ chối ghi đè khi dữ liệu đã bị người khác sửa, trả **412 Precondition Failed** - đây là **optimistic concurrency control** (điều khiển đồng thời lạc quan: cứ cho sửa, nhưng kiểm tra phiên bản lúc ghi). Bài này giải thích cơ chế thật rồi cho bạn tự mô phỏng một {{ResourceStore}} thuần JDK.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Tài nguyên (resource)**: thứ được định danh bởi URL, ví dụ {{/accounts/42}} là tài khoản 42.
+- **ETag (Entity Tag)**: chuỗi do server sinh ra, gắn với **nội dung/phiên bản** hiện tại của tài nguyên. Strong ETag: {{"v5"}} (khớp byte-for-byte). Weak ETag: {{W/"v5"}} (tương đương về ngữ nghĩa). ETag phải nằm trong dấu nháy kép theo chuẩn HTTP.
+- **Conditional request (request có điều kiện)**: request kèm header "chỉ thực hiện nếu điều kiện về phiên bản đúng", ví dụ {{If-Match: "v5"}}.
+- **Lost update (mất cập nhật)**: A đọc bản 5, B đọc bản 5, A ghi bản 6, B ghi đè lên bản 6 bằng dữ liệu tính từ bản 5 → thay đổi của A biến mất. Giống hai người cùng sửa một file rồi người lưu sau đè người lưu trước.
+- **Optimistic concurrency (đồng thời lạc quan)**: giả định xung đột hiếm, không khoá khi đọc; chỉ kiểm tra phiên bản khi ghi. Ngược lại là pessimistic (khoá từ lúc đọc).
+- **412 Precondition Failed**: điều kiện tiên quyết ({{If-Match}}/{{If-None-Match}} với ngữ nghĩa ghi) không thoả.
+- **428 Precondition Required**: server yêu cầu client phải gửi điều kiện (ví dụ bắt buộc {{If-Match}}) nhưng client không gửi.
+- **409 Conflict**: xung đột **nghiệp vụ/trạng thái** (trùng mã, đơn đã huỷ không cho sửa) - khác 412 (xung đột **phiên bản**).
+
+### 1) Cơ chế thật: ETag sinh ra và dùng thế nào
+**Sinh ETag:** thường là số phiên bản tăng đơn điệu ({{"v7"}}, hoặc giá trị cột {{@Version}}), hoặc hash ổn định của nội dung. **Không** dùng timestamp độ chính xác giây (hai lần sửa trong cùng giây → cùng ETag → mất cập nhật) và **không** dùng {{hashCode()}}/thứ tự field ngẫu nhiên.
+
+**GET có điều kiện (cache):** client gửi {{If-None-Match: "v7"}}. Server so khớp với phiên bản hiện tại: giống → **304 Not Modified**, không có body; khác → **200 OK** kèm body mới và {{ETag}} mới.
+
+**PUT/PATCH có điều kiện (chống lost update):** client gửi {{If-Match: "v7"}}. Server chỉ ghi nếu phiên bản hiện tại đúng là "v7", rồi tăng phiên bản và trả {{ETag}} mới. Nếu đã thành "v8" → **412 Precondition Failed** (kèm {{ETag}} hiện tại). Nếu client quên gửi {{If-Match}} trên endpoint bắt buộc → **428 Precondition Required**.
+
+~~~seq
+title: Chống lost update bằng ETag + If-Match
+actors: Client A | Client B | API Server | DB
+Client A -> API Server: GET /accounts/42
+API Server -> DB: doc account 42 (version 5)
+API Server --> Client A: 200 + ETag: "v5" + body
+Client B -> API Server: GET /accounts/42
+API Server --> Client B: 200 + ETag: "v5" + body
+Client A -> API Server: PUT /accounts/42 + If-Match: "v5"
+API Server -> DB: UPDATE ... WHERE id=42 AND version=5
+API Server --> Client A: 200 + ETag: "v6"
+Client B -> API Server: PUT /accounts/42 + If-Match: "v5"
+API Server -> DB: UPDATE ... WHERE id=42 AND version=5 (0 row)
+API Server --> Client B: 412 Precondition Failed + ETag: "v6"
+note Client B: GET lai, merge thay doi, PUT voi If-Match: "v6"
+~~~
+
+### 2) Tên class/cấu hình thật (Java/Spring) và cách chúng hoạt động
+- **JPA {{@Version}}** ({{jakarta.persistence.Version}}): đánh dấu cột phiên bản (thường {{long}} hoặc {{Integer}}). Hibernate tự thêm {{WHERE version = ?}} vào câu UPDATE và tăng version; nếu số dòng ảnh hưởng = 0 thì ném {{OptimisticLockException}}. Đây là chốt chặn ở tầng DB - nguyên tử giữa nhiều instance.
+- **{{ResponseEntity.eTag(String)}}** (Spring Web): gắn header {{ETag}} vào response. Ví dụ {{ResponseEntity.ok().eTag("\"" + version + "\"").body(dto)}} (tự thêm dấu nháy kép).
+- **{{WebRequest.checkNotModified(String etag)}}**: tiện ích so khớp {{If-None-Match}}; trả {{true}} nếu nên trả 304 (Spring tự xử lý response).
+- **{{ShallowEtagHeaderFilter}}** (Spring): tự tính ETag bằng mã băm (hash) của response body và tự trả 304 cho GET. Nó **chỉ tiết kiệm băng thông** (server vẫn chạy controller và serialize đầy đủ) và **không** xử lý {{If-Match}} cho PUT/PATCH để chống lost update - nên với optimistic concurrency khi ghi, phải dùng ETag gắn với version nghiệp vụ/DB.
+- **So sánh strong vs weak:** {{If-Match}} dùng **so sánh mạnh** theo RFC 9110; ETag yếu {{W/"5"}} không khớp strong comparison, nên đừng dùng weak ETag cho {{If-Match}}.
+
+### 3) Phân biệt các mã lỗi hay nhầm
+| Tình huống | Mã | Lý do |
+|---|---|---|
+| GET + {{If-None-Match}} khớp phiên bản hiện tại | 304 | Dùng lại cache, không body |
+| PUT/PATCH + {{If-Match}} **không** khớp phiên bản hiện tại | 412 | Version lệch, client phải GET lại và merge/retry |
+| PUT/PATCH tới endpoint bắt buộc điều kiện nhưng **thiếu** {{If-Match}} | 428 | Server yêu cầu precondition, client bổ sung rồi gọi lại |
+| Tài nguyên không tồn tại | 404 | Không có gì để so khớp phiên bản |
+| Xung đột nghiệp vụ (đơn đã {{PAID}} không cho huỷ), version vẫn khớp | 409 | Không phải lỗi phiên bản; là quy tắc trạng thái |
+
+### 4) Bản mô phỏng đơn giản hoá ở đâu
+Bài tập cài {{ResourceStore}} thuần JDK (lưu trong {{Map}}), không HTTP framework, không DB, không JSON.
+- **ETag = version số dạng chuỗi** (ví dụ {{"v1"}}, {{"v2"}}) tăng đơn điệu mỗi lần PUT thành công. Hệ thống thật có thể dùng giá trị {{@Version}} của JPA hoặc hash nội dung.
+- **"Nguyên tử" ở mức ngữ nghĩa trong một tiến trình:** logic phải là "kiểm tra version và ghi dựa trên cùng trạng thái hiện tại" (đọc version hiện tại rồi mới quyết định). Hệ thống thật chốt bằng {{WHERE version=?}} ở DB để nguyên tử giữa nhiều instance.
+- **Chỉ mô phỏng GET/PUT và các mã 200/304/404/412/428**. Hệ thống thật còn 204, 409 nghiệp vụ, {{If-None-Match: *}}, Vary, cache-control...
+
+### Lỗi hay gặp
+- **Bỏ qua {{If-Match}} và luôn ghi đè:** lost update quay lại.
+- **Dùng weak ETag cho {{If-Match}}:** strong comparison không khớp → client luôn nhận 412.
+- **Sinh ETag từ {{hashCode()}} hoặc timestamp giây:** không ổn định/không đủ độ phân giải.
+- **Không trả {{ETag}} sau PUT:** client không có version mới cho lần sửa tiếp theo.
+- **Nhầm 412 với 409:** 412 = lệch phiên bản (hãy GET lại), 409 = vi phạm quy tắc nghiệp vụ.
+- **So sánh version bằng "đọc rồi if trong Java" trên nhiều instance:** race condition; phải chốt ở DB.
+
+### Liên hệ phỏng vấn
+Câu kinh điển: "Hai người cùng sửa hồ sơ khách hàng, làm sao tránh mất dữ liệu?" Trả lời: optimistic concurrency bằng version/ETag. GET trả {{ETag}}; client PUT kèm {{If-Match}}; server từ chối 412 nếu lệch, client GET lại rồi merge. Tầng DB dùng {{@Version}} (JPA) hoặc {{UPDATE ... WHERE id=? AND version=?}} để nguyên tử. Phân biệt rõ 412 (version) với 409 (nghiệp vụ) và 428 (thiếu precondition).
+
+> Senior tip: Với dữ liệu nhạy cảm (số dư, hạn mức), coi **thiếu {{If-Match}} là lỗi** (428) thay vì "cho qua cho tiện". Và luôn trả kèm {{ETag}} hiện tại trong response 412/428 để client không phải đoán mình đang lệch phiên bản nào.`,
+  exercises: [
+    {
+      title: 'ResourceStore: GET/PUT có điều kiện với ETag, chặn lost update',
+      prompt: `Cài {{class ResourceStore}} quản lý tài nguyên dạng key-value (key là id chuỗi, value là nội dung chuỗi) kèm **version tăng đơn điệu** cho từng key. Không dùng HTTP framework, không DB, không I/O.
+
+Các loại hỗ trợ (đã khai báo sẵn, dùng lại):
+- {{record Resource(String id, String body, String etag)}} — {{etag}} là chuỗi dạng {{"v" + version}} (ví dụ {{"v1"}}).
+- {{record StoreResponse(int status, Resource resource)}} — {{resource}} có thể {{null}} với 304/404/412/428.
+
+Yêu cầu method:
+
+1) {{StoreResponse get(String id, String ifNoneMatch)}}
+- Nếu {{id}} không tồn tại: trả {{(404, null)}}.
+- Nếu {{ifNoneMatch}} khác {{null}} và **bằng đúng** {{etag}} hiện tại: trả {{(304, null)}}.
+- Ngược lại: trả {{(200, Resource(id, body, etag))}}.
+
+2) {{StoreResponse put(String id, String body, String ifMatch)}}
+- Nếu {{id}} không tồn tại: trả {{(404, null)}} (bài này không xử lý tạo mới).
+- Nếu {{ifMatch}} là {{null}}: trả {{(428, Resource(id, bodyHienTai, etagHienTai))}}.
+- Nếu {{ifMatch}} **không bằng** {{etag}} hiện tại: trả {{(412, Resource(id, bodyHienTai, etagHienTai))}}.
+- Nếu khớp: cập nhật {{body}}, tăng version thêm 1, trả {{(200, Resource(id, bodyMoi, etagMoi))}}.
+
+3) {{void seed(String id, String body)}} — tạo tài nguyên mới với version 1 (etag {{"v1"}}). Nếu id đã tồn tại, đặt lại về v1.
+
+So khớp ETag là so khớp chuỗi **bằng đúng** (strong). Không dùng thời gian thực, không ngủ.`,
+      starter: `record Resource(String id, String body, String etag) {}
+record StoreResponse(int status, Resource resource) {}
+
+class ResourceStore {
+    // TODO: luu trang thai theo id (body + version)
+
+    void seed(String id, String body) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    StoreResponse get(String id, String ifNoneMatch) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    StoreResponse put(String id, String body, String ifMatch) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("get tra 200 kem etag, va 304 khi If-None-Match khop", () -> {
+            ResourceStore s = new ResourceStore();
+            s.seed("acc1", "balance=100");
+            StoreResponse r1 = s.get("acc1", null);
+            eq(200, r1.status());
+            eq("v1", r1.resource().etag());
+            eq("balance=100", r1.resource().body());
+            StoreResponse r2 = s.get("acc1", "v1");
+            eq(304, r2.status());
+            eq(null, r2.resource());
+            StoreResponse r3 = s.get("acc1", "v0");
+            eq(200, r3.status());
+            eq("v1", r3.resource().etag());
+        });
+        check("get/put tren id khong ton tai tra 404", () -> {
+            ResourceStore s = new ResourceStore();
+            eq(404, s.get("none", null).status());
+            eq(404, s.put("none", "x", "v1").status());
+        });
+        check("put thiếu If-Match trả 428 và không đổi dữ liệu", () -> {
+            ResourceStore s = new ResourceStore();
+            s.seed("acc2", "A");
+            StoreResponse r = s.put("acc2", "B", null);
+            eq(428, r.status());
+            eq("v1", r.resource().etag());
+            eq("A", r.resource().body());
+            eq("A", s.get("acc2", null).resource().body());
+            eq("v1", s.get("acc2", null).resource().etag());
+        });
+        check("put với If-Match khớp thì cập nhật và tăng version", () -> {
+            ResourceStore s = new ResourceStore();
+            s.seed("acc3", "A");
+            StoreResponse r = s.put("acc3", "B", "v1");
+            eq(200, r.status());
+            eq("v2", r.resource().etag());
+            eq("B", r.resource().body());
+            StoreResponse r2 = s.put("acc3", "C", "v2");
+            eq(200, r2.status());
+            eq("v3", r2.resource().etag());
+        });
+        check("lost update bị chặn: put với etag cũ trả 412, dữ liệu giữ nguyên", () -> {
+            ResourceStore s = new ResourceStore();
+            s.seed("acc4", "balance=100");
+            eq("v1", s.get("acc4", null).resource().etag());
+            eq("v1", s.get("acc4", null).resource().etag());
+            StoreResponse a = s.put("acc4", "balance=80", "v1");
+            eq(200, a.status());
+            eq("v2", a.resource().etag());
+            StoreResponse b = s.put("acc4", "balance=70", "v1");
+            eq(412, b.status());
+            eq("v2", b.resource().etag());
+            eq("balance=80", b.resource().body());
+            eq("balance=80", s.get("acc4", null).resource().body());
+            eq("v2", s.get("acc4", null).resource().etag());
+        });
+        check("sau 412, client đọc lại và put với etag mới thì thành công", () -> {
+            ResourceStore s = new ResourceStore();
+            s.seed("acc5", "v1data");
+            eq(200, s.put("acc5", "v2data", "v1").status());
+            eq(412, s.put("acc5", "stale", "v1").status());
+            StoreResponse fresh = s.get("acc5", null);
+            eq("v2", fresh.resource().etag());
+            StoreResponse retry = s.put("acc5", "v3data", fresh.resource().etag());
+            eq(200, retry.status());
+            eq("v3", retry.resource().etag());
+            eq("v3data", s.get("acc5", null).resource().body());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Resource(String id, String body, String etag) {}
+record StoreResponse(int status, Resource resource) {}
+
+class ResourceStore {
+    private static class Entry {
+        String body;
+        int version;
+        Entry(String body, int version) { this.body = body; this.version = version; }
+    }
+
+    private final Map<String, Entry> data = new HashMap<>();
+
+    private String etagOf(Entry e) { return "v" + e.version; }
+
+    void seed(String id, String body) {
+        data.put(id, new Entry(body, 1));
+    }
+
+    StoreResponse get(String id, String ifNoneMatch) {
+        Entry e = data.get(id);
+        if (e == null) return new StoreResponse(404, null);
+        String etag = etagOf(e);
+        if (ifNoneMatch != null && ifNoneMatch.equals(etag)) {
+            return new StoreResponse(304, null);
+        }
+        return new StoreResponse(200, new Resource(id, e.body, etag));
+    }
+
+    StoreResponse put(String id, String body, String ifMatch) {
+        Entry e = data.get(id);
+        if (e == null) return new StoreResponse(404, null);
+        String etag = etagOf(e);
+        if (ifMatch == null) {
+            return new StoreResponse(428, new Resource(id, e.body, etag));
+        }
+        if (!ifMatch.equals(etag)) {
+            return new StoreResponse(412, new Resource(id, e.body, etag));
+        }
+        e.version += 1;
+        e.body = body;
+        String newEtag = etagOf(e);
+        return new StoreResponse(200, new Resource(id, e.body, newEtag));
+    }
+}`,
+      hints: [
+        'Lưu mỗi tài nguyên là (body, version). {{etag}} luôn dẫn xuất từ version ({{"v" + version}}). Tăng version chỉ khi PUT thành công với {{If-Match}} khớp.',
+        'PUT: kiểm tra theo thứ tự - 404, thiếu {{If-Match}} (428, kèm trạng thái hiện tại), lệch etag (412, kèm trạng thái hiện tại), rồi mới cập nhật.',
+        'GET với {{If-None-Match}} khớp trả 304 và {{resource}} là {{null}}. So khớp bằng {{String.equals}} (strong comparison).',
+      ],
+      explain: `### Kiểm tra và ghi là một quyết định liền mạch
+Trong {{put}}, đọc {{etag}} hiện tại, so với {{ifMatch}}, rồi mới tăng version/đổi body. Nếu tách rời thì giữa hai bước luồng khác có thể chen vào (race condition). Bài tập đơn tiến trình nên tuần tự là đủ; hệ thống thật chốt bằng {{UPDATE ... WHERE id=? AND version=?}} (DB trả 0 row → 412) hoặc JPA {{@Version}}.
+
+### Dẫn xuất ETag từ version
+ETag là {{"v" + version}} nên luôn đồng bộ với trạng thái, không thể "quên cập nhật". Tương đương dùng cột {{@Version}} làm nguồn sự thật. Sinh ETag từ timestamp giây hoặc {{hashCode()}} là bẫy.
+
+### 304 vs 412
+304 (GET + {{If-None-Match}} khớp) = "bạn đang cầm bản mới nhất, đừng tải lại" (tối ưu băng thông). 412 (PUT + {{If-Match}} lệch) = "bạn đang sửa trên bản cũ, tôi từ chối ghi đè" (bảo toàn dữ liệu). Cùng cơ chế ETag nhưng hai mục tiêu khác nhau.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Client PUT kèm {{If-Match: "v5"}} nhưng tài nguyên hiện tại là {{v6}}. Server nên trả mã nào?',
+      options: [
+        '409 Conflict',
+        '412 Precondition Failed',
+        '304 Not Modified',
+        '428 Precondition Required',
+      ],
+      answer: 1,
+      explain: '412 Precondition Failed nghĩa là điều kiện phiên bản (If-Match) không thoả - client đang sửa trên bản cũ. 409 dành cho xung đột nghiệp vụ/trạng thái, 304 cho GET có điều kiện khớp, 428 khi thiếu precondition.',
+    },
+    {
+      q: 'Vì sao {{ShallowEtagHeaderFilter}} của Spring KHÔNG thay thế được optimistic concurrency cho PUT/PATCH?',
+      options: [
+        'Vì filter này chỉ hỗ trợ JSON, không hỗ trợ XML',
+        'Vì nó tính ETag từ hash body để tiết kiệm băng thông GET/304, nhưng không kiểm tra {{If-Match}} theo version nghiệp vụ khi ghi',
+        'Vì filter này tự động khoá database',
+        'Vì ETag do filter sinh ra luôn là weak ETag',
+      ],
+      answer: 1,
+      explain: 'ShallowEtagHeaderFilter giúp cache GET (trả 304) nhưng không gắn với version nghiệp vụ/DB và không chặn ghi đè. Optimistic concurrency (điều khiển đồng thời lạc quan) khi ghi cần ETag gắn với {{@Version}}/phiên bản dữ liệu và kiểm tra {{If-Match}} (hoặc {{WHERE version=?}}).',
+    },
+    {
+      q: 'Trường hợp nào nên trả **428 Precondition Required** thay vì chấp nhận cập nhật?',
+      options: [
+        'Khi {{If-Match}} khớp phiên bản hiện tại',
+        'Khi endpoint bắt buộc điều kiện phiên bản để tránh lost update nhưng client không gửi {{If-Match}}',
+        'Khi tài nguyên không tồn tại',
+        'Khi body JSON sai cú pháp',
+      ],
+      answer: 1,
+      explain: '428 báo client phải kèm precondition ({{If-Match}}) rồi gọi lại. Với dữ liệu nhạy cảm, chấp nhận PUT không điều kiện đồng nghĩa chấp nhận rủi ro ghi đè mất dữ liệu.',
+    },
+    {
+      q: 'Cách sinh ETag nào **dễ gây lỗi** cho optimistic concurrency?',
+      options: [
+        'Dùng giá trị cột {{@Version}} tăng đơn điệu của JPA',
+        'Dùng hash ổn định của nội dung tài nguyên',
+        'Dùng {{updated_at}} chỉ chính xác tới giây, hoặc dùng {{hashCode()}}/thứ tự field không ổn định',
+        'Dùng chuỗi phiên bản {{"v" + version}} tăng mỗi lần ghi thành công',
+      ],
+      answer: 2,
+      explain: 'Timestamp độ phân giải giây có thể trùng khi hai lần sửa trong cùng giây (mất cập nhật), còn {{hashCode()}}/thứ tự không ổn định làm ETag đổi vô cớ hoặc không phản ánh phiên bản thật. Version tăng đơn điệu hoặc hash nội dung ổn định mới an toàn.',
+    },
+  ],
+  related: ['api-014', 'api-037', 'api-038'],
+  tags: ['ETag', 'If-Match', 'If-None-Match', 'optimistic concurrency', '412', '428', '304', 'lost update'],
+}
+
 );

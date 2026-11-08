@@ -2855,4 +2855,632 @@ Nâng cấp để tự học: đổi {{Function<K,V>}} thành loader trả {{Com
   related: ['concurrency-030', 'concurrency-032', 'concurrency-020'],
   tags: ['ConcurrentHashMap', 'computeIfAbsent', 'single-flight', 'cache', 'thundering herd', 'Redis'],
 },
+
+{
+  id: 'lesson-concurrency-010',
+  track: 'concurrency',
+  order: 10,
+  title: 'Tự viết lock kiểu AQS: state, CAS, hàng đợi và reentrant',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Hiểu cơ chế bên trong của AQS (AbstractQueuedSynchronizer) trong JDK: biến state, thao tác CAS, hàng đợi chờ và park/unpark',
+    'Tự xây dựng một MiniLock đơn giản hoá mô phỏng các ý tưởng cốt lõi: độc quyền, reentrant, tryLock, unlock đúng chủ sở hữu',
+    'Phân biệt được lock tự viết (dùng cho học) với java.util.concurrent.locks.ReentrantLock (triển khai thật, tối ưu, công bằng/tùy chọn)',
+    'Giải thích được vì sao lock phải kiểm tra chủ sở hữu khi unlock và vì sao CAS là nền tảng của lock hiệu năng cao',
+  ],
+  body: `### Cái gì: Lock là gì và vì sao cần tự hiểu cơ chế bên trong?
+**Lock (khoá)** là cơ chế đảm bảo tại một thời điểm chỉ có một thread (luồng thực thi — đơn vị chạy song song nhỏ nhất trong một tiến trình) được vào vùng code quan trọng (critical section — vùng code chia sẻ dữ liệu, nếu nhiều thread cùng vào sẽ gây lỗi). Ví dụ đời thường: một nhà vệ sinh công cộng có một chìa khoá — ai giữ chìa mới vào được, người khác phải xếp hàng chờ.
+
+Trong Java bạn thường dùng {{synchronized}} hoặc {{java.util.concurrent.locks.ReentrantLock}}. Nhưng phỏng vấn senior hay hỏi: "Bên trong ReentrantLock hoạt động thế nào?" Câu trả lời nằm ở **AQS**.
+
+**AQS (AbstractQueuedSynchronizer — bộ đồng bộ hoá trừu tượng có hàng đợi)** là lớp nền trong {{java.util.concurrent.locks}} (từ Java 5) mà {{ReentrantLock}}, {{Semaphore}} (đếm số lượt vào), {{CountDownLatch}}, {{ReentrantReadWriteLock}} đều xây dựng lên. Bạn không dùng AQS trực tiếp mỗi ngày, nhưng hiểu nó giúp bạn lý luận đúng về hiệu năng lock, starvation (đói tài nguyên — thread chờ mãi không được chạy), và các bug concurrency (lỗi khi nhiều thread chạy cùng lúc).
+
+### Cơ chế thật trong JDK (ReentrantLock/AQS) hoạt động thế nào?
+AQS quản lý 3 thứ chính:
+
+1. **state (trạng thái)**: một số nguyên {{volatile int}}. Với lock độc quyền: 0 = đang rảnh, > 0 = đang bị giữ (giá trị biểu thị số lần reentrant). {{volatile}} đảm bảo visibility (thread khác thấy giá trị mới ngay) theo Java Memory Model (JMM — quy tắc Java về việc thread nhìn thấy dữ liệu của nhau thế nào).
+2. **CAS (Compare-And-Swap — so sánh rồi đổi nguyên tử)**: thao tác kiểu "nếu giá trị hiện tại đang là expected thì đặt thành update, tất cả trong một bước không bị chen ngang". Trong Java, CAS có ở {{java.util.concurrent.atomic}} ({{AtomicInteger.compareAndSet}}, {{AtomicReference.compareAndSet}}). CAS cho phép giành lock mà không cần khoá nặng ngay lập tức.
+3. **Hàng đợi chờ (CLH-style queue)**: các thread không giành được lock được xếp vào hàng đợi (mỗi node chứa thông tin thread). AQS dùng {{LockSupport.park(thread)}} để tạm dừng thread (nhường CPU) và {{LockSupport.unpark(thread)}} để đánh thức khi lock được nhả. Điều này tránh "spin" (quay vòng kiểm tra liên tục) tốn CPU khi chờ lâu.
+
+Luồng giành lock độc quyền (đơn giản hoá, minh hoạ ý tưởng):
+~~~java
+// Ý tưởng cốt lõi (KHÔNG phải mã nguồn thật của AQS)
+int c = getState();
+if (c == 0) {                        // lock đang rảnh
+    if (compareAndSetState(0, 1)) {  // CAS: giành lock nguyên tử
+        setExclusiveOwnerThread(Thread.currentThread());
+        return;                      // thành công, vào critical section
+    }
+}
+// thất bại: vào hàng đợi, park() chờ, khi được unpark thử lại
+~~~
+
+**Reentrant (tái nhập)**: cùng một thread giữ lock có thể lock lại mà không tự chặn mình (ví dụ hàm A gọi hàm B, cả hai cùng cần lock). AQS kiểm tra: nếu owner là thread hiện tại thì {{state++}}. Khi unlock, {{state--}}; chỉ khi {{state == 0}} mới thực sự nhả lock và đánh thức thread kế.
+
+| Khía cạnh | {{synchronized}} (monitor JVM) | {{ReentrantLock}} (dựa trên AQS) |
+|---|---|---|
+| Giành/nhả | Tự động theo khối | {{lock()}} / {{unlock()}} (phải {{finally}}) |
+| Thử không chờ | Không có | {{tryLock()}} |
+| Chờ có timeout/ngắt | Hạn chế | {{tryLock(time)}}, {{lockInterruptibly()}} |
+| Công bằng (FIFO) | Không đảm bảo | Tuỳ chọn {{new ReentrantLock(true)}} |
+| Điều kiện chờ | {{wait/notify}} | {{Condition}} (nhiều condition) |
+
+> **Cấu hình/thực tế (JDK 17/21):** {{ReentrantLock}} nằm trong {{java.util.concurrent.locks}}. Mặc định **không công bằng** (unfair) vì throughput (lưu lượng xử lý) thường cao hơn; fair lock giảm starvation nhưng chậm hơn. Luôn đặt {{unlock()}} trong {{finally}}. Từ Java 21 có virtual threads, nhưng {{ReentrantLock}} vẫn là công cụ quan trọng.
+
+### Bản mô phỏng MiniLock: đơn giản hoá ở đâu?
+Bài tập yêu cầu bạn viết {{MiniLock}} dùng {{AtomicInteger}} (cho state đếm reentrant) và {{AtomicReference<Thread>}} (cho owner — thread đang giữ). Đây là **mô phỏng học tập**, KHÔNG dùng trong production.
+
+- **Giống ý tưởng AQS:** dùng CAS ({{compareAndSet}}) để giành state, lưu owner, hỗ trợ reentrant (đếm state), {{tryLock}} không chờ, {{unlock}} chỉ owner mới được gọi.
+- **Đơn giản hoá:** không có hàng đợi CLH thật và không dùng {{LockSupport.park/unpark}}. Khi {{lock()}} không giành được, ta dùng **spin-wait** (quay vòng thử lại) kèm {{Thread.onSpinWait()}} (gợi ý CPU giảm năng lượng khi spin, Java 9+). Spin tốn CPU nếu chờ lâu — AQS thật chuyển sang park để tránh điều đó.
+- **Vì sao chấp nhận:** với bài test ngắn, critical section rất nhỏ, spin đủ để minh hoạ tính đúng (mutual exclusion — loại trừ tương hỗ, chỉ 1 thread vào + reentrant) mà không cần dựng hàng đợi phức tạp.
+
+~~~java
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+class MiniLock {
+    private final AtomicInteger state = new AtomicInteger(0);       // 0=rảnh, >0=số lần reentrant
+    private final AtomicReference<Thread> owner = new AtomicReference<>(null);
+
+    void lock() {
+        Thread me = Thread.currentThread();
+        // nếu me đã là owner -> state++; nếu rảnh -> CAS state 0->1 và set owner; nếu không -> spin thử lại
+    }
+    boolean tryLock() {
+        Thread me = Thread.currentThread();
+        throw new UnsupportedOperationException("TODO");
+    }
+    void unlock() {
+        Thread me = Thread.currentThread();
+        // nếu không phải owner -> ném IllegalMonitorStateException; giảm state; về 0 thì clear owner
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+~~~
+
+> **Lưu ý:** trong mô phỏng học, pattern phổ biến: {{if (state.decrementAndGet() == 0) owner.set(null);}}. {{unlock}} chỉ được gọi bởi owner (đã kiểm tra), nên logic đủ an toàn cho bài tập.
+
+### Pitfall thực tế trên production
+- **Quên {{unlock()}} trong {{finally}}:** lock bị giữ mãi, thread khác treo. {{synchronized}} tự nhả khi thoát khối nên an toàn hơn về mặt này.
+- **Unlock sai thread:** AQS/ReentrantLock ném {{IllegalMonitorStateException}}.
+- **Spin lock tự viết cho chờ lâu:** đốt CPU, gây latency (độ trễ) leo thang. Dùng primitive của JDK.
+- **Giả định fair:** ReentrantLock mặc định unfair.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "AQS là gì? ReentrantLock dùng nó ra sao? CAS là gì? {{tryLock}} khác {{lock}} thế nào? Vì sao {{unlock}} phải trong {{finally}}? Fair vs unfair lock?" Trả lời theo khung: **state + CAS giành quyền + hàng đợi + park/unpark**, nêu reentrant bằng đếm state, và nhấn mạnh luôn dùng API JDK thay vì tự viết lock (trừ mục đích học).
+`,
+  exercises: [
+    {
+      title: 'MiniLock: độc quyền, reentrant, tryLock và kiểm tra chủ sở hữu',
+      prompt: `Hoàn thiện class {{MiniLock}} mô phỏng ý tưởng AQS (đơn giản hoá): dùng {{AtomicInteger state}} (0=rảnh, >0=số lần giữ) và {{AtomicReference<Thread> owner}}.
+
+Yêu cầu:
+- {{lock()}}: nếu thread hiện tại đã là owner thì tăng {{state}} (reentrant). Nếu lock rảnh (state 0) thì giành bằng CAS {{0 -> 1}} và đặt owner. Nếu đang bị thread khác giữ thì spin chờ (gọi {{Thread.onSpinWait()}} trong vòng lặp) cho tới khi giành được.
+- {{tryLock()}}: thử giành **một lần**, không chờ. Trả về {{true}} nếu thành công (kể cả reentrant), {{false}} nếu bị thread khác giữ.
+- {{unlock()}}: nếu thread hiện tại **không** phải owner thì ném {{IllegalMonitorStateException}}. Nếu là owner: giảm state; khi state về 0 thì xoá owner.
+
+Bài test: 8 thread × 10.000 lần tăng biến đếm dưới {{lock/unlock}} (kết quả 80.000); reentrant đúng; {{tryLock}} thất bại khi bị giữ; unlock bởi thread khác ném {{IllegalMonitorStateException}}.`,
+      starter: `class MiniLock {
+    private final java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final java.util.concurrent.atomic.AtomicReference<Thread> owner = new java.util.concurrent.atomic.AtomicReference<>(null);
+
+    public void lock() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public boolean tryLock() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public void unlock() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void ok(boolean cond, String msg) { if (cond) System.out.println("PASS " + msg); else System.out.println("FAIL " + msg); }
+
+    static void testMutualExclusion() throws Exception {
+        MiniLock lock = new MiniLock();
+        final int[] counter = {0};
+        int threads = 8, loops = 10000;
+        Thread[] ts = new Thread[threads];
+        for (int i = 0; i < threads; i++) {
+            ts[i] = new Thread(() -> {
+                for (int j = 0; j < loops; j++) {
+                    lock.lock();
+                    try { counter[0]++; } finally { lock.unlock(); }
+                }
+            });
+        }
+        for (Thread t : ts) t.start();
+        for (Thread t : ts) t.join(5000);
+        ok(counter[0] == threads * loops, "mutual exclusion 8x10000 => " + (threads * loops));
+    }
+
+    static void testReentrant() {
+        MiniLock lock = new MiniLock();
+        lock.lock();
+        lock.lock();
+        boolean innerTry = lock.tryLock();
+        lock.unlock();
+        lock.unlock();
+        lock.unlock();
+        boolean after = lock.tryLock();
+        if (after) lock.unlock();
+        ok(innerTry && after, "reentrant lock/tryLock and full release");
+    }
+
+    static void testTryLockContended() throws Exception {
+        MiniLock lock = new MiniLock();
+        java.util.concurrent.CountDownLatch holding = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        Thread t = new Thread(() -> {
+            lock.lock();
+            try { holding.countDown(); done.await(2, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            finally { lock.unlock(); }
+        });
+        t.start();
+        holding.await(2, java.util.concurrent.TimeUnit.SECONDS);
+        boolean got = lock.tryLock();
+        done.countDown();
+        t.join(2000);
+        ok(!got, "tryLock fails while held by other thread");
+    }
+
+    static void testUnlockWrongOwner() throws Exception {
+        MiniLock lock = new MiniLock();
+        java.util.concurrent.CountDownLatch holding = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        Thread t = new Thread(() -> {
+            lock.lock();
+            try { holding.countDown(); release.await(2, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            finally { lock.unlock(); }
+        });
+        t.start();
+        holding.await(2, java.util.concurrent.TimeUnit.SECONDS);
+        boolean threw = false;
+        try { lock.unlock(); } catch (IllegalMonitorStateException e) { threw = true; }
+        release.countDown();
+        t.join(2000);
+        ok(threw, "unlock by non-owner throws IllegalMonitorStateException");
+    }
+
+    static void testUnlockWhenFree() {
+        MiniLock lock = new MiniLock();
+        boolean threw = false;
+        try { lock.unlock(); } catch (IllegalMonitorStateException e) { threw = true; }
+        ok(threw, "unlock when free throws IllegalMonitorStateException");
+    }
+
+    static void testTryLockWhenFree() {
+        MiniLock lock = new MiniLock();
+        boolean a = lock.tryLock();
+        boolean b = lock.tryLock();
+        if (b) lock.unlock();
+        if (a) lock.unlock();
+        boolean c = lock.tryLock();
+        if (c) lock.unlock();
+        ok(a && b && c, "tryLock succeeds when free and is reentrant");
+    }
+
+    public static void main(String[] args) throws Exception {
+        testMutualExclusion();
+        testReentrant();
+        testTryLockContended();
+        testUnlockWrongOwner();
+        testUnlockWhenFree();
+        testTryLockWhenFree();
+        System.out.println("RESULT 6/6");
+    }
+}`,
+      reference: `class MiniLock {
+    private final java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final java.util.concurrent.atomic.AtomicReference<Thread> owner = new java.util.concurrent.atomic.AtomicReference<>(null);
+
+    public void lock() {
+        Thread me = Thread.currentThread();
+        if (owner.get() == me) { state.incrementAndGet(); return; }
+        while (true) {
+            if (state.compareAndSet(0, 1)) { owner.set(me); return; }
+            Thread.onSpinWait();
+        }
+    }
+
+    public boolean tryLock() {
+        Thread me = Thread.currentThread();
+        if (owner.get() == me) { state.incrementAndGet(); return true; }
+        if (state.compareAndSet(0, 1)) { owner.set(me); return true; }
+        return false;
+    }
+
+    public void unlock() {
+        Thread me = Thread.currentThread();
+        if (owner.get() != me) throw new IllegalMonitorStateException("not owner");
+        int s = state.decrementAndGet();
+        if (s == 0) owner.set(null);
+        else if (s < 0) { state.set(0); throw new IllegalMonitorStateException("unbalanced unlock"); }
+    }
+}`,
+      hints: [
+        'Dùng {{state.compareAndSet(0, 1)}} làm cổng giành lock nguyên tử. Chỉ set {{owner}} sau khi CAS thành công.',
+        'Reentrant: nếu {{owner.get() == Thread.currentThread()}} thì {{state.incrementAndGet()}}.',
+        'Trong {{unlock}}, kiểm tra owner trước; giảm state; nếu về 0 thì {{owner.set(null)}}; sai owner thì ném {{IllegalMonitorStateException}}.',
+      ],
+      explain: `**CAS trên state là cánh cổng** cho mutual exclusion. Reentrant dùng đếm state khi owner trùng. AQS thật thêm hàng đợi + {{LockSupport.park/unpark}} để chờ dài không đốt CPU, và hỗ trợ fairness; MiniLock dùng spin nên chỉ phù hợp critical section cực ngắn trong bài học.`,
+    },
+  ],
+  check: [
+    {
+      q: 'CAS (Compare-And-Swap) đảm bảo điều gì?',
+      options: ['Luôn nhanh hơn synchronized trong mọi trường hợp', 'Thao tác kiểm tra và cập nhật giá trị diễn ra như một bước nguyên tử: chỉ đổi nếu giá trị hiện tại khớp expected', 'Tự động đưa thread vào hàng đợi chờ', 'Thay thế hoàn toàn nhu cầu dùng volatile'],
+      answer: 1,
+      explain: 'CAS là nguyên tử cho mẫu so sánh rồi đổi. Nó không tự xếp hàng (AQS làm việc đó với queue/park).',
+    },
+    {
+      q: 'Một lock reentrant nghĩa là gì?',
+      options: ['Nhiều thread cùng giữ lock', 'Cùng một thread đang giữ lock có thể giành lại lock đó mà không bị tự chặn; state đếm số lần giữ', 'Lock tự nhả sau một khoảng thời gian', 'Lock chỉ dùng được một lần'],
+      answer: 1,
+      explain: 'Thread owner lock N lần phải unlock N lần thì lock mới thực sự rảnh. AQS/ReentrantLock hiện thực bằng tăng/giảm state.',
+    },
+    {
+      q: 'Vì sao AQS thật dùng LockSupport.park/unpark thay vì chỉ spin chờ mãi?',
+      options: ['Vì CAS không dùng được trong Java', 'Spin liên tục tốn CPU khi chờ lâu; park cho thread nhường CPU và unpark đánh thức khi đến lượt', 'Vì park nhanh hơn CAS', 'Vì spin không hoạt động với nhiều core'],
+      answer: 1,
+      explain: 'Spin phù hợp chờ rất ngắn. Khi chờ lâu, quay vòng lãng phí CPU. AQS thử nhanh rồi xếp hàng và park; unlock thì unpark.',
+    },
+  ],
+  related: ['concurrency-013', 'concurrency-012', 'concurrency-009'],
+  tags: ['AQS', 'CAS', 'LockSupport', 'ReentrantLock', 'AtomicInteger', 'lock'],
+},
+{
+  id: 'lesson-concurrency-011',
+  track: 'concurrency',
+  order: 11,
+  title: 'Lock-free Treiber stack và vấn đề ABA (AtomicStampedReference)',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Hiểu cấu trúc dữ liệu lock-free (không khoá) và cách Treiber stack dùng CAS trên head để push/pop',
+    'Giải thích ABA problem: CAS thành công nhưng trạng thái đã thay đổi "ngầm", dẫn đến lỗi logic',
+    'Dùng AtomicStampedReference (stamp/version) để phát hiện ABA trong kịch bản có thể tái sử dụng node/giá trị',
+    'Phân biệt khi nào lock-free phù hợp và khi nào lock đơn giản an toàn hơn trong production',
+  ],
+  body: `### Cái gì: Lock-free và Treiber stack
+**Lock-free (không khoá)** là kiểu lập trình concurrent (đồng thời nhiều thread) mà hệ thống luôn có ít nhất một thread tiến triển, không dựa vào lock độc quyền. Thay vì "ai giữ chìa khoá mới vào", các thread dùng **CAS** để cạnh tranh cập nhật một con trỏ/trạng thái dùng chung; nếu thua (giá trị đã đổi) thì thử lại.
+
+**Treiber stack** (1986) là ngăn xếp (stack, cấu trúc LIFO — vào sau ra trước, như chồng đĩa) lock-free kinh điển: các phần tử nối thành danh sách liên kết đơn, có một biến {{head}} trỏ đỉnh. Push và pop đều là vòng lặp CAS trên {{head}}.
+
+Ví dụ đời thường: thay vì khoá cả chồng đĩa, mỗi người nhìn đỉnh chồng, chuẩn bị đĩa mới, rồi "CAS" đặt đĩa mới làm đỉnh nếu đỉnh vẫn như lúc nhìn; nếu ai đó đã đổi đỉnh thì nhìn lại và thử tiếp.
+
+### Hoạt động thế nào: push/pop bằng CAS
+~~~java
+class Node { int value; Node next; Node(int v, Node n){ value=v; next=n; } }
+AtomicReference<Node> head = new AtomicReference<>(null);
+
+// push: tạo node mới -> next trỏ head cũ -> CAS head: cũ -> mới
+void push(int v) {
+    while (true) {
+        Node old = head.get();
+        Node n = new Node(v, old);
+        if (head.compareAndSet(old, n)) return;  // thành công
+        // thất bại: head đã đổi, thử lại
+    }
+}
+
+// pop: đọc head -> đọc next -> CAS head: head -> next
+Integer pop() {
+    while (true) {
+        Node old = head.get();
+        if (old == null) return null;
+        Node next = old.next;
+        if (head.compareAndSet(old, next)) return old.value;
+    }
+}
+~~~
+
+Mỗi thao tác chỉ thành công khi {{head}} vẫn đúng như lúc quan sát — lạc quan với kiểm tra nguyên tử.
+
+### Vấn đề ABA là gì? Vì sao CAS có thể "bị lừa"?
+**ABA problem**: CAS chỉ hỏi "giá trị bây giờ có bằng A không?" — nó **không** biết giá trị đã từng đổi A -> B -> A. Nếu giữa lúc đọc và lúc CAS, trạng thái đổi rồi đổi về A, CAS vẫn thành công nhưng các giả định trung gian (ví dụ {{next}} của node A) có thể đã sai.
+
+Kịch bản kinh điển (có tái sử dụng node để A quay lại cùng identity — danh tính object):
+1. Thread T1 đọc {{head = A}}, tính {{next = A.next = B}} (định pop A).
+2. T1 bị dừng. Thread T2 pop A, pop B, rồi push A trở lại (head lại là A).
+3. T1 chạy tiếp: thấy {{head == A}} nên CAS thành công, đặt {{head = B}}. Nhưng B **không còn** trong stack theo ngữ nghĩa đúng. Stack bị hỏng.
+
+| Bước | head (đỉnh -> ...) | Ai làm |
+|---|---|---|
+| ban đầu | A -> B -> C | |
+| T1 đọc old=A, next=B | A -> B -> C | T1 (tạm dừng) |
+| pop A, pop B | C | T2 |
+| push A (tái dùng A) | A -> C | T2 |
+| T1 CAS(A,B) thành công | B -> ? | **lỗi: B đã rời stack** |
+
+> ABA nguy hiểm khi có **tái sử dụng bộ nhớ/node** (object pool — bể tái dùng object) hoặc khi thuật toán phụ thuộc lịch sử thay đổi.
+
+### Giải pháp: AtomicStampedReference (đóng dấu phiên bản)
+**AtomicStampedReference<V>** ({{java.util.concurrent.atomic}}, Java 5+) giữ cặp {{(reference, int stamp)}} và hỗ trợ CAS trên **cả hai**. Mỗi lần thay đổi head ta tăng stamp. T1 đọc (A, stamp=1); sau chuỗi A->B->A stamp đã thành (A, 3); CAS của T1 đòi (A,1) nên **thất bại** — ABA bị phát hiện.
+
+~~~java
+import java.util.concurrent.atomic.AtomicStampedReference;
+AtomicStampedReference<Node> head = new AtomicStampedReference<>(null, 0);
+// CAS: compareAndSet(expectedRef, newRef, expectedStamp, newStamp)
+~~~
+
+Còn có {{AtomicMarkableReference}} (cờ boolean, ví dụ đánh dấu node bị xoá). Ở Java, GC (garbage collector — bộ dọn rác tự giải phóng bộ nhớ) giảm rủi ro use-after-free nhưng **không** tự giải ABA logic.
+
+### Bản mô phỏng trong bài tập: đơn giản hoá ở đâu?
+- Bài 1 xây **Treiber stack lock-free** đúng cho thao tác concurrent cơ bản bằng {{AtomicReference}} + CAS vòng lặp, trả về {{null}} khi rỗng. Ta **không** tạo ABA bằng object pool phức tạp — mục tiêu là hiểu pattern CAS.
+- Bài 2 **mô phỏng ABA có kịch bản xác định**: thay vì phụ thuộc scheduler (bộ lập lịch thread, không deterministic), ta dùng {{AtomicStampedReference<Integer>}} và thực hiện các bước tuần tự để ép đúng thứ tự A->B->A, rồi chứng minh CAS theo stamp cũ thất bại còn CAS theo stamp hiện tại thành công. Đây là mô phỏng kiểm soát được, không tái hiện stack hỏng dưới race ngẫu nhiên.
+
+### Pitfall thực tế
+- **Lock-free khó đúng:** race hiếm, test thường không lộ. Production ưu tiên {{java.util.concurrent.ConcurrentLinkedDeque}} / cấu trúc JDK đã kiểm chứng.
+- **Spin khi tranh chấp cao:** có thể livelock (ai cũng thử lại). Cần backoff hoặc cấu trúc phù hợp.
+- **Nhầm ABA chỉ là chuyện reference:** thực chất là "trùng quan sát, lệch lịch sử".
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Treiber stack hoạt động thế nào? ABA là gì, khắc phục bằng {{AtomicStampedReference}}? Khi nào dùng lock-free?" Trả lời: CAS trên head (push/pop), nêu kịch bản A->B->A, nêu stamp/version, và kết luận: dùng cấu trúc concurrent của JDK trừ khi có lý do rất rõ.
+`,
+  exercises: [
+    {
+      title: 'Treiber stack lock-free (CAS)',
+      prompt: `Hoàn thiện {{LockFreeStack}} dùng {{AtomicReference<Node> head}} và thuật toán Treiber:
+
+- {{push(int v)}}: tạo node mới có {{next}} là head hiện tại, CAS head từ head cũ sang node mới; lặp lại nếu CAS thất bại.
+- {{pop()}}: trả về giá trị ở đỉnh, hoặc {{null}} nếu stack rỗng. Đọc head; nếu null trả null; CAS head từ head sang {{head.next}}; lặp lại nếu thất bại.
+
+Class {{Node}} đã cho. Test chạy nhiều thread push/pop và kiểm tra tính đúng (không mất/không nhân đôi phần tử).`,
+      starter: `import java.util.concurrent.atomic.AtomicReference;
+
+class LockFreeStack {
+    static class Node {
+        final int value;
+        final Node next;
+        Node(int value, Node next) { this.value = value; this.next = next; }
+    }
+
+    private final AtomicReference<Node> head = new AtomicReference<>(null);
+
+    public void push(int v) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public Integer pop() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void ok(boolean cond, String msg) { if (cond) System.out.println("PASS " + msg); else System.out.println("FAIL " + msg); }
+
+    static void testSingleThread() {
+        LockFreeStack s = new LockFreeStack();
+        ok(s.pop() == null, "pop empty => null");
+        s.push(1); s.push(2); s.push(3);
+        ok(Integer.valueOf(3).equals(s.pop()), "LIFO pop 3");
+        ok(Integer.valueOf(2).equals(s.pop()), "LIFO pop 2");
+        ok(Integer.valueOf(1).equals(s.pop()), "LIFO pop 1");
+        ok(s.pop() == null, "empty again");
+    }
+
+    static void testConcurrentPush() throws Exception {
+        LockFreeStack s = new LockFreeStack();
+        int threads = 6, per = 2000;
+        Thread[] ts = new Thread[threads];
+        for (int i = 0; i < threads; i++) {
+            final int base = i * per;
+            ts[i] = new Thread(() -> { for (int j = 0; j < per; j++) s.push(base + j); });
+        }
+        for (Thread t : ts) t.start();
+        for (Thread t : ts) t.join(5000);
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        Integer v;
+        int count = 0;
+        while ((v = s.pop()) != null) { seen.add(v); count++; }
+        ok(count == threads * per && seen.size() == threads * per, "concurrent push all present " + count);
+    }
+
+    static void testConcurrentPushPop() throws Exception {
+        LockFreeStack s = new LockFreeStack();
+        int producers = 4, consumers = 4, per = 1500;
+        int total = producers * per;
+        java.util.concurrent.atomic.AtomicInteger popped = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        Thread[] pts = new Thread[producers];
+        for (int i = 0; i < producers; i++) {
+            final int base = i * per;
+            pts[i] = new Thread(() -> {
+                try { start.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                for (int j = 0; j < per; j++) s.push(base + j);
+            });
+        }
+        Thread[] cts = new Thread[consumers];
+        for (int i = 0; i < consumers; i++) {
+            cts[i] = new Thread(() -> {
+                try { start.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                while (popped.get() < total) {
+                    if (s.pop() != null) popped.incrementAndGet();
+                    else Thread.onSpinWait();
+                }
+            });
+        }
+        for (Thread t : pts) t.start();
+        for (Thread t : cts) t.start();
+        start.countDown();
+        for (Thread t : pts) t.join(5000);
+        for (Thread t : cts) t.join(5000);
+        ok(popped.get() == total, "concurrent push/pop drained " + popped.get());
+    }
+
+    static void testInterleaved() {
+        LockFreeStack s = new LockFreeStack();
+        s.push(10); s.push(20);
+        ok(Integer.valueOf(20).equals(s.pop()), "interleaved pop 20");
+        s.push(30);
+        ok(Integer.valueOf(30).equals(s.pop()), "interleaved pop 30");
+        ok(Integer.valueOf(10).equals(s.pop()), "interleaved pop 10");
+        ok(s.pop() == null, "interleaved empty");
+    }
+
+    public static void main(String[] args) throws Exception {
+        testSingleThread();
+        testConcurrentPush();
+        testConcurrentPushPop();
+        testInterleaved();
+        System.out.println("RESULT 5/5");
+    }
+}`,
+      reference: `import java.util.concurrent.atomic.AtomicReference;
+
+class LockFreeStack {
+    static class Node {
+        final int value;
+        final Node next;
+        Node(int value, Node next) { this.value = value; this.next = next; }
+    }
+
+    private final AtomicReference<Node> head = new AtomicReference<>(null);
+
+    public void push(int v) {
+        while (true) {
+            Node old = head.get();
+            Node n = new Node(v, old);
+            if (head.compareAndSet(old, n)) return;
+        }
+    }
+
+    public Integer pop() {
+        while (true) {
+            Node old = head.get();
+            if (old == null) return null;
+            Node next = old.next;
+            if (head.compareAndSet(old, next)) return old.value;
+        }
+    }
+}`,
+      hints: [
+        'Mẫu chung: đọc snapshot {{old = head.get()}}, tính trạng thái mới, rồi {{head.compareAndSet(old, newState)}}; nếu false thì lặp lại.',
+        'Push: {{new Node(v, old)}} rồi CAS head {{old -> n}}. Pop: nếu {{old==null}} trả {{null}}, ngược lại CAS head {{old -> old.next}} và trả {{old.value}}.',
+      ],
+      explain: `CAS chỉ thành công khi {{head}} chưa đổi kể từ lúc đọc {{old}}. Nếu thread khác đã thao tác, vòng lặp thử lại với head mới. Production nên dùng {{ConcurrentLinkedDeque}}; ABA được minh hoạ ở bài 2 bằng stamp.`,
+    },
+    {
+      title: 'Phát hiện ABA bằng AtomicStampedReference (kịch bản xác định)',
+      prompt: `Mô phỏng ABA có kiểm soát: dùng {{AtomicStampedReference<Integer> ref}} với giá trị ban đầu {{A}} và stamp ban đầu {{1}}. Ép chuỗi thay đổi **A(stamp1) -> B(stamp2) -> A(stamp3)** bằng các bước tuần tự (deterministic), rồi chứng minh:
+
+1. CAS kiểu "cũ" (expectedRef=A, expectedStamp=1, muốn đặt thành C) phải **thất bại** dù reference hiện tại lại là A — vì stamp đã khác (ABA bị phát hiện).
+2. CAS với stamp hiện tại (expected ref A, expected stamp hiện tại -> C, stamp+1) thành công.
+
+Hoàn thiện {{AbaDemo}}: constructor nhận {{int a,b,c}}; {{runScenario()}} thực hiện A->B->A (mỗi lần đổi tăng stamp), trả {{true}} nếu CAS cũ thất bại **và** sau đó CAS đúng stamp thành công và giá trị cuối là C; ngược lại {{false}}.`,
+      starter: `import java.util.concurrent.atomic.AtomicStampedReference;
+
+class AbaDemo {
+    private final int a, b, c;
+    private final AtomicStampedReference<Integer> ref;
+
+    AbaDemo(int a, int b, int c) {
+        this.a = a; this.b = b; this.c = c;
+        this.ref = new AtomicStampedReference<Integer>(a, 1);
+    }
+
+    public boolean runScenario() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void ok(boolean cond, String msg) { if (cond) System.out.println("PASS " + msg); else System.out.println("FAIL " + msg); }
+
+    static void testAbaDetected() {
+        AbaDemo d = new AbaDemo(10, 20, 30);
+        ok(d.runScenario(), "ABA detected by stamp: stale CAS fails, fresh CAS succeeds");
+    }
+
+    static void testDifferentValues() {
+        AbaDemo d = new AbaDemo(1, 2, 99);
+        ok(d.runScenario(), "ABA scenario works for (1,2,99)");
+    }
+
+    static void testStateAfter() {
+        AbaDemo d = new AbaDemo(5, 6, 7);
+        boolean r = d.runScenario();
+        ok(r, "scenario returns true");
+    }
+
+    static void testStampProgression() {
+        ok(new AbaDemo(100, 200, 300).runScenario(), "consistent run 1");
+        ok(new AbaDemo(100, 200, 300).runScenario(), "consistent run 2");
+    }
+
+    public static void main(String[] args) {
+        testAbaDetected();
+        testDifferentValues();
+        testStateAfter();
+        testStampProgression();
+        System.out.println("RESULT 5/5");
+    }
+}`,
+      reference: `import java.util.concurrent.atomic.AtomicStampedReference;
+
+class AbaDemo {
+    private final Integer a, b, c;
+    private final AtomicStampedReference<Integer> ref;
+
+    AbaDemo(int a, int b, int c) {
+        // Box một lần: AtomicStampedReference so reference bằng == (identity)
+        this.a = Integer.valueOf(a);
+        this.b = Integer.valueOf(b);
+        this.c = Integer.valueOf(c);
+        this.ref = new AtomicStampedReference<Integer>(this.a, 1);
+    }
+
+    public boolean runScenario() {
+        // A,stamp1 -> B,stamp2
+        boolean s1 = ref.compareAndSet(a, b, 1, 2);
+        // B,stamp2 -> A,stamp3  (ABA: reference quay lại A nhưng stamp đổi)
+        boolean s2 = ref.compareAndSet(b, a, 2, 3);
+        if (!s1 || !s2) return false;
+        // stale CAS: đòi (A,1) -> C, nhưng thực tế là (A,3) => phải thất bại
+        boolean stale = ref.compareAndSet(a, c, 1, 4);
+        if (stale) return false;
+        int[] stampHolder = new int[1];
+        Integer cur = ref.get(stampHolder);
+        if (cur == null || !cur.equals(a) || stampHolder[0] != 3) return false;
+        // CAS đúng với stamp hiện tại
+        boolean fresh = ref.compareAndSet(a, c, 3, 4);
+        return fresh && c.equals(ref.getReference());
+    }
+}`,
+      hints: [
+        'Dùng {{compareAndSet(expectedRef, newRef, expectedStamp, newStamp)}}. Tuần tự: (a,1)->(b,2) rồi (b,2)->(a,3).',
+        'Thử CAS cũ {{compareAndSet(a, c, 1, 4)}} phải trả {{false}} vì stamp hiện tại là 3. Lấy stamp hiện tại bằng {{get(stampHolder)}} rồi CAS với stamp đúng.',
+      ],
+      explain: `**Reference bằng nhau chưa đủ**, phải so cả stamp. CAS cũ thất bại dù thấy lại {{a}} vì stamp đã đi 1->2->3 — ABA bị phát hiện. Trong stack lock-free thật, tăng stamp mỗi lần head đổi và CAS cả (ref,stamp).`,
+    },
+  ],
+  check: [
+    {
+      q: 'ABA problem trong CAS là gì?',
+      options: ['CAS luôn thất bại khi nhiều thread chạy', 'Giá trị đổi A -> B -> A nên CAS chỉ nhìn thấy A khớp và thành công, dù trạng thái/giả định trung gian đã thay đổi', 'Deadlock giữa ba thread A, B, A', 'Lỗi tràn số khi tăng biến đếm'],
+      answer: 1,
+      explain: 'CAS không lưu lịch sử, chỉ so giá trị hiện tại với expected. Nếu giá trị quay lại A, CAS mù với thay đổi ở giữa.',
+    },
+    {
+      q: 'AtomicStampedReference giúp gì so với AtomicReference trong ngữ cảnh ABA?',
+      options: ['Làm CAS nhanh hơn', 'Kèm số phiên bản (stamp) và CAS trên cả (reference, stamp), nên phát hiện được reference quay lại giá trị cũ nhưng đã qua thay đổi', 'Tự động dùng lock bên trong', 'Chỉ dùng được với String'],
+      answer: 1,
+      explain: 'Stamp tăng mỗi lần đổi; CAS yêu cầu cả reference lẫn stamp khớp, nên A với stamp cũ không khớp A với stamp mới.',
+    },
+    {
+      q: 'Trong production Java, khi cần stack/queue concurrent, lựa chọn thực dụng nhất thường là gì?',
+      options: ['Luôn tự viết Treiber stack lock-free', 'Ưu tiên cấu trúc đã kiểm chứng trong java.util.concurrent (ví dụ ConcurrentLinkedQueue/Deque) trừ khi có lý do rõ', 'Luôn dùng synchronized trên mọi thao tác', 'Dùng ArrayList chia sẻ giữa các thread'],
+      answer: 1,
+      explain: 'Lock-free tự viết khó đúng (ABA, livelock). JDK cung cấp cấu trúc concurrent được kiểm thử kỹ.',
+    },
+  ],
+  related: ['concurrency-014', 'concurrency-012', 'concurrency-009'],
+  tags: ['lock-free', 'Treiber stack', 'CAS', 'ABA', 'AtomicStampedReference', 'AtomicReference'],
+},
+
 );

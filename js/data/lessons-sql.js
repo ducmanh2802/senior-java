@@ -1383,5 +1383,314 @@ Nested loop 1200 so sánh ở bài tập tương tự {{Nested Loop}} với {{lo
   ],
   related: ['sql-015', 'sql-017', 'sql-023', 'db-001'],
   tags: ['join', 'nested loop', 'hash join', 'merge join', 'explain', 'optimizer'],
+},
+{
+  id: 'lesson-sql-006',
+  track: 'sql',
+  order: 6,
+  title: 'MVCC và transaction isolation: snapshot, phantom read và deadlock',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích MVCC (Multi-Version Concurrency Control) là gì và vì sao reader không chặn writer',
+    'Phân biệt READ COMMITTED và REPEATABLE READ ở PostgreSQL, biết lỗi nào xuất hiện',
+    'Nhận ra deadlock và cách DB xử lý (abort một transaction)',
+  ],
+  body: `### Transaction là gì (và vì sao isolation quan trọng)
+**Transaction** (giao dịch) là một nhóm câu lệnh DB chạy như một đơn vị: hoặc tất cả thành công (commit, xác nhận lưu), hoặc tất cả thất bại và quay lại (rollback, hoàn tác). Ví dụ chuyển tiền: trừ tài khoản A và cộng tài khoản B phải cùng thành công; nếu chỉ trừ A mà chưa cộng B thì tiền "mất".
+
+Khi nhiều transaction chạy **đồng thời** (cùng lúc), DB phải quyết định: transaction này có thấy dữ liệu đang được transaction khác sửa chưa? Quyết định đó gọi là **isolation level** (mức cô lập). Mức cô lập càng chặt thì dữ liệu càng "nhất quán" khi đọc, nhưng thường tốn chi phí hơn (hoặc dễ bị abort để retry). PostgreSQL 15 dùng cơ chế MVCC để cân bằng giữa đúng dữ liệu và hiệu năng.
+
+### MVCC là gì
+**MVCC** (Multi-Version Concurrency Control, điều khiển đồng thời bằng nhiều phiên bản) là cơ chế DB giữ **nhiều phiên bản** của cùng một dòng dữ liệu. Khi bạn {{UPDATE}}, DB thường **không ghi đè** phiên bản cũ tại chỗ ngay lập tức, mà tạo ra **phiên bản mới** của dòng; phiên bản cũ vẫn còn để các transaction đang đọc theo "ảnh chụp" cũ tiếp tục dùng.
+
+- **Reader** (câu {{SELECT}} đọc dữ liệu): đọc theo **snapshot** (ảnh chụp dữ liệu nhìn thấy tại một thời điểm) của nó.
+- **Writer** ({{INSERT/UPDATE/DELETE}}): tạo phiên bản mới hoặc đánh dấu phiên bản cũ không còn nhìn thấy với các snapshot sau.
+
+Vì reader đọc snapshot riêng, reader thường **không chặn writer**, và writer cũng **không chặn reader**. Đây là lợi ích lớn của MVCC so với cách chỉ dùng lock (khóa dòng) cho mọi thao tác.
+
+Analog đời thường: giống lịch sử phiên bản tài liệu — người đang đọc bản lúc 10:00 vẫn xem trọn vẹn bản đó, dù người khác lưu bản mới lúc 10:01. Họ chỉ thấy bản mới khi "tải lại" theo thời điểm mới.
+
+> Lưu ý thuật ngữ: PostgreSQL gắn thông tin nhìn thấy phiên bản bằng các trường nội bộ (thường nói tới {{xmin}}/{{xmax}} trong tuple header). Bạn không cần nhớ chi tiết bit khi đi phỏng vấn junior/mid, nhưng nên hiểu ý: mỗi phiên bản có dấu vết "ai tạo, ai xoá" để quyết định snapshot nào thấy nó.
+
+### Snapshot và isolation level (PostgreSQL 15)
+**Isolation level** được đặt cho transaction (ví dụ {{BEGIN ISOLATION LEVEL REPEATABLE READ;}}) hoặc dùng mặc định của DB.
+
+- **READ COMMITTED** (mặc định PostgreSQL): mỗi câu lệnh {{SELECT}} lấy snapshot **mới** tại thời điểm câu đó chạy. Trong cùng một transaction, câu SELECT thứ hai có thể thấy dữ liệu đã commit bởi transaction khác sau câu SELECT thứ nhất. Hiện tượng này gọi là **non-repeatable read** (đọc lại cùng điều kiện nhưng kết quả khác).
+- **REPEATABLE READ** (PostgreSQL): snapshot được cố định từ câu lệnh đầu tiên của transaction; mọi {{SELECT}} sau trong transaction đó nhìn thấy **cùng** tập phiên bản (trừ thay đổi do chính transaction đó tạo). Vì vậy không bị non-repeatable read. PostgreSQL còn không cho bạn thấy **phantom read** (dòng mới "xuất hiện" như ma) theo nghĩa snapshot: bạn không thấy dòng mới commit sau snapshot. Tuy nhiên, vẫn có thể xảy ra **serialization anomaly** (ví dụ write skew: hai transaction cùng đọc trạng thái hợp lệ rồi ghi theo cách làm tổng thể không hợp lệ); PostgreSQL sẽ báo lỗi ở mức SERIALIZABLE, còn ở REPEATABLE READ dạng anomaly này có thể không bị chặn như SERIALIZABLE.
+- **SERIALIZABLE**: mức chặt nhất. PostgreSQL dùng kỹ thuật phát hiện xung đột (SSI, Serializable Snapshot Isolation) để đảm bảo kết quả như thể các transaction chạy tuần tự. Khi phát hiện nguy cơ anomaly, DB **abort** transaction với lỗi {{serialization_failure}} (SQLSTATE {{40001}}). Ứng dụng bắt buộc phải **retry** (chạy lại transaction).
+
+### Bảng so sánh nhanh (PostgreSQL 15)
+| Isolation | Non-repeatable read | Phantom read (theo snapshot PG) | Ghi chú hiệu năng/ứng dụng |
+|---|---|---|---|
+| READ COMMITTED | có thể | có thể | mặc định, phù hợp nhiều API OLTP (xử lý giao dịch ngắn) |
+| REPEATABLE READ | không | không | snapshot cố định; cẩn thận logic ghi đồng thời (write skew) |
+| SERIALIZABLE | không | không | an toàn nhất về tính tuần tự; có thể abort {{40001}}, phải retry |
+
+### Vì sao reader không chặn writer (và cái giá phải trả)
+Reader đọc theo snapshot nên không cần xin lock đọc trên từng dòng dữ liệu nghiệp vụ như nhiều hệ lock-based truyền thống. Writer tạo phiên bản mới; phiên bản cũ chỉ được dọn khi chắc chắn không transaction/snapshot nào còn cần.
+
+Cái giá:
+- **Tốn dung lượng**: nhiều phiên bản tồn tại tạm thời.
+- **Cần dọn dẹp**: PostgreSQL dùng {{VACUUM}} (và autovacuum) để thu hồi không gian từ các tuple chết (dead tuples). {{UPDATE/DELETE}} nhiều mà autovacuum theo không kịp có thể gây **bloat** (bảng/phình to, hiệu năng giảm).
+
+### Deadlock là gì và DB xử lý thế nào
+**Deadlock** (kẹt chết) xảy ra khi hai (hoặc nhiều) transaction chờ nhau theo vòng: T1 giữ lock trên A và chờ lock trên B; T2 giữ lock trên B và chờ lock trên A. Không ai nhường ai thì hệ đứng.
+
+DB duy trì cấu trúc chờ (thường mô tả như **wait-for graph**) và định kỳ phát hiện **chu trình** (cycle). Khi phát hiện deadlock, DB chọn một transaction làm **victim** (nạn nhân, thường cân nhắc chi phí/tiến độ) và **abort** nó, trả lỗi {{deadlock_detected}} (SQLSTATE {{40P01}} ở PostgreSQL). Transaction còn lại có thể tiếp tục.
+
+Ứng dụng **phải** bắt lỗi {{40P01}} (và thường cả {{40001}} với SERIALIZABLE) rồi **retry** toàn bộ transaction với backoff (chờ ngắn, có thể tăng dần). Không retry mọi lỗi SQL bừa bãi — chỉ retry lỗi tạm thời (transient) phù hợp.
+
+~~~java
+// Ý tưởng retry (minh hoạ): chỉ retry mã lỗi transient
+for (int attempt = 1; attempt <= 3; attempt++) {
+    try {
+        runBusinessTransaction();
+        break; // thành công
+    } catch (SQLException e) {
+        String sqlState = e.getSQLState();
+        boolean transientErr = "40001".equals(sqlState) || "40P01".equals(sqlState);
+        if (!transientErr || attempt == 3) throw e;
+        Thread.sleep(50L * attempt); // backoff đơn giản
+    }
+}
+~~~
+
+### Liên hệ phỏng vấn
+Khi được hỏi "Transaction isolation là gì, bạn chọn level nào?":
+1. Giải thích ngắn: isolation kiểm soát mức dữ liệu một transaction thấy khi có transaction khác chạy đồng thời; PostgreSQL dùng MVCC (snapshot).
+2. Nêu READ COMMITTED là mặc định, hợp OLTP thông thường.
+3. Nêu REPEATABLE READ khi cần đọc nhất quán trong suốt transaction (ví dụ tính báo cáo nhiều bước) và nhắc trade-off/anomaly.
+4. Nêu SERIALIZABLE khi cần đúng như tuần tự tuyệt đối, chấp nhận retry {{40001}}.
+5. Nhắc deadlock ({{40P01}}) là bình thường trong hệ concurrent; ứng dụng phải retry an toàn.
+
+> Senior tip: isolation level không thay thế thiết kế nghiệp vụ. Với thao tác "đọc rồi ghi" nhạy cảm (trừ tồn kho, giữ chỗ), hãy kết hợp chiến lược phù hợp: {{SELECT ... FOR UPDATE}} (lock có chủ đích), ràng buộc unique/check, optimistic locking (version column), hoặc SERIALIZABLE + retry — tuỳ mức độ tranh chấp và yêu cầu đúng sai.`,
+  exercises: [
+    {
+      title: 'Mô phỏng snapshot đọc dữ liệu và phát hiện deadlock',
+      prompt: `Viết lớp {{Mvcc}} mô phỏng **rất đơn giản** (không giống đầy đủ PostgreSQL, chỉ để hiểu ý snapshot):
+- Danh sách {{commits}} mô tả các phiên bản đã commit theo thứ tự thời gian: {{commits.get(i)}} là giá trị commit ở mốc {{i}} (0-based). Giá trị {{null}} nghĩa là "chưa có commit nhìn thấy" ở mốc đó. Mốc càng lớn nghĩa là càng muộn.
+- {{readCommitted(List<Integer> commits, int statementIndex)}}: mô phỏng **READ COMMITTED** — mỗi câu {{SELECT}} lấy snapshot tại thời điểm câu đó chạy, nên tham số {{statementIndex}} là "mốc của câu lệnh hiện tại". Trả về giá trị commit **gần nhất (muộn nhất)** trong các mốc {{<= statementIndex}} mà không null. Nếu không có thì trả {{null}}. Gọi nhiều lần với {{statementIndex}} khác nhau mô phỏng các câu SELECT khác nhau có thể thấy commit mới.
+- {{repeatableRead(List<Integer> commits, int snapshotIndex)}}: mô phỏng **REPEATABLE READ** — snapshot cố định tại {{snapshotIndex}} (thường là mốc câu lệnh đầu tiên của transaction). Trả về giá trị commit gần nhất trong các mốc {{<= snapshotIndex}} mà không null. Gọi lại với cùng {{snapshotIndex}} phải cho cùng kết quả, dù {{commits}} khái niệm bên ngoài có "thêm commit muộn hơn" (ở bài này ta không đổi list, nhưng semantics là snapshot cố định).
+- {{detectDeadlock(Map<String,String> waits)}}: {{waits}} ánh xạ {{tx -> tx nó đang chờ}} (ví dụ T1 chờ T2). Trả {{true}} nếu có **chu trình** chờ (deadlock), ngược lại {{false}}.
+
+Starter biên dịch được; điền TODO.`,
+      starter: `class Mvcc {
+    Integer readCommitted(List<Integer> commits, int statementIndex) { throw new UnsupportedOperationException("TODO"); }
+    Integer repeatableRead(List<Integer> commits, int snapshotIndex) { throw new UnsupportedOperationException("TODO"); }
+    boolean detectDeadlock(Map<String,String> waits) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed=0,total=0;
+    static void check(String n, Runnable r){ total++; try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);} }
+    static void eq(Object e,Object a){ if(!Objects.equals(e,a)) throw new AssertionError("exp "+e+" got "+a); }
+    public static void main(String[] args){
+        Mvcc m=new Mvcc();
+        List<Integer> c=List.of(10,20,30);
+        // READ COMMITTED: moi cau lenh co the lay snapshot muon hon
+        check("read committed at statement 1", ()->eq(20,m.readCommitted(c,1)));
+        check("read committed at statement 2 sees newer commit", ()->eq(30,m.readCommitted(c,2)));
+        check("read committed null when none", ()->eq(null,m.readCommitted(c,-1)));
+        // REPEATABLE READ: snapshot co dinh
+        check("repeatable read fixed snapshot", ()->eq(20,m.repeatableRead(c,1)));
+        check("repeatable read same snapshot again", ()->eq(20,m.repeatableRead(c,1)));
+        Map<String,String> w1=new HashMap<>(); w1.put("T1","T2"); w1.put("T2","T1");
+        check("deadlock cycle", ()->eq(true,m.detectDeadlock(w1)));
+        Map<String,String> w2=new HashMap<>(); w2.put("T1","T2"); w2.put("T2","T3");
+        check("no deadlock chain", ()->eq(false,m.detectDeadlock(w2)));
+        Map<String,String> w3=new HashMap<>(); w3.put("T1","T2"); w3.put("T2","T3"); w3.put("T3","T1");
+        check("deadlock 3 nodes", ()->eq(true,m.detectDeadlock(w3)));
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `class Mvcc {
+    Integer readCommitted(List<Integer> commits, int statementIndex) {
+        if (commits == null || statementIndex < 0) return null;
+        int idx = Math.min(statementIndex, commits.size() - 1);
+        for (int i = idx; i >= 0; i--) {
+            Integer v = commits.get(i);
+            if (v != null) return v; // commit gan nhat <= moc cau lenh
+        }
+        return null;
+    }
+    Integer repeatableRead(List<Integer> commits, int snapshotIndex) {
+        if (commits == null || snapshotIndex < 0) return null;
+        int idx = Math.min(snapshotIndex, commits.size() - 1);
+        for (int i = idx; i >= 0; i--) {
+            Integer v = commits.get(i);
+            if (v != null) return v; // snapshot co dinh: chi nhin toi snapshotIndex
+        }
+        return null;
+    }
+    boolean detectDeadlock(Map<String,String> waits) {
+        if (waits == null || waits.isEmpty()) return false;
+        for (String start : waits.keySet()) {
+            Set<String> seen = new HashSet<>();
+            String cur = start;
+            while (cur != null) {
+                if (!seen.add(cur)) return true; // gap lai node trong duong di
+                cur = waits.get(cur);
+                if (start.equals(cur)) return true;
+            }
+        }
+        return false;
+    }
+}`,
+      hints: [
+        'Hai hàm đọc đều tìm giá trị **khác null** gần nhất với mốc cho phép, đi ngược từ {{idx}} về 0.',
+        'Khác nhau ở semantics: READ COMMITTED truyền mốc câu lệnh (có thể đổi giữa các lần gọi); REPEATABLE READ truyền snapshot cố định. Test thể hiện điều này.',
+        'Deadlock: với mỗi node bắt đầu, đi theo {{waits}} và lưu {{seen}}; nếu gặp node đã thấy hoặc quay về {{start}} thì có chu trình.',
+      ],
+      explain: `### Vì sao mô phỏng này đơn giản hoá
+PostgreSQL thật dùng visibility rules (xmin/xmax, snapshot transaction IDs) và nhiều chi tiết khác. Ở đây ta chỉ mô phỏng ý chính: "chỉ thấy commit tới một mốc nhất định", và phân biệt READ COMMITTED (mốc câu lệnh có thể thay đổi) với REPEATABLE READ (mốc snapshot cố định).
+
+### Lỗi hay gặp
+- Quên trả {{null}} khi {{statementIndex < 0}} hoặc không có commit nào.
+- Deadlock: chỉ kiểm tra cặp A-B mà bỏ sót chu trình 3 node (T1->T2->T3->T1).
+- Đi xuôi thay vì đi ngược: cần commit **gần nhất** (mốc lớn nhất) trong phạm vi cho phép.
+
+### Liên hệ phỏng vấn
+Bạn không cần viết MVCC, nhưng nên nói được: READ COMMITTED lấy snapshot mỗi câu lệnh; REPEATABLE READ giữ snapshot; deadlock thì DB abort một transaction ({{40P01}} ở PostgreSQL) và ứng dụng phải retry.`,
+    },
+  ],
+  check: [
+    { q: 'MVCC cho phép reader và writer làm gì?', options: ['Reader phải chờ writer commit', 'Writer phải chờ reader xong', 'Reader đọc bản cũ theo snapshot, writer tạo bản mới, không chặn nhau', 'Cả hai đều lock dòng'], answer: 2, explain: `**Phương án 3 đúng**: MVCC giữ nhiều phiên bản nên reader đọc snapshot cũ, writer tạo phiên bản mới; không chặn nhau. Các phương án khác mô tả locking pessimistic, không phải MVCC.` },
+    { q: 'Deadlock trong DB được xử lý thế nào?', options: ['DB chờ mãi cho đến khi timeout', 'DB phát hiện chu trình chờ và abort một transaction, ứng dụng retry', 'DB tự động serialize tất cả transaction', 'DB bỏ qua lock'], answer: 1, explain: `**Phương án 2 đúng**: DB phát hiện wait-for graph có chu trình và chọn victim abort; ứng dụng phải retry transaction bị abort.` },
+  ],
+  related: ['sql-001'],
+  tags: ['mvcc', 'isolation', 'deadlock', 'snapshot'],
+},
+{
+  id: 'lesson-sql-007',
+  track: 'sql',
+  order: 7,
+  title: 'Index B-tree và covering index: vì sao index nhanh, khi nào không giúp',
+  level: 'senior',
+  minutes: 25,
+  goals: [
+    'Giải thích B-tree index là gì và vì sao tra cứu O(log n)',
+    'Hiểu covering index và index-only scan',
+    'Biết khi nào index không được dùng (low selectivity, hàm trên cột, kiểu dữ liệu)',
+  ],
+  body: `### Index là gì
+**Index** (chỉ mục) là một cấu trúc dữ liệu phụ mà DB tạo thêm để tìm dòng nhanh hơn. Không có index phù hợp, DB thường phải **Seq Scan** (sequential scan, quét tuần tự) — đọc từng dòng trong bảng để kiểm tra điều kiện {{WHERE}}. Bảng càng lớn, Seq Scan càng tốn thời gian và I/O (đọc đĩa/bộ nhớ).
+
+Analog đời thường: mục lục cuối sách. Muốn tìm chương nói về "deadlock", bạn tra mục lục thay vì đọc từ trang 1.
+
+### B-tree index là gì
+Loại index phổ biến nhất trong PostgreSQL 15 là **B-tree** (balanced tree, cây cân bằng). Mỗi node trong cây chứa nhiều khóa (key) đã sắp thứ tự; tìm kiếm đi từ gốc (root) xuống lá (leaf) bằng cách so sánh khóa. Vì cây cân bằng và mỗi node chứa nhiều khóa (**fanout** lớn), cây thường rất "nông": bảng hàng triệu dòng vẫn chỉ cần vài tầng.
+
+Chi phí tra cứu theo khóa thường xấp xỉ **O(log n)** (logarit theo kích thước dữ liệu), vì mỗi tầng loại bỏ phần lớn nhánh không liên quan.
+
+### Từ index tới dữ liệu thật (vì sao đôi khi vẫn chậm)
+Với index thông thường, leaf chứa khóa và con trỏ tới vị trí dòng trong bảng (ở PostgreSQL thường nói tới **TID/ctid** — định danh vị trí tuple). Sau khi tìm thấy dòng phù hợp trong index, DB có thể phải đọc thêm **heap** (phần lưu dữ liệu bảng) để lấy các cột khác. Bước này có thể gây **random I/O** (đọc rải rác) nếu nhiều dòng khớp.
+
+Nếu bạn {{SELECT *}} trên tập kết quả lớn, chi phí fetch heap có thể đáng kể. Planner (bộ tối ưu truy vấn) đôi khi chọn Seq Scan thay vì index scan khi ước tính phải fetch quá nhiều dòng.
+
+### Covering index và index-only scan
+**Covering index** là index chứa **đủ** mọi cột mà câu query cần (cột trong {{SELECT}}, {{WHERE}}, {{JOIN}}, {{ORDER BY}} tuỳ trường hợp) để DB có thể trả kết quả **chỉ từ index**, không cần đọc heap. PostgreSQL gọi khả năng này là **index-only scan**.
+
+PostgreSQL hỗ trợ {{INCLUDE}} để thêm "cột payload" vào index mà không đưa vào khóa sắp xếp chính — hữu ích để tạo covering index.
+
+~~~sql
+-- Ví dụ ý tưởng: query hay chạy
+-- SELECT status, total FROM orders WHERE user_id = ? ORDER BY created_at DESC;
+-- Index có thể cân nhắc (tuỳ workload): (user_id, created_at DESC) INCLUDE (status, total)
+~~~
+
+> Điều kiện thực tế: index-only scan hiệu quả nhất khi **visibility map** cho phép xác nhận tuple "đủ mới" mà không phải kiểm tra heap. {{VACUUM}} cập nhật visibility map; bảng update nhiều có thể làm index-only scan kém lợi hơn.
+
+### Khi index không giúp (hoặc ít giúp)
+- **Selectivity thấp** (độ chọn lọc thấp): cột có ít giá trị khác nhau (ví dụ boolean, trạng thái chỉ vài giá trị) — index thường không loại bỏ được nhiều dòng, planner hay chọn Seq Scan. Đây là **quy tắc kinh nghiệm**, không phải hằng số tuyệt đối (phân bố dữ liệu lệch có thể khác).
+- **Hàm/biểu thức trên cột**: {{WHERE UPPER(email) = 'A@B.COM'}} thường không dùng index thường trên {{email}}. Cần **expression/functional index** phù hợp, ví dụ {{CREATE INDEX ... ON users (UPPER(email));}} và viết query khớp biểu thức.
+- **Kiểu dữ liệu/ép kiểu không khớp**: so sánh khác kiểu có thể gây cast ngầm, làm index khó dùng.
+- **Bảng nhỏ**: đọc thẳng vài trang còn rẻ hơn đi index rồi fetch heap.
+- **Write-heavy**: mỗi index thêm chi phí cho {{INSERT/UPDATE/DELETE}} (phải cập nhật cấu trúc index). Quá nhiều index làm ghi chậm và tốn dung lượng.
+
+### B-tree và các loại index khác (PostgreSQL 15)
+- **B-tree**: mặc định, tốt cho {{=}}, {{<}}, {{>}}, range, {{ORDER BY}}, nhiều pattern chung.
+- **Hash**: chủ yếu tối ưu cho so sánh bằng {{=}} (không hỗ trợ ordering/range như B-tree). Ít dùng hơn B-tree trong đa số schema OLTP.
+- **GiN**: phù hợp full-text search, {{jsonb}}, mảng (array), các toán tử containment.
+- **GiST**: phù hợp dữ liệu hình học, range types, một số truy vấn nearest-neighbor tuỳ operator class.
+- **BRIN**: rất nhỏ, phù hợp bảng lớn **append theo thứ tự vật lý** tương quan với giá trị (ví dụ time-series theo thời gian insert), không phù hợp dữ liệu ngẫu nhiên.
+
+### Liên hệ phỏng vấn
+Câu hay: "Khi nào thêm index, khi nào không?".
+Trả lời có cấu trúc:
+1. Xuất phát từ **query pattern** thật ({{WHERE/JOIN/ORDER BY}}), không thêm theo cảm tính.
+2. Kiểm tra bằng {{EXPLAIN (ANALYZE, BUFFERS)}} trước/sau để xác nhận planner dùng index và thời gian/I-O cải thiện.
+3. Cân nhắc **selectivity**, **covering/index-only scan**, chi phí ghi và bảo trì.
+4. Nhắc index không phải phép màu: có thể bị bỏ qua vì hàm trên cột, kiểu dữ liệu, hoặc planner ước tính Seq Scan rẻ hơn.
+
+> Senior tip: Đừng chỉ nhìn "có index hay không". Hãy nhìn **cardinality ước lượng vs thực tế** trong {{EXPLAIN ANALYZE}}, số buffer đọc ({{BUFFERS}}), và tác động lên ghi. Một index "đúng" trên staging có thể vô dụng trên production nếu phân bố dữ liệu khác. Xoá index không được dùng (kiểm tra thống kê sử dụng như {{pg_stat_user_indexes}}) để giảm gánh nặng ghi.`,
+  exercises: [
+    {
+      title: 'Mô phỏng độ sâu B-tree, covering index và heuristic selectivity',
+      prompt: `Viết lớp {{Idx}} (mô phỏng khái niệm, không phải code PostgreSQL):
+- {{btreeSteps(int n)}}: ước lượng số "bước/tầng" tra cứu trong B-tree lý tưởng có **fanout 100** (mỗi node dẫn xuống ~100 nhánh). Dùng công thức: nếu {{n <= 0}} trả {{0}}; ngược lại trả {{floor(log100(n)) + 1}}. (Ví dụ: n=50 -> 1; n=1,000,000 -> 4.)
+- {{isCovering(List<String> queryCols, List<String> indexCols)}}: trả {{true}} nếu **mọi** cột trong {{queryCols}} đều có mặt trong {{indexCols}} (index chứa đủ cột query cần, ở mức khái niệm). Ngược lại {{false}}. Nếu {{queryCols}} rỗng, coi như covering (trả {{true}}) cho đơn giản.
+- {{shouldUseIndex(int distinct, int total)}}: heuristic đơn giản: trả {{true}} nếu tỉ lệ {{distinct/total > 0.05}} (selectivity > 5%). Nếu {{total <= 0}} trả {{false}}.
+
+Đây chỉ là **quy tắc minh hoạ**; planner thật dùng thống kê và chi phí, không dùng ngưỡng cứng 5%.`,
+      starter: `class Idx {
+    int btreeSteps(int n) { throw new UnsupportedOperationException("TODO"); }
+    boolean isCovering(List<String> queryCols, List<String> indexCols) { throw new UnsupportedOperationException("TODO"); }
+    boolean shouldUseIndex(int distinct, int total) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed=0,total=0;
+    static void check(String n, Runnable r){ total++; try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);} }
+    static void eq(Object e,Object a){ if(!Objects.equals(e,a)) throw new AssertionError("exp "+e+" got "+a); }
+    public static void main(String[] args){
+        Idx x=new Idx();
+        check("btree steps 1M", ()->eq(4,x.btreeSteps(1000000)));
+        check("btree steps small", ()->eq(1,x.btreeSteps(50)));
+        check("btree steps zero", ()->eq(0,x.btreeSteps(0)));
+        check("covering true", ()->eq(true,x.isCovering(List.of("a","b"),List.of("a","b","c"))));
+        check("covering false", ()->eq(false,x.isCovering(List.of("a","d"),List.of("a","b"))));
+        check("covering empty query", ()->eq(true,x.isCovering(List.of(),List.of("a"))));
+        check("use index high selectivity", ()->eq(true,x.shouldUseIndex(500,1000)));
+        check("no index low selectivity", ()->eq(false,x.shouldUseIndex(2,1000)));
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `class Idx {
+    int btreeSteps(int n) {
+        if (n <= 0) return 0;
+        // log100(n) = ln(n)/ln(100)
+        return (int) Math.floor(Math.log(n) / Math.log(100.0) + 1e-12) + 1;
+    }
+    boolean isCovering(List<String> queryCols, List<String> indexCols) {
+        if (queryCols == null || queryCols.isEmpty()) return true;
+        Set<String> idx = new HashSet<>();
+        if (indexCols != null) idx.addAll(indexCols);
+        for (String c : queryCols) if (!idx.contains(c)) return false;
+        return true;
+    }
+    boolean shouldUseIndex(int distinct, int total) {
+        if (total <= 0) return false;
+        return (double) distinct / (double) total > 0.05;
+    }
+}`,
+      hints: [
+        '{{btreeSteps}}: dùng {{Math.log(n)/Math.log(100)}}; nhớ trả 0 khi {{n <= 0}}.',
+        '{{isCovering}}: đưa {{indexCols}} vào {{HashSet}} rồi kiểm tra từng cột query.',
+        'Heuristic 5% chỉ để minh hoạ — ngoài đời planner xem thống kê, chi phí I/O, và có thể bỏ index dù selectivity "đẹp".',
+      ],
+      explain: `### Lỗi hay gặp
+- {{btreeSteps}} trả 0 cho {{n}} nhỏ: test yêu cầu n=50 -> 1.
+- {{isCovering}} quên trường hợp {{queryCols}} rỗng hoặc quên kiểm tra **tất cả** cột query.
+- Nhầm heuristic 5% là luật tuyệt đối: trong PostgreSQL thật, quyết định dùng index do planner dựa trên {{pg_stats}}, chi phí random page, correlation, v.v.
+
+### Liên hệ phỏng vấn
+Khi nói về index, hãy nhấn mạnh: "đo bằng EXPLAIN (ANALYZE, BUFFERS) trên dữ liệu thực tế", vì cùng một query có thể dùng index ở môi trường này nhưng Seq Scan ở môi trường khác.`,
+    },
+  ],
+  check: [
+    { q: 'Khi nào DB thường KHÔNG dùng index B-tree?', options: ['Query có WHERE trên cột index với selectivity cao', 'Bảng nhỏ hoặc cột selectivity thấp (ít giá trị distinct)', 'ORDER BY trùng thứ tự index', 'Covering index chứa đủ cột'], answer: 1, explain: `**Phương án 2 đúng**: bảng nhỏ Seq Scan rẻ hơn; selectivity thấp khiến index không chọn lọc. Các phương án khác là trường hợp index được dùng.` },
+    { q: 'Covering index giúp gì?', options: ['Tăng tốc INSERT', 'Cho phép index-only scan, không fetch heap', 'Giảm kích thước bảng', 'Thay thế primary key'], answer: 1, explain: `**Phương án 2 đúng**: nếu index chứa đủ cột query, DB trả kết quả chỉ từ index (index-only scan), giảm I/O.` },
+  ],
+  related: ['sql-001'],
+  tags: ['index', 'btree', 'covering index', 'selectivity'],
 }
 );

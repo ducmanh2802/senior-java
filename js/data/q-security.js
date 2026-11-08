@@ -2017,6 +2017,12 @@ Vault có thể cấp DB credential sống 1 giờ, tự revoke. App renew lease
 - Rotation partial failure: một nửa pod còn credential cũ → keep cả hai user active cho đến khi verify.
 - Secret trong configmap Kubernetes (base64, không mã hoá) — dùng Sealed Secrets/External Secrets Operator.
 
+### Ví dụ đời thực
+Một công ty lưu mật khẩu DB production trong biến môi trường của Deployment (Kubernetes Secret dạng base64, không mã hoá ở etcd) và **in toàn bộ cấu hình khi khởi động** để debug. Log được đẩy lên hệ thống log mà 120 người có quyền xem → mật khẩu DB lộ trong log suốt 8 tháng. Khi phát hiện, phải rotate gấp: vì ứng dụng chỉ đọc secret lúc khởi động, đổi mật khẩu là toàn bộ pod mất kết nối. Thiết kế lại: secret nằm trong AWS Secrets Manager, đồng bộ vào pod bằng External Secrets Operator; rotate theo kiểu **hai user luân phiên** (tạo/đổi mật khẩu user B trong khi app đang dùng user A, cập nhật secret, rolling restart, rồi mới vô hiệu user A) nên không downtime; Actuator {{/env}} chỉ mở nội bộ và Spring tự che giá trị nhạy cảm; thêm scanner tìm chuỗi giống mật khẩu trong log. Rotate định kỳ 90 ngày giờ là một pipeline tự động 15 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Secret không được nằm trong code, file cấu hình trong Git hay image. Tôi đặt nó trong secret manager như Vault hoặc AWS Secrets Manager, ứng dụng lấy qua tích hợp như Spring Cloud AWS, Vault, hoặc External Secrets đồng bộ vào Kubernetes Secret, với quyền truy cập theo từng service qua IAM role. Biến môi trường thuần dễ lộ qua log khởi động, crash dump, endpoint debug hay lệnh describe pod, nên phải hạn chế. Để rotate mật khẩu DB không downtime, tôi dùng hai credential luân phiên: tạo hoặc đổi mật khẩu của user thứ hai trong khi ứng dụng vẫn dùng user thứ nhất, cập nhật secret, rolling restart hoặc refresh pool, rồi mới vô hiệu user cũ. Tốt nhất là credential ngắn hạn sinh động như dynamic secrets của Vault hoặc IAM authentication cho RDS. Và luôn che secret trong log, kèm scanner tự động."
+
 > Senior tip: tôi coi secret là "có hạn sử dụng", không phải "cài một lần". Mọi secret phải có owner, TTL và quy trình rotate đã test trong staging trước khi prod cần.`
   ,
   follow: [
@@ -2064,6 +2070,15 @@ Sau khi authn bằng mTLS, enforce authz: {{AuthorizationPolicy}} chỉ cho phé
 - Cert expired → toàn bộ traffic fail; monitor cert expiry.
 - Debug khó: traffic mã hoá → dùng mesh tap/telemetry.
 - Trust domain sai → cross-cluster call fail.
+
+### Bên trong: mTLS handshake thêm gì
+TLS một chiều: client kiểm tra chứng chỉ của server (đúng tên miền, ký bởi CA tin cậy). mTLS thêm bước server gửi **CertificateRequest**, client gửi chứng chỉ của mình và chứng minh sở hữu private key (ký dữ liệu handshake); server kiểm tra chứng chỉ client với CA nội bộ. Trong service mesh, **sidecar** (Envoy) làm việc này thay ứng dụng; danh tính thường là **SPIFFE ID** dạng {{spiffe://cluster.local/ns/payments/sa/payment-api}} gắn với ServiceAccount, chứng chỉ ngắn hạn (vài giờ) được tự động xoay vòng — ứng dụng không cần biết gì.
+
+### Ví dụ đời thực
+Một ngân hàng tin vào "mạng nội bộ là an toàn": service nội bộ gọi nhau bằng HTTP thường không xác thực. Kiểm thử xâm nhập chiếm được một pod của dịch vụ marketing (qua lỗ hổng thư viện) rồi gọi thẳng API chuyển tiền nội bộ. Sau đó: bật Istio với mTLS **STRICT** cho namespace thanh toán và {{AuthorizationPolicy}} chỉ cho phép danh tính {{order-service}} gọi {{/internal/transfer}}. Lần kiểm thử sau, pod bị chiếm không gọi được service thanh toán (không có chứng chỉ hợp lệ, không có quyền). Bài học vận hành: lúc chuyển dùng chế độ **PERMISSIVE** 2 tuần (chấp nhận cả plain text) và theo dõi metric để tìm client chưa có sidecar, rồi mới chuyển STRICT — tránh làm gãy các job cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"TLS một chiều chỉ chứng minh server là ai; mTLS bắt cả client trình chứng chỉ, nên hai bên xác thực lẫn nhau và có danh tính dịch vụ để phân quyền. Trong microservice, tôi cần mTLS khi không muốn tin vào mạng nội bộ: một pod bị chiếm không được tự do gọi các API nhạy cảm. Tự quản lý chứng chỉ cho hàng chục service rất khó, nên service mesh như Istio hay Linkerd làm việc đó qua sidecar: cấp danh tính theo ServiceAccount theo chuẩn SPIFFE, cấp chứng chỉ ngắn hạn và tự xoay vòng trước khi hết hạn, không cần restart ứng dụng. Kết hợp với authorization policy theo danh tính để chỉ service được phép mới gọi được endpoint nhạy cảm. Khi triển khai, tôi chạy chế độ permissive một thời gian để phát hiện client chưa sẵn sàng, rồi mới bật strict."
 
 > Senior tip: mTLS giải quyết "ai đang gọi tôi" ở tầng network; vẫn cần authz ở tầng app cho business logic. Mesh là hạ tầng (infrastructure), không thay thế authorization ở tầng domain.`
   ,
@@ -2117,6 +2132,12 @@ Dùng Redis với Lua script atomic (INCR + EXPIRE) để đếm qua nhiều ins
 - Attacker rotate IP (botnet) → cần device fingerprint + behavioral signals.
 - Lockout vĩnh viễn bị attacker lợi dụng để DoS victim → dùng gradual lockout + unlock qua email.
 
+### Ví dụ đời thực
+App ngân hàng bị **credential stuffing**: kẻ tấn công thử 2 triệu cặp email/mật khẩu lộ từ trang khác, phân tán qua 40.000 IP, mỗi IP chỉ vài lần — rate limit theo IP (100 lần/phút) không bắt được. Khoảng 900 tài khoản bị chiếm trước khi phát hiện. Biện pháp nhiều tầng: rate limit theo **tài khoản** (5 lần sai liên tiếp → chờ tăng dần, không khoá vĩnh viễn để tránh bị lợi dụng khoá tài khoản người khác), theo **thiết bị** (fingerprint) và theo IP/ASN; CAPTCHA khi điểm rủi ro cao; kiểm tra mật khẩu với danh sách đã lộ; thông báo đăng nhập từ thiết bị mới; bắt buộc OTP cho thiết bị mới. OTP: tối đa 5 lần nhập sai cho mỗi mã, mã hết hạn sau 2–5 phút, giới hạn số lần gửi lại theo số điện thoại. Tỉ lệ đăng nhập thành công của kẻ tấn công giảm gần về 0, người dùng thật gần như không bị ảnh hưởng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế hai tầng. Tầng gateway hoặc WAF chặn lưu lượng thô: giới hạn theo IP, theo dải mạng, chống bot. Tầng ứng dụng giới hạn theo ngữ cảnh nghiệp vụ mà gateway không biết: theo tài khoản, theo số điện thoại nhận OTP, theo thiết bị. Credential stuffing thường phân tán qua hàng chục nghìn IP nên giới hạn theo IP là chưa đủ; theo tài khoản thì tôi dùng chờ tăng dần thay vì khoá cứng, để kẻ xấu không thể khoá tài khoản người khác. Kèm CAPTCHA khi rủi ro cao, kiểm tra mật khẩu đã lộ, xác thực thêm cho thiết bị mới. Với OTP: số lần nhập sai mỗi mã, thời gian hết hạn ngắn, giới hạn gửi lại. Bộ đếm dùng Redis với thao tác nguyên tử, ví dụ script Lua cho token bucket, và có metric, cảnh báo khi tỉ lệ đăng nhập sai tăng bất thường."
+
 > Senior tip: ở ngân hàng, rate limit là control compensating, không phải control chính. Quan trọng hơn là MFA, transaction signing và monitoring anomaly. Tôi thiết kế rate limit để mua thời gian cho detection, không để "chặn tuyệt đối".`
   ,
   follow: [
@@ -2167,6 +2188,12 @@ Danh sách mọi component (lib, version, license) trong artifact. Chuẩn SPDX/
 - Allowlist CVE vĩnh viễn → debt bảo mật.
 - Ký image nhưng không verify ở deploy → chữ ký vô nghĩa.
 
+### Ví dụ đời thực
+Tháng 3/2024, backdoor trong **xz-utils** (CVE-2024-3094) được phát hiện. Team nhận câu hỏi từ ban điều hành: "chúng ta có bị ảnh hưởng không?". Vì đã sinh **SBOM** (CycloneDX) cho mọi image trong CI và lưu vào Dependency-Track, team trả lời trong **15 phút**: 0 image production dùng phiên bản bị ảnh hưởng (5.6.0/5.6.1), 2 image dev có — rebuild ngay. Một sự cố khác cùng năm: một gói npm bị chiếm tài khoản maintainer trong tooling frontend; nhờ khoá phiên bản bằng lockfile và kéo thư viện qua **proxy registry nội bộ** (Nexus/Artifactory) có chính sách cách ly phiên bản mới 7 ngày, phiên bản độc hại chưa bao giờ vào build. Image production được **ký bằng cosign** và admission controller (Kyverno) từ chối image không có chữ ký hợp lệ — chặn cả trường hợp ai đó đẩy image thủ công vào registry.
+
+### Trả lời mẫu khi phỏng vấn
+"Supply chain attack là khi kẻ xấu đi vào qua những thứ ta tin tưởng: thư viện, công cụ build, image nền, registry. Tôi phòng theo các lớp. SBOM sinh trong CI cho mọi artifact, lưu tập trung, để khi có CVE mới biết ngay service nào bị ảnh hưởng. Dependency scanning như Dependabot, Renovate, Trivy, OWASP Dependency-Check trên cả dependency trực tiếp lẫn transitive; với CVE transitive, tôi ép phiên bản qua dependencyManagement hoặc BOM, nếu chưa có bản vá thì đánh giá khả năng bị khai thác và áp mitigation. Thư viện kéo qua proxy registry nội bộ, khoá phiên bản. Image được ký bằng cosign, và cluster chỉ chạy image có chữ ký hợp lệ qua admission controller. Pipeline build hướng tới các mức SLSA: build cách ly, có provenance."
+
 > Senior tip: supply chain là bài toán "trust but verify". Tôi không tin registry hay dependency; tôi verify tại deploy bằng admission policy và audit provenance. Nếu không verify ở runtime, mọi thứ trước đó chỉ là paperwork.`
   ,
   follow: [
@@ -2216,6 +2243,15 @@ Lưu {{argon2(legacy_hash(password))}} ngay lập tức (batch migration) mà kh
 - Work factor quá cao → login chậm, DoS chính mình.
 - So sánh hash bằng == → timing leak; dùng constant-time compare (framework đã làm).
 - Quên pepper rotation plan.
+
+### Bên trong: vì sao hàm băm chậm lại an toàn hơn
+SHA-256 được thiết kế để **nhanh**: một GPU hiện đại tính hàng tỉ hash SHA-256 mỗi giây, nên kẻ có bảng băm bị lộ thử hết mật khẩu 8 ký tự phổ biến trong vài giờ. bcrypt có **cost factor** (mỗi +1 là gấp đôi thời gian), Argon2id còn **tốn bộ nhớ** (memory-hard) làm GPU/ASIC kém hiệu quả. Salt ngẫu nhiên mỗi mật khẩu làm bảng tra sẵn (rainbow table) vô dụng và hai người cùng mật khẩu có hash khác nhau. Spring Security {{DelegatingPasswordEncoder}} lưu hash kèm tiền tố tên thuật toán trong ngoặc nhọn (ví dụ bcrypt, argon2) ở đầu chuỗi hash, nên nhiều thuật toán cùng tồn tại và {{upgradeEncoding()}} cho biết hash nào cần nâng cấp.
+
+### Ví dụ đời thực
+Một hệ thống thương mại 3 triệu tài khoản dùng {{SHA1(salt + password)}}. Migrate không bắt người dùng đổi mật khẩu theo hai bước: (1) ngay lập tức **bọc** mọi hash cũ: {{bcrypt(sha1_hash_cũ)}} và đánh dấu loại "wrapped" — sau một đêm không còn hash yếu nào nằm trơ trong DB; (2) mỗi lần người dùng đăng nhập thành công, tính hash mới chuẩn {{argon2id(password)}} từ mật khẩu vừa nhập và thay thế. Sau 6 tháng, 78% tài khoản đã ở dạng mới; phần còn lại vẫn được bảo vệ bởi lớp bcrypt. Tham số Argon2id được chọn sao cho một lần băm mất khoảng 200–300ms trên server đăng nhập, kèm rate limit để không bị lợi dụng làm DoS CPU.
+
+### Trả lời mẫu khi phỏng vấn
+"Mật khẩu phải lưu bằng hàm băm chậm và có salt như bcrypt hoặc Argon2id, không phải MD5, SHA1 hay SHA-256, vì những hàm đó được thiết kế để nhanh và GPU thử được hàng tỉ lần mỗi giây. Salt ngẫu nhiên cho mỗi mật khẩu chống bảng tra sẵn; pepper là một bí mật chung để ngoài DB, ví dụ trong KMS, nên lộ DB chưa đủ để bẻ. Argon2id còn tốn bộ nhớ nên GPU kém hiệu quả; tham số chọn theo khuyến nghị OWASP và đo sao cho một lần băm khoảng vài trăm mili giây. Để migrate hash cũ mà không bắt đổi mật khẩu, tôi làm hai bước: ngay lập tức bọc hash cũ bằng thuật toán mạnh để DB không còn hash yếu, rồi khi người dùng đăng nhập thành công thì tính lại hash chuẩn từ mật khẩu vừa nhập. Spring Security DelegatingPasswordEncoder hỗ trợ nhiều định dạng cùng tồn tại."
 
 > Senior tip: tôi đặt benchmark: login hash phải < 200ms trên prod hardware. Nếu Argon2 params làm login 800ms, user bỏ đi và attacker vẫn brute được offline? Không—offline attacker không bị rate limit, nên params cao hơn cũng đáng; nhưng cân bằng với UX.`
   ,
@@ -2281,6 +2317,15 @@ Sửa một record → hash không khớp → phát hiện. Xoá record → gap 
 - Audit log quá lớn → sampling? Không—tài chính cần full. Dùng columnar storage (Parquet) + partition theo ngày.
 - Thiếu idempotency: retry request ghi audit trùng → dùng idempotency key.
 
+### Bên trong: hash chain phát hiện sửa đổi thế nào
+Mỗi bản ghi audit lưu {{hash = SHA-256(nội dung bản ghi + hash của bản ghi trước)}}. Sửa hoặc xoá bất kỳ bản ghi nào ở giữa làm hash của nó thay đổi, và mọi bản ghi sau đó **không còn khớp** khi kiểm tra lại từ đầu. Nhưng kẻ có quyền ghi DB có thể **tính lại cả chuỗi** — vì vậy định kỳ (ví dụ mỗi giờ) "neo" hash mới nhất ra một nơi họ không kiểm soát: lưu trữ WORM (S3 Object Lock chế độ compliance), gửi cho bên thứ ba, hoặc ký bằng khoá trong HSM/KMS mà đội vận hành DB không có quyền dùng.
+
+### Ví dụ đời thực
+Trong một cuộc điều tra gian lận nội bộ ở công ty tài chính, nhân viên vận hành bị nghi đã sửa hạn mức của một số khách hàng rồi **xoá dòng audit** tương ứng trong bảng {{audit_log}} (có quyền DBA). Không có bằng chứng vì bảng audit là bảng thường. Sau sự cố: audit được ghi qua một service riêng vào Kafka → lưu song song vào PostgreSQL (để tra cứu) và S3 Object Lock (bản gốc bất biến 7 năm); mỗi bản ghi có hash chain, mỗi giờ hash cuối được ký bằng khoá KMS chỉ service audit dùng được; job kiểm tra hằng đêm so chuỗi trong DB với bản trên S3. Ba tháng sau, job phát hiện một lần sửa dữ liệu audit bằng tay (do một script dọn dẹp sai) trong vòng 24 giờ.
+
+### Trả lời mẫu khi phỏng vấn
+"Audit log tài chính cần ba thuộc tính: đầy đủ, ai làm gì lúc nào trên dữ liệu nào và từ đâu; không sửa được hoặc ít nhất phát hiện được khi bị sửa; và lưu đủ lâu theo quy định. Về lưu trữ, tôi ghi bản gốc vào kho bất biến như S3 Object Lock chế độ compliance, song song với một DB để tra cứu. Để phát hiện sửa đổi, mỗi bản ghi chứa hash của chính nó cộng hash bản trước, nên sửa một bản ghi làm gãy cả chuỗi phía sau; và vì người có quyền DB có thể tính lại cả chuỗi, tôi định kỳ neo hash mới nhất ra ngoài, ký bằng khoá KMS hoặc HSM mà đội vận hành không dùng được. Tách quyền: người vận hành hệ thống không có quyền ghi vào kho audit. Không lưu secret hay dữ liệu thẻ đầy đủ trong audit, và có job kiểm tra chuỗi định kỳ."
+
 > Senior tip: audit log là "bằng chứng", không phải "log debug". Tôi thiết kế để một auditor độc lập có thể verify tính toàn vẹn mà không tin hệ thống của chúng tôi. Nếu auditor phải tin DBA, thì audit vô giá trị.`
   ,
   follow: [
@@ -2340,6 +2385,16 @@ Mỗi tính năng mới có dữ liệu nhạy cảm/tiền; thay đổi lớn; 
 - Làm một lần rồi quên → stale. Review khi architecture thay đổi.
 - Chỉ dev làm, không có security/ops → bỏ sót threat.
 
+### Ví dụ đời thực
+Tính năng "chuyển tiền bằng QR" được threat model trong một buổi 2 giờ với dev, QA, bảo mật và product. Áp STRIDE lên sơ đồ luồng dữ liệu tìm ra 14 mối đe doạ; ba cái được xếp cao nhất và đều đã xảy ra ở các ví khác:
+- **Tampering**: QR chứa số tiền, kẻ gian dán QR giả lên QR thật của cửa hàng → kiểm soát: hiển thị rõ tên người nhận đã xác minh từ server trước khi xác nhận, QR động có chữ ký.
+- **Spoofing/Elevation**: API xác nhận chuyển tiền nhận {{fromAccountId}} từ client → kiểm soát: lấy tài khoản nguồn từ token, không từ request (BOLA).
+- **Repudiation**: khách nói "tôi không chuyển" → kiểm soát: audit có thiết bị, vị trí, xác thực sinh trắc, ký giao dịch phía thiết bị.
+Mỗi kiểm soát thành một ticket có tiêu chí nghiệm thu và test bảo mật tự động. Khi pentest trước go-live, không có phát hiện mức cao nào thuộc các luồng đã được threat model.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi làm threat modeling từ lúc thiết kế, không đợi sau khi code xong. Bước một là xác định phạm vi, tài sản cần bảo vệ như tiền và dữ liệu khách hàng, và các tác nhân. Bước hai vẽ sơ đồ luồng dữ liệu với ranh giới tin cậy: app, gateway, service, DB, đối tác. Bước ba áp STRIDE lên từng thành phần và luồng: giả mạo danh tính, sửa dữ liệu, chối bỏ, lộ thông tin, từ chối dịch vụ, leo thang quyền. Bước bốn xếp hạng rủi ro theo khả năng và tác động. Bước năm biến mỗi mối đe doạ quan trọng thành kiểm soát cụ thể có ticket và tiêu chí nghiệm thu, ví dụ lấy tài khoản nguồn từ token chứ không từ request. Bước sáu kiểm chứng bằng test bảo mật và pentest. Output là sơ đồ, danh sách mối đe doạ có xếp hạng và trạng thái, và các ticket kiểm soát; tài liệu này được cập nhật khi tính năng thay đổi."
+
 > Senior tip: threat modeling giá trị nhất không phải danh sách threat mà là "shared understanding" giữa team về cái gì nguy hiểm. Tôi tổ chức session 90 phút với whiteboard, output là 10-15 threat concrete, không phải 100 threat chung chung.`
   ,
   follow: [
@@ -2389,6 +2444,12 @@ Mỗi tính năng mới có dữ liệu nhạy cảm/tiền; thay đổi lớn; 
 - Chỉ kiểm tra role, không kiểm tra object → BOLA.
 - Chỉ kiểm tra object ở controller, service nội bộ gọi repository trực tiếp → bypass.
 - JWT {{alg: none}} hoặc HS256 với secret đoán được → auth bypass.
+
+### Ví dụ đời thực
+API {{GET /api/statements/:statementId}} của một ví chỉ kiểm tra "đã đăng nhập" rồi trả sao kê theo id — id là số tăng dần. Một nhà nghiên cứu bảo mật đổi id và tải được sao kê của người khác (**BOLA**, lỗi số 1 trong OWASP API Top 10). Cùng đợt rà soát tìm ra **BFLA**: endpoint quản trị {{POST /api/admin/refunds}} chỉ ẩn khỏi giao diện nhưng không kiểm tra vai trò ở server. Sửa: truy vấn luôn kèm chủ sở hữu ({{findByIdAndOwnerId(id, currentUserId)}}, không tìm thấy thì trả 404 thay vì 403 để không tiết lộ sự tồn tại), {{@PreAuthorize("hasRole('REFUND_ADMIN')")}} và đặt mọi endpoint admin dưới một {{SecurityFilterChain}} riêng yêu cầu vai trò; id công khai đổi sang UUID (giảm đoán mò, **không** thay thế kiểm tra quyền). Thêm test tự động: với mỗi endpoint có id tài nguyên, đăng nhập user A và truy cập tài nguyên của user B phải nhận 404.
+
+### Trả lời mẫu khi phỏng vấn
+"BOLA, Broken Object Level Authorization, là khi người dùng đã đăng nhập truy cập được object không thuộc về họ chỉ bằng cách đổi id trong request; đây là lỗi phổ biến nhất của API. Phòng bằng cách mọi truy vấn theo id đều kèm điều kiện chủ sở hữu lấy từ token, hoặc kiểm tra quyền qua PreAuthorize gọi một bean kiểm tra sở hữu; không tìm thấy thì trả 404. BFLA, Broken Function Level Authorization, là khi người dùng thường gọi được chức năng dành cho vai trò khác, như endpoint admin chỉ bị ẩn trên giao diện; phòng bằng kiểm tra vai trò ở server cho từng endpoint, tốt nhất là nhóm endpoint admin dưới security filter chain riêng. Broken Authentication là lỗi ở chính việc xác thực: token không kiểm tra chữ ký, hạn, audience, không giới hạn thử mật khẩu. Tôi luôn có test tự động user A truy cập tài nguyên của user B cho mọi endpoint."
 
 > Senior tip: authorization là "hai chiều": function-level (bạn được làm hành động này không?) và object-level (object này thuộc bạn không?). Nhiều hệ thống làm tốt một chiều và quên chiều kia. Tôi bắt buộc test matrix cả hai trong CI.`
   ,
