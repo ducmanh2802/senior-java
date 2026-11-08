@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/lessons-autotest.js — task T764. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-autotest.js — task T764/T1081. Format: js/core/i18n.js (content overlay).
  * ids: lesson-autotest-008
  */
 App.i18n.content({
@@ -27,18 +27,18 @@ In JUnit 5 the hard style is the most common:
 // Hard assert: the first wrong line stops the method, the lines below it do NOT run
 assertEquals(200, resp.getStatusCode());          // compare values
 assertNotNull(resp.getHeader("location"));         // must be present
-assertTrue(items.size() >= 5, "can it nhat 5 phan tu trong danh sach");  // the message is what saves you in CI
+assertTrue(items.size() >= 5, "need at least 5 items in the list");  // the message is what saves you in CI
 ~~~
 
 The message in the last parameter sounds tiny but it decides whether you spend 5 minutes or 2 hours: the line "expected 200 but was 500" tells the story by itself, while "test failed" tells nothing.
 
 ### Why hard asserts throw information away
-A UI test opens the registration form and all 12 fields show the wrong error message (last name empty, email invalid, phone missing a digit, terms checkbox ticked wrong…). With hard asserts:
+A UI test opens the registration form and fills all 12 fields incorrectly (last name empty, email invalid, phone missing a digit, terms checkbox ticked wrong…). With hard asserts:
 
 ~~~text
-Run 1: FAIL "ho va ten: duong dan khong hien loi"      <- you only learn about field 1
+Run 1: FAIL "last name: error message not shown"      <- you only learn about field 1
 Fix the error-display helper -> rerun (25 minutes)
-Run 2: FAIL "email: duong dan khong hien loi"          <- now field 2
+Run 2: FAIL "email: error message not shown"          <- now field 2
 ... 12 cycles like this = half a day, and you still do not know what else is broken
 ~~~
 
@@ -86,7 +86,7 @@ import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertTha
 
 assertThat(page.locator("#cart-count")).hasText("3");   // polls until the text is "3", TimeoutError after 5s
 assertThat(page.locator("#submit")).isEnabled();
-assertThat(page).hasTitle("Don hang thanh cong");
+assertThat(page).hasTitle("Order successful");
 ~~~
 
 {{sleep(2000)}} followed by a hard assert is flakiness source number 1: the CI machine is slower than your machine and 2 seconds is not enough; raise it to 10 seconds and a suite of 500 tests gains almost an hour. Web-first assertions are both fast (they take the result as soon as the condition holds) and durable.
@@ -154,7 +154,7 @@ JUnit XML is an XML text format that Surefire/Failsafe (Maven), the Gradle test 
     <testcase classname="LoginTest" name="locked account" time="5.0">
       <error message="TimeoutError: waiting for locator">#checkout</error>
     </testcase>
-    <testcase classname="LoginTest" name="todo" time="0"><skipped message=" not finished yet"/></testcase>
+    <testcase classname="LoginTest" name="todo" time="0"><skipped message="not finished yet"/></testcase>
   </testsuite>
 </testsuites>
 ~~~
@@ -199,7 +199,7 @@ note Test..Allure: a failure must name the first error, not just "3 failed"
 **1) Class {{SoftAssert}}** — the minimal version of AssertJ {{SoftAssertions}} / TestNG {{SoftAssert}}:
 - {{check(ok, message)}}: if {{ok}} is false, write {{message}} into the failure list, keeping the order they were added.
 - {{equal(actual, expected, label)}}: if the two values are not equal (compared like {{Objects.equals}} — both null counts as equal), add a failure with the exact shape {{label + ": expected " + expected + " but was " + actual}}.
-- {{notNull(actual, label)}}: if {{actual}} is null, add the failure {{label + ": khong duoc null"}}.
+- {{notNull(actual, label)}}: if {{actual}} is null, add the failure {{label + ": must not be null"}}.
 - {{pending()}}: how many failures are still pending.
 - {{errors()}}: a **copy** of the failure list; adding/removing on the returned list must not affect the object.
 - {{assertAll()}}: with no failures it stays silent; with failures it throws {{AssertionError}} whose message starts with the line "n fail:" and then each failure on its own line beginning with two spaces and "- ". **After that the failure list must be empty**, even though it just threw (so the next test can reuse the same object and so calling it repeatedly does not report the same failure twice).
@@ -207,7 +207,7 @@ note Test..Allure: a failure must name the first error, not just "3 failed"
 ~~~text
 3 fail:
   - status: expected 200 but was 500
-  - token: khong duoc null
+  - token: must not be null
   - role: expected admin but was guest
 ~~~
 
@@ -240,7 +240,7 @@ Requirements while working: do not throw inside {{check}} — the whole value of
 
 **failedCases** needs the body cut correctly: a self-closing testcase has an empty body so it cannot be a failure; a testcase with a closing tag gives you the segment in between. In Surefire, {{<failure}} means the assertion was wrong and {{<error}} means an exception — both are "a red test", while {{<skipped}} is not: telling them apart correctly is what lets a pipeline gate on "failures > 0" without turning red because of disabled tests.
 
-Common mistakes when doing this exercise: (1) forgetting the position parameter in {{indexOf(needle, i)}}, which loops forever on the same match; (2) forgetting that the closing string {{</testsuite>}} is 12 characters long so you must jump exactly that far — jumping by the open tag instead pulls the next suite's testcases into the previous suite; (3) reading an attribute by searching for {{name=}} and cutting by quotes without checking the character right before the attribute name — {{name}} also matches inside {{classname}}, so every testcase comes back as "LoginTest#LoginTest"; (4) using {{split}} on the quote character to read attributes — it breaks as soon as a value contains a space (like {{name="sai mat khau"}}) or a nested quote.`,
+Common mistakes when doing this exercise: (1) forgetting the position parameter in {{indexOf(needle, i)}}, which loops forever on the same match; (2) forgetting that the closing string {{</testsuite>}} is 12 characters long so you must jump exactly that far — jumping by the open tag instead pulls the next suite's testcases into the previous suite; (3) reading an attribute by searching for {{name=}} and cutting by quotes without checking the character right before the attribute name — {{name}} also matches inside {{classname}}, so every testcase comes back as "LoginTest#LoginTest"; (4) using {{split}} on the quote character to read attributes — it breaks as soon as a value contains a space (like {{name="wrong password"}}) or a nested quote.`,
       },
     ],
     check: [
