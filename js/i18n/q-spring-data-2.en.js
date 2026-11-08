@@ -3,22 +3,22 @@
  * ids: spring-012 spring-013 spring-014 spring-015 jpa-001 jpa-002 jpa-003 jpa-004 jpa-005 jpa-006 jpa-007
  */
 App.i18n.content({
-  'spring-012': {
-    q: 'How do Spring MVC and Spring WebFlux differ, when should you choose WebFlux, and does Java 21 virtual threads change this choice?',
-    a: `**Summary:** Spring MVC is a **blocking** model — each request takes a thread for the whole duration of processing. WebFlux is a **reactive non-blocking** model — the event loop handles thousands of requests simultaneously thanks to backpressure. With a JDBC/JPA-based system, WebFlux doesn't help much, and the current mainstream choice is **MVC + virtual threads (Java 21)**.
+    'spring-012': {
+    q: "How do Spring MVC and Spring WebFlux differ? When should you choose WebFlux, and do Java 21 virtual threads change this choice?",
+    a: `**Summary:** Spring MVC uses a **blocking** model - each request occupies a thread for the entire processing duration. WebFlux uses a **reactive non-blocking** model - an event loop handles thousands of concurrent requests via backpressure. For systems using JDBC/JPA (blocking), WebFlux provides no benefit; the modern choice is **MVC + virtual threads (Java 21)**.
 
 ### Comparison
 | Criteria | Spring MVC | Spring WebFlux |
 |---|---|---|
 | Thread model | Thread-per-request (blocking) | Event loop + non-blocking |
-| Concurrency limit | Limited by container threads | Very high, but only when I/O truly non-blocking |
+| Concurrency ceiling | Limited by container thread count | Very high, but only when all I/O is truly non-blocking |
 | DB driver | JDBC/JPA (blocking) | R2DBC (non-blocking) |
-| Blocking code | Normal | **Blocking event loop → very dangerous** |
-| Backpressure | None (depend on thread count) | Has, limits producer speed |
-| Streaming/SSE/WebSocket | Yes (not optimal) | Excellent |
+| Blocking code | Normal | **Blocks the event loop -> very dangerous** |
+| Backpressure | None (relies on thread count) | Yes, throttles the producer |
+| Streaming/SSE/WebSocket | Supported (not optimal) | Excellent |
 
-### Why WebFlux "isn't faster" with JPA
-WebFlux only excels when the **entire** I/O chain doesn't block: R2DBC, WebClient, Kafka reactive, SSE. If you still use JPA/Hibernate in handlers, the blocking queries will keep the event loop → losing the exact advantage of WebFlux, plus added complexity. Combining "WebFlux + JPA" is a sign of wrong design.
+### Why WebFlux is "not faster" with JPA
+WebFlux shines only when the **entire** I/O chain is non-blocking: R2DBC, WebClient, reactive Kafka, SSE. If you still use JPA/Hibernate in the handler, blocking queries hold the event loop -> you lose WebFlux's advantage and add complexity. Combining "WebFlux + JPA" is a sign of a flawed design.
 
 ### How virtual threads change the picture
 Java 21 (JEP 444) allows creating millions of lightweight threads. Spring Boot 3.2+ supports:
@@ -28,21 +28,27 @@ spring:
     virtual:
       enabled: true
 ~~~
-When enabled, Tomcat processes each request by a single virtual thread: **code blocking stays written like MVC normally**, but no longer limited by "number of threads = number of concurrent requests". This is a very reasonable default choice for CRUD systems using JPA.
+With this, Tomcat handles each request on a virtual thread: **blocking code stays written like normal MVC**, but you are no longer limited by "thread count = concurrent request count". This is a very reasonable default for CRUD systems using JPA.
 
-### Production pitfall
-- **Thread pinning**: on Java 21, virtual threads can pin a carrier when blocking in some regions {{synchronized}} or native methods. Avoid holding monitors across long blocking I/O operations; don't replace every {{synchronized}} with {{ReentrantLock}}. JEP 491 (Java 24) eliminates pinning due to monitors in such cases.
-- ThreadLocal still works in virtual threads but memory depends on number of live threads → avoid storing large data in ThreadLocal.
-- With virtual threads, **connection pool must shrink** (pool is a limited resource of the DB), not grow.
-- Testing: MVC uses {{MockMvc}}, WebFlux uses {{WebTestClient}} — getting the test type wrong is a common source of bugs.
+### Production pitfalls
+- **Thread pinning**: on Java 21, a virtual thread can pin its carrier when blocking inside certain {{synchronized}} regions or native methods. Avoid holding a monitor across long blocking I/O; you do not need to replace every {{synchronized}} with {{ReentrantLock}}. JEP 491 (Java 24) removes monitor-induced pinning in these cases.
+- {{ThreadLocal}} still works with virtual threads, but memory usage scales with the number of live threads -> avoid storing large objects in {{ThreadLocal}}.
+- With virtual threads, the **connection pool must shrink** (the pool is a limited DB resource), not grow.
+- Testing: MVC uses {{MockMvc}}, WebFlux uses {{WebTestClient}} - using the wrong test type is a common source of bugs.
 
 ### Interview question worth remembering
-"When do you **not** choose WebFlux?" — A good answer: when all I/O is blocking (JPA/JDBC), when the system needs low latency for simple requests, or when the team doesn't yet have enough reactive experience — in that case MVC + virtual threads gives better performance than with lower development cost.
+"When would you **not** choose WebFlux?" - A good answer: when all I/O is blocking (JPA/JDBC), when the system needs low latency for simple requests, or when the team lacks reactive experience - in that case MVC + virtual threads delivers better performance at much lower development cost.
 
-> Senior tip: don't pick WebFlux just because you heard "reactive is the trend". Evaluate: if the system gets stuck because threads are blocked on I/O (DB, HTTP client), switching to virtual threads is a small change with high payoff. Switching to WebFlux means rewriting the entire I/O layer — high cost, only worth doing when you truly need backpressure and streaming.`,
+### Real-world example
+A team migrated an internal API gateway to WebFlux because it was "faster", but the downstream services still used JPA. They wrapped repository calls in {{Mono.fromCallable(...)}} but forgot {{subscribeOn(Schedulers.boundedElastic())}} -> JDBC blocking calls ran directly on the **event loop** (only a few threads, equal to CPU cores) -> under moderate load, p99 jumped to 4 seconds and every other request stalled. BlockHound (a tool that detects blocking calls on reactive threads) caught 23 spots. The team eventually moved back to Spring MVC + virtual threads ({{spring.threads.virtual.enabled=true}}, Java 21): the code became simple again, throughput matched the fixed WebFlux version, and p99 stabilized at 180 ms. WebFlux was kept for one SSE streaming service with tens of thousands of long-lived open connections - where it truly shines.
+
+### Sample interview answer
+"Spring MVC runs each request on a thread with familiar blocking code; WebFlux uses a non-blocking model on a small number of event-loop threads, which is strong when most time is spent waiting on I/O and the entire path is non-blocking. WebFlux does not make an individual request faster; it helps serve many concurrent connections with few threads. If the backend is still blocking JDBC or JPA, the benefit largely disappears, and accidentally running a blocking call on the event loop is worse than MVC. Java 21 virtual threads change the picture: Spring MVC with virtual threads can serve very high concurrency while keeping blocking code easy to read and debug. So I now default to MVC plus virtual threads, and choose WebFlux only for streaming, very many long-lived open connections, or when I need end-to-end backpressure with a reactive driver like R2DBC."
+
+> Senior tip: do not pick WebFlux just because you heard "reactive is the trend". Measure first: if the system is bottlenecked by threads blocked on I/O (DB, HTTP client), switching to virtual threads is a small change with high payoff. Switching to WebFlux means rewriting the entire I/O layer - high cost, only worth it when you truly need backpressure and streaming.`,
     follow: [
-      'Why is WebFlux + JPA an anti-pattern?',
-      'How does virtual thread affect connection pool sizing?'
+      "Why is WebFlux + JPA an anti-pattern?",
+      "How do virtual threads affect connection pool sizing?"
     ]
   },
   'spring-013': {
@@ -274,136 +280,148 @@ List<OrderRow> summary();
       'What is the difference between {{@BatchSize}} and {{default_batch_fetch_size}}?'
     ]
   },
-  'jpa-002': {
-    q: 'How does the persistence context work? What are the entity states, and how do dirty checking and flush mode affect writing data?',
-    a: `**Summary:** Persistence context (i.e., {{EntityManager}}/Session of Hibernate) is the **L1 cache** and **identity map** of Hibernate: within one transaction, each entity is loaded as **only one** Java object, and every change on that object is compared against its snapshot by Hibernate at flush to generate {{UPDATE}} — this is **dirty checking**. Four entity states: transient, persistent (managed), detached, removed.
+    'jpa-002': {
+    q: "How does the persistence context work? How do entity states, dirty checking, and flush mode affect data writes?",
+    a: `**Summary:** The persistence context (Hibernate's {{EntityManager}}/Session) is a **first-level cache** and **identity map**: within one transaction, each loaded entity exists as a **single** Java object, and any changes to that object are compared by Hibernate against a snapshot taken at load time during flush to generate {{UPDATE}} statements - this is **dirty checking**. The four entity states are: transient, persistent (managed), detached, and removed.
 
-### The four entity states
-| State | Meaning | Changeable fields written? |
+### The four states
+| State | Meaning | Are field changes written? |
 |---|---|---|
-| Transient | New {{new}}, not yet attached to context | No |
-| Persistent / Managed | Loaded or persisted in context | **Yes** — dirty checking |
-| Detached | {{detach}}ed or session closed | No (need {{merge}}) |
-| Removed | Marked for deletion | Deleted at flush |
+| Transient | Newly {{new}}ed, not attached to the context | No |
+| Persistent / Managed | Loaded or persisted in the context | **Yes** - dirty checking |
+| Detached | {{detach}}ed or the session was closed | No (must {{merge}}) |
+| Removed | Marked for deletion | Deleted on flush |
 
 ### Dirty checking
 ~~~java
 @Transactional
 public void rename(Long id, String name) {
     Customer c = customerRepo.findById(id).orElseThrow();  // persistent
-    c.setName(name);   // no update needed, no save() required
+    c.setName(name);   // no explicit update, no save() needed
     // on commit -> Hibernate compares snapshot -> UPDATE
 }
 ~~~
-Two conditions for dirty checking to run correctly:
-1. Entity must be managed (managed) in the context.
-2. Field must **not** be {{final}} — Hibernate can't assign final fields through reflection.
+Two conditions for dirty checking to work correctly:
+1. The entity must be managed in the context.
+2. The field must **not** be {{final}} - Hibernate cannot assign final fields via reflection.
 
 ### What is flush
-Flush = push changes in context down to DB (write {{INSERT}}/{{UPDATE}}/{{DELETE}} and {{flush}} dirty). Hibernate flush:
-- before **commit** transaction;
-- before running one **JPQL query** related to the table being changed (auto-flush) — so the query sees the latest data.
+Flush = push the changes in the context down to the DB (issue {{INSERT}}/{{UPDATE}}/{{DELETE}}). Hibernate flushes:
+- before the transaction **commits**;
+- before running a **JPQL query** that touches a table being modified (auto-flush) - so the query sees the latest data.
 
 Flush modes:
 | FlushMode | Behavior |
 |---|---|
 | {{AUTO}} (default) | Flush when needed (as above) |
-| {{COMMIT}} | Flush only at commit → queries within the **same** transaction can read **stale** data (changes not yet flushed) |
-| {{MANUAL}} | Never auto-flush, must call {{session.flush()}} |
+| {{COMMIT}} | Flush only on commit -> a query inside the **same** transaction may read **stale** data (changes not yet flushed) |
+| {{MANUAL}} | Never auto-flush, you must call {{session.flush()}} |
 
-### Production pitfall
-- **Entity "dirty" after rollback**: DB transaction rollback, but objects in context still hold changes. If reusing context (e.g., in a long stream), call {{clear}} after handling errors.
-- Using {{merge}} on detached entity creates **a copy** managed; if you keep a reference to the original, later changes won't be written.
-- {{equals}}/{{hashCode}} based on {{getId()}}: before persist, {{getId()}} is {{null}} → entity can be "lost" in {{HashSet}}.
-- Don't use entities as API return types: activates hidden lazy loading, leaks sensitive fields, and easily generates N+1 when serialized.
+### Production pitfalls
+- **Entity "dirtied" after rollback**: the DB transaction rolls back, but the object in the context still holds the changes. If the context is reused (e.g. in a long-running flow), call {{clear()}} after handling the error.
+- Using {{merge}} on a detached entity creates a **managed copy**; if you keep a reference to the original, later changes to it will not be written.
+- {{equals}}/{{hashCode}} based on {{getId()}}: before persist, {{getId()}} is {{null}} -> the entity can be "lost" inside a {{HashSet}}.
+- Do not use entities as API DTOs: this triggers hidden lazy loading, leaks sensitive fields, and easily causes N+1 during serialization.
 
-> Senior tip: remember the rule "**managed = changes auto-saved**". When debugging, if changing a field doesn't update the DB, check immediately: is the object still managed (session still open, not {{detach}}ed), is the field {{final}}, did the transaction really commit?`,
+### Real-world example
+A job updated prices for 300,000 products inside **one** transaction: {{findAll()}} then modified each entity. The persistence context held all 300,000 entities **plus their snapshots** for dirty checking -> heap grew to 3.5 GB, and at flush Hibernate compared every entity to its snapshot -> it took 11 minutes with constant full GCs. Fix: process in batches of 1,000 entities, and after each batch {{flush()}} then {{clear()}} to release the persistence context, and enable JDBC batching ({{hibernate.jdbc.batch_size=50}}, {{order_updates=true}}); for a bulk update that applies the same formula to many rows, use a bulk {{UPDATE}} statement (note: bulk update bypasses the persistence context, so you must clear it). Time dropped to 40 seconds, peak heap to ~300 MB. Another bug in the same job: reading an entity under {{@Transactional(readOnly = true)}} then calling a setter to "normalize for display" - with readOnly, Hibernate (Spring 5.1+) sets flush mode to MANUAL so it does not write; but earlier, in a non-readOnly method, the same action had silently written to the DB.
+
+### Sample interview answer
+"The persistence context is a first-level cache tied to the EntityManager, usually one transaction. An entity has four states: transient means a new object not yet associated; managed means the context is tracking it; detached means it left the context, for example after the transaction ended; removed means marked for deletion. For a managed entity, Hibernate keeps a snapshot from load time and compares on flush to generate UPDATE automatically, which is dirty checking, so calling a setter is enough without save. The default flush mode is AUTO, which happens before commit and before a query that could be affected. Practical consequences: processing hundreds of thousands of entities in one transaction bloats memory and slows flush, so I batch, flush and clear after each batch, and enable JDBC batching; and I am careful with setters on managed entities because they will be written to the DB."
+
+> Senior tip: remember the rule "**managed = changes are auto-saved**". When debugging, if a field change is not reflected in the DB, check immediately: is the object still managed (is the session still open, was it {{detach}}ed), is the field {{final}}, and did the transaction actually commit?`,
     follow: [
-      'Why can {{merge}} on a detached entity create a copy and cause confusion?',
-      'When does auto-flush occur and how does it affect query results?'
+      "Why can {{merge}} on a detached entity create a copy and cause confusion?",
+      "In which cases does auto-flush occur and how does it affect query results?"
     ]
   },
-  'jpa-003': {
-    q: 'When does {{LazyInitializationException}} throw? Should Open Session In View be on or off, and why?',
-    a: `**Summary:** Lazy loading only creates a **proxy**; the real query runs when you access the proxy's field. If that access happens **after the session is closed** (transaction ends), Hibernate has no connection left to query → {{LazyInitializationException}}. Open Session In View (OSIV) keeps the session open the entire HTTP request lifecycle so it masks this error, but keeps the DB connection longer and makes N+1 explosions obvious. **Recommendation: disable OSIV.**
+    'jpa-003': {
+    q: "When does {{LazyInitializationException}} occur? Should Open Session In View be enabled or disabled, and why?",
+    a: `**Summary:** Lazy loading only creates a **proxy**; the real query runs when you access a field on that proxy. If that access happens **after the session is closed** (the transaction ended), Hibernate has no connection to run the query -> {{LazyInitializationException}}. Open Session In View (OSIV) keeps the session open for the whole HTTP request, so it hides this error, but it holds the DB connection longer and lets N+1 explode. **Recommendation: disable OSIV.**
 
-### When LazyInitializationException throws
+### When it is thrown
 ~~~text
-service.getOrder(id)   -> @Transactional: load order, session closes when method ends
-controller returns DTO -> calls order.getItems() to map -> no session left -> boom
+service.getOrder(id)   -> @Transactional: load order, session closes when method returns
+controller returns DTO -> calls order.getItems() to map -> NO session left -> boom
 ~~~
 
 Three common causes:
-1. Access lazy collection **outside** transaction.
-2. Access lazy in view/template layer after transaction ended.
-3. Serialize entity to JSON via Jackson **outside** transaction → Jackson calls getter → touches lazy.
+1. Accessing a lazy collection **outside** a transaction.
+2. Accessing lazy data in the view/template layer (Thymeleaf) after the transaction closed.
+3. Serializing an entity to JSON with Jackson **outside** a transaction -> Jackson calls getters -> touches lazy proxies.
 
-### What is OSIV
-{{spring.jpa.open-in-view}} defaults to **true** in Spring Boot: Spring opens an {{EntityManager}} before processing requests and closes it after rendering is done. Through this, lazy errors in the view layer "vanish".
+### What OSIV is
+{{spring.jpa.open-in-view}} defaults to **true** in Spring Boot: Spring opens an {{EntityManager}} before handling the request and closes it after rendering finishes. As a result, lazy errors in the view layer "disappear".
 
-### Why disable
+### Why it should be disabled
 | Problem | Explanation |
 |---|---|
-| Keeps connection longer | Session open throughout request ⇒ connection held even when not used |
-| Hides errors | N+1 bug, mapping error hidden until production |
-| Hidden dependency | Methods without {{@Transactional}} "work" in dev, but fail when deployed with different config |
-| Transaction semantics | No transaction wrapping → lost consistency |
+| Holds connection longer | Session stays open for the whole request -> the connection is held even when no query runs |
+| Hides errors | N+1 bugs and mapping issues stay hidden until production |
+| Hidden dependency | A method without {{@Transactional}} "works" in dev but fails under a different deployment config |
+| Transaction semantics | No wrapping transaction -> lost consistency guarantees |
 
-### Correct approach
+### The right approach
 ~~~yaml
 spring:
   jpa:
     open-in-view: false
 ~~~
-Then fix the code correctly:
-1. Use **DTO projection** for APIs (only take what's needed) — no lazy at all.
-2. Use **fetch join / {{@EntityGraph}}** in repository when child data is genuinely needed.
-3. Place {{@Transactional}} at the service layer and **map to DTO inside** the transaction.
+Then fix the code properly:
+1. Use **DTO projections** for APIs (fetch only what is needed) - no lazy involved.
+2. Use **fetch join / {{@EntityGraph}}** in the repository when child data is genuinely needed.
+3. Put {{@Transactional}} on the service layer and **map to DTO inside** the transaction.
 4. Enable {{spring.jpa.properties.hibernate.default_batch_fetch_size}} to reduce N+1.
 
-### Production pitfall
-- Disabling OSIV is a **behavior** change, not just config: many places accessing lazy outside transactions will break at runtime. Turn this flag on in test environments before going to production.
-- With view templates (JPA + Thymeleaf), the clean approach is: fetch enough data in the query, then render — don't let the template activate lazy.
-- For entities with lazy {{@ManyToMany}}, {{toString}}/{{equals}} may also touch proxies and cause errors or weird queries.
+### Production pitfalls
+- Disabling OSIV is a **behavior** change, not just a config tweak: many places that access lazy data outside transactions will blow up at runtime. Enable this flag in the test environment before production.
+- With view templates (JPA + Thymeleaf), the clean approach is: fetch all required data in the query, then render - do not let the template trigger lazy loading.
+- For entities with a lazy {{@ManyToMany}}, default {{toString}}/{{equals}} can also touch proxies and cause errors or strange queries.
 
-> Senior tip: enable {{spring.jpa.open-in-view=false}} from project start, then add integration tests for core APIs. If the team isn't ready, turn this flag on for the {{test}} profile so errors surface early. This is one of the highest ROI configuration changes in a Spring Boot project: holds connection less, errors clearer, performance stable.`,
+### Real-world example
+An API returning a list of orders worked fine while Open Session In View was enabled (Spring Boot's default, with a startup warning). But every request kept the session open from start until JSON serialization finished: Jackson traversed {{order.items}}, {{order.customer}} -> **lazy loading** fired hundreds of queries during rendering, and the connection was held for the whole request, including a 2-second external API call. Under load, the 30-connection pool was exhausted. Disabling OSIV ({{spring.jpa.open-in-view=false}}) exposed {{LazyInitializationException}} across 17 endpoints - exactly 17 places that had been silently running N+1. Each endpoint was fixed with a DTO projection or an {{@EntityGraph}} in the service; the list API's query count dropped from about 210 to 3, and average connection hold time per request fell from 1.4 seconds to 35 ms.
+
+### Sample interview answer
+"LazyInitializationException happens when you access an unloaded lazy association after the persistence context has closed, typically when an entity is returned from a service and the controller or Jackson touches that association. Open Session In View keeps the session open until the request ends so the exception disappears, and Spring Boot enables it by default. I turn it off because it hides problems: lazy loading scatters during JSON rendering and causes hard-to-see N+1, and the connection is held for the whole request, even while calling external APIs, so the pool can be exhausted under load. The right approach is for the service to decide exactly what data is needed: return a DTO or projection, use JOIN FETCH or an EntityGraph for required associations, and never return entities directly to the controller. When disabling OSIV on an existing system, every exception it reveals is an N+1 spot that needs fixing."
+
+> Senior tip: enable {{spring.jpa.open-in-view=false}} from the start of a project, then add integration tests for the main APIs. If the team is not ready, turn this flag on in the {{test}} profile to surface errors early. This is one of the highest-ROI configuration changes in a Spring Boot project: fewer held connections, clearer errors, and more stable performance.`,
     follow: [
-      'Why does {{@Transactional}} at the service layer sometimes not suffice to avoid {{LazyInitializationException}}?',
-      'What effect does disabling OSIV have on Thymeleaf templates?'
+      "Why is {{@Transactional}} on the service layer sometimes not enough to avoid {{LazyInitializationException}}?",
+      "How does disabling OSIV affect Thymeleaf templates?"
     ]
   },
-  'jpa-004': {
-    q: 'How do optimistic locking ({{@Version}}) and pessimistic locking differ? How do you handle {{OptimisticLockException}} in practice?',
-    a: `**Summary:** **Optimistic** assumes conflicts are rare: add a {{version}} column, each {{UPDATE}} includes condition {{WHERE version = ?}}; if no row is updated, Hibernate throws {{OptimisticLockException}}. **Pessimistic** locks rows directly in the DB via {{SELECT ... FOR UPDATE}}, holding the lock until the end of the transaction — no conflict for sure but lower throughput and risk of deadlock.
+    'jpa-004': {
+    q: "How do optimistic locking ({{@Version}}) and pessimistic locking differ? How do you handle {{OptimisticLockException}} in practice?",
+    a: `**Summary:** **Optimistic** locking assumes conflicts are rare: add a {{version}} column, and every {{UPDATE}} includes {{WHERE version = ?}}; if no row is updated, Hibernate throws {{OptimisticLockException}}. **Pessimistic** locking locks the row in the DB immediately via {{SELECT ... FOR UPDATE}}, holding the lock until the transaction ends - it guarantees no conflict but reduces throughput and risks deadlocks.
 
 ### Comparison
 | Criteria | Optimistic ({{@Version}}) | Pessimistic ({{@Lock}}) |
 |---|---|---|
-| Mechanism | Compare version at update | Row lock in DB |
-| Conflict | Detected **after** write | Blocked **before** write |
-| Performance | Good for many reads, few writes | Worse under contention |
-| Deadlock | None | Yes |
-| Use for | Profile, balances, config, counters | Producer, inventory, bank account |
+| Mechanism | Compare version on update | Lock the row in the DB |
+| Conflict | Detected **after** the write | Blocked **before** the write |
+| Performance | Good for read-heavy, write-light | Degrades under contention |
+| Deadlock | No | Yes |
+| Use for | Profile, balance, config, counter | Stock, inventory, bank account |
 
 ### Optimistic locking
 ~~~java
 @Entity
 public class Account {
     @Id private Long id;
-    @Version private Long version;     // Hibernate auto-increments version on each update
+    @Version private Long version;     // Hibernate auto-increments on each update
     private BigDecimal balance;
 }
 ~~~
-The generated SQL becomes:
+The generated SQL looks like:
 ~~~sql
 UPDATE account SET balance = ?, version = ? WHERE id = ? AND version = ?
 ~~~
-If {{version}} in the DB has changed (someone else updated), number of updated rows = 0 → Hibernate throws {{OptimisticLockException}}. Spring Data JPA wraps it as {{ObjectOptimisticLockingFailureException}}.
+If the {{version}} in the DB has changed (someone else just updated it), the update affects 0 rows -> Hibernate throws {{OptimisticLockException}}. Spring Data JPA wraps it as {{ObjectOptimisticLockingFailureException}}.
 
-### Conflict handling
-1. **Retry with backoff**: re-read state, recalculate, retry (limited attempts, with jitter).
-2. **Return 409 Conflict** to client if the business doesn't accept retry.
-3. **Use optimistic + idempotency key** concurrently to avoid duplicate transactions.
+### Handling conflicts
+1. **Retry with backoff**: re-read state, recompute, try again (limit attempts, add jitter).
+2. **Return 409 Conflict** to the client if the business does not accept retries.
+3. **Combine optimistic locking with an idempotency key** to avoid creating duplicate transactions.
 
 ~~~java
 @Retryable(retryFor = ObjectOptimisticLockingFailureException.class,
@@ -419,16 +437,22 @@ public void transfer(Long from, Long to, BigDecimal amount) { /* ... */ }
 Optional<Account> findForUpdate(@Param("id") Long id);
 ~~~
 
-### Production pitfall
-- **Retry must run in a fresh transaction**: after {{OptimisticLockException}}, the transaction is marked rollback; retry inside the same transaction eats nothing.
-- Pessimistic lock holds the lock even while calling another HTTP service in the transaction → holds lock longer, increases deadlock. Keep transactions short and no external I/O.
-- For many tables, standardize lock order to avoid deadlock.
-- Don't use pessimistic locks for read-only queries — use {{LockModeType.PESSIMISTIC_READ}} or snapshot.
+### Production pitfalls
+- **Retry must run in a new transaction**: after {{OptimisticLockException}}, the transaction is marked rollback-only; retrying inside the same transaction will not work.
+- Pessimistic lock is held even while you call an external HTTP service inside the transaction -> the lock is held longer, increasing deadlock risk. Keep transactions short and avoid external I/O.
+- With multiple tables, standardize lock order to avoid deadlocks.
+- Do not use pessimistic locks for read-only queries - use {{LockModeType.PESSIMISTIC_READ}} or a snapshot instead.
 
-> Senior tip: pick optimistic first, because it's cheaper and causes less bottleneck. Only switch to pessimistic when the business **requires** serialization (e.g., transferring money in legacy payment systems where the business key is the amount per balance, not the version). For banks, rule is: read with care (optimistic), write with contention on balance consider pessimistic or queue by account key.`,
+### Real-world example
+An inventory management screen let multiple staff edit the same product. With no locking: staff A changed the price, staff B (whose form had been open earlier) changed the description and saved -> it **overwrote** A's new price with the old one; 46 products sold at the wrong price during a promotion. Adding {{@Version}}: the second save got {{ObjectOptimisticLockingFailureException}} -> the API returned 409, the UI showed "This product was updated by someone else, please reload." For the order flow deducting stock (hundreds of requests/second on the same hot SKU), optimistic locking caused constant retries, so the team used a conditional atomic UPDATE ({{qty = qty - :n WHERE qty >= :n}}) for that part. Rule of thumb: user edit forms -> optimistic + 409; hot quantity counters -> atomic statement; short flows that need strict ordering -> {{PESSIMISTIC_WRITE}} with a timeout.
+
+### Sample interview answer
+"Optimistic locking assumes conflicts are rare: the entity has a version column, UPDATE includes a condition on the version that was read and increments it; if no row is updated it means someone else modified it, Hibernate throws OptimisticLockException and Spring translates it to ObjectOptimisticLockingFailureException. Nothing is locked in the DB so reads are not blocked. Pessimistic locking locks the row on read with SELECT FOR UPDATE, forcing others to wait; it fits frequent conflicts and short operations, and needs a lock timeout and a consistent lock order to avoid deadlocks. Handling OptimisticLockException depends on context: for a user form, return 409 and ask to reload, sending the version down to the client; for automated processing, re-read and retry a few times with backoff. For incrementing or decrementing very hot counters, I use an atomic UPDATE instead of either approach."
+
+> Senior tip: choose optimistic first, because it is cheaper and does not create bottlenecks. Only switch to pessimistic when the business **must** serialize (for example, debiting money in a legacy payment system where the business key is the amount against the balance, not a version). For banking, the rule is: read with optimistic in mind; for contended writes on balances, consider pessimistic locking or a queue keyed by account.`,
     follow: [
-      'Why must retry on {{OptimisticLockException}} use a new transaction?',
-      'How to avoid deadlock when using pessimistic locks across multiple tables?'
+      "Why must a retry on {{OptimisticLockException}} run in a new transaction?",
+      "How do you avoid deadlocks when using pessimistic locks across multiple tables?"
     ]
   },
   'jpa-005': {
@@ -485,9 +509,9 @@ The {{UPDATE}} with {{@Version}} is also split if Hibernate doesn't know version
       'Why must {{flush}} and {{clear}} be called periodically during batch insert with large quantity?'
     ]
   },
-  'jpa-006': {
-    q: 'In JPA mapping, how do owning side and inverse side differ? When should you use {{orphanRemoval}} and {{cascade}}, and what risks exist?',
-    a: `**Summary:** Both 1-N and N-N relationships have an **owning side** (the side holding the foreign key table or join table) and an **inverse side** (the side {{mappedBy}}). Changes on the owning side are what Hibernate recognizes and generates SQL from. {{orphanRemoval = true}} is used to delete children when removed from the collection; {{cascade}} determines which actions are propagated to the related entity — and {{cascade = REMOVE}} is the classic source of data loss.
+    'jpa-006': {
+    q: "In JPA relationship mapping, how do the owning side and inverse side differ? When should you use {{orphanRemoval}} and {{cascade}}, and how dangerous are they?",
+    a: `**Summary:** Both 1-N and N-N relationships have an **owning side** (the side that holds the foreign key or join table) and an **inverse side** (the side with {{mappedBy}}). Only changes on the owning side are recognized by Hibernate and turned into SQL. {{orphanRemoval = true}} deletes a child when it is removed from the collection; {{cascade}} decides which operations propagate to associated entities - and {{cascade = REMOVE}} is a classic source of data loss.
 
 ### Owning side and inverse side
 ~~~java
@@ -499,43 +523,51 @@ public class Order {                       // inverse side (has mappedBy)
 }
 
 @Entity
-public class Item {                        // owning side: holds order_id
+public class Item {                        // owning side: holds the foreign key order_id
     @Id private Long id;
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "order_id")
     private Order order;
 }
 ~~~
-
-- Changing {{item.setOrder(order)}} (owning side) → Hibernate writes {{order_id}} of item ({{INSERT}}/{{UPDATE item SET order_id = ?}}).
-- Only {{order.getItems().add(item)}} (inverse side) without setting {{item.order}} → **foreign key not written**, Hibernate ignores changes from the inverse side. Therefore, write a helper {{addItem()}} updating **both sides**.
-- For N-N relationships, the default creates a join table; if you need relation attributes (quantity, price at time of placement), use an **join entity** with business meaning instead of a plain join table.
+- Updating {{item.setOrder(order)}} (owning side) -> Hibernate writes the item's {{order_id}} ({{INSERT}}/{{UPDATE item SET order_id = ?}}).
+- Only calling {{order.getItems().add(item)}} (inverse side) without setting {{item.order}} -> the **foreign key is not written**, Hibernate ignores the change from the inverse side. Therefore, write a helper {{addItem()}} that updates **both sides**.
+- N-N relationships create a join table by default; when you need attributes on the relationship itself (quantity, price at order time), use a **join entity** with business meaning instead of a plain join table.
 
 ### orphanRemoval
 ~~~java
 @OneToMany(mappedBy = "order", orphanRemoval = true)
 private List<Item> items;
 ~~~
-When {{order.getItems().remove(item)}}, Hibernate calls {{DELETE}} for {{item}}. Declare on the parent ({{@OneToMany}} — typically the {{mappedBy}} side) or {{@OneToOne}}; **not** for {{@ManyToMany}}.
+When {{order.getItems().remove(item)}}, Hibernate issues {{DELETE}} for {{item}}. Declare it on the parent side ({{@OneToMany}} - typically the {{mappedBy}} side) or {{@OneToOne}}; there is **no** {{orphanRemoval}} for {{@ManyToMany}}.
 
 ### Cascade
 | Cascade | Meaning | Risk |
 |---|---|---|
-| {{PERSIST}} | Save parent saves children | Fine for aggregate root |
-| {{REMOVE}} | Delete parent deletes children | **Dangerous**: mass deletion = data loss |
-| {{MERGE}}, {{REFRESH}}, {{DETACH}} | Sync state | Usually safe |
-| {{ALL}} | Combine all | Not recommended by default |
+| {{PERSIST}} | Persisting the parent persists children | Good fit for an aggregate root |
+| {{REMOVE}} | Removing the parent removes children | **Dangerous**: bulk deletion means data loss |
+| {{MERGE}}, {{REFRESH}}, {{DETACH}} | State synchronization | Usually safe |
+| {{ALL}} | All of the above | Should not be the default |
 
-### Production pitfall
-- {{cascade = REMOVE}} combined with deleting the parent entity in a "delete order" business will **also delete child records referencing it in other modules** if the relationship is mapped. Many real-world data loss incidents come from this.
-- Enabling {{cascade = ALL}} on {{@ManyToMany}} can cause {{StackOverflow}} when objects reference each other circularly.
-- Deleting with {{entityManager.remove()}} deletes children by cascade; if you only want "unlink", use {{orphanRemoval}} and remove from collection.
-- Recursive parent-child self-referencing relationships with cascade can cause errors on deletion of the branch.
+### Production pitfalls
+- {{cascade = REMOVE}} combined with deleting the parent in a "cancel order" flow will **also delete child records referenced by other modules** if the relationship is mapped. Many real-world data loss incidents come from this.
+- Enabling {{cascade = ALL}} on {{@ManyToMany}} can cause {{StackOverflowError}} when objects reference each other.
+- Deleting via {{entityManager.remove()}} deletes children per cascade; if you only want to "unlink", use {{orphanRemoval}} and remove from the collection.
+- A self-referencing parent-child relationship with cascade can cause errors when deleting a whole branch.
 
-> Senior tip: use **aggregate root** as the consistent boundary: child objects are only created/modified/deleted through the parent. Then {{cascade = PERSIST}} on the parent is reasonable; {{REMOVE}} should be replaced with {{orphanRemoval}} alongside a clear business rule. If an entity is referenced from many places, it **should not** sit in the cascade graph of any bean.`,
+### Under the hood: Hibernate only looks at the owning side
+On flush, Hibernate generates the foreign key SQL **based on the owning side** (the side with {{@JoinColumn}}, usually {{@ManyToOne}}). The {{mappedBy}} side ({{@OneToMany(mappedBy = "order")}}) is only a "mirror" for convenience: adding an element to {{order.getItems()}} without setting {{item.setOrder(order)}} leaves the foreign key **unwritten** (the order_id column stays NULL or keeps its old value). That is why you need a helper method that synchronizes both sides ({{order.addItem(item)}} sets both). {{orphanRemoval = true}}: an element removed from the collection is **DELETE**d; {{cascade = REMOVE}}: deleting the parent deletes the children. {{CascadeType.ALL}} on {{@ManyToOne}} (child -> parent) is a trap: deleting a single child row can delete the parent and every other child.
+
+### Real-world example
+An order edit screen submitted a new list of line items; the code did {{order.setItems(newItems)}} (replacing the whole collection) on a relationship with {{orphanRemoval = true}}. Hibernate threw "A collection with cascade=all-delete-orphan was no longer referenced" on some requests; in an earlier quick fix, a dev removed orphanRemoval -> line items removed from the order stayed in the DB with the old order_id, and revenue reports included those deleted lines (about 1.5% overstatement over 2 weeks). Correct fix: keep orphanRemoval, update **the existing collection in place** ({{items.clear(); items.addAll(...)}} or reconcile by id), use a helper that syncs both sides; add a test that checks the row count in the DB after editing an order.
+
+### Sample interview answer
+"In a bidirectional relationship, the owning side is the one that holds the foreign key, usually the ManyToOne with JoinColumn; the inverse side is the one with mappedBy. Hibernate only uses the owning side to write the foreign key, so adding to the inverse side's collection without setting the other side writes nothing. I always write a helper method that synchronizes both sides. Cascade propagates operations like persist or remove from parent to child and fits a composition such as order and line items; orphanRemoval deletes a child when it is removed from the collection. The danger is putting cascade ALL or REMOVE on the wrong side, for example on a ManyToOne from child up to parent, which can delete shared data; and replacing the whole collection with a setter on an orphanRemoval relationship causes errors - you must modify the existing collection in place."
+
+> Senior tip: use an **aggregate root** as the consistency boundary: child objects are only created/modified/deleted through the parent. Then {{cascade = PERSIST}} on the parent is reasonable, while {{REMOVE}} should be replaced by {{orphanRemoval}} with a clear business rule. If an entity is referenced from many places, it **should not** sit inside the cascade graph of any entity.`,
     follow: [
-      'When should you use {{orphanRemoval}} instead of {{cascade = REMOVE}}?',
-      'Why use a join entity instead of {{@ManyToMany}}?'
+      "When should you use {{orphanRemoval}} instead of {{cascade = REMOVE}}?",
+      "Why use a join entity instead of a plain {{@ManyToMany}}?"
     ]
   },
   'jpa-007': {
