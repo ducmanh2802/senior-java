@@ -29,6 +29,28 @@ try (Resource outer = open("outer"); Resource inner = open("inner")) {
 
 Nếu {{work()}} ném exception chính A và {{inner.close()}} ném B, Java vẫn thử đóng outer; exception A được ném ra, B và lỗi đóng outer được gắn làm suppressed. Nếu thân không ném mà close ném, lỗi close đầu tiên trở thành lỗi chính. Duyệt {{getSuppressed()}} khi chẩn đoán lỗi cleanup; chỉ log exception chính có thể che mất file handle hoặc flush thất bại.
 
+### Cơ chế từng bước của try-with-resources
+
+Khai báo tài nguyên trong ngoặc tròn của try, ví dụ {{try (Resource r = open())}}. Compiler dịch thành các khối {{try}} lồng nhau với {{finally}}:
+
+1. **Khởi tạo trước khi vào thân**: mỗi resource được khởi tạo theo thứ tự viết. Nếu resource thứ hai ném lỗi ngay khi tạo, resource đầu tiên đã mở vẫn bị đóng nhờ outer finally — không bị rò rỉ handle hay stream.
+2. **Ghi nhớ lỗi chính**: nếu thân khối ném exception A, Java nhảy vào finally nhưng giữ A làm lỗi chính để ném ra cuối cùng.
+3. **Đóng ngược thứ tự khai báo**: {{close()}} gọi theo thứ tự đảo ngược. Khai báo outer rồi inner → đóng inner trước, rồi outer. Điều này quan trọng khi inner (ví dụ reader) nằm trên outer (stream): phải flush và đóng reader trước stream dưới đáy.
+4. **Gắn suppressed**: nếu inner.close() ném B, Java gọi {{A.addSuppressed(B)}}. Lỗi đóng outer cũng gắn vào suppressed của A. Cuối cùng ném A, và caller duyệt {{getSuppressed()}} để xem B và lỗi đóng outer.
+5. **Thân thành công, close lỗi**: lỗi close đầu tiên trở thành lỗi chính; lỗi close sau gắn vào suppressed của nó.
+
+Ví dụ ngắn:
+
+~~~java
+try (FileInputStream in = new FileInputStream("a.txt");
+     BufferedReader r = new BufferedReader(new InputStreamReader(in))) {
+    String line = r.readLine();   // lỗi ở đây vẫn không làm rò stream
+    process(line);                // r đóng trước, in đóng sau
+}
+~~~
+
+Nếu {{readLine()}} ném A và cả hai {{close()}} ném B, C, thì exception ném ra là A; B và C nằm trong {{getSuppressed()}} theo thứ tự đóng. Khác với finally thủ công: exception từ close có thể che mất exception gốc.
+
 ### Thiết kế exception nghiệp vụ
 Dùng tên thể hiện ngữ cảnh như {{InsufficientFundsException}} thay vì {{Exception}} chung. Có thể giữ mã lỗi ổn định cho API và giữ cause để điều tra:
 
@@ -38,14 +60,19 @@ throw new PaymentException("PAYMENT_DECLINED", "Không thể thanh toán", cause
 
 Không nhét PAN, token hay dữ liệu nhạy cảm vào message. Chuyển đổi exception ở ranh giới tầng (driver → repository/domain → HTTP) nhưng không làm mất cause. Tránh catch rồi trả null: caller không phân biệt “không có dữ liệu” với “truy vấn lỗi”.
 
-### Pitfall production
-- Retry mọi exception: lỗi validation cũng bị gửi lại, còn timeout sau khi server đã ghi có thể tạo giao dịch trùng. Chỉ retry lỗi transient và dùng idempotency key.
-- Đóng thủ công trong finally: exception từ close có thể che exception gốc; try-with-resources đã giải quyết quy tắc này.
-- Bắt {{InterruptedException}} rồi bỏ cờ ngắt: khôi phục bằng {{Thread.currentThread().interrupt()}} nếu không thể truyền tiếp.
-- Chuyển mọi lỗi thành HTTP 500: lỗi nghiệp vụ cần status/mã ổn định, còn lỗi nội bộ không lộ stack trace cho client.
+### Lỗi hay gặp trên production
+
+- **Retry mọi exception**: triệu chứng là lỗi validation (sai định dạng) cũng bị gửi lại lần thứ hai, và timeout sau khi server đã ghi tạo giao dịch trùng. Nguyên nhân: code retry bắt cả lỗi transient và lỗi vĩnh viễn. Cách sửa: chỉ retry lỗi transient (mạng gián đoạn, database quá tải), kết hợp idempotency key (khóa nhận dạng duy nhất để phát hiện yêu cầu trùng) để tránh tạo giao dịch trùng.
+- **Đóng thủ công trong finally**: triệu chứng là log chỉ ghi exception từ close, exception công việc thực sự biến mất. Nguyên nhân: exception trong close ném ra che mất exception gốc. Cách sửa: dùng {{try-with-resources}}; lỗi close gắn vào {{getSuppressed()}} thay vì che mất lỗi chính.
+- **Bắt {{InterruptedException}} rồi bỏ cờ ngắt**: triệu chứng là luồng không bao giờ dừng khi yêu cầu tắt JVM, shutdown kéo dài. Nguyên nhân: swallow exception làm mất cờ ngắt của luồng. Cách sửa: gọi lại {{Thread.currentThread().interrupt()}} nếu không thể ném tiếp.
+- **Chuyển mọi lỗi thành HTTP 500**: triệu chứng là client không biết lỗi do họ hay do server, và stack trace nội bộ rò rãi ra response. Nguyên nhân: không phân biệt lỗi nghiệp vụ và lỗi hệ thống. Cách sửa: lỗi nghiệp vụ trả status/mã lỗi ổn định (ví dụ 409 conflict), lỗi nội bộ chỉ log và trả 500 chung chung mà không lộ stack trace cho client.
 
 ### Liên hệ phỏng vấn
-Hãy kể một lần lỗi cleanup làm mất lỗi gốc, giải thích vì sao resource đóng ngược thứ tự, và nêu chính xác checked exception ảnh hưởng rollback Spring ra sao.`,
+
+- Lỗi cleanup làm mất lỗi gốc thì ảnh hưởng gì đến việc chẩn đoán production? → Lỗi từ close bị ném làm lỗi chính, exception nghiệp vụ thực sự bị gắn vào suppressed và dễ bị bỏ qua nếu chỉ log exception chính; nên luôn duyệt {{getSuppressed()}}.
+- Vì sao resource đóng theo thứ tự ngược khai báo? → Tài nguyên sau khai báo thường nằm trên tài nguyên trước (reader trên stream); phải đóng lớp trên trước để flush đúng thứ tự và không làm hỏng stream dưới đáy.
+- Checked exception ảnh hưởng rollback trong Spring ra sao? → Theo mặc định Spring rollback cho runtime exception; checked exception không rollback trừ khi cấu hình {{rollbackFor}}, do đó bọc database exception thành checked mà không cấu hình sẽ vô tình commit trạng thái dở dang.
+`,
   exercises: [{
     title: 'Đóng tài nguyên theo thứ tự và giữ suppressed exception',
     prompt: `Cài {{Resource}} và {{run()}}. {{run()}} mở A rồi B, gọi {{work()}}. Dù có lỗi vẫn phải đóng B rồi A. Khi work ném lỗi, đó là lỗi chính; lỗi close phải nằm trong {{getSuppressed()}}.`,
@@ -85,7 +112,32 @@ class Tasks {
 }`,
     hints: ['Khai báo A rồi B trong cùng resource specification; Java đóng theo thứ tự đảo.', 'Để kiểm tra suppressed, thân khối phải ném lỗi chính và cả hai close cũng ném lỗi.'],
     explain: `Compiler triển khai logic tương đương finally lồng nhau. Vì thế mọi resource đã khởi tạo đều được đóng, kể cả khi khởi tạo resource sau hoặc thân khối thất bại. Exception từ thân được ưu tiên làm lỗi chính; close exception được thêm theo thứ tự đóng vào mảng suppressed. Khi thân thành công, lỗi close đầu tiên trở thành lỗi được ném và lỗi close tiếp theo suppressed vào nó.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['Exception', 'try-with-resources']
+  }], check: [
+    {
+      q: 'Theo Java, khi một method ném checked exception, caller bắt buộc phải làm gì?',
+      options: ['Không làm gì, JVM tự xử lý', 'Khai báo {{throws}} trong chữ ký hoặc bọc trong {{try-catch}}', 'Chỉ ghi comment nhắc xử lý sau', 'Buộc chuyển thành unchecked exception trước khi ném'],
+      answer: 1,
+      explain: 'Đáp án B đúng: compiler bắt checked exception được khai báo {{throws}} hoặc bắt bằng {{try-catch}}, code không biên dịch nếu bỏ qua. A sai: JVM không tự xử lý checked exception. C sai: comment không thỏa mã compiler. D sai: không phải bắt buộc, và chuyển đổi có thể làm mất nguyên nhân nếu không giữ cause.'
+    },
+    {
+      q: 'Trong {{try-with-resources}}, thân ném lỗi A, hai resource close() ném B và C. Caller nhận exception gì?',
+      options: ['B, vì lỗi đóng xảy ra sau cùng', 'C, vì resource đóng cuối được ưu tiên', 'A làm lỗi chính; B, C gắn vào {{getSuppressed()}}', 'Không ném exception nào ra ngoài'],
+      answer: 2,
+      explain: 'Đáp án C đúng: exception từ thân được ưu tiên làm lỗi chính; lỗi close được gắn thêm vào mảng suppressed qua {{addSuppressed()}}. A/B sai: lỗi close không trở thành lỗi chính khi thân đã ném. D sai: Java không swallow exception; nếu thân thành công mà close ném, lỗi close đầu tiên mới trở thành lỗi chính.'
+    },
+    {
+      q: 'Developer bọc SQLException thành checked exception {{PaymentException}} trong service Spring, không cấu hình thêm. Transaction sẽ ra sao?',
+      options: ['Commit bình thường: checked exception không rollback theo mặc định của Spring', 'Rollback vì exception đã được ném ra', 'Rollback vì SQLException gốc là unchecked', 'Treo vĩnh viễn'],
+      answer: 0,
+      explain: 'Đáp án A đúng: Spring chỉ rollback runtime exception theo mặc định; checked exception cần cấu hình {{rollbackFor}}. B/C sai: ném exception không tự rollback nếu là checked; SQLException đã bị bọc thành checked, đặc tính runtime của JDBC bị mất. D sai: không có cơ chế treo transaction như vậy.'
+    },
+    {
+      q: 'Bắt {{InterruptedException}} mà không thể ném tiếp, phải làm gì?',
+      options: ['Bỏ qua hoàn toàn, không làm gì cả', 'Gọi {{Thread.stop()}} để dừng luồng ngay', 'Chuyển thành HTTP 500 ngay tại chỗ', 'Gọi lại {{Thread.currentThread().interrupt()}} để khôi phục cờ ngắt'],
+      answer: 3,
+      explain: 'Đáp án D đúng: swallow exception làm mất cờ ngắt, luồng không bao giờ dừng khi yêu cầu shutdown. A sai: mất cờ ngắt, luồng vẫn chạy. B sai: {{Thread.stop()}} đã bị lui, không an toàn (có thể khóa monitor bất ngờ). C sai: InterruptedException là sự kiện luồng, không phải lỗi HTTP của request.'
+    }
+  ], related: ['core-001'], tags: ['Exception', 'try-with-resources']
 },
 {
   id: 'lesson-core-002', track: 'core', order: 2,
@@ -118,15 +170,46 @@ Không cần wildcard cho mọi tham số. Nếu hàm vừa đọc vừa ghi cù
 ### Comparator<? super T>
 Một comparator của Object có thể so mọi T, nên max nhận {{Comparator<? super T>}}. Collection là producer nên dùng {{Collection<? extends T>}}. Thuật toán duyệt một lượt, giữ phần tử tốt nhất hiện tại; nếu comparator trả số dương cho candidate so với best thì thay best. Độ phức tạp O(n), bộ nhớ O(1).
 
-### Pitfall production
-- API nhận {{List<Object>}} làm client không truyền được List<String>; dùng {{List<?>}} nếu chỉ đọc, hoặc wildcard thích hợp.
-- Cast raw type làm mất kiểm tra và lỗi xuất hiện xa nơi ghi dữ liệu. Không dùng raw collection để “né” generic.
-- {{? extends T}} không có nghĩa mọi subtype đều hợp lệ để ghi; chỉ null chắc chắn tương thích.
-- Không thể tạo {{new T[]}} do erasure; thường dùng collection hoặc nhận {{Class<T>}}/factory.
-- Comparator không nhất quán với equals có thể làm TreeSet loại nhầm phần tử; chọn comparator theo định danh cần thiết.
+### Cơ chế từng bước của wildcard (PECS)
+
+Compiler xử lý wildcard bằng cách "bắt" (capture) một kiểu ẩn trong mỗi lời gọi:
+
+1. **{{List<? extends Number>}} là nguồn (producer)**: có thể trỏ tới List<Integer> hoặc List<Double>. Đọc ra: chắc chắn là {{Number}}, gán cho {{Number}} được. Ghi: cấm mọi thứ trừ {{null}}, vì compiler không biết subtype cụ thể nào danh sách thực sự chấp nhận.
+2. **{{List<? super Integer>}} là đích (consumer)**: có thể là List<Integer>, List<Number> hoặc List<Object>. Ghi {{Integer}} an toàn vì mọi kiểu đích đều chứa được Integer. Đọc ra: chỉ chắc chắn là {{Object}}.
+3. **Quy tắc PECS**: producer (chỉ đọc) dùng {{? extends T}}, consumer (chỉ ghi) dùng {{? super T}}. Hàm vừa đọc vừa ghi cùng collection thì dùng {{List<T>}} rõ ràng hơn.
+4. **Một T nối hai phía**: trong hàm copy, cùng một {{T}} ràng buộc src và dst, nên giá trị đọc từ src gán vào dst được ngay, không cần cast.
+5. **Runtime bị xóa tham số (erasure)**: {{List<String>}} và {{List<Integer>}} cùng class runtime {{ArrayList}}. Không viết {{value instanceof List<String>}}; kiểm tra từng phần tử hoặc thiết kế kiểu an toàn.
+
+Ví dụ:
+
+~~~java
+// Nguồn chỉ cung cấp số: đọc được Number, ghi bị cấm
+Number total(List<? extends Number> xs) {
+    double s = 0;
+    for (Number n : xs) s += n.doubleValue();   // đọc an toàn
+    return s;
+}
+// Đích chỉ nhận số nguyên: ghi Integer an toàn, đọc chỉ ra Object
+void luu(List<? super Integer> dst) {
+    dst.add(Integer.valueOf(7));                // ghi an toàn
+    Object o = dst.get(0);                      // đọc chỉ khẳng định Object
+}
+~~~
+
+### Lỗi hay gặp trên production
+
+- **API nhận {{List<Object>}}**: triệu chứng là client truyền {{List<String>}} bị lỗi biên dịch ngay chỗ gọi. Nguyên nhân: generic invariant, {{List<String>}} không phải kiểu con của {{List<Object>}}. Cách sửa: dùng {{List<?>}} nếu chỉ đọc, hoặc generic method với wildcard phù hợp cho từng hướng.
+- **Cast raw type**: triệu chứng là lỗi {{ClassCastException}} xuất hiện ở nơi hoàn toàn khác nơi đưa dữ liệu vào, rất khó truy vết. Nguyên nhân: raw type tắt kiểm tra kiểu của compiler. Cách sửa: không dùng raw collection để "né" generic; khai báo kiểu tham số rõ ràng.
+- **{{? extends T}} để ghi**: triệu chứng là code thêm phần tử vào {{List<? extends Number>}} bị từ chối biên dịch. Nguyên nhân: extends chỉ hứa đọc ra được T cha, không hứa chấp nhận mọi subtype để ghi; chỉ {{null}} chắc chắn tương thích. Cách sửa: dùng {{? super T}} cho đích ghi.
+- **{{new T[]}}**: triệu chứng là lỗi biên dịch "generic array creation". Nguyên nhân: type erasure xóa tham số generic ở runtime, JVM không biết kiểu thành phần mảng. Cách sửa: dùng collection hoặc nhận {{Class<T>}}/factory để tạo mảng.
+- **Comparator không nhất quán với equals**: triệu chứng là {{TreeSet}} hoặc {{TreeMap}} loại nhầm phần tử, tìm không thấy key đã put. Nguyên nhân: comparator cho hai object khác bằng 0 trong khi equals cho false, vi phạm "consistent with equals". Cách sửa: chọn comparator theo định danh nghiệp vụ và đảm bảo compareTo trả 0 khi và chỉ khi equals true.
 
 ### Liên hệ phỏng vấn
-Giải thích vì sao {{List<Integer>}} không gán cho {{List<Number>}}, sau đó sửa API copy và max mà không dùng cast. Nêu rõ kiểu gì đọc được và kiểu gì ghi được ở mỗi wildcard.`,
+
+- Vì sao {{List<Integer>}} không gán cho {{List<Number>}}? → Java generic là invariant: nếu cho phép, client có thể thêm {{Double}} vào danh sách thực chất là {{Integer}}, vi phạm kiểu tại runtime; compiler chặn ngay tại compile time.
+- API copy và max sửa như thế nào mà không dùng cast? → copy nhận {{List<? super T> dst}} (đích ghi) và {{List<? extends T> src}} (nguồn đọc); max nhận {{Collection<? extends T> xs}} (producer) và {{Comparator<? super T> c}} (consumer).
+- Kiểu gì đọc được, kiểu gì ghi được ở mỗi wildcard? → {{? extends T}}: đọc được {{T}}, ghi cận trừ {{null}}. {{? super T}}: ghi được {{T}}, đọc chỉ khẳng định {{Object}}.
+`,
   exercises: [{
     title: 'Copy và max không dùng cast',
     prompt: `Hoàn thiện {{Ops.copy}} và {{Ops.max}} với PECS. {{max}} trả {{Optional.empty()}} cho collection rỗng và trả phần tử đầu tiên nếu có comparator tie.`,
@@ -150,7 +233,32 @@ Giải thích vì sao {{List<Integer>}} không gán cho {{List<Number>}}, sau đ
 }`,
     hints: ['Đích consume T nên dùng super; nguồn produce T nên dùng extends.', 'Khởi tạo best từ phần tử đầu thay vì giá trị sentinel để hỗ trợ mọi kiểu T.'],
     explain: `Hai hàm đều dùng generic method để cùng một T liên kết các phía. Comparator chỉ tiêu thụ hai T nên nhận Comparator<? super T>; nhờ vậy Comparator<Object> vẫn dùng được khi tìm max của String. Khởi tạo từ phần tử đầu tránh giả định T có giá trị nhỏ nhất.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['Generics', 'PECS']
+  }], check: [
+    {
+      q: 'Vì sao Java không gán {{List<Integer>}} cho biến {{List<Number>}}?',
+      options: ['Vì Integer và Number là hai class khác nhau, compiler không cho gán', 'Vì generic Java là invariant; nếu cho phép, có thể thêm Double vào danh sách Integer', 'Vì List là interface, không thể dùng làm kiểu tham số', 'Vì Number là abstract class, không tạo được danh sách'],
+      answer: 1,
+      explain: 'Đáp án B đúng: generic Java là invariant, List<Integer> không phải subtype của List<Number>; nếu cho phép thì có thể thêm Double vào danh sách thực chất là Integer, vi phạm kiểu tại runtime. A sai: Integer gán cho Number được bình thường, vấn đề là kiểu generic bao bọc. C sai: List hoàn toàn có dùng làm kiểu tham số. D sai: abstract không liên quan đến vấn đề gán kiểu generic.'
+    },
+    {
+      q: 'Với {{List<? extends Number>}}, thao tác nào sau đây ĐÚNG theo biên dịch?',
+      options: ['Gán giá trị đọc được cho biến kiểu Number', 'Thêm Integer vào danh sách', 'Thêm Double vào danh sách', 'Gán giá trị đọc được cho biến kiểu Integer'],
+      answer: 0,
+      explain: 'Đáp án A đúng: đọc ra chỉ chắc chắn là Number, gán cho biến Number được. B/C sai: wildcard extends là producer (chỉ đọc), ghi cấm mọi thứ trừ null vì compiler không biết subtype thực tế. D sai: đọc ra chỉ biết là Number, không ép về Integer được.'
+    },
+    {
+      q: 'Với {{List<? super Integer>}}, điều gì chính xác?',
+      options: ['Chỉ List<Integer> mới gán được biến này', 'Đọc ra chắc chắn là Integer', 'Ghi Integer an toàn, đọc chỉ khẳng định Object', 'Tương đương List<Integer>, đọc và ghi đều Integer'],
+      answer: 2,
+      explain: 'Đáp án C đúng: đích super Integer có thể là List<Integer>, List<Number>, List<Object>, ghi Integer an toàn; đọc ra chỉ chắc chắn là Object. A sai: List<Number>, List<Object> cũng gán được. B sai: đọc ra chắc chắn Object chứ không phải Integer. D sai: super Integer mở rộng hơn List<Integer>, không tương đương.'
+    },
+    {
+      q: 'Khi gọi {{Collections.max(xs, c)}} với {{xs}} là {{List<String>}} và truyền comparator {{Comparator<Object>}}, điều gì xảy ra?',
+      options: ['Lỗi biên dịch vì Object khác String', 'Chỉ chạy được nếu String implements Comparable', 'Comparator<Object> bị bỏ qua, dùng natural ordering', 'Chạy được: Comparator<Object> là Comparator<? super String>, có thể so hai String'],
+      answer: 3,
+      explain: 'Đáp án D đúng: comparator là consumer (chỉ tiêu thụ hai T), nên Comparator<Object> vẫn nhận được String — đây là contravariance, comparator của kiểu cha dùng được cho kiểu con. A sai: Comparator<Object> là supertype của Comparator<String> theo wildcard, biên dịch được. B/C sai: comparator được truyền thì được dùng, không cần String implements Comparable cũng không bị bỏ qua.'
+    }
+  ], related: ['core-001'], tags: ['Generics', 'PECS']
 },
 {
   id: 'lesson-core-003', track: 'core', order: 3,
