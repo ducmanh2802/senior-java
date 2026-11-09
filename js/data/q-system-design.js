@@ -5129,6 +5129,16 @@ jdbc.execute("SET LOCAL app.tenant_id = '" + tenantId + "'");
 - **Connection pool bùng nổ với DB/schema-per-tenant:** 500 tenant × 5 connection × 10 instance = 25.000 connection. Cần pooler (PgBouncer), pool lười, hoặc giới hạn tenant hoạt động đồng thời.
 - **Migration N lần thất bại giữa chừng:** 200/500 schema đã migrate, 201 lỗi → trạng thái không đồng nhất. Cần công cụ migration per-tenant có theo dõi phiên bản và khả năng chạy lại (idempotent).
 
+### Ví dụ đời thực
+- **Triệu chứng:** Sản phẩm SaaS B2B dùng shared schema, phục vụ ~1.800 tenant. Một buổi sáng, đội hỗ trợ nhận 6 phiếu từ công ty A báo thấy đơn hàng của công ty B trong màn hình quản trị. Tổng ~120 bản ghi bị lộ trong 25 phút trước khi phát hiện.
+- **Điều tra:** Tra log truy cập API thấy các request đều đi qua endpoint export báo cáo. Kiểm tra metric truy vấn theo tenant (nhãn {{tenant_id}} gắn ở tầng ứng dụng) cho thấy endpoint này ghi nhận truy vấn không kèm ngữ cảnh tenant. Đọc mã nguồn: đường đi export gọi câu SQL thô để tối ưu hiệu năng, ghép điều kiện ngày tháng nhưng quên thêm {{tenant_id}}; đường đi này cũng bỏ qua Hibernate filter vì không dùng repository chuẩn.
+- **Nguyên nhân gốc:** Phòng thủ chỉ có một lớp (filter ở ORM). Khi một luồng code "đi tắt" dùng SQL thô và không qua lớp đó, không còn lớp chặn thứ hai. Bảng PostgreSQL chưa bật Row Level Security (RLS) nên database chấp nhận mọi truy vấn hợp lệ cú pháp.
+- **Cách xử lý:** (1) Ngắn hạn (trong 40 phút): tắt endpoint export, xoá dữ liệu cache phản hồi liên quan, thông báo khách hàng bị ảnh hưởng theo quy trình sự cố. (2) Trung hạn (1–2 tuần): bật RLS cho các bảng nghiệp vụ, đặt {{SET LOCAL app.tenant_id}} trong transaction sau bước xác thực, viết lại truy vấn export qua tầng có kiểm soát tenant. (3) Bổ sung test tự động: quét truy vấn SQL trong codebase và bài kiểm tra tích hợp tạo hai tenant, xác nhận tenant A không đọc được dữ liệu tenant B trên mọi API nhạy cảm.
+- **Kết quả đo được:** Sau 30 ngày, 0 sự cố rò rỉ chéo. Bộ kiểm tra cô lập tenant chạy trong CI chặn 2 lần code mới thiếu điều kiện tenant trước khi merge. Độ trễ endpoint export tăng ~8 ms do RLS đánh giá policy, chấp nhận được so với rủi ro tuân thủ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế multi-tenancy cho SaaS B2B, em bắt đầu từ mức cô lập dữ liệu và chi phí vận hành. Ba lựa chọn là shared schema có {{tenant_id}}, schema-per-tenant và DB-per-tenant. Với giai đoạn nhiều tenant nhỏ, em thường chọn shared schema vì chi phí và khả năng mở rộng số tenant tốt, nhưng em không tin vào việc mỗi developer luôn nhớ thêm điều kiện lọc. Em đặt phòng thủ hai lớp: lớp ứng dụng gắn ngữ cảnh tenant từ token đã xác thực và lớp cơ sở dữ liệu dùng Row Level Security của PostgreSQL để tự chặn truy vấn quên điều kiện. Vấn đề tiếp theo là noisy neighbor, tức một tenant chạy báo cáo nặng làm tenant khác chậm, nên em giới hạn tốc độ theo tenant, tách tác vụ nặng vào hàng đợi xử lý công bằng, và đặt {{statement_timeout}} cho truy vấn dài. Thực tế em từng gặp sự cố rò rỉ 120 bản ghi do một endpoint dùng SQL thô bỏ qua ORM filter; sau khi bật RLS và thêm kiểm tra cô lập tenant trong CI, lỗi kiểu đó không tái diễn. Em cũng thiết kế {{TenantRouter}} từ đầu để tenant lớn hoặc có yêu cầu tuân thủ có thể tách sang DB riêng mà không phải viết lại."
+
 > Senior tip: Trong phỏng vấn, đừng chỉ chọn một mô hình — hãy nói "tôi chọn shared schema ban đầu nhưng thiết kế TenantContext + TenantRouter để có thể tách tenant lớn sau, vì yêu cầu cô lập thường tăng theo giá trị hợp đồng". Và luôn nhắc hai lớp phòng thủ (code + RLS): một bug ứng dụng không được phép trở thành sự cố rò rỉ dữ liệu khách hàng.`,
   follow: [
     'Bạn di chuyển một tenant từ shared schema sang DB riêng với gần như không downtime thế nào?',
@@ -5208,6 +5218,16 @@ Event sống mãi (append-only), code thì đổi — đây là thách thức l�
 - **Event quá to hoặc quá chi tiết:** lưu cả blob/ảnh trong event → store phình; hoặc event "mọi lần gõ phím" → không mang nghĩa nghiệp vụ. Event nên là **fact nghiệp vụ có ý nghĩa**.
 - **Không version event từ đầu:** 6 tháng sau đổi schema không còn đường lên. Đặt {{schemaVersion}} và cơ chế upcast ngay từ event đầu tiên.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Hệ thống ví điện tử dùng event sourcing cho sổ cái giao dịch (aggregate tài khoản). Sau 18 tháng vận hành, một số tài khoản hoạt động dày (nhà bán lẻ) tích ~60.000 event. Khi gọi API lấy số dư/chi tiết tài khoản, p95 độ trễ tăng từ 120 ms lên 2,8 giây vào giờ cao điểm; thread pool xử lý lệnh nạp/rút bắt đầu xếp hàng.
+- **Điều tra:** Bật theo dõi thời gian load aggregate thấy phần lớn thời gian nằm ở bước đọc và phát lại (replay) hàng chục nghìn event từ event store. Kiểm tra metric cho thấy tài khoản chậm đều có {{event_count}} rất lớn; truy vấn DB vẫn dùng index {{(aggregate_id, version)}} nhưng số bản ghi đọc mỗi lần là vấn đề.
+- **Nguyên nhân gốc:** Thiết kế ban đầu chưa bật snapshot. Mỗi thao tác đều replay toàn bộ lịch sử từ version 1, nên chi phí load tăng tuyến tính theo tuổi và tần suất giao dịch của aggregate.
+- **Cách xử lý:** (1) Triển khai snapshot: sau mỗi 500 event (hoặc khi load vượt ngưỡng), lưu trạng thái tài khoản kèm {{version}}. Luồng load đổi thành "đọc snapshot gần nhất + replay phần event còn lại". (2) Chạy job dựng snapshot nền cho các aggregate "nóng" để lần load đầu sau triển khai không phải trả hết chi phí replay. (3) Thiết lập giám sát {{events_replayed_per_load}} và {{aggregate_event_count}}; đặt cảnh báo khi replay trung bình vượt 1.000 event.
+- **Kết quả đo được:** Với tài khoản ~60.000 event, số event replay mỗi lần load giảm xuống còn 0–500. p95 API lấy số dư giảm từ 2,8 giây về 150 ms; tải đọc trên event store giảm khoảng 70% cho nhóm tài khoản hoạt động dày. Snapshot bị xoá thử nghiệm cho một aggregate vẫn dựng lại đúng trạng thái từ event, xác nhận snapshot chỉ là tối ưu.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu event sourcing là cách lưu mọi thay đổi trạng thái dưới dạng chuỗi sự kiện bất biến, ví dụ tài khoản được mở, tiền nạp vào, tiền rút ra, rồi suy ra trạng thái hiện tại bằng cách phát lại các sự kiện đó. Cách này rất mạnh khi bài toán cần audit và truy vết, như sổ cái tài chính, vì bản thân event store đã là lịch sử đầy đủ. Nhưng em không dùng nó cho mọi CRUD, vì truy vấn phức tạp hơn, team phải tư duy theo event và thường cần thêm read model. Khi dùng thật, hai vấn đề em luôn chuẩn bị là snapshot và tiến hoá lược đồ event. Snapshot giúp aggregate có nhiều sự kiện không phải replay từ đầu; snapshot chỉ là tối ưu, nguồn sự thật vẫn là event. Với schema evolution, event đã ghi là hợp đồng bất biến, nên thay đổi tương thích thì thêm field tuỳ chọn, còn thay đổi không tương thích thì em dùng upcasting khi đọc hoặc version hoá event, không sửa event cũ. Em từng xử lý một case tải tài khoản 60.000 event mất gần 3 giây; sau khi thêm snapshot mỗi 500 event, p95 giảm còn khoảng 150 mili giây."
+
 > Senior tip: Câu trả lời senior không phải "event sourcing tuyệt vời" mà là "tôi dùng event sourcing cho phần cần audit/replay (ví dụ sổ cái giao dịch) và giữ CRUD thường cho phần còn lại trong cùng hệ thống". Event sourcing là công cụ cho đúng bài toán, không phải kiến trúc mặc định cho mọi thứ. Nếu interviewer hỏi "khi nào KHÔNG dùng" mà bạn không nêu được, đó là dấu hiệu chưa dùng thực tế.`,
   follow: [
     'Event sourcing khác gì chỉ lưu audit log hoặc dùng CDC/outbox? Khi nào audit log là đủ?',
@@ -5279,6 +5299,16 @@ Không phải mọi thứ chia theo cell được:
 - **Cell không đều (hot cell):** vài tenant "cá voi" dồn vào một cell → cell đó quá tải. Cần giám sát per cell, đặt tenant lớn vào cell riêng hoặc chia lại.
 - **Vận hành N cell:** deploy, migrate schema, quan sát nhân lên N lần. Bắt buộc tự động hoá (IaC, deploy theo sóng cell) — làm tay không scale.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Nền tảng SaaS chạy một cụm ứng dụng và một cụm cơ sở dữ liệu dùng chung cho ~20.000 tenant. Một lần phát hành tính năng báo cáo mới, một truy vấn thiếu index chỉ bị kích hoạt với kiểu dữ liệu của một nhóm tenant. DB CPU tăng lên 98% trong 6 phút, hàng đợi kết nối cạn, và 100% tenant (kể cả tenant không dùng báo cáo) gặp lỗi 5xx hoặc chậm nghiêm trọng.
+- **Điều tra:** Dashboard toàn cụm cho thấy CPU/connection tăng đột ngột ngay sau deploy. Truy vấn chậm hàng đầu (từ thống kê truy vấn chậm) là câu SQL của tính năng mới; tần suất tăng theo một nhóm tenant thử tính năng. Không có cách cô lập nhóm này vì mọi tenant đi chung một cụm ứng dụng và chung kết nối DB.
+- **Nguyên nhân gốc:** Blast radius (bán kính ảnh hưởng) của toàn hệ là 100%: một thay đổi xấu hoặc một mẫu tải bất thường lan ra mọi tenant. Hệ thống thiếu ranh giới cô lập failure domain.
+- **Cách xử lý:** (1) Ngắn hạn: rollback bản phát hành, thêm giới hạn thời gian truy vấn và index thiếu, khôi phục dịch vụ. (2) Trung hạn: chuyển sang mô hình cell-based. Chia 20.000 tenant thành 20 cell, mỗi cell ~1.000 tenant với stack ứng dụng + DB riêng; đặt cell router mỏng, stateless tra bảng ánh xạ {{tenant -> cell}} (cache cục bộ, dữ liệu gốc đặt ở kho cấu hình bền). (3) Rollout về sau đi theo sóng từng cell, có giám sát per-cell (độ trễ, lỗi, CPU DB).
+- **Kết quả đo được:** Khi tái diễn một truy vấn nặng tương tự ở môi trường thử nghiệm có cell, chỉ cell chứa tenant kích hoạt (≈5% tenant) bị ảnh hưởng, các cell khác giữ p95 ổn định. Thời gian deploy tăng do rollout 20 sóng, nhưng được tự động hoá bằng pipeline; rủi ro ảnh hưởng toàn hệ giảm rõ rệt so với cụm đơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu cell-based architecture là chia hệ thống thành nhiều ô độc lập, mỗi ô có đủ stack để phục vụ một nhóm tenant, thay vì một cụm lớn phục vụ tất cả. Mục tiêu chính là giới hạn blast radius: nếu một deploy lỗi, một truy vấn xấu hay một tenant quá tải gây sự cố, chỉ ô đó bị ảnh hưởng. Về thiết kế, em cần một cell router rất mỏng và stateless để tra ánh xạ tenant sang cell rồi chuyển tiếp; router phải đơn giản và sẵn sàng cao vì nó là điểm còn có thể ảnh hưởng toàn hệ. Dữ liệu nghiệp vụ của tenant nằm trong cell, còn mapping tenant-to-cell và cấu hình toàn cục cần một control plane riêng, tách khỏi data plane. Em cũng phải tính trước việc di chuyển tenant khi cell đầy và xử lý state toàn cục như danh mục dùng chung. Trong một tình huống thực tế, một truy vấn thiếu index sau deploy đã làm 20.000 tenant lỗi vì dùng cụm chung; sau khi chia 20 cell, lỗi tương tự chỉ ảnh hưởng khoảng 5% tenant. Em thường nhấn mạnh cell-based không phải bước đầu, chỉ dùng khi chi phí sự cố lan rộng lớn hơn chi phí vận hành nhiều cell."
+
 > Senior tip: Cell-based không phải bước đầu tiên. Hãy nói: "Tôi chỉ dùng cell khi đã thấy sự cố một tenant/deploy làm ảnh hưởng toàn hệ và chi phí sự cố vượt chi phí vận hành N cell." Nhấn mạnh hai điểm interviewer hay hỏi: router phải cực đơn giản (nó là blast radius còn lại), và phải đo được kích thước cell = blast radius mục tiêu bằng số liệu, không chọn cảm tính.`,
   follow: [
     'Làm sao deploy phiên bản mới an toàn trên 50 cell (rollout strategy)?',
@@ -5333,6 +5363,16 @@ Tổng minh hoạ: A ~\$4.530/tháng vs B ~\$1.690/tháng cho cùng chức năng
 - **Dữ liệu chuyển mạng (data transfer) bị quên:** cross-AZ, NAT Gateway, egress internet tính tiền theo GB — kiến trúc chatty giữa service có thể làm mục này phình bất ngờ.
 - **Tài nguyên mồ côi:** EBS không gắn, load balancer không có target, snapshot cũ, môi trường dev chạy cuối tuần. Tự động tắt/xoá tài nguyên không dùng.
 - **Cắt chi phí làm vỡ SLO:** giảm replica, tắt multi-AZ, xoá log để rẻ → sự cố kéo dài, mất niềm tin. FinOps tối ưu **lãng phí**, không tối ưu **độ bền cần thiết**.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Hoá đơn AWS của một hệ thương mại điện tử tăng từ ~\$6.200/tháng lên ~\$14.800/tháng trong 2 tháng, trong khi lượng đơn hàng chỉ tăng ~15%. Không có sự cố hiệu năng rõ rệt, nên chi phí bị xem là "tăng trưởng tự nhiên" cho đến khi đội tài chính yêu cầu giải trình.
+- **Điều tra:** Phân tích hoá đơn theo tag {{service}} và {{env}} cho thấy ba khoản tăng lớn: (1) log ứng dụng lưu và index 90 ngày ở mức chi tiết cao (~\$3.900/tháng), (2) data transfer qua NAT Gateway tăng do hai service gọi nhau rất chatty theo từng mục giỏ hàng (~\$2.100/tháng), (3) cụm worker over-provision luôn chạy đủ cho giờ cao điểm (~\$1.700/tháng). Metric đơn vị cho thấy {{cost per 1.000 orders}} tăng 2,1 lần.
+- **Nguyên nhân gốc:** Các quyết định kiến trúc được chốt theo tính năng: bật log debug kéo dài "để tiện tra cứu", tách service nhưng thiết kế API chatty, và cấp tài nguyên cố định cho peak. Không có chủ sở hữu chi phí theo service và không theo dõi chỉ số đơn vị.
+- **Cách xử lý:** (1) Log/quan sát: giữ log hot 30 ngày, mẫu (sampling) log thành công, chuyển log cũ sang lưu trữ giá rẻ; giữ đầy đủ log lỗi và trace khi có sự cố. (2) Giao tiếp: gộp nhiều lời gọi thành một API batch, thêm cache dữ liệu đọc nhiều; không loại bỏ multi-AZ vì mục tiêu là giảm data transfer không cần thiết, không cắt độ bền. (3) Compute: autoscale worker 3→12 theo hàng đợi, dùng reserved cho tải nền ổn định; job batch không nhạy trễ dùng spot với cơ chế thử lại. (4) Quy trình: gắn tag bắt buộc, đặt mục tiêu {{cost per 1.000 orders}}, rà soát hàng tháng.
+- **Kết quả đo được:** Sau 6 tuần, hoá đơn giảm còn ~\$8.100/tháng (~45%) dù lượng đơn tiếp tục tăng nhẹ. {{cost per 1.000 orders}} về gần mức trước đợt tăng. SLO p95 và tỷ lệ lỗi không xấu đi; thời gian tra cứu log cũ dài hạn tăng nhưng vẫn đáp ứng khi cần nhờ lưu trữ lạnh.
+
+### Trả lời mẫu khi phỏng vấn
+"Em xem chi phí cloud là một thuộc tính kiến trúc, không phải việc chỉ xử lý sau khi hệ thống chạy. Quyết định chọn serverless hay container luôn chạy, dùng managed database nào, giữ log bao lâu, các service gọi nhau chatty hay batch, hay bật multi-AZ đều ảnh hưởng trực tiếp đến hoá đơn. Cách em tiếp cận theo FinOps là đo chi phí theo đơn vị, ví dụ cost per 1.000 request hoặc cost per order, rồi gắn trách nhiệm chi phí cho từng service bằng tag. Khi tối ưu, em bắt đầu từ những khoản lớn nhất thay vì tối ưu vi mô. Ví dụ em từng gặp hoá đơn tăng gấp hơn hai lần trong khi đơn hàng chỉ tăng 15%; nguyên nhân nằm ở log giữ quá lâu, data transfer qua NAT do API chatty và worker cấp cố định cho peak. Sau khi đổi chiến lược log, gộp lời gọi, thêm cache và autoscale kết hợp reserved cho tải nền, chi phí giảm khoảng 45% mà SLO không xấu đi. Em luôn cân bằng chi phí với độ tin cậy: FinOps là cắt lãng phí, không cắt các cơ chế HA hay quan sát mà hệ thống thực sự cần."
 
 > Senior tip: Khi trình bày quyết định kiến trúc, tôi kèm ước tính chi phí bậc lớn (order of magnitude) và chỉ số cost-per-request, ví dụ "phương án A ~\$2k/tháng, B ~\$600/tháng nhưng RTO tăng từ 5 phút lên 30 phút — với hệ thanh toán tôi chọn A, với báo cáo nội bộ tôi chọn B". Điều đó cho thấy bạn xem chi phí là ràng buộc thiết kế thật, không phải việc của đội tài chính sau khi deploy.`,
   follow: [
@@ -5397,6 +5437,16 @@ Arch -> Team: ghi ADR, dat moc review
 - **Không đặt mốc review:** quyết định sai sống mãi vì "đã chốt rồi". Ghi trong ADR: "review sau 8 tuần; nếu chi phí vận hành > Y hoặc p95 > Z thì xét lại phương án B".
 - **Bỏ qua tiếng nói ít nói:** người im lặng (junior, người mới, remote) có thể thấy rủi ro thật. RFC dạng viết giúp họ góp ý không phải tranh miệng.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Team backend 8 người tranh luận 3 tuần về việc tách module thanh toán thành service riêng hay giữ trong modular monolith. Hai nhóm giữ lập trường ngược nhau, cuộc họp kéo dài, quyết định bị trì hoãn; tính năng thanh toán mới chậm tiến độ. Mỗi bên viện dẫn kinh nghiệm cá nhân ("microservice linh hoạt hơn", "monolith dễ vận hành hơn") nhưng không có dữ liệu chung.
+- **Điều tra (làm rõ vấn đề):** Kiến trúc sư viết RFC 2 trang nêu bối cảnh: module thanh toán hiện nhận ~40 request/giây (giờ cao điểm 120), team có 1 người trực vận hành, deadline tính năng mới là 6 tuần, mục tiêu là giảm rủi ro deploy ảnh hưởng đơn hàng. RFC liệt kê ba phương án (giữ modular monolith, tách service, tách sau khi đạt tiêu chí), kèm tiêu chí đã chốt với team: tác động tới deadline, công vận hành, khả năng cô lập lỗi, độ phức tạp giao dịch, chi phí ước tính.
+- **Nguyên nhân gốc (của bế tắc):** Bất đồng thực ra là khác ưu tiên (tốc độ giao hàng vs cô lập dài hạn) và có giả định chưa kiểm chứng (tách service có chắc cô lập lỗi tốt hơn với team 1 người vận hành?). Tranh luận miệng không tách được hai lớp này.
+- **Cách xử lý:** (1) Chốt tiêu chí và trọng số trước khi chấm điểm. (2) Chạy spike 3 ngày có time-box: dựng một service thanh toán tối giản trong môi trường dev, đo effort triển khai, quan sát luồng giao dịch (cần bù trừ khi lỗi), và đánh giá vận hành (log, deploy, theo dõi). (3) Kết quả spike cho thấy đáp ứng được chức năng nhưng tăng độ phức tạp giao dịch và vận hành so với deadline 6 tuần. (4) Quyết định: giữ modular monolith, siết ranh giới module bằng interface rõ và kiểm tra kiến trúc tự động; ghi ADR với điều kiện review sau 8 tuần hoặc khi tải thanh toán vượt ngưỡng đã định thì xét lại việc tách.
+- **Kết quả đo được:** Quyết định chốt trong 5 ngày sau RFC (so với 3 tuần bế tắc). Tính năng mới ra đúng kế hoạch; 8 tuần sau, hai sự cố deploy không làm gián đoạn luồng thanh toán nhờ ranh giới module rõ hơn. ADR giúp cuộc thảo luận về sau dựa trên tiêu chí và mốc đo, không lặp lại tranh luận cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi team không đồng ý với quyết định kiến trúc của em, mục tiêu của em không phải thắng tranh luận mà là đi đến quyết định tốt nhất theo bằng chứng và để team cam kết thực hiện. Em thường bắt đầu bằng RFC ngắn: nêu rõ vấn đề, ràng buộc, các phương án kể cả phương án em không thích, và tiêu chí đánh giá. Trước khi tranh luận phương án, em chốt tiêu chí với team, ví dụ tác động deadline, độ trễ, công vận hành, chi phí và mức team quen. Nếu còn giả định chưa kiểm chứng, em dùng spike có time-box, thường 1 đến 3 ngày, để trả lời một câu hỏi cụ thể và lấy dữ liệu. Sau đó người chịu trách nhiệm quyết định dựa trên tiêu chí, ghi nhận ý kiến phản đối, và chốt ADR có mốc review lại. Em từng gặp trường hợp team tranh luận ba tuần về tách service thanh toán; RFC và một spike ba ngày cho thấy chi phí vận hành và giao dịch vượt deadline, nên em quyết định giữ modular monolith, siết ranh giới module và đặt điều kiện review sau tám tuần. Kể cả khi dữ liệu cho thấy em sai, em đổi ý và ghi rõ lý do."
+
 > Senior tip: Dấu hiệu bạn dẫn dắt tốt là sau quyết định, người từng phản đối có thể giải thích được "vì sao team chọn vậy" gần đúng như bạn — nghĩa là họ thấy lập luận của mình được xét đến. Trong phỏng vấn, kể một câu chuyện thật: bất đồng gì, bạn dùng RFC/spike/tiêu chí nào, kết quả ra sao (kể cả khi bạn đã sai và đổi ý nhờ dữ liệu) — điều đó thể hiện trưởng thành hơn là kể bạn luôn đúng.`,
   follow: [
     'Khi spike cho thấy phương án bạn đề xuất kém hơn, bạn xử lý thế nào trước team?',
@@ -5415,57 +5465,64 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế notification service đa kênh.',
-  a: `**Tóm tắt:** Notification service đa kênh cần đảm bảo at-least-once delivery (mỗi thông báo sẽ được gửi ít nhất một lần), khử trùng theo cặp (dedupKey, channel), hàng đợi riêng từng kênh, priority, retry với backoff + jitter, circuit breaker cho provider downstream.
+  a: `**Tóm tắt:** Notification service đa kênh (gửi thông báo qua nhiều kênh như email, SMS, push, in-app) cần thiết kế theo **at-least-once delivery** (ít nhất một lần: hệ thống đảm bảo gửi, nhưng có thể gửi lặp nếu mất ACK — gói xác nhận), kết hợp **khử trùng** (dedup) bằng khóa nghiệp vụ. Mỗi kênh có hàng đợi, SLA (mức cam kết thời gian), giới hạn tốc độ và nhà cung cấp (provider) riêng. Ưu tiên thông báo quan trọng (OTP — mã xác thực một lần), dùng retry có backoff + jitter (độ trễ ngẫu nhiên) và circuit breaker (cầu dao: ngắt tạm khi provider lỗi liên tục) để bảo vệ hệ thống.
 
 ### 1. Vì sao at-least-once chứ không exactly-once?
+Exactly-once (đúng một lần) trên mạng là rất khó/không thực tế vì lỗi mạng, timeout và crash (bài toán tương tự "hai vị tướng"): producer (bên gửi) không biết ACK bị mất hay xử lý chưa xong nên phải retry. Cách thực dụng: **at-least-once + dedup phía nhận/xử lý**. Gửi có thể lặp, nhưng xử lý lặp thì bỏ qua nhờ khóa trùng.
 
-Exactly-once across network là bất khả thi (Two Generals). At-least-once + dedup là pattern thực dụng: producer retry khi không nhận ACK, consumer dedup khi thấy dedupKey đã xử lý.
+### 2. Khử trùng (dedup)
+- **dedup key** = hàm băm của các yếu tố nghiệp vụ, ví dụ {{hash(userId + templateId + businessEventId + channel)}}. Dùng {{businessEventId}} (id sự kiện gốc, như id đơn hàng) để retry của cùng sự kiện không tạo thông báo mới.
+- Lưu key trong Redis bằng thao tác nguyên tử {{SET key NX EX 86400}} (chỉ đặt nếu chưa có, hết hạn sau 24h). Key đã tồn tại → bỏ qua (skip).
+- Cửa sổ dedup (TTL) chọn theo nghiệp vụ: OTP vài phút, thông báo giao dịch vài giờ/1 ngày, marketing dài hơn nhưng vẫn cần chặn trùng chiến dịch.
 
-### 2. Dedup key
+### 3. Hàng đợi theo kênh và ưu tiên
+Mỗi kênh (email/SMS/push/in-app) một hàng đợi riêng vì:
+- **SLA khác nhau:** OTP SMS cần < 5 giây; email giao dịch có thể 30 giây; marketing có thể trễ hơn.
+- **Provider khác nhau:** lỗi của nhà cung cấp SMS không được làm tắc email.
+- **Rate limit khác nhau:** provider giới hạn số gửi/giây; worker phải điều tiết theo kênh.
 
-dedupKey = hash(userId + templateId + businessEventId + channel). Lưu trong Redis SETNX với TTL 24h; nếu key tồn tại → skip.
+Ưu tiên (priority): **OTP > giao dịch > marketing**. OTP đi hàng đợi riêng có worker chuyên dụng, bypass (đi tắt) mọi hàng đợi marketing để không bị "đói" tài nguyên.
 
-### 3. Hàng đợi theo kênh
+### 4. Retry, backoff và jitter
+- Retry khi lỗi tạm (timeout, 5xx, throttling). Không retry mù khi lỗi vĩnh viễn (số điện thoại sai, unsubscribe) — phân loại lỗi.
+- Exponential backoff: 1s, 2s, 4s, 8s... giới hạn số lần và tổng thời gian (ví dụ tối đa 5 lần trong 10 phút cho giao dịch).
+- **Jitter (ngẫu nhiên hoá):** dùng full jitter {{random(0, backoff)}} thay vì chờ đúng mốc, để tránh thundering herd (bầy đàn: hàng nghìn request retry cùng lúc khi provider vừa hồi phục).
 
-Mỗi kênh (email/SMS/push/in-app) một queue riêng vì:
-- SLA khác (OTP SMS < 5s, email có thể 30s).
-- Provider khác.
-- Rate limit khác.
+### 5. Circuit breaker cho provider
+Khi tỷ lệ lỗi của provider vượt ngưỡng (ví dụ > 50% trong 10 giây) → **open** (mở cầu dao, ngừng gọi) một khoảng (30 giây) → **half-open** (thử thăm dò vài request). Nếu probe thành công thì đóng lại. Mục đích: không làm quá tải provider đang chết và không lãng phí worker chờ timeout. Kết hợp fallback kênh nếu hợp lý (push lỗi tạm thời → thử in-app), nhưng OTP phải cẩn trọng với bảo mật và chi phí SMS.
 
-Priority queue: OTP > transactional > marketing.
-
-### 4. Retry + jitter
-
-Exponential backoff 1s,2s,4s,... + full jitter để tránh thundering herd khi provider phục hồi.
-
-### 5. Circuit breaker
-
-Khi error rate > 50% trong 10s → open 30s → half-open probe. Tránh spam provider chết.
-
-### 6. OTP ưu tiên
-
-OTP bypass marketing queue, dùng queue riêng với worker dedicated, retry nhanh hơn.
-
+### 6. Luồng xử lý tổng quát
 ~~~seq
-title: Luồng gửi notification
-actors: App | Notification Service | Queue | Provider
-App -> Notification Service: event (userId, template)
-Notification Service -> Notification Service: dedup check
-Notification Service -> Queue: enqueue per channel
-Queue -> Provider: send
+title: Luồng gửi notification đa kênh
+actors: App | NotifySvc | Dedup | Queue | Provider
+App -> NotifySvc: event (user, template, data)
+NotifySvc -> Dedup: check dedupKey
+Dedup --> NotifySvc: new / duplicate
+NotifySvc -> Queue: enqueue theo kênh + priority
+Queue -> Provider: worker gửi (rate limit)
 Provider --> Queue: ACK / fail
-Queue -> Notification Service: retry on fail
+Queue -> NotifySvc: retry backoff+jitter / DLQ
 ~~~
+- **DLQ (dead-letter queue — hàng đợi thư chết):** sau khi vượt số lần retry, đưa vào DLQ để điều tra thủ công, không chặn luồng chính.
 
-### Pitfall
+### 7. Dữ liệu và tuỳ chọn người dùng
+- Lưu trạng thái gửi ({{PENDING/SENT/DELIVERED/FAILED}}) để tra cứu và hỗ trợ khách hàng, nhưng nguồn phát là sự kiện nghiệp vụ.
+- Tôn trọng tuỳ chọn nhận (opt-in/opt-out) theo kênh và loại thông báo; OTP/bảo mật thường không cho opt-out.
+- Template tách nội dung khỏi code, có biến động ({{amount}}, {{orderId}}) và phiên bản theo ngôn ngữ.
 
-- Dedup TTL quá ngắn → gửi trùng sau restart.
-- Không idempotent provider call → retry gửi 2 lần.
-- Marketing flood OTP queue → starve OTP.
+### Ví dụ đời thực
+- **Triệu chứng:** Nền tảng thương mại điện tử gửi ~2 triệu thông báo/ngày (email, push, SMS OTP). Đợt khuyến mãi cuối tuần, đội marketing phát chiến dịch 1,2 triệu email trong 20 phút. Cùng lúc, người dùng phản ánh OTP đăng nhập/đặt hàng đến sau 3–8 phút; tỷ lệ đăng nhập thành công giảm rõ trong 30 phút.
+- **Điều tra:** Kiểm tra dashboard hàng đợi thấy một hàng đợi chung cho nhiều loại thông báo đang tích ~900.000 message, thời gian chờ tăng vọt. Worker xử lý lần lượt nên email marketing chiếm phần lớn slot. Metric provider SMS vẫn bình thường (độ trễ provider ~400 ms), nhưng thời điểm worker lấy được job OTP đã trễ. Log cho thấy không có phân biệt ưu tiên giữa OTP và marketing.
+- **Nguyên nhân gốc:** Thiết kế dùng hàng đợi/worker chung và không tách ưu tiên kênh. Tải marketing (throughput lớn, SLA lỏng) làm "đói" OTP (throughput thấp, SLA < 5 giây). Ngoài ra, cơ chế retry cũ không có jitter nên khi một đợt lỗi tạm xảy ra trước đó, retry dồn cụm gây tải tăng.
+- **Cách xử lý:** (1) Ngắn hạn: tạm dừng chiến dịch marketing, tăng worker cho luồng giao dịch, xử lý backlog OTP. (2) Thiết kế lại: tách hàng đợi theo kênh và loại — **OTP đi queue riêng với worker chuyên dụng**, giới hạn SLA nội bộ; marketing có queue/rate limit riêng. Thêm priority, dedup key theo {{businessEventId + channel}}, retry exponential backoff với full jitter, và circuit breaker cho từng provider. (3) Đặt cảnh báo theo tuổi message OTP trong queue (ví dụ > 10 giây) và tỷ lệ gửi trễ.
+- **Kết quả đo được:** Sau thay đổi, 99% OTP được gửi trong < 4 giây ngay cả khi chiến dịch marketing chạy song song (đã giới hạn tốc độ). Số khiếu nại "không nhận OTP" giảm từ ~120/giờ ở đỉnh sự cố xuống < 5/giờ. Thời gian gửi email marketing tăng nhẹ (chấp nhận theo SLA), không còn ảnh hưởng luồng xác thực.
 
-> Senior tip: OTP phải đi queue riêng với worker dedicated và SLA < 5s; marketing có thể bị delay. Jitter full (random 0..backoff) chứ không equal jitter, để tránh đồng bộ retry.` ,
-  follow: ['OTP ưu tiên thế nào?','Tại sao cần jitter?'],
-  tags: ['notification','queue','dedup']
+### Trả lời mẫu khi phỏng vấn
+"Nếu thiết kế notification service đa kênh, em sẽ tách rõ luồng gửi theo kênh và theo mức ưu tiên, vì email, SMS, push, in-app có SLA, provider và rate limit khác nhau. Về độ tin cậy, em chọn at-least-once delivery vì exactly-once trên mạng rất khó; để tránh gửi trùng khi retry, em dùng dedup key dựa trên sự kiện nghiệp vụ như {{businessEventId}} kết hợp user và channel, lưu trong Redis với thao tác nguyên tử và TTL phù hợp. Mỗi kênh có hàng đợi riêng, worker điều tiết theo rate limit provider. OTP là loại quan trọng nhất nên em cho đi queue riêng có worker chuyên dụng, không bao giờ dùng chung với marketing, mục tiêu dưới 5 giây. Với lỗi tạm, em retry bằng exponential backoff có full jitter để tránh thundering herd, còn lỗi vĩnh viễn thì không retry mù mà đưa vào dead-letter queue. Em cũng đặt circuit breaker cho từng provider để ngừng gọi khi lỗi liên tục. Em từng gặp case chiến dịch marketing làm OTP trễ tới 8 phút vì dùng hàng đợi chung; sau khi tách queue OTP, thêm dedup, jitter và cảnh báo theo tuổi message, 99% OTP gửi dưới 4 giây."
+
+> Senior tip: OTP phải đi queue riêng với worker dedicated và SLA < 5s; marketing có thể bị delay. Jitter full (random 0..backoff) chứ không equal jitter, để tránh đồng bộ retry.`,
+  follow: ['OTP ưu tiên thế nào?', 'Tại sao cần jitter?', 'Khi provider SMS và push cùng lỗi, bạn fallback và bảo vệ trải nghiệm người dùng ra sao?'],
+  tags: ['notification', 'queue', 'dedup']
 },
 {
   id: 'design-031',
