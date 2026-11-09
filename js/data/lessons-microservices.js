@@ -332,6 +332,43 @@ Gọi compensation ngay khi timeout là nguy hiểm vì lệnh gốc có thể �
 Vẽ state transition, nêu dữ liệu bền vững, key idempotency, timeout không rõ kết quả, và cách tiếp tục sau restart. Nói rõ compensation nào thực sự đảo ngược được.
 
 > Senior tip: compensation thất bại là một trạng thái nghiệp vụ cần dashboard và runbook, không phải chỉ là log ERROR.
+
+### Cơ chế từng bước
+
+Saga chia một nghiệp vụ lớn thành nhiều **local transaction** (giao dịch cục bộ): mỗi service tự commit trong database của riêng mình, không có một transaction duy nhất bao toàn bộ quy trình. **Orchestrator** lưu sagaId (mã định danh toàn quy trình), trạng thái từng bước và kết quả, rồi quyết định bước tiếp theo.
+
+Ví dụ đặt hàng: tạo đơn PENDING → authorize tiền → reserve kho → confirm đơn. Mỗi service commit riêng. Nếu bước 3 (reserve) thất bại sau khi bước 2 đã trừ tiền, orchestrator không thể rollback payment (đã commit ở database khác); thay vào đó gọi **compensation** (bù trừ): hoàn tiền qua payment rồi đánh dấu đơn FAILED/CANCELLED. Compensation là hành động nghiệp vụ mới, không phải quay ngược thời gian, và chỉ chạy cho các bước đã thành công.
+
+~~~java
+// Phác thảo orchestrator: chạy từng bước, bù ngược thứ tự khi lỗi
+class OrderSagaOrchestrator {
+    void run(Order order) {
+        orderService.createPending(order.id()); // commit đơn PENDING
+        if (!paymentService.authorize(order.id(), order.amount())) {
+            orderService.cancel(order.id());    // chưa trừ tiền → chỉ hủy đơn
+            return;
+        }
+        if (!inventoryService.reserve(order.id(), order.items())) {
+            paymentService.refund(order.id(), order.amount()); // đã trừ → hoàn tiền trước
+            orderService.cancel(order.id());                      // rồi hủy đơn
+            return;
+        }
+        orderService.confirm(order.id());   // saga hoàn thành
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+
+- **Triệu chứng:** payment timeout, orchestrator refund và hủy đơn, sau provider cho biết tiền đã bị trừ. Khách bị trừ tiền nhưng đơn đã hủy. **Nguyên nhân:** timeout không chứng minh thao tác thất bại; lệnh gốc có thể vẫn chạy ở provider. **Cách sửa:** trước khi bù trừ, tra cứu trạng thái bằng idempotency key hoặc gửi lại lệnh cùng key để lấy kết quả cũ; chỉ refund khi chắc đã charge.
+- **Triệu chứng:** compensation gọi refund nhưng refund lại lỗi, orchestrator đánh dấu saga FAILED và bỏ qua; tiền chưa hoàn nhưng hệ thống coi như xong. **Nguyên nhân:** coi compensation là best-effort, không retry và không theo dõi. **Cách sửa:** compensation idempotent, retry có giới hạn; lưu lỗi cuối, đưa saga vào trạng thái cần can thiệp và alert.
+- **Triệu chứng:** restart orchestrator làm saga quên tiến độ, bắt đầu lại từ đầu và trừ tiền hai lần cho cùng đơn. **Nguyên nhân:** trạng thái saga chỉ lưu trong RAM, mất khi process restart. **Cách sửa:** lưu sagaId, trạng thái từng bước và kết quả vào database bền vững trước khi gọi service tiếp theo; restart đọc lại và tiếp tục từ bước cuối cùng đã lưu.
+
+### Liên hệ phỏng vấn
+
+- **Hỏi:** Vì sao saga không dùng transaction phân tán (2PC) bao cả ba service? **Trả lời ngắn:** Hai service có database riêng, không có giao thức commit chung thực dụng; 2PC khóa lâu và dễ treo. Saga chấp nhận trạng thái trung gian, mỗi service commit cục bộ, rồi bù trừ bằng compensation khi lỗi.
+- **Hỏi:** Payment timeout, chưa rõ provider đã trừ tiền chưa, bạn làm gì? **Trả lời ngắn:** Không refund ngay. Tra cứu hoặc retry cùng idempotency key để provider trả kết quả cũ, chỉ hoàn tiền khi chắc đã charge.
+- **Hỏi:** Compensation thất bại (refund lỗi), xử lý thế nào? **Trả lời ngắn:** Compensation idempotent, retry có giới hạn, lưu lỗi cuối, đưa saga vào trạng thái cần can thiệp và alert; không coi compensation là best-effort rồi bỏ qua.
 `,
   exercises: [{
     title: 'Bù tiền sau khi giữ kho thất bại',
@@ -379,6 +416,7 @@ Lỗi thường gặp: compensation theo thứ tự xuôi, bù bước chưa th�
   check: [
     { q: 'Trong saga, compensation có nghĩa gì?', options: ['Rollback ACID trên mọi service', 'Một hành động nghiệp vụ mới nhằm bù cho bước đã commit', 'Xóa log broker', 'Tắt retry toàn hệ thống'], answer: 1, explain: `Mỗi local transaction đã commit riêng. Compensation là command/event mới, có thể thất bại hoặc không đảo ngược hoàn toàn tác động.` },
     { q: 'Payment request timeout và chưa rõ provider đã charge chưa, nên làm gì?', options: ['Refund ngay không cần kiểm tra', 'Gửi charge mới với ID khác', 'Tra cứu hoặc retry cùng idempotency key để xác định kết quả', 'Đánh dấu saga thành công'], answer: 2, explain: `Timeout không chứng minh thao tác thất bại. Cùng key giúp provider trả kết quả cũ; query trạng thái tránh charge hai lần hoặc refund sai.` },
+    { q: 'Bước thứ ba của saga thất bại sau khi bước thứ hai đã commit riêng. Orchestrator nên làm gì?', options: ['Gọi compensation cho bước hai (đã thành công), ngược thứ tự, rồi đánh dấu đơn FAILED', 'Gọi rollback trên database của bước hai để hủy tất cả', 'Chỉ đánh dấu đơn FAILED mà không động vào bước hai', 'Bỏ qua bước hai và tiếp tục bước thứ tư'], answer: 0, explain: `Đúng (A): mỗi local transaction đã commit riêng, không có rollback toàn cục; orchestrator gọi compensation (hành động bù mới) cho các bước đã thành công, ngược thứ tự, rồi kết thúc saga. (B) sai vì không thể rollback database của service khác. (C) sai vì đã commit thì phải bù, không được bỏ qua. (D) sai vì bước thất bại dừng quy trình, không tiếp tục.` },
   ], tags: ['saga', 'compensation', 'orchestration', 'workflow']
 },
 {
@@ -416,6 +454,57 @@ Tính retry từ số lần gọi có thể khác số lần giao của broker; 
 Nêu lỗi nào retry, số lần tối đa, backoff, timeout tổng, DLQ ownership, replay và cách giữ throughput/ordering.
 
 > Senior tip: đặt ngân sách thời gian retry nhỏ hơn SLA nghiệp vụ; nếu message đến sau deadline thì retry thành công vẫn có thể gây hại.
+
+### Cơ chế từng bước
+
+Retry là thử lại một thao tác sau khi lỗi, chỉ hợp lý khi lỗi có khả năng tự biến mất (lỗi transient). **Lỗi transient** (lỗi tạm thời) có thể hết sau ngắn, ví dụ mạng reset, dịch vụ quá tải trả 503, API giới hạn gọi trả 429. **Lỗi permanent** (lỗi vĩnh viễn) không qua nếu thử lại, ví dụ payload sai schema, thiếu trường bắt buộc, hoặc message poison (dữ liệu hỏng làm processor luôn ném exception). Thử lại lỗi permanent chỉ làm chậm tiến độ và có thể làm tắc partition (khu vực dữ liệu) của Kafka.
+
+Luồng xử lý một message với retry:
+
+1. **Nhận message**: consumer lấy message từ hàng đợi, kèm số lần thử (attempt) đã lưu.
+2. **Kiểm tra đến hạn (dueAt)**: chưa đến giờ thì để lại trong hàng, không xử lý.
+3. **Chạy processor**: thành công thì message rời hàng. Nếu lỗi:
+4. **Tăng attempts**: đạt ngân sách tối đa (maxAttempts) thì chuyển message vào **DLQ** (dead letter queue — hàng đợi thư thất, cách ly message không xử lý được) kèm metadata. Chưa đạt thì tính thời gian chờ bằng **exponential backoff** (gấp đôi mỗi lần, ví dụ 100 ms, 200 ms, 400 ms), cộng **jitter** (ngẫu nhiên nhỏ để client không cùng thức dậy tạo đợt tải đồng bộ), rồi đưa lại hàng.
+5. **DLQ**: cần alert, chủ sở hữu, công cụ xem và quy trình replay sau khi sửa; replay phải bảo toàn idempotency để không tạo side effect hai lần.
+
+~~~java
+// Phác thảo retry với đồng hồ giả: kiểm thử không cần Thread.sleep
+class RetryQueue {
+    private final int maxAttempts;
+    private final long baseDelay;
+    private final Deque<Job> ready = new ArrayDeque<>();
+    private final List<Job> dead = new ArrayList<>();
+
+    boolean runOne(long now, Predicate<String> processor) {
+        Job j = ready.peekFirst();
+        if (j == null || now < j.dueAt()) return false; // chưa đến giờ
+        ready.removeFirst();
+        if (processor.test(j.id())) return true;        // thành công: rời hàng
+        int n = j.attempts() + 1;
+        if (n >= maxAttempts) {
+            dead.add(new Job(j.id(), n, now));          // poison message → DLQ
+        } else {
+            ready.addLast(new Job(j.id(), n, now + baseDelay * (1L << (n - 1)))); // backoff gấp đôi
+        }
+        return true;
+    }
+}
+~~~
+
+Trong ví dụ, {{now}} là đồng hồ truyền vào nên kiểm thử không cần ngủ thật. Production cần giới hạn trễ tối đa, thêm jitter, lưu trạng thái bền vững và phân biệt lỗi transient/permanent.
+
+### Lỗi hay gặp trên production
+
+- **Triệu chứng:** consumer ném exception liên tục trên message hỏng, partition bị tắc, broker loại consumer khỏi nhóm, gây rebalance liên tục. **Nguyên nhân:** retry lỗi permanent trên thread consumer, không chuyển sang DLQ kịp thời. **Cách sửa:** phân loại lỗi ngay, lỗi validation/poison message chuyển DLQ sớm; retry chỉ với lỗi transient và số lần tối đa.
+- **Triệu chứng:** nhiều client cùng retry vào database vừa hồi phục, tạo đợt tải đồng bộ (thundering herd) làm database sập lại. **Nguyên nhân:** không có jitter, tất cả client thức dậy cùng lúc. **Cách sửa:** thêm jitter ngẫu nhiên vào mỗi lần backoff và giới hạn trễ tối đa.
+- **Triệu chứng:** retry thành công nhưng side effect đã xảy ra (trừ tiền rồi mới nhận lỗi response), khách bị trừ hai lần. **Nguyên nhân:** retry không đi kèm idempotency. **Cách sửa:** dùng idempotency key hoặc outbox, chỉ retry khi side effect thực hiện lại an toàn.
+- **Triệu chứng:** ngân sách retry dài hơn SLA nghiệp vụ (retry 5 phút nhưng đơn chỉ xử lý trong 1 phút). **Nguyên nhân:** chỉ quy tắc số lần thử, không tính tổng thời gian. **Cách sửa:** đặt ngân sách thời gian retry nhỏ hơn SLA; message đến sau deadline thì retry thành công vẫn có thể gây hại.
+
+### Liên hệ phỏng vấn
+
+- **Hỏi:** Lỗi nào nên retry, lỗi nào đưa DLQ ngay? **Trả lời ngắn:** Retry lỗi transient (mạng reset, 429, 503) có số lần và backoff giới hạn; lỗi permanent (schema sai, thiếu trường bắt buộc, message hỏng) đưa DLQ sớm.
+- **Hỏi:** Vai trò của jitter trong exponential backoff là gì? **Trả lời ngắn:** Phân tán thời điểm retry của nhiều client, tránh đợt tải đồng bộ khi dịch vụ vừa khôi phục.
+- **Hỏi:** Hết ngân sách retry thì message đi đâu và làm sao sử dụng lại? **Trả lời ngắn:** Đưa vào DLQ kèm metadata; sau khi sửa lỗi, replay từ DLQ với idempotency để không tạo side effect hai lần.
 `,
   exercises: [{
     title: 'Retry theo đồng hồ giả rồi chuyển poison message vào DLQ',
@@ -471,6 +560,7 @@ Lỗi thường gặp: retry không delay, attempt off-by-one, poison message gi
   check: [
     { q: 'Một payload sai schema chắc chắn lỗi ở mọi lần thử. Cách xử lý phù hợp?', options: ['Retry vô hạn', 'Retry nhanh không giới hạn', 'Đưa DLQ sớm theo chính sách lỗi permanent', 'Tăng timeout vô hạn'], answer: 2, explain: `Poison message không tự hết lỗi; retry chỉ chặn tiến độ. Cách ly kèm metadata để điều tra và replay sau khi sửa.` },
     { q: 'Mục tiêu của jitter trong exponential backoff là gì?', options: ['Mã hóa payload', 'Tránh nhiều client retry đồng thời thành đợt tải đồng bộ', 'Đảm bảo exactly-once', 'Giữ thứ tự toàn cục'], answer: 1, explain: `Jitter phân tán thời điểm retry, giảm thundering herd khi dependency vừa phục hồi.` },
+    { q: 'Một message bị hỏng (poison message) khiến processor ném exception ở mọi lần thử. Chính sách phù hợp là gì?', options: ['Dừng retry và chuyển message vào DLQ kèm metadata để điều tra', 'Retry vô hạn cho đến khi message hợp lệ', 'Giữ message mãi đầu hàng và chờ bản sửa', 'Tăng max.poll.interval.ms cho đủ thời gian xử lý'], answer: 0, explain: `Đúng (A): poison message không tự hồi phục; retry vĩnh viễn không giải quyết lỗi dữ liệu, chỉ chặn tiến độ và có thể làm tắc partition. DLQ cách ly message kèm metadata (id, offset, lỗi) để nhóm điều tra và replay sau khi sửa, hàng chính vẫn tiếp tục chảy. (B) sai vì retry vĩnh viễn trên message hỏng không bao giờ kết thúc. (C) sai vì giữ đầu hàng chặn tất cả message sau. (D) sai vì max.poll.interval.ms chỉ là thời gian giữa hai lần poll, không đổi bản chất lỗi message.` },
   ], tags: ['retry', 'backoff', 'DLQ', 'resilience']
 },
 {
