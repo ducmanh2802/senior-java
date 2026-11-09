@@ -1143,8 +1143,41 @@ Mỗi entity managed tốn RAM cho object và snapshot; mỗi flush duyệt tấ
 - Bytecode enhancement thay đổi bytecode lúc build, phải kiểm tra tương thích với agent/proxy khác (Spring AOP, JaCoCo).
 - Flush mode COMMIT có thể làm query trong transaction thấy dữ liệu cũ; chỉ dùng khi chắc chắn.
 
+### Cơ chế từng bước: từ load đến flush UPDATE
+Hiểu từng bước để thấy tại sao dirty checking chỉ "so sánh lúc flush" và vì sao UPDATE luôn chứa mọi cột:
+
+1. **Load**: Hibernate SELECT entity, lưu **snapshot** — bản sao giá trị các cột lúc đọc. Snapshot là giá trị (string, int…), không phải tham chiếu tới object; nếu giữ cùng object, setter đổi cả hai và không bao giờ phát hiện thay đổi.
+2. **Sửa trong RAM**: bạn gọi setter trên entity managed. Chỉ đổi object Java, không phát sinh SQL. Snapshot vẫn giữ giá trị cũ.
+3. **Flush**: trước commit (hoặc trước query bị ảnh hưởng bởi FlushMode AUTO), Hibernate duyệt các entity managed, so field hiện tại với snapshot. Entity nào khác → sinh UPDATE.
+4. **UPDATE**: mặc định sinh UPDATE chứa **tất cả** cột của entity, kể cả cột không đổi. Lý do: câu SQL cố định nên JDBC/DB có thể tái dùng prepared statement (statement cache).
+5. **Sau flush**: Hibernate cập nhật snapshot bằng giá trị hiện tại; nếu không, flush lần sau sẽ lặp lại UPDATE.
+
+Vì sao thiết kế như vậy? Snapshot cho phép dirty checking chỉ cần so sánh, không cần ghi nhớ lịch sử. UPDATE mọi cột là một thỏa thuận: giảm chi phí phân tích SQL, nhưng tốn payload lớn hơn và database ghi các cột không đổi.
+
+~~~java
+// Ví dụ: entity Account, load xong sửa name
+Account a = em.find(Account.class, 1L);
+// snapshot = {name: "A", email: "a@x.com", status: "ACTIVE", version: 1}
+a.setName("B");                          // chỉ đổi object trong RAM, chưa có SQL
+// commit → flush: UPDATE account SET name=?, email=?, status=?, version=? WHERE id=?
+~~~
+
+| Cách | UPDATE | Ưu điểm | Cái giá |
+|---|---|---|---|
+| Mặc định | mọi cột | statement cache tốt, câu SQL cố định | gửi nhiều tham số, DB ghi cột không đổi (trigger, index update) |
+| @DynamicUpdate | chỉ cột đổi | giảm payload, tốt bảng nhiều cột hoặc cột lớn (TEXT, JSON) | mỗi tổ hợp cột là một câu SQL khác → giảm cơ hội tái dùng prepared statement |
+| Bytecode enhancement | marking | flush chỉ đọc danh sách field đã đổi, không so toàn bộ | phải bật tường minh trong build, có thể tương tác với AOP/JaCoCo |
+
+### Lỗi hay gặp trên production
+- **Transaction dài, import lớn**: mỗi entity managed tốn RAM cho object và snapshot; mỗi flush phải so toàn bộ. Import 1 triệu dòng trong một transaction dễ OOM hoặc flush rất chậm. Cách: xử lý theo chunk (ví dụ 500 entity), mỗi chunk {{flush()}} rồi {{clear()}}. Phải flush **trước** clear, nếu không thay đổi chưa gửi sẽ mất.
+- **@DynamicUpdate không tự động bật**: phải khai báo tường minh và đo bằng statistics ({{hibernate.generate_statistics}}) hoặc profiler. Bảng ít cột thì UPDATE mọi cột tái dùng statement cache tốt hơn — chỉ nên bật khi đã đo thấy lợi.
+- **Flush mode COMMIT**: chỉ flush trước commit; query trong cùng transaction có thể thấy dữ liệu cũ. Chỉ dùng khi chắc chắn không cần query thấy dữ liệu mới.
+- **Read-only endpoint mà vẫn giữ snapshot**: {{@Transactional(readOnly = true)}} giúp Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra, tiết kiệm RAM và CPU. Dùng cho endpoint chỉ đọc.
+
 ### Liên hệ phỏng vấn
-"Dirty checking cost bao nhiêu và tối ưu thế nào?" Nêu: snapshot per entity, full scan mỗi flush, UPDATE mọi cột mặc định; @DynamicUpdate, bytecode enhancement, read-only, chunk + clear. Nhấn mạnh đo trước khi tối ưu.`,
+1. **"Dirty checking cost bao nhiêu và tối ưu thế nào?"** — Trả lời: snapshot per entity (RAM), full scan mỗi flush (CPU), UPDATE mọi cột mặc định (payload). Tối ưu: {{@DynamicUpdate}} (bảng nhiều cột), bytecode enhancement (giảm so snapshot), {{@Transactional(readOnly = true)}} (bỏ snapshot cho entity đọc), chunk + flush + clear (transaction lớn). Luôn đo trước khi tối ưu.
+2. **"So sánh @DynamicUpdate với UPDATE mọi cột — khi nào chọn cái nào?"** — Bảng nhiều cột hoặc cột lớn (TEXT, JSON) thì {{@DynamicUpdate}} giảm payload; bảng ít cột thì UPDATE mọi cột tái dùng statement cache tốt hơn. Bytecode enhancement là tối ưu khác giảm chi phí so snapshot, không bắt buộc đi cùng.
+3. **"@Transactional(readOnly = true) có tác dụng gì với dirty checking?"** — Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra, tiết kiệm RAM và CPU. Vẫn SELECT được, không cho phép ghi; ghi trong read-only transaction có thể gây lỗi hoặc bị bỏ qua tuỳ provider.`,
  exercises:[{title:'Đếm cột đổi cho UPDATE động',prompt:`Mô phỏng dirty checking trả về danh sách field đổi theo thứ tự {{name}}, {{email}}, {{status}}. Cài {{DirtyTracker}}:
 - Constructor nhận snapshot ban đầu (name, email, status).
 - {{current(n, e, s)}} cập nhật state hiện tại.
@@ -1199,8 +1232,8 @@ Mỗi entity managed tốn RAM cho object và snapshot; mỗi flush duyệt tấ
  hints:['Giữ snapshot (sn, se, ss) và current (cn, ce, cs) riêng.','dirty() so từng field theo thứ tự name, email, status.','flush() cập nhật snapshot bằng current nếu có thay đổi.'],
  explain:`Dirty checking so giá trị, không đếm số lần gán. Lỗi hay gặp: cập nhật snapshot ở mọi lần dirty() thay vì flush(), hoặc không cập nhật sau flush khiến flush sau lặp lại UPDATE.`},
 ],
- check:[{q:'@DynamicUpdate có lợi khi nào?',options:['Bảng rất ít cột','Bảng rất nhiều cột hoặc cột lớn, và đã đo thấy lợi','Mọi entity','Khi dùng bytecode enhancement'],answer:1,explain:`@DynamicUpdate chỉ gửi cột đổi, có lợi với bảng nhiều cột hoặc cột lớn. Với bảng ít cột, UPDATE mọi cột tái dùng prepared statement tốt hơn. Bytecode enhancement là tối ưu khác (giảm chi phí so snapshot), không bắt buộc đi cùng.`},{q:'@Transactional(readOnly = true) giúp gì?',options:['Tự động commit nhanh hơn','Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra','Tắt hoàn toàn SQL','Cho phép ghi trong transaction'],answer:1,explain:`Read-only báo Hibernate không cần theo dõi thay đổi, nên không giữ snapshot, tiết kiệm RAM và CPU dirty checking. Nó không tắt SQL (vẫn SELECT) và không cho phép ghi; ghi trong read-only transaction có thể gây lỗi hoặc bị bỏ qua tuỳ provider.`}],
- tags:['dirty checking','@DynamicUpdate','flush mode']
+check:[{q:'@DynamicUpdate có lợi khi nào?',options:['Bảng rất ít cột','Bảng rất nhiều cột hoặc cột lớn, và đã đo thấy lợi','Mọi entity','Khi dùng bytecode enhancement'],answer:1,explain:`@DynamicUpdate chỉ gửi cột đổi, có lợi với bảng nhiều cột hoặc cột lớn. Với bảng ít cột, UPDATE mọi cột tái dùng prepared statement tốt hơn. Bytecode enhancement là tối ưu khác (giảm chi phí so snapshot), không bắt buộc đi cùng.`},{q:'@Transactional(readOnly = true) giúp gì?',options:['Tự động commit nhanh hơn','Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra','Tắt hoàn toàn SQL','Cho phép ghi trong transaction'],answer:1,explain:`Read-only báo Hibernate không cần theo dõi thay đổi, nên không giữ snapshot, tiết kiệm RAM và CPU dirty checking. Nó không tắt SQL (vẫn SELECT) và không cho phép ghi; ghi trong read-only transaction có thể gây lỗi hoặc bị bỏ qua tuỳ provider.`},{q:'Vì sao UPDATE mặc định chứa mọi cột?',options:['Chỉ để giảm số câu SQL','Tái dụng prepared statement (statement cache) tốt hơn; cái giá là payload lớn hơn và DB ghi cột không đổi','Vì Hibernate không biết cột nào đổi','Để hỗ trợ @DynamicUpdate'],answer:1,explain:`Câu SQL cố định cho một entity luôn có cùng dạng, JDBC/DB có thể chuẩn bị sẵn và tái dùng. Cái giá: gửi nhiều tham số hơn, và database phải ghi các cột không đổi (kích hoạt trigger, cập nhật index). @DynamicUpdate thay đổi câu SQL để chỉ gửi cột đổi, giảm payload nhưng giảm cơ hội tái dùng prepared statement.`},{q:'Bytecode enhancement làm gì để giảm chi phí dirty checking?',options:['Tự động thêm @DynamicUpdate cho mọi entity','Chèn code vào setter/getter để đánh dấu field bẩn ngay lúc gán, flush chỉ đọc danh sách field đã đổi','Tắt dirty checking hoàn toàn','Chỉ áp dụng cho entity có @Version'],answer:1,explain:`Bytecode enhancement chèn code vào setter để ghi nhận ngay khi field bị đổi, nên flush không cần so toàn bộ snapshot mà chỉ đọc danh sách field đã đánh dấu. Phải bật tường minh trong build (ví dụ plugin hibernate-enhance-maven-plugin) và kiểm tra tương tác với AOP, JaCoCo; đừng giả định project đã có.`}],
+  tags:['dirty checking','@DynamicUpdate','flush mode']
 },
 {
  id:'lesson-jpa-009',track:'jpa',order:9,title:'Thứ tự flush và ActionQueue',level:'senior',minutes:25,
@@ -1234,6 +1267,40 @@ Nếu gửi theo thứ tự gọi, persist con trước cha sẽ vi phạm FK; r
 - Thứ tự insert theo thứ tự đăng ký: nếu persist con trước cha mà không cascade, FK fail.
 - Deferred constraint (PostgreSQL) có thể cho phép insert/delete trong transaction rồi kiểm tra lúc commit, nhưng Hibernate không tự bật; phải cấu hình DB.
 - Khi debug, bật hibernate.show_sql và format_sql để xem thứ tự thực tế; so sánh với code để hiểu ActionQueue.
+
+### Cơ chế từng bước: ActionQueue xếp action thế nào và vì sao
+Hiểu từng bước để thấy tại sao Hibernate không gửi SQL theo thứ tự bạn gọi:
+
+1. **Đăng ký action**: Khi bạn gọi {{persist(entity)}} (entity ở state new), Hibernate thêm một **insert action** vào ActionQueue. Khi gọi {{remove(entity)}} (entity managed), thêm một **delete action**. Khi entity managed có field đổi, dirty checking thêm một **update action** lúc flush. Mỗi action ghi lại entity id và loại.
+2. **Xếp hàng**: ActionQueue giữ các action trong ba hàng đợi riêng: **insert**, **update**, **delete**. Trong mỗi hàng đợi, thứ tự là thứ tự đăng ký (giống thứ tự bạn thao tác).
+3. **Flush**: Hibernate thực thi theo thứ tự cố định: **insert → update → delete**. Chỉ khi đó các câu SQL mới được gửi xuống database.
+4. **Vì sao thứ tự này?** Nếu insert con trước cha, FK sẽ từ chối (con trỏ vào cha chưa có). Nếu delete cha trước con, FK cũng từ chối (con vẫn trỏ vào cha đã xóa). Với unique constraint: insert trước delete có thể bị Blocked nếu cùng key. Với FK: insert cha trước con, delete con trước cha — thứ tự insert → update → delete tự động đảm bảo điều đó.
+
+Ví dụ: persist order (cha), persist order_line (con) → flush gửi INSERT orders trước, INSERT order_line sau. Xóa order_line trước, xóa order sau → flush gửi DELETE order_line trước, DELETE orders sau.
+
+~~~java
+// Code Java:
+em.persist(order);       // thêm insert action
+em.persist(line);        // thêm insert action
+em.remove(line2);        // thêm delete action
+// Flush → SQL:
+//   INSERT INTO orders(id) VALUES(1)
+//   INSERT INTO order_line(id) VALUES(10)
+//   DELETE FROM order_line WHERE id=11
+~~~
+
+| Loại | thứ tự trong ActionQueue | Lý do |
+|---|---|---|
+| Insert | theo thứ tự đăng ký | insert cha trước con (FK) |
+| Update | sau insert, trước delete | dirty checking |
+| Delete | cuối cùng | delete con trước cha (FK) |
+
+### Lỗi hay gặp trên production
+- **Xóa rồi thêm cùng unique key vẫn lỗi**: bảng có unique constraint trên email. Trong một transaction: xóa user email a@x.com, thêm user mới cùng email. Flush gửi INSERT trước DELETE → INSERT thấy a@x.com vẫn còn (chưa bị xóa) → vi phạm unique. Cách sửa: gọi {{em.flush()}} giữa hai thao tác (gửi DELETE xuống DB trước khi INSERT), hoặc dùng UPDATE thay vì delete+insert, hoặc cấu hình deferred constraint ở DB (PostgreSQL) nhưng Hibernate không tự bật.
+- **Persist con trước cha mà không cascade**: ActionQueue sắp xếp insert theo thứ tự đăng ký, nếu persist con trước cha mà không có cascade PERSIST, FK fail. Luôn set cascade đúng hoặc persist cha trước.
+- **Bulk delete + insert cùng unique key**: nên dùng UPDATE hoặc flush rõ ràng giữa chừng.
+- **Deferred constraint (PostgreSQL)** cho phép insert/delete trong transaction rồi kiểm tra lúc commit, nhưng Hibernate không tự bật; phải cấu hình DB.
+- **Khi debug**: bật {{hibernate.show_sql}} và {{format_sql}} để xem thứ tự thực tế; so sánh với code để hiểu ActionQueue. Log SQL thường không khớp với code Java — đó là hiện tượng bình thường.
 
 ### Liên hệ phỏng vấn
 "Vì sao xóa rồi thêm cùng unique key vẫn lỗi?" Trả lời: Hibernate flush insert trước delete, nên INSERT chạy khi bản ghi cũ chưa bị xóa. Cách sửa: flush giữa chừng, hoặc dùng UPDATE. Nêu thêm thứ tự insert/update/delete và lý do (FK, constraint).`,
@@ -1297,7 +1364,7 @@ Nếu gửi theo thứ tự gọi, persist con trước cha sẽ vi phạm FK; r
  hints:['Giữ ba danh sách riêng cho insert/update/delete.','flush() gộp theo thứ tự insert, update, delete rồi clear.','violatesUnique() kiểm tra giao giữa tập delete và tập insert.'],
  explain:`ActionQueue đảm bảo thứ tự insert → update → delete để tôn trọng FK và constraint. Lỗi hay gặp: nghĩ "xóa rồi thêm" là an toàn trong cùng transaction; thực tế INSERT chạy trước DELETE nên unique vẫn bị chặn. Cách sửa production: flush giữa chừng, hoặc dùng UPDATE.`},
 ],
- check:[{q:'Hibernate flush theo thứ tự nào?',options:['Theo thứ tự bạn gọi persist/remove','insert → update → delete','delete → update → insert','Ngẫu nhiên'],answer:1,explain:`ActionQueue sắp xếp insert trước, update giữa, delete sau để insert cha trước con và delete con trước cha, tôn trọng FK và constraint.`},{q:'Trong một transaction bạn xóa user email a@x.com rồi thêm user mới cùng email. Điều gì xảy ra lúc flush?',options:['Hibernate tự sắp xếp delete trước insert','INSERT chạy trước DELETE → vi phạm unique','Không có SQL nào','Hibernate ném lỗi compile'],answer:1,explain:`Hibernate flush insert trước delete, nên INSERT chạy khi bản ghi cũ chưa bị xóa → unique constraint bị vi phạm. Cách sửa: gọi flush() giữa hai thao tác, hoặc dùng UPDATE.`}],
- tags:['ActionQueue','flush order','unique constraint']
+check:[{q:'Hibernate flush theo thứ tự nào?',options:['Theo thứ tự bạn gọi persist/remove','insert → update → delete','delete → update → insert','Ngẫu nhiên'],answer:1,explain:`ActionQueue sắp xếp insert trước, update giữa, delete sau để insert cha trước con và delete con trước cha, tôn trọng FK và constraint.`},{q:'Trong một transaction bạn xóa user email a@x.com rồi thêm user mới cùng email. Điều gì xảy ra lúc flush?',options:['Hibernate tự sắp xếp delete trước insert','INSERT chạy trước DELETE → vi phạm unique','Không có SQL nào','Hibernate ném lỗi compile'],answer:1,explain:`Hibernate flush insert trước delete, nên INSERT chạy khi bản ghi cũ chưa bị xóa → unique constraint bị vi phạm. Cách sửa: gọi flush() giữa hai thao tác, hoặc dùng UPDATE.`},{q:'Vì sao ActionQueue không gửi SQL theo thứ tự bạn gọi persist/remove?',options:['Để giảm số câu SQL','Để insert cha trước con và delete con trước cha, tôn trọng FK và constraint','Vì database yêu cầu','Để tái dùng prepared statement'],answer:1,explain:`Nếu gửi theo thứ tự gọi, persist con trước cha sẽ vi phạm FK; remove cha trước con cũng vi phạm. ActionQueue sắp xếp để an toàn. Đây là lý do log SQL thường không khớp với code Java.`},{q:'Cách nào sửa lỗi "xóa rồi thêm cùng unique key" trong cùng transaction?',options:['Gọi flush() giữa hai thao tác để gửi DELETE xuống DB trước khi INSERT','Chờ commit rồi làm lại','Dùng UPDATE thay vì delete+insert, hoặc flush giữa chừng','Bỏ unique constraint'],answer:2,explain:`Gọi em.flush() giữa hai thao tác: flush đầu tiên gửi DELETE xuống DB, sau đó INSERT mới không bị ngăn. Hoặc dùng UPDATE thay vì delete+insert. Deferred constraint ở DB cũng có thể giúp nhưng Hibernate không tự bật; cần cấu hình DB.`}],
+  tags:['ActionQueue','flush order','unique constraint']
 }
 );
