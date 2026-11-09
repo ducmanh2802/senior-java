@@ -730,6 +730,12 @@ Kỹ thuật này dùng cho mọi bài toán "chuỗi liên tiếp":
 ### Trả lời miệng 1 phút
 "Đây là bài Gaps and Islands. Đầu tiên tôi khử trùng để mỗi user mỗi ngày chỉ còn một dòng. Sau đó tôi đánh ROW_NUMBER theo ngày trong từng user và lấy ngày trừ đi số thứ tự đó. Trong một chuỗi ngày liên tiếp, ngày và số thứ tự cùng tăng 1 nên hiệu không đổi, còn khi có ngày bị bỏ thì hiệu nhảy sang giá trị mới. Tôi group theo user và hiệu đó để ra từng streak với ngày bắt đầu, kết thúc và độ dài, rồi lấy streak dài nhất bằng ROW_NUMBER. Cách này chỉ cần một lần sort, có index (user_id, login_date) là chạy tốt. Hai lỗi tôi đã gặp thật là quên khử trùng ngày và tính ngày theo UTC thay vì múi giờ của người dùng."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống gamification (PostgreSQL 15, bảng {{login_history}} 4,2 triệu dòng) tính chuỗi đăng nhập liên tiếp để trao huy hiệu "người kiên trì". Sau khi deploy sang production, 2,8% người dùng (khoảng 11.600 tài khoản) nhận sai huy hiệu: streak hiển thị 5–7 ngày nhưng thực tế chỉ 2–3 ngày. Log ứng dụng không báo lỗi, metric streak trung bình tăng bất thường từ 3,2 lên 4,7.
+Điều tra: chạy query kiểm tra dữ liệu thô {{SELECT user_id, login_date, COUNT(*) OVER (PARTITION BY user_id ORDER BY login_date) FROM login_history WHERE user_id IN (mẫu 100 tài khoản bị lỗi)}} phát hiện: (1) user đăng nhập nhiều lần/ngày (2–5 lần) làm {{ROW_NUMBER}} tăng mà ngày không tăng, grouping key bị vỡ; (2) {{login_date}} lưu UTC, user ở múi giờ +07 đăng nhập lúc 6 giờ sáng bị tính sang ngày hôm trước, streak theo UTC lệch 1 ngày so với quan điểm người dùng. {{EXPLAIN (ANALYZE)}} cho thấy CTE numbered sort mất 8 ms, grouped 3 ms.
+Nguyên nhân gốc: quên {{DISTINCT ON (user_id, login_date::date)}} trước window function, và không convert múi giờ về giờ người dùng khi cắt ngày.
+Cách xử lý: thêm CTE distinct {{SELECT DISTINCT ON (user_id, login_date::date) user_id, (login_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS local_date FROM login_history}} rồi mới áp dụng Gaps and Islands trên {{local_date}}. Kết quả: tỷ lệ sai streak giảm từ 2,8% xuống 0%, query p95 3–8 ms, QA thêm case dữ liệu trùng ngày và múi giờ +07 vào bộ test hồi quy.
+
 > Senior tip: đây là câu hỏi "có biết pattern không". Câu trả lời nhanh: "Gaps and Islands – trừ row_number khỏi ngày để tạo grouping key, rồi group by key đó". Nếu interviewer hỏi "làm sao khi có nhiều lần đăng nhập một ngày", bạn trả lời ngay "distinct ngày trước khi window function". Đó là dấu hiệu bạn đã thực sự giải quyết bài toán này trên production.
 `,
   follow: [
@@ -871,6 +877,12 @@ ORDER BY product_id, yr, mo;
 ### Trả lời miệng 1 phút
 "Pivot trong SQL thường làm bằng conditional aggregation: group theo sản phẩm, mỗi tháng một cột SUM CASE WHEN tháng bằng m thì lấy amount, ngược lại 0. Để so YoY tôi tính pivot cho hai năm rồi LEFT JOIN năm hiện tại với năm trước, để sản phẩm mới không bị mất, và dùng NULLIF khi tính phần trăm. Dynamic pivot thật sự thì SQL không làm được, vì danh sách cột và kiểu dữ liệu phải biết khi phân tích câu lệnh; crosstab của PostgreSQL vẫn bắt khai báo cột, còn dynamic SQL thì khó bảo trì và dễ bị injection. Vì vậy trong dự án, tôi để SQL trả dữ liệu dạng dọc gọn, dùng index trên sale_date, rồi pivot và fill tháng thiếu ở Java bằng groupingBy. Cách này test được và không phụ thuộc vendor."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống báo cáo bán hàng (PostgreSQL 14, bảng {{sales}} 1,8 triệu dòng) dùng query pivot động xây dựng bằng {{crosstab}} extension để xuất Excel, mỗi cột là một **danh mục sản phẩm** (category) – hiện có 12 category. Khi đội sản phẩm thêm category mới "ACCESSORIES" (phụ kiện), báo cáo tháng 6 hiển thị sai cột: cột "ACCESSORIES" chứa dữ liệu của category "ELECTRONICS", toàn bộ cột từ ELECTRONICS trở đi dịch sang phải một vị trí, tổng doanh thu năm lệch 4,2%. Log không báo lỗi vì {{crosstab}} vẫn chạy thành công – chỉ thứ tự category trong câu 2 không khớp thứ tự dữ liệu trong câu 1.
+Điều tra: so sánh kết quả {{crosstab}} với truy vấn long format {{SELECT product_id, category, SUM(amount) FROM sales GROUP BY product_id, category ORDER BY product_id, category}} (chạy 1,9s) phát hiện {{crosstab}} trả sai thứ tự cột khi số category thay đổi. Query pivot tĩnh các cột {{CASE WHEN}} cố định (chạy 6,5s) vẫn đúng vì cột đã được viết sẵn.
+Nguyên nhân gốc: {{crosstab}} yêu cầu category trong câu 2 (danh sách cột) phải theo đúng thứ tự xuất hiện của câu 1; thêm category mới làm số category thay đổi mà câu 2 không được cập nhật đồng bộ.
+Cách xử lý: bỏ {{crosstab}}, dùng pivot các cột {{CASE WHEN}} cố định kết hợp với truy vấn long để đối chiếu tự động (chạy 1,9s + 0,3s so sánh = 2,2s). Kết quả: báo cáo khớp 100% với truy vấn long, thêm category mới không làm lệch cột, QA thêm test pivot-so-sánh-long vào CI.
+
 > Senior tip: interviewer hỏi "dynamic pivot thế nào", câu trả lời mạnh là: "SQL không làm được dynamic pivot thực sự; tôi query long format rồi pivot ở Java. Nếu buộc phải SQL, tôi dùng crosstab extension hoặc 12 cột CASE WHEN tường minh". Điều này cho thấy bạn hiểu giới hạn của SQL và biết tách trách nhiệm đúng chỗ.
 `,
   follow: [
@@ -982,6 +994,12 @@ CONNECT BY NOCYCLE PRIOR id = parent_id;
 
 ### Trả lời miệng 1 phút
 "Với cây lưu bằng parent_id, tôi dùng recursive CTE. Phần anchor chọn danh mục gốc, phần recursive join category với chính CTE theo parent_id bằng id để đi xuống từng tầng, nối bằng UNION ALL; vòng lặp dừng khi một tầng không sinh thêm dòng nào. Để phòng dữ liệu bẩn có vòng, tôi mang theo path là mảng id đã đi qua và chặn id đã có trong path, hoặc dùng mệnh đề CYCLE trên PostgreSQL 14 trở lên; Oracle có CONNECT BY NOCYCLE. Bắt buộc có index trên parent_id, nếu không mỗi tầng là một full scan. Tôi cũng đặt statement_timeout và giới hạn độ sâu, vì tôi từng thấy một query đệ quy chạy vô hạn làm đầy ổ temp trên production."
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống danh mục thương mại điện tử (PostgreSQL 15, bảng {{category}} 48.000 node, độ sâu tối đa 7 cấp) có API "lấy toàn bộ danh mục con" cho bộ lọc tìm kiếm. Sau khi thêm tính năng "danh mục ghim" (self-referencing cycle: node 1234 parent_id = 1234) và thiếu index {{parent_id}}, API timeout 22 giây và trả về lỗi 504 cho 340 request/phút lúc cao điểm. Log PostgreSQL ghi {{statement_timeout}} và temp file 1,2 GB.
+Điều tra: {{EXPLAIN (ANALYZE)}} của query recursive CTE cho thấy mỗi vòng lặp recursion đều full scan bảng (Seq Scan) vì thiếu index {{parent_id}}; phát hiện cycle trong {{path}} (id 1234 xuất hiện 2 lần) – self-referencing cycle khiến query không dừng: PostgreSQL không có giới hạn vòng lặp recursion mặc định, nên query chạy liên tục tới khi admin can thiệp ({{pg_cancel_backend}}) hoặc hết tài nguyên. Thử thêm index {{(parent_id)}} và chạy lại: mỗi vòng chỉ cần tìm con qua index, số vòng recursion tối đa bằng độ sâu cây (7 cấp) ⇒ query xong trong 180ms.
+Nguyên nhân gốc: (1) thiếu index {{parent_id}} khiến mỗi đệ quy full scan; (2) dữ liệu bẩn có self-referencing cycle mà query không có {{WHERE c.id <> ALL(s.path)}}; (3) không đặt {{statement_timeout}} cho query đệ quy.
+Cách xử lý: tạo index {{CREATE INDEX idx_cat_parent ON category(parent_id)}}, thêm điều kiện {{WHERE c.id <> ALL(s.path)}} vào recursive term, chuyển sang {{CYCLE id SET is_cycle USING path}} (PG 14+), đặt {{SET LOCAL statement_timeout = '5s'}} cho session API. Kết quả: API p95 180ms, query recursion chỉ cần tối đa 7 vòng (bằng độ sâu cây), cycle bị blocked ngay, QA thêm test case cycle vào migration script.
 
 > Senior tip: khi phỏng vấn, hãy viết Recursive CTE trên giấy/whiteboard mà không cần nhớ cú pháp chính xác – interviewer quan tâm bạn biết **anchor**, **recursive term**, **termination condition**, và **cycle detection**. Nêu rõ: "Tôi dùng UNION ALL, có path để detect cycle, index trên parent_id là bắt buộc". Đó là câu trả lời của người đã deploy recursive query lên production.
 `,
@@ -1104,6 +1122,12 @@ ON DUPLICATE KEY UPDATE
 ### Trả lời miệng 1 phút
 "Upsert là chèn nếu chưa có, cập nhật nếu đã có, và tôi luôn để DB làm việc đó trong một lệnh. Trên PostgreSQL tôi dùng INSERT ON CONFLICT với conflict target là unique index (account_id, currency), lấy giá trị mới qua EXCLUDED; ở READ COMMITTED nó đảm bảo kết quả là insert hoặc update, kể cả khi chạy song song. Oracle dùng MERGE, nhưng hai session cùng MERGE một khóa mới vẫn có thể dính ORA-00001, nên tôi bắt lỗi và retry; MySQL dùng ON DUPLICATE KEY UPDATE. Còn nếu tự SELECT rồi mới INSERT hoặc UPDATE thì có race condition: hai request cùng thấy chưa có, cùng insert, request sau lỗi duplicate key. Ở Java tôi viết native query hoặc JdbcTemplate, không dùng JPA save, và tôi từng sửa đúng lỗi này trong luồng nạp tiền."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống ví điện tử (PostgreSQL 14, bảng {{account_balance}} 3,2 triệu dòng) dùng JPA {{save()}} cho luồng nạp tiền. Dưới tải cao (Black Friday, ~8.000 nạp/giây), log ghi 20–60 lỗi {{DataIntegrityViolationException: duplicate key value violates unique constraint "uk_acc_ccy"}} mỗi ngày, và 12 tài khoản bị mất {{updated_at}} (giữ giá trị cũ) khiến đối soát sai số dư thực tế.
+Điều tra: đọc code thấy pattern {{Optional<Bal> ex = repo.findByAccAndCcy(id, ccy); if (ex.isPresent()) ex.get().setBal(newBal); else repo.save(new Bal(...));}} – check-then-act race condition. Hai luồng cùng thấy "chưa có", cả hai INSERT, luồng sau lỗi unique violation; catch exception thì retry nhưng luồng đầu đã ghi xong, luồng sau update ghi đè {{updated_at}} bằng giá trị cũ. {{EXPLAIN ANALYZE}} của native upsert={{INSERT ... ON CONFLICT ... WHERE updated_at < EXCLUDED.updated_at}} chạy 18ms nhanh hơn JPA save 32ms (p95).
+Nguyên nhân gốc: dùng JPA {{save()}} thay vì native upsert atomic, thiếu điều kiện {{WHERE updated_at < EXCLUDED.updated_at}} để bảo vệ timestamp.
+Cách xử lý: viết native query {{INSERT INTO account_balance ... ON CONFLICT (account_id, currency) DO UPDATE SET balance = EXCLUDED.balance, updated_at = EXCLUDED.updated_at WHERE account_balance.updated_at < EXCLUDED.updated_at}} qua {{JdbcTemplate}}, bỏ {{repo.save()}}. Kết quả: 0 lỗi duplicate key/14 ngày, p95 giảm 18ms, đối soát khớp tuyệt đối.
+
 > Senior tip: câu hỏi "upsert làm thế nào" là câu hỏi check "bạn có biết race condition không". Câu trả lời điểm cao: "Tôi dùng INSERT ON CONFLICT (PostgreSQL) – atomic ở DB; với Oracle MERGE tôi vẫn bắt ORA-00001 và retry vì MERGE song song trên khóa mới có thể đụng unique. Tự viết SELECT-INSERT/UPDATE có race condition: hai request cùng lúc đều thấy chưa có → cả hai INSERT → unique violation hoặc mất cập nhật. Ở Java tôi dùng native query hoặc JdbcTemplate, không dùng JPA save vì nó không atomic".
 `,
   follow: [
@@ -1207,6 +1231,12 @@ FROM orders;
 ### Trả lời miệng 1 phút
 "NULL nghĩa là không biết hoặc không có giá trị, nên mọi phép so sánh với NULL ra UNKNOWN, kể cả NULL bằng NULL, và WHERE chỉ giữ dòng TRUE; muốn kiểm tra phải dùng IS NULL. COUNT sao đếm mọi dòng, COUNT cột chỉ đếm dòng có giá trị, COUNT DISTINCT đếm số giá trị khác nhau và cũng bỏ NULL. SUM, AVG, MIN, MAX bỏ qua NULL; nếu không còn giá trị nào thì trả NULL chứ không phải 0, để phân biệt 'tổng bằng 0' với 'không có dữ liệu', nên tôi luôn bọc COALESCE. Về sắp xếp, PostgreSQL và Oracle coi NULL lớn nhất, MySQL và SQL Server coi NULL nhỏ nhất, nên tôi luôn ghi rõ NULLS LAST hoặc biểu thức IS NULL. Lỗi tôi gặp nhiều nhất là WHERE col = NULL trả rỗng mà không báo lỗi."
 
+### Ví dụ đời thực
+Triệu chứng: dashboard quản kho (PostgreSQL 15, bảng {{orders}} 1,4 triệu dòng, cột {{warehouse_id}} nullable) hiển thị "đơn chưa gán kho" bằng điều kiện {{WHERE warehouse_id <> 0}}. Một ngày đội vận hành phát hiện 320 đơn hàng biến mất khỏi báo cáo: tổng đơn chờ gán kho giảm từ 1.850 xuống 1.530, nhưng số liệu gốc không đổi. Log không báo lỗi, query vẫn chạy 420 ms.
+Điều tra: chạy {{SELECT COUNT(*) FROM orders WHERE warehouse_id <> 0}} ra 1.530, {{SELECT COUNT(*) FROM orders WHERE warehouse_id IS NULL OR warehouse_id = 0}} ra 320. Nguyên nhân: {{warehouse_id = NULL}} cho UNKNOWN nên {{NULL <> 0}} cũng là UNKNOWN, 320 đơn {{warehouse_id IS NULL}} bị lọc mất. Thêm {{IS DISTINCT FROM}} và {{COALESCE}}: {{WHERE warehouse_id IS DISTINCT FROM 0}} (PostgreSQL) hoặc {{WHERE COALESCE(warehouse_id, 0) <> 0}}.
+Nguyên nhân gốc: dùng {{<>}} thay vì {{IS DISTINCT FROM}}/{{COALESCE}} trên cột nullable, và thiếu quy ước review code bắt buộc xử lý NULL.
+Cách xử lý: sửa điều kiện thành {{WHERE warehouse_id IS DISTINCT FROM 0}}, thêm partial index {{CREATE INDEX idx_ord_wh_null ON orders(id) WHERE warehouse_id IS NULL}}, đặt quy ước PR: "cột nullable dùng IS DISTINCT FROM/COALESCE, cấm =/NULL hay <>/NULL". Kết quả: dashboard khớp 320 đơn, code review phát hiện thêm 2 lỗi tương tự ở báo cáo doanh thu.
+
 > Senior tip: "NULL không bằng NULL" là triết lý cốt lõi. Khi phỏng vấn, hãy demo nhanh: {{SELECT NULL = NULL}} → UNKNOWN, {{SELECT NULL IS NULL}} → TRUE. Và nhớ: {{COUNT(*)}} đếm dòng, {{COUNT(col)}} đếm giá trị không NULL – đây là câu hỏi filter ứng viên junior/mid rất hay.
 `,
   follow: [
@@ -1305,6 +1335,12 @@ MatView  : mỗi lần đọc ~ 5 ms; REFRESH đêm mất 3 s, dữ liệu cũ t
 
 ### Trả lời miệng 1 phút
 "DELETE là DML: xoá từng dòng theo WHERE, ghi log từng dòng, chạy trigger, kiểm tra FK và rollback được, nhưng chậm theo số dòng. TRUNCATE xoá toàn bộ bảng bằng cách cấp lại vùng lưu trữ, gần như tức thì, không chạy trigger, khoá cả bảng; PostgreSQL rollback được trong transaction, còn MySQL và Oracle thì không vì DDL tự commit. DROP xoá luôn cấu trúc bảng, index và quyền. View chỉ là câu query được lưu, luôn mới nhưng mỗi lần đọc phải tính lại; materialized view lưu kết quả ra đĩa nên đọc rất nhanh, đánh index được, nhưng dữ liệu cũ tới lần REFRESH kế tiếp. Tôi dùng MV cho báo cáo tổng hợp refresh theo lịch với CONCURRENTLY, và không bao giờ dùng nó cho số dư cần real-time."
+
+### Ví dụ đời thực
+Triệu chứng: job dọn dữ liệu staging (PostgreSQL 15, bảng {{staging_txn}} 18 triệu dòng, ~12 GB) chạy {{DELETE FROM staging_txn WHERE created_at < NOW() - INTERVAL '7 days'}} mỗi đêm 2 giờ. Job chạy 47 phút, sinh ~12 GB WAL, replica trễ 18 phút, bảng phình dead tuple khiến báo cáo sáng nay chậm 3 lần (p95 90 giây). Log autovacuum ghi "dead tuple 16.2M" và VACUUM mất 22 phút.
+Điều tra: {{EXPLAIN (ANALYZE)}} của DELETE cho thấy Seq Scan 18M rows, actual time 47 phút, WAL 12 GB,Buffers: shared hit=1.2M read=800k dirtied=400k. Thử {{TRUNCATE staging_txn RESTART IDENTITY}} trong transaction {{BEGIN; TRUNCATE ... RESTART IDENTITY; COMMIT;}} trên staging copy: chạy <1 giây, WAL ~0, không sinh dead tuple, identity reset. Lưu ý Oracle/MySQL: TRUNCATE là DDL có implicit commit, không rollback được trong transaction.
+Nguyên nhân gốc: dùng DELETE cho xoá toàn bộ bảng staging lớn, không biết TRUNCATE là metadata-only, và PostgreSQL TRUNCATE cần RESTART IDENTITY để reset sequence.
+Cách xử lý: thay DELETE bằng {{BEGIN; TRUNCATE TABLE staging_txn RESTART IDENTITY; COMMIT;}}, thêm comment giải thích RESTART IDENTITY. Kết quả: job chạy <1 giây, WAL ~0, p95 báo cáo sáng giảm 90s → 4s, autovacuum không còn chạy sau job dọn.
 
 > Senior tip: interviewer hỏi "TRUNCATE có rollback không?" – câu trả lời chuẩn: "PostgreSQL có rollback trong transaction (MVCC), Oracle/MySQL không (DDL implicit commit)". Với MV: "Tôi dùng MV cho báo cáo tổng hợp ngày (refresh 1 lần/đêm), không dùng cho số dư real-time". Nêu được trade-off mới là senior.
 `,
