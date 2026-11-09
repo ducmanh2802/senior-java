@@ -2737,4 +2737,187 @@ Câu hỏi "CompletableFuture xử lý exception thế nào" rất hay gặp. N�
   related: ['concurrency-005', 'concurrency-037', 'concurrency-042', 'microservices-022'],
   tags: ['CompletableFuture', 'exception handling', 'fire-and-forget', 'outbox', 'observability']
 },
+{
+  id: 'bug-017',
+  title: 'Ngân hàng đối tác chậm 2 phút, hệ thống của mình sập 40 phút',
+  domain: 'Thanh toán / Tích hợp ngân hàng',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 20,
+  story: `**Bối cảnh dự án:** payment-service (40 pod) gọi bank-adapter để tra cứu trạng thái giao dịch. Lớp {{RetryingClient}} được viết để "chống lỗi mạng": gặp lỗi thì thử lại tối đa 20 lần, mỗi lần cách nhau 50 ms. Bình thường bank-adapter nhận khoảng 1.200 request/giây.
+
+**Sự cố:** 14:02 ngày 06/11, ngân hàng đối tác bảo trì đột xuất khoảng 2 phút, bank-adapter trả 503. Ngân hàng hoạt động lại lúc 14:04, nhưng bank-adapter vẫn quá tải và trả 503/timeout tới **14:42**. Trong thời gian đó, lượng request vào bank-adapter lên tới **24.000/giây**, gần gấp 20 lần bình thường; ngoài ra các request sai tham số (400) cũng bị gọi lại 20 lần.
+
+**Nhiệm vụ của bạn:** Sửa {{RetryingClient.callWithRetry}}: chỉ retry lỗi tạm thời (429, 502, 503, 504), tối đa 5 lần gọi, chờ theo **exponential backoff có trần** (100, 200, 400, 800 ms, trần 1.000 ms) với **full jitter** (chờ ngẫu nhiên từ 0 tới mức trần của lần đó).`,
+  artifacts: [
+    { name: 'grafana-bank-adapter.txt', lang: 'text', content: `time   req/s(in)  ok/s    503/s    p99(ms)  note
+14:00    1,190    1,185        5      180
+14:02    6,800       40    6,760    2,000   ngân hàng bảo trì
+14:03   23,900        0   23,900    2,000
+14:04   24,100      310   23,790    2,000   ngân hàng hoạt động lại
+14:10   23,600      420   23,180    2,000
+14:30   22,800      650   22,150    2,000
+14:42    3,100    2,950      150      950   tắt retry bằng feature flag
+14:45    1,210    1,200       10      190` },
+    { name: 'payment-service.log', lang: 'text', content: `14:03:11.050 WARN RetryingClient : status=503 attempt=1 retry in 50ms
+14:03:11.101 WARN RetryingClient : status=503 attempt=2 retry in 50ms
+14:03:11.152 WARN RetryingClient : status=503 attempt=3 retry in 50ms
+...
+14:03:12.006 WARN RetryingClient : status=503 attempt=20 giving up
+14:03:12.010 WARN RetryingClient : status=400 attempt=1 retry in 50ms   (thiếu tham số bankRef)
+14:03:12.061 WARN RetryingClient : status=400 attempt=2 retry in 50ms` },
+  ],
+  starter: `// ===== Hạ tầng (KHÔNG cần sửa) =====
+class Response {
+    final int status;
+    Response(int status) { this.status = status; }
+}
+
+class FakeDownstream {   // trả lần lượt các status trong kịch bản, hết kịch bản thì lặp lại status cuối
+    private final int[] script; int calls;
+    FakeDownstream(int... script) { this.script = script; }
+    Response call() { int s = script[Math.min(calls, script.length - 1)]; calls++; return new Response(s); }
+}
+
+class Sleeper {   // không ngủ thật, chỉ ghi lại thời gian chờ để test kiểm tra
+    final List<Long> sleeps = new ArrayList<>();
+    void sleep(long ms) { sleeps.add(ms); }
+}
+
+// ===== Code cần sửa =====
+class RetryingClient {
+    private final FakeDownstream downstream; private final Sleeper sleeper; private final Random random;
+    RetryingClient(FakeDownstream downstream, Sleeper sleeper, Random random) {
+        this.downstream = downstream; this.sleeper = sleeper; this.random = random;
+    }
+
+    Response callWithRetry() {
+        Response r = null;
+        for (int i = 0; i < 20; i++) {
+            r = downstream.call();
+            if (r.status < 400) return r;
+            sleeper.sleep(50);
+        }
+        return r;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        FakeDownstream d1 = new FakeDownstream(503, 503, 200);
+        Response r1 = new RetryingClient(d1, new Sleeper(), new Random(1)).callWithRetry();
+        check("thanh_cong_sau_loi_tam_thoi", r1.status == 200 && d1.calls == 3, "503, 503, 200 phải trả 200 sau 3 lần gọi; thực tế status=" + r1.status + " calls=" + d1.calls);
+
+        FakeDownstream d2 = new FakeDownstream(400);
+        Response r2 = new RetryingClient(d2, new Sleeper(), new Random(1)).callWithRetry();
+        check("khong_retry_loi_client", r2.status == 400 && d2.calls == 1, "400 là lỗi của request, gọi lại vô ích: phải gọi đúng 1 lần, thực tế " + d2.calls);
+
+        FakeDownstream d3 = new FakeDownstream(503);
+        Sleeper s3 = new Sleeper();
+        Response r3 = new RetryingClient(d3, s3, new Random(1)).callWithRetry();
+        check("gioi_han_so_lan_goi", r3.status == 503 && d3.calls == 5 && s3.sleeps.size() == 4,
+            "lỗi liên tục phải dừng sau 5 lần gọi (4 lần chờ); thực tế calls=" + d3.calls + " sleeps=" + s3.sleeps.size());
+
+        Random shared = new Random(42);
+        long[] bound = {100, 200, 400, 800};
+        boolean inBound = true; long maxLast = 0; Set<Long> firstDelays = new HashSet<>(); String bad = "";
+        for (int c = 0; c < 500; c++) {
+            Sleeper s = new Sleeper();
+            new RetryingClient(new FakeDownstream(503), s, shared).callWithRetry();
+            for (int i = 0; i < s.sleeps.size() && i < 4; i++) {
+                long v = s.sleeps.get(i);
+                if (v < 0 || v > bound[i]) { inBound = false; bad = "lần chờ " + (i + 1) + " = " + v + "ms > " + bound[i]; }
+            }
+            if (s.sleeps.size() >= 4) maxLast = Math.max(maxLast, s.sleeps.get(3));
+            if (!s.sleeps.isEmpty()) firstDelays.add(s.sleeps.get(0));
+        }
+        check("backoff_tang_dan_co_tran", inBound && maxLast > 400,
+            "lần chờ thứ i phải trong [0, min(1000, 100*2^(i-1))] và lần thứ 4 phải có lúc vượt 400ms; " + (inBound ? "max lần 4 = " + maxLast : bad));
+        check("jitter_tan_deu", firstDelays.size() > 50,
+            "500 client không được chờ cùng một khoảng (full jitter); số giá trị khác nhau của lần chờ đầu = " + firstDelays.size());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class Response {
+    final int status;
+    Response(int status) { this.status = status; }
+}
+
+class FakeDownstream {
+    private final int[] script; int calls;
+    FakeDownstream(int... script) { this.script = script; }
+    Response call() { int s = script[Math.min(calls, script.length - 1)]; calls++; return new Response(s); }
+}
+
+class Sleeper {
+    final List<Long> sleeps = new ArrayList<>();
+    void sleep(long ms) { sleeps.add(ms); }
+}
+
+class RetryingClient {
+    static final int MAX_ATTEMPTS = 5;
+    static final long BASE_MS = 100, CAP_MS = 1000;
+    private final FakeDownstream downstream; private final Sleeper sleeper; private final Random random;
+    RetryingClient(FakeDownstream downstream, Sleeper sleeper, Random random) {
+        this.downstream = downstream; this.sleeper = sleeper; this.random = random;
+    }
+
+    static boolean retryable(int status) {
+        return status == 429 || status == 502 || status == 503 || status == 504;   // lỗi tạm thời
+    }
+
+    Response callWithRetry() {
+        Response r = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            r = downstream.call();
+            if (!retryable(r.status)) return r;        // thành công hoặc lỗi vĩnh viễn (400, 404...): không gọi lại
+            if (attempt == MAX_ATTEMPTS) break;
+            long ceiling = Math.min(CAP_MS, BASE_MS << (attempt - 1));   // 100, 200, 400, 800, trần 1000
+            sleeper.sleep((long) random.nextInt((int) ceiling + 1));    // full jitter: ngẫu nhiên trong [0, ceiling]
+        }
+        return r;
+    }
+}`,
+  hints: [
+    'Tính thử: 40 pod, mỗi request thất bại được gọi tới 20 lần trong khoảng 1 giây. Lượng tải vào bank-adapter khi nó đang yếu tăng bao nhiêu lần? Grafana cho thấy gì?',
+    'Ba lỗi cùng lúc: retry cả lỗi 400 (gọi lại không bao giờ thành công), quá nhiều lần thử, và khoảng chờ cố định 50 ms nên mọi client gọi lại đồng loạt (thundering herd). Cần phân loại lỗi, giới hạn số lần, và chờ tăng dần có ngẫu nhiên.',
+    'Mức trần lần thứ n = min(1000, 100 * 2^(n-1)); thời gian chờ = random.nextInt(mức trần + 1). Chỉ retry 429/502/503/504, tối đa 5 lần gọi, không chờ sau lần gọi cuối.',
+  ],
+  rootCause: `**Retry storm: retry dồn dập khuếch đại một sự cố ngắn thành sự cố dài.** Mỗi request thất bại được gọi lại tới 20 lần, cách nhau cố định 50 ms, từ 40 pod. Khi ngân hàng bảo trì, tải vào bank-adapter tăng từ 1.190 lên khoảng 24.000 request/giây (bảng Grafana 14:03), gần đúng 20 lần. Khi ngân hàng hoạt động lại lúc 14:04, bank-adapter vẫn chìm trong hàng đợi request retry nên tiếp tục timeout, sinh thêm retry: một vòng lặp tự duy trì (metastable failure). Chỉ khi tắt retry lúc 14:42, tải mới về 3.100 và hệ thống hồi phục trong 3 phút.
+
+Thêm hai lỗi nhỏ hơn: retry cả **400** (log 14:03:12.010, thiếu tham số bankRef), là lỗi không bao giờ tự hết; và khoảng chờ **cố định**, khiến hàng nghìn client gọi lại cùng một nhịp thay vì trải đều.`,
+  fix: `### Cách sửa trong bài
+- **Phân loại lỗi:** chỉ retry 429, 502, 503, 504 (và timeout/mất kết nối ở đời thật). 4xx còn lại trả ngay.
+- **Giới hạn:** tối đa 5 lần gọi, không chờ sau lần cuối.
+- **Exponential backoff có trần + full jitter:** lần chờ thứ n ngẫu nhiên trong [0, min(1000, 100 × 2^(n-1))] ms. Theo phân tích nổi tiếng của AWS Architecture Blog ("Exponential Backoff And Jitter"), full jitter giảm mạnh số lần gọi dồn dập so với backoff không jitter.
+
+### Trên production thật
+| Lớp phòng vệ | Tác dụng |
+|---|---|
+| Backoff + jitter, giới hạn lần thử | Giảm hệ số khuếch đại tải |
+| **Retry budget** (ví dụ retry không quá 10% số request thành công) | Khi lỗi diện rộng, tự ngừng retry thay vì nhân tải |
+| **Circuit breaker** (Resilience4j) | Downstream lỗi liên tục thì mở mạch, trả lỗi nhanh, thử lại sau thời gian chờ |
+| Tôn trọng header Retry-After của 429/503 | Downstream tự nói khi nào nên quay lại |
+| Chỉ retry ở **một tầng** | Gateway retry 3, service retry 3, client retry 3 là 27 lần cho một request |
+| Timeout ngắn hơn timeout của tầng gọi mình | Tránh giữ thread vô ích |
+
+Với Resilience4j, cấu hình tương ứng là {{IntervalFunction.ofExponentialRandomBackoff(...)}} cho retry kết hợp CircuitBreaker; nhớ chỉ retry các thao tác **idempotent** (tra cứu thì an toàn; lệnh trừ tiền thì phải có idempotency key).
+
+### Phòng ngừa
+- Dashboard theo dõi tỉ lệ request retry trên tổng request; cảnh báo khi vượt ngưỡng.
+- Có feature flag tắt retry khẩn cấp (đội này đã có, và đó là thứ cứu sự cố lúc 14:42).
+- Game day: giả lập downstream trả 503 trong 2 phút và đo thời gian hồi phục.
+
+### Liên hệ phỏng vấn
+Khi được hỏi về resilience, nêu rằng retry là con dao hai lưỡi: nó sửa lỗi thoáng qua nhưng khuếch đại sự cố diện rộng. Câu trả lời Senior gồm phân loại lỗi, backoff + jitter, retry budget, circuit breaker và chỉ retry ở một tầng với thao tác idempotent.`,
+  related: ['microservices-007', 'microservices-008', 'banking-004'],
+  tags: ['retry storm', 'exponential backoff', 'jitter', 'circuit breaker', 'resilience']
+},
 );
