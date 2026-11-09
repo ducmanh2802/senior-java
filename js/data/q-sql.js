@@ -2577,6 +2577,16 @@ Instant createdAt = Instant.now();                 // lưu vào timestamptz
 ### Trả lời miệng 1 phút
 "Với tiền tôi dùng NUMERIC hoặc DECIMAL có precision và scale rõ ràng, map sang BigDecimal, vì FLOAT và DOUBLE lưu số nhị phân gần đúng nên 0.1 cộng 0.2 không bằng 0.3, cộng dồn sẽ lệch tiền. Trong Java tôi tạo BigDecimal từ chuỗi, so sánh bằng compareTo và làm tròn có RoundingMode rõ ràng. Với thời điểm sự kiện trên PostgreSQL tôi dùng timestamptz, nó quy đổi và lưu theo UTC nên đúng với mọi múi giờ, map sang Instant hoặc OffsetDateTime. Trên MySQL tôi thường dùng DATETIME và quy ước lưu UTC, vì TIMESTAMP chỉ tới năm 2038. Toàn hệ thống chạy UTC, chỉ đổi múi giờ khi hiển thị."
 
+### Ví dụ đời thực
+Hệ thống ví điện tử xử lý khoảng 20.000 giao dịch nạp/rút mỗi ngày. Cột amount dùng DOUBLE PRECISION, cột created_at dùng timestamp không múi giờ. Một sáng, báo cáo doanh thu hôm nay là 498.872.000 VND, lệch 123.000 VND so với đối chiếu ngân hàng. Điều tra bằng:
+
+~~~sql
+SELECT SUM(amount) FROM tx WHERE created_at::date = CURRENT_DATE;
+SELECT amount FROM tx WHERE amount IS DISTINCT FROM ROUND(amount::numeric, 2) LIMIT 5;
+~~~
+
+Nhìn thấy số kỳ lạ như 50000.0000000001: FLOAT lưu nhị phân gần đúng, không chính xác. Cùng lúc, báo cáo thiếu toàn bộ giao dịch từ 17:00 đến 24:00 giờ Việt Nam, vì timestamp lưu "10:00" không ghi múi giờ trong khi app chạy UTC. Xử lý: thêm cột amount_new NUMERIC(19,4), copy và làm tròn HALF_UP, đổi tên cột; đổi created_at sang timestamptz, đặt {{-Duser.timezone=UTC}} cho JVM. Sau khi chạy lại, báo cáo khớp ngân hàng sai số 0 đồng và khung 24 giờ đầy đủ. Bảng 2 tỷ dòng nên đổi kiểu ở giờ ít truy cập.
+
 > Senior tip: hãy quyết định kiểu dữ liệu tiền **một lần cho cả công ty** (ví dụ NUMERIC(19,4), làm tròn HALF_UP ở bước xuất hoá đơn) và ghi vào guideline. Lệch kiểu giữa các service (một bên double, một bên decimal) là nguồn gốc của những sự cố đối soát lệch vài đồng mỗi ngày, rất tốn thời gian để truy ra.`,
   follow: [
     'Vì sao {{new BigDecimal(0.1)}} cho kết quả lạ, còn {{BigDecimal.valueOf(0.1)}} thì không?',
@@ -2653,6 +2663,19 @@ public void checkout(Long orderId) {
 
 ### Trả lời miệng 1 phút
 "Mỗi câu SQL mặc định là một transaction nhờ autocommit; BEGIN mở transaction nhiều câu, COMMIT lưu, ROLLBACK huỷ. Trên PostgreSQL, chỉ cần một câu lỗi là cả transaction ở trạng thái aborted, mọi câu sau bị từ chối và COMMIT thực chất thành ROLLBACK; muốn bỏ qua lỗi một câu thì dùng SAVEPOINT. MySQL InnoDB thì đa số lỗi chỉ huỷ câu đó, nên nếu code nuốt exception rồi commit sẽ lưu một nửa công việc. Tôi giữ transaction ngắn, không gọi API ngoài bên trong, vì transaction dài giữ khoá, làm cạn pool và cản PostgreSQL dọn dữ liệu cũ."
+
+### Ví dụ đời thực
+Trang thanh toán đơn hàng xử lý khoảng 300 đơn/giờ. Code dùng {{@Transactional}} bao lấy cả việc ghi đơn và gọi API cổng thanh toán. Một buổi chiều, khách bấm "Thanh toán", màn hình trắng, tiền đã trừ nhưng đơn không tạo. Log PostgreSQL lặp lại:
+
+current transaction is aborted, commands ignored until end of transaction block
+
+Điều tra bằng:
+
+~~~sql
+SELECT pid, state, query_start FROM pg_stat_activity WHERE state = 'idle in transaction';
+~~~
+
+Nhìn thấy 40 kết nối ở trạng thái "idle in transaction", mỗi kết nối khoá một dòng đơn hàng. Nguyên nhân: câu SQL thứ hai bị lỗi (ví dụ vi phạm khóa ngoại), code bắt exception rồi vẫn chạy câu tiếp theo trong cùng transaction; PostgreSQL coi toàn bộ transaction đã hỏng và từ chối mọi câu lệnh cho tới khi ROLLBACK. Gọi API bên ngoài 5 giây trong transaction cũng giữ khoá dòng hàng ngàn milliseconds. Xử lý: tách gọi API ra ngoài transaction, bắt lỗi sớm rồi ROLLBACK thay vì chạy tiếp, đặt {{idle_in_transaction_session_timeout = '5min'}} làm lưới an toàn. Tuần sau, số kết nối idle giảm từ 40 về 0.
 
 > Senior tip: thêm cảnh báo trên metric "transaction lâu nhất đang mở" (tính từ {{xact_start}} trong {{pg_stat_activity}}). Ở một hệ thống tôi từng xử lý, một job báo cáo giữ transaction 6 tiếng làm bảng đơn hàng phình gấp 3 lần vì VACUUM không dọn được; cảnh báo ở ngưỡng 5 phút sẽ bắt được ngay từ đầu.`,
   follow: [
@@ -2732,6 +2755,32 @@ Hỗ trợ: PostgreSQL có đủ; MySQL có INTERSECT và EXCEPT từ 8.0.31; Or
 
 ### Trả lời miệng 1 phút
 "UNION, UNION ALL, INTERSECT, EXCEPT ghép kết quả của hai câu SELECT theo chiều dọc, hai câu phải cùng số cột và kiểu tương thích theo thứ tự. UNION ALL chỉ nối, giữ dòng trùng và rẻ nhất; UNION nối rồi loại trùng nên DB phải sort hoặc hash toàn bộ. INTERSECT lấy phần chung, EXCEPT lấy phần có ở bên trái mà không có ở bên phải, rất tiện để đối soát hoặc tìm khách rời bỏ. Tôi mặc định dùng UNION ALL, ví dụ gộp bảng orders với orders_archive, chỉ dùng UNION khi thật sự cần loại trùng, và luôn liệt kê cột tường minh để không lệch thứ tự."
+
+### Ví dụ đời thực
+Marketing cần danh sách "mua năm 2025 nhưng chưa quay lại năm 2026" để gửi email khuyến mãi, dữ liệu ở bảng orders và orders_archive. Lần đầu viết:
+
+~~~sql
+SELECT customer_id, order_date, amount FROM orders
+WHERE order_date BETWEEN '2025-01-01' AND '2025-12-31'
+UNION
+SELECT customer_id, order_date, amount FROM orders_archive
+WHERE order_date BETWEEN '2025-01-01' AND '2025-12-31';
+~~~
+
+Báo cáo chỉ có 1.200 khách, kỳ vọng khoảng 3.000. Điều tra thấy một khách có hai đơn cùng ngày, cùng số tiền: UNION coi hai dòng là trùng và chỉ giữ lại một dòng, nên "mất" khách hợp lệ. Sửa sang UNION ALL để gộp hai bảng, rồi dùng EXCEPT trên customer_id (xét cả orders và orders_archive):
+
+~~~sql
+SELECT customer_id FROM orders
+WHERE order_date >= '2025-01-01' AND order_date < '2026-01-01'
+UNION ALL
+SELECT customer_id FROM orders_archive
+WHERE order_date >= '2025-01-01' AND order_date < '2026-01-01'
+EXCEPT
+SELECT customer_id FROM orders
+WHERE order_date >= '2026-01-01' AND order_date < '2027-01-01';
+~~~
+
+Báo cáo mới ra 3.020 khách, thời gian chạy giảm từ 45 giây xuống 8 giây vì tránh bước sort của UNION.
 
 > Senior tip: khi thấy UNION trong code review, tôi hỏi "hai nhánh có thể trùng không?". Trong phần lớn trường hợp câu trả lời là không, và đổi sang UNION ALL bỏ được một bước sort lớn. Khi gộp bảng archive, thêm cột hằng {{'archive' AS source}} vào mỗi nhánh để biết dòng đến từ đâu, rất có ích khi điều tra dữ liệu.`,
   follow: [
@@ -2821,6 +2870,26 @@ Cơ chế từng bước:
 ### Trả lời miệng 1 phút
 "Tôi cập nhật từ bảng staging bằng một câu set-based: UPDATE FROM trên PostgreSQL hoặc UPDATE JOIN trên MySQL, thay vì vòng lặp save từng dòng. Trước khi chạy tôi kiểm tra staging không có key trùng, vì nếu một dòng đích khớp nhiều dòng nguồn, PostgreSQL chọn ngẫu nhiên mà không báo lỗi. Tôi thêm điều kiện IS DISTINCT FROM để bỏ các dòng không đổi, giảm WAL và bloat. Với hàng triệu dòng, tôi chia lô vài nghìn dòng mỗi transaction bằng CTE chọn id kèm FOR UPDATE SKIP LOCKED, lặp đến khi hết, để khoá ngắn và replica theo kịp."
 
+### Ví dụ đời thực
+Mỗi sáng 2 giờ, hệ thống cập nhật giá từ staging_price (2 triệu dòng) vào product và đánh dấu 5 triệu đơn PENDING quá 30 ngày thành EXPIRED. Lần đầu viết một câu UPDATE ... FROM khổng lồ trong một transaction. Buổi hôm đó khách khiếu ngại ứng dụng chậm, replica đọc bị trễ 10 phút so với primary. Điều tra bằng:
+
+~~~sql
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) FROM pg_replication_slots;
+~~~
+
+WAL tích lũy hàng GB vì câu UPDATE 5 triệu dòng tạo phiên bản dòng mới cho cả bảng và giữ khoá tới khi commit. Sửa sang chia lô 5.000 dòng, mỗi lô một transaction ngắn:
+
+~~~sql
+WITH batch AS (
+  SELECT id FROM orders
+  WHERE status = 'PENDING' AND created_at < now() - interval '30 days'
+  ORDER BY id LIMIT 5000 FOR UPDATE SKIP LOCKED
+)
+UPDATE orders o SET status = 'EXPIRED' FROM batch WHERE o.id = batch.id;
+~~~
+
+Lặp cho tới khi số dòng bị ảnh hưởng bằng 0. Mỗi lô khoá chỉ 5.000 dòng trong vài trăm milliseconds, người dùng chờ tối đa một lô. Cuối tuần job vẫn xong đúng giờ, replica lag dưới 30 giây.
+
 > Senior tip: mọi job sửa dữ liệu hàng loạt nên **chạy lại được** (idempotent) và **dừng được giữa chừng**: điều kiện WHERE tự loại dòng đã xử lý (như {{status = 'PENDING'}}), mỗi lô log số dòng và thời gian. Khi job chết lúc 3 giờ sáng, bạn chỉ việc chạy lại, không cần tìm xem nó đã dừng ở đâu.`,
   follow: [
     'Vì sao PostgreSQL vẫn ghi phiên bản dòng mới khi UPDATE với giá trị không đổi?',
@@ -2892,6 +2961,18 @@ Nếu từ lúc UPDATE counter tới COMMIT mất 20 ms, một series tối đa 
 
 ### Trả lời miệng 1 phút
 "Sequence không bao giờ trả lại số khi transaction rollback, vì nếu trả lại thì mọi insert phải chờ nhau; cộng thêm cache và crash, lỗ hổng là bình thường. Vì vậy tôi dùng sequence cho id kỹ thuật, còn số hoá đơn liên tục là cột riêng, cấp từ bảng bộ đếm mỗi series một dòng: UPDATE last_no cộng 1 RETURNING trong cùng transaction với insert hoá đơn, rollback thì cả hai cùng rollback, kèm UNIQUE(series, invoice_no). Cái giá là các transaction cùng series xếp hàng qua một khoá dòng, nên tôi lấy số ở bước phát hành cuối cùng, giữ transaction thật ngắn và chia series theo chi nhánh nếu cần throughput cao."
+
+### Ví dụ đời thực
+Cửa hàng online phát hành khoảng 800 hoá đơn/ngày, số dạng HD-2026-000105, HD-2026-000106. Kế toán khiếu nợ số nhảy: từ 105 nhảy thẳng lên 107, thiếu 106. Điều tra log thấy transaction A gọi nextval lấy 106, sau đó insert hoá đơn bị lỗi và rollback; số 106 bị sequence "chiêu", không bao giờ trả lại. Còn Hibernate lấy trước 50 số mỗi lần (allocationSize = 50), khởi động lại app là mất số chưa dùng. Sửa: tạo bảng invoice_counter (series, last_no), khi phát hành:
+
+~~~sql
+BEGIN;
+UPDATE invoice_counter SET last_no = last_no + 1 WHERE series = 'HD-2026' RETURNING last_no;
+INSERT INTO invoice(series, invoice_no, ...) VALUES ('HD-2026', 106, ...);
+COMMIT;
+~~~
+
+Cùng transaction nên insert thất bại thì số 106 cũng rollback, không còn lỗ hổng. Thêm UNIQUE(series, invoice_no) làm lưới an toàn. Mỗi series hỗ trợ khoảng 50 hoá đơn/giây vì transaction xếp hàng qua một khoá dòng; cần nhiều hơn thì chia series theo chi nhánh (HD-HN-2026, HD-HCMC-2026) để mỗi chi nhánh có counter riêng.
 
 > Senior tip: trước khi xây cơ chế không lỗ hổng, hãy hỏi lại nghiệp vụ **chính xác** yêu cầu gì: thường chỉ số **hoá đơn đã phát hành** phải liên tục theo từng ký hiệu, còn mã đơn hàng, mã giao dịch thì không. Thu hẹp phạm vi như vậy giúp chỉ một bước nhỏ phải xếp hàng, phần còn lại của hệ thống vẫn chạy song song thoải mái.`,
   follow: [
@@ -2977,6 +3058,9 @@ Vì sao phải khoá dòng product: hai transaction cùng kiểm tra "không ch�
 
 ### Trả lời miệng 1 phút
 "Tôi lưu mỗi mức giá thành một dòng có khoảng hiệu lực nửa mở from tới to, to rỗng là còn hiệu lực; giá tại thời điểm t là dòng có from nhỏ hơn hoặc bằng t và t nhỏ hơn to. Đổi giá là đóng dòng đang mở và chèn dòng mới trong cùng transaction, nên đặt giá tương lai rất tự nhiên. Trên PostgreSQL tôi dùng cột tstzrange và exclusion constraint với btree_gist để database tự chặn hai khoảng chồng nhau, an toàn cả khi ghi song song. MySQL không có tính năng này nên tôi khoá dòng sản phẩm bằng FOR UPDATE rồi kiểm tra chồng lấp trước khi insert. Đơn hàng vẫn chụp lại giá lúc mua để hoá đơn không bao giờ thay đổi."
+
+### Ví dụ đời thực
+Hệ thống bán lưu niệm thay đổi giá theo mùa: áo 200.000 VND từ 01/01, giảm còn 150.000 VND từ 01/04. Lần đầu lưu hai cột valid_from, valid_to kiểu khoảng đóng [from, to] và kiểm tra "không chồng lấp" trong ứng dụng trước khi insert. Nửa đêm 01/04, hai admin cùng cập nhật: một người đóng giá cũ đến 01/04 23:59:59, người khác mở giá mới từ 01/04 00:00:00. Do khoảng đóng, lúc 00:00:00 có hai giá áp dụng, đơn hàng đêm đó tính sai 50.000 VND. Sửa sang khoảng nửa mở [from, to): giá cũ [01/01, 01/04), giá mới [01/04, NULL). PostgreSQL dùng cột tstzrange và exclusion constraint trên (product_id, valid_during) để chặn hai khoảng chồng nhau. Hai request song song insert khoảng chồng nhau thì request sau chờ request trước commit, database tự báo lỗi. MySQL không có kiểu này nên khoá dòng sản phẩm SELECT ... FOR UPDATE, kiểm tra chồng lấp trong cùng transaction rồi mới insert. Đơn hàng luôn chụp unit_price lúc mua, hoá đơn cũ in ra số chính xác dù sau này ai sửa lịch sử giá.
 
 > Senior tip: ở vai trò lead, hãy chuẩn hoá **một pattern temporal** dùng chung cho mọi bảng "có hiệu lực" (giá, biểu phí, lãi suất, hạn mức): cùng tên cột, cùng quy ước nửa mở, cùng cách đóng/mở trong một service dùng chung. Tôi từng gặp hệ thống có 5 bảng biểu phí với 5 quy ước khác nhau (đóng, mở, 9999, NULL), và mọi lỗi tính phí lệch một ngày đều đến từ sự không nhất quán đó.`,
   follow: [
