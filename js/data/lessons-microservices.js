@@ -2071,17 +2071,17 @@ Lỗi hay gặp: nhầm "đã poll" với "đã xử lý xong"; commit offset c�
   id: 'lesson-microservices-011', track: 'microservices', order: 11,
   title: 'Idempotent producer: sequence number, dedup và lỗi OUT_OF_ORDER', level: 'senior', minutes: 40,
   goals: ['Giải thích producer id (PID) và sequence number trong idempotent producer của Kafka', 'Cài broker dedup: APPENDED, DUPLICATE, OUT_OF_ORDER', 'Nêu giới hạn của idempotent producer (phạm vi partition, phiên, retry)'],
-  body: `**Tóm tắt:** Khi producer (bên gửi) retry (thử gửi lại) vì timeout (hết thời gian chờ), broker có thể nhận cùng bản ghi hai lần. Idempotent producer (producer có khả năng gửi lặp an toàn) gắn mỗi producer một PID (producer ID, định danh phiên gửi) và mỗi bản ghi trên một partition một sequence number (số thứ tự tăng dần). Broker nhớ sequence cuối theo (PID, partition): seq lặp → DUPLICATE, seq nhảy cóc → OUT_OF_ORDER, đúng kế tiếp → APPENDED.
+  body: `**Tóm tắt:** Khi producer (bên gửi) retry (thử gửi lại) vì timeout (hết thời gian chờ — producer chờ phản hồi ACK nhưng quá lâu nên coi như thất bại), broker (máy chủ Kafka nhận và lưu bản ghi) có thể nhận cùng bản ghi hai lần. Idempotent producer (producer có khả năng gửi lặp an toàn: gửi lại vẫn chỉ tạo một bản ghi logic) gắn mỗi phiên gửi một PID (producer ID, định danh do broker cấp) và mỗi bản ghi trên một partition (phân vùng — một dải log có thứ tự trong topic) một sequence number (số thứ tự tăng dần từ 0). Broker nhớ sequence cuối theo (PID, partition): seq lặp → DUPLICATE (trùng, bỏ qua), seq nhảy cóc → OUT_OF_ORDER (lỗi thứ tự), đúng kế tiếp → APPENDED (đã ghi).
 
 ### Cơ chế thật (Kafka)
-Bật {{enable.idempotence=true}} (mặc định true ở client mới) khiến producer được broker cấp {{PID}}. Với mỗi {{<topic, partition>}}, producer gán {{sequence number}} bắt đầu 0, tăng 1 mỗi bản ghi/batch thành công. Broker lưu {{(PID, partition) -> lastSeq}} (gắn với log).
+Bật {{enable.idempotence=true}} (mặc định true ở client Kafka mới) khiến producer xin broker cấp {{PID}} khi khởi tạo. Với mỗi cặp {{<topic, partition>}}, producer gán {{sequence number}} bắt đầu 0, tăng 1 mỗi batch (nhóm bản ghi) gửi thành công. Broker lưu trạng thái {{(PID, partition) -> lastSeq}} gắn với log của partition đó.
 
 | Nhận (PID, seq) | Điều kiện (last là seq cuối đã append) | Kết quả |
 |---|---|---|
 | lần đầu / last chưa có | seq == 0 (mô phỏng đơn giản) | APPENDED, last=seq |
 | đúng kế tiếp | seq == last + 1 | APPENDED, last=seq |
-| trùng retry | seq == last | DUPLICATE (ack thành công, không ghi thêm) |
-| nhảy cóc / cũ bất thường | seq > last + 1 hoặc seq < last | OUT_OF_ORDER (lỗi) |
+| trùng retry | seq == last | DUPLICATE (ACK thành công, không ghi thêm) |
+| nhảy cóc / cũ bất thường | seq > last + 1 hoặc seq < last | OUT_OF_ORDER (lỗi, từ chối) |
 
 ~~~seq
 title: Retry tạo duplicate nhưng broker dedup
@@ -2094,29 +2094,66 @@ Broker --> Broker: seq==lastSeq → DUPLICATE
 Broker -->> Producer(PID=7): ACK (không ghi lần 2)
 ~~~
 
-Cấu hình liên quan (client mới thường tự đảm bảo khi bật idempotence): {{acks=all}}, {{retries}} đủ lớn (thực tế bị chặn bởi {{delivery.timeout.ms}}), và {{max.in.flight.requests.per.connection}} <= 5 (mặc định 5) để giữ thứ tự. Idempotence Kafka đảm bảo không trùng/không đảo thứ tự **trong phạm vi một phiên producer và một partition**. Producer restart lấy PID mới (trừ khi dùng {{transactional.id}} để fence phiên cũ); cross-partition/cross-topic exactly-once cần transaction API.
+Cấu hình liên quan (client mới thường tự đảm bảo khi bật idempotence): {{acks=all}} (đợi tất cả replica trong ISR xác nhận), {{retries}} đủ lớn (thực tế bị chặn bởi {{delivery.timeout.ms}}), và {{max.in.flight.requests.per.connection}} <= 5 (mặc định 5) để giữ thứ tự khi retry. Idempotence Kafka đảm bảo không trùng/không đảo thứ tự **trong phạm vi một phiên producer và một partition**. Producer restart lấy PID mới (trừ khi dùng {{transactional.id}} để fence — chặn — phiên cũ); exactly-once xuyên partition/topic cần transaction API.
 
-### Vì sao OUT_OF_ORDER là lỗi nghiêm trọng
-Nếu broker nhận seq=5 khi last=3, có thể seq=4 đã mất. Chấp nhận seq=5 tạo lỗ hổng vĩnh viễn trong log. Kafka client có thể gặp {{OutOfOrderSequenceException}}: thường là dấu hiệu cấu hình/retry/in-flight bất thường, không nên âm thầm bỏ qua.
-
-### Bản mô phỏng đơn giản hoá
-{{Broker.append(pid, seq, msg)}} xử lý một partition logic duy nhất, không có topic/partition key, không có PID epoch fencing, không có batch, không có network. DUPLICATE trả về để test quan sát (thực tế vẫn là ack thành công).
+### Cơ chế từng bước
+1. **Khởi tạo phiên:** Producer kết nối broker, xin {{PID}} (ví dụ PID=7). Đây là danh tính phiên gửi; nếu producer crash rồi khởi động lại, nó xin PID mới nên dedup của phiên cũ không tự nối tiếp.
+2. **Gán sequence:** Với mỗi {{<topic, partition>}} producer giữ một bộ đếm riêng, bắt đầu 0. Mỗi lần gửi thành công (nhận ACK hợp lệ), bộ đếm tăng 1. Vì vậy sequence là **per (PID, partition)**, không dùng chung giữa partition.
+3. **Gửi bản ghi:** Producer gửi {{(PID, partition, seq, payload)}}. Broker tra {{lastSeq}} của (PID, partition).
+4. **Broker quyết định:**
+   - Nếu {{seq == expected}} (expected = lastSeq + 1, hoặc 0 nếu chưa có): ghi vào log, cập nhật lastSeq, trả ACK → APPENDED.
+   - Nếu {{seq == lastSeq}}: đây là retry của bản ghi đã commit (ACK trước có thể bị mất trên mạng). Broker **không ghi thêm** nhưng vẫn trả ACK thành công → DUPLICATE. Vậy producer thấy thành công, log không bị nhân đôi.
+   - Nếu {{seq > expected}} hoặc {{seq < lastSeq}} (bất thường): broker từ chối → OUT_OF_ORDER. Vì sao không chấp nhận? Nếu nhận seq=5 khi last=3, seq=4 có thể đã mất vĩnh viễn; chấp nhận sẽ tạo lỗ hổng trong chuỗi thứ tự.
+5. **Retry an toàn:** Khi timeout, producer gửi lại **cùng (PID, seq, payload)**. Nhờ bước 4, retry trở nên idempotent trong phạm vi phiên+partition.
+6. **Kết thúc phiên:** Producer đóng hoặc crash. PID phiên đó hết hiệu lực (trừ fencing bằng {{transactional.id}}). Dữ liệu đã append vẫn đúng; dedup không hứa hẹn xuyên các phiên khác PID.
 
 ~~~java
-Broker b = new Broker();
-b.append(7, 0, "a"); // APPENDED
-b.append(7, 0, "a"); // DUPLICATE (retry)
-b.append(7, 1, "b"); // APPENDED
+// Ví dụ tư duy: mô phỏng quyết định APPENDED/DUPLICATE/OUT_OF_ORDER theo từng PID
+class Broker {
+    private final Map<Integer, Long> last = new HashMap<>(); // PID -> lastSeq
+    synchronized String append(int pid, long seq, String msg) {
+        Long cur = last.get(pid);
+        long expected = (cur == null) ? 0L : cur + 1L; // pid mới phải bắt đầu từ 0
+        if (seq == expected) {
+            last.put(pid, seq);         // ghi thành công, cập nhật mốc
+            return "APPENDED";
+        }
+        if (cur != null && seq == cur) return "DUPLICATE"; // retry an toàn
+        return "OUT_OF_ORDER";          // nhảy cóc hoặc lùi: từ chối, không đổi state
+    }
+}
 ~~~
 
+### Vì sao OUT_OF_ORDER là lỗi nghiêm trọng
+OUT_OF_ORDER có nghĩa chuỗi sequence bị đứt. Nếu broker im lặng chấp nhận seq nhảy cóc, consumer sẽ đọc log có lỗ hổng mà không biết bản ghi thiếu. Kafka client có thể ném {{OutOfOrderSequenceException}}: đây là dấu hiệu cấu hình, retry, hoặc in-flight bất thường — cần điều tra, không nên nuốt lỗi (catch rồi bỏ qua).
+
+### Bản mô phỏng đơn giản hoá
+{{Broker.append(pid, seq, msg)}} trong bài tập xử lý một partition logic duy nhất, không có topic/partition key, không có PID epoch fencing (cơ chế chặn PID cũ khi dùng transaction), không có batch, không có network. DUPLICATE trả về chuỗi để test quan sát (thực tế broker vẫn trả ACK thành công cho producer).
+
 ### Lỗi hay gặp
-- Nghĩ idempotent producer làm exactly-once end-to-end: consumer/DB ngoài vẫn thấy tác dụng lặp nếu pipeline không idempotent.
-- Cấu hình xung đột với idempotence (ví dụ {{acks!=all}} hoặc {{max.in.flight.requests.per.connection}} > 5) sẽ bị client từ chối ở phiên bản mới; nếu tắt idempotence và cho phép nhiều request in-flight, retry có thể đảo thứ tự.
+- Nghĩ idempotent producer làm exactly-once end-to-end: consumer/DB bên ngoài vẫn thấy tác dụng lặp nếu pipeline không idempotent (ví dụ ghi DB hai lần nếu consumer xử lý lại).
+- Cấu hình xung đột với idempotence ({{acks!=all}} hoặc {{max.in.flight.requests.per.connection}} > 5) bị client mới từ chối; nếu tắt idempotence và cho nhiều request in-flight, retry có thể đảo thứ tự.
 - Sequence là **per (PID, partition)**; không dùng chung giữa partition.
-- Nhầm DUPLICATE (an toàn, broker đã có) với OUT_OF_ORDER (cần xử lý lỗi).
+- Nhầm DUPLICATE (an toàn, broker đã có bản ghi) với OUT_OF_ORDER (cần xử lý lỗi, chuỗi bị đứt).
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** Metric {{record-error-rate}} tăng, log producer xuất hiện {{OutOfOrderSequenceException}} hoặc {{UnknownProducerIdException}}.
+  **Nguyên nhân:** Producer ID hết hạn do vô hoạt động lâu (vượt {{transactional.id.expiration.ms}}, mặc định 7 ngày) hoặc broker restart mất state PID; hoặc producer mới cùng {{transactional.id}} khởi động làm fence epoch cũ. Cấu hình in-flight/retry không hợp lệ cũng gây OUT_OF_ORDER; leader failover kết hợp timeout có thể.trigger sequence gap.
+  **Cách sửa:** Kiểm tra {{transactional.id.expiration.ms}}, {{delivery.timeout.ms}}, {{request.timeout.ms}}; đảm bảo {{enable.idempotence=true}}, {{acks=all}}, {{max.in.flight.requests.per.connection <= 5}}. Nếu cần vượt phiên, dùng {{transactional.id}} để fencing.
+- **Triệu chứng:** Duplicate message xuất hiện ở consumer/DB dù producer đã bật idempotence.
+  **Nguyên nhân:** Hiểu nhầm phạm vi: idempotence chỉ chặn duplicate **trong phiên producer + partition** do retry. Duplicate có thể đến từ consumer reprocess (offset commit chưa kịp), producer restart với PID mới gửi lại cùng nghiệp vụ, hoặc nhiều partition.
+  **Cách sửa:** Thiết kế consumer/ghi DB idempotent theo business key (ví dụ {{orderId}} + unique constraint, hoặc bảng dedup). Nếu cần exactly-once Kafka-to-Kafka, dùng transaction API.
+- **Triệu chứng:** Sau deploy/restart producer, thấy một số sự kiện nghiệp vụ bị ghi hai lần.
+  **Nguyên nhân:** Ứng dụng gửi lại cùng sự kiện với PID mới (phiên mới) — broker coi đây là bản ghi hợp lệ vì không có state dedup của PID cũ cho payload đó ở mức nghiệp vụ.
+  **Cách sửa:** Áp dụng idempotency key ở tầng ứng dụng (outbox pattern + unique key, hoặc check-before-write). Không dựa vào Kafka PID để dedup xuyên restart.
+- **Triệu chứng:** Throughput giảm rõ khi bật idempotence, latency tăng.
+  **Nguyên nhân:** {{acks=all}} và giới hạn in-flight (<=5) làm producer chờ xác nhận nhiều hơn, đặc biệt khi {{min.insync.replicas}} cao hoặc cụm có độ trễ mạng.
+  **Cách sửa:** Đo baseline với {{record-send-rate}}, {{request-latency-avg}}; cân bằng {{batch.size}}, {{linger.ms}}; chấp nhận đánh đổi (đúng dữ liệu quan trọng hơn). Chỉ tắt idempotence nếu chấp nhận được duplicate/mất thứ tự và đã đánh giá rủi ro.
 
 ### Liên hệ phỏng vấn
-Trình bày: PID + sequence per partition, cách broker phân biệt retry hợp lệ và lỗ hổng, giới hạn phạm vi (phiên, partition). Nêu {{enable.idempotence}}, {{acks=all}}, {{transactional.id}} và vì sao consumer vẫn cần idempotent.
+- **"Kafka idempotent producer chống duplicate thế nào?"** → Trả lời: broker cấp {{PID}} cho phiên producer, producer gán {{sequence number}} tăng dần cho mỗi (PID, partition); broker lưu lastSeq, seq trùng trả ACK nhưng không append (dedup retry), seq nhảy cóc trả OUT_OF_ORDER để tránh lỗ hổng.
+- **"Idempotent producer có đảm bảo exactly-once end-to-end không?"** → Trả lời: không. Nó đảm bảo không trùng/không đảo thứ tự trong phạm vi **một phiên producer + một partition** với cấu hình đúng ({{acks=all}}, {{max.in.flight <= 5}}). Consumer, DB, và xử lý xuyên phiên/partition vẫn cần idempotency hoặc transaction.
+- **"Khi gặp {{OutOfOrderSequenceException}} bạn xử lý ra sao?"** → Trả lời: coi là lỗi nghiêm trọng (chuỗi sequence đứt), không nuốt lỗi; kiểm tra cấu hình idempotence, timeout/retry, in-flight, và sức khoẻ broker/leader; theo dõi metric error/retry; nếu do timeout giả thì điều chỉnh {{request.timeout.ms}}/{{delivery.timeout.ms}} và hạ tải in-flight.
 
 > Senior tip: theo dõi producer {{record-error-rate}}, {{record-retry-rate}} và OutOfOrderSequence; retry tăng bất thường khi broker ổn định thường do timeout/in-flight hoặc mạng gây timeout giả.
 `,
@@ -2175,7 +2212,8 @@ Lỗi hay gặp: coi seq < last là DUPLICATE; không tách state theo pid; appe
   check: [
     { q: 'Producer gửi lại (PID=5, seq=10) vì timeout ACK, broker đã có lastSeq=10. Kết quả đúng?', options: ['APPENDED thêm bản ghi thứ hai', 'DUPLICATE, không ghi thêm', 'OUT_OF_ORDER', 'Broker reset lastSeq'], answer: 1, explain: 'seq trùng lastSeq là retry của bản ghi đã được broker ghi nhận; broker trả thành công logic (dedup) nhưng không append lần hai.' },
     { q: 'Broker có lastSeq=3 cho PID=5, nhận seq=5. Kết quả đúng?', options: ['APPENDED', 'DUPLICATE', 'OUT_OF_ORDER vì nhảy cóc qua seq=4', 'Tự điền seq=4'], answer: 2, explain: 'seq > lastSeq+1 tạo lỗ hổng (thiếu seq=4). Broker phải từ chối để bảo toàn tính liên tục sequence; im lặng chấp nhận sẽ che mất mất dữ liệu.' },
-    { q: 'Idempotent producer của Kafka (enable.idempotence) đảm bảo phạm vi nào?', options: ['Exactly-once cho mọi DB và HTTP gọi ra ngoài', 'Không trùng/đảo thứ tự trong phạm vi phiên producer + partition (cấu hình đúng)', 'Mọi consumer tự động idempotent', 'Không bao giờ retry'], answer: 1, explain: 'Đảm bảo dựa trên PID/sequence per partition; cross-partition transaction cần transactional.id. Hệ thống ngoài Kafka vẫn cần cơ chế idempotency riêng.' }
+    { q: 'Idempotent producer của Kafka (enable.idempotence) đảm bảo phạm vi nào?', options: ['Exactly-once cho mọi DB và HTTP gọi ra ngoài', 'Không trùng/đảo thứ tự trong phạm vi phiên producer + partition (cấu hình đúng)', 'Mọi consumer tự động idempotent', 'Không bao giờ retry'], answer: 1, explain: 'Đảm bảo dựa trên PID/sequence per partition; cross-partition transaction cần transactional.id. Hệ thống ngoài Kafka vẫn cần cơ chế idempotency riêng.' },
+    { q: 'Tại sao producer restart rồi gửi lại cùng sự kiện nghiệp vụ vẫn có thể tạo bản ghi trùng ở Kafka dù từng phiên bật idempotence?', options: ['Vì broker tự xoá lastSeq sau mỗi ACK', 'Vì phiên mới xin PID mới nên dedup theo PID/sequence không nối tiếp cho nghiệp vụ cũ', 'Vì {{acks=all}} luôn tạo duplicate', 'Vì sequence number dùng chung cho mọi partition'], answer: 1, explain: 'Idempotence Kafka dedup theo (PID, partition) trong phiên. Restart lấy PID mới, broker coi bản ghi là hợp lệ theo phiên mới; dedup nghiệp vụ cần key ứng dụng (outbox/unique constraint).' }
   ],
   related: ['microservices-002', 'microservices-001', 'core-015'],
   tags: ['Kafka', 'idempotent producer', 'sequence number', 'dedup', 'exactly-once']
