@@ -566,8 +566,49 @@ record CreateUser(@NotBlank String email) {}
 ResponseEntity<?> create(@Valid @RequestBody CreateUser request) { ... }
 ~~~
 
+### Cơ chế từng bước
+Đi sâu từng bước khi một request {{POST /orders}} đi qua DispatcherServlet:
+
+1. **Filter chain chạy trước**: request vào Tomcat, chạy qua filter chain ({{FilterChainProxy}} của Spring Security nếu có). Filter có thể chặn request sớm (401/403) hoặc gắn thông tin (principal, correlation ID). Filter **không** biết route Spring MVC.
+2. **DispatcherServlet nhận request**: {{DispatcherServlet.doDispatch()}} là điểm nhập. Nó lưu trữ các attribute (locale, theme, multipart) và bắt đầu tìm handler.
+3. **HandlerMapping tìm handler**: {{RequestMappingHandlerMapping}} dùng {{RequestMappingInfo}} (path, method, consumes, produces, params, headers) để match. Kết quả là {{HandlerExecutionChain}} gồm handler method + interceptors. **Quan trọng**: nếu không match handler nào, ném {{NoHandlerFoundException}} (cần {{spring.mvc.throw-exception-if-no-handler-found=true}} và {{spring.web.resources.add-mappings=false}}) — mặc định Spring 6 trả 404 qua {{DefaultServletHttpRequestHandler}} cho static resource.
+4. **HandlerAdapter chuẩn bị tham số**: {{RequestMappingHandlerAdapter}} dùng {{HandlerMethodArgumentResolverComposite}} để resolve từng tham số:
+   - {{@RequestBody}} → {{RequestResponseBodyMethodProcessor}} dùng {{HttpMessageConverter}} (Jackson) đọc body → DTO. Lỗi parse → {{HttpMessageNotReadableException}}.
+   - {{@Valid}} → {{ValidationArgumentResolver}} chạy Bean Validation (Hibernate Validator). Vi phạm constraint → {{MethodArgumentNotValidException}}.
+   - {{@PathVariable}}, {{@RequestParam}}, {{@RequestHeader}} → resolver tương ứng.
+   Thứ tự: **message converter → validation → controller**. Controller chỉ được gọi khi TẤT CẢ tham số resolve thành công.
+5. **Controller method chạy**: business logic, gọi service, repository. Trả về object (DTO, {{ResponseEntity}}, {{String}}, {{void}}…).
+6. **Return value handler**: {{HandlerMethodReturnValueHandlerComposite}} xử lý kết quả:
+   - {{ResponseEntity}} → set status/headers/body.
+   - {{@ResponseBody}} object → {{RequestResponseBodyMethodProcessor}} dùng converter serialize JSON.
+   - {{String}} view name → {{ViewNameMethodReturnValueHandler}} → {{ViewResolver}}.
+7. **Response hoàn tất**: converter ghi JSON vào {{ServletOutputStream}}, set {{Content-Type: application/json}}. Filter chain tiếp tục ({{OncePerRequestFilter}} after completion).
+8. **Exception flow**: bất kỳ exception nào (validation, business, DB) đều bong lên {{DispatcherServlet.doDispatch}} → DispatcherServlet duyệt từng {{HandlerExceptionResolver}} theo thứ tự:
+   - {{ExceptionHandlerExceptionResolver}} ({{@ExceptionHandler}} trong {{@RestControllerAdvice}}).
+   - {{ResponseStatusExceptionResolver}} ({{@ResponseStatus}} trên exception).
+   - {{DefaultHandlerExceptionResolver}} (exception chuẩn Spring MVC → status code).
+   - Cuối cùng {{ResponseEntityExceptionHandler}} fallback.
+   Kết quả là {{ModelAndView}} hoặc response body → ghi ra client.
+
+**Vì sao lại như vậy?** Tách routing (HandlerMapping), argument resolution (HandlerAdapter), return value handling, và exception resolution thành các component riêng biệt giúp Spring MVC mở rộng được: thêm converter mới cho protobuf, thêm argument resolver cho custom annotation, thêm exception handler cho domain exception — không sửa core DispatcherServlet.
+
 ### Validation boundary
-Validate syntax và invariant đơn giản ngay tại API boundary, ví dụ field bắt buộc hoặc range. Quy tắc nghiệp vụ cần dữ liệu hiện tại như email đã tồn tại phải được kiểm tra ở service/domain và vẫn cần database constraint để chống race. Không trả stack trace hay nội dung exception nội bộ cho client.
+Validate syntax và invariant đơn giản ngay tại API boundary, ví dụ field bắt buộc, range, format email/phone. Quy tắc nghiệp vụ cần dữ liệu hiện tại như email đã tồn tại phải được kiểm tra ở service/domain và vẫn cần database constraint để chống race. Không trả stack trace hay nội dung exception nội bộ cho client.
+
+### Custom ArgumentResolver: mở rộng Spring MVC
+Khi cần logic resolve phức tạp (ví dụ lấy user từ JWT, parse multi-tenant header), hãy viết {{HandlerMethodArgumentResolver}} và đăng ký qua {{WebMvcConfigurer.addArgumentResolvers}}. Resolver được gọi trong {{HandlerMethodArgumentResolverComposite}} theo thứ tự đăng ký, trước validation.
+
+~~~java
+@Component
+class CurrentUserResolver implements HandlerMethodArgumentResolver {
+    @Override public boolean supportsParameter(MethodParameter p) {
+        return p.hasParameterAnnotation(CurrentUser.class) && p.getParameterType().equals(User.class);
+    }
+    @Override public Object resolveArgument(MethodParameter p, ModelAndViewContainer m, NativeWebRequest w, WebDataBinderFactory f) {
+        return w.getUserPrincipal() != null ? userService.findByEmail(w.getUserPrincipal().getName()) : null;
+    }
+}
+~~~
 
 ### ProblemDetail
 {{ProblemDetail}} biểu diễn lỗi theo RFC 9457 (bản thay thế RFC 7807) với các field {{type}}, {{title}}, {{status}}, {{detail}}, {{instance}} và properties mở rộng; content type của response là {{application/problem+json}}. Hai cách dùng: trả {{ProblemDetail}} từ method {{@ExceptionHandler}} của bạn, hoặc trong Spring Boot 3 bật {{spring.mvc.problemdetails.enabled=true}} để các exception chuẩn của Spring MVC (400 validation, 404, 405…) tự trả về dạng ProblemDetail.
@@ -582,19 +623,32 @@ ProblemDetail handle(EmailTakenException e) {
 ~~~
 Giữ {{type}} ổn định để client phân loại; {{detail}} nên hữu ích nhưng không lộ dữ liệu nhạy cảm. Validation error nên có danh sách field/message đã chuẩn hóa, thứ tự ổn định nếu client hoặc snapshot test phụ thuộc.
 
-| Lỗi | HTTP thường dùng | Xử lý |
-|---|---|---|
-| JSON/validation sai | 400 | Trả field errors có cấu trúc |
-| Không tìm thấy tài nguyên | 404 | ProblemDetail nhất quán |
-| Conflict nghiệp vụ | 409 | Nêu cách xử lý phù hợp |
+### ExceptionResolver: so sánh các resolver chuẩn
 
-### Production pitfalls
-Đừng coi mọi exception là 500 hoặc trả 200 với error object. Tránh lộ stack trace, SQL và token. Validation ở controller không thay thế constraint trong DB khi có concurrent request. Cân nhắc correlation ID trong log thay vì nhồi toàn bộ context vào response. API versioning và schema lỗi cần ổn định để client không phụ thuộc câu chữ tự do.
+| Resolver | Xử lý exception nào | Ưu tiên |
+|---|---|---|
+| {{ExceptionHandlerExceptionResolver}} | {{@ExceptionHandler}} trong {{@RestControllerAdvice}} | Cao nhất |
+| {{ResponseStatusExceptionResolver}} | Exception có {{@ResponseStatus}} | Cao |
+| {{DefaultHandlerExceptionResolver}} | Exception chuẩn Spring MVC ({{MethodArgumentNotValidException}}, {{HttpMessageNotReadableException}}, {{NoHandlerFoundException}}…) | Trung bình |
+| {{ResponseEntityExceptionHandler}} | Fallback cho các exception còn lại | Thấp |
+
+Bạn thường chỉ cần viết {{@RestControllerAdvice}} với các method {{@ExceptionHandler}} cho domain exception; Spring MVC lo phần còn lại.
+
+### Lỗi hay gặp trên production
+- **Validation exception trả 500 thay vì 400**: thiếu {{spring-boot-starter-validation}} hoặc quên {{@Valid}} → {{MethodArgumentNotValidException}} không được ném, validation không chạy, dữ liệu sai lọt vào service → exception ở layer dưới (constraint violation) thành 500. Triệu chứng: log thấy {{DataIntegrityViolationException}} hoặc {{ConstraintViolationException}} từ Hibernate. Cách sửa: đảm bảo dependency validation có mặt, {{@Valid}} ở đúng chỗ, và bật {{spring.mvc.problemdetails.enabled=true}} để có response chuẩn.
+- **JSON sai cú pháp trả 400 (không phải 500)**: Jackson bọc JsonParseException vào {{HttpMessageNotReadableException}}, và {{DefaultHandlerExceptionResolver}} ánh xạ ngoại lệ này thành 400 Bad Request — đây là mặc định kể cả Spring Boot 3.1. Nếu ứng dụng trả 500, nguyên nhân thường là exception đã bị bắt/bọc lại ở interceptor hoặc {{@ControllerAdvice}} khác, ghi đè hành vi mặc định. Cách xử lý: đừng thêm {{@ExceptionHandler(JsonParseException.class)}} kỳ vọng bắt lỗi thô (lỗi đã được bọc); nếu muốn body chuẩn, bật {{spring.mvc.problemdetails.enabled=true}} (Boot 3.2+) để body là ProblemDetail, status vẫn là 400.
+- **Validation field errors thứ tự không ổn định**: {{MethodArgumentNotValidException.getBindingResult()}} trả {{FieldError}} theo thứ tự xác thực của Bean Validation, có thể khác thứ tự mà client hoặc snapshot test mong đợi → client/snapshot test fail ngẫu nhiên. Triệu chứng: test pass rồi fail không đổi code. Cách sửa: tự map {{BindingResult}} thành danh sách {{FieldErrorDTO}} sort theo tên field trước khi set vào {{ProblemDetail.setProperty("errors", sortedList)}}.
+- **Lộ stack trace/internal detail trong error response**: {{@ExceptionHandler(Exception.class)}} trả về {{ex.getMessage()}} hoặc {{ex.toString()}} chứa SQL, class name, line number. Triệu chứng: response body có {{org.hibernate.exception.ConstraintViolationException}} hoặc đường dẫn file. Cách sửa: chỉ trả {{ProblemDetail}} với {{detail}} do bạn tự viết, {{type}} ổn định, không bao giờ set {{detail}} từ exception gốc.
+- **Constraint DB trùng lặp với validation controller tạo race condition**: controller check {{email.exists()}} → OK → service {{save()}} → DB unique constraint violation (hai request cùng lúc). Triệu chứng: 500 {{DataIntegrityViolationException}} giữa validation đã pass. Cách sửa: validation controller chỉ check syntax/format; invariant nghiệp vụ (unique email) bắt buộc có DB unique constraint + catch {{DataIntegrityViolationException}} map thành {{ProblemDetail}} 409.
+- **Thiếu idempotency key cho thao tác ghi**: client retry request POST tạo đơn hàng khi timeout mạng → tạo trùng đơn. Triệu chứng: dữ liệu trùng lặp, đối soát khó. Cách sửa: client sinh {{Idempotency-Key}} (UUID) mỗi thao tác ghi; server dùng key đó làm khóa duy nhất (DB unique index hoặc cache Redis TTL 24h) để loại bỏ request trùng.
 
 ### Liên hệ phỏng vấn
-Mô tả request từ servlet tới handler và ngược lại qua converter. Phân biệt validation cấu trúc với invariant nghiệp vụ. Khi thiết kế error contract, chọn status, type/code ổn định, field errors và thông tin correlation; kiểm thử cả JSON sai cú pháp lẫn dữ liệu hợp lệ về hình thức nhưng sai nghiệp vụ.
+1. **DispatcherServlet xử lý request như thế nào? Nêu các component chính.** — DispatcherServlet delegates tới HandlerMapping (tìm handler), HandlerAdapter (resolve argument, gọi controller), HandlerMethodReturnValueHandler (xử lý kết quả), HandlerExceptionResolver (xử lý lỗi). Filter chain chạy trước và sau DispatcherServlet.
+2. **Vì sao validation @Valid chạy trước khi controller được gọi? Exception nào được ném?** — HandlerAdapter dùng ValidationArgumentResolver resolve tham số có @Valid; nếu vi phạm, MethodArgumentNotValidException được ném. Controller không bao giờ được invoke — đây là thiết kế "fail fast" ở boundary.
+3. **ProblemDetail (RFC 9457) có những field gì? Khi nào nên bật spring.mvc.problemdetails.enabled?** — Các field: type (URI phân loại lỗi), title (tóm tắt), status (HTTP code), detail (mô tả cho dev), instance (URI request cụ thể), properties (mở rộng). Bật flag trong Boot 3.2+ để exception chuẩn (400, 404, 405…) tự trả ProblemDetail thay vì HTML/body mặc định, giúp client parse nhất quán.
+4. **Làm sao xử lý unique constraint violation (race condition) mà không trả 500?** — Validation controller không thay thế DB constraint. Bắt DataIntegrityViolationException trong @RestControllerAdvice, kiểm tra constraint name hoặc SQLState, map thành ProblemDetail 409 CONFLICT với type ổn định. Không dùng select-then-insert vì race condition.
 
-> Senior tip: Một error response tốt giúp client quyết định retry hay sửa request. Đừng retry 400; với 409/5xx hãy định nghĩa semantics rõ và dùng idempotency cho thao tác có side effect.`,
+> Senior tip: Một error response tốt giúp client quyết định retry hay sửa request. Đừng retry 400; với 409/5xx hãy định nghĩa semantics rõ và dùng idempotency cho thao tác có side effect. Luôn có correlation ID trong log để trace request end-to-end.`,
     exercises: [{
       title: 'Dispatcher nhỏ với validation và ProblemDetail',
       prompt: `Cài {{MiniDispatcher.dispatch(path, email)}} mô phỏng thứ tự xử lý của Spring MVC cho {{POST /users}} ({{Response}} chỉ giữ {{status}} và {{type}} — phần quan trọng nhất của một ProblemDetail):
@@ -638,7 +692,7 @@ Lỗi hay gặp:
 - Quên null: {{email.indexOf}} ném {{NullPointerException}} → server trả 500 cho một lỗi đáng lẽ là 400.
 - Trả {{type}} là câu lỗi tự do ("Email không hợp lệ!"): client không thể phân loại ổn định; {{type}} phải là mã cố định, câu chữ để trong {{detail}}.`
     }],
-    check: [{ q: 'Validation cho email chưa tồn tại nên nằm ở đâu?', options: ['Chỉ trong regex ở controller', 'Service/domain và constraint DB khi cần chống race', 'Trong serializer JSON', 'Trong DispatcherServlet'], answer: 1, explain: `Kiểm tra "email đã tồn tại chưa" cần đọc dữ liệu hiện tại, nên thuộc service/domain; thêm unique constraint ở DB vì hai request đồng thời có thể cùng vượt qua bước kiểm tra trong code. Regex chỉ kiểm tra hình dạng email, không biết DB có gì. Serializer chỉ chuyển JSON ↔ object. DispatcherServlet chỉ điều phối request, không chứa nghiệp vụ.` }, { q: 'Controller có {{create(@Valid @RequestBody CreateUser req)}}, client gửi email rỗng vi phạm {{@NotBlank}}. Điều gì xảy ra?', options: ['Controller được gọi với req.email() rỗng, tự kiểm tra lấy', 'Spring ném MethodArgumentNotValidException trước khi gọi controller, mặc định trả 400', 'Spring trả 500 vì validation lỗi', 'Jackson từ chối parse JSON và trả 415'], answer: 1, explain: `Validation chạy khi HandlerAdapter chuẩn bị tham số, nên controller không được gọi; MethodArgumentNotValidException được ExceptionResolver chuyển thành 400 (dạng ProblemDetail nếu bật). Phương án 1 chỉ đúng khi thiếu @Valid hoặc thiếu starter-validation. 500 dành cho lỗi phía server. Jackson parse JSON hợp lệ bình thường; 415 là lỗi Content-Type không được hỗ trợ.` }],
+    check: [{ q: 'Validation cho email chưa tồn tại nên nằm ở đâu?', options: ['Chỉ trong regex ở controller', 'Service/domain và constraint DB khi cần chống race', 'Trong serializer JSON', 'Trong DispatcherServlet'], answer: 1, explain: `Kiểm tra "email đã tồn tại chưa" cần đọc dữ liệu hiện tại, nên thuộc service/domain; thêm unique constraint ở DB vì hai request đồng thời có thể cùng vượt qua bước kiểm tra trong code. Regex chỉ kiểm tra hình dạng email, không biết DB có gì. Serializer chỉ chuyển JSON ↔ object. DispatcherServlet chỉ điều phối request, không chứa nghiệp vụ.` }, { q: 'Controller có {{create(@Valid @RequestBody CreateUser req)}}, client gửi email rỗng vi phạm {{@NotBlank}}. Điều gì xảy ra?', options: ['Controller được gọi với req.email() rỗng, tự kiểm tra lấy', 'Spring ném MethodArgumentNotValidException trước khi gọi controller, mặc định trả 400', 'Spring trả 500 vì validation lỗi', 'Jackson từ chối parse JSON và trả 415'], answer: 1, explain: `Validation chạy khi HandlerAdapter chuẩn bị tham số, nên controller không được gọi; MethodArgumentNotValidException được ExceptionResolver chuyển thành 400 (dạng ProblemDetail nếu bật). Phương án 1 chỉ đúng khi thiếu @Valid hoặc thiếu starter-validation. 500 dành cho lỗi phía server. Jackson parse JSON hợp lệ bình thường; 415 là lỗi Content-Type không được hỗ trợ.` }, { q: 'Client gửi JSON sai cú pháp (thiếu dấu ngoặc) tới endpoint {{@PostMapping}} có {{@RequestBody}}. Mặc định Spring Boot 3.1 trả status gì?', options: ['400 Bad Request', '500 Internal Server Error', '415 Unsupported Media Type', '422 Unprocessable Entity'], answer: 0, explain: `Jackson bọc JsonParseException vào {{HttpMessageNotReadableException}}; {{DefaultHandlerExceptionResolver}} ánh xạ ngoại lệ này thành 400 Bad Request — mặc định kể cả Boot 3.1. {{spring.mvc.problemdetails.enabled=true}} (Boot 3.2+) chỉ đổi body thành ProblemDetail, không đổi status. 500 chỉ xảy ra nếu exception đã bị bắt/bọc lại ở layer khác.` }, { q: 'Khi nào nên dùng {{@ExceptionHandler(DataIntegrityViolationException.class)}} trong {{@RestControllerAdvice}}?', options: ['Bắt mọi lỗi validation Bean Validation', 'Bắt unique constraint violation từ DB để map thành ProblemDetail 409', 'Bật ProblemDetail cho toàn app', 'Xử lý JSON parse error'], answer: 1, explain: `DataIntegrityViolationException là exception cha của các lỗi DB (unique constraint, FK, not null). Dùng nó để map lỗi DB thành ProblemDetail 409 CONFLICT thay vì để thành 500. Bean Validation ném MethodArgumentNotValidException, không phải DataIntegrityViolationException. ProblemDetail bật bằng property config, không phải exception handler.` }],
     related: ['spring-005'], tags: ['Spring MVC', 'validation', 'ProblemDetail', 'HTTP']
   },
   {
@@ -667,8 +721,33 @@ Versioned phải chạy theo số thứ tự tăng dần. Khi một migration c�
 ### Idempotency và production
 Clock được truyền vào để ghi thời điểm deterministic trong test; production dùng đồng hồ tin cậy. Migration nên ngắn, transactional khi DB hỗ trợ, và không chứa logic phụ thuộc dữ liệu không kiểm soát. Với nhiều instance chạy cùng lúc, cần khóa migration table để tránh hai pod cùng áp một phiên bản. Nếu migration thất bại giữa chừng, bản ghi success false giúp lần chạy sau biết trạng thái và retry đúng chỗ.
 
+### Cơ chế từng bước
+Đi từng bước khi {{MigrationRunner.applyAll()}} được gọi với danh sách migration hỗn hợp:
+
+1. **Phân loại**: duyệt danh sách đầu vào, tách thành hai nhóm — versioned (tên bắt đầu {{V}} + số + {{__}}) và repeatable (tên bắt đầu {{R__}}). Mỗi migration versioned được parse số phiên bản qua regex {{^V(\\d+)__}}.
+2. **Sắp xếp versioned**: sắp xếp nhóm versioned theo số phiên bản tăng dần; nếu trùng version thì sắp theo tên file để đảm bảo thứ tự xác định.
+3. **Sắp xếp repeatable**: sắp xếp nhóm repeatable theo tên file (alphabetical) để thứ tự chạy ổn định.
+4. **Áp versioned theo thứ tự**: với mỗi migration versioned:
+   - Tra {{schemaHistory}} từ cuối lên để tìm bản ghi cùng version. Nếu tìm thấy và checksum khớp → **bỏ qua** (idempotent). Nếu checksum khác → ném {{IllegalStateException("checksum mismatch ...")}}.
+   - Tính {{maxApplied}} = version lớn nhất đã có trong {{schemaHistory}}.
+   - Nếu {{allowOutOfOrder == false}} và version hiện tại < {{maxApplied}} → ném {{IllegalStateException("out of order ...")}}.
+   - Ghi bản ghi mới vào {{schemaHistory}} với {{success=true}}, timestamp từ {{clock.millis()}}.
+5. **Áp repeatable**: với mỗi migration repeatable:
+   - Tra {{schemaHistory}} từ cuối lên tìm bản ghi cùng tên. Nếu tìm thấy và checksum khớp → **bỏ qua**. Nếu checksum khác → ghi bản ghi mới (chạy lại).
+6. **Kết thúc**: {{schemaHistory}} chứa toàn bộ lịch sử, bao gồm cả bản ghi bị bỏ qua (không ghi) và bản ghi mới.
+
+**Vì sao lại như vậy?** Tách versioned/repeatable rồi sắp xếp đảm bảo thứ tự bất biến bất kể thứ tự file trong filesystem. Kiểm tra checksum trước khi quyết định skip bảo vệ tính toàn vẹn: migration đã chạy trên production không được sửa lén. Out-of-order được chặn mặc định vì phá vỡ giả định "version lớn hơn = sau hơn".
+
+### Lỗi hay gặp trên production
+- **Checksum mismatch sau khi sửa file migration đã chạy**: developer sửa {{V3__add_index.sql}} trên production thay vì tạo {{V4__...}}. Lần deploy sau runner ném {{IllegalStateException}} checksum mismatch, app không lên được. Triệu chứng: log rõ "checksum mismatch V3__add_index.sql". Cách sửa: **không bao giờ sửa migration đã áp**; tạo migration mới {{V4__fix_index.sql}} để sửa.
+- **Out-of-order khi thêm migration bỏ sót**: production đã chạy tới {{V10}}, team phát hiện thiếu {{V5}} và thêm file {{V5__late.sql}} vào code. Runner mặc định từ chối vì {{5 < 10}}. Triệu chứng: "out of order V5__late.sql". Cách sửa: chỉ bật {{allowOutOfOrder=true}} khi có quy trình review chặt, hoặc tạo {{V11__patch.sql}} thay vì chèn số cũ.
+- **Race condition giữa nhiều instance**: hai pod K8s cùng khởi động, cùng đọc {{schemaHistory}} thấy chưa có {{V1}}, cùng chạy {{V1}} → duplicate key hoặc lock timeout. Triệu chứng: deadlock hoặc unique constraint violation trên bảng {{flyway_schema_history}}. Cách sửa: Flyway dùng advisory lock (PostgreSQL) hoặc row lock; tự viết runner cần {{SELECT ... FOR UPDATE}} hoặc lock phân tán (Redis/ZooKeeper).
+- **Migration repeatable không chạy lại khi mong đợi**: view {{R__daily_summary.sql}} đổi logic nhưng quên đổi nội dung → checksum giữ nguyên, runner bỏ qua. Triệu chứng: view cũ vẫn chạy, báo cáo sai. Cách sửa: luôn đổi checksum khi sửa repeatable (thêm comment, đổi format), hoặc xóa bản ghi lịch sử repeatable đó trước khi deploy.
+
 ### Liên hệ phỏng vấn
-Hãy giải thích vì sao sửa file migration đã chạy là sai, cách Flyway phát hiện, và khi nào out-of-order được phép. Nêu cách xử lý migration thất bại giữa chừng và cách khôi phục. Cuối cùng, phân biệt migration schema với seed data và dữ liệu tham chiếu.
+1. **Vì sao sửa file migration đã chạy là sai? Flyway phát hiện như nào?** — Checksum của file hiện tại được so với bản ghi lịch sử. Nếu lệch, migration cũ đã chạy trên DB không còn khớp với file, nên runner báo lỗi để buộc tạo migration mới. Đây là cơ chế bảo vệ tính toàn vẹn schema.
+2. **Khi nào cờ out-of-order được phép bật?** — Chỉ khi bổ sung migration bị bỏ sót có số phiên bản nhỏ hơn max đã áp (ví dụ production đang ở V10, phát hiện thiếu V5). Bật mặc định sẽ che giấu thứ tự và làm khó truy vết; cần quy trình review chặt.
+3. **Phân biệt migration schema, seed data và dữ liệu tham chiếu.** — Migration schema (V/R) thay đổi cấu trúc bảng (DDL), chạy transactional, không rollback dễ. Seed data (dữ liệu khởi tạo bắt buộc) nên dùng migration versioned. Dữ liệu tham chiếu (loại tiền tệ, mã quốc gia…) dùng repeatable (R__) để có thể cập nhật lại khi checksum thay đổi.
 
 > Senior tip: migration là phần không thể rollback dễ dàng trên production. Hãy coi mỗi file migration như một commit không thể sửa; thêm migration mới để thay đổi, và luôn có kế hoạch forward-fix thay vì downgrade thủ công.`,
     exercises: [{
@@ -872,7 +951,7 @@ class MigrationRunner {
       hints: ['Dùng regex {{^V(\\\\d+)__}} để tách số phiên bản; tên bắt đầu {{R__}} là repeatable.', 'Duyệt {{schemaHistory}} từ cuối để tìm bản đã áp cùng version hoặc cùng tên.', 'Kiểm tra checksum trước khi quyết định skip; max version đã áp dùng cho quy tắc out-of-order.', 'Repeatable không có version; chỉ so checksum với lần chạy trước cùng tên.'],
       explain: `Runner mô phỏng Flyway ở mức tối giản nhưng giữ được các bất biến quan trọng. Versioned được sắp xếp trước khi áp, nên thứ tự gọi applyAll không phụ thuộc thứ tự trong list. Checksum mismatch được phát hiện bằng cách tìm bản ghi cùng version; nếu lệch, runner từ chối ngay và không ghi thêm bản ghi sai. Repeatable dùng tên làm khóa và chỉ chạy khi checksum khác, nên gọi applyAll nhiều lần không tạo hiệu ứng phụ. Out-of-order được kiểm soát bằng max version đã áp và cờ allowOutOfOrder. Clock inject giúp ts deterministic trong test; production nên dùng đồng hồ tin cậy và khóa bảng migration khi chạy nhiều instance.`,
     }],
-    check: [{ q: 'Vì sao không nên sửa file migration đã áp dụng trên production?', options: ['Vì checksum sẽ lệch và runner từ chối để ngăn thay đổi lén', 'Vì Java không compile được file SQL', 'Vì migration chỉ chạy một lần trong JVM', 'Vì Flyway tự động xóa bảng lịch sử'], answer: 0, explain: `Checksum của file hiện tại được so với bản ghi lịch sử. Nếu lệch, migration cũ đã chạy trên DB không còn khớp với file, nên runner báo lỗi để buộc tạo migration mới.` }, { q: 'Khi nào cờ out-of-order nên được bật?', options: ['Khi thêm migration bị bỏ sót có số phiên bản nhỏ hơn max đã áp', 'Mọi trường hợp để đơn giản', 'Khi checksum thay đổi', 'Khi chạy trên môi trường dev'], answer: 0, explain: `out-of-order cho phép áp migration có version nhỏ hơn max đã áp trong trường hợp đặc biệt như bổ sung migration bị bỏ sót. Bật mặc định sẽ che giấu thứ tự và làm khó truy vết.` }, { q: 'Repeatable migration chạy lại trong trường hợp nào?', options: ['Khi checksum khác lần trước', 'Mỗi lần applyAll', 'Khi version tăng', 'Khi bảng lịch sử rỗng'], answer: 0, explain: `Repeatable không có version; checksum là tiêu chí duy nhất. Nếu checksum giữ nguyên, runner bỏ qua để tránh chạy lại view hoặc procedure không cần thiết.` }],
+    check: [{ q: 'Vì sao không nên sửa file migration đã áp dụng trên production?', options: ['Vì checksum sẽ lệch và runner từ chối để ngăn thay đổi lén', 'Vì Java không compile được file SQL', 'Vì migration chỉ chạy một lần trong JVM', 'Vì Flyway tự động xóa bảng lịch sử'], answer: 0, explain: `Checksum của file hiện tại được so với bản ghi lịch sử. Nếu lệch, migration cũ đã chạy trên DB không còn khớp với file, nên runner báo lỗi để buộc tạo migration mới.` }, { q: 'Khi nào cờ out-of-order nên được bật?', options: ['Khi thêm migration bị bỏ sót có số phiên bản nhỏ hơn max đã áp', 'Mọi trường hợp để đơn giản', 'Khi checksum thay đổi', 'Khi chạy trên môi trường dev'], answer: 0, explain: `out-of-order cho phép áp migration có version nhỏ hơn max đã áp trong trường hợp đặc biệt như bổ sung migration bị bỏ sót. Bật mặc định sẽ che giấu thứ tự và làm khó truy vết.` }, { q: 'Repeatable migration chạy lại trong trường hợp nào?', options: ['Khi checksum khác lần trước', 'Mỗi lần applyAll', 'Khi version tăng', 'Khi bảng lịch sử rỗng'], answer: 0, explain: `Repeatable không có version; checksum là tiêu chí duy nhất. Nếu checksum giữ nguyên, runner bỏ qua để tránh chạy lại view hoặc procedure không cần thiết.` }, { q: 'Hai pod K8s cùng khởi động, cùng áp migration V1 lần đầu. Vấn đề gì xảy ra và cách phòng?', options: ['Không có vấn đề, Flyway tự xử lý song song', 'Race condition: cả hai cùng insert vào flyway_schema_history → duplicate key hoặc deadlock; cần advisory lock hoặc lock phân tán', 'Migration V1 chỉ chạy một lần nhờ idempotency', 'Pod thứ hai sẽ đợi pod đầu xong nhờ checkpoint'], answer: 1, explain: `Flyway dùng advisory lock (PostgreSQL) hoặc row lock trên bảng lịch sử để serialize việc áp migration. Tự viết runner cần SELECT ... FOR UPDATE hoặc lock phân tán (Redis/ZooKeeper). Idempotency chỉ giúp khi chạy lại lần sau, không giải quyết race lúc chạy cùng lúc.` }],
       related: ['spring-001', 'spring-002'], tags: ['Flyway', 'migration', 'checksum', 'schema history', 'out-of-order']
     },
   {
@@ -902,7 +981,7 @@ Ví dụ: {{private String nick;}} **có** {{public String getNick()}} → vẫn
 
 ### Chế độ strict
 Jackson **không** có cờ nào tên "FAIL_ON_MISSING". Các cờ gần nhất:
-- {{DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES}} (mặc định bật): khi **đọc** JSON có field lạ thì ném lỗi — Spring Boot tắt cờ này mặc định.
+- {{DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES}} (mặc định bật): khi **đọc** JSON có field lạ thì ném lỗi — Jackson bật mặc định; Spring Boot **giữ** mặc định này (có thể tắt qua {{spring.jackson.deserialization.fail-on-unknown-properties=false}}).
 - {{SerializationFeature.FAIL_ON_EMPTY_BEANS}} (mặc định bật): khi **ghi** một object không có property nào thì ném lỗi thay vì trả về một object JSON rỗng.
 
 Chế độ strict của bài tập là một kiểm tra tự viết: không đổi output khi mọi field đều hợp lệ, nhưng gặp field không public mà không annotation thì ném exception — buộc developer quyết định rõ: đánh {{@JsonProperty}} hay {{@JsonIgnore}}.
