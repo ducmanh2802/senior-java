@@ -666,11 +666,64 @@ Bài tập dùng danh sách thời điểm retry thay vì sleep: delay attempt i
 ### Production checklist
 Store unique constraint cho (scope,key), fingerprint canonical payload, kết quả/status, timestamps và retention. Claim phải nguyên tử; hai request đồng thời cùng key chỉ một request thực thi. Không lưu dữ liệu thẻ nhạy cảm trong bảng idempotency; lưu reference/token theo PCI controls. Metrics gồm duplicate hit, conflict, processing lâu và retry attempt; log key đã hash/redact. API trả semantics nhất quán khi request đầu còn PROCESSING (202/409 hoặc chờ có giới hạn).
 
+### Cơ chế từng bước
+Để hiểu tại sao cần cả idempotency key và retry policy, đi từng bước một tình huống thực tế:
+
+**Bước 1: Tạo ý định (không gửi ngay)**
+Client tạo {{Idempotency-Key}} duy nhất cho yêu cầu thanh toán này (ví dụ UUID v4). Key gắn với {{merchantId}}, {{accountId}} và {{operation}} (pay). Quan trọng: **không tạo key mới khi retry** — cùng một key cho cùng một ý định.
+
+**Bước 2: Gửi request lần đầu**
+Client gửi {{POST /payments}} kèm header {{Idempotency-Key}} và body đã canonical hoá (JSON sort keys). Network có thể timeout trước khi nhận response, không có nghĩa server chưa xử lý.
+
+**Bước 3: Server claim key nguyên tử**
+Server kiểm tra bảng idempotency theo (scope, key). Nếu chưa có, dùng {{INSERT ... ON CONFLICT DO NOTHING}} hoặc unique constraint để claim. Chỉ transaction thành công mới được tiến hành xử lý nghiệp vụ. Nếu insert conflict vì request đồng thời, thread thứ hai phải đọc trạng thái hiện tại thay vì xử lý lại.
+
+**Bước 4: Xử lý một lần**
+Trong cùng transaction (hoặc workflow an toàn), server thực hiện charge qua provider. Sau khi có kết quả, lưu vào bảng idempotency: {{status=COMPLETED}}, {{response_body}}, {{http_status}} và {{expires_at}}. Chỉ lưu response **sau khi** nghiệp vụ thành công hoặc đã xác định kết quả cuối cùng.
+
+**Bước 5: Trả kết quả; retry nhận lại kết quả cũ**
+Nếu client timeout và retry với cùng key và cùng payload: server tìm key đã tồn tại, so sánh fingerprint payload. Nếu giống → trả **y nguyên** response đã lưu (cùng status/body). Nếu khác → trả {{409 Conflict}} để tránh xử lý sai ý định. Nếu key đang {{PROCESSING}} và chưa hết lease → trả {{202 Accepted}} hoặc chờ có giới hạn, tránh xử lý song song.
+
+~~~java
+// Mô phỏng claim + trả kết quả đã lưu (đơn giản hoá)
+public PaymentResp pay(String idemKey, String payload, long now) {
+    IdemRec r = store.find(idemKey);           // đọc
+    if (r != null) {
+        if (!r.payloadHash.equals(hash(payload))) throw new Conflict();
+        if (r.status == Status.COMPLETED) return r.resp;  // trả lại kết quả cũ
+        if (r.status == Status.PROCESSING && !r.expired(now)) return pending(); // đang xử lý
+    }
+    // claim
+    if (!store.tryClaim(idemKey, payload, now)) return pay(idemKey,payload,now); // retry đọc
+    try {
+        PaymentResp resp = provider.charge(canon(payload));
+        store.complete(idemKey, resp, now);
+        return resp;
+    } catch (Exception e) {
+        store.fail(idemKey, e, now);            // đánh dấu để reconcile nếu cần
+        throw e;
+    }
+}
+~~~
+
+**Bước 6: Áp dụng retry policy có kiểm soát**
+Chỉ retry lỗi **transient** (network timeout, 503, 429 có {{Retry-After}}). Tính delay = {{min(cap, base * 2^attempt)}} + **jitter** (full jitter phổ biến: random trong [0, delay]). Giới hạn {{maxAttempts}} và **tổng deadline**. Mỗi attempt vẫn phải có {{timeout}} riêng. **Chỉ một tầng** được retry để tránh nhân bội.
+
+### Lỗi hay gặp trên production
+1. **Key mới mỗi lần retry**: Client sinh UUID mới khi timeout → server coi là yêu cầu mới → có thể charge lần hai. **Cách sửa:** Tạo key một lần tại client trước khi gửi attempt đầu, giữ nguyên key cho toàn bộ chuỗi retry.
+2. **Lưu key sau khi xử lý**: Nếu ghi key sau khi đã gọi provider và crash giữa chừng → retry không tìm thấy key → gọi provider lại. **Cách sửa:** Claim key (insert) **trước** khi gọi bất kỳ side effect nào có thể không đảo ngược.
+3. **Payload không canonical**: JSON có thứ tự field khác nhau → hash khác → server có thể coi là payload khác (hoặc ngược lại không phát hiện). **Cách sửa:** Canonical hoá (sort keys), chỉ include field ảnh hưởng nghiệp vụ (currency, amount, merchant, orderId), tránh field thời gian ngẫu nhiên.
+4. **PROCESSING kẹt vô thời hạn**: Thread chết sau khi claim nhưng trước khi complete → key mãi ở trạng thái PROCESSING, retry chờ mãi. **Cách sửa:** Thêm {{lease_expires_at}}, timeout lease, background job reconcile với provider (query trạng thái transaction) để hoàn tất hoặc fail an toàn.
+
 ### Pitfall
 Key ngẫu nhiên mới mỗi lần retry vô hiệu hoá idempotency. Chỉ lưu key sau khi xử lý tạo race duplicate. Hash payload không canonical có thể đổi vì thứ tự JSON field; fingerprint cần canonical representation và include currency/merchant. Retention quá ngắn cho phép charge lặp từ retry muộn; vô hạn thì bảng tăng mãi. Retry một non-idempotent POST mà không có key là lỗi tài chính nghiêm trọng.
 
 ### Liên hệ phỏng vấn
-Bắt đầu bằng tình huống response mất sau khi provider đã charge. Giải thích vì sao retry cần cùng key, nơi lưu key và transaction boundary; sau đó thêm retry budget, backoff+jitter, timeout, duplicate concurrent requests và reconciliation.`, {
+**Câu hỏi thường gặp:**
+
+- *Response mất sau khi provider đã charge, làm sao retry an toàn?* Trả lời: dùng cùng {{Idempotency-Key}} và payload đã canonical hoá; server claim key trước khi gọi provider, lưu response sau khi có kết quả; retry với cùng key sẽ trả response đã lưu thay vì charge lại. Cần transaction boundary rõ ràng và xử lý trạng thái {{PROCESSING}}.
+- *Tại sao cần jitter trong exponential backoff?* Trả lời: tránh thundering herd (nhiều client retry đồng loạt cùng thời điểm sau outage) làm dependency càng tồi tệ hơn. Dùng full jitter giúp phân tán thời điểm, vẫn đảm bảo backoff tăng dần và có cap.
+- *Khi nào dùng 202 vs 409 khi key đang PROCESSING hoặc payload khác?* Trả lời: cùng key + payload khác → {{409 Conflict}} (nghi ngờ nhầm ý định). Cùng key + payload giống nhưng vẫn {{PROCESSING}} và chưa hết lease → có thể {{202 Accepted}} với {{Retry-After}} hoặc chờ ngắn có giới hạn; nếu lease hết hạn cần reconcile với provider trước khi quyết định.`, {
       title: 'Mô phỏng idempotent payment và backoff xác định',
       prompt: `Cài {{PaymentService.pay(key, amount)}}: cùng key cùng amount chỉ ghi nhận một charge; cùng key khác amount ném IllegalArgumentException. {{Backoff.delay(attempt, base, cap)}} trả base×2^attempt có chặn cap, attempt bắt đầu từ 0.`,
       starter: `class PaymentService {
@@ -701,256 +754,7 @@ class Backoff {
       { q: 'Vì sao thêm jitter vào exponential backoff?', options: ['Để giảm việc nhiều client retry cùng một thời điểm sau outage', 'Để mọi client retry cùng lúc cho nhanh', 'Để không cần timeout nữa', 'Để thay idempotency key'], answer: 0, explain: `Jitter phân tán thời điểm retry, tránh thundering herd khi dependency vừa hồi phục; retry đồng loạt chính là điều cần tránh. Jitter không liên quan timeout (mỗi attempt vẫn cần deadline) và không thay idempotency (retry vẫn có thể gửi trùng nên server vẫn phải nhận diện bằng key).` },
     ], ['idempotency', 'retry', 'payments']),
 
-    lesson('006', 6, 'Transactional outbox: vì sao không gửi Kafka trong transaction DB', 'senior', [
-      'Giải thích được dual-write là gì và liệt kê đúng các trạng thái lệch nó tạo ra giữa DB và broker',
-      'Viết outbox table + relay phục hồi được sau crash, hiểu vì sao semantics là at-least-once',
-      'Biết cách làm consumer idempotent và giữ thứ tự event theo aggregate',
-      'Chọn được giữa relay polling và CDC (Debezium) theo hạ tầng đang có',
-    ], `### Bài toán: một nghiệp vụ, hai hệ thống phải ghi
-
-Service "tạo đơn hàng" phải làm hai việc: ghi đơn vào MySQL và báo cho các hệ thống khác (kho vận, email, tích điểm) qua Kafka. **Kafka** là hàng đợi sự kiện phân tán, mấy khái niệm cần biết trước đã: **producer** là app gửi message; **topic** là hộp thư có tên (order-created); topic chia thành nhiều **partition** là các luồng ghi tuần tự song song, và Kafka chỉ đảm bảo **thứ tự trong một partition**; **broker** là server giữ các partition (mỗi partition được nhân bản sang broker khác để không mất khi một server chết); **consumer** đọc message và ghi lại **offset** (con trỏ cho biết đã đọc tới đâu) để lần sau đọc tiếp.
-
-Cách viết tự nhiên nhất là:
-
-~~~java
-@Transactional
-public void placeOrder(Order o) {
-    orderRepo.save(o);                 // (1) DB commit khi method kết thúc
-    kafka.send("order-created", o);    // (2) gửi message từ trong cùng method
-}
-~~~
-
-Hai bước này nằm ở **hai hệ thống không có transaction chung**. Liệt kê mọi khả năng:
-
-| Tiến trình chết ở đâu | Kết quả thực tế | Hậu quả |
-|---|---|---|
-| Trước khi commit | không đơn, không event | ổn, client retry |
-| Sau commit, trước send | có đơn, không có event | kho vận không bao giờ biết, **mất event vĩnh viễn** vì không còn gì ghi nhớ rằng event cần gửi |
-| Đang send, ack bị mất | có đơn, có thể có 2 event | trùng, consumer phải chịu được |
-| Send xong, commit thất bại (ràng buộc uniqueness, exception phía sau) | không đơn, có event | hệ thống kia làm việc cho đơn **không tồn tại** |
-
-Đây là bài toán **dual-write**: không tồn tại một lệnh COMMIT phủ lên hai hệ thống độc lập, nên không có cách nào "chạy lại đúng chỗ bị đứt" nếu app chỉ biết mỗi lần gửi.
-
-### 2PC/XA: hướng giải quyết "đúng" nhưng hầu như không ai dùng
-**Two-Phase Commit (2PC)**: một transaction manager hỏi tất cả bên tham gia (DB, broker hỗ trợ **XA**) "chuẩn bị xong chưa?" (phase prepare, các bên giữ lock), khi tất cả trả lời xong mới ra lệnh commit. Cái giá: transaction manager là điểm lỗi tập trung, lock bị giữ suốt phase prepare nên throughput thường giảm vài lần, một bên treo làm toàn bộ treo theo, và nó phá mất tính độc lập triển khai của microservices. Vì thế trong hệ thống thực người ta đổi yêu cầu: không cố đạt exactly-once trên hai hệ thống, mà làm cho **một hệ thống trở thành điểm cam kết duy nhất**.
-
-### Outbox: đưa cả hai ghi về cùng một transaction
-Ý tưởng: đừng gửi Kafka trong transaction. Thay vào đó ghi message vào **một bảng của chính database nghiệp vụ**, cùng transaction:
-
-~~~sql
-CREATE TABLE outbox (
-  id           BIGINT PRIMARY KEY,      -- event id ổn định, không sinh lại khi retry
-  agg_id       VARCHAR(64),             -- order-7: dùng làm partition key
-  event_type   VARCHAR(64),
-  payload      JSON,
-  created_at   DATETIME(3),
-  delivered_at DATETIME(3) NULL         -- NULL = chưa relay
-);
-INSERT INTO orders (...);               -- nghiệp vụ
-INSERT INTO outbox (...);               -- event cần gửi
-COMMIT;                                 -- MỘT commit cho cả hai dòng
-~~~
-
-Vì hai INSERT nhắm vào cùng một database, tính nguyên tử do chính database đảm bảo: hoặc đơn hàng và event cùng tồn tại, hoặc cả hai cùng không. Không còn trạng thái "có đơn mà thiếu event", và cũng không còn "event cho đơn đã rollback". Một thành phần thứ hai, **relay**, sẽ lấy các dòng có delivered_at IS NULL và gửi sang Kafka sau.
-
-Giá phải trả, nói thẳng từ đầu: event tới Kafka **muộn hơn** commit một khoảng (độ trễ poll, thường vài trăm ms tới vài giây), và semantics là **at-least-once** (relay có thể gửi trùng). Cả hai đều xử lý được và đều là đánh đổi chủ động, không phải lỗi.
-
-~~~seq
-title: Outbox relay, một điểm cam kết duy nhất
-actors: Service | MySQL | Relay | Kafka | Consumer
-Service -> MySQL: BEGIN, INSERT orders và INSERT outbox
-MySQL --> Service: COMMIT, cả hai dòng đã nằm trong log
-note Service..MySQL: Crash ở đây thì chưa có event, client retry an toàn
-Relay -> MySQL: SELECT WHERE delivered_at IS NULL
-MySQL --> Relay: batch event chưa gửi
-Relay -> Kafka: send với partition key order-7
-Relay -> MySQL: UPDATE SET delivered_at = now
-note Relay..Kafka: Crash giữa send và update thì lần sau gửi lại
-Kafka -> Consumer: phát event, có thể trùng lặp
-Consumer -> Consumer: kiểm event id, bỏ qua nếu đã áp dụng
-~~~
-
-### Relay: polling hay CDC
-- **Polling**: relay chạy SELECT theo chu kỳ, gửi Kafka, rồi UPDATE delivered_at (hoặc xoá dòng sang bảng archive). Ưu: không thêm hạ tầng, chỉ cần database. Nhược: tải đọc lặp lại trên database nguồn, độ trễ bằng chu kỳ poll, và phải có chỉ mục trên (delivered_at, id) để không scan cả bảng.
-- **CDC (Change Data Capture)**: công cụ như **Debezium** chạy trong Kafka Connect đọc **transaction log** của database (binlog MySQL, WAL PostgreSQL) và phát mỗi thay đổi thành message, trong đó có dòng mới INSERT vào bảng outbox. Ưu: không truy vấn bảng nghiệp vụ, độ trễ thấp, và log đã chứa cả đơn hàng lẫn dòng outbox nên thứ tự của chúng được giữ nguyên. Nhược: thêm một hạ tầng phải vận hành, cần quyền đọc log, schema change phải quản lý.
-
-### At-least-once và consumer idempotent
-Luôn tồn tại cửa sổ "đã gửi sang Kafka nhưng chưa kịp đánh dấu delivered" (relay chết đúng lúc đó, hoặc ack tới chậm). Lần relay sau thấy dòng vẫn NULL nên gửi lại. Không xoá được cửa sổ này nếu không có coordination kiểu 2PC, nên thay vì hứa exactly-once ở producer, ta **chấp nhận trùng và bắt consumer chịu trùng**:
-- Mỗi event mang **event id ổn định** (id của dòng outbox), không phải UUID sinh lại mỗi lần gửi.
-- Consumer lưu id đã xử lý (bảng processed_event có primary key, Redis SET có TTL, hoặc state store của consumer) và bỏ qua id đã thấy — biến "gửi 2 lần" thành "áp dụng 1 lần".
-- Ưu tiên thao tác **tự nhiên idempotent**: UPDATE status='PAID' WHERE order_id=? AND status='NEW' chạy hai lần chỉ có một hiệu lực; "cộng 100 điểm" thì không idempotent, phải chuyển thành "cộng điểm theo reference key = event id".
-
-### Thứ tự theo aggregate
-Muốn consumer thấy "đã tạo đơn" trước "đã thanh toán" thì mọi event của **cùng một đơn hàng** phải đi qua **cùng một partition**: lấy agg_id làm partition key. Khi đó cần thêm hai điều: relay gửi tuần tự cho một key (không song song hoá các event cùng đơn), và retry cho một key phải chờ vì Kafka không tự sắp xếp lại message đã vào partition. Lưu ý số partition của topic không tăng vô hạn: tăng partition làm thay đổi cách chia key, nên kế hoạch sức chứa cần quyết định sớm.
-
-### Outbox không tự giải quyết chuyện gì
-- Không đảm bảo Kafka đã nhận bền vững: producer vẫn phải cấu hình acks=all, retries, **enable.idempotence=true** (chống trùng và mất bên trong chính Kafka), min.insync.replicas đủ.
-- Không sửa được đọc từ replica: nếu service đọc replica để chịu tải, đơn hàng có thể chưa hiện ra trong khi event đã được relay gửi — cần đọc primary cho dòng vừa ghi.
-- Bảng outbox lớn mãi: cần job archive dòng đã delivered, chỉ mục hỗ trợ, và với hệ lớn thì shard cả bảng outbox theo agg_id.
-- Không làm cho nghiệp vụ thành công trở lại: nếu business logic đã commit, event sẽ đi **chậm** chứ không bị rút lại. Nghiệp vụ cần "rút lại" phải phát thêm event đảo ngược (compensating), xem saga.
-
-### Pitfall thực tế
-- Đánh dấu delivered **trước** khi nhận ack từ Kafka: mất thật sự message đang gửi dở.
-- Payload nhét dữ liệu "nóng" (số dư hiện tại): event nên mô tả cái đã xảy ra; ai cần giá trị hiện tại thì đọc nguồn chuẩn.
-- Chạy hai instance relay mà không phân công: không sai về at-least-once, nhưng trùng nhiều hơn và thứ tự theo key dễ vỡ.
-- Đặt bảng outbox ở database **khác** database nghiệp vụ: mất đúng thứ vừa mua, quay về dual-write.
-- Không theo dõi **relay lag** (now - created_at của dòng lâu nhất chưa delivered): sự cố chỉ lộ ra khi bộ phận kho vận gọi điện hỏi sao đơn nằm im.
-
-### Liên hệ phỏng vấn
-Trả lời theo khung: (1) dual-write và ba trạng thái lệch; (2) outbox gom tất cả về một điểm cam kết, đổi lấy độ trễ và at-least-once; (3) relay polling hay CDC tuỳ hạ tầng; (4) consumer idempotent + partition key theo aggregate; (5) vận hành: metric relay lag, cleanup, cấu hình producer. Nếu bị hỏi "sao không dùng Kafka transaction": transaction của Kafka producer (Kafka 0.11+, dùng cho stream processing exactly-once) chỉ phối hợp được các thao tác **bên trong** Kafka, nó không commit cùng MySQL. Nếu bị hỏi "sao không dùng XA": trả lời bằng chi phí lock và coordination ở trên.
-Bài tập dưới đây mô phỏng DB và broker có thể sập giữa chừng, để chính bạn chạy và thấy dual-write mất event còn outbox thì không.`, {
-      title: 'Chứng minh dual-write mất event, outbox thì không',
-      prompt: `Hạ tầng mô phỏng đã có sẵn trong file test (bạn không cần viết), với API như sau:
-
-~~~java
-final class Sim {
-    static class Crash extends RuntimeException { }  // process chet giua chung thao tac
-    Map<String,String> orders;      // dong DON HANG da commit
-    Map<String,String> outbox;      // dong OUTBOX da commit
-    Set<String> delivered;          // outbox id da relay xong
-    List<String> broker;            // message Kafka THỰC SỰ nhận được
-    Set<String> applied;            // event consumer đã áp dụng
-    String crashBefore;             // "commit" | "publish" | "mark" | null
-    void begin()                    // mở transaction
-    void saveOrder(String id)       // INSERT pending, chỉ bền vững sau commit
-    void saveOutbox(String id)      // INSERT outbox pending
-    void commit()                   // crashBefore = "commit": bỏ pending, ném Crash
-    void publish(String id)         // crashBefore = "publish": ném Crash, broker không đổi
-    void mark(String id)            // crashBefore = "mark": ném Crash, chưa kịp delivered
-    boolean apply(String id)        // true = lần đầu tiên, false = bản sao
-    void recover()                  // process đã khởi động lại
-}
-~~~
-
-Cài class {{Outbox}} với các static method, dùng **đúng** thứ tự thao tác được yêu cầu để kết quả crash không phụ thuộc cách viết:
-1. {{dualWrite(sim, id)}}: begin, saveOrder, commit, rồi publish. Không bắt Crash, mặc nó bay ra cho caller.
-2. {{writeWithOutbox(sim, id)}}: begin, saveOrder, saveOutbox, commit. **Không** publish ở bước này.
-3. {{relay(sim)}}: với mỗi id có trong outbox mà chưa có trong delivered, publish rồi mark id đó.
-4. {{consume(sim, id)}}: trả về kết quả {{apply}} của consumer (true = event mới, false = trùng lặp).
-`,
-      starter: `class Outbox {
-    static void dualWrite(Sim sim, String id) { throw new UnsupportedOperationException("TODO"); }
-    static void writeWithOutbox(Sim sim, String id) { throw new UnsupportedOperationException("TODO"); }
-    static void relay(Sim sim) { throw new UnsupportedOperationException("TODO"); }
-    static boolean consume(Sim sim, String id) { throw new UnsupportedOperationException("TODO"); }
-}`,
-      tests: `public class Main {
-    static int p = 0, n = 0;
-    static void c(String s, boolean ok, String detail) {
-        n++;
-        if (ok) { p++; System.out.println("PASS " + s); }
-        else System.out.println("FAIL " + s + ": " + detail);
-    }
-    static void quiet(Runnable r) { try { r.run(); } catch (Sim.Crash e) { } }
-    static int count(List<String> l, String x) { int k = 0; for (String v : l) if (v.equals(x)) k++; return k; }
-    public static void main(String[] a) {
-        Sim s1 = new Sim();
-        Outbox.dualWrite(s1, "o1");
-        c("dual write works while nothing fails", s1.orders.containsKey("o1") && count(s1.broker, "o1") == 1, "orders=" + s1.orders.keySet() + " broker=" + s1.broker);
-
-        Sim s2 = new Sim();
-        s2.crashBefore = "publish";
-        quiet(() -> Outbox.dualWrite(s2, "o1"));
-        s2.recover();
-        Outbox.relay(s2);
-        c("dual write loses the event when it dies at publish", s2.orders.containsKey("o1") && s2.broker.isEmpty(), "orders=" + s2.orders.keySet() + " broker=" + s2.broker);
-
-        Sim s3 = new Sim();
-        s3.crashBefore = "commit";
-        quiet(() -> Outbox.writeWithOutbox(s3, "o1"));
-        c("outbox write is atomic with the order row", s3.orders.isEmpty() && s3.outbox.isEmpty() && s3.broker.isEmpty(), "orders=" + s3.orders.keySet() + " outbox=" + s3.outbox.keySet() + " broker=" + s3.broker);
-
-        Sim s4 = new Sim();
-        Outbox.writeWithOutbox(s4, "o1");
-        s4.crashBefore = "publish";
-        quiet(() -> Outbox.relay(s4));
-        c("a crashed relay keeps the row pending", s4.outbox.containsKey("o1") && !s4.delivered.contains("o1") && s4.broker.isEmpty(), "outbox=" + s4.outbox.keySet() + " delivered=" + s4.delivered + " broker=" + s4.broker);
-        s4.recover();
-        Outbox.relay(s4);
-        Outbox.relay(s4);
-        c("relay publishes each outbox row exactly once when ack arrives", count(s4.broker, "o1") == 1 && s4.delivered.contains("o1"), "broker=" + s4.broker + " delivered=" + s4.delivered);
-
-        Sim s5 = new Sim();
-        Outbox.writeWithOutbox(s5, "o1");
-        s5.crashBefore = "mark";
-        quiet(() -> Outbox.relay(s5));
-        s5.recover();
-        Outbox.relay(s5);
-        c("losing the ack gives at-least-once, i.e. a duplicate", count(s5.broker, "o1") == 2, "broker=" + s5.broker);
-        c("consumer dedupes the redelivered event", Outbox.consume(s5, "o1") && !Outbox.consume(s5, "o1") && s5.applied.size() == 1, "applied=" + s5.applied);
-        System.out.println("RESULT " + p + "/" + n);
-    }
-}
-final class Sim {
-    static class Crash extends RuntimeException { Crash() { super("crash giua chung thao tac"); } }
-    final Map<String,String> orders = new LinkedHashMap<>();
-    final Map<String,String> outbox = new LinkedHashMap<>();
-    final Set<String> delivered = new LinkedHashSet<>();
-    final List<String> broker = new ArrayList<>();
-    final Set<String> applied = new HashSet<>();
-    String crashBefore;
-    private boolean inTx;
-    private final Map<String,String> pendOrders = new LinkedHashMap<>();
-    private final Map<String,String> pendOutbox = new LinkedHashMap<>();
-    void begin() { if (inTx) throw new IllegalStateException("begin phia trong transaction dang mo"); inTx = true; }
-    void saveOrder(String id) { requireTx("saveOrder"); pendOrders.put(id, "payload-" + id); }
-    void saveOutbox(String id) { requireTx("saveOutbox"); pendOutbox.put(id, "payload-" + id); }
-    void commit() {
-        requireTx("commit");
-        inTx = false;
-        if ("commit".equals(crashBefore)) { pendOrders.clear(); pendOutbox.clear(); throw new Crash(); }
-        orders.putAll(pendOrders); outbox.putAll(pendOutbox);
-        pendOrders.clear(); pendOutbox.clear();
-    }
-    void publish(String id) {
-        if ("publish".equals(crashBefore)) throw new Crash();
-        broker.add(id);
-    }
-    void mark(String id) {
-        if ("mark".equals(crashBefore)) throw new Crash();
-        delivered.add(id);
-    }
-    boolean apply(String id) { return applied.add(id); }
-    void recover() { crashBefore = null; }
-    private void requireTx(String op) { if (!inTx) throw new IllegalStateException(op + " phia ngoai transaction"); }
-}`,
-      reference: `class Outbox {
-    static void dualWrite(Sim sim, String id) {
-        sim.begin();
-        sim.saveOrder(id);
-        sim.commit();
-        sim.publish(id);                       // thuoc he thong khac, khong the commit cung DB
-    }
-    static void writeWithOutbox(Sim sim, String id) {
-        sim.begin();
-        sim.saveOrder(id);
-        sim.saveOutbox(id);
-        sim.commit();                          // MỘT commit cho cả đơn hàng lẫn event
-    }
-    static void relay(Sim sim) {
-        List<String> pending = new ArrayList<>();
-        for (String id : sim.outbox.keySet()) if (!sim.delivered.contains(id)) pending.add(id);
-        for (String id : pending) {
-            sim.publish(id);                   // gui truoc...
-            sim.mark(id);                      // ...roi moi danh dau: crash o day sinh duplicate
-        }
-    }
-    static boolean consume(Sim sim, String id) { return sim.apply(id); }
-}`,
-      hints: [
-        'dualWrite gọi publish SAU commit: khi crash đúng lúc publish thì không còn dấu vết nào cho relay biết event cần gửi, nên event mất vĩnh viễn.',
-        'relay nên chép danh sách id chưa delivered ra một List rồi mới gửi, để không sửa collection đang duyệt.',
-        'Thứ tự publish rồi mark là có chủ ý: crash giữa hai bước làm lần relay sau gửi lại (at-least-once). Ngược lại mark rồi publish sẽ mất message.',
-        'consume chỉ cần trả về kết quả của sim.apply(id): true là lần đầu áp dụng, false là bản sao trùng lặp.',
-      ],
-      explain: `Ba kết luận của bài chạy được ngay trong output: (1) dualWrite crash ở publish để lại dòng trong {{orders}} còn {{broker}} rỗng, và {{relay}} sau đó chịu hết — dual-write không ghi lại ở đâu rằng event còn phải gửi; (2) writeWithOutbox crash ở commit thì không còn gì cả, client retry sạch sẽ, đó chính là tính nguyên tử mà outbox mua được; (3) crash giữa publish và mark tạo duplicate thật ({{broker}} chứa o1 hai lần) tức at-least-once, và consumer đã lưu event id nên hiệu lực nghiệp vụ chỉ xảy ra một lần. Trong production, delivered_at thường được thay bằng xoá dòng hoặc chuyển sang bảng archive, và mark phải xảy ra SAU khi producer nhận ack.`,
-    }, [
-      { q: 'Vì sao gọi {{kafka.send}} bên trong method có {{@Transactional}} vẫn có thể mất event?', options: ['Vì Kafka không có transaction nên Spring không gửi được từ trong method', 'Vì hai thao tác thuộc hai hệ thống không có điểm cam kết chung: chết giữa commit và send để lại đơn hàng mà không có event', 'Vì {{@Transactional}} luôn rollback khi có producer send trong cùng method', 'Vì phải dùng {{@KafkaListener}} thay cho producer send'], answer: 1, explain: `Đây chính là dual-write: Spring commit DB lúc method kết thúc, còn send là gọi tới một hệ thống khác. Kafka Có transaction (Kafka 0.11+) nhưng chúng chỉ phối hợp các thao tác trong nội bộ Kafka, không commit cùng MySQL, nên phương án đầu sai ở tiền đề. {{@Transactional}} không tự rollback vì có send, và {{@KafkaListener}} là phía consumer, không liên quan tới việc gửi.` },
-      { q: 'Relay gửi message thành công nhưng chết trước khi ghi delivered_at. Semantics nào mô tả đúng?', options: ['Exactly-once, vì relay sẽ không gửi lại dòng đã gửi rồi', 'At-most-once, vì message có thể đã mất', 'At-least-once, vì lần relay sau vẫn thấy dòng chưa delivered nên gửi lại, và consumer phải idempotent', 'Best-effort, chỉ gửi lại khi có yêu cầu'], answer: 2, explain: `Không có cách nào biết "đã gửi nhưng chưa kịp đánh dấu" nếu không thêm coordination, nên thiết kế chấp nhận gửi lại và dồn việc khử trùng cho consumer (lưu event id đã áp dụng). Exactly-once là hứa vượt khả năng của relay; at-most-once thì ngược lại (message không mất, chỉ trùng); và không cần ai yêu cầu cả, vòng lặp relay tự phát hiện dòng còn pending.` },
-      { q: 'Vì sao relay nên dùng id aggregate (order id) làm partition key khi gửi Kafka?', options: ['Để Kafka nhân bản message sang broker khác', 'Vì Kafka chỉ giữ thứ tự trong một partition, nên mọi event của cùng một đơn phải nằm cùng partition', 'Để giảm số partition cần tạo cho topic', 'Vì partition key là bắt buộc và chỉ được là id aggregate'], answer: 1, explain: `Replication (phương án đầu) độc lập với partition key. Thứ tự tuần tự chỉ được Kafka đảm bảo trong phạm vi một partition, nên muốn "tạo đơn" tới trước "thanh toán" thì hai event của cùng đơn phải cùng partition. Partition key có thể là bất kỳ chuỗi nào, không bắt buộc là id aggregate, và việc chọn key không làm giảm số partition của topic.` },
-      { q: 'So với CDC (Debezium), nhược điểm chính của relay polling là gì?', options: ['Phải xin quyền đọc transaction log của database', 'Tạo tải đọc lặp lại trên chính database nguồn và độ trễ bằng chu kỳ poll', 'Không thể giữ thứ tự event theo aggregate', 'Luôn gửi trùng message'], answer: 1, explain: `Polling chạy SELECT WHERE delivered_at IS NULL theo chu kỳ trên database nghiệp vụ, vừa tốn tài nguyên vừa trễ một khoảng bằng chu kỳ; quyền đọc log là chi phí của CDC chứ không phải polling. Thứ tự vẫn giữ được nếu đọc theo id và gửi với partition key đúng, còn trùng lặp là đặc trưng at-least-once của cả hai cách.` },
-    ], ['outbox', 'kafka', 'dual-write', 'cdc']),
-
+    
     lesson('007', 7, 'Sharding: chọn shard key, hot partition và resharding', 'senior', [
       'Chọn shard key theo bốn tiêu chí và chỉ ra được hệ quả của từng lựa chọn',
       'Phân biệt hash-based với range-based, biết khi nào scatter-gather xuất hiện',

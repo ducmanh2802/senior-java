@@ -1701,7 +1701,6 @@ window.DATA_INDEX = {
     {"id":"lesson-design-003","track":"design","order":3,"title":"Consistent hashing và virtual nodes","level":"senior","minutes":30},
     {"id":"lesson-design-004","track":"design","order":4,"title":"Circuit breaker: CLOSED, OPEN, HALF_OPEN","level":"senior","minutes":30},
     {"id":"lesson-design-005","track":"design","order":5,"title":"Idempotency key và retry exponential backoff","level":"lead","minutes":30},
-    {"id":"lesson-design-006","track":"design","order":6,"title":"Transactional outbox: vì sao không gửi Kafka trong transaction DB","level":"senior","minutes":30},
     {"id":"lesson-design-007","track":"design","order":7,"title":"Sharding: chọn shard key, hot partition và resharding","level":"senior","minutes":30},
     {"id":"lesson-microservices-001","track":"microservices","order":1,"title":"Transactional outbox: không mất event giữa database và broker","level":"senior","minutes":30},
     {"id":"lesson-microservices-002","track":"microservices","order":2,"title":"Idempotent consumer: chống duplicate và sự kiện cũ","level":"senior","minutes":25},
