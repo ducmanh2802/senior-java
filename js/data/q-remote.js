@@ -3491,6 +3491,15 @@ Day 5 update (giả định):
 - [ ] Thống nhất Definition of Done cho từng task (nghiệm thu, test, cách demo/verify, ghi chú thay đổi).
 - [ ] Gửi cập nhật Day 1–3–5: Đã làm / Đang làm / Tiếp theo / Blockers / Câu hỏi.
 - [ ] Giao ít nhất một kết quả nhỏ có thể kiểm chứng trong tuần đầu (fix nhỏ, PR, bản phân tích root cause, hoặc demo).
+### Ví dụ đời thực
+- **Triệu chứng:** Tôi nhận một dự án fixed-price 1.200 USD để "thêm tính năng đặt lịch" cho ứng dụng phòng khám (Spring Boot + PostgreSQL). Yêu cầu ban đầu chỉ 6 dòng: "khách chọn bác sĩ, chọn giờ, đặt lịch, gửi thông báo". Tôi bắt đầu code sau 1 ngày đọc repo; đến ngày 5, client mới nói cần đặt lặp tuần, chặn trùng giờ theo múi giờ, và gửi SMS — phạm vi thực tế gấp ~2 lần ước lượng.
+- **Điều tra:** Tôi dừng code, đọc lại toàn bộ lịch sử tin nhắn trên nền tảng, và liệt kê các điểm chưa rõ: quy tắc trùng giờ (overlap) là gì, múi giờ nào, kênh thông báo (email/SMS), ai được hủy lịch. Tôi tự dựng một bảng "câu hỏi mở" và so sánh với code hiện có (entity {{Appointment}} chỉ có {{startTime}}, {{doctorId}}, chưa có timezone hay trạng thái hủy).
+- **Nguyên nhân gốc:** Tôi bắt đầu triển khai khi chỉ có "yêu cầu mục tiêu" mà chưa chốt "tiêu chí nghiệm thu" (acceptance criteria — điều kiện cụ thể để coi là xong) và giả định. Thiếu tài liệu phạm vi 1 trang khiến cả hai bên tưởng tượng khác nhau.
+- **Cách xử lý:** Tôi gửi bản tóm tắt phạm vi 1 trang (in-scope 4 luồng, out-of-scope: đặt lặp/SMS/múi giờ phức tạp, giả định, tiêu chí nghiệm thu) và đề xuất chia 2 milestone: Milestone 1 (600 USD, 5 ngày) cho đặt/hủy cơ bản + test; Milestone 2 báo giá riêng cho SMS và đặt lặp sau khi chốt rule. Client xác nhận bằng tin nhắn.
+- **Kết quả đo được:** Milestone 1 bàn giao đúng ngày 10 với 18 test case xanh; thay đổi phạm vi giảm từ "mỗi ngày thêm việc" xuống 1 change request được chấp thuận cho Milestone 2. Không phát sinh tranh chấp thanh toán.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhận dự án mới mà yêu cầu chưa rõ, điều đầu tiên tôi làm là chậm lại để chốt phạm vi trước khi viết nhiều code. Tôi đọc repo và tài liệu hiện có, chạy thử luồng chính, rồi viết một bản tóm tắt 1 trang: mục tiêu, trong phạm vi, ngoài phạm vi, giả định và tiêu chí nghiệm thu. Tôi gửi kèm 5–7 câu hỏi cụ thể, mỗi câu có ví dụ và phương án mặc định nếu client chưa quyết, để họ chỉ cần xác nhận. Với dự án fixed-price, tôi chia thành milestone nhỏ, mỗi milestone có kết quả nghiệm thu được — ví dụ 'đặt/hủy cơ bản + test xanh' — và đặt quy tắc thay đổi: việc ngoài phạm vi sẽ thành milestone mới hoặc change request. Ở một dự án đặt lịch, cách này giúp tôi phát hiện sớm yêu cầu SMS và đặt lặp chưa được chốt; tôi tách thành 2 milestone và tránh phải làm gấp đôi khối lượng với cùng mức giá. Theo tôi, tốc độ tạo niềm tin ở tuần đầu quan trọng hơn tốc độ code."
 
 > Senior tip: tuần đầu, **tốc độ tạo niềm tin** quan trọng hơn tốc độ code. Client thuê người mới đang mua "sự yên tâm". Một Day 1 update rõ ràng khi bạn đang chờ access vẫn tốt hơn ba ngày im lặng rồi code vội. Hãy biến mọi việc vô hình (đọc code, dựng môi trường, phân tích) thành bằng chứng hữu hình: tin nhắn tóm tắt, checklist, test tái hiện lỗi, hoặc demo ngắn.`,
   follow: [
@@ -3588,6 +3597,15 @@ Một review xấu ảnh hưởng niềm tin, nhưng một chuỗi hợp đồng
 - [ ] Nếu cần kết thúc sớm: thông báo rõ, gửi handover, đóng phần trong scope có thể, giữ chuyên nghiệp.
 - [ ] Review xấu: phản hồi ngắn, trung thực, không công kích, tập trung sự thật và cách bạn đã xử lý.
 - [ ] Sau sự cố: rút 1–2 bài học quy trình (scope rõ hơn, milestone nhỏ hơn, tín hiệu client đọc kỹ hơn).
+### Ví dụ đời thực
+- **Triệu chứng:** Tuần 2 của dự án fixed-price (xây API đơn hàng, 1.500 USD, 3 tuần), client nhắn: "Tiện thêm giúp tôi gửi SMS xác nhận đơn và dashboard thống kê doanh thu tuần nhé, chắc nhanh thôi." Hai việc này không có trong phạm vi đã chốt.
+- **Điều tra:** Tôi mở lại bản scope/milestone đã xác nhận, đối chiếu: phạm vi chỉ gồm CRUD đơn hàng, thanh toán trạng thái, và email xác nhận. Tôi ước lượng sơ bộ: tích hợp SMS (chọn nhà cung cấp, template, xử lý lỗi gửi lại) ~2–3 ngày; dashboard thống kê (query tổng hợp, endpoint, UI cơ bản) ~3–4 ngày. Tôi ghi rõ giả định ảnh hưởng ước lượng (nhà cung cấp SMS nào, số liệu thống kê nào).
+- **Nguyên nhân gốc:** Scope creep (phạm vi bị trôi — yêu cầu thêm dần ngoài thỏa thuận) xảy ra vì client thấy tính năng liên quan và giả định "làm cùng lúc sẽ nhanh", trong khi mỗi yêu cầu có chi phí tích hợp và kiểm thử riêng.
+- **Cách xử lý:** Tôi trả lời trong 2 giờ: xác nhận hiểu nhu cầu, nêu rõ 2 hạng mục nằm ngoài scope đã chốt, rồi đưa 3 lựa chọn (A) thêm SMS như change request +400 USD, +2 ngày, giữ deadline dashboard; (B) đổi phạm vi: bớt một phần báo cáo nhỏ để lấy chỗ cho SMS, giữ giá; (C) đưa dashboard vào Milestone 4 riêng với ước lượng sau. Tôi hỏi client chọn A/B/C.
+- **Kết quả đo được:** Client chọn (A) cho SMS và (C) cho dashboard. Hợp đồng được cập nhật bằng tin nhắn xác nhận; tôi giao Milestone gốc đúng hạn và nhận thêm 400 USD cho SMS mà không phải làm đêm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi khách yêu cầu thêm việc ngoài phạm vi, tôi không trả lời bằng một câu 'không' khô khan mà cũng không nhận ngay. Tôi xem lại scope đã thống nhất, xác nhận yêu cầu mới nằm ngoài phạm vi, rồi phản hồi nhanh với cấu trúc: tôi hiểu họ cần gì, tác động đến thời gian/chi phí ra sao, và đưa 2–3 lựa chọn — thêm phí và dời deadline, đổi phạm vi trong cùng ngân sách, hoặc tách thành giai đoạn sau. Cách này giữ giọng hợp tác nhưng vẫn bảo vệ ranh giới chuyên nghiệp. Ví dụ, khi client đang làm dự án API đơn hàng nhờ thêm SMS và dashboard ngoài scope, tôi ước lượng từng hạng mục, gửi change request cho SMS và tách dashboard thành milestone riêng. Kết quả là dự án gốc vẫn đúng hạn và phần thêm được thanh toán rõ ràng. Theo tôi, nói 'không' có phương án giúp mình dự đoán được và giữ được quan hệ lâu dài."
 
 > Senior tip: ranh giới chuyên nghiệp (professional boundaries) là một kỹ năng kiếm tiền. Nói "không" với việc ngoài scope — kèm phương án có phí hoặc đổi phạm vi — không làm bạn khó hợp tác; nó làm bạn **dự đoán được**. Khách tốt tôn trọng điều đó. Khách không tôn trọng ranh giới dù bạn đã giao tiếp rõ thường là khách tốn kém nhất, kể cả khi họ trả rate cao.`,
   follow: [
@@ -3690,6 +3708,15 @@ Thu nhập freelance biến động. Nhiều freelancer Việt bắt đầu vớ
 - [ ] Sau mỗi 15–25 proposal chất lượng: rà tỉ lệ phản hồi và sửa một biến (job target, câu mở đầu, profile).
 - [ ] Thiết lập tiêu chí pivot (2–4 tuần) và tiêu chí kiên trì; quyết định dựa trên dữ liệu.
 - [ ] Quản lý tài chính: quỹ dự phòng, phí nền tảng (Upwork 0–15%/hợp đồng, cố định khi bắt đầu — tại thời điểm viết; kiểm tra lại), phí rút tiền, thuế/bảo hiểm (hỏi chuyên gia).
+### Ví dụ đời thực
+- **Triệu chứng:** Sau 3 tháng làm freelance trên Upwork, một dev Java (4 năm kinh nghiệm, làm thêm ngoài giờ) có 12 hợp đồng nhỏ (bugfix 50–150 USD), thu nhập gộp ~1.100 USD nhưng phải gửi ~70 proposal, mỗi tuần tốn 8–10 giờ viết proposal mà tỉ lệ trúng chỉ ~17%.
+- **Điều tra:** Anh ấy lập bảng theo dõi 8 tuần: nguồn job, số Connects, tỉ lệ xem/phản hồi/phỏng vấn/trúng, giờ làm thực tế vs giờ billable, thu nhập ròng sau phí nền tảng. Số liệu cho thấy job "Spring Boot + PostgreSQL performance/bugfix" có tỉ lệ phản hồi 28% (cao gấp đôi mức trung bình) và ít tranh chấp scope; job "full-stack mọi thứ" gần như không trúng.
+- **Nguyên nhân gốc:** Không có ngách và không có vòng lặp đo lường, nên thời gian bị dàn trải vào proposal khối lượng thấp; bằng chứng (case study, review) chưa gắn với một loại vấn đề cụ thể.
+- **Cách xử lý:** Anh ấy thu hẹp ngách (Java/Spring Boot + PostgreSQL, tập trung sửa lỗi/hiệu năng), làm 2 case study có số liệu, giảm xuống 6–8 proposal/tuần nhưng viết rất sát job, và sau 2 hợp đồng tốt thì đề xuất 1 gói retainer 6 giờ/tuần cho client cũ (bảo trì + xử lý sự cố).
+- **Kết quả đo được:** Tháng 6–9: proposal giảm còn ~25/tháng, tỉ lệ trúng tăng lên ~32%, thu nhập ròng ổn định ~900–1.100 USD/tháng với ~18 giờ/tuần (tăng thu nhập/giờ rõ rệt). Tháng 12: có 1 retainer lặp lại + 1–2 dự án nhỏ, giảm phụ thuộc vào việc săn job mới mỗi tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu nói về việc mở rộng hoạt động freelance trong 12 tháng, tôi tiếp cận như xây một hệ thống chứ không chỉ tăng số giờ. Ba tháng đầu tôi tập trung vào một ngách cụ thể — ví dụ Java, Spring Boot và PostgreSQL — để tích lũy 3–5 review thật và case study có số liệu. Tôi theo dõi các chỉ số đơn giản: tỉ lệ phản hồi, tỉ lệ trúng, giờ billable và thu nhập ròng sau phí. Khi dữ liệu cho thấy một loại job có tỉ lệ phản hồi tốt hơn, tôi dồn proposal vào đúng tệp đó thay vì gửi tràn lan. Sang giai đoạn giữa năm, tôi chuẩn hóa quy trình bàn giao: checklist, cập nhật async, demo theo milestone để tăng tỷ lệ khách quay lại. Cuối kỳ, tôi ưu tiên chuyển 1–2 khách phù hợp sang retainer để thu nhập ổn định hơn. Ví dụ thực tế, cách thu hẹp ngách và đo số liệu có thể giảm số proposal nhưng tăng tỉ lệ trúng và thu nhập trên mỗi giờ làm. Mục tiêu của tôi là có đòn bẩy chọn khách, không phải chạy đua săn job mãi."
 
 > Senior tip: mục tiêu của 12 tháng đầu không chỉ là "kiếm tiền" mà là xây một **hệ thống**: ngách rõ, bằng chứng lặp lại, quy trình giao hàng, và bộ số liệu bạn tin được. Khi hệ thống chạy, bạn có đòn bẩy — tăng giá, chọn khách, chuyển retainer — thay vì chạy đua proposal mãi mãi. Hãy coi mỗi proposal là một thí nghiệm nhỏ có giả thuyết ("mở đầu kiểu này hợp job kiểu này"), và để dữ liệu, không phải cảm xúc, quyết định bước tiếp theo.`,
   follow: [
@@ -3763,9 +3790,17 @@ Bước 4: Sau 8 tuần đo: phản hồi/proposal, phỏng vấn, hợp đồng
 - [ ] Với mỗi nền tảng: đọc trang phí/điều khoản chính thức; không ghi nhớ số liệu cũ.
 - [ ] Sau mỗi hợp đồng tốt: xin feedback/review và hỏi nhẹ về khả năng referral (lịch sự, không ép).
 - [ ] Lên lịch rà soát 4 tuần/lần: kênh nào tạo cơ hội thật, kênh nào chỉ tốn thời gian.
+### Ví dụ đời thực
+- **Triệu chứng:** Một dev Java backend mới bắt đầu freelance chỉ phụ thuộc Upwork. Tháng 4, anh gửi 60 proposal nhưng chỉ có 1 hợp đồng nhỏ (120 USD); tỉ lệ phản hồi giảm vì hồ sơ cạnh tranh cao và chưa có nhiều review.
+- **Điều tra:** Anh lập bảng so sánh 4 kênh trong 6 tuần: Upwork, giới thiệu (referral) từ đồng nghiệp cũ, đăng bài kỹ thuật ngắn, và ứng tuyển remote full-time qua job board. Chỉ số theo dõi: giờ bỏ ra, số cơ hội thật (có trao đổi nhu cầu), tỉ lệ chuyển thành hợp đồng/offer, và giá trị trung bình. Referral tạo 3 cuộc trò chuyện từ 2 giới thiệu (tốn ~2 giờ); Upwork tốn ~18 giờ cho 1 hợp đồng nhỏ.
+- **Nguyên nhân gốc:** Phụ thuộc một kênh có chi phí cạnh tranh cao (nhiều người chào cùng job) khi chưa có lợi thế bằng chứng; trong khi mạng lưới sẵn có và nội dung kỹ thuật chưa được khai thác.
+- **Cách xử lý:** Anh giữ Upwork ở mức chọn lọc (job rất khớp), chủ động xin referral từ 5 đồng nghiệp cũ kèm mô tả rõ "tôi nhận loại việc gì" (Spring Boot/PostgreSQL, sửa lỗi/hiệu năng), và viết 1 bài phân tích một ca chậm truy vấn PostgreSQL (ẩn dữ liệu nhạy cảm) kèm cách đo trước/sau.
+- **Kết quả đo được:** Trong 8 tuần tiếp theo: 2 hợp đồng đến từ referral (tổng 1.600 USD), 1 cuộc trao đổi dự án từ bài viết (chưa chốt nhưng tạo pipeline), Upwork còn 1 hợp đồng nhỏ. Thời gian tìm việc giảm ~35% so với giai đoạn chỉ dùng Upwork, nhờ cơ hội chất lượng cao hơn.
 
-> Senior tip: kênh tốt nhất là kênh bạn có thể tạo **vòng lặp bằng chứng**: làm tốt → có kết quả/review/PR → hồ sơ mạnh hơn → cơ hội tốt hơn. Ở giai đoạn đầu, đừng tối ưu "kênh nào nghe xịn", hãy tối ưu "kênh nào giúp tôi có bằng chứng kiểm chứng nhanh nhất". Referral và open-source là tài sản lãi kép: chậm lúc đầu nhưng giảm chi phí tìm việc về sau.`,
-  follow: [
+### Trả lời mẫu khi phỏng vấn
+"Ngoài Upwork, tôi tìm khách hoặc cơ hội remote qua vài kênh nhưng luôn theo dõi bằng số liệu để biết kênh nào hiệu quả. Kênh đầu tiên là referral: tôi cho đồng nghiệp và khách cũ biết rõ tôi giải quyết loại vấn đề nào, ví dụ backend Java, Spring Boot, tối ưu PostgreSQL, để họ giới thiệu đúng người. Kênh thứ hai là nội dung kỹ thuật hoặc đóng góp mã nguồn mở: một bài viết ngắn hoặc pull request giải quyết vấn đề thật tạo bằng chứng đáng tin hơn lời tự quảng cáo. Kênh thứ ba là job board và LinkedIn cho cơ hội full-time hoặc contract dài hạn. Tôi không dàn trải mù quáng; tôi đo giờ bỏ ra, số cuộc trò chuyện chất lượng và tỉ lệ chuyển đổi. Có lần tôi nhận ra referral mang lại cơ hội tốt với ít thời gian hơn gửi proposal hàng loạt, nên tôi giữ Upwork chọn lọc và đầu tư thêm vào bằng chứng kỹ thuật. Với tôi, kênh tốt là kênh tạo được vòng lặp: làm tốt, có bằng chứng, rồi có cơ hội tốt hơn."
+
+> Senior tip: kênh tốt nhất là kênh bạn có thể tạo **vòng lặp bằng chứng**: làm tốt → có kết quả/review/PR → hồ sơ mạnh hơn → cơ hội tốt hơn. Ở giai đoạn đầu, đừng tối ưu "kênh nào nghe xịn", hãy tối ưu "kênh nào giúp tôi có bằng chứng kiểm chứng nhanh nhất". Referral và open-source là tài sản lãi kép: chậm lúc đầu nhưng giảm chi phí tìm việc về sau.`,  follow: [
     'Bạn có 0 review quốc tế và 8 giờ/tuần. Bạn phân bổ 8 tuần đầu giữa Upwork, LinkedIn và open-source như thế nào để tối đa bằng chứng?',
     'Một vetted platform mời bạn làm bài test mất nhiều giờ. Bạn dùng tiêu chí nào để quyết định có đáng đầu tư không khi chưa biết chắc điều khoản hiện tại?',
     'Làm sao để một đóng góp open-source (PR nhỏ) trở thành câu chuyện thuyết phục trong proposal hoặc phỏng vấn?'
@@ -3863,9 +3898,17 @@ If not, I will close the loop here. Wishing you and [Company] a strong launch.
 - [ ] Lên lịch follow-up tối đa 2 lần, cách nhau vài ngày làm việc, mỗi lần thêm giá trị; lần cuối "đóng vòng".
 - [ ] Theo dõi tỉ lệ phản hồi (giả định bảng tính): điều gì được trả lời, điều gì bị bỏ qua — lặp lại cái hiệu quả.
 - [ ] Xác minh công ty/người nhận; không gửi thông tin nhạy cảm, không mở/đính kèm file đáng ngờ.
+### Ví dụ đời thực
+- **Triệu chứng:** Một freelancer backend gửi 40 tin nhắn outreach chung chung trong 2 tuần ("Tôi là Java dev 4 năm, nhận dự án backend, xin hợp tác") và chỉ nhận 1 phản hồi xã giao, không có cuộc gọi nào.
+- **Điều tra:** Anh rà lại các tin đã gửi: không nhắc sản phẩm cụ thể của người nhận, không nêu vấn đề họ có thể gặp, và lời kêu gọi hành động (CTA) là "có việc gì cho tôi không" — rào cản cao. Anh chọn 10 công ty SaaS nhỏ dùng Java (dựa trên mô tả tuyển dụng/công nghệ công khai), đọc trang sản phẩm và ghi 1 quan sát cụ thể cho mỗi công ty (ví dụ: luồng checkout, trang báo giá, API công khai).
+- **Nguyên nhân gốc:** Outreach thất bại vì tối ưu số lượng và nói về bản thân, thay vì tối ưu mức liên quan (relevance) và giá trị cho người nhận; thiếu giả thuyết vấn đề và bước tiếp theo nhỏ.
+- **Cách xử lý:** Anh viết lại theo cấu trúc: ngữ cảnh cụ thể → giả thuyết vấn đề có cơ sở → bằng chứng 1 case study tương tự (ẩn tên, có số liệu) → CTA nhỏ ("15 phút gọi ngắn để mình hỏi 3 câu về luồng thanh toán?"). Ví dụ: nêu giả thuyết checkout chậm lúc cao điểm có thể do truy vấn N+1 hoặc thiếu chỉ mục, và đề xuất kiểm tra log truy vấn + thời gian phản hồi p95.
+- **Kết quả đo được:** Gửi 12 tin nhắn cá nhân hóa trong 10 ngày: 5 phản hồi (tỉ lệ ~42%), 2 cuộc gọi khám phá, 1 đề xuất audit nhỏ 300 USD được chấp thuận. Số tin giảm nhưng tỷ lệ tạo cuộc trò chuyện có ý nghĩa tăng rõ rệt.
 
-> Senior tip: outreach tốt giống tư vấn mini, không giống quảng cáo. Nếu bạn có thể nêu một giả thuyết kỹ thuật có cơ sở (ví dụ: "API checkout chậm lúc peak thường đến từ N+1 + thiếu index + pool kết nối") và đề nghị cách kiểm tra nhỏ, bạn tạo giá trị ngay cả khi họ chưa thuê. Hãy đo chất lượng outreach bằng **cuộc trò chuyện có ý nghĩa**, không phải số tin đã gửi.`,
-  follow: [
+### Trả lời mẫu khi phỏng vấn
+"Khi viết outreach để tìm khách, tôi coi mỗi tin nhắn như một lời tư vấn nhỏ, không phải quảng cáo bản thân. Tôi chỉ gửi khi có lý do cụ thể: tôi hiểu sản phẩm hoặc bối cảnh của họ và có giả thuyết hợp lý về vấn đề họ có thể gặp. Tin nhắn của tôi thường có bốn phần: ngữ cảnh cụ thể cho thấy tôi đã tìm hiểu, giả thuyết vấn đề dựa trên dấu hiệu quan sát được, một bằng chứng ngắn từ case study tương tự có số liệu, và một lời kêu gọi hành động nhỏ như cuộc gọi 15 phút để xác nhận vấn đề. Tôi tránh gửi hàng loạt tin chung chung. Ví dụ, thay vì nói 'tôi nhận làm Java backend', tôi có thể nêu giả thuyết API checkout chậm do truy vấn N+1 hoặc thiếu chỉ mục và đề xuất kiểm tra p95 cùng log truy vấn. Tôi đo hiệu quả bằng số cuộc trò chuyện có ý nghĩa, không phải số tin đã gửi. Cách này tốn thời gian chuẩn bị hơn nhưng tỉ lệ phản hồi và chất lượng cơ hội tốt hơn nhiều."
+
+> Senior tip: outreach tốt giống tư vấn mini, không giống quảng cáo. Nếu bạn có thể nêu một giả thuyết kỹ thuật có cơ sở (ví dụ: "API checkout chậm lúc peak thường đến từ N+1 + thiếu index + pool kết nối") và đề nghị cách kiểm tra nhỏ, bạn tạo giá trị ngay cả khi họ chưa thuê. Hãy đo chất lượng outreach bằng **cuộc trò chuyện có ý nghĩa**, không phải số tin đã gửi.`,  follow: [
     'Bạn nhắn 30 người, không ai trả lời. Bạn kiểm tra những biến nào (ngách, ICP, tiêu đề, câu mở đầu, CTA, thời điểm) và thay đổi thế nào?',
     'Một founder trả lời "gửi CV và báo giá đi". Bạn chuyển từ outreach sang cuộc trao đổi bán hàng/định phạm vi ra sao mà vẫn chuyên nghiệp?',
     'Khi nào bạn nên dừng outreach với một mục tiêu, và khi nào nên thử kênh khác (referral/LinkedIn post) thay vì nhắn thêm?'
@@ -3954,9 +3997,17 @@ or issues caused by third-party/client changes are excluded and may be quoted se
 - [ ] IP: chuyển sau thanh toán đủ; loại trừ pre-existing/open-source theo giấy phép.
 - [ ] Bảo mật, chấm dứt (có thanh toán phần đã làm + handover), bảo hành có thời hạn và giới hạn phạm vi.
 - [ ] Hợp đồng giá trị lớn/nhạy cảm: nhờ luật sư xem. Mẫu ở đây chỉ tham khảo.
+### Ví dụ đời thực
+- **Triệu chứng:** Một freelancer nhận dự án direct (không qua nền tảng giữ tiền) xây API quản lý kho, báo giá 2.000 USD qua email, không có hợp đồng/SOW (Statement of Work — bản mô tả phạm vi công việc) chính thức, chỉ thỏa thuận miệng về "làm xong trả". Sau khi giao bản demo tuần 3, client im lặng 12 ngày và yêu cầu "thêm xuất Excel, sửa vài chỗ" trước khi thanh toán.
+- **Điều tra:** Freelancer rà lại chuỗi email: chỉ có mô tả tính năng chung, không có tiêu chí nghiệm thu, không có mốc thanh toán, không có quy định đổi phạm vi hay quyền sở hữu mã. Không có đặt cọc (deposit), nên rủi ro dòng tiền dồn về cuối.
+- **Nguyên nhân gốc:** Thiếu thỏa thuận bằng văn bản về phạm vi, mốc thanh toán, nghiệm thu và thay đổi; thanh toán một cục cuối dự án làm tăng rủi ro bị trì hoãn hoặc tranh chấp.
+- **Cách xử lý:** Freelancer dừng phát triển tính năng mới, gửi biên bản tóm tắt những gì đã bàn giao (link repo/commit, video demo, checklist nghiệm thu) và đề xuất ký SOW bổ sung: phạm vi còn lại, milestone thanh toán (500 USD khi nghiệm thu Milestone hiện tại, 700 USD cho phần còn lại, 800 USD khi bàn giao cuối), quy tắc change request, điều khoản sở hữu mã sau khi thanh toán. Các yêu cầu thêm (xuất Excel) được tách thành hạng mục riêng có báo giá.
+- **Kết quả đo được:** Client đồng ý SOW bổ sung và thanh toán 500 USD trong 3 ngày. Dự án hoàn tất với 2 lần thanh toán tiếp theo đúng mốc; không phát sinh công nợ cuối kỳ. Thời gian xử lý tranh chấp mất ~4 ngày làm việc nhưng giúp thu hồi được dòng tiền.
 
-> Senior tip: hợp đồng tốt không phải để "đánh nhau" mà để **giảm hiểu nhầm** khi mọi thứ còn vui vẻ. Hãy viết rõ lúc bắt đầu: cái gì được làm, cái gì không, ai trả bao nhiêu khi nào, ai sở hữu mã, và dừng thế nào. Một SOW rõ ràng + deposit thường ngăn được 80% tranh chấp trước khi chúng xảy ra.`,
-  follow: [
+### Trả lời mẫu khi phỏng vấn
+"Với freelancer làm remote, tôi xem hợp đồng, hóa đơn và thanh toán là phần của quản lý rủi ro, không chỉ là thủ tục hành chính. Trước khi bắt đầu, tôi luôn có thỏa thuận bằng văn bản, tối thiểu là một SOW nêu rõ phạm vi, thứ không nằm trong phạm vi, mốc bàn giao, tiêu chí nghiệm thu, giá và lịch thanh toán. Tôi ưu tiên đặt cọc và chia thanh toán theo milestone để không dồn rủi ro về cuối dự án. Khi phát sinh yêu cầu mới, tôi dùng change request: mô tả thay đổi, ảnh hưởng thời gian/chi phí, và xin xác nhận trước khi làm. Về thanh toán, tôi gửi hóa đơn đúng mốc với thông tin rõ ràng và lưu toàn bộ trao đổi trên kênh có dấu vết. Có một trường hợp dự án direct không có SOW và bị chậm thanh toán; việc lập biên bản bàn giao và bổ sung SOW với milestone đã giúp thu hồi dòng tiền. Theo tôi, hợp đồng tốt giúp giảm hiểu nhầm khi mọi thứ còn thuận lợi."
+
+> Senior tip: hợp đồng tốt không phải để "đánh nhau" mà để **giảm hiểu nhầm** khi mọi thứ còn vui vẻ. Hãy viết rõ lúc bắt đầu: cái gì được làm, cái gì không, ai trả bao nhiêu khi nào, ai sở hữu mã, và dừng thế nào. Một SOW rõ ràng + deposit thường ngăn được 80% tranh chấp trước khi chúng xảy ra.`,  follow: [
     'Client muốn sở hữu toàn bộ mã, kể cả thư viện helper bạn đã có sẵn từ trước. Bạn thương lượng điều khoản IP thế nào?',
     'Client chậm trả invoice quá hạn đã ghi trong hợp đồng. Bạn xử lý theo các bước nào (giao tiếp, tạm dừng, bằng chứng) mà vẫn chuyên nghiệp?',
     'Khi nào một email chốt scope + điều khoản đơn giản là đủ, và khi nào bạn nên dùng MSA/SOW đầy đủ và nhờ luật sư?'
