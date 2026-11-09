@@ -514,18 +514,37 @@ for (int i = 0; i < 3; i++) {
   id: 'lesson-core-005', track: 'core', order: 5,
   title: 'String, StringBuilder và String pool', level: 'mid', minutes: 25,
   goals: ['Giải thích tính bất biến của String và string pool', 'Chọn StringBuilder cho phép nối lặp', 'Chuẩn hoá và che dữ liệu định danh an toàn'],
-  body: `**Tóm tắt:** {{String}} bất biến nên có thể chia sẻ an toàn và dùng làm key; nối lặp trong vòng lặp có thể tạo nhiều object trung gian, nên dùng {{StringBuilder}}. String pool canonicalize một số literal; so sánh nội dung bằng {{equals}}, không dựa vào identity hay gọi {{intern}} tùy tiện.
+  body: `**Tóm tắt:** {{String}} bất biến nên có thể chia sẻ an toàn và dùng làm key trong {{HashMap}}; nối lặp trong vòng lặp có thể tạo nhiều object trung gian và tốn bộ nhớ, nên dùng {{StringBuilder}}. String pool canonicalize một số literal để tối ưu bộ nhớ; so sánh nội dung bằng {{equals}}, không dựa vào identity ({{==}}) hay gọi {{intern}} tùy tiện.
 
 ### String và pool
-String lưu nội dung không đổi sau khi tạo. Phép {{concat}} không sửa chuỗi cũ mà trả chuỗi mới; nhờ vậy hash cache, chia sẻ và dùng làm key ổn định. Literal như {{"java"}} được đưa vào pool; compiler có thể gộp literal hằng. {{new String("java")}} tạo object riêng dù nội dung bằng nhau.
+String lưu nội dung không đổi sau khi tạo. "Bất biến" có nghĩa là khi bạn gán một chuỗi vào biến, nội dung của chuỗi đó sẽ không bao giờ thay đổi; nếu muốn nội dung khác, Java phải tạo một chuỗi mới. Ví dụ như viết tên khách hàng lên một tờ biên nhận rồi photocopy: bản gốc không đổi, bạn chỉ có thêm một bản mới. Phép {{concat}} (nối chuỗi) không sửa chuỗi cũ mà trả chuỗi mới; nhờ vậy hash cache, chia sẻ và dùng làm key ổn định. Literal như {{"java"}} được đưa vào pool; compiler có thể gộp literal hằng. {{new String("java")}} tạo object riêng dù nội dung bằng nhau.
 
 ~~~java
 String a = "java", b = new String("java");
-boolean sameText = a.equals(b); // true
-boolean sameObject = a == b;    // false
+boolean sameText = a.equals(b); // true: cùng nội dung
+boolean sameObject = a == b;    // false: khác object, khác vùng nhớ
 ~~~
 
-{{==}} trên reference kiểm tra cùng object, không phải cùng ký tự. {{intern()}} yêu cầu canonical string từ pool nhưng giữ chuỗi trong pool có chi phí và thường không cần trong ứng dụng. Dùng nó chỉ khi đã đo cardinality và lợi ích bộ nhớ.
+{{==}} trên reference kiểm tra cùng object (cùng vùng nhớ), không phải cùng ký tự. {{intern()}} yêu cầu canonical string từ pool nhưng giữ chuỗi trong pool có chi phí và thường không cần trong ứng dụng. Dùng nó chỉ khi đã đo cardinality (số lượng giá trị khác nhau) và lợi ích bộ nhớ.
+
+### Cơ chế từng bước: StringBuilder hoạt động như thế nào
+StringBuilder là một "buffer" (vùng nhớ đệm) có thể thay đổi nội dung, khác với String immutable. Khi bạn gọi {{append()}}, Java ghi thêm nội dung vào cuối buffer thay vì tạo chuỗi mới mỗi lần.
+
+1. **Cái gì**: {{StringBuilder}} giữ một mảng char nội bộ (buffer) và một con trỏ chỉ số phần tử cuối cùng.
+2. **Vì sao cần**: Nối {{result += part}} trong vòng lặp tạo một String mới mỗi lần, phải copy toàn bộ nội dung cũ sang chuỗi mới; khi kết quả dài dần, tổng số ký tự copy tăng theo bậc hai (O(n²)), chậm và tạo nhiều rác (garbage) trên heap (vùng nhớ JVM quản lý).
+3. **Hoạt động thế nào**: {{append()}} ghi nội dung vào buffer, nếu buffer đầy thì tạo mảng mới gấp đôi và copy qua (gần như cách {{ArrayList}} grow). Cuối cùng gọi {{toString()}} tạo một String duy nhất từ nội dung buffer.
+4. **Ví dụ cụ thể**: nối 3 phần "A", "B", "C": buffer ban đầu trống → append "A" → "A" → append "B" → "AB" → append "C" → "ABC" → toString() tạo "ABC" một lần duy nhất.
+5. **Lỗi hay gặp**: dùng StringBuilder trong nhiều thread cùng lúc không an toàn (không thread-safe, tức không an toàn khi nhiều luồng cùng truy cập); nếu cần, dùng {{StringBuffer}} hoặc xử lý đồng bộ bên ngoài, nhưng đồng bộ từng thao tác không làm cả chuỗi nghiệp vụ atomic (thực hiện toàn bộ như một bước không thể tách).
+
+Ví dụ ngắn (không dùng trong nhiều thread):
+
+~~~java
+StringBuilder sb = new StringBuilder(64);   // dự kiến 64 ký tự, tránh cấp buffer nhiều lần
+for (String part : parts) {
+    sb.append(part);                        // ghi vào buffer, không tạo String mới
+}
+String result = sb.toString();              // tạo String cuối cùng một lần duy nhất
+~~~
 
 ### Chi phí nối chuỗi
 Trong vòng lặp, {{result += part}} tạo chuỗi mới mỗi lần vì String immutable; tổng lượng ký tự copy có thể tăng bậc hai khi kết quả tăng từng chút. {{StringBuilder}} giữ buffer mutable, mở rộng khi cần, rồi tạo String cuối bằng {{toString}}. Java compiler tối ưu biểu thức nối đơn giản trong một biểu thức, nhưng không thể gộp tùy ý qua vòng lặp nhiều lần.
@@ -537,19 +556,22 @@ Trong vòng lặp, {{result += part}} tạo chuỗi mới mỗi lần vì String
 | {{StringBuffer}} | API legacy cần đồng bộ từng thao tác | đồng bộ không làm cả chuỗi nghiệp vụ atomic |
 
 ### Chuẩn hoá và che dữ liệu
-Định nghĩa chuẩn hoá theo domain: số thẻ có thể bỏ dấu cách/gạch nối nhưng không được bỏ ký tự tùy tiện; tài khoản có thể giữ số 0 đầu, nên không parse sang long. Mask chỉ giữ suffix cần thiết và không log giá trị gốc. Dùng builder với capacity dự kiến để tránh cấp buffer nhiều lần.
+Định nghĩa chuẩn hoá theo domain (lĩnh vực nghiệp vụ): số thẻ có thể bỏ dấu cách/gạch nối nhưng không được bỏ ký tự tùy tiện; tài khoản có thể giữ số 0 đầu, nên không parse sang long. Mask chỉ giữ suffix cần thiết và không log giá trị gốc. Dùng builder với capacity dự kiến để tránh cấp buffer nhiều lần.
 
-Chuỗi Java immutable cũng có mặt trái: không thể xoá chắc chắn bản sao chứa mật khẩu khỏi heap. Với secret ngắn hạn, API char[] cho phép caller ghi đè, dù GC/serialization/logging vẫn cần cẩn trọng. Không dùng String cho credential rồi tin rằng {{null}} sẽ xoá bộ nhớ ngay.
+Chuỗi Java immutable cũng có mặt trái: không thể xoá chắc chắn bản sao chứa mật khẩu khỏi heap. Với secret ngắn hạn, API char[] cho phép caller ghi đè, dù GC/serialization/logging vẫn cần cẩn trọng. Không dùng String cho credential (thông tin đăng nhập) rồi tin rằng {{null}} sẽ xoá bộ nhớ ngay.
 
 ### Pitfall production
 - Log request trước khi mask: dữ liệu đã rời khỏi luồng an toàn; mask tại boundary trước log.
-- {{substring}} không phải chuẩn hoá Unicode. Chữ nhìn giống nhau có thể có nhiều code point; nghiệp vụ quốc tế cần xác định Unicode normalization cụ thể.
+- {{substring}} không phải chuẩn hoá Unicode. Chữ nhìn giống nhau có thể có nhiều code point (đơn vị cơ bản của ký tự); nghiệp vụ quốc tế cần xác định Unicode normalization cụ thể.
 - Mask theo số ký tự thay vì ký tự số sau chuẩn hoá có thể làm lộ nhiều hơn dự kiến.
 - Không dùng {{==}} cho nội dung, và đừng dựa vào pool để sửa lỗi so sánh.
 - StringBuilder có thể tăng bộ đệm và giữ dữ liệu nhạy cảm trong bộ nhớ; tránh ghi vào log/debug.
 
 ### Liên hệ phỏng vấn
-So sánh nối chuỗi trong loop với builder, giải thích pool không phải cache nghiệp vụ, rồi mô tả thứ tự normalize → validate → mask → log mà không làm mất số 0 đầu.`,
+- Nối chuỗi trong vòng lặp với StringBuilder khác nhau như thế nào? → Nối bằng {{+}} trong vòng lặp tạo một String mới mỗi lần, tổng ký tự copy tăng bậc hai (O(n²)); StringBuilder ghi vào buffer mutable rồi tạo String một lần, tổng chi phí là O(n).
+- String pool là gì và dùng khi nào? → Pool canonicalize (đưa về dạng chuẩn) literal cùng nội dung thành một object để tiết kiệm bộ nhớ; dùng cho hằng số lặp lại nhiều, không dùng làm cache nghiệp vụ và không gọi {{intern}} tùy tiện vì giữ chuỗi trong pool có chi phí.
+- So sánh hai chuỗi nên dùng {{equals}} hay {{==}}? → {{equals}} so nội dung ký tự; {{==}} so cùng vùng nhớ. Hai chuỗi cùng nội dung nhưng tạo khác nhau (ví dụ {{new String("java")}} với literal) thì {{==}} cho false, {{equals}} cho true.
+`,
   exercises: [{
     title: 'Chuẩn hoá và che chuỗi tài khoản',
     prompt: `Viết {{Mask.account(String raw)}}: bỏ dấu cách và dấu gạch ngang, yêu cầu còn ít nhất 4 ký tự ASCII chữ/số, giữ nguyên số 0 đầu; trả {{*}} cho mọi ký tự trừ 4 ký tự cuối. Input null hoặc sai định dạng ném IllegalArgumentException.`,
@@ -568,7 +590,27 @@ So sánh nối chuỗi trong loop với builder, giải thích pool không phả
 } }`,
     hints: ['Không parse thành số vì sẽ làm mất số 0 đầu; lọc ký tự vào StringBuilder.', 'Chỉ sau chuẩn hoá mới tính suffix bốn ký tự và dựng kết quả mask.'],
     explain: `Chuẩn hoá phải theo hợp đồng đầu vào rõ ràng, ở đây chỉ cho bỏ space và hyphen ASCII. Mọi ký tự ngoài ASCII alphanumeric bị từ chối thay vì âm thầm xóa để tránh hai định danh khác nhau thành một. Builder giữ độ phức tạp tuyến tính O(n) và không tạo chuỗi mới cho từng ký tự.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['String', 'StringBuilder', 'string pool']
+  }],   check: [{
+    q: 'Hai chuỗi {{"java"}} và {{new String("java")}} có cùng nội dung. So sánh bằng {{==}} và {{equals}} kết quả ra sao?',
+    options: ['{{==}} và {{equals}} đều cho true', '{{==}} cho true, {{equals}} cho false', '{{==}} cho false, {{equals}} cho true', 'Cả hai đều cho false'],
+    answer: 2,
+    explain: 'Đáp án C đúng: {{==}} so sánh vùng nhớ (identity), hai object khác nhau nên false; {{equals}} so sánh nội dung ký tự, cả hai là "java" nên true. A sai: {{==}} không so nội dung. B sai: ngược lại. D sai: {{equals}} cho true.'
+  }, {
+    q: 'Trong vòng lặp, nối chuỗi bằng {{result += part}} nhiều lần gây chi phí cao vì lý do gì?',
+    options: ['Compiler từ chối biên dịch vòng lặp nối chuỗi', 'Phải dùng {{StringBuffer}} thay vì {{StringBuilder}}', 'String bất biến, mỗi lần nối phải tạo chuỗi mới và copy toàn bộ nội dung cũ', 'StringBuilder không được dùng trong vòng lặp'],
+    answer: 2,
+    explain: 'Đáp án C đúng: String bất biến nên mỗi {{+=}} tạo String mới, copy toàn bộ nội dung cũ; tổng ký tự copy tăng bậc hai (O(n²)) khi kết quả dài dần. A sai: compiler cho phép. D sai: StringBuilder dùng được trong vòng lặp (một thread). B sai: StringBuffer cũng được nhưng có chi phí đồng bộ, không bắt buộc.'
+  }, {
+    q: 'String pool dùng làm gì, và khi nào nên gọi {{intern()}}?',
+    options: ['Pool canonicalize literal cùng nội dung thành một object để tiết kiệm bộ nhớ; gọi {{intern}} chỉ khi đã đo thấy lợi ích bộ nhớ', 'Pool lưu tất cả chuỗi trong ứng dụng, gọi {{intern}} cho mọi chuỗi tạo bằng {{new String()}}', 'Pool là cache nghiệp vụ, dùng để lưu kết quả truy vấn database', 'Pool tự động xoá chuỗi không dùng nữa, không cần quan tâm'],
+    answer: 0,
+    explain: 'Đáp án A đúng: pool canonicalize (đưa về dạng chuẩn) literal cùng nội dung thành một object duy nhất, tiết kiệm bộ nhớ cho hằng số lặp lại nhiều. {{intern}} giữ chuỗi trong pool có chi phí, chỉ dùng khi đo thấy cần. B sai: pool không lưu tất cả chuỗi, và gọi {{intern}} cho mọi chuỗi gây chi phí lớn. C sai: pool không phải cache nghiệp vụ. D sai: pool không tự xoá chuỗi theo cách người dùng có thể dự kiến.'
+  }, {
+    q: 'Lỗi production hay gặp khi so sánh chuỗi là dùng {{==}} thay vì {{equals}}. Hệ quả là gì?',
+    options: ['Chương trình ném NullPointerException ngay lập tức', 'Chương trình chạy nhanh hơn vì không cần duyệt ký tự', 'Chỉ sai khi chuỗi dài hơn 100 ký tự', 'Hai chuỗi cùng nội dung nhưng khác object bị coi là khác nhau, gây sai logic nghiệp vụ'],
+    answer: 3,
+    explain: 'Đáp án D đúng: {{==}} so sánh vùng nhớ, hai chuỗi cùng nội dung nhưng tạo khác nhau (literal vs {{new String("java")}}) sẽ được coi là khác, gây nhánh logic sai. A sai: {{==}} không ném NullPointerException khi cả hai không null. B sai: {{==}} nhanh nhưng không đúng ý nghĩa so nội dung. C sai: sai lệch không phụ thuộc độ dài.'
+  }], related: ['core-001'], tags: ['String', 'StringBuilder', 'string pool']
 },
 {
   id: 'lesson-core-006', track: 'core', order: 6,
