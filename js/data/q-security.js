@@ -1751,6 +1751,16 @@ note App..DB: connection pool phai doc lai secret
 - Quét secret trong git bằng gitleaks/trufflehog, chặn ở pre-commit và CI.
 - Multi-region: dùng replica secret, nhưng nhớ replica có thể trễ; không hard-code region.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống thanh toán core ngân hàng (Spring Boot 3, PostgreSQL trên RDS, 12 microservice) sau khi rotation mật khẩu DB qua AWS Secrets Manager (chu kỳ 30 ngày, single-user rotation) gặp lỗi "FATAL: password authentication failed" trên 40% connection pool trong 20 phút. Các alert PagerDuty nổ liên tục, người dùng không thanh toán được. Log ứng dụng chỉ ghi "HikariPool - Connection is not available, request timed out" mà không có ngữ cảnh rotation.
+- **Điều tra**: Kiểm tra CloudTrail xác nhận Lambda rotation chạy thành công lúc 02:00, {{AWSCURRENT}} đã chuyển sang version mới. Tuy nhiên metrics HikariCP {{hikaricp.connections.creation}} vọt lên, {{hikaricp.connections.usage}} giảm mạnh. SSH vào pod kiểm tra: env var {{SPRING_DATASOURCE_PASSWORD}} vẫn giữ giá trị cũ vì Spring Cloud AWS import secret lúc startup, không tự refresh. Connection pool {{maxLifetime=30 phút}} (mặc định) vẫn tạo connection mới bằng mật khẩu đã cache; root cause là app đọc secret một lần và cache vô hạn, nên mọi connection mới đều dùng mật khẩu cũ sau khi rotation.
+- **Nguyên nhân gốc**: Ứng dụng đọc secret một lần lúc khởi động và cache vô hạn; HikariCP không biết secret đã đổi nên tiếp tục tạo connection bằng mật khẩu cũ. Spring Cloud AWS {{optional:}} config khiến app không fail-fast khi secret manager down, mà dùng giá trị cache cũ.
+- **Cách xử lý**: (1) Bật **alternating users** ({{app_user}} / {{app_user_clone}}) trong Lambda rotation để mật khẩu cũ còn sống đến lần rotation sau. (2) Giảm {{maxLifetime}} xuống 10 phút, {{validationTimeout}} 5s, thêm {{connectionTimeout}} 10s. (3) Triển khai **AWS Secrets Manager JDBC driver** ({{aws-secretsmanager-jdbc}}) bọc driver PostgreSQL: khi login fail do sai mật khẩu, driver tự gọi Secrets Manager lấy secret mới và retry. (4) Bỏ {{optional:}} cho secret bắt buộc, thêm health check đọc secret mỗi 5 phút.
+- **Kết quả đo được**: Lần rotation sau (02:00 ngày hôm sau) 0 connection fail, metrics HikariCP ổn định. Thử nghiệm chaos: kill pod ngẫu nhiên khi rotation, app tự phục hồi < 30 giây. MTTD (mean time to detect) từ 8 phút xuống < 1 phút nhờ alert {{hikaricp.connections.creation}} spike.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi dùng AWS Secrets Manager cho mật khẩu DB, em không chỉ cấu hình đọc secret lúc khởi động. Em luôn bật alternating users trong Lambda rotation để mật khẩu cũ vẫn hoạt động đến lần xoay kế tiếp, và quan trọng hơn là giảm HikariCP {{maxLifetime}} xuống 10 phút để connection pool ép buộc đọc lại secret mới. Em cũng triển khai AWS Secrets Manager JDBC driver: nó tự intercept lỗi authentication, fetch secret mới từ Secrets Manager và retry đăng nhập, nên app gần như zero downtime khi rotation. Em từng gặp sự cố production rotation thành công mà app vẫn dùng mật khẩu cũ 20 phút vì {{maxLifetime}} mặc định 30 phút; sau khi siết config và bật driver tự refresh, rotation sau đó 0 lỗi connection."
+
 > Senior tip: sự cố production điển hình không phải "không đọc được secret" mà là **rotation thành công nhưng app vẫn dùng mật khẩu cũ** vài giờ sau đó. Hãy coi rotation là một thay đổi hạ tầng có test: chạy rotation ở staging, theo dõi tỉ lệ lỗi đăng nhập DB, và có runbook rollback. Nếu dùng RDS IAM auth thì đơn giản hơn nhiều — không còn password để xoay, chỉ cần cấp token ngắn hạn.`,
   follow: [
     'Vì sao HikariCP vẫn lỗi sau khi Secrets Manager đã rotation thành công?',
@@ -1817,6 +1827,16 @@ public AccountView getAccount(Long accountId) { ... }
 ### Test
 - Dùng {{@WithMockUser}}, {{@WithUserDetails}} hoặc {{SecurityMockMvcRequestPostProcessors.jwt()}}.
 - Test **âm tính** bắt buộc: tenant A gọi account của tenant B phải 403/404; thiếu role phải 403; và phải có ca phát hiện self-invocation.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống đa tenant SaaS ngân hàng (Spring Boot, PostgreSQL, 8 microservice) cho phép khách hàng doanh nghiệp quản lý tài khoản con. Một ngày khách hàng A báo thấy được số dư của khách hàng B trong báo cáo PDF xuất từ endpoint {{GET /api/v1/reports/balance?tenantId=...}}. Log cho thấy request mang {{tenantId}} của B nhưng do A gửi.
+- **Điều tra**: Kiểm tra controller: endpoint nhận {{tenantId}} từ query param và truyền thẳng vào service. Service dùng {{@PreAuthorize("@authz.canRead(#tenantId, authentication)")}} nhưng bean {{AccountAuthorization}} chỉ kiểm tra role ADMIN, không so khớp {{tenantId}} từ token với tham số. Hibernate filter {{@Filter(name="tenantFilter", condition="tenant_id = :tenantId")}} chưa được enable và set parameter {{tenantId}} (bằng {{session.enableFilter("tenantFilter").setParameter(...)}}) — dev quên bước này. Kết quả: query {{SELECT * FROM accounts WHERE tenant_id = :tenantId}} dùng tenantId do client gửi, bypass hoàn toàn.
+- **Nguyên nhân gốc**: (1) Tin {{tenantId}} từ client thay vì từ token đã xác thực. (2) Method security {{@PreAuthorize}} gọi bean kiểm tra nhưng logic bên trong sai (chỉ check role). (3) Hibernate filter chưa kích hoạt, query không tự lọc tenant. (4) Thiếu test âm tính: tenant A gọi data của tenant B.
+- **Cách xử lý**: (1) Tenant lấy từ JWT claim {{tenant_id}} và set vào {{SecurityContext}} qua {{OncePerRequestFilter}}, không bao giờ nhận từ param/body. (2) Sửa {{AccountAuthorization.canRead}}: so khớp {{tenantId}} từ token với {{account.tenantId}} trong DB. (3) Bật Hibernate filter {{@FilterDef}} + {{@Filter}} trên entity, set parameter trong interceptor. (4) Thêm test matrix: với 3 tenant, mọi endpoint có ID phải test tenant A truy cập resource của B/C → 404.
+- **Kết quả đo được**: Chạy test matrix 45 endpoint × 3 tenant = 135 ca, phát hiện thêm 7 endpoint quên check tenant. Sau fix, pentest thử 500 request cross-tenant đều trả 404. Audit log ghi nhận 0 sự cố rò rỉ dữ liệu giữa tenant trong 90 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Em bảo vệ dữ liệu đa tenant bằng ba lớp: đầu tiên, tenant lấy từ JWT claim đã xác thực, set vào SecurityContext qua filter, không bao giờ tin tenantId từ client. Thứ hai, method security @PreAuthorize gọi bean kiểm tra so khớp tenantId trong token với tenantId của resource trong DB — đây là authorization cấp object. Thứ ba, Hibernate filter tự động gắn tenantId vào mọi query, ngay cả khi dev quên where clause. Em từng gặp bug tenant A thấy data B vì controller nhận tenantId từ query param, service chỉ check role ADMIN, Hibernate filter chưa bật. Sau khi sửa lấy tenant từ token, bật filter, thêm test cross-tenant matrix, lỗi không tái diễn."
 
 > Senior tip: đừng coi {{@PreAuthorize}} là bùa hộ mệnh. Trong review, tôi luôn hỏi "nếu bỏ annotation này thì dữ liệu có còn được bảo vệ bởi query không?" — lớp phòng thủ tốt nhất là **query có tenant + ownership**, annotation chỉ là lớp thứ hai. Trả 404 thay vì 403 khi tài nguyên thuộc tenant khác để tránh dò ID. Và nhớ rằng method security không bảo vệ code chạy trong cùng bean nếu gọi qua {{this}}.`,
   follow: [
@@ -1889,6 +1909,16 @@ GRANT INSERT, SELECT ON audit_event TO app_role;   -- KHÔNG UPDATE/DELETE/TRUNC
 - Retention ngắn hơn yêu cầu, hoặc xoá partition mà không kiểm tra legal hold.
 - Hash chain nhưng root hash nằm cùng DB — kẻ sửa DB sửa được cả neo.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống chuyển tiền ngân hàng (core banking, 500TPS peak, PostgreSQL + Kafka) bị kiểm toán phát hiện thiếu log cho 1.200 giao dịch chuyển tiền trong tháng 3. Team dev xác nhận code có ghi audit nhưng log không có trong bảng. Đồng thời một admin DB từng chạy {{DELETE FROM audit_event WHERE occurred_at < '2024-01-01'}} để "dọn dẹp" mà không qua quy trình legal hold.
+- **Điều tra**: So sánh {{audit_outbox}} (bảng trung gian trong cùng transaction) với {{audit_event}} (kho audit cuối cùng): outbox có 1.200 record mà event thiếu. Worker đọc outbox đẩy sang event crash do OOM (OutOfMemoryError) khi xử lý batch lớn, message bị nack nhưng không retry vì config {{maxAttempts=1}}. Việc xoá partition thẳng DB làm gãy hash chain: verify job báo mismatch tại seq 45.892, nhưng team không có alert cho verify fail nên không biết.
+- **Nguyên nhân gốc**: (1) Worker outbox không có retry/backoff, crash im lặng. (2) Hash chain verify job chạy 1 lần/ngày nhưng không alert khi mismatch. (3) Partition detach/xoá dùng role owner thay vì role app, bypass GRANT. (4) Thiếu legal hold check trước xoá dữ liệu.
+- **Cách xử lý**: (1) Worker outbox: thêm {{@Retryable}} với exponential backoff, dead-letter queue cho message fail sau 3 lần. (2) Verify job: chạy mỗi giờ, alert PagerDuty ngay khi hash mismatch hoặc seq gap > 100. (3) Revoke DELETE/TRUNCATE cho owner, chỉ cho phép qua stored procedure có audit parameter. (4) Legal hold flag trên partition, block xoá nếu flag=true.
+- **Kết quả đo được**: Verify job chạy hourly, alert < 5 phút khi mismatch. Worker retry xử lý 99.9% message, 0 event mất trong 60 ngày. Kiểm toán tháng sau: 0 finding audit log, hash chain intact từ seq 1 đến 2.4M.
+
+### Trả lời mẫu khi phỏng vấn
+"Em thiết kế audit log theo nguyên tắc bất biến: ghi vào outbox trong cùng transaction nghiệp vụ, worker đọc outbox đẩy sang kho audit append-only. Hash chain SHA-256 liên kết từng bản ghi, root hash neo định kỳ lên S3 Object Lock (WORM) nên kẻ có quyền DB cũng không sửa được. Em từng xử lý sự cố worker OOM làm mất 1.200 event: thêm retry với dead-letter queue, verify job hourly alert ngay khi hash mismatch, revoke DELETE cho owner. Kiểm toán sau đó 0 finding. Em nhấn mạnh audit log là bằng chứng pháp lý, không phải app log — phải log cả lần từ chối, đồng bộ giờ UTC, và có drill restore từ cold storage định kỳ."
+
 > Senior tip: câu hỏi kiểm toán khó nhất không phải "có log không" mà là **"chứng minh không ai sửa được log"**. Hash chain + WORM + tách quyền là bộ ba tối thiểu; hãy test bằng cách cố sửa một bản ghi trong môi trường staging và xem alert có nổ. Đừng biến audit thành nút thắt hiệu năng: outbox + partition giữ được throughput, còn fail-closed chỉ nên áp cho giao dịch tài chính và thay đổi quyền.`,
   follow: [
     'Vì sao không nên ghi audit trực tiếp vào Kafka trong cùng transaction nghiệp vụ?',
@@ -1943,6 +1973,16 @@ Boundary gồm thiết bị ↔ Internet, DMZ ↔ nội bộ, service ↔ core b
 
 ### 6. Ưu tiên và theo dõi
 - Chấm điểm theo khả năng xảy ra × tác động (tiền, pháp lý, uy tín); gắn owner, hạn xử lý và residual risk có chấp thuận. Threat model là tài liệu sống: cập nhật khi thêm kênh, đối tác hoặc luồng tiền; đo bằng số threat phát hiện sớm.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Ngân hàng phát hành tính năng "chuyển tiền nhanh qua số điện thoại" (mobile app, Spring Boot, core banking SOAP). Trong tuần đầu, đội fraud phát hiện 23 ca khách khiếu nại "chuyển tiền nhưng người nhận không nhận được, số dư trừ đi". Log payment service cho thấy các giao dịch này có {{idempotencyKey}} trùng lặp, nhưng core banking vẫn tạo 2 bút toán ghi nợ.
+- **Điều tra**: Threat model ban đầu chỉ liệt kê STRIDE generic, không có abuse case cụ thể cho "double-spend khi core banking timeout". Kiểm tra code: payment service sinh {{idempotencyKey}} từ client, kiểm tra Redis {{SETNX}} rồi gọi core banking SOAP. Khi core banking timeout (30s), service retry 2 lần nhưng Redis key đã mất (TTL 10s cho idempotency), nên request retry bị coi là mới. Core banking xử lý 3 lần, tạo 3 bút toán. Abuse case: attacker hoặc network glitch khiến timeout → retry → double/triple spend.
+- **Nguyên nhân gốc**: (1) Idempotency key TTL ngắn hơn timeout core banking + retry. (2) Không lưu intent (số tiền, người nhận, trạng thái) trước khi gọi core banking. (3) Threat model thiếu abuse case "network partition giữa payment service và core banking".
+- **Cách xử lý**: (1) Lưu intent (PENDING) trong DB trước khi gọi core, có cột {{idempotencyKey}} unique. (2) TTL Redis = max(core timeout × retry, 24h). (3) Core banking trả mã lỗi "DUPLICATE_TRANSACTION" thì update intent sang SUCCESS, không retry. (4) Thêm abuse case vào threat model: "Network partition gây double-spend" → requirement "Intent phải persisted trước external call" + test chaos (tc qdisc netem delay 30s).
+- **Kết quả đo được**: Load test 10.000 request với network delay 35s: 0 double-spend, intent table khớp 100% với core banking. Threat model review tuần sau phát hiện thêm 2 abuse case tương tự cho "hoàn tiền" và "nạp ví".
+
+### Trả lời mẫu khi phỏng vấn
+"Em làm threat modeling không phải để có tài liệu cho audit mà để tìm lỗi trước khi code. Em vẽ data flow diagram với trust boundary rõ ràng: mobile → API Gateway → Payment Service → Core Banking → Ledger. Mỗi boundary soi theo STRIDE, nhưng quan trọng là viết abuse case cụ thể. Ví dụ em từng phát hiện double-spend vì idempotency key TTL ngắn hơn core banking timeout. Em biến thành requirement: intent phải persist trước external call, idempotency key unique trong DB, TTL đủ dài. Test bằng chaos engineering inject network delay. Em luôn kéo dev, BA, security, ops ngồi 90 phút trước sprint — rẻ hơn nhiều so với vá production."
 
 > Senior tip: đừng cố liệt kê mọi threat — hãy chọn **5 abuse case** tốn tiền nhất và biến chúng thành test tự động. Trong ngân hàng, một buổi threat model 90 phút trước khi code rẻ hơn nhiều so với việc vá sau khi lên production. Tôi luôn yêu cầu có mặt cả dev, BA, security và ops, vì threat hay nằm ở chỗ giao nhau giữa nghiệp vụ và hạ tầng — ví dụ quy trình hoàn tiền hoặc job đối soát mà không ai nghĩ tới.`,
   follow: [
@@ -2037,6 +2077,16 @@ public Tokens refresh(String presented) {
 - Session cookie thiếu {{HttpOnly}}/{{Secure}}, hoặc không đổi session id sau login (session fixation; Spring Security mặc định đã đổi id, đừng tắt).
 - Đặt TTL access 24 giờ "cho đỡ refresh" rồi tuyên bố "có logout": logout chỉ xoá token ở client, token bị trộm vẫn dùng được cả ngày.
 
+### Ví dụ đời thực
+- **Triệu chứng**: App ngân hàng mobile (2 triệu user, Spring Boot, JWT access 10 phút + refresh rotation 8h) nhận khiếu nại: khách hàng báo "đã đổi mật khẩu qua web nhưng app mobile vẫn chuyển tiền được 15 phút sau". Song song, team security phát hiện access token rò rỉ trong log của dịch vụ analytics bên thứ ba (token bị ghi đầy đủ trong header X-Request-ID).
+- **Điều tra**: Kiểm tra luồng thu hồi: đổi mật khẩu chỉ revoke refresh token family, không có denylist cho access token {{jti}}. Access token TTL 10 phút nên cửa sổ thu hồi = 10 phút. Kiểm tra token rò rỉ: service analytics log header {{Authorization}} ở mức DEBUG, token JWT base64 decode được thấy claim {{sub}}, {{roles}}, {{ver}}. Token version {{ver}} không tăng khi đổi mật khẩu.
+- **Nguyên nhân gốc**: (1) Thay đổi mật khẩu không tăng token version → access token cũ vẫn valid. (2) Không có denylist {{jti}} cho logout/đổi mật khẩu khẩn cấp. (3) Service analytics log sensitive header → token leakage.
+- **Cách xử lý**: (1) Đổi mật khẩu: {{UPDATE users SET token_version = token_version + 1 WHERE id = ?}}, JWT claim {{ver}} đọc từ cache user. (2) Thêm denylist Redis {{jti}} TTL = remaining access TTL cho logout/khóa tài khoản. (3) Service analytics: redact header {{Authorization}} trong log, dùng structured logging filter. (4) API chuyển tiền nhạy cảm: check thêm {{ver}} so với cache, TTL cache 30s.
+- **Kết quả đo được**: Sau fix, thao tác "đăng xuất mọi thiết bị" (tăng version) có hiệu lực < 30 giây cho API chuyển tiền. Kịch bản test dùng token rò rỉ sau revoke: 100% bị 401. Log analytics 0 token xuất hiện trong 30 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chọn kiến trúc xác thực dựa trên cửa sổ thu hồi mà nghiệp vụ chấp nhận. Nếu ngân hàng yêu cầu khoá tài khoản có hiệu lực ≤ 5 giây, em dùng session server-side hoặc JWT có denylist {{jti}} tra Redis mỗi request. Nếu chấp nhận 10 phút, em dùng JWT access 10 phút + refresh rotation one-time use, đổi mật khẩu tăng token version. Em từng gặp bug đổi mật khẩu mà app mobile vẫn dùng được 15 phút: vì access token TTL 10 phút, đổi mật khẩu chỉ revoke refresh token mà không tăng version hay thêm denylist. Em fix bằng cách tăng version khi đổi mật khẩu, thêm denylist cho logout, và API nhạy cảm check version qua cache. Cách này hybrid: web BFF dùng session cookie, mobile dùng JWT ngắn + rotation, API tiền check version."
+
 > Senior tip: ghi rõ cửa sổ thu hồi vào tài liệu kiến trúc như một NFR có số ("khoá tài khoản có hiệu lực ≤ 5 giây với API chuyển tiền, ≤ 10 phút với API đọc"). Thiết kế lai rất phổ biến: web dùng session cookie qua BFF, mobile dùng access 10 phút + refresh rotation, và riêng API giao dịch kiểm tra thêm token version. Đừng bắt mọi API trả giá tra cứu chỉ vì vài API cần thu hồi tức thì.`,
   follow: [
     'Grace period cho refresh đồng thời mở ra lỗ hổng gì, và giới hạn nó thế nào?',
@@ -2113,6 +2163,26 @@ Thêm một test "kiểm kê": quét mọi handler có {{@PathVariable}} tên ch
 - Kiểm tra quyền rồi mới query lần hai không kèm owner (race, hoặc sửa code sau này bỏ mất bước kiểm tra).
 - Endpoint export/batch ({{/orders/export?ids=1,2,3}}) quên lọc owner cho từng phần tử.
 - Rate limit không thay được phân quyền, nhưng nên có để phát hiện enumeration: một user gặp hàng trăm lỗi 404 liên tiếp trên {{/orders/*}} là tín hiệu cần alert.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống đặt hàng nội bộ (Spring Boot, 15 microservice, PostgreSQL) bị pentest báo lỗ hổng BOLA nghiêm trọng: endpoint trả PDF hóa đơn không kiểm tra ownership.
+~~~text
+GET /api/v1/orders/{orderId}/invoice
+~~~
+Attacker lặp {{orderId}} từ 10000 đến 20000, tải được 10.000 hóa đơn trong 3 phút (khoảng 500 MB dữ liệu PII: tên, địa chỉ, số điện thoại, tổng tiền). Log WAF chỉ ghi 200 OK, không có 4xx/5xx.
+- **Điều tra**: Kiểm tra controller: endpoint gọi {{invoiceService.generate(orderId)}} không truyền {{currentUserId}}. Service {{InvoiceService}} query {{invoiceRepo.findByOrderId(orderId)}} — thiếu {{AND customer_id = ?}}. Repository method {{findByOrderId}} được sinh tự động từ Spring Data JPA ({{findByOrderId}}), không có owner check. Kiểm tra codebase: 8 endpoint tương tự cùng pattern:
+~~~text
+/orders/{id}/detail
+/orders/{id}/timeline
+/orders/{id}/cancel
+~~~
+ID tuần tự làm attacker dễ dò tìm.
+- **Nguyên nhân gốc**: (1) Service layer không có ownership check cho các endpoint "read-only" (hóa đơn, timeline, detail). (2) Repository method tự động {{findByOrderId}} bypass ownership. (3) Thiếu test matrix quyền cho endpoint mới. (4) ID tuần tự cho phép enumeration hàng loạt.
+- **Cách xử lý**: (1) Sửa service: {{invoiceRepo.findByOrderIdAndCustomerId(orderId, currentUserId)}} cho mọi endpoint. (2) Thêm cột {{public_id}} ULID, migrate dần, API mới dùng public_id. (3) Test matrix CI: 45 endpoint × 3 user = 135 ca, fail nếu endpoint có ID mà không có test. (4) Rate limit {{/orders/*}}: 50 req/phút/user, alert khi 404 > 20/phút.
+- **Kết quả đo được**: Pentest lại: 0 BOLA finding, enumeration attack bị rate limit chặn tại request thứ 51. CI chặn 3 PR mới thiếu test matrix trong 2 tuần đầu. Log analytics: enumeration attempt giảm 99% sau rate limit.
+
+### Trả lời mẫu khi phỏng vấn
+"BOLA là lỗi số 1 OWASP API Security: server không kiểm tra quyền đối tượng. Đổi sang UUID không sửa được gốc — UUID chỉ làm khó đoán ID, nhưng nếu endpoint không check ownership thì attacker có UUID (qua log, email, link chia sẻ) vẫn truy cập được. Em sửa ba lớp: lớp 1 bắt buộc, ownership check trong query {{WHERE customer_id = ?}} ở service/repo, trả 404 không phải 403. Lớp 2: public ID (ULID) thay ID tuần tự ở API boundary, chặn enumeration và lộ doanh số. Lớp 3: test matrix CI quét mọi endpoint có ID, user A tạo object, user B truy cập phải 404. Em từng fix 8 endpoint BOLA cùng lúc bằng cách grep {{findById}} trong repo, thêm owner check, bật test matrix — pentest sau đó 0 finding."
 
 > Senior tip: khi nhận báo cáo BOLA, đừng chỉ vá endpoint bị báo. Tôi grep toàn bộ repository method dạng {{findById(}} được gọi từ controller/service phục vụ user cuối và thay bằng biến thể có owner, rồi bật test kiểm kê trong CI. Cách này thường tìm thêm vài endpoint cùng lỗi mà pentest chưa chạm tới.`,
   follow: [
