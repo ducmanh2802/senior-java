@@ -601,6 +601,9 @@ synchronized (lock) {        // Java 21: block I/O trong khối này...
 ### Trả lời miệng 1 phút
 "Virtual thread là thread nhẹ do JVM quản lý: nó được mount lên một carrier thread, và khi gặp blocking I/O, JVM cất stack xuống heap, unmount, trả carrier cho việc khác. Nhờ vậy tôi viết code blocking bình thường mà vẫn phục vụ hàng chục nghìn request đồng thời với vài carrier. Điểm cần cẩn thận trên Java 21 là pinning: block bên trong synchronized hoặc native call sẽ giữ carrier, tôi phát hiện bằng JFR event VirtualThreadPinned và thay bằng ReentrantLock; từ JDK 24 synchronized đã hết pin. Virtual thread hợp với I/O-bound, không giúp CPU-bound, không nên pool, và vẫn phải giới hạn tài nguyên phía sau bằng semaphore hay connection pool."
 
+### Ví dụ đời thực
+Một service Spring Boot 3.2 xử lý API tìm kiếm sản phẩm gọi 3 service hạ tầng (giá, tồn kho, ship) đồng thời. Ban đầu dùng platform thread pool 200 thread: burst 5000 request đồng thời → 200 thread bận, 4800 request xếp hàng queue, p99 trượt 8 s, CPU 90% do context switch. Chuyển sang virtual thread (spring.threads.virtual.enabled=true) cùng config: 5000 request chạy song song trên 8 carrier, p99 giảm xuống 350 ms (giới hạn bởi latency service hạ tầng), CPU giảm 65%. Tuy nhiên sau deploy phát hiện throughput bất thường: JFR ghi {{jdk.VirtualThreadPinned}} tại synchronized block bọc {{HikariCP.getConnection()}} (driver cũ). Sửa: upgrade JDBC driver lên bản bỏ synchronized trong đường I/O, hoặc thay bằng ReentrantLock. Kết quả: p99 ổn định 300 ms, throughput 5k rps, không OOM heap dù concurrent 10k. Đi kèm đặt Semaphore(50) cho Hikari pool 50 connection để tránh DDoS DB.
+
 > Senior tip: benchmark trước khi tin virtual threads: test tăng concurrent từ 100 lên 10k, đo p99 và connection pool; thường p99 phụ thuộc pool JDBC và giới hạn của DB nhiều hơn số thread. Khi đó việc cần làm là tune pool JDBC (trong sức chịu của DB) và đặt semaphore cho từng dependency, không phải thêm thread.`,
   follow: [
     'Phát hiện pinning của một service Java 21 trong production thế nào?',
@@ -679,6 +682,9 @@ try {
 
 ### Trả lời miệng 1 phút
 "ThreadLocal cho mỗi thread một bản giá trị riêng, tôi hay dùng cho context của request như MDC hay security context. Bên trong, mỗi Thread có một ThreadLocalMap, key là tham chiếu yếu tới ThreadLocal còn value là tham chiếu mạnh. Trong thread pool, thread sống suốt đời app nên nếu không remove thì value nằm mãi, vừa rò heap vừa có thể để request sau đọc nhầm dữ liệu của request trước, và trên Tomcat còn gây leak classloader khi redeploy. Vì vậy tôi luôn set ở filter và remove trong finally ở cùng chỗ. Với Java 21 và virtual thread, tôi giữ ThreadLocal thật nhỏ và hướng tới ScopedValue."
+
+### Ví dụ đời thực
+Hệ thống thanh toán Spring Boot dùng filter set MDC userId + requestId. Một request xử lý lỗi ném exception trước khi MDC.clear() chạy; thread quay lại pool giữ userId cũ. Request sau dùng cùng thread (không set userId vì gọi service nội bộ) đọc MDC lấy userId của request trước → ghi log audit sai, transaction bị gán nhầm user, gây khiếu nại 50+ case/tuần. Thread dump cho thấy thread http-nio-8080-exec-12 giữ UserContext 2 MB × 200 thread = 400 MB Old Gen không giải phóng. Sửa: bọc chain.doFilter trong try/finally gọi MDC.clear(); thêm test integration ép exception ở giữa filter kiểm tra MDC clear. Kết quả: leak heap biến mất, audit log đúng 100% trong 30 ngày theo dõi. Đồng thời chuyển SimpleDateFormat ThreadLocal sang DateTimeFormatter bất biến.
 
 > Senior tip: một vụ "user A thấy data user B" gây ấn tượng cho tôi: MDC có userId của request trước bị giữ lại trong thread, một filter sau đó đọc MDC mà không set — 1 trong 10k request rơi vào trường hợp này. Sau đó team tôi review bắt buộc {{set(}} và {{remove}} phải đi cùng nhau trong cùng method.`,
   follow: [
@@ -766,6 +772,9 @@ Ví dụ số (cỡ độ lớn, tuỳ máy): 16 thread cùng tăng counter, Ato
 
 ### Trả lời miệng 1 phút
 "CAS là lệnh nguyên tử của CPU: chỉ ghi giá trị mới nếu giá trị hiện tại vẫn như mình đã đọc. AtomicInteger dùng nó trong vòng lặp: đọc, tính, CAS, thất bại thì thử lại, nên không có thread nào bị ngủ. Hạn chế đầu tiên là ABA: giá trị đổi rồi đổi về như cũ thì CAS không biết; tôi xử lý bằng AtomicStampedReference hoặc version number. Hạn chế thứ hai là khi tranh chấp cao, nhiều thread CAS cùng một cache line nên fail liên tục; LongAdder giải quyết bằng cách chia thành nhiều cell rồi cộng khi đọc. Nên metric thì tôi dùng LongAdder, còn giá trị cần chính xác từng thời điểm như sinh ID thì dùng AtomicLong."
+
+### Ví dụ đời thực
+Service định giá real-time tăng counter lượt xem sản phẩm. Dùng AtomicLong.incrementAndGet() cho 100k sản phẩm, traffic 50k rps. Profiling async-profiler cho thấy 40% CPU time ở vòng CAS của AtomicLong (cache line bouncing giữa 32 core). Chuyển sang LongAdder: CPU giảm 35%, throughput tăng từ 42k lên 68k ops/s. Tuy nhiên sinh ID đơn hàng dùng LongAdder → sum() trả giá trị xấp xỉ khi còn update, dẫn đến trùng ID đơn 0.02% đơn. Sửa: ID dùng AtomicLong (độ chính xác tuyệt đối), metric dùng LongAdder. Kết quả: không còn trùng ID, metric vẫn nhanh. Một bug khác: team dùng AtomicReference.updateAndGet(fn) với fn có side effect log → CAS fail gọi lại log nhiều lần, log nhiễu. Sửa: hàm thuần, log ở ngoài.
 
 > Senior tip: rule code review: counter cho metrics → LongAdder; giá trị chuẩn từng thời điểm (token bucket rate limiter, sinh ID) → AtomicLong. Trong async-profiler, nếu thấy vòng CAS của AtomicLong chiếm CPU khi tranh chấp cao — đó là chỗ LongAdder thay thế thoải mái.`,
   follow: [
@@ -855,6 +864,9 @@ Vì sao đúng: class {{Holder}} chỉ được khởi tạo khi {{Holder.INSTAN
 ### Trả lời miệng 1 phút
 "Double-checked locking kiểm tra null bên ngoài lock để đường nóng không phải khoá, rồi kiểm tra lại bên trong synchronized để chỉ tạo một instance. Field phải volatile vì new gồm cấp phát, chạy constructor và gán tham chiếu, và JIT hay CPU có thể làm thread khác thấy phép gán trước khi constructor xong; thread đó bỏ qua lock và dùng object nửa xây. volatile tạo happens-before giữa lần ghi và lần đọc nên ai thấy tham chiếu cũng thấy object đã khởi tạo đầy đủ. Tuy vậy trong thực tế tôi ưu tiên holder idiom hoặc enum vì JVM tự lo thread-safety, và trong Spring thì để container quản lý singleton."
 
+### Ví dụ đời thực
+Module cache cấu hình dùng DCL không volatile. Trên CI (x86, JDK 11) test 10k lần đều pass. Triển khai production ARM Graviton2 (JDK 17): 1 tuần sau log xuất hiện NPE tại Config.url.length() 12 lần/ngày, không repro local. Thread dump thấy Config instance không null nhưng field url = null. Nguyên nhân: ARM có mô hình bộ nhớ yếu hơn x86, JIT reorder ghi instance trước constructor. Sửa: thêm volatile vào field instance. Kết quả: NPE biến mất hoàn toàn 60 ngày theo dõi. Học bài: team quy chuẩn chỉ dùng holder idiom hoặc @Configuration bean cho singleton; cấm DCL thủ công. Review bắt buộc grep "volatile" khi thấy pattern instance null check + synchronized.
+
 > Senior tip: tôi coi "singleton tự viết bằng DCL" là code legacy cần review kỹ: 2 nhóm bug thường gặp là (1) quên volatile — bug "object nửa xây" rơi vào production không repro được, (2) holder nhưng class được load bởi 2 classloader khác nhau trong app server, nên thực tế có 2 "singleton".`,
   follow: [
     'Ba bước của {{new Foo()}} được JIT xếp lại thế nào?',
@@ -937,6 +949,9 @@ Ví dụ số để phân biệt Semaphore và rate limit: Semaphore(5) với m�
 ### Trả lời miệng 1 phút
 "Bốn công cụ này đều là synchronizer của java.util.concurrent nhưng giải bốn bài khác nhau. CountDownLatch là chờ N việc xong, dùng một lần, tôi hay dùng để fan-out rồi đợi tất cả, luôn countDown trong finally và await có timeout. CyclicBarrier là nhóm worker chờ nhau tại mỗi pha, dùng lại được, có barrier action, nhưng một thread lỗi là cả barrier broken. Semaphore giới hạn số việc chạy đồng thời, ví dụ tối đa 5 call tới đối tác; nó không phải rate limit theo giây. Phaser dành cho nhiều pha với số thành viên thay đổi. Thực tế phần lớn nhu cầu chỉ là CountDownLatch hoặc CompletableFuture.allOf."
 
+### Ví dụ đời thực
+Batch tính toán rủi ro portfolio: chia 100k vị thế thành 4 stage (load data, calc greeks, agg, write DB), mỗi stage cần chờ tất cả worker xong mới sang stage sau. Dùng CyclicBarrier(50) cho 50 worker, barrier action flush cache giữa các stage. Stage 2 worker 1 ném ArithmeticException (chia cho 0 greeks) → CyclicBarrier broken, 49 worker còn lại nhận BrokenBarrierException, cả batch treo. Sửa: chuyển sang Phaser — register 50 party, arriveAndDeregister() cho worker lỗi thoát ra không làm hỏng phaser; stage sau số party tự giảm. Kết quả: batch chạy ổn định 30 ngày, p99 120 s, recovery từ lỗi 1 worker mất 2 s thay vì fail cả batch. Đồng thời giới hạn gọi pricing API ngoài bằng Semaphore(20) (tối đa 20 call đang bay), kèm RateLimiter 20 rps để chặn burst.
+
 > Senior tip: 90% nhu cầu fan-out thực chiến chỉ là "đợi N việc xong" — CountDownLatch + await timeout là mẫu gọn nhất. Tôi có một lần duy nhất phải dùng Phaser: pipeline nhiều stage mà số worker thay đổi khi kết thúc từng stage — mạnh nhưng không đáng dùng mặc định.`,
   follow: [
     'CyclicBarrier "broken" xảy ra thế nào, xử lý ra sao?',
@@ -1018,6 +1033,9 @@ Kafka topic (hoặc bảng job có cursor)
 
 ### Trả lời miệng 1 phút
 "Tôi chia thành ba lớp. Nguồn phải có checkpoint bền vững, Kafka offset hoặc cursor trong bảng, và tôi chỉ advance checkpoint sau khi cả batch đã ghi xong, nên crash thì chạy lại đúng chỗ. Ở giữa là fan-out có kiểm soát: queue bounded, semaphore giới hạn số call đang bay theo Little's law, và một rate limiter token bucket đặt đúng quota đối tác; gặp 429 thì retry theo Retry-After có jitter, quá ba lần thì vào DLQ. Đầu ra ghi idempotent theo key nghiệp vụ nên at-least-once vẫn cho kết quả như exactly-once. Cuối cùng là metric rps thực tế so với quota, DLQ và test kill giữa batch để chứng minh không mất dữ liệu."
+
+### Ví dụ đời thực
+Job đồng bộ 1 triệu đơn hàng sang đối tác logistics (quota 100 rps, latency 200 ms). Thiết kế ban đầu: 250 worker, mỗi worker Thread.sleep(100) tưởng rate limit 2500 rps → thực tế 2.5k rps, API trả 429 dồn dập, checkpoint không advance, mất 8 tiếng replay. Redesign: Kafka topic đơn hàng (offset checkpoint), consumer fetch batch 500, BoundedQueue(100), 50 virtual thread worker. Trước call logistics: RateLimiter token bucket 100 rps (Resilience4j) + Semaphore(20) (concurrency = 100 rps × 200 ms). Gặp 429: đọc Retry-After header, sleep + jitter 0–500 ms, max 3 lần rồi đẩy sang topic retry/DLQ. Sink: upsert theo order_id (unique constraint). Shutdown: dừng consumer, chờ queue drain 60s, flush batch cuối, commit offset. Kết quả: 1M record xong trong 2.95 giờ (gần trần cứng 2.78h), 0 mất dữ liệu sau 5 lần kill -9 test, DLQ 12 record (do dữ liệu đầu vào sai, không do hệ thống). Dashboard Grafana: rps thực tế line song song quota line, queue depth < 10.
 
 > Senior tip: sai lầm đắt tôi từng thấy: "mỗi worker sleep 100 ms" với 250 worker mà nghĩ đã rate limit — kết quả 2.500 rps, API bắn 429 dồn dập, checkpoint không advance, mất 8 tiếng replay một batch. Rate limit phải đo được (rps thực tế vs quota trên dashboard), không đánh chặn bằng sleep trong code.`,
   follow: [
