@@ -2697,6 +2697,38 @@ Nếu có nghi ngờ: hỏi rõ bằng văn bản, hoặc từ chối để bả
 - [ ] Kiểm tra conflict of interest trước khi nhận thêm việc; minh bạch và tuân thủ điều khoản hợp đồng.
 - [ ] Khi có sự cố nghi ngờ (mất thiết bị, lộ secret, click phishing): báo ngay cho khách/bên liên quan, thu hồi truy cập, xoay secret.
 
+### Ví dụ đời thực
+
+**Tình huống:** Bạn làm contractor cho một công ty fintech ở EU. Khách cung cấp VPN truy cập môi trường staging. Bạn đang debug lỗi thanh toán và cần xem log chi tiết.
+
+**Triệu chứng:** Bạn thấy log chứa toàn bộ số thẻ tín dụng, CVV, và địa chỉ email của người dùng thật trong file log production được đồng bộ về staging. Bạn nhận ra đây là vi phạm dữ liệu nhạy cảm.
+
+**Điều tra:** Bạn kiểm tra code log và thấy dòng sau:
+~~~java
+log.info("Payment processed: card={}, cvv={}, email={}", cardNumber, cvv, email)
+~~~
+Ngoài ra, file {{.env}} chứa API key production đang nằm trong repo private (đã push nhầm). Laptop cá nhân bạn dùng để làm việc chưa bật mã hoá ổ đĩa.
+
+**Nguyên nhân gốc:** (1) Code log ghi trực tiếp dữ liệu nhạy cảm thay vì mask/ẩn. (2) Secret production bị commit vào repo. (3) Thiết bị cá nhân không đủ chuẩn bảo mật (chưa mã hoá ổ đĩa, profile trình duyệt chung với cá nhân).
+
+**Cách xử lý:**
+1. **Báo cáo ngay**: Thông báo cho security lead của khách qua kênh bảo mật (không chat thường) về việc log lộ dữ liệu và secret trong repo.
+2. **Xoay secret**: Yêu cầu khách xoay (rotate) tất cả API key, secret đã lộ ngay lập tức.
+3. **Sửa code log**: Thay đổi log thành đoạn sau:
+~~~java
+log.info("Payment processed: card=****, email={}", maskEmail(email))
+~~~
+— chỉ log 4 số cuối thẻ và email đã mask.
+4. **Dọn repo**: Dùng {{git filter-repo}} hoặc BFG Repo-Cleaner để xoá secret khỏi lịch sử Git, sau đó force push (có phối hợp team).
+5. **Nâng cấp thiết bị**: Bật FileVault (macOS) hoặc BitLocker (Windows) mã hoá ổ đĩa; tạo user/profile trình duyệt riêng cho công việc khách; cài EDR/antivirus; bật khoá màn hình tự động 5 phút.
+6. **Quy trình mới**: Thêm pre-commit hook quét secret (git-secrets/husky); dùng secret manager (AWS Secrets Manager, HashiCorp Vault) thay vì file {{.env}}; chỉ truy cập staging qua VPN, không đồng bộ dữ liệu production thật về máy cá nhân.
+
+**Kết quả đo được:** Sau 2 tuần, log không còn chứa dữ liệu nhạy cảm; secret đã được xoay và lưu trong secret manager; laptop đạt chuẩn bảo mật khách yêu cầu; bạn ký phụ lục NDA cập nhật quy trình xử lý sự cố. Không sự cố rò rỉ nào phát sinh thêm.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi làm remote cho khách quốc tế, tôi coi bảo mật như một phần của chất lượng giao hàng, không phải rào cản. Tôi luôn tách biệt môi trường làm việc: nếu dùng laptop cá nhân, tôi tạo user/profile trình duyệt riêng, bật mã hoá ổ đĩa (BitLocker/FileVault), khoá màn hình tự động, và cài EDR. Mọi tài khoản liên quan công việc đều bật 2FA (OTP app, không dùng SMS). Với secret, tôi không bao giờ hard-code hay commit {{.env}} — dùng secret manager của khách hoặc biến môi trường trong CI/CD. Khi debug, tôi không tải dữ liệu production thật về máy; tôi dùng log đã mask, staging có synthetic data, hoặc xin truy vấn an toàn do người có quyền chạy. Với NDA, tôi không chia sẻ screenshot/code khách trừ khi được phép và đã ẩn danh. Nếu làm nhiều nơi, tôi tự kiểm tra conflict of interest trước khi nhận job mới: có cạnh tranh trực tiếp không, hợp đồng hiện tại có cho phép không, có dùng lại tài sản độc quyền không. Một lần tôi phát hiện log ghi số thẻ tín dụng và CVV — tôi báo ngay cho security lead, xoay secret, sửa code mask dữ liệu, dọn lịch sử Git, và nâng cấp bảo mật laptop. Kết quả: không rò rỉ thêm, khách tin tưởng quy trình của tôi."
+
 > Senior tip: bảo mật và tuân thủ không phải bộ cản trở để vượt qua — chúng là phần của "chất lượng chuyên nghiệp" khi làm remote cho khách quốc tế. Hãy xây thói quen mặc định an toàn (2FA, không commit secret, không đưa dữ liệu thật ra ngoài, đọc NDA) để bạn không phải quyết định lại mỗi lần. Khi gặp tình huống mơ hồ (ví dụ khách nhờ gửi export dữ liệu người dùng qua kênh không chuẩn), hãy dừng lại, hỏi xác nhận bằng văn bản, và chọn cách làm có kiểm soát truy cập — an toàn hơn một chút hôm nay luôn rẻ hơn xử lý sự cố rò rỉ ngày mai.`,
   follow: [
     'Bạn lỡ commit API key vào repo private và đã push. Bạn xử lý sự cố trong 30 phút đầu và sau đó thế nào để ngăn tái diễn?',
@@ -2822,6 +2854,29 @@ Note: Personal/learning project (shared to demonstrate approach and code quality
 - [ ] Chỉnh skills khớp ngách; bỏ kỹ năng bạn không muốn nhận job.
 - [ ] Kiểm tra chính tả tiếng Anh và đọc lại như một client: "mình có dám thuê người này cho job X không?"
 
+### Ví dụ đời thực
+
+**Tình huống:** Một dev Java 4 năm ở Việt Nam (giả định tên Nam) tạo profile Upwork đầu tiên. Profile cũ có title "Full-Stack Developer | Java | React | Node | Python | AWS | Docker", overview mở đầu bằng "Hello, my name is Nam...", portfolio trống, skills liệt kê 15 công nghệ. Sau 3 tuần, anh gửi 20 proposal, nhận 1 phản hồi mơ hồ, 0 phỏng vấn.
+
+**Triệu chứng:** Tỉ lệ phản hồi ~5%. Khách hàng không bấm vào profile vì title quá chung chung; overview không nói được anh giải quyết vấn đề gì; không có bằng chứng để khách tin tưởng.
+
+**Điều tra:** Nam theo dõi 15 job đã gửi trong bảng tính: job, Connects, có phản hồi không, lý do đoán. Phân tích cho thấy 12/15 job cần backend Spring Boot/API/PostgreSQL — đúng thế mạnh anh — nhưng profile lại quảng bá "full-stack làm mọi thứ". 2 dòng đầu overview bị lãng phí cho lời chào, không chứa từ khoá khách tìm (performance, N+1, REST API, bug fix).
+
+**Nguyên nhân gốc:** Profile không có ngách (niche) rõ ràng; mở đầu bằng giới thiệu bản thân thay vì giá trị cho khách; portfolio trống; skills quá rộng làm khách hoang mang.
+
+**Cách xử lý:**
+1. **Đổi title:** "Java Spring Boot Backend Engineer | REST APIs, PostgreSQL, Performance & Reliability"
+2. **Viết lại overview:** 2 dòng đầu: "I help teams fix and build Java backends that stay fast and reliable in production. Over 4 years, I have shipped and maintained Spring Boot services for web products: REST APIs, database-heavy features, and performance issues that show up under real traffic."
+3. **Tạo 2 case study:** (a) Fix slow orders API: N+1 query + missing index → p95 1.8s → 140ms (số liệu giả định, ghi rõ). (b) Booking REST API project cá nhân: demo repo có README, test, OpenAPI spec.
+4. **Chỉnh skills:** Chỉ giữ Java, Spring Boot, REST APIs, PostgreSQL, JPA/Hibernate, SQL, JUnit, Git, Docker (basic).
+5. **Cập nhật employment:** Viết theo kết quả: "Built and optimized Spring Boot REST APIs; reduced p95 latency from 1.8s to 140ms by fixing N+1 queries and adding indexes."
+
+**Kết quả đo được:** Sau khi cập nhật, Nam gửi 12 proposal trong 2 tuần (thay vì 20 proposal/3 tuần), nhận 4 phản hồi, 2 phỏng vấn video call, và 1 hợp đồng nhỏ fix bug Spring Boot (review 5 sao). Tỉ lệ phản hồi tăng từ ~5% lên ~33%. Connects tiêu tốn giảm từ 300 xuống ~180.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi từng có profile Upwork liệt kê 15 công nghệ, mở đầu bằng 'Hello, my name is...', portfolio trống — kết quả 20 proposal chỉ 1 phản hồi. Tôi nhận ra khách không thuê 'người biết nhiều thứ', họ thuê 'người giải quyết đúng vấn đề họ gặp'. Tôi viết lại profile: chọn 1 ngách (Spring Boot backend + PostgreSQL performance), đổi title nói rõ giá trị, 2 dòng đầu overview nói vấn đề tôi giải quyết và bằng chứng số, tạo 2 case study theo cấu trúc Vấn đề → Hành động → Kết quả (ghi rõ số liệu giả định). Skills chỉ giữ nhóm backend. Sau cập nhật, 12 proposal mang lại 4 phản hồi, 2 phỏng vấn, 1 hợp đồng có review 5 sao. Bài học: profile không phải CV, là value proposition cho nhóm khách cụ thể. Người mới chưa có review dùng case study trung thực, repo có README, quy trình làm việc rõ thay thế."
+
 > Senior tip: profile không phải CV liệt kê tất cả những gì bạn biết — nó là một **đề xuất giá trị** (value proposition) cho một nhóm khách cụ thể. Với người mới chưa có review, bằng chứng thay thế là: case study trung thực, repo có README, mô tả quy trình làm việc rõ, và phản hồi nhanh/chuyên nghiệp. Khi bạn có 2–3 review tốt, hãy cập nhật lại profile để phản ánh đúng năng lực đã được chứng minh, thay vì giữ nguyên bản "xin cơ hội".`,
   follow: [
     'Nếu bạn chưa có dự án công ty nào được phép công khai (do NDA), bạn tạo portfolio case study như thế nào mà vẫn trung thực và an toàn?',
@@ -2935,6 +2990,27 @@ Bản nháp cải thiện cho B (ý tưởng):
 - [ ] Kết thúc bằng 1–2 câu hỏi làm rõ để mở hội thoại; đề xuất milestone điều tra nhỏ nếu scope chưa rõ.
 - [ ] Tự chấm proposal của bạn bằng rubric (đã đọc kỹ? kế hoạch? bằng chứng? câu hỏi?) trước khi gửi.
 
+### Ví dụ đời thực
+
+**Tình huống:** Bạn là dev Java 4 năm, gửi proposal cho job "Fix slow Spring Boot REST API endpoint (PostgreSQL)". Bạn soạn 3 phiên bản proposal để so sánh: A (copy-paste chung chung), B (có ý tốt nhưng thiếu cụ thể), C (giảm rủi ro, có kế hoạch và bằng chứng).
+
+**Triệu chứng:** Proposal A và B không nhận được phản hồi. Chỉ proposal C được client mời phỏng vấn.
+
+**Điều tra:** Bạn áp dụng rubric chấm điểm cho 3 bản: A đạt 0/12, B đạt 5/12, C đạt 12/12. Phân tích chi tiết: A không nhắc endpoint/stack, không có kế hoạch, xin "hire me" với giá rẻ. B nhắc Spring Boot/PostgreSQL nhưng chỉ nói chung "check code and database", không có bước cụ thể, không có bằng chứng, không có câu hỏi làm rõ. C nhắc đúng GET /api/orders, Spring Boot 3, JPA/Hibernate, PostgreSQL; nêu giả thuyết N+1/index/fetch quá nhiều; kế hoạch 3 bước (baseline p95/SQL log → root cause EXPLAIN/ANALYZE → fix + before/after + test); case study ẩn danh p95 1.8s → 140ms; câu hỏi làm rõ mapping quan hệ và điều kiện chậm; đề xuất milestone điều tra.
+
+**Nguyên nhân gốc:** Proposal A, B viết như CV (liệt kê kỹ năng) thay vì giải quyết vấn đề của khách. Thiếu giả thuyết + cách kiểm chứng, thiếu kế hoạch đo được, thiếu bằng chứng liên quan, thiếu câu hỏi mở hội thoại.
+
+**Cách xử lý:**
+1. **Áp dụng quy trình viết proposal chuẩn:** Mở đầu nhắc đúng endpoint/stack từ job post → nêu 1–2 giả thuyết + cách kiểm chứng → kế hoạch 2–4 bước có đầu ra đo được → 1 bằng chứng ẩn danh liên quan → 1–2 câu hỏi làm rõ → đề xuất milestone nhỏ nếu scope mơ hồ.
+2. **Tự chấm bằng rubric trước khi gửi:** 6 tiêu chí (đã đọc job, giả thuyết, kế hoạch, bằng chứng, câu hỏi, giọng điệu). Chỉ gửi khi ≥ 10/12.
+3. **Template proposal:** Chuẩn bị khung sẵn cho các loại job thường gặp (bug fix, feature, performance, migration) để viết nhanh nhưng vẫn đúng cấu trúc.
+
+**Kết quả đo được:** Sau áp dụng quy trình, bạn gửi 10 proposal cho job performance/bug fix Spring Boot trong 2 tuần: 7 được phản hồi, 4 phỏng vấn, 2 hợp đồng (1 fixed-price nhỏ, 1 hourly). Tỉ lệ phản hồi 70% (trước đó ~10%). Connects hiệu quả hơn đáng kể.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi viết proposal, tôi không đối đãi nó như CV. Tôi coi proposal là mini design doc cho bước đầu: mở đầu nhắc đúng endpoint/stack từ job post để client thấy tôi đã đọc kỹ, nêu 1–2 giả thuyết hợp lý (ví dụ N+1 query, missing index) nhưng nhấn mạnh 'xác nhận trước khi sửa', đưa kế hoạch 2–4 bước có đo baseline p95, dùng EXPLAIN/ANALYZE, so sánh trước/sau. Tôi luôn đính kèm 1 case study ẩn danh có số liệu (ghi rõ nếu giả định) và kết thúc bằng 1–2 câu hỏi làm rõ kỹ thuật để mở hội thoại. Với job mơ hồ, tôi đề xuất milestone điều tra nhỏ. Tôi tự chấm proposal bằng rubric 6 tiêu chí trước khi gửi — chỉ gửi khi ≥ 10/12. Cách này giúp tôi từ tỉ lệ phản hồi ~10% lên 70% cho job Spring Boot performance/bug fix."
+
 > Senior tip: proposal tốt là một **mini design doc cho bước đầu tiên**, không phải quảng cáo bản thân. Với job sửa lỗi hiệu năng, khách sợ hai thứ: (1) người làm đoán mò làm hỏng thêm, (2) tốn tiền mà không biết đã khá hơn chưa. Nếu bạn chứng minh được bạn sẽ đo baseline, tìm root cause có bằng chứng, và so sánh trước/sau, bạn đang bán "sự chắc chắn" — thứ đáng trả tiền hơn là "tôi code nhanh". (Phí dịch vụ, Connects và chi tiết gửi proposal thay đổi theo thời gian; kiểm tra trang Upwork tại thời điểm viết.)`,
   follow: [
     'Bạn sẽ chỉnh proposal C thế nào nếu client yêu cầu fixed-price ngay từ đầu và không muốn trả cho bước điều tra riêng?',
@@ -3032,6 +3108,32 @@ Job 4: (0,0,0,0)=0 → BỎ.  Job 5: (2,1,1,1)=5 → GỬI nếu có bằng ch�
 - [ ] Với job được chọn: viết proposal nhắc chi tiết job, nêu kế hoạch + rủi ro + câu hỏi làm rõ.
 - [ ] Ghi lại quyết định (gửi/bỏ/lý do) để học từ tỉ lệ phản hồi sau 2–4 tuần.
 
+### Ví dụ đời thực
+
+**Tình huống:** Bạn có 40 Connects, thấy 5 job Java backend mới đăng trên Upwork. Bạn áp dụng khung tính 4 tiêu chí để quyết định gửi/bỏ.
+
+**Triệu chứng:** Trước đây bạn gửi proposal cho mọi job trông "khá" hoặc "dễ", kết quả 20 proposal chỉ 1 phản hồi, Connects hao hụt nhanh mà không có hợp đồng.
+
+**Điều tra:** Bạn tạo bảng chấm điểm cho 5 job:
+- Job 1: "Fix N+1 query Spring Boot orders API" — client verified, hire rate 60%, scope rõ, staging có sẵn, ~8 proposals → (2,2,2,2)=8 điểm.
+- Job 2: "Build next Uber for pets" — client mới, scope mơ hồ khổng lồ, budget thấp, 45 proposals → (1,0,0,0)=1 điểm.
+- Job 3: "Add pagination + fix bug Spring Boot REST API" — client verified, scope rõ 2 việc, fixed-price nhỏ, 12 proposals → (2,2,1,1)=6 điểm.
+- Job 4: "Java developer ASAP" — chưa verified, scope mơ hồ, yêu cầu WhatsApp/Telegram → (0,0,0,0)=0 điểm.
+- Job 5: "Migrate SOAP to REST, need senior advice" — client tốt ($40k spent), scope trung bình, cần kinh nghiệm migration, 18 proposals → (2,1,1,1)=5 điểm.
+
+**Nguyên nhân gốc:** Bạn chưa có quy trình lọc job có hệ thống, gửi proposal dựa trên cảm tính thay vì dữ liệu. Connects bị "đốt" vào job kém chất lượng (Job 2, 4) và job vượt khả năng (Job 5 khi chưa có bằng chứng migration).
+
+**Cách xử lý:**
+1. **Áp dụng khung 4 tiêu chí:** Chỉ gửi khi ≥5–6 điểm. Job 1 (8 điểm) → GỬI ưu tiên cao. Job 3 (6 điểm) → GỬI có điều kiện (chốt scope chống creep). Job 5 (5 điểm) → GỬI chỉ khi có case study migration; nếu không thì BỎ, ưu tiên Job 1,3.
+2. **Ngân sách Connects hàng tuần:** Giới hạn 40–60 Connects/tuần. Tháng này gửi Job 1 (~10 Connects) và Job 3 (~8 Connects) = 18 Connects, giữ 22 Connects dự phòng.
+3. **Theo dõi kết quả:** Sau 4 tuần, Job 1 type (performance/bugfix, client verified, scope rõ) cho tỉ lệ phản hồi ~40%; Job 3 type (fixed-price nhỏ, scope chặt) cho ~25%; Job 2/4 type gần 0%.
+
+**Kết quả đo được:** Sau 1 tháng áp dụng, bạn gửi 8 proposal chất lượng (~24 Connects), nhận 3 phản hồi, 1 phỏng vấn, 1 hợp đồng nhỏ fix bug (review 5 sao). Tỉ lệ phản hồi tăng từ ~10% lên ~38%. Connects dùng hiệu quả, còn dư cho cơ hội tiếp theo. Bạn quyết định tập trung hoàn toàn vào 2 loại job: (a) fix performance/bug Spring Boot + PostgreSQL, (b) feature nhỏ fixed-price scope chặt.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi có Connects giới hạn, tôi không gửi proposal bừa. Tôi chấm điểm mỗi job theo 4 tiêu chí: client có đáng tin (verified, hire rate, review), scope đủ rõ để ước lượng, tôi có bằng chứng khớp trực tiếp, cạnh tranh/chi phí Connect chấp nhận được. Chỉ gửi khi ≥6/8 điểm. Với 40 Connects, tôi ngân sách 40–60 Connects/tuần, chỉ đầu tư vào tệp hẹp: Spring Boot performance/bugfix (client verified, staging có sẵn) và feature nhỏ fixed-price scope chặt. Tôi theo dõi tỉ lệ phản hồi theo loại job — loại nào về 0% sau 15 proposal tôi ngừng đầu tư Connects. Cách này giúp tôi từ tỉ lệ phản hồi ~10% lên ~38%, Connects dùng hiệu quả, vẫn còn dư cho cơ hội tốt."
+
 > Senior tip: Connects là chi phí đầu tư có thể đo được, không phải vé xổ số. Hãy quản lý nó như một **ngân sách thí nghiệm**: chọn tệp hẹp (Java/Spring Boot + PostgreSQL/performance/bugfix), gửi ít nhưng chất lượng, đo tỉ lệ xem → phản hồi → phỏng vấn → thắng. Khi dữ liệu cho thấy một kiểu job không bao giờ phản hồi, hãy ngừng "đốt" Connects vào đó, kể cả khi job trông hấp dẫn. (Các con số Connect/phí trong bài mang tính minh hoạ hoặc theo thời điểm viết; luôn kiểm tra trang Upwork.)`,
   follow: [
     'Bạn sẽ trả lời thế nào nếu job 4 nhắn riêng hối bạn liên hệ Telegram để "trao đổi nhanh"?',
@@ -3119,6 +3221,31 @@ Kiểm tra effective rate:
 - [ ] Tính rate tối thiểu = (gross cần) / (giờ billable); thêm đệm rủi ro 15–25%.
 - [ ] Theo dõi effective hourly rate hằng tuần (net / tổng giờ bỏ ra) để biết có đang "làm rẻ" không.
 - [ ] Đặt kế hoạch tăng rate theo mốc bằng chứng (review, case study, khách lặp lại).
+
+### Ví dụ đời thực
+
+**Tình huống:** Dev Java 4 năm ở Việt Nam (lương full-time 30 triệu VND/tháng) muốn chuyển sang freelance Upwork. Anh tính hourly rate cần đặt để đảm bảo thu nhập ròng tương đương.
+
+**Triệu chứng:** Ban đầu anh nghĩ "30 triệu / 160 giờ = ~187.500 VND/giờ ≈ 7.5 USD/giờ" và định đặt rate 8–10 USD/giờ. Nhưng sau khi tính chi tiết, anh nhận ra con số này bỏ sót non-billable, phí, thuế, bảo hiểm.
+
+**Điều tra:** Anh lập bảng tính theo 3 bước:
+- **Bước A (Mục tiêu net):** Lương 30tr + bảo hiểm y tế/dự phòng 3tr + thiết bị/học tập 2tr = 35tr VND/tháng ≈ 1.400 USD (tỷ giá 25.000).
+- **Bước B (Giờ billable thực tế):** 22 ngày × 8 giờ = 176 giờ/tháng. Trừ non-billable: proposal/phỏng vấn 12h, họp/chat 10h, học/sửa profile 8h, hành chính 6h, nghỉ/dự phòng 12h = 48h. Billable thực tế = 128 giờ/tháng (người mới có thể chỉ 60–100h).
+- **Bước C (Cộng ngược chi phí):** Net mục tiêu 1.400 USD + thuế/bảo hiểm ~10% (140 USD, giả định, hỏi chuyên gia) + phí rút tiền ~1% (15 USD) = cần nhận sau phí nền tảng 1.555 USD. Phí dịch vụ Upwork 10% → gross cần 1.555 / 0.9 = 1.728 USD. Rate tối thiểu = 1.728 / 128 = 13.5 USD/giờ. Rate nên đặt (làm tròn + đệm 15–25%): 16–20 USD/giờ.
+
+**Nguyên nhân gốc:** So sánh trực tiếp lương full-time với rate freelance bỏ qua 3 chênh lệch lớn: (1) Non-billable hours (gần 30% thời gian), (2) Chi phí vận hành (phí nền tảng, rút tiền, thuế, bảo hiểm tự đóng), (3) Rủi ro không có việc/tháng thấp.
+
+**Cách xử lý:**
+1. **Lập bảng tính riêng:** Dùng số thực tế của bản thân (chi phí sống, tỷ giá, tỷ lệ non-billable), không copy số mẫu.
+2. **Đặt rate sàn 16–20 USD/giờ** cho giai đoạn đầu, không bao giờ dưới 15 USD/giờ.
+3. **Theo dõi effective hourly rate hàng tuần:** Net thực nhận / tổng giờ bỏ ra. Nếu effective rate < 10 USD/giờ → điều chỉnh (tăng rate, giảm non-billable, hoặc đổi chiến lược tìm job).
+4. **Kế hoạch tăng rate:** Mốc 2–3 review tốt + case study có số liệu → tăng 20–25%. Mốc retainer/khách lặp lại → chuyển sang gói tháng ổn định hơn.
+
+**Kết quả đo được:** Anh đặt rate khởi điểm 18 USD/giờ. Tháng 1 billable 70h (người mới), net ~900 USD (thấp hơn mục tiêu nhưng trong kế hoạch). Tháng 3 billable 110h, net ~1.500 USD. Tháng 6 billable 130h, rate đã tăng 22 USD/giờ nhờ 3 review tốt + case study p95 1.8s→140ms, net ~2.000 USD. Effective hourly rate ổn định ~11–12 USD/giờ (so với ~7.5 USD/giờ nếu đặt rate 8 USD/giờ). Anh từ chối job 10 USD/giờ một cách bình tĩnh vì biết con số sàn của mình.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi không bao giờ lấy lương full-time chia 160 giờ để đặt rate freelance. Tôi lập bảng tính 3 bước: (A) Mục tiêu net/tháng = lương + phúc lợi tự mua + dự phòng thiết bị/học. (B) Giờ billable thực tế = tổng giờ làm - non-billable (proposal, họp, học, hành chính, nghỉ). Người mới thường chỉ 60–100h billable/tháng. (C) Cộng ngược: net + thuế/bảo hiểm (hỏi chuyên gia) + phí rút tiền + phí Upwork 10% = gross cần. Rate = gross / giờ billable + đệm 15–25%. Với số của tôi: mục tiêu 35tr VND ≈ 1.400 USD, billable 128h, gross ~1.728 USD → rate sàn 13.5 USD/giờ, đặt 16–20 USD/giờ. Tôi theo dõi effective hourly rate (net/tổng giờ) hàng tuần. Tháng 6 rate đã 22 USD/giờ nhờ 3 review + case study. Con số sàn giúp tôi từ chối job rẻ bình tĩnh."
 
 > Senior tip: hãy quản lý freelance như một doanh nghiệp một người (solo business). Rate niêm yết là giá bán; giờ billable là năng lực cung ứng; phí/thuế/bảo hiểm là chi phí vận hành. Nếu bạn không biết ba con số này, bạn đang "đoán giá" chứ không phải kinh doanh. Lập một bảng tính đơn giản và cập nhật mỗi tháng — nó sẽ giúp bạn từ chối job giá thấp một cách bình tĩnh, vì bạn biết con số sàn của mình dựa trên thực tế.`,
   follow: [
@@ -3228,8 +3355,31 @@ Milestones, acceptance criteria, and timeline will be confirmed in the contract 
 - [ ] Viết WBS (tách việc nhỏ), ước lượng giờ từng phần; cộng buffer 15–30% tuỳ độ mơ hồ.
 - [ ] Chia 3–5 milestone, mỗi mốc có đầu ra + tiêu chí nghiệm thu + tỷ lệ thanh toán.
 - [ ] Viết rõ Scope / Out of scope / Assumptions bằng tiếng Anh; xin khách xác nhận bằng tin nhắn/contract.
-- [ ] Kiểm tra cơ chế fixed-price/escrow/milestone trên Upwork (thay đổi theo thời gian; tại thời điểm viết phí DV 0–15%/hợp đồng, cố định khi bắt đầu).
+- [ ] Kiểm tra cơ chế fixed-price/escrow/milestone trên Upwork (thay đổi theo thời gian; tại thời điểm viết phí dịch vụ freelancer 10%/hợp đồng; kiểm tra lại).
 - [ ] Thống nhất quy trình change request: thay đổi ngoài scope → ước lượng lại → duyệt → mới làm.
+
+### Ví dụ đời thực
+
+**Tình huống:** Khách (startup du lịch Mỹ) yêu cầu "Build a REST API for a booking system" với ngân sách fixed-price. Bạn là dev Java backend 5 năm, nhận job qua Upwork. Yêu cầu ban đầu chỉ 1 câu, không có spec chi tiết.
+
+**Triệu chứng:** Nếu báo giá ngay dựa trên cảm tính, bạn dễ báo thấp (ôm cả thanh toán, email, frontend) hoặc báo cao mà không giải thích được cơ sở. Khi làm, khách liên tục thêm "chỉ thêm chút xíu: gửi email xác nhận, sync Google Calendar, admin dashboard" — scope leo thang khiến bạn làm 80 giờ cho giá 40 giờ.
+
+**Điều tra:** Bạn áp dụng quy trình workshop: (1) Làm rõ MVP qua kickoff call: chỉ 1 loại tài nguyên (phòng), đặt/huỷ/xem lịch trống, auth JWT cơ bản, KHÔNG thanh toán, KHÔNG frontend, KHÔNG multi-tenant. (2) Viết WBS: 9 hạng mục, ước lượng thô 38 giờ. (3) Cộng buffer 25% = 10 giờ → tổng 48 giờ. (4) Chia 4 milestone (M1: spec+khung 20%, M2: auth+CRUD tài nguyên 25%, M3: booking cốt lõi 35%, M4: hoàn thiện 20%). (5) Viết Scope/Out of scope/Assumptions tiếng Anh, gửi khách xác nhận bằng tin nhắn Upwork trước khi bắt đầu.
+
+**Nguyên nhân gốc:** Yêu cầu ban đầu quá mơ hồ ("booking system"); không có Out of scope để chặn kỳ vọng; không chia milestone nên rủi ro thanh toán và lệch hướng tập trung ở cuối dự án.
+
+**Cách xử lý:**
+1. **Kickoff call 30 phút:** Chốt MVP, rule trùng lịch, trạng thái booking, múi giờ, auth. Ghi nhận quyết định lên Upwork.
+2. **WBS + Buffer:** Tách 9 việc nhỏ, ước lượng từng cái, cộng 25% buffer vì yêu cầu ban đầu mơ hồ.
+3. **4 Milestone gắn nghiệm thu:** Mỗi mốc có đầu ra rõ, tiêu chí test, % thanh toán. Yêu cầu fund milestone trước khi làm.
+4. **Scope/Out of scope/Assumptions:** Viết tiếng Anh rõ ràng (xem phần 5), xin khách reply "confirmed" trên Upwork.
+5. **Change request process:** Khi khách yêu cầu thêm email/Calendar sau M2, bạn gửi change request: ước lượng 6 giờ, $120, cần duyệt trước khi làm. Khách đồng ý trả thêm cho email, bỏ Calendar.
+
+**Kết quả đo được:** Dự án hoàn thành trong ~50 giờ (gần ước lượng 48 giờ). Khách thanh toán đúng 4 milestone + 1 change request. Không tranh cãi scope. Bạn nhận review 5 sao: "Clear scope, great communication, delivered on time." Fixed-price an toàn nhờ biến mơ hồ thành quyết định rõ ràng trước khi code.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi khách yêu cầu fixed-price cho 'booking system' mà chỉ có 1 câu mô tả, tôi không báo giá ngay. Tôi chạy kickoff call 30 phút để chốt MVP: chỉ 1 loại tài nguyên, đặt/huỷ/xem lịch, JWT auth, không thanh toán/frontend. Sau đó tôi viết WBS 9 hạng mục, ước lượng thô 38 giờ, cộng buffer 25% = 48 giờ. Chia 4 milestone (spec, auth+CRUD, booking core, hoàn thiện) mỗi mốc có đầu ra, tiêu chí nghiệm thu, % thanh toán. Viết Scope/Out of scope/Assumptions tiếng Anh, xin khách confirm trên Upwork TRƯỚC KHI BẮT ĐẦU. Khi khách muốn thêm email/Calendar sau milestone 2, tôi gửi change request ước lượng riêng, duyệt mới làm. Kết quả: dự án ~50 giờ, đúng ước lượng, không tranh cãi, review 5 sao. Bài học: fixed-price an toàn không phải đoán đúng giờ, mà biến mơ hồ thành quyết định rõ trước khi code."
 
 > Senior tip: fixed-price an toàn không phải là "đoán đúng số giờ", mà là **biến dự án mơ hồ thành các quyết định rõ**. Nếu khách chưa trả lời được câu hỏi về rule trùng lịch, trạng thái booking hay múi giờ, hãy bán một milestone discovery/spec nhỏ trước. Trả vài trăm USD để chốt spec luôn rẻ hơn trả vài nghìn USD (hoặc mất review) vì xây sai thứ khách tưởng tượng.`,
   follow: [
