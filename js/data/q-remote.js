@@ -5963,7 +5963,40 @@ Cấu trúc giải thích 1 lỗi cho founder:
 - **Sửa ad-hoc từng chỗ**: thiếu AuthZ là vấn đề có hệ thống; cần quy ước middleware/kiểm tra quyền dùng chung.
 - **Quên rotate secret đã lộ**: xóa khỏi code thôi chưa đủ nếu secret đã nằm trong lịch sử commit hoặc đã bị lộ.
 
-> Senior tip: Với app AI, hãy tìm "đường tắt nguy hiểm" lặp lại: endpoint đọc theo ID không check owner, query ghép chuỗi, secret hard-code. Viết một checklist AuthZ/secret áp dụng cho mọi endpoint nhạy cảm — sửa có hệ thống rẻ và an toàn hơn sửa từng lỗi đơn lẻ.`,
+### 6. Mở rộng: Kiểm tra phụ thuộc & cấu hình (Supply chain)
+App AI thường kéo thư viện không kiểm tra: CVE trong {{package.json}}, base image Docker cũ, action GitHub Actions dùng version {{v1}} thay vì SHA. Thêm vào checklist: {{npm audit}}, {{trivy}} scan image, pin action bằng SHA, kiểm tra {{package-lock.json}} commit đầy đủ.
+
+### Ví dụ đời thực
+
+**Tình huống:** Bạn được founder của một startup fintech thuê audit bảo mật cho app Node.js/Express do AI code (Cursor + GPT-4) trong 6 tuần. App đã có 2.000 user thật, xử lý thanh toán qua Stripe, lưu dữ liệu ngân hàng cơ bản (số dư, lịch sử giao dịch). Team founder 2 dev junior, không có security engineer.
+
+**Triệu chứng:** Founder nhận được email cảnh báo từ GitGuardian rằng repo public (nhầm push) chứa Stripe secret key {{sk_live_...}}. Bạn clone repo, chạy {{grep -r "sk_live_" .}} và thấy 3 file {{.env.production}} bị commit, 1 file {{config/payments.js}} hard-code key. Bạn cũng thử {{curl /api/users/1/accounts}} không kèm token → trả 200 OK với dữ liệu user 1 (thiếu AuthN). Thử {{curl /api/users/2/accounts}} với token user 1 → vẫn trả dữ liệu user 2 (IDOR). Cuối cùng, endpoint {{/api/webhook/stripe}} không verify signature, nhận mọi payload — ai cũng có thể giả mạo webhook hoàn tiền.
+
+**Điều tra:** Bạn kiểm tra 4 nhóm lỗi + supply chain: (1) Secret: 4 file lộ secret production, lịch sử git chứa 12 commit có secret. (2) AuthZ: 12/15 endpoint nhạy cảm không có middleware kiểm tra quyền sở hữu. (3) IDOR: mọi endpoint {{/api/*/:id}} lấy {{:id}} từ params mà không so sánh với {{req.user.id}}. (4) Injection: 2 endpoint dùng template string ghép vào query Knex raw.
+~~~text
+knex.raw('SELECT * FROM orders WHERE user_id = \${userId}')
+~~~
+(5) Supply chain: 3 dependency có CVE high ({{lodash@4.17.20}}, {{axios@0.21.0}}), Docker base image {{node:16-alpine}} (EOL), GitHub Actions dùng {{actions/checkout@v1}} không pin SHA. Bạn ghi nhận bằng {{checklist-audit.md}} kèm file, dòng, severity, và CVE ID.
+
+**Nguyên nhân gốc:** Prompt cho AI chỉ nói "tạo CRUD cho user/account/transaction", không yêu cầu bảo mật; founder không review code bảo mật; CI không có secret scanning, không có test AuthZ, không có dependency scanning.
+
+**Cách xử lý:**
+1. **Rotate ngay (ngày 1)**: đổi Stripe key, DB password, JWT secret; xóa secret khỏi lịch sử git bằng {{git filter-repo --path .env.production --invert-paths}} (hoặc BFG Repo-Cleaner). Yêu cầu founder revoke key cũ trên dashboard Stripe.
+2. **Vá hệ thống (tuần 1)**: thêm middleware {{requireAuth}} (verify JWT), {{requireOwnership(resource)}} dùng cho mọi endpoint nhạy cảm; chuyển 2 query raw sang Knex parameterized.
+~~~text
+knex('orders').where({user_id: userId})
+~~~
+3. **Verify webhook (tuần 1)**: thêm {{stripe.webhooks.constructEvent(payload, sigHeader, endpointSecret)}} check signature, trả 400 nếu sai.
+4. **CI/CD & Supply chain (tuần 2)**: thêm {{gitleaks}} pre-commit hook + GitHub Action chạy {{gitleaks detect --source .}}; thêm {{npm audit}} + {{trivy fs .}} trong CI; pin tất cả GitHub Actions bằng SHA (ví dụ {{actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683}}); upgrade dependency có CVE.
+5. **Test bảo mật**: thêm test integration: 5 test AuthZ (user A không truy cập data B), 3 test IDOR, 2 test webhook verify, 1 test injection payload an toàn.
+
+**Kết quả đo được:** Sau 2 tuần fix, secret scanning pass (0 finding), 15/15 endpoint có AuthZ, IDOR test pass (0 leak), webhook verify pass, {{npm audit}} 0 high/critical, Docker image scan clean. Founder triển khai production với tự tin, không còn cảnh báo GitGuardian. Bạn bàn giao checklist bảo mật 1 trang cho team founder tự kiểm tra mỗi PR.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi audit bảo mật app do AI code, tôi không tin vào 'chạy được' mà kiểm tra theo 5 nhóm: secret lộ, thiếu AuthN/AuthZ, IDOR, injection, và supply chain. Tôi dùng checklist cố định: quét secret bằng gitleaks, gọi API không token và token user khác để thử IDOR, review code tìm query ghép chuỗi, chạy {{npm audit}} và {{trivy}} cho dependency. Với founder, tôi dịch kỹ thuật thành rủi ro tiền/dữ liệu: 'User A xem được dữ liệu User B — vi phạm quyền riêng tư, rủi ro bị kiện theo GDPR/PDPA' thay vì 'thiếu authorization'. Tôi luôn đề xuất fix có hệ thống (middleware chung, parameterized query) thay vì vá từng chỗ, và bắt buộc CI có secret scanning + dependency scanning. Quan trọng nhất là rotate ngay mọi secret đã lộ — xóa code không đủ vì secret đã ở lịch sử git và có thể đã bị kẻ xấu thu thập."
+
+> Senior tip: Với app AI, hãy tìm "đường tắt nguy hiểm" lặp lại: endpoint đọc theo ID không check owner, query ghép chuỗi, secret hard-code, dependency cũ có CVE. Viết một checklist AuthZ/secret/supply-chain áp dụng cho mọi endpoint nhạy cảm — sửa có hệ thống rẻ và an toàn hơn sửa từng lỗi đơn lẻ. Hãy nhớ: attacker chỉ cần tìm 1 lỗ hổng, defender phải chặn tất cả.`,
   follow: [
     'Làm sao phân biệt lỗi chỉ là "thiếu tính năng" với lỗi bảo mật IDOR trong cùng một endpoint?',
     'Bạn sẽ đề xuất quy trình ngắn để team founder không commit secret nữa (pre-commit, review, secret manager)?',
@@ -6018,12 +6051,38 @@ Hướng sửa: gộp truy vấn (join/batch theo cách ORM hỗ trợ) + thêm 
 | Hóa đơn dịch vụ AI tăng gấp 3 | Gọi AI mỗi lần gõ/refresh, không cache, prompt quá lớn | Số call, token/kích thước request (nếu có), log tần suất |
 | Server hết bộ nhớ/treo | Không giới hạn dữ liệu tải vào RAM, không timeout gọi ngoài | Metric RAM/CPU, kích thước response, request treo |
 
-### 5. Lỗi hay gặp
+### 5. Mở rộng: Chi phí ẩn & Capacity planning
+App AI thường bỏ sót: (1) **Egress cost** (chi phí xuất dữ liệu) — gọi API ngoài từ VPC khác region tốn tiền; (2) **Idle resource** — container/database chạy 24/7 mà traffic thấp; (3) **Log/metric volume** — debug log bật mức chi tiết trên production tốn chi phí CloudWatch/Datadog. Thêm vào checklist: xem báo cáo Cost Explorer theo service, bật Compute Savings Plan/RDS Reserved Instance nếu workload ổn định.
+
+### 6. Lỗi hay gặp
 - **Tối ưu mù**: sửa code phức tạp trước khi đo; có thể không đúng điểm nghẽn (bottleneck — chỗ chậm nhất).
 - **Hứa giảm chi phí "chắc chắn X%"**: chi phí phụ thuộc lưu lượng thật; hãy nói "ước tính dựa trên giả định..." và đo lại.
 - **Cache sai**: cache dữ liệu nhạy cảm theo user hoặc không phân biệt khóa cache có thể gây lộ dữ liệu — kiểm tra kỹ.
 
-> Senior tip: Hãy dùng "tam giác đo lường": (1) độ trễ (p95/p99), (2) số truy vấn/lần gọi ngoài mỗi request, (3) chi phí ước tính theo lưu lượng. Ba con số này đủ để ưu tiên fix có ROI (lợi ích/chi phí) cao nhất và thuyết phục founder bằng dữ liệu, không bằng cảm giác.`,
+### Ví dụ đời thực
+
+**Tình huống:** Bạn audit hiệu năng cho một app Node.js/Express do AI code (SaaS B2B, ~1.500 user, PostgreSQL trên AWS RDS db.t3.medium, gọi OpenAI API GPT-3.5-turbo cho feature tóm tắt văn bản). Founder phàn nàn: trang dashboard tải 4–6 giây, hóa đơn AWS tăng từ 120 USD/tháng lên 480 USD/tháng trong 3 tuần sau khi ra mắt. Team founder 2 dev junior, không có DevOps.
+
+**Triệu chứng:** Bạn bật {{pg_stat_statements}} và slow query log trên RDS staging (data giả lập 10k records). Chạy {{EXPLAIN ANALYZE}} cho query dashboard → thấy Seq Scan trên bảng {{events}} (2.5M rows) vì thiếu index {{user_id, created_at}}. Log aplikasi (Pino) cho thấy endpoint {{/dashboard}} gọi OpenAI API 3 lần/request (system prompt, user prompt, fallback) không cache, mỗi lần ~800 token. Metric CloudWatch: CPU RDS trung bình 78%, p95 latency {{/dashboard}} = 5.2s, OpenAI calls = 45k/ngày. Kiểm tra thêm: container Node chạy trên ECS Fargate 1 vCPU/2GB, memory limit 512MB, không có autoscaling; endpoint {{/api/events}} trả toàn bộ 50k rows không phân trang → OOM restart 3-4 lần/ngày.
+
+**Điều tra:** Bạn xác định 4 nguyên nhân chính: (1) Thiếu index composite → full table scan 2.5M rows mỗi request dashboard. (2) Gọi OpenAI lặp, không cache, prompt dài → chi phí ~0.012 USD/call × 45k = 540 USD/tháng (ước tính). (3) Không phân trang endpoint {{/api/events}} → trả toàn bộ 50k rows, gây OOM trên Node container. (4) ECS Fargate chạy 2 task liên tục 24/7 dù traffic ban đêm gần 0 — tốn ~70 USD/tháng không cần thiết.
+
+**Nguyên nhân gốc:** AI sinh code CRUD không có index, không cache API đắt, không phân trang, không có timeout/retry policy. Founder không có quy trình đo lường trước khi deploy, không setup autoscaling hay budget alert.
+
+**Cách xử lý:**
+1. **Index (ngày 1)**: {{CREATE INDEX CONCURRENTLY idx_events_user_created ON events(user_id, created_at DESC);}} — p95 {{/dashboard}} từ 5.2s xuống 420ms, CPU RDS xuống 45%.
+2. **Cache OpenAI (ngày 2-3)**: thêm Redis (ElastiCache t3.micro, ~15 USD/tháng), cache key = hash(prompt+user_id), TTL 24h. Lần 2 trở đi không gọi OpenAI. Calls giảm từ 45k/ngày xuống 3.2k/ngày (chỉ user mới + cache miss). Chi phí OpenAI ước tính từ 540 → 38 USD/tháng.
+3. **Phân trang (ngày 3)**: thêm {{limit=50&cursor=}} cho {{/api/events}}, FE render infinite scroll. RAM container giảm từ 480MB xuống 180MB, OOM restart = 0.
+4. **Autoscaling & Cost (ngày 4-5)**: setup ECS target tracking scaling policy (CPU > 60% scale out, < 30% scale in), tối thiểu 1 task ban đêm. Bật AWS Budgets alert ngưỡng 200 USD/tháng. Tắt debug log production, chỉ giữ error/warn.
+5. **Đo lại (ngày 7)**: p95 {{/dashboard}} = 380ms, hóa đơn OpenAI ước tính 38 USD/tháng, RDS CPU xuống 22%, ECS cost giảm ~40 USD/tháng. Tổng chi phí cloud ước tính giảm từ 480 → 180 USD/tháng.
+
+**Kết quả đo được:** Sau 1 tuần fix, founder thấy dashboard mượt, hóa đơn AWS tháng sau thực tế 195 USD (gần ước tính 180). Bạn bàn giao checklist "đo trước khi tối ưu" + runbook autoscaling 2 trang cho team founder tự vận hành.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi app chậm và tốn tiền, tôi không đoán mà đo theo tam giác: p95 latency, số query/gọi ngoài mỗi request, chi phí ước tính. Tôi bật slow query log, EXPLAIN ANALYZE, và log số lần gọi API đắt (như OpenAI) để có bằng chứng. Với founder, tôi dịch số liệu thành tiền: 'Mỗi request dashboard gọi OpenAI 3 lần, tốn 540 USD/tháng — thêm Redis cache giảm xuống 38 USD'. Tôi ưu tiên fix ROI cao nhất: index cho query chậm nhất, cache cho API đắt nhất, phân trang cho endpoint trả dữ liệu lớn, autoscaling cho resource nhàn rỗi. Quan trọng là đo lại sau fix và bàn giao quy trình 'đo → sửa → đo' cho team."
+
+> Senior tip: Hãy dùng "tam giác đo lường": (1) độ trễ (p95/p99), (2) số truy vấn/lần gọi ngoài mỗi request, (3) chi phí ước tính theo lưu lượng. Ba con số này đủ để ưu tiên fix có ROI (lợi ích/chi phí) cao nhất và thuyết phục founder bằng dữ liệu, không bằng cảm giác. Nhớ thêm: luôn kiểm tra egress cost, idle resource, log volume — ba "kẻ ăn tiền thầm lặng" hay bỏ sót.`,
   follow: [
     'Founder hỏi "cache hết cho nhanh". Bạn giải thích rủi ro cache sai (dữ liệu cũ, lộ dữ liệu) và chọn gì để cache trước?',
     'Làm sao ước tính hóa đơn API/AI tăng bao nhiêu khi user tăng từ 100 lên 10.000 mà không bịa số?',
@@ -6043,7 +6102,7 @@ Hướng sửa: gộp truy vấn (join/batch theo cách ORM hỗ trợ) + thêm 
 - **Migration** (di trú DB): script có phiên bản để tạo/sửa schema theo thời gian (ví dụ thêm cột, thêm index). Migration tốt chạy lặp lại an toàn trên các môi trường.
 - **Transaction** (giao dịch): nhóm thao tác DB phải **atomic** (nguyên tử — hoặc tất cả thành công, hoặc tất cả rollback/quay lui). Ví dụ: trừ kho và tạo đơn phải đi cùng nhau.
 - **Idempotency** (tính lũy đẳng): gọi lại cùng request (do mạng lỗi/retry) không gây trừ tiền hai lần hay tạo đơn trùng. Thường dùng idempotency key (khóa định danh request).
-- **Constraint** (ràng buộc): luật ở DB như UNIQUE (không trùng), NOT NULL (không rỗng), FOREIGN KEY (khóa ngoại, tham chiếu hợp lệ).
+- **Constraint** (ràng buộc): luật ở DB như UNIQUE (không trùng), NOT NULL (không rỗng), FOREIGN KEY (khóa ngoại, tham chiếu hợp lệ), CHECK (giá trị hợp lệ).
 
 ### 2. Checklist audit dữ liệu/kiến trúc
 ~~~text
@@ -6079,16 +6138,41 @@ Minh họa ý tưởng (SQL khái niệm, không gắn framework cụ thể):
 -- UPDATE inventory SET qty = qty - 1 WHERE sku = ? AND qty >= 1; (chỉ trừ khi đủ hàng)
 ~~~
 
-### 4. Trade-off khi sửa
+### 4. Mở rộng: Kỹ thuật xử lý race condition & distributed lock
+Khi scale ra nhiều instance, idempotency key ở DB vẫn hoạt động (UNIQUE constraint), nhưng có thể cần **distributed lock** (khóa phân tán — Redis SETNX/Redlock) cho các thao tác phức tạp hơn (ví dụ: trừ tiền ví, đặt chỗ). Nguyên tắc: lock tối thiểu, timeout ngắn (100-500ms), luôn release trong finally. Với AI-generated app, ưu tiên giải pháp đơn giản: UNIQUE constraint + idempotency key trước, mới cân nhắc lock phức tạp.
+
+### 5. Trade-off khi sửa
 - Thêm constraint/transaction có thể làm chậm nhẹ một số thao tác ghi, nhưng đổi lại dữ liệu đúng — với luồng tiền/đơn, thường **đúng quan trọng hơn nhanh**.
 - Refactor lớn schema trên production cần kế hoạch migration an toàn (backup, chạy thử, rollback plan). Với founder nhỏ, ưu tiên fix chặn lỗi trùng/âm trước.
 
-### 5. Lỗi hay gặp
+### 6. Lỗi hay gặp
 - Tin rằng "ORM tự lo transaction": cần kiểm tra ranh giới transaction thực tế trong code.
 - Chỉ validate ở frontend: client có thể gọi API trực tiếp; ràng buộc quan trọng phải có ở server/DB.
 - Không test kịch bản retry/mạng lỗi: đây là nơi bug toàn vẹn dữ liệu hay lộ ra.
 
-> Senior tip: Hãy khoanh vùng 2–3 luồng "không được sai" (tiền, quyền sở hữu dữ liệu, tồn kho/đặt chỗ) và audit chúng kỹ: idempotency + transaction + constraint DB. Một constraint UNIQUE đúng chỗ có thể ngăn hàng loạt sự cố dữ liệu mà code AI dễ bỏ quên.`,
+### Ví dụ đời thực
+
+**Tình huống:** Bạn audit toàn vẹn dữ liệu cho một app e-commerce Node.js/TypeScript + PostgreSQL do AI code (NestJS + Prisma). Founder báo: "đôi khi user bị trừ tiền 2 lần cho 1 đơn", và "số lượng tồn kho ra âm". App đã live 2 tháng, ~800 đơn/ngày, GMV ~50.000 USD/tháng. Team founder 2 dev junior, không có QA.
+
+**Triệu chứng:** Bạn kiểm tra log application (Pino, correlation ID) thấy pattern: request {{POST /orders}} cùng {{idempotency-key}} xuất hiện 2 lần trong 800ms (client retry do timeout 30s). DB query log: {{INSERT INTO orders}} chạy 2 lần, {{UPDATE inventory SET qty = qty - 1}} chạy 2 lần. Kiểm tra schema: bảng {{orders}} không có UNIQUE constraint trên {{idempotency_key}}; bảng {{inventory}} không có CHECK constraint {{qty >= 0}}. Code Prisma: {{createOrder}} không dùng {{$transaction}}, chỉ {{try/catch}} bọc 2 lệnh riêng lẻ. Bạn viết script kiểm tra data: {{SELECT idempotency_key, COUNT(*) FROM orders GROUP BY idempotency_key HAVING COUNT(*) > 1}} → 47 key trùng trong 30 ngày; {{SELECT * FROM inventory WHERE qty < 0}} → 12 SKU âm. Tổng tiền trùng ~2.300 USD, 12 SKU âm gây oversell thực tế 34 đơn.
+
+**Điều tra:** Bạn xác định 3 lỗi gốc: (1) Thiếu idempotency key enforcement ở DB (UNIQUE). (2) Transaction không atomic: trừ kho và tạo đơn tách biệt, lỗi giữa chừng để kho âm. (3) Error handling nuốt lỗi: catch block log rồi trả {{success: true}} mặc định. Founder không có test retry/race condition.
+
+**Nguyên nhân gốc:** AI sinh code theo pattern "happy path" — không thêm constraint DB, không bọc transaction, error handling template chỉ log không throw.
+
+**Cách xử lý:**
+1. **Data repair (ngày 1)**: chạy script idempotent: với 47 key trùng, giữ order đầu (created_at sớm nhất), hoàn tiền Stripe cho 46 đơn trùng (~2.300 USD); với 12 SKU âm, set về 0 và alert team operation đối soát, thông báo khách hàng đơn bị ảnh hưởng.
+2. **Schema fix (ngày 2)**: migration thêm {{UNIQUE (idempotency_key)}} trên {{orders}} (với {{WHERE deleted_at IS NULL}}); thêm {{CHECK (qty >= 0)}} trên {{inventory}}. Chạy migration trên staging trước, verify không lỗi.
+3. **Code fix (ngày 3-4)**: refactor {{createOrder}} dùng {{prisma.$transaction}} —atomic: check tồn → trừ kho (WHERE qty >= 1) → tạo order → return. Thêm middleware validate {{idempotency-key}} header, trả 409 nếu key đã tồn tại. Fix error handling: throw thay vì return success mặc định.
+4. **Test (ngày 5)**: thêm test integration: gọi {{POST /orders}} 10 lần song song cùng key → chỉ 1 order tạo được; test race: 50 request cùng SKU, qty=10 → đúng 10 success, 40 fail, qty không âm. Test error path: timeout giữa chừng → rollback đúng, không tạo order rác.
+
+**Kết quả đo được:** Sau deploy fix, 14 ngày quan sát: 0 đơn trùng, 0 SKU âm, p95 {{/orders}} tăng nhẹ 15ms (do transaction). Founder yên tâm mở rộng marketing. Bạn bàn giao checklist data integrity 1 trang cho team tự review mỗi PR.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi audit toàn vẹn dữ liệu app AI, tôi tập trung 3 luồng: tiền, quyền sở hữu, tồn kho. Tôi kiểm tra schema có UNIQUE/CHECK constraint không, code có dùng transaction atomic không, error handling có nuốt lỗi không. Tôi viết script quét data thực tế tìm bản ghi trùng và giá trị âm — bằng chứng số thuyết phục founder hơn lý thuyết. Fix phải có hệ thống: constraint ở DB làm hàng rào cuối, transaction atomic ở code, idempotency key bắt buộc. Tôi luôn thêm test race condition (gọi song song cùng key/SKU) để chắc chắn fix thực sự hoạt động. Quan trọng: không tin ORM tự lo transaction, phải kiểm tra ranh giới thực tế."
+
+> Senior tip: Hãy khoanh vùng 2–3 luồng "không được sai" (tiền, quyền sở hữu dữ liệu, tồn kho/đặt chỗ) và audit chúng kỹ: idempotency + transaction + constraint DB. Một constraint UNIQUE đúng chỗ có thể ngăn hàng loạt sự cố dữ liệu mà code AI dễ bỏ quên. Khi scale, hãy dùng Redis distributed lock cho thao tác phức tạp, nhưng luôn ưu tiên giải pháp đơn giản trước.`,
   follow: [
     'Khi nào bạn chọn enforce bằng constraint ở DB thay vì chỉ kiểm tra trong code ứng dụng?',
     'Bạn giải thích cho founder sự khác nhau giữa "lỗi hiển thị" và "lỗi toàn vẹn dữ liệu" để họ ưu tiên ngân sách?',
@@ -6108,6 +6192,7 @@ Minh họa ý tưởng (SQL khái niệm, không gắn framework cụ thể):
 - **Time-box** (hộp thời gian): giới hạn tổng giờ (ví dụ 12 giờ audit). Hết giờ → báo cáo phần đã làm + đề xuất tiếp.
 - **Milestone** (mốc bàn giao): phần việc có đầu ra và tiêu chí nghiệm thu rõ.
 - **SOW (Statement of Work)**: mô tả công việc/phạm vi/đầu ra/giả định — có thể là tài liệu ngắn đính kèm hợp đồng.
+- **Escrow** (tài khoản trung gian): tiền được giữ bởi bên thứ ba (Upwork, freelancer platform), chỉ giải ngân khi nghiệm thu xong — bảo vệ cả hai bên.
 
 ### 2. Gói dịch vụ gợi ý (minh hoạ)
 | Gói | Mục tiêu | Đầu ra | Cách tính phí (cơ chế) |
@@ -6143,13 +6228,38 @@ Mẫu ghi chú scope (tiếng Việt/Anh đều được, gửi kèm đề xuấ
 - Khách chịu trách nhiệm backup và quyền triển khai thay đổi lên production (trừ khi hợp đồng vận hành ghi khác).
 ~~~
 
-### 5. Lỗi hay gặp
+### 5. Mở rộng: Pricing model & Retainer strategy
+Ngoài fixed milestone, cân nhắc: (1) **Hourly với trần (cap)** — phù hợp khi scope mờ, set trần 1.5x ước tính; (2) **Retainer hàng tháng** — sau khi app ổn định, bán monitoring + patch + advisory (ví dụ 500–1.000 USD/tháng); (3) **Equity/risk-sharing** — chỉ khi rất tin vào founder, phần nhỏ (1–2%), không thay thế fee. Luôn có clause: "Fee không bao gồm chi phí hạ tầng/tài khoản bên thứ ba (AWS, Stripe, Redis...)."
+
+### 6. Lỗi hay gặp
 - **Báo giá một cục "fix app"**: app AI có nợ ẩn; bạn gần như chắc chắn lỗ thời gian.
 - **Không chốt quyền truy cập**: audit nửa vời rồi bị đổ lỗi.
 - **Làm free audit quá sâu**: cho bản tóm tắt ngắn; audit chi tiết là sản phẩm có giá trị.
 - **Cam kết "bảo mật tuyệt đối"**: không ai cam kết được; cam kết quy trình kiểm tra và giảm rủi ro theo ưu tiên.
 
-> Senior tip: Hãy định vị mình là "người lập bản đồ rủi ro và xử lý ưu tiên", không phải "người gánh toàn bộ nợ kỹ thuật do AI tạo ra". Cấu trúc Audit → Fix theo milestone giúp bạn được trả công xứng đáng, giúp founder kiểm soát ngân sách, và tạo cơ hội retainer (chăm sóc dài hạn) sau khi app ổn định.`,
+### Ví dụ đời thực
+
+**Tình huống:** Bạn là freelancer senior Java/Node.js, định vị ngách "cứu app do AI code" trên Upwork. Founder một startup health-tech (React + Node/Express + PostgreSQL, AI code 8 tuần) mời bạn audit + fix. App đã có 300 user beta, dữ liệu y tế nhạy cảm (HIPAA-related), founder lo bảo mật và chi phí cloud. Ngân sách founder ~5.000 USD, deadline 4 tuần trước demo investor.
+
+**Triệu chứng:** Founder gửi invite Upwork mô tả mơ hồ: "cần fix bug và bảo mật". Bạn trả lời bằng mẫu câu chốt scope, hỏi 6 câu hỏi chốt (user count, dữ liệu nhạy cảm, quyền truy cập, ưu tiên, stack, định nghĩa "xong"). Founder trả lời: 300 user, dữ liệu bệnh án, cho quyền read-only repo + staging log, ưu tiên bảo mật > chi phí > tốc độ, stack Node 20/Express/Postgres/Prisma, "xong" = code chạy production an toàn.
+
+**Điều tra:** Bạn đề xuất gói "Audit sâu (1 tuần part-time, fixed fee 1.200 USD)" + roadmap 3 milestone fix. Founder đồng ý, bạn ký hợp đồng Upwork fixed-price, milestone 1 (audit) fund 1.200 USD escrow. Bạn làm audit 10 giờ: quét secret (gitleaks), thử IDOR (2 tài khoản test), kiểm tra AuthZ (15 endpoint), slow query log, idempotency. Kết quả: 3 secret lộ, 8 IDOR, 5 endpoint thiếu AuthZ, 2 N+1, 0 idempotency. Bạn gửi báo cáo 1 trang + phụ lục, họp 20 phút trình bày top 5 rủi ro.
+
+**Nguyên nhân gốc:** Founder không rành kỹ thuật, AI code không có bảo mật, không có quy trình review. Scope mơ hồ ban đầu dễ dẫn tới ôm đồm.
+
+**Cách xử lý:**
+1. **Audit fixed-scope**: time-box 10h, deliverable rõ (báo cáo + roadmap), không bao gồm fix. Nghiệm thu M1: founder duyệt báo cáo, giải ngân escrow.
+2. **Fix milestone-based**: M1 (tuần 1, 800 USD escrow): rotate secret, vá AuthZ/IDOR, nghiệm thu checklist. M2 (tuần 2, 1.000 USD escrow): idempotency + transaction cho luồng đặt lịch khám, constraint DB. M3 (tuần 3, 700 USD escrow): index N+1, phân trang, timeout. Mỗi milestone fund escrow trước khi làm.
+3. **Change request**: founder yêu cầu thêm "thêm feature nhắc uống thuốc" ở giữa M2 → bạn gửi change request tách biệt, ước lượng 400 USD, founder duyệt milestone riêng (M2b).
+4. **Retainer chuyển đổi**: sau M3 xong, founder thấy giá trị, bạn đề xuất retainer 500 USD/tháng cho monitoring (Sentry, Logtail), security patch hàng tháng, advisory 2h/tháng. Founder ký 6 tháng.
+
+**Kết quả đo được:** Audit xong 5 ngày, founder duyệt M1 ngay. M1 hoàn thành 4 ngày, checklist pass, founder yêu cầu M2. Sau 3 tuần, 3 milestone xong, app deploy production, founder ký retainer 500 USD/tháng cho monitoring + patch. Bạn không ôm đồm, founder kiểm soát ngân sách. Tổng thu nhập: 1.200 + 800 + 1.000 + 700 + 400 (CR) + 3.000 (retainer 6 tháng) = 7.100 USD.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi nhận khách ngách cứu app AI, tôi không bán 'fix hết' — tôi bán 'giảm rủi ro có kiểm soát'. Tôi đóng gói 2 giai đoạn: Audit time-box (fixed fee, deliverable báo cáo + roadmap) và Fix theo milestone ưu tiên rủi ro cao. Trước khi ký, tôi chốt 6 câu hỏi: user count, dữ liệu nhạy cảm, quyền truy cập, ưu tiên, stack, định nghĩa 'xong'. Mỗi milestone có nghiệm thu rõ, escrow fund trước khi làm, ngoài scope = change request. Với founder health-tech, audit 1 tuần tìm ra 3 secret lộ, 8 IDOR, 5 thiếu AuthZ; fix 3 milestone 3 tuần, founder sau đó ký retainer monitoring. Cấu trúc này bảo vệ cả hai: tôi được trả công xứng đáng, founder kiểm soát ngân sách và rủi ro."
+
+> Senior tip: Hãy định vị mình là "người lập bản đồ rủi ro và xử lý ưu tiên", không phải "người gánh toàn bộ nợ kỹ thuật do AI tạo ra". Cấu trúc Audit → Fix theo milestone giúp bạn được trả công xứng đáng, giúp founder kiểm soát ngân sách, và tạo cơ hội retainer (chăm sóc dài hạn) sau khi app ổn định. Luôn dùng escrow — nó ép founder quyết định nhanh và bảo vệ bạn khi scope trôi.`,
   follow: [
     'Founder muốn "giá trọn gói rẻ, fix hết trong 3 ngày". Bạn phản hồi và neo lại kỳ vọng thế nào?',
     'Khi nào bạn chuyển từ fixed milestone sang retainer hàng tháng cho app này?',
@@ -6169,6 +6279,7 @@ Mẫu ghi chú scope (tiếng Việt/Anh đều được, gửi kèm đề xuấ
 - **Likelihood** (khả năng xảy ra): trong bối cảnh hiện tại, khả năng xảy ra cao hay thấp (ví dụ endpoint public + không auth = khả năng bị thử cao).
 - **Stakeholder** (bên liên quan): người ra quyết định/ngân sách — ở startup nhỏ thường là founder.
 - **Plain language** (ngôn ngữ dễ hiểu): giải thích không cần biết lập trình vẫn hiểu.
+- **Residual risk** (rủi ro còn lại): rủi ro vẫn tồn tại sau khi đã áp dụng biện pháp giảm thiểu — phải truyền đạt rõ cho founder.
 
 ### 2. Cấu trúc báo cáo 1 trang + phụ lục
 ~~~text
@@ -6197,7 +6308,14 @@ Mẫu ghi chú scope (tiếng Việt/Anh đều được, gửi kèm đề xuấ
 | "Truy vấn N+1 trên ORM." | "Trang tải chậm vì app hỏi database hàng chục lần cho mỗi lần mở; khi user tăng sẽ chậm rõ và tốn tài nguyên." |
 | "Hard-coded secret trong repo." | "Khóa truy cập dịch vụ đang nằm trong mã nguồn; nếu lộ, có thể phát sinh chi phí hoặc bị truy cập trái phép — cần đổi khóa ngay." |
 
-### 4. Kịch bản họp 20 phút
+### 4. Mở rộng: Ma trận risk communication (rủi ro → hành động)
+Dùng ma trận 2x2 để founder dễ quyết định:
+| | **Likelihood Cao** | **Likelihood Thấp** |
+|---|---|---|
+| **Severity Cao** | **Fix ngay (M1)** — IDOR, secret lộ, không AuthZ | **Fix sớm (M2)** — lỗ hổng cần điều kiện đặc biệt |
+| **Severity Thấp** | **Fix khi rảnh (M3)** — N+1, thiếu index, log noise | **Chấp nhận/risk register** — kỹ thuật debt nhỏ |
+
+### 5. Kịch bản họp 20 phút
 1. **2 phút**: mục tiêu audit và phạm vi đã làm.
 2. **8 phút**: top 3 rủi ro theo tác động, mỗi cái 1 ví dụ cụ thể.
 3. **5 phút**: milestone ưu tiên + ước lượng.
@@ -6210,13 +6328,36 @@ vì nó có thể ảnh hưởng [dữ liệu khách/chi phí]. Em đề xuất 
 rồi mới tới [M2/M3]. Em sẽ đi qua từng điểm và cần anh/chị quyết định ưu tiên ngân sách."
 ~~~
 
-### 5. Lỗi hay gặp
+### 6. Lỗi hay gặp
 - **Ném danh sách 30 lỗi ngang nhau**: founder tê liệt, không biết làm gì trước. Luôn có "top 3–5".
 - **Dùng từ ngữ phán xét** ("AI code ngu", "code rác") — làm mất hợp tác; tập trung vào rủi ro và cách sửa.
 - **Không nêu giới hạn audit**: founder tưởng bạn đã kiểm tra mọi thứ; phải nói rõ phạm vi.
 - **Không có bước tiếp theo**: báo cáo kết thúc bằng quyết định cụ thể (duyệt M1, cấp quyền, chọn thời điểm).
 
-> Senior tip: Hãy coi báo cáo như một công cụ ra quyết định, không phải bài thi kỹ thuật. Nếu founder hiểu "làm gì trước, vì sao, tốn bao nhiêu", bạn đã thành công — kể cả khi họ chọn hoãn một số hạng mục. Ghi lại quyết định đó bằng văn bản để tránh hiểu nhầm về rủi ro còn lại.`,
+### Ví dụ đời thực
+
+**Tình huống:** Bạn làm freelancer audit cho founder một startup ed-tech (Node/Express + PostgreSQL, AI code 6 tuần). App đã có 1.200 user học viên, founder non-technical (background marketing), ngân sách hạn hẹp, deadline ra mắt tính năng mới 2 tuần. Founder đang chuẩn bị demo investor tuần sau.
+
+**Triệu chứng:** Founder nhắn: "em audit xong cho anh biết app có an toàn không, anh cần ra mắt feature mới tuần sau". Bạn gửi báo cáo theo cấu trúc 1 trang + phụ lục, họp 20 phút (Zoom, record lại). Báo cáo: top 3 rủi ro — (1) IDOR: học viên A xem được bài làm của học viên B (severity cao, likelihood cao), (2) Secret Stripe test key lộ trong repo (severity trung bình, likelihood cao), (3) N+1 query trang danh sách khóa học (severity thấp, likelihood cao). Bạn dịch: "Học viên xem được điểm người khác → vi phạm quyền riêng tư, rủi ro pháp lý (GDPR/PDPA), investor sẽ hỏi" thay vì "thiếu authorization".
+
+**Điều tra:** Founder ban đầu muốn bỏ qua IDOR để kịp deadline. Bạn trình bày: "Nếu ra mắt với lỗi này, 1 học viên phát hiện → đăng mạng xã hội → uy tín sập, có thể bị kiện, investor rút vốn. Fix IDOR ước tính 4 giờ (thêm middleware ownership check + test). Nếu hoãn, rủi ro lớn hơn chi phí fix." Bạn vẽ ma trận risk communication trên whiteboard Zoom, founder thấy IDOR ở ô "Severity Cao + Likelihood Cao = Fix ngay". Bạn ghi nhận quyết định bằng văn bản trên Upwork: "Founder chấp nhận fix IDOR + secret trước (M1, 6h), hoãn N+1 (M3). Residual risk: N+1 chưa fix, sẽ xử lý sau demo investor."
+
+**Nguyên nhân gốc:** Founder áp lực deadline, không hiểu tác động kinh doanh của lỗi kỹ thuật. Báo cáo kỹ thuật thuần túy khiến founder hoảng loạn hoặc bỏ qua.
+
+**Cách xử lý:**
+1. **Báo cáo 1 trang**: executive summary 5 dòng, bảng finding 3 hàng (ID, tác động tiền/khách/pháp lý, mức độ, hành động, ước lượng), milestone M1/M2/M3, ma trận risk communication.
+2. **Họp 20 phút**: 2 phút bối cảnh, 8 phút top 3 rủi ro kèm ví dụ cụ thể (demo IDOR 30 giây trên staging), 5 phút milestone + ước lượng, 5 phút xin quyết định + ghi nhận residual risk.
+3. **Dịch ngôn ngữ**: "Thiếu authorization" → "Học viên A xem được bài làm B — vi phạm quyền riêng tư, rủi ro kiện, investor sẽ hỏi". "Hard-coded secret" → "Key Stripe lộ trong code — ai thấy code đều dùng được tiền test, rủi ro bị ban tài khoản, investor check repo sẽ thấy".
+4. **Ghi nhận quyết định**: founder đồng ý fix IDOR + secret trước (M1, 6h), hoãn N+1 (M3). Bạn gửi tin nhắn Upwork xác nhận: "Theo cuộc họp, M1 fix IDOR + rotate secret, ước tính 6h, bắt đầu hôm nay. M3 N+1 hoãn sau ra mắt. Residual risk: N+1 chưa fix, theo dõi p95."
+5. **Follow-up**: sau M1 xong, gửi báo cáo ngắn: "M1 done, IDOR test pass, secret rotated. Residual risk N+1: p95 trang khóa học 1.2s (ngưỡng 1s), sẽ fix tuần sau."
+
+**Kết quả đo được:** M1 xong 5 giờ, deploy staging, founder test IDOR pass, secret rotated. Ra mắt feature mới đúng hạn, 0 sự cố bảo mật. Founder sau đó nhờ bạn retainer monitoring hàng tháng. Bạn chuyển residual risk N+1 sang M3, fix trong 2 tuần sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi trình bày audit cho founder non-technical, tôi không ném danh sách lỗi. Tôi dùng báo cáo 1 trang: executive summary, bảng finding 3–5 hàng dịch kỹ thuật thành tác động tiền/khách/pháp lý, milestone ưu tiên, và ma trận risk communication 2x2. Họp 20 phút: demo lỗi thật 30 giây (IDOR: tài khoản A xem data B), nói 'nếu ra mắt như này, 1 user phát hiện → uy tín sập, investor rút vốn', đưa ra fix + ước lượng giờ. Tôi xin quyết định bằng văn bản: 'M1 fix IDOR + secret 6h, bắt đầu hôm nay; M3 N+1 hoãn'. Cách này founder hiểu rủi ro, chấp nhận ưu tiên, không hoảng loạn. Quan trọng: luôn có top 3, luôn có bước tiếp theo cụ thể, luôn ghi nhận residual risk."
+
+> Senior tip: Hãy coi báo cáo như một công cụ ra quyết định, không phải bài thi kỹ thuật. Nếu founder hiểu "làm gì trước, vì sao, tốn bao nhiêu", bạn đã thành công — kể cả khi họ chọn hoãn một số hạng mục. Ghi lại quyết định đó bằng văn bản để tránh hiểu nhầm về rủi ro còn lại. Dùng ma trận 2x2 (Severity x Likelihood) để founder tự đặt finding vào ô đúng — họ sẽ tự quyết định fix ngay hay hoãn.`,
   follow: [
     'Founder muốn bỏ qua lỗi bảo mật cao để ưu tiên tính năng mới ra mắt tuần sau. Bạn phản hồi và lưu vết quyết định thế nào?',
     'Bạn theo dõi tiến độ fix sau audit ra sao để đảm bảo vấn đề đã được xử lý thật, không chỉ "đánh dấu xong"?',
@@ -6237,6 +6378,7 @@ rồi mới tới [M2/M3]. Em sẽ đi qua từng điểm và cần anh/chị qu
 - **Technical debt** (nợ kỹ thuật): chi phí tương lai phát sinh vì chọn giải pháp nhanh/bỏ qua chất lượng hôm nay.
 - **CI (Continuous Integration)**: quy trình tự động build/chạy test khi có commit/merge để phát hiện lỗi sớm. (Công cụ cụ thể: GitHub Actions, GitLab CI... tùy dự án.)
 - **Observability/monitoring** (giám sát): thu thập log, metric (số liệu như lỗi/độ trễ), cảnh báo để biết hệ thống đang thế nào.
+- **Strangler Fig Pattern** (mẫu Strangler Fig): thay thế dần các phần của hệ thống cũ bằng hệ thống mới, route traffic từng chút — giảm rủi ro rewrite.
 
 ### 2. Ma trận quyết định (khung tham chiếu)
 | Tiêu chí | Nghiêng về Refactor dần | Nghiêng về cân nhắc Rewrite (có điều kiện) |
@@ -6261,7 +6403,10 @@ Câu hỏi chốt với founder (giả định):
 3. **Refactor theo mô-đun**: tách ranh giới rõ (ví dụ tách lớp truy cập DB, tách xử lý thanh toán) từng phần.
 4. **Đo sau mỗi bước**: p95, lỗi, chi phí; không gộp thay đổi khổng lồ một lần.
 
-### 4. Bàn giao và phòng ngừa lặp lại
+### 4. Mở rộng: Khi nào dừng refactor, chuyển sang rewrite module (Strangler Fig)
+Đặt ngưỡng cụ thể (exit criteria): (1) **Time-to-fix > 3x estimate** cho 2 sprint liên tiếp; (2) **Bug regression rate > 30%** sau mỗi refactor; (3) **Cyclomatic complexity > 50** cho module core sau khi đã tách; (4) **Onboarding time > 2 tuần** cho dev mới hiểu module. Khi chạm ngưỡng → đề xuất Strangler Fig: xây module mới song song, route traffic dần, tắt module cũ. Không bao giờ rewrite toàn bộ cùng lúc.
+
+### 5. Bàn giao và phòng ngừa lặp lại
 ~~~text
 Hàng rào tối thiểu (bất kể stack):
 - Test tự động: ít nhất test cho luồng tiền/đăng nhập/dữ liệu quan trọng; chạy được bằng 1 lệnh.
@@ -6271,15 +6416,37 @@ Hàng rào tối thiểu (bất kể stack):
 - Runbook ngắn: cách deploy/rollback, liên hệ khi sự cố, checklist phát hành.
 ~~~
 
-### 5. Ví dụ tư vấn (giả định)
+### 6. Ví dụ tư vấn (giả định)
 "App có 2 lỗi bảo mật cao và vài truy vấn chậm, nhưng luồng đặt hàng đúng nghiệp vụ. Em đề xuất **refactor dần**: 2 tuần đầu vá bảo mật/toàn vẹn dữ liệu, thêm test luồng đặt hàng, rồi tối ưu hiệu năng. **Rewrite toàn bộ** lúc này rủi ro trễ ra mắt và bỏ sót tính năng; chỉ cân nhắc rewrite một mô-đun cụ thể nếu mô-đun đó không thể kiểm chứng."
 
-### 6. Lỗi hay gặp
+### 7. Lỗi hay gặp
 - **Rewrite vì "ghét code"**: cảm xúc không phải tiêu chí kỹ thuật; rewrite cần spec và ngân sách thật.
 - **Refactor mãi không có mốc**: phải gắn milestone + tiêu chí nghiệm thu.
 - **Không có test/CI sau khi sửa**: 3 tháng sau AI/code mới lại tái tạo nợ kỹ thuật.
 
-> Senior tip: Với sản phẩm nhỏ, câu trả lời an toàn nhất thường là "ổn định rủi ro cao ngay, refactor có ưu tiên, và chỉ rewrite phần thực sự không cứu được — sau khi có test và số liệu". Hãy giúp founder tối ưu **xác suất sống sót của sản phẩm** (bảo mật, dữ liệu đúng, chi phí kiểm soát), không phải sự hoàn hảo của kiến trúc.`,
+### Ví dụ đời thực
+
+**Tình huống:** Bạn là lead backend consultant, founder một startup logistics (Node/TypeScript + PostgreSQL, AI code 10 tuần) hỏi: "refactor hay rewrite?" App đã live 3 tháng, 500 user, xử lý 200 đơn/ngày, team founder 2 dev junior. Founder lo: codebase rối, test coverage 0%, deploy thủ công, từng có sự cố đơn trùng và shipment sai địa chỉ. Ngân sách 4.000 USD, deadline 6 tuần trước peak season (Tết).
+
+**Triệu chứng:** Bạn review codebase 2 ngày: (1) Kiến trúc: tất cả logic trong route handler, không tách service/repository. (2) Test: 0% coverage, không có CI. (3) Deploy: {{ssh}} vào server chạy {{pm2 restart}}. (4) Bug: 2 incident production/tháng (đơn trùng do thiếu idempotency, shipment sai do validation yếu). (5) Tech debt: 15 file >500 dòng, circular dependency 3 chỗ. Founder từng nghe lời dev khác bảo "nên rewrite toàn bộ Next.js + NestJS".
+
+**Điều tra:** Bạn áp dụng ma trận quyết định: Rủi ro bảo mật/dữ liệu = trung bình (có thể vá), Hiểu nghiệp vụ = rõ (luồng đặt hàng/shipment ổn định), Khả năng kiểm thử = thấp (phụ thuộc chặt, khó test), Thời gian = gấp (6 tuần), Đội ngũ = 2 dev junior. Kết quả: nghiêng mạnh về **refactor dần có kiểm soát**, không rewrite toàn bộ. Bạn nói với founder: "Rewrite 6 tuần không xong, rủi ro bỏ sót logic shipment phức tạp. Refactor có kiểm soát: 2 tuần vá rủi ro, 2 tuần test, 2 tuần tách service — đảm bảo không ngừng vận hành."
+
+**Nguyên nhân gốc:** AI code sinh nhanh, không có quy trình engineering (test, CI, review, deploy). Founder chưa đầu tư "hàng rào" từ đầu.
+
+**Cách xử lý:**
+1. **M1 (tuần 1–2, ổn định)**: vá rủi ro cao — thêm idempotency key cho {{/orders}}, validation shipment, rotate secret, setup GitHub Actions CI (lint + typecheck + test), deploy tự động qua GitHub Actions → Render/Railway. Chi phí: ~800 USD.
+2. **M2 (tuần 2–3, test lưới an toàn)**: viết test integration cho 3 luồng quan trọng (đặt hàng, cập nhật shipment, thanh toán) — coverage từ 0% lên 45%. Test chạy qua {{npm test}} 1 lệnh. Dùng {{supertest}} + {{jest}}, mock Prisma client. Chi phí: ~1.200 USD.
+3. **M3 (tuần 3–5, refactor mô-đun)**: tách {{OrderService}}, {{ShipmentService}}, {{PaymentService}} ra khỏi route; mỗi PR <300 dòng, CI pass mới merge. Đo p95, error rate sau mỗi PR. Áp dụng Strangler Fig cho module {{ShipmentService}} phức tạp nhất: viết mới, route 10% traffic → 50% → 100%. Chi phí: ~1.500 USD.
+4. **M4 (tuần 5–6, bàn giao)**: setup monitoring (Sentry error tracking, Logtail logs, p95 alert >1s), viết runbook 2 trang (deploy, rollback, incident contact, release checklist), workshop 2h cho 2 dev junior (hands-on: cách chạy test, cách deploy, cách đọc Sentry). Chi phí: ~500 USD.
+
+**Kết quả đo được:** Sau 6 tuần: 0 incident production (trước 2/tháng), test coverage 52%, deploy tự động 100%, p95 {{/orders}} 320ms → 180ms. Founder team tự deploy, tự fix bug, không gọi bạn khẩn cấp. Bạn chuyển sang retainer 300 USD/tháng code review + architecture advisory. Founder không rewrite, tiết kiệm ~20.000 USD so với dự án rewrite full.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi founder hỏi refactor hay rewrite, tôi không chọn theo cảm xúc mà dùng ma trận 5 tiêu chí: rủi ro bảo mật/dữ liệu, hiểu nghiệp vụ, khả năng kiểm thử, thời gian/ngân sách, đội ngũ. Với startup logistics: rủi ro vá được, nghiệp vụ rõ, test coverage 0% (khó test), deadline 6 tuần, team 2 dev junior → tôi chọn refactor dần có kiểm soát. Kế hoạch: M1 vá rủi ro cao + setup CI/CD tự động, M2 viết test 3 luồng quan trọng làm lưới an toàn, M3 refactor tách service từng PR nhỏ có CI gate, áp dụng Strangler Fig cho module phức tạp nhất, M4 bàn giao monitoring + runbook + workshop cho team. Kết quả: 0 incident, coverage 52%, deploy auto, team tự vận hành. Rewrite chỉ cân nhắc khi nền tảng hỏng sâu đến mức sửa dần đắt hơn — hiếm khi xảy ra với startup nhỏ. Tôi luôn đặt exit criteria rõ: time-to-fix > 3x estimate 2 sprint liên tiếp, bug regression > 30%, complexity > 50."
+
+> Senior tip: Với sản phẩm nhỏ, câu trả lời an toàn nhất thường là "ổn định rủi ro cao ngay, refactor có ưu tiên, và chỉ rewrite phần thực sự không cứu được — sau khi có test và số liệu". Hãy giúp founder tối ưu **xác suất sống sót của sản phẩm** (bảo mật, dữ liệu đúng, chi phí kiểm soát), không phải sự hoàn hảo của kiến trúc. Luôn có exit criteria cho refactor — không thì refactor mãi không xong.`,
   follow: [
     'Bạn đề xuất tiêu chí "dừng refactor, chuyển sang rewrite một mô-đun" cụ thể (ngưỡng thời gian/lỗi) như thế nào?',
     'Làm sao thêm test vào app AI-generated đang khó test (phụ thuộc chặt) mà không rewrite toàn bộ?',
