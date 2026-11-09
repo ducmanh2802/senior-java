@@ -34,14 +34,71 @@ Lưu timestamp của từng request được nhận trong cửa sổ. Khi thời
 | Sliding log | Không vượt limit trong mọi cửa sổ | O(request/window) | Gần như chính xác |
 | Fixed window | Có thể dồn ở ranh giới | O(1)/key | Cao ở ranh giới |
 
+### Cơ chế từng bước: Token bucket thực thi như thế nào
+Để hiểu rõ VÌ SAO token bucket lại cho phép burst nhưng vẫn giới hạn tốc độ trung bình, hãy đi lần lượt từng bước thực thi khi một request đến:
+
+**Bước 1: Tính elapsed time**
+- Lấy thời điểm hiện tại {{nowMillis}} trừ thời điểm lần trước cập nhật bucket {{lastRefillMillis}}.
+- Nếu kết quả âm (clock lùi do NTP hoặc test giả), coi elapsed = 0. Điều này ngăn token được "mint" thêm khi thời gian bị đảo ngược.
+- {{lastRefillMillis}} được cập nhật đơn điệu: luôn lấy max của giá trị cũ và {{nowMillis}}.
+
+**Bước 2: Nạp token theo tỷ lệ refill**
+- Token mới = {{elapsedMs * refillRate / 1000.0}} (vì rate thường tính theo token/giây, còn elapsed tính milliseconds).
+- Token hiện tại = {{Math.min(capacity, currentTokens + newTokens)}}. Hàm {{Math.min}} quan trọng: nó đảm bảo bucket không bao giờ đầy hơn capacity, ngay khi hệ thống idle rất lâu.
+- Đây là lý do burst **có giới hạn**: chỉ có thể tích lũy tối đa {{capacity}} token.
+
+**Bước 3: Quyết định cho phép hay từ chối**
+- Nếu {{currentTokens >= 1}}: trừ 1 token, trả về true (cho phép).
+- Ngược lại: trả về false (từ chối, HTTP 429). Token **không** bị trừ khi từ chối.
+
+**Ví dụ số**: Capacity=10, Rate=5 token/giây. Bucket mới tạo đầy 10 token. Client gửi 10 request liên tiếp → hết token. Dừng 200 ms → nạp thêm 1 token. Gửi 1 request → cho phép, còn 0 token. Dùng 1 giây → nạp 5 token, bucket có 5 token.
+
+~~~java
+class TokenBucket {
+    private final int capacity;
+    private final double rate;       // token per second
+    private double tokens;
+    private long lastRefillMs;
+    TokenBucket(int cap, double rate, long now) {
+        this.capacity = cap; this.rate = rate;
+        this.tokens = cap; this.lastRefillMs = now;
+    }
+    boolean allow(long now) {
+        long elapsed = Math.max(0, now - lastRefillMs);
+        lastRefillMs = Math.max(lastRefillMs, now);
+        tokens = Math.min(capacity, tokens + elapsed * rate / 1000.0);
+        if (tokens < 1.0) return false;
+        tokens -= 1.0; return true;
+    }
+}
+~~~
+
+### Sliding window log: từng bước
+**Bước 1**: Xoá các timestamp cũ hơn {{now - windowMs}} khỏi danh sách (cleanup).
+**Bước 2**: Nếu {{list.size() < limit}}: thêm {{now}} vào danh sách, cho phép.
+**Bước 3**: Ngược lại: từ chối. Danh sách không đổi.
+Độ phức tạp: cleanup O(n) trong trường hợp xấu, nhưng amortized O(1) nếu cleanup đều đặn.
+
 ### Cài đặt trong ứng dụng
 Trong một JVM đơn, đồng bộ hoá bucket hoặc dùng cấu trúc đồng thời đúng cách. Với Redis, ghép đọc trạng thái, tính token và ghi thành một script nguyên tử; TTL dọn key không hoạt động. Định nghĩa rõ khi Redis lỗi: fail-open tăng rủi ro quá tải, fail-closed làm mất availability. Bucket4j cung cấp nhiều backend và cấu hình refill; Redis/Gateway phù hợp khi quota cần chia sẻ. Cần metric cho allowed, rejected, số key và độ trễ backend, nhưng tránh gắn user id vào metric label gây cardinality bùng nổ.
+
+### Lỗi hay gặp trên production
+1. **Dùng wall clock thay vì monotonic clock**: Khi NTP chỉnh giờ lùi, {{System.currentTimeMillis()}} giảm, elapsed âm khiến bucket nạp token sai (hoặc nạp rất nhiều nếu code không clamp). Dùng {{System.nanoTime()}} hoặc truyền clock vào để test.
+2. **Quên clamp token ở capacity**: Nếu chỉ làm {{tokens += elapsed * rate}} mà không {{Math.min(capacity, ...)}}, idle lâu sẽ tạo burst khổng lồ vượt quota thiết kế.
+3. **Key theo IP phía sau proxy/load balancer**: Không xác thực {{X-Forwarded-For}} hoặc {{Forwarded}} header khiến nhiều client cùng IP chia sẻ quota, hoặc attacker spoof IP. Cần trust proxy config và validate header.
+4. **Nhiều replica giữ bucket cục bộ**: Mỗi instance có bucket riêng → tổng quota thực tế = quota × số replica. Phải dùng Redis shared state với Lua script atomic, hoặc chia quota tĩnh cho từng replica.
+5. **Token cost không phân biệt endpoint**: Health check nhẹ và upload 1 GB cùng tốn 1 token. Nên gán weight theo endpoint (bytes, CPU cost) và trừ {{cost}} token thay vì luôn 1.
 
 ### Pitfall vận hành
 Token cost có thể khác nhau theo endpoint; nếu limiter chỉ tính request thì upload 1 GB ngang một health check. Key theo IP phía sau proxy sai nếu không xác thực header proxy tin cậy. Nhiều replica với cấu hình refill giống nhau không tạo ra quota toàn cụm nếu mỗi replica giữ bucket riêng. Khi đổi capacity/rate, cần biết state cũ được migrate hay reset. Trả 429 nên có Retry-After phù hợp, nhưng client vẫn phải có jitter để tránh cả đám retry cùng lúc.
 
 ### Liên hệ phỏng vấn
-Nêu trước scope của quota và semantics khi vượt giới hạn; sau đó chọn bucket nếu cần burst có kiểm soát, sliding log nếu yêu cầu chính xác theo cửa sổ. Bài tập dưới đây dùng đồng hồ giả truyền vào, vì vậy test tại biên thời gian không flaky và không cần sleep.`, {
+Nêu trước scope của quota và semantics khi vượt giới hạn; sau đó chọn bucket nếu cần burst có kiểm soát, sliding log nếu yêu cầu chính xác theo cửa sổ. Bài tập dưới đây dùng đồng hồ giả truyền vào, vì vậy test tại biên thời gian không flaky và không cần sleep.
+
+**Câu hỏi thường gặp thêm:**
+- *Vì sao sliding window log tốn nhiều bộ nhớ hơn token bucket?* Vì phải lưu timestamp từng request, trong khi token bucket chỉ lưu 2 số (tokens, lastRefill).
+- *Làm sao xử lý clock drift trong distributed rate limiter?* Dùng centralized store (Redis) làm nguồn thời gian chân lý, hoặc đồng hồ logic (Hybrid Logical Clock). Trên client chỉ gửi request, không tự tính token.
+- *Fail-open hay fail-closed khi Redis down?* Tùy SLO: payment service chọn fail-closed (an toàn), search API chọn fail-open (khả dụng). Luôn có circuit breaker bao rate limiter call Redis.`, {
       title: 'Cài token bucket với đồng hồ giả',
       prompt: `Cài {{TokenBucket(capacity, refillPerSecond, nowMillis)}}. {{allow(nowMillis)}} nạp token theo thời gian đã trôi qua, chặn ở capacity, rồi tiêu thụ một token nếu đủ. Thời gian không được lùi; nếu now nhỏ hơn mốc trước thì coi elapsed là 0 và không làm mốc lùi.`,
       starter: `class TokenBucket {
@@ -86,6 +143,8 @@ Nêu trước scope của quota và semantics khi vượt giới hạn; sau đó
     }, [
       { q: 'Vì sao token bucket cho burst?', options: ['Token tích luỹ tới capacity khi không có request', 'Nó lưu toàn bộ timestamp', 'Mỗi instance tự đồng bộ Redis', 'Vì refill không có giới hạn'], answer: 0, explain: `Đúng: idle tích lũy token hữu hạn tới capacity. Sliding log lưu timestamp (không phải token); Redis không tự xuất hiện; refill bị chặn bởi capacity nên không vô hạn.` },
       { q: 'Muốn quota dùng chung giữa nhiều replica, điều gì quan trọng nhất?', options: ['Dùng static field', 'Dùng state chia sẻ và cập nhật nguyên tử', 'Tăng limit trên mỗi replica', 'Dùng wall clock cho chính xác'], answer: 1, explain: `State cục bộ nhân quota theo số replica. Shared store cần thao tác atomic để tránh hai request cùng đọc một token cuối. Static chỉ chia sẻ trong một JVM; tăng limit làm sai quota; wall clock không giải quyết đồng bộ.` },
+      { q: 'Dùng {{System.currentTimeMillis()}} làm clock cho token bucket nguy hiểm vì sao?', options: ['Nó chậm hơn {{nanoTime()}}', 'NTP có thể chỉnh giờ lùi/tiến làm elapsed âm hoặc nhảy vọt', 'Nó không có độ phân giải milliseconds', 'Nó không thread-safe'], answer: 1, explain: `Wall clock bị NTP điều chỉnh: có thể lùi (elapsed âm → mint token sai) hoặc tiến nhảy (elapsed lớn → nạp token quá nhiều). Monotonic clock ({{nanoTime()}}) chỉ tăng, không bao giờ lùi, an toàn cho đo thời lượng.` },
+      { q: 'Sliding window log so với token bucket: điểm yếu chính là gì?', options: ['Không giới hạn burst được', 'Bộ nhớ O(requests trong window) trên mỗi key', 'Không hỗ trợ rate khác nhau theo endpoint', 'Không thể dùng với Redis'], answer: 1, explain: `Sliding log phải lưu timestamp từng request → bộ nhớ tăng tuyến tính với traffic. Token bucket chỉ O(1) state (tokens, lastRefill). Cả hai đều hỗ trợ rate khác nhau và dùng được Redis.` },
     ], ['rate-limiter', 'token-bucket', 'sliding-window']),
 
     lesson('002', 2, 'Cache eviction: LRU và LFU', 'mid', [
@@ -117,14 +176,92 @@ LFU loại key có tần suất thấp nhất. Một HashMap key→node cùng c�
 | LFU | popularity ổn định | stale frequency, nhiều state |
 | TTL | dữ liệu hết hạn theo nghiệp vụ | không tự chọn nạn nhân khi đầy |
 
+### Cơ chế từng bước: LRU (LinkedHashMap) thực thi như thế nào
+Để hiểu VÌ SAO {{LinkedHashMap}} access-order đạt O(1) cho get/put/evict, hãy đi lần lượt từng bước:
+
+**Bước 1: Cấu trúc dữ liệu kép**
+- Bên trong: một mảng bucket (như {{HashMap}}) lưu {{Node<K,V>}} — mỗi node trỏ {{next}} (trong bucket) VÀ {{before}}, {{after}} (trong danh sách đôi toàn cục).
+- {{head}} và {{tail}} là sentinel: {{head.after}} là entry cũ nhất (LRU), {{tail.before}} là entry mới nhất (MRU).
+
+**Bước 2: {{get(key)}} — đọc VÀ sửa cấu trúc**
+- Tìm bucket bằng hash, duyệt node trong bucket so {{equals}} → tìm thấy node.
+- **Quan trọng**: {{accessOrder=true}} nghĩa là **get cũng là mutation**. Node được unlink khỏi vị trí cũ ({{node.before.after = node.after; node.after.before = node.before}}) rồi chèn ngay trước {{tail}} ({{node.before = tail.before; node.after = tail; tail.before.after = node; tail.before = node}}).
+- Trả về {{node.value}}. Toàn bộ O(1).
+
+**Bước 3: {{put(key, value)}} — thêm hoặc cập nhật**
+- Nếu key đã có: cập nhật value, rồi làm như get (unlink + chèn trước tail).
+- Nếu key mới: tạo node, chèn vào bucket (head của linked list trong bucket), **và** chèn vào danh sách đôi toàn cục trước tail.
+- Gọi {{removeEldestEntry(eldest)}} — nếu trả true (khi {{size() > capacity}}), unlink {{head.after}} khỏi cả bucket list và danh sách đôi.
+
+**Tóm tắt**: Map lo tìm node O(1), danh sách đôi lo giữ thứ tự O(1). Hai cấu trúc **chia sẻ cùng một node object** nên cập nhật một chỗ đủ cho cả hai.
+
+~~~java
+// Mini LRU skeleton (core ideas only)
+class LruCache<K,V> {
+    static class Node<K,V> { K key; V value; Node<K,V> prev, next; }
+    private final int cap;
+    private final Map<K, Node<K,V>> map = new HashMap<>();
+    private final Node<K,V> head = new Node<>(), tail = new Node<>();
+    LruCache(int cap) { this.cap = cap; head.next = tail; tail.prev = head; }
+    V get(K key) {
+        Node<K,V> n = map.get(key); if (n == null) return null;
+        unlink(n); attachToTail(n); return n.value;
+    }
+    void put(K key, V value) {
+        Node<K,V> n = map.get(key);
+        if (n != null) { n.value = value; unlink(n); attachToTail(n); return; }
+        n = new Node<>(); n.key = key; n.value = value;
+        map.put(key, n); attachToTail(n);
+        if (map.size() > cap) { Node<K,V> lru = head.next; unlink(lru); map.remove(lru.key); }
+    }
+    private void unlink(Node<K,V> n) { n.prev.next = n.next; n.next.prev = n.prev; }
+    private void attachToTail(Node<K,V> n) { n.prev = tail.prev; n.next = tail; tail.prev.next = n; tail.prev = n; }
+}
+~~~
+
+### Cơ chế từng bước: LFU thực thi như thế nào
+LFU mở rộng ý tưởng bằng **nhiều danh sách đôi theo tần suất**:
+
+**Bước 1: Cấu trúc**
+- {{keyNodeMap}}: {{key → Node}} (node lưu key, value, freq).
+- {{freqMap}}: {{freq → DoublyLinkedList<Node>}} — mỗi tần suất một list LRU.
+- {{minFreq}}: tần suất nhỏ nhất hiện có (để evict O(1)).
+
+**Bước 2: {{get(key)}}**
+- Tìm node trong {{keyNodeMap}}.
+- Unlink node khỏi list tần suất cũ {{freqMap.get(freq)}}.
+- Nếu list cũ rỗng **và** {{freq == minFreq}} → {{minFreq++}}.
+- Tăng {{node.freq++}}, chèn node vào đầu list {{freqMap.get(newFreq)}} (MRU của tần suất mới).
+- Trả về value.
+
+**Bước 3: {{put(key, value)}}**
+- Nếu key có: cập nhật value, gọi get(key) để tăng freq (reuse logic).
+- Nếu key mới: nếu đã đầy → evict {{freqMap.get(minFreq).tail.prev}} (LRU trong bucket minFreq), xoá khỏi {{keyNodeMap}}.
+- Tạo node mới freq=1, chèn vào {{freqMap.get(1)}}, {{minFreq = 1}}, thêm vào {{keyNodeMap}}.
+
+**Tie-break**: Khi nhiều key cùng freq thấp nhất, evict LRU **trong bucket đó** — công bằng vì key cũ hơn được ưu tiên xoá.
+
 ### Chọn giải pháp production
 Cache cục bộ như Caffeine thường tốt hơn tự cài vì có eviction, statistics, concurrency và admission policy. Redis phù hợp cache chia sẻ nhưng thêm network hop và vận hành; TTL không đảm bảo invalidation tức thời. Spring Cache abstraction thống nhất annotation nhưng semantics phụ thuộc provider. Với cache-aside, đọc miss rồi load nguồn; đồng thời nhiều miss có thể tạo stampede, cần request coalescing, lock có giới hạn hoặc refresh-ahead. Không cache exception hay dữ liệu phân quyền sai key.
+
+### Lỗi hay gặp trên production
+1. **Quên {{synchronized}} khi dùng LinkedHashMap access-order trong đa luồng**: get() thay đổi cấu trúc nội bộ (di chuyển node), nên đọc đồng thời không an toàn. Dùng {{Collections.synchronizedMap}} (chậm khi tranh chấp) hoặc Caffeine (W-TinyLFU, lock-free reads).
+2. **LFU không có aging/decay**: Key hot hôm qua (freq=1000) giữ chỗ mãi dù hôm nay không truy cập, đẩy key thực sự hot ra khỏi cache. Cần decay định kỳ (chia freq cho 2 theo chu kỳ) hoặc sliding window frequency.
+3. **Cache stampede (thundering herd)**: Nhiều request cùng miss một key hot → cùng load DB → sập DB. Giải pháp: request coalescing (chỉ 1 thread load, các thread khác chờ), probabilistic early expiration, hoặc refresh-ahead.
+4. **Dùng capacity theo số entry mà value to**: 10k entry × 100KB = 1GB heap → OOM. Phải dùng weight-based eviction (Caffeine: {{weigher}}, {{maximumWeight}}).
+5. **Cache invalidation mất message**: Gửi event xoá cache qua Kafka, consumer down → cache stale vĩnh viễn. Phải có TTL làm hàng rào thứ 2, hoặc versioning (key kèm version, invalidation = bump version).
+6. **Null value nghĩa là miss hay value hợp lệ?**: {{get}} trả null ambiguos. Dùng {{Optional}} hoặc sentinel object riêng, hoặc split {{containsKey}} + {{get}} (nhưng race condition trong đa luồng).
 
 ### Pitfall và đo lường
 Hit rate cao vẫn có thể che latency p99 tệ nếu miss tới database chậm. Theo dõi hit/miss, eviction, load latency, size, và chi phí memory; tránh cardinality label theo key. Object lớn khiến capacity theo số entry gây OOM, nên giới hạn cân theo weight. Cache invalidation qua event có thể mất message; cần TTL hoặc versioning làm hàng rào. LRU access-order làm get thành mutation, nên đọc đồng thời vẫn cần đồng bộ.
 
 ### Liên hệ phỏng vấn
-Giải thích vì sao LRU dùng map cộng list để giữ O(1), rồi hỏi workload có temporal locality không. Nếu cache nhiều node, thảo luận local vs shared, invalidation, stampede và consistency trước khi nói thuật toán.`, {
+Giải thích vì sao LRU dùng map cộng list để giữ O(1), rồi hỏi workload có temporal locality không. Nếu cache nhiều node, thảo luận local vs shared, invalidation, stampede và consistency trước khi nói thuật toán.
+
+**Câu hỏi thường gặp thêm:**
+- *Vì sao LFU phức tạp hơn LRU mà vẫn dùng?* Với workload popularity ổn định (top-k item truy cập lặp lại), LFU hit rate cao hơn LRU vì không bị scan lớn đẩy hot set.
+- *Làm sao xử lý cold start cho LFU?* Key mới freq=1, vào bucket 1. Nếu bucket 1 đầy mà minFreq=1, key mới vừa add có thể bị evict ngay. Caffeine dùng admission policy (W-TinyLFU filter) chặn key kém hot vào cache.
+- *Cache local vs distributed (Redis) khi nào chọn cái nào?* Local: latency sub-ms, phù hợp read-heavy, data nhỏ, tolerate staleness. Distributed: shared state, larger data, consistency quan trọng, chấp nhận network hop.`, {
       title: 'Cài LRU O(1) bằng HashMap và danh sách đôi',
       prompt: `Cài {{LruCache}} có capacity dương, {{get}} trả null nếu thiếu và làm mới recency; {{put}} cập nhật hoặc thêm, loại phần tử ít được dùng gần đây nhất khi đầy.`,
       starter: `class LruCache {
@@ -160,6 +297,8 @@ Giải thích vì sao LRU dùng map cộng list để giữ O(1), rồi hỏi wo
     }, [
       { q: 'get trong LinkedHashMap access-order có phải thao tác chỉ đọc?', options: ['Có, thứ tự không thay đổi', 'Không, nó thay đổi recency của entry', 'Chỉ thay đổi khi map đầy', 'Nó luôn xoá entry'], answer: 1, explain: `Với accessOrder=true, get chuyển entry vừa đọc về cuối danh sách, tức là sửa cấu trúc bên trong. Vì vậy nhiều thread chỉ "đọc" vẫn cần đồng bộ. "Thứ tự không đổi" là hành vi của insertion-order (mặc định). Việc dịch chuyển xảy ra ở mọi lần get chứ không chỉ khi map đầy; và get không bao giờ xoá entry (xoá là việc của removeEldestEntry sau put).` },
       { q: 'Trong LFU, khi nhiều key cùng tần suất thấp nhất thì tie-break phổ biến nào?', options: ['Loại key mới được thêm gần nhất', 'Loại key có hash nhỏ nhất', 'Loại key ít được dùng gần đây nhất (LRU) trong bucket tần suất thấp nhất', 'Không cần tie-break, chọn ngẫu nhiên là đủ'], answer: 2, explain: `Mỗi bucket tần suất là một danh sách theo recency, nên lấy phần tử đầu (LRU) của bucket minFreq vừa xác định, vừa O(1). Loại key mới nhất là sai hướng: key mới luôn có tần suất 1, loại nó ngay khiến key mới không bao giờ có cơ hội ở lại. Hash không phản ánh độ hữu ích. Chọn ngẫu nhiên làm kết quả không xác định, khó test và khó giải thích.` },
+      { q: 'Tại sao LFU cần aging/decay tần suất trong hệ thống chạy lâu?', options: ['Để giảm bộ nhớ dùng bởi freqMap', 'Key hot hôm qua có thể giữ chỗ mãi dù hôm nay không còn truy cập', 'Để tie-break LRU hoạt động đúng', 'Giúp minFreq tăng nhanh hơn'], answer: 1, explain: `Nếu không decay, key từng rất hot (freq cao) sẽ không bao giờ bị evict, chiếm chỗ key thực sự hot hiện tại. Decay (chia freq cho 2 theo chu kỳ) hoặc sliding window frequency cho phép cache thích ứng với pattern truy cập thay đổi.` },
+      { q: 'Cache stampede là gì và cách giảm thiểu phổ biến?', options: ['Nhiều thread cùng ghi cache gây deadlock; dùng synchronized', 'Nhiều request cùng miss key hot → cùng load DB; dùng request coalescing', 'Cache đầy gây evict liên tục; tăng capacity', 'LFU freq overflow; dùng LongAdder'], answer: 1, explain: `Stampede: key hot hết hạn/miss, hàng nghìn request cùng load DB → sập DB. Request coalescing: chỉ 1 thread load, các thread khác chờ (future/promise) hoặc trả stale data trong lúc refresh. Probabilistic early expiration và refresh-ahead cũng giúp.` },
     ], ['cache', 'lru', 'lfu']),
 
     lesson('003', 3, 'Consistent hashing và virtual nodes', 'senior', [
