@@ -185,7 +185,7 @@ public class Main {
             Arrays.fill(salt, (byte) 7);
             String saltHex = HexFormat.of().formatHex(salt);
             String old = "pbkdf2$1000$" + saltHex + "$" + jdkHash("pw-cu", salt, 1000);
-            if (!PasswordHasher.verify("pw-cu", old)) throw new AssertionError("hash cu 1000 vong phai verify duoc");
+            if (!PasswordHasher.verify("pw-cu", old)) throw new AssertionError("hash cũ 1000 vòng phải verify được");
             String[] p = parts(old);
             if (PasswordHasher.verify("pw-cu", p[0] + "$999$" + p[2] + "$" + p[3])) throw new AssertionError("sua so vong ma verify true");
             if (PasswordHasher.verify("pw-cu", p[0] + "$0$" + p[2] + "$" + p[3])) throw new AssertionError("0 vong ma verify true");
@@ -194,7 +194,7 @@ public class Main {
             if (PasswordHasher.verify("pw-cu", "sha1$1000$" + p[2] + "$" + p[3])) throw new AssertionError("sai thuat toan ma verify true");
         });
         check("verify fails cleanly on malformed storage", () -> {
-            if (PasswordHasher.verify("x", "khong-phai-dinh-dang")) throw new AssertionError("chuoi rac ma verify true");
+            if (PasswordHasher.verify("x", "khong-phai-dinh-dang")) throw new AssertionError("chuỗi rác mà verify true");
             if (PasswordHasher.verify("x", "pbkdf2$6000$zz$yy")) throw new AssertionError("hex rac ma verify true");
             if (PasswordHasher.verify("x", "pbkdf2$6000$aa")) throw new AssertionError("thieu phan ma verify true");
             if (PasswordHasher.verify("x", null)) throw new AssertionError("null ma verify true");
@@ -224,7 +224,7 @@ final class PasswordHasher {
 
     static String create(String password) {
         byte[] salt = new byte[SALT_BYTES];
-        new SecureRandom().nextBytes(salt);                      // muoi rieng cho moi user
+        new SecureRandom().nextBytes(salt);                      // muối riêng cho mỗi user
         return "pbkdf2$" + ITERATIONS + "$" + HexFormat.of().formatHex(salt) + "$" + hash(password, salt);
     }
 
@@ -238,9 +238,9 @@ final class PasswordHasher {
             SecretKeyFactory kf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
             return HexFormat.of().formatHex(kf.generateSecret(spec).getEncoded());
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("PBKDF2WithHmacSHA256 khong co trong JVM nay", e);
+            throw new IllegalStateException("PBKDF2WithHmacSHA256 không có trong JVM này", e);
         } finally {
-            spec.clearPassword();                                // xoa ban sao mat khau trong spec
+            spec.clearPassword();                                // xoá bản sao mật khẩu trong spec
         }
     }
 
@@ -249,11 +249,11 @@ final class PasswordHasher {
         int a = stored.indexOf('$');
         int b = a < 0 ? -1 : stored.indexOf('$', a + 1);
         int c = b < 0 ? -1 : stored.indexOf('$', b + 1);
-        if (a < 0 || b < 0 || c < 0 || stored.indexOf('$', c + 1) >= 0) return false;   // dung 4 phan
+        if (a < 0 || b < 0 || c < 0 || stored.indexOf('$', c + 1) >= 0) return false;   // đúng 4 phần
         if (!"pbkdf2".equals(stored.substring(0, a))) return false;
         try {
-            int iterations = Integer.parseInt(stored.substring(a + 1, b));             // so vong DA LUU
-            if (iterations < 1 || iterations > 10_000_000) return false;               // chong ban ghi bi sua
+            int iterations = Integer.parseInt(stored.substring(a + 1, b));             // số vòng ĐÃ LƯU
+            if (iterations < 1 || iterations > 10_000_000) return false;               // chống bản ghi bị sửa
             byte[] salt = HexFormat.of().parseHex(stored.substring(b + 1, c));
             byte[] expected = HexFormat.of().parseHex(stored.substring(c + 1));
             if (salt.length == 0 || expected.length == 0) return false;
@@ -464,7 +464,7 @@ public class Main {
         check("token expires exactly at exp", () -> {
             String t = Jwt.sign("u", "k", 1000);
             if (!Jwt.verify(t, "k", 999)) throw new AssertionError("con han ma verify false");
-            if (Jwt.verify(t, "k", 1000)) throw new AssertionError("now bang exp phai het han");
+            if (Jwt.verify(t, "k", 1000)) throw new AssertionError("now bằng exp phải hết hạn");
             if (Jwt.verify(t, "k", 1001)) throw new AssertionError("het han ma verify true");
         });
         check("tampered payload breaks the signature", () -> {
@@ -476,7 +476,7 @@ public class Main {
         check("malformed tokens are rejected", () -> {
             if (Jwt.verify(null, "k", 0)) throw new AssertionError("null phai false");
             if (Jwt.verify("", "k", 0)) throw new AssertionError("empty phai false");
-            if (Jwt.verify("onlyonesegment", "k", 0)) throw new AssertionError("khong dau cham phai false");
+            if (Jwt.verify("onlyonesegment", "k", 0)) throw new AssertionError("không dấu chấm phải false");
             if (Jwt.verify("a.b", "k", 0)) throw new AssertionError("2 phan phai false");
             if (Jwt.verify("a.b.c.d", "k", 0)) throw new AssertionError("4 phan phai false");
             if (Jwt.verify("..", "k", 0)) throw new AssertionError("phan rong phai false");
@@ -487,7 +487,7 @@ public class Main {
             if (!Jwt.verify(t, "k", 1)) throw new AssertionError("token moi phai hop le");
         });
         check("subject returns null on malformed input", () -> {
-            eq(null, Jwt.subject("khong-phai-token"));
+            eq(null, Jwt.subject("không-phải-token"));
             eq(null, Jwt.subject(null));
         });
         System.out.println("RESULT " + passed + "/" + total);
@@ -514,14 +514,14 @@ final class Jwt {
         if (token == null) return false;
         int p1 = token.indexOf('.');
         int p2 = p1 <= 0 ? -1 : token.indexOf('.', p1 + 1);
-        if (p2 <= p1 + 1 || token.indexOf('.', p2 + 1) >= 0) return false;   // dung 3 phan
+        if (p2 <= p1 + 1 || token.indexOf('.', p2 + 1) >= 0) return false;   // đúng 3 phần
         byte[] given = decode(token.substring(p2 + 1));
         if (given == null) return false;
         if (!MessageDigest.isEqual(hmac(token.substring(0, p2), secret), given)) return false;
         byte[] payloadBytes = decode(token.substring(p1 + 1, p2));
         if (payloadBytes == null) return false;
         long exp = claim(new String(payloadBytes, StandardCharsets.UTF_8), "exp");
-        return exp >= 0 && nowSeconds < exp;                       // RFC 7519: now phai nho hon exp
+        return exp >= 0 && nowSeconds < exp;                       // RFC 7519: now phải nhỏ hơn exp
     }
 
     static String subject(String token) {
@@ -535,7 +535,7 @@ final class Jwt {
         String key = Q + "sub" + Q + ":";
         int i = payload.indexOf(key);
         if (i < 0) return null;
-        int start = i + key.length() + 1;                          // bo dau " mo cua gia tri
+        int start = i + key.length() + 1;                          // bỏ dấu " mở của giá trị
         int end = payload.indexOf(Q, start);
         return end < 0 ? null : payload.substring(start, end);
     }
@@ -651,7 +651,7 @@ final class RequestSigner {
             if (RequestSigner.verify("POST", "/v1/transfer", 1000, "amount=999", "k", sig, 1000, 300)) throw new AssertionError("body bi sua ma van qua");
         });
         check("garbage or missing signature is rejected", () -> {
-            if (RequestSigner.verify("GET", "/me", 1000, "", "k", "khong-phai-base64!!", 1000, 300)) throw new AssertionError("chuoi rac ma van qua");
+            if (RequestSigner.verify("GET", "/me", 1000, "", "k", "khong-phai-base64!!", 1000, 300)) throw new AssertionError("chuỗi rác mà vẫn qua");
             if (RequestSigner.verify("GET", "/me", 1000, "", "k", null, 1000, 300)) throw new AssertionError("null ma van qua");
         });
         check("signature is base64url without padding", () -> {
@@ -870,13 +870,13 @@ Chỉ dùng JDK, không dùng thời gian thật.`,
         check("full bucket allows exactly capacity requests", () -> {
             TokenBucket b = new TokenBucket(5, 1000, 0);
             eq(5, drain(b, 0, 6));
-            if (b.tryAcquire(0)) throw new AssertionError("lan thu 6 phai bi chan");
+            if (b.tryAcquire(0)) throw new AssertionError("lần thứ 6 phải bị chặn");
         });
         check("refills at the configured rate", () -> {
-            TokenBucket b = new TokenBucket(5, 1000, 0);      // 1 token moi ms
+            TokenBucket b = new TokenBucket(5, 1000, 0);      // 1 token mỗi ms
             drain(b, 0, 5);
-            if (b.tryAcquire(0)) throw new AssertionError("chua du thoi gian ma van qua");
-            eq(3, drain(b, 3, 5));                            // 3 ms sau co dung 3 token
+            if (b.tryAcquire(0)) throw new AssertionError("chưa đủ thời gian mà vẫn qua");
+            eq(3, drain(b, 3, 5));                            // 3 ms sau có đúng 3 token
         });
         check("refill is capped at capacity", () -> {
             TokenBucket b = new TokenBucket(5, 1000, 0);
@@ -920,11 +920,11 @@ Chỉ dùng JDK, không dùng thời gian thật.`,
     private long lastRefillMs;
 
     TokenBucket(long capacity, long tokensPerSecond, long nowMs) {
-        if (capacity < 1) throw new IllegalArgumentException("capacity phai >= 1");
-        if (tokensPerSecond < 1) throw new IllegalArgumentException("tokensPerSecond phai >= 1");
+        if (capacity < 1) throw new IllegalArgumentException("capacity phải >= 1");
+        if (tokensPerSecond < 1) throw new IllegalArgumentException("tokensPerSecond phải >= 1");
         this.capacity = capacity;
         this.refillPerMs = tokensPerSecond / 1000.0;
-        this.tokens = capacity;                 // khoi tao day
+        this.tokens = capacity;                 // khởi tạo đầy
         this.lastRefillMs = nowMs;
     }
 
@@ -933,9 +933,9 @@ Chỉ dùng JDK, không dùng thời gian thật.`,
     }
 
     boolean tryAcquire(long nowMs, int permits) {
-        if (permits < 1) throw new IllegalArgumentException("permits phai >= 1");
+        if (permits < 1) throw new IllegalArgumentException("permits phải >= 1");
         refill(nowMs);
-        if (permits > capacity) return false;    // khong bao gio du
+        if (permits > capacity) return false;    // không bao giờ đủ
         if (tokens >= permits) {
             tokens -= permits;
             return true;
@@ -955,7 +955,7 @@ Chỉ dùng JDK, không dùng thời gian thật.`,
     }
 
     private void refill(long nowMs) {
-        if (nowMs <= lastRefillMs) return;       // dong ho lu: khong in them token
+        if (nowMs <= lastRefillMs) return;       // đồng hồ lùi: không in thêm token
         tokens = Math.min(capacity, tokens + (nowMs - lastRefillMs) * refillPerMs);
         lastRefillMs = nowMs;
     }
@@ -1018,7 +1018,7 @@ Chỉ dùng JDK, không dùng thời gian thật.`,
             if (!w.tryAcquire(1000)) throw new AssertionError("1000ms da het cua so");
             if (!w.tryAcquire(1000)) throw new AssertionError("hit cu da het, con cho phep 2 nua");
             if (!w.tryAcquire(1000)) throw new AssertionError("hit cu da het, van con cho phep 1");
-            if (w.tryAcquire(1000)) throw new AssertionError("da day 3 hit moi trong cua so");
+            if (w.tryAcquire(1000)) throw new AssertionError("đã đầy 3 hit mới trong cửa sổ");
             eq(3, w.count(1000));
         });
         check("count reports the live window", () -> {
@@ -1033,14 +1033,14 @@ Chỉ dùng JDK, không dùng thời gian thật.`,
         check("backwards clock freezes the window", () -> {
             SlidingWindow w = new SlidingWindow(1000, 3, 0);
             for (int i = 0; i < 3; i++) w.tryAcquire(0);
-            if (w.tryAcquire(-500)) throw new AssertionError("dong ho lu khong duoc noi cua so");
+            if (w.tryAcquire(-500)) throw new AssertionError("đồng hồ lùi không được nới cửa sổ");
             eq(3, w.count(-500));
-            if (!w.tryAcquire(1000)) throw new AssertionError("het cua so thi phai cho qua");
+            if (!w.tryAcquire(1000)) throw new AssertionError("hết cửa sổ thì phải cho qua");
         });
         check("invalid construction is rejected", () -> {
             try { new SlidingWindow(0, 3, 0); }
             catch (IllegalArgumentException e) { return; }
-            throw new AssertionError("windowMs 0 phai ném IllegalArgumentException");
+            throw new AssertionError("windowMs 0 phải ném IllegalArgumentException");
         });
         System.out.println("RESULT " + passed + "/" + total);
     }
@@ -1370,7 +1370,7 @@ final class SessionStore {
             for (int i = 0; i < 50; i++) {
                 SessionStore.Session s = store.create("t1", "u" + i, 0).orElseThrow();
                 for (String v : new String[] { s.sessionId, s.csrfToken }) {
-                    if (!v.matches("[A-Za-z0-9_-]{43}")) throw new AssertionError("khong phai base64url 43 ky tu: " + v);
+                    if (!v.matches("[A-Za-z0-9_-]{43}")) throw new AssertionError("không phải base64url 43 ký tự: " + v);
                     if (!seen.add(v)) throw new AssertionError("trung gia tri: " + v);
                 }
             }
@@ -1560,7 +1560,7 @@ final class SessionStore {
 
     Optional<Session> renew(String sid, long nowMs) {
         return get(sid, nowMs).map(s -> {
-            Session renewed = withExpiry(s, Math.max(s.expiryMs, nowMs + ttlMs));   // khong bao gio rut ngan
+            Session renewed = withExpiry(s, Math.max(s.expiryMs, nowMs + ttlMs));   // không bao giờ rút ngắn
             sessions.put(sid, renewed);
             return renewed;
         });
@@ -1847,8 +1847,8 @@ Interviewer hay hỏi: "RBAC khác ABAC thế nào?", "làm sao chặn user A xe
             eq(false, AccessChecker.check(alice, res(AccessChecker.Domain.VM, "t1", "alice"), AccessChecker.Action.WRITE), "alice write VM");
             eq(false, AccessChecker.check(alice, res(AccessChecker.Domain.BILLING, "t1", "alice"), AccessChecker.Action.READ), "alice doc BILLING");
             AccessChecker.Principal steward = p("sam", "t1", AccessChecker.Role.STEWARD);
-            eq(true, AccessChecker.check(steward, res(AccessChecker.Domain.PROJECT, "t1", "bob"), AccessChecker.Action.WRITE), "STEWARD sua PROJECT cua nguoi khac");
-            eq(false, AccessChecker.check(steward, res(AccessChecker.Domain.BILLING, "t1", "sam"), AccessChecker.Action.WRITE), "STEWARD sua BILLING");
+            eq(true, AccessChecker.check(steward, res(AccessChecker.Domain.PROJECT, "t1", "bob"), AccessChecker.Action.WRITE), "STEWARD sửa PROJECT của người khác");
+            eq(false, AccessChecker.check(steward, res(AccessChecker.Domain.BILLING, "t1", "sam"), AccessChecker.Action.WRITE), "STEWARD sửa BILLING");
         });
         System.out.println("RESULT " + passed + "/" + total);
     }
@@ -1877,8 +1877,8 @@ final class AccessChecker {
     static boolean allowed(Role role, Domain domain, Action action) {
         if (role == null || domain == null || action == null) return false;   // deny by default
         if (domain == Domain.BILLING) {
-            if (role == Role.USER) return false;                              // USER khong thay billing
-            if (action == Action.WRITE && role != Role.OWNER) return false;   // chi OWNER sua billing
+            if (role == Role.USER) return false;                              // USER không thấy billing
+            if (action == Action.WRITE && role != Role.OWNER) return false;   // chỉ OWNER sửa billing
         }
         return BASE.getOrDefault(role, Set.of()).contains(action);
     }
@@ -1974,7 +1974,7 @@ Vậy nên {{client_secret}} của public client không phải secret, và chu�
 ~~~seq
 title: Authorization Code + PKCE cho SPA
 actors: App | AS | RS
-App -> App: tao code_verifier ngau nhien
+App -> App: tạo code_verifier ngẫu nhiên
 App -> AS: /authorize?code_challenge&state
 AS --> App: màn hình đăng nhập và đồng ý
 AS --> App: redirect ?code&state
@@ -2231,7 +2231,7 @@ public class Main {
             String a = s.issueCode(challenge, 1000);
             String b = s.issueCode(challenge, 1000);
             if (a.length() < 22) throw new AssertionError("code qua ngan de doan: " + a.length());
-            if (!onlyIn(a, URLSAFE_CHARS)) throw new AssertionError("code khong phai base64url: " + a);
+            if (!onlyIn(a, URLSAFE_CHARS)) throw new AssertionError("code không phải base64url: " + a);
             if (a.equals(b)) throw new AssertionError("hai code trung nhau");
             if (a.equals(challenge)) throw new AssertionError("code trong nhu challenge");
         });
@@ -2263,7 +2263,7 @@ public class Main {
             Exchange bad = s.exchange(code, Pkce.newVerifier(rnd), 1001);
             if (bad.ok) throw new AssertionError("verifier sai ma duoc cap token");
             eq("invalid_grant", bad.error);
-            if (s.exchange(code, verifier, 1002).ok) throw new AssertionError("verifier sai ma code van dung duoc sau do");
+            if (s.exchange(code, verifier, 1002).ok) throw new AssertionError("verifier sai mà code vẫn dùng được sau đó");
         });
         check("expired code rejected, last second before TTL still works", () -> {
             SecureRandom rnd = new SecureRandom();
@@ -2274,7 +2274,7 @@ public class Main {
             if (late.ok) throw new AssertionError("code het han ma thanh cong");
             eq("expired", late.error);
             String code2 = s.issueCode(Pkce.challenge(verifier), 2000);
-            if (!s.exchange(code2, verifier, 2000 + AuthServerSim.CODE_TTL_SECONDS - 1).ok) throw new AssertionError("giay cuoi cua TTL phai con dung duoc");
+            if (!s.exchange(code2, verifier, 2000 + AuthServerSim.CODE_TTL_SECONDS - 1).ok) throw new AssertionError("giây cuối của TTL phải còn dùng được");
         });
         check("unknown or null code is rejected without touching storage", () -> {
             SecureRandom rnd = new SecureRandom();
@@ -2294,7 +2294,7 @@ public class Main {
             eq("invalid_grant", shortR.error);
             String junk = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ";
             Exchange r = s.exchange(s.issueCode(Pkce.challenge(junk), 1000), junk, 1001);
-            if (r.ok) throw new AssertionError("verifier co dau cach bi chap nhan");
+            if (r.ok) throw new AssertionError("verifier có dấu cách bị chấp nhận");
             eq("invalid_grant", r.error);
             eq("invalid_grant", s.exchange(s.issueCode(Pkce.challenge(tooShort), 1000), null, 1001).error);
             String longOk = "a".repeat(128);
@@ -2323,10 +2323,10 @@ final class Pkce {
     static String challenge(String verifier) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
-            return Base64.getUrlEncoder().withoutPadding()      // base64url + bo padding = dung RFC 7636
+            return Base64.getUrlEncoder().withoutPadding()      // base64url + bỏ padding = đúng RFC 7636
                 .encodeToString(md.digest(verifier.getBytes(StandardCharsets.US_ASCII)));
         } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 phai co trong moi JVM", e);
+            throw new IllegalStateException("SHA-256 phải có trong mọi JVM", e);
         }
     }
 }
@@ -2389,7 +2389,7 @@ final class AuthServerSim {
         if (valid) {
             byte[] expected = p.challenge == null ? new byte[0] : p.challenge.getBytes(StandardCharsets.US_ASCII);
             byte[] actual = Pkce.challenge(codeVerifier).getBytes(StandardCharsets.US_ASCII);
-            valid = MessageDigest.isEqual(expected, actual);     // constant-time, nhu so sanh hash mat khau
+            valid = MessageDigest.isEqual(expected, actual);     // constant-time, như so sánh hash mật khẩu
         }
         if (!valid) {
             p.used = true;                                       // ke dang doan verifier: vo hieu hoa code ngay
@@ -2666,7 +2666,7 @@ public class Main {
     static void expect(Class<? extends Throwable> kind, Case c) {
         try { c.run(); }
         catch (Throwable t) {
-            if (!kind.isInstance(t)) throw new AssertionError("mong " + kind.getSimpleName() + " nhung nhan " + t);
+            if (!kind.isInstance(t)) throw new AssertionError("mong " + kind.getSimpleName() + " nhưng nhận " + t);
             return;
         }
         throw new AssertionError("mong " + kind.getSimpleName() + " nhung khong ném loi");
@@ -2733,11 +2733,11 @@ public class Main {
             eq("v2", prefix(v2));
             eq(CCCD, cipher(2).decrypt(v2));
             eq(v2, cipher(2).rotate(v2));
-            if (v2.equals(v1)) throw new AssertionError("rotate khong doi duoc version");
+            if (v2.equals(v1)) throw new AssertionError("rotate không đổi được version");
         });
         check("malformed storage and unknown key version are IllegalArgumentException", () -> {
             expect(IllegalArgumentException.class, () -> cipher(2).decrypt("v9:" + Base64.getEncoder().encodeToString(new byte[40])));
-            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("khong phai ban ma"));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("không phải bản mã"));
             expect(IllegalArgumentException.class, () -> cipher(2).decrypt("v2:" + Base64.getEncoder().encodeToString(new byte[20])));
             expect(IllegalArgumentException.class, () -> cipher(2).decrypt("abc:" + Base64.getEncoder().encodeToString(new byte[40])));
             expect(IllegalArgumentException.class, () -> cipher(2).decrypt(null));
@@ -2749,7 +2749,7 @@ public class Main {
             String idx = FieldCipher.blindIndex("987654321012345", indexKey());
             eq("4f04392005b677d67c17009aacb3093d36eeb8341aeba727b67f34ad784c6384", idx);
             eq(64, idx.length());
-            if (!idx.matches("[0-9a-f]{64}")) throw new AssertionError("blindIndex khong phai hex thuong: " + idx);
+            if (!idx.matches("[0-9a-f]{64}")) throw new AssertionError("blindIndex không phải hex thường: " + idx);
         });
         check("blindIndex is deterministic and depends on value and key", () -> {
             eq(FieldCipher.blindIndex(CCCD, indexKey()), FieldCipher.blindIndex(CCCD, indexKey()));
@@ -2795,8 +2795,8 @@ final class FieldCipher {
 
     String encrypt(String plaintext) throws GeneralSecurityException {
         byte[] iv = new byte[IV_BYTES];
-        random.nextBytes(iv);                               // IV MOI 100% moi lan — GCM cam lap IV
-        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");  // GCM = CTR + GHASH, khong can padding
+        random.nextBytes(iv);                               // IV MỚI 100% mỗi lần — GCM cấm lặp IV
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");  // GCM = CTR + GHASH, không cần padding
         c.init(Cipher.ENCRYPT_MODE, keys.get(currentVersion), new GCMParameterSpec(TAG_BITS, iv));
         byte[] body = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));   // ciphertext || tag
         byte[] all = ByteBuffer.allocate(iv.length + body.length).put(iv).put(body).array();
@@ -2806,7 +2806,7 @@ final class FieldCipher {
     String decrypt(String stored) throws GeneralSecurityException {
         int cut = colonIndex(stored);
         int version = Integer.parseInt(stored.substring(1, cut));
-        SecretKey key = keys.get(version);                   // co the la khoa cua phien ban cu
+        SecretKey key = keys.get(version);                   // có thể là khoá của phiên bản cũ
         if (key == null) throw new IllegalArgumentException("khong co key cho phien ban: v" + version);
         byte[] all = Base64.getDecoder().decode(stored.substring(cut + 1));
         if (all.length < IV_BYTES + TAG_BITS / 8) throw new IllegalArgumentException("ban ma qua ngan");
@@ -2826,10 +2826,10 @@ final class FieldCipher {
     static String blindIndex(String plaintext, SecretKey hmacKey) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(hmacKey);                               // khoa rieng, kh dung lai khoa AES
+            mac.init(hmacKey);                               // khoá riêng, không dùng lại khoá AES
             return HexFormat.of().formatHex(mac.doFinal(plaintext.getBytes(StandardCharsets.UTF_8)));
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("HmacSHA256 phai co trong moi JVM", e);
+            throw new IllegalStateException("HmacSHA256 phải có trong mọi JVM", e);
         }
     }
 
@@ -3213,7 +3213,7 @@ Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. 
             if (qb("products").like("name", "shoes").sql().contains("shoes")) throw new AssertionError("sql chua gia tri: " + qb("products").sql());
             mustReject("like(null)", () -> qb("products").like("name", null));
         });
-        check("ORDER BY: cot hop le trong whitelist duoc chap nhan, khong co WHERE khi khong co predicate", () -> {
+        check("ORDER BY: cột hợp lệ trong whitelist được chấp nhận, không có WHERE khi không có predicate", () -> {
             QueryBuilder q = qb("orders").orderBy("amount_minor", "DESC");
             eq("SELECT * FROM orders ORDER BY amount_minor DESC", q.sql(), "sql");
             eq(0, q.params().size(), "ORDER BY khong tao params");
@@ -3230,7 +3230,7 @@ Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. 
             eq("SELECT * FROM orders ORDER BY id ASC", q.sql(), "asc -> ASC");
             q.orderBy("AMOUNT_MINOR", null);
             eq("SELECT * FROM orders ORDER BY amount_minor ASC", q.sql(), "null dir -> ASC, hoa thuong khong phan biet");
-            if (q.sql().contains("AMOUNT_MINOR")) throw new AssertionError("sql phai dung ten cot tu whitelist: " + q.sql());
+            if (q.sql().contains("AMOUNT_MINOR")) throw new AssertionError("sql phải dùng tên cột từ whitelist: " + q.sql());
         });
         check("identifier khong hop le bi tu choi o constructor va o predicate", () -> {
             mustReject("table injection", () -> qb("app_user; DROP TABLE x").eq("id", 1));
@@ -3248,12 +3248,12 @@ Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. 
             mustReject("in empty", () -> qb("orders").in("id", List.of()));
             mustReject("in null", () -> qb("orders").in("id", null));
         });
-        check("eq value null bi tu choi; khong co WHERE khi khong co predicate", () -> {
+        check("eq value null bị từ chối; không có WHERE khi không có predicate", () -> {
             mustReject("eq null value", () -> qb("app_user").eq("email", null));
             eq("SELECT * FROM app_user", qb("app_user").sql(), "sql khong co WHERE");
             eq(0, qb("app_user").params().size(), "params rong");
         });
-        check("payload trong IN cung chi nam trong params", () -> {
+        check("payload trong IN cũng chỉ nằm trong params", () -> {
             QueryBuilder q = qb("orders").in("status", List.of("PAID') OR ('1'='1"));
             eq("SELECT * FROM orders WHERE status IN (?)", q.sql(), "sql");
             eq(1, q.params().size(), "params");
@@ -3281,14 +3281,14 @@ Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. 
         this.columnWhitelist = new java.util.TreeMap<>();          // so sánh theo key viết thường
         for (String c : allowedColumns) {
             if (c == null || !IDENT.matcher(c).matches()) throw new IllegalArgumentException("bad column: " + c);
-            columnWhitelist.put(c.toLowerCase(Locale.ROOT), c);    // gia tri la dung ten cot da khai bao
+            columnWhitelist.put(c.toLowerCase(Locale.ROOT), c);    // giá trị là đúng tên cột đã khai báo
         }
     }
 
     private String resolve(String column) {                       // trả về tên cột chuẩn hóa, không phải input
         if (column == null) throw new IllegalArgumentException("column null");
         String real = columnWhitelist.get(column.toLowerCase(Locale.ROOT));
-        if (real == null) throw new IllegalArgumentException("column khong nam trong whitelist: " + column);
+        if (real == null) throw new IllegalArgumentException("column không nằm trong whitelist: " + column);
         return real;
     }
 
@@ -3318,7 +3318,7 @@ Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. 
     QueryBuilder orderBy(String column, String direction) {
         String real = resolve(column);
         String dir = (direction == null || direction.isEmpty()) ? "ASC" : direction.toUpperCase(Locale.ROOT);
-        if (!DIRS.contains(dir)) throw new IllegalArgumentException("direction phai la ASC hoac DESC: " + direction);
+        if (!DIRS.contains(dir)) throw new IllegalArgumentException("direction phải là ASC hoặc DESC: " + direction);
         orderByClause = " ORDER BY " + real + " " + dir;           // goi nhieu lan: lan sau ghi de
         return this;
     }
@@ -3580,7 +3580,7 @@ public class Main {
     static int passed = 0, total = 0;
     static final Set<String> HTTP_HTTPS = Set.of("http", "https");
 
-    // DNS gia lap: khong goi mang, ket qua xac dinh
+    // DNS giả lập: không gọi mạng, kết quả xác định
     static class Dns implements UrlGuard.Resolver {
         final Map<String, List<String>> table = new HashMap<>();
         public List<String> lookup(String host) { return table.get(host); }
@@ -3614,12 +3614,12 @@ public class Main {
             UrlGuard g = build(dns, Set.of());
             eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com/img/avatar.png"), "http public");
             eq(UrlGuard.Verdict.OK, g.check("https://cdn.example.com/x"), "https public");
-            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com:8443/x"), "cong khong anh huong");
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com:8443/x"), "cổng không ảnh hưởng");
         });
         check("scheme chi duoc phep moi qua, file:// bi chan", () -> {
             UrlGuard g = build(dns, Set.of());
             eq(UrlGuard.Verdict.BAD_SCHEME, g.check("ftp://cdn.example.com/a"), "ftp");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("file:///etc/passwd"), "file khong co host -> BAD_URL");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("file:///etc/passwd"), "file không có host -> BAD_URL");
             eq(UrlGuard.Verdict.BAD_URL, g.check("cdn.example.com/x"), "thieu scheme");
             eq(UrlGuard.Verdict.BAD_URL, g.check("http://"), "thieu host");
             eq(UrlGuard.Verdict.BAD_URL, g.check("not a url"), "chuoi ran");
@@ -3628,50 +3628,50 @@ public class Main {
         check("IP literal va moi dang so bi tu choi thuong", () -> {
             UrlGuard g = build(dns, Set.of());
             eq(UrlGuard.Verdict.BAD_URL, g.check("http://10.0.5.9/admin"), "IPv4 literal");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://2130706433/"), "thap phan");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://169.254.169.254/latest/meta-data/"), "metadata dang so");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://2130706433/"), "thập phân");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://169.254.169.254/latest/meta-data/"), "metadata đáng sợ");
             eq(UrlGuard.Verdict.BAD_URL, g.check("http://[::1]/"), "IPv6 literal");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://017700000001/"), "bat phan");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://017700000001/"), "bát phân");
         });
         check("dinh dang hostname kieu RFC: underscore, label rong, dau -, ipv6", () -> {
             UrlGuard g = build(dns, Set.of());
             eq(UrlGuard.Verdict.BAD_URL, g.check("http://exa_mple.com/x"), "underscore");
             eq(UrlGuard.Verdict.BAD_URL, g.check("http://a..b.com/x"), "label rong");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://-bad.example.com/x"), "label bat dau dau -");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://bad-.example.com/x"), "label ket thuc dau -");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://exa mple.com/x"), "dau cach trong host");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://-bad.example.com/x"), "label bắt đầu dấu -");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://bad-.example.com/x"), "label kết thúc dấu -");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://exa mple.com/x"), "dấu cách trong host");
         });
-        check("resolve ra IP noi bo thi chan, kiem tat ca cac dia chi", () -> {
+        check("resolve ra IP nội bộ thì chặn, kiểm tất cả các địa chỉ", () -> {
             UrlGuard g = build(dns, Set.of());
             eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://localhost:8080/admin"), "loopback");
             eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://internal-db.corp/x"), "10/8");
             eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://meta.internal/latest/meta-data/"), "169.254 link-local");
             eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://cg.example.com/x"), "100.64/10 CGNAT");
-            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://dual.example.com/x"), "mot cong mot noi bo");
-            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://hex.example.com/x"), "ten co chu van bi chan vi IP");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://dual.example.com/x"), "một công một nội bộ");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://hex.example.com/x"), "tên có chữ vẫn bị chặn vì IP");
         });
-        check("DNS khong co ket qua va data ran", () -> {
+        check("DNS không có kết quả và data rắn", () -> {
             UrlGuard g = build(dns, Set.of());
-            eq(UrlGuard.Verdict.DNS_FAIL, g.check("http://missing.example.com/x"), "khong resolve duoc");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://rubbish.example.com/x"), "999.1.1.1 khong phai IP hop le");
+            eq(UrlGuard.Verdict.DNS_FAIL, g.check("http://missing.example.com/x"), "không resolve được");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://rubbish.example.com/x"), "999.1.1.1 không phải IP hợp lệ");
         });
-        check("domain allowlist: subdomain duoc, duoi-gian-ten-khong", () -> {
+        check("domain allowlist: subdomain được, đuôi giả tên thì không", () -> {
             UrlGuard g = build(dns, Set.of("example.com"));
-            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com/a"), "subdomain hop le");
-            eq(UrlGuard.Verdict.OK, g.check("http://example.com/a"), " chinh domain cung duoc");
-            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://example.com.evil.net/a"), "vi duoi ten khong phai subdomain");
-            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://notexample.com/a"), "chua phai duoi .example.com");
-            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "domain la");
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com/a"), "subdomain hợp lệ");
+            eq(UrlGuard.Verdict.OK, g.check("http://example.com/a"), "chính domain cũng được");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://example.com.evil.net/a"), "vì đuôi tên không phải subdomain");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://notexample.com/a"), "chưa phải đuôi .example.com");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "domain lạ");
         });
-        check("userinfo bi tu choi truc tiep, ke ca khi host that ngoai allowlist", () -> {
+        check("userinfo bị từ chối trực tiếp, kể cả khi host thật ngoài allowlist", () -> {
             UrlGuard g = build(dns, Set.of("example.com"));
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://admin:pass@cdn.example.com/a"), "co userinfo");
-            eq(UrlGuard.Verdict.BAD_URL, g.check("http://cdn.example.com@evil.net/a"), "host that la evil.net + co userinfo");
-            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "khong co userinfo thi bi chan boi allowlist");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://admin:pass@cdn.example.com/a"), "có userinfo");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://cdn.example.com@evil.net/a"), "host thật là evil.net + có userinfo");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "không có userinfo thì bị chặn bởi allowlist");
         });
-        check("thu tu uu tien: allowlist duoc kiem truoc khi resolve", () -> {
+        check("thứ tự ưu tiên: allowlist được kiểm trước khi resolve", () -> {
             UrlGuard g = build(dns, Set.of("example.com"));
-            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://internal-db.corp/x"), "khong mat cong resolve cho domain ngoai allowlist");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://internal-db.corp/x"), "không mất công resolve cho domain ngoài allowlist");
         });
         check("chuan hoa hoa thuong va dau cham cuoi", () -> {
             UrlGuard g = build(dns, Set.of("example.com"));
