@@ -347,11 +347,57 @@ Planner ước lượng cost từ thống kê và chọn sequential scan nếu p
 | range có thứ tự | B-tree có thể tránh sort |
 | cột ghi liên tục | cân nhắc chi phí duy trì index |
 
+### Cơ chế từng bước: B-tree lookup trong PostgreSQL
+Khi một câu SQL có điều kiện WHERE trên cột có B-tree index, PostgreSQL thực hiện tra cứu theo các bước:
+
+1. **Đọc root page từ shared buffer.** Index metadata lưu block number của root; nếu chưa có trong buffer pool thì đọc từ disk (random I/O).
+2. **Đi xuống qua internal page.** Tại mỗi internal page, binary search tìm con trỏ child page phù hợp với key đang tìm. Với fanout ~100–300 (page 8KB, key nhỏ), chiều cao cây thường chỉ 3–4 tầng dù bảng có tỷ hàng.
+3. **Đến leaf page.** Leaf page chứa cặp (index key, TID/heap pointer). Binary search lần nữa để tìm entry khớp.
+4. **Heap fetch (trừ khi index-only scan).** Dùng TID (block, offset) để đọc heap page. Nếu visibility map cho phép và query chỉ chọn cột có trong index, có thể bỏ qua bước này (index-only scan).
+5. **Kiểm tra visibility (MVCC).** Tuple trên heap phải visible theo snapshot của transaction; nếu không thì bỏ qua.
+
+Vì sao lại như vậy? B-tree thiết kế để giảm random I/O: fanout lớn → chiều cao thấp. Tuy nhiên mỗi level vẫn là một lần đọc page tiềm năng. Nếu phải đọc nhiều hàng liên tiếp (range scan), leaf page được liên kết bằng sibling pointer để duyệt tuần tự.
+
+~~~java
+// Mô phỏng B-tree lookup: đếm số page đọc (giả định fanout=100, height=3)
+class BTreeSim {
+    static int pagesRead(int rows, double selectivity) {
+        int height = 3;                 // root + 1 internal + leaf
+        int leafPages = (int) Math.ceil(rows / 100.0); // ~100 entry/page
+        int scannedLeaves = Math.max(1, (int) (leafPages * selectivity));
+        return height + scannedLeaves;  // root->internal->leaf + leaf pages duyệt
+    }
+}
+// 10M hàng, selectivity 0.001% -> pagesRead ≈ 3 + 1 = 4 page (index scan)
+// 10M hàng, selectivity 10%     -> pagesRead ≈ 3 + 10000 = 10003 page (seq scan rẻ hơn)
+~~~
+
+### So sánh B-tree và cây nhị phân cân bằng (red-black)
+
+| Đặc điểm | B-tree (PostgreSQL) | Red-Black Tree (Java TreeMap) |
+|---|---|---|
+| Node | 1 page 8KB, hàng trăm key | 1 object, 1 key |
+| Fanout | 100–300 | 2 (nhị phân) |
+| Chiều cao (1 tỷ hàng) | 3–4 tầng | ~30 tầng |
+| I/O pattern | Tuần tự trong page, random giữa page | Object trải rải bộ nhớ |
+| Phù hợp cho | Đĩa (page I/O) | RAM (pointer chasing) |
+
+Đây là lý do B-tree thắng trên đĩa: mỗi lần đọc page mang theo hàng trăm key, giảm lượt I/O vật lý.
+
+### Lỗi hay gặp trên production
+1. **Index trên cột low cardinality (ví dụ boolean, status enum) mà không kết hợp.** Triệu chứng: planner vẫn chọn seq scan dù có index. Nguyên nhân: B-tree trả về quá nhiều TID, chi phí heap fetch ngẫu nhiên vượt quá seq scan. Cách sửa: dùng composite index (status, created_at) hoặc partial index {{WHERE status = 'active'}} để giảm số entry.
+2. **Thiếu ANALYZE sau bulk load hoặc partition detach/attach.** Triệu chứng: estimated rows lệch lớn so với actual rows, planner chọn sai plan (index scan thay vì seq scan hoặc ngược lại). Nguyên nhân: thống kê pg_statistic cũ. Cách sửa: chạy {{ANALYZE}} hoặc bật autovacuum-analyze; dùng {{EXPLAIN (ANALYZE, BUFFERS)}} để đối chiếu.
+3. **Write amplification do quá nhiều index trên bảng ghi dày.** Triệu chứng: INSERT/UPDATE chậm, WAL tăng vọt, replication lag. Nguyên nhân: mỗi index là một B-tree riêng, mỗi ghi phải cập nhật tất cả. Cách sửa: xóa index không dùng ({{pg_stat_user_indexes.idx_scan = 0}}), gom index trùng lặp, cân nhắc fillfactor thấp hơn cho index insert-heavy.
+4. **Index-only scan không kích hoạt do visibility map chưa set.** Triệu chứng: {{EXPLAIN}} hiện "Index Scan" thay vì "Index Only Scan" dù query chỉ chọn cột trong index. Nguyên nhân: vacuum chưa chạy để set all-visible flag trên heap page. Cách sửa: bật autovacuum, giảm {{autovacuum_vacuum_scale_factor}}, hoặc {{VACUUM (ANALYZE)}} thủ công.
+
 ### Pitfall production
 Index trên cột có cardinality thấp không tự động vô ích hay hữu ích; điều quan trọng là số hàng phù hợp và pattern truy vấn. Dùng {{EXPLAIN (ANALYZE, BUFFERS)}} trên workload đại diện, nhớ ANALYZE để cập nhật thống kê. Một query trả vài phần trăm bảng có thể đổi plan khi dữ liệu phân bố lệch.
 
 ### Liên hệ phỏng vấn
-Giải thích cấu trúc làm giảm candidate rows, sau đó nêu write amplification và quyết định planner dựa trên cost. Không hứa “index luôn nhanh hơn”; chỉ số benchmark cần cùng dữ liệu, cache và query thực tế.
+- **"B-tree index trong PostgreSQL khác gì so với cây nhị phân cân bằng?"** → B-tree là cây nhiều nhánh (multi-way), mỗi node là một page 8KB chứa hàng trăm key + con trỏ, fanout lớn (~100–300) nên chiều cao chỉ 3–4 tầng dù tỷ hàng. Binary tree (như TreeMap) mỗi node 1 key, chiều cao log2(N) ≈ 40 tầng cho 1 tỷ hàng → I/O nhiều hơn.
+- **"Khi nào planner chọn Sequential Scan thay vì Index Scan?"** → Khi selectivity cao (trả về > 5–10% bảng) hoặc bảng nhỏ (fit trong shared buffers). Seq scan đọc tuần tự (prefetch, sequential I/O) rẻ hơn nhiều random I/O của index scan + heap fetch. Planner ước lượng cost từ thống kê pg_statistic.
+- **"Partial index là gì và dùng khi nào?"** → Index chỉ bao gồm hàng thỏa mãn predicate (ví dụ {{CREATE INDEX ON orders (created_at) WHERE status = 'active'}}). Dùng khi query thường lọc theo giá trị hiếm của cột low cardinality, giúp index nhỏ hơn và planner dễ chọn.
+- **"Vì sao cần ANALYZE sau khi insert hàng loạt?"** → Planner dùng thống kê (most common values, histogram, n_distinct) để ước lượng rows. Bulk load làm thống kê lỗi thời, dẫn đến sai plan. Autovacuum-analyze sẽ chạy tự động nhưng có thể chậm; nên chạy {{ANALYZE}} thủ công sau bulk load.
 
 > Senior tip: theo dõi buffer hit/read và actual rows so với estimated rows; sai lệch thống kê thường quan trọng hơn tranh luận Big O.
 `,
@@ -392,7 +438,7 @@ Giải thích cấu trúc làm giảm candidate rows, sau đó nêu write amplif
     hints:['Duyệt mảng và tăng counter trước phép so sánh từng hàng.','TreeMap comparator có thể tăng int[] counter; reset sau khi nạp dữ liệu.'],
     explain:`Full scan trả N nếu không tìm thấy; lookup trong cây đỏ-đen có số so sánh tăng theo log N. Comparator được gọi cả lúc insert nên phải reset trước lookup. Đây chỉ là đếm phép so sánh trong cấu trúc Java, không đại diện số page I/O hoặc cost PostgreSQL. PostgreSQL B-tree là cây nhiều nhánh tối ưu cho page; planner vẫn có thể chọn sequential scan khi đọc nhiều hàng.`
   }],
-  check:[{q:'Vì sao PostgreSQL đôi khi chọn sequential scan dù có index?',options:['Index bị bỏ qua ngẫu nhiên','Đọc tỷ lệ lớn bảng có thể rẻ hơn nhiều heap fetch rời rạc','B-tree chỉ hỗ trợ chuỗi','MVCC cấm index scan'],answer:1,explain:'Planner chọn plan ước lượng có tổng cost thấp hơn; I/O và số hàng trả về quan trọng.'},{q:'Index thường làm chi phí nào tăng?',options:['INSERT/UPDATE và dung lượng','Chỉ SELECT','VACUUM bị cấm','Transaction isolation tự giảm'],answer:0,explain:'Mỗi thay đổi liên quan phải duy trì index, ghi WAL và dùng storage.'}], tags:['B-tree','index','EXPLAIN','PostgreSQL']
+  check:[{q:'Vì sao PostgreSQL đôi khi chọn sequential scan dù có index?',options:['Index bị bỏ qua ngẫu nhiên','Đọc tỷ lệ lớn bảng có thể rẻ hơn nhiều heap fetch rời rạc','B-tree chỉ hỗ trợ chuỗi','MVCC cấm index scan'],answer:1,explain:'Planner chọn plan ước lượng có tổng cost thấp hơn; I/O và số hàng trả về quan trọng.'},{q:'Index thường làm chi phí nào tăng?',options:['INSERT/UPDATE và dung lượng','Chỉ SELECT','VACUUM bị cấm','Transaction isolation tự giảm'],answer:0,explain:'Mỗi thay đổi liên quan phải duy trì index, ghi WAL và dùng storage.'},{q:'Partial index trong PostgreSQL giúp gì?',options:['Index chỉ chứa hàng thỏa predicate, nhỏ hơn và planner dễ chọn','Tự động chuyển seq scan thành index scan','Bỏ qua visibility check','Vô hiệu hóa autovacuum'],answer:0,explain:'Partial index {{WHERE status = ...}} chỉ index tập con hàng, giảm kích thước và chi phí duy trì; planner ước lượng cost chính xác hơn cho query lọc cùng predicate.'},{q:'Fillfactor 90 của B-tree index mặc định nhằm gì?',options:['Giảm chiều cao cây','Chừa chỗ trống trên leaf page để bớt split khi insert','Tăng fanout','Bật index-only scan'],answer:1,explain:'Fillfactor 90 để leaf page còn 10% chỗ trống; insert vào giữa dải khóa không phải split ngay, giảm write amplification. Giá đổi là index lớn hơn ~11%.'}], tags:['B-tree','index','EXPLAIN','PostgreSQL']
 },
 {
   id:'lesson-db-004',track:'db',order:4,title:'Connection pool: giới hạn tài nguyên và timeout khi cạn pool',level:'senior',minutes:25,
@@ -422,13 +468,93 @@ Little’s Law cho trực giác: concurrency xấp xỉ throughput nhân thời 
 | DB nhiều connection idle | tổng pool giữa replica, cấu hình service |
 | acquire timeout tăng | query latency, lock wait, tải DB |
 
+### Cơ chế từng bước: vòng đời một connection trong pool
+Khi ứng dụng cần truy cập database, pool quản lý vòng đời connection theo các bước:
+
+1. **Borrow (mượn slot).** Thread gọi {{dataSource.getConnection()}}. Pool kiểm tra {{Semaphore}} (bộ đếm slot rảnh): nếu còn thì giảm bộ đếm và trả connection đã mở; nếu hết thì thread vào hàng đợi FIFO, chờ tối đa {{connectionTimeout}} (mặc định 30s).
+2. **Giữ connection (critical section).** Connection được trả cho thread. Thread chạy logic DB (query, update, transaction). **Lưu ý quan trọng:** trong suốt thời gian này slot bị chiếm, không thread khác dùng được.
+3. **Release (trả slot).** Thread đóng connection (hoặc try-with-resources tự đóng). Pool tăng {{Semaphore}}, đánh dấu slot rảnh, và nếu có thread đang chờ, thread đầu tiên trong hàng đợi được đánh thức và nhận slot.
+4. **Health check / idle eviction.** Nền tảng (HikariCP) định kỳ kiểm tra connection ngồi im quá {{idleTimeout}} (mặc định 10 phút) thì đóng để nhường tài nguyên cho DB. {{maxLifetime}} (mặc định 30 phút) buộc đổi connection trước khi firewall/load balancer cắt.
+5. **Leak detection.** Nếu bật {{leakDetectionThreshold}} (ví dụ 60s), pool ghi log stack trace của chỗ đã {{borrow}} mà chưa {{release}} sau ngưỡng; giúp tìm code quên đóng.
+
+Vì sao lại như vậy? Pool chuyển chi phí mở connection (TCP, TLS, auth, process backend) từ "mỗi request" thành "mỗi slot khởi tạo". {{Semaphore}} đảm bảo fairness (FIFO) tránh starvation. Idle/max lifetime bảo vệ DB không bị tích tụ connection chết.
+
+~~~java
+// Mô phỏng pool đơn giản: Semaphore + mảng slot + timestamp mượn
+import java.util.concurrent.*;
+import java.time.Clock;
+
+class TinyPoolSim {
+    private final Semaphore permits;
+    private final long[] borrowedAt; // 0 = rảnh, >0 = thời điểm mượn (ms)
+    private final Clock clock;
+
+    TinyPoolSim(int capacity, Clock clock) {
+        if (capacity < 0) throw new IllegalArgumentException();
+        this.permits = new Semaphore(capacity, true); // fair = FIFO
+        this.borrowedAt = new long[capacity];
+        this.clock = clock;
+    }
+
+    int borrow(long timeoutMs) throws InterruptedException {
+        if (!permits.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS))
+            throw new IllegalStateException("Pool exhausted, timeout " + timeoutMs + "ms");
+        for (int i = 0; i < borrowedAt.length; i++) {
+            if (borrowedAt[i] == 0) { borrowedAt[i] = clock.millis(); return i; }
+        }
+        throw new IllegalStateException("Logic error: permit acquired but no slot");
+    }
+
+    boolean release(int id) {
+        if (id < 0 || id >= borrowedAt.length || borrowedAt[id] == 0) return false;
+        borrowedAt[id] = 0;
+        permits.release();
+        return true;
+    }
+
+    int leakedOver(long thresholdMs) {
+        long now = clock.millis();
+        int count = 0;
+        for (long t : borrowedAt) if (t > 0 && now - t > thresholdMs) count++;
+        return count;
+    }
+}
+~~~
+
+### So sánh các loại timeout
+
+| Timeout | Đặt ở đâu | Mặc định | Khi nổ nghĩa là |
+|---|---|---|---|
+| {{connectionTimeout}} | HikariCP | 30000 ms | không mượn được kết nối từ pool |
+| {{socketTimeout}} | JDBC socket | theo driver | DB đã nhận query nhưng trả lời quá chậm |
+| {{statement_timeout}} | PostgreSQL | 0 (tắt) | DB tự hủy query chạy quá lâu |
+| {{lock_timeout}} | PostgreSQL | 0 (tắt) | chờ lock quá lâu |
+| {{idle_in_transaction_session_timeout}} | PostgreSQL | 0 (tắt) | mở transaction rồi ngồi im |
+
+Mặc định các timeout phía database đều tắt, nên một query xấu có thể treo vô hạn và chiếm một slot mãi. Đó là lý do production nên đặt {{statement_timeout}} theo tầng (ví dụ 5 giây cho OLTP).
+
+### Lỗi hay gặp trên production
+1. **Transaction boundary quá rộng (gọi HTTP/Redis/Kafka bên trong transaction).** Triệu chứng: pool cạn nhanh, {{connectionTimeout}} liên tục, DB vẫn rảnh. Nguyên nhân: connection được giữ suốt transaction, remote call kéo dài từ ms lên giây, slot không được trả kịp. Cách sửa: thu hẹp transaction chỉ quanh phần DB; dùng outbox pattern ghi event rồi commit, relay gửi sau.
+2. **Thiếu {{statement_timeout}} ở PostgreSQL.** Triệu chứng: một query chậm (báo cáo, thiếu index) chiếm slot hàng phút, pool cạn. Nguyên nhân: mặc định {{statement_timeout = 0}} (vô hạn). Cách sửa: đặt {{statement_timeout = '5s'}} (hoặc phù hợp SLA) ở session/role/user/database level; HikariCP có thể set qua {{connectionInitSql}}.
+3. **Quên đóng connection (leak) trong nhánh exception.** Triệu chứng: pool từ từ cạn sau vài giờ/giờ, không có lỗi rõ ràng. Nguyên nhân: code {{getConnection()}} không bọc try-with-resources, exception xảy ra trước dòng {{close()}}. Cách sửa: luôn dùng try-with-resources; bật {{leakDetectionThreshold = 60000}} để log stack trace chỗ mượn.
+
+~~~java
+try (Connection c = ds.getConnection()) {
+    // logic DB
+}
+~~~
+4. **Tăng {{maximumPoolSize}} mù quáng khi pool cạn.** Triệu chứng: tăng pool 10→50, latency không giảm, DB bị OOM hoặc CPU 100%. Nguyên nhân: DB có core giới hạn; nhiều connection chỉ gây context switch, lock contention, memory pressure. Cách sửa: đo {{active}}, {{idle}}, {{pending}}, {{acquire time}} (HikariCP metrics), và {{wait_event}} từ {{pg_stat_activity}}; tối ưu query/transaction trước, mới tăng pool nếu thực sự cần.
+
 ### Pitfall production
 Quên close connection gây leak; giữ connection qua remote call làm cạn pool dù database rảnh. Pool timeout không đồng nghĩa query timeout. Đặt timeout riêng cho acquire, statement và transaction; bật leak detection ở mức chẩn đoán. Với HikariCP: {{maximumPoolSize}} mặc định 10; {{connectionTimeout}} (thời gian tối đa chờ lấy connection) mặc định 30000 ms, quá hạn thì {{getConnection()}} ném {{SQLTransientConnectionException}}; {{leakDetectionThreshold}} mặc định 0 (tắt). Timeout câu lệnh đặt ở DB/driver, ví dụ {{statement_timeout}} của PostgreSQL. Trong Spring, transaction boundary rộng có thể giữ connection xuyên qua xử lý không cần thiết.
 
 ### Liên hệ phỏng vấn
-Tính tổng connection tối đa qua số replica, giải thích vì sao pool là backpressure, rồi đề xuất đo active/idle/pending/acquire time và DB wait events trước khi tuning.
+- **"Connection pool là backpressure như thế nào?"** → Pool giới hạn số connection đồng thời tới DB. Khi request vượt quá capacity, thread phải chờ (hàng đợi FIFO) tới {{connectionTimeout}} rồi ném {{SQLTransientConnectionException}}. Đây là cơ chế backpressure ở tầng ứng dụng bảo vệ DB không bị quá tải.
+- **"Tại sao không nên tăng pool size mặc định 10 lên 100 khi thấy pool cạn?"** → DB có CPU core và RAM giới hạn. Mỗi connection là một process backend tốn memory. Thêm connection khi DB đã bão hòa CPU chỉ làm tăng context switch và lock contention, chứ không tăng throughput. Công thức khởi điểm: {{cores * 2 + spindles}} (SSD coi spindles = 0).
+- **"Ba loại timeout cần phân biệt là gì?"** → (1) {{connectionTimeout}} (HikariCP, 30s mặc định): chờ mượn slot từ pool. (2) {{statement_timeout}} (PostgreSQL, mặc định 0): DB tự hủy query chạy quá lâu. (3) {{socketTimeout}} (JDBC driver): chờ network packet từ DB. Phổ biến nhất là thiếu {{statement_timeout}}, để một query xấu treo slot vô hạn.
+- **"Leak detection trong HikariCP hoạt động sao?"** → {{leakDetectionThreshold}} (ms, mặc định 0=tắt). Khi connection được mượn quá lâu vượt ngưỡng, pool log stack trace tại điểm {{borrow}} (không phải điểm bị kẹt). Giúp tìm code quên {{try-with-resources}} hoặc gọi service chậm bên trong transaction.
 
-> Senior tip: đặt pool size theo sức chịu tải DB và workload benchmark; một pool nhỏ ổn định thường tốt hơn nhiều backend tranh CPU và I/O.
+> Senior tip: khi pool cạn, thứ cần tìm là "ai đang giữ slot và giữ bao lâu", không phải "còn thiếu bao nhiêu slot"; một câu {{SELECT state, now() - xact_start FROM pg_stat_activity ORDER BY 2 DESC}} thường trả lời ngay.
 `,
   exercises:[{title:'Pool hữu hạn với acquire/release',prompt:`Cài {{TinyPool}} có {{capacity}} slot đánh số từ 0 đến capacity - 1. {{acquire()}} đánh dấu và trả id slot rảnh nhỏ nhất, hoặc {{-1}} khi hết slot (mô phỏng timeout). {{release(id)}} nhả slot và trả {{true}} nếu id hợp lệ và slot đang được mượn; id ngoài phạm vi hoặc slot đang rảnh (kể cả release lần hai) trả {{false}}. Không dùng sleep/thread.`,starter:`class TinyPool {
     TinyPool(int capacity) { throw new UnsupportedOperationException("TODO"); }
@@ -463,7 +589,7 @@ Tính tổng connection tối đa qua số replica, giải thích vì sao pool l
 }`,
   hints:['Mảng boolean biểu diễn slot đang được mượn.','Acquire chọn slot rảnh đầu tiên; release cần từ chối id ngoài phạm vi và slot chưa mượn.'],
   explain:`Pool giữ tối đa capacity slot. Khi không còn slot rảnh, mô phỏng trả -1 như tình huống timeout; triển khai thật thường chờ trong giới hạn thời gian. Release phải idempotent theo hợp đồng đã chọn, ở đây lần release thứ hai trả false. Ứng dụng thật cần luôn đóng connection bằng try-with-resources để slot quay về pool kể cả khi exception.`}],
-  check:[{q:'Pool active chạm max và pending tăng, nên xem gì trước?',options:['Tăng max lên rất lớn ngay','Acquire time, query/lock latency và thời gian giữ transaction','Xóa index','Tắt timeout'],answer:1,explain:'Cần tìm nguồn chiếm connection và kiểm tra tải DB; tăng pool có thể làm tổng concurrency vượt sức DB.'},{q:'Remote HTTP call nằm trong transaction DB có thể gây gì?',options:['Giảm thời gian giữ connection','Giữ connection trong lúc chờ mạng, làm cạn pool','Tự động retry SQL','Tắt MVCC'],answer:1,explain:'Connection thường được giữ đến khi transaction kết thúc; latency ngoài DB kéo dài thời gian chiếm slot.'}],tags:['connection-pool','PostgreSQL','HikariCP']
+  check:[{q:'Pool active chạm max và pending tăng, nên xem gì trước?',options:['Tăng max lên rất lớn ngay','Acquire time, query/lock latency và thời gian giữ transaction','Xóa index','Tắt timeout'],answer:1,explain:'Cần tìm nguồn chiếm connection và kiểm tra tải DB; tăng pool có thể làm tổng concurrency vượt sức DB.'},{q:'Remote HTTP call nằm trong transaction DB có thể gây gì?',options:['Giảm thời gian giữ connection','Giữ connection trong lúc chờ mạng, làm cạn pool','Tự động retry SQL','Tắt MVCC'],answer:1,explain:'Connection thường được giữ đến khi transaction kết thúc; latency ngoài DB kéo dài thời gian chiếm slot.'},{q:'Mặc định {{statement_timeout}} của PostgreSQL là bao nhiêu và hệ quả gì?',options:['5s, query chậm tự bị hủy','0 (tắt), query xấu có thể treo slot vô hạn','30s, tương đương connectionTimeout','1 phút, đủ cho hầu hết OLTP'],answer:1,explain:'Mặc định 0 = vô hạn. Một query quên WHERE hoặc thiếu index có thể chạy cả giờ, chiếm slot và cạn pool.'},{q:'HikariCP {{leakDetectionThreshold}} log cái gì khi connection bị leak?',options:['Stack trace tại điểm đang bị kẹt','Stack trace tại điểm đã {{borrow}} (lấy connection)','Danh sách query chậm','Số connection đang idle'],answer:1,explain:'Log vị trí code gọi {{getConnection()}} mà chưa trả lại, giúp tìm nhánh exception quên close hoặc gọi service chậm trong transaction.'}],tags:['connection-pool','PostgreSQL','HikariCP']
 },
 {
   id:'lesson-db-005',track:'db',order:5,title:'Offset pagination và keyset pagination: chi phí bỏ qua hàng',level:'mid',minutes:25,
