@@ -5498,6 +5498,26 @@ Lời khuyên thực tế:
 - [ ] Theo dõi số invite nhận được thay vì chỉ số proposal đã gửi.
 - [ ] Tận dụng khung giờ sáng GMT+7 để phản hồi nhanh.
 
+### Ví dụ đời thực
+**Triệu chứng:** Bạn là dev Java GMT+7 (Việt Nam), đã gửi 40 proposal trong 3 tuần trên Upwork cho các job "Java Spring Boot developer" nhưng chỉ nhận 1 phản hồi và không có invite nào. Profile title đang ghi "Fullstack Java Developer", Connects (điểm dùng để gửi proposal trên Upwork) tiêu hao ~640 điểm/tháng mà không ra hợp đồng.
+
+**Điều tra (cách làm cụ thể):**
+- Mở tab "My Stats" trên Upwork: tỷ lệ invite = 0, tỷ lệ proposal được xem ~15%. Đọc lại 5 job gần nhất đã gửi: đều là job public đăng > 2 ngày, 20–50 proposals, không có screening questions.
+- Kiểm tra "About the client" của các job đó: 2/5 có hire rate < 20% (khách đăng nhiều nhưng ít thuê), 1/5 chưa payment verified.
+- Đối chiếu múi giờ: 3 job từ khách Mỹ (chồng giờ gần 0), phản hồi của bạn thường sau 10–14 giờ.
+
+**Nguyên nhân gốc:** Chiến lược "gửi số lượng" vào job đông, lọc client yếu, profile quá chung chung và không tận dụng lợi thế giờ GMT+7 (phù hợp khách Úc/Singapore/Nhật/Châu Âu sáng).
+
+**Cách xử lý:**
+1. Đổi title thành "Java Backend | Fix slow Spring Boot APIs & PostgreSQL (performance, migration)" và thêm 1 case study có số liệu (p95 1.8s → 120ms).
+2. Tạo bộ lọc: job đăng < 6 giờ, payment verified, hire rate > 50% hoặc total spent > $1k, có screening questions hoặc yêu cầu kết hợp (Spring + PostgreSQL/Kafka/AWS). Ưu tiên timezone Úc/SG/Nhật/EU.
+3. Mỗi sáng (7:00–8:30 GMT+7, trùng giờ làm việc Úc/SG) dành 25 phút lọc, chỉ gửi 1–2 proposal được cá nhân hoá; trả lời screening questions bằng bằng chứng cụ thể.
+
+**Kết quả đo được (4 tuần sau):** Proposal giảm xuống 8–10/tháng nhưng nhận 3 invites, 4 cuộc trò chuyện, chốt 1 hợp đồng fixed-price $900 (bug fix + tối ưu query). Tỷ lệ invite/proposal tăng từ 0% lên ~30%, Connects tiêu hao giảm ~75%.
+
+### Trả lời mẫu khi phỏng vấn
+"Em ưu tiên được mời (invite) thay vì gửi hàng loạt proposal, vì invite thường ít đối thủ và tỷ lệ phản hồi cao hơn. Cách em làm là tối ưu profile theo một vấn đề cụ thể kèm case study có số liệu, rồi chỉ chọn job được lọc kỹ: đăng mới, client có payment verified, hire rate hoặc lịch sử chi tiêu tốt, có screening questions hoặc yêu cầu kỹ năng hiếm. Em gửi proposal sớm và trả lời câu hỏi sàng lọc bằng chi tiết trong job chứ không dùng mẫu chung. Em cũng tận dụng múi giờ GMT+7: buổi sáng em online để phản hồi nhanh khách Úc, Singapore, Nhật hoặc Châu Âu, nhưng em nói rõ khung giờ làm việc chứ không hứa 24/7. Em theo dõi hai chỉ số chính là tỷ lệ invite trên proposal và tỷ lệ phản hồi trên invite; nếu thấp em sửa profile và cách viết, không tăng số lượng mù quáng."
+
 > Senior tip: "Số lượng" thắng trong đấu giá giá rẻ. "Chất lượng lọc + tốc độ phản hồi + bằng chứng phù hợp" thắng trong game "được mời". Hãy theo dõi 2 chỉ số quan trọng nhất: **tỷ lệ invite/proposal** và **tỷ lệ phản hồi/invite**. Nếu cả hai thấp, sửa profile/proposal, đừng tăng số lượng một cách mù quáng.`,
   follow: [
     'Làm sao để tăng tỷ lệ bị client mời thay vì chỉ gửi proposal?',
@@ -5546,6 +5566,23 @@ Kết quả: p95 ~120ms (-93%), số query giảm từ ~150 xuống 2/trang
 - [ ] Cập nhật profile Upwork theo ngách (title + overview + portfolio).
 - [ ] Tìm 5 job thực tế với từ khoá ngách và phân tích xem profile có khớp không.
 - [ ] Học đủ để trả lời 3 câu hỏi phỏng vấn về ngách đó một cách cụ thể.
+
+### Ví dụ đời thực
+**Triệu chứng:** Một startup thương mại điện tử nhỏ (SME) đang chạy hệ thống đặt hàng trên Java 8 + Spring Boot 2.5. Nhóm dev (2 người) không nâng cấp được vì sợ vỡ tính năng; đồng thời một thư viện bảo mật họ dùng đã ngừng vá lỗi cho nhánh cũ. Họ đăng job "spring boot 3 migration" trên Upwork với ngân sách cố định, kèm mô tả ngắn và 2 screening questions.
+
+**Điều tra (cách làm cụ thể):**
+- Đọc mã nguồn (read-only): kiểm tra {{pom.xml}}/{{build.gradle}}, liệt kê dependency chính, tìm import {{javax.*}} (namespace cũ trước Jakarta EE 9; Spring Boot 3 dùng {{jakarta.*}}), rà cấu hình Security/Data/Actuator có dùng API đã đổi.
+- Chạy test hiện có: 126 test, 18 fail trên nhánh thử nâng Java 17 do thay đổi thư viện và namespace. Không có test cho luồng thanh toán webhook.
+- Lập checklist migration: (1) nâng JDK 17, (2) đổi {{javax.*}} → {{jakarta.*}}, (3) nâng Spring Boot 3.x và dependency tương thích, (4) sửa cấu hình bị ảnh hưởng (ví dụ chiến lược khớp đường dẫn {{spring.mvc.pathmatch.matching-strategy}} khi cần tương thích), (5) chạy lại toàn bộ test + smoke test luồng đặt hàng.
+
+**Nguyên nhân gốc (rủi ro cần xử lý):** Nợ kỹ thuật tích luỹ (dependency cũ, namespace {{javax}}), thiếu test bao phủ luồng quan trọng, và thay đổi breaking changes giữa Spring Boot 2 → 3.
+
+**Cách xử lý:** Chia thành 3 milestone nhỏ: (M1) nâng build lên JDK 17, giữ Spring Boot 2, fix compile/test (2 ngày); (M2) chuyển {{javax}} → {{jakarta}} và nâng Spring Boot 3, sửa cấu hình (3 ngày); (M3) bổ sung test cho webhook thanh toán và chạy regression (1–2 ngày). Mỗi milestone có pull request/nhánh riêng và checklist.
+
+**Kết quả đo được (giả định thực tế):** 126/126 test pass sau M3, thời gian khởi động app giảm ~15% trên JDK 17 (đo 5 lần khởi động), lỗ hổng dependency nghiêm trọng (theo báo cáo quét dependency) giảm từ 6 xuống 1 (còn 1 cần thay thư viện ở giai đoạn sau). Founder duy trì hợp đồng retainer 4 giờ/tháng để bảo trì.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu em chọn một ngách freelance, em ưu tiên ngách có nỗi đau rõ và dễ chứng minh kết quả, ví dụ nâng cấp hệ thống cũ từ Java 8 lên 17 hoặc Spring Boot 2 lên 3. Với ngách này, khách thường lo rủi ro vỡ tính năng và bảo mật, nên em chứng minh bằng quy trình cụ thể chứ không chỉ nói kinh nghiệm. Em bắt đầu bằng discovery: kiểm tra dependency, tìm namespace {{javax}} cần đổi sang {{jakarta}}, chạy test hiện có và liệt kê breaking changes. Sau đó em chia migration thành milestone nhỏ, mỗi bước có tiêu chí hoàn thành và kết quả đo được như số test pass, thời gian khởi động, hoặc số cảnh báo dependency giảm. Khi viết profile và proposal, em dùng từ khoá đúng nhu cầu khách và đưa case study trước/sau có số liệu. Theo em, cách này hiệu quả hơn làm generalist vì khách trả cho việc giảm rủi ro."
 
 > Senior tip: "Generalist" khó thắng trên đấu giá. "Specialist" khó bị thay thế bởi AI giá rẻ. Nếu khách tìm "java spring boot 3 migration" và bạn có case study migration thật, bạn đã loại bỏ 90% đối thủ chỉ bằng sự cụ thể. Hãy chọn ngách dựa trên **nỗi đau thực tế của khách**, không dựa trên "công nghệ hot nhất".`,
   follow: [
@@ -5604,6 +5641,26 @@ Khách giỏi thường chú ý đến việc bạn **hiểu đúng vấn đề 
 - [ ] Tạo quy tắc cá nhân: "Tôi có hiểu rõ giải pháp mình đề xuất không?" — nếu không, đừng gửi.
 - [ ] Kiểm tra chính sách khách/NDA trước khi dùng AI với bất kỳ file nào.
 - [ ] Ưu tiên dùng AI cho tác vụ không chứa thông tin nhạy cảm (tóm tắt, sinh test khung, viết doc).
+
+### Ví dụ đời thực
+**Triệu chứng:** Bạn nhận một job "refactor Spring Boot service" (khách cho phép dùng AI hỗ trợ nhưng cấm đưa mã nguồn và dữ liệu khách ra ngoài). Bạn thử dán nguyên một class service (~400 dòng, có tên bảng thật, logic giá và email khách) vào một công cụ AI công khai để "tìm bug" và nhờ AI viết proposal. Proposal được gửi rất nhanh nhưng khách không phản hồi; sau đó khách hỏi bạn có dùng AI và dữ liệu có bị chia sẻ ra ngoài không.
+
+**Điều tra (cách làm cụ thể):**
+- Rà lại nội dung đã dán vào AI: có chuỗi kết nối mẫu, tên schema/bảng thật, và một đoạn comment chứa email thử nghiệm của khách. Đây là vi phạm nguyên tắc ẩn danh hoá.
+- Đọc lại proposal: mở đầu chung chung ("I am a skilled Java developer"), không nhắc screening question về cách xử lý rollback khi refactor, không có case study/cam kết test.
+- Kiểm tra NDA/policy job: cho phép AI hỗ trợ nhưng **không** cho phép gửi mã nguồn/dữ liệu khách.
+
+**Nguyên nhân gốc:** Dùng AI như "hộp đen" thay cho quy trình: lộ thông tin nhạy cảm tiềm ẩn và tạo proposal không cá nhân hoá.
+
+**Cách xử lý:**
+1. Ngừng chia sẻ dữ liệu thật. Khi cần AI hỗ trợ kỹ thuật, chỉ dán **mẫu tối giản đã ẩn danh** (đổi tên class/bảng/field thành {{OrderService}}/{{orders}}, thay giá trị thật bằng {{<amount>}}), mô tả vấn đề bằng lời.
+2. Dùng AI để tạo khung proposal (vấn đề → cách tiếp cận → rủi ro → câu hỏi), sau đó **tự viết lại**: trích 2 chi tiết cụ thể từ job, trả lời đúng screening questions, thêm 1 bằng chứng (ví dụ "đã refactor service tương tự, 85 unit tests pass, không đổi contract API").
+3. Thông báo minh bạch với khách: bạn dùng AI như trợ lý soạn thảo/kiểm tra, không gửi mã nguồn hay dữ liệu của họ.
+
+**Kết quả đo được (giả định thực tế):** 0 thông tin nhạy cảm rời khỏi môi trường làm việc ở các lần sau; thời gian soạn proposal giảm từ ~45 phút xuống ~20 phút nhưng vẫn cá nhân hoá; tỷ lệ phản hồi cải thiện (ví dụ 2/5 proposal được trả lời trong tháng tiếp theo) vì proposal nêu đúng vấn đề và bằng chứng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng AI như trợ lý để làm freelance nhanh và chất lượng hơn, nhưng em không dùng nó để gửi proposal hàng loạt hay thay thế trách nhiệm kỹ thuật. Với proposal, em có thể nhờ AI phân tích job và tạo khung, nhưng em luôn tự viết lại bằng giọng của mình, thêm chi tiết cụ thể trong mô tả và trả lời đúng screening questions. Với code và tài liệu, em dùng AI để gợi ý test, review hoặc soạn README, rồi em tự chạy test và kiểm tra lại. Ranh giới quan trọng nhất là bảo mật: em không đưa mã nguồn, API key, dữ liệu khách hay thông tin trong NDA lên công cụ AI khi chưa được phép; nếu cần hỗ trợ kỹ thuật, em ẩn danh hoá bằng ví dụ tối giản. Em nghĩ khách thường nhận ra proposal AI khi nó chung chung, nên điều quyết định không phải là có dùng AI hay không, mà là em có thực sự hiểu vấn đề của họ và chịu trách nhiệm cho kết quả hay không."
 
 > Senior tip: Trong tương lai, việc "biết dùng AI an toàn và hiệu quả" sẽ là kỹ năng được đánh giá cao. Điểm khác biệt là **đạo đức + bảo mật**. Một dev biết dùng AI đúng cách và vẫn bảo vệ dữ liệu khách hàng sẽ đáng tin cậy hơn rất nhiều so với dev chỉ giỏi code.`,
   follow: [
@@ -5673,6 +5730,27 @@ AI đang thay đổi cách làm việc. Lead cần dẫn đầu thay vì chạy 
 - [ ] Đặt lịch review 3 tháng/6 tháng để đánh giá lại chiến lược.
 - [ ] Theo dõi % thu nhập theo nguồn (Upwork / LinkedIn / Referral / Khác).
 
+### Ví dụ đời thực
+**Triệu chứng:** Sau 6 tháng freelance, bạn có thu nhập dao động mạnh: tháng cao $2,400 (2 job fixed-price trên Upwork), tháng thấp $600. Bạn phải gửi 15–20 proposal/tháng để giữ pipeline (nguồn việc tiềm năng), effective hourly rate (thu nhập thực tế chia tổng giờ làm + giờ bán hàng) chỉ khoảng $12–15/giờ. 90% thu nhập đến từ đấu giá trên một kênh.
+
+**Điều tra (cách làm cụ thể):**
+- Lập bảng 6 tháng: nguồn thu (Upwork/khác), loại hợp đồng (hourly/fixed/retainer), giờ làm thực tế, giờ viết proposal/trao đổi bán hàng. Phát hiện ~25% thời gian là "bán hàng" không được trả tiền.
+- Phân tích 3 khách đã làm: 1 khách hài lòng, có nhu cầu bảo trì nhỏ hàng tháng nhưng bạn chưa đề xuất; 2 khách chỉ cần one-off.
+- Xem lại định vị: profile và proposal nói "Java Spring Boot developer" (gõ code) thay vì kết quả kinh doanh (giảm p95, giảm lỗi production, migration an toàn).
+
+**Nguyên nhân gốc:** Phụ thuộc đấu giá, định vị theo kỹ năng chung, không có cơ chế chuyển khách one-off thành retainer/referral.
+
+**Cách xử lý (roadmap 12 tháng, kiểm tra mỗi 3 tháng):**
+1. Định vị lại: "Java backend — migration & performance cho hệ thống Spring Boot/PostgreSQL", kèm 2 case study có số liệu.
+2. Đề xuất retainer cho khách hài lòng: gói 6 giờ/tháng (vá lỗi ưu tiên + tư vấn nhỏ) giá cố định, báo cáo cuối tháng.
+3. Đa dạng kênh: 2 post LinkedIn/tháng chia sẻ case study (ẩn danh khách), nhắn 5 người trong mạng lưới để chia sẻ ngách (không xin việc trực tiếp).
+4. Mốc đo: % thu nhập từ khách lặp lại, % thu nhập không qua đấu giá, effective hourly rate.
+
+**Kết quả đo được (12 tháng, giả định thực tế):** 1 retainer $300/tháng + 1 referral (khách giới thiệu) $1,200; thu nhập ổn định hơn (biên độ ±20% thay vì ±75%). % thu nhập không từ đấu giá tăng từ ~10% lên ~45%; proposal/tháng giảm từ 18 xuống 6; effective hourly rate tăng từ ~$14 lên ~$24.
+
+### Trả lời mẫu khi phỏng vấn
+"Chiến lược bền vững của em là giảm phụ thuộc vào đấu giá bằng cách chuyển từ bán giờ làm sang giải quyết vấn đề kinh doanh. Em định vị rõ mình giúp loại khách nào, ví dụ tối ưu hiệu năng hoặc nâng cấp Spring Boot, và dùng case study có số liệu để chứng minh. Thay vì tìm khách mới liên tục, em ưu tiên biến khách hài lòng thành quan hệ dài hạn: giao vượt kỳ vọng, báo cáo kết quả, rồi đề xuất retainer phù hợp. Em cũng đa dạng kênh qua Upwork, LinkedIn và mạng lưới cá nhân; trong đó referral thường chất lượng cao vì đã có niềm tin. Song song, em cập nhật kỹ năng AI để làm nhanh hơn nhưng vẫn giữ trách nhiệm về bảo mật và chất lượng. Em đặt mốc kiểm tra 3, 6 và 12 tháng và đo bằng các chỉ số như tỷ lệ thu nhập lặp lại, tỷ lệ thu nhập ngoài đấu giá và effective hourly rate, chứ không chỉ nhìn tổng doanh thu."
+
 > Senior tip: Tự do thực sự trong freelance không phải là "làm bất cứ khi nào muốn", mà là **không bị buộc phải chấp nhận bất kỳ job nào chỉ vì hết tiền**. Để đạt được điều đó, bạn cần xây dựng "nguồn cầu" (demand) thay vì chỉ chạy theo "nguồn cung" (job list). Đầu tư vào định vị, mối quan hệ và referral hôm nay sẽ trả lại nhiều nhất trong 2–3 năm tới.`,
   follow: [
     'Làm sao chuyển từ hợp đồng hourly sang retainer một cách tự nhiên với khách hiện tại?',
@@ -5714,6 +5792,33 @@ AI đang thay đổi cách làm việc. Lead cần dẫn đầu thay vì chạy 
 - [ ] Index + pagination + không N+1.
 - [ ] Job nặng chuyển sang background.
 - [ ] Có log, backup, migration, test tối thiểu.
+
+### Cơ chế từng bước (vì sao các lỗi này hay xảy ra)
+App do AI tạo (đôi khi gọi "vibe-coded app" — app được dựng rất nhanh theo cảm hứng/prompt) thường tối ưu **happy path** (luồng chạy đúng khi người dùng làm đúng) và bỏ sót các ràng buộc production:
+- **IDOR (Insecure Direct Object Reference)**: server tin ID do client gửi ({{/api/orders/123}}) mà không kiểm tra chủ sở hữu. Cơ chế đúng: lấy {{userId}} từ phiên đăng nhập ở server, truy vấn kèm điều kiện sở hữu.
+- **RLS (Row Level Security — bảo mật mức dòng trong Postgres/Supabase)**: nếu tắt, mọi truy vấn có thể thấy mọi dòng; phải bật RLS và viết policy theo user/tổ chức.
+- **N+1 query**: 1 truy vấn lấy danh sách + N truy vấn lấy chi tiết; dữ liệu lớn làm p95 (độ trễ mức 95% request) tăng mạnh. Cần gộp truy vấn (join/batch) + index (chỉ mục DB).
+- **Secret lộ**: khoá API đưa vào frontend/repo sẽ bị trích xuất từ bundle hoặc git history; sửa đúng là rotate (đổi khoá) + đưa vào secret manager/biến môi trường phía server.
+
+### Ví dụ đời thực
+**Triệu chứng:** Một app SaaS nhỏ (Next.js + Supabase, do AI hỗ trợ dựng) bắt đầu có người dùng thật. Tuần thứ 2, hoá đơn API LLM tăng từ ~$20 lên ~$420; một khách báo "thấy dữ liệu dự án của công ty khác"; trang danh sách tải 3–4 giây khi dự án có ~2.000 bản ghi.
+
+**Điều tra (cách làm cụ thể):**
+- Chạy quét secret trên toàn bộ git history (ví dụ công cụ như {{gitleaks}}): phát hiện service-role key của Supabase từng commit trong file cấu hình.
+- Mở DevTools → Network: frontend gọi thẳng endpoint với khoá quyền cao (dấu hiệu cấu hình sai).
+- Kiểm tra Postgres: {{SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname='public';}} cho thấy bảng {{projects}} có {{rowsecurity = false}}.
+- Tạo 2 tài khoản test A/B: dùng token A gọi {{/api/projects/<id-cua-B>}} → vẫn trả dữ liệu (IDOR).
+- Chạy {{EXPLAIN ANALYZE}} trên truy vấn danh sách: full scan + thiếu index trên {{owner_id}}; log cho thấy 201 truy vấn cho 200 item (N+1).
+- Xem dashboard billing LLM: endpoint chat không có rate limit (giới hạn số lần gọi/đơn vị thời gian), bị gọi lặp từ script.
+
+**Nguyên nhân gốc:** Secret lộ + RLS tắt/thiếu policy + thiếu kiểm tra sở hữu ở server + truy vấn không tối ưu + không rate limit.
+
+**Cách xử lý:** (1) Rotate toàn bộ khoá đã lộ ngay; chuyển secret ra server env. (2) Bật RLS, viết policy {{owner_id = auth.uid()}} (theo mô hình app) và test bằng 2 tài khoản. (3) Thêm kiểm tra ownership ở API. (4) Thêm index, phân trang, gộp truy vấn. (5) Thêm rate limit cho endpoint LLM và chuyển job nặng sang background.
+
+**Kết quả đo được (giả định thực tế):** Sau 48 giờ, chi phí LLM/ngày giảm ~85% nhờ rate limit + chặn khoá lộ; p95 trang danh sách giảm từ 3,2s xuống 220ms với 2.000 bản ghi; test chéo tài khoản A/B không còn truy cập chéo dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi audit một app do AI viết, em bắt đầu từ hai thứ dễ mất nhất là tiền và dữ liệu. Em kiểm tra secret trong repo và git history, vì khoá lộ có thể bị dùng ngay cả khi đã xoá khỏi code hiện tại. Tiếp theo em kiểm tra xác thực và phân quyền ở server: endpoint có yêu cầu đăng nhập không, và người dùng A có truy cập được tài nguyên của B không, tức lỗi IDOR. Với stack dùng Postgres như Supabase, em kiểm tra RLS có bật và policy có đúng theo user hay tổ chức không. Về hiệu năng và chi phí, em tìm truy vấn thiếu index, không phân trang, hoặc N+1 bằng cách đo p95 và chạy EXPLAIN ANALYZE, đồng thời xem endpoint gọi LLM có rate limit và cache hợp lý không. Em ưu tiên xử lý theo mức rủi ro: rotate secret và chặn lộ dữ liệu trước, rồi tối ưu hiệu năng và chi phí, và luôn xác nhận lại bằng test hoặc số liệu sau khi sửa."
 
 > Senior tip: Khi audit app AI, hãy bắt đầu từ "tiền và dữ liệu": hoá đơn LLM và dữ liệu người dùng là hai thứ dễ mất nhất. Fix security và cost trước, performance sau.`,
   follow: [
@@ -5785,6 +5890,24 @@ Bằng chứng: [đường dẫn file, giá trị đã che dạng ****abcd].
 
 ### 5. Cách trả lời phỏng vấn/khách (mẫu ngắn)
 "Khi audit một app do AI viết, em ưu tiên rủi ro tác động lớn: lộ secret, lỗi phân quyền, và an toàn dữ liệu. Em đi theo luồng request từ API tới database, ghi finding theo mức độ nghiêm trọng kèm bằng chứng, rồi đề xuất xử lý theo milestone. Em sẽ nói rõ phần nào chắc chắn và phần nào cần xác minh theo stack cụ thể."
+
+### Ví dụ đời thực
+**Triệu chứng:** Founder nhờ bạn "cứu" MVP (Minimum Viable Product — bản sản phẩm tối thiểu để chạy thử) đặt lịch hẹn, do AI dựng bằng Node.js/TypeScript + Postgres, đang có ~30 người dùng thử. Họ sợ "sắp có người dùng thật sẽ hỏng", nhưng không có tài liệu kiến trúc và ngân sách chỉ đủ ~16 giờ audit.
+
+**Điều tra (cách làm cụ thể):**
+- Ngày 1 (discovery): chốt phạm vi 16 giờ, xin quyền đọc repo + xem dashboard log/DB (read-only). Liệt kê 8 endpoint chính và 3 luồng quan trọng: đăng ký/đăng nhập, đặt lịch, xem lịch.
+- Ngày 2 (bảo mật): quét lịch sử git thấy 1 API key dịch vụ email commit 3 tuần trước (đã che trong báo cáo). Gọi thử API đặt lịch bằng token user A với {{userId}} của B → trả dữ liệu (nghi IDOR, tái hiện trên staging).
+- Ngày 3 (dữ liệu/hiệu năng): bảng {{appointments}} không có index trên {{(provider_id, start_time)}}; endpoint danh sách tải toàn bộ bản ghi. Một luồng tạo lịch + gửi email không có transaction rõ ràng.
+- Ngày 4 (chi phí/vận hành): log lỗi 500 rải rác, không có backup DB tự động được xác nhận; ước tính (giả định) 2.000 email/tháng × đơn giá công khai → chi phí nhỏ nhưng có thể tăng nếu retry sai.
+
+**Nguyên nhân gốc:** App được tối ưu cho chạy nhanh (happy path), thiếu kiểm soát production: quản lý secret, phân quyền sở hữu, index/transaction, và quan sát vận hành.
+
+**Cách xử lý (roadmap theo milestone):** M1 (1–2 ngày): rotate key đã lộ, sửa kiểm tra ownership, thêm xác thực endpoint nhạy cảm. M2 (3–5 ngày): thêm index, phân trang, transaction cho luồng tạo lịch, xác nhận backup. M3: logging/monitoring và test tự động cho 3 luồng chính.
+
+**Kết quả đo được (giả định thực tế):** 1 secret lộ được rotate trong ngày đầu; lỗi truy cập chéo (IDOR) bị chặn và xác nhận bằng test 2 tài khoản; p95 endpoint danh sách giảm từ ~1,6s xuống ~180ms trên dataset 5.000 lịch (staging); 0 bản ghi lịch trùng khi chạy thử 50 request tạo lịch đồng thời sau khi thêm ràng buộc/kiểm tra.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu một founder nhờ em cứu một app do AI code trên stack em chưa quen sâu, em sẽ không hứa refactor toàn bộ ngay. Em bắt đầu bằng một audit có phạm vi rõ: tìm rủi ro có tác động lớn nhất về bảo mật, dữ liệu, hiệu năng và chi phí. Dù stack là Node.js hay TypeScript, em vẫn đi theo nguyên lý backend chung là luồng request, xác thực, phân quyền, business logic, database và dịch vụ ngoài. Em ưu tiên kiểm tra secret lộ, lỗi phân quyền như IDOR, truy vấn nguy hiểm hoặc thiếu index, transaction ở luồng quan trọng và chi phí gọi dịch vụ ngoài. Em ghi mỗi phát hiện với mức độ nghiêm trọng, bằng chứng và cách xác nhận lại, rồi đề xuất xử lý theo milestone: chặn rủi ro cao trước, sau đó ổn định dữ liệu và hiệu năng. Em cũng nói rõ giới hạn kiến thức framework cụ thể để kỳ vọng đúng và phối hợp an toàn."
 
 > Senior tip: Hãy bán **Audit có đầu ra rõ** (báo cáo + roadmap) trước khi bán "refactor toàn bộ". Với app AI, 20% vấn đề (secret, auth, query nguy hiểm) thường gây 80% rủi ro; chốt và xử lý nhóm đó trước giúp founder thấy giá trị nhanh và giảm rủi ro pháp lý/dữ liệu ngay.`,
   follow: [
