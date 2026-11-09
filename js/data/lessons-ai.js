@@ -68,7 +68,7 @@ if (res.statusCode() != 200) { /* phân loại lỗi, xem mục 3 */ }
 
 Công thức backoff: {{delay = min(cap, base * 2^attempt)}}, cộng **jitter** ngẫu nhiên để hàng nghìn client không retry cùng một lúc (thundering herd). Luôn có **số lần thử tối đa**. Retry vô hạn với 4xx chỉ đốt quota và không bao giờ thành công.
 
-**Structured output**: khi cần JSON, đừng tin "model sẽ trả JSON". Dùng tính năng của provider ({{response_format}} kiểu {{json_schema}} ở OpenAI, hoặc tool use với {{input_schema}} ở Anthropic), sau đó **vẫn validate** ở server. Parse thất bại thì coi là lỗi (ví dụ map ra 502 {{bad_json}}), có thể thử lại 1 lần, tuyệt đối không bịa ra JSON giả.
+**Structured output**: khi cần JSON, đừng tin "model sẽ trả JSON". Dùng tính năng của provider ({{response_format}} kiểu {{json_schema}} ở OpenAI, hoặc tool use với {{input_schema}} ở Anthropic), sau đó **vẫn validate** ở server. Parse thất bại thì coi là lỗi (ví dụ map ra 502 {{bad_json}} — một mã nội bộ, không phải của provider), có thể thử lại 1 lần, tuyệt đối không bịa ra JSON giả.
 
 ### 4. Measurement: đo bằng số, không bằng cảm giác
 Với RAG hay gợi ý, hệ thống trả về danh sách xếp hạng. Cho {{relevant}} là tập tài liệu đúng:
@@ -368,6 +368,25 @@ Top-k nghĩa là {{min(k, ranked.size())}} phần tử đầu. Một tài liệu
   goals: ['Hiểu vì sao phải che PII trước khi gửi LLM (pháp chế, data residency).','Nhận diện PII phổ biến ở Việt Nam: CCCD 12 số, SĐT, email, số thẻ (kiểm tra Luhn).','Cài đặt mask/unmask với placeholder và bảng ánh xạ.','Trả lời câu hỏi phỏng vấn về bảo vệ dữ liệu.'],
   body: `**Tóm tắt:** Trước khi gửi văn bản cho LLM, phải che (mask) dữ liệu cá nhân (PII) như số điện thoại, email, CCCD, số thẻ. LLM là dịch vụ ngoài, dữ liệu có thể được log hoặc dùng train; che PII giúp tuân thủ pháp chế và data residency, đồng thời có thể khôi phục (unmask) khi trả lời người dùng.
 
+### Cơ chế từng bước: từ văn bản gốc đến câu trả lời đã khôi phục
+Để hiểu rõ pipeline che/khôi phục, hãy đi từng bước — từ khi người dùng gõ câu hỏi đến khi họ nhận được câu trả lời có đúng số điện thoại của họ.
+
+**Bước 1: Nhận văn bản gốc từ người dùng.** Ví dụ: "Cho tôi số điện thoại của anh A là 0901234567 và email a@b.com". Đây là dữ liệu thô, chưa được kiểm tra hay xử lý gì cả.
+
+**Bước 2: Chạy regex để phát hiện PII theo thứ tự ưu tiên.** Tại sao phải có thứ tự? Vì các mẫu số đè lên nhau: CCCD 12 số bắt đầu bằng 0 thì 10 số đầu trông hệt số điện thoại, và dãy 13-19 số có thể là thẻ hoặc mã đơn hàng ngẫu nhiên. Nếu chạy phone trước CCCD, regex phone dùng ranh giới từ ({{\b}}) nên không khớp trọn chuỗi 12 chữ số CCCD (giữa chữ số thứ 10 và 11 không có ranh giới từ) — nhưng vẫn an toàn hơn khi che email/phone trước rồi mới che CCCD, vì CCCD có mẫu 12 chữ số cố định dễ nhận dạng. Nếu chạy card trước khi kiểm tra Luhn, mã đơn hàng 16 chữ số sẽ bị nhầm làm thẻ. Thứ tự an toàn là: email → phone → CCCD → card (card chỉ che khi qua Luhn). Mỗi loại được xử lý một lần, và kết quả của loại trước trở thành input cho loại sau.
+
+**Bước 3: Tạo placeholder thay thế.** Mỗi lần phát hiện một PII, ta không được xóa nó mà phải thay bằng một ký hiệu không lộ thông tin, ví dụ {{[PHONE_1]}}, {{[EMAIL_1]}}, {{[CCCD_1]}}, {{[CARD_1]}}. Mỗi loại có bộ đếm riêng: {{[PHONE_1]}}, {{[PHONE_2]}} cho số điện thoại thứ hai, {{[EMAIL_1]}} cho email đầu tiên. Placeholder phải đủ khác biệt để LLM không nhầm lẫn, và phải đủ rõ ràng để khôi phục sau này.
+
+**Bước 4: Lưu ánh xạ placeholder → giá trị gốc.** Đây là bước quan trọng nhất và cũng là bước dễ bỏ sót. Dữ liệu ánh xạ phải được lưu trong một cấu trúc giữ thứ tự (ví dụ {{LinkedHashMap}}), vì khi khôi phục ta cần thay thế {{[PHONE_1]}} bằng đúng số đã che, không nhầm với {{[PHONE_2]}}. Mapping phải được bảo vệ: không được ghi ra log thường, không được gửi lên server khác không cần thiết; nếu cần audit thì phải mã hóa (ví dụ AES-256 hoặc mã hóa một phần).
+
+**Bước 5: Gửi văn bản đã che cho LLM.** Văn bản gửi là: "Cho tôi số điện thoại của anh A là [PHONE_1] và email [EMAIL_1]". Ở đây LLM chỉ thấy các placeholder, không thấy dữ liệu thật. Model có thể trả lời: "Số điện thoại [PHONE_1] đã được lưu, vui lòng liên hệ admin để xem chi tiết." — model không biết đó là số nào, và không thể trả lại số đó cho người khác.
+
+**Bước 6: Nhận câu trả lời từ LLM và khôi phục (unmask).** Trên biên trả về cho người dùng, ta thay thế từng placeholder bằng giá trị gốc từ mapping. Kết quả: "Số điện thoại 0901234567 đã được lưu, vui lòng liên hệ admin để xem chi tiết." Người dùng thấy dữ liệu của họ, nhưng dữ liệu đó **không từng đi qua LLM**.
+
+**Bước 7: Dọn dẹp.** Mapping nên được xoá khỏi bộ nhớ sau khi khôi phục xong, để không bị tràn bộ nhớ khi xử lý nhiều request. Nếu cần giữ cho một phiên (phiên đăng nhập), thì lưu trong session với thời hạn ngắn.
+
+Tại sao lại cần 7 bước thay vì chỉ "che rồi gửi"? Vì nếu không lưu mapping, bạn không khôi phục được — người dùng thấy {{[PHONE_1]}} thay vì số điện thoại của họ, trải nghiệm xấu. Nếu không che theo thứ tự đúng, một email có chứa số có thể bị che nhầm làm điện thoại, và khi khôi phục sẽ thay sai placeholder. Nếu không bảo vệ mapping, một lập trình viên có ý tốt có thể log mapping ra log debug và lộ toàn bộ PII — điều đáng tiếc hơn cả việc không che.
+
 ### 1. Vì sao phải che
 - Pháp chế: GDPR, Nghị định 13/2023/NĐ-CP (Việt Nam) về bảo vệ dữ liệu cá nhân.
 - Data residency: dữ liệu không được rời khỏi lãnh thổ.
@@ -390,11 +409,17 @@ Dãy số ngẫu nhiên 16 chữ số không phải thẻ. Luhn: từ phải san
 
 ### 5. Pitfall production
 - Che theo thứ tự tránh che nhầm: email trước phone vì email có thể chứa số.
-- Không log mapping ra log thường; nếu cần audit thì mã hoá.
+- Không log mapping ra log thường; nếu cần audit thì mã hóa.
 - Unmask chỉ ở biên trả về người dùng, không trong log.
 
-### Liên hệ phỏng vấn
-Interviewer hỏi: "Làm sao bảo vệ dữ liệu người dùng khi dùng LLM?". Trả lời: che PII trước khi gửi, unmask sau; tuân thủ GDPR/NĐ 13; Luhn để tránh false positive; không log mapping.
+### 5b. Lỗi hay gặp trên production
+| Triệu chứng | Nguyên nhân | Cách sửa |
+|---|---|---|
+| **Mất dữ liệu người dùng trong log debug** | Developer thêm lệnh log debug có ghi cả mapping — log thường không được mã hóa, dễ bị truy cập bởi nhân viên vận hành hoặc bị rò rỉ qua centralized logging (ELK) | Log chỉ ghi method, request id, số lượng PII đã che (ví dụ "masked 3 PII"), không ghi text hay mapping. Nếu cần audit, lưu mapping ở một nơi riêng có mã hóa AES-256 và TTL ngắn. |
+| **Che nhầm dãy số ngẫu nhiên làm thẻ** | Chạy regex card trước khi kiểm tra Luhn, hoặc không kiểm tra Luhn ở all — một dãy 16 số ngẫu nhiên (ví dụ số điện thoại, mã tham chiếu trong database) bị che làm thẻ, và mapping bị lưu với giá trị không phải thẻ thật | Luôn kiểm tra Luhn trước khi che thẻ. Dãy không qua Luhn thì giữ nguyên. Test với case "1234567890123456" (sai Luhn) để đảm bảo không bị che. |
+| **Không khôi phục được dữ liệu** | Developer quên lưu mapping, hoặc lưu vào một biến local bị mất khi request kết thúc, hoặc mapping bị ghi overwrite bởi request khác | Dùng {{LinkedHashMap}} lưu mapping trong request scope, kiểm tra mapping không null trước khi unmask, và test case "unmask phải trả về văn bản có số gốc". |
+| **Che không đủ PII** | Chỉ che điện thoại mà bỏ qua email, hoặc regex không bắt được số có dấu "+84" và điện thoại 11 chữ số (ví dụ "01234567890") do quy tắc chỉ cho 10 chữ số | Viết regex linh hoạt: phone cho phép 10 hoặc 11 số, bắt đầu bằng 0 hoặc +84. Kiểm tra coverage bằng một bộ test có đầy đủ các loại PII (email, phone, CCCD, card, card sai Luhn, dãy số ngẫu nhiên). |
+| **Mapping bị lộ khi debug** | Dùng lệnh in console hoặc log.info để in mapping khi phát triển, và quên bỏ khi deploy | Dùng environment flag: chỉ in mapping khi ở chế độ debug và chỉ trong môi trường phát triển, không bao giờ ở staging/production. |
 
 ### 6. Ví dụ tổng hợp
 Văn bản: "Liên hệ 0901234567 hoặc a@b.com, CCCD 012345678901, thẻ 4532015112830366". Sau mask: "Liên hệ [PHONE_1] hoặc [EMAIL_1], CCCD [CCCD_1], thẻ [CARD_1]". LLM trả lời dùng placeholder; unmask khôi phục để người dùng thấy số gốc. Dãy 1234567890123456 không qua Luhn nên không bị che, tránh false positive.
@@ -425,8 +450,41 @@ cccd:   \\b\\d{12}\\b
 card:   \\b\\d{13,19}\\b
 ~~~
 
+### Liên hệ phỏng vấn
+Interviewer hỏi: "Làm sao bảo vệ dữ liệu người dùng khi dùng LLM?". Trả lời: che PII trước khi gửi, unmask sau; tuân thủ GDPR/NĐ 13; Luhn để tránh false positive; không log mapping.
+
+### Liên hệ phỏng vấn (thêm)
+Câu hỏi phỏng vấn thường gặp về PII và LLM:
+
+1. **"Người dùng gửi CCCD và số thẻ trong câu hỏi, bạn làm sao để không gửi cho LLM?"** — Trả lời: pipeline che PII chạy ngay trước khi gọi LLM, theo thứ tự email → phone → CCCD → card (card chỉ che khi qua Luhn). Mỗi PII được thay bằng placeholder như {{[CCCD_1]}}, và mapping placeholder → giá trị gốc được lưu trong {{LinkedHashMap}} ở request scope. Sau khi LLM trả lời, unmask trên biên trả về. Mapping không bao giờ log, nếu cần audit thì mã hóa.
+
+2. **"Tại sao phải kiểm tra Luhn trước khi che thẻ, thay vì che mọi dãy 13-19 số?"** — Trả lời: vì một dãy số ngẫu nhiên (ví dụ số điện thoại, mã đơn hàng, hoặc dãy test data) có thể có 16 chữ số và sẽ bị nhầm là thẻ. Luhn là công thức kiểm tra tính hợp lệ cơ bản (nhân đôi từ phải sang trái, tổng chia hết cho 10), giúp giảm false positive. Dãy không qua Luhn thì không che. Ví dụ: {{4532015112830366}} qua Luhn (thẻ thật), {{1234567890123456}} không qua (dãy ngẫu nhiên).
+
+3. **"Mapping placeholder → giá trị gốc nên lưu ở đâu và giữ bao lâu?"** — Trả lời: lưu trong request scope (ví dụ một field của class xử lý request), hoặc lưu trong session với TTL ngắn nếu cần giữ mapping qua nhiều lần gọi LLM của cùng một phiên. Sau khi unmask xong nên xóa mapping để không bị tràn bộ nhớ. Không lưu vào database, không lưu vào log, không gửi lên server khác.
+
+> Senior tip: một số hệ thống dùng **PII detection model** (dựa trên NER — Named Entity Recognition) để phát hiện PII linh hoạt hơn regex, nhưng với các định dạng chuẩn như CCCD 12 số, SĐT 10 số, email, regex là đủ và dễ kiểm soát. Kết hợp cả hai: regex bắt các định dạng chuẩn, model bắt các dạng tự do (ví dụ "sinh năm 1990 ở Hà Nội").
+
 ### 10. Luhn giải thích
-Luhn (Modulo 10) là công thức kiểm tra tính hợp lệ của dãy số, dùng để phát hiện gõ sai thẻ. Cách làm: từ phải sang trái, nhân đôi chữ số ở vị trí chẵn (bắt đầu từ 0), nếu kết quả >9 thì trừ 9, tổng tất cả phải chia hết cho 10. Dãy 4532015112830366 hợp lệ, 1234567890123456 không. Luhn chỉ kiểm tra định dạng, không phải bảo mật — vẫn cần che thẻ.
+Luhn (Modulo 10) là công thức kiểm tra tính hợp lệ của dãy số, dùng để phát hiện gõ sai thẻ. Cách làm: từ phải sang trái, nhân đôi mỗi chữ số thứ hai tính từ bên phải (chữ số cuối cùng không bị nhân đôi), nếu kết quả >9 thì trừ 9, tổng tất cả phải chia hết cho 10.
+
+### Ví dụ mã: kiểm tra Luhn trước khi che thẻ
+~~~java
+static boolean luhn(String s) {
+    int sum = 0;
+    boolean alternate = false;
+    for (int i = s.length() - 1; i >= 0; i--) {   // duyệt từ phải sang trái
+        int n = s.charAt(i) - '0';
+        if (alternate) {                           // nhân đôi mỗi chữ số thứ hai tính từ bên phải
+            n *= 2;
+            if (n > 9) n -= 9;
+        }
+        sum += n;
+        alternate = !alternate;
+    }
+    return sum % 10 == 0;                          // tổng chia hết cho 10 → thẻ hợp lệ
+}
+// 4532015112830366 -> true (thẻ thực), 1234567890123456 -> false (dãy ngẫu nhiên)
+~~~
 
 > Senior tip: luôn che trước khi gửi, unmask sau khi nhận; không log PII.`,
   exercises: [
@@ -531,8 +589,9 @@ Che theo thứ tự: email, phone (0XXXXXXXXX hoặc +84XXXXXXXXX), CCCD 12 số
   ],
 check: [
     { q: 'Vì sao phải che PII trước khi gửi LLM?', options: ['Để model trả lời nhanh hơn','Để tuân thủ pháp chế và tránh lộ dữ liệu','Để giảm chi phí token','Không cần che'], answer: 1, explain: 'Đáp án đúng: che PII để tuân thủ pháp chế (GDPR, Nghị định 13) và tránh lộ dữ liệu cá nhân ra dịch vụ ngoài. "Trả lời nhanh hơn" không liên quan — che không làm chậm model; "Giảm chi phí token" là phụ, PII thường ngắn nên không đáng kể; "Không cần che" sai vì LLM là dịch vụ ngoài, provider có thể log request và model có thể nhớ lại PII.' },
-    { q: 'Số thẻ được che khi nào?', options: ['Luôn che mọi dãy 16 số','Chỉ khi qua kiểm tra Luhn','Chỉ khi bắt đầu bằng 4','Không bao giờ'], answer: 1, explain: 'Đáp án đúng: chỉ che khi dãy số qua kiểm tra Luhn, tránh nhận nhầm dãy số ngẫu nhiên làm thẻ. "Luôn che mọi dãy 16 số" sai vì sẽ che nhầm số điện thoại/CCCD hoặc dãy ngẫu nhiên; "Chỉ khi bắt đầu bằng 4" sai vì thẻ có thể bắt đầu bằng 5 (Mastercard), 3 (Amex), 6 (Discover); "Không bao giờ" sai vì thẻ là PII phải che.' },
-    { q: 'Unmask dùng để làm gì?', options: ['Xoá PII','Khôi phục dữ liệu gốc khi trả lời người dùng','Mã hóa','Log'], answer: 1, explain: 'Đáp án đúng: unmask thay thế placeholder bằng giá trị gốc để người dùng thấy dữ liệu của họ. "Xoá PII" là xoá, không phải khôi phục; "Mã hóa" là chuyển sang dạng khác, không phải trả về; "Log" là ghi lại, không phải hiển thị.' }
+    { q: 'Số thẻ được che khi nào?', options: ['Chỉ khi qua kiểm tra Luhn','Luôn che mọi dãy 16 số','Chỉ khi bắt đầu bằng 4','Không bao giờ'], answer: 0, explain: 'Đáp án đúng: chỉ che khi dãy số qua kiểm tra Luhn, tránh nhận nhầm dãy số ngẫu nhiên làm thẻ. "Luôn che mọi dãy 16 số" sai vì sẽ che nhầm số điện thoại/CCCD hoặc dãy ngẫu nhiên; "Chỉ khi bắt đầu bằng 4" sai vì thẻ có thể bắt đầu bằng 5 (Mastercard), 3 (Amex), 6 (Discover); "Không bao giờ" sai vì thẻ là PII phải che.' },
+    { q: 'Unmask dùng để làm gì?', options: ['Xoá PII','Mã hóa','Log','Khôi phục dữ liệu gốc khi trả lời người dùng'], answer: 3, explain: 'Đáp án đúng: unmask thay thế placeholder bằng giá trị gốc để người dùng thấy dữ liệu của họ. "Xoá PII" là xoá, không phải khôi phục; "Mã hóa" là chuyển sang dạng khác, không phải trả về; "Log" là ghi lại, không phải hiển thị.' },
+    { q: 'Placeholder [PHONE_1], [EMAIL_1] được tạo ra để làm gì?', options: ['Để tăng chi phí token','Để làm chậm model','Để thay thế PII bằng ký hiệu không lộ thông tin, đồng thời lưu mapping để khôi phục sau','Để giảm độ chính xác của model'], answer: 2, explain: 'Đáp án đúng: placeholder thay thế PII bằng một ký hiệu không chứa thông tin nhạy cảm, và mapping lưu ánh xạ placeholder → giá trị gốc để sau khi LLM trả lời có thể khôi phục. "Tăng chi phí token" sai vì placeholder thường ngắn hơn PII gốc; "Làm chậm model" và "Giảm độ chính xác" không liên quan.' }
   ],
   related: ['ai-001'],
   tags: ['ai','pii','privacy','masking']
@@ -544,6 +603,30 @@ check: [
   level: 'senior', minutes: 40,
   goals: ['Hiểu RAG: retrieve rồi generate.','Chia tài liệu thành chunk, vector hoá bag-of-words, cosine similarity.','Lọc theo quyền truy cập.','Trả lời phỏng vấn về RAG.'],
   body: `**Tóm tắt:** RAG (Retrieval-Augmented Generation) là kỹ thuật: trước khi hỏi LLM, tìm các đoạn tài liệu liên quan (retrieve) rồi ghép vào prompt (augment) để model trả lời dựa trên dữ liệu riêng. Bài học này xây một RAG mini bằng Java thuần: chunk theo câu, bag-of-words, cosine similarity, top-k, lọc quyền.
+
+### Cơ chế từng bước: từ câu hỏi đến câu trả lời có dẫn chứng
+Để thấy rõ RAG hoạt động thế nào, hãy đi từng bước từ khi người dùng gõ câu hỏi đến khi nhận câu trả lời có thể kiểm chứng được.
+
+**Bước 1: Indexing (chỉ số, không phải mỗi lần hỏi).** Khi hệ thống khởi động hoặc tài liệu cập nhật, ta phải chuẩn bị "tủ sách": (a) cắt tài liệu thành các đoạn nhỏ (chunk) theo cấu trúc (heading, điều khoản, đoạn), không cắt theo ký tự cứng vì sẽ vỡ câu, vỡ số tiền, vỡ dòng bảng; (b) mỗi chunk phải có metadata: {{docId}}, {{section}}, {{page}}, {{updatedAt}}, {{allowedRoles}}; (c) biến mỗi chunk thành một vector (embedding) bằng cách gọi embedding model hoặc bag-of-words đơn giản; (d) lưu vector cùng metadata vào vector store (pgvector, Pinecone, Redis...). Bước này xảy ra một lần, không phải mỗi khi hỏi.
+
+**Bước 2: Query embedding.** Khi người dùng hỏi "thẻ của tôi mất phí bao nhiêu mỗi năm?", hệ thống không gửi câu hỏi thô cho LLM. Thay vào đó, nó biến câu hỏi thành một vector bằng cùng model đã dùng để nhúng tài liệu. Tại sao phải làm vậy? Vì LLM không biết dữ liệu của công ty — nó chỉ biết những gì nó nhìn thấy lúc huấn luyện. Nếu hỏi trực tiếp, model có thể trả lời theo kiến thức chung (ví dụ "phí thường niên thẻ thường là 200.000-500.000 đồng") nhưng không biết chính xác biểu phí của công ty bạn là bao nhiêu, và có thể bịa ra số liệu.
+
+**Bước 3: Retrieve (tìm kiếm).** So vector của câu hỏi với vector của từng chunk bằng cosine similarity. Kết quả trong [-1, 1]: 1 = cùng hướng (giống nghĩa nhất), 0 = không liên quan, -1 = ngược hướng. Chỉ các chunk có điểm > 0 (và có thể thêm ngưỡng như > 0.25) mới được coi là ứng viên. Sau đó sắp xếp theo điểm giảm dần, lấy top-k (thường 3-5) chunk. Quan trọng: **lọc quyền trước khi lấy top-k** — nếu chunk đó thuộc phòng ban khác, người dùng không được thấy.
+
+**Bước 4: Augment (ghép vào prompt).** Top-k chunk được đánh số [1], [2], [3] và kèm nguồn ({{docId}}, page). System prompt buộc model: chỉ trả lời dựa trên NGỮ CẢNH, mỗi nhận định ghi [số] tương ứng, ngữ cảnh không đủ thì nói rõ chưa tìm thấy. Ví dụ:
+~~~text
+NGỮ CẢNH:
+[1] (doc=QS-01, page=12) Phí thường niên thẻ Platinum: 300.000đ/năm.
+[2] (doc=QS-01, page=13) Miễn phí năm đầu nếu phát sinh giao dịch đầu tiên trong 30 ngày.
+~~~
+
+**Bước 5: Generate (trả lời).** LLM nhận prompt có context và câu hỏi, rồi trả lời dựa trên context. Ví dụ: "Theo tài liệu QS-01 trang 12, phí thường niên thẻ Platinum là 300.000đ/năm[1]. Năm đầu tiên nếu phát sinh giao dịch trong 30 ngày sẽ miễn phí[2]."
+
+**Bước 6: Validate citations (kiểm tra trích dẫn).** Server kiểm tra mọi số model trích phải nằm trong tập {{[1]}}, {{[2]}}, {{[3]}} đã gửi. Nếu model trích {{[4]}} (không có trong context) thì đó là bịa — gắn cờ, không render link, hoặc yêu cầu model trả lời lại. Không bao giờ dựng link từ text model tự bịa.
+
+**Bước 7: Render.** UI hiển thị câu trả lời kèm danh sách nguồn bấm được (docId, tiêu đề, trang) để người dùng đối chiếu.
+
+Tại sao phải tách thành 7 bước thay vì "tìm rồi hỏi"? Vì nếu không có bước 1 (indexing), mỗi câu hỏi phải quét toàn bộ tài liệu — chậm và không mở rộng được. Nếu không có bước 3 (retrieve), model không biết dùng tài liệu nào. Nếu không có bước 4 (augment), model không biết tài liệu đó là để trả lời câu hỏi nào. Nếu không có bước 6 (validate), model có thể bịa ra số liệu và trích dẫn nguồn không tồn tại — điều kém tin cậy hơn cả việc không có tài liệu nào, vì người dùng sẽ tin vào thông tin bịa.
 
 ### 1. RAG là gì
 - Model không biết dữ liệu riêng của công ty. RAG cung cấp context.
@@ -563,8 +646,64 @@ check: [
 ### 5. Top-k và ghép prompt
 Lấy k tài liệu top similarity, ghép vào prompt kèm trích nguồn (docId) để model trả lời có căn cứ và người dùng kiểm chứng.
 
+### Ví dụ mã: tính cosine similarity bằng tay
+Cho hai vector bag-of-words a = [1, 1, 0] (tài liệu có từ "java", "spring") và b = [1, 0, 1] (câu hỏi có từ "java", "python"):
+
+~~~java
+int[] a = {1, 1, 0};   // vector tài liệu: [java, spring, python]
+int[] b = {1, 0, 1};   // vector câu hỏi: [java, spring, python]
+
+// 1. Tích vô hướng a . b
+long dot = 0;
+double sumA = 0, sumB = 0;
+for (int i = 0; i < a.length; i++) {
+    dot += (long) a[i] * b[i];
+    sumA += (double) a[i] * a[i];
+    sumB += (double) b[i] * b[i];
+}
+
+// 2. Cosine = dot / (|a| * |b|). Vector toàn 0 thì trả 0.0, tránh chia cho 0
+double lenA = Math.sqrt(sumA);
+double lenB = Math.sqrt(sumB);
+double cosine = (lenA == 0.0 || lenB == 0.0) ? 0.0 : dot / (lenA * lenB);
+// Kết quả nằm trong [-1, 1]: 1 = giống nhau, 0 = không liên quan, -1 = ngược hướng
+~~~
+
+Công thức: cos(a, b) = (a . b) / (|a| * |b|). Vì chia cho độ dài, đoạn văn dài không bị ưu tiên sai lầm chỉ vì dài hơn. Nếu vector đã được chuẩn hóa về độ dài 1 thì chỉ cần tính tích vô hướng, nhanh hơn.
+
+### Lỗi hay gặp trên production
+
+| Triệu chứng | Nguyên nhân | Cách sửa |
+|---|---|---|
+| Trả lời "không có trong tài liệu" dù tài liệu chưa chứa | Cách diễn đạt query khác (viết tắt, gõ không dấu) → embedding không khớp chunk | Hybrid search (vector + từ khóa BM25), chuẩn hóa văn bản (loại bỏ dấu, lower-case), thêm từ đồng nghĩa vào metadata |
+| Model bịa số liệu, trích xuất không tồn tại | Thiếu kiểm tra trích dẫn (citation validation) | Server kiểm tra mỗi [n] model trích phải nằm trong danh sách đã gửi; id lạ → gắn cờ, không render link |
+| Người dùng thấy tài liệu của phòng khác | Không lọc quyền trước khi lấy top-k | Lọc allowedRoles ngay trong truy vấn vector, trước khi sắp xếp và cắt top-k |
+| Kết quả thay đổi lung tung giữa hai lần gọi giống hệt | Sắp xếp không break tie khi nhiều chunk điểm bằng nhau | Break tie theo docId hoặc thời gian cập nhật, kết quả ổn định |
+
+### Metadata của chunk và ngưỡng top-k
+Mỗi chunk kèm metadata: docId, section, page, updatedAt, allowedRoles. Metadata dùng để trích xuất ([1] doc=..., trang=...), lọc quyền, lọc theo thời gian.
+- Ngưỡng cosine: bỏ chunk dưới 0.25–0.3 (với vector đã chuẩn hóa). Thà trả "không tìm thấy" còn hơn model trả lời từ rác.
+- top-k = 3–5, quá nhiều làm context dài, tốn tiền token, bị "lost in the middle".
+- Đo recall@k trên 50–100 câu hỏi thực trước khi quyết định mua vector DB hay re-ranker.
+
+### Re-ranking hai giai đoạn và hybrid search
+- Giai đoạn recall (rẻ, rộng): ANN + BM25 → khoảng 50 ứng viên.
+- Giai đoạn re-rank (đắt, hẹp): cross-encoder đọc cặp câu hỏi-chunk → top 5.
+- Hybrid search: vector hiểu nghĩa, từ khóa bắt mã/viết tắt (CCCD), gõ không dấu. Reciprocal rank fusion trộn hai danh sách xếp hạng.
+
 ### Liên hệ phỏng vấn
 Interviewer hỏi: "RAG hoạt động thế nào?". Trả lời: chunk → embed → retrieve top-k theo similarity → augment prompt với trích nguồn → generate; lọc quyền trước retrieve.
+
+### Liên hệ phỏng vấn (thêm)
+Câu hỏi phỏng vấn thường gặp về RAG:
+
+1. **"RAG khác biệt với fine-tune như thế nào, và khi nào chọn cái nào?"** — Trả lời: RAG giữ nguyên model, xây "tủ sách" và tra cứu mỗi lần hỏi — phù hợp khi tri thức thay đổi thường xuyên (cập nhật index là giây) và cần dẫn chứng. Fine-tune tiếp tục huấn luyện, sửa trọng số của model — phù hợp khi muốn đổi phong cách/format (giọng văn, mẫu email), không phải để nhồi tri thức. Chọn RAG khi tri thức thay đổi và cần dẫn chứng; chọn fine-tune khi muốn đổi cách trình bày.
+
+2. **"Tại sao chunk quá to lại làm chất lượng giảm?"** — Trả lời: vì vector của một đoạn rất dài là "nồi lẩu" — nhiều chủ đề trộn vào nhau nên nó không gần với bất kỳ câu hỏi cụ thể nào. Embedding loãng → điểm similarity với mọi câu hỏi đều na ná, top-k toàn rác. Ngoài ra còn có hiện tượng "lost in the middle" — model chú ý phần đầu và phần cuối context hơn phần giữa. Chunk theo cấu trúc (heading, điều khoản) và overlap 10-20% là giải pháp.
+
+3. **"Tại sao phải lọc quyền trước khi lấy top-k, thay vì lấy xong rồi lọc?"** — Trả lời: vì nếu lọc sau, top-k đã bị các tài liệu bị cấm chiếm chỗ — ví dụ 5 kết quả đầu là tài liệu của phòng khác, lọc xong còn 1, người dùng nhận câu trả lời "không có tài liệu". Lọc trước đảm bảo top-k chỉ gồm tài liệu người dùng được thấy.
+
+> Senior tip: trước khi mua vector DB hay re-ranker, đo recall@50 trên 50–100 câu hỏi thật. Chunk đúng **không có** trong top-50 thì lỗi thuộc chunking/embedding, mọi thứ phía sau chỉ là trang điểm; chunk đúng **có mặt nhưng bị xếp thấp** thì re-ranker là khoản đầu tư sinh lời nhanh nhất.
 
 ### 6. Ví dụ tổng hợp
 Doc1: "Java Spring Boot" (admin), Doc2: "Python Django" (user). Query "java" từ admin → [Doc1]. Query "python" từ admin → [] (Doc2 không cho admin). Query "python" từ user → [Doc2]. Top-k=1 giới hạn kết quả. Cosine giữa "java" và "java spring" > 0 nên liên quan; "rust" không có từ chung → similarity 0 → không trả về.
@@ -583,8 +722,8 @@ Doc1: "Java Spring Boot" (admin), Doc2: "Python Django" (user). Query "java" t�
 
 ### 9. Bag-of-words so với embedding
 - Bag-of-words: đếm từ, không hiểu ngữ nghĩa ("nguồn gốc" khác "gốc nguồn" → 0). Đủ cho demo, dễ hiểu, không cần model.
-- Embedding: vector sốDimensions (thường 384–1536) từ model như sentence-transformers; hiểu ngữ nghĩa, nhưng cần model và chi phí.
-- Vector DB: Pinecone, Chroma, Milvus — lưu embedding, truy vấn nearest neighbor nhanh (approximate nearest neighbor).
+- Embedding: vector số chiều (thường 384–1536) từ model như sentence-transformers; hiểu ngữ nghĩa, nhưng cần model và chi phí.
+- Vector DB: Pinecone, Chroma, Milvus — lưu embedding, truy vấn hàng xóm gần nhất nhanh (approximate nearest neighbor: tìm vector gần nhất mà không quét hết toàn bộ kho).
 
 ### 10. Chunking thực tế
 - Chunk theo câu, overlap vài câu để không mất ngữ cảnh ở biên.
@@ -676,7 +815,8 @@ reference: `class MiniRag {
   check: [
     { q: 'RAG là viết tắt của?', options: ['Random Access Generation','Retrieval-Augmented Generation','Recurrent Attention Graph','Remote API Gateway'], answer: 1, explain: 'Đáp án đúng: RAG = Retrieval-Augmented Generation: retrieve (tìm tài liệu) → augment (ghép vào prompt) → generate (trả lời). "Random Access Generation" là nhầm chữ R=A; "Recurrent Attention Graph" là mô hình khác; "Remote API Gateway" là gateway, không phải RAG.' },
     { q: 'Trong RAG, bước nào quyết định người dùng có thấy tài liệu không?', options: ['Generate','Chunking','Lọc quyền truy cập','Top-k'], answer: 2, explain: 'Đáp án đúng: lọc quyền truy cập (allowedRoles) quyết định tài liệu nào người dùng được thấy. "Generate" là bước tạo câu trả lời, sau khi đã chọn context; "Chunking" là chia tài liệu, không liên quan đến quyền; "Top-k" chỉ giới hạn số lượng, không quyết định quyền.' },
-    { q: 'Cosine similarity bằng 1 nghĩa là?', options: ['Hoàn toàn khác','Hoàn toàn giống nhau','Không liên quan','Lỗi'], answer: 1, explain: 'Đáp án đúng: cosine = 1 khi hai vector cùng hướng, nghĩa là nội dung giống nhau. "Hoàn toàn khác" là cosine = 0 hoặc -1; "Không liên quan" là cosine gần 0; "Lỗi" không phải giá trị similarity.' }
+    { q: 'Cosine similarity bằng 1 nghĩa là?', options: ['Hoàn toàn giống nhau','Hoàn toàn khác','Không liên quan','Lỗi'], answer: 0, explain: 'Đáp án đúng: cosine = 1 khi hai vector cùng hướng, nghĩa là nội dung giống nhau. "Hoàn toàn khác" là cosine = 0 hoặc -1; "Không liên quan" là cosine gần 0; "Lỗi" không phải giá trị similarity.' },
+    { q: 'Overlap trong chunking RAG giúp gì?', options: ['Giảm số chunk để index nhỏ hơn','Tăng độ dài vector embedding','Thay thế hoàn toàn cho embedding model','Giữ ý không bị cắt ở ranh giới giữa hai chunk'], answer: 3, explain: 'Đáp án đúng: overlap lặp lại một số đơn vị cuối của chunk vào chunk sau, nên ý bị cắt ở ranh giới vẫn tồn tại trọn trong ít nhất một chunk, giúp retrieve không bỏ sót. "Giảm số chunk" sai vì overlap làm tăng số chunk và chi phí embedding; "Tăng độ dài vector embedding" và "Thay thế hoàn toàn cho embedding model" không liên quan — overlap chỉ là cách cắt văn bản, không thay đổi cách biểu diễn vector.' }
   ],
   related: ['ai-001'],
   tags: ['ai','rag','retrieval']
@@ -1396,7 +1536,7 @@ static double costUsd(int inTokens, int outTokens, double usdPerMillionIn, doubl
 ~~~
 Ví dụ tự tính để " thấy" con số (giá **giả định** 3 USD/1M input, 15 USD/1M output — luôn kiểm tra bảng giá hiện hành): 10.000 request, mỗi request 5.000 token input + 500 token output = 10.000 × (0.015 + 0.0075) = **225 USD/tháng**. Gấp đôi số lượt hoặc thêm 2.000 token context vào mỗi lượt là hoá đơn đổi ngay — lý do phải log {{usage}} theo feature.
 
-> Hai chỗ tiền "rò" mà ít ai để ý: (1) {{max_tokens}} không đặt → model trả lời dài tuỳ hứng, chi phí output tăng theo; (2) loop của agent — model gọi tool 40 lần là 40 lần trả toàn bộ lịch sử (bài ai-017). Đặt {{max_tokens}} theo **loại công việc**: phân loại 64–128, tóm tắt 256–512, tạo nội dung 1024+.
+> Hai chỗ tiền "rò" mà ít ai để ý: (1) giới hạn token đầu ra ({{max_tokens}} / {{max_completion_tokens}} tuỳ provider) không đặt → model trả lời dài tuỳ hứng, chi phí output tăng theo; (2) loop của agent — model gọi tool 40 lần là 40 lần trả toàn bộ lịch sử (bài ai-017). Đặt giới hạn token đầu ra theo **loại công việc**: phân loại 64–128, tóm tắt 256–512, tạo nội dung 1024+.
 
 ### 3. Cắt lịch sử hội thoại (context trimming)
 Hội thoại 200 lượt sẽ phình thành hàng chục nghìn token: chậm, đắt, và chất lượng **giảm** vì "lost in the middle" (model chú ý đầu/cuối context hơn phần giữa). Cắt là bắt buộc, nhưng cắt sai thì còn hỏng hơn. Sáu luật thực dụng:
