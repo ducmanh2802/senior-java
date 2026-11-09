@@ -1130,10 +1130,17 @@ ScopedValue.where(CURRENT_USER, user)
 ### Trả lời miệng 1 phút
 "Structured concurrency coi một nhóm task song song như một khối: fork các subtask, join, và khi ra khỏi khối thì chắc chắn không còn subtask nào chạy. Với ShutdownOnFailure, một subtask lỗi thì scope interrupt các subtask còn lại và ném lỗi, nên không có task mồ côi như với CompletableFuture, và stack trace đọc được vì mỗi subtask là một virtual thread bình thường. ScopedValue thay ThreadLocal cho context theo request: giá trị bất biến, chỉ có hiệu lực trong run, tự hết hạn nên không thể quên remove. Lưu ý phiên bản: ScopedValue chính thức từ JDK 25, structured concurrency vẫn preview và API đã đổi, nên trên Java 21 production tôi vẫn dùng ThreadLocal có remove."
 
+### Ví dụ đời thực
+Một service Spring Boot 3.2 xử lý API tổng hợp đơn hàng gọi 3 service hạ tầng: price (120 ms), inventory (80 ms), shipping (300 ms). Ban đầu dùng {{CompletableFuture.supplyAsync}} cho 3 call rồi {{allOf}} gom kết quả. Dưới tải 2000 rps, một call shipping bị chậm (3 s), 2 call kia xong sớm nhưng vẫn giữ slot thread trong commonPool. Các request mới vào bị xếp hàng, p99 từ 350 ms trượt lên 2.8 s, thread dump thấy hàng chục {{ForkJoinPool.commonPool-worker}} kẹt ở HTTP client. Chuyển sang {{StructuredTaskScope.ShutdownOnFailure}} với virtual thread ({{Thread.ofVirtual()}}): 3 call chạy song song trong scope, shipping chậm thì 2 call kia vẫn xong, scope join chờ 3 s rồi trả về; nếu shipping ném lỗi thì scope tự huỷ 2 call còn lại. Kết quả: p99 ổn định 320 ms (gần bằng call chậm nhất), không còn rò commonPool, stack trace từng subtask rõ ràng (mỗi virtual thread một stack). Đồng thời dùng {{ScopedValue}} để truyền requestId, userId xuống các service con thay vì {{MDC}}/{{ThreadLocal}}, không còn leak giữa các request trong pool.
+
+### Trả lời mẫu khi phỏng vấn
+"Structured concurrency coi nhóm task song song như một khối có ranh giới: fork các subtask, join, và ra khỏi khối thì chắc chắn không còn subtask nào sống. Với ShutdownOnFailure, một subtask lỗi thì scope interrupt các subtask còn lại, tránh task mồ côi như CompletableFuture thường gặp. Stack trace đọc dễ hơn vì mỗi subtask là virtual thread riêng. ScopedValue thay ThreadLocal cho context request: giá trị bất biến, bind trong scope rồi tự hết hạn, không leak khi pool tái dùng thread. Lưu ý: JDK 21 preview, API đổi ở JDK 25, nên production tôi vẫn dùng ThreadLocal có remove()."
+
 > Senior tip: cách chia nhanh: CompletableFuture hợp với data flow compose nhiều bước; StructuredTaskScope hợp với mẫu "gọi N call, 1 fail huỷ còn lại, tổng hợp". Tôi áp nó cho fan-out 3-5 call: code giảm từ 40 dòng (CompletableFuture + AtomicBoolean huỷ tay) xuống 10 dòng, stack trace đọc dễ hẳn.`,
   follow: [
     'ShutdownOnFailure khác ShutdownOnSuccess ở use case nào?',
-    'Vì sao ScopedValue khó leak hơn ThreadLocal trong thread pool?'
+    'Vì sao ScopedValue khó leak hơn ThreadLocal trong thread pool?',
+    'StructuredTaskScope trên Java 21 preview: khi nâng JDK 25 cần sửa gì?'
   ],
   tags: ['structured concurrency', 'ScopedValue', 'Java 21'],
   refs: [
@@ -1223,6 +1230,12 @@ class SumTask extends RecursiveTask<Long> {
 
 ### Trả lời miệng 1 phút
 "ForkJoinPool cho mỗi worker một deque riêng: worker lấy việc của mình ở một đầu theo LIFO để tận dụng cache, còn worker rảnh trộm ở đầu kia theo FIFO, thường được task lớn nên ít phải trộm lại; join không ngồi chờ mà chạy việc khác. Thiết kế này rất hợp chia để trị CPU-bound. Vấn đề là commonPool dùng chung cả JVM, chỉ có số core trừ một worker, và parallel stream lẫn supplyAsync không truyền executor đều chạy ở đó. Nếu ai đó gọi HTTP hay JDBC trong parallel stream thì worker kẹt chờ I/O và mọi tính năng khác đang dùng commonPool chậm theo. Vì vậy I/O tôi luôn đưa sang executor riêng hoặc virtual thread, parallel stream chỉ dành cho tính toán thuần trên dữ liệu lớn và phải đo trước."
+
+### Ví dụ đời thực
+Một service báo cáo tính tổng doanh thu 50 triệu đơn hàng/ngày dùng {{parallelStream()}} trên mảng {{long[]}} chia nhỏ theo ngưỡng 10k phần tử. Ban đầu chạy trên 8 core, p99 ~ 800 ms. Sau khi team thêm một feature mới: trong lambda của parallel stream gọi HTTP sang service định giá để lấy tỷ giá USD/VND thực thời. Dưới tải 500 rps, 3 worker của commonPool kẹt chờ HTTP 200 ms, 5 worker còn lại phải gánh toàn bộ việc chia mảng, p99 báo cáo nhảy từ 800 ms lên 12 s. Thread dump xác nhận: {{ForkJoinPool.commonPool-worker-1/2/3}} đang ở {{SocketInputStream.socketRead0}}. Sửa: tách gọi HTTP ra executor I/O riêng ({{ThreadPoolExecutor}} core 8, max 32, queue 200) + {{CompletableFuture.supplyAsync(fn, ioExecutor)}}; parallel stream chỉ làm cộng dồn thuần CPU. Kết quả: p99 báo cáo quay về 850 ms, p99 API định giá 220 ms, commonPool metric {{getActiveThreadCount}} không còn đỉnh bất thường. Trên pod giới hạn 2 vCPU (container support, JDK 10+ mặc định bật), {{Runtime.availableProcessors()}} trả 2 nên commonPool parallelism chỉ còn 1, càng dễ nghẽn — vì vậy càng phải tách I/O ra executor riêng, không dựa vào commonPool.
+
+### Trả lời mẫu khi phỏng vấn
+"ForkJoinPool dùng work stealing: mỗi worker deque riêng, LIFO cho việc của mình, FIFO để trộm việc lớn từ người khác. commonPool dùng chung JVM, parallelism = core - 1, rất nhỏ. Parallel stream và supplyAsync không executor đều chạy ở đây. Nếu ai chèn I/O vào parallel stream thì worker kẹt, toàn bộ ứng dụng chậm. Tôi tách I/O ra executor riêng, parallel stream chỉ cho CPU-bound, và luôn metric active thread count của commonPool."
 
 > Senior tip: khi review code, tôi grep {{parallelStream}} và các lời gọi {{supplyAsync}} không truyền executor, vì đây là hai đường phổ biến nhất khiến việc rò vào commonPool. Hãy expose {{getActiveThreadCount()}} và {{getQueuedSubmissionCount()}} của commonPool thành metric: queue tăng dần trong giờ cao điểm là dấu hiệu có ai đó đang block trong pool.`,
   follow: [
@@ -1331,6 +1344,12 @@ Dùng Little's Law: số task trong hệ thống = throughput × thời gian ch�
 
 ### Trả lời miệng 1 phút
 "Producer–consumer tôi luôn dùng queue có giới hạn, vì queue vô hạn chỉ đổi vấn đề chậm thành OOM và task trong đó thường đã quá hạn từ lâu. Khi queue đầy có bốn lựa chọn: put để block producer, hợp với batch nội bộ; offer có timeout cho request online, hết chỗ thì trả 503 hoặc 429; offer trả false ngay để load shedding; và drop chỉ cho dữ liệu được phép mất như metric. Dữ liệu không được mất thì phải ghi bền vững trước, như outbox hay Kafka. Kích thước queue tôi tính bằng Little's Law từ thời gian chờ tối đa chấp nhận được, rồi theo dõi queue size và số lần reject để biết lúc nào phải scale consumer."
+
+### Ví dụ đời thực
+Hệ thống thanh toán xử lý 50k giao dịch/giây tại giờ cao điểm. Producer là Kafka consumer group 8 instance, consumer là worker ghi PostgreSQL. Ban đầu dùng {{Executors.newFixedThreadPool(16)}} với {{LinkedBlockingQueue}} vô hạn. Một sự cố DB chậm (lock contention) làm consumer giảm từ 50k xuống 5k txn/s, producer vẫn đẩy 50k vào queue. Sau 10 phút queue phình 24M phần tử, heap 3.2 GB, GC Full chạy 4 s mỗi lần, p99 từ 50 ms trượt 8 s, cuối cùng OOM heap pod bị kill. Redesign: Kafka consumer fetch batch 500, {{ArrayBlockingQueue<>(2000)}} bounded, 32 virtual thread worker. Khi queue đầy (2000), producer {{poll(Duration.ofSeconds(5))}} rồi {{pause()}} 100 ms (backpressure tới Kafka), consumer dùng {{HikariCP}} pool 50 connection + {{Semaphore(50)}}. Sự cố DB chậm tái diễn: queue đầy sau 2 s, producer pause, consumer 500 txn/s, p99 120 ms, heap ổn định 600 MB, không OOM. Metric {{queue.size}} alert > 1500 trigger scale consumer HPA.
+
+### Trả lời mẫu khi phỏng vấn
+"Producer–consumer bắt buộc queue bounded, vô hạn là đổi chậm thành OOM. Queue đầy có 4 lựa chọn: put block (batch), offer timeout (online API trả 503), offer false (load shedding), drop (chỉ metric). Dữ liệu quan trọng ghi bền vững trước (outbox/Kafka). Queue size tính Little's Law từ SLA chờ tối đa, expose metric alert > 80% để scale consumer. Không tự offer vào queue executor, dùng submit + RejectedExecutionHandler."
 
 > Senior tip: kích thước queue là tham số SLA, không phải tham số hiệu năng. Tôi tính nó từ thời gian chờ tối đa chấp nhận được, rồi expose {{queue.size()}} và số lần reject thành metric. Alert khi queue liên tục trên 80%: đó là lúc phải scale consumer, không phải tăng queue.`,
   follow: [
@@ -1446,6 +1465,12 @@ Không cần vừa gọi {{interrupt()}} vừa ném lại InterruptedException: 
 ### Trả lời miệng 1 phút
 "Interrupt trong Java là cơ chế hợp tác: interrupt chỉ bật một cờ, thread đang chặn ở sleep, wait, join, take hay lockInterruptibly sẽ thoát ra bằng InterruptedException và cờ bị xoá; còn code đang tính toán phải tự kiểm tra isInterrupted. Khi bắt InterruptedException tôi chỉ có hai lựa chọn đúng: khai báo throws để ném tiếp, hoặc nếu đang trong Runnable thì gọi Thread.currentThread().interrupt để khôi phục cờ rồi thoát, nếu không thì shutdownNow sẽ không có tác dụng. Future.cancel(true) thực chất chỉ interrupt thread đang chạy task, còn CompletableFuture.cancel thì không interrupt gì cả. Với job dài, tôi kiểm tra cờ sau mỗi batch và commit theo batch để dừng nhanh mà dữ liệu vẫn nhất quán."
 
+### Ví dụ đời thực
+Job đối soát hàng ngày đọc 20 triệu bản ghi từ Kafka, so sánh với PostgreSQL, ghi chênh lệch vào bảng audit. Chạy trong Kubernetes pod 2 vCPU, 4 GB RAM, dùng {{ThreadPoolExecutor}} core 4, max 8, {{ArrayBlockingQueue<>(1000)}}. Một lần deploy sai config khiến job đọc chậm, p99 45 s. Team bấm cancel deploy, Kubernetes gửi SIGTERM, Spring context đóng, executor {{shutdown()}} → {{awaitTermination(30s)}} → {{shutdownNow()}}. Nhưng job vẫn chạy 2 phút mới chết vì: (1) vòng lặp không kiểm tra interrupt và không gọi {{consumer.wakeup()}} ({{KafkaConsumer.poll()}} không ném {{InterruptedException}}; để dừng an toàn phải gọi {{wakeup()}} từ thread khác hoặc kiểm tra cờ rồi thoát), (2) batch commit 50k bản ghi một lần, interrupt chỉ hiệu lực sau khi commit xong. Sửa: (1) kiểm tra {{Thread.currentThread().isInterrupted()}} trong vòng lặp và đăng ký shutdown hook gọi {{consumer.wakeup()}}; bắt {{WakeupException}} rồi commit offset cuối và thoát, (2) giảm batch size 1000, commit sau mỗi batch, (3) giữ nguyên quy tắc khôi phục cờ interrupt trong các chỗ bắt {{InterruptedException}}. Kết quả: shutdownNow dừng job trong 3 s, không mất bản ghi nào (đã commit theo batch), pod terminate đúng grace period 30 s. Metric {{job.lastSuccessfulCommit}} alert nếu > 5 phút không cập nhật.
+
+### Trả lời mẫu khi phỏng vấn
+"Interrupt là cơ chế hợp tác: chỉ bật cờ, thread chặn (sleep/wait/take/lockInterruptibly) thoát bằng InterruptedException và cờ bị xoá. Bắt exception phải ném lại hoặc interrupt() lại để khôi phục cờ. Future.cancel(true) chỉ interrupt thread chạy task; CompletableFuture.cancel không interrupt. Job dài tôi kiểm tra isInterrupted() sau mỗi batch, commit theo batch để dừng nhanh dữ liệu vẫn nhất quán."
+
 > Senior tip: trong code review tôi grep {{catch (InterruptedException}}: mọi chỗ phải ném lại hoặc có {{Thread.currentThread().interrupt()}}. Với job đối soát chạy hàng giờ, tôi kiểm tra cờ interrupt sau mỗi batch 1.000 bản ghi và commit theo batch. Nhờ vậy khi deploy, {{shutdownNow()}} dừng được job trong vài giây mà dữ liệu vẫn nhất quán.`,
   follow: [
     'Task đang đọc socket bằng InputStream không phản ứng với interrupt — bạn dừng nó thế nào?',
@@ -1545,10 +1570,17 @@ Khi chỉ có một wait set, {{notify()}} có thể đánh thức nhầm một 
 ### Trả lời miệng 1 phút
 "wait và notify gắn với monitor của một object, chỉ gọi được khi đang giữ synchronized trên object đó, và mỗi monitor chỉ có một wait set. Condition lấy từ Lock cho phép nhiều hàng chờ riêng, ví dụ notFull và notEmpty, nên signal đánh thức đúng loại thread, và còn có awaitNanos, awaitUntil, awaitUninterruptibly. Tôi luôn chờ trong vòng while vì thread có thể thức dậy khi điều kiện chưa đúng: spurious wakeup, notifyAll đánh thức nhiều thread, hoặc thread khác chen vào lấy mất trạng thái trước khi mình giành lại lock. Trong thực tế tôi hầu như không tự viết wait/notify mà dùng BlockingQueue, CountDownLatch hay Semaphore."
 
+### Ví dụ đời thực
+Một hệ thống cache tự viết dùng {{ReentrantLock}} + 2 {{Condition}} (notFull, notEmpty) cho bounded buffer 10k entry. Producer là thread ingest log 50k entry/s, consumer là thread flush sang Elasticsearch 40k entry/s. Ban đầu code dùng {{if (queue.isEmpty()) notEmpty.await()}} thay vì {{while}}. Dưới tải bình thường chạy ổn định 2 tuần. Một ngày deploy Elasticsearch mới chậm 3x, consumer kịp flush 12k entry/s. Producer đẩy nhanh, buffer đầy, producer chờ notFull. Consumer lấy 1 entry rồi flush 250 ms, khi lấy entry thứ 2 buffer đã rỗng (producer đang chờ notFull), consumer {{notEmpty.await()}}. Lúc này producer được signal notFull, push 1 entry, signal notEmpty. Consumer thức dậy, nhưng dùng {{if}} nên không kiểm tra lại, gọi {{queue.remove()}} trên buffer rỗng → {{NoSuchElementException}}, consumer thread chết, producer chờ mãi notFull. Thread dump thấy consumer thread TERMINATED, producer WAITING trên notFull. Sửa: đổi {{if}} thành {{while}}, thêm {{awaitUninterruptibly()}} cho consumer để không bị interrupt khi đang flush. Kết quả: không còn crash, buffer tự điều hòa tốc độ, p99 ingest 5 ms, p99 flush 280 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"wait/notify gắn với monitor, chỉ 1 wait set; Condition từ Lock cho nhiều hàng chờ riêng (notFull/notEmpty), có awaitNanos/awaitUntil/awaitUninterruptibly. Luôn chờ trong while vì: spurious wakeup, notifyAll đánh thức thừa, thread khác chen lấy mất trạng thái trước khi mình lấy lock. Thực tế tôi dùng BlockingQueue/CountDownLatch/Semaphore thay vì tự viết."
+
 > Senior tip: khi gặp bug "thỉnh thoảng treo" trong code wait/notify cũ, tôi kiểm tra ba thứ theo thứ tự: có {{if}} thay vì {{while}} không; có {{notify()}} trên monitor có nhiều loại waiter không; trạng thái có bị sửa ở ngoài khối synchronized không. Gần như mọi bug loại này rơi vào một trong ba chỗ đó.`,
   follow: [
     'notify() vs notifyAll(): khi nào notify() là đủ an toàn?',
-    'Lost wakeup là gì và vì sao trạng thái phải được kiểm tra trong cùng lock?'
+    'Lost wakeup là gì và vì sao trạng thái phải được kiểm tra trong cùng lock?',
+    'awaitUninterruptibly() dùng khi nào thay vì await()?'
   ],
   tags: ['wait', 'notify', 'Condition', 'spurious wakeup', 'ReentrantLock']
 },
@@ -1629,6 +1661,12 @@ public final class FxQuote {                  // immutable: publish kiểu nào 
 
 ### Trả lời miệng 1 phút
 "Publish là đưa reference của object cho thread khác. Nếu publish qua một field thường thì không có happens-before giữa các lệnh ghi trong constructor và lệnh đọc ở thread khác, nên thread kia có thể thấy reference khác null nhưng field vẫn là 0 hay null, nhất là trên ARM. Các cách publish an toàn là static initializer, volatile hoặc AtomicReference, lock, hoặc concurrent collection. Field final có bảo đảm riêng: nếu this không bị lộ trong constructor thì mọi thread thấy object đều thấy giá trị final đúng như lúc constructor xong. Vì vậy pattern tôi hay dùng là object immutable cộng một reference volatile: cập nhật bằng cách thay cả object, reader không cần lock."
+
+### Ví dụ đời thực
+Service định giá ngoại tệ nạp config tỷ giá từ file JSON mỗi 5 phút, lưu trong {{static RateConfig current}} (field thường, không volatile). Thread loader nạp JSON, tạo {{RateConfig}} mới, gán vào {{current}}. Thread reader (HTTP handler) đọc {{current}} rồi truy cập {{current.usdVnd}}. Trên máy dev x86 (JDK 17) chạy ổn định 6 tháng. Triển khai production AWS Graviton2 (ARM): log xuất hiện {{NullPointerException}} tại {{current.usdVnd}} khoảng 20 lần/ngày. Điều tra: heap dump thấy {{RateConfig}} instance không null nhưng field {{usdVnd = 0}}. Nguyên nhân: ARM cho phép reorder store; JIT ghi reference {{current}} trước khi constructor {{RateConfig}} xong. Sửa: đổi {{current}} thành {{volatile}} hoặc {{AtomicReference<RateConfig>}}. Cùng lúc refactor: {{RateConfig}} làm immutable (tất cả field {{private final}}, class {{final}}, constructor copy defensive). Kết quả: NPE biến mất hoàn toàn 90 ngày theo dõi, reader không cần synchronized, throughput handler tăng 15% do bỏ lock.
+
+### Trả lời mẫu khi phỏng vấn
+"Publish qua field thường không có happens-before, thread khác thấy reference nhưng field còn 0/null — gọi là object nửa vời, hay gặp trên ARM. An toàn: static init, volatile/AtomicReference, lock, concurrent collection. Field final có freeze guarantee: nếu this không lộ trong constructor thì mọi thread thấy final đúng. Pattern tôi dùng: object immutable + reference volatile, reader zero-lock, cập nhật thay object nguyên bản."
 
 > Senior tip: pattern tôi hay dùng cho config hay bảng tỷ giá đổi định kỳ là object immutable cộng một field {{volatile}} (hoặc AtomicReference) giữ bản hiện tại. Thread cập nhật tạo object mới rồi gán một lần. Reader không cần lock và không bao giờ thấy trạng thái lẫn giữa bản cũ và bản mới, vừa rẻ vừa đúng hơn nhiều so với đặt lock quanh một object mutable.`,
   follow: [
