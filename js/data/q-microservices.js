@@ -4941,6 +4941,18 @@ kafka-consumer-groups.sh --bootstrap-server broker:9092 \
 - **Tuning:** {{max.poll.records}}, {{fetch.min.bytes}}/{{fetch.max.wait.ms}}. Burst producer -> lag tăng tạm thời chấp nhận nếu *slope* lag giảm dần.
 - **Pitfall:** chỉ nhìn tổng lag; scale consumer quên trần partition; xử lý song song rồi commit offset sai thứ tự.
 
+### Ví dụ đời thực
+
+Triage sự cố thực tế: topic "order-events" có 6 partition, group "invoice-workers" chạy 4 consumer. Bình thường lag dưới 50. Lúc 10:00 khuyến mãi, producer bắn 30.000 message/phút còn consumer chỉ xử lý 5.000 message/phút vì ghi DB từng dòng (N+1). Tôi chạy:
+
+{{kafka-consumer-groups.sh --bootstrap-server broker:9092 --describe --group invoice-workers}}
+
+Kết quả: tổng lag 120.000, nhưng P2 đơn lẻ kẹt 80.000, các partition khác dưới 100. Nguyên nhân: hot key — một khách hàng đặt 50.000 đơn, toàn bộ rơi vào P2 do hash(key). Tôi thêm 2 consumer (tổng 6 bằng số partition) nhưng P2 vẫn kẹt vì một consumer đã nắm P2, consumer mới chỉ nhận partition trống. Điều trị thực sự: tối ưu ghi DB theo batch, giảm {{max.poll.records}} cho record nặng, rồi tăng partition và scale consumer cùng lúc. Kết quả sau 20 phút: lag dưới 1.000, dashboard xanh. Bài học: luôn xem lag theo partition, không chỉ tổng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi bắt đầu bằng xem tổng lag trên dashboard, nhưng số lớn dễ che mất một partition kẹt, nên tôi luôn kéo chi tiết theo partition bằng kafka-consumer-groups.sh cùng metric records-lag của từng partition. Nguyên nhân lag thường là consumer xử lý chậm (ví dụ DB N+1) hoặc producer bỗng đẩy nhiều message. Trong một group, một partition chỉ gán cho một consumer, do đó thêm consumer vượt số partition không giúp: consumer dư đứng idle. Tôi giảm lag bằng tối ưu code xử lý, giảm max.poll.records nếu record nặng, và dùng pause/resume khi hàng đợi nội bộ đầy để tạo backpressure mà không rời group. Nếu cần scale hơn, tôi tăng partition và consumer cùng lúc, cẩn thận vì đổi key sẽ phá thứ tự theo key. Trên production tôi alert theo xu hướng lag (slope) và max lag trên partition, không chỉ tổng lag. Cuối cùng, throughput tổng của consumer phải lớn hơn producer cộng dư burst, nếu không lag là tất yếu."
+
 > Senior tip: alert theo **xu hướng** (lag slope dương kéo dài) và theo **phân phối** (max lag partition / median > ngưỡng), không chỉ tổng lag. Và nhớ: {{consumer throughput tổng}} >= {{producer throughput}} + biên burst, nếu không lag là tất yếu về toán.`,
   follow: ["Làm sao phân biệt lag tăng do producer burst tạm thời với lag tăng do consumer thực sự không theo kịp? Bạn nhìn metric nào?", "Nếu buộc phải tăng partition để scale, bạn xử lý rủi ro thay đổi {{hash(key)%N}} với dữ liệu cần ordering theo key ra sao?", "Pause/resume khác gì với việc consumer rời group? Khi nào pause gây rebalance gián tiếp?"],
   tags: ["Kafka", "consumer lag", "backpressure", "partition", "scaling", "pause resume"],
@@ -5015,6 +5027,14 @@ props.put("max.in.flight.requests.per.connection", "5");
 - **Vận hành:** 3 broker trên 3 failure domain (AZ/rack). Kiểm tra {{kafka-configs.sh}}; topic critical có RF/minISR đúng.
 - **Bẫy:** tin "acks=all là đủ" mà quên {{min.insync.replicas}} mặc định 1; bật unclean tạm rồi quên tắt; broker/topic override lệch.
 
+### Ví dụ đời thực
+
+Sự cố thực tế: cụm Kafka 3 broker (RF=3), topic "payments", cấu hình đã lệch: {{acks=all}} nhưng {{min.insync.replicas=1}} và {{unclean.leader.election.enable=true}}. Lúc 02:00 mất điện luân phiên, B2 và B3 từng rớt ISR vì chậm ghi, chỉ còn B1 làm leader và vẫn ack producer (minISR=1 cho phép một replica ack một mình). Các lệnh thanh toán 121..140 chỉ tồn tại trên B1. B1 đột ngột chết, cụm còn B3 sống nhưng LEO chỉ khoảng 110. Vì bật unclean election, một replica lạc hậu được bầu làm leader và high watermark hạ về 110. B1, B2 quay lại sau khi có điện, cắt log về 110 (truncate), các lệnh 111..140 mất vĩnh viễn dù producer đã nhận ack. Khách hàng liên hệ báo tiền bị mất. Khắc phục: phục hồi từ backup, tắt unclean election, đặt {{min.insync.replicas=2}}, triển khai kiểm tra cấu hình tự động so với baseline. Kết quả: test failover sau đó không còn mất dữ liệu, metric {{UncleanLeaderElectionsPerSec}} về 0.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Kịch bản mất dữ liệu do ba sai cấu hình cùng hiện: follower rớt ISR cho đến khi chỉ còn một replica trong ISR, minISR=1 để leader ack một mình, và bật unclean election để một replica lạc hậu lên làm leader khi leader chính chết. Kết quả là high watermark hạ xuống theo bản sao mới, log cũ bị truncate, các message đã ack biến mất. Để ngăn, tôi dùng bộ ba bất biến: {{acks=all}}, {{min.insync.replicas=2}}, {{unclean.leader.election.enable=false}} với RF>=3. Trade-off là nếu hai broker chết, partition từ chối ghi (NotEnoughReplicas) — với dữ liệu thanh toán tôi chấp nhận không nhận ghi thay vì mất dữ liệu. Trên production tôi theo dõi {{UnderReplicatedPartitions}}, {{UnderMinIsrPartitionCount}} và alert ngay khi có unclean election. Leader epoch (KIP-101) giúp truncate chính xác ranh giới epoch nhưng không cứu dữ liệu chỉ có trên leader cũ."
+
 > Senior tip: tôi coi {{unclean.leader.election.enable=false}} + {{min.insync.replicas=2}} + {{acks=all}} là "bộ ba bất biến" cho topic quan trọng và viết kiểm tra cấu hình tự động so với baseline. Đa số sự cố mất dữ liệu Kafka là do cấu hình lệch khỏi bộ ba này.`,
   follow: ["Tại sao {{acks=all}} một mình chưa đủ nếu {{min.insync.replicas=1}}? Mô tả kịch bản mất dữ liệu cụ thể.", "Khi 2/3 broker chết và {{unclean=false}}, ứng dụng nhận lỗi gì? Bạn thiết kế (retry, lưu đệm, fail open/close) thế nào để không mất yêu cầu người dùng?", "Leader epoch (KIP-101) giải quyết vấn đề truncate sai nào so với dùng high watermark thuần? Nó có ngăn được mất dữ liệu do unclean election không?"],
   tags: ["Kafka", "data loss", "unclean leader election", "ISR", "high watermark", "truncate", "durability"],
@@ -5084,6 +5104,14 @@ HttpRequest req = HttpRequest.newBuilder(uri)
 - **Đo:** tỉ lệ duplicate theo idempotency key; đối soát event input vs side effect output (phải 1:1).
 - **Tuning:** key ổn định (eventId nghiệp vụ bền hơn offset khi reset offset). TTL lưu key dedup đủ dài hơn cửa sổ retry tối đa.
 - **Pitfall:** dùng {{UUID.randomUUID()}} mỗi lần retry -> vô dụng. Tin {{commitTransaction}} bảo vệ HTTP.
+
+### Ví dụ đời thực
+
+Sự cố thực tế: dịch vụ "order-notifier" consume topic "orders", transform rồi gọi HTTP gửi email xác nhận và ghi DB, bật Kafka transaction (EOS). Lúc 14:30 deploy bản mới, worker crash ngay sau khi gọi HTTP nhưng trước khi {{commitTransaction}}. Transaction abort, offset chưa commit, lần retry consume lại cùng message và gọi HTTP lần thứ hai. Khách nhận hai email xác nhận cùng một đơn, ghi DB trùng hai dòng. Kiểm tra log thấy dịch vụ dùng {{UUID.randomUUID()}} làm idempotency key mỗi lần retry, nên dedup không hoạt động. Sửa: dùng key ổn định {{topic-partition-offset}} làm Idempotency-Key, dịch vụ email lưu key duy nhất và no-op khi trùng. Sau khi sửa, đối soát event input versus output email là 1:1, không còn trùng sau crash hoặc rebalance.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Kafka transaction chỉ đảm bảo nguyên tử trong phạm vi Kafka: ghi topic output và commit offset input đi cùng nhau, nhờ transaction coordinator và control marker. Nhưng HTTP, ghi DB, gửi email nằm ngoài tầm kiểm soát — coordinator không thể hủy một HTTP đã gửi. Nếu worker crash sau khi gọi HTTP rồi trước khi commit, lần retry sẽ gọi lại HTTP, nên bên ngoài Kafka vẫn là at-least-once. Thiết kế đúng là effectively-once: at-least-once cộng idempotency ở biên. Mỗi record kèm idempotency key ổn định (ví dụ topic-partition-offset), header Idempotency-Key gửi tới đích, đích lưu key duy nhất và no-op khi trùng. Nếu đích không hỗ trợ, tôi dùng outbox trong DB cùng transaction nghiệp vụ rồi relay riêng, hoặc chấp nhận hiếm trùng và bù trừ. Không bao giờ dùng UUID random mỗi lần retry, và không bao giờ coi EOS là bằng chứng không trùng với hệ ngoài."
 
 > Senior tip: **Kafka transaction chỉ bọc thứ Kafka kiểm soát**. Có bất kỳ {{http.*}}, {{jdbc.*}} tới hệ ngoài, gửi mail, hay SDK cloud nào trong đường đi -> coi toàn bộ là at-least-once và thiết kế idempotency end-to-end. Đừng để "đã bật EOS" là bằng chứng không trùng.`,
   follow: ["Idempotency key nên lấy từ {{(topic,partition,offset)}} hay từ {{eventId}} nghiệp vụ? Ảnh hưởng khi topic bị compact hoặc consumer reset offset?", "Nếu đích (third-party) không hỗ trợ idempotency key, bạn thiết kế lớp chống trùng ở phía bạn thế nào?", "Khi nào bạn chọn bỏ Kafka transaction và chỉ dùng at-least-once + idempotent consumer? Đánh đổi vận hành/độ trễ?"],
