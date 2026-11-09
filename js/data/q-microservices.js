@@ -2843,6 +2843,17 @@ consume input → transform → beginTransaction
 ### Trả lời miệng 1 phút
 "Tôi chọn at-least-once: xử lý xong mới commit offset, chấp nhận có thể xử lý lại thay vì mất record. Để không lặp nghiệp vụ, consumer insert event id vào bảng inbox và cập nhật dữ liệu trong cùng một transaction DB; trùng thì bỏ qua. Idempotent producer chỉ chống trùng do retry của producer, không chống được ứng dụng gửi hai lần. Kafka transactions với read_committed cho exactly-once khi cả đầu vào và đầu ra đều là Kafka, như Kafka Streams, nhưng không bao được Postgres hay API bên ngoài. Vì vậy khi nói exactly-once tôi luôn nói rõ phạm vi. Thực tế tôi gắn event id xuyên suốt log, DB và trace để chứng minh replay an toàn."
 
+### Ví dụ đời thực
+**Triệu chứng:** hệ thống ví điện tử (~1.800 event {{payment.captured}}/phút) ghi nhận 0,6% đơn bị cộng tiền ví hai lần sau một đợt deploy làm consumer khởi động lại liên tục; tiền vào ví vượt giao dịch ngân hàng khoảng 11 triệu đồng trong 40 phút.
+
+**Điều tra:** tra log thấy cùng {{eventId}} được xử lý lặp 2-3 lần nhưng offset không tiến đều. Metric {{records-consumed-rate}} dao động, {{commit-latency-avg}} tăng vọt khi pod bị OOMKilled. Kiểm tra code phát hiện listener cập nhật {{wallet.balance}} rồi mới để container commit offset, và không có bảng kiểm tra trùng; pod chết giữa hai bước nên record được đọc lại. Bảng {{inbox_processed}} đã tồn tại nhưng {{insert}} và {{update}} nằm ở hai transaction JPA khác nhau.
+
+**Nguyên nhân gốc:** commit offset sau xử lý kết hợp crash tạo bản trùng at-least-once (đúng kỳ vọng), nhưng consumer không idempotent vì kiểm tra trùng và ghi nghiệp vụ tách transaction.
+
+**Cách xử lý:** gộp {{INSERT INTO inbox_processed(event_id, processed_at)}} và cập nhật số dư vào **cùng một {{@Transactional}}**; nếu insert trùng (khóa chính) thì bỏ qua. Chỉ để container commit offset sau khi transaction DB commit. Thêm chỉ số {{SELECT count(*) FROM wallet_tx GROUP BY event_id HAVING count(*) > 1}} vào dashboard.
+
+**Kết quả đo được:** sau 48 giờ, số dòng trùng theo {{eventId}} = 0; metric {{duplicate.suppressed}} ổn định ~0,5%/phút (chứng tỏ dedup đang hoạt động), đối soát ví với ngân hàng khớp 100%.
+
 > Senior tip: trong production thường chọn at-least-once cộng consumer idempotent. Đặt event id xuyên suốt log, DB và trace để đội trực có thể chứng minh retry nào tạo bản trùng và replay an toàn.`,
   follow: ['Vì sao idempotent producer không chống được lần publish nghiệp vụ trùng?', 'Khi consumer ghi DB, bạn thiết kế inbox table và commit offset ra sao?'],
   tags: ['Kafka', 'offset', 'exactly once', 'idempotency', 'transactions'],
@@ -2905,6 +2916,17 @@ Luôn làm theo tài liệu migration chính thức của đúng phiên bản; t
 
 ### Trả lời miệng 1 phút
 "KRaft thay ZooKeeper bằng một quorum controller ngay trong Kafka, dùng Raft và lưu metadata trong một log nội bộ. Controller dự phòng có sẵn metadata nên failover nhanh, cluster chứa nhiều partition hơn, và bớt một hệ thống phải vận hành. Từ Kafka 4.0 ZooKeeper đã bị gỡ, nên tôi migrate trên bản cầu nối 3.9: dựng controller quorum ở chế độ migration, rolling broker để chép metadata, rồi rolling sang KRaft hoàn toàn, theo dõi ISR và lag sau mỗi bước, và chỉ finalize khi đã ổn định vì sau đó không rollback được. Vận hành thì tôi đặt 3 hoặc 5 controller ở các AZ khác nhau và alert theo quorum health, không chỉ broker up."
+
+### Ví dụ đời thực
+**Triệu chứng:** cụm Kafka 3.5 (6 broker, ZooKeeper, ~4.200 partition) gặp hai lần sự cố trong tháng: failover controller mất ~35 giây làm tạo topic và bầu lại leader chậm; một lần ZooKeeper session timeout gây {{NotControllerException}} rải rác, p95 produce latency vọt từ 18 ms lên 420 ms.
+
+**Điều tra:** chạy {{kafka-metadata-quorum.sh}} không dùng được (chưa KRaft); kiểm tra log controller thấy "Controller moved to another broker" và thời gian tải metadata từ ZooKeeper ~28 giây. Metric ZooKeeper {{zk_outstanding_requests}} tăng đột biến. Đội vận hành cũng báo phải vá bảo mật/backup cho cả Kafka lẫn ZooKeeper, hai hệ thống khác nhau.
+
+**Nguyên nhân gốc:** controller phụ thuộc ZooKeeper để nạp metadata khi failover, và cụm có nhiều partition làm thời gian nạp lớn; vận hành hai hệ thống phân tán tăng rủi ro.
+
+**Cách xử lý:** nâng cấp lên bản cầu nối 3.9, dựng quorum 3 controller KRaft ở 3 AZ ở chế độ migration, rolling broker để sao chép metadata, theo dõi ISR và client lag sau mỗi node. Chạy song song 10 ngày, kiểm tra tạo topic, bầu lại leader và ACL; sau đó rolling sang KRaft hoàn toàn, chờ thêm 7 ngày mới finalize.
+
+**Kết quả đo được:** failover controller giảm còn ~2 giây (controller dự phòng đã có metadata); thao tác tạo topic ổn định < 1 giây; số hệ thống phải vận hành giảm 1 (bỏ ZooKeeper); không ghi nhận {{NotControllerException}} trong 30 ngày sau.
 
 > Senior tip: diễn tập mất một controller và restore trên staging có dữ liệu gần production. Tiêu chí là đo được thời gian các thao tác metadata phục hồi (tạo topic, bầu lại leader), không chỉ thấy process đang chạy.`,
   follow: ['Controller quorum mất majority thì broker và client nhìn thấy hiện tượng gì?', 'Bạn xác minh khả năng restore metadata KRaft bằng bài diễn tập nào?'],
@@ -2974,6 +2996,17 @@ kafka-configs.sh --bootstrap-server localhost:9092 --alter --entity-type topics 
 
 ### Trả lời miệng 1 phút
 "Retention xóa cả segment khi quá tuổi hoặc quá dung lượng, nên hợp với topic audit cần replay trong một cửa sổ; tôi đặt retention theo chính sách lưu trữ và archive ra S3 nếu cần lâu hơn. Compaction giữ bản ghi mới nhất cho mỗi key, hợp với topic trạng thái khách hàng để dựng lại cache hay state store. Tôi lưu ý compaction chạy nền nên consumer vẫn có thể thấy bản cũ, active segment không được compact, và tombstone chỉ giữ trong delete.retention.ms. Có thể bật cả compact và delete nhưng phải chắc là không làm mất dữ liệu cần để rebuild. Topic không thay được database khi cần query tùy ý."
+
+### Ví dụ đời thực
+**Triệu chứng:** đội tuân thủ cần điều tra một thay đổi quyền truy cập xảy ra 75 ngày trước nhưng topic {{audit.events}} chỉ đọc lại được 7 ngày; đồng thời topic {{customer.state}} (trạng thái hạng khách hàng theo {{customerId}}) phình từ 12 GB lên 180 GB sau 3 tháng, chi phí đĩa broker tăng.
+
+**Điều tra:** chạy {{kafka-configs.sh --describe --entity-type topics --entity-name audit.events}} thấy {{retention.ms}} đang dùng mặc định 7 ngày. Với {{customer.state}}, kiểm tra {{kafka-log-dirs.sh}} và log cleaner thấy {{cleanup.policy=delete}} (mặc định) nên Kafka chỉ xóa segment theo thời gian, không compact theo key; cùng {{customerId}} xuất hiện hàng trăm phiên bản.
+
+**Nguyên nhân gốc:** chọn sai chính sách dọn log cho từng nhu cầu: audit cần lịch sử dài (retention dài + archive) nhưng để mặc định; trạng thái khách hàng chỉ cần giá trị mới nhất theo key nhưng dùng delete thay vì compact.
+
+**Cách xử lý:** đặt {{audit.events}} với {{retention.ms=7776000000}} (90 ngày) và bật tiered storage/archive sang S3 để giữ lâu hơn theo chính sách. Đặt {{customer.state}} với {{cleanup.policy=compact,min.compaction.lag.ms=60000,delete.retention.ms=86400000}}, đảm bảo key là {{customerId}} ổn định. Thử rebuild cache khách hàng từ đầu topic sau khi cleaner chạy.
+
+**Kết quả đo được:** điều tra audit đọc lại được đủ 90 ngày; dung lượng {{customer.state}} giảm còn ~14 GB sau 24 giờ cleaner chạy (bản mới nhất ~1,2 triệu key), cache rebuild từ topic cho kết quả khớp DB 100%.
 
 > Senior tip: thử dựng lại state store từ topic sau khi cleaner chạy và tombstone đã hết hạn. Nếu việc rebuild vẫn cần biết "bản ghi đã bị xóa" để hiểu nghiệp vụ, phải lưu dấu xóa hoặc lịch sử ở nơi khác.`,
   follow: ['Nếu consumer mới cần khôi phục lịch sử đầy đủ, compaction có đáp ứng không?', 'Tombstone hết hạn trước khi consumer offline quay lại tạo rủi ro nào?'],
@@ -3051,6 +3084,17 @@ DLT header: kafka_dlt-original-topic/partition/offset, kafka_dlt-exception-fqcn,
 ### Trả lời miệng 1 phút
 "Tôi phân loại lỗi trước. Lỗi tạm thời như DB timeout thì DefaultErrorHandler retry vài lần với exponential backoff, tổng chỉ vài giây để không giữ partition lâu. Lỗi vĩnh viễn như payload sai hay deserialize hỏng thì khai báo not-retryable để DeadLetterPublishingRecoverer gửi thẳng sang DLT, kèm header topic, partition, offset và exception. Lỗi deserialize tôi bắt bằng ErrorHandlingDeserializer, nếu không consumer kẹt ngay ở poll. Offset chỉ được commit khi xử lý xong hoặc đã gửi DLT thành công, nên không mất record. Trade-off của blocking retry là partition đứng trong lúc retry, đổi lại giữ thứ tự. Tôi luôn có alert và owner cho DLT."
 
+### Ví dụ đời thực
+**Triệu chứng:** topic {{order.placed}} (12 partition, ~900 event/phút) có lag của partition 3 tăng liên tục lên 120.000 record trong 25 phút; các đơn thuộc partition 3 không được xử lý, dashboard báo "chậm cập nhật tồn kho" cho một nhóm khách hàng.
+
+**Điều tra:** xem log consumer thấy lỗi {{DeserializationException}} lặp vô hạn tại cùng offset; {{records-consumed-rate}} của partition 3 gần 0 trong khi các partition khác bình thường. Kiểm tra payload tại offset lỗi (dùng {{kafka-console-consumer --offset}}) thấy producer mới gửi JSON thiếu field bắt buộc. Cấu hình không dùng {{ErrorHandlingDeserializer}} và không có {{DeadLetterPublishingRecoverer}}.
+
+**Nguyên nhân gốc:** lỗi deserialize xảy ra ở bước poll; {{DefaultErrorHandler}} không bắt được vì exception ném trước khi listener chạy, nên consumer bị kẹt vòng lặp tại cùng offset (poison message) và chặn toàn bộ partition.
+
+**Cách xử lý:** bọc bằng {{ErrorHandlingDeserializer}} và ủy quyền cho {{JsonDeserializer}}; cấu hình {{DefaultErrorHandler}} với {{ExponentialBackOff}} (tối đa 5 giây) và {{DeadLetterPublishingRecoverer}} gửi sang {{order.placed.DLT}} kèm header lỗi. Khai báo {{DeserializationException}} là not-retryable. Tạo DLT đủ 12 partition, thêm alert "DLT rate > 0" và quy trình replay có idempotency.
+
+**Kết quả đo được:** poison message được chuyển sang DLT trong < 1 giây; lag partition 3 giảm về 0 sau 4 phút; 1 record lỗi được đội owner sửa và replay an toàn nhờ kiểm tra trùng, không ảnh hưởng các record khác.
+
 > Senior tip: có dashboard riêng cho số lần retry, tốc độ vào DLT và tuổi của record cũ nhất chưa xử lý. DLT bằng 0 không có nghĩa là khỏe nếu consumer đang retry cùng một poison record hàng nghìn lần.`,
   follow: ['Retry topic khác blocking retry về thứ tự và lag ra sao?', 'Bạn replay DLT thế nào để không gửi lại payment đã thành công?'],
   tags: ['Spring Kafka', 'DefaultErrorHandler', 'DLT', 'retry'],
@@ -3113,6 +3157,17 @@ mỗi record: 6ms, trong đó 5ms là write DB (pool 10 connection, DB đã ch�
 
 ### Trả lời miệng 1 phút
 "Lag là log end offset trừ offset đã commit, và thêm consumer chỉ có ích khi còn partition và nút thắt là consumer. Nên tôi đo trước: tốc độ vào so với ra, lag theo từng partition để tìm hot key, thời gian xử lý mỗi record tách ra chờ DB pool, downstream, GC, rebalance. Nếu DB là nút thắt, tôi ghi theo batch và giới hạn concurrency bằng capacity DB theo Little's Law. Backpressure thì pause partition khi downstream cạn, vẫn poll để giữ membership và không commit phần chưa xong. Autoscale theo lag với KEDA nhưng không vượt số partition và có cooldown. Tôi alert theo event age vì nó sát với người dùng hơn số offset."
+
+### Ví dụ đời thực
+**Triệu chứng:** chiến dịch flash sale làm traffic nhân 3 (từ ~2.000 lên ~6.000 event/phút, topic {{order.status}} 12 partition, 12 pod consumer). Lag tăng đều lên ~480.000 record trong 30 phút; tuổi event ({{consumer-lag-ms}} tương đương) vượt 8 phút, vi phạm SLO xử lý < 30 giây.
+
+**Điều tra:** kiểm tra {{kafka-consumer-groups --describe}} thấy lag phân bố đều 12 partition (không phải hot key), số consumer = số partition nên thêm pod không giúp. Đo tốc độ ra chỉ ~2.000 rec/s. Trace cho mỗi record: 1 ms parse + 6 ms ghi DB = 7 ms, nhưng 5 ms là chờ {{HikariPool}} (pool 10 connection) vì DB đã chạm ~2.000 write/s. CPU pod ~25%, không GC dài, rebalance = 0.
+
+**Nguyên nhân gốc:** nút thắt là throughput ghi DB, không phải số consumer hay CPU. Scale thêm consumer (nếu có thêm partition) chỉ làm connection pool/DB quá tải hơn.
+
+**Cách xử lý:** gom ghi theo batch (INSERT nhiều dòng, 100 record/lần) giảm round-trip; giới hạn concurrency xử lý theo capacity DB (Little's Law: 2.000 write/s × 0,005 s ≈ 10 việc song song). Khi hàng đợi nội bộ đầy thì {{pause()}} partition, vẫn poll giữ membership, không commit phần chưa xong. KEDA autoscale theo lag nhưng {{maxReplicaCount = 12}} (= số partition) và có cooldown 5 phút.
+
+**Kết quả đo được:** tốc độ ra tăng lên ~6.200 rec/s; lag giảm về < 5.000 record sau 18 phút; p99 event age về 12 giây; lỗi DB timeout giảm từ 3,2% xuống 0%.
 
 > Senior tip: đặt SLO kiểu "99% event được xử lý trong 30 giây" rồi alert theo event age. Một triệu lag trên topic phân tích có thể vô hại; vài nghìn event thanh toán đã già 10 phút thì không.`,
   follow: ['Lag thấp nhưng event age cao có thể do đâu?', 'Làm sao phối hợp autoscaling consumer với giới hạn connection pool DB?'],
@@ -3177,6 +3232,17 @@ record mới (v2) ──► reader v1: currency lạ → bỏ qua               
 
 ### Trả lời miệng 1 phút
 "Schema Registry lưu các phiên bản schema và kiểm tra compatibility khi đăng ký, mỗi message chỉ mang schema ID, consumer dùng writer schema và reader schema để resolve. Với nhiều team và cần replay, tôi chọn BACKWARD_TRANSITIVE, hoặc FULL_TRANSITIVE nếu không kiểm soát được thứ tự deploy. Quy tắc của tôi: field mới luôn có default, xóa field phải qua deprecate, đổi tên dùng alias, không đổi nghĩa âm thầm. Rollout theo thứ tự: đăng ký schema qua CI, deploy consumer trước, producer sau, chờ hết retention mới dọn field cũ. Trade-off là thêm quy trình, nhưng registry không kiểm được ngữ nghĩa nên tôi vẫn cần review và contract test."
+
+### Ví dụ đời thực
+**Triệu chứng:** team Payment thêm field {{discountCode}} vào event Avro {{payment.captured}} và deploy producer trước. Consumer của team Loyalty (deploy độc lập, dùng schema cũ) bắt đầu lỗi deserialize ~4% message mới; đồng thời một consumer phân tích replay 30 ngày dữ liệu cũng lỗi vì gặp schema cũ hơn.
+
+**Điều tra:** kiểm tra Schema Registry subject {{payment.captured-value}} thấy mode đang là {{BACKWARD}} (không transitive) và không có bước CI chặn đăng ký. Log consumer báo {{org.apache.avro.AvroTypeException}} khi resolve field. Trong một PR khác, ai đó đổi {{amount}} từ USD sang cent nhưng vẫn giữ kiểu {{long}}; registry chấp nhận (cùng kiểu), nhưng số tiền hiển thị sai 100 lần ở dashboard.
+
+**Nguyên nhân gốc:** thêm field nhưng deploy sai thứ tự (producer trước consumer) và thiếu default an toàn ở consumer cũ; mode không transitive làm replay phiên bản xa hơn thất bại; registry không kiểm tra được thay đổi **ngữ nghĩa** (đơn vị).
+
+**Cách xử lý:** chuyển subject sang {{FULL_TRANSITIVE}}; thêm field mới luôn có default ({{"discountCode": ["null","string"], "default": null}}). CI chạy kiểm tra compatibility (gọi REST {{/compatibility}}) trước merge, tắt auto-register ở production. Rollout: đăng ký schema qua CI → deploy consumer → deploy producer. Với thay đổi đơn vị, tạo field mới {{amountCents}} và deprecate {{amount}} thay vì đổi nghĩa.
+
+**Kết quả đo được:** sau 6 tuần, 0 lỗi deserialize liên quan schema; 2 PR bị CI chặn do vi phạm compatibility; replay 30 ngày chạy thành công với consumer schema mới nhất.
 
 > Senior tip: quyền sở hữu schema phải gồm owner nghiệp vụ, chính sách breaking change và người liên hệ khi compatibility check thất bại. Registry không thay thế được review ngữ nghĩa hay danh sách consumer đang dùng topic.`,
   follow: ['Backward và full transitive khác nhau thế nào khi replay topic lâu ngày?', 'Đổi đơn vị một field nhưng giữ nguyên kiểu số có bị registry phát hiện không?'],
