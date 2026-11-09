@@ -592,8 +592,40 @@ W3C traceparent mang version, trace-id (16 byte), parent-id (8 byte) và trace-f
 ### Pitfall
 Không chỉ set MDC mà quên finally remove/restore. Tạo span mới mà không gắn parent context sẽ làm trace bị đứt thành nhiều trace rời. Không log toàn bộ baggage. Khi truyền qua message broker, inject context vào header và extract ở consumer; message retry có thể tiếp tục trace cũ hoặc tạo span xử lý mới theo chính sách instrumentation.
 
+### Cơ chế từng bước
+Hãy đi qua luồng một request đi qua nhiều service và thread pool, từ đầu đến cuối. **TraceId** là định danh duy nhất của toàn bộ trace (một request end-to-end); **SpanId** là định danh của một operation cụ thể trong trace đó; **ParentSpanId** cho biết span cha. **ThreadLocal** là cơ chế lưu dữ liệu gắn với một thread cụ thể — dữ liệu này không tự lan truyền sang thread khác.
+
+1. **Client gửi request có header traceparent**: Header W3C Trace Context (ví dụ {{traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01}}) mang {{version-trace-id-parent-id-flags}}. **Vì sao cần header này?** Vì traceId phải do client hoặc gateway edge sinh ra một lần, rồi tất cả service dùng chung để nối các span thành một trace hoàn chỉnh.
+2. **Gateway/service edge extract context**: Đọc header, tạo {{Span}} gốc với traceId từ header, spanId mới. **Vì sao không tự sinh traceId mới?** Nếu mỗi service sinh traceId riêng, backend sẽ thấy hàng nghìn trace rời rạc thay vì một chuỗi liên tục — không thể debug latency hay error rate theo request thật.
+3. **Gọi service downstream qua HTTP**: Inject context vào header {{traceparent}} và {{tracestate}} (baggage) khi gọi HTTP client. **Vì sao inject?** Vì network boundary cắt đứt ThreadLocal; header là cầu nối duy nhất giữa hai tiến trình.
+4. **Xử lý bất đồng bộ qua thread pool**: Khi {{executor.submit(task)}}, thread caller **capture** context hiện tại ({{Context.current()}} hoặc {{MDC.getCopyOfContextMap()}}), truyền vào task. **Vì sao không để worker tự lấy?** Worker là thread tái sử dụng; ThreadLocal của caller không hiển thị ở worker. Nếu không capture, task chạy không có traceId, log mất liên kết.
+5. **Trong task worker**: Set context đã capture vào ThreadLocal/MDC ngay đầu task, ghi log/span, xóa context trong {{finally}} (dù thành công hay exception). **Vì sao finally?** Exception làm bỏ qua code cleanup → context rò sang task kế tiếp trên cùng worker (thread leak).
+6. **Kết thúc span và export**: Span kết thúc, đưa vào batch processor của OpenTelemetry SDK. **Vì sao batch?** Gửi từng span lên collector tốn network round-trip; batch gom nhiều span giảm overhead. Cấu hình {{scheduleDelayMillis}}, {{maxQueueSize}}, {{maxExportBatchSize}} để cân bằng latency vs throughput.
+7. **Message broker (Kafka/RabbitMQ)**: Producer inject context vào message header; consumer extract và tạo span tiếp tục (hoặc span mới với parent context). **Vì sao inject vào message?** Message queue là network boundary khác; header message thay cho HTTP header.
+
+~~~java
+// Minh họa: capture context ở caller, set/clear trong worker (OpenTelemetry style)
+Context captured = Context.current();                    // 4. capture ở thread submit
+executor.submit(() -> {
+    try (Scope scope = captured.makeCurrent()) {        // 5. set context cho task này, tự restore khi đóng
+        Span span = tracer.spanBuilder("async-work").setParent(captured).startSpan();
+        try (Scope s = span.makeCurrent()) {
+            doWork();                                    // nghiệp vụ, log tự có traceId
+        } finally { span.end(); }
+    }
+});
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** Log của request B hiển thị traceId của request A, khiến tracing UI hiển thị sai luồng. **Nguyên nhân:** Thread pool tái sử dụng worker; task A set MDC/ThreadLocal nhưng không clear trong {{finally}}, task B kế thừa context cũ. **Cách sửa:** Luôn bọc thân task bằng try/finally (set context trước, clear trong finally); dùng {{Context.taskWrapping(executor)}} của OpenTelemetry thay vì tự quản lý ThreadLocal.
+- **Triệu chứng:** Trace bị đứt thành nhiều trace rời rạc ở service downstream; một request end-to-end hiển thị 3-4 traceId khác nhau. **Nguyên nhân:** Service gọi HTTP client nhưng không inject header {{traceparent}}/{{tracestate}}; hoặc service nhận request không extract header để làm parent context. **Cách sửa:** Cấu hình instrumentation tự động (OpenTelemetry Java agent, Micrometer Tracing) hoặc interceptor thủ công inject/extract header tại mọi boundary HTTP/gRPC/message.
+- **Triệu chứng:** Collector nhận quá nhiều span, bộ nhớ tăng, batch export timeout, trace bị sampling bỏ qua ngẫu nhiên. **Nguyên nhân:** Không cấu hình {{BatchSpanProcessor}} (queue size, schedule delay, max batch size) và sampler phù hợp; span name dùng giá trị động (orderId) làm metric label gây cardinality explosion. **Cách sửa:** Dùng {{ParentBasedSampler}} với {{TraceIdRatioBased}} (ví dụ 10%); span name cố định (ví dụ {{HTTP POST /orders}}), orderId để vào attribute; cấu hình processor: {{scheduleDelayMillis=5000}}, {{maxQueueSize=2048}}, {{maxExportBatchSize=512}}.
+- **Triệu chứng:** Retry message từ DLQ tạo span mới không nối với trace gốc, mất bối cảnh lỗi ban đầu. **Nguyên nhân:** Consumer retry không extract context từ message header, hoặc tạo span mới không set parent. **Cách sửa:** Khi retry, extract context từ header message gốc, tạo span con ({{setParent(extractedContext)}}) hoặc tiếp tục span cũ theo chính sách instrumentation.
+
 ### Liên hệ phỏng vấn
-Giải thích traceparent qua HTTP, context qua executor, và cách chứng minh không rò context giữa hai task dùng chung worker. Nêu lựa chọn instrumentation thay vì tự viết ThreadLocal khắp ứng dụng.
+- **Hỏi:** Thread pool tái sử dụng worker; task A đặt MDC nhưng không clear. Nguy cơ chính? **Trả lời ngắn:** Task B có thể ghi log với context A — ThreadLocal thuộc worker, không tự dọn khi task kết thúc.
+- **Hỏi:** Trong W3C Trace Context, {{trace-id}} và {{parent-id}} có vai trò nào? **Trả lời ngắn:** {{trace-id}} nối toàn trace; {{parent-id}} chỉ span cha được truyền để phía nhận tạo quan hệ con. Baggage là metadata riêng, không nên chứa bí mật.
+- **Hỏi:** Tại sao không nên dùng {{orderId}} làm {{span name}} hoặc metric label? **Trả lời ngắn:** Cardinality explosion — mỗi đơn hàng tạo một tên span/label duy nhất, làm sập hệ thống metric/tracing. Dùng tên cố định ({{HTTP POST /orders}}), orderId để vào attribute.
 
 > Senior tip: kiểm tra task bị reject/cancel và đường exception; cleanup context phải nằm trong finally, kể cả khi code nghiệp vụ ném lỗi.
 `,
@@ -649,6 +681,8 @@ Lỗi thường gặp: đọc ThreadLocal trên thread caller rồi mong worker 
   check: [
     { q: 'Thread pool tái sử dụng worker; task A đặt MDC nhưng không clear. Nguy cơ chính?', options: ['Task B có thể ghi log với context A', 'TraceId tự đổi thành spanId', 'Executor sẽ tạo thread mới cho B', 'Kafka offset sẽ rollback'], answer: 0, explain: `ThreadLocal thuộc worker và worker được tái sử dụng. Không cleanup có thể làm context rò giữa các task.` },
     { q: 'Trong W3C Trace Context, trace-id và parent-id có vai trò nào?', options: ['Cả hai là ID của database', 'trace-id nối toàn trace; parent-id xác định span cha được truyền', 'parent-id là baggage PII', 'trace-id chỉ dùng làm metric label'], answer: 1, explain: `trace-id giữ các span trong cùng trace; parent-id chỉ span hiện tại ở phía gửi để phía nhận tạo quan hệ con. Baggage là metadata riêng, không nên chứa bí mật.` },
+    { q: 'Service A gọi HTTP service B nhưng không inject header traceparent. Hậu quả?', options: ['Service B tự sinh traceId mới, trace bị đứt', 'Service B dùng traceId của A tự động', 'HTTP client tự inject header', 'Không ảnh hưởng vì ThreadLocal lan truyền'], answer: 0, explain: `Ranh giới mạng cắt đứt ThreadLocal. Không inject header = service B không biết parent context, tự tạo trace mới → trace bị đứt. (B) sai vì không có cơ chế tự động. (C) sai trừ khi cấu hình instrumentation. (D) sai vì ThreadLocal không lan truyền qua network.` },
+    { q: 'Tại sao không nên dùng orderId làm span name hoặc metric label?', options: ['Khó đọc trong UI', 'Cardinality explosion: mỗi đơn tạo label duy nhất, sập hệ thống metric', 'Vi phạm W3C spec', 'Làm chậm span export'], answer: 1, explain: `Span name/label phải ổn định, số lượng hữu hạn. orderId không giới hạn → cardinality không kiểm soát. Dùng span name cố định ("HTTP POST /orders"), orderId để attribute.` },
   ], tags: ['tracing', 'OpenTelemetry', 'ThreadLocal', 'context propagation']
 },
 {
@@ -969,17 +1003,59 @@ Token trên không phải rollback tức thời; nó đánh dấu công việc c
 ### Production
 Ledger và tiến độ phải bền (bảng saga/outbox), không nằm trong RAM như bài tập. Mỗi bước cần idempotent ở phía đối tác: xoá row thiếu trả thành công, xoá blob thiếu trả thành công, notify dùng idempotency key. Orchestrator có thể chạy lại sau crash nhờ state đã lưu. Đừng gọi downstream trong transaction DB dài; ghi state trước, gọi ngoài transaction, rồi cập nhật.
 
-### Pitfall
-- Trả 200 dù có id lỗi: người dùng tưởng đã xoá hết.
-- Không có ledger: blob mồ côi, không ai biết cần dọn.
-- Retry không có tiến độ: xoá và notify lặp, đặc biệt nguy hiểm với notify gửi email.
-- Ledger chỉ trong RAM: restart là mất, dữ liệu kẹt nửa vời.
-- Xoá cứng ngay: khó khôi phục khi bước sau fail; nhiều hệ thống dùng soft delete + job dọn sau khi chắc chắn.
+### Cơ chế từng bước
+Hãy đi qua luồng xoá một lô dữ liệu (ví dụ 100 đơn hàng) qua ba hệ thống: Database (PostgreSQL), Object Store (S3/MinIO), Downstream (Notification Service). **Saga** là chuỗi các local transaction, mỗi transaction commit ở một hệ thống riêng; không có transaction ACID bao trùm cả ba. **Compensation** là hành động nghiệp vụ ngược chiều để bù trừ tác động đã commit (ví dụ: đã xoá row → compensation là khôi phục row, hoặc ghi log để reconcile sau). **207 Multi-Status** là mã HTTP báo "thành công một phần" — response kèm danh sách chi tiết từng item.
+
+1. **Nhận request xoá lô**: API nhận {{DELETE /orders/batch}} với danh sách {{orderIds}}. **Vì sao batch?** Xoá từng id một request tốn network round-trip; batch gom nhiều id giảm overhead. Client nhận một response duy nhất.
+2. **Duyệt từng id theo thứ tự DB → Blob → Notify**: Với mỗi {{id}}:
+   - **Bước 1 - Xoá row DB**: Gọi {{DELETE FROM orders WHERE id = ?}}. Nếu row không tồn tại ({{false}}), coi như **đã xoá** (idempotent), bỏ qua Blob và Notify cho id này. **Vì sao DB trước?** Row DB là "source of truth"; nếu xoá DB thất bại thì không nên xoá blob (sẽ tạo blob mồ côi).
+   - **Bước 2 - Xoá blob Object Store**: Gọi {{s3.deleteObject(bucket, key)}}. Nếu lỗi (network, permission), **ghi compensation ledger**: {{compensation.delete.row(id)}} — nghĩa là row DB đã xoá, cần reconcile sau. **Vì sao ghi ledger?** Row đã mất, blob còn lại; ledger đánh dấu "còn việc dang dở" để job reconcile xử lý.
+   - **Bước 3 - Notify downstream**: Gọi {{notificationService.deleted(id)}}. Nếu lỗi, ghi thêm {{compensation.delete.blob(id)}} (blob đã xoá, cần notify lại). **Vì sao notify cuối?** Downstream chỉ cần biết khi dữ liệu thực sự đã biến mất; notify sớm có thể gây race condition (downstream đọc DB còn thấy row).
+3. **Tổng hợp response**: Nếu **tất cả** id thành công (mỗi id qua hết 3 bước) → trả {{200 OK}}. Nếu **có ít nhất một id lỗi** ở bất kỳ bước nào → trả {{207 Multi-Status}} kèm {{detail}} danh sách từng id với {{code}} (200/500) và {{msg}}. **Vì sao 207 không phải 500?** 500 nghĩa là "toàn bộ thất bại", client không biết id nào đã xoá. 207 cho client thấy rõ: id nào xong, id nào lỗi, tự quyết định retry hay báo cáo.
+4. **Retry / Reconcile**: Client hoặc scheduler gọi lại {{deleteBatch}} (hoặc {{reconcile()}}). Orchestrator đọc **tiến độ** (progress) từng id: bước nào đã {{done}} thì **bỏ qua**, chỉ chạy bước còn thiếu. **Vì sao cần tiến độ?** Không có tiến độ, retry sẽ xoá DB lần 2 (idempotent nên an toàn nhưng lãng phí), xoá blob lần 2, **gửi notify lần 2** (gửi email gấp đôi — nguy hiểm).
+5. **Kết thúc**: Khi tất cả bước của một id đã {{done}} → xoá tiến độ và ledger của id đó. Id này lần sau gọi trả {{200}} ngay (already deleted).
+
+~~~java
+// Minh họa luồng deleteOne với tiến độ và ledger (rút gọn từ bài tập)
+Detail deleteOne(String id) {
+    if (completed.contains(id)) return new Detail(id, 200, "already deleted");
+    State st = progress.computeIfAbsent(id, k -> new State()); // EnumSet<Step> done
+
+    try {
+        // Bước 1: DB
+        if (!st.done.contains(Step.DB)) {
+            if (!db.deleteRows(id)) { progress.remove(id); return new Detail(id, 200, "already absent"); }
+            st.done.add(Step.DB);
+        }
+        // Bước 2: Blob
+        if (!st.done.contains(Step.BLOB)) { objects.deleteBlob(id); st.done.add(Step.BLOB); }
+        // Bước 3: Notify
+        if (!st.done.contains(Step.NOTIFY)) { downstream.notify(id); st.done.add(Step.NOTIFY); }
+
+        completed.add(id); progress.remove(id); clearLedger(id);
+        return new Detail(id, 200, "deleted");
+    } catch (Exception e) {
+        // Ghi ledger cho các bước ĐÃ thành công (bước lỗi KHÔNG ghi)
+        if (st.done.contains(Step.DB)) ledger.add(new Comp("delete.row", id));
+        if (st.done.contains(Step.BLOB)) ledger.add(new Comp("delete.blob", id));
+        return new Detail(id, 500, e.getClass().getSimpleName() + ": " + e.getMessage());
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu khách:** Client nhận {{200 OK}} nhưng một số id thực tế chưa xoá được blob/notify; dữ liệu mồ côi tồn tại âm thầm. **Nguyên nhân:** Orchestrator trả {{200}} khi có lỗi (chỉ kiểm tra DB thành công, bỏ qua lỗi blob/notify), hoặc try-catch nuốt exception mà không ghi ledger/đánh dấu lỗi. **Cách sửa:** Luôn kiểm tra lỗi ở **tất cả** ba bước; chỉ trả {{200}} khi mọi id qua hết 3 bước; lỗi bất kỳ bước → {{207}} kèm detail từng id.
+- **Triệu chứng:** Reconcile chạy mà xoá row DB lần hai (hoặc gửi notify lần hai), gây email trùng lặp cho người dùng. **Nguyên nhân:** Không lưu tiến độ (progress) từng bước đã xong; retry chạy lại từ đầu thay vì tiếp tục từ bước lỗi. **Cách sửa:** Lưu {{EnumSet<Step> done}} cho mỗi id (bền vững trong DB/Redis); đầu mỗi lần xử lý kiểm tra {{done}} để bỏ qua bước đã thành công.
+- **Triệu chứng:** Service restart làm mất compensation ledger, các id kẹt giữa chừng không bao giờ được reconcile. **Nguyên nhân:** Ledger và tiến độ chỉ lưu trong RAM ({{Map}}, {{List}}); process chết là mất hết state. **Cách sửa:** Ghi ledger và progress vào bảng bền vững ({{saga_state/outbox}}) **trước hoặc cùng transaction** với việc gọi tier tiếp theo; restart đọc lại state và tiếp tục.
+- **Triệu chứng:** Xoá cứng (hard delete) row DB, sau đó blob lỗi → không thể khôi phục row để retry, dữ liệu mất lệch. **Nguyên nhân:** Dùng {{DELETE}} thay vì {{soft delete}} (cột {{deleted_at}}); hard delete không thể undo. **Cách sửa:** Dùng soft delete + job dọn dẹp sau cửa sổ an toàn (ví dụ 30 ngày); compensation chỉ cần cập nhật {{deleted_at = null}} để khôi phục.
 
 ### Liên hệ phỏng vấn
-Nêu rõ vì sao chọn 207 thay vì 500, thứ tự ba bước, ledger ghi gì, retry dựa vào đâu, và reconcile xử lý trường hợp nào. Sau đó mô tả cách làm cho từng tier idempotent để retry an toàn.
+- **Hỏi:** Vì sao chọn {{207 Multi-Status}} thay vì {{500}} khi một id lỗi? **Trả lời ngắn:** 500 che mất thông tin id nào đã xoá thành công; 207 trả detail từng id (code {{200}}/{{500}}) để client biết chính xác trạng thái và quyết định retry/report.
+- **Hỏi:** Thứ tự ba bước {{DB → Blob → Notify}} có ý nghĩa gì? **Trả lời ngắn:** DB là source of truth (xoá trước để tránh blob mồ côi); Blob sau DB (tránh file rác khi DB fail); Notify cuối (downstream chỉ hành động khi dữ liệu thực sự mất).
+- **Hỏi:** Reconcile không xoá DB hai lần nhờ cơ chế nào? **Trả lời ngắn:** Lưu tiến độ ({{EnumSet<Step> done}}) cho mỗi id; retry đọc tiến độ và chỉ chạy bước chưa {{done}}.
+- **Hỏi:** Compensation ledger ghi gì khi blob lỗi sau khi DB đã xoá? **Trả lời ngắn:** {{compensation.delete.row(id)}} — đánh dấu row đã xoá, cần reconcile blob/notify; KHÔNG ghi {{compensation.delete.blob}} vì blob chưa xoá thành công.
 
-> Senior tip: đặt metric theo id kẹt quá N phút và tuổi entry ledger; alert khi ledger tăng mà reconcile không giảm. Với lô lớn, xử lý theo batch nhỏ và trả 202 kèm job id thay vì giữ request quá lâu.
+> Senior tip: đặt metric theo id kẹt quá N phút và tuổi entry ledger; alert khi ledger tăng mà reconcile không giảm. Với lô lớn, xử lý theo batch nhỏ và trả {{202}} kèm job id thay vì giữ request quá lâu.
 `,
   exercises: [{
     title: 'Delete orchestrator: 207, tiến độ từng id và reconcile',
@@ -1233,6 +1309,7 @@ Trong production, State và ledger phải được lưu bền và cập nhật n
     { q: 'Một lô có 10 id: 9 id xoá xong, 1 id lỗi ở object store. API nên trả gì?', options: ['200 vì phần lớn thành công', '207 kèm detail từng id để client biết id nào lỗi', '500 và rollback toàn bộ', '202 và bỏ qua id lỗi'], answer: 1, explain: `207 Multi-Status đúng cho kết quả từng phần: 9 id thành công, 1 id lỗi vẫn được báo riêng. 200 che mất lỗi; 500 làm mất thông tin id nào đã xong và không rollback được object store; 202 chỉ hợp lý nếu chấp nhận xử lý nền, nhưng vẫn phải có trạng thái theo id.` },
     { q: 'Vì sao orchestrator lưu tiến độ các bước đã xong theo từng id?', options: ['Để tăng kích thước response', 'Để retry tiếp tục từ bước còn thiếu, tránh xoá DB hoặc notify hai lần', 'Để thay thế transaction DB', 'Để tự động rollback blob'], answer: 1, explain: `Tiến độ biến retry thành idempotent ở mức orchestration: bước đã xong bị bỏ qua. Nó không làm response lớn hơn (chỉ dùng nội bộ), không thay thế transaction DB, và cũng không tự rollback blob đã xoá.` },
     { q: 'Sau khi DB đã xoá nhưng blob lỗi, compensation ledger nên ghi gì?', options: ['Không ghi gì vì chưa hoàn tất', 'compensation.delete.row(id) cho bước DB đã thành công', 'compensation.delete.blob(id) cho bước vừa lỗi', 'Một bản sao dữ liệu blob để phục hồi'], answer: 1, explain: `Ledger ghi các bước đã thành công để reconciler biết id còn dang dở; trong ví dụ này là row. Bước vừa lỗi chưa thành công nên không ghi blob; không ghi gì sẽ làm mất dấu id cần xử lý; sao lưu blob là việc của backup, không phải ledger compensation.` },
+    { q: 'Row DB không tồn tại (xoá thất bại trả false). Orchestrator xử lý ra sao?', options: ['Trả 500 và ghi ledger compensation.delete.row', 'Coi như đã xoá: trả detail 200, bỏ qua blob và notify, không ghi ledger', 'Tạo row mới rồi xoá lại để có compensation', 'Retry vô hạn cho đến khi row xuất hiện'], answer: 1, explain: `Xoá idempotent: trạng thái mong muốn (row không còn) đã đạt. Không cần compensation vì không có tác động đã commit cần bù; blob/notify cũng không chạy vì không có dữ liệu để xoá/thông báo.` },
   ], related: ['microservices-043', 'microservices-004', 'microservices-022'],
   tags: ['207', 'partial success', 'compensation', 'saga', 'reconcile']
 },
