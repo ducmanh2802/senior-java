@@ -2633,6 +2633,12 @@ Playwright có khả năng component testing (phổ biến trong hệ Node/JS). 
 ### Trả lời phỏng vấn thế nào
 Giải thích mục đích từng mức và tiêu chí chọn. Nêu {{page.route}} để mock có chủ đích (ca lỗi, backend chưa sẵn sàng) và nhấn mạnh giữ một tập E2E nhỏ chạy tích hợp thật. Thể hiện bạn hiểu trade-off: cô lập nhanh nhưng có thể lệch thực tế.
 
+### Ví dụ đời thực
+Một dự án bán hàng trực tuyến dùng React + Java Spring Boot. Team QA có 120 test E2E Playwright chạy 25 phút, flaky rate 8% do backend staging hay restart giữa ngày. Trưởng SDET phân tích: 70 test chỉ kiểm tra hiển thị form (validate, dropdown, toast) – không cần backend thật. Họ chuyển 70 test này sang component testing bằng Vitest + React Testing Library (chạy 3 phút, 0% flaky), giữ 20 test API quan trọng (REST Assured, 4 phút), và chỉ 30 test E2E luồng thanh toán/đăng ký xuyên hệ thống (12 phút). Kết quả: suite PR từ 25 xuống 10 phút, flaky từ 8% xuống 1.2%, dev nhận feedback trong 10 phút thay vì chờ 25 phút. Khi backend thêm field bắt buộc mới, chỉ 3 test E2E và 5 test API cần sửa; 70 component test không đỏ vì mock props. Sau 3 tháng, team không còn bỏ qua CI đỏ, và số lỗi UI lọt production giảm từ 5–7/tháng xuống 1–2/tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân tầng test theo chi phí và giá trị: component test cho logic UI cục bộ (validate, render, trạng thái) – chạy giây, không flaky; API test cho hợp đồng và nghiệp vụ backend – chạy nhanh, ổn định; E2E chỉ cho luồng critical xuyên lớp (đăng nhập, thanh toán) – chạy chậm nhưng cho niềm tin tích hợp. Mock backend bằng page.route cho ca lỗi (500, timeout) hoặc khi BE chưa xong, nhưng luôn giữ một tập E2E nhỏ chạy tích hợp thật. Ví dụ project trước: chuyển 70/120 test E2E sang component test, suite từ 25 xuống 10 phút, flaky từ 8% xuống 1%, dev không còn bỏ CI. Tôi quyết định bằng dữ liệu pipeline, không theo xu hướng."
+
 > Senior tip: Hãy đặt câu hỏi "lỗi này tầng nào bắt rẻ nhất?" trước khi viết E2E. Một bug validate hiển thị bắt ở component test mất giây; bắt ở E2E tốn phút và hay flaky. E2E dành cho niềm tin tích hợp, không dành cho mọi nhánh if của UI.`,
   follow: [
     'Khi mock bằng {{page.route}}, làm sao tránh test "xanh" nhưng contract thực tế giữa FE và BE đã đổi?',
@@ -2804,6 +2810,12 @@ Test: cung cấp giá trị chuẩn (số), assert chuỗi hiển thị đúng t
 
 ### Trả lời phỏng vấn thế nào
 Trình bày 3 trục (i18n, timezone, tiền) với nguyên tắc: dữ liệu chuẩn (UTC, kiểu tiền chính xác) tách khỏi hiển thị (locale/timezone). Nêu công cụ: Playwright {{locale/timezoneId}}, test hàm format ở unit level, chọn ca biên (qua ngày, DST, làm tròn). Nhấn mạnh tránh phụ thuộc thời gian/môi trường hiện tại.
+
+### Ví dụ đời thực
+Một nền tảng thanh toán đa quốc gia (Việt Nam, Mỹ, Đức) dùng Java Spring Boot + React. Team có 200 test API (REST Assured) và 50 test UI (Playwright). Một sprint, thay đổi format tiền tệ cho thị trường Đức (dấu chấm phân cách nghìn, dấu phẩy thập phân) làm vỡ 40 test API và 12 test UI vì code test hard-code kỳ vọng {{$1,234.56}} thay vì dùng locale. Phân tích: test tạo dữ liệu bằng {{double}} ({{0.1 + 0.2 != 0.3}}), assert chuỗi format trực tiếp, không set locale/timezone cho context Playwright. Team refactor: (1) chuyển toàn bộ tiền sang {{BigDecimal}} lưu cent/xu; (2) viết helper {{formatMoney(amount, locale)}} dùng {{NumberFormat.getCurrencyInstance(locale)}}; (3) unit test helper với ma trận 5 locale × 10 ca biên (0, âm, lớn, làm tròn); (4) E2E Playwright set {{locale/timezoneId}} trong context, chỉ test 3 màn hình đại diện (checkout, hóa đơn, lịch sử). Kết quả: thêm locale mới (Nhật) chỉ mất 30 phút cập nhật helper + unit test, E2E không sửa; bug format tiền trên production từ 3–4/tháng xuống 0 trong 6 tháng; CI locale matrix chạy 8 phút thay vì 25 phút trước đây.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách dữ liệu chuẩn (UTC cho thời gian, BigDecimal cent cho tiền) khỏi hiển thị (locale, timezone). i18n: test key dịch tồn tại + UI render đúng locale, dùng Playwright context locale. Timezone: seed dữ liệu UTC cố định, assert hiển thị theo timezone mục tiêu, chọn ca biên qua nửa đêm/DST. Tiền: dùng BigDecimal/integer cent, format bằng NumberFormat theo locale, unit test ma trận ca biên. E2E chỉ vài màn hình đại diện, set locale/timezoneId trong context. Project trước: thêm locale Đức làm vỡ 52 test do hard-code format; refactor helper + unit test matrix, thêm locale mới chỉ 30 phút, bug production về 0."
 
 > Senior tip: Hãy có một "bộ ca biên thời gian/tiền" dùng chung (cross-midnight, DST transition, 0/âm/lớn, làm tròn) và chạy nó như unit test nhanh. E2E chỉ cần chứng minh wiring locale trên vài trang. Đừng nhân ma trận (mọi locale × mọi trang) nếu không có rủi ro tương ứng.`,
   follow: [
@@ -3073,6 +3085,12 @@ E2E repo --> CI: fail do lệch contract hoặc xanh giả do assert yếu
 
 ### Trả lời phỏng vấn thế nào
 So sánh hai mô hình theo trục: đồng bộ thay đổi, ownership, chi phí CI, rủi ro lệch phiên bản. Đưa khuyến nghị thực dụng: unit/integration luôn đi cùng service; E2E ưu tiên gần code (monorepo hoặc module kỷ luật) và phải gắn phiên bản được test. Nhấn mạnh cơ chế (CI gate, contract, tag) hơn là giáo điều mô hình.
+
+### Ví dụ đời thực
+Một công ty fintech có 5 microservice (Java Spring Boot) và 2 team: team Core (3 service) và team Payment (2 service). Ban đầu E2E test (Playwright + REST Assured) nằm trong repo riêng do team QA quản lý. Khi team Core đổi response {{POST /transfers}} (thêm trường {{feeBreakdown}}), họ merge PR, deploy staging, nhưng repo E2E vẫn chạy test cũ → 30 test đỏ ồ ạt, team QA mất 4 giờ sửa test. Lần sau, team Payment thêm trường bắt buộc {{idempotencyKey}} cho {{POST /payments}}; CI app pass, deploy production, nhưng E2E repo riêng chưa cập nhật → test vẫn pass (assert yếu chỉ check status 200) mà production thực sự lỗi 400 cho client cũ. CTO quyết định: chuyển E2E vào monorepo (thư mục {{e2e/}}), cấu hình CI affected-test (Nx/Turborepo) chỉ chạy test liên quan đến service thay đổi, và thêm contract test (Pact) giữa service. Kết quả: thay đổi API + cập nhật test đi cùng 1 PR, CI affected chạy 8 phút thay vì 45 phút, không còn lệch phiên bản; contract test chặn breaking change ngay PR; team QA chuyển sang coaching dev viết test, ownership rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+"Unit/integration test luôn nằm cùng code service (monorepo per service hoặc mono-repo lớn) để thay đổi API + test đi chung PR. E2E xuyên service: ưu tiên để gần code (monorepo hoặc module kỷ luật) và gắn version/tag môi trường test. Nếu tách repo E2E, bắt buộc cơ chế: CI app trigger E2E với versioned artifact, contract test (Pact) verify tương thích, tag deploy để tái lập. Project trước: repo E2E riêng gây lệch phiên bản 2 lần (test đỏ ồ ạt, xanh giả miss bug production). Chuyển sang monorepo + affected CI + Pact, PR đồng bộ app+test, CI từ 45 xuống 8 phút, breaking change bị chặn ở PR. Tôi chọn mô hình nào cũng ưu tiên cơ chế đồng bộ hơn địa chỉ repo."
 
 > Senior tip: Câu hỏi không chỉ là "để test ở repo nào" mà là "làm sao một thay đổi phá hợp đồng bị chặn trước khi deploy". Nếu repo riêng mà CI app bắt buộc chạy đúng bộ E2E versioned tương thích, bạn vẫn đạt mục tiêu; nếu monorepo mà E2E luôn bị skip, bạn thất bại. Cơ chế đồng bộ quan trọng hơn địa chỉ repo.`,
   follow: [
