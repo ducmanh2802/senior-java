@@ -625,10 +625,42 @@ Cursor cần bao gồm toàn bộ khóa sắp xếp và encode đúng kiểu, k�
 
 PostgreSQL planner vẫn có thể chọn scan khác tùy predicate, thống kê và selectivity. Xác nhận bằng {{EXPLAIN (ANALYZE, BUFFERS)}} và index khớp filter + order. API nên encode cursor có kiểm tra/opaque để tránh client sửa tùy ý.
 
-### Liên hệ phỏng vấn
-Nêu rõ workload: admin cần nhảy trang có thể dùng offset ở tập vừa; feed/infinite scroll thường hợp keyset. Đảm bảo thứ tự total order, cursor tie-breaker, composite index và semantics khi dữ liệu đổi.
+### Cơ chế từng bước
+1. **Offset: đếm từ đầu.** DB quét theo thứ tự sắp xếp, bỏ qua {{OFFSET}} hàng trước khi trả kết quả. Mỗi hàng bỏ qua tốn CPU (kiểm tra MVCC visibility) và có thể tốn I/O (đọc page từ đĩa). Chi phí lớn theo tỷ lệ offset, không phải theo {{LIMIT}}.
+2. **Keyset: index seek đến cursor.** Cursor là giá trị khóa của hàng cuối trang trước (ví dụ cặp created_at, id). Trang tiếp theo dùng {{WHERE (sort_col, tie_breaker) > (last_val, last_id)}}. B-tree seek đến vị trí cursor trong O(log N), không quét các hàng trước.
+3. **Trả trang dữ liệu.** Cả hai chỉ đọc {{LIMIT}} hàng liên tiếp sau vị trí bắt đầu. Keyset đi dọc qua các leaf page liền kề (next pointer); offset tiếp tục quét từ vị trí đã đếm đến khi đủ {{LIMIT}}.
+4. **Dữ liệu thay đổi giữa request.** Offset lệch: insert hàng trước offset làm trang lùi (bị bỏ), delete làm nhảy (bị trùng). Keyset ổn định hơn vì cursor gắn khóa cụ thể; nhưng dữ liệu mới chèn trước cursor sẽ không xuất hiện — đây là đặc tính, không phải bug.
+5. **Encode/decode cursor an toàn.** Cursor chứa toàn bộ cột ORDER BY, encode base64/JSON, ký HMAC. Server decode, verify chữ ký, dựng predicate. Nếu filter đổi, cursor cũ bị từ chối để tránh kết quả khó hiểu.
 
-> Senior tip: đo trang sâu, không chỉ trang đầu; OFFSET thường biểu hiện chi phí ở tail latency khi offset tăng.
+**Ví dụ số liệu:** Bảng 10 triệu hàng, {{LIMIT}} 20.
+- Trang 1 (offset 0): đọc 20 hàng, nhanh.
+- Trang 50000 (offset 1.000.000): offset đọc khoảng 1.000.020 hàng rồi trả 20 (chi phí tuyến tính). Keyset chỉ seek đến cursor và đọc 20 hàng (chi phí hằng số).
+Vì vậy offset phù hợp UI nhảy trang (trang nông), keyset phù hợp infinite scroll/feed.
+
+~~~java
+class PagingCostModel {
+    static long offsetCost(long n, long offset, long limit) { return Math.min(n, offset + limit); }
+    static long keysetCost(long n, long cursor, long limit) { return Math.min(limit, Math.max(0, n - cursor)); }
+}
+// 10M hàng, trang 50000 (offset=1M, limit=20): offsetCost ≈ 1,000,020 | keysetCost ≈ 20
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng OFFSET lớn cho infinite scroll/feed.** Trang đầu <50ms, trang 10000 >5s. Nguyên nhân: chi phí tuyến tính với offset. Sửa: keyset + cursor {{(created_at, id)}} + composite index.
+2. **Cursor thiếu tie-breaker.** Trùng/lỡ hàng khi nhiều bản ghi cùng timestamp. Sửa: luôn thêm id: {{WHERE (created_at, id) > (?, ?)}}.
+3. **Client tự sửa cursor/dùng lại cursor cũ sau đổi filter.** Kết quả lạ, không báo lỗi SQL. Sửa: ký cursor (HMAC), gắn version/filter hash, từ chối cursor không khớp.
+4. **Thiếu index composite ORDER BY + WHERE.** Keyset chậm, planner chọn seq scan. Sửa: index {{(filter_col, sort_col, tie_breaker)}} theo thứ tự predicate.
+
+### Lựa chọn offset hay keyset?
+Offset phù hợp khi trang số ít và cần nhảy thẳng trang N (trang quản trị). Keyset phù hợp feed/infinite scroll, danh sách lớn, dữ liệu thay đổi giữa các trang. Ngưỡng thực tế: offset dưới vài nghìn hàng thì nhanh, trên đó chi phí tăng tuyến tính nên chuyển sang keyset. Keyset không hỗ trợ nhảy thẳng trang số tùy ý.
+
+### Liên hệ phỏng vấn
+- **"Offset vs keyset: khác nhau ở đâu, khi nào dùng?"** → Offset đếm từ đầu O(offset); keyset cursor seek O(log N). Admin nhảy trang: offset; feed/infinite scroll: keyset.
+- **"Tại sao keyset cần tie-breaker (id)?"** → Nhiều hàng cùng timestamp -> cursor không xác định duy nhất ranh giới -> trùng/lỡ hàng.
+- **"Cursor opaque là gì, cần ký HMAC?"** → Server tạo, encode base64/JSON, ký HMAC để client không tự sửa; validate chữ ký và filter version khi decode.
+- **"Làm sao planner chọn index cho keyset?"** → Composite index: WHERE filter columns trước -> ORDER BY columns -> tie-breaker. Dùng {{EXPLAIN (ANALYZE, BUFFERS)}} xác nhận.
+
+> Senior tip: đo trang sâu, không chỉ trang đầu; OFFSET biểu hiện chi phí ở tail latency khi offset tăng.
 `,
   exercises:[{title:'Đếm hàng bỏ qua ở offset và keyset',prompt:`Cài {{PagingCost}}. Mô hình: bảng n hàng có khóa unique 1..n đã sắp tăng dần. {{offsetCost(n, offset, limit)}} trả số hàng phải đi qua từ đầu để trả trang: hàng bị bỏ qua cộng hàng trả về, không vượt quá n. {{keysetCost(n, after, limit)}} giả định index seek thẳng tới cursor {{after}} (khóa cuối của trang trước) nên chỉ đếm số hàng của trang tiếp theo: các khóa lớn hơn after, tối đa limit hàng.`,starter:`class PagingCost {
     static int offsetCost(int n, int offset, int limit) { throw new UnsupportedOperationException("TODO"); }
@@ -658,7 +690,7 @@ Nêu rõ workload: admin cần nhảy trang có thể dùng offset ở tập v�
 }`,
   hints:['Offset scan từ đầu qua cả hàng bị skip lẫn hàng được trả.', 'Với cursor hợp lệ sau phần tử thứ after, chỉ thăm min(limit, n-after) phần tử tiếp theo.'],
   explain:`Trong mô hình đã sắp thứ tự, offset cần đi qua offset + limit hàng, bị giới hạn bởi tổng n. Keyset giả định index seek tới cursor nên chỉ tính hàng của trang kế tiếp. Đây là mô hình chi phí hàng logic; DB thật còn có page I/O, visibility check, filter và cache. Composite B-tree theo cột filter/order giúp seek đúng vùng. OFFSET vẫn hợp với trang nông hoặc cần nhảy tới trang số cụ thể.`}],
-  check:[{q:'Tại sao keyset thường cần tie-breaker như id?',options:['Để ép PostgreSQL dùng hash join','Để thứ tự là total order khi sort key bị trùng','Để bỏ MVCC','Để offset nhanh hơn'],answer:1,explain:'Nếu nhiều hàng cùng timestamp, cursor chỉ timestamp không định vị duy nhất ranh giới trang.'},{q:'Keyset pagination có đảm bảo snapshot nhất quán xuyên nhiều request không?',options:['Có, luôn luôn','Không; cursor không thay thế snapshot transaction','Chỉ khi không có index','Có nếu LIMIT là số chẵn'],answer:1,explain:'Keyset xác định vị trí tiếp theo; dữ liệu vẫn có thể thay đổi giữa các HTTP request.'}],tags:['pagination','keyset','PostgreSQL','B-tree']
+  check:[{q:'Tại sao keyset thường cần tie-breaker như id?',options:['Để ép PostgreSQL dùng hash join','Để thứ tự là total order khi sort key bị trùng','Để bỏ MVCC','Để offset nhanh hơn'],answer:1,explain:'Nếu nhiều hàng cùng timestamp, cursor chỉ timestamp không định vị duy nhất ranh giới trang.'},{q:'Keyset pagination có đảm bảo snapshot nhất quán xuyên nhiều request không?',options:['Có, luôn luôn','Không; cursor không thay thế snapshot transaction','Chỉ khi không có index','Có nếu LIMIT là số chẵn'],answer:1,explain:'Keyset xác định vị trí tiếp theo; dữ liệu vẫn có thể thay đổi giữa các HTTP request.'},{q:'Khi dùng keyset với ORDER BY created_at DESC, id DESC, predicate WHERE đúng là gì?',options:['WHERE (created_at, id) > (?, ?)','WHERE (created_at, id) < (?, ?)','WHERE created_at < ? OR (created_at = ? AND id < ?)','WHERE created_at > ? AND id > ?'],answer:2,explain:'Row comparison (created_at, id) < ... chỉ hoạt động khi mọi cột cùng chiều ASC. Trộn ASC/DESC phải viết điều kiện OR tách từng cột theo thứ tự ưu tiên.'},{q:'Composite index cho keyset pagination nên đặt cột theo thứ tự nào?',options:['ORDER BY columns trước, WHERE columns sau','WHERE filter columns trước, rồi ORDER BY columns, cuối tie-breaker','Chỉ cần index trên cột sort','Primary key đã đủ cho mọi trường hợp'],answer:1,explain:'Index phải hỗ trợ cả filter (WHERE) lẫn range scan (ORDER BY). Thứ tự: equality filter -> range/order -> tie-breaker.'}],tags:['pagination','keyset','PostgreSQL','B-tree']
 },
 {
   id:'lesson-db-006',track:'db',order:6,title:'Bên trong connection pool: borrow, timeout khi chờ và phát hiện leak',level:'senior',minutes:30,
@@ -2005,16 +2037,45 @@ DB -> Data: trạng thái: A=80, B=120
 - {{synchronous_commit}} điều khiển khi fsync: mặc định an toàn; tắt có thể mất vài transaction gần nhất khi crash OS, đổi lại throughput cao hơn.
 - Có full page write sau checkpoint để chống torn page. Replica streaming nhận WAL; PITR dùng base backup + WAL archive.
 
-### Lỗi hay gặp
-- Áp dụng mọi record khi recover: sai, transaction chưa COMMIT phải bỏ qua.
-- Ghi trang dữ liệu rồi mới ghi log: vi phạm write-ahead.
-- Nghĩ checkpoint cho phép xóa hết log: phải giữ WAL đủ cho recovery/replica.
-- Bỏ qua thứ tự LSN: redo phải theo thứ tự log.
+### Cơ chế từng bước: từ UPDATE đến recovery sau crash
+1. **Sửa trong shared buffers.** UPDATE đọc page vào RAM, sửa tuple, đánh dấu dirty. Chỉ ở RAM.
+2. **Ghi WAL trước commit.** Tạo WAL record append vào buffer. LSN tăng dần. **Quy tắc: WAL phải fsync TRƯỚC khi trả "COMMIT OK".**
+3. **COMMIT: ghi COMMIT record, fsync WAL, trả OK.** Trang dirty chưa flush.
+4. **Crash: RAM mất, WAL trên đĩa nguyên vẹn.** Nhờ fsync bước 3.
+5. **Recovery: redo từ checkpoint.** Đọc checkpoint, từ LSN đó đọc WAL: CÓ COMMIT -> redo; KHÔNG CÓ COMMIT -> bỏ qua. Theo thứ tự LSN.
+6. **Checkpoint thu hồi WAL.** Ghi dirty page ra data file, fsync, ghi CHECKPOINT. WAL trước đó không còn cần.
+
+Vì sao? Ghi page ngẫu nhiên (random I/O) chậm, dễ torn page. WAL biến thành append tuần tự + 1 fsync/commit. Trang flush lazy, gộp nhiều sửa. Crash chỉ mất RAM, WAL đủ dựng lại.
+
+~~~java
+class MiniWalRecovery {
+    static class Rec { int lsn; String tx, op, key; Integer val; }
+    static Map<String, Integer> recover(List<Rec> log, int fromLsn, Map<String, Integer> base) {
+        Map<String, Integer> state = new LinkedHashMap<>(base);
+        Set<String> committed = new LinkedHashSet<>();
+        for (Rec r : log) if (r.lsn >= fromLsn && "COMMIT".equals(r.op)) committed.add(r.tx);
+        for (Rec r : log) if (r.lsn >= fromLsn && ("SET".equals(r.op) || "DEL".equals(r.op)) && committed.contains(r.tx)) {
+            if ("SET".equals(r.op)) state.put(r.key, r.val); else state.remove(r.key);
+        }
+        return state;
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+1. **Tắt {{synchronous_commit = off}} cho tài chính.** Mất điện -> đơn "thành công" mất. Nguyên nhân: COMMIT trả OK trước WAL fsync. Sửa: không tắt synchronous_commit.
+2. **Slot không tiêu thụ -> {{pg_wal}} đầy.** Disk tăng không kiểm soát, DB đứng. Nguyên nhân: standby/CDC down nhưng slot giữ WAL. Sửa: monitor {{pg_replication_slots.active}}; drop slot inactive.
+3. **Không bật {{archive_command}}.** Chỉ có backup base cũ, mất dữ liệu. Nguyên nhân: PITR cần base + WAL archive. Sửa: archive_command đẩy WAL sang S3/GCS, test restore định kỳ.
+4. **Ghi data trước WAL.** Crash -> dữ liệu không nhất quán. Nguyên nhân: bảng unlogged hoặc extension bỏ qua WAL. Sửa: không dùng unlogged table cho dữ liệu cần bền.
 
 ### Liên hệ phỏng vấn
-Nhấn mạnh: (1) commit trả lời client chỉ sau COMMIT record fsync; (2) crash recovery redo transaction có COMMIT từ checkpoint; (3) đánh đổi {{synchronous_commit}}/checkpoint/IO. "Mất điện có mất đơn đã báo thành công không?" -> không, nếu COMMIT đã durable.
+- **"Mất điện có làm mất đơn đã commit không?"** → Không ({{synchronous_commit = on}} mặc định). COMMIT đã fsync WAL trước khi OK; recovery redo.
+- **"Tại sao WAL trước data file?"** → Write-ahead: fsync WAL xong mới báo commit. Ghi data trước vi phạm quy tắc.
+- **"Checkpoint ảnh hưởng recovery?"** → Ghi sạch dirty page, đánh dấu LSN an toàn. Recovery chỉ đọc từ checkpoint; thưa -> lâu, dày -> I/O cao.
+- **"Slot giữ WAL thế nào?"** → Lưu {{restart_lsn}}. Slot inactive giữ WAL mãi -> pg_wal đầy. Phải drop slot không dùng.
+- **"full page write là gì?"** → Sau checkpoint, lần sửa đầu page ghi cả 8 KB. Chống torn page: crash ghi nửa page, recovery có bản full.
 
-> Senior tip: theo dõi {{pg_wal}} phình bất thường (thường do replication slot giữ hoặc archiving kẹt), thời gian checkpoint và {{pg_stat_bgwriter}}.`,
+> Senior tip: theo dõi {{pg_wal}} phình (thường do slot giữ hoặc archiving kẹt), thời gian checkpoint và {{pg_stat_bgwriter}}.`,
   exercises: [
     {
       title: 'WalStore: commit, crash giả lập, recover()',
@@ -2178,6 +2239,17 @@ class WalStore {
       ],
       answer: 1,
       explain: 'Checkpoint đánh dấu base đã an toàn tới mức nào, nên recover không cần đọc lại toàn bộ log từ đầu.'
+    },
+    {
+      q: 'Replication slot làm pg_wal đầy ổ cứng khi nào?',
+      options: [
+        'Khi standby đang replicate bình thường',
+        'Khi slot inactive (standby down) không bị drop, giữ restart_lsn không cho WAL tái sử dụng',
+        'Khi checkpoint chạy quá thường xuyên',
+        'Khi synchronous_commit = off'
+      ],
+      answer: 1,
+      explain: 'Slot lưu restart_lsn (LSN cũ nhất còn cần). Slot inactive không tiêu thụ WAL -> pg_wal không được quay vòng, dung lượng tăng không kiểm soát.'
     }
   ],
   related: ['db-006', 'db-035'],
