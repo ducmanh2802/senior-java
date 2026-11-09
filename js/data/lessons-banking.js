@@ -398,9 +398,40 @@ Hạn mức nên có nhiều cấp: theo giao dịch, theo ngày, theo tháng. V
 
 > Senior tip: Luôn inject Clock thay vì dùng Instant.now() trực tiếp để test deterministic.
 
+### Cơ chế từng bước: kiểm tra một giao dịch
+**Tóm tắt:** Ba lớp bảo vệ trên đồng hồ Việt Nam: kiểm tra hạn mức ngày, kiểm tra vận tốc (velocity), rồi quyết định cho phép hay yêu cầu xác thực mạnh.
+
+1. **Xác định ngày theo múi giờ VN**: lấy thời điểm từ {{Clock}}, chuyển sang {{ZoneId.of("Asia/Ho_Chi_Minh")}}. **Vì sao**: UTC thì nửa đêm VN là 17:00 UTC ngày trước → reset sai giờ so với khách hàng.
+2. **Reset hạn mức nếu đổi ngày**: ngày từ {{Clock}} khác ngày đã lưu → reset {{dailyTotal}} về 0, xóa lịch sử velocity. **Vì sao**: hạn mức tính theo ngày calendario.
+3. **Kiểm tra velocity trước**: đếm giao dịch trong 5 phút gần nhất (bao gồm hiện tại). Vượt {{velocityMax}} → {{REJECT_VELOCITY}}. **Vì sao**: hạn mức tiền không bắt bot giao dịch nhiều lần nhỏ trong vài phút.
+4. **Kiểm tra hạn mức ngày**: {{dailyTotal + amount > dailyLimit}} → {{REJECT_DAILY_LIMIT}}, từ chối ngay.
+5. **Quyết định**: {{amount >= strongAuthThreshold}} → {{REQUIRE_STRONG_AUTH}} (OTP/sinh trắc học). Ngược lại {{ALLOW}}, rồi mới cộng {{amount}} vào {{dailyTotal}}.
+
+### Ví dụ: kiểm tra hạn mức 5 triệu đồng
+~~~java
+long amount = 5_000_000L; // 5 triệu đồng (đơn vị nhỏ nhất VND)
+ZoneId zone = ZoneId.of("Asia/Ho_Chi_Minh");
+Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), zone);
+LimitChecker checker = new LimitChecker(clock, 100_000_000L, 3, 50_000_000L);
+Result r = checker.check(amount);
+// 5 triệu < 50 triệu ngưỡng xác thực mạnh, chưa vượt hạn mức ngày → ALLOW
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng UTC thay vì Asia/Ho_Chi_Minh**: Khách 23:30 giờ VN bị báo "vượt hạn mức ngày" hoặc reset sớm 7 giờ. Nguyên nhân: {{Instant.now()}} theo UTC, nửa đêm VN là 17:00 UTC hôm trước. Sửa: inject {{Clock}} + {{ZoneId.of("Asia/Ho_Chi_Minh")}}.
+2. **Kiểm tra hạn mức sau khi đã cộng tiền**: Giao dịch 23:59:59 vượt hạn mức mà hệ thống cho phép vì cộng rồi mới kiểm tra. Sửa: kiểm tra {{dailyTotal + amount > dailyLimit}} TRƯỚC khi cộng.
+3. **Không xóa lịch sử velocity khi đổi ngày**: Sau 00:00, khách giao dịch lần đầu bị chặn velocity do lịch sử hôm qua còn lại. Sửa: cùng lúc reset {{dailyTotal}} và {{recentTxnTimes.clear()}}.
+4. **Dùng double cho tiền**: Tổng ngày lệch vài đồng sau hàng nghìn giao dịch. Nguyên nhân: {{double}} sai số nhị phân (xem lesson-banking-001). Sửa: {{long}} (đơn vị đồng) hoặc {{BigDecimal}}.
+
 ### Liên hệ phỏng vấn
 **Câu hỏi:** "Em hãy thiết kế hàm kiểm tra hạn mức giao dịch – những điểm nào quan trọng nhất?"
-**Cách trả lời:** Ba lớp bảo vệ: (1) hạn mức theo ngày reset vào 00:00 theo múi giờ địa phương (Việt Nam: Asia/Ho_Chi_Minh), không dùng UTC vì sẽ reset sai giờ so với người dùng Việt Nam; (2) velocity check đếm số giao dịch trong cửa sổ trượt 5 phút để phát hiện bot hoặc kẻ chiếm đoạt tài khoản; (3) giao dịch lớn (vượt ngưỡng, ví dụ 50 triệu VND) yêu cầu xác thực mạnh như OTP hoặc sinh trắc học, chứ không chỉ PIN. Tiêu chí senior: inject {{Clock}} vào {{LimitChecker}} thay vì gọi {{Instant.now()}} trực tiếp, dùng {{long}} hoặc {{BigDecimal}} cho tiền chứ không dùng {{double}}, trả mã lỗi rõ ràng khi từ chối, và kiểm thử phải deterministic bằng {{Clock.fixed}}.
+**Cách trả lời:** Ba lớp bảo vệ: (1) hạn mức theo ngày reset 00:00 giờ VN (Asia/Ho_Chi_Minh), không UTC; (2) velocity check 5 phút phát hiện bot/chiếm đoạt tài khoản; (3) giao dịch lớn (≥ 50 triệu VND) yêu cầu xác thực mạnh (OTP/sinh trắc học), không chỉ PIN. Senior: inject {{Clock}} thay {{Instant.now()}}, dùng {{long}}/{{BigDecimal}} không dùng {{double}}, trả mã lỗi rõ ràng, kiểm thử deterministic bằng {{Clock.fixed}}.
+
+**Câu hỏi 2:** "Vì sao inject {{Clock}} thay {{Instant.now()}} trực tiếp?"
+**Cách trả lời 2:** {{Instant.now()}} lấy thời điểm thực máy, không kiểm thử được "23:59:59" hay "sau 00:00 reset" mà không đợi thật. {{Clock.fixed}} gán thời điểm cố định → kiểm thử deterministic, lặp lại được.
+
+**Câu hỏi 3:** "Velocity check ích gì khi đã có hạn mức tiền?"
+**Cách trả lời 3:** Hạn mức tiền không ngăn tần số. Kẻ chiếm đoạt giao dịch 100 lần nhỏ trong 1 phút, mỗi lần dưới hạn mức → dấu hiệu bot. Velocity đếm giao dịch trong 5 phút, vượt ngưỡng thì từ chối/yêu cầu xác thực mạnh.
 `,
     exercises: [
       {
@@ -501,6 +532,8 @@ class LimitChecker {
     check: [
       { q: 'Hạn mức nên reset theo múi giờ nào?', options: ['UTC', 'Asia/Ho_Chi_Minh', 'GMT', 'tùy client'], answer: 1, explain: 'Theo giờ địa phương Việt Nam' },
       { q: 'Velocity check dùng để làm gì?', options: ['tính phí', 'phát hiện giao dịch bất thường trong thời gian ngắn', 'đối soát', 'backup'], answer: 1, explain: 'Phát hiện bot/chiếm đoạt' },
+      { q: 'Mục đích chính của hạn mức giao dịch là gì?', options: ['Giới hạn số tiền giao dịch trong ngày để giảm thiệt hại nếu tài khoản bị chiếm đoạt', 'Tính lãi suất tháng cho tiền gửi', 'Đối soát giao dịch cuối ngày với ngân hàng đối tác', 'Backup dữ liệu vào mỗi nửa đêm'], answer: 0, explain: 'Đúng: hạn mức là giới hạn tiền tối đa trong một khoảng thời gian (ngày), giảm thiệt hại khi tài khoản bị đánh cắp hoặc chiếm đoạt. Sai (B): lãi suất là sản phẩm gửi tiết kiệm, không liên quan đến hạn mức giao dịch. Sai (C): đó là đối soát, nội dung bài khác. Sai (D): backup là vận hành hạ tầng, không phải giới hạn giao dịch.' },
+      { q: 'Vì sao inject {{Clock}} thay vì gọi {{Instant.now()}} trực tiếp trong LimitChecker?', options: ['Instant.now() không được phép trong Java 17', 'Instant.now() luôn sai múi giờ Việt Nam', 'Clock giúp tính lãi suất chính xác hơn', 'Để dùng {{Clock.fixed}} gán thời điểm cố định, kiểm thử các trường hợp midnight/đổi ngày deterministik'], answer: 3, explain: 'Đúng: inject Clock cho phép test gán thời gian cố định (ví dụ 23:59:59 hoặc 00:00:00 theo giờ VN) mà không cần đợi thật, kết quả kiểm thử ổn định, lặp lại được. Sai (A): Instant.now() dùng được bình thường trong Java. Sai (B): Instant.now() lấy UTC, chính xác nhưng không thể điều khiển để test; vấn đề không phải sai múi giờ. Sai (C): Clock không liên quan đến tính lãi suất.' },
     ],
     related: [],
     tags: ['limit', 'risk', 'banking'],
@@ -554,9 +587,43 @@ Cần xử lý phí trả trước hạn, phạt trả chậm, và thay đổi l
 
 > Senior tip: Luôn kiểm tra balance cuối cùng == 0; nếu không, điều chỉnh kỳ cuối.
 
+### Cơ chế từng bước: tính lịch trả nợ theo dư nợ giảm dần
+**Tóm tắt:** Mỗi kỳ lãi = dư nợ còn lại × lãi tháng; PMT (gốc+lãi) cố định. Dư nợ giảm → lãi giảm, gốc tăng. Kỳ cuối điều chỉnh gốc bằng dư nợ còn lại để balance về 0.
+
+1. **Đổi lãi năm sang tháng**: {{r = annualRatePercent / 12 / 100}} (12%/năm → 1%/tháng). **Vì sao**: lãi công bố theo năm, vay hàng tháng tính theo tháng.
+2. **Tính PMT**: {{PMT = P × r / (1 - (1+r)^-n)}}. Mỗi kỳ trả cùng số tiền. Lãi 0% → {{PMT = P / n}} (tránh chia cho 0).
+3. **Mỗi kỳ i**: lãi = {{balance × r}} (trên dư nợ trước kỳ), gốc = {{PMT - interest}}, balance mới = {{balance - principalPart}}. Gốc tăng dần, lãi giảm dần vì dư nợ giảm.
+4. **Điều chỉnh kỳ cuối**: làm tròn làm tổng gốc lệch vài đồng so với {{principal}}. Kỳ cuối: gốc = dư nợ còn lại, lãi = balance × r, balance = 0.
+5. **Lãi 0%**: mỗi kỳ gốc = {{principal / n}}, lãi = 0, balance giảm đều về 0.
+
+### Ví dụ: vay 1 triệu, 12%/năm, 12 kỳ
+~~~java
+BigDecimal principal = new BigDecimal("1000000");
+BigDecimal annualRate = new BigDecimal("12");
+int months = 12;
+List<Installment> sched = LoanSchedule.build(principal, annualRate, months);
+Installment first = sched.get(0);
+Installment last = sched.get(months - 1);
+System.out.println("Kỳ 1: gốc=" + first.principal + " lãi=" + first.interest + " dư nợ=" + first.balance);
+System.out.println("Kỳ 12: gốc=" + last.principal + " lãi=" + last.interest + " dư nợ=" + last.balance);
+// Kỳ 12 phải có dư nợ = 0
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng double cho tiền/lãi**: Dư nợ cuối 0.00000003đ hoặc -500đ thay vì 0. Nguyên nhân: {{double}} xấp xỉ nhị phân (xem lesson-banking-001). Sửa: {{BigDecimal}}, scale 2, {{RoundingMode.HALF_UP}}.
+2. **Quên điều chỉnh kỳ cuối**: Tổng gốc 999.950đ thay vì 1.000.000đ (thiếu 50đ bốc hơi). Sửa: kỳ cuối gốc = dư nợ còn lại, balance = 0.
+3. **Lãi 0% dùng công thức annuity**: Chia cho 0 vì mẫu {{(1+r)^n - 1}} bằng 0 khi r = 0. Sửa: nhánh riêng {{if (r.compareTo(BigDecimal.ZERO) == 0)}} → {{PMT = principal / n}}.
+4. **Sai scale**: lãi 8333.3333333333 thay vì 8333.33. Sửa: {{setScale(2, HALF_UP)}} mỗi kỳ; scale 10 chỉ cho trung gian PMT.
+
 ### Liên hệ phỏng vấn
 **Câu hỏi:** "Vì sao tính lãi vay trả góp phải dùng BigDecimal, và sao kỳ cuối phải điều chỉnh lại?"
-**Cách trả lời:** Tiền không dùng {{double}} vì số trội gây sai số tích lũy, ví dụ 0.1 + 0.2 không bằng 0.3 chính xác; {{BigDecimal}} với scale và {{RoundingMode.HALF_UP}} giữ chính xác đến cent. Lãi tính theo dư nợ còn lại, nên mỗi kỳ lãi giảm dần còn gốc tăng dần (công thức annuity). Kỳ cuối lấy gốc bằng dư nợ còn lại để balance về đúng 0, hấp thụ phần lệch do làm tròn; lãi 0% phải xử lý riêng (PMT = principal / n) để không sai công thức mũ. Khi phỏng vấn, nhấn mạnh kiểm tra balance cuối cùng bằng 0 là điều kiện chấp nhận.
+**Cách trả lời:** {{double}} sai số tích lũy (0.1+0.2 ≠ 0.3 chính xác); {{BigDecimal}} + scale + {{RoundingMode.HALF_UP}} chính xác đến cent. Lãi tính trên dư nợ còn lại → lãi giảm, gốc tăng (annuity). Kỳ cuối gốc = dư nợ còn lại để balance = 0; lãi 0% xử lý riêng (PMT = principal / n). Senior: kiểm tra balance cuối = 0 là điều kiện chấp nhận.
+
+**Câu hỏi 2:** "12%/năm đổi tháng ra bao nhiêu, PMT nghĩa là gì?"
+**Cách trả lời 2:** {{r = 12/12/100 = 1%}} tháng. PMT = số tiền trả mỗi kỳ, cố định: {{PMT = P × r / (1 - (1+r)^-n)}} (P số vay, r lãi tháng, n số kỳ). PMT = lãi (dư nợ × r) + gốc. Dư nợ giảm → lãi giảm, gốc tăng.
+
+**Câu hỏi 3:** "Lãi 0% tính thế nào, chú ý gì?"
+**Cách trả lời 3:** {{PMT = principal / n}}, lãi = 0, balance giảm đều về 0. Không dùng công thức annuity vì mẫu {{(1+r)^n - 1}} = 0 khi r = 0 → chia cho 0; phải nhánh riêng trong code.
 `,
     exercises: [
       {
@@ -647,6 +714,8 @@ class LoanSchedule {
     check: [
       { q: 'Lãi tính theo cái gì?', options: ['principal ban đầu', 'dư nợ còn lại', 'tổng tiền', 'phí'], answer: 1, explain: 'Lãi theo dư nợ giảm dần' },
       { q: 'Vì sao kỳ cuối cần điều chỉnh?', options: ['để đẹp', 'do làm tròn tích lũy', 'tính lại lãi', 'không cần'], answer: 1, explain: 'Làm tròn gây lệch vài đồng' },
+      { q: 'Lãi suất công bố 12%/năm, vay trả góp hằng tháng, lãi áp dụng mỗi kỳ bằng bao nhiêu?', options: ['12%', '1%', '6%', '0,01 (tức 1% viết dưới dạng thập phân)'], answer: 3, explain: 'Đúng: r = 12 / 12 / 100 = 0,01, tức 1% mỗi tháng, nhưng trong công thức phải viết dạng thập phân 0,01 chứ không phải số nguyên 1. Sai (A): 12% là trên năm, không phải mỗi tháng. Sai (B): 1% đúng về ý nghĩa nhưng làm con số trong công thức thì là 0,01. Sai (C): 6% là nửa năm, không liên quan.' },
+      { q: 'Vay trả góp lãi 0% tính thế nào?', options: ['Chỉ trả toàn bộ gốc ở kỳ cuối', 'Không cần trả gốc, chỉ trả phí', 'PMT = principal / n, mỗi kỳ trả gốc đều, lãi = 0', 'Dùng công thức annuity như thường vì 0 không ảnh hưởng'], answer: 2, explain: 'Đúng: lãi 0% → PMT = principal / n, mỗi kỳ trả gốc đều, lãi = 0, balance giảm đều về 0 ở kỳ cuối. Sai (A): đó là vay một lần cuối (balloon), không phải trả góp hàng tháng. Sai (B): vẫn phải trả gốc. Sai (C): công thức annuity có mẫu (1+r)^n - 1, khi r = 0 mẫu bằng 0 → chia cho 0, phải nhánh riêng trong code.' },
     ],
     related: [],
     tags: ['loan', 'banking', 'bigdecimal'],
