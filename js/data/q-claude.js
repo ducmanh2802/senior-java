@@ -438,6 +438,9 @@ String userMsg = "Ngữ cảnh: " + sortedJson(ctx) + "\nCâu hỏi: " + questio
 ### Trả lời miệng 1 phút
 "Cache khớp theo prefix từng byte nên hit bằng 0 nghĩa là prefix đang thay đổi. Tôi log hai request liên tiếp rồi diff phần trước breakpoint; thủ phạm thường là timestamp hay dữ liệu người dùng trong system prompt, JSON serialize với thứ tự khoá không cố định, hoặc danh sách tools thay đổi theo người dùng. Sau đó tôi kiểm tra prefix có vượt ngưỡng tối thiểu không và lưu lượng có thưa hơn TTL 5 phút không; nếu thưa thì cân nhắc TTL 1 giờ. Cuối cùng xác nhận model không đổi giữa các request, vì cache tách riêng theo model."
 
+### Ví dụ đời thực
+Tuần sau deploy tính năng "hỗ trợ kỹ thuật", dashboard route chat cho thấy {{cache_read_input_tokens}} gần 0 trên 10.000 request/ngày, mặc dù system prompt 40K token gần như không đổi. Kiểm tra log request gửi đi: mỗi request đều có dòng {{Hôm nay là 2026-11-09 14:32:10}} trong system prompt do code ghi {{LocalDateTime.now()}}. Cache khớp theo prefix từng byte, nên timestamp thay đổi mỗi giây làm prefix không bao giờ giống; mỗi request đều phải ghi cache mới thay vì đọc lại. Khắc phục: xóa timestamp khỏi system prompt, chuyển thời gian hiện tại vào tin nhắn người dùng. Sau đó {{cache_read_input_tokens}} chiếm 88% input, chi phí input route giảm từ 45 USD xuống 5 USD mỗi ngày. Bổ sung test CI: gửi hai request giống nhau, assert đoạn system prompt giống hệt theo SHA-256.
+
 > Senior tip: viết một **test tự động** dựng request hai lần với dữ liệu người dùng khác nhau rồi assert phần trước breakpoint giống hệt nhau. Nó bắt được 90% lỗi vỡ cache ngay trong CI, trước khi lên hoá đơn.`,
   follow: ['Bạn kiểm soát quyền dùng tool thế nào mà vẫn giữ bộ tools cố định để cache?', 'A/B test hai model có ảnh hưởng chi phí cache không?'],
   tags: ['prompt caching', 'debug', 'silent invalidator']
@@ -491,6 +494,9 @@ POST /v1/messages/batches
 
 ### Trả lời miệng 1 phút
 "Tôi dùng Batch API cho việc không cần kết quả ngay như phân loại hay tóm tắt hàng loạt, vì giá chỉ bằng một nửa. Một batch chứa tới 100 nghìn request hoặc 256 MB, phần lớn xong trong một giờ, tối đa 24 giờ. Mỗi request có custom_id, tôi lưu batch id, poll tới khi trạng thái ended, rồi đọc kết quả và ghép theo custom_id vì thứ tự không được đảm bảo. Request errored hoặc expired thì gom lại gửi batch sau, kết quả được giữ 29 ngày."
+
+### Ví dụ đời thực
+Cuối tháng hệ thống cần tóm tắt 200.000 hoá đơn gửi phòng kế toán vào 8h sáng. Triệu chứng: gọi Messages API thường thì 200.000 request chạy liên tục hơn 4 ngày, chi phí tính đầy 100% tarif, không kịp hạn. Điều tra: kiểm tra lưu lượng và quy ước Batch API — xử lý bất đồng bộ, phần lớn xong trong 1 giờ, giá bằng một nửa, kết quả giữ 29 ngày. Nguyên nhân gốc: tính năng này không cần kết quả ngay, nên gọi từng request là lãng phí và làm hệ thống tắc. Cách xử lý: chia 200.000 hoá đơn thành hai batch (giới hạn 100.000 request / 256 MB một batch), mỗi request gắn {{custom_id}} bằng id hoá đơn trong DB để ghép kết quả sau (kết quả không đảm bảo thứ tự), gửi một lần. Sáng hôm sau job định kỳ poll trạng thái, thấy {{processing_status}} là ended, đọc file JSONL và cập nhật DB theo {{custom_id}}. 1.200 dòng bị errored do hoá đơn ảnh mờ, gom lại gửi batch tuần sau. Job ghi idempotent theo {{custom_id}} nên chạy lại nhiều lần không ghi nhầm DB. Kết quả đo được: chi phí chỉ bằng một nửa so với gọi thường, phòng không đợi từng hoá đơn, và không tắc lưu lượng ở giờ cao điểm.
 
 > Senior tip: kết hợp Batch với **prompt caching** cho phần prompt chung của mọi request (hướng dẫn phân loại dài): hai mức giảm giá cộng dồn, đặc biệt hiệu quả cho job eval chạy hàng nghìn test case.`,
   follow: ['Làm sao để job đọc kết quả batch idempotent nếu bị chạy lại?', 'Bạn chọn kích thước batch thế nào?'],
@@ -558,6 +564,9 @@ Schema giống mẫu đơn có ô trống: nó đảm bảo người ta điền 
 ### Trả lời miệng 1 phút
 "Nếu chỉ cần dữ liệu có cấu trúc, tôi dùng structured outputs qua output_config.format với json_schema, schema phẳng, có required và additionalProperties false. Nếu model cần chọn hành động trong agent thì dùng tool với strict true để input luôn đúng schema. Dặn JSON trong prompt chỉ để prototype. Nhưng schema chỉ bảo đảm hình dạng, nên server vẫn kiểm tra stop_reason, validate giá trị nghiệp vụ bằng Bean Validation và coi dữ liệu là không tin cậy khi đưa vào SQL hay HTML."
 
+### Ví dụ đời thực
+Pipeline trích xuất hoá đơn xử lý 5.000 file/ngày, dùng structured outputs với schema có total, currency, invoice_no. Một ngày team phát hiện DB lưu total = -1.200.000 trên 12 hoá đơn. Kiểm tra bản JSON gốc: model trả đúng schema (các trường và kiểu đều đúng) nhưng giá trị bị âm vì đọc sai dấu trừ trên ảnh mờ. Schema chỉ bảo đảm hình dạng, không bảo đảm giá trị hợp lý. Khắc phục: thêm Bean Validation {{@Positive}} trên DTO total, hoá đơn không qua validation được đánh dấu chờ duyệt và gửi phòng kế toán. Đồng thời lưu bản JSON gốc kèm phiên bản prompt và model vào bảng audit để tra cứu nguyên nhân. Sau khi sửa: 0 bản ghi tổng sai, số hoá đơn chờ duyệt giảm từ 12 xuống 0. Tôi cũng quét lại các hoá đơn đã lưu trong 30 ngày qua để đảm bảo không còn bản ghi tổng sai tương tự, và bắt metric tỉ lệ hoá đơn bị từ chối qua validation để theo dõi chất lượng mô hình theo thời gian.
+
 > Senior tip: lưu **bản JSON gốc** model trả về cùng phiên bản prompt và model vào bảng audit. Khi phát hiện dữ liệu sai trong DB, bạn biết lỗi do model, do prompt hay do code mapping.`,
   follow: ['Khi nào chọn strict tool use thay vì structured outputs?', 'Schema thay đổi (thêm trường) thì bạn triển khai an toàn thế nào?'],
   tags: ['structured outputs', 'JSON schema', 'strict tool', 'validation']
@@ -611,6 +620,9 @@ Giả sử 100.000 tài liệu/tháng, mỗi tài liệu 6.000 token input (đã
 ### Trả lời miệng 1 phút
 "Tôi lấy mẫu vài chục tài liệu thật, đếm input bằng endpoint count_tokens với đúng prompt và model, chạy thử để biết output trung bình, rồi nhân với lưu lượng tháng và giá từng model. Ví dụ 100 nghìn tài liệu, mỗi cái 6 nghìn token vào và 300 ra, thì Haiku khoảng 75 đô, Sonnet khoảng 1.500, Opus khoảng 3.000 mỗi tháng. Tôi trình bày kèm đòn bẩy: Batch API giảm một nửa, caching phần prompt chung, và chọn model rẻ nhất đạt ngưỡng chất lượng trên bộ eval."
 
+### Ví dụ đời thực
+Sếp yêu cầu tính chi phí tính năng "tóm tắt tài liệu pháp luật" dự kiến 80.000 tài liệu/tháng. Tôi lấy mẫu 40 tài liệu thật, chạy endpoint count_tokens với đúng prompt và model: trung bình 5.500 token input (gồm prompt 900 token) và output khoảng 250 token. Tính: Haiku 5.5 (0.10/0.50 USD mỗi MTok) → 80.000 × 5.5M input = 440 MTok × 0.10 = 44 USD, output 20 MTok × 0.50 = 10 USD, tổng khoảng 54 USD/tháng; cộng 10% dự phòng cho retry và request lỗi là khoảng 60 USD. Sonnet 5.5 khoảng 1.080 USD, Opus 5.5 khoảng 2.160 USD. Tôi tách chi phí theo tính năng trên dashboard và nêu đòn bẩy: Batch API giảm một nửa, caching phần prompt 900 token, chọn model rẻ nhất qua eval. Cuối tháng chi phí thực tế 62 USD, đúng dự báo, sếp phê duyệt tiếp tục.
+
 > Senior tip: báo cáo theo **chi phí trên mỗi tác vụ hoàn thành** (ví dụ $0.015/tài liệu), không theo chi phí/request. Một model rẻ mà phải gọi lại 3 lần vì sai thì không hề rẻ.`,
   follow: ['Nếu tài liệu dài hơn 100K token thì cách tính với Haiku 5.5 thay đổi thế nào?', 'Bạn chứng minh Haiku "đủ tốt" cho tác vụ này bằng cách nào?'],
   tags: ['chi phí', 'count_tokens', 'pricing', 'model selection']
@@ -659,6 +671,9 @@ Giống thuê người: thực tập sinh (Haiku) làm nhanh việc đơn giản
 
 ### Trả lời miệng 1 phút
 "Có bốn tầng: Haiku 5.5 rẻ và nhanh cho phân loại hay trích xuất khối lượng lớn, Sonnet 5.5 cân bằng cho chatbot và tóm tắt, Opus 5.5 cho việc phức tạp và agent dài, Fable 5.1 cho bài toán khó nhất. Tất cả có context 1M. Tôi không chọn theo cảm tính mà xây eval từ dữ liệu thật, chạy vài model và mức effort, so chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành, rồi chọn phương án rẻ nhất đạt ngưỡng. Thường tôi thử hạ effort trước khi đổi sang model nhỏ hơn."
+
+### Ví dụ đời thực
+Sản phẩm có ba tính năng AI: phân loại ticket, chat hỗ trợ và review code pull request. Ban đầu team dùng Opus 5.5 cho tất cả, hóa đơn tháng sau tăng 30 lần. Tôi xây eval 150 case thật cho mỗi tính năng, chạy thử Haiku, Sonnet, Opus ở effort low/medium, ghi chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành. Kết quả: phân loại ticket, Haiku đạt 97% đúng và chỉ 0.02 USD/tác vụ, Opus 0.40 USD; chat hỗ trợ, Sonnet đạt ngưỡng chất lượng, Opus tốt hơn nhưng không đáng gấp 10 tiền; review code giữ Opus effort medium vì sai lệch nhiều bước. Áp dụng: hóa đơn từ 4.200 xuống 610 USD tháng sau, chất lượng không giảm theo eval. Luật: chọn theo số liệu, không theo cảm tính. Tôi cũng đặt alert chi phí theo route để phát hiện sớm nếu chi phí bất thường tăng, và lưu model đã dùng cho mỗi request vào DB để so sánh khi Anthropic ra model mới.
 
 > Senior tip: lưu {{model}} và phiên bản prompt cùng mỗi kết quả trong DB. Khi Anthropic ra model mới, bạn chạy lại đúng bộ eval cũ và có số liệu so sánh trong một buổi chiều, thay vì tranh luận cảm tính.`,
   follow: ['Router chọn model nên đặt ở đâu trong kiến trúc?', 'Khi nâng từ model cũ lên model mới bạn kiểm tra những gì?'],
@@ -710,6 +725,9 @@ Effort giống dặn nhân viên "làm nhanh cho xong" hay "nghĩ thật kỹ r�
 
 ### Trả lời miệng 1 phút
 "Trên các model hiện hành thinking là adaptive, model tự quyết nghĩ bao nhiêu, còn tôi điều khiển độ sâu bằng output_config.effort từ low tới max. Kiểu budget_tokens cũ đã bị bỏ trên model 5.x, và Opus 5.5 không cho tắt thinking, mặc định effort medium. Tôi đặt effort tường minh theo từng route: low cho phân loại và chat ngắn, medium cho tóm tắt, high hoặc xhigh cho coding và agent, và chọn bằng eval chứ không đoán. Khi stream cho người dùng thì bật display summarized để họ thấy model đang suy nghĩ."
+
+### Ví dụ đời thực
+Hệ thống có hai route AI: phân loại lỗi ticket và coding assistant hỗ trợ debug. Ban đầu cả hai dùng Opus 5.5 effort mặc định medium, p95 phản hồi 12 giây, chi phí cao. Tôi chạy eval ở effort low/medium/high trên mỗi route: phân loại lỗi ở effort low đạt 96% đúng, phản hồi 2 giây, chi phí mỗi tác vụ giảm 8 lần; coding assistant ở effort medium bỏ lỡ nguyên nhân deadlock, effort high đạt 94% và chấp nhận được 8 giây. Áp dụng effort tường minh theo route thay vì một giá trị chung: low cho phân loại, high cho coding assistant. Tuần sau chi phí route phân loại từ 90 xuống 11 USD, coding assistant giữ chất lượng. Còn không tắt thinking trên Opus 5.5 vì API trả lỗi 400; muốn tiết kiệm thì hạ effort, không tắt thinking.
 
 > Senior tip: khi nâng model, **chạy lại effort sweep**. Cùng tên mức effort nhưng các model khác nhau được hiệu chỉnh khác nhau, và giữ nguyên cấu hình cũ là nguồn gốc phổ biến của việc "model mới chậm hơn / tốn hơn".`,
   follow: ['Vì sao không nên tắt thinking để tiết kiệm trên Opus 5.5?', 'Hiển thị tiến trình suy nghĩ cho người dùng thế nào khi stream?'],
