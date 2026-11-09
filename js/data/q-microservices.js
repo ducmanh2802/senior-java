@@ -1209,6 +1209,9 @@ http.oauth2Client(o -> o.clientRegistrationRepository(reg))   // phía client: x
 ### Trả lời miệng 1 phút
 "Tôi coi đây là hai câu hỏi khác nhau. mTLS trả lời service nào đang gọi, bằng certificate ngắn hạn; OAuth2 client credentials trả lời service đó được làm gì, bằng scope và audience trong JWT. Với hệ thống nhỏ, tôi dùng client credentials, cache token tới gần hết hạn, resource server kiểm chữ ký, audience và scope, cộng NetworkPolicy deny-by-default. Khi có hàng chục service đa ngôn ngữ, tôi dùng mesh để có auto mTLS và AuthorizationPolicy, nhưng vẫn giữ kiểm scope và luật nghiệp vụ trong app, vì mesh không hiểu nghiệp vụ. Trade-off của mesh là chi phí vận hành và độ trễ. Kinh nghiệm của tôi là phải tập rotate secret và cert thật."
 
+### Ví dụ đời thực
+  Một công ty fintech 15 service, team dùng OAuth2 client credentials giữa các service. Năm 2023, team payment-service rotate client_secret theo lịch 90 ngày, nhưng team order-service vẫn cache token cũ 30 phút. Khi secret đổi, order-service nhận 401 từ payment-service/IdP trong vòng 30 phút và retry 3 lần theo Resilience4j config, gây tải dồn (cascade 5xx) vào payment-service. Triệu chứng: {{p99}} của order-service gọi payment-service tăng từ 200ms lên 2,5s, tỉ lệ lỗi 70%, circuit breaker (phía order-service gọi payment-service) mở. Điều tra: log order-service thấy {{InvalidClientException}} lặp; token cache không invalidate khi secret rotate; payment-service log thấy client_id order-service bị reject. Nguyên gốc: cache token TTL (30 phút) lớn hơn độ trễ propagate secret mới, và không có cơ chế chủ động invalidate cache khi nhận 401. Xử lý: (1) giảm token cache TTL xuống 5 phút, (2) thêm logic: nhận 401 với hint token invalidated → xóa cache ngay và xin token mới, (3) payment-service thêm endpoint {{/oauth2/introspect}} để client kiểm tra token trước khi retry, (4) rotate secret dùng blue-green: cấp secret mới song song cũ 1 ngày, client migrate dần. Kết quả: lần rotate sau đó không còn 401, circuit breaker không mở. Đây là minh chứng: OAuth2 client credentials cần chiến lược cache + invalidate chủ động, không chỉ tin vào TTL.
+
 > Senior tip: secret và cert phải **rotate được mà không redeploy toàn cluster**. Nếu rotation nghĩa là downtime, thì bạn chưa có kế hoạch: hãy đo bằng bài tập rotate thật mỗi quý một lần.`,
   follow: [
     'Khi nào chọn private_key_jwt thay vì client_secret_basic?',
@@ -1290,6 +1293,20 @@ consumer CI: test ─► pact file ─► Pact Broker ◄─ provider CI: verify
 
 ### Trả lời miệng 1 phút
 "Nguyên tắc của tôi là chỉ thêm, không phá: thêm field optional, consumer là tolerant reader. Khi buộc phải breaking, tôi dùng expand–contract: thêm field mới song song, ghi cả hai, chuyển consumer sang bản mới, rồi sau ít nhất một release mới gỡ bản cũ; schema DB cũng đi theo cách đó. Version lớn tôi đặt trên URI cho dễ hiểu. Để bắt lỗi sớm, tôi dùng consumer-driven contract với Pact: consumer sinh pact file, provider verify trong CI, và can-i-deploy chặn deploy nếu chưa tương thích. Kinh nghiệm của tôi là phần lớn breaking đến từ đổi format như ngày tháng, nên contract phải kiểm cả format."
+
+### Ví dụ đời thực
+  Một hệ thống e-commerce dùng REST API cho 20 service. Năm 2023, team order-service muốn đổi field {{status}} từ enum string ({{PENDING, PAID, SHIPPED}}) sang object. Developer push breaking change trực tiếp lên {{/api/orders}} mà không tạo version mới.
+
+~~~json
+{
+  "status": {
+    "code": "PAID",
+    "label": "Đã thanh toán"
+  }
+}
+~~~
+
+  Triệu chứng: mobile app crash khi parse response, web dashboard hiển thị "[object Object]", metric {{http.server.requests}} 5xx tăng từ 0,1% lên 12%. Điều tra: log mobile thấy {{com.fasterxml.jackson.databind.exc.MismatchedInputException}} (status nhận object, mong đợi string); web dashboard code dùng {{order.status}} như string để so sánh; consumer-driven contract test (Pact) chưa bao giờ chạy trong CI vì team bỏ qua. Nguyên gốc: breaking change đẩy lên production mà không có expand–contract, không có contract test, không có can-i-deploy gate. Xử lý: (1) rollback ngay về version cũ, (2) tạo {{/api/v2/orders}} với object status mới, (3) mobile/web migrate dần sang v2 trong 2 sprint, (4) cài đặt Pact Broker, consumer viết contract, provider verify trong CI, (5) can-i-deploy chặn deploy nếu contract fail. Kết quả: sau 1 tháng, v1 traffic về 0, v2 ổn định, và 3 breaking change sau đó bị bắt ở CI. Đây là minh chứng: contract test + expand–contract + versioning URI bắt breaking change sớm, không để lọt production.
 
 > Senior tip: phần lớn breaking đến từ **đổi định dạng**, không phải đổi schema. Thêm contract test cho định dạng ngày/tiền tệ/enum rẻ hơn rất nhiều so với sửa lỗi parse trên production.`,
   follow: [
@@ -1385,6 +1402,9 @@ Bắt đầu bằng **CQRS-lite**: ghi qua service, đọc từ read replica ho�
 ### Trả lời miệng 1 phút
 "CQRS là tách model ghi và model đọc; tôi dùng khi query nghiệp vụ cần dạng dữ liệu rất khác model ghi hoặc đọc nhiều hơn ghi rất nhiều, ví dụ dashboard hay tìm kiếm. Read model được cập nhật qua event từ outbox, nên phải chấp nhận eventual consistency và xử lý read-your-writes. Event sourcing là lưu chuỗi sự kiện làm nguồn sự thật; tôi chỉ thêm khi cần audit đầy đủ, time-travel hoặc rebuild projection, vì nó kéo theo upcasting, snapshot, xử lý GDPR bằng crypto-shredding và tooling để debug. Với CRUD thông thường tôi không dùng cả hai. Thực tế tôi bắt đầu bằng CQRS-lite rồi mới nâng cấp khi có nhu cầu thật."
 
+### Ví dụ đời thực
+  Hệ thống đặt vé sự kiện 10 service, query dashboard "doanh thu theo ngày/sự kiện/khách hàng" chậm 8s do join 5 bảng chuẩn hóa. Năm 2023, team áp CQRS: ghi giữ nguyên Order/OrderItem, phát event {{OrderCreated, ItemAdded, PaymentTaken}} qua outbox, projector cập nhật bảng {{order_summary}} (denormalize: order_id, event_name, date, customer_id, amount, status). Triệu chứng ban đầu: read model lệch 2% so với dữ liệu ghi (dashboard sai số). Điều tra: projector consume event nhưng retry logic không idempotent, cùng event {{PaymentTaken}} được xử lý 2 lần do Kafka rebalance; reconciliation job phát hiện 4.000 bản ghi amount gấp đôi. Nguyên gốc: projector không dùng inbox pattern (dedup theo eventId), và outbox relay publish at-least-once. Xử lý: (1) thêm bảng {{processed_event(event_id PK)}}, projector insert trước khi cập nhật summary, (2) snapshot aggregate mỗi 100 event để rebuild nhanh, (3) CDC Debezium sync bảng summary sang Elasticsearch cho tìm kiếm full-text. Kết quả: query dashboard từ 8s xuống 120ms, reconciliation job phát hiện 0 lệch sau 2 tuần, và team có thể rebuild Elasticsearch từ đầu trong 15 phút nhờ event store. Đây là minh chứng: CQRS giải quyết query phức tạp nhưng bắt buộc idempotent projector + reconciliation.
+
 > Senior tip: mỗi lần ai đó đề nghị event sourcing, hãy hỏi "ai sẽ xây tool rebuild projection và ai trực on-call khi projection lệch?". Nếu không có câu trả lời, đó là nợ kỹ thuật được bọc bằng buzzword.`,
   follow: [
     'Snapshot hỏng thì xử lý thế nào? Ai chịu trách nhiệm version snapshot?',
@@ -1459,6 +1479,9 @@ ALTER TABLE orders DROP COLUMN status;
 
 ### Trả lời miệng 1 phút
 "Blue-green chuyển toàn bộ traffic một lần nên rollback tức thì nhưng tốn gấp đôi tài nguyên; canary rót traffic dần theo SLO, có thể tự động rollback bằng Argo Rollouts; feature flag tách deploy khỏi release, tắt cờ là xong. Nhưng cả ba chỉ rollback được code, không rollback được schema, và trong lúc deploy thì v1 và v2 cùng chạy trên một DB. Vì thế tôi bắt buộc migration tương thích với N-1 theo expand–contract: thêm cột nullable, ghi cả hai, backfill theo lô, chuyển đọc, và chỉ drop cột cũ sau ít nhất một release. Câu hỏi tôi luôn tự hỏi khi review migration là: nếu app bị revert ngay sau 30 giây, hệ thống còn chạy không?"
+
+### Ví dụ đời thực
+  Hệ thống thanh toán 8 service, team thêm cột {{discount_id}} vào bảng {{orders}} (50 triệu dòng). Năm 2023, migration chạy {{ALTER TABLE orders ADD COLUMN discount_id VARCHAR(36)}} xong, deploy code v2 ghi cả {{discount_id}} và {{discount_code}} (cột cũ). Triệu chứng: 30 phút sau deploy, read replica lag 15 phút; {{pg_stat_activity}} thấy {{ALTER TABLE}} giữ {{AccessExclusiveLock}} 45 giây, chặn mọi SELECT trên bảng orders. Điều tra: migration chạy lúc 14:00 (giờ cao điểm) thay vì 03:00; backfill {{UPDATE orders SET discount_id = discount_code}} 50 triệu dòng một câu duy nhất chạy 2 giờ, WAL phình 200GB; replica không áp kịp WAL, replication slot giữ WAL và đĩa DB đầy dần. Nguyên gốc: migration DDL + backfill không dùng online schema change, không chia lô, chạy sai giờ. Xử lý: (1) backfill theo lô: {{UPDATE orders SET discount_id = discount_code WHERE id BETWEEN :from AND :to AND discount_id IS NULL}} 5.000 dòng/lần, nghỉ 100ms/lần, chạy nền vài giờ không khóa lâu (PostgreSQL không dùng gh-ost — gh-ost dành cho MySQL), (2) tạo index {{CREATE INDEX CONCURRENTLY ON orders(discount_id)}}, (3) code v2 đọc {{COALESCE(discount_id, discount_code)}}, (4) sau 2 release xác nhận không còn đọc {{discount_code}} mới {{DROP COLUMN discount_code}}. Kết quả: migration sau đó zero-downtime, replica lag < 10s, và team quy định migration DDL chỉ chạy 02:00–04:00. Đây là minh chứng: expand–contract + online schema change + giờ thấp điểm = migration an toàn.
 
 > Senior tip: mỗi lần review migration, hãy tự hỏi "nếu app vừa deploy bị revert ngay 30 giây sau, hệ thống còn chạy không?". Nếu câu trả lời là không thì migration chưa an toàn, bất kể có backup hay không.`,
   follow: [
@@ -1554,6 +1577,9 @@ Chỉ số: % traffic qua service mới + số dòng/bảng đã XÓA khỏi mon
 ### Trả lời miệng 1 phút
 "Tôi dùng strangler fig: đặt facade trước monolith, chọn seam đầu tiên có boundary rõ và ít join như Catalog, viết service mới với anti-corruption layer để không kế thừa model cũ. Dữ liệu tôi đồng bộ bằng Debezium CDC, chạy dual-run với job đối soát, luôn giữ một nguồn ghi duy nhất, và dùng shadow traffic để so response. Traffic chuyển dần bằng canary theo SLO, rollback chỉ là đổi route. Trade-off là thời gian chạy song song và chi phí đồng bộ. Điều tôi nhấn mạnh với team là bước cuối: xóa code và bảng cũ; tôi đo tiến độ bằng phần trăm traffic qua service mới và số bảng đã xóa khỏi monolith."
 
+### Ví dụ đời thực
+  Một ngân hàng monolith 500k dòng Java, 120 bảng, chạy 8 năm. Năm 2023 bắt đầu strangler fig: Quý 1 tách Catalog (sản phẩm, danh mục), Quý 2 tách Notification, Quý 3–4 tách Order (phức tạp nhất). Catalog: facade route {{/api/catalog/**}} sang catalog-service mới (Spring Boot), Debezium CDC sync 12 bảng sang Postgres mới, dual-run 4 tuần, reconciliation job so sánh hàng ngày (count, checksum {{MD5}}), lệch 0,001% do timestamp precision → fix mapping. Traffic canary 5% → 100% trong 2 tuần, xóa 12 bảng và 40k dòng code khỏi monolith. Order: 35 bảng, nhiều join, transaction phức tạp. Dùng branch by abstraction trong monolith: tạo interface {{OrderRepository}}, implement mới gọi order-service gRPC, giữ implement JPA cũ. Shadow traffic 100% so sánh response JPA vs gRPC 3 tuần, lệch 0,02% do floating point rounding → fix bằng BigDecimal. Canary 5% → 30% → 100% trong 6 tuần. Kết quả: sau 1 năm, monolith còn 60k dòng, 45 bảng, 3 service mới tự deploy, lead time feature từ 3 tuần xuống 3 ngày. Đo tiến độ: % traffic qua service mới (Catalog 100%, Notification 100%, Order 30%) + số bảng xóa (57/120). Đây là minh chứng: strangler fig cần CDC + reconciliation + shadow traffic + canary + xóa code cũ, thiếu một bước là không xong.
+
 > Senior tip: đo tiến độ strangler bằng 2 chỉ số: **% traffic đi qua service mới** và **số module/bảng đã xóa khỏi monolith**. Không có chỉ số thứ hai thì đó không phải strangler, đó là copy-paste sang microservices.`,
   follow: [
     'Nếu monolith không có outbox, bạn ghi hai phía lúc dual-write an toàn thế nào?',
@@ -1636,6 +1662,9 @@ Pod (ServiceAccount) ─IAM role─► Secrets Manager ─► password (cache 10
 
 ### Trả lời miệng 1 phút
 "Theo 12-factor, config là environment chứ không nằm trong code: tôi build một artifact và deploy mọi nơi. Config thường tôi để ConfigMap hoặc Spring Cloud Config để có version và review; feature flag cần rollout từ từ thì AWS AppConfig. Secret thì luôn ở Vault hoặc Secrets Manager: pod lấy bằng danh tính IAM, app đọc lúc boot và cache có TTL, rotation tự động, mọi lần đọc đều có audit. Các bẫy tôi chặn: secret trong git và history, actuator env, image layer, và Kubernetes Secret chỉ là base64. Nếu lỡ commit secret thì việc đầu tiên là rotate, không phải xóa file. Tôi cũng cho phép đổi timeout, flag lúc runtime để on-call tune được."
+
+### Ví dụ đời thực
+  Hệ thống 12 service trên AWS EKS. Năm 2023, developer commit file {{application-prod.yml}} chứa {{spring.datasource.password=ProdPass123}} lên git (nhầm đẩy nhánh feature merge vào main). CI/CD build image, deploy production. Triệu chứng: 2 giờ sau, {{CloudTrail}} ghi nhận {{GetSecretValue}} từ IP lạ, RDS log thấy 50 kết nối failed login. Điều tra: git history vẫn còn secret ({{git log -p}} thấy commit), Docker image layer có file config ({{docker history}} đọc được), {{/actuator/env}} production trả về password plaintext (dev bật {{management.endpoint.env.show-values=ALWAYS}}). Nguyên gốc: secret trong git + image + actuator lộ + thiếu secret scanning CI. Xử lý: (1) **rotate ngay** mật khẩu RDS qua Secrets Manager (Lambda tự động), (2) force push rewrite history ({{git filter-repo}}) và rotate mọi credential khác trong repo, (3) thêm {{truffleHog}} + {{gitleaks}} vào CI pre-commit và pipeline, (4) chặn {{/actuator/env}} bằng Spring Security + network policy, (5) dùng External Secrets Operator kéo secret từ Secrets Manager mount file, không dùng env var, (6) bật encryption at rest cho etcd, RBAC chặt Secret. Kết quả: 6 tháng sau không còn incident lộ secret, CI chặn 3 PR chứa secret. Đây là minh chứng: secret lộ = rotate ngay, không chỉ xóa file; phòng chống bằng CI scanning + actuator lockdown + External Secrets.
 
 > Senior tip: cấu hình vận hành (timeout, tỷ lệ %) nên đổi được lúc runtime: nếu đổi timeout cần redeploy thì bạn sẽ không bao giờ tune nó khi on-call lúc 2 giờ sáng.`,
   follow: [
