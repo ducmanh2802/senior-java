@@ -5561,6 +5561,46 @@ Redis là cache; DB lưu score history. Khi Redis mất: rebuild ZSET từ DB (b
 - Không persist → mất data khi restart.
 - Hot key single leaderboard → bottleneck; partition.
 
+### Cơ chế chi tiết: ZSET internals
+
+ZSET lưu cặp (member, điểm) và tự động sắp xếp theo điểm. Bên trong Redis dùng hai cấu trúc kết hợp:
+- **Skip list (danh sách nhảy):** cấu trúc phân cấp giúp tìm, xóa, chèn trong O(log N) trung bình. Mỗi node có các pointer "nhảy" theo nhiều mức (mức 1 = linked list đơn, múc 2 = nhảy mỗi 2 nút...). Đơn giản hơn cây đỏ-đen nhưng tốn hơn một chút bộ nhớ.
+- **Hash table:** tra cứu member -> điểm trong O(1), dùng cho ZSCORE.
+
+Với 10 triệu user, mỗi entry khoảng 72 bytes → ~720 MB, vừa vặn trong một Redis instance 2–4 GB. Đây là lý do ZSET phù hợp leaderboard: đọc top-K và tra thứ hạng nhanh, cập nhật thường xuyên.
+
+### Idempotent score update
+
+{{ZINCRBY}} là atomic (thực hiện trọn vẹn, không bị xen giữa) nhưng **không idempotent**: nếu client gửi lại cùng lệnh (ví dụ retry do mạng timeout), điểm sẽ được cộng nhiều lần. Hai cách khắc phục:
+- **Client request_id:** server lưu bộ nhớ request_id đã xử lý (TTL 24h). Nhận request -> kiểm tra -> nếu đã có thì trả kết quả cũ; chưa có thì {{ZINCRBY}} và đánh dấu đã xử lý.
+- **ZADD với GT (Redis 6.2+):** {{ZADD lb GT điểm userId}} chỉ cập nhật nếu điểm mới cao hơn điểm cũ. Phù hợp khi client gửi tổng điểm mới (không phải delta). Nếu client chỉ gửi delta (+10), dùng request_id.
+
+### Tie-breaker (xếp hạng cùng điểm)
+
+Redis chia như nhau theo chuỗi member theo thứ tự từ điển. Nếu muốn xếp hạng theo thời gian đạt điểm, mã hoá điểm thành composite: {{điểm * 1e9 + (MAX_TS - ts)}}. Điểm nguyên occupies phần cao, timestamp occupies phần thấp. MAX_TS là thời gian tương lai xa (ví dụ năm 2100). Công thức: {{composite = points * 1_000_000_000 + (MAX_TS - achieved_at_ms)}}. Người đạt sớm hơn có {{achieved_at_ms}} nhỏ hơn -> {{MAX_TS - achieved_at_ms}} lớn hơn -> composite lớn hơn -> xếp trên.
+
+### Sharding và approximate rank
+
+Khi một leaderboard nhận hàng triệu update/giây, một ZSET key trở thành bottleneck (Redis đơn luồng). Sharding: chia thành N shard ZSET lb:{shard_i}, shard_key = hash(userId) % N.
+- **Top-K global:** query top-K từ mỗi shard, merge K-way bằng min-heap O(K × log N).
+- **Rank user:** ZREVRANK trong shard + ZCOUNT đếm số user có điểm cao hơn trong shard, cộng rank các shard khác.
+- **Approximate rank:** chia khoảng điểm thành bucket (0–1000, 1001–2000...). Mỗi bucket đếm số user. Rank ≈ tổng bucket trên + offset trong bucket. Sai số < kích thước bucket.
+
+### Monitoring và operations
+
+- Metric bắt buộc: ZADD ops/s, ZREVRANGE latency p99, memory usage, key eviction rate.
+- Hot key detection: theo dõi ops/s theo key; nếu một key vượt ngưỡng (ví dụ 10k ops/s), cảnh báo và gợi ý sharding.
+- Persistence: AOF everysec + replica; khi Redis mất, rebuild từ DB (pipeline {{ZADD}} batch 5000, ~30s cho 10M user).
+- Anti-drift: rebuild hàng tuần từ DB để đối chiếu điểm Redis với DB score_history; nếu lệch, alert và fix.
+
+### Ví dụ đời thực: game leaderboard bị trùng điểm do client retry
+
+Một game di động có leaderboard theo điểm, hàng chục triệu người chơi. **Triệu chứng:** vào cuối tuần, một số người phàn nàn thứ hạng bị nhảy lên rồi xuống; hai người cùng điểm nhưng thứ hạng thay đổi giữa hai lần tải trang. **Điều tra:** log backend thấy nhiều lệnh {{ZINCRBY}} cho cùng userId đến cùng lúc do client retry khi mạng timeout. Mỗi retry là một {{ZINCRBY}} +10, nên userId bị cộng thêm 10 điểm dù chỉ hoàn thành level một lần. **Nguyên nhân gốc:** {{ZINCRBY}} atomic nhưng **không idempotent**: lặp lại lệnh lặp lại hiệu ứng. Ngoài ra, tie-break bằng chuỗi member (userId theo bảng chữ cái) không phản ánh thời gian đạt điểm, nên thứ hạng bất ổn. **Xử lý:** (1) thêm {{client_request_id}} vào request; server lưu set request_id gần nhất, nếu lặp trả kết quả cũ; hoặc dùng {{ZADD}} với {{GT}}. (2) Mã hoá thời gian vào điểm: {{điểm = points * 1_000_000_000 + (MAX_TS - achieved_at_ms)}}. (3) Rebuild hàng tuần từ DB score_history để đối chiếu Redis. **Kết quả đo được:** trùng điểm giảm từ ~2% xuống 0.03%, thứ hạng ổn định qua các lần reload.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về leaderboard, tôi chọn Redis Sorted Set vì {{ZINCRBY}} atomic, {{ZREVRANGE}} lấy top O(log N), {{ZREVRANK}} tra thứ hạng — hết trong bộ nhớ, latency dưới 5ms. Điểm mấu chốt là **idempotency**: {{ZINCRBY}} cộng thêm điểm mỗi lần client retry, nên tôi luôn ghi nhận request_id để lặp lại không tăng điểm. Với tie-break, tôi mã hoá thời gian đạt điểm vào điểm bằng {{điểm * 1e9 + (MAX_TS - ts)}} để người đạt sớm xếp trên. Cuối cùng, Redis chỉ là view nhanh; tôi giữ CSDL làm source of truth và có script rebuild khôi phục khi Redis mất — cache có thể mất, điểm người dùng không được mất."
+
 > Senior tip: Luôn có DB source of truth + rebuild script; Redis chỉ là view. Tie-break encode vào score để deterministic, tránh race.` ,
   follow: ['Tie-breaker?', 'Khôi phục?'],
   tags: ['leaderboard','redis']
@@ -5598,6 +5638,32 @@ Per-conversation sequence number; client reorder theo seq.
 - Broadcast trước persist → mất message khi crash.
 - Presence storm với triệu connection → dùng distributed presence.
 - WebSocket sticky session → load balancer phải consistent hash.
+
+### Cơ chế chi tiết: Fan-out hybrid
+
+Với nhóm nhỏ (< 1000 thành viên), server duy trì bản ghi conversationId -> danh sách connectionId của từng thành viên đang online (trong bộ nhớ hoặc Redis). Khi có message mới, server lặp qua danh sách và gọi gửi trực tiếp xuống từng WebSocket. Độ phức tạp O(N) với N = số thành viên online. Phù hợp vì N nhỏ, latency thấp, không qua trung gian.
+
+Với nhóm lớn / kênh công khai (celebrity, livestream chat), fan-out trực tiếp sẽ tốn quá nhiều CPU/memory trên gateway và gây thundering herd (nhiều quá trình cùng kích hoạt cùng lúc) khi broadcast. Chuyển sang mô hình pub/sub (công cấu publish-subscribe - người gửi publish message vào một kênh, nhiều người dùng subscribe kênh đó nhận message): message đẩy vào Redis Stream hoặc Kafka topic chat:{conversationId}. Các gateway instance subscribe topic này, nhận message và đẩy xuống connection của thành viên đang online trên instance đó. Số lượng subscriber = số gateway instance (thường 10–100), không phụ thuộc vào số user. Latency tăng thêm khoảng 1–2 ms do qua message broker, nhưng scale gần như vô hạn.
+
+Ngưỡng chuyển đổi: thường đặt ở 500–1000 thành viên online. Có thể dùng feature flag (cờ điều khiển tính năng) bật/tắt pub/sub cho từng conversationId để xử lý sự cố nóng.
+
+### Cơ chế chi tiết: Presence và Reconnect
+
+**Presence (trạng thái hiện diện - biết ai đang online):** Mỗi connection gửi ping (heartbeat) mỗi 30 giây. Gateway cập nhật khóa Redis presence:{userId}:{deviceId} với TTL 60 giây (thời gian sống - key tự xóa sau TTL). User coi là online nếu ít nhất một thiết bị còn TTL > 0. Khi TTL hết, gateway phát sự kiện user_offline cho **chỉ những người đang mở chat với user đó** - không broadcast cho cả danh bạ (tránh presence storm - tình trạng quá nhiều kết nối presence cùng lúc làm quá tải hệ thống với triệu kết nối).
+
+**Reconnect:** Client lưu lastMessageId (cursor - con trỏ đánh dấu tin nhắn cuối đã xem) của từng cuộc trò chuyện. Khi reconnect, client gửi RESUME conversationId lastMessageId. Server truy vấn CSDL lấy message WHERE id > lastMessageId ORDER BY id LIMIT 100 và đẩy xuống. Nếu lastMessageId quá cũ (khoảng cách lớn), server trả lỗi FULL_SYNC_REQUIRED và client tải lại toàn bộ lịch sử gần nhất. Exponential backoff (lùi theo số mũ): 1s, 2s, 4s, 8s, max 30s + jitter ngẫu nhiên 0–500 ms để tránh reconnect storm (nhiều client reconnect cùng lúc khi gateway vừa khởi động lại).
+
+### Cơ chế chi tiết: Ordering và Idempotency
+
+Mỗi cuộc trò chuyện có một sequence number (số thứ tự) tăng dần (có thể dùng Redis INCR conv:seq:{conversationId} hoặc cột identity của CSDL). Khi client gửi message, server gán seq rồi persist. Client nhận ACK kèm seq. Nếu client không nhận được ACK (mạng đứt), client retry cùng clientMessageId (UUID do client sinh). Server kiểm tra clientMessageId đã xử lý chưa (bộ nhớ Redis msg:processed:{clientMessageId} TTL 24h) — nếu có thì trả ACK cũ, không tạo message mới. Đây là **idempotency ở tầng ứng dụng** (thao tác lặp lại cho cùng kết quả).
+
+### Ví dụ đời thực: message trùng lặp và mất tin khi reconnect
+
+Một ứng dụng chat 2 triệu DAU dùng WebSocket + Redis pub/sub cho nhóm lớn. **Triệu chứng:** người dùng trong nhóm 5000 thành viên báo nhận được cùng một tin nhắn 2–3 lần liên tiếp; một số người reconnect sau khi đổi mạng 4G->WiFi thì mất 5–10 tin nhắn. **Điều tra:** log gateway thấy client gửi tin, server persist thành công nhưng ACK bị mất do mạng timeout; client retry (không có clientMessageId) -> server tạo message thứ 2 với seq mới. Với reconnect: client không lưu lastMessageId, reconnect thì server đẩy toàn bộ lịch sử (1000 tin) -> client hiển thị trùng lặp và lag. **Nguyên nhân gốc:** (1) thiếu idempotency key ở client -> retry tạo message trùng; (2) reconnect không dùng cursor -> server không biết client đã thấy đâu. **Xử lý:** (1) client sinh clientMessageId UUID cho mỗi tin, gửi kèm request; server lưu clientMessageId trong bộ nhớ Redis set TTL 24h, nếu thấy trùng trả ACK cũ; (2) client lưu lastMessageId mỗi cuộc trò chuyện vào localStorage; reconnect gửi RESUME conversationId lastMessageId; server chỉ trả message seq > lastMessageId; (3) thêm FULL_SYNC_REQUIRED khi gap > 5000 message. **Kết quả đo được:** message trùng giảm từ ~2% xuống 0.01%; reconnect mất tin giảm từ 5% xuống 0%; p99 latency reconnect < 800 ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi thiết kế chat realtime, tôi bắt đầu bằng nguyên tắc persist trước, broadcast sau - message phải ghi vào CSDL trước khi đẩy cho người nhận, đảm bảo không mất dữ liệu khi gateway crash. Với fan-out, tôi dùng hybrid: nhóm nhỏ (< 1k) đẩy trực tiếp từ gateway, nhóm lớn chuyển sang pub/sub qua Redis Stream/Kafka để tránh quá tải gateway. Presence theo dõi heartbeat 30s, TTL 60s trong Redis, chỉ thông báo cho người đang mở chat chứ không broadcast cho cả danh bạ. Điểm mấu chốt là idempotency: client phải gửi clientMessageId UUID, server deduplicate bằng bộ nhớ Redis set; và reconnect có cursor - client lưu lastMessageId, reconnect chỉ kéo message mới. Tôi từng gặp case thiếu hai thứ này khiến message trùng lặp 2% và reconnect mất tin 5%; sau khi thêm dedup key và cursor-based resume, cả hai đều gần như bằng 0."
 
 > Senior tip: Luôn persist-first + cursor-based resume; presence là best-effort, không block message delivery.` ,
   follow: ['Fan-out?', 'Reconnect?'],
@@ -5640,6 +5706,38 @@ Track fan-out lag, feed freshness, read latency p99.
 - Cache stampede khi celebrity post → coalescing.
 - Cursor không stable khi clock skew → dùng snowflake id.
 - Hot celebrity post → thundering herd.
+
+### Cơ chế chi tiết: Fan-out worker
+
+Fan-out worker tiêu thụ sự kiện post-created từ Kafka (hệ thống tin nhắn phân tán - các ứng dụng gửi/nhận message qua topic). Mỗi worker xử lý một partition (phân vùng - phần của topic được phân tán), đọc batch 100–500 sự kiện/lần. Với mỗi sự kiện, worker lấy danh sách follower từ cache (Redis followers:{userId} - ZSET lưu follow_time). Nếu số follower < ngưỡng (mặc định 10k), worker dùng Redis pipeline (gom nhiều lệnh gửi cùng lúc để giảm round-trip) ZADD feed:{followerId} {timestamp} {postId} cho từng follower. Pipeline gom 100–500 lệnh gửi một lần giảm round-trip từ khoảng 500ms xuống ~5ms. Nếu số follower >= ngưỡng, worker **không push**, chỉ cập nhật recent_posts:{authorId} (ZSET lưu 500 bài mới nhất của celebrity). Worker scale ngang bằng thêm partition Kafka; mỗi partition chỉ xử lý một tập con tác giả.
+
+Vấn đề hot partition: bài của celebrity rơi vào một partition -> worker đó quá tải. Giải pháp: pre-split partition theo băm authorId, hoặc detect celebrity trước khi vào Kafka (routing key = celebrity thì vào topic riêng, xử lý bởi worker pool riêng với concurrency cao hơn).
+
+### Cơ chế chi tiết: Read path và merge
+
+Khi client gọi GET /feed?cursor=... feed service:
+1. Đọc từ feed:{userId} (Redis ZSET) top N bài đã push (thường 50–100).
+2. Lấy danh sách celebrity mà user follow từ cache celebrity_follows:{userId}.
+3. Với mỗi celebrity, đọc recent_posts:{celebrityId} top M bài (M = 10–20).
+4. Merge K danh sách đã sắp xếp (K = 1 push + số celebrity follow) bằng **k-way merge** dùng min-heap O(tổng × log K). Loại bỏ duplicate postId (dùng hash set - cấu trúc lưu giá trị duy nhất).
+5. Hydrate chi tiết bài (content, author, media) từ cache/CSDL theo batch postId — tránh N+1 query (tránh truy vấn CSDL nhiều lần lặp cho từng bài).
+6. Trả về cursor (score, postId) của bài cuối để trang sau.
+
+Cursor ổn định: điều kiện điểm < điểmCuoi HOẶC (điểm = điểmCuoi VÀ postId < postIdCuoi) đảm bảo không skip/duplicate khi data thay đổi giữa hai request. Không dùng OFFSET vì OFFSET lớn sẽ quét O(N) và khi data thay đổi liên tục sẽ gây skip/duplicate.
+
+### Cơ chế chi tiết: Cache invalidation và lan truyền xoá
+
+Khi celebrity xoá/sửa bài:
+- Sửa: chỉ cập nhật bài gốc trong CSDL; feed chỉ lưu postId nên tự động đúng — không cần invalidate.
+- Xoá: phát sự kiện post-deleted -> fan-out worker nhận và ZREM feed:{followerId} {postId} cho TẤT CẢ follower (dùng pipeline batch 500). Đồng thời xóa khỏi recent_posts:{authorId}. Nếu số follower lớn (celebrity), dùng job nền chia nhỏ theo batch 10k follower/lần, hoàn tất trong vài giây. Không chờ TTL 2h.
+
+### Ví dụ đời thực: feed bị duplicate bài khi merge push và pull
+
+Một nền tảng nội dung có 5 triệu DAU dùng hybrid fan-out: push cho user thường, pull cho celebrity. **Triệu chứng:** người dùng báo thấy cùng một bài twice trong feed (lần ở vị trí 3 và vị trí 15), và khi cuộn xuống bài bị mất. **Điều tra:** kiểm tra log feed service thấy hai nguồn trả về cùng postId: feed ZSET của user (push) trả bài do worker fan-out, và celebrity recent_posts (pull) cũng trả bài đó — merge không loại bỏ trùng. Ngoài ra, khi celebrity xoá bài, feed ZSET của follower vẫn giữ id cũ đến khi TTL (2h). **Nguyên nhân gốc:** merge push và pull là hai đường dữ liệu độc lập, không có cơ chế dedup (loại trùng) theo postId; và xoá bài không lan truyền sang feed cache đã push. **Xử lý:** (1) merge theo postId, loại bỏ id trùng trước khi trả; (2) dùng cursor phân trang ổn định (score, postId) để không skip/duplicate khi data thay đổi; (3) khi celebrity xoá bài, phát sự kiện post-deleted để fan-out worker gỡ id khỏi feed ZSET (dùng ZREM batch); (4) hydrate chi tiết bài qua batch, lọc bỏ bài đã xoá ở lớp cuối. **Kết quả đo được:** duplicate bài giảm từ ~3% xuống 0.1%, và bài xoá biến mất khỏi feed trung bình trong 2 giây thay vì 2h.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về news feed celebrity, tôi giải thích ngay rằng push cho celebrity có triệu follower là không thể: một bài = 50 triệu ZADD, worker sẽ bị nghẽn. Vì vậy tôi dùng hybrid: push cho follower dưới ngưỡng (ví dụ 10k), pull cho celebrity. Khi đọc, feed service lấy từ Redis ZSET của người dùng kết hợp recent_posts của celebrity, merge theo timestamp, và dùng cursor (score, postId) để phân trang — không dùng OFFSET vì OFFSET lớn sẽ quét O(N) và khi data thay đổi liên tục sẽ gây skip/duplicate. Điểm hay bị bỏ qua là merge: hai nguồn push và pull có thể trả cùng postId, phải dedup theo postId trước khi trả; và khi xoá bài, phải phát sự kiện để worker gỡ id khỏi feed cache đã push, không thể chờ TTL 2h."
 
 > Senior tip: Hybrid fan-out là trade-off write vs read; chọn threshold follower count (ví dụ 10k) để chuyển sang pull.` ,
   follow: ['Tại sao hybrid?', 'Cursor khác OFFSET?'],
@@ -5689,6 +5787,65 @@ Tiering + lifecycle policy tự động chuyển cold sau 30 ngày không truy c
 - Orphan chunks khi upload fail → GC sweep.
 - Dedup cross-tenant phải cẩn thận privacy (hash leak existence) → salt per tenant.
 
+### Cơ chế chi tiết: Chunking strategy
+
+Có hai cách chia chunk:
+- **Fixed-size chunking (chia cố định 4MB):** đơn giản, dễ triển khai. Nhược điểm: thay đổi 1 byte ở đầu file làm dịch chuyển toàn bộ chunk sau đó -> không dedup được phần còn lại. Phù hợp cho file ít thay đổi (backup, lớp ảnh container).
+- **Content-Defined Chunking - CDC (chia theo nội dung, dùng Rabin fingerprinting - kỹ thuật vân tay nội dung):** ranh giới chunk quyết định bởi nội dung (hash cửa sổ trượt). Thay đổi cục bộ chỉ ảnh hưởng chunk chứa thay đổi -> dedup tốt cho file thường sửa (disk VM, kho code). Chi phí CPU cao hơn, nhưng tỷ lệ dedup tốt hơn 2–3x so với fixed-size.
+
+Production thường dùng CDC cho backup/VM, fixed-size cho object storage đơn giản. Kết hợp: file nhỏ (< 8MB) không chunk, file lớn dùng CDC. CDC tham số: kích thước cửa sổ (48–64 byte), min/max chunk size (2KB–512KB), kích thước trung bình mục tiêu (64KB–1MB). Chunk size quá nhỏ -> manifest lớn; quá lớn -> mức chi tiết dedup thô.
+
+### Cơ chế chi tiết: Cấu trúc manifest
+
+~~~json
+{
+  "fileId": "sha256:abc123...",
+  "size": 104857600,
+  "chunks": [
+    {"hash": "sha256:chunk1...", "size": 4194304, "offset": 0},
+    {"hash": "sha256:chunk2...", "size": 4194304, "offset": 4194304}
+  ],
+  "createdAt": "2026-11-01T10:00:00Z",
+  "tenantId": "tenant-123"
+}
+~~~
+
+Manifest được lưu như một object riêng (cũng có content hash), ref count = số file tham chiếu. Luồng upload: client tính hash chunk -> kiểm tra sự tồn tại -> upload chunk thiếu -> POST manifests với danh sách hash chunk -> server xác thực và commit (tăng ref count từng chunk). Bước commit manifest là nguyên tử: nếu thất bại giữa chừng, chunk trở thành orphan (ref count = 0).
+
+### Cross-tenant privacy và salt
+
+Nếu dùng chung kho lưu trữ chunk cho nhiều tenant (khách hàng), hash chunk có thể rò rỉ thông tin: kẻ tấn công upload file đoán -> nếu chunk tồn tại -> biết tenant khác có file đó. Giải pháp: **salt per tenant** (muối cho mỗi tenant) — chunk hash = SHA-256(salt_tenant + nội dung chunk). Salt lưu trong cấu hình tenant, xoay thay đổi định kỳ. Trade-off: mất dedup cross-tenant (chấp nhận được vì bảo mật > lượng dung lượng saves). Nếu bắt buộc dedup cross-tenant (ví dụ kho chứa container công khai), dùng **convergent encryption** (mã hóa hoán quy - mã hóa chunk với khóa = hash(chunk)), nhưng cần mô hình mối đe dọa kỹ (kẻ tấn công có thể tra cứu từ điển).
+
+### Kiểm tra toàn vẹn và sửa chữa
+
+Mỗi chunk lưu kèm crc32c (nhanh) và sha256 (chắc chắn). Job nền:
+- **Scrub hàng tuần:** đọc 1% chunk ngẫu nhiên, xác thực sha256. Sai -> đánh dấu corrupt, trigger sao chép lại từ replica khỏe.
+- **Sửa chữa:** chunk corrupt -> tìm replica đúng hash -> sao chép lại -> xác thực. Nếu tất cả replica corrupt -> alert P1, cần khôi phục từ bản sao lưu.
+- **Kiểm tra tính nhất quán manifest:** hàng ngày so sánh ref count manifest với kho chunk thực tế; lệch -> sửa ref count.
+
+### Garbage Collection cho orphan chunk
+
+- **Soft delete:** khi xóa file/manifest, ref count giảm. Chunk có ref count = 0 -> đánh dấu orphaned_at, không xóa ngay.
+- **Hard delete sau TTL:** orphan chunk sau 7–30 ngày mới xóa (để khôi phục nếu commit manifest thất bại do mạng).
+- **Pending TTL:** chunk upload xong nhưng commit manifest thất bại trong 1h -> xóa (tránh orphan tăng dần).
+- GC job chạy định kỳ (mỗi giờ), batch 1000 chunk/lần, ghi log tỉ lệ orphan để cảnh báo.
+
+### Tách tầng lưu trữ và tối ưu chi phí
+
+- **Hot tier (SSD):** chunk gần đây (< 30 ngày), truy cập thường xuyên.
+- **Warm tier (HDD/object storage):** chunk 30–90 ngày.
+- **Cold tier (S3 Glacier / băng):** chunk > 90 ngày, khôi phục trong vài giờ.
+
+Chính sách vòng đời tự động chuyển theo thời gian truy cập gần nhất. Dedup giúp tách tầng hiệu quả hơn: cùng nội dung chỉ lưu 1 lần ở mỗi tầng.
+
+### Ví dụ đời thực: orphan chunk bít tắc lưu trữ sau khi upload thất bại
+
+Một dịch vụ lưu file doanh nghiệp có hàng triệu người dùng, dùng CAS (content-addressable storage - lưu theo hash nội dung) với chunk 4MB và reference counting. **Triệu chứng:** dung lượng disk tăng 30% trong 2 tuần dù người dùng chỉ upload lượng file nhỏ; dashboard cho thấy số orphan chunk tăng dần. **Điều tra:** kiểm tra log upload service thấy nhiều request timeout ở bước "commit manifest" — client upload xong các chunk nhưng request commit bị thất bại; chunk đã được lưu với hash nhưng manifest (danh sách chunk + ref count) chưa được ghi. **Nguyên nhân gốc:** upload chunk là idempotent theo chunk hash (nên lặp lại không sao), nhưng bước commit manifest là ghi ref count — nếu thất bại giữa chừng, chunk trở thành orphan (ref count = 0). Job GC chỉ chạy mỗi ngày và chỉ xóa chunk có ref count = 0 và không nằm trong manifest nào đang chờ. **Xử lý:** (1) thêm TTL cho chunk pending (1h) — chunk không được commit trong 1h thì xóa; (2) commit manifest dùng optimistic locking trên file id, conflict -> retry; (3) job GC chạy mỗi giờ thay vì mỗi ngày, và ghi log tỉ lệ orphan để cảnh báo; (4) thêm kiểm tra toàn vẹn hàng tuần: xác thực hash của mỗi chunk với lưu trữ. **Kết quả đo được:** orphan chunk giảm từ 30% xuống dưới 1%, dung lượng disk ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về lưu file dedup, tôi bắt đầu bằng content-addressable storage: id file = SHA-256(content), upload cùng nội dung -> cùng id -> skip lưu. Với file lớn, chunking 4MB giúp dedup phần — hai file có cùng phần đầu thì chunk đó không cần upload lại, rất hữu ích cho backup/versioning. Mỗi chunk/file có reference count; khi về 0 thì GC (xóa mềm + xóa cứng sau TTL). Điểm hay bị bỏ là orphan chunk: nếu upload xong chunk nhưng commit manifest thất bại, chunk trở thành orphan — tôi dùng TTL cho chunk pending và job GC chạy thường xuyên hơn. Với dedup cross-tenant, cần salt per tenant vì hash leak có thể cho biết tenant A có file nào đó. Cuối cùng, kiểm tra toàn vẹn xác thực hash sau upload/download để phát hiện hư hỏng dữ liệu."
+
 > Senior tip: CAS + ref count là nền tảng của Dropbox/borg; luôn có GC job và integrity check.` ,
   follow: ['Tại sao chunking?', 'Reference counting?'],
   tags: ['dedup','chunking']
@@ -5722,6 +5879,76 @@ Payment success → UPDATE seat SET status=BOOKED WHERE id=? AND status=HOLD AND
 - Hold TTL quá ngắn → user chưa thanh toán xong.
 - Expiry worker race với confirm → conditional update bảo vệ.
 - Over-sell nếu không conditional.
+
+### Cơ chế chi tiết: Hold phase và Seat map
+
+Hold phase là bước quan trọng nhất. Mô hình dữ liệu:
+~~~sql
+CREATE TABLE seat (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT NOT NULL,
+  section VARCHAR(20), row_num INT, seat_num INT,
+  status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE', -- AVAILABLE, HOLD, BOOKED
+  hold_expires_at TIMESTAMPTZ,
+  hold_token UUID,           -- khóa idempotency từ client
+  version INT NOT NULL DEFAULT 0,
+  UNIQUE (event_id, section, row_num, seat_num)
+);
+CREATE INDEX idx_seat_event_status ON seat(event_id, status);
+~~~
+
+Khi user chọn ghế (có thể chọn nhiều), client gửi danh sách seatId kèm hold_token (UUID). Server chạy trong **một transaction**:
+1. SELECT * FROM seat WHERE id IN (...) AND status = 'AVAILABLE' FOR UPDATE — khoá row, serialize concurrent hold.
+2. Kiểm tra tất cả seat đều AVAILABLE. Nếu có seat đã HOLD/BOOKED -> rollback, trả lỗi SEAT_TAKEN.
+3. UPDATE seat SET status='HOLD', hold_expires_at=now() + interval '10 minutes', hold_token=?, version=version+1 WHERE id IN (...).
+4. Commit. Trả hold_id (UUID gom nhóm) cho client.
+
+hold_token quan trọng: nếu client gửi lại cùng request (retry), server thấy hold_token đã tồn tại -> trả hold hiện có thay vì tạo mới (idempotency).
+
+### Cơ chế chi tiết: Expiry worker design
+
+Expiry worker không chỉ đơn giản UPDATE seat SET status='AVAILABLE' WHERE status='HOLD' AND hold_expires_at < now(). Cần thiết kế an toàn:
+- **Batch size:** mỗi lần xử lý 100–500 seat, tránh khoá bảng quá lâu.
+- **Conditional update:** chỉ cập nhật nếu vẫn còn HOLD và đã hết hạn:
+UPDATE seat
+   SET status='AVAILABLE', hold_token=NULL, hold_expires_at=NULL, version=version+1
+ WHERE id IN (...) AND status='HOLD' AND hold_expires_at < now()
+Chỉ cập nhật nếu vẫn còn HOLD và đã hết hạn. Nếu payment callback vừa đổi sang BOOKED, affected rows = 0 -> không làm gì.
+- **Cursor-based pagination:** dùng WHERE id > last_processed_id thay vì OFFSET để tránh skip khi data thay đổi.
+- **Idempotent:** chạy lại nhiều lần cũng an toàn nhờ điều kiện status='HOLD'.
+- **Schedule:** chạy mỗi 30s–1p. Có feature flag bật/tắt ngay lập tức.
+
+### Cơ chế chi tiết: Waitlist
+
+Khi event sold out (hết vé), user đăng ký waitlist:
+~~~sql
+CREATE TABLE waitlist (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  seat_preference JSONB,      -- section/row ưu tiên
+  status VARCHAR(20) DEFAULT 'WAITING', -- WAITING, OFFERED, EXPIRED, FULFILLED
+  offered_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,     -- TTL cho offer (ví dụ 10 phút)
+  UNIQUE (event_id, user_id)
+);
+~~~
+
+Khi seat bị release (expiry hoặc user hủy), worker lấy waitlist đầu tiên (FIFO theo created_at), tạo hold mới cho user đó, gửi thông báo (email/push), set offered_at=now(), expires_at=now()+10min. User phải confirm trong TTL; hết hạn -> chuyển user tiếp theo. Waitlist storm khi hàng loạt seat release cùng lúc -> batch processing + rate limit notification (ví dụ chỉ gửi 100 notification/giây).
+
+### Cơ chế chi tiết: Pessimistic vs Optimistic locking
+
+- **Pessimistic locking (SELECT FOR UPDATE):** khoá row ngay khi bắt đầu transaction. An toàn tuyệt đối, không có retry. Nhược điểm: throughput thấp (chỉ một transaction khoá row tại một thời điểm), dễ deadlock nếu khoá nhiều row (phải khoá theo thứ tự cố định). Phù hợp với hold phase (contention cao: nhiều user chọn cùng ghế).
+- **Optimistic locking (version column):** không khoá row; UPDATE có điều kiện WHERE id=? AND version=x. Nếu affected rows = 0 -> version thay đổi (conflict) -> rollback và retry (exponential backoff). Throughput cao, nhưng retry có thể lên đến 10–20 lần khi contention cao. Phù hợp với confirm phase (contention thấp: chỉ một user confirm một ghế).
+- **SELECT ... FOR UPDATE SKIP LOCKED:** tính năng Postgres — khoá row và bỏ qua row đã bị khoá bởi transaction khác. Dùng cho expiry worker: SELECT id FROM seat WHERE status='HOLD' AND expires_at < now() ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED — worker không cần đợi row đang được khoá bởi worker khác.
+
+### Ví dụ đời thực: hold hết hạn và payment callback đến trễ -> oversell nhẹ
+
+Một nền tảng đặt vé máy bay có 20 triệu vé/năm, dùng hold TTL 10 phút + expiry worker + conditional confirm. **Triệu chứng:** hàng tháng có ~50 đơn bị từ chối dù đã thanh toán thành công ("đơn của bạn đã bị hủy vì hết thời gian giữ chỗ"), và 3 trường hợp vé bị bán quá 1 lần (sau khi đối chiếu). **Điều tra:** kiểm tra log expiry worker thấy job chạy mỗi 1 phút; một lần chạy bắt đầu lúc 10:00:00 và kết thúc lúc 10:02:30 (quá 2 phút do CSDL chậm). Trong khoảng đó, payment callback của 12 đơn đến và ghi BOOKED — nhưng expiry worker đã đọc row với status=HOLD và sau đó UPDATE thành AVAILABLE. **Nguyên nhân gốc:** expiry worker không dùng conditional update (chỉ WHERE status=HOLD AND expires_at < now) nên khi chạy sau payment callback, nó ghi Available lên một row vừa được BOOKED. Expiry worker và payment callback race trên cùng row. **Xử lý:** (1) expiry worker dùng conditional update WHERE status='HOLD' AND expires_at < now() — nếu payment callback vừa đổi sang BOOKED, affected rows = 0; (2) payment callback dùng conditional WHERE status='HOLD' AND expires_at > now() — nếu expiry worker vừa đổi sang AVAILABLE, affected rows = 0; (3) thêm column version để optimistic locking; (4) callback và expiry worker cùng khoá theo seat row (SELECT FOR UPDATE) khi cần. **Kết quả đo được:** oversell nhẹ từ 3 xuống 0, đơn bị hủy nhầm giảm từ 50 xuống 2 (2 đơn còn do payment provider chậm hơn 10 phút).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về đặt vé chống overbook, tôi bắt đầu bằng hold phase: user chọn ghế -> INSERT hold với expires_at = now + 10 phút, status=HOLD, và dùng SELECT FOR UPDATE trên seat row để serialize concurrent hold. Expiry worker là job định kỳ UPDATE seat SET status=AVAILABLE WHERE status=HOLD AND expires_at < now — nhưng điều hay bị bỏ là worker đó phải dùng conditional update, nếu không nó có thể ghi Available lên một row vừa được payment callback đổi sang BOOKED. Confirm cũng conditional: UPDATE seat SET status=BOOKED WHERE id=? AND status=HOLD AND expires_at > now; nếu 0 rows thì hold đã hết hạn. Với pessimistic vs optimistic: pessimistic (SELECT FOR UPDATE) serialize và an toàn nhưng throughput thấp, phù hợp với hold phase; optimistic (version column) throughput cao, retry khi conflict, phù hợp với confirm phase khi contention thấp. Luôn có expiry worker chỉ là cleanup, không phải authority."
 
 > Senior tip: Luôn conditional update với status check; expiry worker chỉ là cleanup, không phải authority.` ,
   follow: ['Pessimistic vs optimistic?', 'Hold hết hạn?'],
@@ -5826,6 +6053,15 @@ UPDATE inventory
 - **Tuning/cấu hình có thật (Redis):** dùng {{PX}} (ms) thay {{EX}}; đặt TTL >= 3-5x p99 thời gian xử lý; watchdog gia hạn (Redisson {{RLock}} có watchdog mặc định 30s, gia hạn mỗi 10s) nhưng **watchdog không cứu process bị treo hoàn toàn** (STW, SIGSTOP). Bật {{appendonly yes}} và chấp nhận lock có thể mất khi failover nếu dùng async replication; cần correctness thì dùng replication có xác nhận hoặc chuyển sang hệ consensus.
 - **Nguyên tắc vận hành:** handler phía sau lock phải **idempotent** (chạy 2 lần cho cùng kết quả) - đó là lưới an toàn cuối khi lock thất bại.
 
+### Ví dụ đời thực: báo cáo tài chính bị ghi đè do GC pause
+
+Một hệ thống xử lý báo cáo doanh thu hàng ngày của ngân hàng, chạy lúc 02:00 sáng. Mỗi báo cáo mất khoảng 25 giây tính toán (tổng hợp 50 triệu giao dịch), dùng Redis lock TTL 60s. **Triệu chứng:** sau 3 tháng, team phát hiện báo cáo ngày 15/10 bị sai lệch 2,3 tỷ so với dữ liệu gốc; log thấy hai worker cùng ghi report_output cho cùng report_id=2024-10-15 trong vòng 2 giây. **Điều tra:** GC log (JDK 17, G1GC, heap 16GB) cho thấy lúc 02:15:23 worker A vào Full GC STW kéo dài 48 giây (humongous allocation + promotion failure). Lúc đó lock TTL 60s đã hết hạn (acquire lúc 02:14:55). Worker B acquire lock lúc 02:15:35, tính xong ghi V2 lúc 02:16:00. Worker A sau khi GC xong (02:16:11) vẫn nghĩ mình giữ lock, ghi đè V1 -> V2 mất. **Nguyên nhân gốc:** lock Redis hết hạn theo thời gian thực nhưng worker không biết; không có fencing token nên storage chấp nhận write từ worker cũ. **Xử lý:** (1) Thêm fencing token: Redis INCR fence:report:2024-10-15 cấp token mỗi acquire; (2) report_output thêm cột fence_token BIGINT DEFAULT 0; (3) Worker ghi DB với WHERE fence_token < $new_token (conditional update); (4) Tăng lock TTL lên 300s + bật Redisson watchdog gia hạn 10s; (5) Thêm alert: metric lock_lost_total > 0 hoặc GC pause > 30s -> PagerDuty. **Kết quả đo được:** 6 tháng sau, 0 sự cố ghi đè báo cáo; lock_lost_total = 0; p99 báo cáo 28s (trong TTL).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi nói về distributed lock Redis, tôi luôn bắt đầu bằng: SET NX PX chỉ là mutual exclusion best-effort, không phải correctness guarantee. Vấn đề cốt lõi là lock hết hạn theo thời gian thực (TTL) trong khi code chạy theo thời gian logic — GC pause, CPU throttle, network partition đều có thể làm TTL hết mà worker không hay. Tôi từng gặp case Full GC 48s làm lock hết hạn, worker cũ ghi đè báo cáo tài chính đã được worker mới tính xong. Giải pháp đúng là fencing token: mỗi lần acquire lock, lấy token tăng dần từ Redis INCR (hoặc DB sequence); storage đích (DB, S3 versioned, v.v.) chỉ chấp nhận write nếu token mới hơn token đã thấy. Nếu storage không hỗ trợ compare-and-swap (ví dụ API thứ ba), lock Redis không bảo vệ được — lúc đó phải dùng DB row lock (UPDATE ... WHERE version = x) hoặc etcd/consensus. Tóm lại: Redis lock giảm trùng lặp, fencing token + conditional write mới đảm bảo đúng đắn."
+
+
 > Senior tip: Tôi coi Redis lock là "đèn giao thông gợi ý", còn fencing token + ràng buộc DB là "rào chắn vật lý". Trong phỏng vấn, nếu bạn nói "dùng Redis lock" mà không nhắc GC pause và fencing, interviewer senior sẽ đào tiếp; nếu bạn chủ động nói "lock chỉ giảm trùng, tính đúng đắn nằm ở conditional write với token/version", đó là câu trả lời của người đã từng bị mất dữ liệu.`,
   follow: ['Redisson watchdog gia hạn lock tự động; nó có giải quyết được kịch bản GC stop-the-world 40 giây không? Vì sao?', 'Bạn thiết kế fencing token khi storage đích là một API HTTP bên thứ ba không hỗ trợ version/compare-and-swap như thế nào?', 'Postgres advisory lock khác row lock (SELECT FOR UPDATE) ở điểm nào, và khi nào advisory lock phù hợp hơn?'],
   refs: [{"type":"article","title":"How to do distributed locking (Martin Kleppmann)","url":"https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"},{"type":"doc","title":"Redis: Distributed Locks","url":"https://redis.io/docs/latest/develop/use/patterns/distributed-locks/"}],
@@ -5910,7 +6146,7 @@ Quorum đảm bảo **giao nhau** (intersection): bất kỳ hai tập đa số 
 - Đọc có thể {{linearizable}} (qua leader, chắc chắn mới nhất) hoặc {{serializable}} (từ follower, nhanh hơn nhưng có thể hơi cũ) tùy cấu hình client.
 
 ### Liên hệ Kafka KRaft
-- Trước đây Kafka dùng **ZooKeeper** (hệ consensus riêng) để lưu metadata: broker nào sống, partition leader ở đâu, topic config. KRaft (Kafka Raft Metadata mode) thay ZooKeeper bằng một **controller quorum** chạy giao thức dựa trên Raft, lưu metadata trong một internal log topic ({{@metadata}}).
+- Trước đây Kafka dùng **ZooKeeper** (hệ consensus riêng) để lưu metadata: broker nào sống, partition leader ở đâu, topic config. KRaft (Kafka Raft Metadata mode) thay ZooKeeper bằng một **controller quorum** chạy giao thức dựa trên Raft, lưu metadata trong một internal log topic ({{__cluster_metadata}}).
 - Điều xảy ra khi controller leader chết: các controller còn lại bầu leader mới bằng quorum; metadata đã commit không mất. Broker tiếp tục phục vụ produce/consume dựa trên metadata đã biết, nhưng thay đổi metadata (tạo topic, bầu partition leader mới) phải chờ controller quorum ổn.
 - Lợi ích thực tế: bỏ phụ thuộc ZooKeeper, mở rộng số partition tốt hơn, thời gian khôi phục controller nhanh và nhất quán hơn.
 
