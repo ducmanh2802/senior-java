@@ -4091,6 +4091,18 @@ return 0
 ### Trả lời miệng 1 phút
 "count++ gồm ba bước đọc, cộng, ghi nên không nguyên tử: hai thread cùng đọc 5 thì cùng ghi 6 và mất một lần tăng; volatile không sửa được vì nó chỉ lo visibility. Trong một JVM tôi dùng AtomicInteger cho giá trị cần chính xác, LongAdder cho metric ghi nhiều, hoặc lock khi phải cập nhật nhiều biến cùng lúc; và cẩn thận check-then-act, phải gộp kiểm tra và trừ vào một thao tác CAS. Khi chạy nhiều instance, lock trong JVM vô dụng, tôi đưa tính nguyên tử về DB: UPDATE có điều kiện như used nhỏ hơn max_uses rồi xem affected rows; xung đột hiếm thì optimistic locking, logic phức tạp thì SELECT FOR UPDATE. Khi một dòng quá nóng mới chuyển phần giữ chỗ sang Redis Lua kèm job đối soát."
 
+### Ví dụ đời thực
+
+Flash sale voucher "TẾT2026" dành cho 1000 lượt. Triệu chứng: ứng dụng ghi 1200 đơn dùng voucher, vượt 200 lượt so với max_uses = 1000. Điều tra: log cho thấy hai luồng cùng đọc used = 999, mỗi luồng cộng 1 rồi ghi lại, cột cuối về 1001. Nguyên nhân: app đọc used lên Java, kiểm tra, sau đó UPDATE used = used + 1 — hai bước đọc-tính-ghi không nguyên tử, hai lần cập nhật chồng lên nhau, gọi là lost update. Cách xử lý: gộp kiểm tra và cập nhật thành một câu SQL:
+
+~~~sql
+UPDATE voucher
+SET used = used + 1
+WHERE code = 'TET2026' AND used < max_uses;
+~~~
+
+Kiểm tra affected rows: bằng 1 dùng thành công, bằng 0 đã hết lượt. Kết quả: không còn đơn vượt max_uses, không cần lock phân tán hay retry dồn dập.
+
 > Senior tip: với bài toán trừ tồn kho hay voucher, tôi luôn bắt đầu bằng UPDATE có điều kiện và kiểm tra affected rows: một câu SQL, không cần lock phân tán, đúng tuyệt đối. Chỉ khi đo thấy một dòng "nóng" làm DB nghẽn (hàng nghìn request mỗi giây vào cùng một SKU) mới chuyển phần giữ chỗ lên Redis Lua, kèm job đối soát với DB.`,
   follow: [
     'Vì sao check-then-act vẫn sai kể cả khi dùng AtomicInteger?',
@@ -4192,6 +4204,10 @@ Semaphore permits = new Semaphore(10, true);     // semaphore fair
 
 ### Trả lời miệng 1 phút
 "Deadlock là các thread đứng im chờ nhau mãi, CPU thấp, JVM phát hiện được trong thread dump. Livelock là các thread vẫn chạy, liên tục nhả ra rồi thử lại theo nhau, CPU cao mà không ai tiến; ví dụ hai thread chuyển tiền ngược chiều dùng tryLock không có backoff, hay retry storm trong hệ phân tán. Starvation là hệ thống vẫn chạy nhưng một số thread mãi không tới lượt, ví dụ do lock non-fair hoặc một tenant chiếm hết pool. Fair lock trao lock theo thứ tự chờ nên chống starvation, nhưng mất khả năng chen ngang và mỗi lần chuyển giao phải đánh thức thread đang ngủ, nên throughput giảm đáng kể. Tôi chỉ dùng nó khi đo thấy starvation thật, sau khi đã thử rút ngắn thời gian giữ lock."
+
+### Ví dụ đời thực
+
+Hai microservice chuyển tiền ngược chiều dùng {{tryLock}} và nhả lock ngay khi không khóa được, cứ lặp lại mà không chuyển được tiền. Triệu chứng: CPU về 100%, số giao dịch mỗi giây rơi xuống gần 0. Điều tra: thread dump cho thấy stack của hai luồng cứ quay lại trong vòng lặp retry; metric CPU cao nhưng throughput bằng 0. Nguyên nhân: livelock — hai luồng vẫn chạy, liên tục nhả ra rồi thử lại theo nhau, chẳng ai hoàn thành việc. Cách xử lý: thêm backoff ngẫu nhiên, ví dụ {{Thread.sleep}} 1–10 ms trước khi thử lại, hoặc khoá theo thứ tự id cố định của hai tài khoản. Kết quả: CPU giảm từ 100% xuống mức thường, throughput khôi phục, giao dịch hoàn thành.
 
 > Senior tip: livelock tôi gặp nhiều nhất không nằm trong code Java mà ở chính sách retry: client timeout 1 giây và retry ngay 3 lần, service vốn đang chậm vì quá tải lại càng quá tải hơn. Exponential backoff có jitter và circuit breaker chính là "fair lock" của hệ phân tán. Còn starvation trong JVM thường lộ ra qua p99.9 của một nhóm request tăng vọt; lúc đó tôi thử giảm thời gian giữ lock trước, fair lock là lựa chọn sau cùng.`,
   follow: [
@@ -4311,6 +4327,10 @@ Bean scope singleton nghĩa là "một instance cho mỗi ApplicationContext", d
 ### Trả lời miệng 1 phút
 "Tôi dùng ba cách: eager với static final, holder idiom khi cần lazy, và enum khi cần chống phá. Cả ba thread-safe nhờ JVM bảo đảm phần khởi tạo class chạy đúng một lần dưới khoá và publish an toàn, nên không cần volatile hay synchronized. Singleton bị phá bằng reflection gọi constructor private, deserialization tạo object mới, clone nếu class là Cloneable, và nhiều class loader. Enum chặn được reflection và serialization; với class thường thì kiểm tra trong constructor và thêm readResolve; còn class loader thì không chặn được trong code. Lưu ý thực tế là constructor ném exception thì class hỏng tới khi restart, và trong Spring tôi để container quản lý singleton thay vì tự viết."
 
+### Ví dụ đời thực
+
+Ứng dụng dùng singleton {{FeeTable}} implements Serializable để lưu bảng phí, session replicate giữa các pod. Triệu chứng: cùng đơn hàng, hai pod tính phí khác nhau. Điều tra: heap dump cùng MAT cho thấy hai object {{FeeTable}} khác nhau; log cho thấy service deserialize session từ peer. Nguyên nhân: thiếu {{readResolve()}}, mỗi deserialize tạo object mới, hai instance trạng thái lệch nhau. Cách xử lý: thêm {{readResolve()}} trả về {{INSTANCE}}, hoặc dùng enum singleton (JVM tự chống serialization và reflection). Kết quả: chỉ còn một instance, tính phí nhất quán trên mọi pod.
+
 > Senior tip: trong phỏng vấn, tôi trả lời gọn: "enum nếu cần chống reflection và serialization, holder nếu cần lazy, còn trong Spring thì không tự viết singleton". Interviewer thường vặn tiếp chuyện ExceptionInInitializerError; biết rằng class khởi tạo lỗi là "hỏng vĩnh viễn" tới khi restart cho thấy bạn đã thật sự debug chuyện này trên production.`,
   follow: [
     'Vì sao enum singleton không bị phá bằng reflection?',
@@ -4404,6 +4424,10 @@ jcmd <pid> Compiler.codecache                # dung lượng code cache đang d�
 ### Trả lời miệng 1 phút
 "JVM là máy ảo chạy bytecode, JRE là JVM cộng thư viện chuẩn để chạy ứng dụng, còn JDK là JRE cộng công cụ như javac, jar, jlink, jcmd. Đường đi là: javac dịch file java thành bytecode, khi code cần tới class lần đầu thì class loader nạp nó, JVM verify, prepare, resolve rồi chạy static initializer. Bytecode chạy bằng interpreter trước, method nóng được C1 biên dịch nhanh kèm profile, rồi C2 tối ưu mạnh; giả định sai thì deoptimize. Trade-off của thiết kế hai tầng là khởi động nhanh và tối ưu theo dữ liệu thật, nhưng phải trả giá bằng warm-up. Thực tế điều này giải thích vì sao p99 cao vài phút sau deploy và vì sao image dựng bằng jlink nhỏ hơn hẳn."
 
+### Ví dụ đời thực
+
+Triệu chứng: image Docker production dùng full JDK khoảng 300 MB; build bằng JDK 21 nhưng chạy trên JRE 17 thì ứng dụng khởi động bị lỗi {{UnsupportedClassVersionError}}. Điều tra: {{java -version}} cho thấy runtime là 17, file class biên dịch bằng JDK 21 (phiên bản 65). Nguyên nhân: class file mới hơn phiên bản JRE hỗ trợ; image chứa công cụ phát triển thừa không cần khi chạy. Cách xử lý: javac thêm flag {{--release 17}} hoặc chạy bằng JDK/JRE 21; production image dùng JRE của vendor hoặc {{jlink}} tạo runtime tối giản chỉ gồm module cần dùng. Kết quả: khởi động bình thường, image từ 300 MB xuống dưới 100 MB.
+
 > Senior tip: hiểu đường đi này giải thích được nhiều hiện tượng trên production: p99 cao sau mỗi lần deploy (JIT chưa warm, nên warm-up trước khi nhận traffic); {{NoClassDefFoundError}} chỉ xuất hiện khi chạy vào nhánh hiếm (class được load lazy); và vì sao image dựng bằng {{jlink}} với đúng các module cần dùng nhỏ hơn đáng kể so với full JDK.`,
   follow: [
     'Deoptimization xảy ra khi nào và ảnh hưởng tới latency ra sao?',
@@ -4493,6 +4517,10 @@ Cách tìm: chụp heap dump rồi dùng Path to GC Roots trong MAT trên object
 ### Trả lời miệng 1 phút
 "JVM xác định rác bằng reachability: bắt đầu từ GC roots là biến trên stack của thread đang sống, static field, JNI reference và monitor, đi theo mọi reference strong để đánh dấu; object không đến được là rác, kể cả khi chúng trỏ vòng vào nhau. JVM không dùng reference counting vì nó không thu được vòng tham chiếu, tốn chi phí cập nhật bộ đếm atomic ở mỗi lần gán, và có thể giải phóng dây chuyền gây pause. Tracing thì chi phí tỉ lệ với object còn sống, hợp với việc đa số object chết trẻ. Còn leak trong Java nghĩa là object vẫn reachable nhưng không còn dùng, như static map quên xoá hay ThreadLocal trong pool. GC chỉ thu cái không đến được, không thu cái bạn không cần."
 
+### Ví dụ đời thực
+
+Triệu chứng: heap dùng tăng đều mỗi ngày, full GC thường xuyên, pod cuối cùng bị OOMKill. Điều tra: chụp heap dump, mở bằng MAT, dùng Path to GC Roots trên object {{Event}} nghi ngờ; chuỗi giữ: static field {{PENDING}} → {{ConcurrentHashMap}} → entry → {{List<Event>>}}. Nguyên nhân: {{AuditService.record}} thêm sự kiện vào static map nhưng quên remove khi giao dịch xong, nên object vẫn reachable từ root, GC không bao giờ thu dù code không dùng nữa. Cách xử lý: gọi {{remove()}} trong {{finally}} sau mỗi giao dịch, hoặc dùng cache có giới hạn kèm TTL. Kết quả: old gen sau mỗi GC đi ngang, full GC ngừng xuất hiện.
+
 > Senior tip: khi giải thích một vụ leak cho team, tôi luôn chỉ ra **root** cụ thể lấy từ MAT, thường là static field, ThreadLocal của thread pool, hoặc class loader. Câu hỏi "có GC rồi sao còn leak" được trả lời bằng một câu: GC thu những gì không còn đến được, chứ không thu những gì bạn không còn cần.`,
   follow: [
     'Card table / remembered set giải quyết vấn đề gì khi chỉ dọn young gen?',
@@ -4579,6 +4607,16 @@ Nguyên nhân thường gặp: allocation rate rất cao; young gen quá nhỏ (
 
 ### Trả lời miệng 1 phút
 "Minor GC dọn young gen khi Eden đầy, có dừng ứng dụng nhưng ngắn vì chỉ copy số ít object còn sống sang Survivor. Major GC là dọn old gen, thuật ngữ không chuẩn hoá; với G1 nó là concurrent marking cộng mixed GC. Full GC dọn toàn bộ heap trong một lần dừng dài, trên G1 là phương án dự phòng và là dấu hiệu có vấn đề. Object được promote khi sống qua tenuring threshold, tối đa 15 vì tuổi lưu trong 4 bit header, hoặc sớm hơn khi Survivor đầy; object humongous vào thẳng old. Trên GC log tôi nhìn old gen sau GC: đi ngang là khoẻ, bậc thang đi lên là leak, sát trần là heap nhỏ. Một dòng Pause Full mà giải phóng rất ít là tín hiệu tôi lấy heap dump ngay."
+
+### Ví dụ đời thực
+
+Triệu chứng: GC log có dòng {{Pause Full}} mất vài giây, old gen sau mỗi GC bậc thang đi lên theo ngày. Điều tra: chạy {{-Xlog:gc}} thấy:
+
+~~~text
+[75.880s][info][gc] GC(120) Pause Full (G1 Compaction Pause) 2010M->1890M(2048M) 2450.317ms
+~~~
+
+full GC 2,4 giây chỉ giải phóng 120 MB, nghĩa là old gen chứa toàn object còn sống. Nguyên nhân: batch đọc 100.000 bản ghi vào {{List}} một lúc; object sống trung bình tràn Survivor, bị promote sớm lên old rồi chết ngay (premature promotion). Cách xử lý: xử lý theo lô nhỏ, ghi kết quả ngay thay vì giữ hết trong bộ nhớ; full GC do {{System.gc()}} thì gỡ lời gọi hoặc bật {{-XX:+ExplicitGCInvokesConcurrent}}. Kết quả: full GC biến mất, old gen ổn định.
 
 > Senior tip: chỉ số tôi xem đầu tiên không phải pause time mà là **old gen sau GC** (heap còn lại sau mixed/full GC). Đường này đi ngang là heap khoẻ; đi lên theo hình bậc thang là leak; đi ngang nhưng sát trần là heap quá nhỏ. Ba hình dạng, ba hướng xử lý khác nhau.`,
   follow: [
