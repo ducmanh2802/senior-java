@@ -3182,6 +3182,24 @@ Ví dụ JDK: {{DocumentBuilderFactory}}, {{XMLInputFactory}}.
 - Mô tả Abstract Factory là "factory tạo ra factory". Điểm cốt lõi là **họ object nhất quán**, không phải số tầng.
 - Viết factory + interface cho thứ chỉ có một implementation: thêm lớp vô ích.
 
+### Ví dụ đời thực
+
+Dự án thanh toán tích hợp VNPay, MoMo và thẻ quốc tế; mỗi đối tác có client HTTP, cách ký và parse callback khác nhau.
+
+Triệu chứng: sau khi deploy thêm MoMo, giao dịch VNPay cũ bị lỗi "UnsupportedOperationException", thất toán khoảng 5% trong 30 phút.
+
+Điều tra: team dùng Simple Factory, một hàm static switch theo enum. Dev sửa hàm này để thêm case MOMO nhưng vô tình xóa nhánh VNPay khi merge. Không có test riêng cho từng đối tác, nên lỗi chỉ lộ ra trên production sau deploy.
+
+Nguyên nhân gốc: Simple Factory vi phạm nguyên lý mở-đóng — thêm đối tác phải sửa code cũ, dễ làm hỏng đối tác đã ổn định. Client, signer, parser của mỗi đối tác bị trộn lẫn trong cùng một class.
+
+Cách xử lý: quay về commit trước để khôi phục, rồi refactor sang Abstract Factory: interface {{PaymentKit}} với {{client()}}, {{signer()}}, {{callbackParser()}}; mỗi đối tác một implementation. Inject {{Map<String, PaymentKit>}} vào service, tra cứu theo mã đối tác runtime.
+
+Kết quả: thêm đối tác mới chỉ thêm package mới, không đụng code cũ. Thời gian đưa đối tác mới lên production giảm từ mấy ngày xuống mấy giờ, không còn downgrade giao dịch cũ khi triển khai.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Simple Factory là một hàm tĩnh chọn class theo tham số, nhưng không phải pattern GoF vì thêm đối tác mới lại phải sửa hàm cũ. Factory Method để lớp cha giữ quy trình chung, lớp con quyết định tạo object nào — ví dụ importer ngân hàng chọn parser CSV hay fixed-width. Abstract Factory tạo một họ object nhất quán: client, signer và parser của cùng một đối tác, tránh việc trộn signer của VNPay với parser của MoMo. Trong Spring tôi inject {{Map<String, PaymentKit>}} và tra cứu theo mã đối tác runtime, chỉ viết factory tự tạo khi object phụ thuộc tham số đọc từ DB. Khi nào dùng cái nào: Simple Factory cho tập lựa chọn nhỏ ổn định, Factory Method khi thuật toán chung cố định nhưng tạo object thay đổi, Abstract Factory khi nhiều thành phần phải khớp nhau như một họ. Thực tế, khi thêm đối tác mới tôi tạo package riêng và dùng test kiến trúc để chặn package của đối tác này import package của đối tác khác, giúp triển khai an toàn mà không làm hỏng giao dịch cũ."
+
 > Senior tip: khi tích hợp đối tác, Abstract Factory (hay "kit" theo đối tác) đáng giá nhất ở chỗ gom mọi thứ của một đối tác vào một package; thêm đối tác mới là thêm một package, không đụng code cũ. Tôi dùng test kiến trúc để đảm bảo package của đối tác này không import package của đối tác khác.`,
   follow: [
     'Khi nào bạn chọn Factory Method (kế thừa) thay vì truyền Strategy qua constructor?',
@@ -3251,6 +3269,24 @@ public record TransferCommand(String fromAccount, String toAccount, BigDecimal a
 ### Câu trả lời sai phổ biến
 - "Builder giúp code nhanh hơn." Không; nó tạo thêm object builder, chỉ giúp đọc và an toàn hơn.
 - "Lombok @Builder thì object immutable." Chỉ khi field final và không có setter.
+
+### Ví dụ đời thực
+
+Dịch vụ đơn hàng dùng Lombok @Builder cho class Order với field status = "NEW" mặc định.
+
+Triệu chứng: sau khi thêm field status, đơn hàng mới tạo có status null, downstream xử lý đơn bị NPE khoảng 2% đơn, ảnh hưởng tạo đơn trong giờ cao điểm.
+
+Điều tra: log NPE trỏ đến lần đọc status, xem mã nguồn thấy @Builder sinh constructor all-args và không dùng giá trị khởi tạo của field, nên status = null.
+
+Nguyên nhân gốc: @Builder bỏ qua giá trị mặc định của field, cần @Builder.Default mới giữ nguyên. Ngoài ra @Builder không validate field bắt buộc (amount) và đối với JPA entity mất constructor không tham số mà Hibernate cần.
+
+Cách xử lý: thêm @Builder.Default cho danh sách mục, dùng record với compact constructor để validate amount > 0, thêm {{@NoArgsConstructor(access = AccessLevel.PROTECTED)}} + {{@AllArgsConstructor}} cho entity, tránh kết hợp @Builder với @Data (đối tượng vẫn mutable).
+
+Kết quả: giảm NPE liên quan status đơn hàng, validation lỗi sớm lúc khởi tạo object, entity không bị set id/version qua builder, số lỗi severity cao liên quan đơn hàng giảm về 0 trong tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Builder hợp khi object có nhiều tham số, nhiều tham số tuỳ chọn và nên immutable, giúp tránh telescoping constructor và nhầm thứ tự tham số cùng kiểu. Lombok @Builder tiện nhưng có bẫy: bỏ qua giá trị mặc định của field nếu thiếu @Builder.Default, không kiểm tra field bắt buộc, phá constructor không tham số mà JPA cần, toBuilder copy nông, và không hỗ trợ kế thừa (cần @SuperBuilder trên cả cha và con). Với DTO đơn giản tôi dùng record. Với entity tôi thích static factory method có tên nghiệp vụ để giữ invariant. Khi review, tôi tìm @Builder đi cùng @Data hoặc @Entity trước, đó là hai tổ hợp sinh bug nhiều nhất. Record không thay thế hoàn toàn Builder khi object có nhiều tham số tuỳ chọn và cần hàm rõ ràng, vì record bắt buộc cung cấp đủ trường trong constructor. Trong thực tế tôi bắt đầu từ record, chỉ chọn Builder khi object thật sự có nhiều tham số tuỳ chọn cần hàm gán rõ ràng, và luôn validate bắt buộc ngay trong compact constructor."
 
 > Senior tip: khi review, tôi tìm {{@Builder}} đi cùng {{@Data}} hoặc {{@Entity}} trước tiên; đó là hai tổ hợp sinh bug nhiều nhất. Quy ước tốt cho team: record cho DTO, factory method có tên cho entity, Builder cho object cấu hình nhiều tham số tuỳ chọn.`,
   follow: [
@@ -3331,6 +3367,24 @@ Cách sửa, theo thứ tự ưu tiên:
 ### Câu trả lời sai phổ biến
 - "Spring sửa bytecode class của tôi để thêm transaction." Không, mặc định là proxy bọc bên ngoài (trừ khi cấu hình AspectJ).
 - "Đánh {{@Transactional}} lên private method cũng được." Không có tác dụng và không báo lỗi.
+
+### Ví dụ đời thực
+
+Dịch vụ nhập chỉnh lệnh giao dịch batch, method importAll gọi importOne có @Transactional(propagation = REQUIRES_NEW).
+
+Triệu chứng: một file bị lỗi làm rollback toàn bộ batch thay vì chỉ file đó, thời gian xử lý batch 10.000 lệnh tăng từ 5 phút lên 30 phút sau khi deploy.
+
+Điều tra: đặt breakpoint, xem class bean được inject có hậu tố $$SpringCGLIB$$, thấy importAll gọi this.importOne() trực tiếp bên trong class, bỏ qua proxy.
+
+Nguyên nhân gốc: self-invocation. Proxy nằm bên ngoài object thật, lời gọi this.method() không qua proxy nên annotation @Transactional không có hiệu lực, tất cả chạy trong cùng transaction.
+
+Cách xử lý: tách importOne sang bean riêng (thiết kế tốt nhất), hoặc dùng TransactionTemplate quản lý transaction bằng code, hoặc inject chính mình qua {{ObjectProvider}} (khuyên ít dùng vì khó đọc).
+
+Kết quả: mỗi file có transaction riêng, lỗi một file không ảnh hưởng file khác, batch 10.000 lệnh ổn định khoảng 5 phút, giảm incident liên quan rollback sai.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Proxy là object cùng interface đứng trước object thật, chặn lời gọi để thêm hành vi như mở transaction, chạy async hoặc đọc cache, rồi chuyển tiếp. Spring tạo proxy khi khởi tạo bean, dùng JDK dynamic proxy nếu bean có interface hoặc CGLIB subclass (mặc định trong Spring Boot). Vì proxy nằm bên ngoài, gọi this.method() trong class bỏ qua proxy, nên @Transactional, @Async, @Cacheable không chạy. @Lazy tại điểm inject inject proxy, bean thật chỉ tạo ở lần gọi đầu; method final hoặc class final (Kotlin mặc định) CGLIB không override được, annotation im lặng không chạy. Cách sửa: tách method sang bean khác, dùng TransactionTemplate, hoặc AspectJ weaving. Khi debug transaction không rollback hay cache không ăn, tôi xem class bean có hậu tố $$SpringCGLIB$$ và kiểm tra lời gọi có đi qua tham chiếu bean đó. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất."
 
 > Senior tip: khi debug "transaction không rollback" hay "cache không ăn", tôi đặt breakpoint xem class của bean được inject: thấy tên có {{$$SpringCGLIB$$}} là có proxy. Rồi kiểm tra lời gọi có đi qua tham chiếu bean đó không. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất.`,
   follow: [
@@ -3422,6 +3476,24 @@ Client (mobile app, BFF) chỉ biết {{open()}}. Facade không cấm gọi tr�
 - "Decorator thì dùng kế thừa." Decorator dùng **composition**; kế thừa để thêm hành vi sẽ bùng nổ số lớp con cho mỗi tổ hợp (retry + metrics, chỉ metrics...).
 - Facade phình thành god service chứa cả logic nghiệp vụ: facade chỉ nên điều phối.
 
+### Ví dụ đời thực
+
+Dịch vụ thanh toán tích hợp SDK của một ví điện tử, sau đó cần thêm retry, đo metrics và cung cấp API mở tài khoản gọi 4 hệ thống phía sau.
+
+Triệu chứng: sau khi đổi SDK đối tác, mã lỗi "99" của đối tác rò rỉ ra API của ta, mobile app hiển thị sai thông điệp, và gọi SDK trực tiếp ở nhiều service khiến test khó viết.
+
+Điều tra: tìm thấy team gọi AcmeWalletSdk trực tiếp trong service nghiệp vụ, không có lớp trung gian giữa domain và SDK.
+
+Nguyên nhân gốc: không có Adapter, kiểu dữ liệu và mã lỗi của đối tác rò vào domain, vi phạm nguyên lý phụ thuộc vào abstraction.
+
+Cách xử lý: viết {{WalletGateway}} interface do domain định nghĩa, {{AcmeWalletAdapter}} dịch mã lỗi đối tác sang ngôn ngữ của ta, thêm {{MeteredWalletGateway}} đo thời gian và {{RetryingWalletGateway}} retry (chỉ khi đối tác hỗ trợ idempotency). API mở tài khoản dùng {{Facade}} điều phối eKYC, core banking, phát hành thẻ và thông báo. Decorator xếp chồng thứ tự quan trọng: metrics bọc ngoài retry đo tổng thời gian kể cả retry, bọc trong đo từng lần.
+
+Kết quả: đổi đối tác chỉ viết adapter mới, mã lỗi đối tác không rò ra API, monitor latency mỗi lệnh, API mở tài khoản đơn giản cho client mobile.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Adapter đổi interface của SDK đối tác sang port mà domain của ta mong đợi, giúp đổi đối tác chỉ viết adapter mới và mã lỗi đối tác không rò vào domain. Decorator giữ nguyên interface, bọc thêm retry, metrics, log, có thể xếp chồng nhiều lớp, thứ tự bọc có ý nghĩa. Facade tạo interface mới đơn giản đứng trước nhiều hệ thống con, ví dụ API mở tài khoản gọi eKYC, core banking, phát hành thẻ và thông báo. Proxy cũng giữ interface nhưng mục đích là kiểm soát truy cập như lazy, bảo mật hay remote, không phải thêm tính năng. Trong tích hợp ngân hàng tôi yêu cầu adapter là nơi duy nhất biết mã lỗi đối tác và mọi mapping có test với response mẫu thật từ sandbox. Thứ tự xếp chồng Decorator quan trọng: metrics bọc ngoài retry đo tổng thời gian kể cả retry, bọc trong đo từng lần, nên chọn theo mục tiêu quan sát hệ thống."
+
 > Senior tip: trong tích hợp ngân hàng, tôi yêu cầu adapter là nơi **duy nhất** biết mã lỗi đối tác và mọi mapping có test với response mẫu thật (lấy từ sandbox của đối tác). Khi đối tác thêm mã lỗi mới, bug sẽ nằm gọn ở một class thay vì rải khắp code.`,
   follow: [
     'Bạn đặt retry ở decorator, ở HTTP client hay ở message queue? Tiêu chí chọn?',
@@ -3492,6 +3564,24 @@ infra.JdbcAccountRepository              domain.AccountRepository (interface, do
 - "IoC, DI là một, chính là Spring." Spring là một container IoC dùng DI; hai khái niệm có trước và độc lập với Spring.
 - "Có interface là đạt DIP." Không, nếu interface nằm ở tầng hạ tầng và domain import nó, hướng phụ thuộc vẫn sai.
 - "Phải tạo interface cho mọi service." DIP áp dụng ở **ranh giới** (domain với hạ tầng, với đối tác); service nội bộ chỉ có một implementation không cần interface.
+
+### Ví dụ đời thực
+
+Dịch vụ chuyển tiền cần thay JDBC sang JPA nhưng team phải sửa class TransferService ở tầng domain.
+
+Triệu chứng: sau khi thêm JPA, domain import org.springframework.jdbc và jakarta.persistence, đổi repository phải sửa nhiều class ở domain, test domain không chạy được mà không có Spring.
+
+Điều tra: xem import của package domain, thấy phụ thuộc trực tiếp vào JdbcAccountRepository và framework persistence.
+
+Nguyên nhân gốc: có DI (constructor injection) nhưng vi phạm DIP vì interface do tầng hạ tầng định nghĩa, mũi tên phụ thuộc từ domain chỉ xuống infra, không phải inversion.
+
+Cách xử lý: tạo {{AccountRepository}} interface ở package domain, đặt tên theo nhu cầu domain (ví dụ {{findForUpdate}}), {{infra.JdbcAccountRepository}} implements nó, mũi tên phụ thuộc từ infra chỉ vào domain.
+
+Kết quả: đổi JDBC sang JPA không đụng domain, test domain không cần Spring, đưa luật kiểm tra import domain vào test kiến trúc ArchUnit để không ai phải nhớ.
+
+### Trả lời mẫu khi phỏng vấn
+
+"IoC là ý tưởng rộng: framework điều khiển luồng và gọi code của ta, ví dụ servlet container gọi doGet hoặc listener Kafka gọi method. DI là kỹ thuật cung cấp phụ thuộc từ bên ngoài thay vì tự new, không nhất thiết cần container, Spring chỉ tự động hóa việc này. DIP là nguyên lý thiết kế: module cấp cao và module cấp thấp đều phụ thuộc abstraction, và abstraction thuộc về phía cấp cao. Có thể dùng DI nhưng vẫn vi phạm DIP nếu inject thẳng class hạ tầng vào domain. Tôi kiểm tra DIP nhanh bằng cách xem import của package domain: thấy jdbc hay persistence là có vấn đề, và đưa luật đó vào test kiến trúc ArchUnit. Constructor injection ưu tiên vì field final, phụ thuộc bắt buộc rõ ràng và test không cần Spring. Mỗi team nên ghi lại lý do chọn interface ở package domain để những dev sau này không ngược dòng quy tắc."
 
 > Senior tip: kiểm tra DIP nhanh nhất là nhìn phần import của package domain: thấy {{org.springframework.jdbc}}, {{jakarta.persistence}} hay SDK đối tác là có vấn đề. Tôi đưa luật đó vào test kiến trúc (ArchUnit) để không ai phải nhớ.`,
   follow: [
@@ -3570,6 +3660,24 @@ Lợi ích: thêm sản phẩm mới phần lớn là **cấu hình** (đọc t�
 ### Câu trả lời sai phổ biến
 - "Không bao giờ dùng kế thừa." Quá cực đoan; record + sealed, template method, framework hook là kế thừa hợp lý.
 - Kế thừa chỉ để **tái sử dụng code** (ví dụ {{BaseService}} chứa tiện ích log, mapper): đó là dấu hiệu nên dùng helper/composition.
+
+### Ví dụ đời thực
+
+Dịch vụ tài sản có cây kế thừa sản phẩm tiền gửi với nhiều nhánh.
+
+Triệu chứng: thêm sản phẩm tiết kiệm online cho rút bất kỳ lúc nào, team tạo OnlineSavingsWithdrawAnytime kế thừa OnlineSavingsAccount; sau đó sửa AbstractAccount.withdraw() cho một sản phẩm làm vỡ năm sản phẩm khác, incident thất toán giao dịch rút tiền.
+
+Điều tra: git blame thấy AbstractAccount.withdraw() dùng cờ if (isPremium), mỗi trục thay đổi (lãi, phí, rút, hạn mức) bị copy-paste hoặc nhồi cờ vào class cha.
+
+Nguyên nhân gốc: kế thừa chỉ mở rộng theo một chiều, số lớp con bùng nổ khi nghiệp vụ thay đổi theo nhiều trục độc lập, và sửa class cha dễ làm vỡ sản phẩm khác (fragile base class).
+
+Cách xử lý: refactor sang composition, mỗi trục thành policy interface ({{InterestPolicy}}, {{FeePolicy}}, {{WithdrawalRule}}), {{Account}} final ghép các policy, mỗi sản phẩm là cấu hình tổ hợp đọc từ bảng.
+
+Kết quả: thêm sản phẩm mới phần lớn là cấu hình, policy được unit test độc lập, đổi policy không ảnh hưởng sản phẩm khác, số incident liên quan rút tiền giảm xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Kế thừa gắn chặt lớp con với chi tiết triển khai của lớp cha, dễ gây fragile base class và chỉ mở rộng một chiều, nên khi nghiệp vụ thay đổi theo nhiều trục số lớp con bùng nổ. Composition tách mỗi chiều thành object policy được ghép lại, thay được lúc runtime và test riêng. Ví dụ class {{CountingSet}} extends {{HashSet}}, addAll gọi lại add đã override khiến đếm sai. Refactor sang {{Account}} với {{InterestPolicy}}, {{FeePolicy}}, {{WithdrawalRule}}, mỗi sản phẩm là cấu hình. Khi nào dùng kế thừa: quan hệ là một ổn định, lớp cha thiết kế để kế thừa (hook có tài liệu, method còn lại final), hoặc biến thể dữ liệu đóng như sealed interface. Lỗi phổ biến là dùng kế thừa chỉ để tái sử dụng code (ví dụ BaseService chứa tiện ích), thì nên dùng helper hoặc composition. Dấu hiệu cây kế thừa sai là lớp cha có cờ boolean hoặc protected method chỉ một lớp con dùng."
 
 > Senior tip: dấu hiệu sớm nhất của cây kế thừa sai là lớp cha bắt đầu có cờ boolean hoặc method protected chỉ một lớp con dùng. Khi thấy hai dấu hiệu đó trong review, tôi đề xuất tách trục thay đổi ra policy trước khi thêm lớp con kế tiếp; càng để lâu, chi phí tách càng lớn.`,
   follow: [
