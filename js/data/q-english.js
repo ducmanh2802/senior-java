@@ -246,26 +246,34 @@ I am also realistic: five years is long, and plans change. What I can promise is
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a disagreement with a teammate or a manager. How did you handle it?',
-  a: `**Tóm tắt:** Chọn xung đột **về kỹ thuật/ưu tiên**, không phải xung đột cá nhân. Cấu trúc: bối cảnh → hai quan điểm → **cách bạn tìm dữ liệu để giải quyết** → kết quả → bạn học được gì. Điểm cộng là bạn giữ được quan hệ và vẫn bảo vệ được tiêu chuẩn kỹ thuật.
+  a: `**Tóm tắt:** Interviewer (người phỏng vấn) muốn đánh giá cách bạn xử lý xung đột chuyên môn (conflict) mà vẫn tôn trọng đồng đội, dùng dữ liệu để thuyết phục, và giữ được quan hệ làm việc. Họ không muốn nghe bạn nói xấu người khác hay "tôi luôn đúng".
 
 ### Sample answer
-We had a disagreement about whether to introduce a shared library for our service-to-service authentication. My tech lead wanted every team to copy a small filter class into each service; I wanted a versioned shared library. His argument was speed and autonomy: teams would not be blocked by library releases. Mine was consistency and security: a copied filter means a security patch has to be applied in nine places.
+At my previous company, we had a disagreement about service-to-service authentication, meaning how internal services prove their identity to each other. My tech lead wanted every team to copy a small filter class, a piece of code that checks a request before it reaches the business logic, into each service. He argued this would give teams speed and autonomy, so they would not be blocked by shared releases.
 
-It got a bit tense in the design review, and I could feel myself pushing too hard. So I stopped arguing in the meeting and asked for one week to collect data. I checked our git history and found that the copied filter already existed in nine services with four slightly different implementations, and one of them had a bug that skipped token expiry. That was the evidence I needed.
+I understood his concern, but I worried about security consistency. A copied filter means a security patch, a fix for a vulnerability, has to be applied in nine places. In the design review it got a bit tense, and I could feel myself pushing too hard. So I stopped arguing in the meeting and asked for one week to collect data.
 
-I wrote a short document with three options, the cost of each, and a recommendation: a shared library with a documented upgrade path, plus an automated check that fails the build if a service uses a copied filter. My lead agreed, mainly because the bug made the risk concrete. The library shipped two weeks later.
+I checked our Git history and found the filter already existed in nine services with four slightly different implementations. One of them had a bug that skipped token expiry, so an expired token could still be accepted. I wrote a short document with three options, the cost of each, and a recommendation: a versioned shared library with a documented upgrade path, plus an automated build check that fails if a service uses a copied filter.
 
-What I took from it is that arguing about principles rarely works; arguing about evidence usually does. And I should have brought data to the first meeting instead of debating.
+My lead agreed, mainly because the bug made the risk concrete. The library shipped two weeks later, and we fixed the expiry bug in the same release. What I took from it is that arguing about principles rarely works, but evidence usually does. Next time, I would bring data to the first meeting.
 
 ### Useful phrases
-- **we had a disagreement about**: chúng tôi bất đồng về
-- **his argument was**: lập luận của anh ấy là
-- **it got a bit tense**: mọi thứ hơi căng
-- **I stopped arguing and asked for time to collect data**: tôi ngừng tranh luận và xin thời gian thu thập dữ liệu
-- **the bug made the risk concrete**: bug đó khiến rủi ro trở nên cụ thể
-- **what I took from it is**: điều tôi rút ra là
+- **we had a disagreement about**: chúng tôi có bất đồng về (mở đầu trung tính, không đổ lỗi)
+- **I understood his concern, but I worried about**: tôi hiểu lo ngại của anh ấy, nhưng tôi lo về (thể hiện lắng nghe)
+- **it got a bit tense**: cuộc trao đổi hơi căng thẳng (mô tả cảm xúc nhẹ nhàng)
+- **I stopped arguing and asked for time to collect data**: tôi ngừng tranh luận và xin thời gian thu thập dữ liệu (hành động trưởng thành)
+- **I wrote a short document with three options**: tôi viết tài liệu ngắn với ba phương án (giải quyết có cấu trúc)
+- **the evidence made the risk concrete**: bằng chứng khiến rủi ro trở nên cụ thể (thuyết phục bằng dữ liệu)
+- **what I took from it is**: điều tôi rút ra là (kết bằng bài học)
 
-> Tip: Đừng chọn phe "tôi đúng, sếp sai" — interviewer sẽ nghi bạn khó làm việc nhóm. Cũng đừng nói "I disagreed with my manager" mà không nêu **cách bạn nói chuyện riêng** trước. Ngữ pháp hay sai: "discuss about" là sai, đúng là "discuss" + tân ngữ trực tiếp; "disagree with someone **about/on** something".`,
+### Lỗi người Việt hay mắc
+- **Dùng "discuss about"**: sai. Đúng là {{discuss something}} (không có "about"), hoặc {{talk about something}}. Ví dụ đúng: {{We discussed the design.}}
+- **"Disagree" thiếu giới từ đúng**: nói {{disagree with someone about/on something}}. Ví dụ: {{I disagreed with my lead about the approach.}} Không nói "I disagreed my lead".
+- **Dịch "tranh luận" thành "fight/argue" quá nặng**: trong môi trường chuyên nghiệp nên dùng {{disagree}}, {{have a different view}}, hoặc {{push back politely}} (phản biện lịch sự). {{Argue}} đôi khi nghe như cãi nhau cá nhân.
+- **Kể chuyện một chiều "tôi đúng, sếp sai"**: interviewer sẽ lo bạn khó làm việc nhóm. Luôn nêu bạn đã lắng nghe ({{I understood his concern}}) và dùng dữ liệu, không phải cái tôi.
+- **Thiếu kết quả cụ thể**: chỉ nói "we agreed" là yếu. Nên có số liệu hoặc hành động rõ: {{nine services}}, {{four implementations}}, {{shipped two weeks later}}.
+
+> Senior tip: Chọn xung đột về kỹ thuật hoặc ưu tiên, không phải xung đột cá nhân. Trả lời theo mạch: bối cảnh → hai quan điểm → bạn tìm dữ liệu/chứng cứ → kết quả đo được → bài học. Dùng "I" cho hành động của bạn và giữ giọng tôn trọng đồng đội; senior được đánh giá cao khi giải quyết bất đồng bằng bằng chứng và vẫn giữ được quan hệ.`,
   follow: [
     'What would you have done if your lead had still said no?',
     'How do you disagree with someone more senior than you without damaging the relationship?',
@@ -319,9 +327,9 @@ About three years ago we had to add full-text search to an internal order tool. 
 
 The mistake was that I made the decision based on our current volume, about two hundred thousand orders, and did not model growth. Within a year we were at four million orders, and the queries started taking two to three seconds because our GIN index no longer fit comfortably in memory. Worse, the ranking quality was poor for Vietnamese text, and fixing it meant custom dictionaries and a lot of tuning.
 
-We eventually moved to Elasticsearch anyway, which meant we paid both the migration cost and the operational cost I had tried to avoid. The migration took six weeks.
+We eventually moved to Elasticsearch anyway, which meant we paid both the migration cost and the operational cost I had tried to avoid. The migration took six weeks and required a dual-write period to keep data in sync.
 
-What I learned is to write down the assumption behind a decision and the number at which it breaks. Now, in design docs, I always add a section called "when this stops working", with concrete thresholds. It is a small habit, but it has caught two bad decisions since then.
+What I learned is to write down the assumption behind a decision and the number at which it breaks. Now, in design docs, I always add a section called "when this stops working", with concrete thresholds: expected QPS, data size, latency budget. It is a small habit, but it has caught two bad decisions since then — one about caching strategy and one about database sharding.
 
 ### Useful phrases
 - **the obvious choice was**: lựa chọn hiển nhiên là
@@ -330,8 +338,18 @@ What I learned is to write down the assumption behind a decision and the number 
 - **which meant we paid both costs**: nghĩa là chúng tôi trả cả hai loại chi phí
 - **the assumption behind a decision**: giả định đằng sau một quyết định
 - **when this stops working**: khi nào cách này hết hiệu quả
+- **growth modeling**: mô hình tăng trưởng
+- **dual-write period**: giai đoạn ghi kép
 
-> Tip: Đừng chọn "regret" là lỗi người khác gây ra, và đừng chọn lỗi quá nhỏ ("I used the wrong variable name"). Cũng đừng nói "I regret **to** choose" — sau regret là V-ing khi nói về việc đã làm: "I regret choosing Postgres full-text search" hoặc đơn giản "I regret that decision". Phát âm **regret** nhấn âm tiết thứ hai.`,
+### Lỗi người Việt hay mắc
+- **Dùng "regret to choose"**: sai. Sau "regret" là V-ing khi nói về việc đã làm: "I regret choosing Postgres" hoặc "I regret that decision". "Regret to inform" chỉ dùng khi báo tin xấu.
+- **Chọn lỗi do người khác gây ra**: interviewer muốn nghe *bạn* quyết định, *bạn* sai, *bạn* học được gì. Đừng đổ lỗi.
+- **Chọn lỗi quá nhỏ**: "I used the wrong variable name" không thể hiện tư duy senior. Chọn quyết định kiến trúc hoặc chiến lược.
+- **Phát âm "regret"**: nhấn âm tiết thứ hai /rɪˈɡret/, không phải âm đầu. "Decision" /dɪˈsɪʒn/ nhấn âm hai, "s" đọc /ʒ/ như "vision".
+- **Thiếu bài học cụ thể**: chỉ nói "I learned to be careful" quá chung chung. Hãy nói "I now write down assumptions and break thresholds in every design doc".
+- **Dùng "anyway" nhiều quá**: "We moved to Elasticsearch anyway" nghe như lười giải thích. Hãy nói "We ended up migrating to Elasticsearch" hoặc "The migration to Elasticsearch became necessary".
+
+> Senior tip: Đừng chọn "regret" là lỗi người khác gây ra, và đừng chọn lỗi quá nhỏ ("I used the wrong variable name"). Cũng đừng nói "I regret **to** choose" — sau regret là V-ing khi nói về việc đã làm: "I regret choosing Postgres full-text search" hoặc đơn giản "I regret that decision". Phát âm **regret** nhấn âm tiết thứ hai. Quan trọng: kết thúc bằng **thói quen cụ thể bạn thay đổi** ("I now add a 'when this stops working' section to every design doc") — điều đó chứng minh bạn cải tiến quy trình, không chỉ hối hận.`,
   follow: [
     'At what point did you realise the decision was wrong?',
     'How did you convince the team to migrate after arguing against Elasticsearch?',
@@ -363,8 +381,18 @@ We shipped on time. The part I am proudest of is not the delivery, it is that no
 - **I went to the product owner with three options**: tôi đến gặp PO với ba phương án
 - **nobody was surprised**: không ai bị bất ngờ
 - **a constraint to design around**: một ràng buộc để thiết kế xoay quanh
+- **impact estimate**: ước lượng tác động
+- **scope creep**: bloat phạm vi (phạm vi trùm tấm)
 
-> Tip: Tránh câu "I work well under pressure" mà không có ví dụ — sáo rỗng. Người Việt hay dịch "chạy deadline" thành "run deadline" (sai); đúng là "meet a deadline" hoặc "work to a tight deadline". Cũng chú ý phát âm **deadline** /ˈdedlaɪn/, không phải "đét-lai".`,
+### Lỗi người Việt hay mắc
+- **Dịch "chạy deadline" thành "run deadline"**: sai. Đúng là "meet a deadline" hoặc "work to a tight deadline".
+- **Dùng "I work well under pressure" không có ví dụ**: sáo rỗng. Luôn kèm ví dụ có số liệu.
+- **Phát âm "deadline"**: /ˈdedlaɪn/, nhấn âm đầu, không phải "đét-lai" đều nhau.
+- **Thiếu trade-off cụ thể**: nhiều bạn chỉ nói "I prioritize" mà không nói *cái gì* bị cắt, *cái gì* giữ lại. Interviewer muốn nghe bảng quyết định.
+- **Dùng "scope" số ít mà không có mạo từ**: "scope changed" → "the scope changed" hoặc "scope has changed".
+- **Không phân biệt "deadline" và "timeline"**: deadline là hạn chót cứng, timeline là kế hoạch. "The timeline slipped" khác "we missed the deadline".
+
+> Senior tip: Tránh câu "I work well under pressure" mà không có ví dụ — sáo rỗng. Người Việt hay dịch "chạy deadline" thành "run deadline" (sai); đúng là "meet a deadline" hoặc "work to a tight deadline". Cũng chú ý phát âm **deadline** /ˈdedlaɪn/, không phải "đét-lai". Quan trọng: luôn mang đến cuộc thảo luận **ba phương án có đánh giá rủi ro** thay vì chỉ nói "sẽ cố gắng". Điều đó phân biệt senior (điều khiển) với junior (chịu đựng).`,
   follow: [
     'What do you do when the product owner refuses to cut scope?',
     'How do you communicate a slipping deadline without losing trust?',
@@ -396,8 +424,18 @@ The worst case is still O(n) if all keys have the same hash and do not implement
 - **collisions happen when**: xung đột xảy ra khi
 - **degrades to O(log n)**: giảm xuống O(log n)
 - **redistributed**: được phân bổ lại
+- **power of two**: lũy thừa của hai
+- **red-black tree**: cây đỏ-đen
 
-> Tip: Đừng nói "HashMap dùng hashCode để tìm index" rồi dừng — thiếu spread function và power-of-two là mất điểm. Cũng đừng nhầm **load factor** với **capacity**. Tiếng Anh: "hash" đọc /hæʃ/, và **collision** nhấn âm thứ hai /kəˈlɪʒn/; nhiều bạn đọc "co-li-sion" nghe rất lạ.`,
+### Lỗi người Việt hay mắc
+- **Nói "HashMap dùng hashCode để tìm index" rồi dừng**: thiếu spread function và power-of-two là mất điểm lớn. Phải giải thích tại sao không dùng modulo trực tiếp.
+- **Nhầm load factor với capacity**: load factor (0.75) là ngưỡng tải, capacity là dung lượng mảng. "Load factor is 16" là sai hoàn toàn.
+- **Phát âm "hash"**: /hæʃ/ (có dấu huyền, giống "hét" nhưng ngắn), không phải "hát" hay "héc".
+- **Phát âm "collision"**: nhấn âm thứ hai /kəˈlɪʒn/, "sion" đọc /ʒn/ như "vision". Nhiều bạn đọc "co-li-sion" nghe rất lạ.
+- **Quên untreeify threshold**: khi remove khiến bucket giảm xuống 6 entries, tree convert ngược lại linked list. Nói được điều này thấy hiểu sâu.
+- **Không nhắc initial capacity**: "new HashMap()" mặc định 16, resize nhiều lần tốn kém. Senior biết {{new HashMap<>(expectedSize * 4 / 3)}}.
+
+> Senior tip: Đừng nói "HashMap dùng hashCode để tìm index" rồi dừng — thiếu spread function và power-of-two là mất điểm. Cũng đừng nhầm **load factor** với **capacity**. Tiếng Anh: "hash" đọc /hæʃ/, và **collision** nhấn âm thứ hai /kəˈlɪʒn/; nhiều bạn đọc "co-li-sion" nghe rất lạ. Nếu được hỏi thêm về ConcurrentHashMap, hãy nhấn mạnh: segment locking (Java 7) hoặc CAS + synchronized trên bucket đầu (Java 8+), không lock toàn bộ map.`,
   follow: [
     'What happens if two keys have the same hashCode but are not equal?',
     'Why is the initial capacity of a HashMap not just set to the expected size?',
@@ -429,8 +467,18 @@ One pitfall: optimistic locking does not protect you across multiple rows unless
 - **zero rows are affected**: không dòng nào bị ảnh hưởng
 - **my rule of thumb**: nguyên tắc kinh nghiệm của tôi
 - **a lock is only as short as the transaction**: lock chỉ ngắn bằng giao dịch giữ nó
+- **lost update**: cập nhật bị mất
+- **retry storm**: bão retry (retry liên tục làm sập hệ thống)
 
-> Tip: Đừng nói optimistic locking "nhanh hơn" một cách tuyệt đối — nó nhanh khi contention thấp, nhưng retry storm có thể tệ hơn. Cũng đừng nhầm **optimistic** (lạc quan) với **optimal** (tối ưu) — hai từ khác nghĩa, phát âm cũng khác. Dùng đúng giới từ: "lock **on** a row", "contend **for** a row".`,
+### Lỗi người Việt hay mắc
+- **Nói optimistic locking "nhanh hơn" tuyệt đối**: nó nhanh khi contention thấp, nhưng retry storm có thể tệ hơn pessimistic. Luôn nói "under low contention".
+- **Nhầm "optimistic" (lạc quan) với "optimal" (tối ưu)**: hai từ khác nghĩa, phát âm khác. Optimistic /ˌɒptɪˈmɪstɪk/, optimal /ˈɒptɪməl/.
+- **Dùng sai giới từ**: "lock **on** a row", "contend **for** a row", "lock **with** SELECT FOR UPDATE".
+- **Quên nhắc idempotency khi retry**: retry payment không idempotent = double charge. Luôn nhắc "idempotent operation" khi nói retry.
+- **Không phân biệt lock mode**: PESSIMISTIC_WRITE vs PESSIMISTIC_READ vs PESSIMISTIC_FORCE_INCREMENT. Senior biết khi nào dùng cái nào.
+- **Phát âm "pessimistic"**: /ˌpɛsɪˈmɪstɪk/, nhấn âm ba, không phải "pê-si-mis-tic".
+
+> Senior tip: Đừng nói optimistic locking "nhanh hơn" một cách tuyệt đối — nó nhanh khi contention thấp, nhưng retry storm có thể tệ hơn. Cũng đừng nhầm **optimistic** (lạc quan) với **optimal** (tối ưu) — hai từ khác nghĩa, phát âm cũng khác. Dùng đúng giới từ: "lock **on** a row", "contend **for** a row". Quan trọng: luôn gắn ví dụ thực tế (inventory counter, seat booking, wallet balance) và nhắc đến **idempotency** — đó là điều interviewer chắc chắn hỏi tiếp.`,
   follow: [
     'How do you implement retry with optimistic locking in Spring without duplicating side effects?',
     'What causes a deadlock with pessimistic locking, and how do you reduce it?',
@@ -444,16 +492,16 @@ One pitfall: optimistic locking does not protect you across multiple rows unless
   topic: 'english',
   level: 'lead',
   q: 'How would you design a scalable REST API? And how do you make a create endpoint idempotent?',
-  a: `**Tóm tắt:** Trả lời hai phần. **Thiết kế:** stateless, resource-oriented, pagination, versioning, rate limit, cache, async cho tác vụ dài. **Idempotency:** client gửi Idempotency-Key, server lưu key + fingerprint + response trong bảng có unique constraint, trả lại response cũ khi trùng. Nêu cả race condition và TTL.
+  a: `**Tóm tắt:** Interviewer muốn kiểm tra hai kỹ năng: (1) thiết kế API có thể scale ngang, bảo mật, dễ dùng, và (2) hiểu sâu về idempotency cho POST — điều kiện bắt buộc cho thanh toán và các tác vụ quan trọng. Cần nêu trade-off thực tế, không chỉ liệt kê best practice.
 
 ### Sample answer
-I would start with the contract, not the framework. Resources are nouns, verbs come from HTTP methods, and errors are consistent: a problem-details body with a stable error code, so clients do not parse English messages. Every list endpoint needs cursor pagination rather than offset, because offset gets slower and inconsistent as the table grows.
+I would start with the contract, not the framework. Resources are nouns — payments, merchants, refunds — and verbs come from HTTP methods. Errors follow RFC 9457 Problem Details with a stable error code, so clients never parse English messages. Every list endpoint uses cursor pagination, not offset, because offset degrades as data grows.
 
-For scalability, the API tier stays stateless so it can scale horizontally. Rate limiting is per client and per endpoint at the gateway. Read-heavy endpoints get caching with clear invalidation, and long-running operations return 202 with a status URL instead of holding the connection. Versioning is in the path for breaking changes only; additive changes do not need it.
+For scalability, the API tier is stateless so we can add instances behind a load balancer. Rate limiting lives at the gateway, per client and per endpoint. Read-heavy paths get caching with explicit invalidation keys; long-running work returns 202 Accepted with a status URL. Versioning only goes in the path for breaking changes; additive changes like new optional fields need no version bump.
 
-For idempotency, the client sends an Idempotency-Key header, usually a UUID. On the first request the server inserts a row with that key, a hash of the request body, and the status IN_PROGRESS, using a unique constraint on the key. If the insert fails because the key exists, we inspect the stored row: a different body hash means 422; a stored response is replayed exactly; in-progress means 409 and the client retries later. When the operation finishes, we store the response body and status, and expire the row after twenty-four hours.
+For idempotency on a create endpoint, the client sends an Idempotency-Key header, usually a UUID. On first request we insert a row with that key, a hash of the request body, and status IN_PROGRESS, protected by a unique constraint on the key. If the insert fails because the key exists, we check the stored row: different body hash returns 422; a stored response is replayed exactly; IN_PROGRESS returns 409 and the client retries. When the operation finishes we store the response and status, then expire the row after 24 hours.
 
-The subtle part is that the insert and the business transaction must not leave a half-written state, so we use the same transaction or a state machine with recovery. The key must also be scoped per client, or one tenant can block another.
+The tricky part is the race condition: two requests with the same key arriving simultaneously. The unique constraint on the key serializes the inserts, so only one wins. The loser reads the existing row and follows the logic above. We also scope the key per client so one tenant cannot block another.
 
 ### Useful phrases
 - **I would start with the contract, not the framework**: tôi bắt đầu từ hợp đồng API, không phải framework
@@ -462,8 +510,18 @@ The subtle part is that the insert and the business transaction must not leave a
 - **additive changes**: thay đổi kiểu bổ sung
 - **replay it exactly**: trả lại đúng response cũ
 - **scoped per client**: giới hạn theo từng client
+- **race condition**: điều kiện đua
+- **unique constraint**: ràng buộc duy nhất
 
-> Tip: Đừng nói "idempotent" mà chỉ giải thích bằng ví dụ PUT; interviewer hỏi POST vì đó mới là chỗ khó. Cũng đừng bỏ qua **race condition** — hai request cùng key đến đồng thời là câu hỏi tiếp gần như chắc chắn. Phát âm **idempotent** /ˌaɪdəmˈpoʊtənt/ (không phải "i-đem-po-tent"), và **pagination** /ˌpædʒɪˈneɪʃn/.`,
+### Lỗi người Việt hay mắc
+- **Phát âm "idempotent"**: đọc /ˌaɪdəmˈpoʊtənt/ (nhấn âm "PO"), không phải "i-đem-po-tent" hay "i-đêm-pô-tent".
+- **Nói "PUT is idempotent" rồi dừng**: interviewer hỏi POST vì PUT đã idempotent theo định nghĩa HTTP; phải giải thích cách làm POST idempotent bằng Idempotency-Key.
+- **Quên race condition**: không nhắc đến hai request cùng key đến cùng lúc là mất điểm lớn. Luôn nói "unique constraint serializes concurrent inserts".
+- **Dùng "offset pagination" cho list lớn**: offset chậm và không consistent khi dữ liệu thay đổi. Phải dùng cursor/keyset pagination.
+- **Thiếu TTL cho idempotency key**: key tồn tại mãi sẽ làm bảng phình to. Luôn nêu "expire after 24 hours" hoặc tương tự.
+
+> Senior tip: Thiết kế API không phải liệt kê công nghệ. Hãy nói theo thứ tự: contract → resource modeling → error format → pagination → auth/rate limit → caching → async → versioning. Với idempotency, điểm chốt là **race condition trên unique constraint** và **phân biệt 409 (in-progress) vs 422 (key reused with different body) vs replay**. Nếu interviewer hỏi "nếu DB crash giữa chừng thì sao?", hãy nói về transactional outbox hoặc state machine với recovery job. Phát âm **pagination** /ˌpædʒɪˈneɪʃn/ (nhấn "NAY"), **idempotent** /ˌaɪdəmˈpoʊtənt/.
+`,
   follow: [
     'What happens if the first request with an idempotency key crashes before it stores the result?',
     'How would you handle idempotency across two services in a saga?',
@@ -477,7 +535,7 @@ The subtle part is that the insert and the business transaction must not leave a
   topic: 'english',
   level: 'lead',
   q: 'A non-technical stakeholder asks why we should not split everything into microservices. How would you explain the trade-offs without jargon?',
-  a: `**Tóm tắt:** Đây là bài kiểm tra **giao tiếp**, không phải kiến trúc. Tránh thuật ngữ; dùng **ẩn dụ + chi phí + điều kiện**. Nêu monolith tốt khi nào, microservices đáng giá khi nào (nhiều team, scale khác nhau, deploy độc lập), và luôn quy ra **tiền/thời gian/rủi ro**.
+  a: `**Tóm tắt:** Đây là bài kiểm tra **giao tiếp**, không phải kiến trúc. Interviewer muốn thấy bạn dùng **ẩn dụ + chi phí + điều kiện** để giải thích cho người không kỹ thuật. Tránh thuật ngữ; quy ra **tiền/thời gian/rủi ro** và đưa ra **một khuyến nghị rõ ràng**, không nói "it depends" rồi dừng.
 
 ### Sample answer
 I would use a building analogy. A monolith is one office with one front door, one security desk and one electricity bill. Everybody works in the same building, so it is cheap to run and easy to change the layout. Microservices are separate buildings, each with its own front door, security desk and utility bill. That is great when you have many teams that need to enter and leave without waiting for each other, but you now pay for every door, every guard and every connection between buildings.
@@ -493,8 +551,22 @@ I would also be clear about when the split does pay off: when one part needs to 
 - **before we write a single feature**: trước khi viết được tính năng nào
 - **when the split does pay off**: khi việc tách thực sự có lợi
 - **enforce clear module boundaries**: giữ ranh giới module rõ ràng
+- **network hop**: bước nhảy qua mạng (gọi service khác)
+- **on-call rotation**: lịch trực on-call
+- **module boundaries**: ranh giới module
+- **two-week change vs two-year rewrite**: thay đổi 2 tuần vs viết lại 2 năm
 
-> Tip: Người Việt hay dùng "microservice" như một từ tiếng Việt và nói "chia ra microservice" — khi nói tiếng Anh phải là "split into microservices" (số nhiều). Tránh nói "it depends" rồi dừng; stakeholder cần **một khuyến nghị**. Và đừng dạy lại định nghĩa — họ hỏi để ra quyết định, không phải để học kiến trúc.`,
+### Lỗi người Việt hay mắc
+- **Dùng "microservice" số ít**: tiếng Anh phải nói "split into **microservices**" (số nhiều). "We should not split into microservice" sai.
+- **Nói "it depends" rồi dừng**: stakeholder cần **một khuyến nghị**. Hãy nói "My recommendation is..." kèm điều kiện.
+- **Dạy lại định nghĩa microservice**: họ hỏi để ra quyết định, không phải để học kiến trúc. Tập trung vào trade-off thực tế.
+- **Quên gắn con số**: "operational overhead tăng" quá chung chung. Phải có "20-30% overhead", "10 pipelines", "5 systems".
+- **Phát âm "operational"**: /ˌɒpəˈreɪʃənl/ (nhấn "RAY"), không phải "ô-pê-ra-tion-al".
+- **Dùng "split" thiếu giới từ**: "split the system **into** microservices", không phải "split microservices".
+- **Quên "enforce" boundaries**: chỉ nói "clear boundaries" không đủ, phải nói "enforce clear module boundaries" để thể hiện hành động chủ động.
+
+> Senior tip: Câu này test **khả năng chuyển ngữ từ tech sang business**. Dùng phép so sánh đời thường (toà nhà, điện nước, cửa hàng) kèm **con số thực tế từ dự án bạn**. Luôn kết bằng **khuyến nghị cụ thể** ("keep monolith but enforce module boundaries"). Nếu stakeholder đã hứa microservices với board, hãy nói: "I understand the commitment. Here is the realistic timeline and cost if we split now vs. if we prepare the monolith first." Đừng đối đầu — hãy làm rõ rủi ro. Phát âm **overhead** /ˈoʊvərhɛd/, **analogy** /əˈnælədʒi/, **enforce** /ɪnˈfɔːrs/.
+`,
   follow: [
     'How would you know the moment has come to split the monolith?',
     'What would you say if the stakeholder had already promised microservices to the board?',
@@ -508,7 +580,7 @@ I would also be clear about when the split does pay off: when one part needs to 
   topic: 'english',
   level: 'senior',
   q: 'An API is slow in production. Walk me through how you would troubleshoot it.',
-  a: `**Tóm tắt:** Trình bày theo thứ tự **đo → khoanh vùng → xác nhận → sửa → phòng ngừa**. Bắt đầu từ triệu chứng và số liệu (p50/p95/p99, error rate, traffic), rồi đi qua các tầng: gateway, app (GC, thread pool, connection pool), downstream, database. Nêu công cụ cụ thể và một quy tắc an toàn khi thao tác trên production.
+  a: `**Tóm tắt:** Interviewer muốn thấy quy trình **đo → khoanh vùng → xác nhận → sửa → phòng ngừa** có hệ thống. Bắt đầu từ triệu chứng có số liệu (p50/p95/p99, error rate, traffic), đi qua các tầng: gateway, app (GC, thread pool, connection pool), downstream, database. Nêu công cụ cụ thể, quy tắc an toàn khi thao tác production, và cách đặt alert sau fix.
 
 ### Sample answer
 First I would define "slow" with numbers. Is it p99 or the average? Is it every request or one endpoint? Did it start suddenly or drift over weeks? I would pull the dashboard: latency percentiles, error rate, request rate, and the deploy timeline. The deploy timeline alone solves a surprising number of incidents.
@@ -526,8 +598,23 @@ While investigating I keep production safe: read-only commands, no profiling on 
 - **a few full thread dumps**: vài thread dump đầy đủ
 - **which span owns the time**: span nào đang chiếm thời gian
 - **roll back first and investigate after**: rollback trước, điều tra sau
+- **connection pool exhaustion**: cạn kiệt connection pool
+- **distributed tracing**: truy vết phân tán
+- **latency percentiles**: phần trăm độ trễ
+- **execution plan**: kế hoạch thực thi
 
-> Tip: Đừng nhảy ngay vào "I would add more servers" — đó là che triệu chứng. Cũng đừng nói "I would restart the service" mà không giải thích rủi ro. Tiếng Anh: **latency** /ˈleɪtənsi/ không phải "la-tên-si"; phân biệt **p99** đọc "p ninety-nine". Dùng "slow query log" chứ không phải "slow query logs" khi nói về công cụ.`,
+### Lỗi người Việt hay mắc
+- **Phát âm "latency"**: /ˈleɪtənsi/ (nhấn "LAY"), không phải "la-tên-si".
+- **Nói "I would add more servers" ngay**: đó là che triệu chứng, không phải root cause. Phải đo trước.
+- **Dùng "restart service" làm giải pháp đầu**: restart mất state, có thể làm tình huống tệ hơn. Chỉ restart khi đã hiểu rủi ro.
+- **Thiếu "read-only commands" khi điều tra production**: luôn nhắc "read-only commands, no profiling on every node".
+- **Alert trên CPU/memory thay vì symptom**: alert phải trên p99 latency, error rate — thứ user thực sự thấy.
+- **Phát âm "percentile"**: /pərˈsɛntaɪl/ (nhấn "TILE"), không phải "pê-sen-tai".
+- **Quên correlation ID**: không có correlation ID thì không trace được request xuyên service. Luôn nhắc "correlation ID across services".
+- **Sai "root cause" vs "symptom"**: latency cao là symptom, root cause có thể là GC, lock, downstream, DB. Phải phân biệt rõ.
+
+> Senior tip: Quy trình chuẩn: **dashboard → deploy timeline → distributed tracing → thread dump/GC log → DB slow query log**. Không bao giờ nhảy bước. Câu "deploy timeline alone solves a surprising number of incidents" là gold — nhiều sự cố do deploy xấu. Luôn có quy tắc an toàn: read-only, rollback first nếu severe. Sau fix, alert trên **symptom (p99 > 1s for 5m)** chứ không phải metric nội bộ. Phát âm **latency** /ˈleɪtənsi/, **percentile** /pərˈsɛntaɪl/, **profiling** /ˈproʊfaɪlɪŋ/. Một senior engineer luôn hỏi "What changed?" trước khi đi sâu vào code — deploy timeline là câu trả lời nhanh nhất.
+`,
   follow: [
     'How do you tell whether the bottleneck is the JVM or the database?',
     'What would you do if the problem only happens under load you cannot reproduce?',
@@ -541,7 +628,7 @@ While investigating I keep production safe: read-only commands, no profiling on 
   topic: 'english',
   level: 'senior',
   q: 'How do you use AI tools in your daily development work? What do you trust them with, and what do you not?',
-  a: `**Tóm tắt:** Trả lời cân bằng: **dùng thật, cụ thể, có kiểm chứng**. Nêu việc phù hợp (viết test, đọc code lạ, chuyển đổi cú pháp, gợi ý regex, viết docs), việc không giao (quyết định kiến trúc, logic tiền bạc, secrets, dữ liệu khách hàng), và **quy trình xác minh**. Tránh thái độ "AI thay được dev".
+  a: `**Tóm tắt:** Interviewer muốn thấy sự **cân bằng, trung thực, có ranh giới dữ liệu**. Nêu việc phù hợp (viết test, đọc code lạ, chuyển đổi cú pháp, gợi ý regex, viết docs), việc **không giao** (quyết định kiến trúc, logic tiền bạc, secrets, dữ liệu khách hàng), và **quy trình xác minh**. Tránh "AI thay được dev" lẫn "I don't use AI".
 
 ### Sample answer
 I use AI tools every day, but as a fast junior assistant, not as an authority. My most common use is tests: I give it a class and ask for edge cases I might have missed, then I rewrite the ones that do not fit. It is very good at generating the boring eighty percent, which frees me for the twenty percent that needs judgement.
@@ -559,8 +646,23 @@ The rule I follow is simple: AI can propose, but I am still the one who signs th
 - **confident, plausible code**: code trông tự tin và hợp lý
 - **I never merge generated code without reading every line**: tôi không bao giờ merge code sinh ra mà không đọc từng dòng
 - **I am the one who signs the commit**: tôi là người chịu trách nhiệm commit
+- **data boundary**: ranh giới dữ liệu
+- **verify before merge**: kiểm chứng trước khi merge
+- **hallucination risk**: rủi ro bịa đặt
+- **accountability**: trách nhiệm cá nhân
 
-> Tip: Đừng trả lời "I don't use AI" (nghe lạc hậu) hoặc "AI writes all my code" (nghe thiếu trách nhiệm). Nêu **ranh giới dữ liệu** là điểm cộng lớn với công ty nước ngoài, vì họ lo compliance. Phát âm **authority** /əˈθɒrəti/ nhấn âm hai, và **proprietary** /prəˈpraɪətri/ — hai từ này người Việt hay đọc sai trọng âm.`,
+### Lỗi người Việt hay mắc
+- **Trả lời "I don't use AI"**: nghe lạc hậu. Hãy nói "I use it for X, Y, Z" cụ thể.
+- **Trả lời "AI writes all my code"**: nghe thiếu trách nhiệm. Luôn nhắc "I verify every line".
+- **Quên nêu ranh giới dữ liệu**: không paste production data, PII, secrets, proprietary logic — điểm cộng lớn cho compliance.
+- **Phát âm "authority"**: /əˈθɒrəti/ (nhấn "THO"), không phải "ô-thô-ri-ti".
+- **Phát âm "proprietary"**: /prəˈpraɪətri/ (nhấn "PRY"), không phải "pro-pri-e-tary".
+- **Dùng "confident" cho code AI**: "confident, plausible code" là code *trông* tự tin và hợp lý (nhưng có thể sai) — hiểu đúng ngữ cảnh này.
+- **Sai "hallucination"**: /həˌluːsɪˈneɪʃn/ (nhấn "NAY"), không phải "ha-lu-si-na-tion". Code AI bịa đặt gọi là "hallucination".
+- **Quên "compliance"**: công ty enterprise yêu cầu không dùng data thật với AI public. Luôn nhắc compliance/data privacy.
+
+> Senior tip: Điểm chốt là **data boundary** và **verification workflow**. Công ty nước ngoài lo compliance, nên việc bạn chủ động nói "I never paste production data/PII/secrets" là huge plus. Luôn kết bằng quy tắc cá nhân: "AI proposes, I sign the commit." Điều này cho thấy bạn hiểu accountability. Phát âm **authority** /əˈθɒrəti/, **proprietary** /prəˈpraɪətri/, **plausible** /ˈplɔːzəbl/, **hallucination** /həˌluːsɪˈneɪʃn/. Senior engineer dùng AI như power tool — biết lúc nào dùng, lúc nào không, và luôn verify output.
+`,
   follow: [
     'Can you give an example where AI gave you a wrong answer? How did you catch it?',
     'Does your company have a policy on AI tools and customer data?',
@@ -592,8 +694,22 @@ When I get stuck, I say so directly: "Let me think about the edge case for thirt
 - **I will state my assumptions first**: tôi sẽ nêu giả định trước
 - **let me think about the edge case for thirty seconds**: cho tôi nghĩ về edge case khoảng ba mươi giây
 - **here is how I would find out**: đây là cách tôi sẽ tìm ra
+- **narrate decisions, not syntax**: kể quyết định, không kể cú pháp
+- **a question with a reason**: câu hỏi có lý do
+- **think aloud**: suy nghĩ to
+- **structure first, code second**: khung trước, code sau
 
-> Tip: Đừng im lặng quá lâu rồi đột ngột viết code — interviewer không biết bạn đang nghĩ hay đang bí. Cũng đừng xin nhắc lại bằng "What?" hay "Sorry, I don't understand" mãi; dùng "Could you clarify what you mean by...?" Người Việt hay nói "Can you repeat again?" — sai, đúng là "Could you repeat that?" hoặc "Could you say that again?".`,
+### Lỗi người Việt hay mắc
+- **Im lặng quá lâu rồi đột ngột viết code**: interviewer không biết bạn đang nghĩ hay đang bí. Hãy announce: "Let me think for thirty seconds."
+- **Xin nhắc lại bằng "What?" hay "Sorry, I don't understand" mãi**: thiếu lịch sự. Dùng "Could you clarify what you mean by...?"
+- **Nói "Can you repeat again?"**: thừa từ (repeat đã có nghĩa again). Đúng là "Could you repeat that?" hoặc "Could you say that again?".
+- **Hỏi quá nhiều câu làm rõ**: "a stream of questions sounds unprepared". Tối đa 2 câu, mỗi câu có lý do.
+- **Think aloud bằng cách đọc code**: "I am typing for loop..." — sai. Hãy nói quyết định: "I use a map for O(1) lookup."
+- **Dùng "uhm", "ah" lấp khoảng lặng**: fillers làm mất professional. Thay bằng pause có announce.
+- **Quên check edge case trước khi code**: senior engineer luôn nói "Let me think about edge cases" trước khi type.
+
+> Senior tip: Câu "mua thời gian" chỉ dùng **một lần** mỗi câu hỏi; lặp lại nghe như né tránh. Luyện với đồng hồ: đặt khung trong 10 giây đầu, trả lời mỗi ý trong 30–45 giây. Câu hỏi system design lớn có thể xin thêm thời gian: "Could I take a minute to sketch my thoughts?" — hoàn toàn được chấp nhận. Khi bí, nói thẳng "I have not seen this exact problem, but here is how I would approach it" — thể hiện tư duy giải quyết vấn đề hơn là kiến thức thuộc lòng. Phát âm **assumption** /əˈsʌmpʃn/, **clarify** /ˈklærɪfaɪ/, **rambling** /ˈræmblɪŋ/. Quan trọng: **structure first, code second** — interviewer đánh giá tư duy, không phải typing speed.
+`,
   follow: [
     'What do you do if the interviewer gives you a hint you do not understand?',
     'How do you handle it when you realise halfway through that your approach is wrong?',
@@ -627,8 +743,23 @@ If the interview went well, I might also ask why the previous person left and wh
 - **what I am signing up for**: điều tôi đang nhận lấy
 - **the team's biggest technical debt**: món nợ kỹ thuật lớn nhất của đội
 - **that belongs to HR**: việc đó thuộc về HR
+- **on-call rotation**: lịch trực on-call
+- **technical influence**: sự ảnh hưởng kỹ thuật
+- **decision-making authority**: thẩm quyền ra quyết định
+- **success metrics**: chỉ số thành công
 
-> Tip: Đừng nói "I have no questions" — interviewer đọc đó là thiếu quan tâm. Cũng đừng hỏi câu mà câu trả lời có sẵn trên website ("What does your company do?"). Chú ý **on-call** đọc /ˈɒn kɔːl/, và câu hỏi đuôi không cần thiết; hỏi trực tiếp ngắn gọn nghe chuyên nghiệp hơn.`,
+### Lỗi người Việt hay mắc
+- **Nói "I have no questions"**: interviewer đọc là thiếu quan tâm. Luôn chuẩn bị 3-5 câu.
+- **Hỏi câu trả lời có trên website**: "What does your company do?" — mất điểm lớn. Hỏi về thực tế làm việc.
+- **Hỏi lương/benefit ở vòng kỹ thuật**: những câu đó thuộc về HR. Vòng kỹ thuật hỏi về on-call, tech debt, decision-making.
+- **Phát âm "on-call"**: /ˈɒn kɔːl/ (nhấn "ON"), không phải "on-câl" hay "ôn-cỏ".
+- **Dùng câu hỏi đuôi không cần thiết**: "Isn't it?" "Right?" — hỏi trực tiếp ngắn gọn nghe chuyên nghiệp hơn.
+- **Sai "technical debt"**: đọc /ˈtɛknɪkəl dɛt/ (debt đọc như "det"), không phải "debt" như "đép".
+- **Hỏi "What is the culture?"** quá chung chung: phải cụ thể — "How does the team handle disagreements on architecture?"
+- **Quên follow-up question**: sau khi interviewer trả lời, hãy có câu hỏi tiếp để đào sâu — thể hiện listening skill.
+
+> Senior tip: Câu hỏi cuối thể hiện **mindset của người sẽ làm việc ở đó**. Hỏi on-call → bạn quan tâm reliability. Hỏi decision-making → bạn quan tâm autonomy. Hỏi success metrics → bạn quan tâm impact. Luôn prepare 5 câu, pick 3 tùy context. Nếu interviewer rushed, hỏi 1 câu quan trọng nhất: "What does a typical on-call week look like?" — câu này reveal engineering health nhất. Phát âm **on-call** /ˈɒn kɔːl/, **technical debt** /ˈtɛknɪkəl dɛt/, **transactional** /trænˈzækʃənl/, **authority** /əˈθɒrəti/. Một senior engineer hỏi về **tech debt** và **decision-making** vì đó là hai điều quyết định xem bạn có thể deliver impact hay chỉ là feature factory.
+`,
   follow: [
     'What would you ask if the interviewer seemed rushed?',
     'How do you evaluate whether a team has a healthy on-call culture?',
