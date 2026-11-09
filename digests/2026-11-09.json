@@ -1,0 +1,91 @@
+{
+  "date": "2026-11-09",
+  "intro": "Tuần này mảng Java xoay quanh JDK 28: Structured Concurrency chuẩn hoá chính thức, cùng các dự án đưa Java tới gần hơn với runtime ngoài JVM (FFM, Babylon, Detroit). Spring Boot 4.2 đã sang RC2, và AWS thêm công cụ chuyển bảng Hive sang Iceberg.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring Boot 4.2.0-RC2 ra mắt",
+      "title": "Spring Boot 4.2.0-RC2 available now",
+      "url": "https://spring.io/blog/2026/11/06/spring-boot-4-2-0-RC2-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Boot 4.2.0-RC2 đã có trên Maven Central, gồm 99 cải tiến cùng các bản sửa lỗi, nâng cấp dependency và cập nhật tài liệu. Bài nêu hai thay đổi đáng chú ý: hỗ trợ header {{X-Forwarded-Prefix}} với Reactor Netty, và property {{spring.data.redis.database}} nay áp dụng cả cho kết nối master/replica. Đây là release candidate, bài không nêu ngày GA.",
+      "why": "Nếu service của bạn chạy sau reverse proxy/API gateway hoặc dùng Redis master/replica, hai thay đổi này ảnh hưởng trực tiếp tới cấu hình. RC2 là lúc tốt để chạy thử nâng cấp trên môi trường staging.",
+      "interview_q": "Bạn lên kế hoạch nâng cấp một hệ thống Spring Boot lớn lên minor release mới như thế nào để giảm rủi ro?",
+      "related": [],
+      "tags": ["spring-boot", "release"]
+    },
+    {
+      "title_vi": "JEP 543: Structured Concurrency được chốt ở JDK 28",
+      "title": "JEP 543: Structured Concurrency",
+      "url": "https://openjdk.org/jeps/543",
+      "source": "OpenJDK",
+      "category": "tech",
+      "summary": "JEP 543 đề xuất chốt (finalize) Structured Concurrency ở JDK 28 mà không đổi thêm gì. API từng incubate ở JDK 19–20, preview từ JDK 21, và qua nhiều lần re-preview. Ý tưởng: giới hạn vòng đời subtask trong một scope, để lỗi và huỷ tác vụ được xử lý tự động, tránh thread leak. {{StructuredTaskScope}} dùng các {{Joiner}} như {{anySuccessfulOrThrow()}}, và JSON thread dump hiển thị phân cấp scope.",
+      "why": "Đây là cách thay thế có cấu trúc cho {{ExecutorService}}/{{Future}} khi fan-out nhiều lời gọi downstream trên virtual thread. Khi API ổn định, bạn có thể bắt đầu cân nhắc dùng trong code production.",
+      "interview_q": "Structured Concurrency giải quyết vấn đề gì mà CompletableFuture hay ExecutorService không xử lý tốt, và bạn chọn joiner nào cho từng kiểu fan-out?",
+      "related": ["concurrency-013", "concurrency-007"],
+      "tags": ["jdk28", "concurrency"]
+    },
+    {
+      "title_vi": "Java và thế hệ mô hình lập trình tiếp theo (Devoxx Belgium)",
+      "title": "Java and the Next Generation of Programming Models",
+      "url": "https://inside.java/2026/11/08/devoxxbelgium-java-next-programming-models/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Tóm tắt một phiên tại Devoxx Belgium 2026. Phần đầu nói về cách Java tương tác an toàn với runtime ngoài JVM nhờ Foreign Function and Memory (FFM) API và công cụ jextract tạo binding từ thư viện native. Phần sau nhìn về Project Babylon và code reflection, nhằm viết mô hình AI như chương trình Java thông thường rồi đưa xuống inference engine. Takeaway: suy luận dựa trên FFM làm được ngay, còn mô hình thuần Java qua code reflection là hướng tương lai.",
+      "why": "FFM thay thế dần JNI cho việc gọi thư viện native; nếu backend của bạn tích hợp thư viện C/AI inference, đây là hướng đi cần nắm.",
+      "interview_q": "So sánh JNI và FFM API: vì sao FFM an toàn hơn và bạn sẽ dùng nó khi nào?",
+      "related": [],
+      "tags": ["ffm", "babylon"]
+    },
+    {
+      "title_vi": "Project Detroit: nhúng runtime JavaScript/Python vào Java",
+      "title": "Project Detroit: From Foreign Libraries to Foreign Language Runtimes",
+      "url": "https://inside.java/2026/11/04/devoxxbelgium-project-detroit/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Project Detroit là nỗ lực của OpenJDK nhằm cho ứng dụng Java làm việc với toàn bộ runtime ngôn ngữ khác như JavaScript và Python, thay vì tự cài đặt lại runtime bằng Java như Nashorn (bị deprecate ở Java 11 và gỡ ở Java 15). Hướng tiếp cận là dùng FFM để nhúng V8 và CPython. Phiên cũng nhắc tới hai thách thức: phối hợp hai garbage collector và tránh virtual thread pinning. Nguồn chỉ là abstract nên chưa có chi tiết triển khai.",
+      "why": "Giúp hình dung hướng đi của hệ sinh thái JVM với script/ML runtime và vì sao các runtime nhúng lại gây bài toán GC và pinning.",
+      "interview_q": "Vì sao Nashorn bị loại bỏ, và cách nhúng runtime native qua FFM khác gì việc cài đặt lại ngôn ngữ trên JVM?",
+      "related": [],
+      "tags": ["detroit", "ffm"]
+    },
+    {
+      "title_vi": "Chẩn đoán lỗi JVM ngay lần xảy ra đầu tiên",
+      "title": "What's Going Wrong with My JVM?! A Guide to First-Time Failure Diagnosis",
+      "url": "https://inside.java/2026/10/22/jvm-diagnosis/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Bài giới thiệu phiên JavaOne 2026 của Sandra Payne với kịch bản ứng dụng ngừng phản hồi lúc 2 giờ sáng. Vấn đề cốt lõi: nhiều môi trường production không thu thập sẵn dữ liệu cần để chẩn đoán, và một số công cụ chẩn đoán tốn quá nhiều hiệu năng. Phiên tập trung vào các lỗi heap memory hay gặp và cách thu thập, phân tích dữ liệu chi phí thấp ngay lần lỗi đầu tiên. Trang chỉ có phần mở đầu, không liệt kê chi tiết công cụ.",
+      "why": "Chuẩn bị sẵn dữ liệu chẩn đoán (GC log, heap dump khi OOM...) quyết định bạn tìm được root cause hay phải chờ lỗi tái diễn.",
+      "interview_q": "Bạn cấu hình JVM trên production thế nào để khi gặp OutOfMemoryError lần đầu vẫn đủ dữ liệu điều tra?",
+      "related": ["jvm-004", "jvm-005"],
+      "tags": ["jvm", "diagnosis"]
+    },
+    {
+      "title_vi": "Hướng dẫn Secure Coding cho Java: cập nhật mới",
+      "title": "Java Secure Coding Guidelines",
+      "url": "https://inside.java/2026/10/28/java-secure-coding-guidelines/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Bài giới thiệu một phiên của Andrew Gross về Java Secure Coding Guidelines: tổng quan và best practice, các ví dụ code không an toàn, cách áp dụng guideline để tránh lỗ hổng. Phần cập nhật gần đây mở rộng phạm vi về input validation và serialization. Trang chỉ là mô tả phiên, nội dung chi tiết nằm trong tài liệu guideline và video JavaOne 2026.",
+      "why": "Input validation và serialization là hai nguồn lỗ hổng kinh điển ở backend Java; guideline chính thức là tài liệu tham chiếu tốt khi code review.",
+      "interview_q": "Vì sao Java serialization mặc định bị coi là rủi ro bảo mật, và bạn thay thế nó thế nào trong hệ thống của mình?",
+      "related": [],
+      "tags": ["security"]
+    },
+    {
+      "title_vi": "Amazon S3 Tables: chuyển bảng Hive sang Iceberg có quản lý",
+      "title": "Amazon S3 Tables now offer managed migration of Apache Hive tables to Apache Iceberg",
+      "url": "https://aws.amazon.com/blogs/aws/amazon-s3-tables-now-offer-managed-migration-of-apache-hive-tables-to-apache-iceberg/",
+      "source": "AWS News Blog",
+      "category": "cloud",
+      "summary": "S3 Tables hỗ trợ migration có quản lý cho bảng Hive định dạng Parquet đăng ký trong Glue Data Catalog sang Iceberg, không cần tự dựng pipeline hay compute. Quy trình: tạo bảng từ migration (console hoặc CLI), sinh báo cáo tương thích, đồng bộ nhiều lần chỉ phần thay đổi, rồi hoàn tất khi bảng đích chuyển từ read-only sang read-write. Lúc ra mắt chỉ hỗ trợ cùng account và Region, và tính phí theo dữ liệu được copy.",
+      "why": "Nếu backend của bạn ghi dữ liệu sự kiện vào data lake trên S3, Iceberg là format bảng đang được chuẩn hoá; biết giới hạn của migration giúp lập kế hoạch cutover.",
+      "interview_q": "Bạn sẽ di chuyển một data lake dạng Hive/Parquet sang Iceberg mà không dừng các job ghi như thế nào?",
+      "related": [],
+      "tags": ["aws", "iceberg"]
+    }
+  ]
+}
