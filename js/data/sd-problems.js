@@ -2254,4 +2254,279 @@ Một sorted set 100 triệu phần tử khoảng 10 GB, vẫn chạy được t
   ],
   related: ['design-031']
 },
+{
+  id: 'sd-020',
+  title: 'Đếm click quảng cáo thời gian thực để tính tiền nhà quảng cáo',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Nền tảng quảng cáo nhận **1 tỷ click mỗi ngày** (cao điểm 50.000 click/giây). Nhà quảng cáo cần dashboard số click theo từng quảng cáo **mỗi phút**, độ trễ dưới 1–2 phút, và hoá đơn cuối ngày phải **chính xác** (không đếm thiếu, không đếm trùng) vì tính tiền theo click (CPC). Cần lọc click gian lận (bot, click lặp). Thiết kế hệ thống thu thập và tổng hợp. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: đếm theo ad_id và cửa sổ 1 phút (có thể thêm country, device); truy vấn N phút/giờ gần nhất; top 100 quảng cáo được click nhiều nhất mỗi phút; số liệu dashboard được phép lệch nhẹ và được sửa sau, còn **số tính tiền phải đúng tuyệt đối**; click đến trễ (mạng mobile chập chờn) vài phút vẫn phải được tính đúng phút xảy ra.` },
+    { name: 'Estimation', minutes: 5, guide: `1 tỷ/ngày ≈ 11.600 click/giây trung bình, cao điểm 50.000/giây. Mỗi sự kiện khoảng 200 byte → khoảng 200 GB/ngày dữ liệu thô, giữ 90 ngày trên object storage. Kết quả tổng hợp: 200.000 quảng cáo đang chạy × 1.440 phút = tối đa 288 triệu dòng/ngày, thực tế thưa hơn nhiều vì phần lớn quảng cáo không có click mỗi phút.` },
+    { name: 'API & data model', minutes: 5, guide: `Click đi qua redirect: GET /click?token=... → ghi sự kiện rồi 302 về trang đích. Sự kiện: click_id (sinh lúc hiển thị quảng cáo, dùng khử trùng), ad_id, user/device, ip, event_time. Kết quả: bảng ad_clicks_minute (ad_id, minute, clicks, invalid_clicks) khoá chính (ad_id, minute) để ghi lặp vẫn an toàn (upsert). Truy vấn: GET /ads/ID/clicks?from=&to=&granularity=minute.` },
+    { name: 'High-level design', minutes: 15, guide: `Click Service (stateless) → Kafka topic clicks (partition theo ad_id) → hai nhánh: (1) Stream processor (Flink) gom cửa sổ 1 phút theo event time, khử trùng click_id, lọc gian lận cơ bản, upsert vào OLAP store (ClickHouse/Druid) cho dashboard; (2) sink thô vào S3 (data lake). Job batch hằng ngày tính lại từ dữ liệu thô làm số chốt hoá đơn và đối soát với số streaming.` },
+    { name: 'Deep dive', minutes: 15, guide: `Event time vs processing time, watermark và click đến trễ; exactly-once từ Kafka tới kết quả (checkpoint + sink idempotent); quảng cáo "hot" gây lệch partition (salting rồi gộp 2 tầng); khử trùng click_id với state có TTL; lọc gian lận; đối soát streaming và batch; sự cố consumer chết, replay từ offset.` }
+  ],
+  rubric: [
+    'Ghi sự kiện thô vào Kafka trước khi tổng hợp, có thể replay',
+    'Gom theo cửa sổ 1 phút dựa trên event time, không dùng thời điểm xử lý',
+    'Watermark và cách xử lý sự kiện đến trễ (allowed lateness, side output, batch sửa sau)',
+    'Exactly-once hiệu quả: checkpoint + ghi kết quả idempotent theo khoá (ad_id, minute)',
+    'Khử trùng theo click_id và lọc click gian lận trước khi tính tiền',
+    'Xử lý quảng cáo hot (key skew): pre-aggregate có salting rồi gộp',
+    'Tách số hiển thị (streaming) và số tính tiền (batch tính lại từ dữ liệu thô), có đối soát',
+    'Chọn kho lưu kết quả phù hợp truy vấn theo thời gian (OLAP/columnar)',
+    'Ước lượng throughput và dung lượng hợp lý',
+    'Giám sát consumer lag, tỉ lệ sự kiện trễ, chênh lệch streaming vs batch'
+  ],
+  reference: `**Tóm tắt:** Click đi qua một redirect service ghi sự kiện vào **Kafka** (nguồn sự thật có thể replay), một **stream processor** như Flink gom theo **cửa sổ 1 phút theo event time** với watermark, khử trùng theo click_id và ghi kết quả **idempotent** (upsert theo ad_id + phút) vào kho OLAP cho dashboard. Song song, dữ liệu thô được lưu vào S3 và một **job batch** hằng ngày tính lại để chốt hoá đơn, rồi đối soát với số streaming. Hiển thị cần nhanh, tính tiền cần đúng: hai yêu cầu này được phục vụ bởi hai đường khác nhau.
+
+### Vì sao không UPDATE counter trong database
+Cách ngây thơ: mỗi click chạy {{UPDATE ad_stats SET clicks = clicks + 1 WHERE ad_id = ? AND minute = ?}}. Với 50.000 click/giây, các quảng cáo hot dồn vào cùng một dòng, row lock xếp hàng, database chết. Thêm nữa, nếu ứng dụng retry sau timeout thì click bị cộng hai lần mà không ai biết. Ghi **sự kiện** (append-only, rẻ) rồi **tổng hợp theo lô nhỏ** mới chịu được tải và cho phép tính lại khi có lỗi.
+
+### Kiến trúc
+~~~text
+Người dùng click --> Click Service (302 về trang đích)
+                          | produce (acks=all, idempotent producer)
+                          v
+                 Kafka "clicks" (partition theo ad_id, giữ 7 ngày)
+                    |                               |
+                    v                               v
+       Flink: khử trùng click_id,              Sink thô --> S3 (Parquet, theo giờ)
+       lọc gian lận, cửa sổ 1 phút                          |
+                    | upsert (ad_id, minute)                v
+                    v                              Spark batch hằng ngày:
+       ClickHouse/Druid --> Dashboard API          tính lại, chốt hoá đơn,
+                                                   đối soát với số streaming
+~~~
+
+### Event time, watermark và click đến trễ
+Click xảy ra lúc 10:00:58 trên điện thoại mất sóng, tới server lúc 10:02:10. Nếu gom theo thời điểm xử lý, click này rơi nhầm vào phút 10:02. Phải gom theo **event time** (thời điểm click xảy ra). Nhưng khi nào thì "đóng" cửa sổ 10:00? Đó là việc của **watermark**: một mốc "tôi tin rằng sự kiện có event time trước T đã đến hết". Với watermark trễ 15 giây, cửa sổ 10:00–10:01 được phát kết quả khi watermark vượt 10:01:00, tức khoảng 10:01:15.
+- Click trễ hơn watermark nhưng vẫn trong **allowed lateness** (ví dụ 5 phút): Flink tính lại cửa sổ và phát kết quả cập nhật. Vì kết quả được upsert theo (ad_id, minute), bản mới ghi đè bản cũ.
+- Click trễ hơn nữa: đưa ra **side output**, ghi riêng; job batch cuối ngày sẽ tính đúng.
+
+### Exactly-once hiệu quả
+Không có "exactly-once delivery" xuyên suốt; cái ta cần là **kết quả** như thể mỗi click được đếm đúng một lần:
+1. Producer bật idempotence để retry không tạo bản ghi trùng trong Kafka.
+2. Flink checkpoint định kỳ lưu cả offset Kafka lẫn state (bộ đếm đang gom). Khi crash, nó khôi phục state và đọc lại từ offset của checkpoint, nên mỗi sự kiện ảnh hưởng state đúng một lần.
+3. Sink ghi kết quả bằng **upsert theo khoá (ad_id, minute)**: ghi lại cùng kết quả sau khi khôi phục cũng không sao.
+4. Khử trùng ở mức nghiệp vụ: click_id sinh lúc hiển thị quảng cáo; Flink giữ state "đã thấy click_id" với TTL vài giờ, gặp lại thì bỏ.
+
+### Quảng cáo hot và lệch tải
+Partition theo ad_id giữ thứ tự và gom đúng, nhưng một chiến dịch lớn có thể chiếm 30% click và dồn hết vào một subtask. Cách xử lý: gom **hai tầng**. Tầng 1 dùng khoá (ad_id, salt ngẫu nhiên 0–15) để chia tải ra 16 subtask, mỗi subtask đếm một phần; tầng 2 gộp 16 phần theo ad_id. Tổng vẫn đúng vì phép cộng có tính kết hợp.
+
+### Tách số hiển thị và số tính tiền
+| | Đường streaming | Đường batch |
+|---|---|---|
+| Độ trễ | 1–2 phút | Vài giờ, chạy sau nửa đêm |
+| Dùng cho | Dashboard, cảnh báo ngân sách | Hoá đơn, báo cáo chính thức |
+| Click trễ quá ngưỡng | Có thể thiếu | Đầy đủ |
+| Lọc gian lận | Luật đơn giản (tần suất theo IP/thiết bị) | Mô hình phức tạp, dữ liệu cả ngày |
+
+Job đối soát so hai con số theo từng quảng cáo; chênh lệch trên 0,1% thì cảnh báo để điều tra (thường là lỗi watermark quá chặt hoặc sink lỗi).
+
+### Lọc gian lận
+- Cùng thiết bị/IP click một quảng cáo nhiều lần trong vài phút: chỉ tính lần đầu.
+- User-agent của bot, IP trung tâm dữ liệu, tốc độ click phi lý.
+- Click không có impression tương ứng (click_id không khớp lượt hiển thị nào): không hợp lệ.
+Click gian lận vẫn được ghi lại (cột invalid_clicks) để giải trình với nhà quảng cáo.
+
+### Ví dụ đời thực
+Một đội ads thấy số click trên dashboard thấp hơn hoá đơn 2,3% vào các buổi tối. Điều tra: tỉ lệ sự kiện vào side output (trễ hơn allowed lateness) tăng vọt lúc 20–22 giờ, đúng giờ cao điểm mạng mobile, và phần lớn đến từ SDK Android gửi theo lô mỗi 3 phút khi app ở nền. Watermark 10 giây và allowed lateness 1 phút là quá chặt. Họ tăng allowed lateness lên 5 phút và cho SDK gửi ngay khi app trở lại foreground. Chênh lệch giảm xuống dưới 0,1%, còn state của Flink tăng khoảng 20% vì giữ cửa sổ lâu hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách hai đường. Click đi qua redirect service, ghi sự kiện vào Kafka partition theo ad_id; Kafka là nguồn sự thật có thể replay. Đường nhanh là Flink gom cửa sổ một phút theo event time, watermark khoảng 15 giây, allowed lateness vài phút, khử trùng theo click_id rồi upsert kết quả theo khoá ad_id cộng phút vào ClickHouse cho dashboard. Nhờ checkpoint lưu cả offset lẫn state, cộng với sink idempotent, mỗi click ảnh hưởng kết quả đúng một lần dù job có crash. Đường chậm lưu dữ liệu thô vào S3, job Spark hằng ngày tính lại làm số chốt hoá đơn, rồi đối soát với số streaming; chênh quá ngưỡng thì cảnh báo. Quảng cáo hot thì tôi gom hai tầng có salting để không dồn vào một subtask. Gian lận lọc cơ bản trên stream, kỹ hơn ở batch, và vẫn lưu click không hợp lệ để giải trình. Điểm mấu chốt là dashboard được phép lệch nhẹ, nhưng tiền thì phải tính từ dữ liệu thô đầy đủ."
+
+> Senior tip: interviewer thường đào vào "click đến trễ 10 phút thì sao" và "job crash giữa chừng có đếm trùng không". Trả lời bằng ba khái niệm cụ thể: event time + watermark + allowed lateness, checkpoint + sink idempotent, và batch tính lại làm nguồn chốt. Đừng hứa "exactly-once delivery"; hãy nói "exactly-once về kết quả".`,
+  followups: [
+    'Nhà quảng cáo muốn lọc thêm theo quốc gia và thiết bị: số dòng kết quả và cách lưu thay đổi thế nào?',
+    'Phát hiện bug lọc gian lận đã chạy sai 3 ngày: bạn tính lại và sửa hoá đơn thế nào?',
+    'Muốn dừng quảng cáo ngay khi hết ngân sách (độ trễ dưới 10 giây): thiết kế thêm gì?',
+    'Không dùng Flink mà chỉ có Kafka Streams: thay đổi những gì?'
+  ],
+  related: ['microservices-006', 'microservices-051', 'db-052']
+},
+{
+  id: 'sd-021',
+  title: 'Cổng thanh toán cho merchant tích hợp nhiều ngân hàng và ví',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn thiết kế **cổng thanh toán** (payment gateway) cho 20.000 merchant thương mại điện tử: khách thanh toán bằng thẻ quốc tế, thẻ nội địa, QR và ví điện tử, qua 5 đối tác xử lý (ngân hàng, PSP). Cao điểm ngày sale 2.000 giao dịch/giây. Yêu cầu: **không trừ tiền hai lần**, không "khách bị trừ tiền mà đơn báo thất bại", merchant nhận kết quả tin cậy, đối soát được với đối tác mỗi ngày, tuân thủ PCI DSS. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt luồng: merchant tạo payment → khách xác thực ở trang thanh toán (3-D Secure, OTP, quét QR) → đối tác báo kết quả → gateway báo merchant. Hỏi: có refund một phần không, payment hết hạn sau bao lâu, merchant cần webhook hay polling, có lưu thẻ cho lần sau (tokenization) không. Non-functional: tính đúng tuyệt đối về tiền, idempotent, khả dụng 99,95%, kiểm toán được.` },
+    { name: 'Estimation', minutes: 5, guide: `2.000 TPS cao điểm, mỗi payment khoảng 5–8 lượt ghi (tạo, chuyển trạng thái, gọi đối tác, callback, webhook). Khoảng 10 triệu payment/ngày ngày thường; bảng payment tăng vài trăm GB/năm, partition theo tháng. Webhook ra merchant: khoảng 1 webhook/payment cộng retry.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /payments (header Idempotency-Key; merchant_id + order_id là duy nhất) → trả payment_id và URL trang thanh toán. GET /payments/ID. POST /payments/ID/refunds. Bảng payments (id, merchant_id, order_id, amount, currency, method, psp, status, psp_ref, version, created_at); payment_events (lịch sử chuyển trạng thái, append-only); outbox cho webhook; bảng ledger double-entry cho số dư merchant và phí.` },
+    { name: 'High-level design', minutes: 15, guide: `API Gateway → Payment Service (state machine, idempotency) → Routing chọn đối tác theo phương thức, tỉ lệ thành công, phí → PSP Adapter (mỗi đối tác một adapter, ký request, ánh xạ mã lỗi) → đối tác. Callback/IPN từ đối tác → Callback Service (xác thực chữ ký, idempotent). Kết quả → outbox → Webhook Dispatcher → merchant. Card data chỉ đi qua trang hosted / vault tách biệt (phạm vi PCI nhỏ). Reconciliation job đọc file quyết toán của đối tác mỗi ngày.` },
+    { name: 'Deep dive', minutes: 15, guide: `Trạng thái "không rõ" khi gọi đối tác timeout (không được retry trừ tiền mù quáng; dùng API tra cứu); callback đến trùng, đến sai thứ tự, đến trước redirect; state machine chặn chuyển trạng thái ngược; đối soát và xử lý "trừ tiền nhưng đơn thất bại"; failover đối tác khi sập; bảo mật thẻ và tokenization.` }
+  ],
+  rubric: [
+    'Idempotency khi tạo payment: Idempotency-Key và ràng buộc duy nhất (merchant_id, order_id)',
+    'State machine rõ ràng, trạng thái cuối không bị ghi đè, cập nhật có điều kiện hoặc optimistic lock',
+    'Xử lý timeout với đối tác bằng trạng thái UNKNOWN + tra cứu, không retry trừ tiền mù quáng',
+    'Callback từ đối tác: xác thực chữ ký, idempotent, chịu được đến trùng và sai thứ tự; có polling dự phòng',
+    'Webhook ra merchant qua outbox, retry có backoff, ký HMAC',
+    'Đối soát hằng ngày với file quyết toán của đối tác, xử lý từng loại chênh lệch',
+    'Ledger double-entry cho số dư merchant, phí, refund',
+    'Phạm vi PCI DSS nhỏ: không lưu số thẻ, hosted page/vault, tokenization',
+    'Routing và failover giữa các đối tác, chỉ failover cho lần thử mới chứ không cho giao dịch đang treo',
+    'Giám sát tỉ lệ thành công theo đối tác, số payment kẹt ở UNKNOWN/PENDING'
+  ],
+  reference: `**Tóm tắt:** Trái tim của cổng thanh toán là một **state machine** lưu trong database với các chuyển trạng thái có điều kiện, cộng **idempotency ở mọi cửa vào**: merchant tạo payment (Idempotency-Key, unique merchant_id + order_id), callback từ đối tác (khử trùng theo mã giao dịch đối tác), webhook ra merchant (outbox + retry). Khi gọi đối tác bị timeout, payment chuyển sang **UNKNOWN** và được **tra cứu** chứ không bao giờ trừ tiền lại. Cuối cùng, **đối soát hằng ngày** với file quyết toán của đối tác là lưới an toàn bắt mọi chênh lệch còn sót.
+
+### Luồng chính
+~~~seq
+title: Thanh toán thẻ qua cổng
+actors: Merchant | Gateway | PSP | Khách
+Merchant -> Gateway: POST /payments (Idempotency-Key)
+Gateway --> Merchant: payment_id + URL trang thanh toán
+Khách -> Gateway: mở trang, nhập thẻ (hosted page)
+Gateway -> PSP: authorize/charge (ký request)
+PSP -> Khách: 3-D Secure / OTP
+PSP -> Gateway: callback IPN (có chữ ký)
+Gateway -> Gateway: kiểm chữ ký, PENDING -> SUCCEEDED
+Gateway -> Merchant: webhook payment.succeeded (HMAC)
+~~~
+
+### State machine
+~~~text
+CREATED --> PENDING --> SUCCEEDED --> (PARTIALLY_)REFUNDED
+               |  \--> FAILED
+               |  \--> EXPIRED (khách bỏ dở quá 15 phút)
+               \--> UNKNOWN --(tra cứu)--> SUCCEEDED / FAILED
+~~~
+Mọi chuyển trạng thái là một câu UPDATE có điều kiện, ví dụ {{UPDATE payments SET status = 'SUCCEEDED', version = version + 1 WHERE id = ? AND status IN ('PENDING','UNKNOWN')}}. Nếu số dòng cập nhật là 0 thì sự kiện này đến muộn hoặc trùng: ghi log, không làm gì thêm. Trạng thái cuối (SUCCEEDED, FAILED) không bao giờ bị ghi đè; riêng trường hợp "FAILED nhưng đối tác thực ra đã trừ tiền" được xử lý bằng đối soát và refund, không quay ngược trạng thái âm thầm.
+
+### Timeout: tình huống nguy hiểm nhất
+Gateway gửi lệnh charge, chờ 30 giây không thấy phản hồi. Có ba khả năng: request chưa tới đối tác, đối tác đã trừ tiền nhưng phản hồi bị mất, hoặc đối tác đang xử lý. Retry ngay có thể **trừ tiền hai lần**; báo FAILED có thể sinh ra "khách bị trừ tiền mà đơn thất bại". Cách đúng:
+1. Chuyển payment sang UNKNOWN, báo merchant là "đang xử lý".
+2. Gọi **API tra cứu** của đối tác theo mã tham chiếu do gateway sinh (gửi kèm từ đầu), với backoff: 10 giây, 30 giây, 2 phút, 10 phút.
+3. Vẫn không rõ sau ngưỡng: để job đối soát cuối ngày quyết định, kèm cảnh báo cho vận hành.
+Nếu đối tác hỗ trợ idempotency key thì gửi lại cùng key là an toàn; nếu không, chỉ được tra cứu.
+
+### Callback từ đối tác
+- **Xác thực chữ ký** (HMAC hoặc chữ ký RSA theo tài liệu đối tác) và kiểm tra số tiền khớp với payment, tránh callback giả.
+- **Idempotent**: lưu mã giao dịch của đối tác với ràng buộc unique; callback trùng trả 200 ngay.
+- **Sai thứ tự**: "failed" đến sau "succeeded" thì câu UPDATE có điều kiện tự bỏ qua.
+- **Có thể không bao giờ đến**: job quét payment PENDING quá 5 phút để chủ động tra cứu.
+- Trả 200 nhanh, xử lý nặng làm sau, để đối tác không retry vì timeout.
+
+### Webhook ra merchant
+Cập nhật trạng thái và ghi bản ghi vào bảng **outbox** trong cùng một transaction. Webhook Dispatcher đọc outbox, gửi POST có chữ ký HMAC và timestamp; merchant trả lỗi thì retry theo exponential backoff trong khoảng 24–72 giờ. Merchant phải xử lý idempotent theo event_id, và luôn có GET /payments/ID để tự kiểm tra.
+
+### Đối soát hằng ngày
+Đối tác gửi file quyết toán (giao dịch đã thành công, phí, số tiền chuyển về). Job so từng dòng với bảng payments:
+| Chênh lệch | Nguyên nhân thường gặp | Xử lý |
+|---|---|---|
+| Đối tác: thành công, mình: FAILED/UNKNOWN | Mất callback, timeout | Refund tự động hoặc chuyển SUCCEEDED và báo merchant tuỳ chính sách |
+| Mình: SUCCEEDED, đối tác: không có | Callback giả hoặc lỗi đối tác | Treo, điều tra, chặn quyết toán cho merchant |
+| Lệch số tiền/phí | Sai cấu hình phí, tỉ giá | Bút toán điều chỉnh trong ledger |
+
+### Tiền của merchant: ledger
+Mỗi payment thành công tạo bút toán kép: ghi nợ tài khoản phải thu từ đối tác, ghi có số dư merchant (sau khi trừ phí) và doanh thu phí. Refund là bút toán ngược. Số dư merchant luôn tính từ ledger, không phải một cột số dư cập nhật tay.
+
+### Bảo mật thẻ
+Số thẻ chỉ đi vào **trang thanh toán hosted** hoặc iframe của gateway, rồi vào **vault** tách biệt trả về token; Payment Service chỉ thấy token. Như vậy phần lớn hệ thống nằm ngoài phạm vi kiểm định PCI DSS. Không bao giờ ghi số thẻ hay CVV vào log; CVV không được lưu sau khi authorize.
+
+### Routing và failover
+Routing chọn đối tác theo phương thức, tỉ lệ thành công gần nhất và phí. Đối tác sập (circuit breaker mở) thì **lần thử mới** chuyển sang đối tác khác, nhưng payment đang UNKNOWN ở đối tác cũ thì **không** được gửi sang đối tác mới, vì có thể bị trừ tiền ở cả hai nơi.
+
+### Ví dụ đời thực
+Ngày sale, một ngân hàng đối tác phản hồi chậm, p99 lên 45 giây trong khi timeout của gateway là 30 giây. Bản cũ coi timeout là FAILED và khách bấm thanh toán lại: 1.200 khách bị trừ tiền hai lần, call center quá tải. Điều tra bằng đối soát: file quyết toán có 1.200 giao dịch thành công mà hệ thống ghi FAILED. Sửa: thêm trạng thái UNKNOWN với tra cứu theo backoff, trang kết quả hiển thị "đang xử lý" thay vì "thất bại", và refund tự động cho các giao dịch lệch. Sale tháng sau, số ca trừ tiền hai lần về 0, số payment kẹt UNKNOWN sau 10 phút dưới 0,05%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xây quanh ba thứ: state machine, idempotency và đối soát. Merchant tạo payment với Idempotency-Key, database có unique trên merchant_id và order_id nên gọi lặp chỉ trả lại payment cũ. Mọi chuyển trạng thái là UPDATE có điều kiện trên trạng thái hiện tại, nên callback trùng hay sai thứ tự đều vô hại, và trạng thái cuối không bị ghi đè. Tình huống tôi chú ý nhất là timeout khi gọi đối tác: tôi không retry trừ tiền và cũng không báo thất bại, mà chuyển sang UNKNOWN rồi tra cứu theo backoff. Callback từ đối tác được kiểm chữ ký và số tiền, còn kết quả gửi merchant đi qua outbox với retry và chữ ký HMAC. Mỗi ngày job đối soát so file quyết toán của đối tác với hệ thống để bắt những ca trừ tiền mà mình ghi thất bại và refund tự động. Số thẻ chỉ đi qua trang hosted và vault, phần còn lại chỉ thấy token để giữ phạm vi PCI nhỏ."
+
+> Senior tip: câu hỏi phân loại ứng viên là "gọi ngân hàng timeout thì làm gì". Người chưa làm thanh toán sẽ nói "retry 3 lần"; người đã làm sẽ nói "trạng thái không rõ, tra cứu, đối soát, không bao giờ retry trừ tiền mù quáng". Thêm một con số thật như "bao nhiêu payment kẹt UNKNOWN quá 10 phút" là metric vận hành bạn theo dõi hằng ngày.`,
+  followups: [
+    'Merchant gọi refund hai lần liên tiếp do retry: bạn chặn refund vượt số tiền đã thu thế nào?',
+    'Thêm thanh toán định kỳ (subscription) với thẻ đã lưu: cần thay đổi gì về token và xác thực?',
+    'Một đối tác chỉ có API tra cứu theo ngày, không theo từng giao dịch: xử lý UNKNOWN thế nào?',
+    'Bạn chia database thế nào khi lên 20.000 TPS?'
+  ],
+  related: ['banking-004', 'api-022', 'api-035', 'microservices-022']
+},
+{
+  id: 'sd-022',
+  title: 'Lưu trữ và đồng bộ file nhiều thiết bị kiểu Google Drive',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Thiết kế dịch vụ lưu trữ file cho **50 triệu người dùng** (10 triệu hoạt động mỗi ngày): upload/download file tới 10 GB, **tự đồng bộ** giữa laptop, điện thoại và web, giữ **lịch sử phiên bản** 30 ngày, chia sẻ file/thư mục. Mạng của người dùng có thể chập chờn; upload dở phải tiếp tục được. Hai thiết bị sửa cùng file khi offline phải xử lý xung đột hợp lý. Bạn có 60 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: kích thước file tối đa, số thiết bị mỗi người, độ trễ đồng bộ chấp nhận được (vài giây khi online), phiên bản giữ bao lâu, chia sẻ quyền đọc/sửa, có sửa đồng thời kiểu Google Docs không (thường là không, đó là bài toán khác). Non-functional: không mất dữ liệu (độ bền 11 số 9 của object storage), upload tiếp tục được, tiết kiệm băng thông.` },
+    { name: 'Estimation', minutes: 5, guide: `50 triệu người × trung bình 2 GB đã dùng = khoảng 100 PB trước khi khử trùng. 10 triệu DAU × 2 file thay đổi/ngày × 1 MB trung bình = 20 TB/ngày dữ liệu mới, khoảng 230 file/giây trung bình, cao điểm gấp 5. Metadata: vài tỉ file × khoảng 1 KB = vài TB, cần shard.` },
+    { name: 'API & data model', minutes: 5, guide: `Chia file thành chunk 4 MB, định danh bằng SHA-256. API: POST /files/ID/upload-session (gửi danh sách hash chunk, nhận lại chunk còn thiếu + presigned URL); PUT chunk thẳng lên object storage; POST /files/ID/commit (manifest + base_version). GET /changes?cursor=... trả thay đổi từ cursor. Metadata: files (file_id, namespace_id, path, latest_version), file_versions (file_id, version, chunk_hashes[], size, created_by), journal (namespace_id, seq, file_id, op).` },
+    { name: 'High-level design', minutes: 20, guide: `Client đồng bộ (theo dõi thư mục, chia chunk, tính hash) → API/Metadata Service (sharded theo namespace = user hoặc shared folder) → Object storage (S3) lưu chunk theo hash. Notification Service (WebSocket/long-poll) chỉ báo "có thay đổi"; client gọi /changes lấy delta theo cursor. Thumbnail/preview/virus scan chạy bất đồng bộ qua queue.` },
+    { name: 'Deep dive', minutes: 25, guide: `Upload tiếp tục và delta sync theo chunk; commit hai pha (chunk trước, manifest sau); journal theo namespace và cursor; xung đột khi base_version lệch (tạo bản "conflicted copy"); dọn chunk không còn ai dùng; khử trùng và vấn đề riêng tư; chia sẻ thư mục cho nhiều người; bảo mật và mã hoá.` }
+  ],
+  rubric: [
+    'Chia file thành chunk có hash nội dung, chỉ upload chunk còn thiếu (delta sync, khử trùng)',
+    'Upload thẳng lên object storage qua presigned URL, upload dở tiếp tục được ở mức chunk',
+    'Commit manifest sau khi đủ chunk, không để phiên bản tham chiếu chunk chưa tồn tại',
+    'Journal thay đổi theo namespace với cursor tăng dần để client lấy delta',
+    'Notification chỉ báo hiệu, dữ liệu lấy qua API changes (tránh mất sự kiện)',
+    'Phát hiện xung đột bằng base_version và tạo bản conflicted copy, không ghi đè im lặng',
+    'Metadata shard theo namespace, phân tích được truy vấn nóng',
+    'Dọn chunk rác an toàn (mark-and-sweep có thời gian ân hạn), không xoá chunk đang dùng',
+    'Ước lượng dung lượng, băng thông, số file mỗi giây',
+    'Bảo mật: mã hoá, quyền chia sẻ, link chia sẻ có hạn'
+  ],
+  reference: `**Tóm tắt:** Tách **dữ liệu** và **metadata**. File được chia thành **chunk 4 MB định danh bằng SHA-256**; client chỉ upload chunk mà server chưa có, thẳng lên **object storage** qua presigned URL, rồi **commit một manifest** (danh sách hash) kèm base_version vào **Metadata Service**. Mỗi thay đổi được ghi vào **journal** của namespace với số thứ tự tăng dần; thiết bị khác được báo "có thay đổi" qua kết nối notification rồi tự lấy delta từ cursor của mình. Commit với base_version cũ nghĩa là có xung đột: server từ chối, client lưu thành bản "conflicted copy".
+
+### Vì sao chia chunk theo hash
+- **Upload tiếp tục**: mất mạng ở chunk 180/250 thì lần sau chỉ gửi 70 chunk còn lại.
+- **Delta sync**: sửa vài trang trong file PDF 200 MB chỉ đổi vài chunk; với chunk kích thước cố định, chèn dữ liệu ở đầu file sẽ làm lệch mọi chunk sau đó, nên hệ thống tối ưu hơn dùng content-defined chunking (cắt theo rolling hash) để chỉ chunk quanh chỗ sửa bị đổi.
+- **Khử trùng**: cùng nội dung thì cùng hash, lưu một lần.
+- **Toàn vẹn**: server kiểm hash khi nhận, chunk hỏng bị phát hiện ngay.
+
+### Luồng upload
+~~~seq
+title: Upload một phiên bản mới
+actors: Client | Metadata | S3
+Client -> Client: chia chunk 4 MB, tính SHA-256
+Client -> Metadata: upload-session (danh sách hash, base_version)
+Metadata --> Client: các hash còn thiếu + presigned URL
+Client -> S3: PUT từng chunk còn thiếu (song song)
+Client -> Metadata: commit manifest + base_version
+Metadata -> Metadata: kiểm chunk tồn tại, so base_version
+Metadata --> Client: version mới, seq trong journal
+~~~
+Commit kiểm tra mọi chunk đã có trong object storage trước khi ghi phiên bản: không bao giờ có phiên bản trỏ tới chunk chưa tồn tại. Ghi file_versions, cập nhật latest_version và thêm dòng journal trong **cùng một transaction** của shard metadata.
+
+### Đồng bộ giữa các thiết bị
+Mỗi namespace (thư mục của một người, hoặc một thư mục chia sẻ) có một **journal** với seq tăng dần. Mỗi thiết bị nhớ cursor = seq cuối cùng đã áp dụng.
+1. Notification Service giữ kết nối WebSocket/long-poll với thiết bị, chỉ gửi tín hiệu "namespace X có thay đổi".
+2. Thiết bị gọi /changes?cursor=1052 và nhận các thay đổi từ seq 1053 trở đi, tải chunk còn thiếu và dựng lại file.
+Vì dữ liệu thật luôn lấy qua /changes, tín hiệu bị mất (thiết bị offline, server notification khởi động lại) cũng không làm sai: lần kết nối sau, thiết bị hỏi theo cursor và nhận đủ.
+
+### Xung đột
+Laptop và điện thoại cùng sửa notes.docx từ phiên bản 7 khi offline. Laptop commit trước, thành phiên bản 8. Điện thoại commit với base_version = 7, server thấy latest là 8 nên từ chối. Client lưu bản của mình thành "notes (bản xung đột của điện thoại).docx" và tải bản 8 về. Không hệ thống lưu file nào tự trộn nội dung file nhị phân; cái quan trọng là **không mất dữ liệu và không ghi đè im lặng**.
+
+### Metadata ở quy mô lớn
+- Shard theo namespace_id: mọi thao tác của một thư mục nằm trên một shard, transaction commit + journal là transaction cục bộ.
+- Thư mục chia sẻ cho 10.000 người là namespace riêng; mỗi người "mount" nó vào cây thư mục của mình, nên một lần sửa chỉ ghi journal một lần, không ghi 10.000 lần.
+- Truy vấn nóng (liệt kê thư mục, lấy delta theo cursor) có index theo (namespace_id, seq) và (namespace_id, parent_id).
+
+### Lưu chunk và dọn rác
+Chunk lưu trên S3 theo khoá là hash, có thể gom nhiều chunk nhỏ vào một object lớn để giảm số request. Phiên bản cũ hơn 30 ngày bị xoá, kéo theo chunk không còn phiên bản nào tham chiếu. Đếm tham chiếu chính xác giữa hàng tỉ chunk rất dễ sai lệch khi có lỗi giữa chừng, nên thường dùng **mark-and-sweep**: định kỳ quét metadata đánh dấu chunk còn dùng, chunk không được đánh dấu và đã cũ hơn thời gian ân hạn (ví dụ 7 ngày, để không xoá chunk của upload đang dở) mới bị xoá.
+
+### Bảo mật
+- Mã hoá khi lưu (SSE-KMS hoặc khoá riêng theo người dùng) và TLS khi truyền.
+- Presigned URL hết hạn sau vài phút, chỉ cho đúng chunk đó.
+- Khử trùng **chéo người dùng** có rủi ro rò rỉ thông tin: người ngoài thử upload một file và thấy "upload xong ngay" là biết file đó đã có trên hệ thống. Nhiều hệ thống chỉ khử trùng trong phạm vi một người dùng hoặc không tiết lộ việc chunk đã tồn tại.
+
+### Ví dụ đời thực
+Một đội làm sync cho tài liệu doanh nghiệp thấy upload file thiết kế 2 GB qua 4G thất bại 35%: cả file là một request, mất mạng giữa chừng là upload lại từ đầu. Chuyển sang chunk 8 MB, mỗi chunk retry riêng, phiên upload lưu danh sách chunk đã nhận 24 giờ: tỉ lệ thất bại về dưới 1%. Sau khi thêm content-defined chunking, băng thông trung bình khi lưu lại file Office giảm khoảng 70%, vì thường chỉ vài chunk thay đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách dữ liệu và metadata. Client chia file thành chunk khoảng 4 MB, tính SHA-256, gửi danh sách hash lên Metadata Service; server trả về chunk nào còn thiếu kèm presigned URL, client upload thẳng lên S3, song song và có retry từng chunk, nên upload dở có thể tiếp tục và sửa nhỏ chỉ gửi vài chunk. Khi đủ chunk, client commit manifest kèm base_version; server kiểm chunk đã tồn tại rồi ghi phiên bản mới và một dòng journal trong cùng transaction. Mỗi thư mục là một namespace có journal seq tăng dần; thiết bị giữ cursor, được Notification Service báo có thay đổi rồi tự gọi API changes để lấy delta, nên mất tín hiệu cũng không sai. Nếu base_version lệch, server từ chối và client lưu bản xung đột, không ghi đè im lặng. Metadata shard theo namespace; chunk rác dọn bằng mark-and-sweep có thời gian ân hạn."
+
+> Senior tip: điểm lead mà interviewer tìm là bạn tách "tín hiệu" khỏi "dữ liệu" (notification chỉ báo, journal + cursor mới là nguồn sự thật) và bạn nói thẳng về xung đột: không giả vờ tự trộn được file nhị phân. Nhắc S3 multipart upload (mỗi phần tối thiểu 5 MB trừ phần cuối, tối đa 10.000 phần) cho thấy bạn đã đụng tới thực tế triển khai.`,
+  followups: [
+    'Một thư mục chia sẻ có 50.000 thành viên và thay đổi liên tục: notification và journal chịu tải thế nào?',
+    'Người dùng xoá nhầm cả thư mục 20 GB: khôi phục thế nào, và journal ghi gì?',
+    'Bạn thêm tìm kiếm toàn văn trong file PDF/Office thế nào mà không làm chậm upload?',
+    'So sánh chunk kích thước cố định với content-defined chunking: khi nào đáng làm phức tạp?'
+  ],
+  related: ['aws-007', 'scenario-011', 'api-023']
+},
 ];

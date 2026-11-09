@@ -1857,6 +1857,9 @@ window.DATA_INDEX = {
     {"id":"sd-017","title":"Hệ thống voucher và mã giảm giá có giới hạn lượt dùng"},
     {"id":"sd-018","title":"Hệ thống đặt lệnh và khớp lệnh chứng khoán"},
     {"id":"sd-019","title":"Bảng xếp hạng thời gian thực cho game và mini-app khuyến mãi"},
+    {"id":"sd-020","title":"Đếm click quảng cáo thời gian thực để tính tiền nhà quảng cáo"},
+    {"id":"sd-021","title":"Cổng thanh toán cho merchant tích hợp nhiều ngân hàng và ví"},
+    {"id":"sd-022","title":"Lưu trữ và đồng bộ file nhiều thiết bị kiểu Google Drive"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
