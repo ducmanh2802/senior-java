@@ -318,6 +318,27 @@ key 73 → B#2 (điểm đầu tiên >= 73)
 
 Hash function cần phân phối tốt và ổn định giữa process. Java {{hashCode}} không phù hợp nếu không chuẩn hoá thuật toán/encoding, và không nên dùng identity. Production thường dùng hash 64/128 bit có seed/quy ước byte rõ ràng; collision phải được xử lý. Đừng dùng TreeMap comparator có thể coi hai điểm khác nhau là bằng nhau rồi làm mất vnode.
 
+### Cơ chế từng bước: lookup key trên hash ring
+Để hiểu VÌ SAO consistent hashing lại cho movement cục bộ, hãy đi lần lượt từng bước khi tra owner của một key:
+
+**Bước 1: Hash key vào không gian vòng tròn**
+- Tính {{hash(key)}} → số nguyên trong khoảng {{[0, 2^32-1]}} (hoặc {{[0, 2^64-1]}} tùy hash function).
+- Ví dụ: {{hash("user-42") = 157342}}.
+
+**Bước 2: Tìm successor (vnode kế tiếp theo chiều kim đồng hồ)**
+- Ring lưu các vnode dưới dạng cặp {{(hashPosition, nodeName)}} đã sắp xếp theo hashPosition.
+- Dùng cấu trúc dữ liệu có {{ceilingEntry}} (như {{TreeMap}} trong Java) để tìm vnode đầu tiên có {{hashPosition >= hash(key)}}.
+- Nếu tìm thấy: owner là {{nodeName}} của vnode đó.
+
+**Bước 3: Wrap-around khi không có vnode nào lớn hơn**
+- Nếu {{hash(key)}} lớn hơn tất cả các vnode trên ring ({{ceilingEntry}} trả về null), quay vòng về vnode có hashPosition nhỏ nhất ({{firstEntry}}).
+- Điều này đảm bảo mọi key đều có owner, ring kín.
+
+**Bước 4: Virtual nodes phân tán owner**
+- Mỗi physical node có nhiều vnode (ví dụ {{nodeA#0}}, {{nodeA#1}}…{{nodeA#V-1}}) ở các vị trí hash khác nhau.
+- Key thuộc đoạn giữa {{vnode_i}} và {{vnode (i+1)}} thuộc về physical node của {{vnode (i+1)}}.
+- Khi thêm physical node mới, chỉ các key trong đoạn ngay trước vnode của node mới mới đổi owner; các đoạn khác không ảnh hưởng.
+
 ### Thêm, bỏ node và movement
 Khi thêm vnode, key thuộc đoạn vừa được vnode mới tiếp quản đổi owner; khi bỏ node, key của nó chuyển sang successor. Tỉ lệ movement có thể đo bằng cách tạo tập key cố định, phân phối trước, thêm node, rồi đếm owner thay đổi. Kết quả lý tưởng khi thêm node mới vào N node là xấp xỉ 1/(N+1), không phải chính xác cho mọi seed/virtual-node count. Test cần so cùng key set và hash deterministically.
 
@@ -330,11 +351,68 @@ Khi thêm vnode, key thuộc đoạn vừa được vnode mới tiếp quản đ
 | ring, 1 điểm/node | ít remap | dao động lớn | node có thể nhận đoạn khổng lồ |
 | ring, nhiều vnode | ít remap | tốt hơn | state ring và rebalance |
 
+### Ví dụ minh hoạ: Ring tối giản bằng TreeMap
+~~~java
+class SimpleRing {
+    private final TreeMap<Long, String> ring = new TreeMap<>();
+    private final int vnodesPerNode;
+    SimpleRing(int vnodesPerNode) { this.vnodesPerNode = vnodesPerNode; }
+
+    // Thêm physical node: sinh V vnode, hash tên "node#i", insert vào ring
+    void addNode(String node) {
+        for (int i = 0; i < vnodesPerNode; i++) {
+            long h = hash(node + "#" + i);
+            ring.put(h, node); // collision xử lý riêng trong bài tập
+        }
+    }
+
+    // Tìm owner: ceilingEntry tìm vnode kế tiếp, null thì firstEntry (wrap)
+    String owner(String key) {
+        if (ring.isEmpty()) throw new IllegalStateException("ring empty");
+        long h = hash(key);
+        Map.Entry<Long, String> e = ring.ceilingEntry(h);
+        return (e == null ? ring.firstEntry() : e).getValue();
+    }
+
+    private long hash(String s) { return Math.floorMod(s.hashCode(), 1_000_000); }
+}
+~~~
+
 ### Production và vận hành
 Consistent hashing phù hợp cache phân tán, partition routing hoặc shard placement khi membership đổi. Nó không tự replicate dữ liệu, không cung cấp consensus, và không xử lý split brain. Service discovery phải phát membership có version đồng nhất; nếu node A và B thấy ring khác nhau, cùng key có thể ghi vào hai nơi. Khi deploy, có thể shadow-route, copy dữ liệu rồi switch, theo dõi movement và miss rate. Nếu cần phân vùng dữ liệu mạnh, xem xét database partitioning hoặc rendezvous hashing cũng có thể đơn giản hơn.
 
+### Lỗi hay gặp trên production
+1. **Ring không đồng bộ giữa các instance**: Service discovery phát membership chậm hoặc version mismatch khiến node A và B thấy ring khác nhau → cùng key ghi vào hai node khác nhau → data inconsistency. Giải pháp: dùng consensus store (etcd, Consul) làm nguồn chân lý, listener cập nhật ring local ngay khi membership thay đổi, và version check trước khi route.
+2. **Hash function không phù hợp cho ring production**: {{String.hashCode()}} là thuật toán xác định (công thức quy định trong hợp đồng {{String}}, ổn định qua các bản Java cho cùng nội dung chuỗi), nhưng chỉ cho 32 bit, phân phối có thể không đủ đều cho ring lớn, và dễ bị lệch nếu các service hash khác kiểu dữ liệu hoặc khác cách mã hoá byte (UTF-8 vs UTF-16). Dùng {{System.identityHashCode()}} (hash theo danh tính object, không theo nội dung) cho key nội dung cũng sai. Giải pháp: chuẩn hoá hash function (Murmur3, xxHash, hoặc cắt SHA-256) với seed/quy ước cố định, luôn hash byte theo encoding rõ ràng (UTF-8), và dùng cùng thuật toán ở mọi service.
+3. **Collision vnode làm mất điểm trên ring**: TreeMap ghi đè entry khi key trùng, vnode bị mất → đoạn ring trống → key rơi vào node sai. Giải pháp: dò tuyến tính {{(h+1) % MAX}} cho tới khi trống (như bài tập), hoặc dùng multimap (hash → list vnode) rồi chọn theo quy tắc deterministic.
+4. **Hot key không được giải quyết bởi virtual nodes**: Một key truy cập cực nhiều (celebrity user, viral content) vẫn map vào một vnode duy nhất → overload một shard. Giải pháp: key salting ({{key + "#" + random(0, K-1)}}) để chia hot key ra K vnode, client phải fan-out đọc K shard, hoặc cache layer trước shard.
+
+### Cơ chế chi tiết: Tính movement khi thêm node
+Để lượng hoá chính xác, ta tạo tập key cố định (ví dụ 10.000 key), phân phối bằng ring cũ (N node), sau đó thêm node mới (N+1 node) và đếm bao nhiêu key đổi owner. Công thức lý thuyết:
+- Movement ratio ≈ 1 / (N + 1) khi vnode đủ lớn và hash phân phối đều.
+- Ví dụ: N=4 → thêm node thứ 5 → ~20% key chuyển, và **tất cả** đều chuyển sang node mới (không phải chia lẫn nhau).
+
+~~~java
+// Đo movement thực tế
+int moved = 0;
+for (String key : keys) {
+    String oldOwner = ringWith4Nodes.owner(key);
+    String newOwner = ringWith5Nodes.owner(key);
+    if (!oldOwner.equals(newOwner)) moved++;
+}
+double ratio = (double) moved / keys.size();  // mong đợi ~0.20
+~~~
+
+> Lưu ý: movement phụ thuộc seed hash và số vnode. Với ít vnode, số thực tế có thể lệch so với 1/(N+1). Production nên mô phỏng với workload thực trước khi scale.
+
 ### Liên hệ phỏng vấn
-Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó lượng hoá movement bằng workload, nhắc virtual nodes, hot key, replication và đồng bộ membership. Bài tập dùng hash đơn giản deterministic để tập trung vào ownership, không giả làm production cryptographic hash.`, {
+Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó lượng hoá movement bằng workload, nhắc virtual nodes, hot key, replication và đồng bộ membership. Bài tập dùng hash đơn giản deterministic để tập trung vào ownership, không giả làm production cryptographic hash.
+
+**Câu hỏi thường gặp thêm:**
+- *Vì sao modulo N gây remap gần như toàn bộ key khi thêm shard?* Vì {{hash % N}} thay đổi mẫu số, mọi key đều có thể rơi vào bucket khác nhau. Consistent hashing chỉ đổi owner cho đoạn ring giữa node mới và predecessor.
+- *Làm sao xử lý hot key trong consistent hashing?* Key salting (thêm suffix ngẫu nhiên), replication read, hoặc cache layer. Virtual nodes không giải quyết hot key đơn lẻ.
+- *Ring dùng TreeMap có thread-safe không?* TreeMap không thread-safe; production dùng ConcurrentSkipListMap hoặc read-only snapshot + atomic swap khi membership đổi.
+- *Khi node down, key của nó chuyển sang đâu?* Key chuyển sang successor (vnode kế tiếp theo chiều kim đồng hồ). Nếu dùng replication, quorum read có thể vẫn trả được dữ liệu từ replica khác.`, {
       title: 'Đo movement khi thêm node trên hash ring',
       prompt: `Cài {{Ring}} với {{addNode(name, virtualNodes)}} và {{owner(key)}}. Dùng hash ổn định {{Math.floorMod(String.hashCode(), 100000)}}; đặt vnode theo chuỗi {{name + "#" + i}}. owner chọn vị trí vnode đầu tiên >= hash(key); nếu không có thì vòng lại vị trí nhỏ nhất.
 - Nếu hai vnode trùng vị trí, dò tới vị trí kế tiếp {{(h + 1) % 100000}} cho tới khi trống (không được ghi đè vnode cũ).
@@ -370,6 +448,8 @@ Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó 
     }, [
       { q: 'Ring đang có 4 node cân bằng tốt. Thêm node thứ 5 thì khoảng bao nhiêu key đổi owner, và chúng đi đâu?', options: ['Gần như tất cả key, chia đều cho 5 node', 'Không key nào, node mới chỉ nhận key mới', 'Khoảng 1/5 số key, và tất cả đều chuyển sang node mới', 'Khoảng 1/4 số key, chuyển qua lại giữa các node cũ'], answer: 2, explain: `Node mới chỉ tiếp quản các đoạn ring nằm ngay trước các vnode của nó, nên chỉ key trong những đoạn đó đổi owner, xấp xỉ 1/(N+1) = 1/5, và đích luôn là node mới; key giữa các node cũ không đổi chỗ cho nhau. "Gần như tất cả" là hành vi của {{hash % N}}. Key cũ nằm trong đoạn node mới tiếp quản bắt buộc phải chuyển, nên không thể "không key nào".` },
       { q: 'Virtual nodes chủ yếu giải quyết vấn đề nào?', options: ['Hot key đơn lẻ', 'Phân phối không đều khi mỗi node chỉ có một điểm', 'Replication consistency', 'Mã hoá dữ liệu'], answer: 1, explain: `Nhiều điểm lấy mẫu giúp cân bằng tải tốt hơn. Hot key vẫn tập trung; virtual node không replicate hay mã hoá dữ liệu.` },
+      { q: 'Tại sao consistent hashing dùng ceilingEntry (successor) thay vì floorEntry (predecessor)?', options: ['TreeMap không có floorEntry', 'CeilingEntry nhanh hơn', 'Key thuộc về node kế tiếp theo chiều kim đồng hồ để movement cục bộ khi thêm node', 'FloorEntry chỉ dùng cho range query'], answer: 2, explain: `Key đi theo chiều kim đồng hồ tới node đầu tiên ≥ hash(key). Khi thêm node mới, node đó chen giữa predecessor và successor cũ; chỉ key trong đoạn giữa predecessor cũ và node mới đổi owner (đi sang node mới). Dùng predecessor sẽ làm movement lan rộng hơn.` },
+      { q: 'Vnode collision (hai vnode cùng hashPosition) xử lý thế nào để không mất vnode?', options: ['TreeMap tự xử lý bằng comparator', 'Ghi đè vnode cũ (data loss chấp nhận được)', 'Dò tuyến tính (h+1) % MAX cho tới khi trống, rồi insert', 'Bỏ qua vnode collision, không xảy ra trong thực tế'], answer: 2, explain: `TreeMap.put ghi đè key trùng → vnode cũ mất. Phải dò vị trí kế tiếp deterministic cho tới khi trống, đảm bảo mọi vnode đều có chỗ. Comparator không giải quyết được collision giá trị hash.` },
     ], ['consistent-hashing', 'sharding', 'virtual-nodes']),
 
     lesson('004', 4, 'Circuit breaker: CLOSED, OPEN, HALF_OPEN', 'senior', [
@@ -390,8 +470,17 @@ HALF_OPEN -- any counted failure --> OPEN
 
 Đồng hồ monotonic/giả khiến wait duration đo được chính xác. Không gọi {{Thread.sleep}} trong test; truyền now vào thao tác hoặc clock abstraction. Trong hệ thống nhiều thread, state transition phải atomic để không cho hàng trăm probe lọt qua cùng lúc. Resilience4j cung cấp circuit breaker, sliding window, metrics, decorators và event hooks; production vẫn phải chọn threshold/window hợp lý.
 
-### Window và ngưỡng
-Failure rate 50% trên cửa sổ 10 call khác ý nghĩa với 50% trên 1000 call. Cửa sổ count-based phù hợp lưu lượng ổn định; time-based phản ánh gần đây nhưng cần clock và cleanup. Có minimum number of calls để tránh mở vì một lỗi duy nhất lúc khởi động. Slow-call rate có thể mở circuit dù call chưa lỗi. Quá nhạy gây flap; quá lỏng không bảo vệ. Theo dõi trạng thái, rejected calls và thời gian ở mỗi state.
+### Window và ngưỡng: count-based vs time-based
+Failure rate 50% trên cửa sổ 10 call khác ý nghĩa với 50% trên 1000 call.
+- **Count-based window**: lưu kết quả N call gần nhất (ví dụ 100 call). Phù hợp lưu lượng ổn định, dễ cài đặt, không cần clock. Nhược: nếu traffic thưa, cửa sổ bao phủ thời gian rất dài, phản ánh chậm sự cố thực tế.
+- **Time-based window**: lưu call trong T giây gần nhất (ví dụ 10 giây). Phản ánh gần đây, thích ứng nhanh khi traffic biến đổi. Nhược: cần clock monotonic, cleanup định kỳ, và có thể flip-flop khi traffic rơi gần 0 (cửa sổ gần như rỗng → một lỗi = 100% rate).
+
+Cả hai đều cần **minimum number of calls** (ví dụ 20) trước khi tính tỷ lệ, tránh mở vì một lỗi duy nhất lúc khởi động. **Slow-call rate** (call vượt timeout nhưng không exception) cũng có thể mở circuit dù call chưa lỗi hẳn. Quá nhạy gây flap; quá lỏng không bảo vệ. Theo dõi trạng thái, rejected calls và thời gian ở mỗi state.
+
+| Loại cửa sổ | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| Count-based (N call) | Đơn giản, không cần clock, ổn định khi traffic đều | Chậm phản ứng khi traffic thưa | Traffic ổn định, muốn implement đơn giản |
+| Time-based (T giây) | Phản ánh thực tế gần đây, thích ứng nhanh | Cần clock, cleanup, dễ flap khi traffic thấp | Traffic biến động, cần độ nhạy cao |
 
 ### HALF_OPEN concurrency
 Khi cooldown kết thúc, chỉ cho phép số probe cấu hình. Probe đang chạy cần được tính vào quota; concurrent calls khác bị reject hoặc nhận fallback. Nếu chỉ check state rồi increment không nguyên tử, nhiều request cùng thấy slot trống. Sau probe completion cần xử lý đúng một lần; callback trùng hoặc exception bị nuốt có thể làm state sai. Có thể dùng semaphore/atomic count hoặc thư viện đã kiểm chứng.
@@ -406,8 +495,113 @@ Khi cooldown kết thúc, chỉ cho phép số probe cấu hình. Probe đang ch
 ### Production policy
 Đặt breaker quanh đúng remote dependency, không quanh toàn request nếu có các bước độc lập. Fallback phải đúng nghiệp vụ: dữ liệu stale có thể chấp nhận, thanh toán không thể giả thành thành công. Nếu dùng retry bên trong breaker, định nghĩa một logical call hay từng attempt được tính; retry quá nhiều làm breaker mở muộn và khuếch đại tải. Gắn timeout nhỏ hơn deadline tổng, thêm jitter cho retry, và quan sát các transition.
 
+### Cơ chế từng bước: breaker xử lý một cuộc gọi
+Để hiểu VÌ SAO ba trạng thái lại bảo vệ hệ thống, hãy đi lần lượt cuộc đời của một request gọi dependency qua breaker:
+
+**Bước 1: {{allow(now)}} kiểm tra trạng thái**
+- CLOSED: cho gọi đi, sau khi kết thúc gọi ghi lại thành công hoặc thất bại.
+- OPEN: nếu {{now - openedAt}} vẫn nhỏ hơn thời gian cooldown ({{waitMs}}), từ chối ngay (fail-fast), không gọi dependency, trả lỗi hoặc fallback ngay lập tức. Điều này ngăn hàng triệu request giữ thread/connection đợi một dependency đã biết đang lỗi.
+- HALF_OPEN: cooldown đã hết, breaker đang "thử ngại". Chỉ cho **một** probe đi qua; các request khác bị từ chối hoặc nhận fallback.
+
+**VÌ SAO fail-fast ở OPEN?** Nếu không có breaker, hàng nghìn request cùng chờ dependency timeout (ví dụ 30s) sẽ làm cạn thread pool, queue đầy, và lan lỗi sang service khác. Breaker biến 30s wait thành <1ms reject, bảo vệ tài nguyên cục bộ.
+
+**Bước 2: Gọi dependency và ghi nhận kết quả**
+- Gọi thành công: trong CLOSED reset bộ đếm lỗi về 0; trong HALF_OPEN → chuyển về CLOSED, mạch đã khôi phục.
+- Gọi thất bại (timeout, 5xx từ dependency…): trong CLOSED tăng bộ đếm lỗi liên tiếp; đủ ngưỡng ({{threshold}}) → chuyển OPEN, ghi {{openedAt = now}}. Trong HALF_OPEN một lỗi nào cũng mở lại OPEN ngay, vì dependency vẫn chưa ổn định.
+
+**VÌ SAO HALF_OPEN một lỗi cũng mở lại?** Probe là "thử thách" dependency. Nếu probe fail nghĩa là dependency vẫn chưa sẵn sàng; mở lại ngay để tiếp tục bảo vệ thay vì cho thêm traffic.
+
+**Bước 3: OPEN → HALF_OPEN → CLOSED**
+- Khi {{now - openedAt >= waitMs}}, lần {{allow}} tiếp theo chuyển sang HALF_OPEN và cấp một probe.
+- Probe thành công đủ ngưỡng (thường 1–3 lần) → CLOSED. Một probe thất bại → OPEN lại, bắt đầu cooldown mới.
+Tại sao lại vậy? Mở mạch ngay khi lỗi quá nhiều để ngừng thả tải vào dependency đang suy giảm; chờ một khoảng để dependency có thời gian phục hồi; rồi chỉ thả một luồng lượng nhỏ (probe) để xác thực trước khi mở cửa toàn bộ traffic. Không có timeout riêng cho mỗi attempt thì call treo vẫn chiếm tài nguyên cho dù breaker đã OPEN.
+
+### Ví dụ mã: breaker tối giản (lỗi liên tiếp)
+~~~java
+class Breaker {
+    private enum State { CLOSED, OPEN, HALF_OPEN }
+    private final int threshold; // số lỗi liên tiếp để mở mạch
+    private final long waitMs;   // thời gian cooldown trước khi cho probe
+    private int failures;        // số lỗi liên tiếp hiện tại
+    private State state = State.CLOSED;
+    private long openedAt;       // thời điểm mạch mở lần gần nhất
+    private boolean probeUsed;
+    Breaker(int threshold, long waitMs) {
+        if (threshold < 1 || waitMs < 0) throw new IllegalArgumentException();
+        this.threshold = threshold; this.waitMs = waitMs;
+    }
+    boolean allow(long now) {
+        if (state == State.OPEN) {
+            if (now - openedAt < waitMs) return false; // chưa hết cooldown
+            state = State.HALF_OPEN; probeUsed = false;
+        }
+        if (state == State.HALF_OPEN && probeUsed) return false; // một probe mỗi lần mở
+        if (state == State.HALF_OPEN) probeUsed = true;
+        return true;
+    }
+    void recordFailure(long now) { if (state == State.HALF_OPEN || ++failures >= threshold) { state = State.OPEN; openedAt = now; probeUsed = false; } }
+    void recordSuccess(long now) { if (state == State.HALF_OPEN) { state = State.CLOSED; failures = 0; probeUsed = false; } else if (state == State.CLOSED) failures = 0; }
+}
+~~~
+Lưu ý: code trên dùng lỗi liên tiếp để đơn giản hoá; thư viện production (ví dụ Resilience4j) thường đếm tỷ lệ lỗi trong cửa sổ thời gian gần đây, và cấp phép probe bằng biến nguyên tử (atomic) để nhiều thread không cùng nắm một lượt.
+
+### Ví dụ mở rộng: Sliding window count-based (100 call)
+Để hiểu VÌ SAO production dùng sliding window thay vì đếm liên tiếp, đây là bản demo dùng ring buffer:
+~~~java
+class SlidingWindowBreaker {
+    private static final int WINDOW = 100;
+    private final int threshold;      // số lỗi cho phép trong window
+    private final int[] results;      // 0=success, 1=failure
+    private int idx = 0, count = 0, failures = 0;
+    private enum State { CLOSED, OPEN, HALF_OPEN }
+    private State state = State.CLOSED;
+    private long openedAt, waitMs;
+    SlidingWindowBreaker(int threshold, int waitMs) {
+        this.threshold = threshold; this.waitMs = waitMs;
+        this.results = new int[WINDOW];
+    }
+    boolean allow(long now) {
+        if (state == State.OPEN) {
+            if (now - openedAt < waitMs) return false;
+            state = State.HALF_OPEN;
+        }
+        return true; // HALF_OPEN logic đơn giản: cho 1 call, production cần atomic
+    }
+    void record(boolean success) {
+        int old = results[idx];
+        if (count == WINDOW) failures -= old; else count++;
+        results[idx] = success ? 0 : 1;
+        failures += results[idx];
+        idx = (idx + 1) % WINDOW;
+        if (state == State.CLOSED && count >= 20 && failures >= threshold) {
+            state = State.OPEN; openedAt = System.currentTimeMillis();
+        } else if (state == State.HALF_OPEN) {
+            state = success ? State.CLOSED : State.OPEN;
+            if (state == State.CLOSED) { failures = 0; count = 0; Arrays.fill(results, 0); }
+            else openedAt = System.currentTimeMillis();
+        }
+    }
+}
+~~~
+> Sliding window cho tỷ lệ lỗi thực tế hơn: một burst 50 lỗi trong 100 call mở mạch, nhưng 50 lỗi rải trong 1000 call thì không. Đó là lý do Resilience4j mặc định dùng sliding window.
+
+### Lỗi hay gặp trên production
+1. **Call treo mà không có timeout riêng**: triệu chứng hàng request giữ thread/connection lâu, p99 tăng, thread pool cạn kiệt. Nguyên nhân: breaker chỉ chặn **call mới**, không huỷ call đã gửi đi. Cách sửa: gán timeout nhỏ hơn deadline tổng cho mỗi attempt, trong mọi trạng thái breaker.
+2. **Ngưỡng lỗi quá nhẹ (flapping)**: triệu chứng mạch bật/tắt liên tục, traffic giật giấu. Nguyên nhân: {{threshold}} thấp hoặc cửa sổ quá ngắn so với tỷ lệ lỗi bình thường, một lỗi lẻ lúc khởi động cũng mở mạch. Cách sửa: đặt ngưỡng từ SLO và baseline thực tế, có minimum số cuộc gọi trước khi tính tỷ lệ.
+3. **Hàng chục probe cùng lúc ở HALF_OPEN**: triệu chứng dependency vừa hồi phục lại bị đập thêm. Nguyên nhân: kiểm tra trạng thái rồi tăng đếm không nguyên tử, nhiều request cùng thấy chỗ trống. Cách sửa: dùng semaphore/biến nguyên tử, chỉ cho một probe mỗi lần mở, các request khác nhận fallback.
+4. **Fallback không đúng nghiệp vụ**: triệu chứng hiển thị dữ liệu cũ hoặc đánh dấu đơn "thành công" thực ra chưa thanh toán. Nguyên nhân: dùng một fallback chung cho mọi endpoint. Cách sửa: fallback theo từng nghiệp vụ, thanh toán không được giả thành công; dữ liệu stale chỉ dùng cho tra cứu chỉ đọc.
+5. **Retry và breaker xung đột**: retry bên trong breaker làm breaker thấy "một logical call" là nhiều attempt, chậm mở mạch và nhân tải dependency. Cách sửa: retry ở layer ngoài breaker, hoặc cấu hình breaker đếm logical call; breaker bao retry là anti-pattern.
+6. **Không theo dõi metrics trạng thái**: không biết breaker ở OPEN bao lâu, bao nhiêu request bị reject, probe success/fail rate. Cách sửa: export metrics (state, rejected, probe_ok, probe_fail) lên Prometheus/Grafana, alert khi flap rate cao.
+
 ### Liên hệ phỏng vấn
-Mô tả state transitions cùng semantics của probe, rồi phân biệt timeout/retry/bulkhead. Hỏi thêm ngưỡng được chọn từ SLO và baseline nào, thay vì khẳng định một con số cố định phù hợp mọi service.`, {
+Mô tả state transitions cùng semantics của probe, rồi phân biệt timeout/retry/bulkhead. Hỏi thêm ngưỡng được chọn từ SLO và baseline nào, thay vì khẳng định một con số cố định phù hợp mọi service.
+
+**Câu hỏi thường gặp thêm:**
+- *Breaker ở trạng thái OPEN thì làm gì với request mới?* Trả lời: từ chối ngay (fail-fast), không gọi dependency; chỉ khi hết cooldown mới vào HALF_OPEN và cho một probe.
+- *Vì sao vẫn cần timeout cho mỗi call khi đã có breaker?* Trả lời: breaker không huỷ call đang chạy; call treo vẫn giữ thread/connection, nên mỗi attempt vẫn cần deadline hữu hạn.
+- *Ngưỡng lỗi chọn thế nào để không bị bật tắt liên tục?* Trả lời: đặt theo SLO và tỷ lệ lỗi baseline thực tế, có minimum số cuộc gọi trước khi tính, theo dõi thời gian ở mỗi trạng thái.
+- *Sự khác biệt giữa count-based và time-based window?* Count-based dùng N call gần nhất, đơn giản nhưng chậm phản ứng khi traffic thưa. Time-based dùng T giây gần đây, nhạy hơn nhưng cần clock monotonic và cleanup; dễ flap khi traffic gần 0.
+- *Khi nào nên dùng sliding window thay vì đếm lỗi liên tiếp?* Khi traffic biến động hoặc muốn tỷ lệ lỗi phản ánh thực tế (50 lỗi/100 call ≠ 50 lỗi/1000 call). Đếm liên tiếp chỉ phù hợp demo hoặc traffic rất ổn định.`, {
       title: 'Cài breaker theo ngưỡng lỗi và đồng hồ giả',
       prompt: `Cài {{Breaker(threshold, openMillis, nowMillis)}} với {{failure(now)}}, {{success(now)}} và {{allow(now)}}. Sau threshold lỗi liên tiếp thì OPEN; hết thời gian thì HALF_OPEN và cho đúng một probe; probe success đóng, probe failure mở lại.`,
       starter: `class Breaker {
@@ -435,7 +629,9 @@ Mô tả state transitions cùng semantics của probe, rồi phân biệt timeo
     }, [
       { q: 'Đã có circuit breaker, bạn có còn cần timeout cho từng call không?', options: ['Không, breaker thay thế hoàn toàn timeout', 'Không, vì breaker tự huỷ call đang treo khi chuyển OPEN', 'Chỉ cần khi breaker ở HALF_OPEN', 'Có; breaker chỉ chặn call mới, call đã gửi đi vẫn cần deadline'], answer: 3, explain: `Breaker quyết định có cho call **mới** đi hay không; nó không dừng một call đang chờ. Không có timeout, call treo vẫn giữ thread/connection, và breaker cũng không nhận được tín hiệu lỗi để mở. Chuyển OPEN không huỷ call đang chạy. Timeout cần ở mọi trạng thái, không riêng HALF_OPEN.` },
       { q: 'HALF_OPEN dùng probe để làm gì?', options: ['Tạo thêm tải bất kể kết quả', 'Thử giới hạn call để quyết định đóng hay mở lại', 'Xoá lỗi khỏi log', 'Bỏ qua timeout'], answer: 1, explain: `Probe nhỏ kiểm chứng dependency hồi phục trước khi cho traffic bình thường. Nó không xoá log, bỏ timeout hay tự tạo tải vô hạn.` },
-    ], ['circuit-breaker', 'resilience', 'state-machine']),
+      { q: 'Mạch ở trạng thái CLOSED chuyển sang OPEN khi nào?', options: ['Khi số lỗi liên tiếp đạt ngưỡng threshold', 'Khi có một lỗi bất kỳ', 'Khi hết thời gian cooldown (retryAt)', 'Khi một probe thành công'], answer: 0, explain: `Đúng: CLOSED chỉ mở khi số lỗi liên tiếp đạt ngưỡng, tránh mở vì một lỗi lẻ. Các đáp án sai mô tả chuyển trạng thái khác: hết cooldown đưa OPEN → HALF_OPEN (không phải CLOSED → OPEN); probe thành công đưa HALF_OPEN → CLOSED (đóng mạch, không mở).` },
+      { q: 'Khi mạch ở OPEN và chưa hết cooldown, request mới xảy ra sao?', options: ['Gọi dependency như bình thường', 'Được gọi probe một lần', 'Từ chối ngay (fail-fast) mà không gọi dependency', 'Đợi hết cooldown rồi mới gọi'], answer: 2, explain: `Đúng: trong OPEN breaker từ chối call mới ngay lập tức, trả lỗi hoặc fallback, bảo vệ dependency đang yếu và không giữ thread/connection. Gọi như bình thường hoặc chờ hết cooldown sai; probe chỉ được một lượt và chỉ sau khi hết cooldown vào HALF_OPEN.` },
+     ], ['circuit-breaker', 'resilience', 'state-machine']),
 
     lesson('005', 5, 'Idempotency key và retry exponential backoff', 'lead', [
       'Mô phỏng thanh toán retry an toàn bằng idempotency key và lưu kết quả trước khi trả',
