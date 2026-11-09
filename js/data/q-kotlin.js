@@ -684,6 +684,12 @@ open class Order protected constructor() {
 - Kế thừa entity: đừng so bằng {{getClass()}} vì proxy là subclass; dùng business key hoặc {{Hibernate.getClass}}.
 - Đừng dùng data class cho entity chỉ để giảm boilerplate; chi phí debug lớn hơn nhiều.
 
+### Ví dụ đời thực
+Một hệ thống đặt hàng dùng entity {{Order}} kế thừa từ base class {{AuditableEntity}} có field {{createdAt}} và {{updatedAt}}. Dev khai báo {{data class Order(@Id var id: Long? = null, var code: String, var createdAt: Instant = Instant.now(), var updatedAt: Instant = Instant.now())}}. Khi lưu đơn hàng mới, id null; hai đơn hàng cùng code nhưng khác createdAt vẫn được coi là khác nhau. Sau khi persist, Hibernate gán id và updatedAt đổi giá trị, hashCode thay đổi. Kết quả: {{HashSet<Order>}} trong giỏ hàng không tìm thấy đơn vừa thêm, gây trùng đơn 15% lúc cao điểm. Log {{toString}} của entity kéo cả collection {{items}} lazy → ném {{LazyInitializationException}} khi log ngoài transaction, làm 500 endpoint chi tiết đơn. Cách sửa: đổi sang class thường {{open class Order protected constructor()}} với business key {{code}}, equals/hashCode chỉ dùng {{code}}, toString chỉ in {{code}}, constructor phụ gán code và id. Thêm test thêm entity vào {{HashSet}}, flush, {{contains}} lại. Kết quả: không còn trùng đơn, log an toàn, p95 endpoint ổn định dưới 200ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Data class sinh equals, hashCode, toString dựa trên toàn bộ property trong constructor, trong đó có id null lúc tạo và collection lazy. Sau khi persist, id được gán và timestamp thay đổi, khiến hashCode đổi — object trong HashSet không còn tìm thấy. ToString kéo collection lazy gây N+1 hoặc LazyInitializationException. Tôi dùng class thường, open cho proxy, equals/hashCode chỉ theo business key bất biến (như mã đơn hàng), toString chỉ in business key. Copy của data class tạo object detached cùng id, dễ merge nhầm. Entity phải mutable cho JPA, data class phù hợp cho DTO bất biến."
+
 > Senior tip: chọn identity trước khi viết entity. Nếu nghiệp vụ đã có mã đơn hàng/mã giao dịch bất biến, dùng nó làm business key và viết test hash ổn định sau persist; nếu không, dùng id với {{Persistable}} và chấp nhận rằng entity mới chưa có identity.`,
   follow: ['Business key nào phù hợp để tính {{equals}}/{{hashCode}}?', 'Vì sao {{toString}} trên entity lazy có thể gây N+1?', '{{Persistable}} giải quyết vấn đề gì khi id do application gán?'],
   tags: ['JPA', 'Hibernate', 'data class', 'equals', 'hashCode']
@@ -745,6 +751,12 @@ Log expected error ở mức info/warn kèm mã lỗi; unexpected mới log stac
 - Dùng {{Result}} của Kotlin cho lỗi nghiệp vụ sẽ mất kiểu lỗi; sealed riêng rõ hơn.
 - Sealed type lồng quá sâu hoặc mang state mutable khiến so sánh/pattern matching khó.
 - Trả thẳng exception message ra API làm lộ thông tin nội bộ.
+
+### Ví dụ đời thực
+Một service thanh toán dùng sealed class {{PaymentError}} với 4 nhánh. Client mobile cũ đã compile với 3 nhánh (thiếu {{GatewayTimeout}}). Khi gateway ngân hàng chậm, server trả nhánh mới {{GatewayTimeout}}; app mobile ném {{NoWhenBranchMatchedException}} và crash toàn bộ luồng thanh toán, ảnh hưởng 2.000 đơn/ngày. Điều tra: sealed type là {{public}} trong module dùng chung, client không có nhánh fallback. Cách xử lý: map sealed error sang DTO {{ErrorResponse}} ổn định ở adapter (code/message/retryAfter), không expose sealed type ra JSON; thêm contract test cho mỗi nhánh ánh xạ sang HTTP status; client cũ nhận 503 kèm {{retryAfter}} thay vì crash. Đồng thời giữ sealed type {{internal}} trong domain module. Kết quả: deploy nhánh lỗi mới không làm vỡ client, giảm incident liên quan đến error handling 90%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng sealed class cho lỗi nghiệp vụ dự kiến (validation, conflict) để compiler bắt exhaustive when, nhưng không để sealed type ra ngoài JSON contract. Tôi map sang DTO ErrorResponse ổn định (code, message, fields) ở adapter, dùng ProblemDetail (RFC 9457) cho HTTP. Sealed type để internal trong module domain; thêm nhánh mới chỉ làm domain recompile, client vẫn nhận DTO quen thuộc. Nếu phải public, luôn có nhánh fallback và contract test. Exception dành cho lỗi hạ tầng bất ngờ (DB down), có boundary handler tập trung."
 
 > Senior tip: coi sealed result là hợp đồng nội bộ, còn mã lỗi công khai là hợp đồng với client. Giữ hai lớp này tách nhau, và có contract test cho từng nhánh sang HTTP; như vậy bạn có thể refactor domain mà không phá client.`,
   follow: ['Vì sao thêm subtype sealed có thể gây lỗi ở consumer đã compile?', 'Bạn serialize sealed type sang JSON ổn định bằng cách nào?', 'Khi nào nên dùng exception thay cho sealed result?'],
@@ -857,6 +869,12 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Spri
 - Test: {{runTest}} + Turbine cho Flow, {{StepVerifier}} + {{reactor-test}} cho Reactor; nhớ virtual time.
 - Flow vô hạn không có cancellation sẽ treo test; luôn đặt timeout.
 
+### Ví dụ đời thực
+Một dịch vụ giá cổ phiếu real-time dùng {{Flow}} phát giá mỗi giây cho 5.000 client qua SSE. Ban đầu dùng {{buffer(1000)}} để backpressure; khi một client mobile chậm (mạng 3G), buffer đầy → producer bị chặn → tất cả client khác cũng chậm, p99 từ 200ms lên 12 giây. Điều tra: buffer vô hạn che triệu chứng; metrics Micrometer {{flow.buffer.size}} hiển thị buffer hit 1000. Cách sửa: chuyển sang {{conflate}} cho client chậm (chỉ lấy giá mới nhất), giữ {{buffer(100)}} cho client nhanh; thêm {{collectLatest}} cho UI dashboard. Kết quả: p99 quay về 300ms, client 3G vẫn nhận giá gần nhất, không làm chậm toàn bộ hệ thống. Thử Reactor {{onBackpressureDrop}} cho so sánh: hành vi tương tự nhưng code bridge context (MDC, security) phức tạp hơn, team chọn Flow vì codebase chủ yếu suspend/JDBC.
+
+### Trả lời mẫu khi phỏng vấn
+"Flow và Reactor đều có backpressure nhưng cơ chế khác: Flow dùng suspend (collect chậm thì emit chậm), Reactor dùng request(n). Tôi chọn theo stack end-to-end: WebFlux/R2DBC/WebClient thì Reactor; service Kotlin suspend/JDBC thì Flow. Bridge ở adapter bằng asFlow/asFlux, không trộn nhiều lần. Backpressure Flow điều khiển bằng buffer/conflate/collectLatest; Reactor dùng onBackpressureBuffer/Drop. Context propagation (MDC, security) phải xử lý tường minh ở bridge. Đo bằng load test thật, theo dõi lag consumer."
+
 > Senior tip: đừng chọn Flow chỉ vì đang viết Kotlin. Nếu hệ sinh thái là WebFlux/R2DBC, Reactor cho bạn backpressure và tooling đồng bộ hơn; nếu team chủ yếu viết suspend service và JDBC, Flow dễ đọc hơn. Đo bằng load test thật và theo dõi lag của consumer.`,
   follow: ['{{flowOn}} ảnh hưởng phần nào của pipeline?', 'Bạn bridge Reactor Context và CoroutineContext thế nào?', 'Vì sao Flow vô hạn có thể treo test?'],
   tags: ['Flow', 'Reactor', 'backpressure', 'WebFlux']
@@ -875,7 +893,7 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Spri
 ### Build và annotation processing
 - kapt chạy Java annotation processor, sinh stub, làm chậm build và phá incremental; cần cho processor chưa hỗ trợ KSP.
 - KSP nhanh hơn và Kotlin-first nhưng chỉ dùng được với processor hỗ trợ; kiểm tra MapStruct, Hibernate metamodel, Dagger/Hilt trước khi chuyển.
-- Spring Framework 6.1 bỏ cơ chế đọc tên tham số từ debug info: code Java cần biên dịch với {{-parameters}}. Với Kotlin, Spring đọc tên tham số qua kotlin-reflect, nhưng vẫn nên bật {{javaParameters = true}} (Spring Boot Gradle plugin tự bật) để tránh lỗi bind {{@PathVariable}}/{{@RequestParam}} không có tên tường minh.
+- Spring đọc tên tham số qua ParameterNameDiscoverer; Kotlin không sinh tên tham số vào bytecode theo mặc định (khác Java với {{-parameters}}). Bật {{javaParameters = true}} (Spring Boot Gradle plugin tự bật) để Kotlin đưa tên tham số vào bytecode, tránh lỗi bind {{@PathVariable}}/{{@RequestParam}} thiếu tên.
 - Cấu hình {{kotlin("plugin.spring")}}, {{kotlin("plugin.jpa")}}, all-open/no-arg; kiểm tra version plugin khớp compiler.
 - {{jvm-default}} phải nhất quán giữa các module; thay đổi nó ảnh hưởng interface default method khi Java gọi.
 - Pin Kotlin stdlib, dùng BOM, đo build time trước/sau; kapt thường là chi phí lớn nhất.
@@ -905,6 +923,12 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Spri
 - Quên {{javaParameters}} hoặc Kotlin module → lỗi runtime chỉ xuất hiện ở môi trường thật.
 - Nâng Kotlin compiler nhưng quên plugin Spring/JPA; proxy và no-arg hỏng.
 - Public API Kotlin đổi signature ngầm khi thêm default parameter hoặc đổi nullability.
+
+### Ví dụ đời thực
+Một hệ thống e-commerce 12 module Java Spring Boot 2.7 quyết định chuyển sang Kotlin 1.9 + Spring Boot 3.2. Phase 1: chuyển module {{notification}} (module lá, ít coupling) làm pilot. Build time tăng 45% do kapt (MapStruct, Hibernate metamodel). Chuyển sang KSP cho MapStruct, Hibernate metamodel vẫn dùng kapt → build time giảm còn +15%. Phase 2: chuyển module {{order}} (core domain). Vấn đề: entity JPA Kotlin không open → lazy loading ném {{LazyInitializationException}}; quên {{javaParameters=true}} → {{@PathVariable}} bind null. Thêm {{allOpen}} cho {{jakarta.persistence.Entity}}, bật {{javaParameters}}, viết integration test proxy/rollback. Phase 3: module {{payment}} mới viết Kotlin, DTO dùng value class cho id/tiền tệ; API public giữ DTO Java-friendly (record), domain dùng value class. Kết quả 6 tháng: 3 module Kotlin chạy ổn, build time +12%, NPE production giảm 80%, lead time feature mới giảm 20%. Không chuyển module {{user}} (legacy, sắp sunset).
+
+### Trả lời mẫu khi phỏng vấn
+"Chuyển dần không phải big-bang. Tôi chọn module lá hoặc mới ít coupling làm pilot, đo build time, defect, lead time. Build multi-language: kapt chậm, ưu tiên KSP, pin plugin version khớp compiler. API biên: tránh default argument, suspend, value class trong public API cho Java; dùng @JvmStatic/@JvmName/@JvmOverloads, gắn JSpecify/@NullMarked. Entity JPA cần all-open/no-arg, javaParameters=true cho @PathVariable. Test integration thật cho proxy, rollback, lazy loading. Vận hành: ktlint/detekt, pair programming, owner build plugin, kế hoạch rollback. Thành công đo bằng defect escape, lead time, build time — không phải LOC."
 
 > Senior tip: hãy chọn một bounded context có API rõ, chuyển nó cùng test và observability, rồi so sánh số liệu với baseline trước khi mở rộng. Đầu tư sớm vào build/annotation processing và quy ước biên Java sẽ rẻ hơn nhiều so với sửa lỗi proxy/deserialization rải rác về sau.`,
   follow: ['Vì sao Java source do annotation processor sinh ra khó thấy từ Kotlin trong cùng vòng?', 'Bạn chọn kapt hay KSP dựa trên tiêu chí nào?', 'Những construct Kotlin nào không nên xuất hiện trong API public cho Java?'],
@@ -957,6 +981,12 @@ suspend fun get(@PathVariable id: Long): OrderDto =
 - Trộn cả hai trong cùng một yêu cầu làm ngữ cảnh khó theo dõi và debug.
 - Virtual Thread không làm cho cơ sở dữ liệu nhanh hơn; pool kết nối và giới hạn downstream vẫn là nút thắt.
 
+### Ví dụ đời thực
+Một API gateway Spring Boot 3.2 chuyển từ Tomcat thread pool (200 threads) sang Virtual Thread ({{spring.threads.virtual.enabled=true}}) để xử lý 10.000 RPS burst. Trước khi chuyển: p99 800ms, thread count 200, CPU 60%, nhiều request chờ thread. Sau khi bật Virtual Thread: p99 120ms, thread count 15.000 virtual threads nhưng carrier threads chỉ 48 (số core), CPU 35%. Tuy nhiên, một endpoint gọi stored procedure MySQL có {{synchronized}} quanh connection → pin carrier thread. Dưới tải 5.000 RPS, carrier thread bị cạn, p99 nhảy lên 5 giây. Điều tra: thread dump thấy {{RUNNABLE}} trong {{synchronized}} block, JFR ghi nhận {{jdk.VirtualThreadPinned}}. Cách sửa: thay {{synchronized}} bằng {{ReentrantLock}}, connection pool HikariCP tăng từ 20 lên 50. Kết quả: p99 ổn định 150ms, throughput 12.000 RPS, không cần thêm server. So sánh: nếu viết coroutine suspend + WebClient/R2DBC cũng đạt tương tự nhưng phải rewrite 15 endpoint; Virtual Thread chỉ đổi config + fix pinning.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual Thread là thread thật của JVM nhưng rẻ, gắn/tháo khỏi carrier thread; code vẫn blocking quen thuộc, bật bằng config Spring Boot 3.2+. Coroutine là trừu tượng Kotlin, cần suspend function, structured concurrency, cancellation tự động. Tôi chọn Virtual Thread khi codebase nhiều Java, dùng JDBC/RestTemplate, muốn bật nhanh không đổi logic. Chọn coroutine khi codebase Kotlin, cần async/await, Flow, cancellation tự động. Cảnh báo: Virtual Thread + synchronized gây pin carrier thread (JDK 21-23), phải dùng ReentrantLock. Cả hai đều không làm DB nhanh hơn — pool connection vẫn là nút thắt. Đo p99, carrier thread count, connection wait thực tế."
+
 > Senior tip: bắt đầu với Virtual Thread nếu team còn viết Java nhiều; chuyển sang coroutine khi cần hủy tác vụ, kết hợp bất đồng bộ và codebase đã dùng Kotlin. Đo p99 và số luồng thực tế trước khi quyết định, không chỉ tin vào benchmark đơn lẻ.`,
   follow: ['Bạn đo pinning của Virtual Thread bằng cách nào?', 'withContext(Dispatchers.IO) khác gì Virtual Thread về tài nguyên?', 'Khi nào coroutine không đáng công migrate?'],
   tags: ['kotlin', 'coroutine', 'virtual-thread', 'spring-boot']
@@ -1002,6 +1032,9 @@ while (items.hasNext()) {
 - Dùng GlobalScope → mất structured concurrency, coroutine sống độc lập.
 - Gọi mã blocking trực tiếp trong coroutine → không phản hồi hủy tác vụ.
 - Dùng runBlocking trong controller hoặc filter → chiếm luồng và dễ gây hunger luồng.
+
+### Ví dụ đời thực
+Một dashboard bán hàng gọi 4 API nội bộ song song bằng {{coroutineScope}} + {{async}}. Một ngày, API {{inventory}} chậm từ 100ms lên 8 giây do deadlock DB. Vì dùng {{coroutineScope}}, lỗi của {{inventory}} làm hủy 3 nhánh còn lại ({{orders}}, {{customers}}, {{promotions}}); dashboard trả 500 thay vì hiển thị dữ liệu có sẵn. Điều tra: {{coroutineScope}} hủy toàn bộ cây khi một con lỗi — đúng thiết kế nhưng không phù hợp dashboard widget độc lập. Cách sửa: đổi sang {{supervisorScope}}, mỗi widget lỗi độc lập; thêm {{async}} với {{catch}} để graceful degradation. Đồng thời đặt bulkhead {{Semaphore(20)}} cho DB inventory, timeout 3 giây. Kết quả: khi inventory chậm, 3 widget khác vẫn load <500ms, inventory widget hiển thị "Tạm thời không có dữ liệu", không 500. Thêm test hủy scope cha kiểm tra resource cleanup.
 
 ### 5. Trả lời mẫu khi phỏng vấn
 "Tôi dùng structured concurrency để đảm bảo coroutine con không rò rỉ: cha chờ con hoàn tất và hủy cha sẽ hủy toàn bộ cây con. coroutineScope phù hợp khi mọi nhánh phải thành công — một con lỗi thì hủy các con khác. supervisorScope phù hợp khi các con độc lập, ví dụ widget trên dashboard. Hủy tác vụ trong Kotlin là cooperative: job.cancel() chỉ đặt cờ, coroutine dừng ở điểm chờ tiếp theo, nên mã CPU-heavy phải kiểm tra isActive. Tôi không dùng GlobalScope và không bắt CancellationException lầm thành lỗi thông thường."
@@ -1195,7 +1228,6 @@ plugins {
     kotlin("jvm")
     kotlin("plugin.spring")
     kotlin("plugin.jpa")
-    kotlin("plugin.allopen")
 }
 ~~~
 
@@ -1241,7 +1273,7 @@ Một service đặt đơn hàng và đánh dấu @Transactional. Do quên plugi
 fun stream(@PathVariable id: String): Flow<Price> = service.prices(id)
 ~~~
 
-Spring WebFlux thích ứng Flow thành Flux. Cầu nối ngược: flow.asFlux(), Publisher.asFlow(). Cầu nối ngữ cảnh: Dispatchers.Reactor, ReactorContext. Không tự đồng bộ mọi ThreadLocal; MDC, security, tenant phải xử lý riêng.
+Spring WebFlux thích ứng Flow thành Flux. Cầu nối ngược: {{flow.asFlux()}}, {{Publisher.asFlow()}}. Cầu nối ngữ cảnh (MDC, security, tenant): dùng {{kotlinx-coroutines-reactor}} cung cấp {{ReactorContext}} và các extension chuyển đổi; không tự đồng bộ mọi {{ThreadLocal}}, phải xử lý riêng.
 
 ### 5. Chọn cái nào
 | Bối cảnh | Lựa chọn |
