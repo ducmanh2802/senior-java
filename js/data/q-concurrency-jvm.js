@@ -1768,6 +1768,12 @@ public class FalseSharingBench {
 ### Trả lời miệng 1 phút
 "CPU đồng bộ cache theo cache line, thường 64 byte. False sharing là khi hai thread ghi vào hai biến khác nhau nhưng nằm chung một line: theo giao thức MESI, mỗi lần ghi phải giành quyền độc quyền và vô hiệu hoá bản ở core kia, nên line bị chuyền qua lại và throughput sụp dù không có lock hay data race. Tôi nghi tới nó khi thêm thread mà throughput không tăng, CPU cao và không thấy lock contention; xác nhận bằng perf c2c hoặc JMH với benchmark nhóm. Cách sửa là tách biến sang các line khác nhau bằng @Contended với cờ -XX:-RestrictContended, padding qua kế thừa, hoặc tốt nhất là đổi thiết kế như LongAdder để mỗi thread ghi vùng riêng."
 
+### Ví dụ đời thực
+Một service định giá chứng khoán realtime xử lý 50k cập nhật/giây. Team dùng class {{PriceSnapshot}} với ba field {{volatile long bid}}, {{volatile long ask}}, {{volatile long timestamp}} — ba field {{long}} cạnh nhau rất có thể chung cache line 64 byte. Triệu chứng: scale từ 8 lên 16 thread mà throughput không tăng, CPU usage 95%, p99 latency từ 2 ms lên 12 ms. Điều tra: {{perf c2c record -a -- sleep 30}} cho thấy cache line chứa {{bid}} và {{ask}} có cache-to-cache transfer rate 15M/s, line bounce giữa 2 socket. Nguyên nhân gốc: consumer thread cập nhật {{bid}}, publisher thread cập nhật {{ask}} — hai thread ghi chung line. Sửa: thêm {{@Contended}} vào từng field và chạy với {{-XX:-RestrictContended}}; benchmark JMH {{@Group}} (micro-benchmark đo throughput ghi field thuần túy) trước/sau cho thấy throughput tăng từ 48M ops/s lên 82M ops/s (71% cải thiện), p99 latency giảm xuống 3 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"CPU đồng bộ cache theo cache line 64 byte. False sharing xảy ra khi hai thread ghi vào hai biến khác nhau nhưng chung một line — MESI buộc line phải chuyển quyền sở hữu giữa các core, throughput sụt mà không có lock hay data race. Tôi từng gặp trên service định giá: scale thread lên mà throughput không tăng, perf c2c phát hiện line bounce 15M/s giữa hai socket. Sửa bằng @Contended kèm -XX:-RestrictContended, throughput tăng 71%, p99 từ 12 ms xuống 3 ms. Quan trọng là đo bằng JMH @Group và perf c2c, không đoán mò."
+
 > Senior tip: false sharing hiếm khi là nguyên nhân trong service CRUD, vì I/O và lock tốn hơn nhiều bậc. Tôi chỉ nghĩ tới nó khi thêm thread mà throughput không tăng (thậm chí giảm), CPU vẫn cao và profiler không thấy lock contention. Trước khi dùng @Contended (phụ thuộc API nội bộ, tốn bộ nhớ), hãy thử LongAdder hoặc thiết kế lại để mỗi thread chỉ ghi dữ liệu của riêng nó.`,
   follow: [
     'Vì sao padding bằng field thừa trong cùng một class không đáng tin, còn padding qua kế thừa thì có?',
@@ -1875,6 +1881,12 @@ scheduler.scheduleAtFixedRate(() -> {
 ### Trả lời miệng 1 phút
 "shutdown ngừng nhận task mới nhưng vẫn chạy hết task đang chạy và trong queue; shutdownNow ngừng nhận, trả về các task chưa chạy và interrupt các worker, task không hợp tác với interrupt thì vẫn chạy tiếp. Cả hai đều không chờ, nên tôi dùng quy trình hai pha: shutdown, awaitTermination có timeout, hết giờ thì shutdownNow rồi chờ thêm một chút, và tổng thời gian phải nhỏ hơn grace period của pod. Riêng ScheduledExecutorService, một lần chạy ném exception là các lần sau bị huỷ âm thầm, exception nằm trong ScheduledFuture và không ai log; vì vậy mọi job định kỳ của tôi đều có try/catch bao ngoài, log, metric, và alert khi quá vài chu kỳ không có lần chạy thành công."
 
+### Ví dụ đời thực
+Một microservice thanh toán có job đồng bộ tỷ giá mỗi phút dùng {{scheduleAtFixedRate}}. Một lần API ngân hàng trung ương trả về JSON thiếu field {{rate}} gây {{NullPointerException}} trong lambda. Triệu chứng: job ngừng chạy hoàn toàn, không có log error, metric {{job.fx.success}} không cập nhật. 5 ngày sau khách khiếu nại tỷ giá sai lệch 2.3% so với thị trường. Điều tra: {{jstack}} cho thấy worker thread của pool vẫn sống nhưng đang {{TIMED_WAITING}} (park trên {{DelayedWorkQueue}}, chờ task mới) — không có deadlock, chỉ là job định kỳ đã bị huỷ nên không còn task nào được lên lịch; mở đối tượng {{ScheduledFuture}} qua heap dump thấy {{outcome = java.lang.NullPointerException}} (FutureTask lưu exception vào field outcome). Nguyên nhân: {{ScheduledFutureTask.run()}} bắt exception, lưu vào future, chuyển state sang {{EXCEPTIONAL}} nên không lên lịch lại. Sửa: bọc toàn thân job trong try/catch, log error + đẩy metric {{job.fx.error}}; thêm alert Prometheus {{rate(job_fx_success[5m]) == 0}} (cửa sổ 5 phút cho job chạy mỗi phút, tương đương ~5 chu kỳ thiếu success) để bắt cả job chết lẫn job treo. Kết quả: lần sau API lỗi, job log rõ {{NullPointerException}}, metric error tăng, alert PagerDuty rung sau ~5 phút, team hotfix trong 15 phút — không còn ngừng chạy âm thầm.
+
+### Trả lời mẫu khi phỏng vấn
+"shutdown chỉ từ chối task mới, vẫn chạy hết queue; shutdownNow interrupt worker và trả task chưa chạy; cả hai đều không chờ nên tôi dùng quy trình hai pha với awaitTermination, tổng timeout nhỏ hơn grace period pod. Bẫy lớn là ScheduledExecutorService: một exception làm job ngừng chạy âm thầm, exception nằm trong ScheduledFuture không ai log. Tôi từng gặp job tỷ giá chết 5 ngày không ai hay. Sửa: try/catch bao job, log + metric error, alert khi 3 chu kỳ không có success. Lúc sau API lỗi, alert rung 3 phút, fix 15 phút xong."
+
 > Senior tip: kiểu incident hay gặp: job đồng bộ tỷ giá chạy mỗi phút, một lần API đối tác trả JSON lỗi gây NullPointerException, job ngừng chạy cả tuần cho tới khi khách khiếu nại tỷ giá cũ. Từ đó tôi bắt buộc mọi job định kỳ có try/catch bao ngoài và metric "lần chạy thành công gần nhất", alert khi quá 3 chu kỳ không cập nhật. Alert dựa trên "không có lần thành công" bắt được cả job chết lẫn job treo.`,
   follow: [
     'Task bỏ qua interrupt khi shutdownNow — bạn làm gì để pod vẫn tắt đúng hạn?',
@@ -1958,6 +1970,24 @@ jcmd <pid> VM.metaspace                  # chi tiết metaspace
 ### Trả lời miệng 1 phút
 "JVM có heap chia young và old để chứa object, metaspace chứa metadata class ở native memory, mỗi thread một stack, code cache cho mã JIT, và direct memory cho buffer NIO ngoài heap. Young dọn thường xuyên và rẻ vì đa số object chết trẻ, old dọn ít mà nặng hơn. Khi có sự cố tôi đọc thông điệp lỗi để khoanh vùng: Java heap space là heap, Metaspace thường là classloader leak, unable to create native thread là quá nhiều thread, còn RSS cao hơn Xmx là native. Trade-off quan trọng là trong container heap không được chiếm hết limit. Thực tế tôi luôn bật heap dump khi OOM và Native Memory Tracking, nhiều lần RSS tăng hoá ra do direct buffer chứ heap hoàn toàn sạch."
 
+### Ví dụ đời thực
+Một Spring Boot service đọc file CSV lớn (200 MB) dùng {{Files.readAllBytes}} rồi parse. Pod limit 2 GB, Xmx 1.5 GB. Triệu chứng: pod bị OOMKilled (exit 137) sau 3 phút chạy batch, log không có OutOfMemoryError.
+
+Điều tra:
+~~~bash
+kubectl describe pod
+~~~
+thấy OOMKilled; bật NMT summary ({{-XX:NativeMemoryTracking=summary}}), chụp mốc rồi chạy lại batch và so sánh:
+~~~bash
+jcmd <pid> VM.native_memory baseline
+# chạy lại batch
+jcmd <pid> VM.native_memory summary.diff
+~~~
+Kết quả diff cho thấy Direct memory tăng 1.3 GB (buffer ngoài heap, ví dụ {{ByteBuffer.allocateDirect}} dùng bởi Netty HTTP client khi cache response lớn), metaspace 180 MB, thread stack 120 MB, heap chỉ 600 MB. Tổng RSS = 2.2 GB > limit 2 GB. Nguyên nhân: {{Files.readAllBytes}} tạo byte[] 200 MB vào heap, còn Netty giữ response body trong direct buffer (qua nhiều request response khác nhau, vùng direct tích lũy lên 1.3 GB) và GC không kịp thu hồi kịp. Sửa: đổi sang streaming parse ({{Files.lines}} + {{Stream}}), set {{-XX:MaxDirectMemorySize=512m}}, giảm Xmx xuống ~1.3 GB qua {{MaxRAMPercentage=65%}}. Kết quả: RSS peak 1.6 GB < 2 GB limit, batch chạy ổn định 30 lần liên tiếp không OOMKilled.
+
+### Trả lời mẫu khi phỏng vấn
+"JVM có heap (young/old), metaspace, stack, code cache, direct memory. OOM Java heap space là heap, Metaspace là classloader leak, unable to create native thread là quá nhiều thread, RSS > Xmx là native. Tôi từng gặp pod 2 GB limit, Xmx 1.5 GB bị OOMKilled mà heap chỉ 600 MB — NMT diff chỉ ra direct buffer 1.3 GB do Netty cache response. Sửa: streaming parse thay {{Files.readAllBytes}}, set {{MaxDirectMemorySize}} 512 MB, Xmx 1 GB. RSS peak 1.6 GB, batch ổn định. Quan trọng: bật NMT, đọc diff, không chỉ nhìn heap."
+
 > Senior tip: luôn bật {{-XX:NativeMemoryTracking=summary}} ở môi trường quan trọng; so sánh {{jcmd VM.native_memory baseline}} rồi {{summary.diff}} trước khi kết luận "leak heap" — nhiều lần RSS tăng là native (direct buffer, metaspace) chứ heap vẫn trong sạch.`,
   follow: [
     'Metaspace khác PermGen (trước Java 8) thế nào, vì sao đổi?',
@@ -2039,6 +2069,12 @@ java -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -Xlog:gc* ...
 
 ### Trả lời miệng 1 phút
 "Serial và Parallel là GC dừng cả ứng dụng, Parallel dùng nhiều thread nên hợp batch cần throughput. G1 là mặc định từ Java 9: chia heap thành region, young GC dọn Eden, khi old vượt ngưỡng IHOP thì marking đồng thời, sau đó mixed GC dọn thêm các region old nhiều rác nhất, nên pause ngắn và bám được mục tiêu MaxGCPauseMillis. ZGC và Shenandoah dùng barrier để làm gần hết việc song song với app, pause dưới một mili giây, từ JDK 21 có Generational ZGC và từ JDK 23 nó là mặc định của ZGC. Trade-off là ZGC tốn thêm CPU và barrier. Thực tế tôi giữ G1 cho đa số service, chỉ chuyển ZGC khi p99 bị GC chi phối và đã đo 24 giờ cho cả hai."
+
+### Ví dụ đời thực
+Một e-commerce platform heap 16 GB, traffic 3k rps, p99 latency 450 ms do G1 mixed GC pause 120–180 ms. Team thử chuyển ZGC (JDK 21, {{-XX:+UseZGC -XX:+ZGenerational}}). Triệu chứng: GC pause giảm xuống 2–4 ms (rất đẹp), nhưng CPU usage tăng từ 55% lên 85% do concurrent marking + relocation threads; throughput rơi 18% (2.5k rps thay vì 3k), p99 request latency thực tế tăng lên 520 ms vì app bị tranh CPU với GC threads. Điều tra: {{pidstat -t}} thấy 8 GC threads luôn chạy 100% CPU; {{jcmd GC.heap_info}} heap dùng 10 GB / 16 GB. Sửa: quay lại G1, tune {{-XX:MaxGCPauseMillis=80 -XX:G1HeapRegionSize=16m -XX:InitiatingHeapOccupancyPercent=35}}, giảm young gen allocation rate bằng object reuse. Kết quả: G1 mixed GC pause 60–80 ms, CPU 58%, throughput 2.9k rps, p99 latency 280 ms — tốt hơn cả hai config trước.
+
+### Trả lời mẫu khi phỏng vấn
+"Serial/Parallel là STW, G1 chia region mixed GC cân bằng latency/throughput, ZGC/Shenandoah concurrent pause < 1 ms. Tôi từng thử ZGC trên heap 16 GB: pause 2–4 ms rất đẹp nhưng CPU nhảy 55%→85%, throughput rơi 18%, p99 latency thực tế tăng vì app tranh CPU với GC threads. Quay lại G1 tune MaxGCPauseMillis 80, IHOP 35%, region 16 MB: pause 60–80 ms, CPU 58%, throughput 2.9k rps, p99 280 ms. Trade-off: ZGC tốn CPU concurrent, chỉ hợp khi có CPU headroom. Tôi đo 24h cho cả hai trước khi quyết."
 
 > Senior tip: nhảy ZGC vì "pause thấp" chưa chắc đúng: ZGC có overhead CPU concurrent và throughput có thể giảm so với G1 cùng heap; đo p99 và tổng throughput 24h cho cả hai collector trước khi quyết — latency và throughput là bài toán đổi chỗ, chọn trên số liệu.`,
   follow: [
@@ -2125,6 +2161,12 @@ kubectl describe pod <pod>          # Last State: OOMKilled, Exit Code 137
 ### Trả lời miệng 1 phút
 "Trong container, RSS của JVM không chỉ là heap mà còn metaspace, thread stack, code cache, direct buffer và cấu trúc của GC. Nếu đặt Xmx bằng memory limit thì heap được phép chiếm hết, native đẩy tổng vượt limit và kernel giết pod với exit 137, không có OutOfMemoryError hay heap dump nào. Vì vậy tôi không đặt Xmx cố định mà dùng MaxRAMPercentage: JVM đọc limit từ cgroup và lấy một phần trăm làm heap, mặc định 25% thì quá ít, tôi thường bắt đầu 60–65%. Trade-off là heap lớn hơn thì ít GC hơn nhưng ít chỗ cho native hơn. Kinh nghiệm của tôi là tăng dần theo RSS đo được lúc load test, kèm alert theo memory container chứ không chỉ heap."
 
+### Ví dụ đời thực
+Team deploy Spring Boot service lên K8s pod limit 1 GB, copy Xmx 1g từ VM cũ. Triệu chứng: pod restart liên tục mỗi 10–20 phút, {{kubectl get pods}} thấy {{OOMKilled}}, exit code 137, log JVM không có OutOfMemoryError. Điều tra: bật {{-XX:NativeMemoryTracking=summary}}, {{jcmd VM.native_memory summary}} cho thấy heap dùng 700 MB, metaspace 150 MB, thread (200 thread, NMT Thread committed) ~200 MB, code cache 80 MB, direct buffer (Netty) 120 MB, GC structures 80 MB → tổng ~1.33 GB > limit 1 GB. RSS đo bằng {{container_memory_working_set_bytes}} peak 1.28 GB. Sửa: bỏ Xmx, đặt {{-XX:MaxRAMPercentage=65}} (heap max ~650 MB), {{-XX:MaxDirectMemorySize=256m}}, {{-XX:MaxMetaspaceSize=256m}}, giảm thread pool từ 200 xuống 50. Kết quả: heap 580 MB, native ~350 MB, RSS peak 930 MB < 1 GB limit, pod chạy ổn định 14 ngày không restart.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong container, RSS = heap + native (metaspace, stack, code cache, direct buffer). Xmx = limit là sai vì native đẩy tổng vượt limit, kernel OOMKill pod (exit 137) không có OOME hay heap dump. Tôi dùng MaxRAMPercentage: JVM đọc cgroup limit, lấy % làm heap, mặc định 25% quá ít, tôi bắt đầu 65%. Tôi từng gặp pod 1 GB, Xmx 1g bị OOMKilled — NMT chỉ ra native 600 MB. Sửa: MaxRAMPercentage 65%, MaxDirectMemorySize 256 MB, MaxMetaspaceSize 256 MB, giảm thread pool. RSS 930 MB < 1 GB, pod ổn định 14 ngày. Alert theo container memory, không chỉ heap."
+
 > Senior tip: template tôi chia sẻ trong team: heap 65%, native 35% trong pod — chưa bị OOMKilled trong 2 năm. Tăng heap theo bước 50 → 60 → 65% sau khi đo RSS thật, không nhảy 75% ngay từ đầu.`,
   follow: [
     'OOMKilled (exit 137) khác OOM Java heap space thế nào?',
@@ -2204,6 +2246,12 @@ Retained khác shallow: bám theo retained mới tìm đúng gốc, vì kẻ gi�
 
 ### Trả lời miệng 1 phút
 "OutOfMemoryError có nhiều loại và thông điệp cho biết vùng nào cạn: Java heap space là heap, GC overhead limit exceeded là Parallel GC đang chạy gần như liên tục mà thu được rất ít, Metaspace thường do classloader leak, unable to create native thread là quá nhiều thread hoặc chạm ulimit, Direct buffer memory là bộ nhớ NIO ngoài heap. Với heap tôi lấy heap dump, mở MAT xem Leak Suspects, Dominator Tree theo retained size rồi Path to GC Roots để tìm ai đang giữ. Với native tôi dùng NMT và đếm thread. Trade-off là heap dump dừng JVM vài giây và file rất lớn, nên tôi dump trên pod đã rút traffic. Tôi luôn bật dump tự động khi OOM vì đó là bằng chứng đáng tin nhất."
+
+### Ví dụ đời thực
+Một payment service triển khai dạng WAR trên Tomcat ném {{OutOfMemoryError: Metaspace}} sau mỗi lần redeploy (2 tuần/lần). Heap 2 GB, {{MaxMetaspaceSize}} không đặt. Triệu chứng: redeploy thứ 3 service crash, log {{Metaspace}}, heap dump size 400 MB (heap chỉ dùng 600 MB). Điều tra: mở heap dump MAT → Histogram lọc {{ClassLoader}} thấy 3 {{WebappClassLoader}} instance, retained size 1.2 GB; Dominator Tree: {{WebappClassLoader}} cũ retained 1.2 GB, path to GC Roots cho thấy thread pool của Tomcat vẫn giữ {{ThreadLocal}} value trỏ tới object thuộc class do class loader cũ nạp (ví dụ {{com.app.security.JwtFilter}} có static field {{INSTANCE}}). Nguyên nhân: redeploy không clear {{ThreadLocal}} trên thread pool nên giá trị cũ giữ sống class loader cũ và mọi metadata class của nó; ngoài ra JDBC driver (ví dụ {{org.postgresql.Driver}}) tự đăng ký với {{DriverManager}} qua static initializer, redeploy không deregister nên cũng giữ loader cũ. Sửa: thêm {{ServletContextListener.contextDestroyed}} gọi {{DriverManager.deregisterDriver}} + {{ThreadLocal.remove()}}; đặt {{-XX:MaxMetaspaceSize=512m}} để fail fast. Kết quả: redeploy 20 lần liên tiếp Metaspace stable 280 MB, không còn leak.
+
+### Trả lời mẫu khi phỏng vấn
+"OOME có nhiều loại: Java heap space, GC overhead limit exceeded, Metaspace, unable to create native thread, Direct buffer memory. Mỗi loại cạn vùng khác nên công cụ khác: heap dump + MAT cho heap, NMT cho native, đếm thread + ulimit cho native thread. Tôi từng gặp Metaspace OOME sau redeploy: MAT Dominator Tree chỉ ra 3 WebappClassLoader retained 1.2 GB, path qua ThreadLocal giữ JwtFilter static. Nguyên nhân: HikariCP đăng ký driver static, ThreadLocal không clear khi redeploy. Sửa: contextDestroyed deregister driver + clear ThreadLocal, đặt MaxMetaspaceSize 512 MB. Redeploy 20 lần stable 280 MB. Luôn bật HeapDumpOnOutOfMemoryError từ đầu."
 
 > Senior tip: bật HeapDumpOnOutOfMemoryError ngay khi boot với HeapDumpPath đủ disk; dump có thể dừng JVM vài giây, nhưng đó là dump duy nhất đáng tin vì ở đúng trạng thái OOM — dump sau restart không có giá trị điều tra như vậy.`,
   follow: [
