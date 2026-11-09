@@ -3303,6 +3303,19 @@ Mỗi message mang txnId duy nhất → consumer khử trùng khi bridge gửi l
 ### Trả lời miệng 1 phút
 "Tôi phân vai theo ngữ nghĩa. Kafka cho domain event cần nhiều consumer và replay, như giao dịch đã hạch toán đi tới chống gian lận và phân tích. RabbitMQ cho work queue cần ack từng message, retry và dead-letter, như sinh sao kê hay gửi OTP. IBM MQ giữ ở biên với core banking và đối tác vì đã có SLA, audit và hợp đồng hỗ trợ. Giữa các thế giới tôi đặt một bridge duy nhất, ví dụ Kafka Connect MQ source, và mọi message mang id nghiệp vụ để khử trùng. Trade-off là vận hành nhiều nền tảng, nên tôi đặt một broker mặc định cho workload mới, ngoại lệ phải có ADR. Và broker không bao giờ là sổ cái."
 
+
+### Ví dụ đời thực
+
+Sự cố: sau khi một team mới đẩy việc gửi mã OTP vào cùng topic Kafka với event thanh toán, chỉ số consumer lag của nhóm OTP tăng từ 0 lên hơn 10.000 thông điệp trong 15 phút, và khách nhận mã OTP chậm hơn 5 giây so với bình thường.
+
+Điều tra: tra metric consumer group của Kafka, thấy một partition gộp cả mã OTP và event thanh toán nặng bị chậm — một thông điệp xử lý lâu chặn hàng antrian của cả partition. Lúc này team dùng Kafka như hàng đợi công việc, thiếu ack từng message và retry như RabbitMQ.
+
+Nguyên nhân gốc: vi phạm nguyên tắc phân vai theo ngữ nghĩa. Kafka giữ thứ tự trong partition và phù hợp event stream cần nhiều consumer lắng nghe và replay, không phải công việc từng message cần "lấy một lần, xử lý xong rồi ký nhận".
+
+Xử lý: chuyển hàng đợi gửi OTP sang RabbitMQ với competing consumers, ack từng message, retry và dead-letter exchange; Kafka chỉ giữ event stream thanh toán cần nhiều consumer và replay, ví dụ rebuild projection. Mỗi thông điệp giữ id nghiệp vụ để bridge không tạo giao dịch trùng.
+
+Kết quả: lag gửi OTP về 0, thời gian gửi mã giảm từ trên 5 giây xuống dưới 1 giây, và hệ thống vẫn có thể replay Kafka để xây dựng lại dữ liệu phân tích khi cần.
+
 > Senior tip: chọn một broker mặc định cho workload mới; ngoại lệ cần ADR nêu owner và chi phí trực on-call. Số nền tảng có thể tồn tại vì legacy, nhưng đừng để mỗi team tự chọn broker thứ tư.`,
   follow: ['Bạn thiết kế bridge Kafka–IBM MQ sao cho duplicate không tạo hai giao dịch?', 'Khi nào replay Kafka không đủ để đáp ứng audit tài chính?'],
   tags: ['Kafka', 'RabbitMQ', 'IBM MQ', 'banking', 'messaging']
@@ -3361,6 +3374,19 @@ Bảng outbox thường có: {{id}} (event ID, UUID), {{aggregatetype}}, {{aggre
 
 ### Trả lời miệng 1 phút
 "Tôi ghi đơn hàng và dòng outbox trong cùng một transaction, nên không còn dual write. Debezium đọc WAL qua replication slot, Outbox Event Router đưa event ra topic với key là orderId để giữ thứ tự theo đơn, và Kafka Connect chỉ lưu offset sau khi Kafka xác nhận. Vì vậy khi connector restart thì có thể gửi lặp nhưng không mất, và consumer khử trùng theo event ID trong cùng transaction với business write. Thứ tự giữa các transaction của cùng một đơn do khóa hoặc version trong DB quyết định. Về vận hành, tôi alert theo trạng thái connector, WAL bị slot giữ lại và tuổi event chưa publish, và có runbook khi connector dừng."
+
+
+### Ví dụ đời thực
+
+Sự cố: sau khi nâng cấp Kafka Connect và restart connector Debezium, hệ thống gửi email xác nhận đơn hàng cho cùng một khách hàng hai lần, cách nhau 90 giây.
+
+Điều tra: tra log consumer, thấy hai record cùng mã sự kiện {{evt-7731}}; kiểm tra trạng thái task của connector qua Kafka Connect REST, chạy bình thường nhưng source lag vẫn lớn; xem replication slot PostgreSQL, thấy slot giữ WAL khoảng 3 GB vì connector đã ngừng vài giờ.
+
+Nguyên nhân gốc: connector gửi record lên Kafka trước, mới lưu offset sau. Khi restart, khoảng thời gian này bị gửi lại; lại chưa có khử trùng theo event ID ở consumer nên đơn hàng được xử lý hai lần.
+
+Xử lý: thêm bảng {{processed_event(event_id PK)}}, insert mã sự kiện trong cùng transaction với ghi đơn, consumer kiểm tra mã trước khi xử lý. Cấu hình cảnh báo khi source lag quá 5 phút hoặc WAL bị slot giữ quá 2 GB.
+
+Kết quả: số đơn bị xử lý trùng từ khoảng 3-5 lần mỗi tuần về 0; trong 2 tuần sau restart connector không còn email trùng.
 
 > Senior tip: đặt ngưỡng cảnh báo cho tuổi event chưa publish và dung lượng WAL bị giữ. "DB commit thành công" mới là nửa SLA; event tới Kafka trong bao lâu mới là điều consumer và khách hàng cảm nhận.`,
   follow: ['Replication slot Debezium bị giữ lâu gây tác động gì đến PostgreSQL?', 'Bạn dọn outbox table mà không xóa event chưa publish bằng cách nào?'],
@@ -3448,6 +3474,19 @@ một tenant lỗi làm kẹt cả pipeline
 
 ### Trả lời miệng 1 phút
 "Tôi chọn theo quy mô và compliance. Vài chục khách enterprise yêu cầu cô lập mạnh thì schema hoặc DB riêng: dễ backup, xóa tenant, chứng minh compliance, nhưng migration là N nhân M nên tôi theo dõi schema_version từng tenant và chạy theo lô. Hàng nghìn tenant nhỏ thì shared-schema với tenant_id, và bật RLS của PostgreSQL để câu query quên filter vẫn bị chặn; app đặt tenant bằng SET LOCAL và kết nối bằng role không phải owner. Tôi thêm nhiều lớp: index bắt đầu bằng tenant_id, Hibernate TenantId, cache key có tenant, audit log, và test tự động tenant A không thấy dữ liệu tenant B cho mọi endpoint."
+
+
+### Ví dụ đời thực
+
+Sự cố: sau kỳ đăng ký tăng gấp 3 lần, hỗ trợ nhận khiếu nại: khách hàng B nhìn thấy đơn hàng của khách hàng A trong màn hình lịch sử của mình.
+
+Điều tra: tra log PostgreSQL (pgaudit), thấy câu truy vấn {{SELECT * FROM orders WHERE status = 'PENDING'}} không có điều kiện tenant_id, thực hiện full scan trên bảng hàng triệu dòng và trộn dữ liệu nhiều khách.
+
+Nguyên nhân gốc: một truy vấn thô của team mới quên mệnh đề {{AND tenant_id = ?}}; ORM không thêm điều kiện tenant cho câu SQL này.
+
+Xử lý: bật RLS, đặt {{SET LOCAL app.tenant_id = ...}} trong mỗi transaction, kết nối bằng role không phải owner và dùng FORCE ROW LEVEL SECURITY; thêm chỉ số hợp nhất {{(tenant_id, status)}} để truy vấn thiếu tenant_id dễ bị phát hiện qua full scan chậm; viết test tự động "khách A không thấy dữ liệu khách B" cho mọi endpoint.
+
+Kết quả: không còn sự cố trộn dữ liệu xuyên tenant trong 2 quý sau; truy vấn lọc theo tenant giảm từ 1,2 giây xuống dưới 50 ms.
 
 > Senior tip: dù chọn mô hình nào, hãy có một test tự động "tenant A không thấy dữ liệu tenant B" chạy trong CI cho mọi endpoint. Một vụ lộ dữ liệu xuyên tenant là incident P0 và thường là lý do mất khách hàng lớn.`,
   follow: [
@@ -3544,6 +3583,19 @@ nếu mất event: muộn nhất sau TTL 60s cũng bị chặn
 ### Trả lời miệng 1 phút
 "Tenant bị suspend là trạng thái nghiệp vụ, không phải lỗi server, nên tôi trả 403 với mã lỗi rõ ràng. Nếu để thành 500, client sẽ retry vô ích, on-call bị báo động giả và SLO lỗi bị sai. Tôi chặn ngay ở gateway hoặc một OncePerRequestFilter: xác định tenant, tra trạng thái trong cache, không ACTIVE thì trả 403 không gọi downstream, và luôn clear tenant context trong finally. Cache có TTL ngắn kèm invalidation bằng event khi admin suspend, và fail-closed nếu không đọc được trạng thái. Phần còn lại tôi ánh xạ exception sang status trong RestControllerAdvice bằng ProblemDetail. Tôi có test suspend giữa chừng để chắc không có 500."
 
+
+### Ví dụ đời thực
+
+Sự cố: nhà hàng A nợ phí và bị admin khóa vào 14:00, nhưng nhân viên nhà hàng vẫn tạo đơn bình thường đến 14:45, chưa thấy thông báo bị khóa.
+
+Điều tra: tra log truy cập, thấy API tạo đơn vẫn trả 200 trong 45 phút; kiểm tra cache trạng thái tenant, thấy giá trị đã lưu với TTL 10 phút và không có sự kiện xóa cache khi admin bấm nút khóa.
+
+Nguyên nhân gốc: cache trạng thái tenant TTL quá dài và chỉ dựa vào TTL làm lưới an toàn; khi dịch vụ cấu hình bị lỗi, code lại mặc định cho qua (fail-open), nên nhà hàng bị khóa vẫn tiếp tục hoạt động.
+
+Xử lý: giảm TTL xuống 30 giây, khi admin khóa phát sự kiện {{tenant.suspended}} để mọi instance xóa cache ngay; nếu không đọc được trạng thái thì trả 503 và chặn (fail-closed). Viết test: mock dịch vụ trả ACTIVE rồi SUSPENDED trong cùng một test, assert phản hồi là 403 và không có 500 nào.
+
+Kết quả: thời gian từ khi khóa đến khi tất cả request bị chặn giảm từ 45 phút xuống dưới 30 giây; alert 5xx giả do tenant bị khóa biến mất.
+
 > Senior tip: viết test "suspend tenant giữa request" bằng cách mock tenant service trả ACTIVE rồi SUSPENDED trong cùng test, assert response là 403 và không có 500 nào. Đây là test hay bị thiếu nhất.`,
   follow: [
     'Cache tenant status nên invalidate bằng event hay polling, vì sao?',
@@ -3611,6 +3663,19 @@ SAI:    A: GET K → null; B: GET K → null; A: SET PENDING; B: SET PENDING →
 
 ### Trả lời miệng 1 phút
 "Hợp đồng của tôi là client sinh Idempotency-Key cho mỗi lệnh ghi và gửi lại cùng key khi retry; server lưu theo scope tenant, endpoint, key, kèm hash payload, trạng thái và response, TTL 24 giờ. Điểm quan trọng nhất là claim nguyên tử bằng Redis SET NX hoặc unique constraint: chỉ một request được xử lý. Request trùng khi đang IN_FLIGHT nhận 409 với Retry-After, khi đã COMPLETED nhận lại đúng response cũ, còn khác payload thì 422. Với lệnh tiền, tôi ghi bản ghi bền vào DB cùng transaction và truyền key sang cổng thanh toán. Lỗi hay gặp nhất là check rồi mới set PENDING, hai request cùng thấy trống và cùng chạy."
+
+
+### Ví dụ đời thực
+
+Sự cố: sau khi triển khai tính năng nộp tiền từ ứng dụng di động, kế toán phát hiện một số khách bị trừ tiền hai lần trong khoảng 2 giây, cùng mã giao dịch.
+
+Điều tra: tra log Redis và cơ sở dữ liệu, thấy hai yêu cầu cùng khóa idempotency {{pay-8821}} đều đọc là "chưa có" (null), cả hai đều ghi trạng thái PENDING, rồi cả hai cùng gọi cổng thanh toán và trừ tiền.
+
+Nguyên nhân gốc: code làm kiểm tra rồi mới thiết lập (check-then-set): {{GET key}}, nếu null thì {{SET PENDING}}; hai yêu cầu cùng đọc null và cùng chạy, vi phạm yêu cầu claim nguyên tử.
+
+Xử lý: đổi thành {{SET key IN_FLIGHT NX EX 30}}; chỉ yêu cầu thành công mới được xử lý; yêu cầu trùng khi đang IN_FLIGHT nhận 409 kèm {{Retry-After}}; khi đã COMPLETED, trả lại phản hồi cũ đã lưu. Với lệnh liên quan tiền, ghi bản bền vào cơ sở dữ liệu cùng transaction và truyền khóa sang cổng thanh toán.
+
+Kết quả: trường hợp bị trừ tiền hai lần từ 3-4 lần mỗi tháng về 0 sau 2 tuần vận hành; độ trễ thêm khoảng 2 ms do claim Redis.
 
 > Senior tip: idempotency key là "hợp đồng" giữa client và server: hãy viết rõ trong tài liệu API về scope, TTL, hành vi khi IN_FLIGHT và khi payload khác. Không có tài liệu thì client không biết cách retry đúng.`,
   follow: [
@@ -3692,6 +3757,19 @@ Nếu quên remove và req#2 không set: thread-7 vẫn mang tenant A → rò d�
 
 ### Trả lời miệng 1 phút
 "Request là object dùng chung trong cả filter chain và còn bị container tái sử dụng sau khi xong. Vì vậy tôi không để component nào sửa request gốc: encoding đặt ở filter đầu tiên, body chỉ đọc lại qua wrapper phát lại byte, header X-Forwarded chỉ tin khi đi qua proxy tin cậy. Mẫu tôi dùng là một OncePerRequestFilter ở biên đọc tenant, user, trace id, chép vào một record bất biến đặt trong ThreadLocal hoặc request scope, và luôn remove trong finally. Với async, tôi chép record qua TaskDecorator chứ không truyền request. Trade-off là thêm chút code ở biên, đổi lại tránh được lỗi rò dữ liệu giữa các request, loại lỗi rất khó tái hiện."
+
+
+### Ví dụ đời thực
+
+Sự cố: sau khi thêm filter kiểm tra chữ ký bằng cách đọc toàn bộ nội dung yêu cầu, hỗ trợ nhận hàng chục tin báo "yêu cầu sai cú pháp (400)" mỗi giờ, mặc dù nội dung gửi đi hợp lệ.
+
+Điều tra: tra log truy cập, thấy lỗi 400 tăng đột biến sau bản deploy filter mới; kiểm tra mã filter, thấy nó gọi {{req.getInputStream()}} để đọc nội dung và ghi log, sau đó controller gọi {{getInputStream()}} lần nữa nhưng dòng dữ liệu đã hết, nhận nội dung rỗng và không qua validation.
+
+Nguyên nhân gốc: dòng dữ liệu của servlet chỉ được đọc một lần; filter đọc nội dung trước controller mà không phát lại dòng dữ liệu, làm nội dung bị "mất".
+
+Xử lý: viết bộ bọc đọc toàn bộ nội dung vào mảng byte một lần, rồi trả về dòng dữ liệu mới mỗi khi {{getInputStream()}} được gọi (tương tự ContentCachingRequestWrapper của Spring); chỉ đọc nội dung ở biên khi thực sự cần, và không giữ tham chiếu đến đối tượng yêu cầu sau khi phản hồi hoàn tất.
+
+Kết quả: lỗi 400 do nội dung rỗng về 0; log chữ ký vẫn được ghi đầy đủ mà không làm hỏng luồng xử lý chính.
 
 > Senior tip: quy tắc "không giữ reference tới request": mọi dữ liệu cần dùng phía sau phải được trích thành object bất biến ngay tại biên (filter). Bất biến đơn giản này loại bỏ phần lớn lỗi "lẫn dữ liệu giữa các request".`,
   follow: [
