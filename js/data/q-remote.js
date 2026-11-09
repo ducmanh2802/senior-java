@@ -262,7 +262,29 @@ Score (fit+client+competition): [x]/9  → Decision: [SEND / SKIP] | Reason: [..
 - [ ] Lưu bảng theo dõi (job, Connects, quyết định, kết quả) để rút kinh nghiệm sau 20 proposal.
 - [ ] Kiểm tra lại giá Connects/cơ chế invite trên trang chính thức (con số thay đổi theo thời gian).
 
-> Senior tip: hãy coi Connects như ngân sách quảng cáo nhỏ. Mỗi tuần đặt giới hạn (ví dụ 40–60 Connects), chỉ "đầu tư" vào job có client tốt và độ khớp cao, rồi đo tỉ lệ phản hồi. Nếu sau 15–20 proposal đúng tệp vẫn không ai trả lời, vấn đề thường nằm ở 2–3 dòng đầu proposal hoặc profile — sửa thông điệp trước khi mua thêm Connects.`,
+### Ví dụ đời thực
+
+  **Tình huống:** Bạn có 20 Connects trong tài khoản, đọc 5 job mới đăng. Job A: cần 16 Connects, client đã xác minh thanh toán, mô tả rõ "fix N+1 query trên Spring Data JPA, p95 ~2s", bạn có case study tối ưu từ 1,8s xuống 120ms. Job B: cần 8 Connects, client chưa xác minh, mô tả "need Java developer ASAP", 50+ proposals. Job C: cần 6 Connects, client tốt, scope rõ "tối ưu query PostgreSQL", nhưng yêu cầu kinh nghiệm Kafka — bạn chưa từng dùng.
+
+  **Triệu chứng:** Bạn gửi proposal cho cả 3 job. Job A: client trả lời sau 2 ngày, mời phỏng vấn. Job B: không ai trả lời, Connects đã mất. Job C: client từ chối vì thiếu kinh nghiệm Kafka. Sau 1 tháng, bạn đã mất 30 Connects nhưng chỉ có 1 phỏng vấn.
+
+  **Điều tra:** Bạn bắt đầu ghi bảng theo dõi: job, Connects cần, điểm chấm (khớp/client/cạnh tranh), kết quả. Sau khi rà soát 10 job gần nhất, bạn thấy job có client xác minh + scope rõ + độ khớp cao → tỉ lệ phản hồi ~40%; job client yếu hoặc mô hồ → ~0%; job vượt quá khả năng → từ chối. Connects tiêu tốn không hiệu quả ở job B và C.
+
+  **Nguyên nhân gốc:** Bạn đã gửi proposal cho job không đủ điều kiện (Job B — client chưa xác minh, mô tả mơ hồ) và job vượt quá khả năng (Job C — cần Kafka mà bạn chưa dùng), tốn Connects không hiệu quả. Bạn chưa áp dụng heuristic 3 tiêu chí trước khi gửi.
+
+  **Cách xử lý:**
+  1. **Áp dụng heuristic:** Mỗi job chấm 3 tiêu chí (độ khớp/bằng chứng, chất lượng client, độ cạnh tranh/độ vừa sức), tổng 7–9 điểm mới gửi.
+  2. **Chỉ gửi job:** client xác minh, scope rõ, và bạn có bằng chứng phù hợp.
+  3. **Bỏ qua job:** client yếu, mô tả mơ hồ, hoặc cần kỹ năng chưa có — dù Connects rẻ hơn.
+  4. **Giữ Connects:** cho job thực sự phù hợp, đặt ngân sách hàng tuần (ví dụ 40–60 Connects).
+
+  **Kết quả đo được:** Sau 4 tuần áp dụng, bạn gửi 8 proposal chất lượng (~24 Connects — bạn đã bổ sung thêm sau khi mất Connects ở tháng trước), nhận 3 phản hồi, 1 phỏng vấn và 1 hợp đồng nhỏ (fix bug). Tỉ lệ phản hồi tăng từ ~10% lên ~38%. Với ngân sách 40–60 Connects/tuần, Connects được dùng hiệu quả và còn dư cho các cơ hội tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+
+  "Khi tôi có một số Connects giới hạn, tôi không gửi proposal bừa. Trước mỗi job, tôi kiểm tra client đã xác minh thanh toán chưa, đọc kỹ scope, và so sánh với bằng chứng tôi có. Nếu job cần kỹ năng tôi chưa có, tôi bỏ qua dù Connects rẻ. Tôi chấm điểm theo 3 tiêu chí: độ khớp, chất lượng client, và độ cạnh tranh — chỉ gửi khi tổng đủ cao. Connects với tôi là ngân sách quảng cáo nhỏ, và tôi đo tỉ lệ phản hồi sau mỗi 10 proposal để điều chỉnh. Việc chọn job kỹ là cách duy nhất để tôi có review đầu tiên mà không tốn quá nhiều Connects."
+
+  > Senior tip: hãy coi Connects như ngân sách quảng cáo nhỏ. Mỗi tuần đặt giới hạn (ví dụ 40–60 Connects), chỉ "đầu tư" vào job có client tốt và độ khớp cao, rồi đo tỉ lệ phản hồi. Nếu sau 15–20 proposal đúng tệp vẫn không ai trả lời, vấn đề thường nằm ở 2–3 dòng đầu proposal hoặc profile — sửa thông điệp trước khi mua thêm Connects.`,
   follow: [
     'Bạn nhận được invite (lời mời) từ client chưa xác minh thanh toán, mô tả mơ hồ. Bạn phản hồi thế nào để vừa giữ cơ hội vừa giảm rủi ro?',
     'Làm sao để viết 2–3 dòng đầu proposal khiến client đọc tiếp khi họ đang lướt hàng chục đề xuất?',
@@ -334,7 +356,29 @@ any payment adjustments through Upwork support. I will pause work on this conver
 - [ ] Bật 2FA cho Upwork và email; báo cáo (Report/Flag) cuộc trò chuyện đáng ngờ kèm bằng chứng.
 - [ ] Kiểm tra lại điều khoản non-circumvention và chính sách an toàn trên upwork.com/legal (thay đổi theo thời gian).
 
-> Senior tip: hãy đặt một "quy tắc bất biến" cho bản thân: không hợp đồng Upwork = không làm, không nhận file thực thi lạ, không chuyển tiền ra ngoài. Quy tắc đơn giản này loại bỏ phần lớn rủi ro. Khi nghi ngờ, chậm lại 10 phút để kiểm tra client, đọc lại tin nhắn, và hỏi ý kiến cộng đồng — kẻ lừa đảo luôn tạo cảm giác gấp gáp để bạn bỏ qua kiểm tra.`,
+### Ví dụ đời thực
+
+  **Tình huống:** Bạn là freelancer mới, nhận được tin nhắn từ một client chưa xác minh thanh toán: "Chúng tôi có dự án backend 6 tháng, hãy gửi proposal và làm ngay. Để tiện, chuyển sang Telegram hoặc Zalo, và gửi file test task cho chúng tôi xin." Client này có thể là lừa đảo.
+
+  **Triệu chứng:** Sau khi chuyển sang Telegram, client gửi một file "coding_test.zip" với hướng dẫn "chạy npm install và npm start". Bạn chạy script trong máy chính mà không kiểm tra. Sau đó, bạn nhận ra một số tài khoản ngân hàng và ví crypto đã bị truy cập trái phép — mất khoảng 5.000 USD.
+
+  **Điều tra:** Bạn kiểm tra lại tin nhắn trên Upwork và thấy: client chưa xác minh thanh toán, không có lịch sử thuê, job post mô tả mơ hồ ("build an app like X"), và yêu cầu chuyển sang Telegram ngay mà chưa có hợp đồng. File "coding_test.zip" chứa script postinstall tải mã từ máy chủ ngoài.
+
+  **Nguyên nhân gốc:** Bạn đã vi phạm ba quy tắc an toàn cơ bản: (1) chuyển giao tiếp ra ngoài nền tảng trước khi có hợp đồng, (2) chạy file thực thi chưa kiểm tra trong máy chính, và (3) bỏ qua tín hiệu client chưa xác minh thanh toán.
+
+  **Cách xử lý:**
+  1. **Ngắt kết nối:** Ngắt mạng, quét mã độc, đổi mật khẩu từ thiết bị sạch, kiểm tra phiên đăng nhập.
+  2. **Báo cáo:** Dùng nút Report/Flag trên Upwork, kèm bằng chứng ( ảnh chụp tin nhắn, link job).
+  3. **Thay đổi quy trình:** Từ chối chuyển sang Telegram/WhatsApp khi chưa có hợp đồng; không chạy file thực thi chưa kiểm tra trong máy chính; chỉ nhận test dạng review code hoặc paid test qua Upwork contract.
+  4. **Tự bảo vệ:** Bật 2FA cho Upwork và email; không nhấp link đăng nhập chưa kiểm tra.
+
+**Kết quả đo được:** Sau sự cố, bạn đã khôi phục được phần lớn tài khoản (thay đổi mật khẩu, kích hoạt 2FA), nhưng vẫn mất 5.000 USD và khoảng 2 tuần để xử lý. Sau đó, bạn thiết lập quy trình an toàn: mọi trao đổi quan trọng trên Upwork, không chạy file thực thi chưa kiểm tra, và chỉ làm việc với client đã xác minh thanh toán. Trong 6 tháng sau, bạn không gặp thêm lừa đảo nào và có 3 review tốt.
+
+### Trả lời mẫu khi phỏng vấn
+
+  "Tôi coi an toàn là ưu tiên hàng đầu khi làm việc trên Upwork. Khi client đề nghị chuyển sang Telegram/WhatsApp hoặc trả tiền ngoài nền tảng, tôi từ chối lịch sự nhưng rõ ràng, đề nghị giữ mọi thứ trên Upwork để hai bên đều được bảo vệ. Với file test task, tôi không bao giờ chạy file thực thi chưa kiểm tra trong máy chính — tôi chỉ nhận dạng review code hoặc đề xuất paid test qua Upwork contract, và nếu cần chạy code, tôi dùng VM cô lập. Tôi cũng luôn kiểm tra client đã xác minh thanh toán chưa và có lịch sử thuê tốt không. Quy tắc bất biến của tôi là: không hợp đồng Upwork = không làm, không nhận file thực thi chưa kiểm tra, không chuyển tiền ra ngoài."
+
+  > Senior tip: hãy đặt một "quy tắc bất biến" cho bản thân: không hợp đồng Upwork = không làm, không nhận file thực thi lạ, không chuyển tiền ra ngoài. Quy tắc đơn giản này loại bỏ phần lớn rủi ro. Khi nghi ngờ, chậm lại 10 phút để kiểm tra client, đọc lại tin nhắn, và hỏi ý kiến cộng đồng — kẻ lừa đảo luôn tạo cảm giác gấp gáp để bạn bỏ qua kiểm tra.`,
   follow: [
     'Client thật sự muốn họp qua Zoom/Google Meet sau khi đã có hợp đồng Upwork. Bạn xử lý thế nào cho đúng chính sách và vẫn thuận tiện?',
     'Bạn phát hiện dependency lạ trong project "test task" (ví dụ package chạy postinstall). Bạn kiểm tra và báo lại cho client ra sao?',
@@ -437,7 +481,28 @@ codebase and edge cases. I suggest a 1-week paid discovery milestone to produce 
 - [ ] Giữ độ dài ~80–150 từ (nhỏ) hoặc ~180–300 từ (lớn), dễ đọc trong 60–90 giây.
 - [ ] Kiểm tra lại: proposal có chứng minh bạn đã đọc job và giảm được rủi ro cho client không?
 
-> Senior tip: với dự án lớn, đề xuất một **discovery milestone** nhỏ có trả phí (1–2 tuần) để chốt yêu cầu, kiến trúc và ước lượng. Nó bảo vệ cả hai bên: client trả ít tiền để giảm rủi ro lớn, bạn tránh cam kết sai. Trong proposal, hãy gọi đây là cách "de-risk the project" — đây là ngôn ngữ client senior hiểu và đánh giá cao.`,
+### Ví dụ đời thực
+
+  **Tình huống:** Bạn nhận được 2 job cùng lúc trên Upwork. Job A: sửa một bug trên 1 endpoint REST (ước tính 2–3 giờ). Job B: xây module thanh toán cho một shop nhỏ (ước tính 4–6 tháng, nhiều phần). Bạn viết chung một proposal template khoảng 200 từ, mở đầu bằng giới thiệu bản thân ("I am a Java backend engineer with 4 years of experience…"), rồi gửi cho cả 2. Job A: client trả lời nhanh, nhận việc. Job B: client không phản hồi.
+
+  **Triệu chứng:** Tỉ lệ phản hồi job nhỏ = 100% (1/1), job lớn = 0% (0/1). Khi client Job B mở lại tin nhắn, họ viết: "Your proposal reads like a generic intro. Can you tell us how you would structure this over 4 months, and what the milestones look like?"
+
+  **Điều tra:** Bạn so sánh lại 2 job post: Job B mô tả nhiều tính năng (payment, refund, webhook, dashboard), có screening questions ("How would you estimate this? What assumptions would you make?"). Proposal bạn gửi không đề xuất giai đoạn nào, không nêu giả định, không trả lời screening questions, và chỉ có 2–3 bước làm — kiểu dành cho job nhỏ. Client cần thấy bạn tư duy hệ thống theo thời gian, nhưng họ chỉ thấy một câu trả lời cho 1 vấn đề lẻ.
+
+  **Nguyên nhân gốc:** Dùng chung template proposal của job nhỏ cho job dài hạn — thiếu lộ trình theo milestone, thiếu kế hoạch giao tiếp, thiếu câu hỏi làm rõ scope, và không đề xuất discovery milestone để giảm rủi ro. Với dự án lớn, client mua **sự tin cậy theo thời gian**, không phải giải quyết 1 vấn đề nhanh; proposal là nơi họ đánh giá xem bạn có biết quản lý rủi ro scope không.
+
+  **Cách xử lý:**
+  1. **Viết lại proposal Job B theo cấu trúc dài hạn:** đề xuất 3 phase (discovery 1 week → spec chốt; MVP 2–3 weeks → core payment flow + tests; hardening → retries/webhooks, monitoring), nêu rõ giả định (1 payment provider, APIs only, không UI), cách giao tiếp (cập nhật hàng tuần + demo mỗi milestone), và 3 câu hỏi làm rõ scope.
+  2. **Trả lời screening questions một cách cụ thể:** nêu range ước lượng (2–3 weeks MVP) kèm giả định, và đề xuất discovery milestone trả phí để chốt spec — thay vì cam kết số cứng.
+  3. **Với Job A, giữ proposal ngắn (80–150 từ):** 2–3 bước hành động + 1 câu hỏi làm rõ, không cần milestone.
+
+  **Kết quả đo được:** Gửi lại proposal Job B, client trả lời sau 3 ngày, đồng ý làm việc theo milestone trên Upwork. Sau 4 tháng, bạn đã hoàn thành dự án, nhận review 5 sao, và client muốn thuê tiếp giai đoạn bảo trì. Tỉ lệ chuyển đổi proposal dài hạn (job lớn → phỏng vấn) tăng từ 0% lên ~25% sau 4 job lớn tiếp theo — vẫn thấp hơn job nhỏ (~40%) nhưng có giá trị dài hạn cao hơn nhiều.
+
+### Trả lời mẫu khi phỏng vấn
+
+  "Khi tôi nhận được hai job cùng lúc — một việc nhỏ và một dự án lớn — tôi hiểu ngay chúng cần hai cách viết khác nhau hoàn toàn. Với job nhỏ, tôi viết proposal ngắn, tập trung vào 2–3 bước hành động cụ thể để giải quyết vấn đề ngay, kèm một câu hỏi làm rõ để bắt đầu. Với job dài hạn, thay vì chỉ nêu cách làm, tôi đề xuất một lộ trình theo giai đoạn: discovery để chốt yêu cầu, MVP để giao lõi, và hardening để ổn định. Tôi luôn nêu rõ các giả định của mình — vì khi scope chưa rõ, cam kết cứng là tự tạo bẫy. Tôi cũng đặt 2–3 câu hỏi làm rõ về ưu tiên, tiêu chí nghiệm thu và người ra quyết định, và đề xuất một discovery milestone có trả phí để giảm rủi ro cho cả hai bên. Điều quan trọng là với dự án lớn, client không mua kỹ năng của bạn — họ mua sự tin cậy theo thời gian, và proposal là nơi bạn chứng minh bạn biết cách quản lý rủi ro scope."
+
+  > Senior tip: với dự án lớn, đề xuất một **discovery milestone** nhỏ có trả phí (1–2 tuần) để chốt yêu cầu, kiến trúc và ước lượng. Nó bảo vệ cả hai bên: client trả ít tiền để giảm rủi ro lớn, bạn tránh cam kết sai. Trong proposal, hãy gọi đây là cách "de-risk the project" — đây là ngôn ngữ client senior hiểu và đánh giá cao.`,
   follow: [
     'Client hỏi ước lượng cố định cho dự án lớn nhưng tài liệu mơ hồ. Bạn trả lời thế nào để không từ chối thẳng mà vẫn an toàn?',
     'Làm sao chọn và viết một case study 1 trang từ dự án cá nhân để đính kèm proposal?',
@@ -528,7 +593,29 @@ Sau call: gửi tin nhắn tóm tắt trên Upwork (cảm ơn, tóm tắt cách 
 - [ ] Chốt bước tiếp theo cụ thể (gửi tóm tắt, milestone, thời gian); sau call nhắn tóm tắt trên Upwork.
 - [ ] Đánh giá ngược client: scope, kỳ vọng, cách phản hồi — từ chối lịch sự nếu tín hiệu xấu.
 
-> Senior tip: hãy coi 5 phút cuối là quan trọng nhất. Một bản tóm tắt sau call (3–5 gạch đầu dòng: hiểu gì, sẽ làm gì, giả định, ước lượng, bước tiếp theo) gửi trên Upwork thường là thứ khiến client chọn bạn — vì nó cho thấy bạn làm việc có cấu trúc và giảm rủi ro cho họ, đúng thứ họ mua khi thuê một senior.`,
+### Ví dụ đời thực
+
+  **Tình huống:** Bạn được client Upwork mời phỏng vấn video call cho một job tối ưu backend Java (Spring Boot + PostgreSQL). Bạn chuẩn bị trong 30 phút: đọc job post, chuẩn bị 2 mini case study (60–90 giây mỗi cái), và 4 câu hỏi làm rõ. Trên call, client hỏi về cách bạn sẽ ước lượng thời gian cho việc thêm 1 endpoint và migration DB. Bạn trả lời ngay mà không hỏi thêm về schema hiện tại, phiên bản, hay số lượng dữ liệu — chỉ nêu một khoảng ước lượng chung chung (4–8 giờ). Sau call, client không phản hồi.
+
+  **Triệu chứng:** Client không trả lời tin nhắn follow-up. Khi bạn hỏi lại, họ nói: "We went with another candidate who asked more specific questions about our current setup and gave a clearer estimate with assumptions."
+
+  **Điều tra:** Bạn xem lại ghi chú call: bạn đã trình bày 2 case study tốt (giảm p95 từ 1,8s xuống 120ms), nhưng khi đến phần ước lượng, bạn chỉ đưa ra range mà không nêu giả định cụ thể (ví dụ "assuming we can access logs and schema"). Bạn cũng không hỏi về schema hiện tại, phiên bản Spring Boot, hay dung lượng dữ liệu — thứ quyết định xem ước lượng có chính xác không. Client không biết bạn có hiểu hệ thống của họ không.
+
+  **Nguyên nhân gốc:** Chuẩn bị call là đủ, nhưng trong phần trình bày giải pháp và ước lượng, bạn bỏ qua cấu trúc 4 phần (vấn đề → cách tiếp cận → rủi ro/giả định → ước lượng có giả định) và không hỏi làm rõ các thông số cần thiết. Với phỏng vấn video call, client đánh giá cả kỹ năng và giao tiếp — việc không hỏi lại scope hoặc không nêu giả định khiến client thấy bạn chưa thực sự hiểu bối cảnh của họ.
+
+  **Cách xử lý:**
+  1. **Trình bày theo cấu trúc 4 phần:** (1) vấn đề/mục tiêu — nhắc lại điều client nói; (2) cách tiếp cận — 2–4 bước cụ thể; (3) rủi ro/giả định — nêu rõ bạn giả định điều gì và rủi ro là gì; (4) ước lượng dạng range kèm giả định (ví dụ "4–8 giờ, giả định có quyền truy cập schema và phiên bản hiện hành X").
+  2. **Hỏi làm rõ trước khi ước lượng:** schema hiện tại, phiên bản Spring Boot, dung lượng dữ liệu, ai quyết định, deadline — 4–6 câu hỏi chuẩn bị sẵn.
+  3. **Dùng think aloud (nói to suy nghĩ):** khi phân tích, nói "I am noticing the schema is X, so I would start by…" để client thấy tư duy.
+  4. **Chốt bước tiếp theo cụ thể:** sau call, gửi tin nhắn tóm tắt trên Upwork (3–5 gạch: hiểu gì, sẽ làm gì, giả định, ước lượng, bước tiếp theo).
+
+  **Kết quả đo được:** Sau khi áp dụng, bạn chuẩn bị lại với cấu trúc 4 phần và câu hỏi làm rõ. Ở call tiếp theo, bạn mở đầu bằng câu hỏi làm rõ, trình bày theo cấu trúc rõ ràng, và chốt bước tiếp theo cụ thể. Client đồng ý nhận việc với ước lượng 6–8 giờ, và sau khi hoàn thành, client muốn thuê tiếp. Tỉ lệ chuyển đổi call → job tăng từ ~0% lên ~40% sau 3 lần call.
+
+### Trả lời mẫu khi phỏng vấn
+
+  "Khi tôi tham gia một video call phỏng vấn cho một job backend, tôi coi đó là buổi khám phá hai chiều — client đánh giá tôi có giải quyết được vấn đề không, và tôi cũng đánh giá job có rõ ràng và đáng làm không. Chuẩn bị trước call rất quan trọng: tôi đọc kỹ job post, chuẩn bị 2 mini case study có số liệu, và 4–6 câu hỏi làm rõ về mục tiêu, stack, deadline và cách giao tiếp. Trên call, tôi mở đầu ngắn gọn, nhắc lại vấn đề client nêu và xin phép hỏi làm rõ. Khi trình bày giải pháp, tôi dùng cấu trúc 4 phần: vấn đề → cách tiếp cận (2–4 bước) → rủi ro/giả định → ước lượng dạng range kèm giả định cụ thể. Khi không nghe rõ, tôi xin nhắc lại hoặc diễn đạt lại — điều rất bình thường, không phải điểm trừ. Cuối call, tôi luôn chốt bước tiếp theo cụ thể: đề xuất gửi tóm tắt bằng văn bản và milestone/ước lượng trên Upwork. Sau call, tôi gửi ngay tin nhắn tóm tắt để tạo dấu rõ ràng và thể hiện tính chuyên nghiệp."
+
+  > Senior tip: hãy coi 5 phút cuối là quan trọng nhất. Một bản tóm tắt sau call (3–5 gạch đầu dòng: hiểu gì, sẽ làm gì, giả định, ước lượng, bước tiếp theo) gửi trên Upwork thường là thứ khiến client chọn bạn — vì nó cho thấy bạn làm việc có cấu trúc và giảm rủi ro cho họ, đúng thứ họ mua khi thuê một senior.`,
   follow: [
     'Client yêu cầu bạn live-coding hoặc chia sẻ màn hình debug ngay trên call. Bạn chuẩn bị và xử lý thế nào?',
     'Bạn ước lượng một task backend (ví dụ thêm API + migration DB) như thế nào để đưa ra range hợp lý?',
