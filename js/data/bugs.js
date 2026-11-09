@@ -2361,4 +2361,380 @@ Caffeine dùng thuật toán W-TinyLFU, hit ratio thường tốt hơn LRU thu�
   related: ['jvm-005', 'jvm-004', 'collections-005', 'collections-028'],
   tags: ['memory leak', 'cache', 'LRU', 'LinkedHashMap', 'OOMKilled']
 },
+{
+  id: 'bug-015',
+  title: 'Hai lần trừ tiền cùng lúc, số dư ví chỉ bị trừ một lần',
+  domain: 'Ví điện tử / Fintech',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 20,
+  story: `**Bối cảnh dự án:** Ví điện tử cho phép thanh toán QR tại cửa hàng. {{WalletService.debit}} đọc ví, kiểm tra số dư, trừ tiền rồi lưu. Entity {{Wallet}} có cột {{version}} nhưng câu UPDATE không dùng nó trong điều kiện WHERE (đội cũ bỏ {{@Version}} vì "hay bị OptimisticLockException"). Ứng dụng chạy 6 pod, mỗi pod nhiều thread.
+
+**Sự cố:** Job đối soát đêm 05/11 báo **37 ví** có số dư lớn hơn tổng nạp trừ tổng chi, tổng lệch **18,4 triệu đồng**; vài ví còn chi vượt số dư. Tất cả đều có hai giao dịch thanh toán cách nhau dưới 50 ms (khách bấm hai lần, hoặc hai đơn từ hai thiết bị).
+
+**Nhiệm vụ của bạn:** Tìm vì sao hai lần trừ tiền chỉ còn lại một, và sửa {{WalletService.debit}} để không mất cập nhật, không chi vượt số dư, và không retry vô hạn.`,
+  artifacts: [
+    { name: 'payment.log', lang: 'text', content: `21:14:07.112 [http-nio-8080-exec-14] INFO  WalletService : debit start wallet=W-88213 amount=300000 txn=T-5521
+21:14:07.118 [http-nio-8080-exec-9]  INFO  WalletService : debit start wallet=W-88213 amount=200000 txn=T-5522
+21:14:07.121 [http-nio-8080-exec-14] DEBUG SQL : select id,balance,version from wallet where id='W-88213'  -> balance=1000000 version=41
+21:14:07.124 [http-nio-8080-exec-9]  DEBUG SQL : select id,balance,version from wallet where id='W-88213'  -> balance=1000000 version=41
+21:14:07.139 [http-nio-8080-exec-9]  DEBUG SQL : update wallet set balance=800000, version=42 where id='W-88213'
+21:14:07.141 [http-nio-8080-exec-9]  INFO  WalletService : debit ok wallet=W-88213 txn=T-5522 balance=800000
+21:14:07.146 [http-nio-8080-exec-14] DEBUG SQL : update wallet set balance=700000, version=42 where id='W-88213'
+21:14:07.148 [http-nio-8080-exec-14] INFO  WalletService : debit ok wallet=W-88213 txn=T-5521 balance=700000` },
+    { name: 'reconcile-2026-11-05.txt', lang: 'text', content: `wallet     topups     payments   expected_balance  actual_balance  diff
+W-88213    1,000,000    500,000           500,000         700,000  +200,000
+W-10457    2,500,000  2,650,000          -150,000          50,000  +200,000   <-- chi vượt số dư
+W-77302      800,000    420,000           380,000         500,000  +120,000
+...
+TOTAL mismatched wallets: 37   total diff: +18,400,000 VND` },
+  ],
+  starter: `// ===== Hạ tầng (KHÔNG cần sửa) =====
+class Wallet {
+    final String id; long balance; long version;
+    Wallet(String id, long balance, long version) { this.id = id; this.balance = balance; this.version = version; }
+    Wallet copy() { return new Wallet(id, balance, version); }
+}
+
+class InsufficientFundsException extends RuntimeException {
+    InsufficientFundsException(String msg) { super(msg); }
+}
+
+// Mô phỏng bảng wallet. load() trả về bản sao như entity JPA đọc trong một transaction.
+// onLoad: test dùng để chen một giao dịch khác vào giữa lúc đọc và lúc ghi.
+class WalletStore {
+    private final Map<String, Wallet> rows = new HashMap<>();
+    Runnable onLoad;
+    int loads;
+    void insert(String id, long balance) { rows.put(id, new Wallet(id, balance, 0)); }
+    Wallet load(String id) {
+        loads++;
+        Wallet w = rows.get(id).copy();
+        Runnable hook = onLoad;
+        if (hook != null) hook.run();
+        return w;
+    }
+    // update wallet set balance=?, version=version+1 where id=?
+    void save(Wallet w) { Wallet cur = rows.get(w.id); cur.balance = w.balance; cur.version++; }
+    // update wallet set balance=?, version=version+1 where id=? and version=?  (false nếu 0 dòng được cập nhật)
+    boolean saveIfVersion(Wallet w) {
+        Wallet cur = rows.get(w.id);
+        if (cur.version != w.version) return false;
+        cur.balance = w.balance; cur.version++;
+        return true;
+    }
+    void touch(String id) { rows.get(id).version++; }   // một giao dịch khác vừa cập nhật ví
+    long balance(String id) { return rows.get(id).balance; }
+}
+
+// ===== Code cần sửa =====
+class WalletService {
+    private final WalletStore store;
+    WalletService(WalletStore store) { this.store = store; }
+
+    void debit(String walletId, long amount) {
+        Wallet w = store.load(walletId);
+        if (w.balance < amount) throw new InsufficientFundsException("số dư không đủ: " + w.balance);
+        w.balance -= amount;
+        store.save(w);
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        WalletStore s1 = new WalletStore(); s1.insert("W", 1_000_000);
+        new WalletService(s1).debit("W", 300_000);
+        check("tru_tien_binh_thuong", s1.balance("W") == 700_000, "1.000.000 - 300.000 phải còn 700.000, thực tế " + s1.balance("W"));
+
+        // Giao dịch 200.000 chen vào giữa lúc giao dịch 300.000 đọc và ghi
+        WalletStore s2 = new WalletStore(); s2.insert("W", 1_000_000);
+        WalletService svc2 = new WalletService(s2);
+        s2.onLoad = () -> { s2.onLoad = null; svc2.debit("W", 200_000); };
+        String err2 = null;
+        try { svc2.debit("W", 300_000); } catch (RuntimeException e) { err2 = e.toString(); }
+        check("khong_mat_cap_nhat", err2 == null && s2.balance("W") == 500_000,
+            "trừ 200.000 và 300.000 đồng thời phải còn 500.000, thực tế " + s2.balance("W") + (err2 == null ? "" : " lỗi=" + err2));
+
+        // Số dư 500.000: giao dịch 400.000 chen vào, giao dịch 300.000 phải bị từ chối
+        WalletStore s3 = new WalletStore(); s3.insert("W", 500_000);
+        WalletService svc3 = new WalletService(s3);
+        s3.onLoad = () -> { s3.onLoad = null; svc3.debit("W", 400_000); };
+        boolean rejected = false;
+        try { svc3.debit("W", 300_000); } catch (InsufficientFundsException e) { rejected = true; }
+        check("khong_chi_vuot_so_du", rejected && s3.balance("W") == 100_000,
+            "sau khi trừ 400.000, lệnh 300.000 phải bị từ chối và số dư còn 100.000; thực tế rejected=" + rejected + " balance=" + s3.balance("W"));
+
+        // Ví bị cập nhật liên tục: phải dừng sau vài lần thử và báo lỗi, không ghi đè
+        WalletStore s4 = new WalletStore(); s4.insert("W", 1_000_000);
+        s4.onLoad = () -> s4.touch("W");
+        String err4 = null;
+        try { new WalletService(s4).debit("W", 100_000); } catch (InsufficientFundsException e) { err4 = "sai loại lỗi"; } catch (RuntimeException e) { err4 = "ok"; }
+        check("retry_co_gioi_han", "ok".equals(err4) && s4.balance("W") == 1_000_000 && s4.loads >= 2 && s4.loads <= 5,
+            "khi luôn xung đột phải thử lại 2-5 lần rồi ném lỗi, không trừ tiền; thực tế loads=" + s4.loads + " balance=" + s4.balance("W") + " err=" + err4);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class Wallet {
+    final String id; long balance; long version;
+    Wallet(String id, long balance, long version) { this.id = id; this.balance = balance; this.version = version; }
+    Wallet copy() { return new Wallet(id, balance, version); }
+}
+
+class InsufficientFundsException extends RuntimeException {
+    InsufficientFundsException(String msg) { super(msg); }
+}
+
+class WalletStore {
+    private final Map<String, Wallet> rows = new HashMap<>();
+    Runnable onLoad;
+    int loads;
+    void insert(String id, long balance) { rows.put(id, new Wallet(id, balance, 0)); }
+    Wallet load(String id) {
+        loads++;
+        Wallet w = rows.get(id).copy();
+        Runnable hook = onLoad;
+        if (hook != null) hook.run();
+        return w;
+    }
+    void save(Wallet w) { Wallet cur = rows.get(w.id); cur.balance = w.balance; cur.version++; }
+    boolean saveIfVersion(Wallet w) {
+        Wallet cur = rows.get(w.id);
+        if (cur.version != w.version) return false;
+        cur.balance = w.balance; cur.version++;
+        return true;
+    }
+    void touch(String id) { rows.get(id).version++; }
+    long balance(String id) { return rows.get(id).balance; }
+}
+
+class WalletService {
+    static final int MAX_ATTEMPTS = 3;
+    private final WalletStore store;
+    WalletService(WalletStore store) { this.store = store; }
+
+    void debit(String walletId, long amount) {
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            Wallet w = store.load(walletId);              // đọc lại số dư MỚI NHẤT ở mỗi lần thử
+            if (w.balance < amount) throw new InsufficientFundsException("số dư không đủ: " + w.balance);
+            w.balance -= amount;
+            if (store.saveIfVersion(w)) return;           // where version = ? : chỉ ghi khi không ai sửa xen vào
+        }
+        throw new IllegalStateException("ví " + walletId + " bị cập nhật đồng thời, đã thử " + MAX_ATTEMPTS + " lần");
+    }
+}`,
+  hints: [
+    'Đọc payment.log: hai thread cùng đọc balance=1000000 version=41. Câu UPDATE thứ hai dựa trên số dư nào?',
+    'UPDATE không có điều kiện "and version = 41" nên thread chậm hơn ghi đè kết quả của thread nhanh hơn: lost update kiểu read-modify-write. WalletStore đã có sẵn saveIfVersion.',
+    'Dùng saveIfVersion; nếu trả về false thì ĐỌC LẠI ví (số dư mới) rồi kiểm tra số dư và trừ lại, tối đa vài lần; hết lượt thì ném lỗi chứ không ghi đè.',
+  ],
+  rootCause: `**Lost update do read-modify-write không có kiểm tra phiên bản.** Hai request cùng đọc ví {{W-88213}} với {{balance=1000000 version=41}} (dòng 21:14:07.121 và .124). Request T-5522 ghi {{balance=800000}}, rồi T-5521 ghi {{balance=700000}} tính từ số dư cũ 1.000.000, đè mất lần trừ 200.000. Câu UPDATE {{where id='W-88213'}} không có {{and version=41}}, nên lần ghi thứ hai vẫn thành công dù dữ liệu đã đổi.
+
+Cùng cơ chế đó, kiểm tra số dư cũng sai: cả hai request đều thấy đủ tiền dựa trên số dư cũ, nên ví {{W-10457}} chi vượt số dư (expected -150.000). Cột {{version}} có trong bảng nhưng vô dụng vì không nằm trong điều kiện WHERE.`,
+  fix: `### Cách sửa trong bài
+Ghi có điều kiện phiên bản ({{saveIfVersion}}, tương đương {{update ... where id=? and version=?}}) và khi ghi thất bại thì **đọc lại** rồi tính lại, tối đa 3 lần:
+~~~java
+for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    Wallet w = store.load(walletId);
+    if (w.balance < amount) throw new InsufficientFundsException("...");
+    w.balance -= amount;
+    if (store.saveIfVersion(w)) return;
+}
+throw new IllegalStateException("cập nhật đồng thời, hết lượt thử");
+~~~
+Điểm hay sai: retry mà **không đọc lại** (dùng lại đối tượng cũ) thì chỉ ghi đè chậm hơn; và retry vô hạn thì ví hot làm treo thread.
+
+### Trên production thật (Spring + JPA)
+| Cách | Khi nào dùng | Lưu ý |
+|---|---|---|
+| {{@Version}} + retry | Xung đột hiếm, đa số request khác ví | Bắt {{ObjectOptimisticLockingFailureException}}, retry **cả transaction** (ví dụ Spring Retry đặt bên ngoài {{@Transactional}}) |
+| Update nguyên tử {{update wallet set balance = balance - :amt where id = :id and balance >= :amt}} | Trừ tiền đơn giản | Kiểm tra số dòng cập nhật = 1, không cần đọc trước; nhanh nhất |
+| {{SELECT ... FOR UPDATE}} (pessimistic) | Ví hot, xung đột thường xuyên | Giữ transaction ngắn, có lock timeout |
+
+Với ví điện tử, cách phổ biến nhất là update nguyên tử có điều kiện số dư, kèm bảng sổ cái ghi từng giao dịch với idempotency key. Đội cũ bỏ {{@Version}} vì "hay bị exception": exception đó chính là tín hiệu có xung đột thật; bỏ nó đi là đổi lỗi ồn ào lấy lỗi âm thầm mất tiền.
+
+### Phòng ngừa
+- Mọi read-modify-write trên tiền/tồn kho phải có một trong ba cơ chế trên; review code tìm mẫu "load, set, save".
+- Test đồng thời có chèn giao dịch vào giữa (như {{onLoad}} trong bài), không chỉ test tuần tự.
+- Job đối soát số dư với sổ cái hằng ngày, đây là thứ đã phát hiện ra bug.
+
+### Liên hệ phỏng vấn
+Câu "hai người cùng cập nhật một bản ghi" xuất hiện ở hầu hết vòng Senior. Hãy kể theo thứ tự: chỉ ra lost update, so sánh optimistic với pessimistic và update nguyên tử, rồi nói cách retry đúng (đọc lại, giới hạn lượt, retry cả transaction).`,
+  related: ['jpa-004', 'scenario-008', 'scenario-119'],
+  tags: ['lost update', 'optimistic locking', '@Version', 'retry', 'wallet']
+},
+{
+  id: 'bug-016',
+  title: 'Khách không được cộng điểm thưởng mà log không có lỗi nào',
+  domain: 'Thương mại điện tử / Loyalty',
+  level: 'mid',
+  severity: 'P2',
+  minutes: 15,
+  story: `**Bối cảnh dự án:** Sau khi đặt đơn thành công, {{OrderService.afterOrderPlaced}} cộng điểm thưởng (1 điểm cho mỗi 1.000 đồng) bằng cách gọi loyalty-service **bất đồng bộ** với {{CompletableFuture.runAsync}}, để đơn hàng không phải chờ.
+
+**Sự cố:** Từ 03/11, CSKH nhận hơn 400 khiếu nại "đặt đơn rồi mà không có điểm". Đối soát cho thấy khoảng **3% đơn** không được cộng điểm, tập trung vào giờ cao điểm. Log của order-service **không có một dòng lỗi nào**; dashboard của loyalty-service lại thấy p99 vượt 2 giây và có timeout.
+
+**Nhiệm vụ của bạn:** Tìm vì sao lỗi biến mất không dấu vết, và sửa {{afterOrderPlaced}} để: lỗi được ghi log kèm mã đơn và nguyên nhân, đơn lỗi được đưa vào hàng đợi cộng lại, còn luồng đặt đơn vẫn không bị ảnh hưởng.`,
+  artifacts: [
+    { name: 'OrderService.java (đoạn đang chạy)', lang: 'java', content: `public void afterOrderPlaced(Order order) {
+    // cộng điểm bất đồng bộ, không chặn response của API đặt đơn
+    CompletableFuture.runAsync(
+        () -> loyaltyClient.addPoints(order.getUserId(), order.getAmount() / 1000),
+        loyaltyExecutor);
+}` },
+    { name: 'loyalty-service.log', lang: 'text', content: `20:31:02.411 WARN  [loyalty-http-7]  PointsController : request aborted by client after 2000ms userId=U-23871
+20:31:02.906 WARN  [loyalty-http-12] PointsController : request aborted by client after 2000ms userId=U-90112
+20:31:03.554 WARN  [loyalty-http-3]  PointsController : request aborted by client after 2000ms userId=U-44120
+...
+order-service.log 20:00-21:00: 0 dòng ERROR, 0 dòng WARN liên quan loyalty` },
+  ],
+  starter: `// ===== Hạ tầng (KHÔNG cần sửa) =====
+class Log {
+    final List<String> errors = new ArrayList<>();
+    void error(String msg) { errors.add(msg); }
+}
+
+class LoyaltyClient {
+    final Map<String, Long> points = new HashMap<>();
+    final Set<String> slowUsers = new HashSet<>();     // các user mà lời gọi sẽ timeout
+    void addPoints(String userId, long p) {
+        if (slowUsers.contains(userId)) throw new IllegalStateException("loyalty-service timeout after 2000ms");
+        points.merge(userId, p, Long::sum);
+    }
+}
+
+class RetryQueue {   // bảng outbox: job định kỳ cộng điểm lại cho các đơn này
+    final List<String> orderIds = new ArrayList<>();
+    void add(String orderId) { orderIds.add(orderId); }
+}
+
+// ===== Code cần sửa =====
+class OrderService {
+    private final LoyaltyClient loyalty; private final Log log; private final RetryQueue retryQueue; private final Executor executor;
+    OrderService(LoyaltyClient loyalty, Log log, RetryQueue retryQueue, Executor executor) {
+        this.loyalty = loyalty; this.log = log; this.retryQueue = retryQueue; this.executor = executor;
+    }
+
+    void afterOrderPlaced(String orderId, String userId, long amount) {
+        CompletableFuture.runAsync(() -> loyalty.addPoints(userId, amount / 1000), executor);
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        Executor direct = Runnable::run;   // chạy ngay trên thread gọi để test xác định
+        LoyaltyClient loyalty = new LoyaltyClient(); Log log = new Log(); RetryQueue q = new RetryQueue();
+        loyalty.slowUsers.add("U-SLOW");
+        OrderService svc = new OrderService(loyalty, log, q, direct);
+
+        svc.afterOrderPlaced("ORD-1", "U-OK", 250_000);
+        check("don_binh_thuong_duoc_cong_diem", Long.valueOf(250).equals(loyalty.points.get("U-OK")) && log.errors.isEmpty() && q.orderIds.isEmpty(),
+            "đơn 250.000 phải được 250 điểm, không log lỗi, không vào hàng đợi; points=" + loyalty.points + " errors=" + log.errors + " queue=" + q.orderIds);
+
+        String thrown = null;
+        try { svc.afterOrderPlaced("ORD-2", "U-SLOW", 120_000); } catch (RuntimeException e) { thrown = e.toString(); }
+        check("dat_don_khong_bi_anh_huong", thrown == null, "lỗi cộng điểm không được ném ra luồng đặt đơn: " + thrown);
+
+        boolean logged = log.errors.stream().anyMatch(m -> m.contains("ORD-2") && m.contains("timeout"));
+        check("loi_duoc_ghi_log", logged, "phải log lỗi chứa mã đơn ORD-2 và nguyên nhân (timeout); log hiện có: " + log.errors);
+
+        check("don_loi_vao_hang_doi_cong_lai", q.orderIds.equals(List.of("ORD-2")), "ORD-2 phải được đưa vào RetryQueue đúng một lần, thực tế " + q.orderIds);
+
+        LoyaltyClient l2 = new LoyaltyClient(); Log log2 = new Log(); RetryQueue q2 = new RetryQueue();
+        OrderService s2 = new OrderService(l2, log2, q2, direct);
+        for (int i = 0; i < 100; i++) { String u = "U-" + i; if (i % 33 == 0) l2.slowUsers.add(u); s2.afterOrderPlaced("ORD-" + (1000 + i), u, 100_000); }
+        check("nhieu_don_dem_dung", q2.orderIds.size() == 4 && log2.errors.size() == 4 && l2.points.size() == 96,
+            "100 đơn, 4 đơn lỗi: phải có 4 log, 4 đơn trong hàng đợi, 96 user có điểm; thực tế log=" + log2.errors.size() + " queue=" + q2.orderIds.size() + " points=" + l2.points.size());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class Log {
+    final List<String> errors = new ArrayList<>();
+    void error(String msg) { errors.add(msg); }
+}
+
+class LoyaltyClient {
+    final Map<String, Long> points = new HashMap<>();
+    final Set<String> slowUsers = new HashSet<>();
+    void addPoints(String userId, long p) {
+        if (slowUsers.contains(userId)) throw new IllegalStateException("loyalty-service timeout after 2000ms");
+        points.merge(userId, p, Long::sum);
+    }
+}
+
+class RetryQueue {
+    final List<String> orderIds = new ArrayList<>();
+    void add(String orderId) { orderIds.add(orderId); }
+}
+
+class OrderService {
+    private final LoyaltyClient loyalty; private final Log log; private final RetryQueue retryQueue; private final Executor executor;
+    OrderService(LoyaltyClient loyalty, Log log, RetryQueue retryQueue, Executor executor) {
+        this.loyalty = loyalty; this.log = log; this.retryQueue = retryQueue; this.executor = executor;
+    }
+
+    void afterOrderPlaced(String orderId, String userId, long amount) {
+        CompletableFuture.runAsync(() -> loyalty.addPoints(userId, amount / 1000), executor)
+            .exceptionally(ex -> {
+                // runAsync bọc lỗi trong CompletionException: lấy nguyên nhân gốc để log có nghĩa
+                Throwable cause = (ex instanceof CompletionException && ex.getCause() != null) ? ex.getCause() : ex;
+                log.error("loyalty addPoints failed orderId=" + orderId + " userId=" + userId + " cause=" + cause.getMessage());
+                retryQueue.add(orderId);   // job sẽ cộng lại; loyalty-service phải idempotent theo orderId
+                return null;
+            });
+    }
+}`,
+  hints: [
+    'runAsync trả về một CompletableFuture. Code hiện tại làm gì với đối tượng đó? Exception ném trong task đi đâu?',
+    'Exception trong task không bay ra thread gọi cũng không được in ra đâu cả: nó chỉ được lưu bên trong future (dạng CompletionException). Không ai gọi join/get hay gắn handler thì lỗi biến mất.',
+    'Gắn .exceptionally(...) (hoặc .whenComplete) ngay sau runAsync: lấy getCause() của CompletionException, log kèm orderId, đưa orderId vào RetryQueue, trả về null để future hoàn tất bình thường.',
+  ],
+  rootCause: `**Exception bị "nuốt" trong CompletableFuture fire-and-forget.** Khi task trong {{runAsync}} ném exception, CompletableFuture **không** in stack trace và không ném ra thread nào; nó chỉ hoàn tất future ở trạng thái lỗi (bọc trong {{CompletionException}}). Code gọi {{runAsync}} rồi bỏ đi kết quả, không {{join}}, không {{exceptionally}}/{{whenComplete}}, nên lỗi timeout của loyalty-service (log phía loyalty: {{request aborted by client after 2000ms}}) không để lại dấu vết nào ở order-service: đúng như "0 dòng ERROR".
+
+Khác với {{ExecutorService.execute}} (lỗi đi tới UncaughtExceptionHandler của thread và thường được in ra), CompletableFuture giữ lỗi cho người tiêu thụ kết quả. Không có người tiêu thụ thì không có lỗi. Giờ cao điểm loyalty chậm, khoảng 3% lời gọi timeout và số điểm đó mất vĩnh viễn.`,
+  fix: `### Cách sửa trong bài
+~~~java
+CompletableFuture.runAsync(() -> loyalty.addPoints(userId, amount / 1000), executor)
+    .exceptionally(ex -> {
+        Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
+        log.error("loyalty addPoints failed orderId=" + orderId + " cause=" + cause.getMessage());
+        retryQueue.add(orderId);
+        return null;
+    });
+~~~
+Nhớ unwrap {{CompletionException}}, nếu không log chỉ thấy tên lớp bao ngoài.
+
+### Trên production thật
+- **Đừng để việc quan trọng chạy kiểu fire-and-forget trong bộ nhớ.** Pod restart giữa chừng cũng làm mất task. Cách bền vững: ghi bản ghi "cần cộng điểm" vào **outbox** trong cùng transaction với đơn hàng, rồi job/consumer xử lý và retry; loyalty-service khử trùng theo orderId để cộng lại không bị cộng hai lần.
+- Đặt timeout rõ ràng: {{orTimeout}} hoặc timeout của HTTP client, và dùng executor riêng có giới hạn queue, không dùng {{ForkJoinPool.commonPool}} cho tác vụ I/O.
+- Metric đếm số lần thất bại theo loại và cảnh báo khi tăng; đây là thứ thiếu khiến sự cố kéo dài một tuần.
+
+| Cách gắn xử lý lỗi | Đặc điểm |
+|---|---|
+| {{exceptionally}} | Chỉ chạy khi lỗi, trả giá trị thay thế |
+| {{whenComplete}} | Chạy cả khi thành công lẫn lỗi, không đổi kết quả (lỗi vẫn truyền tiếp) |
+| {{handle}} | Chạy cả hai trường hợp và trả kết quả mới |
+
+### Phòng ngừa
+- Quy ước review: mọi {{CompletableFuture}} tạo ra phải được join, trả về cho caller, hoặc có handler lỗi. Error Prone có check {{FutureReturnValueIgnored}} cảnh báo khi bỏ qua future trả về.
+- Test với executor chạy đồng bộ ({{Runnable::run}}) như trong bài để kiểm tra nhánh lỗi một cách xác định.
+
+### Liên hệ phỏng vấn
+Câu hỏi "CompletableFuture xử lý exception thế nào" rất hay gặp. Nói được ba điều là đủ điểm Senior: lỗi bị giữ trong future và có thể bị nuốt; khác biệt giữa exceptionally, handle và whenComplete; và tác vụ quan trọng nên đi qua outbox chứ không chỉ chạy bất đồng bộ trong bộ nhớ.`,
+  related: ['concurrency-005', 'concurrency-037', 'concurrency-042', 'microservices-022'],
+  tags: ['CompletableFuture', 'exception handling', 'fire-and-forget', 'outbox', 'observability']
+},
 );
