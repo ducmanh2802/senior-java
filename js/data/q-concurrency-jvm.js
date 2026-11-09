@@ -4722,6 +4722,13 @@ Hai ví dụ chỉ để học; đừng chạy kiểu "tạo thread vô hạn" (
 ### Trả lời miệng 1 phút
 "StackOverflowError là stack của một thread hết chỗ, gần như luôn do đệ quy vô hạn hoặc quá sâu; chỉ thread đó bị ảnh hưởng và stack được giải phóng khi exception unwind, nên JVM vẫn khoẻ. OutOfMemoryError là một vùng dùng chung như heap, metaspace hay direct memory hết chỗ; nó nổ ở thread đang cấp phát, thường chỉ là nạn nhân, và vì bộ nhớ vẫn đầy nên cả app ở trạng thái hỏng. Cả hai đều là Error, tôi không catch để chạy tiếp. Với stack overflow tôi đọc cụm frame lặp, đổi đệ quy thành vòng lặp hoặc giới hạn độ sâu input. Với OOM tôi đọc thông điệp để biết vùng nào, bật heap dump và ExitOnOutOfMemoryError để process restart sạch rồi phân tích dump."
 
+### Ví dụ đời thực
+Triệu chứng: sau deploy feature lấy đơn hàng, API trả 500, log đầy các khung lệnh lặp lại "Order.toString → OrderItem.toString → Order.toString..." hàng ngàn lần; thread request bị StackOverflowError.
+Điều tra: mở stack trace, thấy cụm frame lặp lại giữa class Order và OrderItem; hai class đều dùng Lombok @Data sinh toString/equals hai chiều.
+Nguyên nhân gốc: Order chứa danh sách OrderItem, mỗi OrderItem tham ngược lại Order. Ghi log đơn hàng gọi toString → đệ quy vô hạn → stack của thread request đầy.
+Cách xử lý: loại field quan hệ (danh sách item, đơn hàng cha) khỏi toString/equals của Lombok, hoặc viết toString thủ công chỉ in id. Không tăng -Xss: đây là lỗi thiết kế, không phải stack quá nhỏ.
+Kết quả: log đơn hàng in xong, lỗi 500 biến mất; team quy tắc kiểm tra quan hệ hai chiều trước khi thêm @Data.
+
 > Senior tip: với StackOverflowError, tôi coi input là nghi phạm đầu tiên: cây danh mục cha–con do người dùng tạo, rule engine đệ quy, JSON từ đối tác. Giới hạn độ sâu ở biên hệ thống rẻ hơn nhiều so với tăng Xss. Với OOM, câu hỏi đầu tiên luôn là "thông điệp nói vùng nào?"; rất nhiều lần team nhầm OOM Metaspace hay Direct buffer memory thành OOM heap rồi tăng Xmx một cách vô ích.`,
   follow: [
     'Vì sao thread ném OutOfMemoryError thường không phải thủ phạm?',
@@ -4795,6 +4802,13 @@ int read() {
 ### Trả lời miệng 1 phút
 "Nguyên nhân là không có happens-before giữa writer và reader, tức là data race: JIT và CPU được phép làm lệnh ghi cờ hiện ra trước lệnh ghi value, nên reader thấy ready bằng true nhưng value vẫn cũ. Cách sửa là khai báo ready là volatile, writer ghi value trước rồi mới bật cờ, reader đọc cờ trước rồi mới đọc value: ghi volatile có ngữ nghĩa release, đọc volatile có ngữ nghĩa acquire, cộng tính bắc cầu nên value chắc chắn nhìn thấy được. Nhưng volatile không làm thao tác ghép thành nguyên tử, và nếu cần snapshot nhiều field thì tôi publish một object immutable qua một reference volatile hoặc dùng lock. Tôi không dùng sleep hay test stress để chứng minh đúng, mà chỉ ra cạnh happens-before cụ thể và kiểm bằng jcstress khi cần."
 
+### Ví dụ đời thực
+Triệu chứng: sau reload cấu hình giới hạn tốc độ API, một số instance vẫn áp dụng giới hạn cũ trong vài phút, còn instance khác đã dùng giá trị mới.
+Điều tra: mỗi instance log "config version" khi khởi động và khi reload; thấy các instance khác version, dù reload đã chạy trên tất cả pod.
+Nguyên nhân gốc: thread reload ghi các trường cấu hình mới vào object dùng chung, rồi mới bật cờ ready = true; reader không có happens-before với writer, nên thấy cờ mới nhưng đọc trường cũ (reordering trên ARM).
+Cách xử lý: khai báo cờ ready là volatile, writer cập nhật hết trường trước rồi mới bật cờ (release), reader đọc cờ trước rồi mới dùng cấu hình (acquire). Hoặc publish đối tượng cấu hình immutable qua volatile reference.
+Kết quả: sau reload, mọi reader nhìn thấy cấu hình mới cùng lúc; không còn pod dùng giới hạn cũ gây sai lệch quota.
+
 > Senior tip: khi review concurrent code, hãy chỉ ra cạnh happens-before nối writer với reader. Nếu không chỉ ra được cạnh cụ thể, đừng dựa vào việc "máy x86 chạy ổn".`,
   follow: ['Vì sao volatile không bảo vệ count++?', 'Khi nào cần immutable snapshot thay vì nhiều volatile field?'],
   tags: ['JMM', 'happens-before', 'volatile']
@@ -4867,6 +4881,13 @@ Với Java 21 có thể thay pool bằng {{newVirtualThreadPerTaskExecutor()}} c
 ### Trả lời miệng 1 phút
 "Parallel stream chạy trên commonPool, pool dùng chung cả JVM chỉ có số core trừ một worker. Nếu trong lambda có HTTP hay JDBC thì worker đứng chờ I/O, không steal được việc khác, và ForkJoinPool không tự bù thread vì driver không báo trước; thế là mọi CompletableFuture async không truyền executor và các parallel stream khác bị đói, endpoint không liên quan cũng timeout. Tôi thiết kế lại bằng bulkhead: mỗi dependency một executor có số thread và queue hữu hạn, rejection rõ ràng, timeout cho từng call, semaphore theo quota đối tác; hoặc virtual thread cộng semaphore trên Java 21. Parallel stream tôi chỉ giữ cho tính toán thuần trên dữ liệu lớn, và theo dõi metric của commonPool để phát hiện ai đó lại block trong đó."
 
+### Ví dụ đời thực
+Triệu chứng: sau thêm endpoint tổng hợp báo cáo dùng parallelStream gọi 3 API đối tác, các API không liên quan (đặt hàng, tra cứu) cũng chậm và timeout; thread dump thấy ForkJoinPool.commonPool-worker đang đọc socket.
+Điều tra: xem metric queue của commonPool tăng lên; p99 toàn dịch vụ tăng cùng lúc, không chỉ endpoint báo cáo.
+Nguyên nhân gốc: lambda trong parallelStream thực hiện gọi HTTP chặn. commonPool chỉ có 3 worker trên pod 4 vCPU, cả ba đều đứng chờ đối tác, work-stealing không giúp vì worker không rảnh; các CompletableFuture khác cũng bị đẩy vào hàng đợi chung.
+Cách xử lý: bỏ parallelStream cho I/O; tạo ExecutorService riêng cho báo cáo với 10 thread, queue 50, đầy thì trả 503 ngay, mỗi call timeout 5 giây. Quản lý executor theo vòng đời ứng dụng, không tạo mới mỗi request.
+Kết quả: endpoint báo cáo chậm tự nhiên nhưng không kéo các API khác theo; p99 đặt hàng quay lại ổn định, commonPool chỉ xử lý tính toán thuần.
+
 > Senior tip: đặt bulkhead theo từng dependency. Khi queue đã đầy, fail fast thường tốt hơn xếp thêm việc chắc chắn hết deadline.`,
   follow: ['Vì sao virtual thread vẫn cần semaphore?', 'CompletableFuture stage nào mặc định có thể chạy trên common pool?'],
   tags: ['ForkJoinPool', 'parallel stream', 'backpressure']
@@ -4935,6 +4956,13 @@ Gen ZGC       21 ms    35 ms   9.600 rps   78%        10.1 GB
 
 ### Trả lời miệng 1 phút
 "G1 chia heap thành region, dọn theo từng nhóm với mục tiêu pause mềm, MaxGCPauseMillis không phải cam kết; còn Generational ZGC làm marking và relocation đồng thời nhờ load barrier nên pause dưới một mili giây, nhưng tốn thêm CPU và thường cần heap rộng hơn. Tôi không chọn theo một con số pause mà theo SLO, CPU và RSS headroom. Benchmark đáng tin phải cùng JDK, cùng heap và quota container, cùng dữ liệu và tỷ lệ request, có warm-up, chạy vài giờ, và so cả p99, p999, throughput, CPU, RSS. Sau đó canary trên production với cấu hình rollback. Nếu ZGC đạt latency nhưng làm CPU peak cạn thì tôi giữ G1."
+
+### Ví dụ đời thực
+Triệu chứng: dịch vụ heap 8 GB, p99 latency spikes lên 120 ms mỗi giờ cao điểm, trong khi p50 vẫn ổn 30 ms.
+Điều tra: mở GC log và JFR, thấy G1 thực hiện mixed collection (dọn young cộng vùng old nhiều rác), pause dừng ứng dụng vài chục mili giây; RSS ổn định 9.6 GB, CPU peak 62%.
+Nguyên nhân gốc: pause của G1 tăng theo lượng object sống phải sao chép trong vùng old; heap lớn và cache sống lâu khiến mixed collection đắt.
+Cách xử lý: chạy load test 2 giờ trên pod cùng quota, so sánh G1 và Generational ZGC; số liệu cho thấy ZGC p99 dưới 1 ms nhưng CPU peak cao hơn (78%). Vì còn CPU headroom, chọn ZGC, triển khai canary một nhóm instance trước, giữ cấu hình rollback.
+Kết quả: p99 từ 38 ms xuống 21 ms, p999 giảm sâu; latency ổn định vào giờ cao điểm; team quyết định dựa trên SLO và headroom chứ không con số pause duy nhất.
 
 > Senior tip: nếu mục tiêu pause đạt nhưng CPU headroom cạn ở peak, collector đó chưa phù hợp production. Đừng tăng Xmx bằng toàn bộ memory limit của container.`,
   follow: ['Vì sao MaxGCPauseMillis không phải cam kết?', 'Bạn theo dõi gì để biết ZGC đang lấy CPU khỏi ứng dụng?'],
@@ -5009,6 +5037,13 @@ sau deopt (class mới load) : ~800 MB/s vài giây, rồi về ~0 khi C2 compil
 ### Trả lời miệng 1 phút
 "Allocation biến mất sau warm-up là do C2: sau khi method đủ nóng và các lời gọi nhỏ được inline, escape analysis chứng minh object không bị return, không lưu vào field hay truyền ra ngoài, nên JIT thay object bằng các biến scalar trong register và bỏ luôn lock trên nó. Nhưng đó là tối ưu phụ thuộc profile: trước khi C2 compile thì vẫn cấp phát, khi giả định đổi thì deoptimize, và code phức tạp hơn hay JDK khác có thể không tối ưu được. Vì vậy tôi không coi nó là hợp đồng. Tôi đo bằng JMH có warm-up và fork, và bằng JFR hoặc async-profiler alloc trên workload thật, rồi chỉ tối ưu allocation khi số liệu cho thấy nó thực sự gây áp lực GC."
 
+### Ví dụ đời thực
+Triệu chứng: vài phút sau deploy, rate cấp phát object cao khoảng 800 MB/s, GC làm việc liên tục; sau đó mức này giảm gần về 0 mà không đổi code.
+Điều tra: dùng JFR sự kiện jdk.ObjectAllocationSample, thấy allocation tập trung ở method tính điểm trong vòng lặp, tạo đối tượng Point tạm thời mỗi lần lặp.
+Nguyên nhân gốc: trước khi JIT C2 đủ nóng, mỗi lần lặp vẫn new Point thực sự trên heap. Sau khi method nóng, C2 inline, escape analysis chứng minh Point không thoát khỏi method, thay bằng biến scalar trong register — allocation biến mất.
+Cách xử lý: không thiết kế API dựa trên giả định "allocation miễn phí"; chạy warm-up bằng request thật trước khi pod nhận traffic; chỉ tối ưu allocation khi flame graph cho thấy nó chiếm phần lớn CPU/GC.
+Kết quả: sau warm-up, allocation rate giảm gần 0, áp lực GC giảm; code vẫn giữ độ dễ đọc, không hack dựa trên tối ưu JIT khó tái lập giữa các phiên bản JDK.
+
 > Senior tip: tối ưu allocation khi allocation flame graph chứng minh nó chiếm đáng kể CPU/GC. Thiết kế code rõ ràng trước, đừng phụ thuộc vào một tối ưu JIT khó tái lập giữa các phiên bản JDK.`,
   follow: ['Escape qua field static tác động phân tích ra sao?', 'Vì sao JMH cần warm-up và fork?'],
   tags: ['JIT', 'escape analysis', 'scalar replacement']
@@ -5076,6 +5111,13 @@ jcmd <pid> JFR.start duration=5m filename=/data/warmup.jfr
 
 ### Trả lời miệng 1 phút
 "HotSpot chạy code bằng interpreter trước, đếm số lần gọi và vòng lặp, method nóng được C1 biên dịch kèm instrumentation để thu profile, rồi C2 dùng profile đó để inline và tối ưu mạnh. Trong vài phút đầu, compiler thread ăn CPU và code chưa tối ưu, cộng với deoptimization khi giả định sai, nên latency cao rồi giảm dần. Khi điều tra tôi ghi JFR và log compilation ở canary, xem CPU compiler thread, code cache, class loading, và tách riêng các nguồn lạnh khác như connection pool hay cache rỗng, so với một nhóm instance đã warm. Cách xử lý là warm-up bằng code path thật trước khi readiness báo sẵn sàng và đủ CPU, chứ không tắt tiered compilation chỉ vì thấy tương quan."
+
+### Ví dụ đời thực
+Triệu chứng: p99 latency cao khoảng 200 ms trong 3-4 phút sau mỗi deploy, rồi giảm về 40 ms và ổn định; CPU của compiler thread cao cùng lúc.
+Điều tra: bật JFR sự kiện jdk.Compilation, jdk.Deoptimization, jdk.CodeCacheFull ở canary; thấy đỉnh compilation trùng với thời gian latency cao; xem jcmd Compiler.codecache, code cache chưa đầy.
+Nguyên nhân gốc: HotSpot khởi động bằng interpreter và C1, thu profile rồi C2 tối ưu method nóng; trong giai đoạn này compiler thread cạnh tranh CPU với request, cộng các lần deoptimization khi giả định kiểu hay phân cấp lớp thay đổi. Các nguồn "lạnh" khác (connection pool, cache rỗng) cũng xảy ra cùng lúc nhưng không phải toàn bộ.
+Cách xử lý: warm-up bằng request mẫu trên các endpoint chính trước khi readiness probe báo sẵn sàng, cho đủ CPU giai đoạn đầu, rolling update chậm (maxSurge nhỏ) để không nhiều pod lạnh cùng lúc. Không tắt tiered compilation chỉ vì thấy tương quan.
+Kết quả: latency cao chỉ còn vài phút và giảm dần sau warm-up; đội ngũ phân biệt được JIT warm-up với dependency cold start qua metric riêng.
 
 > Senior tip: giữ một nhóm instance đã warm làm đối chứng khi rollout. So p99 cùng CPU, compilation, error rate để phân biệt JIT với dependency cold start.`,
   follow: ['Deoptimization khác compilation failure thế nào?', 'Code cache đầy có biểu hiện gì?'],
