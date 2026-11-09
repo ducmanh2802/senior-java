@@ -280,11 +280,52 @@ public void importFile() throws IOException {
 }
 ~~~
 
-### Production pitfalls
-Transaction thường gắn với thread hiện tại; tự chuyển sang executor không tự mang transaction sang thread mới. Trong JPA, commit còn là lúc flush SQL nên constraint violation có thể xuất hiện cuối method. Gọi external API lâu bên trong transaction giữ connection và lock lâu. Đặt boundary quanh thao tác dữ liệu cần nguyên tử, giữ ngắn, và dùng outbox/idempotency khi phối hợp database với message broker.
+### Cơ chế từng bước
+Đi từng bước một khi một method {{@Transactional}} được gọi qua proxy:
+
+1. **Proxy chặn lời gọi**: caller giữ reference tới proxy (bean được inject), không phải target thật. Lời gọi {{orderService.placeOrder()}} đi vào proxy trước.
+2. **TransactionInterceptor lấy/khởi tạo transaction**: interceptor gọi {{PlatformTransactionManager.getTransaction()}} với {{TransactionDefinition}} đọc từ annotation (propagation, isolation, timeout, readOnly, rollbackFor). Nếu propagation là {{REQUIRED}} và có transaction đang hoạt động trên thread → dùng transaction đó; nếu chưa có → tạo mới (lấy connection từ pool, tắt auto-commit). Nếu {{REQUIRES_NEW}} → suspend transaction hiện tại (nếu có) bằng {{TransactionSuspender}}, sau đó tạo transaction mới hoàn toàn.
+3. **Gọi target method**: interceptor gọi {{target.placeOrder()}} trên object thật. Code nghiệp vụ chạy, có thể gọi repository, JPA flush, v.v.
+4. **Kết thúc method**: nếu method trả về bình thường (không ném exception) → interceptor gọi {{transactionManager.commit(status)}}. Trong JPA, commit là lúc {{EntityManager.flush()}} thực sự đẩy SQL xuống DB, nên constraint violation có thể ném exception ở bước này.
+5. **Xử lý exception**: nếu method ném exception, interceptor so khớp exception với rule rollback: unchecked ({{RuntimeException}}, {{Error}}) → luôn rollback; checked exception → chỉ rollback khi khớp {{rollbackFor}} (tính cả subclass). Nếu quyết định rollback → gọi {{transactionManager.rollback(status)}}; nếu quyết định commit → gọi commit (đây là hành vi mặc định với checked exception).
+6. **Cleanup**: sau commit/rollback, connection được trả về pool. Nếu dùng {{REQUIRES_NEW}} và suspend transaction ngoài, transaction ngoài được resume.
+
+**Vì sao lại như vậy?** Propagation quyết định **transaction nào** chịu trách nhiệm dữ liệu; rollback rule quyết định **kết thúc** transaction đó thế nào. Tách hai trục giúp bạn kiểm soát ranh giới độc lập: outer có thể muốn commit toàn bộ, inner có thể muốn rollback riêng — khi đó dùng {{REQUIRES_NEW}} cho inner. Nhưng {{REQUIRES_NEW}} tốn thêm connection từ pool, nên chỉ dùng khi thực sự cần tách biệt kết quả.
+
+~~~java
+@Service
+class OrderService {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void placeOrder() {
+        orderRepo.save(new Order());      // T1: insert order
+        auditService.logAudit();          // inner REQUIRED → dùng chung T1
+        paymentService.charge();          // inner REQUIRES_NEW → T2 độc lập
+    }
+}
+
+@Service
+class AuditService {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void logAudit() { auditRepo.save(new AuditLog()); } // cùng T1
+}
+
+@Service
+class PaymentService {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void charge() { paymentRepo.save(new Payment()); }  // T2 riêng
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **UnexpectedRollbackException do inner REQUIRED ném exception, outer bắt và nuốt**: inner đánh dấu transaction rollback-only; outer không ném tiếp exception nên interceptor của outer thấy cờ rollback-only lúc commit → rollback toàn bộ và ném {{UnexpectedRollbackException}}. Triệu chứng: log thấy "Transaction rolled back because it has been marked as rollback-only". Cách sửa: **không nuốt exception** từ inner REQUIRED, hoặc dùng {{REQUIRES_NEW}} cho inner nếu muốn tách biệt kết quả, hoặc ném lại exception (có thể bọc) để outer cũng rollback.
+- **Cạn connection pool do REQUIRES_NEW lạm dụng**: mỗi transaction suspended giữ connection; T2 cần connection mới. Dưới tải cao, pool HikariCP (mặc định 10) cạn nhanh. Triệu chứng: request timeout chờ connection, log "Pool exhausted". Cách sửa: chỉ dùng {{REQUIRES_NEW}} khi bắt buộc (ghi audit/log phải sống sót khi chính rollback); boundary ngắn, tránh gọi API/http bên trong transaction.
+- **Checked exception không rollback mặc định — dữ liệu "nửa vời" commit**: method {{importFile()}} đã {{save()}} 500 dòng rồi gặp {{IOException}} dòng 501. Không có {{rollbackFor}}, 500 dòng đã commit, caller nhận IOException. Triệu chứng: DB có dữ liệu không hoàn chỉnh, không có lỗi nào báo rõ. Cách sửa: thêm {{@Transactional(rollbackFor = Exception.class)}} hoặc ít nhất {{IOException.class}} cho các method xử lý file/IO.
+- **Transaction không lan sang thread mới**: dùng {{ExecutorService}} hoặc {{@Async}} bên trong method transactional, code trong thread mới **không** nằm trong transaction gốc. Triệu chứng: repository.save trong thread con không thấy dữ liệu cha vừa ghi, hoặc commit/rollback không ảnh hưởng thread con. Cách sửa: tránh xử lý nặng trong transaction; dùng outbox pattern cho side effect, hoặc {{TransactionTemplate}} truyền context thủ công (phức tạp, ít khuyến khích).
 
 ### Liên hệ phỏng vấn
-Với ghi audit cần tồn tại dù nghiệp vụ chính rollback, REQUIRES_NEW có thể phù hợp nhưng cần cân nhắc tính nhất quán và pool. Với thao tác nghiệp vụ cần cùng commit, REQUIRED thường đúng hơn. Luôn hỏi exception là checked hay unchecked, method có đi qua proxy không, và SQL flush xảy ra lúc nào.
+1. **Propagation REQUIRED và REQUIRES_NEW khác nhau ở điểm nào? Khi nào chọn cái nào?** — REQUIRED dùng chung transaction nếu có, không thì tạo mới; REQUIRES_NEW luôn suspend transaction ngoài (nếu có) và tạo transaction hoàn toàn riêng. Chọn REQUIRED cho các thao tác cần cùng thành công/cùng thất bại (atomic). Chọn REQUIRES_NEW khi inner phải commit độc lập (ví dụ ghi audit log, gửi metric) dù outer rollback.
+2. **Spring mặc định rollback với exception nào? Checked exception thì sao?** — Mặc định rollback cho {{RuntimeException}} và {{Error}}. Checked exception ({{IOException}}, {{SQLException}}...) thì **commit** transaction rồi mới ném exception. Muốn rollback checked exception phải khai báo {{@Transactional(rollbackFor = IOException.class)}}.
+3. **Vì sao gọi @Async bên trong method @Transactional không an toàn?** — @Async chạy trên thread pool riêng, không chia sẻ transaction context với thread cha. Transaction gốc có thể commit/rollback trước khi thread con xong, dẫn đến dữ liệu không nhất quán. Nên dùng outbox pattern: ghi event vào DB trong cùng transaction, process riêng đọc outbox và gửi.
 
 > Senior tip: Đừng dùng REQUIRES_NEW như cách sửa mọi lỗi transaction. Theo dõi connection-pool active/pending cùng thời gian transaction; boundary dài thường là nguyên nhân gây nghẽn trước khi propagation trở thành vấn đề.`,
     exercises: [{
@@ -351,7 +392,7 @@ Lỗi hay gặp:
 
 Propagation (REQUIRED/REQUIRES_NEW) quyết định **transaction nào** được dùng; rollback rule quyết định **kết thúc** nó thế nào — hai trục khác nhau.`
     }],
-    check: [{ q: 'Method bên trong chạy REQUIRED khi đã có transaction ngoài thì thường thế nào?', options: ['Luôn tạo transaction mới độc lập', 'Tham gia transaction hiện có', 'Tắt transaction ngoài', 'Chỉ chạy được với checked exception'], answer: 1, explain: `REQUIRED dùng transaction hiện có nếu có, nếu không mới tạo. "Luôn tạo transaction mới" là REQUIRES_NEW. Không propagation nào "tắt" transaction ngoài; NOT_SUPPORTED chỉ tạm treo nó. Propagation không liên quan loại exception.` }, { q: 'Method {{@Transactional public void importFile() throws IOException}} lưu 500 bản ghi rồi ném {{IOException}}. Không cấu hình gì thêm. Kết quả?', options: ['Rollback cả 500 bản ghi', '500 bản ghi được commit, caller vẫn nhận IOException', 'Spring nuốt IOException và commit', 'Spring bọc thành RuntimeException rồi rollback'], answer: 1, explain: `Mặc định Spring chỉ rollback với RuntimeException và Error; IOException là checked nên transaction được commit, sau đó exception vẫn được ném cho caller. Muốn rollback phải thêm rollbackFor = IOException.class. Spring không nuốt exception và cũng không bọc lại thành RuntimeException.` }],
+    check: [{ q: 'Method bên trong chạy REQUIRED khi đã có transaction ngoài thì thường thế nào?', options: ['Luôn tạo transaction mới độc lập', 'Tham gia transaction hiện có', 'Tắt transaction ngoài', 'Chỉ chạy được với checked exception'], answer: 1, explain: `REQUIRED dùng transaction hiện có nếu có, nếu không mới tạo. "Luôn tạo transaction mới" là REQUIRES_NEW. Không propagation nào "tắt" transaction ngoài; NOT_SUPPORTED chỉ tạm treo nó. Propagation không liên quan loại exception.` }, { q: 'Method {{@Transactional public void importFile() throws IOException}} lưu 500 bản ghi rồi ném {{IOException}}. Không cấu hình gì thêm. Kết quả?', options: ['Rollback cả 500 bản ghi', '500 bản ghi được commit, caller vẫn nhận IOException', 'Spring nuốt IOException và commit', 'Spring bọc thành RuntimeException rồi rollback'], answer: 1, explain: `Mặc định Spring chỉ rollback với RuntimeException và Error; IOException là checked nên transaction được commit, sau đó exception vẫn được ném cho caller. Muốn rollback phải thêm rollbackFor = IOException.class. Spring không nuốt exception và cũng không bọc lại thành RuntimeException.` }, { q: 'Outer REQUIRED gọi inner REQUIRES_NEW; inner commit thành công, outer sau đó ném RuntimeException. Dữ liệu của inner bị rollback không?', options: ['Có, vì outer rollback kéo theo inner', 'Không, inner đã commit trong transaction riêng và không bị ảnh hưởng', 'Chỉ rollback nếu inner cũng ném exception', 'Spring ném UnexpectedRollbackException và rollback cả hai'], answer: 1, explain: `REQUIRES_NEW tạo transaction hoàn toàn độc lập (suspend outer). Inner commit xong là dữ liệu đã xuống DB, outer rollback không thể quay ngược transaction đã kết thúc của inner. UnexpectedRollbackException chỉ xảy ra khi inner REQUIRED đánh dấu rollback-only trên transaction chung.` }, { q: 'Method @Transactional có rollbackFor = IOException.class, trong đó gọi repository.save() ném DataIntegrityViolationException (subclass của RuntimeException). Transaction có rollback không?', options: ['Không, vì rollbackFor chỉ áp dụng cho IOException', 'Có, vì RuntimeException luôn rollback mặc định, rollbackFor chỉ mở rộng thêm', 'Chỉ rollback nếu catch IOException và ném lại', 'Không, vì DataIntegrityViolationException không phải IOException'], answer: 1, explain: `Mặc định Spring rollback mọi RuntimeException (kể cả subclass như DataIntegrityViolationException) và Error. rollbackFor = IOException.class chỉ THÊM rule cho checked exception IOException (và subclass), không ghi đè rule mặc định. Vì vậy RuntimeException vẫn rollback như bình thường.` }],
     related: ['spring-003'], tags: ['Transactional', 'propagation', 'rollback', 'JPA']
   },
   {
@@ -393,6 +434,48 @@ Singleton là một instance cho mỗi bean definition trong ApplicationContext.
 | Singleton | Thường một lần mỗi context | Context quản lý |
 | Prototype | Mỗi lần resolve | Consumer chịu trách nhiệm sau khi nhận |
 
+### Cơ chế từng bước
+Đi từng bước một khi Spring khởi tạo một singleton bean {{OrderService}} phụ thuộc vào {{OrderRepository}}:
+
+1. **Đọc bean definition**: component scan tìm {{@Service}} class, tạo {{BeanDefinition}} lưu metadata (class name, scope, constructor args, property values, init/destroy method). Chưa tạo instance nào.
+2. **Resolve dependency graph**: container xây dựng đồ thị phụ thuộc. {{OrderService}} cần {{OrderRepository}} → {{OrderRepository}} phải tạo trước.
+3. **Instantiation**: gọi constructor của {{OrderRepository}} (không có dependency khác) → instance repo. Sau đó gọi constructor {{OrderService(repo)}} → instance service.
+4. **Dependency injection (field/setter)**: nếu có {{@Autowired}} trên field hoặc setter, gán giá trị ngay sau constructor.
+5. **Aware callbacks**: nếu bean implements {{BeanNameAware}}, gọi {{setBeanName("orderService")}}; nếu {{ApplicationContextAware}}, gọi {{setApplicationContext(ctx)}}.
+6. **PostProcessBeforeInitialization**: các {{BeanPostProcessor}} chạy, trong đó {{CommonAnnotationBeanPostProcessor}} phát hiện {{@PostConstruct}} và gọi method warmUp().
+7. **Custom init callbacks**: nếu implements {{InitializingBean}}, gọi {{afterPropertiesSet()}}; nếu có {{@Bean(initMethod="init")}}, gọi method init().
+8. **PostProcessAfterInitialization**: {{BeanPostProcessor}} chạy lần 2. **Quan trọng**: {{AnnotationAwareAspectJAutoProxyCreator}} (một {{BeanPostProcessor}}) bọc bean bằng **AOP proxy** tại đây. Bean đăng ký trong context và inject cho bean khác là **proxy**, không phải target gốc.
+9. **Bean sẵn sàng**: context trả proxy cho nơi cần inject.
+
+Khi shutdown ({{ConfigurableApplicationContext.close()}}):
+1. Gọi {{@PreDestroy}} (qua {{CommonAnnotationBeanPostProcessor}}).
+2. Gọi {{DisposableBean.destroy()}}.
+3. Gọi destroy-method của {{@Bean}}.
+4. Hủy theo thứ tự ngược dependency graph (bean phụ thuộc bị hủy trước dependency của nó).
+
+**Vì sao lại như vậy?** Thứ tự đảm bảo dependency sẵn sàng trước khi bean dùng nó. Proxy được tạo **sau** init callback để init method không bị chặn bởi proxy (self-invocation trong {{@PostConstruct}} không kích hoạt AOP). Hủy ngược thứ tự tránh dùng dependency đã bị đóng.
+
+~~~java
+@Service
+class OrderService {
+    private final OrderRepository repo;
+    OrderService(OrderRepository repo) { this.repo = repo; } // 1. constructor inject
+    
+    @PostConstruct
+    void init() { repo.count(); } // 2. @PostConstruct chạy TRƯỚC khi tạo proxy
+    
+    @Transactional
+    public void placeOrder() { repo.save(new Order()); } // 3. @Transactional chỉ hoạt động khi gọi QUA proxy
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **@Transactional trong @PostConstruct không hoạt động**: gọi {{this.placeOrder()}} trong {{@PostConstruct}} là self-call trên target gốc (chưa có proxy). Triệu chứng: method chạy nhưng không mở transaction, không có lock, JPA flush không xảy ra. Cách sửa: chuyển logic khởi động cần transaction sang {{ApplicationReadyEvent}} listener, hoặc tách ra bean riêng và inject.
+- **Prototype bean inject vào singleton chỉ tạo một instance**: field prototype được resolve một lần lúc tạo singleton. Triệu chứng: mỗi request dùng chung instance prototype, state bị chia sẻ nhầm (ví dụ request-scoped data rò rỉ giữa user). Cách sửa: inject {{ObjectProvider<PrototypeBean>}} rồi gọi {{getObject()}} mỗi lần cần, hoặc dùng {{@Lookup}} method.
+- **Resource rò rỉ trong prototype**: container không gọi destroy cho prototype. Nếu prototype mở {{Connection}}, {{ExecutorService}}, file handle... mà consumer không đóng → leak. Triệu chứng: connection pool cạn, thread count tăng không giảm, "Too many open files". Cách sửa: prototype implement {{AutoCloseable}}, consumer dùng try-with-resources; hoặc tránh để prototype nắm resource dài hạn.
+- **Singleton có mutable state gây race condition**: field {{private User currentUser}} trong {{@Service}} singleton, request A gán, request B đọc nhầm. Triệu chứng: dữ liệu user "nhảy" giữa request, khó tái hiện. Cách sửa: service stateless, truyền dữ liệu request qua tham số method; cần state thì dùng scope {{request}} hoặc {{ThreadLocal}} (cẩn thận cleanup).
+- **Shutdown callback không chạy khi process bị kill (SIGKILL) hoặc hết timeout**: {{@PreDestroy}} là best-effort, không đảm bảo chạy. Triệu chứng: dữ liệu trong memory chưa flush mất khi container stop gấp. Cách sửa: không dựa vào {{@PreDestroy}} cho dữ liệu quan trọng; dùng transaction DB, outbox pattern, hoặc graceful shutdown với timeout đủ dài ({{spring.lifecycle.timeout-per-shutdown-phase}}).
+
 ### Thứ tự và dependency
 Nếu A phụ thuộc B, B phải sẵn sàng trước khi A dùng dependency. Hủy bean thường theo thứ tự ngược để consumer giải phóng trước dependency. Không nên phụ thuộc vào thứ tự giữa hai bean không có quan hệ dependency; nếu cần startup ordering, khai báo dependency rõ ràng.
 
@@ -400,7 +483,9 @@ Nếu A phụ thuộc B, B phải sẵn sàng trước khi A dùng dependency. H
 Không mở thread hoặc connection trong constructor nếu khởi tạo có thể thất bại một phần. Đảm bảo shutdown graceful đóng executor và resource. Prototype chứa resource dễ rò rỉ vì context không gọi destroy cho từng instance; dùng try/finally hoặc AutoCloseable ở nơi sở hữu. Bean singleton có state mutable dùng chung gây race condition. Với web scope, proxy giúp singleton tham chiếu tới bean request-scoped nhưng cần hiểu lifecycle request.
 
 ### Liên hệ phỏng vấn
-Hãy nêu ai sở hữu vòng đời và ai chịu trách nhiệm đóng resource. Nếu prototype được inject vào singleton, giải thích vì sao vẫn chỉ thấy một instance đã inject và đề xuất factory/provider. Với shutdown, phân biệt callback best-effort với bảo đảm hoàn tất trước giới hạn thời gian dừng của nền tảng.
+1. **Bean lifecycle của Spring có những giai đoạn nào? Proxy AOP được tạo ở đâu?** — Tạo instance → inject dependency → Aware callback → @PostConstruct → InitializingBean/afterPropertiesSet → **tạo AOP proxy (postProcessAfterInitialization)** → bean sẵn sàng. Proxy tạo SAU @PostConstruct nên @Transactional trong @PostConstruct không chạy.
+2. **Prototype inject vào singleton thì sao? Làm sao để lấy instance mới mỗi lần?** — Chỉ resolve một lần lúc tạo singleton, nên singleton giữ y nguyên instance đó. Muốn instance mới: inject {{ObjectProvider<PrototypeBean>}} và gọi {{getObject()}} mỗi lần, hoặc viết method {{@Lookup PrototypeBean createPrototype()}}.
+3. **@PreDestroy có đảm bảo chạy khi app tắt không?** — Không. SIGKILL, crash JVM, hoặc hết {{spring.lifecycle.timeout-per-shutdown-phase}} đều làm callback không kịp chạy. Không dùng @PreDestroy để bảo vệ dữ liệu quan trọng; hãy dùng DB transaction, outbox, hay idempotency.
 
 > Senior tip: Lifecycle callback nên ngắn, idempotent và có log rõ. Không coi @PreDestroy là nơi duy nhất bảo vệ dữ liệu quan trọng; process có thể bị kill hoặc hết thời gian shutdown.`,
     exercises: [{
@@ -456,7 +541,7 @@ Lỗi hay gặp:
 - Ghi {{init}} trước khi kiểm tra cache: singleton bị ghi init nhiều lần dù chỉ tạo một object.
 - Không có cờ {{closed}}: gọi close hai lần thì destroy hai lần — với resource thật (connection pool) có thể ném lỗi khi đóng lần hai.`
     }],
-    check: [{ q: 'Prototype bean được inject một lần vào singleton thì chuyện gì xảy ra?', options: ['Mỗi lần gọi method singleton tự nhận prototype mới', 'Singleton giữ instance đã resolve lúc inject', 'Prototype chuyển thành request scope', 'Container không tạo prototype'], answer: 1, explain: `Dependency được resolve một lần khi singleton được tạo, nên field đó luôn trỏ tới cùng một object. Container không tự "làm mới" field mỗi lần gọi method; muốn instance mới mỗi lần cần {{ObjectProvider}} hoặc {{@Lookup}}. Scope không tự đổi thành request. Container vẫn tạo prototype — đúng một lần lúc inject.` }, { q: 'Service có method {{@Transactional void loadData()}} và được gọi từ {{@PostConstruct void init()}} của chính service đó. Vì sao transaction không được mở?', options: ['Vì @PostConstruct chạy trước khi bean được bọc proxy (postProcessAfterInitialization), và lời gọi là self-call', 'Vì @PostConstruct luôn chạy trong thread riêng', 'Vì transaction manager chỉ khởi tạo sau khi HTTP server bật', 'Vì @Transactional không hỗ trợ method trả về void'], answer: 0, explain: `@PostConstruct chạy ở bước postProcessBeforeInitialization, trước khi Spring tạo AOP proxy; hơn nữa init() gọi this.loadData() trên chính object gốc, không qua proxy. Cách sửa: chạy trong listener ApplicationReadyEvent hoặc gọi qua bean khác. @PostConstruct chạy trên thread đang tạo context, không phải thread riêng. Transaction manager là bean bình thường, không chờ HTTP server. Kiểu trả về void hoàn toàn được hỗ trợ.` }],
+    check: [{ q: 'Prototype bean được inject một lần vào singleton thì chuyện gì xảy ra?', options: ['Mỗi lần gọi method singleton tự nhận prototype mới', 'Singleton giữ instance đã resolve lúc inject', 'Prototype chuyển thành request scope', 'Container không tạo prototype'], answer: 1, explain: `Dependency được resolve một lần khi singleton được tạo, nên field đó luôn trỏ tới cùng một object. Container không tự "làm mới" field mỗi lần gọi method; muốn instance mới mỗi lần cần {{ObjectProvider}} hoặc {{@Lookup}}. Scope không tự đổi thành request. Container vẫn tạo prototype — đúng một lần lúc inject.` }, { q: 'Service có method {{@Transactional void loadData()}} và được gọi từ {{@PostConstruct void init()}} của chính service đó. Vì sao transaction không được mở?', options: ['Vì @PostConstruct chạy trước khi bean được bọc proxy (postProcessAfterInitialization), và lời gọi là self-call', 'Vì @PostConstruct luôn chạy trong thread riêng', 'Vì transaction manager chỉ khởi tạo sau khi HTTP server bật', 'Vì @Transactional không hỗ trợ method trả về void'], answer: 0, explain: `@PostConstruct chạy ở bước postProcessBeforeInitialization, trước khi Spring tạo AOP proxy; hơn nữa init() gọi this.loadData() trên chính object gốc, không qua proxy. Cách sửa: chạy trong listener ApplicationReadyEvent hoặc gọi qua bean khác. @PostConstruct chạy trên thread đang tạo context, không phải thread riêng. Transaction manager là bean bình thường, không chờ HTTP server. Kiểu trả về void hoàn toàn được hỗ trợ.` }, { q: 'Bean prototype chứa một ExecutorService và được inject vào singleton qua ObjectProvider.getObject(). Ai chịu trách nhiệm shutdown ExecutorService?', options: ['Spring container tự gọi destroy cho prototype', 'Code nhận instance (consumer) phải tự đóng trong try-with-resources hoặc @PreDestroy của chính nó', 'Singleton cha sẽ tự đóng khi context đóng', 'ExecutorService không cần shutdown, GC sẽ dọn dẹp'], answer: 1, explain: `Spring KHÔNG gọi destroy callback cho prototype bean. Consumer nhận instance qua ObjectProvider.getObject() phải tự quản lý vòng đời: đóng resource trong finally, try-with-resources, hoặc đăng ký shutdown hook riêng. Singleton cha không biết prototype nào đã được tạo. GC không đảm bảo shutdown executor kịp thời.` }, { q: 'Khi Spring Boot shutdown, @PreDestroy callback có chắc chắn chạy không?', options: ['Luôn chạy, Spring đảm bảo', 'Chỉ chạy nếu shutdown graceful (SIGTERM), không chạy nếu SIGKILL hoặc crash JVM', 'Chỉ chạy cho singleton, không chạy cho prototype', 'Chỉ chạy nếu bean implements DisposableBean'], answer: 1, explain: `@PreDestroy là best-effort: chạy khi context.close() được gọi graceful (SIGTERM, timeout đủ). SIGKILL, crash JVM, OutOfMemoryError, hoặc hết spring.lifecycle.timeout-per-shutdown-phase đều làm callback không kịp chạy. Không dùng @PreDestroy để bảo vệ dữ liệu quan trọng (dùng DB transaction, outbox). Prototype từ đầu không có destroy callback.` }],
     related: ['spring-004'], tags: ['lifecycle', 'scope', 'singleton', 'prototype']
   },
   {
