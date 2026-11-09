@@ -5,24 +5,33 @@
   topic: 'english',
   level: 'mid',
   q: 'Tell me about yourself. Give the short version you would use at the start of a Senior Java backend interview.',
-  a: `**Tóm tắt:** Interviewer không cần lý lịch đầy đủ; họ muốn biết bạn là ai, mạnh ở đâu và vì sao ngồi ở đây. Công thức 60–90 giây: **hiện tại (vai trò + domain + scale) → quá khứ (1–2 thành tựu có số) → vì sao ứng tuyển**. Đừng kể từ lúc tốt nghiệp đại học.
+  a: `**Tóm tắt:** Interviewer không cần nghe toàn bộ lý lịch; họ muốn đánh giá ba thứ: bạn là ai (vai trò, domain, quy mô hệ thống), bạn đã tạo ra giá trị gì (thành tựu có số liệu), và bạn có phù hợp vị trí đang tuyển không. Công thức 60–90 giây: **hiện tại → quá khứ (1-2 thành tựu) → vì sao ứng tuyển**.
 
 ### Sample answer
-Thanks for having me. I am a backend engineer with seven years of experience, and for the last three years I have been working on a payments platform at a fintech company here in Vietnam. The platform handles about two million transactions a day across roughly twenty Spring Boot services, and I own the payment orchestration and reconciliation services end to end, from design and code review to running them on Kubernetes.
+Thanks for having me. I am a backend engineer with seven years of experience, and for the last three years I have focused on payments at a fintech company in Vietnam. Our platform processes around two million transactions a day across roughly twenty Spring Boot services running on Kubernetes. I own the payment orchestration and reconciliation services end to end, which means I am responsible for design, code reviews, on-call support, and production reliability.
 
-Before that I was a Java developer on a logistics product, where I led the migration of a legacy monolith from Java 8 and Spring 3 to Java 17 and Spring Boot 3. That project removed about forty percent of our old XML configuration and cut deployment time from forty minutes to eight.
+Before that, I worked on a logistics product where I led the migration of a legacy monolith from Java 8 and Spring 3 to Java 17 and Spring Boot 3. The project removed about forty percent of our old XML configuration and reduced deployment time from forty minutes to eight. It also made the codebase easier for new engineers to understand.
 
-What I enjoy most is the part where correctness and performance meet: idempotency, retries, reconciliation. That is exactly why I am interested in this role. Your team is moving into multi-region payments, and that is the problem I want to spend the next few years on. I am also comfortable working in English, since my current team has engineers in Singapore and India, and all our design reviews are in English.
+What I enjoy most is solving problems where correctness and performance meet, such as idempotency, retries, and reconciliation. I am interested in this role because your team is expanding into multi-region payments, and that is exactly the kind of challenge I want to take on next. I am comfortable working in English because my current team includes engineers in Singapore and India, and we run our design reviews in English.
 
 ### Useful phrases
+- **Thanks for having me**: cảm ơn anh/chị đã dành thời gian phỏng vấn em
 - **I specialize in**: tôi chuyên về
-- **end-to-end ownership**: sở hữu trọn vẹn từ thiết kế đến vận hành
-- **I led the migration of**: tôi dẫn dắt việc chuyển đổi
-- **which brings me to why I am here**: và đó là lý do tôi có mặt ở đây
-- **hands-on**: trực tiếp làm, không chỉ quản lý
-- **I own the service end to end**: tôi chịu trách nhiệm toàn bộ service
+- **end-to-end ownership**: chịu trách nhiệm trọn vẹn từ thiết kế đến vận hành
+- **I led the migration of**: tôi dẫn dắt việc chuyển đổi/nâng cấp
+- **which reduced / cut ... from ... to ...**: giúp giảm ... từ ... xuống ...
+- **that is exactly the kind of challenge I want to take on**: đó chính là thử thách tôi muốn đảm nhận
+- **I am comfortable working in English**: tôi thoải mái làm việc bằng tiếng Anh
+- **cross-functional / cross-border team**: nhóm làm việc đa chức năng / đa quốc gia
 
-> Tip: Người Việt hay viết "I have 7 years experiences" — sai, vì **experience** khi nói kinh nghiệm là uncountable: "seven years of experience". Cũng đừng dịch nguyên văn "em rất vui được phỏng vấn" thành "I am very happy to be interviewed" nghe cứng; dùng "Thanks for having me" tự nhiên hơn nhiều. Tập nói thành tiếng và bấm giờ: dài quá 2 phút là mất điểm.`,
+### Lỗi người Việt hay mắc
+- **Sai danh từ không đếm được:** "I have 7 years experiences" → đúng: "I have seven years of **experience**". Khi nói về kinh nghiệm nói chung, {{experience}} không thêm {{s}}.
+- **Dịch word-by-word lời chào:** "I am very happy to be interviewed today" nghe cứng và dịch từ tiếng Việt → dùng tự nhiên hơn: "Thanks for having me" hoặc "It is great to meet you".
+- **Dùng thì hiện tại đơn cho việc đang làm:** "I work on a payments platform for three years" → đúng: "I **have been working** on a payments platform for three years" (present perfect continuous, nhấn mạnh việc còn tiếp diễn).
+- **Thiếu mạo từ hoặc giới từ:** "I am backend engineer" → "I am **a** backend engineer"; "responsible design" → "responsible **for** design".
+- **Kể quá dài, thiếu số liệu:** Nói "I worked on many projects" mà không có con số (transactions/day, deployment time, team size) khiến câu trả lời mơ hồ và khó tin.
+
+> Senior tip: Hãy chuẩn bị hai phiên bản: bản 60 giây cho câu mở đầu và bản 90 giây nếu interviewer gật đầu muốn nghe thêm. Luôn có 2-3 con số cụ thể (quy mô traffic, thời gian giảm được, số service/team) vì số liệu tạo độ tin cậy ngay lập tức. Tập nói to, ghi âm, và cắt các từ đệm như "actually", "basically", "you know". Nếu đang apply vị trí remote/global, nhấn mạnh kinh nghiệm làm việc với team đa quốc gia và thói quen viết tài liệu/review bằng tiếng Anh. Nếu chưa nhớ câu tiếng Anh, đừng im lặng quá ba giây: hãy nói "Let me think about that for a moment".`,
   follow: [
     'Which part of that payments platform did you personally design, and which part did you inherit?',
     'You mentioned the migration to Java 17 — what was the hardest technical risk there?',
@@ -55,7 +64,14 @@ The part I own is the orchestration layer. The key design decision was to make e
 - **we are fixing that with**: chúng tôi đang khắc phục bằng
 - **per-merchant rate limiting**: giới hạn tần suất theo từng merchant
 
-> Tip: Đừng đọc tên công nghệ như một bản CV ("we use Kafka, Redis, Postgres, Kubernetes, Grafana..."). Interviewer sẽ hỏi "why" ngay. Mỗi công nghệ nêu ra phải kèm **lý do** và **đánh đổi**. Cẩn thận về thì: dự án hiện tại dùng thì hiện tại ("we run", "we have"), dự án cũ dùng quá khứ ("we ran", "we had"); đừng trộn hai thì khi nói về cùng một hệ thống.`,
+### Lỗi người Việt hay mắc
+  - **Thêm "s" cho tên proper noun**: "We are using Kafkas" → đúng là "Kafka" (tên riêng không thêm s). Tương tự "Redis", "Postgres", "Kubernetes", "EKS". Chỉ thêm "s" khi là common noun: "topics", "messages".
+  - **Thì không nhất quán trong cùng một hệ thống**: "Our system uses Kafka and it processed 400 QPS" → nếu hệ thống vẫn đang chạy thì hiện tại: "processes". Dùng quá khứ ("processed", "ran", "had") chỉ khi nói về một dự án đã kết thúc.
+  - **Thiếu mạo từ trước từ viết tắt**: "we have a API gateway" → "an API gateway"; "we have a EKS cluster" → "an EKS cluster" (vì "E" phát âm /iː/). "API" đọc /ˌeɪ piː ˈaɪ/, không nói "a-pi" lóng lánh.
+  - **Sai số ít với "there is/are"**: "There is three layers" → "There are three layers". Luôn kiểm tra chủ ngữ số ít hay đa số.
+  - **Lặp "and" quá nhiều**: "We have Kafka and Redis and Postgres and Kubernetes" → nghe như đọc danh sách. Nên dùng dấu phẩy: "Kafka, Redis, Postgres and Kubernetes", hoặc ngắt câu.
+
+  > Senior tip: Chuẩn bị sơ đồ các lớp (layers) trên giấy trước, tập nói theo thứ tự: business problem → request flow → dữ liệu/hạ tầng → scale → pain point. Mỗi công nghệ chỉ nêu khi interviewer hỏi "why". Ghi chú 3 con số vào giấy (QPS, p99, số service) để nhớ. Đọc to, ghi âm, rồi nghe lại xem từ nào phát âm chưa rõ (Kafka /ˈkæfkə/ nhấn âm đầu; EKS đọc từng chữ cái /iː keɪ es/).`,
   follow: [
     'Why did you use Kafka between the API and the orchestration workers instead of a synchronous call?',
     'How do you keep the database and the event stream consistent if the broker is briefly unavailable?',
@@ -86,7 +102,14 @@ I am also specifically interested in your company because of the way you handle 
 - **a good match in both directions**: phù hợp từ cả hai phía
 - **I would learn a lot from**: tôi sẽ học được nhiều từ
 
-> Tip: Câu "I want to leave because my manager is toxic" là tự sát trong phỏng vấn, kể cả khi đúng. Người Việt cũng hay dùng "I want to find a new challenge" quá chung chung — hãy thay bằng **một loại công việc cụ thể** (multi-region, platform scale, leading a team). Chú ý giới từ: "interested **in**", "grateful **for**", không phải "interested on".`,
+### Lỗi người Việt hay mắc
+  - **Sai giới từ với "interested"**: "I am interested **on** your company" → đúng là "interested **in**". Tương tự "grateful **for**", "good **at**", "bad **at**", "depend **on**". Đây là một trong những lỗi người Việt mắc nhiều nhất.
+  - **Dùng "find a new challenge" quá chung chung**: nghe như một câu trả lời có sẵn, không có thông tin mới. Hãy thay bằng một loại công việc cụ thể: "I want to work on multi-region consistency", "I want to lead a platform team", "I want to scale a payments system to ten times its current volume".
+  - **Phát âm "specifically"**: nhiều bạn nói "specifically" thành "spesifically" hoặc bỏ âm /p/. Đọc /spəˈsɪfɪkli/, nhấn âm tiết thứ ba.
+  - **Thiếu "a/an" trước danh từ số ít**: "I am interested in role that involves payments" → "a role". Luôn kiểm tra xem danh từ có mạo từ hay chưa.
+  - **Dùng "so" ở đầu câu như connective**: "So it is a good match" → nghe như nói tiếng Việt. Có thể dùng "so" nhưng chỉ ở giữa câu: "It is a good match, so I am excited to talk more."
+
+  > Senior tip: Câu này đánh giá thái độ nhiều hơn lý do, tuyệt đối không nói xấu sếp, đồng nghiệp hay công ty cũ. Hãy đề cập ít nhất một chi tiết cụ thể về công ty mới (bài viết kỹ thuật, sản phẩm, quyết định kiến trúc) để chứng minh bạn đã tìm hiểu. Nếu chưa tìm được chi tiết, hãy đảo ngược thành câu hỏi: "I read about your multi-region work — could you tell me more about the biggest challenge there?". Chuẩn bị trước 1-2 câu hỏi về công ty để thể hiện sự quan tâm thật.`,
   follow: [
     'What would make you stay if your current company offered you a counter-offer?',
     'What do you know about our engineering culture?',
@@ -114,8 +137,17 @@ My weakness is that I used to take too much on myself. In my previous team I wou
 - **I became a bottleneck**: tôi trở thành nút thắt
 - **I have deliberately paired with**: tôi chủ động pair với
 - **I catch myself doing it**: tôi vẫn nhận ra mình đang làm vậy
+- **I have a rule: if a task blocks someone else**: tôi có một nguyên tắc: nếu một công việc blocking người khác
+- **I ask for help earlier**: tôi xin giúp đỡ sớm hơn
 
-> Tip: Đừng nói weakness mà không có **hành động sửa** và **kết quả**. Cũng đừng chọn weakness chí mạng với vị trí ("I am bad at debugging", "I don't like code review"). Về phát âm: **strength** có cụm /str/ + /ŋθ/ rất khó, người Việt hay đọc thành "s-tren"; luyện chậm từng âm hoặc dùng "what I do well" nếu sợ vấp.`,
+### Lỗi người Việt hay mắc
+  - **Phát âm "strength"**: cụm /str/ + /ŋθ/ rất khó, nhiều bạn đọc thành "s-tren" hoặc "stren". Luyện từng âm: /strɛŋkθ/ - kết thúc bằng /θ/ (như "th" trong "think"), không phải /t/. Nếu vẫn nói không trôi chảy, hãy dùng "what I do well" để tránh vấp.
+  - **Sai từ "weakness" với "strength"**: "My strength is that I am weak at taking too much on myself" logic mâu thuẫn. Weakness phải là một khuyết điểm cụ thể, strength là điều bạn làm tốt. Đừng nhầm lẫn hai từ.
+  - **Dùng "used to" sai**: "I used to take too much on myself" (đã từng) -> đúng. Nhưng "I am used to asking for help" nghĩa là "tôi đã quen hỏi". Hai cấu trúc khác nhau: "used to + verb" (quá khứ) và "be used to + V-ing" (quen với).
+  - **Thiếu "a/an"**: "I became bottleneck" -> "a bottleneck". "I am backend engineer" -> "a backend engineer".
+  - **Dùng "deliberately" quá phổ biến**: nghe như từ vựng học thuộc lòng. Thay bằng "on purpose", "by design", hoặc simply "I started pairing with juniors".
+
+  > Senior tip: Weakness hay nhất là một điều bạn từng làm tốt nhưng giờ đã cải thiện - điều đó cho thấy bạn tự phản tỉnh. Chọn weakness không liên quan đến core requirement của vị trí (ví dụ: không chọn "I am bad at SQL" cho một job về database). Luôn kết thúc weakness bằng **hành động hiện tại** và **kết quả**: "I have a rule now, and my team says my on-call handover is much clearer." Nếu một từ phát âm khó, hãy thay bằng cụm dễ nói hơn, ví dụ thay "strength" bằng "what I do well". Cắt các từ đệm như "actually", "basically", "you know"; tập nói và ghi âm trước 2 lần để câu trả lời trôi chảy.`,
   follow: [
     'Can you give me an example where that weakness actually caused a problem?',
     'What feedback did you receive in your last performance review?',
@@ -145,8 +177,19 @@ I am also realistic: five years is long, and plans change. What I can promise is
 - **tech lead of one service area**: tech lead của một mảng service
 - **lead by being the most useful engineer**: dẫn dắt bằng việc là người hữu ích nhất
 - **I am realistic: plans change**: tôi thực tế: kế hoạch sẽ thay đổi
+- **keep going deeper in**: tiếp tục đi sâu vào
+- **jumping between stacks**: nhảy giữa các công nghệ khác nhau
+- **the problems here are real**: những vấn đề ở đây là thật (money, latency, correctness)
+- **still hands-on**: vẫn còn làm tay
 
-> Tip: Tránh "I want to be a manager in two years" nếu JD là IC, và tránh "I want your job" — nghe thiếu tinh tế. Người Việt hay nói "in 5 years I will be manager" (thiếu **a**): đúng là "a manager" khi nói một vai trò. Cũng chú ý **five years** đọc /faɪv jɪərz/, nối âm "five-years" nghe như "faiv-iearz".`,
+### Lỗi người Việt hay mắc
+  - **Sai "a/an" với vai trò**: "in 5 years I will be manager" -> đúng là "a manager". "I will be a tech lead", "I will be an architect". Luôn kiểm tra danh từ số ít có mạo từ hay chưa.
+  - **Dùng "in 5 years" thay cho "in five years"**: khi nói số, đọc số aloud: "in five years" (/faɪv jɪərz/). Nối âm "five-years" nghe như "faiv-iearz" - tập chậm: "five... years".
+  - **Phát âm "tech lead"**: nhiều bạn nói "tech lead" như hai từ riêng biệt. Đọc /tɛk liːd/, nối âm liên tục.
+  - **Sai "rather than" / "would rather"**: "I would rather lead" (đúng, dùng bare infinitive), nhưng "I would rather leading" là sai. Với cấu trúc {{would rather A than B}}, cả A và B dùng bare infinitive: "I would rather be a manager than be a tech lead". "Rather than" đứng riêng (không có would rather) mới thường đi với V-ing: "Rather than leading a team, I prefer to stay hands-on".
+  - **Dùng "hands-on" không cần dấu gạch**: "hands on" (two words) cũng đúng, "hands-on" (hyphenated) là adjective. "I want to keep writing code, still hands-on" -> nghe tự nhiên.
+
+  > Senior tip: Nối mục tiêu của bạn với vấn đề cụ thể công ty đang giải quyết: "This company is a good place for that because the problems here are real: money, latency, correctness." Thay vì câu chung chung "I want to learn more", hãy nêu một kỹ năng bạn muốn đi sâu (distributed transactions, consensus, multi-region design) và lý do nó quan trọng với vai trò. Đừng nói "I want to be a manager" nếu JD là Individual Contributor — nói rõ bạn muốn vẫn hands-on (ví dụ tech lead của một mảng service). Cuối câu, hỏi ngược một câu về roadmap của team.`,
   follow: [
     'Would you rather grow as an individual contributor or as a manager?',
     'What skill are you actively working on right now?',
@@ -178,8 +221,18 @@ I am also realistic: five years is long, and plans change. What I can promise is
 - **we replayed them from Kafka**: chúng tôi replay từ Kafka
 - **no merchant actually lost money**: không merchant nào thực sự mất tiền
 - **we have not had an incident since**: từ đó chưa có sự cố nào
+- **the root cause was**: nguyên nhân gốc là
+- **a validation test for every rule**: một test validation cho mỗi rule
+- **a canary step that sends one percent**: một bước canary gửi 1% traffic
 
-> Tip: Đừng kể incident mà **bạn chỉ là người quan sát**; interviewer sẽ đào ngay "what did **you** do?". Cũng đừng giấu thiệt hại — nêu số liệu thật rồi cho thấy bạn kiểm soát được. Thì quá khứ là bắt buộc: "we **saw**", "I **made** the call", không dùng hiện tại. Tập nói cụm "twelve thousand" trôi chảy, đừng đọc từng số.`,
+### Lỗi người Việt hay mắc
+  - **Dùng "we" thay cho "I"**: "We saw that errors started" -> nghe như bạn chỉ là người đi cùng đội. Luôn dùng "I" khi nói vai trò của bạn: "I took the communication role", "I made the call to roll back". Interviewer sẽ hỏi "what did YOU do?" ngay.
+  - **Sai thì quá khứ với các từ quá khứ**: "we saw", "I made", "we replayed" -> đúng. Đừng trộn hiện tại: "we see" khi sự cố đã xảy ra. Kiểm tra mỗi động từ có -ed hay không.
+  - **Phát âm số "twelve thousand"**: nhiều bạn đọc tách từng số: "twelve... thousand". Đọc liên tục /twɛlv ˈθaʊzənd/, nối âm "twelve-thousand".
+  - **Sai "postmortem"**: viết một từ, không phân cách: "postmortem" (không phải "post-mortem" khi dùng như danh từ). Đọc /ˈpoʊstmɔrtəm/.
+  - **Dùng "canary" không hiểu nghĩa**: "a canary step" nghe như từ kỹ thuật. Nếu không sure, hãy nói "a small rollout to one percent of traffic first" - dễ hiểu và vẫn đúng.
+
+  > Senior tip: Câu này kiểm tra **khả năng phản xạ và quản lý rủi ro**. Điều quan trọng nhất là "I made the call to roll back" — một senior engineer biết khi nào dừng và rollback thay vì debug tiếp khi hệ thống đang mất tiền mỗi phút. Mỗi phần STAR nên có số liệu (số giao dịch lỗi, thời gian khôi phục, số đơn hàng bị ảnh hưởng). Sau sự cố, nêu hành động phòng ngừa cụ thể (validation test, canary rollout, automated rollback) và nhắc đến postmortem (tài liệu chia sẻ lại cho toàn team). Luôn dùng "I" cho vai trò của bạn, không chỉ "we".`,
   follow: [
     'What would you have done differently if the rollback had not worked?',
     'Who else was involved, and how did you divide the work?',
