@@ -557,7 +557,7 @@ Schema giống mẫu đơn có ô trống: nó đảm bảo người ta điền 
 
 ### Lỗi hay gặp
 - **Parse JSON bằng regex trên text** → vỡ khi model thêm lời dẫn.
-- **Ép tool bằng tool_choice type tool** để lấy JSON: trên các model hiện hành (Opus 5.5, Sonnet 5.5, Fable 5.1) cách này trả lỗi 400. Hãy dùng structured outputs hoặc tool_choice auto + strict.
+- **Ép tool bằng tool_choice type tool** để lấy JSON: trên các model hiện hành (Opus 5.5, Sonnet 5.5) cách này trả lỗi 400. Hãy dùng structured outputs hoặc tool_choice auto + strict.
 - **Bật citations cùng structured outputs**: hai tính năng không dùng chung được (lỗi 400).
 - **Schema quá phức tạp** (lồng sâu, nhiều anyOf): dễ lỗi và chậm; hãy giữ phẳng, rõ ràng.
 
@@ -631,17 +631,17 @@ Sếp yêu cầu tính chi phí tính năng "tóm tắt tài liệu pháp luật
   id: 'claude-011',
   topic: 'claude',
   level: 'senior',
-  q: 'So sánh các model Claude hiện hành (Haiku 5.5, Sonnet 5.5, Opus 5.5, Fable 5.1). Bạn chọn model cho từng tính năng của một sản phẩm thế nào?',
+  q: 'So sánh các model Claude hiện hành (Haiku 5.5, Sonnet 5.5, Opus 5.5). Bạn chọn model cho từng tính năng của một sản phẩm thế nào?',
   a: `**Tóm tắt:** Bốn tầng theo năng lực và giá:
 - **Haiku 5.5**: rẻ, nhanh nhất ($0.10/$0.50 mỗi MTok khi prompt ≤ 100K token).
 - **Sonnet 5.5**: cân bằng tốc độ và năng lực ($2/$10).
 - **Opus 5.5**: mạnh cho việc khó và agent dài ($4/$20); đây là mặc định Anthropic khuyến nghị cho đa số việc.
-- **Fable 5.1**: mạnh nhất cho suy luận cực khó, chạy lâu ($10/$50).
+- **Sonnet 5.5 (high effort)** hoặc **Opus 5.5 (high effort)**: cho suy luận cực khó, chạy lâu, đắt hơn.
 
 Tất cả có context 1M, output tối đa 128K. Chọn model bằng **eval trên dữ liệu thật**, không chọn theo cảm tính: bắt đầu từ model có khả năng đạt yêu cầu, rồi thử hạ xuống model rẻ hơn hoặc hạ **effort** xem chất lượng có giữ được không.
 
 ### Hiểu nhanh
-Giống thuê người: thực tập sinh (Haiku) làm nhanh việc đơn giản như phân loại; kỹ sư (Sonnet) làm phần lớn công việc hằng ngày; senior (Opus) cho việc phức tạp nhiều bước; chuyên gia đầu ngành (Fable) cho bài toán khó nhất, đắt và chậm hơn. Không ai thuê chuyên gia để phân loại email.
+Giống thuê người: thực tập sinh (Haiku) làm nhanh việc đơn giản như phân loại; kỹ sư (Sonnet) làm phần lớn công việc hằng ngày; senior (Opus) cho việc phức tạp nhiều bước; chuyên gia đầu ngành (Opus effort cao) cho bài toán khó nhất, đắt và chậm hơn. Không ai thuê chuyên gia để phân loại email.
 
 ### Thuật ngữ
 - **Effort**: mức "cố gắng suy nghĩ" ({{low}} → {{max}}) trong cùng một model, đòn bẩy chi phí đầu tiên trước khi đổi model.
@@ -654,7 +654,7 @@ Giống thuê người: thực tập sinh (Haiku) làm nhanh việc đơn giản
 | Phân loại ticket, gắn nhãn, trích trường đơn giản | Haiku 5.5 | Khối lượng lớn, cần rẻ và nhanh |
 | Chatbot hỗ trợ khách hàng, tóm tắt | Sonnet 5.5 | Cân bằng chất lượng và độ trễ |
 | Coding agent, phân tích nhiều bước, tool use phức tạp | Opus 5.5 | Ổn định trên tác vụ dài |
-| Nghiên cứu sâu, bài toán cực khó mà Opus effort cao vẫn chưa đạt | Fable 5.1 | Đắt và chậm hơn, chỉ dùng khi đo được lợi ích |
+| Nghiên cứu sâu, bài toán cực khó mà Opus effort cao vẫn chưa đạt | Opus 5.5 (high/xhigh effort) | Đắt và chậm hơn, chỉ dùng khi đo được lợi ích |
 
 ### Quy trình chọn từng bước
 1. Xây eval 50–200 case cho tính năng, có tiêu chí chấm rõ.
@@ -670,14 +670,14 @@ Giống thuê người: thực tập sinh (Haiku) làm nhanh việc đơn giản
 - **Ghi ID model kèm hậu tố ngày tự đoán**: chỉ dùng đúng ID trong tài liệu (ví dụ {{claude-sonnet-5-5}}).
 
 ### Trả lời miệng 1 phút
-"Có bốn tầng: Haiku 5.5 rẻ và nhanh cho phân loại hay trích xuất khối lượng lớn, Sonnet 5.5 cân bằng cho chatbot và tóm tắt, Opus 5.5 cho việc phức tạp và agent dài, Fable 5.1 cho bài toán khó nhất. Tất cả có context 1M. Tôi không chọn theo cảm tính mà xây eval từ dữ liệu thật, chạy vài model và mức effort, so chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành, rồi chọn phương án rẻ nhất đạt ngưỡng. Thường tôi thử hạ effort trước khi đổi sang model nhỏ hơn."
+"Có bốn tầng: Haiku 5.5 rẻ và nhanh cho phân loại hay trích xuất khối lượng lớn, Sonnet 5.5 cân bằng cho chatbot và tóm tắt, Opus 5.5 cho việc phức tạp và agent dài, và Opus 5.5 effort cao cho bài toán khó nhất. Tất cả có context 1M. Tôi không chọn theo cảm tính mà xây eval từ dữ liệu thật, chạy vài model và mức effort, so chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành, rồi chọn phương án rẻ nhất đạt ngưỡng. Thường tôi thử hạ effort trước khi đổi sang model nhỏ hơn."
 
 ### Ví dụ đời thực
 Sản phẩm có ba tính năng AI: phân loại ticket, chat hỗ trợ và review code pull request. Ban đầu team dùng Opus 5.5 cho tất cả, hóa đơn tháng sau tăng 30 lần. Tôi xây eval 150 case thật cho mỗi tính năng, chạy thử Haiku, Sonnet, Opus ở effort low/medium, ghi chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành. Kết quả: phân loại ticket, Haiku đạt 97% đúng và chỉ 0.02 USD/tác vụ, Opus 0.40 USD; chat hỗ trợ, Sonnet đạt ngưỡng chất lượng, Opus tốt hơn nhưng không đáng gấp 10 tiền; review code giữ Opus effort medium vì sai lệch nhiều bước. Áp dụng: hóa đơn từ 4.200 xuống 610 USD tháng sau, chất lượng không giảm theo eval. Luật: chọn theo số liệu, không theo cảm tính. Tôi cũng đặt alert chi phí theo route để phát hiện sớm nếu chi phí bất thường tăng, và lưu model đã dùng cho mỗi request vào DB để so sánh khi Anthropic ra model mới.
 
 > Senior tip: lưu {{model}} và phiên bản prompt cùng mỗi kết quả trong DB. Khi Anthropic ra model mới, bạn chạy lại đúng bộ eval cũ và có số liệu so sánh trong một buổi chiều, thay vì tranh luận cảm tính.`,
   follow: ['Router chọn model nên đặt ở đâu trong kiến trúc?', 'Khi nâng từ model cũ lên model mới bạn kiểm tra những gì?'],
-  tags: ['model selection', 'Haiku', 'Sonnet', 'Opus', 'Fable', 'eval']
+  tags: ['model selection', 'Haiku', 'Sonnet', 'Opus', 'eval']
 },
 {
   id: 'claude-012',
@@ -797,6 +797,17 @@ class AiClient {
 ### Trả lời miệng 1 phút
 "Tôi gom mọi lời gọi Claude vào một lớp AiClient nội bộ, là nơi duy nhất giữ API key lấy từ secret manager. Frontend chỉ gọi API của mình. Lớp đó có timeout theo route, một tầng retry cho 429 và 5xx, circuit breaker và bulkhead để AI chậm không kéo sập cả app, cùng quota theo người dùng để chặn lạm dụng và kiểm soát chi phí. Mỗi lời gọi được log route, model, token, độ trễ, stop_reason và request-id, có metric và tracing. Dữ liệu nhạy cảm được che trước khi gửi."
 
+### Ví dụ đời thực
+**Triệu chứng:** Một ứng dụng Spring Boot (khoảng 5.000 người dùng đồng thời giờ cao điểm) có tính năng "tóm tắt tài liệu bằng AI". Một buổi trưa, Claude API phản hồi chậm bất thường (p95 từ 3 giây lên 45 giây). Sau 10 phút, không chỉ tính năng tóm tắt mà cả trang danh sách tài liệu và trang đăng nhập cũng bị treo/timeout. Đồng thời một người dùng lạm dụng gửi 800 request/giờ, đẩy chi phí ngày lên gấp 6 lần bình thường.
+
+**Điều tra (lệnh/metric/log cụ thể):** Kiểm tra metric thread pool Tomcat ({{tomcat.threads.busy}}) thấy chạm {{maxThreads}} (200/200). Tracing (OpenTelemetry) cho thấy các request treo đang chờ {{AiClient.summarize()}} — lời gọi HTTP tới Claude không có read timeout nên thread bị giữ. Log chi phí theo {{userId}} (từ {{usage}}) cho thấy một {{userId}} chiếm 62% request trong 1 giờ. Ban đầu mỗi controller tự gọi Claude, không có chỗ đặt quota hay bulkhead chung.
+
+**Nguyên nhân gốc:** (1) Không có timeout/bulkhead nên lời gọi AI chậm chiếm hết thread của cả ứng dụng (cascading failure); (2) không có quota theo người dùng nên một user lạm dụng gây tốn kém; (3) tích hợp phân tán, không có điểm kiểm soát chung.
+
+**Cách xử lý:** Gom mọi lời gọi vào {{AiClient}} (nơi duy nhất giữ key từ AWS Secrets Manager). Đặt connect timeout 5 giây, read timeout 60 giây cho route đồng bộ; bulkhead tối đa 40 lời gọi AI đồng thời để AI chậm không vượt quá 40 thread. Thêm circuit breaker (Resilience4j, mở khi tỉ lệ lỗi/chậm cao) trả về "tính năng AI tạm thời bận" thay vì treo. Quota theo {{userId}} bằng Redis (ví dụ 60 request/giờ, vượt trả 429 nội bộ). Log {{route, model, input/output/cache token, latency, stop_reason, request-id}} và metric Micrometer; thêm feature flag tắt riêng tính năng tóm tắt.
+
+**Kết quả đo được:** Tái diễn sự cố giả lập (tiêm độ trễ 45 giây vào lời gọi AI): thread pool Tomcat chỉ tăng tối đa 40 thread cho AI, các trang khác vẫn p95 < 300 ms; circuit breaker mở sau ~30 giây và trả fallback. User lạm dụng bị chặn ở request thứ 61 trong giờ. Chi phí ngày về mức bình thường; thời gian tắt tính năng AI khi cần chỉ còn thao tác bật/tắt feature flag (vài giây), không cần deploy.
+
 > Senior tip: thêm **feature flag** cho từng tính năng AI. Khi chi phí tăng đột biến hoặc nhà cung cấp gặp sự cố, bạn tắt riêng tính năng đó trong vài giây thay vì phải deploy lại.`,
   follow: ['Bạn đặt quota theo người dùng bằng Redis thế nào?', 'Làm sao test tích hợp Claude trong CI mà không tốn tiền?'],
   tags: ['Spring Boot', 'API key', 'Resilience4j', 'observability', 'kiến trúc']
@@ -806,7 +817,7 @@ class AiClient {
   topic: 'claude',
   level: 'mid',
   q: 'Người dùng muốn upload ảnh hoá đơn và file PDF hợp đồng để Claude đọc. Bạn gửi chúng qua Messages API thế nào, có giới hạn gì, và khi nào dùng Files API?',
-  a: `**Tóm tắt:** Ảnh gửi bằng content block {{image}} với {{source}} là {{base64}} hoặc {{url}}; PDF gửi bằng block {{document}} (base64, có {{media_type: "application/pdf"}}). Model đọc cả chữ lẫn hình trong PDF. Giới hạn chính: request tối đa 32 MB, PDF tối đa 600 trang (100 trang với model context 200K). Nếu cùng một file dùng lại nhiều lần thì **upload một lần qua Files API** rồi tham chiếu bằng {{file_id}}.
+  a: `**Tóm tắt:** Ảnh gửi bằng content block {{image}} với {{source}} là {{base64}} hoặc {{url}}; PDF gửi bằng block {{document}} (base64, có {{media_type: "application/pdf"}}). Model đọc cả chữ lẫn hình trong PDF. Giới hạn chính: request tối đa 32 MB, PDF tối đa 600 trang. Nếu cùng một file dùng lại nhiều lần thì **upload một lần qua Files API** rồi tham chiếu bằng {{file_id}}.
 
 ### Hiểu nhanh
 Gửi base64 giống photocopy tài liệu kèm theo mỗi lá thư. Files API giống gửi tài liệu vào kho lưu trữ một lần, các lá thư sau chỉ ghi "xem hồ sơ số X".
@@ -851,6 +862,17 @@ Gửi base64 giống photocopy tài liệu kèm theo mỗi lá thư. Files API g
 ### Trả lời miệng 1 phút
 "Ảnh tôi gửi bằng block image với source base64 hoặc url, PDF bằng block document base64 media type application/pdf; Claude đọc được cả chữ lẫn hình trong PDF. Giới hạn là 32 MB mỗi request và 600 trang PDF. Tôi đặt tài liệu trước câu hỏi. Nếu người dùng hỏi nhiều câu trên cùng một hợp đồng, tôi upload một lần qua Files API, tham chiếu bằng file_id và cache phần đó. Khi cần dẫn chứng thì bật citations. Backend vẫn kiểm tra loại file, kích thước và cho người dùng xác nhận các số liệu quan trọng."
 
+### Ví dụ đời thực
+**Triệu chứng:** Một hệ thống kế toán cho phép kế toán viên upload ảnh hoá đơn và PDF hợp đồng để AI trích xuất số tiền, ngày, bên bán. Sau 2 tuần vận hành, có 3 trường hợp số tiền nhập vào phần mềm sai (lệch hàng triệu đồng) và người dùng phàn nàn "hỏi 5 câu trên cùng hợp đồng 120 trang thì rất chậm, mỗi lần chờ 20–30 giây".
+
+**Điều tra (lệnh/metric/log cụ thể):** Kiểm tra log request: mỗi câu hỏi trên cùng hợp đồng đều gửi lại toàn bộ PDF 120 trang dưới dạng base64 trong body (khoảng 9 MB/request, gần 60.000 token input/lần), nên độ trễ và chi phí đều cao. Xem 3 ca sai số tiền: ảnh hoá đơn chụp mờ/nghiêng, model trả về số tiền nhưng hệ thống tự động ghi vào DB không có bước xác nhận; so ảnh gốc thấy một ca đọc nhầm {{1.500.000}} thành {{15.000.000}}. Kiểm tra validation đầu vào: một file {{.exe}} đổi đuôi thành {{.pdf}} được chấp nhận vì chỉ kiểm tra đuôi file.
+
+**Nguyên nhân gốc:** (1) Gửi lại base64 toàn file mỗi request thay vì dùng Files API + cache; (2) tin tuyệt đối kết quả OCR/đọc ảnh mà không có human-in-the-loop; (3) kiểm tra loại file chỉ dựa vào đuôi, không dựa vào magic bytes/kích thước/số trang.
+
+**Cách xử lý:** Khi user upload hợp đồng, backend kiểm tra magic bytes (chữ ký PDF), kích thước (chặn > 32 MB) và số trang; upload một lần qua {{POST /v1/files}}, lưu {{file_id}} theo phiên hỏi đáp và tái dùng cho các câu sau (kết hợp prompt caching). Ảnh hoá đơn: resize về độ phân giải đủ đọc (tránh ảnh quá to tốn token). Bật citations để hiển thị đoạn trích kèm trang khi đối chiếu. Với số tiền/ngày quan trọng, trả về giá trị kèm mức tin cậy và bắt buộc kế toán viên xác nhận trước khi ghi DB (human-in-the-loop).
+
+**Kết quả đo được:** Câu hỏi thứ 2 trở đi trên cùng hợp đồng giảm từ 20–30 giây xuống 4–6 giây (nhờ tái dùng {{file_id}} + cache), input token trung bình mỗi câu sau giảm khoảng 85%. Sau 1 tháng, tỉ lệ kế toán viên phải sửa trường số tiền/ngày là 3,1% (đo được), và không còn ca ghi sai tự động vào DB vì mọi trường quan trọng đều cần xác nhận. File giả mạo đuôi bị chặn 100% ở bước kiểm tra magic bytes.
+
 > Senior tip: với luồng tài chính (hoá đơn, hợp đồng), thiết kế **human-in-the-loop**: AI trích xuất và đánh dấu độ tin cậy, người duyệt các trường quan trọng. Tỉ lệ người phải sửa là chỉ số chất lượng tốt nhất để theo dõi.`,
   follow: ['Bạn đánh giá độ chính xác trích xuất hoá đơn thế nào?', 'Citations giúp gì cho trải nghiệm và kiểm toán?'],
   tags: ['vision', 'PDF', 'Files API', 'citations']
@@ -860,7 +882,7 @@ Gửi base64 giống photocopy tài liệu kèm theo mỗi lá thư. Files API g
   topic: 'claude',
   level: 'senior',
   q: 'Response trả về stop_reason là "refusal". Điều này nghĩa là gì, và bạn xử lý thế nào trong sản phẩm (kể cả tính năng fallback model)?',
-  a: `**Tóm tắt:** {{refusal}} nghĩa là bộ lọc an toàn đã từ chối yêu cầu (HTTP vẫn là 200). Response kèm {{stop_details}} có {{category}} (ví dụ {{cyber}}, {{bio}}…) và {{explanation}}. Xử lý: **luôn kiểm tra stop_reason trước khi đọc content**, hiển thị thông báo thân thiện, ghi metric theo category. Với một số model mới (Opus 5.5, Fable 5.1, Sonnet 5.5…) có thể bật **fallback phía server**: API tự chạy lại trên model dự phòng ngay trong cùng request.
+  a: `**Tóm tắt:** {{refusal}} nghĩa là bộ lọc an toàn đã từ chối yêu cầu (HTTP vẫn là 200). Response kèm {{stop_details}} có {{category}} (ví dụ {{cyber}}, {{bio}}…) và {{explanation}}. Xử lý: **luôn kiểm tra stop_reason trước khi đọc content**, hiển thị thông báo thân thiện, ghi metric theo category. Với một số model mới (Opus 5.5, Sonnet 5.5…) có thể bật **fallback phía server**: API tự chạy lại trên model dự phòng ngay trong cùng request.
 
 ### Hiểu nhanh
 Giống quầy thuốc từ chối bán thuốc cần kê đơn: không phải lỗi hệ thống, mà là một quyết định. Bạn không nên "thử lại 10 lần ở cùng quầy", mà giải thích cho khách, và nếu yêu cầu hợp lệ thì chuyển sang kênh phù hợp.
@@ -900,6 +922,17 @@ Với dạng {{"default"}}, API tự chọn model dự phòng theo loại từ c
 
 ### Trả lời miệng 1 phút
 "Refusal là bộ lọc an toàn từ chối, HTTP vẫn 200 nên tôi luôn kiểm tra stop_reason trước khi đọc content. stop_details cho biết category và lời giải thích. Tôi hiển thị thông báo thân thiện, không retry mù quáng, và ghi metric refusal rate theo route và category để phát hiện false positive. Trên các model mới như Opus 5.5 có thể bật fallback phía server, API tự chạy lại trên model dự phòng trong cùng request, nhưng đó là beta nên tôi kiểm tra tài liệu theo nền tảng và vẫn kiểm tra stop_reason sau fallback."
+
+### Ví dụ đời thực
+**Triệu chứng:** Một công cụ nội bộ hỗ trợ đội bảo mật ứng dụng (phân tích log tấn công, giải thích payload nghi ngờ) bị người dùng phàn nàn: khoảng 12% câu hỏi hợp lệ như "giải thích chuỗi SQL injection này đang cố làm gì trong log của hệ thống tôi" bị trả về câu trả lời trống kèm thông báo chung chung. Trước lần đổi prompt gần nhất, tỉ lệ này dưới 2%.
+
+**Điều tra (lệnh/metric/log cụ thể):** Kiểm tra log ứng dụng: các trường hợp lỗi có HTTP 200 nhưng {{stop_reason}} là {{refusal}} và {{stop_details.category}} thường là {{cyber}}. Đối chiếu thời điểm: tỉ lệ tăng sau khi một thành viên chỉnh system prompt, bỏ đoạn nêu bối cảnh "công cụ nội bộ của đội bảo mật công ty, chỉ phân tích hệ thống do công ty sở hữu, mục đích phòng thủ". Chạy lại 50 câu hỏi bị từ chối với prompt cũ trên môi trường staging: 41/50 được trả lời bình thường.
+
+**Nguyên nhân gốc:** Thiếu ngữ cảnh bối cảnh hợp lệ (phòng thủ, hệ thống của chính công ty) trong system prompt khiến bộ phân loại an toàn coi một số yêu cầu phân tích bảo mật là hướng dẫn tấn công (false positive).
+
+**Cách xử lý:** (1) Khôi phục và làm rõ bối cảnh trong system prompt: vai trò đội bảo mật nội bộ, phạm vi chỉ hệ thống của công ty, mục đích phòng thủ/điều tra. (2) Ở code, kiểm tra {{stop_reason}} trước khi đọc {{content}}: nếu {{refusal}}, hiển thị thông báo thân thiện ("Yêu cầu chưa được xử lý theo chính sách an toàn. Hãy mô tả bối cảnh hệ thống và mục đích phòng thủ rõ hơn") và ghi metric theo {{category}}. (3) Không retry tự động cùng prompt; chỉ thử lại khi người dùng bổ sung ngữ cảnh. (4) Dựng bộ eval false positive gồm 120 câu hỏi bảo mật hợp lệ điển hình; chạy mỗi lần đổi prompt/model.
+
+**Kết quả đo được:** Sau khi sửa prompt, refusal rate của route bảo mật giảm từ 12% xuống 1,6% trên traffic thật 7 ngày. Bộ eval false positive: 118/120 câu hợp lệ được trả lời (98,3%). Các trường hợp refusal còn lại được log theo {{category}} để review thủ công; 0 trường hợp nào vi phạm chính sách sử dụng.
 
 > Senior tip: với sản phẩm chuyên ngành dễ bị từ chối nhầm (bảo mật, y tế), dựng một **bộ eval false positive** gồm các câu hợp lệ điển hình của người dùng. Chạy mỗi lần đổi model hoặc prompt để biết refusal rate trước khi khách hàng phàn nàn.`,
   follow: ['Bạn giảm false positive cho một công cụ bảo mật nội bộ thế nào?', 'Fallback ảnh hưởng chi phí và độ trễ ra sao?'],
@@ -960,6 +993,17 @@ Giống giảm tiền điện công ty: trước hết lắp đồng hồ cho t�
 ### Trả lời miệng 1 phút
 "Tôi đo trước: bảng chi phí theo route dựa trên usage, vì thường vài route chiếm phần lớn hoá đơn. Sau đó làm các free win không ảnh hưởng chất lượng: prompt caching cho phần lặp lại, dọn input như lịch sử dài, tool thừa và tài liệu thừa, giới hạn output, sửa vòng agent gọi tool vô ích, và chuyển job nền sang Batch API giảm một nửa. Chỉ sau đó mới đánh đổi: hạ effort hoặc đổi model nhỏ hơn, nhưng phải chạy eval và so chi phí trên mỗi tác vụ hoàn thành. Cuối cùng đặt quota và alert để không tái diễn."
 
+### Ví dụ đời thực
+**Triệu chứng:** Một sản phẩm SaaS B2B có 3 tính năng dùng Claude (chat hỗ trợ, trích xuất hoá đơn, tóm tắt báo cáo đêm). Hoá đơn Claude tăng từ 4.200 USD/tháng lên 12.800 USD/tháng trong một quý, trong khi số người dùng chỉ tăng 15%. Không ai biết tính năng nào gây ra.
+
+**Điều tra (lệnh/metric/log cụ thể):** Nhóm lập bảng chi phí 14 ngày từ trường {{usage}} ghi trong log (input_tokens, output_tokens, cache_read, cache_write, {{model}}, {{route}}, {{task_id}}) và từ Usage & Cost API: route chat hỗ trợ chiếm 68% chi phí dù chỉ 35% request. Đào sâu route chat: trung bình 42.000 input token/request, trong đó 28.000 là lịch sử hội thoại gửi lại nguyên vẹn; {{cache_read_input_tokens}} gần như 0 vì system prompt thay đổi nhẹ giữa các request (có chèn tên user và ngày giờ). Route tóm tắt báo cáo đêm (6.000 báo cáo, không gấp) đang gọi Messages API đồng bộ thay vì Batch. Route trích xuất dùng model lớn với {{max_tokens}} 4096 dù đầu ra JSON trung bình chỉ 350 token.
+
+**Nguyên nhân gốc:** Thiếu đo lường theo route, không dùng caching/batch, gửi input thừa, và cấu hình output quá rộng.
+
+**Cách xử lý:** (1) Cố định system prompt (đưa tên user/ngày vào message người dùng) để bật prompt caching. (2) Chat: giữ 12 lượt gần nhất + bản tóm tắt ngắn phần cũ, cắt input trung bình còn 14.000 token; mục tiêu cache read > 70%. (3) Chuyển tóm tắt đêm sang Batch API (giảm 50% route đó). (4) Trích xuất: hạ {{max_tokens}} về 800, yêu cầu JSON gọn. (5) Thử hạ effort cho chat (chạy eval 300 hội thoại mẫu): chất lượng giữ ngưỡng nên áp dụng. Đặt alert khi chi phí ngày vượt 600 USD.
+
+**Kết quả đo được:** Sau 3 tuần, chi phí tháng về 5.900 USD (giảm 54%). Chat: 68% xuống 33% tổng chi phí, cache read đạt 74% input, chi phí/tác vụ chat giảm 71%. Batch tiết kiệm ~1.100 USD/tháng cho tóm tắt. Tỉ lệ người dùng phải hỏi lại (chỉ số chất lượng gián tiếp) không đổi (8,2% → 8,4%, trong sai số eval). Chi phí/tác vụ hoàn thành được đưa lên dashboard cạnh điểm hài lòng.
+
 > Senior tip: đưa **chi phí mỗi tác vụ** vào dashboard sản phẩm bên cạnh chỉ số chất lượng. Khi hai con số nằm cạnh nhau, các cuộc tranh luận "dùng model nào" trở thành quyết định dựa trên số liệu.`,
   follow: ['Bạn phát hiện một vòng agent đang lãng phí token bằng cách nào?', 'Làm sao thuyết phục product owner chấp nhận model rẻ hơn?'],
   tags: ['cost optimization', 'caching', 'batch', 'effort']
@@ -976,7 +1020,7 @@ Giống giảm tiền điện công ty: trước hết lắp đồng hồ cho t�
 4. **Rollout dần** (canary/feature flag) có đường lui.
 
 Các bẫy phổ biến khi lên model 5.x:
-- **forced tool_choice** ({{any}}/{{tool}}) trả lỗi 400 trên Opus 5.5, Sonnet 5.5, Fable 5.1;
+- **forced tool_choice** ({{any}}/{{tool}}) trả lỗi 400 trên Opus 5.5, Sonnet 5.5;
 - **prefill** (gửi sẵn đầu câu trả lời assistant) bị bỏ;
 - **budget_tokens** bị bỏ, thay bằng **effort**;
 - Opus 5.5 **không tắt được thinking** và effort mặc định là {{medium}};
@@ -993,7 +1037,7 @@ Giống thay động cơ máy bay: động cơ mới mạnh và tiết kiệm h�
 ### Bảng thay đổi cần rà soát
 | Code cũ | Trên model 5.x | Cách sửa |
 |---|---|---|
-| tool_choice any/tool để ép gọi tool | 400 (Opus 5.5, Sonnet 5.5, Fable 5.1) | tool_choice auto + hướng dẫn trong prompt + strict: true, hoặc structured outputs |
+| tool_choice any/tool để ép gọi tool | 400 (Opus 5.5, Sonnet 5.5) | tool_choice auto + hướng dẫn trong prompt + strict: true, hoặc structured outputs |
 | Prefill assistant để ép JSON | 400 | structured outputs (output_config.format) hoặc hướng dẫn trong system |
 | thinking enabled + budget_tokens | 400 | thinking adaptive (hoặc bỏ tham số) + output_config.effort |
 | thinking disabled để tiết kiệm | 400 trên Opus 5.5 (và Sonnet 5.5) | hạ effort; Sonnet 5.5 có kiểu between_tools |
@@ -1017,6 +1061,17 @@ Giống thay động cơ máy bay: động cơ mới mạnh và tiết kiệm h�
 ### Trả lời miệng 1 phút
 "Tôi coi đổi model là thay đổi production. Đầu tiên kiểm kê mọi chỗ gọi API và prompt. Sau đó sửa breaking changes: forced tool_choice và prefill trả lỗi 400 trên Opus 5.5 nên tôi chuyển sang tool_choice auto với strict hoặc structured outputs, budget_tokens thay bằng effort, Opus 5.5 không tắt được thinking, và API version mới cấm temperature. Rồi tôi chạy bộ eval song song ở vài mức effort để so chất lượng, độ trễ và chi phí mỗi tác vụ, chỉnh prompt dựa trên lỗi thật, và rollout dần bằng feature flag từ 5% traffic, có đường lui về model cũ."
 
+### Ví dụ đời thực
+**Triệu chứng:** Team nâng route "trích xuất dữ liệu hợp đồng" từ model đời cũ lên Opus 5.5 bằng cách chỉ đổi {{model}} id trong code rồi deploy. Ngay sau deploy, dashboard báo tỉ lệ lỗi 400 tăng từ 0% lên 38% ở route đó, trong khi các route chat khác (dùng {{tool_choice: "auto"}}) vẫn bình thường.
+
+**Điều tra (lệnh/metric/log cụ thể):** Xem log lỗi API (lọc {{status=400}}, {{route=/extract-contract}}): phần lớn response body báo tham số không được hỗ trợ. Đối chiếu code route trích xuất: nó đang gửi {{tool_choice}} buộc phải gọi tool lưu hợp đồng, đồng thời có một message {{role: "assistant"}} có phần mở đầu là dấu { (prefill) để ép JSON — cả hai đều là breaking change trên Opus 5.5. Kiểm tra thêm: route đặt {{temperature: 0}} và {{thinking.budget_tokens}}; API version mới cũng từ chối các tham số này.
+
+**Nguyên nhân gốc:** Migration chỉ đổi model id, không rà soát các tham số/tool_choice/prefill mà model 5.x không còn hỗ trợ.
+
+**Cách xử lý:** Ở nhánh migration, thay {{tool_choice}} ép buộc bằng {{tool_choice: "auto"}} + hướng dẫn trong prompt "bắt buộc gọi tool save_contract với kết quả" + bật {{strict: true}} trên tool. Bỏ prefill, chuyển sang {{output_config.format}} (structured outputs) cho phần JSON. Bỏ {{budget_tokens}}/{{temperature}}, đặt {{output_config.effort}} là {{medium}} rồi chạy eval ở {{low/medium/high}}. Trước rollout, chạy contract test tự động gửi request mẫu của mọi route tới model mới và assert không có 400. Rollout bằng feature flag: 5% traffic 24 giờ (theo dõi 400, {{stop_reason}}, tỉ lệ parse JSON, p95 latency, chi phí/tác vụ), rồi 25%, 50%, 100%. Giữ cấu hình model cũ 2 tuần.
+
+**Kết quả đo được:** Sau sửa, lỗi 400 về 0%. Eval trên 500 hợp đồng mẫu: độ đúng trích xuất 93% (cũ 91%), p95 latency 4,8s (cũ 5,6s), chi phí mỗi hợp đồng xử lý đúng 0,021 USD (cũ 0,019 USD, chấp nhận được vì chất lượng tăng). Canary 5% trong 24 giờ không có regression; rollout 100% hoàn tất trong 4 ngày.
+
 > Senior tip: tách **model id, effort và phiên bản prompt ra cấu hình** (không hard-code trong code), kèm bộ eval tự động. Lần migration tiếp theo chỉ còn là một thay đổi cấu hình cộng một lần chạy eval.`,
   follow: ['Bạn xây bộ eval cho migration từ log production thế nào mà không lộ dữ liệu người dùng?', 'Nếu model mới tốt hơn ở 80% case nhưng tệ hơn ở 20% thì sao?'],
   tags: ['migration', 'breaking change', 'tool_choice', 'effort', 'rollout']
@@ -1025,7 +1080,7 @@ Giống thay động cơ máy bay: động cơ mới mạnh và tiết kiệm h�
   id: 'claude-018',
   topic: 'claude',
   level: 'lead',
-  q: 'Một tập đoàn lớn (ví dụ quy mô như Samsung, hàng chục nghìn nhân viên, nhiều ngôn ngữ, tài liệu ở Confluence/SharePoint/Drive) muốn Claude trả lời đúng theo kiến thức nội bộ. Bạn thiết kế "knowledge" cho Claude thế nào?',
+  q: 'Một tập đoàn lớn (ví dụ quy mô hàng chục nghìn nhân viên, nhiều ngôn ngữ, tài liệu ở Confluence/SharePoint/Drive) muốn Claude trả lời đúng theo kiến thức nội bộ. Bạn thiết kế "knowledge" cho Claude thế nào?',
   a: `**Tóm tắt:** Không có một cách duy nhất. Chọn theo **kích thước, độ thay đổi và quyền truy cập** của tri thức:
 - **Ít và ổn định** (quy trình, glossary, chính sách cốt lõi): đặt thẳng vào system prompt hoặc tài liệu cố định, kèm **prompt caching**.
 - **Nhiều và thay đổi liên tục** (hàng triệu trang wiki): **RAG** (truy xuất đoạn liên quan rồi đưa vào prompt), tốt nhất là **hybrid search** (vector + từ khoá), có kiểm soát quyền theo người hỏi.
@@ -1087,6 +1142,17 @@ Dữ liệu sống (tồn kho, ticket) --> MCP server / tool có kiểm soát qu
 ### Trả lời miệng 1 phút
 "Tôi chia tri thức thành ba loại. Phần cốt lõi ổn định như chính sách và glossary thì đưa thẳng vào system prompt và cache, vì context 1M cho phép. Kho tài liệu lớn thay đổi liên tục thì dùng RAG với hybrid search vector cộng từ khoá, contextual retrieval, và quan trọng nhất là lọc theo quyền của người hỏi trước khi đưa vào prompt. Dữ liệu sống như tồn kho hay ticket thì cho Claude truy cập qua tool hoặc MCP server với quyền tối thiểu. Câu trả lời luôn kèm trích dẫn nguồn và ngày cập nhật, có bộ eval theo phòng ban, và tôi theo dõi các câu hỏi không có đáp án để bổ sung tài liệu."
 
+### Ví dụ đời thực
+**Triệu chứng:** Một tập đoàn sản xuất (khoảng 18.000 nhân viên, 4 ngôn ngữ, tài liệu trên Confluence và SharePoint) triển khai trợ lý hỏi đáp nội bộ. Sau 3 tuần, nhân viên phàn nàn: (1) hỏi mã linh kiện {{IC-8842A}} thì không ra kết quả dù tài liệu có; (2) một nhân viên phòng kinh doanh hỏi "chính sách nghỉ phép" lại nhận được đoạn trích từ tài liệu nội bộ của phòng nhân sự dành cho quản lý cấp cao; (3) câu trả lời về quy trình hoàn trả hàng trích tài liệu cập nhật 2 năm trước.
+
+**Điều tra (lệnh/metric/log cụ thể):** Nhóm kỹ thuật xem log truy xuất (metadata: {{query}}, {{retrieved_doc_ids}}, {{score}}) và thấy truy vấn mã linh kiện trả về 0 kết quả từ chỉ mục vector nhưng có 12 kết quả nếu tìm BM25 theo chuỗi chính xác. Họ kiểm tra pipeline ingest: chỉ mục vector được xây, chỉ mục BM25 (từ khoá) chưa bật. Kiểm tra bản ghi tài liệu được trả về ở (2): {{acl_groups}} của tài liệu là {{["hr-managers"]}} nhưng bước retrieval không truyền {{user_groups}} của người hỏi, nên bộ lọc ACL bị bỏ qua. Với (3), metadata {{updated_at}} của đoạn trích là 2024-03-10, trong khi cùng chủ đề có tài liệu {{updated_at}} 2026-01-15 nhưng đoạn cũ có điểm vector cao hơn vì văn bản dài hơn.
+
+**Nguyên nhân gốc:** Ba lỗi thiết kế: (1) chỉ dùng vector search, bỏ qua hybrid nên trượt truy vấn mã/từ khoá chính xác; (2) không lọc ACL theo người hỏi trước khi đưa đoạn vào prompt; (3) không ưu tiên hoặc cảnh báo theo độ mới của tài liệu.
+
+**Cách xử lý:** Bật hybrid search (vector + BM25) và gộp điểm (ví dụ Reciprocal Rank Fusion) để truy vấn mã linh kiện luôn khớp. Thêm bước lọc {{user_groups}} vào truy vấn retrieval (lọc trước khi chọn top-k), viết test tự động: người không thuộc {{hr-managers}} không bao giờ nhận {{doc_id}} của tài liệu đó. Gắn {{updated_at}} và {{owner_dept}} vào metadata mỗi đoạn; khi trả lời, hiển thị "nguồn: Phòng Nhân sự, cập nhật 2026-01-15" và hạ ưu tiên tài liệu quá 12 tháng trừ khi không có bản mới. Bổ sung Contextual Retrieval: trước khi embed, thêm câu ngữ cảnh "Đoạn này thuộc 'Sổ tay linh kiện điện tử', mục mã IC-8842A".
+
+**Kết quả đo được:** Sau 2 tuần, trên bộ eval 400 câu hỏi thật của 6 phòng ban: độ đúng tăng từ 61% lên 84%, tỉ lệ trích đúng nguồn 91%, tỉ lệ "không tìm thấy trong tài liệu" (thay vì bịa) tăng từ 4% lên 14% (đúng kỳ vọng), và **0** trường hợp lộ tài liệu sai quyền trong 10.000 lượt hỏi kiểm toán. Truy vấn theo mã linh kiện/mã lỗi khớp chính xác 97%.
+
 > Senior tip: ở tập đoàn lớn, phần khó nhất không phải model mà là **chủ sở hữu tri thức**. Hãy gắn mỗi bộ tài liệu với một phòng ban chịu trách nhiệm cập nhật, và hiển thị "tài liệu này do phòng X duy trì, cập nhật ngày Y" ngay trong câu trả lời.`,
   follow: ['Bạn đảm bảo Claude không trả lời từ tài liệu người dùng không có quyền xem bằng cách nào?', 'Khi nào đưa thẳng tài liệu vào context 1M thay vì RAG?'],
   tags: ['enterprise', 'RAG', 'knowledge', 'MCP', 'ACL', 'contextual retrieval']
@@ -1096,9 +1162,9 @@ Dữ liệu sống (tồn kho, ticket) --> MCP server / tool có kiểm soát qu
   topic: 'claude',
   level: 'lead',
   q: 'Agent Skills của Claude là gì? Trong một doanh nghiệp lớn, bạn xây và quản lý Skill (ví dụ "viết báo cáo chất lượng theo chuẩn công ty", "review code theo guideline nội bộ") thế nào?',
-  a: `**Tóm tắt:** Một **Skill** là một **thư mục** chứa file {{SKILL.md}} (phần đầu có {{name}} và {{description}}, phần thân là hướng dẫn chi tiết), có thể kèm script, template, tài liệu tham khảo. Claude chỉ đọc **tên và mô tả** của mọi skill lúc đầu, rồi **chỉ nạp nội dung đầy đủ khi tác vụ cần**. Cơ chế này gọi là **progressive disclosure**: có thể cài nhiều skill mà không tốn context.
+  a: `**Tóm tắt:** Một **Skill** là một **thư mục** chứa file {{SKILL.md}} (phần đầu có {{name}} và {{description}}, phần thân là hướng dẫn chi tiết), có thể kèm script, template, tài liệu tham khảo. Claude (trong **Claude Code** và **ứng dụng Claude**) chỉ đọc **tên và mô tả** của mọi skill lúc đầu, rồi **chỉ nạp nội dung đầy đủ khi tác vụ cần**. Cơ chế này gọi là **progressive disclosure**: có thể cài nhiều skill mà không tốn context.
 
-Skill dùng được trong ứng dụng Claude, Claude Code và qua API (kèm công cụ code execution). Với doanh nghiệp, Skill là cách **đóng gói quy trình và tiêu chuẩn của công ty** thành thứ tái sử dụng, có kiểm soát phiên bản.
+Skill dùng được trong **Claude Code**, **ứng dụng Claude** và qua API (kèm công cụ code execution). Với doanh nghiệp, Skill là cách **đóng gói quy trình và tiêu chuẩn của công ty** thành thứ tái sử dụng, có kiểm soát phiên bản.
 
 ### Hiểu nhanh
 Skill giống bộ "SOP + mẫu biểu" đặt trên kệ. Nhân viên giỏi không học thuộc cả kệ, chỉ đọc nhãn gáy sách; khi gặp việc "làm báo cáo chất lượng" thì rút đúng cuốn đó ra đọc và làm theo, kể cả dùng mẫu Excel đi kèm.
@@ -1190,7 +1256,7 @@ Workflow giống dây chuyền lắp ráp: từng trạm làm đúng một việ
 
 ### Khung quản trị, từng lớp
 1. **Nền tảng & dữ liệu**:
-   - Chọn kênh triển khai phù hợp chính sách: Claude API trực tiếp, hoặc qua nền tảng cloud công ty đang dùng (Amazon Bedrock, Google Cloud Vertex AI, Microsoft Foundry).
+   - Chọn kênh triển khai phù hợp chính sách: Claude API trực tiếp, hoặc qua nền tảng cloud công ty đang dùng (Amazon Bedrock, Google Cloud Vertex AI, Azure AI Foundry).
    - Xác định vùng xử lý dữ liệu, chính sách lưu trữ; phân loại dữ liệu nào được gửi (che PII, bí mật thương mại theo cấp độ).
 2. **Danh tính & quyền**: SSO cho ứng dụng; tool và agent chạy với **quyền tối thiểu**; hành động ghi (gửi email, sửa dữ liệu, deploy) cần người xác nhận.
 3. **Gateway AI dùng chung**: một điểm giữ key, quota và ngân sách **theo phòng ban/dự án** (workspace riêng), log usage, chặn lạm dụng.
@@ -1357,7 +1423,7 @@ AgentResult run(List<Msg> history, Budget b) {
 - Viết tiêu chí hoàn thành rõ trong system prompt: "Khi đã có X và Y thì trả lời, không tra thêm".
 - Tool trả kết quả gọn, có phân trang và tóm tắt; error message nói rõ nên làm gì tiếp.
 - Đặt {{output_config.effort}} theo route: tác vụ tra cứu đơn giản không cần effort cao.
-- Các model như Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1 không được API tự báo token còn lại ("context awareness"); có thể dùng **task budgets** (đang beta) để cho model biết ngân sách của nó.
+- Các model như Opus 5.5, Sonnet 5.5, Haiku 5.5 không được API tự báo token còn lại ("context awareness"); có thể dùng **task budgets** (đang beta) để cho model biết ngân sách của nó.
 
 ### Pitfall production
 - Đếm bước nhưng quên rằng một bước có thể chứa 10 tool_use song song: giới hạn cả **tổng số lời gọi tool**.
@@ -1642,14 +1708,14 @@ Bật {{strict: true}} trên tool (strict tool use) để sampling bị ràng bu
   topic: 'claude',
   level: 'senior',
   q: 'tool_choice có những giá trị nào? Code cũ của team dùng tool_choice {"type": "tool"} để ép Claude luôn trả JSON qua một tool; khi chuyển sang Opus 5.5 thì bị lỗi 400. Vì sao và bạn sửa thế nào?',
-  a: `**Tóm tắt:** {{tool_choice}} có 4 kiểu: {{auto}} (mặc định khi có tools, model tự quyết có gọi tool không), {{any}} (bắt buộc gọi một tool bất kỳ), {{tool}} (bắt buộc gọi đúng tool có tên chỉ định), {{none}} (cấm gọi tool, mặc định khi không có tools). Trên **Opus 5.5, Sonnet 5.5, Fable 5.1** (và Mythos 5.1), {{any}} và {{tool}} **trả lỗi 400**: không còn "ép gọi tool". Cách sửa: dùng {{auto}} + {{strict: true}} cho tool, hoặc dùng **structured outputs** nếu mục đích thật chỉ là lấy JSON đúng schema.
+  a: `**Tóm tắt:** {{tool_choice}} có 4 kiểu: {{auto}} (mặc định khi có tools, model tự quyết có gọi tool không), {{any}} (bắt buộc gọi một tool bất kỳ), {{tool}} (bắt buộc gọi đúng tool có tên chỉ định), {{none}} (cấm gọi tool, mặc định khi không có tools). Trên **Opus 5.5, Sonnet 5.5**, {{any}} và {{tool}} **trả lỗi 400**: không còn "ép gọi tool". Cách sửa: dùng {{auto}} + {{strict: true}} cho tool, hoặc dùng **structured outputs** nếu mục đích thật chỉ là lấy JSON đúng schema.
 
 ### Mỗi giá trị hoạt động thế nào
 | tool_choice | Hành vi | Ghi chú |
 |---|---|---|
 | auto | Model tự chọn: gọi tool hoặc trả lời text | Mặc định; prompt vẫn ảnh hưởng việc chọn |
-| any | Phải gọi ít nhất một tool | Không hỗ trợ trên các model 5.5/Fable 5.1 |
-| tool | Phải gọi đúng tool có tên chỉ định | Không hỗ trợ trên các model 5.5/Fable 5.1 |
+| any | Phải gọi ít nhất một tool | Không hỗ trợ trên Opus 5.5, Sonnet 5.5 |
+| tool | Phải gọi đúng tool có tên chỉ định | Không hỗ trợ trên Opus 5.5, Sonnet 5.5 |
 | none | Không được gọi tool | Hữu ích cho lượt "chỉ tổng kết" |
 
 Thêm vài chi tiết docs nêu:
@@ -1744,7 +1810,7 @@ Docs nêu đây là lỗi phổ biến nhất khiến Claude **ngừng gọi son
 |---|---|
 | Mặc định | Có thể nhiều tool_use mỗi lượt |
 | {{tool_choice}} auto + {{disable_parallel_tool_use: true}} | Tối đa 1 tool mỗi lượt (vẫn có thể trả text) |
-| any/tool + disable_parallel_tool_use | Đúng 1 tool, nhưng any/tool không dùng được trên Opus 5.5, Sonnet 5.5, Fable 5.1 |
+| any/tool + disable_parallel_tool_use | Đúng 1 tool, nhưng any/tool không dùng được trên Opus 5.5, Sonnet 5.5 |
 | Muốn song song nhiều hơn | Thêm hướng dẫn trong system prompt: thao tác độc lập thì gọi tất cả cùng lúc |
 
 Khi nào nên tắt: tool có side effect phụ thuộc nhau mà bạn không muốn xử lý dependency, hệ thống phía sau không chịu được burst, hoặc cần audit từng bước một.
@@ -1905,7 +1971,7 @@ Sao đơn của tôi lâu vậy? Tôi muốn huỷ.
   topic: 'claude',
   level: 'mid',
   q: 'Code cũ của team dùng few-shot và "prefill" (viết sẵn phần đầu câu trả lời của assistant, ví dụ "{") để ép Claude trả đúng định dạng. Trên các model hiện hành, cách nào còn dùng được và bạn thay prefill bằng gì?',
-  a: `**Tóm tắt:** **Few-shot** (đưa ví dụ mẫu) vẫn là một trong những cách tin cậy nhất để điều khiển định dạng, giọng văn và cấu trúc; docs khuyên 3–5 ví dụ **sát thực tế, đa dạng**, bọc trong {{<example>}}/{{<examples>}}. **Prefill** ở lượt assistant cuối **không còn được hỗ trợ** từ các model Claude 4.6 trở đi (gồm các model 5.x): gửi lên sẽ bị lỗi 400. Thay bằng structured outputs (cần JSON), hướng dẫn trực tiếp trong system prompt (bỏ câu mở đầu), hoặc tool/enum (phân loại).
+  a: `**Tóm tắt:** **Few-shot** (đưa ví dụ mẫu) vẫn là một trong những cách tin cậy nhất để điều khiển định dạng, giọng văn và cấu trúc; docs khuyên 3–5 ví dụ **sát thực tế, đa dạng**, bọc trong {{<example>}}/{{<examples>}}. **Prefill** ở lượt assistant cuối **không còn được hỗ trợ** từ các model **Claude 4** trở đi (gồm Opus 4, Sonnet 4 và các model 5.x): gửi lên sẽ bị lỗi 400. Thay bằng structured outputs (cần JSON), hướng dẫn trực tiếp trong system prompt (bỏ câu mở đầu), hoặc tool/enum (phân loại).
 
 ### Prefill là gì và vì sao từng phổ biến
 Prefill là gửi một message {{role: "assistant"}} cuối cùng có sẵn vài ký tự, ví dụ dấu mở ngoặc nhọn của JSON, để model "viết tiếp" từ đó, buộc kết quả bắt đầu bằng JSON. Docs giải thích rằng khả năng bám hướng dẫn của model mới đã đủ tốt nên phần lớn nhu cầu prefill không còn cần thiết. Lưu ý: chỉ prefill ở **lượt assistant cuối** bị cấm; các message assistant ở giữa lịch sử hội thoại vẫn bình thường.
@@ -2483,7 +2549,7 @@ Cách sửa thường gặp:
 |---|---|
 | Mô tả mơ hồ | Mô tả 3–4 câu+: làm gì, khi nào dùng, khi nào không |
 | Prompt không ràng buộc | "Số liệu về đơn hàng PHẢI lấy từ tool orders_get_status; không được đoán." |
-| Muốn ép gọi tool | any/tool không dùng được trên Opus 5.5, Sonnet 5.5, Fable 5.1: dùng auto + hướng dẫn rõ, và kiểm tra trong code |
+| Muốn ép gọi tool | any/tool không dùng được trên Opus 5.5, Sonnet 5.5: dùng auto + hướng dẫn rõ, và kiểm tra trong code |
 | Bịa số liệu | Kiểm tra phía server: câu trả lời có số liệu mà không có tool_result tương ứng thì chặn hoặc gắn cảnh báo |
 
 ### Lỗi 2: JSON không parse được
@@ -2506,7 +2572,7 @@ Set<ConstraintViolation<Summary>> v = validator.validate(s);  // kiểm tra nghi
 ### Các lỗi 400 hay gặp khi tự viết vòng lặp tool
 - "tool_use ids were found without tool_result blocks immediately after": thiếu tool_result, hoặc chen message vào giữa.
 - Text đặt **trước** tool_result trong message user.
-- Prefill ở lượt assistant cuối trên model mới, hoặc tool_choice any/tool trên Opus 5.5/Sonnet 5.5/Fable 5.1.
+- Prefill ở lượt assistant cuối trên model mới, hoặc tool_choice any/tool trên Opus 5.5/Sonnet 5.5.
 
 ### Quy trình debug chung
 - Log có cấu trúc: request id, model, prompt version, stop_reason, số tool_use, usage, lỗi parse.
