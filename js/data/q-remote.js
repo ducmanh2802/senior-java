@@ -71,7 +71,7 @@ Quick question: are you on Spring Data JPA or plain Hibernate?
 **Nguyên nhân gốc:** Profile quá rộng (không nói rõ bạn giải quyết vấn đề gì), proposal mở đầu bằng giới thiệu bản thân thay vì vấn đề khách hàng, và bạn chọn job không đủ khớp với bằng chứng có sẵn.
 
 **Cách xử lý:** 
-1. **Sửa profile:** Đổi title thành {{code|Java / Spring Boot Backend Engineer | REST APIs, PostgreSQL, AWS}}. Viết overview 2 dòng đầu nói rõ bạn giúp fix API chậm, sửa bug, tối ưu query.
+1. **Sửa profile:** Đổi title thành {{Java / Spring Boot Backend Engineer | REST APIs, PostgreSQL, AWS}}. Viết overview 2 dòng đầu nói rõ bạn giúp fix API chậm, sửa bug, tối ưu query.
 2. **Chuẩn bị bằng chứng:** Lấy 2 dự án cá nhân trên GitHub có README rõ ràng, mỗi dự án viết 3 dòng: vấn đề → bạn làm gì → kết quả (ví dụ p95 giảm từ 1,8s xuống 120ms).
 3. **Chọn job lọc kỹ:** Chỉ gửi cho job đăng trong 24 giờ, có mô tả cụ thể, client xác minh thanh toán. Ưu tiên job nhỏ rõ phạm vi (fix bug/thêm endpoint).
 4. **Viết proposal tailored:** Mở đầu bằng 1 câu nhắc đúng vấn đề trong job, nêu 2–3 bước cụ thể, đính kèm link GitHub sát vấn đề, hỏi 1 câu làm rõ.
@@ -106,7 +106,7 @@ Thuật ngữ cần biết (giải thích lần đầu): **Hourly contract** (h�
 Đừng đoán. Hãy làm 3 bước:
 1. **Khảo sát**: tìm 10–15 profile Java/Spring Boot backend có 3–7 năm kinh nghiệm, khu vực Đông Nam Á hoặc toàn cầu, xem khoảng rate họ đặt. Ghi lại mức thấp, trung vị, cao (chỉ để tham chiếu, không copy).
 2. **Tính mức sàn cá nhân**: ước lượng chi phí tháng tối thiểu (sinh hoạt, thiết bị, internet) + thời gian không billable (không tính tiền: viết proposal, họp, học). Ví dụ minh hoạ (số liệu giả định, tự thay bằng số của bạn): cần 20 triệu VND/tháng, làm billable 80 giờ/tháng → sàn khoảng 250.000 VND/giờ. Đổi sang USD để đặt trên Upwork (tỷ giá giả định 25.000 VND/USD) → khoảng 10 USD/giờ **trước phí**.
-3. **Trừ phí để ra net**: phí dịch vụ freelancer trên Upwork **biến động 0–15% mỗi hợp đồng**, hiển thị trước khi gửi proposal hoặc nhận offer và được cố định khi hợp đồng bắt đầu (tại thời điểm viết 2026-11-07, theo support.upwork.com; kiểm tra lại trước khi tính). Ví dụ giả định phí 10%: rate 20 USD/giờ → bạn nhận khoảng 18 USD/giờ trước phí rút tiền/thuế. Hãy đảm bảo **net rate** vẫn trên mức sàn.
+3. **Trừ phí để ra net**: phí dịch vụ freelancer trên Upwork là **10% cố định cho mọi hợp đồng** (tính từ thu nhập brute của freelancer), hiển thị trước khi gửi proposal hoặc nhận offer. Ví dụ: rate 20 USD/giờ → bạn nhận 18 USD/giờ trước phí rút tiền/thuế. Hãy đảm bảo **net rate** vẫn trên mức sàn.
 
 ~~~text
 Ví dụ tính nhanh (giả định, tự thay số):
@@ -158,7 +158,7 @@ Best,
 ### Checklist
 - [ ] Khảo sát 10–15 profile Java/Spring Boot cùng level để có khoảng tham chiếu.
 - [ ] Tính mức sàn cá nhân: (chi phí + thời gian không billable) / giờ billable.
-- [ ] Đặt rate khởi điểm bền vững, kiểm tra net sau phí dịch vụ (biến động 0–15%/hợp đồng, cố định khi bắt đầu — tại thời điểm viết; kiểm tra lại).
+- [ ] Đặt rate khởi điểm bền vững, kiểm tra net sau phí dịch vụ (10% cố định/hợp đồng — tại thời điểm viết; kiểm tra lại).
 - [ ] Chọn 2–3 job nhỏ, scope rõ để lấy review đầu tiên thay vì hạ giá.
 - [ ] Chuẩn bị 1 case study có số liệu (trước/sau) để dùng khi tăng giá.
 - [ ] Với khách cũ, soạn mẫu tin nhắn tăng giá, báo trước 2–4 tuần.
@@ -683,6 +683,28 @@ Kết quả: [không phản hồi / phỏng vấn / trúng] | Rút ra: có lặp
 - [ ] Không dùng boost/badge để bù cho proposal chung chung hoặc scope bạn không làm được.
 - [ ] Kiểm tra lại tên tính năng, giá, điều kiện trên trang Upwork chính thức (thay đổi theo thời gian).
 
+### Ví dụ đời thực
+
+**Tình huống:** Bạn mới vào Upwork, profile Java backend chưa có review, có 40 Connects/tuần. Bạn thấy job "Fix slow Spring Boot API" rất khớp case study của bạn và boost thêm 12 Connects để đẩy proposal lên đầu danh sách. Nhưng sau 5 lần boost, không có phản hồi nào.
+
+**Triệu chứng:** Connects giảm từ 40 xuống 5, không có interview, profile vẫn không được click. Bạn kiểm tra và thấy proposal vẫn viết chung chung ("I am a Java developer with 4 years experience"), profile title chung chung "Software Developer".
+
+**Điều tra:** Bạn dùng bảng ghi chép thử boost (job, Connects thường, Connects boost, kết quả). Sau 5 lần, tỉ lệ phản hồi 0%. Bạn lại đọc khóa Upwork Academy về cách viết proposal và các chính sách nền tảng, rồi viết lại profile theo hướng hẹp hơn.
+
+**Nguyên nhân gốc:** Boost chỉ khuếch đại vị trí, không cải thiện nội dung. Nếu proposal/profile chưa thuyết phục, khuếch đại giúp bạn bị bỏ qua nhanh hơn — và tốn Connects. Bạn chưa học cơ chế nền tảng (Upwork Academy) nên mắc sai lầm tốn kém.
+
+**Cách xử lý:**
+1. **Dừng boost**, đợi Connects hoặc mua ít nữa cho 2–3 proposal thực sự khớp.
+2. **Học Upwork Academy** (miễn phí/thấp chi phí) để hiểu cách gửi proposal, chính sách non-circumvention, cơ chế escrow.
+3. **Viết lại profile:** title hẹp, overview 2 dòng đầu nói rõ giá trị, 2–3 case study có số liệu.
+4. **Gửi proposal tailored**, mở đầu bằng vấn đề của khách, không boost cho job này.
+
+**Kết quả đo được:** Sau 2 tuần, bạn gửi 8 proposal tailored (không boost), nhận 3 phản hồi, 1 phỏng vấn và 1 hợp đồng nhỏ. Tỉ lệ phản hồi tăng từ 0% (khi boost) lên ~37% (khi không boost nhưng profile/proposal tốt hơn). Connects được dùng hiệu quả hơn.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi tôi mới bắt đầu trên Upwork, tôi không chạy ngay tính năng trả phí như Boosted proposal hay Availability badge. Thay vào đó, tôi dành thời gian hoàn thiện nền tảng: làm profile hẹp với title nói rõ giá trị, viết overview 2 dòng đầu để khách hiểu tôi giúp gì, và chuẩn bị 2–3 case study có số liệu thực. Tôi cũng học qua Upwork Academy để tránh các sai lầm tốn Connects và vi phạm điều khoản nền tảng. Với mỗi job, tôi chỉ cân nhắc boost khi proposal đã tailored, client chất lượng và công việc rất khớp bằng chứng tôi có — và dù boost, tôi đặt giới hạn Connects để theo dõi ROI. Kinh nghiệm của tôi là một proposal viết đúng vấn đề cho job nhỏ phù hợp mang lại hiệu quả cao hơn nhiều so với việc mua visibility khi profile còn yếu. Nếu phải chọn một việc hôm nay, tôi sẽ viết lại 2–3 dòng đầu profile và một proposal mẫu tailored thay vì bỏ tiền vào tính năng nổi bật. Tôi coi mọi tính năng trả phí là đòn bẩy chỉ dùng sau khi nền tảng đã tốt."
+
 > Senior tip: với người mới, ROI (lợi tức trên chi phí) cao nhất gần như luôn đến từ **một case study tốt + một proposal viết đúng vấn đề** cho job nhỏ phù hợp. Hãy coi mọi tính năng trả phí là "đòn bẩy" chỉ dùng sau khi nền tảng đã tốt; nếu phải chọn một việc hôm nay, hãy viết lại 2–3 dòng đầu profile và một proposal mẫu tailored thay vì mua thêm visibility.`,
   follow: [
     'Bạn thử Boosted proposal 5 lần nhưng không được phản hồi. Bạn phân tích nguyên nhân theo thứ tự nào?',
@@ -781,6 +803,28 @@ Nguyên tắc README: nêu vấn đề nó giải quyết, cách chạy, nơi xe
 - [ ] Đưa link portfolio/case study vào profile Upwork và vào proposal đúng job liên quan.
 - [ ] Tự luyện giải thích miệng 60–90 giây cho từng dự án (client có thể hỏi sâu trên call).
 
+### Ví dụ đời thực
+
+**Tình huống:** Bạn là Java backend 4 năm, mới vào Upwork chưa có review. Ban đầu bạn đưa link repo tutorial CRUD ("todo list Spring Boot") vào profile, nhưng client không phản hồi. Sau đó bạn chọn một vấn đề thật: tối ưu API đơn hàng chậm (Spring Boot + PostgreSQL), đo p95 1,8s → 120ms trên dataset local 10k dòng, viết case study 1 trang và README chạy được trong 5 phút.
+
+**Triệu chứng:** Với repo tutorial, 0 phản hồi sau 2 tuần. Sau khi thay bằng case study tối ưu API, client bắt đầu nhắn hỏi về chi tiết kỹ thuật.
+
+**Điều tra:** Bạn so sánh hai bằng chứng. Repo tutorial chỉ liệt kê công nghệ, không có số liệu, không giải thích quyết định. Case study có: vấn đề (N+1 query), ràng buộc (API response không đổi), cách làm (fetch join, index), kết quả đo được (p95 1,8s → 120ms, query 101 → 2), và bước tiếp theo trên production.
+
+**Nguyên nhân gốc:** Portfolio "demo công nghệ" không giải quyết vấn đề của client. Client thuê để giảm rủi ro và tạo kết quả, không ngắm danh sách framework.
+
+**Cách xử lý:**
+1. **Chọn 2–3 dự án mẫu** gắn vấn đề backend thật (tối ưu API, idempotency thanh toán sandbox, job nền).
+2. **Viết case study 1 trang:** Vấn đề → Ràng buộc → Cách làm → Kết quả đo được → Bước tiếp theo → Link.
+3. **README đủ rõ:** vấn đề, tech, cách chạy 5 phút, nơi xem code quan trọng, lưu ý an toàn (không secret, dùng sandbox).
+4. **Đưa link** vào profile Upwork và vào proposal đúng job liên quan.
+
+**Kết quả đo được:** Sau 3 tuần, tỉ lệ phản hồi proposal tăng từ 0% lên ~30%. Có 2 cuộc phỏng vấn và 1 hợp đồng nhỏ. Client nhấn vào case study có số liệu và README chạy được.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi tôi chưa có review trên Upwork, tôi coi portfolio là bằng chứng thay thế — nó phải cho thấy tôi đã giải quyết vấn đề giống client đang gặp, chứ không chỉ là danh sách framework tôi biết. Thay vì đưa link tutorial CRUD, tôi chọn 2–3 dự án mẫu gắn vấn đề backend thật, ví dụ tối ưu API chậm hoặc tích hợp thanh toán trong môi trường thử nghiệm. Mỗi dự án tôi viết case study 1 trang theo cấu trúc vấn đề → ràng buộc → cách làm → kết quả đo được, và README đủ rõ để người khác chạy và hiểu trong 5 phút. Tôi luôn ghi rõ điều kiện đo (local, dataset giả) để trung tính, và không bao giờ commit secret hay khóa API. Trong proposal, tôi chọn case study sát nhất vấn đề của client và kèm link. Kinh nghiệm của tôi là chất lượng bằng chứng quan trọng hơn số lượng dự án: một repo nhỏ có test, README rõ và case study trung thực tạo tín hiệu mạnh hơn rất nhiều repo nửa vời."
+
 > Senior tip: hãy tối ưu portfolio cho câu hỏi client thực sự nghĩ: "Bạn đã giải quyết vấn đề giống tôi chưa, và bạn có đo được kết quả không?" Một repo nhỏ có test, README rõ, và case study trung thực (ghi cả giới hạn) tạo tín hiệu senior mạnh hơn rất nhiều repo "full-stack" nửa vời. Chất lượng bằng chứng quan trọng hơn số lượng dự án.`,
   follow: [
     'Bạn biến một dự án công ty (không được lộ code) thành case study portfolio trung thực nhưng không vi phạm bảo mật/NDA như thế nào?',
@@ -852,6 +896,28 @@ Chuyển khi **đủ tín hiệu**, không chuyển vì sốt ruột:
 - [ ] Tháng 5–6: chỉ chuyển sang hợp đồng dài/retainer khi có tín hiệu (review, mời lại, ước lượng được thời gian).
 - [ ] Chưa vội agency profile: chỉ cân nhắc khi có năng lực giao hàng nhóm và đã hiểu cơ chế/điều kiện chính thức.
 - [ ] Kê khai thu nhập từ nước ngoài theo quy định thuế Việt Nam và giữ chứng từ; hỏi chuyên gia thuế/kế toán khi cần (không tự suy đoán thuế suất).
+
+### Ví dụ đời thực
+
+**Tình huống:** Bạn là Java backend đang làm full-time tại Việt Nam, muốn bắt đầu freelance trên Upwork. Tháng đầu bạn nhận mọi job nhỏ nhặt, không có quy trình, và nhận một job cho đối thủ trực tiếp của công ty full-time. Cuối tháng 2, bạn kiệt sức, hiệu suất làm việc chính giảm, và mất tín nhiệm với nhà quản lý.
+
+**Triệu chứng:** Thời gian freelance trôi sai kỳ full-time, deadline trễ, đánh giá xấu trên Upwork, và rủi ro vi phạm hợp đồng lao động/bảo mật.
+
+**Điều tra:** Bạn đọc lại hợp đồng lao động và NDA, thấy công ty yêu cầu xin phép việc làm thêm và cấm làm cho đối thủ. Bạn cũng thấy mình không có khung giờ cố định, nên nhận việc ồ ạt mà không kiểm soát thời gian.
+
+**Nguyên nhân gốc:** Không kiểm tra ràng buộc full-time trước khi bid, không có chiến lược giai đoạn, nhận job xung đột lợi ích và quá nhiều so với thời gian thực có.
+
+**Cách xử lý:**
+1. **Dừng nhận job mới**, đọc hợp đồng/NDA, xin phép bằng văn bản nếu cần, từ chối job xung đột lợi ích.
+2. **Chọn khung giờ freelance cố định** (ví dụ 6–10 giờ/tuần, ngoài giờ full-time), tránh overlap giờ hành chính.
+3. **Áp dụng lộ trình 6 tháng:** tháng 1–2 hoàn thiện profile/portfolio nhắm job nhỏ scope rõ; tháng 3–4 ưu tiên 2–4 hợp đồng hoàn tất với review tốt; tháng 5–6 chỉ chuyển sang retainer/dài hạn khi có tín hiệu.
+4. **Không vội lập agency:** chỉ cân nhắc khi đã là freelancer cá nhân ổn định.
+
+**Kết quả đo được:** Sau 6 tháng, bạn có 3–4 review tốt, vài case study có số liệu, và thói quen giao hàng kỷ luật. Hiệu suất full-time không bị ảnh hưởng, và bạn có một tùy chọn nghề nghiệp bền vững thay vì kiếm thêm vài trăm đô sớm nhưng đánh đổi uy tín.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Chiến lược 6 tháng đầu của tôi trên Upwork không phải kiếm thật nhiều ngay, mà là xây bằng chứng và quy trình bền vững mà không đốt cầu với công việc full-time. Trước khi nhận bất kỳ job nào, tôi đọc kỹ hợp đồng lao động, NDA và chính sách làm thêm để tránh xung đột lợi ích hoặc vi phạm bảo mật. Tôi chọn khung giờ freelance cố định (khoảng 6–10 giờ/tuần, ngoài giờ làm chính) và tránh việc trùng giờ hành chính. Lộ trình tôi theo: tháng 1–2 hoàn thiện profile và portfolio, nhắm job nhỏ scope rõ để lấy review đầu tiên; tháng 3–4 ưu tiên 2–4 hợp đồng hoàn tất với review tốt; tháng 5–6 chỉ chuyển sang hợp đồng dài hoặc retainer khi đã có tín hiệu như review, tỉ lệ được mời lại và ước lượng được thời gian. Tôi cũng không vội lập agency cho đến khi mình là freelancer cá nhân ổn định. Mục tiêu dài hạn là tạo một tùy chọn nghề nghiệp, không phải đánh đổi uy tín hoặc vi phạm hợp đồng full-time vì vài trăm đô sớm."
 
 > Senior tip: ở góc nhìn lead, mục tiêu 6 tháng đầu là **tùy chọn nghề nghiệp** (career option), không phải "nghề tay trái bù lương". Một hồ sơ Upwork có 3–5 review thật, vài case study đo được, và thói quen giao tiếp/giao hàng kỷ luật — giá trị dài hạn lớn hơn nhiều so với cố kiếm thêm vài trăm đô sớm nhưng đánh đổi uy tín hoặc vi phạm hợp đồng full-time. Bảo vệ danh tiếng và tuân thủ trước, tối ưu thu nhập sau.`,
   follow: [
@@ -961,6 +1027,28 @@ Please reply with "confirmed" or any changes you would like. Thanks, [Your Name]
 - [ ] Nếu hourly: dùng time tracker chính thức và ghi chú công việc rõ từng khối giờ.
 - [ ] Kiểm tra điều kiện Payment Protection/escrow hiện hành trên trang Upwork (chính sách thay đổi theo thời gian).
 
+### Ví dụ đời thực
+
+**Tình huống:** Bạn nhận dự án backend Java 4 tuần trên Upwork (REST API quản lý đơn hàng cho shop nhỏ). Bạn chọn fixed-price 2.000 USD, nhưng chỉ chốt scope bằng tin nhắn ngắn ("build an API for my shop") và bắt đầu code milestone 1 trước khi escrow được nạp. Giữa chừng, khách yêu cầu thêm tính năng thanh toán thật và dashboard, phạm vi lớn gấp đôi, nhưng bạn vẫn nhận 2.000 USD.
+
+**Triệu chứng:** Làm thêm khoảng 40 giờ miễn phí, effective hourly rate giảm từ khoảng 50 USD/giờ xuống dưới 20 USD/giờ. Khách không duyệt milestone vì "không như mong đợi" (tiêu chí nghiệm thu chưa chốt). Tiền kẹt trong escrow.
+
+**Điều tra:** Bạn rà soát tin nhắn và thấy: không có spec viết, không có tiêu chí nghiệm thu, không chốt trong/ngoài phạm vi, và milestone 1 chưa được fund khi bạn bắt đầu code. Bản spec mơ hồ là nguyên nhân chính.
+
+**Nguyên nhân gốc:** Chọn fixed-price cho phạm vi chưa rõ, không chốt scope bằng văn bản, bắt đầu code trước khi escrow fund, và không chia milestone nhỏ có đầu ra kiểm tra được.
+
+**Cách xử lý:**
+1. **Dừng code**, gửi tin nhắn chốt scope và milestone trên Upwork (trong/ngoài phạm vi, tiêu chí nghiệm thu, giả định, quy tắc change request, kênh giao tiếp).
+2. **Đề xuất milestone khám phá ngắn** (spec + thiết kế) trả phí nhỏ để mua sự rõ ràng.
+3. **Chỉ bắt đầu mỗi milestone sau khi escrow đã được nạp.**
+4. **Nếu scope thực tế lớn gấp đôi**, báo giá lại trước khi cam kết toàn bộ.
+
+**Kết quả đo được:** Sau khi viết lại spec và chia 4 milestone (khám phá 300 USD, API cốt lõi 700 USD, xác thực 600 USD, hoàn thiện 400 USD), khách duyệt từng mốc và giải ngân đúng hạn. Dự án hoàn thành đúng 4 tuần, bạn nhận đủ 2.000 USD, và khách muốn thuê tiếp giai đoạn bảo trì. Tỉ lệ duyệt milestone tăng từ 0% lên 100%.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Với dự án backend 4 tuần, tôi sẽ chọn fixed-price nếu phạm vi đã rõ và có thể chia thành các milestone nhỏ, hoặc hourly nếu phạm vi còn mơ hồ và cần khám phá. Nguyên tắc là chọn ai chịu rủi ro khi ước lượng sai. Trước khi viết dòng code đầu tiên, tôi luôn chốt bằng văn bản trên Upwork: phạm vi trong và ngoài, tiêu chí nghiệm thu cho từng milestone, giả định về môi trường và phản hồi của khách, quy tắc thay đổi scope, và kênh giao tiếp. Với fixed-price, tôi chỉ bắt đầu mỗi milestone sau khi escrow đã được nạp. Ví dụ cho dự án quản lý đơn hàng, tôi sẽ chia thành 4 milestone: khám phá/thiết kế, API cốt lõi, xác thực, và hoàn thiện bàn giao. Nếu sau milestone đầu tiên thấy scope thực tế lớn hơn, tôi có bằng chứng để báo giá lại trước khi cam kết. Tôi không dùng tốc độ code để bù cho spec mơ hồ, vì nợ phạm vi luôn đắt hơn nợ kỹ thuật."
+
 > Senior tip: với dự án 4 tuần, một **milestone khám phá ngắn** (spec + thiết kế + giả định) trả phí nhỏ là cách rẻ nhất để mua sự rõ ràng. Nếu sau milestone 1 bạn thấy scope thực tế lớn gấp đôi, bạn có bằng chứng để báo giá lại trước khi cam kết toàn bộ. Đừng dùng tốc độ code để bù cho một bản spec mơ hồ — nợ phạm vi luôn đắt hơn nợ kỹ thuật.`,
   follow: [
     'Client muốn fixed-price nhưng từ chối nạp escrow trước, hứa "sẽ trả khi xong". Bạn xử lý thế nào?',
@@ -1065,6 +1153,28 @@ Mẫu C chỉ dùng khi bạn **chủ động chọn** tặng một thay đổi 
 - [ ] Giữ giọng điệu hợp tác, dựa trên tác động cụ thể (không công kích, không suy đoán động cơ).
 - [ ] Lưu toàn bộ trao đổi trên Upwork làm bằng chứng phạm vi.
 
+### Ví dụ đời thực
+
+**Tình huống:** Bạn đang làm hợp đồng fixed-price 800 USD cho 4 endpoint (ước tính 20 giờ). Giữa chừng, khách nhắn "thêm giúp một nút xuất CSV, chắc nhanh thôi". Bạn nói OK ngay trên chat mà không ước lượng. Sau khi làm, tính năng xuất CSV thực tế mất thêm 6 giờ (query dữ liệu lớn, phân trang, quyền truy cập, test, xử lý tiếng Việt), nhưng bạn vẫn nhận 800 USD.
+
+**Triệu chứng:** Effective hourly rate giảm từ 40 USD/giờ xuống khoảng 30,8 USD/giờ. Khách tiếp tục yêu cầu thêm "việc nhỏ" khác, và milestone gốc có nguy cơ trễ.
+
+**Điều tra:** Bạn rà soát spec và thấy xuất CSV không nằm trong phạm vi đã chốt. "Việc nhỏ" nghe nhỏ nhưng cần thay đổi DB, API, auth, và test — tổng tác động lớn.
+
+**Nguyên nhân gốc:** Bạn đã nói OK ngay mà không đánh giá tác động, không đề xuất change request, và không xin xác nhận bằng văn bản trước khi làm. Scope creep bắt đầu từ một câu "chắc nhanh thôi".
+
+**Cách xử lý:**
+1. **Ghi nhận nhu cầu tích cực**, hỏi làm rõ (dữ liệu, ai dùng, ưu tiên).
+2. **Đánh giá tác động** (~5–7 giờ, DB/query, bảo mật, test).
+3. **Đề xuất bằng văn bản trên Upwork:** thêm milestone mới hoặc đổi scope tương đương, nêu giả định.
+4. **Chỉ bắt đầu sau khi khách xác nhận**; fixed-price thì milestone mới phải được fund escrow.
+
+**Kết quả đo được:** Sau khi áp dụng quy trình 5 bước, khách đồng ý tạo milestone mới 280 USD cho xuất CSV. Bạn giao đúng hạn, duyệt milestone, và giữ được quan hệ tốt vì khách ra quyết định dựa trên thông tin rõ ràng. Trong 3 tháng sau, không còn bất kỳ "việc nhỏ" nào được làm miễn phí.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi khách nhắn 'thêm giúp một tính năng nhỏ nữa', tôi không bao giờ nói OK ngay trên chat. Thay vào đó, tôi làm rõ yêu cầu (dữ liệu, ai dùng, ưu tiên), đánh giá tác động kỹ thuật (DB, bảo mật, test, thời gian), và đề xuất bằng văn bản trên Upwork: thêm milestone mới, đổi scope tương đương, hoặc đưa vào giai đoạn sau. Chỉ khi khách xác nhận — và với fixed-price, milestone mới đã được nạp escrow — tôi mới bắt đầu làm. Tôi cũng phân biệt rõ bug trong phạm vi đã chốt (tôi sửa trong milestone đó) và tính năng mới (là change request). Một quy tắc quan trọng tôi áp dụng là đưa 'quy tắc thay đổi' vào tin nhắn chốt phạm vi ngay từ đầu dự án. Khi scope creep xảy ra, tôi chỉ đang thực thi quy trình đã thống nhất, không phải đòi thêm tiền. Cách nói 'I can do that — here is the impact and options' vừa chuyên nghiệp vừa giữ quan hệ tốt, vì tôi giúp khách ra quyết định có thông tin."
+
 > Senior tip: hãy đưa "quy tắc thay đổi" vào tin nhắn chốt phạm vi ngay từ đầu dự án (xem remote-010). Khi scope creep xảy ra, bạn chỉ đang **thực thi một quy trình đã thống nhất**, không phải đang đòi thêm tiền. Cách nói "I can do that — here is the impact and options" vừa chuyên nghiệp vừa giữ quan hệ, vì bạn đang giúp client ra quyết định có thông tin.`,
   follow: [
     'Client nói: "freelancer trước làm mấy cái này miễn phí". Bạn trả lời thế nào mà vẫn tôn trọng và giữ ranh giới?',
@@ -1167,6 +1277,28 @@ I am willing to [fix specific issue] within [X days] if it is within the agreed 
 - [ ] Nếu dispute: tổng hợp timeline + bằng chứng, trình bày ngắn gọn, trung thực, theo quy trình hỗ trợ Upwork.
 - [ ] Không chuyển thanh toán/tranh chấp ra ngoài nền tảng; không làm thêm ngoài scope khi chưa thỏa thuận.
 - [ ] Kiểm tra cơ chế escrow/dispute/Payment Protection hiện hành trên trang hỗ trợ Upwork (thay đổi theo thời gian).
+
+### Ví dụ đời thực
+
+**Tình huống:** Bạn nộp Milestone 2 (API xác thực + kiểm soát lỗi, 600 USD) trên fixed-price. Client không phản hồi trong 7 ngày, tiền kẹt trong escrow. Sau đó khách yêu cầu refund vì "chất lượng không như kỳ vọng" nhưng không chỉ ra tiêu chí nào bị vi phạm.
+
+**Triệu chứng:** Tiền 600 USD kẹt, dự án treo, và bạn lo rằng dispute có thể ảnh hưởng tài khoản.
+
+**Điều tra:** Bạn kiểm tra bằng chứng đã giữ: tin nhắn chốt scope trên Upwork, commit/tag abc123, demo video, README hướng dẫn chạy, và tin nhắn nộp milestone yêu cầu duyệt. Khách không thể chỉ ra điểm cụ thể nào không đạt tiêu chí nghiệm thu.
+
+**Nguyên nhân gốc:** Client chậm duyệt và không phản hồi; bạn không có bằng chứng bàn giao rõ ràng gửi kèm khi nộp milestone ban đầu (hoặc bằng chứng không được trích dẫn khi phản hồi refund).
+
+**Cách xử lý:**
+1. **Gửi tin nhắn nhắc duyệt lịch sự trên Upwork**, kèm bằng chứng (commit, demo, cách kiểm tra) và yêu cầu hành động cụ thể (duyệt hoặc phản hồi điểm cụ thể).
+2. **Nếu khách yêu cầu refund**, trả lời bình tĩnh, bám scope đã chốt, yêu cầu chỉ ra điểm không đạt tiêu chí, và đề xuất sửa lỗi cụ thể trong khoảng thời gian nhất định.
+3. **Nếu dispute mở**, trình bày ngắn gọn có cấu trúc: scope đã đồng ý, bằng chứng bàn giao, ý kiến khách, phản hồi của bạn.
+4. **Giữ mọi trao đổi trên Upwork**, không chuyển sang chat ngoài.
+
+**Kết quả đo được:** Khách xem lại bằng chứng và đồng ý duyệt milestone vì bạn đã giao đúng tiêu chí nghiệm thu. Tiền 600 USD được giải ngân đúng hạn. Sau sự cố, bạn thiết lập thói quen cuối mỗi milestone gửi demo + cách kiểm tra, và cuối mỗi ngày gửi cập nhật 3 dòng trên Upwork. Trong 6 tháng sau, không còn dispute nào.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi thanh toán bị kẹt — client chậm duyệt milestone, không phản hồi, hoặc yêu cầu refund — mục tiêu của tôi là giải quyết có cấu trúc và dựa trên bằng chứng, không phải tranh cãi cảm tính. Tôi giữ mọi trao đổi quan trọng trên Upwork (tin nhắn, hợp đồng, milestone) và giữ bằng chứng từ ngày đầu: phạm vi và tiêu chí nghiệm thu đã chốt, lịch sử trao đổi, artefact bàn giao (commit/tag, demo video, README), và work diary nếu là hourly. Khi nộp milestone, tôi luôn kèm commit, demo ngắn và cách kiểm tra theo tiêu chí nghiệm thu. Nếu khách yêu cầu refund, tôi trả lời bình tĩnh, bám vào scope đã chốt, và yêu cầu chỉ ra điểm cụ thể không đạt tiêu chí. Nếu dispute mở, tôi trình bày timeline và bằng chứng ngắn gọn, trung tính, theo quy trình hỗ trợ Upwork. Bằng chứng tốt nhất được tạo trước tranh chấp, không phải trong lúc tranh chấp — nên tôi có thói quen gửi cập nhật 3 dòng mỗi ngày và demo cuối mỗi milestone."
 
 > Senior tip: bằng chứng tốt nhất được tạo **trước** tranh chấp, không phải trong lúc tranh chấp. Một thói quen đơn giản: cuối mỗi ngày làm việc gửi một cập nhật 3 dòng trên Upwork (đã làm, sẽ làm, vướng gì) và cuối mỗi milestone gửi demo + cách kiểm tra. Khi có vấn đề, bạn không phải "chứng minh mình đã làm" — bạn chỉ việc trỏ vào chuỗi dấu vết đã có.`,
   follow: [
@@ -1403,7 +1535,7 @@ Upwork có thể hỗ trợ các nhóm phương thức như: **chuyển khoản 
 ~~~text
 Ví dụ (GIẢ ĐỊNH — tự thay bằng số/điều kiện thực tế của bạn):
 - Hợp đồng fixed-price milestone: 500 USD
-- Phí dịch vụ freelancer (giả định 10% — thực tế biến động 0–15%/hợp đồng, cố định khi bắt đầu; tại thời điểm viết, kiểm tra lại): -50 USD
+- Phí dịch vụ freelancer (10% cố định): -50 USD
 - Số dư khả dụng: 450 USD
 - Phí rút (giả định do phương thức/đối tác): -1 USD  (kiểm tra phí thực tế)
 - Số tiền quy đổi: 449 USD
@@ -1443,14 +1575,14 @@ Thư mục chứng từ gợi ý (lưu bản sao an toàn, sao lưu):
 - [ ] Hiểu chuỗi tiền: thu nhập hợp đồng → trừ phí dịch vụ Upwork → số dư khả dụng → rút (phí + FX) → nhận về VN.
 - [ ] Kiểm tra phương thức rút khả dụng cho Việt Nam, phí, thời gian, loại tiền nhận trên trang Upwork chính thức (Get Paid/Fees).
 - [ ] Chọn tần suất rút phù hợp để tối ưu phí (dựa trên cơ chế phí thực tế, không giả định).
-- [ ] Theo dõi phí dịch vụ Upwork (0–15%/hợp đồng, cố định khi bắt đầu — tại thời điểm viết; kiểm tra lại) khi định giá.
+- [ ] Theo dõi phí dịch vụ Upwork (10% cố định/hợp đồng — tại thời điểm viết; kiểm tra lại) khi định giá.
 - [ ] Lưu chứng từ: hợp đồng, lịch sử giao dịch, biên nhận rút, sao kê ngân hàng, ghi chú tỷ giá.
 - [ ] Xác định nghĩa vụ kê khai/nộp thuế TNCN với chuyên gia thuế/kế toán; kê khai đúng hạn nếu có nghĩa vụ.
 - [ ] Không suy đoán thuế suất; kiểm tra quy định hiện hành từ nguồn chính thức/chuyên gia.
 
 > Senior tip: hãy quản lý freelance như một "business nhỏ": mỗi tháng đối chiếu ba con số — gross (trên hợp đồng), sau phí nền tảng, và thực nhận VND sau rút/FX — rồi trích một khoản dự phòng cho thuế và tháng ít việc. Lưu chứng từ ngay khi giao dịch xảy ra (5 phút) rẻ hơn rất nhiều so với dọn lại hồ sơ cả năm vào mùa kê khai. Và trước mọi quyết định thuế, một cuộc hỏi chuyên gia đáng tin cậy có giá trị hơn hàng chục bình luận trên mạng.`,
   follow: [
-    'Phí dịch vụ Upwork thay đổi theo hợp đồng (0–15%). Bạn phản ánh điều này vào báo giá hourly và fixed-price thế nào?',
+    'Phí dịch vụ Upwork là 10% cố định. Bạn phản ánh điều này vào báo giá hourly và fixed-price thế nào?',
     'Bạn nên rút tiền theo chu kỳ nào (mỗi tuần/mỗi tháng/gộp lớn) để cân bằng phí, tỷ giá và nhu cầu dòng tiền?',
     'Những chứng từ nào thường cần khi bạn làm việc với kế toán để kê khai thu nhập freelance từ nước ngoài?'
   ],
@@ -2759,7 +2891,7 @@ Job 4: (0,0,0,0)=0 → BỎ.  Job 5: (2,1,1,1)=5 → GỬI nếu có bằng ch�
 - **Giờ non-billable** (không tính tiền): viết proposal, phỏng vấn, học công nghệ, marketing profile, kế toán, chờ phản hồi, nghỉ. Bạn vẫn tốn thời gian nhưng không gửi invoice cho giờ này.
 - **Gross** (doanh thu trước khấu trừ): tiền hợp đồng ghi nhận trước phí/thuế. **Net** (thực nhận): tiền còn lại bạn dùng được.
 - **Effective hourly rate** (thu nhập thực tế mỗi giờ làm việc): net chia cho tổng giờ bạn bỏ ra (cả billable lẫn non-billable) — con số "thật" để so sánh với lương.
-- **Phí dịch vụ (service fee)**: phần nền tảng giữ lại từ thu nhập trên hợp đồng. Trên Upwork, phí dịch vụ freelancer **biến động 0–15% mỗi hợp đồng**, hiển thị trước khi gửi proposal/nhận offer và cố định khi hợp đồng bắt đầu (tại thời điểm viết 2026-11-07, theo support.upwork.com; **kiểm tra lại**). Direct contract có mức khác (xem trang chính thức).
+- **Phí dịch vụ (service fee)**: phần nền tảng giữ lại từ thu nhập trên hợp đồng. Trên Upwork, phí dịch vụ freelancer là **10% cố định cho mọi hợp đồng** (tính từ thu nhập brute của freelancer), hiển thị trước khi gửi proposal/nhận offer. Direct contract có mức khác (xem trang chính thức).
 
 ### 2. Bảng tính mẫu (TẤT CẢ SỐ LIỆU GIẢ ĐỊNH — tự thay bằng số của bạn)
 ~~~text
@@ -2815,14 +2947,14 @@ Kiểm tra effective rate:
 
 ### 5. Sai lầm hay gặp
 - Lấy lương tháng chia cho 160 giờ rồi đặt rate: bỏ quên non-billable, phí, thuế, bảo hiểm.
-- Quên phí dịch vụ biến động 0–15% và phí rút tiền: net thấp hơn tưởng tượng.
+- Quên phí dịch vụ (10% cố định trên Upwork) và phí rút tiền: net thấp hơn tưởng tượng.
 - Không có quỹ dự phòng: freelance có tháng cao tháng thấp.
 - Tăng giờ làm để bù rate thấp: burnout (kiệt sức), chất lượng giảm, review xấu.
 
 ### Checklist
 - [ ] Xác định mục tiêu net/tháng (gồm dự phòng phúc lợi, thiết bị, nghỉ) — dùng số của bạn, không dùng số mẫu.
 - [ ] Ước lượng giờ billable thực tế (trừ proposal, họp, học, hành chính, nghỉ); người mới nên giả định thận trọng (60–100 giờ).
-- [ ] Cộng ngược: thuế/bảo hiểm (hỏi chuyên gia) + phí rút tiền (phương thức thực tế) + phí dịch vụ Upwork (biến động 0–15%/hợp đồng, cố định khi bắt đầu — tại thời điểm viết; kiểm tra lại).
+- [ ] Cộng ngược: thuế/bảo hiểm (hỏi chuyên gia) + phí rút tiền (phương thức thực tế) + phí dịch vụ Upwork (10% cố định/hợp đồng — tại thời điểm viết; kiểm tra lại).
 - [ ] Tính rate tối thiểu = (gross cần) / (giờ billable); thêm đệm rủi ro 15–25%.
 - [ ] Theo dõi effective hourly rate hằng tuần (net / tổng giờ bỏ ra) để biết có đang "làm rẻ" không.
 - [ ] Đặt kế hoạch tăng rate theo mốc bằng chứng (review, case study, khách lặp lại).
@@ -2877,7 +3009,7 @@ Tổng công sức dự phòng:                                ~48 giờ
 
 Quy đổi giá (giả định): 48 giờ x 20 USD/giờ = 960 USD (gross, chưa gồm phí nền tảng bạn chịu).
 Có thể báo fixed-price theo milestone tổng ~900–1,100 USD tuỳ mức rủi ro bạn chấp nhận.
-(Lưu ý: phí dịch vụ freelancer Upwork biến động 0–15%/hợp đồng, cố định khi bắt đầu — tại thời điểm viết 2026-11-07; kiểm tra lại. Số giờ/giá ở đây hoàn toàn giả định.)
+(Lưu ý: phí dịch vụ freelancer Upwork 10% cố định/hợp đồng — tại thời điểm viết; kiểm tra lại. Số giờ/giá ở đây hoàn toàn giả định.)
 ~~~
 
 ### 4. Bước 3 — Chia milestone gắn nghiệm thu
