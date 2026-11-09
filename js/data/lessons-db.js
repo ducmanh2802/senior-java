@@ -41,13 +41,94 @@ PostgreSQL lưu phiên bản hàng (tuple) cùng thông tin transaction tạo/x�
 | Chỉnh một hàng theo phiên bản | optimistic locking với version |
 | Bảo vệ nhiều hàng cùng invariant | constraint, khóa phù hợp hoặc SERIALIZABLE + retry |
 
+### Lịch xen kẽ minh họa
+Mỗi cột là một transaction, thời gian chạy từ trên xuống. Commit là dấu +, rollback là dấu ×.
+
+Dirty read (READ UNCOMMITTED, PostgreSQL coi như READ COMMITTED, không cho phép thật):
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT balance = 100 ------>|
+|                               |-- UPDATE balance = 80 (chưa commit)
+|                               |
+|-- SELECT balance = 80 ---------|   <-- T1 đọc giá trị chưa commit
+|                               |-- ROLLBACK
+|-- SELECT balance = 80 ---------|   <-- T1 đã dùng giá trị "ma" không tồn tại
+~~~
+
+Non-repeatable read (READ COMMITTED):
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT balance = 100 ------>|
+|                               |-- UPDATE balance = 80
+|                               |-- COMMIT
+|-- SELECT balance = 80 ---------|   <-- T1 đọc lại, giá trị khác (hợp lệ ở READ COMMITTED)
+~~~
+
+Lost update (READ COMMITTED, read-modify-write ở ứng dụng):
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT balance = 100 ------>|
+|                               |-- SELECT balance = 100 ------>|
+|                               |   <-- cả hai cùng đọc 100
+|-- UPDATE balance = 101 ------->|   <-- T1 ghi 101
+|                               |-- UPDATE balance = 101 -->|   <-- T2 ghi 101, ghi đè T1
+|                               |   <-- kết quả 101, một lần tăng bị mất
+~~~
+
+### Cơ chế từng bước
+Hãy tưởng tượng hai giao dịch cùng muốn sửa một giá trị. Cơ chế isolation hoạt động theo từng bước như sau:
+
+1. **Transaction bắt đầu và lấy snapshot.** Khi một transaction chạy, database quyết định nó được nhìn thấy những phiên bản dữ liệu nào. Ở READ COMMITTED, snapshot được lấy cho mỗi câu lệnh; ở REPEATABLE READ, snapshot được lấy một lần ở đầu transaction và giữ nguyên.
+
+2. **Ghi tạo ra phiên bản mới.** Khi transaction ghi (UPDATE/DELETE), database không sửa tại chỗ mà tạo một tuple mới, đánh dấu tuple cũ là đã bị thay thế (xmax). Tuple cũ vẫn còn trong bảng cho đến khi VACUUM dọn.
+
+3. **Đọc chọn tuple theo snapshot.** Khi transaction đọc, nó chọn trong các tuple của hàng tuple mà snapshot của nó cho phép thấy: tuple đã sinh ra (xmin đã commit theo snapshot) và chưa bị thay thế (xmax chưa commit theo snapshot).
+
+4. **Commit làm thay đổi quan sát được.** Sau khi transaction commit, các tuple nó sinh ra trở nên visible với các snapshot lấy sau đó. Ở READ COMMITTED, các câu lệnh sau trong cùng transaction sẽ thấy commit mới; ở REPEATABLE READ, chúng không thấy vì đã chụp ảnh cũ.
+
+5. **Xung đột ghi bị phát hiện ở bước 4.** Nếu một transaction ở REPEATABLE READ muốn ghi một hàng mà đã có commit mới sau snapshot của nó, PostgreSQL không ghi overwrite mà abort với SQLSTATE 40001, bắt ứng dụng retry toàn bộ transaction.
+
+Vì sao lại như vậy? MVCC ưu tiên đọc không bị ngăn bởi ghi, đổi lại để lại tuple chết và yêu cầu VACUUM. Mỗi mức isolation là một trade-off giữa nhất quán và đồng thời.
+
+~~~java
+// Mô phỏng 5 bước bằng một hàng có hai tuple
+// Tuple cũ: value=10, xmin=100, xmax=201 (đã bị T201 thay thế)
+// Tuple mới: value=12, xmin=201, xmax=0 (hiện hành)
+// Snapshot T300 với committed={100}: thấy tuple cũ (10)
+// Snapshot T400 với committed={100,201}: thấy tuple mới (12)
+boolean bornOld = true;     // xmin=100 đã commit theo snapshot T300
+boolean goneOld = false;    // xmax=201 chưa commit theo snapshot T300
+boolean visibleOld = bornOld && !goneOld;   // true: T300 thấy 10
+boolean bornNew = true;     // xmin=201 đã commit theo snapshot T400
+boolean goneNew = false;    // xmax=0 chưa bị thay thế
+boolean visibleNew = bornNew && !goneNew;   // true: T400 thấy 12
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng READ COMMITTED cho nghiệp vụ cần nhất quán giữa hai SELECT.** Triệu chứng: SELECT thứ nhất đọc số dư 100, sau đó làm việc khác, SELECT thứ hai đọc số dư 90 vì người khác đã trừ. Nguyên nhân: READ COMMITTED lấy snapshot mới mỗi câu lệnh, nên non-repeatable read là hợp lệ. Cách sửa: nếu cần cùng một giá trị trong suốt transaction, dùng REPEATABLE READ hoặc SELECT ... FOR UPDATE để khóa hàng; hoặc dùng UPDATE nguyên tử không cần đọc trước.
+
+2. **Code Java read-modify-write mà không dùng UPDATE nguyên tử.** Triệu chứng: hai request cùng đọc 100, cùng cộng 1, cùng ghi 101; một lần tăng bị mất. Nguyên nhân: lost update — cả hai phép ghi đều dựa trên ảnh chụp ban đầu. Cách sửa: {{UPDATE account SET balance = balance + ? WHERE id = ?}} để database tính, hoặc optimistic locking với version check.
+
+3. **Dùng SERIALIZABLE cho workload cao mà không retry.** Triệu chứng: ứng dụng liên tục gặp serialization failure (SQLSTATE 40001). Nguyên nhân: SERIALIZABLE abort khi phát hiện write skew hoặc lost update. Cách giữ SERIALIZABLE nhưng retry có giới hạn với backoff, hoặc xuống REPEATABLE READ nếu không thực sự cần.
+
+4. **Chạy chung transaction với thao tác ngoài DB.** Triệu chứng: transaction kéo dài, giữ snapshot và lock, làm transaction khác phải chờ, VACUUM chậm, bảng phình. Nguyên nhân: gọi HTTP, gửi email, await người dùng trong transaction. Cách sửa: ghi event vào outbox trong cùng transaction, để relay gửi sau commit; giữ transaction chỉ quanh phần DB.
+
 ### Pitfall production
 Transaction dài giữ snapshot cũ, làm VACUUM khó thu hồi tuple chết và tăng bloat. Retry toàn transaction phải idempotent, không gửi email/charge thẻ trước khi commit. Đừng dùng một bài test chạy tuần tự để kết luận về concurrency: cố định lịch xen kẽ để tái hiện race.
 
-### Liên hệ phỏng vấn
-Hãy vẽ lịch T1/T2, ghi trạng thái commit và giá trị mỗi lần đọc. Nêu rõ PostgreSQL READ COMMITTED tạo snapshot theo statement, còn REPEATABLE READ theo transaction; giải thích anomaly nghiệp vụ và biện pháp cụ thể.
-
 > Senior tip: đo thời gian transaction và tỷ lệ serialization failure; retry có backoff giới hạn, và chỉ retry phần nghiệp vụ thực sự an toàn.
+
+### Liên hệ phỏng vấn
+- **"READ COMMITTED và REPEATABLE READ khác biệt gì?"** → READ COMMITTED lấy snapshot mỗi câu lệnh, hai SELECT trong cùng transaction có thể thấy hai giá trị khác nhau; REPEATABLE READ lấy snapshot một lần ở đầu transaction, giữ nguyên trong suốt transaction, nhưng khi cố ghi hàng đã đổi, PostgreSQL abort với 40001.
+- **"Lost update xảy ra sao và sửa bằng cách nào?"** → Hai transaction cùng đọc 10, cùng cộng 1, cùng ghi 11 — một lần tăng bị mất. Sửa bằng UPDATE nguyên tử (SET balance = balance + 1) hoặc optimistic locking với version check.
+- **"Khi nào chọn SERIALIZABLE thay vì REPEATABLE READ?"** → Khi invariant bao gồm nhiều hàng (ví dụ tổng số dư phải bằng 0), REPEATABLE READ không bắt được write skew; SERIALIZABLE dùng SSI để phát hiện và abort. Ứng dụng phải retry.
+- **"MVCC giúp đọc không bị chặn bởi ghi như thế nào?"** → Đọc chọn tuple theo snapshot, ghi tạo tuple mới thay vì overwrite. Nhược điểm là VACUUM phải dọn tuple chết và transaction dài giữ snapshot gây bloat.
 `,
   exercises: [{
     title: 'Phát hiện lost update trong lịch cố định',
@@ -84,7 +165,9 @@ Hãy vẽ lịch T1/T2, ghi trạng thái commit và giá trị mỗi lần đ�
   }],
   check: [
     {q:'READ UNCOMMITTED trong PostgreSQL 15 có cho dirty read không?',options:['Có','Không, được xử lý như READ COMMITTED','Chỉ khi dùng MVCC','Chỉ với bảng temporary'],answer:1,explain:'PostgreSQL không expose dirty read; READ UNCOMMITTED có hành vi như READ COMMITTED.'},
-    {q:'Ở READ COMMITTED, snapshot được lấy khi nào?',options:['Mỗi statement','Chỉ lúc BEGIN','Chỉ lúc COMMIT','Mỗi lần gọi Java getter'],answer:0,explain:'Mỗi câu lệnh SQL có snapshot mới; vì vậy SELECT lặp lại có thể thấy commit mới.'}
+    {q:'Ở READ COMMITTED, snapshot được lấy khi nào?',options:['Mỗi statement','Chỉ lúc BEGIN','Chỉ lúc COMMIT','Mỗi lần gọi Java getter'],answer:0,explain:'Mỗi câu lệnh SQL có snapshot mới; vì vậy SELECT lặp lại có thể thấy commit mới.'},
+    {q:'PostgreSQL SERIALIZABLE abort với SQLSTATE 40001 khi nào?',options:['Khi có dirty read','Chỉ khi có non-repeatable read','Khi phát hiện write skew hoặc lost update qua SSI','Mỗi lần transaction BEGIN'],answer:2,explain:'SSI phát hiện dependency nguy hiểm giữa các transaction và abort một trong số chúng; ứng dụng phải retry toàn bộ transaction.'},
+    {q:'Ở REPEATABLE READ, transaction UPDATE một hàng đã bị transaction khác sửa và commit sau khi snapshot lấy, sẽ ra sao?',options:['Ghi đè giá trị mới','Báo lỗi could not serialize access (SQLSTATE 40001)','Tự động rollback toàn bộ database','Không ghi gì và silently bỏ qua'],answer:1,explain:'PostgreSQL không cho ghi đè dựa trên snapshot cũ; nó abort transaction hiện tại và bắt ứng dụng retry.'}
   ], tags:['isolation','MVCC','PostgreSQL','lost-update']
 },
 {
@@ -107,8 +190,28 @@ return false; // caller must reload and decide whether to retry
 
 Trong SQL tương ứng: {{UPDATE account SET balance=?, version=version+1 WHERE id=? AND version=?}}. Không kiểm tra row count là lỗi nghiêm trọng: request có thể báo thành công dù update không xảy ra. ORM như Hibernate hỗ trợ {{@Version}} và thường ném optimistic lock exception khi update không khớp.
 
+Khi Hibernate dùng {{@Version}}, nó tự thêm điều kiện version vào câu UPDATE và ném {{OptimisticLockException}} nếu row count bằng 0. Đây là cơ chế chuẩn của JPA, bản chất vẫn là compare-and-set ở tầng database. Version nên là kiểu số nguyên (Long/Integer) và tăng thêm 1 mỗi lần cập nhật. Không nên dùng timestamp làm version vì độ phân giải thấp có thể khiến hai cập nhật cùng giây được coi là cùng version.
+
+Một điểm quan trọng là version chỉ bảo vệ một hàng. Nếu nghiệp vụ cần cập nhật nhiều hàng nguyên tử (ví dụ trừ tiền từ tài khoản A và cộng vào tài khoản B), version một hàng không đủ; cần transaction, khóa hàng, hoặc SERIALIZABLE.
+
 ### Retry phải tính lại
-Retry đúng nghĩa là bắt đầu transaction mới, đọc trạng thái mới, tính lại thay đổi dựa trên input nghiệp vụ rồi thử lại. Không nên chỉ gửi lại cùng SQL với giá trị tuyệt đối cũ; như vậy có thể lặp lại stale write. Giới hạn số lần retry, thêm jitter khi contention cao và trả conflict cho client nếu không thể hòa giải.
+Retry đúng nghĩa là bắt đầu transaction mới, đọc trạng thái mới, tính lại thay đổi dựa trên input nghiệp vụ rồi thử lại. Không nên chỉ gửi lại cùng SQL với giá trị tuyệt đối cũ; như vậy có thể lặp lại stale write — ghi đè lên kết quả mới nhất, lại thành lost update.
+
+Vòng retry an toàn trong Java:
+
+~~~java
+int attempt = 0;
+while (attempt++ < MAX_RETRY) {
+    int current = readBalance(id);       // đọc lại version + giá trị mới
+    int next = current + delta;          // tính lại từ input nghiệp vụ
+    int updated = updateBalance(id, next, currentVersion);
+    if (updated == 1) return;            // thành công
+    sleep(randomBackoff(attempt));       // jitter tránh thundering herd
+}
+throw new OptimisticConflictException("quá số lần retry");
+~~~
+
+Khi contention cao, nhiều transaction cùng conflict và retry cùng lúc có thể gây "thundering herd": tất cả cùng đọc, cùng conflict, cùng retry, tải tăng vọt. Giới hạn số lần retry (3-5 lần), thêm exponential backoff với jitter (thời gian chờ ngẫu nhiên) để các transaction không va chạm lại, và trả conflict cho client nếu vượt quá giới hạn hoặc conflict là do nghiệp vụ (ví dụ số dư không đủ).
 
 ### PostgreSQL MVCC
 MVCC giúp reader không chặn writer trong nhiều trường hợp, nhưng không tự ngăn lost update trong ứng dụng kiểu read-compute-write ở READ COMMITTED. Version predicate biến tính toàn vẹn thành điều kiện ghi nguyên tử. Một lệnh UPDATE nguyên tử trên cột cũng có thể phù hợp hơn cho phép cộng đơn giản. Với invariant nhiều hàng, version một hàng không đủ; cân nhắc constraint, khóa hoặc SERIALIZABLE.
@@ -119,13 +222,63 @@ MVCC giúp reader không chặn writer trong nhiều trường hợp, nhưng kh�
 | Atomic SQL update | phép biến đổi đơn giản tại DB | logic phải biểu diễn được trong SQL |
 | Pessimistic row lock | contention cao, cần tuần tự hóa | chờ khóa, deadlock, throughput thấp |
 
+### Lịch xen kẽ: conflict và retry
+T1 đọc (số dư=100, version=5), tính toán, rồi ghi. T2 đã cập nhật giữa thời gian đó.
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT (100, v5) ---------->|
+|                               |-- SELECT (100, v5) ------>|
+|                               |   <-- cả hai cùng đọc v5
+|-- UPDATE ... WHERE version=5 -->|   <-- T1 thành công, v→6
+|                               |-- UPDATE ... WHERE version=5
+|                               |   <-- T2: 0 dòng, version đã là 6
+|-- (T2 đọc lại: 105, v6) ------>|   <-- retry: đọc trạng thái mới
+|-- UPDATE ... WHERE version=6 -->|   <-- T2 thành công, v→7
+~~~
+
+### Cơ chế từng bước
+Optimistic locking hoạt động theo 5 bước, từ đọc đến ghi thành công hoặc conflict:
+
+1. **Đọc kèm version.** Transaction đọc hàng cùng với version hiện tại (ví dụ value=10, version=4). Đây là điểm chuẩn bị để so sánh.
+
+2. **Tính thay đổi trong bộ nhớ.** Dựa trên giá trị đã đọc, transaction tính ra giá trị mới (ví dụ 10 + 3 = 13). Bước này không đụng đến database.
+
+3. **Ghi với điều kiện version.** Transaction gửi UPDATE với điều kiện WHERE version = 4 (phiên bản đã đọc). Database so sánh version hiện tại với 4.
+
+4. **Kiểm tra kết quả.** Nếu version vẫn là 4, UPDATE thay đổi value và tăng version lên 5, trả về số dòng = 1. Nếu version đã thành 5 (transaction khác vừa cập nhật), điều kiện không khớp, UPDATE trả về 0 dòng.
+
+5. **Quyết định retry hoặc báo conflict.** Với 0 dòng, application biết dữ liệu đã đổi: đọc lại (bước 1) và tính lại (bước 2), hoặc trả conflict cho client. Với 1 dòng, ghi thành công.
+
+Vì sao lại như vậy? Cách này không khóa cho đến khi ghi, nên nhiều reader cùng đọc không cần chờ nhau. Giá phải trả là phải xử lý conflict một cách explicit, và retry phải bắt đầu từ dữ liệu mới.
+
+~~~java
+// Mô phỏng 5 bước bằng một VersionedCounter
+VersionedCounter c = new VersionedCounter(10); // value=10, version=0
+boolean ok = c.update(0, 3);   // version hiện tại là 0, expected 0 -> khớp, value=13, version=1, trả true
+ok = c.update(0, 9);           // version đã thành 1, expected 0 -> không khớp, trả false, giữ nguyên
+~~~
+
+### Lỗi hay gặp trên production
+1. **Không kiểm tra row count của UPDATE.** Triệu chứng: request được application coi là thành công (vì không có exception) nhưng dữ liệu thực tế không thay đổi. Nguyên nhân: UPDATE với version predicate không khớp trả về 0 dòng, application không check số dòng. Cách sửa: luôn kiểm tra affected rows; bằng 0 thì coi là conflict, retry hoặc trả về client.
+
+2. **Retry gửi lại cùng SQL với giá trị tuyệt đối cũ.** Triệu chứng: retry lặp lại stale write — ghi lại giá trị đã đọc từ snapshot cũ thay vì giá trị mới. Nguyên nhân: retry không đọc lại dữ liệu. Cách sửa: retry phải bắt đầu transaction mới, đọc lại state, tính lại thay đổi từ input nghiệp vụ.
+
+3. **Side effect trước commit.** Triệu chứng: mỗi retry gửi email hoặc gọi API thanh toán, gây gửi trùng lặp. Nguyên nhân: thực hiện side effect ngoài transaction. Cách sửa: ghi event vào outbox trong cùng transaction, relay gửi sau commit; dùng idempotency key.
+
+4. **Retry vô hạn khi hệ thống đã nóng.** Triệu chứng: khi contention cao, retry liên tục làm tăng tải thêm, hệ thống càng chậm. Nguyên nhân: không giới hạn số lần retry và không phân biệt conflict tạm thời với conflict nghiệp vụ. Cách sửa: retry có giới hạn (3-5 lần) với exponential backoff và jitter; conflict nghiệp vụ trả về client.
+
 ### Pitfall production
 Đừng thực hiện side effect ngoài DB (gửi email, gọi API thanh toán) trước khi commit, vì mỗi lần retry sẽ lặp lại nó; ghi event vào outbox trong cùng transaction và để relay gửi sau commit. Retry không giới hạn gây khuếch đại tải khi hệ thống đã nóng. Cần phân biệt conflict nghiệp vụ (cần người dùng chọn) với lỗi transient có thể tự retry.
 
-### Liên hệ phỏng vấn
-Nêu SQL có predicate version, giải thích row count bằng 0, rồi mô tả vòng retry bắt đầu transaction mới và tính lại. Hibernate {{@Version}} tiện lợi nhưng không thay thế xử lý exception ở boundary.
-
 > Senior tip: theo dõi tỷ lệ optimistic conflict theo loại entity; nếu thường xuyên cao, cân nhắc atomic update hoặc khóa thay vì retry vô ích.
+
+### Liên hệ phỏng vấn
+- **"Optimistic locking và pessimistic locking khác biệt gì?"** → Optimistic không lock khi đọc, chỉ check version khi ghi; conflict thì retry. Pessimistic lock hàng từ đầu, chờ đến khi commit; phù hợp contention cao nhưng gây deadlock và giảm throughput.
+- **"UPDATE có version predicate trả về 0 dòng nghĩa là gì?"** → Điều kiện version không khớp, có thể dữ liệu đã đổi hoặc hàng không tồn tại; ứng dụng phải retry hoặc trả conflict, không được coi là thành công.
+- **"Retry optimistic conflict cần làm gì?"** → Bắt đầu transaction mới, đọc lại state, tính lại thay đổi từ input nghiệp vụ; retry có giới hạn (3-5 lần) với backoff; side effect phải idempotent hoặc dùng outbox.
+- **"Vì sao không nên gọi HTTP hoặc gửi email trong hàm compute/merge?"** → Hàm tính toán chạy trên ảnh chụp đã đọc, ngoài khóa database; side effect sẽ được lặp lại mỗi lần retry, gây gửi trùng (email/thanh toán).
 `,
   exercises: [{
     title: 'Cập nhật nếu version còn khớp',
@@ -158,7 +311,7 @@ Nêu SQL có predicate version, giải thích row count bằng 0, rồi mô tả
     hints: ['Kiểm tra version trước khi đụng vào value.', 'Conflict phải giữ nguyên cả value lẫn version.'],
     explain: `Version predicate đóng vai trò compare-and-set: chỉ một updater với expectedVersion hiện tại có thể thành công. Nếu trả false, caller cần đọc lại và quyết định tính lại thay đổi; không được coi đó là thành công. Trong DB, kiểm tra row count của UPDATE. Mô phỏng đơn luồng diễn đạt logic điều kiện, còn transaction/atomicity thực tế do database đảm nhiệm.`
   }],
-  check:[{q:'UPDATE có version predicate trả row count 0 thường biểu thị gì?',options:['Update đã commit hai lần','Dữ liệu đã đổi hoặc hàng không tồn tại','Database mất MVCC','Connection pool đầy'],answer:1,explain:'Điều kiện version không khớp hoặc id không tồn tại; ứng dụng cần phân biệt theo nghiệp vụ nếu cần.'},{q:'Retry optimistic conflict nên làm gì?',options:['Gửi lại nguyên giá trị tính từ snapshot cũ','Đọc lại và tính lại trong transaction mới','Bỏ kiểm tra version','Retry vô hạn'],answer:1,explain:'Dữ liệu nền đã đổi; transaction mới cần đọc trạng thái mới và tính lại.'}], tags:['optimistic-locking','version','PostgreSQL']
+  check:[{q:'UPDATE có version predicate trả row count 0 thường biểu thị gì?',options:['Update đã commit hai lần','Dữ liệu đã đổi hoặc hàng không tồn tại','Database mất MVCC','Connection pool đầy'],answer:1,explain:'Điều kiện version không khớp hoặc id không tồn tại; ứng dụng cần phân biệt theo nghiệp vụ nếu cần.'},{q:'Retry optimistic conflict nên làm gì?',options:['Gửi lại nguyên giá trị tính từ snapshot cũ','Đọc lại và tính lại trong transaction mới','Bỏ kiểm tra version','Retry vô hạn'],answer:1,explain:'Dữ liệu nền đã đổi; transaction mới cần đọc trạng thái mới và tính lại.'},{q:'Vì sao optimistic locking phù hợp hơn pessimistic khi xung đột ít?',options:['Không cần khóa khi đọc, nhiều reader cùng đọc không chờ nhau','Luôn nhanh hơn pessimistic locking mọi trường hợp','Không cần retry bao giờ','Không cần version'],answer:0,explain:'Optimistic không khoá khi đọc, nên reader không chặn reader; chỉ kiểm tra version khi ghi. Không phải luôn nhanh hơn, và vẫn cần retry khi conflict.'},{q:'Khi dùng Hibernate {{@Version}}, điều gì xảy ra nếu UPDATE không khớp version?',options:['Hibernate ném OptimisticLockException','Hibernate tự rollback toàn bộ database','Hibernate ghi đè dữ liệu mới','Hibernate không kiểm tra version'],answer:0,explain:'Hibernate tự thêm điều kiện version vào UPDATE; nếu row count bằng 0, nó ném OptimisticLockException cho ứng dụng xử lý.'}], tags:['optimistic-locking','version','PostgreSQL']
 },
 {
   id: 'lesson-db-003', track: 'db', order: 3,
