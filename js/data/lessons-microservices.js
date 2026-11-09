@@ -38,11 +38,56 @@ Outbox có thể là bảng SQL được relay polling có giới hạn batch, h
 | Polling | Ít hạ tầng, dễ hiểu | Query tải DB, cần claim row và backoff |
 | CDC | Độ trễ thấp, ít polling | Vận hành connector, schema và log retention |
 
-### Pitfall production
-Outbox tăng liên tục nếu không dọn sent row; dọn quá sớm làm mất khả năng replay. Nhiều relay cùng chọn row phải dùng claim/lease hoặc cơ chế CDC có checkpoint. Thứ tự theo aggregate cần partition key ổn định và sequence/version; thứ tự toàn cục thường không được đảm bảo. Payload cần version hóa, bảo vệ dữ liệu nhạy cảm và có metric tuổi row cũ nhất, lag, retry.
+### Cơ chế từng bước
+Hãy nhìn một luồng tạo đơn hàng từ đầu đến cuối. **Kafka** là một hệ thống hàng đợi/phát sự kiện (message broker — "người đưa thư" ở giữa): producer gửi message vào topic, consumer đọc message từ topic. **Event** là một bản ghi mô tả điều đã xảy ra (ví dụ "đơn hàng vừa được tạo"). **Broker** là máy chủ chạy Kafka, nhận và lưu message.
+
+1. **Nhận request và mở transaction database**: service nhận lệnh tạo đơn. Nó mở một transaction (giao dịch — nhóm các thao tác DB: hoặc tất cả thành công, hoặc tất cả bị hủy/rollback). Đây là transaction nội bộ của một database, không phải transaction phân tán qua nhiều hệ thống.
+2. **Ghi state nghiệp vụ**: {{INSERT}} vào bảng {{orders}}. Vì sao ghi trong transaction? Để nếu bước sau lỗi, đơn hàng "nửa vời" không bị lưu.
+3. **Ghi ý định phát event vào outbox (cùng transaction)**: {{INSERT}} một dòng vào bảng {{outbox}} chứa {{event_id}} (định danh duy nhất, ổn định), {{aggregate_id}} (ví dụ order id), {{event_type}}, {{payload}} (nội dung JSON). Đây là "ghi chú" nói rằng: khi commit xong, hãy gửi event này. Vì sao cùng transaction? Vì DB đảm bảo hai INSERT cùng commit hoặc cùng rollback.
+4. **Commit**: DB xác nhận. Từ thời điểm này, cả đơn hàng lẫn dòng outbox đều bền vững (durable — còn sau khi restart). **Chưa có message nào được gửi tới Kafka** ở bước này.
+5. **Relay đọc outbox và publish**: một tiến trình riêng (relay/worker) quét các dòng outbox chưa gửi ({{sent_at IS NULL}}), gửi payload lên Kafka topic. **ACK** (acknowledgment) là xác nhận từ broker rằng message đã được nhận/lưu.
+6. **Đánh dấu đã gửi sau ACK**: chỉ khi broker ACK, relay mới cập nhật {{sent_at}}. Vì sao sau ACK? Nếu đánh dấu trước rồi broker lỗi, event coi như "đã gửi" nhưng thực ra mất. Nếu chết giữa bước 5 và 6, lần sau relay gửi lại — đây là **at-least-once delivery** (gửi ít nhất một lần, có thể trùng).
+7. **Consumer xử lý và phải idempotent**: consumer nhận event (có thể trùng) và áp dụng nghiệp vụ. Nó cần cơ chế chống trùng (xem bài idempotent consumer).
+
+~~~java
+// Minh họa luồng outbox: 2 thao tác DB trong 1 transaction, publish nằm ngoài
+void createOrder(OrderRequest req, Connection db, OutboxRelay relay) throws Exception {
+    String orderId = UUID.randomUUID().toString();
+    String eventId = UUID.randomUUID().toString(); // id ổn định cho dedup
+    db.setAutoCommit(false);
+    try {
+        // (2) ghi state nghiệp vụ
+        try (var ps = db.prepareStatement(
+                "INSERT INTO orders(id, status, amount) VALUES (?,?,?)")) {
+            ps.setString(1, orderId); ps.setString(2, "CREATED"); ps.setLong(3, req.amount());
+            ps.executeUpdate();
+        }
+        // (3) ghi outbox CÙNG transaction
+        try (var ps = db.prepareStatement(
+                "INSERT INTO outbox(event_id, aggregate_id, type, payload) VALUES (?,?,?,?)")) {
+            ps.setString(1, eventId); ps.setString(2, orderId);
+            ps.setString(3, "OrderCreated"); ps.setString(4, toJson(orderId));
+            ps.executeUpdate();
+        }
+        db.commit(); // (4) commit: cả hai cùng bền vững
+    } catch (Exception e) {
+        db.rollback(); // lỗi → không có đơn, không có event
+        throw e;
+    }
+    // (5)(6) relay poll outbox và publish sau commit; publish KHÔNG nằm trong transaction DB
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** đơn hàng có trong DB nhưng downstream (kho, thông báo) không nhận được event. **Nguyên nhân:** code publish Kafka trực tiếp sau khi ghi DB (dual-write) rồi process chết/crash giữa hai thao tác, hoặc publish trước commit rồi transaction rollback. **Cách sửa:** dùng transactional outbox; không bao giờ để publish broker nằm giữa transaction DB theo kiểu "hy vọng cả hai cùng thành công".
+- **Triệu chứng:** bảng outbox phình to hàng chục triệu dòng, query chậm, disk đầy. **Nguyên nhân:** chỉ insert mà không có cơ chế dọn (purge) các dòng đã gửi, hoặc dọn quá chậm so với tốc độ ghi. **Cách sửa:** job xóa/archiver các dòng {{sent_at}} cũ hơn cửa sổ giữ (ví dụ 3-7 ngày, đủ để replay điều tra); dọn theo batch nhỏ để tránh lock lớn; theo dõi số dòng backlog và tuổi dòng cũ nhất.
+- **Triệu chứng:** consumer nhận cùng một event 2-3 lần sau khi deploy/restart relay. **Nguyên nhân:** relay dùng mô hình "gửi rồi mới đánh dấu" (đúng) nên khi chết giữa chừng sẽ gửi lặp — đây là hành vi at-least-once, không phải bug. **Cách sửa:** chấp nhận duplicate ở tầng transport; bắt buộc consumer idempotent theo {{event_id}} ổn định; đo duplicate rate để phân biệt duplicate bình thường với storm.
+- **Triệu chứng:** event của cùng một đơn hàng đến consumer sai thứ tự ({{OrderShipped}} trước {{OrderCreated}}). **Nguyên nhân:** relay gửi song song nhiều dòng, hoặc partition Kafka không gắn theo aggregate, hoặc không dùng sequence/version. **Cách sửa:** dùng {{aggregate_id}} (order id) làm partition key để các event cùng aggregate vào cùng partition (Kafka giữ thứ tự trong một partition); thêm {{sequence/version}} trong payload; consumer bỏ qua hoặc buffer event đến lệch thứ tự theo chính sách.
 
 ### Liên hệ phỏng vấn
-Hãy mô tả crash ở từng ranh giới: trước commit, sau commit trước publish, sau publish trước ACK/mark. Sau đó giải thích vì sao consumer idempotent vẫn cần thiết và cách replay một khoảng event.
+- **Hỏi:** Vì sao không thể dùng một transaction bao cả database và Kafka? **Trả lời ngắn:** DB transaction chỉ cam kết trên một hệ quản trị; Kafka là hệ thống khác. Không có 2PC thực dụng giữa hai bên trong đa số kiến trúc; dùng outbox để atomic trong DB rồi publish at-least-once, consumer idempotent.
+- **Hỏi:** Relay crash sau khi publish nhưng trước khi đánh dấu sent thì sao? **Trả lời ngắn:** Event sẽ được gửi lại (at-least-once). Đây là lựa chọn có chủ đích để tránh mất event; consumer phải deduplicate theo {{event_id}} ổn định.
+- **Hỏi:** CDC (ví dụ Debezium) khác polling outbox thế nào? **Trả lời ngắn:** CDC đọc transaction log (WAL/binlog) nên thấy row đã commit với độ trễ thấp, không query bảng liên tục; đổi lại phải vận hành connector, schema và quản lý log retention.
 
 > Senior tip: theo dõi p95/p99 tuổi outbox chưa gửi và số hàng backlog; alert theo tuổi sự kiện thường phản ánh tác động người dùng tốt hơn chỉ đếm hàng.
 `,
@@ -109,8 +154,10 @@ Relay đánh dấu sau khi sender thành công. Nếu sender ném lỗi, excepti
 Lỗi thường gặp: đánh dấu trước send làm mất event khi broker lỗi; tạo order trước rồi ném lỗi mà không rollback để lại trạng thái nửa vời; hoặc cho rằng synchronized bảo vệ nhiều instance/process.`,
   }],
   check: [
-    { q: 'Relay gửi thành công nhưng process chết trước khi ghi sent. Kết quả có thể là gì?', options: ['Event bị mất chắc chắn', 'Event được gửi lại; consumer cần deduplicate', 'DB tự rollback transaction đã commit', 'Kafka xóa event'], answer: 1, explain: `Outbox giữ hàng chưa đánh dấu nên relay sẽ thử lại. Điều này tạo duplicate nhưng tránh mất event; consumer dùng event id ổn định để xử lý idempotent.` },
-    { q: 'Debezium (kèm SMT Outbox Event Router) lấy event từ bảng outbox bằng cách nào?', options: ['CDC từ transaction log của database', 'Quét mọi bảng mỗi mili giây', 'Gọi trực tiếp controller Spring', 'Đọc ThreadLocal của producer'], answer: 0, explain: `Debezium connector đọc transaction log (WAL của PostgreSQL, binlog của MySQL) để bắt các INSERT đã commit vào bảng outbox; Outbox Event Router chỉ là SMT biến đổi và định tuyến change event đó sang topic. Debezium không quét bảng theo chu kỳ, không gọi vào ứng dụng và không đọc state trong JVM của producer.` },
+    { q: 'Relay gửi thành công nhưng process chết trước khi ghi sent. Kết quả có thể là gì?', options: ['Event bị mất chắc chắn', 'Event được gửi lại; consumer cần deduplicate', 'DB tự rollback transaction đã commit', 'Kafka xóa event'], answer: 1, explain: `Outbox giữ hàng chưa đánh dấu nên relay sẽ thử lại. Điều này tạo duplicate nhưng tránh mất event; consumer dùng event id ổn định để xử lý idempotent. (A) sai vì mô hình "đánh dấu sau ACK" ưu tiên không mất. (C) sai vì transaction DB đã commit trước khi publish. (D) sai vì Kafka không tự xóa event hợp lệ do relay chết.` },
+    { q: 'Debezium (kèm SMT Outbox Event Router) lấy event từ bảng outbox bằng cách nào?', options: ['CDC từ transaction log của database', 'Quét mọi bảng mỗi mili giây', 'Gọi trực tiếp controller Spring', 'Đọc ThreadLocal của producer'], answer: 0, explain: `Debezium connector đọc transaction log (WAL của PostgreSQL, binlog của MySQL) để bắt các INSERT đã commit vào bảng outbox; Outbox Event Router chỉ là SMT biến đổi và định tuyến change event đó sang topic. (B) sai vì CDC đọc log, không polling bảng. (C) sai vì CDC hoạt động ở tầng DB log, không gọi ứng dụng. (D) vô nghĩa vì ThreadLocal là state trong JVM, không phải nguồn event bền vững.` },
+    { q: 'Vì sao nên ghi order và outbox trong CÙNG một transaction database?', options: ['Để Kafka tự rollback khi DB lỗi', 'Để publish nhanh hơn nhờ gom network', 'Để đảm bảo state nghiệp vụ và ý định phát event cùng commit hoặc cùng rollback', 'Để consumer không cần idempotent'], answer: 2, explain: `Đúng (C): cùng transaction cho atomicity nội bộ — không có trạng thái "có đơn nhưng không có outbox" hay ngược lại. (A) sai vì Kafka không tham gia transaction DB. (B) sai vì publish xảy ra sau commit bởi relay, không nằm trong transaction. (D) sai vì consumer vẫn phải idempotent do delivery là at-least-once.` },
+    { q: 'Nếu relay đánh dấu sent TRƯỚC khi publish tới Kafka, rủi ro chính là gì?', options: ['Tạo duplicate event ở consumer', 'Làm transaction DB rollback tự động', 'Làm Kafka partition bị lệch thứ tự', 'Có thể mất event nếu publish thất bại hoặc process chết sau khi đánh dấu'], answer: 3, explain: `Đúng (D): event đã bị coi là "xong" nhưng chưa chắc broker đã nhận, nên mất message. (A) ngược lại — đánh dấu trước thường gây mất, không gây duplicate (duplicate xuất hiện khi đánh dấu sau). (B) sai vì đánh dấu sent không ảnh hưởng transaction DB đã commit. (C) sai vì thứ tự partition phụ thuộc key/partitioning, không phụ thuộc thời điểm đánh dấu.` },
   ], tags: ['outbox', 'CDC', 'Kafka', 'atomicity']
 },
 {
@@ -140,6 +187,48 @@ Event thường mô tả điều đã xảy ra, còn command yêu cầu hành đ
 | Inbox SQL unique | Nhiều instance, bền vững | Tăng dung lượng; cần retention có căn cứ |
 | Version aggregate | Bỏ event state cũ | Không đủ cho mọi side effect cộng dồn |
 
+### Cơ chế từng bước
+**Idempotent** (lũy đẳng) nghĩa là thực hiện cùng một thao tác nhiều lần cho kết quả giống như thực hiện một lần (ví dụ: nhấn nút "lưu" 3 lần nhưng chỉ lưu 1 bản ghi). **Consumer** là chương trình đọc message từ broker (Kafka). **Offset** là vị trí đọc của consumer trong một partition (phân vùng) của topic; commit offset nghĩa là "tôi đã xử lý tới đây".
+
+1. **Consumer nhận message**: broker giao message kèm {{message_id}} (định danh ổn định do producer/outbox tạo) và có thể kèm {{version/sequence}}. Vì sao cần {{message_id}} ổn định? Để cùng một message, dù được giao lại bao nhiêu lần, vẫn nhận ra là "đã thấy".
+2. **Mở transaction database cục bộ**: consumer bắt đầu một transaction trên DB của chính nó (projection/state store). Vì sao? Để việc "ghi nhận đã xử lý" và "áp dụng side effect nghiệp vụ" trở thành một đơn vị nguyên tử.
+3. **Kiểm tra/ghi inbox (dedup)**: {{INSERT}} vào bảng inbox (bảng ghi nhận message đã xử lý) với unique constraint trên {{(consumer_name, message_id)}}. Nếu insert thành công → message mới, tiếp tục. Nếu vi phạm unique (conflict) → message trùng, **rollback/thoát mà không làm side effect**. Vì sao dùng unique constraint thay vì check-then-act? Vì hai consumer replica cùng kiểm tra "chưa có" rồi cùng xử lý sẽ trừ tiền hai lần; constraint DB là trọng tài nguyên tử.
+4. **Kiểm tra version (nếu event thay thế state)**: với event dạng snapshot (mô tả trạng thái mới), so {{incoming.version > current.version}}. Nếu cũ hơn hoặc bằng → bỏ qua phần áp dụng state (nhưng đã ghi inbox để replay sau không tốn xử lý). Vì sao không dùng timestamp đồng hồ? Đồng hồ các máy có thể lệch (clock skew).
+5. **Áp dụng side effect nghiệp vụ**: cập nhật projection/bảng state, hoặc thực hiện hành động nghiệp vụ. Với event **cộng dồn** (charge tiền, tăng số dư) thì version không thay thế được dedup — bắt buộc dựa vào {{message_id}}.
+6. **Commit transaction DB**: inbox row và state change cùng commit. Từ đây, dù message có đến lại, bước 3 sẽ chặn.
+7. **Commit offset (sau DB commit)**: consumer báo broker đã xử lý. Vì sao sau DB commit? Nếu commit offset trước rồi DB lỗi, broker nghĩ "xong" và không giao lại → mất hiệu ứng (at-most-once). Commit sau tạo at-least-once (có thể trùng) và dedup xử lý phần trùng.
+
+~~~java
+// Luồng idempotent consumer: inbox insert + apply trong 1 transaction DB
+void handle(Message msg, Connection db) throws Exception {
+    db.setAutoCommit(false);
+    try {
+        // (3) dedup: unique (consumer, message_id) — conflict nghĩa là đã xử lý
+        try (var ps = db.prepareStatement(
+                "INSERT INTO inbox(consumer, message_id) VALUES (?,?)")) {
+            ps.setString(1, "billing"); ps.setString(2, msg.id());
+            ps.executeUpdate();
+        } catch (java.sql.SQLIntegrityConstraintViolationException dup) {
+            db.rollback(); // (3) duplicate: không side effect
+            return;
+        }
+        // (4)(5) chỉ áp version mới, rồi cập nhật state
+        applyIfNewer(db, msg.aggregateId(), msg.version(), msg.payload());
+        db.commit(); // (6) inbox + state cùng bền vững
+    } catch (Exception e) {
+        db.rollback(); // lỗi → offset chưa commit, broker sẽ giao lại
+        throw e;
+    }
+    // (7) commit offset SAU DB commit (thực tế do consumer framework gọi)
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** khách bị trừ tiền hai lần, hoặc tồn kho bị trừ hai lần sau khi consumer restart/rebalance. **Nguyên nhân:** dedup chỉ bằng {{HashSet}} trong RAM — mất khi restart, và mỗi replica có Set riêng nên hai instance cùng xử lý trước khi biết nhau; hoặc dùng check-then-act không nguyên tử (kiểm tra rồi mới xử lý tách rời). **Cách sửa:** dùng inbox table với unique constraint trên {{(consumer, message_id)}}, insert và side effect trong cùng transaction DB; với side effect gọi dịch vụ ngoài, dùng idempotency key ở đích hoặc outbox.
+- **Triệu chứng:** projection hiển thị trạng thái cũ dù event mới đã đến (ví dụ đơn đã "Shipped" nhưng hiện "Paid"). **Nguyên nhân:** event đến sai thứ tự (out-of-order) và consumer ghi đè state theo thứ tự nhận, không theo {{version/sequence}} của aggregate; hoặc dùng timestamp làm version và bị clock skew. **Cách sửa:** lưu {{version}} theo aggregate, chỉ áp dụng khi {{incoming.version > current}}; dùng sequence tăng đơn điệu do aggregate phát; với event dạng delta/out-of-order phức tạp, cân nhắc buffer chờ gap hoặc rebuild từ source.
+- **Triệu chứng:** bảng inbox tăng không ngừng, chiếm dung lượng lớn, insert chậm dần. **Nguyên nhân:** ghi nhận mọi {{message_id}} nhưng không có retention (chính sách giữ/xóa). **Cách sửa:** xóa inbox row cũ hơn cửa sổ replay/khôi phục có căn cứ (ví dụ lâu hơn max retention của topic + thời gian điều tra); dọn theo batch, có index; theo dõi kích thước bảng.
+- **Triệu chứng:** replay một khoảng event cũ (reprocessing) làm phát sinh side effect lặp (gửi mail lại, gọi API đối tác lần nữa). **Nguyên nhân:** xóa inbox key quá sớm nên replay không còn bị chặn; hoặc side effect nằm ngoài transaction DB (gọi HTTP) không có idempotency key. **Cách sửa:** giữ inbox key đủ dài qua cửa sổ replay; với side effect ngoài, dùng outbox hoặc idempotency key ở hệ thống đích; thiết kế replay chạy ở chế độ có kiểm soát.
+
 ### Công cụ và production
 Kafka consumer offset và DB transaction là hai hệ thống riêng; commit offset sau DB thường tạo at-least-once. Kafka transactions hỗ trợ consume-transform-produce trong Kafka, nhưng không tự nguyên tử với database ngoài. Spring Cloud Stream cung cấp listener/binder và error handling, không tự làm business side effect idempotent. Thiết kế schema inbox có unique constraint, metric duplicate rate, lag, conflict version; retention phải dài hơn cửa sổ replay/khôi phục. Nếu xóa key quá sớm, replay cũ có thể chạy lại side effect.
 
@@ -147,7 +236,9 @@ Kafka consumer offset và DB transaction là hai hệ thống riêng; commit off
 Check-then-act không atomic: hai consumer cùng thấy key chưa có rồi cả hai cùng trừ tiền. Dùng unique constraint và xử lý duplicate key. Không dùng timestamp làm version nếu đồng hồ có thể lệch; sequence tăng đơn điệu theo aggregate tốt hơn. Với event out-of-order dạng delta, cần buffer/gap handling hoặc rebuild từ source; chỉ bỏ version cũ có thể làm mất delta bắt buộc.
 
 ### Liên hệ phỏng vấn
-Hãy chỉ ra điểm crash giữa DB commit và offset commit, rồi mô tả unique key, transaction boundary, retention và cách xử lý event đến sai thứ tự.
+- **Hỏi:** At-least-once nghĩa là gì và vì sao consumer vẫn phải idempotent? **Trả lời ngắn:** Broker có thể giao lại message khi offset chưa được commit sau khi DB đã commit, hoặc khi timeout/rebalance. At-least-once ưu tiên không mất; idempotent consumer (inbox + unique key) biến lần giao trùng thành no-op.
+- **Hỏi:** Vì sao check {{if (!set.contains(id)) set.add(id)}} không đủ trong môi trường nhiều replica? **Trả lời ngắn:** Set cục bộ không chia sẻ giữa instance và thao tác không nguyên tử với side effect; hai replica có thể cùng qua nhánh {{if}} rồi cùng xử lý. Cần unique constraint ở DB dùng chung và thực hiện trong cùng transaction.
+- **Hỏi:** Làm sao xử lý event đến sai thứ tự? **Trả lời ngắn:** Với event thay thế state, lưu {{version/sequence}} tăng đơn điệu theo aggregate và chỉ áp dụng khi version mới hơn; không dùng timestamp đồng hồ. Với event dạng delta, có thể cần buffer/gap handling hoặc rebuild.
 
 > Senior tip: đo duplicate rate theo topic/consumer; tỷ lệ tăng đột ngột thường chỉ ra rebalance, timeout hoặc DB latency chứ không nhất thiết là lỗi broker.
 `,
@@ -198,8 +289,10 @@ Event stale vẫn được đánh dấu đã thấy để replay không tốn x�
 Lỗi thường gặp là lưu ID sau side effect, khiến crash tạo side effect lặp; dùng ID không ổn định qua retry; hoặc chỉ kiểm tra version mà bỏ qua duplicate của side effect không thay thế được.`,
   }],
   check: [
-    { q: 'DB side effect đã commit nhưng consumer chưa commit offset. Kịch bản hợp lý nhất?', options: ['Message có thể được giao lại', 'Broker biết DB commit nên bỏ qua', 'DB tự rollback theo offset', 'Message bị đổi ID'], answer: 0, explain: `Offset và DB là hai transaction khác nhau; crash ở giữa có thể khiến broker giao lại. Inbox/idempotency làm lần giao lại không nhân đôi hiệu ứng.` },
-    { q: 'Vì sao check-then-act bằng HashSet cục bộ không đủ khi có nhiều replica?', options: ['Set không lưu String', 'Mỗi replica có trạng thái riêng và có thể cùng xử lý trước khi ghi', 'Kafka không gửi String', 'Version luôn tăng theo đồng hồ'], answer: 1, explain: `Các process không chia sẻ Set và thao tác cục bộ không nguyên tử toàn cụm. Unique constraint/inbox dùng chung là nơi phân xử.` },
+    { q: 'DB side effect đã commit nhưng consumer chưa commit offset. Kịch bản hợp lý nhất?', options: ['Message có thể được giao lại', 'Broker biết DB commit nên bỏ qua', 'DB tự rollback theo offset', 'Message bị đổi ID'], answer: 0, explain: `Offset và DB là hai transaction khác nhau; crash ở giữa có thể khiến broker giao lại. Inbox/idempotency làm lần giao lại không nhân đôi hiệu ứng. (B) sai vì broker không quan sát transaction DB. (C) sai vì offset commit không điều khiển rollback DB. (D) sai vì message id ổn định là cơ sở dedup.` },
+    { q: 'Vì sao check-then-act bằng HashSet cục bộ không đủ khi có nhiều replica?', options: ['Set không lưu String', 'Mỗi replica có trạng thái riêng và có thể cùng xử lý trước khi ghi', 'Kafka không gửi String', 'Version luôn tăng theo đồng hồ'], answer: 1, explain: `Các process không chia sẻ Set và thao tác cục bộ không nguyên tử toàn cụm. Unique constraint/inbox dùng chung là nơi phân xử. (A) sai vì HashSet lưu được String. (C) sai, không liên quan kiểu dữ liệu. (D) sai và đồng hồ còn có thể lệch.` },
+    { q: 'Trong idempotent consumer, tại sao nên insert inbox và cập nhật state trong CÙNG transaction DB?', options: ['Để Kafka commit offset nhanh hơn', 'Để tránh trạng thái "đã áp dụng side effect nhưng chưa ghi nhận đã xử lý" khi crash', 'Để cho phép hai replica cùng xử lý một message', 'Để thay thế hoàn toàn version checking'], answer: 1, explain: `Đúng (B): nếu tách rời, crash giữa hai bước có thể làm side effect chạy rồi nhưng inbox chưa ghi, lần giao lại sẽ chạy lại side effect. (A) sai vì offset commit là thao tác riêng với broker. (C) sai, mục tiêu là ngăn xử lý trùng. (D) sai vì version giải quyết thứ tự event state, khác mục đích với dedup theo message_id.` },
+    { q: 'Consumer nhận event state cũ (version 2) sau khi đã áp dụng version 5. Cách xử lý đúng là gì?', options: ['Ghi đè state bằng version 2 để giữ đủ lịch sử nhận', 'Bỏ qua áp dụng state vì version không mới hơn; vẫn ghi nhận message id để replay an toàn', 'Rollback DB về version 2', 'Tăng offset nhưng xóa inbox để nhận lại'], answer: 1, explain: `Đúng (B): event state chỉ áp dụng khi version lớn hơn hiện tại; vẫn nên dedup theo message_id để lần replay không xử lý lại. (A) sai vì sẽ làm state lùi. (C) sai vì DB không tự rollback theo version event và việc này phá hủy state mới hơn. (D) sai vì xóa inbox làm mất khả năng chống trùng.` },
   ], tags: ['idempotency', 'Kafka', 'inbox', 'ordering']
 },
 {
