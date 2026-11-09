@@ -143,6 +143,9 @@ public class Demo {
 ### Trả lời phỏng vấn thế nào
 Trình bày chuỗi: "Test Java → Selenium client → HTTP W3C WebDriver → driver binary (chromedriver/geckodriver) → browser". Nhấn mạnh Selenium 4 chuẩn hoá W3C (bỏ phụ thuộc JSON Wire) và Selenium Manager giải bài toán ghép phiên bản driver. Nêu một lỗi thực tế bạn từng gặp (version mismatch) và cách xử lý.
 
+### Ví dụ đời thực
+Pipeline CI của team chạy trên GitHub Actions ubuntu-latest, cài Chrome và chromedriver bằng apt. Một sáng Chrome tự cập nhật lên phiên bản 126, nhưng apt repository vẫn chỉ có chromedriver 124. Toàn bộ 150 test UI Selenium fail ngay tại khởi tạo session với lỗi "session not created: ChromeDriver 124 chỉ hỗ trợ Chrome 124". Team mất 2 giờ điều tra: log CI chỉ hiện version mismatch, không gợi ý driver nào cần. Tạm thời khắc phục bằng cách pin Chrome version trong workflow (google-chrome-stable=124.0.6367.91-1) và chạy lại. Sau đó nâng cấp Selenium lên 4.18+ và bật Selenium Manager để CI tự tải driver khớp phiên bản Chrome thực tế; tuy nhiên môi trường CI chặn mạng ra ngoài nên Selenium Manager không tải được driver, team tự host driver trên artifact repository nội bộ và cấu hình CI dùng driver đó (bỏ qua tải về của Selenium Manager). Kết quả: các lần Chrome cập nhật sau đó không còn làm vỡ CI, thời gian khắc phục sự cố từ 2 giờ xuống còn 10 phút cập nhật mirror.
+
 > Senior tip: Khi debug lỗi "intermittent" (thỉnh thoảng), hãy nhớ có nhiều lớp: test, client lib, driver, browser, mạng, app. Bật log driver (ví dụ chromedriver verbose) và hiểu lệnh W3C nào đang gửi giúp khoanh vùng nhanh hơn là chỉ nhìn stack trace test.`,
   follow: [
     'Khi nào bạn cần Selenium Grid 4, và các thành phần Router/Distributor/Node làm gì?',
@@ -1094,6 +1097,9 @@ Nếu test A tạo đơn hàng và test B xóa cùng đơn hàng, chạy song so
 ### Trả lời phỏng vấn thế nào
 Trình bày mô hình Browser/Context/Page, ThreadLocal isolation, Docker image, sharding, so sánh Grid 4. Nhấn mạnh độc lập dữ liệu là điều kiện tiên quyết. Đưa ví dụ flaky do chia sẻ dữ liệu bạn từng sửa.
 
+### Ví dụ đời thực
+Team 10 QA mới chuyển sang Playwright for Java, viết framework dùng BrowserContext static duy nhất cho toàn bộ suite để "tiết kiệm tài nguyên". Khi chạy sequential (một luồng) mọi test pass; bật parallel 4 worker thì flaky rate nhảy lên 18%: test đăng nhập thay đổi cookie làm test thanh toán bị logout, test tìm kiếm ghi đè localStorage làm test giỏ hàng mất dữ liệu. Điều tra bằng trace viewer thấy cả 4 worker cùng dùng một BrowserContext static, mọi thao tác lẫn vào nhau. Sửa: đưa DriverFactory dùng ThreadLocal<BrowserContext>, mỗi worker tạo context riêng, đóng trong @AfterEach; thêm base test class tự handle context lifecycle. Sau khi sửa, parallel 4 worker ổn định, flaky rate xuống 0,5%, thời gian suite từ 25 phút xuống 7 phút.
+
 > Senior tip: Song song hóa chỉ giúp khi test thực sự độc lập. Trước khi tăng worker, hãy sửa flaky và tách data; nếu không, bạn chỉ chạy nhanh hơn để fail nhanh hơn.`,
   follow: [
     'BrowserContext giúp cô lập test như thế nào so với mở lại trình duyệt mỗi test?',
@@ -1192,6 +1198,9 @@ Chia suite thành các mảnh chạy trên job CI khác nhau. Sửa hoặc cách
 - Giữ mọi test UI vì "không muốn xóa" → suite vẫn chậm.
 - Chạy headed (có cửa sổ) trên CI → khó khởi động, chậm.
 
+
+### Ví dụ đời thực
+Một dự án e-commerce có 120 test UI Selenium chạy sequential trên CI, tổng thời gian 120 phút. Phân tích thấy 60 test chỉ kiểm tra rule tính giá, kiểm tra dữ liệu giỏ hàng – không cần giao diện. Team chuyển 20 test ưu tiên nhất (kiểm tra giảm giá, phí ship, voucher) xuống REST Assured, chạy song song 4 worker trên GitHub Actions. Kết quả: 20 test API chạy trong 3 phút (trước đó 40 phút qua UI), 40 test UI còn lại chạy headless 4 worker trong 15 phút, tổng suite giảm từ 120 xuống 18 phút. Flaky rate từ 5% xuống 0,8% nhờ loại bỏ test UI giòn và dữ liệu độc lập mỗi test.
 
 ### Trả lời mẫu khi phỏng vấn
 "Trước hết tôi đo: thời gian từng test, thời gian setup so với thời gian kiểm tra thật, test nào hay đỏ. Thường một nhóm nhỏ test chiếm phần lớn thời gian. Sau đó tôi xem mỗi test UI thực sự kiểm tra gì: những test kiểm tra quy tắc tính toán hay dữ liệu trả về thì chuyển xuống API hoặc unit test, nhanh hơn hàng chục lần; UI chỉ giữ các luồng end-to-end quan trọng. Tiếp theo, chuyển setup dữ liệu sang API, vì tạo đơn qua UI có thể mất cả phút mỗi test. Khi test đã độc lập về dữ liệu, tôi mới bật song song nhiều worker, chạy headless và chia shard trên nhiều job CI. Thứ tự này quan trọng: song song hoá khi test còn dùng chung dữ liệu chỉ làm tăng flaky. Cuối cùng sửa hoặc cách ly test flaky để không phải chạy lại. Tôi theo dõi thời gian suite như một chỉ số, có ngưỡng cảnh báo để nó không phình lại."
@@ -1415,6 +1424,9 @@ Sau khi route được thiết lập, mọi yêu cầu tới /api/payment từ t
 - Route pattern không khớp (ví dụ sai đường dẫn) → request vẫn đi thật, test flaky.
 - Quên bỏ route sau test → ảnh hưởng test khác chạy cùng trình duyệt.
 - Chỉ testUI mà không verify API thật trong một số ca quan trọng.
+
+### Ví dụ đời thực
+Team QA có 60 test UI Selenium từng test tạo đơn hàng qua giao diện: click thêm sản phẩm, điền form, bấm đặt hàng, chờ xác nhận – trung bình 45 giây/test, tổng suite 45 phút. Chuyển sang Playwright: dùng APIRequestContext tạo đơn hàng qua POST /orders (1,2 giây), sau đó chỉ mở UI verify hiển thị đơn hàng (8 giây). Kết hợp network interception mock API thanh toán để test case thất bại không cần sandbox thật. 60 test chạy song song 4 worker headless: tổng thời gian từ 45 phút xuống 5 phút, flaky rate từ 4% xuống 0,5%. Các test thanh toán lỗi (500, timeout) được cover bởi mock mà không cần môi trường sandbox.
 
 ### Trả lời phỏng vấn thế nào
 Giải thích APIRequestContext dùng để setup dữ liệu nhanh, ví dụ kết hợp UI+API, và page.route mock backend để kiểm tra xử lý lỗi. Nhấn mạnh không lạm dụng mock, vẫn cần có ít nhất một ca gọi API thật.
