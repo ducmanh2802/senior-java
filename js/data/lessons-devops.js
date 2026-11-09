@@ -2355,7 +2355,90 @@ Câu hỏi: "Rolling update mất request 502, sửa gì?" — tách probes, sta
 
 > Senior tip: Luôn đặt maxUnavailable=0 cho service quan trọng để không thiếu capacity trong lúc deploy.
 
-Thêm giải thích chi tiết: maxSurge làm tròn lên, maxUnavailable làm tròn xuống. Với 10 replicas, maxSurge 25% = 3 (làm tròn lên), maxUnavailable 25% = 2 (làm tròn xuống). Rolling update chỉ tắt Pod cũ khi Pod mới Ready. Readiness của Pod mới phải phản ánh warm-up thật. minReadySeconds chặn Ready rồi crash ngay. progressDeadlineSeconds mặc định 600s. PodDisruptionBudget bảo vệ drain node, không áp dụng rolling update. Giải thích thêm về probe: readiness fail → gỡ Endpoints; liveness fail → restart; startup probe cho app boot chậm. preStop sleep để LB kịp gỡ. terminationGracePeriodSeconds tính từ lúc Pod Terminating. ENTRYPOINT exec để SIGTERM tới JVM. Thêm nhiều giải thích hơn để đạt độ dài yêu cầu: giải thích chi tiết từng bước rollout, ví dụ cụ thể với số liệu, so sánh trade-off, pitfall production, và trả lời phỏng vấn. Đây là đoạn văn bổ sung để đủ 2500 ký tự yêu cầu của validator, giải thích thêm về maxSurge và maxUnavailable, readiness, liveness, startup probe, graceful shutdown, preStop, termination grace period, và các bẫy production thường gặp trong thực tế. Thêm nữa để đủ độ dài. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới.`,
+### Cơ chế từng bước
+
+Kịch bản thường gặp trong phỏng vấn: Deployment chạy 4 Pod bản v1 (replicas: 4), cần đưa ra bản v2 mà không ngừng dịch vụ. Cài đặt {{maxSurge: 1}} và {{maxUnavailable: 1}}.
+
+Bước 1: K8s tạo một Pod v2 mới. Tổng số Pod tạm thời là 5 (4 + maxSurge 1). Pod mới đang khởi tạo, chưa Ready, nên Service vẫn không gửi traffic tới nó.
+
+Bước 2: K8s đợi Pod v2 mới đạt Ready (readiness probe pass, ví dụ endpoint {{/actuator/health/readiness}} trả 200). Chỉ khi Pod mới Ready, K8s mới cho phép tắt Pod cũ.
+
+Bước 3: Tắt một Pod v1. Lúc đó số Pod sẵn sàng là 4 (vẫn đủ phục vụ). K8s gỡ Pod v1 khỏi Endpoints của Service, gửi SIGTERM, đợi Pod tự tắt an toàn (graceful shutdown).
+
+Bước 4: Lặp lại bước 1-3 cho đến khi 4 Pod đều là v2. Số Pod sẵn sàng thấp nhất trong toàn quá trình là 3 (4 - maxUnavailable 1).
+
+Vai trò của mỗi tham số:
+- maxSurge > 0: cho tạo Pod mới trước khi tắt Pod cũ, nên không có khoảng thời gian thiếu Pod trong khi chờ Pod mới boot.
+- maxUnavailable = 0: không tắt Pod cũ cho đến khi Pod mới Ready, bảo vệ toàn bộ capacity, nhưng rollout chậm hơn.
+- Cả hai bằng 0: K8s không thể rollout (kẹt, không tạo được Pod mới, không tắt được Pod cũ).
+
+Minh hoạ ASCII (replicas = 4, maxSurge = 1, maxUnavailable = 1):
+
+ Bước | Pod v1 sẵn sàng | Pod v2 sẵn sàng | Tổng sẵn sàng | Hành động
+ 1 | 4 | 0 | 4 | tạo Pod v2 mới (tổng 5 Pod)
+ 2 | 4 | 1 | 5 | Pod v2 mới đã Ready
+ 3 | 3 | 1 | 4 | tắt 1 Pod v1 (maxUnavailable = 1)
+ 4 | 2 | 1 | 3 | tạo Pod v2 mới (tổng 5 Pod)
+ 5 | 2 | 2 | 4 | Pod v2 mới Ready
+ 6 | 1 | 2 | 3 | tắt 1 Pod v1
+ 7 | 1 | 3 | 4 | tạo Pod v2 mới
+ 8 | 0 | 4 | 4 | tắt Pod v1 cuối cùng
+
+K8s làm tròn phần trăm theo hướng an toàn: maxSurge làm tròn lên, maxUnavailable làm tròn xuống. Với 10 replicas, maxSurge 25% = 3 Pod tạo thêm, maxUnavailable 25% = 2 Pod cho phép không sẵn sàng, nên sẵn sàng tối thiểu = 8 Pod.
+
+Ví dụ mã mô phỏng logic tính sẵn sàng tối thiểu (giản lược, giống bài tập dưới đây):
+
+~~~java
+// Tính số Pod sẵn sàng tối thiểu trong rolling update
+int replicas = 4;
+int maxSurge = 1;
+int maxUnavailable = 1;
+
+// K8s chỉ tắt Pod cũ khi Pod mới đã Ready
+int minReady = replicas - maxUnavailable;   // 4 - 1 = 3
+int maxTotal = replicas + maxSurge;         // 4 + 1 = 5 (số Pod nhiều nhất tạm thời)
+
+if (minReady <= 0) {
+    throw new IllegalArgumentException("Cấu hình sai: sẵn sàng về 0");
+}
+// Kết quả: minReady = 3, maxTotal = 5
+~~~java
+
+### Lỗi hay gặp trên production
+
+1. Request bị 502 trong lúc rollout
+   - Triệu chứng: mỗi lần deploy có vài chục request thất bại.
+   - Nguyên nhân: Pod cũ nhận SIGTERM và đóng cổng ngay, trong khi load balancer chưa kịp gỡ Pod khỏi danh sách (thông tin gỡ mất vài giây lan tới kube-proxy và Ingress). Request đến muộn rơi vào Pod đã chết.
+   - Cách sửa: thêm hook preStop sleep vài giây (hoặc preStop.sleep từ Kubernetes 1.30 nếu image không có lệnh sleep), và dùng server.shutdown=graceful của Spring Boot 3.4+ để Pod vẫn phục vụ xong request đang chạy.
+
+2. Liveness probe kiểm tra cơ sở dữ liệu
+   - Triệu chứng: cơ sở dữ liệu chập chờn, toàn bộ Pod ứng dụng bị restart cùng lúc.
+   - Nguyên nhân: liveness include kiểm tra CSDL → CSDL chậm làm liveness fail → K8s restart container (không chỉ gỡ khỏi Endpoints). Đây là cơ sở của sự cố lan rộng.
+   - Cách sửa: tách nhóm health. Liveness chỉ nhìn livenessState (process còn sống), readiness có thể nhìn CSDL. Spring Boot 3 cấu hình management.endpoint.health.group.liveness.include: livenessState.
+
+3. Không có startupProbe cho ứng dụng boot chậm
+   - Triệu chứng: Pod restart liên tục (CrashLoopBackOff) sau deploy dù code không sai.
+   - Nguyên nhân: Spring Boot 3 với Hibernate validate và nạp cache có thể boot 60-90 giây. Liveness mặc định periodSeconds 10 × failureThreshold 3 = 30 giây, restart trước khi boot xong.
+   - Cách sửa: startupProbe với failureThreshold lớn (ví dụ 30, mỗi 10 giây thì 300 giây để boot). Trong lúc startup, liveness chưa được đánh giá.
+
+4. ENTRYPOINT dạng shell nuốt SIGTERM
+   - Triệu chứng: Pod bị SIGKILL, request đang chạy bị cắt ngang.
+   - Nguyên nhân: ENTRYPOINT ["/bin/sh", "-c", "java -jar app.jar"] — shell không truyền SIGTERM đến tiến trình Java con.
+   - Cách sửa: dùng exec form ENTRYPOINT ["java", "-jar", "app.jar"] để JVM nhận trực tiếp SIGTERM và tắt graceful.
+
+> Senior tip: Luôn đặt maxUnavailable = 0 cho dịch vụ quan trọng để không thiếu capacity trong lúc deploy, và theo dõi số Pod sẵn sàng (không chỉ tổng số Pod) trong thời gian deploy.
+
+### Liên hệ phỏng vấn
+
+1. Replicas = 4, maxSurge = 1, maxUnavailable = 1: số Pod sẵn sàng thấp nhất trong rollout là bao nhiêu, và tại sao?
+   - Trả lời ngắn: 3 Pod. K8s chỉ tắt Pod cũ khi Pod mới Ready; maxUnavailable = 1 cho phép một Pod không sẵn sàng, nên trong từng giai đoạn còn ít nhất 4 - 1 = 3 Pod phục vụ traffic.
+
+2. Liveness và readiness cùng trỏ vào /actuator/health (bao cả CSDL). CSDL chậm 30 giây, điều gì xảy ra?
+   - Trả lời ngắn: Health đầy đủ include CSDL → liveness fail → K8s restart container, cụm ứng dụng bị chấn động chồng lên sự cố CSDL. Readiness fail chỉ gỡ Pod khỏi Endpoints (cắt traffic) là đủ; liveness phải chỉ nhìn livenessState.
+
+3. Ứng dụng boot 90 giây, liveness mặc định khởi động lại sau 30 giây. Bạn xử lý thế nào?
+   - Trả lời ngắn: Dùng startupProbe với failureThreshold đủ lớn (ví dụ 30 × 10 giây = 300 giây). Trong lúc startup, liveness chưa được đánh giá, tránh restart Pod đang boot. Kết hợp readiness fail ngay khi nhận SIGTERM và preStop sleep để không mất request trong rolling update.
+`,
   exercises: [
     {
       title: 'RolloutSimulator: số pod sẵn sàng tối thiểu trong rollout',
@@ -2412,6 +2495,12 @@ Thêm giải thích chi tiết: maxSurge làm tròn lên, maxUnavailable làm tr
   check: [
     { q: 'maxSurge=1, maxUnavailable=0 với 4 replicas. Số pod tối thiểu sẵn sàng?', options: ['3', '4', '5', '2'], answer: 1, explain: 'maxUnavailable=0 nên không pod nào bị tắt trước khi pod mới ready; capacity giữ nguyên 4.' },
     { q: 'Startup probe dùng khi nào?', options: ['App boot nhanh', 'App boot chậm để tránh liveness kill sớm', 'Thay readiness', 'Thay liveness'], answer: 1, explain: 'Startup probe cho app boot chậm thời gian boot; trong lúc đó liveness chưa đánh giá.' },
+    {
+      q: 'Với 10 replicas, maxSurge 25% và maxUnavailable 25%. Số Pod được tạo thêm tối đa và số Pod sẵn sàng tối thiểu là bao nhiêu?',
+      options: ['3 Pod thêm và 8 Pod sẵn sàng', '2 Pod thêm và 8 Pod sẵn sàng', '3 Pod thêm và 7 Pod sẵn sàng', '2 Pod thêm và 7 Pod sẵn sàng'],
+      answer: 0,
+      explain: 'maxSurge 25% của 10 = 2.5, K8s làm tròn lên thành 3 Pod tạo thêm. maxUnavailable 25% = 2.5, làm tròn xuống thành 2 Pod cho phép không sẵn sàng, nên sẵn sàng tối thiểu = 10 - 2 = 8 Pod. Làm tròn lên maxSurge tránh tạo quá nhiều Pod; làm tròn xuống maxUnavailable bảo vệ capacity trong lúc deploy.'
+    },
   ],
   related: ['devops-002', 'devops-006'],
   tags: ['Kubernetes', 'Rolling update', 'maxSurge', 'maxUnavailable', 'probe'],
@@ -2449,7 +2538,93 @@ Câu hỏi: "Tính p99 latency và error budget?" — histogram_quantile + rate,
 
 > Senior tip: Chọn bucket theo SLA thực tế (ví dụ 50ms, 100ms, 250ms, 500ms, 1s, 2.5s) để percentile có ý nghĩa.
 
-Thêm chi tiết: Counter không bao giờ giảm; restart process thì counter reset về 0 nên dùng rate() thay vì giá trị tuyệt đối. Gauge có thể tăng/giảm, phù hợp memory, queue size, active connections. Histogram có _bucket, _sum, _count; bucket cumulative (le). quantile nội suy tuyến tính giữa hai bucket. Error budget: nếu SLO 99.9% và traffic 1000 req, cho phép 1 lỗi; nếu đã 2 lỗi thì budget âm → vi phạm SLO. Chọn bucket theo SLA: nếu SLA 200ms thì bucket nên có 200ms boundary. Prometheus scrape interval thường 15s; rate() cần ít nhất 2 scrape. histogram_quantile trả NaN nếu không có data. Label cardinality cao (userId) sẽ làm Prometheus OOM. recording rules để precompute. Alerting: error budget burn rate. Thêm nhiều giải thích hơn để đạt độ dài yêu cầu: giải thích chi tiết từng metric, ví dụ cụ thể với số liệu, so sánh trade-off, pitfall production, và trả lời phỏng vấn. Đây là đoạn văn bổ sung để đủ 2500 ký tự yêu cầu của validator, giải thích thêm về counter, gauge, histogram, rate, percentile, SLO, error budget, và các bẫy production thường gặp trong thực tế. Thêm nữa để đủ độ dài. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới. Thên nữa để đủ độ dài và giải thích thêm cho người mới.`,
+### Cơ chế từng bước
+
+Prometheus thu thập số liệu theo mô hình pull (Prometheus tự đi lấy, không phải ứng dụng đẩy):
+
+Bước 1: Prometheus giữ danh sách target (ví dụ các Pod của order-service, node, cơ sở dữ liệu) qua Kubernetes service discovery hoặc file cấu hình tĩnh.
+
+Bước 2: Mỗi scrape_interval (mặc định 15 giây), Prometheus kết nối tới đường dẫn {{/metrics}} của mỗi target, lấy toàn bộ số liệu hiện tại kèm thời gian điểm và nhãn (label), ví dụ {{job="order-service"}}, {{version="v2"}}.
+
+Bước 3: Số liệu được lưu vào cơ sở dữ liệu thời gian với tên metric và nhãn. Mỗi nhãn thay đổi tạo một time series mới.
+
+Bước 4: Truy vấn bằng PromQL. {{rate(http_requests_total[5m])}} tính tốc độ tăng trung bình mỗi giây trong cửa sổ 5 phút (dùng cho counter, vì counter chỉ tăng và reset về 0 khi process khởi động lại). {{histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))}} tính latency p99 từ các bucket.
+
+Ba loại metric:
+
+| Loại metric | Ví dụ | Giá trị thay đổi ra sao | PromQL hay dùng |
+|---|---|---|---|
+| Counter | {{http_requests_total}} | Chỉ tăng; reset về 0 khi process khởi động lại | {{rate()}} |
+| Gauge | {{jvm_memory_used_bytes}} | Lên xuống theo giá trị thực (bộ nhớ, kích thước hàng đợi) | giá trị trực tiếp |
+| Histogram | {{http_request_duration_seconds}} | Phân bố latency; mỗi quan sát tăng {{_count}}, cộng {{_sum}}, tăng bucket {{le}} tương ứng | {{histogram_quantile()}} |
+
+Histogram tính phân phối: quan sát latency 150ms với bucket {{100}}, {{200}}, {{500}} → tăng bucket {{200}} và {{500}} (cumulative), tăng {{_count}} và {{_sum}}. {{histogram_quantile(0.99, ...)}} tìm bucket nhỏ nhất mà số lượng tích lũy đạt 99% tổng quan sát, rồi nội suy tuyến tính giữa biên dưới và trên của bucket đó.
+
+SLO và error budget:
+
+- SLO (Service Level Objective) 99.9% nghĩa là cam kết 99.9% request thành công, tương đương cho phép 0.1% lỗi.
+- Trong một cửa sổ (ví dụ 30 ngày) có 1.000.000 request → cho phép 1.000 lỗi.
+- Error budget còn lại = số lỗi cho phép − số lỗi đã dùng. Nếu đã dùng 1.200 lỗi thì budget = −200 (âm) → vi phạm SLO. Khi budget sắp cạn, đội nên dừng deploy tính năng mới và ưu tiên sửa lỗi, cải thiện độ ổn định.
+- Error budget burn rate: tốc độ tiêu budget. Ví dụ tiêu 100% budget trong 1 giờ → cảnh báo khẩn ngay.
+
+### Ví dụ minh hoạ
+
+Mã Java mô phỏng ba loại metric đơn giản (không cần thư viện ngoài):
+
+~~~java
+class SimpleMetrics {
+    long requestsTotal = 0;           // counter: chỉ tăng
+    long queueSize = 0;               // gauge: lên và xuống
+    long[] latencyBuckets = {0, 0, 0}; // histogram: <= 100ms, <= 500ms, <= 2000ms (cumulative)
+
+    void requestDone(long latencyMs) {
+        requestsTotal++;              // counter tăng mỗi request
+        if (latencyMs <= 100) latencyBuckets[0]++;
+        else if (latencyMs <= 500) latencyBuckets[1]++;
+        else latencyBuckets[2]++;     // bucket lớn nhất chứa tất cả quan sát chậm hơn
+    }
+
+    void queueChange(int delta) {
+        queueSize += delta;           // gauge có thể tăng hoặc giảm
+    }
+}
+~~~java
+
+### Lỗi hay gặp trên production
+
+1. Dùng counter cho giá trị lên xuống (bộ nhớ, hàng đợi)
+   - Triệu chứng: metric bộ nhớ chỉ tăng mãi cho đến khi tràn biểu đồ.
+   - Nguyên nhân: counter không bao giờ giảm, không phù hợp cho giá trị biến động hai hướng.
+   - Cách sửa: dùng gauge cho bộ nhớ, kích thước hàng đợi, số kết nối đang mở.
+
+2. Bucket histogram quá thưa
+   - Triệu chứng: p99 latency sai, hoặc histogram_quantile trả NaN.
+   - Nguyên nhân: các ngưỡng bucket le không phủ mức quan trọng (ví dụ chỉ có 100ms và 5s, thiếu 200ms/500ms gần SLA).
+   - Cách sửa: chọn bucket theo SLA thực tế (ví dụ 50ms, 100ms, 250ms, 500ms, 1s, 2.5s).
+
+3. Không gắn nhãn phiên bản (version)
+   - Triệu chứng: bản canary lỗi 10% traffic chỉ làm error rate toàn hệ thống tăng 1%, không ai phát hiện kịp.
+   - Nguyên nhân: metric không có nhãn phiên bản, không thể tách canary và bản ổn định.
+   - Cách sửa: gắn nhãn version trên các Pod (hoặc header X-Version từ gateway), tất cả metric/trace/log phải có nhãn này.
+
+4. Nhãn có cardinality cao (ví dụ userId)
+   - Triệu chứng: Prometheus hết bộ nhớ (OOM).
+   - Nguyên nhân: mỗi giá trị userId khác nhau tạo một time series mới; hàng triệu user tạo hàng triệu series.
+   - Cách sửa: không gán nhãn giá trị riêng biệt cao; dùng nhãn có số giá trị hạn chế (version, environment, endpoint).
+
+> Senior tip: Chọn bucket histogram theo SLA thực tế (ví dụ 50ms, 100ms, 250ms, 500ms, 1s, 2.5s) để percentile có ý nghĩa; bucket quá thưa làm p99 sai lệch và có thể dẫn đến quyết định sai.
+
+### Liên hệ phỏng vấn
+
+1. SLO 99.9% với 10.000 request trong một tháng, cho phép bao nhiêu lỗi? Nếu đã có 15 lỗi thì error budget còn lại là bao nhiêu?
+   - Trả lời ngắn: cho phép 0.1% × 10.000 = 10 lỗi. Còn lại = 10 − 15 = −5 (âm) → đã vi phạm SLO, cần dừng deploy tính năng mới và ưu tiên ổn định.
+
+2. Tại sao phải dùng {{rate(http_requests_total[5m])}} thay vì lấy giá trị tổng của counter?
+   - Trả lời ngắn: counter chỉ tăng và reset về 0 khi process khởi động lại, nên giá trị tuyệt đối không cho biết tốc độ hiện tại. {{rate()}} tính số lần tăng trung bình mỗi giây trong cửa sổ 5 phút và khôi phục được sau khi counter reset.
+
+3. {{histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))}} nghĩa là gì, và khi nào hàm này trả NaN?
+   - Trả lời ngắn: latency p99 (99% request nhanh hơn mức này) trong cửa sổ 5 phút. Trả NaN khi không có dữ liệu trong cửa sổ (rate() cần ít nhất hai lần scrape để có điểm so sánh).
+`,
   exercises: [
     {
       title: 'Histogram quantile và ErrorBudget',
@@ -2556,6 +2731,12 @@ class ErrorBudget {
   check: [
     { q: 'SLO 99.9%, 1000 request, 0 lỗi. Error budget còn?', options: ['1.0', '0.1', '10', '100'], answer: 0, explain: 'allowed = 0.1%*1000 = 1.0; remaining = 1.0 - 0 = 1.0.' },
     { q: 'Metric nào chỉ tăng?', options: ['Gauge', 'Counter', 'Histogram', 'Summary'], answer: 1, explain: 'Counter chỉ tăng; Gauge lên xuống; Histogram phân bố.' },
+    {
+      q: 'Prometheus histogram dùng để đo latency. Trường nào chứa tổng số lần quan sát?',
+      options: ['_bucket', '_sum', '_count', 'rate()'],
+      answer: 2,
+      explain: '_count là tổng số lần quan sát, _sum là tổng giá trị (ví dụ tổng latency), _bucket là phân phối theo các ngưỡng le, còn rate() là hàm PromQL, không phải trường của histogram. Histogram_quantile dùng _count làm mẫu số để tìm điểm phần trăm trong phân bố.'
+    },
   ],
   related: ['devops-005'],
   tags: ['Prometheus', 'SLO', 'Histogram', 'Error budget', 'Observability'],
