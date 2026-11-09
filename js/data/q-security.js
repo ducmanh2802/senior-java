@@ -2804,6 +2804,20 @@ public class SecurityConfig {
 | Web admin server-rendered | {{formLogin}}, bật CSRF, session | CSRF token bắt buộc cho POST/PUT/DELETE |
 | Endpoint public (health, docs) | {{permitAll()}}, chain riêng {{@Order}} cao nhất | Đặt {{securityMatcher}} hẹp để tránh mở rộng ngoài ý muốn |
 
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi đội mobile release tính năng mới gọi {{POST /api/v1/payments}}, khoảng 18% request (tăng từ 0% lên ~2.400 lỗi/giờ trên tổng 13.300 req/giờ) bị trả {{401 Unauthorized}} dù client gửi đúng header {{Authorization: Bearer <jwt>}}. Các endpoint {{/api/v1/profile}} cũ vẫn 200. Gateway log chỉ thấy 401 từ upstream, không có stack trace.
+
+**Điều tra:** Bật tạm {{logging.level.org.springframework.security=TRACE}} trên một pod staging tái hiện lỗi, gửi request mẫu. Log của {{FilterChainProxy}} in: {{Trying to match using RequestMatcher ... /admin/**}} rồi rơi vào chain web ({{formLogin}}, session) thay vì chain API. Kiểm tra cấu hình: chain web khai báo {{@Order(1)}} với {{authorizeHttpRequests}} match {{/**}}, còn chain API ({{securityMatcher("/api/**")}}, stateless, {{oauth2ResourceServer}}) là {{@Order(2)}}. Metric Micrometer {{http.server.requests}} (tag {{uri="/api/v1/payments"}}, {{status="401"}}) xác nhận lỗi chỉ xuất hiện sau deploy commit thêm chain web lúc 10:12.
+
+**Nguyên nhân gốc:** {{FilterChainProxy}} chọn chain **đầu tiên** khớp request. Chain {{/**}} đứng trước đã "nuốt" mọi request, nên {{BearerTokenAuthenticationFilter}} của chain API không bao giờ chạy; chain web dùng session, không đọc JWT, dẫn tới {{AuthenticationException}} và trả 401.
+
+**Cách xử lý:** Đổi {{@Order(1)}} cho chain {{securityMatcher("/api/**")}} (cụ thể hơn trước) và {{@Order(2)}} cho chain web; bổ sung {{securityMatcher("/actuator/health")}} {{permitAll}} ở chain riêng {{@Order(0)}}. Thêm integration test {{MockMvc}} cho 3 ca: {{GET /api/v1/profile}} có JWT → 200, không JWT → 401; {{POST /admin}} không session → 302/401. Sau hotfix, tỉ lệ 401 của {{/api/v1/payments}} về 0% trong 10 phút, p95 không đổi (~42 ms).
+
+**Kết quả đo được:** 2.400 lỗi/giờ → 0; không còn cảnh báo SLO 99.9% cho luồng thanh toán.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhận câu hỏi về cơ chế Spring Security, em sẽ mô tả luồng đi của một request từ ngoài vào trong. Đầu tiên, Servlet container như Tomcat đưa request qua các filter đã đăng ký; trong đó có {{DelegatingFilterProxy}} — nó chỉ là lớp cầu nối, mỗi request sẽ tìm bean {{FilterChainProxy}} trong Spring context rồi ủy quyền xử lý. {{FilterChainProxy}} giữ danh sách {{SecurityFilterChain}} và chọn chain đầu tiên có {{RequestMatcher}} khớp đường dẫn, nên chain cụ thể như {{/api/**}} phải đặt {{@Order}} cao hơn chain tổng quát. Bên trong chain được chọn, các filter chạy theo thứ tự cố định: filter xác thực như {{BearerTokenAuthenticationFilter}} phải chạy trước {{AuthorizationFilter}} để biết người dùng là ai rồi mới kiểm tra quyền; {{ExceptionTranslationFilter}} đứng trước phân quyền để bắt ngoại lệ và chuyển thành 401 hoặc 403 thay vì lỗi 500. Trong thực tế em từng gặp sự cố 18% request API trả 401 dù JWT đúng, nguyên nhân là chain {{/**}} đặt trước đã nuốt request nên filter đọc Bearer token không chạy. Cách xử lý là sắp lại {{@Order}}, tách {{securityMatcher}} rõ ràng và viết test {{MockMvc}} cho đủ ba ca: đúng quyền 200, sai quyền 403, chưa đăng nhập 401 để tránh hồi quy."
+
 > Senior tip: Khi debug Spring Security, đừng đoán — đọc log của {{FilterChainProxy}}. Nó in ra chuỗi filter thực tế cho request (vd. "Securing GET /api/orders" kèm danh sách 12 filter). Nếu endpoint bạn nghĩ đã mở mà vẫn 401, 90% là do chain/matcher không khớp hoặc {{AuthorizationFilter}} chặn; 10% còn lại là {{CsrfFilter}} im lặng từ chối (thiếu token). Luôn viết integration test với {{@SpringBootTest}} + {{MockMvc}} cho từng rule phân quyền: test "đúng quyền thì 200, sai quyền thì 403, chưa login thì 401" — đây là lưới an toàn khi refactor config.`,
   follow: [
     'ExceptionTranslationFilter xử lý AuthenticationException và AccessDeniedException khác nhau thế nào? Khi nào trả 401, khi nào trả 403?',
@@ -2815,8 +2829,7 @@ public class SecurityConfig {
     { type: 'doc', title: 'Spring Security - Multiple HttpSecurity Instances', url: 'https://docs.spring.io/spring-security/reference/servlet/configuration/java.html#jc-httpsecurity' }
   ],
   tags: ['Spring Security', 'FilterChainProxy', 'DelegatingFilterProxy', 'SecurityFilterChain', 'internals'],
-},
-{
+},{
   id: 'security-034',
   topic: 'security',
   level: 'senior',
@@ -2895,6 +2908,20 @@ JWT tự chứa claim nên service verify **offline** — đây là ưu điểm 
 - **Triệu chứng 401 đồng loạt sau rotation**: JWKS cache chưa kịp refresh hoặc key cũ bị gỡ sớm. Cấu hình TTL cache JWKS (vd. 5 phút) và luôn công bố chồng key cũ/mới. Theo dõi metric tỉ lệ verify fail theo {{kid}}.
 - **Log an toàn**: log {{iss}}, {{sub}}, {{kid}}, {{exp}} khi debug; **không bao giờ** log nguyên chuỗi JWT (nó là bearer credential — ai có chuỗi là dùng được).
 - **Cấu hình sai nguy hiểm**: tắt kiểm tra {{exp}}/{{aud}}/{{iss}} "cho đỡ lỗi" → chấp nhận token hết hạn hoặc token phát hành cho hệ thống khác. Luôn bật đủ kiểm tra claim.
+
+### Ví dụ đời thực
+**Triệu chứng:** Một dịch vụ {{payment-api}} (Java 21, Spring Boot 3) đột ngột trả {{401}} cho ~35% request hợp lệ trong 20 phút, bắt đầu ngay sau khi đội nền tảng bật xoay vòng khoá ký JWT lúc 02:00 UTC. Access log cho thấy lỗi chỉ xảy ra trên các pod {{payment-api}} phiên bản mới (6/10 pod), pod cũ vẫn verify được. Metric {{jwt.verify.failure}} (tag {{reason="signature"}}) tăng từ 0 lên ~1.900 lỗi/phút.
+
+**Điều tra:** Lấy một token bị từ chối, giải mã header thấy {{"alg":"RS256","kid":"key-2026-11"}}. Gọi JWKS endpoint {{/.well-known/jwks.json}} từ trong pod lỗi: phản hồi 200 nhưng chỉ chứa {{key-2026-05}} (key cũ); key mới {{key-2026-11}} chưa có. Truy vết cấu hình: {{NimbusJwtDecoder}} cache JWKS mặc định, và CDN phía trước JWKS endpoint đang cache 15 phút. Trong khi đó, Authorization Server đã chuyển sang ký 100% token bằng key mới ngay khi phát hành key, mà chưa giữ song song key cũ trong JWKS trong suốt TTL của token cũ.
+
+**Nguyên nhân gốc:** Rotation vi phạm quy tắc "công bố chồng key cũ + mới cho đến khi mọi token ký bằng key cũ hết hạn". Token access (TTL 10 phút) ký bằng {{key-2026-11}} đến pod đang cache JWKS cũ → không tìm thấy {{kid}} → verify chữ ký thất bại.
+
+**Cách xử lý:** (1) Khẩn cấp: purge cache CDN cho JWKS và khởi động rolling các pod {{payment-api}} để ép refresh cache (phục vụ tức thì). (2) Dài hạn: sửa quy trình rotation — bước 1 thêm key mới vào JWKS, bước 2 chờ cache hết (15 phút) rồi mới ký bằng key mới, bước 3 giữ key cũ trong JWKS thêm ≥ TTL access token (10 phút), bước 4 mới gỡ key cũ. Cấu hình {{NimbusJwtDecoder}} với {{jwkSetCache}} TTL 5 phút và viết runbook rotation. Thêm test tự động: verify token ký bằng key mới, token hết {{exp}}, sai {{aud}}, và ca {{alg=HS256}}/none phải bị từ chối.
+
+**Kết quả đo được:** Sau 4 phút purge + rolling, lỗi verify về 0; rotation lần sau (có quy trình mới) không phát sinh 401. Bài test regression bắt được 1 cấu hình decoder thử nghiệm từng chấp nhận nhầm {{alg}} từ header.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu JWT là một chuỗi tự chứa thông tin người dùng và được ký số để service nhận có thể kiểm tra tính toàn vẹn mà không cần gọi lại máy chủ phát hành. Em phân biệt rõ HS256 và RS256: HS256 dùng một khoá bí mật chung nên bất kỳ bên nào cầm khoá để verify cũng có thể ký giả, còn RS256 dùng cặp khoá riêng/công khai — issuer giữ private key để ký, các microservice chỉ cần public key công bố qua JWKS để verify, nên an toàn hơn khi nhiều service cùng kiểm tra token. Về lỗ hổng, em luôn chống {{alg=none}} và algorithm confusion bằng cách cố định thuật toán mong đợi ở server, không bao giờ tin trường {{alg}} trong header. Với rotation, em dùng {{kid}} và endpoint JWKS, luôn công bố chồng key cũ và mới cho đến khi token cũ hết hạn để tránh 401 hàng loạt. Trong thực tế em từng xử lý sự cố 35% request 401 sau rotation vì JWKS cache và quy trình gỡ key sớm; cách sửa là chuẩn hoá quy trình overlap key, đặt TTL cache JWKS ngắn và bổ sung test cho {{exp}}, {{aud}}, {{alg=none}} và {{HS256}} để ngăn hồi quy."
 
 > Senior tip: Kiểm tra nhanh hệ thống của bạn có dính algorithm confusion không: lấy một token RS256 hợp lệ, tự ký lại payload bằng HS256 dùng public key của issuer, gửi lên. Nếu server chấp nhận, bạn có lỗ hổng nghiêm trọng. Viết test tự động cho trường hợp {{alg=none}}, {{alg=HS256}} trên endpoint mong đợi RS256, token hết {{exp}}, sai {{aud}} — đây là regression test bảo mật rẻ và hiệu quả.`,
   follow: [
@@ -2981,6 +3008,20 @@ Service A -> Service B: Authorization: Bearer <access_token_moi>
 | Client Credentials | Service-to-service, không có user | Machine identity |
 | Device Code | Thiết bị không có trình duyệt/keyboard (TV) | User xác nhận trên thiết bị khác |
 | Token Exchange (RFC 8693) | Gọi service thay mặt user, thu hẹp scope | Giữ {{sub}}, đổi {{aud}}/{{scope}} |
+
+### Ví dụ đời thực
+**Triệu chứng:** Một SPA đặt lịch khám (React) dùng Authorization Code flow với redirect URI {{https://app.clinic.vn/callback}}. Sau 3 ngày, đội bảo mật phát hiện 27 tài khoản bị đăng nhập lạ từ IP nước ngoài. Log ứng dụng không có brute-force mật khẩu; Authorization Server ghi nhận 27 lần đổi {{code}} lấy token thành công nhưng {{client_id}} là của SPA hợp lệ. Cùng thời điểm, 14 user báo "vừa bấm đăng nhập Google xong thì trang trắng một lúc".
+
+**Điều tra:** Kiểm tra access log phía AS: các request {{POST /token}} đổi code đến từ IP lạ, trong khi {{GET /authorize}} tương ứng đến từ IP của user thật; thời gian đổi code trễ 20–90 giây. Truy vết front-channel: SPA gửi {{response_type=code}} nhưng **không có {{state}}** và **không dùng PKCE** (không có {{code_challenge}}). Phân tích trình duyệt: một extension quảng cáo độc hại đọc được URL redirect chứa {{?code=...}} trong history/referrer và gửi code ra ngoài.
+
+**Nguyên nhân gốc:** Thiếu {{state}} nên không phát hiện được CSRF/login bất thường; thiếu PKCE nên kẻ cắp được {{code}} ở front-channel vẫn đổi token được ở back-channel (SPA là public client, không có {{client_secret}}). Authorization code một mình không đủ để chứng minh "đứa đổi code là đứa đã xin code".
+
+**Cách xử lý:** Chuyển sang Authorization Code + PKCE ({{S256}}): sinh {{code_verifier}} ngẫu nhiên (43–128 ký tự), lưu {{sessionStorage}}, gửi {{code_challenge}} lúc {{/authorize}} và gửi {{verifier}} lúc {{/token}}. Thêm {{state}} ngẫu nhiên, verify khớp trước khi đổi code. Cấu hình AS chỉ chấp nhận {{redirect_uri}} exact match và bắt buộc PKCE cho client SPA. Thu hồi toàn bộ refresh token của 27 tài khoản, buộc đăng nhập lại, bật thông báo thiết bị mới.
+
+**Kết quả đo được:** Sau vá, thử nghiệm tái hiện (cố tình đổi code mà không có verifier) bị AS từ chối {{invalid_grant}} 100%. Trong 30 ngày tiếp theo: 0 sự cố chiếm tài khoản cùng kiểu, thời gian đăng nhập tăng không đáng kể (~35 ms do tính SHA-256 trên trình duyệt).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế đăng nhập với OAuth2, em luôn chọn Authorization Code kết hợp PKCE và coi đây là mặc định cho cả web lẫn mobile. Em mô tả luồng như sau: ứng dụng sinh {{code_verifier}} ngẫu nhiên, băm thành {{code_challenge}} rồi chuyển người dùng sang trang đăng nhập của Authorization Server kèm {{state}} và {{code_challenge}}; sau khi user xác thực, AS chỉ trả về một authorization code dùng một lần qua front-channel, rồi ứng dụng đổi code lấy access token ở back-channel kèm {{code_verifier}} để AS kiểm tra. Hai điểm quan trọng là {{state}} chống CSRF khi hoàn tất đăng nhập, còn PKCE chứng minh đúng ứng dụng đã xin code mới được đổi token, nên code bị lộ trên URL cũng vô dụng. Em không dùng implicit flow vì token bị trả thẳng lên front-channel và rất dễ rò rỉ. Với trường hợp service A cần gọi service B thay mặt user, em dùng token exchange theo RFC 8693 để đổi token gốc lấy token có audience và scope hẹp hơn, giữ được danh tính người dùng cho audit nhưng tuân thủ least privilege. Trong thực tế em từng xử lý sự cố 27 tài khoản bị chiếm vì thiếu {{state}} và PKCE; sau khi bật PKCE S256, bắt buộc {{redirect_uri}} exact match và dùng thư viện chuẩn như Spring Security OAuth2 Client, lỗi không tái diễn."
 
 > Senior tip: Checklist review OAuth2: (1) có {{state}} ngẫu nhiên và verify, (2) có PKCE (S256), (3) {{redirect_uri}} exact match, (4) access token sống ngắn, (5) không dùng implicit. Nếu thấy token trong URL fragment, đó là mùi của implicit flow cũ. Và nhớ: OAuth2 là **ủy quyền** (authorization), còn xác thực danh tính user là **OpenID Connect** (OIDC) thêm {{id_token}} — đừng dùng access token như bằng chứng đăng nhập nếu không verify đúng audience/issuer.`,
   follow: [
@@ -3098,6 +3139,20 @@ public void login(String username, String rawPassword) {
 - **Cột DB**: dùng {{VARCHAR(255)}} (chuỗi Argon2 dài hơn bcrypt 60 ký tự). Đừng cắt chuỗi hash.
 - **Không tự chế**: không "SHA-256(password + salt)" tự viết — thiếu tính chậm và dễ sai (so sánh không constant-time → timing attack). Dùng {{PasswordEncoder}} của Spring Security.
 
+### Ví dụ đời thực
+**Triệu chứng:** Sau một đợt SQL injection bị vá, đội bảo mật yêu cầu kiểm tra bảng {{users}} (2,1 triệu tài khoản). Rà soát cho thấy 100% mật khẩu đang lưu dạng bcrypt cost 10 (prefix {{\$2a\$10\$}}), được tạo từ 2019. Đánh giá rủi ro: nếu bảng này rò rỉ lần nữa, máy benchmark nội bộ (GPU RTX 4090, dùng {{hashcat}} trên dữ liệu kiểm thử được phép) ước tính thử được ~28.000 mật khẩu/giây với bcrypt cost 10, đủ bẻ phần lớn mật khẩu yếu trong vài giờ. Đồng thời CPU web server đang chạy ~68% giờ cao điểm (9.000 đăng nhập/phút).
+
+**Điều tra:** Đo thời gian {{matches()}} trên container production (2 vCPU, 4 GB): bcrypt cost 10 ~65 ms, cost 12 ~260 ms, Argon2id ({{m=64MiB,t=3,p=1}}) ~310 ms mỗi lần verify. Với 9.000 login/phút và 12 worker thread, cost 12 giữ CPU login dưới ngưỡng an toàn (~20% CPU tăng thêm), Argon2id cần giới hạn song song để tránh tranh chấp RAM (64 MiB x số verify đồng thời).
+
+**Nguyên nhân gốc:** Cost factor không được nâng theo thời gian; tham số chọn từ 2019 không còn phù hợp phần cứng hiện nay. Ngoài ra, không có cơ chế nâng cấp hash, nên muốn đổi thuật toán bắt buộc user reset mật khẩu hàng loạt — không khả thi.
+
+**Cách xử lý:** Chuyển sang {{DelegatingPasswordEncoder}} với {{idForEncode = "argon2id"}} và giữ encoder bcrypt trong map để verify hash cũ. Mở rộng cột {{password_hash}} lên {{VARCHAR(255)}}. Bật {{upgradeEncoding()}}: khi user đăng nhập thành công bằng hash cũ, ứng dụng băm lại bằng Argon2id và cập nhật. Thêm rate limit endpoint {{/login}} (5 lần/phút/IP, khoá tạm 15 phút sau 10 lần sai) để bảo vệ endpoint đang chạy. Theo dõi tỉ lệ hash cũ qua truy vấn đếm prefix (ban đầu 100% {{bcrypt}}, mục tiêu < 10% sau 90 ngày).
+
+**Kết quả đo được:** Sau 30 ngày, 72% tài khoản hoạt động đã tự nâng cấp sang Argon2id, 0 khiếu nại về độ trễ đăng nhập (p95 login 340 ms, trước đó 95 ms nhưng chấp nhận được). Kiểm thử nội bộ cho thấy tốc độ thử mật khẩu trên cùng GPU giảm xuống mức không thực tế với tham số Argon2id đã chọn.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi lưu mật khẩu, em không bao giờ mã hoá để giải ngược và cũng không dùng hash nhanh như SHA-256, mà dùng hàm băm mật khẩu chuyên dụng có độ trễ có chủ đích. Em phân biệt hai lựa chọn phổ biến: bcrypt dùng cost factor theo lũy thừa hai và tự nhúng salt ngẫu nhiên vào chuỗi hash, còn Argon2id — lựa chọn em ưu tiên theo khuyến nghị OWASP — thêm yếu tố tốn bộ nhớ với các tham số memory, time và parallelism nên khó bị GPU hay ASIC tăng tốc. Em giải thích rõ salt và pepper: salt là giá trị ngẫu nhiên cho từng mật khẩu, lưu cùng hash để chống rainbow table; pepper là bí mật dùng chung lưu tách khỏi cơ sở dữ liệu, ví dụ trong KMS, để tăng bảo vệ nếu chỉ DB bị lộ. Trong Spring Security, em dùng {{DelegatingPasswordEncoder}} với prefix thuật toán để nhận diện hash cũ và mới, và thực hiện nâng cấp dần: khi người dùng đăng nhập thành công bằng hash bcrypt cũ, em gọi {{upgradeEncoding()}} rồi băm lại bằng Argon2id và lưu đè. Trên production em từng chuyển 2,1 triệu tài khoản theo cách này mà không cần reset hàng loạt, chọn tham số để {{matches()}} mất khoảng 300 ms trên container thật, đồng thời bật rate limit cho {{/login}} để cân bằng bảo mật và trải nghiệm."
+
 > Senior tip: Đừng chọn tham số theo cảm tính. Viết một benchmark nhỏ chạy trên container production-like: thử Argon2id (m=64MiB,t=3,p=1) và tăng dần đến khi {{matches()}} mất ~300 ms, rồi chốt. Lưu tham số đó trong cấu hình và đặt lịch **6–12 tháng** rà soát lại (phần cứng đổi, threat model đổi). Và luôn bật rate limit + khoá tạm thời sau N lần sai ở endpoint login — hash chậm bảo vệ DB bị lộ, còn rate limit bảo vệ endpoint đang chạy.`,
   follow: [
     'Tại sao hai user đặt cùng mật khẩu lại có chuỗi hash khác nhau trong DB khi dùng bcrypt? Điều gì xảy ra nếu bạn dùng chung một salt cố định?',
@@ -3205,6 +3260,20 @@ public final class SafeFetcher {
 - **Giới hạn thêm**: timeout ngắn, giới hạn kích thước response, không trả raw response nội bộ về client (attacker dùng bạn làm proxy mù/half-blind SSRF).
 - **Monitoring**: metric/alert cho outbound request tới IP private/link-local; audit danh sách host được phép.
 
+### Ví dụ đời thực
+**Triệu chứng:** Tính năng "dán link ảnh avatar từ URL" của một dịch vụ hồ sơ người dùng (Spring Boot, chạy trên AWS EC2) bị đội bảo mật nội bộ báo cáo. Khi gửi {{url=http://169.254.169.254/latest/meta-data/iam/security-credentials/app-role}}, API trả về nội dung JSON chứa {{AccessKeyId}}, {{SecretAccessKey}} và {{Token}} tạm thời của IAM role gắn với EC2. Kiểm tra CloudTrail cho thấy trong 48 giờ trước đó có ~12 request lạ dùng đúng credential đó gọi {{s3:GetObject}} vào một bucket chứa ảnh khách hàng.
+
+**Điều tra:** Đọc code endpoint {{POST /avatar/fetch}}: ứng dụng nhận {{url}} từ body, gọi {{HttpClient.newHttpClient().send(GET uri)}} và trả thẳng bytes về client. Không kiểm tra scheme, không kiểm tra host/IP, {{followRedirects}} để mặc định (NORMAL). Thử thêm các biến thể: {{http://127.0.0.1:8080/actuator/env}} trả về cấu hình nội bộ; {{http://10.0.2.15:6379/}} làm Redis trả lỗi giao thức lộ ra phản hồi — xác nhận SSRF full-read và quét nội bộ. Log ứng dụng ghi nhận 12 request tới {{169.254.169.254}} từ đúng endpoint này (IP nguồn là user ngoài Internet).
+
+**Nguyên nhân gốc:** Server lấy URL do người dùng kiểm soát và thực hiện request từ phía server mà không có allowlist. Vì EC2 nằm trong hạ tầng AWS, nó truy cập được dịch vụ metadata {{169.254.169.254}} (link-local). Thiếu kiểm tra IP private/link-local, thiếu chặn redirect, và IMDSv2 chưa bắt buộc.
+
+**Cách xử lý:** (1) Đổi thiết kế: chỉ chấp nhận upload file trực tiếp hoặc chỉ cho phép fetch từ allowlist domain CDN cố định (exact host, scheme {{https}}). (2) Nếu buộc phải fetch URL, áp dụng bộ lọc: allowlist host, resolve DNS và chặn {{isLoopback/isLinkLocal/isSiteLocal/isAnyLocal}}, tắt tự follow redirect (hoặc kiểm tra lại từng hop), giới hạn timeout 3 giây và kích thước 2 MB, không trả raw body nội bộ cho client. (3) Hạ tầng: bật IMDSv2 bắt buộc ({{HttpTokens=required}}, {{HttpPutResponseHopLimit=1}}), thêm network policy chặn egress tới {{169.254.169.254}} trừ tiến trình thật sự cần. (4) Thu hồi credential IAM tạm thời, xoay secret liên quan, rà soát toàn bộ endpoint có tham số URL.
+
+**Kết quả đo được:** Tái kiểm thử 25 payload SSRF (metadata, loopback, IP decimal, redirect, {{file://}}) đều bị chặn với {{host not allowed}} hoặc {{resolved to blocked IP}}. Không còn request đi tới {{169.254.169.254}} từ dịch vụ hồ sơ (xác nhận qua VPC Flow Logs trong 14 ngày).
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu SSRF là lỗi khi ứng dụng nhận một URL do người dùng cung cấp rồi để chính server đi gọi URL đó. Nguy hiểm ở chỗ request xuất phát từ bên trong hạ tầng, nên attacker có thể chạm tới dịch vụ nội bộ hoặc địa chỉ metadata cloud như {{169.254.169.254}} để lấy credential, dù firewall đã chặn truy cập từ Internet. Khi xử lý, em không dùng blocklist từng địa chỉ vì rất dễ bị vượt qua bằng biến thể IP, DNS rebinding hay redirect; thay vào đó em đảo tư duy sang allowlist: chỉ cho phép đúng scheme {{https}} và đúng host nghiệp vụ cần, sau đó resolve DNS và chặn IP loopback, link-local, private ở thời điểm kết nối, đồng thời tắt tự động follow redirect hoặc kiểm tra lại từng bước chuyển hướng. Ở mức hạ tầng em xem đây là phòng thủ nhiều lớp: bắt buộc IMDSv2 trên AWS và dùng network policy hoặc egress proxy để chặn đường ra tới metadata và mạng nội bộ. Em từng xử lý một ca endpoint lấy avatar theo URL trả về credential IAM; sau khi siết allowlist, chặn IP nội bộ, bật IMDSv2 và rà soát toàn bộ chỗ nhận URL, 25 payload kiểm thử đều bị chặn và không còn lưu lượng ra metadata."
+
 > Senior tip: Blocklist IP (chặn 127.0.0.1, 169.254.169.254) gần như chắc chắn bị bypass bằng encoding/DNS. Hãy đảo tư duy: **chỉ cho phép (allowlist) đúng host + scheme nghiệp vụ cần**, resolve và kiểm tra IP đã chặn dải private/link-local, và tắt follow redirect tự động. Ở mức hạ tầng, bắt buộc IMDSv2 (AWS) và chặn route tới metadata bằng network policy. SSRF là lỗi "một dòng fetch URL" nhưng hậu quả có thể là mất toàn bộ cloud account — review mọi chỗ nhận URL từ user.`,
   follow: [
     'DNS rebinding vượt qua kiểm tra "resolve rồi chặn IP private" kiểu đơn giản như thế nào, và egress proxy/HTTP client cấu hình ra sao để giảm TOCTOU?',
@@ -3307,6 +3376,20 @@ spring:
   - {{Received fatal alert: bad_certificate}} (mTLS): server không tin cert client — client gửi sai cert hoặc trustStore phía server thiếu CA của client.
 - **Quan sát**: metric thời gian còn lại của cert ({{x509_cert_not_after}}), alert expiry; log lỗi handshake (bật {{javax.net.debug=ssl,handshake}} **chỉ tạm thời khi debug**, vì log rất nhạy/ồn).
 - **Zero-trust nội bộ**: ưu tiên mTLS (qua mesh) cho mọi service-to-service; tắt TLS 1.0/1.1, chỉ cho TLS 1.2+ (ưu tiên 1.3). Quản lý cert tự động, không cấp cert dài hạn thủ công.
+
+### Ví dụ đời thực
+**Triệu chứng:** Hệ thống gồm 9 microservice Java (Spring Boot) gọi nhau qua HTTPS nội bộ (mTLS cấp thủ công). Lúc 03:17 sáng, 4 service bắt đầu trả lỗi hàng loạt khi gọi {{payment-service}}: {{PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target}}. Tỉ lệ lỗi của luồng thanh toán tăng từ 0,1% lên 62% trong 5 phút, tương đương ~3.800 request thất bại/phút. Không có deploy nào trong 6 giờ trước.
+
+**Điều tra:** Chạy {{openssl s_client -connect payment-service:8443 -showcerts}} từ một pod caller: server gửi leaf cert của {{payment-service}} nhưng **thiếu intermediate CA** trong chain; leaf cert vừa được gia hạn thủ công lúc 02:00 và hết hạn cert cũ trùng thời điểm sự cố. Kiểm tra {{notAfter}}: cert cũ hết hạn 03:15 UTC. Kiểm tra trustStore phía caller: chỉ có root CA, không có intermediate mới (CA trung gian đã đổi khi gia hạn). Metric {{x509_cert_not_after}} không được thu thập; không có cảnh báo hết hạn. Thử {{keytool -list -v -keystore trust.p12}} xác nhận thiếu intermediate.
+
+**Nguyên nhân gốc:** Quy trình xoay vòng chứng chỉ thủ công bỏ sót bước gắn đủ chain (leaf + intermediate) lên server và phân phối intermediate mới vào trustStore các caller. Cert cũ hết hạn đúng lúc, trong khi cert mới không tạo được chuỗi tin cậy tới root CA mà caller tin. Không có overlap an toàn và không có hot reload tự động.
+
+**Cách xử lý:** (1) Khẩn cấp: ghép lại full chain ({{cat leaf.crt intermediate.crt > fullchain.crt}}), cập nhật {{keyStore}} của {{payment-service}} và reload; đồng thời thêm intermediate mới vào {{trustStore}} các caller rồi rolling restart có kiểm soát. Lỗi giảm về 0,4% sau 11 phút. (2) Dài hạn: chuyển sang cert-manager + internal CA (hoặc service mesh) để tự động cấp/renew cert ngắn hạn, phân phối full chain qua TLS Secret, và reload động. Thêm exporter thu thập {{x509_cert_not_after}} cho mọi cert, cảnh báo 14/7/1 ngày trước hết hạn. Viết runbook rotation có bước kiểm tra chain bằng {{openssl verify -CAfile root.crt -untrusted intermediate.crt leaf.crt}}.
+
+**Kết quả đo được:** 3.800 lỗi/phút → 0 trong 11 phút. Sau 60 ngày dùng tự động hoá: 6 lần renew diễn ra, 0 gián đoạn, cảnh báo hết hạn hoạt động đúng (đã bắn thử ở môi trường staging).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nói về TLS và mTLS giữa các microservice, em tập trung vào ba phần: cơ chế bắt tay, cách xác thực chuỗi chứng chỉ và cách xoay vòng không gây gián đoạn. Ở mức bắt tay, client và server thoả thuận phiên bản, cipher, trao đổi {{key_share}} theo ECDHE để sinh khoá phiên; server gửi certificate chain và {{CertificateVerify}} để chứng minh nó giữ private key, còn với mTLS thì server yêu cầu client cũng trình chứng chỉ để xác thực hai chiều. Phía xác thực, mỗi bên kiểm tra chữ ký dọc theo chuỗi từ leaf tới intermediate rồi tới root CA có trong {{trustStore}}, đồng thời kiểm tra thời hạn và tên host khớp SAN. Trong Java Spring Boot, em cấu hình {{keyStore}} để giữ chứng chỉ và khoá riêng của chính service, {{trustStore}} để giữ CA mà service tin, ưu tiên PKCS12 và lấy mật khẩu từ secret manager. Trên production, em coi cert có vòng đời ngắn và phải tự động hoá: cấp mới trước khi hết hạn, giữ overlap, reload động thay vì restart, kèm cảnh báo {{notAfter}}. Em từng xử lý sự cố 62% lỗi do cert gia hạn thiếu intermediate trong chain; sau khi khôi phục full chain và chuyển sang cert-manager với cảnh báo hết hạn, các lần renew về sau không còn downtime."
 
 > Senior tip: 80% sự cố TLS trong microservice là "hết hạn cert" hoặc "thiếu intermediate trong chain". Hãy tự động hoá toàn bộ vòng đời cert (cấp, phân phối, reload, cảnh báo hết hạn) — mesh hoặc cert-manager + hot reload. Và đừng bao giờ "fix nhanh" bằng cách tắt hostname verification hay trust-all {{TrustManager}}: đó là tắt TLS trên thực tế, biến kênh mã hoá thành kênh bị MITM thoải mái. Khi gặp {{PKIX path building failed}}, soi chain ({{openssl s_client -showcerts}}) thay vì thêm bừa cert vào trustStore.`,
   follow: [
