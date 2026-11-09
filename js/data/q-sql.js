@@ -3529,6 +3529,31 @@ API thanh toán có thể retry (network timeout). Dùng **idempotency key** (UU
 - Đo: {{pg_stat_database}} deadlocks; log ERROR; tracing transaction duration.
 - Fix: chuẩn hoá thứ tự lock; retry serialization failure; idempotency key; outbox.
 
+### Ví dụ đời thực
+
+Hệ thống thanh toán công ty (PostgreSQL 15, Spring Boot 3.x) xử lý khoảng 20.000 giao dịch mỗi giờ vào khung cao điểm. Một buổi chiều, đội vận hành nhận được khiếu nại: cùng một tài khoản nguồn thực hiện 2 lệnh chuyển 5 triệu đồng gần như đồng thời, nhưng số dư chỉ bị trừ 5 triệu thay vì 10 triệu; một giao dịch khác bị ghi nhận hai lần do client retry khi mạng timeout.
+
+Triệu chứng và điều tra:
+- Đối chiếu bảng {{account_ledger}} với {{accounts.balance}} thấy 12 ca lệch số dư trong ngày. Truy vết request cho thấy hai transaction T1, T2 cùng chạy ở mức {{READ COMMITTED}} (mặc định PostgreSQL): cả hai {{SELECT balance FROM accounts WHERE id = 1001}} đọc được 10 triệu, mỗi bên tính 10 - 5 = 5 và {{UPDATE}} ghi balance = 5. Transaction commit sau ghi đè transaction commit trước mà không báo lỗi — đây là **lost update** (mất cập nhật: ghi đè dựa trên dữ liệu đã cũ).
+- Đồng thời, {{pg_stat_database.deadlocks}} tăng từ ~2 ca/ngày lên ~40 ca/ngày. Log PostgreSQL ghi {{ERROR: deadlock detected}} (SQLSTATE {{40P01}}): hai giao dịch chuyển tiền ngược chiều (A→B và B→A) khóa hai dòng tài khoản theo thứ tự khác nhau nên chờ nhau vòng tròn.
+
+Nguyên nhân gốc:
+- Không khóa dòng số dư khi đọc-ghi (read-modify-write) nên bị lost update ở {{READ COMMITTED}}.
+- Không chuẩn hóa thứ tự lock khi chuyển giữa hai tài khoản nên phát sinh deadlock.
+- API {{POST /transfer}} không có idempotency key nên retry tạo bản ghi trùng.
+
+Cách xử lý:
+- Pessimistic locking cho luồng chuyển tiền: trong một transaction, khóa **cả hai** tài khoản theo {{id}} tăng dần rồi mới tính toán, ví dụ {{SELECT id, balance FROM accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE}}. Khóa theo thứ tự cố định giúp tránh deadlock vòng.
+- Thêm bảng {{idempotency_keys(key UUID PRIMARY KEY, response_json JSONB, created_at TIMESTAMPTZ)}}. Client gửi header {{Idempotency-Key}}; service kiểm tra/tạo key trong cùng transaction — request retry cùng key trả kết quả cũ, không trừ tiền lần hai.
+- Với transaction bị abort do deadlock ({{40P01}}) hoặc serialization failure ({{40001}} nếu dùng {{SERIALIZABLE}}), retry có backoff ngắn (tối đa 3 lần) và chỉ khi thao tác idempotent.
+- Ghi sự kiện {{TransferCompleted}} vào bảng {{outbox}} trong cùng transaction commit DB, worker riêng publish sau (at-least-once) để không mất message.
+
+Kết quả đo được (48 giờ sau deploy): lệch số dư hằng ngày giảm từ 12 ca xuống 0; giao dịch trùng do retry giảm về 0; {{pg_stat_database.deadlocks}} trong giờ cao điểm giảm còn dưới 5 ca/ngày (phần còn lại do luồng khác, tiếp tục chuẩn hóa thứ tự lock).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Với hệ thống tài chính trên PostgreSQL, tôi chọn isolation level theo mức rủi ro: {{READ COMMITTED}} đủ cho truy vấn đọc đơn giản, {{REPEATABLE READ}} an toàn hơn cho luồng nghiệp vụ nhiều bước vì PostgreSQL dùng MVCC nên tránh phantom read, còn {{SERIALIZABLE}} (SSI) tôi dùng khi cần đảm bảo không có serialization anomaly và chấp nhận retry lỗi {{40001}}. Để tránh lost update khi trừ số dư, tôi dùng pessimistic locking: {{SELECT ... FOR UPDATE}} và luôn khóa các dòng liên quan theo thứ tự {{id}} tăng dần để cắt vòng deadlock. Với dữ liệu ít tranh chấp như profile, tôi dùng optimistic locking bằng cột {{version}} ({{UPDATE ... WHERE id=? AND version=?}}). Mọi API có side-effect như chuyển tiền tôi gắn idempotency key (UNIQUE) để retry mạng an toàn. Sự kiện sau commit tôi ghi vào bảng outbox trong cùng transaction rồi publish at-least-once. Trên production tôi theo dõi {{pg_stat_database.deadlocks}}, thời gian transaction và log {{40P01}}/{{40001}} để quyết định retry hay chuẩn hóa thêm thứ tự lock."
+
 > Senior tip: Trong tài chính, "đúng" quan trọng hơn "nhanh". Dùng SERIALIZABLE + retry cho logic phức tạp; pessimistic lock cho số dư; và idempotency key cho mọi API có side-effect. Deadlock không phải bug — là thiết kế sai thứ tự lock; chuẩn hoá thứ tự lock là cure.`,
   follow: [
     'SERIALIZABLE trong PostgreSQL dùng SSI (Serializable Snapshot Isolation) thế nào?',
