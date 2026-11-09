@@ -3872,67 +3872,146 @@ Lỗi còn lại mà bài này **không** đóng được — và bạn nên nó
   body: `**Tóm tắt:** JWT = base64url(header).base64url(payload).base64url(HMAC(header.payload, secret)); verify phải so sánh chữ ký thời gian hằng và kiểm exp/nbf/alg.
 
 ### JWT là gì
-JWT (JSON Web Token) là chuỗi 3 phần cách nhau bởi dấu chấm: header.payload.signature. Mỗi phần là base64url (base64 biến thể an toàn cho URL, không padding =).
+JWT (JSON Web Token) là chuỗi 3 phần cách nhau bởi dấu chấm: header.payload.signature. Mỗi phần là base64url (base64 biến thể an toàn cho URL, không padding =). **Lưu ý quan trọng:** JWT chỉ **ký** (signed JWS), không **mã hóa** (encrypted JWE) — payload ai cũng decode được. Dùng khi cần truyền claim giữa các bên tin nhau mà không cần giấu nội dung.
 
 ### Vì sao cần HMAC
-HMAC-SHA256 đảm bảo payload không bị sửa; secret chia sẻ giữa issuer và verifier.
+HMAC-SHA256 đảm bảo payload không bị sửa; secret chia sẻ giữa issuer và verifier. HMAC là MAC (Message Authentication Code) dựa trên hàm băm: chỉ ai có secret mới tạo ra được MAC đúng, và thay đổi một bit nào của dữ liệu làm MAC sai hoàn toàn.
 
 ### Base64url trong Java
-Dùng Base64.getUrlEncoder().withoutPadding() và getUrlDecoder().
+Base64url (biến thể Base64 an toàn cho URL: thay {{+}} thành {{-}}, {{/}} thành {{_}}, bỏ padding {{=}}) dùng để mỗi phần JWT đi được trong URL/header mà không bị encode hỏng. Dùng {{Base64.getUrlEncoder().withoutPadding()}} và {{getUrlDecoder()}}. **Không dùng** Base64 chuẩn vì {{+}}/{{/}}/{{=}} sẽ bị percent-encode khi ở query string hoặc header.
 
-### Ký
+### Cơ chế từng bước (ký và xác minh)
+1. **Chuẩn bị header**: JSON tối thiểu:
+   ~~~json
+   {"alg":"HS256","typ":"JWT"}
+   ~~~
+   **Vì sao phải có {{alg}}?** Để verifier biết thuật toán kỳ vọng; nếu không kiểm, attacker có thể đổi {{alg}} và lách chữ ký. **Vì sao {{typ}}?** Xác định đây là JWT, tránh nhầm lẫn với các định dạng khác.
+2. **Chuẩn bị payload (claims)**: chứa dữ liệu như {{sub}} (subject - định danh người dùng), {{exp}} (expiration - thời điểm hết hạn, tính bằng epoch seconds, tức số giây từ 1970-01-01), {{nbf}} (not before - chưa có hiệu lực trước thời điểm này), {{iss}} (issuer - bên phát hành), {{aud}} (audience - bên nhận), {{iat}} (issued at - lúc cấp), {{jti}} (JWT ID - định danh duy nhất cho token, dùng cho denylist). **Vì sao dùng epoch seconds?** So sánh số nguyên nhanh, không phụ thuộc múi giờ, không parse phức tạp.
+3. **Mã hóa 2 phần**: {{headerB64 = base64url(headerJson)}}, {{payloadB64 = base64url(payloadJson)}}. **Vì sao base64url mà không phải JSON thô?** JSON có dấu ngoặc/khoảng trắng/ký tự đặc biệt dễ hỏng khi đi qua HTTP header {{Authorization: Bearer ...}}.
+4. **Tạo dữ liệu ký**: {{signingInput = headerB64 + "." + payloadB64}}. Chữ ký bao phủ cả header lẫn payload, nên sửa bất kỳ byte nào (kể cả đổi {{alg}}) cũng làm chữ ký sai.
+5. **Tính HMAC-SHA256**: {{HMAC(secret, signingInput)}} dùng {{javax.crypto.Mac}}. HMAC cho ra chuỗi byte chứng minh: ai có {{secret}} mới tạo ra được chữ ký này, và dữ liệu không bị đổi. **HMAC không mã hóa** payload: ai cũng decode base64url được.
+6. **Ghép token**: {{token = headerB64 + "." + payloadB64 + "." + base64url(signature)}}.
+7. **Xác minh (verify)**: tách 3 phần → decode header, **kiểm {{alg}} trước** (chỉ chấp nhận {{HS256}}) → parse payload lấy {{exp}}/{{nbf}} → tính lại HMAC từ {{headerB64.payloadB64}} bằng cùng {{secret}} → so sánh chữ ký bằng {{MessageDigest.isEqual}} (constant-time) → kiểm tra thời gian ({{now < exp}}, {{now >= nbf}}, cho phép sai lệch đồng hồ nhỏ, clock skew, ví dụ 30-60 giây) → kiểm {{iss}}/{{aud}} nếu có.
+
 ~~~java
-Mac mac = Mac.getInstance("HmacSHA256");
-mac.init(new SecretKeySpec(secret, "HmacSHA256"));
-byte[] sig = mac.doFinal((h+"."+p).getBytes(StandardCharsets.UTF_8));
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.MessageDigest;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
+
+class JwtDemo {
+  static String b64(byte[] b){ return Base64.getUrlEncoder().withoutPadding().encodeToString(b); }
+  static String sign(String headerB64, String payloadB64, byte[] secret) throws Exception {
+    String data = headerB64 + "." + payloadB64;           // signing input: header.payload
+    Mac mac = Mac.getInstance("HmacSHA256");
+    mac.init(new SecretKeySpec(secret, "HmacSHA256"));    // khóa bí mật >= 256 bit (32 byte)
+    byte[] sig = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+    return data + "." + b64(sig);
+  }
+  static boolean verifySig(String headerB64, String payloadB64, String sigB64, byte[] secret) throws Exception {
+    String expected = sign(headerB64, payloadB64, secret);
+    byte[] a = expected.substring(expected.lastIndexOf('.') + 1).getBytes(StandardCharsets.UTF_8);
+    byte[] b = sigB64.getBytes(StandardCharsets.UTF_8);
+    return MessageDigest.isEqual(a, b); // constant-time: KHÔNG dùng String.equals
+  }
+}
 ~~~
 
-### Verify
-1. Tách 3 phần, decode.
-2. Parse header JSON, kiểm alg == "HS256" (từ chối alg=none, RS256...).
-3. Tính HMAC lại, so sánh bằng MessageDigest.isEqual (thời gian hằng, chống timing attack).
-4. Parse payload, kiểm exp (hết hạn) và nbf (chưa hiệu lực) với đồng hồ giả để test.
+| Thuộc tính | HMAC-SHA256 (HS256) | RSA/ECDSA (RS256/ES256) |
+|---|---|---|
+| Khóa | 1 secret chia sẻ (đối xứng) | Cặp private/public (bất đối xứng) |
+| Ai verify được? | Bất kỳ ai có secret | Ai cũng verify được bằng public key |
+| Dùng khi | Issuer và verifier là cùng hệ thống/tin nhau | Nhiều bên verify, issuer giữ private key |
+| Rủi ro | Lộ secret = ai cũng ký được token giả | Quản lý key phức tạp hơn |
+
+| Thuộc tính | JWS (Signed JWT) | JWE (Encrypted JWT) |
+|---|---|---|
+| Mục đích | Toàn vẹn (integrity) + xác thực (authenticity) | Bí mật (confidentiality) |
+| Payload | Plaintext (base64url) | Ciphertext |
+| Dùng khi | Claim công khai, chỉ cần biết không bị sửa | Claim nhạy cảm (PII, token nội bộ) |
+
+### Ký: ví dụ đầy đủ xử lý lỗi
+~~~java
+String sign(String payloadJson, byte[] secret, long now) {
+  String h = b64("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8));
+  String p = b64(payloadJson.getBytes(StandardCharsets.UTF_8));
+  String data = h + "." + p;
+  try {
+    Mac mac = Mac.getInstance("HmacSHA256");
+    mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+    return data + "." + b64(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));
+  } catch (GeneralSecurityException e) {
+    throw new IllegalStateException("JWT signing failed", e);
+  }
+}
+~~~
+
+### Verify: thứ tự kiểm tra quyết định an toàn
+1. Tách đúng 3 phần bằng dấu chấm; khác 3 phần → reject.
+2. Decode header, parse JSON, **bắt buộc {{alg == "HS256"}}**; khác → reject (chặn {{none}}, {{RS256}}...).
+3. Decode payload, parse {{exp}}, {{nbf}}, {{iss}}, {{aud}}.
+4. Kiểm tra thời gian: {{now < exp}} (RFC 7519: bằng {{exp}} là hết hạn), {{now >= nbf}}, cho clock skew 30-60s.
+5. Tính lại HMAC trên {{header.payload}}, so bằng {{MessageDigest.isEqual}}.
+6. Kiểm {{iss}}/{{aud}} khớp kỳ vọng (nếu có cấu hình).
 
 ### Đồng hồ giả
-Truyền Clock/Instant vào hàm verify thay vì System.currentTimeMillis() để test token hết hạn.
-### Tại sao alg phải kiểm trước HMAC
-Nếu attacker đổi alg thành none và xoá signature, server nếu không kiểm alg sẽ coi là hợp lệ. Kiểm alg trước khi tính HMAC cắt đứng bypass.
+Truyền {{Clock}} hoặc {{Instant}} vào hàm verify thay vì {{System.currentTimeMillis()}} để test token hết hạn, đồng hồ lệch, clock skew. Production dùng {{Clock.systemUTC()}}.
 
-### Rotation key
-Dùng kid header để chọn secret; rotation không làm token cũ vô hiệu ngay nếu giữ secret cũ trong thời gian grace.
+### Tại sao alg phải kiểm trước HMAC (chống alg confusion)
+Nếu attacker đổi header thành:
+   ~~~json
+   {"alg":"none"}
+   ~~~
+   và xóa signature, server "linh hoạt" có thể chấp nhận token không chữ ký. Hoặc attacker đổi {{HS256}} sang {{RS256}} (bất đối xứng - dùng public key để verify) và ký bằng HMAC dùng **public key** của server (public key thường công khai) — nếu server lại verify RSA bằng khóa đó như HMAC, token giả lọt qua. Đây gọi là **algorithm confusion**. **Cách chặn**: danh sách trắng thuật toán cố định (chỉ {{HS256}} cho luồng này), kiểm tra {{alg}} **trước** khi tính HMAC; không tin {{alg}} từ token để chọn thuật toán.
 
-### Liên hệ phỏng vấn thêm
-Giải thích HMAC không mã hoá payload; base64url không có padding; secret >= 256 bit; timing attack; alg confusion.
+### Xoay khóa (key rotation) và kid
+- **kid (Key ID)**: trường trong header chỉ định secret nào dùng để verify, hữu ích khi xoay khóa.
+- **Rotation**: phát hành token mới bằng secret mới, nhưng vẫn giữ secret cũ một thời gian ân hạn (grace period) để token cũ chưa hết {{exp}} vẫn verify được; sau grace period mới bỏ secret cũ.
+- **Lưu ý**: rotation không thu hồi token đã phát; muốn thu hồi ngay cần danh sách đen (denylist) theo {{jti}} hoặc dùng access token ngắn hạn (5-15 phút) + refresh token.
 
-### Lỗi hay gặp
-- Dùng String.equals so sánh chữ ký → timing leak.
-- Không kiểm alg → alg=none bypass.
-- Không kiểm exp → token vĩnh viễn.
-- Base64 thường thay vì base64url → '+' '/' bị hỏng trong URL.
+### Ví dụ đời thực: bypass xác thực do quên kiểm alg
+**Triệu chứng:** Admin panel bị chiếm quyền mà không có password. **Điều tra:** Log thấy request có token {{alg=none}} được chấp nhận. **Nguyên nhân:** Code chỉ decode payload lấy {{sub}} mà không kiểm {{alg}}. Attacker tạo token:
+   ~~~json
+   {"alg":"none"}
+   ~~~
+   +
+   ~~~json
+   {"sub":"admin"}
+   ~~~
+   + rỗng chữ ký. **Xử lý:** Thêm whitelist {{alg}} trước khi verify; deploy patch trong 15 phút. **Kết quả:** Không còn bypass được; thêm test tự động cho {{alg=none}}.
 
-### Ví dụ đầy đủ
-~~~java
-// sign
-String data = header + "." + payload;
-Mac mac = Mac.getInstance("HmacSHA256");
-mac.init(new SecretKeySpec(secret, "HmacSHA256"));
-String sig = Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(data.getBytes()));
-~~~
-
-### Interview answer
-Trả lời: JWT không mã hoá, HMAC đảm bảo integrity, verify alg/exp/nbf, compare constant-time.
-
-### Common pitfalls
-Quên kiểm exp, dùng base64 thường, so sánh bằng equals, alg confusion.
-
-### Production notes
-Log kid, monitor failed verify, rotate secret định kỳ, không để secret trong code.
-
-### Best practices
-Dùng constant-time compare, kiểm exp với tolerance nhỏ (clock skew), validate iss/aud.
+### Lỗi hay gặp trên production
+1. **So sánh chữ ký bằng {{String.equals}}**
+   - Triệu chứng: không thấy lỗi chức năng, nhưng hệ thống có thể bị dò chữ ký qua thời gian phản hồi.
+   - Nguyên nhân: {{equals}} thoát sớm tại byte khác đầu tiên (timing leak).
+   - Cách sửa: luôn dùng {{MessageDigest.isEqual(expected, given)}} (constant-time).
+2. **Không kiểm {{alg}} hoặc chấp nhận {{alg}} từ token**
+   - Triệu chứng: token giả với {{alg=none}} hoặc chữ ký bịa được chấp nhận.
+   - Nguyên nhân: code chỉ decode payload mà bỏ qua/ tin header.
+   - Cách sửa: whitelist {{alg == "HS256"}} trước khi verify; từ chối mọi giá trị khác ({{none}}, {{RS256}}, {{HS512}}...).
+3. **Không kiểm {{exp}}/{{nbf}} hoặc dùng đồng hồ hệ thống lung tung**
+   - Triệu chứng: token hết hạn vẫn truy cập được; token bị từ chối sớm trên máy lệch giờ.
+   - Nguyên nhân: quên parse claim; so sánh với {{System.currentTimeMillis()}} khiến test khó.
+   - Cách sửa: kiểm {{exp}}/{{nbf}} bắt buộc; truyền {{Clock}}/thời điểm hiện tại vào hàm verify (dễ test); cho phép clock skew nhỏ (30-60s).
+4. **Dùng Base64 thường hoặc secret yếu**
+   - Triệu chứng: verify thất bại ngẫu nhiên với token đi qua URL/header; token dễ bị brute-force.
+   - Nguyên nhân: Base64 chuẩn dùng {{+}}/{{/}}/{{=}} gây lỗi khi encode URL; secret ngắn/dễ đoán.
+   - Cách sửa: dùng {{Base64.getUrlEncoder().withoutPadding()}} (base64url); secret HS256 >= 256 bit (32 byte) sinh từ {{SecureRandom}}, lưu trong secret manager, không hard-code.
+5. **Không kiểm {{aud}}/{{iss}} khi hệ thống có nhiều service/tenant**
+   - Triệu chứng: token cấp cho service A bị dùng truy cập service B; token tenant A truy cập tenant B.
+   - Nguyên nhân: code chỉ kiểm {{exp}}/{{sub}}; {{aud}}/{{iss}} để trống.
+   - Cách sửa: cấu hình {{expectedIssuer}}, {{expectedAudience}} và validate bắt buộc.
+6. **Secret hard-code trong repo hoặc log ra console**
+   - Triệu chứng: Secret lộ trên GitHub/GitLab; pentest tìm thấy secret trong log file.
+   - Nguyên nhân: Dev copy secret vào code để test nhanh; logger in toàn bộ token/request.
+   - Cách sửa: Dùng {{@Value}} từ env/Secret Manager; mask secret trong log; quét secret trong CI.
 
 ### Liên hệ phỏng vấn
-Nói rõ HMAC chỉ bảo toàn tính toàn vẹn, không mã hoá; secret phải đủ dài (>=256 bit); rotation key; kid header.`,
+- **Hỏi: "JWT có mã hóa dữ liệu không? HS256 hoạt động ra sao?"** — Trả lời: JWT chỉ ký (đảm bảo tính toàn vẹn - integrity, biết dữ liệu có bị sửa không), không mã hóa, nên ai có token cũng đọc được payload; HS256 dùng HMAC-SHA256 với một secret chia sẻ: tính {{base64url(header).base64url(payload)}}, ký bằng HMAC, verify bằng cách tính lại và so sánh constant-time. Muốn giấu nội dung phải dùng JWE.
+- **Hỏi: "Làm sao ngăn tấn công {{alg=none}} và timing attack khi verify JWT?"** — Trả lời: whitelist thuật toán (chỉ chấp nhận {{HS256}}) và kiểm tra {{alg}} trước khi tin chữ ký; so sánh chữ ký bằng {{MessageDigest.isEqual}} để tránh timing leak; luôn kiểm {{exp}}/{{nbf}}/{{iss}}/{{aud}} phù hợp.
+- **Hỏi: "Làm sao thu hồi JWT và xoay secret an toàn?"** — Trả lời: JWT tự chứa (stateless) nên khó thu hồi ngay; dùng access token ngắn hạn (5-15 phút) + refresh token có thể thu hồi, hoặc denylist theo {{jti}}; xoay key bằng {{kid}} và giữ secret cũ trong grace period đến khi token cũ hết hạn.
+- **Hỏi: "HS256 hay RS256, khi nào chọn cái nào?"** — Trả lời: HS256 cho hệ thống đơn giản, issuer=verifier, hiệu năng cao; RS256 cho kiến trúc phân tán, nhiều resource server verify, IdP trung tâm cấp token, public key phân phối qua JWKS.`,
   exercises: [
     {
       title: 'JWT sign/verify',
@@ -3945,8 +4024,10 @@ Nói rõ HMAC chỉ bảo toàn tính toàn vẹn, không mã hoá; secret phả
     },
   ],
   check: [
-    { q: 'Vì sao dùng MessageDigest.isEqual?', options: ['Nhanh hơn', 'Thời gian hằng, chống timing attack', 'Hỗ trợ unicode', 'Tự động hash'], answer: 1, explain: 'So sánh byte theo thời gian cố định, tránh leak thông tin qua timing.' },
-    { q: 'alg=none nguy hiểm vì?', options: ['Chậm', 'Bypass chữ ký', 'Tốn bộ nhớ', 'Không hỗ trợ UTF-8'], answer: 1, explain: 'Attacker xoá signature và đặt alg none; server không kiểm alg sẽ chấp nhận.' },
+    { q: 'Vì sao dùng MessageDigest.isEqual thay vì String.equals khi so sánh chữ ký JWT?', options: ['Nhanh hơn vì so byte thô', 'So sánh thời gian hằng (constant-time), chống timing attack', 'Tự động kiểm tra thêm thuật toán HMAC', 'Hỗ trợ so sánh Base64url có padding'], answer: 1, explain: 'MessageDigest.isEqual so sánh mọi byte với thời gian không đổi, nên attacker không đoán được chữ ký qua thời gian phản hồi. String.equals thoát sớm khi gặp byte khác, gây timing leak. Nó không tự kiểm thuật toán hay xử lý padding.' },
+    { q: 'Server chấp nhận header {"alg":"none"} và bỏ qua chữ ký. Rủi ro trực tiếp là gì?', options: ['Token bị hết hạn sớm hơn', 'Xung đột encoding giữa Base64 và Base64url', 'Attacker tự tạo payload tùy ý và bypass xác thực (chữ ký bị vô hiệu)', 'Server phải tính HMAC hai lần nên chậm hơn'], answer: 2, explain: 'alg=none nghĩa là "không ký"; nếu server không từ chối, attacker sửa payload (ví dụ đổi sub thành admin) mà không cần secret. Đây là bypass xác thực, không liên quan hết hạn, encoding hay hiệu năng.' },
+    { q: 'Payload JWT HS256 có được xem là bí mật không? Vì sao?', options: ['Không, vì payload chỉ base64url-encode chứ không mã hóa; HMAC chỉ đảm bảo tính toàn vẹn', 'Có, vì chỉ ai có secret mới đọc được', 'Có, nếu dùng Base64url.withoutPadding thì payload được che giấu', 'Không, nhưng chỉ vì exp đã hết hạn'], answer: 0, explain: 'Base64url là mã hóa biểu diễn (encoding), decode được bởi bất kỳ ai. HS256 là chữ ký (MAC) chứng minh dữ liệu không bị sửa, không phải mã hóa (encryption). Muốn giấu nội dung phải dùng JWE (JSON Web Encryption). Secret dùng để ký/verify, không dùng để đọc payload.' },
+    { q: 'Khi xoay secret HS256 bằng kid, cách nào giúp token cũ chưa hết hạn vẫn verify được?', options: ['Đặt alg=none cho token cũ', 'Tăng exp của token cũ lên thêm 30 ngày', 'Xóa luôn secret cũ ngay khi phát hành secret mới', 'Giữ secret cũ trong grace period và chọn secret theo kid trong header'], answer: 3, explain: 'kid chỉ định khóa dùng để verify; server tra cứu secret theo kid. Giữ secret cũ trong grace period (đến khi token cũ hết exp) cho phép verify token cũ mà không chấp nhận token giả. Đặt alg=none, tự ý gia hạn exp, hay xóa secret cũ ngay đều sai/không an toàn.' },
   ],
   related: [],
   tags: ['JWT', 'HMAC', 'base64url'],
@@ -3959,79 +4040,145 @@ Nói rõ HMAC chỉ bảo toàn tính toàn vẹn, không mã hoá; secret phả
   level: 'senior',
   minutes: 40,
   goals: ['Hiểu PKCE và code_challenge S256', 'Mô phỏng authorize + token exchange', 'Chặn kẻ tấn công không có verifier'],
-  body: `**Tóm tắt:** PKCE: client tạo code_verifier ngẫu nhiên, gửi code_challenge = base64url(SHA256(verifier)); server lưu challenge khi authorize và kiểm verifier khi đổi code lấy token.
+  body: `**Tóm tắt:** PKCE (Proof Key for Code Exchange - bằng chứng trao đổi mã ủy quyền) bảo vệ public client: client tạo {{code_verifier}} ngẫu nhiên, gửi {{code_challenge = BASE64URL(SHA-256(verifier))}} khi authorize; server lưu challenge theo code và chỉ cấp token khi nhận đúng {{code_verifier}}.
 
-### Vấn đề
-Public client (SPA/mobile) không giữ secret; authorization code có thể bị đánh cắp qua redirect. PKCE ràng buộc code với verifier chỉ client biết.
+### Vấn đề PKCE giải quyết là gì?
+- **Public client** (SPA - ứng dụng web chạy trên trình duyệt, hoặc app mobile): không thể giữ bí mật {{client_secret}} an toàn (code/mã cài có thể bị đọc), nên chỉ dựa vào secret là không đủ.
+- **Authorization code interception** (đánh cắp mã ủy quyền): kẻ tấn công trên cùng thiết bị (ví dụ app độc hại đăng ký custom URL scheme, hoặc chặn redirect) có thể lấy được {{code}} khi trình duyệt redirect về. Trước PKCE, ai có {{code}} là có thể đổi lấy token.
+- **PKCE ràng buộc**: {{code}} chỉ đổi được token khi kèm {{code_verifier}} mà chỉ client khởi đầu phiên mới biết. Kẻ tấn công lấy được {{code}} nhưng không có {{verifier}} → đổi token thất bại.
 
-### Luồng
+### Cơ chế từng bước (S256)
+1. **Client sinh {{code_verifier}}**: chuỗi ngẫu nhiên, dài 43-128 ký tự, chỉ dùng các ký tự an toàn URL (unreserved): {{[A-Z a-z 0-9 - . _ ~]}}. **Vì sao phải ngẫu nhiên và đủ dài?** Để attacker không đoán được (entropy - độ ngẫu nhiên cao). Dùng {{SecureRandom}} (bộ sinh số ngẫu nhiên an toàn mật mã), không dùng {{Random}} thường. 32 byte ngẫu nhiên → 43 ký tự base64url là độ dài tối thiểu phổ biến.
+2. **Client tính {{code_challenge}} (phương thức S256)**: {{code_challenge = BASE64URL(SHA-256(ASCII(code_verifier)))}}, không padding. **Vì sao băm SHA-256?** Challenge đi qua trình duyệt/redirect (có thể lộ), nhưng từ hash một chiều không suy ngược ra verifier.
+3. **Authorize request**: client chuyển hướng người dùng đến Authorization Server kèm {{response_type=code}}, {{client_id}}, {{redirect_uri}}, {{state}} (chống CSRF - Cross-Site Request Forgery, giả mạo yêu cầu từ site khác), {{code_challenge}}, {{code_challenge_method=S256}}. **Vì sao cần {{state}}?** State là giá trị ngẫu nhiên client sinh, lưu trong session, đối chiếu khi nhận callback — ngăn attacker gắn code của họ vào phiên nạn nhân (login CSRF).
+4. **Server xác thực người dùng và phát {{code}}**: server lưu cặp {{(code -> code_challenge, method, client_id, redirect_uri)}} với thời gian sống ngắn (thường 1-10 phút). **Vì sao lưu theo code?** Để đối chiếu ở bước đổi token; code là khóa tra cứu duy nhất.
+5. **Token request**: client gửi {{grant_type=authorization_code}}, {{code}}, {{redirect_uri}}, **và {{code_verifier}}** (lúc này verifier mới rời client, đi qua kênh back-channel HTTPS tới token endpoint). **Lưu ý:** {{code_verifier}} không bao giờ đi qua trình duyệt/URL.
+6. **Server kiểm tra**: tìm challenge theo {{code}} → tính {{BASE64URL(SHA-256(code_verifier))}} → so sánh **constant-time** ({{MessageDigest.isEqual}}) với challenge đã lưu → kiểm tra {{redirect_uri}} khớp chính xác → kiểm tra {{code}} chưa dùng (một lần). **Vì sao constant-time?** Tránh timing attack khi so sánh chuỗi bí mật.
+7. **Cấp token và vô hiệu hóa {{code}}**: nếu hợp lệ, trả {{access_token}} (và có thể {{refresh_token}}), đánh dấu {{code}} đã dùng để chống replay (phát lại mã cũ).
+
 ~~~seq
-title: PKCE
+title: PKCE S256
 actors: Client | AuthServer | Resource
-Client -> AuthServer: authorize + code_challenge
-AuthServer -> Client: code
+Client -> AuthServer: authorize + code_challenge(S256) + state
+AuthServer -> Client: redirect ?code=... & state
 Client -> AuthServer: token + code + code_verifier
-AuthServer -> Client: access_token
+AuthServer -> Client: access_token (nếu verifier khớp)
 ~~~
 
-### code_challenge
-code_challenge = BASE64URL(SHA-256(code_verifier)).
-
-### Server kiểm
-Lưu challenge theo code; khi token request, tính base64url(SHA256(verifier)) và so sánh thời gian hằng với challenge.
-
-### Lỗi hay gặp
-- Dùng plain method thay vì S256.
-### Chi tiết S256
-SHA-256 cho 256-bit output, base64url không padding. Verifier dài 43-128 ký tự từ [A-Z a-z 0-9 - . _ ~].
-
-### So sánh thời gian hằng
-MessageDigest.isEqual tránh timing leak khi so challenge.
-
-### Phòng CSRF
-Kết hợp state parameter; PKCE không thay state, hai cơ chế bổ sung.
-
-### Liên hệ phỏng vấn thêm
-PKCE bắt buộc cho public client theo OAuth 2.1; confidential client cũng nên dùng; code_verifier không được log.
-- Không kiểm verifier → PKCE vô nghĩa.
-- Verifier quá ngắn (<43 ký tự).
-
-### Ví dụ challenge
+### Ví dụ Java: sinh challenge và kiểm tra
 ~~~java
-MessageDigest md = MessageDigest.getInstance("SHA-256");
-byte[] d = md.digest(verifier.getBytes(StandardCharsets.UTF_8));
-String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(d);
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
+
+class Pkce {
+  static String newVerifier() {
+    byte[] buf = new byte[32];                 // 32 byte -> 43 ký tự base64url (đủ entropy)
+    new SecureRandom().nextBytes(buf);         // SecureRandom: ngẫu nhiên an toàn mật mã
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(buf);
+  }
+  static String challengeS256(String verifier) throws Exception {
+    byte[] hash = MessageDigest.getInstance("SHA-256")
+        .digest(verifier.getBytes(StandardCharsets.US_ASCII));
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(hash); // base64url, no padding
+  }
+  static boolean matches(String verifier, String storedChallenge) throws Exception {
+    // so sánh constant-time để tránh timing attack
+    return MessageDigest.isEqual(challengeS256(verifier).getBytes(StandardCharsets.US_ASCII),
+                                 storedChallenge.getBytes(StandardCharsets.US_ASCII));
+  }
+}
 ~~~
 
-### Extra5
-Use SecureRandom for verifier; length 43-128; charset unreserved.
+### Ví dụ đầy đủ: AuthServer mô phỏng luồng PKCE
+~~~java
+import java.util.*;
+import java.security.MessageDigest;
+import java.util.Base64;
 
-### Extra4
-Authorization server stores challenge; token endpoint recomputes and compares.
+class AuthServer {
+  private final Map<String, String> challenges = new HashMap<>();
+  private final Set<String> usedCodes = new HashSet<>();
+  private int counter = 0;
 
-### Extra3
-Public clients cannot keep secret; PKCE provides proof of possession.
+  String authorize(String clientId, String challenge) {
+    String code = "code" + (++counter);
+    challenges.put(code, challenge);
+    return code;
+  }
 
-### Extra2
-Token endpoint validates code + verifier + redirect_uri; mismatch rejects.
+  String token(String code, String verifier) {
+    String ch = challenges.get(code);
+    if (ch == null) return null;                    // code không tồn tại
+    if (usedCodes.contains(code)) return null;      // code đã dùng (replay)
+    if (!MessageDigest.isEqual(ch.getBytes(), challengeOf(verifier).getBytes())) return null;
+    usedCodes.add(code);                            // đánh dấu đã dùng
+    return "token-" + code;
+  }
 
-### Extra
-RFC 7636, OAuth 2.1 mandate PKCE, verifier entropy, challenge storage, replay protection.
+  static String challengeOf(String verifier) {
+    try {
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      byte[] d = md.digest(verifier.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      return Base64.getUrlEncoder().withoutPadding().encodeToString(d);
+    } catch (Exception e) { throw new RuntimeException(e); }
+  }
+}
+~~~
 
-### Interview answer
-Trả lời: PKCE ràng buộc code với verifier, S256, bắt buộc public client, chống code interception.
+| Thuộc tính | {{plain}} | {{S256}} |
+|---|---|---|
+| Cách tính | challenge = verifier | challenge = BASE64URL(SHA-256(verifier)) |
+| Nếu challenge lộ | Verifier lộ luôn → vô nghĩa | Không suy ngược được verifier |
+| Khuyến nghị | Không dùng | Bắt buộc dùng; OAuth 2.1 yêu cầu PKCE |
 
-### Common pitfalls
-Dùng plain method, verifier ngắn, không kiểm verifier, replay code.
+| Đặc điểm | Confidential Client (Server-side) | Public Client (SPA/Mobile) |
+|---|---|---|
+| Chạy ở đâu | Server của bạn (backend) | Máy của người dùng (browser/app) |
+| Giữ được secret? | Có (env, vault) | **Không bao giờ** |
+| PKCE bắt buộc? | Khuyến nghị (OAuth 2.1) | **Bắt buộc** |
+| Client auth ở /token | {{client_id}} + {{client_secret}} (Basic auth) | Chỉ {{client_id}} (no secret) |
 
-### Production notes
-Log challenge, reject reuse code, enforce PKCE cho mọi public client, redirect exact.
+### PKCE và state bổ sung cho nhau
+- **PKCE**: chứng minh "đúng client đã bắt đầu flow mới đổi được code lấy token" (chống code interception).
+- **state**: giá trị ngẫu nhiên client gửi đi và kiểm tra khi nhận redirect, chứng minh response thuộc về request của mình (chống CSRF). Thiếu state, attacker có thể gắn {{code}} của họ vào phiên nạn nhân.
+- **Cả hai đều cần**: PKCE bảo vệ code, state bảo vệ luồng redirect. OAuth 2.1 yêu cầu PKCE cho mọi client; state luôn khuyến nghị.
 
-### Best practices
-Verifier sinh bằng SecureRandom, challenge S256, state chống CSRF, redirect URI exact match.
+### Ví dụ đời thực: app mobile bị đánh cắp code qua custom URL scheme
+**Triệu chứng:** User báo tài khoản bị chiếm dù không phishing. **Điều tra:** App đăng ký scheme {{myapp://callback}}; app độc hại cùng scheme chặn redirect lấy {{code}}. **Nguyên nhân:** Không dùng PKCE, server chỉ kiểm tra {{code}} + {{client_id}} (public). **Xử lý:** Bật PKCE S256 bắt buộc trên Auth Server; cập nhật app sinh {{verifier}}, gửi {{challenge}}, kèm {{verifier}} khi đổi token. **Kết quả:** Code bị chặn không đổi được token vì thiếu verifier; attacker không sinh được verifier (chỉ client gốc biết).
+
+### Lỗi hay gặp trên production
+1. **Dùng phương thức {{plain}} hoặc không gửi {{code_challenge_method}} đúng**
+   - Triệu chứng: trao đổi token vẫn thành công nhưng bảo vệ yếu; audit bảo mật fail.
+   - Nguyên nhân: triển khai theo tài liệu cũ, nhầm lẫn method.
+   - Cách sửa: luôn dùng {{S256}}; server từ chối {{plain}} (đặc biệt với public client) và từ chối request thiếu PKCE theo chính sách OAuth 2.1.
+2. **Không kiểm tra {{code_verifier}} / không so sánh constant-time / không chống replay {{code}}**
+   - Triệu chứng: code bị đánh cắp vẫn đổi được token; mã đã dùng đổi lại lần nữa.
+   - Nguyên nhân: token endpoint bỏ qua bước đối chiếu challenge-verifier; không đánh dấu {{code}} đã tiêu thụ.
+   - Cách sửa: tính {{S256(verifier)}} và so sánh bằng {{MessageDigest.isEqual}} với challenge đã lưu; {{code}} dùng một lần, hết hạn nhanh (vài phút).
+3. **Verifier yếu hoặc bị lộ qua log/URL**
+   - Triệu chứng: attacker đoán/đọc được verifier và đổi token.
+   - Nguyên nhân: verifier < 43 ký tự, dùng {{Random}} dễ đoán; ghi {{code_verifier}} vào access log hoặc để lộ trong query string phía client.
+   - Cách sửa: sinh verifier bằng {{SecureRandom}}, đủ dài (43-128); **không bao giờ log {{code_verifier}}**; verifier chỉ gửi trong body POST tới token endpoint (HTTPS).
+4. **Không ràng buộc {{redirect_uri}} hoặc bỏ qua {{state}}**
+   - Triệu chứng: code bị chuyển hướng sang URI lạ; phiên người dùng bị gắn mã của attacker (CSRF/login CSRF).
+   - Nguyên nhân: server chấp nhận redirect_uri linh hoạt; client không sinh/kiểm tra {{state}}.
+   - Cách sửa: đăng ký và so khớp {{redirect_uri}} chính xác tuyệt đối; luôn sinh {{state}} ngẫu nhiên, lưu (session/cookie) và đối chiếu khi nhận callback.
+5. **Code TTL quá dài hoặc không xoá challenge sau khi dùng**
+   - Triệu chứng: Code cũ (ngày hôm qua) vẫn đổi được token; bộ nhớ server phình do challenge tích lũy.
+   - Nguyên nhân: Không đặt TTL cho code (hoặc TTL hàng giờ); không xoá entry sau khi exchange thành công.
+   - Cách sửa: TTL 1-10 phút; xoá challenge khỏi store ngay sau exchange (thành công hoặc thất bại do verifier sai).
+6. **Chấp nhận {{code_challenge_method}} không hợp lệ hoặc thiếu**
+   - Triệu chứng: Client gửi {{method=S256}} nhưng server không validate; hoặc client không gửi method mà server vẫn xử lý.
+   - Nguyên nhân: Server không whitelist method; chỉ đọc challenge mà không kiểm tra method.
+   - Cách sửa: Whitelist chỉ {{S256}}; từ chối request thiếu {{code_challenge_method}} hoặc method lạ.
 
 ### Liên hệ phỏng vấn
-PKCE bắt buộc cho public client (RFC 7636); kết hợp state chống CSRF.`,
+- **Hỏi: "PKCE giải quyết vấn đề gì và {{S256}} hoạt động ra sao?"** — Trả lời: PKCE chống đánh cắp authorization code ở public client (SPA/mobile) không giữ được secret. Client sinh {{code_verifier}} ngẫu nhiên, gửi {{code_challenge = BASE64URL(SHA-256(verifier))}} khi authorize; khi đổi token gửi kèm verifier, server băm lại và so khớp, nên kẻ chỉ có {{code}} mà không có verifier không đổi được token.
+- **Hỏi: "Vì sao không dùng {{plain}} và cần so sánh challenge thế nào?"** — Trả lời: {{plain}} đặt verifier ngay trong challenge, nếu challenge lộ thì vô nghĩa; {{S256}} dùng hash một chiều. Server phải so sánh bằng constant-time ({{MessageDigest.isEqual}}) để tránh timing attack, và {{code}} phải dùng một lần.
+- **Hỏi: "PKCE có thay thế {{state}} hay {{client_secret}} không?"** — Trả lời: không. PKCE chống code interception; {{state}} chống CSRF — hai cơ chế bổ sung. Với confidential client (server-side, giữ được secret) vẫn nên dùng PKCE thêm (OAuth 2.1 khuyến nghị), còn {{client_secret}} vẫn dùng để xác thực client nếu có.
+- **Hỏi: "Public client và confidential client khác nhau thế nào về OAuth flow?"** — Trả lời: Public client chạy trên máy user (browser/app) → không giữ được secret → bắt buộc PKCE, không gửi client_secret; Confidential client chạy trên server của bạn → giữ được secret → dùng client_secret xác thực ở /token, PKCE khuyến nghị thêm. Cả hai đều dùng authorization code flow.`,
   exercises: [
     {
       title: 'AuthServer PKCE',
@@ -4044,8 +4191,10 @@ PKCE bắt buộc cho public client (RFC 7636); kết hợp state chống CSRF.`
     },
   ],
   check: [
-    { q: 'PKCE bảo vệ chống gì?', options: ['CSRF', 'Đánh cắp authorization code trên public client', 'XSS', 'SQLi'], answer: 1, explain: 'Ràng buộc code với verifier chỉ client biết.' },
-    { q: 'PKCE method nên dùng?', options: ['plain', 'S256', 'MD5', 'SHA-1'], answer: 1, explain: 'S256 = base64url(SHA-256(verifier)).' },
+    { q: 'PKCE S256 chủ yếu bảo vệ kịch bản tấn công nào?', options: ['SQL injection vào token endpoint', 'CSRF khi người dùng submit form', 'Đánh cắp authorization code trên public client và đổi lấy token', 'Đọc trộm payload JWT vì payload không mã hóa'], answer: 2, explain: 'PKCE ràng buộc code với code_verifier chỉ client khởi đầu biết; kẻ cướp được code nhưng không có verifier sẽ bị token endpoint từ chối. CSRF do state xử lý; SQL injection và đọc payload JWT là vấn đề khác, không phải mục tiêu của PKCE.' },
+    { q: 'Vì sao nên dùng method S256 thay vì plain cho code_challenge?', options: ['S256 cho token sống lâu hơn', 'S256 tính nhanh hơn SHA-1', 'plain giúp server không cần lưu challenge', 'S256 băm một chiều nên dù challenge lộ cũng không suy ra verifier; plain để lộ luôn verifier'], answer: 3, explain: 'Với plain, challenge == verifier nên chỉ cần nhìn thấy challenge (qua redirect/log) là đổi được token, PKCE trở nên vô nghĩa. S256 dùng SHA-256 (hash một chiều) nên không suy ngược. Tuổi thọ token và tốc độ/không cần lưu đều không phải lý do đúng.' },
+    { q: 'Token endpoint nhận đúng code và code_verifier khớp, nhưng code này đã dùng để đổi token trước đó. Server nên làm gì?', options: ['Từ chối vì authorization code phải dùng một lần (chống replay)', 'Vẫn cấp token mới vì verifier khớp là đủ', 'Chỉ cấp token nếu client gửi thêm client_secret', 'Chuyển sang method plain để kiểm tra lại'], answer: 0, explain: 'Authorization code là one-time-use: tái sử dụng là dấu hiệu code bị đánh cắp/replay. Server phải từ chối và có thể thu hồi token đã cấp từ code đó. Verifier khớp không đủ nếu code đã tiêu thụ; client_secret hay chuyển plain đều sai.' },
+    { q: 'Trong luồng PKCE, state và PKCE khác nhau thế nào?', options: ['Giống nhau, chỉ cần dùng một trong hai', 'state chống CSRF (đảm bảo redirect thuộc request của mình), PKCE chống đánh cắp code; hai cơ chế bổ sung', 'PKCE thay thế state vì cả hai đều dùng giá trị ngẫu nhiên', 'state dùng để băm verifier, PKCE dùng để xác thực người dùng'], answer: 1, explain: 'state là giá trị ngẫu nhiên đối chiếu khi nhận callback để chống CSRF/login CSRF. PKCE chứng minh bên đổi token chính là bên bắt đầu flow. Chúng giải quyết hai lớp tấn công khác nhau nên dùng cùng nhau; không thay thế nhau.' },
   ],
   related: [],
   tags: ['PKCE', 'OAuth', 'S256'],
