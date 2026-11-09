@@ -295,6 +295,46 @@ Với {{Money}}, lưu amount và currency, không dùng double vì biểu diễn
 
 Records sinh accessor trả field trực tiếp. Record chứa List vẫn cần {{List.copyOf}} trong compact constructor; “record” không đồng nghĩa deep immutable.
 
+### Cơ chế từng bước của defensive copy
+
+Aliasing xảy ra khi nhiều biến trỏ cùng một object mutable: sửa qua biến này thì biến kia cũng thấy thay đổi. Defensive copy phá liên kết đó bằng cách tạo bản sao riêng cho mỗi bên, không còn đường chia sẻ.
+
+Khi người gọi truyền object mutable vào constructor:
+
+1. **Nhận tham chiếu, không phải bản sao**: constructor nhận tham chiếu đến object của người gọi (ví dụ {{Date}} hay {{List}}), chưa tách liên kết.
+2. **Sao chép ngay lúc nhận**: constructor tạo object mới chứa dữ liệu sao chép, ví dụ {{new Date(input.getTime())}} hoặc {{List.copyOf(input)}}, rồi gán field trỏ đến bản sao.
+3. **Trả bản sao khi đọc**: getter không trả field thô; trả {{new Date(created.getTime())}} hoặc {{List.copyOf(items)}}. Người gọi sửa bản trả về sẽ không làm thay đổi trường bên trong object.
+4. **Kết quả**: người gọi giữ bản gốc của mình, object giữ bản của riêng mình, không còn aliasing → chia sẻ an toàn giữa thread.
+
+Ví dụ ngắn với {{Date}} (mutable) và danh sách:
+
+~~~java
+final class Transfer {
+    private final Date created;   // Date có thể bị sửa sau khi tạo
+    private final List<String> items;
+
+    Transfer(Date created, List<String> items) {
+        this.created = new Date(created.getTime());   // copy ngay lúc nhận
+        this.items = List.copyOf(items);                // tách khỏi danh sách của caller
+    }
+
+    Date created() {
+        return new Date(created.getTime());             // trả bản sao mới
+    }
+
+    List<String> items() {
+        return List.copyOf(items);                      // trả danh sách bất biến
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+
+- **Chỉ copy khi nhận vào, quên copy khi trả ra**: triệu chứng là caller lấy getter rồi sửa {{Date}} hoặc danh sách, trường bên trong object bị thay đổi mà không qua constructor. Nguyên nhân: getter trả chính tham chiếu trường nội bộ. Cách sửa: getter trả bản sao mới, ví dụ {{new Date(created.getTime())}} hoặc {{List.copyOf(items)}}.
+- **Shallow copy với phần tử mutable**: triệu chứng là {{List.copyOf}} ngăn sửa cấu trúc danh sách nhưng phần tử trong danh sách (ví dụ {{OrderLine}} mutable) vẫn chia sẻ tham chiếu; sửa phần tử vẫn thay đổi nội dung thấy được từ snapshot. Nguyên nhân: copy nông chỉ sao chép tham chiếu phần tử, không sao chép object phần tử. Cách sửa: dùng phần tử immutable, hoặc deep-copy từng phần tử, hoặc trả bản sao của từng phần tử.
+- **Trả iterator hoặc view trực tiếp**: triệu chứng là người dùng iterator/spliterator của danh sách nội bộ, sửa khi duyệt ném {{ConcurrentModificationException}} hoặc nhìn thấy dữ liệu thay đổi giữa chừng. Nguyên nhân: view không tách bản sao, vẫn liên kết với danh sách gốc. Cách sửa: trả {{List.copyOf(...)}} hoặc mảng/danh sách mới, không trả view trực tiếp.
+- **Bảo vệ một nơi còn là rò rỉ ở nơi khác**: triệu chứng là constructor copy nhưng builder hoặc constructor khác giữ nguyên tham chiếu input, object “bất biến” vẫn bị đổi qua đường khác. Nguyên nhân: defensive copy chỉ áp dụng một phần. Cách sửa: áp dụng copy tại mọi nơi nhận dữ liệu từ người gọi (constructor, setter, builder, factory method).
+
 ### Pitfall production
 - Hibernate entity thường mutable và có lifecycle proxy; đừng biến entity thành value object bất biến chỉ bằng final class. Chuyển sang immutable DTO/domain snapshot tại ranh giới.
 - {{unmodifiableList}} không bảo vệ khỏi thay đổi qua list gốc; phù hợp khi cần view live có kiểm soát.
@@ -303,7 +343,11 @@ Records sinh accessor trả field trực tiếp. Record chứa List vẫn cần 
 - Bất biến không thay kiểm tra quyền, validation hay atomicity của thao tác nhiều object.
 
 ### Liên hệ phỏng vấn
-Hãy vẽ đường đi của tham chiếu input → constructor → getter, chỉ ra mọi nơi caller có thể sửa object, rồi giải thích shallow copy và record có nested list.`,
+
+- Object nào nên làm bất biến? → Dùng cho value object (tiền, mã giao dịch, cấu hình đọc nhiều lần) vì chia sẻ an toàn giữa thread và làm key an toàn trong HashMap/HashSet. Không dùng cho object lớn thay đổi liên tục (ví dụ buffer, trạng thái game) vì defensive copy mỗi lần tốn O(n) bộ nhớ và CPU.
+- Defensive copy ngăn được tất cả rò rỉ tham chiếu không? → Không. Chỉ ngăn aliasing qua tham chiếu mà constructor/getter truyền. Nếu danh sách chứa phần tử mutable và chỉ gọi {{List.copyOf}}, phần tử vẫn chia sẻ; cần phần tử immutable hoặc deep-copy từng phần tử.
+- unmodifiable view khác snapshot ra sao? → unmodifiableList vẫn là view trên danh sách gốc: sửa danh sách gốc thì view cũng đổi. {{List.copyOf}} tạo bản sao tách biệt: sửa danh sách gốc sau đó không ảnh hưởng bản sao.
+`,
   exercises: [{
     title: 'Tạo Transfer snapshot bất biến',
     prompt: `Sửa {{Transfer}} để ngày và danh sách không thể thay đổi qua constructor hoặc getter. Các item là String nên shallow snapshot đủ.`,
@@ -325,7 +369,32 @@ Hãy vẽ đường đi của tham chiếu input → constructor → getter, ch�
 }`,
     hints: ['Date mutable: copy millis vào constructor và tạo Date mới ở accessor.', 'List.copyOf tạo snapshot cấu trúc bất biến; ở đây phần tử String bất biến.'],
     explain: `Test cố tình sửa cả input lẫn kết quả accessor để tìm hai hướng rò rỉ. Chỉ copy constructor vẫn chưa đủ nếu getter trả Date nội bộ. List.copyOf chặn sửa cấu trúc và tách khỏi list đầu vào; nó không deep-copy phần tử tùy ý.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['immutability', 'defensive copy']
+  }],   check: [
+    {
+      q: 'Khi class bất biến nhận một {{Date}} vào constructor, sao phải gán field bằng {{new Date(created.getTime())}} thay vì gán trực tiếp {{created}}?',
+      options: ['Vì Date không phải final nên Java cấm gán trực tiếp', 'Vì Date là mutable: caller còn tham chiếu đến object gốc, sửa Date của mình sẽ sửa luôn trường bên trong object', 'Vì new Date tạo object nhanh hơn và tiết kiệm bộ nhớ hơn', 'Vì constructor không được nhận tham số kiểu Date'],
+      answer: 1,
+      explain: 'Đáp án B đúng: Date có thể bị thay đổi sau khi tạo (setTime). Nếu gán trực tiếp, caller và object giữ cùng một tham chiếu → aliasing; sửa ở một đầu sẽ thấy ở đầu kia. new Date(getTime()) tạo bản sao riêng, mỗi bên một object. A sai: Java không cấm gán tham chiếu Date. C sai: mục đích là an toàn không phải tốc độ. D sai: constructor hoàn toàn có thể nhận Date.'
+    },
+    {
+      q: '{{List.copyOf(items)}} khác {{items}} ra sao về việc ngăn sửa danh sách?',
+      options: ['Trả danh sách mới không cho thêm/xoá phần tử, còn danh sách gốc vẫn có thể sửa và không ảnh hưởng bản sao', 'Cả hai đều cho sửa phần tử giống nhau', 'List.copyOf chỉ tạo view chỉ đọc: sửa danh sách gốc vẫn thay đổi bản sao', 'List.copyOf sửa luôn danh sách gốc thành không cho sửa'],
+      answer: 0,
+      explain: 'Đáp án A đúng: List.copyOf tạo bản sao mới và trả về list bất biến — thử add sẽ ném UnsupportedOperationException; sửa danh sách gốc sau đó không ảnh hưởng bản sao. B sai: bản sao không cho sửa cấu trúc. C sai: đó là đặc điểm của unmodifiableList (view), không phải List.copyOf. D sai: List.copyOf không đụng danh sách gốc.'
+    },
+    {
+      q: 'Danh sách items chứa các object {{OrderLine}} mutable. Chỉ gọi {{List.copyOf(items)}} trong getter đủ để object bất biến hoàn toàn không?',
+      options: ['Đủ, vì List.copyOf đã copy mọi thứ sâu', 'Không, vì List.copyOf ném exception khi phần tử mutable', 'Không, chỉ copy cấu trúc danh sách: phần tử OrderLine vẫn chia sẻ tham chiếu, sửa phần tử vẫn ảnh hưởng snapshot', 'Không, vì List.copyOf chỉ hoạt động với danh sách String'],
+      answer: 2,
+      explain: 'Đáp án C đúng: List.copyOf là shallow copy (copy nông) — sao chép tham chiếu phần tử, không sao chép object phần tử. Nếu OrderLine mutable, caller sửa OrderLine qua bản gốc vẫn thay đổi nội dung thấy được từ snapshot. Cần phần tử immutable hoặc deep-copy từng phần tử. A/B/D sai.'
+    },
+    {
+      q: 'Getter trả {{Date}} nội bộ trực tiếp (không tạo bản sao mới). Caller lấy đối tượng đó rồi gọi {{setTime(...)}}. Hệ quả gì xảy ra?',
+      options: ['Không có gì: Java tự bảo vệ trường Date trong object', 'Chỉ bản Date của caller bị thay đổi, trường trong object vẫn giữ giá trị cũ', 'Java ném UnsupportedOperationException tại getter', 'Object bị thay đổi trạng thái bên trong sau khi đã tạo, vi phạm bất biến vì caller và object chia sẻ cùng một Date'],
+      answer: 3,
+      explain: 'Đáp án D đúng: getter trả chính tham chiếu trường nội bộ, caller gọi setTime thì trường của object cũng đổi theo — alias ngược từ caller vào bên trong, object đã không còn bất biến. A/B/C sai: Java không tự sao chép, caller và object giữ cùng tham chiếu nên sửa bản trả về chính là sửa trường nội bộ, và getter không ném exception.'
+    }
+  ], related: ['core-001'], tags: ['immutability', 'defensive copy']
 },
 {
   id: 'lesson-core-004', track: 'core', order: 4,
@@ -354,6 +423,36 @@ BigDecimal rounded = amount.divide(BigDecimal.valueOf(3), 2, RoundingMode.DOWN);
 
 RoundingMode là chính sách nghiệp vụ: HALF_UP phổ biến nhưng không phải mặc định đúng cho mọi thuế/lãi; HALF_EVEN giảm thiên lệch tích lũy trong một số thống kê. Không dùng {{MathContext}} mơ hồ thay cho scale tiền cụ thể.
 
+### Cơ chế từng bước của BigDecimal
+
+BigDecimal lưu số dưới hai phần: **unscaled value** (số nguyên không dấu) và **scale** (vị trí dấu thập phân). Ví dụ 123.45 có unscaled = 12345, scale = 2; giá trị thực = 12345 / 10². Số nguyên không giới hạn độ dài, nên BigDecimal không bị sai lệch như double.
+
+1. **Tạo số**: dùng {{new BigDecimal("10.00")}} từ chuỗi để giữ chính xác từng chữ số, hoặc {{BigDecimal.valueOf()}} từ long/double đã an toàn về chuỗi. Không dùng {{new BigDecimal(double)}} vì double đã sai lệch trước khi vào BigDecimal.
+2. **Phép tính**: cộng/trừ giữ scale phù hợp, nhân cộng scale, chia phải chọn scale và {{RoundingMode}} vì kết quả có thể vô hạn (10 / 3 = 3.333…).
+3. **Làm tròn**: {{divide(divisor, 2, RoundingMode.HALF_UP)}} chọn 2 chữ số thập phân và làm tròn theo quy tắc business. HALF_UP làm tròn theo cách phổ biến; HALF_EVEN giảm thiên lệch khi cộng dồn nhiều lần.
+4. **Phân bổ tiền**: tính ở đơn vị nhỏ nhất (cent) bằng số nguyên, chia lấy phần nguyên và phần dư, rồi cộng phần dư vào các kỳ đầu theo thứ tự ổn định. Tổng các kỳ vẫn bằng tổng ban đầu, có thể kiểm tra lại.
+
+Ví dụ phân bổ 10.00 thành 3 kỳ:
+
+~~~java
+BigDecimal total = new BigDecimal("10.00");           // 1000 cent
+BigInteger[] qr = total.movePointRight(2).toBigIntegerExact().divideAndRemainder(BigInteger.valueOf(3));
+// qr[0] = 333 cent mỗi kỳ, qr[1] = 1 cent dư
+List<BigDecimal> parts = new ArrayList<>();
+for (int i = 0; i < 3; i++) {
+    BigInteger cent = qr[0].add(i < qr[1].intValue() ? BigInteger.ONE : BigInteger.ZERO);
+    parts.add(new BigDecimal(cent, 2));               // scale 2: 3.34, 3.33, 3.33
+}
+// tổng: 3.34 + 3.33 + 3.33 = 10.00
+~~~
+
+### Lỗi hay gặp trên production
+
+- **{{new BigDecimal(double)}}**: triệu chứng là 0.1USD được lưu thành 0.1000000000000000055511…, tiền sai ngay từ đầu tính toán đầu tiên. Nguyên nhân: double lưu nhị phân, 0.1 không biểu diễn chính xác, và constructor giữ giá trị nhị phân sai lệch đó. Cách sửa: luôn dùng {{new BigDecimal("0.1")}} từ chuỗi, hoặc {{BigDecimal.valueOf(0.1)}} (dùng chuỗi của double, gần đúng ý người viết).
+- **Chia BigDecimal thiếu scale**: triệu chứng là {{amount.divide(divisor)}} ném {{ArithmeticException}} khi kết quả không chia hết, ví dụ 10.00 / 3. Nguyên nhân: divide mặc định yêu cầu kết quả chính xác tuyệt đối, không biết làm tròn thế nào. Cách sửa: luôn truyền scale và {{RoundingMode}}, ví dụ {{divide(divisor, 2, RoundingMode.HALF_UP)}}.
+- **{{equals}} để so sánh tiền**: triệu chứng là 10.00 và 10.0 được coi là khác trong HashMap/set, dù trị số bằng nhau. Nguyên nhân: equals so cả trị số lẫn scale. Cách sửa: dùng {{compareTo}} == 0 khi chỉ quan tâm trị số, hoặc chuẩn hóa cùng scale bằng {{setScale}} trước khi so.
+- **Làm tròn mỗi dòng rồi tổng**: triệu chứng là tổng các dòng sau làm tròn khác tổng đơn hàng, khách khiếu náo sai 1–2 đồng. Nguyên nhân: sai số làm tròn tích lũy ở mỗi dòng. Cách sửa: tính toán ở đơn vị nhỏ nhất (cent) bằng số nguyên, phân bổ phần dư theo quy tắc xác định, chỉ làm tròn ở lớp trình bày.
+
 ### Quy tắc lưu trữ và production
 - Database {{DECIMAL(p,s)}} phải đủ precision/scale cho giá trị tối đa; kiểm tra overflow trước khi ghi.
 - JPA/Hibernate map BigDecimal vào decimal, nhưng schema migration cần khớp precision/scale. Đọc lại có thể giữ scale theo database/driver; đừng dùng equals để so tiền nếu nghiệp vụ chỉ quan tâm trị số.
@@ -362,7 +461,11 @@ RoundingMode là chính sách nghiệp vụ: HALF_UP phổ biến nhưng không 
 - Với phân bổ, xác định ai nhận remainder và tie-break ổn định để chạy lại cho cùng kết quả.
 
 ### Liên hệ phỏng vấn
-Nêu ví dụ tổng 10.00 chia ba, giải thích vì sao 3.33 × 3 lệch, rồi mô tả quy tắc phân bổ có thể audit. Phân biệt comparator tiền với equals của BigDecimal.`,
+
+- Tại sao tiền không dùng double? → Double dùng số nhị phân, 0.1 không biểu diễn hết chính xác nên 0.1 + 0.2 có thể ra 0.30000000000000004. Tiền dùng BigDecimal từ chuỗi, hoặc lưu cent (số nguyên) để mỗi chữ số thập phân chính xác đến đồng.
+- So sánh tiền dùng equals hay compareTo? → equals so cả trị số lẫn scale, nên 10.0 khác 10.00 — thường sai ở tiền. Dùng {{compareTo}} == 0 khi chỉ quan tâm trị số, hoặc chuẩn hóa cùng scale bằng {{setScale}} trước khi so.
+- Chia tiền cho nhiều kỳ làm sao cho tổng vẫn khớp? → Tính ở đơn vị nhỏ nhất (cent) bằng số nguyên, lấy phần nguyên và phần dư, rồi cộng phần dư vào các kỳ đầu theo thứ tự ổn định (ví dụ 3.34, 3.33, 3.33). Ghi rõ quy tắc này vào nghiệp vụ và audit để đối soát sau này.
+`,
   exercises: [{
     title: 'Chia phí thành kỳ và phân bổ phần dư',
     prompt: `Cài {{Fees.split(BigDecimal total,int n)}} trả danh sách n phần, scale 2. Chia theo đơn vị cent: các kỳ đầu nhận thêm tối đa một cent; tổng phải đúng bằng total. Reject n <= 0 và total âm.`,
@@ -380,7 +483,32 @@ Nêu ví dụ tổng 10.00 chia ba, giải thích vì sao 3.33 × 3 lệch, rồ
 } }`,
     hints: ['Đổi amount scale 2 thành số nguyên cent; chia lấy quotient và remainder.', 'Đưa từng cent dư vào các kỳ đầu để thứ tự luôn xác định.'],
     explain: `Chia BigDecimal trực tiếp cần chọn scale và rounding; phần dư làm tổng các kỳ không còn bằng tổng ban đầu. Chuyển sang cent nguyên biến bài toán thành phép chia số nguyên: mỗi kỳ nhận quotient cent, remainder kỳ đầu nhận thêm một cent. Ràng buộc scale 2 bằng UNNECESSARY để không âm thầm làm tròn input.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['BigDecimal', 'money']
+  }],   check: [
+    {
+      q: 'Vì sao không viết {{new BigDecimal(0.1)}} để đại diện cho 0.1 đồng USD?',
+      options: ['Constructor double giữ chính xác giá trị nhị phân sai lệch của 0.1, nên số tiền đã sai ngay từ đầu', 'BigDecimal không nhận constructor double', '0.1 trong double là chính xác, không có vấn đề gì', 'Constructor double bị Java lui từ Java 17'],
+      answer: 0,
+      explain: 'Đáp án A đúng: double lưu số nhị phân, 0.1 không có biểu diễn nhị phân hữu hạn, nên new BigDecimal(0.1) giữ giá trị sai lệch (0.1000000000000000055511…). Phải dùng new BigDecimal("0.1") hoặc BigDecimal.valueOf(0.1). B/C/D sai.'
+    },
+    {
+      q: 'Hai số {{new BigDecimal("10.00")}} và {{new BigDecimal("10.0")}} so bằng nhau theo {{equals}} hay theo {{compareTo}}?',
+      options: ['Cả hai đều cho bằng nhau', 'Cả hai đều cho khác nhau', 'equals cho khác nhau (scale khác), compareTo cho bằng nhau (trị số bằng)', 'equals cho bằng nhau, compareTo cho khác nhau'],
+      answer: 2,
+      explain: 'Đáp án C đúng: equals so cả trị số lẫn scale, 10.00 (scale 2) khác 10.0 (scale 1); compareTo chỉ so trị số, hai số bằng 10 nên bằng nhau. Tiền nên dùng compareTo == 0 khi chỉ quan tâm trị số.'
+    },
+    {
+      q: '{{amount.divide(divisor, 2, RoundingMode.HALF_UP)}} cần cả scale và RoundingMode. Nếu bỏ qua, chuyện gì thường xảy ra?',
+      options: ['Java tự chọn scale 2 và làm tròn HALF_UP', 'Ném ArithmeticException khi kết quả chia không hết, ví dụ 10 chia 3', 'Kết quả luôn về số nguyên, mất phần thập phân', 'Chỉ ném lỗi khi divisor bằng 0'],
+      answer: 3,
+      explain: 'Đáp án D đúng: divide không tham số yêu cầu kết quả chia hết chính xác; 10/3 = 3.333… không hết nên ném ArithmeticException. Phải truyền scale và RoundingMode để quy định làm tròn. A sai: Java không tự đoán scale. B sai: mất phần thập phân không phải hành vi của divide. C sai: divisor 0 ném ArithmeticException riêng, không liên quan.'
+    },
+    {
+      q: 'Tổng 10.00 chia cho 3 kỳ, làm tròn mỗi kỳ về 3.33 thì tổng ba kỳ là 9.99, thiếu 0.01. Cách xử lý đúng theo quy tắc phân bổ?',
+      options: ['Bỏ qua 0.01 vì số nhỏ, tổng không bắt buộc khớp', 'Cộng phần dư 0.01 vào kỳ đầu theo thứ tự ổn định, ví dụ 3.34, 3.33, 3.33, tổng lại bằng 10.00', 'Làm tròn mỗi kỳ lên 3.34, tổng thành 10.02', 'Chia lại từ đầu cho đến khi tổng đúng 10.00'],
+      answer: 1,
+      explain: 'Đáp án B đúng: tính ở đơn vị nhỏ nhất (cent), lấy phần nguyên và phần dư, rồi cấp phần dư vào các kỳ đầu theo thứ tự xác định — tổng vẫn bằng 10.00 và có thể kiểm tra lại (audit). A/C/D sai: bỏ qua làm sai đối soát, làm tròn lên làm tổng vượt, và “chia lại từ đầu” không phải quy tắc xác định.'
+    }
+  ], related: ['core-001'], tags: ['BigDecimal', 'money']
 },
 {
   id: 'lesson-core-005', track: 'core', order: 5,
