@@ -793,8 +793,6 @@ If the offer is below my range, I do not negotiate emotionally. I say what would
 - **a clean handover matters to me**: bàn giao sạch sẽ quan trọng với tôi
 - **signing bonus**: tiền thưởng ký hợp đồng
 - **in writing**: bằng văn bản
-- **base salary vs total compensation**: lương cơ bản so với tổng thu nhập
-- **walk-away number**: mức lương tối thiểu để chấp nhận
 
 ### Lỗi người Việt hay mắc
 - **Nói "I want salary negotiable"**: nghe như chưa chuẩn bị. Hãy nêu range cụ thể.
@@ -802,9 +800,8 @@ If the offer is below my range, I do not negotiate emotionally. I say what would
 - **Dùng "notice time"**: sai. Đúng là **notice period** (thời gian báo trước).
 - **Phát âm "salary"**: /ˈsæləri/ (nhấn âm đầu), không phải "sa-la-ry" đều đều.
 - **Nói "I will resign now" trước khi có offer viết tay**: rủi ro lớn. Luôn nói: "I will resign after I receive the written offer."
-- **Quên hỏi về performance review cycle**: không hỏi "When is the first salary review?" — điều này ảnh hưởng trực tiếp đến thu nhập dài hạn.
 
-> Senior tip: Chuẩn bị **ba con số**: gross mong muốn, mức chấp nhận được (walkaway), và tổng giá trị package (bonus, equity, learning budget). Khi đàm phán, gói gọn: "My range is X–Y gross. If the base is at the lower end, I would need a signing bonus or a six-month review to bridge the gap." Điều này thể hiện bạn hiểu market và có chuẩn mực. Với notice period, hãy cam kết handover sạch sẽ — điều đó xây dựng reputation lâu dài. **Luôn hỏi performance review cycle và promotion path** — một offer base thấp nhưng review 6 tháng + promotion path rõ ràng thường tốt hơn offer cao mà đóng băng lương 2 năm. Phát âm **negotiate** /nɪˈɡoʊʃieɪt/, **compensation** /ˌkɒmpɛnˈseɪʃn/.`,
+> Senior tip: Chuẩn bị **ba con số**: gross mong muốn, mức chấp nhận được (walkaway), và tổng giá trị package (bonus, equity, learning budget). Khi đàm phán, gói gọn: "My range is X–Y gross. If the base is at the lower end, I would need a signing bonus or a six-month review to bridge the gap." Điều này thể hiện bạn hiểu market và có chuẩn mực. Với notice period, hãy cam kết handover sạch sẽ — điều đó xây dựng reputation lâu dài. Phát âm **negotiate** /nɪˈɡoʊʃieɪt/, **compensation** /ˌkɒmpɛnˈseɪʃn/.`,
   follow: [
     'What if they offer below your range but promise a review in six months?',
     'How do you value equity or a bonus against base salary?',
@@ -1081,8 +1078,6 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
 - **dead-letter queue (DLQ)**: hàng đợi thư chết (chứa message xử lý thất bại)
 - **retention period**: kỳ lưu giữ
 - **exponential backoff**: quay về theo cấp số nhân
-- **no blockers**: không có trở ngại
-- **take it offline**: thảo luận riêng sau buổi stand-up
 
 ### Lỗi người Việt hay mắc
 - **Báo cáo hoạt động thay vì kết quả**: "I read code, I ran tests" → hãy nói "I finished X and opened PR #123".
@@ -1090,9 +1085,8 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
 - **Blocker không cụ thể**: "I'm waiting for the platform team" → phải nói: "I need the platform team to create the DLQ topic by tomorrow 9 AM."
 - **Phát âm "blocker"**: /ˈblɒkə/ (Anh) hoặc /ˈblɑːkər/ (Mỹ), nhấn âm đầu.
 - **Dùng "yesterday I did"**: quá khứ đơn đúng, nhưng hãy dùng "I finished/completed" để nhấn mạnh kết quả.
-- **Kể chi tiết kỹ thuật không cần thiết**: team không cần biết bạn dùng library gì, chỉ cần biết *xong chưa* và *blocker gì*.
 
-> Senior tip: Đừng biến stand-up thành **báo cáo trạng thái chi tiết** ("tôi đã mở file, đọc code, chạy test..."). Chỉ nói **outcome** và **blocker**. Nếu blocker cần quyết định, nói rõ: "I need a decision from @PO by 2pm on whether to cut scope or delay." Nếu không có blocker, nói "No blockers" — đừng im lặng. **Nếu cả ngày đi meeting**, hãy nói: "Yesterday was mostly sync meetings; I aligned with the fraud team on the API contract and unblocked the integration path. Today I'll implement the validator." Phát âm **stand-up** /ˈstænd ʌp/, **retention** /rɪˈtɛnʃn/.`,
+> Senior tip: Đừng biến stand-up thành **báo cáo trạng thái chi tiết** ("tôi đã mở file, đọc code, chạy test..."). Chỉ nói **outcome** và **blocker**. Nếu blocker cần quyết định, nói rõ: "I need a decision from @PO by 2pm on whether to cut scope or delay." Nếu không có blocker, nói "No blockers" — đừng im lặng. Phát âm **stand-up** /ˈstænd ʌp/, **retention** /rɪˈtɛnʃn/.`,
   follow: [
     'How do you handle a blocker that the team cannot resolve internally?',
     'What do you do when a stand-up runs long because someone starts a technical discussion?',
@@ -1127,9 +1121,7 @@ We take reliability seriously, especially for financial features, and we would r
 - **take reliability seriously**: coi trọng độ tin cậy
 - **downstream plans**: kế hoạch của các bên liên quan
 - **unique constraint**: ràng buộc duy nhất (tại database)
-- **critical path**: đường găng / chuỗi công việc quyết định tiến độ (làm chậm một việc trong critical path sẽ làm trễ toàn bộ deadline)
-- **proactive communication**: liên lạc chủ động
-- **contributing factor**: yếu tố góp phần
+- **critical path**: đườngritical path (chuỗi tác vụ quyết định deadline)
 
 ### Lỗi người Việt hay mắc
 - **Gửi email "we are delayed" rồi im lặng**: khách hàng quốc tế cần **proactive communication** — báo trước, cho timeline cụ thể, cam kết update hằng ngày.
@@ -1137,9 +1129,8 @@ We take reliability seriously, especially for financial features, and we would r
 - **Delay do thay đổi requirement từ khách**: hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path."
 - **Phát âm "mitigation"**: /ˌmɪtɪˈɡeɪʃn/ (nhấn "GAY"), không phải "mi-ti-ge-tion".
 - **Thiếu con số cụ thể**: "delay một chút" → phải nói "delay approximately one week", "new target date is January 19".
-- **Không có rollback plan**: luôn nêu "If we cannot meet the new date, we will..." để khách thấy bạn có plan B.
 
-> Senior tip: Khách hàng quốc tế đánh giá cao **proactive communication**: báo trước, cho timeline cụ thể, cam kết update hằng ngày. Nếu delay do thay đổi requirement từ phía khách, hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path." Không dùng từ "fault" hay "blame" — dùng "root cause" hoặc "contributing factor". Luôn kết email bằng câu hỏi mở: "Please let me know if you have questions or need to adjust downstream plans." Điều này thể hiện ownership và sự quan tâm. **Nếu delay do vendor thứ ba**, hãy nói: "Our vendor X is experiencing Y; we've escalated and their ETA is Z. We're also evaluating a temporary workaround." Phát âm **proactive** /proʊˈæktɪv/, **deadline** /ˈdedlaɪn/.`,
+> Senior tip: Khách hàng quốc tế đánh giá cao **proactive communication**: báo trước, cho timeline cụ thể, cam kết update hằng ngày. Nếu delay do thay đổi requirement từ phía khách, hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path." Không dùng từ "fault" hay "blame" — dùng "root cause" hoặc "contributing factor". Luôn kết email bằng câu hỏi mở: "Please let me know if you have questions or need to adjust downstream plans." Điều này thể hiện ownership và sự quan tâm. Phát âm **proactive** /proʊˈæktɪv/, **deadline** /ˈdedlaɪn/.`,
   follow: [
     'What if the client pushes back and demands the original date?',
     'How do you communicate a delay when the root cause is a third-party vendor?',
@@ -1226,8 +1217,6 @@ In the meantime, if we need to unblock the design discussion, I can share what I
 - **unblock the design discussion**: gỡ chặn cuộc thảo luận thiết kế
 - **I can have a concrete answer by**: tôi có thể có câu trả lời cụ thể vào lúc
 - **architecture decision records (ADR)**: bản ghi quyết định kiến trúc
-- **I haven't had hands-on experience with**: tôi chưa có kinh nghiệm thực tế với
-- **let me verify and get back to you**: để tôi xác thực và phản hồi lại
 
 ### Lỗi người Việt hay mắc
 - **Nói "I don't know" rồi dừng**: interviewer test **integrity** và **problem-solving**, không phải knowledge. Tuyệt đối không được dừng lại.
@@ -1235,9 +1224,8 @@ In the meantime, if we need to unblock the design discussion, I can share what I
 - **Bịa đặt câu trả lời**: bị bắt là mất uy tín ngay lập tức. Senior engineer nói "I haven't worked with that directly" rồi đưa ra plan.
 - **Phát âm "follow-up"**: (danh từ/tính từ) /ˈfɒləʊ ʌp/ nhấn âm đầu; (động từ) **follow up** viết rời ("I will follow up tomorrow"). Đừng đọc thành "fô-lô-úp".
 - **Quên cam kết timeline**: "I'll get back to you" quá chung chung. Hãy nói: "I will have an answer by end of day tomorrow."
-- **Không chia sẻ kiến thức lân cận**: nếu biết điều gì liên quan, hãy nói ngắn gọn — điều đó cho thấy bạn không hoàn toàn mù.
 
-> Senior tip: Interviewer hỏi câu này để test **integrity** và **problem-solving**, không phải knowledge. Tuyệt đối **không nói "I don't know" rồi dừng**. Cũng đừng nói "I would Google it" — quá lười. Hãy nêu **các bước cụ thể**: tài liệu nào, ai để hỏi, benchmark như thế nào, khi nào có kết quả. Nếu có kiến thức lân cận, hãy chia sẻ ngắn gọn để cho thấy bạn không hoàn toàn mù. **follow-up** (có gạch nối) là danh từ/tính từ, nhấn âm đầu /ˈfɒləʊ ʌp/; động từ viết rời **follow up** ("I will follow up tomorrow"). Đừng đọc thành "fô-lô-úp". **Nếu câu hỏi là kiến thức cơ bản (ví dụ HashMap)**, đừng dùng mẫu này — hãy nói: "I know the basics but I'd like to double-check the exact mechanism before giving you a precise answer." Điều này thể hiện sự cẩn trọng thay vì không biết.`,
+> Senior tip: Interviewer hỏi câu này để test **integrity** và **problem-solving**, không phải knowledge. Tuyệt đối **không nói "I don't know" rồi dừng**. Cũng đừng nói "I would Google it" — quá lười. Hãy nêu **các bước cụ thể**: tài liệu nào, ai để hỏi, benchmark như thế nào, khi nào có kết quả. Nếu có kiến thức lân cận, hãy chia sẻ ngắn gọn để cho thấy bạn không hoàn toàn mù. **follow-up** (có gạch nối) là danh từ/tính từ, nhấn âm đầu /ˈfɒləʊ ʌp/; động từ viết rời **follow up** ("I will follow up tomorrow"). Đừng đọc thành "fô-lô-úp".`,
   follow: [
     'What if the interviewer pressures you to guess anyway?',
     'How do you handle a question about a fundamental concept you should know (e.g., "How does HashMap work?")?',
@@ -1474,8 +1462,6 @@ So the order is always the same: what I recommend, why, what it costs, what the 
 - **I'd suggest we start with...**: tôi đề nghị bắt đầu với...
 - **bottom line up front (BLUF)**: kết luận lên trước
 - **support ticket**: yêu cầu hỗ trợ (từ người dùng)
-- **success criteria**: tiêu chí thành công
-- **trade-off**: đánh đổi / lấy gì mất nấy
 
 ### Lỗi người Việt hay mắc
 - Kể bối cảnh 2–3 phút rồi mới nói đề xuất → người nghe mất kiên nhẫn.
@@ -1483,9 +1469,8 @@ So the order is always the same: what I recommend, why, what it costs, what the 
 - "I think" ở đầu mọi câu. Dùng một lần cho phần ý kiến cá nhân là đủ.
 - **Thiếu chi phí (cost/trade-off)**: chỉ nói lợi ích không nói chi phí → nghe như sales, không phải engineer.
 - **Không có tiêu chí đo thành công**: kết thúc bằng "we'll see" → thiếu ownership. Hãy nói: "We'll track export success rate for two weeks."
-- **Không nêu alternative**: chỉ đưa 1 phương án → nghe như ép buộc. Luôn đưa ít nhất 1 phương án khác và lý do loại bỏ.
 
-> Senior tip: Khi người nghe là manager, mỗi lý do nên gắn với một con số kinh doanh (số ticket, tỉ lệ lỗi, chi phí). Kết thúc bằng một **tiêu chí đo thành công** ("watch the export success rate") — đó là dấu hiệu bạn nghĩ như owner, không chỉ như người code. Cấu trúc BLUF (Bottom Line Up Front) là chuẩn giao tiếp tại các công ty lớn (Amazon, Google, Meta). **Nếu bạn không chắc 100%**, hãy nói: "Based on current data, my recommendation is X. I'm 80% confident. The main risk is Y, so I propose we validate with a small rollout first." Điều này thể hiện sự trung thực và quản trị rủi ro. Phát âm **recommendation** /ˌrekəmenˈdeɪʃn/ (nhấn "MEN"), **alternative** /ɔːlˈtɜːrnətɪv/.`,
+> Senior tip: Khi người nghe là manager, mỗi lý do nên gắn với một con số kinh doanh (số ticket, tỉ lệ lỗi, chi phí). Kết thúc bằng một **tiêu chí đo thành công** ("watch the export success rate") — đó là dấu hiệu bạn nghĩ như owner, không chỉ như người code. Cấu trúc BLUF (Bottom Line Up Front) là chuẩn giao tiếp tại các công ty lớn (Amazon, Google, Meta). Phát âm **recommendation** /ˌrekəmenˈdeɪʃn/ (nhấn "MEN"), **alternative** /ɔːlˈtɜːrnətɪv/.`,
   follow: ['What would you do if your manager chose the alternative instead?', 'How do you present a recommendation when you are not fully sure?', 'How do you adapt the explanation for an engineer versus a business stakeholder?'],
   tags: ['communication', 'recommendation', 'speaking'],
   lang: 'en',
@@ -1556,8 +1541,6 @@ If I lose my train of thought, I just say, "Sorry, let me go back to the main po
 - **Let me go back to the main point.**: quay lại ý chính
 - **lose my train of thought**: quên mất mạch đang nói
 - **buy time**: mua thời gian (dùng từ chuyển ngữ để có thời gian nghĩ)
-- **Could I take a moment to gather my thoughts?**: tôi có thể xin chút thời gian để tổng hợp ý không?
-- **Let me structure my answer first.**: để tôi cấu trúc câu trả lời trước
 
 ### Lỗi người Việt hay mắc
 - Lấp khoảng lặng bằng "ờ", "à" tiếng Việt hoặc "uhm" liên tục.
@@ -1565,9 +1548,8 @@ If I lose my train of thought, I just say, "Sorry, let me go back to the main po
 - Hứa "three points" nhưng chỉ nói hai → hãy đếm trên ngón tay khi nói.
 - **Không đưa ra khung (structure) trước**: nhảy thẳng vào chi tiết → người nghe bị lạc hướng.
 - **Dùng filler words quá nhiều**: "you know", "actually", "basically", "like" — hãy thay bằng pause có announce.
-- **Xin thời gian nhiều lần cho một câu hỏi**: câu "mua thời gian" chỉ nên dùng một lần; lặp lại nghe như né tránh.
 
-> Senior tip: Câu "mua thời gian" chỉ dùng **một lần** mỗi câu hỏi; lặp lại nhiều lần nghe như né tránh. Luyện với đồng hồ: đặt khung trong 10 giây đầu, trả lời mỗi ý trong khoảng 30–45 giây. Câu hỏi system design lớn thì có thể xin thêm thời gian: "Could I take a minute to sketch my thoughts?" — hoàn toàn được chấp nhận. **Nếu hoàn toàn trắng (blank)**, hãy nói thật: "I'm drawing a blank on this one. Let me think from first principles..." — điều này thể hiện tư duy giải quyết vấn đề hơn là thuộc lòng. Phát âm **structure** /ˈstrʌktʃər/ (nhấn "STRUC"), **angle** /ˈæŋɡl/, **pause** /pɔːz/. Quan trọng: **structure first, details second** — interviewer đánh giá tư duy, không phải tốc độ nói.`,
+> Senior tip: Câu "mua thời gian" chỉ dùng **một lần** mỗi câu hỏi; lặp lại nhiều lần nghe như né tránh. Luyện với đồng hồ: đặt khung trong 10 giây đầu, trả lời mỗi ý trong khoảng 30–45 giây. Câu hỏi system design lớn thì có thể xin thêm thời gian: "Could I take a minute to sketch my thoughts?" — hoàn toàn được chấp nhận. Phát âm **structure** /ˈstrʌktʃər/ (nhấn "STRUC"), **angle** /ˈæŋɡl/, **pause** /pɔːz/. Quan trọng: **structure first, details second** — interviewer đánh giá tư duy, không phải tốc độ nói.`,
   follow: ['What do you do if you completely blank on a question?', 'How long is too long for a pause in an interview?', 'How do you get back on track after going off topic?'],
   tags: ['fluency', 'structure', 'speaking'],
   lang: 'en',
@@ -1577,40 +1559,48 @@ If I lose my train of thought, I just say, "Sorry, let me go back to the main po
   topic: 'english',
   level: 'senior',
   q: 'How do you keep a technical explanation easy to follow?',
-  a: `**Tóm tắt:** Ba thói quen: **nói kết luận trước**, giải thích cơ chế theo **các bước đánh số** (first, then, finally), và **kiểm tra người nghe** bằng câu hỏi tự nhiên thay vì "Do you understand?". Giữ một mức độ chi tiết, đừng nhảy qua lại giữa tổng quan và chi tiết code.
+  a: `**Tóm tắt:** Ba thói quen: **nói kết luận trước**, giải thích cơ chế theo **các bước đánh số** (first, then, finally), và **kiểm tra người nghe** bằng câu hỏi tự nhiên thay vì "Do you understand?". Giữ một mức độ chi tiết, đừng nhảy qua lại giữa tổng quan và chi tiết code. Interviewer muốn đánh giá xem bạn có thể truyền đạt ý tưởng kỹ thuật rõ ràng và phù hợp với đối tượng nghe hay không.
 
 ### Sample answer
-I try to keep three habits. First, I give the short version up front. Second, I walk through the mechanism step by step. And third, I check in with the listener before going deeper.
+I try to keep three habits in mind when I explain something technical. First, I give the short version up front. Second, I walk through the mechanism step by step, keeping each step to one idea. Third, I check in with the listener before going deeper.
 
-For example, if I'm explaining our product cache, I'd say: "The short version is: we put Redis in front of the product service, and it cut database reads by about 80 percent. Here's how it works. First, the service checks Redis. If the product is there — that's a cache hit — we return it in about a millisecond. If it isn't, we read it from Postgres, store it in Redis with a ten-minute TTL, and return it. The tricky part is freshness: when a price changes, we delete the key, so the next read loads the new value."
+For example, if I'm explaining our product cache, I'd say: "The short version is that we put Redis in front of the product service, and it cut database reads by about 80 percent. Here's how it works. First, the service checks Redis. If the product is there — that's a cache hit — we return it in about a millisecond. If it isn't — a cache miss — we read it from Postgres, store it in Redis with a ten-minute TTL, and return it. The tricky part is freshness: when a price changes, we delete the key, so the next read loads the new value from the database."
 
-Then I ask, "Does that level of detail work, or should I go deeper into how we handle invalidation?" That way the interviewer decides where to zoom in.
+Then I'd ask, "Does that level of detail work for you, or should I go deeper into how we handle invalidation?" That way, the interviewer can decide where to zoom in, and I don't waste time going into details they don't need.
 
 ### Useful phrases
 - **The short version is...**: nói ngắn gọn thì...
 - **Here's how it works.**: nó hoạt động thế này
-- **The tricky part is...**: phần khó là...
-- **Does that make sense so far?**: tới đây có rõ không?
+- **The tricky part is...**: phần khó/trở ngại là...
+- **Does that make sense so far?**: tới đây có rõ chưa?
 - **Should I go deeper into...?**: tôi có nên đi sâu vào... không?
+- **That being said...**: nói như vậy nhưng...
+- **To put it simply...**: nói đơn giản thì...
+- **Just to be clear...**: chỉ để cho rõ...
 
 ### Lỗi người Việt hay mắc
-- Hỏi **"Do you understand?"** → nghe như đang kiểm tra người nghe, dễ bị coi là thiếu lịch sự. Dùng "Does that make sense?" hoặc "Is that clear so far?".
-- Chồng nhiều thuật ngữ trong một câu ("we use write-behind cache-aside with TTL-based eviction").
-- Không có từ nối → người nghe không biết bạn đang ở bước mấy. Dùng "First... Then... Finally...".
+- **Dùng "Do you understand?"**: Nghe như đang kiểm tra hay trách móc. Thay bằng "Does that make sense?" hoặc "Is that clear so far?".
+- **Chồng nhiều thuật ngữ**: Nói quá nhiều tên công nghệ trong một câu khiến người nghe mất theo. Chỉ nói thuật ngữ cần thiết, giải thích nếu cần.
+- **Thiếu từ nối**: Không dùng "First/Then/Finally" khiến mạch suy nghĩ bị đứt đoạn. Dùng các từ nối để dẫn dắt từng bước.
+- **Dịch word-by-word**: Tránh dịch nguyên văn tiếng Việt. Hãy nghĩ bằng cấu trúc tiếng Anh tự nhiên.
 
 ### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+The short version is that I structure explanations in three steps. First, I lead with the conclusion: "Here's what happened and why it matters." Second, I break the mechanism down into clear steps, using examples with concrete numbers where possible. Third, I pause and check in with my listener to adjust the level of detail. For example, when explaining a cache, I focus on hits and misses first, then mention TTL and invalidation only if they ask. This keeps things clear without oversimplifying. And if I notice the person looks confused, I paraphrase rather than repeating the same long sentence.
 
 ### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+- **lead with...**: bắt đầu bằng...
+- **break down into...**: chia nhỏ thành...
+- **zoom in/out**: đi sâu/xem tổng quan
+- **in a nutshell**: ngắn gọn lại
+- **the key takeaway is...**: điểm quan trọng là...
 
 ### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+- **Chậm lại ở con số**: Đọc số, tỷ lệ, thời gian rõ ràng. Nhiều người Việt nói nhanh vô thức khi căng thẳng.
+- **Dùng câu ngắn**: Ưu tiên câu đơn thay vì câu ghép dài. Nếu câu dài quá, hãy chia thành hai câu.
+- **Paraphrase thay vì im lặng**: Nếu quên từ, diễn đạt lại bằng từ đơn giản thay vì dừng hoàn toàn.
+- **Ngừng đúng chỗ**: Nghỉ sau khi kết luận trước, sau mỗi bước để người nghe kịp theo dõi.
 
-> Senior tip: Một con số cụ thể ("about 80 percent", "about a millisecond") giúp người nghe hình dung tốt hơn mọi tính từ ("very fast", "much better"). Với interviewer kỹ thuật, câu "The tricky part is..." là chỗ ghi điểm: nó cho thấy bạn hiểu pitfall, không chỉ happy path.`,
+> Senior tip: Một con số cụ thể ("about 80 percent", "about a millisecond") giúp người nghe hình dung tốt hơn mọi tính từ chung chung ("very fast", "much better"). Với interviewer kỹ thuật, câu "The tricky part is..." rất hiệu quả vì nó cho thấy bạn không chỉ biết happy path, mà còn hiểu pitfall thực tế. Đừng ngại hỏi ngược lại để điều chỉnh độ chi tiết - đó là dấu hiệu của người biết truyền đạt tốt, chứ không phải dấu hiệu không tự tin.`,
   follow: ['How would you explain the same cache to a product manager?', 'What happens if the cache delete fails after the price update?', 'How do you know when you are going into too much detail?'],
   tags: ['communication', 'explanation', 'caching', 'speaking'],
   lang: 'en',
@@ -1620,42 +1610,43 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'What would you say if you did not hear a question?',
-  a: `**Tóm tắt:** Nói thẳng là bạn không nghe rõ, xin nhắc lại **đúng phần bị lỡ**, hoặc **diễn đạt lại** phần bạn nghe được để xác nhận. Đừng đoán rồi trả lời sai câu hỏi — điều đó mất điểm hơn nhiều so với hỏi lại một lần.
+  a: `**Tóm tắt:** Nói thẳng là bạn không nghe rõ, xin nhắc lại **đúng phần bị lỡ**, hoặc **diễn đạt lại** phần bạn nghe được để xác nhận. Đừng đoán rồi trả lời sai câu hỏi — điều đó mất điểm hơn nhiều so với hỏi lại một lần. Interviewer muốn đánh giá sự rõ ràng và khả năng giao tiếp khi có trở ngại.
 
 ### Sample answer
-It depends on what I missed. If the connection drops, I just say so: "Sorry, you cut out for a second — could you repeat the last part of the question?"
+It depends on what I missed. If I only caught part of it, I'd say, "Just to be sure, did you mean [rephrase what I heard]?" If I didn't hear it at all, I'd be direct and polite: "I'm sorry, could you repeat that, please?" Or if it's a long question with several parts, I'd ask: "Could you repeat just the part about [specific area], or break it into smaller parts?"
 
-If I caught most of it, I paraphrase it to confirm: "I think I got most of that. Are you asking how I'd handle duplicate messages after a consumer restarts?" That's quicker than asking them to repeat everything, and it shows I was listening.
-
-If it's just one word, I ask about that word: "Sorry, I didn't quite catch the last word — did you say 'rebalance'?"
-
-And if the audio keeps breaking up, I suggest a fix rather than struggling through it: "The audio is a bit choppy on my side. Would it help if I turned off my video?"
+I try to avoid guessing. It's much better to ask for clarification than to answer the wrong question. Once I understand, I confirm briefly before I start answering.
 
 ### Useful phrases
-- **You cut out / You broke up for a second.**: tiếng bạn bị mất một lúc
-- **I didn't quite catch that.**: tôi chưa nghe rõ
-- **Could you repeat the last part?**: bạn nhắc lại phần cuối được không?
-- **Are you asking...?**: có phải bạn đang hỏi...?
-- **The audio is a bit choppy.**: âm thanh bị ngắt quãng
+- **I'm sorry, could you repeat that, please?**: Xin lỗi, bạn có thể nhắc lại được không?
+- **Just to be sure, did you mean...?**: Để chắc chắn, ý bạn là... đúng không?
+- **Could you break that down a bit?**: Bạn có thể chia nhỏ câu hỏi ra được không?
+- **If I understood correctly...**: Nếu tôi hiểu đúng...
+- **Let me make sure I got this right...**: Để tôi đảm bảo tôi hiểu đúng...
 
 ### Lỗi người Việt hay mắc
-- Nói **"What?"** hoặc "Huh?" → thiếu lịch sự. "Pardon?" đúng nhưng hơi trang trọng; "Sorry?" tự nhiên hơn.
-- **"Can you repeat again?"** → thừa từ (repeat đã có nghĩa "again"). Nói **"Could you repeat that?"** hoặc **"Could you say that again?"**.
-- Ngại hỏi lại, đoán ý rồi trả lời lạc đề.
+- **Đoán mò**: Trả lời ngay mà không xác nhận khi không nghe rõ. Điều này dễ dẫn đến trả lời lệch hoàn toàn so với câu hỏi.
+- **Nói quá vòng vo**: "Maybe I didn't catch it but..." nghe không tự tin. Hãy nói thẳng và lịch sự.
+- **Dùng "What?" một mình**: Trong phỏng vấn, "What?" nghe thô. Dùng "Could you repeat that, please?" thay thế.
+- **Ngại hỏi lại**: Nhiều người Việt sợ bị đánh giá thấp khi hỏi lại, nhưng ngược lại, hỏi lại đúng cách là dấu hiệu chuyên nghiệp.
 
 ### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+If I didn't hear a question clearly, I would be honest about it. First, I'd acknowledge it politely: "Sorry, I didn't catch that clearly." Then, I'd ask for clarification in the right way - either by asking them to repeat the whole question, or by rephrasing what I think I heard to confirm. For example, if they ask about a complex system design question but I only catch half of it, I'd say, "Just to be sure, are you asking about [X], or more broadly about [Y]?" This way, I don't waste time answering the wrong question. Once they confirm, I can give a focused answer. I'd rather take five seconds to clarify than two minutes going off track.
 
 ### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+- **clarify**: làm rõ
+- **rephrase**: diễn đạt lại
+- **off track**: đi chệch hướng
+- **on the right track**: đúng hướng
+- **to confirm**: để xác nhận
 
 ### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+- **Giữ giọng lịch sự**: Thêm "please", "sorry" một cách tự nhiên không quá khiêm nhường.
+- **Nói ngắn**: Chỉ hỏi đúng phần cần làm rõ, không xin lỗi dài dòng.
+- **Xác nhận trước khi trả lời**: Sau khi được nhắc lại, tóm tắt ngắn để chắc chắn trước khi đi vào câu trả lời.
+- **Bình tĩnh**: Nếu phải hỏi lại lần hai, vẫn giữ giọng điềm đạm và chuyên nghiệp.
 
-> Senior tip: Trước buổi phỏng vấn online, kiểm tra tai nghe, micro và mạng; nên dùng tai nghe có dây. Hỏi lại **một lần** là hoàn toàn bình thường — người bản xứ cũng làm vậy. Nếu phải hỏi lại liên tục, hãy chủ động đề xuất đổi kênh (tắt video, gọi lại) thay vì cố đoán.`,
+> Senior tip: Trong phỏng vấn tiếng Anh, "Could you repeat that, please?" là hoàn toàn bình thường và chuyên nghiệp. Thay vì cố gắng đoán từ ngữ khó, hãy hỏi lại. Nhiều ứng viên giỏi bị trừ điểm chỉ vì trả lời đúng một câu hỏi... sai. Hỏi lại đúng lúc cho thấy bạn cẩn thận, giao tiếp rõ ràng, và quan tâm đến việc trả lời đúng chứ không chỉ trả lời nhanh.`,
   follow: ['What if you still do not understand after they repeat the question?', 'How do you handle an interviewer with a strong accent?', 'How do you confirm a long, multi-part question?'],
   tags: ['clarify', 'listening', 'online-interview', 'speaking'],
   lang: 'en',
@@ -1665,42 +1656,46 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'How do you respond about a technology you have not used?',
-  a: `**Tóm tắt:** Trả lời trung thực ngay câu đầu ("Not in production"), nối sang **kinh nghiệm gần nhất** bạn có, nói ngắn gọn bạn **hiểu khái niệm** thế nào, rồi mô tả **cách bạn sẽ học** (docs, proof of concept nhỏ, rủi ro cần chú ý). Đừng bịa, cũng đừng chỉ nói "I don't know" rồi dừng.
+  a: `**Tóm tắt:** Trả lời trung thực ngay câu đầu ("Not in production"), nối sang **kinh nghiệm gần nhất** bạn có, nói ngắn gọn bạn **hiểu khái niệm** thế nào, rồi mô tả **cách bạn sẽ học** (docs, proof of concept nhỏ, rủi ro cần chú ý). Đừng bịa, cũng đừng chỉ nói "I don't know". Interviewer muốn đánh giá thái độ học hỏi và khả năng ứng dụng khi gặp công nghệ mới.
 
 ### Sample answer
-*Interviewer: "Have you worked with Kubernetes operators?"*
+Honestly, I haven't used Kafka in production yet, but I've worked with message queues before. In my last project, I used RabbitMQ for asynchronous processing between services. I understand that Kafka is designed for high-throughput, distributed event streaming, with topics, partitions, and consumer groups. 
 
-"Not in production, no. I've deployed our services to Kubernetes with Helm charts and set up readiness and liveness probes, but I haven't written an operator myself.
-
-From what I understand, an operator is a controller that watches a custom resource and keeps reconciling the actual state of the cluster toward the desired state — similar in spirit to how the Deployment controller manages ReplicaSets.
-
-If I needed to build one, I'd start with the official docs and the Java Operator SDK, build a small proof of concept for one resource, and pay close attention to how it behaves when reconciliation fails halfway. I'd expect to be productive within a couple of weeks, and I'd ask someone who's run operators in production to review the design."
+Given the chance, I'd start by reading the official docs, run a small local setup with Docker, and build a proof of concept to understand producers, consumers, and offsets. I'd also pay attention to ordering and at-least-once delivery, since those are common gotchas. If this role uses Kafka heavily, I'd be keen to learn quickly with guidance from the team.
 
 ### Useful phrases
-- **Not in production, no.**: chưa dùng trên production
-- **The closest thing I've done is...**: việc gần nhất tôi từng làm là...
-- **From what I understand, ...**: theo tôi hiểu thì...
-- **The way I'd get up to speed is...**: cách tôi bắt nhịp nhanh là...
-- **similar in spirit to...**: về ý tưởng thì giống với...
+- **I haven't used X in production, but...**: Tôi chưa dùng X trong production, nhưng...
+- **I've worked with something similar...**: Tôi đã làm việc với thứ tương tự...
+- **I understand the concept of...**: Tôi hiểu khái niệm về...
+- **I'd be keen to learn...**: Tôi rất muốn học...
+- **I'd start by...**: Tôi sẽ bắt đầu bằng...
+- **A proof of concept (PoC)**: bản thử nghiệm nhỏ
 
 ### Lỗi người Việt hay mắc
-- "I don't know." rồi im lặng → mất cơ hội thể hiện tư duy.
-- Bịa kinh nghiệm → interviewer hỏi thêm 2 câu là lộ, mất hết uy tín.
-- Câu chung chung "I can learn anything quickly" → không có bằng chứng. Hãy nêu **kế hoạch học cụ thể**.
+- **Nói "I don't know" và dừng lại**: Nghe thụ động. Phải luôn có phần "nhưng" nối sang kinh nghiệm liên quan hoặc kế hoạch học.
+- **Bịa công ty/project**: Rất dễ bị phát hiện nếu interviewer hỏi chi tiết. Trung thực luôn tốt hơn bịa đặt.
+- **Nói quá chung**: "I know everything about it" là sai. Hãy nói đúng mức độ hiểu thực tế của bạn.
+- **Dùng từ phủ định mạnh**: Tránh "I've never heard of it". Thay vào đó nói trung thực về kinh nghiệm có/không.
 
 ### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+To be honest, I haven't used Kubernetes in a production environment yet. However, I have deployed applications using Docker in my previous projects, so I understand the basics of containerization. I know Kubernetes helps with orchestration - scaling, load balancing, and self-healing containers across multiple nodes. 
+
+If I needed to use it for this role, I'd start with the official Kubernetes docs and practice in a local cluster like Minikube or kind. I'd focus on core concepts first - pods, services, deployments, and config maps. I'd also build a small proof of concept to deploy one of our services and see how rolling updates work. I'm comfortable learning new tools quickly, and I'd ask for feedback early on. The key for me is to learn by doing while following best practices.
 
 ### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+- **transferable skills**: kỹ năng có thể áp dụng
+- **get up to speed**: nhanh chóng làm quen
+- **hands-on practice**: thực hành trực tiếp
+- **learn by doing**: học qua thực hành
+- **ramp up quickly**: nhanh chóng tiếp cận
 
 ### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+- **Trung thực là mạnh**: Thừa nhận thiếu kinh nghiệm nhưng chỉ ra bạn có nền tảng liên quan.
+- **Tập trung vào kế hoạch**: Phần "cách học" quan trọng không kém phần "đã biết gì".
+- **Giữ cân đối**: Không khoe quá mức những gì chưa làm, cũng không tự hạ thấp hoàn toàn.
+- **Dùng ví dụ cụ thể**: Nêu rõ bạn sẽ làm gì, chứ không nói chung chung "I'll learn it".
 
-> Senior tip: Senior không cần biết mọi công nghệ, nhưng phải cho thấy cách **đánh giá rủi ro** khi áp dụng thứ mới: "what happens when it fails", "who will operate it", "how do we roll back". Câu "From what I understand..." vừa trung thực vừa để interviewer sửa nếu bạn hiểu sai.`,
+> Senior tip: Interviewer không trông đợi bạn biết mọi công nghệ. Họ muốn xem bạn phản ứng thế nào khi gặp thứ chưa biết. Cách trả lời tốt nhất là: trung thực + liên hệ với kinh nghiệm có + kế hoạch học cụ thể. Nếu bạn có thể chỉ ra "rủi ro cần chú ý" khi học (vd: "need to understand RBAC in K8s") sẽ càng ấn tượng hơn, vì nó cho thấy bạn nghĩ thực tế chứ không chỉ học lý thuyết.`,
   follow: ['How would you decide whether the team should adopt this technology?', 'Tell me about a time you had to learn a new technology quickly.', 'What are the risks of introducing a technology nobody on the team knows?'],
   tags: ['honesty', 'learning', 'speaking'],
   lang: 'en',
@@ -1710,40 +1705,48 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'What if you realize you misstated a technical detail?',
-  a: `**Tóm tắt:** Sửa **ngay khi nhận ra**, ngắn gọn, không xin lỗi quá mức: nói bạn đã nói gì, đúng ra là gì, và kết luận có thay đổi không. Tự sửa sai là tín hiệu tốt về sự trung thực và hiểu biết sâu.
+  a: `**Tóm tắt:** Sửa **ngay khi nhận ra**, ngắn gọn, không xin lỗi quá mức: nói bạn đã nói gì, đúng ra là gì, và kết luận có thay đổi không. Tự sửa sai là tín hiệu tốt về sự trung thực và hiểu biết sâu. Interviewer muốn đánh giá bạn có đủ khiêm nhường để thừa nhận sai và đủ chủ động để sửa chữa kịp thời không.
 
 ### Sample answer
-I correct it as soon as I notice — briefly, and without making a big deal of it. For example:
+I correct it as soon as I notice. For example, if I just said we used eventual consistency but actually it's strong consistency in that flow, I'd say: "Actually, wait - let me correct that. I said eventual consistency, but in this particular case, we need strong consistency because it's a payment transfer, so we use a synchronous write to the ledger. That means the flow is slightly different from what I described."
 
-"Sorry, let me correct something I said earlier. I said Kafka gives us exactly-once delivery by default — that's not accurate. On the consumer side, the default is effectively at-least-once: if a consumer crashes after processing a message but before committing the offset, it will get that message again. Kafka does support exactly-once semantics with idempotent producers and transactions, but that only covers reads and writes inside Kafka. Once the consumer writes to an external database, we still need idempotent processing.
-
-The good news is that it doesn't change my design, because the consumer already uses an idempotency key — but I wanted to be precise."
+I keep it short, state the correction clearly, and adjust if needed. I don't dwell on it or over-apologize - just fix it and move on.
 
 ### Useful phrases
-- **Let me correct something I said earlier.**: cho tôi sửa lại một điều vừa nói
-- **What I meant was...**: ý tôi là...
-- **To be precise, ...**: nói cho chính xác thì...
-- **That doesn't change my conclusion, because...**: điều này không thay đổi kết luận vì...
-- **That changes things a bit — ...**: điều này làm thay đổi một chút...
+- **Actually, let me correct that.**: Thực ra, để tôi sửa lại...
+- **I made a small mistake there.**: Tôi vừa nói sai một chút...
+- **To be precise...**: Để chính xác hơn...
+- **Just to correct myself...**: Để tự sửa lại...
+- **The correct thing is...**: Điều đúng là...
+- **That said, actually...**: Nói đúng hơn thì...
 
 ### Lỗi người Việt hay mắc
-- Lờ đi, mong interviewer không để ý → nếu họ để ý, bạn mất điểm gấp đôi.
-- Xin lỗi quá mức: "I'm so sorry, I'm very bad at this" → làm giảm uy tín. Một chữ **"Sorry"** là đủ.
-- Sửa nhưng không nói kết luận có đổi không → người nghe phải tự đoán.
+- **Xin lỗi quá dài dòng**: "I'm really really sorry for that mistake..." nghe quá khiêm nhường và mất thời gian. Chỉ cần ngắn gọn là đủ.
+- **Cố biện minh**: "Well, I meant..." rồi vòng vo không thừa nhận. Hãy thừa nhận và sửa ngay.
+- **Im lặng rồi bỏ qua**: Nhiều người nhận ra sai nhưng ngại sửa sợ mất điểm, thực tế lại mất điểm nhiều hơn nếu không sửa.
+- **Sửa sau khi đã nói quá dài**: Sửa ngay khi nhận ra, đừng chờ đến cuối câu trả lời.
 
 ### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+If I realize I've misstated a technical detail mid-answer, I'd correct it immediately and concisely. For example, I'd say, "Actually, let me correct myself - I said we use optimistic locking, but it's actually pessimistic locking for this specific case because of the high contention on this table." 
+
+I wouldn't apologize excessively. I'd just state what was wrong and what the correct information is. If the correction changes my conclusion, I'd briefly adjust it too. For instance, "So with pessimistic locking, we'd expect a bit more latency, but it's necessary to prevent double-spending." 
+
+The key is to stay calm, be precise, and not let the small mistake derail the rest of my answer. I think owning mistakes shows maturity and attention to detail - qualities that are important for senior roles.
 
 ### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+- **own up to**: thừa nhận
+- **course-correct**: điều chỉnh hướng
+- **on second thought**: nghĩ lại thì
+- **to be more accurate**: chính xác hơn
+- **straighten that out**: làm rõ điều đó
 
 ### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+- **Nhanh chóng, không dài dòng**: Sửa trong 1-2 câu ngắn là đủ.
+- **Giọng bình tĩnh**: Không hoảng hốt hay xấu hổ khi sửa sai.
+- **Không tự hạ thấp**: "small correction" thay vì tự chê mình quá nhiều.
+- **Tiếp tục mạch nói**: Sau khi sửa, quay lại điểm chính ngay lập tức.
 
-> Senior tip: Ví dụ Kafka ở trên rất hay gặp: từ Kafka 3.0, producer bật idempotence mặc định (chống trùng do retry phía producer), nhưng điều đó **không** làm consumer hết nhận trùng. Nắm chắc những chỗ dễ nói nhầm như vậy giúp bạn tự sửa kịp thời và ghi điểm "deep understanding".`,
+> Senior tip: Trong phỏng vấn kỹ thuật, việc tự sửa sai thường được đánh giá **cao hơn** là cố giữ sai. Nó cho thấy bạn có integrity (tính chính trực), intellectual honesty (trung thực về kiến thức), và khả năng tư duy phản biện - đúng những gì cần có ở cấp Senior/Lead. Thay vì sợ bị mất điểm, hãy xem việc sửa sai là cơ hội để thể hiện sự trưởng thành và am hiểu sâu sắc hơn.`,
   follow: ['How does Kafka achieve exactly-once semantics inside a stream processing pipeline?', 'Tell me about a time you were wrong about a technical decision.', 'How do you handle it when a colleague misstates something in a meeting?'],
   tags: ['honesty', 'kafka', 'communication', 'speaking'],
   lang: 'en',
@@ -1753,45 +1756,52 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'How would you begin an English interview naturally?',
-  a: `**Tóm tắt:** Mở đầu gồm hai phần: **small talk ngắn** (chào, cảm ơn, đáp "How are you?" tự nhiên) và **phần giới thiệu bản thân 60–90 giây**: bạn là ai, đang làm gì, một thành tích nổi bật, vì sao quan tâm vị trí này. Không đọc lại CV theo thứ tự thời gian.
+  a: `**Tóm tắt:** Mở đầu gồm hai phần: **small talk ngắn** (chào, cảm ơn, đáp "How are you?" tự nhiên) và **phần giới thiệu bản thân 60–90 giây**: bạn là ai, đang làm gì, một thành tích nổi bật, vì sao quan tâm vị trí này. Không đọc lại CV theo thứ tự thời gian. Interviewer muốn đánh giá ấn tượng đầu tiên và khả năng tóm tắt bản thân một cách chuyên nghiệp.
 
 ### Sample answer
-*Small talk:*
-"Hi, nice to meet you. Thanks for taking the time today."
-*"How are you?"* — "I'm good, thanks — a little excited, to be honest. How about you?"
+"Hi, nice to meet you. Thank you for taking the time today. I'm doing well, thanks - how are you?"
 
-*"So, tell me about yourself."*
-"Sure. I'm a backend engineer with about six years of experience, mostly with Java and Spring Boot. For the last three years I've been at a fintech company, working on the payment platform. I own the settlement service, and I'm part of the on-call rotation for it.
+Then for my introduction: "I'm a Java backend engineer with about four years of experience. Currently, I'm working at [Company Name], where I focus on building scalable APIs and improving system performance. One thing I'm proud of is reducing our API response time by about 60 percent by optimizing database queries and adding caching. I'm excited about this Senior Backend role because your team is working on [mention something specific about the company/product], and I'd love to use my experience to help solve similar scaling challenges here."
 
-Recently I've been focusing on reliability. I led the move from synchronous calls to an event-driven flow with Kafka, which cut our timeout errors by about 70 percent.
-
-I'm now looking for a role where I can work on larger-scale distributed systems and spend more time mentoring, which is why this position caught my attention."
+I keep it focused on what matters to them, not my entire life story.
 
 ### Useful phrases
-- **Thanks for taking the time today.**: cảm ơn anh/chị đã dành thời gian
-- **a little excited, to be honest**: thật lòng thì hơi hồi hộp (tự nhiên, thân thiện)
-- **I own the... service**: tôi chịu trách nhiệm chính service...
-- **Recently I've been focusing on...**: gần đây tôi tập trung vào...
-- **That's why this position caught my attention.**: đó là lý do vị trí này thu hút tôi
+- **Nice to meet you.**: Rất vui được gặp bạn.
+- **Thank you for taking the time today.**: Cảm ơn bạn đã dành thời gian hôm nay.
+- **I'm doing well, thanks. How are you?**: Tôi khỏe, cảm ơn. Còn bạn thì sao?
+- **I focus on...**: Tôi tập trung vào...
+- **I'm excited about...**: Tôi rất hào hứng về...
+- **I'd love to contribute to...**: Tôi rất muốn đóng góp vào...
 
 ### Lỗi người Việt hay mắc
-- **"I'm fine, thank you, and you?"** → nghe như sách giáo khoa. Tự nhiên hơn: "I'm good, thanks. How about you?" / "Doing well, thanks!"
-- Bắt đầu bằng "My name is..., I'm 30 years old, I graduated from..." → tuổi và trường không cần thiết với senior.
-- Nói quá 2 phút → interviewer chưa kịp hỏi gì đã mất hứng.
+- **Đọc CV nguyên xi**: Liệt kê từ học đại học đến giờ thay vì tập trung vào điểm nổi bật liên quan đến vị trí.
+- **Nói quá dài**: Giới thiệu 3-4 phút sẽ làm mất sự tập trung. Nên giới hạn 60-90 giây.
+- **Quá khiêm nhường**: "I'm just a junior..." nghe thiếu tự tin. Hãy tự tin nhưng khiêm nhường một cách chân thật.
+- **Bỏ qua small talk**: Một câu chào ngắn rất quan trọng để tạo không khí thân thiện.
+- **Nói chung chung**: "I want to grow" chưa đủ - cần nói rõ vì sao quan tâm vị trí CỤ THỂ này.
 
 ### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+"Good morning, it's a pleasure to meet you. Thank you for speaking with me today. I'm doing well, thank you - how are you?"
+
+"Briefly about me - I'm a backend engineer with around four years of experience building Java and Spring Boot applications. At my current company, I've been focused on microservices and performance optimization. A highlight was leading the migration of a monolith to microservices, which helped us scale to handle 3x more traffic with better reliability. 
+
+What drew me to this role is that you're building [specific product/challenge]. I enjoy solving complex backend problems, and I think my experience with distributed systems would be a good fit to help your team tackle similar challenges. I'm looking forward to learning more about the role today."
 
 ### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+- **a good fit**: phù hợp
+- **drawn to**: bị thu hút bởi
+- **highlight/recent achievement**: thành tựu nổi bật
+- **value proposition**: giá trị bạn mang lại
+- **in a nutshell**: ngắn gọn
 
 ### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+- **Mỉm cười khi nói**: Ngay cả qua điện thoại/video cũng giúp giọng ấm hơn.
+- **Nghỉ tự nhiên**: Dừng sau câu chào, sau đó bắt đầu giới thiệu.
+- **Tập trung vào "tôi có gì cho họ"**: Thay vì "tôi muốn gì", hãy nói "tôi có thể giúp gì".
+- **Thực hành trước gương/ghi âm**: Đảm bảo giới thiệu dưới 90 giây và nghe tự nhiên.
+- **Tùy chỉnh theo từng công ty**: Luôn tìm 1 điểm cụ thể về công ty/role để nói.
 
-> Senior tip: Chuẩn bị bản giới thiệu theo công thức **present → past → future**: hiện tại làm gì, một thành tích có số liệu, vì sao muốn vị trí này. Luyện đến mức nói tự nhiên nhưng **đừng học thuộc từng chữ** — nghe như đọc bài sẽ mất điểm. Phát âm **experience** /ɪkˈspɪəriəns/, nhấn âm "SPEE".`,
+> Senior tip: Nguyên tắc "Tell me about yourself" không phải là "Tell me your whole life story". Hãy dùng công thức: **Present - Past highlight - Future interest**. Present: vị trí hiện tại, Past: thành tích liên quan nhất, Future: lý do quan tâm role này. Quan trọng nhất là liên hệ ngược lại với nhu cầu của họ - nếu bạn có thể nói "Tôi thấy bạn đang cần X, và tôi đã làm Y thành công" thì bạn đã thắng ngay ấn tượng đầu tiên.`,
   follow: ['Why are you interested in this role specifically?', 'Which part of your current job do you enjoy the most?', 'What is one achievement you are most proud of?'],
   tags: ['introduction', 'small-talk', 'speaking'],
   lang: 'en',
@@ -1801,45 +1811,54 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'How would you close an interview professionally?',
-  a: `**Tóm tắt:** Cảm ơn, nhắc tới **một chủ đề cụ thể** trong buổi nói chuyện, khẳng định ngắn gọn sự quan tâm, hỏi **bước tiếp theo và thời gian** phản hồi. Ấm áp, chuyên nghiệp, không hỏi "Did I pass?". Sau buổi phỏng vấn, gửi email cảm ơn ngắn trong vòng 24 giờ.
+  a: `**Tóm tắt:** Cảm ơn, nhắc tới **một chủ đề cụ thể** trong buổi nói chuyện, khẳng định ngắn gọn sự quan tâm, hỏi **bước tiếp theo và thời gian** phản hồi. Ấm áp, chuyên nghiệp, không hỏi "Did I pass?". Sau buổi phỏng vấn, gửi email cảm ơn ngắn trong vòng 24 giờ. Interviewer muốn đánh giá sự chuyên nghiệp và kết thúc buổi phỏng vấn một cách lịch sự.
 
 ### Sample answer
-"Thank you so much for your time today. I really enjoyed the discussion about how you're splitting the order service — it's a problem I've worked on before, and it made me even more interested in the role.
+"Thank you both for your time today. I especially enjoyed our discussion about [specific topic, e.g., the microservices migration strategy]. After speaking with you, I'm even more excited about this Senior Backend role and the opportunity to help scale your platform. 
 
-Could you tell me what the next steps in the process look like, and roughly when I might hear back?"
+Could you tell me what the next steps are and roughly when I can expect to hear back?"
 
-*Interviewer: "We'll get back to you within a week."*
-
-"Great, that sounds good. Thanks again, and have a good rest of your day."
-
-*Follow-up email (same day):*
-"Hi Anna, thank you for the conversation today. I especially enjoyed discussing the order service migration. I'm excited about the role and look forward to hearing about the next steps. Best regards, Minh"
+That's short and natural. I wouldn't ask about salary at this point unless they brought it up first.
 
 ### Useful phrases
-- **I really enjoyed the discussion about...**: tôi rất thích phần trao đổi về...
-- **It made me even more interested in the role.**: điều đó khiến tôi càng quan tâm vị trí này
-- **What do the next steps look like?**: các bước tiếp theo thế nào?
-- **roughly when I might hear back**: khoảng khi nào tôi nhận được phản hồi
-- **Have a good rest of your day.**: chúc anh/chị một ngày tốt lành
+- **Thank you for your time today.**: Cảm ơn bạn đã dành thời gian hôm nay.
+- **I especially enjoyed our discussion about...**: Tôi đặc biệt thích buổi thảo luận về...
+- **I'm even more excited about this role now.**: Giờ đây tôi càng hào hứng với vị trí này hơn.
+- **Could you tell me what the next steps are?**: Bạn có thể cho tôi biết các bước tiếp theo là gì không?
+- **When can I expect to hear back?**: Khi nào tôi có thể mong nhận được phản hồi?
+- **I look forward to hearing from you.**: Tôi mong sớm nhận được tin từ bạn.
 
 ### Lỗi người Việt hay mắc
-- **"Thank you for your listening."** → sai. Đúng: **"Thank you for listening"** hoặc "Thank you for your time".
-- **"So... did I pass?"** → đặt interviewer vào thế khó.
-- **"I hope I will have a chance to work with you."** → đúng ngữ pháp nhưng hơi cứng. Tự nhiên hơn: "I'd love to work with the team" hoặc "I look forward to hearing from you."
+- **Hỏi "Did I pass?"**: Rất không chuyên nghiệp. Không bao giờ hỏi trực tiếp kết quả.
+- **Cảm ơn quá chung chung**: Chỉ nói "Thank you" mà không nhắc gì cụ thể sẽ nghe có vẻ hời hợt.
+- **Hỏi về lương/phúc lợi ngay**: Trừ khi họ chủ động đề cập, đừng hỏi trong phần kết thúc.
+- **Nói quá dài**: Chỉ cần 20-30 giây là đủ cho phần kết thúc.
+- **Quên gửi email cảm ơn**: Nhiều ứng viên bỏ qua bước này, nhưng nó thực sự tạo thiện cảm và gây ấn tượng tốt.
 
 ### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+"Thank you very much for taking the time to speak with me today, [Interviewer names if possible]. I especially enjoyed our conversation about the challenges around scaling your payment system - it's an area I'm passionate about as well. 
+
+After learning more about the role and the team, I'm even more excited about the opportunity. I feel like my experience with high-throughput systems could add value here. 
+
+Could you walk me through the next steps in the process and when I might expect to hear back? Thank you again, and I look forward to the next opportunity to speak with you."
+
+Keep it genuine - mention something you actually discussed, not something generic.
 
 ### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+- **next steps**: các bước tiếp theo
+- **timeline**: thời gian dự kiến
+- **follow up**: theo dõi sau
+- **wrap up**: kết thúc
+- **leave a good impression**: để lại ấn tượng tốt
 
 ### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+- **Chọn chi tiết cụ thể**: Hãy nhớ 1-2 chủ đề đã thảo luận để nhắc lại.
+- **Giọng ấm áp nhưng chuyên nghiệp**: Thể hiện sự nhiệt tình mà không quá thân mật.
+- **Đặt câu hỏi thông minh**: Hỏi về quy trình thay vì hỏi về cơ hội thành công của mình.
+- **Gửi email ngay**: Trong vòng 24 giờ, gửi email cảm ơn ngắn với nội dung tương tự.
+- **Kết thúc tự nhiên**: Sau khi họ trả lời, cảm ơn lại ngắn gọn và chào tạm biệt.
 
-> Senior tip: Câu nhắc lại chủ đề cụ thể ("the order service migration") cho thấy bạn thực sự lắng nghe và giúp interviewer nhớ đến bạn khi viết đánh giá. Chú ý ngữ pháp: **look forward to + V-ing** ("look forward to hearing"), không phải "look forward to hear".`,
+> Senior tip: Email cảm ơn sau phỏng vấn rất quan trọng ở nhiều công ty. Viết ngắn gọn: cảm ơn, nhắc lại 1 chủ đề thú vị đã trao đổi, khẳng định quan tâm, mong chờ bước tiếp theo. Ví dụ: "Thank you for your time today. I enjoyed learning about [project name]. After our discussion, I'm even more excited about contributing to [specific goal]. Please let me know if I need to provide anything else. Looking forward to hearing about next steps." Chỉ mất 3-4 phút nhưng có thể tạo khác biệt lớn, đặc biệt khi có nhiều ứng viên ngang tài ngang sức.`,
   follow: ['What should you include in a follow-up email after the interview?', 'How do you follow up if you have not heard back after the promised date?', 'What would you say if the interviewer asks whether you have other offers?'],
   tags: ['closing', 'etiquette', 'speaking'],
   lang: 'en',
