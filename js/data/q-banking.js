@@ -2162,7 +2162,15 @@ public TransferResult createTransfer(String idempotencyKey, TransferCmd cmd) {
 - Tự ý hoàn tiền sau N phút timeout mà chưa inquiry -> có thể hoàn nhầm khi đối tác đã xử lý thành công.
 - {{PENDING_UNKNOWN}} treo vô hạn không có job quét/leo thang -> tiền khách bị giữ mãi.
 
-> Senior tip: Hãy phân biệt rõ 3 khái niệm khi trả lời: *timeout* (không biết kết quả), *retry kỹ thuật* (gửi lại cùng idempotency key, an toàn nếu đối tác idempotent) và *retry nghiệp vụ* (tạo yêu cầu chuyển tiền mới — chỉ làm khi chắc chắn giao dịch cũ thất bại). Nhấn mạnh "tiền thật an toàn hơn trải nghiệm nhanh": thà báo khách chờ tra soát còn hơn hoàn/ghi trùng sai.
+### Ví dụ đời thực
+
+Một ngân hàng số xử lý chuyển khoản liên ngân hàng qua Napas. Vào một ngày cao điểm (lương về), lượng giao dịch tăng 3 lần. Một khách chuyển 5 triệu VND lúc 21:00; request đến Napas nhưng mất phản hồi sau 10 giây (timeout). Hệ thống chuyển giao dịch sang trạng thái {{PENDING_UNKNOWN}}, tiền bị **hold** (tạm giữ) nhưng không tự động hoàn tiền, không tự động retry. App hiển thị "Đang xử lý, vui lòng chờ". Job inquiry tự động chạy theo lịch: sau 30s, 2p, 10p, 1h — lần thứ 2, Napas trả về {{SUCCESS}}: hệ thống cập nhật {{SUCCESS}}, trừ tiền người gửi, thông báo thành công. Một giao dịch khác timeout và inquiry không thành công sau 24 giờ: hệ thống hoàn tiền tự động theo quy trình reversal, người gửi không mất tiền. Kết quả đo được: 94% giao dịch timeout được chốt tự động trong vòng 2 giờ, không còn trường hợp trừ tiền hai lần; số dư khả dụng hiển thị đúng (khi hold thì giảm, khi hoàn thì tăng lại). Dev cũng thêm job quét định kỳ để giải phóng {{PENDING_UNKNOWN}} treo quá lâu, tránh tiền bị giữ mãi.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi giao dịch liên ngân hàng bị timeout, điều cốt lõi là timeout không có nghĩa là thất bại — chỉ là chưa biết kết quả. Tôi thiết kế máy trạng thái: giao dịch chuyển sang {{PENDING_UNKNOWN}}, tiền bị hold (tạm giữ) nhưng không tự động retry hay hoàn tiền ngay. Hệ thống inquiry theo mã tham chiếu duy nhất với lịch retry (30s, 2p, 10p, 1h) và giới hạn thời gian; {{SUCCESS}} thì ghi nợ, {{FAILED}} thì hoàn tiền, quá hạn thì leo thang thủ công. Toàn bộ idempotent: retry cùng {{tx_id}} thì Napas trả kết quả cũ. Trong thực tế, với một ngân hàng số, 94% giao dịch timeout được chốt tự động trong 2 giờ, không còn hiện tượng trừ tiền hai lần. Quan trọng nhất là tiền thật an toàn hơn trải nghiệm nhanh — thà báo khách chờ còn hơn hoàn/ghi trùng sai."
+
+> Senior tip: Hãy phân biệt rõ 3 khái niệm khi trả lời: **timeout** (không biết kết quả), **retry kỹ thuật** (gửi lại cùng idempotency key, an toàn nếu đối tác idempotent) và **retry nghiệp vụ** (tạo yêu cầu chuyển tiền mới — chỉ làm khi chắc chắn giao dịch cũ thất bại). Nhấn mạnh "tiền thật an toàn hơn trải nghiệm nhanh": thà báo khách chờ tra soát còn hơn hoàn/ghi trùng sai.
   `,
   follow: [
     'Idempotency được đảm bảo ở những tầng nào (client, API của bạn, Napas/đối tác, DB) và mỗi tầng làm gì?',
@@ -2245,7 +2253,15 @@ ip_address, user_agent, request_id/correlation_id, result (OK/DENY)
 - Áp dụng thay đổi bằng cách đọc lại dữ liệu hiện tại thay vì payload đã duyệt -> maker sửa dữ liệu sau duyệt, checker duyệt một đằng áp dụng một nẻo.
 - Không log cả hành động bị từ chối (DENY) -> bỏ sót dấu hiệu dò quyền/gian lận.
 
-> Senior tip: Nêu ba lớp bảo vệ khi phỏng vấn: (1) *nghiệp vụ* — state machine + SoD (maker != checker, đúng vai trò/ngưỡng), (2) *dữ liệu* — payload bất biến, áp dụng đúng bản đã duyệt, audit append-only, (3) *hạ tầng* — tách quyền DB/log, giám sát bất thường. Maker-checker không chỉ là "thêm nút duyệt", nó là ràng buộc toàn vẹn phải được cưỡng bức ở tầng service/API, không tin UI.
+### Ví dụ đời thực
+
+Một ngân hàng đang triển khai hệ thống maker-checker cho các giao dịch hoàn tiền (refund). Ban đầu hệ thống chỉ ẩn nút "Duyệt" trên UI nhưng API không kiểm tra maker_id != checker_id. Một nhân viên bộ phận chăm sóc khách hàng (đồng thời có vai trò maker và checker do config sai) đã tạo yêu cầu hoàn tiền 10 triệu cho một khách hàng thân thiết và tự duyệt — tiền bị hoàn nhầm. Sau khi phát hiện, đội dev sửa: (1) API kiểm tra bắt buộc maker_id != checker_id, (2) thêm ngưỡng — hoàn tiền dưới 5 triệu cần 1 checker, từ 5 triệu cần 2 checker hoặc cấp cao hơn, (3) log audit ghi đầy đủ before/after, (4) áp dụng đúng payload đã duyệt (không đọc lại dữ liệu hiện tại). Kết quả: sau 3 tháng, không còn giao dịch tự duyệt; audit trail giúp phát hiện 2 cố ý can thiệp trong quá khứ và đưa ra xử lý. Đội cũng thêm job báo cáo định kỳ: số yêu cầu đang chờ, số yêu cầu từ chối, và thời gian xử lý trung bình.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Maker-checker trong hệ thống ngân hàng của tôi được triển khai ở 3 lớp. Lớp nghiệp vụ: mỗi yêu cầu nhạy cảm (hoàn tiền, sửa hạn mức, tạo tài khoản đặc biệt) có state machine DRAFT -> PENDING_APPROVAL -> APPROVED -> APPLIED; maker tạo, checker duyệt, và hệ thống bắt buộc maker_id != checker_id ở API — không tin UI. Lớp dữ liệu: payload đề xuất được lưu đóng băng, áp dụng đúng bản đã duyệt; audit trail ghi ai, lúc nào, hành động, resource, before/after, IP, request_id, và kết quả OK/DENY — lưu append-only, WORM, tách quyền DBA. Lớp hạ tầng: RBAC với vai trò MAKER, CHECKER, ADMIN tách biệt; ngưỡng số tiền quyết định số lượng checker; và mọi hành động từ chối cũng được log. Một ví dụ thực tế: trước đây chỉ ẩn nút duyệt trên UI, một nhân viên tự tạo tự duyệt hoàn tiền 10 triệu; sau khi thêm kiểm tra bắt buộc ở API và ngưỡng 2 checker cho số tiền trên 5 triệu, không còn hiện tượng tự duyệt và audit giúp phát hiện các cố ý can thiệp trong quá khứ."
+
+> Senior tip: Nêu ba lớp bảo vệ khi phỏng vấn: (1) **nghiệp vụ** — state machine + SoD (maker != checker, đúng vai trò/ngưỡng), (2) **dữ liệu** — payload bất biến, áp dụng đúng bản đã duyệt, audit append-only, (3) **hạ tầng** — tách quyền DB/log, giám sát bất thường. Maker-checker không chỉ là "thêm nút duyệt", nó là ràng buộc toàn vẹn phải được cưỡng bức ở tầng service/API, không tin UI.
   `,
   follow: [
     'Nếu maker chỉnh sửa yêu cầu sau khi checker đã mở màn hình duyệt, hệ thống nên xử lý thế nào để checker không duyệt nhầm nội dung cũ?',
@@ -2333,6 +2349,14 @@ Quy tắc phân bổ (phần đầu nhận dư, hay phần lớn nhất nhận d
 - Chia phí bỏ quên phần dư -> sổ cái lệch, đối soát không khớp (break).
 - Mỗi module tự chọn {{RoundingMode}} khác nhau -> cùng nghiệp vụ ra hai kết quả.
 
+### Ví dụ đời thực
+
+Một hệ thống ví điện tử đang tính phí giao dịch: mỗi giao dịch chuyển tiền bị trừ 10.000 VND phí, chia đều cho 3 đối tác thanh toán (nhà cung cấp cổng, đối tác tiếp thị, ngân hàng nhận). Code ban đầu dùng {{double}} và chia bằng phép chia không chỉ định RoundingMode: 10.000 / 3 = 3333.333... — mỗi đối tác nhận 3333, tổng thu 9999, mất 1 đồng. Đối chiếu cuối ngày phát hiện sổ cái lệch 1 đồng mỗi ngày, tích lũy sau 3 tháng là 90 đồng — nhỏ nhưng kiểm toán không chấp nhận. Dev sửa: dùng {{BigDecimal}} khởi tạo từ {{String}}, {{divideAndRemainder}} với {{RoundingMode.DOWN}}, phân bổ phần dư 1 đồng vào đối tác đầu tiên theo thứ tự cố định (quy tắc minh bạch, lặp lại được). Kết quả: phí chia đúng 10.000 mỗi lần, đối chiếu không còn lệch. Dev cũng thêm unit test với nhiều case (chia hết, dư 1, dư 2, số tiền lớn) và quy ước toàn hệ thống: mọi tiền dùng {{BigDecimal}} từ {{String}}, {{scale}} theo loại tiền (VND 0), {{RoundingMode}} thống nhất theo nghiệp vụ.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Với tiền, tôi luôn dùng {{BigDecimal}} khởi tạo từ {{String}}, không bao giờ {{double}} hay {{new BigDecimal(0.1)}} vì nhị phân không biểu diễn chính xác thập phân — ví dụ 0.1 + 0.2 = 0.30000000000000004. {{RoundingMode}} là quy tắc làm tròn khi kết quả có quá nhiều chữ số; tôi chọn {{HALF_UP}} cho tính lãi (làm tròn học), {{HALF_EVEN}} (banker's rounding) khi cần giảm thiên lệch cộng dồn, và {{DOWN}} khi cắt phần dư. VND không có phần thập phân — mọi số tiền là số nguyên đồng — nên {{scale = 0}}, hoặc làm tròn bậc 100đ/1.000đ tùy nghiệp vụ. Khi chia phí cho nhiều bên, tôi dùng {{divideAndRemainder}} để lấy thương và dư, rồi phân bổ phần dư một cách xác định (ví dụ phần đầu nhận thêm) để tổng các phần bằng đúng số tiền gốc — không được để mỗi lần chạy một kiểu. Trong thực tế, một hệ thống ví dùng {{double}} bị mất 1 đồng mỗi ngày do chia phí; sau khi chuyển sang {{BigDecimal}} với quy tắc phân bổ cố định và thêm unit test, đối chiếu không còn lệch."
+
 > Senior tip: Đặt ra quy ước toàn hệ thống ngay từ đầu: (1) kiểu tiền duy nhất ({{BigDecimal}} hoặc {{long}} minor unit) và cách khởi tạo (luôn từ {{String}}), (2) {{scale}} và {{RoundingMode}} cho từng loại nghiệp vụ (lãi, phí, thuế, hiển thị), (3) hàm chia/phân bổ phần dư dùng chung có unit test. Trong code review, coi mọi {{double}} chạm vào tiền là lỗi blocker.
   `,
   follow: [
@@ -2396,7 +2420,15 @@ public void accrueInterest(LocalDate bizDate, String accountId) {
 - Nhiều node cùng chạy EOD cho cùng ngày -> tranh chấp, trùng dữ liệu; cần cơ chế **distributed lock** (khóa phân tán: chỉ một node giữ khóa được chạy) theo {{business_date}}.
 - Chuyển ngày nghiệp vụ (bước 7) trước khi các bước trước xác nhận xong -> ngày mới mở trong khi số liệu ngày cũ chưa chốt.
 
-> Senior tip: Hãy nói về EOD theo tư duy "thiết kế cho sự cố": *giả định job sẽ chết giữa chừng và sẽ bị chạy lại*. Khi đó idempotency + checkpoint + khóa nghiệp vụ theo ngày là bắt buộc, không phải tối ưu. Nêu thêm: tách **cut-off logic** (gắn ngày nghiệp vụ) khỏi EOD batch — cut-off là quyết định tại thời điểm nhận giao dịch, EOD chỉ xử lý tập đã chốt. Hai thứ trộn lẫn là nguồn gốc lỗi ngày hạch toán.
+### Ví dụ đời thực
+
+Một ngân hàng chạy EOD hàng đêm với 7 bước. Đêm nào cũng vậy, nhưng một ngày job bị lỗi ở bước 5 (GL/Balance) sau khi đã tính lãi xong — team phải chạy lại từ đầu, và vì bước tính lãi không idempotent, khách được cộng lãi kép. Sau khi phát hiện, dev sửa: (1) mỗi bút toán tính lãi gắn khóa nghiệp vụ {{(account, INTEREST, business_date)}} và kiểm tra tồn tại trước khi ghi ({{INSERT ... ON CONFLICT DO NOTHING}}) — chạy lại không tạo bút trùng; (2) thêm checkpoint {{eod_run(date=T, step=INTEREST, status=DONE)}}; khi restart, đọc bước DONE cuối cùng và chạy tiếp bước sau; (3) distributed lock theo {{business_date}} để nhiều node không cùng chạy. Kết quả: sau khi fix, job có thể restart từ bất kỳ bước nào mà không gây trùng; thời gian EOD giảm từ 6 tiếng xuống 3 tiếng. Dev cũng thêm monitoring: báo alert nếu EOD chưa hoàn thành trước 3h sáng hoặc số bút toán ngày T khác ngày T-1 quá 20%.
+
+### Trả lời mẫu khi phỏng vấn
+
+"EOD của tôi được thiết kế với tư duy 'giả định job sẽ chết giữa chừng và sẽ bị chạy lại'. Cut-off time là mốc chốt——giao dịch sau mốc được gán vào ngày nghiệp vụ tiếp theo——và được tách khỏi EOD batch. EOD gồm 7 bước có thứ tự (pre-check, posting, interest/fee, reconcile, GL/balance, reporting, date switch), là một DAG với phụ thuộc rõ ràng. An toàn khi chạy lại nhờ 3 kỹ thuật: (1) mỗi bút toán gắn khóa nghiệp vụ {{(account, type, business_date)}} và kiểm tra tồn tại trước khi ghi——idempotent; (2) checkpoint lưu trạng thái từng bước, restart thì chạy tiếp từ bước chưa xong; (3) distributed lock theo {{business_date}} để nhiều node không cùng chạy. Cut-off logic tách biệt: EOD chỉ xử lý tập đã chốt. Kết quả thực tế: một ngân hàng sau khi áp dụng có thể restart từ bất kỳ bước nào mà không gây trùng lãi, thời gian EOD giảm từ 6 tiếng xuống 3 tiếng."
+
+> Senior tip: Hãy nói về EOD theo tư duy "thiết kế cho sự cố": **giả định job sẽ chết giữa chừng và sẽ bị chạy lại**. Khi đó idempotency + checkpoint + khóa nghiệp vụ theo ngày là bắt buộc, không phải tối ưu. Nêu thêm: tách **cut-off logic** (gắn ngày nghiệp vụ) khỏi EOD batch — cut-off là quyết định tại thời điểm nhận giao dịch, EOD chỉ xử lý tập đã chốt. Hai thứ trộn lẫn là nguồn gốc lỗi ngày hạch toán.
   `,
   follow: [
     'Distributed lock cho job EOD theo business_date nên dùng công cụ/cơ chế nào và xử lý thế nào khi node giữ khóa bị chết (lock bị kẹt)?',
@@ -2473,7 +2505,15 @@ Adapter --> CoreBank: cap nhat trang thai giao dich
 - Không xử lý reason code khi {{RJCT}} (bị từ chối) -> chỉ biết "lỗi" mà không biết lý do (sai tài khoản, vượt hạn mức...).
 - Hard-code mapping rải rác -> khó thay đổi khi đối tác nâng phiên bản.
 
-> Senior tip: Ở góc lead, nhấn mạnh đây là bài toán *quản lý biên* (boundary) và *ngữ nghĩa dữ liệu*, không chỉ là "parse XML". Ba điểm ăn điểm: (1) canonical model + adapter để cô lập thay đổi, (2) mã tham chiếu end-to-end ổn định để idempotency/đối soát/tra soát, (3) parallel run + đối soát trước khi cutover. Luôn hỏi đối tác: họ dùng profile/phiên bản nào, trường nào bắt buộc, reason code set nào — đừng suy đoán.
+> ### Ví dụ đời thực
+
+Một ngân hàng cần gửi file chuyển tiền sang đối tác theo chuẩn ISO 20022 (pacs.008). Ban đầu mapping thủ công bằng Excel: mỗi tháng mất 2 ngày để đối chiếu field, và 3 lần sai field (ngày tạo vs ngày giá trị, trạng thái accepted vs settled) gây đối tác từ chối giao dịch. Dev triển khai: (1) lớp canonical model trung gian, (2) adapter map core -> ISO 20022 và parse XML về lại, (3) validate theo XSD + rule nghiệp vụ, (4) giữ EndToEndId ổn định theo giao dịch gốc (tạo một lần, không sinh lại khi retry), (5) log message id + bản tin đã che dữ liệu nhạy cảm, (6) parallel run 2 tháng: gửi cả kênh cũ và ISO 20022, so khớp kết quả. Kết quả: thời gian mapping giảm từ 2 ngày xuống 2 giờ, không còn giao dịch bị từ chối do field sai; khi đối tác nâng phiên bản profile, chỉ sửa adapter, không core. Đội cũng thêm đối chiếu hằng ngày để phát hiện map sai sớm.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi tích hợp với đối tác theo ISO 20022, tôi luôn thiết kế một lớp canonical model trung gian và adapter——không để cấu trúc XML rò rỉ vào core. Canonical model biểu diễn trung gian theo ngữ nghĩa nghiệp vụ, giúp không phải map N hệ thống x N hệ thống trực tiếp. Adapter làm 3 việc: validate XML theo XSD, map field core <-> ISO 20022, và giữ các mã tham chiếu (EndToEndId, TxId) ổn định theo giao dịch gốc——đây là chìa khóa cho idempotency, đối chiếu và tra cứu. Ba thách thức thường gặp: ngữ nghĩa khác nhau (ngày tạo vs ngày giá trị, accepted vs settled), độ dài field (tên 200 ký tự nhưng message chỉ nhận 140), và reason code khi RJCT——phải xử lý từng loại. Chiến lược an toàn: parallel run với kênh cũ, so khớp kết quả trước khi cutover; log message id và đối chiếu hằng ngày. Luôn hỏi đối tác: profile/phiên bản nào, trường nào bắt buộc, reason code set nào — đừng suy đoán."
+
+> Senior tip: Ở góc lead, nhấn mạnh đây là bài toán **quản lý biên** (boundary) và **ngữ nghĩa dữ liệu**, không chỉ là "parse XML". Ba điểm ăn điểm: (1) canonical model + adapter để cô lập thay đổi, (2) mã tham chiếu end-to-end ổn định để idempotency/đối chiếu/tra khảo, (3) parallel run + đối chiếu trước khi cutover.
   `,
   follow: [
     'EndToEndId, TxId, MsgId trong ISO 20022 khác nhau thế nào và bạn chọn mã nào làm khóa đối soát/tra soát với đối tác?',
