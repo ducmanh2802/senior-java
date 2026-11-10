@@ -1890,6 +1890,15 @@ If I'm talking to an engineer, I might also ask: "What does on-call look like, a
 - **How are you deciding...?**: team quyết định... như thế nào?
 - **What does on-call look like?**: on-call ở đây thế nào?
 
+### Useful phrases
+- **What would success look like in the first six months?**: thành công trong 6 tháng đầu trông như thế nào?
+- **What's the biggest technical challenge the team is dealing with right now?**: thách thức lớn nhất team đang gặp hiện tại là gì?
+- **Is it more about scale, reliability, or legacy code?**: chủ yếu là mở rộng quy mô, độ tin cậy, hay code cũ?
+- **How does the team balance feature work with tech debt and reliability?**: team cân bằng công việc tính năng với nợ kỹ thuật và độ tin cậy thế nào?
+- **How are you deciding which parts to extract first?**: team quyết định phần nào trích xuất đầu tiên?
+- **What does a typical on-call week look like for this team?**: một tuần on-call bình thường của team này thế nào?
+- **Is there a dedicated budget for tech debt, or is it negotiated sprint by sprint?**: có ngân sách riêng cho nợ kỹ thuật không, hay đàm phán từng sprint?
+
 ### Lỗi người Việt hay mắc
 - "No, I think everything is clear." → bỏ lỡ cơ hội thể hiện sự quan tâm.
 - Hỏi câu có sẵn trên website ("What does your company do?").
@@ -1979,6 +1988,20 @@ If you need someone sooner, I can ask my manager whether a shorter notice period
 - **the earliest I could start would be...**: ngày sớm nhất tôi có thể bắt đầu là...
 - **a proper handover**: bàn giao đầy đủ
 - **I don't want to promise that until...**: tôi không muốn hứa điều đó trước khi...
+- **leave my current team in good shape**: để đội hiện tại ở trạng thái tốt
+- **documentation and knowledge-transfer sessions**: tài liệu và các buổi chia sẻ kiến thức
+- **Is there a particular date you have in mind?**: anh/chị có ngày cụ thể nào trong tâm trí không?
+- **I can ask my manager whether a shorter notice period would be possible**: tôi có thể hỏi xem có thể báo trước ngắn hơn không
+- **I'd rather not use my remaining leave to shorten it**: tôi không muốn dùng ngày phép còn lại để ngắn lại thời gian
+- **a clean handover matters to me**: một lần bàn giao sạch sẽ quan trọng với tôi
+- **I want to do a proper handover**: tôi muốn thực hiện một lần bàn giao đầy đủ
+- **documentation and knowledge-transfer sessions**: tài liệu và các buổi chia sẻ kiến thức
+- **Is there a particular date you have in mind?**: anh/chị có ngày cụ thể nào trong tâm trí không?
+- **I can ask my manager whether a shorter notice period would be possible**: tôi có thể hỏi xem có thể báo trước ngắn hơn không
+- **I don't want to promise that until I've talked to them**: tôi không muốn hứa điều đó trước khi đã nói chuyện với họ
+- **leave my current team in good shape**: để đội hiện tại ở trạng thái tốt
+- **30 days' notice**: báo trước 30 ngày (chú ý dấu sở hữu **days'**)
+- **the earliest I could start would be...**: ngày sớm nhất tôi có thể bắt đầu là...
 
 ### Lỗi người Việt hay mắc
 - "I can start immediately." trong khi vẫn đang đi làm → nếu không đúng, công ty mới sẽ mất niềm tin.
@@ -2116,6 +2139,17 @@ We'll track one number: the percentage of exports that finish successfully. Toda
 - **What we're proposing is...**: điều chúng tôi đề xuất là...
 - **For the business, that means...**: với kinh doanh, điều đó có nghĩa là...
 - **We'll track one number: ...**: chúng tôi sẽ theo dõi một chỉ số...
+- **The cost is...**: cái giá phải trả là...
+- **The alternative would be...**: phương án khác là...
+- **Does that trade-off work for you?**: đánh đổi đó có phù hợp với anh/chị không?
+- **no more failed exports**: không còn xuất file bị lỗi
+- **fewer support tickets**: ít yêu cầu hỗ trợ hơn
+- **about three weeks of engineering time**: khoảng ba tuần làm việc của kỹ sư
+- **the percentage of exports that finish successfully**: tỉ lệ các lần xuất hoàn thành thành công
+- **customers wait for a notification instead of getting the file right away**: khách hàng chờ thông báo thay vì nhận file ngay lập tức
+- **build the report in the background**: xây dựng báo cáo ở nền
+- **Your report is being prepared**: báo cáo của bạn đang được chuẩn bị
+- **get an email when it's ready**: nhận email khi đã xong
 
 ### Lỗi người Việt hay mắc
 - Nói "we will add a message queue and async workers" → stakeholder không biết điều đó có ý nghĩa gì với họ.
@@ -2168,6 +2202,20 @@ What helped was learning the three sounds for each ending and practicing in pair
 ### Câu luyện tập
 "Last week we **migrated** two **services**, **fixed** three **bugs**, and **deployed** the **changes** to all **regions**."
 
+### Useful phrases
+- **Since my first language is Vietnamese**: vì tiếng mẹ đẻ của tôi là tiếng Việt
+- **words don't end in consonant clusters**: các từ không kết thúc bằng cụm phụ âm
+- **I used to drop endings**: tôi thường bỏ các đuôi
+- **the three sounds for each ending**: ba âm cho mỗi đuôi
+- **practice in pairs**: luyện theo cặp
+- **I record myself explaining a past project**: tôi ghi âm mình kể một dự án đã xong
+- **slow down slightly on the ending**: chậm lại một chút ở đuôi
+- **finish the sound, then go back to normal pace**: hoàn thành âm, rồi trở lại tốc độ bình thường
+- **nuốt đuôi -s và -ed**: bỏ qua đuôi -s và -ed
+- **thì hiện tại**: present tense
+- **quá khứ đơn**: past simple
+- **consonant clusters**: cụm phụ âm (như /sts/ trong "requests")
+
 ### Lỗi người Việt hay mắc
 - Đọc "fixed" thành "fix-ed" /fɪksɪd/ → sai; chỉ thêm /ɪd/ sau /t/ và /d/.
 - Nuốt hoàn toàn đuôi → "two request", "we test it yesterday".
@@ -2218,8 +2266,20 @@ And if a team has its own way of saying something — some people say 'sequel', 
 | Hibernate | /ˈhaɪbərneɪt/ | nhấn âm đầu "HI" |
 | PostgreSQL | "post-gres-Q-L" | hoặc gọi tắt "Postgres" |
 
+### Useful phrases
+- **I check how the creators or the community say it**: tôi kiểm tra người sáng tạo hoặc cộng đồng đọc nó thế nào
+- **many projects mention it in their docs or in conference talks**: nhiều dự án đề cập nó trong tài liệu hoặc hội thảo
+- **I use a dictionary with audio**: tôi dùng từ điển có âm thanh
+- **pay attention to the stressed syllable**: chú ý đến âm tiết được nhấn
+- **wrong stress is what usually makes a word hard to recognize**: nhấn sai âm là điều khiến từ khó nhận ra
+- **practice the word in a full sentence**: luyện từ trong cả câu
+- **if a team has its own way of saying something**: nếu một team có cách đọc riêng
+- **I just follow what my colleagues use**: tôi chỉ làm theo đồng nghiệp dùng
+- **both are fine**: cả hai đều được
+- **read it correctly**: đọc đúng
+- **make a list of 20–30 terms**: làm một danh sách 20–30 thuật ngữ
+
 ### Lỗi người Việt hay mắc
-- Đọc mọi âm tiết đều nhau, không có trọng âm → người bản xứ khó nhận ra từ.
 - Bỏ phụ âm cuối: "cache" thành "ca", "queue" thành "kiu" ngắn.
 - Ngại nói từ khó nên dùng từ khác lòng vòng → cứ nói, nếu sai interviewer vẫn hiểu từ ngữ cảnh.
 
@@ -2262,6 +2322,21 @@ Right now I'm leading our migration to Spring Boot 3. We've moved six of our nin
 | Kết quả tính đến nay | Present perfect | We**'ve moved** six services so far. |
 | Đang diễn ra | Present continuous | I**'m leading** the migration. |
 | Bắt đầu trong quá khứ, vẫn tiếp tục | Present perfect continuous | I**'ve been working** here since 2021. |
+
+### Useful phrases
+- **I'm responsible for...**: tôi có trách nhiệm về...
+- **I maintain the adapters**: tôi bảo trì các adapter
+- **I'm on the on-call rotation**: tôi tham gia lịch trực on-call
+- **I worked on...**: tôi đã làm việc về...
+- **I built the document upload flow**: tôi xây dựng luồng tải tài liệu lên
+- **I'm leading our migration to...**: tôi dẫn dắt việc chuyển đổi sang...
+- **We've moved six of our nine services so far**: chúng tôi đã di chuyển 9 dịch vụ thì 6 dịch vụ rồi
+- **we're planning to finish by the end of the quarter**: chúng tôi đang lên kế hoạch xong vào cuối quý
+- **trách nhiệm thường xuyên**: regular responsibility
+- **việc đã xong, có thời điểm**: completed work with a specific time
+- **kết quả tính đến nay**: result up to now
+- **đang diễn ra**: ongoing
+- **bắt đầu trong quá khứ, vẫn tiếp tục**: started in the past and still continuing
 
 ### Lỗi người Việt hay mắc
 - "I **have worked** on that project **in 2022**." → sai; có mốc thời gian cụ thể thì dùng quá khứ: **"I worked on that project in 2022."**
