@@ -1,6 +1,6 @@
 # T464 — Dịch sang tiếng Anh: lessons-testing (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-testing-1.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-testing-1.en.js` và `node scripts/check-i18n.js lessons-testing-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Đã dịch 2 bài học (lesson-testing-001, lesson-testing-002). `node scripts/validate.js` → OK.
