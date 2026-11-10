@@ -2025,6 +2025,11 @@ Map<String, User> byEmail = users.stream()
 - Song song: collector **không** cần container thread-safe (mỗi thread có container riêng rồi gộp bằng combiner), nhưng supplier/accumulator/combiner tự viết phải đúng và không dùng state chia sẻ.
 - Tránh side effect trong classifier/downstream; collector nên là hàm thuần.
 
+### Ví dụ đời thực
+Batch kết xuất báo cáo doanh thu theo khách hàng, nhóm đơn hàng bằng {{groupingBy(Order::getEmail, toList())}}. Lần chạy đầu production, job dừng giữa chừng sau 15 phút, log ghi {{NullPointerException}} trỏ đến dòng collect. Điều tra: 2% đơn hàng là khách lẻ, getEmail() trả null, classifier trả null gây NPE (key null) và hủy toàn bộ stream. Sửa: lọc đơn có email trước, riêng khách lẻ gom vào khóa "KHACH_LE" bằng {{groupingBy(o -> o.getEmail() == null ? "KHACH_LE" : o.getEmail())}}. Kết quả: batch xử lý hết 85.000 đơn, 0 lỗi, báo cáo đúng số.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi dùng {{toMap}}, em luôn kèm hàm merge, vì nếu key trùng và không có merge function thì {{toMap}} ném {{IllegalStateException}} và làm hỏng toàn bộ stream. Hàm merge giúp em giữ bản mới nhất theo updatedAt, tránh mất âm thầm dữ liệu. Nếu value có thể null, em lọc bằng {{filter(Objects::nonNull)}} hoặc dùng giá trị mặc định để tránh NPE. Với {{groupingBy}}, classifier trả null cũng khiến pipeline dừng vì {{computeIfAbsent}} không chấp nhận key null, nên em kiểm tra hoặc gán giá trị mặc định trước khi collect. Em thường dùng downstream counting() để thống kê số đơn mỗi khách thay vì load toàn bộ danh sách vào bộ nhớ. Em từng gặp batch nhóm đơn hàng theo email dừng lỗi ở production vì email khách hàng null; em sửa bằng cách lọc null và gom khách lẻ vào khóa riêng, batch sau đó chạy xong tám mươi ngàn đơn mà không lỗi. Em cũng ưu tiên {{LinkedHashMap}} khi báo cáo cần giữ thứ tự, và hạn chế stream song song nếu classifier có side effect."
 > Senior tip: khi map dữ liệu từ DB, luôn giả định key có thể trùng và value có thể null; viết merge function rõ ràng (ví dụ giữ bản mới nhất theo timestamp) thay vì để exception nổ ở production. Và với báo cáo, dùng {{LinkedHashMap}}/{{TreeMap}} để thứ tự ổn định giữa các lần chạy.`,
   follow: [
     'Vì sao {{toMap}} ném NPE khi value null?',
@@ -2098,6 +2103,11 @@ for (var e : map.reversed().entrySet()) { ... }  // b=2, a=1
 - {{SequencedCollection}} không extends {{Deque}} — không có {{push}}/{{pop}}.
 - Immutable collections ({{List.of}}, {{Set.of}}) implement {{SequencedCollection}} nhưng {{addFirst}}/{{removeFirst}} ném {{UnsupportedOperationException}}.
 
+### Ví dụ đời thực
+Hệ thống đối soát thanh toán lưu danh sách mã giao dịch trong {{LinkedHashSet}} để tránh trùng và giữ thứ tự xảy ra, khoảng 50.000 mã mỗi ngày. Cần lấy mã mới nhất để so sánh với ngân hàng. Trước Java 21, code phải đổi sang List rồi gọi {{get(size - 1)}}, hoặc duyệt ngược bằng Iterator, dễ sai chỉ mục và phải copy toàn bộ tập hợp. Sau nâng cấp Java 21, dùng trực tiếp {{set.getLast()}} và {{set.reversed()}} để duyệt ngược không copy, và kiểm tra {{isEmpty()}} trước khi gọi {{getLast()}} tránh {{NoSuchElementException}}. Sau thay đổi, code gọn hơn mười lăm dòng, không còn lỗi chỉ mục vượt mảng trong module đối soát.
+
+### Trả lời mẫu khi phỏng vấn
+"Java 21 thêm {{SequencedCollection}} và {{SequencedMap}} để thống nhất cách truy cập phần tử đầu, cuối và đảo ngược cho các collection có thứ tự như {{List}}, {{LinkedHashSet}}, {{LinkedHashMap}} và {{TreeMap}}. Trước đây mỗi loại có API riêng, ví dụ {{List}} dùng {{get(0)}} còn {{TreeSet}} dùng {{first()}}, nên viết code chung rất khó. Với {{SequencedCollection}}, em dùng {{getFirst()}}/{{getLast()}} lấy đầu/cuối, {{reversed()}} để duyệt ngược bằng view không cần copy. Lưu ý {{reversed()}} là view, sửa gốc thì view thay đổi theo, và {{getLast()}} ném exception nếu rỗng nên em kiểm tra {{isEmpty()}} trước. HashSet/HashMap không implement vì thứ tự không ổn định. Em ưu tiên dùng nó làm tham số method để chấp nhận nhiều loại collection hơn."
 > Senior tip: khi viết method nhận collection có thứ tự, dùng {{SequencedCollection}} làm tham số thay vì {{List}}/{{Deque}} — chấp nhận được nhiều loại hơn và có API thống nhất. {{reversed()}} view rất tiện cho duyệt ngược không cần index math.`,
   follow: [
     'Vì sao {{HashSet}}/{{HashMap}} không implement {{SequencedCollection}}/{{SequencedMap}}?',
@@ -2197,6 +2207,11 @@ String priority(Order o) {
 - Unnamed pattern {{_}} chỉ Java 22+ (preview), Java 21 dùng {{var _}} hoặc tên biến rồi không dùng.
 - Performance: pattern matching switch compile thành {{tableswitch}}/{{lookupswitch}} + type check, nhanh hơn visitor.
 
+### Ví dụ đời thực
+Hệ thống xử lý sự kiện thanh toán dùng hiérarchie sealed: interface {{Event}} permits {{PaymentSuccess}}, {{PaymentFailure}}, {{Refund}}. Cần tính tổng tiền các sự kiện thành công và đếm sự kiện thất bại hơn một ngàn đồng. Trước đây em viết visitor pattern với nhiều lớp và method accept, code dài và dễ quên xử lý loại mới. Sau chuyển sang record pattern + switch, em viết một hàm duy nhất destructure mỗi loại trong {{case}}, thêm guard {{when}} để lọc số tiền, compiler kiểm tra exhaustive nhờ {{sealed}} nên không cần {{default}}. Thêm loại sự kiện mới chỉ cần thêm record và sửa hàm switch, compiler sẽ nhắc nếu thiếu case. Code gọn hơn khoảng ba mươi dòng và không còn lỗi quên xử lý loại sự kiện ở runtime.
+
+### Trả lời mẫu khi phỏng vấn
+"Record pattern cho phép em destructure thành phần của record ngay trong {{instanceof}} và {{switch}}, bao gồm cả destructure lồng nhau, ví dụ destructure đối tượng khách hàng bên trong đơn hàng. Với guard {{when}}, em thêm điều kiện boolean vào từng case, chỉ match khi điều kiện đúng. Kết hợp với hiérarchie {{sealed}}, switch kiểm tra exhaustive tại thời điểm biên dịch, nên em không cần visitor pattern và không cần cast thủ công. Thứ tự case quan trọng: case cụ thể phải đặt trước case chung, không thì compiler báo dominated. Unnamed pattern {{_}} chỉ có từ Java 22, ở Java 21 em dùng tên biến rồi không dùng. Em ưu tiên record pattern cho mô hình miền ổn định như sự kiện, lệnh, trạng thái; nếu miền mở (plugin), em dùng {{non-sealed}} hoặc interface thường."
 > Senior tip: record pattern + sealed + switch exhaustive là "killer feature" cho domain modeling (AST, command, event, state). Thay thế visitor pattern hoàn toàn cho hierarchy ổn định. Nếu domain mở (plugin), dùng {{non-sealed}} hoặc interface thường.`,
   follow: [
     'Vì sao record pattern + sealed switch an toàn hơn visitor pattern?',
@@ -2675,6 +2690,11 @@ try (var in = FileChannel.open(src, StandardOpenOption.READ);
 - Yêu cầu: source là {{FileChannel}}, destination có thể là {{FileChannel}} hoặc {{SocketChannel}}.
 - Java 9+: {{transferTo}} trả về số byte đã transfer; có thể gọi lặp nếu không transfer hết.
 
+### Ví dụ đời thực
+Hệ thống lưu file log ứng dụng dạng text, mỗi ngày khoảng 8GB, cần lọc dòng chứa ERROR để điều tra sự cố. Lúc đầu dev dùng {{Files.readAllBytes}} load toàn bộ file vào bộ nhớ, máy OutOfMemoryError vì heap chỉ 2GB. Sửa sang {{Files.lines(path)}} đọc lazy theo dòng, lọc dòng chứa "ERROR" và in ra, dùng try-with-resources để tự đóng stream. Từ 8GB file chỉ tốn vài megabyte heap, job chạy xong trong vài phút không OOM. Nếu cần sao lưu file log sang ổ khác, em dùng {{FileChannel.transferTo}} sao chép kernel-to-kernel không qua bộ nhớ ứng dụng, nhanh hơn và không làm đầy heap.
+
+### Trả lời mẫu khi phỏng vấn
+"I/O truyền thống như {{FileInputStream}} đọc byte-by-byte và block luồng cho đến khi xong, còn NIO dùng {{Buffer}} và {{Channel}}: dữ liệu đọc vào bộ nhớ đệm rồi kênh truyền, cho phép không block và sử dụng {{Selector}} quản lý nhiều kênh cùng lúc. {{Files}} API (Java 7+) hỗ trợ thao tác hệ thống file như {{Files.lines}} đọc file lớn theo dòng không đầy bộ nhớ, và {{Files.walk}} duyệt thư mục. Đọc file lớn phải tránh {{readAllBytes}}/{{readAllLines}} load hết vào heap, dùng stream hoặc {{BufferedReader}} theo dòng. Zero-copy {{transferTo}} truyền dữ liệu giữa hai kênh tại kernel, không copy qua user space, thích hợp copy file lớn hoặc gửi qua mạng. {{MappedByteBuffer}} ánh xạ file vào bộ nhớ nhưng khó unmap và không dùng cho file quá 2GB trên 32-bit."
 > Senior tip: với log processing lớn, dùng {{Files.lines}} + parallel stream (nếu CPU-bound) hoặc {{BufferedReader}} tuần tự (nếu I/O-bound). Với copy file lớn hoặc gửi file qua network, luôn ưu tiên {{transferTo}}. Tránh {{MappedByteBuffer}} cho file > 2GB trên 32-bit hoặc khi cần đóng gấp (unmap khó khăn, dùng {{Cleaner}} hoặc reflection hack).`,
   follow: [
     'Vì sao {{transferTo}} nhanh hơn đọc vào buffer rồi ghi ra?',
@@ -2745,6 +2765,21 @@ log.info("Processing {} for {}", id, user);
 ~~~
 - {{String.join}} cho collection: tiện nhưng tạo mảng trung gian nếu truyền varargs; dùng {{StringJoiner}} cho stream.
 
+### Ví dụ đời thực
+Module ghi log hệ thống có câu lệnh {{log.info("Processing order " + orderId + " for user " + userName)}} trong đường dẫn nóng, xử lý 5.000 giao dịch mỗi phút. Chuỗi được nối trước khi kiểm tra mức log, dù log level là WARN thì chuỗi vẫn tạo ra, gây rác bộ nhớ và làm chậm hệ thống. Sửa sang placeholder SLF4J dùng dấu ngoặc nhọn làm chỗ trống, chỉ tạo chuỗi khi log level cho phép:
+
+~~~java
+// tránh: nối chuỗi luôn tạo ra ngay cả khi không ghi log
+log.info("Processing order " + orderId + " for user " + userName);
+
+// đúng: SLF4J placeholder, tạo chuỗi lười
+log.info("Processing order {} for user {}", orderId, userName);
+~~~
+
+Phần khác xây dựng báo cáo bằng vòng lặp nối chuỗi với {{+}}, mỗi vòng tạo một lời gọi invokedynamic riêng, chậm. Dùng {{StringBuilder}} với capacity ước lượng, thời gian xử lý báo cáo giảm từ vài giây xuống dưới một giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Từ Java 9, phép nối chuỗi bằng {{+}} dùng {{invokedynamic}} cùng {{StringConcatFactory}}, runtime sinh bytecode tối ưu thay vì cố định {{new StringBuilder()}} như trước. Kết quả {{a + b + c}} nhanh ngang {{StringBuilder}} thủ công và code dễ đọc hơn. Nhưng trong vòng lặp, mỗi lần nối tạo một lời gọi riêng nên em dùng {{StringBuilder}} với capacity ước lượng để tránh resize. {{String.format}} chậm hơn khoảng 50-100 lần vì phải phân tích chuỗi định dạng, tạo đối tượng {{Formatter}} mới và boxing/unboxing tham số mỗi lần gọi. Với logging, em luôn dùng placeholder SLF4J để chỉ tạo chuỗi khi cần, đây là lỗi performance phổ biến trong production. Em bật {{-XX:+PrintStringConcat}} nếu muốn xem chiến lược JIT chọn."
 > Senior tip: mặc định viết {{+}} cho concat đơn giản (Java 9+), chỉ dùng {{StringBuilder}} khi có vòng lặp hoặc cần capacity. Bật {{-XX:+PrintStringConcat}} để xem chiến lược JIT chọn. Với logging, **luôn dùng placeholder SLF4J** — đây là lỗi performance hay gặp nhất trong production.`,
   follow: [
     'Vì sao {{invokedynamic}} giúp concat nhanh hơn bytecode tĩnh?',
@@ -2819,6 +2854,11 @@ Ví dụ hợp lý là template method: {{AbstractStatementExporter}} có method
 - Nhầm abstraction (thiết kế mức khái niệm, interface) với encapsulation (giấu dữ liệu và bảo vệ invariant).
 - Chỉ nói đến runtime polymorphism (overriding) mà quên overloading là compile-time polymorphism.
 
+### Ví dụ đời thực
+Dự án cũ tính phí giao dịch bằng chuỗi if/else kiểm tra loại cổng thanh toán, mỗi khi thêm VNPay hay MoMo team phải sửa lại class CheckoutService và ít ngày lại có bug nhánh mới không được couverture test. Refactor sang interface {{PaymentProcessor}} với method {{pay()}}, mỗi cổng là một lớp implements, CheckoutService giữ {{Map<PaymentMethod, PaymentProcessor>}} và gọi dynamic dispatch. Thêm cổng mới chỉ cần thêm lớp @Component mới, không đụng CheckoutService (Open/Closed). Lỗi hay gặp là dùng inheritance chỉ để tái sử dụng code, ví dụ {{OrderService extends BaseDao}} chỉ để gọi {{save()}}, gắn chặt hai lớp và vi phạm Liskov; nên dùng composition, inject {{OrderRepository}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Encapsulation là giấu trạng thái và chỉ cho đổi qua method giữ ràng buộc, ví dụ {{Account.withdraw}} không cho số dư âm và đồng thời ghi lịch sử, tránh service nào cũng thay số dư trực tiếp. Abstraction là caller chỉ biết "cái gì" qua interface như {{PaymentProcessor.pay}}, không biết "làm thế nào". Inheritance là quan hệ "is-a" thật sự, ví dụ lớp xuất PDF và Excel kế thừa khung xuất chung và chỉ override từng bước. Polymorphism là cùng một lời gọi chạy implementation khác nhau theo object thực tế, nên thêm cổng thanh toán mới không sửa if/else. Tính chất hay bị sai nhất là inheritance: nhiều đội kế thừa chỉ để dùng lại code, nên dùng composition thay vì kế thừa theo chi."
 > Senior tip: khi trả lời, chọn một ví dụ xuyên suốt (thanh toán, tài khoản) rồi chỉ ra trade-off: "tôi ưu tiên composition, chỉ kế thừa khi có khung template rõ ràng". Interviewer ngân hàng thường hỏi tiếp sang SOLID và Strategy pattern, nên chuẩn bị sẵn ví dụ {{Map<Type, Strategy>}} như trên.`,
   follow: [
     'Composition over inheritance: cho một ví dụ bạn đã refactor từ kế thừa sang composition.',
