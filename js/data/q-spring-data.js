@@ -1784,6 +1784,17 @@ Thay vì khoá cả bảng khi đọc, MVCC giữ **nhiều phiên bản** của
 - **Write skew trong bài toán "ít nhất một bác sĩ trực"**: hai transaction cùng thấy còn 2 người trực, mỗi bên rút một người, kết quả 0 người. Cách tránh: SERIALIZABLE, hoặc khoá tường minh các dòng liên quan bằng {{FOR UPDATE}}, hoặc ràng buộc ở tầng DB.
 - **Transaction mở hàng giờ (quên commit, batch dài)**: triệu chứng – PostgreSQL bloat, InnoDB "History list length" tăng vọt, query chậm dần. Cách tránh: đặt {{idle_in_transaction_session_timeout}}, chia batch nhỏ.
 
+### Ví dụ đời thực
+**Triệu chứng:** Dịch vụ ví điện tử chạy PostgreSQL 14 (mặc định {{READ COMMITTED}}) ghi nhận trung bình 2–3 ca số dư âm mỗi ngày trên tài khoản khách, dù logic ứng dụng luôn kiểm tra {{balance >= amount}} trước khi trừ. Lưu lượng giờ cao điểm ~1.200 giao dịch rút/giây, cùng tài khoản hiếm khi bị trùng nhưng vẫn xảy ra.
+
+**Điều tra:** Bật {{pg_stat_statements}} và log các transaction có {{rows_affected}} bất thường; tái hiện bằng hai phiên {{psql}} chạy song song: cả hai {{SELECT balance}} thấy 100.000đ, mỗi bên trừ 80.000đ rồi {{UPDATE balance}} thành 20.000đ. Query thực tế chỉ làm {{SELECT}} rồi {{UPDATE ... SET balance = ?}} (ghi đè bằng giá trị tính ở ứng dụng) nên lần ghi sau ghi đè lên lần ghi trước (lost update), không phải cộng dồn.
+
+**Nguyên nhân gốc:** Pattern đọc-sửa-ghi tách rời ở mức {{READ COMMITTED}}: mỗi transaction tính số dư mới từ snapshot riêng, transaction commit sau thắng mà không biết bên kia đã trừ.
+
+**Cách xử lý:** Đổi sang cập nhật nguyên tử {{UPDATE account SET balance = balance - :amount WHERE id = :id AND balance >= :amount}} và kiểm tra số dòng cập nhật; với luồng cần đọc nhiều bước rồi quyết định, dùng {{SELECT ... FOR UPDATE}} để khoá dòng. Thêm ràng buộc {{CHECK (balance >= 0)}} làm lưới an toàn cuối.
+
+**Kết quả đo được:** Sau deploy, ca số dư âm giảm về 0 trong 30 ngày theo dõi; p95 thời gian giao dịch rút tăng không đáng kể (~1ms) do khoá chỉ giữ trong transaction ngắn.
+
 ### Trả lời miệng 1 phút
 "Chuẩn SQL có bốn mức isolation, mỗi mức chặn thêm một hiện tượng: READ COMMITTED chặn dirty read, REPEATABLE READ chặn thêm non-repeatable read, SERIALIZABLE chặn cả phantom và các bất thường khác. Cả PostgreSQL và InnoDB đều dùng MVCC: ghi tạo phiên bản mới, đọc nhìn một snapshot nên đọc không chặn ghi. Khác biệt chính là PostgreSQL mặc định READ COMMITTED, snapshot mới cho mỗi câu lệnh, và REPEATABLE READ của nó chặn cả phantom nhưng vẫn có write skew; InnoDB mặc định REPEATABLE READ, giữ read view cả transaction, chặn phantom khi ghi bằng gap lock nên dễ deadlock hơn. Trade-off là mức càng cao càng nhiều conflict và retry. Kinh nghiệm của tôi là đặt isolation tường minh, dùng update nguyên tử hoặc khoá cho read-modify-write, và luôn có retry cho lỗi serialization."
 
@@ -1869,6 +1880,17 @@ EXPLAIN FORMAT=JSON SELECT ...;
 - **Đo trên dữ liệu dev 1000 dòng**: optimizer chọn plan hoàn toàn khác so với production 50 triệu dòng. Cách tránh: test trên bản sao dữ liệu đã ẩn danh, hoặc ít nhất có cùng phân bố.
 - **Đo một lần rồi kết luận**: lần đầu đọc đĩa (cold cache), lần sau đọc RAM. Cách tránh: chạy vài lần, so cả cột Buffers hit/read.
 - **Thêm index nhưng query vẫn bọc cột trong hàm**: index không được dùng. Cách tránh: đọc lại plan sau khi sửa, đừng giả định.
+
+### Ví dụ đời thực
+**Triệu chứng:** API danh sách đơn hàng {{GET /orders?status=NEW}} trên PostgreSQL 14, bảng {{orders}} ~12 triệu dòng, bắt đầu vượt SLA 500ms vào giờ cao điểm; p95 tăng từ 80ms lên 2,4s sau khi traffic gấp đôi, trong khi CPU DB chỉ ~35%.
+
+**Điều tra:** Kiểm tra {{pg_stat_statements}} thấy query này chiếm ~40% tổng thời gian DB. Chạy {{EXPLAIN (ANALYZE, BUFFERS)}} trên bản sao dữ liệu production: node gốc là {{Nested Loop}} với {{Seq Scan on orders}} ước lượng 12 dòng nhưng thực tế trả 48.210 dòng ({{Rows Removed by Filter}} ~1,95 triệu), inner {{Index Scan}} lặp 48.210 lần, tổng {{Buffers: shared read=22012}}.
+
+**Nguyên nhân gốc:** Thống kê cột {{status}} lỗi thời sau đợt import lớn nên optimizer đánh giá thấp số dòng {{NEW}} và chọn {{Nested Loop}} sai; đồng thời thiếu index phù hợp cho điều kiện lọc nên phải quét và loại bỏ rất nhiều dòng.
+
+**Cách xử lý:** Chạy {{ANALYZE orders}} để cập nhật thống kê, tạo index {{(status, created_at)}} khớp truy vấn phổ biến, kiểm tra lại plan thấy chuyển sang {{Index Scan}}/join hợp lý hơn và giảm số vòng lặp.
+
+**Kết quả đo được:** Trên cùng dữ liệu, thời gian query giảm từ ~2,4s xuống ~35ms, {{shared read}} giảm mạnh nhờ đọc đúng vùng index; p95 API ổn định dưới 120ms ở tải cao điểm.
 
 ### Trả lời miệng 1 phút
 "EXPLAIN cho tôi plan dự kiến, còn EXPLAIN ANALYZE chạy thật và cho thời gian, số dòng thực tế của từng node. Quy trình của tôi: đo baseline, đọc plan từ node trong cùng ra, tìm node tốn thời gian nhất – nhớ nhân với số loops – rồi giải thích vì sao nó chậm: thiếu index, thống kê cũ, join sai kiểu, hay sort tràn đĩa. Dấu hiệu quan trọng nhất là estimated rows lệch xa actual rows, vì khi đó optimizer chọn sai thuật toán join. Sửa xong tôi đo lại để chắc chắn. Lưu ý thực tế: EXPLAIN ANALYZE với UPDATE sẽ thật sự ghi dữ liệu nên phải bọc trong BEGIN và ROLLBACK, và tôi dùng pg_stat_statements để tìm query tốn nhất tổng thể chứ không chỉ query chậm nhất một lần."
@@ -1960,6 +1982,17 @@ public void transfer(Long from, Long to, BigDecimal amount) {
 - **Foreign key không có index**: xoá dòng cha khiến DB quét và khoá bảng con rộng hơn cần thiết. Cách tránh: luôn index cột FK (PostgreSQL không tự tạo).
 - **Batch update không sắp xếp**: hai job cùng cập nhật danh sách id theo thứ tự khác nhau. Cách tránh: sort id trước khi update.
 
+### Ví dụ đời thực
+**Triệu chứng:** Ứng dụng chuyển tiền nội bộ trên MySQL 8.0 (InnoDB) ghi log lỗi {{Deadlock found when trying to get lock; try restarting transaction}} (1213) khoảng 30–50 lần/giờ, tăng lên ~300 lần/giờ vào khung 18h–20h. Tỉ lệ giao dịch thất bại sau 1 lần thử ~0,4%, một số yêu cầu của người dùng phải bấm lại.
+
+**Điều tra:** Bật {{innodb_print_all_deadlocks}} tạm thời và xem {{SHOW ENGINE INNODB STATUS}} (mục LATEST DETECTED DEADLOCK). Log cho thấy Tx1 cập nhật {{account}} id=101 rồi id=205, trong khi Tx2 cập nhật id=205 rồi id=101; cả hai đến từ API chuyển tiền hai chiều gần như đồng thời.
+
+**Nguyên nhân gốc:** Hai luồng khoá hai dòng tài khoản theo **thứ tự khác nhau** (theo tham số {{from}}, {{to}} của request) tạo vòng chờ. Transaction đủ ngắn nhưng thứ tự khoá không ổn định.
+
+**Cách xử lý:** Chuẩn hoá thứ tự khoá trong code: luôn khoá {{min(from,to)}} trước rồi {{max(from,to)}} bằng {{SELECT ... FOR UPDATE}}; giữ transaction chỉ gồm các bước DB. Thêm retry với backoff + jitter (tối đa 3 lần) ở tầng service bên ngoài {{@Transactional}} để xử lý các tranh chấp hiếm còn lại.
+
+**Kết quả đo được:** Sau deploy, deadlock giảm xuống 0–3 lần/giờ (chủ yếu từ luồng batch khác, được xử lý tiếp), tỉ lệ yêu cầu phải thử lại thủ công về ~0%, p95 API chuyển tiền không đổi đáng kể.
+
 ### Trả lời miệng 1 phút
 "Deadlock là khi hai transaction giữ khoá mà bên kia cần, tạo thành vòng chờ. DB phát hiện vòng đó – InnoDB kiểm tra ngay, PostgreSQL sau deadlock_timeout một giây – rồi rollback một transaction làm victim, client nhận lỗi 40P01 hoặc MySQL 1213. Cách xử lý của tôi có hai lớp: phòng ngừa bằng việc khoá theo thứ tự cố định, giữ transaction ngắn, có index cho mọi điều kiện ghi; và chịu lỗi bằng retry với transaction mới, có backoff và jitter. Trên production tôi đọc server log của PostgreSQL hoặc SHOW ENGINE INNODB STATUS để biết hai câu query nào tham gia, rồi sửa thứ tự khoá. Tôi theo dõi tỉ lệ deadlock theo thời gian: tăng đột biến sau deploy thường là dấu hiệu thay đổi code gây ra."
 
@@ -2043,6 +2076,17 @@ List<Order> findNext(@Param("t") Instant lastCreatedAt,
 - **Index không khớp hướng sort hoặc thiếu cột id**: triệu chứng – plan có thêm node Sort, chậm lại khi bảng lớn. Cách tránh: index {{(created_at, id)}} (B-tree đọc ngược được nên DESC/DESC vẫn dùng được; chỉ cần index riêng khi trộn chiều ASC/DESC).
 - **Viết {{Page}} trong Spring Data cho keyset**: {{Page}} chạy thêm câu {{COUNT(*)}} mỗi lần – trên bảng lớn tốn ngang query chính. Cách tránh: trả về {{Slice}} hoặc {{List}}; Spring Data 3.1+ còn có {{Window}} + {{ScrollPosition}} hỗ trợ keyset sẵn.
 - **Cột sort có NULL**: so sánh với NULL luôn không đúng nên dòng NULL biến mất. Cách tránh: cột sort NOT NULL hoặc xử lý NULLS FIRST/LAST tường minh.
+
+### Ví dụ đời thực
+**Triệu chứng:** Màn hình lịch sử giao dịch (infinite scroll) của ứng dụng ví dùng MySQL 8.0, bảng {{transactions}} ~18 triệu dòng. Trang đầu tải ~40ms, nhưng khi người dùng kéo sâu (tương đương offset ~200.000) thời gian phản hồi tăng lên 3–5s và DB CPU tăng vọt theo lưu lượng lướt; khiếu nại "app đứng" xuất hiện giờ cao điểm.
+
+**Điều tra:** Chạy {{EXPLAIN ANALYZE}} cho query {{SELECT ... ORDER BY created_at DESC, id DESC LIMIT 20 OFFSET 200000}} thấy engine phải đọc và bỏ 200.020 dòng theo index rồi mới trả 20 dòng. {{pg_stat_statements}} tương đương (trên bản sao PostgreSQL dùng để so sánh) và slow query log MySQL đều cho thấy thời gian tăng tuyến tính theo offset; thêm câu {{COUNT(*)}} của {{Page}} tốn thêm ~400ms.
+
+**Nguyên nhân gốc:** OFFSET buộc DB duyệt tuần tự qua phần đầu kết quả mỗi lần; càng sâu càng tốn. COUNT trên bảng lớn quét nhiều dữ liệu dù client chỉ cần "còn trang tiếp không".
+
+**Cách xử lý:** Chuyển sang keyset pagination với điều kiện {{WHERE (created_at < :t) OR (created_at = :t AND id < :id)}} và index {{(created_at, id)}}, trả cursor mã hoá và dùng {{Slice}} thay vì {{Page}} để bỏ {{COUNT(*)}}. Màn admin nhỏ vẫn giữ OFFSET vì cần nhảy trang.
+
+**Kết quả đo được:** Thời gian tải ổn định 25–45ms dù người dùng cuộn rất sâu; p99 API lịch sử giảm từ ~4,2s xuống ~60ms, CPU DB giảm rõ trong giờ cao điểm.
 
 ### Trả lời miệng 1 phút
 "OFFSET bắt DB đọc rồi bỏ n dòng nên trang càng sâu càng chậm; keyset thì lưu giá trị sort của dòng cuối và hỏi 'các dòng sau giá trị này', nên DB đi thẳng tới đó qua index và thời gian gần như không đổi. Với bảng hàng triệu dòng tôi chọn keyset, ORDER BY created_at, id với id làm tie-breaker, có index khớp, cursor mã hoá trả cho client. Trade-off là không nhảy được tới trang N và khó đổi kiểu sort tuỳ ý, nên với màn hình admin nhỏ cần số trang tôi vẫn dùng OFFSET. Kinh nghiệm thực tế: chuyển API danh sách giao dịch sang keyset và bỏ COUNT(*) giảm p99 từ vài giây xuống vài chục mili giây."
@@ -2129,6 +2173,17 @@ Ví dụ thực tế: sharding theo {{tenant_id}} hoặc {{customer_id}} cho h�
 - **Shard theo thời gian**: toàn bộ ghi hôm nay dồn vào một shard mới nhất (hot shard). Cách tránh: shard theo khoá phân tán đều (tenant, customer) và chỉ partition theo thời gian **bên trong** shard.
 - **Quá nhiều partition nhỏ**: hàng nghìn partition làm planning chậm và tốn bộ nhớ. Cách tránh: giữ số partition vừa phải (vài chục đến vài trăm), chọn độ hạt theo tháng thay vì ngày nếu đủ.
 
+### Ví dụ đời thực
+**Triệu chứng:** Nền tảng SaaS B2B (PostgreSQL 14) dùng một primary + 2 replica, bảng {{events}} tăng ~120 triệu dòng/tháng. Sau 10 tháng, câu truy vấn báo cáo theo tenant chạy 40–90s, job xoá dữ liệu cũ bằng {{DELETE}} gây lock và IO spike; {{pg_stat_replication}} cho thấy replica lag tăng lên 8–15s giờ cao điểm, người dùng than "vừa tạo xong không thấy trong danh sách".
+
+**Điều tra:** {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy quét gần như toàn bộ bảng sự kiện dù chỉ cần 30 ngày gần nhất; {{pg_stat_activity}} ghi nhận câu {{DELETE}} giữ transaction lâu. Ứng dụng định tuyến đọc theo {{@Transactional(readOnly=true)}} nên một số request đọc ngay sau ghi bị gửi sang replica đang trễ.
+
+**Nguyên nhân gốc:** Bảng lớn đơn khối không partition theo thời gian nên không prune và không thể dọn nhanh; replication giải quyết đọc nhưng có lag; tải ghi và dung lượng tập trung một instance.
+
+**Cách xử lý:** Chuyển {{events}} sang declarative partitioning theo tháng (range trên {{created_at}}) để prune và {{DROP}} partition cũ; áp dụng "read-your-writes" (đọc primary vài giây sau ghi cho chính user). Chuẩn bị kế hoạch shard theo {{tenant_id}} trong tương lai khi primary không chịu nổi ghi, nhưng chưa shard ngay.
+
+**Kết quả đo được:** Báo cáo 30 ngày giảm còn 3–6s nhờ pruning; xoá dữ liệu cũ thành thao tác {{DROP PARTITION}} tức thì, lag replica giảm còn < 2s khi bớt IO nền.
+
 ### Trả lời miệng 1 phút
 "Ba khái niệm giải quyết ba vấn đề khác nhau. Replication tạo bản sao để scale đọc và HA, mọi ghi vẫn đi qua một primary và có replication lag. Partitioning chia một bảng lớn thành nhiều phần trong cùng instance, lợi ích chính là partition pruning và xoá dữ liệu cũ bằng drop partition. Sharding chia dữ liệu ra nhiều DB độc lập nên scale được cả ghi, đổi lại mất transaction và join xuyên shard. Shard key tôi chọn theo truy vấn thực tế: phần lớn query phải chứa key, phân bố đều và không tạo hot shard – thường là tenant hoặc customer id. Kinh nghiệm của tôi là đi theo thứ tự tối ưu query, replica, partition, cache rồi mới shard, vì shard gần như không quay lại được."
 
@@ -2212,6 +2267,17 @@ spring:
 - **Gọi API ngoài bên trong {{@Transactional}}**: API chậm 5s thì connection cũng bị giữ 5s. Triệu chứng – "Connection is not available, request timed out after 3000ms" khi đối tác chậm. Cách tránh: gọi API trước/sau transaction.
 - **{{max-lifetime}} dài hơn timeout của firewall/DB**: triệu chứng – lỗi "connection reset" ngẫu nhiên sau giờ thấp điểm. Cách tránh: đặt max-lifetime ngắn hơn giới hạn hạ tầng (vd 30 phút so với 60 phút).
 - **Autoscale 50 pod × pool 20 = 1000 connection** vào PostgreSQL {{max_connections=500}}: triệu chứng – "too many clients already" khi scale. Cách tránh: tính tổng ở số pod tối đa, dùng PgBouncer/RDS Proxy.
+
+### Ví dụ đời thực
+**Triệu chứng:** Dịch vụ đặt hàng Spring Boot 3 (HikariCP) trên PostgreSQL, 8 pod × {{maximum-pool-size=20}}. Giờ cao điểm xuất hiện lỗi hàng loạt {{SQLTransientConnectionException: Connection is not available, request timed out after 3000ms}}, p95 API tăng từ 120ms lên > 5s dù CPU DB chỉ ~40%.
+
+**Điều tra:** Theo dõi metric {{hikaricp.connections.pending}} và {{hikaricp.connections.active}}: active chạm 20/20 liên tục trên nhiều pod, pending tăng. Bật {{leak-detection-threshold=60000}} thấy log "Apparent connection leak detected" trỏ vào method {{OrderService.createOrder}}; trong method này có {{@Transactional}} bao quanh cả lời gọi HTTP sang cổng thanh toán (timeout đối tác 8–10s khi nghẽn).
+
+**Nguyên nhân gốc:** Connection DB bị giữ suốt thời gian chờ HTTP bên ngoài nên pool cạn dù query DB chỉ vài mili giây; connection-timeout 3s khiến request fail nhanh nhưng tích tụ lỗi.
+
+**Cách xử lý:** Tách lời gọi HTTP ra khỏi transaction (gọi thanh toán trước, chỉ mở transaction để ghi kết quả), tắt {{spring.jpa.open-in-view=false}}, giữ {{connection-timeout=3000}} và xác nhận {{leak-detection-threshold}} trong production. Đánh giá lại sizing: 8 pod × 15 connection vẫn trong giới hạn {{max_connections}} của DB.
+
+**Kết quả đo được:** Pending về 0 ổn định, lỗi timeout lấy connection biến mất; p95 API về ~150ms ở tải tương đương, active connections dao động 4–8 thay vì kẹt trần.
 
 ### Trả lời miệng 1 phút
 "HikariCP giữ sẵn một số connection để tái sử dụng vì mở connection mới rất đắt. Tôi sizing theo khả năng của DB chứ không theo số thread của app: tổng pool của mọi instance phải nhỏ hơn max_connections, mỗi instance thường 10–20, và dùng Little's Law – request/s nhân thời gian giữ connection – để kiểm tra. Các timeout quan trọng: connection-timeout ngắn vài giây để fail nhanh, max-lifetime ngắn hơn giới hạn của firewall, và leak-detection-threshold để log stack trace nơi mượn connection quá lâu. Trade-off là pool lớn không làm DB nhanh hơn mà chỉ tăng contention. Khi thấy pending tăng, việc đầu tiên tôi làm là tìm transaction giữ connection lâu – thường là open-in-view hoặc gọi API ngoài trong transaction – chứ không tăng pool."
