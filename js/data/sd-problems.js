@@ -374,7 +374,7 @@ Client -> API gateway -> OTP service -> Redis (OTP state, rate limit)
 - Theo user: 5 OTP/giờ cho mỗi purpose, 3 resend/15 phút.
 - Theo IP và device fingerprint: rộng hơn vì NAT.
 - Theo transaction: một OTP cho một txn_ref; sai 3-5 lần thì lock OTP đó.
-- Lockout 계정 sau N OTP sai liên tiếp trong 24h, yêu cầu kênh khác hoặc branch.
+- Khoá tài khoản sau N OTP sai liên tiếp trong 24h, yêu cầu kênh khác hoặc branch.
 - Backoff: mỗi lần sai tăng delay verify.
 
 ### Chống replay

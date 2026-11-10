@@ -1957,7 +1957,7 @@ Kết luận: thiết kế phải nhắm vào **tính đúng**, không phải v�
 Outbox là một **cái hộp thư đặt ngay trong nhà bạn**: nhân viên vừa cập nhật trạng thái đơn thì **cùng lúc** bỏ một bức thư (event) vào hộp, trong **cùng một lần ghi sổ** (transaction). Sau đó có một người giao thư (relay) đều đặn mở hộp, mang từng thư ra bưu điện (Kafka), và đóng dấu "đã gửi" vào thư.
 - Nếu app crash ngay sau khi ghi sổ nhưng trước khi gửi: thư **vẫn còn nằm trong hộp**, chưa đóng dấu → lần sau gửi lại. Không mất gì.
 - Nếu crash **sau** khi đưa bưu điện nhưng **trước** khi đóng dấu: bưu điện đã nhận rồi, hộp vẫn đánh dấu chưa gửi → **thư bị gửi hai lần**. Không thể tránh được nếu không dùng giao dịch hai pha — nên ta chấp nhận "gửi ít nhất một lần" và để **người nhận khử trùng**.
-Đó là lý do outbox luôn điคู่ với idempotency ở consumer.
+Đó là lý do outbox luôn đi đôi với idempotency ở consumer.
 
 ### Vì sao không gửi Kafka trong transaction DB
 | Cách | Chuyện xấu có thể xảy ra |

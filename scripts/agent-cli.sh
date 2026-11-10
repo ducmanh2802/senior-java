@@ -71,6 +71,8 @@ for t in $(git status --porcelain -- tasks/ | awk '{print $NF}'); do
 done
 for f in $(md5sum -c --quiet "$bak/before.md5" 2>/dev/null | sed -n 's/: FAILED.*//p'); do
   case "$keep" in *" $f "*) continue ;; esac
+  # integrator committed this file while the agent ran (working tree == HEAD): keep it, do not roll back
+  git diff --quiet HEAD -- "$f" 2>/dev/null && continue
   tar xf "$bak/snap.tar" "$f" && echo "[$(date +%T)] guard $id: reverted unowned edit to $f"
 done
 rm -f "$bak/snap.tar"
