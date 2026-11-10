@@ -3326,19 +3326,31 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'mid',
   q: 'How do you politely ask for clarification when you do not understand an English interview question?',
-  a: `**Tóm tắt:** Đừng nói "What?" hoặc im lặng. Dùng câu hỏi lịch sự + lý do để cho interviewer thấy bạn đang cố gắng hiểu, không phải lười nghe. Luôn nhắc lại phần bạn hiểu trước để xác nhận.\n\n### Sample answer\nIf I miss part of the question, I say: "Could you please repeat the last part? I want to make sure I answer the right thing." If the vocabulary is unfamiliar, I say: "Could you clarify what you mean by 'idempotency'? My understanding is that repeating the same request has the same effect as sending it once — but are you asking about it from the API design side or the database side?"\n\nThen I repeat the full question back: "So just to make sure I understand: you want me to explain how I would make a POST endpoint idempotent, considering both the client-sent key and the server-side state. Is that correct?" That shows I listened, I am precise, and I value accuracy over speed.\n\nIf the interviewer uses an idiom I do not know, I ask politely: "I am not familiar with that phrase — could you explain what 'move the needle' means in this context?" This is better than pretending to understand and answering the wrong question.\n\n### Useful phrases\n- **could you please repeat the last part**\n- **I want to make sure I answer the right thing**\n- **could you clarify what you mean by**\n- **just to make sure I understand**\n- **I am not familiar with that phrase**\n\n### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+  a: `**Tóm tắt:** Interviewer muốn xem bạn phản ứng thế nào khi không nghe rõ hoặc không hiểu câu hỏi — liệu bạn có dũng khí hỏi lại lịch sự, có kiểm tra lại phần mình hiểu, hay im lặng rồi trả lời sai. Đây là bài kiểm tra kỹ năng giao tiếp thực tế, không phải kiến thức.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
+### Sample answer
+If I miss part of the question, I say: "Could you please repeat the last part? I want to make sure I answer the right thing." If the vocabulary is unfamiliar, I say: "Could you clarify what you mean by 'idempotency'? My understanding is that repeating the same request has the same effect as sending it once — but are you asking about it from the API design side or the database side?"
 
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+Then I repeat the full question back: "So just to make sure I understand: you want me to explain how I would make a POST endpoint idempotent, considering both the client-sent key and the server-side state. Is that correct?" That shows I listened, I am precise, and I value accuracy over speed.
 
-> Senior tip: Đừng nói "Can you repeat again?" — lỗi thừa từ rất phổ biến ("repeat" đã có nghĩa là "nói lại"). Đúng là "Could you say that again?" hoặc "Could you repeat that?". Cũng đừng nói "Sorry, my English is not good" — điều đó làm giảm uy tín. Hãy nói: "Could you speak a little slower? I want to make sure I understand every detail."\n\n### Lỗi người Việt hay mắc\n- Nói "Can you repeat again?" (thừa từ)\n- Nói "Sorry, my English is bad" (giảm uy tín)\n- Im lặng rồi đoán và trả lời sai hoàn toàn`,
+If the interviewer uses an idiom I do not know, I ask politely: "I am not familiar with that phrase — could you explain what 'move the needle' means in this context?" This is better than pretending to understand and answering the wrong question.
+
+### Useful phrases
+- **Could you please repeat the last part?** — Bạn có thể nhắc lại phần cuối không?
+- **I want to make sure I answer the right thing.** — Tôi muốn chắc chắn trả lời đúng vấn đề.
+- **Could you clarify what you mean by...?** — Bạn có thể giải thích rõ hơn về... không?
+- **Just to make sure I understand...** — Để chắc là tôi hiểu đúng...
+- **I am not familiar with that phrase.** — Tôi không quen cụm từ đó.
+- **Could you explain what X means in this context?** — Bạn có thể giải thích X trong ngữ cảnh này nghĩa là gì không?
+
+### Lỗi người Việt hay mắc
+- **Nói "Can you repeat again?"** — lỗi thừa từ rất phổ biến ("repeat" đã có nghĩa là "nói lại"). Đúng là "Could you say that again?" hoặc "Could you repeat that?".
+- **Nói "Sorry, my English is not good" / "Sorry, my English is bad"** — điều đó làm giảm uy tín ngay lập tức. Hãy nói: "Could you speak a little slower? I want to make sure I understand every detail."
+- **Im lặng rồi đoán và trả lời sai hoàn toàn** — interviewer chấm điểm giao tiếp, không chấm bạn có hiểu hết mỗi từ. Hỏi lại một lần đúng cách tốt hơn trả lời sai.
+- **Dùng "What?" một mình** — nghe thô lỗ. Luôn thêm "please" và lý do: "I didn't catch that, could you repeat please?"
+- **Không xác nhận lại sau khi nghe lại** — hãy tóm tắt: "So you are asking whether... Is that right?" để chắc chắn.
+
+> Senior tip: Người Việt hay nói "Can you repeat again?" — sai vì "repeat" đã bao hàm "again". Đúng là "Could you repeat that?" hoặc "Could you say that again?". Cũng tránh "I don't understand" lặp lại nhiều lần; dùng "Could you clarify...?" nghe chuyên nghiệp hơn. Tập nói to các cụm từ này 10 lần trước phỏng vấn để phản xạ tự nhiên.`,
   follow: [
     'How do you handle a very fast-talking interviewer?',
     'What if the interviewer uses a lot of idioms?',
@@ -3919,7 +3931,7 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'Walk me through a production incident you led on a Java service running on Kubernetes. How did you communicate during it?',
-  a: `**Tóm tắt:** Kể theo timeline: phát hiện → đánh giá ảnh hưởng → hành động khẩn cấp → liên lạc → RCA → phòng ngừa. Nêu vai trò của bạn rõ ràng, các con số, và cách bạn giữ mọi người bình tĩnh. Interviewer đánh giá **leadership under pressure**, không phải kiến thức kỹ thuật đơn thuần.
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn lãnh đạo sự cố thế nào: phân vai, ra quyết định dưới áp lực, giao tiếp đều đặn, và học được gì. Không phải kể chi tiết kỹ thuật sâu, mà là thể hiện leadership trong lúc cháy nhà.
 
 ### Sample answer
 At 2:14 a.m. our alerting fired: the payment orchestration service on EKS had a 40 percent error rate on the checkout endpoint. I was the on-call senior and I became incident commander within the first three minutes.
@@ -3931,25 +3943,22 @@ We found that a new deployment had increased memory per pod, causing OOM kills a
 Afterwards I wrote the postmortem the same day: timeline, root cause, five whys, and three action items with owners and dates. I also pushed for a canary deployment with automatic rollback on error-rate thresholds, which we shipped two weeks later. We have not had a deployment-related SEV-1 since.
 
 ### Useful phrases
-- **I became incident commander**: tôi trở thành người chỉ huy sự cố
-- **I assigned roles**: tôi phân công vai trò
-- **silence makes people panic**: im lặng khiến mọi người hoảng
-- **I made the call to roll back**: tôi quyết định rollback
-- **with owners and dates**: kèm người chịu trách nhiệm và thời hạn
+- **I became incident commander** — Tôi trở thành người chỉ huy sự cố
+- **I assigned roles** — Tôi phân công vai trò
+- **silence makes people panic** — im lặng khiến mọi người hoảng
+- **I made the call to roll back** — Tôi quyết định rollback
+- **with owners and dates** — kèm người chịu trách nhiệm và thời hạn
+- **five whys** — kỹ thuật 5 cái tại sao
+- **canary deployment** — triển khai canary (đẩy 1% traffic trước)
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Dùng "we" cho mọi quyết định** — interviewer muốn nghe "I made the call", "I assigned", "I posted". Luôn phân biệt vai trò của bạn vs team.
+- **Nói "the system die" hoặc "the system was downed"** — sai ngữ pháp. Đúng: "the system went down", "the pods crashed", "the service became unavailable".
+- **Quên nhắc giao tiếp** — câu hỏi rõ ràng hỏi "How did you communicate?". Bắt buộc nói: "I posted updates every 5 minutes", "I declared SEV-1 in the channel".
+- **Phát âm "commander" /kəˈmɑːndər/** — nhấn âm thứ hai, không phải "com-mân-der". **postmortem** /poʊstˈmɔːrtəm/ nhấn âm hai.
+- **Không có timeline cụ thể** — "at 2:14", "within 3 minutes", "at 2:27", "completed at 2:31". Số liệu thời gian tạo độ tin cậy.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Đừng kể incident như một câu chuyện kỹ thuật khô khan — interviewer muốn thấy bạn **điều phối con người**. Tránh nói "we fixed it" suốt câu; dùng "I" cho quyết định của bạn. Tiếng Anh: **commander** /kəˈmɑːndər/, và **postmortem** /poʊstˈmɔːrtəm/ nhấn âm thứ hai.`,
+> Senior tip: Đừng kể incident như một câu chuyện kỹ thuật khô khan — interviewer muốn thấy bạn điều phối con người. Tránh nói "we fixed it" suốt câu; dùng "I" cho quyết định của bạn. Luôn có: severity declaration, role assignment, regular updates, rollback decision, postmortem with action items. Đây là 5 cột mốc interviewer chắc chắn nghe.`,
   follow: [
     'What would you have done if the rollback had not fixed the problem?',
     'How do you decide the severity level of an incident?',
@@ -3963,7 +3972,7 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'mid',
   q: 'How would you explain garbage collection in the JVM to a junior developer who has never seen a GC log?',
-  a: `**Tóm tắt:** Dùng ẩn dụ đời thường (dọn phòng), rồi đi từ khái niệm → cơ chế → ví dụ → lỗi hay gặp. Giữ tiếng Anh đơn giản, tránh jargon không giải thích. Mục tiêu là người nghe hiểu **vì sao** có pause và **khi nào** nên lo.
+  a: `**Tóm tắt:** Interviewer kiểm tra khả năng giải thích khái niệm phức tạp đơn giản, đúng thuật ngữ, có ẩn dụ đời thường. Mục tiêu: junior hiểu VÌ SAO có pause, KHI NÀO nên lo, không chỉ định nghĩa GC.
 
 ### Sample answer
 I would start with an analogy: imagine your desk is the heap, and the objects you use are papers on it. Garbage collection is the moment you stop working, throw away the papers you no longer need, and tidy the rest. The reason we need it is that Java does not ask you to free memory by hand; the JVM reclaims it automatically when no reference points to an object anymore.
@@ -3973,25 +3982,22 @@ Then I would explain the generations. New objects go into the young generation, 
 I would show one simple GC log line and decode it: "GC pause 45 ms, 200 MB to 80 MB" means it freed 120 MB in 45 milliseconds. Then the practical advice: if you see frequent long pauses, look for memory leaks, oversized caches, or objects that live too long. Do not tune GC flags before you measure.
 
 ### Useful phrases
-- **throw away the papers you no longer need**: vứt những tờ giấy không còn dùng
-- **reclaimed automatically**: được thu hồi tự động
-- **most objects die quickly**: hầu hết object chết rất nhanh
-- **a long pause usually comes from there**: pause dài thường đến từ đó
-- **do not tune before you measure**: đừng chỉnh trước khi đo
+- **throw away the papers you no longer need** — vứt những tờ giấy không còn dùng
+- **reclaimed automatically** — được thu hồi tự động
+- **most objects die quickly** — hầu hết object chết rất nhanh
+- **a long pause usually comes from there** — pause dài thường đến từ đó
+- **do not tune before you measure** — đừng chỉnh trước khi đo
+- **young generation / old generation** — thế hệ trẻ / già
+- **Eden / Survivor space** — vùng Eden / Survivor
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Nói "GC delete unused object"** — thiếu chính xác. Đúng: "GC reclaims objects that are no longer reachable / no longer referenced".
+- **Nhầm "heap" và "stack"** — heap là nơi chứa object, stack là cho biến cục bộ/primitive. Giải thích GC phải nói heap.
+- **Phát âm "heap" /hiːp/** — kéo dài, không phải "híp". **pause** /pɔːz/ — không phải "pau". **reclaim** /rɪˈkleɪm/ nhấn âm hai.
+- **Nói "GC run every 5 seconds"** — GC không chạy theo giờ cố định, nó chạy khi Eden đầy. Đúng: "Minor GC triggers when Eden is full".
+- **Quên nhắc "stop-the-world"** — mọi GC đều có pause (stop-the-world), kể cả G1/ZGC. Junior cần biết khái niệm này.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Khi giải thích kỹ thuật cho junior, **độ chính xác phải cao hơn** vì họ sẽ nhớ nguyên văn. Đừng nói "GC xóa object không dùng" mà phải nói "GC xóa object không còn reference". Tiếng Anh: **heap** /hiːp/, **pause** /pɔːz/, và **reclaim** /rɪˈkleɪm/ nhấn âm hai.`,
+> Senior tip: Khi giải thích kỹ thuật cho junior, độ chính xác phải CAO HƠN vì họ sẽ nhớ nguyên văn. Đừng nói "GC xóa object không dùng" mà phải nói "GC reclaims objects no longer referenced". Tiếng Anh: heap /hiːp/, pause /pɔːz/, reclaim /rɪˈkleɪm/. Luôn kết bằng lời khuyên thực tế: "Do not tune GC flags before you measure — look at the logs first."`,
   follow: [
     'What is the difference between minor and major GC?',
     'How would you explain G1GC to someone who only knows Serial GC?',
@@ -4005,7 +4011,7 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'How would you explain a technical trade-off to a non-technical product manager so they can make a decision?',
-  a: `**Tóm tắt:** Không dùng thuật ngữ; dùng **lựa chọn + chi phí + rủi ro + khuyến nghị**. Nói bằng tiền, thời gian, rủi ro cho người dùng. Luôn kết thúc bằng một khuyến nghị rõ ràng, không phải "it depends".
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn dịch trade-off kỹ thuật sang ngôn ngữ kinh doanh: lựa chọn + chi phí + rủi ro + khuyến nghị. PM quyết định dựa trên tiền, thời gian, rủi ro — không phải kiến trúc. Luôn kết bằng một khuyến nghị rõ ràng.
 
 ### Sample answer
 I would avoid architecture words entirely. Instead I structure it as three options with a price tag and a risk.
@@ -4017,25 +4023,22 @@ Then I translate to business impact: "Option one means we can launch with the pa
 I end with a recommendation and a condition: "I recommend option one now, with a trigger: if search traffic exceeds ten thousand queries a day or latency crosses two seconds, we revisit." That gives the PM a decision and a clear rule for revisiting it.
 
 ### Useful phrases
-- **with a price tag and a risk**: kèm giá tiền và rủi ro
-- **we lose control of data residency**: chúng ta mất quyền kiểm soát nơi lưu dữ liệu
-- **the lowest risk to our timeline**: rủi ro thấp nhất cho tiến độ
-- **a trigger to revisit**: điều kiện để xem xét lại
-- **I end with a recommendation**: tôi kết thúc bằng khuyến nghị
+- **with a price tag and a risk** — kèm giá tiền và rủi ro
+- **we lose control of data residency** — chúng ta mất quyền kiểm soát nơi lưu dữ liệu
+- **the lowest risk to our timeline** — rủi ro thấp nhất cho tiến độ
+- **a trigger to revisit** — điều kiện để xem xét lại
+- **I end with a recommendation** — tôi kết thúc bằng khuyến nghị
+- **data residency** — nơi lưu trữ dữ liệu (yêu cầu pháp lý)
+- **on-call rotation** — lịch trực xử lý sự cố
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Dùng thuật ngữ kỹ thuật với PM** — "GIN index", "inverted index", "sharding". PM không hiểu. Dùng: "better ranking", "scales further", "new system to operate".
+- **Nói "it depends" rồi dừng** — đó là cách né trách nhiệm. Senior phải đưa khuyến nghị: "I recommend X, with a trigger to revisit if Y happens."
+- **Thiếu con số cụ thể** — "costs a lot" → "roughly one engineer-week per month", "six-week delay", "ten thousand queries a day".
+- **Phát âm "residency" /rɪˈzɪdənsi/** — nhấn âm hai. **trade-off** /ˈtreɪd ɒf/ (danh từ).
+- **Không phân biệt "risk" và "cost"** — risk = rủi ro (có thể xảy ra), cost = chi phí (chắc chắn phải trả). PM cần biết cả hai.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: PM không cần biết GIN index hay inverted index; họ cần biết **tiền, thời gian, rủi ro**. Đừng nói "it depends" rồi dừng — đó là cách né trách nhiệm. Luôn đưa một khuyến nghị kèm điều kiện rõ ràng. Tiếng Anh: **residency** /rɪˈzɪdənsi/, và **trade-off** đọc /ˈtreɪd ɒf/ (danh từ) hoặc /ˈtreɪd ɒf/ (động từ).`,
+> Senior tip: PM không cần biết GIN index hay inverted index; họ cần biết tiền, thời gian, rủi ro. Đừng nói "it depends" rồi dừng — đó là cách né trách nhiệm. Luôn đưa một khuyến nghị kèm điều kiện rõ ràng. Cấu trúc 3 lựa chọn + khuyến nghị + trigger là mẫu chuẩn cho mọi trade-off.`,
   follow: [
     'What if the PM insists on the most expensive option?',
     'How do you handle a trade-off where the cost is hard to quantify?',
@@ -4049,7 +4052,7 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a time you pushed back on a deadline. How did you say it, and what was the outcome?',
-  a: `**Tóm tắt:** Push back không phải "từ chối" mà là **đưa dữ liệu + phương án thay thế**. Cấu trúc: tình huống → lý do deadline không khả thi → bạn đề xuất gì → kết quả. Giọng điệu hợp tác, không phòng thủ.
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn push back không phải "từ chối" mà là ĐƯA DỮ LIỆU + PHƯƠNG ÁN THAY THẾ. Cấu trúc: tình huống → lý do deadline không khả thi → bạn đề xuất gì → kết quả. Giọng điệu hợp tác, không phòng thủ.
 
 ### Sample answer
 Two months ago our team was asked to deliver a merchant onboarding flow in four weeks instead of the six we had planned. I did not say "that is impossible" in the meeting. I took one day to break the work down and came back with numbers: the full scope needed about twenty-two engineer-days and we had roughly fourteen available, including testing.
@@ -4059,25 +4062,22 @@ I went to the product owner with three options. Option one: ship the core flow i
 We chose option three. I wrote the decision into the release notes so nobody was surprised, and I added a weekly checkpoint so we could catch slippage early. We shipped on time and nobody worked a weekend. The PO later told me she appreciated that I brought options instead of just a problem.
 
 ### Useful phrases
-- **I did not say "that is impossible"**: tôi không nói "điều đó không thể"
-- **I came back with numbers**: tôi quay lại với con số
-- **I brought options instead of just a problem**: tôi mang phương án thay vì chỉ vấn đề
-- **nobody was surprised**: không ai bị bất ngờ
-- **a weekly checkpoint**: một điểm kiểm tra hằng tuần
+- **I did not say "that is impossible"** — Tôi không nói "điều đó không thể"
+- **I came back with numbers** — Tôi quay lại với con số
+- **I brought options instead of just a problem** — Tôi mang phương án thay vì chỉ vấn đề
+- **nobody was surprised** — không ai bị bất ngờ
+- **a weekly checkpoint** — một điểm kiểm tra hằng tuần
+- **scope** — phạm vi công việc
+- **engineer-days** — ngày công của kỹ sư
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Nói "I pushed back" mà không nêu CÁCH bạn nói** — interviewer muốn thấy kỹ năng mềm. Tránh "no" trần trụi; luôn kèm "yes, if..." hoặc "yes, but...".
+- **Dùng "we" cho quyết định của mình** — "We decided to push back" nghe như cả team. Đúng: "I proposed three options", "I showed the risk", "We chose option three".
+- **Thiếu con số** — "a lot of work" → "twenty-two engineer-days vs fourteen available". Con số khiến push back thành chuyên nghiệp, không phải phàn nàn.
+- **Phát âm "scope" /skoʊp/** — không phải "s-cốp". **push back** là động từ phrasal, nhấn âm "push" và "back" đều nhẹ.
+- **Kết thúc không có kết quả** — phải có: "We shipped on time", "nobody worked a weekend", "PO appreciated".
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Đừng nói "I pushed back" mà không nêu **cách bạn nói** — interviewer muốn thấy kỹ năng mềm. Tránh "no" trần trụi; luôn kèm "yes, if..." hoặc "yes, but...". Tiếng Anh: **push back** là động từ phrasal, nhấn âm "push" và "back" đều nhẹ; **scope** /skoʊp/ không phải "s-cốp".`,
+> Senior tip: Push back thành công = dữ liệu + 3 phương án + risk assessment + weekly checkpoint. Đừng nói "I pushed back" chung chung — hãy kể cụ thể: "I broke down the work, found we were 8 engineer-days short, proposed 3 options with risks, we chose option 3, shipped on time, zero weekend work." Đó là câu trả lời senior.`,
   follow: [
     'What if the product owner refused to cut scope?',
     'How do you communicate a slipping deadline without losing trust?',
@@ -4091,7 +4091,7 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
   topic: 'english',
   level: 'senior',
   q: 'Describe your CI/CD pipeline and one thing you would improve in it.',
-  a: `**Tóm tắt:** Mô tả pipeline theo các **stage** (build → test → security → deploy → verify), nêu công cụ thật, thời gian chạy, và **một cải tiến cụ thể** có lý do và chi phí. Tránh liệt kê công nghệ không giải thích.
+  a: `**Tóm tắt:** Interviewer muốn thấy góc nhìn hệ thống: mô tả pipeline theo stage, công cụ thật, thời gian chạy, và MỘT CẢI TIẾN CỤ THỂ có lý do đo được và chi phí. Không liệt kê tool mà không giải thích.
 
 ### Sample answer
 Our pipeline runs on GitHub Actions. On every pull request we run unit tests, a SonarQube scan, and a Docker build. On merge to main, we build the image, push it to ECR, and deploy to staging automatically. Production deploy is manual but one-click, after a smoke test suite passes. Total time from merge to production is about twelve minutes.
@@ -4101,25 +4101,22 @@ The thing I would improve is test feedback speed. Right now the full suite takes
 The second improvement is rollback. Today rollback is manual and takes about five minutes. I would add automated rollback on a spike in error rate or latency after deploy, using Argo Rollouts with a canary step at ten percent of traffic for five minutes.
 
 ### Useful phrases
-- **on every pull request**: trên mỗi pull request
-- **one-click deploy**: deploy một nút bấm
-- **context-switch while waiting**: chuyển ngữ cảnh trong lúc chờ
-- **quarantine it**: cách ly nó
-- **automated rollback on a spike**: rollback tự động khi có đột biến
+- **on every pull request** — trên mỗi pull request
+- **one-click deploy** — deploy một nút bấm
+- **context-switch while waiting** — chuyển ngữ cảnh trong lúc chờ
+- **quarantine it** — cách ly nó (test không ổn định)
+- **automated rollback on a spike** — rollback tự động khi có đột biến
+- **canary step** — bước canary (đẩy 10% traffic trước)
+- **flaky-test detection** — phát hiện test không ổn định
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Chỉ liệt kê tool: "we use Jenkins, Docker, Kubernetes"** — interviewer hỏi "what would you improve" để xem bạn có góc nhìn hệ thống không. Mỗi cải tiến nên kèm lý do đo được (thời gian, rủi ro) và chi phí.
+- **Nói "I want to make it faster" chung chung** — phải cụ thể: "split tests into fast/slow tier", "fast tier under 2 minutes", "add flaky-test detection".
+- **Quên nói chi phí cải tiến** — "split tests" tốn effort setup; "automated rollback" cần Argo Rollouts setup. Senior luôn nêu trade-off.
+- **Phát âm "pipeline" /ˈpaɪplaɪn/** — không phải "pip-lin". **quarantine** /ˈkwɒrəntiːn/ nhấn âm đầu.
+- **Thiếu con số baseline** — "full suite takes eight minutes", "target under two minutes", "rollback takes five minutes". Không có số thì không đo lường được cải tiến.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Đừng chỉ liệt kê tool ("we use Jenkins, Docker, Kubernetes"); interviewer hỏi "what would you improve" để xem bạn có **góc nhìn hệ thống** không. Mỗi cải tiến nên kèm **lý do đo được** (thời gian, rủi ro) và **chi phí**. Tiếng Anh: **pipeline** /ˈpaɪplaɪn/, và **quarantine** /ˈkwɒrəntiːn/ nhấn âm đầu.`,
+> Senior tip: Đừng chỉ liệt kê tool ("we use Jenkins, Docker, Kubernetes"); interviewer hỏi "what would you improve" để xem bạn có góc nhìn hệ thống không. Mỗi cải tiến nên kèm lý do đo được (thời gian, rủi ro) và chi phí. Cấu trúc: hiện trạng (stage + time) → cải tiến 1 (vấn đề + giải pháp + số liệu) → cải tiến 2 (tương tự). Đó là mẫu trả lời senior.`,
   follow: [
     'How do you handle secrets in your CI/CD pipeline?',
     'What is your strategy for database migrations in CI/CD?',
@@ -4370,13 +4367,13 @@ title: Mot lenh chuyen tien tu app den core
 actors: App | Payments API | Ledger | Core banking
 App -> Payments API: POST chuyen tien + Idempotency-Key
 Payments API -> Payments API: Key trung? Tra lai ket qua cu
-Payments API -> Ledger: Ghi buc no va buc co trong 1 transaction
+Payments API -> Ledger: Ghi no/co trong 1 transaction
 Ledger --> Payments API: transferId dang PENDING
 Payments API --> App: 202 Accepted
 Payments API -> Core banking: Gui lenh qua queue
 Core banking --> Payments API: Callback SUCCESS hoac FAILED
 Payments API -> Ledger: Ghi reversal neu that bai
-note App..Core banking: Lenh treo qua dem -> doi soat hang ngay phat hien
+note App..Core banking: Lenh treo qua dem -> doi soat ngay
 ~~~
 
 ### Giải nghĩa thuật ngữ (đọc trước để không vấp)
@@ -4798,11 +4795,11 @@ title: Tich hop bat dong bo voi core banking
 actors: Payments API | Queue | Core banking | Ops
 Payments API -> Queue: Ghi lenh thanh toan (batch)
 Queue -> Core banking: Core tai lenh khi san
-Core banking --> Payments API: Callback tung lenh, khop reference
+Core banking --> Payments API: Callback tung lenh, khop ref
 Payments API -> Payments API: Khong thay callback -> goi status API
 Core banking -> Queue: Lenh loi dinh dang
 Queue -> Ops: DLQ co canh bao
-note Payments API..Ops: Cuoi ngay doi soat file vs ledger, phat hien lech
+note Payments API..Ops: Doi soat file vs ledger, phat hien lech
 ~~~
 
 ### Giải thích từ gốc
