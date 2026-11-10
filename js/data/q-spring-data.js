@@ -4543,6 +4543,14 @@ Spring không có sẵn cơ chế read replica; cần tự xây bằng {{Abstrac
 ### Trả lời miệng 1 phút
 "Replica chỉ thấy dữ liệu sau khi nhận và replay WAL từ primary, nên luôn có replication lag – đó là lý do khách vừa chuyển tiền xong mà không thấy giao dịch. Tôi đo lag bằng byte qua pg_stat_replication, so LSN với pg_current_wal_lsn, đáng tin hơn đo theo thời gian. Lag tăng khi primary ghi đột biến, replica yếu hơn, mạng chậm, hoặc replay bị chặn bởi query dài trên replica. Trong Spring tôi dùng AbstractRoutingDataSource bọc LazyConnectionDataSourceProxy, readOnly đi replica, ghi đi primary, và với dữ liệu nhạy cảm như số dư hay giao dịch vừa tạo thì luôn đọc primary, hoặc đọc primary trong vài giây sau lần ghi của chính user. Kinh nghiệm: coi lag là SLO có cảnh báo và tự động rút replica khỏi routing khi lag vượt ngưỡng."
 
+### Ví dụ đời thực
+Hệ thống ví điện tử xử lý 5.000 giao dịch/giây giờ cao điểm. Sau khi thêm 2 read replica (cùng zone AWS) để giảm tải báo cáo, khách hàng bắt đầu khiếu nại "chuyển tiền xong không thấy lịch sử" – trung bình 40 vụ/ngày. Điều tra:
+- **Triệu chứng**: Client POST /transfer nhận 200 OK, ngay sau đó GET /transactions (đọc từ replica) trả danh sách rỗng. Sau 5–30 giây refresh lại thì thấy.
+- **Metric**: {{pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)}} trên primary trung bình 15 MB (≈ 200 ms) bình thường, nhưng lúc 11:00–13:00 tăng tới 120 MB (≈ 2,5 s) do job đối soát sinh bulk UPDATE.
+- **Nguyên nhân**: Job đối soát hàng ngày chạy {{UPDATE account SET balance = ...}} hàng triệu dòng, sinh WAL đột biến. Replica chỉ có 2 vCPU replay đơn luồng không kịp. Hơn nữa, query báo cáo dài trên replica (full scan 50 GB) khiến {{max_standby_streaming_delay}} (30 s) bị chạm, PostgreSQL huỷ query báo cáo để ưu tiên replay – nhưng lúc đó lag đã tăng vọt.
+- **Cách xử lý**: (1) Tạo replica thứ 3 chuyên cho báo cáo, đặt {{max_standby_streaming_delay = 5min}}, chấp nhận lag cao ở replica này. (2) Chuyển job đối soát sang chạy ban đêm, chia batch 10.000 dòng mỗi transaction, thêm {{pg_sleep(0.01)}} giữa các batch để replica kịp replay. (3) Trong Spring, màn hình "Lịch sử giao dịch" sau khi vừa chuyển tiền dùng **sticky read**: lưu {{lastCommitLsn}} vào session, 5 giây sau POST thì buộc đọc primary; các màn hình khác (danh mục, tham số) vẫn đọc replica.
+- **Kết quả đo được**: Lag giờ cao điểm giảm từ 2,5 s xuống 300 ms; khiếu nại "không thấy giao dịch" về 0; pool connection replica báo cáo tách biệt không ảnh hưởng replica phục vụ user.
+
 > Senior tip: coi **replication lag là một SLO có cảnh báo**. Ngưỡng nên theo tác động nghiệp vụ: nếu nghiệp vụ chấp nhận dữ liệu cũ tối đa 1 giây thì cảnh báo khi lag vượt 1 giây. Hãy có **đường lùi tự động về primary**, vì hệ thống đọc replica mà không có lưới an toàn sẽ biểu hiện sự cố thành "khách hàng không thấy giao dịch" – rất khó chẩn đoán.`,
   follow: [
     'Vì sao replay WAL trên replica có thể bị chặn bởi một câu SELECT dài?',
@@ -4645,6 +4653,13 @@ SELECT * FROM ranked WHERE rn <= 3 ORDER BY account_id, amount DESC;
 
 ### Trả lời miệng 1 phút
 "Window function tính trên một nhóm dòng liên quan mà không gộp dòng như GROUP BY, nên mỗi giao dịch vẫn giữ nguyên và có thêm cột tính toán. Running balance tôi viết SUM amount OVER PARTITION BY account ORDER BY created_at, id với frame ROWS từ đầu tới dòng hiện tại. Top-3 mỗi khách thì dùng ROW_NUMBER trong CTE rồi lọc rn nhỏ hơn hoặc bằng 3 ở tầng ngoài, vì window không dùng được trong WHERE. Bẫy chính: frame mặc định là RANGE nên các dòng trùng thời gian bị gộp, thiếu tie-breaker làm kết quả không ổn định, và WHERE chạy trước nên phải cộng số dư đầu kỳ. Trên dữ liệu lớn tôi luôn có index khớp partition và order để tránh sort tràn đĩa."
+
+### Ví dụ đời thực
+Hệ thống ngân hàng cần xuất sao kê 500.000 tài khoản/tháng, mỗi tài khoản trung bình 200 giao dịch. Yêu cầu: tính số dư chạy chính xác cho từng dòng và lấy top-3 giao dịch lớn nhất của mỗi tài khoản trong tháng.
+- **Triệu chứng**: Query chạy 18 phút, sort spill 12 GB ra đĩa tạm (vượt {{work_mem}} 256 MB), memory PostgreSQL tăng tới 8 GB. Top-3 đôi khi sai khi 2 giao dịch cùng số tiền và cùng timestamp.
+- **Nguyên nhân**: Query dùng {{RANGE}} frame mặc định và không có tie-breaker; {{PARTITION BY account_id ORDER BY created_at}} không khớp index (index chỉ có {{(account_id, created_at)}} thiếu {{id}}). PostgreSQL phải sort toàn bộ 100 triệu dòng.
+- **Cách xử lý**: (1) Thêm index {{(account_id, created_at, id)}} khớp đúng partition + order + tie-breaker. (2) Đổi frame thành {{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} tường minh. (3) Thêm cột {{opening_balance}} pre-computed hàng ngày (materialized view refresh mỗi 00:05) để query chỉ tính window trên giao dịch tháng hiện tại (giảm từ 100M xuống 10M dòng). (4) Top-3 dùng {{ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY amount DESC, id)}} trong CTE.
+- **Kết quả đo được**: Query giảm từ 18 phút xuống 2 phút 30 giây; sort không còn spill; top-3 ổn định giữa các lần chạy.
 
 > Senior tip: khi viết báo cáo bằng window function, luôn thêm **tie-breaker** vào {{ORDER BY}} và **chọn frame tường minh** ({{ROWS ...}} thay vì để mặc định).`,
   follow: [
@@ -4760,6 +4775,13 @@ Quy trình đề xuất khi vẫn phải dùng procedure:
 ### Trả lời miệng 1 phút
 "Stored procedure chạy sát dữ liệu nên rất nhanh cho xử lý hàng loạt và giảm round-trip, có thể cấp quyền EXECUTE thay vì quyền ghi bảng. Nhưng nó khó unit test, khó review, khó version, ẩn logic khỏi team Java và trói chặt vào một loại DB. Với tính lãi và biểu phí – là quy tắc nghiệp vụ thay đổi theo sản phẩm, cần audit và test – tôi giữ ở tầng Java. Procedure tôi chỉ dùng cho thao tác dữ liệu set-based như dọn dữ liệu, tổng hợp, và khi đó quản lý bằng Flyway, có test chạy trên DB thật trong CI. Kinh nghiệm: phần lớn 'Java chậm' là do xử lý từng dòng; chuyển sang batch theo lô thường đủ nhanh mà vẫn giữ logic ở chỗ dễ bảo trì."
 
+### Ví dụ đời thực
+Hệ thống thanh toán cần áp dụng biểu phí mới: 0,5% giá trị giao dịch, tối thiểu 1.000 VNĐ, tối đa 50.000 VNĐ, miễn phí cho khách hàng VIP, và phí giảm dần theo bậc tháng (tháng 1: 100%, tháng 2: 80%, tháng 3: 60%). Team đề xuất viết stored procedure PL/pgSQL để "chạy nhanh".
+- **Triệu chứng**: Mỗi lần thay đổi chính sách phí (trung bình 4 lần/năm) phải nhờ DBA deploy procedure, review code PL/pgSQL mất 3 ngày, không có unit test tự động. Một lần sửa sai điều kiện VIP (quên cast kiểu dữ liệu) làm 12.000 giao dịch bị trừ phí nhầm, phải rollback thủ công 4 tiếng. CI của team Java không chạy test procedure.
+- **Nguyên nhân**: Logic nghiệp vụ phức tạp, thay đổi thường xuyên, cần audit trail rõ ràng – tất cả đều nghịch lý với stored procedure.
+- **Cách xử lý**: Chuyển công thức phí sang Java domain service ({{FeeCalculator}}), có unit test 45 case bao gồm biên, VIP, bậc tháng. Phần "áp dụng hàng loạt" (tính phí cho 2 triệu giao dịch đêm) dùng một câu SQL set-based {{UPDATE ... FROM (SELECT ...)}} do Java gọi, không chứa quy tắc. Procedure chỉ còn lại {{recalc_daily_balance}} (tổng hợp số dư) – logic đơn lẻ, ít đổi, có test pgTAP trong CI.
+- **Kết quả đo được**: Thay đổi chính sách phí từ 3 ngày (cần DBA) xuống 2 giờ (deploy Java bình thường); 0 sự cố phí sai sau 6 tháng; coverage unit test phí đạt 98%.
+
 > Senior tip: câu hỏi nên tự hỏi là: "**Nếu logic này ở trong DB, ai sẽ viết test cho nó, và test sẽ chạy trong CI của team ứng dụng không?**". Nếu câu trả lời là "không" thì đó là tín hiệu mạnh cho thấy procedure sẽ trở thành "logic ma" – không ai dám sửa, không ai hiểu, và sự cố sẽ được gọi bằng cái tên "lỗi stored procedure" trong khi nguyên nhân thật là thiếu test và thiếu sở hữu.`,
   follow: [
     'Khi nào việc đưa logic lên tầng Java lại làm hệ thống chậm đi?',
@@ -4870,6 +4892,13 @@ recovery_target_action = 'promote'      # pause (mac dinh) | shutdown | promote
 
 ### Trả lời miệng 1 phút
 "PITR cho phép khôi phục tới bất kỳ thời điểm nào, dựa trên base backup cộng với WAL archive liên tục. Khi có câu DELETE sai, tôi dựng một instance riêng từ base backup trước đó, đặt restore_command và recovery_target_time ngay trước lệnh sai, để PostgreSQL replay WAL rồi pause, kiểm tra, sau đó trích dữ liệu bị xoá đưa lại production. RPO phụ thuộc WAL được archive nhanh tới đâu – archive_timeout, hoặc synchronous replication nếu cần gần bằng không; RTO phụ thuộc kích thước backup, lượng WAL cần replay và có standby sẵn hay không. Trade-off là RPO và RTO càng nhỏ thì chi phí càng lớn. Kinh nghiệm quan trọng nhất của tôi: backup chưa từng được khôi phục thử thì chưa phải backup, nên tôi diễn tập restore định kỳ và đo thời gian thật."
+
+### Ví dụ đời thực
+Hệ thống core banking PostgreSQL 15, DB 2 TB, WAL 150 GB/ngày. 14:05 một developer chạy nhầm {{DELETE FROM transaction_log WHERE created_at < '2026-01-01'}} thiếu điều kiện {{AND status = 'ARCHIVED'}} – xoá 45 triệu dòng (3 tháng giao dịch) trong 2 phút.
+- **Triệu chứng**: Application log báo {{ERROR: DELETE 45000000}}; monitoring thấy disk usage giảm bất ngờ; replica lag nhảy từ 50 MB lên 8 GB do replay DELETE.
+- **Quy trình khôi phục**: (1) 14:07 xác định {{xid = 1847291}} từ {{pg_waldump}} của WAL segment đang chạy. (2) 14:10 dựng instance mới từ base backup 00:00 hôm đó (pgBackRest, 2 TB restore 22 phút). (3) 14:32 cấu hình {{recovery_target_xid = '1847291'}}, {{recovery_target_inclusive = false}}, {{recovery_target_action = 'pause'}}. (4) 14:32–15:10 replay 850 GB WAL (I/O bottleneck, 200 MB/s). (5) 15:10 pause, {{pg_dump -t transaction_log --where="created_at >= '2026-01-01'"}} ra 45 triệu dòng, import ngược lên production (18 phút). (6) 15:30 verify checksum, mở lại ứng dụng.
+- **RPO/RTO thực tế**: RPO = 0 (vì synchronous replication sang AZ khác, WAL không mất); RTO thực tế = 1h25p (restore 22p + replay 38p + extract/import 18p + verify 7p). Cam kết SLA RTO 2h – đạt.
+- **Bài học**: (a) Luôn đặt {{pg_create_restore_point('pre_migration_...')}} trước thao tác rủi ro – khôi phục tới LSN nhanh hơn replay theo xid. (b) Cần instance standby chuyên dụng cho PITR (không chia sẻ với read replica) để không tranh I/O khi replay. (c) Diễn tập restore hàng quý phát hiện pgBackRest config thiếu {{--repo1-retention-full=2}} làm backup cũ bị xoá – đã sửa trước khi sự cố thật xảy ra.
 
 > Senior tip: hãy nói với stakeholder bằng **con số**, không bằng thuật ngữ: "Nếu ổ cứng chết lúc 10:05, chúng ta mất tối đa 5 phút dữ liệu giao dịch và cần 20 phút để dựng lại từ bản sao lưu gần nhất". Rất nhiều tổ chức tuyên bố RPO "không mất dữ liệu" trong khi thực tế backup đêm và không có WAL archive – đó không phải PITR, đó là mất một ngày dữ liệu.`,
   follow: [
@@ -5061,6 +5090,39 @@ public class NotificationDispatcher {
 - Quên {{@Primary}} khi thêm implementation thứ hai cho interface cũ ⇒ tất cả chỗ inject interface đó bị lỗi {{NoUniqueBeanDefinitionException}} lúc khởi động (không phải lỗi compile).
 - Inject {{Map}} mà quên key là tên bean (không phải qualifier) ⇒ tra cứu sai key.
 
+### Cơ chế resolution chi tiết: @Priority và fallback theo tên
+Spring 4.1+ hỗ trợ {{@Priority}} (JSR-330) trên bean definition để quyết định ưu tiên khi có nhiều candidate và không có {{@Primary}} hay {{@Qualifier}}. Giá trị số **nhỏ hơn = ưu tiên cao hơn** (nghịch với @Order). Thứ tự ưu tiên đầy đủ:
+1. {{@Qualifier}} tại injection point (cao nhất)
+2. {{@Primary}} trên bean definition
+3. {{@Priority}} trên bean definition (giá trị nhỏ hơn thắng)
+4. Khớp tên tham số/field với tên bean (cần compile với {{-parameters}})
+5. Báo lỗi {{NoUniqueBeanDefinitionException}}
+
+~~~java
+@Configuration
+public class PriorityConfig {
+    @Bean @Priority(10)  // ưu tiên cao hơn mặc định
+    PaymentGateway gatewayA() { return new GatewayA(); }
+
+    @Bean @Priority(100) // ưu tiên thấp
+    PaymentGateway gatewayB() { return new GatewayB(); }
+}
+~~~
+Khi inject {{PaymentGateway}} không qualifier, Spring chọn {{gatewayA}} nhờ {{@Priority(10)}}.
+
+### Inject collection và array
+Ngoài {{List}} và {{Map}}, Spring hỗ trợ inject **array** ({{Notifier[]}}) và {{Set<Notifier>}} (từ Spring 4.3). Array/Set/List hành vi y hệt {{List}} (sắp theo {{@Order}}/{{@Priority}}). {{Set}} loại bỏ trùng lặp theo bean instance (không bao giờ trùng vì mỗi bean là singleton riêng). Collection inject **luôn** nhận tất cả bean khớp kiểu, kể cả {{@Primary}} – không bị lọc bỏ.
+
+### Ví dụ đời thực
+Hệ thống thanh toán tích hợp 4 cổng: VNPAY (mặc định), MoMo, ZaloPay, ShopeePay. Mỗi cổng là một implementation của {{PaymentGateway}}.
+- **Triệu chứng**: Deploy thêm ShopeePayGateway (implementation thứ 4) → app **không start được**, log {{NoUniqueBeanDefinitionException}} tại 12 chỗ inject {{PaymentGateway}}.
+- **Nguyên nhân**: Chỉ có {{VNPAY}} có {{@Primary}}. Các chỗ inject cũ không dùng {{@Qualifier}} vì trước đó chỉ có 2 cổng và VNPAY là primary. Thêm cổng thứ 3, 4 làm vỡ assumption.
+- **Cách xử lý**: (1) Giữ {{@Primary}} trên VNPAY (cổng mặc định). (2) Tạo {{PaymentGatewayRegistry}} inject {{List<PaymentGateway>}} để duyệt tất cả cổng khi cần hiển thị danh sách cho user chọn. (3) Các service nghiệp vụ cần cổng cụ thể dùng {{@Qualifier("momoGateway")}} tường minh. (4) Thêm integration test kiểm tra app start OK với 5 cổng giả lập.
+- **Kết quả đo được**: App start bình thường; thêm cổng mới chỉ cần viết class implement + {{@Bean}} + {{@Qualifier}}, không sửa code sẵn có; test coverage 100% các đường inject.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhiều bean cùng kiểu, Spring ném NoUniqueBeanDefinitionException. Ba cách giải quyết: @Primary đánh dấu bean mặc định, @Qualifier chỉ định rõ bean name tại chỗ inject, và inject List/Map để nhận tất cả bean cùng kiểu. @Qualifier thắng @Primary. Spring cũng thử khớp tên tham số với tên bean nếu compile với -parameters. Collection inject nhận tất cả bean, sắp theo @Order/@Priority, @Primary không bị loại. Mình dùng List cho strategy pattern (danh sách validator, processor), Map để lookup theo tên bean. Trong review, nếu thấy interface có 2+ implementation, mình luôn hỏi: bean nào là default? Nếu không có @Primary và không dùng @Qualifier khắp nơi, code sẽ vỡ khi thêm implementation mới."
+
 > Senior tip: trong review, nếu thấy interface có 2+ implementation, hãy hỏi: "bean nào là default (primary)?" Nếu không có primary và không dùng qualifier ở mọi chỗ inject, code sẽ vỡ khi thêm implementation mới.`,
   follow: [
     'Tại sao Spring không tự chọn bean đầu tiên theo alphabet thay vì ném lỗi ambiguity?',
@@ -5111,6 +5173,28 @@ Version của các thư viện được BOM của Boot quản lý và đã test 
 - **Quét quá rộng**: {{@ComponentScan}} không chỉ định package sẽ quét từ package của class khai báo nó trở xuống; nếu đặt class main ở package quá chung (ví dụ {{com}}) hoặc default package thì sẽ quét cả thư viện ⇒ start chậm, register bean rác. Đặt class main ở root package riêng của ứng dụng.
 - **Tắt auto-config không cần**: {{@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)}} khi không dùng DB.
 - **Starter kéo dependency thừa**: có cả starter-web và starter-webflux thì Boot chọn Spring MVC (servlet), WebFlux chỉ còn là client – muốn reactive hoàn toàn thì bỏ starter-web. Xem dependency tree: {{mvn dependency:tree}}.
+
+### Cơ chế auto-configuration chi tiết
+{{@EnableAutoConfiguration}} đọc file {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}} (Spring Boot 3) – mỗi dòng là một class auto-configuration. Với mỗi class, Spring kiểm tra các điều kiện {{@Conditional...}} ở class-level:
+- {{@ConditionalOnClass}}: ASM đọc annotation, **không nạp class** – an toàn khi class vắng mặt.
+- {{@ConditionalOnMissingBean}}: kiểm tra xem bean cùng type đã được user define chưa.
+- {{@ConditionalOnProperty}}: đọc property, {{matchIfMissing = true}} để có default.
+- Nếu bất kỳ điều kiện nào fail → toàn bộ auto-config bị loại.
+
+Thứ tự auto-configuration: {{@AutoConfigureBefore}} / {{@AutoConfigureAfter}} ép thứ tự, {{@AutoConfigureOrder}} sắp xếp theo số. Nếu không khai báo, Boot sắp theo tên class alphabet – **không** tự suy ra thứ tự từ dependency giữa các bean.
+
+### Fat JAR và embedded server
+Spring Boot đóng gói ứng dụng thành **fat JAR** (uber JAR) chứa cả code ứng dụng, dependency, và embedded server (Tomcat mặc định, hoặc Jetty/Undertow). Chạy bằng {{java -jar app.jar}} – không cần cài đặt server riêng. Lợi ích: môi trường dev/staging/prod giống hệt nhau (cùng JAR), dễ containerize (Docker COPY app.jar), rollback chỉ cần deploy JAR cũ. Spring thuần truyền thống đóng WAR và deploy lên Tomcat/JBoss ngoài – version server, config server, classpath đều là biến số gây "works on my machine".
+
+### Ví dụ đời thực
+Team mới chuyển từ Spring thuần (WAR deploy lên Tomcat 9) sang Spring Boot 3.2.
+- **Triệu chứng**: Dev máy local chạy {{mvn spring-boot:run}} OK, nhưng build Docker image {{java -jar app.jar}} báo {{NoClassDefFoundError: jakarta/servlet/ServletContext}} lúc runtime. Staging deploy WAR lên Tomcat 10 cũng báo lỗi tương tự.
+- **Nguyên nhân**: Project còn phụ thuộc {{javax.servlet:javax.servlet-api}} (Servlet 4) từ Spring thuần, nhưng Spring Boot 3 dùng Jakarta EE 10 (Servlet 6, package {{jakarta.servlet.*}}). Fat JAR của Boot đã bundle Tomcat 10 (Jakarta), nhưng code vẫn import {{javax.servlet}} → conflict khi classloader nạp.
+- **Cách xử lý**: (1) Xoá mọi dependency {{javax.servlet}} khỏi pom, để Boot quản lý qua BOM. (2) Thay import {{javax.servlet.*}} → {{jakarta.servlet.*}} trong code (IDE refactor hỗ trợ). (3) Dockerfile đổi sang base image {{eclipse-temurin:21-jre}} + {{COPY app.jar /app.jar}} + {{ENTRYPOINT ["java","-jar","/app.jar"]}}. (4) Staging bỏ Tomcat ngoài, deploy JAR trực tiếp qua systemd.
+- **Kết quả đo được**: Build time giảm 40% (không cần assemble WAR + deploy riêng); startup time từ 12s (Tomcat deploy WAR) xuống 3.2s (fat JAR); 0 lỗi "works on my machine" sau 3 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"@SpringBootApplication gộp 3 annotation: @SpringBootConfiguration (cho phép @Bean), @EnableAutoConfiguration (đọc file imports, nạp auto-config có điều kiện), @ComponentScan (quét component từ package main). Starter là dependency descriptor gom thư viện + version do BOM quản lý + auto-config kích hoạt theo classpath. Khác Spring thuần: không tự khai báo bean/version, chạy fat JAR nhúng server thay vì WAR deploy ngoài, config tập trung application.yml, Actuator sẵn sàng health/metrics. Auto-config dùng @ConditionalOnClass/MissingBean/Property để quyết định bean nào nạp, thứ tự do @AutoConfigureOrder/@AutoConfigureBefore/After kiểm soát. Fat JAR nhúng Tomcat/Jetty giúp dev/staging/prod cùng một artifact, dễ containerize."
 
 > Senior tip: hãy coi {{@SpringBootApplication}} là **điểm vào ứng dụng** – package của class này quyết định boundary của component scan. Nếu project multi-module, hãy để class main ở module gốc và chỉ scan module đó; các module con dùng {{@ComponentScan}} riêng hoặc export bean qua {{@Bean}}.`,
   follow: [
