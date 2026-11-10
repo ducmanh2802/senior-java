@@ -192,14 +192,12 @@ DispatcherServlet (Front Controller)
     ├──► HandlerMapping (RequestMappingHandlerMapping)
     │      └─ Tìm @RequestMapping match → HandlerExecutionChain (controller + interceptors)
     │
-    ├──► HandlerAdapter (RequestMappingHandlerAdapter)
+├──► HandlerAdapter (RequestMappingHandlerAdapter)
     │      ├─ Resolve @RequestParam, @PathVariable, @RequestBody, @ModelAttribute
+    │      │    └─ HttpMessageConverter đọc body JSON → object (read)
     │      ├─ Gọi Controller method
-    │      └─ Xử lý return value → ModelAndView / ResponseBody
-    │
-    ├──► HttpMessageConverter (MappingJackson2HttpMessageConverter)
-    │      ├─ Request: JSON → Java object (read)
-    │      └─ Response: Java object → JSON (write)
+    │      └─ Xử lý return value → ModelsAndView / ResponseBody
+    │              └─ HttpMessageConverter ghi object → JSON (write, cho @ResponseBody)
     │
     ├──► ViewResolver (nếu trả view) / ResponseBodyEmitter (streaming)
     │
@@ -301,7 +299,19 @@ Response
 | **Business audit log** | AOP (@AfterReturning trên @Service) | Có domain object, method args, return value tự nhiên |
 | **Retry/Idempotency check** | AOP / Interceptor | Cần business context (idempotency key, entity) |
 
-> Senior tip: **Đừng lạm dụng AOP cho logging request/response** — overhead proxy + khó debug stack trace. Dùng **Filter** cho MDC, CORS, body logging; **Interceptor** cho timing, rate limit, API key check; **AOP** cho @Transactional, @Retryable, audit domain event. Spring Boot 3.x: {{@Order(Ordered.HIGHEST_PRECEDENCE)}} cho Filter MDC.`,
+### Ví dụ đời thực
+Hệ thống chuyển tiền của một ngân hàng thương mại: vào giờ cao điểm (9h–11h), p99 latency của API /transfers tăng vọt từ 180ms lên 2,4s, và tỉ lệ timeout client tăng từ 0,2% lên 4%. Team điều tra bằng thread dump và thấy hơn 65% thread đang block trong một HandlerInterceptor tên FraudCheckInterceptor — nó gọi đồng bộ service kiểm tra rủi ro qua HTTP sang một hệ thống bên thứ ba (trung bình 850ms), và làm như vậy **trong preHandle()**, tức là trước khi controller chạy. Vì preHandle() trả false thì request bị từ chối, interceptor này đã trở thành cổng bảo vệ nhưng lại là điểm nghẽn: mỗi request giữ một thread của Tomcat, và với 200 thread max, throughput giảm xuống còn ~250 req/s thay vì 2.000 req/s.
+
+Nguyên nhân gốc: interceptor được viết để kiểm tra fraud cho mọi request, nhưng gọi external service đồng bộ trong interceptor là anti-pattern — interceptor nằm trên chuỗi request chính, và khi interceptor block 850ms, toàn bộ thread pool bị giữ cho đến khi response về.
+
+Cách xử lý: (1) Di chuyển logic kiểm tra rủi ro sang một @Aspect với @Around advice trên method TransferService.execute(), cho phép cache kết quả 30s và fallback async khi downstream chậm. (2) Trong interceptor, chỉ giữ lại việc kiểm tra rate limit nhẹ (nhìn local counter, không gọi external). (3) Filter tiếp tục chỉ làm MDC traceId và logging — không làm gì nặng. (4) Thêm bulkhead: giới hạn số request đồng thời đi đến fraud service bằng semaphore 50, các request vượt hàng đợi nhận 429 thay vì làm chậm cả hệ thống.
+
+Kết quả sau 2 tuần: p99 latency giảm từ 2,4s xuống 310ms, throughput tăng từ 250 lên 1.900 req/s, và không có request nào bị từ chối do interceptor quá tải. Filter/Interceptor/AOP được phân công rõ ràng: Filter làm MDC, Interceptor làm rate limit, AOP làm fraud check có thể cache — mỗi lớp làm một việc và không làm việc của lớp khác.
+
+### Trả lời mẫu khi phỏng vấn
+"Ba thứ này nằm ở ba tầng khác nhau và tôi chọn dựa trên trách nhiệm, không phải tùy ngẫu nhiên. Filter là lớp đầu tiên, chạy trên Servlet container, bao trùm cả static files và error pages — tôi dùng Filter cho mọi thứ cần chạy trước DispatcherServlet: set MDC traceId để correlate logs, character encoding, CORS preflight, và caching response body bằng ContentCachingRequestWrapper. HandlerInterceptor chạy sau HandlerMapping, có access đến controller và interceptors khác — tôi dùng để rate limit theo endpoint, API key validation, và đo latency request. AOP là thứ gần business logic nhất, chạy qua proxy của Spring bean — tôi dùng cho @Transactional, retry, audit log, và các logic cần method args hoặc return value. Bài học lớn nhất từ một production incident: một interceptor gọi external service đồng bộ trong preHandle đã làm p99 tăng từ 200ms lên 2,4s vì nó block thread pool — interceptor chỉ nên làm việc nhẹ, logic nặng phải chuyển sang AOP hoặc async."
+
+  > Senior tip: **Đừng lạm dụng AOP cho logging request/response** — overhead proxy + khó debug stack trace. Dùng **Filter** cho MDC, CORS, body logging; **Interceptor** cho timing, rate limit, API key check; **AOP** cho @Transactional, @Retryable, audit domain event. Spring Boot 3.x: {{@Order(Ordered.HIGHEST_PRECEDENCE)}} cho Filter MDC.`,
     follow: [
       'Làm sao log request/response body trong Filter mà không làm hỏng stream cho controller?',
       'Spring Security filter chain chạy ở đâu so với Filter/Interceptor tùy chỉnh?'
@@ -313,7 +323,7 @@ Response
     topic: 'api',
     level: 'mid',
     q: 'Phân biệt @RequestParam, @PathVariable, @RequestBody, @ModelAttribute: khi nào dùng cái nào, validate input và trả lỗi chuẩn RFC 7807?',
-    a: `**Tóm tắt:** @RequestParam lấy query param (GET /search?q=java), @PathVariable lấy URI template variable (GET /accounts/{id}), @RequestBody deserialize JSON body (POST /transfers), @ModelAttribute bind form/query vào object (GET /search?page=0&size=20). Validate dùng @Valid + BindingResult hoặc @Validated trên method, trả ProblemDetail (RFC 7807).
+    a: `**Tóm tắt:** @RequestParam lấy query param (GET /search?q=java), @PathVariable lấy URI template variable (GET /accounts/{id}), @RequestBody deserialize JSON body (POST /transfers), @ModelAttribute bind form/query vào object (GET /search?page=0&size=20). Validate dùng @Valid + BindingResult hoặc @Validated trên service (method-level validation), trả ProblemDetail (RFC 9457).
 
 ### So sánh nhanh
 | Annotation | Nguồn dữ liệu | Content-Type | Dùng cho | Ví dụ |
@@ -327,7 +337,6 @@ Response
 ~~~java
 @RestController
 @RequestMapping("/api/accounts")
-@Validated  // enable method-level validation
 public class AccountController {
 
     @PostMapping
@@ -340,7 +349,7 @@ public class AccountController {
 
     @GetMapping("/{id}")
     public AccountResponse get(@PathVariable @NotNull @Positive Long id) {
-        return service.get(id);  // 400 nếu id null/<=0 (ConstraintViolationException)
+        return service.get(id);  // 400 nếu id null/<=0 (HandlerMethodValidationException)
     }
 
     @GetMapping
@@ -394,10 +403,16 @@ class GlobalExceptionHandler {
 
 ### Sai phổ biến
 - Dùng @RequestBody cho GET → violation HTTP spec (GET không nên có body), một số proxy/gateway drop body.
-- {{@PathVariable Long id}} nhận "abc" → Spring ném MethodArgumentTypeMismatchException → **400** nhưng body mặc định không theo format chung ⇒ thêm handler trong @ControllerAdvice. Còn giá trị sai nghĩa (0, số âm) thì cần {{@Positive}} + {{@Validated}} trên class.
+- {{@PathVariable Long id}} nhận "abc" → Spring ném MethodArgumentTypeMismatchException → **400** nhưng body mặc định không theo format chung ⇒ thêm handler trong @ControllerAdvice. Còn giá trị sai nghĩa (0, số âm) thì cần {{@Positive}} trên tham số (Spring Framework 6.1 / Boot 3.2+ tự validate tham số, không cần {{@Validated}}).
 - @ModelAttribute không @Valid → binding thành công nhưng data rác. Luôn {{@Valid @ModelAttribute}}.
 
-> Senior tip: dùng **record** làm DTO request (Java 17+): public record CreateAccountRequest(@Email String email, @Positive BigDecimal initialBalance) {} – constraint đặt trên record component, kích hoạt bằng {{@Valid}} ở tham số controller. Record immutable, ít code boilerplate. Dùng {{@JsonProperty}} map tên field JSON ↔ Java.`,
+### Ví dụ đời thực
+Một công ty fintech cung cấp API cho đối tác tích hợp: API dùng @RequestParam cho tất cả tham số, kể cả body JSON phức tạp. Khi đối tác gửi POST /transfers với Content-Type application/json và body {...}, server trả về 400 vì @RequestParam không thể deserialize JSON — team phải viết adapter chuyển body JSON thành map tham số. Sau khi đổi sang @RequestBody cho POST, mọi request bắt đầu thành công. Nhưng một đối tác lớn gửi GET /accounts/{id} với body JSON (họ tưởng GET cũng có thể có body) — API gateway tự động drop body theo HTTP spec, đối tác không hiểu tại sao luôn nhận 400. Sau khi thêm @ControllerAdvice trả ProblemDetail (RFC 9457) với field errors chi tiết từng field, đối tác có thể tự debug thay vì gọi support. Kết quả: tỉ lệ ticket support giảm 60% trong 3 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng bốn annotation này để phân biệt nguồn dữ liệu: @RequestParam lấy từ query string, dùng cho filter, phân trang, tìm đơn giản — ví dụ ?status=ACTIVE&page=0&size=20. @PathVariable lấy từ URI path, dùng cho resource identifier — ví dụ /accounts/{id}. @RequestBody deserialize JSON body, dùng cho create/update với input phức tạp — ví dụ POST /transfers với TransferRequest. @ModelAttribute bind form/query vào một object, dùng cho form submission hoặc search criteria DTO. Validate thì dùng @Valid trên tham số controller (Spring Framework 6.1/Boot 3.2+ tự validate @PathVariable/@RequestParam, không cần @Validated), kết hợp @Validated trên service cho method-level validation; lỗi validation được gom trong @ControllerAdvice trả ProblemDetail theo RFC 9457 với mảng errors theo field. Bài học lớn nhất: team cũ dùng @RequestParam cho body JSON nên đối tác luôn nhận 400 — phải chọn annotation phù hợp Content-Type, và luôn trả error chuẩn để client tự debug."
+
+  > Senior tip: dùng **record** làm DTO request (Java 17+): public record CreateAccountRequest(@Email String email, @Positive BigDecimal initialBalance) {} – constraint đặt trên record component, kích hoạt bằng {{@Valid}} ở tham số controller. Record immutable, ít code boilerplate. Dùng {{@JsonProperty}} map tên field JSON ↔ Java.`,
     follow: [
       'Validate nested object trong @RequestBody (List<@Valid Item>) như thế nào?',
       'Cách custom validator annotation (ví dụ @ValidVietnamPhone) dùng chung cho Param/Body?'
@@ -486,6 +501,12 @@ public class SecurityConfig {
 - Quên {{exposedHeaders}} → client JS không đọc được header custom (X-Total-Count, Retry-After).
 - Không set {{maxAge}} → không có header Access-Control-Max-Age, browser chỉ cache preflight rất ngắn (mặc định 5s) → gần như mỗi request thêm một OPTIONS. Browser cũng tự giới hạn trần (Chrome tối đa 2h).
 
+### Trả lời mẫu khi phỏng vấn
+"CORS là cơ chế browser thực thi Same-Origin Policy — chỉ trình duyệt mới bị constrain, Postman/curl không chạy JS của origin khác nên không bị ảnh hưởng. Preflight là request OPTIONS tự động gửi bởi browser trước request "không đơn giản" (method ngoài GET/HEAD/POST, hoặc custom header, hoặc Content-Type application/json). Gửi cookie hay credentials không tự gây preflight — preflight chỉ do method/header/content-type. Trên Spring Security 6, tôi dùng CorsConfigurationSource với setAllowedOriginPatterns cho multiple subdomain, setAllowCredentials(true) cho cookie, và setMaxAge(3600) để cache preflight 1 giờ. Spring Security 6: http.cors(cors -> cors.configurationSource(corsConfigurationSource())). Bài học lớn nhất: team cũ dùng wildcard origin với credentials=true — browser từ chối và Spring throw exception; phải list origin cụ thể hoặc dùng pattern matching, và luôn test bằng curl -H 'Origin: https://evil.com' -v để xác minh bị chắn."
+
+### Ví dụ đời thực
+Hệ thống internet banking của một ngân hàng: ban đầu chỉ có origin https://app.bank.vn, nhưng sau khi phát triển, thêm web admin (https://admin.bank.vn), app mobile API (https://api.bank.vn), và đối tác fintech (https://partner.bank.vn). Ban đầu team dùng setAllowedOrigins(List.of("*")) với setAllowCredentials(true) — browser từ chối response vì CORS spec cấm wildcard khi credentials=true, và Spring ném IllegalArgumentException khi xử lý request. Khách hàng báo "không thể kết nối" nhưng không biết nguyên nhân. Sau khi đổi sang setAllowedOriginPatterns(List.of("https://*.bank.vn")) và cấu hình setExposedHeaders(List.of("X-Total-Count", "Retry-After")), mọi request thành công. Một sự cố khác: đối tác fintech gửi request với custom header X-Partner-Key nhưng không gửi preflight OPTIONS — server trả 403 vì header không được allow. Sau khi thêm header vào setAllowedHeaders, hệ thống hoạt động ổn định. Kết quả: thời gian downtime do CORS giảm từ 4 tiếng xuống 0, và đối tác có thể tích hợp trong vòng 1 ngày thay vì 1 tuần.
+
 > Senior tip: Ngân hàng thường có **multiple subdomain** (app, admin, partner). Dùng **pattern matching** thay vì list cứng: {{config.setAllowedOriginPatterns(List.of("https://*.bank.vn"))}} (Spring 5.3+). Với mobile app (không có origin), config riêng endpoint {{/api/mobile/**}} không require credentials. Luôn test CORS bằng {{curl -H "Origin: https://evil.com\" -v}} để xác minh chặn đúng.`,
     follow: [
       'CORS với WebSocket (STOMP over SockJS) cấu hình khác như thế nào?',
@@ -545,7 +566,13 @@ public class SecurityConfig {
 - **Nhưng**: logout, password change, role update, token compromise → cần **revocation**.
 - Giải pháp: **Short expiry (5-15min) + refresh rotation** → window tấn công nhỏ. Không cần blocklist phức tạp.
 
-> Senior tip: **Đừng lưu JWT trong localStorage** cho app ngân hàng web. Dùng **cookie HttpOnly + SameSite=Strict + CSRF token (Double Submit Cookie pattern)**. Spring Security 6: {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} cho SPA (JS đọc cookie XSRF-TOKEN rồi gửi lại trong header X-XSRF-TOKEN; Spring Security 6 còn cần cấu hình CsrfTokenRequestHandler phù hợp cho SPA). Mobile app: lưu access/refresh trong **iOS Keychain / Android Keystore**, dùng **certificate pinning** cho API call.`,
+### Ví dụ đời thực
+Một app internet banking dùng JWT trong localStorage cho authentication. Một ngày nọ, khách hàng nhấp vào link quảng cáo trong email → mở trang lừa đảo có script malicious → script này đọc localStorage và gửi token về server attacker. Attacker có token truy cập tài khoản khách hàng trong 15 phút (access token expiry) và không thể logout vì không có session server-side. Attacker chuyển tiền 50 triệu từ tài khoản này sang tài khoản của mình. Khách hàng khiếu nại, hệ thống không có log logout hay revocation — vì JWT stateless. Sau khi chuyển sang cookie HttpOnly + SameSite=Strict + Refresh Token Rotation, cùng một script malicious không thể đọc cookie (HttpOnly) và không thể gửi request cross-origin (SameSite=Strict). Kết quả: 0 trường hợp đánh cắp token sau 3 tháng, và thời gian phát hiện compromise giảm từ 15 phút xuống còn 0 (vì refresh rotation phát hiện reuse).
+
+### Trả lời mẫu khi phỏng vấn
+"Với app ngân hàng, tôi luôn chọn cookie HttpOnly thay vì localStorage. Lý do đầu tiên là XSS: localStorage có thể đọc bởi bất kỳ script nào chạy trên trang, trong khi HttpOnly cookie không thể đọc bởi JavaScript — chỉ trình duyệt tự gửi. Lý do thứ hai là SameSite: với SameSite=Strict, browser không gửi cookie khi request đến từ origin khác, điều này ngăn CSRF. Với refresh token rotation, mỗi lần refresh tạo cặp token mới và revoke token cũ; nếu attacker reuse token cũ, hệ thống phát hiện và revoke toàn bộ session. Mobile app thì khác — lưu token trong iOS Keychain hoặc Android Keystore, không để trong SharedPreferences hay UserDefaults. Bài học lớn nhất: team cũ dùng localStorage cho JWT và mất 50 triệu trong một đợt XSS — chuyển sang cookie HttpOnly + refresh rotation đã khắc phục ngay lập tức."
+
+  > Senior tip: **Đừng lưu JWT trong localStorage** cho app ngân hàng web. Dùng **cookie HttpOnly + SameSite=Strict + CSRF token (Double Submit Cookie pattern)**. Spring Security 6: {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} cho SPA (JS đọc cookie XSRF-TOKEN rồi gửi lại trong header X-XSRF-TOKEN; Spring Security 6 còn cần cấu hình CsrfTokenRequestHandler phù hợp cho SPA). Mobile app: lưu access/refresh trong **iOS Keychain / Android Keystore**, dùng **certificate pinning** cho API call.`,
     follow: [
       'Implement refresh token rotation với reuse detection (OAuth 2.0 Security BCP, RFC 9700) như thế nào?',
       'So sánh JWT opaque token vs self-contained JWT cho microservice internal call?'
@@ -629,7 +656,13 @@ class Account {
 - Không trả {{ETag}} header trong response PUT/POST → client không có version để gửi If-Match lần sau.
 - Quên handle {{If-None-Match: *}} (tạo mới, fail nếu tồn tại) → dùng cho idempotent create.
 
-> Senior tip: Ngân hàng **bắt buộc** optimistic locking cho tài khoản (balance, status). Kết hợp {{@Version}} JPA + {{If-Match}} header. Client mobile/web: GET → cache ETag → PUT kèm If-Match. Nếu 412 → re-fetch GET → merge local change → retry. Không dùng {{Last-Modified}} cho việc này vì HTTP-date chỉ chính xác tới **giây** – hai update trong cùng giây không phân biệt được.`,
+### Ví dụ đời thực
+Hệ thống quản lý tài khoản của một ngân hàng: khách hàng A và B cùng truy cập trang sửa thông tin cá nhân. A xem trang, browser cache ETag "7". Sau đó, admin đổi số điện thoại của A (version lên 8). A nhập địa chỉ mới và submit — browser gửi If-Match: "7" nhưng server đã có version 8, trả 412. A reload trang, thấy version 8, nhập lại địa chỉ mới — thành công. Một trường hợp khác: khách hàng C không dùng If-Match (client cũ), server trả 428 yêu cầu thêm If-Match. Sau khi hướng dẫn client gửi If-Match, tỉ lệ lost update giảm từ 100% xuống 0. Kết quả: sau 1 tháng, không còn khiếu nại "thông tin của tôi bị mất khi người khác cùng sửa".
+
+### Trả lời mẫu khi phỏng vấn
+"ETag là fingerprint của resource version — thường là version counter từ @Version JPA. GET request có If-None-Match → server so sánh ETag, nếu giống trả 304 Not Modified (client dùng cache). PUT/PATCH request có If-Match → server chỉ ghi nếu version hiện tại khớp, nếu không trả 412 Precondition Failed. Spring hỗ trợ ShallowEtagHeaderFilter cho GET cache, và manual ETag qua ResponseEntity.eTag() cho write conditional. Với ngân hàng, tôi dùng strong ETag (version số) cho If-Match — weak ETag (W/...) không bao giờ khớp vì If-Match dùng strong comparison. Bài học lớn nhất: team cũ không trả ETag sau khi PUT, client không có version mới, lần sau chắc chắn 412 — luôn trả ETag trong response write."
+
+  > Senior tip: Ngân hàng **bắt buộc** optimistic locking cho tài khoản (balance, status). Kết hợp {{@Version}} JPA + {{If-Match}} header. Client mobile/web: GET → cache ETag → PUT kèm If-Match. Nếu 412 → re-fetch GET → merge local change → retry. Không dùng {{Last-Modified}} cho việc này vì HTTP-date chỉ chính xác tới **giây** – hai update trong cùng giây không phân biệt được.`,
     follow: [
       'So sánh ETag vs Last-Modified cho cache: ưu nhược điểm?',
       'Làm sao generate ETag cho collection resource (GET /accounts?page=1)?'
@@ -757,7 +790,13 @@ void notifyWebhook(AsyncJob job) {
 - Partner phải handle duplicate delivery (network retry).
 - Gửi {{X-Delivery-ID}} (UUID) + {{X-Timestamp}}. Partner deduplicate theo ID.
 
-> Senior tip: **Polling interval nên exponential backoff** (5s, 10s, 20s, max 60s) + jitter ±10% tránh thundering herd. UI hiển thị progress bar từ {{estimatedCompletion}}. Với export lớn (>100MB), dùng **pre-signed S3 URL** (TTL 1h) trong {{resultUrl}} thay vì trả file qua API. Spring Boot 3.2+: job I/O-bound có thể chạy trên virtual thread ({{SimpleAsyncTaskExecutor}} với virtual threads) – không pool virtual thread, giới hạn số job đồng thời bằng concurrency limit.`,
+### Ví dụ đời thực
+Hệ thống báo cáo của một ngân hàng: mỗi ngày có 5.000 yêu cầu export danh sách giao dịch, mỗi export mất 3-5 phút. Ban đầu API trả 200 OK sau khi xong — client phải poll mỗi 10 giây, tạo 30-50 request rác mỗi export. Sau khi đổi sang 202 Accepted + Location header, client nhận job ID và poll /api/jobs/{jobId}. Kết quả: số request poll giảm từ 30 xuống 3-5 mỗi export, và server không còn block thread trong 5 phút. Một đối tác khác dùng webhook: khi job xong, server POST kết quả về URL của đối tác — đối tác nhận ngay lập tức không cần poll. Kết quả: thời gian từ job xong đến đối tác nhận được giảm từ 5-10 phút (poll) xuống dưới 1 giây (webhook).
+
+### Trả lời mẫu khi phỏng vấn
+"Với tác vụ chạy lâu hơn 5-10 giây, tôi không bao giờ giữ HTTP connection — trả 202 Accepted ngay với Location header để client poll, hoặc webhook để server push. Polling đơn giản và phù hợp UI dashboard; webhook gần real-time và phù hợp partner integration. Spring Boot: dùng @Async với dedicated TaskExecutor, lưu job status trong DB (PENDING → RUNNING → COMPLETED/FAILED), và client poll /api/jobs/{jobId}. Với webhook, ký HMAC trên payload, retry exponential backoff, và partner deduplicate theo X-Delivery-ID. Bài học lớn nhất: team cũ trả 200 sau 5 phút — client poll mỗi 10 giây tạo 30 request rác; đổi sang 202 + polling/backoff giảm xuống 3 request và cải thiện trải nghiệm."
+
+  > Senior tip: **Polling interval nên exponential backoff** (5s, 10s, 20s, max 60s) + jitter ±10% tránh thundering herd. UI hiển thị progress bar từ {{estimatedCompletion}}. Với export lớn (>100MB), dùng **pre-signed S3 URL** (TTL 1h) trong {{resultUrl}} thay vì trả file qua API. Spring Boot 3.2+: job I/O-bound có thể chạy trên virtual thread ({{SimpleAsyncTaskExecutor}} với virtual threads) – không pool virtual thread, giới hạn số job đồng thời bằng concurrency limit.`,
     follow: [
       'Thiết kế retry với exponential backoff + jitter cho webhook delivery?',
       'Làm sao cleanup job cũ (TTL) và handle job bị treo (stuck RUNNING)?'
@@ -2086,7 +2125,7 @@ Giống quầy tiếp nhận ở bệnh viện: **kiểm tra form** (đủ chữ
 ### Cơ chế từng bước
 1. Dev đặt annotation trên DTO. Vì sao: ràng buộc nằm cạnh dữ liệu, ai đọc DTO cũng thấy ngay.
 2. Controller nhận {{@Valid @RequestBody CreateAccountRequest req}}. Spring chạy HV **trước khi vào method**; nếu sai thì ném {{MethodArgumentNotValidException}}, gom tất cả lỗi field chứ không dừng ở lỗi đầu.
-3. Với {{@PathVariable}}/{{@RequestParam}} trên controller: từ Spring Framework 6.1 (Boot 3.2+) Spring MVC tự validate tham số và ném {{HandlerMethodValidationException}} (thường trả 400), không cần {{@Validated}}. Ở tầng **service** thì {{@Validated}} trên class bật proxy method validation, lỗi là {{ConstraintViolationException}}.
+3. Với {{@PathVariable}}/{{@RequestParam}} trên controller: từ Spring Framework 6.1 (Boot 3.2+) Spring MVC tự validate tham số và ném {{HandlerMethodValidationException}} (thường trả 400), **không cần {{@Validated}}** — lưu ý: đặt {{@Validated}} lên controller class sẽ chuyển sang proxy AOP và_throw {{ConstraintViolationException}} (thường là 500), nên hãy bỏ nó ở controller. Ở tầng **service** thì {{@Validated}} trên class vẫn đúng (proxy method validation, lỗi là {{ConstraintViolationException}}).
 4. Lỗi được @ControllerAdvice chuyển thành ProblemDetail kèm danh sách {{field, message}}.
 5. Kiểm tra nghiệp vụ (email trùng) nằm ở service: ưu tiên để **DB chặn cuối** bằng unique constraint, bắt {{DataIntegrityViolationException}} rồi trả 409.
 
@@ -2134,7 +2173,7 @@ public record BeneficiaryReq(
         @Valid AccountRef account,             // cascade xuống object lồng
         List<@Positive Long> amounts) {}       // ràng buộc áp lên TỪNG phần tử (container element)
 ~~~
-Lúc validate phải chỉ rõ nhóm: ở controller dùng {{@Validated(Create.class) @RequestBody BeneficiaryReq req}} ({{@Valid}} không nhận tham số nhóm), gọi tay thì {{validator.validate(req, Create.class)}}. Nếu gọi validate ở nhóm mặc định (Default) thì các ràng buộc đã gán nhóm **không chạy**; ngược lại khi gọi {{Create.class}}, các ràng buộc **không gán nhóm** (như {{@NotBlank name}} ở trên, thuộc Default) cũng bị bỏ qua. Vì vậy hoặc gán nhóm cho mọi ràng buộc, hoặc truyền cả hai: {{validator.validate(req, Create.class, Default.class)}} — đây là lỗi im lặng hay gặp nhất của groups.
+Lúc validate phải chỉ rõ nhóm: ở controller chỉ cần {{@Valid @RequestBody BeneficiaryReq req}} ({{@Valid}} là nested constraint, không nhận tham số nhóm; đặt {{@Validated}} trên controller class sẽ chuyển sang proxy AOP và throw {{ConstraintViolationException}} → 500, nên controller không cần {{@Validated}}). Nhóm chỉ dùng khi validate tay bằng {{validator.validate(req, Create.class)}}. Nếu gọi validate ở nhóm mặc định (Default) thì các ràng buộc đã gán nhóm **không chạy**; ngược lại khi gọi {{Create.class}}, các ràng buộc **không gán nhóm** (như {{@NotBlank name}} ở trên, thuộc Default) cũng bị bỏ qua. Vì vậy hoặc gán nhóm cho mọi ràng buộc, hoặc truyền cả hai: {{validator.validate(req, Create.class, Default.class)}} — đây là lỗi im lặng hay gặp nhất của groups.
 
 ### Lỗi format hay nghiệp vụ? Đặt status đúng
 | Loại | Ai bắt | Ví dụ | Status |
@@ -2402,7 +2441,7 @@ static JsonNode merge(JsonNode base, JsonNode patch) {
     return out;
 }
 ~~~
-Với JSON Patch, Jackson (jackson-core) chỉ có {{JsonPointer}} và {{JsonNode.at(...)}} để trỏ đường dẫn, **không** có sẵn class áp patch trong {{jackson-databind}}. Muốn nhận {{application/json-patch+json}} phải thêm thư viện như {{com.github.java-json-tools:json-patch}} (API {{JsonPatch.fromJson(node).apply(target)}}) hoặc {{com.flipkart.zjsonpatch:zjsonpatch}}; trỏ sai đường dẫn hay {{test}} không khớp sẽ ném {{JsonPatchException}} → trả 400 (patch sai cú pháp), 422 (patch không áp được lên tài liệu) hoặc 409 (test/trạng thái xung đột) kèm chi tiết.
+Với JSON Patch, Jackson trong jackson-databind chỉ có {{JsonPointer}} và {{JsonNode.at(...)}} để trỏ đường dẫn, **không** có sẵn class áp patch. Muốn nhận {{application/json-patch+json}} phải thêm thư viện như {{com.github.java-json-tools:json-patch}} (API {{JsonPatch.fromJson(node).apply(target)}}) hoặc {{com.flipkart.zjsonpatch:zjsonpatch}}; trỏ sai đường dẫn hay {{test}} không khớp sẽ ném {{JsonPatchException}} → trả 400 (patch sai cú pháp), 422 (patch không áp được lên tài liệu) hoặc 409 (test/trạng thái xung đột) kèm chi tiết.
 
 ### Lỗi hay gặp
 - **Gửi sai Content-Type** ({{application/json}} thay vì {{application/merge-patch+json}}) → 415. Đây là lỗi phía client, nhưng phải ghi rõ trong tài liệu và trả ProblemDetail dễ hiểu.
