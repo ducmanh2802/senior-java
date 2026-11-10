@@ -1,6 +1,6 @@
 # T412 — Dịch sang tiếng Anh: quiz (19 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-15.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-15.en.js` và `node scripts/check-i18n.js quiz-15` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 19/19 mục vào `js/i18n/quiz-15.en.js` (english-001..008, devops-003..008, kotlin-003..007), chỉ gồm q/options/explain, giữ nguyên markup, thứ tự options và code block; comment trong code block đã dịch.
+- Bản chạy trước bị gián đoạn để lại một cụm tiếng Việt trong `qz-english-001` ("đang không biết") làm `check-i18n` báo lỗi; đã thay bằng cách diễn đạt tiếng Anh tương đương, không đổi ý.
+- `node scripts/check-i18n.js quiz-15` → OK (19 mục); full `check-i18n` → OK (1204 mục); `node scripts/validate.js` → `OK — không có lỗi.`
