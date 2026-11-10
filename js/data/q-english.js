@@ -791,8 +791,20 @@ If the offer is below my range, I do not negotiate emotionally. I say what would
 - **that would help me tell you honestly**: điều đó giúp tôi trả lời trung thực
 - **my contract requires forty-five days**: hợp đồng của tôi yêu cầu 45 ngày
 - **a clean handover matters to me**: bàn giao sạch sẽ quan trọng với tôi
+- **signing bonus**: tiền thưởng ký hợp đồng
+- **in writing**: bằng văn bản
+- **base salary vs total compensation**: lương cơ bản so với tổng thu nhập
+- **walk-away number**: mức lương tối thiểu để chấp nhận
 
-> Tip: Đừng nói "I want salary negotiable" — nghe như chưa chuẩn bị. Cũng đừng nêu **net** khi công ty hỏi **gross** (hoặc ngược lại) — chênh 10–20% và làm lệch cả cuộc đàm phán. Tiếng Anh: **notice period** (không phải "notice time"), **probation** (thử việc), **gross/net salary**. Phát âm **salary** /ˈsæləri/ nhấn âm đầu, không phải "sa-la-ry" đều nhau.`,
+### Lỗi người Việt hay mắc
+- **Nói "I want salary negotiable"**: nghe như chưa chuẩn bị. Hãy nêu range cụ thể.
+- **Nhầm net/gross**: không phân biệt được lương thu nhập trước thuế (gross) và sau thuế (net) — chênh lệch 10–20%. Hãy hỏi rõ: "Is that gross or net?"
+- **Dùng "notice time"**: sai. Đúng là **notice period** (thời gian báo trước).
+- **Phát âm "salary"**: /ˈsæləri/ (nhấn âm đầu), không phải "sa-la-ry" đều đều.
+- **Nói "I will resign now" trước khi có offer viết tay**: rủi ro lớn. Luôn nói: "I will resign after I receive the written offer."
+- **Quên hỏi về performance review cycle**: không hỏi "When is the first salary review?" — điều này ảnh hưởng trực tiếp đến thu nhập dài hạn.
+
+> Senior tip: Chuẩn bị **ba con số**: gross mong muốn, mức chấp nhận được (walkaway), và tổng giá trị package (bonus, equity, learning budget). Khi đàm phán, gói gọn: "My range is X–Y gross. If the base is at the lower end, I would need a signing bonus or a six-month review to bridge the gap." Điều này thể hiện bạn hiểu market và có chuẩn mực. Với notice period, hãy cam kết handover sạch sẽ — điều đó xây dựng reputation lâu dài. **Luôn hỏi performance review cycle và promotion path** — một offer base thấp nhưng review 6 tháng + promotion path rõ ràng thường tốt hơn offer cao mà đóng băng lương 2 năm. Phát âm **negotiate** /nɪˈɡoʊʃieɪt/, **compensation** /ˌkɒmpɛnˈseɪʃn/.`,
   follow: [
     'What if they offer below your range but promise a review in six months?',
     'How do you value equity or a bonus against base salary?',
@@ -1066,20 +1078,21 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
 - **waiting on**: đang chờ
 - **unblock the deployment**: gỡ chặn việc deploy
 - **pick this up**: nhận việc này
+- **dead-letter queue (DLQ)**: hàng đợi thư chết (chứa message xử lý thất bại)
+- **retention period**: kỳ lưu giữ
+- **exponential backoff**: quay về theo cấp số nhân
+- **no blockers**: không có trở ngại
+- **take it offline**: thảo luận riêng sau buổi stand-up
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Báo cáo hoạt động thay vì kết quả**: "I read code, I ran tests" → hãy nói "I finished X and opened PR #123".
+- **Im lặng khi không có blocker**: hãy nói **"No blockers"** rõ ràng.
+- **Blocker không cụ thể**: "I'm waiting for the platform team" → phải nói: "I need the platform team to create the DLQ topic by tomorrow 9 AM."
+- **Phát âm "blocker"**: /ˈblɒkə/ (Anh) hoặc /ˈblɑːkər/ (Mỹ), nhấn âm đầu.
+- **Dùng "yesterday I did"**: quá khứ đơn đúng, nhưng hãy dùng "I finished/completed" để nhấn mạnh kết quả.
+- **Kể chi tiết kỹ thuật không cần thiết**: team không cần biết bạn dùng library gì, chỉ cần biết *xong chưa* và *blocker gì*.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Đừng biến stand-up thành **báo cáo trạng thái chi tiết** ("tôi đã mở file, đọc code, chạy test..."). Chỉ nói **outcome** và **blocker**. Nếu blocker cần quyết định, nói rõ: "I need a decision from @PO by 2pm on whether to cut scope or delay." Nếu không có blocker, nói "No blockers" — đừng im lặng. Phát âm **blocker** /ˈblɒkə/ (Anh) hoặc /ˈblɑːkər/ (Mỹ), nhấn âm đầu.`,
+> Senior tip: Đừng biến stand-up thành **báo cáo trạng thái chi tiết** ("tôi đã mở file, đọc code, chạy test..."). Chỉ nói **outcome** và **blocker**. Nếu blocker cần quyết định, nói rõ: "I need a decision from @PO by 2pm on whether to cut scope or delay." Nếu không có blocker, nói "No blockers" — đừng im lặng. **Nếu cả ngày đi meeting**, hãy nói: "Yesterday was mostly sync meetings; I aligned with the fraud team on the API contract and unblocked the integration path. Today I'll implement the validator." Phát âm **stand-up** /ˈstænd ʌp/, **retention** /rɪˈtɛnʃn/.`,
   follow: [
     'How do you handle a blocker that the team cannot resolve internally?',
     'What do you do when a stand-up runs long because someone starts a technical discussion?',
@@ -1113,20 +1126,20 @@ We take reliability seriously, especially for financial features, and we would r
 - **soak test**: kiểm tra ngâm (chạy lâu để bắt lỗi ngẫu nhiên)
 - **take reliability seriously**: coi trọng độ tin cậy
 - **downstream plans**: kế hoạch của các bên liên quan
+- **unique constraint**: ràng buộc duy nhất (tại database)
+- **critical path**: đường găng / chuỗi công việc quyết định tiến độ (làm chậm một việc trong critical path sẽ làm trễ toàn bộ deadline)
+- **proactive communication**: liên lạc chủ động
+- **contributing factor**: yếu tố góp phần
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Gửi email "we are delayed" rồi im lặng**: khách hàng quốc tế cần **proactive communication** — báo trước, cho timeline cụ thể, cam kết update hằng ngày.
+- **Dùng từ "fault" hay "blame"**: nghe như đổ lỗi. Hãy dùng **"root cause"** hoặc **"contributing factor"**.
+- **Delay do thay đổi requirement từ khách**: hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path."
+- **Phát âm "mitigation"**: /ˌmɪtɪˈɡeɪʃn/ (nhấn "GAY"), không phải "mi-ti-ge-tion".
+- **Thiếu con số cụ thể**: "delay một chút" → phải nói "delay approximately one week", "new target date is January 19".
+- **Không có rollback plan**: luôn nêu "If we cannot meet the new date, we will..." để khách thấy bạn có plan B.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Đừng gửi email "we are delayed" rồi im lặng. Khách hàng quốc tế đánh giá cao **proactive communication**: báo trước, cho timeline cụ thể, cam kết update hằng ngày. Nếu delay do thay đổi requirement từ phía khách, hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path." Không dùng từ "fault" hay "blame" — dùng "root cause" hoặc "contributing factor".`,
+> Senior tip: Khách hàng quốc tế đánh giá cao **proactive communication**: báo trước, cho timeline cụ thể, cam kết update hằng ngày. Nếu delay do thay đổi requirement từ phía khách, hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path." Không dùng từ "fault" hay "blame" — dùng "root cause" hoặc "contributing factor". Luôn kết email bằng câu hỏi mở: "Please let me know if you have questions or need to adjust downstream plans." Điều này thể hiện ownership và sự quan tâm. **Nếu delay do vendor thứ ba**, hãy nói: "Our vendor X is experiencing Y; we've escalated and their ETA is Z. We're also evaluating a temporary workaround." Phát âm **proactive** /proʊˈæktɪv/, **deadline** /ˈdedlaɪn/.`,
   follow: [
     'What if the client pushes back and demands the original date?',
     'How do you communicate a delay when the root cause is a third-party vendor?',
@@ -1212,20 +1225,19 @@ In the meantime, if we need to unblock the design discussion, I can share what I
 - **in the meantime**: trong lúc chờ đợi
 - **unblock the design discussion**: gỡ chặn cuộc thảo luận thiết kế
 - **I can have a concrete answer by**: tôi có thể có câu trả lời cụ thể vào lúc
+- **architecture decision records (ADR)**: bản ghi quyết định kiến trúc
+- **I haven't had hands-on experience with**: tôi chưa có kinh nghiệm thực tế với
+- **let me verify and get back to you**: để tôi xác thực và phản hồi lại
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+### Lỗi người Việt hay mắc
+- **Nói "I don't know" rồi dừng**: interviewer test **integrity** và **problem-solving**, không phải knowledge. Tuyệt đối không được dừng lại.
+- **Nói "I would Google it"**: quá lười, không thể hiện tư duy hệ thống. Hãy nêu **các bước cụ thể**: tài liệu nào, ai để hỏi, benchmark như thế nào, khi nào có kết quả.
+- **Bịa đặt câu trả lời**: bị bắt là mất uy tín ngay lập tức. Senior engineer nói "I haven't worked with that directly" rồi đưa ra plan.
+- **Phát âm "follow-up"**: (danh từ/tính từ) /ˈfɒləʊ ʌp/ nhấn âm đầu; (động từ) **follow up** viết rời ("I will follow up tomorrow"). Đừng đọc thành "fô-lô-úp".
+- **Quên cam kết timeline**: "I'll get back to you" quá chung chung. Hãy nói: "I will have an answer by end of day tomorrow."
+- **Không chia sẻ kiến thức lân cận**: nếu biết điều gì liên quan, hãy nói ngắn gọn — điều đó cho thấy bạn không hoàn toàn mù.
 
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Interviewer hỏi câu này để test **integrity** và **problem-solving**, không phải knowledge. Tuyệt đối **không nói "I don't know" rồi dừng**. Cũng đừng nói "I would Google it" — quá lười. Hãy nêu **các bước cụ thể**: tài liệu nào, ai để hỏi, benchmark như thế nào, khi nào có kết quả. Nếu có kiến thức lân cận, hãy chia sẻ ngắn gọn để cho thấy bạn không hoàn toàn mù. **follow-up** (có gạch nối) là danh từ/tính từ, nhấn âm đầu /ˈfɒləʊ ʌp/; động từ viết rời **follow up** ("I will follow up tomorrow"). Đừng đọc thành "fô-lô-úp".`,
+> Senior tip: Interviewer hỏi câu này để test **integrity** và **problem-solving**, không phải knowledge. Tuyệt đối **không nói "I don't know" rồi dừng**. Cũng đừng nói "I would Google it" — quá lười. Hãy nêu **các bước cụ thể**: tài liệu nào, ai để hỏi, benchmark như thế nào, khi nào có kết quả. Nếu có kiến thức lân cận, hãy chia sẻ ngắn gọn để cho thấy bạn không hoàn toàn mù. **follow-up** (có gạch nối) là danh từ/tính từ, nhấn âm đầu /ˈfɒləʊ ʌp/; động từ viết rời **follow up** ("I will follow up tomorrow"). Đừng đọc thành "fô-lô-úp". **Nếu câu hỏi là kiến thức cơ bản (ví dụ HashMap)**, đừng dùng mẫu này — hãy nói: "I know the basics but I'd like to double-check the exact mechanism before giving you a precise answer." Điều này thể hiện sự cẩn trọng thay vì không biết.`,
   follow: [
     'What if the interviewer pressures you to guess anyway?',
     'How do you handle a question about a fundamental concept you should know (e.g., "How does HashMap work?")?',
@@ -1460,25 +1472,20 @@ So the order is always the same: what I recommend, why, what it costs, what the 
 - **The cost is... / The downside is...**: cái giá phải trả là...
 - **The alternative would be..., but...**: phương án khác là..., nhưng...
 - **I'd suggest we start with...**: tôi đề nghị bắt đầu với...
+- **bottom line up front (BLUF)**: kết luận lên trước
+- **support ticket**: yêu cầu hỗ trợ (từ người dùng)
+- **success criteria**: tiêu chí thành công
+- **trade-off**: đánh đổi / lấy gì mất nấy
 
 ### Lỗi người Việt hay mắc
 - Kể bối cảnh 2–3 phút rồi mới nói đề xuất → người nghe mất kiên nhẫn.
 - Rào đón quá nhiều: "Maybe we can possibly consider..." → nghe thiếu tự tin. Nói thẳng: **"I recommend..."**, "I'd suggest...".
 - "I think" ở đầu mọi câu. Dùng một lần cho phần ý kiến cá nhân là đủ.
+- **Thiếu chi phí (cost/trade-off)**: chỉ nói lợi ích không nói chi phí → nghe như sales, không phải engineer.
+- **Không có tiêu chí đo thành công**: kết thúc bằng "we'll see" → thiếu ownership. Hãy nói: "We'll track export success rate for two weeks."
+- **Không nêu alternative**: chỉ đưa 1 phương án → nghe như ép buộc. Luôn đưa ít nhất 1 phương án khác và lý do loại bỏ.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
-
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Khi người nghe là manager, mỗi lý do nên gắn với một con số kinh doanh (số ticket, tỉ lệ lỗi, chi phí). Kết thúc bằng một **tiêu chí đo thành công** ("watch the export success rate") — đó là dấu hiệu bạn nghĩ như owner, không chỉ như người code.`,
+> Senior tip: Khi người nghe là manager, mỗi lý do nên gắn với một con số kinh doanh (số ticket, tỉ lệ lỗi, chi phí). Kết thúc bằng một **tiêu chí đo thành công** ("watch the export success rate") — đó là dấu hiệu bạn nghĩ như owner, không chỉ như người code. Cấu trúc BLUF (Bottom Line Up Front) là chuẩn giao tiếp tại các công ty lớn (Amazon, Google, Meta). **Nếu bạn không chắc 100%**, hãy nói: "Based on current data, my recommendation is X. I'm 80% confident. The main risk is Y, so I propose we validate with a small rollout first." Điều này thể hiện sự trung thực và quản trị rủi ro. Phát âm **recommendation** /ˌrekəmenˈdeɪʃn/ (nhấn "MEN"), **alternative** /ɔːlˈtɜːrnətɪv/.`,
   follow: ['What would you do if your manager chose the alternative instead?', 'How do you present a recommendation when you are not fully sure?', 'How do you adapt the explanation for an engineer versus a business stakeholder?'],
   tags: ['communication', 'recommendation', 'speaking'],
   lang: 'en',
@@ -1548,25 +1555,19 @@ If I lose my train of thought, I just say, "Sorry, let me go back to the main po
 - **There are three things I'd consider.**: có ba điều tôi sẽ xem xét
 - **Let me go back to the main point.**: quay lại ý chính
 - **lose my train of thought**: quên mất mạch đang nói
+- **buy time**: mua thời gian (dùng từ chuyển ngữ để có thời gian nghĩ)
+- **Could I take a moment to gather my thoughts?**: tôi có thể xin chút thời gian để tổng hợp ý không?
+- **Let me structure my answer first.**: để tôi cấu trúc câu trả lời trước
 
 ### Lỗi người Việt hay mắc
 - Lấp khoảng lặng bằng "ờ", "à" tiếng Việt hoặc "uhm" liên tục.
 - Nói "Wait." hoặc "Wait a minute." → nghe cộc lốc như ra lệnh. Dùng **"Give me a second"** hoặc **"Let me think"**.
 - Hứa "three points" nhưng chỉ nói hai → hãy đếm trên ngón tay khi nói.
+- **Không đưa ra khung (structure) trước**: nhảy thẳng vào chi tiết → người nghe bị lạc hướng.
+- **Dùng filler words quá nhiều**: "you know", "actually", "basically", "like" — hãy thay bằng pause có announce.
+- **Xin thời gian nhiều lần cho một câu hỏi**: câu "mua thời gian" chỉ nên dùng một lần; lặp lại nghe như né tránh.
 
-### Full sample answer (60-90 seconds)
-Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
-
-### Vocabulary and phrases to reuse
-- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
-- Avoid vague "we did"; name your specific contribution and the data you used.
-
-### Delivery tips for Vietnamese speakers
-- Slow down on numbers and proper nouns; English interviewers need time to parse them.
-- Use short sentences; long compound sentences are hard to follow when nervous.
-- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
-
-> Senior tip: Câu "mua thời gian" chỉ dùng **một lần** mỗi câu hỏi; lặp lại nhiều lần nghe như né tránh. Luyện với đồng hồ: đặt khung trong 10 giây đầu, trả lời mỗi ý trong khoảng 30–45 giây. Câu hỏi system design lớn thì có thể xin thêm thời gian: "Could I take a minute to sketch my thoughts?" — hoàn toàn được chấp nhận.`,
+> Senior tip: Câu "mua thời gian" chỉ dùng **một lần** mỗi câu hỏi; lặp lại nhiều lần nghe như né tránh. Luyện với đồng hồ: đặt khung trong 10 giây đầu, trả lời mỗi ý trong khoảng 30–45 giây. Câu hỏi system design lớn thì có thể xin thêm thời gian: "Could I take a minute to sketch my thoughts?" — hoàn toàn được chấp nhận. **Nếu hoàn toàn trắng (blank)**, hãy nói thật: "I'm drawing a blank on this one. Let me think from first principles..." — điều này thể hiện tư duy giải quyết vấn đề hơn là thuộc lòng. Phát âm **structure** /ˈstrʌktʃər/ (nhấn "STRUC"), **angle** /ˈæŋɡl/, **pause** /pɔːz/. Quan trọng: **structure first, details second** — interviewer đánh giá tư duy, không phải tốc độ nói.`,
   follow: ['What do you do if you completely blank on a question?', 'How long is too long for a pause in an interview?', 'How do you get back on track after going off topic?'],
   tags: ['fluency', 'structure', 'speaking'],
   lang: 'en',
