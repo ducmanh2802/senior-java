@@ -1512,6 +1512,14 @@ String encode(Cursor c) throws Exception {
 - Prev page: đảo điều kiện và đảo thứ tự rồi reverse kết quả; hoặc trả cả {{prev_cursor}}.
 - Với export toàn bộ: chạy trong transaction {{repeatable read}} hoặc snapshot để các trang nhất quán.
 
+### Ví dụ đời thực
+
+Ngân hàng có bảng transactions 80 triệu dòng, API lịch sử giao dịch dùng OFFSET. Triệu chứng: p99 lúc lật trang sâu khoảng 8 giây; khách báo thấy giao dịch trùng hoặc biến mất sau khi hệ thống import batch vào đêm hôm trước. Điều tra: slow query log cho thấy truy vấn OFFSET 100000 LIMIT 20 quét hơn 100.000 dòng index rồi bỏ; cursor chỉ chứa created_at, thiếu id nên nhiều giao dịch cùng microsecond bị nhảy trang. Xử lý: tạo composite index (account_id, created_at DESC, id DESC), đổi sang keyset WHERE (created_at, id) < (?, ?), cursor mã hóa base64 JSON + ký HMAC, kèm filterHash của (accountId, từ, đến, trạng thái). Kết quả: p99 giảm từ 8 giây xuống dưới 60 miligiây mỗi trang, không còn trùng/mất dòng kể cả khi insert liên tục, và không trả count(*) nên tránh OOM.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ không dùng OFFSET cho lịch sử giao dịch. Với 80 triệu dòng, OFFSET khiến PostgreSQL phải quét toàn bộ index từ đầu cho mỗi trang, nên p99 tăng theo thứ tự trang và bị nổ ở trang sâu. Tôi dùng cursor pagination: WHERE (created_at, id) < (cursor_ts, cursor_id) ORDER BY created_at DESC, id DESC. Cursor chứa timestamp và id; id là tie-breaker bắt buộc, tránh mất hoặc trùng dòng khi nhiều giao dịch cùng giây (ví dụ batch import). Cursor được mã hóa base64, ký HMAC để chống sửa, và kèm hash của bộ lọc (accountId, khoảng thời gian, trạng thái) để khách hàng không dùng cursor của bộ lọc này cho bộ lọc khác. Mỗi trang lấy LIMIT size + 1 để biết has_more, không trả total vì count(*) chậm. Chi phí mỗi trang O(log n + page size), ổn định ngay cả khi có insert liên tục giữa các lần gọi. Nếu UI cần prev page, tôi đảo điều kiện và đảo thứ tự rồi reverse kết quả, không chạy count(*) mỗi trang."
+
 > Senior tip: Hãy test phân trang bằng cách chèn dữ liệu **trong lúc** client đang lật trang — đó là lúc bug lộ ra. Spring Data 3.1+ có {{Window}} và {{ScrollPosition}} để bớt phải tự viết SQL, nhưng phần ký cursor và filterHash vẫn phải tự lo. Đừng đưa cursor vào query string rồi log nguyên văn nếu nó chứa dữ liệu nhạy cảm; hãy ký và mã hóa đủ để lộ cũng vô hại.`,
     follow: [
       'Keyset pagination hỗ trợ sắp xếp theo nhiều cột động như thế nào?',
@@ -1615,6 +1623,14 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 - **Trả {{errors}} dạng chuỗi nối** → client không highlight được field.
 - **Lộ thông tin qua 404/409**: kẻ tấn công dò được mã giao dịch có tồn tại hay không.
 
+### Ví dụ đời thực
+
+API ngân hàng có hai team tự định nghĩa lỗi: team A trả {code: 4001, message: ...}, team B trả problem+json. SDK đối tác phải parse hai kiểu và hay bị lỗi khi team A đổi khóa message. Triệu chứng: số ticket hỗ trợ đối tác tăng, integration test thất bại ngẫu nhiên. Điều tra: ghi log response của cả hai endpoint, thấy type và status không nhất quán, detail đôi khi lộ tên bảng SQL. Xử lý: chốt danh sách type như enum trong OpenAPI, tất cả endpoint dùng ProblemDetail, type trỏ tới trang tài liệu giải thích cách sửa; viết contract test kiểm tra mọi lỗi 4xx/5xx đều là application/problem+json, detail nói người dùng cần làm gì không lộ stack. Kết quả: SDK đối tác chỉ xử lý một format, ticket hỗ trợ giảm hơn 70% trong tháng đầu.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ áp dụng RFC 9457 cho toàn bộ API ngân hàng. Mỗi lỗi trả body application/problem+json có type, title, status, detail, instance, và các extension như balance hoặc traceId. Client switch trên type và status, không bao giờ parse detail vì detail là văn bản dành cho người, có thể đổi ngôn ngữ. Lỗi validation gom theo field vào extension errors, mỗi field một entry để client highlight được. 5xx trả traceId để support tra cứu, không lộ stack trace. Tôi sẽ chốt type như enum trong OpenAPI và viết contract test cho mọi lỗi 4xx/5xx. Type đặt theo nguyên nhân (insufficient-funds) chứ không theo tầng (db-error), vì khách hàng cần biết phải làm gì, không cần biết lỗi phát sinh ở đâu. Với Spring Boot 3, tôi bật spring.mvc.problemdetails.enabled=true và viết @RestControllerAdvice extends ResponseEntityExceptionHandler để cả lỗi framework và lỗi nghiệp vụ đều trả cùng format. Type là URL trỏ tới trang tài liệu, đối tác đọc được cách xử lý, giảm ticket support."
+
 > Senior tip: Hãy chốt bộ {{type}} như một **enum trong OpenAPI** và review như public API — thêm type mới là thay đổi hợp đồng cần thông báo. Đặt tên theo **nguyên nhân/hành động** (insufficient-funds, card-expired) chứ không theo tầng (db-error, service-exception): client cần biết phải làm gì, không cần biết lỗi phát sinh ở đâu. Và luôn có một contract test kiểm tra mọi lỗi 4xx/5xx đều là problem+json.`,
     follow: [
       'Làm sao để Spring Security cũng trả problem+json thay vì body mặc định?',
@@ -1708,6 +1724,14 @@ Content-Type: application/problem+json
 - Thanh toán/đăng nhập: **fail-closed** hoặc hạn mức local rất thấp — ưu tiên an toàn.
 - Ghi rõ quyết định này vào runbook; đừng để on-call tự đoán lúc 2 giờ sáng.
 
+### Ví dụ đời thực
+
+API công khai chạy 10 pod sau load balancer, giới hạn 100 yêu cầu/phút mỗi consumer. Ban đầu mỗi pod đếm bucket riêng → client thực tế nhận 1000/phút, hạn mức vô nghĩa, và thêm pod qua autoscaling làm tình trạng tồi hơn. Triệu chứng: latency tăng, lưu lượng request đến Redis bùng đột ngột. Điều tra: log mỗi pod thấy bucket cục bộ cạn kiệt khác nhau, tổng lượng quét vượt hạn mức phép. Xử lý: chuyển sang Redis Lua script nguyên tử đọc-modify-ghi token trong một lần chạy, key theo consumerId plus endpoint; mỗi pod chỉ giữ cache cục bộ khoảng 10% limit để lọc thô khi bị flood. Trả 429 kèm Retry-After, client retry phải có jitter nếu không toàn bộ quay lại cùng một giây tạo sóng thứ hai. Kết quả: hạn mức chuẩn xác 100/phút bất kể số pod, tải Redis giảm 90%, không còn sóng retry đồng thời.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ dùng token bucket đếm tập trung trong Redis bằng Lua script nguyên tử. Tại sao Redis: nếu mỗi pod đếm riêng với 10 pod và limit 100/phút, client thực tế nhận 1000/phút, hạn mức mất ý nghĩa và phụ thuộc autoscaling. Lua script đọc-modify-ghi trong một lần chạy, Redis đơn luồng nên không có race; đừng lấy GET rồi SET từ Java vì hai request sẽ cùng thấy còn token và cùng cho qua. Trả 429 kèm Retry-After để client biết chờ bao lâu, plus RateLimit headers, và client retry phải có jitter nếu không toàn bộ quay lại cùng một giây tạo sóng thứ hai. Key theo API key/consumer chứ không chỉ IP, vì NAT và IPv6 làm nhiều người chung IP. Redis chết: fail-open cho API tra cứu, fail-closed cho thanh toán."
+
 > Senior tip: Rate limit không thay thế **bulkhead** và timeout. Một consumer hợp lệ vẫn có thể đốt hết connection pool; hãy giới hạn đồng thời (semaphore) cho từng loại tài nguyên. Đặt alert trên tỉ lệ 429 theo consumer: tăng đột biến thường là client retry loop hoặc key bị lộ, không phải "hệ thống chậm". Và hãy đo bằng một con số: nếu limit 100/phút thì 1% traffic bị 429 là bình thường, 30% là sự cố cần gọi cho đối tác.`,
     follow: [
       'Rate limit theo user và theo IP nên kết hợp thế nào để chống cả bot lẫn lạm dụng tài khoản?',
@@ -1800,6 +1824,14 @@ int updateIfVersion(long id, long expected, String name, BigDecimal limit);
 - Retry có backoff + giới hạn số lần; mỗi lần retry phải GET lại, không giữ If-Match cũ.
 - Với PATCH từng phần, cân nhắc JSON Merge Patch và vẫn giữ If-Match; JSON Patch có op "test" nhưng không thay thế được version check ở DB.
 
+### Ví dụ đời thực
+
+Hai thiết bị cùng sửa hạn mức người hưởng: A lưu trước 20 triệu, B ghi đè sau 15 triệu, thay đổi của A biến mất. Triệu chứng: khách khiếu niệu hạn mức sai, giao dịch bị chặn do vượt hạn mức thực tế. Điều tra: log thấy hai request cùng đọc version 7, server không kiểm tra If-Match nên "last write wins" âm thầm. Xử lý: thêm cột @Version, trả ETag sau mỗi ghi, endpoint PUT bắt buộc If-Match; nếu không có → 428, nếu version không khớp → 412 kèm ETag hiện tại. Câu UPDATE có điều kiện where id = ? and version = ? atomic trong DB. Kết quả: không còn mất cập nhật, tỉ lệ 412 dưới 1% và được alert để phát hiện UI cache quá lâu.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ dùng optimistic locking bằng cột @Version và ETag. Mỗi resource có version tăng đơn điệu, trả qua ETag; client gửi If-Match khi PUT/PATCH. Server chỉ ghi nếu version hiện tại khớp, ngược lại trả 412 Precondition Failed. Thiếu If-Match ở endpoint bắt buộc trả 428; xung đột nghiệp vụ như trùng mã trả 409. Quan trọng: check-and-update phải là một câu UPDATE có điều kiện trong DB, không phải đọc version rồi so sánh trong Java, nếu không hai request vẫn chen giữa lúc so và lúc ghi. Khi 412, client GET lại, merge nếu sửa field khác nhau, hoặc hiện diff cho người dùng chọn. Tôi không cho client tự ghi đè khi 412 với dữ liệu tiền, và đo tỉ lệ 412 để phát hiện UI cache quá lâu."
+
 > Senior tip: Với dữ liệu tiền, tôi thường **không** cho client chọn "ghi đè" khi 412 — bắt buộc tải lại và xác nhận. Đo tỉ lệ 412 theo endpoint: cao bất thường nghĩa là UI cache quá lâu hoặc nhiều tab cùng sửa. Và đừng dùng pessimistic lock cho form người dùng: giữ row lock qua một request HTTP là cách nhanh nhất để cạn connection pool.`,
     follow: [
       'Khi nào optimistic locking không đủ và phải dùng pessimistic lock?',
@@ -1863,6 +1895,14 @@ Partner ──► API Gateway ──► REST /partner/v1 ───┤─► tran
 ### Cách migrate không big-bang
 - Đặt gateway trước, chuyển từng route (strangler), chạy song song, so sánh kết quả (shadow traffic) trước khi cắt.
 - Bắt đầu bằng **một** protocol mới ở một biên có pain rõ ràng; đừng chuyển toàn bộ chỉ vì "gRPC nhanh hơn".
+
+### Ví dụ đời thực
+
+Ngân hàng có app mobile, web admin, đối tác và 30 microservice. Ban đầu toàn bộ dùng REST, màn hình lịch sử giao dịch trên mobile phải gọi 8 endpoint liên tiếp, chậm và tiêu nhiều dữ liệu di động. Điều tra: APM thấy 8 round trip cho một màn hình, nhiều field không dùng. Xử lý: GraphQL BFF cho mobile/web (tổng hợp dữ liệu theo màn hình), gRPC giữa các service nội bộ (payload nhỏ, deadline lan truyền qua metadata), REST + OpenAPI cho đối tác (firewall mở 443, SDK mọi ngôn ngữ, curl được). Gateway làm authn và rate limit. Kết quả: mobile giảm từ 8 request xuống 1-2, nội bộ giảm payload 30-60%, đối tác vẫn tích hợp dễ dàng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi chọn protocol theo biên, không theo sở thích. Đối tác và public dùng REST + JSON + OpenAPI vì firewall mở 443, curl được và SDK mọi ngôn ngữ. Service nội bộ đồng bộ dùng gRPC vì protobuf nhỏ, HTTP/2 multiplex, deadline lan truyền qua metadata. Client đa dạng cần tổng hợp dữ liệu dùng GraphQL ở tầng BFF, giảm over-fetching cho màn hình phức tạp. Cái giá là ba bộ tooling, ba cách version và ba cách quan sát: trace phải chuẩn W3C traceparent, định danh dùng một thư viện chung, test contract riêng cho từng protocol. Tôi không chuyển toàn bộ chỉ vì gRPC nhanh hơn; bắt đầu bằng một protocol mới ở biên có pain rõ ràng, chạy song song rồi cắt dần."
 
 > Senior tip: Trong ngân hàng, ràng buộc lớn nhất thường không phải hiệu năng mà là **khả năng chứng minh tuân thủ và debug khi có sự cố**. REST/JSON để lại access log đọc được, đó là lý do nó vẫn là mặc định ở biên đối tác. gRPC tiết kiệm payload thật (thường thấy 30–60% với DTO lớn) nhưng chỉ đáng ở nội bộ nơi bạn kiểm soát toàn bộ client. GraphQL chỉ nên xuất hiện khi số màn hình và biến thể client đủ lớn để chi phí N+1/complexity được bù lại.`,
     follow: [
@@ -1951,6 +1991,14 @@ public ResponseEntity<Void> receive(
 - Rate limit riêng cho endpoint webhook theo provider — retry storm là chuyện sẽ xảy ra, phải có van.
 - Đối soát cuối ngày với sao kê/ledger đối tác để bắt event bị mất hoàn toàn (at-least-once không bảo đảm không mất nếu bên gửi bỏ cuộc).
 - Load test bằng cách replay 10.000 event trùng trong 1 phút: hệ thống đúng phải ack hết mà không tạo bút toán trùng.
+
+### Ví dụ đời thực
+
+Ngân hàng đối tác gửi webhook at-least-once, có thể trùng và sai thứ tự, retry trong 72 giờ. Ban đầu endpoint xử lý đồng bộ 5 giây, đối tác timeout sau 3 giây và retry → hai worker cộng tiền hai lần. Triệu chứng: số dư khách sai, khách khiếu niệu bị cộng trùng. Điều tra: log thấy cùng event_id được xử lý hai lần trong khoảng vài giây. Xử lý: xác thực chữ ký HMAC trên raw body (không parse lại vì thứ tự field thay đổi làm chữ ký sai), ghi event vào bảng inbox có unique (provider, event_id) — DB là trọng tài, trả 200/202 ngay, sau đó worker xử lý idempotent theo event_id; lỗi tạm thời vào DLQ và retry theo lịch của mình, không để đối tác retry 72 giờ gây storm. Không tin thứ tự event; nếu nghi ngờ, gọi API đối tác lấy trạng thái chuẩn. Cuối ngày có job đối soát với sao kê để phát hiện event bị mất hoàn toàn.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi thiết kế endpoint webhook theo nguyên tắc ack nhanh, xử lý sau. Nhận request, xác thực chữ ký HMAC trên raw body, kiểm tra timestamp trong cửa sổ 5 phút để chặn replay. Ghi event vào bảng inbox có unique (provider, event_id) — DB là trọng tài, không dùng exists rồi save vì có race. Trả 200/202 ngay, sau đó worker xử lý idempotent theo event_id; lỗi tạm thời vào DLQ và retry theo lịch của mình, không để đối tác retry 72 giờ gây storm. Không tin thứ tự event; nếu nghi ngờ, gọi API đối tác lấy trạng thái chuẩn. Cuối ngày có job đối soát với sao kê để phát hiện event bị mất hoàn toàn."
 
 > Senior tip: Đừng bao giờ để endpoint webhook gọi thẳng service nghiệp vụ nặng. Tôi đã thấy một đợt retry của đối tác biến 3.000 event thành 40.000 request trong 10 phút và làm nghẽn luôn API người dùng — vì endpoint vừa xử lý đồng bộ vừa không có rate limit. Inbox + worker + DLQ là mô hình tối thiểu; phần khó nhất không phải code mà là **đối soát**: phải có job so khớp với đối tác, nếu không bạn chỉ biết mất event khi khách hàng gọi lên.`,
     follow: [
