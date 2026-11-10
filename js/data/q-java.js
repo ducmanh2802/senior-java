@@ -3881,6 +3881,12 @@ Biến pattern có phạm vi theo luồng điều khiển: dùng được ở nh
 - Log chỉ ghi {{e.toString()}} hoặc custom message mà nuốt stack trace: thông báo hay đến đâu cũng thiếu dòng code; luôn log cả exception.
 - Helpful NPE giúp tìm chỗ null, không thay được việc thiết kế để tránh null: validate ở biên (Bean Validation), dùng {{Optional}} cho giá trị trả về có thể vắng.
 
+### Ví dụ đời thực
+Service hồ sơ khách hàng trên Java 17 gặp lỗi NullPointerException lúc xuất báo cáo. Triệu chứng: khoảng 0,8% request trả lỗi 500, log chỉ in {{java.lang.NullPointerException}} kèm dòng {{reportService.format}}. Điều tra: bật helpful NPE (mặc định đã bật) và đọc thông báo đầy đủ trong stack trace ghi ra file, thấy "because the return value of Customer.getAddress() is null". Đối chiếu dữ liệu cho thấy khách hàng đăng ký online chưa nhập địa chỉ nên field address rỗng. Nguyên nhân gốc: code gọi chuỗi {{customer.getAddress().getCity()}} mà không kiểm tra null. Cách xử lý: thêm kiểm tra ở biên bằng Bean Validation khi tạo hồ sơ, và trong luồng báo cáo dùng pattern matching {{if (customer.getAddress() instanceof Address addr)}} để lấy city, ngược lại điền giá trị mặc định "Chưa cập nhật". Kết quả: lỗi 500 do NPE ở luồng này giảm xuống 0%, thời gian xác định nguyên nhân từ hơn 30 phút dò log xuống còn khoảng 5 phút ở lần tái diễn tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Từ Java 15, Helpful NullPointerException được bật mặc định và cho biết chính xác biểu thức nào bị null, ví dụ getter nào trả về null trong một chuỗi gọi dài. Nhờ vậy tôi không còn phải đặt log từng bước mà đọc thẳng message trong stack trace là khoanh vùng được. Đi kèm là pattern matching cho instanceof từ Java 16: tôi vừa kiểm tra kiểu vừa có biến đã ép kiểu, nên bỏ được cast thủ công và tránh lỗi cast nhầm, đặc biệt tiện trong equals hay xử lý nhiều loại event. Trong thực tế, khi service báo cáo gặp NPE, thông báo chỉ rõ getAddress trả null giúp tôi xử lý trong vài phút: tôi bổ sung validate ở biên và dùng instanceof có pattern variable để xử lý nhánh thiếu dữ liệu an toàn. Tôi vẫn giữ nguyên tắc không dùng null làm luồng bình thường, chỉ để nó là tín hiệu dữ liệu bất thường."
+
 > Senior tip: khi kể "cải tiến hay dùng", hãy gắn với tác động: "sau khi lên 17, thời gian điều tra NPE từ log production giảm rõ vì thông báo chỉ thẳng getter nào trả null". Câu trả lời có kết quả đo được luôn ghi điểm hơn danh sách tính năng.`,
   follow: [
     'Vì sao helpful NPE ban đầu bị tắt mặc định ở Java 14?',
@@ -3951,6 +3957,12 @@ Ngoài ra Java 8 còn có: {{HashMap}} treeify bucket khi nhiều collision, Met
 - Stream lồng nhau dài 15 dòng, khó debug; tách thành method có tên rõ ràng.
 - {{Optional.get()}} không kiểm tra, hoặc {{orElse(expensiveCall())}} luôn gọi hàm tốn kém ngay cả khi có giá trị (dùng {{orElseGet}}).
 - {{CompletableFuture}} quên xử lý lỗi ({{exceptionally}}/{{handle}}) hoặc quên timeout ({{orTimeout}} có từ Java 9).
+
+### Ví dụ đời thực
+API tổng hợp thông tin thẻ tín dụng phải gọi 3 hệ thống: hồ sơ khách hàng, lịch sử giao dịch, và điểm tín dụng. Triệu chứng: thời gian phản hồi trung bình 900 ms, giờ cao điểm p99 lên tới 1,8 giây và tỷ lệ timeout phía mobile tăng 3%. Điều tra: xem log truy vết (distributed tracing, công cụ theo dấu request qua nhiều service) thấy 3 cuộc gọi được thực hiện tuần tự, mỗi cuộc 250-350 ms, cộng dồn lại. Nguyên nhân gốc: code Java 8 viết theo kiểu blocking tuần tự, chưa tận dụng song song. Cách xử lý: dùng {{CompletableFuture.supplyAsync(..., ioPool)}} cho từng cuộc gọi, truyền executor IO riêng (khoảng 32 thread) thay vì dùng {{ForkJoinPool.commonPool()}}, rồi ghép bằng {{thenCombine}} và đặt {{orTimeout(2, TimeUnit.SECONDS)}} cho từng bước. Kết quả: p50 giảm còn khoảng 360 ms, p99 còn 900 ms, tỷ lệ timeout giảm xuống dưới 0,2%.
+
+### Trả lời mẫu khi phỏng vấn
+"Java 8 mang vào ba nhóm tính năng tôi dùng hằng ngày: lambda với Stream API để xử lý tập dữ liệu, java.time để làm việc với ngày giờ, và CompletableFuture để gọi bất đồng bộ. Với Stream tôi dùng để lọc và gom nhóm giao dịch thay cho vòng lặp dài, code ngắn và dễ đọc hơn. Với ngày giờ tôi dùng LocalDate và ZonedDateTime vì chúng bất biến và an toàn khi nhiều thread cùng dùng, khác với SimpleDateFormat cũ. Với CompletableFuture tôi từng tối ưu một API tổng hợp gọi 3 hệ thống: chuyển từ tuần tự sang chạy song song trên executor IO riêng, thêm timeout và xử lý lỗi, thời gian phản hồi p99 giảm từ 1,8 giây xuống khoảng 900 ms. Tôi cũng cẩn thận không dùng parallel stream cho tác vụ IO và luôn truyền executor riêng cho CompletableFuture để không chặn common pool."
 
 > Senior tip: chuẩn bị sẵn một câu chuyện "trước/sau": ví dụ "API tổng hợp thông tin khách hàng gọi tuần tự 3 service mất khoảng 900 ms, chuyển sang CompletableFuture song song còn khoảng 350 ms". Một con số thật từ dự án của bạn đáng giá hơn mọi định nghĩa.`,
   follow: [
@@ -4033,6 +4045,12 @@ Từ Java 9, {{count()}} có thể tính thẳng từ kích thước của ngu�
 - Dùng {{peek(o -> o.setStatus(PROCESSED))}} để cập nhật trạng thái đơn hàng: một ngày ai đó đổi terminal operation sang {{count()}} hoặc thêm {{limit}} và một phần đơn không được cập nhật.
 - {{flatMap}} trên quan hệ lazy của JPA trong vòng lặp gây N+1 query; fetch join trước khi stream.
 
+### Ví dụ đời thực
+Hệ thống xử lý đơn hàng dùng pipeline Stream để đánh dấu các đơn đủ điều kiện: {{orders.stream().filter(...).peek(o -> o.setStatus(PROCESSED)).collect(...)}}. Triệu chứng: sau một lần refactor đổi đoạn kiểm tra số lượng sang {{count()}} để tối ưu, khoảng 2% đơn (khoảng 120 đơn/ngày) vẫn ở trạng thái NEW dù đã được tính vào báo cáo. Điều tra: chạy debug từng bước và so sánh hành vi giữa JDK 8 và JDK 17, thấy {{peek}} không được gọi vì {{count()}} trên nguồn SIZED bỏ qua duyệt phần tử. Nguyên nhân gốc: dùng {{peek}} (vốn chỉ để quan sát khi debug) cho side effect quan trọng là đổi trạng thái. Cách xử lý: chuyển việc đổi trạng thái sang {{map}} trả về đối tượng đã cập nhật hoặc sang {{forEach}} là terminal operation, và thêm test xác nhận mọi đơn đủ điều kiện đều đổi trạng thái. Kết quả: 0 đơn bị bỏ sót sau khi deploy, và quy ước code review cấm side effect trong {{peek}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt ba cặp hay nhầm: map biến một phần tử thành một phần tử, còn flatMap biến một phần tử thành một stream rồi nối phẳng, dùng khi mỗi đơn hàng có nhiều dòng hàng. reduce gộp thành một giá trị bất biến như tính tổng, còn collect gom vào container mutable như List hay Map và an toàn hơn khi chạy song song. peek chỉ để quan sát khi debug, nó lazy và có thể bị bỏ qua khi terminal operation như count tối ưu hóa. Tôi từng gặp lỗi production vì dùng peek để đổi trạng thái đơn, sau khi refactor sang count thì một phần đơn không được cập nhật. Cách sửa là đưa side effect vào forEach hoặc map, và đặt quy tắc trong team: lambda trong stream phải không có side effect."
+
 > Senior tip: quy ước team: lambda trong stream phải **không có side effect** (trừ {{forEach}} cuối cùng). Thấy {{peek}} chứa setter hoặc {{reduce}} với {{ArrayList}} trong code review là dấu hiệu cần viết lại ngay.`,
   follow: [
     '{{reduce}} có 3 tham số (identity, accumulator, combiner): combiner dùng khi nào?',
@@ -4103,6 +4121,12 @@ for (Txn t : txns) {
 - {{parallelStream()}} gọi repository bên trong request handler: dưới tải cao commonPool bị chặn bởi IO, cả {{CompletableFuture}} mặc định cũng chậm theo.
 - Pipeline dài 20 dòng với lambda nhiều tầng: stack trace khó đọc, debug khó; tách thành method có tên.
 - Tái sử dụng một {{Stream}} đã được tiêu thụ sẽ ném {{IllegalStateException}}; stream không phải collection.
+
+### Ví dụ đời thực
+Một batch tính điểm rủi ro duyệt 2 triệu bản ghi, dùng {{list.parallelStream().map(this::score).collect(...)}} với hy vọng nhanh hơn. Triệu chứng: CPU chỉ đạt 30-40%, nhưng thời gian chạy batch tăng từ 6 phút lên 18 phút và các API khác trong cùng JVM bị chậm theo (p95 tăng gấp đôi). Điều tra: xem thread dump thấy nhiều thread của {{ForkJoinPool.commonPool()}} đang BLOCKED chờ gọi HTTP tới service chấm điểm, còn CompletableFuture mặc định của các luồng khác cũng xếp hàng trên cùng pool. Nguyên nhân gốc: parallelStream dùng chung commonPool, và tác vụ là IO-bound (chờ mạng) chứ không phải CPU-bound. Cách xử lý: chuyển về vòng {{for}} tuần tự kết hợp chia lô gọi song song trên executor IO riêng có giới hạn 20 luồng, và đo lại bằng JMH cho phần tính toán thuần CPU. Kết quả: batch hoàn thành trong 4 phút, các API khác không còn bị ảnh hưởng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn stream hay vòng for dựa trên ngữ cảnh. Stream phù hợp khi biến đổi dữ liệu nghiệp vụ như filter, map, group vì code ngắn và thể hiện rõ ý định. Vòng for phù hợp khi cần break phức tạp, ném checked exception, cập nhật nhiều biến, hoặc xử lý theo chỉ số. Về hiệu năng, với dữ liệu vài nghìn phần tử có IO thì khác biệt không đáng kể; trong vòng lặp nóng trên primitive tôi ưu tiên for hoặc IntStream và đo bằng JMH. Tôi từng thấy parallelStream gọi HTTP trong request làm nghẽn commonPool và kéo chậm cả hệ thống, nên guideline của tôi là dùng stream không side effect cho biến đổi dữ liệu, dùng for cho logic phức tạp, và cấm parallelStream trong luồng xử lý request nếu chưa có benchmark và review."
 
 > Senior tip: guideline tôi hay đặt cho team: (1) stream là mặc định cho biến đổi dữ liệu, mỗi lambda ngắn, không side effect; (2) for cho logic điều khiển phức tạp và hot path đã được profiler chỉ ra; (3) cấm {{parallelStream}} trong code xử lý request nếu không có benchmark JMH và review riêng. Quy tắc "đo trước khi tối ưu" quan trọng hơn mọi tranh luận stream hay for.`,
   follow: [
@@ -4396,6 +4420,9 @@ int pending = countByStatus.getOrDefault(Status.PENDING, 0); // không có thì 
 ### Trả lời miệng 1 phút
 "Đếm thì tôi dùng merge với Integer::sum, gom nhóm thì computeIfAbsent rồi add. Chúng chỉ tìm bucket một lần và tránh tạo object thừa như putIfAbsent. Cần nhớ ba bẫy: merge trả null là xoá key, getOrDefault vẫn trả null nếu value là null, và lambda không được sửa chính map. Nếu nhiều thread cùng ghi thì đổi sang ConcurrentHashMap, nơi các hàm này mới atomic theo key."
 
+### Ví dụ đời thực
+Job tổng hợp báo cáo cuối ngày đọc 2 triệu giao dịch từ file và đếm số lượng theo trạng thái, đồng thời gom danh sách giao dịch theo khách hàng. Triệu chứng: job chạy 18 phút và gây áp lực GC cao (GC log cho thấy nhiều lần thu gom ngắn, heap tăng giảm liên tục). Điều tra: dùng profiler thấy hàng triệu object {{ArrayList}} tạm được tạo rồi vứt ngay trong vòng lặp; mã dùng {{putIfAbsent(k, new ArrayList<>())}} rồi {{get(k).add(o)}}. Nguyên nhân gốc: {{putIfAbsent}} luôn tạo sẵn ArrayList mới ở mỗi vòng lặp dù key đã tồn tại, nên phần lớn object bị bỏ đi; ngoài ra mỗi vòng gọi {{get}} thêm một lần. Cách xử lý: đổi sang {{computeIfAbsent(k, kk -> new ArrayList<>()).add(o)}} và dùng {{EnumMap}} cho phần đếm trạng thái với {{merge(status, 1, Integer::sum)}}. Kết quả: thời gian job giảm còn 7 phút, số lần GC giảm rõ và bộ nhớ đỉnh thấp hơn khoảng 30%.
+
 > Senior tip: nếu dữ liệu đã nằm trong một collection, {{Collectors.groupingBy(Order::customerId)}} và {{groupingBy(Order::status, counting())}} thường gọn hơn vòng for; còn khi đọc dữ liệu theo luồng (Kafka, file từng dòng) thì {{merge}}/{{computeIfAbsent}} là lựa chọn tự nhiên. Với key là enum, dùng {{EnumMap}} để vừa nhanh vừa in ra đúng thứ tự khai báo.`,
   follow: ['Vì sao putIfAbsent(k, new ArrayList<>()) tốn hơn computeIfAbsent trong vòng lặp lớn?', 'Trên ConcurrentHashMap, merge có atomic không và có rủi ro gì khi lambda chậm?', 'Viết lại đoạn đếm trên bằng Collectors.groupingBy thế nào?'],
   tags: ['HashMap', 'merge', 'computeIfAbsent', 'getOrDefault', 'Java 8']
@@ -4450,6 +4477,9 @@ Từng bước khi {{list.sort(report)}} so sánh hai người: (1) lấy salary
 
 ### Trả lời miệng 1 phút
 "Comparable là thứ tự tự nhiên viết trong class, chỉ một cái, TreeMap và Collections.sort dùng mặc định; ở đây tôi cho Employee so sánh theo id bằng Long.compare. Comparator là thứ tự bên ngoài, dùng cho báo cáo: comparing salary reverseOrder rồi thenComparing name. Tôi không dùng phép trừ vì tràn số, và giữ compareTo nhất quán với equals để TreeSet không nuốt phần tử."
+
+### Ví dụ đời thực
+Màn hình báo cáo nhân sự cần xếp danh sách theo lương giảm dần, cùng lương thì theo tên A-Z. Triệu chứng: một số nhân viên biến mất khỏi danh sách (khoảng 5/10.000 bản ghi) và thứ tự thỉnh thoảng sai với mức lương rất lớn. Điều tra: kiểm tra code thấy dùng {{TreeSet}} với comparator {{(a, b) -> (int)(b.salary() - a.salary())}}; khi hai người cùng lương comparator trả 0 nên TreeSet coi là trùng và bỏ một người, đồng thời phép trừ/ép kiểu gây sai với giá trị lớn. Nguyên nhân gốc: compareTo/comparator không nhất quán với equals và dùng phép trừ thay vì {{Long.compare}}/{{Comparator.comparing}}. Cách xử lý: đổi sang {{ArrayList}} và sắp bằng {{Comparator.comparing(Employee::salary, Comparator.reverseOrder()).thenComparing(Employee::name).thenComparingLong(Employee::id)}} để luôn phân định, và bỏ hẳn phép trừ. Kết quả: danh sách đủ 10.000 bản ghi, thứ tự đúng trong mọi trường hợp kiểm thử biên.
 
 > Senior tip: đừng cho entity/DTO implement {{Comparable}} chỉ vì một màn hình cần sắp xếp; thứ tự nghiệp vụ thay đổi theo yêu cầu, nên để nó thành các hằng {{Comparator}} có tên ({{Employee.BY_SALARY_DESC}}) và viết unit test với dữ liệu trùng lương, null và giá trị cực trị.`,
   follow: ['Vì sao TreeSet có thể "mất" phần tử khi compareTo không nhất quán với equals?', 'Comparator.comparing(...).reversed() đảo cả chuỗi hay chỉ khoá đầu?', 'BigDecimal có compareTo nhất quán với equals không?'],
