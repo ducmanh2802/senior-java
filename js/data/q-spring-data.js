@@ -3925,6 +3925,16 @@ Khi xoá một {{Student}}, Hibernate sẽ **cố xoá luôn các {{Course}}** t
 - {{cascade = ALL}} trên quan hệ có nhiều cha (ManyToMany, hoặc ManyToOne dùng chung entity con) sẽ gây xoá lan man hoặc merge trùng lặp.
 - {{@OneToOne}} LAZY hoạt động bình thường ở **owning side** (giá trị FK cho biết null hay không). Ở **phía {{mappedBy}}**, bảng không có FK nên Hibernate phải query để biết có bản ghi hay không ⇒ vẫn load ngay; giải pháp: {{@MapsId}} (chia sẻ PK), bytecode enhancement, hoặc chỉ map một chiều.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Sau khi deploy tính năng "xoá học viên khỏi khoá học", buổi tối có báo cáo hàng loạt khoá học của người khác biến mất trong hệ thống đào tạo nội bộ (khoảng 120 khoá, 3.500 học viên bị ảnh hưởng hiển thị). Log ứng dụng không có exception rõ ràng, nhưng bảng {{course}} giảm đột ngột so với bản sao lưu đêm.
+- **Điều tra:** Bật {{spring.jpa.show-sql=true}} trên môi trường staging và lặp lại thao tác xoá {{Student}}. Quan sát Hibernate sinh {{DELETE FROM course WHERE id=?}} sau khi xoá dòng trong bảng nối {{student_course}}. Kiểm tra entity {{Student}} thấy {{@ManyToMany}} khai báo cascade gồm {{PERSIST}} và {{REMOVE}}; {{Course}} còn được tham chiếu bởi nhiều {{Student}} khác.
+- **Nguyên nhân gốc:** {{CascadeType.REMOVE}} lan thao tác xoá từ {{Student}} sang các entity {{Course}} trong tập hợp. Hibernate phát ra câu {{DELETE}} trực tiếp lên bảng {{course}} (không chỉ xoá dòng trong bảng nối). Ràng buộc khoá ngoại ở bảng nối chỉ ngăn việc tạo dòng **mồ côi (orphan)** trong bảng nối, không ngăn việc xoá bản thân entity {{Course}} – nên entity dùng chung bị xoá theo một học viên duy nhất.
+- **Cách xử lý:** Bỏ {{CascadeType.REMOVE}} khỏi quan hệ {{@ManyToMany}}, chỉ giữ {{PERSIST}} và {{MERGE}} nếu thực sự cần. Đổi thao tác "rời khoá" thành {{student.getCourses().remove(course)}} trên owning side để Hibernate chỉ xoá bản ghi trong bảng nối. Khôi phục dữ liệu từ bản sao lưu và chạy script đối chiếu.
+- **Kết quả đo được:** Kiểm thử tích hợp xác nhận xoá {{Student}} không còn phát sinh câu {{DELETE}} trên {{course}}. Sự cố không tái diễn, thời gian khôi phục khoảng 40 phút nhờ có quy trình sao lưu rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu CascadeType là cơ chế lan thao tác từ entity cha xuống entity con, còn FetchType quyết định nạp quan hệ ngay hay trì hoãn. Mặc định thì ManyToOne và OneToOne là EAGER, OneToMany và ManyToMany là LAZY, nên em luôn đặt LAZY tường minh cho ManyToOne để tránh N+1 ngầm. Bẫy nguy hiểm nhất là cascade REMOVE trên ManyToMany: khi xoá một bản ghi cha, Hibernate có thể cố xoá entity con vốn đang được nhiều cha khác tham chiếu, dẫn đến mất dữ liệu dùng chung hoặc lỗi ràng buộc khoá ngoại. Cách đúng là không dùng REMOVE ở ManyToMany, chỉ thao tác trên tập hợp để Hibernate xoá dòng trong bảng nối; với quan hệ OneToMany sở hữu thực sự thì mới cân nhắc orphanRemoval. Trong thực tế em từng xử lý sự cố xoá nhầm dữ liệu do cascade sai, từ đó team quy ước chỉ dùng PERSIST và MERGE cho aggregate root và review kỹ mọi cascade trong code."
+
 > Senior tip: trong review, hãy soi mọi {{@ManyToOne}} và {{@OneToOne}}: nếu không có {{fetch = FetchType.LAZY}} thì là bug tiềm ẩn. Với {{cascade}}, chỉ dùng {{PERSIST}} và {{MERGE}} cho aggregate root; {{REMOVE}} chỉ dùng cho quan hệ sở hữu thực sự (OneToMany với orphanRemoval).`,
   follow: [
     'Vì sao @OneToOne mặc định EAGER lại gây N+1 nhiều hơn @ManyToOne?',
@@ -3976,6 +3986,16 @@ Khi gọi {{repo.findByCustomerId(1L, PageRequest.of(0, 20))}}, Spring Data sinh
 - {{@Query}} JPQL với {{LEFT JOIN FETCH}} + {{Pageable}} -> lỗi in-memory pagination (xem câu HHH90003004).
 - Native query + {{Pageable}}: Spring Data vẫn thêm LIMIT/OFFSET, nhưng việc tự suy ra count query từ SQL phức tạp dễ sai – nên khai báo {{countQuery}} tường minh; {{Sort}} phải dùng tên cột thật.
 - Count query kế thừa JOIN từ data query -> nếu data query join nhiều bảng, count query cũng join -> chậm. Viết countQuery tùy chỉnh khi cần.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Trang danh sách đơn hàng của khách hàng lớn (khoảng 2 triệu đơn trong bảng) phản hồi chậm, P95 từ 200 ms tăng lên 3,8 giây vào giờ cao điểm. CPU cơ sở dữ liệu (database – nơi lưu dữ liệu) tăng rõ dù số request không đổi nhiều.
+- **Điều tra:** Bật log SQL và quan sát mỗi lần gọi API phân trang sinh hai câu: câu lấy dữ liệu có {{LIMIT/OFFSET}} và một câu {{SELECT count(*) ...}} kèm nhiều {{JOIN}} giống hệt truy vấn chính. Dùng {{EXPLAIN ANALYZE}} thấy câu count quét và join hàng triệu dòng chỉ để trả về tổng số.
+- **Nguyên nhân gốc:** Repository trả về {{Page}} nên Spring Data tự sinh count query; truy vấn gốc dùng {{@Query}} với join phức tạp và count query kế thừa các join không cần thiết cho việc đếm.
+- **Cách xử lý:** Đổi kiểu trả về sang {{Slice}} cho màn hình "xem thêm" vì giao diện chỉ cần biết còn trang tiếp hay không. Với màn hình quản trị thực sự cần tổng số trang, viết {{countQuery}} tường minh bỏ bớt join không ảnh hưởng kết quả đếm và bổ sung index phù hợp cho điều kiện lọc.
+- **Kết quả đo được:** API danh sách chính giảm còn khoảng 220 ms P95 và không còn câu count nặng; màn hình quản trị dùng count tuỳ chỉnh giảm từ 3,2 giây xuống còn 450 ms trên cùng tập dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Spring Data JPA em phân biệt ba cách: derived query method nhanh và được kiểm tra lúc khởi động, @Query JPQL linh hoạt cho projection và join fetch, còn native SQL dùng khi cần tính năng riêng của cơ sở dữ liệu. Khi dùng Pageable, Spring Data thường chạy hai câu: một câu lấy dữ liệu có LIMIT OFFSET và một câu count để tính tổng. Điểm cần lưu ý là count query không có ORDER BY nhưng vẫn giữ WHERE và JOIN, nên trên bảng lớn nó có thể rất chậm. Trong thực tế em ưu tiên trả Slice cho danh sách kiểu cuộn vì chỉ cần hasNext và không tốn count; nếu bắt buộc dùng Page thì em viết countQuery tường minh, bỏ join thừa nhưng giữ đúng điều kiện lọc, và kiểm tra bằng EXPLAIN ANALYZE. Cách tiếp cận này giúp cân bằng giữa trải nghiệm người dùng và chi phí truy vấn."
 
 > Senior tip: với API phân trang danh sách, **mặc định dùng {{Slice}}** (trả hasNext, không count) – nhanh hơn hẳn trên bảng lớn. Chỉ dùng {{Page}} khi UI thực sự cần "trang 5/120".`,
   follow: [
@@ -4094,6 +4114,13 @@ SET lock_timeout = '5s';
 ### Trả lời miệng 1 phút
 "Trong PostgreSQL, UPDATE không sửa tại chỗ mà tạo tuple mới, tuple cũ được đánh xmax và thành dead tuple khi không còn snapshot nào cần nó. VACUUM dọn dead tuple để chỗ trống được tái dùng, đồng thời freeze tuple cũ vì xid chỉ có 32 bit – không freeze kịp thì tới gần wraparound PostgreSQL sẽ ngừng nhận ghi. Bloat là hệ quả khi dọn không kịp. Transaction dài là thủ phạm chung: nó giữ xmin horizon nên chặn cả dọn rác lẫn freeze, lại giữ lock và connection. Trade-off của MVCC là đọc không chặn ghi nhưng phải trả bằng việc dọn dẹp. Trong thực tế tôi chỉnh autovacuum theo từng bảng lớn, đặt idle_in_transaction_session_timeout và cảnh báo trên transaction dài, replication slot và tuổi xid."
 
+### Ví dụ đời thực
+- **Triệu chứng:** Bảng {{transaction_log}} (khoảng 300 triệu dòng, cập nhật trạng thái liên tục) tăng dung lượng từ 120 GB lên 380 GB trong 10 ngày, truy vấn đọc chậm dần từ 40 ms lên 600 ms dù lượng dữ liệu logic không đổi. Giám sát cũng thấy {{n_dead_tup}} tăng liên tục.
+- **Điều tra:** Kiểm tra {{pg_stat_activity}} thấy một phiên ở trạng thái {{idle in transaction}} (giao dịch treo chưa kết thúc) đã mở hơn 6 giờ do job báo cáo quên commit; {{pg_stat_user_tables}} cho thấy autovacuum chạy nhưng {{n_dead_tup}} không giảm. Theo dõi {{age(datfrozenxid)}} trong {{pg_database}} tăng nhanh.
+- **Nguyên nhân gốc:** Giao dịch dài giữ {{xmin}} horizon thấp, khiến VACUUM không thể dọn dead tuple mới hơn mốc đó và cũng không freeze được; dead tuple tích luỹ gây bloat, file dữ liệu phình và index kém hiệu quả.
+- **Cách xử lý:** Kết thúc phiên treo an toàn sau khi phối hợp, đặt {{idle_in_transaction_session_timeout = '5min'}} và {{statement_timeout}} cho ứng dụng; tinh chỉnh autovacuum cho bảng lớn (giảm scale factor, tăng tốc độ dọn). Chạy {{VACUUM (ANALYZE)}} trong giờ thấp điểm và lên kế hoạch {{pg_repack}} để thu gọn bảng nếu cần.
+- **Kết quả đo được:** Sau 2 giờ dọn dẹp, {{n_dead_tup}} giảm hơn 85%, truy vấn đọc ổn định lại quanh 50-70 ms; cảnh báo tuổi giao dịch giảm dần và dung lượng tái sử dụng được mà không cần {{VACUUM FULL}} gây khoá dài.
+
 > Senior tip: hãy theo dõi **tỉ lệ dead tuple và tuổi transaction** như hai metric hàng ngày. Kinh nghiệm thực tế: phần lớn sự cố "database chậm không rõ nguyên nhân" đều truy vết ngược lại được tới một hoặc vài session {{idle in transaction}} kéo dài. Một câu lệnh giám sát đơn giản – {{SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'}} – đã có thể cứu một sự cố nghiêm trọng.`,
   follow: [
     'Vì sao {{VACUUM}} không giải phóng dung lượng đĩa cho hệ điều hành?',
@@ -4202,6 +4229,13 @@ CREATE INDEX idx_log_created_brin ON transaction_log USING brin (created_at)
 
 ### Trả lời miệng 1 phút
 "B-tree là mặc định cho equality, range và sort. Partial index chỉ lập chỉ mục phần dữ liệu có điều kiện, ví dụ đơn PENDING, nên nhỏ và rẻ, nhưng planner phải chứng minh được điều kiện query bao hàm điều kiện index. Expression index lập theo biểu thức như lower(email), query phải viết đúng biểu thức đó. GIN là index ngược cho JSONB, mảng, full-text, đọc rất nhanh nhưng ghi đắt hơn. BRIN chỉ lưu min max theo dải page, cực nhỏ, hợp với dữ liệu append-only theo thời gian. Với bảng log khổng lồ tôi dùng BRIN cho created_at, B-tree composite cho account_id cộng thời gian, partial index cho trạng thái hiếm, và thường kết hợp partition theo tháng. Luôn kiểm tra bằng EXPLAIN chứ không đoán."
+
+### Ví dụ đời thực
+- **Triệu chứng:** Bảng {{transaction_log}} chỉ ghi thêm (append-only – chỉ thêm dòng mới, không sửa), khoảng 2 tỷ dòng và 400 GB, truy vấn "xem log theo khoảng 1 giờ" mất 12-15 giây; dung lượng index B-tree trên {{created_at}} chiếm gần 45 GB và thời gian ghi tăng nhẹ.
+- **Điều tra:** Chạy {{EXPLAIN (ANALYZE, BUFFERS)}} thấy index scan trên B-tree lớn nhưng vẫn đọc nhiều page; kiểm tra {{pg_stats.correlation}} của cột {{created_at}} gần 1 (dữ liệu ghi theo thời gian). Đánh giá truy vấn thực tế: đa số lọc theo khoảng thời gian và một số ít theo {{account_id}}.
+- **Nguyên nhân gốc:** Dùng B-tree cho cột thời gian tăng dần trên bảng khổng lồ tốn rất nhiều dung lượng và chi phí cập nhật, trong khi tính chất dữ liệu có tương quan vật lý cao phù hợp hơn với BRIN (Block Range Index – index tóm tắt min/max theo dải trang).
+- **Cách xử lý:** Tạo {{BRIN}} trên {{created_at}} với {{pages_per_range}} phù hợp, giữ B-tree composite {{(account_id, created_at)}} cho truy vấn tra cứu theo tài khoản, và thêm partial index cho trạng thái hiếm cần xử lý. Thử nghiệm trên môi trường giống production trước khi áp dụng.
+- **Kết quả đo được:** Dung lượng index thời gian giảm từ ~45 GB xuống còn vài MB; truy vấn theo khoảng 1 giờ giảm còn khoảng 0,8-1,2 giây nhờ đọc ít dải trang hơn, tốc độ ghi cải thiện do bớt cập nhật B-tree lớn.
 
 > Senior tip: chọn loại index nên bắt đầu từ **hình dạng dữ liệu và câu query thực tế**. Ba phát hiện hay bị bỏ qua: bảng log khổng lồ thường **không cần** B-tree mà BRIN là đủ và rẻ hơn hàng trăm lần; truy vấn JSONB theo **một key cụ thể** thường được phục vụ tốt hơn bằng expression index; partial index theo trạng thái nghiệp vụ giảm rất nhiều I/O.`,
   follow: [
@@ -4314,6 +4348,13 @@ Lưu ý: {{DETACH ... CONCURRENTLY}} không chạy được trong transaction bl
 ### Trả lời miệng 1 phút
 "Với bảng giao dịch 800 triệu dòng, tôi partition theo RANGE trên created_at, mỗi tháng một partition. Khi query có điều kiện thời gian, planner prune và chỉ đọc partition liên quan, kể cả runtime pruning với tham số. Lợi ích lớn nhất là xoá dữ liệu cũ bằng detach và drop partition, gần như tức thời, không sinh WAL và bloat như DELETE. Vận hành hằng ngày gồm tạo partition trước bằng job, cảnh báo nếu partition DEFAULT có dữ liệu. Ràng buộc đau nhất là unique và primary key phải chứa cột partition, nên PK thành (id, created_at) và mọi đường truy cập theo id phải biết thời gian. Kinh nghiệm của tôi là quyết định thiết kế khoá này trước khi bảng lớn, vì đổi về sau rất tốn kém."
 
+### Ví dụ đời thực
+- **Triệu chứng:** Bảng {{orders}} tích luỹ 800 triệu dòng sau 3 năm, job xoá dữ liệu cũ hơn 24 tháng bằng {{DELETE}} chạy mỗi đêm mất 4-5 giờ, tạo nhiều WAL (write-ahead log – nhật ký ghi trước để đảm bảo an toàn dữ liệu) khiến replica (bản sao) trễ 20 phút và bảng bị bloat.
+- **Điều tra:** Theo dõi {{pg_stat_statements}} và log thấy câu {{DELETE}} quét và xoá hàng chục triệu dòng mỗi lần; {{EXPLAIN}} cho truy vấn báo cáo theo tháng vẫn quét nhiều dữ liệu không cần thiết. Kiểm tra dung lượng cho thấy chỉ mục và bảng phình sau các đợt xoá lớn.
+- **Nguyên nhân gốc:** Lưu toàn bộ dữ liệu trong một bảng lớn khiến việc dọn dữ liệu theo chu kỳ và truy vấn theo khoảng thời gian đều tốn kém; {{DELETE}} hàng loạt sinh dead tuple và ghi nhật ký lớn.
+- **Cách xử lý:** Thiết kế lại bảng theo partition {{RANGE}} trên {{created_at}} (mỗi tháng một partition – bảng con), đổi khoá chính thành {{(id, created_at)}} để thoả ràng buộc unique phải chứa cột partition. Thiết lập job tạo partition trước, chuyển lưu trữ dữ liệu cũ bằng {{DETACH}} rồi {{DROP}} partition.
+- **Kết quả đo được:** Việc loại bỏ dữ liệu tháng cũ hoàn tất trong dưới 1 giây thay vì nhiều giờ, replica không còn trễ do xoá lớn; truy vấn báo cáo theo tháng giảm từ 6 giây xuống còn khoảng 400 ms nhờ partition pruning (bộ tối ưu bỏ qua các partition không liên quan).
+
 > Senior tip: trước khi partition, trả lời ba câu: **(1) tôi xoá dữ liệu cũ theo chu kỳ nào?** (đây mới là lý do chính để partition) **(2) unique constraint có chứa được cột partition không?** Nếu không, bạn phải đổi thiết kế khoá – thay đổi rất tốn kém nên phải quyết định sớm. **(3) sau 3 năm sẽ có bao nhiêu partition?**`,
   follow: [
     'Vì sao unique constraint phải chứa cột partition và điều đó ảnh hưởng gì tới khoá chính?',
@@ -4401,6 +4442,13 @@ Các dấu hiệu đáng chú ý:
 
 ### Trả lời miệng 1 phút
 "Nested loop duyệt từng dòng vế ngoài và tra vế trong qua index, tốt khi vế ngoài nhỏ. Hash join dựng bảng băm từ vế nhỏ rồi quét vế lớn, tốt cho join lớn không có index nhưng cần work_mem, thiếu thì spill ra đĩa với Batches lớn hơn 1. Merge join trộn hai dãy đã sắp xếp, tốt khi cả hai lớn và có sẵn thứ tự. Khi đọc plan, tôi so estimated rows với actual rows ở từng node: lệch lớn gần như luôn là nguyên nhân optimizer chọn sai thuật toán, thường do thống kê cũ, các cột tương quan, hoặc generic plan. Tôi sửa bằng ANALYZE, tăng statistics target, extended statistics, còn tắt enable_hashjoin chỉ để chẩn đoán. Kinh nghiệm: sửa ước lượng thì planner tự chọn đúng, ép plan chỉ là băng dán tạm."
+
+### Ví dụ đời thực
+- **Triệu chứng:** Truy vấn báo cáo doanh thu theo khu vực (join {{orders}} ~5 triệu dòng với {{customers}} ~1 triệu dòng) sau một đợt nhập dữ liệu tăng từ 1,2 giây lên 25 giây, trong khi code không thay đổi.
+- **Điều tra:** Chạy {{EXPLAIN (ANALYZE, BUFFERS)}} thấy planner chọn Nested Loop với ước lượng 2.000 dòng ở vế ngoài nhưng thực tế trả về 80.000 dòng, dẫn đến hàng chục nghìn lần tra cứu index. Kiểm tra thống kê cột {{country}} và {{city}} cho thấy chưa phản ánh dữ liệu mới và hai cột có tương quan mạnh.
+- **Nguyên nhân gốc:** Thống kê lỗi thời sau bulk insert và optimizer giả định các cột độc lập, ước lượng cardinality (số dòng ước tính) sai lệch lớn nên đánh giá chi phí Nested Loop thấp hơn Hash Join.
+- **Cách xử lý:** Chạy {{ANALYZE}} cho các bảng liên quan, tăng {{default_statistics_target}} cho cột phân bố phức tạp và tạo extended statistics {{(dependencies)}} trên {{(country, city)}}. Kiểm tra lại plan và điều chỉnh {{work_mem}} ở mức phiên khi cần để tránh spill.
+- **Kết quả đo được:** Ước lượng dòng tiệm cận thực tế, planner chuyển sang Hash Join phù hợp; thời gian truy vấn giảm còn khoảng 1,4 giây và ổn định qua các lần chạy tiếp theo.
 
 > Senior tip: hãy lưu {{EXPLAIN (ANALYZE)}} của các query quan trọng vào CI hoặc lưu theo thời gian để phát hiện **plan regression** trước khi lên production.`,
   follow: [
