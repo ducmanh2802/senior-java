@@ -7041,6 +7041,12 @@ public void remove() {
 - Guideline cho team: (1) không sửa collection đang duyệt, dùng {{removeIf}}/{{compute}}; (2) collection chia sẻ giữa thread phải là concurrent hoặc bất biến ({{List.copyOf}}, {{Set.of}}); (3) khi trả collection ra ngoài thì trả bản copy/unmodifiable; (4) không catch CME để retry — nó là tín hiệu logic sai.
 - {{transient}} trên {{modCount}} cũng giải thích một hiện tượng nhỏ: map vừa deserialize có {{modCount}} = 0, nên debugger thấy 0 không có nghĩa là chưa ai sửa.
 
+### Ví dụ đời thực
+Dịch vụ đơn hàng dùng {{HashMap<Long, List<Order>> orderByUser}} (key: userId, value: danh sách đơn) để cache 50.000 user đang hoạt động. Một endpoint GET /orders duyệt map bằng {{forEach}} và lọc đơn trạng thái "PENDING" để trả về. Dưới tải cao, một request khác gọi {{orderByUser.computeIfAbsent(userId, k -> new ArrayList<>())}} để thêm đơn mới — đây là thay đổi cấu trúc (tăng modCount). Iterator của request đầu tiên gặp race: {{modCount}} không volatile, thread duyệt đọc giá trị cũ, không ném CME, nhưng bỏ sót node mới thêm hoặc đọc {{size}} sai. Triệu chứng: log ghi "trả 3 đơn" nhưng response chỉ có 2, p99 latency tăng ngẫu nhiên. Điều tra: thêm wrapper ghi stack trace mỗi lần sửa map, phát hiện {{computeIfAbsent}} được gọi từ thread nạp dữ liệu async. Cách sửa: đổi sang {{ConcurrentHashMap}} (iterator weakly consistent, không ném CME) và dùng {{putIfAbsent}} + {{synchronized}} trên list con khi thêm đơn. Kết quả: không còn CME âm thầm, p99 ổn định < 50ms, throughput tăng 15% nhờ tránh contention.
+
+### Trả lời mẫu khi phỏng vấn
+"modCount là một int không volatile, tăng khi collection thay đổi cấu trúc. Iterator lưu expectedModCount lúc tạo và so sánh ở mỗi next(). Hai điểm quan trọng: một, modCount không volatile nên trong đa luồng có thể đọc giá trị cũ — fail-fast là best-effort, có thể im lặng không ném CME mà trả kết quả sai. Hai, không phải thao tác nào cũng tăng modCount: setValue trên entry, put key đã có, replaceAll, computeIfPresent thì không tăng, nên không gây CME. Tôi từng gặp bug production: HashMap cache đơn hàng bị race, iterator không ném CME mà trả thiếu dữ liệu. Sửa bằng ConcurrentHashMap cho iterator weakly consistent, và khóa đúng chỗ khi sửa. Lead sẽ nói: fail-fast chỉ là công cụ debug, tính đúng đắn đến từ concurrent collection hoặc bất biến."
+
 > Senior tip: CME không phải "lỗi đa luồng", nó là "có người sửa cấu trúc ngoài iterator". Cái đáng sợ thật là trường hợp ngược lại: race mà fail-fast không phát hiện, vì {{modCount}} không volatile và không có happens-before. Nên câu trả lời lead là: fail-fast chỉ là công cụ debug, còn tính đúng đắn đến từ {{synchronized}}, concurrent collection hoặc bất biến.`,
   follow: [
     'Vì sao modCount không volatile làm fail-fast không đáng tin trong đa luồng, và JMM nói gì về race này?',
@@ -7124,6 +7130,12 @@ public class ListBench {
 - Case hay gặp trong review: {{orders.contains(x)}} trong vòng lặp 100k lần — thủ phạm là Big-O chứ không phải cache locality, vẫn cùng bài học: đo rồi hãy sửa.
 - Khi nào đáng đo: đổi cấu trúc dữ liệu ở đường nóng, hoặc ai đó đề nghị {{LinkedList}}. Khi nào không: code chạy năm lần mỗi request.
 
+### Ví dụ đời thực
+Service giỏ hàng dùng {{List<OrderItem>}} để lưu 5.000 item/ngày, hàm {{calculateTotal()}} duyệt list và gọi {{item.getPrice()}}. Dev chuyển từ {{ArrayList}} sang {{LinkedList}} vì "thêm/xoá giữa nhanh hơn" theo lý thuyết, nhưng không đo. Sau deploy, p99 của API tính tổng tăng từ 8ms lên 45ms, CPU usage nhảy từ 35% lên 68%. async-profiler flame graph cho thấy phần lớn thời gian nằm ở {{LinkedList$Node}} truy cập (pointer chase, cache miss). Chạy JMH trên máy staging (n=5000, 10 fork): duyệt ArrayList 120µs, LinkedList 1.1ms — chênh 9 lần. Sửa: đổi lại {{ArrayList}} và dùng {{removeIf}} cho xóa hàng loạt. Kết quả: p99 về 9ms, CPU xuống 32%. Bài học: Big-O chỉ đếm thao tác, không đếm chi phí cache miss; luôn đo trước khi thay cấu trúc dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"ArrayList nhanh hơn LinkedList chủ yếu vì cache locality: mảng reference liên tục, CPU prefetch được, một cache line 64 byte chứa 8-16 reference. LinkedList là pointer chase qua node rải rác, mỗi bước có thể cache miss — chênh lệch 10-100 lần giữa L1 và RAM. Big-O chỉ đếm số thao tác, không đếm chi phí mỗi thao tác. Để chứng minh, tôi dùng JMH: đủ warmup, @Fork(2) chạy tiến trình riêng, Blackhole để JIT không xoá code, -prof gc để xem allocation. Benchmark duyệt 100k Integer: ArrayList ~20µs, LinkedList ~180µs. Trên production tôi từng gặp team đổi sang LinkedList nghĩ thêm giữa nhanh, p99 tăng 5 lần vì duyệt chậm. Cách đúng: mặc định ArrayList, chỉ dùng LinkedList khi đã có iterator ở vị trí cần sửa; còn queue dùng ArrayDeque. Luôn đo trên dữ liệu thật trước khi quyết định."
+
 > Senior tip: khác biệt senior/lead ở câu này không phải thuộc con số, mà là khả năng **thiết kế phép đo**: vì sao cần {{@Fork}}, Blackhole, {{-prof gc}}, và vì sao số đo trên 100k phần tử có thể vô nghĩa với workload 50 phần tử. Câu chốt: "{{LinkedList}} sai gần như mọi lúc — và tôi chứng minh được bằng JMH trên dữ liệu thật của chính hệ thống này."`,
   follow: [
     'Blackhole tồn tại để chặn điều gì, và nếu bỏ nó thì JIT "gian lận" ra sao?',
@@ -7202,6 +7214,12 @@ try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
 - **Dùng virtual thread cho CPU-bound:** throughput giảm, p99 xấu đi; CPU-bound hãy dùng {{ForkJoinPool}}/parallelism cố định.
 - **Pool thread cũ bọc trong virtual thread:** tạo virtual thread chỉ để {{submit}} vào {{fixedThreadPool(50)}} thì vẫn nghẽn ở pool 50.
 - **Quan sát kém:** thread dump truyền thống khó đọc với hàng nghìn VT; cần JFR/metrics.
+
+### Ví dụ đời thực
+Hệ thống thanh toán migrate sang virtual thread (Java 21) để xử lý 2.000 TPS, từng dùng fixedThreadPool(200). Sau deploy, p99 latency tăng từ 120ms lên 800ms, DB connection pool HikariCP (max 30) liên tục hết, log đầy "Pool exhausted". Nguyên nhân: 2.000 virtual thread cùng chờ 30 connection, semaphore không được thêm. ThreadLocal của filter MDC tạo 2.000 bản copy, heap tăng 400MB trong 10 phút. Sửa: (1) thêm Semaphore(30) trước truy vấn DB, (2) thay ThreadLocal MDC bằng ScopedValue, (3) cấu hình HikariCP maxPoolSize=30, connectionTimeout=2s. Kết quả: p99 giảm xuống 150ms, heap ổn định, 0 lỗi pool exhausted. Virtual thread giúp fan-out I/O, nhưng semaphore + scoped value là bắt buộc để bảo vệ hạ nguồn.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual thread cho phép hàng triệu task blocking I/O bằng code đồng bộ, nhưng migrate từ platform thread gặp ba vấn đề. Một, ThreadLocal nhân bản theo thread: 200 platform thread thì 200 bản, 200.000 virtual thread thì 200.000 bản — OOM. Giải pháp: remove() trong finally, hoặc dùng ScopedValue (immutable, tự dọn khi ra scope). Hai, connection pool JDBC thành nút thắt: virtual thread nhiều nhưng DB connection ít; phải giới hạn đồng thời bằng Semaphore(permits = pool size) trước khi acquire connection — đây là bulkhead pattern. Ba, pinning: synchronized hoặc native blocking ghim carrier thread, mất lợi ích unmount; thay bằng ReentrantLock, tránh I/O trong critical section. Tôi migrate hệ thống thanh toán 2k TPS, thiếu semaphore gây pool exhausted, thiếu ScopedValue gây OOM; thêm cả hai thì p99 từ 800ms xuống 150ms. Kết luận: VT miễn phí tạo thread, nhưng tài nguyên hạ nguồn vẫn hữu hạn."
 
 > Senior tip: virtual thread biến "chi phí tạo thread" gần như bằng 0, nhưng **không** biến tài nguyên hạ nguồn thành vô hạn. Công thức thực tế: VT cho fan-out I/O + semaphore = min(pool DB, giới hạn dịch vụ ngoài) + timeout + circuit breaker (ngắt mạch khi hạ nguồn lỗi liên tục). Đo p99 và error rate trước/sau; chỉ rollout khi có số liệu.`,
   follow: [
@@ -7406,6 +7424,16 @@ String label = switch (status) {       // status có thể null
 - Switch expression thêm {{default}} "cho chắc" trên enum → mất cảnh báo compile khi enum thêm giá trị mới.
 - Review code đồng đội lạm dụng {{var}} khiến logic nghiệp vụ (tiền, trạng thái) bị hiểu nhầm kiểu.
 
+### Ví dụ đời thực
+Team viết API tìm kiếm đơn hàng dùng text block SQL:
+~~~text
+""" SELECT * FROM orders WHERE status = '""" + status + """' """
+~~~
+Parameter {{status}} từ request không validate. Tấn công SQL injection gửi {{status = 'SHIPPED' OR '1'='1'}} → trả về 1.2 triệu đơn hàng thay vì 50, DB CPU 100%, ứng dụng sập 15 phút. Log ghi query rõ ràng, phát hiện trong 5 phút. Sửa: đổi sang PreparedStatement với {{?}}, thêm allowlist cho status. Code review mới bắt buộc: text block không được ghép input động. Bổ sung: một dev dùng {{var list = new ArrayList<>()}} trong service tính chiết khấu, JIT suy ra {{ArrayList<Object>}}, add {{BigDecimal}} rồi get làm {{String}} → {{ClassCastException}} ở production. Sửa: {{var list = new ArrayList<BigDecimal>()}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Text block, switch expression, var là ba tính năng hiện đại nhưng có bẫy khi review. Text block: thụt lề tự cắt theo khoảng trắng chung nhỏ nhất, dấu đóng {{"""}} ảnh hưởng kết quả; tuyệt đối không ghép input động vào SQL text block — đó là SQL injection, phải dùng PreparedStatement. Switch expression: exhaustive trên enum/sealed giúp compiler bắt nhánh thiếu khi thêm giá trị mới; nhớ xử lý {{case null}} từ Java 21 vì selector null vẫn ném NPE nếu không bắt. Var: chỉ dùng khi vế phải nói rõ kiểu, tránh {{var x = get()}} ép người đọc đoán, và {{var list = new ArrayList<>()}} suy ra Object. Quy tắc team: var chỉ khi kiểu rõ ràng cùng dòng, text block chỉ cho hằng chuỗi, switch exhaustive không default. Khi review tôi hỏi ba câu: text block có ghép input không? switch nhận null được không? var này kiểu gì?"
+
 > Senior tip: đặt convention (quy ước) trong team: {{var}} chỉ khi vế phải nói rõ kiểu trong cùng dòng; text block chỉ cho hằng chuỗi (không ghép dữ liệu động); switch trên enum/sealed ưu tiên exhaustive không {{default}} để compiler bắt hộ trường hợp mới. Khi review, ba câu hỏi nhanh: "text block có ghép input không?", "switch có thể nhận null không?", "{{var}} này người đọc có biết kiểu ngay không?".`,
   follow: [
     'Text block bỏ indentation (thụt lề) theo quy tắc nào, và dấu đóng {{"""}} ảnh hưởng ra sao?',
@@ -7468,6 +7496,12 @@ public record Order(String id, List<String> items) {
 - Thêm logic nặng trong compact constructor (gọi DB/mạng) → constructor khó test, bất ngờ khi deserialize.
 - Trộn accessor kiểu record {{id()}} với quy ước JavaBean {{getId()}} làm một số framework cũ không map được (hiếm, nhưng kiểm tra khi tích hợp).
 
+### Ví dụ đời thực
+API đặt hàng nhận {{OrderRequest}} record có {{List<String> items}}. Dev không copy trong compact constructor, client gửi list, service validate xong add item quà tặng vào list gốc ({{request.items().add("GIFT")}}). Vì record không copy, list bên client cũng bị thêm "GIFT" → client hiển thị sai, log ghi nhận đơn hàng có quà tặng mà khách không chọn. Bug xuất hiện 3% đơn, khó reproduce vì chỉ xảy ra khi client giữ reference list. Sửa: compact constructor dùng {{items = List.copyOf(items)}}. Kết quả: client list không đổi, server tự do thêm quà. Bổ sung: team thử dùng record làm {{@Entity}} cho bảng {{User}} — Hibernate ném lỗi khởi động "no no-arg constructor", ép phải dùng class thường. Projection JPQL {{select new com.app.UserDto(u.id, u.name) from User u}} trả record DTO hoàn hảo.
+
+### Trả lời mẫu khi phỏng vấn
+"Record là class dữ liệu bất biến từ Java 16, compiler tự sinh constructor, accessor, equals/hashCode/toString. Compact constructor cho phép validate và chuẩn hóa trước khi gán field — không liệt kê tham số, không gán this, compiler tự làm. Quan trọng: bất biến chỉ nông (shallow), field final chỉ chặn gán lại reference, không chặn sửa nội dung List/Map. Vì vậy bắt buộc defensive copy trong compact constructor: {{items = List.copyOf(items)}}. Record rất hợp làm DTO: ít boilerplate, bất biến, toString tốt cho log, Jackson serialize tốt. Không dùng làm JPA entity vì: final class không cho kế thừa (Hibernate không tạo proxy cho lazy loading), không có no-arg constructor, field final không setter. Dùng record cho projection JPQL hoặc DTO tầng service/controller. Tôi từng gặp bug: record OrderRequest không copy items list, service thêm quà vào list gốc làm client hiển thị sai — sửa bằng List.copyOf."
+
 > Senior tip: dùng record cho value object/DTO và kết quả truy vấn; luôn defensive-copy các component dạng collection/mảng trong compact constructor ({{List.copyOf}}, {{Map.copyOf}}). Với JPA, giữ entity là class thường và map sang record DTO ở tầng service/controller - vừa tận dụng bất biến, vừa không phá cơ chế proxy/lazy của Hibernate.`,
   follow: [
     'Vì sao Hibernate không tạo được proxy cho record, và điều đó ảnh hưởng lazy loading thế nào?',
@@ -7525,6 +7559,12 @@ String fee(Payment p) {
 | {{if-else/instanceof}} cũ | Dễ quên, im lặng | Thấp | Runtime |
 | Visitor pattern | Bị ép sửa | Cao | Compile (nếu đủ kỷ luật) |
 | Sealed + switch pattern | Compiler báo mọi chỗ thiếu | Thấp | Compile |
+
+### Ví dụ đời thực
+Hệ thống xử lý đơn hàng dùng {{sealed interface OrderEvent permits Created, Paid, Shipped, Cancelled, Refunded}}. Function {{calculateCommission(OrderEvent e)}} dùng switch exhaustive. Khi team bổ sung event {{PartiallyRefunded}} (hoàn một phần) và cập nhật {{permits}}, build thất bại: compiler liệt kê 4 chỗ switch thiếu case {{PartiallyRefunded}} — bao gồm cả function commission. Dev sửa từng chỗ, thêm logic tính hoa hồng cho hoàn một phần (50% mức bình thường). Nếu dùng if-else cũ, case mới sẽ rơi vào {{else}} trả 0, mất hoa hồng hàng nghìn đơn trước khi phát hiện. Số liệu: sau khi áp dụng sealed+switch, 0 bug sơ nhánh khi thêm event trong 6 tháng; trước đó trung bình 2 bug/quý. Bổ sung: một dev thêm {{default -> throw new IllegalStateException()}} "cho an toàn" trên sealed type kín → compiler không báo khi thêm subtype mới, bug lẩn vào production. Code review cấm default trên sealed kín.
+
+### Trả lời mẫu khi phỏng vấn
+"Sealed class/interface giới hạn tập subtype được phép (permits). Kết hợp pattern matching switch (Java 21), compiler kiểm tra exhaustive: nếu switch expression liệt kê đủ mọi permits thì không cần default, thêm subtype mới → mọi switch thiếu nhánh lỗi compile. Đây là lợi ích lớn nhất: compiler dẫn đi sửa thay vì bug runtime. Ví dụ: OrderEvent sealed có Created, Paid, Shipped, Cancelled, Refunded. Thêm PartiallyRefunded vào permits, build fail ở 4 chỗ switch, sửa xong mới deploy được. So với visitor pattern: cũng ép compile khi thêm type, nhưng visitor cần interface + accept method + implementation classes — nhiều boilerplate. Sealed+switch gọn hơn, dispatch ngay tại chỗ dùng. Bẫy: không dùng default trên sealed kín (mất kiểm tra), nhớ case null vì selector null ném NPE, thứ tự case cụ thể trước tổng quát. Non-sealed mở rộng thì compiler không kiểm tra được exhaustive, phải có default. Tôi dùng cho domain đóng: trạng thái đơn, loại sự kiện, kết quả xử lý."
 
 > Senior tip: mô hình hóa domain "đóng" (trạng thái đơn hàng, loại sự kiện, kết quả xử lý) bằng {{sealed interface}} + {{record}} cho từng biến thể, rồi dùng switch expression exhaustive. Khi ai đó thêm biến thể mới, để compiler dẫn đường - đó là lợi ích thiết kế lớn hơn cả cú pháp. Chỉ dùng {{default}} khi bạn thật sự chấp nhận "loại chưa biết" (ví dụ đọc dữ liệu tương lai), và khi đó hãy log/cảnh báo thay vì nuốt im.`,
   follow: [
