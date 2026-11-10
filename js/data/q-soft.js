@@ -59,6 +59,12 @@ class CheckoutFlowIT { /* đăng nhập -> tạo đơn -> thanh toán -> đối 
 - **H2 thay Postgres** ở tầng repository ⇒ sai dialect, sai hành vi unique/index ⇒ lỗi chỉ lộ lúc production.
 - **E2E chạy song song dùng chung DB** ⇒ nhiễu dữ liệu, test fail lung tung.
 
+### Ví dụ đời thực
+Một service đặt hàng và thanh toán (Spring Boot 3.2, Postgres 15) có 620 test, trong đó 480 là {{@SpringBootTest}} dựng toàn bộ context; CI trên nhánh {{main}} mất 27 phút. Triệu chứng: đội bắt đầu gộp nhiều commit vào một PR để "đỡ chờ CI", và trong 6 tuần có 3 lần build đỏ bị bỏ qua vì "chắc do test môi trường". Điều tra: tôi đo thời gian từng tầng bằng {{--scan}} (Gradle) và log thời gian context: 70% thời gian nằm ở 480 test {{@SpringBootTest}}, nhưng 310 trong số đó chỉ kiểm tra validation HTTP hoặc truy vấn repository đơn giản. Nguyên nhân gốc: chiến lược test bị "đảo kim tự tháp" — mọi thứ đều dùng full context vì viết nhanh, không ai phân tầng. Cách xử lý: (1) chuyển 220 test controller sang {{@WebMvcTest}} + mock service, (2) chuyển 90 test repository sang {{@DataJpaTest}} chạy trên Testcontainers Postgres dùng chung, (3) giữ lại 12 {{@SpringBootTest}} làm smoke test cho luồng đặt hàng → thanh toán → đối soát. Kết quả đo được: thời gian CI giảm từ 27 phút xuống 8 phút 40 giây; trong 2 tháng sau, tỉ lệ build đỏ bị bỏ qua giảm từ ~15% xuống dưới 2%, và 2 lỗi mapping JSON (field {{amount}} bị serialize sai kiểu) được bắt ngay ở tầng {{@WebMvcTest}} trước khi merge.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế chiến lược test cho một Spring Boot service như đặt hàng và thanh toán, tôi chọn mô hình kim tự tháp có phần giữa dày, gần với testing trophy. Khoảng 70% là unit test cho domain và service thuần, vì lớp này chứa quy tắc tính tiền, kiểm tra trạng thái, và chạy rất nhanh. Khoảng 25% là slice test: {{@WebMvcTest}} để kiểm tra controller, validation, mapping JSON; {{@DataJpaTest}} để kiểm tra repository và JPQL trên database thật qua Testcontainers, vì H2 khác Postgres ở nhiều hành vi. Chỉ khoảng 5% là {{@SpringBootTest}} cho một vài luồng khói quan trọng như tạo đơn rồi thanh toán. Tôi tránh dùng {{@SpringBootTest}} cho mọi thứ vì mỗi lần dựng context tốn nhiều giây và làm CI chậm, khiến đội mất niềm tin vào pipeline. Mục tiêu của tôi là CI dưới 10 phút và mỗi test chỉ fail khi hành vi quan sát được thay đổi. Trước khi quyết định tỉ lệ, tôi thường xem bug gần đây đến từ tầng nào để đầu tư đúng chỗ."
+
 > Senior tip: bắt đầu bằng câu hỏi "bug gần đây của team đến từ tầng nào?". Nếu phần lớn bug đến từ mapping HTTP↔domain hoặc từ SQL thì hãy đầu tư slice test, đừng viết thêm unit test cho domain — đó là hướng hoàn đảo của "test nhiều hơn".`,
   follow: [
     'Bạn có dùng {{@SpringBootTest}} với {{webEnvironment = RANDOM_PORT}} và {{TestRestTemplate}} không? Khi nào cách đó tốt hơn {{MockMvc}}?',
@@ -116,6 +122,12 @@ class OrderRepositoryIT {
 - **Container không được dừng** khi test fail ⇒ rò rỉ container, đầy disk. Testcontainers dùng "Ryuk" để dọn, nhưng nếu tắt Ryuk thì bạn phải dọn bằng tay.
 - **Port bị chiếm** khi chạy song song ⇒ luôn để container tự cấp port động, đừng hardcode.
 - **Test chậm do chờ database**: mỗi test lại chạy migration ⇒ gom migration vào {{@Sql}} hoặc chạy Flyway một lần.
+
+### Ví dụ đời thực
+Một đội dùng {{@DataJpaTest}} với H2 (chế độ tương thích Postgres) cho module khuyến mãi. Triệu chứng: tất cả test repository xanh trên CI, nhưng sau khi deploy tính năng "mã giảm giá theo điều kiện JSON" lên staging, API trả lỗi {{SQLSyntaxError}} và một truy vấn sắp xếp theo tên khách hàng cho thứ tự khác mong đợi. Điều tra: tôi chạy lại chính truy vấn đó trên Postgres 15 local và thấy hai vấn đề: (1) repository dùng {{jsonb}} với toán tử {{@>}} và index GIN — H2 không hỗ trợ, test trước đó phải dùng hàm thay thế nên không bao giờ chạy đúng SQL thật; (2) {{ORDER BY name}} trên Postgres dùng collation {{vi_VN}} cho kết quả khác H2 (mặc định so sánh đơn giản). Nguyên nhân gốc: khác biệt dialect và collation giữa H2 và Postgres. Cách xử lý: chuyển 86 test repository sang Testcontainers với {{postgres:15-alpine}}, dùng {{@ServiceConnection}} (Spring Boot 3.1+) để tự cấu hình datasource, và tạo singleton container dùng chung cho cả suite; bật {{testcontainers.reuse.enable=true}} ở máy dev. Kết quả đo được: bộ 86 test chạy 3 phút 10 giây trên CI (chấp nhận được), phát hiện thêm 2 truy vấn dùng {{ILIKE}} sai cách; trong 4 tháng sau không còn lỗi "chạy H2 được, lên Postgres chết" nào ở module này.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng Testcontainers cho test tích hợp vì nó chạy đúng engine của production, ví dụ Postgres 16 hoặc Redis 7, trong Docker. Điều này loại bỏ một lớp bug rất hay gặp khi dùng H2: khác biệt về kiểu {{jsonb}}, cú pháp {{ON CONFLICT}}, timezone, collation sắp xếp chuỗi, và hành vi index. Những khác biệt đó làm test xanh nhưng production lỗi. Với Spring Boot 3.1 trở lên, tôi dùng {{@ServiceConnection}} để container tự nối vào datasource, nên cấu hình rất gọn. Vấn đề chính của Testcontainers là thời gian khởi động container, nên tôi dùng singleton container dùng chung cho cả suite và bật reuse trên máy dev để container sống qua nhiều lần chạy test. Trên CI tôi để môi trường sạch, không bật reuse. Tôi chỉ dùng H2 khi test hoàn toàn không phụ thuộc hành vi đặc thù của database, còn mọi truy vấn thật, migration, hoặc constraint quan trọng thì tôi ưu tiên chạy trên cùng engine với production để kết quả đáng tin."
 
 > Senior tip: hãy đo trước khi tối ưu. Một suite 400 test với Postgres container dùng chung thường chạy ~3–5 phút — nhanh hơn nhiều so với việc mỗi dev phải debug một lỗi chỉ xuất hiện trên Postgres mà cả team không ai tái hiện được.`,
   follow: [
@@ -237,6 +249,11 @@ Với Spring Cloud Contract, provider viết contract trong Groovy DSL và frame
 - **Breaking change âm thầm**: provider đổi response nhưng consumer chưa kịp deploy — cần chính sách version và deprecation window rõ ràng.
 - **Chỉ test happy path** trong contract: hãy mô tả cả lỗi (4xx) vì đó là phần hay vỡ nhất.
 
+### Ví dụ đời thực
+Hai service order-service và payment-service gọi nhau qua REST. Triệu chứng: sau khi deploy phiên bản mới của order-service, payment-service bắt đầu nhận HTTP 500 vì trường JSON {{amount}} bị đổi tên thành {{totalAmount}}. Cả hai service đều có test xanh trên CI vì mỗi service chỉ test chính mình, không kiểm tra hợp đồng với bên kia. Điều tra: tôi so sánh response thực tế với contract cũ và thấy provider đã đổi tên field mà không thông báo consumer. Nguyên nhân gốc: thiếu cơ chế kiểm tra hợp đồng giữa hai service — mỗi bên giả định bên kia không đổi API. Cách xử lý: giới thiệu Pact Broker, consumer publish pact sau mỗi thay đổi, provider chạy {{pactVerify}} trong CI, build bị chặn nếu API lệch. Kết quả đo được: trong vòng 1 tháng, Pact Broker chặn 3 breaking change trước khi merge (ví dụ đổi kiểu {{amount}} từ số sang chuỗi, xoá trường {{status}}, đổi mã lỗi 404 thành 422), và không còn sự cố "gọi API của nhau rồi hỏng" nào sau deploy.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hai service gọi nhau, tôi lo lắng nhất là một bên đổi API làm bên kia hỏng mà cả hai đều có test xanh vì mỗi bên chỉ test mình. Tôi dùng contract testing với Pact: consumer viết kỳ vọng mình cần từ API, publish pact lên Pact Broker; provider kéo pact và chạy {{pactVerify}} trong CI, build đỏ ngay nếu API đã lệch. Cách này chặn breaking change ở CI chứ không đợi đến lúc deploy production. Chi phí là cần vận hành thêm Pact Broker (deploy, backup, giám sát), và contract test chỉ kiểm tra hình dạng API chứ không kiểm tra ngữ nghĩa nghiệp vụ, nên vẫn cần integration test cho luồng quan trọng. Tôi chỉ áp dụng khi có nhiều service, tần suất deploy lệch nhau và cần deploy độc lập."
 > Senior tip: contract test có giá trị nhất khi nó **chạy trong CI của cả hai bên** và failure thật sự chặn deploy. Nếu chỉ tồn tại trên giấy, nó chỉ là tài liệu đẹp — hãy chứng minh bằng cách cố tình đổi response một lần và cho xem build đỏ thế nào.`,
   follow: [
     'Pact Broker lưu phiên bản contract thế nào, và làm sao xử lý khi consumer đã bị xoá?',
@@ -459,6 +476,11 @@ export default function () {
 - **Không mô phỏng được "coordinated omission"** ở công cụ không hỗ trợ ⇒ latency bị đẹp hơn thực tế. Gatling và k6 xử lý việc này tốt hơn.
 - **Chạy load test trên production** vào giờ cao điểm — không ai làm, nhưng đáng nhắc vì đây là câu hỏi phỏng vấn thực tế.
 
+### Ví dụ đời thực
+Sự kiện flash sale với lượng 800 đơn giây trên API đặt hàng. Triệu chứng: p99 latency tăng từ 200 ms lên 3,2 giây, error rate cot lên 4%, và một số user không thể thanh toán. Điều tra: tôi chạy k6 với kịch bản {{ramping-arrival-rate}} từ 200 lên 1000 VU trong 5 phút, rồi đọc báo cáo. Thấy p95 vẫn đẹp nhưng p99 xấu, cùng lúc CPU database cao 95% và connection pool cạn kiệt. Nguyên nhân gốc: truy vấn tìm đơn hàng chưa có index, connection pool quá nhỏ, và thiếu cache cho danh sách sản phẩm hot. Cách xử lý: thêm index cho cột {{order_date}} và {{status}}, tăng pool từ 10 lên 30, đưa sản phẩm hot vào Redis cache với TTL 1 phút. Kết quả đo được: p99 giảm từ 3,2 giây xuống 420 ms, error rate dưới 0,1%, hệ thống chịu được 1000 đơn/giây trong sự kiện sau đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế load test cho API đặt hàng, tôi không bấm API một triệu lần mà mô phỏng lưu lượng thật lấy từ log production. Tôi chọn k6 hoặc Gatling, viết kịch bản theo mô hình tải: ramp-up, plateau, spike và soak, với SLO cụ thể như p95 dưới 300 ms và p99 dưới 800 ms. Khi đọc kết quả, tôi xem error rate trước, rồi p99, throughput và tài nguyên. p99 tăng trong khi p50 vẫn đẹp thường là dấu hiệu rò rỉ tài nguyên hoặc contention, không phải thiếu máy. Ví dụ trong một sự kiện flash sale, p99 giảm từ 3,2 giây xuống 420 ms sau khi thêm index, tăng connection pool và dùng cache. Tôi luôn đo trước/sau và tránh chạy load test trên production vào giờ cao điểm."
 > Senior tip: luôn trình bày **số liệu trước/sau**. "p99 giảm từ 1.2 s xuống 280 ms sau khi thêm index và cache" là câu trả lời của kỹ sư; "tôi đã chạy load test" chỉ là câu trả lời của người mới đi làm.`,
   follow: [
     'Bạn chọn arrival-rate (open model) hay constant VUs (closed model) khi nào, và vì sao?',
@@ -562,6 +584,11 @@ for i in $(seq 1 20); do mvn -q test -Dtest=OrderServiceIT || echo "FAIL run $i"
 - **E2E chạy trên PR**: khiến PR mất 20 phút và mọi người bắt đầu push nhiều lần, tăng tải CI.
 - **Chỉ đo "số test"** mà không đo chất lượng: 2.000 test mà 8% flaky thì vô nghĩa.
 
+### Ví dụ đời thực
+Dự án có hơn 2000 test trên CI, trong đó khoảng 19% test đỏ ngẫu nhiên trên nhánh main. Triệu chứng: team bắt đầu gộp nhiều commit vào một PR để "đỡ chờ CI", và trong 6 tuần có 3 lần build đỏ bị bỏ qua vì "chắc do test môi trường". Nguyên nhân gốc: test phụ thuộc thứ tự, dùng thời gian thật, và chia sẻ dữ liệu giữa các test. Cách xử lý: tôi áp dụng quy trình 5 bước — đo tỉ lệ flaky theo từng test id, chạy lại test fail 20 lần để xác nhận ngẫu nhiên, cô lập test bị gắn nhãn {{flaky}} vào job riêng với ticket và người chịu trách nhiệm, đặt hạn chót 7 ngày để sửa, và sửa tận gốc theo nhóm nguyên nhân (thứ tự, dữ liệu dùng chung, thời gian, mạng thật, contention). Kết quả: tỉ lệ đỏ ngẫu nhiên từ 19% xuống dưới 1,5%, change failure rate từ 14% xuống 7%, và team lại tin vào pipeline.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế quality gate trong pipeline CI/CD, tôi sắp xếp theo tầng: lint và format, compile và unit, integration, contract, E2E, rồi deploy. Nguyên tắc quan trọng nhất là tầng rẻ phải fail trước — không có ý nghĩa chạy 15 phút E2E khi compile đã lỗi. Với test flaky, tôi theo quy trình 5 bước: đo tỉ lệ flaky theo từng test id, tái hiện bằng cách chạy lại 20 lần, cô lập test flaky vào job riêng có ticket và người chịu trách nhiệm, đặt hạn chót 7 ngày để sửa, và sửa tận gốc theo nhóm nguyên nhân. Tôi cấm dùng retry để làm pipeline xanh vì đó che triệu chứng. Ngoài ra tôi theo dõi 4 chỉ số DORA, đặc biệt là change failure rate, để kết nối chất lượng test với giá trị kinh doanh."
 > Senior tip: hãy theo dõi 4 chỉ số DORA — tần suất deploy, lead time, change failure rate, MTTR. Chúng nối thẳng chất lượng test với giá trị kinh doanh: giảm change failure rate là lập luận thuyết phục nhất khi xin thêm nguồn lực cho kỹ thuật.`,
   follow: [
     'Bạn có dùng "test sharding" (chia suite theo class để chạy song song) không, và chia theo tiêu chí nào?',
