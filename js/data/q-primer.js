@@ -2194,6 +2194,26 @@ String bad = new String(utf8, java.nio.charset.StandardCharsets.ISO_8859_1); // 
 ### Trả lời phỏng vấn thế nào
 Giải thích char là ký tự con người, byte là đơn vị lưu/truyền, encoding là ánh xạ. Nêu UTF-8 biến độ dài (1-4 byte), tương thích ASCII, phổ biến cho web/API. Đưa ví dụ "Nguyễn" 6 ký tự nhưng 8 byte UTF-8. Nêu 1-2 lỗi thực tế (mojibake do sai charset, giới hạn byte vs ký tự, luôn chỉ rõ {{StandardCharsets.UTF_8}} trong Java) và nguyên tắc: thống nhất UTF-8 end-to-end.
 
+### Ví dụ đời thực
+**Triệu chứng:** Ứng dụng đặt hàng (Spring Boot 3, Java 17, PostgreSQL) nhận tên khách hàng qua API JSON. Sau một lần di chuyển hệ thống log sang server mới, khoảng 2-3% bản ghi tên tiếng Việt hiển thị thành ký tự lạ (ví dụ {{Nguyá»…n}} thay vì {{Nguyễn}}) trên trang quản trị; đồng thời một số request tạo hồ sơ có emoji trong ghi chú trả lỗi 500.
+
+**Điều tra:**
+- Kiểm tra request/response: header {{Content-Type}} của API đã là {{application/json; charset=utf-8}}, payload client gửi đúng UTF-8.
+- So sánh byte thực tế: trích một mẫu từ DB và in hex ở tầng app, thấy chuỗi UTF-8 hợp lệ ({{ễ}} = {{E1 BB 85}}) nhưng log file trên server mới hiển thị sai.
+- Kiểm tra cấu hình JVM và log: job ghi log chạy với locale/encoding mặc định của máy mới (không đặt {{file.encoding}}), trong khi server cũ chạy với UTF-8. Đồng thời cột ghi chú ở một bảng phụ đang dùng collation/charset cũ không tương thích emoji 4 byte (MySQL {{utf8}} 3-byte trong môi trường cũ được di chuyển một phần).
+
+**Nguyên nhân gốc:** (1) Đọc/ghi log và một số chỗ chuyển {{byte[] <-> String}} không chỉ rõ charset nên phụ thuộc mặc định nền tảng; (2) Một bảng vẫn dùng charset 3-byte, từ chối emoji 4 byte → lỗi insert.
+
+**Cách xử lý:**
+- Chuẩn hóa mọi chuyển đổi: dùng {{StandardCharsets.UTF_8}} trong {{getBytes}}/{{new String}}; đặt {{-Dfile.encoding=UTF-8}} và {{logging.charset.console/file=UTF-8}} thống nhất.
+- Chuyển bảng/cột sang {{utf8mb4}} (MySQL) và kiểm tra {{client_encoding}} PostgreSQL; kiểm thử bằng dữ liệu tiếng Việt + emoji.
+- Viết script đối chiếu/khôi phục các bản ghi bị ghi sai bằng nguồn dữ liệu gốc nếu còn.
+
+**Kết quả đo được:** Sau khi triển khai, lỗi 500 do emoji giảm từ ~15-20 lỗi/ngày xuống 0 trong 2 tuần theo dõi; tỷ lệ bản ghi hiển thị mojibake mới giảm về 0% và log đọc thống nhất trên mọi môi trường.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu encoding là quy tắc ánh xạ giữa ký tự con người đọc và byte mà máy lưu hoặc truyền đi. Ký tự như chữ {{ă}} hay emoji là khái niệm logic, còn byte là đơn vị 8 bit; UTF-8 là encoding biến độ dài, dùng 1 byte cho ASCII và 3-4 byte cho tiếng Việt có dấu hay emoji, nên số ký tự và số byte không giống nhau. Ở backend Java, em luôn chỉ rõ {{StandardCharsets.UTF_8}} khi chuyển giữa {{String}} và {{byte[]}} vì mặc định của JVM phụ thuộc hệ điều hành, rất dễ gây mojibake. Em cũng phân biệt giới hạn theo ký tự và theo byte khi thiết kế cột DB, validate input hay tính kích thước payload. Trong thực tế em từng xử lý sự cố tên tiếng Việt và emoji bị hỏng do lệch charset giữa app, log và DB: sau khi chuẩn hóa UTF-8 end-to-end, đặt encoding cho JVM/log và chuyển cột sang {{utf8mb4}} ở MySQL, lỗi hiển thị và lỗi insert biến mất hoàn toàn. Theo em, nguyên tắc quan trọng là thống nhất UTF-8 từ client, API, service, database cho tới log ngay từ đầu, vì dữ liệu đã hỏng rất khó sửa ngược."
+
 > Senior tip: khi thiết kế DB và API, hãy ghi rõ giới hạn là **ký tự** hay **byte** (ví dụ Postgres {{varchar(255)}} là 255 ký tự, còn một số hệ thống/driver/cột tính byte). Với dữ liệu đa ngôn ngữ + emoji, luôn dùng UTF-8 (Postgres: {{UTF8}}, MySQL: {{utf8mb4}} — tránh {{utf8}} "3-byte" cũ của MySQL vì không đủ cho emoji 4 byte). Sự cố encoding rất khó sửa ngược dữ liệu đã hỏng, nên phải đúng từ đầu.`,
   follow: ['Vì sao "Nguyễn" có thể dài 6 ký tự nhưng chiếm 8 byte trong UTF-8?', 'Trong Java, khi nào bạn phải chỉ rõ Charset thay vì dùng mặc định?'],
   tags: ['UTF-8', 'encoding', 'Unicode', 'byte', 'char', 'nhập môn']
@@ -2275,6 +2295,26 @@ for (Order a : orders) {
 
 ### Trả lời phỏng vấn thế nào
 Định nghĩa Big-O là tốc độ tăng theo n. Nêu nhanh 5 mức với 1 ví dụ backend mỗi mức ({{HashMap}}/index là O(1)/O(log n), duyệt list O(n), sort O(n log n), vòng lặp lồng O(n^2)). Đưa một ví dụ số liệu (n=1.000.000 thì O(n^2) không khả thi) và một lỗi thực tế ({{contains}} trong vòng lặp). Nhấn mạnh: Big-O giúp chọn hướng đúng, nhưng quyết định cuối cùng cần đo trên dữ liệu thật.
+
+### Ví dụ đời thực
+**Triệu chứng:** API xuất báo cáo đối soát đơn hàng (Spring Boot, Java 17) chạy bình thường ở môi trường dev (vài trăm đơn) nhưng trên production vào cuối tháng, khi mỗi merchant có 20.000-50.000 đơn, thời gian phản hồi tăng vọt từ ~300 ms lên 40-90 giây, gây timeout ở gateway (ngưỡng 30 giây) và CPU pod tăng sát 100%.
+
+**Điều tra:**
+- Quan sát metric: latency p95 của endpoint tăng tuyến tính mạnh theo quy mô merchant; thread dump cho thấy request bị kẹt lâu trong phương thức ghép danh sách đơn và danh sách thanh toán.
+- Bật profiling (sampling) và đọc code: đoạn ghép dùng hai vòng {{for}} lồng nhau và gọi {{list.contains}} để tìm bản ghi khớp theo {{orderId}}.
+- Ước lượng nhanh: với 30.000 đơn × 30.000 bản ghi thanh toán, số lần so sánh ở mức ~900.000.000, đúng đặc trưng {{O(n^2)}}.
+
+**Nguyên nhân gốc:** Thuật toán ghép dữ liệu chọn cấu trúc sai (duyệt tuyến tính lồng nhau và tra cứu {{contains}} trên {{List}} là {{O(n)}} mỗi lần) nên tổng độ phức tạp {{O(n^2)}}, chỉ bộc lộ khi n lớn ở production.
+
+**Cách xử lý:**
+- Đưa danh sách thanh toán vào {{HashMap}} theo {{orderId}} (tra cứu trung bình {{O(1)}}), sau đó duyệt đơn hàng một lần để ghép → tổng ~{{O(n)}}.
+- Bổ sung phân trang/giới hạn kích thước batch cho báo cáo lớn và thêm test hiệu năng với dữ liệu kích thước gần production.
+- Theo dõi thêm thời gian xử lý và kích thước đầu vào trong log/metric.
+
+**Kết quả đo được:** Sau khi triển khai, cùng tập ~30.000 bản ghi thời gian xử lý giảm từ ~45 giây xuống ~250-400 ms, p95 endpoint về dưới 500 ms, không còn timeout tại gateway và CPU ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu Big-O là cách mô tả tốc độ tăng của thời gian hoặc bộ nhớ khi kích thước đầu vào n lớn lên, chứ không phải số mili-giây chính xác. Khi phân tích, em thường nhìn các mức quen thuộc: {{O(1)}} như tra cứu {{HashMap}} theo key, {{O(log n)}} như tìm trên chỉ mục B-tree, {{O(n)}} khi duyệt một danh sách, {{O(n log n)}} như sắp xếp, và {{O(n^2)}} khi có vòng lặp lồng nhau trên cùng tập dữ liệu. Trong backend, em luôn tự hỏi n tối đa trên production là bao nhiêu vì đoạn {{O(n^2)}} có thể chạy ổn ở dev nhưng sập khi dữ liệu tăng. Ví dụ em từng gặp API báo cáo chậm tới hàng chục giây do ghép hai danh sách bằng vòng lặp lồng và {{contains}} trên {{List}}; sau khi chuyển sang dùng {{HashMap}} để tra cứu {{O(1)}}, độ phức tạp về ~{{O(n)}} và thời gian xử lý giảm xuống còn vài trăm mili-giây. Với em, Big-O giúp chọn hướng thiết kế và cấu trúc dữ liệu đúng, nhưng quyết định cuối cùng vẫn cần dựa trên đo đạc như profiling và metric thực tế."
 
 > Senior tip: khi review code xử lý collection/batch, hãy tự hỏi "n tối đa ở production là bao nhiêu?" Nếu n có thể lên hàng chục nghìn, bất kỳ đoạn O(n^2) nào cũng là ứng viên gây sự cố khi dữ liệu tăng. Ưu tiên sửa bằng cấu trúc dữ liệu đúng ({{Map/Set}}), hoặc đẩy việc lọc/join về database có index — nơi có thuật toán và tối ưu phù hợp cho tập lớn.`,
   follow: ['Vì sao {{ArrayList.contains}} trong một vòng lặp có thể gây O(n^2)? Bạn sửa thế nào?', 'Khi nào tra cứu bằng index B-tree được xem là gần O(log n) và giới hạn thực tế của nó là gì?'],
