@@ -2647,9 +2647,19 @@ Không có pub-sub thì triệu chứng là **"một nửa số client thấy gi
 - **Mobile**: app vào nền thì hệ điều hành cắt kết nối; ngoài SSE còn cần push notification (FCM) làm lưới an toàn.
 
 ### Trả lời miệng 1 phút
-"Tôi chọn theo yêu cầu độ trễ và trạng thái phía server. Polling kèm ETag là nền: mỗi lượt chỉ tốn một request 304, độ trễ bằng chu kỳ hỏi, không cần giữ trạng thái nên chạy sau bao nhiêu instance cũng được. Khi nghiệp vụ yêu cầu dưới một giây thì tôi thêm SSE: client mở một request, server giữ kết nối và đẩy text/event-stream, EventSource tự nối lại và gửi Last-Event-ID để lấy phần bị đứt — điều kiện là proxy phải tắt buffering, có heartbeat, và đa instance phải có pub-sub để event sinh bên này tới được client đang nối bên kia. WebSocket tôi chỉ dùng khi client thật sự phải gửi dữ liệu real-time cùng lúc, vì giá của nó là trạng thái kết nối, sticky session và rất nhiều ca lỗi chỉ xuất hiện khi có hàng nghìn kết nối."
+"Tôi chọn theo yêu cầu độ trễ và trạng thái phía server. Polling kèm ETag là nền: mỗi lượt chỉ tốn một request 304, độ trễ bằng chu kỳ hỏi, không cần giữ trạng thái nên chạy sau bao nhiêu instance cũng được. Khi nghiệp vụ yêu cầu dưới một giây thì tôi thêm SSE: client mở một request, server giữ kết nối và đẩy {{text/event-stream}}, {{EventSource}} tự nối lại và gửi {{Last-Event-ID}} để lấy phần bị đứt — điều kiện là proxy phải tắt buffering, có heartbeat, và đa instance phải có pub-sub để event sinh bên này tới được client đang nối bên kia. WebSocket tôi chỉ dùng khi client thật sự phải gửi dữ liệu real-time cùng lúc, vì giá của nó là trạng thái kết nối, sticky session và rất nhiều ca lỗi chỉ xuất hiện khi có hàng nghìn kết nối."
 
-> Senior tip: bắt đầu bằng polling + ETag cho mọi màn hình, nâng lên SSE đúng một chỗ cần thật sự tức thì — tôi đã thấy đội trả giá rất đắt cho WebSocket khi chỉ cần push một chiều. Trước khi mở SSE cho production, test bằng curl giữ kết nối qua đúng dải proxy/ingress thật và đo thời gian từ lúc sinh event tới lúc client nhận; nếu con số không dưới ngưỡng mục tiêu thì vấn đề nằm ở buffer/heartbeat, không nằm ở code Java.`,
+### Ví dụ đời thực
+App internet banking của một ngân hàng thương mại: màn hình "Giao dịch mới nhất" trên mobile phải hiện ngay sau khi khách chuyển tiền xong, nhưng team đầu tiên dùng **polling mỗi 30 giây**. Triệu chứng: khách chuyển tiền xong rồi quay lại màn hình, phải chờ 25–30 giây mới thấy giao dịch — tỉ lệ gọi support "Tại sao giao dịch chưa hiện?" là 1.200 ticket/ngày, và vào giờ cao điểm (12h–13h) độ trễ thực tế lên đến 45 giây do server quá tải. Điều tra bằng metric: rate request polling tăng từ 200 req/s lên 2.500 req/s (12 client × chu kỳ 30s × 7.000 client đang online), CPU instance đạt 85%, và log server cho thấy 94% request polling trả về 304 (không có data mới) — tức là 94% công suất đi vào không có giá trị.
+
+Cách xử lý: (1) Thay polling 30s bằng **SSE** trên endpoint /api/accounts/{id}/events với {{SseEmitter}} timeout 30 phút, heartbeat ping mỗi 20 giây, và {{proxy_buffering off}} ở nginx ingress. (2) Khi chuyển tiền thành công, service phát event lên **Redis Pub/Sub** kênh transfer.done.{accountId}; instance nào giữ kết nối của client nhận được rồi push xuống. (3) Client dùng {{EventSource}} với {{withCredentials: true}}, gửi {{Last-Event-ID}} khi reconnect để lấy event bị miss. (4) Giữ polling mỗi 5 phút làm lưới an toàn khi SSE mất kết nối (app vào nền, mạng di động chuyển 4G↔WiFi).
+
+Kết quả sau 4 tuần: độ trễ từ lúc khách chuyển tiền tới lúc màn hình cập nhật giảm từ 25–45 giây xuống **trung bình 800ms (p99 1,2s)**; ticket support giảm 91%; CPU instance giảm từ 85% xuống 42% vì polling request giảm 98%; và khi có 2 instance, pub-sub đảm bảo event sinh ở instance nào cũng tới được client đang nối ở instance kia — không còn hiện tượng "một nửa client thấy, một nửa không".
+
+### Trả lời mẫu khi phỏng vấn
+"Về bản chất, tôi chọn công nghệ dựa trên hai câu hỏi: client có cần **nhận** dữ liệu tức thì không, và client có cần **gửi** dữ liệu real-time không. Nếu chỉ cần nhận, đầu tiên là polling kèm ETag: đơn giản, không cần giữ trạng thái, chạy được sau bao nhiêu instance, và mỗi lượt chỉ tốn một request 304 khi không có data mới. Khi nghiệp vụ yêu cầu độ trễ dưới một giây, tôi nâng lên SSE: client mở một HTTP request, server giữ kết nối và đẩy event dạng {{text/event-stream}}; trình duyệt tự nối lại và gửi {{Last-Event-ID}} để lấy phần bị miss. Điều kiện bắt buộc là proxy phải tắt buffering, có heartbeat định kỳ, và đa instance phải dùng Redis Pub/Sub để event sinh ở instance nào tới được client đang nối ở instance kia. Cuối cùng, WebSocket tôi chỉ chọn khi client thật sự phải gửi dữ liệu real-time cùng lúc — ví dụ chat hoặc multiplayer game — vì giá của nó là trạng thái kết nối, sticky session, và rất nhiều ca lỗi chỉ lộ ra khi có hàng nghìn kết nối. Trên mobile, ngoài SSE tôi vẫn giữ polling làm lưới an toàn khi app vào nền hoặc mất mạng, vì hệ điều hành sẽ cắt kết nối TCP và không có gì thay thế push notification."
+
+  > Senior tip: bắt đầu bằng polling + ETag cho mọi màn hình, nâng lên SSE đúng một chỗ cần thật sự tức thì — tôi đã thấy đội trả giá rất đắt cho WebSocket khi chỉ cần push một chiều. Trước khi mở SSE cho production, test bằng curl giữ kết nối qua đúng dải proxy/ingress thật và đo thời gian từ lúc sinh event tới lúc client nhận; nếu con số không dưới ngưỡng mục tiêu thì vấn đề nằm ở buffer/heartbeat, không nằm ở code Java.`,
     follow: [
       'Nếu dùng SSE thì quyền truy cập kiểm tra lúc nào, khi EventSource không gửi được header Authorization tùy ý?',
       'Điều phối pub-sub giữa nhiều instance với Redis có mất event khi Redis restart không?',
@@ -2730,7 +2740,17 @@ major  ngừng trả field cũ (đây là lúc cần version mới, xem chính s
 ### Trả lời miệng 1 phút
 "Nguyên tắc của tôi là trong cùng major version chỉ cộng thêm, không sửa xoá: thêm field optional thì an toàn, còn đổi tên hay bỏ field thì phải thêm field mới và giữ field cũ đọc được thêm vài tháng, sau đó đo xem còn ai dùng mới bỏ ở lần nâng cấp version. Ở phía đọc, client luôn là tolerant reader: bỏ qua field lạ, có nhánh mặc định cho enum lạ bằng JsonEnumDefaultValue, và không giả định mọi field đều có mặt — vì app đã lên store thì không sửa được. Để chắc chắn, tôi dựng contract test: JSON mẫu của app cũ phải parse được bằng đúng parser của app cũ ngay trong CI, rồi chạy staging với APK cũ trước khi lên production. Thay đổi format ngày giờ hay default cũng coi là breaking, vì nó làm hiển thị sai thay vì crash nên càng khó phát hiện."
 
-> Senior tip: hãy xem **"broke được bao nhiêu version client"** là chỉ số của mỗi lần deploy API, ngang bằng với tỉ lệ lỗi 5xx. Công cụ rẻ nhất là contract test với JSON golden file của N-2 phiên bản; thứ hai là telemetry theo {{X-Client-Version}} để biết field nào sắp hết người dùng trước khi xoá. Và khi buộc phải breaking thì nâng major version đúng nghĩa (giữ song song, có {{Sunset}}), đừng "nói nội bộ thôi rồi đổi luôn" — mọi tích hợp bên thứ ba đều coi đó là sự cố.`,
+### Ví dụ đời thực
+App mobile v2.3 của một ví điện tử đã có 3 triệu người dùng hoạt động, và team backend muốn đổi response: thêm field {{balanceVnd}} (số dư bằng VND), đổi tên field {{amount}} thành {{amountMinor}} (đổi sang đơn vị cent/minor để chuẩn hóa), và thêm giá trị enum {{SETTLED}} vào {{TxStatus}} (hiện tại chỉ có PENDING, SUCCESS, FAILED). App v2.3 không thể ép nâng cấp vì store đã duyệt và người dùng không thể chờ. Triệu chứng đầu tiên nếu deploy thô: app cũ parse {{amount}} thành null → màn hình lịch sử hiện trống, và switch trên enum thiếu {{SETTLED}} → crash ngay khi có giao dịch mới.
+
+Cách xử lý: (1) Giữ field {{amount}} trả về thêm 3 tháng, đồng thời thêm {{amountMinor}} — cả hai cùng có giá trị. (2) Log metric theo {{X-Client-Version}}: sau 1 tuần, {{amount}} vẫn được 94% client đọc, {{amountMinor}} chỉ 6% — chưa thể bỏ. (3) Enum: thêm {{SETTLED}} và đánh dấu {{@JsonEnumDefaultValue UNKNOWN}} trên enum; client phải có nhánh default. (4) Contract test: lưu JSON response mẫu của app v2.3 làm golden file, CI deserialize bằng parser của app v2.3 — test đỏ ngay khi server đổi field. (5) Staging chạy APK v2.3 trên emulator trước khi deploy.
+
+Kết quả: deploy không làm crash một app nào; sau 3 tháng {{amount}} còn 0,8% lượt đọc → đưa vào danh sách bỏ; và telemetry theo {{X-Client-Version}} giúp team biết chính xác field nào sắp hết người dùng trước khi xoá.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi app đã phát hành và không thể ép người dùng nâng cấp, nguyên tắc của tôi là trong cùng major version chỉ cộng thêm, không sửa xoá: thêm field optional thì an toàn, còn đổi tên hay bỏ field thì phải thêm field mới và giữ field cũ đọc được thêm vài tháng, sau đó đo xem còn ai dùng mới bỏ ở lần nâng cấp version. Ở phía đọc, client luôn là tolerant reader: bỏ qua field lạ, có nhánh mặc định cho enum lạ bằng JsonEnumDefaultValue, và không giả định mọi field đều có mặt — vì app đã lên store thì không sửa được. Để chắc chắn, tôi dựng contract test: JSON mẫu của app cũ phải parse được bằng đúng parser của app cũ ngay trong CI, rồi chạy staging với APK cũ trước khi lên production. Thay đổi format ngày giờ hay default cũng coi là breaking, vì nó làm hiển thị sai thay vì crash nên càng khó phát hiện."
+
+  > Senior tip: hãy xem **"broke được bao nhiêu version client"** là chỉ số của mỗi lần deploy API, ngang bằng với tỉ lệ lỗi 5xx. Công cụ rẻ nhất là contract test với JSON golden file của N-2 phiên bản; thứ hai là telemetry theo {{X-Client-Version}} để biết field nào sắp hết người dùng trước khi xoá. Và khi buộc phải breaking thì nâng major version đúng nghĩa (giữ song song, có {{Sunset}}), đừng "nói nội bộ thôi rồi đổi luôn" — mọi tích hợp bên thứ ba đều coi đó là sự cố.`,
     follow: [
       'Nếu cả hai version cũ và mới phải chạy song song một thời gian thì code và database sắp xếp thế nào?',
       'Làm sao đo được "còn bao nhiêu client đọc field này" nếu client không gửi phiên bản app?',
@@ -3080,11 +3100,53 @@ Rate limit như quota nước: fixed window là "mỗi giờ 100 lít" — phút
 - Token bucket: bucket capacity + refill rate; consume token per request; cho burst up to capacity.
 - Leaky bucket: queue FIFO với rate cố định; smoothing, không burst.
 
+### Cơ chế từng bước: Token Bucket trên Redis (Lua)
+Dưới đây là quy trình chi tiết khi một request đến và được kiểm tra bởi token bucket:
+
+1. **Client gửi request** kèm key định danh (user_id, IP, API key).
+2. **Redis nhận key**, Lua script được thực thi nguyên tử (atomic) trên single-threaded Redis:
+   - Lấy hash hiện tại: {{tokens, last_refill_ts}} từ key ratelimit:{key}.
+   - Tính {{elapsed = now - last_refill_ts}} (ms).
+   - Tính {{new_tokens = min(capacity, tokens + elapsed * refill_rate / 1000)}}.
+   - Nếu {{new_tokens >= 1}}: trừ 1 token, cập nhật hash với {{tokens = new_tokens - 1}}, {{last_refill_ts = now}}, đặt TTL = window_size * 2. Trả về {{allowed: true, remaining: new_tokens - 1}}.
+   - Nếu {{new_tokens < 1}}: không trừ token, trả về {{allowed: false, remaining: 0, retry_after_ms: (1 - new_tokens) / refill_rate * 1000}}.
+3. **Application nhận kết quả**: nếu allowed → xử lý request; nếu không → trả 429 với header {{Retry-After}} và {{X-RateLimit-Remaining: 0}}.
+4. **Cleanup**: key tự hết hạn sau TTL, không cần job dọn dẹp riêng.
+
+### So sánh chi tiết
+| Tiêu chí | Fixed Window | Sliding Window Log | Sliding Window Counter | Token Bucket | Leaky Bucket |
+|---|---|---|---|---|---|
+| Độ chính xác | Thấp (boundary spike) | Cao | Trung bình (xấp xỉ) | Cao | Cao |
+| Memory | O(1) | O(N requests) | O(1) | O(1) | O(1) |
+| Burst handling | Không | Không | Một phần | Có (tới capacity) | Không |
+| Latency impact | Thấp | Cao (duyệt sorted set) | Thấp | Thấp | Thấp |
+| Implementation | Đơn giản | Phức tạp | Trung bình | Trung bình | Trung bình |
+| Phù hợp | Brute-force protection | Billing, quota chính xác | General purpose | Public API, burst-friendly | Strict fairness, smoothing |
+
 ### Redis Lua atomic
 - INCR + EXPIRE không atomic qua nhiều instance → race.
 - Lua script chạy atomic trên Redis single-threaded.
 - Sliding window counter: cần 2 key (prev, curr) + Lua compute weighted.
-- Token bucket: lưu {tokens, last_refill} hash; Lua compute refill và consume.
+- Token bucket: lưu {{tokens, last_refill}} hash; Lua compute refill và consume.
+
+### Lua script mẫu cho Token Bucket
+~~~lua
+-- KEYS[1] = ratelimit:{key}, ARGV[1] = capacity, ARGV[2] = refill_rate (tokens/sec), ARGV[3] = now_ms, ARGV[4] = ttl_ms
+local bucket = redis.call('HMGET', KEYS[1], 'tokens', 'last_refill')
+local tokens = tonumber(bucket[1]) or tonumber(ARGV[1])
+local last_refill = tonumber(bucket[2]) or tonumber(ARGV[3])
+local elapsed = tonumber(ARGV[3]) - last_refill
+local new_tokens = math.min(tonumber(ARGV[1]), tokens + elapsed * tonumber(ARGV[2]) / 1000)
+if new_tokens >= 1 then
+  new_tokens = new_tokens - 1
+  redis.call('HMSET', KEYS[1], 'tokens', new_tokens, 'last_refill', ARGV[3])
+  redis.call('PEXPIRE', KEYS[1], ARGV[4])
+  return {1, new_tokens}
+else
+  local retry_after = math.ceil((1 - new_tokens) / tonumber(ARGV[2]) * 1000)
+  return {0, 0, retry_after}
+end
+~~~
 
 ### Chọn thế nào
 - Public API: token bucket (burst friendly).
@@ -3096,6 +3158,13 @@ Rate limit như quota nước: fixed window là "mỗi giờ 100 lít" — phút
 - Triệu chứng: 429 storm khi traffic burst → token bucket capacity tuning.
 - Đo: 429 rate, latency Redis, key cardinality.
 - Tuning: per-user/per-IP/per-endpoint keys; Redis Cluster hash tag để cùng slot.
+
+### Lỗi hay gặp trên production
+- **Dùng INCR + EXPIRE riêng biệt**: pod crash giữa hai lệnh → key không bao giờ hết hạn, user bị chặn vĩnh viễn. Luôn dùng Lua atomic hoặc {{SET key value EX NX}} (Redis 2.6.12+).
+- **Không dùng hash tag trong Redis Cluster**: key {{ratelimit:user:123}} và {{ratelimit:user:456}} rơi vào slot khác → Lua script báo lỗi {{CROSSSLOT}}. Dùng ratelimit:{user}:123 để cùng slot.
+- **Refill rate tính sai đơn vị**: refill_rate là tokens/giây nhưng {{elapsed}} tính bằng ms → phải chia 1000. Sai lệch này làm bucket refill quá nhanh hoặc quá chậm.
+- **Không set TTL hợp lý**: TTL quá ngắn → key bị xóa khi user vẫn đang request; TTL quá dài → memory leak. TTL = window_size * 2 là an toàn.
+- **Burst capacity quá lớn**: cho phép burst 1000 request đồng thời có thể làm downstream sập. Capacity nên dựa trên throughput thực tế của downstream.
 
 ### Trả lời miệng 1 phút
 "Fixed window đơn giản nhưng boundary spike; sliding window counter cân bằng chính xác và memory; token bucket cho burst + refill. Trên Redis dùng Lua script atomic để tránh race giữa instance."
@@ -3140,15 +3209,67 @@ Cache như tủ lạnh: max-age là hạn sử dụng, ETag là tem kiểm tra c
 - Vary: Accept, Accept-Encoding, Accept-Language → cache key gồm các header đó.
 - Vary: * → disable caching hiệu quả.
 
-### CDN vs browser
-- Browser cache: per-user, max-age ngắn, phù hợp personalized.
-- CDN: shared, s-maxage dài, edge gần user, phù hợp static/public.
-- Kết hợp: max-age=60, s-maxage=3600, stale-while-revalidate=86400.
+### Cơ chế từng bước: Request flow với cache
+1. **Client gửi request** kèm header If-None-Match: "etag-value" (nếu có cached response) và Accept-Encoding: gzip, br.
+2. **CDN nhận request**, kiểm tra cache key (URL + Vary headers). Nếu cache hit:
+   - Kiểm tra max-age/s-maxage còn hạn không.
+   - Nếu còn hạn → trả cached response ngay (hit).
+   - Nếu hết hạn nhưng có stale-while-revalidate → trả stale response ngay, **bật async revalidate** ngầm.
+3. **Async revalidate** (nếu stale-while-revalidate): CDN gửi request lên origin kèm If-None-Match. Origin so sánh ETag:
+   - Giống → trả 304, CDN cập nhật cache, gia hạn TTL.
+   - Khác → trả 200 với body mới, CDN thay thế cache.
+4. **Cache miss** hoặc **stale-if-error** (khi origin lỗi 5xx): CDN forward request lên origin, cache response mới (nếu 2xx), trả về client.
+5. **Client nhận response**: nếu 304 → dùng cached body; nếu 200 → cache body mới với ETag mới.
+
+### ETag generation strategies
+- **Strong ETag**: hash nội dung response (MD5/SHA256 của body). Đảm bảo byte-for-byte identical. Dùng cho PUT/PATCH response và resource mutable.
+- **Weak ETag** (W/"..."): semantic equivalence, không đảm bảo byte-for-byte. Ví dụ: version number, timestamp, hash của field quan trọng. Dùng khi strong ETag tốn kém (response lớn, streaming).
+- **Generation point**: tại application layer (Spring: ShallowEtagHeaderFilter tính hash body) hoặc reverse proxy (Nginx etag on tính từ file static).
+- **Pitfall**: Weak ETag không dùng được cho If-Match (chỉ dùng cho If-None-Match). Nếu dùng weak ETag cho conditional PUT → server có thể chấp nhận ghi đè sai dữ liệu.
+
+### Cache key design cho CDN
+Cache key = scheme + host + path + query params (có filter) + Vary headers.
+- **Query params**: chỉ include params ảnh hưởng response (filter, sort, page). Loại bỏ tracking params (utm_*, fbclid).
+- **Vary headers**: Accept-Encoding (gzip/br), Accept-Language (i18n), Accept (JSON/XML). Không Vary theo User-Agent (quá nhiều variant).
+- **Cookie**: **không** include cookie vào cache key trừ khi cache personalized content ở CDN (thường không làm). Dùng private directive để chặn CDN cache.
+
+### CDN vs browser — so sánh chi tiết
+| Tiêu chí | Browser Cache | CDN (Shared Cache) |
+|---|---|---|
+| Phạm vi | Per-user, per-device | Shared across users |
+| Directive | max-age, no-store, private | s-maxage, public |
+| Invalidation | Hard (phải clear browser cache hoặc versioned URL) | Easy (purge API, cache tag) |
+| Phù hợp | Personalized data, auth pages | Static assets, public API, HTML public |
+| Kích thước | Nhỏ (hàng trăm MB) | Lớn (GB-TB) |
+| Latency | 0 ms (local) | 1-50 ms (edge) |
+
+### Kết hợp real-world: Multi-layer caching
+~~~text
+Response headers:
+Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=86400
+ETag: "sha256-abc123..."
+Vary: Accept-Encoding, Accept-Language
+
+Flow:
+Browser (max-age=60s) → CDN (s-maxage=1h, SWR=24h) → Origin
+- 0-60s: Browser cache hit (0 ms)
+- 60s-1h: Browser miss → CDN hit (edge, ~5 ms)
+- 1h-24h: CDN stale → trả stale + async revalidate (user không thấy độ trễ)
+- >24h: CDN miss → Origin (full latency)
+~~~
 
 ### Trên production
 - Triệu chứng: stale data sau deploy → purge CDN hoặc versioned URL.
 - Đo: hit ratio, origin load, bandwidth.
 - Tuning: cache key design, purge API, versioned assets.
+
+### Lỗi hay gặp trên production
+- **Cache authenticated response ở shared cache**: quên private directive → CDN cache response có Set-Cookie hoặc body user-specific → user A thấy data của user B. Luôn dùng Cache-Control: private, no-store cho endpoint cần auth.
+- **Vary: User-Agent** → nghìn variant cache cho cùng một URL (mỗi browser version một cache entry) → hit ratio gần 0. Chỉ Vary theo header thực sự ảnh hưởng response (Accept-Encoding, Accept-Language).
+- **Không purge CDN sau deploy static asset**: user vẫn tải JS/CSS cũ → UI broken. Dùng versioned URL (/app.v20240115.js) hoặc purge API trong CI/CD.
+- **ETag weak cho conditional PUT**: server chấp nhận ghi đè dựa trên weak ETag → lost update. Chỉ dùng strong ETag cho If-Match.
+- **stale-while-revalidate quá dài** (ví dụ 1 năm): client thấy data cũ quá lâu sau khi data thay đổi. SWR nên ≤ 24h cho API dynamic.
+- **Query param không ổn định trong cache key**: ?timestamp=12345 hoặc ?request_id=uuid làm cache key unique mỗi request → hit ratio = 0. Strip tracking params ở CDN layer.
 
 ### Trả lời miệng 1 phút
 "Cache-Control với max-age/s-maxage điều khiển TTL client/CDN; ETag cho conditional 304; Vary phân biệt theo header; stale-while-revalidate trả stale trong khi revalidate. CDN cho public/shared, browser cho personalized."
