@@ -1,6 +1,6 @@
 # T407 — Dịch sang tiếng Anh: q-english (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-english-7.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-english-7.en.js` và `node scripts/check-i18n.js q-english-7` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Đã dịch đủ 8 mục english-064 đến english-071, giữ nguyên markup và phần tiếng Anh gốc. `node scripts/check-i18n.js q-english-7` → OK (8 mục); `node scripts/validate.js` → OK — không có lỗi. Lệnh `node --check` bị chặn bởi quyền shell; file đã được check-i18n nạp và phân tích cú pháp thành công.
