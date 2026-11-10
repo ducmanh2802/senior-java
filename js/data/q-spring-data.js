@@ -3355,6 +3355,16 @@ int deleteOldAuditLogs(@Param("cutoff") Instant cutoff);
 - **Trigger và entity listener**: các trigger ở tầng DB vẫn chạy (đây là điểm tốt), nhưng {{@PreUpdate}} và Spring Data auditing thì **không** chạy.
 - **Audit trail**: bulk update làm mất thông tin về ai đã sửa; với dữ liệu tài chính cần bảng lịch sử riêng.
 
+### Ví dụ đời thực
+Triệu chứng: job đóng hàng loạt 500.000 đơn quá hạn chạy mỗi đêm. Sáng hôm sau, CSKH báo một số đơn đã đóng lại "sống dậy" trạng thái {{PENDING}} trên hệ thống, dù trong bảng {{orders}} từng thấy {{EXPIRED}}.
+Điều tra: bật {{logging.level.org.hibernate.SQL=DEBUG}} và {{org.springframework.transaction=DEBUG}}, so sánh log lúc job chạy. Thấy sequence: (1) load entity Order A để ghi note, (2) gọi {{@Modifying}} bulk update set {{status='EXPIRED'}}, (3) sửa {{note}} của A trong cùng transaction, (4) commit sinh {{UPDATE orders SET status='PENDING', note='...', ... WHERE id=?}} do dirty checking dùng snapshot cũ (lúc load A vẫn {{PENDING}}).
+Nguyên nhân gốc: bulk JPQL đi thẳng xuống DB, không đồng bộ persistence context; entity managed giữ snapshot cũ nên dirty checking ghi đè kết quả bulk.
+Cách xử lý: tách bulk update sang transaction riêng (chạy trước), hoặc bật {{@Modifying(flushAutomatically = true, clearAutomatically = true)}} rồi load lại entity cần dùng sau đó. Bổ sung metric đếm {{rowsAffected}} và log cảnh báo nếu khác kỳ vọng.
+Kết quả đo được: sau khi tách transaction, không còn đơn "sống dậy"; job 500k dòng chạy ổn định ~12 giây, {{rowsAffected}} khớp số đơn quá hạn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi hiểu {{@Modifying}} với JPQL bulk update/delete là câu lệnh gửi thẳng xuống DB, không đi qua persistence context. Nghĩa là các entity đang được quản lý trong bộ nhớ không được cập nhật và Hibernate cũng không biết dữ liệu đã đổi. Rủi ro lớn nhất là dirty checking: nếu tôi load một entity, chạy bulk update rồi sửa entity đó trong cùng transaction, lúc commit Hibernate so sánh snapshot cũ và sinh UPDATE ghi đè kết quả bulk. Vì vậy tôi luôn tách bulk update ra transaction riêng hoặc bật {{flushAutomatically}} để đẩy thay đổi chưa ghi trước khi bulk chạy, và {{clearAutomatically}} để xoá context sau đó rồi load lại nếu còn cần dùng entity. Tôi cũng kiểm tra {{rowsAffected}} trả về, invalidate cache thủ công vì Spring Cache không tự biết, và nhớ rằng bulk update không tăng {{@Version}} cũng không chạy {{@PreUpdate}} hay auditing callback."
+
 > Senior tip: quy tắc đơn giản và hữu ích nhất là "**bulk update là một câu SQL độc lập, hãy để nó độc lập**": chạy ở đầu transaction hoặc trong transaction riêng, và luôn **kiểm tra số dòng ảnh hưởng**. Một câu bulk sai điều kiện có thể đóng hàng chục nghìn đơn chưa thanh toán, và phát hiện ra điều đó còn khó hơn nhiều so với việc viết lại câu update cho chuẩn.`,
   follow: [
     'Vì sao bulk update có thể bị dirty checking ghi đè, và làm sao chứng minh điều đó?',
@@ -3426,6 +3436,16 @@ try (BufferedReader reader = Files.newBufferedReader(path)) {
 - **Retry không idempotent**: nếu job fail giữa chừng và chạy lại, sẽ sinh bản ghi trùng. Dùng upsert theo khoá nghiệp vụ, hoặc bảng staging + cờ trạng thái.
 - **Index trên bảng đích**: mỗi index là thêm chi phí cho từng dòng insert. Với lần nạp lớn vào bảng mới, có thể drop index phụ rồi tạo lại sau khi nạp; nhưng giữ unique index cần cho upsert/chống trùng.
 
+### Ví dụ đời thực
+Triệu chứng: job nhập 1 triệu dòng lịch sử giao dịch từ CSV chạy mỗi cuối tháng. Lần đầu chạy bằng {{repository.save()}} trong vòng lặp, job mất hơn 40 phút rồi {{OutOfMemoryError: Java heap space}}; DB connection bị giữ suốt, p95 API giao dịch tăng gấp 3 lần.
+Điều tra: bật metric heap và {{hibernate.generate_statistics}}, thấy persistence context giữ ~800k entity managed, số JDBC statement gần 1 triệu (insert từng dòng), GC liên tục. {{EXPLAIN}} không phải vấn đề vì insert đơn giản.
+Nguyên nhân gốc: dùng {{EntityManager}} thông thường nên mỗi entity được track để dirty-check, không batching (id {{IDENTITY}}), và không flush/clear định kỳ.
+Cách xử lý: chuyển sang {{StatelessSession}} đọc CSV streaming bằng {{BufferedReader}}, insert theo lô 500, commit theo chunk 50k dòng, tắt index phụ trước khi nạp và tạo lại sau; dùng id do ứng dụng sinh ({{UUID}}) hoặc sequence để không bị chặn batching. Có bảng checkpoint để job chạy lại idempotent.
+Kết quả đo được: thời gian nạp giảm còn ~3 phút, heap ổn định dưới 512 MB, không ảnh hưởng latency API vì commit ngắn và không giữ connection dài.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhập khoảng 1 triệu dòng, tôi tối ưu theo hai trục: giảm round-trip và không để persistence context phình to. Nếu vẫn dùng JPA/Hibernate, tôi bật {{hibernate.jdbc.batch_size}} (ví dụ 50-100), {{order_inserts}}, {{order_updates}}, và đảm bảo không dùng {{GenerationType.IDENTITY}} vì nó buộc lấy id sau mỗi insert làm mất batching; đồng thời flush/clear sau mỗi lô. Nhưng với khối lượng lớn và không cần đọc lại entity, tôi ưu tiên {{StatelessSession}} vì nó bỏ qua persistence context, không dirty-check, không cascade nên nhẹ hơn hẳn. Nếu chỉ là nạp dữ liệu thuần, {{JdbcTemplate.batchUpdate}} hoặc COPY của PostgreSQL còn nhanh hơn. Tôi cũng chú ý stream file thay vì load hết vào RAM, commit theo chunk để tránh transaction dài, và thiết kế retry idempotent bằng khoá nghiệp vụ hoặc bảng staging."
+
 > Senior tip: với 1 triệu dòng, câu hỏi quan trọng nhất không phải "dùng thư viện nào" mà là **"dữ liệu này còn cần đọc lại trong quá trình ghi không?"**.`,
   follow: [
     'Vì sao {{@GeneratedValue(strategy = GenerationType.IDENTITY)}} làm mất hiệu quả của JDBC batching?',
@@ -3491,6 +3511,16 @@ List<OrderRow> countItems(@Param("cid") Long customerId);
 - **Đổi tên cột trong native query** mà không sửa alias → kết quả trả về null im lặng, không báo lỗi.
 - **DTO thiếu field mới**: khi domain thêm trạng thái mới, DTO phải được cập nhật – đây là cái giá của việc tách lớp, và nó là cái giá **đáng trả**.
 - **Trả entity kèm {{@JsonIgnore}}** rồi thêm mọi thứ cần thiết là cách dễ quên nhất: mọi field mới của entity sẽ tự động lộ ra API.
+
+### Ví dụ đời thực
+Triệu chứng: endpoint {{GET /orders?customerId=...}} trả danh sách đơn hàng bắt đầu ném {{LazyInitializationException}} ngẫu nhiên sau khi tắt {{open-in-view}}; khi bật lại OSIV thì response time tăng từ 120 ms lên 1,8 s ở giờ cao điểm.
+Điều tra: bật {{hibernate.show_sql}} và đếm query, thấy 1 query lấy {{orders}} + N query load {{items}} cho từng đơn khi Jackson serialize entity. Kiểm tra payload phát hiện field {{internalNote}} và {{discountReason}} (nhạy cảm nội bộ) bị lộ ra client.
+Nguyên nhân gốc: controller trả thẳng entity {{Order}} có collection {{@OneToMany}} lazy; serialization kích hoạt lazy load ngoài transaction (lỗi) hoặc trong OSIV (N+1). Entity gắn với schema nên mọi field mới cũng tự lộ.
+Cách xử lý: tạo {{OrderRow}} record và dùng constructor expression trong {{@Query}} chỉ chọn cột cần; bỏ OSIV; viết test snapshot JSON để khoá hợp đồng API.
+Kết quả đo được: endpoint ổn định 1 query, p95 giảm còn ~90 ms, payload nhỏ hơn 60%, không còn lộ field nội bộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi ưu tiên trả DTO thay vì entity cho API vì entity là mô hình persistence, không phải hợp đồng API. Trả entity dễ gây N+1 hoặc {{LazyInitializationException}} khi serialize quan hệ lazy, lộ field nhạy cảm khi schema đổi, và làm API phụ thuộc cấu trúc bảng. Với Spring Data JPA, tôi thường dùng constructor expression trong {{@Query}} để DB chỉ select đúng cột cần và map thẳng vào record DTO, hoặc interface projection dạng closed khi truy vấn đơn giản; native query chỉ dùng khi JPQL không đủ và tôi chấp nhận rủi ro alias. Trong service nội bộ cần nghiệp vụ và update thì tôi vẫn dùng entity. Tôi cũng tắt OSIV và có test snapshot để đảm bảo DTO là hợp đồng ổn định."
 
 > Senior tip: hãy coi DTO là **hợp đồng API** và viết test khẳng định hợp đồng đó (snapshot test hoặc kiểm tra danh sách field).`,
   follow: [
@@ -3566,6 +3596,16 @@ List<Customer> companies = em.createQuery(
 - Constraint ở cấp lớp cha áp dụng cho **cả** các lớp con: khai báo {{@NotNull}} trên trường của lớp cha nghĩa là mọi nhánh đều phải có.
 - Với {{JOINED}}, đọc một đối tượng cần join 2-3 bảng; nếu thiếu index trên khoá ngoại thì tốn I/O. Bảo đảm index trên các cột khoá ngoại.
 
+### Ví dụ đời thực
+Triệu chứng: module khách hàng ban đầu dùng {{SINGLE_TABLE}} cho {{Customer}} ({{Individual}}/{{Company}}). Sau 2 năm thêm 4 nhánh con nữa ({{VIP}}, {{Agent}}...), bảng {{customer}} phình lên 60 cột, trong đó ~40% giá trị NULL; truy vấn đọc danh sách khách hàng chậm dần, migration thêm cột {{NOT NULL}} cho nhánh {{Company}} gây lock lâu.
+Điều tra: {{EXPLAIN (ANALYZE)}} cho thấy scan bảng rộng, nhiều cột không dùng; kiểm tra schema thấy constraint {{tax_code NOT NULL}} không đặt được vì ảnh hưởng nhánh {{Individual}}. Log deploy ghi nhận ALTER TABLE mất ~8 phút trên bảng 5 triệu dòng.
+Nguyên nhân gốc: chọn {{SINGLE_TABLE}} khi cây kế thừa còn phẳng, nhưng về sau mỗi nhánh có nhiều thuộc tính và ràng buộc riêng khiến mô hình "bảng rộng, nhiều NULL" không còn phù hợp.
+Cách xử lý: thiết kế lại sang {{JOINED}} cho các nhánh có dữ liệu/constraint riêng: bảng {{customer}} giữ trường chung, {{company}} giữ {{tax_code}} với {{UNIQUE NOT NULL}}, {{individual}} giữ {{id_number}}; migrate dữ liệu bằng job theo batch, thêm index FK.
+Kết quả đo được: truy vấn đa hình chậm hơn ~15% (do join) nhưng truy vấn theo từng nhánh nhanh hơn 30%, ràng buộc dữ liệu được DB bảo vệ, migration sau này chỉ ảnh hưởng bảng nhánh liên quan.
+
+### Trả lời mẫu khi phỏng vấn
+"Với kế thừa trong JPA tôi cân nhắc ba chiến lược. {{SINGLE_TABLE}} dùng một bảng có cột discriminator, đọc/ghi nhanh và đơn giản nên là mặc định khi cây kế thừa phẳng và ít cột riêng. {{JOINED}} tách mỗi lớp thành một bảng, chuẩn hoá tốt và cho phép constraint riêng từng nhánh, đổi lại truy vấn đa hình phải join nên tốn hơn. {{TABLE_PER_CLASS}} gần như tôi tránh vì truy vấn đa hình phải {{UNION ALL}}, khó phân trang và không dùng được {{IDENTITY}}. Khi chọn, tôi hỏi: nhánh nào cần constraint DB riêng, tần suất truy vấn đa hình so với truy vấn theo nhánh, và chi phí migrate sau này ra sao. Với case {{Customer}} chỉ có {{Individual}}/{{Company}} và khác biệt ít, tôi bắt đầu bằng {{SINGLE_TABLE}}; nếu nhánh phình to và cần ràng buộc mạnh, tôi chuyển sang {{JOINED}} và chấp nhận chi phí join."
+
 > Senior tip: quyết định giữa {{SINGLE_TABLE}} và {{JOINED}} nên dựa trên câu hỏi "**nhánh nào có constraint riêng mà tôi cần DB bảo vệ?**".`,
   follow: [
     'Vì sao {{@MappedSuperclass}} không phải là kế thừa bảng trong JPA?',
@@ -3632,6 +3672,16 @@ Ba điểm kỹ thuật cần nhớ:
 - **Chuyển truy vấn đọc nặng** (báo cáo, xuất file) để đọc replica, nhưng **không** để luồng nghiệp vụ chính phụ thuộc replica.
 - Nếu cache ở tầng ứng dụng được điền từ replica, dữ liệu sẽ cũ hơn – phải ghi nhận điều này khi thiết kế TTL.
 - Bật read-only trên **mọi** method đọc có thể làm hỏng chỗ cần đọc rồi ghi trong cùng transaction (ví dụ đọc để validate rồi update). Hãy chỉ bật ở method thực sự chỉ đọc.
+
+### Ví dụ đời thực
+Triệu chứng: API xem lịch sử giao dịch chạy chậm giờ cao điểm (p95 ~900 ms) và thỉnh thoảng DB primary CPU 85%. Team bật {{@Transactional(readOnly = true)}} và cấu hình read replica, nhưng sau khi chuyển tiền xong, người dùng refresh thấy số dư cũ trong ~2 giây.
+Điều tra: log Hibernate cho thấy với {{readOnly}} dirty-checking đã tắt (ít {{UPDATE}} ngầm), song metric replication lag của replica dao động 1-3 giây. Một luồng khác "đọc để validate rồi update" bị đặt nhầm read-only nên {{save()}} không flush, dữ liệu không đổi mà không có lỗi.
+Nguyên nhân gốc: nhầm lẫn hai mục tiêu: read-only giúp Hibernate/JDBC tối ưu, còn định tuyến replica là chuyện khác; replica có độ trễ tự nhiên; {{FlushMode.MANUAL}} nuốt thay đổi im lặng.
+Cách xử lý: tách rõ service chỉ đọc (read-only, route replica) và service đọc-ghi (primary). Với luồng "read-your-writes" (số dư, trạng thái giao dịch ngay sau ghi) ép đọc từ primary hoặc chờ lag; bỏ read-only ở method có ghi.
+Kết quả đo được: p95 API lịch sử giảm còn ~220 ms, CPU primary xuống ~55%, không còn bug "save nhưng không lưu", và luồng số dư luôn đọc đúng từ primary.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xem {{@Transactional(readOnly = true)}} là gợi ý cho hai lớp. Với Hibernate nó đặt {{FlushMode.MANUAL}}, tắt dirty checking và bỏ snapshot nên tiết kiệm CPU, tránh {{UPDATE}} ngầm. Với JDBC nó gọi {{Connection.setReadOnly(true)}}, tuỳ driver/DB có enforce hay không nên tôi coi đó là lưới an toàn chứ không phải tối ưu chắc chắn. Điều nó không làm là tự route sang read replica: để đọc replica tôi dùng {{AbstractRoutingDataSource}} dựa trên {{TransactionSynchronizationManager.isCurrentTransactionReadOnly()}} và bọc {{LazyConnectionDataSourceProxy}} để quyết định sau khi có transaction. Tôi cũng tách hai câu hỏi: query này có cần ghi không, và dữ liệu này có chấp nhận đọc trễ không. Với số dư hay trạng thái giao dịch ngân hàng tôi luôn đọc từ primary để đảm bảo read-your-writes, còn báo cáo/lịch sử mới cho đi replica."
 
 > Senior tip: hãy tách hai quyết định: **"câu query này có cần ghi không?"** (dùng {{readOnly}} để tiết kiệm CPU) và **"dữ liệu này có được phép đọc bản cũ không?"** (quyết định định tuyến replica). Với hệ thống ngân hàng, số dư, hạn mức và trạng thái giao dịch luôn phải đọc từ primary.`,
   follow: [
@@ -3716,6 +3766,16 @@ public class Customer {
 - Dùng chung với Envers: các cột {{updatedAt}}/{{updatedBy}} cũng nằm trong mỗi revision (thường có ích); ngoài ra nên dùng custom revision entity ({{@RevisionEntity}}) để lưu user vào {{REVINFO}}.
 - **Envers + soft delete** không tương thích tự nhiên: xoá mềm là {{UPDATE}} nên Envers sẽ ghi một revision dạng UPDATE, không phải DELETE ⇒ lịch sử không ghi nhận "đã xoá".
 - **Xoá mềm làm hỏng foreign key semantics**: dòng "đã xoá" vẫn còn và vẫn được tham chiếu. Nếu nghiệp vụ coi dòng đã xoá là không tồn tại thì phải xử lý ở tầng ứng dụng.
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống ngân hàng bị audit yêu cầu giải trình "ai đã đổi địa chỉ và hạn mức của khách hàng X vào ngày 12/10, giá trị trước/sau là gì" và đồng thời phải "không xoá" dữ liệu khách hàng. Thiết kế ban đầu chỉ dùng Spring Data auditing ({{updatedBy}}, {{updatedAt}}) và soft delete.
+Điều tra: tra bảng {{customer}} chỉ thấy trạng thái cuối cùng và người sửa lần cuối, không dựng lại được lịch sử 5 lần thay đổi trước đó. Một số bản ghi "đã xoá" vẫn bị query JPQL bulk delete xoá hẳn trong job dọn dữ liệu vì bulk delete bỏ qua {{@SQLDelete}}.
+Nguyên nhân gốc: nhầm lẫn ba nhu cầu: auditing hiện tại (ai sửa lần cuối), lịch sử thay đổi (mọi phiên bản), và không xoá vật lý.
+Cách xử lý: giữ Spring Data auditing cho trường hiện tại; bật Hibernate Envers cho entity {{Customer}} ({{@Audited}}, bảng {{customer_aud}} + {{revinfo}}) để lưu lịch sử; dùng {{@SQLDelete}}/{{@SQLRestriction}} cho soft delete và cấm bulk delete trên entity này, thay bằng job archive. Thêm unique index partial {{WHERE deleted = false}} cho email.
+Kết quả đo được: truy vấn {{AuditReader}} dựng lại được đầy đủ lịch sử tại thời điểm T trong vài giây, vượt qua đợt audit; không còn mất bản ghi do bulk delete, và khách hàng xoá mềm đăng ký lại email được.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách ba nhu cầu. Spring Data JPA auditing rất nhẹ, chỉ lưu {{createdBy/Date, lastModifiedBy/Date}} trên chính bảng nên biết ai sửa lần cuối nhưng không có lịch sử. Hibernate Envers ghi mỗi revision vào bảng audit riêng, lưu ảnh chụp qua các lần insert/update/delete nên dựng lại được trạng thái tại thời điểm T, đánh đổi là chi phí ghi và dung lượng bảng audit. Soft delete với {{@SQLDelete}} và {{@SQLRestriction}} đảm bảo không xoá vật lý, nhưng phải cẩn thận: JPQL bulk delete bỏ qua {{@SQLDelete}} sẽ xoá thật, unique constraint vẫn chiếm chỗ, và dữ liệu chỉ lớn dần. Với hệ thống ngân hàng tôi thường dùng kết hợp: auditing cho trạng thái hiện tại, Envers cho entity nhạy cảm cần truy vết, và soft delete kèm index partial, chính sách archive; đồng thời loại trừ field nhạy cảm khỏi audit và dùng {{AuditorAware}} để gắn đúng người thực hiện."
 
 > Senior tip: bắt đầu từ câu hỏi **"ai cần đọc lại lịch sử này, vào lúc nào, để làm gì?"**. Chỉ cần xem cập nhật gần nhất thì Spring Data auditing là đủ. Cần dựng lại trạng thái tại thời điểm T thì cần Envers. Dữ liệu không được xoá vì quy định thì cần soft delete. Cái sai lầm phổ biến là bật cả ba "cho an toàn" rồi phát hiện bảng audit phình to và làm chậm hệ thống.`,
   follow: [
@@ -8268,82 +8328,6 @@ DELETE FROM users WHERE id=10;                    -- chưa kịp chạy
   ],
   tags: ['flush', 'FlushMode', 'ActionQueue', 'unique constraint', 'internals'],
   refs: [
-    { type: 'doc', title: 'Hibernate ORM User Guide: Flushing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#flushing' }
-  ]
-}
-,
-{
-  id: 'jpa-041',
-  topic: 'jpa',
-  level: 'senior',
-  q: 'Dirty checking (kiểm tra "bẩn" - thay đổi) trong Hibernate hoạt động bên trong thế nào: snapshot (ảnh chụp) lúc load được lưu ở đâu, so sánh lúc flush diễn ra theo thứ tự nào, và chi phí thế nào khi persistence context (ngữ cảnh bền vững - bộ nhớ quản lý entity trong 1 session) rất lớn? Bytecode enhancement (tăng cường bytecode) và read-only hint (gợi ý chỉ đọc) giúp gì?',
-  a: `**Tóm tắt:** Khi Hibernate load một entity (thực thể - object ánh xạ bảng DB) vào trạng thái **managed/persistent**, nó lưu một mảng **snapshot** (bản sao giá trị các trường tại thời điểm load) trong cấu trúc nội bộ của persistence context. Lúc **flush** (đẩy thay đổi xuống DB), Hibernate duyệt từng entity managed, so sánh giá trị hiện tại với snapshot để tìm trường "dirty" (đã đổi) rồi sinh {{UPDATE}}. Chi phí là O(số entity * số trường/cơ chế so sánh) mỗi lần flush; persistence context lớn (hàng nghìn entity) khiến flush chậm và tốn RAM. **Bytecode enhancement** (plugin chỉnh bytecode lúc build) gắn cơ chế dirty-tracking vào chính entity để Hibernate biết ngay entity nào bẩn; **read-only hint** ({{setHint(QueryHints.HINT_READONLY, true)}} hoặc {{@Transactional(readOnly=true)}} với Hibernate) giúp bỏ snapshot/skip dirty check cho truy vấn chỉ đọc.
-
-### Bước 1: Thuật ngữ (giải thích từ gốc)
-- **Persistence context**: ví dụ đời thường như một "bàn làm việc" tạm — mọi giấy tờ (entity) bạn lấy ra đều nằm trên bàn; Hibernate nhớ cả trạng thái gốc để cuối buổi biết bạn đã sửa tờ nào.
-- **Snapshot (loaded state)**: bản chụp giá trị từng cột/thuộc tính ngay sau khi entity được nạp. Hibernate giữ nó song song với object Java bạn đang cầm.
-- **Dirty checking**: so sánh "giá trị hiện tại" với "snapshot" để quyết định có cần {{UPDATE}} không.
-- **Flush**: thời điểm Hibernate đồng bộ thay đổi managed xuống DB (trước commit, trước một số query, hoặc khi gọi {{flush()}}).
-
-### Bước 2: Cơ chế bên trong từng bước
-1. **Load**: {{em.find(Order.class, 1L)}} hoặc query trả entity → Hibernate hydrate (đổ dữ liệu) vào object, đăng ký entity vào identity map (đảm bảo 1 id = 1 instance trong context), và lưu **loaded state** (snapshot) theo từng property.
-2. **Bạn sửa object**: {{order.setStatus("PAID")}} — Hibernate **không** biết ngay (mặc định không intercept setter trừ khi dùng enhancement).
-3. **Flush trigger**: commit transaction, {{em.flush()}}, hoặc auto-flush trước JPQL/HQL có thể chạm bảng liên quan.
-4. **Dirty check**: Hibernate duyệt các entity trong persistence context, với mỗi entity so sánh từng field hiện tại với snapshot (dùng {{equals}}/kiểu so sánh phù hợp; collection cần cẩn thận). Entity nào khác → sinh SQL {{UPDATE}} (chỉ các cột đổi nếu dùng {{@DynamicUpdate}}, nhưng dynamic có chi phí riêng).
-5. **Execute**: SQL được gửi theo thứ tự ActionQueue (xem câu về flush/ActionQueue).
-
-~~~java
-// Ví dụ: 10.000 Order managed trong 1 transaction
-List<Order> orders = em.createQuery("select o from Order o", Order.class)
-    .setMaxResults(10000).getResultList(); // snapshot 10.000 bản ghi được giữ
-orders.get(0).setStatus("PAID");           // chỉ 1 bản đổi
-em.flush(); // mặc định vẫn phải xét dirty trên các entity managed
-~~~
-
-### Bước 3: Vì sao thiết kế như vậy (trade-off)
-Hibernate chọn **snapshot comparison** vì đơn giản, đúng với mọi kiểu field, không cần can thiệp bytecode. Đánh đổi: tốn RAM (snapshot ~ nhân đôi dữ liệu quản lý) và CPU khi context lớn. Đây là trade-off "tiện lợi lập trình (POJO tự nhiên) vs chi phí runtime".
-
-### Bytecode enhancement (dirty tracking)
-- **Cái gì**: plugin (Maven {{hibernate-enhance-maven-plugin}} / Gradle) chỉnh class lúc build để entity tự báo khi field thay đổi (dirty tracking) và hỗ trợ lazy attribute nâng cao.
-- **Hoạt động**: entity gắn cờ/metadata "dirty"; lúc flush Hibernate chỉ xét entity đã bẩn thay vì quét hết.
-- **Khi dùng**: context lớn, nhiều entity load nhưng ít entity sửa. **Lưu ý**: build phức tạp hơn; cần cấu hình đúng {{enableDirtyTracking}}; kiểm tra tương thích tool (IDE, test).
-
-~~~xml
-<!-- Maven (ví dụ ý tưởng, kiểm tra version Hibernate 6.x bạn dùng) -->
-<plugin>
-  <groupId>org.hibernate.orm.tooling</groupId>
-  <artifactId>hibernate-enhance-maven-plugin</artifactId>
-  <executions><execution><configuration>
-    <enableDirtyTracking>true</enableDirtyTracking>
-  </configuration></execution></executions>
-</plugin>
-~~~
-
-### Read-only hint
-- {{query.setHint("org.hibernate.readOnly", true)}} (hằng số {{HibernateHints.HINT_READ_ONLY}} trong Hibernate 6; JPA chuẩn không có hint read-only): Hibernate **không giữ snapshot** / không dirty-check entity trả về → tiết kiệm RAM/CPU cho báo cáo.
-- {{@Transactional(readOnly=true)}} (Spring 5.1+) đặt {{FlushMode.MANUAL}} và {{session.setDefaultReadOnly(true)}} với Hibernate: không flush tự động và mọi entity load trong transaction đều read-only.
-
-| Cách | Tác dụng chính | Khi dùng |
-|---|---|---|
-| Mặc định (managed) | Có snapshot, dirty check | Cần sửa và lưu |
-| Read-only hint / readOnly tx | Bỏ/giảm snapshot & flush | Báo cáo, đọc nhiều |
-| Bytecode dirty tracking | Chỉ check entity bẩn | Nhiều entity, ít sửa |
-| {{StatelessSession}} / DTO projection | Không L1 context | Batch/đọc lớn |
-
-### Trên production
-- **Triệu chứng thật**: API "lấy danh sách để hiển thị" nhưng RAM tăng theo traffic; thời gian commit tăng; thread giữ transaction lâu; GC căng.
-- **Cách đo**: bật {{hibernate.generate_statistics}} (dev/staging) xem {{EntityLoadCount}}, {{FlushCount}}; đo thời gian flush; profiler heap xem {{EntityEntry}}/snapshot; log SQL đếm {{UPDATE}} ngoài ý muốn.
-- **Tuning/cấu hình có thật**: {{spring.jpa.properties.hibernate.generate_statistics=true}} (chỉ chẩn đoán), dùng read-only cho query đọc, chia nhỏ transaction, {{em.clear()}} theo chunk khi batch, cân nhắc bytecode enhancement {{enableDirtyTracking=true}} với Hibernate ORM tooling plugin đúng phiên bản.
-
-> Senior tip: Persistence context là "đơn vị công việc" (unit of work), không phải cache dữ liệu lớn. Nếu bạn load hàng chục nghìn entity chỉ để đọc/hiển thị, hãy dùng **DTO projection** ({{select new ...}}) hoặc read-only + giới hạn kích thước; đó là cách cắt chi phí snapshot triệt để hơn mọi mẹo nhỏ.`,
-  follow: [
-    'Khi nào {{@DynamicUpdate}} giúp ích và khi nào nó lại làm chậm hơn so với dirty checking mặc định?',
-    'Bytecode enhancement có rủi ro gì khi deploy (classloader, test, tương thích Lombok/proxy) và bạn kiểm soát thế nào?',
-    'Tại sao read-only hint không phải lúc nào cũng thay thế được việc dùng DTO projection cho API danh sách?'
-  ],
-  tags: ['dirty checking', 'snapshot', 'loaded state', 'persistence context', 'bytecode enhancement', 'read-only', 'Hibernate internals'],
-  refs: [
-    { type: 'doc', title: 'Hibernate ORM User Guide: Bytecode Enhancement', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#BytecodeEnhancement' },
     { type: 'doc', title: 'Hibernate ORM User Guide: Flushing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#flushing' }
   ]
 }
