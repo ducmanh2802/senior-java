@@ -987,6 +987,14 @@ BigDecimal capturable(Hold h, BigDecimal requested, Instant now) {
 - Capture và settlement chạy theo lô cuối ngày, không chạy tức thời.
 - Giao dịch nước ngoài: số tiền hold là ước lượng theo tỷ giá tạm tính, số capture chính thức có thể lệch vài chục nghìn đồng, app phải hiển thị số "tạm giữ".
 
+### Ví dụ đời thực
+
+Một siêu thị lớn xử lý 50.000 giao dịch thẻ mỗi ngày. Một buổi chiều, hơn 200 khách khiếu nại ứng dụng ngân hàng hiển thị "giao dịch chờ xử lý" kéo dài 3 ngày cho các giao dịch mua hàng cuối tuần. Đội dev tra soát log issuer và thấy: các giao dịch đã được authorize thành công, nhưng file settlement từ acquirer (ngân hàng của siêu thị) bị gửi trễ do sự cố máy chủ NAPAS ngày Chủ nhật. Hệ thống issuer không có job tự động giải phóng hold hết hạn (auth code chỉ giữ 7 ngày), nên các hold vẫn hiện "chờ xử lý". Nguyên nhân gốc: thiếu job cron chạy hàng ngày kiểm tra các hold sắp hết hạn và giải phóng số dư khả dụng, đồng thời thiếu cảnh báo khi file settlement không đến đúng giờ. Cách xử lý: chạy script giải phóng các hold quá 7 ngày, bổ sung job hàng ngày 02:00 kiểm tra hold sắp hết hạn và gửi thông báo đến khách, và thêm bộ giám sát (alert) khi acquirer không gửi file settlement trước 10:00 sáng hôm sau. Kết quả: sau khi triển khai, không còn case hold "chờ xử lý" kéo dài quá 24 giờ, và số khiếu nại về số dư khả dụng giảm 90%.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi khách quẹt thẻ, tiền chỉ bị giữ (authorization) chứ chưa chuyển ngay. Có bốn bước: authorization — issuer kiểm tra hạn mức và giữ chỗ tiền; capture — merchant xác nhận lấy tiền thật (có thể một phần); settlement — tiền thật sự chuyển giữa ngân hàng qua NAPAS/Visa/Mastercard, thường T+1 hoặc T+2; chargeback — khách khiếu nại, tiền bị thu ngược. Tiền chỉ rời issuer ở bước settlement, mọi thứ trước đó chỉ là giữ chỗ trên sổ. Quan trọng: hold phải có hạn và có job tự động giải phóng, và tỷ lệ chargeback là chỉ số sống còn của merchant nên hệ thống phải lưu bằng chứng (hóa đơn có chữ ký, log thiết bị) ngay khi giao dịch xảy ra, không chờ lúc có khiếu nại."
+
 ### Lỗi hay gặp
 - Cho phép capture lớn hơn amount đã auth, hoặc không cộng dồn partial capture → khách bị trừ nhiều hơn số đồng ý.
 - Không lưu auth id → không capture được, hold treo đến hết hạn, merchant mất tiền.
@@ -1096,6 +1104,14 @@ CREATE TABLE merchant_order (
 - QR động không có hạn → kẻ gian giữ lại QR của đơn đã thanh toán để dùng lại.
 - Coi webhook là tin cậy tuyệt đối mà không kiểm tra chữ ký/nguồn và không xử lý trùng.
 
+### Ví dụ đời thực
+
+Một chuỗi cửa hàng tiện lợi 200 chi nhánh triển khai VietQR động cho các quầy thu ngân. Một ngày, chi nhánh A báo 15 đơn hàng bị "mất tiền": khách quét QR, app báo thành công, nhưng POS không nhận webhook và nhân viên không cho lấy hàng. Khách bức xúc, nhân viên phải đối soát thủ công từng giao dịch. Dev tra soát log POS và NAPAS thấy: webhook từ core ngân hàng thụ hưởng bị thất lạc do sự cố mạng 5 phút lúc 14:00–14:05. Hệ thống POS không có job tra soát chủ động (polling) khi webhook không về, và trạng thái đơn vẫn là AWAITING. Nguyên nhân gốc: thiết kế chỉ dựa vào webhook (push) mà không có cơ chế kéo (pull) theo mã tham chiếu NAPAS theo chu kỳ 5 phút. Cách xử lý: chạy script đối soát thủ công cho 15 đơn, xác nhận tiền đã về tài khoản, chuyển đơn sang PAID và cho khách lấy hàng. Sau đó bổ sung job cron 5 phút: với mọi đơn AWAITING quá 10 phút, gọi API tra soát NAPAS theo mã tham chiếu; nếu tìm thấy -> cập nhật PAID, nếu không -> giữ AWAITING và gửi cảnh báo. Kết quả: trong tháng sau, không còn đơn nào bị "mất tiền" do webhook thất lạc, và tỷ lệ đơn cần tra soát thủ công giảm từ 15/ngày xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+
+"VietQR chỉ là kênh khởi tạo yêu cầu chuyển khoản, không giữ tiền và không chứng minh đã thanh toán. QR tĩnh in ra dán quầy, không có số tiền và mã đơn, khách tự nhập dễ sai; QR động sinh theo đơn hàng, có số tiền, mã đơn, hết hạn vài phút. Luồng: khách quét QR -> app đọc TLV -> xác nhận -> gửi lệnh chuyển khoản nhanh 24/7 qua NAPAS -> tiền vào tài khoản người bán -> core người bán gửi webhook báo có. Quan trọng: không bao giờ xác nhận đơn chỉ dựa vào ảnh 'chuyển khoản thành công' khách chụp (dễ ghép ảnh), phải nhận webhook hoặc chủ động tra soát theo mã tham chiếu NAPAS, kiểm tra đúng số tiền, tài khoản thụ hưởng, mã đơn chưa được dùng. Webhook có thể trùng nên handler phải khóa theo mã tham chiếu. Thiết kế phải có trạng thái 'đang chờ xác nhận' và job tra soát chủ động phòng khi webhook thất lạc."
+
 > Senior tip: Hãy nói trong phỏng vấn rằng QR chỉ là **kênh khởi tạo yêu cầu** (initiation), còn **kênh quyết định** là hệ thống chuyển mạch và sổ cái. Vì vậy thiết kế phải có ba thứ: mã đơn duy nhất trong nội dung chuyển khoản, trạng thái "đang chờ xác nhận" thay vì "thành công" ngay khi khách báo, và job tra soát chủ động phòng khi webhook thất lạc. Đây chính là bài học idempotency và đối soát áp dụng cho một luồng rất đời thường.
 
 > Cụm từ: BIN (Bank Identification Number) là 6 số đầu của một dãy số dùng để nhận diện ngân hàng, ở đây là ngân hàng thụ hưởng. Webhook là việc hệ thống A chủ động gọi API của B khi có sự kiện, thay vì B cứ hỏi A.
@@ -1175,6 +1191,14 @@ Thiếu tiền là lỗi **có thể chờ**, không phải lỗi kỹ thuật, 
 - Cứng ngày 31 trong code → tháng 2 không sinh kỳ nào, bên thu không thu được tiền cả tháng.
 - Chỉ báo cho khách sau khi đã trừ tiền → khách khiếu nại, hoàn tiền dây dưa.
 
+### Ví dụ đời thực
+
+Một công ty bảo hiểm triển khai auto-debit cho 500.000 hợp đồng, thu phí hàng tháng ngày 5. Tháng 2 năm nay ngày 5 rơi vào thứ 6, nhưng tháng 2 không có ngày 31 (chỉ có 28 ngày). Triệu chứng: 12.000 hợp đồng có ngày thu là ngày 31 (khách chọn ngày 31 khi đăng ký) không được sinh kỳ thu cho tháng 2, bên thu không nhận được tiền và phải gọi thủ công yêu cầu khách chuyển khoản. Dev kiểm tra code lập lịch thấy hàm {{dueDate}} dùng {{dayOfMonth}} trực tiếp mà không kiểm tra {{lengthOfMonth()}}, dẫn đến {{LocalDate.of(2026, 2, 31)}} ném exception và job dừng. Nguyên nhân gốc: thiếu xử lý trường hợp ngày 29/30/31 cho tháng ngắn, và thiếu test case cho tháng 2. Cách xử lý: chạy script bù đắp 12.000 kỳ thu thiếu (tạo {{debit_run}} với {{due_date}} = ngày cuối tháng 2), sửa hàm {{dueDate}} dùng {{Math.min(dayOfMonth, YearMonth.of(year, month).lengthOfMonth())}} như ví dụ code, thêm unit test cho tháng 2, tháng 4/6/9/11 ngày 31, và năm nhuận. Kết quả: tháng sau job chạy trôi chảy cho tất cả 500.000 hợp đồng, không còn kỳ nào bị bỏ sót.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Auto-debit dựa trên ủy quyền (mandate) của khách cho phép trừ tiền định kỳ. Ba đối tượng cốt lõi: mandate (trạng thái ACTIVE/SUSPENDED/REVOKED, phải kiểm tra ngay trước khi thu), kỳ thu (schedule), attempt (mỗi lần thử là một giao dịch riêng). Job phải an toàn khi chạy lại (re-runnable): khóa tự nhiên (mandate_id + period_key) ở database với unique constraint, không chỉ if trong code. Retry thiếu tiền tách biệt với retry lỗi kỹ thuật: thiếu tiền thử lại D+1, D+3 tối đa 3 lần/ kỳ; lỗi kỹ thuật retry nhanh với backoff, không tính vào số lần nghiệp vụ. Thông báo 3 lúc: trước kỳ (T-2), thành công, thất bại — trước kỳ quan trọng nhất để giảm khiếu nại. Luôn cho khách rút ủy quyền trong app."
+
 > Senior tip: Câu hỏi phân biệt senior ở đây là "job của bạn có chạy lại an toàn không" (re-runnable). Hãy trả lời theo trình tự: khóa tự nhiên (mandate, kỳ) ở database, kiểm tra trạng thái mandate ngay trước khi ghi sổ, tách retry nghiệp vụ khỏi retry kỹ thuật, và phát hành thông báo trước kỳ thu. Nói thêm một ý thực tế: số tiền thu có thể đổi (điện tiêu dùng theo tháng), nên phải có trần tiền trong mandate và từ chối thu vượt trần.
 
 > Cụm từ: Mandate (ủy quyền thu) là văn bản/đồng ý điện tử cho phép một tổ chức trừ tiền tài khoản khách định kỳ. Period key (khóa kỳ) là chuỗi nhận diện một kỳ thu, ví dụ '2026-06'.
@@ -1252,6 +1276,14 @@ Giao dịch bị chặn/chờ đi vào hàng đợi để nhân viên xem (case 
 - Không ghi lại snapshot feature tại thời điểm quyết định → sau này không tái hiện được vì sao chặn khách, không giải trình được.
 - Đổi ngưỡng mà không thông báo, không có grey release → tỷ lệ chặn nhảy vọt một buổi sáng.
 
+### Ví dụ đời thực
+
+Một ngân hàng trung bình xử lý 2 triệu giao dịch thẻ/ngày. Một sáng, tỷ lệ giao dịch bị chặn (block) nhảy từ 0.2% lên 3.5% trong 2 giờ, tổng đài ngập cuộc gọi khách phàn nại không thể thanh toán. Dev tra soát log decision service và thấy: lúc 08:15 team data science triển khai model ML mới (v2.3) với ngưỡng challengeAt giảm từ 70 xuống 55 để "bắt nhiều gian lận hơn", nhưng không chạy grey release (chỉ bật cho 5% traffic) và không thông báo team vận hành. Model mới chấm điểm cao cho các giao dịch nhỏ vào ban sáng (velocity trong 30 phút) vì dữ liệu huấn luyện thiếu đại diện cho giờ cao điểm. Nguyên nhân gốc: quy trình deploy model thiếu gate (grey release + canary + rollback tự động khi FP tăng), và feature velocity không chuẩn hóa theo giờ trong ngày. Cách xử lý: rollback ngay về model v2.2, tỷ lệ block giảm về 0.3% trong 15 phút. Sau đó bổ sung pipeline: model mới chỉ deploy cho 5% traffic 48 giờ, so sánh FP/FN với model cũ, tự động rollback nếu FP tăng > 20%; chuẩn hóa feature velocity theo bucket giờ (0-6h, 6-12h, 12-18h, 18-24h). Kết quả: deploy model v2.4 sau 2 tuần an toàn, FP giảm 40% so với v2.2, không còn sự cố block hàng loạt.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Hệ thống chống gian lận real-time phải quyết định trong 150-300 ms: cho qua, challenge (yêu cầu OTP/push), hay block. Ba lớp chạy song song: rule engine (luật cứng, giải thích được), model ML (điểm 0-1, bắt mẫu tinh vi), danh sách whitelist/blacklist. Độ trễ ngân sách: tổng 2000 ms, trong đó decision chỉ 150-300 ms — phải đọc feature từ cache/Redis, tính toán nặng chạy bất đồng bộ qua Kafka. Khi timeout: fail open cho giao dịch nhỏ, fail closed hoặc challenge cho giao dịch lớn/nước ngoài. False positive (chặn nhầm khách thật) tốn kêu gọi, mất khách; giảm FP bằng step-up authentication (OTP/push) thay vì block, và kênh khiếu nại một chạm 'Đây là tôi' trong app. Luôn ghi log snapshot feature tại thời điểm quyết định để giải trình sau này. Vòng phản hồi: nhân viên xem case, gán nhãn legit/fraud -> retrain model."
+
 > Senior tip: Trong phỏng vấn, hãy trả lời theo trình tự: (1) quyết định phải đồng bộ nhưng chỉ đọc dữ liệu đã chuẩn bị sẵn, phần nặng chạy bất đồng bộ; (2) luôn có chính sách khi dịch vụ chống gian lận lỗi, kèm ngưỡng tiền; (3) ưu tiên step-up challenge thay vì block để giảm FP; (4) ghi log nguyên nhân quyết định. Nói thêm: gian lận là trò đuổi bắt, giá trị của hệ thống nằm ở vòng phản hồi và khả năng tắt/mở luật trong vài phút, không phải ở model xịn nhất.
 
 > Cụm từ: Velocity là tốc độ giao dịch (bao nhiêu lần, bao nhiêu tiền trong một cửa sổ thời gian ngắn). Step-up authentication là buộc thêm một bước xác minh (OTP, xác nhận push) ngay trong giao dịch thay vì từ chối thẳng.
@@ -1326,6 +1358,14 @@ Kích hoạt lần đầu gắn tài khoản với một thiết bị: lưu đ�
 - Bỏ qua bước kiểm tra mandate/trạng thái thiết bị khi khách đổi máy, vì "app báo được là được".
 - Gửi OTP ngay khi khách mới mở màn hình, trước khi biết giao dịch cụ thể → mất tác dụng ràng buộc.
 
+### Ví dụ đời thực
+
+Một ngân hàng lớn phát hiện 50 vụ mất tiền trong một tháng do kẻ gian lợi dụng lỗ hổng OTP không bind amount. Triệu chứng: khách nhận SMS OTP "Mã 123456 để xác thực", nhập vào app, nhưng giao dịch thực tế bị sửa từ chuyển 2 triệu thành chuyển 200 triệu sang tài khoản kẻ gian. Dev tra soát log xác thực thấy: hệ thống chỉ kiểm tra mã OTP có đúng không, không kiểm tra hash của nội dung giao dịch (amount + beneficiary). Kẻ gian dùng kỹ thuật man-in-the-browser: sau khi khách nhập OTP, mã độc trên trình duyệt sửa request gửi lên server (thay amount và beneficiary), server vẫn chấp nhận vì OTP đúng. Nguyên nhân gốc: thiết kế OTP tách biệt với nội dung giao dịch, không có transaction signing. Cách xử lý: khẩn cấp deploy hotfix so sánh hash(amount + beneficiary + txnId) tại server với hash client ký (dùng Web Crypto API trong app), chặn mọi request hash không khớp; đồng thời triển khai Smart OTP (TOTP trong app) và transaction signing cho giao dịch > 10 triệu. Kết quả: sau 2 tuần, không còn vụ mất tiền do sửa nội dung giao dịch, và tỷ lệ giao dịch dùng Smart OTP lên 85%.
+
+### Trả lời mẫu khi phỏng vấn
+
+"SMS OTP yếu 5 điểm: 1) SIM swap — kẻ gian cấp lại SIM số nạn nhân, OTP chảy về tay chúng; 2) SS7 — tin nhắn bị đọc ở tầng mạng di động; 3) Social engineering — kẻ lừa khách đọc OTP qua điện thoại; 4) Không bind giao dịch — OTP '123456' dùng cho 5 triệu cũng dùng cho 500 triệu, kẻ gian sửa amount sau khi khách nhập OTP; 5) Phụ thuộc sóng. Smart OTP (TOTP) chạy trong app: HMAC-SHA1(secret, time/30), không cần mạng, secret lưu trong Keystore/Secure Enclave. Transaction signing: thiết bị ký hash(amount + beneficiary + txnId), server verify — đổi bất kỳ chữ nào mã đều sai. Device binding: gắn tài khoản với thiết bị qua public key, push confirmation chỉ về thiết bị đó, đổi máy phải re-enroll. Ba tầng bảo vệ: OTP bind nội dung, yếu tố 'có gì' là key phần cứng, có đường dự phòng cho khách mất điện thoại."
+
 > Senior tip: Khi phỏng vấn, đừng chỉ nói "SMS OTP yếu vì dễ bị SIM swap". Hãy nói ba tầng: (1) OTP phải ràng buộc nội dung giao dịch (amount + beneficiary), (2) yếu tố "có gì" phải là key trong phần cứng thiết bị chứ không phải số điện thoại, (3) mọi quy trình phải có đường dự phòng cho khách mất điện thoại mà không mở cửa sau cho kẻ gian. Nói thêm một con số: mã 6 số + 5 lần thử + khóa 15 phút là cấu hình hợp lý; 1 triệu tổ hợp chia cho 5 lần thử thì xác suất đoán trúng 0.0005%.
 
 > Cụm từ: Secret (khóa bí mật) là chuỗi byte chỉ thiết bị và server biết, dùng để sinh TOTP. Keystore/Secure Enclave là vùng lưu trữ khóa chuyên dụng trên điện thoại, khóa không thể trích ra kể cả khi có root.
@@ -1399,6 +1439,14 @@ Bảng so sánh cách trả lãi:
 - Partial break (rút một phần): gốc mới phải về 0 nhưng lãi của phần rút bị tính cho cả kỳ.
 - Ngày đáo hạn tính bằng cách cộng tháng trên LocalDate mà quên trường hợp ngày 31.
 - Thu hồi lãi đã trả mà không ghi bút toán điều chỉnh, chỉ "trừ bớt" → sổ cái lệch, đối soát đỏ.
+
+### Ví dụ đời thực
+
+Một ngân hàng quản lý 2 triệu sổ tiết kiệm. Quý 1 năm 2023, lãi suất tiền gửi 12 tháng là 7.5%/năm. Quý 3, lãi thị trường giảm, ngân hàng hạ biểu lãi xuống 4.2%/năm. Triệu chứng: 15.000 khách gọi khiếu nại "lãi bị giảm giữa chừng", tổng đài quá tải. Dev tra soát hệ thống lãi suất thấy: bảng {{deposit_rate}} chỉ có 1 dòng cho từng kỳ hạn, không có cột {{effective_from}}/{{effective_to}}. Khi cập nhật lãi mới, hệ thống ghi đè lãi cũ, khiến job tính lãi hằng ngày (accrual) dùng lãi 4.2% cho cả sổ mở đầu năm 2023. Nguyên nhân gốc: không versioning lãi suất theo ngày, job accrual đọc lãi "mới nhất" thay vì lãi tại ngày mở sổ. Cách xử lý: chạy script bù đắp chênh lệch lãi cho 15.000 sổ (tính lại theo 7.5% từ ngày mở đến hôm nay), sửa schema thêm {{rate_version}} với {{effective_from}}, {{effective_to}}, {{rate_value}}; job accrual và job tất toán đều join theo {{effective_from <= ngay_tinh < effective_to}}. Kết quả: sau khi triển khai, không còn khiếu nại về lãi sai, và kiểm toán chấp nhận báo cáo lãi theo phiên bản đúng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tiền gửi kỳ hạn: lãi = gốc × lãi suất năm × số ngày thực / cơ sở ngày (actual/365 phổ biến ở VN). Dùng BigDecimal, không dùng double. Ngân hàng phải trích trước lãi hằng ngày (accrual) vào sổ cái — đây là khoản nợ phát sinh theo ngày, không đợi đáo hạn mới ghi. Tất toán trước hạn: chỉ trả lãi theo lãi suất không kỳ hạn (thấp, ví dụ 0.2%) cho số ngày thực gửi; nếu đã trả lãi trước (đầu kỳ/hàng tháng) phải thu hồi phần thừa. Tái tục tự động: mở kỳ mới theo biểu lãi ngày đáo hạn, phải báo khách trước (T-1), job idempotent theo (sổ, kỳ mới). Ba thứ tách biệt: lãi suất hợp đồng (bất biến, lưu theo ngày gửi), biểu lãi thị trường (thay đổi), chính sách làm tròn/phí (cấu hình)."
 
 > Senior tip: Trong phỏng vấn, câu này ăn điểm ở hai chỗ: (1) tách rõ ba thứ — lãi suất theo hợp đồng (bất biến, lưu theo ngày gửi), biểu lãi thị trường (thay đổi), và chính sách làm tròn/phí (cấu hình); (2) nói được nghiệp vụ dự trích lãi hằng ngày, vì đó là chỗ dev thuần kỹ thuật hay bỏ. Hãy chủ động nói "tôi sẽ lưu phiên bản lãi suất và khóa công thức tính theo ngày" — đó là điều ngân hàng thật sự làm sau các sự cố khiếu nại lãi.
 
