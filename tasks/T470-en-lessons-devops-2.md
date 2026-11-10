@@ -1,6 +1,6 @@
 # T470 — Dịch sang tiếng Anh: lessons-devops (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-devops-2.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-devops-2.en.js` và `node scripts/check-i18n.js lessons-devops-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lesson-devops-003` (rolling/blue-green/canary, hash ổn định, auto-rollback) và `lesson-devops-004` (phân loại FINAL/RETRY, exponential backoff có cap, jitter, Retry-After, idempotency) sang `js/i18n/lessons-devops-2.en.js`.
+- Chỉ chép các field dịch: title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain; không chép starter/tests/reference, không chép `answer` của check.
+- Giữ nguyên markup (bảng, danh sách, `{{code}}`, `~~~lang`), giữ nhãn "> Senior tip:", đổi "### Liên hệ phỏng vấn" → "### Interview notes"; đã dịch comment tiếng Việt trong code block của `body`.
+- `node scripts/check-i18n.js lessons-devops-2` → OK — 2 mục đã dịch; `node scripts/validate.js` → OK — không có lỗi.
