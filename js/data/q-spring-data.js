@@ -8266,6 +8266,11 @@ ex.setTaskDecorator(runnable -> {
 - Job phải idempotent: at-least-once + idempotent để chịu được retry, deploy, clock lệch.
 - Spring Boot 3.2+ có thể dùng virtual thread executor với spring.threads.virtual.enabled=true – phù hợp I/O nhiều.
 
+### Ví dụ đời thực
+Hệ thống đặt hàng dùng @Async để gửi email xác nhận sau mỗi đơn. Giờ cao điểm khoảng 1500 đơn/phút, mỗi email chạy trên thread pool mặc định của Boot (core 8, queue không giới hạn). Hàng ngàn email chờ trong queue, heap leo lên, ứng dụng bị OutOfMemoryError. Đồng thời log email không có mã vết (trace id) vì MDC không tự sang thread mới, nên khó truy vết email nào thất bại. Thread dump thấy hàng task WAITING trong queue; heap dump thấy hàng nghìn đối tượng email task. Cách xử lý: khai báo executor rõ ràng (core 16, max 32, queue 1000, chính sách CallerRunsPolicy khi đầy), cài TaskDecorator copy MDC/trace id sang thread gửi email, thêm metrics đếm task đang chờ và task lỗi, alert khi queue vượt 80%. Kết quả: request đặt hàng không bị chặn, heap ổn định, log email đầy đủ mã vết.
+
+### Trả lời mẫu khi phỏng vấn
+"@Async chạy method trên thread khác do TaskExecutor quản lý, nên gặp ba vấn đề hay: exception bị nuốt, transaction không truyền sang thread mới, ThreadLocal như MDC (mã vết yêu cầu) và SecurityContext (bối cảnh bảo mật) mất đi. Trong Boot 3, nếu không khai báo bean TaskExecutor, Spring Boot tự cấu hình ThreadPoolTaskExecutor với core pool 8, queue không giới hạn – dưới tải cao queue phình gây OOM. Tôi luôn định nghĩa executor rõ ràng với core size, max size, queue giới hạn và chính sách từ chối khi đầy; dùng TaskDecorator để copy MDC/trace id sang thread mới; đặt @Transactional ngay trên chính method async để có transaction riêng; và với nghiệp vụ không được phép mất (đặt hàng, thanh toán) thì đẩy vào message broker có retry/dead-letter thay vì dùng @Async; cuối cùng luôn thêm metrics đếm task đang chờ và task lỗi, đặt alert khi vượt ngưỡng để phát hiện sớm."
 > Senior tip: định nghĩa rõ trong team: @Async chỉ dùng cho tác vụ không quan trọng (gửi email, ghi log, cập nhật thống kê). Với tác vụ nghiệp vụ cần đảm bảo không mất, đẩy vào message broker và có retry/dead-letter. Nhớ thêm metrics đếm số task async đang chờ và số task lỗi.`,
   follow: [
     'Làm sao truyền SecurityContext hoặc trace id sang thread async một cách an toàn?',
@@ -8284,7 +8289,7 @@ ex.setTaskDecorator(runnable -> {
 spring.main.lazy-initialization=true: bean chỉ được tạo khi lần đầu được yêu cầu. Giảm thời gian start và memory ban đầu, nhưng lỗi cấu hình (missing bean, sai property) chỉ lộ ra lúc runtime thay vì lúc start, và request đầu tiên sẽ chậm. Phù hợp cho dev/local; production thường muốn fail-fast.
 
 ### CDS (Boot 3.3+)
-CDS cho phép JVM lưu class metadata đã parse/verify vào archive (.jsa), dùng lại giữa các lần start → giảm thời gian class loading. Boot 3.3 hỗ trợ tạo CDS archive bằng một lần chạy huấn luyện (training run): giải nén jar bằng {{java -Djarmode=tools -jar app.jar extract}}, chạy {{java -XX:ArchiveClassesAtExit=app.jsa -Dspring.context.exit=onRefresh -jar app.jar}} để ứng dụng khởi động xong rồi thoát, sau đó chạy thật với {{-XX:SharedArchiveFile=app.jsa}}. Từ JDK 24, Project Leyden thêm AOT cache (JEP 483) lưu cả class đã nạp và link sẵn, tăng tốc mạnh hơn CDS. Giới hạn: phải chạy cùng JDK version, cùng classpath; không hỗ trợ mọi agent; lợi ích vừa phải (thường 20-40% start nhanh hơn) nhưng không thay đổi throughput.
+CDS cho phép JVM lưu class metadata đã parse/verify vào archive (.jsa), dùng lại giữa các lần start → giảm thời gian class loading. Boot 3.3 hỗ trợ tạo CDS archive bằng một lần chạy huấn luyện (training run): giải nén jar bằng {{java -Djarmode=tools -jar app.jar extract}}, chạy {{java -XX:ArchiveClassesAtExit=app.jsa -cp app.jar:app.jar/BOOT-INF/classes:app.jar/BOOT-INF/lib/* org.springframework.boot.loader.launch.JarLauncher}} để ứng dụng khởi động xong rồi thoát, sau đó chạy thật với {{-XX:SharedArchiveFile=app.jsa}}. Từ JDK 24 (dự kiến), Project Leyden thêm AOT cache (JEP 483) lưu cả class đã nạp và link sẵn, tăng tốc mạnh hơn CDS. Giới hạn: phải chạy cùng JDK version, cùng classpath; không hỗ trợ mọi agent; lợi ích vừa phải (thường 20-40% start nhanh hơn) nhưng không thay đổi throughput.
 
 ### AOT + GraalVM native image
 AOT xử lý Spring tại build time: bean definition, proxy, reflection metadata được sinh sẵn. GraalVM native image biên dịch thành binary native → start cực nhanh (ms), memory footprint thấp, nhưng build lâu (phút), binary lớn, và reflection/dynamic proxy phải khai báo rõ (reachability metadata). Spring Boot 3 hỗ trợ native image qua spring-boot-maven-plugin (native profile). Pitfall: code dùng reflection không khai báo sẽ fail runtime; test coverage phải cao vì lỗi chỉ lộ khi chạy native.
@@ -8306,6 +8311,11 @@ CRaC cho phép JVM checkpoint toàn bộ trạng thái (heap + threads) vào fil
 - Lazy init che lỗi config; native image che lỗi reflection.
 - Đo start time thực tế (time to first request) chứ không chỉ "JVM started".
 
+### Ví dụ đời thực
+Ứng dụng Spring Boot 3.2 của hệ thống báo cáo hàng tháng khởi động khoảng 12 giây, trong đó nạp lớp (class loading) khoảng 4 giây. Mỗi lần triển khai phiên bản mới, instance mới chỉ phục vụ sau khi khởi động xong, làm chậm quy trình phát hành. Team dùng Boot 3.3 tạo CDS archive (.jsa) qua một lần chạy huấn luyện, sau đó khởi động với archive đó: thời gian nạp lớp giảm 30% (4 giây xuống khoảng 2 giây 5). Đồng thời xem xét lazy-init cho bean báo cáo nặng chỉ dùng 1% request, nhưng bỏ vì production cần fail-fast (lỗi cấu hình phải lộ sớm khi khởi động). Tổng thời gian khởi động từ 12 giây xuống 7 giây. Kết luận: CDS phù hợp dịch vụ khởi động lại thường xuyên; native image chỉ xem xét cho hàm serverless khởi động lặp lại nhiều lần (scale-to-zero).
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Boot 3 có nhiều cách tăng tốc khởi động: lazy initialization tạo bean khi cần (giảm thời gian start nhưng lỗi cấu hình chỉ lộ lúc runtime), CDS lưu metadata của lớp đã xử lý để dùng lại lần sau (giảm nạp lớp), AOT + GraalVM native image biên dịch thành binary trước khi chạy (start cực nhanh nhưng build lâu và phải khai báo reflection), CRaC checkpoint toàn bộ trạng thái JVM (bộ nhớ heap và luồng) vào file rồi restore cực nhanh, nhưng file checkpoint lớn và cần cùng môi trường. Tôi chọn CDS cho dịch vụ khởi động lại thường xuyên vì chi phí thấp, tương thích tốt và không giảm throughput; native image chỉ xem xét cho hàm serverless khởi động lặp lại nhiều lần (scale-to-zero, ví dụ Lambda); CRaC giữ khi team đã có JDK hỗ trợ và muốn khởi động tính bằng mili-giây; luôn đo thời gian từ khởi động đến lần xử lý request đầu trên workload thật trước khi quyết định."
 > Senior tip: đừng chọn native image chỉ vì "start nhanh". Nếu workload là serverless/short-lived (Lambda, scale-to-zero), native image/CRaC đáng giá. Nếu là long-running service, JVM tuning (G1/ZGC, heap sizing) thường cho throughput tốt hơn với chi phí thấp hơn. Luôn đo trên workload thật trước khi quyết định.`,
   follow: [
     'Khi nào nên chọn CRaC thay vì GraalVM native image?',
@@ -8344,7 +8354,7 @@ spring:
 Khi đó Tomcat xử lý mỗi request bằng một virtual thread: code blocking vẫn viết như MVC thông thường, nhưng không còn giới hạn "số thread = số request đồng thời". Đây là lựa chọn mặc định rất hợp lý cho hệ thống CRUD dùng JPA.
 
 ### Pitfall production
-- Thread pinning: trên Java 21, virtual thread có thể pin carrier khi blocking trong một số vùng synchronized hoặc native method. Tránh giữ monitor qua thao tác I/O blocking dài. JEP 491 (Java 24) loại bỏ pinning do monitor trong các trường hợp này.
+- Thread pinning: trên Java 21, virtual thread có thể pin carrier khi blocking trong một số vùng synchronized hoặc native method. Tránh giữ monitor qua thao tác I/O blocking dài. JEP 491 (Java 24, dự kiến) loại bỏ pinning do monitor trong các trường hợp này.
 - ThreadLocal trong virtual thread vẫn hoạt động nhưng bộ nhớ phụ thuộc số thread đang sống → tránh giữ dữ liệu lớn trong ThreadLocal.
 - Với virtual thread, connection pool phải nhỏ lại (pool là tài nguyên hữu hạn của DB), không phải lớn lên.
 - Kiểm thử: MVC dùng MockMvc, WebFlux dùng WebTestClient – test sai loại là nguồn lỗi phổ biến.
@@ -8400,6 +8410,11 @@ Một nhóm đang viết lại service thông báo đẩy (push notification) �
 - finishRefresh start SmartLifecycle theo phase tăng dần khi start, và phase giảm dần khi stop → thứ tự shutdown ngược với startup.
 - ApplicationReadyEvent fire sau finishRefresh (và sau CommandLineRunner) → đây là thời điểm an toàn để warm-up và health check.
 
+### Ví dụ đời thực
+Ứng dụng dùng @ComponentScan tạo bean động, kèm BeanPostProcessor để kiểm tra (validate) tất cả bean gắn annotation @ValidConfig. Programmer viết @Bean trả về BeanPostProcessor nhưng quên từ khóa static. Ứng dụng khởi động bình thường, nhưng sau deploy một số service không được kiểm tra → lỗi thiếu trường bắt buộc chỉ hiện lúc runtime. Nguyên nhân: BeanPostProcessor bean không static được khởi tạo muộn (cùng giai đoạn với các bean thường), nên không kịp xử lý các bean được tạo trước đó. Sửa: thêm static lên @Bean (hoặc đánh dấu class @Component), để Spring đăng ký BPP sớm trong phase 6, trước khi instantiate các bean singleton. Kết quả: tất cả bean gắn @ValidConfig đều được kiểm tra ngay khi khởi động, lỗi lộ sớm thay vì hiện lúc chạy.
+
+### Trả lời mẫu khi phỏng vấn
+"refresh() của ApplicationContext trải qua 12 phase theo thứ tự cố định, từ prepareRefresh đến finishRefresh. Hiểu thứ tự giúp debug 'bean không được tạo' hoặc 'BPP bị bỏ qua': BeanFactoryPostProcessor (ví dụ ConfigurationClassPostProcessor xử lý @Configuration và @ComponentScan) có thể thêm bean definition mới, nên phải chạy trước BeanPostProcessor registration (phase 6) và trước khởi tạo singleton (phase 11); nếu ngược lại, BPP có thể bị bỏ qua cho các bean mới thêm. BeanPostProcessor bean phải được đăng ký sớm, nên @Bean trả về BPP phải static. SmartInitializingSingleton chạy sau khi tất cả singleton đã tạo, an toàn cho warm-up. Sự kiện ContextRefreshedEvent có thể phát nhiều lần (context cha và con), nên listener phải idempotent. ApplicationReadyEvent phát sau finishRefresh và CommandLineRunner, là lúc an toàn nhất cho warm-up và health check. Phase 11 (pre-instantiate) thường tốn thời gian nhất khi khởi động, nên lazy init có thể giúp nhưng đánh đổi fail-fast (lỗi cấu hình chỉ lộ khi chạy)."
 > Senior tip: khi app start chậm, cấu hình {{BufferingApplicationStartup}} ({{app.setApplicationStartup(new BufferingApplicationStartup(2048))}}) rồi xem {{/actuator/startup}} để có timeline từng bước và từng bean, hoặc ghi JFR với {{FlightRecorderApplicationStartup}}. Phase 11 (pre-instantiate) thường là chỗ tốn thời gian nhất – lazy init có thể giúp nhưng đánh đổi fail-fast.`,
   follow: [
     'Tại sao BeanPostProcessor bean phải là static @Bean?',
@@ -8530,6 +8545,11 @@ List<Order> findReport();
 | {{StatelessSession}} | Không | Không | Batch/import lớn |
 | Bytecode enhancement (dirty tracking) | Tùy cấu hình | Chỉ field bị đánh dấu đổi | Entity nhiều field, cần tối ưu |
 
+### Ví dụ đời thực
+Job closing ngày đọc 50.000 đơn hàng, cập nhật trạng thái thành "ĐÃ_GIAO" trong một transaction duy nhất. Persistence context giữ 50.000 entity, mỗi entity 20 trường, mỗi lần flush Hibernate so sánh 50.000 × 20 = 1.000.000 cặp giá trị (snapshot vs hiện tại) → CPU spike, GC nhiều, flush từ bình thường 1 giây leo lên 40 giây, heap dump thấy hàng chục nghìn EntityEntry. Cách xử lý: chia thành chunk 1.000, sau mỗi chunk gọi em.flush() rồi em.clear() để xóa persistence context và thả snapshot; hoặc job chỉ đọc xuất báo cáo, đặt read-only hint để Hibernate không giữ snapshot. Kết quả: thời gian xử lý giảm từ 40 giây xuống 3 giây, heap ổn định, không còn OutOfMemoryError.
+
+### Trả lời mẫu khi phỏng vấn
+"Dirty checking là Hibernate tự phát hiện entity nào đã sửa để sinh câu UPDATE, dựa trên snapshot (ảnh chụp giá trị trường lúc nạp entity vào persistence context – vùng nhớ quản lý entity của một phiên làm việc). Lúc flush, Hibernate duyệt từng entity managed, so sánh giá trị hiện tại với snapshot từng trường; khác thì ghi EntityUpdateAction vào ActionQueue để chạy SQL. Persistence context lớn thì chi phí O(N × F): N entity, F trường, mỗi flush tốn CPU và bộ nhớ lưu snapshot; 50.000 entity có thể lên hàng trăm MB heap → nguy cơ OutOfMemoryError. Bytecode enhancement chèn mã vào class entity để entity tự báo trường nào đổi, tránh quét hết; read-only hint (hoặc @Transactional(readOnly = true)) báo Hibernate bỏ snapshot với truy vấn chỉ đọc. Với batch lớn, chia chunk + flush/clear hoặc dùng StatelessSession (phiên không trạng thái – không giữ snapshot, không dirty check) cho nhập liệu lớn."
 > Senior tip: Nếu một job đọc 100k dòng để xuất báo cáo mà không sửa gì, đừng dùng Session thường - hãy đặt read-only hint hoặc dùng projection/StatelessSession; tôi từng thấy job xuất CSV giảm 40% thời gian chỉ nhờ bỏ snapshot không cần thiết. Luôn đo bằng statistics/JFR trước khi tối ưu.`,
   follow: [
     'Khi nào {{@Transactional(readOnly = true)}} đủ và khi nào cần thêm hint {{org.hibernate.readOnly}}?',
@@ -8609,6 +8629,11 @@ DELETE FROM users WHERE id=10;                    -- chưa kịp chạy
 | Xóa rồi thêm lại cùng unique key | **Cao** | {{flush()}} giữa hai bước hoặc update |
 | Thay thế bản ghi có FK phức tạp | Cao | Thiết kế migration logic, cân nhắc soft delete |
 
+### Ví dụ đời thực
+Chức năng đổi email khách hàng: code xóa hàng cũ (remove) rồi lưu hàng mới với cùng email (persist) trong một transaction, không flush giữa hai bước. Hibernate ActionQueue thực thi nhóm INSERT trước DELETE, nên DB thấy email mới trùng email cũ vẫn còn → ném ConstraintViolationException (SQLState 23505 PostgreSQL). Lỗi chỉ hiện khi "đổi key", test không flush giữa chừng thì không bắt được. Sửa: gọi em.flush() sau remove cho DELETE chạy xuống DB trước, sau đó persist hàng mới; hoặc tốt hơn, cập nhật email trên entity hiện tại (update) thay vì xóa thêm mới. Sau sửa, test tích hợp trên PostgreSQL thật không còn lỗi trùng khóa duy nhất.
+
+### Trả lời mẫu khi phỏng vấn
+"Flush là lúc Hibernate đồng bộ persistence context (vùng nhớ quản lý entity đã thêm/sửa/xóa) xuống DB thành câu SQL, nhưng chưa commit. ActionQueue là hàng đợi nội bộ gom các hành động INSERT, UPDATE, DELETE rồi chạy theo thứ tự cố định: insert trước, update, delete sau – để tối ưu batch và giảm lỗi khóa ngoài. Với FlushMode.AUTO (mặc định), Hibernate tự flush trước commit và trước truy vấn JPQL cần dữ liệu nhất quán. Vì vậy xóa một dòng rồi thêm dòng mới cùng unique key trong một transaction: INSERT chạy trước DELETE, DB báo vi phạm unique constraint dù về logic bạn đã xóa trước. Cách xử lý: flush tường minh sau remove, hoặc dùng update thay vì xóa thêm mới, và viết test tích hợp trên DB production thật. FlushMode.COMMIT chỉ flush lúc commit, MANUAL chỉ flush khi gọi flush() thủ công; flush fail nhưng chưa commit thì transaction bị đánh dấu rollback-only, phải rollback toàn bộ."
 > Senior tip: Khi review code JPA, tôi tìm pattern {{remove()}} rồi {{persist()}} cùng business key - đó là mìn hẹn giờ với unique constraint. Nếu id nghiệp vụ không đổi, hãy update; nếu phải thay thế, flush sau delete và viết test tích hợp trên đúng loại DB production.`,
   follow: [
     'Sự khác nhau giữa {{flush()}} và {{commit()}} là gì, và flush fail nhưng chưa commit thì transaction ở trạng thái nào?',
@@ -8897,7 +8922,7 @@ spring:
   topic: 'jpa',
   level: 'senior',
   q: 'Hibernate 6 xử lý query thế nào qua SQM (Semantic Query Model - mô hình ngữ nghĩa truy vấn) và query plan cache (cache kế hoạch truy vấn)? {{hibernate.query.in_clause_parameter_padding}} giải quyết vấn đề gì, và bạn cần lưu ý gì khi bật?',
-  a: `**Tóm tắt:** Từ Hibernate 6, HQL/Criteria được phân tích thành **SQM** (cây ngữ nghĩa gắn với model entity), sau đó chuyển thành **SQL AST** và SQL cuối cùng; kế hoạch biên dịch (plan) có thể được **cache** để tránh parse/translate lặp lại. Vấn đề thực tế: câu {{IN (:ids)}} với số lượng tham số thay đổi tạo ra **nhiều SQL text khác nhau** → nhiều plan/statement cache entry (ở Hibernate và/hoặc DB) → tốn bộ nhớ, giảm hiệu quả. {{hibernate.query.in_clause_parameter_padding}} (mặc định **tắt**, phải bật tường minh) **đệm** số tham số {{IN}} lên các kích thước "bậc" (power-of-two hoặc mức padding) để tái dùng SQL/plan.
+  a: `**Tóm tắt:** Từ Hibernate 6, HQL/Criteria được phân tích thành **SQM** (cây ngữ nghĩa gắn với model entity), sau đó chuyển thành **SQL AST** và SQL cuối cùng; kế hoạch biên dịch (plan) có thể được **cache** để tránh parse/translate lặp lại. Vấn đề thực tế: câu {{IN (:ids)}} với số lượng tham số thay đổi tạo ra **nhiều SQL text khác nhau** → nhiều plan/statement cache entry (ở Hibernate và/hoặc DB) → tốn bộ nhớ, giảm hiệu quả. {{hibernate.query.in_clause_parameter_padding}} (mặc định **bật** từ Hibernate 6.2, có thể tắt nếu cần) **đệm** số tham số {{IN}} lên các kích thước "bậc" (power-of-two hoặc mức padding) để tái dùng SQL/plan.
 
 ### Bước 1: Thuật ngữ
 - **SQM (Semantic Query Model)**: biểu diễn truy vấn ở mức "ý nghĩa" (entity, attribute, join) thay vì chuỗi SQL thô — giúp Hibernate 6 hiểu và tối ưu tốt hơn.
@@ -8914,7 +8939,7 @@ repo.findAllByIdIn(ids);
 ~~~
 Mỗi kích thước sinh SQL text khác → Hibernate có thể tạo plan khác; DB có thể parse/plan lại. Với API nhận danh sách id linh hoạt, số biến thể rất lớn.
 
-Bật padding (Spring Boot {{application.yml}}, kiểm tra tên property đúng phiên bản Hibernate 6.x):
+Bật padding (Spring Boot {{application.yml}}, kiểm tra tên property đúng phiên bản Hibernate 6.x — từ 6.2 mặc định đã bật, có thể tắt bằng {{false}} nếu cần):
 ~~~yaml
 spring:
   jpa:
@@ -8964,7 +8989,7 @@ Khi bật, Hibernate có thể mở rộng danh sách tham số tới bậc đ�
   topic: 'jpa',
   level: 'lead',
   q: 'Batch insert (ghi hàng loạt) trong Hibernate 6: vì sao id {{IDENTITY}} (DB tự tăng) phá batching, cách dùng {{SEQUENCE}} + pooled/pooled-lo optimizer (bộ tối ưu cấp id theo "bể") hoạt động thế nào, và bạn kiểm chứng/tuning trên production ra sao khi có quan hệ cha-con và ràng buộc?',
-  a: `**Tóm tắt:** JDBC batching chỉ hiệu quả khi Hibernate gửi được **nhiều statement cùng loại liên tiếp**. Với {{GenerationType.IDENTITY}}, DB sinh id **sau INSERT** nên Hibernate phải {{insert}} từng row để lấy generated key → **không gom batch** theo cách mong muốn. Với {{SEQUENCE}}, Hibernate lấy id **trước** (gọi sequence), có thể gán id vào entity và gom nhiều {{INSERT}}; **pooled optimizer** ({{@SequenceGenerator}} với {{allocationSize > 1}}, Hibernate dùng pooled strategy phù hợp) xin DB một "bể" giá trị (increment step) và cấp phát trong bộ nhớ, giảm round-trip gọi sequence. Trên production cần đo round-trip, thứ tự insert ({{order_inserts}}), cascade cha-con, và thống nhất {{allocationSize}} với {{INCREMENT BY}} của sequence.
+  a: `**Tóm tắt:** JDBC batching chỉ hiệu quả khi Hibernate gửi được **nhiều statement cùng loại liên tiếp**. Với {{GenerationType.IDENTITY}}, DB sinh id **sau INSERT** nên Hibernate truyền thống phải {{insert}} từng row để lấy generated key → **khó gom batch** theo cách mong muốn (PostgreSQL 10+ hỗ trợ {{INSERT ... RETURNING}} cho phép batch một phần, MySQL thì không). Với {{SEQUENCE}}, Hibernate lấy id **trước** (gọi sequence), có thể gán id vào entity và gom nhiều {{INSERT}}; **pooled optimizer** ({{@SequenceGenerator}} với {{allocationSize > 1}}, Hibernate dùng pooled strategy phù hợp) xin DB một "bể" giá trị (increment step) và cấp phát trong bộ nhớ, giảm round-trip gọi sequence. Trên production cần đo round-trip, thứ tự insert ({{order_inserts}}), cascade cha-con, và thống nhất {{allocationSize}} với {{INCREMENT BY}} của sequence.
 
 ### Bước 1: Thuật ngữ
 - **JDBC batch**: gom nhiều {{addBatch()}} rồi {{executeBatch()}} — giảm số lần đi-về (round-trip) giữa app và DB.
@@ -8974,9 +8999,9 @@ Khi bật, Hibernate có thể mở rộng danh sách tham số tới bậc đ�
 
 ### Bước 2: Luồng bên trong
 **IDENTITY (vấn đề):**
-1. {{persist(child)}} → Hibernate cần id để đưa vào context/cascade/FK → buộc {{INSERT}} ngay.
+1. {{persist(child)}} → Hibernate cần id để đưa vào context/cascade/FK → buộc {{INSERT}} ngay (trên PostgreSQL 10+ có thể dùng {{INSERT ... RETURNING}} gom một phần, MySQL thì bắt buộc insert từng row).
 2. DB trả generated key → entity có id.
-3. Lặp row 2 → lại {{INSERT}} ngay → không còn "nhiều insert chờ gom".
+3. Lặp row 2 → lại {{INSERT}} ngay → không còn "nhiều insert chờ gom" (trừ khi DB hỗ trợ RETURNING batch).
 
 **SEQUENCE + pooled:**
 1. {{allocationSize=50}} và sequence DB {{INCREMENT BY 50}}.
@@ -9009,7 +9034,7 @@ IDENTITY đơn giản cho DB nhưng khóa chặt thứ tự "phải insert mới
 ### Quan hệ cha-con và bẫy batch
 - **Thứ tự**: insert cha trước con; {{order_inserts=true}} giúp Hibernate nhóm theo entity type — nhưng đồ thị phức tạp vẫn cần kiểm tra.
 - **{{@Version}}**: update versioned cần {{hibernate.jdbc.batch_versioned_data=true}} để batch update hiệu quả hơn.
-- **{{IDENTITY}} trên MySQL**: nếu bắt buộc IDENTITY, chấp nhận không batch hoặc chuyển chiến lược (TABLE generator có chi phí lock; thường kém hơn SEQUENCE trên Postgres) — quyết định theo DB.
+- **{{IDENTITY}} trên MySQL**: nếu bắt buộc IDENTITY, chấp nhận không batch (PostgreSQL 10+ hỗ trợ {{INSERT ... RETURNING}} cho phép batch một phần) hoặc chuyển chiến lược (TABLE generator có chi phí lock; thường kém hơn SEQUENCE trên Postgres) — quyết định theo DB.
 - **{{merge()}}** trong batch lớn: có thể gây {{select}} thêm; ưu tiên {{persist()}} cho đối tượng mới.
 
 | Mục | IDENTITY | SEQUENCE + pooled |
@@ -9333,7 +9358,7 @@ Dựa vào hai câu SQL và hai chỉ mục liên quan, bạn biết deadlock do
 
 ### Công thức tham khảo
 1. Xem max_connections của cơ sở dữ liệu và số instance: maximum-pool-size × số instance (tính cả pod tối đa khi mở rộng tự động) phải nhỏ hơn max_connections.
-2. Tính theo lõi CPU của cơ sở dữ liệu: pool tham khảo ≈ (số lõi × 2) + số ổ đĩa hiệu dụng.
+2. Tính theo lõi CPU của cơ sở dữ liệu: quy tắc kinh nghiệm cộng đồng (không phải công thức chính thức HikariCP) pool ≈ (số lõi × 2) + số ổ đĩa hiệu dụng.
 3. Bắt đầu với 10–20, rồi đo: thời gian chờ lấy kết nối, tỉ lệ timeout, throughput của cơ sở dữ liệu.
 Ví dụ số liệu: 400 request/giây, mỗi request giữ kết nối 20ms → cần trung bình 8 kết nối bận (400 × 0,02).
 
@@ -9673,7 +9698,7 @@ Sau khi scale lên 60 pod cho đợt khuyến mãi, PostgreSQL báo "too many co
 | statement_timeout | Câu lệnh chạy quá lâu (quét cả bảng, báo cáo nặng trên DB chính) | API: 2–5 giây; báo cáo: vài phút trên replica |
 | lock_timeout | Chờ khoá vô hạn, đặc biệt DDL xếp hàng chặn mọi truy vấn sau nó | 2–5 giây cho migration; ngắn cho API |
 | idle_in_transaction_session_timeout | Ứng dụng mở transaction rồi quên (lỗi code, debug) — giữ khoá, chặn vacuum | 30–60 giây |
-| transaction_timeout (PG17+) | Tổng thời gian một transaction | Theo nhu cầu |
+| transaction_timeout (PG 17+, chưa phát hành) | Tổng thời gian một transaction | Theo nhu cầu |
 
 ### Đặt ở đâu
 ~~~sql
