@@ -5843,6 +5843,9 @@ Với dữ liệu tài chính/critical: {{appendfsync always}} + replica + backu
 ### Trả lời miệng 1 phút
 "Redis là cửa hàng dữ liệu trong bộ nhớ (RAM) có single-threaded event loop và I/O multiplexing, giúp nó xử lý hàng nghìn kết nối mà không cần context switch. Persistence có hai chế độ: snapshot (chụp ảnh nhanh) và nhật ký ghi (ghi từng thao tác). Mất dữ liệu xảy ra khi crash giữa các lần sao lưu hoặc replication chưa kịp cập nhật. Tôi chọn cấu hình bền vững dựa trên SLO: cache chấp nhận mất vài giây, còn billing thì phải có appendfsync always + replica."
 
+### Ví dụ đời thực
+Một trang thương mại điện tử dùng Redis làm cache danh sách sản phẩm (keyspace hits 95%). Sau lần restart máy chủ, toàn bộ cache biến mất: dashboard DB cho thấy query SELECT sản phẩm nhảy từ 200 lên 15.000 query/giây, CPU DB lên 80% trong 10 phút. Điều tra file {{redis.conf}} thấy {{save ""}} và {{appendonly no}} → Redis không persistence, restart = mất sạch. Nguyên nhân gốc: Redis được coi là pure cache mà không sao lưu. Xử lý: bật lại {{save 900 1}}, {{appendonly yes}}, {{appendfsync everysec}}, và thêm replica đọc cache. Sau đó restart lần sau chỉ mất dữ liệu mới ghi trong 1 giây (AOF everysec), replica giữ 90% hit rate ngay khi master restart. Kết quả: query DB về sản phẩm giảm từ 15.000 xuống 1.200 query/giây sau mỗi restart.
+
 > Senior tip: không có "miễn phí" – muốn tốc độ tối đa (sub-ms) thì chấp nhận rủi ro mất dữ liệu (chỉ RDB hoặc AOF everysec). Muốn hạn chế mất dữ liệu -> {{appendfsync always}} + replica + lệnh {{WAIT}} (Redis không có replication đồng bộ thật sự) -> latency tăng; dữ liệu tuyệt đối không được mất thì nguồn sự thật nên là DB. Hãy quy ước **SLO rõ ràng**: "rate limit/session/cache chấp nhận mất", "billing/inventory/idempotency key KHÔNG được mất".",
 `,
   follow: [
@@ -5928,6 +5931,9 @@ var result = call.execute(Map.of("p_account_id", accountId));
 ### Trả lời miệng 1 phút
 "Với procedure Oracle trả REF CURSOR, tôi dùng SimpleJdbcCall khai báo schema, package là catalog, tên procedure, và tắt metadata discovery để khai báo tham số tường minh: IN là account id, OUT là OracleTypes.CURSOR kèm RowMapper. Spring đọc hết cursor ngay trong lúc execute khi connection còn mở, map sang DTO rồi đóng, nên tôi không bao giờ trả ResultSet ra khỏi DAO. Transaction do Spring quản lý, procedure không được tự commit. Trade-off: JdbcTemplate thuần cho kiểm soát tối đa, SimpleJdbcCall gọn khi có nhiều OUT param, còn JPA native thì vụng với cursor. Kinh nghiệm: luôn có integration test trên Oracle thật, vì H2 không mô phỏng được package, cursor hay tên cột chữ hoa."
 
+### Ví dụ đời thực
+Một báo cáo ngân hàng gọi gói PL/SQL {{BANK_APP.REPORT_PKG}} trả REF CURSOR qua Spring JDBC. Lần đầu chạy trên dữ liệu thật ném lỗi "invalid column name" ở hàng thứ 3.000. Điều tra: trong Java RowMapper dùng tên cột viết thường (ví dụ {{entry_id}}), còn Oracle trả tên cột chữ HOA ({{ENTRY_ID}}). Nguyên nhân gốc: tên cột Oracle viết hoa theo mặc định, và alias trong procedure không khớp tên dùng trong RowMapper. Xử lý: đổi RowMapper đọc tên cột viết hoa (hoặc thêm alias trong SQL của procedure), rồi chạy integration test trên Oracle thật với dữ liệu lớn. Kết quả: báo cáo chạy đúng, không còn lỗi "invalid column name", và team giữ test này trong CI để phát hiện sớm khi procedure thay đổi tên cột.
+
 > Senior tip: viết integration test trên Oracle tương thích môi trường thật cho REF CURSOR và overload; H2 không xác nhận được semantics Oracle.
 `,
   follow: ['Khi nào SimpleJdbcCall cần khai báo parameter tường minh?', 'Bạn kiểm thử procedure Oracle trong pipeline CI thế nào?'],
@@ -6005,6 +6011,9 @@ END LOOP;
 
 ### Trả lời miệng 1 phút
 "Tôi chọn theo câu hỏi dữ liệu có cần ra Java hay không. Nếu Java phải xử lý hay đẩy sang hệ khác, tôi đọc REF CURSOR theo luồng với fetch size vài trăm dòng – mặc định của Oracle chỉ 10 nên rất tốn round-trip – và xử lý từng lô để heap không phình. Nếu chỉ là biến đổi dữ liệu trong DB, tôi để PL/SQL làm bằng BULK COLLECT có LIMIT và FORALL, giảm chuyển ngữ cảnh mà vẫn giới hạn bộ nhớ PGA. Trade-off lớn nhất là ranh giới commit: commit theo lô nhẹ hơn nhưng đổi ngữ nghĩa atomic, nên cần checkpoint và ghi idempotent để chạy tiếp được. Kinh nghiệm: chỉ riêng việc tăng fetch size từ 10 lên 500 từng giúp tôi giảm một job từ vài phút xuống vài giây."
+
+### Ví dụ đời thực
+Một batch job đọc 500.000 dòng từ bảng giao dịch Oracle vào Java để xuất file đối soát. Job chạy 5 phút và heap Java nhảy lên 2 GB. Điều tra: JDBC driver dùng fetch size mặc định là 10 → 50.000 round-trip qua mạng, mỗi round-trip khoảng 1ms nên chỉ chờ mạng đã 50 giây; đồng thời Java giữ toàn bộ result set trong bộ nhớ. Nguyên nhân gốc: không set fetch size và đọc hết vào List. Xử lý: set {{jdbcTemplate.setFetchSize(500)}}, đọc REF CURSOR theo luồng và ghi từng lô 500 dòng vào file, không giữ toàn bộ trong heap. Kết quả: job xuống còn khoảng 30 giây, heap ổn định dưới 300 MB, và có thể chạy trên pod nhỏ hơn.
 
 > Senior tip: đo rows/sec, PGA/heap, round trips và thời gian lock trên batch đại diện; tăng LIMIT/fetch size chỉ khi phép đo cho thấy round trip là nút thắt.
 `,
@@ -6089,6 +6098,9 @@ CREATE TABLE payment (
 ### Trả lời miệng 1 phút
 "Sequence là object độc lập, cấp số trước khi insert và dùng chung được nhiều bảng; identity gắn generator với cột, gọn hơn nhưng chỉ biết id sau khi insert – và cả hai bên dưới đều là sequence. Với JPA, tôi chọn SEQUENCE với allocationSize bằng INCREMENT BY cho bảng ghi nhiều, vì Hibernate cấp id trong bộ nhớ và giữ được JDBC batching; IDENTITY buộc insert từng dòng và tắt batching. Cả hai đều có gap do rollback, cache và restart, và không đảm bảo thứ tự commit, nên id chỉ là định danh kỹ thuật. Khi chạy cả Oracle lẫn PostgreSQL, tôi viết migration theo dialect và test batch insert thật. Kinh nghiệm: số hoá đơn liên tục luôn phải là một cơ chế nghiệp vụ riêng có audit."
 
+### Ví dụ đời thực
+Sau khi migrate dữ liệu lịch sử sang Oracle (có cột id sinh bằng sequence), team nhập lại 2 triệu bản ghi với id có sẵn nhưng quên điều chỉnh sequence. Lần insert đơn hàng mới sau migrate ngay bị lỗi "duplicate key" vì sequence vẫn cấp số từ 1. Điều tra: {{SELECT payment_seq.NEXTVAL FROM DUAL}} trả số nhỏ hơn max(id) trong bảng. Nguyên nhân gốc: sequence độc lập transaction và không tự theo dõi max id đã nhập. Xử lý: chạy {{DROP SEQUENCE payment_seq}} rồi {{CREATE SEQUENCE payment_seq START WITH <max(id) + 1>}} (Oracle) hoặc {{SELECT setval('payment_id_seq', (SELECT max(id) FROM payment))}} (PostgreSQL) để sequence bắt đầu sau id lớn nhất. Kết quả: insert mới không còn trùng khoá chính, và team thêm sanity check trong migration: sequence value phải lớn hơn max(id) hiện tại.
+
 > Senior tip: khóa chính là định danh kỹ thuật. Thiết kế số tham chiếu khách hàng riêng, có unique constraint và quy trình cấp số được audit.
 `,
   follow: ['Vì sao rollback làm sequence có gap?', 'IDENTITY ảnh hưởng JDBC batching và Hibernate thế nào?'],
@@ -6165,6 +6177,9 @@ WHERE account_id = :account_id
 ### Trả lời miệng 1 phút
 "Tôi bắt đầu bằng plan thực tế của đúng SQL_ID với bind thật, dùng DBMS_XPLAN.DISPLAY_CURSOR với ALLSTATS LAST, không dùng EXPLAIN PLAN vì nó có thể khác plan đang chạy. Tôi tìm node có E-Rows lệch A-Rows nhiều nhất, xem access path, join order, buffers. Sau khi dữ liệu tăng mạnh, nguyên nhân thường là thống kê cũ hoặc thiếu histogram cho cột lệch, bind peeking, hay predicate không sargable. Tôi sửa đầu vào trước: gather stats, viết lại SQL, index composite phù hợp. Hint hoặc SQL Plan Baseline chỉ là biện pháp cuối khi có bằng chứng optimizer sai ổn định, vì hint gắn chặt với dữ liệu và phiên bản. Kinh nghiệm: tôi luôn lưu plan hash, buffer gets và p95 trước sau để chứng minh cải thiện."
 
+### Ví dụ đời thực
+Báo cáo đối soát ngày chậm từ 2 giây lên 30 giây sau khi bảng giao dịch tăng từ 2 triệu sang 20 triệu dòng. Điều tra: chạy câu SQL với bind thật, rồi dùng {{DBMS_XPLAN.DISPLAY_CURSOR(NULL, NULL, 'ALLSTATS LAST')}}. Plan cho thấy E-Rows (dự kiến) 12 dòng nhưng A-Rows (thực tế) 1,8 triệu dòng tại bước TABLE ACCESS BY INDEX ROWID → optimizer dùng index sai do thống kê cũ. Nguyên nhân gốc: sau khi dữ liệu tăng mạnh, thống kê cột {{account_id}} chưa được thu lại và thiếu histogram cho cột lệch. Xử lý: chạy {{DBMS_STATS.GATHER_TABLE_STATS}} với histogram cho cột đó, thêm index composite {{(account_id, booked_at)}} để giảm số dòng lấy ra. Kết quả: báo cáo chạy lại khoảng 2 giây; team lưu plan hash và buffer gets trước/sau để chứng minh cải thiện.
+
 > Senior tip: lưu plan hash, buffer gets và p95 trước/sau; mục tiêu là giảm công việc DB cho workload thật, không phải làm plan trông đẹp.
 `,
   follow: ['Estimated rows sai thường gợi ý vấn đề gì?', 'Khi nào function-based index đáng dùng?'],
@@ -6234,6 +6249,9 @@ Giai đoạn 5: Hết rollback window -> tắt Oracle (contract)
 
 ### Trả lời miệng 1 phút
 "Tôi không coi đây là đổi JDBC URL. Bước đầu là inventory: schema, SQL native, PL/SQL, sequence, kiểu dữ liệu, isolation và workload, rồi dịch và viết test tương đương. Sau đó backfill dữ liệu lịch sử có checkpoint, dùng CDC chép thay đổi mới, chạy shadow read để so kết quả hai bên, và đối soát hằng ngày theo khoá, tổng tiền theo ngày và currency, cùng các invariant của sổ cái. Cutover theo cohort, mỗi bước có tiêu chí lag, error rate và mismatch bằng không, kèm replication ngược để giữ đường rollback. Nguyên tắc cứng là mọi thời điểm chỉ có một nguồn sự thật. Kinh nghiệm: những lỗi tốn công nhất thường nằm ở chuỗi rỗng thành NULL, DATE có giờ và NUMBER không precision, nên tôi test biên các kiểu này từ sớm."
+
+### Ví dụ đời thực
+Một ứng dụng ngân hàng migrate từ Oracle sang PostgreSQL và chạy song song hai hệ trong hai tuần để đối soát. Sau tuần đầu, báo cáo tổng tiền hằng ngày khác nhau vài tỷ đồng giữa hai hệ, dù tổng số dòng khớp. Điều tra: đối soát theo từng ngày, tiền tệ và trạng thái tìm ra hai sai lệch bù trừ (+100 và −100) trên cột số tiền. Nguyên nhân gốc: kiểu {{NUMBER}} của Oracle bị map sang {{double precision}} của PostgreSQL → số tiền lệch vài đồng mỗi dòng, tổng lên hàng triệu dòng mới thấy. Xử lý: đổi mapping sang {{numeric(p,s)}} khớp nghiệp vụ, và đối soát theo khoá, ngày, tiền tệ, trạng thái chứ không chỉ tổng. Kết quả: sai lệch về số, mismatch = 0, và cutover được phê duyệt sau khi cân bằng nợ/có theo từng partition/ngày.
 
 > Senior tip: với ledger, cutover chỉ sau khi cân bằng debit/credit và reconcile được theo từng partition/ngày; đặt ngưỡng mismatch bằng zero cho dữ liệu tài chính cốt lõi.
 `,
