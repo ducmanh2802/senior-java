@@ -6795,6 +6795,22 @@ Giải pháp theo mức:
 - **Tuning/cấu hình có thật:** Postgres {{synchronous_standby_names}} cho replica đồng bộ (linearizable hơn nhưng tăng latency ghi, giảm availability khi standby chết); route đọc/ghi ở tầng ứng dụng ({{@Transactional(readOnly=true)}} tới replica chỉ cho truy vấn chấp nhận stale). CockroachDB/Spanner cung cấp bounded/strong staleness tùy câu lệnh.
 - **Thiết kế API:** endpoint ghi trả về resource + version; client dùng version đó cho lần đọc sau. Đừng buộc client "đợi 1 giây rồi load lại" - đó là che giấu vấn đề consistency bằng timing.
 
+### Ví dụ đời thực: số dư hiển thị nhảy lên xuống sau khi rút tiền
+
+Triệu chứng: Khách hàng ngân hàng vừa rút 2 triệu VND thành công tại ATM, nhưng mở ứng dụng di động vẫn thấy số dư cũ trong khoảng 3 giây trước khi cập nhật, khiến khách hàng hoảng và gọi trung tâm chăm sóc.
+
+Điều tra: Team nhìn chỉ số replication lag của replica phục vụ ứng dụng (khoảng trễ giữa primary và replica) thấy chênh lệch tăng từ 50ms lên khoảng 2500ms trong giờ cao điểm do ghi burst. Logs cho thấy request đọc số dư được gửi tới replica read-only, trong khi request rút tiền ghi vào primary.
+
+Nguyên nhân gốc: Ghi trên primary được xác nhận ngay sau khi primary ghi xong, chưa chờ replica áp dụng. Đọc số dư trên replica bị stale theo khoảng thời gian replication lag. Vì ứng dụng chỉ dùng số dư đó để hiển thị, không dùng để quyết định cho phép rút, nên tiền thực không bị sai — chỉ trải nghiệm người dùng khó chịu.
+
+Xử lý: Trang số dư chính vẫn đọc từ replica nhưng hiển thị chú thích "cập nhật cách đây x giây" kèm nút làm mới đọc từ primary khi cần chính xác. Lệnh rút tiền luôn ghi vào primary và dùng điều kiện {{UPDATE account SET balance = balance - amount WHERE id = ? AND balance >= amount}} trong chính câu lệnh ghi, cho dù đường đọc hiển thị có thể cũ.
+
+Kết quả: replication lag giữ dưới 500ms kể từ giờ cao điểm, tỷ lệ khiếu nại số dư sai giảm 90% trong tháng, và không còn trường hợp trừ tiền sai do đọc dữ liệu cũ.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi ghi được xác nhận, đọc từ replica vẫn có thể thấy dữ liệu cũ vì việc sao chép dữ liệu không diễn ra ngay lập tức. Tôi chia đường đọc theo mức: đọc phục vụ quyết định tiền, ví dụ số dư để rút tiền, phải linearizable qua primary hoặc quorum read; hiển thị số dư có thể eventual kèm thông báo khoảng trễ; xác nhận đơn dùng read-your-writes hoặc trả luôn dữ liệu trong phản hồi tạo đơn. Trên thực tế, tôi ép điều kiện còn tiền vào chính câu lệnh UPDATE để đảm bảo chính xác dù đường đọc hiển thị cũ. Một bài học trên production là đừng bắt client 'đợi 1 giây rồi load lại' — đó che vấn đề consistency bằng thời gian, không phải giải quyết nguyên nhân gốc. Lựa chọn giữa độ trễ và tính đúng đắn tùy vào tác động nghiệp vụ của từng đường đọc."
+
 > Senior tip: Câu hỏi lead không phải "chọn CP hay AP", mà là "với từng câu query trong luồng này, stale tối đa chấp nhận bao nhiêu và hậu quả nếu vượt?". Tôi thường vẽ luồng đặt hàng và gắn nhãn từng chỗ đọc: {{[linearizable]}}, {{[read-your-writes]}}, {{[eventual 2s]}}. Bảng đó vừa là thiết kế, vừa là hợp đồng với team và là cơ sở chọn hạ tầng.`,
   follow: ['Synchronous replication (standby sync) trong Postgres cải thiện linearizable read như thế nào và đánh đổi availability/latency ra sao khi standby chậm hoặc chết?', 'Read-your-writes triển khai bằng cách "ghi nhớ version đã ghi vào session/cookie và gửi kèm request đọc" có rủi ro gì khi user đổi thiết bị hoặc session bị xoay?', 'Trong CockroachDB/Spanner, bounded staleness read cho phép đọc dữ liệu "cũ tối đa X giây" nhanh hơn; bạn chọn X và xác định query nào được dùng bounded staleness dựa trên tiêu chí gì?'],
 }
@@ -6824,11 +6840,43 @@ Chuyển interface của class thành interface client mong đợi. Spring MVC: 
 - Decorator: cùng interface, thêm hành vi.
 - Adapter: khác interface, chuyển đổi.
 
-### Cạm bẫy
+### Cơ chế từng bước
 
-- Decorator lồng sâu → khó gỡ lỗi.
-- Proxy gọi tự thân (Spring AOP).
-- Adapter lạm dụng → thiết kế quá phức tạp.
+**Proxy — cái gì:** một đối tượng đại diện giữ cùng giao diện với đối tượng thật, quản lý mọi lời gọi tới nó. **Vì sao cần:** kiểm soát truy cập (lazy loading, kiểm tra quyền, ghi log, transaction) mà không sửa code của đối tượng thật. **Hoạt động:** client gọi method trên proxy → proxy chạy xử lý thêm trước hoặc sau → nếu cần, gọi method tương ứng trên đối tượng thật → trả kết quả về client.
+
+Ví dụ Spring AOP: khi gọi method gắn annotation transaction trên service, Spring thực chất gọi bản proxy bọc ngoài → proxy bắt đầu transaction, ghi log, rồi mới gọi method thật của service. Nếu code bên trong service tự gọi method khác của chính nó, lời gọi đó không đi qua proxy → khuyên transaction của method gọi tự thân không chạy. Đây là lỗi điển hình dễ bỏ qua.
+
+**Decorator — cái gì:** bọc đối tượng bằng lớp wrapper cùng giao diện, mỗi lớp thêm một tính năng nhỏ. **Vì sao cần:** mở rộng hành vi khi chạy mà không tạo ra lớp con cho mọi tổ hợp tính năng. **Hoạt động:** client gọi method trên decorator ngoài cùng → decorator thêm xử lý của mình → chuyển tiếp method cho đối tượng được bọc (có thể là decorator khác nữa) → kết quả chui ngược lại theo từng lớp.
+
+Ví dụ trong java.io: BufferedInputStream bao bọc FileInputStream, thêm bộ nhớ đệm để đọc ít lần hơn từ đĩa; DataInputStream tiếp tục bao bọc BufferedInputStream để đọc số nguyên và kiểu dữ liệu nguyên thủy. Một luồng có thể được xếp lớp nhiều decorator.
+
+**Adapter — cái gì:** lớp trung gian chuyển giao diện của một thành phần thành giao diện mà client mong đợi. **Vì sao cần:** dùng lại thành phần hiện có mà không được sửa code của nó. **Hoạt động:** client gọi method theo giao diện mục tiêu → adapter dịch sang method tương ứng của thành phần bên trong → trả kết quả về dưới dạng client hiểu.
+
+Ví dụ Spring MVC: HandlerAdapter dịch yêu cầu HTTP thành lời gọi method trên Controller (qua HandlerExecutionChain), để DispatcherServlet không cần biết chi tiết từng loại Controller.
+
+### Bảng so sánh
+
+| Mẫu | Cùng giao diện? | Mục đích chính | Ví dụ thực |
+|---|---|---|---|
+| Proxy | Có | Kiểm soát truy cập (lazy, quyền, transaction, log) | Spring AOP proxy |
+| Decorator | Có | Thêm tính năng động, xếp lớp nhiều lần | java.io luồng |
+| Adapter | Không | Chuyển giao diện để dùng lại code cũ | Spring MVC HandlerAdapter |
+
+### Ví dụ đời thực: kiểm soát quyền truy cập tài khoản ngân hàng
+
+Triệu chứng: Sau khi triển khai màn hình xem chi tiết giao dịch, team phát hiện một số lần màn hình hiển thị dữ liệu của khách hàng khác ngay sau khi người dùng đăng xuất nhưng trình duyệt chưa tải lại trang. Log cho thấy service lấy thông tin khách hàng dựa trên session cũ còn hiệu lực vài giây.
+
+Điều tra: Tìm thấy lớp AccountService gọi trực tiếp repository và tự kiểm tra quyền trong mỗi method, dẫn đến code kiểm tra quyền bị lặp lại và dễ bỏ sót ở method mới thêm.
+
+Nguyên nhân gốc: Kiểm tra quyền trộn lẫn với nghiệp vụ, không có lớp điều khiển truy cập tập trung.
+
+Xử lý: Triển khai Proxy bao bọc AccountService — trước mỗi method, proxy kiểm tra session hợp lệ và quyền xem tài khoản của người dùng hiện tại, mới chuyển tiếp cho service thật. Lớp repository vẫn chỉ xử lý dữ liệu.
+
+Kết quả: Giảm code kiểm tra quyền trùng lặp, thêm log truy cập cho tất cả method, dễ truy tìm nguồn truy cập trái phép khi khách hàng khiếu nại.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Ba mẫu này đều dùng đối tượng bọc nhưng mục đích khác nhau: Proxy kiểm soát quyền truy cập, ví dụ Spring AOP bắt đầu transaction và ghi log trước khi chạy method thực sự của service; Decorator thêm tính năng, ví dụ BufferedInputStream thêm bộ nhớ đệm cho luồng dữ liệu và có thể xếp nhiều lớp một lúc; Adapter chuyển giao diện, ví dụ HandlerAdapter trong Spring MVC dịch yêu cầu HTTP thành lời gọi method trên Controller. Tất cả đều giữ giao diện gốc, ngoại trừ Adapter chuyển đổi giao diện. Lưu ý quan trọng trên production: Spring AOP proxy không can thiệp lời gọi tự thân trong cùng class, nên khuyên transaction có thể lặng lẽ không chạy — hãy trích xuất method cần transaction ra class riêng. Tôi cũng khuyên ghi chú từng layer đọc trong luồng xử lý để team mới nắm rõ chỗ nào kiểm soát, chỗ nào thêm tính năng, chỗ nào chuyển giao diện."
 
 > Senior tip: Proxy = kiểm soát, Decorator = thêm, Adapter = chuyển. Nhớ bẫy gọi tự thân của Spring AOP.` ,
     follow: ['Spring AOP gọi tự thân vì sao không chạy?', 'Decorator trong java.io có nhược điểm gì?', 'Adapter khác Facade thế nào?'],
