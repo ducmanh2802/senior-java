@@ -4160,6 +4160,26 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
 - Use short sentences; long compound sentences are hard to follow when nervous.
 - If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
+### Lỗi người Việt hay mắc
+- **"I review a code"** → đúng là "I review **code**" hoặc "I review **a pull request**"; khi là động từ, "review" đi thẳng với object, không cần giới từ.
+- **"I comment on the code"** → nghe như danh từ; nói "I **leave a comment on** the code" hoặc "I **commented on** the PR" mới tự nhiên.
+- **"I gave him a feedback"** → **feedback** không đếm được; đúng: "I gave him **some feedback**" hoặc "**a piece of feedback**".
+- **Phát âm "review"**: /rɪˈvjuː/ nhấn âm hai, không phải "ri-view" đều nhau. "Pull request" đọc /pʊl ˈrɛkwɛst/, nối âm "pull-request".
+- **Quên phân biệt blocking vs non-blocking**: chỉ nói "I left a comment" là chưa đủ; interviewer muốn nghe bạn phân loại để tác giả ưu tiên sửa cái nào.
+
+### Cách viết comment tốt và kém
+- **Tốt**: "Blocking: this endpoint does not validate the amount, so a negative value could create a credit. Could we add a check in the validator?"
+- **Kém**: "Fix this." — manga, không có lý do, tác giả không biết sửa gì.
+- Luôn kết thúc bằng một câu hỏi hoặc đề xuất, không phải lệnh.
+
+### Trình tự review thực tế
+1. Đọc PR description → hiểu mục tiêu.
+2. Nhìn diff theo thứ tự: correctness → design → readability → style.
+3. Kiểm tra edge case: null, empty, boundary, concurrency.
+4. Với DB: migration có reversible không, có N+1 không.
+5. Với endpoint: authn, authorization, validation, error response.
+6. Gắn label Blocking/Nit, khen điều tốt, proposing call nếu bất đồng.
+
 > Senior tip: Đừng review theo thứ tự diff từ trên xuống; đọc **intent trước** sẽ giúp bạn không mất thời gian vào chi tiết không liên quan. Phân biệt rõ **blocking** và **non-blocking** để tác giả biết phải sửa gì. Tiếng Anh: **authorisation** (UK) vs **authorization** (US) — chọn một và nhất quán; **nit** /nɪt/ là viết tắt của nitpick.`,
   follow: [
     'How do you handle a PR that is too large to review well?',
@@ -4189,6 +4209,16 @@ I am not looking for just any job; I am looking for a team where I can stay for 
 - **I left on good terms**: tôi rời đi trong tình trạng tốt
 - **I am clear about what I want next**: tôi rõ ràng về điều mình muốn tiếp theo
 - **I am not looking for just any job**: tôi không tìm bất kỳ công việc nào
+
+### Real-life example
+Một ứng viên nói "They fired me because of a conflict with my manager" — interviewer ngay lập tức hỏi thêm về xung đột cá nhân và kết luận ứng viên khó làm việc nhóm. Với cùng một câu chuyện nhưng nói trung tính: "The team was affected by a restructuring. It was a business decision, and I left on good terms." — interviewer chuyển sang hỏi về kỹ năng. Sự khác biệt là không nói xấu, chỉ nêu sự kiện và hành động bạn đã làm trong thời gian đó.
+
+### Lỗi người Việt hay mắc
+- **"I was fired" vs "I was laid off"**: fired là do hiệu suất hoặc vi phạm, laid off là do tổ chức cắt giảm. Kể nhầm làm interviewer suy giảm năng lực ngay. Nếu thực sự là layoff, nói rõ: "It was a restructuring, a business decision."
+- **Dùng quá nhiều từ tiêu cực**: "They treated me badly", "The manager was unfair" → interviewer sẽ nghi bạn là vấn đề. Dùng từ trung tính: "The team was affected by budget cuts."
+- **Phát âm "laid off"**: /leɪd ɒf/, nối âm "laid-off", không nói "lay-ed off".
+- **Thiếu hành động hiện tại**: chỉ nói "I was laid off" rồi im lặng → nghe như bạn đang tự pity. Luôn kèm "Since then I have…" để thể hiện chủ động.
+- **"I am looking for a job"** → quá chung; nói cụ thể: "I am looking for a senior backend role where I can own a service end to end."
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
@@ -4231,6 +4261,13 @@ Then I listen. If the answer is "not now", I ask what the path looks like and by
 - **I write it down**: tôi ghi lại
 - **an ultimatum usually backfires**: tối hậu thư thường phản tác dụng
 - **trust is damaged**: niềm tin bị tổn hại
+
+### Lỗi người Việt hay mắc
+- **"I deserve a raise"** → nghe như đòi quyền; thay bằng "I am looking for a move to…" và "what would need to be true for that to happen?" để biến thành đối thoại.
+- **Dùng "ultimatum" sai**: "I will quit if…" → nghe như dọa; thay bằng "I would like to understand the path to that level" và hỏi mốc thời gian.
+- **Phát âm "promotion"**: /prəˈmoʊʃn/ nhấn âm hai, không phải "pro-mo-tion". "Compensation" /ˌkɒmpenˈseɪʃn/ nhấn âm ba.
+- **Chỉ nói về tiền, không nói về đóng góp**: "I want more money" → luôn kèm số liệu: "I led the migration that cut deployment time by forty percent".
+- **Thiếu kế hoạch B**: chỉ hỏi lương, không hỏi đường đi; nếu manager nói "not now", bạn im lặng → không có next step.
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
@@ -4275,6 +4312,13 @@ Then I thank them, ask about next steps and timeline, and follow up with a short
 - **makes you hesitate**: khiến bạn do dự
 - **address it now**: giải quyết ngay bây giờ
 - **follow up with a short email**: gửi email ngắn theo sau
+
+### Lỗi người Việt hay mắc
+- **"I think I did well"** → nghe như tự đánh giá; thay bằng nêu đóng góp cụ thể: "I can contribute quickly on the orchestration side because that is exactly what I have been doing for three years."
+- **Kể lại toàn bộ buổi phỏng vấn** → chỉ tóm tắt 3 điểm chính: đóng góp, điều bạn muốn học, câu hỏi cuối.
+- **Phát âm "closing"**: /ˈkloʊzɪng/ (có /z/), không phải "closing" (/s/). "Pitch" /pɪtʃ/ như "ch" trong "champion".
+- **Thiếu câu hỏi cuối**: kết thúc bằng cảm ơn là đủ; thêm "Is there anything that makes you hesitate?" để chứng minh tự tin.
+- **Quên follow-up email**: sau cuộc phỏng vấn, gửi email ngắn cùng ngày, đề cập một chi tiết cụ thể đã nói.
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
@@ -4321,6 +4365,13 @@ If I still do not understand after one repeat, I say so honestly: "I want to mak
 - **just to make sure I follow**: để chắc là tôi theo kịp
 - **are you asking about X or Y**: anh/chị đang hỏi về X hay Y
 - **let me rephrase what I heard**: để tôi nhắc lại những gì tôi nghe
+
+### Lỗi người Việt hay mắc
+- **Nói "What?" hoặc "Huh?"** → thô, thiếu lịch sự. Dùng "I am sorry, I did not catch that last part. Could you say it again?"
+- **"Can you repeat again?"** → sai vì "repeat" đã bao hàm "again"; đúng: "Could you repeat that?" hoặc "Could you say that again?".
+- **Xin nhắc lại quá nhiều lần** → mỗi buổi phỏng vấn 1–2 lần là tối đa. Sau đó nên nói "Let me rephrase what I heard, and you can correct me" để lấy lại thế.
+- **Dịch word-by-word**: "I don't understand your question" → nghe như chỉ trích; thay bằng "Could you clarify what you mean by 'scale' in this context?" — lịch sự và chuyên nghiệp.
+- **Im lặng khi không hiểu** → interviewer nghĩ bạn không quan tâm. Luôn có câu nối: "Just to make sure I follow, are you asking about X or Y?"
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
