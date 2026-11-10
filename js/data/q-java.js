@@ -4930,6 +4930,13 @@ Map<String, Long> countByCity = orders.stream()
 ### Trả lời miệng 1 phút
 "Lambda trong stream nên là hàm thuần. Đổ kết quả vào list bên ngoài hay cộng vào int[] chạy được ở stream tuần tự nhưng sai ở parallel vì ArrayList và phép cộng không thread-safe, và làm code khó đọc. Tôi viết lại bằng map rồi toList, mapToLong rồi sum, groupingBy với counting. forEach tôi chỉ dùng khi mục đích chính là hành động ra ngoài như gửi event."
 
+### Ví dụ đời thực
+1. **Triệu chứng**: Job đối soát cuối ngày đọc 200.000 đơn từ DB, dùng {{orders.parallelStream().filter(...).forEach(o -> result.add(o.id()))}} để gom ID đơn đã thanh toán. Một số ngày báo cáo thiếu 300-1.200 đơn so với số liệu DB, thỉnh thoảng ném {{ArrayIndexOutOfBoundsException}} trong log. Chạy lại cùng dữ liệu thì số đơn thiếu mỗi lần khác nhau.
+2. **Điều tra**: Bật {{-XX:+HeapDumpOnOutOfMemoryError}} không thấy gì (không OOM), nhưng log exception stack trace trỏ vào {{ArrayList.add}}. Reproduce bằng test lặp 1.000 lần với {{parallelStream()}} và {{ArrayList}}: tỷ lệ lỗi khoảng 5%, kết quả list có {{null}} hoặc kích thước nhỏ hơn kỳ vọng. Kiểm tra code thấy {{ArrayList}} được tạo ngoài stream và chia sẻ giữa các thread của ForkJoinPool (mặc định {{CPU cores - 1}} thread).
+3. **Nguyên nhân gốc**: {{ArrayList.add}} không thread-safe: nhiều thread cùng tăng {{size}} và ghi vào cùng chỉ số mảng, hoặc một thread đọc mảng cũ trong lúc thread khác vừa mở rộng (copy sang mảng mới), dẫn đến mất phần tử. {{parallelStream}} không tự đồng bộ hóa side-effect.
+4. **Cách xử lý**: Đổi thành {{List<Long> ids = orders.parallelStream().filter(Order::paid).map(Order::id).toList();}}. Nếu cần mutable list ở bước sau thì {{collect(Collectors.toCollection(ArrayList::new))}} (collector gom từng phần theo thread rồi hợp nhất an toàn). Bật rule phân tích tĩnh (Sonar, SpotBugs) cảnh báo side-effect trong stream pipeline và review pattern {{forEach.*add}}.
+5. **Kết quả đo được**: Test lặp 10.000 lần không còn thiếu phần tử và không còn exception. Thời gian job giảm từ ~18 giây xuống ~11 giây trên máy 8 core vì bỏ được tranh chấp ngầm và {{collect}} hợp nhất hiệu quả hơn.
+
 > Senior tip: khi review, tôi tìm nhanh các mẫu {{forEach(x -> list.add}}, {{new int[1]}}, {{AtomicInteger}} trong lambda và {{peek(}}: phần lớn đều viết lại được bằng {{collect}}/{{reduce}} ngắn hơn. Sonar có rule cảnh báo một số mẫu này; bật nó để reviewer không phải nhắc lại mãi.`,
   follow: ['Vì sao collect an toàn ở parallel stream còn forEach + add thì không?', 'Khi nào JDK bỏ qua peek?', 'Dùng AtomicLong trong lambda có phải giải pháp tốt không?'],
   tags: ['Stream', 'side-effect', 'collect', 'parallel stream', 'forEach']
@@ -4984,6 +4991,13 @@ public record Email(String value) {
 
 ### Trả lời miệng 1 phút
 "Dữ liệu bất biến tôi dùng record: DTO, value object, cấu hình. Nó có sẵn trong ngôn ngữ, không phụ thuộc Lombok, bất biến và equals theo giá trị. Lombok @Data tạo object mutable nên tôi chỉ dùng khi framework cần setter. JPA entity giữ class thường vì cần no-arg constructor, field không final và proxy; trên entity tôi không dùng @Data. Builder thì vẫn dùng Lombok @Builder khi có nhiều field tuỳ chọn."
+
+### Ví dụ đời thực
+1. **Triệu chứng**: Sau khi nâng dự án từ Java 11 lên Java 17, module {{payment-api}} (dùng Lombok 1.18.12 và {{@Data}} trên nhiều DTO) bị lỗi biên dịch hàng loạt: {{java.lang.IllegalAccessError}} và IDE báo không tìm thấy getter/setter. CI fail 100%, chặn release.
+2. **Điều tra**: Chạy {{mvn -v}} thấy JDK 17; log Maven compiler trỏ tới Lombok annotation processor. Kiểm tra {{pom.xml}} thấy Lombok phiên bản cũ. Tạo nhánh thử: nâng Lombok lên 1.18.30 thì biên dịch qua, nhưng khi chạy test Jackson deserialize một DTO có {{@Data}} lại gán sai field do tên accessor và constructor sinh ra khác kỳ vọng.
+3. **Nguyên nhân gốc**: Lombok can thiệp vào compiler internals; JDK 16+ bật strong encapsulation (JEP 396) khiến Lombok cũ không truy cập được API nội bộ. Ngoài ra, DTO dùng {{@Data}} là mutable, một service khác vô tình gọi setter làm thay đổi object chia sẻ, gây bug khó tái hiện.
+4. **Cách xử lý**: Tách làm hai bước. Bước 1: nâng Lombok lên bản tương thích JDK 17 để unblocking build. Bước 2: với các DTO request/response mới và DTO không cần setter, chuyển sang {{record}} (Jackson 2.12+ hỗ trợ). Với value object như {{Email}}, {{Money}} dùng record + compact constructor để validate. JPA entity giữ class thường, bỏ {{@Data}}, chỉ dùng {{@Getter @Setter}} khi cần.
+5. **Kết quả đo được**: Thời gian build ổn định trở lại (trung bình 3 phút 20 giây như trước). Số lỗi do DTO bị mutate ngoài ý muốn giảm rõ trong 2 sprint tiếp theo (từ 4 bug liên quan xuống 0). Việc nâng JDK sau này nhẹ hơn vì bớt phụ thuộc vào Lombok internals ở các module DTO.
 
 > Senior tip: đừng chuyển hàng loạt từ Lombok sang record trong một PR; đi theo từng module và bắt đầu ở DTO của API mới. Lombok vẫn là phụ thuộc compile-time cần theo kịp mỗi lần nâng JDK (các bản Lombok cũ từng vỡ khi lên Java 16+ do strong encapsulation), nên càng ít chỗ phụ thuộc vào nó thì nâng cấp càng nhẹ.`,
   follow: ['Record có implement interface và có static factory method được không?', 'Vì sao @Data trên JPA entity gây StackOverflowError hoặc LazyInitializationException?', 'Bạn thêm builder cho record thế nào khi không dùng Lombok?'],
@@ -5040,6 +5054,13 @@ String body = "Xin chào %s, đơn %d đã giao.".formatted(name, orderId);
 
 ### Trả lời miệng 1 phút
 "trim chỉ cắt ký tự có mã tới U+0020, strip từ Java 11 cắt khoảng trắng Unicode theo Character.isWhitespace, nhưng cả hai đều không cắt NBSP nên tôi thay NBSP trước. Validate dùng isBlank thay vì isEmpty. Tách dòng dùng lines, kẻ đường dùng repeat, sinh nội dung dùng formatted hoặc text block. Với input người dùng, tôi chuẩn hoá ở một chỗ duy nhất trước khi lưu."
+
+### Ví dụ đời thực
+1. **Triệu chứng**: Hệ thống CRM cho phép tạo khách hàng theo email. Trong 2 tuần, bộ phận vận hành phát hiện khoảng 120 cặp hồ sơ trùng (cùng người, cùng email nhìn bằng mắt thường) nhưng DB không chặn được vì unique constraint so sánh chuỗi khác nhau. Tỷ lệ email bounce tăng nhẹ do gửi trùng.
+2. **Điều tra**: Export các cặp trùng và in mã ký tự bằng {{Integer.toHexString(ch)}}: một bản ghi có U+00A0 (NBSP) ở cuối email, bản khác có U+3000 (ideographic space) ở đầu tên. Kiểm tra form đăng ký web: code validate dùng {{value.trim().isEmpty()}} nên NBSP và U+3000 lọt qua. Một số tên tiếng Việt copy từ macOS ở dạng NFD khiến {{equals}} trả false dù hiển thị giống hệt.
+3. **Nguyên nhân gốc**: {{trim()}} chỉ cắt ký tự <= U+0020, không xử lý khoảng trắng Unicode; {{isEmpty()}} không coi chuỗi toàn khoảng trắng là rỗng. Không có bước chuẩn hoá Unicode (NFC/NFD) tập trung trước khi lưu.
+4. **Cách xử lý**: Tạo hàm {{normalizeInput}} dùng tại biên nhận (controller/DTO mapper): thay NBSP và zero-width space bằng space thường hoặc rỗng tùy ngữ cảnh, gọi {{strip()}}, với tên dùng {{Normalizer.normalize(s, Normalizer.Form.NFC)}}, với email chuyển {{toLowerCase(Locale.ROOT)}}. Validate bằng {{isBlank()}}. Viết migration job quét và gộp bản ghi trùng theo email đã chuẩn hoá (giữ bản mới nhất, log audit).
+5. **Kết quả đo được**: Sau khi deploy và chạy migration, 120 cặp trùng được gộp còn 120 hồ sơ. Trong 30 ngày tiếp theo không phát sinh cặp trùng mới do khoảng trắng/Unicode. Tỷ lệ bounce do gửi trùng giảm tương ứng với số bản ghi đã gộp.
 
 > Senior tip: đặt một hàm chuẩn hoá chung (thay NBSP, zero-width, {{strip}}, Unicode {{Normalizer.normalize(s, Form.NFC)}} cho tiếng Việt) và gọi ở biên nhận dữ liệu. Tiếng Việt có thể ở dạng dựng sẵn (NFC) hoặc tổ hợp (NFD, hay gặp khi copy từ macOS): hai chuỗi trông giống hệt nhưng {{equals}} trả false, gây trùng khách hàng khi tìm theo tên.`,
   follow: ['Vì sao Character.isWhitespace không coi NBSP là khoảng trắng?', 'NFC và NFD khác nhau thế nào, ảnh hưởng gì tới tìm kiếm tiếng Việt?', 'Khi nào dùng StringBuilder thay vì formatted?'],
@@ -5104,6 +5125,13 @@ new DueService(fixed).isOverdue(LocalDate.of(2024, 12, 31)); // true: ở VN đ�
 
 ### Trả lời miệng 1 phút
 "Period cho khoảng theo lịch như tháng, năm; Duration cho thời lượng chính xác như token 24 giờ; đếm ngày dùng ChronoUnit.DAYS.between. Cộng tháng sẽ kẹp về cuối tháng nên lịch trả góp luôn tính từ ngày gốc. Nhắc lịch cùng giờ ngày mai thì plusDays trên ZonedDateTime theo múi giờ khách, vì ngày đổi DST chỉ có 23 hoặc 25 giờ. Pattern dùng yyyy chứ không YYYY, và tôi inject Clock để test."
+
+### Ví dụ đời thực
+1. **Triệu chứng**: Ứng dụng nhắc lịch uống thuốc cho người dùng ở Mỹ gửi thông báo sai giờ vào ngày 10/03/2024 (ngày bắt đầu DST ở nhiều bang): người dùng đặt nhắc 08:00 hàng ngày nhưng nhận thông báo lúc 09:00 theo giờ địa phương. Đồng thời, báo cáo PDF sinh ngày 30/12/2024 hiển thị năm "2025" trên tiêu đề.
+2. **Điều tra**: Kiểm tra code nhắc lịch thấy dùng {{zdt.plus(Duration.ofHours(24))}} để tính lần nhắc tiếp theo thay vì {{zdt.plusDays(1)}}. Với {{ZoneId.of("America/New_York")}}, ngày 10/03/2024 chỉ có 23 giờ nên cộng 24 giờ đẩy thời điểm sang 09:00-04:00. Kiểm tra template báo cáo thấy {{DateTimeFormatter.ofPattern("YYYY-MM-dd")}}; tra cứu thấy {{YYYY}} là week-based year, tuần chứa 30/12/2024 thuộc năm tuần 2025.
+3. **Nguyên nhân gốc**: Nhầm lẫn giữa "cùng giờ ngày mai" (khái niệm lịch, dùng {{Period}}/{{plusDays}} trên {{ZonedDateTime}}) và "đúng 24 giờ sau" (khái niệm thời lượng, dùng {{Duration}}). Nhầm pattern {{YYYY}} với {{yyyy}}.
+4. **Cách xử lý**: Đổi lịch nhắc sang {{zdt.plusDays(1)}} với {{ZoneId}} của người dùng. Giữ {{Instant.plus(Duration.ofHours(24))}} cho token hết hạn. Sửa formatter thành {{yyyy-MM-dd}} (hoặc {{uuuu-MM-dd}}). Inject {{Clock}} vào service tính hạn để viết test cố định tại 2024-03-09T12:00:00Z và tại 2024-12-30.
+5. **Kết quả đo được**: Sau bản vá, kiểm tra thủ công trên môi trường staging với múi giờ New York cho thấy nhắc lịch ngày 10/03/2024 và 11/03/2024 đều đúng 08:00 địa phương. Unit test bổ sung 5 case (ngày DST bắt đầu/kết thúc, 29-31/12) chạy xanh trong CI; lỗi hiển thị năm 2025 trên báo cáo cuối năm không tái diễn.
 
 > Senior tip: bug {{YYYY}} thường chỉ lộ đúng tuần cuối tháng 12, khi cả team nghỉ lễ; thêm unit test với ngày 29-31/12 cho mọi pattern ngày tháng. Với Spring, khai báo một bean {{Clock}} ({{Clock.systemUTC()}}) và cho mọi service nhận qua constructor; test chỉ việc thay bằng {{Clock.fixed}}.`,
   follow: ['Lịch trả góp ngày 31 hàng tháng bạn tính thế nào cho đúng?', 'Instant, LocalDateTime và ZonedDateTime nên dùng ở tầng nào?', 'Khi một giờ địa phương không tồn tại do DST (2:30 sáng), ZonedDateTime xử lý ra sao?'],
@@ -5176,6 +5204,13 @@ interface FeeCalculator {                  // tên nghiệp vụ rõ hơn BiFunc
 ### Trả lời miệng 1 phút
 "Tôi chọn theo hình dạng: Function cho biến đổi, Predicate cho điều kiện, Supplier để tạo lười, Consumer cho hành động, UnaryOperator khi cùng kiểu vào ra. Code nóng với số nguyên thì dùng bản primitive để tránh boxing. Ghép bằng andThen, compose, and, or, Predicate.not. Khi chữ ký generic quá dài, cần checked exception hoặc nhiều tham số, tôi tự định nghĩa @FunctionalInterface có tên nghiệp vụ."
 
+### Ví dụ đời thực
+1. **Triệu chứng**: Module tính điểm tín dụng xử lý khoảng 2 triệu bản ghi mỗi đêm. Sau khi refactor sang stream + lambda, thời gian chạy batch tăng từ 7 phút lên 12 phút, GC log cho thấy tần suất Minor GC tăng rõ và heap allocation rate cao hơn.
+2. **Điều tra**: Bật GC log thống nhất ({{-Xlog:gc*:file=gc.log}}, JDK 9+) và dùng profiler (Java Flight Recorder) xem allocation hot spots. Kết quả: phần lớn allocation nằm ở {{Integer.valueOf}} và {{Long.valueOf}} (boxing). Đọc code thấy dùng {{Function<Integer, Integer>}} và {{Predicate<Integer>}} trong vòng lặp tính điểm trên giá trị số nguyên, cộng thêm {{orElse(loadFromDb(key))}} luôn gọi DB dù cache có giá trị.
+3. **Nguyên nhân gốc**: Dùng interface generic object ({{Function<Integer, Integer>}}) buộc JDK boxing/unboxing hàng triệu lần, tạo nhiều object tạm. {{orElse}} đánh giá tham số ngay (eager) nên truy vấn DB không cần thiết, làm tăng I/O và thời gian chờ.
+4. **Cách xử lý**: Đổi sang {{IntUnaryOperator}} và {{IntPredicate}} cho các phép tính số nguyên; ghép điều kiện bằng {{and}}/{{or}} thay vì viết lambda lồng nhau khó đọc. Thay {{orElse(loadFromDb(key))}} bằng {{orElseGet(() -> loadFromDb(key))}} để hoãn truy vấn DB. Gom các rule tính phí phức tạp thành {{@FunctionalInterface FeeCalculator}} có tên rõ nghĩa, dễ test và dễ inject khi chuyển sang Spring.
+5. **Kết quả đo được**: Thời gian batch giảm còn khoảng 7 phút 30 giây (gần mức trước refactor). Allocation rate giảm đáng kể trong JFR, số Minor GC trong cửa sổ chạy batch giảm (quan sát trên cùng cấu hình heap 2 GB). Số truy vấn DB dư thừa do {{orElse}} giảm về 0 theo log truy vấn.
+
 > Senior tip: trong code nghiệp vụ, interface tự đặt tên như {{FeeCalculator}}, {{DiscountRule}} giúp người mới đọc hiểu ngay và dễ biến thành bean Spring (mỗi rule một class) khi logic lớn dần. Interface chuẩn của JDK hợp nhất ở tầng tiện ích và trong stream pipeline.`,
   follow: ['Vì sao JDK không có TriFunction?', 'Lambda và method reference có khác nhau về hiệu năng không?', 'Bạn biến các rule viết bằng Predicate thành cấu hình được thế nào?'],
   tags: ['functional interface', 'Function', 'Predicate', 'Supplier', 'composition']
@@ -5238,6 +5273,13 @@ static BigDecimal fee(Pay p) {
 
 ### Trả lời miệng 1 phút
 "Đa hình dễ thêm loại mới nhưng thêm thao tác thì phải sửa mọi class. Sealed cộng record cộng switch Java 21 thì ngược lại: thêm thao tác là một method mới, thêm loại thì compiler chỉ ra mọi switch cần sửa nhờ kiểm tra exhaustive. Tập loại đóng như phương thức thanh toán, trạng thái, kết quả xử lý mà nhiều tầng cần xử lý khác nhau thì tôi chọn sealed; tập mở có plugin thì chọn đa hình. Và tôi không đặt default trên switch của sealed type."
+
+### Ví dụ đời thực
+1. **Triệu chứng**: Hệ thống thanh toán hỗ trợ 3 loại (thẻ, ví, chuyển khoản) được triển khai theo interface {{Payment}} với method {{fee()}}, {{toReceipt()}}, {{toReportRow()}} rải trong từng class. Khi thêm loại "Trả góp" (Installment), đội mất 2 ngày sửa và vẫn bỏ sót logic xuất đối soát ở module báo cáo; báo cáo cuối tháng lệch 0,8% tổng phí so với sổ cái.
+2. **Điều tra**: Rà soát commit thêm {{InstallmentPayment}} thấy đã implement đủ method trong domain, nhưng module {{reporting}} có {{switch}} cũ theo enum/string và một nhánh {{default}} trả về "UNKNOWN", nên bản ghi trả góp bị gộp sai nhóm. Test unit domain pass, nhưng không có test end-to-end cho luồng đối soát.
+3. **Nguyên nhân gốc**: Tập loại phương thức thanh toán là đóng và ổn định nhưng logic xử lý nằm rải rác ở nhiều tầng; {{default}} che mất trường hợp mới. Thiết kế đa hình buộc mỗi thao tác mới phải chạm vào mọi class domain, còn thiết kế switch rời rạc thiếu kiểm tra exhaustive.
+4. **Cách xử lý**: Refactor domain sang {{sealed interface Pay permits CardPay, WalletPay, BankPay, InstallmentPay}} với các {{record}} giữ dữ liệu. Mỗi tầng (tính phí, hiển thị, báo cáo) viết method riêng dùng {{switch}} pattern matching **không có default**. Khi thêm {{InstallmentPay}}, compiler báo lỗi tại mọi {{switch}} chưa xử lý, buộc bổ sung case. Bổ sung test đối soát so sánh tổng phí báo cáo với sổ cái trên bộ dữ liệu mẫu.
+5. **Kết quả đo được**: Lần thêm phương thức mới tiếp theo, compiler chỉ ra 5 vị trí {{switch}} cần cập nhật; thời gian hoàn thành giảm còn nửa ngày và không phát sinh lệch báo cáo trong kỳ đối soát sau. Độ lệch phí 0,8% được điều chỉnh và kỳ tiếp theo khớp 100% với sổ cái.
 
 > Senior tip: hai cách không loại trừ nhau. Tôi hay để hành vi cốt lõi, bất biến của domain ở method trong type (ví dụ {{amount()}}), còn các thao tác "của tầng khác" như mapping DTO, hiển thị, đối soát thì viết bằng switch ở tầng đó. Nhớ rằng sealed chỉ có giá trị khi mọi module được biên dịch lại cùng nhau; với hợp đồng API giữa các service, vẫn cần xử lý giá trị lạ ở runtime.`,
   follow: ['Vì sao không nên đặt default trong switch trên sealed interface?', 'Sealed interface có dùng được qua ranh giới module/thư viện không?', 'Visitor pattern còn cần thiết khi đã có Java 21 không?'],
