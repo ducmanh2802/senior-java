@@ -2376,6 +2376,14 @@ Second: does the listener already know which one I mean? Then I use 'the'. For e
 
 If I'm talking about things in general, I usually don't need an article at all: 'Caches can return stale data', 'We store data in PostgreSQL'."
 
+### Useful phrases
+- **I used to drop them**: tôi từng bỏ mạo từ (a/an/the) khi nói
+- **one countable thing**: một thứ có thể đếm được, số ít
+- **the listener already knows**: người nghe đã biết là cái nào
+- **in general**: nói về nói chung, nói chung về điều gì đó
+- **I fixed a bug**: tôi đã sửa một lỗi (không phải "I fixed bug")
+- **a piece of code**: một đoạn mã (không dùng "a code" khi nói về mã nguồn)
+
 ### Danh từ không đếm được hay gặp trong IT
 Không dùng "a" và không thêm "-s": **information, feedback, advice, software, hardware, equipment, traffic, research, knowledge, documentation, code**.
 - "some feedback" (không phải "some feedbacks")
@@ -2389,6 +2397,12 @@ Không dùng "a" và không thêm "-s": **information, feedback, advice, softwar
 | Can you give me some feedbacks? | Can you give me some **feedback**? |
 | We had a high traffic. | We had high traffic. / We had **a** traffic spike. |
 | We use the Kafka. | We use Kafka. (nhưng: **the** Kafka cluster) |
+
+### Lỗi người Việt hay mắc
+- **Bỏ mạo từ với danh từ đếm được số ít:** "I fixed bug in payment service" → đúng: "I fixed **a** bug in **the** payment service". Danh từ đếm được, số ít, lần đầu nhắc phải có a/an.
+- **Dùng "the" sai với tên công nghệ:** "We use the Kafka" → dùng "We use Kafka" khi nói chung về công nghệ; chỉ dùng "**the** Kafka cluster" khi chỉ cụm cụ thể.
+- **Thêm "-s" cho danh từ không đếm được:** "some feedbacks" → "some feedback"; "a code" → "a piece of code" hoặc "some code". Feedback, code, information không đếm được, không thêm s.
+- **Thiếu mạo từ trước vai trò:** "I am backend developer" → "I am **a** backend developer". Vai trò số ít phải có a/an.
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
@@ -2617,16 +2631,24 @@ That's what attracted me to this bank. From the job description, the team is mov
 
 Việc chuẩn bị kỹ lưỡng cho câu hỏi này giúp bạn thể hiện sự chuyên nghiệp và định hướng rõ ràng.
 
-### Cụm từ hữu ích
-- "I have learned a lot, but..."
-- "What excites me about this role is..."
-- "I am looking for..."
-- "This role fits because..."
+### Useful phrases
+- **I have learned a lot, but...**: tôi đã học được nhiều, nhưng...
+- **What excites me about this role is...**: điều khiến tôi hào hứng với vị trí này là...
+- **I am looking for...**: tôi đang tìm kiếm...
+- **This role fits because...**: vị trí này phù hợp vì...
+- **larger-scale systems with stricter reliability requirements**: hệ thống quy mô lớn hơn với yêu cầu độ tin cậy khắt khe hơn
+- **a smaller version of it before**: từng làm phiên bản nhỏ hơn của điều đó trước đây
+- **contribute to**: đóng góp vào
+- **I'd be curious to hear...**: tôi muốn nghe thêm về...
 
 ### Lỗi người Việt hay mắc
 - Phàn nàn sếp hoặc công ty cũ, nghe tiêu cực.
 - Nói "for higher salary" là lý do chính.
-- Không nghiên cứu công ty, trả lời chung chung.`,
+- Không nghiên cứu công ty, trả lời chung chung.
+- **Không rõ gross/net và theo tháng hay năm:** "I want 80 million" → đúng: "I'm looking for a salary of 80 million VND gross per month". Hai bên phải hiểu cùng một con số.
+- **Chấp nhận offer ngay tại chỗ:** → "Thank you. Could I have a day or two to review the full offer?" Đừng quyết định ngay trong cuộc gọi.
+
+> Senior tip: Nói về lý do rời đi theo hướng tích cực: "tôi đã học được nhiều, giờ muốn thách thức lớn hơn" chứ không phải phàn nàn về sếp hay lương. Phần "why this bank" phải có chi tiết thật bạn đã tìm hiểu (công nghệ, sản phẩm, quy trình) — câu chung chung như "I like your company" không điểm được. Nếu chưa chắc về thông tin công ty, hãy hỏi ngược: "I read about your migration to Spring Boot — could you tell me more about the biggest challenge there?". Điều này thể hiện bạn chuẩn bị và quan tâm thực sự. Luôn xác nhận offer bằng văn bản trước khi từ việc cũ. Nếu lương dưới mong đợi, hãy thảo luận thêm về bonus hoặc ngày xem lại lương sau sáu tháng.`,
   follow: ['What would make you stay at your current job?', 'Where do you see yourself in 3 years?'],
   tags: ['career', 'interview', 'motivation'],
   lang: 'en',
@@ -3042,11 +3064,23 @@ Then I ask a few clarifying questions, each with a reason: "Do clients retry fai
 
 Next, I state my assumptions out loud: "I'll assume the thousand is peak traffic, latency matters more than cost, and we already run on Kubernetes. Please stop me if any of that is wrong." Then I sketch a high-level design and check that we're aligned before going deeper.
 
+### Giải nghĩa thuật ngữ (đọc trước để không vấp)
+- **idempotency key (khóa idempotency)**: chuỗi duy nhất gắn mỗi yêu cầu; nếu khách gửi lại cùng key, server trả lại kết quả cũ, không xử lý trùng hai lần.
+- **multi-region (đa vùng)**: hệ thống chạy trên nhiều vùng địa lý khác nhau, ví dụ Việt Nam và Singapore, để không toàn bộ dừng khi một vùng bị sự cố.
+- **peak traffic (tải cao điểm)**: số lượng yêu cầu lớn nhất trong một khoảng thời gian, khác với tải trung bình.
+- **headroom (không gian thừa)**: dung lượng hệ thống còn trống để phục vụ khi tải đột ngột tăng.
+- **high-level design (thiết kế cấp cao)**: vẽ các thành phần chính và luồng dữ liệu, chưa chi tiết đến từng class hay hàm.
+- **aligned (đồng bộ)**: hai bên hiểu cùng một thứ về yêu cầu và giải pháp.
+
 ### Useful phrases
 - **play the problem back in my own words**: nhắc lại đề bài bằng lời của mình
 - **That buys me a few seconds.**: giúp tôi có thêm vài giây suy nghĩ
 - **each question comes with a reason**: mỗi câu hỏi đi kèm lý do
 - **Please stop me if any of that is wrong.**: nếu có gì sai, anh/chị cứ ngắt lời tôi
+- **clarifying question**: câu hỏi làm rõ yêu cầu
+- **state my assumptions out loud**: nói ra giả định của mình một cách rõ ràng
+- **high-level design**: thiết kế cấp cao (nhìn toàn cảnh hệ thống)
+- **we are aligned**: chúng ta đã thống nhất về hướng thiết kế
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
@@ -3087,11 +3121,22 @@ Then I put numbers on it: "We're a team of eight, and we deploy six times a week
 
 So I recommend we keep the monolith but enforce clear module boundaries. That way, if we do need to split later, it's a few weeks of work, not a two-year rewrite."
 
+### Giải nghĩa thuật ngữ (đọc trước để không vấp)
+- **monolith (monolit)**: hệ thống đơn khối, toàn bộ code chạy trong một ứng dụng duy nhất, dễ triển khai nhưng khó mở rộng khi lớn.
+- **microservices (vi mô dịch vụ)**: hệ thống tách thành nhiều dịch vụ nhỏ, tự triển khai và chạy riêng, linh hoạt nhưng tốn vận hành hơn.
+- **module boundary (ranh giới module)**: ranh giới giữa các phần code, mỗi module chỉ phụ trách một chức năng rõ ràng.
+- **on-call (trực xử lý sự cố)**: lịch trực xử lý sự cố hệ thống, thường ngoài giờ làm việc.
+- **deploy (triển khai)**: đẩy code mới lên server để người dùng sử dụng.
+
 ### Useful phrases
-- **put numbers on it**
-- **operational overhead**
-- **clear module boundaries**
-- **not a two-year rewrite**
+- **put numbers on it**: gắn con số cụ thể vào vấn đề
+- **operational overhead**: chi phí vận hành thêm (server, cảnh báo, trực xử lý sự cố)
+- **clear module boundaries**: ranh giới module rõ ràng, mỗi module có phạm vi riêng
+- **not a two-year rewrite**: không phải viết lại toàn bộ hệ thống trong hai năm
+- **monolith (monolit)**: hệ thống đơn khối, toàn bộ code chạy trong một ứng dụng duy nhất
+- **microservices (vi mô dịch vụ)**: hệ thống tách thành nhiều dịch vụ nhỏ, tự triển khai và chạy riêng
+- **stakeholder (người liên quan)**: người không kỹ thuật nhưng quan tâm đến quyết định, ví dụ giám đốc sản phẩm
+- **trade-off (đánh đổi)**: chọn một lựa chọn thì phải chấp nhận nhược điểm của nó
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
@@ -3133,12 +3178,23 @@ Next, I either bring evidence or adjust the design: "If the main concern is cost
 
 If they push further: "I see your point. Let me adjust: we start with a single region and a Multi-AZ database, add connection pool limits and circuit breakers, and write a runbook for failover. We revisit multi-region once we have real traffic data. Would that work?"
 
+### Giải nghĩa thuật ngữ (đọc trước để không vấp)
+- **read replica (bản sao chỉ đọc)**: bản sao của database chỉ dùng để đọc, giảm tải cho database chính.
+- **primary database (database chính)**: database chỉ thực hiện ghi dữ liệu, các bản sao chỉ đọc.
+- **cache (bộ nhớ đệm)**: lưu dữ liệu thường dùng để truy xuất nhanh hơn.
+- **TTL (thời gian sống)**: thời gian dữ liệu được lưu trong cache trước khi bị xóa.
+- **availability zone (vùng sẵn sàng)**: trung tâm dữ liệu độc lập bên trong một vùng cloud.
+- **Multi-AZ (đa vùng sẵn sàng)**: chạy database trên nhiều AZ để nếu một AZ hỏng thì AZ khác tiếp tục hoạt động.
+- **failover (chuyển đổi dự phòng)**: chuyển sang hệ thống dự phòng khi hệ thống chính hỏng.
+- **circuit breaker (trang trải mạch)**: ngừng gọi dịch vụ bị lỗi trong một thời gian để không làm sập hệ thống gọi.
+- **runbook (sổ tay vận hành)**: tài liệu hướng dẫn xử lý từng loại sự cố thường gặp.
+
 ### Useful phrases
-- **that is a fair challenge**
-- **does that match your understanding of the risk?**
-- **I will adjust the design**
-- **revisit after real traffic data**
-- **clear upgrade path**
+- **that is a fair challenge**: đó là một thách thức chính đáng / điểm hợp lý
+- **does that match your understanding of the risk?**: đó có khớp với hiểu biết của anh/chị về rủi ro không?
+- **I will adjust the design**: tôi sẽ điều chỉnh thiết kế
+- **revisit after real traffic data**: quay lại vấn đề này sau khi có dữ liệu traffic thực tế
+- **clear upgrade path**: con đường nâng cấp rõ ràng
 
 ### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
@@ -3175,7 +3231,24 @@ Start with the one-line summary, then walk through STAR in order. Keep each part
 
 If I don't know the technology: "I want to be honest — I haven't used eBPF in production, so I can't give you numbers I'm confident about. Here's how I'd approach it: read the docs, run a small benchmark against our current iptables setup, and talk to the platform team. In the meantime, I can walk you through how we handle it today. Would that be useful?"
 
-Either way, I show a method — check the docs, measure, ask someone with experience, and offer a temporary answer. That turns a gap into evidence of how I solve problems.\n\n### Useful phrases\n- **could you please clarify**\n- **I want to be honest**\n- **here is how I would approach it**\n- **would that work for you?**\n- **in the meantime**\n\n### Full sample answer (60-90 seconds)
+Either way, I show a method — check the docs, measure, ask someone with experience, and offer a temporary answer. That turns a gap into evidence of how I solve problems.\
+\
+### Giải nghĩa thuật ngữ (đọc trước để không vấp)\
+- **scalable (co giãn được)**: hệ thống xử lý được nhiều hơn khi thêm máy hoặc nguồn lực, ví dụ từ 100 lên 10.000 yêu cầu mỗi giây.\
+- **benchmark (thử nghiệm hiệu suất)**: chạy thử hệ thống dưới tải để đo tốc độ và tài nguyên tiêu dùng.\
+- **iptables (tường lửa Linux)**: công cụ quản lý gói tin mạng trên Linux, dùng để định tuyến hoặc chặn kết nối.\
+- **eBPF (công nghệ theo dõi nhân Linux)**: cho phép chạy chương trình nhỏ bên trong nhân Linux để quan sát mạng và hiệu năng.\
+- **platform team (đội ngũ nền tảng)**: nhóm xây dựng và vận hành các hệ thống chia sẻ (CI/CD, monitoring, database) cho các nhóm phát triển.\
+- **docs (tài liệu)**: hướng dẫn sử dụng công thức và API của một công nghệ.\
+\
+### Useful phrases\
+- **could you please clarify**: anh/chị có thể giải thích rõ hơn không?\
+- **I want to be honest**: tôi muốn nói thật\
+- **here is how I would approach it**: đây là cách tôi sẽ tiếp cận vấn đề\
+- **would that work for you?**: cách đó có phù hợp với anh/chị không?\
+- **in the meantime**: trong lúc chờ đợi\
+\
+### Full sample answer (60-90 seconds)
 Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
 
 ### Vocabulary and phrases to reuse
