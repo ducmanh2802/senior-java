@@ -8695,6 +8695,18 @@ Native SQL không đi qua mô hình entity của JPQL theo cùng cách; Hibernat
 - **Cách đo**: bật log SQL ({{org.hibernate.SQL}}) và statistics; quan sát thứ tự statement; so sánh với/không có flush hint.
 - **Tuning**: tách luồng đọc thuần (read-only, DTO), giảm số entity managed trước query, dùng {{COMMIT}} hint cho query báo cáo trong transaction phù hợp, chunk batch + {{clear()}}.
 
+### Ví dụ đời thực
+
+Hệ thống đơn hàng của một sàn thương mại điện tử có khoảng 2000 đơn/giờ. Màn hình "cập nhật trạng thái đơn" chạy trong một transaction: load Order, gán status = "SHIPPED", rồi chạy JPQL đếm đơn theo status để hiện badge trên giao diện. Với FlushMode.AUTO mặc định, Hibernate flush câu UPDATE status trước khi chạy câu SELECT đếm. Do nhiều đoạn code khác trong cùng transaction cũng đang sửa Order, mỗi lần render badge gây thêm 1-2 câu UPDATE lặp lại. Log SQL cho thấy mẫu: UPDATE orders ... trước mỗi câu SELECT count ...; p95 của request tăng từ 120ms lên 450ms trong giờ cao điểm.
+
+Điều tra: bật log {{org.hibernate.SQL}} và Hibernate statistics, quan sát thứ tự câu lệnh và số prepare statement. Xác nhận root cause là auto-flush trước JPQL trong transaction ghi.
+
+Xử lý: cho query báo cáo/đếm dùng {{em.setFlushMode(FlushModeType.COMMIT)}} hoặc {{@QueryHints(@QueryHint(name = "org.hibernate.flushMode", value = "COMMIT"))}} vì query này chỉ đọc, không cần thấy thay đổi chưa commit trong transaction này. Dùng {{@Transactional(readOnly=true)}} cho màn hình chỉ đọc. Sau khi triển khai, số UPDATE mỗi request giảm gần 0, p95 quay về dưới 150ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Với FlushMode.AUTO, Hibernate sẽ tự động flush các thay đổi chưa commit trong persistence context trước khi thực thi JPQL hoặc HQL, và cũng flush trước khi commit transaction. Mục đích là để câu query nhìn được dữ liệu mới nhất mà ứng dụng vừa sửa trong cùng single unit of work. Ví dụ: bạn sửa status đơn hàng sang SHIPPED rồi chạy câu đếm đơn theo status, Hibernate sẽ đẩy UPDATE xuống DB trước câu SELECT để kết quả đếm chính xác. Tuy nhiên, tính chính xác này có giá thành: mỗi lần flush tốn dirty checking, sinh câu SQL và có thể giữ khóa DB sớm hơn. Ở luồng đọc nhiều, điều này làm chậm request. Nếu query chỉ đọc và không cần thấy thay đổi trong bộ nhớ, tôi khuyên dùng FlushMode.COMMIT hoặc MANUAL, kèm @Transactional(readOnly=true), và đo bằng log SQL trước khi thay đổi."
+
 > Senior tip: Đừng coi auto-flush là "ma thuật miễn phí". Trong code review, mỗi JPQL chạy giữa chừng một transaction có nhiều entity dirty là một điểm cần hỏi: "flush này có cần thiết không, có ảnh hưởng index/lock không?"`,
   follow: [
     'Làm sao chứng minh auto-flush đã xảy ra (log, statistics, breakpoint) và query nào kích hoạt nó?',
@@ -8758,6 +8770,18 @@ List<Order> rows = em.createQuery(
 - **Triệu chứng**: OutOfMemoryError khi endpoint phân trang; latency tăng tuyến tính theo offset; Hibernate log {{HHH000104}}; dữ liệu collection sai/thiếu sau khi đổi {{List}}→{{Set}}.
 - **Cách đo**: đếm {{PrepareStatementCount}}; log số dòng JDBC trả về; heap dump; so sánh kế hoạch query DB.
 - **Cấu hình/tuning**: {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} (fail-fast), {{hibernate.default_batch_fetch_size}} (ví dụ 50) làm lưới an toàn, giới hạn độ sâu EntityGraph, API list trả DTO.
+
+### Ví dụ đời thực
+
+API danh sách đơn hàng của một hệ thống bán hàng trả 50 đơn/trang, mỗi đơn có 5-10 item và mỗi item có thông tin product. Ban đầu dùng lazy load, serializer JSON chạm {{order.getItems()}} và {{item.getProduct()}} khi trả response → N+1, hàng trăm query cho 50 đơn, p95 api từ 80ms lên 3000ms. Dùng {{EntityGraph}} fetch {{items}} và {{items.product}} thì gặp lỗi phân trang trên collection fetch (Hibernate ném {{HHH000104}} hoặc tự phân trang trong bộ nhớ gây OOM).
+
+Điều tra: bật {{datasource-proxy}} đếm số PrepareStatement, log SQL cho thấy mỗi đơn sinh thêm 5-10 câu SELECT. Root cause là fetch join collection + Pageable làm DB trả hàng triệu dòng do một dòng cha sinh nhiều dòng join.
+
+Xử lý: dùng chiến lược 2-bước — lấy id 50 đơn đầu bằng query không join, rồi fetch join đơn theo danh sách id đó. Hoặc trả DTO chỉ chứa fields cần thiết, không đồ thị entity. Sau khi sửa, số query/request từ hàng trăm xuống dưới 10, p95 ổn định dưới 100ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi không bao giờ fetch tất cả quan hệ bằng một nút bấm. Mục tiêu là đúng dữ liệu, kiểm soát số query và kiểm soát bộ nhớ. Đối với các endpoint đọc danh sách, tôi dùng EntityGraph hoặc join fetch có chủ đích, nhưng không bao giờ kết hợp fetch join collection với phân trang trực tiếp vì SQL sẽ phân trang theo dòng join, không theo số thực thể cha. Nếu cần phân trang, tôi dùng 2-bước: lấy id trang trước, rồi fetch join theo danh sách id, hoặc trả DTO projection. Với hai collection kiểu List cùng fetch join, tôi tránh MultipleBagFetchException bằng cách đổi sang Set chỉ khi equals/hashCode đúng theo business key bất biến, hoặc tách thành hai query riêng. Trên production, tôi luôn viết test integration đo số query — chạy được trên 10 dòng staging không phải là tiêu chuẩn chấp nhận được."
 
 > Senior tip: Ở cấp lead, tôi yêu cầu mọi PR có fetch join collection + {{Pageable}} phải có bằng chứng: hoặc dùng 2-step, hoặc DTO, hoặc tắt paging — và có test đo số query. "Chạy được trên 10 dòng staging" không phải là tiêu chuẩn.`,
   follow: [
@@ -8828,6 +8852,18 @@ spring:
 | OSIV bật | Ít lỗi LAZY ban đầu | Giữ tài nguyên, che N+1 |
 | OSIV tắt + DTO/fetch có chủ đích | Rõ boundary, dễ tối ưu | Cần sửa code |
 | {{enable_lazy_load_no_trans}} | Tránh exception | Hành vi khó đoán, chống pattern |
+
+### Ví dụ đời thực
+
+API báo cáo doanh thu ngày của một hệ thống bán hàng trả về 1000 đơn hàng mỗi request. Với OSIV bật mặc định, controller trả về danh sách entity {{Order}} trực tiếp. Serializer JSON chạm {{order.getCustomer()}} và {{order.getItems()}} (LAZY) sau khi transaction service đã commit → Hibernate mở lazy load thêm hàng ngàn câu SQL, mỗi câu cần lấy connection từ pool. HikariCP pool (kích thước 20) bị cạn trong lúc render JSON, các request khác phải chờ lấy connection, timeout sau 30 giây. CPU DB thấp nhưng thời gian phản hồi dịch vụ tăng từ 200ms lên hơn 10 giây.
+
+Điều tra: metric HikariCP {{connections.active}} và {{connections.pending}} tối đa; APM thấy thời gian DB tập trung ở tầng controller/view chứ không phải service. Log SQL cho thấy hàng trăm câu SELECT sau khi service đã xong việc.
+
+Xử lý: đặt {{spring.jpa.open-in-view=false}}, trả về DTO có sẵn dữ liệu cần thiết, trong service dùng {{@Transactional(readOnly=true)}} với join fetch hoặc EntityGraph có kiểm soát. Bật log SQL và datasource-proxy để đếm query trên staging. Sau khi triển khai, số query/request từ hàng ngàn xuống dưới 20, pool không còn cạn, p95 api quay về dưới 300ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"OSIV, hay Open Session in View, giữ EntityManager mở từ đầu request HTTP đến sau khi view hay JSON render xong. Lợi ích là tránh LazyInitializationException khi template hoặc serializer chạm thuộc tính LAZY, nhưng chi phí là giữ tài nguyên persistence và thường là kết nối DB kéo dài dài hơn transaction nghiệp vụ. Ví dụ trong Spring Boot mặc định, transaction commit ở service nhưng Session vẫn giữ connection đến cuối request — dưới tải cao pool HikariCP có thể cạn vì connection bị giam giữ trong phần render JSON. N+1 cũng dễ bị che giấu vì query chạy lẻ lẻ ngoài transaction. Tôi khuyên tắt OSIV ngay từ ngày 1 cho service mới, trả DTO thay vì entity JPA, và fetch dữ liệu cần thiết trong service bằng join fetch hoặc EntityGraph. Nếu hệ cũ, hãy đo số query và pool trước, rồi tắt theo từng nhóm API đã có DTO đầy đủ. enable_lazy_load_no_trans tôi không khuyên dùng vì che lỗi và gây hành vi khó đoán."
 
 > Senior tip: Tôi coi OSIV là "nợ kỹ thuật có phí lãi". Ở service mới, tắt ngay từ ngày 1; ở hệ cũ, đo số query/request và pool trước, rồi tắt theo từng vertical slice (một nhóm API) có DTO đầy đủ.`,
   follow: [
@@ -8905,6 +8941,18 @@ spring:
 - **Cách đo**: metric của cache provider (hits, misses, evictions), Hibernate statistics {{SecondLevelCacheHitCount}}, log region.
 - **Cấu hình/cờ (tên thật, kiểm tra version)**: {{hibernate.cache.use_second_level_cache}}, {{hibernate.cache.use_query_cache}}, {{hibernate.cache.region.factory_class}} ({{jcache}}), {{jakarta.persistence.sharedCache.mode}}; annotation {{@Cache}}, {{@Cacheable}} (JPA).
 
+### Ví dụ đời thực
+
+Hệ thống quản lý kho hàng có bảng {{Product}} đọc rất nhiều nhưng giá hàng ngày thay đổi nhiều lần. Ban đầu bật L2 cache cho entity {{Product}} với chiến lược READ_WRITE để tránh đọc DB lặp lại. Một ngày, nhân viên kho cập nhật giá 500 sản phẩm qua màn hình admin, nhưng khách hàng trên node khác vẫn thấy giá cũ trong 5-10 phút vì L2 cache node kia chưa bị invalid. Một số đơn hàng bị sinh sai giá, gây khiếu nại và phải hoàn tiền.
+
+Điều tra: so sánh log trên 2 node, thấy node A ghi DB thành công nhưng node B vẫn trả giá cũ từ L2 region. Root cause là stale read — dữ liệu bị sửa ở node A không tự động xóa cache trên node B khi dùng L2 cache không phân phối (hoặc invalidation async có cửa sổ stale).
+
+Xử lý: tắt L2 cache cho bảng dữ liệu thay đổi liên tục như giá, tồn kho, hạn mức. Chỉ dùng L2 cho reference data gần như bất biến (danh mục quốc gia, cấu hình hệ thống) với TTL dài và invalidate khi deploy. Cho dữ liệu phần lớn dùng DB trực tiếp, kết hợp optimistic locking (@Version) để ngăn ghi đè. Nếu cần cache ứng dụng, dùng Redis với khóa nghiệp vụ rõ ràng và TTL ngắn, invalidate ngay khi giá thay đổi. Sau khi thay đổi, incident giá sai giảm về 0.
+
+### Trả lời mẫu khi phỏng vấn
+
+"L2 cache, hay second-level cache, lưu trạng thái entity theo id để chia sẻ giữa các session trên cùng một SessionFactory, giúp tránh đọc DB lặp lại. Query cache lưu danh sách id kết quả của một query và thường phải đi kèm L2 entity cache để hữu ích. Vấn đề lớn xuất hiện trong cluster nhiều node: dữ liệu được sửa ở node A thì cache node B bị stale, hay còn gọi là đọc giá cũ, nếu không có cơ chế đồng bộ cache giữa các node. Query cache còn nhạy hơn — bất kỳ thay đổi nào trên bảng liên quan đều invalid vùng cache, hit rate thấp và overhead cao hơn cả không cache. Tôi khuyên chỉ dùng L2 cho reference data đọc nhiều, gần như bất biến, như danh mục quốc gia hay cấu hình hệ thống. Với dữ liệu nghiệp vụ như giá, tồn kho, hạn mức, tôi dùng DB làm source of truth, thêm optimistic locking nếu cần, và nếu muốn cache thì dùng Redis tại tầng ứng dụng với khóa rõ ràng, TTL ngắn, invalidate ngay khi dữ liệu thay đổi. Query cache tôi mặc định tắt, chỉ bật khi có bằng chứng đo được lợi trên production."
+
 > Senior tip: Ở phỏng vấn lead, câu trả lời mạnh là: "Tôi mặc định tắt query cache, chỉ cân nhắc L2 cho reference data có owner rõ và đường invalidation rõ; nghiệp vụ tiền/tồn kho dùng DB + optimistic locking + cache ứng dụng có TTL ngắn nếu cần."`,
   follow: [
     'Tại sao query cache phụ thuộc L2 entity cache và khi nào nó trở nên vô dụng?',
@@ -8970,6 +9018,18 @@ Khi bật, Hibernate có thể mở rộng danh sách tham số tới bậc đ�
 - **Triệu chứng**: throughput giảm khi traffic có nhiều biến thể filter {{IN}}; DB thấy nhiều hard parse/plan; heap/metaspace tăng.
 - **Cách đo**: Hibernate statistics (query plan cache metrics nếu exposed), log {{org.hibernate.orm.query}}, DB view ({{pg_stat_statements}} đếm số queryid/plan), APM.
 - **Cấu hình có thật (kiểm tra version)**: {{hibernate.query.in_clause_parameter_padding=true}}; các cấu hình query plan cache của Hibernate 6 (tên property có thể nằm dưới {{hibernate.query.*}} — tra tài liệu ORM 6.x bạn deploy); giới hạn batch size {{IN}} ở tầng repository.
+
+### Ví dụ đời thực
+
+API tìm đơn hàng của một hệ thống logistics cho phép lọc theo danh sách id đơn ({{IN clause}}). Khách hàng có thể gửi từ 1 đến hàng ngàn id trong một request. Với {{IN (:ids)}} và số lượng tham số thay đổi liên tục, Hibernate sinh ra rất nhiều chuỗi SQL khác nhau (IN (?, ?, ?), IN (?, ?, ?, ?), v.v.). Mỗi chuỗi SQL khác nhau tạo ra một plan mới trong Hibernate query plan cache và prepared statement cache của PostgreSQL. Sau hai tuần vận hành, plan cache phình lên, CPU parse tăng, thời gian phản hồi API từ 50ms lên 400ms.
+
+Điều tra: dùng Hibernate statistics và PostgreSQL {{pg_stat_statements}} để đếm số queryid riêng biệt cùng mẫu truy vấn. Xác nhận số lượng câu SQL IN biến thể rất cao, plan cache miss preponderant. Root cause là mỗi kích thước danh sách id sinh SQL text khác nhau.
+
+Xử lý: bật {{hibernate.query.in_clause_parameter_padding}} (mặc định bật từ Hibernate 6.2) để Hibernate đệm số tham số IN lên các bậc (ví dụ 3 → 4, 5 → 8), tái dùng cùng SQL shape. Đồng thời giới hạn số id tối đa mỗi request (ví dụ 500 id), chia thành nhiều query nếu client gửi quá nhiều. Sau khi triển khai, số queryid riêng biệt giảm một magnitude, CPU parse giảm, p95 API quay lại dưới 100ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Từ Hibernate 6, HQL và Criteria được phân tích thành SQM, hay Semantic Query Model — một biểu diễn về ý nghĩa của truy vấn gắn với mô hình entity — rồi mới chuyển thành SQL AST và SQL cuối cùng. Hibernate cũng có thể cache kế hoạch thực thi để tránh phải parse và dịch lại truy vấn lặp lại. Vấn đề thực tế xuất hiện với câu truy vấn IN có số lượng tham số thay đổi: mỗi kích thước danh sách id tạo ra một chuỗi SQL khác nhau, do đó Hibernate và cơ sở dữ liệu phải tạo nhiều kế hoạch plan, tốn bộ nhớ và giảm hiệu quả cache. Thuộc tính {{hibernate.query.in_clause_parameter_padding}} giải quyết bằng cách đệm số tham số IN lên các kích thước bậc định trước, giúp các truy vấn cùng hình dạng tái dùng cùng plan. Tôi khuyên bật tính năng này (mặc định đã bật từ Hibernate 6.2) và đồng thời giới hạn số id tối đa mỗi request, ví dụ 500 id, chia thành nhiều query nếu cần. Điều này bảo vệ cả plan cache của Hibernate và prepared statement cache của cơ sở dữ liệu, đồng thời giữ latency ổn định."
 
 > Senior tip: Khi API nhận mảng id từ client, tôi luôn có "max ids per query" (ví dụ 500) + chunk + padding. Đó là bộ ba: bảo vệ DB, bảo vệ plan cache, và giữ latency ổn định.`,
   follow: [
@@ -9048,6 +9108,18 @@ IDENTITY đơn giản cho DB nhưng khóa chặt thứ tự "phải insert mới
 - **Triệu chứng**: import 100k dòng chậm, p95 DB time cao, mỗi row một insert; hoặc duplicate key/sequence lỗi khi migration.
 - **Cách đo**: {{datasource-proxy}} đếm statement và batch size thực; {{generate_statistics}}; so sánh thời gian với/không batch.
 - **Tuning/cấu hình có thật**: {{hibernate.jdbc.batch_size}}, {{hibernate.order_inserts}}, {{hibernate.order_updates}}, {{hibernate.jdbc.batch_versioned_data}}; {{allocationSize}} khớp DDL {{CREATE SEQUENCE ... INCREMENT BY 50}}; chunk {{persist/flush/clear}} mỗi 50-200 row; dùng {{reWriteBatchedInserts}} (PostgreSQL JDBC driver) khi phù hợp — kiểm tra driver.
+
+### Ví dụ đời thực
+
+Hệ thống nhập liệu hàng loạt nhập 100.000 đơn hàng vào đêm hằng ngày. Code dùng {{GenerationType.IDENTITY}} cho id đơn hàng (MySQL AUTO_INCREMENT), mỗi lần persist một đơn Hibernate phải chèn ngay vào DB để lấy id sinh ra, không thể gom nhiều câu INSERT thành một batch. Log JDBC cho thấy mỗi đơn là một câu INSERT riêng biệt, p95 import từ 3 phút lên hơn 20 phút, DB time cao do nhiều round-trip giữa ứng dụng và cơ sở dữ liệu.
+
+Điều tra: bật {{datasource-proxy}} đếm số câu statement và kích thước batch thực tế. Xem log SQL thấy mỗi câu INSERT đi kèm với lấy generated key, không có câu executeBatch nào có nhiều tham số. Root cause là IDENTITY buộc chèn trước mới có id, nên Hibernate không đợi gom batch.
+
+Xử lý: chuyển sang {{GenerationType.SEQUENCE}} với {{@SequenceGenerator(allocationSize = 50)}} và sequence DB {{INCREMENT BY 50}}, đặt {{hibernate.jdbc.batch_size = 50}} và {{hibernate.order_inserts = true}}. Chia dữ liệu import thành các chunk 50-200 dòng, gọi {{persist}}, flush và clear persistence context định kỳ. Sau khi thay đổi, thời gian import 100.000 đơn giảm từ hơn 20 phút xuống khoảng 4 phút, số câu INSERT mỗi lần executeBatch tăng từ 1 lên gần 50.
+
+### Trả lời mẫu khi phỏng vấn
+
+"JDBC batching chỉ hiệu quả khi Hibernate có thể gửi nhiều câu cùng loại liên tiếp bằng một lần executeBatch. Với GenerationType.IDENTITY, cơ sở dữ liệu chỉ sinh id sau khi INSERT, nên Hibernate truyền thống phải chèn từng dòng để lấy generated key — rất khó gom batch. PostgreSQL 10 trở lên hỗ trợ INSERT ... RETURNING để batch một phần, nhưng MySQL thì bắt buộc chèn từng dòng. Ngược lại, với SEQUENCE Hibernate lấy id trước khi chèn, có thể gán id vào entity và gom nhiều câu INSERT theo batch_size. Tôi khuyên dùng SEQUENCE kết hợp optimizer pooled hoặc pooled-lo: DB tăng sequence theo bước allocationSize, Hibernate "mua sỉ" một khoảng id và cấp phát trong bộ nhớ, giảm số lần gọi nextval. Lưu ý quan trọng là allocationSize trong code phải khớp với INCREMENT BY của sequence trong cơ sở dữ liệu, nếu không sẽ gây lỗi duplicate key. Trên production, tôi luôn đo số câu thực sự bị gom bằng executeBatch và chia dữ liệu lớn thành các chunk nhỏ, flush và clear persistence context định kỳ để tránh persistence context phình lên."
 
 > Senior tip: Khi ai đó nói "Hibernate chậm", tôi hỏi ngay: "Id strategy là gì, batch_size bao nhiêu, và bạn có đo executeBatch thực sự gom được mấy câu không?" Ba câu trả lời đó thường tìm ra gốc vấn đề.`,
   follow: [
