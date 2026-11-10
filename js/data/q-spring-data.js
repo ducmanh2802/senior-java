@@ -9197,6 +9197,16 @@ Kiểm tra unique bị dời đến **cuối transaction** (hoặc lúc {{SET CO
 - **Cách đo**: log {{org.hibernate.SQL}} xem thứ tự DML; integration test với Testcontainers (Postgres thật) tái hiện clear+add hoặc remove+persist; kiểm tra DDL index/constraint.
 - **Tuning/cấu hình**: {{hibernate.order_inserts/order_updates}} **không** giải quyết insert-vs-delete unique; dùng {{em.flush()}} có chủ đích; với soft delete dùng partial index (Postgres) — kiểm tra tương thích DB.
 
+### Ví dụ đời thực
+Hệ thống quản lý hợp đồng cho phép người dùng chỉnh sửa danh sách điều khoản (line) của hợp đồng. Mỗi điều khoản có {{lineNo}} là khóa nghiệp vụ (natural key - mã có ý nghĩa nghiệp vụ) duy nhất trong một hợp đồng: {{UNIQUE(contract_id, line_no)}}. Khi người dùng bấm "Lưu", code cũ dùng cách thay thế toàn bộ: {{contract.getLines().clear()}} rồi {{add}} lại danh sách mới từ form (khoảng 5-20 dòng). Vào giờ cao điểm 200 yêu cầu/phút, khoảng 1-2% giao dịch lỗi {{duplicate key value violates unique constraint}} (SQLState 23505) dù dữ liệu form hoàn toàn hợp lệ.
+
+Điều tra: bật log {{org.hibernate.SQL}} và thấy thứ tự DML trong cùng giao dịch là INSERT các dòng mới chạy trước, còn DELETE do {{orphanRemoval}} xếp sau trong ActionQueue (hàng đợi hành động nội bộ của Hibernate) nên chưa kịp xóa dòng cũ cùng {{lineNo}}. Test trên H2 không lộ lỗi vì hành vi và ràng buộc khác Postgres thật. Tái hiện ổn định bằng Testcontainers với Postgres.
+
+Xử lý: đổi sang cập nhật tại chỗ - tìm dòng theo {{lineNo}} để {{set}} lại nội dung, thêm dòng mới, xóa dòng thừa; bỏ hẳn {{clear()+add}}. Với luồng bắt buộc phải replace, chèn {{entityManager.flush()}} ngay sau {{clear()}} để DELETE chạy trước khi INSERT. Viết test tích hợp xác nhận không còn lỗi trùng khóa. Sau khi sửa, lỗi 23505 ở luồng này giảm về 0 trong 2 tuần theo dõi, p95 API lưu hợp đồng giữ ổn định ~120 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu ActionQueue là hàng đợi thay đổi nội bộ của Hibernate: khi flush, nó không chạy theo thứ tự em gọi method trong Java mà gom theo nhóm insert, update, delete để tối ưu. Hệ quả là insert có thể chạy trước delete, nên pattern xóa rồi thêm lại cùng unique constraint rất dễ vỡ. Em từng xử lý case thay thế collection có orphanRemoval: code clear rồi add lại phần tử cùng mã nghiệp vụ, trên Postgres thỉnh thoảng bị duplicate key. Em điều tra bằng log SQL, thấy INSERT đi trước DELETE, rồi tái hiện bằng Testcontainers. Cách sửa em ưu tiên là cập nhật entity hiện có theo id hoặc khóa nghiệp vụ thay vì replace; nếu buộc phải xóa rồi thêm thì em gọi flush tường minh sau pha xóa. Với soft delete, em chú ý unique index phải là partial index chỉ áp cho bản ghi chưa xóa, nếu không email đã xóa mềm vẫn chặn tạo lại. Em luôn viết test tích hợp trên DB thật cho các luồng động chạm unique key."
+
 > Senior tip: Khi code review thấy "xóa phần tử cũ rồi thêm phần tử mới có cùng mã nghiệp vụ", tôi coi là bug tiềm ẩn cho đến khi có (1) {{flush()}} tách pha, (2) chiến lược update-in-place, hoặc (3) bằng chứng constraint/index thiết kế đúng cho soft delete. Đừng tin thứ tự method Java.`,
   follow: [
     'Làm sao viết test Testcontainers tái hiện chắc chắn lỗi ActionQueue+unique thay vì flaky (ép flush/transaction boundary)?',
@@ -9258,6 +9268,16 @@ Giả sử load **100 Order**; {{@BatchSize(size=25)}} hoặc {{hibernate.defaul
 - **Cách đo:** {{spring.jpa.properties.hibernate.generate_statistics=true}} xem {{PrepareStatementCount}}; datasource-proxy/p6spy.
 - **Cấu hình:** {{spring.jpa.properties.hibernate.default_batch_fetch_size: 50}} (khởi đầu 16-100, cần đo); danh sách phân trang dùng DTO/projection hoặc 2 bước (lấy id trang → fetch join theo id).
 
+### Ví dụ đời thực
+API danh sách đơn hàng {{GET /orders?page=0&size=50}} trả về 50 đơn kèm danh sách sản phẩm (items) và thanh toán (payments). Ban đầu code dùng {{FetchType.LAZY}} mặc định; khi map sang JSON, mỗi đơn truy cập {{getItems()}} và {{getPayments()}} sinh thêm query. Với 50 đơn, một request tạo 1 (orders) + 50 (items) + 50 (payments) = 101 câu SQL, p95 từ 120 ms tăng lên 1,8 giây khi traffic cao.
+
+Điều tra: bật {{hibernate.generate_statistics}} thấy {{PrepareStatementCount}} ~101/request; log datasource-proxy liệt kê hàng loạt {{select ... from order_items where order_id=?}}. Thử sửa nhanh bằng JPQL {{join fetch o.items join fetch o.payments}} thì gặp {{MultipleBagFetchException}} vì cả hai đều là {{List}} (bag - collection không có thứ tự chỉ số, cho phép trùng). Chuyển {{payments}} sang {{Set}} được nhưng làm đổi ngữ nghĩa thứ tự và rủi ro {{equals/hashCode}}.
+
+Xử lý cuối: giữ query cha phân trang lấy 50 id đơn (an toàn với paging ở DB), cấu hình {{hibernate.default_batch_fetch_size=50}} để khi truy cập {{items}} và {{payments}} Hibernate gom id vào {{IN (...)}} (≈ 1 + 1 + 1 = 3 query/request). Kiểm tra lại statistics: {{PrepareStatementCount}} giảm từ ~101 xuống 3-5, p95 xuống còn ~150 ms, CPU DB giảm rõ ở giờ cao điểm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi fetch quan hệ trong JPA, em luôn cảnh giác hai vấn đề: N+1 và MultipleBagFetchException. N+1 là khi lấy N bản ghi cha rồi mỗi bản ghi lại phát sinh thêm query con, ví dụ 50 đơn có thể thành 101 query. MultipleBagFetchException xảy ra khi fetch join đồng thời hai collection dạng bag như hai List, vì SQL tạo tích Descartes và Hibernate không khử trùng đúng được. Em so sánh các cách: BatchSize gom id vào IN nên từ 101 query giảm còn vài query và vẫn phân trang DB an toàn; SUBSELECT chỉ còn 2 query nhưng subquery có thể nặng; EntityGraph hay join fetch cho 1 query nhưng dễ phình dòng và không nên dùng chung với phân trang collection. Trên thực tế, với API danh sách em hay dùng bước lấy id trang rồi cấu hình default_batch_fetch_size, vừa tránh N+1 vừa tránh lỗi bag và giữ paging đúng ở DB."
+
 > Senior tip: Với API danh sách phân trang, tôi dùng DTO/projection hoặc 2 bước, tránh {{join fetch}} collection trực tiếp với paging. Bật {{default_batch_fetch_size}} là lưới an toàn, nhưng vẫn phải đo.`,
   follow: ["Tại sao đổi {{List}} sang {{Set}} có thể sửa {{MultipleBagFetchException}} nhưng lại tạo rủi ro nghiệp vụ (equals/hashCode, thứ tự)?", "Bạn xử lý thế nào khi cần load Order + Items có phân trang đúng ở DB (không phân trang trong bộ nhớ)?", "Sự khác nhau giữa {{FetchType.EAGER}} cố định và EntityGraph theo truy vấn về bảo trì lâu dài?"],
   tags: ["MultipleBagFetchException", "bag", "BatchSize", "default_batch_fetch_size", "subselect", "EntityGraph", "N+1"],
@@ -9297,6 +9317,16 @@ Ví dụ: chèn 10 triệu dòng UUID v4 vào khóa chính InnoDB. Mỗi dòng m
 - Triệu chứng chỉ mục phình: chèn chậm dần, buffer pool hit rate tụt, chỉ mục lớn hơn bảng dữ liệu đáng kể.
 - Cách đo: pg_stat_user_indexes (cột idx_scan = 0 trong thời gian dài → chỉ mục không dùng, hãy xóa), bộ mở rộng pgstattuple xem bloat, EXPLAIN xem Heap Fetches cao trên index-only scan.
 - Khắc phục: đổi khóa chính sang UUID v7 hoặc khóa tăng dần (cần migration dữ liệu), hoặc đặt fillfactor thấp hơn (ví dụ 80) để để chỗ trong trang cho ghi ngẫu nhiên (chỉ PostgreSQL). REINDEX CONCURRENTLY để thu gom chỉ mục bị phình mà không khóa bảng đọc/ghi.
+
+### Ví dụ đời thực
+Bảng {{events}} lưu log sự kiện người dùng, ~8 triệu dòng mới mỗi ngày, khóa chính là {{id UUID}} sinh bằng UUID v4 (ngẫu nhiên hoàn toàn). Sau 3 tháng, dung lượng chỉ mục primary key lớn gần gấp đôi so với ước tính, tốc độ ghi INSERT giảm dần: p95 insert từ 4 ms lên 18 ms, buffer cache hit rate của chỉ mục giảm vì các trang ngẫu nhiên liên tục bị đẩy ra khỏi RAM.
+
+Điều tra: dùng {{pg_relation_size}} thấy chỉ mục PK ~45 GB trong khi dữ liệu bảng ~28 GB; {{pgstattuple}} cho thấy tỉ lệ lấp đầy trang lá thấp do page split (tách trang - khi trang đầy, DB chia đôi trang và để trống). {{EXPLAIN (ANALYZE, BUFFERS)}} các truy vấn ghi cho thấy nhiều trang phải đọc/ghi ngẫu nhiên. Nguyên nhân gốc: UUID v4 rải giá trị khắp cây B-tree, mỗi insert có thể chèn vào giữa trang bất kỳ thay vì dồn về mép phải.
+
+Xử lý: thiết kế lại khóa chính dùng {{BIGINT GENERATED BY DEFAULT AS IDENTITY}} (tăng dần) cho bảng mới, cột {{external_id UUID}} v7 (có thành phần thời gian, sắp xếp được) để lộ ra ngoài API; migrate dữ liệu theo lô. Sau migration, chỉ mục PK gọn hơn ~40%, p95 insert ổn định quanh 5 ms, buffer cache hit rate cải thiện rõ. Với bảng cũ không migrate ngay, chạy {{REINDEX CONCURRENTLY}} để thu gọn bloat tạm thời.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu B-tree là cây cân bằng lưu dữ liệu theo trang, mỗi trang chứa nhiều khóa nên cây thường chỉ cao 3-4 tầng dù bảng hàng trăm triệu dòng, nhờ đó tra cứu chỉ cần vài lần đọc trang. Index-only scan là khi query chỉ cần cột có trong chỉ mục và visibility map của Postgres xác nhận trang heap an toàn, DB trả kết quả trực tiếp từ chỉ mục. Vấn đề em hay gặp với UUID v4 là nó ngẫu nhiên, nên insert chèn rải rác khắp cây, gây tách trang, chỉ mục phình và cache kém. Em từng tối ưu bảng sự kiện 8 triệu dòng/ngày: chỉ mục PK phình gấp đôi, insert chậm dần. Sau khi đo bằng pgstattuple và EXPLAIN BUFFERS, em đề xuất chuyển PK sang BIGINT tăng dần và dùng UUID v7 cho id public; kết quả chỉ mục gọn hơn và p95 insert giảm rõ. Khi phỏng vấn em luôn nhấn mạnh: chọn kiểu khóa ảnh hưởng trực tiếp đến hình dạng cây và hiệu năng ghi."
 
 > Senior tip: khi nhận khiếu nại "insert chậm dần nhưng schema không đổi", hãy đo kích thước chỉ mục và tỉ lệ lấp đầy của trang trước khi đổ lỗi cho phần cứng hay mã ứng dụng. Một chỉ mục không dùng đến (idx_scan = 0 trong thời gian dài) vừa chiếm đĩa vừa làm chậm mọi câu ghi – hãy xóa nó.`,
   follow: [
@@ -9346,6 +9376,16 @@ Checkpoint là quá trình đẩy trang đã sửa từ bộ nhớ đệm xuốn
 - Theo dõi: pg_stat_bgwriter đến PostgreSQL 16 (checkpoints_timed là định kỳ, checkpoints_req là do WAL đầy – nhiều checkpoints_req là dấu hiệu ghi quá nhiều; buffers_checkpoint là số trang checkpoint đã ghi); từ PostgreSQL 17 các cột này chuyển sang view pg_stat_checkpointer (num_timed, num_requested, buffers_written). Theo dõi thêm kích thước pg_wal và bật log_checkpoints.
 - Nếu thấy spike: chia nhỏ batch ghi, tránh cập nhật cùng hàng lớn đồng thời, xem xét tăng max_wal_size (dùng nhiều dung lượng WAL để ít checkpoint hơn) và kiểm tra checkpoint_completion_target đang ở 0.9 (trên bản cũ hơn 14 thường cần đặt lại).
 - Không bao giờ tắt fsync (PostgreSQL fsync = off) trên production: commit sẽ được báo thành công trước khi dữ liệu xuống đĩa, mất điện có thể làm hỏng dữ liệu, không chỉ mất giao dịch gần nhất.
+
+### Ví dụ đời thực
+Hệ thống ghi nhận giao dịch thanh toán trên PostgreSQL, ~600 commit/giây giờ cao điểm. Đội vận hành nhận cảnh báo p99 latency ghi tăng vọt theo chu kỳ 3-5 phút, từ ~8 ms lên 300-500 ms, trong khi CPU DB không cao. Người dùng thấy thao tác "Xác nhận thanh toán" thỉnh thoảng quay lâu.
+
+Điều tra: xem {{pg_stat_bgwriter}} (Postgres 14) thấy {{checkpoints_req}} tăng mạnh so với {{checkpoints_timed}}, chứng tỏ checkpoint bị ép do WAL đầy trước chu kỳ; {{buffers_checkpoint}} cao trong các đợt spike. Bật {{log_checkpoints}} ghi log cho thấy mỗi checkpoint phải ghi hàng chục nghìn buffer trong thời gian ngắn, gây áp lực I/O đĩa. Nguyên nhân gốc: {{max_wal_size}} để mặc định nhỏ (1 GB) so với lượng ghi thực tế, và một job batch cập nhật hàng loạt mỗi 5 phút làm dirty page tăng đột biến.
+
+Xử lý: tăng {{max_wal_size}} lên 4 GB để checkpoint giãn ra, giữ {{checkpoint_completion_target}} 0.9, tách job batch thành các lô nhỏ hơn và rải đều thời gian. Theo dõi sau thay đổi: {{checkpoints_req}} giảm rõ, p99 latency ghi ổn định 10-15 ms, không còn spike chu kỳ. Với dữ liệu click-tracking không quan trọng, nhóm cân nhắc {{synchronous_commit=off}} cho bảng riêng để giảm chờ fsync, nhưng giao dịch thanh toán vẫn giữ {{on}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Em giải thích durability của commit dựa trên WAL: khi COMMIT, DB phải ghi WAL xuống đĩa và fsync trước khi báo thành công, còn trang dữ liệu thật được ghi nền qua checkpoint. Nhờ vậy sau mất điện, DB replay WAL để khôi phục. Em phân biệt synchronous_commit: on chờ fsync an toàn nhất, off nhanh hơn nhưng có thể mất vài giao dịch vừa commit khi crash. full_page_writes ghi ảnh trang đầu sau checkpoint để tránh torn page. Về checkpoint spike, em từng gặp p99 ghi tăng chu kỳ do checkpoints_req cao vì max_wal_size nhỏ và batch ghi dồn; em xử lý bằng tăng max_wal_size, giữ completion_target 0.9 và chia nhỏ batch. Khi trả lời phỏng vấn em luôn nhấn mạnh trade-off: commit bền vững tốn độ trễ fsync, nên gom thao tác vào một transaction và chỉ nới synchronous_commit cho dữ liệu chịu mất được."
 
 > Senior tip: commit bền vững có giá tiền (mỗi commit chờ ổ cứng ghi, thường vài đến mười miligiây). Hãy nhóm nhiều thao tác vào một giao dịch thay vì commit từng dòng, và đặt synchronous_commit = off chỉ cho chức năng chịu được mất vài giao dịch gần nhất (ví dụ sự kiện theo dõi lượt nhấp, log hành vi) – không bao giờ dùng cho dữ liệu tiền tệ.`,
   follow: [
@@ -9408,6 +9448,16 @@ Dựa vào hai câu SQL và hai chỉ mục liên quan, bạn biết deadlock do
 - Cách theo dõi: SHOW ENGINE INNODB STATUS khi cần chi tiết; information_schema.innodb_trx xem giao dịch mở lâu.
 - Không khắc phục bằng cách tắt gap lock (đặt isolation READ COMMITTED) một cách tuỳ tiện: sẽ mất tính nhất quán phantom; chỉ đổi khi nghiệp vụ chấp nhận và đã hiểu hậu quả.
 
+### Ví dụ đời thực
+API đăng ký mã khuyến mãi {{promo_code}} (có unique index) trên MySQL InnoDB, isolation REPEATABLE READ. Trong chiến dịch flash sale, ~300 yêu cầu/giây cùng cố gắng tạo mã {{WELCOME2026}}. Log ứng dụng ghi nhận lỗi {{Deadlock found when trying to get lock; try restarting transaction}} (mã 1213, SQLState 40001) tăng đột biến, tỉ lệ thất bại ~2% dù sau đó mã chỉ được tạo một lần.
+
+Điều tra: chạy {{SHOW ENGINE INNODB STATUS}} và xem mục LATEST DETECTED DEADLOCK thấy 3 transaction cùng INSERT giá trị trùng: T1 giữ X lock trên bản ghi mới, T2 và T3 chờ S lock để kiểm tra trùng; khi T1 rollback, T2 và T3 cùng được cấp S và mỗi bên xin X lock dẫn đến vòng chờ, MySQL chọn victim rollback. Ngoài ra có batch job chèn nhiều mã theo thứ tự ngẫu nhiên gây deadlock thứ hai kiểu chéo khóa.
+
+Xử lý: (1) ứng dụng bắt lỗi 1213 và retry toàn bộ transaction với backoff + jitter, tối đa 3 lần; (2) đổi luồng tạo mã sang kiểm tra tồn tại + sinh mã từ nguồn tuần tự, giảm va chạm trùng; (3) sắp xếp danh sách mã trước khi insert batch để thứ tự khóa ổn định. Sau thay đổi, lỗi 1213 còn rải rác <0,1% và được retry thành công, không ảnh hưởng người dùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu trong InnoDB bảng chính là clustered index theo khóa chính, còn secondary index lưu khóa phụ kèm giá trị khóa chính nên truy vấn qua index phụ phải tra ngược về clustered index. Ở REPEATABLE READ, InnoDB dùng next-key lock và gap lock để chống phantom read, nên khi nhiều transaction chèn cùng khóa unique hoặc chèn theo thứ tự ngược nhau rất dễ deadlock. Em từng xử lý vụ 1213 bùng lên khi flash sale: em đọc SHOW ENGINE INNODB STATUS để thấy vòng chờ giữa các insert trùng mã, rồi kết hợp ba hướng: retry transaction có backoff ở ứng dụng, giảm va chạm bằng cách sinh mã ổn định và sắp xếp khóa khi batch insert. Em không chọn tắt gap lock vội vì nó đổi ngữ nghĩa isolation; thay vào đó em chấp nhận deadlock có thể xảy ra và đảm bảo hệ thống tự phục hồi đúng."
+
 > Senior tip: deadlock không phải lỗi của cơ sở dữ liệu, mà là tín hiệu hai giao dịch đang tranh chấp tài nguyên theo thứ tự không ổn định. Mục tiêu không phải "không bao giờ deadlock" (không thể với ghi song song), mà là giảm tần suất và đảm bảo ứng dụng biết bắt lỗi và thử lại đúng cách.`,
   follow: [
     'Tại sao chỉ mục phụ của InnoDB luôn chứa giá trị khóa chính, và điều đó ảnh hưởng thế nào đến việc chọn khóa chính?',
@@ -9456,6 +9506,16 @@ Theo dõi chỉ số HikariCP: hikaricp.connections.pending (số luồng đang 
 ### Trên production
 - Với luồng ảo (Java 21+): số luồng có thể rất lớn nhưng kết nối cơ sở dữ liệu vẫn hữu hạn → đặt pool nhỏ (thường 5–10), theo dõi pending; nhiều instance chia sẻ một cơ sở dữ liệu hãy cân nhắc PgBouncer hoặc RDS Proxy thay vì tăng pool ở mỗi instance.
 - spring.jpa.open-in-view = true (mặc định) giữ kết nối suốt khi render JSON → pool cạn dù truy vấn nhanh. Hãy đặt false và load đủ dữ liệu trong dịch vụ.
+
+### Ví dụ đời thực
+Dịch vụ đơn hàng Spring Boot chạy 4 instance, mỗi instance cấu hình HikariCP {{maximum-pool-size=50}} (tổng 200 kết nối) trỏ vào PostgreSQL {{max_connections=120}}. Giờ cao điểm ~350 req/giây, p95 API tăng từ 200 ms lên 2,5 giây, log xuất hiện {{SQLTransientConnectionException: Connection is not available, request timed out after 30000ms}} và DB CPU tăng dù query riêng lẻ vẫn nhanh.
+
+Điều tra: metric HikariCP cho thấy {{hikaricp.connections.pending}} thường xuyên > 0 và {{connections.acquire}} cao; DB log thấy hàng trăm kết nối active nhưng nhiều query chờ lock/context switch. Đồng thời {{spring.jpa.open-in-view}} đang bật (mặc định) nên kết nối bị giữ suốt quá trình serialize JSON, kéo dài thời gian giữ kết nối trung bình từ ~20 ms lên ~80 ms. Nguyên nhân gốc: pool quá lớn gây tranh chấp trên DB và OSIV giữ kết nối lâu hơn cần thiết.
+
+Xử lý: tắt {{spring.jpa.open-in-view}}, load dữ liệu trong service bằng DTO; giảm pool mỗi instance xuống 15 (tổng 60, chừa chỗ cho admin/replication); đặt {{maxLifetime}} 30 phút ngắn hơn timeout mạng, bật {{leak-detection-threshold}} 60s phát hiện chỗ giữ kết nối lâu. Sau khi deploy, {{pending}} về ~0, p95 ổn định ~220 ms, lỗi timeout kết nối biến mất, CPU DB giảm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi sizing HikariCP, em không lấy số thread ứng dụng làm kích thước pool mà dựa trên thời gian giữ kết nối và throughput, ví dụ theo Little's Law: 400 req/giây nhân 0,02 giây chỉ cần khoảng 8 kết nối bận. Em cũng nhớ tổng pool mọi instance phải nhỏ hơn max_connections của DB. Pool quá lớn thường làm hệ thống chậm hơn vì tăng hàng chờ, context switch và tranh chấp lock trên DB. Em chú ý maxLifetime phải ngắn hơn timeout của firewall hoặc DB để tránh connection reset ngẫu nhiên, và dùng leak-detection để tìm chỗ giữ kết nối lâu. Trường hợp thực tế em từng gặp: OSIV bật làm giữ kết nối tới lúc render JSON, pool 50/instance gây pending và timeout; sau khi tắt OSIV, giảm pool xuống 15 và chỉnh maxLifetime, latency và lỗi kết nối đều ổn định lại."
 
 > Senior tip: chỉ số quan trọng nhất của pool kết nối là thời gian chờ và số luồng đang chờ, không phải số kết nối hiện có. Pool lớn không làm cơ sở dữ liệu nhanh hơn; nó chỉ chia nhỏ thời gian CPU của cơ sở dữ liệu cho nhiều yêu cầu hơn. Khi thấy chờ kết nối, việc đầu tiên là tìm truy vấn giữ giao dịch lâu.`,
   follow: [
