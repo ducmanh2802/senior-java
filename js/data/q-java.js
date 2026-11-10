@@ -6235,6 +6235,12 @@ Một service xử lý hàng đợi đơn hàng cần lấy đơn mới nhất v
 - Mô hình domain với sealed hierarchy + record → algebraic data type style.
 - Parser/AST/protocol message.
 
+### Ví dụ đời thực
+Một dịch vụ xử lý sự kiện thanh toán có 3 loại: {{DomesticTransfer}}, {{InternationalWire}}, {{CardPayment}}, được mô hình bằng {{sealed interface Transaction permits ...}} và mỗi loại là record chứa trường riêng. Logic tính phí dùng {{switch}} expression không có {{default}}. Khi thêm loại {{CryptoPayment}} vào {{permits}} nhưng quên cập nhật hàm tính phí, quá trình build thất bại ngay tại {{switch}} với lỗi thiếu case, nên lỗi được phát hiện trước khi deploy. Trước đó, khi dùng class thường và có {{default}}, loại mới có thể rơi vào nhánh mặc định và bị xử lý sai. Sau khi sửa, nhóm cập nhật đủ case và test; kết quả là tránh được rủi ro tính phí sai trên production và rút ngắn thời gian rà soát nhờ compiler chỉ rõ chỗ thiếu.
+
+### Trả lời mẫu khi phỏng vấn
+"Record pattern cho phép tách các thành phần của record trực tiếp trong {{instanceof}} hoặc {{switch}}, ví dụ {{case Point(int x, int y)}} thay vì phải cast rồi gọi getter. Khi kết hợp với sealed class, compiler biết toàn bộ subtype được phép nên có thể kiểm tra exhaustiveness: nếu thiếu nhánh thì lỗi biên dịch, và khi thêm subtype mới vào {{permits}} thì các {{switch}} cũ buộc phải cập nhật. Điều này giúp refactor domain model an toàn hơn, đặc biệt với luồng xử lý event hoặc tính toán nghiệp vụ. Tôi cũng chú ý {{case null}} khi input có thể null, dùng guarded pattern với {{when}} khi cần điều kiện, và với type không sealed thì vẫn cần {{default}}. Trong thực tế, sealed + record + switch expression giúp code rõ ràng và giảm bug bỏ sót case."
+
 > Senior tip: kết hợp sealed + record + switch expression để compiler bắt sót case khi domain mở rộng; thêm case null nếu input có thể null; tránh default "silent" nuốt case mới.`,
   follow: ['Sealed class là gì?', 'Khi nào cần default trong switch?'],
   tags: ['Java 21', 'record patterns', 'sealed', 'pattern matching']
@@ -6262,6 +6268,22 @@ Một service xử lý hàng đợi đơn hàng cần lấy đơn mới nhất v
 
 ### Khi nào preview OK
 - Thử nghiệm local/CI; không commit vào main branch production.
+
+### So sánh lựa chọn thay thế
+- {{String.formatted}}: cú pháp ngắn gọn, quen thuộc như {{printf}}, phù hợp log/message.
+- {{MessageFormat}}: mạnh cho i18n (quốc tế hóa) và định dạng phức tạp theo locale.
+- Text block + {{PreparedStatement}}: phù hợp SQL nhiều dòng; biến được bind an toàn, tránh ghép chuỗi.
+- Template engine/thư viện: hữu ích khi template lớn, nhưng cần cân nhắc phụ thuộc và độ phức tạp.
+
+### Mẹo thực tế
+- Luôn xem trạng thái JEP/API (preview/stable) trước khi dùng trong production.
+- Với dữ liệu từ người dùng, ưu tiên cơ chế binding/escaping đúng ngữ cảnh thay vì nội suy chuỗi trực tiếp.
+
+### Ví dụ đời thực
+Một nhóm từng thử dùng cú pháp string template (preview, JEP 430) trên JDK 21 để tạo truy vấn báo cáo cho dễ đọc. Khi nâng môi trường lên JDK mới hơn trong CI, tính năng preview bị thay đổi/bỏ nên mã không còn biên dịch được. Nhóm phải chuyển sang text block để giữ SQL nhiều dòng dễ đọc và dùng {{String.formatted}} hoặc {{PreparedStatement}}/builder để chèn tham số an toàn. Việc này làm tốn thời gian sửa đổi nhưng giúp chốt lại nguyên tắc: chỉ dùng API stable cho production. Sau khi chuẩn hóa, build CI ổn định trên các phiên bản JDK được hỗ trợ và mã rõ ràng hơn về cách xử lý biến đầu vào.
+
+### Trả lời mẫu khi phỏng vấn
+"String templates theo JEP 430 từng là tính năng preview ở JDK 21/22 nhưng sau đó bị rút và không có trong các JDK ổn định về sau, nên tôi không dùng cho production. Tôi phân biệt rõ với text block: text block chỉ là chuỗi nhiều dòng từ Java 15, không tự nội suy biến. Khi cần chèn giá trị, tôi dùng {{String.formatted}} hoặc {{MessageFormat}} tùy ngữ cảnh, và với SQL thì ưu tiên {{PreparedStatement}} hoặc query builder để tránh injection. Tôi cũng không bật {{--enable-preview}} trong build production vì làm tăng rủi ro khi nâng cấp JDK. Nói chung, nên chọn tính năng stable và cách làm rõ ràng, an toàn."
 
 > Senior tip: theo dõi JEP nhưng chỉ merge feature khi stable; ghi rõ java.version/target trong pom; review dependency preview.`,
   follow: ['Text block vs string templates?', 'Khi nào bật preview?'],
@@ -6293,6 +6315,12 @@ Một service xử lý hàng đợi đơn hàng cần lấy đơn mới nhất v
 - StructuredTaskScope vẫn preview: API ở JDK 25 (StructuredTaskScope.open + Joiner) khác hẳn JDK 21.
 - ThreadLocal vẫn cần cho thư viện chưa hỗ trợ ScopedValue.
 
+### Ví dụ đời thực
+Một API gateway dùng virtual thread và cần truyền {{traceId}}, {{userId}} qua nhiều lớp để ghi log và tracing. Trước đây dùng {{ThreadLocal}}; trong một luồng lỗi hiếm, filter quên {{remove()}} trong {{finally}} khiến request sau đọc nhầm context cũ, gây log sai và khó điều tra. Nhóm siết lại kỷ luật {{set}}/{{remove}} trong {{finally}} và chuẩn bị lộ trình dùng {{ScopedValue}} trên môi trường JDK hỗ trợ ổn định, vì {{ScopedValue}} gắn giá trị bất biến vào scope lexical và tự hết hiệu lực khi ra khỏi block. Với các tác vụ con song song, {{StructuredTaskScope}} giúp gom fork/join và xử lý lỗi tập trung, tránh task mồ côi. Kết quả là giảm rủi ro rò rỉ context và luồng xử lý dễ hiểu hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"{{ThreadLocal}} giúp lưu context theo thread nhưng có nhược điểm là mutable, dễ quên {{remove()}} gây leak, và khó quản lý khi tạo nhiều task con. {{ScopedValue}} giải quyết bằng cách gắn giá trị bất biến vào một scope rõ ràng: vào scope thì có, ra khỏi scope thì hết, nên an toàn và phù hợp với virtual thread khi môi trường hỗ trợ ổn định. {{StructuredTaskScope}} quản lý task con theo cấu trúc với fork/join/cancel và propagate lỗi rõ ràng, tránh task mồ côi. Trên JDK 21 các tính năng này còn preview nên production thường vẫn dùng {{ThreadLocal}} kèm {{finally remove()}}; khi lên phiên bản ổn định tôi cân nhắc chuyển request context sang {{ScopedValue}} và dùng structured concurrency cho xử lý song song."
+
 > Senior tip: trên JDK 21, production vẫn dùng ThreadLocal + ExecutorService có remove() trong finally; khi lên JDK 25, chuyển context request (userId, traceId) sang ScopedValue. Khi migrate sang virtual thread, đo memory của ThreadLocal.`,
   follow: ['ThreadLocal leak ở đâu?', 'Virtual threads + ThreadLocal?'],
   tags: ['Java 21', 'scoped values', 'structured concurrency', 'preview']
@@ -6322,6 +6350,12 @@ Một service xử lý hàng đợi đơn hàng cần lấy đơn mới nhất v
 - ZGC vẫn compact heap (di chuyển object đồng thời với ứng dụng), nên không phân mảnh; cái giá là CPU cho barrier và cần heap dư: nếu tốc độ cấp phát vượt tốc độ GC dọn, thread ứng dụng bị chặn (allocation stall), triệu chứng là latency tăng dù pause log vẫn dưới 1 ms.
 - JDK 24 đã bỏ hẳn chế độ non-generational (JEP 490); cờ -XX:+ZGenerational không còn ý nghĩa.
 - GC log (-Xlog:gc*) để phân tích; không đổi GC mà không đo.
+
+### Ví dụ đời thực
+Một dịch vụ xử lý sự kiện cần độ trễ p99 thấp. Khi dùng G1, thỉnh thoảng pause GC làm p99 tăng. Nhóm thử ZGC non-generational: pause rất thấp nhưng CPU tăng rõ khi allocation rate cao vì phải xử lý nhiều trên toàn heap. Sau khi nâng lên JDK 21 và bật Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}}), young generation được thu gom thường xuyên hơn, overhead CPU giảm so với ZGC cũ trong cùng tải thử nghiệm, và p99 ổn định hơn. Nhóm vẫn theo dõi GC log ({{-Xlog:gc*}}), allocation rate và cấp đủ heap dư để tránh allocation stall. Quyết định cuối cùng dựa trên số liệu đo bằng JFR/benchmark trên tải sát thực tế, không chỉ dựa vào kỳ vọng lý thuyết.
+
+### Trả lời mẫu khi phỏng vấn
+"Generational ZGC cải thiện ZGC cũ bằng cách tách heap thành young và old generation, dựa trên giả thuyết phần lớn object chết sớm. Nhờ đó GC tập trung thu gom young generation thường xuyên với chi phí thấp hơn thay vì xử lý toàn heap như non-generational, nên giảm CPU overhead trong nhiều workload có allocation rate cao. Trên JDK 21 bật bằng {{-XX:+UseZGC -XX:+ZGenerational}}, từ JDK 23 generational là mặc định. Trade-off là vẫn cần heap dư và phải theo dõi allocation stall; pause thấp không đồng nghĩa throughput luôn tốt hơn G1. Khi chọn GC tôi luôn so sánh bằng JFR và benchmark trên tải thực tế, bắt đầu từ G1 và chỉ chuyển khi mục tiêu latency rõ ràng."
 
 > Senior tip: bắt đầu G1 default; chuyển ZGC chỉ khi p99 latency yêu cầu và có benchmark; generational ZGC là bước tiến nhưng vẫn cần tuning heap size và allocation rate.`,
   follow: ['So sánh G1 vs ZGC?', 'Khi nào dùng Shenandoah?'],
@@ -6406,8 +6440,27 @@ String sql = \"\"\"
 ### Khi dùng
 - SQL/JSON trong test và repository; template email; documentation.
 
+### So sánh nhanh
+- Nối chuỗi ({{+}}): phù hợp chuỗi ngắn, nhưng nhiều dòng/quote làm mã rối.
+- Text block: giữ định dạng nhiều dòng, dễ đọc, ít escape hơn.
+- Đọc từ file resource: tốt khi nội dung rất dài/tái sử dụng nhiều nơi, nhưng tách khỏi test và cần quản lý đường dẫn/encoding.
+
+### Lưu ý khi viết test
+- Khi so sánh chuỗi, nên chuẩn hóa xuống dòng ({{\\n}}) nếu chạy trên nhiều môi trường.
+- Nếu cần giữ khoảng trắng cuối dòng, luôn dùng {{\\s}} rõ ràng để người đọc thấy ý định.
+
+### Ví dụ đời thực
+Trong test repository, một câu SQL dài và JSON mẫu được viết bằng nối chuỗi nên khó đọc và dễ sai khi sửa. Nhóm chuyển sang text block (ba dấu ngoặc kép), giúp query và JSON giữ định dạng rõ ràng và dễ review. Tuy nhiên một test snapshot JSON bị fail vì text block tự strip indentation và bỏ trailing whitespace ở cuối dòng, trong khi dữ liệu kỳ vọng có khoảng trắng. Nhóm kiểm tra từng ký tự, thêm {{\s}} tại dòng cần giữ khoảng trắng và canh vị trí dấu đóng để strip indentation ổn định. Sau khi sửa, test xanh trở lại và mã test dễ bảo trì hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Text block giúp viết chuỗi nhiều dòng như SQL hoặc JSON trong test dễ đọc hơn vì không cần nối chuỗi và escape nhiều. Java sẽ strip indentation chung dựa trên dòng có thụt lề nhỏ nhất, nên vị trí dấu đóng rất quan trọng. Cần lưu ý trailing whitespace thường bị bỏ, nếu cần giữ thì dùng {{\s}}, và có thể dùng backslash cuối dòng để nối dòng logic. Nếu nội dung là hằng thì text block cũng có thể là compile-time constant. Trong thực tế tôi dùng text block cho test và template tĩnh, đồng thời cẩn thận khi so sánh snapshot với khoảng trắng và xuống dòng để tránh lỗi khó phát hiện."
+
 > Senior tip: đặt closing \"\"\" thẳng hàng với code để strip đúng; viết test snapshot so sánh; dùng \\s khi cần trailing space trong JSON.`,
-  follow: ['Text block có phải compile-time constant?'],
+  follow: [
+    'Text block có phải compile-time constant và dùng được ở đâu?',
+    'Làm sao giữ trailing whitespace hoặc kiểm soát indentation trong text block?',
+    'Khi nào nên dùng text block thay vì đọc từ file resource?'
+  ],
   tags: ['Java 15', 'text blocks', 'SQL', 'JSON']
 },
 {
@@ -6462,6 +6515,12 @@ jobs:
 - **Chỉ test chức năng, quên hiệu năng:** GC, JIT (Just-In-Time compiler - trình biên dịch lúc chạy) warmup, và memory footprint đổi theo JDK.
 - **{{--add-opens}} thành nợ kỹ thuật vĩnh viễn:** mở tạm để "qua ngày" rồi không ai dọn.
 - **Dependency có CVE hoặc ngừng bảo trì:** nâng JDK là cơ hội bắt buộc nâng cả thư viện rủi ro.
+
+### Ví dụ đời thực
+Một công ty có 30 microservice chạy JDK 17, muốn nâng lên JDK 21. Nhóm platform lập kế hoạch theo wave: wave 0 chọn 2 service nội bộ ít traffic. Họ chuẩn hóa base image JDK 21, chạy CI build/test song song, dùng {{jdeps --jdk-internals}} và {{jdeprscan}} để phát hiện API nội bộ/dependency chưa tương thích. Kết quả: một agent APM cũ không chạy được trên JDK 21 nên phải nâng trước; khi canary 5% traffic, một service có p99 tăng nhẹ do khác biệt warmup/GC. Nhóm so sánh dashboard latency, error rate, GC pause, throughput trước/sau trong 24-48 giờ, điều chỉnh cấu hình rồi mới tăng dần traffic. Sau vài tuần, các wave tiếp theo tái dùng playbook, mỗi wave chỉ bắt đầu khi wave trước ổn định trên production. Nhờ có baseline và rollback image cũ, không xảy ra gián đoạn lớn.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nâng LTS cho khoảng 30 service, tôi coi đây là một chương trình thay đổi có kiểm soát. Trước hết tôi chọn baseline JDK mục tiêu, chuẩn hóa toolchain/CI và quét tương thích bằng {{jdeps}}, {{jdeprscan}}, đồng thời rà dependency, agent và thư viện bytecode. Sau đó tôi chia rollout theo wave: bắt đầu từ service rủi ro thấp, canary một phần traffic, so sánh metric trước/sau như p50/p95/p99, error rate, GC pause, throughput và thời gian khởi động. Mỗi wave phải có tiêu chí qua và kế hoạch rollback rõ ràng, giữ khả năng quay lại image JDK cũ. Tôi cũng tránh dùng {{--add-opens/--add-exports}} như giải pháp lâu dài và luôn ghi kế hoạch dọn nợ. Cách làm theo từng đợt giúp giảm rủi ro và học được bài học từ wave trước để áp dụng cho service quan trọng hơn."
 
 > Senior tip: coi nâng LTS là "chương trình", không phải ticket. Thực tế hay dùng: 1 owner (platform/architect), playbook dùng chung, dashboard so sánh trước-sau cho mọi service, và quy tắc "wave sau chỉ bắt đầu khi wave trước qua 1 tuần production ổn định". Với 30 service, thường mất 2-4 tháng cho lộ trình 17→21 nếu kỷ luật; cố ép nhanh thường trả giá bằng incident.`,
   follow: [
