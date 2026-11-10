@@ -2930,6 +2930,12 @@ Compiler tìm theo 3 phase: (1) không boxing, không varargs; (2) cho phép box
 - {{List<Integer>}} có {{remove(int index)}} và {{remove(Object o)}}: gọi {{list.remove(1)}} sẽ xoá phần tử ở **index 1**, không phải giá trị 1. Muốn xoá giá trị thì gọi {{list.remove(Integer.valueOf(1))}}.
 - Hai overload {{f(List<String>)}} và {{f(List<Integer>)}} lỗi compile "name clash" vì sau type erasure có cùng chữ ký.
 
+### Ví dụ đời thực
+Một team viết DTO {{UserProfile}} có method {{public boolean equals(UserProfile other)}} (thiếu {{Object}} tham số). Code dùng {{Set<UserProfile>}} để khử trùng, nhưng {{HashSet}} gọi {{equals(Object)}} nên {{contains}} luôn false, set chứa hàng trăm bản ghi trùng. Triệu chứng: báo cáo số user unique sai lệch 15%. Điều tra: debugger thấy {{Set}} size tăng liên tục dù dữ liệu giống nhau; thêm {{@Override}} lên method -> compile error ngay ("method does not override"). Sửa: đổi chữ ký thành {{equals(Object)}} và ép kiểu bên trong. Thêm rule Checkstyle/ErrorProne "EqualsHashCode" bắt buộc {{@Override}} cho equals/hashCode. Kết quả: set khử trùng đúng, báo cáo chính xác.
+
+### Trả lời mẫu khi phỏng vấn
+"Overloading là cùng tên, khác tham số — compiler chọn lúc compile theo kiểu khai báo của argument. Overriding là cùng chữ ký, subclass định nghĩa lại — JVM chọn lúc runtime theo object thật (vtable). Static method không override được, chỉ hiding (bind theo kiểu khai báo). Private/final không override được. Overriding cho phép covariant return type, access modifier không được hẹp hơn, checked exception không được ném mới hay rộng hơn. Static call qua reference cha: Parent p = new Child(); p.staticWho() chạy Parent version vì compile-time bind. Instance call: p.instanceWho() chạy Child version vì invokevirtual."
+
 > Senior tip: bật cảnh báo thiếu {{@Override}} trong IDE/Sonar và coi đó là lỗi. Với API public, hạn chế overload có cùng số tham số mà kiểu dễ autobox lẫn nhau (int/Integer/long/Object), vì người gọi rất dễ trỏ nhầm method mà không hề biết.`,
   follow: [
     'Vì sao field không có polymorphism? {{p.field}} với {{p}} khai báo kiểu cha trả về giá trị nào?',
@@ -2998,6 +3004,12 @@ Kết quả trên đúng với cấu hình mặc định; cờ {{-XX:AutoBoxCach
 ### Pitfall production
 - {{if (order.getUserId() == currentUser.getId())}} với {{Long}}: test bằng user ID 1, 2, 3 đều pass; lên production ID 10 523 thì false, gây lỗi phân quyền "không phải chủ đơn hàng". Dùng {{Objects.equals(a, b)}} (an toàn với null) hoặc so primitive.
 - {{status == "ACTIVE"}} với status đọc từ DB hoặc JSON: chuỗi được tạo runtime nên luôn false. Dùng {{"ACTIVE".equals(status)}} để tránh luôn NPE, hoặc tốt hơn là enum (enum so bằng {{==}} là đúng và nhanh).
+
+### Ví dụ đời thực
+Một dịch vụ phân quyền kiểm tra quyền sở hữu đơn hàng bằng {{if (order.getUserId() == currentUser.getId())}} với kiểu {{Long}}. Trong môi trường dev/test, dữ liệu user ID chỉ từ 1–50 nên so sánh reference bằng {{==}} luôn trả {{true}} (trong cache -128..127). Khi lên production, user ID thực tế từ 10.000 trở lên, {{==}} trả {{false}} dù ID bằng nhau → 1.200 yêu cầu/ngày bị từ chối truy cập tài nguyên của chính chủ. Triệu chứng: log audit ghi "access denied" nhưng truy vấn DB xác nhận user là chủ đơn hàng. Điều tra: heap dump cho thấy hai object {{Long}} khác nhau cùng giá trị 10523; viết unit test với ID 200 và 10523 → phát hiện ngay. Cách sửa: đổi sang {{Objects.equals(order.getUserId(), currentUser.getId())}} hoặc lấy primitive {{order.getUserId().longValue() == currentUser.getId().longValue()}}. Sau deploy, lỗi phân quyền về 0. Thêm rule Sonar "ReferenceEquality" ở mức blocker để ngăn chặn regression.
+
+### Trả lời mẫu khi phỏng vấn
+"== so sánh reference, equals so sánh nội dung. Với String literal và hằng compile-time thì == tình cờ đúng nhờ String pool, nhưng chuỗi tạo lúc runtime thì sai. Với Integer/Long có cache -128..127, nên == đúng với số nhỏ (dev thường test ID 1,2,3) nhưng sai khi ID lớn hơn 127 — tôi từng gặp bug phân quyền user ID 10523 bị từ chối vì dev test bằng ID nhỏ. Vì vậy tôi luôn dùng Objects.equals cho wrapper, hoặc so primitive. Enum thì == an toàn vì chỉ có một instance. StringBuilder không override equals nên equals vẫn là ==."
 
 > Senior tip: bật rule Sonar/ErrorProne "reference comparison of boxed types / strings" ở mức blocker. Bug {{Long ==}} là loại lỗi chỉ lộ ra khi dữ liệu đủ lớn, nên test unit với ID nhỏ không bao giờ bắt được; khi viết test hãy cố ý dùng ID lớn hơn 127.`,
   follow: [
@@ -3101,6 +3113,12 @@ try {
 - {{return}} trong {{finally}} làm method báo thành công trong khi giao dịch đã lỗi, nên caller không rollback hay retry. Rất khó điều tra vì log sạch.
 - Gọi {{System.exit}} trong code thư viện hoặc job Spring sẽ bỏ qua {{finally}} và có thể bỏ dở batch đang ghi dở dang.
 
+### Ví dụ đời thực
+Một service chuyển tiền dùng try/finally để quản lý connection: trong try chạy logic chuyển tiền, finally gọi {{conn.close()}}. Khi database bị deadlock, catch ném {{SQLException}}, nhưng finally cũng ném {{SQLException}} khi đóng connection (pool exhausted). Exception deadlock gốc bị nuốt, log chỉ ghi "Connection closed" — team mất 4 tiếng debug vì nghĩ lỗi ở connection pool chứ không phải deadlock. Sửa: chuyển sang try-with-resources ({{try (var conn = ds.getConnection())}}), exception deadlock được giữ nguyên trong {{getSuppressed()}} của exception close. Sau khi fix, log hiển thị đầy đủ: "Deadlock detected" (chính) + "Suppressed: Connection closed" (phụ). Thêm rule Sonar cấm return/throw trong finally.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi try có return, giá trị biểu thức được tính trước, lưu vào slot ẩn, rồi finally chạy, cuối cùng trả slot ẩn. Với primitive, sửa biến trong finally không đổi giá trị trả về; với reference, sửa object thì có ảnh hưởng vì cùng trỏ object đó. Return hoặc throw trong finally thay thế hoàn toàn kết quả try — exception gốc biến mất, không vào suppressed. System.exit dừng JVM nên finally không chạy. Tôi dùng try-with-resources cho tài nguyên, không bao giờ viết return/throw trong finally, và cấm pattern này bằng static analysis."
+
 > Senior tip: cấm {{return}}/{{throw}} trong {{finally}} bằng static analysis (Sonar có rule "jump statements should not occur in finally blocks"). Trong {{finally}} chỉ nên dọn dẹp, không xử lý nghiệp vụ; nếu dọn dẹp có thể lỗi thì bọc try/catch riêng và log lỗi đó, đừng để nó đè lên lỗi chính.`,
   follow: [
     'try-with-resources sinh ra bytecode thế nào để giữ được suppressed exception?',
@@ -3192,6 +3210,12 @@ Khi khởi tạo class, mọi static field có giá trị mặc định (counter
 - Exception trong static block làm lần đầu thấy {{ExceptionInInitializerError}}, các lần sau thấy {{NoClassDefFoundError}}. Ai chỉ đọc log mới nhất sẽ tưởng thiếu jar.
 - Hai class có static init phụ thuộc vòng nhau và được khởi tạo từ hai thread khác nhau có thể deadlock ngay lúc khởi động.
 
+### Ví dụ đời thực
+Một framework nội bộ có class {{BaseEntity}} constructor gọi {{init()}} (để subclass override). Team viết {{OrderEntity extends BaseEntity}} với field {{private String orderNo = generateOrderNo();}}. Khi tạo {{OrderEntity}}, constructor {{BaseEntity}} gọi {{init()}} -> {{OrderEntity.init()}} chạy trước khi {{orderNo}} được gán -> {{orderNo}} là {{null}} -> NPE khi ghi log. Triệu chứng: NPE ngẫu nhiên lúc tạo đơn hàng, chỉ xảy ra với {{OrderEntity}} mới, không phải {{CustomerEntity}}. Điều tra: đọc stack trace thấy NPE ở {{init()}}, so sánh bytecode thấy {{orderNo}} initializer nằm sau {{super()}}. Cách sửa: chuyển logic {{init()}} sang {{@PostConstruct}} (Spring) hoặc factory method; hoặc dùng static factory {{OrderEntity.create()}} gọi constructor rồi {{init()}}. Thêm rule ArchUnit cấm gọi method non-final trong constructor.
+
+### Trả lời mẫu khi phỏng vấn
+"Static block chạy một lần khi class load, theo thứ tự cha trước con. Mỗi new: super() chạy xong, rồi field initializer và instance block của con (theo thứ tự code), rồi constructor con. Vì vậy method override gọi từ constructor cha sẽ thấy field con chưa gán — tôi từng gặp NPE vì BaseEntity constructor gọi init() override, mà OrderEntity.init() đọc orderNo chưa gán. Giải pháp: không gọi method overridable trong constructor (Effective Java), dùng @PostConstruct hoặc factory. Static block giữ mỏng, không gọi DB/network; exception trong static block ra ExceptionInInitializerError lần đầu, sau đó NoClassDefFoundError — log đầu mới là nguyên nhân gốc."
+
 > Senior tip: giữ static block thật mỏng (không gọi network/DB, không đọc config phức tạp). Trong Spring, dùng constructor injection và {{@PostConstruct}} thay vì logic trong static/instance block; khi gặp {{NoClassDefFoundError}} trên production, hãy tìm {{ExceptionInInitializerError}} đầu tiên trong log.`,
   follow: [
     'Vì sao static nested Holder là cách lazy singleton thread-safe mà không cần {{synchronized}}?',
@@ -3248,6 +3272,19 @@ Lưu ý: field {{int}} của một object nằm trên **heap** cùng object đó
 - "Primitive luôn nằm trên stack": sai, primitive là field của object thì nằm trên heap.
 - "Static nằm trên stack" hoặc "String pool nằm trong PermGen": PermGen đã bị bỏ từ Java 8, String pool chuyển lên heap từ Java 7.
 - "Java truyền object theo reference": Java luôn pass-by-value; giá trị được copy là reference.
+
+### Ví dụ đời thực
+Một service xuất báo cáo đệ quy duyệt cây danh mục sản phẩm (độ sâu tối đa 500 cấp). Code dùng recursion:
+~~~java
+void export(Node n) {
+    process(n);
+    for (Node c : n.children) export(c);
+}
+~~~
+Khi khách hàng import danh mục 2.000 cấp (dữ liệu bất thường), recursion depth 2.000 vượt quá stack 1MB ({{-Xss}}) -> StackOverflowError, thread chết, request 500. Triệu chứng: log chỉ có stack trace lặp {{export()}} 1000+ dòng, không thấy nguyên nhân dữ liệu. Điều tra: thread dump thấy stack đầy recursion; query DB đếm độ sâu danh mục -> max depth 2.000. Cách sửa: chuyển sang vòng lặp dùng {{ArrayDeque}} làm stack tường minh (heap, không giới hạn stack thread), thêm validate độ sâu input tối đa 100. Kết quả: không còn StackOverflowError, xử lý được cây 10.000 cấp. Thêm test integration với cây 500 cấp.
+
+### Trả lời mẫu khi phỏng vấn
+"Mỗi thread có stack riêng, chứa frame: biến local (primitive và reference), operand stack. Object, mảng, field đều trên heap dùng chung, do GC quản lý. Static field trên heap cùng Class object, metadata ở Metaspace, String pool trên heap từ Java 7. StackOverflowError khi gọi đệ quy sâu vượt -Xss (mặc định 1MB), thường do JPA @Data toString/hashCode vòng lặp, hoặc recursion dữ liệu do user kiểm soát. Tôi fix bằng vòng lặp + ArrayDeque làm stack tường minh trên heap, loại quan hệ khỏi toString, giới hạn độ sâu input. Tăng -Xss chỉ tạm, tốn RAM nhân với số thread."
 
 > Senior tip: khi thấy {{StackOverflowError}}, đọc stack trace để tìm đoạn lặp lại (thường là {{toString}} hoặc {{hashCode}} lặp xen kẽ giữa 2 class). Đừng bắt {{StackOverflowError}} để xử lý tiếp, vì trạng thái lúc đó có thể dở dang. Với {{OutOfMemoryError: unable to create native thread}}, nguyên nhân là quá nhiều thread (mỗi thread tốn stack riêng) chứ không phải thiếu heap.`,
   follow: [
@@ -3316,6 +3353,12 @@ Vì sao: {{protected}} nghĩa là "lớp con được dùng phần kế thừa *
 
 ### Pitfall trong Spring
 - {{@Transactional}} hoặc {{@Cacheable}} đặt trên method {{private}} không bao giờ có hiệu lực, vì proxy không chặn được lời gọi đó; gọi nội bộ qua {{this}} cũng bỏ qua proxy. Từ Spring 6, proxy dạng class (CGLIB) hỗ trợ thêm method protected và package-private, nhưng private thì vẫn không.
+
+### Ví dụ đời thực
+Một monolith ngân hàng dùng package-by-layer (controller, service, repository đều public). Team vay tiền cần đọc lịch sử tín dụng của khách, nhưng thay vì gọi {{CustomerService.getCreditHistory()}}, dev import trực tiếp {{CustomerRepository}} và gọi {{findById()}} — bỏ qua cache, validation, và audit log trong service. Sau 6 tháng, thay đổi schema {{customer}} bảng làm vỡ 12 chỗ gọi repository trực tiếp, debug mất 2 tuần. Lead áp dụng package-by-feature: tạo package {{credit}} chỉ export {{CreditFacade}} (public), {{CreditRepository}}, {{CreditMapper}} để package-private. ArchUnit test cấm dependency từ package khác vào internal của {{credit}}. Kết quả: lần sau đổi schema chỉ sửa 1 chỗ (repository), các module khác không compile nếu vi phạm ranh giới, CI bắt lỗi ngay. Spring vẫn inject được bean package-private, test đặt cùng package vẫn chạy.
+
+### Trả lời mẫu khi phỏng vấn
+"Có 4 mức: private (chỉ class), package-private (cùng package), protected (cùng package + lớp con khác package, nhưng lớp con chỉ truy cập qua reference kiểu của chính nó), public (mọi nơi). Protected rộng hơn package-private vì bao gồm cả cùng package. Bẫy protected: lớp con khác package không truy cập protected field của object kiểu cha — chỉ qua reference kiểu chính nó. Field nên private để giữ invariant, đổi representation an toàn, và tránh Hibernate proxy đọc field null. Ở mức kiến trúc, tôi dùng package-by-feature: chỉ facade public, internal package-private, ArchUnit kiểm tra ranh giới module trong CI. Spring inject được bean package-private, test cùng package vẫn OK."
 
 > Senior tip: trong code review, mặc định mọi class mới là package-private và chỉ nâng lên {{public}} khi có lý do. Với monolith lớn đang tính tách microservice, việc siết visibility theo package-by-feature trước là bước rẻ nhất để lộ ra phụ thuộc chéo và chuẩn bị cắt module.`,
   follow: [
