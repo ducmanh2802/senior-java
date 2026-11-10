@@ -756,6 +756,12 @@ synchronized (f) {                     // f = node đầu bucket
 - {{putIfAbsent}} + kiểm tra sau đó không atomic; dùng {{computeIfAbsent}}/{{merge}} đúng cách.
 - Kích thước ban đầu: {{new ConcurrentHashMap<>(expected)}} để giảm resize.
 
+### Ví dụ đời thực
+Một service cấu hình feature flag dùng {{ConcurrentHashMap}} làm registry. Lúc cao điểm, một endpoint gọi {{computeIfAbsent}} cho mỗi request để tải cấu hình từ DB: các thread cùng bucket xếp hàng chờ lock, latency p99 tăng từ 5ms lên 180ms và thread pool bị saturated. Điều tra bằng thread dump thấy hàng chục thread ở trạng thái BLOCKED trên cùng một node bucket. Xử lý: tách phần tải DB ra cache Caffeine với loading async, chỉ giữ {{ConcurrentHashMap}} cho kết quả đã tải; pre-size map với {{new ConcurrentHashMap<>(expected)}}; theo dõi {{mappingCount()}} và thời gian chờ. Kết quả p99 về 8ms, không còn thread bị chặn.
+
+### Trả lời mẫu khi phỏng vấn
+"Java 8 bỏ segment, dùng CAS để đặt node vào bucket rỗng và synchronized trên node đầu bucket khi có collision, nên mức đồng thời theo bucket thay vì cố định 16. Đọc không lock vì val và next là volatile. size() dùng baseCount cộng CounterCell giống LongAdder để giảm contention, nhưng tổng hợp không phải snapshot chính xác, chỉ nên dùng monitoring. Null bị cấm để get trả null không nhập nhằng với 'key không tồn tại'. Pitfall thường gặp là computeIfAbsent chạy DB bên trong lock bucket gây nghẽn, nên dùng cache có loading thay vì CHM thuần."
+
 > Senior tip: CHM rất tốt cho map cấu hình/registry đọc nhiều, nhưng không thay thế cache có eviction. Với hot key, cân nhắc {{LongAdder}}/{{striped lock}} thay vì {{compute}} trên cùng một key vì mọi thread sẽ xếp hàng trên cùng bucket.`,
   follow: [
     'Vì sao {{computeIfAbsent}} có thể gây deadlock nếu mapping function động vào chính map?',
@@ -1020,6 +1026,12 @@ Một hệ thống tính phí theo bậc dùng {{TreeMap<BigDecimal, Fee>}} vớ
 - Không xử lý {{InterruptedException}}: phải restore interrupt hoặc thoát êm.
 - Poison pill để đóng consumer cần đúng số consumer, nếu không sẽ kẹt.
 
+### Ví dụ đời thực
+Một event bus giữ danh sách listener trong {{CopyOnWriteArrayList}}. Ban đầu chỉ có 5 listener và ít thay đổi, nên publish nhanh và không CME. Sau đó một tính năng đăng ký/huỷ đăng ký listener theo từng request, mỗi publish copy mảng 2000 listener → GC pressure tăng, throughput publish giảm từ 50k/s xuống 4k/s và pause GC tăng. Điều tra bằng async-profiler thấy hotspot ở {{Arrays.copyOf}}. Xử lý: chuyển sang {{ConcurrentHashMap}} listener set với snapshot khi publish, hoặc copy-on-write chỉ khi cần; đặt bound và theo dõi queue.size(). Throughput trở lại ~45k/s.
+
+### Trả lời mẫu khi phỏng vấn
+"CopyOnWriteArrayList copy toàn bộ mảng mỗi lần ghi, đọc không lock, rất hợp danh sách listener đọc nhiều ghi cực ít; iterator là snapshot nên không CME nhưng có thể thấy dữ liệu cũ. BlockingQueue dùng cho producer-consumer, luôn đặt bound trong production. ArrayBlockingQueue bound chặt, throughput vừa; LinkedBlockingQueue throughput cao nhưng mặc định unbounded dễ OOM; SynchronousQueue handoff trực tiếp không lưu. Tôi luôn tự tạo ThreadPoolExecutor với queue bounded và đặt tên thread, theo dõi queue.size() và thời gian chờ take để phát hiện nghẽn sớm."
+
 > Senior tip: với thread pool, luôn tự tạo {{ThreadPoolExecutor}} với queue bounded và đặt tên thread; đừng dùng {{Executors.newFixedThreadPool}} mặc định vì queue vô hạn che giấu overload cho tới khi OOM. Theo dõi {{queue.size()}} và thời gian chờ {{take}} để phát hiện nghẽn sớm.`,
   follow: [
     'Vì sao {{Executors.newFixedThreadPool}} có thể gây OOM khi tải tăng?',
@@ -1071,6 +1083,12 @@ Một hệ thống tính phí theo bậc dùng {{TreeMap<BigDecimal, Fee>}} vớ
 - Dùng {{ArrayList<Integer>}} rồi sort: boxing comparator chậm hơn {{Arrays.sort(int[])}} nhiều.
 - Giữ collection lớn trong static field/singleton ⇒ leak suốt vòng đời ứng dụng.
 - Quên rằng {{Integer.valueOf}} cache chỉ giúp giá trị nhỏ; dữ liệu thực tế thường ngoài khoảng đó.
+
+### Ví dụ đời thực
+Một service giữ cache id sản phẩm trong {{ArrayList<Integer>}} 10 triệu phần tử. Heap tăng ~250MB, GC pause p99 đạt 400ms và throughput giảm. Điều tra bằng JOL thấy mỗi Integer ~16 byte cộng reference mảng ~80MB. Xử lý: đổi sang {{int[]}} presize, dùng {{Arrays.sort}} và {{Arrays.binarySearch}}; với map id→object đổi sang {{Int2ObjectOpenHashMap}}. Footprint xuống ~40MB cho mảng, GC pause về <50ms, throughput tăng ~2.5 lần.
+
+### Trả lời mẫu khi phỏng vấn
+"Với 10 triệu phần tử, boxing và overhead node quyết định hàng trăm MB. ArrayList<Integer> tốn mảng reference cộng 10 triệu Integer object; LinkedList còn tệ hơn. HashMap<Integer,V> có thể tới 1GB. Tôi ưu tiên int[] hoặc primitive collection như fastutil, Eclipse Collections; nếu key là số liên tục thì dùng mảng trực tiếp. Đo bằng JOL để biết footprint thật, bật compressed oops, presize collection và theo dõi GC. Nếu vượt 30-40% heap dự kiến thì thiết kế lại bằng chunking hoặc không giữ toàn bộ trong RAM."
 
 > Senior tip: trước khi chọn collection, ước lượng memory bằng công thức đơn giản và kiểm tra với JOL; nếu vượt quá ~30-40% heap dự kiến, hãy thiết kế lại (primitive collection, chunking, hoặc không giữ toàn bộ trong RAM). Đây là quyết định kiến trúc, không chỉ là micro-optimization.`,
   follow: [
@@ -1342,6 +1360,12 @@ Meta getMeta(Class<?> clazz) {
 - {{IdentityHashMap}} vi phạm contract Map — không dùng cho key có equals/hashCode logic business.
 - Cả hai không thread-safe; bọc {{Collections.synchronizedMap}} hoặc dùng concurrent alternative.
 
+### Ví dụ đời thực
+Một module gắn metadata cho class qua {{WeakHashMap}}. Ban đầu value là cache lớn giữ reference ngược về class ⇒ class không bao giờ được GC khi ClassLoader unload, heap tăng qua mỗi deployment redeploy và leak memory. Điều tra bằng heap dump thấy {{WeakHashMap}} entry vẫn còn. Xử lý: value chỉ giữ metadata nhẹ, không giữ reference class; dùng {{WeakReference}} cho value nếu cần; theo dõi size() và expungeStaleEntries. Heap ổn định sau redeploy.
+
+### Trả lời mẫu khi phỏng vấn
+"WeakHashMap key là WeakReference, entry tự biến mất khi key không còn strong reference, phù hợp cache metadata theo class hoặc listener registry tránh leak. IdentityHashMap dùng == thay vì equals, phù hợp graph traversal và cycle detection. Cả hai không thread-safe. WeakHashMap không tự dọn ngay, size có thể tính stale entry; value giữ strong reference nên không giữ ngược về key. IdentityHashMap hiếm dùng nhưng không thể thay thế khi cần identity semantics."
+
 > Senior tip: {{WeakHashMap}} là "lưới an toàn" cho metadata cache nhẹ, không thay thế cache production (Caffeine). {{IdentityHashMap}} hiếm dùng nhưng không thể thay thế khi cần identity semantics — đừng cố gắng hack {{equals}}/{{hashCode}} để làm được việc này.`,
   follow: [
     'Vì sao {{WeakHashMap}} value không nên giữ reference ngược về key?',
@@ -1407,6 +1431,12 @@ Comparator<Person> good = Comparator
 - **Null trong stream sort**: {{stream.sorted()}} ném NPE nếu phần tử null; dùng {{Comparator.nullsFirst}} hoặc lọc trước.
 - **Performance**: comparator phức tạp trong hot path — cache key extractor, tránh lambda capture.
 
+### Ví dụ đời thực
+Một endpoint sort danh sách 1 triệu đơn hàng theo status rồi createdAt, dùng comparator lambda tự viết {{(a,b) -> a.getStatus().compareTo(b.getStatus())}}. Khi dữ liệu có status null (đơn mới) comparator ném NPE và request 500; sau khi fix null bằng cách trả 0 sai, TimSort phát hiện vi phạm transitivity và ném "Comparison method violates its general contract" ngẫu nhiên. Xử lý: dùng Comparator.comparing(Order::getStatus, Comparator.nullsFirst(String::compareTo)).thenComparing(Order::getCreatedAt, Comparator.reverseOrder()); thêm test null, trùng giá trị, và kiểm tra stability bằng cách sort 2 lần. Latency sort từ crash về ~180ms ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Java dùng TimSort cho object arrays, hybrid merge/insertion, stable, O(n log n) worst-case, O(n) nếu dữ liệu gần sort. Comparator chain qua comparing rồi thenComparing, nullsFirst/nullsLast xử lý null an toàn. Lỗi contract thường do quên trả 0 khi bằng nhau, null không xử lý, hoặc NaN. Primitive array sort không stable nên muốn stable phải dùng Integer[] hoặc List.sort. Tôi luôn test comparator với dữ liệu null và trùng, dùng comparingInt để tránh boxing."
+
 > Senior tip: luôn test comparator với {{Collections.sort}} trên dữ liệu có null, trùng giá trị, và kiểm tra stability bằng cách sort 2 lần với key khác nhau. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
   follow: [
     'Vì sao TimSort ổn định (stable) quan trọng cho multi-key sort?',
@@ -1469,6 +1499,12 @@ record Key(Long id, String name, String category) {}
 - Dùng {{ConcurrentHashMap}} (treeify cũng có) hoặc key không do user kiểm soát (UUID, Long).
 - Với input user làm key: hash salt (Java 9+ {{String.hashCode}} không salt, nhưng có thể wrap key).
 - Monitoring: theo dõi {{HashMap}} bucket size max qua JMX/heap dump.
+
+### Ví dụ đời thực
+Một API nhận JSON chứa mảng tên field do user gửi, server parse thành {{HashMap<String, Object>}}. Kẻ tấn công gửi 10.000 key có cùng hash → CPU 100%, request timeout, service down. Treeify giảm impact nhưng bucket vẫn O(log n) và GC pressure lớn. Xử lý: giới hạn số parameter (Spring spring.mvc.max-request-parameters), không dùng input user trực tiếp làm key, dùng UUID/Long id, hoặc Caffeine cache có eviction và bound. CPU về bình thường, request timeout biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+"Hash collision xảy ra khi 2 key khác nhau có hashCode trùng bucket, HashDoS khai thác để biến HashMap O(1) thành O(n). Java 8 treeify chuyển bucket dài từ 8 thành cây đỏ-đen O(log n) khi capacity đủ 64, là lưới an toàn cuối. hashCode tốt cho composite key dùng Objects.hash hoặc prime multiplier thủ công, equals khớp, field immutable. Phòng thủ gốc là không dùng input user làm key không giới hạn, giới hạn request size, dùng UUID/Long id hoặc cache có eviction."
 
 > Senior tip: HashDoS hiếm nhưng khi xảy ra rất đau; treeify là lưới an toàn cuối, không phải giải pháp gốc. Gốc là: **không bao giờ dùng input user trực tiếp làm key của HashMap/HashSet không giới hạn**. Dùng UUID/Long ID, hoặc giới hạn số entry, hoặc dùng Caffeine/Guava cache có eviction. Với composite key, dùng record — trình biên dịch sinh {{hashCode}}/{{equals}} chuẩn và không bao giờ sai.`,
   follow: [
