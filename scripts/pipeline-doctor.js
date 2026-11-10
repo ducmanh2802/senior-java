@@ -53,7 +53,7 @@ for (const c of claims) {
   const age = (now - fs.statSync(path.join(claimDir, c)).mtimeMs) / MIN;
   const log = `logs/${c}.log`, logAge = fs.existsSync(log) ? (now - fs.statSync(log).mtimeMs) / MIN : Infinity;
   const t = tasks[c];
-  const stale = !workerLines || (t && t.st === 'DONE') || (age > 180 && logAge > 60);
+  const stale = !workerLines || (t && t.st === 'DONE' && logAge > 30) || (age > 180 && logAge > 60);
   if (!stale) continue;
   if (FIX) { fs.mkdirSync(staleDir, { recursive: true }); fs.renameSync(path.join(claimDir, c), path.join(staleDir, c + '-' + now)); info.push(`moved stale claim ${c}`); }
   else warn(`claim ${c} có vẻ chết (claim ${Math.round(age)} phút, log im ${Math.round(logAge)} phút) → --fix`);
