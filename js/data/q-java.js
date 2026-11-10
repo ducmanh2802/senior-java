@@ -4532,6 +4532,14 @@ Với bảng xếp hạng, dùng {{TreeMap}} theo điểm và value là list ng�
 ### Trả lời miệng 1 phút
 "Tôi hỏi ba câu: tra theo gì, có trùng không, cần thứ tự gì. Tra theo mã dùng HashMap, tập mã đã xử lý dùng HashSet, lịch sử theo thời gian dùng ArrayList, bảng xếp hạng luôn sắp xếp dùng TreeMap theo điểm, hàng đợi dùng ArrayDeque hoặc PriorityQueue nếu có ưu tiên. Nếu nhiều thread cùng truy cập, tôi đổi sang bản concurrent tương ứng."
 
+### Ví dụ đời thực
+Một service đặt hàng dùng {{HashMap<String, Order> ordersByCustomer}} để tra cứu đơn theo mã khách. Dưới Black Friday, traffic tăng 10 lần và service bắt đầu bị p99 latency 2 giây (trước đó < 20ms). Heap dump cho thấy {{HashMap}} resize liên tục từ capacity 16 đến 1.048.576 bucket, mỗi resize copy toàn bộ entry (khoảng 500.000 lúc bùng). Phân tích GC log: Young GC tăng từ 50ms lên 800ms, Allocation Rate 2 GB/s. Cách xử lý: khai báo capacity ban đầu {{HashMap.newHashMap(500_000)}} (Java 19) hoặc {{new HashMap<>((int) Math.ceil(500_000 / 0.75))}} (Java 17), đồng thời chuyển lịch sử thao tác từ {{ArrayList}} sang {{ArrayDeque}} để tránh dịch mảng khi xoá đầu. Kết quả: p99 latency về 15ms, Young GC ổn định 40ms, không còn resize.
+
+Bảng xếp hạng dùng {{TreeMap<Integer, List<Player>>}} thì một lúc điểm số tăng liên tục (cập nhật real-time), team thấy CPU tăng do {{TreeMap}} phải rebalance đỏ-đen mỗi lần {{put}}/{{remove}}. Chuyển sang {{PriorityQueue}} cho top 10 kết hợp {{ConcurrentHashMap}} lưu điểm đầy đủ, mỗi giây rebuild top 10 từ map — giảm CPU 60% và vẫn đúng thứ tự. Lấy bài học: chọn collection phải xét cả tần suất đọc/ghi, không chỉ truy vấn một chiều.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chọn collection, tôi hỏi ba câu: tra cứu theo key hay vị trí, có cho trùng không, và cần thứ tự gì. Tra sản phẩm theo mã là HashMap O(1), mã đã xử lý là HashSet tự loại trùng, lịch sử thao tác là ArrayList giữ thứ tự chèn, bảng xếp hạng luôn sắp xếp dùng TreeMap theo điểm (value là list vì nhiều người cùng điểm), hàng đợi dùng ArrayDeque hoặc PriorityQueue nếu có ưu tiên. Thực tế tôi từng gặp service Black Friday bị chậm do HashMap resize liên tục: từ capacity 16 lên 1 triệu bucket, mỗi lần copy 500 nghìn entry khiến Young GC nhảy từ 50ms lên 800ms. Khai báo capacity đúng n/0.75 giúp loại bỏ resize, p99 từ 2 giây về 15ms. Với bảng xếp hạng cập nhật liên tục, TreeMap rebalance tốn CPU, tôi chuyển sang PriorityQueue rebuild top 10 mỗi giây từ ConcurrentHashMap, giảm 60% CPU. Nếu nhiều thread, tôi đổi sang bản concurrent tương ứng."
+
 > Senior tip: khi review code, cứ thấy {{contains}}, {{indexOf}} hay {{remove(Object)}} trên {{List}} nằm trong vòng lặp là đáng nghi ngờ; một lần đổi sang {{Set}} từng giúp tôi giảm job đối soát từ hàng chục phút xuống vài giây. Còn với dữ liệu bảng xếp hạng thật sự lớn hoặc chia sẻ giữa nhiều instance, chuyển sang Redis Sorted Set thay vì giữ {{TreeMap}} trong heap.`,
   follow: ['Nếu bảng xếp hạng cần lấy top 10 rất thường xuyên nhưng cập nhật điểm liên tục, bạn chọn gì?', 'Khi nào LinkedHashMap tốt hơn TreeMap?', 'Khi nào chọn PriorityQueue thay vì TreeSet?'],
   tags: ['collections', 'HashMap', 'TreeMap', 'ArrayDeque', 'choosing collection']
@@ -4588,6 +4596,14 @@ Lưu ý: {{LinkedList}} chỉ O(1) khi bạn **đã đứng sẵn** tại node (
 ### Trả lời miệng 1 phút
 "ArrayList.contains duyệt tuần tự O(n), gọi trong vòng lặp n lần thành O(n²), 10 tỷ phép so sánh. Tôi build một HashSet từ phía bản ghi ngân hàng một lần rồi tra O(1), tổng O(n), từ 40 phút xuống dưới một giây. Ngoài ra tôi nhớ bảng: ArrayList get theo index O(1) nhưng tìm O(n), HashMap tra O(1) trung bình, TreeMap O(log n) nhưng có thứ tự."
 
+### Ví dụ đời thực
+Job đối soát end-of-day của một ngân hàng trung gian nạp 100.000 giao dịch từ file CSV và 100.000 bản ghi từ bảng {{bank_txn}} (cột {{ref_no}} có index). Code gốc dùng {{ArrayList.contains}} trong vòng lặp: mỗi lượt tra duyệt hết 100.000 phần tử, tổng 10 tỷ phép so sánh {{equals}}, chạy 40 phút và CPU 100%. Profiler (async-profiler) chỉ 92% thời gian ở {{ArrayList.indexOf}}. Sửa: đổi sang {{HashSet<String> bankRefs = new HashSet<>(bankList);}} rồi {{bankRefs.contains(txn.ref())}}. Build set mất 0.3 giây, tra 100.000 lần mất 0.05 giây, tổng job 1.2 giây. Lợi ích thêm: memory allocation giảm từ 2.5 GB (do tạo iterator, boxing) xuống 50 MB.
+
+Khi dữ liệu lớn hơn (5 triệu giao dịch / 5 triệu bản ghi ngân hàng), heap 8 GB không đủ nạp cả hai. Chuyển chiến lược: sort hai file CSV theo {{ref_no}} (external sort) rồi merge tuần tự hai con trỏ — O(n log n) sort + O(n) merge, chỉ cần buffer vài chục nghìn dòng, RAM ổn định 500 MB. Job chạy 3 phút thay vì OOM. Bài học: Big-O đúng nhưng phải xét cả heap; đối soát quy mô lớn đẩy xuống DB hoặc sort-merge file.
+
+### Trả lời mẫu khi phỏng vấn
+"ArrayList.contains duyệt tuần tự O(n), gọi trong vòng lặp n lần thành O(n²), 100 nghìn nhân 100 nghìn bằng 10 tỷ phép so sánh. Tôi build một HashSet từ danh sách ngân hàng một lần, tra O(1), tổng O(n), từ 40 phút xuống dưới một giây. Thực tế job đối soát ngân hàng tôi từng tối ưu: profiler chỉ 92% CPU ở ArrayList.indexOf, đổi HashSet thì build set 0.3 giây, tra 100 nghìn lần 0.05 giây, tổng 1.2 giây. Khi dữ liệu lên 5 triệu bản ghi, heap không đủ nạp cả hai, tôi chuyển sang external sort hai file rồi merge tuần tự, RAM 500 MB, chạy 3 phút. Tôi cũng nhớ bảng độ phức tạp: ArrayList get index O(1) tìm O(n), HashMap O(1) trung bình, TreeMap O(log n) có thứ tự."
+
 > Senior tip: khi đối soát dữ liệu lớn hơn nhiều so với heap (hàng chục triệu dòng), đừng nạp cả hai phía vào Java; đẩy việc so khớp xuống DB bằng {{JOIN}}/{{EXCEPT}} trên cột có index, hoặc sort hai file rồi merge tuần tự. Big-O đúng mà tràn heap thì vẫn là sự cố.`,
   follow: ['HashMap.get khi nào thoái hoá và Java 8 cải thiện gì?', 'Vì sao LinkedList.add(index, x) không phải O(1)?', 'Với 50 triệu bản ghi bạn đối soát thế nào?'],
   tags: ['Big-O', 'complexity', 'ArrayList', 'HashSet', 'performance']
@@ -4641,6 +4657,14 @@ for (String sku : stock.keySet()) {
 
 ### Trả lời miệng 1 phút
 "HashMap và Set.of không đảm bảo thứ tự: nó phụ thuộc hash, capacity và bản JDK, còn Set.of cố ý xáo theo salt ngẫu nhiên nên có thể khác giữa các lần chạy, nên test lúc pass lúc fail. Tôi sửa test để so sánh theo nội dung, còn nếu nghiệp vụ cần thứ tự thì dùng LinkedHashMap hoặc TreeMap. Khi duyệt tôi dùng entrySet hoặc forEach thay vì keySet rồi get."
+
+### Ví dụ đời thực
+Một API thanh toán trả JSON danh sách phương thức thanh toán từ {{Map<String, PaymentMethod> methods}}. Code dùng {{Map.of("VNPAY", ..., "MOMO", ..., "ZALO", ...)}} (Java 9+). Unit test so sánh chuỗi JSON thuần: {{assertEquals(expectedJson, actualJson)}}. Test pass trên máy dev (JDK 17.0.5) nhưng fail trên CI (JDK 17.0.9) và production (JDK 17.0.11) — thứ tự key trong JSON thay đổi ngẫu nhiên giữa các lần chạy JVM do salt của {{Map.of}}. Hậu quả: pipeline CI flaky, deploy bị chặn ngẫu nhiên. Điều tra: javadoc của {{Map.of}} ghi rõ "iteration order is unspecified and may change". Sửa: đổi test dùng AssertJ {{assertThat(actualMap).containsExactlyInAnyOrderEntriesOf(expectedMap)}} so sánh theo ngữ nghĩa, hoặc ép code dùng {{LinkedHashMap}} khi thứ tự là yêu cầu nghiệp vụ (ví dụ hiển thị ưu tiên VNPAY đầu tiên). Kết quả: test ổn định trên mọi JDK.
+
+Tương tự, một service ký chữ ký HMAC cho payload bằng cách nối các entry của {{HashMap}} theo thứ tự duyệt. Hai instance cùng dữ liệu sinh ra chữ ký khác nhau, gây invalid signature khi verify cross-service. Sửa: dùng Jackson {{ORDER_MAP_ENTRIES_BY_KEYS}} hoặc tự sort key trước khi nối.
+
+### Trả lời mẫu khi phỏng vấn
+"HashMap và Set.of không đảm bảo thứ tự duyệt: thứ tự phụ thuộc hash code, capacity hiện tại, phiên bản JDK, còn Set.of và Map.of từ Java 9 còn cố ý xáo trộn bằng một salt ngẫu nhiên mỗi lần chạy JVM, nên test so sánh chuỗi JSON lúc pass lúc fail. Tôi sửa test để so sánh theo nội dung dùng AssertJ containsExactlyInAnyOrderEntriesOf hoặc Map.equals, nếu nghiệp vụ cần thứ tự ổn định thì dùng LinkedHashMap giữ thứ tự chèn hoặc TreeMap sắp xếp. Khi duyệt Map cần cả key và value, tôi dùng entrySet hoặc forEach thay vì keySet rồi get — tránh tra cứu thừa, với TreeMap là O(log n) mỗi lần. Tôi từng gặp case ký HMAC từ HashMap thì hai server cho chữ ký khác nhau, sửa bằng Jackson ORDER_MAP_ENTRIES_BY_KEYS."
 
 > Senior tip: test "flaky" kiểu này hay xuất hiện ngay sau khi nâng JDK hoặc đổi {{List}} sang {{Set}} cho nhanh; trước khi nâng version, grep các chỗ serialize {{HashMap}}/{{HashSet}} ra chuỗi để so sánh, ký HMAC hoặc làm cache key. Từ Java 21, {{LinkedHashMap}}/{{LinkedHashSet}} còn là {{SequencedMap}}/{{SequencedSet}} nên lấy phần tử đầu, cuối rất tiện.`,
   follow: ['Map.equals so sánh hai map khác class (HashMap và TreeMap) được không?', 'Vì sao Set.of cố ý xáo thứ tự?', 'Bạn sinh chữ ký HMAC cho một payload dạng Map thế nào để ổn định?'],
@@ -4699,6 +4723,14 @@ top.get(0);                                     // ConcurrentModificationExcepti
 ### Trả lời miệng 1 phút
 "keySet, values, entrySet, subList, headMap là view chứ không phải copy: ghi qua view là ghi vào gốc, gốc đổi cấu trúc thì subList ném CME, và view giữ reference tới gốc nên cache subList nhỏ vẫn giữ cả list lớn. Tôi dùng view cho thao tác tại chỗ như entrySet().removeIf hay subList().clear(), còn khi cần lưu hoặc trả ra ngoài thì copy bằng List.copyOf."
 
+### Ví dụ đời thực
+Một service cache danh sách sản phẩm bán chạy dùng {{top10 = bigList.subList(0, 10)}} rồi đưa vào {{Caffeine}} cache TTL 10 phút. {{bigList}} có 1 triệu phần tử, mỗi phút job làm mới nạp list mới 1 triệu phần tử nhưng cache vẫn giữ 10 subList cũ (do TTL), mỗi subList giữ reference tới parent list 1 triệu → heap bị giữ 10 triệu phần tử rác. Heap dump (Eclipse MAT) cho thấy {{ArrayList$SubList}} chiếm retained size 800 MB trong 1.2 GB heap. Triệu chứng: Full GC 30 giây một lần, p99 API cache 500ms. Sửa: cache {{List.copyOf(bigList.subList(0, 10))}} tạo bản sao 10 phần tử thực sự. Heap giảm xuống 200 MB, Full GC biến mất, p99 5ms.
+
+Case khác: đồng nghiệp dùng {{map.entrySet().removeIf(e -> e.getValue() == 0)}} để dọn kho trống — đúng, view ghi thẳng xuống map gốc, O(k) với k entry bị xoá, nhanh hơn lặp keySet rồi remove. Nhưng một chỗ khác truyền {{map.keySet()}} cho thư viện thứ ba, thư viện gọi {{removeAll(invalidKeys)}} → map gốc mất dữ liệu. Quy tắc team: view chỉ dùng cục bộ trong method, không truyền ra ngoài, không cache.
+
+### Trả lời mẫu khi phỏng vấn
+"keySet, values, entrySet, subList, headMap là view chứ không phải bản copy: sửa qua view là sửa gốc, gốc đổi cấu trúc thì subList ném ConcurrentModificationException, và view giữ reference tới gốc nên cache subList 10 phần tử vẫn giữ cả list 1 triệu trong heap. Tôi dùng view cho thao tác tại chỗ như entrySet().removeIf hay subList().clear(), còn khi cần lưu hoặc trả ra API thì copy bằng List.copyOf. Thực tế tôi từng gặp service cache top 10 bằng subList: mỗi phút nạp list mới 1 triệu phần tử, cache giữ 10 subList cũ do TTL, mỗi subList giữ parent 1 triệu → heap 800 MB rác, Full GC 30 giây. Đổi sang List.copyOf thì heap 200 MB, Full GC biến mất, p99 từ 500ms xuống 5ms. Lưu ý Collections.unmodifiableList cũng là view, gốc đổi thì nó đổi theo."
+
 > Senior tip: một sự cố tôi từng gặp là heap dump cho thấy hàng nghìn {{ArrayList}} 200.000 phần tử bị giữ bởi {{ArrayList$SubList}} trong cache "top 20". Trong MAT, xem dominator tree, nếu thấy {{SubList}} hay {{KeySet}} giữ retained size lớn bất thường thì gần như chắc chắn ai đó cache view thay vì copy.`,
   follow: ['Vì sao keySet().add() bị cấm nhưng keySet().remove() lại được?', 'List.copyOf có copy lại nếu list đầu vào đã immutable không?', 'Làm sao phát hiện subList giữ bộ nhớ trong heap dump?'],
   tags: ['view', 'subList', 'keySet', 'entrySet', 'memory leak']
@@ -4751,6 +4783,16 @@ Mức lợi thực tế thường là vài đến vài chục phần trăm thờ
 
 ### Trả lời miệng 1 phút
 "ArrayList thì truyền n là đủ. HashMap thì tham số là số bucket, map resize khi vượt 75% nên phải truyền n chia 0,75; new HashMap(100) vẫn resize ở phần tử 97. Java 19 có HashMap.newHashMap(n) nhận số phần tử dự kiến. Tôi chỉ làm việc này ở batch lớn hoặc code nóng, có đo trước và sau."
+
+### Ví dụ đời thực
+Job nạp dữ liệu master 100.000 sản phẩm vào {{HashMap<Long, Product>>> byId}} chạy mỗi sáng 2h. Không khai báo capacity: HashMap resize 14 lần (16 → 32 → ... → 262.144), mỗi lần rehash 100.000 entry tính lại bucket. GC log: Young GC 14 lần trong job, tổng allocation 400 MB, job chạy 8.2 giây. Thêm {{Map<Long, Product> byId = HashMap.newHashMap(100_000);}} (Java 19) — capacity 262.144, threshold 196.608, không resize. Chạy lại: Young GC 1 lần, allocation 50 MB, job 3.1 giây (giảm 62%).
+
+Case ngược: một API tạo {{HashMap}} capacity 10.000 cho mỗi request (đoán "cho chắc"), 5.000 RPS. Mỗi request cấp mảng bucket 16.384 (lũy thừa 2 ≥ 10.000/0.75), 5.000 × 16.384 = 81 triệu bucket/giây, Young GC liên tục, p99 latency 120ms. Bỏ khai báo capacity, để HashMap tự tăng từ 16: allocation giảm 95%, p99 15ms. Quy tắc: chỉ khai báo khi biết trước kích thước **và** object sống đủ lâu (batch, cache), không phải request-scoped.
+
+ArrayList tương tự: nạp 100.000 đơn hàng từ DB, {{new ArrayList<>(rows.size())}} cấp mảng đúng 100.000 một lần. Không khai báo: 23 lần cấp mảng (10 → 15 → 22 ... → 100.000), allocation 200 MB, GC 3 lần. Khai báo: 1 lần cấp, allocation 5 MB, GC 0 lần.
+
+### Trả lời mẫu khi phỏng vấn
+"ArrayList truyền n là đủ. HashMap tham số là số bucket, resize khi vượt 75% load factor nên phải truyền n chia 0,75; new HashMap(100) vẫn resize ở phần tử 97. Java 19 có HashMap.newHashMap(n) nhận thẳng số phần tử dự kiến. Tôi chỉ làm ở batch lớn hoặc code nóng, có đo trước sau. Thực tế job nạp 100 nghìn sản phẩm: không khai báo thì resize 14 lần, Young GC 14 lần, allocation 400 MB, chạy 8.2 giây; dùng HashMap.newHashMap(100_000) thì 0 resize, Young GC 1 lần, 50 MB, 3.1 giây. Ngược lại API request-scoped khai báo capacity 10.000 cho 5 nghìn RPS: cấp 81 triệu bucket/giây, Young GC chấn thương, p99 120ms; bỏ capacity thì p99 15ms. Với ArrayList, new ArrayList(rows.size()) cấp đúng một lần, không khai báo thì 23 lần cấp mảng."
 
 > Senior tip: trong một job nạp 5 triệu entry vào {{HashMap}}, việc tính đúng capacity giảm đáng kể thời gian nạp và các đợt GC do cấp mảng lớn; nhưng lợi ích lớn hơn nhiều thường đến từ việc không giữ 5 triệu object boxed trong heap ngay từ đầu. Đo bằng JMH hoặc ít nhất bằng GC log trước khi kết luận.`,
   follow: ['Vì sao capacity của HashMap phải là lũy thừa của 2?', 'Tăng load factor lên 1.0 được gì, mất gì?', 'ArrayList.trimToSize dùng khi nào?'],
@@ -4808,6 +4850,23 @@ private final Cache<String, Rate> rates = Caffeine.newBuilder()
 
 ### Trả lời miệng 1 phút
 "Lỗi collection gây sự cố thường là cache static không giới hạn, findAll rồi lọc trong Java, contains trên List trong vòng lặp, chia sẻ HashMap giữa thread, trả null và lộ collection mutable. Tôi viết guideline ngắn dựa trên sự cố thật, mỗi quy tắc có ví dụ sai/đúng, rồi tự động hoá bằng Sonar, ArchUnit, test tải và metric kích thước cache, và rà lại định kỳ."
+
+### Ví dụ đời thực
+Một team e-commerce review code và phát hiện 5 anti-pattern gây sự cố trong 6 tháng qua:
+1. **Cache static không giới hạn**: {{static Map<String, Rate> RATES = new HashMap<>();}} lưu tỷ giá theo request. Sau 5 ngày uptime, heap 4 GB đầy, Full GC 40 giây, p99 10 giây. Heap dump: {{RATES}} giữ 2.3 triệu entry, retained size 1.8 GB. Sửa: Caffeine {{maximumSize(10_000).expireAfterWrite(10, MINUTES)}} — heap ổn định 800 MB, hit ratio 92%.
+2. **{{findAll()}} rồi lọc trong Java**: job sync sản phẩm {{repo.findAll().stream().filter(...).toList()}}; khi bảng 500.000 hàng, OOM. Sửa: {{Page<Product> page = repo.findAll(PageRequest.of(0, 1000));}} lặp trang, hoặc push filter xuống SQL {{WHERE category = ?}}.
+3. **{{contains}} trên List trong vòng lặp**: đối soát 200.000 giao dịch/ngày chạy 25 phút. Đổi {{HashSet}} → 3 giây.
+4. **Chia sẻ {{HashMap}} giữa thread**: servlet filter ghi {{requestCountMap.put(ip, count)}}; dưới load test 1.000 thread, map bị corrupt (bucket loop), CPU 100% treo. Sửa: {{ConcurrentHashMap}} hoặc {{LongAdder}} cho counter.
+5. **Lộ collection mutable**: {{Order.getItems()}} trả {{List<OrderItem>}} nội bộ; controller {{order.getItems().clear()}} để reset form → đơn hàng gốc mất dòng. Sửa: getter trả {{List.copyOf(items)}}.
+
+Guideline team: 8 quy tắc ngắn, mỗi quy tắc 1 dòng + ví dụ sai/đúng + link postmortem. Tự động hoá:
+- Sonar rule custom: phát hiện {{String}} nối ({{+}}) trong vòng lặp (nên dùng {{StringBuilder}}) và {{List.contains}}/remove trong vòng lặp (nên dùng {{Set}})
+- ArchUnit test cấm {{static}} field kiểu {{Map}}/{{List}} không {{final}} trong package service
+- Test tải k6 với dữ liệu production size cho job batch
+- Micrometer metric {{cache.size}}, {{cache.hit.ratio}}, alert heap tăng sau Full GC
+
+### Trả lời mẫu khi phỏng vấn
+"Lỗi collection gây sự cố thường là: cache static Map không giới hạn gây OOM, findAll nạp cả bảng rồi lọc trong Java, contains trên List trong vòng lặp thành O(n²), chia sẻ HashMap giữa thread bị corrupt, trả null thay vì list rỗng gây NPE, lộ collection mutable nội bộ cho caller sửa. Tôi viết guideline dựa trên sự cố thật: 8 quy tắc ngắn, mỗi quy tắc có ví dụ sai/đúng và link postmortem. Tự động hoá bằng Sonar bắt contains-in-loop, ArchUnit cấm static mutable Map, test tải k6 với data production size, metric cache size/hit ratio alert heap tăng. Thực tế: một service thanh toán static HashMap lưu token theo request, 5 ngày sau heap 4GB Full GC 40 giây; đổi Caffeine maximumSize 10k expireAfterWrite 10 phút thì heap phẳng 800MB, hit ratio 92%, lỗi không tái diễn."
 
 > Senior tip: quy tắc có giá trị nhất tôi từng đưa vào là "mọi Map dùng làm cache phải có giới hạn và metric". Một service thanh toán từng Full GC liên tục sau 5 ngày uptime chỉ vì {{static HashMap}} lưu token theo request; sau khi đổi sang Caffeine có {{maximumSize}} và dashboard hit ratio, heap phẳng và lỗi không tái diễn.`,
   follow: ['Bạn viết ArchUnit rule thế nào để cấm static mutable Map?', 'Làm sao phát hiện cache không giới hạn từ heap dump?', 'Khi nào static Map vẫn chấp nhận được?'],
