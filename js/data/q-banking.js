@@ -508,6 +508,14 @@ Hệ thống -> Maker: ghi audit trail (tạo, duyệt, 14:32)
 - Phân quyền quá rộng (một nhân viên nhiều vai trò) -> có thể sửa hạn mức và duyệt cùng lúc.
 - Không kiểm tra quyền mỗi lần nhấn nút -> sau khi đăng nhập, nhân viên có thể truy cập trang không được phép.
 
+### Ví dụ đời thực
+
+Một nhân viên back-office sửa hạn mức thẻ tín dụng của khách từ 50 triệu lên 500 triệu mà khách không yêu cầu. Khách gọi trung tâm chăm sóc khiếu nại số tiền bị chặn do vượt hạn mức bất thường. Đội dev xem audit trail (nhật ký kiểm tra) và thấy: nhân viên B, IP 10.0.0.12, lúc 14:32:10, đổi hạn mức từ 50 triệu sang 500 triệu, trạng thái đã duyệt, lý do trống. Tra cứu thêm phát hiện B đồng thời là người tạo yêu cầu (maker) và người duyệt (checker) — hệ thống không chặn một người nắm cả hai quyền. Nguyên nhân gốc: RBAC bị cấu hình quá rộng, và code không kiểm tra "người duyệt khác người tạo" khi duyệt yêu cầu. Cách xử lý: hoàn hạn mức về 50 triệu, báo cáo quản lý rủi ro, thu hồi quyền duyệt của B, rồi sửa code: khi duyệt, hệ thống so sánh mã nhân viên duyệt với mã người tạo; nếu trùng thì từ chối và ghi audit trail. Kết quả: trong tháng sau không còn case hạn mức bị sửa sai, và mọi thao tác tiền đều có hai người khác nhau.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Maker-checker yêu cầu hai người khác nhau tham gia mỗi thao tác ảnh hưởng đến tiền. Ví dụ, nhân viên A tạo yêu cầu tăng hạn mức thẻ từ 50 triệu lên 100 triệu, yêu cầu này vẫn đang chờ, chưa có hiệu lực. Nhân viên B, người khác, xem yêu cầu, kiểm tra tài khoản, rồi duyệt hoặc từ chối. Chỉ khi B duyệt thì tiền mới được chuyển hoặc hạn mức mới áp dụng. Một nhân viên không được đồng thời là người tạo và người duyệt của cùng một yêu cầu. Audit trail là nhật ký kiểm toán, ghi lại ai làm gì, lúc nào, từ IP hay máy tính nào, và giá trị trước và sau mỗi thay đổi; nhật ký này không bao giờ được xóa hoặc sửa. Phân quyền theo vai trò (RBAC) gán cho mỗi nhân viên quyền cần đủ để làm việc, ví dụ thủ ngân chỉ nộp rút, nhân viên kiểm soát chỉ duyệt. Hệ thống phải kiểm tra quyền mỗi lần nhân viên nhấn nút, không chỉ khi đăng nhập. Tôi áp dụng nguyên tắc least privilege: cấp ít quyền nhất có thể, và audit trail phải đủ chi tiết để phục hồi bất kỳ giao dịch nào khi cần."
+
 > Senior tip: Trong phỏng vấn, hãy nói rằng maker-checker không chỉ là "hai người" mà là "hai người không được là cùng một người", và audit trail phải lưu đủ để có thể phục hồi một giao dịch bất kỳ. Hãy nhấn mạnh rằng RBAC phải được kiểm tra tại mỗi request, không chỉ khi đăng nhập, và nhân viên phải được cấp quyền ít nhất để làm việc (least privilege).
 
 > Cụm từ: Least privilege (quyền ít nhất) là táct bộ chỉ cấp cho nhân viên quyền cần thiết để làm việc, không thêm, để hạn chế rủi ro.
@@ -572,6 +580,14 @@ Hệ thống --> Nhân viên: hiển thị họ tên, CMND che, thẻ che
 - Không che số điện thoại khi gửi thông báo cho khách khác -> mất mật liên hệ.
 - Nhân viên thủ ngân có thể xem toàn bộ số CMND -> vi phạm quyền ít nhất.
 
+### Ví dụ đời thực
+
+Một nhân viên chăm sóc khách hàng chia sẻ màn hình để hỗ trợ khách khôi phục tài khoản. Triệu chứng: trên màn hình hiển thị đầy đủ số CMND, số thẻ tín dụng và số điện thoại của khách, được người bên ngoài chụp ảnh. Dev kiểm tra API và thấy phản hồi JSON trả về toàn bộ trường cmnd, soThe va soDienThoai, màn hình hiển thị thô mà không che. Nguyên nhân gốc: thiếu quy tắc masking (che dữ liệu) ở lớp API và lớp hiển thị, dữ liệu nhạy cảm không được che trước khi gửi về client. Cách xử lý: sửa API chỉ trả về 4 số cuối của thẻ (**** **** **** 3456), che một phần CMND (123*******89), che các số giữa của điện thoại (090****1234); log hệ thống chỉ ghi mã khách hàng đã che, không ghi số thẻ hay CMND. Kết quả: ngay sau khi triển khai, màn hình hỗ trợ không còn hiển thị dữ liệu thô, và cuộc kiểm tra bảo mật tháng sau không còn tìm thấy CMND hay số thẻ trong log và phản hồi API.
+
+### Trả lời mẫu khi phỏng vấn
+
+"KYC (Know Your Customer, biết khách hàng của bạn) là quy trình xác minh danh tính khách khi mở tài khoản, ví dụ kiểm tra CMND, địa chỉ, việc làm. eKYC (electronic KYC) làm điều đó bằng công nghệ: khách chụp ảnh CMND và chụp ảnh mặt (selfie), hệ thống tự so sánh ảnh trên giấy tờ với ảnh chụp để xác nhận đây là chủ nhân thẻ. AML (Anti-Money Laundering, chống rửa tiền) là quy trình phát hiện và ngăn tiền từ hoạt động phi pháp được biến thành tiền "trắng", ví dụ ngân hàng theo dõi giao dịch lớn hoặc kỳ lạ và báo cáo khi nghi ngờ. Dữ liệu nhạy cảm như CMND, số thẻ, số điện thoại, địa chỉ và lịch sử giao dịch phải được mã hóa khi lưu vào cơ sở dữ liệu, và phải được che khi hiển thị trên màn hình, in hóa đơn hoặc gửi SMS — ví dụ số thẻ chỉ hiện 4 số cuối, số điện thoại che các số ở giữa. Log hệ thống không được chứa số thẻ hay CMND. Tôi áp dụng quyền ít nhất: chỉ nhân viên có quyền mới xem dữ liệu nhạy cảm đã che, và mọi lần xem đều được ghi nhật ký để kiểm toán sau này."
+
 > Senior tip: Trong phỏng vấn, hãy nói rằng dev không cần làm chuyên viên pháp luật, nhưng phải biết "dữ liệu nào cần che, lưu ở đâu, ai được xem". Hãy nhấn mạnh rằng masking phải được áp dụng ở tất cả màn hình: màn hình, hóa đơn, email, SMS, log, và API trả về. Nếu có thể, hãy nói về một ví dụ quy tắc che thẻ thông tin khách (ví dụ chỉ gửi 4 số cuối thẻ qua SMS).
 
 > Cụm từ: Masking (che) là thay đổi một phần dữ liệu nhạy cảm bằng ký tự khác (ví dụ * hoặc #) để không ai có thể đọc được thông tin đầy đủ, còn dữ liệu gốc vẫn được lưu an toàn để sử dụng khi cần thiết.
@@ -630,6 +646,14 @@ Log --> Hệ thống thanh toán: đã ghi
 - Ghi số thẻ đầy đủ vào log để debug -> mất mật thẻ.
 - Token không được mã hóa hoặc lưu ở hệ thống không bảo mật -> kẻ xấu lấy được token và số thẻ.
 - Nhân viên có thể xem số thẻ đầy đủ trong hệ thống quản lý -> vi phạm quyền ít nhất.
+
+### Ví dụ đời thực
+
+Một dev đang debug lỗi giao dịch thanh toán thẻ và viết log: "Giao dịch thẻ 1234 5678 9012 3456 thành công" để dễ tìm lỗi. Kiểm tra bảo mật phát hiện log chứa số thẻ đầy đủ (PAN) — vi phạm tiêu chuẩn PCI DSS. Điều tra code thấy hệ thống lưu số thẻ thật dưới dạng văn bản thô trong bảng giao dịch, và các thông điệp log in trộn số thẻ để troubleshoot. Nguyên nhân gốc: không có quy tắc che thẻ trong log, và số thẻ thật không được mã hóa hay thay bằng token. Cách xử lý: xóa toàn bộ log cũ chứa số thẻ, sửa code chỉ ghi 4 số cuối (**** **** **** 3456), áp dụng tokenization: thay số thẻ thật bằng token ngẫu nhiên, số thẻ thật lưu ở hệ thống vault riêng biệt và bảo mật cao; đồng thời xác nhận không bao giờ lưu mã CVV (3 số sau thẻ) sau khi xác nhận thanh toán. Kết quả: báo cáo bảo mật lần sau không còn tìm thấy số thẻ đầy đủ trong log hay cơ sở dữ liệu nghiệp vụ, và đơn vị đạt yêu cầu cơ bản của PCI DSS cho phía dev.
+
+### Trả lời mẫu khi phỏng vấn
+
+"PCI DSS (Payment Card Industry Data Security Standard) là tiêu chuẩn bảo mật mà mọi đơn vị lưu, xử lý hoặc truyền số thẻ thanh toán phải tuân theo, ví dụ ngân hàng và cổng thanh toán. Nguyên tắc quan trọng nhất là không bao giờ lưu mã CVV (3 số in sau thẻ) sau khi xác nhận thanh toán, vì nếu kẻ xấu lấy được số thẻ mà không có CVV thì không thể mua hàng trực tuyến. Thay vì lưu số thẻ thật, hệ thống dùng tokenization: thay số thẻ thật (PAN) bằng một mã giả ngẫu nhiên gọi là token, số thẻ thật được lưu ở hệ thống vault riêng biệt và bảo mật rất cao. Khi cần thanh toán, hệ thống gửi token đến vault để thực hiện. Nếu cơ sở dữ liệu bị lộ, kẻ xấu chỉ lấy được token, không thể đổi thành số thẻ thật mà không có khóa của vault. Khi ghi log, chỉ được che số thẻ, ví dụ hiển thị 4 số cuối, không bao giờ in số thẻ đầy đủ. Tôi nhấn mạnh PCI DSS không chỉ là mã hóa, mà là giảm thiểu dữ liệu nhạy cảm hệ thống phải lưu, và số thẻ thật chỉ nên tồn tại ở một nơi duy nhất."
 
 > Senior tip: Trong phỏng vấn, hãy nói rằng PCI DSS không chỉ là "mã hóa" mà là "giảm thiểu tối thiểu dữ liệu nhạy cảm hệ thống cần lưu". Hãy nhấn mạnh rằng số thẻ thật chỉ cần lưu ở một nơi, và các hệ thống khác chỉ lưu token. Nếu có thể, hãy nói về một ví dụ hệ thống bạn đã xây dựng hoặc biết (ví dụ dùng một dịch vụ thanh toán của ngân hàng hoặc một nhà cung cấp tokenization được chứng nhận PCI).
 
@@ -699,6 +723,14 @@ ATM --> Khách: phát 2 triệu, in hóa đơn
 - Điền sai trường ISO 8583 (cần biết trường nào dùng cho gì) -> gửi sai dữ liệu, ngân hàng đối tác từ chối.
 - Thấy ISO 20022 như đơn giản (chỉ có số tiền và tài khoản) -> thiếu thông tin, giao dịch bị không chấp nhận.
 - Không cập nhật khi chuẩn thay đổi (ví dụ ISO 20022 có nhiều phiên bản) -> hệ thống cũ bị lỗi khi kết nối với đối tác mới.
+
+### Ví dụ đời thực
+
+Một ngân hàng triển khai chuyển khoản liên ngân hàng, nhưng dev nhầm chung hai chuẩn. Triệu chứng: khi khách rút tiền tại ATM, máy POS gửi thông báo theo dạng XML như ISO 20022, trong khi mạng thẻ yêu cầu ISO 8583; toàn bộ yêu cầu bị từ chối, khách không rút được tiền trong suốt hai giờ. Dev kiểm tra log hệ thống thẻ và thấy thông điệp không đúng cấu trúc trường số thứ tự của ISO 8583 (MTI, trường 2 số thẻ, trường 4 số tiền...), nên mạng thẻ không nhận dạng được. Nguyên nhân gốc: dùng sai chuẩn — ISO 8583 là chuẩn cho giao dịch thẻ (rút tiền, thanh toán POS), dùng trường số thứ tự và xử lý nhanh; ISO 20022 dùng XML/JSON cho chuyển khoản và thanh toán quốc tế, chứa nhiều thông tin hơn. Cách xử lý: triển khai lại module giao tiếp mạng thẻ theo ISO 8583, điền đúng từng trường (trường 2 PAN, trường 4 số tiền, trường 41 mã máy đọc thẻ...), và kiểm tra mẫu thông điệp với mạng thẻ trước khi đưa vào production. Kết quả: giao dịch rút tiền và thanh toán thẻ quay trở lại bình thường, tỷ lệ từ chối của mạng thẻ về 0.
+
+### Trả lời mẫu khi phỏng vấn
+
+"ISO 8583 là chuẩn thông điệp dùng cho giao dịch thẻ thanh toán, ví dụ rút tiền tại ATM, thanh toán POS. Thông điệp này ngắn, được xử lý trong vài giây, và gồm mã loại thông báo MTI (4 số) kèm các trường có số thứ tự, ví dụ trường 2 là số thẻ, trường 4 là số tiền, trường 41 là mã máy đọc thẻ. ISO 20022 là chuẩn thông điệp chung cho thanh toán, ví dụ chuyển khoản, lệnh thu và thanh toán quốc tế, dùng định dạng XML hoặc JSON, chứa nhiều thông tin chi tiết hơn như tên người gửi, tên người nhận và lý do thanh toán. Cách phân biệt đơn giản: giao dịch thẻ tại thiết bị bán lẻ thường dùng ISO 8583, còn chuyển khoản liên ngân hàng và thanh toán quốc tế thường dùng ISO 20022. Dev không cần đọc hết tài liệu chuẩn, chỉ cần biết ánh xạ dữ liệu từ hệ thống trong ngân hàng sang định dạng chuẩn khi gửi đến đối tác, và điền đúng từng trường để đối tác không từ chối giao dịch. Nếu nhầm chuẩn, ví dụ gửi định dạng XML cho mạng thẻ yêu cầu ISO 8583, toàn bộ giao dịch sẽ bị từ chối và khách không rút được tiền."
 
 > Senior tip: Trong phỏng vấn, không cần xem xét toàn bộ chuẩn (hơn trăm trang). Hãy nắm rõ: ISO 8583 cho thẻ, ISO 20022 cho thanh toán chung, cả hai đều dùng XML/JSON (ISO 20022) hoặc trường số (ISO 8583), và dev phải biết ánh xạ dữ liệu từ hệ thống trong ngân hàng sang chuẩn ngoại khi gửi đến đối tác. Nếu có thể, hãy nói về một ví dụ bạn đã làm việc với một hệ thống thông báo nào (ví dụ hệ thống thẻ, hệ thống chuyển tiền) và chuẩn nó dùng.
 
@@ -779,6 +811,14 @@ Ví dụ: gửi từ 1/1 đến 31/1 là 31 ngày. Lãi = dư nợ × 6% × 31 /
 - Không ghi quy ước ngày (actual/365 hay 360) -> lãi sai khi so sánh với hệ thống cũ.
 - Tính lãi theo ngày lịch, không trừ ngày lễ/chủ nhật nếu quy tắc chỉ tính ngày làm việc -> sai số ngày.
 
+### Ví dụ đời thực
+
+Một sổ tiền gửi 100 triệu đồng, lãi suất 6% mỗi năm, gửi 30 ngày. Dev tính lãi bằng kiểu double và làm tròn ở mỗi phép tính giữa. Triệu chứng: khách gọi khiếu nại số tiền lãi sai 1 đến 2 đồng so với tay tính, và trên 10.000 sổ tiền gửi thì tổng chênh lệch lên hàng chục nghìn đồng. Điều tra thấy code dùng double (0.1 + 0.2 không bằng 0.3 chính xác do lưu nhị phân), chia cho 365 gây sai số nhị phân, và làm tròn ở mỗi bước nhân chia. Nguyên nhân gốc: tiền trong Java phải dùng BigDecimal, và chỉ được làm tròn một lần ở bước cuối. Cách xử lý: viết lại bằng BigDecimal, tính lãi = gốc × lãi suất × ngày / 365 với độ dài lớn trong gian, rồi setScale(2, HALF_UP) ở cuối; kiểm tra lại 10.000 sổ, tổng lãi khớp với sổ cái kế toán. Kết quả: sai số lãi giảm xuống 0 đồng, báo cáo lãi lỗ cuối ngày khớp sổ cái, và kiểm toán chấp nhận.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tiền trong code Java phải dùng BigDecimal chứ không phải double, vì double lưu số thực theo định dạng nhị phân và bị sai số làm tròn, ví dụ 0.1 + 0.2 không bằng 0.3 chính xác — với tiền, một đồng lệch cũng là lỗi mà kiểm toán không chấp nhận. Tính lãi tiền gửi hoặc khoản vay dùng công thức Lãi = Dư nợ × Lãi suất năm × Số ngày / 365, quy ước này gọi là actual/365, ví dụ gửi 100 triệu đồng, lãi suất 6%/năm, gửi 30 ngày cho khoảng 493.150,68 đồng. Làm tròn tiền chỉ được thực hiện một lần ở bước cuối, dùng setScale(2, RoundingMode.HALF_UP) để giữ đúng 2 chữ số thập phân, không được làm tròn ở từng bước giữa vì tổng sẽ sai. Phép chia trong BigDecimal phải chỉ định scale và chế độ làm tròn, nếu không chương trình sẽ ném ArithmeticException. Tôi nhấn mạnh quy ước ngày phải được ghi vào tài liệu và dùng nhất quán trên toàn hệ thống, không được trộn actual/365 với actual/360 hay 30/360."
+
 > Senior tip: Trong phỏng vấn, hãy vẽ công thức lãi trên giấy: Lãi = Dư nợ × Lãi suất × Số ngày / 365, và nói rằng BigDecimal là bắt buộc. Hãy nhấn mạnh rằng phép chia trong BigDecimal cần chỉ định scale và RoundingMode, nếu không sẽ ném ArithmeticException khi chia không chia hết. Nếu có thể, hãy nói về một ví dụ sai số của double (0.1 + 0.2) để minh chứng.
 
 > Cụm từ: RoundingMode (che độ làm tròn) là quy tắc quy định chữ số thập phân ở vị trí làm tròn được xử lý thế nào (ví dụ HALF_UP = làm tròn lên nếu chữ số tiếp theo >= 5).
@@ -855,6 +895,14 @@ Ví dụ SMS: "Ngân hàng ABC bảo trì hệ thống từ 23 giờ đến 1 gi
 - Thông báo khách muộn -> khách hoang mang, gọi điện bàn chuyển.
 - Hàng đợi không giới hạn -> hệ thống quá tải khi nhiều khách giao dịch cùng lúc.
 - Không có thông báo sau khi xong -> khách không biết giao dịch đã thành công chưa.
+
+### Ví dụ đời thực
+
+Core banking bảo trì từ 23 giờ đến 1 giờ sáng, nhưng trong khoảng đó vẫn có 1.000 khách dùng app để chuyển tiền, nạp tiền và thanh toán hóa đơn. Triệu chứng: hệ thống cũ gọi trực tiếp core, nhận lỗi "core đang bảo trì" và trả lỗi ngay cho khách, yêu cầu của khách bị mất và cuộc gọi tổng đài tăng đột biến. Điều tra thấy code không lưu yêu cầu khi core không sẵn sàng, và không thông báo khách trước. Nguyên nhân gốc: không có hàng đợi để đợi yêu cầu, không có cơ chế store-and-forward, và thiếu thông báo khách. Cách xử lý: khi bảo trì, hệ thống lưu mỗi yêu cầu vào cơ sở dữ liệu (store), trả về khách "đã chấp nhận, sẽ xử lý sau", rồi gửi yêu cầu đến core khi hệ thống quay lại (forward), xóa yêu cầu sau khi thành công. Đồng thời gửi SMS và thông báo trong app trước khi bảo trì, nêu thời gian, dịch vụ không dùng được và cách liên hệ. Kết quả: trong cửa sổ bảo trì không yêu cầu nào bị mất, cuộc gọi tổng đài giảm 70%, và sau khi xong bảo trì toàn bộ danh sách trễ được xử lý kèm thông báo kết quả cho khách.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi core banking bảo trì ban đêm, hệ thống không được từ chối yêu cầu của khách ngay lập tức. Thay vào đó, mỗi yêu cầu chuyển tiền, nạp tiền hay thanh toán được lưu vào hàng đợi trong cơ sở dữ liệu, hệ thống trả về khách thông báo "đã chấp nhận, sẽ xử lý sau", rồi gửi yêu cầu đến core khi hệ thống quay lại — cơ chế này gọi là store-and-forward (lưu rồi gửi), đảm bảo yêu cầu không bị mất ngay cả khi máy giữa giây mất điện hay core ngừng hoạt động. Sau khi core xử lý thành công, yêu cầu được xóa khỏi hàng đợi và khách nhận thông báo kết quả thành công hoặc thất bại. Trước khi bảo trì, dev phải gửi email, SMS và thông báo trong ứng dụng nêu rõ thời gian bảo trì, dịch vụ nào không dùng được và cách liên hệ nếu cần giúp. Hàng đợi phải lưu trong cơ sở dữ liệu chứ không chỉ trong bộ nhớ đệm, để không mất yêu cầu khi mất điện. Sau khi xong bảo trì, hệ thống phải xử lý toàn bộ danh sách yêu cầu trễ (backlog) và thông báo kết quả cho khách, không được bỏ qua."
 
 > Senior tip: Trong phỏng vấn, hãy nói rằng hệ thống không bao giờ từ chối yêu cầu của khách ngay cả khi core đang bảo trì. Hàng đợi và store-and-forward đảm bảo yêu cầu không bị mất, thông báo khách đảm bảo khách không bị bất ngờ. Hãy nhấn mạnh rằng sau khi xong bảo trì, hệ thống phải xử lý hàng đợi trễ (backlog) và thông báo kết quả cho khách, không được bỏ qua.
 
