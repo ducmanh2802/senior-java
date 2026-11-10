@@ -1,6 +1,6 @@
 # T558 — Dịch lại (nội dung đã sửa): q-system-design-5 (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-system-design-5.en.js`
 
@@ -13,3 +13,4 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-system-design-5 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại 3 mục: design-019 (log/metrics tập trung), design-020 (phát hiện gian lận realtime), design-021 (OTP/2FA ngân hàng). Chỉ giữ các field được phép dịch (q, a, follow), bỏ tags và refs theo quy định check-i18n. Cả hai script đều pass.
