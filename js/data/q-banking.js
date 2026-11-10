@@ -2645,16 +2645,16 @@ Hold (khóa tiền) là số tiền bị tạm khóa trên tài khoản, chưa �
 Mỗi hold thường có thời hạn (ví dụ 7 ngày đối với giao dịch thẻ). Nếu merchant không gửi yêu cầu trừ tiền trong thời hạn, hệ thống tự giải phóng hold và tiền trở lại khả dụng.
 
 ~~~seq
-title: Hold khi thanh toán the
-actors: Khach | Merchant | Acquirer | Network | Issuer
-Khach -> Merchant: quet the, mua 2 trieu
-Merchant -> Acquirer: yeu cau authorization 2 trieu
-Acquirer -> Network: chuyen yeu cau den issuer
-Network -> Issuer: kiem tra the va han muc
-Issuer -> Issuer: hold 2 trieu tren han muc
-Issuer --> Network: chap thue, ma auth
-Network --> Acquirer: chap thue
-Acquirer --> Merchant: thanh cong, in hoa don
+title: Hold khi thanh toán thẻ
+actors: Khách | Merchant | Acquirer | Network | Issuer
+Khách -> Merchant: quét thẻ, mua 2 triệu
+Merchant -> Acquirer: yêu cầu authorization 2 triệu
+Acquirer -> Network: chuyển yêu cầu đến issuer
+Network -> Issuer: kiểm tra thẻ và hạn mức
+Issuer -> Issuer: hold 2 triệu trên hạn mức
+Issuer --> Network: chấp nhận, mã auth
+Network --> Acquirer: chấp nhận
+Acquirer --> Merchant: thành công, in hóa đơn
 ~~~
 
 ### Giải phóng hold ra sao
@@ -2666,6 +2666,20 @@ Acquirer --> Merchant: thanh cong, in hoa don
 - Chỉ kiểm tra số dư sổ sách khi cho phép chi tiêu -> khách chi tiêu quá khả dụng, số dư có thể bị âm.
 - Hold không có thời hạn hết hạn -> tiền bị khóa vĩnh viễn, khách không thể dùng được tiền của mình.
 - Giải phóng hold nhưng không cập nhật khả dụng -> số dư hiển thị sai, khách phàn nàn.
+
+### Ví dụ đời thực
+**Triệu chứng:** Một ngân hàng số ghi nhận khoảng 120 khiếu nại trong một buổi sáng: khách thấy "số dư khả dụng" trên app bị trừ 500.000 VND cho một giao dịch mua vé xem phim nhưng vé không được cấp, trong khi số dư sổ sách (ledger balance) vẫn đủ. Tổng tiền bị khóa tạm thời (hold) của các khách này khoảng 60 triệu VND, kéo dài hơn 5 ngày.
+
+**Điều tra:** Đội vận hành tra bảng hold theo trạng thái {{PENDING}} và thời gian tạo: ~8.000 hold thẻ đã quá 72 giờ nhưng chưa có bản ghi capture hay void từ hệ thống của nhà cung cấp dịch vụ thanh toán (payment gateway). Log cho thấy sự kiện {{auth.approved}} được ghi nhận, nhưng sự kiện {{capture}} hoặc {{void}} không bao giờ đến do lỗi tích hợp phía merchant (hệ thống bán vé trả mã lỗi nhưng không gửi void). Job quét hold hết hạn đang cấu hình {{hold_ttl_days = 30}} cho loại giao dịch này, nên hold chưa được tự giải phóng.
+
+**Nguyên nhân gốc:** Thiếu cơ chế tự động void/release khi merchant không capture trong thời gian cam kết (ví dụ 24-48 giờ) và TTL (thời gian sống) của hold đặt quá dài; đồng thời không có cảnh báo khi tỷ lệ hold quá hạn tăng đột biến.
+
+**Cách xử lý:** (1) Chạy batch đối soát các hold {{PENDING}} quá 48 giờ không có capture, gọi API void về issuer/network và cập nhật trạng thái hold thành {{RELEASED}}, trả tiền về khả dụng. (2) Giảm {{hold_ttl_days}} xuống 7 ngày cho giao dịch mua hàng thông thường và thêm job định kỳ mỗi 15 phút quét hold quá hạn SLA (cam kết mức dịch vụ). (3) Thêm metric {{hold_expired_unreleased_count}} và cảnh báo khi vượt ngưỡng.
+
+**Kết quả đo được:** Sau 2 giờ xử lý, 100% hold bị kẹt được giải phóng, khiếu nại giảm về 0 trong ngày. Tuần tiếp theo, số hold quá hạn trung bình giảm từ 8.000 xuống dưới 20/ngày nhờ TTL và cảnh báo mới.
+
+### Trả lời mẫu khi phỏng vấn
+"Em phân biệt hai khái niệm: số dư sổ sách (ledger balance) là tiền đã ghi thực tế trên sổ cái dùng để đối soát kế toán, còn số dư khả dụng (available balance) là số khách có thể dùng ngay, bằng sổ sách trừ các khoản đang bị hold. Hold là việc tạm khóa một khoản tiền khi giao dịch thẻ được ủy quyền (authorization) nhưng chưa chốt, để tránh khách chi tiêu hai lần cùng một số tiền; khi merchant capture thì hold chuyển thành bút toán trừ thật, còn nếu void hoặc hết hạn thì hold được giải phóng và tiền trả về khả dụng. Khi thiết kế, em luôn dùng available balance làm nguồn quyết định cho phép chi tiêu, đảm bảo mọi hold đều có TTL và job tự động release, đồng thời có giám sát hold quá hạn. Ở dự án trước, em từng xử lý sự cố hàng nghìn hold bị kẹt do không nhận được void từ merchant, bằng cách chạy batch đối soát, siết TTL và thêm cảnh báo, giúp tiền của khách được trả lại kịp thời."
 
 > Senior tip: Trong phỏng vấn, hãy nhấn mạnh available balance (không phải ledger balance) là nguồn chân lý để hệ thống quyết định cho phép chi tiêu hay không, và mọi hold phải có thời hạn rõ ràng kèm job giải phóng tự động. Ví dụ đính kèm: sổ sách 10 triệu, hold 2 triệu, khả dụng 8 triệu.
 
@@ -2687,24 +2701,24 @@ Acquirer --> Merchant: thanh cong, in hoa don
 
 ### End-to-end là gì
 Một giao dịch chuyển tiền không diễn ra ở một nơi, mà đi qua nhiều lớp: app mobile -> API gateway -> dịch vụ nghiệp vụ -> core banking -> cơ sở dữ liệu. Mỗi lớp có thể thử lại hoặc gửi lại yêu cầu. Nếu không có cơ chế bảo vệ, một yêu cầu bị lạc mạng có thể được gửi hai lần và tiền bị trừ hai lần.
-Ví dụ đời thường: khách nhấn "Chuyen 5 trieu", mạng giật, khách không thấy kết quả nên nhấn lại. Nếu hệ thống không kiểm tra, hai lệnh "chuyen 5 trieu" sẽ đi đến core và tiền bị trừ 10 trieu thay vì 5 trieu.
+Ví dụ đời thường: khách nhấn "Chuyển 5 triệu", mạng giật, khách không thấy kết quả nên nhấn lại. Nếu hệ thống không kiểm tra, hai lệnh "chuyển 5 triệu" sẽ đi đến core và tiền bị trừ 10 triệu thay vì 5 triệu.
 
 ### Các lớp bảo vệ
-1. Mobile: tắt nút ngay sau khi khách nhận, tạo khóa idempotency duy nhất (UUID), lưu trên thiết bị để lần thử lại cũng dùng khóa cũ.
-2. API gateway: giới hạn số yêu cầu của mỗi khách (rate limit), kiểm tra trùng theo khóa idempotency trong bộ nhớ đệm ngắn hạn; nếu khóa đã có, trả kết quả đã luu khong chuyen tiep.
+1. Mobile: tắt nút ngay sau khi khách nhấn, tạo khóa idempotency duy nhất (UUID), lưu trên thiết bị để lần thử lại cũng dùng khóa cũ.
+2. API gateway: giới hạn số yêu cầu của mỗi khách (rate limit), kiểm tra trùng theo khóa idempotency trong bộ nhớ đệm ngắn hạn; nếu khóa đã có, trả kết quả đã lưu không chuyển tiếp.
 3. Dịch vụ nghiệp vụ: kiểm tra khóa trong cơ sở dữ liệu; nếu đã xử lý, trả kết quả cũ; nếu chưa, xử lý mới.
 4. Core banking: ràng buộc duy nhất trên cột khóa idempotency, giao dịch ACID, kiểm tra số dư trước khi trừ tiền.
 
-### Thu tu xu ly (buoc chi tiet)
-1. Khách nhận chuyển tiền trên mobile; app tạo khóa K (mã duy nhất, ví dụ UUID) và gửi yêu cầu kèm K.
+### Thứ tự xử lý (bước chi tiết)
+1. Khách nhấn chuyển tiền trên mobile; app tạo khóa K (mã duy nhất, ví dụ UUID) và gửi yêu cầu kèm K.
 2. Gateway kiểm tra bộ nhớ đệm: nếu K đã có -> trả kết quả đã lưu, không xử lý lại.
-3. Neu K chua co, gateway chuyen tiep yeu cau den dich vu nghiep vu.
+3. Nếu K chưa có, gateway chuyển tiếp yêu cầu đến dịch vụ nghiệp vụ.
 4. Dịch vụ kiểm tra cơ sở dữ liệu: nếu K đã được xử lý -> trả kết quả cũ.
-5. Neu chua, dich vu goi core banking de tru tien.
+5. Nếu chưa, dịch vụ gọi core banking để trừ tiền.
 6. Core thực hiện trong một giao dịch ACID: kiểm tra số dư, trừ tiền, lưu K cùng kết quả.
-7. Ket qua chuyen nguc: dich vu -> gateway -> mobile.
+7. Kết quả chuyển ngược: dịch vụ -> gateway -> mobile.
 
-Ví dụ số liệu: khách chuyển 5.000.000 VND, khóa K = "a1b2-c3d4". Mất mạng sau khi gửi, khách nhận "Thử lại" cùng khóa K. Gateway/dịch vụ tìm thấy K đã xử lý -> tra ve "thanh cong" cu, khong tru them 5 trieu.
+Ví dụ số liệu: khách chuyển 5.000.000 VND, khóa K = "a1b2-c3d4". Mất mạng sau khi gửi, khách nhấn "Thử lại" cùng khóa K. Gateway/dịch vụ tìm thấy K đã xử lý -> trả về "thành công" cũ, không trừ thêm 5 triệu.
 
 ### Lỗi hay gặp
 - Mobile tạo khóa mới mỗi lần thử lại -> không chặn được yêu cầu trùng, tiền có thể bị trừ nhiều lần.
@@ -2712,9 +2726,23 @@ Ví dụ số liệu: khách chuyển 5.000.000 VND, khóa K = "a1b2-c3d4". Mấ
 - Core không có ràng buộc duy nhất trên cột khóa -> hai yêu cầu cùng khóa đều được trừ tiền.
 - Khách tạo yêu cầu mới thay vì thử lại cùng yêu cầu cũ -> sinh giao dịch mới, không liên quan đến khóa cũ.
 
-> Senior tip: Trong pho van, hay ve so do cac lac va chi rang moi lac bao ve o cap nao. Nhấn mạnh khoa idempotency phai do khach tao (khong phai server) va di xuan sut tu mobile den core. Doi voi tien, vie chan trung quan trong hon vie khong cho bo qua yeu cau.
+### Ví dụ đời thực
+**Triệu chứng:** Sau một đợt nâng cấp mạng, tỷ lệ timeout giữa app mobile và API gateway tăng lên ~3% trong 20 phút. Bộ phận chăm sóc khách hàng ghi nhận 47 trường hợp khách bị trừ tiền 2 lần cho cùng một lệnh chuyển khoản (mỗi lệnh 1-10 triệu VND), tổng thiệt hại tạm tính ~180 triệu VND phải hoàn trả thủ công.
 
-> Cụm từ: Idempotency key la ma duy nhat gan voi mot yeu cau, dung de phat hien yeu cau duoc gui lai (retry) va chi xu ly mot lan.
+**Điều tra:** Đối chiếu log theo {{customer_id}} và số tiền cho thấy mỗi giao dịch bị nhân đôi có 2 request khác {{request_id}} nhưng cùng nội dung, gửi cách nhau 5-15 giây. Ở phía mobile, mã cũ tạo idempotency key mới mỗi lần người dùng bấm "Thử lại" (thay vì tái sử dụng key của lần gửi đầu). Ở gateway, cache kiểm tra trùng chỉ lưu 30 giây và không được chia sẻ khi scale-out, nên request thứ hai đi qua node khác không bị chặn. Core banking chưa có ràng buộc duy nhất (unique constraint) trên cột idempotency key của bảng giao dịch.
+
+**Nguyên nhân gốc:** Thiết kế idempotency bị đứt đoạn: key không do client sinh và giữ cố định xuyên suốt vòng đời yêu cầu, các lớp không cùng một nguồn sự thật, và lớp cuối (core/DB) thiếu "chốt an toàn" là unique constraint.
+
+**Cách xử lý:** (1) Sửa mobile: sinh {{idempotencyKey}} (UUID) ngay khi tạo lệnh, lưu kèm trạng thái lệnh và gửi lại cùng key cho mọi retry. (2) Gateway kiểm tra key trong Redis dùng chung với TTL hợp lý (ví dụ 24 giờ) và trả kết quả đã lưu nếu trùng. (3) Dịch vụ và core thêm cột {{idempotency_key}} có unique constraint; khi vi phạm ràng buộc thì đọc và trả lại kết quả giao dịch đã commit. (4) Viết job rà soát giao dịch trùng trong khoảng thời gian sự cố để hoàn tiền.
+
+**Kết quả đo được:** Sau khi triển khai, theo dõi 30 ngày không ghi nhận thêm trường hợp trừ tiền trùng; 47 giao dịch bị ảnh hưởng được hoàn trả trong 4 giờ và đối soát khớp 100% với core.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi trả lời câu hỏi chống trừ tiền hai lần, em trình bày theo tư duy end-to-end: mỗi lớp đều phải có chốt bảo vệ riêng và lớp cuối cùng phải là nguồn sự thật. Ở mobile, app tạo idempotency key (mã định danh duy nhất cho một yêu cầu) ngay khi người dùng xác nhận lệnh và giữ nguyên key đó cho mọi lần retry, đồng thời disable nút để tránh bấm lặp. Ở API gateway, em dùng rate limit và cache dùng chung để chặn request trùng sớm. Ở dịch vụ nghiệp vụ, em kiểm tra key trong cơ sở dữ liệu và trả kết quả cũ nếu đã xử lý. Quan trọng nhất, ở core banking em đặt unique constraint trên cột idempotency key và thực hiện trừ tiền trong một giao dịch ACID, nên dù có race condition thì DB vẫn chỉ cho commit một lần. Em cũng nhấn mạnh thứ tự: kiểm tra khóa trước, xử lý sau, lưu kết quả rồi mới trả về. Trong thực tế, em từng xử lý sự cố trừ tiền trùng do key bị tạo mới mỗi lần retry và thiếu unique constraint, sau khi bổ sung các lớp bảo vệ này thì sự cố không tái diễn."
+
+> Senior tip: Trong phỏng vấn, hãy vẽ sơ đồ các lớp và chỉ ra mỗi lớp bảo vệ ở cấp nào. Nhấn mạnh khóa idempotency phải do khách tạo (không phải server) và đi xuyên suốt từ mobile đến core. Đối với tiền, việc chặn trùng quan trọng hơn việc không cho bỏ qua yêu cầu.
+
+> Cụm từ: Idempotency key là mã duy nhất gắn với một yêu cầu, dùng để phát hiện yêu cầu được gửi lại (retry) và chỉ xử lý một lần.
   `,
   follow: [
     'Nếu mobile mất mạng sau khi gửi request, làm sao retry an toàn?',
@@ -2794,21 +2822,21 @@ Một ví đối soát thủ công bằng Excel với 3 ngân hàng đối tác:
 - Microservices: tach core, thanh toan, kenh so thanh cac dich vu doc lap.
 - Batch cuoi ngay van con nhung nhe hon, chi tong ket so lieu va doi soat.
 
-| Tieu chi | Mainframe | Hien dai |
+| Tiêu chí | Mainframe | Hiện đại |
 |---|---|---|
-| Toc do thay doi | Cham | Nhanh |
-| Thuc thoi | Khong de | De |
-| Do phuc tap | Thap (tap trung) | Cao (phan tan) |
+| Tốc độ thay đổi | Chậm | Nhanh |
+| Thực thời | Không dễ | Dễ |
+| Độ phức tạp | Thấp (tập trung) | Cao (phân tán) |
 | Kiểm toán | Không dễ | Dễ (nhật ký sự kiện) |
-| Chi phi ban dau | Cao | Trung binh |
-| Ru ro van hanh | Thap | Cao hon |
+| Chi phí ban đầu | Cao | Trung bình |
+| Rủi ro vận hành | Thấp | Cao hơn |
 
-Ví dụ số liệu: một ngân hàng lớn, ổn định, gần không đổi giao dịch có thể giữ mainframe cho số cái; một ngân hàng số cần phát hành tính năng mới liên tục nên chon kien truc hien dai.
+Ví dụ số liệu: một ngân hàng lớn, ổn định, gần không đổi giao dịch có thể giữ mainframe cho sổ cái; một ngân hàng số cần phát hành tính năng mới liên tục nên chọn kiến trúc hiện đại.
 
 ### Lỗi hay gặp
 - Chuyển sang hiện đại nhưng không giữ nhật ký kiểm tra -> mất quyền kiểm soát.
 - Hướng sự kiện không có cơ chế chặn trùng -> xử lý giao dịch hai lần.
-- Batch cuoi ngay van qua nang -> nghen vao buoi dem.
+- Batch cuối ngày vẫn quá nặng -> nghẽn vào buổi đêm.
 
 ### Ví dụ đời thực
 Một ngân hàng giữ core mainframe (COBOL, batch EOD 6 tiếng mỗi đêm) nhưng cần chuyển tiền 24/7 và số dư thời gian thực trên app. Thay vì thay core một lần (dự án kiểu "big bang" của ngân hàng khác đã kéo dài 4 năm và vượt ngân sách gấp đôi), họ làm từng bước: dựng một **ledger mới bất biến** (mỗi giao dịch là bút toán kép chỉ thêm, không sửa) cho ví và tài khoản thanh toán; mainframe vẫn là sổ chính thức, đồng bộ hai chiều qua sự kiện và đối soát mỗi giờ; **số dư khả dụng** trên app được tính từ ledger mới theo thời gian thực, còn batch EOD trên mainframe chỉ tính lãi và báo cáo. Sau 18 tháng, 70% giao dịch đi qua ledger mới; thời gian batch EOD giảm còn 2 tiếng vì bớt việc. Đánh đổi: thêm hệ thống phải vận hành và đối soát giữa hai sổ trong giai đoạn chuyển tiếp.
@@ -2816,9 +2844,9 @@ Một ngân hàng giữ core mainframe (COBOL, batch EOD 6 tiếng mỗi đêm) 
 ### Trả lời mẫu khi phỏng vấn
 "Core banking mainframe truyền thống rất ổn định, xử lý giao dịch tốt, nhưng thường dựa nhiều vào batch cuối ngày, khó thay đổi, khó tích hợp với kênh số 24/7, và nguồn nhân lực COBOL ngày càng hiếm. Kiến trúc hiện đại hướng tới ledger bất biến theo kế toán kép, chỉ thêm bút toán chứ không sửa, số dư thời gian thực, giao tiếp qua sự kiện, và các dịch vụ tách theo nghiệp vụ như tài khoản, thanh toán, cho vay. Batch EOD vẫn còn cho tính lãi, phí, báo cáo, nhưng nhẹ hơn. Đánh đổi là độ phức tạp phân tán: nhất quán giữa các dịch vụ, idempotency, đối soát. Thực tế hiếm ngân hàng thay core một lần; tôi ủng hộ cách strangler: dựng ledger mới cho phần cần thời gian thực, đồng bộ và đối soát với core cũ, chuyển dần nghiệp vụ, luôn có đường lui."
 
-> Senior tip: Trong pho van, nhấn mạnh khong phai "hien dai luon tot hon". Mainframe van phu hop ngan hang lon, on dinh, it thay doi; kien truc hien dai phu hop khi can tinh nang moi lien tuc va xu ly thuc thoi. Lua chon phu thuoc quy mo, ngan sach va doi ngu van hanh.
+> Senior tip: Trong phỏng vấn, nhấn mạnh không phải "hiện đại luôn tốt hơn". Mainframe vẫn phù hợp ngân hàng lớn, ổn định, ít thay đổi; kiến trúc hiện đại phù hợp khi cần tính năng mới liên tục và xử lý thực thời. Lựa chọn phụ thuộc quy mô, ngân sách và đội ngũ vận hành.
 
-> Cụm từ: Huong su kien (event-driven) la kien truc xu ly duoc su kien, cac thanh phan phan ung voi su kien thay goi truc tiep lan nhau.
+> Cụm từ: Hướng sự kiện (event-driven) là kiến trúc xử lý theo sự kiện, các thành phần phản ứng với sự kiện thay vì gọi trực tiếp lẫn nhau.
   `,
   follow: [
     'Khi nào nên giữ mainframe thay vì chuyển sang hiện đại?',
