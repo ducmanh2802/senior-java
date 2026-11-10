@@ -24,11 +24,16 @@ scan_open() {
   OPEN=()
   COMMITTED=(); local c; for c in $(git grep -l "^Status: DONE[[:space:]]*$" HEAD -- tasks/ 2>/dev/null | sed "s#^HEAD:##"); do COMMITTED[$c]=1; done
   local t id o
-  for t in $(grep -L '^Status: DONE' tasks/T*.md); do
+  for t in $(grep -L -E '^Status: (DONE|CANCELLED)' tasks/T*.md); do
     id=$(basename "$t" | cut -d- -f1)
     # a TODO chained task whose dep is not committed yet cannot have started: its files are not half-done
     dep=$(grep -m1 '^After:' "$t" | awk '{print $2}')
-    [ -n "$dep" ] && grep -q "^Status: TODO$" "$t" && [ ! -d "logs/claim/$id" ] && [ -n "$(git status --porcelain -- tasks/"$dep"-*.md 2>/dev/null)" ] && continue
+    # a chained TODO task only counts as open once its dep is DONE and committed (otherwise later links of a chain
+    # would block the commit of the chain head forever)
+    if [ -n "$dep" ] && grep -q "^Status: TODO$" "$t" && [ ! -d "logs/claim/$id" ]; then
+      dt=$(ls tasks/"$dep"-*.md 2>/dev/null | head -1)
+      { [ -n "$dt" ] && grep -q "^Status: DONE" "$dt" && [ -z "$(git status --porcelain -- "$dt")" ]; } || continue
+    fi
     for o in $(owns "$t"); do OPEN[$o]+=" $id"; done
   done
 }
@@ -70,6 +75,7 @@ make_review() {   # $1 = task file, $2 = task id
     echo
     echo "Đọc AGENTS.md mục 4–6 (và 10/12 nếu là lab/bài học). Nội dung MỚI của task $2 (xem \`git diff HEAD -- <file>\`) do model free viết, CHƯA review."
     echo "Sửa trực tiếp mọi lỗi kỹ thuật (API/flag bịa, mặc định sai, cơ chế nói ngược, số liệu vô căn cứ), lỗi markup, chữ nước ngoài lẫn vào."
+    echo "CHỈ cần kiến thức ĐÚNG: không chỉnh văn phong, độ dài, bố cục hay thêm nội dung. Không có lỗi kiến thức thì ghi Notes \"không có lỗi\" và xong ngay."
     echo "Chuẩn: Java 17/21, Spring Boot 3.x, Hibernate 6, PostgreSQL 15, Kafka 3.x. Không sửa nội dung đã có ở HEAD. Không thêm/xoá mục."
     echo "Bài học: chạy thêm node scripts/test-lessons.js tới khi pass."
     echo
@@ -95,7 +101,6 @@ stage_light_index() {
 commit_task() {   # $1 = task file, $2 = task id
   local r="tasks/${2}R-review.md" files
   files="$(owns "$1") $1 $([ -f "$r" ] && echo "$r")"
-  node scripts/check-links.mjs --fix > /dev/null 2>&1   # drop dead learn-more links instead of blocking the task
   git reset -q
   git add $files
   case " $files" in *" js/data/"*|*"\`js/data/"*) stage_light_index ;; esac
@@ -168,5 +173,7 @@ while true; do
   if [ -f logs/push-pending ] && ! fresh logs/last-push "$PUSH_EVERY"; then
     git push -q && { rm -f logs/push-pending; touch logs/last-push; log "pushed $(git log --oneline -1 | cut -c1-7) (batched)"; }
   fi
+  # health check every ~15 rounds: frees stale claims, cancels stale reviews that block files, logs DOCTOR: warnings
+  ROUND=$(( ${ROUND:-0} + 1 )); [ $(( ROUND % 15 )) -eq 1 ] && node scripts/pipeline-doctor.js --fix --quiet 2>&1 | grep -v "Verify-failed" | head -20
   sleep "$EVERY"
 done
