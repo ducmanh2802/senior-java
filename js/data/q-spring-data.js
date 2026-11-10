@@ -2836,6 +2836,21 @@ Với Spring Boot 3.4+ có thể dùng property sẵn có: {{spring.http.client.
 - **Circuit breaker và bulkhead**: cần cô lập để một API bên ngoài chết không kéo sập toàn hệ thống (Resilience4j).
 - Với **virtual thread**, connection pool vẫn là tài nguyên hữu hạn: đặt {{maxConnections}} nhỏ hơn nhiều so với số thread.
 
+### Ví dụ đời thực
+Tình huống: màn hình thanh toán đơn hàng gọi 3 API bên ngoài theo thứ tự — cổng thanh toán, dịch vụ xác thực địa chỉ, dịch vụ gửi thông báo. Mỗi API dùng một RestClient mới tạo trong controller, không đặt timeout, dùng HttpURLConnection (không có kết nối pool).
+
+Triệu chứng: lúc cao điểm 500 đơn/phút, trang thanh toán chờ hơn 30 giây rồi trả 504; các màn hình khác của cùng hệ thống cũng bị chậm theo.
+
+Điều tra: thread dump cho thấy 200 thread Tomcat đang chặn tại Sun.nio.ch.SocketChannelImpl.connect, log ghi 'connect timed out'. Metric tomcat.threads.busy đạt 199/200, pool kết nối cạn.
+
+Nguyên nhân gốc: cổng thanh toán phản hồi chậm trung bình 12 giây vì đối tác đang bảo trì; không có timeout nên mỗi request giữ thread Tomcat suốt 12 giây, pool cạn, các request khác không còn thread xử lý.
+
+Xử lý: khai báo RestClient bean singleton cho mỗi đối tác, đặt connect timeout 2 giây và read timeout 5 giây, dùng JdkClientHttpRequestFactory để tái sử dụng connection qua keep-alive, bật circuit breaker trên cổng thanh toán (fail nhanh sau 5 lần lỗi liên tiếp).
+
+Kết quả: p95 thời gian phản hồi trang thanh toán giảm từ hơn 30 giây xuống dưới 800 miligiây, tỷ lệ lỗi 5xx giảm từ 12% xuống dưới 0,1%, các màn hình khác không còn bị lan truyền.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi sẽ chọn {{RestClient}} đồng bộ vì controller chạy Spring MVC và gọi 3 API bên ngoài tuần tự, không cần dữ liệu reactive stream. Mỗi client tôi khai báo thành bean singleton, đặt connect timeout 2 giây để không bỏ thời gian vào việc kết nối, và read timeout 5 giây để một đối tác chậm không giữ thread mãi. Pool kết nối tôi dùng HttpClient của JDK hoặc Apache HttpClient 5 để tái sử dụng connection qua keep-alive, chứ không tạo client mới mỗi lần gọi. Nếu một API bên ngoài chậm hay treo, tôi dùng circuit breaker (Resilience4j) để fail nhanh, bảo vệ toàn hệ thống thay vì để thread pool cạn kiệt. Với 5 đối tác, tôi thiết lập timeout budget theo SLO: nếu API tổng phải trả về dưới 1 giây, mỗi đối tác chỉ được đợi khoảng 200-300 miligiây. Cuối cùng, tôi log mỗi lần gọi với mã đối tác và thời gian phản hồi, để khi xảy ra sự cố biết rõ bottleneck nằm ở đâu."
 > Senior tip: hãy đặt cho mỗi client ngoài một **"timeout budget"** tương ứng với SLO của endpoint của bạn: nếu API đồng vị phải trả trong 300ms thì read timeout 1 giây là quá lỏng, còn nếu bạn đặt 30 giây thì một đối tác treo sẽ giữ 30 giây thread của bạn.`,
   follow: [
     'Khi nào chọn {{WebClient}} thay vì {{RestClient}} khi ứng dụng dùng JPA?',
@@ -2910,6 +2925,21 @@ public class ValidCardNumberValidator implements ConstraintValidator<ValidCardNu
 - {{@Validated}} trên class service kích hoạt proxy; nếu method được gọi bởi method khác trong cùng bean (self-invocation) thì validation bị bỏ qua im lặng.
 - Group không đúng sẽ tạo cảm giác "có validate nhưng không bắt lỗi" – hãy viết test cho từng group.
 
+### Ví dụ đời thực
+Tình huống: API đăng ký khách hàng nhận tên, email, mật khẩu. Ban đầu dev chỉ đánh {{@Valid}} lên DTO ở controller, và để kiểm tra 'email chưa tồn tại' trong service.
+
+Triệu chứng: job nhập khách hàng từ file CSV vào đêm không kiểm tra trùng email, tạo hàng trăm tài khoản trùng; khách hàng gọi API đăng ký với email sai định dạng, do thiếu {{@ExceptionHandler}} cho {{MethodArgumentNotValidException}}, hệ thống trả 500 thay vì 400.
+
+Điều tra: log cho thấy exception {{ConstraintViolationException}} bị ném lên khi job gọi trực tiếp service, không có controller nên không có handler của Spring MVC. Truy vấn COUNT(*) trên CSDL thấy 342 email trùng.
+
+Nguyên nhân gốc: quy tắc nghiệp vụ 'email duy nhất' nằm ở controller, nên job nội bộ bỏ qua; lỗi hình dạng không được bắt lại ở biên vì không có handler.
+
+Xử lý: chuyển {{@Validated}} lên class service với group OnCreate, thêm {{@ExceptionHandler}} trả 400 cho {{MethodArgumentNotValidException}} và {{ConstraintViolationException}}, job gọi trực tiếp service nên vẫn được kiểm tra.
+
+Kết quả: API trả 400 ngay khi dữ liệu sai, job đêm không tạo tài khoản trùng nữa, số ticket lỗi '500 đăng ký' giảm về 0.
+
+### Trả lời mẫu khi phỏng vấn
+"{{@Valid}} là cờ kiểm tra các field lồng nhau, dùng ở tham số method, còn {{@Validated}} là annotation của Spring đặt ở mức class để bật method validation và chọn validation group. Tôi sẽ đánh {{@Valid}} lên {{@RequestBody}} ở controller để fail nhanh với 400 khi dữ liệu sai định dạng. Quy tắc nghiệp vụ, ví dụ 'email chưa tồn tại' hoặc 'số dư đủ', tôi đặt trong service và đánh {{@Validated}} ở mức class, vì cả job nội bộ lẫn API HTTP đều gọi service và đều phải được kiểm tra. Group dùng khi cùng một DTO có quy tắc khác nhau giữa tạo và cập nhật, ví dụ mật khẩu bắt buộc khi tạo nhưng không bắt buộc khi cập nhật. Nếu không có {{@ExceptionHandler}}, client nhận 500 thay vì 400. Lỗi hay gặp là đặt validation chỉ ở controller thì job nội bộ bỏ qua hết. Tôi cũng viết test riêng cho mỗi group."
 > Senior tip: hãy chia rõ ranh giới trong team bằng một câu đơn giản: **"Cấu trúc thì validate ở biên, quy tắc nghiệp vụ thì validate ở domain"**.`,
   follow: [
     'Vì sao {{@Valid}} trên {{@RequestBody}} không tự động validate các object con?',
@@ -2993,6 +3023,21 @@ Step workerStep(JobRepository repo, PlatformTransactionManager tx,
 - **Không bật skip cho lỗi dữ liệu** mà không lưu lại danh sách dòng lỗi: dữ liệu bị mất mà không ai biết.
 - **Thiếu listener quan sát**: không có {{JobExecutionListener}} và {{StepExecutionListener}} thì khi job fail giữa đêm, bạn không biết nó fail ở partition nào, chunk nào, dòng nào.
 
+### Ví dụ đời thực
+Tình huống: job nhập 2 triệu dòng giao dịch từ hệ thống héritage mỗi tối, chunk 10.000 dòng, chạy trên 1 instance.
+
+Triệu chứng: một dòng có mã vận chuyển sai làm fail toàn bộ chunk 10.000 dòng; job bị dừng giữa đêm, sáng hôm sau restart lại từ đầu và mất 6 giờ thay vì 1 giờ. Lượt chạy trước đã ghi 1,8 triệu dòng nhưng vì không idempotent, chạy lại tạo bản ghi trùng.
+
+Điều tra: bảng BATCH_STEP_EXECUTION cho thấy STATUS = FAILED, EXIT_CODE = DataIntegrityViolationException ở gần dòng 1.850.000; không có SkipListener nên không ai biết mấy dòng rác nào bị bỏ.
+
+Nguyên nhân gốc: chunk quá lớn, một lỗi rollback cả 10.000 dòng; processor không idempotent (insert thay vì upsert) nên restart tạo trùng; thiếu skip limit và listener ghi lại dòng lỗi.
+
+Xử lý: giảm chunk xuống 500, cấu hình skip limit 100 với SkipListener ghi dòng lỗi vào bảng, dùng upsert (INSERT ... ON CONFLICT) cho idempotent, partition theo khoảng id vào 8 worker chạy song song.
+
+Kết quả: job chạy dưới 45 phút, restart tiếp tục từ chunk lỗi chứ không từ đầu, số dòng thất bại được ghi rõ và kiểm tra hàng ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Batch xử lý theo kiểu chunk-oriented: đọc một lô item, xử lý, rồi ghi toàn bộ lô trong một transaction và lưu checkpoint vào JobRepository, nên crash có thể restart từ lô gần nhất. Lỗi tạm thời như deadlock hay timeout tôi dùng retry với backoff lặp dần; dữ liệu rác tôi dùng skip có giới hạn và kèm SkipListener để không mất dữ liệu trong im lặng. Chunk nhỏ làm nhiều transaction và chậm, chunk lớn rollback tốn kém, tôi thường chọn 500-1.000. Khi job quá lớn cho một máy, tôi dùng partitioning: một manager chia khoảng id thành 8 partition, mỗi partition là một StepExecution riêng, restart độc lập. Nhớ rằng processor phải idempotent (upsert chứ không insert) để restart an toàn."
 > Senior tip: với job nhập dữ liệu lớn, hãy coi **idempotency và checkpoint là thiết kế chính**, còn code xử lý chỉ là phần dễ.`,
   follow: [
     'Vì sao Spring Batch áp dụng retry trước rồi mới skip, và hậu quả khi cấu hình sai là gì?',
@@ -3073,6 +3118,21 @@ SPA đọc cookie {{XSRF-TOKEN}} rồi gửi lại trong header {{X-XSRF-TOKEN}}
 - Lưu token trong {{localStorage}}: mọi lỗi XSS đều đánh cắp được token. Nếu buộc phải dùng, cần CSP nghiêm và sanitize input.
 - Sai mapping authorities (scope không được đổi thành {{SCOPE_}}) → 403 hàng loạt mà không rõ nguyên nhân.
 
+### Ví dụ đời thực
+Tình huống: SPA React tại app.nganhang.vn gọi API api.nganhang.vn, lưu access token trong memory và gửi qua header Authorization. Ban đầu dev bật CORS với allowedOrigins('*') và allowCredentials(true), đồng thời để bật CSRF mặc định.
+
+Triệu chứng: trình duyệt báo lỗi 'The value of the Access-Control-Allow-Origin header in the response must not be the wildcard * when the request's credentials mode is include'; gọi API từ trình duyệt thất bại 100%.
+
+Điều tra: log Spring ném IllegalArgumentException khi xử lý yêu cầu OPTIONS; F12 Network thấy yêu cầu trước không được trả lời.
+
+Nguyên nhân gốc: không thể dùng '*' cùng allowCredentials(true); CSRF dựa trên cookie nhưng SPA không dùng cookie cho token nên không cần CSRF.
+
+Xử lý: CORS chỉ cho origin app.nganhang.vn, allowCredentials(true), cache preflight 1 giờ; tắt CSRF vì token trong memory không được trình duyệt gửi tự động; bật @EnableMethodSecurity và dùng hasAuthority('SCOPE_transfer.write').
+
+Kết quả: gọi API từ trình duyệt thành công, p95 yêu cầu trước dưới 50 miligiây (được cache), không còn lỗi 403 do sai mapping scope.
+
+### Trả lời mẫu khi phỏng vấn
+"Phân quyền tôi chia thành 3 lớp: filter chain phân quyền thô theo URL, method security với {{@PreAuthorize}} phân quyền theo hành động nghiệp vụ, và row-level luôn lọc theo tenant của người dùng trong truy vấn. OAuth2 resource server xác thực JWT, và Spring đổi scope thành SCOPE_xxx nên dùng hasAuthority('SCOPE_transfer.write') chứ không phải hasRole. CORS cho phép trình duyệt đọc phản hồi từ origin khác, không phải cơ chế bảo mật; tôi chỉ liệt kê origin của SPA, không dùng '*' khi cho phép credentials. CSRF dựa trên trình duyệt tự động gửi cookie; access token nằm trong memory và gửi qua header Authorization nên không có đường tấn công CSRF, tôi tắt CSRF. Nếu token nằm trong cookie thì mới bật lại CSRF theo kiểu double-submit."
 > Senior tip: khi rà soát security của một SPA, đi theo thứ tự: **(1) token nằm ở đâu?** Nằm trong cookie thì cần CSRF; nằm trong memory thì cần CSP chặt. **(2) preflight có được trả lời đúng không?** **(3) endpoint nhạy cảm có method security không?** **(4) dữ liệu nhiều tenant có được lọc ở tầng truy vấn không?** Phần lớn sự cố bảo mật không nằm ở mã hoá hay token, mà ở việc **tin rằng filter chain đã đủ**.`,
   follow: [
     'Vì sao {{hasRole("ADMIN")}} không hoạt động với scope của OAuth2 token?',
@@ -3123,6 +3183,21 @@ Một đơn có 3 item và 2 payment sẽ ra 6 dòng. Nếu chỉ fetch một co
 - Fetch join làm **dữ liệu trùng** ở mức SQL: Hibernate 5 cần {{distinct}} để không trả cùng một đơn nhiều lần; Hibernate 6 tự loại trùng entity gốc, nhưng nếu bạn select DTO/scalar từ join thì vẫn bị nhân dòng.
 - {{@BatchSize}} chỉ hiệu quả khi số collection cần load nằm gọn trong batch size. Với collection rất lớn (vài nghìn phần tử), câu {{IN}} sẽ nặng.
 
+### Ví dụ đời thực
+Tình huống: API chi tiết đơn hàng lấy kèm danh sách sản phẩm và danh sách lịch sử thanh toán bằng {{@EntityGraph}} với attributePaths = {'items', 'payments'}.
+
+Triệu chứng: sau khi deploy, mỗi lần mở chi tiết đơn có nhiều sản phẩm và nhiều lần thanh toán, ứng dụng ném {{MultipleBagFetchException}} và trả 500 cho khách hàng.
+
+Điều tra: log Hibernate ném exception ngay khi dựng câu lệnh SQL; kiểm tra đơn bị lỗi có 4 sản phẩm và 3 giao dịch thanh toán.
+
+Nguyên nhân gốc: hai collection {{List}} cùng được LEFT JOIN trong một câu SQL tạo ra tích Descartes (4 × 3 = 12 dòng); Hibernate không thể gộp 12 dòng thành 2 collection {{List}} khác nhau nên từ chối truy vấn.
+
+Xử lý: tách thành 2 truy vấn — truy vấn 1 lấy đơn kèm items, truy vấn 2 lấy payments theo danh sách id đơn; hoặc thay {{List}} bằng {{Set}} nếu ngữ nghĩa cho phép; hoặc dùng DTO projection khi chỉ cần vài trường.
+
+Kết quả: API chi tiết đơn ổn định, không còn 500, thời gian phản hồi ổn định dưới 200 miligiây cho đơn có hàng trăm dòng lịch sử.
+
+### Trả lời mẫu khi phỏng vấn
+"{{JOIN FETCH}} và {{@EntityGraph}} đều sinh một câu SQL có LEFT JOIN, nên không có truy vấn thêm sau này, nhưng SQL phình to và không dùng được với phân trang. {{@BatchSize}} giữ quan hệ lazy, khi code truy cập collection thì gom nhiều lần tải thành query IN theo lô, nên N collection chỉ cần khoảng N chia batch size truy vấn. Với hai collection List, tôi không join cùng lúc vì sẽ bị {{MultipleBagFetchException}} do tích Descartes: một đơn có 3 sản phẩm và 2 lần thanh toán join ra 6 dòng, Hibernate không biết dòng nào là bản sao tích Cartesian hay phần tử hợp lệ của List. Tôi tách thành 2 truy vấn hoặc dùng DTO projection. Nếu API danh sách phải phân trang, tôi không fetch collection trong query chính, mà lấy id trước rồi fetch collection theo id đã lấy."
 > Senior tip: hãy coi lựa chọn fetch là một **phân tích chi phí**, không phải một lựa chọn "đúng/sai". Một câu SQL có join 3 collection trả về 100 dòng cho 10 đơn có thể nhanh hơn 3 câu query riêng khi dữ liệu nhỏ; nhưng khi collection phình to, chính câu SQL đó lại là thứ làm OOM.`,
   follow: [
     'Vì sao Hibernate không thể gộp kết quả join của hai collection {{List}} cùng lúc?',
@@ -3202,6 +3277,21 @@ Ba điểm cần chú ý trong đoạn trên:
 - Nâng cấp Hibernate hay Spring Data không xoá được vấn đề này: collection fetch + phân trang offset về bản chất luôn phải phân trang trong bộ nhớ.
 - **Đếm tổng số bản ghi** trên bảng lớn rất tốn. Nếu UI không cần "trang 5 / 120 trang", dùng {{Slice}} hoặc trả về {{hasNext}} để khỏi query count.
 
+### Ví dụ đời thực
+Tình huống: API danh sách đơn hàng dùng {{@EntityGraph}} để lấy kèm sản phẩm, kết hợp Spring Data {{Pageable}} (trang 20, mỗi trang 20 đơn).
+
+Triệu chứng: đến trang 10.000 trở đi API phản hồi hơn 30 giây, sau đó ném OutOfMemoryError; logs Hibernate ném cảnh báo {{HHH90003004}} 'firstResult/maxResults specified with collection fetch; applying in memory'.
+
+Điều tra: truy vấn chậm trong log Hibernate không có LIMIT/OFFSET, truy vấn lấy toàn bộ hàng triệu đơn rồi gom trong bộ nhớ; heap dump cho thấy các đối tượng Order chiếm 4 GB heap.
+
+Nguyên nhân gốc: LEFT JOIN collection nhân các dòng, LIMIT áp trên số dòng SQL sai số lượng đơn, Hibernate buộc tải toàn bộ tập kết quả về bộ nhớ rồi mới cắt.
+
+Xử lý: truy vấn 1 chỉ lấy id theo trang (có LIMIT, có ORDER BY ổn định), truy vấn 2 fetch sản phẩm theo danh sách id đã lấy, truy vấn 3 đếm tổng không join collection; hoặc dùng DTO projection, hoặc phân trang keyset thay cho offset.
+
+Kết quả: trang 10.000 phản hồi dưới 1 giây, heap ổn định, không còn OutOfMemoryError.
+
+### Trả lời mẫu khi phỏng vấn
+"Cảnh báo {{HHH90003004}} có nghĩa Hibernate không thể áp dụng LIMIT của SQL khi câu lệnh có join collection, vì join nhân số dòng ra và LIMIT sẽ cắt sai số lượng đơn. Hibernate chọn cách tải toàn bộ tập kết quả về bộ nhớ rồi cắt, nên với hàng triệu đơn là OutOfMemoryError. Cách sửa chuẩn là tách thành 2 truy vấn: truy vấn 1 chỉ lấy id theo trang với LIMIT và ORDER BY ổn định, truy vấn 2 fetch collection theo danh sách id đã lấy, rồi sắp xếp lại theo thứ tự phân trang. Truy vấn đếm tổng cũng phải tách ra, không join collection, sao cho không bị tích Descartes. Nếu UI không cần hiển thị 'trang 5 của 120 trang', tôi dùng Slice để không cần truy vấn đếm."
 > Senior tip: cảnh báo {{HHH90003004}} thực chất là một **phát hiện quý**: nó cho biết ứng dụng đang âm thầm tải toàn bộ bảng về bộ nhớ. Trong production, chỉ cần bảng 5 triệu đơn là vài GB heap rồi.`,
   follow: [
     'Vì sao Hibernate không thể áp dụng LIMIT của SQL khi có collection fetch?',
