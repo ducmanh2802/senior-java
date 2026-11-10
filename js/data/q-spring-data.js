@@ -111,6 +111,40 @@ Các tính năng dựa trên proxy như {{@Transactional}}, {{@Async}}, {{@Cache
 - {{@Bean}} trả về {{BeanPostProcessor}} phải là **static**, nếu không Spring sẽ phải khởi tạo sớm configuration class đó và log cảnh báo "not eligible for getting processed by all BeanPostProcessors".
 - Bean phải là singleton thì việc destroy mới xảy ra đúng một lần; bean prototype không được quản lý vòng đời kiểu này.
 
+### Ví dụ đời thực
+Một hệ thống giao dịch cần warm-up cache Redis khi khởi động: team viết {{@PostConstruct}} trong {{CacheService}} để load toàn bộ danh sách cấu hình từ DB vào Redis. App chạy tốt trong dev (1 instance), nhưng khi deploy lên staging với 2 instance cùng chạy, cả hai instance đồng thời ghi vào cùng key cache → Redis báo lỗi hoặc ghi chồng dữ liệu; mỗi lần deploy lại là một lần cache bị lỗi. Điều tra: log Spring cho thấy {{@PostConstruct}} chạy trong lúc context đang khởi tạo, transaction chưa được mở (vì {{CacheService}} không có {{@Transactional}}) → truy vấn DB ngoài transaction vẫn chạy nhưng không có rollback khi lỗi; và hai instance cùng warm-up không có cơ chế lock. Nguyên nhân gốc: warm-up là công việc **một lần** sau khi app sẵn sàng, không phải việc cần làm trong {{@PostConstruct}}. Sửa: chuyển sang {{ApplicationRunner}}/{{CommandLineRunner}} (vẫn chạy early nhưng sau khi context hoàn tất) hoặc dùng {{@ApplicationEventListener(ApplicationReadyEvent.class)}}; thêm distributed lock (Redisson) nếu nhiều instance cùng warm-up. Kết quả: deploy staging không còn lỗi cache, và thời gian warm-up giảm 30% vì không còn chạy song song.
+
+### Trả lời mẫu khi phỏng vấn
+"Vòng đời bean trong Spring đi qua nhiều giai đoạn: container đọc BeanDefinition, tạo instance, inject dependency, rồi qua các hook theo thứ tự BeanPostProcessor.postProcessBeforeInitialization → @PostConstruct → InitializingBean.afterPropertiesSet → init-method → BeanPostProcessor.postProcessAfterInitialization – đây là nơi Spring bọc proxy AOP – và cuối cùng bean sẵn sàng. SmartLifecycle.start chạy sau khi context refresh để bean có thể bắt đầu phục vụ, và khi shutdown, SmartLifecycle.stop chạy trước (theo phase) để dọn dẹp trước khi destroy bean: @PreDestroy → DisposableBean → destroy-method. Trong thực tế, điều tôi quan tâm nhất là không ghi công việc nặng vào @PostConstruct vì nó chạy trong lúc context đang khởi tạo, chưa có transaction, và làm chậm app start; thay vào đó tôi dùng ApplicationReadyEvent hoặc CommandLineRunner. Ngoài ra, @Bean trả về BeanPostProcessor phải static, và mọi code trong @PostConstruct nên idempotent vì devtools reload có thể gọi lại nó."
+
+### Cơ chế từng bước: thứ tự các hook chi tiết
+Khi Spring container khởi tạo một bean singleton, thứ tự các hook chạy như sau:
+
+1. **BeanFactoryPostProcessor**: Spring đọc file cấu hình (XML, component scan, imports) và biến đổi **BeanDefinition** trước khi tạo bean. Ví dụ: {{PropertySourcesPlaceholderProcessor}} thay \${...} bằng giá trị thật từ file config. Bước này chạy **chưa có bean nào**.
+
+2. **BeanDefinitionRegistryPostProcessor**: biến thể của BeanFactoryPostProcessor, thêm/xóa BeanDefinition động (ví dụ {{ConfigurationClassPostProcessor}} – Spring tự dùng để quét các class {{@Configuration}} và {{@ComponentScan}}; hoặc {{@MapperScan}} của MyBatis thêm bean mapper vào registry).
+
+3. **BeanPostProcessor.postProcessBeforeInitialization**: chạy ngay sau khi bean được tạo và inject dependency xong, trước khi gọi init. Dùng để biến đổi bean (ví dụ {{@RequiredAnnotationPostProcessor}} xử lý {{@Required}}, hoặc InjectAnnotationBeanPostProcessor cho {{@Autowired}}).
+
+4. **@PostConstruct**: annotation standard (JSR-250), chạy sau khi inject xong, chỉ một lần. Đây là nơi **an toàn** nhất để ghi log, validate config, nhưng **không** nên làm việc nặng.
+
+5. **InitializingBean.afterPropertiesSet**: interface của Spring, chạy ngay sau {{@PostConstruct}}. Tương đương với attribute {{init-method}} trong XML.
+
+6. **init-method**: phương thức được khai báo explicit ({{@Bean(initMethod = "init")}} hoặc XML {{init-method}}), chạy sau {{afterPropertiesSet}}.
+
+7. **BeanPostProcessor.postProcessAfterInitialization**: bước **quan trọng nhất** – đây là nơi {{AbstractAutoProxyCreator}} tạo proxy AOP (cho {{@Transactional}}, {{@Async}}, {{@Cacheable}}), và {{ApplicationListenerDetector}} thêm bean vào danh sách listeners. Sau bước này bean đã "hoàn chỉnh" và sẵn sàng.
+
+8. **SmartLifecycle.start()**: chỉ chạy khi {{ApplicationContext}} refresh xong (tất cả bean đã tạo). Dùng để bắt đầu các dịch vụ nền (kết nối message broker, chạy scheduler, warm-up cache).
+
+Khi shutdown:
+- {{SmartLifecycle.stop()}} chạy trước (theo phase, phase thấp hơn chạy sau), cho phép dọn dẹp theo thứ tự đúng.
+- {{@PreDestroy}} → {{DisposableBean.destroy()}} → destroy-method.
+- Bean prototype không được quản lý vòng đời này – Spring không tự gọi destroy callback cho chúng.
+
+**Lưu ý quan trọng về thứ tự**: {{@PostConstruct}} và {{InitializingBean}} chỉ khác nhau về nguồn gốc (JSR-250 vs Spring interface), nhưng thứ tự chạy là PostConstruct trước, sau đó là afterPropertiesSet. Nếu một bean implement cả hai, PostConstruct luôn chạy trước. Không nên implement cả hai trong cùng một bean – chỉ chọn một.
+
+**Tại sao proxy AOP phải nằm ở postProcessAfterInitialization**: Spring cần tạo proxy **sau** khi bean đã được inject đầy đủ dependency, vì proxy phải bọc object đã hoàn chỉnh. Nếu proxy tạo sớm hơn (trước khi inject xong), proxy sẽ bóc một bean thiếu dependency → method call trên proxy sẽ đi đến target không đủ dữ liệu.
+
 > Senior tip: khi debug Spring, hãy bật {{--debug}} để xem điều kiện auto-config, và dùng {{ApplicationContext}} + {{getBeanDefinitionNames()}} khi cần hiểu vì sao một bean không được tạo. Với cơ chế vòng đời, nguyên tắc nhớ: **mọi thứ bạn ghi trong {{@PostConstruct}} phải idempotent**, vì app restart / devtools reload sẽ gọi lại nó.`,
   follow: [
     'Sự khác biệt giữa {{BeanFactoryPostProcessor}} và {{BeanPostProcessor}} về thời điểm và phạm vi?',
@@ -406,6 +440,27 @@ Dùng {{@AutoConfigureBefore}} / {{@AutoConfigureAfter}} để ép thứ tự, v
 - {{@ConditionalOnClass(X.class)}} ở **class-level** là an toàn (Spring đọc annotation bằng ASM, không nạp class). Nhưng đặt trên **method {{@Bean}}** với class literal thì có thể ném {{ClassNotFoundException}}/{{NoClassDefFoundError}} khi X vắng mặt. Cách an toàn: tách nested {{@Configuration}} riêng có điều kiện ở class-level, hoặc dùng {{name = "com.x.X"}} dạng String.
 - Thiếu {{@AutoConfigureAfter}} / {{@AutoConfigureOrder}} → auto-config của bạn có thể chạy trước khi bean của thư viện khác sẵn sàng.
 
+### Ví dụ đời thực
+Một team viết auto-config {{DbMetricsAutoConfiguration}} để expose metric số lượng connection đang dùng từ HikariCP. Auto-config đặt {{@Bean}} {{HikariDataSource}} mà **không** có {{@ConditionalOnMissingBean}} → khi user tự định nghĩa {{DataSource}} bean (ví dụ test với embedded database), auto-config vẫn tạo bean thứ hai → hai pool cùng kết nối DB, metric báo sai số connection, và một số test fail vì bean conflict. Điều tra: logSpring Boot in "Condition evaluation report" cho thấy {{DbMetricsAutoConfiguration}} vẫn chạy dù user đã define bean. Nguyên nhân: thiếu {{@ConditionalOnMissingBean}}. Sửa: thêm {{@ConditionalOnMissingBean}} lên {{@Bean}} và thay {{@ConditionalOnClass(X.class)}} trên method bằng class-level hoặc string name để tránh {{ClassNotFoundException}}. Kết quả: test với embedded DB không còn bean conflict, metric phản ánh đúng pool thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+"Auto-configuration trong Spring Boot là cơ chế đăng ký bean có điều kiện: Boot đọc danh sách auto-config từ file {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}}, rồi với mỗi auto-config kiểm tra các {{@Conditional...}} – {{@ConditionalOnMissingBean}} để không overriding bean của user, {{@ConditionalOnClass}} để không yêu cầu thư viện vắng mặt, {{@ConditionalOnProperty}} để toggle theo config. Debug bằng cờ {{--debug}} (log in ra điều kiện từng auto-config) hoặc endpoint {{/actuator/conditions}}. Trong thực tế, khi viết auto-config, tôi luôn thinking nó là API công khai: mọi bean phải có {{@ConditionalOnMissingBean}}, phải có default value hợp lý cho property, và phải có test khẳng định user tự define bean thì auto-config nhường đường. Đây là 3 test tối thiểu."
+
+### Cơ chế từng bước: auto-config được nạp và sắp xếp thế nào
+1. **Phát hiện**: Spring Boot đọc file {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}} (Spring Boot 3) – mỗi dòng một class name đầy đủ. Boot 2.7 trở xuống dùng key {{EnableAutoConfiguration}} trong {{META-INF/spring.factories}}.
+
+2. **Lọc điều kiện**: Với mỗi auto-config class, Spring kiểm tra các annotation {{@Conditional...}} ở class-level:
+   - {{@ConditionalOnClass}}: ASM đọc annotation, **không nạp class** – an toàn khi class vắng mặt.
+   - {{@ConditionalOnMissingBean}}: kiểm tra xem bean cùng type đã được user define chưa.
+   - {{@ConditionalOnProperty}}: đọc property, {{matchIfMissing = true}} để có default.
+   - Nếu bất kỳ điều kiện nào fail → toàn bộ auto-config bị loại.
+
+3. **Sắp xếp thứ tự**: {{@AutoConfigureBefore}} / {{@AutoConfigureAfter}} ép thứ tự, {{@AutoConfigureOrder}} sắp xếp theo số. Nếu không khai báo, Boot sắp theo tên class alphabet – **không** tự suy ra thứ tự từ dependency giữa các bean.
+
+4. **Tạo bean**: Các {{@Bean}} trong auto-config được đăng ký như bean thường, với điều kiện method-level nếu có.
+
+**Lưu ý quan trọng**: {{@ConditionalOnClass(X.class)}} ở **class-level** là an toàn (Spring đọc bằng ASM, không nạp class). Nhưng đặt trên **method {{@Bean}}** với class literal thì có thể ném {{ClassNotFoundException}} khi X vắng mặt – vì lúc đó Spring phải nạp class để đọc annotation. Cách an toàn: tách nested {{@Configuration}} riêng có điều kiện ở class-level, hoặc dùng {{name = "com.x.X"}} dạng String.
+
 > Senior tip: khi viết auto-config cho đội ngũ, hãy nghĩ nó là **API công khai**: mọi bean đều phải có {{@ConditionalOnMissingBean}}, phải tôn trọng property có mặc định hợp lý, và phải có test kiểm tra "user tự định nghĩa bean thì auto-config nhường đường". Đó là 3 test tối thiểu của một auto-config đạt chuẩn.`,
   follow: [
     'Sự khác biệt giữa {{@ConditionalOnMissingBean}} và {{@ConditionalOnMissingClass}} là gì?',
@@ -442,6 +497,36 @@ Với field/setter injection, container có thể: tạo A (chưa inject B) → 
 
 ### Pitfall production
 - {{@Lazy}} làm che mất vấn đề: lỗi tạo bean (nếu có) chỉ lộ ra ở lần gọi đầu tiên qua lazy proxy lúc runtime, thay vì lỗi lúc start.
+- Event-driven: nếu phát event trong cùng transaction mà listener dùng {{@EventListener}} (không {{@TransactionalEventListener}}), listener chạy **trước commit** – đọc được dữ liệu chưa commit và có thể gây deadlock.
+- Cycle với bean scope {{prototype}} cũng không giải quyết được; còn cycle giữa các bean của cùng thư viện bên thứ ba thì không sửa được, phải đổi cách tích hợp.
+
+### Ví dụ đời thực
+Hệ thống thanh toán có {{PaymentService}} (ghi số dư, gửi email) và {{NotificationService}} (gửi email, đọc cấu hình từ {{PaymentService}}). Hai service này inject vào nhau: {{PaymentService → NotificationService}} (để gửi email khi thanh toán) và {{NotificationService → PaymentService}} (để đọc số dư còn lại cho email). App chạy tốt trên Boot 2.5 (mặc định cho phép circular dependency). Khi nâng cấp lên Boot 2.6, app **fail lúc start** với chuỗi lỗi: "The dependency of PaymentService -> NotificationService and NotificationService -> PaymentService is unresolvable". Điều tra: Boot in ra đường dẫn đầy đủ {{PaymentService → NotificationService → PaymentService}}. Kiểm tra code: {{NotificationService}} chỉ cần {{PaymentService}} để **đọc** số dư khi gửi email – không cần ngay lúc khởi tạo. Nguyên nhân gốc: design smell – {{NotificationService}} biết quá nhiều về {{PaymentService}}, và hai service cùng thực hiện việc liên thông. Sửa theo thứ tự ưu tiên: (1) tách abstraction – {{NotificationService}} inject {{BalanceService}} interface (do {{PaymentService}} implement) → cycle tan; (2) nếu cần nhanh, dùng {{@Lazy}} trên {{NotificationService}} để tạo proxy trễ – nhưng team nhận ra đây là workaround; (3) dài hạn: {{PaymentService}} phát {{PaymentCompletedEvent}} khi xong, {{NotificationService}} listen bằng {{@TransactionalEventListener}} → event-driven. Kết quả: app start được trên Boot 2.6+, unit test của {{NotificationService}} không cần Spring context anymore.
+
+### Trả lời mẫu khi phỏng vấn
+"Circular dependency là A phụ thuộc B, B phụ_depend A. Spring Boot 2.6+ cấm nó mặc định bằng {{spring.main.allow-circular-references=false}} vì cycle là triệu chứng của thiết kế sai: hai class phụ thuộc lẫn nhau, không test được độc lập, và chỉ giải quyết được bằng early reference + proxy (chỉ với field/setter injection) – không hoạt động với constructor injection. Khi gặp cycle, tôi phân tích theo 3 bước: (1) đọc chuỗi lỗi của Boot để xác định điểm giao, (2) hỏi 'A có thật sự cần B ngay lúc khởi tạo hay chỉ cần khi xử lý request?', (3) tìm {{@Lazy}} đang dùng để giấu cycle. Sau đó refactor theo thứ tự: tách abstraction (Dependency Inversion – để interface do A định nghĩa), event-driven (ApplicationEventPublisher + @TransactionalEventListener), hoặc dùng ObjectProvider/@Lazy như workaround cuối cùng. Trong review, câu hỏi đáng đặt là: 'module này có đang biết quá nhiều về module kia không?'."
+
+### Cơ chế từng bước: Spring xử lý cycle và quy trình refactor chi tiết
+**Spring xử lý cycle thế nào (chỉ với field/setter injection)**:
+1. Container tạo A (chưa inject B) → đưa "early reference" của A vào B.
+2. Inject B vào A → sau đó thay early reference bằng proxy.
+3. **Tại sao không hoạt động với constructor injection**: constructor cần B ngay từ đầu, nhưng B cũng cần A → bế tắc.
+4. **Tại sao {{@Async}} dễ vỡ**: proxy AOP không hỗ trợ early reference → lỗi "has been injected into other beans in its raw version".
+
+**Quy trình phân tích khi gặp cycle**:
+1. Đọc chuỗi lỗi: Boot in ra đường dẫn phụ thuộc đầy đủ (A → B → A), đánh số từng bean.
+2. Vẽ lại sơ đồ phụ thuộc và hỏi: "A có thật sự cần B ngay lúc khởi tạo, hay chỉ cần B khi xử lý request?".
+3. Kiểm tra {{@Lazy}} đang được dùng ở đâu để "giấu" cycle.
+
+**Các cách refactor (xếp theo mức độ ưu tiên)**:
+1. **Tách abstraction**: để B phụ thuộc vào interface do A định nghĩa (Dependency Inversion). Cycle thường tan ngay khi inversion chiều sở hữu interface.
+2. **Đảo chiều phụ thuộc theo use case**: service "cao cấp" (application service) gọi cả hai service "thấp" – ông trung gian không cần logic, chỉ điều phối.
+3. **Event-driven**: thay lời gọi trực tiếp bằng {{ApplicationEventPublisher}} + {{@TransactionalEventListener}} ở phía nhận. Lưu ý event chạy **sau commit** nếu dùng {{@TransactionalEventListener}}, nên dữ liệu phải được đọc lại.
+4. **Lazy injection** ({{@Lazy}} hoặc {{ObjectProvider<T>}}): tạo proxy trễ hoãn, phá cycle về mặt kỹ thuật. Đây là **workaround**, dùng khi cần fix nhanh trên hệ thống cũ.
+5. **Tách module/service**: nếu cycle xuyên qua ranh giới module, đó là dấu hiệu thiếu event bus hoặc thiếu một module "shared".
+
+**Pitfall production thêm**:
+- {{@Lazy}} làm che vấn đề: lỗi tạo bean (nếu có) chỉ lộ ra ở lần gọi đầu tiên qua lazy proxy lúc runtime, thay vì lỗi lúc start.
 - Event-driven: nếu phát event trong cùng transaction mà listener dùng {{@EventListener}} (không {{@TransactionalEventListener}}), listener chạy **trước commit** – đọc được dữ liệu chưa commit và có thể gây deadlock.
 - Cycle với bean scope {{prototype}} cũng không giải quyết được; còn cycle giữa các bean của cùng thư viện bên thứ ba thì không sửa được, phải đổi cách tích hợp.
 
@@ -500,6 +585,34 @@ SecurityFilterChain apiChain(HttpSecurity http, JwtAuthenticationConverter conve
 - Không log token/header {{Authorization}}; redact trong log filter.
 - Cần rate limiting và cơ chế chặn brute force ở tầng gateway.
 
+### Ví dụ đời thực
+Một API gateway nội bộ dùng JWT để xác thực: mỗi service nhận token từ header {{Authorization: Bearer ...}}, kiểm tra chữ ký bằng public key từ JWKS. Đội ngũ quyết định dùng HS256 (shared secret) vì đơn giản và latency thấp hơn – cả auth server và 5 service đều giữ secret. Vấn đề: một developer commit secret lên GitHub (được phát hiện sau 3 ngày) → **tất cả** token đã cấp có thể được tạo lại bởi bất kỳ ai có secret, và service nào giữ secret đều tự ký được token. Điều tra: audit log cho thấy token được tạo từ IP nội bộ không phải auth server. Sửa: chuyển sang RS256 (bất đối xứng) – auth server giữ private key (không bao giờ ra ngoài), các service lấy public key từ JWKS endpoint {{/.well-known/jwks.json}}. Kết quả: ngay sau khi rotate key, 5 service tự động load JWKS mới, không cần deploy lại; và thêm {{aud}} validator để token cấp cho service A không dùng được ở service B. Việc kiểm tra {{aud}} đã ngăn một token test được dùng ở staging – là lỗ hổng thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Security là filter-based: mỗi request đi qua FilterChainProxy, gọi lần lượt các filter – nạp SecurityContext, kiểm tra CSRF, đọc Bearer token, kiểm tra quyền, xử lý lỗi. Với API stateless, tôi tắt session (SessionCreationPolicy.STATELESS) và CSRF, dùng BearerTokenAuthenticationFilter để đọc header Authorization. Spring Boot tự động cấu hình OAuth2 Resource Server khi thêm starter oauth2-resource-server và khai báo issuer-uri – nó tự lấy /.well-known/openid-configuration, tải JWKS để xác thực chữ ký. Resource server không phát token, chỉ xác thực token do Authorization Server (Keycloak, Cognito) cấp. Trong thực tế, tôi luôn kiểm tra 4 thứ: chữ ký, iss, exp (với clock skew 60s), và aud – vì chỉ dựa vào exp là lỗ hổng: token cấp cho service khác vẫn dùng được. Authority: scope read:orders → SCOPE_read:orders, nếu token mang claim roles thì cần JwtAuthenticationConverter tùy chỉnh."
+
+### Cơ chế từng bước: filter chain và JWT verification chi tiết
+**Thứ tự filter quan trọng**:
+1. {{SecurityContextHolderFilter}}: nạp {{SecurityContext}} (không tự lưu session).
+2. {{CsrfFilter}}: chống CSRF cho request dùng cookie.
+3. {{BearerTokenAuthenticationFilter}}: đọc header {{Authorization: Bearer ...}}, xác thực token.
+4. {{UsernamePasswordAuthenticationFilter}}: đăng nhập bằng form (REST thường không dùng).
+5. {{ExceptionTranslationFilter}}: chuyển lỗi 401/403 sang entry point.
+6. {{AuthorizationFilter}}: kiểm tra quyền theo rule đã cấu hình.
+
+**Cơ chế xác thực JWT (Resource Server)**:
+- Resource server **không** phát token, chỉ xác thực token do Authorization Server (Keycloak, Spring Authorization Server, Cognito) cấp.
+- Khai báo {{issuer-uri}} → Boot tự lấy {{/.well-known/openid-configuration}}, tải **JWK Set** để xác thực chữ ký, và cache bằng {{NimbusJwtDecoder}}.
+- Token phải kiểm tra: chữ ký hợp lệ, {{iss}} đúng, {{exp}} chưa hết hạn (chấp nhận clock skew mặc định 60s), {{aud}} đúng với API của bạn (cần cấu hình thêm {{audience}} validator).
+- Authorities: mặc định scope {{read:orders}} → {{SCOPE_read:orders}}. Nếu token mang claim {{roles}} cần khai báo {{JwtAuthenticationConverter}} tùy chỉnh.
+
+**Pitfall production thêm**:
+- Tắt CSRF phải đi kèm việc **không dùng cookie/session** để xác thực. Nếu app vừa có web session vừa có API, tách filter chain riêng cho từng phần.
+- Chỉ dựa vào {{exp}} mà không kiểm tra {{aud}} là lỗ hổng kinh điển: token cấp cho dịch vụ khác vẫn dùng được.
+- Refresh token: cần cơ chế rotation, lưu hash phía server, phát hiện reuse.
+- Không log token/header {{Authorization}}; redact trong log filter.
+- Cần rate limiting và cơ chế ngăn brute force ở tầng gateway.
+
 > Senior tip: khi tách hệ thống sang nhiều service, chuẩn phổ biến nhất là **OAuth2 Resource Server + JWT** ký bất đối xứng (RS256/ES256, service chỉ giữ public key lấy từ JWKS – không dùng shared secret HS256, vì service nào giữ secret cũng tự ký được token): mỗi service tự xác thực, không cần gọi auth server mỗi request (latency + single point of failure). Nhớ rằng đó là **trust boundary**: chỉ service nào thực sự cần mới nhận token, và luôn kiểm tra {{aud}} cùng scope tối thiểu cần thiết.`,
   follow: [
     'Sự khác biệt giữa Resource Server và Authorization Server trong OAuth2 là gì?',
@@ -557,6 +670,39 @@ ex.setTaskDecorator(runnable -> {
 ~~~
 
 ### Pitfall production
+- Queue không giới hạn + producer nhanh hơn consumer → memory tăng cho tới khi OOM; luôn đặt queue capacity và rejection policy.
+- {{@Async}} trên method {{private}} hoặc lời gọi nội bộ {{this.x()}} → chạy đồng bộ, không báo lỗi.
+- Không dùng {{@Async}} để che giấu một luồng nghiệp vụ quan trọng: nếu task thất bại, không có gì retry. Hãy dùng hàng đợi bền vững (RabbitMQ/Kafka/SQS) khi cần đảm bảo giao.
+- Spring Boot 3.2 trở đi có thể dùng **virtual thread executor** với {{spring.threads.virtual.enabled=true}} – phù hợp khi tác vụ I/O nhiều.
+
+### Ví dụ đời thực
+Một service gửi email thông báo sau khi đơn hàng được xác nhận: team dùng {{@Async}} trên {{EmailService.sendConfirmation()}} để không làm chậm response. App chạy tốt trên 1 instance, nhưng khi scale lên 10 pod, mỗi pod nhận hàng trăm email mỗi phút – {{SimpleAsyncTaskExecutor}} (mặc định vì không có bean TaskExecutor nào) tạo **một thread mới cho mỗi email** → 10 pod × 500 email/phút = 5.000 thread/pod, CPU 80%, GC liên tục, và một số email bị mất do thread bị kill khi pod scale down. Điều tra: thread dump cho thấy hàng nghìn thread {{SimpleAsyncTaskExecutor-1}}, {{SimpleAsyncTaskExecutor-2}}…; metric HikariCP cũng báo pool cạn vì async task cũng dùng connection. Sửa: khai báo {{ThreadPoolTaskExecutor}} với core=4, max=8, queue=500, rejection policy {{CallerRunsPolicy}} (backpressure); thêm metrics đếm số task đang chờ và số task lỗi; với email quan trọng, chuyển sang RabbitMQ + retry/dead-letter. Kết quả: CPU xuống 20%, không còn thread bùng nổ, và email không bị mất khi scale down (graceful shutdown + queue).
+
+### Trả lời mẫu khi phỏng vấn
+"{{@Async}} chạy method ở thread khác do một TaskExecutor quản lý, và nó cũng dựa trên proxy – nên chịu đúng hạn chế của AOP: self-invocation, method private/final → không chạy async. Ba cái bẫy lớn nhất: thứ nhất, exception bị nuốt – task chạy nền, lỗi không trả về cho caller; method void thì exception chỉ vào AsyncUncaughtExceptionHandler (mặc định chỉ log), method trả Future thì exception nằm trong Future, không ai đọc là mất. thứ hai, transaction không truyền sang thread mới – TransactionSynchronizationManager gắn với thread, nên thread mới không có transaction; phải đặt {{@Transactional}} ngay trên chính method async. thứ ba, ThreadLocal không truyền – MDC (trace id) và SecurityContext không tự sang thread mới; phải dùng TaskDecorator để copy context. Trong thực tế, tôi luôn khai báo executor tường minh (không dùng SimpleAsyncTaskExecutor), đặt queue capacity và rejection policy, và chỉ dùng {{@Async}} cho tác vụ không quan trọng – với tác vụ nghiệp vụ cần đảm bảo, dùng message broker."
+
+### Cơ chế từng bước: executor và các bẫy chi tiết
+**Executor mặc định là gì**:
+- Nếu có **đúng một** bean {{TaskExecutor}}, Spring dùng bean đó cho {{@Async}}.
+- Spring Boot tự động cấu hình bean {{applicationTaskExecutor}} (core size 8, queue rất lớn, prefix {{task-}}).
+- Nếu **không** có bean nào, Spring rơi về {{SimpleAsyncTaskExecutor}}: **mỗi task một thread mới, không giới hạn** → chạy tải cao sẽ sinh hàng nghìn thread và làm chết máy. Luôn khai báo executor tường minh.
+
+**Bẫy 1 – exception bị nuốt**:
+Method {{void}}: exception đi vào {{AsyncUncaughtExceptionHandler}} (mặc định chỉ log), caller không biết. Method trả {{Future}}/{{CompletableFuture}}: exception nằm trong Future, không ai đọc là mất. Muốn xử lý lỗi: trả {{CompletableFuture<Void>}} và dùng {{whenComplete}} / {{exceptionally}}, và cài {{AsyncUncaughtExceptionHandler}} riêng (alert/metrics) cho method void.
+
+**Bẫy 2 – transaction**:
+Transaction gắn với thread (qua {{TransactionSynchronizationManager}}), nên thread mới **không có** transaction. Đừng mong {{@Transactional}} ở method gọi được kế thừa. Hãy đặt {{@Transactional}} ngay trên chính method async (chạy trong thread mới) để có transaction riêng.
+
+**Bẫy 3 – ThreadLocal**:
+{{MDC}} (trace id) và {{SecurityContext}} không tự truyền sang thread mới. Dùng {{TaskDecorator}} để copy context:
+~~~java
+ex.setTaskDecorator(runnable -> {
+    var ctx = MDC.getCopyOfContextMap();
+    return () -> { MDC.setContextMap(ctx); try { runnable.run(); } finally { MDC.clear(); } };
+});
+~~~
+
+**Pitfall production thêm**:
 - Queue không giới hạn + producer nhanh hơn consumer → memory tăng cho tới khi OOM; luôn đặt queue capacity và rejection policy.
 - {{@Async}} trên method {{private}} hoặc lời gọi nội bộ {{this.x()}} → chạy đồng bộ, không báo lỗi.
 - Không dùng {{@Async}} để che giấu một luồng nghiệp vụ quan trọng: nếu task thất bại, không có gì retry. Hãy dùng hàng đợi bền vững (RabbitMQ/Kafka/SQS) khi cần đảm bảo giao.
@@ -729,6 +875,12 @@ Lớp này xử lý nhiều lỗi do Spring MVC sinh ra như 400, 405 và 415. N
 - Cân nhắc phân quyền theo vai trò: client có quyền xem thông báo chi tiết, client khác chỉ thấy mã lỗi.
 - Nội dung {{ProblemDetail}} có thể được cache lại bởi CDN/proxy – nhớ đặt header chặn cache cho response lỗi.
 - Không đưa thông tin nội bộ vào {{detail}} khi lỗi do người dùng gây ra; đặt thông tin chi tiết vào log kèm {{traceId}}.
+
+### Ví dụ đời thực
+Một hệ thống đặt hàng có API GET /api/orders/{id} trả về HTTP 500 khi đơn hàng không tồn tại, nhưng body trả về chứa stack trace đầy đủ: câu SQL, tên class, đường dẫn source code trên server. Attacker có thể dùng thông tin này để ánh xạ cấu trúc cơ sở dữ liệu. Đội ngũ điều tra log API và thấy response body có org.springframework... kèm query SQL đầy đủ. Nguyên nhân: controller ném OrderNotFoundException (chủ riêng extends RuntimeException) nhưng không có @RestControllerAdvice nào bắt nó, nên Spring Boot dùng DefaultErrorResponse mặc định với các trường error, message, trace đầy đủ. Sửa: thêm @RestControllerAdvice bắt OrderNotFoundException, trả về ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "Không tìm thấy đơn hàng") kèm setProperty("code", "ORDER_NOT_FOUND"); log stack trace gốc ở server. Đồng thời tắt trường nhạy cảm trong response lỗi (server.error.include-stacktrace=never, server.error.include-message=never). Kết quả: client chỉ nhận {"status":404,"title":"Order not found","detail":"Không tìm thấy đơn hàng","code":"ORDER_NOT_FOUND"}, không còn lộ SQL hay đường dẫn file; theo log WAF, số lượt quét lỗi từ bên ngoài giảm xuống 0 sau 2 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xử lý lỗi tập trung bằng @RestControllerAdvice kết hợp @ExceptionHandler, để một chỗ duy nhất quản lý tất cả exception thay vì bắt tại mỗi controller. Từ Spring Framework 6, tôi trả về ProblemDetail theo chuẩn RFC 9457: type, title, status, detail và các thuộc tính mở rộng như mã lỗi nghiệp vụ. Với các exception do Spring MVC sinh ra (400, 405, 415), tôi kế thừa ResponseEntityExceptionHandler và override hook tương ứng. Tôi tránh các bẫy phổ biến: không bắt Exception.class rồi trả ex.getMessage() ra client vì sẽ lộ câu SQL, đường dẫn file; luôn log stack trace gốc ở server và chỉ trả về thông điệp trung tính; thêm correlation id vào mỗi response để tra log. Mỗi response lỗi đều kèm mã lỗi nghiệp vụ và traceId, giúp client hiển thị theo mã, và đội vận hành tra cứu log trong 30 giây khi người dùng phản ánh lỗi."
 
 > Senior tip: hãy chuẩn hoá lỗi của cả hệ thống theo **mã lỗi nghiệp vụ** ({{code}}) thay vì chuỗi message tiếng Anh – client hiển thị theo mã, còn bạn đổi message trong code mà không phá vỡ client. Kèm theo đó, luôn trả về {{traceId}} để tra log trong 30 giây khi user gọi báo lỗi.`,
   follow: [
