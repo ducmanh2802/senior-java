@@ -58,6 +58,14 @@ Ví dụ: một ngân hàng trung bình có 500.000 giao dịch/ngày, EOD phả
 - Quên xử lý ngày lễ trong EOD → ngày hôm sau sai báo cáo, lãi tính sai.
 - Ghi nhầm hướng ghi sổ cái (nợ/có) → phải khôi phục từ sao lưu, tốn nhiều giờ.
 
+### Ví dụ đời thực
+
+Một ngân hàng trung bình xử lý khoảng 500.000 giao dịch mỗi ngày. Một chiều, hơn trăm khách gọi trung tâm chăm sóc khách hàng khiếu nại số dư trong app hiển thị sai so với sổ sách riêng. Đội dev tra soát log dịch vụ tài khoản và thấy: các giao dịch nạp tiền trong chiều hôm qua đã được ghi vào core, nhưng vòng batch EOD (End of Day) hôm qua đã kết thúc trong khi một chi nhánh bị mất kết nối cơ sở dữ liệu nên sổ cái của chi nhánh đó chưa được đóng. Số dư cũ sai dẫn đến số dư hiển thị sai hôm nay. Nguyên nhân gốc: EOD chạy trên nhiều chi nhánh song song, nhưng không có bước kiểm tra "tất cả chi nhánh đều đã đóng" trước khi báo xong. Cách xử lý: chạy lại EOD cho chi nhánh bị thiếu, khôi phục số dư từ nhật ký giao dịch chi tiết, rồi bổ sung cờ kiểm tra trong job EOD: nếu bất kỳ chi nhánh nào chưa đóng thì toàn bộ job đánh dấu thất bại và gửi cảnh báo, không bao giờ báo "EOD xong" sai sự thật. Kết quả đo được: số case sai số dư giảm từ hơn trăm xuống không, và EOD luôn kết thúc trước 24 giờ tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Core banking là sổ cái điện tử duy nhất của ngân hàng, lưu số dư và lịch sử giao dịch mọi tài khoản, và là nơi duy nhất quyết định "tài khoản còn bao nhiêu tiền". Các hệ thống xung quanh — app, internet banking, hệ thống thẻ, hệ thống thanh toán và CRM — chỉ gọi vào core để tra số dư hoặc tác động tiền, chưa bao giờ viết trực tiếp vào bảng số dư của core. Vì mỗi ngày có hàng trăm nghìn giao dịch, ngân hàng chia làm hai luồng: online trong ngày chỉ làm việc nhẹ, khẩn cấp; batch End of Day vào đêm xử lý nặng: tổng kết giao dịch, tính lãi, đối soát và đóng sổ cái. Khi nói về chuyển khoản liên ngân hàng, tôi nhấn mạnh mã tham chiếu duy nhất và không tự động retry khi timeout, để không bị trừ tiền hai lần."
+
 > Senior tip: Trong phỏng vấn, hãy nhấn mạnh rằng core banking không phải "chỉ một database": đây là hệ thống nơi tính toàn vẹn dữ liệu quan trọng nhất của ngân hàng, mọi thay đổi số dư phải đi qua giao dịch ACID và khớp với sổ cái kế toán hàng ngày.
 
 > Cụm từ: ACID là tập hợp 4 tính chất (Atomicity, Consistency, Isolation, Durability) đảm bảo giao dịch đúng và không bị hỏng kể cả khi máy mất điện giữa chừng.
@@ -122,6 +130,14 @@ Ví dụ số liệu: khách gửi 5 triệu lúc 20 giờ, hệ thống timeout
 - Quên lưu mã tham chiếu duy tiên (transaction ID) không thể tra soát -> giao dịch bị mất trong hệ thống, không tìm lại được.
 - Thông báo thất bại cho khách ngay khi timeout, chưa tra soát xong -> khách hoang mang, gọi điện bàn chuyển.
 - Không có giới hạn số lần tra soát -> giao dịch treo float trong hệ thống tháng năm, không bao giờ kết thúc.
+
+### Ví dụ đời thực
+
+Một khách gửi 5 triệu VND lúc 20 giờ, hệ thống báo timeout sau 10 giây. Dev không tự động gửi lại lệnh trừ tiền. Tra soát theo mã tham chiếu duy nhất: NAPAS xác nhận tiền đã được cộng vào tài khoản người nhận → cập nhật giao dịch thành "thành công" và gửi SMS cho khách. Nếu sau 24 giờ vẫn không xác định được → hoàn 5 triệu VND về tài khoản người gửi và mở ticket cho nhân viên kiểm tra tay. Nếu dev sai lầm tự động retry, tiền có thể bị trừ hai lần ở người gửi hoặc cộng hai lần ở người nhận, gây sai số lớn và khiếu nại.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Chuyển khoản nhanh 24/7 qua NAPAS hoạt động như một bưu điện điện tử giữa ngân hàng gửi và ngân hàng nhận: ngân hàng gửi gói giao dịch, NAPAS kiểm tra và chuyển tiền, rồi thông báo kết quả về lại. Quan trọng nhất, khi giao dịch bị timeout tôi không bao giờ tự động retry hay tự động trừ tiền lại, vì tiền có thể đã bị trừ ở bên gửi hoặc đã được cộng ở bên nhận mà thông báo bị mất. Thay vào đó, tôi đánh dấu giao dịch là đang tra soát, truy vấn lại NAPAS bằng mã tham chiếu duy nhất, và chỉ hoàn tiền nếu sau thời gian quy định vẫn không xác định được. Đây là cách phân biệt at-most-once và at-least-once mà tôi áp dụng thực tế."
 
 > Senior tip: Trái tim của chuyển khoản liên ngân hàng là "một giao dịch, một mã tham chiếu duy nhất, không bao giờ tự động thử lại khi lỗi". Trong phỏng vấn, nhấn mạnh: nếu không chấp nhận được rủi ro có thể tiền đã được xử lý ở bên kia, thì chưa được retry. Dev phải phân biệt "at-most-once" (gửi tối đa một lần, có thể bị mất) và "at-least-once" (gửi ít nhất một lần, có thể bị trùng) và chọn chế độ phù hợp.
 
@@ -207,6 +223,14 @@ Khi xử lý giao dịch, dịch vụ phải:
 - Chỉ ghi một dòng cho giao dịch (không kép) -> số dư sai, không thể kiểm tra cân bằng.
 - Không bao bọc trong một giao dịch DB -> một bên ghi thành công, bên kia thất bại, tiền bị mất.
 
+### Ví dụ đời thực
+
+Trên hệ thống ví điện tử, một ngày đội dev phát hiện sổ cái không cân bằng: tổng số tiền của một giao dịch không bằng 0 do dòng ghi thiếu. Tra soát log LedgerDB thấy giao dịch G-998 chỉ có dòng "tài khoản A trừ 2 triệu" mà không có dòng "tài khoản B cộng 2 triệu" — dịch vụ bị gián đoạn giữa lúc ghi hai dòng. Nguyên nhân gốc: code ghi các entry riêng lẻ, không bao bọc trong một transaction cơ sở dữ liệu. Cách xử lý: ghi các dòng đảo ngược cho các giao dịch bị ảnh hưởng để sổ cái quay về cân bằng, rồi sửa code để ghi tất cả entry của một giao dịch trong một transaction ACID — hoặc tất cả thành công, hoặc tất cả thất bại — và thêm kiểm tra tổng bằng 0 trước khi commit. Kết quả: sổ cái luôn cân bằng, không còn case thiếu dòng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Sổ cái kế toán kép lưu mọi biến động tiền dưới dạng các dòng entry; mỗi giao dịch tạo ít nhất hai dòng — một bên trừ, một bên cộng — và tổng phải bằng 0. Sổ cái phải append-only: chỉ được thêm mới, không được sửa hoặc xóa dòng cũ; nếu phát hiện sai, tôi ghi thêm dòng đảo ngược chứ không xóa dữ liệu cũ, để giữ toàn bộ lịch sử kiểm tra. Trong code tôi dùng BigDecimal chứ không phải double để tránh sai số làm tròn, và ghi tất cả entry của một giao dịch trong một transaction cơ sở dữ liệu ACID. Một ví dụ thực tế: nhân viên nhập sai số tiền, tôi đã khôi phục bằng dòng đảo ngược, giữ nguyên nhật ký để kiểm toán sau này."
+
 > Senior tip: Trong phỏng vấn, vẽ sổ cái trên giấy: bảng có các cột transaction_id, account_id, amount, direction, created_at. Mỗi giao dịch là một "khung" có hai đầu (trừ ở bên này, cộng ở bên kia) và tổng bằng 0. Ví dụ thực tế: nhân viên nhập sai số tiền, bạn đã đảo ngược bằng dòng đảo ngược không xóa dòng cũ.
 
 > Cụm từ: Reversing entry (dòng đảo ngược) là dòng ghi mới có số tiền ngược lại dòng sai, hoàn tác lỗi không cần xóa dữ liệu cũ.
@@ -273,6 +297,14 @@ Ví dụ: NAPAS gửi callback "giao dịch G123 đã thành công, cộng 2 tri
 - Idempotency key hết hạn quá nhanh (ví dụ sau 1 phút) nhưng client retry sau 2 phút -> bị trùng lại.
 - Hai giao dịch khác nhau dùng cùng idempotency key -> giao dịch sau bị từ chối sai sai.
 
+### Ví dụ đời thực
+
+Một khách gọi API chuyển 2 triệu VND với idempotency key "abc-123", rồi mất mạng ngay sau khi server đã xử lý xong. Khách gọi lại yêu cầu cũ với cùng key "abc-123". Server tìm thấy key đã tồn tại trong bảng idempotency (có ràng buộc duy nhất), trả về kết quả cũ "thành công" và không trừ thêm 2 triệu. Tương tự, callback từ NAPAS thông báo "giao dịch G123 đã thành công" được gửi hai lần do mạng lỡ; lần thứ hai server thấy mã G123 đã được xử lý, trả 200 OK ngay, không cộng thêm tiền vào tài khoản nhận. Nếu không có kiểm tra này, tài khoản người nhận sẽ bị cộng trùng 2 triệu.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Idempotency có nghĩa là thực hiện cùng một thao tác nhiều lần thì kết quả vẫn như thực hiện một lần, hệ thống không bị thay đổi thêm. Đối với API chuyển tiền, client tự tạo một idempotency key duy nhất (UUID) kèm theo yêu cầu; server kiểm tra key trong cơ sở dữ liệu có ràng buộc duy nhất, nếu đã xử lý thì trả kết quả cũ mà không trừ tiền thêm. Đối với callback từ đối tác như NAPAS, server trích mã giao dịch, kiểm tra đã xử lý chưa, nếu có thì trả 200 OK ngay, không cộng tiền lần hai. Key phải do client tạo và lưu trong cơ sở dữ liệu, không chỉ trong bộ nhớ đệm, vì khi server khởi động lại bộ nhớ đệm sẽ mất và gây trùng lặp."
+
 > Senior tip: Idempotency key phải do client tạo (không do server tạo ngẫu nhiên), vì client mới biết khi nào nó đang "lấy lại mạng" cùng một yêu cầu cũ. Key phải lưu trong cơ sở dữ liệu có ràng buộc duy nhất (unique constraint), không chỉ lưu trong bộ nhớ đệm, vì nếu server khởi động lại thì bộ nhớ đệm bị mất và bị trùng lặp.
 
 > Cụm từ: Unique constraint (ràng buộc duy nhất) là quy tắc trong cơ sở dữ liệu cấm hai dòng có cùng giá trị trong một cột (hoặc những cột), ví dụ cấm hai dòng có cùng idempotency_key.
@@ -335,6 +367,14 @@ Nhân viên tra soát --> Ngân hàng A: báo cáo kết quả
 - Thông báo lệch muộn -> khách phàn nàn, ngân hàng mất uy tín.
 - Không có giới hạn thời gian xử lý lệch -> giao dịch treo float tháng năm, báo cáo sai.
 
+### Ví dụ đời thực
+
+Ngân hàng A gửi 100 giao dịch tổng cộng 500 triệu VND sang ngân hàng B qua NAPAS; bên B báo nhận 99 giao dịch, tổng 495 triệu VND — lệch một giao dịch 5 triệu VND. Đội tra soát xem nhật ký của hai bên và thấy giao dịch G-55 bị timeout: tiền đã bị trừ ở ngân hàng A nhưng thông báo bị mất, ngân hàng B chưa biết. Cách xử lý: cộng 5 triệu VND vào tài khoản người nhận ở B, cập nhật trạng thái giao dịch, thông báo cho cả hai khách hàng, rồi gửi báo cáo cho kế toán và quản lý rủi ro ghi rõ nguyên nhân. Sau đó dev bổ sung bước kiểm tra khớp chi tiết từng giao dịch, không chỉ đối soát tổng số tiền, để tránh trường hợp tương tự.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Đối soát cuối ngày là so sánh sổ cái của ngân hàng chúng ta với sổ của đối tác — NAPAS, các ngân hàng khác hay switch thẻ — để tìm khoản tiền lệch: tiến đơn, thiếu đơn hoặc sai số tiền. Tôi không chỉ đối soát tổng số tiền, mà kiểm tra từng giao dịch: mã giao dịch, số tiền, thời gian, tài khoản gửi và tài khoản nhận. Khi phát hiện lệch, tôi tạo báo cáo, tra soát nhật ký của hai bên để xác định lỗi ở đâu, rồi điều chỉnh sổ cái nếu cần — ví dụ cộng tiền vào tài khoản nhận khi tiền đã gửi nhưng chưa được cộng. Điều chỉnh phải được phán duyệt theo quy trình maker-checker để tránh gian lận, rồi báo cáo kế toán và quản lý rủi ro, tìm nguyên nhân gốc để sửa code."
+
 > Senior tip: Trong phỏng vấn, hãy nói rằng đối soát cuối ngày là "cuối cùng của chúng ta" để phát hiện lỗi, và dev phải xây dựng hệ thống để tự động phát hiện lệch, không chờ khách báo. Hãy nhấn mạnh mục tiêu không chỉ là "khớp số" còn là "tìm ra sai sai ở đâu và sửa ở đâu".
 
 > Cụm từ: Discrepancy (lech) là khoảng cách giữa hai con số phải bằng nhau, ví dụ ngân hàng A ghi 500 triệu, ngân hàng B ghi 495 triệu, lệch 5 triệu.
@@ -388,6 +428,14 @@ Ngân hàng --> Khách: thông báo chấp nhận, tiền cộng ngày làm vi�
 - Không phân biệt ngày làm việc và ngày thực tế -> sai số dư, khách phàn nàn.
 - Tính lãi trong ngày lễ như một ngày bình thường cho sản phẩm chỉ tính lãi trong ngày làm việc -> sai số tiền lãi.
 - Thông báo cho khách tiền đã được cộng nhưng value date chưa đến -> khách hoang mang, gọi điện bàn chuyển.
+
+### Ví dụ đời thực
+
+Một khách gửi 100 triệu VND vào lúc 23 giờ Chủ Nhật — đã qua giờ cut-off và ngày này là ngày nghỉ. Ngân hàng vẫn chấp nhận giao dịch, nhưng value date (ngày tiền được cộng vào tài khoản và bắt đầu tính lãi) được đẩy sang ngày làm việc đầu tiên của tuần sau, không phải Chủ Nhật. Lãi tiền gửi được tính từ value date. Nếu dev sai lầm tính ngày bằng ngày hiện tại, value date và lãi sẽ sai, khách thấy số dư chưa cập nhật và gọi điện phàn nàn. Cách xử lý đúng: dùng một lớp tính ngày làm việc dùng chung cho toàn hệ thống, kiểm tra cut-off và danh sách ngày lễ trước khi gán value date, và luôn thông báo khách đúng ngày tiền thực tế được cộng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Cut-off time là mốc giờ cuối ngày ngân hàng chấp nhận giao dịch và tính là của ngày hôm nay; giao dịch sau cut-off được xử lý như của ngày làm việc tiếp theo. Ngày làm việc là ngày ngân hàng mở cửa và xử lý giao dịch, còn ngày lễ ngân hàng nghỉ, không xử lý giao dịch mới. Khi tính lãi hoặc hạn, value date — ngày tiền được cộng vào tài khoản và bắt đầu tính lãi — sẽ bị đẩy sang ngày làm việc kế tiếp nếu giao dịch trượt cut-off hoặc rơi vào ngày lễ. Tôi nhấn mạnh dev không được tự ý tính ngày trên mỗi màn hình, phải có một lớp tính ngày làm việc dùng chung cho toàn hệ thống, và luôn thông báo khách đúng value date để tránh hiểu nhầm về số dư."
 
 > Senior tip: Trong phỏng vấn, hãy vẽ bảng tra cứu các loại giao dịch với cut-off và quy tắc tính ngày (ví dụ: chuyển tiền nội bộ cut-off 16 giờ, value date là ngày hiện tại nếu trước cut-off, khác ngày nếu sau cut-off). Hãy nhấn mạnh rằng dev không được tính ngày một cách tùy tiện, phải có một lớp tính ngày làm việc dùng chung cho toàn hệ thống.
 
