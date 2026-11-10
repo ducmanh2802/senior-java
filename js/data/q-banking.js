@@ -1554,6 +1554,20 @@ Báo cáo quản trị đa tiền tệ phải nói rõ **loại tiền báo cáo
 - Tính tỷ giá lúc đọc (JOIN bảng tỷ giá hôm nay) thay vì lúc ghi — báo cáo tháng trước thay đổi mỗi ngày.
 - Làm tròn ở từng dòng chi tiết rồi cộng, tổng khác số làm tròn ở mức hóa đơn; phải có dòng điều chỉnh phần dư.
 
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi tích hợp nhận thanh toán USD trên app, mỗi buổi sáng đội kế toán báo cáo doanh thu USD quy ra VND "khác hôm qua" dù không có giao dịch mới, và tổng tiền đối soát với ngân hàng thu hộ lệch vài chục nghìn đến vài triệu đồng.
+
+**Điều tra:** Truy vấn bảng giao dịch thấy chỉ lưu {{amount}} và {{currency}} gốc; khi tạo báo cáo, code JOIN bảng {{fx_rate}} lấy tỷ giá {{current_date}}. Log cho thấy cùng giao dịch 100 USD ngày 05/06 (bid 25.400) hiển thị 2.565.000 VND vào ngày 06/06 vì tỷ giá đổi. Ngoài ra hàm quy đổi làm tròn từng dòng bằng {{HALF_UP}} rồi cộng, trong khi ngân hàng đối tác chốt tổng theo quy tắc khác.
+
+**Nguyên nhân gốc:** Không snapshot tỷ giá và nguồn báo giá tại thời điểm giao dịch; làm tròn trung gian và không có cơ chế phân bổ phần dư.
+
+**Cách xử lý:** Bổ sung các cột {{fx_rate, fx_rate_source, quote_id, quoted_at, amount_credited, currency_credited}} và backfill từ bảng báo giá lịch sử theo {{quoted_at}} gần nhất trước thời điểm giao dịch; khóa quy đổi chỉ dùng snapshot đã lưu. Chuyển làm tròn về một lần theo scale của tiền đích và thêm dòng điều chỉnh phần dư khi chia nhiều phần, sau đó chạy đối soát lại 30 ngày.
+
+**Kết quả đo được:** Chênh lệch tỷ giá do tính lại giảm về 0 trên báo cáo lịch sử; sai lệch làm tròn giảm từ mức vài triệu đồng/tháng xuống 0 đồng nhờ dòng phân bổ dư; thời gian đối soát thủ công giảm từ ~3 giờ/ngày xuống ~30 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi luôn coi tiền tệ là một cặp giá trị và loại tiền, không bao giờ tách rời. Với giao dịch có quy đổi, hệ thống phải lưu snapshot tỷ giá tại thời điểm thực hiện gồm giá, nguồn báo giá, mã quote và thời điểm hiệu lực, vì nếu tính lại theo tỷ giá hiện tại thì số liệu lịch sử sẽ đổi và không giải trình được với khách hay kiểm toán. Về làm tròn, tôi dùng số chữ thập phân theo ISO 4217 của loại tiền đích, chọn một chế độ như HALF_EVEN hoặc HALF_UP và áp dụng nhất quán, chỉ làm tròn một lần ở đầu ra. Khi chia tiền cho nhiều phần dễ phát sinh phần dư, tôi quy đổi về đơn vị nhỏ nhất rồi phân bổ phần lẻ thành các dòng điều chỉnh để tổng luôn khớp. Ở dự án trước, sau khi bổ sung snapshot tỷ giá và cơ chế phân bổ dư, chúng tôi loại bỏ hoàn toàn chênh lệch do tính lại báo cáo và rút ngắn đáng kể thời gian đối soát cuối ngày."
+
 > Senior tip: Câu trả lời ăn điểm là chủ động nêu ba thứ: "tiền là cặp giá trị-loại tiền", "mọi giao dịch lưu tỷ giá và nguồn tỷ giá tại thời điểm", và "làm tròn một lần, có dòng điều chỉnh phần dư để tổng luôn khớp". Nói thêm về nghiệp vụ: chênh lệch tỷ giá là một khoản mục P&L thật, có phòng giao dịch (treasury) quản lý hạn mức, nên code của bạn chỉ được quyền áp tỷ giá, không được tự sinh tỷ giá.
 
 > Cụm từ: Snapshot tỷ giá là bản ghi giá trị tỷ giá đã dùng tại thời điểm giao dịch, để sau này tái hiện đúng số tiền. Revaluation (đánh giá lại) là tính lại giá trị khoản mục ngoại tệ theo tỷ giá hiện hành cho báo cáo.
@@ -1642,6 +1656,20 @@ Dữ liệu cũ luôn có: thiếu ngày sinh, trùng giấy tờ, tài khoản 
 - Không lưu ánh xạ id cũ → id mới; 5 năm sau không tra soát được giao dịch thời core cũ.
 - Không đóng băng dữ liệu trong lúc migrate delta → mất giao dịch phát sinh trong cửa sổ.
 - Rollback chỉ nằm trên giấy, chưa từng diễn tập.
+
+### Ví dụ đời thực
+**Triệu chứng:** Trong đợt dry run thứ ba cho 2,1 triệu tài khoản, báo cáo tổng số dư hai hệ thống khớp nhưng bộ phận vận hành phát hiện một số khách báo "thiếu tiền giữ chỗ thẻ" sau khi test trên core mới.
+
+**Điều tra:** Chạy đối soát tầng 3 (từng tài khoản) bằng truy vấn so {{old_balance}} và {{new_balance}} theo khóa tài khoản, đồng thời so nhóm {{PENDING/HOLD}}. Log pipeline cho thấy 18 tài khoản UNEXPLAINED; kiểm tra chi tiết phát hiện 12 lệnh hold thẻ và 6 khoản lãi đã trích chưa trả không nằm trong danh mục trạng thái treo được migrate, vì ETL chỉ lấy snapshot số dư khả dụng.
+
+**Nguyên nhân gốc:** Phạm vi dữ liệu chưa bao phủ trạng thái đang treo; tiêu chí "tổng khớp" che mất sai lệch bù trừ.
+
+**Cách xử lý:** Bổ sung danh mục migrate riêng cho hold, pending, lãi dồn tích; sửa công cụ transform để ánh xạ và lưu {{old_id -> new_id}}; chạy lại dry run và yêu cầu UNEXPLAINED = 0 ở cả tầng tổng, nhóm, từng tài khoản trước khi họp go/no-go. Chuẩn bị runbook freeze kênh, migrate delta và tiêu chí lùi.
+
+**Kết quả đo được:** Sau 2 lần chạy lại, UNEXPLAINED giảm từ 18 xuống 0 trên 2.113.402 tài khoản; thời gian chạy toàn bộ pipeline ổn định ~4,5 giờ trong cửa sổ cắt 48 giờ; buổi cutover không phát sinh khiếu nại mất hold/lãi trong tuần hỗ trợ tăng cường đầu tiên.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thay core banking, tôi tiếp cận như một bài toán quản lý rủi ro: từng đồng số dư phải khớp và phải chứng minh được. Tôi bắt đầu bằng phân loại dữ liệu gồm master data, tài khoản và số dư, điều khoản hợp đồng, lịch sử cần thiết và đặc biệt là các trạng thái treo như hold thẻ hay lãi đã trích. Tôi viết công cụ đối soát trước công cụ migrate, rồi chạy nhiều dry run trên bản sao dữ liệu thật để đo cả thời gian và tính ổn định. Đối soát phải làm ba tầng: tổng, theo nhóm và từng tài khoản, vì tổng khớp vẫn có thể che sai lệch bù trừ. Tiêu chí go/no-go tôi đặt bằng số, ví dụ UNEXPLAINED bằng 0, toàn bộ tài khoản khớp và không còn bản ghi treo chưa xử lý, kèm runbook freeze, migrate delta và kế hoạch lùi có diễn tập. Ở một lần chạy thử, chính đối soát từng tài khoản đã phát hiện các lệnh hold bị bỏ sót, và chúng tôi xử lý xong trước khi cắt để tránh khiếu nại của khách."
 
 > Senior tip: Hãy trình bày câu này như quản lý rủi ro chứ không phải như bài toán copy dữ liệu: "tôi viết tool đối soát trước, vì tỷ lệ khớp là định nghĩa duy nhất của xong". Nêu ba con số bạn sẽ theo dõi qua từng dry run: số tài khoản UNEXPLAINED (phải về 0), thời gian chạy toàn bộ so với cửa sổ cắt, và số bản ghi bị loại vào hàng đợi ngoại lệ (phải giảm). Nói thêm: sau cutover vẫn còn giai đoạn "hỗ trợ tăng cường" vài tuần, vì lỗi migration thường lộ dần khi khách chạm các nghiệp vụ hiếm.
 
@@ -1739,6 +1767,20 @@ Consumer **bắt buộc idempotent** vì bus giao tối thiểu một lần (at-
 - Event không có version; đổi schema làm gãy consumer một cách âm thầm; hoặc nhét số thẻ/PII vào event khiến mọi subscriber thành nơi chứa dữ liệu nhạy cảm.
 - Publish event trước khi commit transaction: consumer đọc phải dữ liệu chưa tồn tại.
 - Không định nghĩa "thành công" nghĩa là gì: payment báo thành công trong khi ledger chưa ghi. Hãy chốt: thành công = ledger đã ghi sổ; các bước sau chỉ là phân phối thông tin.
+
+### Ví dụ đời thực
+**Triệu chứng:** Trong giờ cao điểm, một số khách nạp tiền thành công nhưng không nhận được push thông báo; đồng thời màn hình "Số dư ví" ở payment hiển thị khác với số dư tra cứu từ dịch vụ kế toán ở khoảng 0,2% phiên.
+
+**Điều tra:** Kiểm tra log thấy payment ghi {{balance}} cục bộ rồi mới publish event Kafka; khi Kafka broker lỗi ngắn, event mất còn DB đã commit (dual write). Ở luồng khác, notification consumer timeout và throw lỗi khiến orchestrator retry toàn bộ bước nạp, trong khi ledger đã ghi sổ từ lần đầu. Truy vết {{paymentId}} qua bảng {{outbox_event}} và {{consumer_dedup}} cho thấy thiếu idempotency.
+
+**Nguyên nhân gốc:** Không có outbox nên mất event; consumer không chống trùng; payment tự giữ bản sao số dư và coi nó là nguồn sự thật.
+
+**Cách xử lý:** Bỏ cột số dư khỏi payment, chuyển mọi thay đổi tiền về lệnh kế toán gửi ledger; ghi event vào outbox trong cùng transaction với bút toán; worker đẩy event at-least-once, consumer kiểm tra {{consumer_dedup}} trước khi xử lý. Định nghĩa lại "thành công" = ledger đã ghi sổ, notification chỉ là bước phân phối thông tin có thể gửi lại.
+
+**Kết quả đo được:** Sai lệch hiển thị số dư giữa service giảm về 0 do chỉ còn một nguồn sự thật; mất thông báo do lỗi publish giảm về 0 nhờ outbox; tỷ lệ gửi trùng thông báo khi retry giảm rõ rệt sau khi thêm chống trùng theo {{event_id}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi sẽ chia hệ thống ví theo năng lực nghiệp vụ: account quản lý hồ sơ và trạng thái tài khoản, ledger là nơi duy nhất ghi sổ và sở hữu số dư, payment điều phối luồng thanh toán và quyết định trạng thái giao dịch, còn notification chỉ gửi thông báo và không được giữ trạng thái tiền. Ranh giới dữ liệu rất rõ: service không đọc bảng của nhau, muốn dữ liệu thì gọi API hoặc nhận event để xây bản sao phục vụ đọc. Về nhất quán, trong một service tôi dùng giao dịch database, còn giữa các service tôi dùng saga với bước bù trừ khi thất bại, kết hợp outbox để ghi event cùng transaction rồi mới phát, và consumer phải idempotent vì message được giao ít nhất một lần. Tôi luôn chốt ledger ghi sổ là mốc thành công; nếu notification lỗi thì tiền không rollback mà event được gửi lại. Cách làm này tránh dual write và tránh việc mỗi service tự giữ một bản số dư khác nhau."
 
 > Senior tip: Câu hỏi thật của nhà tuyển dụng không phải "vẽ được bao nhiêu ô", mà là hai câu: "ai sở hữu số dư" và "ai được quyền tuyên bố một giao dịch là thành công". Trả lời gọn: ledger sở hữu số dư, payment sở hữu trạng thái vòng đời, mọi nơi khác chỉ có bản sao để đọc và được phép chậm vài giây. Nói tiếp về đánh đổi: với ghi sổ thì chọn nhất quán, chấp nhận tạm giảm khả năng phục vụ; với thông tin thì chọn khả năng phục vụ, chấp nhận nhất quán tới sau — chính sự phân biệt đó là lý do saga và outbox tồn tại.
 
@@ -1839,6 +1881,20 @@ SLA 99.95% của bạn không thể độc lập nếu đường ra hệ thống
 - Không có ai được ủy quyền bấm nút failover, cả phòng kỹ thuật đứng nhìn qua Zoom.
 - Cache lạnh sau khi chuyển làm p95 tăng vọt: RTO về trải nghiệm khách dài hơn RTO về kỹ thuật.
 
+### Ví dụ đời thực
+**Triệu chứng:** Một buổi diễn tập sự cố, đội vận hành báo "failover xong trong 8 phút" nhưng khách hàng vẫn không thanh toán được ổn định trong hơn 30 phút; sau đó phát hiện vài giao dịch đã báo thành công trên DC chính không xuất hiện ở DC dự phòng.
+
+**Điều tra:** Kiểm tra cấu hình database thấy replication đang ở chế độ bất đồng bộ (async), độ trễ log {{replay_lag}} dao động 2-5 giây trước thời điểm cắt. DNS TTL của endpoint thanh toán đặt 600 giây nên một phần lớn client vẫn trỏ về DC cũ. Nhật ký runbook cho thấy bước xác nhận failover chờ người duyệt thủ công ~6 phút và không có bước kiểm tra "điểm cuối log đã áp dụng".
+
+**Nguyên nhân gốc:** RPO được kỳ vọng là 0 nhưng kiến trúc thực tế cho phép mất dữ liệu vài giây; RTO chỉ tính thời gian kỹ thuật, bỏ qua phát hiện, quyết định, DNS và làm nóng cache.
+
+**Cách xử lý:** Chuyển replication sang đồng bộ cho phân vùng ghi sổ giao dịch thành công, chấp nhận tăng độ trễ ghi; hạ DNS TTL xuống 60 giây và bổ sung VIP cho luồng nội bộ; tự động hóa phát hiện và kịch bản nâng standby với danh sách kiểm tra bắt buộc; diễn tập định kỳ và ghi nhận thời gian từng bước.
+
+**Kết quả đo được:** Trong lần diễn tập tiếp theo, RTO đo được từ lúc cảnh báo đến khi giao dịch thành công ổn định là ~14 phút, nằm trong mục tiêu 15 phút; {{replay_lag}} tại thời điểm cắt bằng 0 cho luồng ghi sổ, không ghi nhận mất giao dịch đã xác nhận; tỷ lệ lỗi do cache lạnh giảm sau khi thêm bước warm-up.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt rõ SLA, SLO và SLI: SLA là cam kết với khách kèm hậu quả, SLO là mục tiêu nội bộ, còn SLI là chỉ số đo thật như tỷ lệ giao dịch thành công trong ngưỡng thời gian. Với thanh toán, RPO cho giao dịch đã báo thành công phải bằng 0, nên tôi dùng nhân bản nhật ký đồng bộ và chấp nhận đánh đổi độ trễ ghi cũng như việc phải tạm dừng ghi nếu mất kênh. RTO là tổng của chuỗi phát hiện, quyết định, chuyển định tuyến, nâng standby, làm nóng và kiểm tra khói, vì vậy tôi chia ngân sách thời gian cho từng bước và diễn tập để đo con số thực tế. Trong thiết kế active-passive, tôi luôn nhắc tới quorum để tránh split-brain, cấu hình đồng nhất giữa hai site và kế hoạch failback. Tôi cũng tính SLA theo chuỗi phụ thuộc bên ngoài để không cam kết vượt quá khả năng thực tế của toàn hệ thống."
+
 > Senior tip: Trả lời theo ba câu chốt: (1) RPO của dữ liệu đã báo thành công phải bằng 0, nên ghi sổ được nhân bản đồng bộ, và tôi chấp nhận đánh đổi độ trễ cùng việc tạm dừng ghi khi mất kênh; (2) RTO là tổng của một chuỗi bước có người chịu trách nhiệm, tôi chia ngân sách thời gian cho từng bước và diễn tập để đo con số thật; (3) SLA bị trần của phụ thuộc bên ngoài chặn lại, nên tôi tính theo chuỗi và bàn lại phạm vi cam kết. Câu chốt thứ tư ghi điểm: hệ thống thanh toán dự phòng tốt là hệ thống **replay được** — mất kết nối không mất tiền vì đã có tham chiếu duy nhất và chứng thư đối soát.
 
 > Cụm từ: Split-brain là tình trạng hai bản cùng nghĩ mình là bản chính và cùng nhận ghi, sinh ra hai lịch sử số dư khác nhau. Failback là bước đưa lưu lượng về data center ban đầu sau khi khắc phục, thường khó hơn failover vì phải đồng bộ dữ liệu phát sinh theo chiều ngược.
@@ -1921,6 +1977,20 @@ PaymentService --> App: thanh cong, co tx_id de truy vet
 - Tính số dư bằng cách cộng dồn toàn bộ ledger mỗi lần đọc trên bảng lớn -> chậm; cần snapshot/bảng cân đối được cập nhật đồng bộ trong cùng transaction.
 - Dùng kiểu {{double/float}} cho {{amount}} -> sai số làm tròn; luôn dùng {{BigDecimal}} hoặc số nguyên đơn vị nhỏ nhất (xem banking-027).
 
+### Ví dụ đời thực
+**Triệu chứng:** Đầu giờ sáng, bộ phận CS nhận 5 khiếu nại "tài khoản bị trừ tiền sai": một tài khoản có số dư hiển thị 200.000 VND nhưng lịch sử rút tiền cho thấy đã rút tổng 700.000 VND từ số dư ban đầu 500.000 VND trong cùng buổi tối hôm trước.
+
+**Điều tra:** Truy vết log ứng dụng thấy hai request rút tiền của cùng tài khoản đến gần như đồng thời (chênh ~40 ms). Code đang dùng luồng "SELECT balance -> kiểm tra -> UPDATE balance = giá trị mới". Bảng {{accounts}} chỉ có cột {{balance}} bị ghi đè, không có bảng ghi bút toán chi tiết; audit log chỉ lưu "đã gọi API rút tiền" mà không có {{tx_id}} gắn với thay đổi số dư.
+
+**Nguyên nhân gốc:** Race condition do đọc-ghi tách rời và cập nhật trực tiếp số dư; thiếu sổ cái bất biến nên không tái hiện được thứ tự và giá trị trung gian.
+
+**Cách xử lý:** Chuyển sang mô hình double-entry: mỗi lần rút ghi 2 dòng ledger (DEBIT tài khoản khách, CREDIT tài khoản đối ứng) trong một DB transaction, kèm {{tx_id}} duy nhất. Khi kiểm tra và ghi, khóa hàng tài khoản bằng {{SELECT ... FOR UPDATE}} hoặc dùng optimistic locking với {{version}}. Số dư hiển thị lấy từ bảng snapshot được cập nhật trong cùng transaction với ledger.
+
+**Kết quả đo được:** Tái hiện kịch bản 50 luồng rút đồng thời trên cùng tài khoản trong môi trường kiểm thử cho thấy không còn âm số dư ngoài dự kiến; mọi bút toán đều truy vết được theo {{tx_id}}; thời gian tra soát khiếu nại giảm từ hàng giờ (phải đối chiếu log rời rạc) xuống còn vài phút nhờ truy vấn ledger.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không coi cột balance là nguồn sự thật mà chỉ là giá trị dẫn xuất từ sổ cái. Nếu UPDATE trực tiếp số dư, ta vừa mất lịch sử kiểm toán vừa dễ gặp race condition khi hai giao dịch đọc cùng số dư cũ rồi ghi đè. Tôi thiết kế theo double-entry: mỗi giao dịch sinh các bút toán Nợ và Có cân bằng, chỉ INSERT append-only vào ledger trong một DB transaction và gắn tx_id duy nhất. Để chống tranh chấp, tôi dùng SELECT FOR UPDATE khi cần tính và trừ tiền trên tài khoản nóng, hoặc optimistic locking với version và retry nếu xung đột thấp. Số dư phục vụ đọc có thể lưu snapshot nhưng phải được cập nhật đồng bộ cùng transaction ghi ledger. Cách này giúp hệ thống truy vết được mọi biến động và luôn kiểm tra được tổng Nợ bằng tổng Có."
+
 > Senior tip: Trong phỏng vấn, hãy nói rõ: "Số dư là một *kết quả dẫn xuất* (derived) từ sổ cái, không phải nguồn sự thật gốc". Nguồn sự thật là các bút toán bất biến. Khi bị hỏi cách chống race condition, nêu 2 lựa chọn: khóa bi quan {{SELECT FOR UPDATE}} trên hàng tài khoản (đơn giản, an toàn, có thể nghẽn khi hot account) hoặc optimistic locking + retry (ít khóa hơn, phải xử lý xung đột). Đừng quên nhắc: mọi thay đổi tiền phải nằm trong một DB transaction và có {{tx_id}} duy nhất để idempotent.
   `,
   follow: [
@@ -1990,6 +2060,20 @@ Kết quả: TX001 MATCH; TX002 lệch trạng thái -> inquiry/confirm rồi c�
 - Không chuẩn hóa múi giờ/định dạng ngày (mình lưu UTC, đối tác gửi giờ địa phương) -> lệch ngày, báo "không tìm thấy".
 - Xử lý break bằng tay hoàn toàn, không có công cụ/queue theo dõi trạng thái tra soát -> sót giao dịch treo nhiều ngày.
 - Điều chỉnh sổ cái không qua maker-checker (xem banking-026) -> rủi ro gian lận.
+
+### Ví dụ đời thực
+**Triệu chứng:** Báo cáo EOD với Napas cho thấy tổng tiền khớp nhưng có 12 khiếu nại "chuyển khoản thành công phía nhận nhưng tài khoản nguồn vẫn treo" trong ngày; thêm 3 giao dịch bị gắn sai ngày trong báo cáo nội bộ.
+
+**Điều tra:** Job đối soát tải file Napas (CSV) và so khớp theo {{RRN}}, {{amount}}, ngày giao dịch. Phát hiện 12 bản ghi trạng thái {{PENDING}} ở core nhưng {{SUCCESS}} ở file đối tác (timeout mất phản hồi), 1 bản ghi có ở đối tác nhưng thiếu trong core, và một nhóm giao dịch sau 17:00 UTC bị xếp sang ngày T+1 do core lưu UTC còn file đối tác dùng giờ địa phương. Log cho thấy bước chuẩn hóa chưa đổi múi giờ trước khi tạo khóa ngày.
+
+**Nguyên nhân gốc:** Thiếu quy trình xử lý trạng thái mơ hồ realtime bằng đối soát; chuẩn hóa thời gian và khóa khớp chưa đủ chặt.
+
+**Cách xử lý:** Chuẩn hóa toàn bộ timestamp về cùng múi giờ trước khi khớp; ưu tiên khớp theo mã tham chiếu duy nhất (RRN/STAN) rồi mới dùng các tiêu chí phụ. Phân loại break thành MATCH/BREAK_OPEN và đẩy vào hàng đợi tra soát có chủ sở hữu, SLA. Với các giao dịch lệch trạng thái, gửi inquiry/confirm tới đối tác rồi cập nhật trạng thái hoặc tạo bút toán điều chỉnh append-only, có maker-checker.
+
+**Kết quả đo được:** 13/13 break trong ngày được phân loại và xử lý trong vòng 1 ngày làm việc; giao dịch PENDING được xác nhận SUCCESS và cập nhật đúng, không phát sinh trùng tiền; sau khi chuẩn hóa múi giờ, lỗi lệch ngày trong báo cáo giảm về 0 ở các kỳ đối soát tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xem đối soát cuối ngày là lưới an toàn cho các giao dịch có trạng thái mơ hồ do timeout hoặc mất phản hồi. Quy trình của tôi là lấy dữ liệu nội bộ và file đối tác, chuẩn hóa định dạng và múi giờ, rồi khớp theo khóa tham chiếu duy nhất như RRN hoặc STAN kết hợp số tiền và thời gian. Kết quả được phân loại thành khớp hoặc break, và break phải đi vào pipeline có trạng thái với người chịu trách nhiệm và hạn xử lý. Các loại lệch thường gặp là có ở một bên, lệch số tiền, lệch trạng thái hoặc trùng lặp, mỗi loại có hướng tra soát và điều chỉnh khác nhau. Khi cần sửa sổ, tôi luôn tạo bút toán mới append-only và áp dụng maker-checker, không sửa dòng cũ. Ở thực tế, việc chuẩn hóa khóa và múi giờ giúp tôi phát hiện sớm các giao dịch treo và tránh xử lý nhầm do khớp mờ."
 
 > Senior tip: Thiết kế đối soát như một pipeline có trạng thái: {{IMPORTED -> MATCHED -> BREAK_OPEN -> INVESTIGATING -> RESOLVED}}. Mỗi break phải có chủ sở hữu, hạn xử lý (SLA), và nhật ký hành động. Trong phỏng vấn, nhấn mạnh: đối soát không chỉ là "báo cáo" mà là cơ chế phát hiện mất tiền; và mọi điều chỉnh sau đối soát phải tạo bút toán mới trên sổ cái (append-only), tuyệt đối không sửa dòng cũ.
   `,
