@@ -12,9 +12,64 @@
       'Nắm đơn vị nhỏ nhất và scale/RoundingMode',
       'Áp dụng largest-remainder để tổng luôn bằng total'
     ],
-    body: `### Tiền là số nguyên
-Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. Giải thích thêm cho người mới: tiền là số nguyên, không dùng double. 
-> Senior tip: Luôn kiểm tra tổng.`,
+    body: `### Tiền là số nguyên — tại sao "0.1 + 0.2" không bằng 0.3?
+**Tóm tắt:** Trong hệ thống tài chính (ngân hàng, ví điện tử, thanh toán), tiền **không bao giờ** được lưu hay tính bằng {{double}} hoặc {{float}}. Hai kiểu này là số thực dấu phẩy động theo chuẩn IEEE 754 — chúng biểu diễn số trong hệ nhị phân nên không thể lưu chính xác nhiều số thập phân quen thuộc như 0.1. Sai số nhỏ tích lũy qua hàng nghìn giao dịch sẽ tạo ra chênh lệch tiền thật. Giải pháp: dùng {{long}} để lưu số nguyên ở **đơn vị nhỏ nhất** (ví dụ: đồng, không phải nghìn đồng), hoặc dùng {{BigDecimal}} khi cần tính toán thập phân chính xác (phí phần trăm, lãi suất, chia tỷ lệ).
+
+**Thuật ngữ cần biết (giải thích cho người mới):**
+- **IEEE 754**: chuẩn quốc tế quy định cách máy tính lưu số thực (số có dấu phẩy). {{double}} dùng 64 bit: 1 bit dấu, 11 bit số mũ, 52 bit phần định trị (mantissa). 52 bit không đủ để biểu diễn chính xác vô hạn số thập phân.
+- **Đơn vị nhỏ nhất (smallest unit / minor unit)**: đơn vị tiền không còn chia nhỏ hơn. Với VND là 1 đồng. Với USD là 1 cent (1/100 dollar). Lưu 123.456 VND thành {{long amount = 123456L}}.
+- **BigDecimal**: lớp trong Java ({{java.math.BigDecimal}}) lưu số thập phân dưới dạng số nguyên lớn + scale (số chữ số sau dấu phẩy), nên tính toán chính xác tuyệt đối. Ví dụ: "0.1" được lưu đúng là 0.1, không phải xấp xỉ nhị phân.
+- **RoundingMode**: chế độ làm tròn khi phép chia không chia hết. {{HALF_UP}} = làm tròn thông thường (>= 0.5 thì lên, < 0.5 thì xuống). Đây là chế độ phổ biến nhất trong tài chính.
+- **Scale**: số chữ số sau dấu phẩy trong {{BigDecimal}}. {{new BigDecimal("123.45")}} có scale = 2.
+
+### Cơ chế từng bước: vì sao không dùng double
+1. **Biểu diễn nhị phân gây sai số**: Số 0.1 trong hệ thập phân = 0.0001100110011... (lặp vô hạn) trong hệ nhị phân. {{double}} chỉ có 52 bit mantissa nên phải cắt bớt → lưu giá trị xấp xỉ 0.1000000000000000055511151231257827. Tương tự 0.2 cũng xấp xỉ. Khi cộng lại, kết quả là 0.30000000000000004, không phải 0.3.
+2. **Sai số tích lũy (accumulated error)**: Mỗi phép tính làm tròn theo round-to-nearest-even. Một giao dịch lệch vài phần tỷ đồng nghe như không đáng kể, nhưng qua hàng triệu giao dịch mỗi ngày, chênh lệch tích lũy đủ lớn để hệ thống **đối soát (reconciliation)** báo lỗi "sổ không khớp".
+3. **So sánh bằng {{==}} thất bại**: {{0.1 + 0.2 == 0.3}} trả về {{false}} trong Java. Nếu bạn dùng {{double}} để so sánh số dư, logic "đủ tiền hay không" có thể sai.
+4. **Giải pháp {{long}}**: Lưu 123.456 VND thành {{123456L}}. Cộng trừ số nguyên luôn chính xác, nhanh, không cần thư viện. Phù hợp khi không có phần thập phân (VND) hoặc khi đã quy đổi về đơn vị nhỏ nhất.
+5. **Giải pháp {{BigDecimal}}**: Dùng khi cần phép chia/phần trăm/lãi suất. Luôn khởi tạo từ **chuỗi**: {{new BigDecimal("0.1")}} (đúng) chứ không phải {{new BigDecimal(0.1)}} (sai — vì 0.1 literal đã là double xấp xỉ). So sánh dùng {{compareTo()}}, không dùng {{equals()}} (vì {{equals}} coi scale khác nhau là khác nhau: "1.0" khác "1.00").
+6. **Làm tròn đúng chỗ**: Chỉ làm tròn **một lần ở biên giới** (khi ghi sổ, khi hiển thị, khi trả kết quả cuối). Không làm tròn ở từng bước trung gian, vì mỗi lần làm tròn thêm lại tạo sai số.
+
+**Tóm tắt:** Dùng **long** (số nguyên, đơn vị đồng chẵn) hoặc **BigDecimal** (chuỗi thập phân chính xác). Không bao giờ dùng double/float cho tiền.
+
+### So sánh các cách lưu tiền
+| Cách | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| {{long}} | nhanh, không cần library | chỉ lưu số nguyên, phải tự nhớ scale | lưu số dư, amount, fee |
+| {{BigDecimal}} | chính xác tuyệt đối, có scale/RoundingMode | chậm hơn, dễ dùng sai equals | tính lãi, chia tiền, tỷ giá, phần trăm |
+| {{double}} | dễ viết | sai số, không thể dùng cho tiền | **không dùng** |
+
+### Lỗi hay gặp trên production
+1. **Dùng {{double}} cho amount và so sánh bằng {{==}}**: {{0.1 + 0.2 == 0.3}} là {{false}}. Trong production, điều này làm đối soát phát hiện hàng trăm dòng lệch mỗi ngày.
+2. **Dùng {{new BigDecimal(double)}} thay vì {{new BigDecimal("0.1")}}**: phiên bản nhận double đã nhét hạt nhiễm nhị phân vào số học của bạn — bạn tưởng dùng BigDecimal nhưng thật ra vẫn đang dùng double.
+3. **Dùng {{equals}} để so sánh BigDecimal**: {{new BigDecimal("1.0").equals(new BigDecimal("1.00"))}} là {{false}} vì khác scale. Luôn dùng {{compareTo}}.
+4. **Làm tròn ở từng bước trung gian**: 1.000 giao dịch mỗi cái lệch 0,5đ là 500đ bốc hơi. Chỉ làm tròn một lần ở biên giới khi ghi sổ.
+
+### Ví dụ: tính phí 0,5% trên 123.456đ
+~~~java
+// SAI: dùng double trực tiếp
+double fee = 123456 * 0.5 / 100;          // 617.28 -> làm tròn sai
+// ĐÚNG: BigDecimal từ chuỗi, HALF_UP một lần
+BigDecimal amt = new BigDecimal("123456");
+BigDecimal pct = new BigDecimal("0.5");
+BigDecimal fee = amt.multiply(pct).divide(new BigDecimal("100"), 0, RoundingMode.HALF_UP);
+// 617
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi 1:** "Tại sao không dùng double để tính tiền? Khi nào dùng long, khi nào dùng BigDecimal?"
+
+**Cách trả lời:** {{double}} là số dấu phẩy động nhị phân 64-bit (IEEE 754), không biểu diễn chính xác các số thập phân như 0.1 — thực tế lưu xấp xỉ 0.1000000000000000055 — và sai số tích lũy qua từng phép tính, nên không thể dùng cho tiền. Dùng **{{long}}** để lưu số nguyên ở đơn vị nhỏ nhất (ví dụ: đồng VND, cent USD) khi chỉ cần cộng/trừ — nhanh, chính xác tuyệt đối. Dùng **{{BigDecimal}}** khi cần phép chia, phần trăm, lãi suất, chia tỷ lệ vì nó lưu thập phân chính xác với {{scale}} và {{RoundingMode}}. Hai quy tắc bắt buộc: khởi tạo từ chuỗi ({{new BigDecimal("0.1")}}, không {{new BigDecimal(0.1)}}) và so sánh bằng {{compareTo()}}, không dùng {{equals()}}.
+
+**Câu hỏi 2:** "Làm tròn tiền nên làm ở đâu và dùng chế độ nào?"
+
+**Cách trả lời:** Chỉ làm tròn **một lần ở biên giới** — khi ghi sổ vào cơ sở dữ liệu, khi hiển thị cho người dùng, hoặc khi trả kết quả API cuối cùng. Không làm tròn ở từng bước trung gian vì mỗi lần làm tròn tạo sai số nhỏ, tích lũy thành chênh lệch lớn. Chế độ phổ biến là {{RoundingMode.HALF_UP}} (làm tròn thông thường: >= 0.5 thì lên). Với các bài toán chia tiền (ví dụ chia hóa đơn cho 3 người), dùng thuật toán **largest-remainder** (phần dư lớn nhất) để đảm bảo tổng các phần sau chia luôn bằng đúng tổng ban đầu.
+
+**Câu hỏi 3:** "BigDecimal.equals() và compareTo() khác nhau thế nào khi so sánh tiền?"
+
+**Cách trả lời:** {{equals()}} coi cả giá trị lẫn {{scale}}: {{new BigDecimal("1.0").equals(new BigDecimal("1.00"))}} trả về {{false}} vì scale khác (1 vs 2). {{compareTo()}} chỉ so sánh giá trị số học: cùng ví dụ trả về 0 (bằng nhau). Trong nghiệp vụ tài chính, hầu hết trường hợp cần so sánh giá trị nên dùng {{compareTo()}}; dùng {{equals()}} chỉ khi bạn thực sự cần phân biệt scale (hiếm).
+
+> Senior tip: Luôn kiểm tra tổng sau khi chia/phân bổ tiền — viết assertion {{sum(parts) == total}}. Trong code review, coi mọi {{double}}/{{float}} dùng cho amount, price, balance, fee là bug nghiêm trọng cho đến khi chứng minh ngược lại.`,
     exercises: [
       {
         title: 'MoneyMath.fee và MoneyMath.allocate',
@@ -107,9 +162,10 @@ class MoneyMath {
       }
     ],
     check: [
-      {q: 'Tại sao không dùng double để tính tiền?', options: ['chậm', 'không biểu diễn chính xác số thập phân', 'không hỗ trợ', 'không có'], answer: 1, explain: 'Floating point nhị phân không chính xác với 0.1'},
-      {q: 'largest-remainder để làm gì?', options: ['tính lãi', 'đảm bảo tổng bằng chính xác total', 'làm tròn', 'tính phí'], answer: 1, explain: 'Phân phối phần dư để tổng đúng'},
-      {q: 'HALF_UP nghĩa là gì?', options: ['xuống', 'lên', '>=0.5 làm tròn lên', 'bỏ'], answer: 2, explain: 'Làm tròn thông thường'}
+      { q: 'Vì sao không dùng {{double}} để lưu hoặc tính tiền trong hệ thống tài chính?', options: ['Vì double chậm hơn long', 'Vì double là số nhị phân IEEE 754, không biểu diễn chính xác nhiều số thập phân như 0.1 nên sai số tích lũy', 'Vì double không hỗ trợ số âm', 'Vì Java không cho phép dùng double trong phép cộng'], answer: 1, explain: 'Đúng: double dùng biểu diễn nhị phân 64-bit (IEEE 754) nên các số như 0.1, 0.2 không thể lưu chính xác — thực tế là xấp xỉ — và sai số tích lũy qua nhiều phép tính. Sai (A): tốc độ không phải lý do chính; sai số mới là vấn đề. Sai (C): double hỗ trợ số âm bình thường. Sai (D): Java cho phép cộng double, chỉ là kết quả không chính xác cho tiền.' },
+      { q: 'Thuật toán largest-remainder (phần dư lớn nhất) dùng để làm gì khi chia tiền?', options: ['Tính lãi suất kép cho từng phần', 'Đảm bảo tổng các phần sau khi chia đúng bằng tổng ban đầu, không bị lệch do làm tròn', 'Chọn phần tử có số dư lớn nhất để xóa', 'Chuyển double sang BigDecimal an toàn'], answer: 1, explain: 'Đúng: khi chia 100.000đ cho 3 phần bằng nhau, mỗi phần 33.333đ (làm tròn xuống) → tổng 99.999đ, thiếu 1đ. Largest-remainder phân phối phần dư 1đ cho phần có "phần dư thập phân" lớn nhất, đảm bảo tổng = 100.000đ. Sai (A): không liên quan lãi suất. Sai (C): không phải thao tác xóa. Sai (D): không phải mục đích chuyển đổi kiểu.' },
+      { q: 'So sánh hai giá trị {{BigDecimal}} "1.0" và "1.00" — phát biểu nào đúng?', options: ['equals() trả true vì giá trị bằng nhau', 'Cả equals() và compareTo() đều trả false', 'equals() trả false vì khác scale, nhưng compareTo() trả 0 vì giá trị bằng nhau', 'Không thể so sánh BigDecimal khác scale'], answer: 2, explain: 'Đúng: {{equals()}} so cả giá trị và scale nên "1.0" (scale 1) khác "1.00" (scale 2) → false. {{compareTo()}} chỉ so giá trị số học → trả 0 (bằng nhau). Sai (A): nhầm equals với compareTo. Sai (B): compareTo trả 0, không phải false. Sai (D): hoàn toàn có thể so sánh; chỉ cần chọn đúng phương thức.' },
+      { q: 'Khi tính phí giao dịch bằng {{BigDecimal}}, cách khởi tạo nào ĐÚNG để tránh sai số từ double?', options: ['{{new BigDecimal(0.1)}}', '{{BigDecimal.valueOf(0.1)}}', '{{new BigDecimal("0.1")}}', '{{new BigDecimal(1/10)}}'], answer: 2, explain: 'Đúng: khởi tạo từ chuỗi {{new BigDecimal("0.1")}} giữ chính xác giá trị thập phân. Sai (A): {{new BigDecimal(0.1)}} nhận double literal đã bị xấp xỉ nhị phân → mang sai số vào BigDecimal. (B): {{BigDecimal.valueOf(0.1)}} nội bộ dùng {{Double.toString(0.1)}} = "0.1" nên kết quả cũng chính xác, nhưng khởi tạo từ chuỗi là cách rõ ràng và khuyến khích nhất cho hằng số tiền. Sai (D): {{1/10}} là phép chia số nguyên trong Java → kết quả 0 (int), không phải 0.1.' }
     ],
     related: [],
     tags: ['money','bigdecimal']
@@ -165,6 +221,40 @@ Viết Reconciler.match(internal, partner) phân loại các giao dịch. Giao d
 ### Chi tiết thêm về đối soát
 Đối soát không chỉ là so khớp: cần xử lý timezone, duplicate txnId, partial refund. Mỗi dòng lệch cần ticket theo dõi và SLA xử lý (ví dụ 24h). Lưu audit log đầy đủ để kiểm toán. Luôn có dashboard theo dõi số dòng lệch theo ngày để phát hiện xu hướng. Thêm giải thích chi tiết: hệ thống ngân hàng luôn cần đối soát để đảm bảo tiền nhất quán giữa các bên. Khi lệch, phải có quy trình xử lý rõ ràng, không tự sửa số liệu. Audit log là bằng chứng quan trọng cho kiểm toán và pháp lý. Dashboard giúp phát hiện xu hướng lệch sớm. SLA 24h đảm bảo xử lý timely. Duplicate txnId cần dedupe. Partial refund cần xử lý riêng. Timezone cut-off phải rõ ràng. Tất cả đảm bảo hệ thống đáng tin cậy.
 
+### Cơ chế từng bước: vì sao hai bên lệch
+**Tóm tắt:** Dù cả hai bên cùng gửi file CSV hàng ngày, chúng vẫn có thể lệch về 4 nguyên nhân chính — timeout, cut-off, hoàn tiền, phí — và mỗi dòng lệch đều phải được phân loại trước khi tự sửa.
+
+1. **Timeout (nguyên nhân #1)**: App gửi request, không nhận phản hồi trong thời gian chờ, coi là thất bại. Đối tác sau đó xử lý thành công và trả về callback. Kết quả: mình đã trừ tiền, đối tác đã ghi có. Đây là hiện tượng "tiền đã trừ mà app báo lỗi" (nối bài 5, 6).
+
+2. **Cut-off 23:00**: mỗi hệ thống có một mốc thời gian chia ngày (cut-off). Giao dịch lúc 22:59:30 có thể thuộc ngày hôm nay ở bên này nhưng ngày mai ở bên kia nếu xử lý chậm vài giây. Cut-off phải được định nghĩa rõ ràng và **cùng một múi giờ** (thường UTC+7) ở cả hai bên.
+
+3. **Hoàn tiền (refund)**: một bên ghi nhận refund ngay, bên kia ghi nhận sau khi xử lý. Nếu không có quy trình hoàn tiền chuẩn, hai bên sẽ liên tục lệch về refund.
+
+4. **Phí**: phí bị trừ ở bên này nhưng chưa ghi nhận ở bên kia. Phí thường là một tài khoản nội bộ (SYS/fee) — nếu không có kế toán kép (bài 5), khoản 1.100đ này sẽ "mất" giữa không trung.
+
+### Lỗi hay gặp trên production
+1. **Không có cut-off rõ ràng**: hai bên dùng múi giờ khác nhau, mỗi ngày có 1–2 giao dịch bị tính sai ngày. Triệu chứng: cùng một ngày, số lượng giao dịch của hai bên lệch nhau một vài dòng.
+2. **Xử lý timeout như failed**: tự động hoàn tiền trong khi đối tác đã ghi có → tiền vừa ở người nhận vừa về người gửi. Đây là lỗi nghiêm trọng nhất (P1).
+3. **Bỏ qua duplicate txnId**: file đối tác gửi trùng một giao dịch (do retry), chương trình đếm hai lần → số lượng giao dịch tăng ảo.
+4. **Không lưu raw file đối tác**: khi có tranh chấp, không có bằng chứng để đối chiếu. Audit log là bắt buộc.
+
+### Ví dụ: phân loại một dòng lệch
+~~~java
+// Txn internal: TXN001, 100000, SUCCESS
+// Txn partner: không có TXN001
+// → MISSING_AT_PARTNER: kiểm tra timeout, có thể retry hoặc hoàn tiền
+// Nếu partner đã ghi có (callback muộn) → AMOUNT_MISMATCH hoặc MISSING_INTERNAL
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Cuối ngày hai bên lệch một vài dòng. Bạn làm gì?"
+**Cách trả lời:** Bắt đầu bằng việc phân loại từng dòng theo bốn trạng thái: **MATCHED** (cùng txnId, cùng amount → OK), **MISSING_AT_PARTNER** (mình có, đối tác không → kiểm tra timeout, có thể retry hoặc hoàn tiền), **MISSING_INTERNAL** (đối tác có, mình không → ghi nhận muộn, kiểm tra), **AMOUNT_MISMATCH** (txnId trùng nhưng số tiền khác → điều tra, thường do phí hoặc cut-off). Quan trọng: **không tự sửa số liệu** — mỗi dòng lệch cần ticket theo dõi và SLA xử lý (ví dụ 24h). Lưu raw file đối tác để audit, và có dashboard theo dõi số dòng lệch theo ngày để phát hiện xu hướng. Điểm senior: nối với bài 5 (sổ cái kép) và bài 6 (state machine) để giải quyết timeout một cách an toàn.
+
+**Câu hỏi:** "Cut-off time là gì và tại sao quan trọng trong đối soát?"
+**Cách trả lời:** Cut-off time (thời điểm chốt sổ) là mốc thời gian chia ngày giao dịch — ví dụ 23:00 UTC+7. Giao dịch phát sinh trước cut-off thuộc ngày hôm nay, sau cut-off thuộc ngày hôm sau. Nếu hai bên dùng cut-off khác nhau hoặc múi giờ khác nhau, cùng một giao dịch sẽ bị tính vào hai ngày khác nhau, tạo ra dòng lệch "ảo" (một bên thấy MISSING, bên kia cũng thấy MISSING ở ngày tương ứng). Cần quy ước cut-off rõ ràng trong thỏa thuận đối tác và xử lý giao dịch sát mốc một cách nhất quán.
+
+**Câu hỏi:** "Khi gặp AMOUNT_MISMATCH (cùng txnId nhưng số tiền khác), bạn điều tra thế nào?"
+**Cách trả lời:** Đầu tiên tra cứu chi tiết giao dịch ở cả hai hệ thống: so sánh amount gốc, phí, thuế, tỷ giá (nếu đa tiền tệ), và thời điểm ghi nhận. Nguyên nhân thường gặp: một bên tính phí vào amount, bên kia tách riêng; làm tròn khác nhau (HALF_UP vs HALF_EVEN); hoặc refund một phần chưa được đồng bộ. Sau khi xác định nguyên nhân, tạo ticket điều chỉnh kèm bằng chứng (raw record từ cả hai bên) và cập nhật quy tắc map phí nếu cần — tuyệt đối không sửa số liệu trực tiếp trong DB production.
 > Senior tip: Luôn lưu raw file đối tác để audit; không bao giờ tự sửa số liệu mà không có bằng chứng.`,
     exercises: [
       {
@@ -258,8 +348,9 @@ class Reconciler {
       },
     ],
     check: [
-      { q: 'Nguyên nhân #1 của lệch là gì?', options: ['phí', 'timeout', 'hoàn tiền', 'cut-off'], answer: 1, explain: 'Timeout khiến một bên xử lý, bên kia coi thất bại' },
-      { q: 'Cut-off 23:00 dùng để làm gì?', options: ['đóng hệ thống', 'phân chia ngày đối soát', 'tính phí', 'backup'], answer: 1, explain: 'Quy tắc giao dịch sau 23:00 thuộc ngày sau' },
+      { q: 'Nguyên nhân phổ biến số 1 khiến giao dịch lệch giữa hệ thống mình và đối tác là gì?', options: ['Phí giao dịch tính sai công thức', 'Timeout khi gọi API: mình coi là thất bại nhưng đối tác đã xử lý thành công', 'Hoàn tiền (refund) chưa đồng bộ', 'Cut-off time khác nhau'], answer: 1, explain: 'Đúng: timeout là nguyên nhân #1. Ví dụ: bạn gửi request chuyển tiền, mạng chậm nên client không nhận được response trong thời gian chờ → hệ thống bạn ghi "thất bại", nhưng server đối tác đã xử lý xong và trừ tiền. Kết quả: đối tác có giao dịch, bạn không có (hoặc trạng thái khác). Sai (A): sai phí thường gây AMOUNT_MISMATCH, không phải lệch có/không. Sai (C), (D): cũng gây lệch nhưng tần suất thấp hơn timeout trong thực tế.' },
+      { q: 'Cut-off time (thời điểm chốt sổ, ví dụ 23:00) dùng để làm gì trong đối soát?', options: ['Đóng hệ thống, không cho giao dịch mới', 'Phân chia giao dịch thuộc ngày đối soát nào — giao dịch sau cut-off tính vào ngày hôm sau', 'Tự động tính phí cho mọi giao dịch trong ngày', 'Kích hoạt sao lưu (backup) cơ sở dữ liệu'], answer: 1, explain: 'Đúng: cut-off time là mốc phân chia ngày kế toán/đối soát. Giao dịch lúc 22:59:30 (trước 23:00) thuộc ngày hôm nay; giao dịch 23:00:05 thuộc ngày mai. Hai bên phải thống nhất cùng cut-off và cùng múi giờ, nếu không sẽ tạo dòng lệch giả. Sai (A): hệ thống thường vẫn nhận giao dịch, chỉ phân loại ngày khác. Sai (C): tính phí là logic khác, không liên quan cut-off. Sai (D): backup là vận hành hạ tầng, không phải nghiệp vụ đối soát.' },
+      { q: 'Trạng thái MISSING_AT_PARTNER trong báo cáo đối soát có nghĩa là gì và cần xử lý thế nào?', options: ['Đối tác có giao dịch nhưng hệ thống mình không có — cần ghi nhận bổ sung ngay', 'Hệ thống mình có giao dịch nhưng đối tác không có — cần kiểm tra timeout, có thể truy vấn lại hoặc hoàn tiền', 'Cùng txnId nhưng số tiền khác nhau — cần điều tra phí/làm tròn', 'Giao dịch đã được hoàn tiền ở cả hai bên'], answer: 1, explain: 'Đúng: MISSING_AT_PARTNER = mình có, đối tác không có. Cần tra cứu: có phải do timeout không? Đối tác thực sự chưa xử lý hay đã xử lý nhưng file chưa kịp tổng hợp? Có thể gọi API truy vấn trạng thái giao dịch bên đối tác; nếu xác nhận đối tác chưa xử lý, cân nhắc retry hoặc hoàn tiền theo quy trình. Sai (A): đó là MISSING_INTERNAL. Sai (C): đó là AMOUNT_MISMATCH. Sai (D): không phải định nghĩa của MISSING_AT_PARTNER.' }
     ],
     related: [],
     tags: ['reconcile', 'banking'],
@@ -307,9 +398,40 @@ Hạn mức nên có nhiều cấp: theo giao dịch, theo ngày, theo tháng. V
 
 > Senior tip: Luôn inject Clock thay vì dùng Instant.now() trực tiếp để test deterministic.
 
+### Cơ chế từng bước: kiểm tra một giao dịch
+**Tóm tắt:** Ba lớp bảo vệ trên đồng hồ Việt Nam: kiểm tra hạn mức ngày, kiểm tra vận tốc (velocity), rồi quyết định cho phép hay yêu cầu xác thực mạnh.
+
+1. **Xác định ngày theo múi giờ VN**: lấy thời điểm từ {{Clock}}, chuyển sang {{ZoneId.of("Asia/Ho_Chi_Minh")}}. **Vì sao**: UTC thì nửa đêm VN là 17:00 UTC ngày trước → reset sai giờ so với khách hàng.
+2. **Reset hạn mức nếu đổi ngày**: ngày từ {{Clock}} khác ngày đã lưu → reset {{dailyTotal}} về 0, xóa lịch sử velocity. **Vì sao**: hạn mức tính theo ngày calendario.
+3. **Kiểm tra velocity trước**: đếm giao dịch trong 5 phút gần nhất (bao gồm hiện tại). Vượt {{velocityMax}} → {{REJECT_VELOCITY}}. **Vì sao**: hạn mức tiền không bắt bot giao dịch nhiều lần nhỏ trong vài phút.
+4. **Kiểm tra hạn mức ngày**: {{dailyTotal + amount > dailyLimit}} → {{REJECT_DAILY_LIMIT}}, từ chối ngay.
+5. **Quyết định**: {{amount >= strongAuthThreshold}} → {{REQUIRE_STRONG_AUTH}} (OTP/sinh trắc học). Ngược lại {{ALLOW}}, rồi mới cộng {{amount}} vào {{dailyTotal}}.
+
+### Ví dụ: kiểm tra hạn mức 5 triệu đồng
+~~~java
+long amount = 5_000_000L; // 5 triệu đồng (đơn vị nhỏ nhất VND)
+ZoneId zone = ZoneId.of("Asia/Ho_Chi_Minh");
+Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), zone);
+LimitChecker checker = new LimitChecker(clock, 100_000_000L, 3, 50_000_000L);
+Result r = checker.check(amount);
+// 5 triệu < 50 triệu ngưỡng xác thực mạnh, chưa vượt hạn mức ngày → ALLOW
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng UTC thay vì Asia/Ho_Chi_Minh**: Khách 23:30 giờ VN bị báo "vượt hạn mức ngày" hoặc reset sớm 7 giờ. Nguyên nhân: {{Instant.now()}} theo UTC, nửa đêm VN là 17:00 UTC hôm trước. Sửa: inject {{Clock}} + {{ZoneId.of("Asia/Ho_Chi_Minh")}}.
+2. **Kiểm tra hạn mức sau khi đã cộng tiền**: Giao dịch 23:59:59 vượt hạn mức mà hệ thống cho phép vì cộng rồi mới kiểm tra. Sửa: kiểm tra {{dailyTotal + amount > dailyLimit}} TRƯỚC khi cộng.
+3. **Không xóa lịch sử velocity khi đổi ngày**: Sau 00:00, khách giao dịch lần đầu bị chặn velocity do lịch sử hôm qua còn lại. Sửa: cùng lúc reset {{dailyTotal}} và {{recentTxnTimes.clear()}}.
+4. **Dùng double cho tiền**: Tổng ngày lệch vài đồng sau hàng nghìn giao dịch. Nguyên nhân: {{double}} sai số nhị phân (xem lesson-banking-001). Sửa: {{long}} (đơn vị đồng) hoặc {{BigDecimal}}.
+
 ### Liên hệ phỏng vấn
 **Câu hỏi:** "Em hãy thiết kế hàm kiểm tra hạn mức giao dịch – những điểm nào quan trọng nhất?"
-**Cách trả lời:** Ba lớp bảo vệ: (1) hạn mức theo ngày reset vào 00:00 theo múi giờ địa phương (Việt Nam: Asia/Ho_Chi_Minh), không dùng UTC vì sẽ reset sai giờ so với người dùng Việt Nam; (2) velocity check đếm số giao dịch trong cửa sổ trượt 5 phút để phát hiện bot hoặc kẻ chiếm đoạt tài khoản; (3) giao dịch lớn (vượt ngưỡng, ví dụ 50 triệu VND) yêu cầu xác thực mạnh như OTP hoặc sinh trắc học, chứ không chỉ PIN. Tiêu chí senior: inject {{Clock}} vào {{LimitChecker}} thay vì gọi {{Instant.now()}} trực tiếp, dùng {{long}} hoặc {{BigDecimal}} cho tiền chứ không dùng {{double}}, trả mã lỗi rõ ràng khi từ chối, và kiểm thử phải deterministic bằng {{Clock.fixed}}.
+**Cách trả lời:** Ba lớp bảo vệ: (1) hạn mức theo ngày reset 00:00 giờ VN (Asia/Ho_Chi_Minh), không UTC; (2) velocity check 5 phút phát hiện bot/chiếm đoạt tài khoản; (3) giao dịch lớn (≥ 50 triệu VND) yêu cầu xác thực mạnh (OTP/sinh trắc học), không chỉ PIN. Senior: inject {{Clock}} thay {{Instant.now()}}, dùng {{long}}/{{BigDecimal}} không dùng {{double}}, trả mã lỗi rõ ràng, kiểm thử deterministic bằng {{Clock.fixed}}.
+
+**Câu hỏi 2:** "Vì sao inject {{Clock}} thay {{Instant.now()}} trực tiếp?"
+**Cách trả lời 2:** {{Instant.now()}} lấy thời điểm thực máy, không kiểm thử được "23:59:59" hay "sau 00:00 reset" mà không đợi thật. {{Clock.fixed}} gán thời điểm cố định → kiểm thử deterministic, lặp lại được.
+
+**Câu hỏi 3:** "Velocity check ích gì khi đã có hạn mức tiền?"
+**Cách trả lời 3:** Hạn mức tiền không ngăn tần số. Kẻ chiếm đoạt giao dịch 100 lần nhỏ trong 1 phút, mỗi lần dưới hạn mức → dấu hiệu bot. Velocity đếm giao dịch trong 5 phút, vượt ngưỡng thì từ chối/yêu cầu xác thực mạnh.
 `,
     exercises: [
       {
@@ -410,6 +532,8 @@ class LimitChecker {
     check: [
       { q: 'Hạn mức nên reset theo múi giờ nào?', options: ['UTC', 'Asia/Ho_Chi_Minh', 'GMT', 'tùy client'], answer: 1, explain: 'Theo giờ địa phương Việt Nam' },
       { q: 'Velocity check dùng để làm gì?', options: ['tính phí', 'phát hiện giao dịch bất thường trong thời gian ngắn', 'đối soát', 'backup'], answer: 1, explain: 'Phát hiện bot/chiếm đoạt' },
+      { q: 'Mục đích chính của hạn mức giao dịch là gì?', options: ['Giới hạn số tiền giao dịch trong ngày để giảm thiệt hại nếu tài khoản bị chiếm đoạt', 'Tính lãi suất tháng cho tiền gửi', 'Đối soát giao dịch cuối ngày với ngân hàng đối tác', 'Backup dữ liệu vào mỗi nửa đêm'], answer: 0, explain: 'Đúng: hạn mức là giới hạn tiền tối đa trong một khoảng thời gian (ngày), giảm thiệt hại khi tài khoản bị đánh cắp hoặc chiếm đoạt. Sai (B): lãi suất là sản phẩm gửi tiết kiệm, không liên quan đến hạn mức giao dịch. Sai (C): đó là đối soát, nội dung bài khác. Sai (D): backup là vận hành hạ tầng, không phải giới hạn giao dịch.' },
+      { q: 'Vì sao inject {{Clock}} thay vì gọi {{Instant.now()}} trực tiếp trong LimitChecker?', options: ['Instant.now() không được phép trong Java 17', 'Instant.now() luôn sai múi giờ Việt Nam', 'Clock giúp tính lãi suất chính xác hơn', 'Để dùng {{Clock.fixed}} gán thời điểm cố định, kiểm thử các trường hợp midnight/đổi ngày deterministik'], answer: 3, explain: 'Đúng: inject Clock cho phép test gán thời gian cố định (ví dụ 23:59:59 hoặc 00:00:00 theo giờ VN) mà không cần đợi thật, kết quả kiểm thử ổn định, lặp lại được. Sai (A): Instant.now() dùng được bình thường trong Java. Sai (B): Instant.now() lấy UTC, chính xác nhưng không thể điều khiển để test; vấn đề không phải sai múi giờ. Sai (C): Clock không liên quan đến tính lãi suất.' },
     ],
     related: [],
     tags: ['limit', 'risk', 'banking'],
@@ -463,9 +587,43 @@ Cần xử lý phí trả trước hạn, phạt trả chậm, và thay đổi l
 
 > Senior tip: Luôn kiểm tra balance cuối cùng == 0; nếu không, điều chỉnh kỳ cuối.
 
+### Cơ chế từng bước: tính lịch trả nợ theo dư nợ giảm dần
+**Tóm tắt:** Mỗi kỳ lãi = dư nợ còn lại × lãi tháng; PMT (gốc+lãi) cố định. Dư nợ giảm → lãi giảm, gốc tăng. Kỳ cuối điều chỉnh gốc bằng dư nợ còn lại để balance về 0.
+
+1. **Đổi lãi năm sang tháng**: {{r = annualRatePercent / 12 / 100}} (12%/năm → 1%/tháng). **Vì sao**: lãi công bố theo năm, vay hàng tháng tính theo tháng.
+2. **Tính PMT**: {{PMT = P × r / (1 - (1+r)^-n)}}. Mỗi kỳ trả cùng số tiền. Lãi 0% → {{PMT = P / n}} (tránh chia cho 0).
+3. **Mỗi kỳ i**: lãi = {{balance × r}} (trên dư nợ trước kỳ), gốc = {{PMT - interest}}, balance mới = {{balance - principalPart}}. Gốc tăng dần, lãi giảm dần vì dư nợ giảm.
+4. **Điều chỉnh kỳ cuối**: làm tròn làm tổng gốc lệch vài đồng so với {{principal}}. Kỳ cuối: gốc = dư nợ còn lại, lãi = balance × r, balance = 0.
+5. **Lãi 0%**: mỗi kỳ gốc = {{principal / n}}, lãi = 0, balance giảm đều về 0.
+
+### Ví dụ: vay 1 triệu, 12%/năm, 12 kỳ
+~~~java
+BigDecimal principal = new BigDecimal("1000000");
+BigDecimal annualRate = new BigDecimal("12");
+int months = 12;
+List<Installment> sched = LoanSchedule.build(principal, annualRate, months);
+Installment first = sched.get(0);
+Installment last = sched.get(months - 1);
+System.out.println("Kỳ 1: gốc=" + first.principal + " lãi=" + first.interest + " dư nợ=" + first.balance);
+System.out.println("Kỳ 12: gốc=" + last.principal + " lãi=" + last.interest + " dư nợ=" + last.balance);
+// Kỳ 12 phải có dư nợ = 0
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng double cho tiền/lãi**: Dư nợ cuối 0.00000003đ hoặc -500đ thay vì 0. Nguyên nhân: {{double}} xấp xỉ nhị phân (xem lesson-banking-001). Sửa: {{BigDecimal}}, scale 2, {{RoundingMode.HALF_UP}}.
+2. **Quên điều chỉnh kỳ cuối**: Tổng gốc 999.950đ thay vì 1.000.000đ (thiếu 50đ bốc hơi). Sửa: kỳ cuối gốc = dư nợ còn lại, balance = 0.
+3. **Lãi 0% dùng công thức annuity**: Chia cho 0 vì mẫu {{(1+r)^n - 1}} bằng 0 khi r = 0. Sửa: nhánh riêng {{if (r.compareTo(BigDecimal.ZERO) == 0)}} → {{PMT = principal / n}}.
+4. **Sai scale**: lãi 8333.3333333333 thay vì 8333.33. Sửa: {{setScale(2, HALF_UP)}} mỗi kỳ; scale 10 chỉ cho trung gian PMT.
+
 ### Liên hệ phỏng vấn
 **Câu hỏi:** "Vì sao tính lãi vay trả góp phải dùng BigDecimal, và sao kỳ cuối phải điều chỉnh lại?"
-**Cách trả lời:** Tiền không dùng {{double}} vì số trội gây sai số tích lũy, ví dụ 0.1 + 0.2 không bằng 0.3 chính xác; {{BigDecimal}} với scale và {{RoundingMode.HALF_UP}} giữ chính xác đến cent. Lãi tính theo dư nợ còn lại, nên mỗi kỳ lãi giảm dần còn gốc tăng dần (công thức annuity). Kỳ cuối lấy gốc bằng dư nợ còn lại để balance về đúng 0, hấp thụ phần lệch do làm tròn; lãi 0% phải xử lý riêng (PMT = principal / n) để không sai công thức mũ. Khi phỏng vấn, nhấn mạnh kiểm tra balance cuối cùng bằng 0 là điều kiện chấp nhận.
+**Cách trả lời:** {{double}} sai số tích lũy (0.1+0.2 ≠ 0.3 chính xác); {{BigDecimal}} + scale + {{RoundingMode.HALF_UP}} chính xác đến cent. Lãi tính trên dư nợ còn lại → lãi giảm, gốc tăng (annuity). Kỳ cuối gốc = dư nợ còn lại để balance = 0; lãi 0% xử lý riêng (PMT = principal / n). Senior: kiểm tra balance cuối = 0 là điều kiện chấp nhận.
+
+**Câu hỏi 2:** "12%/năm đổi tháng ra bao nhiêu, PMT nghĩa là gì?"
+**Cách trả lời 2:** {{r = 12/12/100 = 1%}} tháng. PMT = số tiền trả mỗi kỳ, cố định: {{PMT = P × r / (1 - (1+r)^-n)}} (P số vay, r lãi tháng, n số kỳ). PMT = lãi (dư nợ × r) + gốc. Dư nợ giảm → lãi giảm, gốc tăng.
+
+**Câu hỏi 3:** "Lãi 0% tính thế nào, chú ý gì?"
+**Cách trả lời 3:** {{PMT = principal / n}}, lãi = 0, balance giảm đều về 0. Không dùng công thức annuity vì mẫu {{(1+r)^n - 1}} = 0 khi r = 0 → chia cho 0; phải nhánh riêng trong code.
 `,
     exercises: [
       {
@@ -556,6 +714,8 @@ class LoanSchedule {
     check: [
       { q: 'Lãi tính theo cái gì?', options: ['principal ban đầu', 'dư nợ còn lại', 'tổng tiền', 'phí'], answer: 1, explain: 'Lãi theo dư nợ giảm dần' },
       { q: 'Vì sao kỳ cuối cần điều chỉnh?', options: ['để đẹp', 'do làm tròn tích lũy', 'tính lại lãi', 'không cần'], answer: 1, explain: 'Làm tròn gây lệch vài đồng' },
+      { q: 'Lãi suất công bố 12%/năm, vay trả góp hằng tháng, lãi áp dụng mỗi kỳ bằng bao nhiêu?', options: ['12%', '1%', '6%', '0,01 (tức 1% viết dưới dạng thập phân)'], answer: 3, explain: 'Đúng: r = 12 / 12 / 100 = 0,01, tức 1% mỗi tháng, nhưng trong công thức phải viết dạng thập phân 0,01 chứ không phải số nguyên 1. Sai (A): 12% là trên năm, không phải mỗi tháng. Sai (B): 1% đúng về ý nghĩa nhưng làm con số trong công thức thì là 0,01. Sai (C): 6% là nửa năm, không liên quan.' },
+      { q: 'Vay trả góp lãi 0% tính thế nào?', options: ['Chỉ trả toàn bộ gốc ở kỳ cuối', 'Không cần trả gốc, chỉ trả phí', 'PMT = principal / n, mỗi kỳ trả gốc đều, lãi = 0', 'Dùng công thức annuity như thường vì 0 không ảnh hưởng'], answer: 2, explain: 'Đúng: lãi 0% → PMT = principal / n, mỗi kỳ trả gốc đều, lãi = 0, balance giảm đều về 0 ở kỳ cuối. Sai (A): đó là vay một lần cuối (balloon), không phải trả góp hàng tháng. Sai (B): vẫn phải trả gốc. Sai (C): công thức annuity có mẫu (1+r)^n - 1, khi r = 0 mẫu bằng 0 → chia cho 0, phải nhánh riêng trong code.' },
     ],
     related: [],
     tags: ['loan', 'banking', 'bigdecimal'],

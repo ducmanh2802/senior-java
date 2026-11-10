@@ -173,7 +173,13 @@ Present the chain: "Java test → Selenium client → HTTP W3C WebDriver → dri
 ### How to answer in an interview
 Compare by architecture, auto-wait/flakiness, cross-browser, team fit, debug/CI. Conclude with a context-aware decision and trade-offs.
 
-> Senior tip: The tool only reduces part of the flakiness. Isolated test data, durable locators, and waiting for the right business condition determine stability – evaluate how tests are written, not just the tool.`,
+### Real-world example
+  A 6-person QA team had a Selenium 4 suite with 350 tests and a flaky rate around 6%, mostly from clicking elements that were still covered by an overlay or not yet enabled. Over 4 weeks they rewrote 40 payment-flow tests in Playwright for Java, using the same data and same environment. Result: flaky rate for that group dropped to 0.8%, run time fell 35% thanks to browser context isolation (no need to launch a fresh browser per test), and the trace viewer cut red-test investigation from about 30 minutes of log reading to about 5 minutes. However, the team still kept Selenium for 60 tests that run on real Safari via a partner's Grid, because Playwright uses its own WebKit build rather than the released Safari binary. Decision: write new tests in Playwright, migrate the reddest old tests gradually, and never rewrite everything at once.
+
+  ### Sample interview answer
+  "Selenium goes through the standard W3C WebDriver protocol: the client sends HTTP commands to each browser's driver, so it supports a very wide range of languages and browsers, has Grid, but you must manage waits yourself with explicit waits. Playwright drives the browser through the browser's native protocol, waits for elements to be actionable before acting, has isolated browser contexts, network mocking, and a trace viewer, and has an official Java port. Cypress is strong with JavaScript frontend teams but is less suitable for pure Java teams. For a new Java enterprise project I usually pick Playwright for Java because it reduces flakiness and makes debugging faster. If you already have a large, stable Selenium framework, or need real Safari, I keep Selenium and only write new tests in the newer tool. I decide with a small experiment on a real flow, measuring flaky rate and run time, rather than following a trend."
+
+  > Senior tip: The tool only reduces part of the flakiness. Isolated test data, durable locators, and waiting for the right business condition determine stability – evaluate how tests are written, not just the tool.`,
     follow: [
       'How does a Playwright browser context isolate tests?',
       'If you must test on real Safari, how do Selenium and Playwright respond?',
@@ -219,14 +225,17 @@ driver.findElement(By.cssSelector("[data-testid='search-input']")).sendKeys("pho
 - If {{data-testid}} exists: use it. If stable id/name exists: use it. If matching by text: acceptable but careful with i18n (Playwright offers {{getByRole/getByText}} supporting accessibility). Avoid absolute XPath, {{nth-child}}, dynamic classes.
 
 ### Common mistakes
-- Copying XPath from DevTools and pasting → extremely brittle.
-- Using display text for multi-language apps without a strategy.
-- Duplicate {{data-testid}} on a page → wrong element selected.
+  - Copying XPath from DevTools and pasting → extremely brittle.
+  - Using display text for multi-language apps without a strategy.
+  - Duplicate {{data-testid}} on a page → wrong element selected.
 
-### How to answer in an interview
-State the priority order and reasons (durability, separation from UI). Emphasize dev collaboration and that {{data-testid}} is a contract. Give an example of a brittle locator you fixed.
+  ### Real-world example
+  A frontend team upgraded their UI component library and all the auto-generated CSS class names changed: 180 out of 420 UI tests went red overnight even though no functional bug was introduced. 70% of the broken locators were XPath copied from DevTools or selectors tied to framework classes. QA proposed to the frontend team a {{data-testid}} convention in the form {{area-action}}, added it to shared components (Button, Input, Table row) so every screen gets it automatically, plus a lint rule that warns when an interactive element lacks a test id. The next priority was {{getByRole}} with an accessible name, which also surfaced accessibility bugs. The following UI upgrade caused only 9 red tests, all due to genuine flow changes.
 
-> Senior tip: Locate by **user intent** (role, label, test id) and lock the convention with the team – saves many hours of fixing trivial tests when UI changes.`,
+  ### Sample interview answer
+  "I choose locators by the element's intent, not by its position in the DOM tree. My priority order is: a test-only {{data-testid}}, then role and accessible label via {{getByRole}}, then a stable id or name, then a short CSS selector with semantic meaning; absolute XPath, {{nth-child}}, and auto-generated classes are avoided because adding a single div or swapping a library can break them. With developers I agree on a behavior-based test id naming convention, add it to shared components so every screen has it automatically, and treat the test id as a contract: renaming or removing it requires QA visibility, which can be enforced by lint. The result is that tests go red only when behavior actually changes, not when the UI is restyled, which saves a lot of trivial test-fix time."
+
+  > Senior tip: Locate by **user intent** (role, label, test id) and lock the convention with the team – saves many hours of fixing trivial tests when UI changes.`,
     follow: [
       'When is XPath acceptable, and how do you write more durable relative XPath?',
       'How do you handle elements with dynamic ids (random per render)?',

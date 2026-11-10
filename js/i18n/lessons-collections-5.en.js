@@ -1,5 +1,6 @@
-/* 
- * English translation of js/data/lessons-collections.js - task T451. Format: js/core/i18n.js (content overlay).
+/*
+ * English translation of js/data/lessons-collections.js — task T1092 (redo lesson-collections-005).
+ * Format: js/core/i18n.js (content overlay).
  * ids: lesson-collections-005
  */
 App.i18n.content({
@@ -16,11 +17,11 @@ App.i18n.content({
 A heap tree is a **complete** binary tree, so it is stored compactly in the {{Object[] queue}} array with no pointers: the node at index {{i}} has its children at {{2i + 1}} and {{2i + 2}}, and its parent at {{(i - 1) / 2}}.
 
 ~~~text
-array: [ 1 | 3 | 2 | 7 | 4 | 5 ]      tree:       1
-index:   0   1   2   3   4   5                /   \\
-                                             3     2
-children of 1 (i=1): i=3 (7), i=4 (4)       / \\   /
-                                           7   4 5
+array:  [ 1 | 3 | 2 | 7 | 4 | 5 ]       tree:        1
+index:    0   1   2   3   4   5                    /   \\
+                                              3     2
+children of 1 (i=1): i=3 (7), i=4 (4)        / \\   /
+                                            7   4 5
 ~~~
 
 - {{offer(e)}}: append {{e}} at the end of the array, then **sift-up**: compare it with its parent and swap when it is smaller, repeating. At most the height of the tree: **O(log n)**.
@@ -78,8 +79,7 @@ Each index enters the deque once and leaves at most once, so the total is **O(n)
 > Common production mistakes: using {{Stack}} because "the name is easy to understand" (paying for synchronized on a hot path), printing a PriorityQueue to the log and assuming it is sorted, using an unbounded PriorityBlockingQueue as a job queue, and adding {{null}} to an ArrayDeque, which causes an NPE in a hard-to-guess place.
 
 ### Interview relevance
-Interviewers often ask: how the heap is stored in an array and the complexity of each operation, why top-K uses a min-heap and how much memory it costs, why {{Stack}} is discouraged, and the sliding window maximum problem. Senior-level follow-ups: **distributed** top-K (each node computes its local top-K, then the heaps are merged, because the global top-K is guaranteed to lie in the union of the local top-Ks), and when you need a heap that supports updating an element's priority (Dijkstra), which PriorityQueue does not.
-`,
+Interviewers often ask: how the heap is stored in an array and the complexity of each operation, why top-K uses a min-heap and how much memory it costs, why {{Stack}} is discouraged, and the sliding window maximum problem. Senior-level follow-ups: **distributed** top-K (each node computes its local top-K, then the heaps are merged, because the global top-K is guaranteed to lie in the union of the local top-Ks), and when you need a heap that supports updating an element's priority (Dijkstra), which PriorityQueue does not.`,
     exercises: [
       {
         title: 'Top-K largest transactions over a data stream',
@@ -132,16 +132,19 @@ Common mistakes:
       {
         q: 'You {{offer}} 5, 1, 4, 2 in that order into a {{PriorityQueue<Integer>}} and then call {{System.out.println(pq)}}. Which statement is correct?',
         options: ['Always prints [1, 2, 4, 5]', 'It prints in the internal heap-array order, e.g. [1, 2, 4, 5] or not in ascending order; only the first element is guaranteed to be the smallest', 'It prints in insertion order [5, 1, 4, 2]', 'It throws UnsupportedOperationException because PriorityQueue does not support toString'],
+        answer: 1,
         explain: `{{toString}} uses the iterator, and the iterator walks the heap array by index. The heap array only guarantees that {{queue[0]}} is the smallest; the other positions merely satisfy the heap property. In this example the output happens to be [1, 2, 4, 5] (with 5, 1, 4, 2, 3 you get [1, 2, 4, 5, 3]). It does not preserve insertion order, and toString works normally. To get ordered output, poll repeatedly.`,
       },
       {
         q: 'Find the 100 largest transactions out of 100 million transactions read incrementally from a stream. Which approach is optimal, and what is its complexity?',
         options: ['Max-heap holding everything, then poll 100 times: O(n) memory', 'Sort everything: O(n log n) time, O(n) memory', 'Min-heap holding 100 elements: O(n log K) time, O(K) memory', 'TreeSet holding everything: O(n log n)'],
+        answer: 2,
         explain: `A size-K min-heap has the entry threshold for the top at its root: a smaller element is rejected after one peek, a larger one replaces the root in O(log K). Memory holds only K elements, so it works on a stream. The other three options all keep 100 million elements in RAM; sorting and TreeSet also cost O(n log n), and a TreeSet with a comparator that only looks at the amount would even lose transactions that share the same amount.`,
       },
       {
         q: 'Why is {{ArrayDeque}} recommended over {{Stack}} for implementing a stack?',
         options: ['Stack has no pop method', 'Stack extends Vector: every method is synchronized, which is unnecessary overhead, and it exposes index-based access methods that break the stack abstraction', 'ArrayDeque is thread-safe while Stack is not', 'ArrayDeque allows null elements while Stack does not'],
+        answer: 1,
         explain: `{{Stack extends Vector}}, so every push/pop takes a lock, and it exposes {{get(i)}}, {{add(i, e)}}, {{remove(i)}} on the "stack". ArrayDeque is a lock-free circular array and is faster. The wrong options: Stack does have pop; ArrayDeque is **not** thread-safe; and ArrayDeque **forbids** null (Stack allows it).`,
       },
     ],

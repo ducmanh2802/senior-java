@@ -1,6 +1,6 @@
 # T1042 — Thêm dấu tiếng Việt: q-banking.js
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/q-banking.js`
 
@@ -23,3 +23,6 @@ Nghiệm thu:
 - `node scripts/build-light-index.js` rồi `node scripts/validate.js` → OK. KHÔNG commit. Ghi `Status: DONE` (sửa dòng Status ở đầu file) + số dòng đã sửa vào Notes.
 
 ## Notes
+
+Diacritics added to q-banking.js (find-nodiac now 0).
+Reviewed-by: kilo (T1042R)

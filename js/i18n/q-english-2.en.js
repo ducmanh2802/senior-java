@@ -139,7 +139,7 @@ If the offer is below my range, I do not negotiate emotionally. I say what would
     ],
   },
   'english-020': {
-    q: `Can you explain the CAP theorem and how you applied it when choosing between consistency and availability in a real system?`,
+    q: `Explain the CAP theorem and eventual consistency to the interviewer with a concrete example from a system you have worked on.`,
     a: `**Summary:** CAP states that when a network is partitioned, a distributed system must choose between Consistency (every read sees the latest write — linearizable) and Availability (every request to a living node gets a response). Partition is unavoidable, so the practical choice is CP or AP **during partition**. Eventual consistency chooses AP: data will become consistent after some time, not immediately.
 
 ### Sample answer

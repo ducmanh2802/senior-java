@@ -4,35 +4,41 @@
  */
 App.i18n.content({
   'jpa-008': {
-    q: `When should you move away from JPA to use JdbcTemplate, jOOQ or native queries? What are the risks of mixing JPA and hand-written SQL?`,
-    a: `**Summary:** JPA wins on domain-model CRUD and on avoiding hand-written SQL, but is weak on complex queries (multi-level aggregation, window functions, recursive CTEs) and on absolute performance control. When you need fully controlled SQL, use **jOOQ** (type-safe, code generated from the schema) for complex queries and **JdbcTemplate** for batch/streaming, while keeping JPA for the CRUD part.
+    q: `When should you move away from JPA and use JdbcTemplate, jOOQ, or native queries? What are the risks of mixing JPA and hand-written SQL?`,
+    a: `**Summary:** JPA shines for CRUD on a domain model (a domain model is your Java classes representing business concepts like Order or Customer) and for avoiding hand-written SQL. But JPA is weak for complex queries (multi-level aggregation, window functions, recursive CTEs — a CTE, Common Table Expression, is a named temporary result set written with {{WITH}}) and when you need absolute control over performance. When you need fully controlled SQL, use **jOOQ** (a library that generates type-safe Java code from your database schema, so column names are checked at compile time) for complex queries and **JdbcTemplate** (Spring's thin helper around plain JDBC, Java Database Connectivity) for batch work and streaming. Keep JPA for the CRUD part.
 
-### When to leave JPA
-| Situation | Tool to use |
-|---|---|
-| Reports, dashboards aggregating many tables | jOOQ or JDBC template |
-| Analytical queries, window functions, recursive CTEs | jOOQ (Hibernate 6 supports them but the API is clunky) |
-| Importing/inserting millions of rows | JDBC template + batch |
-| Streaming a large dataset row by row | JDBC template + {{ResultSet}} fetchSize |
-| Simple queries, standard CRUD | JPA remains a good choice |
+### Key terms (first time)
+- **JPA (Java Persistence API)**: a Java standard for mapping database tables to Java objects (entities) and for querying them without writing raw SQL most of the time.
+- **Native query**: raw SQL you send directly to the database, bypassing JPA's JPQL (JPQL is JPA's object-oriented query language).
+- **Persistence context**: JPA/Hibernate's in-memory "notebook" of entities it is tracking in the current transaction; it decides what to flush (write) to the database and when.
+- **Flush**: the moment Hibernate synchronizes in-memory entity changes to the database (it runs {{INSERT}}/{{UPDATE}}/{{DELETE}} SQL).
 
-### jOOQ – suggested usage
+### When to move away from JPA
+| Situation | Tool to use | Why |
+|---|---|---|
+| Reports, dashboards aggregating many tables | jOOQ or JdbcTemplate | JPA loads entities; reports need flat rows and SQL-level aggregation |
+| Analytical queries, window functions, recursive CTEs | jOOQ | Hibernate 6 can express some of these, but the API is clunky; jOOQ maps 1:1 to SQL |
+| Importing/inserting millions of rows | JdbcTemplate + batch | JPA tracks every entity in the persistence context → memory and flush overhead |
+| Streaming a large dataset row by row | JdbcTemplate + {{ResultSet}} fetchSize | Avoid loading the whole result set into memory |
+| Simple queries, standard CRUD | JPA is still a good choice | Domain mapping, dirty checking, and cascading save you boilerplate |
+
+### How it works: jOOQ for complex, type-safe SQL
 ~~~java
-// SQL is generated from the schema (code-gen), no hand-written SQL strings
+// SQL is generated from schema-derived classes (code-gen), no hand-written SQL strings
 List<CustomerDTO> rows = ctx.select(
-        CUSTOMER.ID, CUSTOMER.NAME, ORDER.AMOUNT.sum())
+        CUSTOMER.ID, CUSTOMER.NAME, ORDER.AMOUNT.sum())   // column names checked at compile time
     .from(CUSTOMER)
     .leftJoin(ORDER).on(ORDER.CUSTOMER_ID.eq(CUSTOMER.ID))
     .groupBy(CUSTOMER.ID, CUSTOMER.NAME)
-    .fetchInto(CustomerDTO.class);
+    .fetchInto(CustomerDTO.class);                         // map flat rows straight to a DTO
 ~~~
-jOOQ gives type safety (column names checked at compile time), good support for window functions/CTEs, and still runs on plain JDBC.
+jOOQ gives compile-time safety (a typo in a column name fails the build), first-class support for window functions and CTEs, and still runs on plain JDBC — so you keep full control of the SQL that actually executes.
 
-### JdbcTemplate for bulk work
+### How it works: JdbcTemplate for bulk inserts
 ~~~java
 jdbcTemplate.batchUpdate(
     "insert into order_item(order_id, sku, qty) values (?, ?, ?)",
-    items, 1000, (ps, it) -> {
+    items, 1000, (ps, it) -> {        // send 1000 rows per batch to cut round trips
         ps.setLong(1, it.orderId());
         ps.setString(2, it.sku());
         ps.setInt(3, it.qty());
@@ -40,18 +46,24 @@ jdbcTemplate.batchUpdate(
 ~~~
 
 ### Risks of mixing JPA and hand-written SQL
-1. **Auto-flush is not always triggered**: Hibernate flushes before JPQL queries, but for a **native query / JDBC** there is no guarantee of a flush ⇒ you may read stale data inside the same transaction. Call {{entityManager.flush()}} when you need to see data you just modified.
-2. **Two mapping sources for the same table**: the entity and a hand-written DTO will drift apart over time.
-3. **The transaction boundary must be shared**: use Spring's {{@Transactional}} for both, otherwise you lose consistency.
-4. **Hibernate may overwrite your changes**: if you modify data through a native query and Hibernate then flushes the old entity at commit → data loss.
-5. **Locks and deadlocks become hard to control** when mixing two access styles in the same transaction.
+1. **Auto-flush is not always triggered**: Hibernate flushes pending entity changes before running a **JPQL** query, but there is no guaranteed flush before a **native query / plain JDBC** call in the same transaction. You can read stale data. Fix: call {{entityManager.flush()}} before the native/JDBC read when it must see data you just modified.
+2. **Two mapping sources for the same table**: the JPA entity and a hand-written DTO/SQL mapping drift apart over time (a column added in one place, forgotten in the other).
+3. **The transaction boundary must be shared**: wrap both JPA and JDBC work in the same Spring {{@Transactional}} method; otherwise they may run in different transactions/connections and lose consistency.
+4. **Hibernate may overwrite your changes**: if you update a row through native SQL/JDBC, but a stale copy of that entity is still in the persistence context, Hibernate can flush the stale entity at commit and silently overwrite your update. Fix: do bulk writes in a separate transaction, or call {{entityManager.clear()}} / {{refresh()}} after the native write.
+5. **Locks and deadlocks get harder to reason about** when two access styles touch the same rows in one transaction.
 
 ### Pitfall production
-- Do not use a native {{select *}} query mapped manually into an entity – map to a DTO instead.
-- With large batches, split into chunks and commit per chunk to avoid overly long transactions and a bloated undo log.
-- Measure before/after with {{EXPLAIN ANALYZE}}; do not guess.
+- Never use a native {{select *}} mapped back into an entity — map to a DTO/record instead (entities carry lifecycle baggage and caching side effects).
+- For large batches, split into chunks and commit per chunk to avoid an overly long transaction and a bloated undo log.
+- Always measure before/after with {{EXPLAIN ANALYZE}} (a database command that shows the real execution plan and timings); do not guess.
 
-> Senior tip: a good interview question is: "Have you ever had to move away from JPA in your project – and why?". A good answer shows you know precisely where the **boundary** is: JPA for aggregates and CRUD, SQL/jOOQ for complex read queries, and you have already controlled the flush problem when mixing the two worlds. Blind mixing is where the hardest "read stale data" bugs come from.`,
+### Real-world example
+A "revenue by channel per day, with year-over-year ratio" report was first built with JPQL plus in-Java grouping: it loaded 1.2 million order entities into memory to aggregate them, taking 4 minutes and peaking at 5 GB heap. It was rewritten as a single native SQL query using window functions ({{SUM(...) OVER (PARTITION BY channel ORDER BY day)}}, {{LAG}}) mapped straight to a DTO record via {{JdbcClient}} (Spring 6.1+): 1.8 seconds. But the same week, a job used {{JdbcTemplate}} to update order {{status}} while another JPA transaction still held those entities in its persistence context — the stale entities overwrote the new status on flush. The team rule: hand-written SQL for read-heavy reports and bulk work; writes to tables managed by JPA go through JPA, or run in a separate transaction with {{clear()}}/{{refresh()}}, and use {{@Version}} (optimistic locking) to detect overwrites.
+
+### Model interview answer
+"JPA is excellent for CRUD and for business logic on a single aggregate, but I move away from it when a query is a complex report with window functions, CTEs, or multi-dimensional grouping, when I need to process hundreds of thousands of rows in bulk, or when I need database-specific features like ON CONFLICT or JSONB. In those cases I use JdbcClient or JdbcTemplate and map straight to a DTO, or jOOQ if I want compile-time-checked SQL. The main risk of mixing the two is that the persistence context does not know data was changed by hand-written SQL: a stale entity in memory can overwrite fresh data on flush, and the second-level cache can go stale. So I keep a clear boundary — hand-written SQL for read reports and bulk work, writes to JPA-managed tables go through JPA or a separate transaction with a clear/refresh — and I rely on @Version to catch accidental overwrites."
+
+> Senior tip: a strong interview angle is: "Have you ever had to move away from JPA in your project, and why?" A good answer shows you know the exact **boundary**: JPA for aggregates and CRUD, SQL/jOOQ for complex read queries, and that you have already handled the flush problem when mixing the two worlds. Blind mixing is where the hardest "reading stale data" bugs come from.`,
     follow: [
       'Why does Hibernate not flush automatically before running a native query?',
       'How does jOOQ differ from the JPA Criteria API in terms of compile-time safety?'
@@ -59,14 +71,19 @@ jdbcTemplate.batchUpdate(
   },
   'jpa-009': {
     q: `How should a JPA entity implement {{equals}} and {{hashCode}}? Why is using Lombok {{@Data}} on an entity risky?`,
-    a: `**Summary:** Entities often end up inside {{HashSet}}/{{HashMap}} (relationship collections, hand-written caches) → they need {{equals}}/{{hashCode}} that is **stable over the whole lifecycle**. Using {{getId()}} is risky because the id is {{null}} before persist and can change; prefer a **business key** (an immutable business code) or a class-based constant. Lombok {{@Data}} generates {{equals}} from **every** field, including lazy collections → causing N+1, infinite recursion and logic errors.
+    a: `**Summary:** JPA entities (Java objects mapped to database rows) often end up inside {{HashSet}}/{{HashMap}} (for example in relationship collections or hand-written caches), so they need {{equals}}/{{hashCode}} that stay **stable for the whole lifecycle**. Using {{getId()}} is risky because the id is {{null}} before {{persist}} (before the row is inserted) and can change; prefer a **business key** (an immutable business identifier, like a unique customer code) or a class-based constant. Lombok {{@Data}} generates {{equals}} from **every** field, including lazy collections (lazy = loaded from the database only when first accessed), which causes N+1 queries, infinite recursion, and logic bugs.
+
+### Key terms (first time)
+- **Entity lifecycle**: a JPA entity moves through states — transient (new, not saved), managed/persistent (tracked by the persistence context), detached (no longer tracked), removed.
+- **Proxy**: Hibernate may hand you a lazy subclass wrapper instead of the real entity; {{getClass()}} on a proxy returns the proxy class, not the entity class.
+- **Business key**: a natural, immutable identifier with business meaning (e.g. {{customer_code}}) that is unique and never changes, unlike a generated database id.
 
 ### Why you must be careful
-- Before persist, the {{id}} is {{null}} ⇒ an entity can be "lost" from a {{HashSet}} after persist (the id gets assigned) → {{contains()}} returns false and {{remove()}} stops working.
-- If the {{id}} is reassigned (e.g. merging from a DTO), the hash code changes ⇒ lookups in maps break.
-- {{equals}} based on collections triggers **lazy loading** on every comparison: it costs queries and can throw {{LazyInitializationException}}.
+- Before persist, the {{id}} is {{null}}. If you put the entity into a {{HashSet}} and then persist it (so the id gets assigned), the hash code changes → the entity is "lost" in the set: {{contains()}} returns false and {{remove()}} stops working.
+- If the {{id}} is reassigned (e.g. merging an entity from a DTO), the hash code changes and map lookups break.
+- {{equals}} that inspects a collection field triggers **lazy loading** on every comparison: it costs extra queries and can throw {{LazyInitializationException}} (an error meaning you touched a lazy field after the persistence context was closed).
 
-### The right way
+### How to do it right
 ~~~java
 @Entity
 public class Customer {
@@ -78,6 +95,7 @@ public class Customer {
 
     @Override public boolean equals(Object o) {
         if (this == o) return true;
+        // use instanceof (not getClass) so Hibernate proxies compare correctly
         if (!(o instanceof Customer other)) return false;
         return code != null && code.equals(other.code);
     }
@@ -86,25 +104,31 @@ public class Customer {
 }
 ~~~
 
-### With Lombok
+### Using Lombok safely (selectively)
 ~~~java
 @Entity
 @Getter
 @Setter
-@NoArgsConstructor
-@EqualsAndHashCode(of = "code")     // compare only the business key
-@ToString(exclude = {"items"})       // avoid parent <-> child recursion
+@NoArgsConstructor                 // JPA requires a no-arg constructor
+@EqualsAndHashCode(of = "code")   // compare only the business key
+@ToString(exclude = {"items"})     // avoid parent <-> child recursion in logs
 public class Customer { /* ... */ }
 ~~~
-- Even better: let Lombok **not** generate {{equals}}/{{hashCode}} for the entity, or use {{@Entity}} + record? (A record is not the default choice for an entity, because entities need to be mutable and proxyable.)
-- Always make sure the **identity attribute is {{@Id}}** and is not final.
+- Even safer: let Lombok **not** generate {{equals}}/{{hashCode}} for the entity at all, and write them yourself. (A Java {{record}} is not the default choice for a JPA entity because entities need to be mutable and proxyable.)
+- Always keep the identity attribute as {{@Id}} and non-final.
 
 ### Pitfall production
-- Lombok's default {{@ToString}} prints every field, including collections and back references (parent – child – parent…) ⇒ **stack overflow** when logging, or a gigantic log that fires queries on its own.
-- {{@Data}} also generates {{@RequiredArgsConstructor}} and {{@Getter/@Setter}} for every field – for JPA, a no-arg constructor is mandatory, so prefer {{@NoArgsConstructor}} + {{@AllArgsConstructor(access = AccessLevel.PROTECTED)}} instead of {{@Data}}.
-- If you use {{@Data}} on an entity with {{@OneToMany}}, {{equals}} calls {{List.equals}} → compares element by element → triggers lazy loading → very bad.
+- Lombok's default {{@ToString}} prints every field, including collections and back-references (parent → child → parent…) ⇒ a **stack overflow** when logging, or a gigantic log that fires queries on its own.
+- {{@Data}} also generates {{@RequiredArgsConstructor}} and getters/setters for every field, but JPA requires a no-arg constructor — prefer {{@NoArgsConstructor}} plus {{@AllArgsConstructor(access = AccessLevel.PROTECTED)}} instead of {{@Data}}.
+- If you put {{@Data}} on an entity with {{@OneToMany}}, {{equals}} calls {{List.equals}} → compares elements one by one → triggers lazy loading of the whole collection → very bad for performance and correctness.
 
-> Senior tip: a simple team rule: **entities use {{@Getter}} + {{@Setter}}, never {{@Data}}**; base {{equals}}/{{hashCode}} on the business key when there is one, otherwise let Hibernate manage identity, and never put entities into a {{HashSet}} relying on arbitrary {{equals}}. Also always keep {{@ToString}} printing only the id and a few safe fields.`,
+### Real-world example
+A {{Customer}} entity annotated with Lombok {{@Data}} had a bidirectional relationship with {{Address}}. Three incidents in one month: (1) logging {{customer.toString()}} caused a {{StackOverflowError}} because Customer printed Address and Address printed Customer back; (2) {{toString}} in debug logs triggered **lazy loading** of hundreds of queries when DEBUG logging was briefly enabled in production; (3) a {{HashSet<Customer>}} used to deduplicate customers silently lost elements because {{hashCode}} was generated from every field, including fields that changed after the element was added. Fix: removed {{@Data}} from entities and used only the needed {{@Getter}}/{{@Setter}}; {{equals}} compared by id (when non-null) or by a business key, {{hashCode}} returned a class-constant; {{toString}} was hand-written to print only the id; an ArchUnit rule was added to forbid {{@Data}}/{{@EqualsAndHashCode}} on any class annotated with {{@Entity}}.
+
+### Model interview answer
+"An entity's equals and hashCode must stay stable across its whole lifecycle, including when the id is generated on persist and when the object is a Hibernate proxy. I use an immutable business key when one exists; otherwise equals compares the id only when it is non-null, and hashCode returns a class-level constant. Lombok @Data is risky on entities: it generates equals and hashCode from every field, including mutable fields and relationships, which breaks HashSet behavior and can trigger lazy loading; its toString prints every field, so it can fire mass lazy loading or a StackOverflowError on bidirectional relationships. On entities I stick to getters, selective setters, hand-written equals, hashCode, and toString, and I enforce it with an ArchUnit rule that bans @Data on entity classes."
+
+> Senior tip: a simple team rule: **entities use {{@Getter}} + {{@Setter}}, never {{@Data}}**; base {{equals}}/{{hashCode}} on a business key when there is one, otherwise let Hibernate manage identity and never put entities into a {{HashSet}} relying on arbitrary {{equals}}. Always make {{@ToString}} print only the id and a few safe fields.`,
     follow: [
       'Why does Hibernate recommend not overriding {{equals}}/{{hashCode}} based on relationships?',
       'What does Lombok {{@Data}} generate that can break a JPA entity?'

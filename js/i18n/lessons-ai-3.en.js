@@ -1,36 +1,38 @@
 /*
- * English translation of js/data/lessons-ai.js — task T809. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-ai.js — task T1067. Format: js/core/i18n.js (content overlay).
  * ids: lesson-ai-005
  */
 App.i18n.content({
   'lesson-ai-005': {
     title: 'RAG from the ground up: overlapping chunking, embedding, cosine similarity, top-k, re-ranking and citations',
     goals: [
-      'Explain why documents must be cut into chunks, why you need overlap, and what breaks when chunks are too big or too small.',
-      'Understand that an embedding is just a list of numbers and compute cosine similarity by hand, step by step, with no library.',
+      'Explain why documents must be cut into chunks, why overlap is needed, and what breaks when chunks are too big or too small.',
+      'Understand that an embedding is just a list of numbers and compute cosine similarity by hand step by step, no library needed.',
       'Write the retrieve step: filter by threshold, sort by score, break ties stably, take exactly top-k.',
-      'Explain why recall (ANN + BM25) and precision (re-ranker) are two separate stages, and what hybrid search buys you for Vietnamese.',
-      'Design citations: chunks carry an id, the model is forced to reference them, the server checks each id before rendering a link.',
+      'Explain why recall (ANN + BM25) and precision (re-ranker) are split into two stages and what hybrid search buys you for Vietnamese.',
+      'Design citations: chunks carry ids, the model is forced to reference them, the server checks each id before rendering a link.',
     ],
-    body: `**Summary:** RAG (Retrieval-Augmented Generation — "generating an answer that is boosted by a search step") lets an LLM answer from your company's own documents, in four steps: **(1)** cut the documents into small pieces (chunks), **(2)** turn each piece into a list of numbers called an embedding vector, **(3)** compare the vector of the question against the vector of every piece with cosine similarity to take the top-k most relevant pieces, **(4)** paste those top-k into the prompt together with source labels and only then call the model. Most of the answer quality is decided in the "search" steps, not by the model — so a developer has to understand chunking, similarity, top-k and citations, not just how to call an API.
+    body: `**Summary:** RAG (Retrieval-Augmented Generation — "generating an answer boosted by a search step") lets an LLM answer from your company's own documents in four steps: **(1)** cut documents into small pieces (chunks), **(2)** turn each piece into a list of numbers called an embedding vector, **(3)** compare the question's vector against each piece's vector with cosine similarity to take the top-k most relevant pieces, **(4)** paste top-k into the prompt with source labels and only then call the model. Most answer quality is decided at the "search" steps, not by the model — so a developer must understand chunking, similarity, top-k and citations, not just how to call an API.
 
-### 1. What RAG solves (and why it is not fine-tuning)
+### 1. What RAG solves (and why not fine-tuning)
+
 An LLM only "knows" what it saw while it was being trained. Three problems when you ask it about your own data:
 1. **It does not know**: your internal fee schedule, your credit-limit approval process, your contract clauses were never in the training data.
-2. **It stands still**: the knowledge has a cutoff date. The fee table changed last week, the model still answers with last year's numbers.
+2. **It stands still**: knowledge has a cutoff date. The fee table changed last week, the model still answers with last year's numbers.
 3. **It invents** (hallucination — the model fluently states something that does not exist): the model is optimised to make "the next token sound plausible", not to "only say things that are true".
 
 Two ways to fix that:
 | | Fine-tuning | RAG |
 |---|---|---|
-| Essence | Continue training, i.e. **change the model weights** | Keep the model untouched, build an extra "bookshelf" and look things up on every question |
+| Essence | Continue training, i.e. **change model weights** | Keep the model untouched, build an extra "bookshelf" and look things up on every question |
 | Documents change daily | Must retrain (hours, money, an MLOps process) | Update the index (seconds) |
 | Evidence | You cannot tell which document the answer came from | Can cite the exact chunk, the exact page |
 | Security risk | The data sits inside the weights and can be "prised out" | Only the chunks sent inside the request — controllable |
 | Operational risk | Needs clean data, a training pipeline, MLOps people | Needs retrieval and eval done properly |
-> Pick RAG when the knowledge changes and you need citations. Fine-tune when you want to change the **style/format** (tone of voice, email template, layout), not to pump in knowledge.
+> Pick RAG when knowledge changes and you need citations. Fine-tune when you want to change the **style/format** (tone of voice, email template, layout), not to pump in knowledge.
 
 ### 2. Chunking: why you must cut, and how to cut correctly
+
 Every embedding model accepts only a limited number of tokens (usually around 512 tokens per embedding call), and **the vector of a very long passage is a "stew"**: many topics blended together, so it ends up close to nothing in particular. Cutting smaller makes each vector "sharper". But cut too small and one idea falls across two places, and neither place can answer on its own.
 
 The common ways to cut, from worst to best:
@@ -57,9 +59,10 @@ chunk 3  :                                 [w9  w10  w11]   <- short: it touches
 
 Every chunk must carry **metadata** (extra data stored alongside the vector): {{docId}}, {{section}}, {{page}}, {{updatedAt}}, {{language}}, {{allowedRoles}}. Metadata serves three jobs: citations, **permission filtering** (a user only sees chunks they are allowed to read) and time filtering. Filtering should run **before** taking top-k; if you filter afterwards, top-k has already been taken over by junk.
 
-> Common indexing mistakes: (a) hard character cuts that break sentences; (b) updating a document without deleting its old chunks -> the system returns last year's fee schedule; (c) indexing footers, "page 12/40" and boilerplate clauses too — they all look alike, so they match every question and steal the top-k slots; (d) forgetting Vietnamese normalisation (Unicode NFC/NFD, "d" with a hook as two code points versus one) which throws off exact matching and BM25.
+> Common indexing mistakes: (a) hard character cuts that break sentences; (b) updating a document without deleting its old chunks -> the system returns last year's fee schedule; (c) indexing footers, "page 12/40" and boilerplate clauses too — they all look alike, so they match every question and steal the top-k slots; (d) forgetting Vietnamese normalisation (Unicode NFC/NFD, "đ" with a hook as two code points versus one) which throws off exact matching and BM25.
 
 ### 3. Embedding: turning text into a list of numbers
+
 An **embedding** is the output of an embedding model: it maps a piece of text onto a vector, for instance 384 real numbers (all-MiniLM-L6-v2) or 1536 numbers (OpenAI's text-embedding-3-small). The core property: two passages that are **close in meaning** have vectors that are **close in direction**, even when they share no single word.
 
 Illustrated in 3 dimensions (reality is 384-1536 dimensions; nobody can picture 384 dimensions, so people draw 2):
@@ -94,6 +97,7 @@ LIMIT 5;
 ~~~
 
 ### 4. Cosine similarity: a formula you can compute by hand
+
 Given two vectors a and b:
 ~~~text
                 n
@@ -121,12 +125,14 @@ Two places where it goes wrong (exercise 2 makes you handle them):
 - Bag-of-words (counting word frequencies, no model needed) uses this very same formula — it simply does not understand synonyms, and it is a cheap way to get a demo vector.
 
 ### 5. Top-k and thresholds: how many is enough
+
 - **Money and limits**: 5 chunks x 300 tokens = 1500 context tokens per question; multiply by the number of requests and users and you have the invoice.
 - **Quality**: the "lost in the middle" effect — the model pays more attention to the beginning and the end of the context than to the middle. Stuffing 20 chunks usually makes the answer **worse**, not better, and gives the model more raw material to invent with.
 - **Threshold**: drop chunks whose cosine is too low (say below 0.25-0.3 with a normalised model). Answering "no document found" is better than letting the model answer from junk.
 - Practically: k = 3-5, and **measure** it with recall@k on a set of real questions (see lesson-ai-001) instead of guessing.
 
 ### 6. Re-ranking: why the work splits into two stages
+
 Searching millions of vectors with ANN (**A**pproximate **N**earest **N**eighbor — an approximate-neighbour algorithm such as HNSW, which trades a little accuracy for speed) or BM25 (Elasticsearch's keyword ranking algorithm) is **cheap**: a few ms over millions of records, but it scores "naively", because it only compares vector against vector (or word against word).
 
 A **re-ranker** is a small cross-encoder model: it takes **the question and the chunk together in one pass**, so the model "reads" both texts at once and then emits a score. Much more accurate, but it needs one inference run **per pair** — 50 pairs means about 50 model runs, roughly a second, which is impossible across millions of chunks.
@@ -137,9 +143,11 @@ recall   (cheap, wide): ANN + BM25  ->  ~50 candidates        goal: miss nothing
 rerank   (costly, narrow): cross-encoder re-scores the 50  ->  top 5   goal: put the best one on top (precision)
 generate (LLM):         5 labelled chunks + the question  ->  the answer
 ~~~
+
 **Hybrid search** = merging the vector results with the keyword results. Their strengths cover for each other: embeddings understand meaning, keywords nail exact strings. For Vietnamese it is well worth doing, because product names, clause codes, abbreviations ("CCCD", "TTLTT") and text **typed without diacritics** ("phi thuong nien the") easily slip past the embedding yet hit BM25. A simple and stable merge is **reciprocal rank fusion**: a document's score = the sum of 1 / (60 + position) taken from each ranked list — you only need the positions, you do not have to normalise the two systems' score scales.
 
 ### 7. Citations: turning an answer into something checkable
+
 Without citations nobody trusts the answer, you cannot audit it, and legal will not let it go to production. The compact recipe:
 1. Every chunk placed into the prompt is numbered {{[1]}}, {{[2]}}, {{[3]}} and carries its source (docId, page).
 2. The system prompt **forces** the model to: answer only from the CONTEXT, tag every statement with the matching {{[number]}}, and if the context is not enough, state clearly that nothing was found.
@@ -158,6 +166,7 @@ Map<String, String> byCiteId = Map.of("1", "QS-01#12", "2", "QS-01#13");
 > Pitfall: the model cites "[3]" when the prompt only contains [1] and [2]; or it cites [1] correctly but the answer actually came from the model's own knowledge (a "lip-service" citation). Beyond checking ids, you also need to measure **groundedness** on a golden dataset.
 
 ### 8. The flow of one RAG question
+
 ~~~seq
 title: What a RAG question goes through
 actors: User | API | Embed | VectorDB | Rank | LLM
@@ -175,6 +184,7 @@ note API: Filter by user permission before taking top-k
 ~~~
 
 ### 9. Failures you actually see in production
+
 | Symptom | Common cause | Fix |
 |---|---|---|
 | Answers "not in the documents" although the document has it | the question uses different wording, the embedding does not catch it | hybrid search, normalise the text, add synonyms/definitions into the metadata |
@@ -185,6 +195,7 @@ note API: Filter by user permission before taking top-k
 | A user sees another department's documents | no permission filter | filter {{allowedRoles}} right inside the vector query |
 
 ### Interview relevance
+
 The opener: "How does RAG work?" — answer it as a chain: chunk (with overlap + metadata) -> embed -> store in a vector store -> cosine/dot with a threshold -> top-k -> re-rank -> prompt with source labels -> the server checks the citations. The follow-ups are usually: why big chunks break (the embedding is diluted), why you need overlap (an idea cut right at the boundary), when to add a re-ranker (recall is fine but the ranking is wrong), why not stuff 20 chunks (lost in the middle + cost), how to handle Vietnamese typed without diacritics (hybrid + BM25), what to do when the embedding model changes (recompute the index, run two vector columns in parallel).
 > Senior tip: before buying a vector DB or a re-ranker, measure recall@50 on 50-100 real questions. If the right chunk is **not** in the top-50, the fault is in chunking/embedding and everything downstream is just makeup; if the right chunk **is there but ranked low**, the re-ranker is the investment that pays back fastest.`,
     exercises: [
@@ -202,7 +213,7 @@ With the 10 words {{alpha beta gamma delta epsilon zeta eta theta iota kappa}}, 
         hints: [
           'Validate {{size}} and {{overlap}} before doing anything else, then compute {{step = size - Math.min(overlap, size - 1)}}.',
           'Loop over the start index: {{for (int start = 0; start < ws.size(); start += step)}} with {{end = Math.min(start + size, ws.size())}}; use {{String.join(" ", ws.subList(start, end))}} to build the chunk.',
-          'The tail stop condition: when {{end == ws.size()}} do {{break}} — the chunk you just built already reached the last word, so no extra chunk is needed.',
+          'The tail stop condition: if {{end == ws.size()}} then {{break}} — the chunk you just built already reached the last word, so no extra chunk is needed.',
         ],
         explain: `### Solution
 - The text is tokenised into an array of words once ({{words}}); after that everything is a sliding window over an array of indexes: {{[start, start + size)}} with a jump of {{step = size - overlap}}.
@@ -229,7 +240,7 @@ With the 10 words {{alpha beta gamma delta epsilon zeta eta theta iota kappa}}, 
 
 Note: the score of one document is computed many times if you call {{cosine}} again inside the comparator — not wrong, but better to compute it once and keep it.`,
         hints: [
-          'Inside {{cosine}}, accumulate {{dot}}, {{na}} and {{nb}} in one single loop; if {{a}} or {{b}} is null/empty, the two lengths differ, or {{na}} or {{nb}} is 0, return {{0.0}} before dividing.',
+          'In {{cosine}}, accumulate {{dot}}, {{na}}, {{nb}} in one single loop; if {{a}} or {{b}} is null/empty, the two lengths differ, or {{na}} or {{nb}} is 0, return {{0.0}} before dividing.',
           'For {{topK}}, build a temporary list holding only the candidates that score > 0.0 (id and score), sort that list with {{Double.compare}} by descending score and then {{compareTo}} by id when the scores tie.',
           'Do not modify {{docs}} and do not return the {{subList}} of an internal list: finish with {{new ArrayList<>(list.subList(0, Math.min(k, list.size())))}}.',
         ],
@@ -256,11 +267,13 @@ Note: the score of one document is computed many times if you call {{cosine}} ag
           'So that any idea sits whole inside at least one chunk instead of being cut in half at the boundary',
           'Because the embedding model requires each vector to partly repeat the previous vector',
         ],
+        answer: 2,
         explain: `Overlap (typically 10-20% of the chunk size) exists so that a piece of information lying across the boundary of two chunks still appears **in full** inside one chunk. Without it, both chunks contain only half the idea, so the match is fuzzy and the chunk drops out of top-k. The other options are wrong: overlap makes the index **bigger and slower**, not faster; it does not systematically raise similarity; and embedding models place no requirement on the relationship between vectors.`,
       },
       {
         q: 'The cosine similarity between a = [1, 2] and b = [2, 4] is approximately:',
         options: ['10.0', '0.5', '0.71', '1.0'],
+        answer: 3,
         explain: `It is **1.0**: a·b = 2 + 8 = 10, |a| = 2.236, |b| = 4.472, the product of the lengths = 10, so cos = 10/10 = 1.0. The two vectors are proportional, therefore they point in the same direction. "10.0" is what you get when you forget to divide by the lengths (a raw dot product); "0.5" and "0.71" come from dividing by the wrong denominator (forgetting the square root, or dividing by the length of only one vector).`,
       },
       {
@@ -271,6 +284,7 @@ Note: the score of one document is computed many times if you call {{cosine}} ag
           'Fix the chunking and the embedding (chunk size, overlap, move to hybrid search)',
           'Switch to a larger, more powerful LLM',
         ],
+        answer: 2,
         explain: `The right chunk missing from the top-50 means the **recall** of the retrieve step is poor: the problem is in how you cut and how you embed, so fix chunking/embedding and add keyword search (BM25) for exact phrases. Raising k to 200 only hides the fault — it bloats the prompt, wastes tokens and causes "lost in the middle"; a re-ranker can only reorder what was already retrieved, it cannot produce a result that was never retrieved; a bigger LLM knows nothing about the retrieve step.`,
       },
       {
@@ -281,6 +295,7 @@ Note: the score of one document is computed many times if you call {{cosine}} ag
           'The vector store returns incomplete results while the index is still building',
           'Chunk overlap destroys the context in the middle of the document',
         ],
+        answer: 1,
         explain: `It is a positional bias of the model on long context: information at the beginning or at the end of the prompt is used better than information in the middle. The practical consequence: stuffing 20 chunks both dilutes the signal and can drop the right chunk into the ignored region — so keep k small, put the best chunk first, and re-rank. The remaining options describe indexing or chunking faults, not the "lost in the middle" effect.`,
       },
     ],

@@ -5,135 +5,165 @@
 App.i18n.content({
   'kotlin-019': {
     q: 'In Spring Boot 3, Kotlin coroutines and Java Virtual Threads both promise "synchronous code, high throughput" — which one do you choose, and when?',
-    a: `**Summary:** Virtual Threads are a JVM mechanism (Java 21) for all JVM languages, suitable when you want to keep blocking Java code and scale threads; coroutines are a Kotlin language-level abstraction, suitable when the codebase is Kotlin and requires structured concurrency, cancellation, and Flow. In Spring Boot 3, both are supported; choose based on your stack and the need for cancellation/composition rather than just raw performance.
+    a: `**Summary:** In Spring Boot 3, both Java Virtual Threads (Virtual Thread, Java 21) and Kotlin coroutines promise to write synchronous-looking code while handling many tasks simultaneously. Virtual Thread is a JVM-level mechanism for all JVM languages, suitable when you want to keep blocking Java code and scale threads. Coroutines are a Kotlin language-level abstraction, suitable when the codebase is Kotlin and requires structured concurrency, cancellation, and asynchronous call composition. Choose based on stack and needs, not just raw performance.
 
-### 1. What level do the two concepts operate at?
-- Virtual Threads (JEP 444): Genuine JVM threads that are as lightweight as coroutines, mounting and unmounting onto carrier threads. Code remains standard blocking I/O ({{Thread.sleep}}, {{InputStream.read}}).
-- Coroutines: Suspend functions where the compiler generates a state machine that avoids blocking threads; they require the {{kotlinx-coroutines}} runtime.
+### 1. Two different concepts
+- Virtual Thread (JEP 444): Real JVM threads but as cheap as coroutines, mounting and unmounting from carrier threads. Code remains standard blocking I/O like Thread.sleep, InputStream.read. You don't need to change how you write code, just configure JVM/Spring.
+- Coroutine: Suspend functions where the compiler generates a state machine, not occupying a thread while waiting; requires kotlinx-coroutines runtime. You write code that looks synchronous but actually suspends at each waiting point.
 
 ### 2. When to choose Virtual Threads
-- The codebase is primarily Java or Kotlin but calls blocking APIs (JDBC, RestTemplate).
-- You want to quickly enable them using {{spring.threads.virtual.enabled=true}} without significant code changes.
-- You need compatibility with libraries that only offer blocking APIs.
+- Codebase is primarily Java, or Kotlin but calling blocking APIs like JDBC, RestTemplate, or old libraries that only have blocking APIs.
+- Want to enable quickly with spring.threads.virtual.enabled=true without changing code.
+- Need compatibility with observability tools, agents, or profilers that run on standard JVM threads.
 
 ### 3. When to choose coroutines
-- In a Kotlin codebase where you want to leverage {{suspend}}, {{Flow}}, structured concurrency, and automatic cancellation.
-- You need to compose multiple asynchronous calls (async/await) and propagate cancellation efficiently.
-- You require Reactor integration (coroutines provide a bridge to Reactor).
+- Kotlin codebase, wanting suspend, Flow, structured concurrency, and automatic cancellation when the request is cancelled.
+- Need to compose multiple asynchronous calls (async/await) and propagate cancellation to child calls.
+- Need to connect to Reactor (coroutines have a bridge to Reactor via kotlinx-coroutines-reactor).
 
 ### 4. Trade-off table
-| Criterion | Virtual Threads | Coroutines |
+| Criterion | Virtual Thread | Coroutine |
 |---|---|---|
-| Language | Java/Kotlin | Kotlin |
+| Language | Java and Kotlin | Kotlin |
 | Code style | blocking | suspend |
-| Cancellation | manual | structured |
+| Cancellation | manual | structured automatic |
 | Async composition | CompletableFuture | async/await, Flow |
-| Libraries | blocking OK | need to be suspend-aware |
+| Libraries | blocking OK | need suspend-aware APIs |
 
-### 5. Pitfalls
-- Virtual Threads + {{synchronized}} blocks pinning the carrier thread → loss of benefits; use {{ReentrantLock}} instead.
-- Coroutines + blocking calls → blocks the thread pool; use {{withContext(Dispatchers.IO)}}.
-- Mixing both in the same request → makes debugging context difficult.
+### 5. Example Spring Boot 3
+~~~kotlin
+@GetMapping("/orders/{id}")
+suspend fun get(@PathVariable id: Long): OrderDto =
+    withContext(Dispatchers.IO) {
+        service.load(id)
+    }
+~~~
+{{withContext(Dispatchers.IO)}} only wraps the blocking part of database access, not blocking the entire processing thread. With Virtual Threads, you don't need {{withContext}}, but you are still limited by the database connection pool.
 
-> Senior tip: Start with Virtual Threads if the team still uses Java; move to coroutines when you need cancellation/composition and already have a Kotlin foundation. Measure p99 and the actual number of threads before making a final decision.`,
-    follow: ['How do you measure Virtual Thread pinning?', 'How does {{withContext(Dispatchers.IO)}} differ from Virtual Threads in terms of resource usage?', 'When is it not worth migrating to coroutines?']
+### 6. Common pitfalls
+- Virtual Thread combined with synchronized can pin the carrier thread, losing benefits; use ReentrantLock instead of synchronized when needed.
+- Coroutine calling blocking code directly will occupy the dispatcher thread; use withContext(Dispatchers.IO) for blocking parts.
+- Mixing both in the same request makes context difficult to track and debug.
+- Virtual Thread does not make the database faster; connection pools and downstream limits are still bottlenecks.
+
+> Senior tip: Start with Virtual Threads if the team still writes a lot of Java; switch to coroutines when you need cancellation, asynchronous composition, and the codebase already uses Kotlin. Measure p99 and actual thread count before deciding, not just based on single benchmark numbers.`,
+    follow: ['How do you measure Virtual Thread pinning?', 'How does withContext(Dispatchers.IO) differ from Virtual Threads in terms of resources?', 'When is it not worth migrating to coroutines?']
   },
   'kotlin-020': {
-    q: 'Structured concurrency and cancellation in Kotlin coroutines: How do {{coroutineScope}} and {{supervisorScope}} differ, and why is cancellation cooperative?',
-    a: `**Summary:** Structured concurrency ensures that child coroutines do not "leak" — the parent waits for all children to finish and cancels them if the parent itself is cancelled. {{coroutineScope}} cancels all children if any child fails; {{supervisorScope}} allows children to fail independently. Cancellation is cooperative: code must check {{isActive}} or call a suspend function to stop.
+    q: 'Structured concurrency and cancellation in Kotlin coroutines: How do coroutineScope and supervisorScope differ, and why is cancellation cooperative?',
+    a: `**Summary:** Structured concurrency (concurrent with structure — all child coroutines are attached to a parent scope with a clear lifecycle) ensures that child coroutines never leak: the parent waits for the children, and a child error cancels the entire group (except in supervisorScope). {{coroutineScope}} cancels all branches when one child fails; {{supervisorScope}} allows a failing child to operate independently. Cancellation is cooperative: coroutines only stop when they check {{isActive}} or call a suspend function, so setting a cancellation flag is not enough.
 
 ### 1. The problem of "leaking" coroutines
-If you launch a coroutine without attaching it to a scope, it continues to run even after the request is finished → this leads to resource leaks and makes debugging difficult.
+If you launch a coroutine without attaching it to a scope with a clear lifecycle, it continues to run even after the request is finished → resource leaks, hard to debug. Every coroutine must belong to a scope; the parent waits for all children, and cancelling the parent cancels the entire subtree below it.
 
-### 2. How structured concurrency helps
-Every coroutine belongs to a scope; the parent scope waits for all its children. Cancelling the parent scope automatically cancels the entire subtree of coroutines.
+### 2. coroutineScope vs supervisorScope
+- {{coroutineScope}}: If one child throws an exception, it cancels all other children and propagates the exception to the parent. Suitable when all branches must succeed, e.g., aggregating data from multiple services.
+- {{supervisorScope}}: Error in one child does not affect siblings; the error propagates only through the child's Job. Suitable when one failing component should not ruin the entire page, e.g., dashboard with many independent widgets.
 
-### 3. coroutineScope vs supervisorScope
-- {{coroutineScope}}: If one child throws an exception, it cancels all other children and propagates the exception to the parent.
-- {{supervisorScope}}: A failure in one child does not affect its siblings; the exception propagates only through that child's Job.
+### 3. Cancellation is cooperative
+Calling {{job.cancel()}} only sets a "cancelled" flag; the coroutine only stops at the next suspension point or when it checks {{isActive}}. Heavy CPU-bound loops must call {{ensureActive()}} or {{yield()}}. Do not catch {{CancellationException}} and return normal results; that breaks structured concurrency and causes cancelled requests to continue writing data.
 
-### 4. Cooperative cancellation
-- Calling {{job.cancel()}} only sets a "cancelled" flag; the coroutine only actually stops when it reaches a suspension point or manually checks {{isActive}}.
-- CPU-heavy code must manually check the status using {{ensureActive()}} or {{yield()}}.
+### 4. Common pitfalls
+- Ignoring {{CancellationException}} → coroutine does not stop.
+- Using {{GlobalScope}} → loses structured concurrency.
+- Blocking calls directly in coroutine → does not respond to cancellation.
 
-### 5. Example
-~~~kotlin
-suspend fun fetchAll() = coroutineScope {
-    val a = async { fetchA() }
-    val b = async { fetchB() }
-    a.await() + b.await()  // if a fails, b is automatically cancelled
-}
-~~~
-
-### 6. Pitfalls
-- Swallowing {{CancellationException}} → prevents the coroutine from stopping correctly.
-- Using {{GlobalScope}} → breaks structured concurrency and leads to unmanaged coroutines.
-- Making blocking calls within a coroutine → the coroutine won't respond to cancellation requests.
-
-> Senior tip: Treat cancellation as a contract: every suspend function should respond to cancellation; test your code by cancelling the Job and asserting that resources are cleaned up properly.`,
-    follow: ['Where should {{ensureActive()}} be placed in a CPU-heavy loop?', 'Should {{CancellationException}} be caught?', 'How do you propagate cancellation to blocking I/O?']
+> Senior tip: Treat cancellation as a contract — every suspend function should respond to cancellation; test by cancelling the Job and verify resources are cleaned up.`,
+    follow: ['Where to place ensureActive() in a CPU-heavy loop?', 'Should CancellationException be caught?', 'How to propagate cancellation to blocking I/O?']
   },
   'kotlin-021': {
     q: 'Null safety when calling Java code from Kotlin: What is a platform type, and why can NPEs still occur?',
-    a: `**Summary:** When calling Java from Kotlin, Java return types that lack nullability annotations become platform types ({{T!}}). Kotlin doesn't know if they are null or non-null, so the compiler doesn't enforce null checks. NullPointerExceptions (NPEs) can still occur if Java returns null and Kotlin code dereferences it without a check.
+    a: `**Summary:** Platform type is how Kotlin handles Java types lacking nullability info, e.g., {{String!}}; the compiler doesn't know null or non-null so it doesn't enforce checks. If Java returns null and Kotlin references, NPE occurs at runtime. I handle this by treating every value from Java as nullable at the boundary, adding nullability annotations to Java code, and using {{requireNotNull}} or the safe operator {{?.}} to convert to a clear Kotlin type. I avoid {{!!}} unless the invariant is proven and the error must fail fast.
 
-### 1. Platform type
+### 1. What is platform type
 - A Java method like {{String getName()}} appears in Kotlin as {{String!}} (with an exclamation mark).
-- The compiler allows calling both nullable and non-null methods on it without warnings or errors.
-- Annotations like {{@Nullable}} or {{@NotNull}} (from JSR-305, JetBrains, etc.) help Kotlin determine the exact nullability.
+- Compiler doesn't know nullability, so it doesn't enforce checks.
+- Annotations like {{@Nullable}} or {{@NotNull}} help, but support depends on compiler configuration (e.g., {{-Xjsr305}}) and version; JSpecify (org.jspecify.annotations) is a newer standard — check your project.
 
 ### 2. Why NPEs still occur
-- Java code might return null unexpectedly (e.g., from a {{Map.get}} call).
-- Kotlin code assumes the value is non-null and calls a method on it → resulting in an NPE at runtime.
-- Java generics like {{List<String>}} can still contain null elements.
+- Java code returns null unexpectedly, e.g., {{Map.get}} returns null.
+- Kotlin trusts it's non-null and calls a method → NPE at runtime.
+- Java generics like {{List<String>}} can contain null elements without type-use annotations.
 
 ### 3. Prevention methods
-- Add nullability annotations to your Java code (Spring widely uses {{@Nullable}}).
-- At the Kotlin boundary, treat platform types as nullable by default and perform explicit checks.
-- Use {{Objects.requireNonNull}} in Java or {{requireNotNull}} in Kotlin at the interaction boundary.
+- Add nullability annotations to Java code (Spring widely uses {{Nullable}}/{{NotNull}}).
+- Treat all Java values as nullable at the boundary and perform checks.
+- Use {{Objects.requireNonNull}} or {{requireNotNull}} at the interaction boundary to fail fast.
 
-### 4. Example
+Example:
 ~~~kotlin
-val name: String? = javaObj.name  // Safe conversion to nullable
-val upper = name?.uppercase()     // Standard null-safe call
+val name: String? = javaObj.name // safe, treat as nullable
+val upper = name?.uppercase() // safe call
+val required = requireNotNull(javaObj.name) // fails fast with clear message
 ~~~
 
-### 5. Pitfalls
-- Force-casting a platform type to non-null using {{!!}} → leads to an NPE if Java actually returns null.
-- Collections received from Java can be mutated or contain null elements unexpectedly.
-- Annotations are sometimes not propagated correctly through reflection or complex generics.
+### 4. Things to avoid
+- Force-casting a platform type to non-null with {{!!}} → NPE if Java returns null.
+- Java collections can be mutated or contain null elements.
+- Annotations not propagated through reflection/complex generics.
+- Don't let platform types spread deep into domain logic; convert immediately at the adapter level.
 
-> Senior tip: Treat every value coming from Java as nullable until an explicit annotation proves otherwise; write an adapter layer to convert external Java types into clear, safe Kotlin types.`,
-    follow: ['Are JSR-305 annotations honored by Kotlin by default?', 'How do you enforce nullability at the Java boundary?', '{{Map.get}} in Java returns a platform type; how should it be handled?']
+### 5. Sample interview answer
+"Platform type is how Kotlin handles Java types lacking nullability info, e.g., String!; compiler doesn't know null or not-null so it doesn't enforce checks. If Java returns null and Kotlin references, NPE occurs at runtime. I handle this by treating every value from Java as nullable at the boundary, adding nullability annotations to Java code, and using {{requireNotNull}} or safe operator {{?.}} to convert to clear Kotlin type. I avoid {{!!}} unless the invariant is proven and error must fail fast."
+
+> Senior tip: Treat every value from Java as nullable until an annotation proves otherwise; write an adapter layer at the boundary to convert to clear, safe Kotlin types, log with request identifier but without logging sensitive data.`,
+    follow: ['JSR-305 annotation honored by Kotlin by default?', 'How to enforce nullability at Java boundary?', 'Map.get in Java returns platform type, how to handle?']
   },
   'kotlin-022': {
-    q: 'Kotlin {{data class}} vs. Java {{record}} in JPA/Hibernate: Which one should you choose, and why should entities typically not be data classes?',
-    a: `**Summary:** Kotlin data classes generate {{equals}}, {{hashCode}}, {{toString}}, and {{copy}} based on all properties; Java records are similar but immutable. JPA entities require mutability, identity based on an id, and proxying support, making neither ideal as a default entity type. Use standard classes with {{var}} and define {{equals}} based on the id. Data classes and records are better suited for DTOs and value objects.
+    q: 'Kotlin data class vs. Java record in JPA/Hibernate: Which one should you choose, and why should entities typically not be data classes?',
+    a: `**Summary:** Kotlin data classes generate {{equals}}, {{hashCode}}, {{toString}}, and {{copy}} based on all properties in the primary constructor; Java records are similar but immutable. JPA entities need mutability, identity based on an id, and support for proxying, making neither ideal as a default entity type. Use a standard class with {{var}} and equals based on id (or default identity). Data classes and records are better suited for DTOs, values, and read models.
 
 ### 1. Kotlin data class
-- Generates constructors, getters, setters (if {{var}}), {{equals}}, {{hashCode}}, {{toString}}, and {{copy}}.
-- The generated {{equals}} and {{hashCode}} use all properties → this causes issues with lazy associations and Hibernate proxies.
+- Generates constructors, getters, setters (if {{var}}), {{equals}}, {{hashCode}}, {{toString}}, {{copy}}.
+- {{equals}}/{{hashCode}} use all properties → issue with lazy associations and proxies.
+- {{copy()}} is a shallow copy: mutable objects inside still share references.
 
 ### 2. Java record
-- Immutable by design, with component accessors, {{equals}}, {{hashCode}}, and {{toString}}.
-- Lacks setters → cannot be easily hydrated by JPA (which typically requires a no-arg constructor and setters or direct field access).
+- Immutable by design, accessor named as components (no default JavaBean getters), record is final.
+- No setter, so Hibernate is hard to initialize (needs no-arg constructor and field access); not suitable for entity.
 
 ### 3. Why entities should not be data classes
-- **Lazy loading:** Using generated {{equals}}/{{hashCode}} might touch lazy associations → leading to N+1 query problems or {{LazyInitializationException}}.
-- **Proxies:** Hibernate creates proxy subclasses. Since data classes are final by default, proxies cannot subclass them (unless using the all-open plugin).
-- **Identity:** Entity identity should be based on its id, not its entire state which might change.
+- Lazy loading: {{equals}}/{{hashCode}} touches associations → N+1 or {{LazyInitializationException}}.
+- Proxies: Hibernate creates a proxy subclass for lazy loading. Final class cannot be subclassed (needs open or all-open plugin).
+- Identity: Entity identified by id, not entire state; two new entities with null id might be considered equal if based on other fields.
+- Mutable collections in data class easily cause aliasing bugs.
 
-### 4. Selection guide
-- **Entity:** Use a standard class, marked as {{open}} (or via the all-open plugin), with {{equals}}/{{hashCode}} based on the primary key (id).
-- **DTO/Read Model:** Use a {{data class}} or {{record}} for immutable value semantics.
+### 4. Safe implementation
+~~~kotlin
+@Entity
+open class Order protected constructor() {
+    @Id
+    var id: UUID? = null
 
-### 5. Pitfalls
-- Data classes with mutable collections → can lead to difficult-to-track aliasing bugs.
-- Using a {{record}} as a JPA entity → results in a missing no-arg constructor error at runtime.
-- Calling {{copy()}} on a managed entity → creates a detached instance with the same id, causing confusion during merge operations.
+    lateinit var code: String
 
-> Senior tip: Follow this convention: entity = mutable class with identity-based id; DTO = immutable data class or record. Always check the {{equals}} and {{hashCode}} implementation of your entities during code reviews.`,
-    follow: ['What is the problem with defining {{equals}}/{{hashCode}} based on an id before the entity is persisted?', 'How do you configure the all-open plugin?', 'When should Hibernate\'s {{@Immutable}} annotation be used?']
+    constructor(code: String) : this() {
+        this.code = code
+        this.id = UUID.randomUUID()
+    }
+
+    override fun equals(other: Any?): Boolean =
+        this === other || (other is Order && code == other.code)
+
+    override fun hashCode(): Int = code.hashCode()
+
+    override fun toString(): String = "Order(code=$code)"
+}
+~~~
+- Business key must be immutable, unique, business-relevant.
+- Do not put collections, lazy associations, audit timestamps, or changing fields into {{equals}}/{{hashCode}}.
+- Proxy is a subclass, so {{other is Order}} is correct, but {{javaClass == other.javaClass}} is wrong. Read values through getter to initialize proxy; use {{Hibernate.getClass(other)}}.
+- For app-assigned id, Spring Data calls merge; use {{Persistable}} with {{isNew}} flag if wanting save to use persist.
+
+### 5. Selection
+- Entity: standard class, open (or all-open plugin), equals/hashCode by id or default identity.
+- DTO/read model: data class or record (immutable, value semantics).
+
+### 6. Sample interview answer
+"I don't use data class as JPA entity because automatically generated equals/hashCode uses all properties, including null-id and lazy associations — this changes the hash after persist, breaks HashSet/HashMap and can trigger unwanted queries. Java record isn't suitable either because it's immutable and lacks setters that JPA needs. I use open class, equals/hashCode based on business key or id, and keep data class/record only for DTO and read model."
+
+> Senior tip: convention = entity is a mutable class identified by id; DTO is an immutable data class/record. Code review should check entity's equals/hashCode and test adding entity to HashSet then verify contains after persist.`,
+    follow: ['What is the problem with defining equals/hashCode based on an id before the entity is persisted?', 'How do you configure the all-open plugin?', 'When should Hibernate\'s @Immutable annotation be used?']
   },
   'kotlin-023': {
     q: 'Kotlin extension functions: How do they work, and what are the risks of abusing them in a large codebase?',
@@ -142,31 +172,39 @@ val upper = name?.uppercase()     // Standard null-safe call
 ### 1. Mechanism
 - {{fun String.isEmail(): Boolean}} compiles down to {{fun isEmail($receiver: String): Boolean}}.
 - Calling {{s.isEmail()}} is effectively {{isEmail(s)}}.
-- Resolution is static at compile time, meaning it is not polymorphic based on the runtime type.
+- Resolution is static at compile time, meaning it is not polymorphic based on the runtime type. If a subclass has a member with the same name, the member is always prioritized.
 
 ### 2. Benefits
 - Add methods to classes you don't own (like {{String}} or {{List}}) without needing inheritance.
-- Perfect for creating DSL builders and fluent, builder-style APIs.
-- Supports extension properties (using getters and setters).
+- Perfect for creating DSL builders and fluent APIs.
+- Supports extension properties.
 
 ### 3. Risks of abuse
-- **Overload resolution:** It can be hard to distinguish between an extension and a member function, or between multiple extensions.
-- **Action at a distance:** Methods can suddenly appear on types based on an import anywhere in the file.
-- **Naming conflicts:** Generic names (like {{toDto}}) used in multiple modules can cause conflicts.
-- **Discoverability:** IDEs might not suggest the extension if the necessary import isn't already present.
+- **Overload resolution:** Hard to distinguish between extension and member, or between multiple extensions.
+- **Action at a distance:** Methods appear on types based on an import anywhere in the file.
+- **Naming conflicts:** Generic names (like {{toDto}}) in multiple modules can cause conflicts.
+- **Discoverability:** IDEs might not suggest the extension if the import isn't present.
 
 ### 4. Best practice conventions
 - Extensions should ideally be pure functions without side effects.
-- Organize them in clearly named files, within packages that follow the domain logic.
-- Avoid writing extensions for overly general types (like {{Any}} or {{List<Any>}}).
-- Prefer member functions if you actually own and control the class.
+- Organize them in clearly named files, within packages that follow domain logic.
+- Avoid extensions for overly general types like {{Any}} or {{List<Any>}}.
+- Prefer member functions if you own and control the class.
 
-### 5. Pitfalls
-- Extensions cannot be overridden → this can lead to unexpected behavior when dealing with subclasses.
-- Extension properties do not have backing fields, limiting their use for state storage.
-- Java callers see extensions as static helpers, not as methods on the object.
+### 5. Java interop
+- Java sees extensions as static helpers in a generated facade class (default name from file name, e.g., StringExtKt). Use {{@file:JvmName}} to stabilize, {{@JvmName}} for signature conflicts.
 
-> Senior tip: Extensions are an ergonomic tool, not a core OOP mechanism. During review, consider if a clearer member function or a dedicated utility class would be more maintainable.`,
+### 6. Example
+A team put fun String.toDto() in a common module. Two months later, a new Java library added getDto(), and another module also defined toDto(). Code compiled but called the wrong function, causing wrong data in financial reports. Solution: rename to toOrderDto(), toInvoiceDto(), place in separate packages and use {{@file:JvmName("OrderDtoExt")}} for Java caller stability.
+
+### 7. Pitfalls
+- Extensions cannot be overridden → unexpected behavior with subclasses.
+- Extension properties do not have backing fields.
+
+### 8. Sample interview answer
+"Extension function lets me add helper methods to a type without inheritance; compiler compiles it to a static function receiving the object as the first parameter. It's not truly polymorphic and doesn't access private members. I only use extensions for pure helpers like formatting or mapping, no side effects like DB/HTTP calls, because those need to be injected and mocked. If an extension needs mocking, transactions, or configuration, it's not an extension — turn it into a bean."
+
+> Senior tip: Extensions are ergonomic, not a core OOP mechanism. During review, consider if a clearer member function or a dedicated utility class would be more maintainable.`,
     follow: ['What is the priority order between an extension function and a member function?', 'How do you organize extensions in a multi-module project?', 'Can an extension function access private members?']
   },
   'kotlin-024': {
@@ -174,30 +212,31 @@ val upper = name?.uppercase()     // Standard null-safe call
     a: `**Summary:** Kotlin classes and methods are final by default, but Spring requires subclass proxies for features like AOP, {{@Transactional}}, and {{@Async}}. JPA also needs subclass proxies and a no-arg constructor. The {{kotlin-spring}} (all-open) plugin opens classes with Spring annotations, while the {{no-arg}} plugin generates empty constructors for entities. The Jackson Kotlin module handles data classes and nullability correctly.
 
 ### 1. The "final" challenge
-- Spring AOP creates proxy subclasses → if the class is final, CGLIB proxying fails.
+- Spring AOP creates proxy subclasses → if the class is final, CGLIB proxying fails, {{Transactional}} doesn't work, no rollback.
 - JPA/Hibernate also create proxy subclasses and thus require classes to be open.
 - {{@Configuration}} classes must be open (or you must set {{proxyBeanMethods=false}}).
 
 ### 2. kotlin-spring / all-open
 - This plugin automatically opens classes and methods annotated with {{@Component}}, {{@Transactional}}, {{@Async}}, {{@Cacheable}}, etc.
 - In Gradle: {{id("org.jetbrains.kotlin.plugin.spring")}}.
-- You can also manually configure it to open custom annotations.
+- Manually configure to open custom annotations if needed.
 
 ### 3. no-arg plugin
-- Generates an empty constructor for classes annotated with {{@Entity}}, {{@Embeddable}}, or {{@MappedSuperclass}}.
-- This is required for JPA to instantiate entity objects via reflection.
+- Generates an empty constructor for classes annotated with {{@Entity}}, {{@Embeddable}}, or {{@MappedSuperclass}}, required for JPA to instantiate entity objects via reflection.
+- Default generated constructor doesn't run property initializers/{{init}}; Hibernate assigns fields from ResultSet later.
 
 ### 4. Jackson module
 - The {{jackson-module-kotlin}} provides support for constructors, data classes, default values, and Kotlin's nullability.
-- Register it via {{ObjectMapper.registerModule(KotlinModule())}} (Spring Boot does this automatically if the dependency is present).
+- Register via {{ObjectMapper.registerModule(KotlinModule())}} (Spring Boot does this automatically if on classpath).
+- Use {{@field:NotBlank}}/{{@field:Min}} because Bean Validation defaultly reads fields/getters, not constructor params.
 
 ### 5. Common errors
-- **Forgetting the plugin:** {{@Transactional}} won't work (no proxy is created) → resulting in no transaction rollback.
-- **Final entities:** Hibernate proxy creation fails, often silently falling back to eager loading or causing errors.
-- **Deserialization issues:** Jackson failing to deserialize a data class because the Kotlin module is missing.
+- **Forgetting the plugin:** {{@Transactional}} doesn't work (no proxy) → no transaction rollback.
+- **Final entities:** Hibernate proxy creation fails, often silently failing or causing lazy loading errors.
+- **Deserialization issues:** Jackson failing because the Kotlin module is missing.
 - **Initialization order:** Issues combining {{lateinit}} with constructor injection.
 
-### 6. Gradle Example
+### 6. Example Gradle
 ~~~kotlin
 plugins {
   kotlin("jvm")
@@ -207,42 +246,47 @@ plugins {
 }
 ~~~
 
-> Senior tip: Maintain a build plugin checklist in your CI pipeline: verify that {{@Transactional}} rollbacks work with a test; ensure that entities load lazily; and verify JSON round-trip serialization for all DTOs.`,
+> Senior tip: Maintain a build plugin checklist in your CI: verify {{@Transactional}} rollbacks work with a test; ensure entities load lazily; and verify JSON round-trip serialization for all DTOs.`,
     follow: ['When should {{proxyBeanMethods=false}} be used?', '{{lateinit}} vs. constructor injection: which is preferred?', 'Can KSP be used instead of kapt in a Spring environment?']
   },
   'kotlin-025': {
     q: 'Kotlin {{Flow}} vs. Project Reactor ({{Mono}}/{{Flux}}): What are the differences regarding cold/hot streams, backpressure, and when to choose which in Spring WebFlux?',
-    a: `**Summary:** {{Flow}} is a Kotlin-native cold stream based on coroutines, where backpressure is handled naturally via suspension. Reactor is a Java-based reactive library that supports both cold and hot streams, using an explicit {{request(n)}} mechanism for backpressure. In Spring WebFlux (which is Reactor-based), use Reactor at the web boundary and bridge to {{Flow}} for your internal Kotlin logic using {{kotlinx-coroutines-reactor}}.
+    a: `**Summary:** {{Flow}} is a Kotlin-native cold stream based on coroutines, where backpressure is handled naturally via suspension. Reactor (Mono/Flux) is a Java-based reactive library that supports both cold and hot streams, using an explicit {{request(n)}} mechanism for backpressure. In Spring WebFlux (Reactor-based), use Reactor at the web boundary and bridge to {{Flow}} for internal Kotlin logic using {{kotlinx-coroutines-reactor}}.
 
 ### 1. Cold vs. Hot
-- **Flow:** Primarily cold — every {{collect}} call restarts the producer logic.
-- **SharedFlow/StateFlow:** Hot streams for broadcasting; {{StateFlow}} replays the latest value.
-- **Mono/Flux:** Cold by default, but can be made hot via {{Sinks}} or Processors.
+- **Flow:** Primarily cold — every {{collect}} call restarts the producer logic. {{collect}} is a suspend function, so producer is automatically suspended when the consumer is slow (backpressure via suspension).
+- **SharedFlow/StateFlow:** Hot — broadcast to many; {{StateFlow}} replays the latest value (like a conflated hot stream).
+- **Mono/Flux:** Cold default, hot via Sinks.
 
 ### 2. Backpressure
-- **Flow:** Natural and simple — the {{collect}} call suspends, and the producer suspends when the buffer is full.
-- **Reactor:** Uses explicit demand signaling ({{request(n)}}) from the subscriber.
+- **Flow:** Natural — {{collect}} is a suspend function, so the producer waits when the consumer is slow (with buffer). Use {{buffer}}, {{conflate}}, {{collectLatest}} to control. An infinite buffer only masks symptoms and can lead to OOM.
+- **Reactor:** Explicit demand — subscriber requests n; operators like {{limitRate}}, {{flatMap}} with concurrency need explicit configuration to control downstream speed.
 
 ### 3. Composition
-- **Flow:** Uses suspend operators like {{map}}, {{filter}}, and {{flatMapMerge}}, following structured concurrency.
-- **Reactor:** Uses a chain of operators and dedicated {{Scheduler}} objects.
+- **Flow:** Operators are suspend functions (map, filter, flatMapMerge), following structured concurrency.
+- **Reactor:** Chain of operators and dedicated {{Scheduler}}.
 
-### 4. Integration in Spring WebFlux
-- Controllers typically return {{Mono}} or {{Flux}} (Reactor) for Spring's internal handling.
-- Internal Kotlin logic can return a {{Flow}}, which is converted using {{flow.asFlux()}}.
-- Bridge the context using {{Dispatchers.Reactor}} where necessary.
+### 4. Integration in WebFlux
+- Controllers return {{Mono}} or {{Flux}} (Reactor) for Spring's internal handling.
+- Internal Kotlin logic can return {{Flow}}, converted using {{flow.asFlux()}}.
+- Bridge context using {{Dispatchers.Reactor}}. MDC, security, tenant need custom handling to propagate through threads.
 
 ### 5. When to choose which
-- **Kotlin + Coroutine stack:** Use {{Flow}} for domain logic and Reactor at the web interaction boundary.
-- **Java/Reactor stack:** Stick with Reactor end-to-end.
-- **Reactor Ecosystem:** If you need deep integration with things like {{WebClient}} or R2DBC, Reactor is often more straightforward.
+| Context | Choice |
+|---|---|
+| WebFlux + R2DBC + WebClient | Reactor |
+| Kotlin service, JDBC, suspend | Flow |
+| Need complex backpressure, hot streams | Reactor/Sinks |
 
-### 6. Pitfalls
-- **Missing subscribers:** A {{Flow}} without a collector won't run (it's cold) — a common mistake.
-- **Mixing dispatchers:** Can lead to context loss (like losing MDC or security info).
-- **Hot streams:** Creating hot streams without proper backpressure management can lead to OOM errors.
+Don't convert back and forth too much; choose a boundary (adapter) and keep one model throughout.
 
-> Senior tip: Define clear boundaries: use Reactor for the web layer and {{Flow}} for the domain layer, performing the conversion in the controller. Always measure memory usage and backpressure behavior with load tests.`,
+### 6. Common Pitfalls
+- Blocking in {{map}} of Flow or Reactor event loop → kills throughput.
+- {{GlobalScope}}/{{Sinks}} without lifecycle management → leaks.
+- Testing: {{runTest}} + Turbine for Flow; {{StepVerifier}} + {{reactor-test}} for Reactor.
+- Infinite Flow without cancellation will hang tests; always set a timeout.
+
+> Senior tip: Define clear boundaries: Reactor for web, {{Flow}} for domain, convert at controller. Measure memory and backpressure with load tests, not just response time.`,
     follow: ['Does {{asFlux()}} preserve the coroutine context?', '{{SharedFlow}} vs. {{Flux.share()}}: how do they compare?', 'When should {{StateFlow}} be used instead of manual caching?']
   },
   'kotlin-026': {
@@ -250,37 +294,37 @@ plugins {
     a: `**Summary:** Avoid "big-bang" rewrites. Base your decision on measurable business value, team skills, and framework compatibility. Use the "strangler" approach: write new modules in Kotlin, define clear interop boundaries, and track key metrics. Keep Java for high-performance hot paths or stable legacy code, and use Kotlin for new domains. Migration is a multi-quarter effort requiring a dedicated owner and a rollback plan.
 
 ### 1. When to migrate
-- The team is already experienced with Kotlin, and the project would benefit from null safety, coroutines, or custom DSLs.
-- You are starting a new domain with clear APIs and robust testing.
-- Your build infrastructure (Gradle, KSP) is ready to support both languages.
+- Team already experienced with Kotlin, and the project benefits from null safety, coroutines, or custom DSLs.
+- Starting a new domain with clear APIs and robust testing.
+- Build infrastructure (Gradle, KSP) is ready for both languages.
 
 ### 2. When to stay with Java
-- The team is Java-only and facing a tight production deadline.
-- You rely on legacy frameworks that do not have good Kotlin support.
-- Performance is absolutely critical and requires specialized Java tooling (profilers, agents) not yet optimized for Kotlin.
+- Team is Java-only, facing tight production deadlines.
+- Rely on legacy frameworks with poor Kotlin support.
+- Performance is absolutely critical and requires specialized Java tooling (profilers, agents) not optimized for Kotlin.
 
 ### 3. The Strangler strategy
 - Implement new modules in Kotlin while keeping existing ones in Java.
-- Maintain clear interop boundaries: use stable packages and avoid Kotlin-specific constructs in public APIs.
-- Convert files gradually when they need changes ("boy scout rule") rather than doing massive, non-functional rewrites.
+- Maintain clear interop boundaries: use stable packages, avoid Kotlin-specific constructs in public APIs.
+- Convert files gradually when they need changes ("boy scout rule") rather than massive non-functional rewrites.
 
 ### 4. Risks and Mitigation
-- **Build time increases:** Use KSP and build caching to mitigate the overhead of {{kapt}}.
+- **Build time increases:** Use KSP, build caching, to mitigate {{kapt}} overhead.
 - **Codebase complexity:** Establish strict conventions and use tools like {{ktlint}} or {{detekt}}.
-- **Onboarding:** Provide clear documentation and use pair programming to spread knowledge.
-- **Binary compatibility:** Be very careful with public API signatures.
+- **Onboarding:** Documentation, pair programming.
+- **Binary compatibility:** Be careful with public API signatures.
 
 ### 5. Metrics for success
-- Track lead time, defect escape rates, build durations, and p99 latency.
-- Conduct developer satisfaction surveys to gauge the impact on morale.
-- Ensure "rollback capability" — that modules can be reverted if necessary.
+- Lead time, defect escape rates, build durations, p99 latency.
+- Developer satisfaction surveys.
+- "Rollback capability" — revert modules if necessary.
 
 ### 6. Pitfalls
-- **Big-bang rewrites:** These often lead to regressions and destroy team morale.
-- **Kotlin "Java-style":** Writing Kotlin that looks like Java misses the actual benefits of the language.
-- **Annotation processing gaps:** Forgetting to configure plugins can lead to subtle runtime errors.
+- **Big-bang rewrites:** Regression risk, team morale.
+- **Kotlin "Java-style":** Missing benefits of the language.
+- **Annotation processing gaps:** Subtle runtime errors from bad configuration.
 
-> Senior tip: Select a bounded context with a very clear API, migrate it along with its tests and observability hooks, and compare its performance metrics against the baseline before scaling the migration further. Invest in build and interop conventions early to avoid friction.`,
-    follow: ['How do you select the first module for migration?', 'How do you measure the ROI of a language migration?', 'When is the right time to stop a migration?']
+> Senior tip: Select a bounded context with a very clear API, migrate it along with its tests and observability hooks, and compare performance metrics against the baseline before scaling. Invest in build and interop conventions early to avoid friction.`,
+    follow: ['How to select the first module for migration?', 'How to measure the ROI of a language migration?', 'When is the right time to stop a migration?']
   }
 });

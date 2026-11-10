@@ -1,69 +1,70 @@
 /*
  * English translation of js/data/lessons-jvm.js — task T457. Format: js/core/i18n.js (content overlay).
  * ids: lesson-jvm-003
+ * T1112: re-translated to match updated Vietnamese content.
  */
 App.i18n.content({
   'lesson-jvm-003': {
-    title: 'Class loading and static init: initialization order, the holder idiom and classloader traps',
+    title: 'Class loading and static init: initialization order, the holder idiom, and classloader traps',
     goals: [
-      'Name the loading, linking and initialization phases and what happens in each of them',
+      'Name the loading, linking, and initialization phases correctly and explain what happens in each phase',
       'Predict the order in which static fields and static blocks run when a class is triggered',
-      'Write a singleton with the holder idiom that is truly lazy, thread-safe, and explain why',
-      'Recognise {{ExceptionInInitializerError}} bugs, initialization deadlocks and classloader leaks',
+      'Write a singleton with the holder idiom that is truly lazy and thread-safe, and explain why',
+      'Recognise {{ExceptionInInitializerError}} bugs, initialization deadlocks, and classloader leaks',
     ],
     body: `### A class goes through three stages
-The first time a class is touched, the JVM does not "run code" right away. It goes through:
+The first time you touch a class (use it in a way that triggers it), the JVM does not "run code" right away. It goes through three stages:
 
-1. **Loading**: the classloader finds the bytecode (on disk, in a jar, over the network), reads it and defines the class: the class's internal metadata lives in Metaspace, while the {{java.lang.Class}} object that represents it (the thing you get from {{Foo.class}}) lives on the heap.
+1. **Loading**: the classloader (the component that finds and loads class bytecode) finds the bytecode (on disk, in a jar, over the network), reads it, and defines the class. The class's internal metadata lives in **Metaspace** (native memory for class metadata, separate from the Java heap). The {{java.lang.Class}} object that represents the class (the thing you get from {{Foo.class}}) lives on the **heap** (the main memory area where Java objects live).
 2. **Linking** has three parts:
-   - **Verification**: checks that the bytecode is valid and cannot corrupt the JVM (for example the stack does not overflow, types are correct).
-   - **Preparation**: allocates static fields and assigns **default values** (0, false, null); initializers have not run yet. The one exception is a static final constant variable (for example {{static final int MAX = 100}}): the compiler writes the value into the {{ConstantValue}} attribute of the class file, and the JVM assigns that value directly without running any initializer code.
-   - **Resolution**: replaces symbolic references with real references; this can be lazy and only happen when the reference is actually used.
+   - **Verification**: checks that the bytecode is valid and cannot corrupt the JVM (for example the operand stack does not overflow, types are correct).
+   - **Preparation**: allocates static fields and assigns **default values** (0, false, null). Initializers have not run yet. The exception is a **static final constant variable** (for example {{static final int MAX = 100}}): the compiler writes the value into the {{ConstantValue}} attribute of the class file, and the JVM assigns that value directly without running any initializer code.
+   - **Resolution**: replaces symbolic references (name-based references in bytecode) with real references; this can be lazy and happen only when the reference is actually used.
 3. **Initialization**: runs static field initializers and static blocks in order — this is when your code really runs.
 
-Only step 3 runs static blocks. Understanding this explains why reading a {{static final int}} constant does not trigger the class: it is a **constant variable**, inlined by the compiler at the use site.
+Only step 3 runs static blocks. Understanding this explains why reading a {{static final int}} constant does not trigger the class: it is a **constant variable**, inlined by the compiler at every use site (copied into the calling class), so the original class is not needed.
 
 ### When is a class initialized?
-The JVM initializes a class on **active use**:
+The JVM initializes a class on **active use** (a direct use that requires the class to be ready):
 - {{new}} an instance;
-- get or set a static field that is **not** a constant variable;
+- read or write a static field that is **not** a constant variable;
 - call a static method;
 - use reflection {{Class.forName("...")}} (initialize = true by default);
 - initialize a subclass (the superclass must finish first; a superclass interface is initialized along with it only if it declares default methods);
 - the class containing {{main}} when the JVM starts up.
 
-The following do not trigger initialization:
+These do **not** trigger initialization:
 - reading a constant variable whose value is known at compile time;
-- creating an array {{new Foo[10]}} (only the array is created, no Foo yet);
+- creating an array {{new Foo[10]}} (only the array is created, no Foo instance yet);
 - {{Foo.class}}, {{instanceof}}, a cast;
 - declaring a variable of type {{Foo}};
 - reading a static field or calling a static method through a subclass name when that field/method is declared in a superclass, for example {{Child.parentField}}: only the class that declares it (the superclass) is initialized, not the subclass.
 
 ### Order inside a class
-The rule is very short: **superclass first, then subclass; within each class, static fields and static blocks run in textual order, top to bottom**. There is no "fields before blocks" rule and no reverse one either — the compiler merges everything into a single {{<clinit>}} method in exactly the order it appears.
+The rule is very short: **superclass first, then subclass; within each class, static fields and static blocks run in textual order, top to bottom**. There is no "fields before blocks" rule and no reverse — the compiler merges everything into a single method called {{<clinit>}} (the class initializer) in exactly the order it appears in the source.
 
 ~~~java
 class Parent {
-    static int A = init("Parent.A");          // (1)
-    static { System.out.println("Parent.block"); }  // (2)
+    static int A = init("Parent.A");                // (1)
+    static { System.out.println("Parent.block"); } // (2)
     static int init(String s) { System.out.println(s); return 1; }
 }
 class Child extends Parent {
-    static int B = init("Child.B");           // (3) after Parent finishes
-    static { System.out.println("Child.block"); }   // (4)
+    static int B = init("Child.B");                 // (3) after Parent finishes
+    static { System.out.println("Child.block"); }  // (4)
 }
 // new Child() prints: Parent.A, Parent.block, Child.B, Child.block
 ~~~
 
-The subtle point: **the superclass is always initialized before the subclass**, even when the subclass has its own static fields. If the superclass throws during static init, the subclass is never initialized.
+The subtle point: **the superclass is always initialized before the subclass**, even when the subclass has its own static fields. If the superclass throws an exception during static init, the subclass is never initialized.
 
 ### Thread safety and initialization deadlocks
-The JVM uses a separate **initialization lock** per class. When several threads hit the first access at the same time, one thread runs {{<clinit>}} and the others block and wait. That is why the holder idiom needs no manual {{synchronized}} — the JVM already guarantees it.
+The JVM uses a separate **initialization lock** per class (an internal lock that serializes class initialization). When several threads hit the first access at the same time, one thread runs {{<clinit>}} and the others block and wait. That is why the holder idiom (see below) needs no manual {{synchronized}} — the JVM already guarantees it.
 
-But that same lock creates a deadlock if two classes initialize each other in a cycle: thread 1 holds A's lock and waits for B, thread 2 holds B's lock and waits for A. The bug is rare but very hard to debug: an initialization lock is not a regular monitor, so {{jstack}} usually does not print "Found one Java-level deadlock"; you only see two threads standing still inside the {{<clinit>}} of two classes that point at each other. The rule: **static initializers must be short, must not call services, must not open connections, must not wait for other threads**.
+But that same lock creates a **deadlock** (two threads waiting for each other forever) if two classes initialize each other in a cycle: thread 1 holds A's lock and waits for B, thread 2 holds B's lock and waits for A. The bug is rare but very hard to debug: an initialization lock is not a regular monitor (the lock used by {{synchronized}}), so {{jstack}} (a tool that prints thread stacks) usually does not print "Found one Java-level deadlock"; you only see two threads standing still inside the {{<clinit>}} of two classes that point at each other. The rule: **static initializers must be short, must not call services, must not open connections, must not wait for other threads**.
 
 ### Singleton: the holder idiom and the wrong ways
-The best approach in modern Java:
+A **singleton** is a class that has exactly one instance for the whole application. The best approach in modern Java:
 
 ~~~java
 final class AppConfig {
@@ -77,28 +78,28 @@ final class AppConfig {
 }
 ~~~
 
-Why it is **lazy**: {{Holder}} is initialized only when {{getInstance}} reads {{Holder.INSTANCE}}, not when {{AppConfig}} is loaded. Why it is **thread-safe**: the JVM guarantees that Holder's {{<clinit>}} runs exactly once under the lock.
+Why it is **lazy** (created only when needed): {{Holder}} is initialized only when {{getInstance}} reads {{Holder.INSTANCE}}, not when {{AppConfig}} is loaded. Why it is **thread-safe** (safe with many threads): the JVM guarantees that Holder's {{<clinit>}} runs exactly once under the initialization lock.
 
 Other approaches:
 - {{enum}} singleton: short, robust against reflection and serialization, but not lazy in the "created only when called" sense — the enum constant is created when the enum class initializes.
-- **Double-checked locking** is correct only when the field is {{volatile}}; without {{volatile}} a partially constructed object can be published because of reordering.
-- **Eager static final**: simple, but it initializes as soon as the class is loaded, which can drag I/O into application startup.
+- **Double-checked locking** (check the field twice, with a lock in between) is correct only when the field is {{volatile}} (a keyword that prevents certain reordering/caching issues); without {{volatile}} a partially constructed object can be published because of reordering.
+- **Eager static final**: simple, but it initializes as soon as the class is loaded, which can drag I/O (file/network work) into application startup.
 
 ### Classloader leak: the Metaspace killer
-Each classloader keeps its own class namespace. A class can be unloaded only when **its classloader** is no longer reachable. In server applications (Tomcat, OSGi, hot reload), if a static field of a class loaded by the webapp is still held by a thread, a JDBC driver, a ThreadLocal or a timer, the classloader cannot be unloaded. Every redeploy loads another copy of the classes, and Metaspace grows until {{OutOfMemoryError: Metaspace}}.
+Each classloader keeps its own class namespace. A class can be unloaded only when **its classloader** is no longer reachable from any GC root. In server applications (Tomcat, OSGi, hot reload — reloading code without restarting the whole server), if a static field of a class loaded by the webapp is still held by a thread, a JDBC driver (database driver), a ThreadLocal (per-thread storage), or a timer, the classloader cannot be unloaded. Every redeploy loads another copy of the classes, and Metaspace grows until {{OutOfMemoryError: Metaspace}}.
 
 How to prevent it: stop threads/timers properly on shutdown, call {{ThreadLocal.remove()}}, deregister drivers/listeners, and watch the number of loaded classes with {{jcmd <pid> VM.classloader_stats}} or {{jcmd <pid> GC.class_histogram}}.
 
-> A very common bug: a static initializer calls a service obtained from the Spring context. Class init runs too early, before the context is ready, causing {{ExceptionInInitializerError}}; afterwards every access to that class fails with {{NoClassDefFoundError}} even though the root cause was only logged the first time.
+> A very common bug: a static initializer calls a service obtained from the Spring context. Class init runs too early, before the context is ready, causing {{ExceptionInInitializerError}} (class init failed); afterwards every access to that class fails with {{NoClassDefFoundError}} (class definition not found) even though the root cause was only logged the first time.
 
 ### Interview relevance
-Interviewers often ask: "Why is the holder idiom lazy and still thread-safe?", "When does a static block run?", "When is a class unloaded?", "What is the difference between {{ExceptionInInitializerError}} and {{NoClassDefFoundError}}?". A confident answer covers **active use**, **textual order**, the **initialization lock** and the **classloader unload condition**. The two exercises below have you write the holder singleton and build the exact initialization order by hand.`,
+Interviewers often ask: "Why is the holder idiom lazy and still thread-safe?", "When does a static block run?", "When is a class unloaded?", "What is the difference between {{ExceptionInInitializerError}} and {{NoClassDefFoundError}}?". A confident answer covers **active use**, **textual order**, the **initialization lock**, and the **classloader unload condition**. The two exercises below have you write the holder singleton and build the exact initialization order by hand.`,
     exercises: [
       {
         title: 'A lazy singleton with the holder idiom',
         prompt: `Complete {{AppConfig}} using the **holder idiom**:
 
-- The constructor is **private** and increments the counter {{initCount}} every time it runs.
+- The constructor is **private**, and each time it runs it increments the counter {{initCount}}.
 - {{getInstance()}} returns the same single instance, created lazily on the first call.
 - The holder is a static nested class that is initialized only when {{getInstance()}} reads its field.
 - Do not use manual {{synchronized}}: the JVM already guarantees that class initialization runs only once.
@@ -109,15 +110,15 @@ The test checks: before any call, {{initCount}} is 0; calling many times still r
           '{{getInstance()}} only needs {{return Holder.INSTANCE;}} — the first time Holder is touched, the JVM initializes it under the initialization lock.',
           'The private constructor only increments {{initCount}}; do not initialize Holder inside the constructor or in a static field of AppConfig, because that would lose laziness.',
         ],
-        explain: `The holder idiom exploits the JVM's **lazy class initialization** semantics. The {{AppConfig}} class is initialized when {{initCount()}} or {{getInstance()}} is called, but {{Holder}} is initialized only when the instruction {{Holder.INSTANCE}} runs for the first time. At that point the JVM uses the initialization lock: one thread creates the instance, the other threads wait and then see the same instance. No {{volatile}}, no {{synchronized}}, and no cost on each call.
+        explain: `The holder idiom exploits the JVM's **lazy class initialization** semantics (rules). The {{AppConfig}} class is initialized when {{initCount()}} or {{getInstance()}} is called, but {{Holder}} is initialized only when the instruction {{Holder.INSTANCE}} runs for the first time. At that point the JVM uses the initialization lock: one thread creates the instance, the other threads wait and then see the same instance. No {{volatile}}, no {{synchronized}}, and no cost on each call.
 
-If you put {{static final AppConfig INSTANCE = new AppConfig();}} directly in {{AppConfig}}, the instance is created when the class initializes — eager, not lazy. If you use double-checked locking and forget {{volatile}}, another thread can see a non-null reference to an object that has not been fully published. An enum singleton solves reflection/serialization but is not lazy.
+If you put {{static final AppConfig INSTANCE = new AppConfig();}} directly in {{AppConfig}}, the instance is created when the class initializes — eager, not lazy. If you use double-checked locking and forget {{volatile}}, another thread can see a non-null reference to an object that has not been fully published (constructed and made visible). An enum singleton solves reflection/serialization but is not lazy.
 
 Production note: a singleton constructor should not do heavy I/O or call other services. If it throws, the first call gets {{ExceptionInInitializerError}}, later calls get {{NoClassDefFoundError}}, and the class is effectively broken forever in that classloader.`,
       },
       {
         title: 'Build the correct static initialization order yourself',
-        prompt: `Given three classes {{Parent}}, {{Child}} (extending {{Parent}}) and {{Solo}}. Write static field initializers and static blocks so that they log into {{OrderTrace}} in exactly this order:
+        prompt: `Given three classes {{Parent}}, {{Child}} (extending {{Parent}}), and {{Solo}}. Write static field initializers and static blocks so that they log into {{OrderTrace}} in exactly this order:
 
 - When {{Child.CHILD}} is read for the first time: {{Parent.field}}, {{Parent.block}}, {{Child.field}}, {{Child.block}}; {{Parent.PARENT}} returns 10 and {{Child.CHILD}} returns 20.
 - When {{Solo.VALUE}} is read for the first time: {{Solo.field}}, {{Solo.block}}; it returns 30.
@@ -148,7 +149,7 @@ In a real JVM, if {{<clinit>}} throws an exception, the class is marked as erron
           'Initializing a subclass of Foo',
         ],
         answer: 1,
-        explain: `If {{MAX}} is a constant variable (primitive or String, initialized with a constant), the compiler inlines the value at the use site and the class is not needed. {{new}}, calling a static method and initializing a subclass are all active uses, so they trigger init (a subclass pulls in its superclass).`,
+        explain: `If {{MAX}} is a constant variable (primitive or String, initialized with a constant expression), the compiler inlines the value at the use site and the class is not needed. {{new}}, calling a static method, and initializing a subclass are all active uses, so they trigger init (a subclass pulls in its superclass).`,
       },
       {
         q: 'When running {{new Child()}} for the first time, what is the correct static init order?',

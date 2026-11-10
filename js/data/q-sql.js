@@ -86,6 +86,12 @@ Ngoài ra, query này quét toàn bộ bảng nhân sự mỗi lần mở báo c
 ### Trả lời miệng 1 phút
 "Để lấy mức lương cao thứ hai mỗi phòng, tôi dùng window function DENSE_RANK, partition theo dept_id và order theo salary giảm dần. Vì window function được tính sau WHERE, tôi bọc nó trong một CTE rồi lọc hạng bằng 2 ở lớp ngoài. Tôi chọn DENSE_RANK vì nó xếp hạng theo giá trị: hai người cùng lương cao nhất cùng hạng 1, người kế tiếp là hạng 2. RANK sẽ nhảy từ 1 sang 3 nên có thể ra báo cáo rỗng, còn ROW_NUMBER chỉ phù hợp khi cần đúng N người và phải có tie-break. Tôi cũng loại lương NULL và đặt index (dept_id, salary) để tránh sort lớn. Thực tế tôi từng thấy báo cáo rỗng âm thầm vì dùng RANK, nên giờ tôi luôn test với dữ liệu trùng giá trị."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống chấm công - tính lương (PostgreSQL 15, bảng {{employee}} khoảng 12.000 dòng, 38 phòng ban) có trang "Mức lương bậc 2 theo phòng" dùng để gợi ý khung thưởng; sau kỳ điều chỉnh lương tháng 6, 7 phòng ban bỗng hiển thị "không có dữ liệu" dù mỗi phòng vẫn có 5-20 nhân viên. Không có lỗi 500, log ứng dụng bình thường.
+Điều tra: chạy lại câu SQL của trang báo cáo và thấy dùng {{RANK()}} với điều kiện {{rank = 2}}. Kiểm tra dữ liệu các phòng bị ảnh hưởng bằng {{SELECT dept_id, salary, RANK() OVER (PARTITION BY dept_id ORDER BY salary DESC) FROM employee WHERE dept_id IN (...)}}, phát hiện 2 người cùng mức lương cao nhất (cùng 42.000.000) nên hạng nhảy 1, 1, 3 – không tồn tại hạng 2. {{EXPLAIN (ANALYZE)}} của query gốc cho thấy Sort theo {{(dept_id, salary DESC)}} mất khoảng 18 ms và quét toàn bảng (Seq Scan) mỗi lần mở trang.
+Nguyên nhân gốc: chọn nhầm {{RANK}} trong khi nghiệp vụ hỏi "mức lương thứ 2" (theo giá trị), cộng thêm thiếu {{NULLS LAST}} khiến trên môi trường staging có dòng lương NULL bị đẩy lên hạng 1.
+Cách xử lý: đổi sang {{DENSE_RANK}}, thêm {{WHERE e.salary IS NOT NULL}} và {{NULLS LAST}}, tạo index {{CREATE INDEX idx_emp_dept_salary ON employee (dept_id, salary DESC)}}. Kết quả: 7 phòng hiển thị đúng 1-3 người ở mức lương bậc 2; thời gian query giảm còn khoảng 2-3 ms nhờ Index Scan, và nhóm QA thêm bộ dữ liệu có trùng lương vào test hồi quy.
+
 > Senior tip: khi phỏng vấn, hãy trả lời theo thứ tự: "Tôi dùng window function, lọc ở lớp ngoài vì WHERE không nhìn thấy kết quả của window function; DENSE_RANK vì nghiệp vụ hỏi theo **mức lương** chứ không phải theo **thứ tự người**". Việc phân biệt được DENSE_RANK với RANK là dấu hiệu bạn thực sự hiểu window function chứ không chỉ biết cú pháp. Trong dự án thật, hãy ưu tiên giải pháp đơn giản hơn: nếu bảng nhân sự chỉ vài nghìn dòng, một correlated subquery cũng đủ và dễ đọc hơn cho đồng nghiệp không rành SQL.`,
   follow: [
     'Vì sao {{RANK}} không bao giờ trả về hạng 2 khi hai người cùng lương cao nhất?',
@@ -184,6 +190,12 @@ Với PostgreSQL có thể xoá theo {{ctid}} (địa chỉ vật lý) để kh�
 
 ### Trả lời miệng 1 phút
 "Tôi xử lý trùng lặp theo hai phần: dọn dữ liệu hiện tại và chặn tái phát. Để dọn, tôi dùng ROW_NUMBER partition theo external_id, order theo id, nên mỗi nhóm trùng có bản rn bằng 1 là bản cũ nhất; tôi xoá các dòng rn lớn hơn 1. Trên PostgreSQL tôi dùng DELETE USING, trên MySQL phải bọc thêm một derived table để tránh lỗi 1093. Tôi luôn đếm trước, chạy trên staging, rồi xoá theo lô vài nghìn dòng mỗi transaction để không giữ lock lâu và không làm phình dead tuple hay undo. Quan trọng nhất, tôi thêm unique constraint trên external_id và đổi luồng import sang upsert, vì nếu không lần import sau sẽ lại trùng."
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống thanh toán nhập dữ liệu từ cổng đối tác (PostgreSQL 14, bảng {{transaction_import}} khoảng 6,8 triệu dòng) bị job import retry sau khi mạng chập chờn; ngày hôm sau đội đối soát báo 14.320 giao dịch có {{external_id}} trùng (khoảng 2,1‰), làm báo cáo doanh thu ngày tăng ảo 1,26 tỷ VND và một số hoá đơn bị ghi nhận hai lần.
+Điều tra: đếm nhóm trùng bằng {{SELECT external_id, count(*) c FROM transaction_import GROUP BY external_id HAVING count(*) > 1 ORDER BY c DESC LIMIT 20}} (khoảng 420 ms với index {{(external_id)}} tạm tạo để dò). Xem log worker thấy lỗi timeout rồi retry cùng payload nhưng cột {{external_id}} không có ràng buộc duy nhất. Chạy câu "Bước 1" đếm dòng sẽ xoá trên staging copy cho ra đúng 14.320.
+Nguyên nhân gốc: luồng import không idempotent và bảng thiếu unique constraint trên khóa nghiệp vụ {{external_id}}.
+Cách xử lý: sao lưu các dòng {{rn > 1}} sang bảng {{transaction_import_dup_backup}}, xoá theo lô 5.000 dòng mỗi transaction (mỗi lô khoảng 0,8-1,2 giây, không giữ lock lâu), sau đó chạy {{ALTER TABLE transaction_import ADD CONSTRAINT uk_txn_external_id UNIQUE (external_id)}} và đổi worker sang {{INSERT ... ON CONFLICT (external_id) DO NOTHING}}. Kết quả: còn 0 nhóm trùng, đối soát khớp số liệu đối tác, lần retry tiếp theo không tạo thêm bản ghi; autovacuum dọn dead tuple trong khoảng 15 phút sau đợt xoá.
 
 > Senior tip: câu hỏi "bạn sẽ xoá trùng thế nào?" thường là câu hỏi bẫy – interviewer muốn nghe bạn nói về **unique constraint + idempotent upsert**, chứ không phải về cú pháp DELETE. Câu trả lời mạnh là: "Tôi sẽ xoá bằng ROW_NUMBER để dọn dữ liệu hiện tại, nhưng cách sửa gốc là thêm unique constraint trên external_id và đổi luồng import sang upsert, vì nếu chỉ xoá thì lần import sau sẽ lại trùng". Đó là tư duy của kỹ sư 4–8 năm: xử lý nguyên nhân, không chỉ triệu chứng.`,
   follow: [
@@ -287,6 +299,12 @@ WHERE o.customer_id IS NULL;
 ### Trả lời miệng 1 phút
 "Để tìm khách chưa có giao dịch, tôi mặc định dùng NOT EXISTS. Đây là anti-join: với mỗi khách, DB chỉ cần biết có hay không một đơn khớp, nên dừng ở dòng đầu và tận dụng index trên customer_id. NOT IN thì nguy hiểm vì logic ba giá trị: chỉ cần subquery trả về một NULL, phép so sánh với NULL ra UNKNOWN và cả câu trả về rỗng, mà không có lỗi nào. Trên PostgreSQL NOT IN còn không được chuyển thành anti-join nên dễ chậm. LEFT JOIN IS NULL cho cùng kết quả nhưng dễ nhân dòng khi join nhiều bảng con, và lọc sai chỗ là biến thành inner join. Tôi từng gặp báo cáo rỗng vì NOT IN trên bảng blacklist có NULL, từ đó tôi review mọi NOT IN với subquery."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống CRM (PostgreSQL 15, bảng {{customers}} 2,1 triệu dòng, {{orders}} 48 triệu dòng) có báo cáo "Khách chưa phát sinh đơn từ đầu năm" phục vụ đội chăm sóc; sau khi deploy bản vá thêm luồng đồng bộ đơn offline, báo cáo trả về **0 dòng** suốt 3 ngày dù đội kinh doanh chắc chắn có hàng trăm nghìn khách chưa mua. Trang vẫn load trong khoảng 1,8 giây, không lỗi.
+Điều tra: chạy riêng subquery {{SELECT customer_id FROM orders WHERE created_at >= TIMESTAMPTZ '2026-01-01 00:00:00+07'}} và thấy có 1 dòng {{customer_id NULL}} (đơn offline chưa gán khách). Câu báo cáo dùng {{c.id NOT IN (subquery)}} nên theo logic ba giá trị, so sánh với NULL cho UNKNOWN và toàn bộ kết quả bị loại. {{EXPLAIN (ANALYZE)}} của câu gốc cho thấy plan "Seq Scan on orders (SubPlan 1)" và 0 row output, xác nhận bẫy NULL chứ không phải thiếu dữ liệu.
+Nguyên nhân gốc: chọn {{NOT IN}} trên cột nullable {{orders.customer_id}} và thiếu ràng buộc/validate khi nhập đơn offline.
+Cách xử lý: đổi query sang {{NOT EXISTS}} với điều kiện thời gian đặt trong subquery, thêm index {{CREATE INDEX idx_orders_cust_created ON orders (customer_id, created_at)}} (bỏ qua dòng NULL ở phần tử dẫn đầu nhờ dùng EXISTS), đồng thời bổ sung kiểm tra {{customer_id IS NOT NULL}} ở luồng nhập đơn offline. Kết quả: báo cáo trả về 384.215 khách đúng kỳ vọng, thời gian chạy khoảng 620 ms với Nested Loop Anti Join dùng index; ca tiếp theo có thêm 2 đơn {{customer_id}} NULL nhưng báo cáo không bị ảnh hưởng.
+
 > Senior tip: câu "NOT IN hay NOT EXISTS" là câu hỏi *knock-out* cổ điển. Câu trả lời mạnh là: "Tôi dùng NOT EXISTS vì NOT IN không an toàn với NULL – chỉ cần một NULL trong tập kết quả là toàn bộ câu trả về rỗng; ngoài ra NOT EXISTS được optimizer biến thành anti-join nên dừng sớm và dùng index tốt hơn". Nếu interviewer hỏi tiếp "còn LEFT JOIN IS NULL thì sao", hãy trả lời tiếp về khả năng nhân dòng khi join nhiều bảng con – đó mới là chỗ ứng viên trung bình trả lời sai.`,
   follow: [
     'Giải thích chi tiết ba-valued logic và vì sao NULL trong NOT IN làm cả câu trả về rỗng.',
@@ -379,6 +397,12 @@ WHERE giảm số dòng đi vào bước gom nhóm (hash aggregate / sort) ⇒ �
 ### Trả lời miệng 1 phút
 "WHERE lọc từng dòng trước khi gom nhóm, còn HAVING lọc các nhóm sau khi đã tính aggregate. Thứ tự logic là FROM, WHERE, GROUP BY, HAVING, rồi mới đến window function, SELECT, DISTINCT, ORDER BY và LIMIT; vì vậy WHERE không dùng được SUM hay alias của SELECT. Quy tắc của tôi là điều kiện nào trên cột gốc thì đặt ở WHERE, vì nó giảm số dòng đi vào bước hash aggregate hoặc sort, còn HAVING chỉ dành cho điều kiện trên tổng. Lỗi tôi hay sửa cho team là lọc tháng ở HAVING, đếm COUNT(*) sau LEFT JOIN nên khách không có đơn vẫn ra 1, và SUM trả NULL thay vì 0. Tôi luôn kiểm tra bằng EXPLAIN ANALYZE xem bước aggregate nhận bao nhiêu dòng."
 
+### Ví dụ đời thực
+Triệu chứng: trang báo cáo "Top khách mua tháng 3" (MySQL 8.0, bảng {{orders}} khoảng 9,2 triệu dòng) bắt đầu hết timeout sau khi dữ liệu tích lũy; p95 của API báo cáo tăng từ 1,1 giây lên 27 giây, và dashboard giám sát DB ghi nhận CPU trung bình 78% trong khung giờ chạy báo cáo định kỳ.
+Điều tra: lấy slow query log (mức {{long_query_time}} 2 giây) và chạy {{EXPLAIN ANALYZE}}. Query gốc viết {{GROUP BY customer_id}} rồi đặt {{HAVING EXTRACT(MONTH FROM created_at) = 3 AND SUM(amount) > 1000000}}. Plan cho thấy HashAggregate phải xử lý gần 9,2 triệu dòng, {{actual time}} khoảng 24,8 giây, vì hàm {{EXTRACT()}} trên cột không cho phép dùng index và điều kiện tháng không được lọc sớm.
+Nguyên nhân gốc: đặt điều kiện trên cột gốc {{created_at}} ở HAVING thay vì WHERE, nên DB gom nhóm toàn bộ lịch sử đơn hàng trước khi loại.
+Cách xử lý: chuyển điều kiện thời gian sang WHERE dùng khoảng nửa mở {{WHERE created_at >= '2026-03-01' AND created_at < '2026-04-01'}}, giữ {{HAVING SUM(amount) > 1000000}}, thêm index {{(created_at, customer_id, amount)}}. Kết quả: HashAggregate chỉ nhận khoảng 780.000 dòng tháng 3, thời gian query giảm còn 1,4 giây, CPU giờ báo cáo giảm về dưới 20%; reviewer chốt quy tắc "điều kiện cột gốc luôn ở WHERE" vào checklist PR.
+
 > Senior tip: hãy nhớ câu "**WHERE lọc dòng, HAVING lọc nhóm**" và luôn dùng nó để quyết định điều kiện nằm ở đâu. Khi gặp câu hỏi phỏng vấn về SQL performance, câu trả lời ăn điểm là: "điều kiện trên cột gốc luôn đặt ở WHERE để giảm số dòng đi vào bước aggregate; HAVING chỉ dùng cho điều kiện phụ thuộc kết quả tính tổng". Kèm theo một ví dụ thật từ hệ thống bạn đã sửa – đó là thứ khiến câu trả lời đi từ "biết lý thuyết" sang "đã gặp và xử lý".`,
   follow: [
     'Vì sao {{COUNT(*) }} và {{COUNT(o.id)}} cho hai kết quả khác nhau khi dùng LEFT JOIN?',
@@ -458,6 +482,12 @@ Luôn thêm cột khóa {{id}} (hoặc {{created_at}} nếu duy nhất) vào {{O
 
 ### Trả lời miệng 1 phút
 "Đây là bài top-N theo nhóm. Tôi dùng ROW_NUMBER partition theo customer_id, order theo amount giảm dần và id để tie-break, rồi lọc rn nhỏ hơn hoặc bằng 3 ở lớp ngoài vì window function chạy sau WHERE. Khách chỉ có 2 giao dịch thì partition chỉ có rn 1 và 2, nên tự nhiên trả 2 dòng. Tôi không dùng RANK hay DENSE_RANK vì khi trùng số tiền chúng trả nhiều hơn 3 dòng. Về hiệu năng, tôi tạo index (customer_id, amount DESC, id) để tránh sort; nếu chỉ cần cho vài khách thì dùng LATERAL với LIMIT 3 để đọc đúng 3 entry index mỗi khách. Với bảng hàng trăm triệu dòng, tôi tính sẵn vào bảng summary thay vì chạy mỗi lần người dùng click."
+
+### Ví dụ đời thực
+Triệu chứng: ứng dụng ngân hàng số (PostgreSQL 15, bảng {{transaction}} 120 triệu dòng) có widget "3 giao dịch lớn nhất" trên trang chi tiết khách; trong đợt khuyến mãi hoàn tiền, nhiều khách có các giao dịch cùng số tiền 500.000 VND và widget hiển thị 4-6 dòng, làm vỡ giao diện bảng (UI chỉ có 3 hàng) và đội CS nhận 47 ticket "hiển thị sai số lượng".
+Điều tra: chạy truy vấn native của widget và thấy dùng {{DENSE_RANK() <= 3}}. Kiểm tra một khách bị lỗi: các giao dịch 1.200.000 (rank 1), 800.000 (rank 2), 500.000 (rank 3), 500.000 (rank 3) đều lọt qua, nên ra 4 dòng. {{EXPLAIN (ANALYZE)}} trên production cho thấy WindowAgg + Sort mất khoảng 4,6 giây khi query quét toàn bảng vì chưa có index phù hợp và widget gọi mỗi lần mở trang.
+Nguyên nhân gốc: dùng {{DENSE_RANK}} cho yêu cầu "đúng 3 dòng" (top-N theo số dòng) và thiếu tie-break ổn định.
+Cách xử lý: đổi sang {{ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY amount DESC, id)}}, tạo index {{(customer_id, amount DESC, id)}}, và vì widget chỉ cần cho 1 khách đang xem nên đổi sang {{LATERAL ... ORDER BY amount DESC, id LIMIT 3}}. Kết quả: luôn trả tối đa 3 dòng (khách chỉ có 2 giao dịch trả 2), thời gian truy vấn cho 1 khách giảm còn 3-5 ms; nhóm QA thêm case trùng {{amount}} để chặn tái phát.
 
 > Senior tip: câu này hay bị hỏi như "làm thế nào để lấy top N theo nhóm". Câu trả lời điểm cao: "ROW_NUMBER + lọc ở lớp ngoài, luôn có tie-break, có index composite đúng thứ tự". Với team thực sự, hãy nói thêm: "Nếu bảng rất lớn, tôi sẽ không chạy query này trực tiếp trên production mỗi khi người dùng click – tôi sẽ pre-aggregate vào bảng summary theo ngày và chỉ query bảng summary đó".
 `,
@@ -567,6 +597,12 @@ Index composite: {{(account_id, created_at, id)}}. Cửa sổ {{ROWS UNBOUNDED P
 
 ### Trả lời miệng 1 phút
 "Running balance là tổng cộng dồn các giao dịch tính tới dòng hiện tại. Tôi đổi dấu trước, IN là cộng, OUT là trừ, rồi dùng SUM OVER partition theo account_id, order theo created_at và id, với frame ROWS UNBOUNDED PRECEDING. Số dư cuối kỳ là giá trị cộng dồn đó, số dư đầu kỳ bằng cuối kỳ trừ đi delta, tương đương LAG của dòng trước, dòng đầu tiên ra 0. Tôi ghi rõ ROWS vì mặc định là RANGE, nên hai giao dịch cùng timestamp sẽ hiện cùng số dư. Với index (account_id, created_at, id), DB đọc theo thứ tự và cộng dồn kiểu streaming, không cần self-join. Kinh nghiệm của tôi là sao kê theo kỳ phải cộng số dư đầu kỳ, nếu không mọi tháng đều bắt đầu từ 0."
+
+### Ví dụ đời thực
+Triệu chứng: module sao kê tài khoản (PostgreSQL 14, bảng {{transaction}} 26 triệu dòng) bị khách hàng khiếu nại: 18 tài khoản có 2 giao dịch phát sinh cùng giây (do job nhận tiền hàng loạt) hiển thị **cùng số dư cuối kỳ**, và khi xuất sao kê tháng 4 thì số dư đầu tháng luôn là 0 dù tài khoản đã có dư từ tháng 3. Bộ phận kế toán phát hiện chênh lệch tổng 96.400.000 VND trên mẫu kiểm tra 500 tài khoản.
+Điều tra: đọc câu SQL sinh sao kê và thấy {{SUM(delta) OVER (PARTITION BY account_id ORDER BY created_at)}} không ghi frame và không có {{id}} – frame mặc định là {{RANGE UNBOUNDED PRECEDING}}, nên hai dòng cùng {{created_at}} là peer và cùng nhận tổng gồm cả hai. Với lỗi tháng 4, CTE trung gian lọc {{WHERE created_at >= '2026-04-01' AND created_at < '2026-05-01'}} trước khi tính window, khiến running sum bắt đầu từ 0.
+Nguyên nhân gốc: dựa vào frame mặc định (RANGE), thiếu tie-break {{id}}, và tính cộng dồn trên tập đã lọc kỳ thay vì cộng số dư đầu kỳ.
+Cách xử lý: thêm {{, t.id}} vào ORDER BY và ghi rõ {{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}; tính opening balance kỳ bằng tổng delta trước đầu kỳ (hoặc snapshot cuối kỳ trước) rồi cộng dồn; tạo index {{(account_id, created_at, id)}}. Kết quả: 18 tài khoản có số dư cuối kỳ khác nhau đúng thứ tự id, số dư đầu tháng 4 khớp snapshot tháng 3, truy vấn sao kê 1 tài khoản/1 tháng chạy khoảng 12 ms; mẫu kiểm tra 500 tài khoản không còn chênh lệch.
 
 > Senior tip: khi phỏng vấn, hãy vẽ minh họa: "Giao dịch 1: nạp 100 → running 100; GD 2: rút 30 → running 70; GD 3: nạp 50 → running 120". Sau đó nói: "Tôi dùng SUM OVER ROWS UNBOUNDED PRECEDING vì nó streaming, không cần self-join, index (account_id, created_at, id) cho plan tối ưu". Interviewer senior sẽ gật gù vì bạn nói được streaming aggregate và tie-break.
 `,
@@ -693,6 +729,12 @@ Kỹ thuật này dùng cho mọi bài toán "chuỗi liên tiếp":
 
 ### Trả lời miệng 1 phút
 "Đây là bài Gaps and Islands. Đầu tiên tôi khử trùng để mỗi user mỗi ngày chỉ còn một dòng. Sau đó tôi đánh ROW_NUMBER theo ngày trong từng user và lấy ngày trừ đi số thứ tự đó. Trong một chuỗi ngày liên tiếp, ngày và số thứ tự cùng tăng 1 nên hiệu không đổi, còn khi có ngày bị bỏ thì hiệu nhảy sang giá trị mới. Tôi group theo user và hiệu đó để ra từng streak với ngày bắt đầu, kết thúc và độ dài, rồi lấy streak dài nhất bằng ROW_NUMBER. Cách này chỉ cần một lần sort, có index (user_id, login_date) là chạy tốt. Hai lỗi tôi đã gặp thật là quên khử trùng ngày và tính ngày theo UTC thay vì múi giờ của người dùng."
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống gamification (PostgreSQL 15, bảng {{login_history}} 4,2 triệu dòng) tính chuỗi đăng nhập liên tiếp để trao huy hiệu "người kiên trì". Sau khi deploy sang production, 2,8% người dùng (khoảng 11.600 tài khoản) nhận sai huy hiệu: streak hiển thị 5–7 ngày nhưng thực tế chỉ 2–3 ngày. Log ứng dụng không báo lỗi, metric streak trung bình tăng bất thường từ 3,2 lên 4,7.
+Điều tra: chạy query kiểm tra dữ liệu thô {{SELECT user_id, login_date, COUNT(*) OVER (PARTITION BY user_id ORDER BY login_date) FROM login_history WHERE user_id IN (mẫu 100 tài khoản bị lỗi)}} phát hiện: (1) user đăng nhập nhiều lần/ngày (2–5 lần) làm {{ROW_NUMBER}} tăng mà ngày không tăng, grouping key bị vỡ; (2) {{login_date}} lưu UTC, user ở múi giờ +07 đăng nhập lúc 6 giờ sáng bị tính sang ngày hôm trước, streak theo UTC lệch 1 ngày so với quan điểm người dùng. {{EXPLAIN (ANALYZE)}} cho thấy CTE numbered sort mất 8 ms, grouped 3 ms.
+Nguyên nhân gốc: quên {{DISTINCT ON (user_id, login_date::date)}} trước window function, và không convert múi giờ về giờ người dùng khi cắt ngày.
+Cách xử lý: thêm CTE distinct {{SELECT DISTINCT ON (user_id, login_date::date) user_id, (login_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS local_date FROM login_history}} rồi mới áp dụng Gaps and Islands trên {{local_date}}. Kết quả: tỷ lệ sai streak giảm từ 2,8% xuống 0%, query p95 3–8 ms, QA thêm case dữ liệu trùng ngày và múi giờ +07 vào bộ test hồi quy.
 
 > Senior tip: đây là câu hỏi "có biết pattern không". Câu trả lời nhanh: "Gaps and Islands – trừ row_number khỏi ngày để tạo grouping key, rồi group by key đó". Nếu interviewer hỏi "làm sao khi có nhiều lần đăng nhập một ngày", bạn trả lời ngay "distinct ngày trước khi window function". Đó là dấu hiệu bạn đã thực sự giải quyết bài toán này trên production.
 `,
@@ -835,6 +877,12 @@ ORDER BY product_id, yr, mo;
 ### Trả lời miệng 1 phút
 "Pivot trong SQL thường làm bằng conditional aggregation: group theo sản phẩm, mỗi tháng một cột SUM CASE WHEN tháng bằng m thì lấy amount, ngược lại 0. Để so YoY tôi tính pivot cho hai năm rồi LEFT JOIN năm hiện tại với năm trước, để sản phẩm mới không bị mất, và dùng NULLIF khi tính phần trăm. Dynamic pivot thật sự thì SQL không làm được, vì danh sách cột và kiểu dữ liệu phải biết khi phân tích câu lệnh; crosstab của PostgreSQL vẫn bắt khai báo cột, còn dynamic SQL thì khó bảo trì và dễ bị injection. Vì vậy trong dự án, tôi để SQL trả dữ liệu dạng dọc gọn, dùng index trên sale_date, rồi pivot và fill tháng thiếu ở Java bằng groupingBy. Cách này test được và không phụ thuộc vendor."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống báo cáo bán hàng (PostgreSQL 14, bảng {{sales}} 1,8 triệu dòng) dùng query pivot động xây dựng bằng {{crosstab}} extension để xuất Excel, mỗi cột là một **danh mục sản phẩm** (category) – hiện có 12 category. Khi đội sản phẩm thêm category mới "ACCESSORIES" (phụ kiện), báo cáo tháng 6 hiển thị sai cột: cột "ACCESSORIES" chứa dữ liệu của category "ELECTRONICS", toàn bộ cột từ ELECTRONICS trở đi dịch sang phải một vị trí, tổng doanh thu năm lệch 4,2%. Log không báo lỗi vì {{crosstab}} vẫn chạy thành công – chỉ thứ tự category trong câu 2 không khớp thứ tự dữ liệu trong câu 1.
+Điều tra: so sánh kết quả {{crosstab}} với truy vấn long format {{SELECT product_id, category, SUM(amount) FROM sales GROUP BY product_id, category ORDER BY product_id, category}} (chạy 1,9s) phát hiện {{crosstab}} trả sai thứ tự cột khi số category thay đổi. Query pivot tĩnh các cột {{CASE WHEN}} cố định (chạy 6,5s) vẫn đúng vì cột đã được viết sẵn.
+Nguyên nhân gốc: {{crosstab}} yêu cầu category trong câu 2 (danh sách cột) phải theo đúng thứ tự xuất hiện của câu 1; thêm category mới làm số category thay đổi mà câu 2 không được cập nhật đồng bộ.
+Cách xử lý: bỏ {{crosstab}}, dùng pivot các cột {{CASE WHEN}} cố định kết hợp với truy vấn long để đối chiếu tự động (chạy 1,9s + 0,3s so sánh = 2,2s). Kết quả: báo cáo khớp 100% với truy vấn long, thêm category mới không làm lệch cột, QA thêm test pivot-so-sánh-long vào CI.
+
 > Senior tip: interviewer hỏi "dynamic pivot thế nào", câu trả lời mạnh là: "SQL không làm được dynamic pivot thực sự; tôi query long format rồi pivot ở Java. Nếu buộc phải SQL, tôi dùng crosstab extension hoặc 12 cột CASE WHEN tường minh". Điều này cho thấy bạn hiểu giới hạn của SQL và biết tách trách nhiệm đúng chỗ.
 `,
   follow: [
@@ -946,6 +994,12 @@ CONNECT BY NOCYCLE PRIOR id = parent_id;
 
 ### Trả lời miệng 1 phút
 "Với cây lưu bằng parent_id, tôi dùng recursive CTE. Phần anchor chọn danh mục gốc, phần recursive join category với chính CTE theo parent_id bằng id để đi xuống từng tầng, nối bằng UNION ALL; vòng lặp dừng khi một tầng không sinh thêm dòng nào. Để phòng dữ liệu bẩn có vòng, tôi mang theo path là mảng id đã đi qua và chặn id đã có trong path, hoặc dùng mệnh đề CYCLE trên PostgreSQL 14 trở lên; Oracle có CONNECT BY NOCYCLE. Bắt buộc có index trên parent_id, nếu không mỗi tầng là một full scan. Tôi cũng đặt statement_timeout và giới hạn độ sâu, vì tôi từng thấy một query đệ quy chạy vô hạn làm đầy ổ temp trên production."
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống danh mục thương mại điện tử (PostgreSQL 15, bảng {{category}} 48.000 node, độ sâu tối đa 7 cấp) có API "lấy toàn bộ danh mục con" cho bộ lọc tìm kiếm. Sau khi thêm tính năng "danh mục ghim" (self-referencing cycle: node 1234 parent_id = 1234) và thiếu index {{parent_id}}, API timeout 22 giây và trả về lỗi 504 cho 340 request/phút lúc cao điểm. Log PostgreSQL ghi {{statement_timeout}} và temp file 1,2 GB.
+Điều tra: {{EXPLAIN (ANALYZE)}} của query recursive CTE cho thấy mỗi vòng lặp recursion đều full scan bảng (Seq Scan) vì thiếu index {{parent_id}}; phát hiện cycle trong {{path}} (id 1234 xuất hiện 2 lần) – self-referencing cycle khiến query không dừng: PostgreSQL không có giới hạn vòng lặp recursion mặc định, nên query chạy liên tục tới khi admin can thiệp ({{pg_cancel_backend}}) hoặc hết tài nguyên. Thử thêm index {{(parent_id)}} và chạy lại: mỗi vòng chỉ cần tìm con qua index, số vòng recursion tối đa bằng độ sâu cây (7 cấp) ⇒ query xong trong 180ms.
+Nguyên nhân gốc: (1) thiếu index {{parent_id}} khiến mỗi đệ quy full scan; (2) dữ liệu bẩn có self-referencing cycle mà query không có {{WHERE c.id <> ALL(s.path)}}; (3) không đặt {{statement_timeout}} cho query đệ quy.
+Cách xử lý: tạo index {{CREATE INDEX idx_cat_parent ON category(parent_id)}}, thêm điều kiện {{WHERE c.id <> ALL(s.path)}} vào recursive term, chuyển sang {{CYCLE id SET is_cycle USING path}} (PG 14+), đặt {{SET LOCAL statement_timeout = '5s'}} cho session API. Kết quả: API p95 180ms, query recursion chỉ cần tối đa 7 vòng (bằng độ sâu cây), cycle bị blocked ngay, QA thêm test case cycle vào migration script.
 
 > Senior tip: khi phỏng vấn, hãy viết Recursive CTE trên giấy/whiteboard mà không cần nhớ cú pháp chính xác – interviewer quan tâm bạn biết **anchor**, **recursive term**, **termination condition**, và **cycle detection**. Nêu rõ: "Tôi dùng UNION ALL, có path để detect cycle, index trên parent_id là bắt buộc". Đó là câu trả lời của người đã deploy recursive query lên production.
 `,
@@ -1068,6 +1122,12 @@ ON DUPLICATE KEY UPDATE
 ### Trả lời miệng 1 phút
 "Upsert là chèn nếu chưa có, cập nhật nếu đã có, và tôi luôn để DB làm việc đó trong một lệnh. Trên PostgreSQL tôi dùng INSERT ON CONFLICT với conflict target là unique index (account_id, currency), lấy giá trị mới qua EXCLUDED; ở READ COMMITTED nó đảm bảo kết quả là insert hoặc update, kể cả khi chạy song song. Oracle dùng MERGE, nhưng hai session cùng MERGE một khóa mới vẫn có thể dính ORA-00001, nên tôi bắt lỗi và retry; MySQL dùng ON DUPLICATE KEY UPDATE. Còn nếu tự SELECT rồi mới INSERT hoặc UPDATE thì có race condition: hai request cùng thấy chưa có, cùng insert, request sau lỗi duplicate key. Ở Java tôi viết native query hoặc JdbcTemplate, không dùng JPA save, và tôi từng sửa đúng lỗi này trong luồng nạp tiền."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống ví điện tử (PostgreSQL 14, bảng {{account_balance}} 3,2 triệu dòng) dùng JPA {{save()}} cho luồng nạp tiền. Dưới tải cao (Black Friday, ~8.000 nạp/giây), log ghi 20–60 lỗi {{DataIntegrityViolationException: duplicate key value violates unique constraint "uk_acc_ccy"}} mỗi ngày, và 12 tài khoản bị mất {{updated_at}} (giữ giá trị cũ) khiến đối soát sai số dư thực tế.
+Điều tra: đọc code thấy pattern {{Optional<Bal> ex = repo.findByAccAndCcy(id, ccy); if (ex.isPresent()) ex.get().setBal(newBal); else repo.save(new Bal(...));}} – check-then-act race condition. Hai luồng cùng thấy "chưa có", cả hai INSERT, luồng sau lỗi unique violation; catch exception thì retry nhưng luồng đầu đã ghi xong, luồng sau update ghi đè {{updated_at}} bằng giá trị cũ. {{EXPLAIN ANALYZE}} của native upsert={{INSERT ... ON CONFLICT ... WHERE updated_at < EXCLUDED.updated_at}} chạy 18ms nhanh hơn JPA save 32ms (p95).
+Nguyên nhân gốc: dùng JPA {{save()}} thay vì native upsert atomic, thiếu điều kiện {{WHERE updated_at < EXCLUDED.updated_at}} để bảo vệ timestamp.
+Cách xử lý: viết native query {{INSERT INTO account_balance ... ON CONFLICT (account_id, currency) DO UPDATE SET balance = EXCLUDED.balance, updated_at = EXCLUDED.updated_at WHERE account_balance.updated_at < EXCLUDED.updated_at}} qua {{JdbcTemplate}}, bỏ {{repo.save()}}. Kết quả: 0 lỗi duplicate key/14 ngày, p95 giảm 18ms, đối soát khớp tuyệt đối.
+
 > Senior tip: câu hỏi "upsert làm thế nào" là câu hỏi check "bạn có biết race condition không". Câu trả lời điểm cao: "Tôi dùng INSERT ON CONFLICT (PostgreSQL) – atomic ở DB; với Oracle MERGE tôi vẫn bắt ORA-00001 và retry vì MERGE song song trên khóa mới có thể đụng unique. Tự viết SELECT-INSERT/UPDATE có race condition: hai request cùng lúc đều thấy chưa có → cả hai INSERT → unique violation hoặc mất cập nhật. Ở Java tôi dùng native query hoặc JdbcTemplate, không dùng JPA save vì nó không atomic".
 `,
   follow: [
@@ -1171,6 +1231,12 @@ FROM orders;
 ### Trả lời miệng 1 phút
 "NULL nghĩa là không biết hoặc không có giá trị, nên mọi phép so sánh với NULL ra UNKNOWN, kể cả NULL bằng NULL, và WHERE chỉ giữ dòng TRUE; muốn kiểm tra phải dùng IS NULL. COUNT sao đếm mọi dòng, COUNT cột chỉ đếm dòng có giá trị, COUNT DISTINCT đếm số giá trị khác nhau và cũng bỏ NULL. SUM, AVG, MIN, MAX bỏ qua NULL; nếu không còn giá trị nào thì trả NULL chứ không phải 0, để phân biệt 'tổng bằng 0' với 'không có dữ liệu', nên tôi luôn bọc COALESCE. Về sắp xếp, PostgreSQL và Oracle coi NULL lớn nhất, MySQL và SQL Server coi NULL nhỏ nhất, nên tôi luôn ghi rõ NULLS LAST hoặc biểu thức IS NULL. Lỗi tôi gặp nhiều nhất là WHERE col = NULL trả rỗng mà không báo lỗi."
 
+### Ví dụ đời thực
+Triệu chứng: dashboard quản kho (PostgreSQL 15, bảng {{orders}} 1,4 triệu dòng, cột {{warehouse_id}} nullable) hiển thị "đơn chưa gán kho" bằng điều kiện {{WHERE warehouse_id <> 0}}. Một ngày đội vận hành phát hiện 320 đơn hàng biến mất khỏi báo cáo: tổng đơn chờ gán kho giảm từ 1.850 xuống 1.530, nhưng số liệu gốc không đổi. Log không báo lỗi, query vẫn chạy 420 ms.
+Điều tra: chạy {{SELECT COUNT(*) FROM orders WHERE warehouse_id <> 0}} ra 1.530, {{SELECT COUNT(*) FROM orders WHERE warehouse_id IS NULL OR warehouse_id = 0}} ra 320. Nguyên nhân: {{warehouse_id = NULL}} cho UNKNOWN nên {{NULL <> 0}} cũng là UNKNOWN, 320 đơn {{warehouse_id IS NULL}} bị lọc mất. Thêm {{IS DISTINCT FROM}} và {{COALESCE}}: {{WHERE warehouse_id IS DISTINCT FROM 0}} (PostgreSQL) hoặc {{WHERE COALESCE(warehouse_id, 0) <> 0}}.
+Nguyên nhân gốc: dùng {{<>}} thay vì {{IS DISTINCT FROM}}/{{COALESCE}} trên cột nullable, và thiếu quy ước review code bắt buộc xử lý NULL.
+Cách xử lý: sửa điều kiện thành {{WHERE warehouse_id IS DISTINCT FROM 0}}, thêm partial index {{CREATE INDEX idx_ord_wh_null ON orders(id) WHERE warehouse_id IS NULL}}, đặt quy ước PR: "cột nullable dùng IS DISTINCT FROM/COALESCE, cấm =/NULL hay <>/NULL". Kết quả: dashboard khớp 320 đơn, code review phát hiện thêm 2 lỗi tương tự ở báo cáo doanh thu.
+
 > Senior tip: "NULL không bằng NULL" là triết lý cốt lõi. Khi phỏng vấn, hãy demo nhanh: {{SELECT NULL = NULL}} → UNKNOWN, {{SELECT NULL IS NULL}} → TRUE. Và nhớ: {{COUNT(*)}} đếm dòng, {{COUNT(col)}} đếm giá trị không NULL – đây là câu hỏi filter ứng viên junior/mid rất hay.
 `,
   follow: [
@@ -1269,6 +1335,12 @@ MatView  : mỗi lần đọc ~ 5 ms; REFRESH đêm mất 3 s, dữ liệu cũ t
 
 ### Trả lời miệng 1 phút
 "DELETE là DML: xoá từng dòng theo WHERE, ghi log từng dòng, chạy trigger, kiểm tra FK và rollback được, nhưng chậm theo số dòng. TRUNCATE xoá toàn bộ bảng bằng cách cấp lại vùng lưu trữ, gần như tức thì, không chạy trigger, khoá cả bảng; PostgreSQL rollback được trong transaction, còn MySQL và Oracle thì không vì DDL tự commit. DROP xoá luôn cấu trúc bảng, index và quyền. View chỉ là câu query được lưu, luôn mới nhưng mỗi lần đọc phải tính lại; materialized view lưu kết quả ra đĩa nên đọc rất nhanh, đánh index được, nhưng dữ liệu cũ tới lần REFRESH kế tiếp. Tôi dùng MV cho báo cáo tổng hợp refresh theo lịch với CONCURRENTLY, và không bao giờ dùng nó cho số dư cần real-time."
+
+### Ví dụ đời thực
+Triệu chứng: job dọn dữ liệu staging (PostgreSQL 15, bảng {{staging_txn}} 18 triệu dòng, ~12 GB) chạy {{DELETE FROM staging_txn WHERE created_at < NOW() - INTERVAL '7 days'}} mỗi đêm 2 giờ. Job chạy 47 phút, sinh ~12 GB WAL, replica trễ 18 phút, bảng phình dead tuple khiến báo cáo sáng nay chậm 3 lần (p95 90 giây). Log autovacuum ghi "dead tuple 16.2M" và VACUUM mất 22 phút.
+Điều tra: {{EXPLAIN (ANALYZE)}} của DELETE cho thấy Seq Scan 18M rows, actual time 47 phút, WAL 12 GB,Buffers: shared hit=1.2M read=800k dirtied=400k. Thử {{TRUNCATE staging_txn RESTART IDENTITY}} trong transaction {{BEGIN; TRUNCATE ... RESTART IDENTITY; COMMIT;}} trên staging copy: chạy <1 giây, WAL ~0, không sinh dead tuple, identity reset. Lưu ý Oracle/MySQL: TRUNCATE là DDL có implicit commit, không rollback được trong transaction.
+Nguyên nhân gốc: dùng DELETE cho xoá toàn bộ bảng staging lớn, không biết TRUNCATE là metadata-only, và PostgreSQL TRUNCATE cần RESTART IDENTITY để reset sequence.
+Cách xử lý: thay DELETE bằng {{BEGIN; TRUNCATE TABLE staging_txn RESTART IDENTITY; COMMIT;}}, thêm comment giải thích RESTART IDENTITY. Kết quả: job chạy <1 giây, WAL ~0, p95 báo cáo sáng giảm 90s → 4s, autovacuum không còn chạy sau job dọn.
 
 > Senior tip: interviewer hỏi "TRUNCATE có rollback không?" – câu trả lời chuẩn: "PostgreSQL có rollback trong transaction (MVCC), Oracle/MySQL không (DDL implicit commit)". Với MV: "Tôi dùng MV cho báo cáo tổng hợp ngày (refresh 1 lần/đêm), không dùng cho số dư real-time". Nêu được trade-off mới là senior.
 `,
@@ -1390,6 +1462,12 @@ Phương pháp "3 lần trung bình" đơn giản nhưng hay false positive (gia
 ### Trả lời miệng 1 phút
 "Tôi dùng một CTE tính trung bình trượt cho từng giao dịch: AVG amount OVER partition theo customer_id, order theo created_at, với frame RANGE từ 30 ngày trước đến 1 ngày trước. Tôi chọn RANGE vì cửa sổ phải tính theo thời gian, không theo số dòng, mà số giao dịch mỗi ngày của mỗi khách rất khác nhau; và tôi loại giao dịch hiện tại khỏi frame để nó không tự kéo trung bình lên. Lớp ngoài lọc amount lớn hơn 3 lần trung bình, bỏ trường hợp không có lịch sử, và dùng NULLIF khi tính tỉ lệ. Cần index (customer_id, created_at) để khỏi sort lớn. Thực tế quy tắc 3 lần trung bình sinh nhiều false positive, nên tôi thêm số mẫu tối thiểu, cân nhắc z-score, và chạy theo lô hoặc stream thay vì per-request."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống thanh toán (PostgreSQL 15, bảng {{transaction}} 85 triệu dòng) có job phát hiện gian lận chạy mỗi 15 phút; sau đợt Black Friday, đội risk nhận 1.200 cảnh báo/ngày (tăng từ 180/ngày), trong đó 85% là false positive – khách mua sắm cuối tuần bình thường bị gắn cờ. Metric Grafana cho thấy p95 query job tăng từ 4,2 giây lên 38 giây, và CPU DB trung bình 65% trong khung giờ chạy.
+Điều tra: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} của query phát hiện trên production thấy Seq Scan trên toàn bảng 85 triệu dòng (cost 1.2M, actual time 35 giây) vì planner không thể dùng index {{(customer_id, created_at)}} – nguyên nhân là window function {{AVG OVER RANGE}} buộc sort theo {{created_at}} cho mỗi partition nhưng index hiện tại lại là {{(customer_id, amount)}}. Kiểm tra thêm phát hiện cửa sổ kết thúc ở {{CURRENT ROW}} thay vì {{1 day PRECEDING}}, khiến giao dịch lớn tự kéo trung bình của chính nó lên nên không bị cảnh báo (mất 12% true positive).
+Nguyên nhân gốc: (1) thiếu index {{(customer_id, created_at, amount)}}, (2) frame RANGE kết thúc sai chỗ, (3) quy tắc cứng "3× trung bình" không có ngưỡng số mẫu tối thiểu.
+Cách xử lý: tạo index {{CREATE INDEX CONCURRENTLY idx_txn_cust_created_amt ON transaction (customer_id, created_at) INCLUDE (amount)}}, sửa frame thành {{RANGE BETWEEN INTERVAL '30 days' PRECEDING AND INTERVAL '1 day' PRECEDING}}, thêm điều kiện {{COUNT(*) OVER (PARTITION BY customer_id) >= 5}} vào CTE. Kết quả: false positive giảm từ 85% xuống 12%, true positive tăng từ 88% lên 96%, p95 job giảm 38s → 2,1s, CPU DB giờ chạy giảm 65% → 18%.
+
 > Senior tip: "Tôi dùng window AVG với RANGE INTERVAL '30 days' PRECEDING vì nó tính trung bình theo thời gian thực chứ không phải theo số dòng. Index (customer_id, created_at) là bắt buộc. Trên production tôi sẽ không chạy query này per-request – tôi sẽ pre-compute vào bảng anomaly_score refresh 5 phút một lần, hoặc đẩy sang Flink stream processing".
 `,
   follow: [
@@ -1498,6 +1576,12 @@ List<Txn> txns = jdbc.query(
 ### Trả lời miệng 1 phút
 "Tôi lọc tháng 3 bằng khoảng nửa mở: created_at lớn hơn hoặc bằng 0 giờ ngày 1/3 và nhỏ hơn 0 giờ ngày 1/4, theo múi giờ của người dùng. Viết như vậy thì cột đứng trần nên DB dùng index range scan, đúng cho mọi độ dài tháng, và hai tháng liền nhau không chồng cũng không hở. Tôi tránh MONTH(created_at) vì bọc hàm quanh cột làm mất index và lấy tháng theo UTC; tránh BETWEEN vì nó gồm cả điểm cuối, viết 31/3 thì chỉ lấy đúng 0 giờ ngày 31, viết 23:59:59 thì vẫn sót phần lẻ giây. Với múi giờ, tôi lưu UTC trong TIMESTAMPTZ, tính hai mốc ở Java bằng ZoneId Asia/Ho_Chi_Minh rồi bind parameter. Tôi từng sửa báo cáo doanh thu lệch đúng 7 tiếng vì literal không có offset."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống báo cáo doanh thu (PostgreSQL 14, bảng {{sales}} 4,2 triệu dòng) hiển thị doanh thu tháng 3/2026 thấp hơn kỳ vọng 1,8 tỷ VND (chênh lệch 3,2%) so với dữ liệu kế toán. Đội kinh doanh phản ánh báo cáo "thu hẹp" từ cuối tuần trước. Query báo cáo dùng {{WHERE EXTRACT(MONTH FROM created_at) = 3 AND EXTRACT(YEAR FROM created_at) = 2026}} chạy 8,4 giây (Seq Scan).
+Điều tra: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy Seq Scan toàn bảng vì {{EXTRACT}} trên cột không dùng được index {{(created_at)}}. So sánh dữ liệu thô: {{SELECT COUNT(*) FROM sales WHERE created_at >= '2026-03-01 00:00:00+07' AND created_at < '2026-04-01 00:00:00+07'}} trả về 142.350 dòng, trong khi query cũ trả 138.120 dòng – thiếu 4.230 dòng. Phân tích các dòng thiếu thấy chúng đều rơi vào khung giờ 00:00–06:59 UTC ngày 1/4 (tức 07:00–13:59 giờ VN ngày 31/3) – do {{EXTRACT(MONTH FROM created_at)}} lấy tháng theo UTC chứ không phải giờ VN.
+Nguyên nhân gốc: (1) dùng {{EXTRACT(MONTH ...)}} thay vì khoảng nửa mở có múi giờ, (2) literal không có offset khiến session TimeZone UTC lệch 7 giờ so với múi giờ kinh doanh.
+Cách xử lý: sửa query thành {{WHERE created_at >= TIMESTAMPTZ '2026-03-01 00:00:00+07' AND created_at < TIMESTAMPTZ '2026-04-01 00:00:00+07'}}, thêm index {{(created_at)}} (đã có). Kết quả: báo cáo khớp 100% với kế toán (142.350 dòng), thời gian query giảm 8,4s → 0,18s (Index Range Scan), team đặt quy tắc "báo cáo theo tháng phải dùng half-open + bind từ Java" vào coding standard.
+
 > Senior tip: đây là câu hỏi "bạn có bao giờ debug báo cáo sai số liệu do múi giờ không". Câu trả lời mạnh: "Tôi luôn dùng half-open interval [start, end), bind mốc thời gian từ Java (không dùng hàm DB trên cột), index trên created_at. BETWEEN và MONTH() là hai cái bẫy tôi không bao giờ dùng". Nêu được "SARGable", "partition pruning", "plan cache" là điểm cộng lớn.
 `,
   follow: [
@@ -1582,6 +1666,12 @@ Seq Scan on orders (cost=0.00..486320.00 rows=19980000 width=64)
 
 ### Trả lời miệng 1 phút
 "EXPLAIN cho tôi cây kế hoạch của planner, còn EXPLAIN ANALYZE BUFFERS chạy thật và ghi thời gian, số dòng thực và số trang đọc. Tôi đọc từ node gốc để biết tổng thời gian, tìm node tốn nhất nhân với loops, rồi so rows ước tính với thực tế. Ở plan này, Seq Scan đọc hai mươi triệu dòng để giữ hai mươi nghìn, Rows Removed by Filter rất lớn, tức selectivity chỉ khoảng 0,1 phần trăm, nên một index trên cột lọc là hợp lý. Seq Scan vẫn đúng khi cần phần lớn bảng, bảng nhỏ, hoặc dữ liệu đã nằm trong RAM, vì đọc tuần tự rẻ hơn nhiều lần đọc ngẫu nhiên. Index Scan seek index rồi vào heap lấy dòng, Index Only Scan lấy đủ cột từ index và chỉ chạm heap khi visibility map chưa xác nhận trang. Tôi luôn đo trước và sau trên dữ liệu thật."
+
+### Ví dụ đời thực
+Triệu chứng: API tìm đơn hàng theo trạng thái (PostgreSQL 15, bảng {{orders}} 22 triệu dòng) bị timeout ngẫu nhiên lúc cao điểm: p95 tăng từ 400 ms lên 28 giây, 12% request lỗi 504. Slow query log ghi {{Seq Scan on orders}} kèm {{Rows Removed by Filter: 21950000}}, {{Buffers: shared hit=85000 read=134000}}.
+Điều tra: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} trên production với parameter thực tế {{status = 'PAID' AND created_at >= '2026-03-01'}} cho thấy planner ước lượng 11,2 triệu dòng (selectivity 51%) nhưng actual chỉ 18.500 dòng (0,08%). Cột {{status}} có 8 giá trị, {{PAID}} chiếm 65% (là most common value), nhưng planner dùng histogram cho {{created_at}} nhân độc lập với {{status}} nên chọn Seq Scan. Index hiện có là {{(created_at)}} đơn lẻ.
+Nguyên nhân gốc: (1) planner nhân selectivity độc lập giữa {{status}} (phổ biến) và {{created_at}} (khoảng) ⇒ ước lượng sai 600 lần, (2) thiếu composite index {{(status, created_at)}} cho phép seek chính xác.
+Cách xử lý: tạo index {{CREATE INDEX CONCURRENTLY idx_ord_status_created ON orders (status, created_at) WHERE status IN ('PAID','SHIPPED')}} (partial index chỉ cho trạng thái hot), chạy {{ANALYZE orders}}. Kết quả: plan chuyển sang Index Scan, p95 API giảm 28s → 45 ms, Rows Removed by Filter = 0, CPU DB giờ cao điểm giảm 78% → 22%.
 
 > Senior tip: quy tắc đọc plan của tôi: nhìn node gốc trước (tổng thời gian), tìm node con tốn nhất, rồi so rows ước tính với rows thực tế. Chữ "Seq Scan" không phải lỗi; lỗi thật là "Rows Removed by Filter: 19980000" cộng thời gian 15 giây trong khi ứng dụng chỉ cần 20.000 dòng.
 `,
@@ -1680,6 +1770,12 @@ Oracle dùng {{MINUS}} (từ 21c có thêm {{EXCEPT}}); MySQL hỗ trợ {{EXCEP
 ### Trả lời miệng 1 phút
 "Bài đối soát tôi luôn chia 4 nhóm: khớp, chỉ có ở A, chỉ có ở B và có cả hai nhưng lệch tiền. Tôi dùng FULL OUTER JOIN theo order_id để giữ mọi dòng của cả hai phía, lấy khóa bằng COALESCE, rồi CASE: phía A NULL là chỉ B, phía B NULL là chỉ A, còn lại so tiền bằng IS DISTINCT FROM để NULL không làm sai phép so sánh. Cách này cho cả 4 nhóm kèm số tiền hai bên trong một lần quét, thường là một hash join, trong khi hai lần anti-join chỉ cho hai nhóm thiếu. EXCEPT hợp khi tôi chỉ cần danh sách ID. Trên MySQL không có FULL JOIN thì tôi ghép LEFT JOIN với phần chỉ có ở B. Điều đầu tiên tôi kiểm tra luôn là khóa có unique không, vì import lặp sẽ làm báo cáo đầy mismatch ảo."
 
+### Ví dụ đời thực
+Triệu chứng: hệ thống đối soát đơn hàng hàng ngày (PostgreSQL 14, {{staging_order_a}} 2,8 triệu dòng, {{staging_order_b}} 2,75 triệu dòng) báo 18.400 đơn MISMATCH (lệch tiền) và 3.200 đơn ONLY_B – tổng chênh lệch 2,6 tỷ VND. Đội vận hành mất 4 tiếng đối soát thủ công mỗi ngày. Query đối soát dùng FULL OUTER JOIN chạy 6,8 giây.
+Điều tra: chạy {{SELECT order_id, COUNT(*) FROM staging_order_a GROUP BY order_id HAVING COUNT(*) > 1}} phát hiện 420 {{order_id}} trùng trong A (do job import retry), tương tự 310 trong B. Mỗi {{order_id}} trùng nhân đôi dòng khi join, tạo ra MISMATCH ảo. Thêm điều kiện lọc: chỉ so khớp đơn có {{created_at}} trong ngày hôm qua, nhưng staging A có cột {{order_date DATE}}, B có {{created_at TIMESTAMPTZ}} – so sánh ngày mất 12% đơn do lệch múi giờ (B lưu UTC, A lưu giờ VN).
+Nguyên nhân gốc: (1) thiếu unique constraint trên {{order_id}} trong staging, (2) kiểu dữ liệu ngày không thống nhất giữa hai nguồn, (3) không dedupe trước khi join.
+Cách xử lý: thêm {{CREATE UNIQUE INDEX ON staging_order_a (order_id)}} và B (bắt lỗi insert trùng ngay tại nguồn), chuẩn hoá cột ngày sang UTC {{DATE(created_at AT TIME ZONE 'UTC')}} ở cả hai bên trước khi load staging, thêm CTE dedupe {{ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY created_at DESC) = 1}}. Kết quả: MISMATCH giảm 18.400 → 127 (chỉ còn lệch thật do hoàn tiền), ONLY_B giảm 3.200 → 0, thời gian query 6,8s → 1,4s, đội vận hành đối soát tự động 100%, giảm 4 tiếng/ngày thủ công.
+
 > Senior tip: khi được hỏi "đối soát hai nguồn thế nào", tôi nói luôn "tôi tách 4 nhóm: khớp, thiếu trái, thiếu phải, lệch giá trị" rồi mới viết SQL – interviewer thấy bạn nghĩ bằng **kết quả nghiệp vụ** trước, cú pháp sau. Tôi còn hỏi ngược lại: "khóa có unique không, nguồn có import lặp không?" – đó là câu quyết định báo cáo đối soát có đúng không.`,
   follow: [
     '{{FULL OUTER JOIN}} được thực thi thế nào (hash join) trên dữ liệu lớn?',
@@ -1750,6 +1846,12 @@ Không hẳn. Cost cũng được tính trên chính ước lượng đó, nên 
 
 ### Trả lời miệng 1 phút
 "Planner ước số dòng bằng thống kê do ANALYZE thu vào pg_stats: danh sách giá trị phổ biến, histogram, n_distinct, tỉ lệ NULL. Với mỗi điều kiện nó tính một selectivity, rồi nhân các selectivity lại với số dòng của bảng, tức là giả định các cột độc lập. Vì vậy dù thống kê mới, estimate vẫn lệch khi cột tương quan, khi giá trị cần tìm hiếm và nằm ngoài danh sách phổ biến, khi điều kiện bọc hàm, khi prepared statement chuyển sang generic plan, hoặc qua nhiều tầng join. Tôi xử lý bằng CREATE STATISTICS cho cặp cột liên quan, tăng statistics target cho đúng cột nóng, viết lại điều kiện cho SARGable, và ép custom plan cho câu quan trọng. Tôi chỉ can thiệp khi lệch lớn nằm ở node tốn thời gian thật."
+
+### Ví dụ đời thực
+Triệu chứng: API tìm đơn hàng chờ xử lý (PostgreSQL 15, bảng {{orders}} 35 triệu dòng) timeout 30 giây lúc cao điểm: p95 từ 120 ms vọt lên 28 giây, 45% request lỗi. {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy planner ước lượng 12 triệu dòng (rows=12000000) chọn Hash Join, nhưng actual chỉ 20.000 dòng – lệch 600 lần. Query: {{WHERE status = 'PENDING' AND payment_method = 'COD' AND created_at >= NOW() - INTERVAL '7 days'}}. Cột {{status}} có 6 giá trị, {{PENDING}} 0,8% (hiếm, không trong MCV), {{payment_method}} 4 giá trị, {{COD}} 35%.
+Điều tra: {{SELECT attname, most_common_vals, n_distinct FROM pg_stats WHERE tablename = 'orders'}} cho thấy {{PENDING}} không nằm trong MCV (top 100 giá trị) – planner ước nó bằng (1 - tổng MCV - null_frac) / n_distinct ≈ 1/6 ≈ 16,7%, thực tế chỉ 0,8% (lệch 20 lần). Cột {{payment_method = 'COD'}} trong MCV đúng 35%. Nhân độc lập: 35M × 16,7% × 35% × 7% (khoảng 7 ngày) ≈ 12M. Thực tế: {{PENDING}} và {{COD}} **tương quan dương** (đơn COD thường PENDING chờ thu tiền), selectivity thật ≈ 0,06%.
+Nguyên nhân gốc: (1) giá trị hiếm {{PENDING}} ngoài MCV bị ước lượng bằng phân phối đều, (2) cột {{status}} và {{payment_method}} tương quan nhưng planner giả định độc lập, (3) generic plan của PreparedStatement không biết giá trị tham số.
+Cách xử lý: {{CREATE STATISTICS st_ord_status_pm (dependencies, mcv) ON status, payment_method FROM orders;}} chạy {{ANALYZE orders;}}, tăng {{ALTER TABLE orders ALTER COLUMN status SET STATISTICS 500;}}, ép custom plan bằng {{SET plan_cache_mode = force_custom_plan;}} cho câu này. Kết quả: estimate 12M → 22.000 (gần actual 20.000), plan chuyển từ Hash Join sang Nested Loop + Index Scan, p95 28s → 85 ms, planning time giảm 12 ms → 0,4 ms.
 
 > Senior tip: tôi chẩn đoán theo thứ tự: (1) so {{rows}} ước với {{actual}} ở node gốc; (2) mở {{pg_stats}} của các cột trong WHERE – có MCV không, {{n_distinct}} bao nhiêu, tương quan ra sao; (3) thử {{CREATE STATISTICS}} cho cặp cột hay đi kèm rồi {{ANALYZE}}. Khoảng 70% ca lệch estimate lớn tôi gặp là do cột tương quan hoặc giá trị hiếm, chứ không phải do "statistics cũ".`,
   follow: [
@@ -1837,6 +1939,12 @@ WHERE thread_id = 42 ORDER BY created_at DESC LIMIT 50;
 
 ### Trả lời miệng 1 phút
 "Với inbox chưa đọc, tôi tạo partial index trên (recipient_id, created_at DESC) với WHERE is_read = false: chỉ khoảng 1% dòng vào index nên nó nhỏ, nằm gọn trong RAM, ghi cũng rẻ. Planner chỉ dùng partial index khi chứng minh được WHERE của query bao hàm predicate của index, nên nếu is_read là bind parameter, ở generic plan nó không biết giá trị và bỏ qua index; vì vậy tôi viết cứng is_read = false trong SQL. Với báo cáo theo thread, tôi dùng covering index: thread_id làm khóa, created_at ở INCLUDE, hoặc làm cột khóa nếu cần sắp xếp, để chạy Index Only Scan không chạm heap, với điều kiện autovacuum giữ visibility map tốt. Tôi kiểm chứng bằng EXPLAIN ANALYZE BUFFERS, xem Heap Fetches và idx_scan trong pg_stat_user_indexes."
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống tin nhắn nội bộ (PostgreSQL 15, bảng {{message}} 280 triệu dòng, 1,2 TB) có API inbox "tin chưa đọc" bị chậm dần: p95 từ 45 ms (tháng 1) tăng lên 8,2 giây (tháng 6), CPU DB 85% lúc cao điểm, autovacuum không kịp dọn dead tuple. Query: {{SELECT * FROM message WHERE recipient_id = $1 AND is_read = false ORDER BY created_at DESC LIMIT 50}}. Index hiện có: {{(recipient_id, created_at DESC)}} full (không partial).
+Điều tra: {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy Index Scan trên index full quét 2,8 triệu entry cho một user (1% chưa đọc nhưng index chứa 100% dòng) – {{Buffers: shared hit=185000 read=42000}}. Spring Data method {{findByRecipientIdAndIsRead(id, false)}} sinh SQL {{WHERE recipient_id = ? AND is_read = ?}} – ở generic plan planner không dùng partial index được vì không biết giá trị {{is_read}}. Bảng ghi 12.000 INSERT/giây, index full 42 GB khiến ghi chậm và vacuum nặng.
+Nguyên nhân gốc: (1) dùng index full thay vì partial index cho {{is_read = false}}, (2) bind parameter cho cột predicate làm planner bỏ qua partial index ở generic plan, (3) thiếu covering index cho query báo cáo thread.
+Cách xử lý: tạo partial index {{CREATE INDEX CONCURRENTLY idx_msg_unread ON message (recipient_id, created_at DESC) WHERE is_read = false;}} (chỉ 420 MB, nhỏ 100 lần), đổi Spring Data method thành {{@Query("SELECT ... WHERE recipient_id = :id AND is_read = false")}} để predicate là hằng số, thêm covering index {{CREATE INDEX CONCURRENTLY idx_msg_thread_cover ON message (thread_id) INCLUDE (created_at);}}. Chạy {{ANALYZE message}}. Kết quả: inbox p95 8,2s → 12 ms, Index Only Scan cho báo cáo thread Heap Fetches = 0, index size giảm 42 GB → 420 MB + 180 MB, CPU DB giờ cao điểm 85% → 28%, autovacuum **đủ kịp** dead tuple.
 
 > Senior tip: "inbox chưa đọc của một user chậm" là câu kinh điển. Câu trả lời mạnh gồm hai phần: partial index trên {{(recipient_id, created_at)}} {{WHERE is_read = false}} – nhỏ gấp vài chục lần; và giải thích được **vì sao query bind parameter lại không dùng được partial index**. Chi tiết thứ hai mới là thứ tách người từng dùng index khỏi người từng debug plan.`,
   follow: [
@@ -1957,6 +2065,9 @@ Giả sử ba phiên chồng nhau rồi một phiên rời: [1,10], [2,3], [5,6]
 ### Trả lời miệng 1 phút
 "Với khoảng thời gian có thể chồng nhau, mẹo ngày trừ row_number không dùng được vì các khoảng không cách đều. Tôi sắp các phiên theo start_ts trong từng user và tính max end_ts của mọi dòng phía trước bằng window MAX với frame từ đầu tới dòng liền trước, không gồm dòng hiện tại. Nếu start_ts của dòng hiện tại lớn hơn max đó thì có khoảng trống, tôi gắn cờ mở đảo mới; sau đó SUM tích luỹ các cờ ra số đảo, group theo user và số đảo để lấy MIN start, MAX end. Thời gian online là bề rộng của từng đảo cộng lại, không cộng từng phiên vì phần chồng sẽ bị đếm hai lần. Trước khi chạy tôi chuẩn hoá end_ts NULL và loại phiên có end trước start, và đặt index (user_id, start_ts, end_ts) để bỏ sort."
 
+### Ví dụ đời thực
+Ứng dụng đọc tin 4 triệu MAU ghi phiên vào {{app_session}} từ 3 loại client (iOS, Android, web). **Triệu chứng:** dashboard "tổng thời gian online/ngày" của người dùng đa thiết bị cho ra 28–32 giờ/ngày; đội tăng trưởng nghi ngờ gian lận, còn team vận hành thấy CPU tăng cao đột ngột mỗi sáng khi job tính số liệu chạy. **Điều tra:** lấy mẫu một user có 6 phiên chồng nhau trong 2 giờ, đối chiếu log client thấy nhiều phiên bắt đầu khi phiên khác chưa kết thúc; query cũ dùng {{SUM(EXTRACT(EPOCH FROM (end_ts-start_ts)))}} trên từng dòng và có vài {{end_ts IS NULL}} (phiên đang mở) được lọc sai. **Nguyên nhân gốc:** (1) cộng duration từng dòng làm đếm đúp phần chồng (fan-out theo thời gian); (2) {{end_ts NULL}} chưa chuẩn hoá; (3) thiếu index {{(user_id, start_ts, end_ts)}} nên window sort quét ~120 triệu dòng/ngày. **Cách xử lý:** chuẩn hoá {{COALESCE(end_ts, now())}} và lọc {{end_ts >= start_ts}}; viết lại bằng island marker {{MAX(end_ts) OVER (PARTITION BY user_id ORDER BY start_ts, end_ts ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)}} để gộp khoảng chồng rồi mới {{SUM}} bề rộng đảo; tạo index {{(user_id, start_ts, end_ts)}}. **Kết quả đo được:** tổng online tối đa còn 24 giờ/ngày, chênh lệch với nhật ký server < 1%; thời gian job buổi sáng giảm từ ~42 phút xuống ~6 phút nhờ bỏ sort và index-only scan một phần; không còn cảnh báo "online > 24h".
+
 > Senior tip: câu hỏi quan trọng nhất khi gặp "bài toán chuỗi liên tiếp" là **các khoảng có chồng nhau không**. Nếu có, mọi công thức {{date - row_number}} đều sai. Tôi luôn vẽ ba interval lên bảng trắng rồi tính {{max(end)}} tích luỹ để interviewer thấy mình nắm bản chất: island marker nghĩa là "đầu khoảng mới đã vượt quá bề rộng mình từng thấy".`,
   follow: [
     'Nếu {{end_ts}} có thể NULL thì sửa query thế nào?',
@@ -2046,6 +2157,9 @@ Mỗi lỗi dưới đây kèm triệu chứng và cách tránh:
 ### Trả lời miệng 1 phút
 "Để có tổng theo vùng và sản phẩm, tổng theo vùng, tổng theo sản phẩm và tổng cộng trong một câu, tôi dùng GROUP BY GROUPING SETS với bốn nhóm đó. DB đọc dữ liệu một lần rồi cộng mỗi dòng vào nhiều cấp tổng, thay vì bốn câu UNION ALL quét bốn lần và lặp điều kiện lọc. Ở dòng tổng, cột bị gộp là NULL, nên tôi dùng GROUPING(col) để phân biệt với NULL thật và để gắn nhãn 'Tất cả'. ROLLUP(a, b) chỉ sinh các cấp phân cấp (a,b), (a) và tổng cộng, không có cấp theo b; CUBE sinh mọi tổ hợp, 2 mũ n cấp, nên với nhiều cột thì bùng nổ. MySQL chỉ có WITH ROLLUP. Với bảng rất lớn, tôi vẫn pre-aggregate theo ngày, vì GROUPING SETS tiết kiệm số lần quét chứ không giảm lượng dữ liệu phải đọc."
 
+### Ví dụ đời thực
+Hệ thống POS chuỗi siêu thị có bảng {{sales}} ~220 triệu dòng/năm, dashboard kinh doanh cần 4 con số cho tháng hiện tại: chi tiết (vùng, sản phẩm), tổng theo vùng, tổng theo sản phẩm, tổng cộng. **Triệu chứng:** phiên bản cũ dùng 4 câu {{UNION ALL}} cùng điều kiện {{sale_date}}; giờ cao điểm (8h sáng họp) dashboard mất 55–70 giây, đôi khi timeout; frontend còn hiển thị tổng cộng gấp ~3 lần vì vô tình cộng cả dòng chi tiết lẫn dòng subtotal. **Điều tra:** {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy bảng {{sales}} bị quét/aggregate 4 lần (buffers đọc lặp lại); kiểm tra payload JSON thấy các dòng tổng có {{region = null}} nhưng không có nhãn phân biệt với dữ liệu thật. **Nguyên nhân gốc:** query lặp 4 lần gây đọc dữ liệu dư; thiếu {{GROUPING()}} nên không phân biệt NULL "tổng" với NULL thật, frontend cộng sai. **Cách xử lý:** gộp thành 1 câu {{GROUP BY GROUPING SETS ((region,product),(region),(product),())}} với {{CASE WHEN GROUPING(...) = 1 THEN 'Tất cả'}} và trả kèm cột {{g_region/g_product}}; frontend chỉ cộng khi {{g_region=0 AND g_product=0}}; ngoài ra tạo bảng tổng hợp {{sales_daily_agg}} (materialized/pre-aggregate) refresh theo ngày cho khoảng thời gian cũ. **Kết quả đo được:** truy vấn tháng hiện tại (trên dữ liệu nóng) giảm còn ~9 giây nhờ 1 lần quét; truy vấn tháng trước đọc từ bảng tổng hợp còn < 300ms; lỗi "tổng cộng gấp đôi" biến mất sau khi frontend dùng cờ {{GROUPING}}.
+
 > Senior tip: khi khách hỏi "cho tôi tổng theo vùng và tổng cộng trong một câu", tôi viết ngay {{GROUPING SETS}} kèm {{CASE WHEN GROUPING(x) = 1}} rồi nói thêm giới hạn của nó: "câu này tiết kiệm code và một lần quét; với bảng 500 triệu dòng/ngày tôi sẽ tách bảng tổng hợp". Phỏng vấn senior/lead thích nghe bạn nêu được **giới hạn** của giải pháp, không chỉ cú pháp.`,
   follow: [
     '{{CUBE}} với 6 cột sinh ra bao nhiêu nhóm, có nên dùng không?',
@@ -2123,6 +2237,9 @@ Mỗi lỗi kèm triệu chứng và cách tránh:
 
 ### Trả lời miệng 1 phút
 "Trước PostgreSQL 12, mọi CTE là optimization fence: planner tính CTE một lần, lưu kết quả tạm rồi query ngoài đọc qua CTE Scan, nên điều kiện lọc bên ngoài không đẩy vào trong được và không dùng được index của bảng gốc. Từ bản 12, CTE không đệ quy, không có side-effect và chỉ được tham chiếu một lần sẽ được inline như subquery, nên planner tối ưu chung với query ngoài. Tham chiếu hai lần thì mặc định vẫn materialize để khỏi tính lại. Tôi ép MATERIALIZED khi CTE chứa aggregate nặng dùng nhiều lần hoặc khi muốn chốt plan ổn định, và NOT MATERIALIZED khi đo thấy đẩy điều kiện vào từng chỗ dùng có lợi hơn. Tôi coi CTE là công cụ cho dễ đọc, còn tối ưu thì luôn xác nhận bằng EXPLAIN ANALYZE, đặc biệt sau mỗi lần nâng cấp."
+
+### Ví dụ đời thực
+Nền tảng đặt vé có bảng {{orders}} ~50 triệu dòng, truy vấn tra cứu "đơn của khách X trong 30 ngày" được viết kiểu {{WITH o AS (SELECT * FROM orders) SELECT * FROM o WHERE customer_id = :id AND created_at >= :d}} cho dễ đọc. **Triệu chứng:** sau khi nâng cấp từ PostgreSQL 11 lên 13, API tra cứu của một số màn hình bỗng chậm 20–40 lần (từ ~15ms lên ~600ms) dù code không đổi; ngược lại một báo cáo tổng hợp dùng cùng CTE lại nhanh hơn. **Điều tra:** {{EXPLAIN (ANALYZE, BUFFERS)}} trên bản 11 cho thấy {{CTE Scan on o}} đọc toàn bộ 50 triệu dòng rồi lọc; trên bản 13 planner inline CTE ở một truy vấn khác nhưng ở truy vấn báo cáo (CTE được tham chiếu 2 lần) vẫn materialize – hành vi thay đổi đúng theo quy tắc mới. Với truy vấn tra cứu khách, bản 13 inline giúp dùng {{Index Scan}} trên {{(customer_id, created_at)}} (~200 dòng), còn một truy vấn khác đội phát triển từng dựa vào fence để chặn planner chọn join order tệ nay bị inline và plan xấu đi. **Nguyên nhân gốc:** hành vi mặc định của CTE thay đổi từ PG 12 (fence → inline có điều kiện); code cũ ngầm phụ thuộc vào fence. **Cách xử lý:** với các truy vấn tra cứu một lần, giữ inline (hưởng predicate pushdown + index); với CTE nặng dùng 2 lần hoặc cần plan ổn định, thêm {{WITH o AS MATERIALIZED (...)}} và ghi chú lý do; chạy {{EXPLAIN (ANALYZE)}} so sánh trước/sau trên bộ dữ liệu thật và thêm vào checklist nâng cấp. **Kết quả đo được:** p95 tra cứu đơn khách hàng trở về ~12–18ms; truy vấn báo cáo bị thoái hoá được chốt bằng {{MATERIALIZED}}, ổn định ~3,1 giây; checklist "đo lại query CTE sau nâng cấp PG" được thêm vào quy trình phát hành.
 
 > Senior tip: nguyên tắc của tôi là "CTE là công cụ **đọc code**, không phải công cụ tối ưu". Tôi viết CTE cho rõ ràng rồi đo bằng {{EXPLAIN (ANALYZE)}}; khi plan bị đổi sau nâng cấp hoặc ước lượng sai, tôi dùng {{MATERIALIZED}}/{{NOT MATERIALIZED}} để chốt hành vi và ghi chú **lý do** ngay trong SQL. Khi trao đổi với interviewer, câu trả lời ấn tượng là: "từ PostgreSQL 12 CTE không còn là fence mặc định, nên tôi luôn nhìn node {{CTE Scan}} hay {{Subquery Scan}} trong plan trước khi kết luận".`,
   follow: [
@@ -2213,6 +2330,9 @@ Gather  (cost=1000.00..412000.00 rows=3800000 width=48)
 ### Trả lời miệng 1 phút
 "Parallel query trong PostgreSQL là quyết định dựa trên chi phí: planner so phương án tuần tự với phương án chia việc cho nhiều worker, có tính chi phí khởi động worker và chi phí chuyển từng dòng về leader qua node Gather; bảng nhỏ hơn min_parallel_table_scan_size hay query trả ít dòng thì tuần tự rẻ hơn. Có những thứ cấm song song: câu ghi dữ liệu, FOR UPDATE, hàm bị đánh dấu PARALLEL UNSAFE mà hàm tự viết mặc định là vậy, và một số aggregate không chia được. Khi chỉ thấy một worker, tôi kiểm tra plan có Gather không, Workers Launched bao nhiêu, hàm nào unsafe, rồi thử tăng max_parallel_workers_per_gather cho riêng session báo cáo và đo lại. Tôi không ép parallel cho hệ OLTP nhiều connection, vì oversubscription làm p99 tệ đi, và ưu tiên giảm lượng dữ liệu phải quét trước."
 
+### Ví dụ đời thực
+Hệ thống phân tích bán hàng chạy PostgreSQL 15 trên máy 8 vCPU, bảng {{sales}} 420 triệu dòng. **Triệu chứng:** báo cáo doanh thu tháng chạy 58–65 giây bằng 1 worker dù {{vmstat/top}} cho thấy còn ~4 core rảnh; sau khi một kỹ sư hạ tầng đặt {{parallel_setup_cost = 0}} và {{max_parallel_workers_per_gather = 8}} "cho nhanh", báo cáo giảm còn ~18 giây nhưng p99 của API đặt hàng (cùng cụm, 40 connection) tăng từ 180ms lên 750ms giờ cao điểm. **Điều tra:** {{EXPLAIN (ANALYZE)}} ban đầu không có {{Gather}} vì planner ước tính chi phí parallel cao hơn tuần tự và có một hàm {{format_region()}} tự viết mặc định {{PARALLEL UNSAFE}} ({{pg_proc.proparallel = 'u'}}) khiến phần lọc không chạy song song. Sau khi hạ cost về 0, {{pg_stat_activity}} cho thấy mỗi báo cáo xin 8 worker, 5–6 báo cáo đồng thời tạo hàng chục worker tranh 8 core với connection OLTP (oversubscription) và I/O đĩa bão hoà. **Nguyên nhân gốc:** (1) hàm UNSAFE + chi phí mặc định ngăn parallel đúng lúc; (2) ép parallel toàn hệ thống gây tranh chấp tài nguyên. **Cách xử lý:** đánh dấu {{ALTER FUNCTION format_region(...) PARALLEL SAFE}} (hàm thuần, không ghi dữ liệu); trả {{parallel_setup_cost}} về mặc định; chỉ đặt {{ALTER ROLE report_user SET max_parallel_workers_per_gather = 4}} cho user chạy báo cáo; giới hạn số báo cáo đồng thời ở tầng ứng dụng; cân nhắc pre-aggregate theo ngày cho truy vấn lặp lại. **Kết quả đo được:** báo cáo ổn định ~14–16 giây với {{Workers Launched = 4}}; p99 API đặt hàng trở về ~190ms; CPU không còn bão hoà giờ cao điểm.
+
 > Senior tip: "nhiều core rảnh" chưa bao giờ là lý do để ép parallel. Tôi từng chứng kiến đội hạ tầng đặt chi phí parallel về 0 cho hệ 32 connection trên 8 core ⇒ mỗi câu bung worker, tổng process vượt sức máy, p99 chậm gấp đôi. Nguyên tắc của tôi: đo bằng {{EXPLAIN (ANALYZE)}}, theo dõi số worker chạy đồng thời, và nhớ rằng parallel query là **thuật toán chia việc** chứ không phải đòn bẩy tăng tốc tất yếu.`,
   follow: [
     '{{Gather}} và {{Gather Merge}} khác nhau khi nào, vì sao cần bản merge?',
@@ -2296,6 +2416,9 @@ Mỗi CTE trả tối đa **một dòng mỗi khách**, nên join 1-1 không cò
 ### Trả lời miệng 1 phút
 "INNER JOIN giữ các cặp khớp điều kiện ON, LEFT JOIN giữ mọi dòng bảng trái và điền NULL khi không khớp, FULL giữ cả hai phía, CROSS ghép mọi tổ hợp. Lỗi tôi gặp nhiều nhất là fan-out: join khách với hai bảng con một-nhiều như đơn hàng và thanh toán, số dòng thành tích của hai bên nên SUM bị nhân lên. Tôi sửa bằng cách gộp từng bảng con theo customer_id trong CTE trước, rồi mới LEFT JOIN vào bảng khách, kèm COALESCE về 0. Một bẫy khác là đặt điều kiện của bảng phải vào WHERE sau LEFT JOIN, làm nó thành INNER JOIN; điều kiện đó phải nằm trong ON."
 
+### Ví dụ đời thực
+Hệ thống bán lẻ có 1,2 triệu khách, 8 triệu đơn ({{orders}}) và 9,5 triệu lần thanh toán ({{payment}}, một đơn có thể trả nhiều lần). **Triệu chứng:** báo cáo "tổng đơn hàng và tổng đã thu theo khách" cho nhóm khách VIP hiển thị tổng doanh thu 4,8 tỷ đồng, trong khi sổ kế toán cùng kỳ chỉ ghi 1,5 tỷ; chênh lệch chỉ xuất hiện ở khách có nhiều đơn và nhiều lần thanh toán. **Điều tra:** chạy câu SQL báo cáo với {{COUNT(*)}} trước {{GROUP BY}} thấy số dòng tăng vọt (một khách 2 đơn x 3 lần thanh toán ra 6 dòng); dùng {{EXPLAIN (ANALYZE)}} xác nhận nested loop/ hash join tạo fan-out, không có lỗi cú pháp. So sánh tổng từng bảng riêng: {{SUM(orders.amount)}} và {{SUM(payment.amount)}} đều khớp kế toán. **Nguyên nhân gốc:** câu báo cáo {{JOIN orders}} rồi {{JOIN payment}} cùng lúc vào {{customer}}, làm nhân dòng 1-n x 1-n nên {{SUM}} cộng lặp. **Cách xử lý:** viết lại theo mẫu "gộp trước, join sau": CTE {{o}} {{GROUP BY customer_id}} ra {{total_order}}, CTE {{p}} ra {{total_paid}} (mỗi khách 1 dòng), rồi {{LEFT JOIN}} hai CTE vào {{customer}} với {{COALESCE(..., 0)}}. **Kết quả đo được:** số liệu khớp 100% với kế toán; thời gian chạy trên 8 triệu đơn giảm từ ~18 giây xuống ~2,4 giây vì bỏ được bước nhân dòng trung gian; thêm kiểm thử tự động so {{SUM}} trước/sau join cho 5 khách mẫu có nhiều đơn/thanh toán.
+
 > Senior tip: khi review một báo cáo tài chính, tôi luôn hỏi "mỗi dòng kết quả đại diện cho cái gì?" (grain) rồi đếm {{COUNT(*)}} trước và sau mỗi JOIN. Nếu số dòng tăng mà grain không đổi thì chắc chắn có fan-out. Thói quen 30 giây này bắt được phần lớn lỗi báo cáo lệch số mà unit test không thấy.`,
   follow: [
     'Vì sao đặt điều kiện của bảng phải trong WHERE lại biến LEFT JOIN thành INNER JOIN?',
@@ -2375,6 +2498,9 @@ Vẫn nên kiểm tra trước bằng SELECT để báo lỗi đẹp trong trư�
 ### Trả lời miệng 1 phút
 "Kiểm tra tồn tại rồi mới insert ở tầng Java có khe hở: hai request trên hai pod cùng đọc thấy chưa có rồi cùng insert. Chỉ database mới kiểm tra được ở đúng thời điểm ghi, có khoá, nên tôi đặt UNIQUE cho email, FOREIGN KEY cho quan hệ cha con, CHECK cho miền giá trị và NOT NULL cho cột bắt buộc. Java vẫn kiểm tra trước để báo lỗi thân thiện, nhưng luôn bắt DataIntegrityViolationException và trả 409. Trên PostgreSQL tôi nhớ tạo index cho cột FK vì nó không tự tạo, và chọn ON DELETE RESTRICT cho dữ liệu tài chính."
 
+### Ví dụ đời thực
+Một nền tảng thương mại điện tử chạy 6 pod Spring Boot sau load balancer. **Triệu chứng:** trong chiến dịch flash sale, bộ phận chăm sóc khách hàng báo có 37 cặp tài khoản cùng địa chỉ email (chữ hoa/thường khác nhau hoặc trùng hệt), và một job đối soát phát hiện 124 đơn hàng có {{customer_id}} trỏ tới khách đã bị xoá. **Điều tra:** truy vấn {{SELECT lower(email), COUNT(*) FROM customer GROUP BY 1 HAVING COUNT(*) > 1}} xác nhận trùng; log ứng dụng (trace id theo thời gian) cho thấy hai request đăng ký cùng email đến hai pod cách nhau ~15ms, cả hai log "email chưa tồn tại" rồi đều {{INSERT}} thành công; bảng {{customer.email}} không có unique index. Đơn hàng mồ côi đến từ một script vận hành xoá khách trực tiếp bằng SQL mà không có FK chặn. **Nguyên nhân gốc:** logic check-then-insert ở Java có race condition, và luật dữ liệu (duy nhất, tham chiếu) không được DB đảm bảo. **Cách xử lý:** (1) chuẩn hoá email về chữ thường trong code, gộp/xoá dữ liệu trùng có kiểm soát; (2) {{CREATE UNIQUE INDEX CONCURRENTLY uq_customer_email ON customer (lower(email));}}; (3) thêm FK {{orders.customer_id REFERENCES customer(id) ON DELETE RESTRICT}} bằng {{NOT VALID}} rồi {{VALIDATE CONSTRAINT}} để tránh khoá bảng lâu; (4) {{saveAndFlush}} và bắt {{DataIntegrityViolationException}} (SQLSTATE 23505/23503) trả HTTP 409/422. **Kết quả đo được:** trong 30 ngày sau, không còn bản ghi trùng email; job đối soát báo 0 đơn mồ côi; p99 API đăng ký không đổi (unique index check thêm < 1ms trên bảng 12 triệu dòng).
+
 > Senior tip: constraint là "unit test chạy mãi mãi trên production": nó chặn cả script sửa tay của DBA, job import, service khác dùng chung DB. Ở các dự án tôi review, gần như mọi lần dữ liệu bẩn (trùng, mồ côi, số âm) đều truy ra được một bảng thiếu constraint vì "đã kiểm tra trong code rồi".`,
   follow: [
     'Vì sao {{@Transactional}} ở READ COMMITTED không ngăn được việc insert trùng?',
@@ -2450,6 +2576,16 @@ Instant createdAt = Instant.now();                 // lưu vào timestamptz
 
 ### Trả lời miệng 1 phút
 "Với tiền tôi dùng NUMERIC hoặc DECIMAL có precision và scale rõ ràng, map sang BigDecimal, vì FLOAT và DOUBLE lưu số nhị phân gần đúng nên 0.1 cộng 0.2 không bằng 0.3, cộng dồn sẽ lệch tiền. Trong Java tôi tạo BigDecimal từ chuỗi, so sánh bằng compareTo và làm tròn có RoundingMode rõ ràng. Với thời điểm sự kiện trên PostgreSQL tôi dùng timestamptz, nó quy đổi và lưu theo UTC nên đúng với mọi múi giờ, map sang Instant hoặc OffsetDateTime. Trên MySQL tôi thường dùng DATETIME và quy ước lưu UTC, vì TIMESTAMP chỉ tới năm 2038. Toàn hệ thống chạy UTC, chỉ đổi múi giờ khi hiển thị."
+
+### Ví dụ đời thực
+Hệ thống ví điện tử xử lý khoảng 20.000 giao dịch nạp/rút mỗi ngày. Cột amount dùng DOUBLE PRECISION, cột created_at dùng timestamp không múi giờ. Một sáng, báo cáo doanh thu hôm nay là 498.872.000 VND, lệch 123.000 VND so với đối chiếu ngân hàng. Điều tra bằng:
+
+~~~sql
+SELECT SUM(amount) FROM tx WHERE created_at::date = CURRENT_DATE;
+SELECT amount FROM tx WHERE amount IS DISTINCT FROM ROUND(amount::numeric, 2) LIMIT 5;
+~~~
+
+Nhìn thấy số kỳ lạ như 50000.0000000001: FLOAT lưu nhị phân gần đúng, không chính xác. Cùng lúc, báo cáo thiếu toàn bộ giao dịch từ 17:00 đến 24:00 giờ Việt Nam, vì timestamp lưu "10:00" không ghi múi giờ trong khi app chạy UTC. Xử lý: thêm cột amount_new NUMERIC(19,4), copy và làm tròn HALF_UP, đổi tên cột; đổi created_at sang timestamptz, đặt {{-Duser.timezone=UTC}} cho JVM. Sau khi chạy lại, báo cáo khớp ngân hàng sai số 0 đồng và khung 24 giờ đầy đủ. Bảng 2 tỷ dòng nên đổi kiểu ở giờ ít truy cập.
 
 > Senior tip: hãy quyết định kiểu dữ liệu tiền **một lần cho cả công ty** (ví dụ NUMERIC(19,4), làm tròn HALF_UP ở bước xuất hoá đơn) và ghi vào guideline. Lệch kiểu giữa các service (một bên double, một bên decimal) là nguồn gốc của những sự cố đối soát lệch vài đồng mỗi ngày, rất tốn thời gian để truy ra.`,
   follow: [
@@ -2527,6 +2663,19 @@ public void checkout(Long orderId) {
 
 ### Trả lời miệng 1 phút
 "Mỗi câu SQL mặc định là một transaction nhờ autocommit; BEGIN mở transaction nhiều câu, COMMIT lưu, ROLLBACK huỷ. Trên PostgreSQL, chỉ cần một câu lỗi là cả transaction ở trạng thái aborted, mọi câu sau bị từ chối và COMMIT thực chất thành ROLLBACK; muốn bỏ qua lỗi một câu thì dùng SAVEPOINT. MySQL InnoDB thì đa số lỗi chỉ huỷ câu đó, nên nếu code nuốt exception rồi commit sẽ lưu một nửa công việc. Tôi giữ transaction ngắn, không gọi API ngoài bên trong, vì transaction dài giữ khoá, làm cạn pool và cản PostgreSQL dọn dữ liệu cũ."
+
+### Ví dụ đời thực
+Trang thanh toán đơn hàng xử lý khoảng 300 đơn/giờ. Code dùng {{@Transactional}} bao lấy cả việc ghi đơn và gọi API cổng thanh toán. Một buổi chiều, khách bấm "Thanh toán", màn hình trắng, tiền đã trừ nhưng đơn không tạo. Log PostgreSQL lặp lại:
+
+current transaction is aborted, commands ignored until end of transaction block
+
+Điều tra bằng:
+
+~~~sql
+SELECT pid, state, query_start FROM pg_stat_activity WHERE state = 'idle in transaction';
+~~~
+
+Nhìn thấy 40 kết nối ở trạng thái "idle in transaction", mỗi kết nối khoá một dòng đơn hàng. Nguyên nhân: câu SQL thứ hai bị lỗi (ví dụ vi phạm khóa ngoại), code bắt exception rồi vẫn chạy câu tiếp theo trong cùng transaction; PostgreSQL coi toàn bộ transaction đã hỏng và từ chối mọi câu lệnh cho tới khi ROLLBACK. Gọi API bên ngoài 5 giây trong transaction cũng giữ khoá dòng hàng ngàn milliseconds. Xử lý: tách gọi API ra ngoài transaction, bắt lỗi sớm rồi ROLLBACK thay vì chạy tiếp, đặt {{idle_in_transaction_session_timeout = '5min'}} làm lưới an toàn. Tuần sau, số kết nối idle giảm từ 40 về 0.
 
 > Senior tip: thêm cảnh báo trên metric "transaction lâu nhất đang mở" (tính từ {{xact_start}} trong {{pg_stat_activity}}). Ở một hệ thống tôi từng xử lý, một job báo cáo giữ transaction 6 tiếng làm bảng đơn hàng phình gấp 3 lần vì VACUUM không dọn được; cảnh báo ở ngưỡng 5 phút sẽ bắt được ngay từ đầu.`,
   follow: [
@@ -2606,6 +2755,32 @@ Hỗ trợ: PostgreSQL có đủ; MySQL có INTERSECT và EXCEPT từ 8.0.31; Or
 
 ### Trả lời miệng 1 phút
 "UNION, UNION ALL, INTERSECT, EXCEPT ghép kết quả của hai câu SELECT theo chiều dọc, hai câu phải cùng số cột và kiểu tương thích theo thứ tự. UNION ALL chỉ nối, giữ dòng trùng và rẻ nhất; UNION nối rồi loại trùng nên DB phải sort hoặc hash toàn bộ. INTERSECT lấy phần chung, EXCEPT lấy phần có ở bên trái mà không có ở bên phải, rất tiện để đối soát hoặc tìm khách rời bỏ. Tôi mặc định dùng UNION ALL, ví dụ gộp bảng orders với orders_archive, chỉ dùng UNION khi thật sự cần loại trùng, và luôn liệt kê cột tường minh để không lệch thứ tự."
+
+### Ví dụ đời thực
+Marketing cần danh sách "mua năm 2025 nhưng chưa quay lại năm 2026" để gửi email khuyến mãi, dữ liệu ở bảng orders và orders_archive. Lần đầu viết:
+
+~~~sql
+SELECT customer_id, order_date, amount FROM orders
+WHERE order_date BETWEEN '2025-01-01' AND '2025-12-31'
+UNION
+SELECT customer_id, order_date, amount FROM orders_archive
+WHERE order_date BETWEEN '2025-01-01' AND '2025-12-31';
+~~~
+
+Báo cáo chỉ có 1.200 khách, kỳ vọng khoảng 3.000. Điều tra thấy một khách có hai đơn cùng ngày, cùng số tiền: UNION coi hai dòng là trùng và chỉ giữ lại một dòng, nên "mất" khách hợp lệ. Sửa sang UNION ALL để gộp hai bảng, rồi dùng EXCEPT trên customer_id (xét cả orders và orders_archive):
+
+~~~sql
+SELECT customer_id FROM orders
+WHERE order_date >= '2025-01-01' AND order_date < '2026-01-01'
+UNION ALL
+SELECT customer_id FROM orders_archive
+WHERE order_date >= '2025-01-01' AND order_date < '2026-01-01'
+EXCEPT
+SELECT customer_id FROM orders
+WHERE order_date >= '2026-01-01' AND order_date < '2027-01-01';
+~~~
+
+Báo cáo mới ra 3.020 khách, thời gian chạy giảm từ 45 giây xuống 8 giây vì tránh bước sort của UNION.
 
 > Senior tip: khi thấy UNION trong code review, tôi hỏi "hai nhánh có thể trùng không?". Trong phần lớn trường hợp câu trả lời là không, và đổi sang UNION ALL bỏ được một bước sort lớn. Khi gộp bảng archive, thêm cột hằng {{'archive' AS source}} vào mỗi nhánh để biết dòng đến từ đâu, rất có ích khi điều tra dữ liệu.`,
   follow: [
@@ -2695,6 +2870,26 @@ Cơ chế từng bước:
 ### Trả lời miệng 1 phút
 "Tôi cập nhật từ bảng staging bằng một câu set-based: UPDATE FROM trên PostgreSQL hoặc UPDATE JOIN trên MySQL, thay vì vòng lặp save từng dòng. Trước khi chạy tôi kiểm tra staging không có key trùng, vì nếu một dòng đích khớp nhiều dòng nguồn, PostgreSQL chọn ngẫu nhiên mà không báo lỗi. Tôi thêm điều kiện IS DISTINCT FROM để bỏ các dòng không đổi, giảm WAL và bloat. Với hàng triệu dòng, tôi chia lô vài nghìn dòng mỗi transaction bằng CTE chọn id kèm FOR UPDATE SKIP LOCKED, lặp đến khi hết, để khoá ngắn và replica theo kịp."
 
+### Ví dụ đời thực
+Mỗi sáng 2 giờ, hệ thống cập nhật giá từ staging_price (2 triệu dòng) vào product và đánh dấu 5 triệu đơn PENDING quá 30 ngày thành EXPIRED. Lần đầu viết một câu UPDATE ... FROM khổng lồ trong một transaction. Buổi hôm đó khách khiếu ngại ứng dụng chậm, replica đọc bị trễ 10 phút so với primary. Điều tra bằng:
+
+~~~sql
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) FROM pg_replication_slots;
+~~~
+
+WAL tích lũy hàng GB vì câu UPDATE 5 triệu dòng tạo phiên bản dòng mới cho cả bảng và giữ khoá tới khi commit. Sửa sang chia lô 5.000 dòng, mỗi lô một transaction ngắn:
+
+~~~sql
+WITH batch AS (
+  SELECT id FROM orders
+  WHERE status = 'PENDING' AND created_at < now() - interval '30 days'
+  ORDER BY id LIMIT 5000 FOR UPDATE SKIP LOCKED
+)
+UPDATE orders o SET status = 'EXPIRED' FROM batch WHERE o.id = batch.id;
+~~~
+
+Lặp cho tới khi số dòng bị ảnh hưởng bằng 0. Mỗi lô khoá chỉ 5.000 dòng trong vài trăm milliseconds, người dùng chờ tối đa một lô. Cuối tuần job vẫn xong đúng giờ, replica lag dưới 30 giây.
+
 > Senior tip: mọi job sửa dữ liệu hàng loạt nên **chạy lại được** (idempotent) và **dừng được giữa chừng**: điều kiện WHERE tự loại dòng đã xử lý (như {{status = 'PENDING'}}), mỗi lô log số dòng và thời gian. Khi job chết lúc 3 giờ sáng, bạn chỉ việc chạy lại, không cần tìm xem nó đã dừng ở đâu.`,
   follow: [
     'Vì sao PostgreSQL vẫn ghi phiên bản dòng mới khi UPDATE với giá trị không đổi?',
@@ -2766,6 +2961,18 @@ Nếu từ lúc UPDATE counter tới COMMIT mất 20 ms, một series tối đa 
 
 ### Trả lời miệng 1 phút
 "Sequence không bao giờ trả lại số khi transaction rollback, vì nếu trả lại thì mọi insert phải chờ nhau; cộng thêm cache và crash, lỗ hổng là bình thường. Vì vậy tôi dùng sequence cho id kỹ thuật, còn số hoá đơn liên tục là cột riêng, cấp từ bảng bộ đếm mỗi series một dòng: UPDATE last_no cộng 1 RETURNING trong cùng transaction với insert hoá đơn, rollback thì cả hai cùng rollback, kèm UNIQUE(series, invoice_no). Cái giá là các transaction cùng series xếp hàng qua một khoá dòng, nên tôi lấy số ở bước phát hành cuối cùng, giữ transaction thật ngắn và chia series theo chi nhánh nếu cần throughput cao."
+
+### Ví dụ đời thực
+Cửa hàng online phát hành khoảng 800 hoá đơn/ngày, số dạng HD-2026-000105, HD-2026-000106. Kế toán khiếu nợ số nhảy: từ 105 nhảy thẳng lên 107, thiếu 106. Điều tra log thấy transaction A gọi nextval lấy 106, sau đó insert hoá đơn bị lỗi và rollback; số 106 bị sequence "chiêu", không bao giờ trả lại. Còn Hibernate lấy trước 50 số mỗi lần (allocationSize = 50), khởi động lại app là mất số chưa dùng. Sửa: tạo bảng invoice_counter (series, last_no), khi phát hành:
+
+~~~sql
+BEGIN;
+UPDATE invoice_counter SET last_no = last_no + 1 WHERE series = 'HD-2026' RETURNING last_no;
+INSERT INTO invoice(series, invoice_no, ...) VALUES ('HD-2026', 106, ...);
+COMMIT;
+~~~
+
+Cùng transaction nên insert thất bại thì số 106 cũng rollback, không còn lỗ hổng. Thêm UNIQUE(series, invoice_no) làm lưới an toàn. Mỗi series hỗ trợ khoảng 50 hoá đơn/giây vì transaction xếp hàng qua một khoá dòng; cần nhiều hơn thì chia series theo chi nhánh (HD-HN-2026, HD-HCMC-2026) để mỗi chi nhánh có counter riêng.
 
 > Senior tip: trước khi xây cơ chế không lỗ hổng, hãy hỏi lại nghiệp vụ **chính xác** yêu cầu gì: thường chỉ số **hoá đơn đã phát hành** phải liên tục theo từng ký hiệu, còn mã đơn hàng, mã giao dịch thì không. Thu hẹp phạm vi như vậy giúp chỉ một bước nhỏ phải xếp hàng, phần còn lại của hệ thống vẫn chạy song song thoải mái.`,
   follow: [
@@ -2852,6 +3059,9 @@ Vì sao phải khoá dòng product: hai transaction cùng kiểm tra "không ch�
 ### Trả lời miệng 1 phút
 "Tôi lưu mỗi mức giá thành một dòng có khoảng hiệu lực nửa mở from tới to, to rỗng là còn hiệu lực; giá tại thời điểm t là dòng có from nhỏ hơn hoặc bằng t và t nhỏ hơn to. Đổi giá là đóng dòng đang mở và chèn dòng mới trong cùng transaction, nên đặt giá tương lai rất tự nhiên. Trên PostgreSQL tôi dùng cột tstzrange và exclusion constraint với btree_gist để database tự chặn hai khoảng chồng nhau, an toàn cả khi ghi song song. MySQL không có tính năng này nên tôi khoá dòng sản phẩm bằng FOR UPDATE rồi kiểm tra chồng lấp trước khi insert. Đơn hàng vẫn chụp lại giá lúc mua để hoá đơn không bao giờ thay đổi."
 
+### Ví dụ đời thực
+Hệ thống bán lưu niệm thay đổi giá theo mùa: áo 200.000 VND từ 01/01, giảm còn 150.000 VND từ 01/04. Lần đầu lưu hai cột valid_from, valid_to kiểu khoảng đóng [from, to] và kiểm tra "không chồng lấp" trong ứng dụng trước khi insert. Nửa đêm 01/04, hai admin cùng cập nhật: một người đóng giá cũ đến 01/04 23:59:59, người khác mở giá mới từ 01/04 00:00:00. Do khoảng đóng, lúc 00:00:00 có hai giá áp dụng, đơn hàng đêm đó tính sai 50.000 VND. Sửa sang khoảng nửa mở [from, to): giá cũ [01/01, 01/04), giá mới [01/04, NULL). PostgreSQL dùng cột tstzrange và exclusion constraint trên (product_id, valid_during) để chặn hai khoảng chồng nhau. Hai request song song insert khoảng chồng nhau thì request sau chờ request trước commit, database tự báo lỗi. MySQL không có kiểu này nên khoá dòng sản phẩm SELECT ... FOR UPDATE, kiểm tra chồng lấp trong cùng transaction rồi mới insert. Đơn hàng luôn chụp unit_price lúc mua, hoá đơn cũ in ra số chính xác dù sau này ai sửa lịch sử giá.
+
 > Senior tip: ở vai trò lead, hãy chuẩn hoá **một pattern temporal** dùng chung cho mọi bảng "có hiệu lực" (giá, biểu phí, lãi suất, hạn mức): cùng tên cột, cùng quy ước nửa mở, cùng cách đóng/mở trong một service dùng chung. Tôi từng gặp hệ thống có 5 bảng biểu phí với 5 quy ước khác nhau (đóng, mở, 9999, NULL), và mọi lỗi tính phí lệch một ngày đều đến từ sự không nhất quán đó.`,
   follow: [
     'Vì sao exclusion constraint vẫn đúng khi hai transaction cùng chèn khoảng chồng nhau?',
@@ -2869,12 +3079,12 @@ Vì sao phải khoá dòng product: hai transaction cùng kiểm tra "không ch�
   a: `**Tóm tắt:** Planner ước lượng số dòng trả về (cardinality) bằng thống kê cột: **n_distinct** (số giá trị khác nhau), **histogram** (phân bố giá trị), **correlation** (độ sắp xếp so với heap). Nếu ước lượng << tổng số dòng, chọn index scan; nếu ~ toàn bảng, chọn seq scan. Khi các cột có **tương quan** (city + zip), planner mặc định nhân selectivity từng cột → ước lượng sai → phải dùng {{CREATE STATISTICS}}.
 
 ### Thống kê PostgreSQL lưu ở đâu
-Sau {{ANALYZE}}, mỗi cột có một hàng trong {{pg_statistic}}:
-- {{stanullfrac}}: tỷ lệ NULL.
-- {{stadistinct}}: n_distinct (âm nếu tỷ lệ so với tổng dòng).
-- {{stakind1..5}}: loại thống kê: histogram, MCV (most common values), correlation...
-- {{stavalues1}}: danh sách giá trị phổ biến + tần suất.
-- {{stahistbounds}}: biên histogram.
+Sau {{ANALYZE}}, mỗi cột có một hàng trong catalog {{pg_statistic}} (lưu dạng "khe" stakind/stanumbers/stavalues, khó đọc); thực tế nên xem qua view {{pg_stats}}:
+- {{null_frac}}: tỷ lệ NULL.
+- {{n_distinct}}: số giá trị khác nhau (số âm nghĩa là tỷ lệ so với tổng dòng, ví dụ -1 là mọi giá trị đều khác nhau).
+- {{most_common_vals}} / {{most_common_freqs}}: danh sách giá trị phổ biến (MCV) và tần suất.
+- {{histogram_bounds}}: biên histogram cho phần giá trị ngoài MCV.
+- {{correlation}}: mức độ thứ tự giá trị cột khớp thứ tự vật lý trên đĩa.
 
 ### Selectivity là gì
 Selectivity = tỷ lệ dòng thoả điều kiện. Ví dụ {{WHERE status='PAID'}}: nếu 'PAID' xuất hiện 30% số dòng → selectivity 0.3. Planner nhân selectivity với tổng số dòng để ra rows ước lượng. Nếu rows << tổng → index scan có lợi; nếu rows ~ tổng → seq scan rẻ hơn vì tránh random I/O.
@@ -2902,7 +3112,7 @@ Planner giả định các điều kiện độc lập: {{P(city='HCM' AND zip L
 - Fix: {{ANALYZE table;}} sau bulk load; tăng {{default_statistics_target}}; tạo extended statistics; dùng {{SET plan_cache_mode = force_custom_plan}} cho prepared statement.
 
 ### Ví dụ đời thực
-Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND district = 'Cầu Giấy'}} chạy 9 giây vì planner chọn Seq Scan. EXPLAIN cho thấy ước lượng **1.200 dòng** nhưng thực tế **380.000** — planner nhân hai selectivity như thể hai cột độc lập, trong khi district phụ thuộc hoàn toàn vào city. Với ước lượng sai đó nó lại chọn nested loop cho bước join tiếp theo. Sửa: {{CREATE STATISTICS orders_city_district (dependencies, ndistinct) ON city, district FROM orders; ANALYZE orders;}} → ước lượng 360.000, planner đổi sang hash join + index phù hợp, 9 giây → 650ms. Một lần khác, sau khi import 5 triệu dòng mới qua đêm, autovacuum chưa kịp ANALYZE nên thống kê cũ — thêm bước {{ANALYZE}} cuối job import.
+Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND district = 'Cầu Giấy'}} rồi join sang bảng order_items chạy 9 giây. EXPLAIN cho thấy ước lượng **1.200 dòng** nhưng thực tế **380.000** — planner nhân hai selectivity như thể hai cột độc lập, trong khi district phụ thuộc hoàn toàn vào city. Tin rằng chỉ có 1.200 dòng, nó chọn Index Scan rồi nested loop sang order_items, thành 380.000 lần tra index ngẫu nhiên. Sửa: {{CREATE STATISTICS orders_city_district (dependencies, ndistinct) ON city, district FROM orders; ANALYZE orders;}} → ước lượng 360.000, planner đổi sang hash join + index phù hợp, 9 giây → 650ms. Một lần khác, sau khi import 5 triệu dòng mới qua đêm, autovacuum chưa kịp ANALYZE nên thống kê cũ — thêm bước {{ANALYZE}} cuối job import.
 
 ### Trả lời mẫu khi phỏng vấn
 "Planner PostgreSQL chọn kế hoạch theo chi phí ước lượng, dựa trên thống kê trong pg_statistic, xem qua view pg_stats: tỉ lệ null, n_distinct, danh sách giá trị phổ biến nhất kèm tần suất, và histogram cho phần còn lại. Selectivity là tỉ lệ dòng thoả điều kiện; nhân với số dòng ra ước lượng, và ước lượng quyết định chọn index scan hay seq scan, nested loop hay hash join. Vấn đề hay gặp là các cột có tương quan: planner mặc định coi chúng độc lập và nhân selectivity, nên ước lượng thấp hơn thực tế nhiều lần. CREATE STATISTICS với dependencies hoặc ndistinct, hay mcv, giúp planner hiểu tương quan đó. Khi query chậm, tôi chạy EXPLAIN ANALYZE so số dòng ước lượng với thực tế; lệch hàng chục lần là dấu hiệu thống kê sai, cần ANALYZE, tăng statistics target cho cột lệch hoặc thêm extended statistics."
@@ -2938,14 +3148,14 @@ Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND di
 ### Merge join
 - Cần cả hai input đã sort theo join key.
 - Nếu đã có index theo key → sort miễn phí; nếu chưa → sort (external sort, có thể spill).
-- Chọn khi: input đã sort, hoặc range join ({{a.x BETWEEN b.lo AND b.hi}}), hoặc planner muốn tránh hash memory.
+- Chọn khi: input đã sort sẵn theo khoá join (có index phù hợp), dữ liệu rất lớn mà hash không vừa bộ nhớ, hoặc kết quả cần sắp theo khoá join. Chỉ áp dụng cho điều kiện bằng; join theo khoảng trong PostgreSQL luôn là nested loop.
 - Ưu: output đã sort theo join key → hữu ích cho ORDER BY tiếp theo.
 
 ### Bảng so sánh
 | Tiêu chí | Nested loop | Hash join | Merge join |
 |---|---|---|---|
 | Equi-join | ok | tốt nhất | tốt |
-| Range join | tốt | không | tốt |
+| Range join ({{a.x BETWEEN b.lo AND b.hi}}) | lựa chọn duy nhất | không | không (PostgreSQL chỉ merge join với điều kiện bằng) |
 | Cần index | thường có | không | không (cần sort) |
 | Memory | thấp | cao (work_mem) | trung bình |
 | Streaming | có | không (build xong mới probe) | có |
@@ -3119,7 +3329,7 @@ Màn hình quản trị cho phép nhảy tới trang bất kỳ của 30 triệu
 Index trên (a, b, c) sort theo a rồi b rồi c. Query:
 - {{WHERE a=1}} → dùng index (prefix a).
 - {{WHERE a=1 AND b=2}} → dùng index.
-- {{WHERE b=2}} → KHÔNG dùng index (không có prefix a). Phải tạo index riêng trên b.
+- {{WHERE b=2}} → thường KHÔNG dùng được index (không có prefix a), nên tạo index riêng trên b. Ngoại lệ: **MySQL 8.0.13+ có skip scan**, dùng được index khi cột a có ít giá trị khác nhau (nhảy qua từng giá trị a); PostgreSQL hiện chưa có skip scan; đừng thiết kế dựa vào nó cho truy vấn nóng.
 - {{WHERE a=1 AND c=3}} → dùng prefix a, filter c sau.
 
 ### Thứ tự cột: equality trước, range sau
@@ -3147,7 +3357,7 @@ Index (user_id, created_at DESC) → planner đi index theo thứ tự, lấy 20
 Cần visibility map đánh dấu page "all visible" → sau VACUUM. Nếu không, phải fetch heap để check visibility → mất lợi ích.
 
 ### Trên production
-- Triệu chứng: query có index nhưng vẫn chậm; EXPLAIN hiện "Index Scan" với "Heap Fetches" lớn.
+- Triệu chứng: query có index nhưng vẫn chậm; EXPLAIN hiện "Index Only Scan" với "Heap Fetches" lớn (visibility map chưa cập nhật), hoặc "Index Scan" phải đọc heap nhiều vì index thiếu cột.
 - Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; xem "Index Only Scan" vs "Index Scan".
 - Fix: VACUUM ANALYZE; INCLUDE cột payload; partial index cho subset hot; tránh index thừa (mỗi index làm chậm write).
 
@@ -3177,7 +3387,10 @@ Index trên {{email}} lưu giá trị gốc. Query {{WHERE lower(email) = 'a@b.c
 Fix: expression index {{CREATE INDEX ON users (lower(email));}} và query phải khớp chính xác expression.
 
 ### Implicit cast
-Cột {{phone VARCHAR}}, query {{WHERE phone = 12345}} (số). DB cast cột sang số: {{WHERE phone::integer = 12345}} → hàm trên cột → mất index. Hoặc cast literal: {{WHERE phone = '12345'}} → dùng index. Luôn so sánh cùng kiểu.
+Cột {{phone VARCHAR}}, query {{WHERE phone = 12345}} (số). Hành vi khác nhau theo DB:
+- **MySQL** và **Oracle** tự ép kiểu **cột** sang số để so sánh (tương đương bọc hàm quanh cột) → mất index, quét toàn bảng, lại còn khớp sai ('012345' bằng 12345).
+- **PostgreSQL** không tự ép kiểu trong trường hợp này mà báo lỗi {{operator does not exist: character varying = integer}}; lỗi tương tự khi JDBC gửi tham số chuỗi cho cột số.
+Cách đúng ở mọi DB: so sánh cùng kiểu ({{WHERE phone = '12345'}}), và kiểu tham số Java khớp kiểu cột.
 
 ### OR làm mất index
 {{WHERE status='PAID' OR created_at > '2025-01-01'}}: nếu hai điều kiện dùng index khác nhau, planner có thể chọn seq scan vì bitmap OR tốn kém, hoặc không merge được. 
@@ -3200,7 +3413,7 @@ Trade-off: index lớn, write chậm; phù hợp search text vừa phải. Searc
 - Fix: expression index; cast literal đúng kiểu; pg_trgm GIN; hoặc chuyển search sang ES.
 
 ### Ví dụ đời thực
-Tìm khách hàng theo email chạy 4 giây dù có index {{customers(email)}}. Code Hibernate sinh {{WHERE lower(email) = lower(?)}} (tìm không phân biệt hoa thường) → hàm bọc cột, index thường không dùng được. Sửa: index biểu thức {{CREATE INDEX ON customers (lower(email))}} → 2ms. Một trường hợp khác: cột {{phone}} kiểu {{varchar}} nhưng Java truyền tham số kiểu số qua native query → PostgreSQL ép kiểu cột sang số để so sánh ({{phone::numeric = 912345678}}), mất index; sửa kiểu tham số thành chuỗi. Ô tìm kiếm "chứa từ khoá" dùng {{LIKE '%nguyen%'}} trên 6 triệu tên khách (4,5 giây) → thêm extension {{pg_trgm}} và index GIN {{gin_trgm_ops}}: 40ms; với tiếng Việt có dấu, kết hợp {{unaccent}} trong một index biểu thức để tìm được cả khi người dùng gõ không dấu.
+Tìm khách hàng theo email chạy 4 giây dù có index {{customers(email)}}. Code Hibernate sinh {{WHERE lower(email) = lower(?)}} (tìm không phân biệt hoa thường) → hàm bọc cột, index thường không dùng được. Sửa: index biểu thức {{CREATE INDEX ON customers (lower(email))}} → 2ms. Một trường hợp khác (hệ thống MySQL cũ): cột {{phone}} kiểu {{varchar}} nhưng Java truyền tham số kiểu số qua native query → MySQL ép kiểu cột sang số để so sánh, mất index và quét 6 triệu dòng; sửa kiểu tham số thành chuỗi. Ô tìm kiếm "chứa từ khoá" dùng {{LIKE '%nguyen%'}} trên 6 triệu tên khách (4,5 giây) → thêm extension {{pg_trgm}} và index GIN {{gin_trgm_ops}}: 40ms; với tiếng Việt có dấu, kết hợp {{unaccent}} trong một index biểu thức để tìm được cả khi người dùng gõ không dấu.
 
 ### Trả lời mẫu khi phỏng vấn
 "Index B-tree lưu giá trị gốc của cột, nên khi điều kiện bọc cột trong hàm như lower hay date, hoặc DB phải ép kiểu cột vì tham số khác kiểu, nó không dùng được index đó. Cách sửa là viết điều kiện trên cột gốc, ví dụ dùng khoảng thời gian thay vì date của cột, truyền tham số đúng kiểu, hoặc tạo index biểu thức như index trên lower của email. Điều kiện OR giữa các cột khác nhau thường làm planner bỏ index hoặc phải dùng bitmap OR; có thể viết lại thành UNION ALL. LIKE với ký tự đại diện ở đầu chuỗi không dùng được B-tree vì không biết bắt đầu từ đâu; dùng pg_trgm với index GIN hoặc full-text search. Khi gặp query có index mà vẫn seq scan, tôi xem EXPLAIN để biết điều kiện thật sự được áp dụng, rồi kiểm tra hàm, kiểu dữ liệu, collation."
@@ -3315,6 +3528,31 @@ API thanh toán có thể retry (network timeout). Dùng **idempotency key** (UU
 - Triệu chứng: deadlock error; lost update; duplicate charge.
 - Đo: {{pg_stat_database}} deadlocks; log ERROR; tracing transaction duration.
 - Fix: chuẩn hoá thứ tự lock; retry serialization failure; idempotency key; outbox.
+
+### Ví dụ đời thực
+
+Hệ thống thanh toán công ty (PostgreSQL 15, Spring Boot 3.x) xử lý khoảng 20.000 giao dịch mỗi giờ vào khung cao điểm. Một buổi chiều, đội vận hành nhận được khiếu nại: cùng một tài khoản nguồn thực hiện 2 lệnh chuyển 5 triệu đồng gần như đồng thời, nhưng số dư chỉ bị trừ 5 triệu thay vì 10 triệu; một giao dịch khác bị ghi nhận hai lần do client retry khi mạng timeout.
+
+Triệu chứng và điều tra:
+- Đối chiếu bảng {{account_ledger}} với {{accounts.balance}} thấy 12 ca lệch số dư trong ngày. Truy vết request cho thấy hai transaction T1, T2 cùng chạy ở mức {{READ COMMITTED}} (mặc định PostgreSQL): cả hai {{SELECT balance FROM accounts WHERE id = 1001}} đọc được 10 triệu, mỗi bên tính 10 - 5 = 5 và {{UPDATE}} ghi balance = 5. Transaction commit sau ghi đè transaction commit trước mà không báo lỗi — đây là **lost update** (mất cập nhật: ghi đè dựa trên dữ liệu đã cũ).
+- Đồng thời, {{pg_stat_database.deadlocks}} tăng từ ~2 ca/ngày lên ~40 ca/ngày. Log PostgreSQL ghi {{ERROR: deadlock detected}} (SQLSTATE {{40P01}}): hai giao dịch chuyển tiền ngược chiều (A→B và B→A) khóa hai dòng tài khoản theo thứ tự khác nhau nên chờ nhau vòng tròn.
+
+Nguyên nhân gốc:
+- Không khóa dòng số dư khi đọc-ghi (read-modify-write) nên bị lost update ở {{READ COMMITTED}}.
+- Không chuẩn hóa thứ tự lock khi chuyển giữa hai tài khoản nên phát sinh deadlock.
+- API {{POST /transfer}} không có idempotency key nên retry tạo bản ghi trùng.
+
+Cách xử lý:
+- Pessimistic locking cho luồng chuyển tiền: trong một transaction, khóa **cả hai** tài khoản theo {{id}} tăng dần rồi mới tính toán, ví dụ {{SELECT id, balance FROM accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE}}. Khóa theo thứ tự cố định giúp tránh deadlock vòng.
+- Thêm bảng {{idempotency_keys(key UUID PRIMARY KEY, response_json JSONB, created_at TIMESTAMPTZ)}}. Client gửi header {{Idempotency-Key}}; service kiểm tra/tạo key trong cùng transaction — request retry cùng key trả kết quả cũ, không trừ tiền lần hai.
+- Với transaction bị abort do deadlock ({{40P01}}) hoặc serialization failure ({{40001}} nếu dùng {{SERIALIZABLE}}), retry có backoff ngắn (tối đa 3 lần) và chỉ khi thao tác idempotent.
+- Ghi sự kiện {{TransferCompleted}} vào bảng {{outbox}} trong cùng transaction commit DB, worker riêng publish sau (at-least-once) để không mất message.
+
+Kết quả đo được (48 giờ sau deploy): lệch số dư hằng ngày giảm từ 12 ca xuống 0; giao dịch trùng do retry giảm về 0; {{pg_stat_database.deadlocks}} trong giờ cao điểm giảm còn dưới 5 ca/ngày (phần còn lại do luồng khác, tiếp tục chuẩn hóa thứ tự lock).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Với hệ thống tài chính trên PostgreSQL, tôi chọn isolation level theo mức rủi ro: {{READ COMMITTED}} đủ cho truy vấn đọc đơn giản, {{REPEATABLE READ}} an toàn hơn cho luồng nghiệp vụ nhiều bước vì PostgreSQL dùng MVCC nên tránh phantom read, còn {{SERIALIZABLE}} (SSI) tôi dùng khi cần đảm bảo không có serialization anomaly và chấp nhận retry lỗi {{40001}}. Để tránh lost update khi trừ số dư, tôi dùng pessimistic locking: {{SELECT ... FOR UPDATE}} và luôn khóa các dòng liên quan theo thứ tự {{id}} tăng dần để cắt vòng deadlock. Với dữ liệu ít tranh chấp như profile, tôi dùng optimistic locking bằng cột {{version}} ({{UPDATE ... WHERE id=? AND version=?}}). Mọi API có side-effect như chuyển tiền tôi gắn idempotency key (UNIQUE) để retry mạng an toàn. Sự kiện sau commit tôi ghi vào bảng outbox trong cùng transaction rồi publish at-least-once. Trên production tôi theo dõi {{pg_stat_database.deadlocks}}, thời gian transaction và log {{40P01}}/{{40001}} để quyết định retry hay chuẩn hóa thêm thứ tự lock."
 
 > Senior tip: Trong tài chính, "đúng" quan trọng hơn "nhanh". Dùng SERIALIZABLE + retry cho logic phức tạp; pessimistic lock cho số dư; và idempotency key cho mọi API có side-effect. Deadlock không phải bug — là thiết kế sai thứ tự lock; chuẩn hoá thứ tự lock là cure.`,
   follow: [

@@ -194,15 +194,15 @@ SELECT * FROM ranked WHERE rn <= 3 ORDER BY account_id, amount DESC;
   },
   'db-018': {
     q: `Another team proposes putting interest calculation and fee logic into database stored procedures. How do you evaluate the trade-offs, and when should logic move to the Java layer instead of staying in the DB?`,
-    a: `**Summary:** A stored procedure runs **inside the DB**, touches the data directly and reduces network round-trips – efficient for bulk operations. But the price is that **testability, versioning, code review and operations** all become significantly worse. The practical rule for banking systems: **keep business logic in the Java layer** and reserve procedures for **bulk data operations** that need no unit tests (aggregating, purging old data, recomputing totals).
+    a: `**Summary:** A stored procedure runs **inside the DB**, touches the data directly and reduces network round-trips - efficient for bulk operations. But the price is that **testability, versioning, code review and operations** all become significantly worse. The practical rule for banking systems: **keep business logic in the Java layer** and reserve procedures for **bulk data operations** that need no unit tests (aggregating, purging old data, recomputing totals).
 
 ### Quick intuition
-Putting fee logic into a stored procedure is like **handing the recipe to the warehouse keeper**: they cook right there in the warehouse, so nobody has to carry ingredients to the kitchen (fewer round-trips), and it is very fast in large quantities. But once the recipe lives in the warehouse, the head chef (the Java team) cannot see it, cannot test it with familiar tools, every change has to go through the warehouse keeper, and moving to a different warehouse (Oracle → PostgreSQL) means rewriting it. So the usual rule is: **bulk hauling** belongs to the warehouse, **business recipes** belong to the main kitchen.
+Putting fee logic into a stored procedure is like **handing the recipe to the warehouse keeper**: they cook right there in the warehouse, so nobody has to carry ingredients to the kitchen (fewer round-trips), and it is very fast in large quantities. But once the recipe lives in the warehouse, the head chef (the Java team) cannot see it, cannot test it with familiar tools, every change has to go through the warehouse keeper, and moving to a different warehouse (Oracle -> PostgreSQL) means rewriting it. So the usual rule is: **bulk hauling** belongs to the warehouse, **business recipes** belong to the main kitchen.
 
 ### Key terms
 - **Stored procedure / function**: a program stored and executed inside the DB; PostgreSQL 11+ has {{CREATE PROCEDURE}} (it can commit midway) alongside {{FUNCTION}}.
 - **PL/pgSQL / PL/SQL**: the procedural languages of PostgreSQL / Oracle.
-- **Round-trip**: one request from the app to the DB plus the result coming back, usually 0.2–1ms inside the same data center.
+- **Round-trip**: one request from the app to the DB plus the result coming back, usually 0.2-1ms inside the same data center.
 - **SECURITY DEFINER / INVOKER**: the function runs with the privileges of its creator / of its caller.
 - **search_path**: the ordered list of PostgreSQL schemas searched when a name is used without a schema.
 - **pgTAP / utPLSQL**: unit-testing frameworks for PostgreSQL / Oracle.
@@ -211,9 +211,9 @@ Putting fee logic into a stored procedure is like **handing the recipe to the wa
 ### Evaluating the proposal, step by step
 ~~~text
 Batch interest run for 2 million accounts:
- Java reads account by account : 2,000,000 round-trips x 0.5ms ≈ 17 minutes of network alone
- Java set-based in batches     : 2,000 batches x 1,000 rows, 1 SELECT + 1 batch UPDATE each ≈ a few minutes
- Procedure set-based           : one statement UPDATE ... FROM (...)  ≈ 1-2 minutes
+ Java reads account by account : 2,000,000 round-trips x 0.5ms ~ 17 minutes of network alone
+ Java set-based in batches     : 2,000 batches x 1,000 rows, 1 SELECT + 1 batch UPDATE each ~ a few minutes
+ Procedure set-based           : one statement UPDATE ... FROM (...)  ~ 1-2 minutes
 ~~~
 1. **Classify the logic**: is it a business rule or a bulk data transformation? Why: only the second kind clearly benefits from running inside the DB.
 2. **Measure the real round-trip cost**: often the slowness comes from Java code processing row by row, not from being in the Java layer. Why: switching to batch/set-based processing in Java is usually fast enough.
@@ -264,17 +264,17 @@ BEGIN
 END;
 $fn$;
 ~~~
-A safety point worth remembering: always set {{SET search_path}} explicitly. When {{search_path}} contains a schema that users can write to, an attacker could create a function with the same name that then gets called instead – and with {{SECURITY DEFINER}} this risk is far more serious.
+A safety point worth remembering: always set {{SET search_path}} explicitly. When {{search_path}} contains a schema that users can write to, an attacker could create a function with the same name that then gets called instead - and with {{SECURITY DEFINER}} this risk is far more serious.
 
 ### When to move logic to Java
-1. **Business rules** (fee schedules, interest rates per product, approval conditions) – they change constantly, need tests, and need an audit trail of who changed what and when.
-2. **Integration with other systems** (calling a payment gateway, sending notifications) – the DB cannot do this.
+1. **Business rules** (fee schedules, interest rates per product, approval conditions) - they change constantly, need tests, and need an audit trail of who changed what and when.
+2. **Integration with other systems** (calling a payment gateway, sending notifications) - the DB cannot do this.
 3. **Reuse** across several processing channels (sync API, batch job, message consumer).
-4. **Scale** when the DB is split into shards – DB logic does not split with it.
+4. **Scale** when the DB is split into shards - DB logic does not split with it.
 5. **Observability**: metrics, traces and logs with context.
 
 Recommended process when you still have to use procedures:
-- Manage them with **Flyway/Liquibase** alongside the other migrations – never edit by hand in production.
+- Manage them with **Flyway/Liquibase** alongside the other migrations - never edit by hand in production.
 - **Test for real** against the DB (use a transaction plus rollback for each test case).
 - Document clearly in a **comment** at the top of the procedure: purpose, parameters, side effects, owner.
 - **Version by name**: create a new function (for example {{recalc_daily_balance_v2}}) and make the old one call the new one, so you have a rollback path.
@@ -283,20 +283,20 @@ Recommended process when you still have to use procedures:
 
 ### Pitfall production
 - **Procedure calling procedure** creates dependency chains that are hard to trace and hard to test.
-- **No explicit transaction boundary** between the steps inside a procedure makes retry semantics ambiguous – you must state clearly whether the procedure is idempotent.
-- **Logic hidden in the DB** never shows up in code review ⇒ one wrong change can affect millions of rows without anyone noticing.
+- **No explicit transaction boundary** between the steps inside a procedure makes retry semantics ambiguous - you must state clearly whether the procedure is idempotent.
+- **Logic hidden in the DB** never shows up in code review => one wrong change can affect millions of rows without anyone noticing.
 - **{{EXECUTE}} grants** on procedures are often too broad; follow the principle of least privilege.
-- **When you go from 1 DB to many DBs**, DB logic does not scale with you ⇒ it must be rewritten. That is a strong reason to put the logic in Java from the start.
+- **When you go from 1 DB to many DBs**, DB logic does not scale with you => it must be rewritten. That is a strong reason to put the logic in Java from the start.
 
 ### Common mistakes
 - **A procedure that loops row by row (cursor loop)** instead of working set-based: it throws away the only performance advantage it had. How to avoid: write it as a single UPDATE/INSERT ... SELECT.
-- **The same fee formula exists in both Java and a procedure**: the two drift apart after a few changes. Symptom – the fee shown on screen differs from the fee actually charged. How to avoid: a single source of truth.
+- **The same fee formula exists in both Java and a procedure**: the two drift apart after a few changes. Symptom - the fee shown on screen differs from the fee actually charged. How to avoid: a single source of truth.
 - **Calling a long procedure from a Java {{@Transactional}} method**: the transaction stays open for 20 minutes, holding locks and a connection. How to avoid: split it into batches, one transaction per batch, with a resume point when something fails.
 
 ### One-minute spoken answer
-"A stored procedure runs next to the data, so it is very fast for bulk work and cuts round-trips, and it lets you grant EXECUTE instead of table write permission. But it is hard to unit test, hard to review, hard to version, hides logic from the Java team and locks you to one database vendor. For interest and fee calculation – business rules that vary per product, need auditing and tests – I keep them in the Java layer. I only use procedures for set-based data operations such as purging or aggregating, and then I manage them with Flyway and run real DB tests in CI. Lesson: most of what looks like 'Java is slow' is row-by-row processing; switching to batched processing is usually fast enough while keeping the logic where it is easy to maintain."
+"A stored procedure runs next to the data, so it is very fast for bulk work and cuts round-trips, and it lets you grant EXECUTE instead of table write permission. But it is hard to unit test, hard to review, hard to version, hides logic from the Java team and locks you to one database vendor. For interest and fee calculation - business rules that vary per product, need auditing and tests - I keep them in the Java layer. I only use procedures for set-based data operations such as purging or aggregating, and then I manage them with Flyway and run real DB tests in CI. Lesson: most of what looks like 'Java is slow' is row-by-row processing; switching to batched processing is usually fast enough while keeping the logic where it is easy to maintain."
 
-> Senior tip: the question to ask yourself is: "**If this logic lives in the DB, who will write its tests, and will those tests run in the application team's CI?**" If the answer is "no", that is a strong signal the procedure will become "ghost logic" – nobody dares touch it, nobody understands it, and incidents get blamed on "a stored procedure bug" while the real cause is missing tests and missing ownership.`,
+> Senior tip: the question to ask yourself is: "**If this logic lives in the DB, who will write its tests, and will those tests run in the application team's CI?**" If the answer is "no", that is a strong signal the procedure will become "ghost logic" - nobody dares touch it, nobody understands it, and incidents get blamed on "a stored procedure bug" while the real cause is missing tests and missing ownership.`,
     follow: [
       'When does moving logic to the Java layer actually make the system slower?',
       'How do you manage versioning and rollback for stored procedures in production?'
@@ -411,93 +411,111 @@ This is the most skipped step and also the most dangerous one:
   },
   'spring-022': {
     q: `What is the difference between {{@Component}}, {{@Service}}, {{@Repository}}, {{@Controller}}? What extra capability does {{@Repository}} add for exceptions?`,
-    a: `**Summary:** All four are **stereotype annotations** for Spring component scan to discover beans; technically they are **aliases** of {{@Component}} and behave identically. The difference is purely **semantic**: {{@Component}} generic, {{@Service}} business layer, {{@Repository}} data layer, {{@Controller}} web layer. The key point: {{@Repository}} enables **exception translation** – Hibernate/JPA exceptions (unchecked) are wrapped into Spring's {{DataAccessException}} hierarchy so upper layers can catch them without depending on JPA.
- 
- ### Comparison
- | Annotation | Layer | Use case |
- |---|---|---|
- | {{@Component}} | Generic | Utility, config, shared bean |
- | {{@Service}} | Business logic | Orchestration, transaction boundary |
- | {{@Repository}} | Data access | JPA repo, custom DAO, **exception translation** |
- | {{@Controller}} | Web MVC | {{@RequestMapping}}, returns view (Thymeleaf) |
- | {{@RestController}} | Web REST | {{@Controller}} + {{@ResponseBody}} |
- 
- ### Exception translation by {{@Repository}}
- When a bean is annotated with {{@Repository}}, Spring registers a {{PersistenceExceptionTranslationPostProcessor}} that automatically wraps JPA/Hibernate exceptions ({{NoResultException}}, {{OptimisticLockException}}, Hibernate's {{ConstraintViolationException}}…) into subclasses of {{DataAccessException}} ({{EmptyResultDataAccessException}}, {{OptimisticLockingFailureException}}, {{DataIntegrityViolationException}}…). Spring Boot auto-registers this post-processor; plain Spring requires manual bean declaration. This lets services catch {{DataAccessException}} instead of importing JPA exceptions.
- 
- ~~~java
- @Repository
- public class JpaOrderRepository implements OrderRepository {
-     // getSingleResult() throws NoResultException -> Spring translates to EmptyResultDataAccessException
- }
- 
- @Service
- public class OrderService {
-     public Order get(Long id) {
-         try { return repo.findById(id).orElseThrow(() -> new OrderNotFoundException(id)); }
-         catch (DataAccessException ex) { throw new RepositoryException("DB error", ex); }
-     }
- }
- ~~~
- 
- ### Pitfall production
- - Using {{@Component}} for everything loses architectural meaning – reviewers can't tell which bean is a service, repo, or controller.
- - Forgetting {{@Repository}} on a custom DAO ⇒ JPA exceptions leak into the service layer, coupling it to JPA.
- - {{@Controller}} used for REST API returns a view name instead of JSON – must use {{@RestController}} or add {{@ResponseBody}}.
- 
- > Senior tip: simple review rule: **any bean that touches the DB must have {{@Repository}}**. If the team uses Spring Data JPA interfaces, those are already proxied with {{@Repository}} implicitly, but custom DAO classes must add it manually.`,
+    a: `**Summary:** All four are **stereotype annotations** that Spring component scanning uses to discover beans. Technically they are **aliases** of {{@Component}} and behave identically for bean registration. The difference is their **semantic meaning**: {{@Component}} is generic, {{@Service}} marks the business layer, {{@Repository}} marks the data layer, {{@Controller}} marks the web layer. The key extra: {{@Repository}} enables **exception translation** - unchecked Hibernate/JPA exceptions are wrapped into Spring's {{DataAccessException}} hierarchy so upper layers can catch them without depending on JPA.
+
+### Comparison
+| Annotation | Layer | Use case |
+|---|---|---|
+| {{@Component}} | Generic | Utility, config, shared bean |
+| {{@Service}} | Business logic | Orchestration, transaction boundary |
+| {{@Repository}} | Data access | JPA repo, custom DAO, **exception translation** |
+| {{@Controller}} | Web MVC | {{@RequestMapping}}, returns a view (Thymeleaf) |
+| {{@RestController}} | Web REST | {{@Controller}} + {{@ResponseBody}} |
+
+### Exception translation by {{@Repository}}
+When a bean is annotated with {{@Repository}}, Spring registers a {{PersistenceExceptionTranslationPostProcessor}} that automatically wraps JPA/Hibernate exceptions ({{NoResultException}}, {{OptimisticLockException}}, Hibernate's {{ConstraintViolationException}}...) into subclasses of {{DataAccessException}} ({{EmptyResultDataAccessException}}, {{OptimisticLockingFailureException}}, {{DataIntegrityViolationException}}...). Spring Boot auto-registers this post-processor; plain Spring requires you to declare the bean yourself. This lets services catch {{DataAccessException}} instead of importing JPA exceptions.
+
+~~~java
+@Repository
+public class JpaOrderRepository implements OrderRepository {
+    // getSingleResult() throws NoResultException -> Spring translates to EmptyResultDataAccessException
+}
+
+@Service
+public class OrderService {
+    public Order get(Long id) {
+        try { return repo.findById(id).orElseThrow(() -> new OrderNotFoundException(id)); }
+        catch (DataAccessException ex) { throw new RepositoryException("DB error", ex); }
+    }
+}
+~~~
+
+### Pitfall production
+- Using {{@Component}} for everything loses architectural meaning - reviewers cannot tell which bean is a service, repo, or controller.
+- Forgetting {{@Repository}} on a custom DAO => JPA exceptions leak into the service layer, coupling it to JPA.
+- Using {{@Controller}} for a REST API returns a view name instead of JSON - you must use {{@RestController}} or add {{@ResponseBody}}.
+
+### Under the hood: what exception translation does
+{{@Repository}} is wrapped by a proxy via {{PersistenceExceptionTranslationPostProcessor}}: technology-specific exceptions ({{SQLException}} with PostgreSQL error codes, Hibernate's {{PersistenceException}}) are translated into Spring's common **{{DataAccessException}}** tree - {{DuplicateKeyException}}, {{DataIntegrityViolationException}}, {{CannotAcquireLockException}}, {{QueryTimeoutException}}... So the service layer handles errors by **meaning** ("duplicate key") without depending on the DB or ORM. Spring Data JPA repositories already have this mechanism. {{@Service}} and {{@Controller}} add no special behavior (apart from {{@Controller}} being recognized by Spring MVC as a handler) - they are mostly semantic and targets for pointcuts.
+
+### Real-world example
+An account registration API caught {{catch (SQLException e)}} and checked {{e.getSQLState().equals("23505")}} to report "email already exists". After part of the code moved to JPA, the exception became {{DataIntegrityViolationException}} (already translated), so the catch branch never ran => users saw a 500 error instead of "email already registered" (about 300 times per day). Fix: catch {{DuplicateKeyException}}/{{DataIntegrityViolationException}} in the service and map it to 409 in {{@RestControllerAdvice}}; still check existence first for a friendly message, with the unique constraint as the last line of defense for two concurrent requests.
+
+### Sample interview answer
+"All four annotations are @Component, so component scanning registers them as beans; they differ in layer semantics and a few attached behaviors. @Controller is recognized by Spring MVC as a handler, @RestController adds ResponseBody. @Service mainly marks the business layer, useful for readability and pointcuts. @Repository adds exception translation: a post processor wraps a proxy that translates technology-specific exceptions from JDBC or Hibernate into Spring's DataAccessException tree, like DuplicateKeyException or CannotAcquireLockException. That lets the service layer handle errors by meaning without depending on a specific DB or ORM. Spring Data repositories already have this. In practice I catch those translated exceptions and map them to the right HTTP codes in a controller advice."
+
+> Senior tip: simple review rule: **any bean that touches the DB must have {{@Repository}}**. If the team uses Spring Data JPA interfaces, those are already proxied with {{@Repository}} implicitly, but custom DAO classes must add it manually.`,
     follow: [
       "Why doesn't Spring merge {{@Service}} and {{@Repository}} into a single annotation?",
-      "How do you enable exception translation for a bean that doesn't use {{@Repository}}?"
+      'How do you enable exception translation for a bean that doesn\'t use {{@Repository}}?'
     ],
   },
   'spring-023': {
-    q: `How do {{@Bean}} and {{@Component}} differ? What does {{@Configuration}}'s {{proxyBeanMethods}} do, and when should you turn it off?`,
-    a: `**Summary:** {{@Component}} uses **component scan** for Spring to auto-discover and register the bean; {{@Bean}} is used inside a {{@Configuration}} class to **manually declare a bean** – typically for third-party libraries, objects you don't own, or when creation logic is complex. {{@Configuration(proxyBeanMethods = true)}} (default) creates a CGLIB proxy for the config class so that calling a {{@Bean}} method multiple times still returns the **same instance** (singleton scope). Turn off {{proxyBeanMethods = false}} when the config class **does not call other {{@Bean}} methods** – this reduces proxy overhead and allows the class to be final.
- 
- ### Comparison
- | Aspect | {{@Component}} | {{@Bean}} |
- |---|---|---|
- | Registration | Component scan (auto) | Explicit declaration in {{@Configuration}} |
- | Use for | Classes you write and control | Third-party libs, complex creation logic, multiple instances |
- | Scope | Singleton by default, change via {{@Scope}} | Singleton by default, change via {{@Scope}} on method |
- | Multiple instances | Hard (needs {{@Qualifier}}) | Easy: write multiple {{@Bean}} methods with different names |
- 
- ### What is {{proxyBeanMethods}}
- When a {{@Configuration}} class has a {{@Bean}} method A calling another {{@Bean}} method B:
- ~~~java
- @Configuration
- public class AppConfig {
-     @Bean
-     DataSource dataSource() { return new HikariDataSource(); }
- 
-     @Bean
-     JdbcTemplate jdbcTemplate() { return new JdbcTemplate(dataSource()); } // calls dataSource()
- }
- ~~~
- If {{proxyBeanMethods = true}} (default), Spring wraps the class in a CGLIB proxy. When {{dataSource()}} is called, the proxy checks the context: is there already a {{DataSource}} bean? If yes, return that bean instead of running the method body again ⇒ **singleton is preserved**. If {{false}}, {{dataSource()}} executes its body ⇒ creates a **new** {{DataSource}} every call ⇒ violates singleton.
- 
- ### When to turn it off
- - Config class **does not** call other {{@Bean}} methods (no cross-method calls).
- - You want the config class to be final (CGLIB cannot proxy a final class).
- - Slightly faster startup (no proxy creation).
- 
- ~~~java
- @Configuration(proxyBeanMethods = false)  // "lite" mode
- public class LiteConfig {
-     @Bean DataSource dataSource() { ... }  // does not call other beans
-     @Bean JdbcTemplate jdbcTemplate(DataSource ds) { return new JdbcTemplate(ds); } // inject via parameter
- }
- ~~~
- Spring Boot 3.x encourages **lite mode** ({{proxyBeanMethods = false}}) with parameter injection instead of calling other bean methods.
- 
- ### Pitfall production
- - Turning off {{proxyBeanMethods}} while still calling other {{@Bean}} methods ⇒ duplicate instances, broken singleton, connection pool doubled.
- - Using {{@Bean}} for a class you own that could use {{@Component}} ⇒ more verbose, component scan won't see it, easy to forget to declare.
- 
- > Senior tip: default to {{@Component}} for your own classes; only use {{@Bean}} when forced (library, complex instantiation). With {{@Configuration}}, use {{proxyBeanMethods = false}} and inject via parameters – that's the modern Spring Boot 3 style.`,
+    q: `How do {{@Bean}} and {{@Component}} differ? What does {{proxyBeanMethods}} on {{@Configuration}} do, and when should you turn it off?`,
+    a: `**Summary:** {{@Component}} uses **component scanning** so Spring discovers and registers the bean automatically; {{@Bean}} is used inside a {{@Configuration}} class to **declare a bean manually** - typically for third-party libraries, objects you do not own, or when instance creation needs custom logic. {{@Configuration(proxyBeanMethods = true)}} (the default) creates a CGLIB proxy for the config class so calling a {{@Bean}} method multiple times still returns the **same instance** (singleton scope). Turn off {{proxyBeanMethods = false}} when the config class **never calls another {{@Bean}} method directly** - this reduces proxy overhead and allows the class to be final.
+
+### Comparison
+| Aspect | {{@Component}} | {{@Bean}} |
+|---|---|---|
+| Registration | Component scan (automatic) | Explicit declaration in {{@Configuration}} |
+| Use for | Classes you own and control | Third-party libraries, complex creation logic, multiple instances |
+| Scope | Singleton by default, change with {{@Scope}} | Singleton by default, change with {{@Scope}} on the method |
+| Multiple instances | Hard (needs {{@Qualifier}}) | Easy: write several {{@Bean}} methods with different names |
+
+### What {{proxyBeanMethods}} does
+When a {{@Configuration}} has a {{@Bean}} method A that calls {{@Bean}} method B:
+~~~java
+@Configuration
+public class AppConfig {
+    @Bean
+    DataSource dataSource() { return new HikariDataSource(); }
+
+    @Bean
+    JdbcTemplate jdbcTemplate() { return new JdbcTemplate(dataSource()); } // calls dataSource()
+}
+~~~
+If {{proxyBeanMethods = true}} (default), Spring wraps the class in a CGLIB proxy. When {{dataSource()}} is called, the proxy checks the context: does a DataSource bean already exist? If yes, it returns that bean without running the method body => the **singleton is preserved**. If {{false}}, {{dataSource()}} runs for real => a **new DataSource** is created on each call => the singleton is violated.
+
+### When to turn it off
+- The config class **does not** call other {{@Bean}} methods directly (no cross-calls).
+- You want the config class to be {{final}} (CGLIB cannot proxy a final class).
+- You want slightly faster startup (no proxy creation).
+
+~~~java
+@Configuration(proxyBeanMethods = false)  // "lite" mode
+public class LiteConfig {
+    @Bean DataSource dataSource() { ... }  // does not call other beans
+    @Bean JdbcTemplate jdbcTemplate(DataSource ds) { return new JdbcTemplate(ds); } // inject via parameter
+}
+~~~
+Spring Boot 3.x applications encourage **lite mode** ({{proxyBeanMethods = false}}) and injecting dependencies via method parameters instead of calling other bean methods.
+
+### Pitfall production
+- Turning off {{proxyBeanMethods}} while still calling another {{@Bean}} method => duplicate instances, broken singletons, connection pools multiplied.
+- Using {{@Bean}} for classes you own that could be {{@Component}} => more boilerplate, component scan does not see them, easy to forget to declare.
+
+### Under the hood: why calling a @Bean method inside @Configuration returns the same object
+With {{@Configuration}} (default {{proxyBeanMethods = true}}), Spring creates a **CGLIB subclass** of the config class; every call to a {{@Bean}} method from inside the class is intercepted: if the bean already exists in the container it returns that bean instead of running the method again. That is why calling {{dataSource()}} twice still yields a single pool. With {{proxyBeanMethods = false}} ("lite mode"), there is no proxy: calling {{dataSource()}} directly **creates a new object** each time - you must receive dependencies via {{@Bean}} method parameters instead of calling the method. Spring Boot uses {{false}} for most auto-configuration to start faster and support native images.
+
+### Real-world example
+A config class was written as {{@Configuration(proxyBeanMethods = false)}} (copied from an online example) and inside it {{orderClient()}} called {{httpClient()}}, and {{paymentClient()}} also called {{httpClient()}} => two separate {{HttpClient}} instances, each with a 200-connection pool => connections to the gateway doubled the limit and the gateway rejected 5% of requests during peak hours. Fix: receive {{HttpClient}} via a method parameter ({{@Bean OrderClient orderClient(HttpClient http)}}). Team rule: always receive dependencies via @Bean method parameters - correct in both modes.
+
+### Sample interview answer
+"@Component goes on a class you own so component scanning creates the bean; @Bean is a method in a config class that returns an object, used to create beans from external libraries or when you need custom initialization logic. With the default @Configuration, Spring creates a CGLIB subclass that intercepts calls between @Bean methods, so calling dataSource twice still returns the same singleton bean. proxyBeanMethods set to false removes that proxy, starts faster and fits native images - Spring Boot uses it for auto-configuration; but then calling a @Bean method directly creates a new object each time. So my safe rule is to always receive dependencies via @Bean method parameters instead of calling another method, which works in both modes."
+
+> Senior tip: default to {{@Component}} for classes you own; use {{@Bean}} only when necessary (libraries, instance creation logic). With {{@Configuration}}, prefer {{proxyBeanMethods = false}} and inject via parameters - that is the modern Spring Boot 3 style.`,
     follow: [
-      'Why does Spring Boot 3 recommend {{proxyBeanMethods = false}}?',
+      'Why does Spring Boot 3 encourage {{proxyBeanMethods = false}}?',
       'If a class has {{@Configuration(proxyBeanMethods = false)}} but still calls another {{@Bean}} method, what happens?'
     ],
   },
@@ -618,52 +636,70 @@ This is the most skipped step and also the most dangerous one:
   },
   'spring-026': {
     q: `{{@Transactional}}: default rollback only on unchecked exceptions. How do you use {{rollbackFor}}, and how does a try-catch that "swallows" the exception break the transaction?`,
-    a: `**Summary:** By default {{@Transactional}} only rolls back on **unchecked exceptions** ({{RuntimeException}}, {{Error}}). Checked exceptions ({{IOException}}, {{SQLException}}, custom checked exceptions) will **commit** the transaction unless you declare {{rollbackFor}}. The most dangerous trap: **catching the exception and not rethrowing** (swallowing) – the transaction commits normally even though business logic failed.
- 
- ### Rollback rules
- | Exception type | Default | To rollback, declare |
- |---|---|---|
- | {{RuntimeException}}, {{Error}} | Rollback | — |
- | Checked exception | **Commit** | {{@Transactional(rollbackFor = Exception.class)}} |
- | {{SQLException}} | **Commit** (checked) – but often translated by Spring to {{DataAccessException}} (unchecked) | {{rollbackFor}} if you rethrow it yourself |
-  | JPA {{PersistenceException}}, {{DataAccessException}} | Rollback (unchecked) | — |
- 
- ~~~java
- @Transactional(rollbackFor = Exception.class)
- public void importFile(InputStream in) throws IOException {
-     // IOException is checked -> needs rollbackFor to rollback
-     parseAndSave(in);
- }
- ~~~
- 
- ### Try-catch that swallows the exception
- ~~~java
- @Transactional
- public void transfer(Account from, Account to, BigDecimal amount) {
-     try {
-         from.debit(amount);
-         to.credit(amount);
-     } catch (InsufficientFundsException e) {
-         log.warn("Insufficient funds");  // SWALLOWS EXCEPTION - NO rethrow
-         // Transaction STILL COMMITS because no exception escaped!
-     }
- }
- ~~~
- Fix: **rethrow** or wrap in a {{RuntimeException}}:
- ~~~java
- catch (InsufficientFundsException e) {
-     throw new TransferFailedException(e);  // unchecked -> rollback
- }
- ~~~
- 
- ### Pitfall production
- - **Checked exception without {{rollbackFor}}** ⇒ partial data commits (e.g., file import fails halfway but first half is saved).
- - **Catch, log, and don't throw** is the most common bug – code review must catch this: every {{catch}} inside a {{@Transactional}} method must {{throw}}.
- - Conversely: if an exception is thrown from a **different bean's** {{@Transactional}} method (REQUIRED, joined transaction) and caught in the outer method, the transaction is already marked rollback-only ⇒ commit throws {{UnexpectedRollbackException}}. Swallowing the exception does not "save" the transaction.
- - {{@Transactional}} on {{private}}, {{final}}, {{static}} methods **has no effect** (not proxyable) – Spring silently ignores it.
- - Place {{@Transactional}} at the **service layer**, not controller or repository.
- 
- > Senior tip: mandatory code review rule: **a method with {{@Transactional}} must not have a try-catch that doesn't rethrow**. If you catch to handle, wrap in an unchecked exception and throw again. Also, enable DEBUG logging for {{org.springframework.transaction}} when debugging transactions.`,
+    a: `**Summary:** By default {{@Transactional}} only rolls back on **unchecked exceptions** ({{RuntimeException}}, {{Error}}). Checked exceptions ({{IOException}}, {{SQLException}}, custom checked exceptions) will **commit** the transaction unless you declare {{rollbackFor}}. The most dangerous trap: **catching the exception and not rethrowing** (swallowing it) - the transaction commits normally even though the business logic failed.
+
+### Rollback rules
+| Exception type | Default | To rollback, declare |
+|---|---|---|
+| {{RuntimeException}}, {{Error}} | Rollback | - |
+| Checked exception | **Commit** | {{@Transactional(rollbackFor = Exception.class)}} |
+| {{SQLException}} | **Commit** (checked) - but often translated by Spring to {{DataAccessException}} (unchecked) | {{rollbackFor}} if you throw it yourself |
+| JPA {{PersistenceException}}, {{DataAccessException}} | Rollback (unchecked) | - |
+
+~~~java
+@Transactional(rollbackFor = Exception.class)
+public void importFile(InputStream in) throws IOException {
+    // IOException is checked -> needs rollbackFor to rollback
+    parseAndSave(in);
+}
+~~~
+
+### Try-catch that swallows the exception
+~~~java
+@Transactional
+public void transfer(Account from, Account to, BigDecimal amount) {
+    try {
+        from.debit(amount);
+        to.credit(amount);
+    } catch (InsufficientFundsException e) {
+        log.warn("Insufficient funds");  // SWALLOWS EXCEPTION - NO rethrow
+        // Transaction STILL COMMITS because no exception escaped!
+    }
+}
+~~~
+Fix: **rethrow** or wrap in a {{RuntimeException}}:
+~~~java
+catch (InsufficientFundsException e) {
+    throw new TransferFailedException(e);  // unchecked -> rollback
+}
+~~~
+
+### Pitfall production
+- **Checked exception without {{rollbackFor}}** => partial data commits (for example, a file import fails halfway but the first half is saved).
+- **Catch, log, and do not throw** is the most common bug - code review must catch it: every {{catch}} inside a {{@Transactional}} method must {{throw}}.
+- Conversely: if an exception is thrown from a **different bean's** {{@Transactional}} method (REQUIRED, joined transaction) and caught in the outer method, the transaction is already marked rollback-only => commit throws {{UnexpectedRollbackException}}. Swallowing the exception does not "save" the transaction.
+- {{@Transactional}} on {{private}}, {{final}}, {{static}} methods **has no effect** (not proxyable) - Spring silently ignores it.
+- Place {{@Transactional}} at the **service layer**, not the controller or repository.
+
+### Real-world example
+A transfer service wrote:
+~~~java
+@Transactional
+public void transfer(...) {
+    debit(from, amount);
+    try {
+        credit(to, amount);            // throws DataIntegrityViolationException
+    } catch (Exception e) {
+        log.error("credit failed", e); // "swallows" the error to return a nice result to the client
+    }
+}
+~~~
+Result: the money debited from the source account **was committed**, while the destination account was not credited - 23 payments "disappeared" before reconciliation found it. Another variant: {{credit}} lives in a different bean with {{@Transactional}} (REQUIRED); the error inside marks the transaction **rollback-only**; the outer method catches and swallows the exception and finishes normally => Spring throws {{UnexpectedRollbackException}} at commit, the client receives 500 even though the code "handled the error". Fix: do not catch exceptions inside a transactional method unless you truly handle them; if you need a friendly result, let the exception propagate and map it in {{@RestControllerAdvice}}; for checked business exceptions use {{rollbackFor}}.
+
+### Sample interview answer
+"By default Spring only rolls back when a method throws RuntimeException or Error; checked exceptions still commit. To roll back on a checked exception, declare rollbackFor, or use an unchecked business exception as I usually do. The bigger trap is a try-catch that swallows the exception inside a transactional method: the proxy never sees the error so it commits everything that was done, for example money already debited but not credited. A confusing variant is an error thrown inside another transactional bean in the same transaction: it marks the transaction rollback-only, the outer method swallows the error and finishes normally, and at commit Spring throws UnexpectedRollbackException. My rule: only catch exceptions inside a transactional method when you truly handle them; otherwise let the exception propagate and map it in a controller advice."
+
+> Senior tip: mandatory code review rule: **a method with {{@Transactional}} must not have a try-catch that doesn't rethrow**. If you catch to handle, wrap in an unchecked exception and throw again. Also, enable DEBUG logging for {{org.springframework.transaction}} when debugging transactions.`,
     follow: [
       'Why does Spring default to not rolling back on checked exceptions?',
       'How do you spot a {{@Transactional}} method that swallows an exception during code review?'

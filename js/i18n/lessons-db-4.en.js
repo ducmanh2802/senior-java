@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/lessons-db.js — task T1021. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-db.js — task T1103. Format: js/core/i18n.js (content overlay).
  * ids: lesson-db-008
  */
 App.i18n.content({

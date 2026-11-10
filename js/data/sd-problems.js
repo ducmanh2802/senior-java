@@ -1860,5 +1860,673 @@ WHERE driver_id = :d AND status = 'AVAILABLE';
     'Chuyển sang ghép theo lô mỗi 2 giây: thuật toán và trade-off là gì?'
   ],
   related: ['design-010']
-}
+},
+{
+  id: 'sd-016',
+  title: 'Flash sale: 1.000 sản phẩm, 200.000 người bấm mua cùng lúc',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Sàn thương mại điện tử chạy flash sale 0 giờ: 1.000 chiếc điện thoại giá 1 triệu đồng (giá gốc 20 triệu), mỗi tài khoản chỉ được mua 1 chiếc. Dự kiến 200.000 người dùng mở app chờ, khoảng 50.000 request/giây trong 10 giây đầu. Yêu cầu: **không bán vượt số lượng (oversell)**, không để một người mua hai chiếc, hệ thống chính (giỏ hàng, thanh toán của các đơn khác) không bị sập theo, đơn giữ chỗ mà không thanh toán trong 10 phút thì trả hàng về kho. Bạn có 45 phút. Hãy thiết kế.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: số lượng hàng (1.000), giới hạn mỗi người (1), thời gian giữ chỗ chờ thanh toán (10 phút), có cần công bằng theo thứ tự đến không (thường chỉ cần "không oversell", không cần FIFO tuyệt đối). Non-functional: peak 50.000 RPS, p99 phản hồi "thành công/hết hàng" dưới 1 giây, không ảnh hưởng hệ thống khác. Hỏi: có chống bot không, thanh toán qua cổng nào, có cho huỷ đơn không. Out-of-scope: gợi ý sản phẩm, livestream.` },
+    { name: 'Estimation', minutes: 5, guide: `50.000 RPS nhưng chỉ 1.000 request "thành công": 98% request chỉ cần trả "hết hàng" thật rẻ. Một DB quan hệ chịu vài nghìn UPDATE/giây trên **một dòng** tồn kho là trần (lock hàng đợi); Redis single-thread làm được khoảng 100.000 lệnh đơn giản/giây. Đơn giữ chỗ: 1.000 bản ghi, không đáng kể. Băng thông: 50.000 × 2 KB ≈ 100 MB/s ở edge, phải chặn sớm ở CDN/gateway.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /flash-sales/{saleId}/reservations (Idempotency-Key, userId từ token) → 201 {reservationId, expiresAt} hoặc 409 SOLD_OUT / 409 ALREADY_BOUGHT. GET /flash-sales/{saleId} (trạng thái, còn hàng hay không, qua cache). POST /reservations/{id}/pay. Dữ liệu: Redis key stock:{saleId} (số nguyên), set buyers:{saleId}; DB bảng reservation (id, sale_id, user_id, status PENDING/PAID/EXPIRED, expires_at, UNIQUE(sale_id, user_id)).` },
+    { name: 'High-level design', minutes: 15, guide: `CDN + trang tĩnh đếm ngược; gateway rate limit theo user/IP và chặn trước giờ mở; Redis Lua trừ kho nguyên tử + kiểm tra người mua; ghi reservation qua Kafka (hoặc ghi DB trực tiếp vì chỉ 1.000 dòng); worker hết hạn trả kho; thanh toán đi luồng thường. Tách hạ tầng flash sale (cluster Redis, service riêng) khỏi hệ thống đặt hàng chính.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: script Lua bảo đảm "kiểm tra + trừ" nguyên tử; Redis mất dữ liệu khi failover thì sao (đối soát với DB, giới hạn bằng UNIQUE và CHECK trong DB); trả hàng khi hết hạn và race với thanh toán đến muộn; chống bot (captcha, token xếp hàng, giới hạn thiết bị); hot key Redis; quan sát và kill switch.` }
+  ],
+  rubric: [
+    'Nhận ra 98% request là "hết hàng" và phải trả lời rẻ ở tầng ngoài (cache, gateway, Redis)',
+    'Không trừ tồn kho trực tiếp bằng UPDATE trên một dòng DB ở 50.000 RPS; giải thích hot row/lock',
+    'Trừ kho nguyên tử trong Redis (Lua hoặc DECR có kiểm tra) kèm chống mua trùng mỗi người',
+    'Ràng buộc cuối ở DB: UNIQUE(sale_id, user_id) và tổng đơn không vượt số lượng (đối soát)',
+    'Giữ chỗ có hạn, worker hết hạn trả kho, xử lý race thanh toán đến muộn bằng trạng thái có điều kiện',
+    'Idempotency cho request đặt chỗ và thanh toán',
+    'Rate limit, chống bot, chặn trước giờ mở bán ở edge',
+    'Cô lập hạ tầng flash sale khỏi hệ thống chính (bulkhead), có kill switch',
+    'Xử lý Redis failover/mất dữ liệu và đối soát sau sale',
+    'Giám sát: số còn lại, tỉ lệ 409, độ trễ, lỗi; nêu trade-off FIFO và công bằng'
+  ],
+  reference: `**Tóm tắt:** Flash sale là bài toán **chặn tải sớm** và **trừ kho nguyên tử**. 50.000 request/giây nhưng chỉ 1.000 request thành công, nên thiết kế phải trả lời "hết hàng" thật rẻ ở tầng ngoài cùng, và chỉ để một số nhỏ request chạm tới nơi trừ kho. Trừ kho làm trong Redis bằng script Lua (kiểm tra còn hàng, kiểm tra người này chưa mua, trừ, ghi nhận, tất cả trong một bước nguyên tử). Database giữ ràng buộc cuối cùng (UNIQUE theo người mua) và là nguồn sự thật cho đơn; giữ chỗ có hạn 10 phút, hết hạn thì trả kho.
+
+### Vì sao không trừ kho bằng database
+~~~sql
+UPDATE flash_stock SET remaining = remaining - 1 WHERE sale_id = 7 AND remaining > 0;
+~~~
+Câu này đúng về logic nhưng mọi request đều tranh **một dòng**: mỗi UPDATE giữ row lock tới khi commit, các request khác xếp hàng. Thực tế một dòng nóng chỉ chịu vài nghìn lượt/giây; 50.000 request/giây sẽ làm hàng đợi lock dài, connection pool cạn, và kéo sập cả các API khác dùng chung database. Redis xử lý lệnh tuần tự trên một thread, mỗi lệnh vài micro giây, nên chịu được khoảng 100.000 thao tác/giây trên một key mà không cần lock.
+
+### Kiến trúc
+~~~text
+Client --> CDN (trang tĩnh, đếm ngược, trạng thái còn/hết cache 1s)
+   |
+   v
+API Gateway: chặn trước giờ mở, rate limit 1 req/2s mỗi user, captcha/token xếp hàng
+   |
+   v
+Flash Sale Service (cluster riêng) --Lua--> Redis (stock:7, buyers:7)
+   |  thành công (tối đa ~1.000 lần)
+   v
+Ghi reservation vào DB (UNIQUE sale_id+user_id)  ---> Kafka "reservation-created"
+   |                                                     |
+   v                                                     v
+Trả 201 + reservationId                     Payment flow thường / thông báo
+                                                         |
+Expiry worker: quét reservation PENDING quá hạn --> trả kho (Redis INCR) + EXPIRED
+~~~
+- Trang sản phẩm và trạng thái "còn hàng/hết hàng" phục vụ từ CDN/cache, cập nhật mỗi giây, nên phần lớn người dùng không chạm vào backend.
+- Khi Redis báo hết, service bật cờ **sold_out** trong bộ nhớ: mọi request sau trả 409 ngay, không gọi Redis nữa.
+
+### Trừ kho nguyên tử bằng Lua
+~~~text
+-- KEYS[1] = stock:{sale}, KEYS[2] = buyers:{sale}, ARGV[1] = userId
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then return -2 end   -- đã mua
+local left = tonumber(redis.call('GET', KEYS[1]))
+if left <= 0 then return -1 end                                        -- hết hàng
+redis.call('DECR', KEYS[1])
+redis.call('SADD', KEYS[2], ARGV[1])
+return left - 1
+~~~
+Redis chạy cả script như một lệnh duy nhất, không lệnh nào chen giữa "kiểm tra" và "trừ", nên không thể bán vượt. Hai key dùng chung hash tag (đặt phần sale id trong dấu ngoặc nhọn, ví dụ stock:{7} và buyers:{7}) để nằm cùng một slot khi chạy Redis Cluster.
+
+### Ghi đơn và ràng buộc cuối
+Sau khi Lua trả thành công, service ghi bảng reservation:
+~~~sql
+CREATE TABLE reservation (
+  id          UUID PRIMARY KEY,
+  sale_id     BIGINT NOT NULL,
+  user_id     BIGINT NOT NULL,
+  status      VARCHAR(16) NOT NULL,      -- PENDING, PAID, EXPIRED, CANCELLED
+  expires_at  TIMESTAMPTZ NOT NULL,
+  UNIQUE (sale_id, user_id)              -- lưới an toàn cuối: một người một đơn
+);
+~~~
+Chỉ khoảng 1.000 lần ghi, database chịu thoải mái. Nếu ghi DB lỗi sau khi Redis đã trừ, service gọi script hoàn kho (INCR và SREM) rồi trả lỗi; một job đối soát định kỳ so số lượng trong Redis với số reservation PENDING/PAID để sửa lệch.
+
+### Hết hạn giữ chỗ và race với thanh toán
+~~~sql
+-- worker mỗi 10 giây
+UPDATE reservation SET status = 'EXPIRED'
+WHERE status = 'PENDING' AND expires_at < now()
+RETURNING sale_id, user_id;            -- với mỗi dòng: Redis INCR stock, SREM buyers
+-- thanh toán xác nhận
+UPDATE reservation SET status = 'PAID' WHERE id = ? AND status = 'PENDING';
+~~~
+Cả hai đều là cập nhật **có điều kiện trên trạng thái**: nếu thanh toán đến đúng lúc worker vừa đánh EXPIRED, câu UPDATE của thanh toán ảnh hưởng 0 dòng, service hoàn tiền tự động (hoặc cho phép mua nếu kho còn), không bao giờ có hai trạng thái cùng thắng.
+
+### Chống bot và công bằng
+- Chặn ở gateway trước giờ mở (request tới sớm trả 425/403 ngay), token mua do trang chờ cấp kèm captcha.
+- Rate limit theo user, thiết bị, IP; giới hạn một tài khoản xác thực số điện thoại.
+- Hàng đợi ảo (virtual waiting room) nếu cần công bằng theo thứ tự: người dùng nhận số thứ tự, chỉ một nhóm được vào trang mua mỗi giây. Đổi lại tốn công vận hành; nhiều sàn chấp nhận "ai nhanh hơn thì được" kèm chống bot.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Redis primary chết, replica chưa kịp nhận vài lệnh DECR | Kho trong Redis lớn hơn thực tế, có thể bán vượt vài chiếc | UNIQUE trong DB chặn mua trùng; đối soát tổng reservation, vượt thì huỷ đơn cuối kèm voucher xin lỗi; dùng WAIT 1 0 sau script nếu chấp nhận trễ thêm |
+| Ghi DB lỗi sau khi Redis trừ | Kho "mất" một chiếc | Hoàn kho ngay trong luồng lỗi + job đối soát |
+| Service flash sale quá tải | Lỗi 5xx | Cluster riêng, autoscale trước giờ G, kill switch tắt sale mà không ảnh hưởng hệ thống chính |
+| Bot spam | Người thật không mua được | Captcha, token, rate limit, phát hiện bất thường |
+
+### Giám sát
+Số còn lại theo thời gian thực, tỉ lệ 201/409/429/5xx, p99 latency, số reservation PENDING sắp hết hạn, số lệch khi đối soát Redis với DB. Diễn tập tải (load test 2 lần peak) một tuần trước sự kiện.
+
+> Senior tip: điều quan trọng nhất khi trả lời bài này là nói rõ **đâu là nguồn sự thật cho mỗi thứ**: Redis là nguồn sự thật cho "còn được bán không" trong lúc sale (nhanh, chấp nhận lệch nhỏ khi failover), database là nguồn sự thật cho "ai đã mua" (UNIQUE, bền vững), và một job đối soát nối hai bên. Interviewer thường hỏi tiếp "Redis chết thì sao", và câu trả lời tốt luôn có con số: lệch tối đa bao nhiêu chiếc và xử lý phần lệch thế nào với khách.`,
+  followups: [
+    'Nếu yêu cầu tuyệt đối không được bán vượt dù chỉ một chiếc kể cả khi Redis failover, bạn đổi thiết kế thế nào và mất gì?',
+    'Thay vì 1 sản phẩm, flash sale có 500 sản phẩm khác nhau cùng mở lúc 0 giờ: hot key và phân bổ Redis thay đổi ra sao?',
+    'Làm sao triển khai hàng đợi ảo (waiting room) để công bằng theo thứ tự đến?',
+    'Khách đã thanh toán nhưng đơn bị đánh hết hạn do callback cổng thanh toán đến muộn: luồng xử lý thế nào?'
+  ],
+  related: ['design-004', 'scenario-049', 'scenario-051', 'scenario-008']
+},
+{
+  id: 'sd-017',
+  title: 'Hệ thống voucher và mã giảm giá có giới hạn lượt dùng',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống voucher cho sàn thương mại điện tử: marketing tạo chiến dịch (giảm 50.000 đồng cho đơn từ 300.000, tối đa 100.000 lượt toàn hệ thống, mỗi khách 1 lượt, hiệu lực 7 ngày), khách "lưu" voucher vào ví rồi áp dụng khi thanh toán. Quy mô: 30 triệu khách, 2.000 đơn/giây giờ cao điểm, một chiến dịch lớn có thể có 1 triệu lượt lưu trong 5 phút đầu. Yêu cầu: **không vượt tổng lượt**, không dùng một voucher hai lần, đơn huỷ thì hoàn lượt. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt loại voucher: mã công khai (nhập tay) và voucher cá nhân (đã lưu vào ví); điều kiện áp dụng (giá trị đơn tối thiểu, ngành hàng, kênh thanh toán); giới hạn: tổng lượt, mỗi khách, theo ngày; có cộng dồn nhiều voucher không. Vòng đời: tạo → phát/lưu → giữ (reserve) khi tạo đơn → dùng (redeem) khi thanh toán thành công → hoàn khi huỷ. Non-functional: kiểm tra voucher dưới 50 ms, không vượt lượt, audit đầy đủ.` },
+    { name: 'Estimation', minutes: 5, guide: `30 triệu khách × trung bình 10 voucher trong ví = 300 triệu dòng user_voucher (khoảng 100 byte/dòng ≈ 30 GB, cần partition theo user). 2.000 đơn/giây, mỗi đơn kiểm tra 3–5 voucher ứng viên → 10.000 lượt đọc/giây (cache được). Lượt lưu đột biến 1 triệu trong 5 phút ≈ 3.300 ghi/giây trên **một** bộ đếm tổng lượt: hot counter.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /vouchers/{campaignId}/claim (Idempotency-Key) → lưu vào ví. GET /wallet/vouchers?cartValue=... → danh sách áp dụng được. POST /orders (kèm voucherIds) → reserve. Bảng campaign (id, rule JSON, total_quota, per_user_limit, starts_at, ends_at); user_voucher (user_id, campaign_id, status CLAIMED/RESERVED/USED/EXPIRED, order_id, version) PK (user_id, campaign_id); voucher_ledger (append-only: claim, reserve, redeem, release).` },
+    { name: 'High-level design', minutes: 15, guide: `Voucher service tách khỏi Order service; rule engine đánh giá điều kiện; quota counter trong Redis (hoặc chia nhỏ quota thành nhiều shard) cho lượt lưu; user_voucher trong DB phân vùng theo user; reserve trong cùng luồng tạo đơn bằng saga/TCC: reserve khi tạo đơn, confirm khi thanh toán, release khi huỷ hoặc quá hạn; outbox để đồng bộ sự kiện.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: hot counter tổng lượt (Redis DECR, quota sharding, cấp phát theo lô cho từng instance); idempotency khi khách bấm lưu nhiều lần; race áp dụng cùng một voucher cho hai đơn song song (UPDATE có điều kiện trên trạng thái); hoàn lượt khi huỷ và chống gian lận (tạo đơn rồi huỷ để giữ voucher); mã công khai bị lộ; đối soát ngân sách marketing.` }
+  ],
+  rubric: [
+    'Phân biệt rõ vòng đời claim, reserve, redeem, release và trạng thái tương ứng',
+    'Chống vượt tổng lượt với hot counter: Redis nguyên tử hoặc chia quota theo shard/lô, có đối soát',
+    'Chống dùng trùng: UPDATE có điều kiện trên trạng thái/version, UNIQUE theo (user, campaign)',
+    'Reserve khi tạo đơn, confirm khi thanh toán, release khi huỷ hoặc hết hạn (saga/TCC)',
+    'Idempotency cho claim và cho reserve theo orderId',
+    'Rule engine đánh giá điều kiện áp dụng, cache campaign',
+    'Dữ liệu ví phân vùng theo user, ước lượng dung lượng',
+    'Ledger append-only để audit và đối soát ngân sách',
+    'Chống gian lận: giới hạn theo thiết bị/tài khoản, mã công khai bị lộ',
+    'Nêu trade-off nhất quán chặt và hiệu năng'
+  ],
+  reference: `**Tóm tắt:** Voucher là bài toán **đếm có giới hạn dưới tải cao** cộng **máy trạng thái không được chạy hai lần**. Tách vòng đời thành bốn bước: **claim** (lưu vào ví, trừ quota tổng), **reserve** (gắn vào đơn khi tạo đơn), **redeem** (xác nhận khi thanh toán thành công), **release** (hoàn khi đơn huỷ hoặc giữ chỗ hết hạn). Quota tổng là một hot counter nên đặt ở Redis (DECR nguyên tử) hoặc chia thành nhiều shard; mọi chuyển trạng thái của từng voucher là UPDATE có điều kiện trong DB để không thể dùng hai lần. Mọi thay đổi ghi vào ledger append-only để đối soát ngân sách marketing.
+
+### Vòng đời và trạng thái
+~~~text
+           claim                 reserve(orderId)            redeem(orderId)
+(campaign) -----> CLAIMED  ---------------------> RESERVED ------------------> USED
+                     ^                                |
+                     |        release (huỷ đơn, hết hạn giữ 30 phút)
+                     +--------------------------------+
+CLAIMED --(hết hạn chiến dịch)--> EXPIRED
+~~~
+Mỗi mũi tên là một câu UPDATE có điều kiện trên trạng thái hiện tại:
+~~~sql
+-- reserve: chỉ thành công nếu voucher đang CLAIMED và còn hạn
+UPDATE user_voucher
+SET status = 'RESERVED', order_id = :orderId, reserved_at = now()
+WHERE user_id = :userId AND campaign_id = :campaignId
+  AND status = 'CLAIMED' AND expires_at > now();
+-- 0 dòng => voucher đã được dùng cho đơn khác hoặc hết hạn => từ chối
+~~~
+Hai đơn song song cùng dùng một voucher: chỉ một câu UPDATE thắng, câu kia ảnh hưởng 0 dòng. Gọi lại reserve với cùng orderId (retry) phải trả thành công: kiểm tra {{status = 'RESERVED' AND order_id = :orderId}} trước khi báo lỗi.
+
+### Quota tổng: hot counter
+Một triệu lượt claim trong 5 phút đổ vào **một** bộ đếm. Ba lựa chọn:
+| Cách | Thông lượng | Độ chính xác | Ghi chú |
+|---|---|---|---|
+| UPDATE campaign SET remaining = remaining - 1 WHERE remaining > 0 | Vài nghìn/giây trên một dòng | Tuyệt đối | Lock dòng nóng, dễ nghẽn |
+| Redis DECR (Lua kiểm tra không âm) | Khoảng 100.000/giây | Lệch nhỏ khi failover | Đối soát với ledger |
+| Chia quota thành 16 shard (16 key hoặc 16 dòng), chọn shard ngẫu nhiên | Gấp 16 lần | Tuyệt đối nếu ở DB | Khi một shard hết thì thử shard khác |
+Thực tế: Redis DECR cho đường nóng, DB ghi user_voucher với PK (user_id, campaign_id) bảo đảm mỗi người một lượt, job đối soát mỗi phút so tổng claim trong DB với quota.
+
+### Kiến trúc
+~~~text
+App --> API Gateway --> Voucher Service --(DECR quota)--> Redis
+                          |  rule engine (campaign cache 30s)
+                          v
+                  DB user_voucher (partition theo hash user_id) + voucher_ledger
+                          ^
+Order Service --reserve/confirm/release (đồng bộ, idempotent theo orderId)--+
+                          |
+                     outbox --> Kafka (voucher-events) --> báo cáo ngân sách, CRM
+~~~
+- **Áp dụng khi checkout**: Order Service gọi reserve trong luồng tạo đơn (đồng bộ, timeout 200 ms); thanh toán thành công thì gọi redeem; đơn huỷ hoặc không thanh toán sau 30 phút thì release. Đây là saga dạng TCC: Try (reserve), Confirm (redeem), Cancel (release).
+- **Rule engine**: điều kiện (giá trị đơn tối thiểu, ngành hàng, kênh thanh toán, khung giờ) lưu dạng JSON có version, cache theo campaign; đánh giá trên snapshot giỏ hàng gửi kèm.
+
+### Chống gian lận
+- Mã công khai bị đăng lên mạng: giới hạn theo tài khoản đã xác thực, thiết bị, phương thức thanh toán; mã cá nhân gắn với user thay vì mã chung.
+- Tạo đơn rồi huỷ để "giữ" voucher: reserve có hạn 30 phút; huỷ nhiều lần thì hạ mức ưu tiên hoặc không hoàn lượt.
+- Bot claim hàng loạt: rate limit, captcha khi claim chiến dịch lớn.
+
+### Đối soát ngân sách
+voucher_ledger ghi mọi sự kiện (claim, reserve, redeem, release) kèm số tiền giảm. Báo cáo cuối ngày: tổng redeem × giá trị giảm phải khớp chi phí marketing ghi nhận ở kế toán; số CLAIMED + RESERVED + USED không vượt quota.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Redis mất vài DECR khi failover | Có thể vượt quota vài lượt | Đối soát, chặn claim khi DB vượt quota, chấp nhận lệch nhỏ đã thống nhất với marketing |
+| Order Service gọi reserve timeout | Không biết đã reserve chưa | Retry cùng orderId (idempotent), release theo hạn nếu đơn không tạo |
+| Đơn huỷ nhưng sự kiện huỷ bị mất | Voucher kẹt RESERVED | Job quét RESERVED quá hạn đối chiếu trạng thái đơn |
+| Campaign sửa điều kiện khi đang chạy | Đơn cũ/mới đánh giá khác nhau | Rule có version, đơn lưu version đã áp dụng |
+
+> Senior tip: hãy nói rõ voucher là **tiền** của công ty: mọi lượt dùng phải có dấu vết trong ledger và đối soát được với kế toán. Interviewer đánh giá cao ứng viên chủ động hỏi "lệch quota bao nhiêu lượt thì marketing chấp nhận được", vì câu trả lời quyết định chọn Redis (nhanh, lệch nhỏ khi sự cố) hay counter chia shard trong DB (chậm hơn, chính xác tuyệt đối).`,
+  followups: [
+    'Cho phép cộng dồn tối đa 3 voucher (một của shop, một của sàn, một freeship): chọn tổ hợp tốt nhất cho khách thế nào?',
+    'Marketing muốn tăng quota giữa chiến dịch hoặc dừng khẩn cấp: thiết kế thay đổi ra sao?',
+    'Hoàn tiền một phần cho đơn đã dùng voucher: phân bổ giá trị giảm cho từng sản phẩm thế nào?',
+    'Làm sao phát hiện và chặn nhóm tài khoản ảo săn voucher?'
+  ],
+  related: ['scenario-050', 'scenario-056', 'design-004']
+},
+{
+  id: 'sd-018',
+  title: 'Hệ thống đặt lệnh và khớp lệnh chứng khoán',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Công ty chứng khoán muốn xây hệ thống nhận lệnh mua/bán cổ phiếu từ app và **khớp lệnh nội bộ** (order book theo từng mã) trong giờ giao dịch. Quy mô: 2 triệu tài khoản, 1.500 mã, giờ mở cửa 30.000 lệnh/giây, mã nóng nhất chiếm 15% lượng lệnh. Yêu cầu: khớp theo **ưu tiên giá rồi thời gian**, trả xác nhận đặt lệnh dưới 50 ms, kiểm tra sức mua/số dư chứng khoán trước khi nhận lệnh, không được khớp sai hay mất lệnh khi một máy chết, kết quả phải tái lập được cho kiểm toán. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt loại lệnh (LO giới hạn, MP thị trường, huỷ, sửa), phiên (khớp liên tục, ATO/ATC khớp định kỳ có thể out-of-scope), đơn vị giá (bước giá), lô. Kiểm tra trước giao dịch: sức mua (tiền), số dư chứng khoán khả dụng (bán). Non-functional: p99 nhận lệnh 50 ms, khớp tuần tự xác định (deterministic), sẵn sàng cao trong giờ giao dịch, audit 10 năm. Hỏi rõ: nội bộ hay chuyển lên sở; ở đây giả định khớp nội bộ.` },
+    { name: 'Estimation', minutes: 5, guide: `30.000 lệnh/giây toàn hệ thống, mã nóng 4.500 lệnh/giây. Một engine khớp lệnh đơn luồng trong bộ nhớ xử lý hàng trăm nghìn lệnh/giây (thao tác trên cây giá + hàng đợi), nên một luồng cho một mã là đủ, chia 1.500 mã cho vài chục engine. Lưu trữ: 30.000 × 6,5 giờ ≈ 700 triệu sự kiện/ngày × 200 byte ≈ 140 GB/ngày cho log sự kiện.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /orders {clientOrderId, symbol, side, type, price, qty} → 202 {orderId, status: ACCEPTED} hoặc 422 (thiếu sức mua). DELETE /orders/{id}. Luồng sự kiện về app qua WebSocket: ACCEPTED, PARTIALLY_FILLED, FILLED, CANCELLED, REJECTED. Dữ liệu: order (id, account, symbol, side, price, qty, filled_qty, status, seq), trade (id, buy_order, sell_order, price, qty, seq), sổ cái tiền và chứng khoán (append-only), log sự kiện đầu vào theo mã (sequence number).` },
+    { name: 'High-level design', minutes: 15, guide: `Gateway → Order Service (xác thực, idempotency, kiểm tra rủi ro: phong toả tiền/chứng khoán) → ghi lệnh vào log có thứ tự theo mã (Kafka partition theo symbol hoặc journal riêng) → Matching Engine đơn luồng cho mỗi nhóm mã, state trong RAM, đọc log tuần tự → phát sự kiện khớp → Settlement/Ledger cập nhật tiền và chứng khoán → Notification qua WebSocket. Engine dự phòng đọc cùng log để sẵn sàng thay thế.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: cấu trúc order book (TreeMap theo giá + hàng đợi FIFO mỗi mức giá), vì sao đơn luồng mỗi mã (xác định, không lock); event sourcing và tái lập sau khi engine chết (snapshot + replay từ offset); phong toả sức mua trước khi gửi lệnh vào engine và giải phóng khi huỷ; huỷ lệnh đi cùng hàng đợi với đặt lệnh để giữ thứ tự; tránh khớp hai lần khi failover (engine dự phòng chỉ phát sự kiện sau khi nhận quyền leader, sự kiện có seq để downstream khử trùng).` }
+  ],
+  rubric: [
+    'Order book theo mã: mức giá sắp xếp, hàng đợi FIFO trong cùng mức giá, ưu tiên giá rồi thời gian',
+    'Engine khớp lệnh đơn luồng cho mỗi mã (hoặc nhóm mã), state trong bộ nhớ, giải thích vì sao không dùng DB lock',
+    'Log đầu vào có thứ tự (sequence) theo mã làm nguồn sự thật, event sourcing để tái lập',
+    'Snapshot định kỳ + replay khi khôi phục, engine dự phòng hot standby',
+    'Kiểm tra và phong toả sức mua/chứng khoán trước khi lệnh vào engine; giải phóng khi huỷ/khớp',
+    'Huỷ và sửa lệnh đi cùng log với đặt lệnh để giữ thứ tự xác định',
+    'Idempotency theo clientOrderId; sự kiện có seq để downstream khử trùng',
+    'Sổ cái tiền/chứng khoán append-only, đối soát cuối ngày',
+    'Phân bổ mã cho engine, xử lý mã nóng',
+    'Audit, tái lập kết quả khớp, giám sát độ trễ end-to-end'
+  ],
+  reference: `**Tóm tắt:** Trái tim là **matching engine đơn luồng cho mỗi mã chứng khoán**, giữ order book trong RAM và xử lý lệnh tuần tự từ một **log đầu vào có số thứ tự**. Đơn luồng nghe có vẻ chậm nhưng ngược lại: không lock, không tranh chấp, mỗi lệnh chỉ vài micro giây, và quan trọng nhất là **xác định**: cùng một log đầu vào luôn cho cùng kết quả khớp, nên khôi phục sau sự cố và kiểm toán chỉ là replay log. Mọi kiểm tra tiền và chứng khoán (phong toả sức mua) làm **trước** khi lệnh vào log, để engine chỉ lo khớp.
+
+### Order book của một mã
+~~~text
+          BÁN (ask)  giá tăng dần
+  25.300 | [S7 1.000] [S9 500]          <- giá bán thấp nhất được ưu tiên
+  25.200 | [S3 2.000]
+  ---------------------------------
+  25.100 | [B4 1.500] [B8 300]          <- giá mua cao nhất được ưu tiên
+  25.000 | [B1 1.000] [B2 700] [B6 400]
+          MUA (bid)  giá giảm dần
+Mỗi mức giá: hàng đợi FIFO theo thời gian vào sổ
+~~~
+Cấu trúc: hai cây sắp theo giá (Java {{TreeMap<Long, ArrayDeque<Order>>}}, giá lưu bằng số nguyên theo bước giá) và một map orderId → order để huỷ nhanh. Lệnh mua giá 25.300 khối lượng 1.200 đến: khớp 1.000 với S7 rồi 200 với S9 ở mức 25.300 (giá của lệnh đang chờ), phần còn lại của S9 vẫn nằm sổ.
+
+### Vì sao đơn luồng
+- Khớp lệnh về bản chất là tuần tự: lệnh sau phụ thuộc trạng thái sổ sau lệnh trước. Song song hoá trong cùng một mã chỉ thêm lock mà không thêm thông lượng.
+- Không lock, dữ liệu nằm gọn trong cache CPU: một luồng xử lý hàng trăm nghìn lệnh mỗi giây. Mã nóng nhất 4.500 lệnh/giây còn rất xa trần.
+- Song song **giữa các mã**: 1.500 mã chia cho khoảng 20 engine (theo hash hoặc theo tải), mỗi engine một luồng khớp chính.
+
+### Luồng xử lý
+~~~seq
+title: Đặt lệnh mua và khớp
+actors: App | Order Service | Risk | Log | Engine | Ledger
+App -> Order Service: POST /orders (clientOrderId)
+Order Service -> Risk: phong toả sức mua = giá x khối lượng + phí
+Risk --> Order Service: OK, đã phong toả
+Order Service -> Log: append NEW_ORDER (seq theo mã)
+Order Service --> App: 202 ACCEPTED
+Log -> Engine: đọc tuần tự theo seq
+Engine -> Engine: khớp theo giá rồi thời gian
+Engine -> Log: append TRADE, ORDER_UPDATED (seq đầu ra)
+Log -> Ledger: chuyển tiền và chứng khoán, giải phóng phong toả thừa
+Ledger --> App: thông báo khớp qua WebSocket
+~~~
+- **Log đầu vào** là nguồn sự thật: Kafka topic phân vùng theo mã (một partition giữ thứ tự cho một nhóm mã) hoặc journal chuyên dụng có replication. Order Service chỉ trả 202 sau khi lệnh đã ghi bền vào log (acks=all).
+- **Huỷ và sửa lệnh** cũng là sự kiện trong cùng log, nên thứ tự giữa "đặt" và "huỷ" luôn xác định.
+- **Idempotency**: clientOrderId duy nhất theo tài khoản; gửi lại cùng clientOrderId trả kết quả cũ.
+
+### Kiểm tra trước giao dịch
+Lệnh mua: phong toả tiền = giá × khối lượng + phí ước tính, trong sổ cái tiền (UPDATE có điều kiện số dư khả dụng ≥ số cần phong toả). Lệnh bán: phong toả chứng khoán khả dụng. Khi khớp ở giá tốt hơn hoặc huỷ phần còn lại, Ledger giải phóng phần phong toả thừa. Engine không bao giờ phải hỏi "có đủ tiền không", nên không có I/O trong vòng khớp.
+
+### Khôi phục và sẵn sàng cao
+- Engine chính ghi **snapshot** order book mỗi vài phút kèm seq cuối cùng đã xử lý.
+- Engine dự phòng đọc cùng log, giữ state song song (hot standby) nhưng **không phát** sự kiện đầu ra.
+- Engine chính chết: cơ chế bầu leader (ví dụ lease trong etcd/ZooKeeper) chuyển quyền; engine dự phòng tiếp tục từ seq đã xử lý, đầu ra mang seq nên downstream khử trùng nếu có sự kiện bị phát hai lần quanh thời điểm chuyển.
+- Mất cả hai: dựng engine mới từ snapshot cuối + replay log từ seq đó; vì xử lý xác định nên kết quả trùng khớp tuyệt đối.
+
+### Lưu trữ và kiểm toán
+Log đầu vào và log đầu ra lưu dài hạn (object storage, 10 năm). Kiểm toán viên có thể replay một ngày giao dịch và so sánh từng trade. Sổ cái tiền và chứng khoán append-only, đối soát cuối ngày: tổng tiền phong toả bằng tổng giá trị lệnh đang chờ, tổng trade khớp với Ledger.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Engine chính chết giữa phiên | Gián đoạn vài giây | Hot standby nhận quyền, tiếp tục từ seq |
+| Sự kiện đầu ra phát trùng khi failover | Ledger cộng hai lần | Ledger khử trùng theo (symbol, seq đầu ra) |
+| Risk phong toả thành công nhưng ghi log lỗi | Tiền bị giữ mà không có lệnh | Giải phóng ngay trong luồng lỗi + job đối soát phong toả mồ côi |
+| Mã nóng vượt năng lực một engine | Độ trễ tăng | Tách mã đó ra engine riêng, tối ưu cấu trúc dữ liệu, không tách một mã ra nhiều luồng |
+
+> Senior tip: câu hỏi kiểm tra tư duy lead nhất là "vì sao không dùng database với SELECT FOR UPDATE để khớp lệnh". Hãy trả lời bằng ba ý: khớp lệnh là tuần tự theo bản chất nên lock chỉ thêm chi phí; engine trong RAM đơn luồng nhanh hơn hàng trăm lần; và quan trọng nhất là tính **xác định** từ log có thứ tự, thứ biến khôi phục và kiểm toán thành bài toán replay. Đây là cùng ý tưởng với kiến trúc LMAX nổi tiếng trong ngành tài chính.`,
+  followups: [
+    'Phiên ATO/ATC khớp lệnh định kỳ (tìm một mức giá khớp nhiều nhất) khác khớp liên tục thế nào về thuật toán và thiết kế?',
+    'Làm sao gửi lệnh lên sở giao dịch thay vì khớp nội bộ mà vẫn giữ thứ tự và không gửi trùng?',
+    'Nhà đầu tư huỷ lệnh đúng lúc lệnh đang được khớp: kết quả xác định thế nào?',
+    'Bạn đo và đảm bảo p99 độ trễ end-to-end dưới 50 ms ra sao?'
+  ],
+  related: ['design-017']
+},
+{
+  id: 'sd-019',
+  title: 'Bảng xếp hạng thời gian thực cho game và mini-app khuyến mãi',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Ví điện tử chạy mini-game khuyến mãi 7 ngày: người chơi kiếm điểm qua giao dịch và nhiệm vụ, xem **top 100** toàn quốc, **thứ hạng của chính mình** và **những người xung quanh mình**, cập nhật gần thời gian thực. Quy mô: 10 triệu người chơi, 5.000 sự kiện cộng điểm/giây lúc cao điểm, 50.000 lượt xem bảng xếp hạng/giây. Kết thúc chiến dịch phải chốt kết quả chính xác để trao thưởng, chống gian lận điểm. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: điểm chỉ tăng hay có thể giảm; xếp hạng khi bằng điểm (ai đạt trước xếp trên); độ trễ chấp nhận được (vài giây); có bảng theo tỉnh/bạn bè không; chốt kết quả lúc nào và có đóng băng điểm không. Non-functional: đọc 50.000/giây p99 dưới 100 ms, ghi 5.000/giây, kết quả trao thưởng chính xác tuyệt đối và kiểm toán được.` },
+    { name: 'Estimation', minutes: 5, guide: `10 triệu thành viên trong một Redis sorted set: mỗi phần tử khoảng 60–100 byte (skiplist + hash), tổng khoảng 1 GB, vừa một instance. ZINCRBY 5.000/giây và ZREVRANK/ZREVRANGE 50.000/giây đều O(log N) với N = 10 triệu (khoảng 24 bước), một Redis xử lý được; top 100 cache 1 giây giảm phần lớn lượt đọc.` },
+    { name: 'API & data model', minutes: 5, guide: `GET /leaderboards/{campaign}/top?limit=100; GET /leaderboards/{campaign}/me (rank, score, 5 người trên/dưới). Sự kiện vào: Kafka topic point-events {eventId, userId, delta, source, occurredAt}. Lưu bền: bảng point_ledger (event_id PK, user_id, delta, source, created_at) append-only; bảng user_score (user_id, score, reached_at) là kết quả tổng hợp.` },
+    { name: 'High-level design', minutes: 15, guide: `Nguồn sự kiện (giao dịch, nhiệm vụ) → Kafka → Score Service: khử trùng theo eventId, ghi point_ledger (DB, nguồn sự thật), cập nhật Redis sorted set (ZINCRBY) → Leaderboard API đọc Redis, cache top 100 trong 1 giây ở API/CDN. Chốt kết quả: tính lại từ point_ledger, không lấy thẳng từ Redis.` },
+    { name: 'Deep dive', minutes: 15, guide: `Tie-break bằng điểm kết hợp thời gian (score * 10^k + (Tmax - t)); khử trùng sự kiện; Redis mất dữ liệu thì dựng lại từ ledger; scale khi 100 triệu người (shard theo dải điểm hoặc tính rank xấp xỉ); bảng theo tỉnh/bạn bè; chống gian lận (giới hạn điểm/ngày, phát hiện bất thường, đóng băng trước khi chốt).` }
+  ],
+  rubric: [
+    'Dùng sorted set (Redis ZSET) với ZINCRBY, ZREVRANK, ZREVRANGE và giải thích độ phức tạp O(log N)',
+    'Xử lý bằng điểm: mã hoá thời gian đạt điểm vào score hoặc khoá phụ',
+    'Nguồn sự thật bền vững (point ledger) tách khỏi Redis; dựng lại Redis từ ledger',
+    'Khử trùng sự kiện cộng điểm (idempotency theo eventId)',
+    'Cache top 100 ngắn hạn để giảm tải đọc',
+    '"Người xung quanh tôi" bằng ZREVRANK rồi ZREVRANGE quanh vị trí đó',
+    'Chốt kết quả trao thưởng từ ledger, có đóng băng và kiểm toán',
+    'Chống gian lận: giới hạn, phát hiện bất thường, xem xét trước khi trao thưởng',
+    'Phương án scale khi số người chơi vượt một instance',
+    'Giám sát độ trễ cập nhật, lệch giữa Redis và ledger'
+  ],
+  reference: `**Tóm tắt:** Dùng **Redis sorted set** làm chỉ mục xếp hạng: ZINCRBY cộng điểm, ZREVRANGE lấy top, ZREVRANK lấy hạng của tôi, tất cả O(log N), với 10 triệu người chỉ khoảng 24 bước so sánh. Nhưng Redis **không** là nguồn sự thật: mọi lần cộng điểm được ghi vào **point ledger** append-only trong database (khử trùng theo eventId), Redis chỉ là bản chiếu có thể dựng lại. Kết quả trao thưởng tính lại từ ledger sau khi đóng băng, không lấy thẳng từ Redis.
+
+### Vì sao sorted set
+Sorted set của Redis là skiplist kết hợp hash: tìm vị trí, chèn, cập nhật điểm đều O(log N); lấy hạng của một phần tử cũng O(log N) nhờ skiplist lưu số phần tử bỏ qua ở mỗi tầng. Database quan hệ trả lời "hạng của user X" phải đếm {{COUNT(*) WHERE score > x}}, chậm dần theo số người chơi và không chịu được 50.000 lượt/giây.
+~~~text
+ZINCRBY lb:summer 30 user:42             -- cộng 30 điểm
+ZREVRANGE lb:summer 0 99 WITHSCORES      -- top 100
+ZREVRANK lb:summer user:42               -- hạng của tôi (0 là hạng nhất)
+ZREVRANGE lb:summer (r-5) (r+5)          -- 5 người trên, 5 người dưới quanh hạng r
+~~~
+
+### Bằng điểm thì ai đứng trên
+Yêu cầu "ai đạt điểm trước xếp trên". Sorted set khi bằng điểm sắp theo thứ tự từ điển của member, không theo thời gian. Cách phổ biến: mã hoá thời gian vào score.
+~~~text
+score_lưu = điểm * 10^7 + (T_kết_thúc - thời_điểm_đạt_điểm_tính_bằng_giây)
+~~~
+Ai đạt cùng điểm sớm hơn có phần thời gian lớn hơn nên xếp trên. Score của Redis là số double, chính xác tuyệt đối tới 2^53 (khoảng 9 × 10^15), nên với khoảng 7 ngày (khoảng 605.000 giây, cần 10^6) và điểm tới 10^8 vẫn an toàn; tính kỹ biên trước khi chọn hệ số. Vì score lưu đã chứa thời gian, cộng điểm phải đọc điểm hiện tại từ ledger/hash rồi ghi lại score mới bằng một script Lua, không dùng ZINCRBY thô.
+
+### Kiến trúc
+~~~text
+Giao dịch, nhiệm vụ --> Kafka point-events (partition theo userId)
+                              |
+                              v
+                       Score Service
+       1) INSERT point_ledger (event_id PK) -- trùng thì bỏ qua
+       2) cập nhật user_score (DB) cùng transaction
+       3) Lua: tính score mã hoá -> ZADD lb:summer
+                              |
+App --> Leaderboard API --> Redis (ZSET)      Top 100 cache 1 giây (API + CDN)
+~~~
+- Partition Kafka theo userId để sự kiện của một người xử lý tuần tự, không race khi tính điểm mới.
+- Thứ tự: ghi DB trước, Redis sau. Redis lỗi thì sự kiện vẫn đã an toàn trong ledger; một job đồng bộ lại.
+- Đọc top 100: 50.000 lượt/giây nhưng kết quả giống nhau cho mọi người, cache 1 giây giảm tải Redis còn vài lượt/giây; chỉ "hạng của tôi" mới thật sự đi vào Redis.
+
+### Dựng lại và chốt kết quả
+- Redis mất dữ liệu: dựng lại sorted set từ bảng user_score (10 triệu dòng, vài phút với pipeline ZADD theo lô).
+- Đối soát mỗi giờ: lấy mẫu người chơi, so điểm trong Redis với user_score.
+- Kết thúc chiến dịch: **đóng băng** (ngừng nhận sự kiện có thời điểm sau giờ kết thúc), chờ consumer xử lý hết lag, tính bảng xếp hạng cuối từ user_score bằng SQL (ORDER BY score DESC, reached_at ASC), lưu snapshot kèm hash để kiểm toán, rồi mới công bố.
+
+### Chống gian lận
+- Giới hạn điểm theo ngày và theo nguồn; sự kiện chỉ đến từ hệ thống nội bộ (giao dịch đã quyết toán), không nhận điểm từ client.
+- Phát hiện bất thường: tăng điểm đột biến, nhiều tài khoản cùng thiết bị, giao dịch vòng tròn giữa các tài khoản.
+- Top người thắng giải được xét duyệt trước khi trao thưởng.
+
+### Scale khi 100 triệu người
+Một sorted set 100 triệu phần tử khoảng 10 GB, vẫn chạy được trên một instance lớn nhưng là điểm nghẽn ghi. Phương án: chia nhiều sorted set theo dải điểm (người điểm thấp ở set riêng, hạng = số người ở các set trên + hạng trong set), hoặc chấp nhận **hạng xấp xỉ** cho người ngoài top 10.000 ("bạn ở top 15%") tính từ histogram điểm, chỉ giữ chính xác cho nhóm đầu.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Sự kiện cộng điểm gửi lặp | Điểm bị cộng hai lần | event_id là khoá chính trong ledger, trùng thì bỏ qua |
+| Redis failover mất vài cập nhật | Hạng hiển thị lệch tạm thời | Đồng bộ lại từ user_score, kết quả chốt từ DB |
+| Consumer lag lúc cao điểm | Bảng chậm cập nhật vài chục giây | Theo dõi lag, scale consumer theo số partition |
+| Gian lận điểm | Trao thưởng sai | Giới hạn, phát hiện bất thường, duyệt trước khi trao |
+
+> Senior tip: điểm phân biệt câu trả lời senior là tách bạch "hiển thị" và "trao thưởng". Redis cho trải nghiệm thời gian thực và được phép lệch vài giây; còn danh sách người nhận giải phải tính lại từ ledger bền vững sau khi đóng băng, có snapshot và hash để kiểm toán. Nói được điều này cùng cách xử lý bằng điểm theo thời gian là đủ thuyết phục interviewer.`,
+  followups: [
+    'Thêm bảng xếp hạng theo tỉnh và theo danh sách bạn bè (mỗi người vài trăm bạn): thiết kế thay đổi thế nào?',
+    'Điểm có thể bị trừ (hoàn giao dịch): ảnh hưởng gì tới thiết kế và tie-break?',
+    'Làm sao hiển thị "bạn vừa vượt 3 người" ngay sau khi cộng điểm mà không quá tải Redis?',
+    'Với 500 triệu người chơi toàn cầu, bạn tính hạng gần đúng thế nào?'
+  ],
+  related: ['design-031']
+},
+{
+  id: 'sd-020',
+  title: 'Đếm click quảng cáo thời gian thực để tính tiền nhà quảng cáo',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Nền tảng quảng cáo nhận **1 tỷ click mỗi ngày** (cao điểm 50.000 click/giây). Nhà quảng cáo cần dashboard số click theo từng quảng cáo **mỗi phút**, độ trễ dưới 1–2 phút, và hoá đơn cuối ngày phải **chính xác** (không đếm thiếu, không đếm trùng) vì tính tiền theo click (CPC). Cần lọc click gian lận (bot, click lặp). Thiết kế hệ thống thu thập và tổng hợp. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: đếm theo ad_id và cửa sổ 1 phút (có thể thêm country, device); truy vấn N phút/giờ gần nhất; top 100 quảng cáo được click nhiều nhất mỗi phút; số liệu dashboard được phép lệch nhẹ và được sửa sau, còn **số tính tiền phải đúng tuyệt đối**; click đến trễ (mạng mobile chập chờn) vài phút vẫn phải được tính đúng phút xảy ra.` },
+    { name: 'Estimation', minutes: 5, guide: `1 tỷ/ngày ≈ 11.600 click/giây trung bình, cao điểm 50.000/giây. Mỗi sự kiện khoảng 200 byte → khoảng 200 GB/ngày dữ liệu thô, giữ 90 ngày trên object storage. Kết quả tổng hợp: 200.000 quảng cáo đang chạy × 1.440 phút = tối đa 288 triệu dòng/ngày, thực tế thưa hơn nhiều vì phần lớn quảng cáo không có click mỗi phút.` },
+    { name: 'API & data model', minutes: 5, guide: `Click đi qua redirect: GET /click?token=... → ghi sự kiện rồi 302 về trang đích. Sự kiện: click_id (sinh lúc hiển thị quảng cáo, dùng khử trùng), ad_id, user/device, ip, event_time. Kết quả: bảng ad_clicks_minute (ad_id, minute, clicks, invalid_clicks) khoá chính (ad_id, minute) để ghi lặp vẫn an toàn (upsert). Truy vấn: GET /ads/ID/clicks?from=&to=&granularity=minute.` },
+    { name: 'High-level design', minutes: 15, guide: `Click Service (stateless) → Kafka topic clicks (partition theo ad_id) → hai nhánh: (1) Stream processor (Flink) gom cửa sổ 1 phút theo event time, khử trùng click_id, lọc gian lận cơ bản, upsert vào OLAP store (ClickHouse/Druid) cho dashboard; (2) sink thô vào S3 (data lake). Job batch hằng ngày tính lại từ dữ liệu thô làm số chốt hoá đơn và đối soát với số streaming.` },
+    { name: 'Deep dive', minutes: 15, guide: `Event time vs processing time, watermark và click đến trễ; exactly-once từ Kafka tới kết quả (checkpoint + sink idempotent); quảng cáo "hot" gây lệch partition (salting rồi gộp 2 tầng); khử trùng click_id với state có TTL; lọc gian lận; đối soát streaming và batch; sự cố consumer chết, replay từ offset.` }
+  ],
+  rubric: [
+    'Ghi sự kiện thô vào Kafka trước khi tổng hợp, có thể replay',
+    'Gom theo cửa sổ 1 phút dựa trên event time, không dùng thời điểm xử lý',
+    'Watermark và cách xử lý sự kiện đến trễ (allowed lateness, side output, batch sửa sau)',
+    'Exactly-once hiệu quả: checkpoint + ghi kết quả idempotent theo khoá (ad_id, minute)',
+    'Khử trùng theo click_id và lọc click gian lận trước khi tính tiền',
+    'Xử lý quảng cáo hot (key skew): pre-aggregate có salting rồi gộp',
+    'Tách số hiển thị (streaming) và số tính tiền (batch tính lại từ dữ liệu thô), có đối soát',
+    'Chọn kho lưu kết quả phù hợp truy vấn theo thời gian (OLAP/columnar)',
+    'Ước lượng throughput và dung lượng hợp lý',
+    'Giám sát consumer lag, tỉ lệ sự kiện trễ, chênh lệch streaming vs batch'
+  ],
+  reference: `**Tóm tắt:** Click đi qua một redirect service ghi sự kiện vào **Kafka** (nguồn sự thật có thể replay), một **stream processor** như Flink gom theo **cửa sổ 1 phút theo event time** với watermark, khử trùng theo click_id và ghi kết quả **idempotent** (upsert theo ad_id + phút) vào kho OLAP cho dashboard. Song song, dữ liệu thô được lưu vào S3 và một **job batch** hằng ngày tính lại để chốt hoá đơn, rồi đối soát với số streaming. Hiển thị cần nhanh, tính tiền cần đúng: hai yêu cầu này được phục vụ bởi hai đường khác nhau.
+
+### Vì sao không UPDATE counter trong database
+Cách ngây thơ: mỗi click chạy {{UPDATE ad_stats SET clicks = clicks + 1 WHERE ad_id = ? AND minute = ?}}. Với 50.000 click/giây, các quảng cáo hot dồn vào cùng một dòng, row lock xếp hàng, database chết. Thêm nữa, nếu ứng dụng retry sau timeout thì click bị cộng hai lần mà không ai biết. Ghi **sự kiện** (append-only, rẻ) rồi **tổng hợp theo lô nhỏ** mới chịu được tải và cho phép tính lại khi có lỗi.
+
+### Kiến trúc
+~~~text
+Người dùng click --> Click Service (302 về trang đích)
+                          | produce (acks=all, idempotent producer)
+                          v
+                 Kafka "clicks" (partition theo ad_id, giữ 7 ngày)
+                    |                               |
+                    v                               v
+       Flink: khử trùng click_id,              Sink thô --> S3 (Parquet, theo giờ)
+       lọc gian lận, cửa sổ 1 phút                          |
+                    | upsert (ad_id, minute)                v
+                    v                              Spark batch hằng ngày:
+       ClickHouse/Druid --> Dashboard API          tính lại, chốt hoá đơn,
+                                                   đối soát với số streaming
+~~~
+
+### Event time, watermark và click đến trễ
+Click xảy ra lúc 10:00:58 trên điện thoại mất sóng, tới server lúc 10:02:10. Nếu gom theo thời điểm xử lý, click này rơi nhầm vào phút 10:02. Phải gom theo **event time** (thời điểm click xảy ra). Nhưng khi nào thì "đóng" cửa sổ 10:00? Đó là việc của **watermark**: một mốc "tôi tin rằng sự kiện có event time trước T đã đến hết". Với watermark trễ 15 giây, cửa sổ 10:00–10:01 được phát kết quả khi watermark vượt 10:01:00, tức khoảng 10:01:15.
+- Click trễ hơn watermark nhưng vẫn trong **allowed lateness** (ví dụ 5 phút): Flink tính lại cửa sổ và phát kết quả cập nhật. Vì kết quả được upsert theo (ad_id, minute), bản mới ghi đè bản cũ.
+- Click trễ hơn nữa: đưa ra **side output**, ghi riêng; job batch cuối ngày sẽ tính đúng.
+
+### Exactly-once hiệu quả
+Không có "exactly-once delivery" xuyên suốt; cái ta cần là **kết quả** như thể mỗi click được đếm đúng một lần:
+1. Producer bật idempotence để retry không tạo bản ghi trùng trong Kafka.
+2. Flink checkpoint định kỳ lưu cả offset Kafka lẫn state (bộ đếm đang gom). Khi crash, nó khôi phục state và đọc lại từ offset của checkpoint, nên mỗi sự kiện ảnh hưởng state đúng một lần.
+3. Sink ghi kết quả bằng **upsert theo khoá (ad_id, minute)**: ghi lại cùng kết quả sau khi khôi phục cũng không sao.
+4. Khử trùng ở mức nghiệp vụ: click_id sinh lúc hiển thị quảng cáo; Flink giữ state "đã thấy click_id" với TTL vài giờ, gặp lại thì bỏ.
+
+### Quảng cáo hot và lệch tải
+Partition theo ad_id giữ thứ tự và gom đúng, nhưng một chiến dịch lớn có thể chiếm 30% click và dồn hết vào một subtask. Cách xử lý: gom **hai tầng**. Tầng 1 dùng khoá (ad_id, salt ngẫu nhiên 0–15) để chia tải ra 16 subtask, mỗi subtask đếm một phần; tầng 2 gộp 16 phần theo ad_id. Tổng vẫn đúng vì phép cộng có tính kết hợp.
+
+### Tách số hiển thị và số tính tiền
+| | Đường streaming | Đường batch |
+|---|---|---|
+| Độ trễ | 1–2 phút | Vài giờ, chạy sau nửa đêm |
+| Dùng cho | Dashboard, cảnh báo ngân sách | Hoá đơn, báo cáo chính thức |
+| Click trễ quá ngưỡng | Có thể thiếu | Đầy đủ |
+| Lọc gian lận | Luật đơn giản (tần suất theo IP/thiết bị) | Mô hình phức tạp, dữ liệu cả ngày |
+
+Job đối soát so hai con số theo từng quảng cáo; chênh lệch trên 0,1% thì cảnh báo để điều tra (thường là lỗi watermark quá chặt hoặc sink lỗi).
+
+### Lọc gian lận
+- Cùng thiết bị/IP click một quảng cáo nhiều lần trong vài phút: chỉ tính lần đầu.
+- User-agent của bot, IP trung tâm dữ liệu, tốc độ click phi lý.
+- Click không có impression tương ứng (click_id không khớp lượt hiển thị nào): không hợp lệ.
+Click gian lận vẫn được ghi lại (cột invalid_clicks) để giải trình với nhà quảng cáo.
+
+### Ví dụ đời thực
+Một đội ads thấy số click trên dashboard thấp hơn hoá đơn 2,3% vào các buổi tối. Điều tra: tỉ lệ sự kiện vào side output (trễ hơn allowed lateness) tăng vọt lúc 20–22 giờ, đúng giờ cao điểm mạng mobile, và phần lớn đến từ SDK Android gửi theo lô mỗi 3 phút khi app ở nền. Watermark 10 giây và allowed lateness 1 phút là quá chặt. Họ tăng allowed lateness lên 5 phút và cho SDK gửi ngay khi app trở lại foreground. Chênh lệch giảm xuống dưới 0,1%, còn state của Flink tăng khoảng 20% vì giữ cửa sổ lâu hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách hai đường. Click đi qua redirect service, ghi sự kiện vào Kafka partition theo ad_id; Kafka là nguồn sự thật có thể replay. Đường nhanh là Flink gom cửa sổ một phút theo event time, watermark khoảng 15 giây, allowed lateness vài phút, khử trùng theo click_id rồi upsert kết quả theo khoá ad_id cộng phút vào ClickHouse cho dashboard. Nhờ checkpoint lưu cả offset lẫn state, cộng với sink idempotent, mỗi click ảnh hưởng kết quả đúng một lần dù job có crash. Đường chậm lưu dữ liệu thô vào S3, job Spark hằng ngày tính lại làm số chốt hoá đơn, rồi đối soát với số streaming; chênh quá ngưỡng thì cảnh báo. Quảng cáo hot thì tôi gom hai tầng có salting để không dồn vào một subtask. Gian lận lọc cơ bản trên stream, kỹ hơn ở batch, và vẫn lưu click không hợp lệ để giải trình. Điểm mấu chốt là dashboard được phép lệch nhẹ, nhưng tiền thì phải tính từ dữ liệu thô đầy đủ."
+
+> Senior tip: interviewer thường đào vào "click đến trễ 10 phút thì sao" và "job crash giữa chừng có đếm trùng không". Trả lời bằng ba khái niệm cụ thể: event time + watermark + allowed lateness, checkpoint + sink idempotent, và batch tính lại làm nguồn chốt. Đừng hứa "exactly-once delivery"; hãy nói "exactly-once về kết quả".`,
+  followups: [
+    'Nhà quảng cáo muốn lọc thêm theo quốc gia và thiết bị: số dòng kết quả và cách lưu thay đổi thế nào?',
+    'Phát hiện bug lọc gian lận đã chạy sai 3 ngày: bạn tính lại và sửa hoá đơn thế nào?',
+    'Muốn dừng quảng cáo ngay khi hết ngân sách (độ trễ dưới 10 giây): thiết kế thêm gì?',
+    'Không dùng Flink mà chỉ có Kafka Streams: thay đổi những gì?'
+  ],
+  related: ['microservices-006', 'microservices-051', 'db-052']
+},
+{
+  id: 'sd-021',
+  title: 'Cổng thanh toán cho merchant tích hợp nhiều ngân hàng và ví',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn thiết kế **cổng thanh toán** (payment gateway) cho 20.000 merchant thương mại điện tử: khách thanh toán bằng thẻ quốc tế, thẻ nội địa, QR và ví điện tử, qua 5 đối tác xử lý (ngân hàng, PSP). Cao điểm ngày sale 2.000 giao dịch/giây. Yêu cầu: **không trừ tiền hai lần**, không "khách bị trừ tiền mà đơn báo thất bại", merchant nhận kết quả tin cậy, đối soát được với đối tác mỗi ngày, tuân thủ PCI DSS. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt luồng: merchant tạo payment → khách xác thực ở trang thanh toán (3-D Secure, OTP, quét QR) → đối tác báo kết quả → gateway báo merchant. Hỏi: có refund một phần không, payment hết hạn sau bao lâu, merchant cần webhook hay polling, có lưu thẻ cho lần sau (tokenization) không. Non-functional: tính đúng tuyệt đối về tiền, idempotent, khả dụng 99,95%, kiểm toán được.` },
+    { name: 'Estimation', minutes: 5, guide: `2.000 TPS cao điểm, mỗi payment khoảng 5–8 lượt ghi (tạo, chuyển trạng thái, gọi đối tác, callback, webhook). Khoảng 10 triệu payment/ngày ngày thường; bảng payment tăng vài trăm GB/năm, partition theo tháng. Webhook ra merchant: khoảng 1 webhook/payment cộng retry.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /payments (header Idempotency-Key; merchant_id + order_id là duy nhất) → trả payment_id và URL trang thanh toán. GET /payments/ID. POST /payments/ID/refunds. Bảng payments (id, merchant_id, order_id, amount, currency, method, psp, status, psp_ref, version, created_at); payment_events (lịch sử chuyển trạng thái, append-only); outbox cho webhook; bảng ledger double-entry cho số dư merchant và phí.` },
+    { name: 'High-level design', minutes: 15, guide: `API Gateway → Payment Service (state machine, idempotency) → Routing chọn đối tác theo phương thức, tỉ lệ thành công, phí → PSP Adapter (mỗi đối tác một adapter, ký request, ánh xạ mã lỗi) → đối tác. Callback/IPN từ đối tác → Callback Service (xác thực chữ ký, idempotent). Kết quả → outbox → Webhook Dispatcher → merchant. Card data chỉ đi qua trang hosted / vault tách biệt (phạm vi PCI nhỏ). Reconciliation job đọc file quyết toán của đối tác mỗi ngày.` },
+    { name: 'Deep dive', minutes: 15, guide: `Trạng thái "không rõ" khi gọi đối tác timeout (không được retry trừ tiền mù quáng; dùng API tra cứu); callback đến trùng, đến sai thứ tự, đến trước redirect; state machine chặn chuyển trạng thái ngược; đối soát và xử lý "trừ tiền nhưng đơn thất bại"; failover đối tác khi sập; bảo mật thẻ và tokenization.` }
+  ],
+  rubric: [
+    'Idempotency khi tạo payment: Idempotency-Key và ràng buộc duy nhất (merchant_id, order_id)',
+    'State machine rõ ràng, trạng thái cuối không bị ghi đè, cập nhật có điều kiện hoặc optimistic lock',
+    'Xử lý timeout với đối tác bằng trạng thái UNKNOWN + tra cứu, không retry trừ tiền mù quáng',
+    'Callback từ đối tác: xác thực chữ ký, idempotent, chịu được đến trùng và sai thứ tự; có polling dự phòng',
+    'Webhook ra merchant qua outbox, retry có backoff, ký HMAC',
+    'Đối soát hằng ngày với file quyết toán của đối tác, xử lý từng loại chênh lệch',
+    'Ledger double-entry cho số dư merchant, phí, refund',
+    'Phạm vi PCI DSS nhỏ: không lưu số thẻ, hosted page/vault, tokenization',
+    'Routing và failover giữa các đối tác, chỉ failover cho lần thử mới chứ không cho giao dịch đang treo',
+    'Giám sát tỉ lệ thành công theo đối tác, số payment kẹt ở UNKNOWN/PENDING'
+  ],
+  reference: `**Tóm tắt:** Trái tim của cổng thanh toán là một **state machine** lưu trong database với các chuyển trạng thái có điều kiện, cộng **idempotency ở mọi cửa vào**: merchant tạo payment (Idempotency-Key, unique merchant_id + order_id), callback từ đối tác (khử trùng theo mã giao dịch đối tác), webhook ra merchant (outbox + retry). Khi gọi đối tác bị timeout, payment chuyển sang **UNKNOWN** và được **tra cứu** chứ không bao giờ trừ tiền lại. Cuối cùng, **đối soát hằng ngày** với file quyết toán của đối tác là lưới an toàn bắt mọi chênh lệch còn sót.
+
+### Luồng chính
+~~~seq
+title: Thanh toán thẻ qua cổng
+actors: Merchant | Gateway | PSP | Khách
+Merchant -> Gateway: POST /payments (Idempotency-Key)
+Gateway --> Merchant: payment_id + URL trang thanh toán
+Khách -> Gateway: mở trang, nhập thẻ (hosted page)
+Gateway -> PSP: authorize/charge (ký request)
+PSP -> Khách: 3-D Secure / OTP
+PSP -> Gateway: callback IPN (có chữ ký)
+Gateway -> Gateway: kiểm chữ ký, PENDING -> SUCCEEDED
+Gateway -> Merchant: webhook payment.succeeded (HMAC)
+~~~
+
+### State machine
+~~~text
+CREATED --> PENDING --> SUCCEEDED --> (PARTIALLY_)REFUNDED
+               |  \--> FAILED
+               |  \--> EXPIRED (khách bỏ dở quá 15 phút)
+               \--> UNKNOWN --(tra cứu)--> SUCCEEDED / FAILED
+~~~
+Mọi chuyển trạng thái là một câu UPDATE có điều kiện, ví dụ {{UPDATE payments SET status = 'SUCCEEDED', version = version + 1 WHERE id = ? AND status IN ('PENDING','UNKNOWN')}}. Nếu số dòng cập nhật là 0 thì sự kiện này đến muộn hoặc trùng: ghi log, không làm gì thêm. Trạng thái cuối (SUCCEEDED, FAILED) không bao giờ bị ghi đè; riêng trường hợp "FAILED nhưng đối tác thực ra đã trừ tiền" được xử lý bằng đối soát và refund, không quay ngược trạng thái âm thầm.
+
+### Timeout: tình huống nguy hiểm nhất
+Gateway gửi lệnh charge, chờ 30 giây không thấy phản hồi. Có ba khả năng: request chưa tới đối tác, đối tác đã trừ tiền nhưng phản hồi bị mất, hoặc đối tác đang xử lý. Retry ngay có thể **trừ tiền hai lần**; báo FAILED có thể sinh ra "khách bị trừ tiền mà đơn thất bại". Cách đúng:
+1. Chuyển payment sang UNKNOWN, báo merchant là "đang xử lý".
+2. Gọi **API tra cứu** của đối tác theo mã tham chiếu do gateway sinh (gửi kèm từ đầu), với backoff: 10 giây, 30 giây, 2 phút, 10 phút.
+3. Vẫn không rõ sau ngưỡng: để job đối soát cuối ngày quyết định, kèm cảnh báo cho vận hành.
+Nếu đối tác hỗ trợ idempotency key thì gửi lại cùng key là an toàn; nếu không, chỉ được tra cứu.
+
+### Callback từ đối tác
+- **Xác thực chữ ký** (HMAC hoặc chữ ký RSA theo tài liệu đối tác) và kiểm tra số tiền khớp với payment, tránh callback giả.
+- **Idempotent**: lưu mã giao dịch của đối tác với ràng buộc unique; callback trùng trả 200 ngay.
+- **Sai thứ tự**: "failed" đến sau "succeeded" thì câu UPDATE có điều kiện tự bỏ qua.
+- **Có thể không bao giờ đến**: job quét payment PENDING quá 5 phút để chủ động tra cứu.
+- Trả 200 nhanh, xử lý nặng làm sau, để đối tác không retry vì timeout.
+
+### Webhook ra merchant
+Cập nhật trạng thái và ghi bản ghi vào bảng **outbox** trong cùng một transaction. Webhook Dispatcher đọc outbox, gửi POST có chữ ký HMAC và timestamp; merchant trả lỗi thì retry theo exponential backoff trong khoảng 24–72 giờ. Merchant phải xử lý idempotent theo event_id, và luôn có GET /payments/ID để tự kiểm tra.
+
+### Đối soát hằng ngày
+Đối tác gửi file quyết toán (giao dịch đã thành công, phí, số tiền chuyển về). Job so từng dòng với bảng payments:
+| Chênh lệch | Nguyên nhân thường gặp | Xử lý |
+|---|---|---|
+| Đối tác: thành công, mình: FAILED/UNKNOWN | Mất callback, timeout | Refund tự động hoặc chuyển SUCCEEDED và báo merchant tuỳ chính sách |
+| Mình: SUCCEEDED, đối tác: không có | Callback giả hoặc lỗi đối tác | Treo, điều tra, chặn quyết toán cho merchant |
+| Lệch số tiền/phí | Sai cấu hình phí, tỉ giá | Bút toán điều chỉnh trong ledger |
+
+### Tiền của merchant: ledger
+Mỗi payment thành công tạo bút toán kép: ghi nợ tài khoản phải thu từ đối tác, ghi có số dư merchant (sau khi trừ phí) và doanh thu phí. Refund là bút toán ngược. Số dư merchant luôn tính từ ledger, không phải một cột số dư cập nhật tay.
+
+### Bảo mật thẻ
+Số thẻ chỉ đi vào **trang thanh toán hosted** hoặc iframe của gateway, rồi vào **vault** tách biệt trả về token; Payment Service chỉ thấy token. Như vậy phần lớn hệ thống nằm ngoài phạm vi kiểm định PCI DSS. Không bao giờ ghi số thẻ hay CVV vào log; CVV không được lưu sau khi authorize.
+
+### Routing và failover
+Routing chọn đối tác theo phương thức, tỉ lệ thành công gần nhất và phí. Đối tác sập (circuit breaker mở) thì **lần thử mới** chuyển sang đối tác khác, nhưng payment đang UNKNOWN ở đối tác cũ thì **không** được gửi sang đối tác mới, vì có thể bị trừ tiền ở cả hai nơi.
+
+### Ví dụ đời thực
+Ngày sale, một ngân hàng đối tác phản hồi chậm, p99 lên 45 giây trong khi timeout của gateway là 30 giây. Bản cũ coi timeout là FAILED và khách bấm thanh toán lại: 1.200 khách bị trừ tiền hai lần, call center quá tải. Điều tra bằng đối soát: file quyết toán có 1.200 giao dịch thành công mà hệ thống ghi FAILED. Sửa: thêm trạng thái UNKNOWN với tra cứu theo backoff, trang kết quả hiển thị "đang xử lý" thay vì "thất bại", và refund tự động cho các giao dịch lệch. Sale tháng sau, số ca trừ tiền hai lần về 0, số payment kẹt UNKNOWN sau 10 phút dưới 0,05%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xây quanh ba thứ: state machine, idempotency và đối soát. Merchant tạo payment với Idempotency-Key, database có unique trên merchant_id và order_id nên gọi lặp chỉ trả lại payment cũ. Mọi chuyển trạng thái là UPDATE có điều kiện trên trạng thái hiện tại, nên callback trùng hay sai thứ tự đều vô hại, và trạng thái cuối không bị ghi đè. Tình huống tôi chú ý nhất là timeout khi gọi đối tác: tôi không retry trừ tiền và cũng không báo thất bại, mà chuyển sang UNKNOWN rồi tra cứu theo backoff. Callback từ đối tác được kiểm chữ ký và số tiền, còn kết quả gửi merchant đi qua outbox với retry và chữ ký HMAC. Mỗi ngày job đối soát so file quyết toán của đối tác với hệ thống để bắt những ca trừ tiền mà mình ghi thất bại và refund tự động. Số thẻ chỉ đi qua trang hosted và vault, phần còn lại chỉ thấy token để giữ phạm vi PCI nhỏ."
+
+> Senior tip: câu hỏi phân loại ứng viên là "gọi ngân hàng timeout thì làm gì". Người chưa làm thanh toán sẽ nói "retry 3 lần"; người đã làm sẽ nói "trạng thái không rõ, tra cứu, đối soát, không bao giờ retry trừ tiền mù quáng". Thêm một con số thật như "bao nhiêu payment kẹt UNKNOWN quá 10 phút" là metric vận hành bạn theo dõi hằng ngày.`,
+  followups: [
+    'Merchant gọi refund hai lần liên tiếp do retry: bạn chặn refund vượt số tiền đã thu thế nào?',
+    'Thêm thanh toán định kỳ (subscription) với thẻ đã lưu: cần thay đổi gì về token và xác thực?',
+    'Một đối tác chỉ có API tra cứu theo ngày, không theo từng giao dịch: xử lý UNKNOWN thế nào?',
+    'Bạn chia database thế nào khi lên 20.000 TPS?'
+  ],
+  related: ['banking-004', 'api-022', 'api-035', 'microservices-022']
+},
+{
+  id: 'sd-022',
+  title: 'Lưu trữ và đồng bộ file nhiều thiết bị kiểu Google Drive',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Thiết kế dịch vụ lưu trữ file cho **50 triệu người dùng** (10 triệu hoạt động mỗi ngày): upload/download file tới 10 GB, **tự đồng bộ** giữa laptop, điện thoại và web, giữ **lịch sử phiên bản** 30 ngày, chia sẻ file/thư mục. Mạng của người dùng có thể chập chờn; upload dở phải tiếp tục được. Hai thiết bị sửa cùng file khi offline phải xử lý xung đột hợp lý. Bạn có 60 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt: kích thước file tối đa, số thiết bị mỗi người, độ trễ đồng bộ chấp nhận được (vài giây khi online), phiên bản giữ bao lâu, chia sẻ quyền đọc/sửa, có sửa đồng thời kiểu Google Docs không (thường là không, đó là bài toán khác). Non-functional: không mất dữ liệu (độ bền 11 số 9 của object storage), upload tiếp tục được, tiết kiệm băng thông.` },
+    { name: 'Estimation', minutes: 5, guide: `50 triệu người × trung bình 2 GB đã dùng = khoảng 100 PB trước khi khử trùng. 10 triệu DAU × 2 file thay đổi/ngày × 1 MB trung bình = 20 TB/ngày dữ liệu mới, khoảng 230 file/giây trung bình, cao điểm gấp 5. Metadata: vài tỉ file × khoảng 1 KB = vài TB, cần shard.` },
+    { name: 'API & data model', minutes: 5, guide: `Chia file thành chunk 4 MB, định danh bằng SHA-256. API: POST /files/ID/upload-session (gửi danh sách hash chunk, nhận lại chunk còn thiếu + presigned URL); PUT chunk thẳng lên object storage; POST /files/ID/commit (manifest + base_version). GET /changes?cursor=... trả thay đổi từ cursor. Metadata: files (file_id, namespace_id, path, latest_version), file_versions (file_id, version, chunk_hashes[], size, created_by), journal (namespace_id, seq, file_id, op).` },
+    { name: 'High-level design', minutes: 20, guide: `Client đồng bộ (theo dõi thư mục, chia chunk, tính hash) → API/Metadata Service (sharded theo namespace = user hoặc shared folder) → Object storage (S3) lưu chunk theo hash. Notification Service (WebSocket/long-poll) chỉ báo "có thay đổi"; client gọi /changes lấy delta theo cursor. Thumbnail/preview/virus scan chạy bất đồng bộ qua queue.` },
+    { name: 'Deep dive', minutes: 25, guide: `Upload tiếp tục và delta sync theo chunk; commit hai pha (chunk trước, manifest sau); journal theo namespace và cursor; xung đột khi base_version lệch (tạo bản "conflicted copy"); dọn chunk không còn ai dùng; khử trùng và vấn đề riêng tư; chia sẻ thư mục cho nhiều người; bảo mật và mã hoá.` }
+  ],
+  rubric: [
+    'Chia file thành chunk có hash nội dung, chỉ upload chunk còn thiếu (delta sync, khử trùng)',
+    'Upload thẳng lên object storage qua presigned URL, upload dở tiếp tục được ở mức chunk',
+    'Commit manifest sau khi đủ chunk, không để phiên bản tham chiếu chunk chưa tồn tại',
+    'Journal thay đổi theo namespace với cursor tăng dần để client lấy delta',
+    'Notification chỉ báo hiệu, dữ liệu lấy qua API changes (tránh mất sự kiện)',
+    'Phát hiện xung đột bằng base_version và tạo bản conflicted copy, không ghi đè im lặng',
+    'Metadata shard theo namespace, phân tích được truy vấn nóng',
+    'Dọn chunk rác an toàn (mark-and-sweep có thời gian ân hạn), không xoá chunk đang dùng',
+    'Ước lượng dung lượng, băng thông, số file mỗi giây',
+    'Bảo mật: mã hoá, quyền chia sẻ, link chia sẻ có hạn'
+  ],
+  reference: `**Tóm tắt:** Tách **dữ liệu** và **metadata**. File được chia thành **chunk 4 MB định danh bằng SHA-256**; client chỉ upload chunk mà server chưa có, thẳng lên **object storage** qua presigned URL, rồi **commit một manifest** (danh sách hash) kèm base_version vào **Metadata Service**. Mỗi thay đổi được ghi vào **journal** của namespace với số thứ tự tăng dần; thiết bị khác được báo "có thay đổi" qua kết nối notification rồi tự lấy delta từ cursor của mình. Commit với base_version cũ nghĩa là có xung đột: server từ chối, client lưu thành bản "conflicted copy".
+
+### Vì sao chia chunk theo hash
+- **Upload tiếp tục**: mất mạng ở chunk 180/250 thì lần sau chỉ gửi 70 chunk còn lại.
+- **Delta sync**: sửa vài trang trong file PDF 200 MB chỉ đổi vài chunk; với chunk kích thước cố định, chèn dữ liệu ở đầu file sẽ làm lệch mọi chunk sau đó, nên hệ thống tối ưu hơn dùng content-defined chunking (cắt theo rolling hash) để chỉ chunk quanh chỗ sửa bị đổi.
+- **Khử trùng**: cùng nội dung thì cùng hash, lưu một lần.
+- **Toàn vẹn**: server kiểm hash khi nhận, chunk hỏng bị phát hiện ngay.
+
+### Luồng upload
+~~~seq
+title: Upload một phiên bản mới
+actors: Client | Metadata | S3
+Client -> Client: chia chunk 4 MB, tính SHA-256
+Client -> Metadata: upload-session (danh sách hash, base_version)
+Metadata --> Client: các hash còn thiếu + presigned URL
+Client -> S3: PUT từng chunk còn thiếu (song song)
+Client -> Metadata: commit manifest + base_version
+Metadata -> Metadata: kiểm chunk tồn tại, so base_version
+Metadata --> Client: version mới, seq trong journal
+~~~
+Commit kiểm tra mọi chunk đã có trong object storage trước khi ghi phiên bản: không bao giờ có phiên bản trỏ tới chunk chưa tồn tại. Ghi file_versions, cập nhật latest_version và thêm dòng journal trong **cùng một transaction** của shard metadata.
+
+### Đồng bộ giữa các thiết bị
+Mỗi namespace (thư mục của một người, hoặc một thư mục chia sẻ) có một **journal** với seq tăng dần. Mỗi thiết bị nhớ cursor = seq cuối cùng đã áp dụng.
+1. Notification Service giữ kết nối WebSocket/long-poll với thiết bị, chỉ gửi tín hiệu "namespace X có thay đổi".
+2. Thiết bị gọi /changes?cursor=1052 và nhận các thay đổi từ seq 1053 trở đi, tải chunk còn thiếu và dựng lại file.
+Vì dữ liệu thật luôn lấy qua /changes, tín hiệu bị mất (thiết bị offline, server notification khởi động lại) cũng không làm sai: lần kết nối sau, thiết bị hỏi theo cursor và nhận đủ.
+
+### Xung đột
+Laptop và điện thoại cùng sửa notes.docx từ phiên bản 7 khi offline. Laptop commit trước, thành phiên bản 8. Điện thoại commit với base_version = 7, server thấy latest là 8 nên từ chối. Client lưu bản của mình thành "notes (bản xung đột của điện thoại).docx" và tải bản 8 về. Không hệ thống lưu file nào tự trộn nội dung file nhị phân; cái quan trọng là **không mất dữ liệu và không ghi đè im lặng**.
+
+### Metadata ở quy mô lớn
+- Shard theo namespace_id: mọi thao tác của một thư mục nằm trên một shard, transaction commit + journal là transaction cục bộ.
+- Thư mục chia sẻ cho 10.000 người là namespace riêng; mỗi người "mount" nó vào cây thư mục của mình, nên một lần sửa chỉ ghi journal một lần, không ghi 10.000 lần.
+- Truy vấn nóng (liệt kê thư mục, lấy delta theo cursor) có index theo (namespace_id, seq) và (namespace_id, parent_id).
+
+### Lưu chunk và dọn rác
+Chunk lưu trên S3 theo khoá là hash, có thể gom nhiều chunk nhỏ vào một object lớn để giảm số request. Phiên bản cũ hơn 30 ngày bị xoá, kéo theo chunk không còn phiên bản nào tham chiếu. Đếm tham chiếu chính xác giữa hàng tỉ chunk rất dễ sai lệch khi có lỗi giữa chừng, nên thường dùng **mark-and-sweep**: định kỳ quét metadata đánh dấu chunk còn dùng, chunk không được đánh dấu và đã cũ hơn thời gian ân hạn (ví dụ 7 ngày, để không xoá chunk của upload đang dở) mới bị xoá.
+
+### Bảo mật
+- Mã hoá khi lưu (SSE-KMS hoặc khoá riêng theo người dùng) và TLS khi truyền.
+- Presigned URL hết hạn sau vài phút, chỉ cho đúng chunk đó.
+- Khử trùng **chéo người dùng** có rủi ro rò rỉ thông tin: người ngoài thử upload một file và thấy "upload xong ngay" là biết file đó đã có trên hệ thống. Nhiều hệ thống chỉ khử trùng trong phạm vi một người dùng hoặc không tiết lộ việc chunk đã tồn tại.
+
+### Ví dụ đời thực
+Một đội làm sync cho tài liệu doanh nghiệp thấy upload file thiết kế 2 GB qua 4G thất bại 35%: cả file là một request, mất mạng giữa chừng là upload lại từ đầu. Chuyển sang chunk 8 MB, mỗi chunk retry riêng, phiên upload lưu danh sách chunk đã nhận 24 giờ: tỉ lệ thất bại về dưới 1%. Sau khi thêm content-defined chunking, băng thông trung bình khi lưu lại file Office giảm khoảng 70%, vì thường chỉ vài chunk thay đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách dữ liệu và metadata. Client chia file thành chunk khoảng 4 MB, tính SHA-256, gửi danh sách hash lên Metadata Service; server trả về chunk nào còn thiếu kèm presigned URL, client upload thẳng lên S3, song song và có retry từng chunk, nên upload dở có thể tiếp tục và sửa nhỏ chỉ gửi vài chunk. Khi đủ chunk, client commit manifest kèm base_version; server kiểm chunk đã tồn tại rồi ghi phiên bản mới và một dòng journal trong cùng transaction. Mỗi thư mục là một namespace có journal seq tăng dần; thiết bị giữ cursor, được Notification Service báo có thay đổi rồi tự gọi API changes để lấy delta, nên mất tín hiệu cũng không sai. Nếu base_version lệch, server từ chối và client lưu bản xung đột, không ghi đè im lặng. Metadata shard theo namespace; chunk rác dọn bằng mark-and-sweep có thời gian ân hạn."
+
+> Senior tip: điểm lead mà interviewer tìm là bạn tách "tín hiệu" khỏi "dữ liệu" (notification chỉ báo, journal + cursor mới là nguồn sự thật) và bạn nói thẳng về xung đột: không giả vờ tự trộn được file nhị phân. Nhắc S3 multipart upload (mỗi phần tối thiểu 5 MB trừ phần cuối, tối đa 10.000 phần) cho thấy bạn đã đụng tới thực tế triển khai.`,
+  followups: [
+    'Một thư mục chia sẻ có 50.000 thành viên và thay đổi liên tục: notification và journal chịu tải thế nào?',
+    'Người dùng xoá nhầm cả thư mục 20 GB: khôi phục thế nào, và journal ghi gì?',
+    'Bạn thêm tìm kiếm toàn văn trong file PDF/Office thế nào mà không làm chậm upload?',
+    'So sánh chunk kích thước cố định với content-defined chunking: khi nào đáng làm phức tạp?'
+  ],
+  related: ['aws-007', 'scenario-011', 'api-023']
+},
 ];

@@ -103,7 +103,7 @@ Answer concisely: "Spring AOP uses a proxy wrapping the bean; each advice is an 
     ],
   },
   'lesson-spring-013': {
-    title: 'Bean lifecycle and BeanPostProcessor: from instantiation to proxy',
+    title: 'Bean lifecycle and BeanPostProcessor: From instantiation to proxy',
     goals: [
       'State the bean lifecycle steps in order: instantiate → populate → Aware → BPP before → init → BPP after',
       'Explain BeanPostProcessor before/after and why the AOP proxy is usually created in afterInitialization',
@@ -118,7 +118,7 @@ Answer concisely: "Spring AOP uses a proxy wrapping the bean; each advice is an 
 4. **{{BeanPostProcessor.postProcessBeforeInitialization}}**: runs before init — may modify or replace the bean.
 5. **Initialization** (init logic): in order {{@PostConstruct}} → {{InitializingBean.afterPropertiesSet()}} → {{init-method}} (declared in configuration).
 6. **{{BeanPostProcessor.postProcessAfterInitialization}}**: runs after init — **may return a proxy** wrapping the original bean. This is where many AOP features "attach".
-7. **Bean ready** to be placed in the context (and for a singleton, stored in the cache). On context shutdown: {{@PreDestroy}} → {{DisposableBean.destroy()}} → {{destroy-method}}.
+7. **Bean ready** to be placed in the context (and for a singleton, stored in the cache). On context shutdown: {{@PreDestroy}} → {{DisposableBean.destroy()}} → {{destroy-method}}. {{@PostConstruct}}/{{@PreDestroy}} belong to the {{jakarta.annotation}} package (Spring Boot 3; older versions use {{javax.annotation}}).
 
 ~~~seq
 title: Bean lifecycle simplified (singleton)

@@ -4,40 +4,74 @@
  */
 App.i18n.content({
   'devops-074': {
-    q: "(lead) Load-test an app before go-live from a DevOps angle: environment, tooling, metrics, and finding the bottleneck at the infrastructure layer (LB, DB connection, node).",
-    a: `**Summary:** Load testing before go-live: an environment that mirrors production (smaller scale but the same topology), tooling such as k6/JMeter/Gatling, metrics like latency p95/p99, error rate, throughput and resource usage; find the bottleneck at LB connections, the DB pool, node CPU/mem, and GC.
+    q: "(lead) Load test an app before go-live from a DevOps angle: environment, tooling, metrics, and finding the bottleneck at the infrastructure layer (LB, DB connection, node).",
+    a: `**Summary:** A pre-go-live load test is only valuable when it answers the business question: "Can we handle the expected load × a safety factor while staying within the p99 and error-rate SLO, and **what breaks first**?" Define measurable goals from real data, build an environment with the same topology as production, run tests in stages (baseline → load → stress → soak → spike), and watch **USE** (utilization, saturation, errors) at every layer: load balancer, node, connection pool, and database.
 
-### Environment
-- A staging environment that mirrors production: same instance type, proportionally sized DB, same network shape.
-- Realistic test data (seed the DB).
-- Warm up the JVM/GC before measuring.
+### Key terms (explained once)
+- **Load test**: a controlled rehearsal where you generate simulated user traffic (requests per second, or RPS) to see how the system behaves under load. Think of it like filling a new highway with test cars before opening it to the public.
+- **SLO (Service Level Objective)**: a target you commit to, for example "p99 < 400 ms and error rate < 0.1%". It turns "feels fast enough" into a pass/fail number.
+- **p99 latency**: 99% of requests finish faster than this value; only the slowest 1% are worse. The average hides those painful outliers, so we focus on p95/p99.
+- **Topology**: the shape of the system — which components sit in line (LB → ingress → app → pool → DB). Testing a different shape gives misleading results.
+- **USE method**: for each resource, check **U**tilization (how busy it is), **S**aturation (how much work is queued/waiting), **E**rrors. Saturation (queues growing) is usually the first sign of a bottleneck.
 
-### Tooling
-- k6, JMeter, Gatling, wrk; distribute the load from multiple regions.
-- Chaos: inject latency into a dependency.
+### Step 1 — Measurable goals
+- Start from real numbers: current peak or a marketing forecast, multiplied by a safety factor of 2-3 for special days. Example: 1,200 requests/second, p99 < 400 ms, error rate < 0.1%.
+- Model the **traffic mix** like real user behavior: 70% browse product, 20% search, 8% add to cart, 2% checkout — do not hammer a single endpoint.
 
-### Metrics
-- Throughput (RPS), latency p50/p95/p99, error rate.
-- Resource: CPU/mem per node, DB connections/queries, GC pause, thread pool.
-- Saturation: queue depth, connection pool usage.
+### Step 2 — Environment
+- Same instance types and the same number of layers (LB → ingress → app → pool → DB), same JVM settings and container limits; it can be smaller in node count, but you must know the ratio to extrapolate.
+- Realistic data volume: a 50 GB database behaves differently from 5 GB (the query planner picks different plans, cache hit rate changes).
+- Replace external dependencies (payment gateway, SMS) with mocks that add realistic delay — never send load to a real partner.
+- The load generators must be powerful enough and distributed: a single k6 machine starved of CPU produces fake, optimistic numbers.
 
-### Finding the infrastructure bottleneck
-- LB: connection limit, TLS handshake cost, target health.
-- DB: connection pool exhausted, slow query, lock contention.
-- Node: CPU throttling, memory pressure, disk I/O, network bandwidth.
-- App: thread pool, GC, connection leak.
+### Step 3 — Test types
+| Type | Purpose | Example |
+|---|---|---|
+| Load | Can we hold the target steadily? | 1,200 rps for 30 minutes |
+| Stress | Where and how does it break? | +10% every 5 minutes until errors appear |
+| Spike | Sudden burst — can autoscaling keep up? | 200 → 2,000 rps in 30 seconds |
+| Soak | Leaks and slow degradation over time | 70% load for 8-12 hours |
+
+~~~javascript
+// k6: ramp up and automatically pass/fail against SLO thresholds
+export const options = {
+  stages: [
+    { duration: '5m', target: 600 },   // ramp to 50% of goal
+    { duration: '20m', target: 1200 }, // hold at goal
+    { duration: '5m', target: 0 },     // ramp down
+  ],
+  thresholds: {
+    http_req_duration: ['p(99)<400'],  // p99 must stay under 400 ms
+    http_req_failed: ['rate<0.001'],   // error rate must stay under 0.1%
+  },
+};
+~~~
+
+### Step 4 — Find the bottleneck by layer
+- **Load balancer / ingress**: connection count, 502/504 errors, TLS handshake time, ingress controller connection limits.
+- **Node**: CPU throttling, memory pressure, conntrack table exhaustion, network bandwidth.
+- **App**: thread pool (Tomcat busy threads), GC pause, Hikari pending (threads waiting for a DB connection).
+- **DB**: connection count, top queries ({{pg_stat_statements}}), lock waits, IOPS, replica lag.
+Rule of thumb: the first resource to **saturate** — where a queue starts growing — is the bottleneck, not the resource with the highest percentage.
+
+### Real-world example
+Before a concert ticket sale, the target was 3,000 rps for the seat-reservation API. The first run broke at 900 rps: p99 jumped to 6 s while app CPU sat at only 35%. Metrics showed Hikari pending at 200+ and the DB hit its {{max_connections}} = 300 limit because 30 pods × pool size 10 = 300 connections. The fix: add PgBouncer (transaction mode), lower each pod pool to 6, and fix one missing-index query. The second run reached 3,400 rps with p99 at 280 ms. A 10-hour soak test revealed the heap growing steadily due to an unbounded cache — fixed before the sale. On the actual day the system peaked at 2,700 rps with no errors.
 
 ### Pitfalls
-- Testing from a single machine → a fake network bottleneck.
-- No warm-up → cold start distorts the numbers.
-- Measuring only average latency → hides p99.
+- Generating load from a single machine, or from the same internal network that skips the real LB.
+- Skipping JVM warm-up and measuring the JIT compilation phase along with steady state.
+- Looking only at the average and ignoring p99 and error rate.
+- Forgetting third-party limits (payment gateway rate limits) → production breaks at a place you never tested.
 
-> Senior tip: Define the SLO first (p99 < X ms, error < 0.1%) and stop the test once you hit it; save a baseline to compare after deploy; run a soak test (many hours) to surface a memory leak.`,
+### Sample interview answer
+"Before go-live I start from measurable goals: the expected peak load multiplied by a safety factor, together with p99 and error-rate thresholds, and a traffic mix that mirrors real user behavior rather than hitting a single endpoint. The environment must match production topology: same instance types, same container limits, realistic data volume, and external dependencies replaced by mocks with realistic delay. I run tests in stages: a load test at the target, stress to find the breaking point, spike to see whether autoscaling keeps up, and a soak test for several hours to catch leaks. While running I watch every layer — load balancer, node, thread pool, connection pool, and database — and I look for the first resource to saturate, meaning where a queue starts growing. In one case app CPU was only 35% but p99 hit 6 seconds; the cause was 30 pods times a pool of 10 exceeding the database max_connections. Adding PgBouncer and shrinking the pool let us meet the target."
+
+> Senior tip: keep a history table of every load-test run (max rps, p99, the first resource to break) and rerun after every major change. When capacity drops 20% between two releases, you will know before your users do.`,
     follow: [
       "What is the difference between a load test, a stress test, a soak test, and a spike test?",
       "How do you load test safely on production (canary load)?",
       "When p99 is high but CPU is low, in what order do you investigate?"
-    ],
+    ]
   },
   'devops-075': {
     q: "In a bank moving to the cloud (AWS), \"DevOps\" is often split into several roles: SA (Solution Architect), DevOps/Platform, Infra/System, SRE, Cloud Security. What does each role do, what do interviews usually ask, and which role should a Java dev with 4 years of experience aim for if they want to switch direction?",

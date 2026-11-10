@@ -121,48 +121,57 @@ class OrderRepositoryIT {
     ]
   },
   'testing-003': {
-    q: `Distinguish stub, mock, spy, fake in unit tests. When is too much mocking a code smell, how do you recognize it, and how do you handle it?`,
-    a: `**Summary:** Four kinds of test double differ in **degree of "fake"**: stub only returns data, spy is the real object with call recording, mock both returns data and **verifies behavior**, fake is a simplified but real implementation. Too much mocking is a smell because the test is **asserting internal structure** rather than observable behavior — every refactor breaks tests while the system remains correct.
+    q: `How do you distinguish stub, mock, spy, and fake in unit tests? When is excessive mocking a code smell, how do you recognize it, and how do you deal with it?`,
+    a: `**Summary:** The four types of test doubles (test double = a stand-in object used in place of a real dependency during testing) differ in how "fake" they are: a stub only returns data, a spy is a real object that records calls, a mock both returns data and **verifies behavior**, and a fake is a simplified but working implementation. Too much mocking is a smell because the test is **asserting internal structure** instead of observable behavior — every refactor breaks tests even though the system is still correct.
 
-### Four test double types
-| Type | Purpose | In Mockito |
+### The four types of test doubles
+| Type | Purpose | In Mockito (Mockito = a popular Java library for creating test doubles) |
 |---|---|---|
-| Stub | configure fixed output | {{when(...).thenReturn(...)}} |
-| Spy | real object, records calls for verify | {{spy()}} |
-| Mock | define expectations, verify anything | {{mock()}} + {{verify()}} |
-| Fake | lightweight but real implementation | self-written class, e.g., in-memory repo |
+| Stub | configure a fixed output | {{when(...).thenReturn(...)}} |
+| Spy | a real object that records calls for verification | {{spy()}} |
+| Mock | define expectations, verify calls | {{mock()}} + {{verify()}} |
+| Fake | a lightweight but real implementation | a hand-written class, e.g. an in-memory repo |
 
-Core difference: **stub only answers, mock answers and is also verified (verify) for calls**. If a test uses {{when}} without {{verify}}, it is essentially a stub.
+Core difference: **a stub only answers, a mock answers and is also verified for how it was called**. If a test uses {{when}} but never {{verify}}, it is essentially just a stub.
 
 ### Example — assert behavior, not internal calls
 ~~~java
-// Bad: test tied to implementation, code change breaks test
+// Not good: test is tightly coupled to implementation, code change breaks the test
 verify(paymentGateway).charge(eq(500_000L), eq("CARD-1"));
 
-// Good: assert observable result
+// Good: assert the observable result
 Order order = service.place(cmd);
 assertThat(order.status()).isEqualTo(PAID);
 assertThat(order.chargedAmount()).isEqualTo(500_000L);
 ~~~
 
-### Signs of too much mocking
-- **Observing call counts instead of results**: test full of {{verify(mock, times(3))}} without asserting any system value.
-- **Have to fix mock every time implementation changes**: sign you're testing "how" not "what".
-- **Business-empty test**: change all logic in service, test still green.
-- **Mock propagation**: mock of mock, deep call chain — usually signals missing abstraction.
-- **Unusually slow test**: lots of mocking usually accompanies complex setup; consider if something belongs to integration layer.
+### Signs of excessive mocking
+- **Observing call counts instead of results**: the test is full of {{verify(mock, times(3))}} but asserts no value coming out of the system.
+- **You must fix mocks every time implementation changes**: a sign you are testing "how" rather than "what".
+- **A test that is empty in business meaning**: you change all the logic inside the service and the test still stays green.
+- **Mock propagation**: a mock of a mock, a deep call chain into lower layers — usually a sign of a missing abstraction (abstraction = a simpler interface that hides details).
+- **Unusually slow tests**: heavy mocking often comes with complex setup; reconsider whether something belongs in an integration test layer instead.
 
-### How to handle
-1. **Replace mock with fake when possible**: in-memory repo, fixed {{Clock}}, JSON fixture instead of real HTTP client.
-2. **Only mock at external system boundaries**: HTTP client, message broker, clock, random — where you have no control.
-3. **Shift assertions to observable output**: entity state, return value, published event.
-4. **Let lower layer be tested with real implementation** instead of mocking at upper layer.
-5. **Contract test** for inter-service agreement instead of long-term mock in unit test.
+### How to handle it
+1. **Replace mocks with fakes when possible**: an in-memory repository, a fixed {{Clock}} (Clock = a Java time source you can inject and replace in tests), a JSON fixture instead of a real HTTP client.
+2. **Mock only at external system boundaries**: HTTP client, message broker (message broker = middleware like Kafka/RabbitMQ that passes messages between services), clock, random — places you do not control.
+3. **Move assertions to observable output**: entity state, return value, published event.
+4. **Let lower layers be tested with real implementations** instead of mocking at the upper layer.
+5. **Use contract tests** (contract test = a test that checks the agreement between services at the API level) for inter-service agreements instead of long-lived mocks in unit tests.
 
-> Senior tip: my personal rule when reviewing PR — **a test should only fail when observable behavior changes**. If renaming a private variable or adding an intermediary class makes the test red, that test asserts structure, and it will make the team hate writing tests.`,
+### Why excessive mocking makes tests "brittle"
+When you write {{verify(repo).save(any())}} or {{verify(mapper, times(2)).toDto(any())}}, the test is asserting **how** the code works, not **what** result it produces. A valid refactor — merging two mapping calls into one, changing {{save}} to {{saveAll}} — does not break behavior but turns the test red. Over time the team becomes afraid to refactor because "change 1 line, 30 tests turn red." A practical rule: **mock at system boundaries** (an outgoing HTTP client, a message broker, a clock, a payment gateway) and **use real objects or fakes for everything inside** (domain objects, mappers, validators, in-memory repositories). Only verify a call when that call **is the behavior** you need to check, for example "exactly 1 confirmation email must be sent."
+
+### Real-world example
+An order module had 420 unit tests; 80% used Mockito with an average of 6 mocks each. When {{OrderService}} was split into two smaller classes, 140 tests turned red even though there were no bugs; it took 3 days to fix the tests. Analysis: most tests verified the call order between mapper, validator, and repository. The team wrote an {{InMemoryOrderRepository}} (a fake, about 40 lines using a {{HashMap}}), used the real mapper and validator, and only mocked {{PaymentGateway}} and {{Clock}}. The number of tests dropped to 260 but the mutation score (PIT, mutation testing = a tool that deliberately breaks code to see if tests catch it) rose from 61% to 78%, and the next large refactor turned only 6 tests red — all real behavior changes.
+
+### Sample interview answer
+"A stub only returns fixed data, a mock returns data and also lets you verify calls, a spy is a real object whose calls are recorded, and a fake is a lightweight but working implementation, like an in-memory repository. I mock at system boundaries such as an HTTP client, a broker, a payment gateway, or a clock, and inside I use real objects or fakes. Signs of too much mocking are five or six mocks in a test, verifying the order of internal calls, and a refactor that does not change behavior turning lots of tests red — that means the tests are locking down structure instead of protecting behavior. To fix it I assert observable results, replace mocks with fakes for repositories, and if a class needs too many mocks that usually means the class is doing too much and should be split. I use mutation testing to check whether tests actually catch bugs."
+
+> Senior tip: a personal rule I use when reviewing a PR — **a test should only fail when observable behavior changes**. If renaming a private variable or adding an intermediate class makes the test red, that test is asserting structure, and it will make the team hate writing tests.`,
     follow: [
       'Do you use {{@ExtendWith(MockitoExtension.class)}}? What issues do {{@Mock}} with {{@InjectMocks}} have?',
-      'How does Fluent assertion library (AssertJ) help compared to pure JUnit {{assertEquals}}?',
+      'How does a fluent assertion library (AssertJ) help compared to plain JUnit {{assertEquals}}?',
       'When should you use {{@Spy}} instead of {{@Mock}}?'
     ]
   },
@@ -301,35 +310,35 @@ await().atMost(Duration.ofSeconds(3))
     ]
   },
   'testing-006': {
-    q: `How much code coverage is enough? Why does high coverage still have bugs? How is mutation testing (PIT) different from coverage and how do you use it in CI?`,
-    a: `**Summary:** Coverage measures **lines of code executed**, not "test catches bugs". 80% coverage can come with 0% meaningful assertions. Mutation testing measures real value by **deliberately breaking code** then seeing if tests detect it — so it's a supplementary metric, not a replacement for coverage.
+    q: `How much code coverage is enough? Why can you still have bugs with high coverage? How is mutation testing (PIT) different from coverage, and how do you use it in CI?`,
+    a: `**Summary:** Coverage (code coverage = the percentage of code lines/branches executed by tests) measures **which lines of code were executed**, not "can the tests catch bugs." 80% coverage can come with 0% meaningful assertions. Mutation testing measures real value by **deliberately breaking the code** and seeing if tests detect it — so it is a complementary metric, not a replacement for coverage.
 
-### What coverage is enough?
-| Level | Actual meaning |
+### How much coverage is enough?
+| Level | Practical meaning |
 |---|---|
-| < 50% | team not serious about tests; needs support, not blame |
-| 60–70% line | minimum acceptable for business logic |
-| 80% line + 70% branch | reasonable target for core business |
-| 100% | usually **wrong goal** — easily leads to meaningless tests for pretty numbers |
+| < 50% | the team is not serious about tests; needs support, not blame |
+| 60–70% line | the minimum acceptable level for business logic |
+| 80% line + 70% branch | a reasonable target for core business logic (branch coverage = checks whether each true/false path of an if/switch was executed) |
+| 100% | usually the **wrong goal** — easily leads to meaningless tests just to make the number look good |
 
-Don't apply a uniform threshold across repo: **DTO, entity, config, generated code don't need coverage**; core business logic does the opposite.
+Do not apply a single threshold to the whole repo: **DTOs (Data Transfer Object = a simple data carrier class), entities, config, and generated code do not need coverage**; core business logic is the opposite.
 
 ### Why high coverage still has bugs
-- Test only asserts "no exception" → line runs fully but wrong result still passes.
-- **Assertions missing in error branches**: {{catch}} branch returns default, nobody checks → coverage still green.
-- **Order-dependent tests** make some tests "counted for coverage" indirectly.
-- Coverage is **a function of code**, not test quality: just call all methods to reach 100%.
+- The test only asserts "no exception thrown" → the line runs but a wrong result still passes.
+- **Assertions missing on error branches**: a {{catch}} branch returns a default value and nobody checks it → coverage is still green.
+- **Order-dependent tests** make some tests get "counted" for coverage indirectly.
+- Coverage is **a function of the code**, not of test quality: just calling every method can reach 100%.
 
 ### How mutation testing (PIT) works
-PIT generates **mutants** — wrong versions of code — then reruns tests:
-- Mutant **killed** (test red) → your assertion has meaning.
-- Mutant **survived** (test green) → you're missing an important test.
+PIT generates **mutants** — broken versions of the code — then reruns the tests:
+- A mutant is **killed** (the test turns red) → your assertion has meaning.
+- A mutant **survived** (the test stays green) → you are missing an important test.
 
 ~~~xml
 <plugin>
   <groupId>org.pitest</groupId>
   <artifactId>pitest-maven</artifactId>
-  <!-- choose latest version compatible with JDK 21 -->
+  <!-- choose the latest version compatible with JDK 21 -->
   <configuration>
     <targetClasses>
       <param>com.acme.order.domain.*</param>
@@ -339,22 +348,28 @@ PIT generates **mutants** — wrong versions of code — then reruns tests:
   </configuration>
 </plugin>
 ~~~
-Typical mutant: change {{>=}} to {{>}}, delete a branch {{if}}, change constant, replace {{null}} with default value.
+Typical mutants: change {{>=}} to {{>}}, remove an {{if}} branch, change a constant, replace {{null}} with a default value.
 
-### How to use in CI
-- Run **PIT for core business** (domain module), not whole repo — runtime increases many times over normal tests.
-- Set **mutation threshold** as quality gate (e.g., 70% on domain), and **run only on PR or nightly** depending on pipeline speed.
-- HTML report so team sees which mutants survived — that's exactly the "tests to add" list.
+### How to use it in CI
+- Run **PIT for core business** (the domain module), not for the whole repo — runtime is many times higher than normal tests.
+- Set a **mutation threshold** as a quality gate (e.g. 70% on domain), and **run only on PRs or nightly** depending on pipeline speed (CI = Continuous Integration, an automated pipeline that builds/tests code on each change).
+- Produce an HTML report so the team can see which mutants survived — that is exactly the list of "tests to add."
 
-### Common traps
-- **Optimizing for numbers**: write empty tests to reach threshold. This is why many teams drop the metric entirely.
-- **Calculating mutation score over all code** including non-logic code → meaningless score drop.
-- **Coverage gate slows PR** if rerunning whole suite; should use "coverage delta" (block when new code lowers quality) instead of blocking total.
+### Common pitfalls
+- **Optimizing for the number**: writing empty tests to reach the threshold. This is why many teams drop the metric entirely.
+- **Calculating mutation score over all code** including non-logic code → a meaningless drop in score.
+- **A coverage gate slows PRs** if it reruns the whole suite; use a "coverage delta" (block when new code lowers quality) instead of blocking on the total.
 
-> Senior tip: use coverage as **early sensor** (which module isn't tested, who wrote code without tests) not as a goal. When you need one number to argue with management, mutation score on domain is more convincing than total coverage.`,
+### Real-world example
+A shipping fee service had 92% line coverage and a green CI, but a bug caused customers in remote areas to be charged a fee of 0 for 3 days. Investigation: the tests called {{calculateFee()}} for every region but only asserted {{assertNotNull(result)}}. First PIT run: mutation score 54%; mutants "change {{>}} to {{>=}} at the distance threshold" and "return 0" both survived. The team added specific assertions for the fee value, tests for boundaries (exactly 50 km, 50.1 km), and set PIT to run on the core fee-calculation classes with a 75% threshold. PIT ran in incremental mode for only the changed classes in a PR (about 3 minutes); the full run ran nightly (about 25 minutes). Six months later the mutation score was 81%, no more fee-calculation bugs reached production; line coverage barely changed.
+
+### Sample interview answer
+"Coverage only tells you which lines ran, not whether the tests checked the results; a test that calls a function and only asserts non-null still counts as covered. So I do not set a single threshold for the whole repo. I set around 80% line and 70% branch for core business logic like pricing and authorization, and I exclude DTOs, config, and generated code. I use coverage to find untested areas, not to judge quality. Mutation testing with PIT answers the right question: it deliberately changes code, like flipping a comparison or returning a default value, and checks if tests turn red. A surviving mutant means there is behavior not being checked. In CI I run incremental PIT on classes changed in a PR to keep it fast, run the full version nightly, and set a threshold for the core module."
+
+> Senior tip: use coverage as an **early sensor** (which module is untested, who just wrote code without tests) rather than as a goal. When you need a single number to argue with management, mutation score on the domain is more convincing than total coverage.`,
     follow: [
-      'How does coverage "ratchet" (block when new code lowers quality) work in pipeline?',
-      'Does mutation testing take a lot of time, and how do you estimate when adding to CI?',
+      'How does a coverage "ratchet" (block when new code lowers quality) work in a pipeline?',
+      'Is mutation testing time-consuming, and how do you estimate the cost when adding it to CI?',
       'Do you use any tool to remove duplicate tests?'
     ]
   },
@@ -428,42 +443,48 @@ export default function () {
     ]
   },
   'testing-008': {
-    q: `How do you review others' code? What's in a senior reviewer's checklist, and how do you review effectively while respecting colleagues?`,
-    a: `**Summary:** Review isn't style bug hunting — it's **protecting the product and transmitting standards**. Senior checklist has 4 groups: correct? safe? won't break at scale? readable by others? The most respectful way is **state priority of each comment** so the author knows what's blocking merge and what's optional.
+    q: `How do you review other people's code? What is on a senior reviewer's checklist, and how do you review effectively while still respecting your colleagues?`,
+    a: `**Summary:** Review is not about hunting style bugs — it is about **protecting the product and passing on standards**. A senior checklist has 4 groups: is it correct? is it safe? will it break at scale? can others read it? The most respectful way is to **state the priority of each comment** so the author knows what blocks the merge and what is optional.
 
-### Senior review checklist
-| Group | Must-answer questions |
+### A senior review checklist
+| Group | Questions that must be answered |
 |---|---|
-| Correct | logic, null, edge (empty, 0, expired date), idempotency |
-| Safe | SQL injection, secret in log, authorization, unvalidated input |
-| Sustainable | N+1 query, missing index, transaction wrapping slow I/O, memory leak |
-| Compatible | response change breaks old clients? migration safe on rollback? |
-| Operational | log/metric/trace enough for 3 AM debug, retry/circuit breaker, timeout |
-| Tested | new logic has tests? flaky? asserts behavior? |
-| Readable | names clear, abstraction correct, comments explain **why** not **what** |
+| Correct | logic, null, edge cases (edge case = an unusual input like empty, 0, expired date), idempotency (idempotency = running the same operation twice gives the same result) |
+| Safe | SQL injection (SQL injection = an attack where user input is executed as SQL), secrets in logs, authorization, uncontrolled input |
+| Sustainable | N+1 query (N+1 = 1 query to fetch a list + N extra queries for each item), missing index, a transaction wrapping slow I/O, memory leak |
+| Compatible | does a response change break old clients? is the migration safe on rollback? (rollback = reverting to the previous version) |
+| Operable | are logs/metrics/traces enough to debug at 3 a.m., retry/circuit breaker (circuit breaker = stops calling a failing dependency to prevent cascading failure), timeout |
+| Tested | does new logic have tests? are they flaky (flaky = fails randomly)? do they assert behavior? |
+| Readable | clear names, right abstraction, comments explain **why** not **what** |
 
-### Writing effective and respectful comments
-- **Classify severity** — most effective: {{must:}} (blocks merge), {{should:}} (should fix, can defer), {{nit:}} (style suggestion, doesn't block). Author knows what's mandatory.
-- **Explain reason, not just command**: "Here the query inside loop becomes N+1 (100 records = 101 round-trips), consider changing to a single {{IN}} query + map results."
-- **Provide fix direction**: "I suggest extracting {{validate()}} out of controller, because business rules in web layer are hard to reuse."
-- **Praise good parts**: good reviews include praise; specific praise ("the way you separated validation is very testable") builds correct behavior faster than criticism.
-- **Don't touch style when tools handle it**: if formatter/linter exists, don't comment on format.
-- **Review within reasonable time**: commit to 24 working hours; PR left >3 days should be handed to someone else.
+### How to write effective and respectful comments
+- **Classify severity** — the most effective approach: {{must:}} (blocks merge), {{should:}} (should fix, can defer), {{nit:}} (style suggestion, does not block). The author immediately knows what is mandatory.
+- **Explain the reason, not just the command**: "Here a query inside the loop becomes N+1 (100 records = 101 round trips), consider switching to a single {{IN}} query + mapping the results."
+- **Give a direction to fix**: "I suggest extracting {{validate()}} out of the controller, because business rules in the web layer are hard to reuse."
+- **Praise good parts**: good reviews include praise; specific praise ("the way you separated validation makes this easy to test") builds the right behavior faster than criticism.
+- **Do not touch style when tools handle it**: if you have a formatter/linter (linter = a tool that automatically checks code style/rules), do not comment on formatting.
+- **Review within a reasonable time**: commit to 24 working hours; a PR left for more than 3 days should be handed to someone else.
 
 ### Before / after example
 - Before: "Why use {{List}} here? Use {{HashMap}}."
-- After: "{{should:}} Here we need lookup by id so {{List}} is O(n) each time. With expected data of a few thousand records it's acceptable, but if it can reach hundreds of thousands, consider switching to {{Map}} for O(1) lookup."
+- After: "{{should:}} Here we need lookup by id so {{List}} is O(n) each time. With the expected data of a few thousand records that is acceptable, but if it can grow to hundreds of thousands, consider switching to {{Map}} for O(1) lookup."
 
-### Common traps
-- **50 comments in one pass** ⇒ author overwhelmed, won't open PR next time.
-- **Approve then read carefully** — formal review is worthless; read diff first, comment after.
-- **Debating style instead of design**: style should be decided by tools.
-- **"Review" just to say something**: reviewing all PRs silently is also a form of damage.
+### Common pitfalls
+- **50 comments in one pass** ⇒ the author is overwhelmed and will not open PRs next time.
+- **Approve then read carefully** — a formal review is worthless; read the diff first, comment after.
+- **Arguing about style instead of design**: style should be decided by tools.
+- **"Review for show"**: approving every PR without saying anything is also a form of damage.
 
-> Senior tip: useful metrics for review quality are **first response time** and **number of PR rounds to merge**. If a PR needs 3 rounds to merge, that's a communication or design quality issue, not reviewer issue.`,
+### Real-world example
+A team of 10 had an average review wait time of 2 days; many PRs received 30–40 comments, mostly about naming and formatting; a new developer asked to transfer teams because they felt "nitpicked." Meanwhile a PR that added {{@Transactional}} (a Spring annotation that wraps code in a database transaction) around an outgoing HTTP call slipped through review and exhausted the connection pool when the partner was slow. Changes made: formatter + Checkstyle + SpotBugs ran in CI so reviews no longer debated formatting; a comment prefix convention ({{blocking:}}, {{suggestion:}}, {{nit:}}, {{question:}}); PRs capped at around 400 lines; a mandatory checklist for transactions, queries, and security; a commitment to give the first review response within 4 working hours. After one quarter: review wait time dropped to 5 hours, the average number of comments per PR was halved, but the share of "blocking" comments that found real issues went up; there were no more incidents caused by a transaction wrapping I/O.
+
+### Sample interview answer
+"When I review I read the description and ticket first to understand the goal, then I look at the overall design before reading line by line. My checklist, in priority order: is it correct, including logic, edge cases, null, idempotency; is it safe, including authorization, injection, secrets in logs; will it hold up under load, like N+1, missing indexes, a transaction wrapping slow I/O; is it backward compatible, like API or migration changes; and finally, is it readable. I let automated tools in CI handle format and style. To respect colleagues I label the severity of each comment, what blocks merge versus what is only a suggestion, I explain reasons instead of giving orders, and I praise good parts. If we go back and forth more than three times I switch to a direct conversation. I also try to respond quickly, because a PR that waits long costs the team more than a missing comment."
+
+> Senior tip: useful metrics for review quality are **time to first response** and **number of PR rounds to merge**. If a PR takes 3 rounds to merge, that is a communication or initial design quality problem, not a reviewer problem.`,
     follow: [
-      'How do you handle when a colleague disagrees with your comment and both have valid points?',
-      'Should you use automated tools (SonarQube, review bot) to reduce reviewer load?',
+      'How do you handle it when a colleague disagrees with your comment and both sides have valid points?',
+      'Should you use automated tools (SonarQube, review bots) to reduce the load on reviewers?',
       'What do you do when you find a PR with serious issues but the author is facing a deadline?'
     ]
   },
@@ -516,13 +537,13 @@ for i in $(seq 1 20); do mvn -q test -Dtest=OrderServiceIT || echo "FAIL run $i"
     ]
   },
   'testing-010': {
-    q: `How do you organize test data and ensure tests are independent, reproducible? What anti-patterns do you commonly see when reading others' test code?`,
-    a: `**Summary:** Good tests must **create their own data** and **not depend on order or time**. Use factory/builder instead of huge fixtures, always seed random, and clean up after each test. Three most common anti-patterns: using {{@DirtiesContext}} to "fix" data pollution, depending on execution order, and embedding data directly in tests.
+    q: `How do you organize test data and ensure tests are independent and reproducible? What anti-patterns do you often see when reading other teams' test code?`,
+    a: `**Summary:** Good tests must **create their own data** and **not depend on order or time**. Use a factory/builder instead of huge fixtures, always seed random values, and clean up after each test. The three most common anti-patterns: {{@DirtiesContext}} to "fix" data pollution, depending on execution order, and embedding data directly in tests.
 
 ### Test data — 4 principles
-1. **Each test creates its own data**: don't rely on previous tests' data.
-2. **Use builder/factory instead of huge JSON fixtures**: 500-line fixtures break when model changes and hide what's really important.
-3. **Random always has seed**: otherwise each failure is unreproducible.
+1. **Each test creates its own data**: do not rely on data created by a previous test.
+2. **Use a builder/factory instead of huge JSON fixtures** (fixture = pre-prepared test data, often a file): a 500-line fixture breaks whenever the model changes and hides what really matters.
+3. **Random always has a seed** (seed = a starting value that makes random output repeatable): otherwise every failure is impossible to reproduce.
 4. **Test data must be readable**: use meaningful variable names instead of {{user1}}, {{user2}}.
 
 ~~~java
@@ -532,7 +553,7 @@ class OrderFixtures {
     }
 }
 
-// test creates itself, doesn't depend on other tests
+// the test creates its own data, does not depend on other tests
 @Test void expired_order_is_rejected() {
     var order = pendingOrder(42L, LocalDateTime.now().minusDays(2));
     assertThat(service.validate(order)).isEqualTo(REJECTED);
@@ -540,31 +561,37 @@ class OrderFixtures {
 ~~~
 
 ### Ensuring reproducibility
-- **Same seed ⇒ same result**: use shared seed function for suite, log seed to CI for reproduction.
-- **Same timezone and locale**: set fixed throughout suite, don't let tests "work on my machine".
-- **Don't rely on order**: if forced to use {{@TestMethodOrder}}, treat it as a signal to redesign.
-- **Self-cleaning data**: prefer transaction rollback for JPA tests, use {{@Sql}} to reset tables, or use separate DB for suite.
+- **Same seed ⇒ same result**: use a shared seed function for the whole suite, log the seed to CI for reproduction.
+- **Same timezone and locale** (locale = regional settings like date/number format): set them fixed for the whole suite, do not let tests "work on my machine."
+- **Do not rely on order**: if you are forced to use {{@TestMethodOrder}}, treat that as a sign the tests need redesign.
+- **Data cleans itself up**: prefer transaction rollback for JPA tests (JPA = Java Persistence API, the standard for mapping Java objects to database tables), use {{@Sql}} to reset tables, or use a separate database for the suite.
 
-### Common anti-patterns when reviewing team tests
-| Anti-pattern | Signs | Consequence |
+### Anti-patterns often seen when reviewing other teams' tests
+| Anti-pattern | Symptom | Consequence |
 |---|---|---|
-| Shared data | static variables, common DB for all tests | failures when running parallel |
-| Order dependency | test B needs data from test A | random failures, unreproducible |
-| {{@DirtiesContext}} to "patch" | clearing cache/context every test | CI slows many times |
-| Too long test | 200 lines, many unrelated asserts | don't know where error is |
-| Missing assertions | runs but checks nothing | false sense of safety |
-| Hardcoded data | 500-line JSON in repo | hard to maintain, hides meaning |
+| Shared data | static variables, a DB shared by all tests | tests fail when run in parallel |
+| Order dependency | test B needs data from test A | random failures, not reproducible |
+| {{@DirtiesContext}} to "patch" | clearing cache/context on every test (DirtiesContext = tells Spring to rebuild the whole app context) | CI becomes many times slower |
+| Overly long test | 200 lines, many unrelated asserts | you cannot tell where the error is |
+| Missing assertions | runs but checks nothing | creates a false sense of safety |
+| Hardcoded data | a 500-line JSON in the repo | hard to maintain, hides meaning |
 
-### Common traps
-- **Generating large data in every test** (thousands of records) slows suite; create minimal data sufficient to cover branches.
-- **Deleting with {{DELETE FROM}} out of order** ⇒ violates foreign keys. Use truncate cascade or rollback.
-- **Tests depending on real environment data** (old dev DB) ⇒ unreproducible outside that machine.
+### Common pitfalls
+- **Generating large data in every test** (thousands of records) slows the suite; create the minimum data needed to cover the branch.
+- **Deleting data with {{DELETE FROM}} in the wrong order** ⇒ violates foreign keys (foreign key = a database rule linking a column to another table's key). Use truncate cascade or rollback.
+- **Tests depending on real environment data** (an old dev DB) ⇒ nobody can reproduce them outside that machine.
 
-> Senior tip: a quick quality check of another team's tests is **clear DB and run tests in reverse order**. If red ⇒ you've found an order-dependent test, and that's usually a hidden bug in remaining tests too.`,
+### Real-world example
+A suite of 600 integration tests ran in 18 minutes and about 1 in 5 CI runs had a random red test. Investigation: (1) 40 tests shared a customer with a fixed email in {{data.sql}}, so parallel runs collided on a unique constraint (unique constraint = a database rule that a value must be unique); (2) 25 tests used {{LocalDateTime.now()}} so they turned red at month end; (3) 60 classes had {{@DirtiesContext}}, causing the Spring context to restart more than 60 times. Fixes: a builder generating data with a unique email/code per test ({{"user-" + UUID}}); inject {{Clock}} and use {{Clock.fixed}} in tests; remove {{@DirtiesContext}}, truncate data after each test, and share one Testcontainers container (Testcontainers = a library that runs real databases in Docker for tests) for the whole suite. Result: runtime dropped to 7 minutes, random red rate fell below 1%; any red test could be reproduced locally.
+
+### Sample interview answer
+"I follow the rule that each test creates the data it needs using a builder or factory with sensible defaults, stating only the fields that matter for that test, and I use unique values like UUID so parallel runs do not collide. Anything non-deterministic is controlled: time through an injected Clock, random with a seed, IDs generated through a replaceable interface. After each test I clean up data, by rollback or truncate, instead of using DirtiesContext because it restarts the Spring context and makes the suite very slow. For integration tests I use Testcontainers with a real DB, started once for the whole suite. The most common anti-patterns are huge shared SQL fixtures, tests that depend on execution order, using real time, and sleep to wait for async work instead of waiting on a condition. I treat a randomly failing test as a real bug to fix, not something to rerun until green."
+
+> Senior tip: a quick way to check another team's test quality is to **wipe the database and run the tests in reverse order**. If they turn red ⇒ you have found order-dependent tests, and that is usually a hidden bug in the remaining tests too.`,
     follow: [
-      'How do you handle test data needing many relationships (foreign keys) in JPA tests?',
-      'Should you use random data generators like Java Faker in tests?',
-      'How do you keep tests fast when the problem needs large historical data (e.g., 1 year of data)?'
+      'How do you handle test data that needs many relationships (foreign keys) in JPA tests?',
+      'Should you use a random data generator like Java Faker in tests?',
+      'How do you keep tests fast when the problem needs large historical data (for example, 1 year of data)?'
     ]
   }
 });

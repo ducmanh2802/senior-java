@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/q-banking.js — task T662. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-banking.js — task T1149. Format: js/core/i18n.js (content overlay).
  * ids: banking-009 banking-010 banking-011 banking-012 banking-013 banking-014 banking-015
  */
 App.i18n.content({
@@ -51,8 +51,7 @@ Log --> Payment system: written
 > Senior tip: In an interview, say that PCI DSS is not just "encryption" but "minimising the sensitive data the system needs to store". Emphasise that the real card number only needs to live in one place, and every other system stores tokens. If you can, mention a system you built or know of (for example using a bank's payment service or a PCI-certified tokenization provider).
 
 > Term: PAN (Primary Account Number) is the card number printed on the card (16 digits), the data protected by PCI DSS.
-
-  `,
+`,
     follow: [
       'Why is storing the CVV forbidden after payment authorisation?',
       'How does a token differ from encryption, and when do you use which?',
@@ -87,6 +86,7 @@ An example ISO 20022 message can contain: sender name "Nguyen Van A", the sendin
 
 ### The basic differences
 | Criterion | ISO 8583 | ISO 20022 |
+|---|---|---|
 | Scope | Card transactions (ATM/POS) | General payments (transfers, collections...) |
 | Format | Numbered fields (binary/ASCII text) | XML or JSON |
 | Information | Little, only what is needed | Rich, detailed sender/beneficiary, purpose |
@@ -117,8 +117,7 @@ ATM --> Customer: dispense 2 million, print receipt
 > Senior tip: In an interview, there is no need to cover the whole standard (hundreds of pages). Know this clearly: ISO 8583 for cards, ISO 20022 for general payments, one built on numbered fields (ISO 8583) and the other on XML/JSON (ISO 20022), and a developer must map data from the bank's internal systems onto the external standard when sending to partners. If you can, mention a messaging system you have worked with (for example a card system or a remittance system) and the standard it used.
 
 > Term: MTI (Message Type Identifier) is the 4 digits at the start of an ISO 8583 message saying what kind of message it is (payment request, response, reversal...).
-
-  `,
+`,
     follow: [
       'Where do ISO 8583 and ISO 20022 differ, and what is each used for?',
       'What is an MTI, and some commonly seen MTI values?',
@@ -193,8 +192,7 @@ Example: a deposit from 1/1 to 31/1 spans 31 days. Interest = balance × 6% × 3
 > Senior tip: In an interview, draw the interest formula on paper: Interest = Balance × Rate × Days / 365, and state that BigDecimal is mandatory. Emphasise that division in BigDecimal requires an explicit scale and RoundingMode, otherwise it throws ArithmeticException when the division is not exact. If you can, cite the classic double error (0.1 + 0.2) as evidence.
 
 > Term: RoundingMode (rounding mode) is the rule that decides how the digit at the rounding position is handled (for example HALF_UP = round up if the next digit is >= 5).
-
-  `,
+`,
     follow: [
       'Why must money in Java use BigDecimal instead of double?',
       'What is the actual/365 convention, and how does it differ from 360?',
@@ -267,8 +265,7 @@ SMS example: "Bank ABC will maintain its systems from 23:00 until 01:00 tomorrow
 > Senior tip: In an interview, say the system never outright rejects a customer request just because the core is under maintenance. The queue and store-and-forward guarantee requests are not lost; customer notice guarantees nobody is surprised. Emphasise that after maintenance the system must process the backlog and report results to customers — it must not silently drop anything.
 
 > Term: Backlog is the set of requests already persisted but not yet processed, which must be handled after the system returns to normal.
-
-  `,
+`,
     follow: [
       'Why persist requests in a database instead of keeping them only in memory?',
       'How does store-and-forward differ from an ordinary queue?',
@@ -353,8 +350,7 @@ BigDecimal capturable(Hold h, BigDecimal requested, Instant now) {
 > Senior tip: In an interview, state clearly that "the customer's money only leaves the issuer at settlement; everything before that is just a placeholder in the books". Add two things that score well: (1) holds must expire and a job must release them, (2) the chargeback ratio is existential for a merchant, so the system must capture evidence (proof of delivery, signature, device logs) at the moment the transaction happens, not when the dispute arrives.
 
 > Term: Hold is the part of the available balance temporarily marked unavailable, not yet booked as a final transaction. MDR (Merchant Discount Rate) is the fee the merchant pays on each card transaction, deducted right at the settlement step.
-
-  `,
+`,
     follow: [
       'Why must capture never exceed the authorized amount, and how do partial captures accumulate?',
       'How do refund and chargeback differ in the ledger and in the processing flow?',
@@ -453,8 +449,7 @@ CREATE TABLE merchant_order (
 > Senior tip: Say in the interview that the QR is only an **initiation channel**, while the **deciding channel** is the switching system and the ledger. So the design must have three things: a unique order code in the transfer content, an "awaiting confirmation" state instead of jumping straight to "success" when the customer reports, and a proactive lookup job in case a webhook gets lost. This is exactly the idempotency-and-reconciliation lesson applied to a very everyday flow.
 
 > Term: BIN (Bank Identification Number) is the first 6 digits of a number sequence, used to identify a bank — here, the beneficiary bank. A webhook is system A proactively calling system B's API when an event happens, instead of B constantly polling A.
-
-  `,
+`,
     follow: [
       'Why must an order never be confirmed from a "transfer successful" screenshot sent by the customer alone?',
       'What data does a dynamic QR need for automatic reconciliation, and how do you handle QR expiry?',
@@ -529,8 +524,7 @@ Insufficient funds is an error **worth waiting on**, not a technical fault, so d
 > Senior tip: The question that separates seniors here is "is your job safe to re-run" (re-runnable). Answer in order: a natural key (mandate, period) in the database, a mandate-state check right before posting to the ledger, business retries separated from technical retries, and a notice issued before each collection. Add one practical point: the collected amount can change (electricity use varies month to month), so the mandate must carry an amount cap and the system must refuse any collection above it.
 
 > Term: Mandate (direct-debit authorisation) is the paper or e-consent allowing an organisation to debit a customer's account periodically. Period key is the string identifying one collection period, for example '2026-06'.
-
-  `,
+`,
     follow: [
       'The auto-debit job runs on 3 instances — how do you prevent double collection?',
       'Where does the design distinguish a retry for insufficient funds from a retry for a network fault?',

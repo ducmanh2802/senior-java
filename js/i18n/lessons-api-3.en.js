@@ -185,44 +185,44 @@ When {{work}} throws, we {{remove(key)}} so the next retry can genuinely try aga
   'lesson-api-005': {
     title: 'API pagination: cursor (keyset) vs offset/limit',
     goals: [
-      'Explain why a large OFFSET is slow and why offset causes duplicate/missing rows when data is inserted/deleted between pages',
-      'Understand the cursor mechanism (keyset pagination): encode the position (createdAt, id), query "after this mark", stable sorting',
+      'Explain why a large OFFSET is slow and why offset causes duplicate or missing rows when data is inserted or deleted between pages',
+      'Understand the cursor mechanism (keyset pagination): encode a position (createdAt, id), query "after this mark", and keep sorting stable',
       'Implement a CursorPager in plain Java that returns items + nextCursor (Base64 of "createdAt|id") with no duplicates and no gaps when rows are inserted',
     ],
-    body: `### What it is: what pagination means
-**Summary:** Pagination splits one large list into smaller pages so the API never returns millions of rows at once. The two common styles: **offset/limit** ("skip the first N rows") and **cursor/keyset** ("take the rows after mark X").
+    body: `### What it is: pagination
+**Summary:** Pagination (splitting a list into pages) divides a large result set into smaller chunks so an API never returns millions of rows at once. The two common approaches are **offset/limit** ("skip the first N rows") and **cursor/keyset** ("take rows after mark X").
 
-**Terms seen for the first time:**
-- **Offset**: the number of rows to skip counted from the start. Everyday example: reading a book from page 101 means skipping the first 100 pages.
-- **Cursor (position marker)**: a mark that says "I am here so far". Everyday example: a bookmark marking the page you stopped at — even if someone pulls extra pages out or inserts new ones before it, the bookmark still points to your exact spot.
-- **Keyset pagination**: using the value of the sorted column(s) as the cursor instead of counting positions. "Keyset" = the set of keys that locate the position.
-- **Stable sort**: the ordering does not shift when elements compare equal; typically achieved by adding a unique column (such as {{id}}) as a tie-breaker.
-- **Base64**: a way to encode binary data/strings into a URL-safe character string; it is NOT secret encryption.
+**Terms you may see for the first time:**
+- **Offset**: the number of rows to skip from the beginning. Everyday analogy: reading a book starting at page 101 means you skip the first 100 pages.
+- **Cursor (position marker)**: a marker that says "I am here so far". Everyday analogy: a bookmark in a book — even if someone inserts or removes pages before it, the bookmark still points to the exact spot where you left off.
+- **Keyset pagination**: using the values of the sorted column(s) as the cursor, instead of counting positions. "Keyset" = the set of keys that locates the position.
+- **Stable sort**: the sort order does not change when elements compare equal; this is usually achieved by adding a unique column (such as {{id}}) as a tie-breaker.
+- **Base64**: an encoding that turns binary data or a string into a URL-safe character string; it is NOT secret encryption.
 
-### Why it is needed: offset is slow and wrong when data changes
-**Offset is slow on deep pages:** {{SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 100000}} forces the DB to still scan and discard the first 100,000 rows before taking 20. The deeper the page, the slower it gets (O(offset + limit)).
+### Why it is needed: offset is slow and breaks when data changes
+**Offset is slow on deep pages:** {{SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 100000}} forces the database (DB) to scan and discard the first 100,000 rows before returning 20. The deeper the page, the slower it gets (O(offset + limit)).
 
-**Offset duplicates/misses rows on inserts/deletes:** you are viewing page 1 (rows A, B). Before you move to page 2 (OFFSET 2), a new row X is inserted at the top. The list is now X, A, B. Page 2 with OFFSET 2 will return B again (duplicate), and if rows get deleted you may miss some. This is a very common bug in feeds/realtime notifications.
+**Offset causes duplicates or gaps on insert/delete:** You are viewing page 1 (rows A, B). Before you move to page 2 (OFFSET 2), a new row X is inserted at the top. The list is now X, A, B. Page 2 with OFFSET 2 returns B again (duplicate). If rows are deleted, you can miss items. This bug is very common in feeds and real-time notifications.
 
 | | Offset/limit | Cursor/keyset |
 |---|---|---|
 | Syntax | {{?page=5001}} or {{?offset=100000&limit=20}} | {{?cursor=abc&limit=20}} |
-| Deep pages | Slow (scans and drops offset rows) | Evenly fast (jumps straight to the mark via an index) |
-| Inserts/deletes mid-way | Easy duplicates/gaps | No duplicates, no gaps (follows the mark) |
+| Deep pages | Slow (scans and drops offset rows) | Consistently fast (jumps straight to the mark via an index) |
+| Inserts/deletes in between | Easy duplicates/gaps | No duplicates, no gaps (follows the mark) |
 | Jump to arbitrary page N | Yes | Not directly (forward/back only) |
 | Implementation | Simple | Needs stable sort + encoded cursor |
 
 ### How it works: a cursor encoding (createdAt, id)
-Pick sort columns with a stable order, e.g. {{(createdAt DESC, id DESC)}} (id acts as a tie-breaker for equal timestamps). First page:
-- Query: take the 20 newest rows (no WHERE on the cursor needed).
-- {{nextCursor}} = Base64 of the **last row** of the page's "{{createdAt}}|{{id}}".
+Choose sort columns with a stable order, for example {{(createdAt DESC, id DESC)}} ({{id}} breaks ties when timestamps are equal). First page:
+- Query: fetch the 20 newest rows (no WHERE on the cursor).
+- {{nextCursor}} = Base64 of "{{createdAt}}|{{id}}" of the **last row** on the page.
 
-Next page, the client sends the {{cursor}} back:
+Next page — the client sends {{cursor}} back:
 - Decode to {{(t, i)}}.
 - Query: {{WHERE (createdAt < t) OR (createdAt = t AND id < i) ORDER BY createdAt DESC, id DESC LIMIT 20}}.
-- The DB uses the index on {{(createdAt, id)}} to jump straight to the mark, no scan-and-drop.
+- The DB uses an index on {{(createdAt, id)}} to jump straight to the mark without scanning and discarding rows.
 
-Because we follow the mark's values instead of counting positions, a new row inserted "above" the mark (newer than it) does not change the set of rows "after the mark". No duplicates, no gaps.
+Because we follow the mark's values instead of counting positions, a new row inserted "above" the mark (newer than the mark) does not change the set of rows "after the mark". No duplicates, no gaps.
 
 ### Concrete example (plain Java, simulation)
 ~~~java
@@ -260,18 +260,18 @@ class CursorPager {
 }
 ~~~
 
-**No-duplicate/no-gap illustration:** page 1 returns [A, B], the cursor points after B. A new row X is inserted at the top of the list. Page 2 asks for "after B" → it still returns [C, D], repeating neither A/B nor missing C/D, even though X cut in.
+**No-duplicate/no-gap illustration:** page 1 returns [A, B] and the cursor points after B. A new row X is inserted at the top of the list. Page 2 asks for "after B" and still returns [C, D] — no repeated A/B and no missing C/D, even though X was inserted in between.
 
 ### Common mistakes
-- **Unstable sort**: only {{ORDER BY createdAt}} while many rows share the same {{createdAt}} → their relative order is undefined and the cursor can miss or repeat rows. Always add a unique column ({{id}}) as tie-breaker.
-- **Cursor leaking sensitive internals**: a cursor is only a position, but do not stuff secret data into it; sign it (HMAC) if you fear the client tampering with the cursor to probe data.
-- **Using offset for an infinite feed**: a feed keeps growing + users scroll deep → both slow and duplicated. Feeds/notifications should almost always use a cursor.
-- **Forgetting the (createdAt, id) index**: without an index the cursor query still does a table scan, losing the speed advantage.
+- **Unstable sort**: using only {{ORDER BY createdAt}} when many rows share the same {{createdAt}} makes the relative order undefined, so the cursor can skip or repeat rows. Always add a unique column ({{id}}) as a tie-breaker.
+- **Cursor leaking sensitive internal data**: a cursor is just a position, but do not embed secret data in it; sign it (HMAC — a cryptographic signature using a secret key) if you worry about clients tampering with the cursor to probe data.
+- **Using offset for an infinite feed**: a feed keeps growing and users scroll deep, which makes it both slow and prone to duplicates. Feeds and notifications should almost always use a cursor.
+- **Forgetting the (createdAt, id) index**: without an index, the cursor query still scans the table and loses the speed advantage.
 
 ### Interview relevance
-Frequent question: "Design a paginated API for a 10-million-row feed?" Answer: (1) use a cursor (keyset) on {{(createdAt, id)}} to avoid offset scans and duplicates/gaps when new posts arrive; (2) the cursor is Base64 (optionally HMAC-signed) of the last mark of the page; (3) a composite index {{(createdAt DESC, id DESC)}}; (4) compare: offset only fits an admin screen that needs page jumps over data that changes little. Mentioning the "row inserted between two page loads" example shows real-world experience.
+Common question: "Design a paginated API for a 10-million-row feed?" Answer: (1) use a cursor (keyset) on {{(createdAt, id)}} to avoid offset scans and to avoid duplicates/gaps when new posts arrive; (2) the cursor is Base64 (optionally HMAC-signed) of the last mark on the page; (3) add a composite index {{(createdAt DESC, id DESC)}}; (4) compare: offset only fits admin screens that need page jumps and where data changes little. Giving the concrete example of "a new row inserted between two page loads" shows real-world experience.
 
-> **Senior tip:** Return {{nextCursor: null}} (or omit the field) on the last page so the client knows to stop and cannot loop forever. For data that must allow "page jumps" (admin tables), offset is usable but still cap the maximum offset; for public/high-volume APIs a cursor is nearly always the right choice.`,
+> **Senior tip:** Return {{nextCursor: null}} (or omit the field) on the last page so the client knows to stop and does not loop forever. For data that must allow "page jumps" (admin tables), offset can work but you should still cap the maximum offset; for public, high-volume APIs, a cursor is almost always the right choice.`,
     exercises: [
       {
         title: 'CursorPager.page: cursor pagination with no duplicates and no gaps',
@@ -280,21 +280,21 @@ Frequent question: "Design a paginated API for a 10-million-row feed?" Answer: (
 
 - {{Item}} has {{final long createdAt; final long id; final String name;}} and a constructor {{Item(long createdAt, long id, String name)}}.
 - {{PageResult}} has {{final List<Item> items; final String nextCursor;}} and a constructor {{PageResult(List<Item> items, String nextCursor)}}.
-- {{sortedData}} is already sorted **descending** by {{(createdAt, id)}} (newest first). New elements may be added at the head of this list between calls to {{page}} (simulating freshly inserted data).
+- {{sortedData}} is already sorted **descending** by {{(createdAt, id)}} (newest first). New elements may be added at the head of this list between calls to {{page}} (simulating newly inserted data).
 - {{cursor == null}} or empty: return the first page (at most the first {{size}} elements of the list).
-- Otherwise: decode the cursor (Base64 of the string {{"createdAt|id"}}) and return at most {{size}} elements that come **after** that mark in the exact descending order.
-- {{nextCursor}} is Base64 of the {{"createdAt|id"}} of the **last element** of the returned {{items}}; if no elements remain after that, {{nextCursor = null}}.
-- Requirement: when a new element is inserted at the head of {{sortedData}} between page 1 and page 2, using page 1's {{nextCursor}} must still give a result with **no duplicates and no gaps** relative to the old element set.`,
+- Otherwise: decode the cursor (Base64 of the string {{"createdAt|id"}}) and return at most {{size}} elements that come **after** that mark in descending order.
+- {{nextCursor}} is Base64 of the {{"createdAt|id"}} of the **last element** in the returned {{items}}; if there are no elements after it, {{nextCursor = null}}.
+- Requirement: when a new element is inserted at the head of {{sortedData}} between page 1 and page 2, using page 1's {{nextCursor}} must still produce a result with **no duplicates and no gaps** relative to the old set of elements.`,
         hints: [
-          'Decode the cursor: {{new String(Base64.getUrlDecoder().decode(cursor))}} yields the string {{"createdAt|id"}}, then {{split("\\\\|")}} (a Java string must escape the | for the regex, and inside a template literal you need one more layer of \\).',
+          'Decode the cursor: {{new String(Base64.getUrlDecoder().decode(cursor))}} gives the string {{"createdAt|id"}}, then {{split("\\\\|")}} (in a Java string you must escape | for the regex, and inside a template literal you need an extra \\ layer).',
           'An element comes "after" the mark (ct, ci) in descending (createdAt, id) order when {{createdAt < ct || (createdAt == ct && id < ci)}}. For the first page, treat the mark as infinity so you start from the top.',
           'Only set {{nextCursor}} when the page is full ({{items.size() == size}}); the last page returns {{null}}.',
         ],
-        explain: `The cursor is a "bookmark": we compare values (createdAt, id) instead of counting positions. When a new element is inserted at the head of the list, the old elements keep their (createdAt, id) values unchanged, so the "after the mark" condition still selects exactly the next set: no duplicates, no gaps.
+        explain: `The cursor is a "bookmark": we compare values (createdAt, id) instead of counting positions. When a new element is inserted at the head of the list, the old elements keep their (createdAt, id) values unchanged, so the "after the mark" condition still selects exactly the next set — no duplicates, no gaps.
 
-Two easy mistakes: (1) forgetting the tie-breaker {{id}} when {{createdAt}} values are equal, which repeats or skips elements sharing the mark; (2) always returning {{nextCursor}} even on the last page, which makes the client loop forever. Checking {{out.size() == size}} is the simple way (it accepts one extra boundary call); the stricter way is to fetch one extra element to know whether more remain.
+Two easy mistakes: (1) forgetting the tie-breaker {{id}} when {{createdAt}} values are equal, which causes elements sharing the mark to be repeated or skipped; (2) always returning {{nextCursor}} even on the last page, which makes the client loop forever. Checking {{out.size() == size}} is the simple approach (it allows one extra boundary call); the stricter approach is to fetch one extra element to know whether more remain.
 
-In a real API, instead of walking a list in memory, you push the "after the mark" condition into the SQL query with an index on {{(createdAt DESC, id DESC)}} so the DB jumps straight to the mark.`,
+In a real API, instead of iterating over a list in memory, you push the "after the mark" condition into the SQL query with an index on {{(createdAt DESC, id DESC)}} so the DB jumps straight to the mark.`,
       },
     ],
     check: [
@@ -302,41 +302,41 @@ In a real API, instead of walking a list in memory, you push the "after the mark
         q: 'Why is {{SELECT ... LIMIT 20 OFFSET 100000}} usually much slower than a cursor query for the equivalent page?',
         options: [
           'Because LIMIT does not work when OFFSET is present',
-          'Because the DB still has to scan/skip 100000 rows before taking 20, while a cursor uses the mark + an index to go straight to the position',
+          'Because the DB still has to scan and discard 100000 rows before taking 20, while a cursor uses the mark + an index to jump straight to the position',
           'Because a cursor does not need ORDER BY',
           'Because OFFSET forces the whole table to be returned',
         ],
-        explain: `Offset does not "hop": the DB must do the work of producing the first 100000 rows and then discard them. Cursor/keyset puts a {{WHERE (createdAt, id) < (t, i)}} condition that matches the index, so it reads only the needed region. The deeper the page, the more linearly offset slows down; a cursor stays roughly even.`,
+        explain: `Offset does not "hop": the DB must do the work of producing the first 100000 rows and then discard them. Cursor/keyset applies a {{WHERE (createdAt, id) < (t, i)}} condition that matches an index, so it reads only the needed region. The deeper the page, the more linearly offset slows down; a cursor stays roughly constant.`,
       },
       {
         q: 'A user is viewing page 1 (offset) of a feed. Before they load page 2, a new post is published at the top of the feed. What is the common consequence?',
         options: [
           'Page 2 returns exactly as before, unaffected',
-          'Page 2 may repeat an item already seen on page 1 and/or miss an item (because the elements shift down)',
+          'Page 2 may repeat an item already seen on page 1 and/or miss an item (because elements are shifted down)',
           'The server automatically switches to a cursor',
-          'Page 1 gets deleted from the DB',
+          'Page 1 is deleted from the DB',
         ],
-        explain: `Offset counts by position: inserting one element at the head pushes every old element down one slot. Page 2 (skip N) now skips over the new element too, so the last element of the old page 1 falls into page 2 (duplicate) and the whole sequence is off. A cursor follows the value of the mark, so it is immune to this effect.`,
+        explain: `Offset counts by position: inserting one element at the head shifts every old element down by one slot. Page 2 (skip N) now skips over the new element too, so the last element of the old page 1 falls into page 2 (duplicate) and the sequence is shifted. A cursor follows the value of the mark, so it is immune to this effect.`,
       },
       {
         q: 'When designing a cursor for a list sorted by {{createdAt DESC}}, why should {{id}} be added as a secondary criterion (ORDER BY createdAt DESC, id DESC)?',
         options: [
-          'To make the query look more sophisticated',
-          'To keep the sort stable when many rows share a createdAt, avoiding missed or repeated rows at the same timestamp',
+          'To make the query look more complex',
+          'To keep the sort stable when many rows share the same createdAt, avoiding skipped or repeated rows at the same timestamp',
           'Because Base64 can only encode integers',
           'Because indexes do not work on time columns',
         ],
-        explain: `If you sort only by {{createdAt}} and many rows share the value, their relative order is undefined between queries; a cursor set at that timestamp can miss or repeat the "tied" rows. Adding {{id}} (unique) as tie-breaker produces a total, stable order, and the {{(createdAt, id)}} cursor then pins an exact position.`,
+        explain: `If you sort only by {{createdAt}} and many rows share the same value, their relative order is undefined across queries; a cursor placed at that timestamp can skip or repeat the "tied" rows. Adding {{id}} (unique) as a tie-breaker creates a total, stable order, and the {{(createdAt, id)}} cursor pins an exact position.`,
       },
       {
         q: 'When is offset/limit still an acceptable choice compared with a cursor?',
         options: [
           'When building an infinite social-media feed for millions of users',
-          'When you need "jump to page 50" in an admin screen, over a small/low-churn dataset where deep pages are rare',
-          'When the data changes continuously every second',
+          'When you need "jump to page 50" in an admin screen, on a small, low-churn dataset where deep pages are rare',
+          'When data changes continuously every second',
           'Offset is always better than a cursor in every case',
         ],
-        explain: `Offset allows arbitrary page jumps and is simple to implement, which fits an internal admin screen over relatively stable data with few records and no endless scrolling. For realtime feeds, public/high-volume APIs, or churning data, a cursor avoids both the deep-page performance problem and the duplicates/gaps caused by inserts and deletes.`,
+        explain: `Offset allows arbitrary page jumps and is simple to implement, which fits internal admin screens with relatively stable data, few records, and no deep infinite scrolling. For real-time feeds, public high-volume APIs, or changing data, a cursor avoids both the deep-page performance problem and duplicates/gaps from inserts and deletes.`,
       },
     ],
   },

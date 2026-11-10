@@ -101,31 +101,28 @@ Hard rule that follows: a {{computeIfAbsent}} function must be short, CPU-bound 
 > Senior tip: to cache something genuinely expensive without pinning a bin, do not put the I/O inside {{computeIfAbsent}}. Store a {{CompletableFuture}} instead — {{computeIfAbsent(k, x -> CompletableFuture.supplyAsync(this::load, executor))}} — so the lock covers only the tiny "create and register the future" step and the loading happens outside; the first caller registers, everyone else joins the same future. Or let a real cache library do it: Caffeine's {{AsyncLoadingCache}} implements exactly this pattern, with expiry and per-key deduplication.`
   },
   "qz-modern-025": {
-    "q": `Which properties does the following record have?`,
+    "q": `What properties does this record have?
+~~~java
+public record Money(String currency, long amount) { }
+~~~`,
     "options": [
       `It is a final class, its components are private final, it has a canonical constructor, and equals/hashCode/toString are generated`,
       `It can extend another class`,
       `Its components can be reassigned`,
       `It has no constructor`
     ],
+    "answer": 0,
     "explain": `**Correct answer: a record is final, its components are final, and its methods are generated.**
 
-### What a record is
-{{record Point(int x, int y) {}}} (Java 16) is a compact way to declare a **named tuple of data**: a class whose whole purpose is to carry values. The compiler generates the boring parts for you:
-- {{final}} class — no one can extend it, so the generated {{equals}}/{{hashCode}} cannot be broken by a subclass.
-- One {{private final}} field per **component** ({{x}}, {{y}}) and a public read accessor named after the component ({{p.x()}}, not {{getX()}}).
-- The **canonical constructor**, whose parameter list is exactly the components in declaration order — that is the constructor whose name and order define the record.
-- {{equals}}, {{hashCode}}, {{toString}} computed from **all** components, so you get value semantics for free ({{Point(1,2).equals(Point(1,2)}} is true, and the map/set behaviour you expect follows).
-You can add methods, implement interfaces, and declare static fields — but no extra instance fields.
-
-You can also write a **compact constructor**: {{record Range(int lo, int hi) { if (lo > hi) throw new IllegalArgumentException(); } }} — no parameter list, no assignments; the compiler inserts your body *before* the implicit field assignments. Use it to validate or to normalise (e.g. replace {{null}} with an empty list).
+### Why this is correct
+A record (Java 16) is a **transparent carrier** for immutable data: a final class, private final components, a canonical constructor, and generated equals/hashCode/toString plus accessors. You can add a compact constructor to validate or normalise.
 
 ### Why the other options are wrong
-- **Can extend another class**: a record already extends {{java.lang.Record}}; a class can have only one superclass, so a record may only implement interfaces.
-- **Components can be reassigned**: the fields are {{final}} — there is no setter and no way to assign to {{x}}.
-- **No constructor**: there is always the canonical constructor; you may restate it explicitly ({{Point(int x, int y) { this.x = x; this.y = y; }}}, e.g. to add validation, but then you must assign every field yourself).
+- **Can extend another class**: a record cannot extend another class (it only implements interfaces).
+- **Components can be reassigned**: components are final — there is no setter and no way to assign to them.
+- **No constructor**: there is always the canonical constructor; you may restate it explicitly (compact constructor) to add validation.
 
-> Senior tip: records are the right shape for DTOs, value objects, map keys and method returns of several values — and they deconstruct nicely in {{switch}} patterns. But the immutability is **shallow**: the compiler only guarantees the *references* cannot be reassigned. {{record Order(List<Item> items)}} can still be mutated by the caller through the very same list it handed in. If you need real immutability, copy in the compact constructor: {{Order(List<Item> items) { this.items = List.copyOf(items); }}}. Also note {{toString}} of a record prints all components — fine for logs, but for a DTO carrying a password or a token you must override it before it reaches an appender. And records are transparent carriers, not business objects: behaviour belongs elsewhere, otherwise you just moved an anemic class.`
+> Senior tip: records fit DTOs and value objects. But immutability is **shallow**: a record holding a mutable List can still be modified from the outside unless you copy it in the constructor.`
   },
   "qz-modern-026": {
     "q": `A sealed interface Payment permits Card, Wallet. When does a switch over it need no default?`,
@@ -274,51 +271,61 @@ The wrapping exists because a stage may fail inside an internal mechanism (or be
 > Senior tip: {{supplyAsync(task, executor)}} — the overload without an executor runs on the **common ForkJoinPool**, which is sized to cores minus one and is shared with parallel streams, so a blocking HTTP call there can starve the whole JVM's CPU work. Always pass your own executor for I/O. The variants you should be able to name: {{exceptionally}} handles failure only and keeps the value path untouched; {{handle}} runs on both outcomes and can return a fallback value; {{whenComplete}} is a side-effect observer that re-throws afterwards; {{orTimeout(n, unit)}} completes the future exceptionally with {{TimeoutException}} so a stalled dependency cannot hold the chain open forever; {{complete(v)}}/{{completeExceptionally(t)}} let you settle a future from the outside, and {{completeOnTimeout(v, n, unit)}} returns a default value instead of failing. Recover with {{exceptionally}} only where you genuinely know the fallback, otherwise let the failure reach the caller and log the {{cause}}, not the wrapper.`
   },
   "qz-jvm-025": {
-    "q": `Service latency p99 under 10 ms, 32 GB heap, Java 21. Which GC makes sense?`,
+    "q": `A Spring Boot service runs Java 21 in a Kubernetes container with a 2 GiB memory limit; the host has 64 GB RAM. No {{-Xmx}} or heap flags are set. What is the JVM's maximum heap?`,
     "options": [
-      `Generational ZGC (-XX:+UseZGC -XX:+ZGenerational)`,
-      `Parallel GC`,
-      `G1 with MaxGCPauseMillis=1`,
-      `Serial GC`
+      `About 16 GB (25% of host RAM), so the pod is easily OOMKilled`,
+      `About 512 MB: the JVM reads the memory limit from cgroup and defaults to {{MaxRAMPercentage}} = 25% of 2 GiB`,
+      `Exactly 2 GiB, the JVM uses the whole limit as heap`,
+      `The JVM cannot start unless {{-Xmx}} is set in the container`
     ],
-    "explain": `**Correct answer: Generational ZGC.**
+    "answer": 1,
+    "explain": `**Correct answer: about 512 MB (25% of the limit).**
 
-### Reading the constraints
-Two numbers drive the choice. **p99 under 10 ms** means the requirement is on *pause latency*, not on throughput: a tail-latency SLA is broken by a single long stop-the-world pause, so you want a collector whose pauses do not grow with the heap. **32 GB heap** rules out the collectors that scan everything while the application is stopped, because their pause time is proportional to live-set size.
-{{ZGC}} (production-ready in Java 11, generational in Java 21) does the marking, relocation and compaction **concurrently with the running application**; the world stops only for very short root-scanning points, and those stops are bounded by the number of GC roots and threads, not by how much data is live — typically well under 1 ms, essentially flat whether the heap is 8 GB or 4 TB. It reaches that with coloured pointers (metadata stored in the pointer's unused high bits) and load barriers, so the read of a reference can transparently fix up an object that was moved just now.
-**Generational** ZGC (Java 21; {{-XX:+ZGenerational}}, default since Java 23) adds a young generation, so most collections scan only the small live set of young objects. That fixes ZGC's classic weakness — spending CPU re-marking the whole huge old generation — which is exactly what a 32 GB heap needs.
-The trade-off you must be able to state: ZGC burns more CPU than G1, and it needs heap headroom (concurrent collection only works if the heap grows while GC runs); on a CPU-starved box those milliseconds may cost you throughput.
+### Why this is correct
+Since JDK 10 (backported to 8u191), the JVM is **container-aware**: it reads the memory limit and CPU quota from cgroup (v1 or v2) instead of the host's RAM. The default maximum heap is {{MaxRAMPercentage}} (default 25%) of the visible memory: 25% × 2 GiB = 512 MB. The rest is for metaspace, thread stacks, code cache, direct buffers, and GC's native memory.
 
 ### Why the other options are wrong
-- **Parallel GC** ({{-XX:+UseParallelGC}}): tuned for maximum throughput, all its work is stop-the-world. On a 32 GB live set a full collection is seconds of complete silence — fine for batch jobs, fatal for a 10 ms tail.
-- **G1 with MaxGCPauseMillis=1**: {{MaxGCPauseMillis}} is a **soft goal**, not a promise. G1 picks how many regions to collect per pause to aim at it, but it cannot go below the unavoidable work (a humongous-object allocation, a full GC fallback, or root scanning) and it still has concurrent-mark phases; a goal of 1 ms is below the practical floor and typically ends up with a full GC. G1 at its default 200 ms is the right answer for most 32 GB services — but not for a p99 of 10 ms.
-- **Serial GC**: single-threaded stop-the-world, meant for small heaps and containers of 1 core; pauses are the longest of all.
+- **16 GB from host RAM**: that is the behavior of old JVMs (Java 8 before 8u191). That behavior caused mass OOMKilled incidents.
+- **All 2 GiB**: the JVM needs memory outside the heap; if the heap takes the whole limit, the process's total memory exceeds the limit and the kernel kills the pod.
+- **Cannot start**: the JVM always has a default value.
 
-> Senior tip: never pick a collector from the requirement alone — confirm the GC is the culprit first. Look at {{-Xlog:gc*:file=gc.log}} (or JFR {{jdk.GarbageCollection}}/{{jdk.GCPhasePause}}) for actual pause durations and the ratio of collection time to allocation rate, and check **time-to-safepoint** separately, because "the app froze for 40 ms" is often not the GC phase at all. Also mention the sizing question: 32 GB is worth asking about — a live set that big is often a cache that should live in Redis, and shrinking the heap sometimes solves the latency problem more cheaply than switching collector. ZGC is not zero-tuning either: {{SoftMaxHeapSize}} and leaving enough free CPU are what make it behave predictably.`
+### Common configuration
+~~~yaml
+resources:
+  limits:
+    memory: 2Gi
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: "-XX:MaxRAMPercentage=75"   # heap about 1.5 GiB, leaving about 512 MiB for off-heap
+~~~
+
+> Senior tip: the default 25% is usually too low for a service running a single JVM; 60–75% is common. If the pod is still OOMKilled although the heap is not full, measure off-heap memory with {{-XX:NativeMemoryTracking=summary}} and {{jcmd <pid> VM.native_memory}}.`
   },
   "qz-jvm-026": {
-    "q": `GC pauses are short, yet the application stalls for a long time. What could be the cause?`,
+    "q": `An application loads Groovy scripts and creates dynamic proxies continuously. After a few days it dies with {{java.lang.OutOfMemoryError: Metaspace}} ({{-XX:MaxMetaspaceSize=512m}} is set), while the heap still has plenty free. What is the most common root cause?`,
     "options": [
-      `A large time-to-safepoint (TTSP)`,
-      `The GC log is wrong`,
-      `A concurrent phase of ZGC`,
-      `A wholesale JIT deoptimization`
+      `Heap too small; increasing {{-Xmx}} fixes it`,
+      `Metaspace is inside the heap, so periodic Full GC is enough`,
+      `ClassLoader leak: a class is only removed from Metaspace when the ClassLoader that loaded it is garbage-collected, but a reference still holds the ClassLoader (static cache, ThreadLocal, thread not stopped)`,
+      `Too many String interns`
     ],
-    "explain": `**Correct answer: a large TTSP.**
+    "answer": 2,
+    "explain": `**Correct answer: the ClassLoader is held, so classes cannot be unloaded.**
 
-### Two different intervals people merge into one word
-Every stop-the-world collection has two phases, and only the second one is what the "pause time" in a GC log usually reports:
-- **Time to safepoint (TTSP)**: the JVM decides to stop the world, so it asks every Java thread to reach a **safepoint** — a point in the code where the thread's stack state is well-defined and its roots can be scanned. Threads get there only when they hit a *poll* instruction (at method returns, back edges of loops, blocking calls). The last thread to arrive determines how long everyone else waits, stopped.
-- **Stop-the-world work**: the actual marking/clearing/compacting, then {{RunThreads}} releases everyone.
-So a "2 ms GC" can freeze the process for 500 ms while the JVM waits for one thread stuck inside a long-running computation. {{Reaching safepoint: 498.123 ms, at safepoint: 2.004 ms, Total: 500.127 ms}} in a {{-Xlog:safepoint}} log says it plainly: the GC did not take that time, the wait did.
-Classic causes of a large TTSP: a JIT-compiled loop with no safepoint poll inside it (a tight loop over primitives, {{while (i < n)}} doing arithmetic — the compiler did not have to insert a poll, and on older JDKs you could not bound it), a big array copy / {{Arrays.fill}}, {{System.gc}} from JNI or a library, page faults or swap, and long-running {{Unsafe}}/native-ish code. JDK 10+ can count iterations and force a poll ({{-XX:+UseCountedLoopSafepoints}}), and JFR exposes {{jdk.ExecuteVMOperation}} with {{safepointId}}/{{sync}} timing plus {{Reaching safepoint}}.
+### Why this is correct
+Metaspace (since Java 8, replacing PermGen) holds **class metadata** and lives in native memory, outside the heap. A class is only removed from Metaspace when **the ClassLoader** that loaded it becomes garbage. Each Groovy script or proxy type usually comes with new classes, sometimes even a new ClassLoader. As long as one reference keeps an object alive, its class, that class's ClassLoader, and every class that ClassLoader loaded are all retained. That reference can be a static cache, a {{ThreadLocal}} on a pool thread, or a thread created by the loaded code that was never stopped.
+
+### How to investigate
+- {{jcmd <pid> VM.classloader_stats}} or {{jcmd <pid> VM.metaspace}}: which ClassLoader holds many classes.
+- Heap dump, open in Eclipse MAT: find many instances of the same ClassLoader, then view "Path to GC Roots".
+- {{-Xlog:class+unload}}: check whether classes are actually unloaded.
 
 ### Why the other options are wrong
-- **The GC log is wrong**: the log measures the GC's own work accurately; it simply does not claim that "GC paused everything" started when the request froze. Trust the number, then look at the safepoint line next to it.
-- **A concurrent ZGC phase**: concurrent phases run by definition *with* the application — they cost CPU, they do not stop threads. If the app is frozen, it is a stop-the-world interval or something outside the GC.
-- **Wholesale deoptimization**: deopt (a compiled method falling back to the interpreter, e.g. after an unexpected branch or class hierarchy change) hurts throughput and can cause recompilation churn, but it is per-thread and gradual — it is not the reason all threads stop at the same instant.
+- **Increasing {{-Xmx}}**: Metaspace is not in the heap, so a bigger heap does not help.
+- **Forcing Full GC**: GC still runs, but cannot reclaim classes whose ClassLoader is still referenced.
+- **String intern**: interned strings live on the heap (since Java 7), not in Metaspace.
 
-> Senior tip: enable {{-Xlog:safepoint,gc*=info::time,uptime}} and compare {{Reaching safepoint}} with {{Total}} — if the first dominates, tuning the collector will not help; you need to find the thread that is slow to reach the safepoint (JFR {{jdk.ExecuteVMOperation}}, or a {{jstack}} taken during the stall; {{-XX:+PrintSafepointStatistics}} on older JDKs). And remember the sibling explanations for the same symptom, which an interviewer will ask about next: {{System.gc()}} from RMI/DirectByteBuffer, {{-XX:+DisableExplicitGC}} vs a growing {{-XX:MaxDirectMemorySize}}, heap dump / {{jmap -histo:live}} run by an APM agent, and class reinitialization by a retransform agent.`
+> Senior tip: always set {{MaxMetaspaceSize}} (default is unlimited) so the error surfaces early instead of letting the process eat all RAM and get OOMKilled. For Groovy, cache compiled scripts instead of recompiling on every run.`
   },
   "qz-core-027": {
     "q": `What does the following code print?
@@ -370,31 +377,24 @@ If you want no trailing newline at all, end the block with the delimiter right a
 > Senior tip: text blocks shine for JSON, SQL and GraphQL inside tests and fixtures — you keep quotes readable without a wall of backslash-escaped quotes. Two methods you should name in an interview: {{stripIndent()}} applies the same de-indentation algorithm to an ordinary string, and {{translateEscapes()}} processes {{\\n}}/{{\\t}}/{{\\u...}} without rejecting unknown escapes — the pair you need when you must build a regex-like text block ({{"\\\\d+"}} vs an escape that would otherwise fail). If you need a line to keep extra indentation, mark it with a trailing {{\\s}} escape, and remember the closing delimiter's own indentation participates in the computation — that is the least obvious part of the algorithm.`
   },
   "qz-concurrency-027": {
-    "q": `When should you reach for ReentrantLock instead of synchronized?`,
+    "q": `When should you use ReentrantLock instead of synchronized?`,
     "options": [
-      `When you need tryLock with a timeout, lock fairness, or interruptible locking`,
+      `When you need tryLock with a timeout, lock fairness, or locking around I/O with virtual threads`,
       `Always, because it is faster`,
-      `When you need to lock inside a constructor`,
+      `When you need to lock in a constructor`,
       `When you need to lock on a primitive`
     ],
-    "explain": `**Correct answer: when you need the extra capabilities.**
+    "answer": 0,
+    "explain": `**Correct answer: when you need the extended features.**
 
-### What each one actually is
-{{synchronized}} is a **language-level monitor**: the JVM enters/exits it via {{monitorenter}}/{{monitorexit}} on an object, the lock is released automatically when the block ends (including by an exception), it is reentrant, and the JIT can elide or coarsen it entirely. That automatic release is its biggest advantage — you cannot forget to unlock.
-{{ReentrantLock}} is a **library class** in {{java.util.concurrent.locks}}. It is also reentrant and gives the same mutual exclusion, but you hold the lock object and call {{lock()}}/{{unlock()}} yourself — which means unlocking in a {{finally}} is mandatory, and a missing {{unlock}} is a production deadlock instead of a compile-time impossibility.
-
-What it buys you in exchange for that boilerplate:
-- {{tryLock()}} / {{tryLock(timeout, unit)}}: give up instead of queueing forever. This is how you implement backpressure, "fail fast if the critical section is busy", or a bounded wait behind a slow dependency — with {{synchronized}} a blocked acquirer cannot be talked out of waiting.
-- {{lockInterruptibly()}}: an acquirer that reacts to {{interrupt()}} and throws {{InterruptedException}}. Monitor acquisition is **not** interruptible — a thread stuck on {{synchronized}} ignores interrupts, so a client timeout or {{shutdownNow()}} cannot free it.
-- **Fairness**: {{new ReentrantLock(true)}} grants the lock in FIFO order, so no thread starves. Fair mode costs a lot of throughput (constant context switching), so you use it only when the tail latency of an unlucky thread matters more than aggregate throughput.
-- Multiple {{Condition}} objects on one lock ({{newCondition()}}), i.e. separate wait sets, which a single monitor cannot express.
-- {{lock()}} around a wait that can be parked without holding a carrier thread — with virtual threads this matters, since a blocking {{Lock}} unparks cleanly. (In JDK 21 the {{synchronized}} path could pin the carrier; JDK 24 / JEP 491 removed that.)
+### Why this is correct
+ReentrantLock supports {{tryLock(timeout)}}, {{lockInterruptibly()}}, fairness, and does not pin virtual threads when blocking. {{synchronized}} is simple and enough for short critical sections.
 
 ### Why the other options are wrong
-- **Always, because it is faster**: no. {{synchronized}} is heavily optimised (biased/thin/fat locks, lock elision, escape analysis) and is usually at least as fast for short critical sections; {{ReentrantLock}} wins mainly on *features*, and its uncontended cost is comparable.
-- **Inside a constructor**: nothing about it needs a lock object there — and both are equally dangerous while the reference is still leaking.
-- **On a primitive**: a lock needs an object to guard ({{synchronized}} takes a reference, {{ReentrantLock}} is itself an object). You cannot lock {{int count}}, and locking on {{this}}/a boxed value you hand out is a bug — use a private final lock object or a {{LongAdder}}/{{AtomicInteger}}.
+- **Always faster**: {{synchronized}} is well optimized and often faster for short locks.
+- **Constructor**: not relevant.
+- **Primitive**: a lock must be on an object.
 
-> Senior tip: default to {{synchronized}} and escalate only when you need a timeout, interruptibility, fairness, or several condition queues — and say why in the interview, because "I use ReentrantLock everywhere" reads as unfamiliarity with the automatic-release guarantee. Two rules that make the escalation safe: always {{lock(); try { ... } finally { unlock(); }}} (never unlock outside the finally), and never call out (RPC, DB, logging) while holding any lock, since the critical section's duration becomes your latency floor. If what you are protecting is a single counter or a check-then-act on one variable, skip locks altogether for {{AtomicInteger}}/{{AtomicReference}}.{{compareAndSet}} — or a {{LongAdder}} under high contention.`
+> Senior tip: default to {{synchronized}}; upgrade to ReentrantLock when you need timeout or backpressure.`
   },
 });

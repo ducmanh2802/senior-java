@@ -271,8 +271,44 @@ Không retry mù nếu thao tác có side effect ngoài database (gửi email, g
 - **@Version chỉ bảo vệ từng hàng**. Ràng buộc trên nhiều hàng (ví dụ tổng ca trực ≥ 2 người) cần unique/check constraint hoặc lock khác.
 - **Hàng "nóng"** (một bộ đếm mọi request cùng sửa) sẽ conflict liên tục; optimistic locking không hợp, cân nhắc UPDATE nguyên tử {{SET stock = stock - 1 WHERE stock > 0}} hoặc pessimistic lock.
 
+### Cơ chế từng bước: từ read đến commit
+Khi một transaction đọc entity có {{@Version}}, Hibernate làm các bước sau. Hiểu từng bước để thấy tại sao optimistic locking chỉ "kiểm tra lúc ghi":
+
+1. **SELECT**: Hibernate SELECT các cột của entity, trong đó có cột {{version}}. Nó lưu giá trị này vào **snapshot** bên trong persistence context — giống bài học persistence context, snapshot là bản sao giá trị, không phải tham chiếu.
+2. **Sửa trong RAM**: bạn gọi setter trên entity managed. Chỉ đổi object Java, không phát sinh SQL. Snapshot vẫn giữ giá trị cũ.
+3. **Flush**: trước commit, Hibernate so field hiện tại với snapshot. Entity nào khác thì sinh UPDATE.
+4. **UPDATE có điều kiện version**: câu UPDATE sinh ra là {{UPDATE product SET stock = ?, version = ? WHERE id = ? AND version = ?}}. Câu này là **compare-and-set** nguyên tử: database kiểm tra xem version trong DB có vẫn là lúc đọc không, nếu không thì ảnh hưởng 0 hàng.
+5. **Kết quả**: ảnh hưởng 1 hàng → commit thành công, version tăng. Ảnh hưởng 0 hàng → Hibernate ném {{StaleObjectStateException}}, JPA bọc thành {{OptimisticLockException}}, Spring dịch thành {{ObjectOptimisticLockingFailureException}}.
+
+Vì sao phải làm như vậy? Vì optimistic locking **không giữ lock** trong lúc người dùng suy nghĩ hay lúc tính toán (khác với pessimistic lock giữ lock suốt). Nó chỉ "tin tưởng" và phát hiện xung đột lúc ghi. Ưu điểm: không gây blocking, không deadlock, phù hợp với đọc nhiều ghi ít. Nhược điểm: phải retry hoặc trả 409 khi conflict.
+
+~~~java
+// Tóm tắt flow: read → modify → flush → UPDATE WHERE version=? → 0 row → exception
+@Entity
+class Product {
+    @Id Long id;
+    int stock;
+    @Version int version;  // Hibernate tự tăng, ứng dụng không tự ghi
+}
+
+// 1. Đọc: SELECT id, stock, version FROM product WHERE id = ?
+//    → snapshot = {stock: 10, version: 4}
+// 2. Sửa: product.setStock(7);  // chỉ RAM
+// 3. Flush: UPDATE product SET stock=7, version=5 WHERE id=? AND version=4
+// 4. Nếu version DB vẫn là 4 → 1 row → thành công
+//    Nếu version DB đã là 5 → 0 row → StaleObjectStateException
+~~~
+
+### Lỗi hay gặp trên production
+- **Gọi merge trên entity detached mà không kiểm tra version**: khi merge, Hibernate so version của object bạn truyền vào với DB. Nếu object có version cũ hơn DB, merge cũng từ chối bằng OptimisticLockException. Đây là bẫy khi mở form web lâu (10 phút), người dùng sửa xong rồi submit: entity đã bị thay đổi bởi người khác. Không retry thì trả về 500 thay vì 409.
+- **Bulk UPDATE không tự tăng version**: {{@Modifying}} JPQL chạy thẳng xuống database, bỏ qua entity, nên version không tăng. Các transaction khác đang giữ bản cũ sẽ ghi overwrite mà không bị phát hiện. Phải tự ghi {{SET version = version + 1}} hoặc dùng HQL {{UPDATE VERSIONED}}.
+- **Retry trong cùng transaction**: bắt exception rồi thử lại trong method {{@Transactional}} là sai, vì transaction đã bị rollback-only. Retry phải ở lớp ngoài, mỗi lần là một transaction mới.
+- **Dùng {{@Version}} cho hàng nóng (bộ đếm mọi request)**: optimistic locking không hợp, vì conflict suất cao. Dùng UPDATE nguyên tử {{SET stock = stock - 1 WHERE stock > 0}} hoặc pessimistic lock.
+
 ### Liên hệ phỏng vấn
-Mô tả lost update, câu UPDATE có điều kiện version, exception được ném, rồi cách retry: ngoài transaction, đọc lại, áp dụng lại ý định, có giới hạn. Nêu thêm khi nào chọn pessimistic, và bẫy bulk update.`,
+1. **"Lost update là gì, và @Version ngăn chặn nó như thế nào?"** — Trả lời: hai transaction đọc cùng version, sửa khác nhau, ghi đè lẫn nhau. @Version thêm điều kiện {{WHERE version = ?}} vào UPDATE; transaction sau thấy 0 row affected → ném OptimisticLockException.
+2. **"Retry sau OptimisticLockException phải làm gì?"** — Trả lời: mở transaction **mới**, đọc lại entity (version mới), áp dụng lại **ý định** (ví dụ cộng 5), không ghi lại kết quả cũ. Giới hạn 3 lần, có backoff. Không retry trong cùng transaction (đã rollback-only).
+3. **"Khi nào chọn pessimistic lock thay vì @Version?"** — Trả lời: tranh chấp cao trên ít hàng nóng (bộ đếm, seat booking), đoạn xử lý ngắn. @Version phù hợp đọc nhiều ghi ít, form web mở lâu. Pessimistic giữ lock DB, có thể deadlock, timeout.`,
  exercises:[{title:'Version check và retry',prompt:`Mô phỏng một hàng có {{value}} và {{version}} (cả hai bắt đầu là 0):
 - {{update(expectedVersion, delta)}}: nếu {{version}} hiện tại khác {{expectedVersion}} thì trả {{false}} và **không** đổi gì; nếu khớp thì cộng {{delta}} vào value, tăng version thêm 1 và trả {{true}} (giống UPDATE ... WHERE version = ?).
 - {{add(delta)}}: thử tối đa **3 lần**; mỗi lần **đọc version hiện tại** rồi gọi {{update}}. Thành công thì dừng. Sau 3 lần thất bại ném {{IllegalStateException}}.`,
@@ -323,7 +359,7 @@ Mô tả lost update, câu UPDATE có điều kiện version, exception được
  explain:`{{update}} mô phỏng compare-and-set mà database làm trong một câu UPDATE có điều kiện version. Lỗi hay gặp nhất là đọc version **một lần trước vòng lặp**: sau khi xung đột, lần thử sau vẫn dùng version cũ nên lần nào cũng thất bại. Test {{flaky}} bắt đúng lỗi này.
 
 Ở ứng dụng thật, mỗi lần thử là một transaction mới (đọc entity mới từ DB), và vòng retry nằm ngoài method @Transactional. Giới hạn 3 lần giúp không khuếch đại tải khi tranh chấp cao.`,
- }],check:[{q:'Retry sau khi gặp {{OptimisticLockException}} nên làm gì?',options:['Gửi lại UPDATE với version cũ','Đọc state mới trong transaction mới rồi áp dụng lại ý định, giới hạn số lần','Xoá cột version để hết lỗi','Bắt exception rồi tiếp tục trong cùng transaction, retry đến khi thành công'],answer:1,explain:`Version cũ chắc chắn tiếp tục thất bại. Transaction hiện tại đã bị đánh dấu rollback-only nên không thể tiếp tục trong nó, và retry vô hạn khuếch đại tải. Xoá version thì quay lại lost update. Cách đúng là transaction mới, đọc lại, áp dụng lại ý định, có giới hạn.`},{q:'{{@Query("UPDATE Product p SET p.stock = 0") @Modifying}} có tự tăng {{@Version}} không?',options:['Có, Hibernate luôn tăng version','Chỉ trên PostgreSQL','Có, nếu retry','Không; bulk JPQL bỏ qua entity, phải tự SET version = version + 1 (hoặc UPDATE VERSIONED trong HQL) và clear context'],answer:3,explain:`Bulk DML chạy thẳng xuống database, không qua entity managed nên không có cơ chế version tự động. Hành vi này không phụ thuộc loại database, và retry không liên quan. Nếu không tự tăng version, các transaction đang giữ bản cũ sẽ ghi đè mà không bị phát hiện.`},{q:'Khi nào pessimistic lock ({{SELECT ... FOR UPDATE}}) hợp hơn @Version?',options:['Khi một vài hàng bị rất nhiều request cùng sửa và đoạn xử lý ngắn','Khi người dùng mở form sửa trong 10 phút','Khi xung đột cực hiếm','Khi muốn tránh hoàn toàn deadlock'],answer:0,explain:`Tranh chấp cao trên hàng nóng làm optimistic liên tục fail và retry; khoá ngắn sẽ hiệu quả hơn. Form mở 10 phút mà giữ lock DB thì chặn người khác suốt thời gian đó, nên optimistic hợp hơn. Xung đột hiếm cũng là đất của optimistic. Pessimistic lock còn **có thể** gây deadlock chứ không tránh được.`}],tags:['@Version','optimistic locking','retry']
+ }],check:[{q:'Retry sau khi gặp {{OptimisticLockException}} nên làm gì?',options:['Gửi lại UPDATE với version cũ','Đọc state mới trong transaction mới rồi áp dụng lại ý định, giới hạn số lần','Xoá cột version để hết lỗi','Bắt exception rồi tiếp tục trong cùng transaction, retry đến khi thành công'],answer:1,explain:`Version cũ chắc chắn tiếp tục thất bại. Transaction hiện tại đã bị đánh dấu rollback-only nên không thể tiếp tục trong nó, và retry vô hạn khuếch đại tải. Xoá version thì quay lại lost update. Cách đúng là transaction mới, đọc lại, áp dụng lại ý định, có giới hạn.`},{q:'{{@Query("UPDATE Product p SET p.stock = 0") @Modifying}} có tự tăng {{@Version}} không?',options:['Có, Hibernate luôn tăng version','Chỉ trên PostgreSQL','Có, nếu retry','Không; bulk JPQL bỏ qua entity, phải tự SET version = version + 1 (hoặc UPDATE VERSIONED trong HQL) và clear context'],answer:3,explain:`Bulk DML chạy thẳng xuống database, không qua entity managed nên không có cơ chế version tự động. Hành vi này không phụ thuộc loại database, và retry không liên quan. Nếu không tự tăng version, các transaction đang giữ bản cũ sẽ ghi đè mà không bị phát hiện.`},{q:'Khi nào pessimistic lock ({{SELECT ... FOR UPDATE}}) hợp hơn @Version?',options:['Khi một vài hàng bị rất nhiều request cùng sửa và đoạn xử lý ngắn','Khi người dùng mở form sửa trong 10 phút','Khi xung đột cực hiếm','Khi muốn tránh hoàn toàn deadlock'],answer:0,explain:`Tranh chấp cao trên hàng nóng làm optimistic liên tục fail và retry; khoá ngắn sẽ hiệu quả hơn. Form mở 10 phút mà giữ lock DB thì chặn người khác suốt thời gian đó, nên optimistic hợp hơn. Xung đột hiếm cũng là đất của optimistic. Pessimistic lock còn **có thể** gây deadlock chứ không tránh được.`},{q:'Entity dùng {{@Version int version}}; transaction A đọc version=5, transaction B đọc version=5. A commit thành công (version=6). B sửa field khác rồi commit. Điều gì xảy ra?',options:['B commit thành công vì sửa field khác','B bị OptimisticLockException vì version đã thay đổi','Hibernate tự merge field của A và B','B ghi đè version=6 thành version=5'],answer:1,explain:`@Version bảo vệ **toàn bộ hàng**, không phải từng field. B sửa field nào cũng không quan trọng; version lúc đọc là 5, lúc flush DB đã là 6 → UPDATE ... WHERE version=5 ảnh hưởng 0 hàng → OptimisticLockException. Đây là thiết kế: bất kỳ thay đổi nào trên hàng cũng được coi là conflict.`}],tags:['@Version','optimistic locking','retry']
 },
 {
  id:'lesson-jpa-004',track:'jpa',order:4,title:'Fetch LAZY/EAGER và LazyInitializationException',level:'mid',minutes:25,
@@ -387,9 +423,64 @@ Nhiều team đặt {{spring.jpa.open-in-view=false}} để lỗi lộ ra sớm 
 - Fetch join nhiều collection lớn cùng lúc làm số dòng nhân lên; tách thành nhiều query.
 - Integration test chạy trong một {{@Transactional}} bao trùm có thể che lỗi vì Session luôn mở; nên có test gọi service rồi kiểm tra DTO **sau khi** transaction đã đóng.
 
+### Cơ chế từng bước: proxy và persistent collection hoạt động thế nào
+Khi association là {{LAZY}}, Hibernate không đọc nó lúc load entity. Hiểu từng bước để thấy tại sao việc này lại là "lazy":
+
+1. **Load parent**: Hibernate SELECT các cột của entity cha (ví dụ {{SELECT * FROM orders WHERE id = ?}}). Kết quả là một entity managed, nằm trong persistence context.
+2. **Tạo proxy/collection**: field association không được điền dữ liệu:
+   - với to-one ({{@ManyToOne Customer customer}}): Hibernate tạo một **proxy**, là subclass do Hibernate sinh ra lúc chạy, mới chỉ biết {{id}}. Proxy này implement Customer, nhưng mọi field đều là "chưa tải".
+   - với collection ({{@OneToMany List<Line> lines}}): field chứa một **persistent collection** (ví dụ {{PersistentBag}}) chưa có phần tử. Collection này biết nó "chưa tải".
+3. **Chạm để tải**: lần đầu bạn gọi {{customer.getName()}} hoặc {{lines.size()}}:
+- proxy to-one: Hibernate kiểm tra xem Session có đang attached không. Nếu có, chạy {{SELECT * FROM customer WHERE id = ?}} (nếu cần), điền field, proxy trở thành entity thật.
+- collection: Hibernate chạy {{SELECT * FROM order_line WHERE order_id = ?}}, điền vào collection.
+   - Các lần sau: đọc từ bộ nhớ (cache trong persistence context).
+4. **Session đóng**: khi transaction kết thúc, Session được đóng. Nếu dữ liệu chưa được tải (chưa bước 3), proxy không còn connection hay persistence context để chạy query, Hibernate ném {{LazyInitializationException}}.
+
+Vì sao thiết kế như vậy? Lazy loading giúp **tiết kiệm SQL và RAM** khi association không cần thiết: với 80 order, nếu không lazy, Hibernate phải tải lines cho cả 80 order ngay khi load order list. Lazy chỉ tải khi thực sự cần. Nhược điểm: phải có Session mở khi truy cập, và dễ N+1 nếu lặp qua collection.
+
+Lưu ý quan trọng: gọi {{getId()}} trên proxy to-one **không** gây query vì proxy đã biết id (id được lưu trong proxy). Chỉ các getter của field khác mới gây query.
+
+### Lỗi hay gặp trên production
+- **Trả entity thẳng từ controller ra view**: Jackson serialize entity, gọi mọi getter, chạm vào collection lazy sau khi transaction đã đóng → LazyInitializationException. Đây là lỗi phổ biến nhất. Sửa bằng cách map sang DTO trong service khi Session còn mở.
+- **OSIV che lỗi nhưng chuyển tải sang tầng web**: Spring Boot bật OSIV ({{spring.jpa.open-in-view=true}}) nên lazy loading trong controller "chạy được". Cái giá: query phát sinh ngầm ở tầng web, connection database bị giữ suốt thời gian request (gồm cả serialize), làm cạn connection pool khi tải cao. Đặt {{spring.jpa.open-in-view=false}} để lỗi lộ ra sớm.
+- **{{toString()}}/{{equals}}/{{hashCode}} (hoặc Lombok {{@Data}}) chạm vào association lazy**: khi ghi log, Hibernate gọi toString, nó chạm vào collection lazy → query hoặc exception ở chỗ không chờ đợi. Dùng {{@Data}} với entity có collection lazy là bẫy phổ biến.
+- **Integration test che lỗi**: test chạy trong {{@Transactional}} bao trùm có thể che lỗi vì Session luôn mở. Có test gọi service rồi kiểm tra DTO **sau khi** transaction đã đóng để bắt được LazyInitializationException.
+
 ### Liên hệ phỏng vấn
-Giải thích proxy cần Session để tải, vì sao lỗi xảy ra sau khi transaction đóng, vì sao EAGER và OSIV chỉ che triệu chứng. Đề xuất: mọi association LAZY, fetch plan theo use case, map DTO trong service, tắt OSIV.`,
- exercises:[{title:'Lazy proxy và session',prompt:`Mô phỏng một persistent collection lazy. {{LazyLines}} nhận một {{Supplier}} đóng vai trò câu SELECT:
+Giải thích proxy cần Session để tải, vì sao lỗi xảy ra sau khi transaction đóng, vì sao EAGER và OSIV chỉ che triệu chứng. Đề xuất: mọi association LAZY, fetch plan theo use case, map DTO trong service, tắt OSIV.
+1. **"LazyInitializationException xảy ra vì sao, và cách nào tránh nó?"** — Trả lời: proxy/collection cần Session để tải; khi transaction đóng, Session bị đóng, proxy không thể chạy query → exception. Tránh bằng cách: mọi association LAZY, tải đúng association cần (fetch join/EntityGraph) trong service khi Session còn mở, map sang DTO trước khi transaction đóng, và đặt {{spring.jpa.open-in-view=false}} để lỗi lộ ra sớm.
+2. **"EAGER có phải lời giải cho N+1 hay không?"** — Trả lời: Không. EAGER chỉ đảm bảo association có sẵn khi entity được tải, không đảm bảo một câu JOIN: với JPQL, Hibernate thường chạy thêm query cho từng entity (vẫn N+1). EAGER còn áp dụng ở mọi nơi, kể cả màn hình không cần dữ liệu đó, và không thể tắt theo từng query. Dùng LAZY + fetch plan theo use case thay thế.
+3. **"Open Session in View là gì, và bạn có dùng nó không?"** — Trả lời: OSIV giữ EntityManager mở đến khi render xong response, giúp lazy loading trong controller "chạy được". Cái giá: query phát sinh ngầm ở tầng web, connection bị giữ lâu, dễ N+1 và cạn connection pool. Ở Senior, tôi thường đặt {{spring.jpa.open-in-view=false}} để lỗi lộ ra sớm ở ranh giới service, và tự kiểm soát fetch plan.
+
+### @EntityGraph: fetch plan khai báo
+{{@EntityGraph}} cho phép tách fetch plan ra khỏi query JPQL, tái dùng được cho nhiều method repository:
+~~~java
+@Entity
+@NamedEntityGraph(name = "Order.withLines", attributeNodes = @NamedAttributeNode("lines"))
+class Order { @Id Long id; @OneToMany List<Line> lines; }
+
+interface OrderRepo extends JpaRepository<Order, Long> {
+    @EntityGraph("Order.withLines")
+    Optional<Order> findWithLines(Long id);
+}
+~~~
+Có hai dạng: **NamedEntityGraph** (định nghĩa trên entity, dùng tên) và **ad-hoc** ({{@EntityGraph(attributePaths = "lines")}} ngay trên method). {{attributePaths}} hỗ trợ đường dẫn chấm: {{"lines.product.category"}}.
+
+### Lỗi production mở rộng
+- **Proxy lọt vào log/serialization**: {{toString()}} của Lombok {{@Data}} gọi getter collection → LazyInitializationException hoặc N+1 trong log. Dùng {{@ToString(exclude = "lines")}} hoặc record DTO.
+- **Fetch join collection + pagination**: JOIN nhân dòng, LIMIT cắt giữa collection. Hibernate 6 tải hết vào RAM rồi cắt, in cảnh báo HHH90003004. Bật {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} để biến cảnh báo thành exception ngay khi test.
+
+### Kiểm thử LazyInitializationException
+Viết integration test **không** có {{@Transactional}} trên method test:
+~~~java
+@Test
+void detail_returnsDtoWithoutLazyError() {
+    OrderDto dto = service.detail(1L);
+    assertThat(dto.lines()).hasSize(3);
+}
+~~~
+Nếu test có {{@Transactional}}, Session mở suốt test → lazy "chạy được" → bug lọt production. Tắt OSIV ({{spring.jpa.open-in-view=false}}) ở test config để bắt lỗi sớm.
+`,exercises:[{title:'Lazy proxy và session',prompt:`Mô phỏng một persistent collection lazy. {{LazyLines}} nhận một {{Supplier}} đóng vai trò câu SELECT:
 - {{get()}}: nếu đã tải trước đó thì trả dữ liệu đã giữ, **không** gọi supplier nữa (kể cả khi session đã đóng).
 - Nếu chưa tải và session còn mở: gọi supplier **đúng một lần**, giữ một bản sao của kết quả, rồi trả về.
 - Nếu chưa tải và session đã đóng ({{close()}} đã được gọi): ném {{IllegalStateException}} và **không** gọi supplier.`,
@@ -434,7 +525,7 @@ Giải thích proxy cần Session để tải, vì sao lỗi xảy ra sau khi tr
  explain:`Thứ tự kiểm tra là mấu chốt: dữ liệu **đã tải** vẫn đọc được sau khi session đóng (giống collection đã được fetch join hoặc đã chạm vào trong transaction), còn dữ liệu **chưa tải** thì cần session. Nếu kiểm tra {{open}} trước, test "loaded data readable after close" sẽ fail.
 
 Trong Hibernate thật, cách tránh lỗi không phải là mở session lâu hơn, mà là tải đủ dữ liệu trong service (fetch join, EntityGraph) rồi map sang DTO trước khi transaction đóng.`,
- }],check:[{q:'{{FetchType.EAGER}} có đảm bảo Hibernate dùng một câu JOIN không?',options:['Có, luôn luôn','Có, nhưng chỉ với collection','Không; nó chỉ đảm bảo dữ liệu có sẵn, Hibernate có thể chạy thêm query (ví dụ với JPQL)','EAGER không phát SQL nào'],answer:2,explain:`EAGER nói về **thời điểm** (có sẵn ngay), không nói về **cách** lấy (SQL shape). Với JPQL, query chính chỉ đọc bảng gốc, nên Hibernate phải chạy query phụ cho association EAGER, thường là N+1. Không có ngoại lệ "chỉ với collection", và tất nhiên EAGER vẫn phải phát SQL để lấy dữ liệu.`},{q:'Cách nào ngăn tầng web (Jackson) gây lazy query hoặc LazyInitializationException?',options:['Trả entity nguyên trạng và bật OSIV','Trong service, tải đúng association cần (fetch join/EntityGraph) rồi map sang DTO trước khi transaction đóng','Đổi toàn bộ association sang EAGER','Bật hibernate.enable_lazy_load_no_trans'],answer:1,explain:`DTO tạo ranh giới dữ liệu rõ ràng: web không thấy proxy nào. OSIV làm lỗi "biến mất" nhưng chuyển query sang tầng web và giữ connection lâu. EAGER tải thừa ở mọi nơi và vẫn có thể N+1. enable_lazy_load_no_trans mở session tạm cho mỗi lần lazy load, che lỗi và sinh N+1 âm thầm.`}],tags:['LAZY','EAGER','proxy','OSIV']
+ }],check:[{q:'{{FetchType.EAGER}} có đảm bảo Hibernate dùng một câu JOIN không?',options:['Có, luôn luôn','Có, nhưng chỉ với collection','Không; nó chỉ đảm bảo dữ liệu có sẵn, Hibernate có thể chạy thêm query (ví dụ với JPQL)','EAGER không phát SQL nào'],answer:2,explain:`EAGER nói về **thời điểm** (có sẵn ngay), không nói về **cách** lấy (SQL shape). Với JPQL, query chính chỉ đọc bảng gốc, nên Hibernate phải chạy query phụ cho association EAGER, thường là N+1. Không có ngoại lệ "chỉ với collection", và tất nhiên EAGER vẫn phải phát SQL để lấy dữ liệu.`},{q:'Cách nào ngăn tầng web (Jackson) gây lazy query hoặc LazyInitializationException?',options:['Trả entity nguyên trạng và bật OSIV','Trong service, tải đúng association cần (fetch join/EntityGraph) rồi map sang DTO trước khi transaction đóng','Đổi toàn bộ association sang EAGER','Bật hibernate.enable_lazy_load_no_trans'],answer:1,explain:`DTO tạo ranh giới dữ liệu rõ ràng: web không thấy proxy nào. OSIV làm lỗi "biến mất" nhưng chuyển query sang tầng web và giữ connection lâu. EAGER tải thừa ở mọi nơi và vẫn có thể N+1. enable_lazy_load_no_trans mở session tạm cho mỗi lần lazy load, che lỗi và sinh N+1 âm thầm.`},{q:'Gọi {{getId()}} trên một proxy to-one ({{@ManyToOne}}) khi Session đã đóng. Điều gì xảy ra?',options:['Ném LazyInitializationException','Trả về id mà không phát sinh query, vì proxy đã biết id','Chạy SELECT để lấy id rồi trả về','Trả về null'],answer:1,explain:`Khi Hibernate tạo proxy cho to-one, nó đã biết id (lưu trong proxy). {{getId()}} chỉ đọc field này, không cần Session hay query. Chỉ các getter của field khác (ví dụ {{getName()}}) mới gây query hoặc exception khi Session đã đóng. LazyInitializationException chỉ xảy ra khi cần tải dữ liệu.`},{q:'Fetch join một collection {{@OneToMany}} kèm {{Pageable}} (phân trang 20/trang). Hibernate 6 xử lý thế nào?',options:['Tải toàn bộ kết quả rồi cắt trang trong RAM, chỉ in cảnh báo (trừ khi bật fail_on_pagination_over_collection_fetch)','Đưa LIMIT 20 xuống SQL và luôn trả đúng 20 parent đầy đủ children','Tự tách thành hai query: phân trang parent rồi tải children','Ném lỗi biên dịch JPQL'],answer:0,explain:`JOIN nhân dòng theo số child, nên LIMIT ở SQL sẽ cắt giữa collection. Hibernate vì vậy phân trang trong RAM và cảnh báo HHH90003004, rất nguy hiểm với bảng lớn. Nó không tự tách thành hai query (đó là việc bạn phải làm), và JPQL vẫn hợp lệ nên không có lỗi biên dịch.`}],tags:['LAZY','EAGER','proxy','OSIV']
 },
 {
  id:'lesson-jpa-005',track:'jpa',order:5,title:'Batch insert, IDENTITY và SEQUENCE pooled',level:'senior',minutes:25,
@@ -670,7 +761,7 @@ class Graph {
         };
         List<String> s1 = g1.flush();
         check("owning side writes the FK", Arrays.equals(want1, s1.toArray()), "sql = " + s1);
-        check("helper keeps both sides", l1.order == o1 && o1.lines.contains(l1), "thieu mot trong hai phia cua lien ket");
+        check("helper keeps both sides", l1.order == o1 && o1.lines.contains(l1), "thiếu một trong hai phía của liên kết");
         List<String> s2 = g1.flush();
         check("flush twice is clean", s2.isEmpty(), "sql = " + s2);
 
@@ -775,7 +866,7 @@ class Graph {
         for (Order o : new ArrayList<>(managed.values())) {
             if (removed.contains(o.id)) {               // cascade REMOVE
                 for (Line l : new ArrayList<>(o.lines)) {
-                    if (l.order != o) continue;         // con da doi cha thi khong bi xoa theo
+                    if (l.order != o) continue;         // con đã đổi cha thì không bị xóa theo
                     if (insLine.remove(l.id)) { out.add("DELETE FROM order_line WHERE id=" + l.id); fk.remove(l.id); }
                     orphans.remove(l.id);
                 }
@@ -970,7 +1061,7 @@ class DbSim {
 }
 class HibernateLite {
     DbSim db; int cap;
-    LinkedHashMap<Long, String> l2 = new LinkedHashMap<>();  // region: id -> STATE, khong phai object
+    LinkedHashMap<Long, String> l2 = new LinkedHashMap<>();  // region: id -> STATE, không phải object
     LinkedHashMap<Long, Account> l1;                         // identity map cua session dang mo, null = chua mo
     int hits, misses;
 
@@ -984,11 +1075,11 @@ class HibernateLite {
         return fresh;
     }
     private String state(long id) {
-        if (l2.containsKey(id)) { hits++; String s = l2.remove(id); l2.put(id, s); return s; }  // duoc cham thi o lai gan hon
+        if (l2.containsKey(id)) { hits++; String s = l2.remove(id); l2.put(id, s); return s; }  // được chạm thì ở lại gần hơn
         misses++;
         String s = db.read(id);
         l2.put(id, s);
-        while (l2.size() > cap) l2.remove(l2.keySet().iterator().next());       // day thi: doi phan tu lau dung nhat ra
+        while (l2.size() > cap) l2.remove(l2.keySet().iterator().next());       // đầy thì: đẩy phần tử lâu dùng nhất ra
         return s;
     }
     void save(long id, String name) { db.rows.put(id, name); l2.remove(id); l2.put(id, name); }  // write-through, bo qua L1
@@ -1052,8 +1143,41 @@ Mỗi entity managed tốn RAM cho object và snapshot; mỗi flush duyệt tấ
 - Bytecode enhancement thay đổi bytecode lúc build, phải kiểm tra tương thích với agent/proxy khác (Spring AOP, JaCoCo).
 - Flush mode COMMIT có thể làm query trong transaction thấy dữ liệu cũ; chỉ dùng khi chắc chắn.
 
+### Cơ chế từng bước: từ load đến flush UPDATE
+Hiểu từng bước để thấy tại sao dirty checking chỉ "so sánh lúc flush" và vì sao UPDATE luôn chứa mọi cột:
+
+1. **Load**: Hibernate SELECT entity, lưu **snapshot** — bản sao giá trị các cột lúc đọc. Snapshot là giá trị (string, int…), không phải tham chiếu tới object; nếu giữ cùng object, setter đổi cả hai và không bao giờ phát hiện thay đổi.
+2. **Sửa trong RAM**: bạn gọi setter trên entity managed. Chỉ đổi object Java, không phát sinh SQL. Snapshot vẫn giữ giá trị cũ.
+3. **Flush**: trước commit (hoặc trước query bị ảnh hưởng bởi FlushMode AUTO), Hibernate duyệt các entity managed, so field hiện tại với snapshot. Entity nào khác → sinh UPDATE.
+4. **UPDATE**: mặc định sinh UPDATE chứa **tất cả** cột của entity, kể cả cột không đổi. Lý do: câu SQL cố định nên JDBC/DB có thể tái dùng prepared statement (statement cache).
+5. **Sau flush**: Hibernate cập nhật snapshot bằng giá trị hiện tại; nếu không, flush lần sau sẽ lặp lại UPDATE.
+
+Vì sao thiết kế như vậy? Snapshot cho phép dirty checking chỉ cần so sánh, không cần ghi nhớ lịch sử. UPDATE mọi cột là một thỏa thuận: giảm chi phí phân tích SQL, nhưng tốn payload lớn hơn và database ghi các cột không đổi.
+
+~~~java
+// Ví dụ: entity Account, load xong sửa name
+Account a = em.find(Account.class, 1L);
+// snapshot = {name: "A", email: "a@x.com", status: "ACTIVE", version: 1}
+a.setName("B");                          // chỉ đổi object trong RAM, chưa có SQL
+// commit → flush: UPDATE account SET name=?, email=?, status=?, version=? WHERE id=?
+~~~
+
+| Cách | UPDATE | Ưu điểm | Cái giá |
+|---|---|---|---|
+| Mặc định | mọi cột | statement cache tốt, câu SQL cố định | gửi nhiều tham số, DB ghi cột không đổi (trigger, index update) |
+| @DynamicUpdate | chỉ cột đổi | giảm payload, tốt bảng nhiều cột hoặc cột lớn (TEXT, JSON) | mỗi tổ hợp cột là một câu SQL khác → giảm cơ hội tái dùng prepared statement |
+| Bytecode enhancement | marking | flush chỉ đọc danh sách field đã đổi, không so toàn bộ | phải bật tường minh trong build, có thể tương tác với AOP/JaCoCo |
+
+### Lỗi hay gặp trên production
+- **Transaction dài, import lớn**: mỗi entity managed tốn RAM cho object và snapshot; mỗi flush phải so toàn bộ. Import 1 triệu dòng trong một transaction dễ OOM hoặc flush rất chậm. Cách: xử lý theo chunk (ví dụ 500 entity), mỗi chunk {{flush()}} rồi {{clear()}}. Phải flush **trước** clear, nếu không thay đổi chưa gửi sẽ mất.
+- **@DynamicUpdate không tự động bật**: phải khai báo tường minh và đo bằng statistics ({{hibernate.generate_statistics}}) hoặc profiler. Bảng ít cột thì UPDATE mọi cột tái dùng statement cache tốt hơn — chỉ nên bật khi đã đo thấy lợi.
+- **Flush mode COMMIT**: chỉ flush trước commit; query trong cùng transaction có thể thấy dữ liệu cũ. Chỉ dùng khi chắc chắn không cần query thấy dữ liệu mới.
+- **Read-only endpoint mà vẫn giữ snapshot**: {{@Transactional(readOnly = true)}} giúp Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra, tiết kiệm RAM và CPU. Dùng cho endpoint chỉ đọc.
+
 ### Liên hệ phỏng vấn
-"Dirty checking cost bao nhiêu và tối ưu thế nào?" Nêu: snapshot per entity, full scan mỗi flush, UPDATE mọi cột mặc định; @DynamicUpdate, bytecode enhancement, read-only, chunk + clear. Nhấn mạnh đo trước khi tối ưu.`,
+1. **"Dirty checking cost bao nhiêu và tối ưu thế nào?"** — Trả lời: snapshot per entity (RAM), full scan mỗi flush (CPU), UPDATE mọi cột mặc định (payload). Tối ưu: {{@DynamicUpdate}} (bảng nhiều cột), bytecode enhancement (giảm so snapshot), {{@Transactional(readOnly = true)}} (bỏ snapshot cho entity đọc), chunk + flush + clear (transaction lớn). Luôn đo trước khi tối ưu.
+2. **"So sánh @DynamicUpdate với UPDATE mọi cột — khi nào chọn cái nào?"** — Bảng nhiều cột hoặc cột lớn (TEXT, JSON) thì {{@DynamicUpdate}} giảm payload; bảng ít cột thì UPDATE mọi cột tái dùng statement cache tốt hơn. Bytecode enhancement là tối ưu khác giảm chi phí so snapshot, không bắt buộc đi cùng.
+3. **"@Transactional(readOnly = true) có tác dụng gì với dirty checking?"** — Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra, tiết kiệm RAM và CPU. Vẫn SELECT được, không cho phép ghi; ghi trong read-only transaction có thể gây lỗi hoặc bị bỏ qua tuỳ provider.`,
  exercises:[{title:'Đếm cột đổi cho UPDATE động',prompt:`Mô phỏng dirty checking trả về danh sách field đổi theo thứ tự {{name}}, {{email}}, {{status}}. Cài {{DirtyTracker}}:
 - Constructor nhận snapshot ban đầu (name, email, status).
 - {{current(n, e, s)}} cập nhật state hiện tại.
@@ -1108,8 +1232,8 @@ Mỗi entity managed tốn RAM cho object và snapshot; mỗi flush duyệt tấ
  hints:['Giữ snapshot (sn, se, ss) và current (cn, ce, cs) riêng.','dirty() so từng field theo thứ tự name, email, status.','flush() cập nhật snapshot bằng current nếu có thay đổi.'],
  explain:`Dirty checking so giá trị, không đếm số lần gán. Lỗi hay gặp: cập nhật snapshot ở mọi lần dirty() thay vì flush(), hoặc không cập nhật sau flush khiến flush sau lặp lại UPDATE.`},
 ],
- check:[{q:'@DynamicUpdate có lợi khi nào?',options:['Bảng rất ít cột','Bảng rất nhiều cột hoặc cột lớn, và đã đo thấy lợi','Mọi entity','Khi dùng bytecode enhancement'],answer:1,explain:`@DynamicUpdate chỉ gửi cột đổi, có lợi với bảng nhiều cột hoặc cột lớn. Với bảng ít cột, UPDATE mọi cột tái dùng prepared statement tốt hơn. Bytecode enhancement là tối ưu khác (giảm chi phí so snapshot), không bắt buộc đi cùng.`},{q:'@Transactional(readOnly = true) giúp gì?',options:['Tự động commit nhanh hơn','Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra','Tắt hoàn toàn SQL','Cho phép ghi trong transaction'],answer:1,explain:`Read-only báo Hibernate không cần theo dõi thay đổi, nên không giữ snapshot, tiết kiệm RAM và CPU dirty checking. Nó không tắt SQL (vẫn SELECT) và không cho phép ghi; ghi trong read-only transaction có thể gây lỗi hoặc bị bỏ qua tuỳ provider.`}],
- tags:['dirty checking','@DynamicUpdate','flush mode']
+check:[{q:'@DynamicUpdate có lợi khi nào?',options:['Bảng rất ít cột','Bảng rất nhiều cột hoặc cột lớn, và đã đo thấy lợi','Mọi entity','Khi dùng bytecode enhancement'],answer:1,explain:`@DynamicUpdate chỉ gửi cột đổi, có lợi với bảng nhiều cột hoặc cột lớn. Với bảng ít cột, UPDATE mọi cột tái dùng prepared statement tốt hơn. Bytecode enhancement là tối ưu khác (giảm chi phí so snapshot), không bắt buộc đi cùng.`},{q:'@Transactional(readOnly = true) giúp gì?',options:['Tự động commit nhanh hơn','Hibernate không giữ snapshot và bỏ dirty checking cho entity đọc ra','Tắt hoàn toàn SQL','Cho phép ghi trong transaction'],answer:1,explain:`Read-only báo Hibernate không cần theo dõi thay đổi, nên không giữ snapshot, tiết kiệm RAM và CPU dirty checking. Nó không tắt SQL (vẫn SELECT) và không cho phép ghi; ghi trong read-only transaction có thể gây lỗi hoặc bị bỏ qua tuỳ provider.`},{q:'Vì sao UPDATE mặc định chứa mọi cột?',options:['Chỉ để giảm số câu SQL','Tái dụng prepared statement (statement cache) tốt hơn; cái giá là payload lớn hơn và DB ghi cột không đổi','Vì Hibernate không biết cột nào đổi','Để hỗ trợ @DynamicUpdate'],answer:1,explain:`Câu SQL cố định cho một entity luôn có cùng dạng, JDBC/DB có thể chuẩn bị sẵn và tái dùng. Cái giá: gửi nhiều tham số hơn, và database phải ghi các cột không đổi (kích hoạt trigger, cập nhật index). @DynamicUpdate thay đổi câu SQL để chỉ gửi cột đổi, giảm payload nhưng giảm cơ hội tái dùng prepared statement.`},{q:'Bytecode enhancement làm gì để giảm chi phí dirty checking?',options:['Tự động thêm @DynamicUpdate cho mọi entity','Chèn code vào setter/getter để đánh dấu field bẩn ngay lúc gán, flush chỉ đọc danh sách field đã đổi','Tắt dirty checking hoàn toàn','Chỉ áp dụng cho entity có @Version'],answer:1,explain:`Bytecode enhancement chèn code vào setter để ghi nhận ngay khi field bị đổi, nên flush không cần so toàn bộ snapshot mà chỉ đọc danh sách field đã đánh dấu. Phải bật tường minh trong build (ví dụ plugin hibernate-enhance-maven-plugin) và kiểm tra tương tác với AOP, JaCoCo; đừng giả định project đã có.`}],
+  tags:['dirty checking','@DynamicUpdate','flush mode']
 },
 {
  id:'lesson-jpa-009',track:'jpa',order:9,title:'Thứ tự flush và ActionQueue',level:'senior',minutes:25,
@@ -1143,6 +1267,40 @@ Nếu gửi theo thứ tự gọi, persist con trước cha sẽ vi phạm FK; r
 - Thứ tự insert theo thứ tự đăng ký: nếu persist con trước cha mà không cascade, FK fail.
 - Deferred constraint (PostgreSQL) có thể cho phép insert/delete trong transaction rồi kiểm tra lúc commit, nhưng Hibernate không tự bật; phải cấu hình DB.
 - Khi debug, bật hibernate.show_sql và format_sql để xem thứ tự thực tế; so sánh với code để hiểu ActionQueue.
+
+### Cơ chế từng bước: ActionQueue xếp action thế nào và vì sao
+Hiểu từng bước để thấy tại sao Hibernate không gửi SQL theo thứ tự bạn gọi:
+
+1. **Đăng ký action**: Khi bạn gọi {{persist(entity)}} (entity ở state new), Hibernate thêm một **insert action** vào ActionQueue. Khi gọi {{remove(entity)}} (entity managed), thêm một **delete action**. Khi entity managed có field đổi, dirty checking thêm một **update action** lúc flush. Mỗi action ghi lại entity id và loại.
+2. **Xếp hàng**: ActionQueue giữ các action trong ba hàng đợi riêng: **insert**, **update**, **delete**. Trong mỗi hàng đợi, thứ tự là thứ tự đăng ký (giống thứ tự bạn thao tác).
+3. **Flush**: Hibernate thực thi theo thứ tự cố định: **insert → update → delete**. Chỉ khi đó các câu SQL mới được gửi xuống database.
+4. **Vì sao thứ tự này?** Nếu insert con trước cha, FK sẽ từ chối (con trỏ vào cha chưa có). Nếu delete cha trước con, FK cũng từ chối (con vẫn trỏ vào cha đã xóa). Với unique constraint: insert trước delete có thể bị Blocked nếu cùng key. Với FK: insert cha trước con, delete con trước cha — thứ tự insert → update → delete tự động đảm bảo điều đó.
+
+Ví dụ: persist order (cha), persist order_line (con) → flush gửi INSERT orders trước, INSERT order_line sau. Xóa order_line trước, xóa order sau → flush gửi DELETE order_line trước, DELETE orders sau.
+
+~~~java
+// Code Java:
+em.persist(order);       // thêm insert action
+em.persist(line);        // thêm insert action
+em.remove(line2);        // thêm delete action
+// Flush → SQL:
+//   INSERT INTO orders(id) VALUES(1)
+//   INSERT INTO order_line(id) VALUES(10)
+//   DELETE FROM order_line WHERE id=11
+~~~
+
+| Loại | thứ tự trong ActionQueue | Lý do |
+|---|---|---|
+| Insert | theo thứ tự đăng ký | insert cha trước con (FK) |
+| Update | sau insert, trước delete | dirty checking |
+| Delete | cuối cùng | delete con trước cha (FK) |
+
+### Lỗi hay gặp trên production
+- **Xóa rồi thêm cùng unique key vẫn lỗi**: bảng có unique constraint trên email. Trong một transaction: xóa user email a@x.com, thêm user mới cùng email. Flush gửi INSERT trước DELETE → INSERT thấy a@x.com vẫn còn (chưa bị xóa) → vi phạm unique. Cách sửa: gọi {{em.flush()}} giữa hai thao tác (gửi DELETE xuống DB trước khi INSERT), hoặc dùng UPDATE thay vì delete+insert, hoặc cấu hình deferred constraint ở DB (PostgreSQL) nhưng Hibernate không tự bật.
+- **Persist con trước cha mà không cascade**: ActionQueue sắp xếp insert theo thứ tự đăng ký, nếu persist con trước cha mà không có cascade PERSIST, FK fail. Luôn set cascade đúng hoặc persist cha trước.
+- **Bulk delete + insert cùng unique key**: nên dùng UPDATE hoặc flush rõ ràng giữa chừng.
+- **Deferred constraint (PostgreSQL)** cho phép insert/delete trong transaction rồi kiểm tra lúc commit, nhưng Hibernate không tự bật; phải cấu hình DB.
+- **Khi debug**: bật {{hibernate.show_sql}} và {{format_sql}} để xem thứ tự thực tế; so sánh với code để hiểu ActionQueue. Log SQL thường không khớp với code Java — đó là hiện tượng bình thường.
 
 ### Liên hệ phỏng vấn
 "Vì sao xóa rồi thêm cùng unique key vẫn lỗi?" Trả lời: Hibernate flush insert trước delete, nên INSERT chạy khi bản ghi cũ chưa bị xóa. Cách sửa: flush giữa chừng, hoặc dùng UPDATE. Nêu thêm thứ tự insert/update/delete và lý do (FK, constraint).`,
@@ -1206,7 +1364,7 @@ Nếu gửi theo thứ tự gọi, persist con trước cha sẽ vi phạm FK; r
  hints:['Giữ ba danh sách riêng cho insert/update/delete.','flush() gộp theo thứ tự insert, update, delete rồi clear.','violatesUnique() kiểm tra giao giữa tập delete và tập insert.'],
  explain:`ActionQueue đảm bảo thứ tự insert → update → delete để tôn trọng FK và constraint. Lỗi hay gặp: nghĩ "xóa rồi thêm" là an toàn trong cùng transaction; thực tế INSERT chạy trước DELETE nên unique vẫn bị chặn. Cách sửa production: flush giữa chừng, hoặc dùng UPDATE.`},
 ],
- check:[{q:'Hibernate flush theo thứ tự nào?',options:['Theo thứ tự bạn gọi persist/remove','insert → update → delete','delete → update → insert','Ngẫu nhiên'],answer:1,explain:`ActionQueue sắp xếp insert trước, update giữa, delete sau để insert cha trước con và delete con trước cha, tôn trọng FK và constraint.`},{q:'Trong một transaction bạn xóa user email a@x.com rồi thêm user mới cùng email. Điều gì xảy ra lúc flush?',options:['Hibernate tự sắp xếp delete trước insert','INSERT chạy trước DELETE → vi phạm unique','Không có SQL nào','Hibernate ném lỗi compile'],answer:1,explain:`Hibernate flush insert trước delete, nên INSERT chạy khi bản ghi cũ chưa bị xóa → unique constraint bị vi phạm. Cách sửa: gọi flush() giữa hai thao tác, hoặc dùng UPDATE.`}],
- tags:['ActionQueue','flush order','unique constraint']
+check:[{q:'Hibernate flush theo thứ tự nào?',options:['Theo thứ tự bạn gọi persist/remove','insert → update → delete','delete → update → insert','Ngẫu nhiên'],answer:1,explain:`ActionQueue sắp xếp insert trước, update giữa, delete sau để insert cha trước con và delete con trước cha, tôn trọng FK và constraint.`},{q:'Trong một transaction bạn xóa user email a@x.com rồi thêm user mới cùng email. Điều gì xảy ra lúc flush?',options:['Hibernate tự sắp xếp delete trước insert','INSERT chạy trước DELETE → vi phạm unique','Không có SQL nào','Hibernate ném lỗi compile'],answer:1,explain:`Hibernate flush insert trước delete, nên INSERT chạy khi bản ghi cũ chưa bị xóa → unique constraint bị vi phạm. Cách sửa: gọi flush() giữa hai thao tác, hoặc dùng UPDATE.`},{q:'Vì sao ActionQueue không gửi SQL theo thứ tự bạn gọi persist/remove?',options:['Để giảm số câu SQL','Để insert cha trước con và delete con trước cha, tôn trọng FK và constraint','Vì database yêu cầu','Để tái dùng prepared statement'],answer:1,explain:`Nếu gửi theo thứ tự gọi, persist con trước cha sẽ vi phạm FK; remove cha trước con cũng vi phạm. ActionQueue sắp xếp để an toàn. Đây là lý do log SQL thường không khớp với code Java.`},{q:'Cách nào sửa lỗi "xóa rồi thêm cùng unique key" trong cùng transaction?',options:['Gọi flush() giữa hai thao tác để gửi DELETE xuống DB trước khi INSERT','Chờ commit rồi làm lại','Dùng UPDATE thay vì delete+insert, hoặc flush giữa chừng','Bỏ unique constraint'],answer:2,explain:`Gọi em.flush() giữa hai thao tác: flush đầu tiên gửi DELETE xuống DB, sau đó INSERT mới không bị ngăn. Hoặc dùng UPDATE thay vì delete+insert. Deferred constraint ở DB cũng có thể giúp nhưng Hibernate không tự bật; cần cấu hình DB.`}],
+  tags:['ActionQueue','flush order','unique constraint']
 }
 );

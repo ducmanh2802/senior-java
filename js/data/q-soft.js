@@ -3868,7 +3868,6 @@ Nguồn tham khảo lương: trên voz 2025–2026 có bài chia sẻ cá nhân 
   ],
   tags: ['offer', 'compensation', 'negotiation', 'career'],
   refs: [
-    { type: 'article', title: 'voz.vn: Tổng hợp chia sẻ mức lương phần 2', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/' }
   ],
 },
 {
@@ -4480,69 +4479,69 @@ Một team có 1.900 unit test với Mockito (coverage 85%), 12 integration test
 Khi code gọi new PostgreSQLContainer<>("postgres:16-alpine"):
 
 1. Testcontainers kết nối tới Docker socket (/var/run/docker.sock trên Linux) và hỏi Docker có image postgres:16-alpine chưa; nếu chưa thì pull về.
-2. Docker tạo container, Testcontainers yêu cầu Docker cap mot port ngau nhien tren may host, gan sang port 5432 ben trong container. Test khong biet port truoc, phai lay tu pg.getJdbcUrl() sau khi container san sang.
-3. Testcontainers doi container bao san sang: quet log container tim dong "database system is ready to accept connections", hoac chay lenh pg_isready ben trong container.
-4. Sau khi san sang, Testcontainers tra URL ket noi (JDBC URL) cho Spring, test viet nhu binh thuong voi spring.datasource.url.
+2. Docker tạo container, Testcontainers yêu cầu Docker cấp một port ngẫu nhiên trên máy host, gán sang port 5432 bên trong container. Test không biết port trước, phải lấy từ pg.getJdbcUrl() sau khi container sẵn sàng.
+3. Testcontainers đợi container báo sẵn sàng: quét log container tìm dòng "database system is ready to accept connections", hoặc chạy lệnh pg_isready bên trong container.
+4. Sau khi sẵn sàng, Testcontainers trả URL kết nối (JDBC URL) cho Spring, test viết như bình thường với spring.datasource.url.
 
-Container song cho den khi test xong hoac JVM tat.
+Container sống cho đến khi test xong hoặc JVM tắt.
 
-### Ryuk: cong don rac, khong phai la tu chon
-Ryuk la container Go nho chay cung mang voi container chinh. Moi container chinh dang ky minh voi Ryuk; khi JVM tat, Testcontainers goi API HTTP cua Ryuk de Ryuk don container chinh. Neu ban tat Ryuk (disableRyuk()), container chinh khong duoc don tu dong va ban phai xoá bang tay. Neu JVM bi kill -9 hoac may mat dien, Ryuk khong nhan lenh don -> container rac con lai, o Docker day tren runner self-hosted, cac chay sau that bai vi het dung luong.
+### Ryuk: công dọn rác, không phải là tuỳ chọn
+Ryuk là container Go nhỏ chạy cùng mạng với container chính. Mỗi container chính đăng ký mình với Ryuk; khi JVM tắt, Testcontainers gọi API HTTP của Ryuk để Ryuk dọn container chính. Nếu bạn tắt Ryuk (disableRyuk()), container chính không được dọn tự động và bạn phải xoá bằng tay. Nếu JVM bị kill -9 hoặc máy mất điện, Ryuk không nhận lệnh dọn -> container rác còn lại, ổ Docker đầy trên runner self-hosted, các chạy sau thất bại vì hết dung lượng.
 
-### Reuse container: giu container giua cac lan chay local
-Mac dinh, moi lan chay mvn test Testcontainers tao moi roi don container => moi suite cho pull image va khoi dong container (hang mot giay den nhuc giay). Bat reuse bang:
-- withReuse(true) tren container, va
-- dong testcontainers.reuse.enable=true trong file ~/.testcontainers.properties.
+### Reuse container: giữ container giữa các lần chạy local
+Mặc định, mỗi lần chạy mvn test Testcontainers tạo mới rồi dọn container => mỗi suite chờ pull image và khởi động container (hàng một giây đến nhúc giây). Bật reuse bằng:
+- withReuse(true) trên container, và
+- dòng testcontainers.reuse.enable=true trong file ~/.testcontainers.properties.
 
-Testcontainers se dat ten co dinh cho container; lan chay sau no kiem tra container da ton tại va dang chay thi dung lai, khong khoi dong lai. Chi nen bat tren may dev. Tren CI tat reuse: moi job la moi truong sach, container tai dung se mang du lieu cu cua lan chay truoc vao va lam test fail lung tung.
+Testcontainers sẽ đặt tên cố định cho container; lần chạy sau nó kiểm tra container đã tồn tại và đang chạy thì dùng lại, không khởi động lại. Chỉ nên bật trên máy dev. Trên CI tắt reuse: mỗi job là môi trường sạch, container tái dùng sẽ mang dữ liệu cũ của lần chạy trước vào và làm test fail lung tung.
 
-### Singleton container: mot container cho ca suite
-Danh dau container static final de JUnit khoi dong mot lan cho toan bo class test, hoac de container trong class cha tuong abstract de nhieu class con chia chung:
+### Singleton container: một container cho cả suite
+Đánh dấu container static final để JUnit khởi động một lần cho toàn bộ class test, hoặc để container trong class cha trừu tượng abstract để nhiều class con chia chung:
 ~~~java
 @Testcontainers
 abstract class PgIT {
     @Container
-    @ServiceConnection                       // Spring Boot 3.1+: tu nap url/username/password
+    @ServiceConnection                       // Spring Boot 3.1+: tự nạp url/username/password
     static final PostgreSQLContainer<?> PG =
         new PostgreSQLContainer<>("postgres:16-alpine");
 }
 
 class OrderRepositoryIT extends PgIT {
-    // 60 test, khoi dong them container nao
+    // 60 test, khởi động thêm container nào
 }
 ~~~
-@ServiceConnection (Spring Boot 3.1+) tu gan spring.datasource.* vao ung dung test, khong can khai bao @DynamicPropertySource bang tay.
+@ServiceConnection (Spring Boot 3.1+) tự gán spring.datasource.* vào ứng dụng test, không cần khai báo @DynamicPropertySource bằng tay.
 
-### Chay nhieu test song song tren CI
-- Luon de Docker cap port dong; khong hardcode cong 5432, neu khong hai job chay cung luc tren cung runner se gap Address already in use.
-- Runner CI phai co Docker daemon. GitHub Actions co the dung service containers; neu runner khong co Docker, dung Testcontainers Cloud hoac chap nhan chay test tren database embed voi ghi ro han che.
-- Gioi lu bo nho runner: moi container Postgres tuc it nhat tram tram MB; chay qua nhieu job song song tren runner nho gay OOM.
-- Co Docker khong nghia chay duoc Testcontainers: runner phai mount Docker socket hoac co quyen privileged.
+### Chạy nhiều test song song trên CI
+- Luôn để Docker cấp port động; không hardcode cổng 5432, nếu không hai job chạy cùng lúc trên cùng runner sẽ gặp Address already in use.
+- Runner CI phải có Docker daemon. GitHub Actions có thể dùng service containers; nếu runner không có Docker, dùng Testcontainers Cloud hoặc chấp nhận chạy test trên database embed với ghi rõ hạn chế.
+- Giới hạn bộ nhớ runner: mỗi container Postgres tốn ít nhất trăm trăm MB; chạy quá nhiều job song song trên runner nhỏ gây OOM.
+- Có Docker không nghĩa chạy được Testcontainers: runner phải mount Docker socket hoặc có quyền privileged.
 
-### So lieu chi phi thuc te
-| Thanh thuc | Thoi gian |
+### Số liệu chi phí thực tế
+| Thành phần | Thời gian |
 |---|---|
-| Pull image postgres:16-alpine (>100 MB) | lan dau 15-40 giay, co layer cache gan 0 |
-| Khoi dong container toi khi pg_isready OK | 3-6 giay |
-| Ryuk container | 1-2 giay, khoi dong mot lan |
-| Chay migration tren schema rong | 1-5 giay |
+| Pull image postgres:16-alpine (>100 MB) | lần đầu 15-40 giây, có layer cache gần 0 |
+| Khởi động container tới khi pg_isready OK | 3-6 giây |
+| Ryuk container | 1-2 giây, khởi động một lần |
+| Chạy migration trên schema rỗng | 1-5 giây |
 
-Mot module 300 test repository dung chung mot container chậm chậm hon H2 khoang 8-15 giay tong cong, khong phai chậm chậm 300 lan.
+Một module 300 test repository dùng chung một container chậm hơn H2 khoảng 8-15 giây tổng cộng, không phải chậm 300 lần.
 
-### Tren production
-Khong bao giờ dua Testcontainers vao ung dung production chay tren Kubernetes hay server thuc - no la cong cu test. Luc loi tren CI, hay xem:
-- Cannot connect to the Docker daemon -> runner khong co Docker hoac khong mount socket.
-- Container khong don sau test fail -> Ryuk bi tat hoac JVM crash; kiem tra docker ps va don container rac.
-- Day o /var/lib/docker tren runner self-hosted -> do container rac tich luu.
+### Trên production
+Không bao giờ đưa Testcontainers vào ứng dụng production chạy trên Kubernetes hay server thực - nó là công cụ test. Lúc lỗi trên CI, hãy xem:
+- Cannot connect to the Docker daemon -> runner không có Docker hoặc không mount socket.
+- Container không dọn sau test fail -> Ryuk bị tắt hoặc JVM crash; kiểm tra docker ps và dọn container rác.
+- Đầy ổ /var/lib/docker trên runner self-hosted -> do container rác tích luỹ.
 
-### Bai the hay gap
-- Dung image tag latest: image doi lien tuc, Docker layer cache vo dung, build khong tai lap. Luon pin phien ban (postgres:16-alpine).
-- Container khong khai bao static hoac moi test class mot container: CI khoi dong hang tram container, day o.
-- Bat reuse.enable=true tren CI: du lieu cu loti giua cac job.
-- Bo Ryuk de cho nhanh: container rac tich luu, runner chet vi het o.
-- Cac lop test ghi vao cung schema va chay dong bo: fail ngau nhien, mat hang ngay debug.
+### Bẫy hay gặp
+- Dùng image tag latest: image đổi liên tục, Docker layer cache vô dụng, build không tái lập. Luôn pin phiên bản (postgres:16-alpine).
+- Container không khai báo static hoặc mỗi test class một container: CI khởi động hàng trăm container, đầy ổ.
+- Bật reuse.enable=true trên CI: dữ liệu cũ lọt giữa các job.
+- Bỏ Ryuk để cho nhanh: container rác tích luỹ, runner chết vì hết ổ.
+- Các lớp test ghi vào cùng schema và chạy đồng bộ: fail ngẫu nhiên, mất hàng ngày debug.
 
-> Senior tip: trinh biet quyet dinh nay voi lead bang so cua chinh team: suite repository 300 test chay 4 phut 20 giay voi Postgres container dung chung so voi 1 phut 10 giay voi H2; trong 12 thang qua chung ta bat duoc 4 loi SQL chi loi tren Postgres, moi lan sua production mat khoang mot ngay. Do là lap luan cua ky su co kinh nghiem.`,
+> Senior tip: trình bày quyết định này với lead bằng số của chính team: suite repository 300 test chạy 4 phút 20 giây với Postgres container dùng chung so với 1 phút 10 giây với H2; trong 12 tháng qua chúng ta bắt được 4 lỗi SQL chỉ lỗi trên Postgres, mỗi lần sửa production mất khoảng một ngày. Đó là lập luận của kỹ sư có kinh nghiệm.`,
   follow: ['Ryuk bị tắt (ví dụ trên runner self-hosted hạn chế quyền), bạn dọn container rác như thế nào?', 'Làm sao chạy Testcontainers trên CI không có Docker daemon cục bộ (Docker-in-Docker, Testcontainers Cloud)?', 'Cân bằng giữa test nhanh và test chạy trên DB thật trong cùng một module thế nào?'],
   tags: ['Testcontainers', 'Ryuk', 'reuse-container', 'singleton-container', 'CI'],
   refs: [{ type: 'doc', title: 'Testcontainers documentation', url: 'https://testcontainers.org' }]
@@ -5481,5 +5480,118 @@ Lead -> Team: Chuẩn hóa template, review, vận hành
     'Bạn chọn thời điểm nào để mở rộng từ thí điểm sang nhiều module hơn?'
   ],
   tags: ['change-management', 'migration', 'mentoring', 'leadership', 'STAR']
+},
+{
+  id: 'behavioral-053',
+  topic: 'behavioral',
+  level: 'mid',
+  q: 'Bạn vừa bị layoff (cắt giảm nhân sự) và đã nghỉ 3 tháng. HR hỏi: "Vì sao bạn rời công ty cũ? Ba tháng qua bạn làm gì?" Bạn trả lời thế nào để không bị đánh giá là năng lực kém hay đang tuyệt vọng?',
+  a: `**Tóm tắt:** Nói thẳng và ngắn: layoff là quyết định kinh doanh (cắt team/dự án), **không phải đánh giá cá nhân**, kèm một bằng chứng khách quan (cả team bị cắt, có thư giới thiệu). Sau đó chuyển ngay sang **việc bạn đã làm trong thời gian nghỉ** (ôn hệ thống, dự án nhỏ, chứng chỉ) và **vì sao bạn muốn vị trí này**. Câu chuyện chỉ chiếm 20 giây; 80% còn lại là về giá trị bạn mang lại.
+
+### Interviewer thật sự đang kiểm tra điều gì
+Khi nghe "layoff", người phỏng vấn không quan tâm chuyện công ty cũ. Họ lo 3 rủi ro:
+1. **Bạn bị cho nghỉ vì làm kém?** Layoff thường chọn người theo dự án, chi phí, hoặc đánh giá hiệu suất. Họ cần biết bạn thuộc nhóm nào.
+2. **Bạn có cay cú, tiêu cực không?** Người nói xấu công ty cũ sẽ nói xấu công ty mới. Đây là điểm trừ nặng nhất.
+3. **Bạn có bị "rỉ sét" và có đang nhận bừa mọi việc không?** Nghỉ lâu mà không làm gì, hoặc nói "em cần việc gấp", khiến họ nghĩ bạn sẽ đi ngay khi có chỗ tốt hơn.
+
+Vì vậy câu trả lời tốt phải trả lời đủ cả 3 lo ngại, theo đúng thứ tự đó.
+
+### Cấu trúc 3 phần (công thức nói 60 giây)
+| Phần | Nội dung | Thời lượng |
+|---|---|---|
+| 1. Sự thật | Công ty cắt giảm X% / đóng dự án Y, team bạn bị ảnh hưởng | 1–2 câu |
+| 2. Bằng chứng | Bạn được giữ đến cuối dự án, có thư giới thiệu, manager sẵn sàng làm reference | 1 câu |
+| 3. Hướng tới | Thời gian nghỉ bạn làm gì cụ thể + vì sao chọn công ty này | 3–4 câu |
+
+Các lỗi hay gặp nhất là đảo tỉ lệ: kể lể 2 phút về chuyện công ty quản lý tệ, rồi chỉ nói một câu về điều mình muốn.
+
+### Thời gian nghỉ: biến "khoảng trống" thành bằng chứng
+Ba tháng là bình thường trong thị trường khó; điều quan trọng là bạn **có thể kể cụ thể** đã làm gì. Ví dụ những việc có giá trị khi nói:
+- **Ôn sâu một mảng** mà công việc cũ ít đụng tới: concurrency, tuning PostgreSQL, Kafka. Nói được "tôi tự dựng lại lỗi N+1 và đo được số query giảm từ 101 xuống 2" có giá trị hơn "tôi có ôn lại Spring".
+- **Một dự án nhỏ trên GitHub** có README rõ ràng, có test, có CI. Interviewer có thể mở ra xem ngay.
+- **Chứng chỉ** (AWS, Java) nếu nó khớp với JD.
+- **Việc cá nhân chính đáng** (chăm người thân) chỉ cần nói một câu, không cần giải thích thêm.
+
+Không nên nói: "em nghỉ ngơi cho khoẻ" (nghe như không chủ động), hoặc bịa ra công việc freelance không kiểm chứng được.
+
+### Những câu tuyệt đối tránh
+- "Công ty quản lý kém nên mới phải cắt người" → bạn đang chỉ trích.
+- "Em không hiểu sao em bị chọn" → nghe như bạn bị đánh giá thấp.
+- "Em cần việc gấp, lương bao nhiêu cũng được" → mất vị thế khi deal lương.
+- Nói dối là mình tự nghỉ: thị trường Việt Nam nhỏ, HR hay gọi kiểm tra chéo (reference check), bị phát hiện là loại ngay.
+
+### Nếu bạn nằm trong nhóm bị chọn vì hiệu suất
+Đừng nói dối, nhưng cũng không cần tự nhận "em làm kém". Nói về **bối cảnh và bài học**: "Đợt cắt giảm có xét đánh giá năm; năm đó tôi bị chuyển dự án hai lần nên kết quả chưa nổi bật. Bài học của tôi là chủ động thống nhất mục tiêu đo được với manager từ đầu quý, và tôi đã áp dụng khi..." Câu trả lời kiểu này cho thấy bạn tự nhận thức và có thay đổi.
+
+### Ví dụ đời thực
+Một dev Java 5 năm ở công ty fintech bị cắt khi công ty đóng mảng cho vay (cả team 12 người). Ba lần phỏng vấn đầu, anh kể chuyện công ty "đốt tiền rồi cắt người" mất gần 2 phút, và cả ba lần đều trượt ở vòng HR. Sau khi tập lại theo cấu trúc 3 phần (20 giây sự thật, 1 câu bằng chứng là thư giới thiệu của engineering manager, phần còn lại kể dự án chuyển tiền có idempotency anh tự làm trong 6 tuần nghỉ), anh qua vòng HR ở 4/5 công ty tiếp theo và nhận offer sau 7 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Dạ, tháng 8 công ty em đóng mảng cho vay tiêu dùng vì không đạt mục tiêu tăng trưởng, nên toàn bộ team backend của mảng đó, 12 người, bị cắt giảm, trong đó có em. Em vẫn được giữ lại đến khi bàn giao xong hệ thống đối soát, và anh engineering manager cũ sẵn sàng làm người tham chiếu nếu anh chị cần.
+
+Ba tháng vừa rồi em dùng để lấp những chỗ công việc cũ ít đụng tới. Em ôn lại concurrency và transaction trong PostgreSQL, rồi tự làm một service chuyển tiền nhỏ có idempotency key, outbox gửi sự kiện qua Kafka và test chạy trên Testcontainers. Em để code và phần giải thích trên GitHub, anh chị có thể xem. Em cũng thi xong chứng chỉ AWS Developer Associate.
+
+Em chọn ứng tuyển bên mình vì team đang xây hệ thống thanh toán, đúng mảng em có 3 năm kinh nghiệm và muốn đi sâu hơn. Em không tìm một chỗ tạm, mà tìm một nơi có thể gắn bó và đóng góp lâu dài."
+
+> Senior tip: Viết sẵn câu trả lời này ra giấy, đọc to và bấm giờ đến khi dưới 60 giây; phần "sự thật" không quá 2 câu. Xin manager cũ một tin nhắn LinkedIn recommendation ngay trong tuần bị layoff, khi họ còn nhớ rõ việc của bạn: đó là bằng chứng khách quan mạnh nhất.`,
+  follow: [
+    'Nếu interviewer hỏi thẳng "Vì sao công ty chọn bạn chứ không phải người khác?", bạn trả lời thế nào?',
+    'Bạn đã nghỉ 8 tháng thay vì 3 tháng: câu trả lời thay đổi ra sao?',
+    'Bạn kể lại câu chuyện này bằng tiếng Anh trong 45 giây thế nào?'
+  ],
+  tags: ['layoff', 'career-gap', 'HR-round', 'storytelling', 'behavioral']
+},
+{
+  id: 'behavioral-054',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn đang không có việc sau layoff. HR hỏi "Lương cũ của bạn bao nhiêu?" và đưa ra offer thấp hơn mức cũ 15%. Bạn deal lương thế nào khi vị thế đang yếu, và khi nào nên nhận offer thấp hơn?',
+  a: `**Tóm tắt:** Không mở đầu bằng lương cũ; đưa ra **khoảng lương mong muốn dựa trên thị trường cho vị trí mới** (có số liệu). Khi bị ép, nói thật con số **tổng thu nhập** chứ không nói dối. Với offer thấp, đàm phán theo **các khoản linh hoạt** (lương tháng 13, review lương sau 6 tháng, ngày bắt đầu, phụ cấp), và quyết định nhận hay không dựa trên **số tháng tài chính còn trụ được** và chất lượng công việc, chứ không theo cảm xúc.
+
+### Vì sao vị thế "đang thất nghiệp" yếu, và yếu đến đâu
+HR biết người đang nghỉ việc ít lựa chọn hơn, nên hay hỏi lương cũ để neo (anchor) offer gần mức đó hoặc thấp hơn. Nhưng vị thế của bạn không yếu như bạn nghĩ:
+- Công ty đã tốn 3–5 vòng phỏng vấn để chọn bạn. Tuyển lại người khác mất thêm 1–2 tháng và chi phí headhunter thường 15–20% lương năm.
+- Ngân sách cho vị trí thường là một **khoảng**, không phải một con số. Offer đầu tiên hầu như luôn thấp hơn mức trần.
+- Bạn có thể **bắt đầu ngay**, đó là lợi thế thật với team đang thiếu người.
+
+### Trả lời câu "Lương cũ của bạn bao nhiêu?"
+Mục tiêu là chuyển cuộc nói chuyện từ "quá khứ của bạn" sang "giá trị của vị trí này":
+1. **Lần đầu, chuyển hướng:** "Em muốn trao đổi dựa trên phạm vi công việc ở đây. Với vị trí Senior backend như JD, em mong muốn khoảng 45–50 triệu gross, dựa trên khảo sát lương của TopDev/ITviec năm nay và các offer em đang có."
+2. **Nếu bị hỏi lại lần hai, nói thật nhưng đầy đủ:** dùng **tổng thu nhập năm** (lương, tháng 13, thưởng, phụ cấp), không chỉ lương tháng. Ví dụ "Tổng thu nhập năm của em khoảng 620 triệu, gồm 40 triệu/tháng, lương tháng 13 và thưởng hiệu suất 2 tháng."
+3. **Không bao giờ nói khống:** HR có thể yêu cầu xác nhận thu nhập hoặc hỏi reference; bị phát hiện là mất offer và mất uy tín.
+
+### Bảng các khoản có thể đàm phán (ngoài lương tháng)
+| Khoản | Vì sao dễ được chấp nhận | Cách hỏi |
+|---|---|---|
+| Review lương sau 6 tháng có cam kết | Công ty không phải tăng ngân sách ngay | "Nếu sau 6 tháng em đạt mục tiêu A, B thì mức điều chỉnh là bao nhiêu? Ghi vào offer letter được không?" |
+| Lương tháng 13, thưởng cố định | Thường nằm ở ngân sách khác | Hỏi rõ thưởng cam kết hay tuỳ kết quả |
+| Signing bonus (thưởng ký hợp đồng) | Chi một lần, không ảnh hưởng thang lương | Bù phần chênh lệch năm đầu |
+| Ngày phép, remote, thiết bị, bảo hiểm sức khoẻ | Chi phí thấp với công ty | Hỏi sau khi đã chốt lương |
+| Level/title | Ảnh hưởng mức lương các năm sau | "Với kinh nghiệm X, em mong được xếp level Senior thay vì Middle" |
+
+### Khi nào nên nhận offer thấp hơn
+Đây là quyết định tài chính, nên tính bằng số:
+- **Số tháng còn trụ được (runway)** = tiền tiết kiệm / chi tiêu hàng tháng. Nếu dưới 3 tháng, một offer thấp hơn 10–15% nhưng ổn định thường đáng nhận.
+- **Chênh lệch thật**: 15% của 40 triệu là 6 triệu/tháng, khoảng 72 triệu/năm. Một tháng thất nghiệp thêm mất 40 triệu. Nếu tìm offer tốt hơn mất trên 2 tháng, nhận ngay thường có lợi hơn.
+- **Chất lượng công việc**: công nghệ, mức độ học hỏi, sự ổn định của công ty. Một vị trí giúp bạn có kinh nghiệm hệ thống lớn có thể giúp lương tăng nhanh ở lần chuyển việc sau.
+- **Không nhận** nếu công ty có dấu hiệu sắp cắt giảm tiếp (đóng băng tuyển, trễ lương, đổi CEO liên tục): bạn có thể bị layoff lần hai.
+
+### Ví dụ đời thực
+Một dev Java 6 năm bị layoff, lương cũ 42 triệu. Offer đầu tiên là 36 triệu (thấp hơn 14%). Anh không từ chối mà trả lời bằng email: cảm ơn, nêu mức thị trường 45–50 triệu kèm 2 nguồn khảo sát, đề xuất 44 triệu hoặc 40 triệu kèm review lương sau 6 tháng có ghi trong offer. Công ty trả lời trong 2 ngày: 41 triệu, signing bonus 20 triệu, review sau 6 tháng. Tổng năm đầu cao hơn offer ban đầu khoảng 80 triệu, chỉ nhờ một email.
+
+### Trả lời mẫu khi phỏng vấn
+"Dạ, em cảm ơn anh chị đã gửi offer, em rất muốn tham gia team thanh toán. Về mức lương, em xin trao đổi thẳng thắn. Tổng thu nhập năm vừa rồi của em khoảng 620 triệu, gồm lương tháng, tháng 13 và thưởng. Theo khảo sát của TopDev và ITviec năm nay, vị trí Senior backend Java với 6 năm kinh nghiệm ở mảng fintech nằm trong khoảng 45 đến 50 triệu gross.
+
+Em hiểu bên mình có khung ngân sách. Em đề xuất hai phương án: một là 44 triệu; hai là 40 triệu, kèm cam kết review lương sau 6 tháng dựa trên các mục tiêu cụ thể mà mình thống nhất ngay bây giờ, và được ghi vào offer letter. Em có thể bắt đầu ngay từ tuần sau, nên team sẽ có người ngay cho dự án đang triển khai.
+
+Nếu cả hai phương án đều khó, anh chị cho em biết phần nào linh hoạt được, ví dụ signing bonus hoặc level, để mình tìm điểm chung."
+
+> Senior tip: Luôn trả lời offer bằng email sau khi đã ngủ một đêm, không chốt ngay qua điện thoại. Chuẩn bị trước bảng runway của bạn (tiết kiệm / chi tiêu tháng): khi biết rõ mình còn trụ được 5 tháng, bạn sẽ đàm phán bình tĩnh hơn hẳn. Thực tế phần lớn công ty Việt Nam tăng được 5–10% so với offer đầu nếu ứng viên đưa ra con số có dẫn chứng.`,
+  follow: [
+    'Nếu HR nói "đây là mức cuối cùng, không thương lượng được", bạn làm gì tiếp?',
+    'Bạn đang chờ kết quả công ty B nhưng công ty A yêu cầu trả lời trong 2 ngày: xử lý thế nào?',
+    'Khi chuyển từ outsourcing sang product, bạn trình bày chênh lệch lương thế nào?'
+  ],
+  tags: ['layoff', 'salary-negotiation', 'offer', 'HR-round', 'career']
 },
 );

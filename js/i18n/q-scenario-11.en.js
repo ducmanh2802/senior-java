@@ -297,16 +297,16 @@ The goal is to reduce risk together, not to block someone; always offer a way fo
     ]
   },
   'scenario-086': {
-    q: 'The only engineer who understands the payment reconciliation module has just resigned, with 4 weeks left. The module runs a nightly batch, 2–3 times a month the totals do not match and someone has to fix it by hand, and only they know how. How do you plan the knowledge transfer so that there is no incident after they leave?',
-    a: `**Summary:** this is the "**bus factor = 1**" risk becoming reality. The 4-week plan is built on **doing the real work**, not just meetings: week 1, inventory the knowledge and the risks; week 2, the successor **observes** (shadow) every real task; week 3, **swap roles** (reverse shadow): the successor does the work while the outgoing engineer only observes; week 4, the successor handles everything and the outgoing engineer is only a fallback. Measurable outputs: a runbook for each type of mismatch, the successor having handled at least one real mismatch alone, and at least **two** people who understand the module. In parallel, have a straight conversation with the person who is leaving so that you get genuine cooperation.
+    q: 'The only engineer who understands the payment reconciliation module has just given notice, with 4 weeks left. The module runs a nightly batch, 2–3 times a month the totals do not match and someone has to fix it by hand, and only they know how. How do you plan the knowledge transfer so that there is no incident after they leave?',
+    a: `**Summary:** this is the "**bus factor = 1**" risk becoming reality. The 4-week plan is built on **doing the real work**, not just meetings: week 1, inventory the knowledge and the risks; week 2, the successor **observes** (shadows) every real task; week 3, **swap roles** (reverse shadow): the successor does the work while the outgoing engineer only observes; week 4, the successor handles everything and the outgoing engineer is only a fallback. Measurable outputs: a runbook for each type of mismatch, the successor having handled at least one real mismatch alone, and at least **two** people who understand the module. In parallel, have a straight conversation with the person who is leaving to get genuine cooperation.
 
 ### Understand quickly
-You cannot learn to drive by listening to 10 lectures; you will still be clumsy on the road. Sitting in the passenger seat to observe, then taking the wheel with an instructor beside you, then driving alone — only then do you really learn. Operational knowledge is largely **tacit**: an expert does not know what they know until someone asks the right question in the right situation.
+You cannot learn to drive by listening to 10 lectures; you will still be clumsy on the road. Sitting in the passenger seat to observe, then taking the wheel with an instructor beside you, then driving alone — only then do you really learn. Operational knowledge is largely **tacit knowledge** (know-how that is hard to write down): an expert often does not realise what they know until someone asks the right question in the right situation.
 
 ### Week 1: inventory
-- A list of everything the module does: which jobs, when they run, which tables they read and write, which partners they call, where the configuration lives, which permissions are needed.
-- The last 6 months of mismatch incidents: the type, the cause, how it was handled, the scripts that were run. From that, rank the "5 most common incident types".
-- Check the permissions and assets that only one person has: partner SFTP accounts, keys, cron entries on a personal machine, scripts in a home directory. Move them to team accounts **in week 1**.
+- A list of everything the module does: which jobs run, when they run, which tables they read and write, which partners they call, where the configuration lives, and which permissions are needed.
+- The last 6 months of mismatch incidents: the type, the cause, how it was handled, and the scripts that were run. From that, rank the "5 most common incident types".
+- Check permissions and assets held by only one person: partner SFTP accounts, keys, cron entries on a personal machine, scripts in a home directory. Move them to team accounts **in week 1**.
 - Choose **two** successors (one primary, one secondary), not just one, so that you do not recreate a bus factor of 1.
 
 ### Weeks 2–4: do the real work
@@ -325,7 +325,7 @@ If no real mismatch happens within the 4 weeks: recreate one in staging with sam
 Record audio or video of the walkthrough (with consent), because asking again after the person has left is not an option.
 
 ### Talking to the person who is leaving: a script
-"Thank you for giving 4 weeks' notice. The reconciliation module is what you understand best, and I want nobody to have to call you after you leave. I suggest that during these 4 weeks you reduce feature work and focus on handing over to Minh and Hà following this plan. What do you think is missing?"
+"Thank you for giving 4 weeks' notice. The reconciliation module is what you understand best, and I want nobody to have to call you after you leave. I suggest that during these 4 weeks you reduce feature work and focus on handing over to Minh and Ha following this plan. What do you think is missing?"
 A departing person cooperates well when the handover is recognised as **their main work**, not as something added on after hours.
 
 ### Escalating upwards

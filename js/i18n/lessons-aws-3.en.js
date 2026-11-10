@@ -153,10 +153,10 @@ Real SQS also has: retention, delay queue, no ordering guarantee on standard que
     goals: [
       'Compare Lambda, ECS Fargate, EKS and EC2 by workload model, operational cost and JVM specifics',
       'Understand Java cold start on Lambda and ways to reduce it (SnapStart, memory, provisioned concurrency)',
-      'Configure ALB health check and target tracking scaling for safe scaling',
-      'Calculate "connection budget" to RDS/Aurora and know when RDS Proxy is needed',
+      'Configure ALB health checks and target tracking scaling for safe scaling',
+      'Calculate the "connection budget" to RDS/Aurora and know when RDS Proxy is needed',
     ],
-    body: `### Four compute choices, differing by who manages what
+    body: `### Four compute choices: who manages what
 ~~~text
  You manage more  <------------------------------------------>  AWS manages more
    EC2 (VM)          EKS (Kubernetes)      ECS on Fargate          Lambda
@@ -164,49 +164,49 @@ Real SQS also has: retention, delay queue, no ordering guarantee on standard que
    scale VM          Fargate, manifest     service, scaling        scale by request
 ~~~
 
-- **EC2**: virtual machine. Full control (choose instance type, JVM flags, agents), cheapest for steady workloads with Savings Plans/Reserved, but you patch OS, build AMIs, configure Auto Scaling Groups yourself.
-- **ECS on Fargate**: run containers without managing servers. Declare task definition (image, vCPU, memory, role), ECS service keeps desired task count and attaches to ALB. Least operational burden for containerized Spring Boot.
-- **EKS**: Kubernetes with AWS-managed control plane (charged per cluster hour). Worth it when the org has standardized on Kubernetes (Helm, operators, service mesh, multi-cloud). Trade-off: need Kubernetes expertise.
-- **Lambda**: run code on events, pay per request and duration × memory. Near-zero cost when idle. Max timeout 15 minutes.
+- **EC2** (Elastic Compute Cloud): a virtual machine. Full control (choose instance type, JVM flags, agents), cheapest for steady workloads when using Savings Plans/Reserved, but you patch the OS, build AMIs (machine images), and configure Auto Scaling Groups yourself.
+- **ECS on Fargate** (Elastic Container Service on Fargate): run containers without managing servers. You declare a task definition (image, vCPU, memory, role); the ECS service keeps the desired number of tasks and attaches them to an ALB. Lowest operational burden for a containerized Spring Boot app.
+- **EKS** (Elastic Kubernetes Service): Kubernetes with an AWS-managed control plane (charged per cluster hour). Worth it when the organization has standardized on Kubernetes (Helm, operators, service mesh, multi-cloud). The trade-off is that you need people who understand Kubernetes.
+- **Lambda**: run a function on events, pay per request and duration × memory. Near-zero cost when there are no requests. Max timeout is 15 minutes.
 
-### Lambda with Java: cold start and how to reduce
-When no warm environment exists, Lambda must create a new one (**cold start**): load code, start JVM, load classes, run init (create Spring context, connection pool, SDK clients). With Java + Spring Boot, cold start can range from hundreds of milliseconds to several seconds. Subsequent calls reuse the environment (**warm**) so they're fast.
+### Lambda with Java: cold start and how to reduce it
+When no execution environment is ready, Lambda must create a new one (**cold start**): load the code, start the JVM, load classes, and run init (create the Spring context, connection pool, SDK clients). With Java + Spring Boot, a cold start can range from hundreds of milliseconds to several seconds. Subsequent calls reuse the environment (**warm**) so they are fast.
 
-- **Memory determines CPU**: Lambda allocates CPU proportional to memory (128 MB – 10,240 MB; ~1,769 MB ≈ 1 vCPU). A 512 MB Java function often initializes slowly due to lack of CPU; increasing memory often makes it **both faster and cheaper** because duration drops sharply. Measure with tools like AWS Lambda Power Tuning instead of guessing.
-- **SnapStart** (Java 11+ on Corretto runtime): on version publish, Lambda runs init once, takes a **snapshot** of the memory (Firecracker microVM) and caches it; subsequent cold starts **restore from snapshot** instead of re-initializing. Must invoke via version/alias, not {{$LATEST}}. Note: things created during init become **shared** across environments restored from the same snapshot: random seeds, unique IDs, network connections. Use runtime hooks (CRaC API: {{beforeCheckpoint}}/{{afterRestore}}) to recreate them.
-- **Provisioned concurrency**: keep N pre-initialized environments, pay even when idle. Use when absolutely consistent latency is required.
-- Write lean functions: avoid heavy classpath scanning; create SDK clients **outside** the handler (in init) for reuse across invocations.
+- **Memory determines CPU**: Lambda allocates CPU proportional to memory (128 MB – 10,240 MB; ~1,769 MB ≈ 1 vCPU). A 512 MB Java function often initializes slowly due to lack of CPU; increasing memory often makes it **both faster and cheaper** because duration drops sharply. Measure with a tool like AWS Lambda Power Tuning instead of guessing.
+- **SnapStart** (Java 11+ on the Corretto runtime): when a version is published, Lambda runs init once, takes a **snapshot** of the environment's memory (Firecracker microVM), and caches it; later cold starts **restore from the snapshot** instead of re-initializing. It must be invoked via a version/alias, not {{$LATEST}}. Note what is created during init becomes **shared** across environments restored from the same snapshot: random seeds, unique IDs, network connections. Use runtime hooks (CRaC API: {{beforeCheckpoint}}/{{afterRestore}}) to recreate them.
+- **Provisioned concurrency**: keep N pre-initialized environments, paying even when idle. Use when you need absolutely consistent latency.
+- Write lean functions: avoid heavy classpath scanning; create SDK clients **outside** the handler (in init) so they are reused across invocations.
 
 ### ALB and health checks
-ALB distributes requests to a **target group** (ECS tasks, EC2 instances, IPs, or Lambda). ALB runs **health checks** periodically (path, interval, healthy/unhealthy thresholds); a target failing enough consecutive times is removed from rotation.
+The ALB (Application Load Balancer) distributes requests to a **target group** (ECS tasks, EC2 instances, IPs, or Lambda). The ALB runs **health checks** periodically (path, interval, healthy/unhealthy thresholds); a target failing enough consecutive times is removed from rotation.
 
-- Point health check to {{/actuator/health/readiness}}: returns UP only when app is ready for traffic. **Don't** include database checks in ALB health check carelessly: a brief DB slowdown marks all targets unhealthy, the whole system self-destructs.
-- **Health check grace period** (ECS service / ASG): time to ignore health checks after startup, giving JVM + Spring Boot time to come up, avoiding the "not up yet, kill it" loop.
-- **Deregistration delay** (default 300s): on scale-in or deploy, ALB stops sending new requests but waits for in-flight requests to finish. Combine with Spring Boot's {{server.shutdown=graceful}} to avoid cutting requests mid-flight.
+- Point the health check to {{/actuator/health/readiness}}: it returns UP only when the app is ready for traffic. **Do not** carelessly include a database check in the ALB health check: a brief DB slowdown marks all targets unhealthy and the whole system self-destructs.
+- **Health check grace period** (ECS service / ASG): time to ignore health checks after startup, giving the JVM + Spring Boot time to come up, avoiding the "not up yet, kill it" loop.
+- **Deregistration delay** (default 300s): on scale-in or deploy, the ALB stops sending new requests but waits for in-flight requests to finish. Combine with Spring Boot's {{server.shutdown=graceful}} to avoid cutting requests mid-flight.
 
 ### Auto Scaling: target tracking
-**Target tracking** is like a thermostat: you set a target (e.g., average CPU 50%, or {{ALBRequestCountPerTarget}} = 1,000), AWS creates CloudWatch alarms and auto-calculates the task/instance count to keep the metric around the target.
+**Target tracking** is like a thermostat: you set a target (e.g., average CPU 50%, or {{ALBRequestCountPerTarget}} = 1,000), AWS creates CloudWatch alarms and automatically calculates how many tasks/instances are needed to keep the metric around the target.
 
-Intuition: if 4 tasks run at 75% CPU and target is 50%, need roughly 4 × 75 / 50 = **6** tasks. The system **scales out fast** (lack of capacity = customer errors) and **scales in cautiously** (a little extra just costs money), with cooldowns to prevent thrashing. With ECS (Application Auto Scaling) you can set {{ScaleOutCooldown}} and {{ScaleInCooldown}}.
+Intuition of the calculation: if 4 tasks run at 75% CPU and the target is 50%, you need roughly 4 × 75 / 50 = **6** tasks. The system **scales out fast** (lack of capacity means user errors) and **scales in cautiously** (a little extra just costs money), with cooldowns to prevent thrashing up and down. With ECS (Application Auto Scaling) you can set {{ScaleOutCooldown}} and {{ScaleInCooldown}}.
 
-> With Java, CPU is very high at startup (JIT, class loading). If the new task's CPU metric is counted immediately, the system thinks it's overloaded and scales out more. Grace period, warmup, and using request-based metrics (instead of CPU) help avoid "stacked scaling".
+> With Java, CPU is very high at startup (JIT, class loading). If the new task's CPU metric is counted immediately, the system thinks it is overloaded and scales out more. Grace period, warmup, and choosing a request-based metric (instead of CPU) help avoid "stacked scaling".
 
-### Database: connection limit is the bottleneck
-Scaling the app is easy, scaling the database is not. RDS/Aurora have {{max_connections}} based on instance class (RAM-based). Each PostgreSQL connection is a server-side process, consuming RAM.
+### Database: the connection limit becomes the bottleneck
+Scaling the app is easy; scaling the database is not. RDS/Aurora have {{max_connections}} based on instance class (RAM-based). Each PostgreSQL connection is a server-side process that consumes RAM.
 
 ~~~text
   40 ECS tasks  x  HikariCP maximumPoolSize 10  =  400 connections
-  + 200 concurrent Lambdas x 1 connection      =  600 connections  --> exceeds max_connections on small instance
+  + 200 concurrent Lambdas x 1 connection       =  600 connections  --> exceeds max_connections of a small instance
 ~~~
 
-**Connection budget** = max Auto Scaling instances × pool size, must be less than {{max_connections}} minus headroom for admin/migration. Therefore: set **max capacity** of Auto Scaling by this budget, and keep the pool small (HikariCP recommends much smaller pools than people think).
+**Connection budget** = maximum Auto Scaling instances × pool size, and it must be less than {{max_connections}} minus headroom for admin/migration. Therefore: set the **max capacity** of Auto Scaling by this budget, and keep the pool small (HikariCP recommends much smaller pools than people think).
 
-**RDS Proxy** sits between app and DB, holds a connection pool to the DB and **multiplexes** it for many clients, especially useful for Lambda (many short-lived environments opening connections constantly). Proxy also makes Aurora/RDS failover faster and smoother for clients, supports IAM auth and fetching secrets from Secrets Manager. Note **pinning**: when a session uses session-specific state (prepared statements in some drivers, {{SET}} session variables, temp tables), the proxy must pin that connection to the client, losing the multiplex benefit.
+**RDS Proxy** sits between the app and the DB, holds a connection pool to the DB, and **multiplexes** it for many clients — especially useful for Lambda (many short-lived environments opening connections constantly). The proxy also makes Aurora/RDS failover faster and smoother for clients, supports IAM authentication, and fetches secrets from Secrets Manager. Note **pinning**: when a session uses session-specific state (prepared statements in some drivers, {{SET}} session variables, temp tables), the proxy must pin that connection to the client, losing the multiplex benefit.
 
 ### Decision matrix
 | Situation | Reasonable choice | Reason |
 |---|---|---|
-| Spring Boot API running continuously, diurnal traffic variation | ECS Fargate + ALB + target tracking | low ops, scale by task, no servers |
+| Spring Boot API running continuously, traffic varies during the day | ECS Fargate + ALB + target tracking | low ops, scale by task, no servers |
 | Org standardized on Kubernetes, many teams, need K8s ecosystem | EKS | unified tooling; accept complexity |
 | Large steady workload, need deep JVM/OS tuning, optimize cost | EC2 + ASG (+ Savings Plans) | cheapest per unit capacity, full control |
 | Discrete event processing (S3 upload, SQS, cron), spiky traffic | Lambda (+ SnapStart) | pay per use, auto scale to 0 |
@@ -216,57 +216,57 @@ Scaling the app is easy, scaling the database is not. RDS/Aurora have {{max_conn
 ### Interview relevance
 Common questions: "Deploy Spring Boot to AWS, what do you choose?" (aws-001), "Lambda Java cold start high, how to fix?" (aws-002), "Does scale-in drop requests?" (aws-010), "Aurora failover done but app still errors?" (aws-019). A strong answer always states **criteria** (workload profile, latency needs, team, cost) before naming the service, and mentions **DB connection limits** when discussing scale.
 
-> Senior tip: Before enabling auto scaling, load test one task to know how many requests/sec it handles at acceptable p99; that number is the basis for your target ({{ALBRequestCountPerTarget}}) and max capacity. Setting target by gut feel (CPU 70% because "everyone does it") is the fastest way to scale too late.`,
+> Senior tip: Before enabling auto scaling, load test one task to find how many requests/sec it handles at an acceptable p99; that number is the basis for your target ({{ALBRequestCountPerTarget}}) and max capacity. Setting the target by gut feel (CPU 70% because "everyone does it") is the fastest way to scale too late.`,
     exercises: [
       {
         title: 'Simulate target tracking scaling with min/max and cooldown',
-        prompt: `Implement a target tracking scaling decision **simplified** (not AWS's exact algorithm, but same spirit).
+        prompt: `Implement a **simplified** target tracking scaling decision (not AWS's exact algorithm, but the same spirit).
 
 {{TargetTrackingScaler(targetCpu, min, max, scaleOutCooldownSec, scaleInCooldownSec)}}: throw {{IllegalArgumentException}} if {{targetCpu <= 0}}, {{min < 1}} or {{min > max}}.
 
 {{desired(current, avgCpu, nowSec)}} returns the new task count:
 1. {{raw = ceil(current * avgCpu / targetCpu)}} (subtract a small epsilon like {{1e-9}} before ceil to avoid floating-point errors), then clamp to {{[min, max]}}.
 2. If {{raw > current}} (scale-out): only apply if **never scaled out** or {{nowSec - lastScaleOut >= scaleOutCooldownSec}}; if applied, record {{lastScaleOut = nowSec}} and return {{raw}}, else return {{current}}.
-3. If {{raw < current}} (scale-in): only apply if **scaleInCooldownSec** has passed since **the most recent scale (both out and in)**, or never scaled; if applied, record {{lastScaleIn = nowSec}} and return {{raw}}, else return {{current}}.
+3. If {{raw < current}} (scale-in): only apply if {{scaleInCooldownSec}} has passed since **the most recent scale (both out and in)**, or never scaled; if applied, record {{lastScaleIn = nowSec}} and return {{raw}}, else return {{current}}.
 4. If equal, return {{current}}.`,
         hints: [
           'Total load = {{current * avgCpu}}; tasks needed to keep each at {{targetCpu}} is total load divided by {{targetCpu}}, rounded **up**.',
-          'Clamp to {{[min, max]}} **before** comparing with {{current}}, so the case current < min is also treated as scale-out.',
-          'Scale-in needs the "most recent scale" timestamp = larger of {{lastScaleOut}} and {{lastScaleIn}} (ignoring null).',
+          'Clamp to {{[min, max]}} **before** comparing with {{current}}, so the case where current < min is also handled as scale-out.',
+          'Scale-in needs the "most recent scale" timestamp = the larger of {{lastScaleOut}} and {{lastScaleIn}} (ignoring null).',
         ],
         explain: `### Idea
-Target tracking assumes even load distribution: total "CPU amount" in use is {{current × avgCpu}}; to keep each task at the target you need {{current × avgCpu / target}} tasks, rounded **up** (missing half a task means overload). Then clamp to min/max: max is where you set the **DB connection budget** and cost ceiling.
+Target tracking assumes even load distribution: the total "CPU amount" in use is {{current × avgCpu}}; to keep each task at the target you need {{current × avgCpu / target}} tasks, rounded **up** (missing half a task means overload). Then clamp to min/max: max is where you set the **DB connection budget** and the cost ceiling.
 
 ### Why asymmetry
-- **Scale-out** only waits its own cooldown: lack of capacity = user errors, must react fast. Short cooldown still needed so new tasks can start up and metrics reflect new capacity; otherwise you stack multiple scale-outs for the same spike.
-- **Scale-in** waits long after **any** scale: just scaled out but load dips temporarily → don't shrink yet, avoids flapping. Extra tasks just cost money, missing tasks lose customers.
+- **Scale-out** only waits for its own cooldown: lack of capacity means user errors, so you must react fast. A short cooldown is still needed so new tasks can start up and metrics reflect the new capacity; otherwise you stack multiple scale-outs for the same spike.
+- **Scale-in** waits a long time after **any** scale: if you just scaled out but load dips temporarily, do not shrink yet — that avoids flapping. Extra tasks just cost money; missing tasks lose customers.
 
 ### Common mistakes
-- Using {{Math.round}}: 4 tasks × 51% / 50% = 4.08 rounds to 4, still overloaded; test "ceil, not round" catches this.
-- Skipping epsilon: floating division can yield 3.0000000000000004 and ceil to 4 when it should be 3.
-- Letting scale-in block scale-out: final test checks a new spike right after scale-in still triggers scale-out.
+- Using {{Math.round}}: 4 tasks × 51% / 50% = 4.08 rounds to 4, still overloaded; the test "ceil, not round" catches this.
+- Skipping the epsilon: floating-point division can yield 3.0000000000000004 and ceil to 4 when it should be 3.
+- Letting scale-in block scale-out: the final test checks that a new spike right after scale-in still triggers scale-out.
 
-Real AWS uses aggregated metrics over windows, has instance warmup (EC2) and excludes starting tasks from the average; but the core logic "ratio + clamp + fast scale-out, slow scale-in" remains.`,
+Real AWS also works on metrics aggregated over a window, has instance warmup (EC2), and excludes starting tasks from the average; but the core logic "ratio + clamp + fast scale-out, slow scale-in" is the heart of it.`,
       },
     ],
     check: [
       {
-        q: 'Lambda Java 512 MB has 4s cold start and 800ms warm duration. Best first optimization step?',
-        options: ['Rewrite in another language immediately', 'Try increasing memory (CPU scales with it) and enable SnapStart on version/alias, re-measure', 'Increase function timeout to 15 minutes', 'Use $LATEST to always get the latest version'],
+        q: 'A Lambda Java function at 512 MB has a 4s cold start and 800ms warm duration. What is the most reasonable first optimization step?',
+        options: ['Rewrite it in another language immediately', 'Try increasing memory (CPU scales with it) and enable SnapStart on a version/alias, then re-measure', 'Increase the function timeout to 15 minutes', 'Use $LATEST to always get the latest version'],
         answer: 1,
-        explain: `Lambda allocates CPU proportionally to memory, so increasing memory often reduces both init and duration significantly; SnapStart restores from snapshot instead of re-initializing. Rewrite is expensive before trying cheap fixes; increasing timeout doesn't make it faster; SnapStart only applies to published versions, calling {{$LATEST}} loses SnapStart.`,
+        explain: `Lambda allocates CPU proportionally to memory, so increasing memory often reduces both init and duration significantly; SnapStart restores from a snapshot instead of re-initializing. Rewriting is expensive before trying cheap fixes; increasing timeout does not make it faster; SnapStart only applies to published versions, and invoking {{$LATEST}} loses SnapStart.`,
       },
       {
-        q: 'ECS service max capacity 50 tasks, each task HikariCP {{maximumPoolSize}} = 20, Aurora instance max_connections ~800. At peak load, what risk occurs and how to handle?',
-        options: ['No risk, Aurora auto-increases max_connections', 'Up to 1,000 connections exceed 800: new tasks fail to get connections; reduce pool, lower max capacity per connection budget, or use RDS Proxy', 'Just increase pool to 40 to make each task faster', 'ALB will auto-limit DB connections'],
+        q: 'An ECS service has max capacity 50 tasks, each task has HikariCP {{maximumPoolSize}} = 20, and the Aurora instance has max_connections ~800. At peak load, what risk occurs and how to handle it?',
+        options: ['No risk, Aurora auto-increases max_connections', 'Up to 1,000 connections exceed 800: new tasks fail to get connections; reduce the pool, lower max capacity per the connection budget, or use RDS Proxy', 'Just increase the pool to 40 to make each task faster', 'ALB will auto-limit DB connections'],
         answer: 1,
-        explain: `50 × 20 = 1,000 > 800, so at peak new tasks cannot open connections, cascading failure exactly when capacity is needed most. Fix: calculate connection budget, reduce pool, set max capacity accordingly, or use RDS Proxy. Aurora does not auto-increase max_connections; increasing pool makes it worse; ALB only manages HTTP connections into the app, knows nothing about DB connections.`,
+        explain: `50 × 20 = 1,000 > 800, so at peak new tasks cannot open connections, causing cascading failure exactly when capacity is needed most. Fix: calculate the connection budget, reduce the pool, set max capacity accordingly, or use RDS Proxy. Aurora does not auto-increase max_connections with load; increasing the pool makes it worse; the ALB only manages HTTP connections into the app and knows nothing about DB connections.`,
       },
       {
-        q: 'After every deploy, new Spring Boot tasks are marked unhealthy by ALB and ECS kills them repeatedly, even though they run fine locally (startup takes 50s). Most likely cause?',
-        options: ['ALB does not support Spring Boot', 'Health check starts before app is ready; need sufficient health check grace period (and readiness endpoint)', 'Deregistration delay too short', 'Target tracking is scaling in'],
+        q: 'After every deploy, new Spring Boot tasks are marked unhealthy by the ALB and ECS kills them repeatedly, even though they run fine locally (startup takes 50 seconds). What is the most likely cause?',
+        options: ['ALB does not support Spring Boot', 'Health checks start before the app is ready; you need a sufficient health check grace period (and a readiness endpoint)', 'Deregistration delay is too short', 'Target tracking is scaling in'],
         answer: 1,
-        explain: `If health checks fail enough times before JVM + Spring Boot fully starts, the task is deemed broken and replaced, creating a loop. Grace period gives the app startup time. ALB doesn't depend on framework; deregistration delay affects **draining** targets, not startup; scale-in doesn't explain new tasks being killed right after deploy.`,
+        explain: `If health checks fail enough times before the JVM + Spring Boot fully starts, the task is deemed broken and replaced, creating a loop. A grace period gives the app startup time. ALB does not depend on the framework; deregistration delay affects **draining** targets, not startup; scale-in does not explain new tasks being killed right after deploy.`,
       },
     ],
   },

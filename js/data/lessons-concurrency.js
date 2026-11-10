@@ -2049,10 +2049,10 @@ So với **fixed window counter** (một bộ đếm cho mỗi ô giây, reset �
 fixed window, max 3 request moi giay:
   giay 0: 3 request luc 0,90s -> du 3; bo dem reset luc 1,00s
   giay 1: 3 request luc 1,05s -> lai du 3
-  => trong khoang 0,90s -> 1,05s (0,15s) co 6 request = 40 req/s, trong khi limit la 3 req/s
+  => trong khoảng 0,90s -> 1,05s (0,15s) có 6 request = 40 req/s, trong khi limit là 3 req/s
 
 sliding window, cung max 3:
-  3 request luc 0,90s -> den 1,05s van dem trong cua so 1 giay => tu choi ca 3
+  3 request lúc 0,90s -> đến 1,05s vẫn đếm trong cửa sổ 1 giây => từ chối cả 3
 ~~~
 
 Nhược điểm: bộ nhớ tỉ lệ với số request trong cửa sổ (10.000 req/giây trong cửa sổ 1 phút là 600.000 timestamp). Người ta khắc phục bằng **sliding window counter** (chia cửa sổ thành vài ô nhỏ, mỗi ô chỉ giữ một số đếm, chấp nhận sai số) hoặc dùng **token bucket** khi chỉ cần xấp xỉ.
@@ -2545,16 +2545,16 @@ class Pipeline {
         check("capacity 1: backpressure nhưng vẫn đủ hàng", () -> {
             try { eq(expected(100), Pipeline.run(100, 2, 3, 1)); } catch (Exception e) { throw new RuntimeException(e); }
         });
-        check("1 producer 8 consumer: khong trung khong mat", () -> {
+        check("1 producer 8 consumer: không trùng không mất", () -> {
             try { eq(expected(64), Pipeline.run(64, 1, 8, 4)); } catch (Exception e) { throw new RuntimeException(e); }
         });
-        check("stress 1000 phan tu cap 8: dung mot lan moi so", () -> {
+        check("stress 1000 phần tử cấp 8: đúng một lần mỗi số", () -> {
             try { List<Integer> got = Pipeline.run(1000, 4, 4, 8); eq(1000, got.size()); eq(expected(1000), got); } catch (Exception e) { throw new RuntimeException(e); }
         });
         check("so it hang hon so producer: co producer nhan roi", () -> {
             try { eq(expected(3), Pipeline.run(3, 5, 3, 2)); } catch (Exception e) { throw new RuntimeException(e); }
         });
-        check("n = 0: dung sach, tra ve danh sach rong, khong hang", () -> {
+        check("n = 0: đúng sách, trả về danh sách rỗng, không hang", () -> {
             try { eq(new ArrayList<Integer>(), Pipeline.run(0, 2, 3, 4)); } catch (Exception e) { throw new RuntimeException(e); }
         });
         System.out.println("RESULT " + passed + "/" + total);
@@ -2740,11 +2740,11 @@ class LoadingCache<K, V> {
     }
     static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("expected " + e + " got " + a); }
     public static void main(String[] args) {
-        check("loader chay mot lan moi key, lan sau lay cache", () -> {
+        check("loader chạy một lần mỗi key, lần sau lấy cache", () -> {
             AtomicInteger loads = new AtomicInteger();
             LoadingCache<String, Integer> c = new LoadingCache<>(k -> { loads.incrementAndGet(); return k.length(); });
             eq(3, c.get("abc")); eq(2, c.get("ab"));
-            eq(3, c.get("abc"));                 // lan 2: dung cache, gia tri van la 3, khong nap lai
+            eq(3, c.get("abc"));                 // lần 2: dùng cache, giá trị vẫn là 3, không nạp lại
             eq(2, loads.get());                  // chi 2 key khac nhau duoc nap
             eq(2, c.size());
         });
@@ -2763,7 +2763,7 @@ class LoadingCache<K, V> {
             eq(1, loads.get());                  // single-flight: chi mot lan nap
             eq(1, results.size()); eq("V-HOT", results.iterator().next()); eq(1, c.size());
         });
-        check("nhieu key tren nhieu thread: loader = so key khac nhau", () -> {
+        check("nhiều key trên nhiều thread: loader = số key khác nhau", () -> {
             AtomicInteger loads = new AtomicInteger();
             int keys = 50;
             LoadingCache<Integer, String> c = new LoadingCache<>(k -> { loads.incrementAndGet(); return "v" + k; });

@@ -34,8 +34,32 @@ Mặc định bean trong một Spring ApplicationContext là singleton: một in
 ### Circular dependency và production
 Nếu A cần B trong constructor và B cần A, không tồn tại thứ tự tạo hoàn chỉnh: muốn tạo A phải có B, muốn tạo B phải có A. Spring báo {{BeanCurrentlyInCreationException}} ngay khi khởi động. Với field/setter injection, Spring **có thể** phá vòng bằng cách đưa ra một tham chiếu "sớm" tới bean chưa khởi tạo xong (early singleton reference), nhưng từ **Spring Boot 2.6** tính năng này bị **tắt mặc định** ({{spring.main.allow-circular-references=false}}): mọi vòng phụ thuộc đều làm app fail lúc khởi động. Đừng bật lại cờ đó như một cách sửa; constructor cycle là thiết kế cần sửa. Tách phần chung thành C, hoặc đảo phụ thuộc qua interface/event. Các lỗi thường gặp gồm nhiều bean cùng type không có qualifier, component scan thiếu package, hoặc singleton giữ request-specific state khiến dữ liệu người dùng rò sang request khác.
 
+### Cơ chế từng bước
+Đi từng bước một lần Spring khởi động và "lắp ráp" {{OrderService}} (dependency injection = tiêm phụ thuộc, tức container đưa đối tượng cần dùng vào cho bạn thay vì bạn tự {{new}}):
+
+1. **Đọc metadata (siêu dữ liệu, tức mô tả cách tạo bean)**: component scan (quét gói) tìm class có {{@Service}}/{{@Component}}, ghi lại "bean definition" (bản khai báo bean). Chưa có object nào được tạo ở bước này.
+2. **Chọn constructor**: nếu class chỉ có một constructor, Spring dùng nó (không cần {{@Autowired}}). Spring nhìn kiểu tham số: {{OrderRepository}}.
+3. **Resolve dependency (phân giải phụ thuộc, tức tìm bean phù hợp)**: tìm bean khớp kiểu {{OrderRepository}}. Nếu có đúng 1 → dùng. Nếu có nhiều (ví dụ {{JdbcRepo}} và {{JpaRepo}}) → cần {{@Qualifier}} hoặc {{@Primary}}, không thì ném lỗi mơ hồ.
+4. **Tạo theo thứ tự đồ thị**: muốn {{OrderService}} thì phải có {{OrderRepository}} trước. Container tạo {{OrderRepository}} (nếu nó lại phụ thuộc cái khác thì tiếp tục đệ quy), rồi mới gọi {{new OrderService(repo)}}.
+5. **Lưu singleton**: instance được cất vào registry của {{ApplicationContext}}. Lần sau ai cần {{OrderService}} cũng nhận đúng instance đó (trong cùng context).
+6. **Vì sao lại như vậy?**: tách "tạo" khỏi "dùng" giúp code nghiệp vụ chỉ lo logic, dễ thay implementation (test dùng fake, production dùng thật) mà không sửa {{OrderService}}.
+
+~~~java
+// Test đơn vị: không cần Spring, tự "tiêm" fake qua constructor
+class FakeRepo implements OrderRepository { /* trả dữ liệu giả */ }
+OrderService svc = new OrderService(new FakeRepo()); // DI bằng tay, vẫn là DI
+~~~
+
+### Lỗi hay gặp trên production
+- **{{NoUniqueBeanDefinitionException}} (nhiều bean cùng kiểu)**: có hai {{PaymentGateway}} implementation nhưng quên {{@Qualifier}}. Triệu chứng: app fail lúc khởi động với thông báo "expected single matching bean but found 2". Cách sửa: đặt {{@Primary}} cho mặc định hoặc {{@Qualifier("momoGateway")}} ở điểm inject.
+- **{{BeanCurrentlyInCreationException}} do vòng phụ thuộc**: {{A}} cần {{B}}, {{B}} cần {{A}} qua constructor. Triệu chứng: context không lên được ngay khi deploy. Cách sửa: tách logic chung ra {{C}}, hoặc dùng event/interface để đảo chiều; không bật lại {{allow-circular-references}}.
+- **Singleton giữ state của request (rò dữ liệu người dùng)**: đặt {{private User currentUser}} trong {{@Service}} singleton, request A gán, request B đọc nhầm. Triệu chứng: dữ liệu "nhảy" giữa người dùng, khó tái hiện. Cách sửa: service giữ stateless (không state theo request); dữ liệu request truyền qua tham số method hoặc dùng scope {{request}}/context phù hợp.
+- **Component scan thiếu package**: class nằm ngoài package gốc của {{@SpringBootApplication}}. Triệu chứng: {{NoSuchBeanDefinitionException}} dù đã gắn annotation. Cách sửa: đặt class trong cây package đúng, hoặc khai báo {{@ComponentScan}} rõ ràng.
+
 ### Liên hệ phỏng vấn
-Hãy giải thích sự khác nhau giữa IoC và DI bằng một ví dụ, rồi lần theo cách container resolve constructor. Khi debug, kiểm tra bean definition, type ambiguity và dependency cycle trước khi thêm annotation tùy tiện. Với Spring Boot 3, ưu tiên constructor injection; dùng setter cho dependency thực sự optional.
+1. **IoC và DI khác nhau thế nào? Cho ví dụ.** — IoC (Inversion of Control, đảo ngược điều khiển) là nguyên tắc: không tự tạo/điều phối dependency. DI là một cách thực hiện IoC: container truyền dependency vào (thường qua constructor). Ví dụ {{OrderService}} nhận {{OrderRepository}} qua constructor thay vì {{new JdbcRepo()}}.
+2. **Constructor injection tốt hơn field injection ở điểm nào?** — Dependency bắt buộc hiện rõ, field có thể {{final}} (bất biến), object luôn hợp lệ sau khi tạo, và test dễ bằng {{new Service(fake)}} không cần Spring context hay reflection.
+3. **Gặp circular dependency bạn xử lý ra sao?** — Đọc stack trace tìm hai bean tạo vòng, tách phần chung ra service thứ ba hoặc đảo phụ thuộc bằng interface/event. Không coi việc bật {{allow-circular-references}} là bản sửa vì nó che lỗi thiết kế.
 
 > Senior tip: Một service singleton nên giữ cấu hình bất biến, không giữ dữ liệu của request trong field. Nếu có nhiều implementation, dùng qualifier có ý nghĩa nghiệp vụ thay vì dựa vào thứ tự scan.`,
     exercises: [{
@@ -104,7 +128,7 @@ Lỗi hay gặp:
 
 Spring thật còn làm nhiều hơn: chọn constructor khi có nhiều cái, resolve theo {{@Qualifier}}/{{@Primary}} khi nhiều bean cùng type, chạy BeanPostProcessor (nơi tạo AOP proxy) và lifecycle callback.`
     }],
-    check: [{ q: 'Vì sao constructor injection thường được ưu tiên?', options: ['Làm dependency bắt buộc rõ và cho phép object bất biến', 'Tự làm bean thread-safe', 'Bỏ qua việc tạo bean', 'Chỉ dùng được với prototype'], answer: 0, explain: `Constructor cho thấy dependency bắt buộc (field final), object chỉ tạo được khi đủ collaborator và test dễ bằng {{new Service(fakeRepo)}}. Nó không tự làm bean thread-safe — state mutable vẫn cần đồng bộ. Container vẫn phải tạo bean, không "bỏ qua" được. Constructor injection dùng được với mọi scope, không riêng prototype.` }, { q: 'App Spring Boot 3 có OrderService inject PaymentService qua field {{@Autowired}}, và PaymentService cũng inject OrderService qua field. Khi khởi động chuyện gì xảy ra?', options: ['Chạy bình thường vì field injection luôn phá được vòng', 'Khởi động thất bại vì từ Spring Boot 2.6 circular reference bị cấm mặc định', 'Spring tự tạo hai instance của mỗi bean', 'Chỉ lỗi khi gọi method lần đầu'], answer: 1, explain: `Từ Spring Boot 2.6, {{spring.main.allow-circular-references}} mặc định là false nên mọi vòng phụ thuộc (kể cả qua field/setter) làm context fail lúc khởi động. Phương án 1 đúng với Spring Boot cũ hoặc khi bật lại cờ, không đúng mặc định hiện nay. Spring không tạo thêm instance để phá vòng. Lỗi xảy ra lúc tạo context, không đợi tới lúc gọi method.` }],
+    check: [{ q: 'Vì sao constructor injection thường được ưu tiên?', options: ['Làm dependency bắt buộc rõ và cho phép object bất biến', 'Tự làm bean thread-safe', 'Bỏ qua việc tạo bean', 'Chỉ dùng được với prototype'], answer: 0, explain: `Constructor cho thấy dependency bắt buộc (field final), object chỉ tạo được khi đủ collaborator và test dễ bằng {{new Service(fakeRepo)}}. Nó không tự làm bean thread-safe — state mutable vẫn cần đồng bộ. Container vẫn phải tạo bean, không "bỏ qua" được. Constructor injection dùng được với mọi scope, không riêng prototype.` }, { q: 'App Spring Boot 3 có OrderService inject PaymentService qua field {{@Autowired}}, và PaymentService cũng inject OrderService qua field. Khi khởi động chuyện gì xảy ra?', options: ['Chạy bình thường vì field injection luôn phá được vòng', 'Khởi động thất bại vì từ Spring Boot 2.6 circular reference bị cấm mặc định', 'Spring tự tạo hai instance của mỗi bean', 'Chỉ lỗi khi gọi method lần đầu'], answer: 1, explain: `Từ Spring Boot 2.6, {{spring.main.allow-circular-references}} mặc định là false nên mọi vòng phụ thuộc (kể cả qua field/setter) làm context fail lúc khởi động. Phương án 1 đúng với Spring Boot cũ hoặc khi bật lại cờ, không đúng mặc định hiện nay. Spring không tạo thêm instance để phá vòng. Lỗi xảy ra lúc tạo context, không đợi tới lúc gọi method.` }, { q: 'Có hai class triển khai interface {{PaymentGateway}} đều là {{@Component}}. {{OrderService}} inject {{PaymentGateway}} qua constructor nhưng không dùng {{@Qualifier}} hay {{@Primary}}. Kết quả là gì?', options: ['Spring chọn implementation có tên class theo thứ tự bảng chữ cái', 'Spring chọn ngẫu nhiên một implementation', 'Spring ném {{NoUniqueBeanDefinitionException}} khi khởi động vì có nhiều bean cùng kiểu', 'Spring inject cả hai vào một danh sách tự động'], answer: 2, explain: `Khi resolve dependency theo kiểu và tìm thấy nhiều bean khớp, Spring không đoán: nó ném {{NoUniqueBeanDefinitionException}} (một dạng {{NoSuchBeanDefinitionException}}) lúc tạo context. Không có quy tắc chọn theo tên hay ngẫu nhiên. Muốn inject danh sách phải khai báo tham số là {{List<PaymentGateway>}}; với một tham số đơn bạn phải chỉ rõ bằng {{@Primary}} hoặc {{@Qualifier}}.` }, { q: 'Một {{@Service}} singleton có field {{private String currentUserId}} được gán trong mỗi request. Vì sao đây là lỗi?', options: ['Vì field private không được Spring inject', 'Vì String là immutable nên không gán được nhiều lần', 'Vì singleton chỉ tạo một lần nên field không tồn tại ở request thứ hai', 'Vì singleton dùng chung giữa nhiều thread/request nên các request có thể ghi đè và đọc nhầm dữ liệu của nhau'], answer: 3, explain: `Bean singleton mặc định được tái sử dụng cho mọi request trong cùng {{ApplicationContext}}; nhiều thread có thể chạy đồng thời và cùng chạm vào field đó, gây rò dữ liệu giữa người dùng (request B đọc giá trị request A ghi). Field private hoàn toàn hợp lệ trong Java. String immutable không ngăn việc gán lại tham chiếu {{currentUserId}}. Singleton vẫn tồn tại suốt vòng đời context, không "biến mất" sau request đầu.` }],
     related: ['spring-001'], tags: ['IoC', 'DI', 'container', 'singleton']
   },
   {
@@ -135,11 +159,44 @@ Giả sử caller gọi {{proxy.outer()}}, proxy chuyển tới target.outer(). 
 | JDK | Interface + InvocationHandler | Caller phải gọi qua interface proxy |
 | Subclass | Tạo lớp con target | Final class/method hạn chế override |
 
-### Lỗi production
-Method **private** không bao giờ được proxy chặn (lớp con không override được private); method **final** cũng vậy với CGLIB. Từ Spring Framework 6.0, {{@Transactional}} trên method protected/package-private có hiệu lực với CGLIB proxy, nhưng public vẫn là cách an toàn và dễ hiểu nhất. Một lỗi phổ biến khác là gọi qua reference được tạo bằng {{new}} thay vì bean do Spring quản lý. Khi đo thời gian, dùng finally để ghi cả thành công và lỗi, nhưng tránh log payload nhạy cảm. Proxy cũng có overhead; hãy dùng metric có cardinality kiểm soát thay vì tag theo user ID.
+### Cơ chế từng bước
+Đi từng bước khi một request gọi service có {{@Transactional}} và bị self-invocation. **Proxy** (đối tượng "đại diện" đứng trước target, chặn lời gọi để chèn hành vi thêm) chỉ hoạt động khi caller giữ tham chiếu tới proxy (chính là bean Spring inject), không phải object thật.
+
+1. **Spring tạo bean và bọc proxy**: khi khởi động, container tạo {{OrderService}} (target), rồi tạo một proxy bọc quanh nó. Bean được đăng ký trong context là **proxy**. Ai {{@Autowired OrderService}} sẽ nhận proxy.
+2. **Caller gọi qua proxy**: {{controller}} gọi {{orderService.placeOrder()}} → lời gọi đi vào proxy → proxy chạy advice (ví dụ mở transaction) → proxy gọi {{target.placeOrder()}}.
+3. **Self-invocation bên trong target**: trong {{placeOrder()}}, code gọi {{this.audit()}}. {{this}} ở đây là **target thật**, không phải proxy → lời gọi đi thẳng {{target.audit()}}, **không** quay lại proxy → advice trên {{audit()}} ({{@Transactional}}, {{@Async}}, logging AOP) bị bỏ qua.
+4. **Vì sao Spring chọn proxy-based AOP?**: không cần sửa bytecode lúc biên dịch hay dùng agent đặc biệt; proxy tạo lúc runtime, dễ hiểu với phần lớn case. Đánh đổi: chỉ chặn lời gọi "từ ngoài vào" qua proxy.
+
+~~~java
+@Service
+class OrderService {
+    public void placeOrder() {
+        // this = target thật -> self-invocation, KHÔNG qua proxy
+        audit(); // @Transactional trên audit() sẽ KHÔNG mở transaction mới ở đây
+    }
+    @Transactional
+    public void audit() { /* ghi log giao dịch */ }
+}
+// Cách sửa: tách audit sang bean khác để lời gọi đi qua proxy của bean đó
+@Service class AuditService { @Transactional public void audit() { /* ... */ } }
+~~~
+
+| Cách xử lý self-invocation | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Tách method sang bean khác (gọi qua proxy) | Rõ ràng, đúng mô hình Spring | Thêm class, phải cân nhắc ranh giới |
+| Đặt boundary ở method ngoài | Đơn giản nếu nghiệp vụ cho phép | Có thể mở transaction rộng hơn cần |
+| {{TransactionTemplate}} trong method | Kiểm soát transaction bằng code tại chỗ | Trộn hạ tầng vào nghiệp vụ |
+| Tự inject {{AopContext.currentProxy()}} | Giữ nguyên cấu trúc | Khó hiểu, phải bật {{exposeProxy}}, dễ lỗi |
+
+- **{{new Service()}} bỏ qua Spring**: object tạo bằng {{new}} không phải bean, không được inject dependency và không được bọc proxy — mọi annotation ({{@Transactional}}, {{@Async}}) trên nó đều vô hiệu. Triệu chứng: code "chạy" nhưng không có transaction, không log AOP. Cách sửa: luôn lấy bean qua injection/context, không tự {{new}} class có annotation hạ tầng.
+- **Proxy không chặn private/final**: method {{private}} không bị proxy override được; với CGLIB (mặc định Spring Boot), method {{final}} cũng vậy. Triệu chứng: {{@Transactional}} gắn trên method private/final nhưng không mở transaction. Cách sửa: dùng method {{public}} (hoặc ít nhất non-private/non-final phù hợp) và đặt annotation ở nơi proxy chặn được.
+- **{{@Async}} bị self-invocation nuốt**: gọi {{this.sendEmail()}} có {{@Async}} từ trong cùng bean thì chạy đồng bộ trên thread hiện tại, không ném lỗi. Triệu chứng: request chậm bất thường vì tác vụ "nền" thực ra chạy tuần tự. Cách sửa: tách sang bean khác, hoặc inject chính bean (self-injection) cẩn thận; kiểm tra bằng log thread name.
+- **Gọi method trước khi proxy sẵn sàng**: gọi method có AOP từ constructor hoặc từ code chạy quá sớm trong lifecycle có thể chạy trên target chưa được bọc đầy đủ. Triệu chứng: advice thỉnh thoảng không chạy. Cách sửa: tránh logic nặng/AOP trong constructor; dùng {{@PostConstruct}} hoặc {{ApplicationReadyEvent}} khi thực sự cần, và hiểu giới hạn.
 
 ### Liên hệ phỏng vấn
-Vẽ luồng caller → proxy → target để giải thích self-invocation. Nêu rõ đây là giới hạn của proxy-based AOP, không phải transaction manager tự phát hiện mọi method call. Với yêu cầu cross-cutting cần bao cả self-call, cân nhắc đổi ranh giới bean hoặc giải pháp weaving phù hợp.
+1. **Vì sao {{@Transactional}} (hoặc advice AOP) không chạy khi gọi method từ trong cùng bean?** — Đây là self-invocation: {{this.method()}} gọi thẳng vào target, không đi qua proxy; mà proxy mới là nơi chèn advice. Cách sửa: tách method sang bean khác để lời gọi đi qua proxy.
+2. **JDK dynamic proxy và CGLIB proxy khác nhau thế nào? Spring Boot mặc định dùng cái nào?** — JDK proxy tạo proxy theo interface (caller phải gọi qua interface). CGLIB sinh lớp con của class target (override method). Spring Boot mặc định dùng CGLIB cho bean cần proxy ({{proxy-target-class=true}}), nên inject theo class cụ thể vẫn được.
+3. **Làm sao debug khi nghi ngờ transaction/AOP không chạy?** — Kiểm tra call path có đi qua proxy không (có self-invocation/{{new}} không), method có phải {{private}}/{{final}} không, và log tên class thực tế (proxy thường có tên kiểu {{…$$SpringCGLIB…}}).
 
 > Senior tip: Khi transaction bất ngờ không mở, kiểm tra bean reference và call path trước khi chỉnh propagation. Trace một request qua proxy thường tìm ra nguyên nhân nhanh hơn đọc annotation rời rạc.`,
     exercises: [{
@@ -192,7 +249,7 @@ Lỗi hay gặp:
 - Gọi {{method.invoke(proxy, args)}} thay vì {{target}}: proxy gọi lại chính nó, đệ quy vô hạn tới {{StackOverflowError}}.
 - Ghi log sau khi invoke mà không dùng {{finally}}: lời gọi ném exception sẽ không được ghi.`
     }],
-    check: [{ q: 'Trong proxy-based Spring AOP, vì sao this.inner() thường không kích hoạt advice của inner?', options: ['Method private nên JVM không chạy', 'Lời gọi đi thẳng từ target tới target, không qua proxy', 'Transaction manager chỉ theo dõi HTTP', 'AOP chỉ hoạt động khi compile bằng Java 21'], answer: 1, explain: `Advice được proxy áp dụng khi lời gọi đi qua proxy; this.inner() chạy trực tiếp trên target nên proxy không biết. "Method private": inner trong ví dụ là public và vẫn bị bỏ qua, nên visibility không phải nguyên nhân. Transaction không gắn với HTTP. AOP của Spring chạy trên mọi phiên bản Java được hỗ trợ, không cần Java 21.` }, { q: 'Một bean Spring Boot 3 có method {{@Transactional private void saveAll()}}, được gọi từ một method public của chính bean đó. Transaction có được mở không?', options: ['Có, vì Spring quét mọi method có annotation', 'Không: private không bị proxy chặn được, và lời gọi nội bộ không đi qua proxy', 'Có, nếu bật CGLIB proxy', 'Chỉ khi method trả về void'], answer: 1, explain: `Có hai lý do cộng dồn: proxy (JDK hay CGLIB) không override được method private, và lời gọi từ trong bean là this.saveAll() không qua proxy. Spring không "quét rồi tự chạy" annotation, nó chỉ chèn advice tại proxy. CGLIB là mặc định của Spring Boot rồi và vẫn không chặn được private. Kiểu trả về không liên quan.` }],
+    check: [{ q: 'Trong proxy-based Spring AOP, vì sao this.inner() thường không kích hoạt advice của inner?', options: ['Method private nên JVM không chạy', 'Lời gọi đi thẳng từ target tới target, không qua proxy', 'Transaction manager chỉ theo dõi HTTP', 'AOP chỉ hoạt động khi compile bằng Java 21'], answer: 1, explain: `Advice được proxy áp dụng khi lời gọi đi qua proxy; this.inner() chạy trực tiếp trên target nên proxy không biết. "Method private": inner trong ví dụ là public và vẫn bị bỏ qua, nên visibility không phải nguyên nhân. Transaction không gắn với HTTP. AOP của Spring chạy trên mọi phiên bản Java được hỗ trợ, không cần Java 21.` }, { q: 'Một bean Spring Boot 3 có method {{@Transactional private void saveAll()}}, được gọi từ một method public của chính bean đó. Transaction có được mở không?', options: ['Có, vì Spring quét mọi method có annotation', 'Không: private không bị proxy chặn được, và lời gọi nội bộ không đi qua proxy', 'Có, nếu bật CGLIB proxy', 'Chỉ khi method trả về void'], answer: 1, explain: `Có hai lý do cộng dồn: proxy (JDK hay CGLIB) không override được method private, và lời gọi từ trong bean là this.saveAll() không qua proxy. Spring không "quét rồi tự chạy" annotation, nó chỉ chèn advice tại proxy. CGLIB là mặc định của Spring Boot rồi và vẫn không chặn được private. Kiểu trả về không liên quan.` }, { q: 'Trong service, bạn viết {{OrderService svc = new OrderService(); svc.placeOrder();}} trong đó {{placeOrder()}} có {{@Transactional}}. Điều gì xảy ra với transaction?', options: ['{{@Transactional}} không có tác dụng vì object tạo bằng {{new}} không phải bean do Spring quản lý nên không được bọc proxy', 'Transaction vẫn mở bình thường vì annotation được JVM xử lý', 'Spring tự phát hiện và thay object {{new}} bằng proxy', 'Chỉ lỗi biên dịch, không chạy được'], answer: 0, explain: `AOP dựa trên proxy chỉ áp dụng cho bean nằm trong {{ApplicationContext}} (Spring mới bọc proxy và inject dependency). Object tạo bằng {{new}} nằm ngoài Spring, không có proxy nên annotation hạ tầng như {{@Transactional}}/{{@Async}} bị bỏ qua. JVM không tự xử lý {{@Transactional}}. Spring không can thiệp vào toán tử {{new}}. Code vẫn biên dịch và chạy, chỉ là transaction không mở.` }, { q: 'Spring Boot (mặc định) dùng cơ chế nào để tạo AOP proxy cho bean cần {{@Transactional}}?', options: ['JDK dynamic proxy dựa trên interface cho mọi bean', 'CGLIB proxy (tạo lớp con lúc runtime) cho bean cần proxy, kể cả khi bean có interface', 'Sửa bytecode lúc biên dịch (compile-time weaving) bắt buộc', 'Không dùng proxy, Spring chèn code trực tiếp vào method'], answer: 1, explain: `Từ Spring Boot 2.0, {{spring.aop.proxy-target-class}} mặc định là {{true}}, nên Boot dùng CGLIB tạo proxy dạng lớp con cho mọi bean cần AOP (dù có interface hay không) — giúp inject theo class cụ thể không lỗi kiểu. JDK proxy dựa trên interface vẫn được Spring Framework hỗ trợ nhưng không phải mặc định của Boot. Compile-time/load-time weaving là cách của AspectJ đầy đủ, không bắt buộc với Spring AOP. Spring AOP proxy-based không sửa bytecode method gốc.` }],
     related: ['spring-002'], tags: ['AOP', 'proxy', 'JDK Proxy', 'self-invocation']
   },
   {
@@ -223,11 +280,52 @@ public void importFile() throws IOException {
 }
 ~~~
 
-### Production pitfalls
-Transaction thường gắn với thread hiện tại; tự chuyển sang executor không tự mang transaction sang thread mới. Trong JPA, commit còn là lúc flush SQL nên constraint violation có thể xuất hiện cuối method. Gọi external API lâu bên trong transaction giữ connection và lock lâu. Đặt boundary quanh thao tác dữ liệu cần nguyên tử, giữ ngắn, và dùng outbox/idempotency khi phối hợp database với message broker.
+### Cơ chế từng bước
+Đi từng bước một khi một method {{@Transactional}} được gọi qua proxy:
+
+1. **Proxy chặn lời gọi**: caller giữ reference tới proxy (bean được inject), không phải target thật. Lời gọi {{orderService.placeOrder()}} đi vào proxy trước.
+2. **TransactionInterceptor lấy/khởi tạo transaction**: interceptor gọi {{PlatformTransactionManager.getTransaction()}} với {{TransactionDefinition}} đọc từ annotation (propagation, isolation, timeout, readOnly, rollbackFor). Nếu propagation là {{REQUIRED}} và có transaction đang hoạt động trên thread → dùng transaction đó; nếu chưa có → tạo mới (lấy connection từ pool, tắt auto-commit). Nếu {{REQUIRES_NEW}} → suspend transaction hiện tại (nếu có) bằng {{TransactionSuspender}}, sau đó tạo transaction mới hoàn toàn.
+3. **Gọi target method**: interceptor gọi {{target.placeOrder()}} trên object thật. Code nghiệp vụ chạy, có thể gọi repository, JPA flush, v.v.
+4. **Kết thúc method**: nếu method trả về bình thường (không ném exception) → interceptor gọi {{transactionManager.commit(status)}}. Trong JPA, commit là lúc {{EntityManager.flush()}} thực sự đẩy SQL xuống DB, nên constraint violation có thể ném exception ở bước này.
+5. **Xử lý exception**: nếu method ném exception, interceptor so khớp exception với rule rollback: unchecked ({{RuntimeException}}, {{Error}}) → luôn rollback; checked exception → chỉ rollback khi khớp {{rollbackFor}} (tính cả subclass). Nếu quyết định rollback → gọi {{transactionManager.rollback(status)}}; nếu quyết định commit → gọi commit (đây là hành vi mặc định với checked exception).
+6. **Cleanup**: sau commit/rollback, connection được trả về pool. Nếu dùng {{REQUIRES_NEW}} và suspend transaction ngoài, transaction ngoài được resume.
+
+**Vì sao lại như vậy?** Propagation quyết định **transaction nào** chịu trách nhiệm dữ liệu; rollback rule quyết định **kết thúc** transaction đó thế nào. Tách hai trục giúp bạn kiểm soát ranh giới độc lập: outer có thể muốn commit toàn bộ, inner có thể muốn rollback riêng — khi đó dùng {{REQUIRES_NEW}} cho inner. Nhưng {{REQUIRES_NEW}} tốn thêm connection từ pool, nên chỉ dùng khi thực sự cần tách biệt kết quả.
+
+~~~java
+@Service
+class OrderService {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void placeOrder() {
+        orderRepo.save(new Order());      // T1: insert order
+        auditService.logAudit();          // inner REQUIRED → dùng chung T1
+        paymentService.charge();          // inner REQUIRES_NEW → T2 độc lập
+    }
+}
+
+@Service
+class AuditService {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void logAudit() { auditRepo.save(new AuditLog()); } // cùng T1
+}
+
+@Service
+class PaymentService {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void charge() { paymentRepo.save(new Payment()); }  // T2 riêng
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **UnexpectedRollbackException do inner REQUIRED ném exception, outer bắt và nuốt**: inner đánh dấu transaction rollback-only; outer không ném tiếp exception nên interceptor của outer thấy cờ rollback-only lúc commit → rollback toàn bộ và ném {{UnexpectedRollbackException}}. Triệu chứng: log thấy "Transaction rolled back because it has been marked as rollback-only". Cách sửa: **không nuốt exception** từ inner REQUIRED, hoặc dùng {{REQUIRES_NEW}} cho inner nếu muốn tách biệt kết quả, hoặc ném lại exception (có thể bọc) để outer cũng rollback.
+- **Cạn connection pool do REQUIRES_NEW lạm dụng**: mỗi transaction suspended giữ connection; T2 cần connection mới. Dưới tải cao, pool HikariCP (mặc định 10) cạn nhanh. Triệu chứng: request timeout chờ connection, log "Pool exhausted". Cách sửa: chỉ dùng {{REQUIRES_NEW}} khi bắt buộc (ghi audit/log phải sống sót khi chính rollback); boundary ngắn, tránh gọi API/http bên trong transaction.
+- **Checked exception không rollback mặc định — dữ liệu "nửa vời" commit**: method {{importFile()}} đã {{save()}} 500 dòng rồi gặp {{IOException}} dòng 501. Không có {{rollbackFor}}, 500 dòng đã commit, caller nhận IOException. Triệu chứng: DB có dữ liệu không hoàn chỉnh, không có lỗi nào báo rõ. Cách sửa: thêm {{@Transactional(rollbackFor = Exception.class)}} hoặc ít nhất {{IOException.class}} cho các method xử lý file/IO.
+- **Transaction không lan sang thread mới**: dùng {{ExecutorService}} hoặc {{@Async}} bên trong method transactional, code trong thread mới **không** nằm trong transaction gốc. Triệu chứng: repository.save trong thread con không thấy dữ liệu cha vừa ghi, hoặc commit/rollback không ảnh hưởng thread con. Cách sửa: tránh xử lý nặng trong transaction; dùng outbox pattern cho side effect, hoặc {{TransactionTemplate}} truyền context thủ công (phức tạp, ít khuyến khích).
 
 ### Liên hệ phỏng vấn
-Với ghi audit cần tồn tại dù nghiệp vụ chính rollback, REQUIRES_NEW có thể phù hợp nhưng cần cân nhắc tính nhất quán và pool. Với thao tác nghiệp vụ cần cùng commit, REQUIRED thường đúng hơn. Luôn hỏi exception là checked hay unchecked, method có đi qua proxy không, và SQL flush xảy ra lúc nào.
+1. **Propagation REQUIRED và REQUIRES_NEW khác nhau ở điểm nào? Khi nào chọn cái nào?** — REQUIRED dùng chung transaction nếu có, không thì tạo mới; REQUIRES_NEW luôn suspend transaction ngoài (nếu có) và tạo transaction hoàn toàn riêng. Chọn REQUIRED cho các thao tác cần cùng thành công/cùng thất bại (atomic). Chọn REQUIRES_NEW khi inner phải commit độc lập (ví dụ ghi audit log, gửi metric) dù outer rollback.
+2. **Spring mặc định rollback với exception nào? Checked exception thì sao?** — Mặc định rollback cho {{RuntimeException}} và {{Error}}. Checked exception ({{IOException}}, {{SQLException}}...) thì **commit** transaction rồi mới ném exception. Muốn rollback checked exception phải khai báo {{@Transactional(rollbackFor = IOException.class)}}.
+3. **Vì sao gọi @Async bên trong method @Transactional không an toàn?** — @Async chạy trên thread pool riêng, không chia sẻ transaction context với thread cha. Transaction gốc có thể commit/rollback trước khi thread con xong, dẫn đến dữ liệu không nhất quán. Nên dùng outbox pattern: ghi event vào DB trong cùng transaction, process riêng đọc outbox và gửi.
 
 > Senior tip: Đừng dùng REQUIRES_NEW như cách sửa mọi lỗi transaction. Theo dõi connection-pool active/pending cùng thời gian transaction; boundary dài thường là nguyên nhân gây nghẽn trước khi propagation trở thành vấn đề.`,
     exercises: [{
@@ -294,7 +392,7 @@ Lỗi hay gặp:
 
 Propagation (REQUIRED/REQUIRES_NEW) quyết định **transaction nào** được dùng; rollback rule quyết định **kết thúc** nó thế nào — hai trục khác nhau.`
     }],
-    check: [{ q: 'Method bên trong chạy REQUIRED khi đã có transaction ngoài thì thường thế nào?', options: ['Luôn tạo transaction mới độc lập', 'Tham gia transaction hiện có', 'Tắt transaction ngoài', 'Chỉ chạy được với checked exception'], answer: 1, explain: `REQUIRED dùng transaction hiện có nếu có, nếu không mới tạo. "Luôn tạo transaction mới" là REQUIRES_NEW. Không propagation nào "tắt" transaction ngoài; NOT_SUPPORTED chỉ tạm treo nó. Propagation không liên quan loại exception.` }, { q: 'Method {{@Transactional public void importFile() throws IOException}} lưu 500 bản ghi rồi ném {{IOException}}. Không cấu hình gì thêm. Kết quả?', options: ['Rollback cả 500 bản ghi', '500 bản ghi được commit, caller vẫn nhận IOException', 'Spring nuốt IOException và commit', 'Spring bọc thành RuntimeException rồi rollback'], answer: 1, explain: `Mặc định Spring chỉ rollback với RuntimeException và Error; IOException là checked nên transaction được commit, sau đó exception vẫn được ném cho caller. Muốn rollback phải thêm rollbackFor = IOException.class. Spring không nuốt exception và cũng không bọc lại thành RuntimeException.` }],
+    check: [{ q: 'Method bên trong chạy REQUIRED khi đã có transaction ngoài thì thường thế nào?', options: ['Luôn tạo transaction mới độc lập', 'Tham gia transaction hiện có', 'Tắt transaction ngoài', 'Chỉ chạy được với checked exception'], answer: 1, explain: `REQUIRED dùng transaction hiện có nếu có, nếu không mới tạo. "Luôn tạo transaction mới" là REQUIRES_NEW. Không propagation nào "tắt" transaction ngoài; NOT_SUPPORTED chỉ tạm treo nó. Propagation không liên quan loại exception.` }, { q: 'Method {{@Transactional public void importFile() throws IOException}} lưu 500 bản ghi rồi ném {{IOException}}. Không cấu hình gì thêm. Kết quả?', options: ['Rollback cả 500 bản ghi', '500 bản ghi được commit, caller vẫn nhận IOException', 'Spring nuốt IOException và commit', 'Spring bọc thành RuntimeException rồi rollback'], answer: 1, explain: `Mặc định Spring chỉ rollback với RuntimeException và Error; IOException là checked nên transaction được commit, sau đó exception vẫn được ném cho caller. Muốn rollback phải thêm rollbackFor = IOException.class. Spring không nuốt exception và cũng không bọc lại thành RuntimeException.` }, { q: 'Outer REQUIRED gọi inner REQUIRES_NEW; inner commit thành công, outer sau đó ném RuntimeException. Dữ liệu của inner bị rollback không?', options: ['Có, vì outer rollback kéo theo inner', 'Không, inner đã commit trong transaction riêng và không bị ảnh hưởng', 'Chỉ rollback nếu inner cũng ném exception', 'Spring ném UnexpectedRollbackException và rollback cả hai'], answer: 1, explain: `REQUIRES_NEW tạo transaction hoàn toàn độc lập (suspend outer). Inner commit xong là dữ liệu đã xuống DB, outer rollback không thể quay ngược transaction đã kết thúc của inner. UnexpectedRollbackException chỉ xảy ra khi inner REQUIRED đánh dấu rollback-only trên transaction chung.` }, { q: 'Method @Transactional có rollbackFor = IOException.class, trong đó gọi repository.save() ném DataIntegrityViolationException (subclass của RuntimeException). Transaction có rollback không?', options: ['Không, vì rollbackFor chỉ áp dụng cho IOException', 'Có, vì RuntimeException luôn rollback mặc định, rollbackFor chỉ mở rộng thêm', 'Chỉ rollback nếu catch IOException và ném lại', 'Không, vì DataIntegrityViolationException không phải IOException'], answer: 1, explain: `Mặc định Spring rollback mọi RuntimeException (kể cả subclass như DataIntegrityViolationException) và Error. rollbackFor = IOException.class chỉ THÊM rule cho checked exception IOException (và subclass), không ghi đè rule mặc định. Vì vậy RuntimeException vẫn rollback như bình thường.` }],
     related: ['spring-003'], tags: ['Transactional', 'propagation', 'rollback', 'JPA']
   },
   {
@@ -336,6 +434,48 @@ Singleton là một instance cho mỗi bean definition trong ApplicationContext.
 | Singleton | Thường một lần mỗi context | Context quản lý |
 | Prototype | Mỗi lần resolve | Consumer chịu trách nhiệm sau khi nhận |
 
+### Cơ chế từng bước
+Đi từng bước một khi Spring khởi tạo một singleton bean {{OrderService}} phụ thuộc vào {{OrderRepository}}:
+
+1. **Đọc bean definition**: component scan tìm {{@Service}} class, tạo {{BeanDefinition}} lưu metadata (class name, scope, constructor args, property values, init/destroy method). Chưa tạo instance nào.
+2. **Resolve dependency graph**: container xây dựng đồ thị phụ thuộc. {{OrderService}} cần {{OrderRepository}} → {{OrderRepository}} phải tạo trước.
+3. **Instantiation**: gọi constructor của {{OrderRepository}} (không có dependency khác) → instance repo. Sau đó gọi constructor {{OrderService(repo)}} → instance service.
+4. **Dependency injection (field/setter)**: nếu có {{@Autowired}} trên field hoặc setter, gán giá trị ngay sau constructor.
+5. **Aware callbacks**: nếu bean implements {{BeanNameAware}}, gọi {{setBeanName("orderService")}}; nếu {{ApplicationContextAware}}, gọi {{setApplicationContext(ctx)}}.
+6. **PostProcessBeforeInitialization**: các {{BeanPostProcessor}} chạy, trong đó {{CommonAnnotationBeanPostProcessor}} phát hiện {{@PostConstruct}} và gọi method warmUp().
+7. **Custom init callbacks**: nếu implements {{InitializingBean}}, gọi {{afterPropertiesSet()}}; nếu có {{@Bean(initMethod="init")}}, gọi method init().
+8. **PostProcessAfterInitialization**: {{BeanPostProcessor}} chạy lần 2. **Quan trọng**: {{AnnotationAwareAspectJAutoProxyCreator}} (một {{BeanPostProcessor}}) bọc bean bằng **AOP proxy** tại đây. Bean đăng ký trong context và inject cho bean khác là **proxy**, không phải target gốc.
+9. **Bean sẵn sàng**: context trả proxy cho nơi cần inject.
+
+Khi shutdown ({{ConfigurableApplicationContext.close()}}):
+1. Gọi {{@PreDestroy}} (qua {{CommonAnnotationBeanPostProcessor}}).
+2. Gọi {{DisposableBean.destroy()}}.
+3. Gọi destroy-method của {{@Bean}}.
+4. Hủy theo thứ tự ngược dependency graph (bean phụ thuộc bị hủy trước dependency của nó).
+
+**Vì sao lại như vậy?** Thứ tự đảm bảo dependency sẵn sàng trước khi bean dùng nó. Proxy được tạo **sau** init callback để init method không bị chặn bởi proxy (self-invocation trong {{@PostConstruct}} không kích hoạt AOP). Hủy ngược thứ tự tránh dùng dependency đã bị đóng.
+
+~~~java
+@Service
+class OrderService {
+    private final OrderRepository repo;
+    OrderService(OrderRepository repo) { this.repo = repo; } // 1. constructor inject
+    
+    @PostConstruct
+    void init() { repo.count(); } // 2. @PostConstruct chạy TRƯỚC khi tạo proxy
+    
+    @Transactional
+    public void placeOrder() { repo.save(new Order()); } // 3. @Transactional chỉ hoạt động khi gọi QUA proxy
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **@Transactional trong @PostConstruct không hoạt động**: gọi {{this.placeOrder()}} trong {{@PostConstruct}} là self-call trên target gốc (chưa có proxy). Triệu chứng: method chạy nhưng không mở transaction, không có lock, JPA flush không xảy ra. Cách sửa: chuyển logic khởi động cần transaction sang {{ApplicationReadyEvent}} listener, hoặc tách ra bean riêng và inject.
+- **Prototype bean inject vào singleton chỉ tạo một instance**: field prototype được resolve một lần lúc tạo singleton. Triệu chứng: mỗi request dùng chung instance prototype, state bị chia sẻ nhầm (ví dụ request-scoped data rò rỉ giữa user). Cách sửa: inject {{ObjectProvider<PrototypeBean>}} rồi gọi {{getObject()}} mỗi lần cần, hoặc dùng {{@Lookup}} method.
+- **Resource rò rỉ trong prototype**: container không gọi destroy cho prototype. Nếu prototype mở {{Connection}}, {{ExecutorService}}, file handle... mà consumer không đóng → leak. Triệu chứng: connection pool cạn, thread count tăng không giảm, "Too many open files". Cách sửa: prototype implement {{AutoCloseable}}, consumer dùng try-with-resources; hoặc tránh để prototype nắm resource dài hạn.
+- **Singleton có mutable state gây race condition**: field {{private User currentUser}} trong {{@Service}} singleton, request A gán, request B đọc nhầm. Triệu chứng: dữ liệu user "nhảy" giữa request, khó tái hiện. Cách sửa: service stateless, truyền dữ liệu request qua tham số method; cần state thì dùng scope {{request}} hoặc {{ThreadLocal}} (cẩn thận cleanup).
+- **Shutdown callback không chạy khi process bị kill (SIGKILL) hoặc hết timeout**: {{@PreDestroy}} là best-effort, không đảm bảo chạy. Triệu chứng: dữ liệu trong memory chưa flush mất khi container stop gấp. Cách sửa: không dựa vào {{@PreDestroy}} cho dữ liệu quan trọng; dùng transaction DB, outbox pattern, hoặc graceful shutdown với timeout đủ dài ({{spring.lifecycle.timeout-per-shutdown-phase}}).
+
 ### Thứ tự và dependency
 Nếu A phụ thuộc B, B phải sẵn sàng trước khi A dùng dependency. Hủy bean thường theo thứ tự ngược để consumer giải phóng trước dependency. Không nên phụ thuộc vào thứ tự giữa hai bean không có quan hệ dependency; nếu cần startup ordering, khai báo dependency rõ ràng.
 
@@ -343,7 +483,9 @@ Nếu A phụ thuộc B, B phải sẵn sàng trước khi A dùng dependency. H
 Không mở thread hoặc connection trong constructor nếu khởi tạo có thể thất bại một phần. Đảm bảo shutdown graceful đóng executor và resource. Prototype chứa resource dễ rò rỉ vì context không gọi destroy cho từng instance; dùng try/finally hoặc AutoCloseable ở nơi sở hữu. Bean singleton có state mutable dùng chung gây race condition. Với web scope, proxy giúp singleton tham chiếu tới bean request-scoped nhưng cần hiểu lifecycle request.
 
 ### Liên hệ phỏng vấn
-Hãy nêu ai sở hữu vòng đời và ai chịu trách nhiệm đóng resource. Nếu prototype được inject vào singleton, giải thích vì sao vẫn chỉ thấy một instance đã inject và đề xuất factory/provider. Với shutdown, phân biệt callback best-effort với bảo đảm hoàn tất trước giới hạn thời gian dừng của nền tảng.
+1. **Bean lifecycle của Spring có những giai đoạn nào? Proxy AOP được tạo ở đâu?** — Tạo instance → inject dependency → Aware callback → @PostConstruct → InitializingBean/afterPropertiesSet → **tạo AOP proxy (postProcessAfterInitialization)** → bean sẵn sàng. Proxy tạo SAU @PostConstruct nên @Transactional trong @PostConstruct không chạy.
+2. **Prototype inject vào singleton thì sao? Làm sao để lấy instance mới mỗi lần?** — Chỉ resolve một lần lúc tạo singleton, nên singleton giữ y nguyên instance đó. Muốn instance mới: inject {{ObjectProvider<PrototypeBean>}} và gọi {{getObject()}} mỗi lần, hoặc viết method {{@Lookup PrototypeBean createPrototype()}}.
+3. **@PreDestroy có đảm bảo chạy khi app tắt không?** — Không. SIGKILL, crash JVM, hoặc hết {{spring.lifecycle.timeout-per-shutdown-phase}} đều làm callback không kịp chạy. Không dùng @PreDestroy để bảo vệ dữ liệu quan trọng; hãy dùng DB transaction, outbox, hay idempotency.
 
 > Senior tip: Lifecycle callback nên ngắn, idempotent và có log rõ. Không coi @PreDestroy là nơi duy nhất bảo vệ dữ liệu quan trọng; process có thể bị kill hoặc hết thời gian shutdown.`,
     exercises: [{
@@ -399,7 +541,7 @@ Lỗi hay gặp:
 - Ghi {{init}} trước khi kiểm tra cache: singleton bị ghi init nhiều lần dù chỉ tạo một object.
 - Không có cờ {{closed}}: gọi close hai lần thì destroy hai lần — với resource thật (connection pool) có thể ném lỗi khi đóng lần hai.`
     }],
-    check: [{ q: 'Prototype bean được inject một lần vào singleton thì chuyện gì xảy ra?', options: ['Mỗi lần gọi method singleton tự nhận prototype mới', 'Singleton giữ instance đã resolve lúc inject', 'Prototype chuyển thành request scope', 'Container không tạo prototype'], answer: 1, explain: `Dependency được resolve một lần khi singleton được tạo, nên field đó luôn trỏ tới cùng một object. Container không tự "làm mới" field mỗi lần gọi method; muốn instance mới mỗi lần cần {{ObjectProvider}} hoặc {{@Lookup}}. Scope không tự đổi thành request. Container vẫn tạo prototype — đúng một lần lúc inject.` }, { q: 'Service có method {{@Transactional void loadData()}} và được gọi từ {{@PostConstruct void init()}} của chính service đó. Vì sao transaction không được mở?', options: ['Vì @PostConstruct chạy trước khi bean được bọc proxy (postProcessAfterInitialization), và lời gọi là self-call', 'Vì @PostConstruct luôn chạy trong thread riêng', 'Vì transaction manager chỉ khởi tạo sau khi HTTP server bật', 'Vì @Transactional không hỗ trợ method trả về void'], answer: 0, explain: `@PostConstruct chạy ở bước postProcessBeforeInitialization, trước khi Spring tạo AOP proxy; hơn nữa init() gọi this.loadData() trên chính object gốc, không qua proxy. Cách sửa: chạy trong listener ApplicationReadyEvent hoặc gọi qua bean khác. @PostConstruct chạy trên thread đang tạo context, không phải thread riêng. Transaction manager là bean bình thường, không chờ HTTP server. Kiểu trả về void hoàn toàn được hỗ trợ.` }],
+    check: [{ q: 'Prototype bean được inject một lần vào singleton thì chuyện gì xảy ra?', options: ['Mỗi lần gọi method singleton tự nhận prototype mới', 'Singleton giữ instance đã resolve lúc inject', 'Prototype chuyển thành request scope', 'Container không tạo prototype'], answer: 1, explain: `Dependency được resolve một lần khi singleton được tạo, nên field đó luôn trỏ tới cùng một object. Container không tự "làm mới" field mỗi lần gọi method; muốn instance mới mỗi lần cần {{ObjectProvider}} hoặc {{@Lookup}}. Scope không tự đổi thành request. Container vẫn tạo prototype — đúng một lần lúc inject.` }, { q: 'Service có method {{@Transactional void loadData()}} và được gọi từ {{@PostConstruct void init()}} của chính service đó. Vì sao transaction không được mở?', options: ['Vì @PostConstruct chạy trước khi bean được bọc proxy (postProcessAfterInitialization), và lời gọi là self-call', 'Vì @PostConstruct luôn chạy trong thread riêng', 'Vì transaction manager chỉ khởi tạo sau khi HTTP server bật', 'Vì @Transactional không hỗ trợ method trả về void'], answer: 0, explain: `@PostConstruct chạy ở bước postProcessBeforeInitialization, trước khi Spring tạo AOP proxy; hơn nữa init() gọi this.loadData() trên chính object gốc, không qua proxy. Cách sửa: chạy trong listener ApplicationReadyEvent hoặc gọi qua bean khác. @PostConstruct chạy trên thread đang tạo context, không phải thread riêng. Transaction manager là bean bình thường, không chờ HTTP server. Kiểu trả về void hoàn toàn được hỗ trợ.` }, { q: 'Bean prototype chứa một ExecutorService và được inject vào singleton qua ObjectProvider.getObject(). Ai chịu trách nhiệm shutdown ExecutorService?', options: ['Spring container tự gọi destroy cho prototype', 'Code nhận instance (consumer) phải tự đóng trong try-with-resources hoặc @PreDestroy của chính nó', 'Singleton cha sẽ tự đóng khi context đóng', 'ExecutorService không cần shutdown, GC sẽ dọn dẹp'], answer: 1, explain: `Spring KHÔNG gọi destroy callback cho prototype bean. Consumer nhận instance qua ObjectProvider.getObject() phải tự quản lý vòng đời: đóng resource trong finally, try-with-resources, hoặc đăng ký shutdown hook riêng. Singleton cha không biết prototype nào đã được tạo. GC không đảm bảo shutdown executor kịp thời.` }, { q: 'Khi Spring Boot shutdown, @PreDestroy callback có chắc chắn chạy không?', options: ['Luôn chạy, Spring đảm bảo', 'Chỉ chạy nếu shutdown graceful (SIGTERM), không chạy nếu SIGKILL hoặc crash JVM', 'Chỉ chạy cho singleton, không chạy cho prototype', 'Chỉ chạy nếu bean implements DisposableBean'], answer: 1, explain: `@PreDestroy là best-effort: chạy khi context.close() được gọi graceful (SIGTERM, timeout đủ). SIGKILL, crash JVM, OutOfMemoryError, hoặc hết spring.lifecycle.timeout-per-shutdown-phase đều làm callback không kịp chạy. Không dùng @PreDestroy để bảo vệ dữ liệu quan trọng (dùng DB transaction, outbox). Prototype từ đầu không có destroy callback.` }],
     related: ['spring-004'], tags: ['lifecycle', 'scope', 'singleton', 'prototype']
   },
   {
@@ -424,8 +566,49 @@ record CreateUser(@NotBlank String email) {}
 ResponseEntity<?> create(@Valid @RequestBody CreateUser request) { ... }
 ~~~
 
+### Cơ chế từng bước
+Đi sâu từng bước khi một request {{POST /orders}} đi qua DispatcherServlet:
+
+1. **Filter chain chạy trước**: request vào Tomcat, chạy qua filter chain ({{FilterChainProxy}} của Spring Security nếu có). Filter có thể chặn request sớm (401/403) hoặc gắn thông tin (principal, correlation ID). Filter **không** biết route Spring MVC.
+2. **DispatcherServlet nhận request**: {{DispatcherServlet.doDispatch()}} là điểm nhập. Nó lưu trữ các attribute (locale, theme, multipart) và bắt đầu tìm handler.
+3. **HandlerMapping tìm handler**: {{RequestMappingHandlerMapping}} dùng {{RequestMappingInfo}} (path, method, consumes, produces, params, headers) để match. Kết quả là {{HandlerExecutionChain}} gồm handler method + interceptors. **Quan trọng**: nếu không match handler nào, ném {{NoHandlerFoundException}} (cần {{spring.mvc.throw-exception-if-no-handler-found=true}} và {{spring.web.resources.add-mappings=false}}) — mặc định Spring 6 trả 404 qua {{DefaultServletHttpRequestHandler}} cho static resource.
+4. **HandlerAdapter chuẩn bị tham số**: {{RequestMappingHandlerAdapter}} dùng {{HandlerMethodArgumentResolverComposite}} để resolve từng tham số:
+   - {{@RequestBody}} → {{RequestResponseBodyMethodProcessor}} dùng {{HttpMessageConverter}} (Jackson) đọc body → DTO. Lỗi parse → {{HttpMessageNotReadableException}}.
+   - {{@Valid}} → {{ValidationArgumentResolver}} chạy Bean Validation (Hibernate Validator). Vi phạm constraint → {{MethodArgumentNotValidException}}.
+   - {{@PathVariable}}, {{@RequestParam}}, {{@RequestHeader}} → resolver tương ứng.
+   Thứ tự: **message converter → validation → controller**. Controller chỉ được gọi khi TẤT CẢ tham số resolve thành công.
+5. **Controller method chạy**: business logic, gọi service, repository. Trả về object (DTO, {{ResponseEntity}}, {{String}}, {{void}}…).
+6. **Return value handler**: {{HandlerMethodReturnValueHandlerComposite}} xử lý kết quả:
+   - {{ResponseEntity}} → set status/headers/body.
+   - {{@ResponseBody}} object → {{RequestResponseBodyMethodProcessor}} dùng converter serialize JSON.
+   - {{String}} view name → {{ViewNameMethodReturnValueHandler}} → {{ViewResolver}}.
+7. **Response hoàn tất**: converter ghi JSON vào {{ServletOutputStream}}, set {{Content-Type: application/json}}. Filter chain tiếp tục ({{OncePerRequestFilter}} after completion).
+8. **Exception flow**: bất kỳ exception nào (validation, business, DB) đều bong lên {{DispatcherServlet.doDispatch}} → DispatcherServlet duyệt từng {{HandlerExceptionResolver}} theo thứ tự:
+   - {{ExceptionHandlerExceptionResolver}} ({{@ExceptionHandler}} trong {{@RestControllerAdvice}}).
+   - {{ResponseStatusExceptionResolver}} ({{@ResponseStatus}} trên exception).
+   - {{DefaultHandlerExceptionResolver}} (exception chuẩn Spring MVC → status code).
+   - Cuối cùng {{ResponseEntityExceptionHandler}} fallback.
+   Kết quả là {{ModelAndView}} hoặc response body → ghi ra client.
+
+**Vì sao lại như vậy?** Tách routing (HandlerMapping), argument resolution (HandlerAdapter), return value handling, và exception resolution thành các component riêng biệt giúp Spring MVC mở rộng được: thêm converter mới cho protobuf, thêm argument resolver cho custom annotation, thêm exception handler cho domain exception — không sửa core DispatcherServlet.
+
 ### Validation boundary
-Validate syntax và invariant đơn giản ngay tại API boundary, ví dụ field bắt buộc hoặc range. Quy tắc nghiệp vụ cần dữ liệu hiện tại như email đã tồn tại phải được kiểm tra ở service/domain và vẫn cần database constraint để chống race. Không trả stack trace hay nội dung exception nội bộ cho client.
+Validate syntax và invariant đơn giản ngay tại API boundary, ví dụ field bắt buộc, range, format email/phone. Quy tắc nghiệp vụ cần dữ liệu hiện tại như email đã tồn tại phải được kiểm tra ở service/domain và vẫn cần database constraint để chống race. Không trả stack trace hay nội dung exception nội bộ cho client.
+
+### Custom ArgumentResolver: mở rộng Spring MVC
+Khi cần logic resolve phức tạp (ví dụ lấy user từ JWT, parse multi-tenant header), hãy viết {{HandlerMethodArgumentResolver}} và đăng ký qua {{WebMvcConfigurer.addArgumentResolvers}}. Resolver được gọi trong {{HandlerMethodArgumentResolverComposite}} theo thứ tự đăng ký, trước validation.
+
+~~~java
+@Component
+class CurrentUserResolver implements HandlerMethodArgumentResolver {
+    @Override public boolean supportsParameter(MethodParameter p) {
+        return p.hasParameterAnnotation(CurrentUser.class) && p.getParameterType().equals(User.class);
+    }
+    @Override public Object resolveArgument(MethodParameter p, ModelAndViewContainer m, NativeWebRequest w, WebDataBinderFactory f) {
+        return w.getUserPrincipal() != null ? userService.findByEmail(w.getUserPrincipal().getName()) : null;
+    }
+}
+~~~
 
 ### ProblemDetail
 {{ProblemDetail}} biểu diễn lỗi theo RFC 9457 (bản thay thế RFC 7807) với các field {{type}}, {{title}}, {{status}}, {{detail}}, {{instance}} và properties mở rộng; content type của response là {{application/problem+json}}. Hai cách dùng: trả {{ProblemDetail}} từ method {{@ExceptionHandler}} của bạn, hoặc trong Spring Boot 3 bật {{spring.mvc.problemdetails.enabled=true}} để các exception chuẩn của Spring MVC (400 validation, 404, 405…) tự trả về dạng ProblemDetail.
@@ -440,19 +623,32 @@ ProblemDetail handle(EmailTakenException e) {
 ~~~
 Giữ {{type}} ổn định để client phân loại; {{detail}} nên hữu ích nhưng không lộ dữ liệu nhạy cảm. Validation error nên có danh sách field/message đã chuẩn hóa, thứ tự ổn định nếu client hoặc snapshot test phụ thuộc.
 
-| Lỗi | HTTP thường dùng | Xử lý |
-|---|---|---|
-| JSON/validation sai | 400 | Trả field errors có cấu trúc |
-| Không tìm thấy tài nguyên | 404 | ProblemDetail nhất quán |
-| Conflict nghiệp vụ | 409 | Nêu cách xử lý phù hợp |
+### ExceptionResolver: so sánh các resolver chuẩn
 
-### Production pitfalls
-Đừng coi mọi exception là 500 hoặc trả 200 với error object. Tránh lộ stack trace, SQL và token. Validation ở controller không thay thế constraint trong DB khi có concurrent request. Cân nhắc correlation ID trong log thay vì nhồi toàn bộ context vào response. API versioning và schema lỗi cần ổn định để client không phụ thuộc câu chữ tự do.
+| Resolver | Xử lý exception nào | Ưu tiên |
+|---|---|---|
+| {{ExceptionHandlerExceptionResolver}} | {{@ExceptionHandler}} trong {{@RestControllerAdvice}} | Cao nhất |
+| {{ResponseStatusExceptionResolver}} | Exception có {{@ResponseStatus}} | Cao |
+| {{DefaultHandlerExceptionResolver}} | Exception chuẩn Spring MVC ({{MethodArgumentNotValidException}}, {{HttpMessageNotReadableException}}, {{NoHandlerFoundException}}…) | Trung bình |
+| {{ResponseEntityExceptionHandler}} | Fallback cho các exception còn lại | Thấp |
+
+Bạn thường chỉ cần viết {{@RestControllerAdvice}} với các method {{@ExceptionHandler}} cho domain exception; Spring MVC lo phần còn lại.
+
+### Lỗi hay gặp trên production
+- **Validation exception trả 500 thay vì 400**: thiếu {{spring-boot-starter-validation}} hoặc quên {{@Valid}} → {{MethodArgumentNotValidException}} không được ném, validation không chạy, dữ liệu sai lọt vào service → exception ở layer dưới (constraint violation) thành 500. Triệu chứng: log thấy {{DataIntegrityViolationException}} hoặc {{ConstraintViolationException}} từ Hibernate. Cách sửa: đảm bảo dependency validation có mặt, {{@Valid}} ở đúng chỗ, và bật {{spring.mvc.problemdetails.enabled=true}} để có response chuẩn.
+- **JSON sai cú pháp trả 400 (không phải 500)**: Jackson bọc JsonParseException vào {{HttpMessageNotReadableException}}, và {{DefaultHandlerExceptionResolver}} ánh xạ ngoại lệ này thành 400 Bad Request — đây là mặc định kể cả Spring Boot 3.1. Nếu ứng dụng trả 500, nguyên nhân thường là exception đã bị bắt/bọc lại ở interceptor hoặc {{@ControllerAdvice}} khác, ghi đè hành vi mặc định. Cách xử lý: đừng thêm {{@ExceptionHandler(JsonParseException.class)}} kỳ vọng bắt lỗi thô (lỗi đã được bọc); nếu muốn body chuẩn, bật {{spring.mvc.problemdetails.enabled=true}} (Boot 3.2+) để body là ProblemDetail, status vẫn là 400.
+- **Validation field errors thứ tự không ổn định**: {{MethodArgumentNotValidException.getBindingResult()}} trả {{FieldError}} theo thứ tự xác thực của Bean Validation, có thể khác thứ tự mà client hoặc snapshot test mong đợi → client/snapshot test fail ngẫu nhiên. Triệu chứng: test pass rồi fail không đổi code. Cách sửa: tự map {{BindingResult}} thành danh sách {{FieldErrorDTO}} sort theo tên field trước khi set vào {{ProblemDetail.setProperty("errors", sortedList)}}.
+- **Lộ stack trace/internal detail trong error response**: {{@ExceptionHandler(Exception.class)}} trả về {{ex.getMessage()}} hoặc {{ex.toString()}} chứa SQL, class name, line number. Triệu chứng: response body có {{org.hibernate.exception.ConstraintViolationException}} hoặc đường dẫn file. Cách sửa: chỉ trả {{ProblemDetail}} với {{detail}} do bạn tự viết, {{type}} ổn định, không bao giờ set {{detail}} từ exception gốc.
+- **Constraint DB trùng lặp với validation controller tạo race condition**: controller check {{email.exists()}} → OK → service {{save()}} → DB unique constraint violation (hai request cùng lúc). Triệu chứng: 500 {{DataIntegrityViolationException}} giữa validation đã pass. Cách sửa: validation controller chỉ check syntax/format; invariant nghiệp vụ (unique email) bắt buộc có DB unique constraint + catch {{DataIntegrityViolationException}} map thành {{ProblemDetail}} 409.
+- **Thiếu idempotency key cho thao tác ghi**: client retry request POST tạo đơn hàng khi timeout mạng → tạo trùng đơn. Triệu chứng: dữ liệu trùng lặp, đối soát khó. Cách sửa: client sinh {{Idempotency-Key}} (UUID) mỗi thao tác ghi; server dùng key đó làm khóa duy nhất (DB unique index hoặc cache Redis TTL 24h) để loại bỏ request trùng.
 
 ### Liên hệ phỏng vấn
-Mô tả request từ servlet tới handler và ngược lại qua converter. Phân biệt validation cấu trúc với invariant nghiệp vụ. Khi thiết kế error contract, chọn status, type/code ổn định, field errors và thông tin correlation; kiểm thử cả JSON sai cú pháp lẫn dữ liệu hợp lệ về hình thức nhưng sai nghiệp vụ.
+1. **DispatcherServlet xử lý request như thế nào? Nêu các component chính.** — DispatcherServlet delegates tới HandlerMapping (tìm handler), HandlerAdapter (resolve argument, gọi controller), HandlerMethodReturnValueHandler (xử lý kết quả), HandlerExceptionResolver (xử lý lỗi). Filter chain chạy trước và sau DispatcherServlet.
+2. **Vì sao validation @Valid chạy trước khi controller được gọi? Exception nào được ném?** — HandlerAdapter dùng ValidationArgumentResolver resolve tham số có @Valid; nếu vi phạm, MethodArgumentNotValidException được ném. Controller không bao giờ được invoke — đây là thiết kế "fail fast" ở boundary.
+3. **ProblemDetail (RFC 9457) có những field gì? Khi nào nên bật spring.mvc.problemdetails.enabled?** — Các field: type (URI phân loại lỗi), title (tóm tắt), status (HTTP code), detail (mô tả cho dev), instance (URI request cụ thể), properties (mở rộng). Bật flag trong Boot 3.2+ để exception chuẩn (400, 404, 405…) tự trả ProblemDetail thay vì HTML/body mặc định, giúp client parse nhất quán.
+4. **Làm sao xử lý unique constraint violation (race condition) mà không trả 500?** — Validation controller không thay thế DB constraint. Bắt DataIntegrityViolationException trong @RestControllerAdvice, kiểm tra constraint name hoặc SQLState, map thành ProblemDetail 409 CONFLICT với type ổn định. Không dùng select-then-insert vì race condition.
 
-> Senior tip: Một error response tốt giúp client quyết định retry hay sửa request. Đừng retry 400; với 409/5xx hãy định nghĩa semantics rõ và dùng idempotency cho thao tác có side effect.`,
+> Senior tip: Một error response tốt giúp client quyết định retry hay sửa request. Đừng retry 400; với 409/5xx hãy định nghĩa semantics rõ và dùng idempotency cho thao tác có side effect. Luôn có correlation ID trong log để trace request end-to-end.`,
     exercises: [{
       title: 'Dispatcher nhỏ với validation và ProblemDetail',
       prompt: `Cài {{MiniDispatcher.dispatch(path, email)}} mô phỏng thứ tự xử lý của Spring MVC cho {{POST /users}} ({{Response}} chỉ giữ {{status}} và {{type}} — phần quan trọng nhất của một ProblemDetail):
@@ -496,7 +692,7 @@ Lỗi hay gặp:
 - Quên null: {{email.indexOf}} ném {{NullPointerException}} → server trả 500 cho một lỗi đáng lẽ là 400.
 - Trả {{type}} là câu lỗi tự do ("Email không hợp lệ!"): client không thể phân loại ổn định; {{type}} phải là mã cố định, câu chữ để trong {{detail}}.`
     }],
-    check: [{ q: 'Validation cho email chưa tồn tại nên nằm ở đâu?', options: ['Chỉ trong regex ở controller', 'Service/domain và constraint DB khi cần chống race', 'Trong serializer JSON', 'Trong DispatcherServlet'], answer: 1, explain: `Kiểm tra "email đã tồn tại chưa" cần đọc dữ liệu hiện tại, nên thuộc service/domain; thêm unique constraint ở DB vì hai request đồng thời có thể cùng vượt qua bước kiểm tra trong code. Regex chỉ kiểm tra hình dạng email, không biết DB có gì. Serializer chỉ chuyển JSON ↔ object. DispatcherServlet chỉ điều phối request, không chứa nghiệp vụ.` }, { q: 'Controller có {{create(@Valid @RequestBody CreateUser req)}}, client gửi email rỗng vi phạm {{@NotBlank}}. Điều gì xảy ra?', options: ['Controller được gọi với req.email() rỗng, tự kiểm tra lấy', 'Spring ném MethodArgumentNotValidException trước khi gọi controller, mặc định trả 400', 'Spring trả 500 vì validation lỗi', 'Jackson từ chối parse JSON và trả 415'], answer: 1, explain: `Validation chạy khi HandlerAdapter chuẩn bị tham số, nên controller không được gọi; MethodArgumentNotValidException được ExceptionResolver chuyển thành 400 (dạng ProblemDetail nếu bật). Phương án 1 chỉ đúng khi thiếu @Valid hoặc thiếu starter-validation. 500 dành cho lỗi phía server. Jackson parse JSON hợp lệ bình thường; 415 là lỗi Content-Type không được hỗ trợ.` }],
+    check: [{ q: 'Validation cho email chưa tồn tại nên nằm ở đâu?', options: ['Chỉ trong regex ở controller', 'Service/domain và constraint DB khi cần chống race', 'Trong serializer JSON', 'Trong DispatcherServlet'], answer: 1, explain: `Kiểm tra "email đã tồn tại chưa" cần đọc dữ liệu hiện tại, nên thuộc service/domain; thêm unique constraint ở DB vì hai request đồng thời có thể cùng vượt qua bước kiểm tra trong code. Regex chỉ kiểm tra hình dạng email, không biết DB có gì. Serializer chỉ chuyển JSON ↔ object. DispatcherServlet chỉ điều phối request, không chứa nghiệp vụ.` }, { q: 'Controller có {{create(@Valid @RequestBody CreateUser req)}}, client gửi email rỗng vi phạm {{@NotBlank}}. Điều gì xảy ra?', options: ['Controller được gọi với req.email() rỗng, tự kiểm tra lấy', 'Spring ném MethodArgumentNotValidException trước khi gọi controller, mặc định trả 400', 'Spring trả 500 vì validation lỗi', 'Jackson từ chối parse JSON và trả 415'], answer: 1, explain: `Validation chạy khi HandlerAdapter chuẩn bị tham số, nên controller không được gọi; MethodArgumentNotValidException được ExceptionResolver chuyển thành 400 (dạng ProblemDetail nếu bật). Phương án 1 chỉ đúng khi thiếu @Valid hoặc thiếu starter-validation. 500 dành cho lỗi phía server. Jackson parse JSON hợp lệ bình thường; 415 là lỗi Content-Type không được hỗ trợ.` }, { q: 'Client gửi JSON sai cú pháp (thiếu dấu ngoặc) tới endpoint {{@PostMapping}} có {{@RequestBody}}. Mặc định Spring Boot 3.1 trả status gì?', options: ['400 Bad Request', '500 Internal Server Error', '415 Unsupported Media Type', '422 Unprocessable Entity'], answer: 0, explain: `Jackson bọc JsonParseException vào {{HttpMessageNotReadableException}}; {{DefaultHandlerExceptionResolver}} ánh xạ ngoại lệ này thành 400 Bad Request — mặc định kể cả Boot 3.1. {{spring.mvc.problemdetails.enabled=true}} (Boot 3.2+) chỉ đổi body thành ProblemDetail, không đổi status. 500 chỉ xảy ra nếu exception đã bị bắt/bọc lại ở layer khác.` }, { q: 'Khi nào nên dùng {{@ExceptionHandler(DataIntegrityViolationException.class)}} trong {{@RestControllerAdvice}}?', options: ['Bắt mọi lỗi validation Bean Validation', 'Bắt unique constraint violation từ DB để map thành ProblemDetail 409', 'Bật ProblemDetail cho toàn app', 'Xử lý JSON parse error'], answer: 1, explain: `DataIntegrityViolationException là exception cha của các lỗi DB (unique constraint, FK, not null). Dùng nó để map lỗi DB thành ProblemDetail 409 CONFLICT thay vì để thành 500. Bean Validation ném MethodArgumentNotValidException, không phải DataIntegrityViolationException. ProblemDetail bật bằng property config, không phải exception handler.` }],
     related: ['spring-005'], tags: ['Spring MVC', 'validation', 'ProblemDetail', 'HTTP']
   },
   {
@@ -525,8 +721,33 @@ Versioned phải chạy theo số thứ tự tăng dần. Khi một migration c�
 ### Idempotency và production
 Clock được truyền vào để ghi thời điểm deterministic trong test; production dùng đồng hồ tin cậy. Migration nên ngắn, transactional khi DB hỗ trợ, và không chứa logic phụ thuộc dữ liệu không kiểm soát. Với nhiều instance chạy cùng lúc, cần khóa migration table để tránh hai pod cùng áp một phiên bản. Nếu migration thất bại giữa chừng, bản ghi success false giúp lần chạy sau biết trạng thái và retry đúng chỗ.
 
+### Cơ chế từng bước
+Đi từng bước khi {{MigrationRunner.applyAll()}} được gọi với danh sách migration hỗn hợp:
+
+1. **Phân loại**: duyệt danh sách đầu vào, tách thành hai nhóm — versioned (tên bắt đầu {{V}} + số + {{__}}) và repeatable (tên bắt đầu {{R__}}). Mỗi migration versioned được parse số phiên bản qua regex {{^V(\\d+)__}}.
+2. **Sắp xếp versioned**: sắp xếp nhóm versioned theo số phiên bản tăng dần; nếu trùng version thì sắp theo tên file để đảm bảo thứ tự xác định.
+3. **Sắp xếp repeatable**: sắp xếp nhóm repeatable theo tên file (alphabetical) để thứ tự chạy ổn định.
+4. **Áp versioned theo thứ tự**: với mỗi migration versioned:
+   - Tra {{schemaHistory}} từ cuối lên để tìm bản ghi cùng version. Nếu tìm thấy và checksum khớp → **bỏ qua** (idempotent). Nếu checksum khác → ném {{IllegalStateException("checksum mismatch ...")}}.
+   - Tính {{maxApplied}} = version lớn nhất đã có trong {{schemaHistory}}.
+   - Nếu {{allowOutOfOrder == false}} và version hiện tại < {{maxApplied}} → ném {{IllegalStateException("out of order ...")}}.
+   - Ghi bản ghi mới vào {{schemaHistory}} với {{success=true}}, timestamp từ {{clock.millis()}}.
+5. **Áp repeatable**: với mỗi migration repeatable:
+   - Tra {{schemaHistory}} từ cuối lên tìm bản ghi cùng tên. Nếu tìm thấy và checksum khớp → **bỏ qua**. Nếu checksum khác → ghi bản ghi mới (chạy lại).
+6. **Kết thúc**: {{schemaHistory}} chứa toàn bộ lịch sử, bao gồm cả bản ghi bị bỏ qua (không ghi) và bản ghi mới.
+
+**Vì sao lại như vậy?** Tách versioned/repeatable rồi sắp xếp đảm bảo thứ tự bất biến bất kể thứ tự file trong filesystem. Kiểm tra checksum trước khi quyết định skip bảo vệ tính toàn vẹn: migration đã chạy trên production không được sửa lén. Out-of-order được chặn mặc định vì phá vỡ giả định "version lớn hơn = sau hơn".
+
+### Lỗi hay gặp trên production
+- **Checksum mismatch sau khi sửa file migration đã chạy**: developer sửa {{V3__add_index.sql}} trên production thay vì tạo {{V4__...}}. Lần deploy sau runner ném {{IllegalStateException}} checksum mismatch, app không lên được. Triệu chứng: log rõ "checksum mismatch V3__add_index.sql". Cách sửa: **không bao giờ sửa migration đã áp**; tạo migration mới {{V4__fix_index.sql}} để sửa.
+- **Out-of-order khi thêm migration bỏ sót**: production đã chạy tới {{V10}}, team phát hiện thiếu {{V5}} và thêm file {{V5__late.sql}} vào code. Runner mặc định từ chối vì {{5 < 10}}. Triệu chứng: "out of order V5__late.sql". Cách sửa: chỉ bật {{allowOutOfOrder=true}} khi có quy trình review chặt, hoặc tạo {{V11__patch.sql}} thay vì chèn số cũ.
+- **Race condition giữa nhiều instance**: hai pod K8s cùng khởi động, cùng đọc {{schemaHistory}} thấy chưa có {{V1}}, cùng chạy {{V1}} → duplicate key hoặc lock timeout. Triệu chứng: deadlock hoặc unique constraint violation trên bảng {{flyway_schema_history}}. Cách sửa: Flyway dùng advisory lock (PostgreSQL) hoặc row lock; tự viết runner cần {{SELECT ... FOR UPDATE}} hoặc lock phân tán (Redis/ZooKeeper).
+- **Migration repeatable không chạy lại khi mong đợi**: view {{R__daily_summary.sql}} đổi logic nhưng quên đổi nội dung → checksum giữ nguyên, runner bỏ qua. Triệu chứng: view cũ vẫn chạy, báo cáo sai. Cách sửa: luôn đổi checksum khi sửa repeatable (thêm comment, đổi format), hoặc xóa bản ghi lịch sử repeatable đó trước khi deploy.
+
 ### Liên hệ phỏng vấn
-Hãy giải thích vì sao sửa file migration đã chạy là sai, cách Flyway phát hiện, và khi nào out-of-order được phép. Nêu cách xử lý migration thất bại giữa chừng và cách khôi phục. Cuối cùng, phân biệt migration schema với seed data và dữ liệu tham chiếu.
+1. **Vì sao sửa file migration đã chạy là sai? Flyway phát hiện như nào?** — Checksum của file hiện tại được so với bản ghi lịch sử. Nếu lệch, migration cũ đã chạy trên DB không còn khớp với file, nên runner báo lỗi để buộc tạo migration mới. Đây là cơ chế bảo vệ tính toàn vẹn schema.
+2. **Khi nào cờ out-of-order được phép bật?** — Chỉ khi bổ sung migration bị bỏ sót có số phiên bản nhỏ hơn max đã áp (ví dụ production đang ở V10, phát hiện thiếu V5). Bật mặc định sẽ che giấu thứ tự và làm khó truy vết; cần quy trình review chặt.
+3. **Phân biệt migration schema, seed data và dữ liệu tham chiếu.** — Migration schema (V/R) thay đổi cấu trúc bảng (DDL), chạy transactional, không rollback dễ. Seed data (dữ liệu khởi tạo bắt buộc) nên dùng migration versioned. Dữ liệu tham chiếu (loại tiền tệ, mã quốc gia…) dùng repeatable (R__) để có thể cập nhật lại khi checksum thay đổi.
 
 > Senior tip: migration là phần không thể rollback dễ dàng trên production. Hãy coi mỗi file migration như một commit không thể sửa; thêm migration mới để thay đổi, và luôn có kế hoạch forward-fix thay vì downgrade thủ công.`,
     exercises: [{
@@ -730,7 +951,7 @@ class MigrationRunner {
       hints: ['Dùng regex {{^V(\\\\d+)__}} để tách số phiên bản; tên bắt đầu {{R__}} là repeatable.', 'Duyệt {{schemaHistory}} từ cuối để tìm bản đã áp cùng version hoặc cùng tên.', 'Kiểm tra checksum trước khi quyết định skip; max version đã áp dùng cho quy tắc out-of-order.', 'Repeatable không có version; chỉ so checksum với lần chạy trước cùng tên.'],
       explain: `Runner mô phỏng Flyway ở mức tối giản nhưng giữ được các bất biến quan trọng. Versioned được sắp xếp trước khi áp, nên thứ tự gọi applyAll không phụ thuộc thứ tự trong list. Checksum mismatch được phát hiện bằng cách tìm bản ghi cùng version; nếu lệch, runner từ chối ngay và không ghi thêm bản ghi sai. Repeatable dùng tên làm khóa và chỉ chạy khi checksum khác, nên gọi applyAll nhiều lần không tạo hiệu ứng phụ. Out-of-order được kiểm soát bằng max version đã áp và cờ allowOutOfOrder. Clock inject giúp ts deterministic trong test; production nên dùng đồng hồ tin cậy và khóa bảng migration khi chạy nhiều instance.`,
     }],
-    check: [{ q: 'Vì sao không nên sửa file migration đã áp dụng trên production?', options: ['Vì checksum sẽ lệch và runner từ chối để ngăn thay đổi lén', 'Vì Java không compile được file SQL', 'Vì migration chỉ chạy một lần trong JVM', 'Vì Flyway tự động xóa bảng lịch sử'], answer: 0, explain: `Checksum của file hiện tại được so với bản ghi lịch sử. Nếu lệch, migration cũ đã chạy trên DB không còn khớp với file, nên runner báo lỗi để buộc tạo migration mới.` }, { q: 'Khi nào cờ out-of-order nên được bật?', options: ['Khi thêm migration bị bỏ sót có số phiên bản nhỏ hơn max đã áp', 'Mọi trường hợp để đơn giản', 'Khi checksum thay đổi', 'Khi chạy trên môi trường dev'], answer: 0, explain: `out-of-order cho phép áp migration có version nhỏ hơn max đã áp trong trường hợp đặc biệt như bổ sung migration bị bỏ sót. Bật mặc định sẽ che giấu thứ tự và làm khó truy vết.` }, { q: 'Repeatable migration chạy lại trong trường hợp nào?', options: ['Khi checksum khác lần trước', 'Mỗi lần applyAll', 'Khi version tăng', 'Khi bảng lịch sử rỗng'], answer: 0, explain: `Repeatable không có version; checksum là tiêu chí duy nhất. Nếu checksum giữ nguyên, runner bỏ qua để tránh chạy lại view hoặc procedure không cần thiết.` }],
+    check: [{ q: 'Vì sao không nên sửa file migration đã áp dụng trên production?', options: ['Vì checksum sẽ lệch và runner từ chối để ngăn thay đổi lén', 'Vì Java không compile được file SQL', 'Vì migration chỉ chạy một lần trong JVM', 'Vì Flyway tự động xóa bảng lịch sử'], answer: 0, explain: `Checksum của file hiện tại được so với bản ghi lịch sử. Nếu lệch, migration cũ đã chạy trên DB không còn khớp với file, nên runner báo lỗi để buộc tạo migration mới.` }, { q: 'Khi nào cờ out-of-order nên được bật?', options: ['Khi thêm migration bị bỏ sót có số phiên bản nhỏ hơn max đã áp', 'Mọi trường hợp để đơn giản', 'Khi checksum thay đổi', 'Khi chạy trên môi trường dev'], answer: 0, explain: `out-of-order cho phép áp migration có version nhỏ hơn max đã áp trong trường hợp đặc biệt như bổ sung migration bị bỏ sót. Bật mặc định sẽ che giấu thứ tự và làm khó truy vết.` }, { q: 'Repeatable migration chạy lại trong trường hợp nào?', options: ['Khi checksum khác lần trước', 'Mỗi lần applyAll', 'Khi version tăng', 'Khi bảng lịch sử rỗng'], answer: 0, explain: `Repeatable không có version; checksum là tiêu chí duy nhất. Nếu checksum giữ nguyên, runner bỏ qua để tránh chạy lại view hoặc procedure không cần thiết.` }, { q: 'Hai pod K8s cùng khởi động, cùng áp migration V1 lần đầu. Vấn đề gì xảy ra và cách phòng?', options: ['Không có vấn đề, Flyway tự xử lý song song', 'Race condition: cả hai cùng insert vào flyway_schema_history → duplicate key hoặc deadlock; cần advisory lock hoặc lock phân tán', 'Migration V1 chỉ chạy một lần nhờ idempotency', 'Pod thứ hai sẽ đợi pod đầu xong nhờ checkpoint'], answer: 1, explain: `Flyway dùng advisory lock (PostgreSQL) hoặc row lock trên bảng lịch sử để serialize việc áp migration. Tự viết runner cần SELECT ... FOR UPDATE hoặc lock phân tán (Redis/ZooKeeper). Idempotency chỉ giúp khi chạy lại lần sau, không giải quyết race lúc chạy cùng lúc.` }],
       related: ['spring-001', 'spring-002'], tags: ['Flyway', 'migration', 'checksum', 'schema history', 'out-of-order']
     },
   {
@@ -760,7 +981,7 @@ Ví dụ: {{private String nick;}} **có** {{public String getNick()}} → vẫn
 
 ### Chế độ strict
 Jackson **không** có cờ nào tên "FAIL_ON_MISSING". Các cờ gần nhất:
-- {{DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES}} (mặc định bật): khi **đọc** JSON có field lạ thì ném lỗi — Spring Boot tắt cờ này mặc định.
+- {{DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES}} (mặc định bật): khi **đọc** JSON có field lạ thì ném lỗi — Jackson bật mặc định; Spring Boot **giữ** mặc định này (có thể tắt qua {{spring.jackson.deserialization.fail-on-unknown-properties=false}}).
 - {{SerializationFeature.FAIL_ON_EMPTY_BEANS}} (mặc định bật): khi **ghi** một object không có property nào thì ném lỗi thay vì trả về một object JSON rỗng.
 
 Chế độ strict của bài tập là một kiểm tra tự viết: không đổi output khi mọi field đều hợp lệ, nhưng gặp field không public mà không annotation thì ném exception — buộc developer quyết định rõ: đánh {{@JsonProperty}} hay {{@JsonIgnore}}.
@@ -1243,16 +1464,16 @@ Ba khái niệm: **event object** = một object thường chứa dữ liệu ({
 
 ### Gửi email trong transaction: chuyện gì xảy ra
 ~~~seq
-title: @EventListener chay ngay trong transaction dang mo
+title: @EventListener chạy ngay trong transaction đang mở
 actors: API | OrderService | DB | MailListener | SMTP
 API -> OrderService: POST /orders
 OrderService -> DB: insert order (chua commit)
 OrderService -> MailListener: publishEvent(OrderCreatedEvent)
-MailListener -> SMTP: gui email xac nhan (2 giay)
+MailListener -> SMTP: gửi email xác nhận (2 giây)
 MailListener --> OrderService: quay lai, transaction van dang mo
 OrderService -> DB: rollback vi tru kho that bai
 DB --> API: loi 500
-note API..SMTP: email da gui, don hang thi khong ton tai
+note API..SMTP: email đã gửi, đơn hàng thì không tồn tại
 ~~~
 
 Bốn hệ quả đều rất thực tế:
@@ -2455,7 +2676,7 @@ note Container,BPP: sau buoc 6, reference trong context co the la proxy
 public interface BeanPostProcessor {
   // goi TRUOC init (@PostConstruct)
   default Object postProcessBeforeInitialization(Object bean, String beanName) { return bean; }
-  // goi SAU init: tra ve bean hoac PROXY boc bean
+  // gọi SAU init: trả về bean hoặc PROXY bọc bean
   default Object postProcessAfterInitialization(Object bean, String beanName) { return bean; }
 }
 ~~~

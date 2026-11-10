@@ -270,6 +270,21 @@ Java tooling: choreography uses Kafka + Spring Kafka/Spring Cloud Stream; orches
 ### Quick intuition
 You have just closed an order and must do two things: write it in the ledger and phone the warehouse. If you write the ledger and the power goes out before the call, the warehouse never learns about the order. If you call the warehouse first and then the ledger write fails, the warehouse prepares goods for an order that does not exist. Outbox means: write the order **and** a line "call the warehouse" **on the same page of the ledger**, so one commit guarantees both. After that a dedicated clerk (the relay) reads the "call" lines and phones the warehouse, calling again if it has not gone through.
 
+The diagram below shows the DB write and the Kafka publish without loss:
+
+~~~seq
+title: Outbox + CDC: no lost event
+actors: App | OrdersDB | Debezium | Kafka | Consumer
+App -> OrdersDB: save order + outbox row
+OrdersDB --> App: commit
+OrdersDB -> Debezium: WAL has outbox row
+Debezium -> Kafka: publish order.created
+Kafka --> Debezium: ack
+Kafka -> Consumer: consumer receives event
+Consumer --> Kafka: commit offset
+note Debezium..Kafka: restart -> resend, consumer is idempotent
+~~~
+
 ### Glossary
 - **Dual write**: one business operation writes to two independent systems (DB and broker) with no shared transaction.
 - **Outbox table**: a table inside the business DB holding events waiting to be sent.
@@ -331,6 +346,21 @@ App ─► [orders DB: orders + outbox] ─(WAL / logical replication)─► Deb
 
 ### Quick intuition
 You transfer money in an app, the network is flaky, the spinner keeps turning and then it reports an error. You do not know whether the money left, so you press again. If the bank processes naively, you lose money twice. A decent bank assigns each transfer a **ticket number** (idempotency key): the second press carries the same number, the bank checks its books, sees "this number was already processed" and returns the same receipt. That is the exactly-once effect: sent many times, the money moves once.
+
+The diagram below shows the idempotency key preventing a double charge:
+
+~~~seq
+title: Idempotency key: many sends, only one charge
+actors: Client | API | PaymentGW | IdemTable
+Client -> API: POST /charge (key K)
+API -> IdemTable: insert key K (unique)
+IdemTable --> API: ok -> process
+API -> PaymentGW: charge with key K
+PaymentGW --> API: receipt
+API -> IdemTable: store response
+Client -> API: retry POST /charge (key K)
+API -> IdemTable: found K -> return old response
+~~~
 
 ### Glossary
 - **At-most-once / at-least-once / exactly-once**: a message is processed at most once / at least once / exactly once.
@@ -407,6 +437,20 @@ ON CONFLICT (order_id) DO NOTHING;   -- MySQL: INSERT IGNORE / ON DUPLICATE KEY 
 
 ### Quick intuition
 Think of a call center phoning 10 partners. **Timeout**: if nobody answers within 30 seconds, hang up. **Retry**: hang up and try again, but wait a while and at most 3 times, not in a burst. **Circuit breaker**: if partner X misses 6 of 10 calls, stop calling X for 30 seconds; when a customer asks about X, say "busy" immediately. **Bulkhead**: allow at most 5 agents to call X at once, so if X's line jams the other agents still serve other partners. **Fallback**: when you cannot reach them, answer with backup information.
+
+The diagram below shows the call chain with timeout, breaker and fallback:
+
+~~~seq
+title: Resilience4j: timeout -> breaker -> fallback
+actors: Client | OrderSvc | PaymentAPI | Fallback
+Client -> OrderSvc: charge(order)
+OrderSvc -> PaymentAPI: POST /charges
+PaymentAPI --> OrderSvc: 201 receipt
+OrderSvc --> Client: receipt
+note OrderSvc..Fallback: timeout/error -> breaker opens
+OrderSvc -> Fallback: return receipt.pending
+Fallback --> Client: safe degrade
+~~~
 
 ### Glossary
 - **Timeout / TimeLimiter**: a cap on how long one call may wait; Resilience4j's TimeLimiter is used for asynchronous calls (CompletableFuture).
@@ -510,6 +554,27 @@ Tomcat 200 threads, 10 downstreams: bulkhead 25/downstream
 ### Quick intuition
 A checkout counter is slow because the receipt printer is jammed. The queue gets impatient, and every 10 seconds someone pushes forward to ask "done yet?", and each question makes the cashier slower. The queue grows, spills into the next counter, and the whole supermarket jams. That is a retry storm. The right response: put up a sign "counter paused, come back in 5 minutes" (circuit breaker + Retry-After), limit how many people may ask again (retry budget), and separate lines per counter (bulkhead) so one jammed counter does not block the whole supermarket.
 
+The diagram below shows the retry storm when dependency B is slow:
+
+~~~seq
+title: Retry storm: 3 retries x 3 layers
+actors: Client | C | A | B
+Client -> C: request
+C -> A: request
+A -> B: call
+B --> A: slow
+A -> B: retry 1
+A -> B: retry 2
+A -> B: retry 3
+C -> A: retry 1
+C -> A: retry 2
+C -> A: retry 3
+Client -> C: retry 1
+Client -> C: retry 2
+Client -> C: retry 3
+note A..B: B gets up to 64 calls -> thread pool exhausted
+~~~
+
 ### Glossary
 - **Cascading failure**: a failure spreading in a chain from one service to the services calling it.
 - **Retry amplification**: load multiplied because several layers retry at once (3 layers × 3 attempts = up to 27 calls for one original request).
@@ -569,6 +634,23 @@ Threads in A: 200 threads / (90s per request) = 2.2 requests/second → collapse
 
 ### Quick intuition
 Picture Kafka as a **numbered conveyor belt** in a factory, split into several lanes (partitions). Each crate on a lane has an increasing sequence number (offset). Each group of workers (consumer group) splits the lanes between them: one lane has only one worker standing at it, so the crates on that lane are processed in order. Each worker writes in a ledger "I have processed up to crate 41" (commit offset); if that worker leaves, the replacement reads the ledger and continues from there. A broken crate that cannot be processed is put on a **faulty-goods shelf** (DLQ) so the lane does not stop.
+
+The diagram below shows the consumer group splitting partitions and the poison pill going to the DLQ:
+
+~~~seq
+title: Kafka consumer group + DLQ
+actors: Producer | P0 | P1 | ConsumerA | ConsumerB | DLT
+Producer -> P0: order.created (key o1)
+Producer -> P1: order.created (key o2)
+P0 -> ConsumerA: poll offset 41
+ConsumerA -> ConsumerA: processing fails
+ConsumerA -> P0: retry -> fail
+ConsumerA -> DLT: poison pill
+ConsumerA -> P0: commit offset
+P1 -> ConsumerB: poll
+ConsumerB --> P1: ack
+note ConsumerA..DLT: partition does not stall, lag tracked per partition
+~~~
 
 ### Glossary
 - **Topic / partition**: a topic is a named stream of events; a partition is an ordered sub-log inside the topic.

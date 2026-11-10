@@ -4,7 +4,7 @@
  */
 App.i18n.content({
   'algo-118': {
-    prompt: `Given a list {{accounts}} where each element has the form {{[name, email1, email2, ...]}}. Two accounts that **share at least one email** definitely belong to the same person (and in that case their names are the same too). Note that this relation is **transitive**: if A shares an email with B and B shares an email with C, then A, B and C are the same person. Two accounts with the same name but no email connection may be two different people. Merge the accounts of the same person; each resulting account has the form {{[name, the emails **sorted in ascending order** with no duplicates]}}. The order of the accounts in the result does not matter.
+    prompt: `Given a list {{accounts}} where each element has the form {{[name, email1, email2, ...]}}. Two accounts that **share at least one email** definitely belong to the same person (and in that case their names are the same too). Note that this relation is **transitive**: A shares an email with B, B shares an email with C, then A, B and C are the same person. Two accounts with the same name but no email connection may be two different people. Merge the accounts of the same person; each resulting account has the form {{[name, the emails **sorted in ascending order** with no duplicates]}}. The order of the accounts in the result does not matter.
 
 ### Example
 ~~~text
@@ -22,7 +22,7 @@ Explanation: the first two John accounts share johnsmith@mail.com so they merge.
 - {{1 <= accounts.length <= 1000}}, {{2 <= accounts[i].length <= 10}}
 - Every email is valid, at most 30 characters long.`,
     hints: [
-      'Treat each **email** as a vertex. Inside one account every email belongs to the same person → connect them to each other (you only need to connect the first email with each of the remaining ones).',
+      'Treat each **email** as a vertex. Inside one account every email belongs to the same person → connect them with each other (you only need to connect the first email with each of the remaining ones).',
       'Union-Find over the email strings ({{Map<String, String> parent}}) groups the emails. Each final group is one person.',
       'Remember the name per email ({{Map<String, String> emailToName}}). Group the emails by the root of their group, use {{TreeSet}} to sort and deduplicate at the same time, then prepend the name.'
     ],

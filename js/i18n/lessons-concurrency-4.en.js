@@ -116,11 +116,11 @@ Common mistakes:
     ],
   },
   'lesson-concurrency-005': {
-    title: 'Virtual threads (Java 21): mount/unmount, pinning and when they really pay off',
+    title: 'Virtual threads (Java 21): mount/unmount, pinning, and when they are really beneficial',
     goals: [
-      'Explain how a virtual thread is mounted/unmounted onto a carrier thread and why it is cheap',
-      'Recognize pinning (synchronized, native) on JDK 21–23, know what JEP 491 changes in JDK 24, and how to diagnose it',
-      'Know when virtual threads increase throughput and when they do not (CPU-bound work, limited resources)',
+      'Explain how virtual threads are mounted/unmounted onto carrier threads and why they are cheap',
+      'Recognize pinning (synchronized, native) on JDK 21–23, know what JEP 491 in JDK 24 changes, and how to diagnose it',
+      'Know when virtual threads increase throughput and when they do not (CPU-bound, limited resources)',
       'Bound concurrency with a {{Semaphore}} instead of pool size',
     ],
     body: `### The problem virtual threads solve

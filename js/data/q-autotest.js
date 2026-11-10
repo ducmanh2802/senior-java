@@ -52,6 +52,9 @@ Giả sử luồng "đặt hàng": 200 unit test chạy 20 giây; 50 API test ch
 ### Trả lời phỏng vấn thế nào
 Nêu rõ: "Tôi ưu tiên unit và API trước vì nhanh, ổn định, ROI cao; UI E2E chỉ cho luồng critical. Tôi chọn pyramid hay trophy tuỳ ngữ cảnh – với web nhiều tích hợp tôi nghiêng về trophy (integration/API dày). Với team dev+QA tôi phân chia ownership và đo flaky/time để điều chỉnh." Đưa ví dụ số liệu hoặc trải nghiệm thật.
 
+### Ví dụ đời thực
+Một team web Java có khoảng 200 test UI Selenium chạy trên Chrome khi gửi mã (pull request), mỗi lần mất 40 phút và thường có 5-8 test đỏ ngẫu nhiên vì phần tử bị che hoặc trang chưa tải xong. Dev quen bỏ qua CI đỏ và merge sau khi chạy lại, nên lỗi giao diện lọt ra production. Trưởng team ghi lại số liệu hai tuần: 150 test UI chiếm 35 phút, 40 test API REST Assured chạy 3 phút, 10 unit test chạy 20 giây; 6 trên 8 test flaky là UI. Họ quyết định: giữ 20 test UI quan trọng nhất (đăng nhập, thanh toán), viết lại 80 test quy tắc giảm giá và tồn kho thành API test, xóa 100 test UI trùng lặp hoặc ít giá trị. Sau một tháng: suite PR từ 40 xuống 8 phút, flaky rate từ 6% xuống dưới 1%, và team bắt được lỗi giao diện thật qua 20 test UI còn lại thay vì bỏ qua toàn bộ CI. Thời gian phản hồi giảm từ 40 phút xuống 8 phút.
+
 > Senior tip: Đừng tranh luận giáo điều pyramid vs trophy. Hãy dùng dữ liệu pipeline của bạn (thời gian, flaky rate, defect leakage – lỗi lọt ra production) để quyết định tầng nào cần đầu tư thêm, và sẵn sàng xoá test automation có ROI âm.`,
   follow: [
     'Một UI test flaky liên tục: bạn sửa, cô lập hay xoá? Tiêu chí quyết định là gì?',
@@ -139,6 +142,9 @@ public class Demo {
 
 ### Trả lời phỏng vấn thế nào
 Trình bày chuỗi: "Test Java → Selenium client → HTTP W3C WebDriver → driver binary (chromedriver/geckodriver) → browser". Nhấn mạnh Selenium 4 chuẩn hoá W3C (bỏ phụ thuộc JSON Wire) và Selenium Manager giải bài toán ghép phiên bản driver. Nêu một lỗi thực tế bạn từng gặp (version mismatch) và cách xử lý.
+
+### Ví dụ đời thực
+Pipeline CI của team chạy trên GitHub Actions ubuntu-latest, cài Chrome và chromedriver bằng apt. Một sáng Chrome tự cập nhật lên phiên bản 126, nhưng apt repository vẫn chỉ có chromedriver 124. Toàn bộ 150 test UI Selenium fail ngay tại khởi tạo session với lỗi "session not created: ChromeDriver 124 chỉ hỗ trợ Chrome 124". Team mất 2 giờ điều tra: log CI chỉ hiện version mismatch, không gợi ý driver nào cần. Tạm thời khắc phục bằng cách pin Chrome version trong workflow (google-chrome-stable=124.0.6367.91-1) và chạy lại. Sau đó nâng cấp Selenium lên 4.18+ và bật Selenium Manager để CI tự tải driver khớp phiên bản Chrome thực tế; tuy nhiên môi trường CI chặn mạng ra ngoài nên Selenium Manager không tải được driver, team tự host driver trên artifact repository nội bộ và cấu hình CI dùng driver đó (bỏ qua tải về của Selenium Manager). Kết quả: các lần Chrome cập nhật sau đó không còn làm vỡ CI, thời gian khắc phục sự cố từ 2 giờ xuống còn 10 phút cập nhật mirror.
 
 > Senior tip: Khi debug lỗi "intermittent" (thỉnh thoảng), hãy nhớ có nhiều lớp: test, client lib, driver, browser, mạng, app. Bật log driver (ví dụ chromedriver verbose) và hiểu lệnh W3C nào đang gửi giúp khoanh vùng nhanh hơn là chỉ nhìn stack trace test.`,
   follow: [
@@ -1091,6 +1097,9 @@ Nếu test A tạo đơn hàng và test B xóa cùng đơn hàng, chạy song so
 ### Trả lời phỏng vấn thế nào
 Trình bày mô hình Browser/Context/Page, ThreadLocal isolation, Docker image, sharding, so sánh Grid 4. Nhấn mạnh độc lập dữ liệu là điều kiện tiên quyết. Đưa ví dụ flaky do chia sẻ dữ liệu bạn từng sửa.
 
+### Ví dụ đời thực
+Team 10 QA mới chuyển sang Playwright for Java, viết framework dùng BrowserContext static duy nhất cho toàn bộ suite để "tiết kiệm tài nguyên". Khi chạy sequential (một luồng) mọi test pass; bật parallel 4 worker thì flaky rate nhảy lên 18%: test đăng nhập thay đổi cookie làm test thanh toán bị logout, test tìm kiếm ghi đè localStorage làm test giỏ hàng mất dữ liệu. Điều tra bằng trace viewer thấy cả 4 worker cùng dùng một BrowserContext static, mọi thao tác lẫn vào nhau. Sửa: đưa DriverFactory dùng ThreadLocal<BrowserContext>, mỗi worker tạo context riêng, đóng trong @AfterEach; thêm base test class tự handle context lifecycle. Sau khi sửa, parallel 4 worker ổn định, flaky rate xuống 0,5%, thời gian suite từ 25 phút xuống 7 phút.
+
 > Senior tip: Song song hóa chỉ giúp khi test thực sự độc lập. Trước khi tăng worker, hãy sửa flaky và tách data; nếu không, bạn chỉ chạy nhanh hơn để fail nhanh hơn.`,
   follow: [
     'BrowserContext giúp cô lập test như thế nào so với mở lại trình duyệt mỗi test?',
@@ -1189,6 +1198,9 @@ Chia suite thành các mảnh chạy trên job CI khác nhau. Sửa hoặc cách
 - Giữ mọi test UI vì "không muốn xóa" → suite vẫn chậm.
 - Chạy headed (có cửa sổ) trên CI → khó khởi động, chậm.
 
+
+### Ví dụ đời thực
+Một dự án e-commerce có 120 test UI Selenium chạy sequential trên CI, tổng thời gian 120 phút. Phân tích thấy 60 test chỉ kiểm tra rule tính giá, kiểm tra dữ liệu giỏ hàng – không cần giao diện. Team chuyển 20 test ưu tiên nhất (kiểm tra giảm giá, phí ship, voucher) xuống REST Assured, chạy song song 4 worker trên GitHub Actions. Kết quả: 20 test API chạy trong 3 phút (trước đó 40 phút qua UI), 40 test UI còn lại chạy headless 4 worker trong 15 phút, tổng suite giảm từ 120 xuống 18 phút. Flaky rate từ 5% xuống 0,8% nhờ loại bỏ test UI giòn và dữ liệu độc lập mỗi test.
 
 ### Trả lời mẫu khi phỏng vấn
 "Trước hết tôi đo: thời gian từng test, thời gian setup so với thời gian kiểm tra thật, test nào hay đỏ. Thường một nhóm nhỏ test chiếm phần lớn thời gian. Sau đó tôi xem mỗi test UI thực sự kiểm tra gì: những test kiểm tra quy tắc tính toán hay dữ liệu trả về thì chuyển xuống API hoặc unit test, nhanh hơn hàng chục lần; UI chỉ giữ các luồng end-to-end quan trọng. Tiếp theo, chuyển setup dữ liệu sang API, vì tạo đơn qua UI có thể mất cả phút mỗi test. Khi test đã độc lập về dữ liệu, tôi mới bật song song nhiều worker, chạy headless và chia shard trên nhiều job CI. Thứ tự này quan trọng: song song hoá khi test còn dùng chung dữ liệu chỉ làm tăng flaky. Cuối cùng sửa hoặc cách ly test flaky để không phải chạy lại. Tôi theo dõi thời gian suite như một chỉ số, có ngưỡng cảnh báo để nó không phình lại."
@@ -1412,6 +1424,9 @@ Sau khi route được thiết lập, mọi yêu cầu tới /api/payment từ t
 - Route pattern không khớp (ví dụ sai đường dẫn) → request vẫn đi thật, test flaky.
 - Quên bỏ route sau test → ảnh hưởng test khác chạy cùng trình duyệt.
 - Chỉ testUI mà không verify API thật trong một số ca quan trọng.
+
+### Ví dụ đời thực
+Team QA có 60 test UI Selenium từng test tạo đơn hàng qua giao diện: click thêm sản phẩm, điền form, bấm đặt hàng, chờ xác nhận – trung bình 45 giây/test, tổng suite 45 phút. Chuyển sang Playwright: dùng APIRequestContext tạo đơn hàng qua POST /orders (1,2 giây), sau đó chỉ mở UI verify hiển thị đơn hàng (8 giây). Kết hợp network interception mock API thanh toán để test case thất bại không cần sandbox thật. 60 test chạy song song 4 worker headless: tổng thời gian từ 45 phút xuống 5 phút, flaky rate từ 4% xuống 0,5%. Các test thanh toán lỗi (500, timeout) được cover bởi mock mà không cần môi trường sandbox.
 
 ### Trả lời phỏng vấn thế nào
 Giải thích APIRequestContext dùng để setup dữ liệu nhanh, ví dụ kết hợp UI+API, và page.route mock backend để kiểm tra xử lý lỗi. Nhấn mạnh không lạm dụng mock, vẫn cần có ít nhất một ca gọi API thật.
@@ -1884,6 +1899,12 @@ public class Demo {
 ### Trả lời phỏng vấn thế nào
 Nói rõ chuỗi: "Java test → Playwright client → driver Node → giao thức gốc (CDP/engine) → Chromium/Firefox/WebKit". Phân biệt {{Browser/BrowserContext/Page}} và nêu chiến lược: dùng chung Browser, **mỗi test một Context** để cô lập. So sánh ngắn với Selenium (HTTP W3C + driver binary, {{autotest-002}}) và nhấn mạnh auto-wait giúp giảm flaky timing, nhưng dữ liệu/điều kiện nghiệp vụ vẫn phải kiểm soát.
 
+### Ví dụ đời thực
+Một team Java chuyển từ Selenium sang Playwright for Java cho 200 test UI. Tuần đầu chạy trên CI (GitHub Actions ubuntu-latest, headless), 12 test đỏ ngẫu nhiên: 6 do timeout chờ nút "Xác nhận" sau khi click "Đặt hàng", 4 do test A để lại cookie khiến test B bị redirect sai trang, 2 do font render khác local làm locator text match fail. Nguyên nhân gốc: (1) auto-wait của Playwright chờ nút actionable nhưng API {{/orders}} chưa trả 201, nên trang chưa chuyển sang trang xác nhận – nút "Xác nhận" chưa xuất hiện; (2) suite dùng chung {{ThreadLocal<BrowserContext>}} static thay vì tạo mới mỗi test; (3) test assert text tiếng Việt có dấu trên CI thiếu font Noto Sans. Sửa: thêm {{waitForResponse status 201}} bao quanh click đặt hàng; đổi DriverFactory dùng {{ThreadLocal<BrowserContext>}} tạo context mới mỗi {{@Test}}; cài font Noto Sans trong CI Dockerfile. Kết quả: flaky rate từ 6% xuống 0,3%, thời gian suite từ 22 phút xuống 9 phút nhờ song song 4 worker an toàn. Team cũng phát hiện một bug thật: race condition khi click nhanh "Đặt hàng" hai lần tạo đơn trùng – bug này Selenium cũ không bắt được vì chờ thủ công che lấp.
+
+### Trả lời mẫu khi phỏng vấn
+"Playwright for Java không dùng HTTP W3C như Selenium mà gọi Playwright client Java, client khởi chạy driver Node.js đi kèm, driver dùng giao thức gốc của từng engine: CDP cho Chromium, giao thức riêng cho Firefox và WebKit. Browser là tiến trình trình duyệt nặng, BrowserContext là hồ sơ duyệt cô lập (cookie, localStorage riêng), Page là một tab. Chiến lược ổn định: dùng chung Browser, mỗi test một Context mới – cô lập trạng thái, chạy song song an toàn. Auto-wait chờ actionability trước click/fill, web-first assertion tự retry, nên gần như không cần explicit wait. Vẫn cần waitForResponse/waitForURL cho điều kiện nghiệp vụ. So với Selenium, Playwright giảm flaky do timing, nhưng dữ liệu test và race API vẫn phải tự kiểm soát."
+
 > Senior tip: Đừng tối ưu bằng cách dùng chung một {{BrowserContext}} cho cả suite để "tiết kiệm thời gian" – bạn sẽ mua lại thời gian đó gấp nhiều lần để săn bug do rò rỉ trạng thái giữa các test. Cô lập (context sạch) + trace khi fail là nền tảng ổn định trên CI.`,
   follow: [
     'Khi nào bạn chọn dùng chung Browser nhưng tạo mới BrowserContext, và khi nào cần nhiều Browser?',
@@ -1977,6 +1998,12 @@ assertThat(page.getByTestId("order-id")).isVisible();
 
 ### Trả lời phỏng vấn thế nào
 Giải thích 3 ý: (1) action chờ **actionability**, (2) {{assertThat}} **retry** (web-first), (3) timeout cấu hình nhiều mức. Nêu rõ "gần như không cần explicit wait" nhưng **vẫn cần** chờ response/URL cho điều kiện nghiệp vụ – và cho ví dụ {{waitForResponse}} bọc quanh click submit (so sánh với Selenium {{autotest-005}}).
+
+### Ví dụ đời thực
+Một team viết 80 test Playwright cho luồng thanh toán. Ban đầu không có test nào dùng {{waitForResponse}} – chỉ dựa vào auto-wait và assertion. Trên CI (4 worker, staging), flaky rate 4,2%: phần lớn do test click "Thanh toán" rồi ngay lập tức assert {{page.getByTestId('success-message').isVisible()}}; tuy nhiên API {{/api/payments}} đôi khi mất 1,5–3 giây trả 200 (vì gọi gateway bên ngoài), trong khi Playwright auto-wait chỉ chờ nút actionable, không chờ API. Test pass khi API nhanh, fail khi API chậm. Thêm vào đó, 3 test đọc text ngay bằng {{locator.textContent()}} (đọc một lần) thay vì {{assertThat(locator).hasText(...)}} (retry), làm fail khi render chậm 200ms. Sửa: (1) bọc click submit trong {{page.waitForResponse(r => r.url().includes('/api/payments') && r.status() === 200)}}; (2) thay mọi assert text/content bằng {{assertThat(...).hasText(...)}} hoặc {{.isVisible()}}; (3) đặt {{PlaywrightAssertions.setDefaultAssertionTimeout(10000)}} cho trang thanh toán chậm. Sau sửa: flaky rate xuống 0,4%, thời gian trung bình mỗi test giảm 1,2 giây nhờ bỏ {{Thread.sleep}} rải rác. Team cũng phát hiện một bug thật: khi gateway trả 500, UI vẫn hiện "Đang xử lý..." mãi không timeout – bug này test cũ không bao giờ bắt được vì chờ mù 3 giây rồi assert pass ngẫu nhiên.
+
+### Trả lời mẫu khi phỏng vấn
+"Playwright auto-wait tự chờ phần tử đạt actionability (gắn DOM, hiện, ổn định, nhận sự kiện, enabled) trước khi click/fill. Web-first assertions như assertThat(locator).hasText(...) tự retry đọc DOM cho đến khi khớp hoặc hết timeout, khác với assert thường chỉ đọc một lần. Timeout cấu hình ở ba mức: mặc định hành động, mặc định assertion, và từng lời gọi. Nhờ vậy gần như không cần explicit wait kiểu Selenium. Tuy nhiên actionability chỉ biết UI sẵn sàng, không biết nghiệp vụ xong chưa – ví dụ API lưu đơn hàng chưa trả 200. Lúc đó phải dùng waitForResponse chờ response khớp URL/status, hoặc waitForURL chờ điều hướng. Ví dụ: bọc click submit trong waitForResponse POST /api/orders status 201 rồi mới assert trang thành công."
 
 > Senior tip: Khi viết test, hãy hỏi: "Tôi đang chờ **UI tương tác được** hay chờ **nghiệp vụ hoàn tất**?" Cái đầu để Playwright auto-wait lo; cái sau phải chờ đúng tín hiệu (response, URL, trạng thái dữ liệu) – đừng trộn hai thứ bằng một cái sleep.`,
   follow: [
@@ -2136,6 +2163,12 @@ Test Context -> App: vào thẳng trang cần auth
 ### Trả lời phỏng vấn thế nào
 Nêu rõ vòng đời: {{Browser}} chung, **Context/Page mỗi test** (JUnit 5 {{@BeforeEach/@AfterEach}} hoặc extension). Trình bày POM dùng {{Locator}} (liên hệ {{autotest-006}}) và lợi ích bảo trì. Giải thích {{storageState}} như "đăng nhập một lần, nạp phiên" để tăng tốc và giảm flaky – kèm lưu ý token hết hạn.
 
+### Ví dụ đời thực
+Team 6 QA viết test Playwright cho sàn TMĐT. Ban đầu mỗi test tự login UI: 120 test × 4 giây login = 8 phút chỉ cho setup. Suite chạy sequential 25 phút. Chuyển sang storageState: viết {{@BeforeAll}} login một lần qua UI, lưu {{auth.json}} (cookie + localStorage). Mỗi test {{@BeforeEach}} tạo {{BrowserContext}} nạp {{storageStatePath}}. Kết quả: setup mỗi test từ 4 giây xuống 0,3 giây, tổng suite từ 25 xuống 14 phút. Nhưng tuần thứ 3, CI đỏ hàng loạt: token JWT trong localStorage hết hạn sau 24 giờ, storageState cũ không còn hợp lệ. Sửa: thêm job CI {{refresh-auth-state}} chạy trước suite (login lại, ghi đè auth.json), và trong code bắt lỗi 401/redirect login thì tự tạo lại state. Team cũng tách: 5 smoke test vẫn login UI thật mỗi lần để phủ luồng xác thực; 115 test nghiệp vụ dùng storageState. Flaky rate từ 2,1% xuống 0,2% (ít hơn lỗi rate-limit IdP). Một bug thật bị phát hiện nhờ test storageState: khi đổi mật khẩu, localStorage vẫn giữ token cũ – test UI login thật pass (vì server từ chối token cũ), nhưng test storageState vẫn vào được trang cá nhân vì trình duyệt không tự xóa localStorage. Bug này production đã có 3 khách hàng báo.
+
+### Trả lời mẫu khi phỏng vấn
+"Playwright khuyên dùng chung Browser (khởi động nặng), mỗi test một BrowserContext + Page mới để cô lập cookie/localStorage. Với JUnit 5 tôi dùng @BeforeAll tạo Playwright+Browser, @BeforeEach tạo Context+Page, @AfterEach close Context, @AfterAll close Browser+Playwright. Page Object giữ Locator (getByTestId/getByRole) và hành động, test chỉ gọi hành động và assert web-first. Để tăng tốc, tôi dùng storageState: login UI một lần, lưu cookie+localStorage ra file auth.json, các test nạp state khi newContext – bỏ qua bước login lặp. Lưu ý: token có TTL, cần job CI refresh state định kỳ, và giữ vài smoke test login UI thật. So với Selenium, Playwright Context nhẹ hơn tạo session mới, và Locator lazy evaluation phù hợp POM."
+
 > Senior tip: Hãy coi "đăng nhập" là **precondition** (điều kiện tiên quyết) của test nghiệp vụ, không phải thứ phải kiểm tra lại ở mọi ca. Dùng {{storageState}} (hoặc seed phiên qua API) cho phần lớn test; chỉ giữ một ít test E2E đi qua đúng luồng login UI để vẫn phủ hành vi xác thực.`,
   follow: [
     'Khi nào nên seed phiên đăng nhập bằng API thay vì lưu {{storageState}} từ UI?',
@@ -2253,6 +2286,12 @@ assertThat(page.getByText("SKU-1")).isVisible();
 ### Trả lời phỏng vấn thế nào
 Đi qua từng ca với API tương ứng và một lưu ý thực tế (iframe tách DOM, popup phải chờ kèm action, route đừng mock tràn). Nhấn mạnh: mock backend bằng {{route}} là **công cụ có chủ đích** (test UI cô lập/ca lỗi), còn luồng E2E quan trọng vẫn nên chạy chống môi trường tích hợp có kiểm soát.
 
+### Ví dụ đời thực
+Team test ứng dụng ngân hàng có luồng thanh toán nhúng iframe của cổng VNPAY, popup in biên lai, và tải file PDF đối soát. Ban đầu test Selenium: iframe dùng {{switchTo().frame()}} thủ công hay lỡ frame lồng, popup dùng {{getWindowHandles()}} vòng lặp dễ race, download kiểm tra file system trực tiếp – flaky rate 7%. Chuyển sang Playwright: iframe dùng {{frameLocator('#vnpay-frame')}} tự chờ load; popup dùng {{page.waitForPopup(() -> clickPrint())}} bắt đồng thời; download dùng {{page.waitForDownload(() -> clickExport())}} lưu ra {{build/downloads/}}; dialog xác nhận xóa dùng {{page.onceDialog(d => d.accept())}}. Mock API danh sách ngân hàng bằng {{page.route mock banks JSON}} để test không phụ thuộc sandbox VNPAY. Kết quả: 12 test luồng thanh toán chạy song song 4 worker ổn định 0% flaky, thời gian từ 18 phút xuống 5 phút. Phát hiện thêm bug: iframe VNPAY đôi khi load chậm >30s trên staging do CDN, test timeout ở {{frameLocator}} – team thêm {{page.setDefaultTimeout(60000)}} cho test này và báo cáo infra để tăng cache CDN.
+
+### Trả lời mẫu khi phỏng vấn
+"Playwright có API chuyên biệt cho các tình huống phức tạp: iframe dùng frameLocator (tự chờ DOM frame), popup/tab mới dùng waitForPopup bọc action click, download dùng waitForDownload lưu file, upload dùng setInputFiles gán thẳng input file, dialog native dùng onceDialog đăng ký trước khi trigger, network interception dùng page.route chặn request để mock backend hoặc sửa header. Ví dụ: test thanh toán nhúng iframe VNPAY, tôi dùng frameLocator('#vnpay-frame').getByTestId('submit').click(); popup biên lai dùng waitForPopup(() -> clickPrint()); mock API ngân hàng bằng route('**/api/banks') trả JSON cố định. Lưu ý: route pattern không nên quá rộng (**/**) vì chặn CSS/JS làm trang vỡ; mock chỉ dùng cho ca lỗi hoặc backend chưa sẵn sàng, luồng E2E quan trọng vẫn chạy tích hợp thật."
+
 > Senior tip: Với các ca "bất thường" (iframe, popup, download), hãy viết helper nhỏ có log/trace rõ ràng. Những ca này hay vỡ khác nhau giữa local và CI (quyền file, headless, chặn popup) – đừng đợi đến lúc pipeline đỏ mới tìm cách tái hiện.`,
   follow: [
     'Khi nào bạn mock bằng {{page.route}} và khi nào dùng WireMock/service giả ở tầng hạ tầng (liên hệ {{autotest-014}})?',
@@ -2347,6 +2386,12 @@ CI --> Tracker: theo dõi tỉ lệ pass/flake theo thời gian
 
 ### Trả lời phỏng vấn thế nào
 Trình bày công cụ: trace ({{start/stop}}, Trace Viewer) là mạnh nhất, screenshot/video bổ trợ, codegen hỗ trợ tái hiện. Sau đó nói như lead: **chiến lược artifact** (on-failure, đặt tên, retention, bảo mật) và **quy trình triage** (phân loại → owner → sửa gốc → đo tỉ lệ), nhấn mạnh không dùng rerun thay cho sửa flaky.
+
+### Ví dụ đời thực
+Team 8 SDET chạy 300 test Playwright trên GitHub Actions (4 worker, Ubuntu headless). Tuần đầu bật trace cho mọi test mọi lần: artifact 12 GB/lần, CI chậm 40% do upload, ổ đầy sau 3 ngày. Chuyển sang chiến lược "trace on failure + screenshot on failure": trong {{@AfterEach}}, nếu test fail thì {{tracing.stop}} lưu file zip và {{page.screenshot}} lưu file png. Video chỉ bật cho nightly regression ({{recordVideo dir videos}}). Artifact đặt tên {{<buildNumber>-<suite>-<class>-<method>-<attempt>.zip}} (ví dụ {{4521-regression-CheckoutTests-paySuccess-1.zip}}). Retention 14 ngày cho trace, 30 ngày cho screenshot. Bảo mật: trace có thể chứa header Authorization trong network log – thêm {{Tracing.StartOptions setSources false}} và filter route {{**/auth/**}} và {{**/api/**/token}} không ghi body. Quy trình triage: mỗi sáng QA lead xem Allure report, test fail có trace/screenshot đính kèm. Phân loại 5 phút/test: (1) flaky timing → sửa waitForResponse; (2) rò rỉ state → thêm context mới; (3) dữ liệu chia sẻ → đổi prefix UUID; (4) bug app → tạo ticket dev; (5) môi trường CI (đĩa đầy, network) → báo infra. Mỗi loại có owner và SLA sửa 3 ngày. Theo dõi dashboard: flaky rate từ 3,8% xuống 0,5% sau 6 tuần; MTTR (thời gian trung bình sửa flaky) từ 4 giờ xuống 45 phút nhờ trace cho xem ngay request lỗi mà không phải rerun.
+
+### Trả lời mẫu khi phỏng vấn
+"Test fail trên CI khó debug vì không có màn hình. Playwright cung cấp trace (ghi lại hành động, DOM snapshot, network, console), screenshot, video. Tracing bật bằng {{tracing start screenshots snapshots}}, dừng khi fail lưu file {{.zip}}, mở bằng Trace Viewer ({{npx playwright show-trace}}). Codegen ({{npx playwright codegen}}) giúp sinh locator để tái hiện. Chiến lược lead: chỉ thu artifact khi fail (trace + screenshot), video cho nightly; đặt tên gắn build+test; retention 14/30 ngày; lọc dữ liệu nhạy trong trace. Quy trình triage: fail kèm artifact → phân loại (timing/state/data/env/bug app) → gán owner + SLA 3 ngày → sửa gốc rễ (không rerun) → đo flaky rate theo tuần. Không dùng rerun tự động che flaky – nó che cả bug thật như race condition."
 
 > Senior tip: Một pipeline đáng tin cậy coi flaky là **sự cố chất lượng** có owner và thời hạn, không phải "đặc tính của UI test". Artifact tốt (trace) biến tranh luận "máy em chạy được" thành bằng chứng có thể xem lại từng bước.`,
   follow: [
@@ -2498,6 +2543,12 @@ String phone = "0900000" + (100 + new java.util.Random().nextInt(900));
 ### Trả lời phỏng vấn thế nào
 Nêu nguyên tắc: synthetic by default, masked khi cần giống prod. Giải thích masking giữ format/quan hệ (FK) nhưng bỏ khả năng nhận dạng. Liệt kê điểm rò rỉ đặc thù của automation: code, log, trace/screenshot, biến môi trường – và cách chặn từng điểm.
 
+### Ví dụ đời thực
+Một dự án fintech dùng staging clone từ production database (2 triệu user thật) để test automation. Team QA nhận thấy: (1) log CI in ra {{Authorization header JWT}} từ trace Playwright; (2) screenshot test thất bại hiển thị tên, SĐT, số tài khoản thật của khách hàng trong form hồ sơ; (3) file {{auth.json}} storageState chứa refresh token được commit nhầm vào repo. Rủi ro: lộ PII 2 triệu khách, vi phạm luật bảo vệ dữ liệu, token có thể dùng truy cập API. Sửa ngay: (a) xóa token khỏi repo, xoá lịch sử Git ({{git filter-branch}}); (b) CI secret scanning (gitleaks) chặn commit có pattern JWT/email/SĐT; (c) Playwright tracing config {{setSources false}} + custom route filter bỏ qua {{**/auth/**}} và {{**/api/**/token}}; (d) screenshot on failure dùng {{locator mask}} (che bằng ***); (e) staging data masking pipeline: chạy script hàng đêm – email thành {{user<id>@masked.test}}, SĐT {{090xxxx<last4>}}, tên {{User <id>}}, số tài khoản hash SHA256 giữ 8 ký tự đầu; FK giữ nguyên bằng cách map {{user_id}} → {{masked_user_id}} nhất quán. Kết quả: automation chạy trên dữ liệu masked giống phân bố thật (độ tuổi, số dư, lịch sử giao dịch) nhưng zero PII. Team cũng chuyển 90% test dùng synthetic data ({{qa+uuid@test.example}}) – chỉ 10% test staging cần masked data cho ca đối soát số dư.
+
+### Trả lời mẫu khi phỏng vấn
+"Dữ liệu nhạy cảm (PII: tên, email, SĐT, CMND; secret: mật khẩu, token) tuyệt đối không được để lộ trong code, repo, log, screenshot, artifact CI. Nguyên tắc: synthetic data by default – sinh email {{qa+uuid@test.example}}, tên {{User Test}}, số điện thoại {{090000xxxx}}. Khi bắt buộc dùng dữ liệu giống production trên staging (ví dụ test đối soát phân bố số dư), phải masking: giữ format/FK nhưng bỏ nhận dạng – email hash, SĐT giữ 4 số cuối, tên thành {{User <id>}}, token không bao giờ copy. Điểm rò rỉ automation: hardcode secret trong code, log in token/response body, trace Playwright ghi header Authorization, screenshot hiện form PII, commit auth.json storageState. Chặn bằng: secret manager + env var CI, logger mask pattern, tracing filter route nhạy + setSources false, screenshot mask locator PII, gitleaks CI gate. Staging masking pipeline chạy nightly, map FK nhất quán, zero PII thật."
+
 > Senior tip: Hãy coi "dữ liệu test" là tài sản cần vòng đời như code: ai tạo, ai được đọc, lưu bao lâu, huỷ thế nào. Một ca lộ PII qua artifact CI có thể nghiêm trọng hơn một test đỏ. Tự động hoá kiểm tra (quét secret, quét mẫu PII trong log) rẻ hơn nhiều so với xử lý sự cố.`,
   follow: [
     'Bạn phân biệt masking, pseudonymization (giả danh có thể ánh xạ lại có kiểm soát) và anonymization (ẩn danh không đảo ngược) trong ngữ cảnh test thế nào?',
@@ -2581,6 +2632,12 @@ Playwright có khả năng component testing (phổ biến trong hệ Node/JS). 
 
 ### Trả lời phỏng vấn thế nào
 Giải thích mục đích từng mức và tiêu chí chọn. Nêu {{page.route}} để mock có chủ đích (ca lỗi, backend chưa sẵn sàng) và nhấn mạnh giữ một tập E2E nhỏ chạy tích hợp thật. Thể hiện bạn hiểu trade-off: cô lập nhanh nhưng có thể lệch thực tế.
+
+### Ví dụ đời thực
+Một dự án bán hàng trực tuyến dùng React + Java Spring Boot. Team QA có 120 test E2E Playwright chạy 25 phút, flaky rate 8% do backend staging hay restart giữa ngày. Trưởng SDET phân tích: 70 test chỉ kiểm tra hiển thị form (validate, dropdown, toast) – không cần backend thật. Họ chuyển 70 test này sang component testing bằng Vitest + React Testing Library (chạy 3 phút, 0% flaky), giữ 20 test API quan trọng (REST Assured, 4 phút), và chỉ 30 test E2E luồng thanh toán/đăng ký xuyên hệ thống (12 phút). Kết quả: suite PR từ 25 xuống 10 phút, flaky từ 8% xuống 1.2%, dev nhận feedback trong 10 phút thay vì chờ 25 phút. Khi backend thêm field bắt buộc mới, chỉ 3 test E2E và 5 test API cần sửa; 70 component test không đỏ vì mock props. Sau 3 tháng, team không còn bỏ qua CI đỏ, và số lỗi UI lọt production giảm từ 5–7/tháng xuống 1–2/tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân tầng test theo chi phí và giá trị: component test cho logic UI cục bộ (validate, render, trạng thái) – chạy giây, không flaky; API test cho hợp đồng và nghiệp vụ backend – chạy nhanh, ổn định; E2E chỉ cho luồng critical xuyên lớp (đăng nhập, thanh toán) – chạy chậm nhưng cho niềm tin tích hợp. Mock backend bằng page.route cho ca lỗi (500, timeout) hoặc khi BE chưa xong, nhưng luôn giữ một tập E2E nhỏ chạy tích hợp thật. Ví dụ project trước: chuyển 70/120 test E2E sang component test, suite từ 25 xuống 10 phút, flaky từ 8% xuống 1%, dev không còn bỏ CI. Tôi quyết định bằng dữ liệu pipeline, không theo xu hướng."
 
 > Senior tip: Hãy đặt câu hỏi "lỗi này tầng nào bắt rẻ nhất?" trước khi viết E2E. Một bug validate hiển thị bắt ở component test mất giây; bắt ở E2E tốn phút và hay flaky. E2E dành cho niềm tin tích hợp, không dành cho mọi nhánh if của UI.`,
   follow: [
@@ -2753,6 +2810,12 @@ Test: cung cấp giá trị chuẩn (số), assert chuỗi hiển thị đúng t
 
 ### Trả lời phỏng vấn thế nào
 Trình bày 3 trục (i18n, timezone, tiền) với nguyên tắc: dữ liệu chuẩn (UTC, kiểu tiền chính xác) tách khỏi hiển thị (locale/timezone). Nêu công cụ: Playwright {{locale/timezoneId}}, test hàm format ở unit level, chọn ca biên (qua ngày, DST, làm tròn). Nhấn mạnh tránh phụ thuộc thời gian/môi trường hiện tại.
+
+### Ví dụ đời thực
+Một nền tảng thanh toán đa quốc gia (Việt Nam, Mỹ, Đức) dùng Java Spring Boot + React. Team có 200 test API (REST Assured) và 50 test UI (Playwright). Một sprint, thay đổi format tiền tệ cho thị trường Đức (dấu chấm phân cách nghìn, dấu phẩy thập phân) làm vỡ 40 test API và 12 test UI vì code test hard-code kỳ vọng {{$1,234.56}} thay vì dùng locale. Phân tích: test tạo dữ liệu bằng {{double}} ({{0.1 + 0.2 != 0.3}}), assert chuỗi format trực tiếp, không set locale/timezone cho context Playwright. Team refactor: (1) chuyển toàn bộ tiền sang {{BigDecimal}} lưu cent/xu; (2) viết helper {{formatMoney(amount, locale)}} dùng {{NumberFormat.getCurrencyInstance(locale)}}; (3) unit test helper với ma trận 5 locale × 10 ca biên (0, âm, lớn, làm tròn); (4) E2E Playwright set {{locale/timezoneId}} trong context, chỉ test 3 màn hình đại diện (checkout, hóa đơn, lịch sử). Kết quả: thêm locale mới (Nhật) chỉ mất 30 phút cập nhật helper + unit test, E2E không sửa; bug format tiền trên production từ 3–4/tháng xuống 0 trong 6 tháng; CI locale matrix chạy 8 phút thay vì 25 phút trước đây.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách dữ liệu chuẩn (UTC cho thời gian, BigDecimal cent cho tiền) khỏi hiển thị (locale, timezone). i18n: test key dịch tồn tại + UI render đúng locale, dùng Playwright context locale. Timezone: seed dữ liệu UTC cố định, assert hiển thị theo timezone mục tiêu, chọn ca biên qua nửa đêm/DST. Tiền: dùng BigDecimal/integer cent, format bằng NumberFormat theo locale, unit test ma trận ca biên. E2E chỉ vài màn hình đại diện, set locale/timezoneId trong context. Project trước: thêm locale Đức làm vỡ 52 test do hard-code format; refactor helper + unit test matrix, thêm locale mới chỉ 30 phút, bug production về 0."
 
 > Senior tip: Hãy có một "bộ ca biên thời gian/tiền" dùng chung (cross-midnight, DST transition, 0/âm/lớn, làm tròn) và chạy nó như unit test nhanh. E2E chỉ cần chứng minh wiring locale trên vài trang. Đừng nhân ma trận (mọi locale × mọi trang) nếu không có rủi ro tương ứng.`,
   follow: [
@@ -3022,6 +3085,12 @@ E2E repo --> CI: fail do lệch contract hoặc xanh giả do assert yếu
 
 ### Trả lời phỏng vấn thế nào
 So sánh hai mô hình theo trục: đồng bộ thay đổi, ownership, chi phí CI, rủi ro lệch phiên bản. Đưa khuyến nghị thực dụng: unit/integration luôn đi cùng service; E2E ưu tiên gần code (monorepo hoặc module kỷ luật) và phải gắn phiên bản được test. Nhấn mạnh cơ chế (CI gate, contract, tag) hơn là giáo điều mô hình.
+
+### Ví dụ đời thực
+Một công ty fintech có 5 microservice (Java Spring Boot) và 2 team: team Core (3 service) và team Payment (2 service). Ban đầu E2E test (Playwright + REST Assured) nằm trong repo riêng do team QA quản lý. Khi team Core đổi response {{POST /transfers}} (thêm trường {{feeBreakdown}}), họ merge PR, deploy staging, nhưng repo E2E vẫn chạy test cũ → 30 test đỏ ồ ạt, team QA mất 4 giờ sửa test. Lần sau, team Payment thêm trường bắt buộc {{idempotencyKey}} cho {{POST /payments}}; CI app pass, deploy production, nhưng E2E repo riêng chưa cập nhật → test vẫn pass (assert yếu chỉ check status 200) mà production thực sự lỗi 400 cho client cũ. CTO quyết định: chuyển E2E vào monorepo (thư mục {{e2e/}}), cấu hình CI affected-test (Nx/Turborepo) chỉ chạy test liên quan đến service thay đổi, và thêm contract test (Pact) giữa service. Kết quả: thay đổi API + cập nhật test đi cùng 1 PR, CI affected chạy 8 phút thay vì 45 phút, không còn lệch phiên bản; contract test chặn breaking change ngay PR; team QA chuyển sang coaching dev viết test, ownership rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+"Unit/integration test luôn nằm cùng code service (monorepo per service hoặc mono-repo lớn) để thay đổi API + test đi chung PR. E2E xuyên service: ưu tiên để gần code (monorepo hoặc module kỷ luật) và gắn version/tag môi trường test. Nếu tách repo E2E, bắt buộc cơ chế: CI app trigger E2E với versioned artifact, contract test (Pact) verify tương thích, tag deploy để tái lập. Project trước: repo E2E riêng gây lệch phiên bản 2 lần (test đỏ ồ ạt, xanh giả miss bug production). Chuyển sang monorepo + affected CI + Pact, PR đồng bộ app+test, CI từ 45 xuống 8 phút, breaking change bị chặn ở PR. Tôi chọn mô hình nào cũng ưu tiên cơ chế đồng bộ hơn địa chỉ repo."
 
 > Senior tip: Câu hỏi không chỉ là "để test ở repo nào" mà là "làm sao một thay đổi phá hợp đồng bị chặn trước khi deploy". Nếu repo riêng mà CI app bắt buộc chạy đúng bộ E2E versioned tương thích, bạn vẫn đạt mục tiêu; nếu monorepo mà E2E luôn bị skip, bạn thất bại. Cơ chế đồng bộ quan trọng hơn địa chỉ repo.`,
   follow: [

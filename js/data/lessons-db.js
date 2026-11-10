@@ -41,13 +41,94 @@ PostgreSQL lưu phiên bản hàng (tuple) cùng thông tin transaction tạo/x�
 | Chỉnh một hàng theo phiên bản | optimistic locking với version |
 | Bảo vệ nhiều hàng cùng invariant | constraint, khóa phù hợp hoặc SERIALIZABLE + retry |
 
+### Lịch xen kẽ minh họa
+Mỗi cột là một transaction, thời gian chạy từ trên xuống. Commit là dấu +, rollback là dấu ×.
+
+Dirty read (READ UNCOMMITTED, PostgreSQL coi như READ COMMITTED, không cho phép thật):
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT balance = 100 ------>|
+|                               |-- UPDATE balance = 80 (chưa commit)
+|                               |
+|-- SELECT balance = 80 ---------|   <-- T1 đọc giá trị chưa commit
+|                               |-- ROLLBACK
+|-- SELECT balance = 80 ---------|   <-- T1 đã dùng giá trị "ma" không tồn tại
+~~~
+
+Non-repeatable read (READ COMMITTED):
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT balance = 100 ------>|
+|                               |-- UPDATE balance = 80
+|                               |-- COMMIT
+|-- SELECT balance = 80 ---------|   <-- T1 đọc lại, giá trị khác (hợp lệ ở READ COMMITTED)
+~~~
+
+Lost update (READ COMMITTED, read-modify-write ở ứng dụng):
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT balance = 100 ------>|
+|                               |-- SELECT balance = 100 ------>|
+|                               |   <-- cả hai cùng đọc 100
+|-- UPDATE balance = 101 ------->|   <-- T1 ghi 101
+|                               |-- UPDATE balance = 101 -->|   <-- T2 ghi 101, ghi đè T1
+|                               |   <-- kết quả 101, một lần tăng bị mất
+~~~
+
+### Cơ chế từng bước
+Hãy tưởng tượng hai giao dịch cùng muốn sửa một giá trị. Cơ chế isolation hoạt động theo từng bước như sau:
+
+1. **Transaction bắt đầu và lấy snapshot.** Khi một transaction chạy, database quyết định nó được nhìn thấy những phiên bản dữ liệu nào. Ở READ COMMITTED, snapshot được lấy cho mỗi câu lệnh; ở REPEATABLE READ, snapshot được lấy một lần ở đầu transaction và giữ nguyên.
+
+2. **Ghi tạo ra phiên bản mới.** Khi transaction ghi (UPDATE/DELETE), database không sửa tại chỗ mà tạo một tuple mới, đánh dấu tuple cũ là đã bị thay thế (xmax). Tuple cũ vẫn còn trong bảng cho đến khi VACUUM dọn.
+
+3. **Đọc chọn tuple theo snapshot.** Khi transaction đọc, nó chọn trong các tuple của hàng tuple mà snapshot của nó cho phép thấy: tuple đã sinh ra (xmin đã commit theo snapshot) và chưa bị thay thế (xmax chưa commit theo snapshot).
+
+4. **Commit làm thay đổi quan sát được.** Sau khi transaction commit, các tuple nó sinh ra trở nên visible với các snapshot lấy sau đó. Ở READ COMMITTED, các câu lệnh sau trong cùng transaction sẽ thấy commit mới; ở REPEATABLE READ, chúng không thấy vì đã chụp ảnh cũ.
+
+5. **Xung đột ghi bị phát hiện ở bước 4.** Nếu một transaction ở REPEATABLE READ muốn ghi một hàng mà đã có commit mới sau snapshot của nó, PostgreSQL không ghi overwrite mà abort với SQLSTATE 40001, bắt ứng dụng retry toàn bộ transaction.
+
+Vì sao lại như vậy? MVCC ưu tiên đọc không bị ngăn bởi ghi, đổi lại để lại tuple chết và yêu cầu VACUUM. Mỗi mức isolation là một trade-off giữa nhất quán và đồng thời.
+
+~~~java
+// Mô phỏng 5 bước bằng một hàng có hai tuple
+// Tuple cũ: value=10, xmin=100, xmax=201 (đã bị T201 thay thế)
+// Tuple mới: value=12, xmin=201, xmax=0 (hiện hành)
+// Snapshot T300 với committed={100}: thấy tuple cũ (10)
+// Snapshot T400 với committed={100,201}: thấy tuple mới (12)
+boolean bornOld = true;     // xmin=100 đã commit theo snapshot T300
+boolean goneOld = false;    // xmax=201 chưa commit theo snapshot T300
+boolean visibleOld = bornOld && !goneOld;   // true: T300 thấy 10
+boolean bornNew = true;     // xmin=201 đã commit theo snapshot T400
+boolean goneNew = false;    // xmax=0 chưa bị thay thế
+boolean visibleNew = bornNew && !goneNew;   // true: T400 thấy 12
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng READ COMMITTED cho nghiệp vụ cần nhất quán giữa hai SELECT.** Triệu chứng: SELECT thứ nhất đọc số dư 100, sau đó làm việc khác, SELECT thứ hai đọc số dư 90 vì người khác đã trừ. Nguyên nhân: READ COMMITTED lấy snapshot mới mỗi câu lệnh, nên non-repeatable read là hợp lệ. Cách sửa: nếu cần cùng một giá trị trong suốt transaction, dùng REPEATABLE READ hoặc SELECT ... FOR UPDATE để khóa hàng; hoặc dùng UPDATE nguyên tử không cần đọc trước.
+
+2. **Code Java read-modify-write mà không dùng UPDATE nguyên tử.** Triệu chứng: hai request cùng đọc 100, cùng cộng 1, cùng ghi 101; một lần tăng bị mất. Nguyên nhân: lost update — cả hai phép ghi đều dựa trên ảnh chụp ban đầu. Cách sửa: {{UPDATE account SET balance = balance + ? WHERE id = ?}} để database tính, hoặc optimistic locking với version check.
+
+3. **Dùng SERIALIZABLE cho workload cao mà không retry.** Triệu chứng: ứng dụng liên tục gặp serialization failure (SQLSTATE 40001). Nguyên nhân: SERIALIZABLE abort khi phát hiện write skew hoặc lost update. Cách giữ SERIALIZABLE nhưng retry có giới hạn với backoff, hoặc xuống REPEATABLE READ nếu không thực sự cần.
+
+4. **Chạy chung transaction với thao tác ngoài DB.** Triệu chứng: transaction kéo dài, giữ snapshot và lock, làm transaction khác phải chờ, VACUUM chậm, bảng phình. Nguyên nhân: gọi HTTP, gửi email, await người dùng trong transaction. Cách sửa: ghi event vào outbox trong cùng transaction, để relay gửi sau commit; giữ transaction chỉ quanh phần DB.
+
 ### Pitfall production
 Transaction dài giữ snapshot cũ, làm VACUUM khó thu hồi tuple chết và tăng bloat. Retry toàn transaction phải idempotent, không gửi email/charge thẻ trước khi commit. Đừng dùng một bài test chạy tuần tự để kết luận về concurrency: cố định lịch xen kẽ để tái hiện race.
 
-### Liên hệ phỏng vấn
-Hãy vẽ lịch T1/T2, ghi trạng thái commit và giá trị mỗi lần đọc. Nêu rõ PostgreSQL READ COMMITTED tạo snapshot theo statement, còn REPEATABLE READ theo transaction; giải thích anomaly nghiệp vụ và biện pháp cụ thể.
-
 > Senior tip: đo thời gian transaction và tỷ lệ serialization failure; retry có backoff giới hạn, và chỉ retry phần nghiệp vụ thực sự an toàn.
+
+### Liên hệ phỏng vấn
+- **"READ COMMITTED và REPEATABLE READ khác biệt gì?"** → READ COMMITTED lấy snapshot mỗi câu lệnh, hai SELECT trong cùng transaction có thể thấy hai giá trị khác nhau; REPEATABLE READ lấy snapshot một lần ở đầu transaction, giữ nguyên trong suốt transaction, nhưng khi cố ghi hàng đã đổi, PostgreSQL abort với 40001.
+- **"Lost update xảy ra sao và sửa bằng cách nào?"** → Hai transaction cùng đọc 10, cùng cộng 1, cùng ghi 11 — một lần tăng bị mất. Sửa bằng UPDATE nguyên tử (SET balance = balance + 1) hoặc optimistic locking với version check.
+- **"Khi nào chọn SERIALIZABLE thay vì REPEATABLE READ?"** → Khi invariant bao gồm nhiều hàng (ví dụ tổng số dư phải bằng 0), REPEATABLE READ không bắt được write skew; SERIALIZABLE dùng SSI để phát hiện và abort. Ứng dụng phải retry.
+- **"MVCC giúp đọc không bị chặn bởi ghi như thế nào?"** → Đọc chọn tuple theo snapshot, ghi tạo tuple mới thay vì overwrite. Nhược điểm là VACUUM phải dọn tuple chết và transaction dài giữ snapshot gây bloat.
 `,
   exercises: [{
     title: 'Phát hiện lost update trong lịch cố định',
@@ -84,7 +165,9 @@ Hãy vẽ lịch T1/T2, ghi trạng thái commit và giá trị mỗi lần đ�
   }],
   check: [
     {q:'READ UNCOMMITTED trong PostgreSQL 15 có cho dirty read không?',options:['Có','Không, được xử lý như READ COMMITTED','Chỉ khi dùng MVCC','Chỉ với bảng temporary'],answer:1,explain:'PostgreSQL không expose dirty read; READ UNCOMMITTED có hành vi như READ COMMITTED.'},
-    {q:'Ở READ COMMITTED, snapshot được lấy khi nào?',options:['Mỗi statement','Chỉ lúc BEGIN','Chỉ lúc COMMIT','Mỗi lần gọi Java getter'],answer:0,explain:'Mỗi câu lệnh SQL có snapshot mới; vì vậy SELECT lặp lại có thể thấy commit mới.'}
+    {q:'Ở READ COMMITTED, snapshot được lấy khi nào?',options:['Mỗi statement','Chỉ lúc BEGIN','Chỉ lúc COMMIT','Mỗi lần gọi Java getter'],answer:0,explain:'Mỗi câu lệnh SQL có snapshot mới; vì vậy SELECT lặp lại có thể thấy commit mới.'},
+    {q:'PostgreSQL SERIALIZABLE abort với SQLSTATE 40001 khi nào?',options:['Khi có dirty read','Chỉ khi có non-repeatable read','Khi phát hiện write skew hoặc lost update qua SSI','Mỗi lần transaction BEGIN'],answer:2,explain:'SSI phát hiện dependency nguy hiểm giữa các transaction và abort một trong số chúng; ứng dụng phải retry toàn bộ transaction.'},
+    {q:'Ở REPEATABLE READ, transaction UPDATE một hàng đã bị transaction khác sửa và commit sau khi snapshot lấy, sẽ ra sao?',options:['Ghi đè giá trị mới','Báo lỗi could not serialize access (SQLSTATE 40001)','Tự động rollback toàn bộ database','Không ghi gì và silently bỏ qua'],answer:1,explain:'PostgreSQL không cho ghi đè dựa trên snapshot cũ; nó abort transaction hiện tại và bắt ứng dụng retry.'}
   ], tags:['isolation','MVCC','PostgreSQL','lost-update']
 },
 {
@@ -107,8 +190,28 @@ return false; // caller must reload and decide whether to retry
 
 Trong SQL tương ứng: {{UPDATE account SET balance=?, version=version+1 WHERE id=? AND version=?}}. Không kiểm tra row count là lỗi nghiêm trọng: request có thể báo thành công dù update không xảy ra. ORM như Hibernate hỗ trợ {{@Version}} và thường ném optimistic lock exception khi update không khớp.
 
+Khi Hibernate dùng {{@Version}}, nó tự thêm điều kiện version vào câu UPDATE và ném {{OptimisticLockException}} nếu row count bằng 0. Đây là cơ chế chuẩn của JPA, bản chất vẫn là compare-and-set ở tầng database. Version nên là kiểu số nguyên (Long/Integer) và tăng thêm 1 mỗi lần cập nhật. Không nên dùng timestamp làm version vì độ phân giải thấp có thể khiến hai cập nhật cùng giây được coi là cùng version.
+
+Một điểm quan trọng là version chỉ bảo vệ một hàng. Nếu nghiệp vụ cần cập nhật nhiều hàng nguyên tử (ví dụ trừ tiền từ tài khoản A và cộng vào tài khoản B), version một hàng không đủ; cần transaction, khóa hàng, hoặc SERIALIZABLE.
+
 ### Retry phải tính lại
-Retry đúng nghĩa là bắt đầu transaction mới, đọc trạng thái mới, tính lại thay đổi dựa trên input nghiệp vụ rồi thử lại. Không nên chỉ gửi lại cùng SQL với giá trị tuyệt đối cũ; như vậy có thể lặp lại stale write. Giới hạn số lần retry, thêm jitter khi contention cao và trả conflict cho client nếu không thể hòa giải.
+Retry đúng nghĩa là bắt đầu transaction mới, đọc trạng thái mới, tính lại thay đổi dựa trên input nghiệp vụ rồi thử lại. Không nên chỉ gửi lại cùng SQL với giá trị tuyệt đối cũ; như vậy có thể lặp lại stale write — ghi đè lên kết quả mới nhất, lại thành lost update.
+
+Vòng retry an toàn trong Java:
+
+~~~java
+int attempt = 0;
+while (attempt++ < MAX_RETRY) {
+    int current = readBalance(id);       // đọc lại version + giá trị mới
+    int next = current + delta;          // tính lại từ input nghiệp vụ
+    int updated = updateBalance(id, next, currentVersion);
+    if (updated == 1) return;            // thành công
+    sleep(randomBackoff(attempt));       // jitter tránh thundering herd
+}
+throw new OptimisticConflictException("quá số lần retry");
+~~~
+
+Khi contention cao, nhiều transaction cùng conflict và retry cùng lúc có thể gây "thundering herd": tất cả cùng đọc, cùng conflict, cùng retry, tải tăng vọt. Giới hạn số lần retry (3-5 lần), thêm exponential backoff với jitter (thời gian chờ ngẫu nhiên) để các transaction không va chạm lại, và trả conflict cho client nếu vượt quá giới hạn hoặc conflict là do nghiệp vụ (ví dụ số dư không đủ).
 
 ### PostgreSQL MVCC
 MVCC giúp reader không chặn writer trong nhiều trường hợp, nhưng không tự ngăn lost update trong ứng dụng kiểu read-compute-write ở READ COMMITTED. Version predicate biến tính toàn vẹn thành điều kiện ghi nguyên tử. Một lệnh UPDATE nguyên tử trên cột cũng có thể phù hợp hơn cho phép cộng đơn giản. Với invariant nhiều hàng, version một hàng không đủ; cân nhắc constraint, khóa hoặc SERIALIZABLE.
@@ -119,13 +222,63 @@ MVCC giúp reader không chặn writer trong nhiều trường hợp, nhưng kh�
 | Atomic SQL update | phép biến đổi đơn giản tại DB | logic phải biểu diễn được trong SQL |
 | Pessimistic row lock | contention cao, cần tuần tự hóa | chờ khóa, deadlock, throughput thấp |
 
+### Lịch xen kẽ: conflict và retry
+T1 đọc (số dư=100, version=5), tính toán, rồi ghi. T2 đã cập nhật giữa thời gian đó.
+
+~~~text
+T1                              T2
+|                               |
+|-- SELECT (100, v5) ---------->|
+|                               |-- SELECT (100, v5) ------>|
+|                               |   <-- cả hai cùng đọc v5
+|-- UPDATE ... WHERE version=5 -->|   <-- T1 thành công, v→6
+|                               |-- UPDATE ... WHERE version=5
+|                               |   <-- T2: 0 dòng, version đã là 6
+|-- (T2 đọc lại: 105, v6) ------>|   <-- retry: đọc trạng thái mới
+|-- UPDATE ... WHERE version=6 -->|   <-- T2 thành công, v→7
+~~~
+
+### Cơ chế từng bước
+Optimistic locking hoạt động theo 5 bước, từ đọc đến ghi thành công hoặc conflict:
+
+1. **Đọc kèm version.** Transaction đọc hàng cùng với version hiện tại (ví dụ value=10, version=4). Đây là điểm chuẩn bị để so sánh.
+
+2. **Tính thay đổi trong bộ nhớ.** Dựa trên giá trị đã đọc, transaction tính ra giá trị mới (ví dụ 10 + 3 = 13). Bước này không đụng đến database.
+
+3. **Ghi với điều kiện version.** Transaction gửi UPDATE với điều kiện WHERE version = 4 (phiên bản đã đọc). Database so sánh version hiện tại với 4.
+
+4. **Kiểm tra kết quả.** Nếu version vẫn là 4, UPDATE thay đổi value và tăng version lên 5, trả về số dòng = 1. Nếu version đã thành 5 (transaction khác vừa cập nhật), điều kiện không khớp, UPDATE trả về 0 dòng.
+
+5. **Quyết định retry hoặc báo conflict.** Với 0 dòng, application biết dữ liệu đã đổi: đọc lại (bước 1) và tính lại (bước 2), hoặc trả conflict cho client. Với 1 dòng, ghi thành công.
+
+Vì sao lại như vậy? Cách này không khóa cho đến khi ghi, nên nhiều reader cùng đọc không cần chờ nhau. Giá phải trả là phải xử lý conflict một cách explicit, và retry phải bắt đầu từ dữ liệu mới.
+
+~~~java
+// Mô phỏng 5 bước bằng một VersionedCounter
+VersionedCounter c = new VersionedCounter(10); // value=10, version=0
+boolean ok = c.update(0, 3);   // version hiện tại là 0, expected 0 -> khớp, value=13, version=1, trả true
+ok = c.update(0, 9);           // version đã thành 1, expected 0 -> không khớp, trả false, giữ nguyên
+~~~
+
+### Lỗi hay gặp trên production
+1. **Không kiểm tra row count của UPDATE.** Triệu chứng: request được application coi là thành công (vì không có exception) nhưng dữ liệu thực tế không thay đổi. Nguyên nhân: UPDATE với version predicate không khớp trả về 0 dòng, application không check số dòng. Cách sửa: luôn kiểm tra affected rows; bằng 0 thì coi là conflict, retry hoặc trả về client.
+
+2. **Retry gửi lại cùng SQL với giá trị tuyệt đối cũ.** Triệu chứng: retry lặp lại stale write — ghi lại giá trị đã đọc từ snapshot cũ thay vì giá trị mới. Nguyên nhân: retry không đọc lại dữ liệu. Cách sửa: retry phải bắt đầu transaction mới, đọc lại state, tính lại thay đổi từ input nghiệp vụ.
+
+3. **Side effect trước commit.** Triệu chứng: mỗi retry gửi email hoặc gọi API thanh toán, gây gửi trùng lặp. Nguyên nhân: thực hiện side effect ngoài transaction. Cách sửa: ghi event vào outbox trong cùng transaction, relay gửi sau commit; dùng idempotency key.
+
+4. **Retry vô hạn khi hệ thống đã nóng.** Triệu chứng: khi contention cao, retry liên tục làm tăng tải thêm, hệ thống càng chậm. Nguyên nhân: không giới hạn số lần retry và không phân biệt conflict tạm thời với conflict nghiệp vụ. Cách sửa: retry có giới hạn (3-5 lần) với exponential backoff và jitter; conflict nghiệp vụ trả về client.
+
 ### Pitfall production
 Đừng thực hiện side effect ngoài DB (gửi email, gọi API thanh toán) trước khi commit, vì mỗi lần retry sẽ lặp lại nó; ghi event vào outbox trong cùng transaction và để relay gửi sau commit. Retry không giới hạn gây khuếch đại tải khi hệ thống đã nóng. Cần phân biệt conflict nghiệp vụ (cần người dùng chọn) với lỗi transient có thể tự retry.
 
-### Liên hệ phỏng vấn
-Nêu SQL có predicate version, giải thích row count bằng 0, rồi mô tả vòng retry bắt đầu transaction mới và tính lại. Hibernate {{@Version}} tiện lợi nhưng không thay thế xử lý exception ở boundary.
-
 > Senior tip: theo dõi tỷ lệ optimistic conflict theo loại entity; nếu thường xuyên cao, cân nhắc atomic update hoặc khóa thay vì retry vô ích.
+
+### Liên hệ phỏng vấn
+- **"Optimistic locking và pessimistic locking khác biệt gì?"** → Optimistic không lock khi đọc, chỉ check version khi ghi; conflict thì retry. Pessimistic lock hàng từ đầu, chờ đến khi commit; phù hợp contention cao nhưng gây deadlock và giảm throughput.
+- **"UPDATE có version predicate trả về 0 dòng nghĩa là gì?"** → Điều kiện version không khớp, có thể dữ liệu đã đổi hoặc hàng không tồn tại; ứng dụng phải retry hoặc trả conflict, không được coi là thành công.
+- **"Retry optimistic conflict cần làm gì?"** → Bắt đầu transaction mới, đọc lại state, tính lại thay đổi từ input nghiệp vụ; retry có giới hạn (3-5 lần) với backoff; side effect phải idempotent hoặc dùng outbox.
+- **"Vì sao không nên gọi HTTP hoặc gửi email trong hàm compute/merge?"** → Hàm tính toán chạy trên ảnh chụp đã đọc, ngoài khóa database; side effect sẽ được lặp lại mỗi lần retry, gây gửi trùng (email/thanh toán).
 `,
   exercises: [{
     title: 'Cập nhật nếu version còn khớp',
@@ -158,7 +311,7 @@ Nêu SQL có predicate version, giải thích row count bằng 0, rồi mô tả
     hints: ['Kiểm tra version trước khi đụng vào value.', 'Conflict phải giữ nguyên cả value lẫn version.'],
     explain: `Version predicate đóng vai trò compare-and-set: chỉ một updater với expectedVersion hiện tại có thể thành công. Nếu trả false, caller cần đọc lại và quyết định tính lại thay đổi; không được coi đó là thành công. Trong DB, kiểm tra row count của UPDATE. Mô phỏng đơn luồng diễn đạt logic điều kiện, còn transaction/atomicity thực tế do database đảm nhiệm.`
   }],
-  check:[{q:'UPDATE có version predicate trả row count 0 thường biểu thị gì?',options:['Update đã commit hai lần','Dữ liệu đã đổi hoặc hàng không tồn tại','Database mất MVCC','Connection pool đầy'],answer:1,explain:'Điều kiện version không khớp hoặc id không tồn tại; ứng dụng cần phân biệt theo nghiệp vụ nếu cần.'},{q:'Retry optimistic conflict nên làm gì?',options:['Gửi lại nguyên giá trị tính từ snapshot cũ','Đọc lại và tính lại trong transaction mới','Bỏ kiểm tra version','Retry vô hạn'],answer:1,explain:'Dữ liệu nền đã đổi; transaction mới cần đọc trạng thái mới và tính lại.'}], tags:['optimistic-locking','version','PostgreSQL']
+  check:[{q:'UPDATE có version predicate trả row count 0 thường biểu thị gì?',options:['Update đã commit hai lần','Dữ liệu đã đổi hoặc hàng không tồn tại','Database mất MVCC','Connection pool đầy'],answer:1,explain:'Điều kiện version không khớp hoặc id không tồn tại; ứng dụng cần phân biệt theo nghiệp vụ nếu cần.'},{q:'Retry optimistic conflict nên làm gì?',options:['Gửi lại nguyên giá trị tính từ snapshot cũ','Đọc lại và tính lại trong transaction mới','Bỏ kiểm tra version','Retry vô hạn'],answer:1,explain:'Dữ liệu nền đã đổi; transaction mới cần đọc trạng thái mới và tính lại.'},{q:'Vì sao optimistic locking phù hợp hơn pessimistic khi xung đột ít?',options:['Không cần khóa khi đọc, nhiều reader cùng đọc không chờ nhau','Luôn nhanh hơn pessimistic locking mọi trường hợp','Không cần retry bao giờ','Không cần version'],answer:0,explain:'Optimistic không khoá khi đọc, nên reader không chặn reader; chỉ kiểm tra version khi ghi. Không phải luôn nhanh hơn, và vẫn cần retry khi conflict.'},{q:'Khi dùng Hibernate {{@Version}}, điều gì xảy ra nếu UPDATE không khớp version?',options:['Hibernate ném OptimisticLockException','Hibernate tự rollback toàn bộ database','Hibernate ghi đè dữ liệu mới','Hibernate không kiểm tra version'],answer:0,explain:'Hibernate tự thêm điều kiện version vào UPDATE; nếu row count bằng 0, nó ném OptimisticLockException cho ứng dụng xử lý.'}], tags:['optimistic-locking','version','PostgreSQL']
 },
 {
   id: 'lesson-db-003', track: 'db', order: 3,
@@ -194,11 +347,57 @@ Planner ước lượng cost từ thống kê và chọn sequential scan nếu p
 | range có thứ tự | B-tree có thể tránh sort |
 | cột ghi liên tục | cân nhắc chi phí duy trì index |
 
+### Cơ chế từng bước: B-tree lookup trong PostgreSQL
+Khi một câu SQL có điều kiện WHERE trên cột có B-tree index, PostgreSQL thực hiện tra cứu theo các bước:
+
+1. **Đọc root page từ shared buffer.** Index metadata lưu block number của root; nếu chưa có trong buffer pool thì đọc từ disk (random I/O).
+2. **Đi xuống qua internal page.** Tại mỗi internal page, binary search tìm con trỏ child page phù hợp với key đang tìm. Với fanout ~100–300 (page 8KB, key nhỏ), chiều cao cây thường chỉ 3–4 tầng dù bảng có tỷ hàng.
+3. **Đến leaf page.** Leaf page chứa cặp (index key, TID/heap pointer). Binary search lần nữa để tìm entry khớp.
+4. **Heap fetch (trừ khi index-only scan).** Dùng TID (block, offset) để đọc heap page. Nếu visibility map cho phép và query chỉ chọn cột có trong index, có thể bỏ qua bước này (index-only scan).
+5. **Kiểm tra visibility (MVCC).** Tuple trên heap phải visible theo snapshot của transaction; nếu không thì bỏ qua.
+
+Vì sao lại như vậy? B-tree thiết kế để giảm random I/O: fanout lớn → chiều cao thấp. Tuy nhiên mỗi level vẫn là một lần đọc page tiềm năng. Nếu phải đọc nhiều hàng liên tiếp (range scan), leaf page được liên kết bằng sibling pointer để duyệt tuần tự.
+
+~~~java
+// Mô phỏng B-tree lookup: đếm số page đọc (giả định fanout=100, height=3)
+class BTreeSim {
+    static int pagesRead(int rows, double selectivity) {
+        int height = 3;                 // root + 1 internal + leaf
+        int leafPages = (int) Math.ceil(rows / 100.0); // ~100 entry/page
+        int scannedLeaves = Math.max(1, (int) (leafPages * selectivity));
+        return height + scannedLeaves;  // root->internal->leaf + leaf pages duyệt
+    }
+}
+// 10M hàng, selectivity 0.001% -> pagesRead ≈ 3 + 1 = 4 page (index scan)
+// 10M hàng, selectivity 10%     -> pagesRead ≈ 3 + 10000 = 10003 page (seq scan rẻ hơn)
+~~~
+
+### So sánh B-tree và cây nhị phân cân bằng (red-black)
+
+| Đặc điểm | B-tree (PostgreSQL) | Red-Black Tree (Java TreeMap) |
+|---|---|---|
+| Node | 1 page 8KB, hàng trăm key | 1 object, 1 key |
+| Fanout | 100–300 | 2 (nhị phân) |
+| Chiều cao (1 tỷ hàng) | 3–4 tầng | ~30 tầng |
+| I/O pattern | Tuần tự trong page, random giữa page | Object trải rải bộ nhớ |
+| Phù hợp cho | Đĩa (page I/O) | RAM (pointer chasing) |
+
+Đây là lý do B-tree thắng trên đĩa: mỗi lần đọc page mang theo hàng trăm key, giảm lượt I/O vật lý.
+
+### Lỗi hay gặp trên production
+1. **Index trên cột low cardinality (ví dụ boolean, status enum) mà không kết hợp.** Triệu chứng: planner vẫn chọn seq scan dù có index. Nguyên nhân: B-tree trả về quá nhiều TID, chi phí heap fetch ngẫu nhiên vượt quá seq scan. Cách sửa: dùng composite index (status, created_at) hoặc partial index {{WHERE status = 'active'}} để giảm số entry.
+2. **Thiếu ANALYZE sau bulk load hoặc partition detach/attach.** Triệu chứng: estimated rows lệch lớn so với actual rows, planner chọn sai plan (index scan thay vì seq scan hoặc ngược lại). Nguyên nhân: thống kê pg_statistic cũ. Cách sửa: chạy {{ANALYZE}} hoặc bật autovacuum-analyze; dùng {{EXPLAIN (ANALYZE, BUFFERS)}} để đối chiếu.
+3. **Write amplification do quá nhiều index trên bảng ghi dày.** Triệu chứng: INSERT/UPDATE chậm, WAL tăng vọt, replication lag. Nguyên nhân: mỗi index là một B-tree riêng, mỗi ghi phải cập nhật tất cả. Cách sửa: xóa index không dùng ({{pg_stat_user_indexes.idx_scan = 0}}), gom index trùng lặp, cân nhắc fillfactor thấp hơn cho index insert-heavy.
+4. **Index-only scan không kích hoạt do visibility map chưa set.** Triệu chứng: {{EXPLAIN}} hiện "Index Scan" thay vì "Index Only Scan" dù query chỉ chọn cột trong index. Nguyên nhân: vacuum chưa chạy để set all-visible flag trên heap page. Cách sửa: bật autovacuum, giảm {{autovacuum_vacuum_scale_factor}}, hoặc {{VACUUM (ANALYZE)}} thủ công.
+
 ### Pitfall production
 Index trên cột có cardinality thấp không tự động vô ích hay hữu ích; điều quan trọng là số hàng phù hợp và pattern truy vấn. Dùng {{EXPLAIN (ANALYZE, BUFFERS)}} trên workload đại diện, nhớ ANALYZE để cập nhật thống kê. Một query trả vài phần trăm bảng có thể đổi plan khi dữ liệu phân bố lệch.
 
 ### Liên hệ phỏng vấn
-Giải thích cấu trúc làm giảm candidate rows, sau đó nêu write amplification và quyết định planner dựa trên cost. Không hứa “index luôn nhanh hơn”; chỉ số benchmark cần cùng dữ liệu, cache và query thực tế.
+- **"B-tree index trong PostgreSQL khác gì so với cây nhị phân cân bằng?"** → B-tree là cây nhiều nhánh (multi-way), mỗi node là một page 8KB chứa hàng trăm key + con trỏ, fanout lớn (~100–300) nên chiều cao chỉ 3–4 tầng dù tỷ hàng. Binary tree (như TreeMap) mỗi node 1 key, chiều cao log2(N) ≈ 40 tầng cho 1 tỷ hàng → I/O nhiều hơn.
+- **"Khi nào planner chọn Sequential Scan thay vì Index Scan?"** → Khi selectivity cao (trả về > 5–10% bảng) hoặc bảng nhỏ (fit trong shared buffers). Seq scan đọc tuần tự (prefetch, sequential I/O) rẻ hơn nhiều random I/O của index scan + heap fetch. Planner ước lượng cost từ thống kê pg_statistic.
+- **"Partial index là gì và dùng khi nào?"** → Index chỉ bao gồm hàng thỏa mãn predicate (ví dụ {{CREATE INDEX ON orders (created_at) WHERE status = 'active'}}). Dùng khi query thường lọc theo giá trị hiếm của cột low cardinality, giúp index nhỏ hơn và planner dễ chọn.
+- **"Vì sao cần ANALYZE sau khi insert hàng loạt?"** → Planner dùng thống kê (most common values, histogram, n_distinct) để ước lượng rows. Bulk load làm thống kê lỗi thời, dẫn đến sai plan. Autovacuum-analyze sẽ chạy tự động nhưng có thể chậm; nên chạy {{ANALYZE}} thủ công sau bulk load.
 
 > Senior tip: theo dõi buffer hit/read và actual rows so với estimated rows; sai lệch thống kê thường quan trọng hơn tranh luận Big O.
 `,
@@ -239,7 +438,7 @@ Giải thích cấu trúc làm giảm candidate rows, sau đó nêu write amplif
     hints:['Duyệt mảng và tăng counter trước phép so sánh từng hàng.','TreeMap comparator có thể tăng int[] counter; reset sau khi nạp dữ liệu.'],
     explain:`Full scan trả N nếu không tìm thấy; lookup trong cây đỏ-đen có số so sánh tăng theo log N. Comparator được gọi cả lúc insert nên phải reset trước lookup. Đây chỉ là đếm phép so sánh trong cấu trúc Java, không đại diện số page I/O hoặc cost PostgreSQL. PostgreSQL B-tree là cây nhiều nhánh tối ưu cho page; planner vẫn có thể chọn sequential scan khi đọc nhiều hàng.`
   }],
-  check:[{q:'Vì sao PostgreSQL đôi khi chọn sequential scan dù có index?',options:['Index bị bỏ qua ngẫu nhiên','Đọc tỷ lệ lớn bảng có thể rẻ hơn nhiều heap fetch rời rạc','B-tree chỉ hỗ trợ chuỗi','MVCC cấm index scan'],answer:1,explain:'Planner chọn plan ước lượng có tổng cost thấp hơn; I/O và số hàng trả về quan trọng.'},{q:'Index thường làm chi phí nào tăng?',options:['INSERT/UPDATE và dung lượng','Chỉ SELECT','VACUUM bị cấm','Transaction isolation tự giảm'],answer:0,explain:'Mỗi thay đổi liên quan phải duy trì index, ghi WAL và dùng storage.'}], tags:['B-tree','index','EXPLAIN','PostgreSQL']
+  check:[{q:'Vì sao PostgreSQL đôi khi chọn sequential scan dù có index?',options:['Index bị bỏ qua ngẫu nhiên','Đọc tỷ lệ lớn bảng có thể rẻ hơn nhiều heap fetch rời rạc','B-tree chỉ hỗ trợ chuỗi','MVCC cấm index scan'],answer:1,explain:'Planner chọn plan ước lượng có tổng cost thấp hơn; I/O và số hàng trả về quan trọng.'},{q:'Index thường làm chi phí nào tăng?',options:['INSERT/UPDATE và dung lượng','Chỉ SELECT','VACUUM bị cấm','Transaction isolation tự giảm'],answer:0,explain:'Mỗi thay đổi liên quan phải duy trì index, ghi WAL và dùng storage.'},{q:'Partial index trong PostgreSQL giúp gì?',options:['Index chỉ chứa hàng thỏa predicate, nhỏ hơn và planner dễ chọn','Tự động chuyển seq scan thành index scan','Bỏ qua visibility check','Vô hiệu hóa autovacuum'],answer:0,explain:'Partial index {{WHERE status = ...}} chỉ index tập con hàng, giảm kích thước và chi phí duy trì; planner ước lượng cost chính xác hơn cho query lọc cùng predicate.'},{q:'Fillfactor 90 của B-tree index mặc định nhằm gì?',options:['Giảm chiều cao cây','Chừa chỗ trống trên leaf page để bớt split khi insert','Tăng fanout','Bật index-only scan'],answer:1,explain:'Fillfactor 90 để leaf page còn 10% chỗ trống; insert vào giữa dải khóa không phải split ngay, giảm write amplification. Giá đổi là index lớn hơn ~11%.'}], tags:['B-tree','index','EXPLAIN','PostgreSQL']
 },
 {
   id:'lesson-db-004',track:'db',order:4,title:'Connection pool: giới hạn tài nguyên và timeout khi cạn pool',level:'senior',minutes:25,
@@ -269,13 +468,93 @@ Little’s Law cho trực giác: concurrency xấp xỉ throughput nhân thời 
 | DB nhiều connection idle | tổng pool giữa replica, cấu hình service |
 | acquire timeout tăng | query latency, lock wait, tải DB |
 
+### Cơ chế từng bước: vòng đời một connection trong pool
+Khi ứng dụng cần truy cập database, pool quản lý vòng đời connection theo các bước:
+
+1. **Borrow (mượn slot).** Thread gọi {{dataSource.getConnection()}}. Pool kiểm tra {{Semaphore}} (bộ đếm slot rảnh): nếu còn thì giảm bộ đếm và trả connection đã mở; nếu hết thì thread vào hàng đợi FIFO, chờ tối đa {{connectionTimeout}} (mặc định 30s).
+2. **Giữ connection (critical section).** Connection được trả cho thread. Thread chạy logic DB (query, update, transaction). **Lưu ý quan trọng:** trong suốt thời gian này slot bị chiếm, không thread khác dùng được.
+3. **Release (trả slot).** Thread đóng connection (hoặc try-with-resources tự đóng). Pool tăng {{Semaphore}}, đánh dấu slot rảnh, và nếu có thread đang chờ, thread đầu tiên trong hàng đợi được đánh thức và nhận slot.
+4. **Health check / idle eviction.** Nền tảng (HikariCP) định kỳ kiểm tra connection ngồi im quá {{idleTimeout}} (mặc định 10 phút) thì đóng để nhường tài nguyên cho DB. {{maxLifetime}} (mặc định 30 phút) buộc đổi connection trước khi firewall/load balancer cắt.
+5. **Leak detection.** Nếu bật {{leakDetectionThreshold}} (ví dụ 60s), pool ghi log stack trace của chỗ đã {{borrow}} mà chưa {{release}} sau ngưỡng; giúp tìm code quên đóng.
+
+Vì sao lại như vậy? Pool chuyển chi phí mở connection (TCP, TLS, auth, process backend) từ "mỗi request" thành "mỗi slot khởi tạo". {{Semaphore}} đảm bảo fairness (FIFO) tránh starvation. Idle/max lifetime bảo vệ DB không bị tích tụ connection chết.
+
+~~~java
+// Mô phỏng pool đơn giản: Semaphore + mảng slot + timestamp mượn
+import java.util.concurrent.*;
+import java.time.Clock;
+
+class TinyPoolSim {
+    private final Semaphore permits;
+    private final long[] borrowedAt; // 0 = rảnh, >0 = thời điểm mượn (ms)
+    private final Clock clock;
+
+    TinyPoolSim(int capacity, Clock clock) {
+        if (capacity < 0) throw new IllegalArgumentException();
+        this.permits = new Semaphore(capacity, true); // fair = FIFO
+        this.borrowedAt = new long[capacity];
+        this.clock = clock;
+    }
+
+    int borrow(long timeoutMs) throws InterruptedException {
+        if (!permits.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS))
+            throw new IllegalStateException("Pool exhausted, timeout " + timeoutMs + "ms");
+        for (int i = 0; i < borrowedAt.length; i++) {
+            if (borrowedAt[i] == 0) { borrowedAt[i] = clock.millis(); return i; }
+        }
+        throw new IllegalStateException("Logic error: permit acquired but no slot");
+    }
+
+    boolean release(int id) {
+        if (id < 0 || id >= borrowedAt.length || borrowedAt[id] == 0) return false;
+        borrowedAt[id] = 0;
+        permits.release();
+        return true;
+    }
+
+    int leakedOver(long thresholdMs) {
+        long now = clock.millis();
+        int count = 0;
+        for (long t : borrowedAt) if (t > 0 && now - t > thresholdMs) count++;
+        return count;
+    }
+}
+~~~
+
+### So sánh các loại timeout
+
+| Timeout | Đặt ở đâu | Mặc định | Khi nổ nghĩa là |
+|---|---|---|---|
+| {{connectionTimeout}} | HikariCP | 30000 ms | không mượn được kết nối từ pool |
+| {{socketTimeout}} | JDBC socket | theo driver | DB đã nhận query nhưng trả lời quá chậm |
+| {{statement_timeout}} | PostgreSQL | 0 (tắt) | DB tự hủy query chạy quá lâu |
+| {{lock_timeout}} | PostgreSQL | 0 (tắt) | chờ lock quá lâu |
+| {{idle_in_transaction_session_timeout}} | PostgreSQL | 0 (tắt) | mở transaction rồi ngồi im |
+
+Mặc định các timeout phía database đều tắt, nên một query xấu có thể treo vô hạn và chiếm một slot mãi. Đó là lý do production nên đặt {{statement_timeout}} theo tầng (ví dụ 5 giây cho OLTP).
+
+### Lỗi hay gặp trên production
+1. **Transaction boundary quá rộng (gọi HTTP/Redis/Kafka bên trong transaction).** Triệu chứng: pool cạn nhanh, {{connectionTimeout}} liên tục, DB vẫn rảnh. Nguyên nhân: connection được giữ suốt transaction, remote call kéo dài từ ms lên giây, slot không được trả kịp. Cách sửa: thu hẹp transaction chỉ quanh phần DB; dùng outbox pattern ghi event rồi commit, relay gửi sau.
+2. **Thiếu {{statement_timeout}} ở PostgreSQL.** Triệu chứng: một query chậm (báo cáo, thiếu index) chiếm slot hàng phút, pool cạn. Nguyên nhân: mặc định {{statement_timeout = 0}} (vô hạn). Cách sửa: đặt {{statement_timeout = '5s'}} (hoặc phù hợp SLA) ở session/role/user/database level; HikariCP có thể set qua {{connectionInitSql}}.
+3. **Quên đóng connection (leak) trong nhánh exception.** Triệu chứng: pool từ từ cạn sau vài giờ/giờ, không có lỗi rõ ràng. Nguyên nhân: code {{getConnection()}} không bọc try-with-resources, exception xảy ra trước dòng {{close()}}. Cách sửa: luôn dùng try-with-resources; bật {{leakDetectionThreshold = 60000}} để log stack trace chỗ mượn.
+
+~~~java
+try (Connection c = ds.getConnection()) {
+    // logic DB
+}
+~~~
+4. **Tăng {{maximumPoolSize}} mù quáng khi pool cạn.** Triệu chứng: tăng pool 10→50, latency không giảm, DB bị OOM hoặc CPU 100%. Nguyên nhân: DB có core giới hạn; nhiều connection chỉ gây context switch, lock contention, memory pressure. Cách sửa: đo {{active}}, {{idle}}, {{pending}}, {{acquire time}} (HikariCP metrics), và {{wait_event}} từ {{pg_stat_activity}}; tối ưu query/transaction trước, mới tăng pool nếu thực sự cần.
+
 ### Pitfall production
 Quên close connection gây leak; giữ connection qua remote call làm cạn pool dù database rảnh. Pool timeout không đồng nghĩa query timeout. Đặt timeout riêng cho acquire, statement và transaction; bật leak detection ở mức chẩn đoán. Với HikariCP: {{maximumPoolSize}} mặc định 10; {{connectionTimeout}} (thời gian tối đa chờ lấy connection) mặc định 30000 ms, quá hạn thì {{getConnection()}} ném {{SQLTransientConnectionException}}; {{leakDetectionThreshold}} mặc định 0 (tắt). Timeout câu lệnh đặt ở DB/driver, ví dụ {{statement_timeout}} của PostgreSQL. Trong Spring, transaction boundary rộng có thể giữ connection xuyên qua xử lý không cần thiết.
 
 ### Liên hệ phỏng vấn
-Tính tổng connection tối đa qua số replica, giải thích vì sao pool là backpressure, rồi đề xuất đo active/idle/pending/acquire time và DB wait events trước khi tuning.
+- **"Connection pool là backpressure như thế nào?"** → Pool giới hạn số connection đồng thời tới DB. Khi request vượt quá capacity, thread phải chờ (hàng đợi FIFO) tới {{connectionTimeout}} rồi ném {{SQLTransientConnectionException}}. Đây là cơ chế backpressure ở tầng ứng dụng bảo vệ DB không bị quá tải.
+- **"Tại sao không nên tăng pool size mặc định 10 lên 100 khi thấy pool cạn?"** → DB có CPU core và RAM giới hạn. Mỗi connection là một process backend tốn memory. Thêm connection khi DB đã bão hòa CPU chỉ làm tăng context switch và lock contention, chứ không tăng throughput. Công thức khởi điểm: {{cores * 2 + spindles}} (SSD coi spindles = 0).
+- **"Ba loại timeout cần phân biệt là gì?"** → (1) {{connectionTimeout}} (HikariCP, 30s mặc định): chờ mượn slot từ pool. (2) {{statement_timeout}} (PostgreSQL, mặc định 0): DB tự hủy query chạy quá lâu. (3) {{socketTimeout}} (JDBC driver): chờ network packet từ DB. Phổ biến nhất là thiếu {{statement_timeout}}, để một query xấu treo slot vô hạn.
+- **"Leak detection trong HikariCP hoạt động sao?"** → {{leakDetectionThreshold}} (ms, mặc định 0=tắt). Khi connection được mượn quá lâu vượt ngưỡng, pool log stack trace tại điểm {{borrow}} (không phải điểm bị kẹt). Giúp tìm code quên {{try-with-resources}} hoặc gọi service chậm bên trong transaction.
 
-> Senior tip: đặt pool size theo sức chịu tải DB và workload benchmark; một pool nhỏ ổn định thường tốt hơn nhiều backend tranh CPU và I/O.
+> Senior tip: khi pool cạn, thứ cần tìm là "ai đang giữ slot và giữ bao lâu", không phải "còn thiếu bao nhiêu slot"; một câu {{SELECT state, now() - xact_start FROM pg_stat_activity ORDER BY 2 DESC}} thường trả lời ngay.
 `,
   exercises:[{title:'Pool hữu hạn với acquire/release',prompt:`Cài {{TinyPool}} có {{capacity}} slot đánh số từ 0 đến capacity - 1. {{acquire()}} đánh dấu và trả id slot rảnh nhỏ nhất, hoặc {{-1}} khi hết slot (mô phỏng timeout). {{release(id)}} nhả slot và trả {{true}} nếu id hợp lệ và slot đang được mượn; id ngoài phạm vi hoặc slot đang rảnh (kể cả release lần hai) trả {{false}}. Không dùng sleep/thread.`,starter:`class TinyPool {
     TinyPool(int capacity) { throw new UnsupportedOperationException("TODO"); }
@@ -310,7 +589,7 @@ Tính tổng connection tối đa qua số replica, giải thích vì sao pool l
 }`,
   hints:['Mảng boolean biểu diễn slot đang được mượn.','Acquire chọn slot rảnh đầu tiên; release cần từ chối id ngoài phạm vi và slot chưa mượn.'],
   explain:`Pool giữ tối đa capacity slot. Khi không còn slot rảnh, mô phỏng trả -1 như tình huống timeout; triển khai thật thường chờ trong giới hạn thời gian. Release phải idempotent theo hợp đồng đã chọn, ở đây lần release thứ hai trả false. Ứng dụng thật cần luôn đóng connection bằng try-with-resources để slot quay về pool kể cả khi exception.`}],
-  check:[{q:'Pool active chạm max và pending tăng, nên xem gì trước?',options:['Tăng max lên rất lớn ngay','Acquire time, query/lock latency và thời gian giữ transaction','Xóa index','Tắt timeout'],answer:1,explain:'Cần tìm nguồn chiếm connection và kiểm tra tải DB; tăng pool có thể làm tổng concurrency vượt sức DB.'},{q:'Remote HTTP call nằm trong transaction DB có thể gây gì?',options:['Giảm thời gian giữ connection','Giữ connection trong lúc chờ mạng, làm cạn pool','Tự động retry SQL','Tắt MVCC'],answer:1,explain:'Connection thường được giữ đến khi transaction kết thúc; latency ngoài DB kéo dài thời gian chiếm slot.'}],tags:['connection-pool','PostgreSQL','HikariCP']
+  check:[{q:'Pool active chạm max và pending tăng, nên xem gì trước?',options:['Tăng max lên rất lớn ngay','Acquire time, query/lock latency và thời gian giữ transaction','Xóa index','Tắt timeout'],answer:1,explain:'Cần tìm nguồn chiếm connection và kiểm tra tải DB; tăng pool có thể làm tổng concurrency vượt sức DB.'},{q:'Remote HTTP call nằm trong transaction DB có thể gây gì?',options:['Giảm thời gian giữ connection','Giữ connection trong lúc chờ mạng, làm cạn pool','Tự động retry SQL','Tắt MVCC'],answer:1,explain:'Connection thường được giữ đến khi transaction kết thúc; latency ngoài DB kéo dài thời gian chiếm slot.'},{q:'Mặc định {{statement_timeout}} của PostgreSQL là bao nhiêu và hệ quả gì?',options:['5s, query chậm tự bị hủy','0 (tắt), query xấu có thể treo slot vô hạn','30s, tương đương connectionTimeout','1 phút, đủ cho hầu hết OLTP'],answer:1,explain:'Mặc định 0 = vô hạn. Một query quên WHERE hoặc thiếu index có thể chạy cả giờ, chiếm slot và cạn pool.'},{q:'HikariCP {{leakDetectionThreshold}} log cái gì khi connection bị leak?',options:['Stack trace tại điểm đang bị kẹt','Stack trace tại điểm đã {{borrow}} (lấy connection)','Danh sách query chậm','Số connection đang idle'],answer:1,explain:'Log vị trí code gọi {{getConnection()}} mà chưa trả lại, giúp tìm nhánh exception quên close hoặc gọi service chậm trong transaction.'}],tags:['connection-pool','PostgreSQL','HikariCP']
 },
 {
   id:'lesson-db-005',track:'db',order:5,title:'Offset pagination và keyset pagination: chi phí bỏ qua hàng',level:'mid',minutes:25,
@@ -346,10 +625,42 @@ Cursor cần bao gồm toàn bộ khóa sắp xếp và encode đúng kiểu, k�
 
 PostgreSQL planner vẫn có thể chọn scan khác tùy predicate, thống kê và selectivity. Xác nhận bằng {{EXPLAIN (ANALYZE, BUFFERS)}} và index khớp filter + order. API nên encode cursor có kiểm tra/opaque để tránh client sửa tùy ý.
 
-### Liên hệ phỏng vấn
-Nêu rõ workload: admin cần nhảy trang có thể dùng offset ở tập vừa; feed/infinite scroll thường hợp keyset. Đảm bảo thứ tự total order, cursor tie-breaker, composite index và semantics khi dữ liệu đổi.
+### Cơ chế từng bước
+1. **Offset: đếm từ đầu.** DB quét theo thứ tự sắp xếp, bỏ qua {{OFFSET}} hàng trước khi trả kết quả. Mỗi hàng bỏ qua tốn CPU (kiểm tra MVCC visibility) và có thể tốn I/O (đọc page từ đĩa). Chi phí lớn theo tỷ lệ offset, không phải theo {{LIMIT}}.
+2. **Keyset: index seek đến cursor.** Cursor là giá trị khóa của hàng cuối trang trước (ví dụ cặp created_at, id). Trang tiếp theo dùng {{WHERE (sort_col, tie_breaker) > (last_val, last_id)}}. B-tree seek đến vị trí cursor trong O(log N), không quét các hàng trước.
+3. **Trả trang dữ liệu.** Cả hai chỉ đọc {{LIMIT}} hàng liên tiếp sau vị trí bắt đầu. Keyset đi dọc qua các leaf page liền kề (next pointer); offset tiếp tục quét từ vị trí đã đếm đến khi đủ {{LIMIT}}.
+4. **Dữ liệu thay đổi giữa request.** Offset lệch: insert hàng trước offset làm trang lùi (bị bỏ), delete làm nhảy (bị trùng). Keyset ổn định hơn vì cursor gắn khóa cụ thể; nhưng dữ liệu mới chèn trước cursor sẽ không xuất hiện — đây là đặc tính, không phải bug.
+5. **Encode/decode cursor an toàn.** Cursor chứa toàn bộ cột ORDER BY, encode base64/JSON, ký HMAC. Server decode, verify chữ ký, dựng predicate. Nếu filter đổi, cursor cũ bị từ chối để tránh kết quả khó hiểu.
 
-> Senior tip: đo trang sâu, không chỉ trang đầu; OFFSET thường biểu hiện chi phí ở tail latency khi offset tăng.
+**Ví dụ số liệu:** Bảng 10 triệu hàng, {{LIMIT}} 20.
+- Trang 1 (offset 0): đọc 20 hàng, nhanh.
+- Trang 50000 (offset 1.000.000): offset đọc khoảng 1.000.020 hàng rồi trả 20 (chi phí tuyến tính). Keyset chỉ seek đến cursor và đọc 20 hàng (chi phí hằng số).
+Vì vậy offset phù hợp UI nhảy trang (trang nông), keyset phù hợp infinite scroll/feed.
+
+~~~java
+class PagingCostModel {
+    static long offsetCost(long n, long offset, long limit) { return Math.min(n, offset + limit); }
+    static long keysetCost(long n, long cursor, long limit) { return Math.min(limit, Math.max(0, n - cursor)); }
+}
+// 10M hàng, trang 50000 (offset=1M, limit=20): offsetCost ≈ 1,000,020 | keysetCost ≈ 20
+~~~
+
+### Lỗi hay gặp trên production
+1. **Dùng OFFSET lớn cho infinite scroll/feed.** Trang đầu <50ms, trang 10000 >5s. Nguyên nhân: chi phí tuyến tính với offset. Sửa: keyset + cursor {{(created_at, id)}} + composite index.
+2. **Cursor thiếu tie-breaker.** Trùng/lỡ hàng khi nhiều bản ghi cùng timestamp. Sửa: luôn thêm id: {{WHERE (created_at, id) > (?, ?)}}.
+3. **Client tự sửa cursor/dùng lại cursor cũ sau đổi filter.** Kết quả lạ, không báo lỗi SQL. Sửa: ký cursor (HMAC), gắn version/filter hash, từ chối cursor không khớp.
+4. **Thiếu index composite ORDER BY + WHERE.** Keyset chậm, planner chọn seq scan. Sửa: index {{(filter_col, sort_col, tie_breaker)}} theo thứ tự predicate.
+
+### Lựa chọn offset hay keyset?
+Offset phù hợp khi trang số ít và cần nhảy thẳng trang N (trang quản trị). Keyset phù hợp feed/infinite scroll, danh sách lớn, dữ liệu thay đổi giữa các trang. Ngưỡng thực tế: offset dưới vài nghìn hàng thì nhanh, trên đó chi phí tăng tuyến tính nên chuyển sang keyset. Keyset không hỗ trợ nhảy thẳng trang số tùy ý.
+
+### Liên hệ phỏng vấn
+- **"Offset vs keyset: khác nhau ở đâu, khi nào dùng?"** → Offset đếm từ đầu O(offset); keyset cursor seek O(log N). Admin nhảy trang: offset; feed/infinite scroll: keyset.
+- **"Tại sao keyset cần tie-breaker (id)?"** → Nhiều hàng cùng timestamp -> cursor không xác định duy nhất ranh giới -> trùng/lỡ hàng.
+- **"Cursor opaque là gì, cần ký HMAC?"** → Server tạo, encode base64/JSON, ký HMAC để client không tự sửa; validate chữ ký và filter version khi decode.
+- **"Làm sao planner chọn index cho keyset?"** → Composite index: WHERE filter columns trước -> ORDER BY columns -> tie-breaker. Dùng {{EXPLAIN (ANALYZE, BUFFERS)}} xác nhận.
+
+> Senior tip: đo trang sâu, không chỉ trang đầu; OFFSET biểu hiện chi phí ở tail latency khi offset tăng.
 `,
   exercises:[{title:'Đếm hàng bỏ qua ở offset và keyset',prompt:`Cài {{PagingCost}}. Mô hình: bảng n hàng có khóa unique 1..n đã sắp tăng dần. {{offsetCost(n, offset, limit)}} trả số hàng phải đi qua từ đầu để trả trang: hàng bị bỏ qua cộng hàng trả về, không vượt quá n. {{keysetCost(n, after, limit)}} giả định index seek thẳng tới cursor {{after}} (khóa cuối của trang trước) nên chỉ đếm số hàng của trang tiếp theo: các khóa lớn hơn after, tối đa limit hàng.`,starter:`class PagingCost {
     static int offsetCost(int n, int offset, int limit) { throw new UnsupportedOperationException("TODO"); }
@@ -379,7 +690,7 @@ Nêu rõ workload: admin cần nhảy trang có thể dùng offset ở tập v�
 }`,
   hints:['Offset scan từ đầu qua cả hàng bị skip lẫn hàng được trả.', 'Với cursor hợp lệ sau phần tử thứ after, chỉ thăm min(limit, n-after) phần tử tiếp theo.'],
   explain:`Trong mô hình đã sắp thứ tự, offset cần đi qua offset + limit hàng, bị giới hạn bởi tổng n. Keyset giả định index seek tới cursor nên chỉ tính hàng của trang kế tiếp. Đây là mô hình chi phí hàng logic; DB thật còn có page I/O, visibility check, filter và cache. Composite B-tree theo cột filter/order giúp seek đúng vùng. OFFSET vẫn hợp với trang nông hoặc cần nhảy tới trang số cụ thể.`}],
-  check:[{q:'Tại sao keyset thường cần tie-breaker như id?',options:['Để ép PostgreSQL dùng hash join','Để thứ tự là total order khi sort key bị trùng','Để bỏ MVCC','Để offset nhanh hơn'],answer:1,explain:'Nếu nhiều hàng cùng timestamp, cursor chỉ timestamp không định vị duy nhất ranh giới trang.'},{q:'Keyset pagination có đảm bảo snapshot nhất quán xuyên nhiều request không?',options:['Có, luôn luôn','Không; cursor không thay thế snapshot transaction','Chỉ khi không có index','Có nếu LIMIT là số chẵn'],answer:1,explain:'Keyset xác định vị trí tiếp theo; dữ liệu vẫn có thể thay đổi giữa các HTTP request.'}],tags:['pagination','keyset','PostgreSQL','B-tree']
+  check:[{q:'Tại sao keyset thường cần tie-breaker như id?',options:['Để ép PostgreSQL dùng hash join','Để thứ tự là total order khi sort key bị trùng','Để bỏ MVCC','Để offset nhanh hơn'],answer:1,explain:'Nếu nhiều hàng cùng timestamp, cursor chỉ timestamp không định vị duy nhất ranh giới trang.'},{q:'Keyset pagination có đảm bảo snapshot nhất quán xuyên nhiều request không?',options:['Có, luôn luôn','Không; cursor không thay thế snapshot transaction','Chỉ khi không có index','Có nếu LIMIT là số chẵn'],answer:1,explain:'Keyset xác định vị trí tiếp theo; dữ liệu vẫn có thể thay đổi giữa các HTTP request.'},{q:'Khi dùng keyset với ORDER BY created_at DESC, id DESC, predicate WHERE đúng là gì?',options:['WHERE (created_at, id) > (?, ?)','WHERE (created_at, id) < (?, ?)','WHERE created_at < ? OR (created_at = ? AND id < ?)','WHERE created_at > ? AND id > ?'],answer:2,explain:'Row comparison (created_at, id) < ... chỉ hoạt động khi mọi cột cùng chiều ASC. Trộn ASC/DESC phải viết điều kiện OR tách từng cột theo thứ tự ưu tiên.'},{q:'Composite index cho keyset pagination nên đặt cột theo thứ tự nào?',options:['ORDER BY columns trước, WHERE columns sau','WHERE filter columns trước, rồi ORDER BY columns, cuối tie-breaker','Chỉ cần index trên cột sort','Primary key đã đủ cho mọi trường hợp'],answer:1,explain:'Index phải hỗ trợ cả filter (WHERE) lẫn range scan (ORDER BY). Thứ tự: equality filter -> range/order -> tie-breaker.'}],tags:['pagination','keyset','PostgreSQL','B-tree']
 },
 {
   id:'lesson-db-006',track:'db',order:6,title:'Bên trong connection pool: borrow, timeout khi chờ và phát hiện leak',level:'senior',minutes:30,
@@ -923,7 +1234,7 @@ Tuple mà không snapshot nào còn có thể cần gọi là **dead tuple**. VA
 Điều kiện 1 có một hệ quả sống còn: **VACUUM không được phép xoá tuple mà một snapshot đang mở còn cần.** Nên chỉ cần một transaction mở lâu là cả bảng bắt đầu phình:
 
 ~~~sql
--- Ai dang giu "xmin horizon" (ngan cach thu nhat khi bang phinh bat thuong)?
+-- Ai đang giữ "xmin horizon" (ngăn chặn thứ nhất khi bảng phình bất thường)?
 SELECT pid, state, now() - xact_start AS mo_du_ra, left(query, 60) AS cau_lenh
 FROM pg_stat_activity
 WHERE xact_start IS NOT NULL
@@ -1062,7 +1373,7 @@ class MvccTable {
     }
 
     void update(int xid, int value) {
-        closeOpen(xid);                       // khong xoa ban cu, chi dong dau cua no lai
+        closeOpen(xid);                       // không xóa bản cũ, chỉ đóng đầu của nó lại
         rows.add(new Version(xid, 0, value)); // ban moi la mot tuple khac, cung id
     }
 
@@ -1146,14 +1457,14 @@ Trong PostgreSQL, log sống ở thư mục **pg_wal**, gồm các file segment 
 
 ### Commit thật ra là chuyện gì
 ~~~seq
-title: Duong di cua mot UPDATE, tu luc chay den khi duoc coi la ben
+title: Đường đi của một UPDATE, từ lúc chạy đến khi được coi là bền
 actors: App | Backend | WAL | File du lieu
 App -> Backend: UPDATE account SET balance = 12 WHERE id = 42
 Backend -> Backend: sua tuple trong shared buffers, page tro nen dirty
 Backend -> WAL: ghi record thay doi, nhan LSN 100
 App -> Backend: COMMIT
 Backend -> WAL: ghi record COMMIT roi fsync ca log
-WAL --> App: OK, giao dich cua ban da ben
+WAL --> App: OK, giao dịch của bạn đã bền
 note File du lieu: page chua hang 42 van la trang cu, chua bi ghi
 Backend -> File du lieu: checkpoint sau nay moi ghi page do
 ~~~
@@ -1726,16 +2037,45 @@ DB -> Data: trạng thái: A=80, B=120
 - {{synchronous_commit}} điều khiển khi fsync: mặc định an toàn; tắt có thể mất vài transaction gần nhất khi crash OS, đổi lại throughput cao hơn.
 - Có full page write sau checkpoint để chống torn page. Replica streaming nhận WAL; PITR dùng base backup + WAL archive.
 
-### Lỗi hay gặp
-- Áp dụng mọi record khi recover: sai, transaction chưa COMMIT phải bỏ qua.
-- Ghi trang dữ liệu rồi mới ghi log: vi phạm write-ahead.
-- Nghĩ checkpoint cho phép xóa hết log: phải giữ WAL đủ cho recovery/replica.
-- Bỏ qua thứ tự LSN: redo phải theo thứ tự log.
+### Cơ chế từng bước: từ UPDATE đến recovery sau crash
+1. **Sửa trong shared buffers.** UPDATE đọc page vào RAM, sửa tuple, đánh dấu dirty. Chỉ ở RAM.
+2. **Ghi WAL trước commit.** Tạo WAL record append vào buffer. LSN tăng dần. **Quy tắc: WAL phải fsync TRƯỚC khi trả "COMMIT OK".**
+3. **COMMIT: ghi COMMIT record, fsync WAL, trả OK.** Trang dirty chưa flush.
+4. **Crash: RAM mất, WAL trên đĩa nguyên vẹn.** Nhờ fsync bước 3.
+5. **Recovery: redo từ checkpoint.** Đọc checkpoint, từ LSN đó đọc WAL: CÓ COMMIT -> redo; KHÔNG CÓ COMMIT -> bỏ qua. Theo thứ tự LSN.
+6. **Checkpoint thu hồi WAL.** Ghi dirty page ra data file, fsync, ghi CHECKPOINT. WAL trước đó không còn cần.
+
+Vì sao? Ghi page ngẫu nhiên (random I/O) chậm, dễ torn page. WAL biến thành append tuần tự + 1 fsync/commit. Trang flush lazy, gộp nhiều sửa. Crash chỉ mất RAM, WAL đủ dựng lại.
+
+~~~java
+class MiniWalRecovery {
+    static class Rec { int lsn; String tx, op, key; Integer val; }
+    static Map<String, Integer> recover(List<Rec> log, int fromLsn, Map<String, Integer> base) {
+        Map<String, Integer> state = new LinkedHashMap<>(base);
+        Set<String> committed = new LinkedHashSet<>();
+        for (Rec r : log) if (r.lsn >= fromLsn && "COMMIT".equals(r.op)) committed.add(r.tx);
+        for (Rec r : log) if (r.lsn >= fromLsn && ("SET".equals(r.op) || "DEL".equals(r.op)) && committed.contains(r.tx)) {
+            if ("SET".equals(r.op)) state.put(r.key, r.val); else state.remove(r.key);
+        }
+        return state;
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+1. **Tắt {{synchronous_commit = off}} cho tài chính.** Mất điện -> đơn "thành công" mất. Nguyên nhân: COMMIT trả OK trước WAL fsync. Sửa: không tắt synchronous_commit.
+2. **Slot không tiêu thụ -> {{pg_wal}} đầy.** Disk tăng không kiểm soát, DB đứng. Nguyên nhân: standby/CDC down nhưng slot giữ WAL. Sửa: monitor {{pg_replication_slots.active}}; drop slot inactive.
+3. **Không bật {{archive_command}}.** Chỉ có backup base cũ, mất dữ liệu. Nguyên nhân: PITR cần base + WAL archive. Sửa: archive_command đẩy WAL sang S3/GCS, test restore định kỳ.
+4. **Ghi data trước WAL.** Crash -> dữ liệu không nhất quán. Nguyên nhân: bảng unlogged hoặc extension bỏ qua WAL. Sửa: không dùng unlogged table cho dữ liệu cần bền.
 
 ### Liên hệ phỏng vấn
-Nhấn mạnh: (1) commit trả lời client chỉ sau COMMIT record fsync; (2) crash recovery redo transaction có COMMIT từ checkpoint; (3) đánh đổi {{synchronous_commit}}/checkpoint/IO. "Mất điện có mất đơn đã báo thành công không?" -> không, nếu COMMIT đã durable.
+- **"Mất điện có làm mất đơn đã commit không?"** → Không ({{synchronous_commit = on}} mặc định). COMMIT đã fsync WAL trước khi OK; recovery redo.
+- **"Tại sao WAL trước data file?"** → Write-ahead: fsync WAL xong mới báo commit. Ghi data trước vi phạm quy tắc.
+- **"Checkpoint ảnh hưởng recovery?"** → Ghi sạch dirty page, đánh dấu LSN an toàn. Recovery chỉ đọc từ checkpoint; thưa -> lâu, dày -> I/O cao.
+- **"Slot giữ WAL thế nào?"** → Lưu {{restart_lsn}}. Slot inactive giữ WAL mãi -> pg_wal đầy. Phải drop slot không dùng.
+- **"full page write là gì?"** → Sau checkpoint, lần sửa đầu page ghi cả 8 KB. Chống torn page: crash ghi nửa page, recovery có bản full.
 
-> Senior tip: theo dõi {{pg_wal}} phình bất thường (thường do replication slot giữ hoặc archiving kẹt), thời gian checkpoint và {{pg_stat_bgwriter}}.`,
+> Senior tip: theo dõi {{pg_wal}} phình (thường do slot giữ hoặc archiving kẹt), thời gian checkpoint và {{pg_stat_bgwriter}}.`,
   exercises: [
     {
       title: 'WalStore: commit, crash giả lập, recover()',
@@ -1899,6 +2239,17 @@ class WalStore {
       ],
       answer: 1,
       explain: 'Checkpoint đánh dấu base đã an toàn tới mức nào, nên recover không cần đọc lại toàn bộ log từ đầu.'
+    },
+    {
+      q: 'Replication slot làm pg_wal đầy ổ cứng khi nào?',
+      options: [
+        'Khi standby đang replicate bình thường',
+        'Khi slot inactive (standby down) không bị drop, giữ restart_lsn không cho WAL tái sử dụng',
+        'Khi checkpoint chạy quá thường xuyên',
+        'Khi synchronous_commit = off'
+      ],
+      answer: 1,
+      explain: 'Slot lưu restart_lsn (LSN cũ nhất còn cần). Slot inactive không tiêu thụ WAL -> pg_wal không được quay vòng, dung lượng tăng không kiểm soát.'
     }
   ],
   related: ['db-006', 'db-035'],

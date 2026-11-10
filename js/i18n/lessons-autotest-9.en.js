@@ -23,7 +23,7 @@ App.i18n.content({
 
 The danger of flakiness is that it **competes** with the other two kinds the moment you look at CI: the pipeline goes red, somebody says "that one is flaky, just retry it", and a real bug gets swallowed by the retry. That is why a lot of QA literature classifies flakiness as **technical debt** you have to pay down, not as "a small incident".
 
-### Where it comes from: a list you can diagnose with quickly
+### Where it comes from: a list you can diagnose quickly
 **1. Time and waiting.** Sleeping with {{Thread.sleep(2000)}} and then asserting: the CI box is slower than yours. Waiting for a condition that **never happens** (a CSS animation, a WebSocket that has not pushed its data yet). Clocks: a test that generates a report "on February 31st", a test that runs at 23:59:59.9, an "expires in 7 days" test that crosses midnight, or CI running UTC while you run UTC+7 — the kind of bug that only blows up at night in Vietnam time.
 
 **2. Ordering and state dependencies.** Test A logs in and leaves that tab as it is; test B assumes somebody already logged in. Sequential run is green, random-order run is red. JUnit 5 sorts methods with some {{MethodOrderer}} that is **not the order you wrote the code in**, so this kind of bug occasionally "heals itself" — which makes it even more dangerous.
@@ -37,7 +37,7 @@ The danger of flakiness is that it **competes** with the other two kinds the mom
 **6. The test creating nondeterminism on its own.** {{new Random()}} without a seed, iterating a {{HashMap}} and comparing it to a hard-coded list, {{Instant.now()}} called twice giving two different values, locale-dependent strings ({{toLowerCase}} in Turkish).
 
 ### Why rerun-on-fail is a double-edged sword
-TestNG has {{IRetryAnalyzer}}, JUnit 5 has an extension you write yourself (or a third-party library such as JUnit Pioneer's {{@RetryingTest}}), Playwright (the Node flavour) has {{retries}} in the config. Everybody turns it on because it makes CI "green again" instantly. Now do the arithmetic: a test with a **20%** chance of failing, retried twice (3 attempts at most). The probability it is **still red** = 0.2³ = 0.8%. A suite of 500 tests of which 10 are flaky like that → the probability that **all 10** go green is 0.992¹⁰ ≈ 92%. In other words, every night CI is green with high probability, and people forget that those 10 tests are broken.
+TestNG has {{IRetryAnalyzer}}, JUnit 5 has an extension you write yourself (or a third-party library such as JUnit Pioneer's {{@RetryingTest}}), Playwright has {{retries}} in the config. Everyone turns it on because it makes CI "green again" instantly. Now do the arithmetic: a test with a **20%** chance of failing, retried twice (3 attempts at most). The probability it is **still red** = 0.2³ = 0.8%. A suite of 500 tests of which 10 are flaky like that → the probability that **all 10** go green is 0.992¹⁰ ≈ 92%. In other words, every night CI is green with high probability, and people forget that those 10 tests are broken.
 
 The problem is not the wasted time (retry makes the slowest test run 3 times, and it usually sits exactly at the most expensive spot). The problem is the **signal**: as the flaky rate climbs, people start retrying **tests that are red because of a real bug** as well, then hit merge. A healthy policy:
 - retry **yes**, but a small number of times (1), only for a listed group of tests (tag), and **every retry must be written to the log** so you can count them;

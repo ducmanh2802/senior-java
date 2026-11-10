@@ -372,6 +372,22 @@ headers.set("x-request-timeout-ms", String.valueOf(remaining));
 - **gRPC**: the deadline lives in the {{Context}} and is propagated automatically when you call further within the same context.
 - **DB**: you can set the query timeout from the remaining time (JDBC {{Statement.setQueryTimeout}}, PostgreSQL {{statement_timeout}}).
 
+The diagram below shows deadline propagation with timeout shrinking by depth:
+
+~~~seq
+title: Deadline propagation: timeout shrinks with depth
+actors: Client | Gateway | OrderSvc | Payment | External
+Client -> Gateway: deadline 5s
+Gateway -> OrderSvc: timeout 4.5s
+OrderSvc -> Payment: timeout 3.5s
+Payment -> External: timeout 1.5s
+External --> Payment: ok
+Payment --> OrderSvc: ok
+OrderSvc --> Gateway: ok
+Gateway --> Client: response
+note External..Client: stop where it expires
+~~~
+
 ### Timeouts shrink with depth
 | Hop | Service | Example timeout | Why |
 |---|---|---|---|
@@ -422,6 +438,21 @@ A ship has **watertight bulkheads**: if one compartment is breached, water fills
 No bulkhead:  [200 threads] ──► slow Payment: 200/200 stuck → the whole service is dead
 Bulkhead:     Payment ≤ 25 │ Catalog ≤ 50 │ User ≤ 50 │ the rest for other work
               slow Payment: 25 stuck, call #26 → BulkheadFullException → fallback
+~~~
+
+The diagram below shows the bulkhead isolating each dependency:
+
+~~~seq
+title: Bulkhead: slow Payment does not block Catalog
+actors: Client | OrderSvc | PaymentAPI | CatalogAPI
+Client -> OrderSvc: request
+OrderSvc -> PaymentAPI: charge
+PaymentAPI --> OrderSvc: slow
+OrderSvc -> CatalogAPI: list
+CatalogAPI --> OrderSvc: fast
+OrderSvc -> OrderSvc: fallback for Payment
+OrderSvc --> Client: partial response
+note OrderSvc..PaymentAPI: max 25 concurrent calls
 ~~~
 
 ### Thread pool isolation (Resilience4j)

@@ -34,14 +34,71 @@ Lưu timestamp của từng request được nhận trong cửa sổ. Khi thời
 | Sliding log | Không vượt limit trong mọi cửa sổ | O(request/window) | Gần như chính xác |
 | Fixed window | Có thể dồn ở ranh giới | O(1)/key | Cao ở ranh giới |
 
+### Cơ chế từng bước: Token bucket thực thi như thế nào
+Để hiểu rõ VÌ SAO token bucket lại cho phép burst nhưng vẫn giới hạn tốc độ trung bình, hãy đi lần lượt từng bước thực thi khi một request đến:
+
+**Bước 1: Tính elapsed time**
+- Lấy thời điểm hiện tại {{nowMillis}} trừ thời điểm lần trước cập nhật bucket {{lastRefillMillis}}.
+- Nếu kết quả âm (clock lùi do NTP hoặc test giả), coi elapsed = 0. Điều này ngăn token được "mint" thêm khi thời gian bị đảo ngược.
+- {{lastRefillMillis}} được cập nhật đơn điệu: luôn lấy max của giá trị cũ và {{nowMillis}}.
+
+**Bước 2: Nạp token theo tỷ lệ refill**
+- Token mới = {{elapsedMs * refillRate / 1000.0}} (vì rate thường tính theo token/giây, còn elapsed tính milliseconds).
+- Token hiện tại = {{Math.min(capacity, currentTokens + newTokens)}}. Hàm {{Math.min}} quan trọng: nó đảm bảo bucket không bao giờ đầy hơn capacity, ngay khi hệ thống idle rất lâu.
+- Đây là lý do burst **có giới hạn**: chỉ có thể tích lũy tối đa {{capacity}} token.
+
+**Bước 3: Quyết định cho phép hay từ chối**
+- Nếu {{currentTokens >= 1}}: trừ 1 token, trả về true (cho phép).
+- Ngược lại: trả về false (từ chối, HTTP 429). Token **không** bị trừ khi từ chối.
+
+**Ví dụ số**: Capacity=10, Rate=5 token/giây. Bucket mới tạo đầy 10 token. Client gửi 10 request liên tiếp → hết token. Dừng 200 ms → nạp thêm 1 token. Gửi 1 request → cho phép, còn 0 token. Dùng 1 giây → nạp 5 token, bucket có 5 token.
+
+~~~java
+class TokenBucket {
+    private final int capacity;
+    private final double rate;       // token per second
+    private double tokens;
+    private long lastRefillMs;
+    TokenBucket(int cap, double rate, long now) {
+        this.capacity = cap; this.rate = rate;
+        this.tokens = cap; this.lastRefillMs = now;
+    }
+    boolean allow(long now) {
+        long elapsed = Math.max(0, now - lastRefillMs);
+        lastRefillMs = Math.max(lastRefillMs, now);
+        tokens = Math.min(capacity, tokens + elapsed * rate / 1000.0);
+        if (tokens < 1.0) return false;
+        tokens -= 1.0; return true;
+    }
+}
+~~~
+
+### Sliding window log: từng bước
+**Bước 1**: Xoá các timestamp cũ hơn {{now - windowMs}} khỏi danh sách (cleanup).
+**Bước 2**: Nếu {{list.size() < limit}}: thêm {{now}} vào danh sách, cho phép.
+**Bước 3**: Ngược lại: từ chối. Danh sách không đổi.
+Độ phức tạp: cleanup O(n) trong trường hợp xấu, nhưng amortized O(1) nếu cleanup đều đặn.
+
 ### Cài đặt trong ứng dụng
 Trong một JVM đơn, đồng bộ hoá bucket hoặc dùng cấu trúc đồng thời đúng cách. Với Redis, ghép đọc trạng thái, tính token và ghi thành một script nguyên tử; TTL dọn key không hoạt động. Định nghĩa rõ khi Redis lỗi: fail-open tăng rủi ro quá tải, fail-closed làm mất availability. Bucket4j cung cấp nhiều backend và cấu hình refill; Redis/Gateway phù hợp khi quota cần chia sẻ. Cần metric cho allowed, rejected, số key và độ trễ backend, nhưng tránh gắn user id vào metric label gây cardinality bùng nổ.
+
+### Lỗi hay gặp trên production
+1. **Dùng wall clock thay vì monotonic clock**: Khi NTP chỉnh giờ lùi, {{System.currentTimeMillis()}} giảm, elapsed âm khiến bucket nạp token sai (hoặc nạp rất nhiều nếu code không clamp). Dùng {{System.nanoTime()}} hoặc truyền clock vào để test.
+2. **Quên clamp token ở capacity**: Nếu chỉ làm {{tokens += elapsed * rate}} mà không {{Math.min(capacity, ...)}}, idle lâu sẽ tạo burst khổng lồ vượt quota thiết kế.
+3. **Key theo IP phía sau proxy/load balancer**: Không xác thực {{X-Forwarded-For}} hoặc {{Forwarded}} header khiến nhiều client cùng IP chia sẻ quota, hoặc attacker spoof IP. Cần trust proxy config và validate header.
+4. **Nhiều replica giữ bucket cục bộ**: Mỗi instance có bucket riêng → tổng quota thực tế = quota × số replica. Phải dùng Redis shared state với Lua script atomic, hoặc chia quota tĩnh cho từng replica.
+5. **Token cost không phân biệt endpoint**: Health check nhẹ và upload 1 GB cùng tốn 1 token. Nên gán weight theo endpoint (bytes, CPU cost) và trừ {{cost}} token thay vì luôn 1.
 
 ### Pitfall vận hành
 Token cost có thể khác nhau theo endpoint; nếu limiter chỉ tính request thì upload 1 GB ngang một health check. Key theo IP phía sau proxy sai nếu không xác thực header proxy tin cậy. Nhiều replica với cấu hình refill giống nhau không tạo ra quota toàn cụm nếu mỗi replica giữ bucket riêng. Khi đổi capacity/rate, cần biết state cũ được migrate hay reset. Trả 429 nên có Retry-After phù hợp, nhưng client vẫn phải có jitter để tránh cả đám retry cùng lúc.
 
 ### Liên hệ phỏng vấn
-Nêu trước scope của quota và semantics khi vượt giới hạn; sau đó chọn bucket nếu cần burst có kiểm soát, sliding log nếu yêu cầu chính xác theo cửa sổ. Bài tập dưới đây dùng đồng hồ giả truyền vào, vì vậy test tại biên thời gian không flaky và không cần sleep.`, {
+Nêu trước scope của quota và semantics khi vượt giới hạn; sau đó chọn bucket nếu cần burst có kiểm soát, sliding log nếu yêu cầu chính xác theo cửa sổ. Bài tập dưới đây dùng đồng hồ giả truyền vào, vì vậy test tại biên thời gian không flaky và không cần sleep.
+
+**Câu hỏi thường gặp thêm:**
+- *Vì sao sliding window log tốn nhiều bộ nhớ hơn token bucket?* Vì phải lưu timestamp từng request, trong khi token bucket chỉ lưu 2 số (tokens, lastRefill).
+- *Làm sao xử lý clock drift trong distributed rate limiter?* Dùng centralized store (Redis) làm nguồn thời gian chân lý, hoặc đồng hồ logic (Hybrid Logical Clock). Trên client chỉ gửi request, không tự tính token.
+- *Fail-open hay fail-closed khi Redis down?* Tùy SLO: payment service chọn fail-closed (an toàn), search API chọn fail-open (khả dụng). Luôn có circuit breaker bao rate limiter call Redis.`, {
       title: 'Cài token bucket với đồng hồ giả',
       prompt: `Cài {{TokenBucket(capacity, refillPerSecond, nowMillis)}}. {{allow(nowMillis)}} nạp token theo thời gian đã trôi qua, chặn ở capacity, rồi tiêu thụ một token nếu đủ. Thời gian không được lùi; nếu now nhỏ hơn mốc trước thì coi elapsed là 0 và không làm mốc lùi.`,
       starter: `class TokenBucket {
@@ -86,6 +143,8 @@ Nêu trước scope của quota và semantics khi vượt giới hạn; sau đó
     }, [
       { q: 'Vì sao token bucket cho burst?', options: ['Token tích luỹ tới capacity khi không có request', 'Nó lưu toàn bộ timestamp', 'Mỗi instance tự đồng bộ Redis', 'Vì refill không có giới hạn'], answer: 0, explain: `Đúng: idle tích lũy token hữu hạn tới capacity. Sliding log lưu timestamp (không phải token); Redis không tự xuất hiện; refill bị chặn bởi capacity nên không vô hạn.` },
       { q: 'Muốn quota dùng chung giữa nhiều replica, điều gì quan trọng nhất?', options: ['Dùng static field', 'Dùng state chia sẻ và cập nhật nguyên tử', 'Tăng limit trên mỗi replica', 'Dùng wall clock cho chính xác'], answer: 1, explain: `State cục bộ nhân quota theo số replica. Shared store cần thao tác atomic để tránh hai request cùng đọc một token cuối. Static chỉ chia sẻ trong một JVM; tăng limit làm sai quota; wall clock không giải quyết đồng bộ.` },
+      { q: 'Dùng {{System.currentTimeMillis()}} làm clock cho token bucket nguy hiểm vì sao?', options: ['Nó chậm hơn {{nanoTime()}}', 'NTP có thể chỉnh giờ lùi/tiến làm elapsed âm hoặc nhảy vọt', 'Nó không có độ phân giải milliseconds', 'Nó không thread-safe'], answer: 1, explain: `Wall clock bị NTP điều chỉnh: có thể lùi (elapsed âm → mint token sai) hoặc tiến nhảy (elapsed lớn → nạp token quá nhiều). Monotonic clock ({{nanoTime()}}) chỉ tăng, không bao giờ lùi, an toàn cho đo thời lượng.` },
+      { q: 'Sliding window log so với token bucket: điểm yếu chính là gì?', options: ['Không giới hạn burst được', 'Bộ nhớ O(requests trong window) trên mỗi key', 'Không hỗ trợ rate khác nhau theo endpoint', 'Không thể dùng với Redis'], answer: 1, explain: `Sliding log phải lưu timestamp từng request → bộ nhớ tăng tuyến tính với traffic. Token bucket chỉ O(1) state (tokens, lastRefill). Cả hai đều hỗ trợ rate khác nhau và dùng được Redis.` },
     ], ['rate-limiter', 'token-bucket', 'sliding-window']),
 
     lesson('002', 2, 'Cache eviction: LRU và LFU', 'mid', [
@@ -117,14 +176,92 @@ LFU loại key có tần suất thấp nhất. Một HashMap key→node cùng c�
 | LFU | popularity ổn định | stale frequency, nhiều state |
 | TTL | dữ liệu hết hạn theo nghiệp vụ | không tự chọn nạn nhân khi đầy |
 
+### Cơ chế từng bước: LRU (LinkedHashMap) thực thi như thế nào
+Để hiểu VÌ SAO {{LinkedHashMap}} access-order đạt O(1) cho get/put/evict, hãy đi lần lượt từng bước:
+
+**Bước 1: Cấu trúc dữ liệu kép**
+- Bên trong: một mảng bucket (như {{HashMap}}) lưu {{Node<K,V>}} — mỗi node trỏ {{next}} (trong bucket) VÀ {{before}}, {{after}} (trong danh sách đôi toàn cục).
+- {{head}} và {{tail}} là sentinel: {{head.after}} là entry cũ nhất (LRU), {{tail.before}} là entry mới nhất (MRU).
+
+**Bước 2: {{get(key)}} — đọc VÀ sửa cấu trúc**
+- Tìm bucket bằng hash, duyệt node trong bucket so {{equals}} → tìm thấy node.
+- **Quan trọng**: {{accessOrder=true}} nghĩa là **get cũng là mutation**. Node được unlink khỏi vị trí cũ ({{node.before.after = node.after; node.after.before = node.before}}) rồi chèn ngay trước {{tail}} ({{node.before = tail.before; node.after = tail; tail.before.after = node; tail.before = node}}).
+- Trả về {{node.value}}. Toàn bộ O(1).
+
+**Bước 3: {{put(key, value)}} — thêm hoặc cập nhật**
+- Nếu key đã có: cập nhật value, rồi làm như get (unlink + chèn trước tail).
+- Nếu key mới: tạo node, chèn vào bucket (head của linked list trong bucket), **và** chèn vào danh sách đôi toàn cục trước tail.
+- Gọi {{removeEldestEntry(eldest)}} — nếu trả true (khi {{size() > capacity}}), unlink {{head.after}} khỏi cả bucket list và danh sách đôi.
+
+**Tóm tắt**: Map lo tìm node O(1), danh sách đôi lo giữ thứ tự O(1). Hai cấu trúc **chia sẻ cùng một node object** nên cập nhật một chỗ đủ cho cả hai.
+
+~~~java
+// Mini LRU skeleton (core ideas only)
+class LruCache<K,V> {
+    static class Node<K,V> { K key; V value; Node<K,V> prev, next; }
+    private final int cap;
+    private final Map<K, Node<K,V>> map = new HashMap<>();
+    private final Node<K,V> head = new Node<>(), tail = new Node<>();
+    LruCache(int cap) { this.cap = cap; head.next = tail; tail.prev = head; }
+    V get(K key) {
+        Node<K,V> n = map.get(key); if (n == null) return null;
+        unlink(n); attachToTail(n); return n.value;
+    }
+    void put(K key, V value) {
+        Node<K,V> n = map.get(key);
+        if (n != null) { n.value = value; unlink(n); attachToTail(n); return; }
+        n = new Node<>(); n.key = key; n.value = value;
+        map.put(key, n); attachToTail(n);
+        if (map.size() > cap) { Node<K,V> lru = head.next; unlink(lru); map.remove(lru.key); }
+    }
+    private void unlink(Node<K,V> n) { n.prev.next = n.next; n.next.prev = n.prev; }
+    private void attachToTail(Node<K,V> n) { n.prev = tail.prev; n.next = tail; tail.prev.next = n; tail.prev = n; }
+}
+~~~
+
+### Cơ chế từng bước: LFU thực thi như thế nào
+LFU mở rộng ý tưởng bằng **nhiều danh sách đôi theo tần suất**:
+
+**Bước 1: Cấu trúc**
+- {{keyNodeMap}}: {{key → Node}} (node lưu key, value, freq).
+- {{freqMap}}: {{freq → DoublyLinkedList<Node>}} — mỗi tần suất một list LRU.
+- {{minFreq}}: tần suất nhỏ nhất hiện có (để evict O(1)).
+
+**Bước 2: {{get(key)}}**
+- Tìm node trong {{keyNodeMap}}.
+- Unlink node khỏi list tần suất cũ {{freqMap.get(freq)}}.
+- Nếu list cũ rỗng **và** {{freq == minFreq}} → {{minFreq++}}.
+- Tăng {{node.freq++}}, chèn node vào đầu list {{freqMap.get(newFreq)}} (MRU của tần suất mới).
+- Trả về value.
+
+**Bước 3: {{put(key, value)}}**
+- Nếu key có: cập nhật value, gọi get(key) để tăng freq (reuse logic).
+- Nếu key mới: nếu đã đầy → evict {{freqMap.get(minFreq).tail.prev}} (LRU trong bucket minFreq), xoá khỏi {{keyNodeMap}}.
+- Tạo node mới freq=1, chèn vào {{freqMap.get(1)}}, {{minFreq = 1}}, thêm vào {{keyNodeMap}}.
+
+**Tie-break**: Khi nhiều key cùng freq thấp nhất, evict LRU **trong bucket đó** — công bằng vì key cũ hơn được ưu tiên xoá.
+
 ### Chọn giải pháp production
 Cache cục bộ như Caffeine thường tốt hơn tự cài vì có eviction, statistics, concurrency và admission policy. Redis phù hợp cache chia sẻ nhưng thêm network hop và vận hành; TTL không đảm bảo invalidation tức thời. Spring Cache abstraction thống nhất annotation nhưng semantics phụ thuộc provider. Với cache-aside, đọc miss rồi load nguồn; đồng thời nhiều miss có thể tạo stampede, cần request coalescing, lock có giới hạn hoặc refresh-ahead. Không cache exception hay dữ liệu phân quyền sai key.
+
+### Lỗi hay gặp trên production
+1. **Quên {{synchronized}} khi dùng LinkedHashMap access-order trong đa luồng**: get() thay đổi cấu trúc nội bộ (di chuyển node), nên đọc đồng thời không an toàn. Dùng {{Collections.synchronizedMap}} (chậm khi tranh chấp) hoặc Caffeine (W-TinyLFU, lock-free reads).
+2. **LFU không có aging/decay**: Key hot hôm qua (freq=1000) giữ chỗ mãi dù hôm nay không truy cập, đẩy key thực sự hot ra khỏi cache. Cần decay định kỳ (chia freq cho 2 theo chu kỳ) hoặc sliding window frequency.
+3. **Cache stampede (thundering herd)**: Nhiều request cùng miss một key hot → cùng load DB → sập DB. Giải pháp: request coalescing (chỉ 1 thread load, các thread khác chờ), probabilistic early expiration, hoặc refresh-ahead.
+4. **Dùng capacity theo số entry mà value to**: 10k entry × 100KB = 1GB heap → OOM. Phải dùng weight-based eviction (Caffeine: {{weigher}}, {{maximumWeight}}).
+5. **Cache invalidation mất message**: Gửi event xoá cache qua Kafka, consumer down → cache stale vĩnh viễn. Phải có TTL làm hàng rào thứ 2, hoặc versioning (key kèm version, invalidation = bump version).
+6. **Null value nghĩa là miss hay value hợp lệ?**: {{get}} trả null ambiguos. Dùng {{Optional}} hoặc sentinel object riêng, hoặc split {{containsKey}} + {{get}} (nhưng race condition trong đa luồng).
 
 ### Pitfall và đo lường
 Hit rate cao vẫn có thể che latency p99 tệ nếu miss tới database chậm. Theo dõi hit/miss, eviction, load latency, size, và chi phí memory; tránh cardinality label theo key. Object lớn khiến capacity theo số entry gây OOM, nên giới hạn cân theo weight. Cache invalidation qua event có thể mất message; cần TTL hoặc versioning làm hàng rào. LRU access-order làm get thành mutation, nên đọc đồng thời vẫn cần đồng bộ.
 
 ### Liên hệ phỏng vấn
-Giải thích vì sao LRU dùng map cộng list để giữ O(1), rồi hỏi workload có temporal locality không. Nếu cache nhiều node, thảo luận local vs shared, invalidation, stampede và consistency trước khi nói thuật toán.`, {
+Giải thích vì sao LRU dùng map cộng list để giữ O(1), rồi hỏi workload có temporal locality không. Nếu cache nhiều node, thảo luận local vs shared, invalidation, stampede và consistency trước khi nói thuật toán.
+
+**Câu hỏi thường gặp thêm:**
+- *Vì sao LFU phức tạp hơn LRU mà vẫn dùng?* Với workload popularity ổn định (top-k item truy cập lặp lại), LFU hit rate cao hơn LRU vì không bị scan lớn đẩy hot set.
+- *Làm sao xử lý cold start cho LFU?* Key mới freq=1, vào bucket 1. Nếu bucket 1 đầy mà minFreq=1, key mới vừa add có thể bị evict ngay. Caffeine dùng admission policy (W-TinyLFU filter) chặn key kém hot vào cache.
+- *Cache local vs distributed (Redis) khi nào chọn cái nào?* Local: latency sub-ms, phù hợp read-heavy, data nhỏ, tolerate staleness. Distributed: shared state, larger data, consistency quan trọng, chấp nhận network hop.`, {
       title: 'Cài LRU O(1) bằng HashMap và danh sách đôi',
       prompt: `Cài {{LruCache}} có capacity dương, {{get}} trả null nếu thiếu và làm mới recency; {{put}} cập nhật hoặc thêm, loại phần tử ít được dùng gần đây nhất khi đầy.`,
       starter: `class LruCache {
@@ -160,6 +297,8 @@ Giải thích vì sao LRU dùng map cộng list để giữ O(1), rồi hỏi wo
     }, [
       { q: 'get trong LinkedHashMap access-order có phải thao tác chỉ đọc?', options: ['Có, thứ tự không thay đổi', 'Không, nó thay đổi recency của entry', 'Chỉ thay đổi khi map đầy', 'Nó luôn xoá entry'], answer: 1, explain: `Với accessOrder=true, get chuyển entry vừa đọc về cuối danh sách, tức là sửa cấu trúc bên trong. Vì vậy nhiều thread chỉ "đọc" vẫn cần đồng bộ. "Thứ tự không đổi" là hành vi của insertion-order (mặc định). Việc dịch chuyển xảy ra ở mọi lần get chứ không chỉ khi map đầy; và get không bao giờ xoá entry (xoá là việc của removeEldestEntry sau put).` },
       { q: 'Trong LFU, khi nhiều key cùng tần suất thấp nhất thì tie-break phổ biến nào?', options: ['Loại key mới được thêm gần nhất', 'Loại key có hash nhỏ nhất', 'Loại key ít được dùng gần đây nhất (LRU) trong bucket tần suất thấp nhất', 'Không cần tie-break, chọn ngẫu nhiên là đủ'], answer: 2, explain: `Mỗi bucket tần suất là một danh sách theo recency, nên lấy phần tử đầu (LRU) của bucket minFreq vừa xác định, vừa O(1). Loại key mới nhất là sai hướng: key mới luôn có tần suất 1, loại nó ngay khiến key mới không bao giờ có cơ hội ở lại. Hash không phản ánh độ hữu ích. Chọn ngẫu nhiên làm kết quả không xác định, khó test và khó giải thích.` },
+      { q: 'Tại sao LFU cần aging/decay tần suất trong hệ thống chạy lâu?', options: ['Để giảm bộ nhớ dùng bởi freqMap', 'Key hot hôm qua có thể giữ chỗ mãi dù hôm nay không còn truy cập', 'Để tie-break LRU hoạt động đúng', 'Giúp minFreq tăng nhanh hơn'], answer: 1, explain: `Nếu không decay, key từng rất hot (freq cao) sẽ không bao giờ bị evict, chiếm chỗ key thực sự hot hiện tại. Decay (chia freq cho 2 theo chu kỳ) hoặc sliding window frequency cho phép cache thích ứng với pattern truy cập thay đổi.` },
+      { q: 'Cache stampede là gì và cách giảm thiểu phổ biến?', options: ['Nhiều thread cùng ghi cache gây deadlock; dùng synchronized', 'Nhiều request cùng miss key hot → cùng load DB; dùng request coalescing', 'Cache đầy gây evict liên tục; tăng capacity', 'LFU freq overflow; dùng LongAdder'], answer: 1, explain: `Stampede: key hot hết hạn/miss, hàng nghìn request cùng load DB → sập DB. Request coalescing: chỉ 1 thread load, các thread khác chờ (future/promise) hoặc trả stale data trong lúc refresh. Probabilistic early expiration và refresh-ahead cũng giúp.` },
     ], ['cache', 'lru', 'lfu']),
 
     lesson('003', 3, 'Consistent hashing và virtual nodes', 'senior', [
@@ -179,6 +318,27 @@ key 73 → B#2 (điểm đầu tiên >= 73)
 
 Hash function cần phân phối tốt và ổn định giữa process. Java {{hashCode}} không phù hợp nếu không chuẩn hoá thuật toán/encoding, và không nên dùng identity. Production thường dùng hash 64/128 bit có seed/quy ước byte rõ ràng; collision phải được xử lý. Đừng dùng TreeMap comparator có thể coi hai điểm khác nhau là bằng nhau rồi làm mất vnode.
 
+### Cơ chế từng bước: lookup key trên hash ring
+Để hiểu VÌ SAO consistent hashing lại cho movement cục bộ, hãy đi lần lượt từng bước khi tra owner của một key:
+
+**Bước 1: Hash key vào không gian vòng tròn**
+- Tính {{hash(key)}} → số nguyên trong khoảng {{[0, 2^32-1]}} (hoặc {{[0, 2^64-1]}} tùy hash function).
+- Ví dụ: {{hash("user-42") = 157342}}.
+
+**Bước 2: Tìm successor (vnode kế tiếp theo chiều kim đồng hồ)**
+- Ring lưu các vnode dưới dạng cặp {{(hashPosition, nodeName)}} đã sắp xếp theo hashPosition.
+- Dùng cấu trúc dữ liệu có {{ceilingEntry}} (như {{TreeMap}} trong Java) để tìm vnode đầu tiên có {{hashPosition >= hash(key)}}.
+- Nếu tìm thấy: owner là {{nodeName}} của vnode đó.
+
+**Bước 3: Wrap-around khi không có vnode nào lớn hơn**
+- Nếu {{hash(key)}} lớn hơn tất cả các vnode trên ring ({{ceilingEntry}} trả về null), quay vòng về vnode có hashPosition nhỏ nhất ({{firstEntry}}).
+- Điều này đảm bảo mọi key đều có owner, ring kín.
+
+**Bước 4: Virtual nodes phân tán owner**
+- Mỗi physical node có nhiều vnode (ví dụ {{nodeA#0}}, {{nodeA#1}}…{{nodeA#V-1}}) ở các vị trí hash khác nhau.
+- Key thuộc đoạn giữa {{vnode_i}} và {{vnode (i+1)}} thuộc về physical node của {{vnode (i+1)}}.
+- Khi thêm physical node mới, chỉ các key trong đoạn ngay trước vnode của node mới mới đổi owner; các đoạn khác không ảnh hưởng.
+
 ### Thêm, bỏ node và movement
 Khi thêm vnode, key thuộc đoạn vừa được vnode mới tiếp quản đổi owner; khi bỏ node, key của nó chuyển sang successor. Tỉ lệ movement có thể đo bằng cách tạo tập key cố định, phân phối trước, thêm node, rồi đếm owner thay đổi. Kết quả lý tưởng khi thêm node mới vào N node là xấp xỉ 1/(N+1), không phải chính xác cho mọi seed/virtual-node count. Test cần so cùng key set và hash deterministically.
 
@@ -191,11 +351,68 @@ Khi thêm vnode, key thuộc đoạn vừa được vnode mới tiếp quản đ
 | ring, 1 điểm/node | ít remap | dao động lớn | node có thể nhận đoạn khổng lồ |
 | ring, nhiều vnode | ít remap | tốt hơn | state ring và rebalance |
 
+### Ví dụ minh hoạ: Ring tối giản bằng TreeMap
+~~~java
+class SimpleRing {
+    private final TreeMap<Long, String> ring = new TreeMap<>();
+    private final int vnodesPerNode;
+    SimpleRing(int vnodesPerNode) { this.vnodesPerNode = vnodesPerNode; }
+
+    // Thêm physical node: sinh V vnode, hash tên "node#i", insert vào ring
+    void addNode(String node) {
+        for (int i = 0; i < vnodesPerNode; i++) {
+            long h = hash(node + "#" + i);
+            ring.put(h, node); // collision xử lý riêng trong bài tập
+        }
+    }
+
+    // Tìm owner: ceilingEntry tìm vnode kế tiếp, null thì firstEntry (wrap)
+    String owner(String key) {
+        if (ring.isEmpty()) throw new IllegalStateException("ring empty");
+        long h = hash(key);
+        Map.Entry<Long, String> e = ring.ceilingEntry(h);
+        return (e == null ? ring.firstEntry() : e).getValue();
+    }
+
+    private long hash(String s) { return Math.floorMod(s.hashCode(), 1_000_000); }
+}
+~~~
+
 ### Production và vận hành
 Consistent hashing phù hợp cache phân tán, partition routing hoặc shard placement khi membership đổi. Nó không tự replicate dữ liệu, không cung cấp consensus, và không xử lý split brain. Service discovery phải phát membership có version đồng nhất; nếu node A và B thấy ring khác nhau, cùng key có thể ghi vào hai nơi. Khi deploy, có thể shadow-route, copy dữ liệu rồi switch, theo dõi movement và miss rate. Nếu cần phân vùng dữ liệu mạnh, xem xét database partitioning hoặc rendezvous hashing cũng có thể đơn giản hơn.
 
+### Lỗi hay gặp trên production
+1. **Ring không đồng bộ giữa các instance**: Service discovery phát membership chậm hoặc version mismatch khiến node A và B thấy ring khác nhau → cùng key ghi vào hai node khác nhau → data inconsistency. Giải pháp: dùng consensus store (etcd, Consul) làm nguồn chân lý, listener cập nhật ring local ngay khi membership thay đổi, và version check trước khi route.
+2. **Hash function không phù hợp cho ring production**: {{String.hashCode()}} là thuật toán xác định (công thức quy định trong hợp đồng {{String}}, ổn định qua các bản Java cho cùng nội dung chuỗi), nhưng chỉ cho 32 bit, phân phối có thể không đủ đều cho ring lớn, và dễ bị lệch nếu các service hash khác kiểu dữ liệu hoặc khác cách mã hoá byte (UTF-8 vs UTF-16). Dùng {{System.identityHashCode()}} (hash theo danh tính object, không theo nội dung) cho key nội dung cũng sai. Giải pháp: chuẩn hoá hash function (Murmur3, xxHash, hoặc cắt SHA-256) với seed/quy ước cố định, luôn hash byte theo encoding rõ ràng (UTF-8), và dùng cùng thuật toán ở mọi service.
+3. **Collision vnode làm mất điểm trên ring**: TreeMap ghi đè entry khi key trùng, vnode bị mất → đoạn ring trống → key rơi vào node sai. Giải pháp: dò tuyến tính {{(h+1) % MAX}} cho tới khi trống (như bài tập), hoặc dùng multimap (hash → list vnode) rồi chọn theo quy tắc deterministic.
+4. **Hot key không được giải quyết bởi virtual nodes**: Một key truy cập cực nhiều (celebrity user, viral content) vẫn map vào một vnode duy nhất → overload một shard. Giải pháp: key salting ({{key + "#" + random(0, K-1)}}) để chia hot key ra K vnode, client phải fan-out đọc K shard, hoặc cache layer trước shard.
+
+### Cơ chế chi tiết: Tính movement khi thêm node
+Để lượng hoá chính xác, ta tạo tập key cố định (ví dụ 10.000 key), phân phối bằng ring cũ (N node), sau đó thêm node mới (N+1 node) và đếm bao nhiêu key đổi owner. Công thức lý thuyết:
+- Movement ratio ≈ 1 / (N + 1) khi vnode đủ lớn và hash phân phối đều.
+- Ví dụ: N=4 → thêm node thứ 5 → ~20% key chuyển, và **tất cả** đều chuyển sang node mới (không phải chia lẫn nhau).
+
+~~~java
+// Đo movement thực tế
+int moved = 0;
+for (String key : keys) {
+    String oldOwner = ringWith4Nodes.owner(key);
+    String newOwner = ringWith5Nodes.owner(key);
+    if (!oldOwner.equals(newOwner)) moved++;
+}
+double ratio = (double) moved / keys.size();  // mong đợi ~0.20
+~~~
+
+> Lưu ý: movement phụ thuộc seed hash và số vnode. Với ít vnode, số thực tế có thể lệch so với 1/(N+1). Production nên mô phỏng với workload thực trước khi scale.
+
 ### Liên hệ phỏng vấn
-Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó lượng hoá movement bằng workload, nhắc virtual nodes, hot key, replication và đồng bộ membership. Bài tập dùng hash đơn giản deterministic để tập trung vào ownership, không giả làm production cryptographic hash.`, {
+Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó lượng hoá movement bằng workload, nhắc virtual nodes, hot key, replication và đồng bộ membership. Bài tập dùng hash đơn giản deterministic để tập trung vào ownership, không giả làm production cryptographic hash.
+
+**Câu hỏi thường gặp thêm:**
+- *Vì sao modulo N gây remap gần như toàn bộ key khi thêm shard?* Vì {{hash % N}} thay đổi mẫu số, mọi key đều có thể rơi vào bucket khác nhau. Consistent hashing chỉ đổi owner cho đoạn ring giữa node mới và predecessor.
+- *Làm sao xử lý hot key trong consistent hashing?* Key salting (thêm suffix ngẫu nhiên), replication read, hoặc cache layer. Virtual nodes không giải quyết hot key đơn lẻ.
+- *Ring dùng TreeMap có thread-safe không?* TreeMap không thread-safe; production dùng ConcurrentSkipListMap hoặc read-only snapshot + atomic swap khi membership đổi.
+- *Khi node down, key của nó chuyển sang đâu?* Key chuyển sang successor (vnode kế tiếp theo chiều kim đồng hồ). Nếu dùng replication, quorum read có thể vẫn trả được dữ liệu từ replica khác.`, {
       title: 'Đo movement khi thêm node trên hash ring',
       prompt: `Cài {{Ring}} với {{addNode(name, virtualNodes)}} và {{owner(key)}}. Dùng hash ổn định {{Math.floorMod(String.hashCode(), 100000)}}; đặt vnode theo chuỗi {{name + "#" + i}}. owner chọn vị trí vnode đầu tiên >= hash(key); nếu không có thì vòng lại vị trí nhỏ nhất.
 - Nếu hai vnode trùng vị trí, dò tới vị trí kế tiếp {{(h + 1) % 100000}} cho tới khi trống (không được ghi đè vnode cũ).
@@ -231,6 +448,8 @@ Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó 
     }, [
       { q: 'Ring đang có 4 node cân bằng tốt. Thêm node thứ 5 thì khoảng bao nhiêu key đổi owner, và chúng đi đâu?', options: ['Gần như tất cả key, chia đều cho 5 node', 'Không key nào, node mới chỉ nhận key mới', 'Khoảng 1/5 số key, và tất cả đều chuyển sang node mới', 'Khoảng 1/4 số key, chuyển qua lại giữa các node cũ'], answer: 2, explain: `Node mới chỉ tiếp quản các đoạn ring nằm ngay trước các vnode của nó, nên chỉ key trong những đoạn đó đổi owner, xấp xỉ 1/(N+1) = 1/5, và đích luôn là node mới; key giữa các node cũ không đổi chỗ cho nhau. "Gần như tất cả" là hành vi của {{hash % N}}. Key cũ nằm trong đoạn node mới tiếp quản bắt buộc phải chuyển, nên không thể "không key nào".` },
       { q: 'Virtual nodes chủ yếu giải quyết vấn đề nào?', options: ['Hot key đơn lẻ', 'Phân phối không đều khi mỗi node chỉ có một điểm', 'Replication consistency', 'Mã hoá dữ liệu'], answer: 1, explain: `Nhiều điểm lấy mẫu giúp cân bằng tải tốt hơn. Hot key vẫn tập trung; virtual node không replicate hay mã hoá dữ liệu.` },
+      { q: 'Tại sao consistent hashing dùng ceilingEntry (successor) thay vì floorEntry (predecessor)?', options: ['TreeMap không có floorEntry', 'CeilingEntry nhanh hơn', 'Key thuộc về node kế tiếp theo chiều kim đồng hồ để movement cục bộ khi thêm node', 'FloorEntry chỉ dùng cho range query'], answer: 2, explain: `Key đi theo chiều kim đồng hồ tới node đầu tiên ≥ hash(key). Khi thêm node mới, node đó chen giữa predecessor và successor cũ; chỉ key trong đoạn giữa predecessor cũ và node mới đổi owner (đi sang node mới). Dùng predecessor sẽ làm movement lan rộng hơn.` },
+      { q: 'Vnode collision (hai vnode cùng hashPosition) xử lý thế nào để không mất vnode?', options: ['TreeMap tự xử lý bằng comparator', 'Ghi đè vnode cũ (data loss chấp nhận được)', 'Dò tuyến tính (h+1) % MAX cho tới khi trống, rồi insert', 'Bỏ qua vnode collision, không xảy ra trong thực tế'], answer: 2, explain: `TreeMap.put ghi đè key trùng → vnode cũ mất. Phải dò vị trí kế tiếp deterministic cho tới khi trống, đảm bảo mọi vnode đều có chỗ. Comparator không giải quyết được collision giá trị hash.` },
     ], ['consistent-hashing', 'sharding', 'virtual-nodes']),
 
     lesson('004', 4, 'Circuit breaker: CLOSED, OPEN, HALF_OPEN', 'senior', [
@@ -251,8 +470,17 @@ HALF_OPEN -- any counted failure --> OPEN
 
 Đồng hồ monotonic/giả khiến wait duration đo được chính xác. Không gọi {{Thread.sleep}} trong test; truyền now vào thao tác hoặc clock abstraction. Trong hệ thống nhiều thread, state transition phải atomic để không cho hàng trăm probe lọt qua cùng lúc. Resilience4j cung cấp circuit breaker, sliding window, metrics, decorators và event hooks; production vẫn phải chọn threshold/window hợp lý.
 
-### Window và ngưỡng
-Failure rate 50% trên cửa sổ 10 call khác ý nghĩa với 50% trên 1000 call. Cửa sổ count-based phù hợp lưu lượng ổn định; time-based phản ánh gần đây nhưng cần clock và cleanup. Có minimum number of calls để tránh mở vì một lỗi duy nhất lúc khởi động. Slow-call rate có thể mở circuit dù call chưa lỗi. Quá nhạy gây flap; quá lỏng không bảo vệ. Theo dõi trạng thái, rejected calls và thời gian ở mỗi state.
+### Window và ngưỡng: count-based vs time-based
+Failure rate 50% trên cửa sổ 10 call khác ý nghĩa với 50% trên 1000 call.
+- **Count-based window**: lưu kết quả N call gần nhất (ví dụ 100 call). Phù hợp lưu lượng ổn định, dễ cài đặt, không cần clock. Nhược: nếu traffic thưa, cửa sổ bao phủ thời gian rất dài, phản ánh chậm sự cố thực tế.
+- **Time-based window**: lưu call trong T giây gần nhất (ví dụ 10 giây). Phản ánh gần đây, thích ứng nhanh khi traffic biến đổi. Nhược: cần clock monotonic, cleanup định kỳ, và có thể flip-flop khi traffic rơi gần 0 (cửa sổ gần như rỗng → một lỗi = 100% rate).
+
+Cả hai đều cần **minimum number of calls** (ví dụ 20) trước khi tính tỷ lệ, tránh mở vì một lỗi duy nhất lúc khởi động. **Slow-call rate** (call vượt timeout nhưng không exception) cũng có thể mở circuit dù call chưa lỗi hẳn. Quá nhạy gây flap; quá lỏng không bảo vệ. Theo dõi trạng thái, rejected calls và thời gian ở mỗi state.
+
+| Loại cửa sổ | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| Count-based (N call) | Đơn giản, không cần clock, ổn định khi traffic đều | Chậm phản ứng khi traffic thưa | Traffic ổn định, muốn implement đơn giản |
+| Time-based (T giây) | Phản ánh thực tế gần đây, thích ứng nhanh | Cần clock, cleanup, dễ flap khi traffic thấp | Traffic biến động, cần độ nhạy cao |
 
 ### HALF_OPEN concurrency
 Khi cooldown kết thúc, chỉ cho phép số probe cấu hình. Probe đang chạy cần được tính vào quota; concurrent calls khác bị reject hoặc nhận fallback. Nếu chỉ check state rồi increment không nguyên tử, nhiều request cùng thấy slot trống. Sau probe completion cần xử lý đúng một lần; callback trùng hoặc exception bị nuốt có thể làm state sai. Có thể dùng semaphore/atomic count hoặc thư viện đã kiểm chứng.
@@ -267,8 +495,113 @@ Khi cooldown kết thúc, chỉ cho phép số probe cấu hình. Probe đang ch
 ### Production policy
 Đặt breaker quanh đúng remote dependency, không quanh toàn request nếu có các bước độc lập. Fallback phải đúng nghiệp vụ: dữ liệu stale có thể chấp nhận, thanh toán không thể giả thành thành công. Nếu dùng retry bên trong breaker, định nghĩa một logical call hay từng attempt được tính; retry quá nhiều làm breaker mở muộn và khuếch đại tải. Gắn timeout nhỏ hơn deadline tổng, thêm jitter cho retry, và quan sát các transition.
 
+### Cơ chế từng bước: breaker xử lý một cuộc gọi
+Để hiểu VÌ SAO ba trạng thái lại bảo vệ hệ thống, hãy đi lần lượt cuộc đời của một request gọi dependency qua breaker:
+
+**Bước 1: {{allow(now)}} kiểm tra trạng thái**
+- CLOSED: cho gọi đi, sau khi kết thúc gọi ghi lại thành công hoặc thất bại.
+- OPEN: nếu {{now - openedAt}} vẫn nhỏ hơn thời gian cooldown ({{waitMs}}), từ chối ngay (fail-fast), không gọi dependency, trả lỗi hoặc fallback ngay lập tức. Điều này ngăn hàng triệu request giữ thread/connection đợi một dependency đã biết đang lỗi.
+- HALF_OPEN: cooldown đã hết, breaker đang "thử ngại". Chỉ cho **một** probe đi qua; các request khác bị từ chối hoặc nhận fallback.
+
+**VÌ SAO fail-fast ở OPEN?** Nếu không có breaker, hàng nghìn request cùng chờ dependency timeout (ví dụ 30s) sẽ làm cạn thread pool, queue đầy, và lan lỗi sang service khác. Breaker biến 30s wait thành <1ms reject, bảo vệ tài nguyên cục bộ.
+
+**Bước 2: Gọi dependency và ghi nhận kết quả**
+- Gọi thành công: trong CLOSED reset bộ đếm lỗi về 0; trong HALF_OPEN → chuyển về CLOSED, mạch đã khôi phục.
+- Gọi thất bại (timeout, 5xx từ dependency…): trong CLOSED tăng bộ đếm lỗi liên tiếp; đủ ngưỡng ({{threshold}}) → chuyển OPEN, ghi {{openedAt = now}}. Trong HALF_OPEN một lỗi nào cũng mở lại OPEN ngay, vì dependency vẫn chưa ổn định.
+
+**VÌ SAO HALF_OPEN một lỗi cũng mở lại?** Probe là "thử thách" dependency. Nếu probe fail nghĩa là dependency vẫn chưa sẵn sàng; mở lại ngay để tiếp tục bảo vệ thay vì cho thêm traffic.
+
+**Bước 3: OPEN → HALF_OPEN → CLOSED**
+- Khi {{now - openedAt >= waitMs}}, lần {{allow}} tiếp theo chuyển sang HALF_OPEN và cấp một probe.
+- Probe thành công đủ ngưỡng (thường 1–3 lần) → CLOSED. Một probe thất bại → OPEN lại, bắt đầu cooldown mới.
+Tại sao lại vậy? Mở mạch ngay khi lỗi quá nhiều để ngừng thả tải vào dependency đang suy giảm; chờ một khoảng để dependency có thời gian phục hồi; rồi chỉ thả một luồng lượng nhỏ (probe) để xác thực trước khi mở cửa toàn bộ traffic. Không có timeout riêng cho mỗi attempt thì call treo vẫn chiếm tài nguyên cho dù breaker đã OPEN.
+
+### Ví dụ mã: breaker tối giản (lỗi liên tiếp)
+~~~java
+class Breaker {
+    private enum State { CLOSED, OPEN, HALF_OPEN }
+    private final int threshold; // số lỗi liên tiếp để mở mạch
+    private final long waitMs;   // thời gian cooldown trước khi cho probe
+    private int failures;        // số lỗi liên tiếp hiện tại
+    private State state = State.CLOSED;
+    private long openedAt;       // thời điểm mạch mở lần gần nhất
+    private boolean probeUsed;
+    Breaker(int threshold, long waitMs) {
+        if (threshold < 1 || waitMs < 0) throw new IllegalArgumentException();
+        this.threshold = threshold; this.waitMs = waitMs;
+    }
+    boolean allow(long now) {
+        if (state == State.OPEN) {
+            if (now - openedAt < waitMs) return false; // chưa hết cooldown
+            state = State.HALF_OPEN; probeUsed = false;
+        }
+        if (state == State.HALF_OPEN && probeUsed) return false; // một probe mỗi lần mở
+        if (state == State.HALF_OPEN) probeUsed = true;
+        return true;
+    }
+    void recordFailure(long now) { if (state == State.HALF_OPEN || ++failures >= threshold) { state = State.OPEN; openedAt = now; probeUsed = false; } }
+    void recordSuccess(long now) { if (state == State.HALF_OPEN) { state = State.CLOSED; failures = 0; probeUsed = false; } else if (state == State.CLOSED) failures = 0; }
+}
+~~~
+Lưu ý: code trên dùng lỗi liên tiếp để đơn giản hoá; thư viện production (ví dụ Resilience4j) thường đếm tỷ lệ lỗi trong cửa sổ thời gian gần đây, và cấp phép probe bằng biến nguyên tử (atomic) để nhiều thread không cùng nắm một lượt.
+
+### Ví dụ mở rộng: Sliding window count-based (100 call)
+Để hiểu VÌ SAO production dùng sliding window thay vì đếm liên tiếp, đây là bản demo dùng ring buffer:
+~~~java
+class SlidingWindowBreaker {
+    private static final int WINDOW = 100;
+    private final int threshold;      // số lỗi cho phép trong window
+    private final int[] results;      // 0=success, 1=failure
+    private int idx = 0, count = 0, failures = 0;
+    private enum State { CLOSED, OPEN, HALF_OPEN }
+    private State state = State.CLOSED;
+    private long openedAt, waitMs;
+    SlidingWindowBreaker(int threshold, int waitMs) {
+        this.threshold = threshold; this.waitMs = waitMs;
+        this.results = new int[WINDOW];
+    }
+    boolean allow(long now) {
+        if (state == State.OPEN) {
+            if (now - openedAt < waitMs) return false;
+            state = State.HALF_OPEN;
+        }
+        return true; // HALF_OPEN logic đơn giản: cho 1 call, production cần atomic
+    }
+    void record(boolean success) {
+        int old = results[idx];
+        if (count == WINDOW) failures -= old; else count++;
+        results[idx] = success ? 0 : 1;
+        failures += results[idx];
+        idx = (idx + 1) % WINDOW;
+        if (state == State.CLOSED && count >= 20 && failures >= threshold) {
+            state = State.OPEN; openedAt = System.currentTimeMillis();
+        } else if (state == State.HALF_OPEN) {
+            state = success ? State.CLOSED : State.OPEN;
+            if (state == State.CLOSED) { failures = 0; count = 0; Arrays.fill(results, 0); }
+            else openedAt = System.currentTimeMillis();
+        }
+    }
+}
+~~~
+> Sliding window cho tỷ lệ lỗi thực tế hơn: một burst 50 lỗi trong 100 call mở mạch, nhưng 50 lỗi rải trong 1000 call thì không. Đó là lý do Resilience4j mặc định dùng sliding window.
+
+### Lỗi hay gặp trên production
+1. **Call treo mà không có timeout riêng**: triệu chứng hàng request giữ thread/connection lâu, p99 tăng, thread pool cạn kiệt. Nguyên nhân: breaker chỉ chặn **call mới**, không huỷ call đã gửi đi. Cách sửa: gán timeout nhỏ hơn deadline tổng cho mỗi attempt, trong mọi trạng thái breaker.
+2. **Ngưỡng lỗi quá nhẹ (flapping)**: triệu chứng mạch bật/tắt liên tục, traffic giật giấu. Nguyên nhân: {{threshold}} thấp hoặc cửa sổ quá ngắn so với tỷ lệ lỗi bình thường, một lỗi lẻ lúc khởi động cũng mở mạch. Cách sửa: đặt ngưỡng từ SLO và baseline thực tế, có minimum số cuộc gọi trước khi tính tỷ lệ.
+3. **Hàng chục probe cùng lúc ở HALF_OPEN**: triệu chứng dependency vừa hồi phục lại bị đập thêm. Nguyên nhân: kiểm tra trạng thái rồi tăng đếm không nguyên tử, nhiều request cùng thấy chỗ trống. Cách sửa: dùng semaphore/biến nguyên tử, chỉ cho một probe mỗi lần mở, các request khác nhận fallback.
+4. **Fallback không đúng nghiệp vụ**: triệu chứng hiển thị dữ liệu cũ hoặc đánh dấu đơn "thành công" thực ra chưa thanh toán. Nguyên nhân: dùng một fallback chung cho mọi endpoint. Cách sửa: fallback theo từng nghiệp vụ, thanh toán không được giả thành công; dữ liệu stale chỉ dùng cho tra cứu chỉ đọc.
+5. **Retry và breaker xung đột**: retry bên trong breaker làm breaker thấy "một logical call" là nhiều attempt, chậm mở mạch và nhân tải dependency. Cách sửa: retry ở layer ngoài breaker, hoặc cấu hình breaker đếm logical call; breaker bao retry là anti-pattern.
+6. **Không theo dõi metrics trạng thái**: không biết breaker ở OPEN bao lâu, bao nhiêu request bị reject, probe success/fail rate. Cách sửa: export metrics (state, rejected, probe_ok, probe_fail) lên Prometheus/Grafana, alert khi flap rate cao.
+
 ### Liên hệ phỏng vấn
-Mô tả state transitions cùng semantics của probe, rồi phân biệt timeout/retry/bulkhead. Hỏi thêm ngưỡng được chọn từ SLO và baseline nào, thay vì khẳng định một con số cố định phù hợp mọi service.`, {
+Mô tả state transitions cùng semantics của probe, rồi phân biệt timeout/retry/bulkhead. Hỏi thêm ngưỡng được chọn từ SLO và baseline nào, thay vì khẳng định một con số cố định phù hợp mọi service.
+
+**Câu hỏi thường gặp thêm:**
+- *Breaker ở trạng thái OPEN thì làm gì với request mới?* Trả lời: từ chối ngay (fail-fast), không gọi dependency; chỉ khi hết cooldown mới vào HALF_OPEN và cho một probe.
+- *Vì sao vẫn cần timeout cho mỗi call khi đã có breaker?* Trả lời: breaker không huỷ call đang chạy; call treo vẫn giữ thread/connection, nên mỗi attempt vẫn cần deadline hữu hạn.
+- *Ngưỡng lỗi chọn thế nào để không bị bật tắt liên tục?* Trả lời: đặt theo SLO và tỷ lệ lỗi baseline thực tế, có minimum số cuộc gọi trước khi tính, theo dõi thời gian ở mỗi trạng thái.
+- *Sự khác biệt giữa count-based và time-based window?* Count-based dùng N call gần nhất, đơn giản nhưng chậm phản ứng khi traffic thưa. Time-based dùng T giây gần đây, nhạy hơn nhưng cần clock monotonic và cleanup; dễ flap khi traffic gần 0.
+- *Khi nào nên dùng sliding window thay vì đếm lỗi liên tiếp?* Khi traffic biến động hoặc muốn tỷ lệ lỗi phản ánh thực tế (50 lỗi/100 call ≠ 50 lỗi/1000 call). Đếm liên tiếp chỉ phù hợp demo hoặc traffic rất ổn định.`, {
       title: 'Cài breaker theo ngưỡng lỗi và đồng hồ giả',
       prompt: `Cài {{Breaker(threshold, openMillis, nowMillis)}} với {{failure(now)}}, {{success(now)}} và {{allow(now)}}. Sau threshold lỗi liên tiếp thì OPEN; hết thời gian thì HALF_OPEN và cho đúng một probe; probe success đóng, probe failure mở lại.`,
       starter: `class Breaker {
@@ -296,7 +629,9 @@ Mô tả state transitions cùng semantics của probe, rồi phân biệt timeo
     }, [
       { q: 'Đã có circuit breaker, bạn có còn cần timeout cho từng call không?', options: ['Không, breaker thay thế hoàn toàn timeout', 'Không, vì breaker tự huỷ call đang treo khi chuyển OPEN', 'Chỉ cần khi breaker ở HALF_OPEN', 'Có; breaker chỉ chặn call mới, call đã gửi đi vẫn cần deadline'], answer: 3, explain: `Breaker quyết định có cho call **mới** đi hay không; nó không dừng một call đang chờ. Không có timeout, call treo vẫn giữ thread/connection, và breaker cũng không nhận được tín hiệu lỗi để mở. Chuyển OPEN không huỷ call đang chạy. Timeout cần ở mọi trạng thái, không riêng HALF_OPEN.` },
       { q: 'HALF_OPEN dùng probe để làm gì?', options: ['Tạo thêm tải bất kể kết quả', 'Thử giới hạn call để quyết định đóng hay mở lại', 'Xoá lỗi khỏi log', 'Bỏ qua timeout'], answer: 1, explain: `Probe nhỏ kiểm chứng dependency hồi phục trước khi cho traffic bình thường. Nó không xoá log, bỏ timeout hay tự tạo tải vô hạn.` },
-    ], ['circuit-breaker', 'resilience', 'state-machine']),
+      { q: 'Mạch ở trạng thái CLOSED chuyển sang OPEN khi nào?', options: ['Khi số lỗi liên tiếp đạt ngưỡng threshold', 'Khi có một lỗi bất kỳ', 'Khi hết thời gian cooldown (retryAt)', 'Khi một probe thành công'], answer: 0, explain: `Đúng: CLOSED chỉ mở khi số lỗi liên tiếp đạt ngưỡng, tránh mở vì một lỗi lẻ. Các đáp án sai mô tả chuyển trạng thái khác: hết cooldown đưa OPEN → HALF_OPEN (không phải CLOSED → OPEN); probe thành công đưa HALF_OPEN → CLOSED (đóng mạch, không mở).` },
+      { q: 'Khi mạch ở OPEN và chưa hết cooldown, request mới xảy ra sao?', options: ['Gọi dependency như bình thường', 'Được gọi probe một lần', 'Từ chối ngay (fail-fast) mà không gọi dependency', 'Đợi hết cooldown rồi mới gọi'], answer: 2, explain: `Đúng: trong OPEN breaker từ chối call mới ngay lập tức, trả lỗi hoặc fallback, bảo vệ dependency đang yếu và không giữ thread/connection. Gọi như bình thường hoặc chờ hết cooldown sai; probe chỉ được một lượt và chỉ sau khi hết cooldown vào HALF_OPEN.` },
+     ], ['circuit-breaker', 'resilience', 'state-machine']),
 
     lesson('005', 5, 'Idempotency key và retry exponential backoff', 'lead', [
       'Mô phỏng thanh toán retry an toàn bằng idempotency key và lưu kết quả trước khi trả',
@@ -331,11 +666,64 @@ Bài tập dùng danh sách thời điểm retry thay vì sleep: delay attempt i
 ### Production checklist
 Store unique constraint cho (scope,key), fingerprint canonical payload, kết quả/status, timestamps và retention. Claim phải nguyên tử; hai request đồng thời cùng key chỉ một request thực thi. Không lưu dữ liệu thẻ nhạy cảm trong bảng idempotency; lưu reference/token theo PCI controls. Metrics gồm duplicate hit, conflict, processing lâu và retry attempt; log key đã hash/redact. API trả semantics nhất quán khi request đầu còn PROCESSING (202/409 hoặc chờ có giới hạn).
 
+### Cơ chế từng bước
+Để hiểu tại sao cần cả idempotency key và retry policy, đi từng bước một tình huống thực tế:
+
+**Bước 1: Tạo ý định (không gửi ngay)**
+Client tạo {{Idempotency-Key}} duy nhất cho yêu cầu thanh toán này (ví dụ UUID v4). Key gắn với {{merchantId}}, {{accountId}} và {{operation}} (pay). Quan trọng: **không tạo key mới khi retry** — cùng một key cho cùng một ý định.
+
+**Bước 2: Gửi request lần đầu**
+Client gửi {{POST /payments}} kèm header {{Idempotency-Key}} và body đã canonical hoá (JSON sort keys). Network có thể timeout trước khi nhận response, không có nghĩa server chưa xử lý.
+
+**Bước 3: Server claim key nguyên tử**
+Server kiểm tra bảng idempotency theo (scope, key). Nếu chưa có, dùng {{INSERT ... ON CONFLICT DO NOTHING}} hoặc unique constraint để claim. Chỉ transaction thành công mới được tiến hành xử lý nghiệp vụ. Nếu insert conflict vì request đồng thời, thread thứ hai phải đọc trạng thái hiện tại thay vì xử lý lại.
+
+**Bước 4: Xử lý một lần**
+Trong cùng transaction (hoặc workflow an toàn), server thực hiện charge qua provider. Sau khi có kết quả, lưu vào bảng idempotency: {{status=COMPLETED}}, {{response_body}}, {{http_status}} và {{expires_at}}. Chỉ lưu response **sau khi** nghiệp vụ thành công hoặc đã xác định kết quả cuối cùng.
+
+**Bước 5: Trả kết quả; retry nhận lại kết quả cũ**
+Nếu client timeout và retry với cùng key và cùng payload: server tìm key đã tồn tại, so sánh fingerprint payload. Nếu giống → trả **y nguyên** response đã lưu (cùng status/body). Nếu khác → trả {{409 Conflict}} để tránh xử lý sai ý định. Nếu key đang {{PROCESSING}} và chưa hết lease → trả {{202 Accepted}} hoặc chờ có giới hạn, tránh xử lý song song.
+
+~~~java
+// Mô phỏng claim + trả kết quả đã lưu (đơn giản hoá)
+public PaymentResp pay(String idemKey, String payload, long now) {
+    IdemRec r = store.find(idemKey);           // đọc
+    if (r != null) {
+        if (!r.payloadHash.equals(hash(payload))) throw new Conflict();
+        if (r.status == Status.COMPLETED) return r.resp;  // trả lại kết quả cũ
+        if (r.status == Status.PROCESSING && !r.expired(now)) return pending(); // đang xử lý
+    }
+    // claim
+    if (!store.tryClaim(idemKey, payload, now)) return pay(idemKey,payload,now); // retry đọc
+    try {
+        PaymentResp resp = provider.charge(canon(payload));
+        store.complete(idemKey, resp, now);
+        return resp;
+    } catch (Exception e) {
+        store.fail(idemKey, e, now);            // đánh dấu để reconcile nếu cần
+        throw e;
+    }
+}
+~~~
+
+**Bước 6: Áp dụng retry policy có kiểm soát**
+Chỉ retry lỗi **transient** (network timeout, 503, 429 có {{Retry-After}}). Tính delay = {{min(cap, base * 2^attempt)}} + **jitter** (full jitter phổ biến: random trong [0, delay]). Giới hạn {{maxAttempts}} và **tổng deadline**. Mỗi attempt vẫn phải có {{timeout}} riêng. **Chỉ một tầng** được retry để tránh nhân bội.
+
+### Lỗi hay gặp trên production
+1. **Key mới mỗi lần retry**: Client sinh UUID mới khi timeout → server coi là yêu cầu mới → có thể charge lần hai. **Cách sửa:** Tạo key một lần tại client trước khi gửi attempt đầu, giữ nguyên key cho toàn bộ chuỗi retry.
+2. **Lưu key sau khi xử lý**: Nếu ghi key sau khi đã gọi provider và crash giữa chừng → retry không tìm thấy key → gọi provider lại. **Cách sửa:** Claim key (insert) **trước** khi gọi bất kỳ side effect nào có thể không đảo ngược.
+3. **Payload không canonical**: JSON có thứ tự field khác nhau → hash khác → server có thể coi là payload khác (hoặc ngược lại không phát hiện). **Cách sửa:** Canonical hoá (sort keys), chỉ include field ảnh hưởng nghiệp vụ (currency, amount, merchant, orderId), tránh field thời gian ngẫu nhiên.
+4. **PROCESSING kẹt vô thời hạn**: Thread chết sau khi claim nhưng trước khi complete → key mãi ở trạng thái PROCESSING, retry chờ mãi. **Cách sửa:** Thêm {{lease_expires_at}}, timeout lease, background job reconcile với provider (query trạng thái transaction) để hoàn tất hoặc fail an toàn.
+
 ### Pitfall
 Key ngẫu nhiên mới mỗi lần retry vô hiệu hoá idempotency. Chỉ lưu key sau khi xử lý tạo race duplicate. Hash payload không canonical có thể đổi vì thứ tự JSON field; fingerprint cần canonical representation và include currency/merchant. Retention quá ngắn cho phép charge lặp từ retry muộn; vô hạn thì bảng tăng mãi. Retry một non-idempotent POST mà không có key là lỗi tài chính nghiêm trọng.
 
 ### Liên hệ phỏng vấn
-Bắt đầu bằng tình huống response mất sau khi provider đã charge. Giải thích vì sao retry cần cùng key, nơi lưu key và transaction boundary; sau đó thêm retry budget, backoff+jitter, timeout, duplicate concurrent requests và reconciliation.`, {
+**Câu hỏi thường gặp:**
+
+- *Response mất sau khi provider đã charge, làm sao retry an toàn?* Trả lời: dùng cùng {{Idempotency-Key}} và payload đã canonical hoá; server claim key trước khi gọi provider, lưu response sau khi có kết quả; retry với cùng key sẽ trả response đã lưu thay vì charge lại. Cần transaction boundary rõ ràng và xử lý trạng thái {{PROCESSING}}.
+- *Tại sao cần jitter trong exponential backoff?* Trả lời: tránh thundering herd (nhiều client retry đồng loạt cùng thời điểm sau outage) làm dependency càng tồi tệ hơn. Dùng full jitter giúp phân tán thời điểm, vẫn đảm bảo backoff tăng dần và có cap.
+- *Khi nào dùng 202 vs 409 khi key đang PROCESSING hoặc payload khác?* Trả lời: cùng key + payload khác → {{409 Conflict}} (nghi ngờ nhầm ý định). Cùng key + payload giống nhưng vẫn {{PROCESSING}} và chưa hết lease → có thể {{202 Accepted}} với {{Retry-After}} hoặc chờ ngắn có giới hạn; nếu lease hết hạn cần reconcile với provider trước khi quyết định.`, {
       title: 'Mô phỏng idempotent payment và backoff xác định',
       prompt: `Cài {{PaymentService.pay(key, amount)}}: cùng key cùng amount chỉ ghi nhận một charge; cùng key khác amount ném IllegalArgumentException. {{Backoff.delay(attempt, base, cap)}} trả base×2^attempt có chặn cap, attempt bắt đầu từ 0.`,
       starter: `class PaymentService {
@@ -366,256 +754,7 @@ class Backoff {
       { q: 'Vì sao thêm jitter vào exponential backoff?', options: ['Để giảm việc nhiều client retry cùng một thời điểm sau outage', 'Để mọi client retry cùng lúc cho nhanh', 'Để không cần timeout nữa', 'Để thay idempotency key'], answer: 0, explain: `Jitter phân tán thời điểm retry, tránh thundering herd khi dependency vừa hồi phục; retry đồng loạt chính là điều cần tránh. Jitter không liên quan timeout (mỗi attempt vẫn cần deadline) và không thay idempotency (retry vẫn có thể gửi trùng nên server vẫn phải nhận diện bằng key).` },
     ], ['idempotency', 'retry', 'payments']),
 
-    lesson('006', 6, 'Transactional outbox: vì sao không gửi Kafka trong transaction DB', 'senior', [
-      'Giải thích được dual-write là gì và liệt kê đúng các trạng thái lệch nó tạo ra giữa DB và broker',
-      'Viết outbox table + relay phục hồi được sau crash, hiểu vì sao semantics là at-least-once',
-      'Biết cách làm consumer idempotent và giữ thứ tự event theo aggregate',
-      'Chọn được giữa relay polling và CDC (Debezium) theo hạ tầng đang có',
-    ], `### Bài toán: một nghiệp vụ, hai hệ thống phải ghi
-
-Service "tạo đơn hàng" phải làm hai việc: ghi đơn vào MySQL và báo cho các hệ thống khác (kho vận, email, tích điểm) qua Kafka. **Kafka** là hàng đợi sự kiện phân tán, mấy khái niệm cần biết trước đã: **producer** là app gửi message; **topic** là hộp thư có tên (order-created); topic chia thành nhiều **partition** là các luồng ghi tuần tự song song, và Kafka chỉ đảm bảo **thứ tự trong một partition**; **broker** là server giữ các partition (mỗi partition được nhân bản sang broker khác để không mất khi một server chết); **consumer** đọc message và ghi lại **offset** (con trỏ cho biết đã đọc tới đâu) để lần sau đọc tiếp.
-
-Cách viết tự nhiên nhất là:
-
-~~~java
-@Transactional
-public void placeOrder(Order o) {
-    orderRepo.save(o);                 // (1) DB commit khi method kết thúc
-    kafka.send("order-created", o);    // (2) gửi message từ trong cùng method
-}
-~~~
-
-Hai bước này nằm ở **hai hệ thống không có transaction chung**. Liệt kê mọi khả năng:
-
-| Tiến trình chết ở đâu | Kết quả thực tế | Hậu quả |
-|---|---|---|
-| Trước khi commit | không đơn, không event | ổn, client retry |
-| Sau commit, trước send | có đơn, không có event | kho vận không bao giờ biết, **mất event vĩnh viễn** vì không còn gì ghi nhớ rằng event cần gửi |
-| Đang send, ack bị mất | có đơn, có thể có 2 event | trùng, consumer phải chịu được |
-| Send xong, commit thất bại (ràng buộc uniqueness, exception phía sau) | không đơn, có event | hệ thống kia làm việc cho đơn **không tồn tại** |
-
-Đây là bài toán **dual-write**: không tồn tại một lệnh COMMIT phủ lên hai hệ thống độc lập, nên không có cách nào "chạy lại đúng chỗ bị đứt" nếu app chỉ biết mỗi lần gửi.
-
-### 2PC/XA: hướng giải quyết "đúng" nhưng hầu như không ai dùng
-**Two-Phase Commit (2PC)**: một transaction manager hỏi tất cả bên tham gia (DB, broker hỗ trợ **XA**) "chuẩn bị xong chưa?" (phase prepare, các bên giữ lock), khi tất cả trả lời xong mới ra lệnh commit. Cái giá: transaction manager là điểm lỗi tập trung, lock bị giữ suốt phase prepare nên throughput thường giảm vài lần, một bên treo làm toàn bộ treo theo, và nó phá mất tính độc lập triển khai của microservices. Vì thế trong hệ thống thực người ta đổi yêu cầu: không cố đạt exactly-once trên hai hệ thống, mà làm cho **một hệ thống trở thành điểm cam kết duy nhất**.
-
-### Outbox: đưa cả hai ghi về cùng một transaction
-Ý tưởng: đừng gửi Kafka trong transaction. Thay vào đó ghi message vào **một bảng của chính database nghiệp vụ**, cùng transaction:
-
-~~~sql
-CREATE TABLE outbox (
-  id           BIGINT PRIMARY KEY,      -- event id ổn định, không sinh lại khi retry
-  agg_id       VARCHAR(64),             -- order-7: dùng làm partition key
-  event_type   VARCHAR(64),
-  payload      JSON,
-  created_at   DATETIME(3),
-  delivered_at DATETIME(3) NULL         -- NULL = chưa relay
-);
-INSERT INTO orders (...);               -- nghiệp vụ
-INSERT INTO outbox (...);               -- event cần gửi
-COMMIT;                                 -- MỘT commit cho cả hai dòng
-~~~
-
-Vì hai INSERT nhắm vào cùng một database, tính nguyên tử do chính database đảm bảo: hoặc đơn hàng và event cùng tồn tại, hoặc cả hai cùng không. Không còn trạng thái "có đơn mà thiếu event", và cũng không còn "event cho đơn đã rollback". Một thành phần thứ hai, **relay**, sẽ lấy các dòng có delivered_at IS NULL và gửi sang Kafka sau.
-
-Giá phải trả, nói thẳng từ đầu: event tới Kafka **muộn hơn** commit một khoảng (độ trễ poll, thường vài trăm ms tới vài giây), và semantics là **at-least-once** (relay có thể gửi trùng). Cả hai đều xử lý được và đều là đánh đổi chủ động, không phải lỗi.
-
-~~~seq
-title: Outbox relay, một điểm cam kết duy nhất
-actors: Service | MySQL | Relay | Kafka | Consumer
-Service -> MySQL: BEGIN, INSERT orders và INSERT outbox
-MySQL --> Service: COMMIT, cả hai dòng đã nằm trong log
-note Service..MySQL: Crash ở đây thì chưa có event, client retry an toàn
-Relay -> MySQL: SELECT WHERE delivered_at IS NULL
-MySQL --> Relay: batch event chưa gửi
-Relay -> Kafka: send với partition key order-7
-Relay -> MySQL: UPDATE SET delivered_at = now
-note Relay..Kafka: Crash giữa send và update thì lần sau gửi lại
-Kafka -> Consumer: phát event, có thể trùng lặp
-Consumer -> Consumer: kiểm event id, bỏ qua nếu đã áp dụng
-~~~
-
-### Relay: polling hay CDC
-- **Polling**: relay chạy SELECT theo chu kỳ, gửi Kafka, rồi UPDATE delivered_at (hoặc xoá dòng sang bảng archive). Ưu: không thêm hạ tầng, chỉ cần database. Nhược: tải đọc lặp lại trên database nguồn, độ trễ bằng chu kỳ poll, và phải có chỉ mục trên (delivered_at, id) để không scan cả bảng.
-- **CDC (Change Data Capture)**: công cụ như **Debezium** chạy trong Kafka Connect đọc **transaction log** của database (binlog MySQL, WAL PostgreSQL) và phát mỗi thay đổi thành message, trong đó có dòng mới INSERT vào bảng outbox. Ưu: không truy vấn bảng nghiệp vụ, độ trễ thấp, và log đã chứa cả đơn hàng lẫn dòng outbox nên thứ tự của chúng được giữ nguyên. Nhược: thêm một hạ tầng phải vận hành, cần quyền đọc log, schema change phải quản lý.
-
-### At-least-once và consumer idempotent
-Luôn tồn tại cửa sổ "đã gửi sang Kafka nhưng chưa kịp đánh dấu delivered" (relay chết đúng lúc đó, hoặc ack tới chậm). Lần relay sau thấy dòng vẫn NULL nên gửi lại. Không xoá được cửa sổ này nếu không có coordination kiểu 2PC, nên thay vì hứa exactly-once ở producer, ta **chấp nhận trùng và bắt consumer chịu trùng**:
-- Mỗi event mang **event id ổn định** (id của dòng outbox), không phải UUID sinh lại mỗi lần gửi.
-- Consumer lưu id đã xử lý (bảng processed_event có primary key, Redis SET có TTL, hoặc state store của consumer) và bỏ qua id đã thấy — biến "gửi 2 lần" thành "áp dụng 1 lần".
-- Ưu tiên thao tác **tự nhiên idempotent**: UPDATE status='PAID' WHERE order_id=? AND status='NEW' chạy hai lần chỉ có một hiệu lực; "cộng 100 điểm" thì không idempotent, phải chuyển thành "cộng điểm theo reference key = event id".
-
-### Thứ tự theo aggregate
-Muốn consumer thấy "đã tạo đơn" trước "đã thanh toán" thì mọi event của **cùng một đơn hàng** phải đi qua **cùng một partition**: lấy agg_id làm partition key. Khi đó cần thêm hai điều: relay gửi tuần tự cho một key (không song song hoá các event cùng đơn), và retry cho một key phải chờ vì Kafka không tự sắp xếp lại message đã vào partition. Lưu ý số partition của topic không tăng vô hạn: tăng partition làm thay đổi cách chia key, nên kế hoạch sức chứa cần quyết định sớm.
-
-### Outbox không tự giải quyết chuyện gì
-- Không đảm bảo Kafka đã nhận bền vững: producer vẫn phải cấu hình acks=all, retries, **enable.idempotence=true** (chống trùng và mất bên trong chính Kafka), min.insync.replicas đủ.
-- Không sửa được đọc từ replica: nếu service đọc replica để chịu tải, đơn hàng có thể chưa hiện ra trong khi event đã được relay gửi — cần đọc primary cho dòng vừa ghi.
-- Bảng outbox lớn mãi: cần job archive dòng đã delivered, chỉ mục hỗ trợ, và với hệ lớn thì shard cả bảng outbox theo agg_id.
-- Không làm cho nghiệp vụ thành công trở lại: nếu business logic đã commit, event sẽ đi **chậm** chứ không bị rút lại. Nghiệp vụ cần "rút lại" phải phát thêm event đảo ngược (compensating), xem saga.
-
-### Pitfall thực tế
-- Đánh dấu delivered **trước** khi nhận ack từ Kafka: mất thật sự message đang gửi dở.
-- Payload nhét dữ liệu "nóng" (số dư hiện tại): event nên mô tả cái đã xảy ra; ai cần giá trị hiện tại thì đọc nguồn chuẩn.
-- Chạy hai instance relay mà không phân công: không sai về at-least-once, nhưng trùng nhiều hơn và thứ tự theo key dễ vỡ.
-- Đặt bảng outbox ở database **khác** database nghiệp vụ: mất đúng thứ vừa mua, quay về dual-write.
-- Không theo dõi **relay lag** (now - created_at của dòng lâu nhất chưa delivered): sự cố chỉ lộ ra khi bộ phận kho vận gọi điện hỏi sao đơn nằm im.
-
-### Liên hệ phỏng vấn
-Trả lời theo khung: (1) dual-write và ba trạng thái lệch; (2) outbox gom tất cả về một điểm cam kết, đổi lấy độ trễ và at-least-once; (3) relay polling hay CDC tuỳ hạ tầng; (4) consumer idempotent + partition key theo aggregate; (5) vận hành: metric relay lag, cleanup, cấu hình producer. Nếu bị hỏi "sao không dùng Kafka transaction": transaction của Kafka producer (Kafka 0.11+, dùng cho stream processing exactly-once) chỉ phối hợp được các thao tác **bên trong** Kafka, nó không commit cùng MySQL. Nếu bị hỏi "sao không dùng XA": trả lời bằng chi phí lock và coordination ở trên.
-Bài tập dưới đây mô phỏng DB và broker có thể sập giữa chừng, để chính bạn chạy và thấy dual-write mất event còn outbox thì không.`, {
-      title: 'Chứng minh dual-write mất event, outbox thì không',
-      prompt: `Hạ tầng mô phỏng đã có sẵn trong file test (bạn không cần viết), với API như sau:
-
-~~~java
-final class Sim {
-    static class Crash extends RuntimeException { }  // process chet giua chung thao tac
-    Map<String,String> orders;      // dong DON HANG da commit
-    Map<String,String> outbox;      // dong OUTBOX da commit
-    Set<String> delivered;          // outbox id da relay xong
-    List<String> broker;            // message Kafka THỰC SỰ nhận được
-    Set<String> applied;            // event consumer đã áp dụng
-    String crashBefore;             // "commit" | "publish" | "mark" | null
-    void begin()                    // mở transaction
-    void saveOrder(String id)       // INSERT pending, chỉ bền vững sau commit
-    void saveOutbox(String id)      // INSERT outbox pending
-    void commit()                   // crashBefore = "commit": bỏ pending, ném Crash
-    void publish(String id)         // crashBefore = "publish": ném Crash, broker không đổi
-    void mark(String id)            // crashBefore = "mark": ném Crash, chưa kịp delivered
-    boolean apply(String id)        // true = lần đầu tiên, false = bản sao
-    void recover()                  // process đã khởi động lại
-}
-~~~
-
-Cài class {{Outbox}} với các static method, dùng **đúng** thứ tự thao tác được yêu cầu để kết quả crash không phụ thuộc cách viết:
-1. {{dualWrite(sim, id)}}: begin, saveOrder, commit, rồi publish. Không bắt Crash, mặc nó bay ra cho caller.
-2. {{writeWithOutbox(sim, id)}}: begin, saveOrder, saveOutbox, commit. **Không** publish ở bước này.
-3. {{relay(sim)}}: với mỗi id có trong outbox mà chưa có trong delivered, publish rồi mark id đó.
-4. {{consume(sim, id)}}: trả về kết quả {{apply}} của consumer (true = event mới, false = trùng lặp).
-`,
-      starter: `class Outbox {
-    static void dualWrite(Sim sim, String id) { throw new UnsupportedOperationException("TODO"); }
-    static void writeWithOutbox(Sim sim, String id) { throw new UnsupportedOperationException("TODO"); }
-    static void relay(Sim sim) { throw new UnsupportedOperationException("TODO"); }
-    static boolean consume(Sim sim, String id) { throw new UnsupportedOperationException("TODO"); }
-}`,
-      tests: `public class Main {
-    static int p = 0, n = 0;
-    static void c(String s, boolean ok, String detail) {
-        n++;
-        if (ok) { p++; System.out.println("PASS " + s); }
-        else System.out.println("FAIL " + s + ": " + detail);
-    }
-    static void quiet(Runnable r) { try { r.run(); } catch (Sim.Crash e) { } }
-    static int count(List<String> l, String x) { int k = 0; for (String v : l) if (v.equals(x)) k++; return k; }
-    public static void main(String[] a) {
-        Sim s1 = new Sim();
-        Outbox.dualWrite(s1, "o1");
-        c("dual write works while nothing fails", s1.orders.containsKey("o1") && count(s1.broker, "o1") == 1, "orders=" + s1.orders.keySet() + " broker=" + s1.broker);
-
-        Sim s2 = new Sim();
-        s2.crashBefore = "publish";
-        quiet(() -> Outbox.dualWrite(s2, "o1"));
-        s2.recover();
-        Outbox.relay(s2);
-        c("dual write loses the event when it dies at publish", s2.orders.containsKey("o1") && s2.broker.isEmpty(), "orders=" + s2.orders.keySet() + " broker=" + s2.broker);
-
-        Sim s3 = new Sim();
-        s3.crashBefore = "commit";
-        quiet(() -> Outbox.writeWithOutbox(s3, "o1"));
-        c("outbox write is atomic with the order row", s3.orders.isEmpty() && s3.outbox.isEmpty() && s3.broker.isEmpty(), "orders=" + s3.orders.keySet() + " outbox=" + s3.outbox.keySet() + " broker=" + s3.broker);
-
-        Sim s4 = new Sim();
-        Outbox.writeWithOutbox(s4, "o1");
-        s4.crashBefore = "publish";
-        quiet(() -> Outbox.relay(s4));
-        c("a crashed relay keeps the row pending", s4.outbox.containsKey("o1") && !s4.delivered.contains("o1") && s4.broker.isEmpty(), "outbox=" + s4.outbox.keySet() + " delivered=" + s4.delivered + " broker=" + s4.broker);
-        s4.recover();
-        Outbox.relay(s4);
-        Outbox.relay(s4);
-        c("relay publishes each outbox row exactly once when ack arrives", count(s4.broker, "o1") == 1 && s4.delivered.contains("o1"), "broker=" + s4.broker + " delivered=" + s4.delivered);
-
-        Sim s5 = new Sim();
-        Outbox.writeWithOutbox(s5, "o1");
-        s5.crashBefore = "mark";
-        quiet(() -> Outbox.relay(s5));
-        s5.recover();
-        Outbox.relay(s5);
-        c("losing the ack gives at-least-once, i.e. a duplicate", count(s5.broker, "o1") == 2, "broker=" + s5.broker);
-        c("consumer dedupes the redelivered event", Outbox.consume(s5, "o1") && !Outbox.consume(s5, "o1") && s5.applied.size() == 1, "applied=" + s5.applied);
-        System.out.println("RESULT " + p + "/" + n);
-    }
-}
-final class Sim {
-    static class Crash extends RuntimeException { Crash() { super("crash giua chung thao tac"); } }
-    final Map<String,String> orders = new LinkedHashMap<>();
-    final Map<String,String> outbox = new LinkedHashMap<>();
-    final Set<String> delivered = new LinkedHashSet<>();
-    final List<String> broker = new ArrayList<>();
-    final Set<String> applied = new HashSet<>();
-    String crashBefore;
-    private boolean inTx;
-    private final Map<String,String> pendOrders = new LinkedHashMap<>();
-    private final Map<String,String> pendOutbox = new LinkedHashMap<>();
-    void begin() { if (inTx) throw new IllegalStateException("begin phia trong transaction dang mo"); inTx = true; }
-    void saveOrder(String id) { requireTx("saveOrder"); pendOrders.put(id, "payload-" + id); }
-    void saveOutbox(String id) { requireTx("saveOutbox"); pendOutbox.put(id, "payload-" + id); }
-    void commit() {
-        requireTx("commit");
-        inTx = false;
-        if ("commit".equals(crashBefore)) { pendOrders.clear(); pendOutbox.clear(); throw new Crash(); }
-        orders.putAll(pendOrders); outbox.putAll(pendOutbox);
-        pendOrders.clear(); pendOutbox.clear();
-    }
-    void publish(String id) {
-        if ("publish".equals(crashBefore)) throw new Crash();
-        broker.add(id);
-    }
-    void mark(String id) {
-        if ("mark".equals(crashBefore)) throw new Crash();
-        delivered.add(id);
-    }
-    boolean apply(String id) { return applied.add(id); }
-    void recover() { crashBefore = null; }
-    private void requireTx(String op) { if (!inTx) throw new IllegalStateException(op + " phia ngoai transaction"); }
-}`,
-      reference: `class Outbox {
-    static void dualWrite(Sim sim, String id) {
-        sim.begin();
-        sim.saveOrder(id);
-        sim.commit();
-        sim.publish(id);                       // thuoc he thong khac, khong the commit cung DB
-    }
-    static void writeWithOutbox(Sim sim, String id) {
-        sim.begin();
-        sim.saveOrder(id);
-        sim.saveOutbox(id);
-        sim.commit();                          // MỘT commit cho cả đơn hàng lẫn event
-    }
-    static void relay(Sim sim) {
-        List<String> pending = new ArrayList<>();
-        for (String id : sim.outbox.keySet()) if (!sim.delivered.contains(id)) pending.add(id);
-        for (String id : pending) {
-            sim.publish(id);                   // gui truoc...
-            sim.mark(id);                      // ...roi moi danh dau: crash o day sinh duplicate
-        }
-    }
-    static boolean consume(Sim sim, String id) { return sim.apply(id); }
-}`,
-      hints: [
-        'dualWrite gọi publish SAU commit: khi crash đúng lúc publish thì không còn dấu vết nào cho relay biết event cần gửi, nên event mất vĩnh viễn.',
-        'relay nên chép danh sách id chưa delivered ra một List rồi mới gửi, để không sửa collection đang duyệt.',
-        'Thứ tự publish rồi mark là có chủ ý: crash giữa hai bước làm lần relay sau gửi lại (at-least-once). Ngược lại mark rồi publish sẽ mất message.',
-        'consume chỉ cần trả về kết quả của sim.apply(id): true là lần đầu áp dụng, false là bản sao trùng lặp.',
-      ],
-      explain: `Ba kết luận của bài chạy được ngay trong output: (1) dualWrite crash ở publish để lại dòng trong {{orders}} còn {{broker}} rỗng, và {{relay}} sau đó chịu hết — dual-write không ghi lại ở đâu rằng event còn phải gửi; (2) writeWithOutbox crash ở commit thì không còn gì cả, client retry sạch sẽ, đó chính là tính nguyên tử mà outbox mua được; (3) crash giữa publish và mark tạo duplicate thật ({{broker}} chứa o1 hai lần) tức at-least-once, và consumer đã lưu event id nên hiệu lực nghiệp vụ chỉ xảy ra một lần. Trong production, delivered_at thường được thay bằng xoá dòng hoặc chuyển sang bảng archive, và mark phải xảy ra SAU khi producer nhận ack.`,
-    }, [
-      { q: 'Vì sao gọi {{kafka.send}} bên trong method có {{@Transactional}} vẫn có thể mất event?', options: ['Vì Kafka không có transaction nên Spring không gửi được từ trong method', 'Vì hai thao tác thuộc hai hệ thống không có điểm cam kết chung: chết giữa commit và send để lại đơn hàng mà không có event', 'Vì {{@Transactional}} luôn rollback khi có producer send trong cùng method', 'Vì phải dùng {{@KafkaListener}} thay cho producer send'], answer: 1, explain: `Đây chính là dual-write: Spring commit DB lúc method kết thúc, còn send là gọi tới một hệ thống khác. Kafka Có transaction (Kafka 0.11+) nhưng chúng chỉ phối hợp các thao tác trong nội bộ Kafka, không commit cùng MySQL, nên phương án đầu sai ở tiền đề. {{@Transactional}} không tự rollback vì có send, và {{@KafkaListener}} là phía consumer, không liên quan tới việc gửi.` },
-      { q: 'Relay gửi message thành công nhưng chết trước khi ghi delivered_at. Semantics nào mô tả đúng?', options: ['Exactly-once, vì relay sẽ không gửi lại dòng đã gửi rồi', 'At-most-once, vì message có thể đã mất', 'At-least-once, vì lần relay sau vẫn thấy dòng chưa delivered nên gửi lại, và consumer phải idempotent', 'Best-effort, chỉ gửi lại khi có yêu cầu'], answer: 2, explain: `Không có cách nào biết "đã gửi nhưng chưa kịp đánh dấu" nếu không thêm coordination, nên thiết kế chấp nhận gửi lại và dồn việc khử trùng cho consumer (lưu event id đã áp dụng). Exactly-once là hứa vượt khả năng của relay; at-most-once thì ngược lại (message không mất, chỉ trùng); và không cần ai yêu cầu cả, vòng lặp relay tự phát hiện dòng còn pending.` },
-      { q: 'Vì sao relay nên dùng id aggregate (order id) làm partition key khi gửi Kafka?', options: ['Để Kafka nhân bản message sang broker khác', 'Vì Kafka chỉ giữ thứ tự trong một partition, nên mọi event của cùng một đơn phải nằm cùng partition', 'Để giảm số partition cần tạo cho topic', 'Vì partition key là bắt buộc và chỉ được là id aggregate'], answer: 1, explain: `Replication (phương án đầu) độc lập với partition key. Thứ tự tuần tự chỉ được Kafka đảm bảo trong phạm vi một partition, nên muốn "tạo đơn" tới trước "thanh toán" thì hai event của cùng đơn phải cùng partition. Partition key có thể là bất kỳ chuỗi nào, không bắt buộc là id aggregate, và việc chọn key không làm giảm số partition của topic.` },
-      { q: 'So với CDC (Debezium), nhược điểm chính của relay polling là gì?', options: ['Phải xin quyền đọc transaction log của database', 'Tạo tải đọc lặp lại trên chính database nguồn và độ trễ bằng chu kỳ poll', 'Không thể giữ thứ tự event theo aggregate', 'Luôn gửi trùng message'], answer: 1, explain: `Polling chạy SELECT WHERE delivered_at IS NULL theo chu kỳ trên database nghiệp vụ, vừa tốn tài nguyên vừa trễ một khoảng bằng chu kỳ; quyền đọc log là chi phí của CDC chứ không phải polling. Thứ tự vẫn giữ được nếu đọc theo id và gửi với partition key đúng, còn trùng lặp là đặc trưng at-least-once của cả hai cách.` },
-    ], ['outbox', 'kafka', 'dual-write', 'cdc']),
-
+    
     lesson('007', 7, 'Sharding: chọn shard key, hot partition và resharding', 'senior', [
       'Chọn shard key theo bốn tiêu chí và chỉ ra được hệ quả của từng lựa chọn',
       'Phân biệt hash-based với range-based, biết khi nào scatter-gather xuất hiện',

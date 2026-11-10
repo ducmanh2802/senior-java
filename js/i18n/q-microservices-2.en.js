@@ -7,6 +7,22 @@ App.i18n.content({
     q: `Explain the role of API Gateway and BFF, and where they differ. Compare client-side load balancing with server-side (Kubernetes) and service discovery.`,
     a: `**Summary:** An **API Gateway** is the shared infrastructure front door for every client (TLS, authentication, rate limiting, routing); a **BFF** (Backend For Frontend) is the aggregation layer **per experience** (web, mobile) that holds the logic serving one particular UI. On load balancing: **client-side** (the client picks an instance from a registry itself) is flexible but every client must be smart; **server-side** (a Kubernetes Service, a load balancer) is simple and centrally controlled. On Kubernetes, Service + DNS + readiness probe already is service discovery.
 
+The sequence diagram below: API Gateway + BFF:
+
+~~~seq
+title: API Gateway + BFF: client aggregates data
+actors: Mobile | API Gateway | BFF-mobile | OrderSvc | ProductSvc
+Mobile -> API Gateway: request
+API Gateway -> BFF-mobile: forward
+BFF-mobile -> OrderSvc: GET /orders
+BFF-mobile -> ProductSvc: GET /products
+OrderSvc --> BFF-mobile: orders
+ProductSvc --> BFF-mobile: products
+BFF-mobile -> BFF-mobile: merge + trim
+BFF-mobile --> API Gateway: response
+API Gateway --> Mobile: lean payload
+~~~
+
 ### Quick understanding
 An office building has a **reception desk in the lobby** (API Gateway): it checks badges, limits how many visitors come in, and points people to the right floor - but the receptionist does none of the actual company work. A **BFF** is like a **personal assistant for each kind of guest**: the VIP guest (mobile) wants a short summary, the partner (web) wants the full file; the assistant walks around gathering documents from several departments and hands over exactly what that guest needs. Service discovery is the **building directory** that says which office is open and where; the load balancer is the person **spreading guests** across the staff who are free.
 
@@ -86,6 +102,21 @@ Web ────┘ (TLS, JWT,     └─► BFF-web ────┴─► revie
     q: `How do you build observability for a system of 30 microservices? Distinguish RED/USE, correlation id and OpenTelemetry, and point out the cardinality trap.`,
     a: `**Summary:** metrics for **trends**, logs for **per-event detail**, traces for **the journey of one request across services**. RED (Rate, Errors, Duration) is measured per endpoint/service, USE (Utilization, Saturation, Errors) is measured per resource; the correlation id (a trace_id following the W3C standard) is the thread that ties logs to traces. With 30 services I standardize on OpenTelemetry/Micrometer, keep metric labels at low cardinality, and alert on the SLO burn rate.
 
+The sequence diagram below: trace id propagation via HTTP and Kafka headers:
+
+~~~seq
+title: Correlation id: traceparent propagated across services
+actors: Gateway | OrderSvc | PaymentSvc | Kafka | NotifySvc
+Gateway -> OrderSvc: traceparent header
+OrderSvc --> Gateway: response
+OrderSvc -> PaymentSvc: traceparent header
+PaymentSvc --> OrderSvc: response
+OrderSvc -> Kafka: publish event + traceparent header
+Kafka -> NotifySvc: consumer reads header
+NotifySvc -> Kafka: commit offset
+note Gateway..NotifySvc: same trace id 4bf92f... carried end to end
+~~~
+
 ### Quick understanding
 Imagine a delivery system with 30 warehouses. **Metrics** are the hourly summary table: how many parcels left, how many are late - you can see "something is wrong" at a glance, but not which parcel. **Logs** are the detailed ledger of each warehouse. A **trace** is the **tracking number**: it is stuck on the parcel when it is received and scanned at every warehouse it passes, so looking up one number shows the whole journey and where it was held up. The correlation id is that tracking number printed into every warehouse's ledger as well, so you can jump from the trace straight to the right log line.
 
@@ -110,7 +141,7 @@ Imagine a delivery system with 30 warehouses. **Metrics** are the hourly summary
 traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
              │  ────────── trace id ──────────  ── span id ──  flags
 gateway ─► order ─► payment ─► Kafka(header traceparent) ─► notification
-   └────────── same trace id 4bf92f… end to end ─────────────┘
+   └────────── same trace id 4bf92f... end to end ─────────────┘
 ~~~
 
 ### RED vs USE
@@ -138,7 +169,7 @@ plus a user_id label (1 million users)  = 1.2 billion series → collapse
 
 ### SLO and alerting
 1. **SLI**: availability = {{good requests / total}}, latency = the share of requests under 300ms.
-2. **A 99.9% SLO** per month ⇒ an error budget of roughly 43 minutes/month (0.1% of 30 days).
+2. **A 99.9% SLO** per month => an error budget of roughly 43 minutes/month (0.1% of 30 days).
 3. **Alert on burn rate**: a burn rate of 1 means the budget lasts exactly 30 days; a burn rate of 14.4 sustained for 1 hour means you are burning 2% of the budget per hour → page now; a low burn rate sustained over a long window → open a ticket. Why: alerting on every error causes fatigue, while budget-based alerting reflects the real impact.
 4. Alert on the **symptoms** customers see (5xx, p99) + leading technical alarms (Kafka lag, GC, saturation), not just CPU.
 
@@ -161,6 +192,18 @@ plus a user_id label (1 million users)  = 1.2 billion series → collapse
   'microservices-013': {
     q: `Two internal services call each other. Do you choose OAuth2 client credentials, mTLS or a service mesh? Explain the trade-offs and how authorization works on each side.`,
     a: `**Summary:** **mTLS** answers "which service is this" (identity at the workload level, proven by a certificate), **OAuth2 client credentials** answers "what may this service do" (permissions carried as scope/audience inside a JWT). The two complement each other and do not replace each other: the service mesh handles transport + identity (auto mTLS), while the application still handles business authorization + audit. The mesh cannot replace the app.
+
+The sequence diagram below: OAuth2 client credentials flow:
+
+~~~seq
+title: OAuth2 client credentials: ServiceA calls ServiceB
+actors: ServiceA | IdP | ServiceB
+ServiceA -> IdP: POST /token (client_id, secret)
+IdP --> ServiceA: access_token (scope orders.read)
+ServiceA -> ServiceB: GET /orders + Bearer token
+ServiceB -> ServiceB: verify signature, audience, scope
+ServiceB --> ServiceA: 200 orders
+~~~
 
 ### Quick understanding
 Think of a company building. **mTLS** is like a **badge with a chip**: the door reader knows for sure you are "person A from accounting", and nobody can fake that by just saying so. An **OAuth2 token** is like a **work permit** that states "may enter the warehouse, read-only, expires at 15:00". Having a badge does not automatically grant warehouse access; having a permit without a badge does not get you through the gate. A **service mesh** is like a **security team** standing at every door, checking badges for each room - but whether "person A may approve a 1 million payment" is still decided by the finance department.
@@ -479,6 +522,20 @@ A strangler fig grows around a host tree, its roots spreading further and furthe
 - **Reconciliation job**: a job that compares the data on both sides and reports differences.
 - **Shadow traffic**: duplicating requests to the new service to compare results, without returning them to the user.
 - **Branch by abstraction**: creating an interface inside the monolith and switching the implementation from the old module to a client of the new service.
+
+The sequence diagram below: strangler fig step by step:
+
+~~~seq
+title: Strangler fig: facade + canary + CDC
+actors: Client | Facade | Monolith | CatalogSvc | Debezium | CatalogDB
+Client -> Facade: /api/catalog/*
+Facade -> CatalogSvc: 5% traffic
+CatalogSvc --> Facade: response
+Facade -> Monolith: 95% traffic
+Monolith -> Debezium: CDC sync
+Debezium -> CatalogDB: replicate data
+note Facade..CatalogSvc: rollback = change route
+~~~
 
 ### Step-by-step plan
 1. **Measure and cover with tests before touching anything**: distributed tracing + integration tests for exactly the use case being extracted. Why: extracting from a monolith without tests is gambling; tracing shows who is calling what.

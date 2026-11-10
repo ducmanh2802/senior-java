@@ -29,6 +29,28 @@ try (Resource outer = open("outer"); Resource inner = open("inner")) {
 
 Nếu {{work()}} ném exception chính A và {{inner.close()}} ném B, Java vẫn thử đóng outer; exception A được ném ra, B và lỗi đóng outer được gắn làm suppressed. Nếu thân không ném mà close ném, lỗi close đầu tiên trở thành lỗi chính. Duyệt {{getSuppressed()}} khi chẩn đoán lỗi cleanup; chỉ log exception chính có thể che mất file handle hoặc flush thất bại.
 
+### Cơ chế từng bước của try-with-resources
+
+Khai báo tài nguyên trong ngoặc tròn của try, ví dụ {{try (Resource r = open())}}. Compiler dịch thành các khối {{try}} lồng nhau với {{finally}}:
+
+1. **Khởi tạo trước khi vào thân**: mỗi resource được khởi tạo theo thứ tự viết. Nếu resource thứ hai ném lỗi ngay khi tạo, resource đầu tiên đã mở vẫn bị đóng nhờ outer finally — không bị rò rỉ handle hay stream.
+2. **Ghi nhớ lỗi chính**: nếu thân khối ném exception A, Java nhảy vào finally nhưng giữ A làm lỗi chính để ném ra cuối cùng.
+3. **Đóng ngược thứ tự khai báo**: {{close()}} gọi theo thứ tự đảo ngược. Khai báo outer rồi inner → đóng inner trước, rồi outer. Điều này quan trọng khi inner (ví dụ reader) nằm trên outer (stream): phải flush và đóng reader trước stream dưới đáy.
+4. **Gắn suppressed**: nếu inner.close() ném B, Java gọi {{A.addSuppressed(B)}}. Lỗi đóng outer cũng gắn vào suppressed của A. Cuối cùng ném A, và caller duyệt {{getSuppressed()}} để xem B và lỗi đóng outer.
+5. **Thân thành công, close lỗi**: lỗi close đầu tiên trở thành lỗi chính; lỗi close sau gắn vào suppressed của nó.
+
+Ví dụ ngắn:
+
+~~~java
+try (FileInputStream in = new FileInputStream("a.txt");
+     BufferedReader r = new BufferedReader(new InputStreamReader(in))) {
+    String line = r.readLine();   // lỗi ở đây vẫn không làm rò stream
+    process(line);                // r đóng trước, in đóng sau
+}
+~~~
+
+Nếu {{readLine()}} ném A và cả hai {{close()}} ném B, C, thì exception ném ra là A; B và C nằm trong {{getSuppressed()}} theo thứ tự đóng. Khác với finally thủ công: exception từ close có thể che mất exception gốc.
+
 ### Thiết kế exception nghiệp vụ
 Dùng tên thể hiện ngữ cảnh như {{InsufficientFundsException}} thay vì {{Exception}} chung. Có thể giữ mã lỗi ổn định cho API và giữ cause để điều tra:
 
@@ -38,14 +60,19 @@ throw new PaymentException("PAYMENT_DECLINED", "Không thể thanh toán", cause
 
 Không nhét PAN, token hay dữ liệu nhạy cảm vào message. Chuyển đổi exception ở ranh giới tầng (driver → repository/domain → HTTP) nhưng không làm mất cause. Tránh catch rồi trả null: caller không phân biệt “không có dữ liệu” với “truy vấn lỗi”.
 
-### Pitfall production
-- Retry mọi exception: lỗi validation cũng bị gửi lại, còn timeout sau khi server đã ghi có thể tạo giao dịch trùng. Chỉ retry lỗi transient và dùng idempotency key.
-- Đóng thủ công trong finally: exception từ close có thể che exception gốc; try-with-resources đã giải quyết quy tắc này.
-- Bắt {{InterruptedException}} rồi bỏ cờ ngắt: khôi phục bằng {{Thread.currentThread().interrupt()}} nếu không thể truyền tiếp.
-- Chuyển mọi lỗi thành HTTP 500: lỗi nghiệp vụ cần status/mã ổn định, còn lỗi nội bộ không lộ stack trace cho client.
+### Lỗi hay gặp trên production
+
+- **Retry mọi exception**: triệu chứng là lỗi validation (sai định dạng) cũng bị gửi lại lần thứ hai, và timeout sau khi server đã ghi tạo giao dịch trùng. Nguyên nhân: code retry bắt cả lỗi transient và lỗi vĩnh viễn. Cách sửa: chỉ retry lỗi transient (mạng gián đoạn, database quá tải), kết hợp idempotency key (khóa nhận dạng duy nhất để phát hiện yêu cầu trùng) để tránh tạo giao dịch trùng.
+- **Đóng thủ công trong finally**: triệu chứng là log chỉ ghi exception từ close, exception công việc thực sự biến mất. Nguyên nhân: exception trong close ném ra che mất exception gốc. Cách sửa: dùng {{try-with-resources}}; lỗi close gắn vào {{getSuppressed()}} thay vì che mất lỗi chính.
+- **Bắt {{InterruptedException}} rồi bỏ cờ ngắt**: triệu chứng là luồng không bao giờ dừng khi yêu cầu tắt JVM, shutdown kéo dài. Nguyên nhân: swallow exception làm mất cờ ngắt của luồng. Cách sửa: gọi lại {{Thread.currentThread().interrupt()}} nếu không thể ném tiếp.
+- **Chuyển mọi lỗi thành HTTP 500**: triệu chứng là client không biết lỗi do họ hay do server, và stack trace nội bộ rò rãi ra response. Nguyên nhân: không phân biệt lỗi nghiệp vụ và lỗi hệ thống. Cách sửa: lỗi nghiệp vụ trả status/mã lỗi ổn định (ví dụ 409 conflict), lỗi nội bộ chỉ log và trả 500 chung chung mà không lộ stack trace cho client.
 
 ### Liên hệ phỏng vấn
-Hãy kể một lần lỗi cleanup làm mất lỗi gốc, giải thích vì sao resource đóng ngược thứ tự, và nêu chính xác checked exception ảnh hưởng rollback Spring ra sao.`,
+
+- Lỗi cleanup làm mất lỗi gốc thì ảnh hưởng gì đến việc chẩn đoán production? → Lỗi từ close bị ném làm lỗi chính, exception nghiệp vụ thực sự bị gắn vào suppressed và dễ bị bỏ qua nếu chỉ log exception chính; nên luôn duyệt {{getSuppressed()}}.
+- Vì sao resource đóng theo thứ tự ngược khai báo? → Tài nguyên sau khai báo thường nằm trên tài nguyên trước (reader trên stream); phải đóng lớp trên trước để flush đúng thứ tự và không làm hỏng stream dưới đáy.
+- Checked exception ảnh hưởng rollback trong Spring ra sao? → Theo mặc định Spring rollback cho runtime exception; checked exception không rollback trừ khi cấu hình {{rollbackFor}}, do đó bọc database exception thành checked mà không cấu hình sẽ vô tình commit trạng thái dở dang.
+`,
   exercises: [{
     title: 'Đóng tài nguyên theo thứ tự và giữ suppressed exception',
     prompt: `Cài {{Resource}} và {{run()}}. {{run()}} mở A rồi B, gọi {{work()}}. Dù có lỗi vẫn phải đóng B rồi A. Khi work ném lỗi, đó là lỗi chính; lỗi close phải nằm trong {{getSuppressed()}}.`,
@@ -85,7 +112,32 @@ class Tasks {
 }`,
     hints: ['Khai báo A rồi B trong cùng resource specification; Java đóng theo thứ tự đảo.', 'Để kiểm tra suppressed, thân khối phải ném lỗi chính và cả hai close cũng ném lỗi.'],
     explain: `Compiler triển khai logic tương đương finally lồng nhau. Vì thế mọi resource đã khởi tạo đều được đóng, kể cả khi khởi tạo resource sau hoặc thân khối thất bại. Exception từ thân được ưu tiên làm lỗi chính; close exception được thêm theo thứ tự đóng vào mảng suppressed. Khi thân thành công, lỗi close đầu tiên trở thành lỗi được ném và lỗi close tiếp theo suppressed vào nó.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['Exception', 'try-with-resources']
+  }], check: [
+    {
+      q: 'Theo Java, khi một method ném checked exception, caller bắt buộc phải làm gì?',
+      options: ['Không làm gì, JVM tự xử lý', 'Khai báo {{throws}} trong chữ ký hoặc bọc trong {{try-catch}}', 'Chỉ ghi comment nhắc xử lý sau', 'Buộc chuyển thành unchecked exception trước khi ném'],
+      answer: 1,
+      explain: 'Đáp án B đúng: compiler bắt checked exception được khai báo {{throws}} hoặc bắt bằng {{try-catch}}, code không biên dịch nếu bỏ qua. A sai: JVM không tự xử lý checked exception. C sai: comment không thỏa mã compiler. D sai: không phải bắt buộc, và chuyển đổi có thể làm mất nguyên nhân nếu không giữ cause.'
+    },
+    {
+      q: 'Trong {{try-with-resources}}, thân ném lỗi A, hai resource close() ném B và C. Caller nhận exception gì?',
+      options: ['B, vì lỗi đóng xảy ra sau cùng', 'C, vì resource đóng cuối được ưu tiên', 'A làm lỗi chính; B, C gắn vào {{getSuppressed()}}', 'Không ném exception nào ra ngoài'],
+      answer: 2,
+      explain: 'Đáp án C đúng: exception từ thân được ưu tiên làm lỗi chính; lỗi close được gắn thêm vào mảng suppressed qua {{addSuppressed()}}. A/B sai: lỗi close không trở thành lỗi chính khi thân đã ném. D sai: Java không swallow exception; nếu thân thành công mà close ném, lỗi close đầu tiên mới trở thành lỗi chính.'
+    },
+    {
+      q: 'Developer bọc SQLException thành checked exception {{PaymentException}} trong service Spring, không cấu hình thêm. Transaction sẽ ra sao?',
+      options: ['Commit bình thường: checked exception không rollback theo mặc định của Spring', 'Rollback vì exception đã được ném ra', 'Rollback vì SQLException gốc là unchecked', 'Treo vĩnh viễn'],
+      answer: 0,
+      explain: 'Đáp án A đúng: Spring chỉ rollback runtime exception theo mặc định; checked exception cần cấu hình {{rollbackFor}}. B/C sai: ném exception không tự rollback nếu là checked; SQLException đã bị bọc thành checked, đặc tính runtime của JDBC bị mất. D sai: không có cơ chế treo transaction như vậy.'
+    },
+    {
+      q: 'Bắt {{InterruptedException}} mà không thể ném tiếp, phải làm gì?',
+      options: ['Bỏ qua hoàn toàn, không làm gì cả', 'Gọi {{Thread.stop()}} để dừng luồng ngay', 'Chuyển thành HTTP 500 ngay tại chỗ', 'Gọi lại {{Thread.currentThread().interrupt()}} để khôi phục cờ ngắt'],
+      answer: 3,
+      explain: 'Đáp án D đúng: swallow exception làm mất cờ ngắt, luồng không bao giờ dừng khi yêu cầu shutdown. A sai: mất cờ ngắt, luồng vẫn chạy. B sai: {{Thread.stop()}} đã bị lui, không an toàn (có thể khóa monitor bất ngờ). C sai: InterruptedException là sự kiện luồng, không phải lỗi HTTP của request.'
+    }
+  ], related: ['core-001'], tags: ['Exception', 'try-with-resources']
 },
 {
   id: 'lesson-core-002', track: 'core', order: 2,
@@ -118,15 +170,46 @@ Không cần wildcard cho mọi tham số. Nếu hàm vừa đọc vừa ghi cù
 ### Comparator<? super T>
 Một comparator của Object có thể so mọi T, nên max nhận {{Comparator<? super T>}}. Collection là producer nên dùng {{Collection<? extends T>}}. Thuật toán duyệt một lượt, giữ phần tử tốt nhất hiện tại; nếu comparator trả số dương cho candidate so với best thì thay best. Độ phức tạp O(n), bộ nhớ O(1).
 
-### Pitfall production
-- API nhận {{List<Object>}} làm client không truyền được List<String>; dùng {{List<?>}} nếu chỉ đọc, hoặc wildcard thích hợp.
-- Cast raw type làm mất kiểm tra và lỗi xuất hiện xa nơi ghi dữ liệu. Không dùng raw collection để “né” generic.
-- {{? extends T}} không có nghĩa mọi subtype đều hợp lệ để ghi; chỉ null chắc chắn tương thích.
-- Không thể tạo {{new T[]}} do erasure; thường dùng collection hoặc nhận {{Class<T>}}/factory.
-- Comparator không nhất quán với equals có thể làm TreeSet loại nhầm phần tử; chọn comparator theo định danh cần thiết.
+### Cơ chế từng bước của wildcard (PECS)
+
+Compiler xử lý wildcard bằng cách "bắt" (capture) một kiểu ẩn trong mỗi lời gọi:
+
+1. **{{List<? extends Number>}} là nguồn (producer)**: có thể trỏ tới List<Integer> hoặc List<Double>. Đọc ra: chắc chắn là {{Number}}, gán cho {{Number}} được. Ghi: cấm mọi thứ trừ {{null}}, vì compiler không biết subtype cụ thể nào danh sách thực sự chấp nhận.
+2. **{{List<? super Integer>}} là đích (consumer)**: có thể là List<Integer>, List<Number> hoặc List<Object>. Ghi {{Integer}} an toàn vì mọi kiểu đích đều chứa được Integer. Đọc ra: chỉ chắc chắn là {{Object}}.
+3. **Quy tắc PECS**: producer (chỉ đọc) dùng {{? extends T}}, consumer (chỉ ghi) dùng {{? super T}}. Hàm vừa đọc vừa ghi cùng collection thì dùng {{List<T>}} rõ ràng hơn.
+4. **Một T nối hai phía**: trong hàm copy, cùng một {{T}} ràng buộc src và dst, nên giá trị đọc từ src gán vào dst được ngay, không cần cast.
+5. **Runtime bị xóa tham số (erasure)**: {{List<String>}} và {{List<Integer>}} cùng class runtime {{ArrayList}}. Không viết {{value instanceof List<String>}}; kiểm tra từng phần tử hoặc thiết kế kiểu an toàn.
+
+Ví dụ:
+
+~~~java
+// Nguồn chỉ cung cấp số: đọc được Number, ghi bị cấm
+Number total(List<? extends Number> xs) {
+    double s = 0;
+    for (Number n : xs) s += n.doubleValue();   // đọc an toàn
+    return s;
+}
+// Đích chỉ nhận số nguyên: ghi Integer an toàn, đọc chỉ ra Object
+void luu(List<? super Integer> dst) {
+    dst.add(Integer.valueOf(7));                // ghi an toàn
+    Object o = dst.get(0);                      // đọc chỉ khẳng định Object
+}
+~~~
+
+### Lỗi hay gặp trên production
+
+- **API nhận {{List<Object>}}**: triệu chứng là client truyền {{List<String>}} bị lỗi biên dịch ngay chỗ gọi. Nguyên nhân: generic invariant, {{List<String>}} không phải kiểu con của {{List<Object>}}. Cách sửa: dùng {{List<?>}} nếu chỉ đọc, hoặc generic method với wildcard phù hợp cho từng hướng.
+- **Cast raw type**: triệu chứng là lỗi {{ClassCastException}} xuất hiện ở nơi hoàn toàn khác nơi đưa dữ liệu vào, rất khó truy vết. Nguyên nhân: raw type tắt kiểm tra kiểu của compiler. Cách sửa: không dùng raw collection để "né" generic; khai báo kiểu tham số rõ ràng.
+- **{{? extends T}} để ghi**: triệu chứng là code thêm phần tử vào {{List<? extends Number>}} bị từ chối biên dịch. Nguyên nhân: extends chỉ hứa đọc ra được T cha, không hứa chấp nhận mọi subtype để ghi; chỉ {{null}} chắc chắn tương thích. Cách sửa: dùng {{? super T}} cho đích ghi.
+- **{{new T[]}}**: triệu chứng là lỗi biên dịch "generic array creation". Nguyên nhân: type erasure xóa tham số generic ở runtime, JVM không biết kiểu thành phần mảng. Cách sửa: dùng collection hoặc nhận {{Class<T>}}/factory để tạo mảng.
+- **Comparator không nhất quán với equals**: triệu chứng là {{TreeSet}} hoặc {{TreeMap}} loại nhầm phần tử, tìm không thấy key đã put. Nguyên nhân: comparator cho hai object khác bằng 0 trong khi equals cho false, vi phạm "consistent with equals". Cách sửa: chọn comparator theo định danh nghiệp vụ và đảm bảo compareTo trả 0 khi và chỉ khi equals true.
 
 ### Liên hệ phỏng vấn
-Giải thích vì sao {{List<Integer>}} không gán cho {{List<Number>}}, sau đó sửa API copy và max mà không dùng cast. Nêu rõ kiểu gì đọc được và kiểu gì ghi được ở mỗi wildcard.`,
+
+- Vì sao {{List<Integer>}} không gán cho {{List<Number>}}? → Java generic là invariant: nếu cho phép, client có thể thêm {{Double}} vào danh sách thực chất là {{Integer}}, vi phạm kiểu tại runtime; compiler chặn ngay tại compile time.
+- API copy và max sửa như thế nào mà không dùng cast? → copy nhận {{List<? super T> dst}} (đích ghi) và {{List<? extends T> src}} (nguồn đọc); max nhận {{Collection<? extends T> xs}} (producer) và {{Comparator<? super T> c}} (consumer).
+- Kiểu gì đọc được, kiểu gì ghi được ở mỗi wildcard? → {{? extends T}}: đọc được {{T}}, ghi cận trừ {{null}}. {{? super T}}: ghi được {{T}}, đọc chỉ khẳng định {{Object}}.
+`,
   exercises: [{
     title: 'Copy và max không dùng cast',
     prompt: `Hoàn thiện {{Ops.copy}} và {{Ops.max}} với PECS. {{max}} trả {{Optional.empty()}} cho collection rỗng và trả phần tử đầu tiên nếu có comparator tie.`,
@@ -150,7 +233,32 @@ Giải thích vì sao {{List<Integer>}} không gán cho {{List<Number>}}, sau đ
 }`,
     hints: ['Đích consume T nên dùng super; nguồn produce T nên dùng extends.', 'Khởi tạo best từ phần tử đầu thay vì giá trị sentinel để hỗ trợ mọi kiểu T.'],
     explain: `Hai hàm đều dùng generic method để cùng một T liên kết các phía. Comparator chỉ tiêu thụ hai T nên nhận Comparator<? super T>; nhờ vậy Comparator<Object> vẫn dùng được khi tìm max của String. Khởi tạo từ phần tử đầu tránh giả định T có giá trị nhỏ nhất.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['Generics', 'PECS']
+  }], check: [
+    {
+      q: 'Vì sao Java không gán {{List<Integer>}} cho biến {{List<Number>}}?',
+      options: ['Vì Integer và Number là hai class khác nhau, compiler không cho gán', 'Vì generic Java là invariant; nếu cho phép, có thể thêm Double vào danh sách Integer', 'Vì List là interface, không thể dùng làm kiểu tham số', 'Vì Number là abstract class, không tạo được danh sách'],
+      answer: 1,
+      explain: 'Đáp án B đúng: generic Java là invariant, List<Integer> không phải subtype của List<Number>; nếu cho phép thì có thể thêm Double vào danh sách thực chất là Integer, vi phạm kiểu tại runtime. A sai: Integer gán cho Number được bình thường, vấn đề là kiểu generic bao bọc. C sai: List hoàn toàn có dùng làm kiểu tham số. D sai: abstract không liên quan đến vấn đề gán kiểu generic.'
+    },
+    {
+      q: 'Với {{List<? extends Number>}}, thao tác nào sau đây ĐÚNG theo biên dịch?',
+      options: ['Gán giá trị đọc được cho biến kiểu Number', 'Thêm Integer vào danh sách', 'Thêm Double vào danh sách', 'Gán giá trị đọc được cho biến kiểu Integer'],
+      answer: 0,
+      explain: 'Đáp án A đúng: đọc ra chỉ chắc chắn là Number, gán cho biến Number được. B/C sai: wildcard extends là producer (chỉ đọc), ghi cấm mọi thứ trừ null vì compiler không biết subtype thực tế. D sai: đọc ra chỉ biết là Number, không ép về Integer được.'
+    },
+    {
+      q: 'Với {{List<? super Integer>}}, điều gì chính xác?',
+      options: ['Chỉ List<Integer> mới gán được biến này', 'Đọc ra chắc chắn là Integer', 'Ghi Integer an toàn, đọc chỉ khẳng định Object', 'Tương đương List<Integer>, đọc và ghi đều Integer'],
+      answer: 2,
+      explain: 'Đáp án C đúng: đích super Integer có thể là List<Integer>, List<Number>, List<Object>, ghi Integer an toàn; đọc ra chỉ chắc chắn là Object. A sai: List<Number>, List<Object> cũng gán được. B sai: đọc ra chắc chắn Object chứ không phải Integer. D sai: super Integer mở rộng hơn List<Integer>, không tương đương.'
+    },
+    {
+      q: 'Khi gọi {{Collections.max(xs, c)}} với {{xs}} là {{List<String>}} và truyền comparator {{Comparator<Object>}}, điều gì xảy ra?',
+      options: ['Lỗi biên dịch vì Object khác String', 'Chỉ chạy được nếu String implements Comparable', 'Comparator<Object> bị bỏ qua, dùng natural ordering', 'Chạy được: Comparator<Object> là Comparator<? super String>, có thể so hai String'],
+      answer: 3,
+      explain: 'Đáp án D đúng: comparator là consumer (chỉ tiêu thụ hai T), nên Comparator<Object> vẫn nhận được String — đây là contravariance, comparator của kiểu cha dùng được cho kiểu con. A sai: Comparator<Object> là supertype của Comparator<String> theo wildcard, biên dịch được. B/C sai: comparator được truyền thì được dùng, không cần String implements Comparable cũng không bị bỏ qua.'
+    }
+  ], related: ['core-001'], tags: ['Generics', 'PECS']
 },
 {
   id: 'lesson-core-003', track: 'core', order: 3,
@@ -187,6 +295,46 @@ Với {{Money}}, lưu amount và currency, không dùng double vì biểu diễn
 
 Records sinh accessor trả field trực tiếp. Record chứa List vẫn cần {{List.copyOf}} trong compact constructor; “record” không đồng nghĩa deep immutable.
 
+### Cơ chế từng bước của defensive copy
+
+Aliasing xảy ra khi nhiều biến trỏ cùng một object mutable: sửa qua biến này thì biến kia cũng thấy thay đổi. Defensive copy phá liên kết đó bằng cách tạo bản sao riêng cho mỗi bên, không còn đường chia sẻ.
+
+Khi người gọi truyền object mutable vào constructor:
+
+1. **Nhận tham chiếu, không phải bản sao**: constructor nhận tham chiếu đến object của người gọi (ví dụ {{Date}} hay {{List}}), chưa tách liên kết.
+2. **Sao chép ngay lúc nhận**: constructor tạo object mới chứa dữ liệu sao chép, ví dụ {{new Date(input.getTime())}} hoặc {{List.copyOf(input)}}, rồi gán field trỏ đến bản sao.
+3. **Trả bản sao khi đọc**: getter không trả field thô; trả {{new Date(created.getTime())}} hoặc {{List.copyOf(items)}}. Người gọi sửa bản trả về sẽ không làm thay đổi trường bên trong object.
+4. **Kết quả**: người gọi giữ bản gốc của mình, object giữ bản của riêng mình, không còn aliasing → chia sẻ an toàn giữa thread.
+
+Ví dụ ngắn với {{Date}} (mutable) và danh sách:
+
+~~~java
+final class Transfer {
+    private final Date created;   // Date có thể bị sửa sau khi tạo
+    private final List<String> items;
+
+    Transfer(Date created, List<String> items) {
+        this.created = new Date(created.getTime());   // copy ngay lúc nhận
+        this.items = List.copyOf(items);                // tách khỏi danh sách của caller
+    }
+
+    Date created() {
+        return new Date(created.getTime());             // trả bản sao mới
+    }
+
+    List<String> items() {
+        return List.copyOf(items);                      // trả danh sách bất biến
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+
+- **Chỉ copy khi nhận vào, quên copy khi trả ra**: triệu chứng là caller lấy getter rồi sửa {{Date}} hoặc danh sách, trường bên trong object bị thay đổi mà không qua constructor. Nguyên nhân: getter trả chính tham chiếu trường nội bộ. Cách sửa: getter trả bản sao mới, ví dụ {{new Date(created.getTime())}} hoặc {{List.copyOf(items)}}.
+- **Shallow copy với phần tử mutable**: triệu chứng là {{List.copyOf}} ngăn sửa cấu trúc danh sách nhưng phần tử trong danh sách (ví dụ {{OrderLine}} mutable) vẫn chia sẻ tham chiếu; sửa phần tử vẫn thay đổi nội dung thấy được từ snapshot. Nguyên nhân: copy nông chỉ sao chép tham chiếu phần tử, không sao chép object phần tử. Cách sửa: dùng phần tử immutable, hoặc deep-copy từng phần tử, hoặc trả bản sao của từng phần tử.
+- **Trả iterator hoặc view trực tiếp**: triệu chứng là người dùng iterator/spliterator của danh sách nội bộ, sửa khi duyệt ném {{ConcurrentModificationException}} hoặc nhìn thấy dữ liệu thay đổi giữa chừng. Nguyên nhân: view không tách bản sao, vẫn liên kết với danh sách gốc. Cách sửa: trả {{List.copyOf(...)}} hoặc mảng/danh sách mới, không trả view trực tiếp.
+- **Bảo vệ một nơi còn là rò rỉ ở nơi khác**: triệu chứng là constructor copy nhưng builder hoặc constructor khác giữ nguyên tham chiếu input, object “bất biến” vẫn bị đổi qua đường khác. Nguyên nhân: defensive copy chỉ áp dụng một phần. Cách sửa: áp dụng copy tại mọi nơi nhận dữ liệu từ người gọi (constructor, setter, builder, factory method).
+
 ### Pitfall production
 - Hibernate entity thường mutable và có lifecycle proxy; đừng biến entity thành value object bất biến chỉ bằng final class. Chuyển sang immutable DTO/domain snapshot tại ranh giới.
 - {{unmodifiableList}} không bảo vệ khỏi thay đổi qua list gốc; phù hợp khi cần view live có kiểm soát.
@@ -195,7 +343,11 @@ Records sinh accessor trả field trực tiếp. Record chứa List vẫn cần 
 - Bất biến không thay kiểm tra quyền, validation hay atomicity của thao tác nhiều object.
 
 ### Liên hệ phỏng vấn
-Hãy vẽ đường đi của tham chiếu input → constructor → getter, chỉ ra mọi nơi caller có thể sửa object, rồi giải thích shallow copy và record có nested list.`,
+
+- Object nào nên làm bất biến? → Dùng cho value object (tiền, mã giao dịch, cấu hình đọc nhiều lần) vì chia sẻ an toàn giữa thread và làm key an toàn trong HashMap/HashSet. Không dùng cho object lớn thay đổi liên tục (ví dụ buffer, trạng thái game) vì defensive copy mỗi lần tốn O(n) bộ nhớ và CPU.
+- Defensive copy ngăn được tất cả rò rỉ tham chiếu không? → Không. Chỉ ngăn aliasing qua tham chiếu mà constructor/getter truyền. Nếu danh sách chứa phần tử mutable và chỉ gọi {{List.copyOf}}, phần tử vẫn chia sẻ; cần phần tử immutable hoặc deep-copy từng phần tử.
+- unmodifiable view khác snapshot ra sao? → unmodifiableList vẫn là view trên danh sách gốc: sửa danh sách gốc thì view cũng đổi. {{List.copyOf}} tạo bản sao tách biệt: sửa danh sách gốc sau đó không ảnh hưởng bản sao.
+`,
   exercises: [{
     title: 'Tạo Transfer snapshot bất biến',
     prompt: `Sửa {{Transfer}} để ngày và danh sách không thể thay đổi qua constructor hoặc getter. Các item là String nên shallow snapshot đủ.`,
@@ -217,7 +369,32 @@ Hãy vẽ đường đi của tham chiếu input → constructor → getter, ch�
 }`,
     hints: ['Date mutable: copy millis vào constructor và tạo Date mới ở accessor.', 'List.copyOf tạo snapshot cấu trúc bất biến; ở đây phần tử String bất biến.'],
     explain: `Test cố tình sửa cả input lẫn kết quả accessor để tìm hai hướng rò rỉ. Chỉ copy constructor vẫn chưa đủ nếu getter trả Date nội bộ. List.copyOf chặn sửa cấu trúc và tách khỏi list đầu vào; nó không deep-copy phần tử tùy ý.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['immutability', 'defensive copy']
+  }],   check: [
+    {
+      q: 'Khi class bất biến nhận một {{Date}} vào constructor, sao phải gán field bằng {{new Date(created.getTime())}} thay vì gán trực tiếp {{created}}?',
+      options: ['Vì Date không phải final nên Java cấm gán trực tiếp', 'Vì Date là mutable: caller còn tham chiếu đến object gốc, sửa Date của mình sẽ sửa luôn trường bên trong object', 'Vì new Date tạo object nhanh hơn và tiết kiệm bộ nhớ hơn', 'Vì constructor không được nhận tham số kiểu Date'],
+      answer: 1,
+      explain: 'Đáp án B đúng: Date có thể bị thay đổi sau khi tạo (setTime). Nếu gán trực tiếp, caller và object giữ cùng một tham chiếu → aliasing; sửa ở một đầu sẽ thấy ở đầu kia. new Date(getTime()) tạo bản sao riêng, mỗi bên một object. A sai: Java không cấm gán tham chiếu Date. C sai: mục đích là an toàn không phải tốc độ. D sai: constructor hoàn toàn có thể nhận Date.'
+    },
+    {
+      q: '{{List.copyOf(items)}} khác {{items}} ra sao về việc ngăn sửa danh sách?',
+      options: ['Trả danh sách mới không cho thêm/xoá phần tử, còn danh sách gốc vẫn có thể sửa và không ảnh hưởng bản sao', 'Cả hai đều cho sửa phần tử giống nhau', 'List.copyOf chỉ tạo view chỉ đọc: sửa danh sách gốc vẫn thay đổi bản sao', 'List.copyOf sửa luôn danh sách gốc thành không cho sửa'],
+      answer: 0,
+      explain: 'Đáp án A đúng: List.copyOf tạo bản sao mới và trả về list bất biến — thử add sẽ ném UnsupportedOperationException; sửa danh sách gốc sau đó không ảnh hưởng bản sao. B sai: bản sao không cho sửa cấu trúc. C sai: đó là đặc điểm của unmodifiableList (view), không phải List.copyOf. D sai: List.copyOf không đụng danh sách gốc.'
+    },
+    {
+      q: 'Danh sách items chứa các object {{OrderLine}} mutable. Chỉ gọi {{List.copyOf(items)}} trong getter đủ để object bất biến hoàn toàn không?',
+      options: ['Đủ, vì List.copyOf đã copy mọi thứ sâu', 'Không, vì List.copyOf ném exception khi phần tử mutable', 'Không, chỉ copy cấu trúc danh sách: phần tử OrderLine vẫn chia sẻ tham chiếu, sửa phần tử vẫn ảnh hưởng snapshot', 'Không, vì List.copyOf chỉ hoạt động với danh sách String'],
+      answer: 2,
+      explain: 'Đáp án C đúng: List.copyOf là shallow copy (copy nông) — sao chép tham chiếu phần tử, không sao chép object phần tử. Nếu OrderLine mutable, caller sửa OrderLine qua bản gốc vẫn thay đổi nội dung thấy được từ snapshot. Cần phần tử immutable hoặc deep-copy từng phần tử. A/B/D sai.'
+    },
+    {
+      q: 'Getter trả {{Date}} nội bộ trực tiếp (không tạo bản sao mới). Caller lấy đối tượng đó rồi gọi {{setTime(...)}}. Hệ quả gì xảy ra?',
+      options: ['Không có gì: Java tự bảo vệ trường Date trong object', 'Chỉ bản Date của caller bị thay đổi, trường trong object vẫn giữ giá trị cũ', 'Java ném UnsupportedOperationException tại getter', 'Object bị thay đổi trạng thái bên trong sau khi đã tạo, vi phạm bất biến vì caller và object chia sẻ cùng một Date'],
+      answer: 3,
+      explain: 'Đáp án D đúng: getter trả chính tham chiếu trường nội bộ, caller gọi setTime thì trường của object cũng đổi theo — alias ngược từ caller vào bên trong, object đã không còn bất biến. A/B/C sai: Java không tự sao chép, caller và object giữ cùng tham chiếu nên sửa bản trả về chính là sửa trường nội bộ, và getter không ném exception.'
+    }
+  ], related: ['core-001'], tags: ['immutability', 'defensive copy']
 },
 {
   id: 'lesson-core-004', track: 'core', order: 4,
@@ -246,6 +423,36 @@ BigDecimal rounded = amount.divide(BigDecimal.valueOf(3), 2, RoundingMode.DOWN);
 
 RoundingMode là chính sách nghiệp vụ: HALF_UP phổ biến nhưng không phải mặc định đúng cho mọi thuế/lãi; HALF_EVEN giảm thiên lệch tích lũy trong một số thống kê. Không dùng {{MathContext}} mơ hồ thay cho scale tiền cụ thể.
 
+### Cơ chế từng bước của BigDecimal
+
+BigDecimal lưu số dưới hai phần: **unscaled value** (số nguyên không dấu) và **scale** (vị trí dấu thập phân). Ví dụ 123.45 có unscaled = 12345, scale = 2; giá trị thực = 12345 / 10². Số nguyên không giới hạn độ dài, nên BigDecimal không bị sai lệch như double.
+
+1. **Tạo số**: dùng {{new BigDecimal("10.00")}} từ chuỗi để giữ chính xác từng chữ số, hoặc {{BigDecimal.valueOf()}} từ long/double đã an toàn về chuỗi. Không dùng {{new BigDecimal(double)}} vì double đã sai lệch trước khi vào BigDecimal.
+2. **Phép tính**: cộng/trừ giữ scale phù hợp, nhân cộng scale, chia phải chọn scale và {{RoundingMode}} vì kết quả có thể vô hạn (10 / 3 = 3.333…).
+3. **Làm tròn**: {{divide(divisor, 2, RoundingMode.HALF_UP)}} chọn 2 chữ số thập phân và làm tròn theo quy tắc business. HALF_UP làm tròn theo cách phổ biến; HALF_EVEN giảm thiên lệch khi cộng dồn nhiều lần.
+4. **Phân bổ tiền**: tính ở đơn vị nhỏ nhất (cent) bằng số nguyên, chia lấy phần nguyên và phần dư, rồi cộng phần dư vào các kỳ đầu theo thứ tự ổn định. Tổng các kỳ vẫn bằng tổng ban đầu, có thể kiểm tra lại.
+
+Ví dụ phân bổ 10.00 thành 3 kỳ:
+
+~~~java
+BigDecimal total = new BigDecimal("10.00");           // 1000 cent
+BigInteger[] qr = total.movePointRight(2).toBigIntegerExact().divideAndRemainder(BigInteger.valueOf(3));
+// qr[0] = 333 cent mỗi kỳ, qr[1] = 1 cent dư
+List<BigDecimal> parts = new ArrayList<>();
+for (int i = 0; i < 3; i++) {
+    BigInteger cent = qr[0].add(i < qr[1].intValue() ? BigInteger.ONE : BigInteger.ZERO);
+    parts.add(new BigDecimal(cent, 2));               // scale 2: 3.34, 3.33, 3.33
+}
+// tổng: 3.34 + 3.33 + 3.33 = 10.00
+~~~
+
+### Lỗi hay gặp trên production
+
+- **{{new BigDecimal(double)}}**: triệu chứng là 0.1USD được lưu thành 0.1000000000000000055511…, tiền sai ngay từ đầu tính toán đầu tiên. Nguyên nhân: double lưu nhị phân, 0.1 không biểu diễn chính xác, và constructor giữ giá trị nhị phân sai lệch đó. Cách sửa: luôn dùng {{new BigDecimal("0.1")}} từ chuỗi, hoặc {{BigDecimal.valueOf(0.1)}} (dùng chuỗi của double, gần đúng ý người viết).
+- **Chia BigDecimal thiếu scale**: triệu chứng là {{amount.divide(divisor)}} ném {{ArithmeticException}} khi kết quả không chia hết, ví dụ 10.00 / 3. Nguyên nhân: divide mặc định yêu cầu kết quả chính xác tuyệt đối, không biết làm tròn thế nào. Cách sửa: luôn truyền scale và {{RoundingMode}}, ví dụ {{divide(divisor, 2, RoundingMode.HALF_UP)}}.
+- **{{equals}} để so sánh tiền**: triệu chứng là 10.00 và 10.0 được coi là khác trong HashMap/set, dù trị số bằng nhau. Nguyên nhân: equals so cả trị số lẫn scale. Cách sửa: dùng {{compareTo}} == 0 khi chỉ quan tâm trị số, hoặc chuẩn hóa cùng scale bằng {{setScale}} trước khi so.
+- **Làm tròn mỗi dòng rồi tổng**: triệu chứng là tổng các dòng sau làm tròn khác tổng đơn hàng, khách khiếu náo sai 1–2 đồng. Nguyên nhân: sai số làm tròn tích lũy ở mỗi dòng. Cách sửa: tính toán ở đơn vị nhỏ nhất (cent) bằng số nguyên, phân bổ phần dư theo quy tắc xác định, chỉ làm tròn ở lớp trình bày.
+
 ### Quy tắc lưu trữ và production
 - Database {{DECIMAL(p,s)}} phải đủ precision/scale cho giá trị tối đa; kiểm tra overflow trước khi ghi.
 - JPA/Hibernate map BigDecimal vào decimal, nhưng schema migration cần khớp precision/scale. Đọc lại có thể giữ scale theo database/driver; đừng dùng equals để so tiền nếu nghiệp vụ chỉ quan tâm trị số.
@@ -254,7 +461,11 @@ RoundingMode là chính sách nghiệp vụ: HALF_UP phổ biến nhưng không 
 - Với phân bổ, xác định ai nhận remainder và tie-break ổn định để chạy lại cho cùng kết quả.
 
 ### Liên hệ phỏng vấn
-Nêu ví dụ tổng 10.00 chia ba, giải thích vì sao 3.33 × 3 lệch, rồi mô tả quy tắc phân bổ có thể audit. Phân biệt comparator tiền với equals của BigDecimal.`,
+
+- Tại sao tiền không dùng double? → Double dùng số nhị phân, 0.1 không biểu diễn hết chính xác nên 0.1 + 0.2 có thể ra 0.30000000000000004. Tiền dùng BigDecimal từ chuỗi, hoặc lưu cent (số nguyên) để mỗi chữ số thập phân chính xác đến đồng.
+- So sánh tiền dùng equals hay compareTo? → equals so cả trị số lẫn scale, nên 10.0 khác 10.00 — thường sai ở tiền. Dùng {{compareTo}} == 0 khi chỉ quan tâm trị số, hoặc chuẩn hóa cùng scale bằng {{setScale}} trước khi so.
+- Chia tiền cho nhiều kỳ làm sao cho tổng vẫn khớp? → Tính ở đơn vị nhỏ nhất (cent) bằng số nguyên, lấy phần nguyên và phần dư, rồi cộng phần dư vào các kỳ đầu theo thứ tự ổn định (ví dụ 3.34, 3.33, 3.33). Ghi rõ quy tắc này vào nghiệp vụ và audit để đối soát sau này.
+`,
   exercises: [{
     title: 'Chia phí thành kỳ và phân bổ phần dư',
     prompt: `Cài {{Fees.split(BigDecimal total,int n)}} trả danh sách n phần, scale 2. Chia theo đơn vị cent: các kỳ đầu nhận thêm tối đa một cent; tổng phải đúng bằng total. Reject n <= 0 và total âm.`,
@@ -272,24 +483,68 @@ Nêu ví dụ tổng 10.00 chia ba, giải thích vì sao 3.33 × 3 lệch, rồ
 } }`,
     hints: ['Đổi amount scale 2 thành số nguyên cent; chia lấy quotient và remainder.', 'Đưa từng cent dư vào các kỳ đầu để thứ tự luôn xác định.'],
     explain: `Chia BigDecimal trực tiếp cần chọn scale và rounding; phần dư làm tổng các kỳ không còn bằng tổng ban đầu. Chuyển sang cent nguyên biến bài toán thành phép chia số nguyên: mỗi kỳ nhận quotient cent, remainder kỳ đầu nhận thêm một cent. Ràng buộc scale 2 bằng UNNECESSARY để không âm thầm làm tròn input.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['BigDecimal', 'money']
+  }],   check: [
+    {
+      q: 'Vì sao không viết {{new BigDecimal(0.1)}} để đại diện cho 0.1 đồng USD?',
+      options: ['Constructor double giữ chính xác giá trị nhị phân sai lệch của 0.1, nên số tiền đã sai ngay từ đầu', 'BigDecimal không nhận constructor double', '0.1 trong double là chính xác, không có vấn đề gì', 'Constructor double bị Java lui từ Java 17'],
+      answer: 0,
+      explain: 'Đáp án A đúng: double lưu số nhị phân, 0.1 không có biểu diễn nhị phân hữu hạn, nên new BigDecimal(0.1) giữ giá trị sai lệch (0.1000000000000000055511…). Phải dùng new BigDecimal("0.1") hoặc BigDecimal.valueOf(0.1). B/C/D sai.'
+    },
+    {
+      q: 'Hai số {{new BigDecimal("10.00")}} và {{new BigDecimal("10.0")}} so bằng nhau theo {{equals}} hay theo {{compareTo}}?',
+      options: ['Cả hai đều cho bằng nhau', 'Cả hai đều cho khác nhau', 'equals cho khác nhau (scale khác), compareTo cho bằng nhau (trị số bằng)', 'equals cho bằng nhau, compareTo cho khác nhau'],
+      answer: 2,
+      explain: 'Đáp án C đúng: equals so cả trị số lẫn scale, 10.00 (scale 2) khác 10.0 (scale 1); compareTo chỉ so trị số, hai số bằng 10 nên bằng nhau. Tiền nên dùng compareTo == 0 khi chỉ quan tâm trị số.'
+    },
+    {
+      q: '{{amount.divide(divisor, 2, RoundingMode.HALF_UP)}} cần cả scale và RoundingMode. Nếu bỏ qua, chuyện gì thường xảy ra?',
+      options: ['Java tự chọn scale 2 và làm tròn HALF_UP', 'Ném ArithmeticException khi kết quả chia không hết, ví dụ 10 chia 3', 'Kết quả luôn về số nguyên, mất phần thập phân', 'Chỉ ném lỗi khi divisor bằng 0'],
+      answer: 3,
+      explain: 'Đáp án D đúng: divide không tham số yêu cầu kết quả chia hết chính xác; 10/3 = 3.333… không hết nên ném ArithmeticException. Phải truyền scale và RoundingMode để quy định làm tròn. A sai: Java không tự đoán scale. B sai: mất phần thập phân không phải hành vi của divide. C sai: divisor 0 ném ArithmeticException riêng, không liên quan.'
+    },
+    {
+      q: 'Tổng 10.00 chia cho 3 kỳ, làm tròn mỗi kỳ về 3.33 thì tổng ba kỳ là 9.99, thiếu 0.01. Cách xử lý đúng theo quy tắc phân bổ?',
+      options: ['Bỏ qua 0.01 vì số nhỏ, tổng không bắt buộc khớp', 'Cộng phần dư 0.01 vào kỳ đầu theo thứ tự ổn định, ví dụ 3.34, 3.33, 3.33, tổng lại bằng 10.00', 'Làm tròn mỗi kỳ lên 3.34, tổng thành 10.02', 'Chia lại từ đầu cho đến khi tổng đúng 10.00'],
+      answer: 1,
+      explain: 'Đáp án B đúng: tính ở đơn vị nhỏ nhất (cent), lấy phần nguyên và phần dư, rồi cấp phần dư vào các kỳ đầu theo thứ tự xác định — tổng vẫn bằng 10.00 và có thể kiểm tra lại (audit). A/C/D sai: bỏ qua làm sai đối soát, làm tròn lên làm tổng vượt, và “chia lại từ đầu” không phải quy tắc xác định.'
+    }
+  ], related: ['core-001'], tags: ['BigDecimal', 'money']
 },
 {
   id: 'lesson-core-005', track: 'core', order: 5,
   title: 'String, StringBuilder và String pool', level: 'mid', minutes: 25,
   goals: ['Giải thích tính bất biến của String và string pool', 'Chọn StringBuilder cho phép nối lặp', 'Chuẩn hoá và che dữ liệu định danh an toàn'],
-  body: `**Tóm tắt:** {{String}} bất biến nên có thể chia sẻ an toàn và dùng làm key; nối lặp trong vòng lặp có thể tạo nhiều object trung gian, nên dùng {{StringBuilder}}. String pool canonicalize một số literal; so sánh nội dung bằng {{equals}}, không dựa vào identity hay gọi {{intern}} tùy tiện.
+  body: `**Tóm tắt:** {{String}} bất biến nên có thể chia sẻ an toàn và dùng làm key trong {{HashMap}}; nối lặp trong vòng lặp có thể tạo nhiều object trung gian và tốn bộ nhớ, nên dùng {{StringBuilder}}. String pool canonicalize một số literal để tối ưu bộ nhớ; so sánh nội dung bằng {{equals}}, không dựa vào identity ({{==}}) hay gọi {{intern}} tùy tiện.
 
 ### String và pool
-String lưu nội dung không đổi sau khi tạo. Phép {{concat}} không sửa chuỗi cũ mà trả chuỗi mới; nhờ vậy hash cache, chia sẻ và dùng làm key ổn định. Literal như {{"java"}} được đưa vào pool; compiler có thể gộp literal hằng. {{new String("java")}} tạo object riêng dù nội dung bằng nhau.
+String lưu nội dung không đổi sau khi tạo. "Bất biến" có nghĩa là khi bạn gán một chuỗi vào biến, nội dung của chuỗi đó sẽ không bao giờ thay đổi; nếu muốn nội dung khác, Java phải tạo một chuỗi mới. Ví dụ như viết tên khách hàng lên một tờ biên nhận rồi photocopy: bản gốc không đổi, bạn chỉ có thêm một bản mới. Phép {{concat}} (nối chuỗi) không sửa chuỗi cũ mà trả chuỗi mới; nhờ vậy hash cache, chia sẻ và dùng làm key ổn định. Literal như {{"java"}} được đưa vào pool; compiler có thể gộp literal hằng. {{new String("java")}} tạo object riêng dù nội dung bằng nhau.
 
 ~~~java
 String a = "java", b = new String("java");
-boolean sameText = a.equals(b); // true
-boolean sameObject = a == b;    // false
+boolean sameText = a.equals(b); // true: cùng nội dung
+boolean sameObject = a == b;    // false: khác object, khác vùng nhớ
 ~~~
 
-{{==}} trên reference kiểm tra cùng object, không phải cùng ký tự. {{intern()}} yêu cầu canonical string từ pool nhưng giữ chuỗi trong pool có chi phí và thường không cần trong ứng dụng. Dùng nó chỉ khi đã đo cardinality và lợi ích bộ nhớ.
+{{==}} trên reference kiểm tra cùng object (cùng vùng nhớ), không phải cùng ký tự. {{intern()}} yêu cầu canonical string từ pool nhưng giữ chuỗi trong pool có chi phí và thường không cần trong ứng dụng. Dùng nó chỉ khi đã đo cardinality (số lượng giá trị khác nhau) và lợi ích bộ nhớ.
+
+### Cơ chế từng bước: StringBuilder hoạt động như thế nào
+StringBuilder là một "buffer" (vùng nhớ đệm) có thể thay đổi nội dung, khác với String immutable. Khi bạn gọi {{append()}}, Java ghi thêm nội dung vào cuối buffer thay vì tạo chuỗi mới mỗi lần.
+
+1. **Cái gì**: {{StringBuilder}} giữ một mảng char nội bộ (buffer) và một con trỏ chỉ số phần tử cuối cùng.
+2. **Vì sao cần**: Nối {{result += part}} trong vòng lặp tạo một String mới mỗi lần, phải copy toàn bộ nội dung cũ sang chuỗi mới; khi kết quả dài dần, tổng số ký tự copy tăng theo bậc hai (O(n²)), chậm và tạo nhiều rác (garbage) trên heap (vùng nhớ JVM quản lý).
+3. **Hoạt động thế nào**: {{append()}} ghi nội dung vào buffer, nếu buffer đầy thì tạo mảng mới gấp đôi và copy qua (gần như cách {{ArrayList}} grow). Cuối cùng gọi {{toString()}} tạo một String duy nhất từ nội dung buffer.
+4. **Ví dụ cụ thể**: nối 3 phần "A", "B", "C": buffer ban đầu trống → append "A" → "A" → append "B" → "AB" → append "C" → "ABC" → toString() tạo "ABC" một lần duy nhất.
+5. **Lỗi hay gặp**: dùng StringBuilder trong nhiều thread cùng lúc không an toàn (không thread-safe, tức không an toàn khi nhiều luồng cùng truy cập); nếu cần, dùng {{StringBuffer}} hoặc xử lý đồng bộ bên ngoài, nhưng đồng bộ từng thao tác không làm cả chuỗi nghiệp vụ atomic (thực hiện toàn bộ như một bước không thể tách).
+
+Ví dụ ngắn (không dùng trong nhiều thread):
+
+~~~java
+StringBuilder sb = new StringBuilder(64);   // dự kiến 64 ký tự, tránh cấp buffer nhiều lần
+for (String part : parts) {
+    sb.append(part);                        // ghi vào buffer, không tạo String mới
+}
+String result = sb.toString();              // tạo String cuối cùng một lần duy nhất
+~~~
 
 ### Chi phí nối chuỗi
 Trong vòng lặp, {{result += part}} tạo chuỗi mới mỗi lần vì String immutable; tổng lượng ký tự copy có thể tăng bậc hai khi kết quả tăng từng chút. {{StringBuilder}} giữ buffer mutable, mở rộng khi cần, rồi tạo String cuối bằng {{toString}}. Java compiler tối ưu biểu thức nối đơn giản trong một biểu thức, nhưng không thể gộp tùy ý qua vòng lặp nhiều lần.
@@ -301,19 +556,22 @@ Trong vòng lặp, {{result += part}} tạo chuỗi mới mỗi lần vì String
 | {{StringBuffer}} | API legacy cần đồng bộ từng thao tác | đồng bộ không làm cả chuỗi nghiệp vụ atomic |
 
 ### Chuẩn hoá và che dữ liệu
-Định nghĩa chuẩn hoá theo domain: số thẻ có thể bỏ dấu cách/gạch nối nhưng không được bỏ ký tự tùy tiện; tài khoản có thể giữ số 0 đầu, nên không parse sang long. Mask chỉ giữ suffix cần thiết và không log giá trị gốc. Dùng builder với capacity dự kiến để tránh cấp buffer nhiều lần.
+Định nghĩa chuẩn hoá theo domain (lĩnh vực nghiệp vụ): số thẻ có thể bỏ dấu cách/gạch nối nhưng không được bỏ ký tự tùy tiện; tài khoản có thể giữ số 0 đầu, nên không parse sang long. Mask chỉ giữ suffix cần thiết và không log giá trị gốc. Dùng builder với capacity dự kiến để tránh cấp buffer nhiều lần.
 
-Chuỗi Java immutable cũng có mặt trái: không thể xoá chắc chắn bản sao chứa mật khẩu khỏi heap. Với secret ngắn hạn, API char[] cho phép caller ghi đè, dù GC/serialization/logging vẫn cần cẩn trọng. Không dùng String cho credential rồi tin rằng {{null}} sẽ xoá bộ nhớ ngay.
+Chuỗi Java immutable cũng có mặt trái: không thể xoá chắc chắn bản sao chứa mật khẩu khỏi heap. Với secret ngắn hạn, API char[] cho phép caller ghi đè, dù GC/serialization/logging vẫn cần cẩn trọng. Không dùng String cho credential (thông tin đăng nhập) rồi tin rằng {{null}} sẽ xoá bộ nhớ ngay.
 
 ### Pitfall production
 - Log request trước khi mask: dữ liệu đã rời khỏi luồng an toàn; mask tại boundary trước log.
-- {{substring}} không phải chuẩn hoá Unicode. Chữ nhìn giống nhau có thể có nhiều code point; nghiệp vụ quốc tế cần xác định Unicode normalization cụ thể.
+- {{substring}} không phải chuẩn hoá Unicode. Chữ nhìn giống nhau có thể có nhiều code point (đơn vị cơ bản của ký tự); nghiệp vụ quốc tế cần xác định Unicode normalization cụ thể.
 - Mask theo số ký tự thay vì ký tự số sau chuẩn hoá có thể làm lộ nhiều hơn dự kiến.
 - Không dùng {{==}} cho nội dung, và đừng dựa vào pool để sửa lỗi so sánh.
 - StringBuilder có thể tăng bộ đệm và giữ dữ liệu nhạy cảm trong bộ nhớ; tránh ghi vào log/debug.
 
 ### Liên hệ phỏng vấn
-So sánh nối chuỗi trong loop với builder, giải thích pool không phải cache nghiệp vụ, rồi mô tả thứ tự normalize → validate → mask → log mà không làm mất số 0 đầu.`,
+- Nối chuỗi trong vòng lặp với StringBuilder khác nhau như thế nào? → Nối bằng {{+}} trong vòng lặp tạo một String mới mỗi lần, tổng ký tự copy tăng bậc hai (O(n²)); StringBuilder ghi vào buffer mutable rồi tạo String một lần, tổng chi phí là O(n).
+- String pool là gì và dùng khi nào? → Pool canonicalize (đưa về dạng chuẩn) literal cùng nội dung thành một object để tiết kiệm bộ nhớ; dùng cho hằng số lặp lại nhiều, không dùng làm cache nghiệp vụ và không gọi {{intern}} tùy tiện vì giữ chuỗi trong pool có chi phí.
+- So sánh hai chuỗi nên dùng {{equals}} hay {{==}}? → {{equals}} so nội dung ký tự; {{==}} so cùng vùng nhớ. Hai chuỗi cùng nội dung nhưng tạo khác nhau (ví dụ {{new String("java")}} với literal) thì {{==}} cho false, {{equals}} cho true.
+`,
   exercises: [{
     title: 'Chuẩn hoá và che chuỗi tài khoản',
     prompt: `Viết {{Mask.account(String raw)}}: bỏ dấu cách và dấu gạch ngang, yêu cầu còn ít nhất 4 ký tự ASCII chữ/số, giữ nguyên số 0 đầu; trả {{*}} cho mọi ký tự trừ 4 ký tự cuối. Input null hoặc sai định dạng ném IllegalArgumentException.`,
@@ -332,7 +590,27 @@ So sánh nối chuỗi trong loop với builder, giải thích pool không phả
 } }`,
     hints: ['Không parse thành số vì sẽ làm mất số 0 đầu; lọc ký tự vào StringBuilder.', 'Chỉ sau chuẩn hoá mới tính suffix bốn ký tự và dựng kết quả mask.'],
     explain: `Chuẩn hoá phải theo hợp đồng đầu vào rõ ràng, ở đây chỉ cho bỏ space và hyphen ASCII. Mọi ký tự ngoài ASCII alphanumeric bị từ chối thay vì âm thầm xóa để tránh hai định danh khác nhau thành một. Builder giữ độ phức tạp tuyến tính O(n) và không tạo chuỗi mới cho từng ký tự.`
-  }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['String', 'StringBuilder', 'string pool']
+  }],   check: [{
+    q: 'Hai chuỗi {{"java"}} và {{new String("java")}} có cùng nội dung. So sánh bằng {{==}} và {{equals}} kết quả ra sao?',
+    options: ['{{==}} và {{equals}} đều cho true', '{{==}} cho true, {{equals}} cho false', '{{==}} cho false, {{equals}} cho true', 'Cả hai đều cho false'],
+    answer: 2,
+    explain: 'Đáp án C đúng: {{==}} so sánh vùng nhớ (identity), hai object khác nhau nên false; {{equals}} so sánh nội dung ký tự, cả hai là "java" nên true. A sai: {{==}} không so nội dung. B sai: ngược lại. D sai: {{equals}} cho true.'
+  }, {
+    q: 'Trong vòng lặp, nối chuỗi bằng {{result += part}} nhiều lần gây chi phí cao vì lý do gì?',
+    options: ['Compiler từ chối biên dịch vòng lặp nối chuỗi', 'Phải dùng {{StringBuffer}} thay vì {{StringBuilder}}', 'String bất biến, mỗi lần nối phải tạo chuỗi mới và copy toàn bộ nội dung cũ', 'StringBuilder không được dùng trong vòng lặp'],
+    answer: 2,
+    explain: 'Đáp án C đúng: String bất biến nên mỗi {{+=}} tạo String mới, copy toàn bộ nội dung cũ; tổng ký tự copy tăng bậc hai (O(n²)) khi kết quả dài dần. A sai: compiler cho phép. D sai: StringBuilder dùng được trong vòng lặp (một thread). B sai: StringBuffer cũng được nhưng có chi phí đồng bộ, không bắt buộc.'
+  }, {
+    q: 'String pool dùng làm gì, và khi nào nên gọi {{intern()}}?',
+    options: ['Pool canonicalize literal cùng nội dung thành một object để tiết kiệm bộ nhớ; gọi {{intern}} chỉ khi đã đo thấy lợi ích bộ nhớ', 'Pool lưu tất cả chuỗi trong ứng dụng, gọi {{intern}} cho mọi chuỗi tạo bằng {{new String()}}', 'Pool là cache nghiệp vụ, dùng để lưu kết quả truy vấn database', 'Pool tự động xoá chuỗi không dùng nữa, không cần quan tâm'],
+    answer: 0,
+    explain: 'Đáp án A đúng: pool canonicalize (đưa về dạng chuẩn) literal cùng nội dung thành một object duy nhất, tiết kiệm bộ nhớ cho hằng số lặp lại nhiều. {{intern}} giữ chuỗi trong pool có chi phí, chỉ dùng khi đo thấy cần. B sai: pool không lưu tất cả chuỗi, và gọi {{intern}} cho mọi chuỗi gây chi phí lớn. C sai: pool không phải cache nghiệp vụ. D sai: pool không tự xoá chuỗi theo cách người dùng có thể dự kiến.'
+  }, {
+    q: 'Lỗi production hay gặp khi so sánh chuỗi là dùng {{==}} thay vì {{equals}}. Hệ quả là gì?',
+    options: ['Chương trình ném NullPointerException ngay lập tức', 'Chương trình chạy nhanh hơn vì không cần duyệt ký tự', 'Chỉ sai khi chuỗi dài hơn 100 ký tự', 'Hai chuỗi cùng nội dung nhưng khác object bị coi là khác nhau, gây sai logic nghiệp vụ'],
+    answer: 3,
+    explain: 'Đáp án D đúng: {{==}} so sánh vùng nhớ, hai chuỗi cùng nội dung nhưng tạo khác nhau (literal vs {{new String("java")}}) sẽ được coi là khác, gây nhánh logic sai. A sai: {{==}} không ném NullPointerException khi cả hai không null. B sai: {{==}} nhanh nhưng không đúng ý nghĩa so nội dung. C sai: sai lệch không phụ thuộc độ dài.'
+  }], related: ['core-001'], tags: ['String', 'StringBuilder', 'string pool']
 },
 {
   id: 'lesson-core-006', track: 'core', order: 6,

@@ -68,37 +68,46 @@ for (Txn t : txns) {
     ]
   },
   'core-027': {
-    q: 'A record containing {{List}} is used as a key in a cache: does the record guarantee deep immutability and stable hash? How would you design a domain value object?',
-    a: `**Summary:** Record makes component fields final and generates equals/hashCode from components; it does not make referenced objects immutable. If component is mutable collection, caller can still change content and change key hash after putting into cache.
+    q: 'A record containing {{List}} is used as a key in a cache: does the record guarantee deep immutability and a stable hash? How would you design a domain value object?',
+    a: `**Summary:** A record makes its component fields final and generates equals/hashCode from the components; it does not turn a referenced object into an immutable one. If a component is a mutable collection, the caller can still change its content and change the key's hash after it has been put into the cache.
 
 ### What record guarantees
-- Record is data carrier: components stored in final fields, accessors and equals/hashCode/toString generated from header. Compact constructor allows validation and normalization.
-- Final reference does not mean deep immutable. {{List<String>}} can be modified; record holds exactly the reference received.
-- A record cannot extend another class and automatically inherits {{java.lang.Record}}; fits closed value objects, not entities needing identity/lifecycle ORM.
+- A record is a data carrier: components are stored in final fields, and accessors plus equals/hashCode/toString are generated from the header. A compact constructor allows validating and normalizing data.
+- A final reference does not mean deep immutability. {{List<String>}} can be modified; the record keeps exactly the reference it received.
+- A record cannot extend another class and automatically inherits {{java.lang.Record}}; it suits closed value objects, not entities that need identity or an ORM lifecycle.
 
 ~~~java
 record OrderKey(String tenant, List<String> regions) {
     OrderKey {
-        // Copy so caller cannot modify list after creating key.
+        // Copy so the caller cannot modify the list after creating the key.
         regions = List.copyOf(regions);
     }
 }
 ~~~
 
-### Choosing record vs sealed hierarchy
-- Use record for small values with equality by all data: coordinates, normalized money, immutable command.
-- Use sealed interface when domain state has a finite set of variants, like {{PaymentResult}} with {{Accepted}}, {{Declined}}, {{Pending}}. When adding variants, compiler helps check switch exhaustiveness.
-- Don't force every domain object into record: entities often need stable identity across lifecycle and ORM needs proxy/lazy loading; inheritance mapping with record also doesn't fit.
+### Record vs sealed hierarchy
+- Use a record for small values whose equality is based on all data: coordinates, normalized money, immutable command.
+- Use a sealed interface when the domain state has a finite set of variants, such as {{PaymentResult}} with {{Accepted}}, {{Declined}}, {{Pending}}. When adding a variant, the compiler helps check switch exhaustiveness.
+- Don't force every domain object into a record: entities often need a stable identity across the lifecycle, and ORM needs proxies/lazy loading; inheritance mapping with records does not fit either.
 
 ### Pitfall
-- {{List.copyOf}} creates an unmodifiable structure snapshot, but if elements are mutable it doesn't create deep copy.
-- Equality by all components can make record key too broad; two logically same versions with different metadata become different keys.
-- Normalize before creating record, such as money scale and uppercase/lowercase codes; {{BigDecimal.equals}} distinguishes scale.
+- {{List.copyOf}} creates an unmodifiable structural snapshot, but it does not deep-copy if the elements are mutable.
+- Equality by all components can make a record key too broad; two logically identical versions with different metadata become different keys.
+- Normalize before creating the record, such as money scale and case of codes; {{BigDecimal.equals}} distinguishes scale.
 
-> Senior tip: before using a value object as a map key, check whether every component is deeply immutable and test the case where caller modifies input data. For JPA entities, determine equality by business identity first; don't let generated id be null then change hash after persist.`,
+### Inside: what the record generates
+With {{record Key(String tenant, List<String> tags)}}, the compiler generates a {{private final}} field, an accessor, a canonical constructor, and {{equals}}/{{hashCode}}/{{toString}} based on the **current value** of each component (the record's {{hashCode}} calls {{tags.hashCode()}} every time). "final" only locks the **reference** to the list, not the list's content. If a caller modifies the list after the record has become a key in a {{HashMap}}, the hash changes, the entry stays in the old bucket, {{get}} cannot find it, {{containsKey}} returns false, yet the entry still occupies memory (leak). A compact constructor with {{List.copyOf}} solves this: copy once, real immutability.
+
+### Real-world example
+A search-result cache used {{record SearchKey(String query, List<String> filters)}}. The controller reused one {{ArrayList}} of filters across several processing steps and added a default filter **after** the key had already been put into the cache -> cache hit rate was only 12% instead of the expected ~60%, and the heap grew steadily because the "lost" entries were never retrieved again (the cache had no size limit). Fix: compact constructor {{filters = List.copyOf(filters)}} and bound the cache with Caffeine. Hit rate rose to 58% and the heap stabilized.
+
+### Sample interview answer
+"Record guarantees only shallow immutability: components are private final and equals, hashCode, toString are generated from the current value of each component. If a component is a mutable List, the caller can still modify the list's content after the record is created, and when that record is a key in a cache, hashCode changes, the entry sits in the wrong bucket and can never be found again - both losing cache hits and leaking memory. So for domain value objects I use a compact constructor to validate and copy: List.copyOf, or an already-immutable type like String, LocalDate, BigDecimal. I like record for value objects because it is concise and equality is by value; when I need multiple variants I combine a sealed interface with records."
+
+> Senior tip: before using a value object as a map key, check that every component is deeply immutable and test the case where the caller modifies the input data. For a JPA entity, determine equality by business identity first; don't let a generated id stay null and then change the hash after persist.`,
     follow: [
-      'Why is record not naturally suitable as a JPA entity?',
-      'What benefit does sealed interface provide when modeling a domain result with a finite set of states?'
+      'Why is a record not naturally suitable as a JPA entity?',
+      'What benefit does a sealed interface provide when modeling a domain result with a finite set of states?'
     ]
   },
   'core-028': {
@@ -129,6 +138,16 @@ The dedup log reports how many strings were inspected and deduplicated and how m
 - Dedup does not reduce the number of String objects, it only shares the content array; if object and reference overhead dominates, the benefit is small.
 - Running dedup can add CPU load and extra GC work. A heap snapshot at one moment also easily leads to wrong conclusions if the workload is not stable.
 - Don't rely on fixed object layout details across JDK versions; compressed oops, alignment and the object header affect the real size.
+
+### Real-world example
+A product-suggestion service kept 6 million attribute objects in cache; the heap dump showed 2.3GB of {{byte[]}} for Strings, of which about 70% was duplicate content (color names, sizes, brands). The team tried three approaches on a simulated load:
+- Enable {{-XX:+UseStringDeduplication}} (G1): heap after GC dropped by about 1.1GB, GC CPU rose about 3%, no code change - but it only applies to Strings that survived a few GC cycles (default age 3), so the benefit accrues slowly after each cache load.
+- {{intern()}} the attribute fields at parse time: reduced about 1.5GB because it deduplicates the whole String object, but cache-load time rose 18% due to StringTable lookups.
+- Normalize with a **dedicated HashMap** per attribute type (self-canonicalize, bounded): reduced about 1.5GB, faster load than intern, and easier to measure.
+The team chose the third option for known data, keeping String Deduplication as a safety net for the rest.
+
+### Sample interview answer
+"Three mechanisms solve three different things. Compact Strings, default since Java 9, halves memory for Latin-1 strings because each character takes one byte, with nothing to do. G1 String Deduplication lets different String objects share one byte array, runs in the background and needs no code change, but costs a little GC CPU and only applies to strings that survived a few GC cycles. intern merges whole String objects into the JVM's canonical table, reducing the most, but costs table-lookup time and the table can bloat if data is not repeated. I decide from a heap dump and benchmark: measure what percentage of strings are duplicates and how long they live. Usually I self-canonicalize known fields at parse time, or switch to an enum, and let String Deduplication be the safety net."
 
 > Senior tip: set a measurable target, e.g. cut retained heap by 10% while CPU stays under an agreed threshold; test with representative traffic and keep a rollback path through the JVM flag.`,
     follow: [
@@ -165,7 +184,16 @@ The dedup log reports how many strings were inspected and deduplicated and how m
 ### Decision
 Write tests for a new entity, after persist, with a proxy, detached, and with two instances that have the same id. Do not use mutable fields, timestamps or the whole object graph.
 
-> Senior tip: pick one rule for the whole system and verify it with HashSet tests before and after persist; entity equality is an identity decision, not just boilerplate.`,
+### Inside: why the entity "disappears" from a HashSet
+{{HashSet}} places an object into a bucket based on {{hashCode()}} **at the time of add**. A new entity has {{id = null}} -> if {{hashCode()}} is based on the id, the hash is that of null (for example 0). After {{persist}} and flush, Hibernate assigns id = 42 -> {{hashCode()}} is now different, but the object is still in the old bucket. {{set.contains(entity)}} looks in the new bucket -> false; {{set.remove(entity)}} cannot remove it. With {{@OneToMany Set<Item>}}, Hibernate can add duplicates or fail to remove a child. The common approach (following Vlad Mihalcea's guidance): {{equals}} compares ids when the id is non-null, and {{hashCode()}} returns a **constant per class** ({{getClass().hashCode()}}) - all entities of the same type share one bucket (acceptable only for small collections), which is safe across the whole lifecycle. If there is an immutable business key (order code, account number), use it instead.
+
+### Real-world example
+An order had a {{Set<OrderLine>}}; {{OrderLine}} used Lombok {{@Data}} (equals/hashCode over every field, including id and associations). After adding a line and saving: after flush the hash changed; calling {{lines.remove(line)}} to delete the just-added line had no effect - customers were charged for items removed from the cart (about 90 orders in one day). Also {{@Data}} called {{toString}} on two-way associations causing {{StackOverflowError}} in logs. Fix: remove {{@Data}} from the entity, write equals/hashCode with the "id + class constant" pattern, make {{toString}} print only the id; add a test persist -> contains -> remove.
+
+### Sample interview answer
+"The problem is that a new entity has a null id, and if hashCode is based on the id, then after persist Hibernate assigns an id, hashCode changes, while the HashSet already placed the object in a bucket based on the old hash - so contains and remove cannot find it again. Entity equals and hashCode must stay stable across the whole lifecycle: transient, managed, detached. If there is an immutable business key such as an order code, I use it. Otherwise I use the common pattern: equals compares ids when the id is non-null, and hashCode returns a constant per class - safe across the whole lifecycle, at the cost of all entities of the same type sharing one bucket, which only fits small collections. Care is needed with Hibernate proxies: comparing class with getClass can be wrong for a proxy, so use instanceof or get the real class. And absolutely never use Lombok @Data on an entity."
+
+> Senior tip: choose the rule once for the whole system and verify it with tests on a HashSet before and after persist; entity equality is an identity decision, not just boilerplate.`,
     follow: [
       'Why should a lazy association stay out of hashCode?',
       'What trade-off does a class-stable hashCode have?'
@@ -201,6 +229,12 @@ String describe(Result r) {
 ### When to use
 Fits an algebraic data type with a finite set of variants inside one bounded context. Does not fit when a third-party plugin must add subtypes or the hierarchy is an open API extension.
 
+### Real-world example
+A payment result was modeled as {{sealed interface PaymentResult permits Approved, Declined, Pending}} with three records. In Java 21 the controller used a pattern-matching {{switch}} without {{default}}. When the business added {{RequiresOtp}}, the compiler reported errors at **11 switch sites** that did not handle the new state - the team fixed all of them before release. Previously, with an enum plus {{default -> throw}}, a similar addition only surfaced at runtime (2 flows threw exceptions in production). Another lesson: a different service used an older client library that did not know {{RequiresOtp}} - JSON carrying the new type failed deserialization; the team added an "Unknown" type at the API boundary so old clients would not break.
+
+### Sample interview answer
+"With a finite set of results, I use a sealed interface that declares permits for the variants, each variant being an immutable record carrying exactly its own data, e.g. Approved has the transaction code, Declined has the reason. Sealed has been standard since Java 17, pattern matching for switch since Java 21, so a switch over a sealed interface is fully checked by the compiler without needing a default. The biggest benefit is that when you add a new variant, every switch that does not handle it fails to compile, instead of falling into a default at runtime. The price is that the variants must live in the same package or module, and at system boundaries such as JSON or messages, old clients do not know the new variant, so I add an unknown variant or version the API. Inside the domain core, sealed plus record is the clearest way to model it."
+
 > Senior tip: state clearly who owns the variant set and the versioning policy. Exhaustive switch is very useful in a synchronized codebase, but messages from external systems still need handling for unknown values.`,
     follow: [
       'How does adding a new subtype affect already compiled consumers?',
@@ -209,28 +243,54 @@ Fits an algebraic data type with a finite set of variants inside one bounded con
   },
   'core-031': {
     q: 'An API returns a List but internally keeps the caller\'s mutable list. How do you design the defensive copy and the collection contract?',
-    a: `**Summary:** Copy at the input boundary so the caller cannot modify internal state; if a getter returns a collection, return an immutable snapshot, or a view only when the contract says so explicitly. A shallow copy does not protect mutable objects inside the elements.
+    a: `**Summary:** When a class holds a {{List}} (a list) internally, if you receive a list from outside and store the reference directly, or return the internal list straight out, the caller can modify your data without you knowing. Defensive copy means: copy at the input boundary to stop the caller from changing internal state; copy or return an immutable snapshot at the output boundary. Note: a shallow copy only copies the list structure, not each element - if an element is itself mutable it can still be changed.
 
-### Constructor and accessor
-- The constructor receives a list, needs null/value checks, then uses List.copyOf to create a structural snapshot that also rejects null elements.
-- The getter can return that immutable snapshot directly; if the elements are mutable and must be isolated deeply, copy each element or use an immutable element type.
-- Collections.unmodifiableList is only a wrapper: anyone who still holds a reference to the original list can modify its content.
-- {{List.copyOf}} is smart enough: if the input is already an immutable list created by {{List.of}}/{{List.copyOf}}, it returns that same instance without copying again; but an {{ArrayList}} or an unmodifiable view is always copied. Note that it throws {{NullPointerException}} if any element is null.
+### What - why - how
+- **Context:** in object-oriented design, an object must protect its invariants (things always true about its state, e.g. "the list of ids contains no nulls"). If internal state is modified from outside, the invariant breaks without the class knowing.
+- **Copy at input (constructor/setter):** when receiving a {{List}} from the caller, call {{List.copyOf(input)}} (Java 10+) to create a separate snapshot. After that, even if the caller keeps the old reference and {{add/remove}}s, the copy inside your class does not change. {{List.copyOf}} also rejects {{null}} (throws {{NullPointerException}}), helping detect bad data early.
+- **Return at output (getter):** returning the immutable snapshot itself is enough if elements are immutable (such as {{String}}, {{Long}}). If elements are mutable (for example an {{Address}} object with setters), consider deep copy (copy each element) or use an immutable element type.
+- **How is {{Collections.unmodifiableList}} different?** It is only a "view" (wrapper) that blocks modification through that view, but if someone still holds a reference to the original list, modifying the original changes the view too. It is **not** an independent copy.
+
+### Quick comparison
+| Approach | Blocks caller modifying input after creation? | Blocks caller modifying output? | Note |
+|---|---|---|---|
+| Store original reference | No | No | Dangerous, easily breaks invariants |
+| {{Collections.unmodifiableList}} (wrap original) | No | Yes (through view) | Original can still be modified -> view changes |
+| {{List.copyOf}} in constructor + return it | Yes | Yes | Immutable snapshot, rejects null |
+| {{new ArrayList<>(input)}} + return unmodifiable | Yes | Yes | Real copy; elements may still be mutable |
+
+### Real-world example (production)
+A batch-payment service, each batch ~5,000 {{paymentId}}. The {{PaymentBatch}} constructor received {{List<String> ids}} from the controller and stored it directly: {{this.ids = ids;}}. The controller parsed JSON into a list, passed it to the batch, then (due to reused code) continued with {{ids.addAll(debugIds)}} to log - accidentally adding 200 garbage ids into the real batch. The batch was sent to the worker: ~5,200 transactions instead of 5,000, causing ~40 duplicate/mismatched transactions and ~2 hours of reconciliation. Investigation: trace showed the batch object changed after creation; diffing heap snapshots showed the same list instance held in two places. Fix: {{this.ids = List.copyOf(ids);}} in the constructor and the getter returns {{ids}} (already immutable). Added a test: create a batch, modify the original list, assert {{batch.ids().size()}} does not change. Result: no more count mismatch; copy cost O(n) for 5,000 strings is negligible (< 1ms, a few hundred KB temporary).
 
 ~~~java
-final class Batch {
-    private final List<String> ids;
-    Batch(List<String> ids) { this.ids = List.copyOf(ids); }
-    List<String> ids() { return ids; }
+import java.util.List;
+import java.util.Objects;
+
+final class PaymentBatch {
+    private final List<String> paymentIds; // immutable snapshot
+
+    PaymentBatch(List<String> paymentIds) {
+        // copy + check null elements; throws NPE if any null
+        this.paymentIds = List.copyOf(Objects.requireNonNull(paymentIds));
+    }
+
+    List<String> paymentIds() {
+        return paymentIds; // already immutable, safe to return directly
+    }
+    // NO setter -> state does not change after creation
 }
 ~~~
 
-### Trade-off
-- Copy costs O(n) time and memory; for large lists, consider clear ownership transfer or a streaming API.
-- Don't return mutable internal state just to avoid copying; concurrency bugs and broken invariants usually cost more.
-- A defensive copy does not change transaction semantics: a data snapshot does not guarantee that several fields were read at the same moment.
+### Production pitfalls
+- **Shallow copy with mutable elements:** {{List.copyOf(listOfMutableOrder)}} copies the list but each {{Order}} is still the same object - the caller modifying {{order.setAmount(...)}} still affects it. Need immutable elements or a deliberate deep copy.
+- **Forgetting to copy one direction:** copying only at the getter but not the constructor (or vice versa) -> still a hole.
+- **O(n) cost:** for very large lists (millions of elements) copying each time costs memory/CPU; consider "ownership transfer" with a clear contract, or return a read-only stream/iterator. But don't sacrifice correctness to avoid copying without measuring.
+- **{{List.copyOf}} and null:** it rejects {{null}} elements. If the business allows null, use {{new ArrayList<>(input)}} then {{Collections.unmodifiableList(...)}} but handle null yourself.
 
-> Senior tip: test the collection in both directions: the caller modifies the input after the constructor, and the caller tries to modify the output. If the elements are mutable, add a test for nested mutation.`,
+### Sample interview answer
+"For a class holding a collection internally, I always treat the input boundary and output boundary as boundaries to protect. In the constructor I use List.copyOf to create an immutable snapshot: that way the caller modifying the original list afterwards does not affect internal state, and List.copyOf also blocks null elements, helping detect dirty data early. In the getter I return that snapshot directly because it is already immutable. The point to distinguish is that Collections.unmodifiableList is only a view wrapping the original list, so if anyone still holds a reference to the original, the view changes too - it is not a copy. Another trap is shallow copy: copying the list but leaving mutable elements inside is still unsafe, in which case use immutable elements or deep copy. On cost, copying is O(n), negligible for a few thousand elements; only for very large lists do I consider ownership transfer with a clear contract, but I always prioritize correctness and immutability first."
+
+> Senior tip: write two mandatory tests: (1) modify the list passed to the constructor -> internal state must not change; (2) try {{getter().add(...)}} -> must throw {{UnsupportedOperationException}}. If elements are mutable, add a deep-mutation test. Defensive copy protects invariants, but does not replace transaction semantics - a snapshot does not guarantee multiple fields were read at the same moment.`,
     follow: [
       'How does an unmodifiable view differ from an immutable snapshot?',
       'When is a deep copy not worth the cost?'

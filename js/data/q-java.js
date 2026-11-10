@@ -23,7 +23,7 @@
 | Liên hệ hash | {{equals}} true ⇒ {{hashCode}} bằng nhau |
 
 ### Ví dụ đời thực (production)
-Giả định một dịch vụ phiên đăng nhập dùng {{HashSet<SessionToken>}} (tập hợp không trùng) để kiểm tra token đang hoạt động, ~50.000 token, ~3.000 QPS tra cứu. Dev tạo class {{SessionToken}} có field {{value}} và override {{equals}} so sánh {{value}}, nhưng quên override {{hashCode}} (dùng mặc định của {{Object}} - dựa trên địa chỉ bộ nhớ). Hậu quả: cùng một chuỗi token tạo thành 2 object Java khác nhau → {{hashCode}} mặc định khác → {{set.contains(tokenMoi)}} trả {{false}} dù token hợp lệ đã có trong set. Triệu chứng: người dùng bị đăng xuất ngẫu nhiên, tỷ lệ lỗi 401 tăng từ ~0,1% lên ~8% sau deploy. Điều tra: log cho thấy token "không tìm thấy" nhưng truy vấn DB xác nhận token còn hiệu lực; viết unit test {{set.add(t1); assert set.contains(new Token(t1.value));}} → fail. Cách sửa: thêm override {{hashCode()}} dùng {{Objects.hash(value)}} (đúng các field tham gia equals), hoặc đổi sang {{record SessionToken(String value)}} (Java 16+, record tự sinh {{equals}}/{{hashCode}} đúng contract). Kết quả: lỗi 401 về mức bình thường, p99 tra cứu token vẫn < 1ms.
+Giả định một dịch vụ phiên đăng nhập dùng {{HashSet<SessionToken>}} (tập hợp không trùng) để kiểm tra token đang hoạt động, ~50.000 token, ~3.000 QPS tra cứu. Dev tạo class {{SessionToken}} có field {{value}} và override {{equals}} so sánh {{value}}, nhưng quên override {{hashCode}} (dùng mặc định của {{Object}}: identity hash, khác nhau cho mỗi object; HotSpot hiện sinh nó bằng số ngẫu nhiên chứ không phải địa chỉ bộ nhớ). Hậu quả: cùng một chuỗi token tạo thành 2 object Java khác nhau → {{hashCode}} mặc định khác → {{set.contains(tokenMoi)}} trả {{false}} dù token hợp lệ đã có trong set. Triệu chứng: người dùng bị đăng xuất ngẫu nhiên, tỷ lệ lỗi 401 tăng từ ~0,1% lên ~8% sau deploy. Điều tra: log cho thấy token "không tìm thấy" nhưng truy vấn DB xác nhận token còn hiệu lực; viết unit test {{set.add(t1); assert set.contains(new Token(t1.value));}} → fail. Cách sửa: thêm override {{hashCode()}} dùng {{Objects.hash(value)}} (đúng các field tham gia equals), hoặc đổi sang {{record SessionToken(String value)}} (Java 16+, record tự sinh {{equals}}/{{hashCode}} đúng contract). Kết quả: lỗi 401 về mức bình thường, p99 tra cứu token vẫn < 1ms.
 
 ~~~java
 // BAD: override equals, quên hashCode -> vi phạm contract
@@ -2137,7 +2137,7 @@ String priority(Order o) {
 ### Vì sao không dùng double
 - {{double}} tuân theo IEEE 754 nhị phân: số thập phân hữu hạn (0.1, 0.01, 19.99) thường thành số lặp vô hạn trong nhị phân ⇒ sai số tròn tích lũy.
 - Ví dụ kinh điển: {{0.1 + 0.2 = 0.30000000000000004}}; tính lãi, chiết khấu, tiền tệ ngoại tệ sẽ lệch cent và cộng dồn qua ngàn giao dịch thành số lớn.
-- Các chuẩn kế toán/ngân hàng (ISO 4217, PCI DSS) yêu cầu độ chính xác tuyệt đối; {{double}} không đáp ứng được.
+- Nghiệp vụ kế toán/ngân hàng yêu cầu số tiền khớp tuyệt đối tới đơn vị nhỏ nhất của tiền tệ (số chữ số thập phân của mỗi loại tiền theo ISO 4217: VND 0, USD 2, JPY 0); {{double}} không đáp ứng được.
 
 ### BigDecimal cơ bản
 ~~~java
@@ -4040,7 +4040,7 @@ Team chọn cách thứ ba cho dữ liệu đã biết, giữ String Deduplicati
 Viết test cho entity mới, sau persist, proxy, detached và hai instance cùng id. Không dùng mutable field, timestamp hay toàn bộ object graph.
 
 ### Bên trong: vì sao entity "biến mất" khỏi HashSet
-{{HashSet}} xếp object vào bucket theo {{hashCode()}} **tại thời điểm add**. Entity mới có {{id = null}} → nếu {{hashCode()}} dựa vào id thì hash là của null (ví dụ 0). Sau {{persist}} và flush, Hibernate gán id = 42 → {{hashCode()}} giờ khác, nhưng object vẫn nằm ở bucket cũ. {{set.contains(entity)}} tìm ở bucket mới → false; {{set.remove(entity)}} không xoá được. Với {{@OneToMany Set<Item>}}, Hibernate có thể thêm trùng hoặc không xoá được phần tử con. Cách phổ biến (theo hướng dẫn của Vlad Mihalcea): {{equals}} so id khi id khác null, {{hashCode()}} trả **hằng số theo class** ({{getClass().hashCode()}}) — mọi entity cùng loại chung một bucket (chỉ chấp nhận được với collection nhỏ), đổi lại an toàn suốt vòng đời. Nếu có business key bất biến (mã đơn hàng, số tài khoản) thì dùng nó là tốt nhất.
+{{HashSet}} xếp object vào bucket theo {{hashCode()}} **tại thời điểm add**. Entity mới có {{id = null}} → nếu {{hashCode()}} dựa vào id thì hash là của null (ví dụ 0). Sau {{persist}} và flush, Hibernate gán id = 42 → {{hashCode()}} giờ khác, nhưng object vẫn nằm ở bucket cũ. {{set.contains(entity)}} tìm ở bucket mới → false; {{set.remove(entity)}} không xoá được. Với {{@OneToMany Set<Item>}}, Hibernate có thể thêm trùng hoặc không xoá được phần tử con. Cách phổ biến (theo hướng dẫn của Vlad Mihalcea): {{equals}} so id khi id khác null, {{hashCode()}} trả **hằng số theo class** ({{Account.class.hashCode()}}, không dùng {{getClass()}} vì proxy là subclass nên cho hash khác) — mọi entity cùng loại chung một bucket (chỉ chấp nhận được với collection nhỏ), đổi lại an toàn suốt vòng đời. Nếu có business key bất biến (mã đơn hàng, số tài khoản) thì dùng nó là tốt nhất.
 
 ### Ví dụ đời thực
 Một đơn hàng có {{Set<OrderLine>}}; {{OrderLine}} dùng Lombok {{@Data}} (equals/hashCode theo mọi field, kể cả id và quan hệ). Thêm dòng mới rồi lưu: sau flush, hash đổi; gọi {{lines.remove(line)}} để xoá dòng vừa thêm không có tác dụng — khách bị tính tiền cho món đã bỏ khỏi giỏ (khoảng 90 đơn trong một ngày). Ngoài ra {{@Data}} gọi {{toString}} trên quan hệ hai chiều gây {{StackOverflowError}} khi log. Sửa: bỏ {{@Data}} khỏi entity, viết equals/hashCode theo mẫu "id + hằng số class", {{toString}} chỉ in id; thêm test persist → contains → remove.
@@ -5252,7 +5252,7 @@ Giả định hệ thống thanh toán xử lý ~120.000 giao dịch/ngày với
 |---|---|---|
 | DTO/Request/Response | Rất tốt | Bất biến, ngắn gọn, an toàn khi truyền qua tầng. |
 | JPA Projection (constructor expression, interface-based ít gặp hơn) | Thường tốt | Hibernate/JPA có thể map constructor của record cho projection query. |
-| Value Object (domain) | Rất tốt | Phù hợp với immmutability, {{equals}} theo giá trị. |
+| Value Object (domain) | Rất tốt | Phù hợp với immutability, {{equals}} theo giá trị. |
 | Map key | Rất tốt | {{equals}}/{{hashCode}} bất biến → an toàn, không lo "mất" entry như key mutable. |
 | Embeddable ({{@Embeddable}}) | Cẩn thận/Tùy provider | Một số provider hỗ trợ, nhưng không phổ biến và có giới hạn. Cần kiểm tra kỹ. |
 | JPA Entity ({{@Entity}}) | Không khuyến khích | Xem chi tiết bên dưới. |
@@ -5304,7 +5304,7 @@ Một team chuyển toàn bộ DTO sang record — tốt — nhưng cũng dùng 
 | Có side effect (ghi vào {{ArrayList}}/biến chia sẻ) | Race condition (tranh chấp dữ liệu), kết quả sai/thiếu phần tử; {{ArrayList}} không thread-safe |
 
 ### Ví dụ đời thực (production)
-Giả định một API tổng hợp báo cáo: với mỗi trong ~50 ID, gọi HTTP tới service khác (latency trung bình 120ms) rồi ghép kết quả. Dev đổi {{ids.stream()}} thành {{ids.parallelStream().map(id -> httpClient.get(id))...}} kỳ vọng nhanh hơn. Trên máy 8 lõi, {{commonPool}} có ~7 thread. 7 request đầu chạy, 43 request còn lại xếp hàng chờ trong pool - nhưng tệ hơn: một luồng khác trong cùng ứng dụng dùng {{CompletableFuture.supplyAsync(...)}} (mặc định cũng ăn {{commonPool}}) để xử lý tác vụ nền. Kết quả: p99 của API báo cáo giảm nhẹ (từ ~6s xuống ~4,5s) nhưng p99 của các endpoint khác tăng đột biến từ 80ms lên 900ms trong giờ cao điểm, vì worker bị giữ để chờ HTTP. Điều tra: thread dump thấy nhiều thread {{ForkJoinPool.commonPool-worker-*}} ở trạng thái {{WAITING}} trong socket read. Cách sửa: bỏ {{parallelStream}} cho đường I/O; dùng {{CompletableFuture.supplyAsync(() -> httpClient.get(id), ioExecutor)}} với {{ioExecutor}} là {{Executors.newFixedThreadPool(32)}} (hoặc virtual threads ở Java 21) tách biệt, giới hạn concurrency. Kết quả: API báo cáo ~1,2s (32 request song song thực sự, không chặn pool chung), endpoint khác về p99 85ms.
+Giả định một API tổng hợp báo cáo: với mỗi trong ~50 ID, gọi HTTP tới service khác (latency trung bình 120ms) rồi ghép kết quả. Dev đổi {{ids.stream()}} thành {{ids.parallelStream().map(id -> httpClient.get(id))...}} kỳ vọng nhanh hơn. Trên máy 8 lõi, {{commonPool}} có ~7 thread. 7 request đầu chạy, 43 request còn lại xếp hàng chờ trong pool - nhưng tệ hơn: một luồng khác trong cùng ứng dụng dùng {{CompletableFuture.supplyAsync(...)}} (mặc định cũng ăn {{commonPool}}) để xử lý tác vụ nền. Kết quả: p99 của API báo cáo giảm nhẹ (từ ~6s xuống ~4,5s) nhưng p99 của các endpoint khác tăng đột biến từ 80ms lên 900ms trong giờ cao điểm, vì worker bị giữ để chờ HTTP. Điều tra: thread dump thấy mọi thread {{ForkJoinPool.commonPool-worker-*}} đều nằm trong socket read (trạng thái hiển thị là RUNNABLE vì đang chờ I/O trong native code, dễ bị đọc nhầm là "đang làm việc"). Cách sửa: bỏ {{parallelStream}} cho đường I/O; dùng {{CompletableFuture.supplyAsync(() -> httpClient.get(id), ioExecutor)}} với {{ioExecutor}} là {{Executors.newFixedThreadPool(32)}} (hoặc virtual threads ở Java 21) tách biệt, giới hạn concurrency. Kết quả: API báo cáo ~1,2s (32 request song song thực sự, không chặn pool chung), endpoint khác về p99 85ms.
 
 ~~~java
 import java.util.List;
@@ -5349,7 +5349,7 @@ long sum = hugeArray.parallelStream().mapToLong(this::heavyCpu).sum();
   a: `**Tóm tắt:** Với entity JPA, equality phải giữ ổn định qua vòng đời transient → managed → detached. Nếu hashCode phụ thuộc vào id tự sinh (null trước persist), entity đã add vào HashSet sẽ bị "lạc" khi id được gán. Với kế thừa, dùng {{getClass()}} chặt chẽ hơn {{instanceof}} về tính đối xứng, nhưng cần cân nhắc proxy Hibernate.
 
 ### Vấn đề với id tự sinh
-- Khi {{new Entity()}} thì id là null. Nếu hashCode dựa trên id, hai entity mới tạo có cùng hashCode (null) → bị coi là trùng trong HashSet.
+- Khi {{new Entity()}} thì id là null. Nếu hashCode dựa trên id và equals so id bằng {{Objects.equals}} (hai null coi là bằng), hai entity mới tạo khác nhau bị coi là trùng → HashSet chỉ giữ một.
 - Sau {{persist}}, id được gán → hashCode đổi → entity nằm ở bucket cũ, {{contains()}} và {{remove()}} không tìm thấy.
 - Đây là bug thật: add entity vào Set, persist, rồi remove → không xoá được, memory leak.
 
@@ -5369,7 +5369,7 @@ long sum = hugeArray.parallelStream().mapToLong(this::heavyCpu).sum();
 // instanceof: cho phép proxy (subclass) so sánh được
 if (!(o instanceof Entity e)) return false;
 ~~~
-- {{getClass()}} đảm bảo tính đối xứng: nếu a.equals(b) thì b.equals(a) luôn. Với {{instanceof}}, subclass có thể equals superclass nhưng superclass không equals subclass → vi phạm đối xứng.
+- {{getClass()}} đảm bảo tính đối xứng: nếu a.equals(b) thì b.equals(a) luôn. Với {{instanceof}} ở lớp cha, object lớp cha có thể equals object lớp con (vì lớp con instanceof lớp cha); nếu lớp con lại override equals thêm điều kiện riêng thì chiều ngược lại trả false → vi phạm đối xứng.
 - Tuy nhiên Hibernate lazy proxy là subclass của entity → {{getClass()}} coi proxy và entity thật là khác nhau. Vì vậy cần {{instanceof}} hoặc {{Hibernate.getClass(o)}}.
 
 ### Strategy an toàn
@@ -5388,7 +5388,7 @@ if (!(o instanceof Entity e)) return false;
 
 ### Pitfall
 - Dùng {{@Data}} (Lombok) sinh hashCode theo mọi field, trong đó có id → entity bị mất khỏi Set sau persist.
-- Đưa entity vào Set trước khi persist rồi gọi {{set}} để thay đổi → hashCode đổi.
+- Đưa entity vào Set rồi gọi setter đổi field tham gia hashCode → hashCode đổi, entity lạc bucket.
 
 ### Ví dụ đời thực
 Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Policy}}; {{equals}} của {{Policy}} dùng {{instanceof}} và so {{policyNumber}}, còn {{LifePolicy}} override {{equals}} so thêm {{beneficiary}}. Kết quả: {{policy.equals(lifePolicy)}} là true nhưng {{lifePolicy.equals(policy)}} là false — vi phạm tính đối xứng; một {{HashSet<Policy>}} dùng để loại trùng khi import lúc giữ, lúc bỏ hợp đồng tuỳ thứ tự đọc file, 1.300 hợp đồng bị nhân đôi trong báo cáo quý. Sửa: equality chỉ dựa trên business key {{policyNumber}} khai báo {{final}} ở lớp cha, lớp con không override equals. Với Hibernate proxy, so sánh bằng {{Hibernate.getClass(o)}} thay vì {{getClass()}} trực tiếp để proxy và entity thật vẫn bằng nhau.
@@ -5405,7 +5405,7 @@ Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Poli
   topic: 'core',
   level: 'lead',
   q: 'Generics: PECS, type erasure, heap pollution, {{@SafeVarargs}} và ảnh hưởng khi viết thư viện/API thế nào?',
-  a: `**Tóm tắt:** Generics chỉ kiểm tra lúc compile rồi bị xoá (type erasure) khỏi bytecode. PECS là quy tắc chọn wildcard: Producer Extends, Consumer Super. Heap pollution xảy ra khi trộn raw type với generic, khiến mảng chứa phần tử sai kiểu. {{@SafeVarargs}} chỉ được dùng cho method static/final/private và là cam kết của người viết — compiler không thể kiểm tra được.
+  a: `**Tóm tắt:** Generics chỉ kiểm tra lúc compile rồi bị xoá (type erasure) khỏi bytecode. PECS là quy tắc chọn wildcard: Producer Extends, Consumer Super. Heap pollution là khi một biến kiểu generic trỏ tới object không đúng kiểu đó (thường do raw type, unchecked cast hoặc varargs generic); lỗi chỉ nổ ra sau đó, ở chỗ đọc. {{@SafeVarargs}} chỉ đặt được trên constructor và method static/final/private (private từ Java 9), và là cam kết của người viết — compiler không kiểm tra được thân method.
 
 ### Type erasure
 - {{List<String>}} và {{List<Integer>}} cùng là {{List}} trong bytecode; không thể {{new T()}}, {{instanceof T}}, hay overload chỉ khác type parameter.
@@ -5420,8 +5420,8 @@ Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Poli
 - Ví dụ kinh điển: {{Collections.copy(List<? super T> dest, List<? extends T> src)}}.
 
 ### Heap pollution
-- Xảy ra khi một mảng generic chứa phần tử không đúng kiểu, nhưng do erasure nên runtime không phát hiện.
-- Ví dụ: {{List<String>[] = new List<?>[10]}} → assign {{List<Integer>}} vào mảng này là runtime error.
+- Xảy ra khi một biến kiểu generic (hoặc mảng generic) trỏ tới object không đúng kiểu, nhưng do erasure nên runtime không phát hiện ngay.
+- Ví dụ: {{List<String>[] arr = (List<String>[]) new List<?>[10];}} rồi qua một biến {{Object[]}} gán {{List.of(42)}} vào {{arr[0]}}: JVM **không** chặn (runtime chỉ thấy mảng {{List[]}}), đó chính là heap pollution; {{ClassCastException}} chỉ nổ khi sau này đọc {{arr[0].get(0)}} ra String.
 - Dùng raw type ({{List}} không tham số) rồi add element generic vào: {{list.add(123)}} thành công vì raw type bỏ qua kiểm tra, nhưng {{list.get(0)}} sẽ nổ {{ClassCastException}} khi cast.
 - {{@SafeVarargs}} là cam kết: chỉ cho static/final/private method; nếu method không final và có varargs của generic array, caller có thể ghi array khác và gây heap pollution sau này.
 
@@ -5431,12 +5431,12 @@ Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Poli
 - Tránh varargs generic trong public method nếu không thể đảm bảo an toàn → dùng collection thay vì varargs.
 
 ### Ví dụ đời thực
-Một thư viện tiện ích nội bộ có method {{static <T> List<T> listOf(T... items)}} đánh dấu {{@SafeVarargs}} nhưng bên trong **lưu mảng varargs vào một field** để tái sử dụng. Khi được gọi với kiểu generic ({{listOf(List.of(1), List.of(2))}}), mảng thực chất là {{Object[]}}; một chỗ khác ghi phần tử sai kiểu vào mảng đó (heap pollution) và {{ClassCastException}} nổ ở một service khác, xa chỗ gây lỗi, khiến team mất một ngày truy. Sửa: không giữ hay trả ra mảng varargs ({{List.copyOf(Arrays.asList(items))}}), chỉ đặt {{@SafeVarargs}} khi method chỉ **đọc** phần tử. Thêm {{-Xlint:unchecked}} vào build để mọi cảnh báo unchecked trở thành lỗi trong thư viện dùng chung.
+Một thư viện tiện ích nội bộ có method {{static <T> List<T> listOf(T... items)}} đánh dấu {{@SafeVarargs}} nhưng bên trong **lưu mảng varargs vào một field** để tái sử dụng. Khi được gọi với kiểu generic ({{listOf(List.of(1), List.of(2))}}), mảng thực chất là {{Object[]}}; một chỗ khác ghi phần tử sai kiểu vào mảng đó (heap pollution) và {{ClassCastException}} nổ ở một service khác, xa chỗ gây lỗi, khiến team mất một ngày truy. Sửa: không giữ hay trả ra mảng varargs ({{List.copyOf(Arrays.asList(items))}}), chỉ đặt {{@SafeVarargs}} khi method chỉ **đọc** phần tử. Thêm {{-Xlint:unchecked -Werror}} vào build để mọi cảnh báo unchecked trở thành lỗi trong thư viện dùng chung.
 
 ### Trả lời mẫu khi phỏng vấn
 "Generic chỉ được kiểm tra lúc biên dịch rồi bị xoá, nên runtime không biết List đó chứa gì. Khi viết API, tôi theo PECS: tham số chỉ để đọc dùng extends, chỉ để ghi dùng super, như Collections.copy, còn kiểu trả về thì cụ thể. Heap pollution là khi một biến generic trỏ tới object không đúng kiểu, thường do raw type hoặc varargs generic: varargs tạo mảng, mà mảng generic thực chất là mảng Object, nên ai đó có thể nhét phần tử sai kiểu vào và ClassCastException nổ ở chỗ khác. @SafeVarargs chỉ là lời cam kết của người viết rằng method không ghi vào mảng varargs và không để nó thoát ra ngoài; compiler không kiểm tra. Trong thư viện dùng chung tôi bật Xlint unchecked như lỗi và tránh raw type hoàn toàn."
 
-> Senior tip: khi thiết kế thư viện, luôn dùng wildcard ở input (PECS) và type cụ thể ở output. {{@SafeVarargs}} chỉ là cam kết — nếu method không final/static/private, compiler sẽ cảnh báo. Không bao giờ tạo mảng generic {{new T[]}}; dùng {{List<List<T>>}} hoặc {{Array.newInstance}} + cast có kiểm soát.`,
+> Senior tip: khi thiết kế thư viện, luôn dùng wildcard ở input (PECS) và type cụ thể ở output. {{@SafeVarargs}} chỉ là cam kết — đặt nó lên method có thể override (không final/static/private) là lỗi biên dịch. Không bao giờ tạo mảng generic {{new T[]}}; dùng {{List<List<T>>}} hoặc {{Array.newInstance}} + cast có kiểm soát.`,
   follow: ['Tại sao không thể tạo mảng generic new T[]?', 'Heap pollution xảy ra thế nào và phát hiện ra sao?', 'Khi nào dùng @SafeVarargs và tại sao chỉ cho static/final/private?'],
   tags: ['generics', 'type erasure', 'PECS', 'heap pollution', 'SafeVarargs']
 },
@@ -5450,7 +5450,7 @@ Một thư viện tiện ích nội bộ có method {{static <T> List<T> listOf(
 ### Vì sao không dùng double
 - {{double}} tuân theo IEEE 754 nhị phân: số thập phân hữu hạn (0.1, 19.99) thường thành số lặp vô hạn trong nhị phân ⇒ sai số tròn tích lũy.
 - Ví dụ kinh điển: {{0.1 + 0.2 = 0.30000000000000004}}; tính lãi, chiết khấu sẽ lệch cent và cộng dồn qua nghìn giao dịch thành số lớn.
-- Các chuẩn kế toán/ngân hàng (ISO 4217, PCI DSS) yêu cầu độ chính xác tuyệt đối; {{double}} không đáp ứng được.
+- Nghiệp vụ kế toán/ngân hàng yêu cầu số tiền khớp tuyệt đối tới đơn vị nhỏ nhất của tiền tệ (số chữ số thập phân của mỗi loại tiền theo ISO 4217: VND 0, USD 2, JPY 0); {{double}} không đáp ứng được.
 
 ### BigDecimal cơ bản
 ~~~java
@@ -5462,7 +5462,7 @@ BigDecimal bad = new BigDecimal(0.1);   // 0.10000000000000000555...
 BigDecimal good = BigDecimal.valueOf(0.1); // dùng Double.toString -> "0.1"
 ~~~
 - Luôn dùng constructor nhận {{String}} hoặc {{BigDecimal.valueOf(double)}}.
-- {{scale}} = số chữ số sau dấu phẩy; âm nghĩa là nhân 10^|scale|}.
+- {{scale}} = số chữ số sau dấu phẩy; scale âm nghĩa là giá trị = unscaledValue × 10^|scale| (ví dụ 1E+3 có scale -3).
 
 ### equals vs compareTo
 ~~~java
@@ -5474,18 +5474,25 @@ new BigDecimal("1.0").compareTo(new BigDecimal("1.00")); // 0 (giá trị bằng
 - {{signum()}} trả -1/0/1 tiện cho điều kiện.
 
 ### Phép chia và bug "lệch 1 xu"
-- {{divide(divisor)}} không chỉ định scale sẽ nthrows {{ArithmeticException}} nếu không chia hết (non-terminating decimal).
+- {{divide(divisor)}} không chỉ định scale sẽ ném {{ArithmeticException}} nếu không chia hết (non-terminating decimal).
 - {{divide(divisor, scale, RoundingMode.HALF_UP)}} luôn chỉ định scale và rounding mode.
-- Bug "lệch 1 xu" xảy ra khi: dùng {{double}} trung gian, hoặc rounding mode không phù hợp (ví dụ {{HALF_DOWN}} khi should là {{HALF_UP}}), hoặc scale khác nhau giữa các bước tính.
-- Tính tổng nhiều khoản với tỷ lệ phần trăm: mỗi khoản round riêng rẽ → lệch lũyỹ. Cách đúng: tính tổng bằng {{BigDecimal}} rồi round một lần cuối.
+- Bug "lệch 1 xu" xảy ra khi: dùng {{double}} trung gian, hoặc rounding mode không phù hợp (ví dụ dùng {{HALF_DOWN}} trong khi quy định là {{HALF_UP}}), hoặc scale khác nhau giữa các bước tính.
+- Tính tổng nhiều khoản với tỷ lệ phần trăm: mỗi khoản round riêng rẽ → lệch tích luỹ. Cách đúng: tính tổng bằng {{BigDecimal}} rồi round một lần cuối; còn khi buộc phải chia một số tiền thành nhiều phần (chia hoá đơn, phân bổ phí), làm tròn từng phần rồi dồn phần dư vào một phần để tổng luôn khớp.
 
 ### Pitfall production
 - Quên {{divide}} kèm scale + rounding ⇒ exception lúc runtime khi chia 10/3.
 - Lưu DB: cột {{NUMERIC(19,4)}} hoặc {{DECIMAL}}; đừng dùng {{FLOAT}}/{{DOUBLE}}. Hibernate mapping {{@Column(precision = 19, scale = 4)}}.
 - Tiền tệ đa ngoại tệ: luôn kèm {{Currency}} (ISO 4217), không cộng/trừ tiền tệ khác nhau.
 - Tự viết {{Money}} wrapper (record {{Money(BigDecimal amount, Currency currency)}}) với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ.
+- {{BigDecimal}} làm key của {{HashMap}}/{{HashSet}}: {{1.0}} và {{1.00}} là hai key khác nhau vì equals xét scale. Chuẩn hoá scale ({{setScale}}) trước khi làm key, hoặc dùng {{TreeMap}} (dựa trên compareTo).
 
-> Senior tip: viết wrapper {{Money}} với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ để tránh rải rác {{RoundingMode.HALF_UP}} throughout codebase. Với báo cáo tài chính, {{RoundingMode.HALF_EVEN}} (banker's rounding) là chuẩn kế toán, nhưng phải đồng bộ toàn hệ thống.`,
+### Ví dụ đời thực
+Một ví điện tử tính phí rút tiền 1,1% bằng {{double}} rồi {{Math.round}}: báo cáo đối soát cuối tháng lệch 1,8 triệu đồng trên 2,3 triệu giao dịch so với file của ngân hàng (ngân hàng làm tròn HALF_UP trên số thập phân chính xác). Ngoài ra, chức năng chia hoá đơn nhóm chia 100.000 đồng cho 3 người được 33.333 × 3 = 99.999. Sửa: toàn bộ tính tiền chuyển sang {{BigDecimal}} tạo từ String, phí làm tròn {{setScale(0, RoundingMode.HALF_UP)}} theo đúng hợp đồng với ngân hàng, chia hoá đơn dồn phần dư 1 đồng cho người đầu tiên; thêm test đối chiếu với file mẫu của ngân hàng. Tháng sau đối soát khớp 100%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tiền tôi luôn dùng BigDecimal tạo từ String hoặc valueOf, không bao giờ từ double, vì double là số nhị phân nên 0,1 cộng 0,2 không ra 0,3. Ba điểm hay sai: thứ nhất, equals so cả scale nên 1.0 khác 1.00, logic nghiệp vụ phải dùng compareTo, và cẩn thận khi dùng BigDecimal làm key của HashMap. Thứ hai, phép chia không hết mà không truyền scale và RoundingMode sẽ ném ArithmeticException, nên mọi phép chia phải có scale và rounding mode rõ ràng. Thứ ba, chọn chế độ làm tròn theo hợp đồng nghiệp vụ, HALF_UP hay HALF_EVEN, và làm tròn ở đúng bước: tính tổng rồi làm tròn một lần; khi phải chia một khoản tiền thành nhiều phần thì dồn phần dư vào một phần để tổng luôn khớp. Tôi gom toàn bộ vào một value object Money có currency, để quy tắc làm tròn nằm ở một chỗ, và lưu DB bằng NUMERIC chứ không bao giờ FLOAT."
+
+> Senior tip: viết wrapper {{Money}} với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ để tránh rải rác {{RoundingMode.HALF_UP}} khắp codebase. Với báo cáo tài chính, {{RoundingMode.HALF_EVEN}} (banker's rounding) là chuẩn kế toán, nhưng phải đồng bộ toàn hệ thống.`,
   follow: ['Tại sao BigDecimal("1.00").equals(BigDecimal("1.0")) trả false?', 'Khi nào dùng RoundingMode.HALF_EVEN thay vì HALF_UP?', 'Làm sao tránh bug lệch 1 xu khi tính tổng nhiều khoản với tỷ lệ phần trăm?'],
   tags: ['BigDecimal', 'money', 'rounding', 'equals', 'compareTo']
 },
@@ -5494,11 +5501,11 @@ new BigDecimal("1.0").compareTo(new BigDecimal("1.00")); // 0 (giá trị bằng
   topic: 'collections',
   level: 'senior',
   q: '{{Iterator}} fail-fast, {{ConcurrentModificationException}} trong đơn luồng, {{removeIf}} và {{CopyOnWriteArrayList}}: khi nào hợp?',
-  a: `**Tóm tắt:** Fail-fast iterator kiểm tra {{modCount}} và nthrows {{ConcurrentModificationException}} nếu collection bị sửa ngoài iterator. Fail-safe (weakly consistent) như {{ConcurrentHashMap}} hay snapshot như {{CopyOnWriteArrayList}} thì không nthrows nhưng có thể thấy dữ liệu cũ/không đầy đủ.
+  a: `**Tóm tắt:** Fail-fast iterator kiểm tra {{modCount}} và ném {{ConcurrentModificationException}} nếu collection bị sửa ngoài iterator. Fail-safe (weakly consistent) như {{ConcurrentHashMap}} hay snapshot như {{CopyOnWriteArrayList}} thì không ném nhưng có thể thấy dữ liệu cũ/không đầy đủ.
 
 ### Fail-fast cơ chế
 - {{ArrayList}}, {{HashMap}}, {{HashSet}}... có field {{modCount}} tăng mỗi lần thay đổi cấu trúc.
-- Iterator lưu {{expectedModCount}}; mỗi {{next()}}/{{remove()}} so sánh, lệch thì nthrows CME ngay.
+- Iterator lưu {{expectedModCount}}; mỗi {{next()}}/{{remove()}} so sánh, lệch thì ném CME ngay.
 - Đây là **best-effort detection**, không phải cơ chế đồng bộ: không đảm bảo phát hiện mọi trường hợp, nhất là đa luồng.
 - CME có thể xảy ra cả trong **một thread** khi vừa for-each vừa {{list.remove(x)}} hoặc {{map.put}}.
 
@@ -5515,7 +5522,7 @@ for (String s : l2) {
     if (s.equals("b")) l2.remove(s);
 }
 System.out.println(l2);
-// Output: [a, c]   -> KHÔNG nthrows lỗi, và "c" không bao giờ được kiểm tra
+// Output: [a, c]   -> KHÔNG ném lỗi, và "c" không bao giờ được kiểm tra
 ~~~
 Vì sao trường hợp 2 không lỗi: sau khi xoá "b", size còn 2, con trỏ {{cursor}} của iterator cũng là 2. {{hasNext()}} chỉ kiểm tra {{cursor != size}} nên trả về false và vòng lặp kết thúc trước khi {{next()}} kịp kiểm tra {{modCount}}. Code "chạy được" nhưng bỏ sót phần tử cuối, một bug im lặng nguy hiểm hơn cả CME.
 
@@ -5529,7 +5536,7 @@ balances.entrySet().removeIf(e -> e.getValue().signum() == 0);
 
 ### CopyOnWriteArrayList
 - Mọi thao tác ghi ({{add}}, {{set}}, {{remove}}) tạo mảng mới rồi thay reference {{volatile}}; đọc không lock.
-- Iterator là **snapshot**: không nthrows CME, không {{remove}}; có thể thấy dữ liệu cũ.
+- Iterator là **snapshot**: không ném CME, không {{remove}}; có thể thấy dữ liệu cũ.
 - Chi phí ghi O(n) cả về thời gian và bộ nhớ; ghi liên tục ⇒ GC pressure rất lớn.
 - Hợp: danh sách listener/observer ít thay đổi, cấu hình read-mostly. Không hợp: cache, queue, collection lớn cập nhật thường xuyên.
 
@@ -5577,15 +5584,15 @@ orders.sort(cmp);
 
 ### TreeMap "mất" phần tử
 - {{TreeMap}} không dùng {{equals}}/{{hashCode}} để định danh key; nó dùng {{compare()}}.
-- Nếu comparator không symmetric hoặc transitive, cây đỏ-đen có thể mất cân bằng hoặc tìm kiếm sai.
-- Null: {{TreeMap}} không cho key null trừ khi comparator xử lý null; natural ordering nthrows NPE.
+- Nếu comparator không symmetric hoặc transitive, cây đỏ-đen vẫn cân bằng nhưng đặt và tìm phần tử sai chỗ: {{get}} trả null cho key vừa put, {{containsKey}} lúc đúng lúc sai.
+- Null: {{TreeMap}} không cho key null trừ khi comparator xử lý null; natural ordering ném NPE.
 - {{subMap}}, {{headMap}}, {{tailMap}} là view — thay đổi view ảnh hưởng map gốc.
 
 ### Pitfall
-- Comparator dựa trên field nullable mà không xử lý null: {{a.getName().compareTo(b.getName())}} nthrows NPE hoặc vi phạm transitivity khi null xen vào.
+- Comparator dựa trên field nullable mà không xử lý null: {{a.getName().compareTo(b.getName())}} ném NPE hoặc vi phạm transitivity khi null xen vào.
 - Logic so sánh phức tạp sai: {{(a, b) -> a.x < b.x ? -1 : 1}} (quên case bằng nhau trả 0).
 - So sánh float/double với NaN: {{Double.compare}} xử lý NaN, nhưng tự viết {{a < b ? -1 : 1}} sai với NaN.
-- Primitive array sort không stable: {{Arrays.sort(int[])}} dùng quicksort; muốn stable dùng {{Integer[]}} hoặc {{List.sort}}.
+- {{Arrays.sort(int[])}} dùng Dual-Pivot Quicksort (không stable), nhưng với primitive thì stable không có ý nghĩa vì hai số bằng nhau không phân biệt được. Sắp xếp object ({{Arrays.sort(Object[])}}, {{List.sort}}) dùng TimSort và **stable**, nên sắp theo nhiều khoá bằng nhiều lần sort liên tiếp vẫn đúng.
 
 ### Bên trong: TimSort phát hiện comparator sai
 {{List.sort}}/{{Arrays.sort}} cho object dùng TimSort, giả định comparator tuân thủ hợp đồng (đối xứng, bắc cầu). Khi phát hiện vi phạm trong lúc gộp các đoạn đã sắp xếp, nó ném {{IllegalArgumentException: Comparison method violates its general contract!}} — nhưng **chỉ khi dữ liệu đủ lớn và rơi đúng thứ tự** (thường từ vài chục phần tử trở lên), nên lỗi hay lọt qua test nhỏ. Nguồn vi phạm hay gặp: trừ hai số để so sánh ({{a - b}} tràn số với int lớn), comparator không xử lý null nhất quán, so sánh theo field có thể thay đổi trong lúc sắp xếp, so sánh double có NaN. Dùng {{Comparator.comparingInt}}, {{Integer.compare}}, {{Comparator.nullsLast(...)}} thay vì tự viết.
@@ -5596,7 +5603,7 @@ Báo cáo xếp hạng đại lý thỉnh thoảng lỗi 500 với thông báo "
 ### Trả lời mẫu khi phỏng vấn
 "Comparator phải tuân thủ hợp đồng: đối xứng, bắc cầu và nhất quán. Tôi xây comparator bằng các factory như comparing, comparingLong, thenComparing, reversed, và nullsFirst hoặc nullsLast để xử lý null rõ ràng, thay vì tự viết phép trừ, vì trừ hai số lớn có thể tràn số và đổi dấu. Nếu comparator vi phạm hợp đồng, TimSort có thể ném IllegalArgumentException, nhưng chỉ khi dữ liệu đủ lớn nên lỗi hay lọt test. Với TreeMap và TreeSet thì nguy hiểm hơn: chúng dùng compare chứ không dùng equals, nên nếu compare trả về 0 cho hai phần tử khác nhau, phần tử sau ghi đè phần tử trước, mất dữ liệu âm thầm. Vì vậy tôi luôn thêm khoá phụ như id vào cuối chuỗi so sánh để chỉ trả 0 khi thật sự là cùng một phần tử."
 
-> Senior tip: khi dùng comparator tùy biến, viết unit test khẳng định các key **khác nhau** vẫn là phần tử riêng biệt; đây là loại bug không nthrows exception, chỉ làm mất record và cực khó phát hiện. Với BigDecimal, luôn normalize ({{stripTrailingZeros}}) trước khi làm key. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
+> Senior tip: khi dùng comparator tùy biến, viết unit test khẳng định các key **khác nhau** vẫn là phần tử riêng biệt; đây là loại bug không ném exception, chỉ làm mất record và cực khó phát hiện. Với BigDecimal, luôn normalize ({{stripTrailingZeros}}) trước khi làm key. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
   follow: ['Comparable và Comparator khác nhau thế nào?', 'Tại sao TreeMap không dùng equals/hashCode?', 'Comparator không consistent with equals gây ra vấn đề gì?'],
   tags: ['Comparator', 'Comparable', 'TreeMap', 'TreeSet', 'sorting']
 },
@@ -5605,41 +5612,66 @@ Báo cáo xếp hạng đại lý thỉnh thoảng lỗi 500 với thông báo "
   topic: 'modern',
   level: 'lead',
   q: 'Virtual threads (Java 21) cho service I/O-bound: khi nào dùng, chuyển đổi thế nào, pinning, {{ThreadLocal}}, giới hạn concurrency bằng {{Semaphore}}?',
-  a: `**Tóm tắt:** Virtual thread (VT) là một loại thread do JVM tạo ra với chi phí khởi tạo rất thấp (chỉ một object trên heap, stack được lưu dưới dạng chunk). VT phù hợp với code I/O-bound (gọi DB, HTTP, file, message queue) vì khi bị block (như {{socket.read}}), JVM có thể unmount stack VT lên heap và reuse carrier thread cho VT khác. Pinning xảy ra khi VT chạy trong {{synchronized}} block hoặc gọi native method — carrier thread không thể được giải phóng. {{ThreadLocal}} với hàng triệu VT sẽ tốn nhiều bộ nhớ. {{Semaphore}} vẫn cần để giới hạn concurrency tới downstream (DB connection pool, API rate limit).
+  a: `**Tóm tắt:** Virtual thread (JEP 444, chính thức từ Java 21) là thread do JVM quản lý: rẻ tới mức tạo một thread cho mỗi request. Khi code block ở I/O, JVM "tháo" virtual thread khỏi carrier thread (một platform thread trong ForkJoinPool nội bộ) để carrier chạy việc khác. Dùng cho service **I/O-bound** có nhiều request đồng thời, viết code blocking bình thường mà vẫn scale. Ba điều phải canh: **pinning** (JDK 21–23: block bên trong {{synchronized}} giữ luôn carrier; JDK 24 đã sửa bằng JEP 491), **ThreadLocal** (mỗi virtual thread một bản, hàng triệu thread là hàng triệu bản), và **giới hạn đồng thời tới downstream** bằng {{Semaphore}} vì không còn thread pool nào chặn hộ bạn.
 
-### VT vs platform thread
-- Platform thread: một thread tương ứng một OS thread; chi phí cao (stack 1MB, context switch do OS).
-- Virtual thread: hàng nghìn/hàng triệu VT chạy trên một lượng nhỏ platform thread (carrier threads). VT bị block thì không làmcarrier thread bị block.
-- VT giải quyết vấn đề: viết code blocking (thread.sleep, synchronized, blocking I/O) một cách tự nhiên mà vẫn scale được nhiều đồng thời.
+### Vì sao virtual thread scale được
+| | Platform thread | Virtual thread |
+|---|---|---|
+| Ánh xạ | 1:1 với thread của OS | Nhiều virtual thread trên vài carrier (mặc định số carrier = số CPU) |
+| Bộ nhớ | Stack cố định (thường 1 MB dự trữ) | Stack nằm trên heap, chỉ lớn bằng phần đang dùng |
+| Khi block I/O | OS thread nằm chờ | Unmount, carrier rảnh để chạy virtual thread khác |
+| Số lượng thực tế | Vài nghìn | Hàng trăm nghìn tới hàng triệu |
+
+Với thread pool 200 thread, service gọi API mất 200 ms chỉ phục vụ tối đa khoảng 1.000 request/giây dù CPU rảnh (định luật Little: 200 / 0,2 s). Với virtual thread, giới hạn đó biến mất; giới hạn thật trở thành downstream (DB, API đối tác) và CPU.
 
 ### Chuyển đổi
-- Dùng {{Executors.newVirtualThreadPerTaskExecutor()}} để thay {{Executors.newFixedThreadPool}}.
-- Spring Boot 3.5+ hỗ trợ VT thông qua {{spring.threads.virtual.enabled=true}} (tự động dùng VT cho {{@RestController}}).
-- VT không nhanh hơn cho CPU-bound: nếu code tính toán nặng, VT không giúp; vẫn cần phân bố trên nhiều core.
+~~~java
+// Thay pool cố định bằng một virtual thread cho mỗi task
+try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
+    List<Future<Quote>> fs = providers.stream()
+        .map(p -> exec.submit(() -> p.quote(req)))   // code blocking bình thường
+        .toList();
+    // ... get() từng future có timeout
+}   // close() chờ mọi task xong
+~~~
+- Spring Boot **3.2+**: {{spring.threads.virtual.enabled=true}} để Tomcat/Jetty xử lý request, {{@Async}}, scheduler và listener Kafka/Rabbit chạy trên virtual thread.
+- **Không pool virtual thread**: tạo mới cho mỗi task là đúng thiết kế; pool 10 virtual thread chỉ tái tạo giới hạn cũ.
+- CPU-bound (nén, mã hoá, tính toán) không được lợi gì: vẫn chỉ có số core đó.
 
 ### Pinning
-- Pinning xảy ra khi VT chạy trong {{synchronized}} block hoặc gọi native method: JVM không thể unmount VT vì stack có thể bị truy cập bởi native code.
-- Giải pháp: dùng {{ReentrantLock}} thay vì {{synchronized}} (đặc biệt là trong code quan trọng).
-- Từ Java 24, pinning được giảm bớt nhờ cải tiến (JEP 487: Silently absorb pinning events; JEP 491: virtual thread-friendly synchronized).
+Virtual thread bị **pin** khi không thể unmount, nên carrier bị giữ trong lúc nó block:
+- JDK 21–23: block (I/O, {{sleep}}, {{wait}}) **bên trong {{synchronized}}**. Cách xử lý ở các bản này: đổi sang {{ReentrantLock}} ở chỗ có I/O trong vùng khoá, hoặc nâng thư viện (driver JDBC, HTTP client) lên bản đã bỏ synchronized quanh I/O.
+- JDK 24+ (JEP 491): {{synchronized}} không còn pin nữa.
+- Mọi phiên bản: đang ở trong native frame (JNI) hoặc một số thao tác file của OS.
+- Phát hiện: JFR event {{jdk.VirtualThreadPinned}}; JDK 21–23 có thêm {{-Djdk.tracePinnedThreads=full}}. Triệu chứng: throughput không tăng, **CPU thấp** nhưng mọi carrier đều đang bị chiếm, p99 tăng theo số request đồng thời.
 
 ### ThreadLocal và ScopedValue
-- {{ThreadLocal}} với hàng triệu VT sẽ tạo hàng triệu entry → tốn bộ nhớ và có thể leak.
-- {{ScopedValue}} (Java 20, preview; chốt từ 24) là thay thế an toàn hơn: giá trị được truyền theo scope, không phải mỗi VT một entry.
-- Nếu phải dùng ThreadLocal: chỉ dùng cho dữ liệu ngắn, và dọn dẹp bằng {{remove()}}.
+- Mỗi virtual thread có bản ThreadLocal riêng. Cache object đắt (buffer, {{SimpleDateFormat}}) trong ThreadLocal vốn để tái sử dụng giữa các request trên cùng thread pool, giờ mất tác dụng và tốn bộ nhớ gấp bội.
+- Context nhỏ (traceId, user) trong ThreadLocal vẫn chạy đúng, nhớ {{remove()}}.
+- {{ScopedValue}}: incubator ở Java 20, preview Java 21–24, **chính thức từ Java 25**; truyền context bất biến theo phạm vi, rẻ và không rò.
 
-### Semaphore và giới hạn concurrency
-- VT không tự giới hạn số lượng đồng thời: tạo 10.000 VT không thành vấn đề, nhưng 10.000 kết nối DB thì có.
-- Dùng {{Semaphore}} để giới hạn số request đồng thời tới downstream (connection pool, rate limit).
-- Ví dụ: {{Semaphore(20)}} để tối đa 20 request cùng lúc tới core banking API.
+### Giới hạn đồng thời tới downstream
+~~~java
+private final Semaphore dbPermits = new Semaphore(20);   // bằng maximumPoolSize của HikariCP
 
-### Pitfall
-- Dùng VT cho CPU-bound: không giúp, chỉ làm chậm thêm do overhead unmount/mount.
-- Block VT trong {{synchronized}}: carrier thread bị giữ, giảm hiệu năng.
-- Quên giới hạn concurrency: tạo quá nhiều kết nối DB → exhaust connection pool.
-- Debug stack trace dài do VT stack là sự kết hợp của carrier stack và virtual stack chunk.
+Order load(long id) throws InterruptedException {
+    if (!dbPermits.tryAcquire(500, TimeUnit.MILLISECONDS)) {
+        throw new ServiceBusyException("DB busy");          // fail nhanh thay vì xếp hàng vô hạn
+    }
+    try { return repo.findById(id); }
+    finally { dbPermits.release(); }
+}
+~~~
+Không có semaphore, 10.000 virtual thread cùng chờ 20 connection: request xếp hàng trong pool connection tới timeout, p99 tăng vọt, và API đối tác bị dội gấp nhiều lần.
 
-> Senior tip: dùng VT cho mọi I/O-bound code, nhưng luôn đo lường: số lượng connection/Thread pool tới downstream, CPU usage, và memory. Nếu downstream đã có connection pool (ví dụ HikariCP max 20), đặt {{Semaphore}} tương đương để tránh overflow. VT không thay thế kiến trúc, chỉ đơn giản hóa viết code blocking. Với service hiện tại, bật VT có thể giảm latency p99 rõ rệt khi tải cao do giảm overhead tạo thread.`,
-  follow: ['Pinning là gì và khi nào xảy ra?', 'Tại sao dùng ReentrantLock thay synchronized tốt hơn với virtual thread?', 'Khi nào vẫn cần giới hạn concurrency dù dùng virtual thread?'],
+### Ví dụ đời thực
+Service tổng hợp báo giá vận chuyển gọi 6 hãng (200–800 ms mỗi lời gọi), Tomcat 200 thread, peak 900 request/giây: thread pool cạn, p99 4,8 giây dù CPU chỉ 35%. Bật {{spring.threads.virtual.enabled=true}} trên JDK 21 lần đầu **không cải thiện**: JFR có hàng nghìn {{jdk.VirtualThreadPinned}} từ một HTTP client cũ dùng {{synchronized}} quanh việc đọc socket. Nâng client lên bản dùng ReentrantLock, thêm {{Semaphore}} 50 cho mỗi hãng theo hợp đồng rate limit. Kết quả: p99 còn 1,1 giây, CPU 60%, số thread OS giảm từ 260 xuống 40. Sau khi lên JDK 25, team bỏ được lo lắng về synchronized nhưng giữ nguyên semaphore.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual thread chính thức từ Java 21, rẻ tới mức tạo một thread cho mỗi request. Khi code block ở I/O, JVM tháo virtual thread khỏi carrier để carrier chạy việc khác, nên service I/O-bound phục vụ được nhiều request đồng thời hơn hẳn với code blocking bình thường, không cần reactive. Nó không giúp gì cho việc nặng CPU. Để chuyển đổi tôi dùng newVirtualThreadPerTaskExecutor hoặc spring.threads.virtual.enabled từ Spring Boot 3.2, và không pool virtual thread. Ba điểm tôi luôn kiểm tra: pinning, trên JDK 21 đến 23 là block bên trong synchronized, tôi đo bằng JFR event VirtualThreadPinned và thay bằng ReentrantLock hoặc nâng thư viện, còn JDK 24 đã sửa; ThreadLocal, vì mỗi virtual thread một bản nên không dùng ThreadLocal để cache object đắt; và giới hạn đồng thời, vì không còn thread pool chặn hộ, tôi dùng Semaphore khớp với connection pool hoặc rate limit của đối tác."
+
+> Senior tip: lợi ích của virtual thread là **throughput khi nhiều request cùng chờ I/O**, không phải làm một request nhanh hơn. Trước khi bật, tôi đo ba thứ: số request đồng thời lúc peak, số thread OS và JFR pinning; sau khi bật, việc đầu tiên là đặt semaphore cho từng downstream, vì sự cố hay gặp nhất là chính service của mình dội sập DB hoặc đối tác bằng lượng đồng thời mà trước đây thread pool đã vô tình giới hạn.`,
+  follow: ['Pinning là gì, khi nào xảy ra trên JDK 21 và JEP 491 ở JDK 24 thay đổi gì?', 'Vì sao vẫn phải giới hạn đồng thời bằng Semaphore dù virtual thread gần như miễn phí?', 'ThreadLocal dùng để cache object đắt có vấn đề gì khi chuyển sang virtual thread?'],
   tags: ['virtual thread', 'pinning', 'ThreadLocal', 'ScopedValue', 'Semaphore']
 },
 {
@@ -5693,7 +5725,7 @@ Map<String, User> byEmail = users.stream()
         User::email,
         u -> u,
         (a, b) -> b,              // hoặc merge theo updatedAt
-        LinkedHashMap::new));     // giữ thứ nếu cần
+        LinkedHashMap::new));     // giữ thứ tự nếu cần
 ~~~
 - Key trùng: bản không có merge function ném {{IllegalStateException}} ("Duplicate key ...", từ Java 9 kèm cả hai value).
 - Value null: **NPE** — bản 2 tham số kiểm tra {{requireNonNull(value)}}, bản có merge function dùng {{Map.merge}} vốn cấm value null; lọc bằng {{filter(Objects::nonNull)}} hoặc thay bằng sentinel.
@@ -5734,13 +5766,13 @@ Map<String, User> byEmail = users.stream()
 ### Switch expression (Java 14)
 - Dùng {{->}} không fallthrough, không cần {{break}}; có thể dùng block + {{yield}}.
 - Bắt buộc bao phủ hết (exhaustive) cho expression; enum/String phải có default nếu không đủ.
-- Selector null: nthrows NPE nếu không có {{case null}} (với switch trên reference type).
+- Selector null: ném NPE nếu không có {{case null}} (với switch trên reference type).
 - Có thể trả giá trị trực tiếp, giảm biến tạm và lỗi gán thiếu nhánh.
 - Switch statement vẫn có thể dùng cú pháp cũ; nên chuyển dần sang arrow để tránh fallthrough.
 - Với enum, thêm hằng số mới mà quên case sẽ lỗi compile ở switch expression — lợi ích lớn khi refactor.
 
 ### SequencedCollection (Java 21)
-- {{getFirst()}} / {{getLast()}}: lấy phần tử đầu/cuối (nthrows {{NoSuchElementException}} nếu rỗng).
+- {{getFirst()}} / {{getLast()}}: lấy phần tử đầu/cuối (ném {{NoSuchElementException}} nếu rỗng).
 - {{addFirst(E)}} / {{addLast(E)}}: thêm đầu/cuối (optional, {{UnsupportedOperationException}} nếu immutable).
 - {{removeFirst()}} / {{removeLast()}}: xoá đầu/cuối (optional).
 - {{reversed()}}: trả **view** đảo ngược (read-only, không copy, thay đổi gốc ảnh hưởng view).
@@ -5771,31 +5803,31 @@ Map<String, User> byEmail = users.stream()
   id: 'modern-031',
   topic: 'modern',
   level: 'mid',
-  q: 'Sequenced collections (Java 21) thêm gì so với List/Set cũ?',
-  a: `**Tóm tắt:** Java 21 thêm interface SequencedCollection (và SequencedSet/SequencedMap) chuẩn hoá thao tác đầu/cuối và đảo chiều: first(), last(), addFirst/addLast, removeFirst/removeLast, reversed(); reversed() trả về **view** không copy.
+  q: 'Sequenced collections (Java 21) thêm gì so với List/Set cũ, và giải quyết vấn đề gì khi bạn viết code xử lý collection có thứ tự?',
+  a: `**Tóm tắt:** Java 21 (JEP 431) thêm interface SequencedCollection (và SequencedSet/SequencedMap) chuẩn hoá thao tác đầu/cuối và đảo chiều: getFirst(), getLast(), addFirst/addLast, removeFirst/removeLast, reversed(); reversed() trả về **view** không copy.
 
 ### Bối cảnh: trước Java 21 mỗi collection một kiểu
 - ArrayList: get(0), get(size()-1).
 - ArrayDeque: peekFirst/peekLast, pollFirst/pollLast.
-- LinkedHashSet: không có first()/last() trực tiếp trước đây (phải iterator.next()).
+- LinkedHashSet/LinkedHashMap: trước đây không có cách lấy phần tử đầu/cuối trực tiếp (đầu phải dùng iterator().next(), cuối phải duyệt hết).
 - Kết quả: code generic xử lý "collection có thứ tự" rất lộn xộn, phải instanceof và cast.
 
 ### Vì sao cần SequencedCollection
 - Thống nhất API cho mọi collection có thứ tự (List, Deque, LinkedHashSet, SortedSet...).
-- first()/last() O(1) thay vì get(0) O(1) cho ArrayList nhưng O(n) cho LinkedList.
+- getFirst()/getLast() cùng một tên cho mọi loại, thay vì get(0), peekFirst(), iterator().next() tuỳ loại; với LinkedHashSet/LinkedHashMap, lấy phần tử cuối từ O(n) thành O(1).
 - reversed() cho phép duyệt ngược mà không cấp phát list mới.
 
 ### Cách hoạt động
-- SequencedCollection extends Collection, thêm first/last/addFirst/addLast/removeFirst/removeLast/reversed.
+- SequencedCollection extends Collection, thêm getFirst/getLast/addFirst/addLast/removeFirst/removeLast/reversed.
 - SequencedSet extends Set + SequencedCollection.
-- SequencedMap extends Map với sequencedEntrySet, firstEntry, lastEntry, reversed.
+- SequencedMap extends Map với firstEntry, lastEntry, pollFirstEntry, putFirst/putLast, sequencedKeySet/sequencedValues/sequencedEntrySet, reversed.
 - reversed() trả về **view** đảo thứ tự: thay đổi view phản ánh vào gốc và ngược lại; không copy.
 
 ### Ví dụ
 ~~~java
 SequencedCollection<String> c = new ArrayList<>(List.of("a","b","c"));
-System.out.println(c.first());   // a
-System.out.println(c.last());    // c
+System.out.println(c.getFirst());   // a
+System.out.println(c.getLast());    // c
 for (String s : c.reversed()) { // c, b, a (view)
     System.out.println(s);
 }
@@ -5812,8 +5844,8 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 - Concurrent modification: reversed() view cũng fail-fast như gốc.
 - SequencedMap.reversed() đảo entry order; cẩn thận khi serialize JSON expecting insertion order.
 
-> Senior tip: dùng SequencedCollection trong API nội bộ thay vì List khi cần first/last; reversed() là view nên nếu trả ra ngoài, copy để tránh caller mutate gốc. Trong code review, tìm get(size()-1) và thay bằng last().`,
-  follow: ['reversed() có phải copy không?', 'SequencedMap khác gì?'],
+> Senior tip: dùng SequencedCollection trong API nội bộ thay vì List khi cần first/last; reversed() là view nên nếu trả ra ngoài, copy để tránh caller mutate gốc. Trong code review, tìm get(size()-1) và thay bằng getLast().`,
+  follow: ['reversed() có phải copy không, và rủi ro gì khi trả nó ra ngoài?', 'SequencedMap thêm những thao tác nào cho LinkedHashMap và TreeMap?'],
   tags: ['Java 21', 'SequencedCollection', 'collections']
 },
 {
@@ -5856,7 +5888,7 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
   topic: 'modern',
   level: 'senior',
   q: 'String templates (JEP 430) hiện trạng ra sao? Có nên dùng trong production không?',
-  a: `**Tóm tắt:** String templates (JEP 430) là preview trong JDK 21 và đã bị rút (withdrawn) khỏi JDK 22; KHÔNG dùng trong production. Dùng text blocks + String.formatted/MessageFormat.
+  a: `**Tóm tắt:** String templates là preview ở JDK 21 (JEP 430), preview lần hai ở JDK 22 (JEP 459), rồi bị rút lại và **gỡ bỏ hoàn toàn từ JDK 23** để thiết kế lại; hiện không có trong bất kỳ bản JDK nào. KHÔNG dùng trong production. Dùng text blocks + String.formatted/MessageFormat.
 
 ### Vì sao cần biết
 - Nhiều tutorial cũ còn nhắc \\"\\"\\" là "string templates" — sai: đó là text blocks (Java 15).
@@ -5884,12 +5916,12 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
   topic: 'modern',
   level: 'senior',
   q: 'Scoped values và structured concurrency (preview) giải quyết vấn đề gì của ThreadLocal?',
-  a: `**Tóm tắt:** ScopedValue là ThreadLocal bất biến với phạm vi lexical; StructuredTaskScope quản lý task con theo cấu trúc → dễ hủy, propagate exception. Cả hai preview trong JDK 21, chưa production.
+  a: `**Tóm tắt:** ScopedValue là ThreadLocal bất biến với phạm vi lexical; StructuredTaskScope quản lý task con theo cấu trúc → dễ hủy, propagate exception. Cả hai còn preview ở JDK 21 (LTS). ScopedValue chính thức từ JDK 25 (JEP 506); StructuredTaskScope vẫn là preview và đã được thiết kế lại API ở JDK 25 (JEP 505).
 
 ### ThreadLocal vấn đề
 - Mutable: bất kỳ code nào có thể set → khó truy vết.
 - Dễ leak nếu không remove() trong finally.
-- Không tự propagate sang thread con; với virtual threads số lượng lớn → tốn bộ nhớ (mỗi VT copy ThreadLocal map).
+- Không tự propagate sang thread con (trừ InheritableThreadLocal, vốn copy giá trị khi tạo thread); với virtual threads số lượng lớn → tốn bộ nhớ (mỗi VT có map ThreadLocal riêng).
 
 ### ScopedValue
 - ScopedValue.where(KEY, val).run(() -> ...) → value chỉ tồn tại trong block; immutable.
@@ -5901,11 +5933,11 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 - Exception propagate rõ ràng; lifecycle gắn với scope block.
 
 ### Pitfall
-- Preview → không production; API có thể đổi.
-- StructuredTaskScope chưa stable; syntax sẽ thay đổi.
+- Trên JDK 21 cả hai là preview (cần --enable-preview) → không dùng cho production; trên JDK 25 dùng được ScopedValue.
+- StructuredTaskScope vẫn preview: API ở JDK 25 (StructuredTaskScope.open + Joiner) khác hẳn JDK 21.
 - ThreadLocal vẫn cần cho thư viện chưa hỗ trợ ScopedValue.
 
-> Senior tip: học khái niệm để chuẩn bị; production vẫn dùng ThreadLocal + ExecutorService có cleanup/remove trong finally; khi migrate, đo memory với virtual threads.`,
+> Senior tip: trên JDK 21, production vẫn dùng ThreadLocal + ExecutorService có remove() trong finally; khi lên JDK 25, chuyển context request (userId, traceId) sang ScopedValue. Khi migrate sang virtual thread, đo memory của ThreadLocal.`,
   follow: ['ThreadLocal leak ở đâu?', 'Virtual threads + ThreadLocal?'],
   tags: ['Java 21', 'scoped values', 'structured concurrency', 'preview']
 },
@@ -5931,7 +5963,8 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 
 ### Pitfall production
 - Chọn GC theo workload: throughput vs latency; đo với tải thật.
-- ZGC không compact theo region như G1? pause vẫn < 1ms nhưng CPU footprint.
+- ZGC vẫn compact heap (di chuyển object đồng thời với ứng dụng), nên không phân mảnh; cái giá là CPU cho barrier và cần heap dư: nếu tốc độ cấp phát vượt tốc độ GC dọn, thread ứng dụng bị chặn (allocation stall), triệu chứng là latency tăng dù pause log vẫn dưới 1 ms.
+- JDK 24 đã bỏ hẳn chế độ non-generational (JEP 490); cờ -XX:+ZGenerational không còn ý nghĩa.
 - GC log (-Xlog:gc*) để phân tích; không đổi GC mà không đo.
 
 > Senior tip: bắt đầu G1 default; chuyển ZGC chỉ khi p99 latency yêu cầu và có benchmark; generational ZGC là bước tiến nhưng vẫn cần tuning heap size và allocation rate.`,
@@ -5943,28 +5976,44 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
   topic: 'core',
   level: 'senior',
   q: 'Lộ trình nâng cấp dự án Java 8/11 lên Java 21 gồm những bước nào? jdeps, --add-opens, thư viện cũ?',
-  a: `**Tóm tắt:** Nâng Java 8/11 → 21 theo bước: cài JDK 21, đổi source/target, chạy test, jdeps/jdeprscan tìm API bị xoá, xử lý --add-opens cho reflection, cập nhật thư viện (Spring Boot 3/Hibernate 6), tune GC. Không bật preview trong production.
+  a: `**Tóm tắt:** Nâng Java 8/11 lên 21 có ba lớp việc: (1) **build và thư viện**: JDK 21 trong CI, nâng các plugin và thư viện dùng bytecode/reflection (Lombok, Mockito, ByteBuddy, APM agent) lên bản hỗ trợ class file 65; (2) **API và encapsulation**: tìm chỗ dùng API nội bộ JDK hoặc API đã bị xoá bằng {{jdeps}} và {{jdeprscan}}, xử lý lỗi {{InaccessibleObjectException}} do JDK 17 đã khoá chặt API nội bộ (JEP 403); (3) **runtime**: GC mặc định, cờ JVM đã bị bỏ, container awareness. Nếu đang ở Spring Boot 2 thì thường đi kèm nâng Spring Boot 3 (bắt buộc Java 17+, đổi javax sang jakarta), đó mới là phần tốn công nhất.
 
-### Các bước chi tiết
-1. Cài JDK 21 trong CI; đổi maven.compiler.source/target = 21 (hoặc Gradle java.toolchain).
-2. Chạy full test; sửa compile errors (javax→jakarta nếu Spring 6).
-3. jdeps --jdk-internals tìm dùng internal API.
-4. jdeprscan tìm deprecated-for-removal.
-5. Nếu thư viện cũ dùng reflection sâu: thêm --add-opens module/pkg=ALL-UNNAMED tạm thời.
-6. Cập nhật dependency (Spring Boot 3, Hibernate 6, Lombok, Mockito).
-7. Bật GC phù hợp, đo latency/memory.
+### Những gì thay đổi giữa 8 và 21
+| Thay đổi | Từ bản | Ảnh hưởng thường gặp |
+|---|---|---|
+| Module system (JPMS) | 9 | Reflection vào {{sun.*}}, {{jdk.internal.*}} bị chặn dần |
+| Xoá Java EE modules (JAXB, JAX-WS, javax.annotation) | 11 (JEP 320) | {{ClassNotFoundException: javax.xml.bind.JAXBContext}}: thêm dependency jakarta.xml.bind |
+| Xoá Nashorn | 15 | Script engine JavaScript không còn |
+| Strongly encapsulate JDK internals | 16 (JEP 396), 17 bỏ luôn cờ {{--illegal-access}} (JEP 403) | {{InaccessibleObjectException}} khi thư viện cũ reflection vào JDK |
+| Xoá CMS GC | 14 | Cờ {{-XX:+UseConcMarkSweepGC}} làm JVM không khởi động |
+| Biased locking bị tắt/bỏ | 15/18 | Gần như không ảnh hưởng, có thể thay đổi hiệu năng lock |
+| {{SecurityManager}} deprecated for removal | 17 | Thư viện cũ gọi nó in cảnh báo |
 
-### Pitfall
-- --add-opens chỉ workaround; refactor để không cần.
-- Thư viện pre-JPMS không module-aware.
-- Nhảy thẳng 8→21 làm gỡ lỗi khó; đi từng LTS.
-- Reflection/bytecode instrumentation (APM, Lombok cũ) dễ vỡ.
+### Lộ trình từng bước
+1. **Kiểm kê**: chạy {{jdeps --jdk-internals --multi-release 21 -cp 'libs/*' app.jar}} để tìm code (của bạn và của thư viện) dùng API nội bộ; {{jdeprscan --release 21 app.jar}} tìm API deprecated for removal.
+2. **Nâng build trước, chưa đổi bytecode**: chạy build trên JDK 21 nhưng vẫn {{--release 8}} hoặc {{--release 11}}. Nâng Maven/Gradle plugin, Lombok (từ 1.18.30 cho JDK 21), Mockito 5, ByteBuddy, JaCoCo (từ 0.8.11 cho JDK 21). Bước này tách lỗi "công cụ build" khỏi lỗi "code".
+3. **Chạy test và ứng dụng trên runtime 21** với bytecode cũ: lộ ra lỗi reflection, cờ JVM đã bị bỏ, khác biệt hành vi.
+4. **Xử lý encapsulation đúng cách**: nâng thư viện là cách chính. {{--add-opens java.base/java.lang=ALL-UNNAMED}} chỉ là băng cá nhân tạm thời; ghi lại từng dòng và có ticket gỡ.
+5. **Đổi {{--release 21}}** rồi mới dần dùng tính năng mới (record, switch pattern, text block, virtual thread), không gộp vào cùng PR nâng cấp.
+6. **Spring Boot 2 lên 3** (nếu có): đi qua 2.7 trước, sửa hết deprecation, rồi lên 3.x; dùng OpenRewrite recipe để đổi {{javax.*}} sang {{jakarta.*}} tự động; kiểm tra Hibernate 6 (thay đổi HQL, kiểu id, sequence).
+7. **Runtime**: rà cờ JVM trong Dockerfile/Helm (bỏ CMS, {{PermSize}}, {{-XX:+UseCGroupMemoryLimitForHeap}}), dùng {{-XX:MaxRAMPercentage}}, đo lại GC (G1 trên 21 tốt hơn nhiều so với 8).
 
-### Rollout
-- Chạy song song JDK cũ/mới trong CI; smoke test staging; blue-green deploy; theo dõi GC, p99, memory.
+### Ví dụ lỗi và cách đọc
+~~~text
+java.lang.reflect.InaccessibleObjectException: Unable to make field private final
+  byte[] java.lang.String.value accessible: module java.base does not "opens java.lang"
+  to unnamed module @6d06d69c
+~~~
+Đọc: một thư viện (thường là bản cũ của serializer, mocking hoặc bytecode library) đang reflection vào field private của JDK. Cách sửa đúng là nâng thư viện; tạm thời có thể thêm {{--add-opens java.base/java.lang=ALL-UNNAMED}} để mở đúng package đó.
 
-> Senior tip: migrate theo service nhỏ trước; giữ dual build một thời gian; dùng OpenRewrite để tự động hoá một phần; jdeprscan để tìm API sắp bỏ.`,
-  follow: ['jdeps output đọc thế nào?', 'Khi nào cần --add-exports?'],
+### Ví dụ đời thực
+Một hệ thống core banking gồm 14 service Java 8 + Spring Boot 2.3. Team làm theo thứ tự: một service ít phụ thuộc làm thí điểm, build trên JDK 21 với {{--release 8}} trước. Lỗi đầu tiên không nằm ở code mà ở Lombok 1.18.12 và JaCoCo 0.8.5 không đọc được JDK mới; nâng xong là qua. Chạy runtime 21 lộ 3 chỗ {{InaccessibleObjectException}} từ một thư viện XML cũ và Kryo; nâng thư viện giải quyết 2, chỗ còn lại thêm {{--add-opens}} kèm ticket. Phần tốn công nhất là Spring Boot 3: 1.900 import javax được OpenRewrite đổi tự động, nhưng 40 câu HQL phải sửa tay vì Hibernate 6 chặt hơn. Sau khi lên production, G1 trên JDK 21 giảm p99 GC pause từ 180 ms xuống 45 ms và RAM mỗi pod giảm 15%. Cả 14 service mất 4 tháng, không có sự cố nào do nâng cấp.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia việc nâng Java 8 lên 21 thành ba lớp. Đầu tiên là build: chạy build trên JDK 21 nhưng vẫn giữ release 8, nâng plugin và các thư viện thao tác bytecode như Lombok, Mockito, JaCoCo, APM agent, vì đây là chỗ hỏng đầu tiên. Thứ hai là API: dùng jdeps với tùy chọn jdk-internals để tìm chỗ dùng API nội bộ, jdeprscan để tìm API sắp bị xoá; từ JDK 17 các API nội bộ bị khoá hẳn nên thư viện cũ reflection vào JDK sẽ ném InaccessibleObjectException, cách đúng là nâng thư viện, add-opens chỉ là tạm thời và phải có ticket gỡ. Các module Java EE như JAXB cũng đã bị xoá từ Java 11 nên phải thêm dependency. Thứ ba là runtime: bỏ cờ JVM cũ như CMS, đo lại GC và bộ nhớ. Nếu kèm Spring Boot 3 thì đi qua 2.7 trước, dùng OpenRewrite đổi javax sang jakarta. Tôi làm thí điểm một service trước, không trộn việc dùng tính năng ngôn ngữ mới vào cùng đợt nâng cấp."
+
+> Senior tip: tách nâng cấp thành hai mốc rõ ràng: "chạy được trên JDK 21 với bytecode cũ" và "biên dịch release 21". Mốc đầu tiên giải quyết 80% rủi ro và có thể rollback chỉ bằng đổi base image. Và luôn chạy smoke test **có gắn APM agent**: agent cũ không hiểu class file mới là lý do số một khiến service không khởi động được sau nâng cấp.`,
+  follow: ['Đọc output của jdeps --jdk-internals thế nào, và bạn xử lý từng loại phát hiện ra sao?', 'Vì sao --add-opens chỉ nên là giải pháp tạm, và làm sao để không quên gỡ nó?', 'Nâng Spring Boot 2 lên 3 cùng lúc với Java 21 hay tách hai đợt? Vì sao?'],
   tags: ['migration', 'Java 21', 'jdeps', 'upgrade']
 },
 {
@@ -5979,7 +6028,7 @@ c.addFirst("z");                // gốc thành [z,a,b,c]
 - Text block giữ format, dễ đọc SQL/JSON trong test.
 
 ### Cách hoạt động
-- Dòng đầu sau \"\"\" phải là newline (hoặc \\).
+- Sau dấu \"\"\" mở bắt buộc phải xuống dòng; nội dung bắt đầu từ dòng kế tiếp.
 - Indentation tối thiểu bị strip; closing \"\"\" thẳng hàng với code để strip đúng.
 - Escape: \\\\ cho backslash; quote không cần escape trong block.
 - \\s giữ trailing whitespace; \\ (line continuation) nối dòng.
@@ -6190,7 +6239,7 @@ BootstrapMethods:
 | Anonymous class | cấp phát object + interface dispatch (tra method qua bảng ảo/interface) |
 
 ### Trên production
-- Stack trace: dòng {{com.example.Foo$Lambda$14/0x...lambda$apply$0(Foo.java:57)}} cho biết lambda của class nào, dòng nào. Không có file .class trên đĩa; muốn đọc code thì mở {{Foo.class}} bằng javap/IDE và xem method {{lambda$...}}.
+- Stack trace: dòng {{at com.example.Foo.lambda$apply$0(Foo.java:57)}} là method tổng hợp chứa thân lambda, cho biết class và dòng. Frame của lớp ẩn ({{Foo$$Lambda/0x...}}) mặc định bị giấu, chỉ hiện khi bật {{-XX:+ShowHiddenFrames}}. Lớp ẩn không có file .class trên đĩa; muốn đọc code thì mở {{Foo.class}} bằng javap/IDE và xem method {{lambda$...}}.
 - Lambda **không** serialize được nếu functional interface không kế thừa {{Serializable}}; kể cả khi serialize được thì dạng thức phụ thuộc triển khai nội bộ — đừng đưa lambda vào protocol hay file cấu hình.
 - Lambda không có danh tính: {{a.equals(b)}}/{{a == b}} giữa hai lambda "giống nhau" là vô nghĩa, đừng dùng lambda làm key trong map.
 - Đây là kỹ thuật các thư viện mapping dùng để thay {{Method.invoke}} ở hot path: compile getter/setter thành {{Function}} một lần bằng {{LambdaMetafactory}} rồi tái dùng nghìn lần.
@@ -6247,8 +6296,9 @@ class Beta  { static { Alpha.prep(); } static int size = 1; static void prep() {
 ~~~
 T1 cầm khoá init của Alpha rồi gọi {{Beta.prep}} → cần init Beta → chặn trên khoá mà T2 đang giữ. T2 cầm khoá Beta rồi gọi {{Alpha.prep}} → chặn trên khoá Alpha. Chu trình khoá **không nằm trong code của bạn** ở dạng một {{synchronized}} nào, nên không có object lock để grep.
 
+Lưu ý khi đọc: trên nhiều bản JDK, thread đang chờ class init **không** hiện BLOCKED mà hiện RUNNABLE hoặc {{in Object.wait()}} với dòng chờ trên object {{java.lang.Class}}; các bản JDK mới in rõ tên class đang chờ khởi tạo.
 ~~~text
-jstack excerpt (câu chữ thay đổi theo bản JDK):
+jstack excerpt (minh hoạ, câu chữ thay đổi theo bản JDK):
 "pool-1-thread-1" BLOCKED
    - waiting for the initialization of class Beta ... held by "pool-1-thread-2"
 "pool-1-thread-2" BLOCKED
@@ -6258,7 +6308,7 @@ jstack excerpt (câu chữ thay đổi theo bản JDK):
 ### Bẫy thường gặp
 - {{static final int X = compute();}} **không** là hằng compile-time nên vẫn trigger {{<clinit>}}; chỉ literal như {{= 5}} mới được inline.
 - {{<clinit>}} ném lỗi: lần đầu thấy {{ExceptionInInitializerError}} (có cause), mọi lần sau thấy {{NoClassDefFoundError: Could not initialize class com.x.Foo}} **không còn cause**, và class ở trạng thái Failed cho tới khi ClassLoader đó chết — không "tự khỏi".
-- Static block tạo thread mới mà thread đó chạm lại class của mình: gần như chắc chắn deadlock, vì thread mới chờ init xong còn init thì chờ thread mới.
+- Static block tạo thread mới mà thread đó chạm lại class của mình, rồi static block **chờ** thread đó ({{join()}}, {{Future.get()}}, latch): chắc chắn deadlock, vì thread mới chờ init xong còn init thì chờ thread mới.
 - Enum constant được tạo ngay trong {{<clinit>}} của class enum, nên một enum có static block gọi sang class khác là mầm chu trình.
 
 ### Trên production
@@ -6334,13 +6384,13 @@ newTab[11]: C -> D            (11 = 3 + 8)
 
 ### Load factor 0.75 đứng ở đâu trong phép tính
 - {{threshold = capacity * 0.75}}. Muốn chứa N phần tử mà không resize, capacity phải là luỹ thừa 2 nhỏ nhất sao cho {{capacity * 0.75 >= N}}.
-- Ví dụ 100.000 phần tử: 131072 × 0.75 = 98304 < 100000, nên bảng thật là 262144 slot ≈ 1 MB mảng reference (4 byte/slot với compressed oops). Với 8 triệu phần tử, capacity 2^23 slot ≈ 32 MB **chỉ riêng mảng bảng**.
-- Công thức capacity khởi tạo hay dùng: {{new HashMap<>((int)(N / 0.75f) + 1)}}; viết {{new HashMap<>(N)}} thì vẫn còn resize vì N chưa chia cho load factor.
+- Ví dụ 100.000 phần tử: 131072 × 0.75 = 98304 < 100000, nên bảng thật là 262144 slot ≈ 1 MB mảng reference (4 byte/slot với compressed oops). Với 8 triệu phần tử: 2^23 × 0.75 ≈ 6,3 triệu chưa đủ, nên capacity là 2^24 slot ≈ 64 MB **chỉ riêng mảng bảng**.
+- Công thức capacity khởi tạo hay dùng: {{new HashMap<>((int)(N / 0.75f) + 1)}}; viết {{new HashMap<>(N)}} thì vẫn còn resize vì N chưa chia cho load factor. Từ Java 19 có sẵn {{HashMap.newHashMap(N)}} (và {{HashSet.newHashSet(N)}}) tính đúng giúp bạn.
 - Javadoc của HashMap nói 0.75 là thoả hiệp time/space cho đa số trường hợp: giảm xuống 0.5 thì chuỗi ngắn hơn nhưng tốn bộ nhớ và cache hơn, chỉ đáng cân nhắc khi profiling chỉ vào {{HashMap.getNode}}.
 
 ### Trên production
 - Triệu chứng: một thread chiếm CPU cao, flame graph có {{java.util.HashMap.resize}}, kèm spike cấp phát mảng lớn. Với G1, mảng table lớn hơn nửa region là **humongous allocation** (cấp phát "khổng lồ" — object quá lớn phải đặt riêng, GC xử lý kém hơn) — thấy rõ qua {{jcmd <pid> GC.heap_info}} và log {{-Xlog:gc*}}.
-- Warm-up (giai đoạn khởi động): service nạp vài trăm nghìn entry lúc khởi động sẽ resize ~18 lần liên tiếp nếu không đặt capacity; đặt đúng thường giảm rõ thời gian boot và số young GC (GC vùng nhớ trẻ, dọn object sống ngắn).
+- Warm-up (giai đoạn khởi động): service nạp vài trăm nghìn entry lúc khởi động sẽ resize khoảng 14 lần liên tiếp (16 lên 262.144) nếu không đặt capacity; đặt đúng thường giảm rõ thời gian boot và số young GC (GC vùng nhớ trẻ, dọn object sống ngắn).
 - Pitfall: resize **không** atomic; một thread resize trong khi thread khác ghi là mất dữ liệu và {{size}} lệch — Java 8 hết bug vòng lặp chứ không hết bug đồng bộ.
 - Pitfall: nếu phân bố hash xấu thì resize không cứu được; dựng histogram bucket trên mẫu key trước khi đổ tiền vào capacity.
 
@@ -6360,7 +6410,7 @@ newTab[11]: C -> D            (11 = 3 + 8)
   topic: 'collections',
   level: 'senior',
   q: 'Spliterator làm gì, và vì sao parallelStream trên LinkedList hoặc trên stream dựng từ Iterator lại không nhanh hơn (thậm chí chậm hơn)?',
-  a: `**Tóm tắt:** {{Spliterator}} (split + iterator) là API chia đôi nguồn dữ liệu để ForkJoinPool (pool thread chia-nhỏ-việc kiểu work-stealing) làm song song. Mỗi nguồn mô tả đặc điểm bằng characteristics ({{SIZED}}, {{SUBSIZED}}, {{ORDERED}}, {{CONCURRENT}}, {{DISTINCT}}, {{NONNULL}}) và quyết định có chia được không trong {{trySplit()}}. {{ArrayList}} chia O(1) theo index; {{LinkedList}} mỗi lần chia phải đi bộ tới phần tử giữa qua các con trỏ rải rác (pointer chase — nhảy theo con trỏ, hay gây cache miss); nguồn từ {{Iterator}} thì {{trySplit}} trả null và "parallel" của bạn chạy đúng một task.
+  a: `**Tóm tắt:** {{Spliterator}} (split + iterator) là API chia đôi nguồn dữ liệu để ForkJoinPool (pool thread chia-nhỏ-việc kiểu work-stealing) làm song song. Mỗi nguồn mô tả đặc điểm bằng characteristics ({{SIZED}}, {{SUBSIZED}}, {{ORDERED}}, {{CONCURRENT}}, {{DISTINCT}}, {{NONNULL}}) và quyết định có chia được không trong {{trySplit()}}. {{ArrayList}} chia O(1) theo index; {{LinkedList}} và nguồn dựng từ {{Iterator}} không chia đôi được, nên {{trySplit}} chia **theo lô**: đi bộ tuần tự qua 1024 phần tử đầu (lần sau 2048, rồi tăng dần) để chép vào một mảng và giao mảng đó cho task khác. Việc đọc nguồn vẫn tuần tự qua các con trỏ rải rác (pointer chase — nhảy theo con trỏ, hay gây cache miss), nên chỉ phần xử lý sau đó mới song song.
 
 ### Stream song song chạy thế nào
 1. {{stream.parallel()}} lấy {{spliterator()}} của nguồn.
@@ -6372,17 +6422,17 @@ newTab[11]: C -> D            (11 = 3 + 8)
 | Nguồn | trySplit làm gì | Chi phí chia | Characteristics tiêu biểu |
 |---|---|---|---|
 | {{ArrayList}}, mảng | cắt khoảng index [gốc, giữa) | O(1) mỗi mảnh | SIZED, SUBSIZED, ORDERED |
-| {{HashMap}}, {{HashSet}} | quét node tới giữa bảng | O(số node đã quét) mỗi mảnh | SIZED |
-| {{LinkedList}} | gọi {{node(index)}} để tìm node giữa | O(k) mỗi lần chia, lặp theo số tầng chia | SIZED, ORDERED |
-| {{spliteratorUnknownSize(iterator, 0)}} | trả null: không chia được | không chia | không SIZED |
-| {{Stream.iterate}}/{{generate}} không {{limit}} | không có kích thước để chia | vô nghĩa, có thể ném IllegalStateException | không SIZED |
+| {{HashMap}}, {{HashSet}} | chia theo dải chỉ số bucket | O(1), nhưng số phần tử mỗi mảnh không đều | SIZED (không SUBSIZED) |
+| {{LinkedList}} | đi bộ chép một lô (1024, 2048...) node vào mảng | O(kích thước lô) mỗi lần, đọc tuần tự | SIZED, ORDERED |
+| {{spliteratorUnknownSize(iterator, 0)}} | chép một lô phần tử từ iterator vào mảng | như trên, không biết tổng kích thước | không SIZED |
+| {{Stream.iterate}}/{{generate}} | nguồn vô hạn, chia theo lô | parallel kèm {{limit}} trên stream ordered thường rất chậm | không SIZED |
 | {{ConcurrentHashMap}} | chia theo dải bucket | rẻ, an toàn khi có thread khác ghi | CONCURRENT |
 
 ### Vì sao parallel trên LinkedList thường chậm hơn
-- Chia đôi danh sách cần node ở giữa, và {{node(i)}} đi bộ từ đầu hoặc cuối tuỳ bên gần hơn → mỗi lần chia tốn cỡ k/2 bước pointer chase.
-- Với p mảnh, tổng chi phí chia cỡ O(n log p) lần đi qua con trỏ, trong khi một vòng {{for}} tuần tự chỉ duyệt list **một lần** O(n) và prefetch được.
-- Nói cách khác: mỗi lần "chia" trên {{LinkedList}} là một chuyến đi bộ qua heap. Parallel chỉ có lãi khi công việc trên mỗi phần tử đủ lớn so với chi phí chia, ví dụ 1 ms gọi API cho mỗi phần tử.
-- Nguồn dựng từ {{Iterator}} (JDBC stream, {{Scanner}}) không bao giờ nhanh khi bật parallel vì {{trySplit}} trả null: bạn chỉ trả thêm chi phí quản lý task.
+- {{LinkedList}} không có cách nhảy tới giữa, nên mỗi lần chia là đi bộ qua cả một lô node (pointer chase) và **chép** chúng sang mảng; bước này chỉ một thread làm được.
+- Lô tăng dần (1024, 2048, 3072...) nên các mảnh không đều: mảnh cuối có thể rất lớn hoặc rất nhỏ, work stealing kém hiệu quả.
+- Một vòng {{for}} tuần tự chỉ duyệt list **một lần** và không phải chép gì. Parallel chỉ có lãi khi công việc trên mỗi phần tử đủ lớn so với chi phí đi bộ và chép, ví dụ 1 ms tính toán cho mỗi phần tử.
+- Nguồn dựng từ {{Iterator}} (JDBC stream, {{Scanner}}) cũng chia theo lô như vậy, và việc đọc nguồn luôn tuần tự: với việc nhẹ trên mỗi phần tử, bật parallel chỉ thêm chi phí chép và quản lý task.
 
 ### Tự viết Spliterator đúng
 ~~~java
@@ -6416,11 +6466,7 @@ final class RangeSpliterator implements Spliterator.OfLong {
 - Pitfall: tích luỹ vào {{ArrayList}}/{{HashMap}} chia sẻ từ nhiều mảnh; phải dùng {{collect}} với supplier và combiner đúng.
 
 > Senior tip: trước khi bật parallel, trả lời ba câu: nguồn có chia được không ({{trySplit}} của nó làm gì), mỗi phần tử đáng bao nhiêu việc, và bước gộp có tốn không. Với dữ liệu đã nằm trong bộ nhớ, {{ArrayList}} + vòng for tuần tự thường còn nhanh hơn parallel trên {{LinkedList}}; cần song song quy mô lớn thì tách executor riêng thay vì chiếm common pool.`,
-  follow: [
-    'Khai SIZED nhưng estimateSize không chính xác thì thuật toán chia hỏng thế nào?',
-    'Vì sao stream dựng từ Iterator/JDBC không bao giờ nhanh khi bật parallel?',
-    'Bạn thiết kế spliterator cho một nguồn chia đắt (snapshot vào skip list, range theo thời gian) ra sao?'
-  ],
+  follow: ['Khai SIZED nhưng estimateSize không chính xác thì thuật toán chia hỏng thế nào?', 'Vì sao stream dựng từ Iterator/JDBC hiếm khi nhanh hơn khi bật parallel, dù trySplit vẫn chia theo lô?', 'Bạn thiết kế spliterator cho một nguồn chia đắt (range theo thời gian, dữ liệu phân trang) ra sao?'],
   tags: ['Spliterator', 'parallel stream', 'ForkJoinPool', 'LinkedList', 'trySplit'],
   refs: [
     { type: 'doc', title: 'Spliterator (Java SE 21 API Specification)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Spliterator.html' }
@@ -6570,7 +6616,7 @@ ArrayList 10 phần tử (compressed oops):
   -> duyệt tuần tự, CPU prefetch được; các object Integer vẫn nằm rải rác
 
 LinkedList 10 phần tử:
-  node0 [prev|item|next]  node1 [prev|item|next]  ...   mỗi node ~32 byte
+  node0 [prev|item|next]  node1 [prev|item|next]  ...   mỗi node 24 byte (header 12 + 3 reference)
   -> được cấp phát theo thời gian nên vị trí trên heap gần như ngẫu nhiên
   -> mỗi bước duyệt là một lần đọc con trỏ không dự đoán được
 ~~~
@@ -6609,7 +6655,7 @@ public class ListBench {
 | Duyệt lấy tổng | ~15-30 µs | ~120-250 µs |
 | {{get(i)}} ngẫu nhiên | cỡ nano giây (phép tính index) | cỡ micro giây (đi bộ tới i) |
 | Chèn vào giữa | memmove mảng reference, vài µs, không cấp phát object | tìm node O(n) + đổi 3 con trỏ + 1 object mới |
-| Bộ nhớ riêng cho cấu trúc | 4 byte mỗi slot reference | ~32 byte mỗi node, cộng dấu vết cấp phát |
+| Bộ nhớ riêng cho cấu trúc | 4 byte mỗi slot reference | 24 byte mỗi node (compressed oops), cộng dấu vết cấp phát |
 - Điều ngược đời: {{add(index, e)}} của **cả hai** đều O(n) — ArrayList vì memmove, LinkedList vì phải **đi tới** vị trí. LinkedList chỉ rẻ khi bạn đã có {{ListIterator}} nằm đúng chỗ đó (ví dụ vừa {{next()}} xong rồi {{remove()}}).
 
 ### Bẫy làm số liệu sai
@@ -6643,7 +6689,7 @@ public class ListBench {
   id: 'modern-039',
   topic: 'modern',
   level: 'senior',
-  q: 'Virtual threads (Java 21) khi migrate tu platform thread: ThreadLocal nang, JDBC pool nut that, semaphore gioi han dong thoi.',
+  q: 'Khi migrate từ platform thread sang virtual thread (Java 21), bạn xử lý thế nào ba vấn đề: ThreadLocal nặng, connection pool JDBC thành nút thắt, và giới hạn đồng thời bằng semaphore?',
   a: `**Tóm tắt:** Virtual thread (luồng ảo - thread nhẹ do JVM quản lý, chính thức từ Java 21/JEP 444) giúp xử lý rất nhiều tác vụ I/O chờ (gọi DB, HTTP) bằng code blocking quen thuộc, nhưng khi migrate từ platform thread (thread của hệ điều hành, nặng và ít) bạn sẽ đụng 3 nút thắt mới: {{ThreadLocal}} phình bộ nhớ, connection pool JDBC (bộ kết nối CSDL tái sử dụng) trở thành giới hạn thật, và phải dùng semaphore/bulkhead (cơ chế giới hạn số tác vụ chạy đồng thời) để bảo vệ tài nguyên hạ nguồn.
 
 ### Cái gì và vì sao virtual thread khác
@@ -6671,7 +6717,7 @@ try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
 - Cách xử lý:
   - Luôn {{remove()}} trong {{finally}} (với virtual thread số lượng lớn, quên remove = rò rỉ theo vòng đời task).
   - Truyền dữ liệu qua tham số method thay vì ngầm qua ThreadLocal.
-  - Cân nhắc **ScopedValue** (Java 21 preview, ổn định dần ở các bản sau): giá trị bất biến theo phạm vi (scope), kế thừa an toàn cho virtual thread con, không "nhân bản nặng" như ThreadLocal. Kiểm tra trạng thái preview/final theo đúng JDK bạn dùng.
+  - Cân nhắc **ScopedValue** (preview ở Java 21–24, chính thức từ Java 25): giá trị bất biến theo phạm vi (scope), kế thừa an toàn cho virtual thread con, không "nhân bản nặng" như ThreadLocal.
 
 ### Bước 3 - JDBC pool là nút thắt thật
 - Virtual thread cho phép 10.000 request đồng thời, nhưng database (CSDL) thường chỉ chịu vài chục đến vài trăm connection. {{HikariCP}} (pool JDBC phổ biến) mặc định nhỏ (thường 10). Kết quả: 9.990 virtual thread xếp hàng chờ connection → latency tăng, timeout dồn dập.
@@ -6719,7 +6765,7 @@ try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
   id: 'modern-040',
   topic: 'modern',
   level: 'lead',
-  q: 'Structured concurrency va ScopedValue (Java 21+): trang thai preview/final theo JDK, loi ich va cach dung dung.',
+  q: 'Structured concurrency và ScopedValue (Java 21+): trạng thái preview/final theo từng bản JDK, lợi ích gì và dùng thế nào cho đúng?',
   a: `**Tóm tắt:** Java 21 giới thiệu (dạng preview - xem ghi chú) hai cơ chế đi kèm virtual thread (luồng ảo - thread nhẹ do JVM quản lý): **Structured Concurrency** qua {{StructuredTaskScope}} giúp chạy nhiều subtask (tác vụ con) như một đơn vị có vòng đời rõ ràng (bắt đầu cùng nhau, chờ cùng nhau, huỷ/lỗi thì dọn dẹp cùng nhau); và **ScopedValue** cho phép truyền dữ liệu bất biến theo "phạm vi" (scope) xuống các subtask/thread con an toàn, hiệu quả hơn {{ThreadLocal}} (biến gắn theo thread truyền thống). Lưu ý phiên bản: ở Java 21 chúng là **preview** (cần bật {{--enable-preview}}); {{ScopedValue}} đã thành final ở Java 25, còn {{StructuredTaskScope}} vẫn tiến hoá qua các JDK.
 
 ### Cái gì - vì sao cần
@@ -6773,7 +6819,7 @@ Giả định API chi tiết đơn hàng (p99 mục tiêu 300ms) cần gọi 3 d
 "Structured Concurrency và ScopedValue là hai tính năng đi cùng virtual thread từ Java 21, hiện bắt đầu ở dạng preview nên cần chú ý trạng thái theo phiên bản JDK. StructuredTaskScope cho phép mình fork nhiều subtask trong một scope rồi join như một đơn vị: nếu một subtask lỗi thì có thể huỷ các subtask còn lại, và khi thoát scope thì đảm bảo không còn việc chạy ngầm - khác với ExecutorService nơi mình phải tự quản lý Future và rất dễ rò rỉ tác vụ. ScopedValue thì thay ThreadLocal cho dữ liệu bất biến theo phạm vi như requestId: nó bind trong scope, tự truyền xuống subtask con kể cả virtual thread, và tự hết hiệu lực khi ra khỏi scope nên không có nguy cơ quên remove gây leak như ThreadLocal trên pool. Thực tế tôi dùng pattern này để gọi song song vài dịch vụ và gộp kết quả, vừa giảm latency vừa làm lỗi và huỷ gọn gàng hơn. Khi áp dụng tôi luôn kiểm tra phiên bản JDK và bật enable-preview nếu còn preview, đồng thời chỉ dùng ScopedValue cho dữ liệu immutable."
 
 > Senior tip: coi structured concurrency là "structured programming cho concurrency" - vòng đời subtask đi theo cấu trúc khối code. Trước khi dùng production: xác nhận trạng thái (preview/final) trên đúng JDK bạn chạy, vì {{StructuredTaskScope}} từng đổi API giữa các bản preview; {{ScopedValue}} đã ổn định hơn (final từ Java 25).`,
-  follow: ['Vi sao ScopedValue hieu qua hon ThreadLocal?', 'ShutdownOnFailure khac ShutdownOnSuccess?', 'Khi nao van dung ExecutorService?'],
+  follow: ['Vì sao ScopedValue hiệu quả và an toàn hơn ThreadLocal?', 'ShutdownOnFailure khác ShutdownOnSuccess thế nào (API Java 21)?', 'Khi nào vẫn nên dùng ExecutorService thay cho structured concurrency?'],
   tags: ['structured concurrency', 'ScopedValue', 'StructuredTaskScope', 'preview'],
   refs: [{ type: 'doc', title: 'JEP 453: Structured Concurrency', url: 'https://openjdk.org/jeps/453' }]
 },
@@ -6781,7 +6827,7 @@ Giả định API chi tiết đơn hàng (p99 mục tiêu 300ms) cần gọi 3 d
   id: 'modern-041',
   topic: 'modern',
   level: 'senior',
-  q: 'Stream nang cao: tu viet Collector, gatherers (JDK 24) va vi sao parallel stream khong phai luc nao cung nhanh.',
+  q: 'Stream nâng cao: tự viết Collector, Gatherers (JDK 24), và vì sao parallel stream không phải lúc nào cũng nhanh?',
   a: `**Tóm tắt:** Ba mảng nâng cao của Stream (luồng xử lý dữ liệu tuần tự trên collection): (1) tự viết {{Collector}} (bộ gom kết quả) để tuỳ biến cách thu thập - phải hiểu đúng hợp đồng {{supplier/accumulator/combiner/finisher}}; (2) **Gatherers** (JDK 24, {{Stream.gather}}) cho phép viết phép biến đổi trung gian (intermediate operation) tuỳ chỉnh, kiểu "lọc/nhóm/biến đổi" mà API cũ không có sẵn; (3) {{parallel stream}} không phải lúc nào cũng nhanh - nó chậm khi dữ liệu nhỏ, nguồn khó chia, có blocking I/O, hoặc công việc mỗi phần tử quá nhẹ so với chi phí chia/gộp. Luôn đo trước khi bật parallel.
 
 ### 1) Tự viết Collector - cái gì, vì sao, cơ chế
@@ -6838,14 +6884,14 @@ Giả định job tổng hợp log giao dịch: 2 triệu bản ghi, mỗi bản
 
 ### Pitfall production
 - **Combiner sai chỉ lộ khi parallel:** unit test chạy tuần tự vẫn pass; phải test với {{parallelStream()}} hoặc dữ liệu đủ để framework song song hoá.
-- **Dùng {{mapConcurrent}} gatherer cho blocking nặng:** nó giới hạn concurrency nhưng vẫn chạy trên hạ tầng stream - với blocking I/O lớn, cân nhắc tách sang executor/virtual thread rõ ràng.
+- **Hiểu đúng {{mapConcurrent}}:** nó chạy hàm cho mỗi phần tử trên một virtual thread với số lượng đồng thời tối đa bạn chọn, và **giữ thứ tự** kết quả, nên hợp cho gọi I/O trong stream. Nhưng một phần tử chậm sẽ chặn việc phát kết quả phía sau nó; với luồng việc lớn cần timeout, retry, theo dõi riêng thì dùng executor/virtual thread tường minh.
 - **Tối ưu sớm:** đo bằng benchmark (JMH) trên dữ liệu thật; "parallel" không phải công tắc thần kỳ.
 
 ### Trả lời mẫu khi phỏng vấn
 "Với Stream nâng cao, tôi chia ba phần. Một là tự viết Collector khi cần tuỳ biến cách gom: phải nắm hợp đồng supplier tạo thùng, accumulator thêm phần tử, combiner gộp hai thùng - combiner đặc biệt quan trọng vì khi chạy parallel mỗi thread gom riêng rồi mới gộp, sai combiner là ra kết quả sai. Hai là từ JDK 24 có Gatherers cho phép viết intermediate operation tuỳ chỉnh như windowFixed, windowSliding hay mapConcurrent, thay vì phải lạm dụng collector hay trick. Ba là parallel stream không phải lúc nào cũng nhanh: nó dùng chung ForkJoinPool.commonPool, tốn chi phí chia và gộp, nên chỉ có lợi khi CPU-bound, dữ liệu lớn, nguồn dễ chia như ArrayList, và pipeline không blocking. Với I/O hay dữ liệu nhỏ, nó thường chậm hơn và còn gây tranh chấp pool. Nguyên tắc của tôi là mặc định tuần tự, chỉ bật parallel khi có benchmark chứng minh lợi ích trên dữ liệu thực tế."
 
 > Senior tip: test {{Collector}} tự viết với cả {{stream()}} và {{parallelStream()}} - combiner sai là loại bug "âm thầm". Với gatherers, kiểm tra phiên bản JDK (cần 24+). Trước khi dùng {{parallel()}}, đo bằng JMH; đừng tin cảm giác. (Tham khảo: JEP 485 - Stream Gatherers.)`,
-  follow: ['Combiner cua Collector can lam gi?', 'Gatherers.mapConcurrent khac parallel stream?', 'Lam sao do parallel stream?'],
+  follow: ['Combiner của Collector cần làm gì, và vì sao bug ở combiner chỉ lộ khi chạy parallel?', 'Gatherers.mapConcurrent khác parallel stream thế nào?', 'Bạn đo hiệu năng parallel stream thế nào cho đáng tin?'],
   tags: ['Stream', 'Collector', 'gatherers', 'parallel', 'JDK 24'],
   refs: [{ type: 'doc', title: 'JEP 485: Stream Gatherers', url: 'https://openjdk.org/jeps/485' }]
 },
@@ -6921,7 +6967,7 @@ String label = switch (status) {       // status có thể null
   id: 'modern-043',
   topic: 'modern',
   level: 'senior',
-  q: 'Record: canonical/compact constructor, bat bien nong (shallow), equals/hashCode, DTO/JPA.',
+  q: 'Record: canonical và compact constructor, bất biến nông (shallow), equals/hashCode, và dùng record cho DTO hay JPA entity?',
   a: `**Tóm tắt:** {{record}} (Java 16) là lớp bất biến "mang dữ liệu", compiler tự sinh constructor, accessor, {{equals/hashCode/toString}}; **compact constructor** cho phép validate/chuẩn hóa tham số trước khi gán; nhưng tính bất biến chỉ là **nông (shallow)** - nếu component là {{List/Map}} có thể sửa được thì record vẫn bị thay đổi gián tiếp. Record rất hợp làm DTO (Data Transfer Object - đối tượng chuyển dữ liệu), **không** phù hợp làm JPA entity (thực thể ánh xạ bảng CSDL).
 
 ### Record là gì và vì sao cần
@@ -6983,7 +7029,7 @@ public record Order(String id, List<String> items) {
   id: 'modern-044',
   topic: 'modern',
   level: 'lead',
-  q: 'Sealed + pattern matching switch: exhaustiveness, compiler kiem tra, loi ich khi them subtype moi.',
+  q: 'Sealed + pattern matching switch: compiler kiểm tra exhaustiveness thế nào, và lợi ích gì khi thêm subtype mới?',
   a: `**Tóm tắt:** {{sealed}} (Java 17) giới hạn chính xác tập lớp con được phép; kết hợp **pattern matching for switch** (Java 21) thì compiler có thể kiểm tra **exhaustive** (đã xử lý hết mọi kiểu con) ngay lúc biên dịch. Lợi ích lớn nhất: khi thêm subtype mới vào hierarchy, mọi {{switch}} expression thiếu nhánh sẽ **lỗi compile** - bạn được compiler "dẫn đi sửa" thay vì phát hiện bug ở runtime.
 
 ### Sealed là gì và vì sao cần
@@ -7041,7 +7087,7 @@ String fee(Payment p) {
   id: 'modern-045',
   topic: 'modern',
   level: 'senior',
-  q: 'Sealed class va pattern matching for switch (Java 21): exhaustiveness dam bao gi va pitfall khi migrate tu if-else/visitor.',
+  q: 'Sealed class và pattern matching for switch (Java 21): exhaustiveness đảm bảo gì, và có những pitfall nào khi migrate từ if-else hoặc visitor?',
   a: `**Tóm tắt:** Từ Java 21, {{sealed}} (giới hạn tập lớp con) kết hợp pattern matching cho {{switch}} cho phép compiler kiểm tra exhaustive (phủ hết mọi trường hợp) ngay lúc biên dịch. Khi migrate từ chuỗi {{if-else instanceof}} hoặc từ visitor pattern, bạn được code gọn hơn và an toàn hơn khi thêm type mới, nhưng phải chú ý {{null}}, thứ tự case, và chỉ dùng cho domain thật sự "đóng".
 
 ### Cái gì và vì sao cần (bối cảnh migrate)
@@ -7067,8 +7113,8 @@ String render(Shape s) {
     return switch (s) {
         case Circle c -> "O r=" + c.r();
         case Rect r   -> "[] " + r.w() + "x" + r.h();
-        case Triangle t -> "/\\";
-    }; // thiếu Triangle -> LỖI COMPILE (compiler dẫn đi sửa)
+        case Triangle t -> "Tam giác " + t.a() + "/" + t.b() + "/" + t.c();
+    }; // nếu xoá nhánh Triangle -> LỖI COMPILE (compiler dẫn đi sửa)
 }
 ~~~
 
@@ -7103,7 +7149,7 @@ String render(Shape s) {
   id: 'modern-046',
   topic: 'modern',
   level: 'lead',
-  q: 'Tu Java 8 len 21: lo trinh migrate va tinh nang dang gia nhat.',
+  q: 'Nâng từ Java 8 lên 21: lộ trình migrate ra sao và những tính năng nào đáng giá nhất?',
   a: `**Tóm tắt:** Lộ trình an toàn nhất là đi theo các bản **LTS** (Long-Term Support - bản hỗ trợ dài hạn: 8→11→17→21), mỗi bước có baseline đo lường, quét tương thích tự động, chạy song song CI, và rollout có canary/rollback. Giá trị lớn nhất khi lên 21 không chỉ là cú pháp ({{record/sealed/pattern matching}}) mà còn ở runtime (GC hiện đại, **virtual thread** cho I/O) và bảo mật nền tảng (strong encapsulation).
 
 ### Vì sao đi từng LTS thay vì nhảy 8→21

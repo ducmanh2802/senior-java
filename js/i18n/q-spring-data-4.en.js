@@ -414,8 +414,8 @@ Don't reinvent what already exists: {{@NotNull}}, {{@NotEmpty}}, {{@NotBlank}}, 
     ]
   },
   'spring-020': {
-    q: 'You build a Spring Batch job to import 50 million records from a legacy system, it runs on multiple instances and must restart safely after a failure. How does chunk-oriented processing work, how is skip/retry configured, and when should you use partitioning?',
-    a: `**Summary:** Spring Batch processes jobs with the **chunk-oriented** model: read {{chunkSize}} items, process the whole chunk in **one transaction**, write the checkpoint to the {{JobRepository}}, then commit. This is what makes the job **restartable**: after a crash, the batch resumes from the most recently committed chunk. Failures are handled with {{faultTolerant()}}: **retry** for transient errors (deadlock, timeout) and **skip** for garbage data, with limits and backoff. When the job is too big for one instance, **partitioning** splits the data in a manager/worker model to run in parallel.
+    q: 'You build a Spring Batch job to import 50 million records from a legacy system, it runs on multiple instances and must restart safely after a failure. How does chunk-oriented processing work, how are skip and retry configured, and when should you use partitioning?',
+    a: `**Summary:** Spring Batch processes a job with the **chunk-oriented** model: read {{chunkSize}} items, process the whole chunk in **one transaction**, write the checkpoint to the {{JobRepository}}, then commit. This makes the job **restartable**: after a crash, the batch resumes from the most recently committed chunk. Failures are handled with {{faultTolerant()}}: **retry** for transient errors (deadlock, timeout) and **skip** for bad data, with limits and backoff. When the job is too large for one instance, **partitioning** splits the data in a manager/worker model to run in parallel.
 
 ### Chunk-oriented: the transaction is the checkpoint
 ~~~java
@@ -430,7 +430,7 @@ Step importStep(JobRepository repo, PlatformTransactionManager tx,
                 ItemProcessor<Row, Staging> processor,
                 ItemWriter<Staging> writer) {
     return new StepBuilder("importStep", repo)
-        .<Row, Staging>chunk(1000, tx)     // 1 transaction per 1000 items
+        .<Row, Staging>chunk(1000, tx)     // 1 transaction for 1000 items
         .reader(reader)
         .processor(processor)
         .writer(writer)
@@ -444,8 +444,8 @@ Step importStep(JobRepository repo, PlatformTransactionManager tx,
 }
 ~~~
 Three things to remember:
-- **The chunk is both the transaction and the checkpoint unit**. A small chunk (10) means many transactions and high overhead; a big chunk (10000) holds locks longer, one error rolls back the whole chunk, and a restart loses much more work.
-- **Item processing should not open its own transaction**: {{@Transactional}} (REQUIRED) on a processor/writer only joins the chunk's transaction, so it is meaningless; while {{REQUIRES_NEW}} commits independently, so when the chunk rolls back that part does not roll back with it – it breaks the checkpoint.
+- **The chunk is both the transaction and the checkpoint unit**. A small chunk (10) means many transactions and high overhead; a large chunk (10000) holds locks longer, one error rolls back the whole chunk, and a restart loses much more work.
+- **Item processing should not open its own transaction**: {{@Transactional}} (REQUIRED) on a processor/writer only joins the chunk's transaction, so it is meaningless; while {{REQUIRES_NEW}} commits independently, so when the chunk rolls back that part does not roll back with it – breaking the checkpoint.
 - **Restart is only safe at chunk level**: a committed chunk never runs again; the chunk being processed at the moment of the crash runs again **from the start** → so every operation must be **idempotent** (upsert instead of insert, or a status column to tell them apart).
 
 ### Restartability
@@ -455,7 +455,7 @@ Three things to remember:
 ### Skip and retry
 - **Retry** only pays off for **transient** errors: deadlock, timeout, network failure. Retrying a logic error (a constraint violation caused by bad data) only stretches the job endlessly.
 - When **both retry and skip** are configured for the same exception, Spring Batch applies **retry first**; only when the retries are exhausted is the item skipped.
-- **Skips must have visibility**: use a {{SkipListener}} to record the skipped rows into a file or table, so data is not lost in silence.
+- **Skips must have visibility**: use a {{SkipListener}} to record the skipped rows to a file or table, so data is not lost in silence.
 
 ### Partitioning for large-scale jobs
 ~~~java
@@ -503,7 +503,7 @@ Step workerStep(JobRepository repo, PlatformTransactionManager tx,
 
 ### Method security
 ~~~java
-// @EnableMethodSecurity on a @Configuration class is required (Spring Boot does NOT turn it on automatically)
+// @EnableMethodSecurity is required on a @Configuration class (Spring Boot does NOT enable it automatically)
 @Service
 public class TransferService {
 
@@ -515,7 +515,7 @@ public class TransferService {
     public Statement getStatement(String accountId) { ... }
 }
 ~~~
-- {{hasRole('ADMIN')}} is equivalent to {{hasAuthority('ROLE_ADMIN')}}; OAuth2 scopes are renamed by Spring to {{SCOPE_xxx}}.
+- {{hasRole('ADMIN')}} is equivalent to {{hasAuthority('ROLE_ADMIN')}}; OAuth2 scopes are converted by Spring to {{SCOPE_xxx}}.
 
 ### CORS for a SPA
 A SPA at {{https://app.vn}} calling an API at {{https://api.vn}} is **a different origin** → the browser sends a preflight {{OPTIONS}} request before the real call.

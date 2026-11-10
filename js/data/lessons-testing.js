@@ -849,7 +849,7 @@ Test sẽ dùng harness để chạy 300 trial với seed 42, kiểm tra kết q
                 if (!m.contains("fails at trial 3") || !m.contains("seed=45") || !m.contains("trial=3"))
                     throw new AssertionError("message sai: " + m);
                 if (!(e.getCause() instanceof IllegalStateException)) throw new AssertionError("mat cause goc: " + e.getCause());
-                eq(4, calls[0]);                          // dung lai ngay o trial loi
+                eq(4, calls[0]);                          // dừng lại ngay ở trial lỗi
                 return;
             }
             throw new AssertionError("mong đợi AssertionError từ harness");
@@ -1594,24 +1594,78 @@ Trong code production, hãy bắt {{Exception}} và {{AssertionError}} thay vì 
 ### Vì sao cần chụp hành vi
 Code legacy thường không có test. Khi phải sửa, bạn không biết sửa sẽ phá gì. Characterization test cho phép refactor mà không làm đổi hành vi quan sát được. Nó không kiểm tra spec đúng hay sai, chỉ ghi lại "hệ thống đang làm gì". Điều này giúp bạn tự tin thay đổi implementation bên trong.
 
-### Cách làm từng bước
-1. Chạy bản legacy trên nhiều input đại diện, bao gồm edge case và dữ liệu sản xuất thật.
-2. Lưu output (golden master) vào file hoặc snapshot trong test resources.
-3. Viết bản mới với cùng interface và logic rõ ràng hơn.
-4. So sánh output giữa bản mới và golden master cho mọi input.
+### Cơ chế từng bước
+Characterization test hoạt động theo quy trình 5 bước, mỗi bước giải quyết một rủi ro cụ thể:
 
-### Ví dụ minh hoạ
+**Bước 1: Xác định ranh vực (seam) để quan sát**
+Trước khi viết test, bạn phải chọn *đâu* là output quan sát được. Với hàm thuần, đó là giá trị trả về. Với service có side-effect, đó có thể là: record ghi vào DB, message đẩy lên Kafka, email gửi đi, file ghi ra đĩa, hoặc log audit. **VÌ SAO:** Nếu quan sát sai ranh vực, bạn sẽ bỏ sót hành vi quan trọng (ví dụ: hàm trả về đúng nhưng quên publish event). Chọn ranh vực dựa trên *hợp đồng nghiệp vụ* chứ không phải chi tiết implement.
+
+**Bước 2: Thu thập input đại diện (characterization input)**
+Chạy code cũ trên bộ input bao quát: happy path, edge case (rỗng, null, giá trị cực đại), dữ liệu production thật (export từ DB, log request), và các case bug đã biết. Số lượng input thường từ 50–500 case tuỳ độ phức tạp. **VÌ SAO:** Input quá ít → golden master không phát hiện được regression ở nhánh code ít chạy. Input quá nhiều → test chậm, golden master phình to, khó rà soát khi có thay đổi có chủ đích.
+
+**Bước 3: Chạy legacy và lưu golden master**
+Với mỗi input, gọi code cũ và serialize output (JSON, protobuf, text) vào file dưới {{name}}. Tên file thường theo pattern {{pattern}}. **VÌ SAO:** Lưu file thay vì hardcode trong test giúp: (a) diff dễ dàng bằng công cụ CLI, (b) review thay đổi golden master trong PR như review code, (c) golden master độc lập với framework test.
+
+**Bước 4: Viết bản mới (refactored) với cùng interface**
+Tái cấu trúc code: tách hàm lớn, đổi tên biến, thay thuật toán,.extract class… — nhưng **không đổi signature public** và **không sửa logic nghiệp vụ**. Mục tiêu là code dễ đọc, dễ mở rộng, có unit test riêng cho các helper mới. **VÌ SAO:** Nếu đổi signature, golden master không còn so sánh được. Nếu sửa logic cùng lúc, bạn không biết test đỏ do refactor hay do bug mới.
+
+**Bước 5: So sánh và triết (triage) sự khác biệt**
+Chạy test: với mỗi input, so sánh output mới với golden master. Có 3 kết quả:
+- **Giống hệt** → refactor an toàn, commit.
+- **Khác biệt do chuẩn hoá** (timestamp, UUID, thứ tự map) → cập nhật normalizer, không đổi golden master.
+- **Khác biệt thật** → đây là *ý định thay đổi hành vi* (sửa bug) hoặc *regression không muốn*. Nếu là sửa bug: cập nhật golden master có chủ đích, ghi chú trong commit. Nếu là regression: sửa code mới cho khớp golden master.
+
+### Ví dụ minh hoạ: golden master cho parser CSV legacy
 ~~~java
-// golden master test
-@Test
-void goldenMaster() {
-    String input = "abc,123";
-    String legacyOutput = LegacyParser.parse(input);
-    String newOutput = NewParser.parse(input);
-    assertEquals(legacyOutput, newOutput);
+// LegacyParser.java — code cũ rối, không test, xử lý CSV có header
+public class LegacyParser {
+    public List<Map<String, String>> parse(String csv) {
+        String[] lines = csv.split("\\r?\\n");
+        if (lines.length == 0) return List.of();
+        String[] headers = lines[0].split(",");
+        List<Map<String, String>> rows = new ArrayList<>();
+        for (int i = 1; i < lines.length; i++) {
+            String[] cols = lines[i].split(",", -1); // -1 giữ cột rỗng cuối
+            Map<String, String> row = new LinkedHashMap<>(); // giữ thứ tự cột
+            for (int j = 0; j < headers.length; j++) {
+                row.put(headers[j].trim(), j < cols.length ? cols[j].trim() : "");
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+}
+
+// GoldenMasterTest.java — characterization test
+class GoldenMasterTest {
+    private static final Path GOLDEN_DIR = Path.of("src/test/resources/golden");
+    private final LegacyParser legacy = new LegacyParser();
+    private final NewParser refactored = new NewParser(); // cùng interface
+
+    @ParameterizedTest
+    @MethodSource("goldenCases")
+    void goldenMaster(String input, Path goldenFile) throws IOException {
+        String legacyOut = toJson(legacy.parse(input));
+        String refactoredOut = toJson(refactored.parse(input));
+        String golden = Files.readString(goldenFile);
+
+        // So sánh refactored với golden master (legacy output đã lưu)
+        assertEquals(normalize(golden), normalize(refactoredOut),
+            "Refactored output khác golden master: " + goldenFile);
+    }
+
+    static Stream<Arguments> goldenCases() throws IOException {
+        return Files.list(GOLDEN_DIR)
+            .filter(p -> p.toString().endsWith(".golden.json"))
+            .map(p -> Arguments.of(readInput(p), p)); // đọc input tương ứng
+    }
+
+    // Chuẩn hoá: bỏ timestamp, sắp xếp key JSON, trim whitespace
+    String normalize(String json) { /* ... */ }
+    String toJson(List<Map<String, String>> rows) { /* ... */ }
 }
 ~~~
-Trong thực tế, bạn có thể lưu output vào file và dùng thư viện snapshot.
+Trong thực tế, bạn có thể lưu output vào file và dùng thư viện snapshot (Instancio, Snapshot Testing, hoặc tự viết normalizer).
 
 ### Pitfall
 Golden master cũng chụp cả bug, nên phải theo dõi và sửa dần. Khi phát hiện bug, cập nhật golden master có chủ đích và ghi lý do. Không nên để golden master phình to quá lớn; chọn input đại diện. Nếu output có timestamp hoặc random, cần chuẩn hoá trước khi so sánh. Tránh so sánh object có thứ tự không ổn định.
@@ -1622,18 +1676,27 @@ Dùng khi refactor code legacy không có test. Không dùng khi đang viết t�
 ### So sánh với spec test
 Spec test kiểm tra hành vi mong đợi theo yêu cầu. Characterization test kiểm tra hành vi hiện tại. Khi refactor, bạn muốn giữ hành vi hiện tại; khi sửa bug, bạn chủ đích thay đổi golden master.
 
-### Lỗi hay gặp
-- So sánh output không chuẩn hoá dẫn đến test không ổn định (flaky test).
-- Golden master quá lớn khiến test chậm.
-- Không ghi lý do khi cập nhật golden master.
+### Lỗi hay gặp trên production
+- **So sánh output không chuẩn hoá**: legacy ghi timestamp {{ts}} vào JSON, refactored sinh timestamp khác → test flaky. *Nguyên nhân:* golden master chứa giá trị động. *Cách sửa:* viết normalizer loại bỏ/chuẩn hoá field động trước khi so sánh (ví dụ: replace timestamp bằng placeholder, sort key JSON).
+- **Golden master quá lớn (hàng nghìn file, vài trăm MB)**: suite test chạy 15 phút, CI timeout. *Nguyên nhân:* thu thập input không lọc, lưu cả response HTTP to. *Cách sửa:* chọn input đại diện (boundary, equivalence partitioning), chỉ lưu field nghiệp vụ quan trọng, nén golden master, chạy song song.
+- **Không ghi lý do khi cập nhật golden master**: 6 tháng sau ai cũng không biết tại sao golden master đổi. *Nguyên nhân:* cập nhật golden master như file tự động. *Cách sửa:* bắt buộc PR description giải thích "cập nhật golden master vì sửa bug X" hoặc "refactor Y không đổi hành vi", reviewer check diff golden master như check code.
+- **So sánh object có thứ tự không ổn định**: {{HashSet}} iteration order khác giữa JDK version → golden master mismatch. *Nguyên nhân:* dùng collection không đảm bảo thứ tự. *Cách sửa:* dùng {{LinkedHashMap}}/{{TreeMap}} khi serialize, hoặc sort key trước khi so sánh.
+- **Quên golden master cho error path**: legacy ném {{Exception}} cho input hỏng, refactored trả về empty list → test pass vì không so sánh exception. *Nguyên nhân:* chỉ golden master cho success case. *Cách sửa:* golden master phải chứa cả loại exception và message lỗi; test so sánh type exception + message.
 
 ### Tóm tắt cho phỏng vấn
 Characterization test giúp bạn refactor legacy an toàn bằng cách chụp và so sánh hành vi thực tế, kể cả bug, rồi theo dõi thay đổi có chủ đích.
 
 ### Liên hệ phỏng vấn
-Interviewer hay hỏi về characterization test khi maintain legacy, đặc biệt trong câu hỏi "bạn refactor hệ thống cũ thế nào mà không phá production". Hãy trả lời: chụp hành vi, refactor nhỏ, chạy golden master, theo dõi bug.
+**Câu 1:** "Bạn refactor một module legacy 5.000 dòng không có test. Quy trình của bạn là gì?"
+*Trả lời:* Xác định seam → thu input đại diện (production log + edge case) → chạy legacy lưu golden master → refactor nhỏ, chạy golden master sau mỗi bước → triết diff: nếu khác do chuẩn hoá thì sửa normalizer, nếu khác thật thì quyết định là bug fix hay regression → commit golden master kèm lý do.
 
-> Senior tip: Golden master là lưới an toàn, không phải spec. Luôn rà soát output để phát hiện bug tiềm ẩn.`,
+**Câu 2:** "Golden master khác snapshot testing ở đâu?"
+*Trả lời:* Golden master dùng output của **code cũ (legacy)** làm baseline; snapshot testing dùng output của **code mới** làm baseline (commit snapshot lần đầu). Golden master cho refactor an toàn; snapshot testing cho phát hiện thay đổi bất ngờ khi dev sửa code mới.
+
+**Câu 3:** "Làm sao xử lý khi golden master chứa bug?"
+*Trả lời:* Không sửa golden master ngay. Viết spec test cho hành vi đúng (red), sửa code làm spec test xanh, *sau đó* cập nhật golden master cho khớp hành vi mới, ghi commit message "fix bug X, cập nhật golden master". Điều này tạo dấu vết audit: golden master thay đổi có chủ đích, không phải side effect.
+
+> Senior tip: Golden master là lưới an toàn, không phải spec. Luôn rà soát output để phát hiện bug tiềm ẩn. Khi review PR có thay đổi golden master, hãy diff file golden master như diff code — đó là nơi lộ ra regression hoặc bug fix thực sự.`,
   exercises: [{ title: 'Refactor premium', prompt: `Viết phương thức {{refactored}} sao cho cùng hành vi với {{legacy}}. Bạn phải giữ nguyên logic, chỉ tái cấu trúc để dễ đọc hơn.`, starter: `class Premium { static int legacy(int a){return a;} static int refactored(int a){throw new UnsupportedOperationException("TODO");} }`, tests: `public class Main { static int passed=0,total=0; static void check(String n,Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);}} static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("expected "+e+" got "+a);} public static void main(String[] a){check("x1",()->eq(Premium.legacy(5),Premium.refactored(5)));
         check("x2",()->eq(Premium.legacy(0),Premium.refactored(0)));
         check("x3",()->eq(Premium.legacy(100),Premium.refactored(100)));
@@ -1641,8 +1704,42 @@ Interviewer hay hỏi về characterization test khi maintain legacy, đặc bi�
 
 ### Giải thích
 Phương thức {{legacy}} trả về chính giá trị truyền vào. Để pass characterization test, {{refactored}} phải trả về cùng kết quả. Đây là ví dụ đơn giản để hiểu ý tưởng: bạn không thay đổi "cái hệ thống đang làm", chỉ thay đổi cấu trúc code bên trong.` }],
-  check: [{ q: 'Characterization test kiểm tra điều gì?', options: ['Theo đúng đặc tả yêu cầu', 'Hành vi thực tế đang có', 'Hiệu năng', 'Bảo mật'], answer: 1, explain: 'Characterization test ghi lại hành vi hiện tại của code, kể cả bug, để làm lưới an toàn khi refactor.' }, { q: 'Golden master dùng để làm gì?', options: ['Tạo dữ liệu ngẫu nhiên', 'Chụp output để so sánh sau refactor', 'Mock đối tượng', 'Sinh test tự động'], answer: 1, explain: 'Golden master là bản chụp output quan sát được, dùng để so sánh giữa phiên bản cũ và mới.' }],
-  related: [],
+  check: [
+    {
+      q: 'Characterization test kiểm tra điều gì?',
+      options: ['Theo đúng đặc tả yêu cầu', 'Hành vi thực tế đang có', 'Hiệu năng', 'Bảo mật'],
+      answer: 1,
+      explain: 'Đáp án đúng là (B): characterization test ghi lại hành vi hiện tại của code, kể cả bug, để làm lưới an toàn khi refactor. (A) sai vì kiểm tra theo đặc tả yêu cầu là việc của spec/acceptance test — characterization test không quan tâm spec đúng hay sai. (C) sai vì hiệu năng thuộc nhóm performance/load test, không phải mục tiêu của characterization test. (D) sai vì bảo mật thuộc security test (SAST/DAST/pentest), không liên quan đến việc chụp hành vi hiện tại.',
+    },
+    {
+      q: 'Golden master dùng để làm gì?',
+      options: ['Tạo dữ liệu ngẫu nhiên', 'Chụp output để so sánh sau refactor', 'Mock đối tượng', 'Sinh test tự động'],
+      answer: 1,
+      explain: 'Đáp án đúng là (B): golden master là bản chụp output quan sát được (thường lưu thành file), dùng để so sánh giữa phiên bản cũ và mới nhằm phát hiện thay đổi hành vi. (A) sai vì tạo dữ liệu ngẫu nhiên là vai trò của generator/fuzzer, không phải golden master. (C) sai vì mock đối tượng là kỹ thuật thay thế phụ thuộc (test double) để cô lập unit test. (D) sai vì sinh test tự động là đặc điểm của property-based testing hoặc fuzzing, còn golden master chỉ là dữ liệu baseline để đối chiếu.',
+    },
+    {
+      q: 'Bạn phát hiện golden master chụp cả một bug của legacy. Cách xử lý đúng khi refactor là gì?',
+      options: [
+        'Sửa bug ngay trong lần refactor rồi âm thầm cập nhật golden master',
+        'Xoá golden master cho case đó để test luôn xanh',
+        'Giữ golden master khớp hành vi cũ, viết spec test cho hành vi đúng (red), sửa bug rồi cập nhật golden master có ghi lý do trong commit',
+        'Bỏ qua bug vì characterization test chỉ quan tâm hiệu năng',
+      ],
+      answer: 2,
+      explain: 'Đáp án đúng là (C): tách refactor khỏi sửa bug. Giữ golden master khớp hành vi cũ để refactor an toàn, sau đó dùng spec test mô tả hành vi đúng (test đỏ), sửa code để test xanh, rồi cập nhật golden master có chủ đích kèm lý do trong commit để tạo dấu vết audit. (A) sai vì trộn sửa bug và refactor khiến bạn không biết test đỏ do regression hay do thay đổi có chủ đích, và cập nhật âm thầm làm mất dấu vết. (B) sai vì xoá golden master làm mất lưới an toàn cho nhánh code đó. (D) sai vì characterization test không đo hiệu năng; bỏ qua bug đã biết sẽ để lỗi tồn tại trên production.',
+    },
+    {
+      q: 'Output legacy chứa trường {{createdAt}} (timestamp) thay đổi mỗi lần chạy, khiến golden master mismatch dù logic không đổi. Giải pháp phù hợp nhất là gì?',
+      options: [
+        'Chuẩn hoá output trước khi so sánh (loại bỏ hoặc thay timestamp bằng placeholder)',
+        'Tắt toàn bộ golden master test cho endpoint có timestamp',
+        'Ghim đồng hồ hệ thống của CI vào một giá trị cố định vĩnh viễn cho mọi test',
+        'Cập nhật golden master sau mỗi lần chạy CI để luôn khớp',
+      ],
+      answer: 0,
+      explain: 'Đáp án đúng là (A): viết normalizer loại bỏ hoặc chuẩn hoá các field động (timestamp, UUID, request id) trước khi so sánh, giữ nguyên phần output mang ý nghĩa nghiệp vụ. (B) sai vì tắt test làm mất lưới an toàn cho cả endpoint. (C) sai vì ghim đồng hồ vĩnh viễn cho mọi test có thể làm hỏng các test khác phụ thuộc thời gian thực hoặc gây tác dụng phụ khó kiểm soát; chuẩn hoá tại điểm so sánh là cách khoanh vùng đúng. (D) sai vì cập nhật golden master sau mỗi lần chạy biến test thành vô nghĩa — nó sẽ không bao giờ phát hiện regression thực sự.',
+    },
+  ],  related: [],
   tags: ['characterization'],
 },
 {
@@ -1716,10 +1813,10 @@ Property: "tổng danh sách phải nhỏ hơn 10" ({{xs -> sum(xs) < 10}}). Gen
 [1, 2, 3, 4, 5]  tong 15  vi phạm          (bắt đầu)
    bo idx 0 -> [2, 3, 4, 5]  tong 14  van vi pham  -> chap nhan, quay lai dau
    bo idx 0 -> [3, 4, 5]     tong 12  van vi pham  -> chap nhan, quay lai dau
-   bo idx 0 -> [4, 5]       tong 9   -> DAT property (9 < 10) : khong duoc bo
-   bo idx 1 -> [3, 5]       tong 8   -> DAT property          : khong duoc bo
-   bo idx 2 -> [3, 4]       tong 7   -> DAT property          : khong duoc bo
--> khong bo duoc phan tu nao nua => dung. Phan vi du toi gian: [3, 4, 5]
+   bo idx 0 -> [4, 5]       tong 9   -> DAT property (9 < 10) : không được bỏ
+   bo idx 1 -> [3, 5]       tong 8   -> DAT property          : không được bỏ
+   bo idx 2 -> [3, 4]       tong 7   -> DAT property          : không được bỏ
+-> không bỏ được phần tử nào nữa => đúng. Phần ví dụ tối giản: [3, 4, 5]
 ~~~
 
 Chú ý kết quả **không phải** bộ ba có tổng lớn nhất — thuật toán tham lam chỉ hứa "không bỏ thêm được phần tử nào", không hứa "nhỏ nhất có thể trên mọi hướng". Muốn chắc chắn tối ưu toàn cục, bạn phải thử thêm hướng khác (giảm giá trị từng phần tử, hoán vị) hoặc quay lui. Trong thực tế, tham lam một hướng đã đủ biến case 200 phần tử thành 3 phần tử, và đó là lý do jqwik cũng chạy greedy với giới hạn số bước.
@@ -1835,7 +1932,7 @@ Gợi ý debug: property "{{tổng nhỏ hơn 10}}" áp vào {{[1, 2, 3, 4, 5]}}
         });
         check("seeded generator finds a counterexample and shrinking reduces it to one element", () -> {
             Optional<List<Integer>> got = Prop.forAll(42L, 200, Main::randomList, xs -> !hasEven(xs));
-            if (got.isEmpty()) throw new AssertionError("seed 42 voi 200 trial phai sinh duoc so chan");
+            if (got.isEmpty()) throw new AssertionError("seed 42 với 200 trial phải sinh được số chẵn");
             eq(1, got.get().size());
             int v = got.get().get(0);
             if (v % 2 != 0) throw new AssertionError("phan tu con lai van phai lam property sai: " + v);
@@ -1858,7 +1955,7 @@ Gợi ý debug: property "{{tổng nhỏ hơn 10}}" áp vào {{[1, 2, 3, 4, 5]}}
             for (long seed = 1L; seed <= 12L; seed++) {
                 Optional<List<Integer>> got = Prop.forAll(seed, 60, Main::randomList, xs -> sum(xs) < -100);
                 if (got.isPresent() && !violates(got.get(), xs -> sum(xs) < -100))
-                    throw new AssertionError("shrink tra ve case DA dung: seed " + seed + " " + got.get());
+                    throw new AssertionError("shrink trả về case ĐÃ đúng: seed " + seed + " " + got.get());
             }
         });
         check("forAll rejects non-positive trials", () -> {

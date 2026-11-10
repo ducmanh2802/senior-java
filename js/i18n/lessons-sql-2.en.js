@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/lessons-sql.js — task T459. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-sql.js — task T1131. Format: js/core/i18n.js (content overlay).
  * ids: lesson-sql-003
  */
 App.i18n.content({
@@ -7,11 +7,11 @@ App.i18n.content({
     title: 'Window functions: ROW_NUMBER, RANK and running totals, implemented yourself in Java',
     goals: [
       'Explain the three parts of a window: {{PARTITION BY}}, {{ORDER BY}}, the frame, and what the default frame is',
-      'Tell {{ROW_NUMBER}}, {{RANK}} and {{DENSE_RANK}} apart when values are equal',
+      'Distinguish {{ROW_NUMBER}}, {{RANK}}, and {{DENSE_RANK}} when values are equal',
       'Implement {{ROW_NUMBER}} and a running total yourself in Java (sort + single pass) and avoid leaking state between groups',
     ],
     body: `### How a window function differs from GROUP BY
-{{GROUP BY}} **collapses** many rows into one: 1,000 transactions of 10 customers become 10 total rows. A window function **keeps every row** and attaches one extra value computed over a "window" of related rows: each transaction still exists, together with its sequence number within the customer's history, or the cumulative balance up to that point.
+{{GROUP BY}} **collapses** multiple rows into one: 1,000 transactions of 10 customers become 10 total rows. A window function **keeps every row** and attaches an extra value computed over a "window" of related rows: each transaction still exists, together with its sequence number within the customer's history, or the cumulative balance up to that point.
 
 ~~~sql
 SELECT customer_id, created_at, amount,
@@ -21,15 +21,15 @@ SELECT customer_id, created_at, amount,
 FROM transaction;
 ~~~
 
-The three parts inside {{OVER (...)}}:
+Three components inside {{OVER (...)}}:
 - **PARTITION BY**: splits the data into independent groups (one group per customer). Without it, the whole table is a single group.
-- **ORDER BY**: the order of the rows **inside** each group.
-- **Frame**: for aggregate functions such as {{SUM}}, {{AVG}}, the frame says which rows are added relative to the current row. Ranking functions ({{ROW_NUMBER}}, {{RANK}}) **ignore the frame**.
+- **ORDER BY**: the order of rows **inside** each group.
+- **Frame**: with aggregate functions like {{SUM}}, {{AVG}}, the frame tells you which rows to add relative to the current row. Ranking functions ({{ROW_NUMBER}}, {{RANK}}) **ignore the frame**.
 
 PostgreSQL has had window functions for a long time; MySQL has them from 8.0. Window functions are computed **after** WHERE, GROUP BY, HAVING and **before** the final ORDER BY and LIMIT. Consequence: you cannot write {{WHERE rn <= 3}} at the same level where {{rn}} is defined; you must wrap it in a subquery or a CTE.
 
 ### ROW_NUMBER, RANK, DENSE_RANK: how they differ on ties
-Example salaries in one department (sorted descending): 100, 100, 90, 80.
+Example salaries in a department (sorted descending): 100, 100, 90, 80.
 
 | salary | ROW_NUMBER | RANK | DENSE_RANK |
 |---|---|---|---|
@@ -38,12 +38,12 @@ Example salaries in one department (sorted descending): 100, 100, 90, 80.
 | 90 | 3 | 3 | 2 |
 | 80 | 4 | 4 | 3 |
 
-- {{ROW_NUMBER}}: always 1, 2, 3, … with no repeats. When two rows tie, which one gets the smaller number is **undefined** if ORDER BY is not discriminating enough; add a unique column ({{id}}) to ORDER BY if you need a stable result.
-- {{RANK}}: tied rows share a rank, and the next rank **skips ahead** (1, 1, 3).
-- {{DENSE_RANK}}: tied rows share a rank, with **no skip** (1, 1, 2). "Second highest salary" usually needs DENSE_RANK = 2.
+- {{ROW_NUMBER}}: always 1, 2, 3, … with no repeats. Two rows tying have an **undefined** order if ORDER BY is not discriminating enough; add a unique column ({{id}}) to ORDER BY if you need a stable result.
+- {{RANK}}: tied rows share the same rank, and the next rank **skips** (1, 1, 3).
+- {{DENSE_RANK}}: tied rows share the same rank, with **no skip** (1, 1, 2). "Second highest salary" usually requires DENSE_RANK = 2.
 
 ### The default frame: the trap in running totals
-When there is an ORDER BY but no frame is written, the SQL standard uses the default {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}. **RANGE** treats rows with the same ORDER BY value as "peers" and adds **all of them** at once.
+When there is an ORDER BY but no frame is specified, the SQL standard uses the default {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}. **RANGE** treats rows with the same ORDER BY value as "peers" and adds **all of them** at once.
 
 ~~~text
 date        amount   SUM default (RANGE)   SUM with ROWS
@@ -52,14 +52,14 @@ date        amount   SUM default (RANGE)   SUM with ROWS
 2024-05-02  50       350                    350
 ~~~
 
-Two transactions on the same day both get a running balance of 300 under the default, which makes the statement look wrong. To add **one row at a time**, write out {{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} and add {{id}} to ORDER BY so the order is deterministic. With no ORDER BY inside OVER, the frame is the **whole group**: {{SUM(amount) OVER (PARTITION BY customer_id)}} returns the customer's total on every row.
+Two transactions on the same day get the same running total of 300 by default, which makes the statement look wrong. To add **row by row**, explicitly write {{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} and add {{id}} to ORDER BY so the order is deterministic. Without an ORDER BY inside OVER, the frame is the **whole group**: {{SUM(amount) OVER (PARTITION BY customer_id)}} returns the customer's total on every row.
 
 ### How the DB computes a window function
-In a PostgreSQL plan you will see a {{WindowAgg}} node sitting on top of a {{Sort}} node (sorted by PARTITION BY then ORDER BY), or on top of an {{Index Scan}} if an index already provides that order. Once the order exists, WindowAgg only has to **make a single pass**, keeping a little state (the current sequence number, the current sum) and resetting it when it moves to a new group. The main cost is the sort step, O(n log n); an index on {{(customer_id, created_at)}} removes this step.
+In a PostgreSQL plan, you will see a {{WindowAgg}} node sitting on top of a {{Sort}} node (sorted by PARTITION BY then ORDER BY), or on top of an {{Index Scan}} if an index already provides that order. Once the order exists, WindowAgg only has to **make a single pass**, keeping a little state (the current sequence number, the current sum) and resetting it when moving to a new group. The main cost is the sort step O(n log n); an index on {{(customer_id, created_at)}} removes this step.
 
-The exercise below does exactly that in Java: sort, then make one pass.
+The exercise below does exactly this in Java: sort, then make one pass.
 
-> Real-world pitfall: computing a running total in Java by, for each row, re-walking the list from the start and adding up the rows before it. That is O(n²): 10,000 rows take a few tens of milliseconds, 500,000 rows take several minutes. The right way is to sort once and accumulate: O(n log n) for the sort, O(n) for the accumulation.
+> Real-world pitfall: computing a running total in Java by, for each row, re-walking the list from the start and adding up the preceding rows. That is O(n²): 10,000 rows take tens of milliseconds, 500,000 rows take several minutes. The correct way is to sort once and accumulate: O(n log n) for sort, O(n) for accumulation.
 
 > Senior tip: the "top-N per group" problem ({{WHERE rn <= 3}} outside a subquery) used to force PostgreSQL to compute ROW_NUMBER for **every** row before filtering. Since PG 15, the planner recognizes the {{rn <= 3}} condition and stops early within each group (the plan shows {{Run Condition}}). With few groups and a very large table, an even faster approach is {{CROSS JOIN LATERAL (... ORDER BY ... LIMIT 3)}} per group, exploiting an index on {{(group_id, sort_col)}}. Note: never put {{LIMIT}} inside the subquery that contains ROW_NUMBER to "optimize", because then you take the top-N of the **whole table**, not per group.
 
@@ -76,7 +76,7 @@ SUM(value)   OVER (PARTITION BY grp ORDER BY value ROWS BETWEEN UNBOUNDED PRECED
 ~~~
 
 - {{rowNumber(rows)}} returns {{List<Integer>}}, {{runningTotal(rows)}} returns {{List<Long>}}.
-- Just like SQL, the result is attached to **each input row**: element {{i}} of the result is the value for {{rows.get(i)}}. The input order may be shuffled and groups may be interleaved.
+- Like SQL, the result is attached to **each input row**: element {{i}} of the result is the value for {{rows.get(i)}}. The input order may be shuffled and groups may be interleaved.
 - Within a group, sort by {{value}} ascending. For two rows in **the same group with the same value**, the one that appears earlier in the input list comes first (this is the ROWS semantics: add one row at a time).
 - **Do not modify** the input list (it may be an immutable list such as {{List.of}}).
 - Use {{long}} for the total because it can exceed {{Integer.MAX_VALUE}}.`,
@@ -95,8 +95,7 @@ This is exactly what {{WindowAgg}} does: **sort by (PARTITION BY, ORDER BY), the
 - **Using {{int}} for the total**: 3,000 × 1,000,000 exceeds {{Integer.MAX_VALUE}} (about 2.1 billion) and silently overflows to a negative number.
 - **O(n²) running total**: re-adding all the preceding rows for every row. Correct but disastrously slow on large data.
 
-### Relation to SQL
-Two tied rows ({{G 10}}, {{G 10}}) yield 10 then 20 because this exercise uses **ROWS** semantics. If you write {{SUM(value) OVER (PARTITION BY grp ORDER BY value)}} without a frame, SQL uses **RANGE** and both rows receive 20. In production, if the data already sits in the database, let the DB compute the window function (close to the data, with indexes); implementing it yourself in Java only makes sense when the data comes from another source such as a file or a Kafka stream.`,
+### Relation to SQL`,
       },
     ],
     check: [

@@ -81,6 +81,30 @@ CREATE INDEX idx_t_order ON t (created_at DESC, id DESC);
 - Cột khóa phải duy nhất; nếu không sẽ mất hoặc lặp dòng khi sort không ổn định.
 - Dữ liệu chèn giữa hai lần lấy trang có thể khiến dòng lặp hoặc bị bỏ sót — chấp nhận được trong feed dạng timeline.
 
+### Cơ chế từng bước
+
+OFFSET 300.000 LIMIT 20 làm gì:
+1. DB quét từ dòng đầu tiên của bảng (theo thứ tự index nếu có, không thì quét toàn bảng).
+2. Bỏ qua 300.000 dòng đầu (không trả về cho ứng dụng, nhưng đã đọc từ đĩa hoặc bộ nhớ đệm).
+3. Chỉ giữ 20 dòng sau đó làm kết quả.
+
+Chi phí tăng tuyến tính theo offset, nên trang thứ 10.000 chậm hơn trang thứ 1 rất nhiều. Nếu câu lệnh còn ORDER BY, DB phải sắp xếp toàn bộ tập kết quả trước khi cắt — gấp đôi chi phí.
+
+Keyset pagination (con trỏ phân trang):
+- Trang đầu: {{SELECT id, ... FROM t ORDER BY id DESC LIMIT 20}}
+- Trang sau: {{WHERE id < :last_id ORDER BY id DESC LIMIT 20}}
+- DB dùng index trên id giảm dần để nhảy trực tiếp đến vị trí cuối trang trước, đọc thêm 20 dòng, không quét những dòng đã qua.
+
+Chi phí: {{O(log n + pageSize)}} thay vì {{O(offset + pageSize)}}. Với cột sắp xếp không duy nhất (ví dụ created_at nhiều dòng trùng), ghép thêm cột duy nhất làm phần curb của cursor: {{WHERE (created_at, id) < (:last_ts, :last_id) ORDER BY created_at DESC, id DESC}}.
+
+### Ví dụ đời thực
+
+Feed tin tức trên bảng posts 200 triệu dòng. Trang đầu load 120ms, nhưng khi khách hàng cuốn tới trang 5.000 (OFFSET 100.000) API mất 4,2 giây, p95 toàn hệ thống bị kéo lên. Điều tra bằng EXPLAIN (ANALYZE) cho thấy node Seq Scan quét hơn 100 triệu dòng rồi loại bỏ, CPU DB tăng 40% vào giờ cao điểm vì nhiều khách cùng cuốn feed. Cách xử lý: (1) đổi UI từ bảng số trang sang nút Xem thêm / cuộn vô hạn; (2) triển khai keyset pagination với cursor là (created_at, id) của bài cuối trang trước; (3) tạo index CREATE INDEX idx_posts_created_id ON posts (created_at DESC, id DESC); (4) giữ fallback OFFSET chỉ cho trang nhỏ hơn 100. Kết quả: trang cuối còn 18ms, CPU DB từ 40% xuống 12%, số báo lỗi timeout từ khách giảm hơn 90% trong tuần sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+"OFFSET lớn buộc cơ sở dữ liệu đọc và loại bỏ hàng trăm nghìn dòng trước mỗi trang, nên càng cuốn sâu càng chậm. Tôi chuyển sang keyset pagination: lấy 20 bản ghi đầu theo id giảm dần, rồi mỗi trang tiếp theo dùng WHERE id nhỏ hơn id bản ghi cuối trang trước, cùng LIMIT. Vì cơ sở dữ liệu dùng index nhảy trực tiếp đến vị trí cần lấy, chi phí không phụ thuộc số trang đã qua, chỉ O(log n + pageSize). Nếu sắp xếp theo cột không duy nhất, tôi ghép thêm cột id vào cursor để không bị bỏ hoặc trùng dòng. Một điểm trade-off là keyset chỉ hỗ trợ tiếp theo / trước, không nhảy trang tùy ý, nên phải phù hợp với UX feed cuộn. Trước khi triển khai, tôi đo bằng EXPLAIN ANALYZE để xác nhận index được dùng và không còn node Sort lớn."
+
 > Senior tip: mọi feed hiện đại (Twitter, Facebook News Feed) đều dùng cursor, không dùng OFFSET. Trên bảng 200 triệu dòng, tôi từng giảm từ 4s trang cuối về 15ms chỉ bằng cách đổi cursor — và đây là thay đổi rất rẻ, đáng làm trước khi nghĩ tới cache.`,
   follow: [
     'Keyset pagination khi sort theo cột không duy nhất (created_at) thì thiết kế cursor thế nào?',
@@ -1223,10 +1247,19 @@ FROM ledger_entries GROUP BY 1 HAVING sum(
 - Update balance trong cùng transaction với entries là bình thường (balance chỉ là derived cache) — nhưng nếu nằm ngoài cùng transaction sẽ dễ lệch; job đối soát so tổng SUM(entries) với balances.
 - Bảng entries lớn — mọi query phải có điều kiện thời gian/account để tránh scan toàn bảng.
 
+### Ví dụ đời thực
+
+Hệ thống ví thanh toán có hai triệu ví, mỗi ngày năm trăm nghìn giao dịch nạp, rút và chuyển khoản. Lỗi ban đầu: mã cập nhật số dư trực tiếp bằng câu lệnh {{UPDATE accounts SET balance = balance + :amt WHERE id = :id}}, nên khi kiểm toán viên hỏi "ví A hôm qua có bao nhiêu đồng", đội phát triển không trả lời được vì giá trị cũ đã bị ghi đè. Thiết kế lại theo kế toán kép: mỗi giao dịch là một nhóm giao dịch có mã tham chiếu duy nhất, sinh hai dòng nhập xuất (một dòng nợ cho tài khoản gửi, một dòng có cho tài khoản nhận, số tiền lưu nguyên đơn vị nhỏ nhất như đồng VND hoặc cent USD, không dùng số thực float). Sai số được sửa bằng dòng đảo (reversal entry) kèm lý do, không bao giờ cập nhật hay xóa dòng cũ. Job đối soát chạy mỗi ngày kiểm tra tổng nợ bằng tổng credit trong mỗi nhóm, và tổng các dòng nhập xuất khớp số dư của mỗi tài khoản. Sau khi triển khai, kiểm toán viên truy vết được mọi biến động số dư về ngày gốc, sai số phát hiện sớm và chênh lệch số dư giảm từ hàng trăm trường hợp xuống không.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Kế toán kép lưu mỗi giao dịch thành hai dòng: một dòng nợ và một dòng có cùng mã giao dịch, nên tổng nợ bằng tổng credit luôn. Số dư không được cập nhật trực tiếp trên bảng tài khoản vì mỗi lần cập nhật mất lịch sử trước đó, không biết ai sửa khi nào và không dựng lại số dư quá khứ được. Thay vào đó, số dư là tổng của các dòng nhập xuất, tính từ bảng chi tiết. Lỗi được sửa bằng dòng đảo kèm lý do, không xóa hay ghi đè. Để tra cứu nhanh, có thể giữ bảng số dư làm bộ nhớ đệm và chạy job đối soát theo ngày so với tổng các dòng nhập xuất. Mọi dữ liệu dùng số nguyên đơn vị nhỏ nhất, không dùng số thực, và mỗi giao dịch có mã tham chiếu duy nhất để chống gửi trùng khi mạng gián đoạn."
+
 > Senior tip: quy tắc của tôi cho ledger: "append-only, có đối soát, balance là derived cache". Job đối soát chạy một lần/ngày kiểm tổng SUM(entries) khớp accounts.balance cho từng account đã cứu tôi khỏi nhiều bug luồng kỳ lạ; nhiều case số dư sai do bug không nằm ở ledger mà ở luồng gọi trước đó.
 `,
   follow: [
-    'Query point-in-time balance từ dữ kiện entries: cách làm nào hiệu năng tốt với bảng lớn?'
+    'Query point-in-time balance từ dữ kiện entries: cách làm nào hiệu năng tốt với bảng lớn?',
+    'Khi hai chuyển khoản ngược chiều cùng tài khoản, tránh deadlock bằng cách nào khi cập nhật hai số dư trong cùng một giao dịch?'
   ],
   tags: ['ledger', 'double-entry', 'audit', 'fintech']
 },
@@ -1387,6 +1420,14 @@ CREATE INDEX idx_audit_entity ON audit_log (entity_type, entity_id, ts DESC);
 - Diff JSON phình to (document lớn thay đổi nhiều field) — lưu diff có cấu trúc, không dump full doc.
 - Cách bắt bằng app-only (AOP) bỏ lỡ update từ job hay SQL-direct edits — CDC từ WAL là chắc nhất về WHAT/WHEN, nhưng WAL **không biết WHO** (user cuối, IP): app phải ghi actor vào cột ({{updated_by}}, {{request_id}}) để CDC mang theo, hoặc kết hợp audit tầng app; update SQL trực tiếp thì chỉ biết DB user.
 - Hash chain cần verify job hàng ngày; nếu chain đứt mà không phát hiện sớm thì tính toàn vẹn mất.
+
+### Ví dụ đời thực
+
+Hệ thống quản lý khách hàng của một công ty bảo hiểm có ba triệu hồ sơ. Nhân viên hỗ trợ trực tiếp sửa số điện thoại và địa chỉ trong bảng khách hàng bằng câu SQL chạy thủ công trên production khi khách gọi yêu cầu. Một tháng sau, kiểm toán viên yêu cầu xem "ai thay đổi số điện thoại của khách hàng X, lúc nào, và từ giá trị cũ thành giá trị mới". Đội phát triển không trả lời được vì không có bản ghi trước và sau, và không biết đó là nhân viên hỗ trợ hay một script chạy nhầm. Thiết kế lại: bảng audit_log ghi người dùng, loại người dùng, địa chỉ IP, loại thực thể, ID thực thể, hành động (CREATE/UPDATE/DELETE), giá trị trước và sau dưới dạng JSON có cấu trúc, thời gian theo UTC, và mã yêu cầu để liên kết với nhật ký API. Bắt thay đổi bằng interceptor của Hibernate cho cập nhật qua ứng dụng, kết hợp CDC đọc nhật ký ghi trước (WAL) của cơ sở dữ liệu để không bỏ sót cập nhật trực tiếp từ công cụ quản trị cơ sở dữ liệu. Chuỗi băm (băm của dòng hiện tại phụ thuộc vào băm dòng trước và nội dung) giúp phát hiện nếu ai chỉnh sửa bản ghi audit sau này, và công việc verify hàng ngày kiểm tra chuỗi băm. Kết quả: kiểm toán viên truy vết được bất kỳ thay đổi nào trong vài giây qua truy vấn theo thực thể và thời gian, và cập nhật không được phép từ công cụ quản trị cơ sở dữ liệu được phát hiện ngay.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Nhật ký kiểm toán cần trả lời ba câu: ai làm, sửa gì, khi nào. Tôi thiết kế bảng lưu mỗi sự kiện thay đổi thành một dòng không được sửa hay xóa, ghi rõ người dùng, địa chỉ IP, loại thực thể, ID thực thể, hành động, giá trị trước và sau dưới dạng JSON, và thời gian theo UTC. Để bắt được mọi thay đổi, kể cả khi quản trị viên sửa trực tiếp trên cơ sở dữ liệu, tôi kết hợp interceptor ở cấp ứng dụng với CDC đọc nhật ký ghi trước của cơ sở dữ liệu. Để ngăn chặn việc bản ghi kiểm toán bị chỉnh sửa sau này, tôi dùng chuỗi băm: băm của dòng hiện tại phụ thuộc vào băm dòng trước, và chạy công việc kiểm tra chuỗi băm mỗi ngày. Dữ liệu giữ nóng sáu tháng trong cơ sở dữ liệu, phần cũ đẩy sang lưu trữ rẻ theo quy định. Truy vấn theo thực thể, người dùng và thời gian với chỉ mục thích hợp để kiểm toán viên trả lời nhanh."
 
 > Senior tip: câu hỏi tôi luôn hỏi khi thiết kế audit: "khi kiểm toán viên đến, bạn trả lời trong bao lâu?" — thiết kế query theo entity + user + thời gian với index tương ứng; thời hạn lưu phải được xác định theo loại hồ sơ và quy định áp dụng; snapshot hash chỉ hỗ trợ phát hiện sửa đổi, không thay thế kiểm soát truy cập và quy trình lưu trữ.
 `,
@@ -1555,6 +1596,23 @@ Ngày 25 hằng tháng (ngày lương), lượng chuyển tiền tăng 8 lần t
 - DNS TTL ngắn tăng DNS lookup overhead; cân bằng với tần suất failover.
 - Connection pool recreation là heavy operation; chỉ làm khi cần, không mỗi request.
 
+### Cơ chế chi tiết sau failover
+
+Khi cơ sở dữ liệu chính lỗi và hệ thống chuyển sang bản dự phòng (failover), địa chỉ IP của primary thường thay đổi (ví dụ qua tên miền hoặc thiết bị phân tải). Ứ dụng Java có hai nơi có thể "lưu lại" thông tin cũ dẫn đến lỗi kết nối vài phút:
+
+1. Bộ nhớ đệm phân giải tên miền của Java: Java lưu kết quả phân giải tên miền (ví dụ db-prod.internal → 10.0.1.5) theo thuộc tính bảo mật {{networkaddress.cache.ttl}}. Sau failover, tên miền đã trỏ về IP mới (10.0.1.6) nhưng Java vẫn giữ IP cũ cho đến khi hết hạn bộ nhớ đệm, nên kết nối mới vẫn gửi về máy chủ cũ đã chết.
+2. Connection pool giữ kết nối chết: HikariCP (pool kết nối JDBC phổ biến) lưu các kết nối đã mở để tái sử dụng. Sau failover, kết nối cũ tới primary cũ bị đóng tại phía cơ sở dữ liệu, nhưng pool không biết và vẫn cho ứng dụng mượn. Lúc ứng dụng gửi lệnh SQL, mới nhận lỗi "kết nối bị reset" hoặc "kết nối bị ngắt". Pool mới loại kết nối đó ra và tạo kết nối mới — quá trình này lặp lại cho mỗi kết nối chết, nên mất vài phút để hết tất cả kết nối cũ.
+
+Pool chỉ kiểm tra kết nối còn sống khi mượn (truy vấn kiểm tra hoặc {{Connection.isValid}}) nếu được cấu hình, không kiểm tra mỗi request. Vì vậy những request đầu tiên sau failover thất bại trước khi pool làm sạch.
+
+### Ví dụ đời thực
+
+Hệ thống đặt vé chạy trên PostgreSQL primary-replica với failover tự động. Lúc 14:32 primary mất điện, bản dự phòng nâng cấp thành primary mới và đổi IP qua tên miền. Sau đó ba phút, mười tám phần trăm request đặt vé lỗi {{org.postgresql.util.PSQLException: Connection refused}} hoặc {{Connection reset by peer}}. Điều tra: Tomcat chưa đặt {{networkaddress.cache.ttl}} nên Java giữ tên miền cũ hàng giờ; HikariCP có hai mươi lăm kết nối đang mở tới IP cũ, mỗi kết nối chỉ được phát hiện chết khi ứng dụng mượn và gửi lệnh đầu tiên. Cách xử lý: (1) đặt {{networkaddress.cache.ttl}} thành ba mươi giây để tên miền refresh nhanh; (2) cấu hình HikariCP {{validationTimeout}} ngắn hơn {{connectionTimeout}} và bật truy vấn kiểm tra kết nối (hoặc để driver tự kiểm tra qua JDBC4) để pool phát hiện kết nối chết sớm khi mượn; (3) đặt {{maxLifetime}} ngắn hơn thời gian ngừng hoạt động idle của thiết bị phân tải / proxy trước nó; (4) thêm điểm kiểm tra sức khỏe /health truy vấn SELECT 1, trả 503 nếu lỗi để thiết bị phân tải ngừng gửi traffic tới instance đang fail. Sau khi áp dụng, thời gian khôi phục từ ba phút xuống dưới ba mươi giây, và không còn khách hàng bị lỗi đặt vé sau failover.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Sau khi cơ sở dữ liệu chuyển sang bản dự phòng, ứng dụng có thể vẫn liên lạc với địa chỉ cũ vì Java lưu kết quả phân giải tên miền và connection pool giữ kết nối đã mở. Tôi xử lý theo hai hướng. Thứ nhất, cấu hình thời gian hết hạn của bộ nhớ đệm DNS ngắn hơn (ví dụ ba mươi giây) cho đến khi tên miền đã trỏ về địa chỉ mới. Thứ hai, cấu hình connection pool để kiểm tra kết nối còn khả dụng trước khi cho ứng dụng dùng, ví dụ truy vấn kiểm tra hoặc phương thức isValid của JDBC, và thiết lập thời gian sống tối đa ngắn hơn thời gian ngừng hoạt động của thiết bị giữa để kết nối cũ được loại bỏ sớm. Thêm điểm kiểm tra sức khỏe truy vấn cơ sở dữ liệu đơn giản, trả về lỗi nếu không kết nối được, để thiết bị phân tải ngừng gửi yêu cầu đến máy chủ đang gặp sự cố. Nếu cần khôi phục ngay lập tức, tôi có thể xoá toàn bộ pool kết nối để buộc tạo kết nối mới, nhưng chỉ làm khi thực sự cần vì đây là thao tác tốn tài nguyên."
+
 > Senior tip: ghi nhận hostname, IP đã resolve, SQLState và tuổi connection để phân biệt DNS cũ với socket chết trước khi chỉnh TTL.
 `,
   follow: ['Làm sao detect DB failover từ app side?', 'Khi nào nên dùng failover-aware JDBC driver?'],
@@ -1585,6 +1643,23 @@ Ngày 25 hằng tháng (ngày lương), lượng chuyển tiền tăng 8 lần t
 - MALLOC_ARENA_MAX thấp có thể tăng contention trên arena → throughput giảm; test performance.
 - Direct memory limit quá thấp gây OOM khi Netty buffer pool lớn.
 
+### Cơ chế chi tiết từng nguyên nhân
+
+RSS (Resident Set Size) là lượng bộ nhớ thực tế của tiến trình đang chiếm RAM, bao gồm cả heap (bộ nhớ Java quản lý) và phần ngoài heap.
+
+1. glibc malloc arenas: Thư viện C chuẩn glibc quản lý bộ nhớ qua nhiều "arena" (vùng bộ nhớ riêng) để giảm tranh chấp giữa các luồng khi cấp phát cùng lúc. Mỗi arena giữ bộ nhớ đã giải phóng để tái sử dụng thay vì trả ngay cho hệ điều hành, nên RSS có thể không giảm ngay sau khi ứng dụng giải phóng, và bộ nhớ có thể bị chia mảnh. Số arena phụ thuộc cấu hình và kiến trúc, thường căn cứ theo số lõi CPU, không phải hằng số 8 nhân số lõi.
+2. Direct memory (bộ nhớ trực tiếp): {{ByteBuffer.allocateDirect}}, Netty, NIO đệm nằm ngoài heap Java, không bị garbage collection quản lý theo cách thông thường. Giới hạn được thiết lập bởi {{MaxDirectMemorySize}}.
+3. Thread stack: Mỗi luồng có một vùng stack được đặt trước và phần đã cam kết. {{-Xss}} không chính xác là RSS tăng đúng một megabyte cho mỗi luồng.
+4. Metaspace: Lưu thông tin lớp đã nạp, thường tăng theo thời gian khi ứng dụng chạy lâu.
+
+### Ví dụ đời thực
+
+Ứ dụng Spring Boot chạy trong container giới hạn hai gigabyte RAM. Heap Java chỉ dùng sáu trăm megabyte và ổn định, nhưng RSS tăng từ bảy trăm megabyte lên một gigabyte tám trăm megabyte sau vài ngày, container bị hệ điều hành chấm dứt do hết RAM. Điều tra bằng {{jcmd <pid> VM.native_memory summary}} thấy heap bình thường, nhưng phần native tăng. Xem {{/proc/<pid>/smaps}} thấy rất nhiều vùng mmap từ thư viện glibc malloc do ứng dụng tạo hàng nghìn luồng xử lý tệp song song, mỗi luồng giữ một arena riêng. Cách xử lý: (1) đặt {{MALLOC_ARENA_MAX=2}} để giới hạn số arena glibc; (2) giới hạn số luồng trong pool xử lý tệp và dùng {{virtual threads}} (Java 21) cho tác vụ chờ I/O; (3) đối chiếu {{MaxDirectMemorySize}} với nhu cầu bộ nhớ đệm trực tiếp của Netty; (4) giám sát liên tục bằng NMT và smaps. Sau khi áp dụng, RSS ổn định khoảng chín trăm megabyte, container không còn bị chấm dứt do hết RAM.
+
+### Trả lời mẫu khi phỏng vấn
+
+"RSS tăng trong khi heap ổn định thường liên quan đến bộ nhớ ngoài heap: glibc malloc giữ nhiều arena để phục vụ các luồng, bộ nhớ trực tiếp như ByteBuffer, ngăn xếp luồng và Metaspace. Tôi chẩn đoán theo thứ tự: dùng jcmd xem báo cáo bộ nhớ native của JVM, xem /proc/<pid>/smaps để biết từng vùng bộ nhớ, và đếm số luồng. Nếu glibc malloc arena là nguyên nhân, tôi đặt MALLOC_ARENA_MAX nhỏ hơn (hai hoặc bốn) và kiểm tra hiệu năng vì giảm arena có thể làm tăng tranh chấp. Nếu là direct memory, tôi đối chiếu MaxDirectMemorySize với bộ nhớ đệm trực tiếp thực tế. Với ứng dụng xử lý I/O nhiều luồng, tôi giới hạn số luồng và cân nhắc virtual threads Java 21. Cuối cùng, tôi giám sát liên tục thay vì đoán, vì RSS cao không nhất thiết là rò rỉ bộ nhớ Java."
+
 > Senior tip: so sánh NMT, smaps và số thread; NMT không giải thích hết RSS thì tiếp tục kiểm tra allocator và native library thay vì kết luận là leak Java.
 `,
   follow: ['Native memory tracking overhead là bao nhiêu?', 'Khi nào nên dùng virtual threads?'],
@@ -1611,6 +1686,20 @@ Ngày 25 hằng tháng (ngày lương), lượng chuyển tiền tăng 8 lần t
 ### Trade-off & pitfall
 - Upsert có thể overwrite data không mong muốn; dùng DO UPDATE SET chỉ field cần update.
 - Retry logic phải idempotent; nếu không sẽ tạo duplicate ở layer khác.
+
+### Cơ chế chi tiết
+
+TOCTOU (time-of-check to time-of-use) là khoảng thời gian giữa hai bước: (1) kiểm tra xem khóa đã tồn tại chưa, (2) chèn bản ghi mới. Hai luồng cùng chạy bước kiểm tra, cả hai thấy "chưa tồn tại", cả hai cùng chèn → cơ sở dữ liệu từ chối bản ghi thứ hai vì vi phạm ràng buộc duy nhất (unique constraint), ném lỗi {{DataIntegrityViolationException}} (Spring) hoặc SQLException.
+
+Ràng buộc duy nhất ở cơ sở dữ liệu là "lưới an toàn" cuối cùng: bất kể ứng dụng kiểm tra thế nào, cơ sở dữ liệu luôn đảm bảo sự duy nhất của khóa. Kiểm tra ở cấp ứng dụng (SELECT rồi INSERT) không đủ vì có khoảng trống giữa hai bước.
+
+### Ví dụ đời thực
+
+Hệ thống đăng ký sự kiện cho một triệu khách hàng. Form đăng ký có nút "Đăng ký ngay", khách nhấn nhanh hai lần hoặc chạy lại trang khi mạng chậm, sinh hai request cùng email. Mã kiểm tra {{SELECT count(*) FROM event_registration WHERE email = ?}} rồi chèn nếu bằng 0. Hai request cùng xem count = 0, cùng chèn, bảng có hai dòng cùng email. Việc nhập batch từ file CSV cũng gặp trùng khi hai công nhân xử lý dòng cùng mã đối tác cùng lúc. Cách xử lý: (1) tạo chỉ mục duy nhất trên cột email (và mã đối tác cho nhập batch); (2) dùng {{INSERT ... ON CONFLICT (email) DO NOTHING}} (PostgreSQL) hoặc {{INSERT IGNORE}} / ON DUPLICATE KEY UPDATE (MySQL), nên chèn trùng bị từ chối an toàn thay vì lỗi toàn bộ giao dịch; (3) nếu nghiệp vụ cần cập nhật khi trùng, chỉ cập nhật trường cần thiết bằng {{DO UPDATE SET}}, không ghi đè toàn bộ; (4) cho API nhập, dùng mã idempotency (khóa duy nhất do khách sinh) và kiểm tra trước khi chèn; (5) nếu nội dung khác nhau cùng khóa, quyết định trước quy tắc: ghi lần đầu thắng, ghi lần sau thắng, hay từ chối. Kết quả: không còn bản ghi trùng sau khi triển khai chỉ mục duy nhất + upsert.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Hai request cùng kiểm tra xem mã khách hàng đã tồn tại rồi cùng chèn sẽ gây bản ghi trùng, vì khoảng thời gian giữa bước kiểm tra và bước chèn để lại hở. Đây gọi là TOCTOU. Cách xử lý đúng là để cơ sở dữ liệu đảm bảo: tạo ràng buộc duy nhất trên khóa nghiệp vụ, ví dụ email hoặc mã đối tác. Khi chèn, dùng lệnh upsert như INSERT ON CONFLICT DO NOTHING của PostgreSQL, nên bản ghi trùng bị từ chối an toàn thay vì làm thất bại toàn bộ giao dịch. Nếu cần cập nhật khi trùng, chỉ cập nhật những trường cần thiết. Không nên dựa vào kiểm tra ở ứng dụng rồi mới chèn vì có khoảng hở. Với API nhập, tôi dùng mã idempotency do khách sinh để duy nhất mỗi yêu cầu. Nếu hai yêu cầu cùng khóa nhưng nội dung khác, tôi xác định quy tắc trước: ghi lần đầu thắng, ghi lần sau thắng, hay từ chối, và upsert thực thi chính xác quy tắc đó."
 
 > Senior tip: xác định semantics khi payload khác nhau cùng key (first-write-wins, last-write-wins hay reject); ON CONFLICT thực thi đúng semantics bạn viết.
 `,

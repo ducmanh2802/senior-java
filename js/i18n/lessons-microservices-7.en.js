@@ -1,21 +1,21 @@
 /*
- * English translation of js/data/lessons-microservices.js — task T1018. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/lessons-microservices.js — task T1116. Format: js/core/i18n.js (content overlay).
  * ids: lesson-microservices-008
  */
 App.i18n.content({
   'lesson-microservices-008': {
-    title: 'General saga engine: reverse-order compensation, idempotency and the state log',
+    title: 'General saga engine: reverse-order compensation, idempotency and state log',
     goals: [
-      'Write a saga engine that runs any list of steps (action + compensate): when step k fails, compensate backward over k-1..0',
-      'Explain why a compensate call can run twice and how to block it in both the engine and the receiving side',
-      'Choose where to store saga state (durable table, event log, workflow engine) so a crash does not lose progress',
+      'Write a saga engine that runs any list of steps (action + compensate), and when step k fails, compensate backward over k-1..0',
+      'Explain why compensate can be called twice and how to block it in both the engine and the receiving side',
+      'Choose where to store saga state (durable table, event log, workflow engine) so that a crash does not lose progress',
     ],
-    body: `**Summary:** A saga (a long-running business workflow split across services) is a sequence of steps, and each step has an action (do the work) and a compensation (undo the work that was done). When the action of step k fails, the engine runs compensation for the steps that already succeeded in REVERSE order, from k-1 down to 0; each compensation is called at most once for a given saga, even after a retry or a restart. The saga state must be stored durably so that a process that dies can continue where it left off. Lesson 003 walked through a fixed four-step flow; this lesson generalises it into an engine that can run any list of steps — exactly what you will implement in the exercise — and answers the two hardest questions: why compensate can be called twice and where saga state should live.
+    body: `**Summary:** A saga is a sequence of steps, each with an action and a compensation. When the action of step k fails, the engine runs compensation for the steps that already succeeded in REVERSE order from k-1 down to 0; each compensation is called at most once for a given saga, even after retry or restart. The saga state must be stored durably so that a process that dies can continue where it left off. The previous lesson walked through a fixed four-step flow; this lesson generalizes it into an engine that can run any list of steps — exactly what you will implement in the exercise — and answers the two hardest questions: why compensate can be called twice and where saga state should live.
 
 ### Back to the root: no rollback across services
-In a monolith, a method annotated with {{@Transactional}} (a unit of work managed by the database: every operation inside either all succeeds or all rolls back) writes the order, the inventory and the payment into the SAME database; if the third line fails, the database undoes the first two by itself. When each microservice (a small, independently deployed service that owns its own data) has its own database, no single rollback command can reach all three places at once. So "cancel" does not mean delete: you must create a NEW ACTION that makes up for the old one — a refund, a stock release, a delivery cancellation. The cancellation invoice still sits in the log, money may come back slowly, and fees may not be refunded. Compensation is a business action, not a delete button. (An everyday example: returning a shipped package is not the same as never buying it — the store issues a return slip, takes the parcel back and refunds the money, each as its own step.)
+In a monolith, a method annotated with {{@Transactional}} (a unit of work managed by the database: every operation inside either all succeeds or all rolls back) writes the order, the inventory, and the payment into the SAME database; if the third line fails, the database undoes the first two by itself. When each microservice has its own database, no single rollback command can reach all three places at once. So "cancel" does not mean delete: you must create a NEW ACTION that makes up for the old one — a refund, a stock release, a delivery cancellation. The cancellation invoice still sits in the log, money may come back slowly, and fees may not be refunded. Compensation is a business action, not a delete button. (Everyday example: returning a shipped package is not the same as never buying it — the store issues a return slip, takes the parcel back and refunds the money, each as its own step.)
 
-### The standard four-step flow: place order → reserve stock → charge payment → schedule delivery
+### Standard four-step flow: place order → reserve stock → charge payment → schedule delivery
 ~~~seq
 title: Order saga: delivery fails, compensate in reverse order
 actors: Order | Inventory | Payment | Shipping
@@ -34,10 +34,10 @@ note Order: saga finishes when both compensations complete
 A later step is built on the result of an earlier one: the delivery order exists because inventory was reserved and money was collected. If you compensated in forward order — releasing inventory before cancelling the delivery — the delivery team would receive an instruction to pick up goods while that stock had already been sold to another customer; if you refunded before cancelling the order, the order would still be alive with the money gone. The engine therefore behaves like an undo stack: a failing step stops the queue, and then compensation runs from the step right before it back to the first step. The rule you will implement: when step k fails, compensate only steps 0..k-1 in the order k-1, k-2, ..., 0.
 
 ### Which steps get compensated — and why timeout is the hard case
-Only a step that definitely succeeded may be compensated; the step that just failed must not be treated as successful, so there is nothing to undo. The hard case is TIMEOUT: the service you called did not reply in time, and you do NOT know whether the charge actually ran. A timeout is not a failure — refunding immediately might refund a charge that never happened (giving the customer free money), while doing nothing might leave the customer charged for nothing. The right move: mark the step as UNKNOWN, look up the result by sagaId (the unique id of this saga run) or send the SAME idempotency key (a client-chosen key that makes a repeated call return the old result, see lesson-microservices-006) so the other side returns the original result, and only then decide whether to move forward or to compensate.
+Only a step that definitely succeeded may be compensated; the step that just failed must not be treated as successful, so there is nothing to undo. The hard case is TIMEOUT: the service you called did not reply in time, and you do NOT know whether the charge actually ran. A timeout is not a failure — refunding immediately might refund a charge that never happened (giving the customer free money), while doing nothing might leave the customer charged for nothing. The right move: mark the step as UNKNOWN, look up the result by sagaId or send the SAME idempotency key (a client-chosen key that makes a repeated call return the old result, see lesson-microservices-006) so the other side returns the original result, and only then decide whether to move forward or to compensate.
 
 ### Why compensate can be called twice
-The orchestrator (the component that drives the saga step by step) sends a refund and receives a timeout; not knowing whether the refund ran, it retries; if the payment side does not deduplicate, the customer receives the money twice. The reverse also happens: the engine crashes after the refund succeeds but BEFORE it records "refund done" in the state — on restart it sees that the step is not yet compensated and calls compensate a second time. Defence must exist at two layers: (1) the engine stores compensation state per sagaId + step so it never calls a compensate that already succeeded again; (2) the receiving side keeps the idempotency key so a duplicate command returns the old result instead of refunding more money. The exercise below implements layer (1): calling retryCompensations() twice must never make compensate run twice.
+The orchestrator sends a refund and receives a timeout; not knowing whether the refund ran, it retries; if the payment side does not deduplicate, the customer receives the money twice. The reverse also happens: the engine crashes after the refund succeeds but BEFORE it records "refund done" in the state — on restart it sees that the step is not yet compensated and calls compensate a second time. Defence must exist at two layers: (1) the engine stores compensation state per sagaId + step so it never calls a compensate that already succeeded again; (2) the receiving side keeps the idempotency key so a duplicate command returns the old result instead of refunding more money. The exercise below implements layer (1): calling retryCompensations() twice must never make compensate run twice.
 
 ### Where to store saga state
 The principle: record the saga transition BEFORE or in the same transaction as publishing the command for the next step (combine this with the outbox from lesson 001), so that a restart knows exactly where it stands. A minimal table shape:
@@ -62,7 +62,7 @@ SELECT * FROM saga_state
 
 ### General engine skeleton
 ~~~java
-// Each step takes the sagaId so every command can carry its own idempotency key
+// Run steps by sagaId so each command can carry its idempotency key
 record Step(String name, SagaAction action, SagaAction compensate) {}
 interface SagaAction { void run(String sagaId) throws Exception; }
 

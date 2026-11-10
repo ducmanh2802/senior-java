@@ -213,13 +213,13 @@ class AgentLoop {
             tools.put("query_db", input -> { throw new IllegalStateException("DB timeout after 5s"); });
             ScriptedModel m = new ScriptedModel(
                 reply("tool_use", Block.toolUse("toolu_09", "query_db", in("sql", "select 1"))),
-                reply("end_turn", Block.text("Xin loi, DB dang loi.")));
+                reply("end_turn", Block.text("Xin lỗi, DB đang lỗi.")));
             AgentResult r = AgentLoop.run("Dem don hang", m, tools, 5);
             eq("end_turn", r.stopReason()); eq(2, r.steps());
             Block b = m.seen.get(1).get(2).content().get(0);
             eq("toolu_09", b.toolUseId());
             ok(b.isError(), "is_error phai la true");
-            ok(b.content() != null && b.content().contains("DB timeout"), "content nen chua message loi, nhan: " + b.content());
+            ok(b.content() != null && b.content().contains("DB timeout"), "content nên chứa message lỗi, nhận: " + b.content());
         });
         check("unknown tool also returns is_error", () -> {
             ScriptedModel m = new ScriptedModel(
@@ -228,7 +228,7 @@ class AgentLoop {
             AgentResult r = AgentLoop.run("Xoa het", m, new HashMap<>(), 5);
             eq("end_turn", r.stopReason());
             Block b = m.seen.get(1).get(2).content().get(0);
-            eq("toolu_X", b.toolUseId()); ok(b.isError(), "tool khong ton tai phai tra is_error = true");
+            eq("toolu_X", b.toolUseId()); ok(b.isError(), "tool không tồn tại phải trả is_error = true");
         });
         check("stops after maxSteps", () -> {
             Map<String, Function<Map<String, Object>, String>> tools = new HashMap<>();
@@ -822,12 +822,12 @@ class ContextBudget {
             eq(List.of(SYS, U3), ContextBudget.fit(H, 170, T));
         });
         check("never splits a tool_use/tool_result pair", () -> {
-            List<Msg> r = ContextBudget.fit(H, 380, T);   // tr (200) vua cho nhung tu + tr (230) thi khong
+            List<Msg> r = ContextBudget.fit(H, 380, T);   // tr (200) vừa cho nhưng tu + tr (230) thì không
             eq(List.of(SYS, A2, U3), r);
             eq(List.of(SYS, TU, TR, A2, U3), ContextBudget.fit(H, 410, T));
         });
         check("stops at the first unit that does not fit (no skipping)", () -> {
-            eq(List.of(SYS, A2, U3), ContextBudget.fit(H, 405, T));   // u2 (40) vua nhung khong duoc nhay coc
+            eq(List.of(SYS, A2, U3), ContextBudget.fit(H, 405, T));   // u2 (40) vừa nhưng không được nhảy cóc
             eq(List.of(SYS, U2, TU, TR, A2, U3), ContextBudget.fit(H, 460, T));
         });
         check("system larger than budget throws", () -> {

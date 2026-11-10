@@ -38,11 +38,56 @@ Outbox có thể là bảng SQL được relay polling có giới hạn batch, h
 | Polling | Ít hạ tầng, dễ hiểu | Query tải DB, cần claim row và backoff |
 | CDC | Độ trễ thấp, ít polling | Vận hành connector, schema và log retention |
 
-### Pitfall production
-Outbox tăng liên tục nếu không dọn sent row; dọn quá sớm làm mất khả năng replay. Nhiều relay cùng chọn row phải dùng claim/lease hoặc cơ chế CDC có checkpoint. Thứ tự theo aggregate cần partition key ổn định và sequence/version; thứ tự toàn cục thường không được đảm bảo. Payload cần version hóa, bảo vệ dữ liệu nhạy cảm và có metric tuổi row cũ nhất, lag, retry.
+### Cơ chế từng bước
+Hãy nhìn một luồng tạo đơn hàng từ đầu đến cuối. **Kafka** là một hệ thống hàng đợi/phát sự kiện (message broker — "người đưa thư" ở giữa): producer gửi message vào topic, consumer đọc message từ topic. **Event** là một bản ghi mô tả điều đã xảy ra (ví dụ "đơn hàng vừa được tạo"). **Broker** là máy chủ chạy Kafka, nhận và lưu message.
+
+1. **Nhận request và mở transaction database**: service nhận lệnh tạo đơn. Nó mở một transaction (giao dịch — nhóm các thao tác DB: hoặc tất cả thành công, hoặc tất cả bị hủy/rollback). Đây là transaction nội bộ của một database, không phải transaction phân tán qua nhiều hệ thống.
+2. **Ghi state nghiệp vụ**: {{INSERT}} vào bảng {{orders}}. Vì sao ghi trong transaction? Để nếu bước sau lỗi, đơn hàng "nửa vời" không bị lưu.
+3. **Ghi ý định phát event vào outbox (cùng transaction)**: {{INSERT}} một dòng vào bảng {{outbox}} chứa {{event_id}} (định danh duy nhất, ổn định), {{aggregate_id}} (ví dụ order id), {{event_type}}, {{payload}} (nội dung JSON). Đây là "ghi chú" nói rằng: khi commit xong, hãy gửi event này. Vì sao cùng transaction? Vì DB đảm bảo hai INSERT cùng commit hoặc cùng rollback.
+4. **Commit**: DB xác nhận. Từ thời điểm này, cả đơn hàng lẫn dòng outbox đều bền vững (durable — còn sau khi restart). **Chưa có message nào được gửi tới Kafka** ở bước này.
+5. **Relay đọc outbox và publish**: một tiến trình riêng (relay/worker) quét các dòng outbox chưa gửi ({{sent_at IS NULL}}), gửi payload lên Kafka topic. **ACK** (acknowledgment) là xác nhận từ broker rằng message đã được nhận/lưu.
+6. **Đánh dấu đã gửi sau ACK**: chỉ khi broker ACK, relay mới cập nhật {{sent_at}}. Vì sao sau ACK? Nếu đánh dấu trước rồi broker lỗi, event coi như "đã gửi" nhưng thực ra mất. Nếu chết giữa bước 5 và 6, lần sau relay gửi lại — đây là **at-least-once delivery** (gửi ít nhất một lần, có thể trùng).
+7. **Consumer xử lý và phải idempotent**: consumer nhận event (có thể trùng) và áp dụng nghiệp vụ. Nó cần cơ chế chống trùng (xem bài idempotent consumer).
+
+~~~java
+// Minh họa luồng outbox: 2 thao tác DB trong 1 transaction, publish nằm ngoài
+void createOrder(OrderRequest req, Connection db, OutboxRelay relay) throws Exception {
+    String orderId = UUID.randomUUID().toString();
+    String eventId = UUID.randomUUID().toString(); // id ổn định cho dedup
+    db.setAutoCommit(false);
+    try {
+        // (2) ghi state nghiệp vụ
+        try (var ps = db.prepareStatement(
+                "INSERT INTO orders(id, status, amount) VALUES (?,?,?)")) {
+            ps.setString(1, orderId); ps.setString(2, "CREATED"); ps.setLong(3, req.amount());
+            ps.executeUpdate();
+        }
+        // (3) ghi outbox CÙNG transaction
+        try (var ps = db.prepareStatement(
+                "INSERT INTO outbox(event_id, aggregate_id, type, payload) VALUES (?,?,?,?)")) {
+            ps.setString(1, eventId); ps.setString(2, orderId);
+            ps.setString(3, "OrderCreated"); ps.setString(4, toJson(orderId));
+            ps.executeUpdate();
+        }
+        db.commit(); // (4) commit: cả hai cùng bền vững
+    } catch (Exception e) {
+        db.rollback(); // lỗi → không có đơn, không có event
+        throw e;
+    }
+    // (5)(6) relay poll outbox và publish sau commit; publish KHÔNG nằm trong transaction DB
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** đơn hàng có trong DB nhưng downstream (kho, thông báo) không nhận được event. **Nguyên nhân:** code publish Kafka trực tiếp sau khi ghi DB (dual-write) rồi process chết/crash giữa hai thao tác, hoặc publish trước commit rồi transaction rollback. **Cách sửa:** dùng transactional outbox; không bao giờ để publish broker nằm giữa transaction DB theo kiểu "hy vọng cả hai cùng thành công".
+- **Triệu chứng:** bảng outbox phình to hàng chục triệu dòng, query chậm, disk đầy. **Nguyên nhân:** chỉ insert mà không có cơ chế dọn (purge) các dòng đã gửi, hoặc dọn quá chậm so với tốc độ ghi. **Cách sửa:** job xóa/archiver các dòng {{sent_at}} cũ hơn cửa sổ giữ (ví dụ 3-7 ngày, đủ để replay điều tra); dọn theo batch nhỏ để tránh lock lớn; theo dõi số dòng backlog và tuổi dòng cũ nhất.
+- **Triệu chứng:** consumer nhận cùng một event 2-3 lần sau khi deploy/restart relay. **Nguyên nhân:** relay dùng mô hình "gửi rồi mới đánh dấu" (đúng) nên khi chết giữa chừng sẽ gửi lặp — đây là hành vi at-least-once, không phải bug. **Cách sửa:** chấp nhận duplicate ở tầng transport; bắt buộc consumer idempotent theo {{event_id}} ổn định; đo duplicate rate để phân biệt duplicate bình thường với storm.
+- **Triệu chứng:** event của cùng một đơn hàng đến consumer sai thứ tự ({{OrderShipped}} trước {{OrderCreated}}). **Nguyên nhân:** relay gửi song song nhiều dòng, hoặc partition Kafka không gắn theo aggregate, hoặc không dùng sequence/version. **Cách sửa:** dùng {{aggregate_id}} (order id) làm partition key để các event cùng aggregate vào cùng partition (Kafka giữ thứ tự trong một partition); thêm {{sequence/version}} trong payload; consumer bỏ qua hoặc buffer event đến lệch thứ tự theo chính sách.
 
 ### Liên hệ phỏng vấn
-Hãy mô tả crash ở từng ranh giới: trước commit, sau commit trước publish, sau publish trước ACK/mark. Sau đó giải thích vì sao consumer idempotent vẫn cần thiết và cách replay một khoảng event.
+- **Hỏi:** Vì sao không thể dùng một transaction bao cả database và Kafka? **Trả lời ngắn:** DB transaction chỉ cam kết trên một hệ quản trị; Kafka là hệ thống khác. Không có 2PC thực dụng giữa hai bên trong đa số kiến trúc; dùng outbox để atomic trong DB rồi publish at-least-once, consumer idempotent.
+- **Hỏi:** Relay crash sau khi publish nhưng trước khi đánh dấu sent thì sao? **Trả lời ngắn:** Event sẽ được gửi lại (at-least-once). Đây là lựa chọn có chủ đích để tránh mất event; consumer phải deduplicate theo {{event_id}} ổn định.
+- **Hỏi:** CDC (ví dụ Debezium) khác polling outbox thế nào? **Trả lời ngắn:** CDC đọc transaction log (WAL/binlog) nên thấy row đã commit với độ trễ thấp, không query bảng liên tục; đổi lại phải vận hành connector, schema và quản lý log retention.
 
 > Senior tip: theo dõi p95/p99 tuổi outbox chưa gửi và số hàng backlog; alert theo tuổi sự kiện thường phản ánh tác động người dùng tốt hơn chỉ đếm hàng.
 `,
@@ -109,8 +154,10 @@ Relay đánh dấu sau khi sender thành công. Nếu sender ném lỗi, excepti
 Lỗi thường gặp: đánh dấu trước send làm mất event khi broker lỗi; tạo order trước rồi ném lỗi mà không rollback để lại trạng thái nửa vời; hoặc cho rằng synchronized bảo vệ nhiều instance/process.`,
   }],
   check: [
-    { q: 'Relay gửi thành công nhưng process chết trước khi ghi sent. Kết quả có thể là gì?', options: ['Event bị mất chắc chắn', 'Event được gửi lại; consumer cần deduplicate', 'DB tự rollback transaction đã commit', 'Kafka xóa event'], answer: 1, explain: `Outbox giữ hàng chưa đánh dấu nên relay sẽ thử lại. Điều này tạo duplicate nhưng tránh mất event; consumer dùng event id ổn định để xử lý idempotent.` },
-    { q: 'Debezium (kèm SMT Outbox Event Router) lấy event từ bảng outbox bằng cách nào?', options: ['CDC từ transaction log của database', 'Quét mọi bảng mỗi mili giây', 'Gọi trực tiếp controller Spring', 'Đọc ThreadLocal của producer'], answer: 0, explain: `Debezium connector đọc transaction log (WAL của PostgreSQL, binlog của MySQL) để bắt các INSERT đã commit vào bảng outbox; Outbox Event Router chỉ là SMT biến đổi và định tuyến change event đó sang topic. Debezium không quét bảng theo chu kỳ, không gọi vào ứng dụng và không đọc state trong JVM của producer.` },
+    { q: 'Relay gửi thành công nhưng process chết trước khi ghi sent. Kết quả có thể là gì?', options: ['Event bị mất chắc chắn', 'Event được gửi lại; consumer cần deduplicate', 'DB tự rollback transaction đã commit', 'Kafka xóa event'], answer: 1, explain: `Outbox giữ hàng chưa đánh dấu nên relay sẽ thử lại. Điều này tạo duplicate nhưng tránh mất event; consumer dùng event id ổn định để xử lý idempotent. (A) sai vì mô hình "đánh dấu sau ACK" ưu tiên không mất. (C) sai vì transaction DB đã commit trước khi publish. (D) sai vì Kafka không tự xóa event hợp lệ do relay chết.` },
+    { q: 'Debezium (kèm SMT Outbox Event Router) lấy event từ bảng outbox bằng cách nào?', options: ['CDC từ transaction log của database', 'Quét mọi bảng mỗi mili giây', 'Gọi trực tiếp controller Spring', 'Đọc ThreadLocal của producer'], answer: 0, explain: `Debezium connector đọc transaction log (WAL của PostgreSQL, binlog của MySQL) để bắt các INSERT đã commit vào bảng outbox; Outbox Event Router chỉ là SMT biến đổi và định tuyến change event đó sang topic. (B) sai vì CDC đọc log, không polling bảng. (C) sai vì CDC hoạt động ở tầng DB log, không gọi ứng dụng. (D) vô nghĩa vì ThreadLocal là state trong JVM, không phải nguồn event bền vững.` },
+    { q: 'Vì sao nên ghi order và outbox trong CÙNG một transaction database?', options: ['Để Kafka tự rollback khi DB lỗi', 'Để publish nhanh hơn nhờ gom network', 'Để đảm bảo state nghiệp vụ và ý định phát event cùng commit hoặc cùng rollback', 'Để consumer không cần idempotent'], answer: 2, explain: `Đúng (C): cùng transaction cho atomicity nội bộ — không có trạng thái "có đơn nhưng không có outbox" hay ngược lại. (A) sai vì Kafka không tham gia transaction DB. (B) sai vì publish xảy ra sau commit bởi relay, không nằm trong transaction. (D) sai vì consumer vẫn phải idempotent do delivery là at-least-once.` },
+    { q: 'Nếu relay đánh dấu sent TRƯỚC khi publish tới Kafka, rủi ro chính là gì?', options: ['Tạo duplicate event ở consumer', 'Làm transaction DB rollback tự động', 'Làm Kafka partition bị lệch thứ tự', 'Có thể mất event nếu publish thất bại hoặc process chết sau khi đánh dấu'], answer: 3, explain: `Đúng (D): event đã bị coi là "xong" nhưng chưa chắc broker đã nhận, nên mất message. (A) ngược lại — đánh dấu trước thường gây mất, không gây duplicate (duplicate xuất hiện khi đánh dấu sau). (B) sai vì đánh dấu sent không ảnh hưởng transaction DB đã commit. (C) sai vì thứ tự partition phụ thuộc key/partitioning, không phụ thuộc thời điểm đánh dấu.` },
   ], tags: ['outbox', 'CDC', 'Kafka', 'atomicity']
 },
 {
@@ -140,6 +187,48 @@ Event thường mô tả điều đã xảy ra, còn command yêu cầu hành đ
 | Inbox SQL unique | Nhiều instance, bền vững | Tăng dung lượng; cần retention có căn cứ |
 | Version aggregate | Bỏ event state cũ | Không đủ cho mọi side effect cộng dồn |
 
+### Cơ chế từng bước
+**Idempotent** (lũy đẳng) nghĩa là thực hiện cùng một thao tác nhiều lần cho kết quả giống như thực hiện một lần (ví dụ: nhấn nút "lưu" 3 lần nhưng chỉ lưu 1 bản ghi). **Consumer** là chương trình đọc message từ broker (Kafka). **Offset** là vị trí đọc của consumer trong một partition (phân vùng) của topic; commit offset nghĩa là "tôi đã xử lý tới đây".
+
+1. **Consumer nhận message**: broker giao message kèm {{message_id}} (định danh ổn định do producer/outbox tạo) và có thể kèm {{version/sequence}}. Vì sao cần {{message_id}} ổn định? Để cùng một message, dù được giao lại bao nhiêu lần, vẫn nhận ra là "đã thấy".
+2. **Mở transaction database cục bộ**: consumer bắt đầu một transaction trên DB của chính nó (projection/state store). Vì sao? Để việc "ghi nhận đã xử lý" và "áp dụng side effect nghiệp vụ" trở thành một đơn vị nguyên tử.
+3. **Kiểm tra/ghi inbox (dedup)**: {{INSERT}} vào bảng inbox (bảng ghi nhận message đã xử lý) với unique constraint trên {{(consumer_name, message_id)}}. Nếu insert thành công → message mới, tiếp tục. Nếu vi phạm unique (conflict) → message trùng, **rollback/thoát mà không làm side effect**. Vì sao dùng unique constraint thay vì check-then-act? Vì hai consumer replica cùng kiểm tra "chưa có" rồi cùng xử lý sẽ trừ tiền hai lần; constraint DB là trọng tài nguyên tử.
+4. **Kiểm tra version (nếu event thay thế state)**: với event dạng snapshot (mô tả trạng thái mới), so {{incoming.version > current.version}}. Nếu cũ hơn hoặc bằng → bỏ qua phần áp dụng state (nhưng đã ghi inbox để replay sau không tốn xử lý). Vì sao không dùng timestamp đồng hồ? Đồng hồ các máy có thể lệch (clock skew).
+5. **Áp dụng side effect nghiệp vụ**: cập nhật projection/bảng state, hoặc thực hiện hành động nghiệp vụ. Với event **cộng dồn** (charge tiền, tăng số dư) thì version không thay thế được dedup — bắt buộc dựa vào {{message_id}}.
+6. **Commit transaction DB**: inbox row và state change cùng commit. Từ đây, dù message có đến lại, bước 3 sẽ chặn.
+7. **Commit offset (sau DB commit)**: consumer báo broker đã xử lý. Vì sao sau DB commit? Nếu commit offset trước rồi DB lỗi, broker nghĩ "xong" và không giao lại → mất hiệu ứng (at-most-once). Commit sau tạo at-least-once (có thể trùng) và dedup xử lý phần trùng.
+
+~~~java
+// Luồng idempotent consumer: inbox insert + apply trong 1 transaction DB
+void handle(Message msg, Connection db) throws Exception {
+    db.setAutoCommit(false);
+    try {
+        // (3) dedup: unique (consumer, message_id) — conflict nghĩa là đã xử lý
+        try (var ps = db.prepareStatement(
+                "INSERT INTO inbox(consumer, message_id) VALUES (?,?)")) {
+            ps.setString(1, "billing"); ps.setString(2, msg.id());
+            ps.executeUpdate();
+        } catch (java.sql.SQLIntegrityConstraintViolationException dup) {
+            db.rollback(); // (3) duplicate: không side effect
+            return;
+        }
+        // (4)(5) chỉ áp version mới, rồi cập nhật state
+        applyIfNewer(db, msg.aggregateId(), msg.version(), msg.payload());
+        db.commit(); // (6) inbox + state cùng bền vững
+    } catch (Exception e) {
+        db.rollback(); // lỗi → offset chưa commit, broker sẽ giao lại
+        throw e;
+    }
+    // (7) commit offset SAU DB commit (thực tế do consumer framework gọi)
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** khách bị trừ tiền hai lần, hoặc tồn kho bị trừ hai lần sau khi consumer restart/rebalance. **Nguyên nhân:** dedup chỉ bằng {{HashSet}} trong RAM — mất khi restart, và mỗi replica có Set riêng nên hai instance cùng xử lý trước khi biết nhau; hoặc dùng check-then-act không nguyên tử (kiểm tra rồi mới xử lý tách rời). **Cách sửa:** dùng inbox table với unique constraint trên {{(consumer, message_id)}}, insert và side effect trong cùng transaction DB; với side effect gọi dịch vụ ngoài, dùng idempotency key ở đích hoặc outbox.
+- **Triệu chứng:** projection hiển thị trạng thái cũ dù event mới đã đến (ví dụ đơn đã "Shipped" nhưng hiện "Paid"). **Nguyên nhân:** event đến sai thứ tự (out-of-order) và consumer ghi đè state theo thứ tự nhận, không theo {{version/sequence}} của aggregate; hoặc dùng timestamp làm version và bị clock skew. **Cách sửa:** lưu {{version}} theo aggregate, chỉ áp dụng khi {{incoming.version > current}}; dùng sequence tăng đơn điệu do aggregate phát; với event dạng delta/out-of-order phức tạp, cân nhắc buffer chờ gap hoặc rebuild từ source.
+- **Triệu chứng:** bảng inbox tăng không ngừng, chiếm dung lượng lớn, insert chậm dần. **Nguyên nhân:** ghi nhận mọi {{message_id}} nhưng không có retention (chính sách giữ/xóa). **Cách sửa:** xóa inbox row cũ hơn cửa sổ replay/khôi phục có căn cứ (ví dụ lâu hơn max retention của topic + thời gian điều tra); dọn theo batch, có index; theo dõi kích thước bảng.
+- **Triệu chứng:** replay một khoảng event cũ (reprocessing) làm phát sinh side effect lặp (gửi mail lại, gọi API đối tác lần nữa). **Nguyên nhân:** xóa inbox key quá sớm nên replay không còn bị chặn; hoặc side effect nằm ngoài transaction DB (gọi HTTP) không có idempotency key. **Cách sửa:** giữ inbox key đủ dài qua cửa sổ replay; với side effect ngoài, dùng outbox hoặc idempotency key ở hệ thống đích; thiết kế replay chạy ở chế độ có kiểm soát.
+
 ### Công cụ và production
 Kafka consumer offset và DB transaction là hai hệ thống riêng; commit offset sau DB thường tạo at-least-once. Kafka transactions hỗ trợ consume-transform-produce trong Kafka, nhưng không tự nguyên tử với database ngoài. Spring Cloud Stream cung cấp listener/binder và error handling, không tự làm business side effect idempotent. Thiết kế schema inbox có unique constraint, metric duplicate rate, lag, conflict version; retention phải dài hơn cửa sổ replay/khôi phục. Nếu xóa key quá sớm, replay cũ có thể chạy lại side effect.
 
@@ -147,7 +236,9 @@ Kafka consumer offset và DB transaction là hai hệ thống riêng; commit off
 Check-then-act không atomic: hai consumer cùng thấy key chưa có rồi cả hai cùng trừ tiền. Dùng unique constraint và xử lý duplicate key. Không dùng timestamp làm version nếu đồng hồ có thể lệch; sequence tăng đơn điệu theo aggregate tốt hơn. Với event out-of-order dạng delta, cần buffer/gap handling hoặc rebuild từ source; chỉ bỏ version cũ có thể làm mất delta bắt buộc.
 
 ### Liên hệ phỏng vấn
-Hãy chỉ ra điểm crash giữa DB commit và offset commit, rồi mô tả unique key, transaction boundary, retention và cách xử lý event đến sai thứ tự.
+- **Hỏi:** At-least-once nghĩa là gì và vì sao consumer vẫn phải idempotent? **Trả lời ngắn:** Broker có thể giao lại message khi offset chưa được commit sau khi DB đã commit, hoặc khi timeout/rebalance. At-least-once ưu tiên không mất; idempotent consumer (inbox + unique key) biến lần giao trùng thành no-op.
+- **Hỏi:** Vì sao check {{if (!set.contains(id)) set.add(id)}} không đủ trong môi trường nhiều replica? **Trả lời ngắn:** Set cục bộ không chia sẻ giữa instance và thao tác không nguyên tử với side effect; hai replica có thể cùng qua nhánh {{if}} rồi cùng xử lý. Cần unique constraint ở DB dùng chung và thực hiện trong cùng transaction.
+- **Hỏi:** Làm sao xử lý event đến sai thứ tự? **Trả lời ngắn:** Với event thay thế state, lưu {{version/sequence}} tăng đơn điệu theo aggregate và chỉ áp dụng khi version mới hơn; không dùng timestamp đồng hồ. Với event dạng delta, có thể cần buffer/gap handling hoặc rebuild.
 
 > Senior tip: đo duplicate rate theo topic/consumer; tỷ lệ tăng đột ngột thường chỉ ra rebalance, timeout hoặc DB latency chứ không nhất thiết là lỗi broker.
 `,
@@ -198,8 +289,10 @@ Event stale vẫn được đánh dấu đã thấy để replay không tốn x�
 Lỗi thường gặp là lưu ID sau side effect, khiến crash tạo side effect lặp; dùng ID không ổn định qua retry; hoặc chỉ kiểm tra version mà bỏ qua duplicate của side effect không thay thế được.`,
   }],
   check: [
-    { q: 'DB side effect đã commit nhưng consumer chưa commit offset. Kịch bản hợp lý nhất?', options: ['Message có thể được giao lại', 'Broker biết DB commit nên bỏ qua', 'DB tự rollback theo offset', 'Message bị đổi ID'], answer: 0, explain: `Offset và DB là hai transaction khác nhau; crash ở giữa có thể khiến broker giao lại. Inbox/idempotency làm lần giao lại không nhân đôi hiệu ứng.` },
-    { q: 'Vì sao check-then-act bằng HashSet cục bộ không đủ khi có nhiều replica?', options: ['Set không lưu String', 'Mỗi replica có trạng thái riêng và có thể cùng xử lý trước khi ghi', 'Kafka không gửi String', 'Version luôn tăng theo đồng hồ'], answer: 1, explain: `Các process không chia sẻ Set và thao tác cục bộ không nguyên tử toàn cụm. Unique constraint/inbox dùng chung là nơi phân xử.` },
+    { q: 'DB side effect đã commit nhưng consumer chưa commit offset. Kịch bản hợp lý nhất?', options: ['Message có thể được giao lại', 'Broker biết DB commit nên bỏ qua', 'DB tự rollback theo offset', 'Message bị đổi ID'], answer: 0, explain: `Offset và DB là hai transaction khác nhau; crash ở giữa có thể khiến broker giao lại. Inbox/idempotency làm lần giao lại không nhân đôi hiệu ứng. (B) sai vì broker không quan sát transaction DB. (C) sai vì offset commit không điều khiển rollback DB. (D) sai vì message id ổn định là cơ sở dedup.` },
+    { q: 'Vì sao check-then-act bằng HashSet cục bộ không đủ khi có nhiều replica?', options: ['Set không lưu String', 'Mỗi replica có trạng thái riêng và có thể cùng xử lý trước khi ghi', 'Kafka không gửi String', 'Version luôn tăng theo đồng hồ'], answer: 1, explain: `Các process không chia sẻ Set và thao tác cục bộ không nguyên tử toàn cụm. Unique constraint/inbox dùng chung là nơi phân xử. (A) sai vì HashSet lưu được String. (C) sai, không liên quan kiểu dữ liệu. (D) sai và đồng hồ còn có thể lệch.` },
+    { q: 'Trong idempotent consumer, tại sao nên insert inbox và cập nhật state trong CÙNG transaction DB?', options: ['Để Kafka commit offset nhanh hơn', 'Để tránh trạng thái "đã áp dụng side effect nhưng chưa ghi nhận đã xử lý" khi crash', 'Để cho phép hai replica cùng xử lý một message', 'Để thay thế hoàn toàn version checking'], answer: 1, explain: `Đúng (B): nếu tách rời, crash giữa hai bước có thể làm side effect chạy rồi nhưng inbox chưa ghi, lần giao lại sẽ chạy lại side effect. (A) sai vì offset commit là thao tác riêng với broker. (C) sai, mục tiêu là ngăn xử lý trùng. (D) sai vì version giải quyết thứ tự event state, khác mục đích với dedup theo message_id.` },
+    { q: 'Consumer nhận event state cũ (version 2) sau khi đã áp dụng version 5. Cách xử lý đúng là gì?', options: ['Ghi đè state bằng version 2 để giữ đủ lịch sử nhận', 'Bỏ qua áp dụng state vì version không mới hơn; vẫn ghi nhận message id để replay an toàn', 'Rollback DB về version 2', 'Tăng offset nhưng xóa inbox để nhận lại'], answer: 1, explain: `Đúng (B): event state chỉ áp dụng khi version lớn hơn hiện tại; vẫn nên dedup theo message_id để lần replay không xử lý lại. (A) sai vì sẽ làm state lùi. (C) sai vì DB không tự rollback theo version event và việc này phá hủy state mới hơn. (D) sai vì xóa inbox làm mất khả năng chống trùng.` },
   ], tags: ['idempotency', 'Kafka', 'inbox', 'ordering']
 },
 {
@@ -239,6 +332,43 @@ Gọi compensation ngay khi timeout là nguy hiểm vì lệnh gốc có thể �
 Vẽ state transition, nêu dữ liệu bền vững, key idempotency, timeout không rõ kết quả, và cách tiếp tục sau restart. Nói rõ compensation nào thực sự đảo ngược được.
 
 > Senior tip: compensation thất bại là một trạng thái nghiệp vụ cần dashboard và runbook, không phải chỉ là log ERROR.
+
+### Cơ chế từng bước
+
+Saga chia một nghiệp vụ lớn thành nhiều **local transaction** (giao dịch cục bộ): mỗi service tự commit trong database của riêng mình, không có một transaction duy nhất bao toàn bộ quy trình. **Orchestrator** lưu sagaId (mã định danh toàn quy trình), trạng thái từng bước và kết quả, rồi quyết định bước tiếp theo.
+
+Ví dụ đặt hàng: tạo đơn PENDING → authorize tiền → reserve kho → confirm đơn. Mỗi service commit riêng. Nếu bước 3 (reserve) thất bại sau khi bước 2 đã trừ tiền, orchestrator không thể rollback payment (đã commit ở database khác); thay vào đó gọi **compensation** (bù trừ): hoàn tiền qua payment rồi đánh dấu đơn FAILED/CANCELLED. Compensation là hành động nghiệp vụ mới, không phải quay ngược thời gian, và chỉ chạy cho các bước đã thành công.
+
+~~~java
+// Phác thảo orchestrator: chạy từng bước, bù ngược thứ tự khi lỗi
+class OrderSagaOrchestrator {
+    void run(Order order) {
+        orderService.createPending(order.id()); // commit đơn PENDING
+        if (!paymentService.authorize(order.id(), order.amount())) {
+            orderService.cancel(order.id());    // chưa trừ tiền → chỉ hủy đơn
+            return;
+        }
+        if (!inventoryService.reserve(order.id(), order.items())) {
+            paymentService.refund(order.id(), order.amount()); // đã trừ → hoàn tiền trước
+            orderService.cancel(order.id());                      // rồi hủy đơn
+            return;
+        }
+        orderService.confirm(order.id());   // saga hoàn thành
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+
+- **Triệu chứng:** payment timeout, orchestrator refund và hủy đơn, sau provider cho biết tiền đã bị trừ. Khách bị trừ tiền nhưng đơn đã hủy. **Nguyên nhân:** timeout không chứng minh thao tác thất bại; lệnh gốc có thể vẫn chạy ở provider. **Cách sửa:** trước khi bù trừ, tra cứu trạng thái bằng idempotency key hoặc gửi lại lệnh cùng key để lấy kết quả cũ; chỉ refund khi chắc đã charge.
+- **Triệu chứng:** compensation gọi refund nhưng refund lại lỗi, orchestrator đánh dấu saga FAILED và bỏ qua; tiền chưa hoàn nhưng hệ thống coi như xong. **Nguyên nhân:** coi compensation là best-effort, không retry và không theo dõi. **Cách sửa:** compensation idempotent, retry có giới hạn; lưu lỗi cuối, đưa saga vào trạng thái cần can thiệp và alert.
+- **Triệu chứng:** restart orchestrator làm saga quên tiến độ, bắt đầu lại từ đầu và trừ tiền hai lần cho cùng đơn. **Nguyên nhân:** trạng thái saga chỉ lưu trong RAM, mất khi process restart. **Cách sửa:** lưu sagaId, trạng thái từng bước và kết quả vào database bền vững trước khi gọi service tiếp theo; restart đọc lại và tiếp tục từ bước cuối cùng đã lưu.
+
+### Liên hệ phỏng vấn
+
+- **Hỏi:** Vì sao saga không dùng transaction phân tán (2PC) bao cả ba service? **Trả lời ngắn:** Hai service có database riêng, không có giao thức commit chung thực dụng; 2PC khóa lâu và dễ treo. Saga chấp nhận trạng thái trung gian, mỗi service commit cục bộ, rồi bù trừ bằng compensation khi lỗi.
+- **Hỏi:** Payment timeout, chưa rõ provider đã trừ tiền chưa, bạn làm gì? **Trả lời ngắn:** Không refund ngay. Tra cứu hoặc retry cùng idempotency key để provider trả kết quả cũ, chỉ hoàn tiền khi chắc đã charge.
+- **Hỏi:** Compensation thất bại (refund lỗi), xử lý thế nào? **Trả lời ngắn:** Compensation idempotent, retry có giới hạn, lưu lỗi cuối, đưa saga vào trạng thái cần can thiệp và alert; không coi compensation là best-effort rồi bỏ qua.
 `,
   exercises: [{
     title: 'Bù tiền sau khi giữ kho thất bại',
@@ -286,6 +416,7 @@ Lỗi thường gặp: compensation theo thứ tự xuôi, bù bước chưa th�
   check: [
     { q: 'Trong saga, compensation có nghĩa gì?', options: ['Rollback ACID trên mọi service', 'Một hành động nghiệp vụ mới nhằm bù cho bước đã commit', 'Xóa log broker', 'Tắt retry toàn hệ thống'], answer: 1, explain: `Mỗi local transaction đã commit riêng. Compensation là command/event mới, có thể thất bại hoặc không đảo ngược hoàn toàn tác động.` },
     { q: 'Payment request timeout và chưa rõ provider đã charge chưa, nên làm gì?', options: ['Refund ngay không cần kiểm tra', 'Gửi charge mới với ID khác', 'Tra cứu hoặc retry cùng idempotency key để xác định kết quả', 'Đánh dấu saga thành công'], answer: 2, explain: `Timeout không chứng minh thao tác thất bại. Cùng key giúp provider trả kết quả cũ; query trạng thái tránh charge hai lần hoặc refund sai.` },
+    { q: 'Bước thứ ba của saga thất bại sau khi bước thứ hai đã commit riêng. Orchestrator nên làm gì?', options: ['Gọi compensation cho bước hai (đã thành công), ngược thứ tự, rồi đánh dấu đơn FAILED', 'Gọi rollback trên database của bước hai để hủy tất cả', 'Chỉ đánh dấu đơn FAILED mà không động vào bước hai', 'Bỏ qua bước hai và tiếp tục bước thứ tư'], answer: 0, explain: `Đúng (A): mỗi local transaction đã commit riêng, không có rollback toàn cục; orchestrator gọi compensation (hành động bù mới) cho các bước đã thành công, ngược thứ tự, rồi kết thúc saga. (B) sai vì không thể rollback database của service khác. (C) sai vì đã commit thì phải bù, không được bỏ qua. (D) sai vì bước thất bại dừng quy trình, không tiếp tục.` },
   ], tags: ['saga', 'compensation', 'orchestration', 'workflow']
 },
 {
@@ -323,6 +454,57 @@ Tính retry từ số lần gọi có thể khác số lần giao của broker; 
 Nêu lỗi nào retry, số lần tối đa, backoff, timeout tổng, DLQ ownership, replay và cách giữ throughput/ordering.
 
 > Senior tip: đặt ngân sách thời gian retry nhỏ hơn SLA nghiệp vụ; nếu message đến sau deadline thì retry thành công vẫn có thể gây hại.
+
+### Cơ chế từng bước
+
+Retry là thử lại một thao tác sau khi lỗi, chỉ hợp lý khi lỗi có khả năng tự biến mất (lỗi transient). **Lỗi transient** (lỗi tạm thời) có thể hết sau ngắn, ví dụ mạng reset, dịch vụ quá tải trả 503, API giới hạn gọi trả 429. **Lỗi permanent** (lỗi vĩnh viễn) không qua nếu thử lại, ví dụ payload sai schema, thiếu trường bắt buộc, hoặc message poison (dữ liệu hỏng làm processor luôn ném exception). Thử lại lỗi permanent chỉ làm chậm tiến độ và có thể làm tắc partition (khu vực dữ liệu) của Kafka.
+
+Luồng xử lý một message với retry:
+
+1. **Nhận message**: consumer lấy message từ hàng đợi, kèm số lần thử (attempt) đã lưu.
+2. **Kiểm tra đến hạn (dueAt)**: chưa đến giờ thì để lại trong hàng, không xử lý.
+3. **Chạy processor**: thành công thì message rời hàng. Nếu lỗi:
+4. **Tăng attempts**: đạt ngân sách tối đa (maxAttempts) thì chuyển message vào **DLQ** (dead letter queue — hàng đợi thư thất, cách ly message không xử lý được) kèm metadata. Chưa đạt thì tính thời gian chờ bằng **exponential backoff** (gấp đôi mỗi lần, ví dụ 100 ms, 200 ms, 400 ms), cộng **jitter** (ngẫu nhiên nhỏ để client không cùng thức dậy tạo đợt tải đồng bộ), rồi đưa lại hàng.
+5. **DLQ**: cần alert, chủ sở hữu, công cụ xem và quy trình replay sau khi sửa; replay phải bảo toàn idempotency để không tạo side effect hai lần.
+
+~~~java
+// Phác thảo retry với đồng hồ giả: kiểm thử không cần Thread.sleep
+class RetryQueue {
+    private final int maxAttempts;
+    private final long baseDelay;
+    private final Deque<Job> ready = new ArrayDeque<>();
+    private final List<Job> dead = new ArrayList<>();
+
+    boolean runOne(long now, Predicate<String> processor) {
+        Job j = ready.peekFirst();
+        if (j == null || now < j.dueAt()) return false; // chưa đến giờ
+        ready.removeFirst();
+        if (processor.test(j.id())) return true;        // thành công: rời hàng
+        int n = j.attempts() + 1;
+        if (n >= maxAttempts) {
+            dead.add(new Job(j.id(), n, now));          // poison message → DLQ
+        } else {
+            ready.addLast(new Job(j.id(), n, now + baseDelay * (1L << (n - 1)))); // backoff gấp đôi
+        }
+        return true;
+    }
+}
+~~~
+
+Trong ví dụ, {{now}} là đồng hồ truyền vào nên kiểm thử không cần ngủ thật. Production cần giới hạn trễ tối đa, thêm jitter, lưu trạng thái bền vững và phân biệt lỗi transient/permanent.
+
+### Lỗi hay gặp trên production
+
+- **Triệu chứng:** consumer ném exception liên tục trên message hỏng, partition bị tắc, broker loại consumer khỏi nhóm, gây rebalance liên tục. **Nguyên nhân:** retry lỗi permanent trên thread consumer, không chuyển sang DLQ kịp thời. **Cách sửa:** phân loại lỗi ngay, lỗi validation/poison message chuyển DLQ sớm; retry chỉ với lỗi transient và số lần tối đa.
+- **Triệu chứng:** nhiều client cùng retry vào database vừa hồi phục, tạo đợt tải đồng bộ (thundering herd) làm database sập lại. **Nguyên nhân:** không có jitter, tất cả client thức dậy cùng lúc. **Cách sửa:** thêm jitter ngẫu nhiên vào mỗi lần backoff và giới hạn trễ tối đa.
+- **Triệu chứng:** retry thành công nhưng side effect đã xảy ra (trừ tiền rồi mới nhận lỗi response), khách bị trừ hai lần. **Nguyên nhân:** retry không đi kèm idempotency. **Cách sửa:** dùng idempotency key hoặc outbox, chỉ retry khi side effect thực hiện lại an toàn.
+- **Triệu chứng:** ngân sách retry dài hơn SLA nghiệp vụ (retry 5 phút nhưng đơn chỉ xử lý trong 1 phút). **Nguyên nhân:** chỉ quy tắc số lần thử, không tính tổng thời gian. **Cách sửa:** đặt ngân sách thời gian retry nhỏ hơn SLA; message đến sau deadline thì retry thành công vẫn có thể gây hại.
+
+### Liên hệ phỏng vấn
+
+- **Hỏi:** Lỗi nào nên retry, lỗi nào đưa DLQ ngay? **Trả lời ngắn:** Retry lỗi transient (mạng reset, 429, 503) có số lần và backoff giới hạn; lỗi permanent (schema sai, thiếu trường bắt buộc, message hỏng) đưa DLQ sớm.
+- **Hỏi:** Vai trò của jitter trong exponential backoff là gì? **Trả lời ngắn:** Phân tán thời điểm retry của nhiều client, tránh đợt tải đồng bộ khi dịch vụ vừa khôi phục.
+- **Hỏi:** Hết ngân sách retry thì message đi đâu và làm sao sử dụng lại? **Trả lời ngắn:** Đưa vào DLQ kèm metadata; sau khi sửa lỗi, replay từ DLQ với idempotency để không tạo side effect hai lần.
 `,
   exercises: [{
     title: 'Retry theo đồng hồ giả rồi chuyển poison message vào DLQ',
@@ -378,6 +560,7 @@ Lỗi thường gặp: retry không delay, attempt off-by-one, poison message gi
   check: [
     { q: 'Một payload sai schema chắc chắn lỗi ở mọi lần thử. Cách xử lý phù hợp?', options: ['Retry vô hạn', 'Retry nhanh không giới hạn', 'Đưa DLQ sớm theo chính sách lỗi permanent', 'Tăng timeout vô hạn'], answer: 2, explain: `Poison message không tự hết lỗi; retry chỉ chặn tiến độ. Cách ly kèm metadata để điều tra và replay sau khi sửa.` },
     { q: 'Mục tiêu của jitter trong exponential backoff là gì?', options: ['Mã hóa payload', 'Tránh nhiều client retry đồng thời thành đợt tải đồng bộ', 'Đảm bảo exactly-once', 'Giữ thứ tự toàn cục'], answer: 1, explain: `Jitter phân tán thời điểm retry, giảm thundering herd khi dependency vừa phục hồi.` },
+    { q: 'Một message bị hỏng (poison message) khiến processor ném exception ở mọi lần thử. Chính sách phù hợp là gì?', options: ['Dừng retry và chuyển message vào DLQ kèm metadata để điều tra', 'Retry vô hạn cho đến khi message hợp lệ', 'Giữ message mãi đầu hàng và chờ bản sửa', 'Tăng max.poll.interval.ms cho đủ thời gian xử lý'], answer: 0, explain: `Đúng (A): poison message không tự hồi phục; retry vĩnh viễn không giải quyết lỗi dữ liệu, chỉ chặn tiến độ và có thể làm tắc partition. DLQ cách ly message kèm metadata (id, offset, lỗi) để nhóm điều tra và replay sau khi sửa, hàng chính vẫn tiếp tục chảy. (B) sai vì retry vĩnh viễn trên message hỏng không bao giờ kết thúc. (C) sai vì giữ đầu hàng chặn tất cả message sau. (D) sai vì max.poll.interval.ms chỉ là thời gian giữa hai lần poll, không đổi bản chất lỗi message.` },
   ], tags: ['retry', 'backoff', 'DLQ', 'resilience']
 },
 {
@@ -409,8 +592,40 @@ W3C traceparent mang version, trace-id (16 byte), parent-id (8 byte) và trace-f
 ### Pitfall
 Không chỉ set MDC mà quên finally remove/restore. Tạo span mới mà không gắn parent context sẽ làm trace bị đứt thành nhiều trace rời. Không log toàn bộ baggage. Khi truyền qua message broker, inject context vào header và extract ở consumer; message retry có thể tiếp tục trace cũ hoặc tạo span xử lý mới theo chính sách instrumentation.
 
+### Cơ chế từng bước
+Hãy đi qua luồng một request đi qua nhiều service và thread pool, từ đầu đến cuối. **TraceId** là định danh duy nhất của toàn bộ trace (một request end-to-end); **SpanId** là định danh của một operation cụ thể trong trace đó; **ParentSpanId** cho biết span cha. **ThreadLocal** là cơ chế lưu dữ liệu gắn với một thread cụ thể — dữ liệu này không tự lan truyền sang thread khác.
+
+1. **Client gửi request có header traceparent**: Header W3C Trace Context (ví dụ {{traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01}}) mang {{version-trace-id-parent-id-flags}}. **Vì sao cần header này?** Vì traceId phải do client hoặc gateway edge sinh ra một lần, rồi tất cả service dùng chung để nối các span thành một trace hoàn chỉnh.
+2. **Gateway/service edge extract context**: Đọc header, tạo {{Span}} gốc với traceId từ header, spanId mới. **Vì sao không tự sinh traceId mới?** Nếu mỗi service sinh traceId riêng, backend sẽ thấy hàng nghìn trace rời rạc thay vì một chuỗi liên tục — không thể debug latency hay error rate theo request thật.
+3. **Gọi service downstream qua HTTP**: Inject context vào header {{traceparent}} và {{tracestate}} (baggage) khi gọi HTTP client. **Vì sao inject?** Vì network boundary cắt đứt ThreadLocal; header là cầu nối duy nhất giữa hai tiến trình.
+4. **Xử lý bất đồng bộ qua thread pool**: Khi {{executor.submit(task)}}, thread caller **capture** context hiện tại ({{Context.current()}} hoặc {{MDC.getCopyOfContextMap()}}), truyền vào task. **Vì sao không để worker tự lấy?** Worker là thread tái sử dụng; ThreadLocal của caller không hiển thị ở worker. Nếu không capture, task chạy không có traceId, log mất liên kết.
+5. **Trong task worker**: Set context đã capture vào ThreadLocal/MDC ngay đầu task, ghi log/span, xóa context trong {{finally}} (dù thành công hay exception). **Vì sao finally?** Exception làm bỏ qua code cleanup → context rò sang task kế tiếp trên cùng worker (thread leak).
+6. **Kết thúc span và export**: Span kết thúc, đưa vào batch processor của OpenTelemetry SDK. **Vì sao batch?** Gửi từng span lên collector tốn network round-trip; batch gom nhiều span giảm overhead. Cấu hình {{scheduleDelayMillis}}, {{maxQueueSize}}, {{maxExportBatchSize}} để cân bằng latency vs throughput.
+7. **Message broker (Kafka/RabbitMQ)**: Producer inject context vào message header; consumer extract và tạo span tiếp tục (hoặc span mới với parent context). **Vì sao inject vào message?** Message queue là network boundary khác; header message thay cho HTTP header.
+
+~~~java
+// Minh họa: capture context ở caller, set/clear trong worker (OpenTelemetry style)
+Context captured = Context.current();                    // 4. capture ở thread submit
+executor.submit(() -> {
+    try (Scope scope = captured.makeCurrent()) {        // 5. set context cho task này, tự restore khi đóng
+        Span span = tracer.spanBuilder("async-work").setParent(captured).startSpan();
+        try (Scope s = span.makeCurrent()) {
+            doWork();                                    // nghiệp vụ, log tự có traceId
+        } finally { span.end(); }
+    }
+});
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** Log của request B hiển thị traceId của request A, khiến tracing UI hiển thị sai luồng. **Nguyên nhân:** Thread pool tái sử dụng worker; task A set MDC/ThreadLocal nhưng không clear trong {{finally}}, task B kế thừa context cũ. **Cách sửa:** Luôn bọc thân task bằng try/finally (set context trước, clear trong finally); dùng {{Context.taskWrapping(executor)}} của OpenTelemetry thay vì tự quản lý ThreadLocal.
+- **Triệu chứng:** Trace bị đứt thành nhiều trace rời rạc ở service downstream; một request end-to-end hiển thị 3-4 traceId khác nhau. **Nguyên nhân:** Service gọi HTTP client nhưng không inject header {{traceparent}}/{{tracestate}}; hoặc service nhận request không extract header để làm parent context. **Cách sửa:** Cấu hình instrumentation tự động (OpenTelemetry Java agent, Micrometer Tracing) hoặc interceptor thủ công inject/extract header tại mọi boundary HTTP/gRPC/message.
+- **Triệu chứng:** Collector nhận quá nhiều span, bộ nhớ tăng, batch export timeout, trace bị sampling bỏ qua ngẫu nhiên. **Nguyên nhân:** Không cấu hình {{BatchSpanProcessor}} (queue size, schedule delay, max batch size) và sampler phù hợp; span name dùng giá trị động (orderId) làm metric label gây cardinality explosion. **Cách sửa:** Dùng {{ParentBasedSampler}} với {{TraceIdRatioBased}} (ví dụ 10%); span name cố định (ví dụ {{HTTP POST /orders}}), orderId để vào attribute; cấu hình processor: {{scheduleDelayMillis=5000}}, {{maxQueueSize=2048}}, {{maxExportBatchSize=512}}.
+- **Triệu chứng:** Retry message từ DLQ tạo span mới không nối với trace gốc, mất bối cảnh lỗi ban đầu. **Nguyên nhân:** Consumer retry không extract context từ message header, hoặc tạo span mới không set parent. **Cách sửa:** Khi retry, extract context từ header message gốc, tạo span con ({{setParent(extractedContext)}}) hoặc tiếp tục span cũ theo chính sách instrumentation.
+
 ### Liên hệ phỏng vấn
-Giải thích traceparent qua HTTP, context qua executor, và cách chứng minh không rò context giữa hai task dùng chung worker. Nêu lựa chọn instrumentation thay vì tự viết ThreadLocal khắp ứng dụng.
+- **Hỏi:** Thread pool tái sử dụng worker; task A đặt MDC nhưng không clear. Nguy cơ chính? **Trả lời ngắn:** Task B có thể ghi log với context A — ThreadLocal thuộc worker, không tự dọn khi task kết thúc.
+- **Hỏi:** Trong W3C Trace Context, {{trace-id}} và {{parent-id}} có vai trò nào? **Trả lời ngắn:** {{trace-id}} nối toàn trace; {{parent-id}} chỉ span cha được truyền để phía nhận tạo quan hệ con. Baggage là metadata riêng, không nên chứa bí mật.
+- **Hỏi:** Tại sao không nên dùng {{orderId}} làm {{span name}} hoặc metric label? **Trả lời ngắn:** Cardinality explosion — mỗi đơn hàng tạo một tên span/label duy nhất, làm sập hệ thống metric/tracing. Dùng tên cố định ({{HTTP POST /orders}}), orderId để vào attribute.
 
 > Senior tip: kiểm tra task bị reject/cancel và đường exception; cleanup context phải nằm trong finally, kể cả khi code nghiệp vụ ném lỗi.
 `,
@@ -466,6 +681,8 @@ Lỗi thường gặp: đọc ThreadLocal trên thread caller rồi mong worker 
   check: [
     { q: 'Thread pool tái sử dụng worker; task A đặt MDC nhưng không clear. Nguy cơ chính?', options: ['Task B có thể ghi log với context A', 'TraceId tự đổi thành spanId', 'Executor sẽ tạo thread mới cho B', 'Kafka offset sẽ rollback'], answer: 0, explain: `ThreadLocal thuộc worker và worker được tái sử dụng. Không cleanup có thể làm context rò giữa các task.` },
     { q: 'Trong W3C Trace Context, trace-id và parent-id có vai trò nào?', options: ['Cả hai là ID của database', 'trace-id nối toàn trace; parent-id xác định span cha được truyền', 'parent-id là baggage PII', 'trace-id chỉ dùng làm metric label'], answer: 1, explain: `trace-id giữ các span trong cùng trace; parent-id chỉ span hiện tại ở phía gửi để phía nhận tạo quan hệ con. Baggage là metadata riêng, không nên chứa bí mật.` },
+    { q: 'Service A gọi HTTP service B nhưng không inject header traceparent. Hậu quả?', options: ['Service B tự sinh traceId mới, trace bị đứt', 'Service B dùng traceId của A tự động', 'HTTP client tự inject header', 'Không ảnh hưởng vì ThreadLocal lan truyền'], answer: 0, explain: `Ranh giới mạng cắt đứt ThreadLocal. Không inject header = service B không biết parent context, tự tạo trace mới → trace bị đứt. (B) sai vì không có cơ chế tự động. (C) sai trừ khi cấu hình instrumentation. (D) sai vì ThreadLocal không lan truyền qua network.` },
+    { q: 'Tại sao không nên dùng orderId làm span name hoặc metric label?', options: ['Khó đọc trong UI', 'Cardinality explosion: mỗi đơn tạo label duy nhất, sập hệ thống metric', 'Vi phạm W3C spec', 'Làm chậm span export'], answer: 1, explain: `Span name/label phải ổn định, số lượng hữu hạn. orderId không giới hạn → cardinality không kiểm soát. Dùng span name cố định ("HTTP POST /orders"), orderId để attribute.` },
   ], tags: ['tracing', 'OpenTelemetry', 'ThreadLocal', 'context propagation']
 },
 {
@@ -786,17 +1003,59 @@ Token trên không phải rollback tức thời; nó đánh dấu công việc c
 ### Production
 Ledger và tiến độ phải bền (bảng saga/outbox), không nằm trong RAM như bài tập. Mỗi bước cần idempotent ở phía đối tác: xoá row thiếu trả thành công, xoá blob thiếu trả thành công, notify dùng idempotency key. Orchestrator có thể chạy lại sau crash nhờ state đã lưu. Đừng gọi downstream trong transaction DB dài; ghi state trước, gọi ngoài transaction, rồi cập nhật.
 
-### Pitfall
-- Trả 200 dù có id lỗi: người dùng tưởng đã xoá hết.
-- Không có ledger: blob mồ côi, không ai biết cần dọn.
-- Retry không có tiến độ: xoá và notify lặp, đặc biệt nguy hiểm với notify gửi email.
-- Ledger chỉ trong RAM: restart là mất, dữ liệu kẹt nửa vời.
-- Xoá cứng ngay: khó khôi phục khi bước sau fail; nhiều hệ thống dùng soft delete + job dọn sau khi chắc chắn.
+### Cơ chế từng bước
+Hãy đi qua luồng xoá một lô dữ liệu (ví dụ 100 đơn hàng) qua ba hệ thống: Database (PostgreSQL), Object Store (S3/MinIO), Downstream (Notification Service). **Saga** là chuỗi các local transaction, mỗi transaction commit ở một hệ thống riêng; không có transaction ACID bao trùm cả ba. **Compensation** là hành động nghiệp vụ ngược chiều để bù trừ tác động đã commit (ví dụ: đã xoá row → compensation là khôi phục row, hoặc ghi log để reconcile sau). **207 Multi-Status** là mã HTTP báo "thành công một phần" — response kèm danh sách chi tiết từng item.
+
+1. **Nhận request xoá lô**: API nhận {{DELETE /orders/batch}} với danh sách {{orderIds}}. **Vì sao batch?** Xoá từng id một request tốn network round-trip; batch gom nhiều id giảm overhead. Client nhận một response duy nhất.
+2. **Duyệt từng id theo thứ tự DB → Blob → Notify**: Với mỗi {{id}}:
+   - **Bước 1 - Xoá row DB**: Gọi {{DELETE FROM orders WHERE id = ?}}. Nếu row không tồn tại ({{false}}), coi như **đã xoá** (idempotent), bỏ qua Blob và Notify cho id này. **Vì sao DB trước?** Row DB là "source of truth"; nếu xoá DB thất bại thì không nên xoá blob (sẽ tạo blob mồ côi).
+   - **Bước 2 - Xoá blob Object Store**: Gọi {{s3.deleteObject(bucket, key)}}. Nếu lỗi (network, permission), **ghi compensation ledger**: {{compensation.delete.row(id)}} — nghĩa là row DB đã xoá, cần reconcile sau. **Vì sao ghi ledger?** Row đã mất, blob còn lại; ledger đánh dấu "còn việc dang dở" để job reconcile xử lý.
+   - **Bước 3 - Notify downstream**: Gọi {{notificationService.deleted(id)}}. Nếu lỗi, ghi thêm {{compensation.delete.blob(id)}} (blob đã xoá, cần notify lại). **Vì sao notify cuối?** Downstream chỉ cần biết khi dữ liệu thực sự đã biến mất; notify sớm có thể gây race condition (downstream đọc DB còn thấy row).
+3. **Tổng hợp response**: Nếu **tất cả** id thành công (mỗi id qua hết 3 bước) → trả {{200 OK}}. Nếu **có ít nhất một id lỗi** ở bất kỳ bước nào → trả {{207 Multi-Status}} kèm {{detail}} danh sách từng id với {{code}} (200/500) và {{msg}}. **Vì sao 207 không phải 500?** 500 nghĩa là "toàn bộ thất bại", client không biết id nào đã xoá. 207 cho client thấy rõ: id nào xong, id nào lỗi, tự quyết định retry hay báo cáo.
+4. **Retry / Reconcile**: Client hoặc scheduler gọi lại {{deleteBatch}} (hoặc {{reconcile()}}). Orchestrator đọc **tiến độ** (progress) từng id: bước nào đã {{done}} thì **bỏ qua**, chỉ chạy bước còn thiếu. **Vì sao cần tiến độ?** Không có tiến độ, retry sẽ xoá DB lần 2 (idempotent nên an toàn nhưng lãng phí), xoá blob lần 2, **gửi notify lần 2** (gửi email gấp đôi — nguy hiểm).
+5. **Kết thúc**: Khi tất cả bước của một id đã {{done}} → xoá tiến độ và ledger của id đó. Id này lần sau gọi trả {{200}} ngay (already deleted).
+
+~~~java
+// Minh họa luồng deleteOne với tiến độ và ledger (rút gọn từ bài tập)
+Detail deleteOne(String id) {
+    if (completed.contains(id)) return new Detail(id, 200, "already deleted");
+    State st = progress.computeIfAbsent(id, k -> new State()); // EnumSet<Step> done
+
+    try {
+        // Bước 1: DB
+        if (!st.done.contains(Step.DB)) {
+            if (!db.deleteRows(id)) { progress.remove(id); return new Detail(id, 200, "already absent"); }
+            st.done.add(Step.DB);
+        }
+        // Bước 2: Blob
+        if (!st.done.contains(Step.BLOB)) { objects.deleteBlob(id); st.done.add(Step.BLOB); }
+        // Bước 3: Notify
+        if (!st.done.contains(Step.NOTIFY)) { downstream.notify(id); st.done.add(Step.NOTIFY); }
+
+        completed.add(id); progress.remove(id); clearLedger(id);
+        return new Detail(id, 200, "deleted");
+    } catch (Exception e) {
+        // Ghi ledger cho các bước ĐÃ thành công (bước lỗi KHÔNG ghi)
+        if (st.done.contains(Step.DB)) ledger.add(new Comp("delete.row", id));
+        if (st.done.contains(Step.BLOB)) ledger.add(new Comp("delete.blob", id));
+        return new Detail(id, 500, e.getClass().getSimpleName() + ": " + e.getMessage());
+    }
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu khách:** Client nhận {{200 OK}} nhưng một số id thực tế chưa xoá được blob/notify; dữ liệu mồ côi tồn tại âm thầm. **Nguyên nhân:** Orchestrator trả {{200}} khi có lỗi (chỉ kiểm tra DB thành công, bỏ qua lỗi blob/notify), hoặc try-catch nuốt exception mà không ghi ledger/đánh dấu lỗi. **Cách sửa:** Luôn kiểm tra lỗi ở **tất cả** ba bước; chỉ trả {{200}} khi mọi id qua hết 3 bước; lỗi bất kỳ bước → {{207}} kèm detail từng id.
+- **Triệu chứng:** Reconcile chạy mà xoá row DB lần hai (hoặc gửi notify lần hai), gây email trùng lặp cho người dùng. **Nguyên nhân:** Không lưu tiến độ (progress) từng bước đã xong; retry chạy lại từ đầu thay vì tiếp tục từ bước lỗi. **Cách sửa:** Lưu {{EnumSet<Step> done}} cho mỗi id (bền vững trong DB/Redis); đầu mỗi lần xử lý kiểm tra {{done}} để bỏ qua bước đã thành công.
+- **Triệu chứng:** Service restart làm mất compensation ledger, các id kẹt giữa chừng không bao giờ được reconcile. **Nguyên nhân:** Ledger và tiến độ chỉ lưu trong RAM ({{Map}}, {{List}}); process chết là mất hết state. **Cách sửa:** Ghi ledger và progress vào bảng bền vững ({{saga_state/outbox}}) **trước hoặc cùng transaction** với việc gọi tier tiếp theo; restart đọc lại state và tiếp tục.
+- **Triệu chứng:** Xoá cứng (hard delete) row DB, sau đó blob lỗi → không thể khôi phục row để retry, dữ liệu mất lệch. **Nguyên nhân:** Dùng {{DELETE}} thay vì {{soft delete}} (cột {{deleted_at}}); hard delete không thể undo. **Cách sửa:** Dùng soft delete + job dọn dẹp sau cửa sổ an toàn (ví dụ 30 ngày); compensation chỉ cần cập nhật {{deleted_at = null}} để khôi phục.
 
 ### Liên hệ phỏng vấn
-Nêu rõ vì sao chọn 207 thay vì 500, thứ tự ba bước, ledger ghi gì, retry dựa vào đâu, và reconcile xử lý trường hợp nào. Sau đó mô tả cách làm cho từng tier idempotent để retry an toàn.
+- **Hỏi:** Vì sao chọn {{207 Multi-Status}} thay vì {{500}} khi một id lỗi? **Trả lời ngắn:** 500 che mất thông tin id nào đã xoá thành công; 207 trả detail từng id (code {{200}}/{{500}}) để client biết chính xác trạng thái và quyết định retry/report.
+- **Hỏi:** Thứ tự ba bước {{DB → Blob → Notify}} có ý nghĩa gì? **Trả lời ngắn:** DB là source of truth (xoá trước để tránh blob mồ côi); Blob sau DB (tránh file rác khi DB fail); Notify cuối (downstream chỉ hành động khi dữ liệu thực sự mất).
+- **Hỏi:** Reconcile không xoá DB hai lần nhờ cơ chế nào? **Trả lời ngắn:** Lưu tiến độ ({{EnumSet<Step> done}}) cho mỗi id; retry đọc tiến độ và chỉ chạy bước chưa {{done}}.
+- **Hỏi:** Compensation ledger ghi gì khi blob lỗi sau khi DB đã xoá? **Trả lời ngắn:** {{compensation.delete.row(id)}} — đánh dấu row đã xoá, cần reconcile blob/notify; KHÔNG ghi {{compensation.delete.blob}} vì blob chưa xoá thành công.
 
-> Senior tip: đặt metric theo id kẹt quá N phút và tuổi entry ledger; alert khi ledger tăng mà reconcile không giảm. Với lô lớn, xử lý theo batch nhỏ và trả 202 kèm job id thay vì giữ request quá lâu.
+> Senior tip: đặt metric theo id kẹt quá N phút và tuổi entry ledger; alert khi ledger tăng mà reconcile không giảm. Với lô lớn, xử lý theo batch nhỏ và trả {{202}} kèm job id thay vì giữ request quá lâu.
 `,
   exercises: [{
     title: 'Delete orchestrator: 207, tiến độ từng id và reconcile',
@@ -1050,6 +1309,7 @@ Trong production, State và ledger phải được lưu bền và cập nhật n
     { q: 'Một lô có 10 id: 9 id xoá xong, 1 id lỗi ở object store. API nên trả gì?', options: ['200 vì phần lớn thành công', '207 kèm detail từng id để client biết id nào lỗi', '500 và rollback toàn bộ', '202 và bỏ qua id lỗi'], answer: 1, explain: `207 Multi-Status đúng cho kết quả từng phần: 9 id thành công, 1 id lỗi vẫn được báo riêng. 200 che mất lỗi; 500 làm mất thông tin id nào đã xong và không rollback được object store; 202 chỉ hợp lý nếu chấp nhận xử lý nền, nhưng vẫn phải có trạng thái theo id.` },
     { q: 'Vì sao orchestrator lưu tiến độ các bước đã xong theo từng id?', options: ['Để tăng kích thước response', 'Để retry tiếp tục từ bước còn thiếu, tránh xoá DB hoặc notify hai lần', 'Để thay thế transaction DB', 'Để tự động rollback blob'], answer: 1, explain: `Tiến độ biến retry thành idempotent ở mức orchestration: bước đã xong bị bỏ qua. Nó không làm response lớn hơn (chỉ dùng nội bộ), không thay thế transaction DB, và cũng không tự rollback blob đã xoá.` },
     { q: 'Sau khi DB đã xoá nhưng blob lỗi, compensation ledger nên ghi gì?', options: ['Không ghi gì vì chưa hoàn tất', 'compensation.delete.row(id) cho bước DB đã thành công', 'compensation.delete.blob(id) cho bước vừa lỗi', 'Một bản sao dữ liệu blob để phục hồi'], answer: 1, explain: `Ledger ghi các bước đã thành công để reconciler biết id còn dang dở; trong ví dụ này là row. Bước vừa lỗi chưa thành công nên không ghi blob; không ghi gì sẽ làm mất dấu id cần xử lý; sao lưu blob là việc của backup, không phải ledger compensation.` },
+    { q: 'Row DB không tồn tại (xoá thất bại trả false). Orchestrator xử lý ra sao?', options: ['Trả 500 và ghi ledger compensation.delete.row', 'Coi như đã xoá: trả detail 200, bỏ qua blob và notify, không ghi ledger', 'Tạo row mới rồi xoá lại để có compensation', 'Retry vô hạn cho đến khi row xuất hiện'], answer: 1, explain: `Xoá idempotent: trạng thái mong muốn (row không còn) đã đạt. Không cần compensation vì không có tác động đã commit cần bù; blob/notify cũng không chạy vì không có dữ liệu để xoá/thông báo.` },
   ], related: ['microservices-043', 'microservices-004', 'microservices-022'],
   tags: ['207', 'partial success', 'compensation', 'saga', 'reconcile']
 },
@@ -1109,7 +1369,7 @@ SELECT * FROM saga_state
 
 ### Khung engine tổng quát
 ~~~java
-// Buoc van hanh theo sagaId de moi lenh giu duoc idempotency key cua no
+// Bước vận hành theo sagaId để mỗi lệnh giữ được idempotency key của nó
 record Step(String name, SagaAction action, SagaAction compensate) {}
 interface SagaAction { void run(String sagaId) throws Exception; }
 
@@ -1118,7 +1378,7 @@ void advance(Saga saga) {
         Step s = saga.steps().get(saga.step());
         try {
             s.action().run(saga.id());
-            saga.markDone(s.name());        // ghi saga_state truoc hoac cung luc phat lenh ke tiep
+            saga.markDone(s.name());        // ghi saga_state trước hoặc cùng lúc phát lệnh kế tiếp
             saga.step(saga.step() + 1);
         } catch (TimeoutException e) {
             saga.markUnknown(s.name());     // UNKNOWN: truy van ket qua, khong doan that bai
@@ -1439,11 +1699,11 @@ Payment:      cap hop Bank 1200ms, giữ 700ms còn lại để ghi kết quả 
 ~~~
 Code phía gọi (kiểu RestTemplate/Feign interceptor):
 ~~~java
-// Timeout hop ke tiep = min(cap cua minh, budget con lai - du phong cho viec cua minh)
+// Timeout hộp kế tiếp = min(cap của mình, budget còn lại - dự phòng cho việc của mình)
 long remaining = budget.remainingMillis();          // doc tu header X-Deadline
 long hopTimeout = Math.min(1200, remaining - 300);  // cap 1.2s, giu 300ms duoi
 if (hopTimeout <= 0) {
-    return failFast("deadline exhausted");          // het gio: goi tiep cung khong kip xong, dung goi
+    return failFast("deadline exhausted");          // hết giờ: gọi tiếp cũng không kịp xong, dừng gọi
 }
 requestConfig.setResponseTimeout(Duration.ofMillis(hopTimeout));
 ~~~
@@ -1576,7 +1836,7 @@ Vẽ chain 4 hop với budget 3000ms, chỉ ra công thức chia timeout từng 
     long t=chain.timeoutForCall(500,0);
     if(t==0) { used.add(0L); continue; }
     used.add(t);
-    now.set(now.get()+t);                        // moi hop dung het timeout cua no
+    now.set(now.get()+t);                        // mỗi hộp dùng hết timeout của nó
    }
    eq(List.of(500L,500L,0L,0L),used);
   });
@@ -1739,13 +1999,13 @@ Nêu rõ: partition log + offset, group assignment (range/round-robin), hai hư�
   ck("append returns offsets",()->{MiniKafka k=new MiniKafka();eq(0,k.append("o",0,"a"));eq(1,k.append("o",0,"b"));eq(0,k.append("o",1,"x"));});
   ck("poll advances position",()->{MiniKafka k=new MiniKafka();k.append("o",0,"a");k.append("o",0,"b");k.append("o",0,"c");eq(List.of("a","b"),k.poll("g","o",0,2));eq(2,k.position("g","o",0));eq(List.of("c"),k.poll("g","o",0,5));});
   ck("at-most-once loses on crash",()->{MiniKafka k=new MiniKafka();k.append("o",0,"m1");k.append("o",0,"m2");List<String> batch=k.poll("g","o",0,10);
-   k.commit("g","o",0,k.position("g","o",0)); // commit TRUOC xu ly
-   // crash: khong xu ly batch, restart
+   k.commit("g","o",0,k.position("g","o",0)); // commit TRƯỚC xử lý
+   // crash: không xử lý batch, restart
    k.resetToCommitted("g","o",0);
    eq(List.of(),k.poll("g","o",0,10)); // m1,m2 bi mat
   });
   ck("at-least-once duplicates on crash",()->{MiniKafka k=new MiniKafka();k.append("o",0,"m1");k.append("o",0,"m2");List<String> batch=k.poll("g","o",0,10);
-   // da xu ly batch nhung crash TRUOC commit
+   // đã xử lý batch nhưng crash TRƯỚC commit
    k.resetToCommitted("g","o",0);
    eq(List.of("m1","m2"),k.poll("g","o",0,10)); // doc lai -> trung
    k.commit("g","o",0,k.position("g","o",0));k.resetToCommitted("g","o",0);eq(List.of(),k.poll("g","o",0,10));
@@ -1811,17 +2071,17 @@ Lỗi hay gặp: nhầm "đã poll" với "đã xử lý xong"; commit offset c�
   id: 'lesson-microservices-011', track: 'microservices', order: 11,
   title: 'Idempotent producer: sequence number, dedup và lỗi OUT_OF_ORDER', level: 'senior', minutes: 40,
   goals: ['Giải thích producer id (PID) và sequence number trong idempotent producer của Kafka', 'Cài broker dedup: APPENDED, DUPLICATE, OUT_OF_ORDER', 'Nêu giới hạn của idempotent producer (phạm vi partition, phiên, retry)'],
-  body: `**Tóm tắt:** Khi producer (bên gửi) retry (thử gửi lại) vì timeout (hết thời gian chờ), broker có thể nhận cùng bản ghi hai lần. Idempotent producer (producer có khả năng gửi lặp an toàn) gắn mỗi producer một PID (producer ID, định danh phiên gửi) và mỗi bản ghi trên một partition một sequence number (số thứ tự tăng dần). Broker nhớ sequence cuối theo (PID, partition): seq lặp → DUPLICATE, seq nhảy cóc → OUT_OF_ORDER, đúng kế tiếp → APPENDED.
+  body: `**Tóm tắt:** Khi producer (bên gửi) retry (thử gửi lại) vì timeout (hết thời gian chờ — producer chờ phản hồi ACK nhưng quá lâu nên coi như thất bại), broker (máy chủ Kafka nhận và lưu bản ghi) có thể nhận cùng bản ghi hai lần. Idempotent producer (producer có khả năng gửi lặp an toàn: gửi lại vẫn chỉ tạo một bản ghi logic) gắn mỗi phiên gửi một PID (producer ID, định danh do broker cấp) và mỗi bản ghi trên một partition (phân vùng — một dải log có thứ tự trong topic) một sequence number (số thứ tự tăng dần từ 0). Broker nhớ sequence cuối theo (PID, partition): seq lặp → DUPLICATE (trùng, bỏ qua), seq nhảy cóc → OUT_OF_ORDER (lỗi thứ tự), đúng kế tiếp → APPENDED (đã ghi).
 
 ### Cơ chế thật (Kafka)
-Bật {{enable.idempotence=true}} (mặc định true ở client mới) khiến producer được broker cấp {{PID}}. Với mỗi {{<topic, partition>}}, producer gán {{sequence number}} bắt đầu 0, tăng 1 mỗi bản ghi/batch thành công. Broker lưu {{(PID, partition) -> lastSeq}} (gắn với log).
+Bật {{enable.idempotence=true}} (mặc định true ở client Kafka mới) khiến producer xin broker cấp {{PID}} khi khởi tạo. Với mỗi cặp {{<topic, partition>}}, producer gán {{sequence number}} bắt đầu 0, tăng 1 mỗi batch (nhóm bản ghi) gửi thành công. Broker lưu trạng thái {{(PID, partition) -> lastSeq}} gắn với log của partition đó.
 
 | Nhận (PID, seq) | Điều kiện (last là seq cuối đã append) | Kết quả |
 |---|---|---|
 | lần đầu / last chưa có | seq == 0 (mô phỏng đơn giản) | APPENDED, last=seq |
 | đúng kế tiếp | seq == last + 1 | APPENDED, last=seq |
-| trùng retry | seq == last | DUPLICATE (ack thành công, không ghi thêm) |
-| nhảy cóc / cũ bất thường | seq > last + 1 hoặc seq < last | OUT_OF_ORDER (lỗi) |
+| trùng retry | seq == last | DUPLICATE (ACK thành công, không ghi thêm) |
+| nhảy cóc / cũ bất thường | seq > last + 1 hoặc seq < last | OUT_OF_ORDER (lỗi, từ chối) |
 
 ~~~seq
 title: Retry tạo duplicate nhưng broker dedup
@@ -1834,29 +2094,66 @@ Broker --> Broker: seq==lastSeq → DUPLICATE
 Broker -->> Producer(PID=7): ACK (không ghi lần 2)
 ~~~
 
-Cấu hình liên quan (client mới thường tự đảm bảo khi bật idempotence): {{acks=all}}, {{retries}} đủ lớn (thực tế bị chặn bởi {{delivery.timeout.ms}}), và {{max.in.flight.requests.per.connection}} <= 5 (mặc định 5) để giữ thứ tự. Idempotence Kafka đảm bảo không trùng/không đảo thứ tự **trong phạm vi một phiên producer và một partition**. Producer restart lấy PID mới (trừ khi dùng {{transactional.id}} để fence phiên cũ); cross-partition/cross-topic exactly-once cần transaction API.
+Cấu hình liên quan (client mới thường tự đảm bảo khi bật idempotence): {{acks=all}} (đợi tất cả replica trong ISR xác nhận), {{retries}} đủ lớn (thực tế bị chặn bởi {{delivery.timeout.ms}}), và {{max.in.flight.requests.per.connection}} <= 5 (mặc định 5) để giữ thứ tự khi retry. Idempotence Kafka đảm bảo không trùng/không đảo thứ tự **trong phạm vi một phiên producer và một partition**. Producer restart lấy PID mới (trừ khi dùng {{transactional.id}} để fence — chặn — phiên cũ); exactly-once xuyên partition/topic cần transaction API.
 
-### Vì sao OUT_OF_ORDER là lỗi nghiêm trọng
-Nếu broker nhận seq=5 khi last=3, có thể seq=4 đã mất. Chấp nhận seq=5 tạo lỗ hổng vĩnh viễn trong log. Kafka client có thể gặp {{OutOfOrderSequenceException}}: thường là dấu hiệu cấu hình/retry/in-flight bất thường, không nên âm thầm bỏ qua.
-
-### Bản mô phỏng đơn giản hoá
-{{Broker.append(pid, seq, msg)}} xử lý một partition logic duy nhất, không có topic/partition key, không có PID epoch fencing, không có batch, không có network. DUPLICATE trả về để test quan sát (thực tế vẫn là ack thành công).
+### Cơ chế từng bước
+1. **Khởi tạo phiên:** Producer kết nối broker, xin {{PID}} (ví dụ PID=7). Đây là danh tính phiên gửi; nếu producer crash rồi khởi động lại, nó xin PID mới nên dedup của phiên cũ không tự nối tiếp.
+2. **Gán sequence:** Với mỗi {{<topic, partition>}} producer giữ một bộ đếm riêng, bắt đầu 0. Mỗi lần gửi thành công (nhận ACK hợp lệ), bộ đếm tăng 1. Vì vậy sequence là **per (PID, partition)**, không dùng chung giữa partition.
+3. **Gửi bản ghi:** Producer gửi {{(PID, partition, seq, payload)}}. Broker tra {{lastSeq}} của (PID, partition).
+4. **Broker quyết định:**
+   - Nếu {{seq == expected}} (expected = lastSeq + 1, hoặc 0 nếu chưa có): ghi vào log, cập nhật lastSeq, trả ACK → APPENDED.
+   - Nếu {{seq == lastSeq}}: đây là retry của bản ghi đã commit (ACK trước có thể bị mất trên mạng). Broker **không ghi thêm** nhưng vẫn trả ACK thành công → DUPLICATE. Vậy producer thấy thành công, log không bị nhân đôi.
+   - Nếu {{seq > expected}} hoặc {{seq < lastSeq}} (bất thường): broker từ chối → OUT_OF_ORDER. Vì sao không chấp nhận? Nếu nhận seq=5 khi last=3, seq=4 có thể đã mất vĩnh viễn; chấp nhận sẽ tạo lỗ hổng trong chuỗi thứ tự.
+5. **Retry an toàn:** Khi timeout, producer gửi lại **cùng (PID, seq, payload)**. Nhờ bước 4, retry trở nên idempotent trong phạm vi phiên+partition.
+6. **Kết thúc phiên:** Producer đóng hoặc crash. PID phiên đó hết hiệu lực (trừ fencing bằng {{transactional.id}}). Dữ liệu đã append vẫn đúng; dedup không hứa hẹn xuyên các phiên khác PID.
 
 ~~~java
-Broker b = new Broker();
-b.append(7, 0, "a"); // APPENDED
-b.append(7, 0, "a"); // DUPLICATE (retry)
-b.append(7, 1, "b"); // APPENDED
+// Ví dụ tư duy: mô phỏng quyết định APPENDED/DUPLICATE/OUT_OF_ORDER theo từng PID
+class Broker {
+    private final Map<Integer, Long> last = new HashMap<>(); // PID -> lastSeq
+    synchronized String append(int pid, long seq, String msg) {
+        Long cur = last.get(pid);
+        long expected = (cur == null) ? 0L : cur + 1L; // pid mới phải bắt đầu từ 0
+        if (seq == expected) {
+            last.put(pid, seq);         // ghi thành công, cập nhật mốc
+            return "APPENDED";
+        }
+        if (cur != null && seq == cur) return "DUPLICATE"; // retry an toàn
+        return "OUT_OF_ORDER";          // nhảy cóc hoặc lùi: từ chối, không đổi state
+    }
+}
 ~~~
 
+### Vì sao OUT_OF_ORDER là lỗi nghiêm trọng
+OUT_OF_ORDER có nghĩa chuỗi sequence bị đứt. Nếu broker im lặng chấp nhận seq nhảy cóc, consumer sẽ đọc log có lỗ hổng mà không biết bản ghi thiếu. Kafka client có thể ném {{OutOfOrderSequenceException}}: đây là dấu hiệu cấu hình, retry, hoặc in-flight bất thường — cần điều tra, không nên nuốt lỗi (catch rồi bỏ qua).
+
+### Bản mô phỏng đơn giản hoá
+{{Broker.append(pid, seq, msg)}} trong bài tập xử lý một partition logic duy nhất, không có topic/partition key, không có PID epoch fencing (cơ chế chặn PID cũ khi dùng transaction), không có batch, không có network. DUPLICATE trả về chuỗi để test quan sát (thực tế broker vẫn trả ACK thành công cho producer).
+
 ### Lỗi hay gặp
-- Nghĩ idempotent producer làm exactly-once end-to-end: consumer/DB ngoài vẫn thấy tác dụng lặp nếu pipeline không idempotent.
-- Cấu hình xung đột với idempotence (ví dụ {{acks!=all}} hoặc {{max.in.flight.requests.per.connection}} > 5) sẽ bị client từ chối ở phiên bản mới; nếu tắt idempotence và cho phép nhiều request in-flight, retry có thể đảo thứ tự.
+- Nghĩ idempotent producer làm exactly-once end-to-end: consumer/DB bên ngoài vẫn thấy tác dụng lặp nếu pipeline không idempotent (ví dụ ghi DB hai lần nếu consumer xử lý lại).
+- Cấu hình xung đột với idempotence ({{acks!=all}} hoặc {{max.in.flight.requests.per.connection}} > 5) bị client mới từ chối; nếu tắt idempotence và cho nhiều request in-flight, retry có thể đảo thứ tự.
 - Sequence là **per (PID, partition)**; không dùng chung giữa partition.
-- Nhầm DUPLICATE (an toàn, broker đã có) với OUT_OF_ORDER (cần xử lý lỗi).
+- Nhầm DUPLICATE (an toàn, broker đã có bản ghi) với OUT_OF_ORDER (cần xử lý lỗi, chuỗi bị đứt).
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** Metric {{record-error-rate}} tăng, log producer xuất hiện {{OutOfOrderSequenceException}} hoặc {{UnknownProducerIdException}}.
+  **Nguyên nhân:** Producer ID hết hạn do vô hoạt động lâu (vượt {{transactional.id.expiration.ms}}, mặc định 7 ngày) hoặc broker restart mất state PID; hoặc producer mới cùng {{transactional.id}} khởi động làm fence epoch cũ. Cấu hình in-flight/retry không hợp lệ cũng gây OUT_OF_ORDER; leader failover kết hợp timeout có thể.trigger sequence gap.
+  **Cách sửa:** Kiểm tra {{transactional.id.expiration.ms}}, {{delivery.timeout.ms}}, {{request.timeout.ms}}; đảm bảo {{enable.idempotence=true}}, {{acks=all}}, {{max.in.flight.requests.per.connection <= 5}}. Nếu cần vượt phiên, dùng {{transactional.id}} để fencing.
+- **Triệu chứng:** Duplicate message xuất hiện ở consumer/DB dù producer đã bật idempotence.
+  **Nguyên nhân:** Hiểu nhầm phạm vi: idempotence chỉ chặn duplicate **trong phiên producer + partition** do retry. Duplicate có thể đến từ consumer reprocess (offset commit chưa kịp), producer restart với PID mới gửi lại cùng nghiệp vụ, hoặc nhiều partition.
+  **Cách sửa:** Thiết kế consumer/ghi DB idempotent theo business key (ví dụ {{orderId}} + unique constraint, hoặc bảng dedup). Nếu cần exactly-once Kafka-to-Kafka, dùng transaction API.
+- **Triệu chứng:** Sau deploy/restart producer, thấy một số sự kiện nghiệp vụ bị ghi hai lần.
+  **Nguyên nhân:** Ứng dụng gửi lại cùng sự kiện với PID mới (phiên mới) — broker coi đây là bản ghi hợp lệ vì không có state dedup của PID cũ cho payload đó ở mức nghiệp vụ.
+  **Cách sửa:** Áp dụng idempotency key ở tầng ứng dụng (outbox pattern + unique key, hoặc check-before-write). Không dựa vào Kafka PID để dedup xuyên restart.
+- **Triệu chứng:** Throughput giảm rõ khi bật idempotence, latency tăng.
+  **Nguyên nhân:** {{acks=all}} và giới hạn in-flight (<=5) làm producer chờ xác nhận nhiều hơn, đặc biệt khi {{min.insync.replicas}} cao hoặc cụm có độ trễ mạng.
+  **Cách sửa:** Đo baseline với {{record-send-rate}}, {{request-latency-avg}}; cân bằng {{batch.size}}, {{linger.ms}}; chấp nhận đánh đổi (đúng dữ liệu quan trọng hơn). Chỉ tắt idempotence nếu chấp nhận được duplicate/mất thứ tự và đã đánh giá rủi ro.
 
 ### Liên hệ phỏng vấn
-Trình bày: PID + sequence per partition, cách broker phân biệt retry hợp lệ và lỗ hổng, giới hạn phạm vi (phiên, partition). Nêu {{enable.idempotence}}, {{acks=all}}, {{transactional.id}} và vì sao consumer vẫn cần idempotent.
+- **"Kafka idempotent producer chống duplicate thế nào?"** → Trả lời: broker cấp {{PID}} cho phiên producer, producer gán {{sequence number}} tăng dần cho mỗi (PID, partition); broker lưu lastSeq, seq trùng trả ACK nhưng không append (dedup retry), seq nhảy cóc trả OUT_OF_ORDER để tránh lỗ hổng.
+- **"Idempotent producer có đảm bảo exactly-once end-to-end không?"** → Trả lời: không. Nó đảm bảo không trùng/không đảo thứ tự trong phạm vi **một phiên producer + một partition** với cấu hình đúng ({{acks=all}}, {{max.in.flight <= 5}}). Consumer, DB, và xử lý xuyên phiên/partition vẫn cần idempotency hoặc transaction.
+- **"Khi gặp {{OutOfOrderSequenceException}} bạn xử lý ra sao?"** → Trả lời: coi là lỗi nghiêm trọng (chuỗi sequence đứt), không nuốt lỗi; kiểm tra cấu hình idempotence, timeout/retry, in-flight, và sức khoẻ broker/leader; theo dõi metric error/retry; nếu do timeout giả thì điều chỉnh {{request.timeout.ms}}/{{delivery.timeout.ms}} và hạ tải in-flight.
 
 > Senior tip: theo dõi producer {{record-error-rate}}, {{record-retry-rate}} và OutOfOrderSequence; retry tăng bất thường khi broker ổn định thường do timeout/in-flight hoặc mạng gây timeout giả.
 `,
@@ -1899,7 +2196,7 @@ Trình bày: PID + sequence per partition, cách broker phân biệt retry hợp
         if (cur != null && seq == cur) {
             return "DUPLICATE"; // retry an toan: da co ban ghi, khong ghi them
         }
-        return "OUT_OF_ORDER"; // seq < last hoac nhay coc: khong chap nhan
+        return "OUT_OF_ORDER"; // seq < last hoặc nhảy cóc: không chấp nhận
     }
     synchronized int size() { return log.size(); }
     synchronized long lastSeq(int pid) { return last.getOrDefault(pid, -1L); }
@@ -1915,7 +2212,8 @@ Lỗi hay gặp: coi seq < last là DUPLICATE; không tách state theo pid; appe
   check: [
     { q: 'Producer gửi lại (PID=5, seq=10) vì timeout ACK, broker đã có lastSeq=10. Kết quả đúng?', options: ['APPENDED thêm bản ghi thứ hai', 'DUPLICATE, không ghi thêm', 'OUT_OF_ORDER', 'Broker reset lastSeq'], answer: 1, explain: 'seq trùng lastSeq là retry của bản ghi đã được broker ghi nhận; broker trả thành công logic (dedup) nhưng không append lần hai.' },
     { q: 'Broker có lastSeq=3 cho PID=5, nhận seq=5. Kết quả đúng?', options: ['APPENDED', 'DUPLICATE', 'OUT_OF_ORDER vì nhảy cóc qua seq=4', 'Tự điền seq=4'], answer: 2, explain: 'seq > lastSeq+1 tạo lỗ hổng (thiếu seq=4). Broker phải từ chối để bảo toàn tính liên tục sequence; im lặng chấp nhận sẽ che mất mất dữ liệu.' },
-    { q: 'Idempotent producer của Kafka (enable.idempotence) đảm bảo phạm vi nào?', options: ['Exactly-once cho mọi DB và HTTP gọi ra ngoài', 'Không trùng/đảo thứ tự trong phạm vi phiên producer + partition (cấu hình đúng)', 'Mọi consumer tự động idempotent', 'Không bao giờ retry'], answer: 1, explain: 'Đảm bảo dựa trên PID/sequence per partition; cross-partition transaction cần transactional.id. Hệ thống ngoài Kafka vẫn cần cơ chế idempotency riêng.' }
+    { q: 'Idempotent producer của Kafka (enable.idempotence) đảm bảo phạm vi nào?', options: ['Exactly-once cho mọi DB và HTTP gọi ra ngoài', 'Không trùng/đảo thứ tự trong phạm vi phiên producer + partition (cấu hình đúng)', 'Mọi consumer tự động idempotent', 'Không bao giờ retry'], answer: 1, explain: 'Đảm bảo dựa trên PID/sequence per partition; cross-partition transaction cần transactional.id. Hệ thống ngoài Kafka vẫn cần cơ chế idempotency riêng.' },
+    { q: 'Tại sao producer restart rồi gửi lại cùng sự kiện nghiệp vụ vẫn có thể tạo bản ghi trùng ở Kafka dù từng phiên bật idempotence?', options: ['Vì broker tự xoá lastSeq sau mỗi ACK', 'Vì phiên mới xin PID mới nên dedup theo PID/sequence không nối tiếp cho nghiệp vụ cũ', 'Vì {{acks=all}} luôn tạo duplicate', 'Vì sequence number dùng chung cho mọi partition'], answer: 1, explain: 'Idempotence Kafka dedup theo (PID, partition) trong phiên. Restart lấy PID mới, broker coi bản ghi là hợp lệ theo phiên mới; dedup nghiệp vụ cần key ứng dụng (outbox/unique constraint).' }
   ],
   related: ['microservices-002', 'microservices-001', 'core-015'],
   tags: ['Kafka', 'idempotent producer', 'sequence number', 'dedup', 'exactly-once']

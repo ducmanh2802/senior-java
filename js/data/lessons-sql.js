@@ -213,7 +213,7 @@ class JoinEngine {
         Map<Integer, List<Row>> table = new HashMap<>();
         for (Row b : build) table.computeIfAbsent(b.id, k -> new ArrayList<>()).add(b);
 
-        // Pha probe: moi dong tra bang bam dung mot lan
+        // Pha probe: mỗi dòng tra bảng băm dùng một lần
         List<String[]> result = new ArrayList<>();
         for (Row p : probe) {
             hashCount++;
@@ -976,8 +976,8 @@ class Window {
         Integer[] out = new Integer[rows.size()];
         String curGroup = null;
         int prevAmount = 0;
-        int curRank = 0;   // rank cua dong vua xu ly
-        int seen = 0;      // so dong da thay trong partition (dung cho RANK nhay)
+        int curRank = 0;   // rank của dòng vừa xử lý
+        int seen = 0;      // số dòng đã thấy trong partition (dùng cho RANK nhảy)
         for (int i : order(rows)) {
             Row r = rows.get(i);
             if (!r.group.equals(curGroup)) {          // sang partition moi: reset
@@ -1265,7 +1265,7 @@ class Joins {
         List<String[]> out = new ArrayList<>();
         for (Row l : left) {
             for (Row r : right) {
-                comparisons++;                 // moi cap duoc kiem tra
+                comparisons++;                 // mỗi cặp được kiểm tra
                 if (keyEq(l.key, r.key)) out.add(new String[]{l.val, r.val});
             }
         }
@@ -1286,7 +1286,7 @@ class Joins {
         List<String[]> out = new ArrayList<>();
         for (Row p : probe) {
             if (p.key == null) continue;       // null khong tra cuu
-            comparisons++;                     // mot lan tra/kiem tra cho dong probe
+            comparisons++;                     // một lần tra/kiểm tra cho dòng probe
             List<Row> matches = table.get(p.key);
             if (matches == null) continue;
             for (Row b : matches) {
@@ -1308,7 +1308,7 @@ class Joins {
         };
         List<Row> L = new ArrayList<>(left); L.sort(cmp);
         List<Row> R = new ArrayList<>(right); R.sort(cmp);
-        // bo qua duoi null (null khong khop) bang cach gioi han pham vi khong-null
+        // bỏ qua dưới null (null không khớp) bằng cách giới hạn phạm vi không-null
         int lEnd = L.size(); while (lEnd > 0 && L.get(lEnd - 1).key == null) lEnd--;
         int rEnd = R.size(); while (rEnd > 0 && R.get(rEnd - 1).key == null) rEnd--;
         List<String[]> out = new ArrayList<>();
@@ -1319,7 +1319,7 @@ class Joins {
             if (c < 0) { i++; }
             else if (c > 0) { j++; }
             else {
-                // khop: xuat tich Descartes cua nhom key bang nhau o ca hai ben
+                // khớp: xuất tích Descartes của nhóm key bằng nhau ở cả hai bên
                 int key = L.get(i).key;
                 int jStart = j;
                 while (i < lEnd && L.get(i).key.equals(key)) {
@@ -1556,6 +1556,17 @@ Bạn không cần viết MVCC, nhưng nên nói được: READ COMMITTED lấy 
   check: [
     { q: 'MVCC cho phép reader và writer làm gì?', options: ['Reader phải chờ writer commit', 'Writer phải chờ reader xong', 'Reader đọc bản cũ theo snapshot, writer tạo bản mới, không chặn nhau', 'Cả hai đều lock dòng'], answer: 2, explain: `**Phương án 3 đúng**: MVCC giữ nhiều phiên bản nên reader đọc snapshot cũ, writer tạo phiên bản mới; không chặn nhau. Các phương án khác mô tả locking pessimistic, không phải MVCC.` },
     { q: 'Deadlock trong DB được xử lý thế nào?', options: ['DB chờ mãi cho đến khi timeout', 'DB phát hiện chu trình chờ và abort một transaction, ứng dụng retry', 'DB tự động serialize tất cả transaction', 'DB bỏ qua lock'], answer: 1, explain: `**Phương án 2 đúng**: DB phát hiện wait-for graph có chu trình và chọn victim abort; ứng dụng phải retry transaction bị abort.` },
+    {
+      q: 'Transaction T1 cập nhật bảng A rồi B, transaction T2 cập nhật B rồi A cùng lúc. Hai transaction chờ nhau mãi (deadlock). PostgreSQL xử lý thế nào?',
+      options: [
+        'Phát hiện chu trình chờ, abort một transaction với lỗi {{deadlock_detected}} ({{40P01}}), application bắt lỗi và retry toàn bộ transaction',
+        'Chờ mãi đến timeout mặc định rồi hủy cả hai transaction',
+        'Tự động chạy tuần tự: hoàn tất T1 rồi mới chạy T2, không bao giờ bị chờ',
+        'Cho cả hai ghi song song, kết quả ghi sau ghi đè dữ liệu của cái trước'
+      ],
+      answer: 0,
+      explain: `**Phương án 1 đúng**: PostgreSQL duy trì đồ thị chờ (wait-for graph) và định kỳ quét chu trình. Phát hiện deadlock → chọn một transaction làm nạn nhân (victim), abort nó và trả lỗi {{deadlock_detected}}, SQLSTATE {{40P01}}; transaction còn lại tiếp tục chạy. Application bắt lỗi {{40P01}} rồi **retry** toàn bộ transaction (kèm backoff ngắn). **Phương án 2** sai: PG không để chờ mãi — nó chủ động phát hiện deadlock, không cần đợi lock_timeout hết hạn. **Phương án 3** sai: PG không tự serialize tất cả transaction theo thứ tự cố định; các transaction vẫn chạy đồng thời, PG chỉ kiểm soát dữ liệu nào thấy được và phát hiện xung đột khi cần. **Phương án 4** sai: hai transaction cùng cập nhật cùng một hàng sẽ bị khóa chờ lẫn nhau, không phải "ghi sau ghi đè" im lặng.`
+    },
   ],
   related: ['sql-001'],
   tags: ['mvcc', 'isolation', 'deadlock', 'snapshot'],
@@ -1689,6 +1700,17 @@ Khi nói về index, hãy nhấn mạnh: "đo bằng EXPLAIN (ANALYZE, BUFFERS) 
   check: [
     { q: 'Khi nào DB thường KHÔNG dùng index B-tree?', options: ['Query có WHERE trên cột index với selectivity cao', 'Bảng nhỏ hoặc cột selectivity thấp (ít giá trị distinct)', 'ORDER BY trùng thứ tự index', 'Covering index chứa đủ cột'], answer: 1, explain: `**Phương án 2 đúng**: bảng nhỏ Seq Scan rẻ hơn; selectivity thấp khiến index không chọn lọc. Các phương án khác là trường hợp index được dùng.` },
     { q: 'Covering index giúp gì?', options: ['Tăng tốc INSERT', 'Cho phép index-only scan, không fetch heap', 'Giảm kích thước bảng', 'Thay thế primary key'], answer: 1, explain: `**Phương án 2 đúng**: nếu index chứa đủ cột query, DB trả kết quả chỉ từ index (index-only scan), giảm I/O.` },
+    {
+      q: 'Câu {{SELECT * FROM users WHERE UPPER(email) = ?}} đã có index trên cột {{email}} nhưng DB vẫn chạy Seq Scan. Nguyên nhân phổ biến nhất là gì?',
+      options: [
+        'Index B-tree không hỗ trợ tìm theo cột kiểu text',
+        'Bảng users quá nhỏ nên planner không dùng index',
+        'Index chỉ giúp câu có {{ORDER BY}}',
+        'Hàm {{UPPER}} trên cột làm chỉ số thường không dùng được; cần expression index trên {{UPPER(email)}} và viết query khớp biểu thức'
+      ],
+      answer: 3,
+      explain: `**Phương án 4 đúng**: index thường lưu giá trị gốc của {{email}}; câu so sánh {{UPPER(email)}} = ? không khớp biểu thức được lưu trong chỉ số, nên planner thường không dùng index đó (cần expression index {{CREATE INDEX ON users (UPPER(email))}} và query phải viết chính xác {{UPPER(email) = ?}}). **Phương án 1** sai: B-tree hoàn toàn hỗ trợ cột text và so sánh bằng. **Phương án 2** sai: bảng nhỏ chọn Seq Scan là bình thường và rẻ hơn, nhưng đây là trường hợp index **có sẵn** lại bị bỏ qua do hàm trên cột. **Phương án 3** sai: index giúp WHERE và join, không chỉ ORDER BY.`
+    },
   ],
   related: ['sql-001'],
   tags: ['index', 'btree', 'covering index', 'selectivity'],

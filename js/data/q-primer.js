@@ -89,6 +89,17 @@ volumes:
 ### Trả lời miệng 1 phút
 "Docker đóng gói ứng dụng cùng toàn bộ môi trường chạy thành image. Container là một tiến trình được cô lập chạy từ image đó, nên dev, test và prod chạy y hệt nhau. Với Spring Boot, tôi viết Dockerfile multi-stage: giai đoạn đầu build bằng Maven, giai đoạn hai chỉ copy file jar vào image JRE nhỏ gọn, chạy bằng user không phải root, đặt MaxRAMPercentage để JVM tôn trọng giới hạn RAM của container. Dữ liệu cần giữ lại thì để trong volume, secret truyền lúc chạy chứ không nhúng vào image, và tag image theo phiên bản cụ thể để dễ rollback."
 
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi lần đội phát triển sửa một dòng code Java và đẩy lên CI, thời gian build image Docker tăng lên ~14 phút (trước đó ~3 phút). Pipeline thường xuyên chờ lâu, làm chậm vòng phản hồi. Ổ đĩa runner CI cũng đầy nhanh vì xuất hiện nhiều layer lớn.
+
+**Điều tra:** Xem log build thấy bước {{mvn package}} tải lại gần như toàn bộ dependency từ mạng ở mỗi lần build. Kiểm tra Dockerfile phát hiện thứ tự lệnh: {{COPY . .}} (toàn bộ mã nguồn) đặt trước {{RUN mvn -DskipTests package}}. Như vậy, bất kỳ thay đổi file nào trong thư mục cũng làm layer COPY thay đổi, khiến Docker **không dùng được cache** cho các bước phía sau, bao gồm bước tải dependency. Kiểm tra thêm: image cuối cùng dùng base image chứa cả JDK và mã nguồn, dung lượng ~780MB.
+
+**Nguyên nhân gốc:** (1) Thứ tự layer không tối ưu: sao chép mã nguồn biến đổi thường xuyên trước khi cài dependency tương đối ổn định, phá cache layer. (2) Không dùng multi-stage build: giai đoạn runtime mang theo công cụ build và artifact thừa.
+
+**Cách xử lý:** (1) Viết lại Dockerfile theo multi-stage: giai đoạn build COPY {{pom.xml}} (và file cấu hình build cần thiết) trước, chạy {{mvn dependency:go-offline}} hoặc bước tải dependency để tạo layer cache; sau đó mới COPY {{src}} và build jar. Giai đoạn runtime chỉ dùng image JRE nhỏ (ví dụ {{eclipse-temurin:17-jre}}), {{COPY --from=build}} đúng file jar. (2) Tạo user không phải root, đặt {{JAVA_TOOL_OPTIONS}}/{{-XX:MaxRAMPercentage}} phù hợp. (3) Thêm {{.dockerignore}} để loại {{target/}}, {{.git/}}, file không cần thiết. (4) Tag image theo phiên bản/commit, thêm bước quét lỗ hổng image (Trivy) trong CI.
+
+**Kết quả đo được:** Khi chỉ đổi mã nguồn Java, thời gian build image giảm từ ~14 phút xuống ~2 phút 40 giây nhờ cache dependency. Dung lượng image runtime giảm từ ~780MB xuống ~210MB. Pipeline ổn định hơn, và không còn bước tải lại toàn bộ dependency trên mỗi commit.
+
 > Senior tip: thêm bước quét lỗ hổng image (ví dụ Trivy) vào CI và chỉ cho phép deploy image đã quét. Đó là câu trả lời "bảo mật chuỗi cung ứng" mà interviewer Senior rất thích nghe.`,
   follow: ['Container khác máy ảo (VM) thế nào?', 'Làm sao giảm kích thước image Spring Boot?'],
   tags: ['Docker', 'container', 'image', 'Dockerfile', 'nhập môn']
@@ -177,7 +188,18 @@ kubectl rollout undo deploy/orders -n shop    # quay lại bản trước
 - Vì sao pod bị OOMKilled dù heap còn trống? (Tổng bộ nhớ của JVM gồm heap, metaspace, thread stack, direct buffer, nên có thể vượt limit.)
 
 ### Trả lời miệng 1 phút
-"Kubernetes là hệ thống điều phối container: tôi khai báo trạng thái mong muốn, ví dụ Deployment 3 replica của image phiên bản 1.4, và K8s tự giữ đúng trạng thái đó, tạo lại pod chết và rolling update khi có bản mới. Pod là đơn vị chạy tạm thời; Service cho một tên DNS ổn định và cân bằng tải giữa các pod; Ingress đưa traffic HTTP từ ngoài vào. Với Spring Boot, tôi đặt requests và limits phù hợp với bộ nhớ JVM, readiness probe vào actuator readiness để chỉ nhận traffic khi sẵn sàng, liveness chỉ kiểm tra tiến trình còn sống, bật graceful shutdown, và cấu hình qua ConfigMap, Secret."
+"Kubernetes là hệ thống điều phối container: tôi khai báo trạng thái mong muốn, ví dụ Deployment 3 replica của image phiên bản 1.4, và K8s tự giữ đúng trạng thái đó, tạo lại pod chết và rolling update khi có bản mới. Pod là đơn vị chạy tạm thời; Service cho một tên DNS ổn định và cân bằng tải giữa các pod; Ingress đưa traffic HTTP từ ngoài vào. Với Spring Boot, tôi đặt requests và limits phù hợp với bộ nhớ JVM, readiness probe vào actuator readiness để chỉ nhận traffic khi sẵn sàng, liveness probe chỉ kiểm tra tiến trình còn sống, bật graceful shutdown, và cấu hình qua ConfigMap, Secret."
+
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi bật autoscaling và chạy vài giờ dưới tải trung bình, một số pod của service {{order-api}} bị **OOMKilled** rồi khởi động lại liên tục ({{CrashLoopBackOff}} ngắn hạn xen kẽ). Người dùng thấy lỗi 502 ngắt quãng. Dashboard JVM trong pod cho thấy heap "chỉ" dùng khoảng 450MB trước khi chết, trong khi giới hạn bộ nhớ container đặt là 512Mi.
+
+**Điều tra:** Xem sự kiện bằng {{kubectl describe pod <pod>}} thấy {{Last State: Terminated, Reason: OOMKilled, Exit Code: 137}}. Kiểm tra {{kubectl top pod}} và metric {{container_memory_working_set_bytes}} (Prometheus/cAdvisor) cho thấy bộ nhớ thực tế tiến sát 512Mi. Kiểm tra cách chạy JVM: container dùng image JDK 17, nhưng không đặt {{-XX:MaxRAMPercentage}}; heap mặc định chọn theo công thức cũ, cộng thêm **metaspace**, thread stack (mỗi thread vài trăm KB), bộ nhớ direct buffer (NIO), và bộ nhớ native của thư viện — tổng vượt 512Mi dù heap báo chỉ ~450MB.
+
+**Nguyên nhân gốc:** Đặt **memory limit** container thấp hơn tổng bộ nhớ mà JVM + native thực sự cần. Kubernetes cgroups giết tiến trình khi vượt limit (OOMKilled), không phải OutOfMemoryError trong heap Java. Giới hạn 512Mi không đủ cho heap 450MB cộng các vùng nhớ ngoài heap.
+
+**Cách xử lý:** (1) Điều chỉnh tài nguyên: đặt {{requests.memory}} sát mức dùng ổn định và {{limits.memory}} đủ dư, ví dụ 768Mi hoặc 1Gi tùy đo đạc. (2) Cấu hình JVM tôn trọng container: {{-XX:MaxRAMPercentage=70.0}} (để lại ~30% cho metaspace/thread/direct/native) và, nếu cần, giới hạn {{-XX:MaxMetaspaceSize}}, {{-Xss}}. (3) Tách probe: **liveness** chỉ kiểm tra tiến trình còn sống (ví dụ endpoint nhẹ/Actuator liveness), **readiness** dùng {{/actuator/health/readiness}} để ngừng nhận traffic khi app chưa sẵn sàng; tránh liveness gọi DB gây restart dây chuyền. (4) Bật {{server.shutdown=graceful}} và {{preStop}} hook phù hợp để giảm lỗi khi rolling update.
+
+**Kết quả đo được:** Sau khi tăng limit lên 1Gi và đặt {{MaxRAMPercentage=70}}, trong 7 ngày không còn OOMKilled. {{container_memory_working_set_bytes}} ổn định quanh 620–700Mi dưới tải đỉnh; tỉ lệ 502 do pod restart giảm về 0 trong cửa sổ triển khai.
 
 > Senior tip: đặt **PodDisruptionBudget** và chạy pod rải trên nhiều zone. Khi cụm nâng cấp node, nó đảm bảo không bao giờ tắt cùng lúc quá nhiều pod của bạn. Đây là chi tiết vận hành phân biệt người "đã chạy K8s thật" với người chỉ đọc tài liệu.`,
   follow: ['Readiness và liveness probe khác nhau thế nào?', 'Pod bị OOMKilled dù heap còn trống, vì sao?'],
@@ -269,6 +291,17 @@ class InventoryListener {
 ### Trả lời miệng 1 phút
 "Kafka là một log sự kiện phân tán: producer ghi nối đuôi vào topic, topic chia thành partition để song song, mỗi sự kiện có offset. Sự kiện không bị xoá khi đọc mà giữ theo retention, nên nhiều consumer group đọc độc lập và có thể đọc lại. Thứ tự chỉ đảm bảo trong một partition, nên tôi đặt key là id thực thể, ví dụ orderId. Trong một group, mỗi partition do một consumer xử lý, nên độ song song bằng số partition. Tôi dùng at-least-once, commit sau khi xử lý, nên consumer phải idempotent, và dùng outbox để không mất sự kiện khi vừa ghi DB vừa phát Kafka."
 
+### Ví dụ đời thực
+**Triệu chứng:** Dịch vụ thông báo (notification) gửi email xác nhận đơn hàng chậm dần: lúc 10:00 trễ ~10 giây, đến 11:15 trễ hơn 25 phút. Người dùng phàn nàn "đã thanh toán nhưng chưa nhận email". API đặt hàng vẫn hoạt động bình thường.
+
+**Điều tra:** Kiểm tra consumer lag của group {{notification-service}} (qua công cụ quản trị Kafka/burrow hoặc metric lag phơi ra từ client) thấy lag trên topic {{order-events}} tăng đều từ vài trăm lên ~180.000 message, tập trung ở cả 6 partition. Log consumer cho thấy mỗi lần xử lý một sự kiện, listener gọi API email bên ngoài và mất 3–8 giây; đồng thời xuất hiện cảnh báo liên quan đến việc consumer không kịp gửi heartbeat/poll trong khoảng thời gian cấu hình {{max.poll.interval.ms}}. Kafka kích hoạt **rebalance**: các partition bị thu hồi rồi gán lại, làm một phần message xử lý dở bị giao lại.
+
+**Nguyên nhân gốc:** (1) Listener xử lý tuần tự và quá chậm (gọi đồng bộ API bên ngoài) nên throughput thực tế ~0,3 msg/giây mỗi consumer, trong khi producer đẩy ~12 msg/giây. (2) Xử lý vượt {{max.poll.interval.ms}} gây rebalance lặp lại, càng làm giảm tốc độ tiêu thụ. (3) Một số email bị gửi trùng vì message giao lại (at-least-once) nhưng bước gửi chưa idempotent.
+
+**Cách xử lý:** (1) Tách việc gọi API email ra khỏi listener: consumer chỉ ghi bản ghi "cần gửi" vào DB/bảng outbox nội bộ hoặc đẩy sang một luồng xử lý có kiểm soát, commit offset sau khi ghi nhận thành công. (2) Tăng số consumer instance trong group lên tối đa bằng số partition (6), và điều chỉnh {{max.poll.records}} cho phù hợp thời gian xử lý. (3) Thêm idempotency key (ví dụ {{orderId + eventType}}) và bảng {{processed_events}} để bỏ qua bản trùng. (4) Cấu hình **dead-letter topic** cho message lỗi sau N lần retry để không chặn partition.
+
+**Kết quả đo được:** Sau thay đổi, lag giảm từ 180.000 về dưới 200 trong ~40 phút, thời gian trễ email ổn định 5–15 giây. Rebalance không còn tái diễn (theo log group coordinator). Tỉ lệ email trùng do giao lại giảm về 0 nhờ kiểm tra idempotency.
+
 > Senior tip: theo dõi **consumer lag** (khoảng cách giữa offset mới nhất và offset đã xử lý) cho từng group. Lag tăng đều là chỉ báo sớm nhất cho thấy consumer chậm hoặc kẹt, trước khi người dùng thấy dữ liệu bị trễ.`,
   follow: ['Kafka đảm bảo thứ tự như thế nào?', 'Outbox pattern giải quyết vấn đề gì?', 'Kafka khác RabbitMQ ra sao?'],
   tags: ['Kafka', 'partition', 'consumer group', 'offset', 'nhập môn']
@@ -339,6 +372,17 @@ class ProductService {
 
 ### Trả lời miệng 1 phút
 "Redis là kho key-value trong RAM, độ trễ dưới mili giây, có nhiều kiểu dữ liệu như string, hash, list, set, sorted set, stream và hỗ trợ TTL. Trong backend tôi dùng nó cho cache, rate limit, session, khoá phân tán và bảng xếp hạng, nhưng DB vẫn là nguồn dữ liệu chuẩn. Cache tôi làm theo cache-aside: Cacheable để đọc, khi cập nhật thì ghi DB rồi xoá cache, luôn có TTL. Tôi cẩn thận với cache stampede khi key hot hết hạn, tránh lệnh KEYS và big key vì Redis xử lý lệnh đơn luồng."
+
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi tối khoảng 20:00, trang chi tiết sản phẩm hot (key {{product:8821}}) bị chậm đột ngột: p95 API {{GET /products/8821}} tăng từ 18ms lên 1,4 giây trong vòng 30–60 giây, rồi tự bình thường. DB Postgres ghi nhận một cụm truy vấn giống hệt {{SELECT ... FROM products WHERE id = 8821}} tăng gấp ~40 lần so với bình thường.
+
+**Điều tra:** Metric Redis ({{INFO stats}}, theo dõi qua exporter) cho thấy {{keyspace_misses}} tăng vọt đúng thời điểm sự cố, trong khi {{keyspace_hits}} tụt mạnh; key {{product:8821}} biến mất rồi xuất hiện lại (do TTL hết). Log ứng dụng cho thấy hàng chục request đồng thời cùng rơi vào nhánh "cache miss" của cache-aside. Không có lệnh {{KEYS}} chậm trong {{SLOWLOG}}; CPU Redis ổn định.
+
+**Nguyên nhân gốc:** **Cache stampede** (còn gọi là thundering herd): key hot hết TTL đúng lúc có nhiều request đồng thời. Vì Redis single-threaded xử lý lệnh nhưng bản chất ở đây là cache-aside ở tầng app, tất cả request miss đều đồng thời truy vấn DB để dựng lại cùng một giá trị, gây "đập" DB.
+
+**Cách xử lý:** (1) Áp dụng **mutex khi tái nạp**: request đầu tiên lấy một lock ngắn trong Redis ({{SET lock:product:8821 1 NX PX 3000}}), chỉ nó truy vấn DB và đặt lại cache; các request khác chờ/ngủ ngắn rồi đọc lại hoặc chấp nhận dữ liệu cũ tạm thời. (2) Thêm **jitter** cho TTL (ví dụ TTL cơ sở 600s ± 60s ngẫu nhiên) để các key hot không hết hạn cùng lúc. (3) Với key cực hot, cân nhắc "logical expiry": lưu thời hạn mềm trong value, trả dữ liệu cũ ngay và làm mới bất đồng bộ. (4) Đặt alert khi {{keyspace_miss}}/tổng request của cache name vượt ngưỡng.
+
+**Kết quả đo được:** Sau 1 tuần, đỉnh p95 {{GET /products/8821}} vào khung 20:00 còn 42ms, số truy vấn DB trùng lặp cho cùng key giảm từ ~40 xuống 1–2 mỗi lần hết hạn, hit rate cache name {{product}} tăng từ 78% lên 96%.
 
 > Senior tip: đo **hit rate** của từng cache name. Cache có hit rate dưới khoảng 50–60% thường chỉ thêm độ phức tạp và rủi ro dữ liệu cũ mà không giảm tải đáng kể cho DB. Đừng ngại bỏ nó.`,
   follow: ['Làm sao giữ cache và DB nhất quán khi cập nhật?', 'Cache stampede là gì và xử lý thế nào?'],
@@ -420,6 +464,17 @@ s3.putObject(PutObjectRequest.builder().bucket("reports-prod").key("2026/10/repo
 ### Trả lời miệng 1 phút
 "Với một app Spring Boot trên AWS, tôi đặt load balancer ALB ở subnet public, các container chạy trên ECS Fargate hoặc EKS ở subnet private trải ít nhất hai AZ, và DB là RDS Postgres Multi-AZ chỉ cho app truy cập qua Security Group. Image để trên ECR. Quyền gọi S3 hay SQS cấp qua IAM role theo least privilege, không bao giờ dùng access key trong code; mật khẩu DB để trong Secrets Manager. Log và metric lên CloudWatch, có alarm cho lỗi và độ trễ, kèm budget alarm để kiểm soát chi phí. Việc bất đồng bộ thì đẩy qua SQS cho worker xử lý."
 
+### Ví dụ đời thực
+**Triệu chứng:** Lúc 02:10 (giờ thấp điểm), một AZ trong vùng {{ap-southeast-1}} gặp sự cố phần cứng. Ứng dụng thanh toán bắt đầu trả HTTP 503 ngắt quãng; khoảng 18% request thất bại trong 4 phút, dù CPU trung bình toàn cụm trước đó chỉ 40%.
+
+**Điều tra:** Kiểm tra ALB target health thấy toàn bộ target ở subnet AZ-b chuyển {{unhealthy}}. Trên ECS service, số task chạy giảm từ 6 xuống 3 vì cả 3 task còn lại nằm ở AZ-b (sai sót khi triển khai ban đầu chỉ gắn 1 subnet private). Kiểm tra RDS: instance chính cũng đặt ở AZ-b, Multi-AZ chưa bật nên failover thủ công phải đợi tạo standby. CloudWatch alarm {{ALB-TargetResponseTime}} và {{HTTPCode_Target_5XX_Count}} đã bắn nhưng chưa có runbook gắn kèm.
+
+**Nguyên nhân gốc:** Kiến trúc "giả đa AZ": subnet khai báo đủ nhưng ECS service và RDS đều gắn vào một AZ. Khi AZ đó lỗi, không còn tài nguyên dự phòng; ALB còn route nhưng không còn target khỏe.
+
+**Cách xử lý:** (1) Sửa ECS service để chạy trên 2 subnet private ở 2 AZ, đặt {{desiredCount=6}} và bật spread theo AZ; thêm **Application Auto Scaling** theo CPU/request. (2) Bật RDS Multi-AZ và xác nhận endpoint không đổi khi failover. (3) Rà soát Security Group DB: chỉ cho phép inbound từ SG của app, bỏ mọi rule {{0.0.0.0/0}}. (4) Thêm runbook vào alarm và kiểm tra bằng bài test failover có lên lịch.
+
+**Kết quả đo được:** 6 tuần sau, khi thực hiện bài test tắt AZ-b có chủ đích, ALB chuyển 100% traffic sang AZ-a trong khoảng 40 giây, tỉ lệ 5xx đỉnh 0,6% trong 1 phút, không mất dữ liệu (RDS failover ~70 giây, app retry theo backoff). Mục tiêu RTO < 2 phút đạt được.
+
 > Senior tip: khi phỏng vấn, nhắc tới **chi phí**: NAT Gateway, data transfer giữa các AZ và log CloudWatch là ba khoản hay làm hoá đơn tăng bất ngờ. Người từng vận hành thật luôn nhớ chúng.`,
   follow: ['ECS, EKS và Lambda: khi nào chọn cái nào?', 'Làm sao cấp quyền S3 cho app mà không dùng access key?'],
   tags: ['AWS', 'IAM', 'VPC', 'ECS', 'S3', 'RDS', 'nhập môn']
@@ -498,6 +553,17 @@ Timer.builder("payment.call").register(registry).record(() -> paymentClient.char
 ### Trả lời miệng 1 phút
 "Tôi dùng ba trụ cột. Metric để biết có vấn đề hay không, với RED là rate, errors, duration theo percentile cho mỗi API, cộng metric JVM, connection pool và metric nghiệp vụ, qua Actuator, Micrometer, Prometheus và Grafana. Trace để biết chậm ở service nào, qua Micrometer Tracing với OpenTelemetry, có lấy mẫu. Log JSON có traceId để đọc chi tiết, gom về một nơi. Alert dựa trên SLO theo triệu chứng người dùng thấy. Tôi tránh nhãn có cardinality cao như userId, và không log dữ liệu nhạy cảm."
 
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi ra bản mới lúc 14:05, tỉ lệ lỗi 5xx của API {{POST /orders}} tăng từ 0,1% lên 4,8% trong 6 phút. p99 thời gian phản hồi nhảy từ 420ms lên 6,2 giây. Người dùng báo "đặt hàng thất bại", nhưng CPU của pod vẫn chỉ khoảng 35%.
+
+**Điều tra:** Trên Grafana, bảng RED theo endpoint cho thấy chỉ {{POST /orders}} bất thường. Metric {{hikaricp_connections_pending}} tăng vọt lên 48 (bằng kích thước pool), trong khi {{hikaricp_connections_active}} kẹt ở 48 và không giảm — dấu hiệu request đang chờ connection. Mở một trace chậm trong Jaeger/Tempo: span {{jdbc.execute}} chiếm 5,9 giây; span con trỏ tới truy vấn kiểm tra tồn kho. Log JSON lọc theo {{traceId}} của trace đó cho thấy câu lệnh chạy với tham số {{sku_id}} mới thêm trong bản phát hành.
+
+**Nguyên nhân gốc:** Bản mới bổ sung truy vấn tồn kho theo {{sku_id}} nhưng chưa có index trên cột này. Bảng {{inventory}} khoảng 12 triệu dòng, nên truy vấn quét tuần tự, giữ connection pool quá lâu và làm các request khác xếp hàng chờ.
+
+**Cách xử lý:** Thêm index {{CREATE INDEX CONCURRENTLY idx_inventory_sku_id ON inventory(sku_id)}} (chạy không khóa ghi trên PostgreSQL), xác nhận bằng {{EXPLAIN ANALYZE}} chuyển từ Seq Scan sang Index Scan. Đồng thời đặt {{spring.datasource.hikari.connection-timeout}} hợp lý và alert khi {{hikaricp_connections_pending}} vượt ngưỡng 5 phút liên tục.
+
+**Kết quả đo được:** Sau 8 phút từ lúc thêm index, p99 {{POST /orders}} giảm về 380ms, tỉ lệ 5xx còn 0,08%, {{hikaricp_connections_pending}} về 0. Không cần rollback hay tăng số pod.
+
 > Senior tip: mỗi khi xử lý xong sự cố, hãy hỏi "metric hoặc alert nào lẽ ra đã báo sớm hơn?" rồi thêm nó vào. Hệ thống quan sát tốt được xây dần từ các postmortem, không phải từ một lần cấu hình.`,
   follow: ['Vì sao đo p95/p99 thay vì trung bình?', 'SLO, SLI, SLA khác nhau thế nào?'],
   tags: ['observability', 'metric', 'trace', 'log', 'Micrometer', 'OpenTelemetry', 'nhập môn']
@@ -571,6 +637,19 @@ Người dùng: "Query lấy đơn hàng tháng này sao chậm vậy?"
 ### Trả lời miệng 1 phút
 "MCP là chuẩn mở để ứng dụng AI kết nối với công cụ và dữ liệu, giống cổng USB-C: tôi viết một MCP server cung cấp tools để AI gọi, resources để AI đọc và prompts mẫu, và mọi host hỗ trợ MCP như Claude Code hay Claude Desktop đều dùng được. Giao tiếp theo JSON-RPC qua stdio cho công cụ local, hoặc HTTP cho server từ xa. Khi thiết kế, tôi chú trọng tên và mô tả tool nói rõ khi nào dùng, input schema chặt, output gọn và lỗi rõ ràng. Về bảo mật, tôi coi dữ liệu trả về là không tin cậy vì có thể chứa prompt injection, nên giới hạn quyền ngay ở tầng hệ thống, ví dụ DB user chỉ SELECT, có auth và audit log."
 
+### Ví dụ đời thực
+**Bối cảnh:** Team backend có database reporting 80 bảng, và dữ liệu analyst thường phải hỏi dev "cho em query doanh thu theo tháng". Dev mất 2–3 giờ/ngày copy-paste SQL.
+
+**Triệu chứng:** Không có sự cố production, nhưng throughput của team analytics bị chặn vì phụ thuộc dev.
+
+**Điều tra:** Xem log query thực tế người dùng hay hỏi → 5 câu SQL lặp lại 80% trường hợp. Kiểm tra MCP server mẫu của dự án để xác nhận schema tool.
+
+**Nguyên nhân gốc:** Không có "cổng" chuẩn để AI tự đọc schema và chạy EXPLAIN; mọi request phải đi qua dev.
+
+**Cách xử lý:** Viết MCP server "db-inspector" với 3 tool: {{describe_table}}, {{explain_query}}, {{run_select}}. DB user chỉ có quyền SELECT trên schema read-only. Output {{explain_query}} cắt bớt ở 2KB. Thêm audit log ghi ai gọi tool nào với tham số gì.
+
+**Kết quả đo được:** Sau 2 tuần, 70% câu hỏi analytics tự xử lý qua Claude Code; thời gian dev dành cho ad-hoc query giảm từ 2,5 giờ/ngày xuống 15 phút. Không có incident dữ liệu vì DB user chỉ SELECT.
+
 > Senior tip: khi kể về MCP trong phỏng vấn, hãy nhấn mạnh **thiết kế quyền ở tầng hạ tầng chứ không ở prompt**: "dù model bị lừa, tool vẫn không thể ghi dữ liệu". Câu đó cho thấy bạn hiểu rủi ro thật của AI agent.`,
   follow: ['Tool và resource trong MCP khác nhau thế nào?', 'Bạn phòng prompt injection cho một MCP server đọc dữ liệu khách hàng ra sao?'],
   tags: ['MCP', 'Model Context Protocol', 'tools', 'AI agent', 'nhập môn']
@@ -637,6 +716,19 @@ git push origin main
 
 ### Trả lời miệng 1 phút
 "Git là hệ thống quản lý phiên bản phân tán, mọi nơi có toàn bộ lịch sử. Thao tác hằng ngày của tôi là: tạo nhánh cho từng tính năng, sửa code rồi {{git add}} để chọn thay đổi vào staging, {{git commit}} với message rõ lý do, và {{git push}} lên remote. Khi nhánh chính có thay đổi mới, tôi {{git pull}} để lấy về và merge. Gặp conflict thì tôi mở file, đọc các đoạn được Git đánh dấu, giữ nội dung đúng, xoá dòng mốc rồi {{git add}} và commit để hoàn tất merge. Tôi không rebase hay force push trên nhánh chung, và luôn kiểm tra {{.gitignore}} để không đẩy secret lên."
+
+### Ví dụ đời thực
+**Bối cảnh:** Dự án e-commerce, 6 dev làm song song trên nhánh feature. Một dev commit secret AWS vào nhánh riêng rồi merge PR.
+
+**Triệu chứng:** Alert từ AWS GuardDuty phát hiện key bị dùng ở IP lạ sau 40 phút.
+
+**Điều tra:** {{git log --all -S "AKIA"}} tìm commit chứa key; {{git branch --contains <hash>}} xác định nhánh nào đã merge. Kiểm tra CloudTrail để biết key đã bị dùng làm gì.
+
+**Nguyên nhân gốc:** Secret commit lên remote, dù sau đó dev xoá commit bằng rebase, key vẫn còn trong lịch sử và đã bị clone.
+
+**Cách xử lý:** Revoke key ngay lập tức (không đợi xoá lịch sử); rotate secret mới qua Secrets Manager; thêm pre-commit hook quét secret; bật branch protection bắt buộc review; ghi postmortem.
+
+**Kết quả đo được:** Key cũ vô hiệu trong 12 phút; không có dữ liệu bị rò rỉ; sau đó 3 tháng không có commit secret nào lọt qua hook.
 
 > Senior tip: luyện {{git log --oneline --graph --all}} mỗi tuần một lần — nhìn được hình cây lịch sử giúp bạn hiểu chuyện gì đang xảy ra giữa các nhánh, và là kỹ năng phân biệt người "biết dùng Git" với người "chỉ nhớ vài lệnh". Trong team, squash merge + ràng buộc branch protection (bắt buộc review, cấm force push) giữ lịch sử gọn mà vẫn an toàn.`,
   follow: ['Merge và rebase khác nhau về lịch sử ra sao, khi nào dùng cái nào?', 'Bạn xử lý một commit chứa secret đã lỡ push lên remote thế nào?', 'Fast-forward merge là gì, khi nào Git không fast-forward được?'],
@@ -706,6 +798,19 @@ chown app:app app.properties  # đổi chủ sở hữu sang user app
 
 ### Trả lời miệng 1 phút
 "Process là chương trình đang chạy có PID; service là tiến trình do systemd quản lý, tự khởi động và tự restart khi lỗi; port là cổng số mà tiến trình lắng nghe. Khi nghi ngờ sự cố, tôi dùng {{ps -ef | grep java}} tìm tiến trình, {{top}} xem CPU/RAM, {{ss -tlnp}} xem cổng bị chiếm bởi ai, {{journalctl -u}} hoặc {{tail -f}} xem log quanh thời điểm lỗi. Tôi dừng tiến trình bằng {{kill}} để app tắt graceful, {{kill -9}} chỉ là phương án cuối. Về quyền file, tôi cấp vừa đủ qua {{chmod}}/{{chown}} và không bao giờ chạy app production bằng root."
+
+### Ví dụ đời thực
+**Bối cảnh:** Production API đột ngột trả 502; on-call SSH vào server app.
+
+**Triệu chứng:** Người dùng thấy 502 Bad Gateway; Nginx error log ghi {{connect() failed (111: Connection refused)}}.
+
+**Điều tra:** 30 giây đầu chạy {{uname -a}}, {{ss -tlnp | head}}, {{df -h}}, {{free -m}}, {{uptime}}. Kết quả: disk 100% đầy vì log rotation tắt; app Java crash vì không ghi được log. {{ps -ef | grep java}} không thấy process.
+
+**Nguyên nhân gốc:** Log file lớn dần đến đầy đĩa; app không start lại được do không còn chỗ ghi.
+
+**Cách xử lý:** Xoá log cũ bằng {{truncate -s 0}} và {{logrotate -f}}; restart service; bật alert disk > 80%; thêm log rotation trong Logback.
+
+**Kết quả đo được:** Service up sau 4 phút; p99 về 200ms; alert disk fire trước khi đầy 3 tuần sau.
 
 > Senior tip: khi SSH vào server lạ, mất 30 giây đầu để chạy {{uname -a}}, {{ss -tlnp | head}}, {{df -h}}, {{free -m}} và {{uptime}} — "ảnh chụp" hiện trạng máy; nhiều sự cố (đĩa đầy, RAM cạn, load cao) lộ ra ngay từ 5 lệnh đó trước khi bạn mở log.`,
   follow: ['Khác nhau giữa SIGTERM và SIGKILL, vì sao Spring Boot cần graceful shutdown?', 'Bạn chẩn đoán app Java bị treo (không phản hồi) trên Linux thế nào?', 'Quyền file 644 và 640 khác nhau ra sao, khi nào dùng cái nào?'],
@@ -797,6 +902,19 @@ curl -v https://api.example.com/orders/42
 ### Trả lời miệng 1 phút
 "HTTP gồm request có method, path, header và body, response có status code, header và body. Status 2xx là thành công, 4xx là lỗi phía client (401 chưa đăng nhập, 403 thiếu quyền), 5xx là lỗi phía server. Keep-alive (mặc định ở HTTP/1.1) cho phép dùng lại kết nối TCP cho nhiều request, và HTTP/2 còn multiplex nhiều request trên một kết nối. HTTPS chạy HTTP trong lớp TLS: bắt tay xác thực server qua chứng chỉ rồi mã hoá symmetric toàn bộ phiên. Khi viết HTTP client trong Spring Boot, tôi luôn đặt timeout và xử lý đúng idempotency cho các method không an toàn."
 
+### Ví dụ đời thực
+**Bối cảnh:** Client mobile báo "đôi khi API trả 200 nhưng dữ liệu sai"; backend không thấy lỗi trong log.
+
+**Triệu chứng:** Intermittent wrong data; monitoring chỉ thấy 200 OK.
+
+**Điều tra:** Bật log {{X-Request-Id}} xuyên suốt; kiểm tra response header {{Cache-Control}}. Phát hiện response cá nhân hoá không có {{Cache-Control: private, no-store}}; CDN cache response của user A và trả cho user B.
+
+**Nguyên nhân gốc:** Thiếu header cache-control cho endpoint cá nhân hoá.
+
+**Cách xử lý:** Thêm {{Cache-Control: private, no-store}} ở endpoint; thêm test kiểm tra header; purge cache CDN.
+
+**Kết quả đo được:** Sau deploy, incident wrong-data về 0 trong 2 tuần; cache hit rate của endpoint public không đổi.
+
 > Senior tip: khi điều tra sự cố, đọc **đúng response header** ({{X-Request-Id}}, {{Server-Timing}}, {{Retry-After}}) trước khi đọc body — chúng cho biết request đi qua tầng nào, mất bao nhiêu thời gian, và nên retry sau bao lâu. Đây là kỹ năng điều tra API mà junior thường bỏ qua.`,
   follow: ['GET, POST, PUT, PATCH khác nhau thế nào về idempotency và khi nào dùng cái nào?', 'HTTPS bắt tay TLS gồm những bước nào, vì sao cần cả hai loại khoá asymmetric và symmetric?', '401 và 403 khác nhau thế nào, Spring Security trả hai mã này khi nào?'],
   tags: ['HTTP', 'HTTPS', 'TLS', 'header', 'status code', 'keep-alive', 'nhập môn']
@@ -879,6 +997,19 @@ Ví dụ project của bạn khai báo {{A}} và {{C}}; cây là {{app→A→X 1
 
 ### Trả lời miệng 1 phút
 "Maven và Gradle đều khai báo dependency theo tọa độ groupId, artifactId, version, tự tải transitive dependencies và build theo lifecycle — Maven có các phase cố định từ compile tới package và deploy, Gradle dùng task graph với daemon và cache. Scope quyết định dependency dùng ở đâu: test chỉ dùng khi test, provided thì không đóng vào artifact. Với xung đột version, Maven theo độ gần còn Gradle theo version mới nhất; tôi chặn việc này bằng BOM của Spring Boot qua dependencyManagement để chốt version toàn bộ dự án ở một chỗ."
+
+### Ví dụ đời thực
+**Bối cảnh:** Nâng Spring Boot từ 3.2 lên 3.3; build xanh nhưng runtime {{NoSuchMethodError}} ở production.
+
+**Triệu chứng:** App crash khi gọi endpoint upload; stack trace {{NoSuchMethodError: org.apache.tomcat...}}.
+
+**Điều tra:** {{mvn dependency:tree}} cho thấy hai version Tomcat (10.1.18 và 10.1.24) do transitive dependency; Maven chọn version gần gốc theo nearest-wins, không phải mới nhất.
+
+**Nguyên nhân gốc:** Xung đột version Tomcat do dependency không được chốt.
+
+**Cách xử lý:** Thêm Spring Boot BOM qua {{dependencyManagement}}; chạy {{mvn dependency:tree}} lại; thêm OWASP dependency-check vào CI.
+
+**Kết quả đo được:** Build vẫn xanh; runtime không còn NoSuchMethodError; CI bắt được 1 CVE trong 1 tháng sau.
 
 > Senior tip: thêm {{dependency-check}} (OWASP) hoặc SCA của CI vào pipeline để phát hiện thư viện dính lỗ hổng; kết hợp {{dependency:tree}} khi nâng version — nâng một starter có thể kéo theo hàng chục thư viện transitive, phải chạy test đầy đủ chứ không chỉ "build xanh".`,
   follow: ['Dependency scope provided khác runtime thế nào, vì sao servlet-api là provided?', 'Maven chọn version gần nhất, Gradle chọn version mới nhất — hệ quả và cách cưỡng chế ra sao?', 'BOM (dependencyManagement) giải quyết vấn đề gì mà khai báo version từng dependency không giải quyết được?'],
@@ -969,6 +1100,19 @@ Cân bằng tải ở tầng Nginx thường đủ; khi lên Kubernetes thì Ser
 ### Trả lời miệng 1 phút
 "Nginx là reverse proxy: client chỉ nói chuyện với Nginx, Nginx chuyển request tới các instance backend và chia tải đều. Nó đảm nhận TLS termination để backend không lo chứng chỉ, phục vụ static file, và thêm các lớp như rate limit, giới hạn dung lượng upload. Tôi cấu hình bằng {{upstream}} để khai báo nhóm backend, {{proxy_pass}} để chuyển, và {{proxy_set_header}} để backend biết IP thật cũng như scheme https của client. Với endpoint chạy lâu, tôi tăng {{proxy_read_timeout}} thay vì để 504 cắt ngang."
 
+### Ví dụ đời thực
+**Bối cảnh:** Endpoint export báo cáo 5 phút trả 504 Gateway Timeout sau khi deploy Nginx mới.
+
+**Triệu chứng:** User thấy 504; Nginx error log {{upstream timed out (110: Connection timed out)}}.
+
+**Điều tra:** {{ss -tlnp}} backend đang listen; {{tail -f}} backend log cho thấy query chạy 4 phút 30 giây. So sánh {{proxy_read_timeout}} = 60s.
+
+**Nguyên nhân gốc:** Timeout Nginx mặc định 60s ngắn hơn thời gian xử lý.
+
+**Cách xử lý:** Tăng {{proxy_read_timeout 300s}} cho location export; hoặc chuyển sang async job + polling. Thêm {{X-Request-Id}} log xuyên suốt.
+
+**Kết quả đo được:** Export thành công; p99 endpoint thường không đổi; không còn 504.
+
 > Senior tip: khi backend trả 502/504, kiểm tra {{proxy_read_timeout}} và trạng thái backend trước khi đinh ninh "code lỗi"; và luôn log {{X-Request-Id}} xuyên suốt Nginx → backend → log hệ thống để truy vết một request cụ thể. Đây là kỹ năng điều tra sự cố production rất hay được phỏng vấn.`,
   follow: ['Reverse proxy khác forward proxy thế nào?', 'Nginx trả 502 Bad Gateway, bạn chẩn đoán theo trình tự nào?', 'X-Forwarded-For và X-Forwarded-Proto dùng để làm gì, thiếu chúng thì hệ quả gì?'],
   tags: ['Nginx', 'reverse proxy', 'load balancing', 'TLS', 'nhập môn']
@@ -1047,7 +1191,18 @@ Spring AMQP mặc định dùng ack mode AUTO: hàm trả về bình thường t
 ### Trả lời miệng 1 phút
 "RabbitMQ là message broker: producer gửi vào exchange, exchange phân phát theo binding vào queue, consumer đọc và ack để xác nhận xử lý xong. Nếu consumer chết trước khi ack, message được giao lại, nên consumer phải idempotent; poison message thì đưa sang DLQ để không chặn hàng. Tôi dùng RabbitMQ cho hàng đợi công việc và pub-sub router linh hoạt, còn luồng sự kiện cần đọc lại và throughput cao thì chọn Kafka. Khi cấu hình, tôi bật durable queue, persistent message và giới hạn prefetch để chia đều việc."
 
-> Senior tip: RabbitMQ Management UI (cổng 15672) cho thấy ngay độ sâu queue, tỉ lệ redeliver và kết nối consumer — hãy mở nó mỗi lần deploy để "nhìn" hàng đợi trước khi người dùng phàn nàn. Và với Spring Boot, bật publisher confirms ({{spring.rabbitmq.publisher-confirm-type=correlated}}) để biết message đã thực sự tới broker, chứ không chỉ "đã gọi gửi".`,
+### Ví dụ đời thực
+  **Triệu chứng:** Dịch vụ email xác nhận (consumer {{notification-email}}) bỏ sót email. Queue {{order.events}} trên RabbitMQ Management UI tăng từ ~200 lên 12.000 message trong 2 giờ, dù producer chỉ ~50 msg/giây. Tỉ lệ {{redeliver}} nhảy từ <1% lên 38%. Users phàn nàn "đã thanh toán nhưng chưa nhận email".
+
+  **Điều tra:** Mở Management UI → queue {{order.events}} thấy {{Messages ready}} tăng vọt, {{Messages unacknowledged}} dao động. Tab Consumers: instance {{notification-email-v2}} báo redeliver liên tục. Log consumer (Spring AMQP, ack AUTO) thấy {{NullPointerException}} khi parse message thiếu field {{couponCode=null}} — field mới thêm trong deploy trước. Vì {{default-requeue-rejected=true}} (mặc định), message reject → requeue ngay → message đó quay vòng mãi. Với {{prefetch=100}} (mặc định), consumer ôm 100 message; message đầu là poison → consumer kẹt, không xử lý message sau.
+
+  **Nguyên nhân gốc:** (1) Poison message: dữ liệu thiếu field mới, consumer throw. (2) Auto-requeue=default true → message lặp mãi thay vì loại bỏ. (3) Không DLQ để tách message lỗi. (4) Prefetch 100 → một consumer bị poison message thì không phân phát lại message khác cho consumer khác.
+
+  **Cách xử lý:** (1) Bật retry có giới hạn: {{spring.rabbitmq.listener.simple.retry.enabled=true}}, {{max-attempts=3}}; sau hết lượt → reject không requeue. (2) Cấu hình dead-letter exchange: {{x-dead-letter-exchange=order.dl}}, {{x-dead-letter-routing-key=order.failed}}. (3) {{default-requeue-rejected=false}}. (4) Giảm prefetch xuống 10-20. (5) Idempotency: bảng {{processed_events}} check event id trước khi gửi email.
+
+  **Kết quả đo được:** Queue giảm từ 12.000 xuống <500 trong ~30 phút. Redeliver từ 38% xuống <0,5%. Message lỗi tự vào DLQ, xử lý bởi job nightly. Không còn email bỏ sót do poison message.
+
+  > Senior tip: RabbitMQ Management UI (cổng 15672) cho thấy ngay độ sâu queue, tỉ lệ redeliver và kết nối consumer — hãy mở nó mỗi lần deploy để "nhìn" hàng đợi trước khi người dùng phàn nàn. Và với Spring Boot, bật publisher confirms ({{spring.rabbitmq.publisher-confirm-type=correlated}}) để biết message đã thực sự tới broker, chứ không chỉ "đã gọi gửi".`,
   follow: ['Ack và nack khác nhau thế nào, khi nào message bị redeliver?', 'Bạn xử lý thế nào khi consumer RabbitMQ bị crash giữa chừng và cần đảm bảo không mất việc?', 'Kafka khác RabbitMQ về mô hình lưu trữ và đọc lại ra sao, khi nào chọn cái nào?'],
   tags: ['RabbitMQ', 'exchange', 'queue', 'ack', 'message broker', 'nhập môn']
 },
@@ -1127,7 +1282,20 @@ Với dependency {{spring-boot-starter-oauth2-client}} và {{http.oauth2Login(Cu
 ### Trả lời miệng 1 phút
 "OAuth2 là giao thức ủy quyền: client không biết mật khẩu user mà nhận access token từ authorization server để gọi resource server. OIDC xây trên OAuth2 và thêm id_token để xác thực user là ai. Luồng authorization code gồm: user đăng nhập và đồng ý tại authorization server, server redirect về app kèm mã code, backend đổi code lấy access token và id_token, rồi verify id_token để đăng nhập. Tôi luôn dùng PKCE cho client public, validate state chống CSRF, và chỉ lưu secret ở backend."
 
-> Senior tip: khi chọn nhà cung cấp identity, đừng chỉ so số tính năng — hãy xem **cửa sổ thu hồi token** và hỗ trợ refresh token rotation; "đăng xuất khỏi mọi thiết bị" hay "khóa tài khoản bị đánh cắp" có nhanh hay không phụ thuộc vào cấu hình này, và là câu hỏi phỏng vấn thực tế cho Senior.`,
+### Ví dụ đời thực
+  **Bối cảnh:** App web của công ty có tính năng "đăng nhập bằng Google". Đội backend vừa triển khai bản mới với Spring Security OAuth2 Client.
+
+  **Triệu chứng:** User báo "bấm đăng nhập Google xong, bị quay về trang login, không vào được". Lượng báo tăng nhanh; ~30% người dùng không đăng nhập được. Khi debug, dev thấy redirect tới Google thành công, Google trả code về redirect_uri, nhưng backend báo "invalid_grant" khi đổi token.
+
+  **Điều tra:** Kiểm tra log backend (filter {{OAuth2LoginAuthenticationProvider}}): {{invalid_grant}} — nghĩa là code đã dùng hoặc expired. Kiểm tra {{state}}: log ghi {{state mismatch}} ở một số request. Kiểm tra cookie session: app dùng {{SameSite=Lax}} nhưng redirect_uri của app khác (tên domain mới) nên cookie không gửi khi redirect về domain mới. Đồng thời, trong CI, {{client_secret}} được inject bằng env var nhưng deploy production lại quên set → secret rỗng, Google reject.
+
+  **Nguyên nhân gốc:** (1) {{state}} mismatch do cookie {{SameSite}} không gửi cross-site khi redirect về domain mới (khoảng cách deploy). (2) {{client_secret}} rỗng trên production do env var quên set. (3) Code được dùng 1 lần: dev debug nhiều lần bằng cùng redirect_uri → code đã hết hạn.
+
+  **Cách xử lý:** (1) Set {{client_secret}} trong Secrets Manager, validate deploy script check non-empty. (2) Chuyển sang cookie-based session (backend giữ token) thay vì localStorage, hoặc set {{SameSite=None; Secure}} nếu cần cross-site. (3) Kích hoạt PKCE ({{authorization_code+PKCE}}) để client public không cần secret. (4) Validate {{state}} bắt buộc; nếu mismatch → redirect về login, không tự động retry.
+
+  **Kết quả đo được:** Sau deploy, tỉ lệ đăng nhập thành công từ ~70% lên 99,2%. {{invalid_grant}} giảm về 0; không còn {{state mismatch}}. Dev debug code nhanh hơn nhờ PKCE (không cần secret).
+
+  > Senior tip: khi chọn nhà cung cấp identity, đừng chỉ so số tính năng — hãy xem **cửa sổ thu hồi token** và hỗ trợ refresh token rotation; "đăng xuất khỏi mọi thiết bị" hay "khóa tài khoản bị đánh cắp" có nhanh hay không phụ thuộc vào cấu hình này, và là câu hỏi phỏng vấn thực tế cho Senior.`,
   follow: ['OAuth2 và OIDC khác nhau thế nào, vì sao đăng nhập bằng Google cần OIDC?', 'PKCE giải quyết vấn đề gì, nó hoạt động ra sao?', 'Access token và id_token khác nhau về mục đích và cách kiểm tra ra sao?'],
   tags: ['OAuth2', 'OIDC', 'authorization code', 'token', 'nhập môn']
 },
@@ -1204,7 +1372,20 @@ Spring Boot 3.x không có starter gRPC trong bộ starter chuẩn. Lựa chọn
 ### Trả lời miệng 1 phút
 "gRPC là RPC dùng protobuf làm định dạng message và HTTP/2 làm giao thức. Protobuf là IDL: khai báo message và service một lần trong file .proto, protoc sinh code Java cho cả client và server, message mã hoá nhị phân kèm số thứ tự field nên rất nhỏ. HTTP/2 cho phép multiplex nhiều stream trên một kết nối và nén header, nên độ trễ và băng thông tốt hơn REST/JSON. Tôi chọn gRPC cho service nội bộ cần hiệu năng hoặc streaming, giữ REST cho API công khai; và luôn đặt deadline khi gọi, không tái sử dụng số field protobuf."
 
-> Senior tip: với hệ thống nhiều service, một kiến trúc phổ biến là **REST ở biên (client) + gRPC bên trong**; và nếu cần quan sát, dùng interceptor của gRPC để gắn trace context (OpenTelemetry) — thiếu nó, distributed tracing sẽ "mù" với mọi luồng gRPC, rất khó điều tra sự cố.`,
+### Ví dụ đời thực
+  **Bối cảnh:** Hệ thống thanh toán nội bộ: {{payment-service}} (Java, gRPC) gọi {{fraud-service}} (Go, gRPC) để kiểm tra gian dận. Gọi ~500 req/s, p99 latency 12ms. Sau khi thêm 1 service mới, p99 tăng lên 85ms, và một số request timeout (deadline 100ms).
+
+  **Triệu chứng:** p99 tăng; metric {{grpc_client_latency}} (Prometheus) cho thấy 80% thời gian ở {{fraud-service}} handling. Kiểm tra interceptor: trace OpenTelemetry chỉ thấy 60% request có trace — trace "mù" với gRPC.
+
+  **Điều tra:** (1) Kiểm tra load balancing: client gRPC dùng {{round_robin}} nhưng kết nối HTTP/2 giữ lâu; 1 instance {{fraud-service}} nhận 70% traffic do connection affinity. (2) Kiểm tra deadline: client không set deadline → downstream treo kéo sập upstream. (3) Kiểm tra interceptor: không gắn trace context vào gRPC metadata → distributed tracing mất một phần.
+
+  **Nguyên nhân gốc:** (1) Connection affinity: HTTP/2 multiplex nhưng một client có thể dồn vào một server. (2) Thiếu deadline khi gọi gRPC → downstream treo kéo sập cả upstream. (3) Thiếu interceptor gRPC để gắn trace context → distributed tracing "mù" với mọi luồng gRPC.
+
+  **Cách xử lý:** (1) Client-side LB: {{round_robin}} hoặc service mesh (Istio/Linkerd). (2) Đặt deadline: {{withDeadlineAfter(Duration.ofMillis(80))}}. (3) Thêm gRPC interceptor để gắn trace context (OpenTelemetry). (4) Thêm retry có giới hạn: chỉ retry trên các error có thể retry được (UNAVAILABLE, RESOURCE_EXHAUSTED), không retry DEADLINE_EXCEEDED.
+
+  **Kết quả đo được:** p99 giảm từ 85ms xuống 18ms. Tỉ lệ request timeout từ 5% xuống 0%. Trace coverage từ 60% lên 99%.
+
+  > Senior tip: với hệ thống nhiều service, một kiến trúc phổ biến là **REST ở biên (client) + gRPC bên trong**; và nếu cần quan sát, dùng interceptor của gRPC để gắn trace context (OpenTelemetry) — thiếu nó, distributed tracing sẽ "mù" với mọi luồng gRPC, rất khó điều tra sự cố.`,
   follow: ['Protobuf mã hoá nhị phân thế nào, vì sao số thứ tự field quan trọng cho tương thích?', 'Deadline và retry nên cấu hình thế nào khi gọi gRPC, vì sao không retry mọi lỗi?', 'Khi nào cần API gateway dịch giữa gRPC và REST?'],
   tags: ['gRPC', 'protobuf', 'HTTP/2', 'RPC', 'nhập môn']
 },
@@ -1293,7 +1474,20 @@ Công thức chọn: **PostgreSQL là nguồn dữ liệu chính (source of trut
 ### Trả lời miệng 1 phút
 "Elasticsearch dùng inverted index: từ khoá trỏ tới danh sách tài liệu chứa nó, nên tìm full-text nhanh dù dữ liệu lớn. Mapping mô tả kiểu từng trường, và tôi phân biệt text (tìm full-text) với keyword (filter/sort/aggregate). Analyzer quyết định text được tokenize ra sao, quan trọng với tiếng Việt. Tôi chỉ thêm ES khi bài toán là tìm kiếm mờ, facet phức tạp trên dữ liệu lớn; còn transaction và nguồn dữ liệu chính vẫn để ở PostgreSQL, đồng bộ sang ES bằng CDC."
 
-> Senior tip: đo **cluster health và phân bổ shard** trước khi mở rộng node; và với tiếng Việt, hãy tự kiểm tra analyzer ("Khách sạn" vs "khach san" có khớp không) ngay từ đầu — sai analyzer chỉ lộ ra khi đã có dữ liệu và chi phí reindex rất đắt.`,
+### Ví dụ đời thực
+  **Bối cảnh:** App tìm kiếm sản phẩm (10 triệu sản phẩm). Ban đầu dùng PostgreSQL {{LIKE '%...%'}}. Sau khi dữ liệu tăng, trang tìm kiếm thường mất 5-10 giây khi người dùng gõ từ khóa.
+
+  **Triệu chứng:** Trang tìm kiếm bị chậm (p99 8s). PostgreSQL log thấy query {{SELECT ... FROM products WHERE name ILIKE '%điện thoại%'}} quét toàn bảng (Seq Scan). CPU DB 90%. Người dùng bỏ đi.
+
+  **Điều tra:** Kiểm tra EXPLAIN: Seq Scan trên 10 triệu dòng. Kiểm tra index: không có index cho {{name}}. Kiểm tra ES: chưa dùng ES; chỉ dùng PostgreSQL.
+
+  **Nguyên nhân gốc:** Dùng {{LIKE '%...%'}} trên bảng lớn → B-tree index không dùng được (ký tự {{%}} ở đầu). PostgreSQL phải quét toàn bảng mỗi truy vấn. Với 10 triệu sản phẩm, mỗi query mất vài giây.
+
+  **Cách xử lý:** (1) Triển khai Elasticsearch làm bản sao tối ưu cho tìm kiếm. (2) Đồng bộ bằng CDC (Debezium) hoặc outbox. (3) Mapping: {{name}} là {{text}} với analyzer tiếng Việt (bỏ dấu, viết thường), {{category}} là {{keyword}} (filter/sort/aggregate). (4) Dùng alias để reindex không downtime. (5) Giữ PostgreSQL là nguồn dữ liệu chính (source of truth), chỉ dùng ES để tìm kiếm.
+
+  **Kết quả đo được:** Sau khi triển khai, p99 tìm kiếm từ 8s xuống 80ms. CPU DB từ 90% xuống 30%. Tỉ lệ bỏ đi do chậm từ 40% xuống <5%.
+
+  > Senior tip: đo **cluster health và phân bổ shard** trước khi mở rộng node; và với tiếng Việt, hãy tự kiểm tra analyzer ("Khách sạn" vs "khach san" có khớp không) ngay từ đầu — sai analyzer chỉ lộ ra khi đã có dữ liệu và chi phí reindex rất đắt.`,
   follow: ['Text và keyword khác nhau thế nào, khi nào cần dùng cả hai cho một trường?', 'PostgreSQL và Elasticsearch nên đồng bộ theo hướng nào, vì sao không ghi trực tiếp vào ES?', 'Analyzer sai thì hậu quả và cách sửa (reindex) ra sao?'],
   tags: ['Elasticsearch', 'inverted index', 'mapping', 'full-text search', 'nhập môn']
 },
@@ -1385,7 +1579,20 @@ Cấu hình ({{application-dev.yml}}, {{application-prod.yml}}) và **secret** (
 ### Trả lời miệng 1 phút
 "Continuous integration là mỗi commit đều được build và test tự động để phát hiện lỗi sớm; continuous delivery đảm bảo mọi thay đổi qua pipeline đều sẵn sàng release, còn continuous deployment thì tự động lên production. Pipeline của tôi gồm build, unit test, quality gate, đóng gói artifact, rồi deploy qua DEV, SIT/UAT và PROD với smoke test cuối. Nguyên tắc then chốt là build một lần: cùng một artifact đi qua các môi trường, chỉ đổi cấu hình và secret. Và tôi luôn có kế hoạch rollback, không bao giờ deploy mà không có đường lui."
 
-> Senior tip: theo dõi **lead time** và **change failure rate** (hai chỉ số DORA) — chúng cho biết pipeline của bạn thực sự hiệu quả đến đâu. Pipeline nhanh (< 10 phút) và ổn định là nền tảng để cả team release nhiều lần mỗi ngày thay vì "release cuối tuần đầy rủi ro".`,
+### Ví dụ đời thực
+  **Bối cảnh:** Team backend 6 người, mỗi commit đều chạy pipeline. Sau khi tăng số dev, pipeline thường xuyên bị timeout (GitHub Actions 6h limit). Build image Docker mất 14 phút, test integration mất 10 phút. Dev phải chờ 24 phút để biết code có xanh không.
+
+  **Triệu chứng:** Pipeline timeout; CI wait time tăng từ 5 phút lên 24 phút. Dev bỏ qua test, merge không check. Release cuối tuần bị rollback do test flaky.
+
+  **Điều tra:** Kiểm tra pipeline: (1) Build stage: {{mvn package}} không dùng cache (mỗi build lại tải dependency). (2) Test stage: test integration chạy trên DEV environment, không mock. (3) Deploy stage: build lại image ở mỗi môi trường (DEV, SIT, PROD) — vi phạm "build once, deploy many".
+
+  **Nguyên nhân gốc:** (1) Không dùng cache dependency. (2) Test integration chậm do environment thật. (3) Build lại ở mỗi môi trường → artifact UAT khác artifact PROD.
+
+  **Cách xử lý:** (1) Dùng cache dependency: {{actions/cache}} hoặc Docker layer cache. (2) Tách test unit (nhanh, mock) và test integration (chạy song song trên DEV). (3) Build image 1 lần, artifact đi qua DEV → SIT → PROD, chỉ đổi config. (4) Dùng {{actions/upload-artifact}} và {{actions/download-artifact}} để giữ artifact.
+
+  **Kết quả đo được:** Pipeline từ 24 phút xuống 6 phút. Tỉ lệ merge không check từ 30% xuống 0%. Release cuối tuần không còn rollback do test flaky.
+
+  > Senior tip: theo dõi **lead time** và **change failure rate** (hai chỉ số DORA) — chúng cho biết pipeline của bạn thực sự hiệu quả đến đâu. Pipeline nhanh (< 10 phút) và ổn định là nền tảng để cả team release nhiều lần mỗi ngày thay vì "release cuối tuần đầy rủi ro".`,
   follow: ['Continuous delivery và continuous deployment khác nhau thế nào?', 'Artifact nên được promote qua các môi trường ra sao để đảm bảo "đã test cái gì thì deploy cái đó"?', 'Đặt database migration ở stage nào của pipeline để không downtime?'],
   tags: ['CI/CD', 'pipeline', 'artifact', 'môi trường', 'nhập môn']
 },

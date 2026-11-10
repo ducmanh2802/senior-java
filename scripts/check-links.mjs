@@ -5,7 +5,7 @@
  *   node scripts/check-links.mjs q-java.js    one file
  * YouTube: checked through the oEmbed endpoint (404 = no such video) and the real title is printed,
  * so a mismatching title can be fixed. Other URLs: GET following redirects; 404/410/DNS errors fail.
- * 401/403/429 (bot blocking) only warn. Exit 1 when any link is broken.
+ * 401/403/429 (bot blocking) and 5xx after one retry (server outage) only warn. Exit 1 when any link is broken.
  */
 import fs from 'fs';
 import path from 'path';
@@ -38,8 +38,12 @@ async function check(r) {
       const j = await res.json();
       return { ...r, real: j.title + ' — ' + j.author_name };
     }
-    const res = await fetch(r.url, { redirect: 'follow', signal: AbortSignal.timeout(20000), headers: { 'user-agent': 'Mozilla/5.0 (link-check; senior-java-prep)' } });
-    if ([404, 410].includes(res.status) || res.status >= 500) return { ...r, bad: true, why: 'HTTP ' + res.status };
+    const get = () => fetch(r.url, { redirect: 'follow', signal: AbortSignal.timeout(20000), headers: { 'user-agent': 'Mozilla/5.0 (link-check; senior-java-prep)' } });
+    let res = await get();
+    if (res.status >= 500) { await new Promise(ok => setTimeout(ok, 3000)); res = await get(); }
+    if ([404, 410].includes(res.status)) return { ...r, bad: true, why: 'HTTP ' + res.status };
+    // a 5xx (GitHub 504 on 2026-11-08) is the server's outage, not a missing page: warn, never block or --fix it away
+    if (res.status >= 500) return { ...r, warn: 'HTTP ' + res.status + ' (lỗi server tạm thời, chưa kiểm tra được)' };
     if (res.status >= 400) return { ...r, warn: 'HTTP ' + res.status + ' (có thể chặn bot)' };
     return r;
   } catch (e) {

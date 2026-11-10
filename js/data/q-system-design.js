@@ -662,7 +662,13 @@ Tách ranking khỏi storage; cache kết quả ngắn hạn. Không chạy mode
 | Hot key | Một user được đọc liên tục | Cache L1, replicate |
 | Xoá không lan toả | Feed cache còn id cũ | Lọc khi hydrate, TTL ngắn |
 
-> Senior tip: ngưỡng celebrity không nên cố định cứng 10k. Tôi từng thấy một tài khoản 8k follower nhưng có bài viral nhận 2 triệu tương tác, làm worker fan-out nghẽn cả hàng đợi. Hãy dùng ngưỡng động theo tải thực tế và luôn có cơ chế tắt push cho một tài khoản cụ thể.`,
+### Ví dụ đời thực
+  Một mạng xã hội có 30 triệu DAU từng gặp sự cố feed trễ 30 giây vào một tối thứ Sáu khi một diễn viên nổi tiếng đăng bài. **Triệu chứng:** p99 tải feed tăng từ 220 ms lên 30 giây, queue Kafka {{post-created}} lag lên 800k message, CPU của 4 fan-out worker vượt 90%. Người dùng phàn nàn "feed không cập nhật bài mới" trên group Facebook. **Điều tra:** dashboard Grafana cho thấy partition 3 của topic {{post-created}} có throughput đột ngột từ 2k msg/s lên 120k msg/s; {{redis-cli --hotkeys}} chỉ ra key {{feed:<userId>}} của celebrity không xuất hiện — nghĩa là worker đã push 50 triệu lần cho 50 triệu follower nhưng không ai nhận được vì key bị hot. Lệnh {{ZADD feed:userId ...}} trên một key duy nhất trở thành điểm nghẽn do Redis xử lý từng member một. **Nguyên nhân gốc:** celebrity có 50 triệu follower nhưng hệ thống vẫn áp dụng push (fan-out on write) vì ngưỡng celebrity là 10k follower — celebrity này vượt ngưỡng 5.000 lần. Một bài = 50 triệu bản ghi feed, mỗi bản là một ZADD; worker phải thực hiện 50 triệu thao tác Redis trong khi chỉ có 1 partition xử lý. **Xử lý:** (1) Tăng ngưỡng celebrity lên 500k follower và áp dụng ngưỡng động theo throughput thực tế thay vì follower count; (2) celebrity chuyển sang pull — chỉ ghi 1 bản {{recent_posts}} của tác giả, feed service merge khi đọc; (3) worker batch ZADD theo lô 500 member thay vì từng người một, dùng pipeline; (4) thêm read replica cho Redis cluster để phân tán hot key. **Kết quả đo được:** sau 1 tuần, p99 feed trở về 280 ms, queue lag về 0, và celebrity post chỉ mất 3 giây để thấy trên feed của follower thường —acceptable vì fan-out worker chạy nền.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi interviewer hỏi về news feed, tôi bắt đầu bằng một con số: với 50 triệu DAU và trung bình 200 follower mỗi người, mỗi ngày có khoảng 1 tỷ bản ghi feed được tạo nếu dùng push toàn bộ — điều không thể. Vì vậy tôi chọn mô hình hybrid: push cho người dùng có dưới ngưỡng follower (ví dụ 10k), pull cho celebrity. Cơ chế là fan-out worker đọc event post-created từ Kafka, nếu follower dưới ngưỡng thì ZADD vào feed Redis sorted set của từng người; nếu celebrity thì không push, chỉ ghi recent_posts. Khi đọc, feed service lấy từ Redis ZSET của người dùng kết hợp với bài mới của celebrity đang theo dõi, merge theo timestamp. Trade-off là người dùng theo celebrity có thể thấy bài muộn vài giây so với người theo thường, nhưng bù lại hệ thống không bị sập khi một bài viral. Kinh nghiệm thực tế của tôi là ngưỡng celebrity không nên cố định: một tài khoản chỉ 8k follower nhưng có bài viral có thể làm nghẽn worker nếu vẫn push. Vì vậy tôi dùng ngưỡng động dựa trên throughput thực tế và luôn có feature flag để tắt push cho một tài khoản cụ thể trong vòng 1 phút."
+
+  > Senior tip: ngưỡng celebrity không nên cố định cứng 10k. Tôi từng thấy một tài khoản 8k follower nhưng có bài viral nhận 2 triệu tương tác, làm worker fan-out nghẽn cả hàng đợi. Hãy dùng ngưỡng động theo tải thực tế và luôn có cơ chế tắt push cho một tài khoản cụ thể.`,
   follow: [
     'Nếu sản phẩm yêu cầu feed nhất quán tức thì khi follow/unfollow, bạn xử lý ra sao?',
     'Bạn thiết kế rebuild feed khi Redis mất toàn bộ dữ liệu mà không sập hệ thống?',
@@ -759,7 +765,13 @@ Nhóm 100k thành viên (kênh cộng đồng) không thể fan-out từng ngư�
 | Consumer chậm | Tin đến trễ | Scale consumer, backpressure, ưu tiên tin 1-1 |
 | Spam/flood | Quá tải | Rate limit theo user, chặn trước khi cấp seq |
 
-> Senior tip: đừng cố làm WebSocket "stateless" bằng cách đẩy mọi thứ qua database — bạn sẽ tạo ra hàng triệu query mỗi giây. Cái cần là **registry tập trung nhỏ** (user đang ở gateway nào) cộng với gateway giữ socket trong RAM; đó là mô hình đã được chứng minh ở quy mô hàng chục triệu kết nối.`,
+### Ví dụ đời thực
+  Một nền tảng chat với 5 triệu user đồng thời từng mất tin nhắn hàng loạt vào tháng 12 khi một gateway node bị restart. **Triệu chứng:** hàng nghìn người dùng báo "tin nhắn bị mất" giữa một cuộc hội thoại nhóm 1-1; dashboard cho thấy một gateway node bị restart do CPU quá tải, và session registry trong Redis còn một số entry cũ pointing tới gateway đã chết. **Điều tra:** log gateway cho thấy khi node restart, client reconnect nhưng gateway mới không biết lastSeq của client nên trả về 50 tin đầu tiên thay vì các tin sau lastSeq. Lệnh {{HGET session:<userId> lastSeq}} trả về null vì key bị xoá TTL 60 giây trước khi reconnect. **Nguyên nhân gốc:** session registry dùng TTL 60 giây được refresh theo heartbeat, nhưng khi gateway restart, client reconnect trong vòng 2 giây và gateway mới không có lastSeq — client bị coi là lần đầu vào chat. **Xử lý:** (1) client gửi {{lastSeq}} một cách rõ ràng khi reconnect thay vì để gateway tự tra cứu; (2) server trả các tin từ {{lastSeq + 1}} với giới hạn số lượng, nếu quá nhiều thì tải theo trang; (3) tăng TTL session lên 5 phút và xoá session explicit khi đóng socket; (4) thêm retry: gateway mới nếu không có session thì hỏi message service theo conversation_id. **Kết quả đo được:** sau khi fix, reconnect mất 300 ms và không có tin nhắn nào bị mất; dashboard reconnect success rate từ 87% lên 99.9%.
+
+### Trả lời mẫu khi phỏng vấn
+  "Chat realtime có ba phần độc lập cần thiết kế: kết nối, định tuyến và lưu trữ. Kết nối là WebSocket gateway giữ socket, không chứa business logic, mỗi node phục vụ 100k–500k connection. Định tuyến dùng session registry nhỏ trong Redis biết user đang ở gateway nào để đẩy tin — đây là thứ không thể thay thế bằng database vì sẽ tạo ra hàng triệu query mỗi giây. Lưu trữ dùng append tin nhắn với sequence number tăng dần cho mỗi conversation, không dùng timestamp client vì đồng hồ có thể sai. Về mất kết nối, chìa khóa là client reconnect phải gửi lastSeq đã nhận; server trả các tin từ lastSeq+1, giới hạn số lượng nếu quá nhiều. Về gửi trùng, hệ thống dùng at-least-once everywhere và client dedup theo clientMsgId; server lưu unique (conversation_id, client_msg_id) để retry không tạo hai tin. Trade-off là không cố gắng exactly-once vì trùng rarity và dedup rẻ hơn nhiều so với đảm bảo tuyệt đối."
+
+  > Senior tip: đừng cố làm WebSocket "stateless" bằng cách đẩy mọi thứ qua database — bạn sẽ tạo ra hàng triệu query mỗi giây. Cái cần là **registry tập trung nhỏ** (user đang ở gateway nào) cộng với gateway giữ socket trong RAM; đó là mô hình đã được chứng minh ở quy mô hàng chục triệu kết nối.`,
   follow: [
     'Mã hoá đầu cuối (end-to-end encryption) ảnh hưởng gì tới kiến trúc?',
     'Làm sao đảm bảo thứ tự tin nhắn khi một conversation bị di chuyển giữa các shard?',
@@ -853,7 +865,13 @@ Một key được đọc hàng trăm nghìn lần/giây làm một node Redis q
 - Cấu hình feature flag: cache local + pub/sub để xoá nhanh.
 Đừng hứa "cache luôn đúng"; hãy nói rõ **độ trễ nhất quán chấp nhận được** và cách đo.
 
-> Senior tip: trong sự cố production, cache thường là thứ che lỗi chứ không phải nguyên nhân. Tôi luôn chuẩn bị khả năng **tắt cache trong 1 phút** (feature flag) để xem hệ thống có sống nổi không; nếu tắt cache mà DB sập ngay thì bạn chưa có cache, bạn có một điểm chết mới.`,
+### Ví dụ đời thực
+  Một hệ thống đơn hàng dùng cache-aside cho catalog sản phẩm (100k sản phẩm, đọc 50k lần/giây). Một ngày 11/11, sau khi dev deploy mới, khách hàng thấy giá sản phẩm cũ trong 15 phút. **Triệu chứng:** p99 tải trang sản phẩm tăng từ 200 ms lên 2 giây, nhiều khách phàn nàn "giá không cập nhật" trên group Facebook. **Điều tra:** log ứng dụng cho thấy sau khi deploy, cache key {{product:<id>}} vẫn còn TTL 600 giây từ lần đọc trước deploy; dev đã sửa logic tính giá nhưng không xoá cache. Lệnh {{redis-cli KEYS product:*}} cho thấy hàng nghìn key vẫn giữ giá cũ. **Nguyên nhân gốc:** cache-aside chỉ xoá cache khi dữ liệu thay đổi từ cùng app; deploy mới là một "thay đổi" khác biệt — cache không tự invalidation. **Xử lý:** (1) thêm delayed double delete — xoá cache ngay sau commit rồi xoá lại sau 500 ms; (2) thêm TTL jitter 600–660 giây để không có hàng nghìn key hết hạn cùng lúc; (3) thêm CDC (Debezium) nghe binlog Postgres và xoá cache tự động — đáng tin nhất; (4) chuẩn bị feature flag để tắt cache trong 1 phút khi cần. **Kết quả đo được:** sau khi triển khai CDC, không có trường hợp nào cache stale vượt 1 giây; p99 trở về 180 ms.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi hỏi về caching, tôi luôn bắt đầu bằng cache-aside vì đó là mô hình mặc định: app tự đọc cache, miss thì đọc DB rồi set; khi ghi thì xoá cache SAU khi DB commit — xoá thay vì cập nhật vì hai request ghi đồng thời có thể cập nhật cache theo thứ tự ngược với DB. Ba vấn đề luôn phải trả lời: invalidation, stampede và hot key. Invalidation: xoá trước commit là sai vì request khác có thể nạp dữ liệu cũ; delayed double delete (xoá sau commit rồi xoá lại 500 ms) là giảm thiểu; CDC/Debezium nghe binlog là đáng tin nhất. Stampede: khi key nóng hết hạn, hàng nghìn request cùng miss; dùng single-flight mutex (SET NX PX) để chỉ một request load, các request khác chờ hoặc trả stale. Hot key: dùng L1 in-process cache (Caffeine) TTL 1–5 giây để giảm 90% request tới Redis, hoặc key replication. Trade-off là cache luôn không thể đúng tuyệt đối; điều quan trọng là biết stale tối đa chấp nhận được và cách đo."
+
+  > Senior tip: trong sự cố production, cache thường là thứ che lỗi chứ không phải nguyên nhân. Tôi luôn chuẩn bị khả năng **tắt cache trong 1 phút** (feature flag) để xem hệ thống có sống nổi không; nếu tắt cache mà DB sập ngay thì bạn chưa có cache, bạn có một điểm chết mới.`,
   follow: [
     'Bạn chọn TTL thế nào cho dữ liệu vừa cần mới vừa đọc rất nhiều?',
     'Làm sao invalidate cache khi dữ liệu thay đổi từ một service khác không chung codebase?',
@@ -939,6 +957,20 @@ Kết luận thực dụng: Redlock **không sai** cho mục tiêu "giảm khả
 - Ghi log {{acquire/release}} kèm token và thời gian giữ lock để điều tra.
 - Nếu lock là "nice to have" (chỉ giảm tải), fail-open; nếu là "bắt buộc", phải có ràng buộc tầng dữ liệu.
 
+### Ví dụ đời thực
+Một nền tảng thương mại điện tử chạy job tính lại tồn kho khả dụng (available stock = tổng tồn kho - tồn kho đang giữ cho đơn chưa thanh toán) theo lịch mỗi 5 phút. Job này chạy trên 3 instance Spring Boot để dự phòng, và dùng Redis {{SET lock:stock-recalc NX PX 30000}} để chỉ một instance chạy. Một buổi tối thứ Bảy, traffic tăng gấp 4 lần vì chương trình flash sale. **Triệu chứng:** dashboard kho hàng hiển thị tồn kho âm cho 12 mã sản phẩm (ví dụ -47 chiếc áo thun), trong khi đơn hàng vẫn được tạo thành công. Metric {{lock.stock.held_seconds}} có vài điểm nhảy lên 45–55 giây, vượt TTL 30 giây; log cho thấy 2 instance cùng in "recalc started" cách nhau 18 giây cho cùng một chu kỳ.
+
+**Điều tra:** kiểm tra GC log (JDK 17, G1GC) trên instance A: {{jcmd <pid> GC.heap_info}} và GC log cho thấy một lần Full GC kéo dài 38 giây do heap 6 GB bị căng và promotion failure (vùng Old đầy, không kịp thu gom). Truy vết log theo {{requestId}} của job cho thấy: A acquire lock lúc 20:05:00, bắt đầu đọc dữ liệu; A bị Full GC 38 giây; lock hết hạn lúc 20:05:30; B acquire thành công lúc 20:05:31 và tính lại tồn kho dựa trên snapshot mới; B ghi kết quả (token logic không có) lúc 20:05:42; A tỉnh dậy lúc 20:05:38 và ghi đè kết quả của B (tính trên dữ liệu cũ hơn) lúc 20:05:55. Kết quả A bỏ qua các đơn giữ chỗ mà B đã trừ, nên tồn kho bị cộng ngược lại sai.
+
+**Nguyên nhân gốc:** lock chỉ dùng TTL, không có cơ chế fencing token; tài nguyên đích (bảng {{stock_snapshot}}) chấp nhận mọi lần ghi mà không kiểm tra thứ tự. Stop-the-world GC dài hơn TTL làm lock mất hiệu lực loại trừ nhưng client không biết.
+
+**Xử lý:** (1) Chuyển job sang **một consumer duy nhất** dùng partition/leader election thay vì lock phân tán — bỏ hẳn bài toán tranh chấp. (2) Với các thao tác vẫn cần ghi từ nhiều nguồn, thêm cột {{recalc_version BIGINT}} vào {{stock_snapshot}} và dùng conditional update: {{UPDATE stock_snapshot SET qty=?, recalc_version=? WHERE sku=? AND recalc_version < ?}}; version lấy từ Redis {{INCR stock:recalc:version}} (hoặc sequence DB) mỗi lần acquire logic. (3) Release lock bằng Lua kiểm tra token (đã có nhưng chưa dùng nhất quán). (4) Điều chỉnh GC: giảm {{-Xmx}} xuống 4 GB cho job worker, bật {{-XX:MaxGCPauseMillis=200}}, tách job nặng ra process riêng để GC của web request không ảnh hưởng. (5) Thêm cảnh báo khi {{lock.held_seconds > 20}} hoặc khi phát hiện hai lần "recalc started" trong một chu kỳ.
+
+**Kết quả đo được:** sau 2 tuần không còn tồn kho âm do recalc. p99 thời gian Full GC của worker giảm từ 38 giây xuống 180 ms. Conditional update từ chối trung bình 0,3 lần/giờ (các trường hợp tranh chấp hiếm còn lại) và được log để theo dõi — chứng tỏ fencing đang bảo vệ đúng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi được hỏi về distributed lock, tôi luôn bắt đầu bằng việc hỏi có thể tránh lock không, vì unique constraint, conditional update hay partition theo key thường đúng và đơn giản hơn. Nếu buộc phải dùng lock, với Redis tôi dùng {{SET key token NX PX}} và release bằng Lua kiểm tra token để không xoá nhầm lock của người khác. Nhưng tôi nhấn mạnh rằng lock một mình không đủ cho tính đúng đắn: client có thể bị stop-the-world GC dài hơn TTL, lock hết hạn, client khác vào, rồi client cũ tỉnh dậy ghi đè. Ở production tôi từng gặp đúng kịch bản này với job tính tồn kho và Full GC 38 giây làm tồn kho bị tính sai. Cách giải quyết đúng là fencing token — một số thứ tự tăng dần mà tầng lưu trữ kiểm tra, từ chối ghi có token cũ. Ngoài ra tôi ưu tiên thiết kế để bỏ lock, ví dụ dùng một consumer duy nhất hoặc conditional update theo version. Redlock thì tôi xem là giảm xác suất trùng cho các job không quan trọng, nhưng không dùng cho dữ liệu tiền hay tồn kho nếu không có ràng buộc thứ hai ở tầng dữ liệu."
+
 > Senior tip: câu hỏi tôi luôn hỏi trong phỏng vấn là "nếu client giữ lock bị GC 40 giây thì sao?". Người trả lời "tăng TTL" chưa đủ; người trả lời "fencing token ở tầng storage" là người đã thực sự vận hành hệ thống phân tán.`,
   follow: [
     'Bạn triển khai fencing token với một storage không hỗ trợ so sánh version thế nào?',
@@ -1005,6 +1037,22 @@ Với hệ replicated N node: ghi thành công khi W node xác nhận, đọc t�
 - **Đọc từ replica ngay sau ghi:** replication lag 100 ms đủ để người dùng thấy "mất" dữ liệu vừa lưu. Giải: đọc từ primary trong vài giây sau ghi, hoặc dùng session token/version.
 - **Trộn nhiều nguồn:** ghi Postgres, đọc Elasticsearch nhưng index trễ 5 giây — người dùng tạo xong tìm không thấy. Cần thông báo "đang xử lý" hoặc đọc fallback.
 - **Nhầm "eventual" với "không bao giờ đúng":** eventual cần cơ chế đảm bảo hội tụ (retry, anti-entropy, read repair). Không có cơ chế đó là mất dữ liệu.
+
+### Ví dụ đời thực
+Một ứng dụng ví điện tử nội bộ (dùng cho nhân viên mua hàng trong công ty, quy mô ~50.000 người) có hai luồng: (1) xem số dư và lịch sử giao dịch, (2) bảng xếp hạng "top chi tiêu tháng" hiển thị trên trang chủ. Ban đầu đội dùng một cụm cơ sở dữ liệu NoSQL cấu hình mặc định (eventual consistency, đọc từ replica gần nhất) cho cả hai luồng để "nhanh và scale dễ".
+
+**Triệu chứng:** sau khi nạp tiền, khoảng 2–5% người dùng thấy số dư vẫn là số cũ trong 1–3 giây và bấm nạp lại hoặc thanh toán lần nữa. Có 37 trường hợp ghi nhận giao dịch trừ tiền bị từ chối với lỗi "insufficient balance" dù người dùng vừa nạp thành công (theo log nạp). Đồng thời bảng xếp hạng đôi khi hiển thị thứ hạng nhảy lung tung giữa các lần tải trang.
+
+**Điều tra:** kiểm tra log ứng dụng thấy luồng nạp tiền ghi vào node leader rồi trả "thành công" cho client; request đọc số dư ngay sau đó (cùng phiên người dùng) bị load balancer đưa tới một replica chưa nhận bản sao — replication lag đo được 400 ms đến 2,8 giây trong giờ cao điểm (metric {{replication_lag_ms}} p99 = 2800). Luồng thanh toán đọc số dư từ replica và từ chối vì thấy số cũ. Bảng xếp hạng dùng cùng cụm, đọc eventual nên thứ hạng thay đổi theo replica được chọn — đây là hành vi chấp nhận được nhưng chưa được giải thích cho sản phẩm.
+
+**Nguyên nhân gốc:** áp một consistency model (eventual, ưu tiên latency) cho hai loại dữ liệu có yêu cầu khác nhau. Số dư ví cần ít nhất read-your-writes cho chính người dùng và cần quyết định thanh toán dựa trên dữ liệu đủ mới; bảng xếp hạng chỉ cần eventual.
+
+**Xử lý:** (1) Tách luồng số dư/ledger sang PostgreSQL với transaction ({{BEGIN; SELECT balance FOR UPDATE; kiểm tra; INSERT ledger; UPDATE balance; COMMIT}}) — chọn {{PC/EC}} cho dữ liệu tiền. (2) Với các màn hình "số dư của tôi" sau khi ghi, đọc từ primary hoặc gửi kèm phiên bản/ghi chú "read-after-write" trong 5 giây. (3) Giữ bảng xếp hạng trên đường ống eventual: ghi sự kiện chi tiêu vào hàng đợi, tính lại bảng xếp hạng bất đồng bộ mỗi 30 giây, cache kết quả — chấp nhận trễ và ghi rõ "cập nhật mỗi 30 giây" trên UI. (4) Thêm kiểm thử tái hiện: kịch bản "ghi rồi đọc ngay" chạy trong môi trường có replication lag giả lập.
+
+**Kết quả đo được:** lỗi "insufficient balance" sai sau nạp tiền giảm về 0 trong 30 ngày theo dõi. p99 đọc số dư tăng từ 18 ms lên 35 ms (đọc primary) — chấp nhận được. Bảng xếp hạng ổn định hơn về trải nghiệm vì người dùng hiểu dữ liệu trễ có chủ đích.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nói về CAP và PACELC, tôi không dừng ở định nghĩa mà đi thẳng vào yêu cầu của từng loại dữ liệu. CAP nhắc rằng khi có partition mạng thì phải chọn consistency hay availability; PACELC bổ sung rằng kể cả lúc bình thường vẫn phải chọn latency hay consistency. Trong thực tế tôi phân loại dữ liệu: ví dụ số dư ví và ledger cần consistency mạnh, tôi dùng cơ sở dữ liệu quan hệ với transaction và conditional update, chấp nhận latency cao hơn; giỏ hàng cần read-your-writes cho chính người dùng nhưng chịu được mất mát nhỏ, nên cache hoặc key-value với TTL là hợp lý; news feed hay bảng xếp hạng chấp nhận eventual vài giây để đổi lấy độ trễ thấp và khả năng scale. Tôi từng gặp sự cố khi một hệ thống dùng eventual cho cả số dư ví: người dùng nạp xong đọc từ replica chưa kịp sao chép nên thấy số cũ và bị từ chối thanh toán. Cách sửa là tách luồng tiền về giao dịch mạnh và chỉ dùng eventual cho những nơi sản phẩm chấp nhận trễ. Trade-off luôn là: dữ liệu nào sai một đơn vị là sự cố nghiệp vụ thì không đánh đổi consistency."
 
 > Senior tip: khi interviewer hỏi CAP, đừng trả lời định nghĩa rồi dừng. Hãy nói ngay "với bài toán này tôi chấp nhận stale bao lâu, vì người dùng sẽ cảm nhận thế nào" — đó là câu trả lời của người đã thiết kế sản phẩm, không chỉ đọc sách.`,
   follow: [
@@ -1097,6 +1145,22 @@ Tín hiệu: một service chặn cả hệ thống khi chậm, team deploy gi�
 - **Con người là điểm nghẽn.** 3 kỹ sư không vận hành nổi 20 microservice + service mesh. Chọn kiến trúc phù hợp năng lực đội.
 - **Dữ liệu cũ.** Migration 100 triệu row cần chạy nền, batched, có kiểm tra; không làm trong một transaction.
 - **Deploy an toàn:** blue-green/canary quan trọng hơn việc chọn công nghệ DB mới.
+
+### Ví dụ đời thực
+Một sản phẩm SaaS quản lý đơn hàng cho cửa hàng nhỏ đang có khoảng 1.200 tài khoản (mỗi tài khoản vài người dùng, tổng ~4.000 người dùng hoạt động ngày). Kiến trúc là một ứng dụng Spring Boot + một PostgreSQL trên một máy chủ, deploy thủ công. Sau khi lên báo, lượng đăng ký tăng nhanh: trong 6 tuần đạt ~40.000 người dùng hoạt động ngày, giờ cao điểm (11:00–13:00) gấp 5 lần bình thường.
+
+**Triệu chứng:** p99 API {{GET /orders}} tăng từ 280 ms lên 3,2 giây vào giờ cao điểm; trang quản trị báo cáo doanh thu thỉnh thoảng timeout 30 giây; PostgreSQL báo {{FATAL: remaining connection slots are reserved}} và CPU DB dao động 85–95%. Đội kỹ thuật (3 người) hoảng và đề xuất "chuyển sang microservice + Kubernetes + Kafka" trong 1 tháng.
+
+**Điều tra:** dùng APM và {{pg_stat_statements}} thấy 2 truy vấn chiếm 70% thời gian DB: (1) danh sách đơn hàng thiếu index trên {{(tenant_id, created_at)}} nên quét nhiều dòng; (2) báo cáo doanh thu chạy truy vấn tổng hợp nặng trực tiếp trên primary vào giờ làm việc. HikariCP mỗi instance mở 20 connection; khi scale tạm lên 6 instance để chịu tải thì tổng 120 connection chạm trần cấu hình Postgres ({{max_connections}} 100). Không có cache cho dữ liệu danh mục; static asset vẫn đi qua app server.
+
+**Nguyên nhân gốc:** không phải "thiếu microservice" mà là các điểm nghẽn cơ bản: thiếu index, query nặng đặt sai chỗ, connection pool nhân lên theo số instance, và chưa có lớp giảm tải đọc. Quy mô ~40k user vẫn nằm trong tầm một monolith được tối ưu.
+
+**Xử lý theo mốc (không nhảy cóc):** (1) Tuần 1: thêm index {{(tenant_id, created_at DESC)}}, tối ưu query báo cáo, đặt timeout truy vấn; p99 giảm còn 900 ms. (2) Tuần 2: đưa PostgreSQL lên máy mạnh hơn một bậc, bật PgBouncer (transaction pooling) để kiểm soát connection; thêm 1 read replica và chuyển báo cáo sang replica. (3) Tuần 3: đưa session và catalog vào Redis (cache-aside, TTL có jitter), đẩy static asset lên CDN/object storage; p99 giờ cao điểm còn ~350 ms, CPU DB xuống 45–55%. (4) Chuẩn bị nền cho mốc tiếp: app stateless, health check, CI/CD, giám sát SLO. Chưa tách microservice vì 3 kỹ sư không đủ vận hành; ghi lại ranh giới domain để tách sau khi có tín hiệu thật (deploy giẫm chân nhau, một phần làm chậm toàn bộ).
+
+**Kết quả đo được:** sau 3 tuần, hệ thống chịu ổn định ~40k người dùng hoạt động ngày với chi phí hạ tầng tăng khoảng 2,2 lần (thay vì ước tính 6–8 lần nếu dựng cụm Kubernetes/Kafka). Thời gian khôi phục khi sự cố rõ hơn nhờ backup đã test restore và runbook đơn giản.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi được hỏi cách chuẩn bị từ 1.000 lên 1 triệu người dùng, tôi không vẽ kiến trúc đích ngay mà trình bày lộ trình theo từng mốc gắn với tín hiệu đo được. Ở 1.000 người dùng, tôi giữ monolith gọn, một cơ sở dữ liệu, CI/CD, backup và đã test restore — đây là thứ nhiều đội bỏ qua. Khi p99 và CPU DB tăng, mốc tiếp theo là thêm cache, read replica, CDN và tách job nền; sau đó làm app stateless, thêm queue cho bất đồng bộ, PgBouncer để kiểm soát connection. Chỉ khi một primary không chịu nổi ghi hoặc một phần hệ thống bắt đầu chặn phần khác, tôi mới nghĩ tới partition, shard, rồi tách service theo ranh giới nghiệp vụ. Ở production tôi từng thấy đội 3 người muốn nhảy thẳng sang microservice và Kubernetes khi traffic tăng, nhưng điểm nghẽn thật là thiếu index và query nặng trên primary; tối ưu theo trục rẻ nhất giúp ổn định trong vài tuần với chi phí thấp hơn nhiều. Trade-off tôi luôn nói rõ là chi phí vận hành và năng lực đội tăng nhanh hơn traffic, nên kiến trúc phải đi sau số liệu, không đi trước."
 
 > Senior tip: tôi luôn hỏi "nếu ngày mai traffic tăng 10 lần, cái gì vỡ đầu tiên?" và chuẩn bị cho đúng cái đó. Đội nào trả lời được bằng số liệu sẽ scale tốt hơn đội có kiến trúc đẹp nhưng không biết điểm nghẽn thật.`,
   follow: [
@@ -1231,6 +1295,12 @@ Job có thể chạy lại do retry, lease hết hạn, hoặc chạy tay. Mọi
 - **Temporal**: workflow bền, retry, timer rất tốt; phù hợp khi job có nhiều bước và cần bù trừ, nhưng thêm hạ tầng.
 - **Kafka + consumer**: hợp cho stream, không hợp cho cron đúng giờ.
 
+### Ví dụ đời thực
+  Một hệ thống ngân hàng số xử lý 50.000 job/ngày: nightly batch tính lãi suất, đối soát giao dịch, gửi báo cáo, và các job ad-hoc như retry thanh toán thất bại. **Triệu chứng:** Một đêm, batch đối soát (10 triệu bản ghi) chạy quá 4 giờ và làm nghẽn connection pool, khiến các job cron 5 phút bị treo hàng loạt, p99 API tăng từ 80 ms lên 12 giây. Monitoring cho thấy {{active connections = 100/100}}, {{job RUNNING > lease_until = 47 jobs}}. **Điều tra:** Script reaper (chạy 5 phút/lần) thấy job batch cha vẫn RUNNING nên không reaper; các chunk con đã DONE nhưng job cha chờ aggregation. Do chunk size nhỏ (10.000) tạo ra 1.000 chunk, overhead claim + commit lớn. Worker autoscale đã max 20 pod nhưng DB primary CPU 95% do nhiều transaction nhỏ. **Nguyên nhân gốc:** Batch lớn không giới hạn concurrency chunk; 1.000 chunk chạy song song gây connection storm. Không có backpressure từ scheduler xuống worker. **Xử lý:** (1) Thêm semaphore giới hạn 10 chunk đồng thời mỗi batch cha; (2) Tăng chunk size lên 100.000 bản ghi, giảm xuống 100 chunk; (3) Materialize cron job dùng advisory lock thay vì INSERT + ON CONFLICT để tránh thundering herd lúc 00:00; (4) Tách connection pool: batch dùng pool riêng (max 30), API dùng pool chính (max 70). **Kết quả đo được:** Nightly batch từ 4h giảm xuống 1h15p; job cron 5 phút không còn trễ; p99 API ổn định < 100 ms; reaper không còn cảnh báo lease timeout.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi thiết kế scheduler phân tán, tôi tập trung vào ba thứ: không chạy trùng, không mất job, và batch lớn không làm sập hệ thống. Cốt lõi là bảng job với SKIP LOCKED để claim nguyên tử, lease_until để phát hiện worker chết, và idempotency_key để chạy lại an toàn. Với batch 10 triệu bản ghi, tôi chia chunk, mỗi chunk lưu checkpoint để resume. Tôi từng gặp sự cố batch đối soát tạo 1.000 chunk làm nghẽn connection pool — giải pháp là giới hạn concurrency chunk và tăng chunk size. Nếu cần workflow phức tạp nhiều bước có bù trừ, tôi cân nhắc Temporal thay vì tự xây saga. Monitoring thì theo dõi PENDING quá hạn, RUNNING quá lease, và DLQ size."
+
 > Senior tip: điều tôi luôn kiểm tra đầu tiên khi nhận hệ thống scheduler là **job có chạy trùng được không**. Nếu handler không idempotent, mọi cơ chế lease/retry đẹp đến đâu cũng sẽ tạo ra dữ liệu sai vào đúng đêm có sự cố — và đó là lúc không ai muốn debug.`,
   follow: [
     'Bạn xử lý job cần chạy đúng một lần mỗi ngày mà vẫn chịu được node chết giữa chừng?',
@@ -1344,6 +1414,12 @@ Hàm nào nhận {{List}} và gọi {{add}} sẽ vỡ khi truyền {{ReadOnlyLis
 - Nguyên tắc thực dụng: **trừu tượng hoá khi có biến thể thứ hai hoặc khi cần test**. Đừng tạo {{PaymentGateway}} nếu hệ thống mãi mãi chỉ có một cổng.
 - SOLID giúp dễ thay đổi, nhưng mỗi lớp trừu tượng là một thứ phải đọc hiểu. Cân bằng bằng kinh nghiệm và yêu cầu thực tế.
 
+### Ví dụ đời thực
+  Một dự án e-commerce 3 năm tuổi, team 8 dev, codebase 150k LOC. **Triệu chứng:** Mỗi khi thêm phương thức thanh toán mới (VNPAY, MoMo, ZaloPay, ShopeePay), dev phải sửa 12 file: OrderService, PaymentService, controller, DTO, validator, integration test, mock config, feature flag, documentation, migration script, CI pipeline, và runbook. Thời gian trung bình 3 ngày/tính năng, tỷ lệ bug regression 35%. **Điều tra:** Code review cho thấy OrderService có 2.400 dòng, import 47 class, phụ thuộc trực tiếp 8 client thanh toán cụ thể, 3 repository, 2 email service, 1 SMS service. Không có interface PaymentGateway — mỗi client được {{new}} trực tiếp trong method {{checkout}}. Test unit không thể mock client, buộc dùng integration test chậm (12 phút/lần). **Nguyên nhân gốc:** Vi phạm DIP (phụ thuộc chi tiết), OCP (thêm cổng phải sửa code cũ), SRP (OrderService làm 5 việc: validate, tính phí, gọi client, lưu DB, gửi thông báo). **Xử lý:** (1) Tạo interface PaymentGateway với method {{supports(type)}} và {{charge(amount)}}; (2) Tách 8 client thành 8 implementation; (3) Inject {{List<PaymentGateway>}} vào OrderService, tra cứu bằng stream; (4) Tách repository, notifier ra interface riêng; (5) Viết unit test cho từng gateway và OrderService (mock gateway), integration test chỉ 2 file. **Kết quả đo được:** Thêm cổng mới từ 3 ngày xuống 4 giờ (chỉ thêm 1 class + test), regression rate từ 35% xuống 5%, unit test coverage OrderService từ 12% lên 98%, thời gian CI từ 12p xuống 3p.
+
+### Trả lời mẫu khi phỏng vấn
+  "SOLID không phải checklist để áp dụng máy móc — nó là công cụ giảm chi phí thay đổi. Tôi từng thấy OrderService 2.400 dòng nhét hết thanh toán, lưu DB, gửi mail, thêm cổng mới phải sửa 12 file. Tôi refactor: tạo PaymentGateway interface, tách 8 implementation, inject List<PaymentGateway>, OrderService chỉ lo orchestrate. Kết quả: thêm cổng từ 3 ngày xuống 4 giờ, regression ít hơn 7 lần. Nguyên tắc cốt lõi: DIP để test được, OCP để mở rộng không sửa cũ, SRP để tách trách nhiệm. Nhưng đừng over-engineer: nếu hệ thống chỉ có 1 cổng thanh toán và không dự định thêm, interface chỉ làm code khó đọc. Tôi luôn hỏi: 'nếu mai đổi nhà cung cấp, bao nhiêu file phải sửa?' — câu trả lời đo được giá trị thực của SOLID."
+
 > Senior tip: trong code review, tôi không hỏi "class này có SOLID không" mà hỏi "nếu mai đổi nhà cung cấp thanh toán, bao nhiêu file phải sửa?". Câu trả lời đo được đó hữu ích hơn mọi định nghĩa lý thuyết.`,
   follow: [
     'Bạn xử lý khi hai nguyên lý xung đột nhau trong một thiết kế cụ thể?',
@@ -1432,6 +1508,12 @@ Spring cho phép bọc bean sau khi khởi tạo. Ví dụ tự viết một {{B
 - {{@Async}} nên trả về {{void}} hoặc {{Future}}/{{CompletableFuture}}; nếu trả kiểu khác, method vẫn chạy async nhưng caller luôn nhận {{null}}.
 - Bean singleton phải **thread-safe**; đừng giữ state request trong field.
 - Event listener đồng bộ có thể che giấu độ trễ và lỗi.
+
+### Ví dụ đời thực
+  Một hệ thống đặt vé xem phim 5 năm tuổi, 2 triệu user/ngày. **Triệu chứng:** Deploy version 2.3.1 làm lỗi thanh toán VNPAY — khách không nhận email xác nhận, đơn hàng bị tạo trùng khi khách retry, tiền bị trừ 2 lần. Log chỉ thấy "transaction rolled back" nhưng DB vẫn có đơn commit từ các lần retry. Team debug 6 giờ mới tìm ra nguyên nhân. **Điều tra:** OrderService.create() có @Transactional (REQUIRED), bên trong gọi this.sendConfirmationEmail() có @Transactional(propagation = REQUIRES_NEW). Gọi this.method() trong cùng class là self-invocation: **bỏ qua proxy**, nên REQUIRES_NEW không áp dụng và sendConfirmationEmail chạy cùng transaction với create(). Khi SMTP ném exception, cả hai cùng rollback; đơn không tạo, email không gửi — log chỉ in "transaction rolled back" của transaction ngoài cùng nên team nhầm rằng order đã commit và email lỗi riêng. Khách không thấy xác nhận → retry thanh toán → tạo trùng đơn, trừ tiền 2 lần. **Nguyên nhân gốc:** Self-invocation bypass proxy — @Transactional trên method gọi bằng this() bị bỏ qua hoàn toàn. Code review không bắt được vì "logic trông đúng", test integration pass vì SMTP mock không timeout. **Xử lý:** (1) Tách sendConfirmationEmail ra NotificationService bean riêng; (2) Thêm ArchUnit rule: method @Transactional không được gọi method @Transactional khác trong cùng class; (3) Ép CGLIB qua {{spring.aop.proxy-target-class=true}} (mặc định là false: Spring dùng JDK proxy nếu bean có interface; CGLIB chỉ khi class không implement interface) và tránh {{final}} class/method (proxy có thể không áp dụng); (4) Viết test integration thực sự timeout SMTP. **Kết quả đo được:** 0 sự cố self-invocation trong 12 tháng sau; deploy payment an tâm hơn; team mới onboarding đọc ArchUnit report hiểu quy tắc ngay.
+
+### Trả lời mẫu khi phỏng vấn
+  "Spring dùng Proxy pattern cho AOP: @Transactional, @Async, @Cacheable đều là proxy bọc bean. Bug kinh điển là self-invocation — gọi this.method() trong cùng class không qua proxy, nên @Transactional(propagation=REQUIRES_NEW) không hoạt động. Tôi từng debug 6 giờ sự cố thanh toán bị trừ tiền 2 lần do OrderService.create() gọi this.sendEmail() có REQUIRES_NEW. Giải pháp: tách sang bean riêng hoặc inject self (proxy). Các pattern khác: Template Method (JdbcTemplate cố định quy trình JDBC), Factory (BeanFactory/@Bean), Strategy (HandlerMapping), Observer (ApplicationEventPublisher), Adapter (HandlerAdapter), Decorator (BeanPostProcessor). Hiểu cơ chế proxy giúp debug nhanh: khi @Async không chạy hoặc @Transactional không rollback, check self-invocation trước."
 
 > Senior tip: khi debug "transaction không rollback" hoặc "async không chạy", việc đầu tiên tôi làm là kiểm tra lời gọi có đi qua proxy không. Chín trên mười lần nguyên nhân là self-invocation, không phải cấu hình Spring sai.`,
   follow: [
@@ -1545,6 +1627,12 @@ Compiler báo nếu thiếu nhánh, code ngắn, không cần DI. Strategy thắ
 - Unit test từng strategy với số liệu cụ thể.
 - Test {{FeeService}} với một list strategy giả để kiểm tra tra cứu và lỗi.
 - Test khởi động Spring context để phát hiện trùng key — đây là test rẻ và bắt được lỗi cấu hình.
+
+### Ví dụ đời thực
+  Một hệ thống thanh toán đa kênh (CARD, WALLET, BANK_TRANSFER, QR_CODE, BNPL) phục vụ 200k đơn/ngày. **Triệu chứng:** Mỗi khi onboard đối tác mới (ví dụ MoMo, ZaloPay, ShopeePay), dev phải sửa FeeService, DiscountService, SettlementService, ReconciliationJob — trung bình 18 file, 2.5 ngày, 30% khả năng bug tính phí sai. Code review thấy chuỗi if-else dài 80 dòng trong FeeService, DiscountService dùng switch 50 case, SettlementService có Map hardcoded. **Điều tra:** FeeStrategy interface có nhưng chỉ 3 implementation cũ; 5 kênh mới được hardcode vì "nhanh hơn". Map injection Spring dùng bean name làm key nên tra cứu sai im lặng (channel "MOMO" tra key "momoFeeStrategy" ra null, fallback về default 0%). **Nguyên nhân gốc:** Không enforce convention build map theo channel() trong constructor; không có test khởi động bắt trùng key; team mới không hiểu cơ chế Map injection của Spring. **Xử lý:** (1) Bắt buộc build map trong constructor dùng {{toUnmodifiableMap(FeeStrategy::channel)}}; (2) Thêm ArchUnit test: mọi class implement FeeStrategy phải có {{@Component}} và channel() unique; (3) Viết integration test khởi động context với tất cả channel kỳ vọng; (4) Tạo template GitHub issue cho kênh mới: chỉ cần thêm 1 class implement FeeStrategy. **Kết quả đo được:** Onboard kênh mới từ 2.5 ngày xuống 3 giờ (chỉ thêm 1 class + test), 0 bug tính phí sau deploy, coverage FeeService 100%.
+
+### Trả lời mẫu khi phỏng vấn
+  "Strategy + Spring DI giúp xoá if-else bằng cách inject List<Strategy> rồi build map theo khoá nghiệp vụ. Cốt lõi: interface FeeStrategy có method channel(), mỗi implementation là @Component, service inject List rồi toUnmodifiableMap(FeeStrategy::channel) — fail fast nếu trùng key. Quan trọng: đừng inject Map<String, Strategy> trực tiếp vì Spring dùng bean name làm key, không phải channel(). Tôi từng gặp bug: hai team thêm MOMO, map ghi đè âm thầm, phí tính sai 2 tuần mới phát hiện khi đối soát. Giải pháp: build map trong constructor, ArchUnit check unique channel, test khởi động context. Khi nào dùng switch thay vì Strategy? Tập giá trị đóng, logic ngắn, không cần dependency riêng — Java 21 sealed interface + switch compiler-check exhaustiveness."
 
 > Senior tip: tôi luôn yêu cầu map được build trong constructor và **fail fast** khi trùng khoá. Trong một dự án, hai team cùng thêm strategy "MOMO" và map âm thầm ghi đè, khiến phí của một đối tác bị tính sai suốt hai tuần — lỗi chỉ lộ ra khi đối soát tài chính.`,
   follow: [
@@ -1661,6 +1749,12 @@ Service không biết thanh toán là Stripe hay Momo, không biết lưu bằng
 - Chỉ tạo port khi thật sự có biến thể hoặc cần test seam. Không cần port cho mọi repository nếu bạn chấp nhận test với DB.
 - Giữ domain sạch ở module quan trọng (billing, pricing), cho phép đơn giản ở module phụ (admin CRUD).
 - Dùng ArchUnit để **kiểm tra chiều phụ thuộc tự động** trong CI; nếu không, kiến trúc sẽ bị phá trong vài sprint.
+
+### Ví dụ đời thực
+  Một fintech startup 3 năm, team 12 dev, modular monolith 8 module. **Triệu chứng:** Sprint 15, module Billing deploy gây lỗi module Pricing — test Pricing pass nhưng production tính phí sai cho 4.000 đơn trong 2 giờ. Nguyên nhân: Billing thêm cột {{discount_percent}} vào bảng {{orders}} (JPA entity), Pricing đọc entity này trực tiếp thay vì qua port. **Điều tra:** ArchUnit check chưa có (chỉ có sơ đồ architecture). Domain Pricing import {{jakarta.persistence}} và dùng {{OrderJpaEntity}} thay vì {{Order}} domain. Mapping thủ công giữa domain/JPA entity bị bỏ qua vì "nhanh". **Nguyên nhân gốc:** Không enforce dependency rule; team áp dụng Clean Architecture chỉ trên sơ đồ, code thực tế domain phụ thuộc JPA, adapter lẫn lộn. **Xử lý:** (1) Viết ArchUnit test: {{noClasses().that().resideInAPackage("..domain..").should().dependOnClassesThat().resideInAPackage("..persistence..")}}; (2) Bắt buộc mapping domain ↔ JPA entity bằng MapStruct trong adapter; (3) CI fail nếu ArchUnit violation; (4) Refactor Pricing: tạo {{OrderRepository}} port, implement {{JpaOrderRepository}} adapter, Pricing chỉ dùng {{Order}} domain. **Kết quả đo được:** 0 violation ArchUnit sau 6 tháng; deploy module độc lập không còn gây lỗi chéo; onboarding dev mới đọc ArchUnit report hiểu ranh giới module trong 30 phút thay vì 2 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+  "Clean/Hexagonal đặt domain ở trung tâm, phụ thuộc chỉ hướng vào trong: domain không biết Spring, JPA, HTTP. Application chứa use case và định nghĩa port (interface); adapter (web, persistence, messaging) implement port. Cấu trúc package: domain/model, domain/port/in, domain/port/out, application/service, adapter/in.web, adapter/out.persistence. Ưu: test domain không cần Spring, thay hạ tầng dễ, ranh giới rõ. Nhược: nhiều mapper/DTO, chậm ban đầu, dễ over-engineer CRUD đơn giản. Tôi từng thấy dự án 'Clean Architecture' mà domain import JPA và controller trả entity — kiến trúc chỉ còn trên sơ đồ. Giải pháp: ArchUnit test từ ngày đầu, bắt buộc mapping domain↔JPA entity ở adapter, CI fail violation. Transaction boundary đặt ở application service, không ở domain."
 
 > Senior tip: tôi từng thấy một dự án "Clean Architecture" mà domain import JPA và controller trả thẳng entity — kiến trúc chỉ còn trên sơ đồ. Nếu định áp dụng, hãy viết ArchUnit test ngay từ ngày đầu; kỷ luật tự động đáng tin hơn kỷ luật con người.`,
   follow: [
@@ -1793,6 +1887,12 @@ Ví dụ đặt hàng: Order tạo ở trạng thái PENDING, phát {{OrderPlace
 ### Khi nào không cần DDD
 Hệ CRUD, báo cáo, admin tool: entity + service là đủ. DDD có chi phí nhận thức cao; chỉ đầu tư khi nghiệp vụ phức tạp, nhiều invariant, nhiều actor và thay đổi liên tục. Đừng biến mọi bảng thành aggregate.
 
+### Ví dụ đời thực
+  Một sàn giao dịch chứng khoán xử lý 500k lệnh/ngày. **Triệu chứng:** Sự cố "mất lệnh" lặp lại 3 lần trong quý: khách đặt mua 1000 cổ phiếu, hệ thống xác nhận thành công nhưng sổ order book không thấy lệnh, sau 10 phút lệnh xuất hiện với giá sai. Log chỉ thấy {{OrderPlaced}} event nhưng không có {{OrderMatched}}. **Điều tra:** Order aggregate và MatchingEngine aggregate chia tách đúng, nhưng {{OrderPlaced}} event publish trực tiếp lên Kafka trong transaction của Order (không dùng outbox). Khi Kafka broker restart lúc commit, event mất mà DB đã commit. MatchingEngine không nhận event, lệnh không vào order book. **Nguyên nhân gốc:** Vi phạm quy tắc "publish event sau commit" — dùng outbox pattern. Code ghi event vào bảng outbox trong cùng transaction, relay đọc outbox publish Kafka. **Xử lý:** (1) Thêm bảng outbox, sửa Order aggregate ghi event vào danh sách nội bộ, application service flush outbox trong cùng transaction; (2) Relay dùng {{SELECT ... FOR UPDATE SKIP LOCKED}} đọc outbox, publish Kafka, đánh dấu published_at; (3) Idempotent consumer MatchingEngine dùng {{orderId}} dedup; (4) Thêm reconciliation job hàng giờ so sánh count order DB vs count event Kafka. **Kết quả đo được:** 0 sự cố mất lệnh trong 9 tháng; reconciliation phát hiện 0 lệch; latency order→match trung bình 800ms (tăng 200ms do outbox relay, chấp nhận được).
+
+### Trả lời mẫu khi phỏng vấn
+  "DDD cốt lõi: Entity có id, Value Object không có id (bất biến, so sánh giá trị), Aggregate là ranh giới nhất quán (một transaction sửa một aggregate), Domain event tách side-effect. Chọn aggregate boundary: cái gì phải nhất quán ngay → cùng aggregate; cái gì thay đổi độc lập, tranh chấp cao → tách aggregate, dùng event+saga. Order + OrderLine cùng aggregate; Order + Inventory tách, reserve qua saga. Quan trọng: không publish event trước commit — phải outbox pattern. Tôi từng gặp sàn chứng khoán mất lệnh do Order publish event trực tiếp trong transaction, Kafka restart mất event. Sửa: outbox table + relay, idempotent consumer, reconciliation job. Anemic domain (chỉ getter/setter, logic ở service) là dấu hiệu chưa hiểu DDD — invariant phải nằm trong aggregate root."
+
 > Senior tip: câu hỏi tôi dùng để kiểm tra hiểu DDD là "nếu hai người đặt cùng một sản phẩm cuối cùng, transaction nằm ở đâu?". Người trả lời "gộp Order và Inventory vào một transaction" chưa hiểu ranh giới; người trả lời "hai aggregate, reserve qua saga/event và DB có ràng buộc" mới là người đã vận hành hệ thống thật.`,
   follow: [
     'Bạn chọn kích thước aggregate thế nào khi có collection rất lớn?',
@@ -1899,6 +1999,13 @@ Chỉ rewrite khi:
 4. Có kế hoạch dữ liệu: migration, dual-write, backfill, rollback.
 Rewrite big-bang thường mất 2–3 lần ước tính và bỏ sót business rule ngầm — những rule không ai viết ra nhưng khách hàng phụ thuộc.
 
+### Ví dụ đời thực
+    Một nền tảng thương mại điện tử 7 năm tuổi, 50 lập trình viên, monolith (ứng dụng một khối) 800 nghìn dòng code. **Triệu chứng:** Mỗi tháng có 2–3 lần phát hành (deploy) lỗi do module discount và pricing — khách thấy giá cũ sau khi khuyến mãi kết thúc, hoặc giá giảm đột ngột giữa chừng. p99 checkout (thời gian phản hồi ở mức 99% yêu cầu) tăng từ 400 ms lên 2,5 giây vào giờ cao điểm. **Điều tra:** Kiểm tra code thấy file {{PricingEngine.java}} 3.200 dòng, import 31 class, có 17 method tính giá khác nhau, trong đó 5 method là "tạm thời" (ghi chú TODO từ 2019). Không có unit test (kiểm thử đơn vị) cho pricing; chỉ có integration test (kiểm thử tích hợp) chạy trên DB thật, mất 12 phút/lần. Mỗi lần thêm chương khuyến mãi mới, lập trình viên phải sửa trực tiếp method {{calculateDiscount}} và thêm một {{if (campaignType == "...")}} — đến năm thứ 5 có 23 case. **Nguyên nhân gốc:** Nợ kỹ thuật (technical debt — những chỗ code làm tắt để kịp hạn, để lại chi phí sửa sau) tích lũy theo từng tính năng; branch by abstraction (tách logic qua interface để chạy song song bản cũ/mới) và characterization test (bộ test "chụp" hành vi hiện tại làm chuẩn, kể cả hành vi sai) đều không được áp dụng vì "chỉ là thay đổi nhỏ". **Xử lý:** (1) Viết characterization test: 200 case đầu vào/đầu ra hiện tại làm golden master (kết quả chuẩn để so sánh) — kể cả kết quả sai cũng được ghi nhận; (2) Tạo interface {{PriceCalculator}} với hai implementation (bản hiện thực): bản cũ và bản mới; (3) Dùng feature flag (cờ bật/tắt tính năng theo cấu hình) để chuyển 1% traffic sang bản mới, so sánh log, tăng dần 10% → 50% → 100%; (4) Mỗi PR refactor chỉ tách 1 method ra class riêng, có test; (5) Đặt quy tắc: không thêm case mới vào {{PricingEngine}} nếu chưa refactor xong. **Kết quả đo được:** Sau 3 tháng, checkout p99 trở về 480 ms, deploy không còn lỗi pricing, thời gian thêm khuyến mãi từ 3 ngày xuống 4 giờ (chỉ thêm cấu hình + 1 class), coverage (độ phủ test) unit test pricing từ 0% lên 87%.
+
+### Trả lời mẫu khi phỏng vấn
+    "Khi nói về nợ kỹ thuật (technical debt), tôi luôn bắt đầu bằng việc đo, không phải cảm tính. Trên một monolith (ứng dụng một khối) 800 nghìn dòng code, tôi xác định hotspot (điểm nóng — file hay thay đổi và phức tạp) bằng git churn (tần suất sửa file) kết hợp cyclomatic complexity (độ phức tạp luồng rẽ nhánh): file {{PricingEngine.java}} 3.200 dòng, 23 nhánh if-else, sửa trung bình 5 lần/tuần — đó là điểm nghẽn. Chiến lược tôi dùng là branch by abstraction (tách qua interface để chạy song song bản cũ và mới): tạo interface {{PriceCalculator}}, hai implementation (bản hiện thực), dùng feature flag (cờ bật/tắt tính năng) để chuyển traffic dần 1% → 100% và có thể rollback (quay lại) ngay nếu lỗi. Trước khi refactor (tái cấu trúc), tôi viết characterization test (bộ test chụp hành vi hiện tại làm golden master/chuẩn so sánh) với 200 case đầu ra hiện tại — kể cả kết quả sai cũng được ghi nhận để bảo vệ hành vi trong lúc thay đổi. Mỗi PR (yêu cầu gộp code) chỉ làm một việc: tách một method, thêm test, không trộn refactor với tính năng mới. Tôi từng thấy đội khác rewrite big-bang (viết lại toàn bộ một lần) và mất 6 tháng để khôi phục business rule (quy tắc nghiệp vụ) bị bỏ sót. Trade-off (đánh đổi) ngắn hạn là mỗi PR refactor tốn khoảng 20% công suất, nhưng đổi lại deploy ổn định hơn và thời gian thêm khuyến mãi từ 3 ngày xuống 4 giờ."
+
+  
 > Senior tip: tôi luôn nói với stakeholder bằng ngôn ngữ rủi ro, không phải code: "module này gây 40% sự cố trong 6 tháng, mỗi sự cố tốn 2 giờ và ảnh hưởng 5.000 người dùng". Khi có con số, việc xin thời gian refactor dễ hơn nhiều so với nói "code xấu".`,
   follow: [
     'Bạn thuyết phục product owner hy sinh 20% capacity cho refactor thế nào?',
@@ -2005,6 +2112,13 @@ Công cụ: một thư mục Markdown là đủ, không cần phần mềm. Có 
 - **ADR**: ghi lại **quyết định** và lý do, ngắn gọn, bất biến.
 Một quyết định lớn có thể có RFC trước, ADR sau khi chốt, và ADR link tới RFC.
 
+### Ví dụ đời thực
+    Một công ty logistics có 3 service (billing, tracking, notification) đang dùng chung một RabbitMQ cluster. **Triệu chứng:** Khi notification service thêm một hàng đợi mới cho email retry, billing service bị chậm 2 giây do kết nối tới broker (máy trung gian nhận/chuyển message) bị gián đoạn và phải kết nối lại; p99 publish billing tăng từ 15 ms lên 2,2 giây vào giờ cao điểm. **Điều tra:** RabbitMQ dashboard cho thấy một node (máy chủ trong cụm) bị lỗi đĩa và khởi động lại; các queue (hàng đợi) của notification được khai báo {{durable=true}} (tồn tại sau khi broker khởi động lại) nhưng message (tin nhắn) không được publish với cờ persistent — nên khi node gặp sự cố, một phần message trong hàng đợi bị mất. Queue cũng không dùng cơ chế sao chép (như quorum queue) nên không có bản sao trên node khác. Billing service publish sự kiện quan trọng (order-paid), nhưng RabbitMQ mặc định xoá message ngay sau khi consumer ack (xác nhận đã xử lý) — tức là không có khả năng **replay** (phát lại message cũ). Mỗi lần cần dựng lại read model (mô hình đọc), team phải viết script đọc log ứng dụng để phát lại — mỗi lần mất 30 phút. **Nguyên nhân gốc:** Chọn RabbitMQ vì "đơn giản và team đã có kinh nghiệm" nhưng không đánh giá hai yêu cầu trọng số cao nhất trong bảng ADR: **replay** và **throughput** (lưu lượng). **Xử lý:** (1) Viết ADR-001: chọn Kafka (hệ thống log sự kiện phân tán, giữ message theo thời gian lưu trữ nên có thể replay) làm event bus (kênh sự kiện chung), RabbitMQ giữ cho task queue ngắn (email, job) nơi không cần replay; (2) Migration (chuyển đổi): thêm outbox table (bảng trung gian trong DB để ghi sự kiện an toàn), relay publish Kafka, chạy song song 2 tuần so sánh log; (3) Cập nhật trọng số: replay 25%, throughput 20%, vận hành 20% — Kafka tổng điểm 3,90 cao hơn RabbitMQ 3,05. **Kết quả đo được:** p99 publish trở về 18 ms, replay dựng lại read model từ 7 ngày chỉ mất 2 giờ (tự động theo offset Kafka), không còn script export thủ công.
+
+### Trả lời mẫu khi phỏng vấn
+    "Một ADR (Architecture Decision Record — bản ghi quyết định kiến trúc) tốt là tài liệu 1–2 trang, lưu trong repo, bất biến, ghi context (bối cảnh), decision (quyết định), consequences (hệ quả), alternatives (phương án bị loại) và references. Khi chọn giữa Kafka và RabbitMQ, tôi xác định tiêu chí trước: khả năng replay (phát lại) sự kiện (trọng số 25%), throughput (lưu lượng, 20%), vận hành (20%), kinh nghiệm team (20%), chi phí 3 năm (15%). Kafka đạt 3,90, RabbitMQ 3,05. Điểm số chỉ hỗ trợ thảo luận, không thay thế phán đoán. Tôi từng thấy team chọn RabbitMQ vì 'đơn giản' nhưng sau 6 tháng phải viết script đọc log để phát lại sự kiện, mỗi lần mất 30 phút, vì RabbitMQ xoá message sau khi consumer ack (xác nhận xử lý) còn Kafka giữ theo retention (thời gian lưu trữ). Giải pháp: migration (chuyển đổi) bằng outbox table (bảng trung gian ghi sự kiện) + relay publish Kafka, chạy song song 2 tuần so sánh log. ADR phải được viết trước hoặc trong lúc quyết định, không viết muộn, và khi quyết định thay đổi thì tạo ADR mới supersede (thay thế) ADR cũ."
+
+  
 > Senior tip: giá trị lớn nhất của ADR không phải tài liệu, mà là **buộc người ra quyết định viết ra các phương án bị loại**. Trong nhiều buổi review, chính phần Alternatives khiến team nhận ra mình đang chọn công nghệ vì hype chứ không vì nhu cầu.`,
   follow: [
     'Bạn xử lý khi có hai ADR mâu thuẫn nhau trong cùng hệ thống?',
@@ -2128,6 +2242,13 @@ order.recalculateTotal();     // luôn suy ra từ lines
 - Ghi ADR cho các boundary quan trọng để không bị phá sau này.
 - Thay đổi tăng dần, có feature flag và rollback; không "big bang re-architecture".
 
+### Ví dụ đời thực
+    Một công ty fintech (công nghệ tài chính) có 12 service microservice (dịch vụ nhỏ), nhưng vẫn dùng chung một database schema (cấu trúc cơ sở dữ liệu). **Triệu chứng:** Khi team Payment thêm một cột {{kyc_status}} vào bảng {{users}}, team Loan và Risk cùng phải deploy (phát hành) trong cùng ngày để tránh crash (sập); mỗi lần thay đổi schema là một lần deploy nhóm. p99 end-to-end (từ đầu đến cuối) của API đặt khoản vay tăng từ 450 ms lên 3,2 giây do request đi qua 8 service gọi đồng bộ (gọi trực tiếp và chờ kết quả). **Điều tra:** Kiểm tra log deploy thấy 6 service có dependency (phụ thuộc) vào bảng {{users}}; thư viện dùng chung {{common-entity}} phiên bản 2.3.4 được 8 service dùng, nhưng không ai có thẩm quyền thay đổi. Lỗi chỉ lộ ra ở kiểm thử end-to-end; mỗi service tự test pass vì dùng dữ liệu giả (mock). **Nguyên nhân gốc:** Distributed monolith (monolith phân tán — nhìn như microservice nhưng vẫn phụ thuộc chặt như một khối): nhiều service nhưng dùng chung database và thư viện entity dùng chung, nên trả chi phí phân tán (network, retry/thử lại, tracing/theo dấu, deploy theo nhóm) mà vẫn giữ coupling (độ ràng buộc) chặt. **Xử lý:** (1) Xác định boundary (ranh giới) theo business capability (năng lực nghiệp vụ): mỗi service sở hữu dữ liệu của mình; (2) Tách database: tạo view/read replica tạm thời cho service khác đọc, sau đó chuyển hẳn; (3) Thay gọi đồng bộ bằng event (sự kiện) cho luồng không cần kết quả ngay; (4) Bỏ thư viện entity dùng chung, chỉ chia sẻ contract (hợp đồng giao tiếp: OpenAPI, schema event) thay vì chia sẻ class; (5) Contract testing (kiểm thử hợp đồng, ví dụ Pact) để deploy độc lập; (6) Đo deploy independence (khả năng deploy độc lập): một service có thể deploy mà không cần service khác không? Sau 6 tháng, Payment deploy không cần chờ Loan hay Risk.
+
+### Trả lời mẫu khi phỏng vấn
+    "Ba anti-pattern (mẫu thiết kế xấu hay gặp) phổ biến là God class (class 'biết quá nhiều', là change magnet — chỗ nào thay đổi cũng phải sửa), anemic domain model (entity chỉ có dữ liệu getter/setter, hành vi và quy tắc nằm hết ở service nên invariant/điều kiện bất biến không được bảo vệ), và distributed monolith (monolith phân tán — nhiều service nhưng vẫn phụ thuộc chặt như một khối). Dấu hiệu nhận biết: file 1.000+ dòng, 20+ dependency inject là God class; entity chỉ getter/setter, logic ở service là anemic; nhiều service dùng chung database hoặc phải deploy theo thứ tự là distributed monolith. Cách xử lý: God class — tách method theo trách nhiệm, mỗi PR tách một nhóm, có test; anemic — đưa hành vi vào aggregate (cụm đối tượng có gốc kiểm soát quy tắc), đóng field, dùng value object; distributed monolith — DB per service (mỗi service một DB), dùng event (sự kiện) thay gọi đồng bộ, bỏ thư viện entity dùng chung, chỉ chia sẻ contract (OpenAPI/schema event) và dùng contract testing. Tôi từng gặp 12 service dùng chung bảng {{users}}: Payment thêm cột khiến 6 service phải deploy cùng ngày, p99 tăng từ 450 ms lên 3,2 giây. Giải pháp là tách database, dùng event, và đo deploy independence (khả năng deploy độc lập) — một service có thể deploy chiều thứ Sáu mà không phải hỏi ai không?"
+
+  
 > Senior tip: tôi đánh giá một hệ microservice bằng một câu hỏi duy nhất: "team này có thể deploy một service vào 3 giờ chiều thứ Sáu mà không hỏi ai không?". Nếu câu trả lời là không, đó là distributed monolith — và mọi dashboard đẹp đẽ về số lượng service chỉ là trang trí.`,
   follow: [
     'Bạn đo mức độ coupling giữa các service bằng chỉ số nào?',
@@ -2145,7 +2266,7 @@ order.recalculateTotal();     // luôn suy ra từ lines
 
 ### Làm rõ yêu cầu và quy mô
 - Chức năng: truy vấn tên người nhận, chuyển tiền nhanh 24/7 qua switch (NAPAS), xem trạng thái, tra soát/khiếu nại, đối soát hằng ngày.
-- Phi chức năng: không mất giao dịch, không "tạo tiền ảo", audit đầy đủ, chạy 24/7 không có cửa sổ bảo trì; tuân thủ hạn mức và quy định xác thực của NHNN. Theo Quyết định 2345/QĐ-NHNN áp dụng từ 01/07/2024, sinh trắc học được yêu cầu với giao dịch trên 10 triệu đồng/lần hoặc tổng giao dịch online trên 20 triệu đồng/ngày; kiểm tra văn bản và quy định hiện hành khi triển khai thực tế.
+- Phi chức năng: không mất giao dịch, không "tạo tiền ảo", audit đầy đủ, chạy 24/7 không có cửa sổ bảo trì; tuân thủ hạn mức và quy định xác thực của NHNN. Sinh trắc học (vân tay, mặt, NHNN định danh điện tử) được yêu cầu với giao dịch trên mức quy định — kiểm tra văn bản và quy định hiện hành khi triển khai thực tế.
 - Ước lượng (giả định ngân hàng lớn): 5 triệu giao dịch/ngày → 5.000.000 / 86.400 ≈ 58 TPS trung bình; giờ cao điểm (ngày lương, trước Tết) giả sử gấp 10 → ~600 TPS. Không lớn về throughput; cái khó là tính đúng.
 - Giao thức bản tin, chuẩn (ví dụ ISO 8583/ISO 20022), mã lỗi và timeout phụ thuộc dịch vụ, phiên bản và đặc tả kết nối của switch; không suy đoán từ tên dịch vụ.
 
@@ -2211,6 +2332,13 @@ Ngân hàng gửi **không thể tự trừ tiền tài khoản ở ngân hàng 
 | Core banking chậm khi giữ tiền | Timeout ngắn ở bước hold; hold là thao tác có thể truy vấn lại |
 | Kafka trễ | Dữ liệu nguồn ở DB; job quét SENT/UNKNOWN quá hạn |
 
+### Ví dụ đời thực
+    Một ngân hàng thương mại chuyển tiền nhanh 24/7 (NAPAS) xử lý trung bình 5 triệu giao dịch/ngày. **Triệu chứng:** Vào một ngày mưa lớn, đường truyền giữa switch NAPAS và ngân hàng thụ hưởng bị rớt gói; khoảng 1.200 giao dịch chuyển sang trạng thái UNKNOWN sau 30 giây timeout (hết thời gian chờ phản hồi). Một job tự động "dọn dẹp" chạy mỗi 5 phút thấy UNKNOWN và tự động nhả hold (tiền đang bị giữ) + đánh dấu FAILED, vì cho rằng switch không nhận được bản tin. **Điều tra:** Job log ghi "auto-release UNKNOWN -> FAILED" cho 1.200 giao dịch; đối chiếu với file settlement (đối soát cuối ngày) của switch ngày đó: 847 giao dịch trong số đó **thành công thực sự** — người nhận đã được cộng tiền. Ngân hàng phải thực hiện reversal (giao dịch đảo chiều/hoàn trả) cho 847 giao dịch và đối chiếu với ngân hàng thụ hưởng để ghi nhận sự cố. **Nguyên nhân gốc:** Job tự động chuyển UNKNOWN thành FAILED mà không truy vấn switch trước — vi phạm nguyên tắc "UNKNOWN không phải FAILED". **Xử lý:** (1) Tắt job tự động; (2) Thêm bản tin inquiry (truy vấn trạng thái) theo mã tham chiếu với backoff (chờ tăng dần: 30 giây, 2 phút, 10 phút, 1 giờ); (3) Chỉ chuyển FAILED khi inquiry trả về rõ ràng hoặc đã vượt số lần retry (thử lại); (4) Đặt metric {{transfer.unknown.age}} và cảnh báo nếu > 5 phút; (5) Runbook (quy trình xử lý sự cố): UNKNOWN phải có người xác nhận hoặc đối chiếu settlement trước khi nhả hold. **Kết quả đo được:** Sau khi sửa, 0 giao dịch bị tự động hoàn tiền; 100% UNKNOWN được inquiry trước; thời gian trung bình từ UNKNOWN đến kết quả rõ ràng từ 30 giây lên 4 phút (chấp nhận được vì là giao dịch tiền).
+
+### Trả lời mẫu khi phỏng vấn
+    "Bài toán chuyển tiền liên ngân hàng là bài toán đúng tuyệt đối hơn là nhanh. Mỗi giao dịch đi qua state machine (máy trạng thái — tập các bước chuyển trạng thái được định nghĩa rõ): INITIATED → HELD → SENT → SUCCESS/FAILED/UNKNOWN → POSTED/RELEASED. Timeout (hết thời gian chờ) là phần quan trọng nhất: khi không có phản hồi, trạng thái là UNKNOWN, giữ nguyên hold (tiền đang bị giữ), không tự hoàn tiền — vì switch có thể đã chuyển thành công và người nhận đã được cộng tiền, chỉ là phản hồi bị mất. Thay vào đó, gửi inquiry (bản tin truy vấn trạng thái) theo mã tham chiếu, retry (thử lại) có backoff (chờ tăng dần); vẫn chưa rõ sau N lần thì đưa vào hàng đợi đối chiếu cuối ngày. Khách hàng thấy 'Giao dịch đang xử lý', không phải 'Thất bại'. Tôi từng gặp một job tự động chuyển UNKNOWN thành FAILED và làm ngân hàng mất tiền do 847 giao dịch đã thành công bị hoàn lại. Giải pháp: inquiry trước, metric tuổi UNKNOWN, runbook (quy trình xử lý sự cố) đối chiếu rõ ràng."
+
+  
 > Senior tip: lỗi đắt nhất trong hệ thống chuyển tiền thường không nằm ở lúc tải cao mà ở **xử lý timeout**: một job "dọn dẹp" tự chuyển UNKNOWN thành FAILED và nhả hold sẽ làm ngân hàng mất tiền mỗi khi mạng chập chờn. Hãy đo số giao dịch UNKNOWN theo phút làm metric hàng đầu và có runbook tra soát rõ ràng.`,
   follow: [
     'Bạn thiết kế cơ chế truy vấn trạng thái khi switch không trả kết quả thế nào để không gây chuyển trùng?',
@@ -2302,7 +2430,13 @@ ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có t
 | Hệ thống vừa phải, đã có PostgreSQL HA | DB sequence/block |
 | Cần thứ tự tuyệt đối | Sequencer đơn luồng theo partition |
 
-> Senior tip: khi review một Snowflake tự viết, tôi hỏi hai câu trước tiên: "worker ID được cấp thế nào khi scale từ 3 lên 30 pod?" và "đồng hồ lùi 1 giây thì chuyện gì xảy ra?". Phần lớn implementation tự viết trả lời sai ít nhất một câu. Nếu không thật sự cần {{long}}, UUIDv7 (cùng ý tưởng time-ordered như ULID, chuẩn hoá trong RFC 9562) bớt được cả hai rủi ro.`,
+### Ví dụ đời thực
+    Một nền tảng logistics có 30 instance (bản chạy) microservice sinh ID theo Snowflake tự viết. **Triệu chứng:** Vào một ngày thứ Sáu, một pod (đơn vị chạy ứng dụng trong Kubernetes — hệ thống điều phối container) bị crash (sập) và Kubernetes khởi động lại pod mới với IP mới; bộ sinh ID ở pod mới nhận worker ID (mã định danh máy/worker, 10 bit trong Snowflake) = hash(IP) % 1024 → **trùng worker ID** với một pod đang chạy. Hai worker cùng timestamp (mốc thời gian) + sequence (số thứ tự trong cùng mili-giây) → sinh ra 2 ID trùng nhau; khi insert (chèn) vào PostgreSQL, constraint (ràng buộc unique) báo lỗi. 12 đơn hàng bị từ chối, khách phải thử lại. **Điều tra:** Log DB thấy {{duplicate key violation}} trên bảng {{orders.id}}; kiểm tra cấu hình worker ID: dùng {{InetAddress.getLocalHost().getHostAddress()}} rồi hash mod 1024. Khi Kubernetes tái sử dụng dải IP, hai pod có thể có IP trùng hoặc hash trùng — worker ID không còn duy nhất. **Nguyên nhân gốc:** Worker ID được gán từ IP/hash — không có lease (cơ chế "thuê" định danh có thời hạn, tự hết hạn nếu không gia hạn) hoặc ràng buộc duy nhất toàn cụm. **Xử lý:** (1) Dùng etcd (kho key-value phân tán) cấp worker ID bằng lease có TTL (thời gian sống) + gia hạn định kỳ; (2) Phương án thay thế: StatefulSet (kiểu triển khai có tên/ordinal cố định) với ordinal làm worker ID; (3) Thêm kiểm thử khởi động nhiều pod cùng lúc, xác nhận không trùng; (4) Cân nhắc UUIDv7 (định danh 128-bit có sắp xếp theo thời gian, chuẩn RFC 9562) để bỏ hoàn toàn worker ID và clock skew (đồng hồ lệch/lùi). **Kết quả đo được:** 0 lỗi trùng khóa sau 3 tháng; khởi động lại pod không còn sinh ID trùng.
+
+### Trả lời mẫu khi phỏng vấn
+    "Snowflake là ID 64-bit: 1 bit sign (dấu), 41 bit timestamp (mốc thời gian), 10 bit worker (mã máy), 12 bit sequence (số thứ tự trong cùng mili-giây). Ưu điểm: sinh rất nhanh, gần đúng theo thời gian, giúp insert (chèn) vào chỉ mục B-tree ở mép phải. Nhược điểm: phải quản lý worker ID và chống clock skew (đồng hồ hệ thống bị lệch hoặc lùi). Clock skew nguy hiểm vì khi NTP (giao thức đồng bộ thời gian) chỉnh lùi đồng hồ, chương trình có thể sinh lại cặp timestamp + sequence cũ → trùng ID. Cách phòng: giữ lastTimestamp; nếu lùi < 5 ms thì chờ, lùi nhiều thì dừng (fail-fast) để tránh trùng. Worker ID là nguồn lỗi thật: hash IP dễ trùng khi Kubernetes tái sử dụng IP; cách an toàn là lease (thuê định danh có thời hạn) từ etcd/ZooKeeper/Redis có TTL và gia hạn, hoặc dùng StatefulSet ordinal. DB sequence/block không phụ thuộc đồng hồ nhưng không sắp xếp được theo thời gian giữa các instance. Nếu cần thứ tự tuyệt đối (sổ lệnh chứng khoán) thì phải có sequencer đơn luồng. Tôi từng thấy 12 đơn hàng bị từ chối do hai pod Snowflake trùng worker ID — giải pháp là etcd lease hoặc chuyển sang UUIDv7 (định danh 128-bit sắp xếp theo thời gian, RFC 9562)."
+
+  > Senior tip: khi review một Snowflake tự viết, tôi hỏi hai câu trước tiên: "worker ID được cấp thế nào khi scale từ 3 lên 30 pod?" và "đồng hồ lùi 1 giây thì chuyện gì xảy ra?". Phần lớn implementation tự viết trả lời sai ít nhất một câu. Nếu không thật sự cần {{long}}, UUIDv7 (cùng ý tưởng time-ordered như ULID, chuẩn hoá trong RFC 9562) bớt được cả hai rủi ro.`,
   follow: [
     'Nếu cần ID 64-bit nhưng không muốn lo clock skew, bạn thiết kế thế nào?',
     'Khi migrate khoá chính từ bigint auto-increment sang Snowflake hoặc ULID, lộ trình ra sao?',
@@ -2386,7 +2520,13 @@ Phòng chờ ảo là thành phần quan trọng nhất: thay vì để 500.000 
 - Bot giữ chỗ hàng loạt rồi bỏ: giới hạn số hold/người, CAPTCHA ở phòng chờ, hold ngắn.
 - DB primary quá tải: phòng chờ giảm nhịp vào; partition theo event nếu nhiều sự kiện mở bán cùng lúc.
 
-> Senior tip: interviewer thường gài câu "dùng distributed lock cho từng ghế được không?". Được, nhưng thừa: một UPDATE có điều kiện trong DB đã là lock đúng nghĩa và có transaction đi kèm. Thứ thật sự cứu bạn ngày mở bán là phòng chờ và cache sơ đồ ghế, vì hơn 90% traffic là đọc.`,
+### Ví dụ đời thực
+    Một nền tảng đặt vé concert 40.000 ghế mở bán cho 500.000 người trong 5 phút. **Triệu chứng:** 3 phút sau khi mở bán, 2.300 ghế đã ở trạng thái HELD (đang giữ chỗ) nhưng 1.200 hold bị hết hạn và do bot (chương trình tự động) tạo ra (giữ hàng nghìn ghế rồi bỏ). Khách thật thấy lỗi 409 "ghế đã bị giữ" dù không ai giữ; một số ghế bị bán hai lần vì callback (lời gọi xác nhận từ cổng thanh toán) đến sau khi hold đã hết hạn. **Điều tra:** Log booking service thấy 1.200 hold có {{hold_until < now()}} nhưng status vẫn HELD — job dọn dẹp chưa chạy; cache (bộ nhớ đệm) sơ đồ ghế trên Redis còn stale (dữ liệu cũ) 1 giây nên khách thấy AVAILABLE trong khi DB đã HELD. Callback từ cổng thanh toán đến trễ 3 phút do timeout, khi đó hold đã hết và ghế bị người khác giữ. **Nguyên nhân gốc:** Không có virtual waiting room (phòng chờ ảo) nên 500.000 request đập thẳng vào DB; không có job dọn dẹp hold hết hạn chạy định kỳ; callback không idempotent (gọi lặp cho cùng kết quả) theo hold_id. **Xử lý:** (1) Thêm virtual waiting room: chỉ cho 2.000 người/phút vào trang chọn ghế, số còn lại xếp hàng chờ; (2) Job dọn dẹp HELD quá hạn chạy mỗi 30 giây; (3) Callback chỉ chuyển SOLD khi {{hold_id}} khớp và {{hold_until > now()}}; (4) Cache sơ đồ ghế TTL (thời gian sống) 1 giây + pub/sub (cơ chế phát tin cập nhật) để làm tươi; (5) Thời gian giữ ghế 10 phút nhưng link thanh toán hết hạn 8 phút. **Kết quả đo được:** Sau khi sửa, 0 ghế bị bán hai lần; 99,9% khách thấy trạng thái ghế chính xác; lưu lượng vào trang chọn ghế giảm từ mức bùng nổ xuống còn khoảng 2.000 yêu cầu/phút (được phòng chờ điều tiết).
+
+### Trả lời mẫu khi phỏng vấn
+    "Mỗi ghế là một bản ghi chuyển trạng thái AVAILABLE → HELD → SOLD. Giữ chỗ bằng conditional UPDATE (câu lệnh cập nhật có điều kiện): {{UPDATE seat SET status='HELD', hold_id=?, hold_until=now()+interval '10 minutes' WHERE event_id=? AND seat_id=ANY(?) AND (status='AVAILABLE' OR (status='HELD' AND hold_until < now()))}}. PostgreSQL khóa từng dòng khi cập nhật, giao dịch đến sau chờ rồi đánh giá lại điều kiện, nên không có race condition (tình huống tranh chấp). Unique constraint (ràng buộc duy nhất) trên vé là chốt cuối. Thanh toán: callback (lời gọi xác nhận từ cổng thanh toán) chỉ chuyển SOLD khi {{hold_id}} khớp và hold còn hiệu lực; nếu tiền về sau khi hold hết thì không ép bán, phải tự động hoàn tiền. Phòng tải: dùng virtual waiting room (phòng chờ ảo) — chỉ cho khoảng 2.000 người/phút vào trang chọn ghế, số còn lại xếp hàng; đây mới là thứ giảm tải thật sự vì phần lớn lưu lượng là đọc sơ đồ ghế. Trade-off (đánh đổi): không cần distributed lock (khóa phân tán) cho từng ghế vì conditional UPDATE trong DB đã là cơ chế khóa kèm giao dịch. Tôi từng gặp bot giữ 1.200 ghế và một ghế bị bán hai lần do callback đến muộn — giải pháp là phòng chờ, job dọn dẹp hold hết hạn, và callback idempotent (gọi lặp cho cùng kết quả) theo hold_id."
+
+  > Senior tip: interviewer thường gài câu "dùng distributed lock cho từng ghế được không?". Được, nhưng thừa: một UPDATE có điều kiện trong DB đã là lock đúng nghĩa và có transaction đi kèm. Thứ thật sự cứu bạn ngày mở bán là phòng chờ và cache sơ đồ ghế, vì hơn 90% traffic là đọc.`,
   follow: [
     'Nếu muốn hiển thị trạng thái ghế realtime cho 50.000 người đang xem cùng một sơ đồ, bạn làm thế nào?',
     'Thanh toán thành công nhưng callback đến sau khi hold hết hạn: bạn xử lý theo những bước nào?',
@@ -2478,6 +2618,20 @@ Mô hình này giống kiến trúc LMAX (business logic đơn luồng, giao ti�
 - Lệnh bất thường (fat finger): kiểm tra biên độ giá, khối lượng tối đa ở pre-trade risk.
 - Journal disk chậm: group commit (gom nhiều lệnh một lần fsync) đổi vài trăm micro giây lấy throughput.
 
+### Ví dụ đời thực
+Triệu chứng: Một sàn crypto nội bộ (engine tự xây bằng Java, một shard một luồng cho mỗi mã nóng như BTC/USDT) chạy ổn ở 1.500 lệnh/s, nhưng vào 20:00–20:30 (giờ tin tức Mỹ công bố) p99 độ trễ ack (thời gian từ lúc gateway nhận lệnh đến lúc trả "đã nhận") tăng từ 3 ms lên 120 ms, và có 2 lệnh bị ack trễ khiến bot của market maker gửi lệnh huỷ nhưng huỷ không kịp, tạo giao dịch ngoài ý muốn.
+
+Điều tra: Đo histogram p99/p99.9 từ gateway đến ack bằng HdrHistogram, tách từng chặng (gateway, risk, sequencer, engine). Metric cho thấy thời gian đứng chủ yếu ở sequencer, không phải engine (engine vẫn xử lý một lệnh trong ~40 micro giây). Log sequencer và metric disk ({{iostat -x 1}} trên node journal, hoặc {{node_disk_write_time_seconds_total}} nếu có Prometheus node exporter) cho thấy {{await}} của ổ NVMe tăng vọt và số lần {{fsync}}/s bằng đúng số lệnh/s. Kiểm tra cấu hình: sequencer đang {{fsync}} cho từng lệnh một.
+
+Nguyên nhân gốc: Mỗi lệnh đòi một lần {{fsync}} (ép dữ liệu xuống thiết bị lưu trữ bền vững) để đảm bảo "ack chỉ sau khi journal an toàn". Ở 3.000 lệnh/s cao điểm, ổ NVMe không kịp phục vụ 3.000 fsync/s tuần tự, hàng đợi ghi phình ra → độ trễ ack tăng. Đây là đánh đổi kinh điển: bền vững mạnh (mỗi lệnh) đổi lấy độ trễ.
+
+Cách xử lý: Bật **group commit** ở sequencer: gom các lệnh đến trong cửa sổ rất ngắn (ví dụ 200 micro giây hoặc tối đa 64 lệnh) rồi ghi một batch và {{fsync}} một lần, sau đó ack cả batch. Giữ nguyên quy tắc "chỉ ack sau fsync". Thêm giám sát {{sequencer_batch_size}}, {{journal_fsync_latency_p99}}, và {{ack_latency_p99}}. Kiểm thử failover: kill primary, xác nhận standby replay journal đến đúng {{seq}} cuối và tiếp tục khớp.
+
+Kết quả đo được: fsync giảm còn ~200–400 lần/s ở cùng tải, p99 ack về 4–6 ms ở 3.000 lệnh/s, không còn lệnh ack trễ gây huỷ trượt trong phiên sau. Đổi lại, độ trễ tối thiểu tăng thêm ~0,1 ms do chờ batch, chấp nhận được so với mục tiêu p99 ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Em sẽ thiết kế matching engine như một state machine đơn luồng theo từng shard mã để bảo đảm tính deterministic, tức là cùng một dãy lệnh đầu vào thì luôn cho ra cùng kết quả khớp. Lệnh đi qua gateway và kiểm tra rủi ro, rồi sequencer gán số thứ tự và ghi journal bền vững trước khi engine khớp trên order book trong RAM theo nguyên tắc giá tốt nhất trước, cùng giá thì ai đến trước khớp trước. Em dùng giá dạng số nguyên theo bước giá, không dùng double, và dùng HashMap theo orderId để huỷ O(1). Database không nằm trên đường nóng, trade được ghi bất đồng bộ từ output event. Về HA, primary và standby cùng replay journal; chỉ ack sau khi journal đã được nhân bản. Trade-off chính là đơn luồng dễ đúng và dễ phục hồi nhưng phải shard theo mã, còn bền vững mỗi lệnh làm tăng độ trễ nên em dùng group commit để cân bằng. Ở dự án trước, việc chuyển từ fsync từng lệnh sang group commit đã kéo p99 ack từ hơn 100 ms về khoảng 5 ms ở tải cao điểm."
+
 > Senior tip: ở cấp lead, điểm cộng lớn nhất là nói được "engine là một state machine deterministic, journal là nguồn sự thật". Từ câu đó suy ra mọi thứ: HA bằng replay, audit bằng journal, debug bằng cách phát lại đúng ngày lỗi trên máy dev. Ứng viên bắt đầu bằng "dùng Kafka + nhiều consumer + Redis lock" thường tự đào hố về thứ tự khớp.`,
   follow: [
     'Bạn hỗ trợ phiên khớp lệnh định kỳ (ATO/ATC) thế nào: thuật toán xác định giá khớp?',
@@ -2546,6 +2700,20 @@ Index theo dạng đã chuẩn hoá, nhưng **hiển thị** dạng có dấu ph
 | Redis sorted set mỗi prefix | Dễ cập nhật tăng dần | Rất nhiều key, tốn RAM Redis, thêm network hop |
 | ES completion suggester | Ít code, có fuzzy | Phụ thuộc cluster ES, khó tuỳ biến xếp hạng |
 | SQL LIKE 'prefix%' | Đơn giản, prefix search có thể tận dụng index phù hợp | Khó giữ 17.000 QPS và xếp hạng tốt nếu không thiết kế index/cache phù hợp |
+
+### Ví dụ đời thực
+Triệu chứng: Sàn thương mại điện tử ~8 triệu MAU bật tính năng autocomplete mới dùng Redis {{ZREVRANGE}} cho mỗi prefix (một sorted set cho mỗi chuỗi tiền tố người dùng gõ). Ngày sale, traffic gợi ý tăng lên ~12.000 QPS; p95 thời gian phản hồi autocomplete tăng từ 60 ms lên 400 ms, ô tìm kiếm hiện gợi ý chậm rõ rệt và Redis CPU chạm 85%.
+
+Điều tra: Bật {{SLOWLOG GET 50}} trên Redis và xem metric {{redis_commands_duration_seconds}}, {{instantaneous_ops_per_sec}}. SLOWLOG cho thấy rất nhiều lệnh đọc trên các key prefix 1–2 ký tự ({{"p:a"}}, {{"p:d"}}) bị lặp lại liên tục. Đếm số key prefix ({{DBSIZE}}, sampling key pattern) cho thấy hàng triệu key, nhưng top 200 prefix ngắn chiếm phần lớn request. Ở client, log frontend cho thấy mỗi lần gõ gửi request ngay lập tức, người dùng gõ nhanh tạo 8–10 request/giây, nhiều request cũ trở nên vô ích.
+
+Nguyên nhân gốc: Hai vấn đề cộng hưởng: (1) mô hình "mỗi prefix một sorted set" tạo quá nhiều key và mỗi request là một network hop tới Redis; prefix ngắn bị truy vấn lặp đi lặp lại; (2) client không debounce nên nhân số request lên gấp nhiều lần.
+
+Cách xử lý: (1) Ở client thêm debounce 150 ms và huỷ request cũ (AbortController) khi người dùng gõ tiếp. (2) Cache prefix 1–2 ký tự ở CDN/trình duyệt với TTL 2–5 phút (dữ liệu này ít thay đổi). (3) Thay lớp Redis prefix-key bằng snapshot trie top-K dựng offline (job tổng hợp log tìm kiếm mỗi giờ, nạp vào RAM của Suggest Service và swap nguyên tử); Redis chỉ giữ lớp "trending" cửa sổ 10 phút để trộn vào. (4) Thêm dashboard theo dõi QPS gốc, cache hit rate, p95, và lỗi.
+
+Kết quả đo được: Số request xuống Redis/service gợi ý giảm ~70% (debounce + CDN cache), p95 autocomplete về 40–70 ms ở ~12.000 QPS đỉnh, Redis CPU giảm còn ~20%. Từ khoá trending mới vẫn xuất hiện trong 5–10 phút nhờ lớp trending riêng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với autocomplete cho sàn thương mại điện tử, em sẽ không tính gợi ý lúc người dùng gõ mà dựng sẵn dữ liệu offline. Pipeline lấy log tìm kiếm, chuẩn hoá, đếm tần suất có decay theo thời gian, rồi build cấu trúc prefix trỏ tới top K từ khoá và nạp snapshot vào RAM của Suggest Service, nên mỗi request chỉ là tra cứu theo độ dài prefix. Với tiếng Việt em chuẩn hoá bỏ dấu bằng Unicode NFD và xử lý riêng chữ đ, nhưng hiển thị lại dạng có dấu phổ biến. Để chịu tải, em debounce 150 ms ở client, huỷ request cũ, cache prefix 1–2 ký tự ở CDN, và có lớp trending cập nhật vài phút một lần cho từ khoá tăng đột biến. Trade-off là dữ liệu gợi ý có độ trễ vài phút và phải vận hành job build snapshot; em chấp nhận vì mục tiêu là p95 dưới 100 ms. Ở một lần tối ưu tương tự, debounce và cache prefix ngắn đã giảm khoảng 70% request xuống backend."
 
 > Senior tip: phần lớn độ trễ cảm nhận được nằm ở client và mạng, không ở server. Đo từ lúc gõ tới lúc hiện gợi ý; thường debounce hợp lý cộng cache prefix ngắn đã giảm hơn một nửa số request mà chẳng cần đụng tới thuật toán.`,
   follow: [
@@ -2623,6 +2791,20 @@ Tương tự với tag {{uri}} chứa ID thật thay vì template. Đặt giới
 - Hệ thống log chết đúng lúc cần nhất: monitoring của chính hệ thống log phải độc lập (ít nhất alert cơ bản không đi qua nó).
 - Một service log vòng lặp lỗi làm ngập Kafka: rate limit theo nguồn ở agent.
 - Clock lệch giữa node làm sai thứ tự log: dựa vào traceId để ghép, không chỉ timestamp.
+
+### Ví dụ đời thực
+Triệu chứng: Một hệ thống ~800 pod Spring Boot dùng Prometheus (scrape 15s) + remote_write về kho metrics dài hạn. Khoảng 02:10 sáng, Prometheus bắt đầu dùng RAM tăng nhanh, sau đó OOM và restart lặp lại; dashboard Grafana mất dữ liệu 10–15 phút, alertmanager im lặng một phần vì không có metric mới.
+
+Điều tra: Xem log Prometheus (OOMKilled), metric {{prometheus_tsdb_head_series}} (số time series đang hoạt động trong head), {{prometheus_tsdb_head_chunks_created_total}}, và trang {{/tsdb-status}} để xem top label/value tạo nhiều series. {{/tsdb-status}} cho thấy một metric HTTP của service {{payment-api}} có hàng trăm nghìn series mới trong 30 phút, và label {{uri}} có giá trị dạng {{/payments/123456}}, {{/orders/98765}} (chứa ID thật thay vì mẫu route).
+
+Nguyên nhân gốc: Một thay đổi gần đây ghi metric độ trễ/đếm request với tag {{uri}} lấy từ đường dẫn thật thay vì mẫu route. Mỗi {{orderId}}/{{paymentId}} tạo ra một time series mới (cardinality nổ). 800 pod × số ID khác nhau → số series tăng vượt xa dung lượng RAM Prometheus head block. Đây là lỗi cardinality kinh điển: tag có tập giá trị "vô hạn".
+
+Cách xử lý: (1) Ổn định ngay: thêm {{metric_relabel_configs}} ở Prometheus để drop tạm metric/tag gây nổ, hoặc giới hạn/alert theo {{prometheus_tsdb_head_series}}; khởi động lại Prometheus sau khi giảm tải scrape nếu cần. (2) Sửa code: đổi tag {{uri}} sang template route (ví dụ {{/payments/<id>}}, {{/orders/<id>}}) và chỉ giữ tag có tập giá trị nhỏ, cố định ({{method}}, {{status}}, {{channel}}). (3) Phòng ngừa: đặt quy tắc review metric (không dùng userId/orderId/requestId làm label), giới hạn series mỗi job ở kho lưu trữ, cảnh báo khi {{prometheus_tsdb_head_series}} tăng đột biến. (4) Với log tương tự, kiểm tra agent/processor không index ID động vào label.
+
+Kết quả đo được: Sau khi drop tạm và deploy bản sửa, {{prometheus_tsdb_head_series}} giảm từ mức gây OOM về ~2,5 triệu series ổn định, Prometheus hết restart, alert và dashboard khôi phục. Thêm alert "head series tăng > 30% trong 10 phút" giúp phát hiện sớm nếu tái diễn.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế logging và metrics cho khoảng 1.000 pod Spring Boot, em tách hai bài toán. Với log, em cho ứng dụng ghi JSON ra stdout có traceId, agent trên node gom và đẩy qua Kafka để chống spike, rồi processor parse, che dữ liệu nhạy cảm và lọc trước khi lưu hot vài ngày để tìm kiếm, còn cold nén trên object storage theo chính sách retention. Với metrics, em dùng Prometheus scrape, remote_write về kho time-series dài hạn và downsample dữ liệu cũ. Điểm em luôn nhấn mạnh là kiểm soát chi phí và cardinality: quyết định index gì, giữ bao lâu quan trọng hơn chọn công cụ; tag metric phải có tập giá trị nhỏ, cố định, tuyệt đối không dùng userId hay orderId. Trade-off là log full-text hot đắt và chậm nếu giữ lâu, còn Loki rẻ hơn nhưng tìm nội dung kém hơn, nên em phân tầng theo nhu cầu điều tra. Em từng xử lý Prometheus OOM do tag uri chứa ID thật làm nổ series; sửa bằng cách dùng route template và thêm cảnh báo khi head series tăng đột biến."
 
 > Senior tip: trước khi bàn công cụ, hãy hỏi "bao nhiêu % log chúng ta từng tìm tới?". Câu trả lời thường rất nhỏ. Phân tầng hot/cold và sample log thành công thường giảm chi phí mạnh hơn nhiều so với đổi từ ES sang công cụ khác.`,
   follow: [
@@ -2715,6 +2897,20 @@ Quyết định dự phòng phải được ghi nhận và kiểm tra lại bấ
 - Kẻ gian dò ngưỡng: không trả lý do chi tiết cho client; thay đổi rule định kỳ.
 - Dữ liệu cá nhân: hash số thẻ (tokenization), phân quyền truy cập case.
 
+### Ví dụ đời thực
+Triệu chứng: Một ví điện tử có Fraud Decision Service đặt trong luồng thanh toán (timeout 100 ms, nếu quá hạn thì CHALLENGE). Trong chiến dịch hoàn tiền 21:00, lượng giao dịch tăng gấp ~8 lần lên ~1.800 TPS. Đột nhiên tỉ lệ CHALLENGE tăng từ 6% lên 22% trong 10 phút, nhưng dashboard cho thấy điểm model không tăng tương ứng; nhiều khách than bị yêu cầu OTP bất thường.
+
+Điều tra: Xem metric {{fraud_decision_latency_p99}}, {{fraud_timeout_total}}, tỉ lệ quyết định theo {{reason}} (APPROVE/CHALLENGE/DECLINE). Phân tích trace (OpenTelemetry) cho thấy thời gian chủ yếu nằm ở bước đọc feature từ Redis, đặc biệt các lệnh lấy velocity theo nhiều bucket. Redis metric {{redis_connected_clients}}, {{latency}}, {{instantaneous_ops_per_sec}} tăng; một vài key dạng {{vel:<merchant_lớn>:<minute>}} nhận lượng truy cập rất cao (hot key). Kiểm tra thêm cho thấy đường bất đồng bộ (Flink) bị trễ ~40 giây do backlog, nhưng đường đồng bộ vẫn phải tự tính velocity giao dịch hiện tại.
+
+Nguyên nhân gốc: Velocity feature được tính đồng bộ bằng cách đọc/ghi nhiều bucket phút trên Redis. Merchant lớn tạo hot key và làm tăng độ trễ đọc; p99 vượt 100 ms → Fraud Decision Service rơi vào chính sách dự phòng CHALLENGE (step-up) để an toàn. Kết quả là "chặn nhầm mềm" (ma sát cho khách thật) tăng, dù không có sóng gian lận thực sự.
+
+Cách xử lý: (1) Tối ưu hot key: tách counter theo shard ({{vel:<cardHash>:<minute>:<shard>}}) rồi cộng, hoặc dùng local aggregation + đẩy định kỳ cho merchant rất lớn; gộp thao tác Redis bằng Lua/pipeline để giảm round-trip. (2) Phân tầng quyết định khi quá tải: nếu timeout, áp dụng rule nhẹ (số tiền nhỏ + thiết bị quen + người nhận quen → APPROVE có giám sát hậu kiểm), số tiền lớn/người nhận mới → CHALLENGE; tránh CHALLENGE đồng loạt. (3) Đặt ngân sách thời gian từng bước (đọc feature 15 ms, rule 5 ms, model 20 ms) và circuit breaker cho Redis chậm. (4) Theo dõi {{fraud_fallback_total}} và drill-down theo lý do để phát hiện fallback thành "chính sách mặc định".
+
+Kết quả đo được: Sau tối ưu key và ngân sách thời gian, p99 fraud check giảm về 55–70 ms ở ~1.800 TPS, tỉ lệ timeout/fallback giảm mạnh và CHALLENGE quay về ~7%. Không ghi nhận tăng chargeback bất thường trong 7 ngày sau nhờ vẫn giữ step-up cho giao dịch rủi ro cao.
+
+### Trả lời mẫu khi phỏng vấn
+"Em sẽ thiết kế phát hiện gian lận thời gian thực tách hai đường. Đường đồng bộ nằm trong luồng thanh toán, có ngân sách khoảng 100 ms: đọc feature đã tính sẵn từ Redis, chạy rule engine để bắt các luật rõ ràng, rồi cho model chấm điểm và kết hợp ra quyết định APPROVE, CHALLENGE hoặc DECLINE kèm lý do. Đường bất đồng bộ dùng Kafka và stream processing như Flink để tính velocity theo cửa sổ thời gian, cập nhật feature store, phát hiện mẫu phức tạp và đưa case cho analyst; nhãn chargeback quay lại để huấn luyện. Điểm quan trọng là velocity của chính giao dịch hiện tại phải tính đồng bộ, vì Flink trễ vài giây sẽ lọt đợt bắn giao dịch nhanh. Trade-off là giữa tỉ lệ bắt gian lận và tỉ lệ chặn nhầm; rule mới em cho chạy shadow mode trước khi bật. Khi service chậm hoặc chết, em dùng chính sách dự phòng theo ngữ cảnh, ví dụ số tiền lớn hoặc người nhận mới thì step-up, và luôn ghi lại để hậu kiểm. Em cũng chú ý training-serving skew: feature lúc huấn luyện và lúc phục vụ phải cùng định nghĩa."
+
 > Senior tip: ở ngân hàng, trận chiến lớn nhất hiện nay là lừa đảo khách tự chuyển tiền (social engineering), không phải thẻ bị đánh cắp: chính chủ, đúng thiết bị, đúng OTP. Feature thật sự hữu ích là về **người nhận** (tài khoản mới mở, nhận tiền từ nhiều nạn nhân) và hành vi bất thường như đang trong cuộc gọi. Hãy đưa ví dụ này vào câu trả lời, interviewer ngân hàng sẽ đánh giá cao.`,
   follow: [
     'Làm sao backtest một rule mới trên dữ liệu 6 tháng trước khi bật?',
@@ -2786,6 +2982,20 @@ OTP Service -> Kafka topic sms.otp (ưu tiên cao, tách khỏi SMS marketing)
 | Sinh trắc học (khuôn mặt) đối chiếu dữ liệu CCCD | Khó mạo danh | Chi phí, quy trình eKYC |
 
 Ở Việt Nam, giao dịch chuyển tiền giá trị lớn hiện phải xác thực sinh trắc học theo quy định của NHNN; SMS OTP ngày càng chỉ còn vai trò phụ.
+
+### Ví dụ đời thực
+Triệu chứng: Ứng dụng ngân hàng ghi nhận nhiều khiếu nại "không nhận được OTP" vào 11:45–12:00 (giờ cao điểm), tỉ lệ giao dịch bị huỷ ở bước xác nhận tăng 15%. Cùng lúc, tổng chi phí SMS tăng đột biến và có dấu hiệu nhiều request gửi OTP lặp lại trong thời gian ngắn.
+
+Điều tra: Xem metric theo provider/nhà mạng: {{sms_send_latency_p95}}, {{sms_delivery_success_rate}}, {{sms_dlr_timeout_total}} (DLR là delivery report - báo cáo nhà mạng cho biết SMS đã gửi tới máy hay chưa), và {{otp_verify_fail_rate}}. Log OTP Service cho thấy số challenge tạo ra tăng cao nhưng tỉ lệ verify không tăng tương ứng. SMS Router cho provider A có DLR chậm/timeout với một nhà mạng lớn; logic gửi lại đang tạo challenge/OTP mới mỗi lần bấm "Gửi lại" hoặc khi DLR timeout, dẫn tới khách nhận nhiều mã khác nhau.
+
+Nguyên nhân gốc: Hai lỗi kết hợp: (1) failover dựa trên DLR nhưng khi provider chậm, hệ thống phát sinh thêm yêu cầu gửi và đôi khi tạo OTP mới thay vì dùng lại cùng challenge; (2) kiểm soát gửi lại/cooldown chưa đủ chặt theo user/số điện thoại/thiết bị, nên người dùng bấm lặp và hệ thống cũng tự bắn thêm, gây nghẽn và nhầm mã. Ngoài ra có một luồng nhập số điện thoại chưa đăng nhập thiếu rate limit mạnh, làm tăng nguy cơ SMS pumping.
+
+Cách xử lý: (1) Đảm bảo "gửi lại dùng cùng mã trong cùng challenge" trong TTL; cooldown 60 giây cho nút gửi lại; chỉ tạo challenge mới khi OTP hết hạn hoặc người dùng đổi ngữ cảnh giao dịch. (2) SMS Router: nếu không nhận DLR thành công sau 20 giây, gửi lại **cùng nội dung OTP** qua provider B; circuit breaker khi provider/nhà mạng lỗi; theo dõi DLR theo từng tuyến. (3) Chống lạm dụng: rate limit theo user, số điện thoại, IP/thiết bị, CAPTCHA cho luồng công khai, chặn đầu số quốc tế không cần; cảnh báo khi {{otp_send_rate}} hoặc chi phí SMS tăng bất thường. (4) Vẫn giữ xác minh nguyên tử bằng Lua để không dùng lại OTP và đếm sai chính xác.
+
+Kết quả đo được: Sau 1 tuần, tỉ lệ giao SMS thành công trong 30 giây tăng trở lại mức > 97% cho nhà mạng bị ảnh hưởng, khiếu nại "không nhận OTP" giảm ~60%, và chi phí SMS giảm ~25% nhờ bớt gửi trùng/mã mới không cần thiết. Tỉ lệ nhập sai do nhiều mã cũng giảm rõ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế OTP/2FA cho ngân hàng, em tập trung vào ba việc: sinh mã an toàn, xác minh nguyên tử và gửi được tin trong điều kiện nhà mạng không ổn định. OTP 6 số được sinh bằng SecureRandom, chỉ lưu HMAC của OTP trong Redis với TTL 2 đến 5 phút và gắn với ngữ cảnh giao dịch như mã giao dịch, số tiền, người nhận. Xác minh em dùng Lua script để vừa so sánh, vừa tăng số lần sai, vừa xoá OTP khi đúng trong một thao tác nguyên tử, nên không thể dùng lại mã và không bị race khi gửi song song. Em giới hạn số lần thử mỗi OTP, cooldown gửi lại, rate limit theo user, số điện thoại, IP và có biện pháp chống SMS pumping. Với SMS, em dùng Kafka tách luồng OTP, router nhiều provider có failover dựa trên delivery report, nhưng gửi lại phải dùng cùng mã trong cùng challenge. Trade-off là SMS OTP tiện nhưng yếu trước SIM swap và lừa đảo, nên với giao dịch giá trị lớn em ưu tiên Smart OTP hoặc sinh trắc học theo đúng nghiệp vụ ngân hàng."
 
 > Senior tip: lỗ hổng OTP trong thực tế hiếm khi là thuật toán sinh mã mà là **luồng nghiệp vụ**: endpoint xác minh không giới hạn số lần, OTP không gắn với giao dịch (dùng OTP đăng nhập để chuyển tiền), hoặc mã OTP lọt vào log ứng dụng. Khi review, tôi grep log của service OTP trước tiên.`,
   follow: [
@@ -2875,6 +3085,20 @@ Holder idiom an toàn vì JLS đảm bảo khởi tạo class chỉ chạy một
 - "Inject prototype vào singleton thì mỗi lần gọi có object mới." Sai: chỉ inject một lần; cần {{ObjectProvider}} hoặc lookup method.
 - "DCL không cần volatile vì đã synchronized." Sai như phân tích trên.
 
+### Ví dụ đời thực
+Triệu chứng: Một dịch vụ Spring Boot xử lý thanh toán dùng một lớp {{PaymentConfig.getInstance()}} kiểu Singleton GoF (lazy, tự {{new}} bên trong) để giữ cấu hình endpoint và secret của cổng thanh toán. Sau khi bật chạy test tích hợp song song (parallel test) và deploy thêm môi trường staging trên cùng cụm CI, đội QA gặp lỗi ngẫu nhiên: một số test staging gọi nhầm endpoint sandbox/production, và log đôi khi in thiếu/đúng cấu hình không ổn định. Trên production đơn lẻ thì ít thấy, nhưng khi thêm luồng tải bất thường có lúc cấu hình đọc ra null.
+
+Điều tra: Kiểm tra code thấy {{PaymentConfig}} dùng lazy init không thread-safe đầy đủ (check-then-act không {{synchronized}}/{{volatile}} đúng) và có field mutable {{endpoint}}, {{secret}} bị ghi đè khi {{reload()}}. Trong môi trường test, nhiều thread khởi tạo context/test cùng lúc; với app server hoặc classloader khác nhau, có dấu hiệu nhiều bản nạp class dẫn tới hành vi khó đoán. Log khởi tạo cho thấy constructor {{PaymentConfig}} đôi khi chạy theo thứ tự không mong muốn. Thử viết test nhỏ tái hiện: nhiều thread gọi {{getInstance()}} và {{reload()}} → thấy giá trị đọc không nhất quán.
+
+Nguyên nhân gốc: Singleton GoF tạo global mutable state: phụ thuộc ẩn (khó biết ai dùng), vòng đời gắn với classloader, và không thread-safe nếu tự viết sai. Việc {{reload()}} ghi đè field chia sẻ khiến request/thread khác đọc cấu hình giữa chừng. Trong test, không thể thay {{getInstance()}} bằng cấu hình giả một cách sạch.
+
+Cách xử lý: (1) Sửa an toàn tối thiểu nếu buộc giữ: dùng holder idiom hoặc enum (nhưng vẫn không giải quyết global mutable state). (2) Cách đúng trong Spring: chuyển {{PaymentConfig}} thành bean quản lý bởi container, inject qua constructor; cấu hình lấy từ {{@ConfigurationProperties}} (immutable nếu có thể), reload bằng cơ chế có kiểm soát (refresh scope/cấu hình tập trung) thay vì ghi trực tiếp static field. (3) Tách secret ra secret manager/vault; không giữ secret trong object chia sẻ tự do. (4) Thêm test: inject mock config trong unit test; test tích hợp chạy theo profile rõ ràng.
+
+Kết quả đo được: Sau khi chuyển sang bean cấu hình immutable inject qua constructor, lỗi gọi nhầm endpoint trong test song song biến mất, test tích hợp chạy ổn định và thời gian debug cấu hình giảm. Việc review bảo mật cũng dễ hơn vì đường đi của secret rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong Java, em thường dùng enum singleton hoặc holder idiom vì gọn và thread-safe nhờ cơ chế khởi tạo class của JVM; double-checked locking chỉ đúng khi field là volatile, nếu không thread khác có thể thấy object chưa khởi tạo xong. Nhưng trong code nghiệp vụ Spring, em hầu như không tự viết Singleton GoF vì nó tạo global state ẩn, khó mock, khó test và phụ thuộc bị giấu sau getInstance. Spring singleton khác: nó là một instance cho mỗi bean definition trong một ApplicationContext, được inject qua constructor nên phụ thuộc lộ rõ và dễ thay bằng mock. Trade-off là Spring chỉ quản lý vòng đời và số lượng instance, chứ không tự làm bean thread-safe; bean singleton có state mutable như SimpleDateFormat hay HashMap vẫn có thể lỗi race condition. Em từng gặp lỗi cấu hình ngẫu nhiên do static singleton bị nhiều thread ghi đè, và cách sửa là chuyển sang bean cấu hình immutable inject qua constructor."
+
 > Senior tip: trong code nghiệp vụ dùng Spring, gần như không có lý do viết {{getInstance()}}. Khi review thấy static singleton giữ cache hay config, tôi yêu cầu chuyển thành bean. Ngoại lệ hợp lý là thứ không phụ thuộc gì và không có state, ví dụ một mapper hay comparator dùng chung.`,
   follow: [
     'Holder idiom và enum singleton: khi nào bạn chọn cái nào?',
@@ -2958,6 +3182,24 @@ Ví dụ JDK: {{DocumentBuilderFactory}}, {{XMLInputFactory}}.
 - Mô tả Abstract Factory là "factory tạo ra factory". Điểm cốt lõi là **họ object nhất quán**, không phải số tầng.
 - Viết factory + interface cho thứ chỉ có một implementation: thêm lớp vô ích.
 
+### Ví dụ đời thực
+
+Dự án thanh toán tích hợp VNPay, MoMo và thẻ quốc tế; mỗi đối tác có client HTTP, cách ký và parse callback khác nhau.
+
+Triệu chứng: sau khi deploy thêm MoMo, giao dịch VNPay cũ bị lỗi "UnsupportedOperationException", thất toán khoảng 5% trong 30 phút.
+
+Điều tra: team dùng Simple Factory, một hàm static switch theo enum. Dev sửa hàm này để thêm case MOMO nhưng vô tình xóa nhánh VNPay khi merge. Không có test riêng cho từng đối tác, nên lỗi chỉ lộ ra trên production sau deploy.
+
+Nguyên nhân gốc: Simple Factory vi phạm nguyên lý mở-đóng — thêm đối tác phải sửa code cũ, dễ làm hỏng đối tác đã ổn định. Client, signer, parser của mỗi đối tác bị trộn lẫn trong cùng một class.
+
+Cách xử lý: quay về commit trước để khôi phục, rồi refactor sang Abstract Factory: interface {{PaymentKit}} với {{client()}}, {{signer()}}, {{callbackParser()}}; mỗi đối tác một implementation. Inject {{Map<String, PaymentKit>}} vào service, tra cứu theo mã đối tác runtime.
+
+Kết quả: thêm đối tác mới chỉ thêm package mới, không đụng code cũ. Thời gian đưa đối tác mới lên production giảm từ mấy ngày xuống mấy giờ, không còn downgrade giao dịch cũ khi triển khai.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Simple Factory là một hàm tĩnh chọn class theo tham số, nhưng không phải pattern GoF vì thêm đối tác mới lại phải sửa hàm cũ. Factory Method để lớp cha giữ quy trình chung, lớp con quyết định tạo object nào — ví dụ importer ngân hàng chọn parser CSV hay fixed-width. Abstract Factory tạo một họ object nhất quán: client, signer và parser của cùng một đối tác, tránh việc trộn signer của VNPay với parser của MoMo. Trong Spring tôi inject {{Map<String, PaymentKit>}} và tra cứu theo mã đối tác runtime, chỉ viết factory tự tạo khi object phụ thuộc tham số đọc từ DB. Khi nào dùng cái nào: Simple Factory cho tập lựa chọn nhỏ ổn định, Factory Method khi thuật toán chung cố định nhưng tạo object thay đổi, Abstract Factory khi nhiều thành phần phải khớp nhau như một họ. Thực tế, khi thêm đối tác mới tôi tạo package riêng và dùng test kiến trúc để chặn package của đối tác này import package của đối tác khác, giúp triển khai an toàn mà không làm hỏng giao dịch cũ."
+
 > Senior tip: khi tích hợp đối tác, Abstract Factory (hay "kit" theo đối tác) đáng giá nhất ở chỗ gom mọi thứ của một đối tác vào một package; thêm đối tác mới là thêm một package, không đụng code cũ. Tôi dùng test kiến trúc để đảm bảo package của đối tác này không import package của đối tác khác.`,
   follow: [
     'Khi nào bạn chọn Factory Method (kế thừa) thay vì truyền Strategy qua constructor?',
@@ -3027,6 +3269,24 @@ public record TransferCommand(String fromAccount, String toAccount, BigDecimal a
 ### Câu trả lời sai phổ biến
 - "Builder giúp code nhanh hơn." Không; nó tạo thêm object builder, chỉ giúp đọc và an toàn hơn.
 - "Lombok @Builder thì object immutable." Chỉ khi field final và không có setter.
+
+### Ví dụ đời thực
+
+Dịch vụ đơn hàng dùng Lombok @Builder cho class Order với field status = "NEW" mặc định.
+
+Triệu chứng: sau khi thêm field status, đơn hàng mới tạo có status null, downstream xử lý đơn bị NPE khoảng 2% đơn, ảnh hưởng tạo đơn trong giờ cao điểm.
+
+Điều tra: log NPE trỏ đến lần đọc status, xem mã nguồn thấy @Builder sinh constructor all-args và không dùng giá trị khởi tạo của field, nên status = null.
+
+Nguyên nhân gốc: @Builder bỏ qua giá trị mặc định của field, cần @Builder.Default mới giữ nguyên. Ngoài ra @Builder không validate field bắt buộc (amount) và đối với JPA entity mất constructor không tham số mà Hibernate cần.
+
+Cách xử lý: thêm @Builder.Default cho danh sách mục, dùng record với compact constructor để validate amount > 0, thêm {{@NoArgsConstructor(access = AccessLevel.PROTECTED)}} + {{@AllArgsConstructor}} cho entity, tránh kết hợp @Builder với @Data (đối tượng vẫn mutable).
+
+Kết quả: giảm NPE liên quan status đơn hàng, validation lỗi sớm lúc khởi tạo object, entity không bị set id/version qua builder, số lỗi severity cao liên quan đơn hàng giảm về 0 trong tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Builder hợp khi object có nhiều tham số, nhiều tham số tuỳ chọn và nên immutable, giúp tránh telescoping constructor và nhầm thứ tự tham số cùng kiểu. Lombok @Builder tiện nhưng có bẫy: bỏ qua giá trị mặc định của field nếu thiếu @Builder.Default, không kiểm tra field bắt buộc, phá constructor không tham số mà JPA cần, toBuilder copy nông, và không hỗ trợ kế thừa (cần @SuperBuilder trên cả cha và con). Với DTO đơn giản tôi dùng record. Với entity tôi thích static factory method có tên nghiệp vụ để giữ invariant. Khi review, tôi tìm @Builder đi cùng @Data hoặc @Entity trước, đó là hai tổ hợp sinh bug nhiều nhất. Record không thay thế hoàn toàn Builder khi object có nhiều tham số tuỳ chọn và cần hàm rõ ràng, vì record bắt buộc cung cấp đủ trường trong constructor. Trong thực tế tôi bắt đầu từ record, chỉ chọn Builder khi object thật sự có nhiều tham số tuỳ chọn cần hàm gán rõ ràng, và luôn validate bắt buộc ngay trong compact constructor."
 
 > Senior tip: khi review, tôi tìm {{@Builder}} đi cùng {{@Data}} hoặc {{@Entity}} trước tiên; đó là hai tổ hợp sinh bug nhiều nhất. Quy ước tốt cho team: record cho DTO, factory method có tên cho entity, Builder cho object cấu hình nhiều tham số tuỳ chọn.`,
   follow: [
@@ -3107,6 +3367,24 @@ Cách sửa, theo thứ tự ưu tiên:
 ### Câu trả lời sai phổ biến
 - "Spring sửa bytecode class của tôi để thêm transaction." Không, mặc định là proxy bọc bên ngoài (trừ khi cấu hình AspectJ).
 - "Đánh {{@Transactional}} lên private method cũng được." Không có tác dụng và không báo lỗi.
+
+### Ví dụ đời thực
+
+Dịch vụ nhập chỉnh lệnh giao dịch batch, method importAll gọi importOne có @Transactional(propagation = REQUIRES_NEW).
+
+Triệu chứng: một file bị lỗi làm rollback toàn bộ batch thay vì chỉ file đó, thời gian xử lý batch 10.000 lệnh tăng từ 5 phút lên 30 phút sau khi deploy.
+
+Điều tra: đặt breakpoint, xem class bean được inject có hậu tố $$SpringCGLIB$$, thấy importAll gọi this.importOne() trực tiếp bên trong class, bỏ qua proxy.
+
+Nguyên nhân gốc: self-invocation. Proxy nằm bên ngoài object thật, lời gọi this.method() không qua proxy nên annotation @Transactional không có hiệu lực, tất cả chạy trong cùng transaction.
+
+Cách xử lý: tách importOne sang bean riêng (thiết kế tốt nhất), hoặc dùng TransactionTemplate quản lý transaction bằng code, hoặc inject chính mình qua {{ObjectProvider}} (khuyên ít dùng vì khó đọc).
+
+Kết quả: mỗi file có transaction riêng, lỗi một file không ảnh hưởng file khác, batch 10.000 lệnh ổn định khoảng 5 phút, giảm incident liên quan rollback sai.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Proxy là object cùng interface đứng trước object thật, chặn lời gọi để thêm hành vi như mở transaction, chạy async hoặc đọc cache, rồi chuyển tiếp. Spring tạo proxy khi khởi tạo bean, dùng JDK dynamic proxy nếu bean có interface hoặc CGLIB subclass (mặc định trong Spring Boot). Vì proxy nằm bên ngoài, gọi this.method() trong class bỏ qua proxy, nên @Transactional, @Async, @Cacheable không chạy. @Lazy tại điểm inject inject proxy, bean thật chỉ tạo ở lần gọi đầu; method final hoặc class final (Kotlin mặc định) CGLIB không override được, annotation im lặng không chạy. Cách sửa: tách method sang bean khác, dùng TransactionTemplate, hoặc AspectJ weaving. Khi debug transaction không rollback hay cache không ăn, tôi xem class bean có hậu tố $$SpringCGLIB$$ và kiểm tra lời gọi có đi qua tham chiếu bean đó. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất."
 
 > Senior tip: khi debug "transaction không rollback" hay "cache không ăn", tôi đặt breakpoint xem class của bean được inject: thấy tên có {{$$SpringCGLIB$$}} là có proxy. Rồi kiểm tra lời gọi có đi qua tham chiếu bean đó không. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất.`,
   follow: [
@@ -3198,6 +3476,24 @@ Client (mobile app, BFF) chỉ biết {{open()}}. Facade không cấm gọi tr�
 - "Decorator thì dùng kế thừa." Decorator dùng **composition**; kế thừa để thêm hành vi sẽ bùng nổ số lớp con cho mỗi tổ hợp (retry + metrics, chỉ metrics...).
 - Facade phình thành god service chứa cả logic nghiệp vụ: facade chỉ nên điều phối.
 
+### Ví dụ đời thực
+
+Dịch vụ thanh toán tích hợp SDK của một ví điện tử, sau đó cần thêm retry, đo metrics và cung cấp API mở tài khoản gọi 4 hệ thống phía sau.
+
+Triệu chứng: sau khi đổi SDK đối tác, mã lỗi "99" của đối tác rò rỉ ra API của ta, mobile app hiển thị sai thông điệp, và gọi SDK trực tiếp ở nhiều service khiến test khó viết.
+
+Điều tra: tìm thấy team gọi AcmeWalletSdk trực tiếp trong service nghiệp vụ, không có lớp trung gian giữa domain và SDK.
+
+Nguyên nhân gốc: không có Adapter, kiểu dữ liệu và mã lỗi của đối tác rò vào domain, vi phạm nguyên lý phụ thuộc vào abstraction.
+
+Cách xử lý: viết {{WalletGateway}} interface do domain định nghĩa, {{AcmeWalletAdapter}} dịch mã lỗi đối tác sang ngôn ngữ của ta, thêm {{MeteredWalletGateway}} đo thời gian và {{RetryingWalletGateway}} retry (chỉ khi đối tác hỗ trợ idempotency). API mở tài khoản dùng {{Facade}} điều phối eKYC, core banking, phát hành thẻ và thông báo. Decorator xếp chồng thứ tự quan trọng: metrics bọc ngoài retry đo tổng thời gian kể cả retry, bọc trong đo từng lần.
+
+Kết quả: đổi đối tác chỉ viết adapter mới, mã lỗi đối tác không rò ra API, monitor latency mỗi lệnh, API mở tài khoản đơn giản cho client mobile.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Adapter đổi interface của SDK đối tác sang port mà domain của ta mong đợi, giúp đổi đối tác chỉ viết adapter mới và mã lỗi đối tác không rò vào domain. Decorator giữ nguyên interface, bọc thêm retry, metrics, log, có thể xếp chồng nhiều lớp, thứ tự bọc có ý nghĩa. Facade tạo interface mới đơn giản đứng trước nhiều hệ thống con, ví dụ API mở tài khoản gọi eKYC, core banking, phát hành thẻ và thông báo. Proxy cũng giữ interface nhưng mục đích là kiểm soát truy cập như lazy, bảo mật hay remote, không phải thêm tính năng. Trong tích hợp ngân hàng tôi yêu cầu adapter là nơi duy nhất biết mã lỗi đối tác và mọi mapping có test với response mẫu thật từ sandbox. Thứ tự xếp chồng Decorator quan trọng: metrics bọc ngoài retry đo tổng thời gian kể cả retry, bọc trong đo từng lần, nên chọn theo mục tiêu quan sát hệ thống."
+
 > Senior tip: trong tích hợp ngân hàng, tôi yêu cầu adapter là nơi **duy nhất** biết mã lỗi đối tác và mọi mapping có test với response mẫu thật (lấy từ sandbox của đối tác). Khi đối tác thêm mã lỗi mới, bug sẽ nằm gọn ở một class thay vì rải khắp code.`,
   follow: [
     'Bạn đặt retry ở decorator, ở HTTP client hay ở message queue? Tiêu chí chọn?',
@@ -3268,6 +3564,24 @@ infra.JdbcAccountRepository              domain.AccountRepository (interface, do
 - "IoC, DI là một, chính là Spring." Spring là một container IoC dùng DI; hai khái niệm có trước và độc lập với Spring.
 - "Có interface là đạt DIP." Không, nếu interface nằm ở tầng hạ tầng và domain import nó, hướng phụ thuộc vẫn sai.
 - "Phải tạo interface cho mọi service." DIP áp dụng ở **ranh giới** (domain với hạ tầng, với đối tác); service nội bộ chỉ có một implementation không cần interface.
+
+### Ví dụ đời thực
+
+Dịch vụ chuyển tiền cần thay JDBC sang JPA nhưng team phải sửa class TransferService ở tầng domain.
+
+Triệu chứng: sau khi thêm JPA, domain import org.springframework.jdbc và jakarta.persistence, đổi repository phải sửa nhiều class ở domain, test domain không chạy được mà không có Spring.
+
+Điều tra: xem import của package domain, thấy phụ thuộc trực tiếp vào JdbcAccountRepository và framework persistence.
+
+Nguyên nhân gốc: có DI (constructor injection) nhưng vi phạm DIP vì interface do tầng hạ tầng định nghĩa, mũi tên phụ thuộc từ domain chỉ xuống infra, không phải inversion.
+
+Cách xử lý: tạo {{AccountRepository}} interface ở package domain, đặt tên theo nhu cầu domain (ví dụ {{findForUpdate}}), {{infra.JdbcAccountRepository}} implements nó, mũi tên phụ thuộc từ infra chỉ vào domain.
+
+Kết quả: đổi JDBC sang JPA không đụng domain, test domain không cần Spring, đưa luật kiểm tra import domain vào test kiến trúc ArchUnit để không ai phải nhớ.
+
+### Trả lời mẫu khi phỏng vấn
+
+"IoC là ý tưởng rộng: framework điều khiển luồng và gọi code của ta, ví dụ servlet container gọi doGet hoặc listener Kafka gọi method. DI là kỹ thuật cung cấp phụ thuộc từ bên ngoài thay vì tự new, không nhất thiết cần container, Spring chỉ tự động hóa việc này. DIP là nguyên lý thiết kế: module cấp cao và module cấp thấp đều phụ thuộc abstraction, và abstraction thuộc về phía cấp cao. Có thể dùng DI nhưng vẫn vi phạm DIP nếu inject thẳng class hạ tầng vào domain. Tôi kiểm tra DIP nhanh bằng cách xem import của package domain: thấy jdbc hay persistence là có vấn đề, và đưa luật đó vào test kiến trúc ArchUnit. Constructor injection ưu tiên vì field final, phụ thuộc bắt buộc rõ ràng và test không cần Spring. Mỗi team nên ghi lại lý do chọn interface ở package domain để những dev sau này không ngược dòng quy tắc."
 
 > Senior tip: kiểm tra DIP nhanh nhất là nhìn phần import của package domain: thấy {{org.springframework.jdbc}}, {{jakarta.persistence}} hay SDK đối tác là có vấn đề. Tôi đưa luật đó vào test kiến trúc (ArchUnit) để không ai phải nhớ.`,
   follow: [
@@ -3346,6 +3660,24 @@ Lợi ích: thêm sản phẩm mới phần lớn là **cấu hình** (đọc t�
 ### Câu trả lời sai phổ biến
 - "Không bao giờ dùng kế thừa." Quá cực đoan; record + sealed, template method, framework hook là kế thừa hợp lý.
 - Kế thừa chỉ để **tái sử dụng code** (ví dụ {{BaseService}} chứa tiện ích log, mapper): đó là dấu hiệu nên dùng helper/composition.
+
+### Ví dụ đời thực
+
+Dịch vụ tài sản có cây kế thừa sản phẩm tiền gửi với nhiều nhánh.
+
+Triệu chứng: thêm sản phẩm tiết kiệm online cho rút bất kỳ lúc nào, team tạo {{OnlineSavingsWithdrawAnytime}} kế thừa {{OnlineSavingsAccount}}; sau đó sửa {{AbstractAccount.withdraw()}} cho một sản phẩm làm vỡ năm sản phẩm khác, incident thất toán giao dịch rút tiền.
+
+Điều tra: git blame thấy {{AbstractAccount.withdraw()}} dùng cờ {{if (isPremium)}}, mỗi trục thay đổi (lãi, phí, rút, hạn mức) bị copy-paste hoặc nhồi cờ vào class cha.
+
+Nguyên nhân gốc: kế thừa chỉ mở rộng theo một chiều, số lớp con bùng nổ khi nghiệp vụ thay đổi theo nhiều trục độc lập, và sửa class cha dễ làm vỡ sản phẩm khác (fragile base class).
+
+Cách xử lý: refactor sang composition, mỗi trục thành policy interface ({{InterestPolicy}}, {{FeePolicy}}, {{WithdrawalRule}}), {{Account}} final ghép các policy, mỗi sản phẩm là cấu hình tổ hợp đọc từ bảng.
+
+Kết quả: thêm sản phẩm mới phần lớn là cấu hình, policy được unit test độc lập, đổi policy không ảnh hưởng sản phẩm khác, số incident liên quan rút tiền giảm xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Kế thừa gắn chặt lớp con với chi tiết triển khai của lớp cha, dễ gây fragile base class và chỉ mở rộng một chiều, nên khi nghiệp vụ thay đổi theo nhiều trục số lớp con bùng nổ. Composition tách mỗi chiều thành object policy được ghép lại, thay được lúc runtime và test riêng. Ví dụ class {{CountingSet}} extends {{HashSet}}, {{addAll}} gọi lại {{add}} đã override khiến đếm sai. Refactor sang {{Account}} với {{InterestPolicy}}, {{FeePolicy}}, {{WithdrawalRule}}, mỗi sản phẩm là cấu hình. Khi nào dùng kế thừa: quan hệ là một ổn định, lớp cha thiết kế để kế thừa (hook có tài liệu, method còn lại {{final}}), hoặc biến thể dữ liệu đóng như {{sealed interface}}. Lỗi phổ biến là dùng kế thừa chỉ để tái sử dụng code (ví dụ {{BaseService}} chứa tiện ích), thì nên dùng helper hoặc composition. Dấu hiệu cây kế thừa sai là lớp cha có cờ boolean hoặc {{protected}} method chỉ một lớp con dùng."
 
 > Senior tip: dấu hiệu sớm nhất của cây kế thừa sai là lớp cha bắt đầu có cờ boolean hoặc method protected chỉ một lớp con dùng. Khi thấy hai dấu hiệu đó trong review, tôi đề xuất tách trục thay đổi ra policy trước khi thêm lớp con kế tiếp; càng để lâu, chi phí tách càng lớn.`,
   follow: [
@@ -3484,6 +3816,12 @@ Ví dụ thương mại điện tử: {{OrderPlaced}} dạng notification thì k
 - Cần kết quả ngay để trả lời người dùng (kiểm tra số dư trước khi chuyển tiền): gọi đồng bộ.
 - Team nhỏ, một service: event nội bộ trong process ({{ApplicationEventPublisher}}) đủ dùng, chưa cần Kafka.
 
+### Ví dụ đời thực
+Một sàn TMĐT xử lý 100k đơn/ngày. **Triệu chứng:** Khách hàng nhắn CSKH "đã đặt hàng nhưng không thấy điểm thưởng, cũng không nhận email xác nhận". Log chỉ thấy "OrderPlaced event sent" nhưng consumer điểm thưởng (Loyalty Service) không xử lý được vì DB connection pool hết do query chậm. Team debug 4 giờ, thấy Order Service đẩy event, Loyalty Service đọc event nhưng retry vô hạn làm chặn partition Kafka, event bên dưới (đơn hàng khác) bị stuck. **Điều tra:** Consumer Loyalty không idempotent (không có bảng {{processed_event}}), lỗi DB connection pool ném exception, Spring Kafka {{DefaultErrorHandler}} retry 10 lần rồi DLQ, nhưng DLQ không được monitor. Order Service tiếp tục đẩy event, partition bị chặn, consumer khác (Inventory, Notification) cũng bị delay. **Nguyên nhân gốc:** Không có idempotency, không monitor DLQ, retry vô hạn chặn partition. **Xử lý:** (1) Thêm bảng {{processed_event}} unique eventId, consumer check trước khi xử lý; (2) {{DefaultErrorHandler}} với {{DeadLetterPublishingRecoverer}} + max retry 3, DLQ đẩy topic riêng có dashboard + alert PagerDuty; (3) Trace ID xuyên suốt (Micrometer Tracing) để xem luồng đơn hàng end-to-end; (4) AsyncAPI catalog event, ai produce/consume rõ ràng. **Kết quả đo được:** 0 event mất 6 tháng, MTTR từ 4 giờ xuống 15 phút (xem trace ID biết ngay chỗ nào lỗi), DLQ alert tự động phân công on-call.
+
+### Trả lời mẫu khi phỏng vấn
+"Event-driven khó debug vì luồng nghiệp vụ không nằm ở một chỗ: phân tán qua consumer, async, trùng lặp, sai thứ tự. Giải pháp: trace ID xuyên suốt, schema registry quản lý, consumer idempotent (bảng processed_event), retry có giới hạn + DLQ có dashboard + người on-call, orchestration cho luồng dài. Tôi từng gặp Loyalty Service retry vô hạn chặn partition Kafka, làm delay Inventory/Notification 4 giờ. Sửa: idempotent key, DLQ monitor, trace ID. Choreography hợp phản ứng độc lập ít bước; luồng dài cần bù trừ (mở tài khoản, hoàn tiền) phải có orchestrator. Luôn hỏi: event đến 2 lần, muộn 1 giờ, hoặc không bao giờ đến thì sao? Nếu team không trả lời được câu 3, thiếu cơ chế đối soát — tiền hoặc dữ liệu sẽ lệch âm thầm."
+
 > Senior tip: quy tắc tôi áp cho mọi event: phải trả lời được "nếu event này đến hai lần, đến muộn 1 giờ, hoặc không bao giờ đến thì sao?". Nếu team không trả lời được câu thứ ba, hệ thống thiếu cơ chế đối soát, và đó là chỗ tiền hoặc dữ liệu sẽ lệch âm thầm.`,
   follow: [
     'Bạn tiến hoá schema event (đổi tên field, tách field) thế nào khi có 6 consumer của 4 team?',
@@ -3571,6 +3909,12 @@ Nếu module chưa sạch phụ thuộc ở trong monolith, tách ra chỉ tạo
 - Module chia theo tầng kỹ thuật (controller, service, repository) thay vì theo nghiệp vụ: Modulith không cứu được.
 - Các module join bảng của nhau trong query: ranh giới code sạch nhưng ranh giới dữ liệu vẫn dính.
 - Event mang entity JPA thay vì dữ liệu bất biến (record).
+
+### Ví dụ đời thực
+Một ngân hàng 300k LOC monolith 8 năm, team 20 dev. **Triệu chứng:** Deploy module Loan làm sập module Card 3 lần/quý; thêm tính điểm Loyalty phải sửa 4 module, 2 tuần; p99 API tăng dần, tìm bug mất giờ vì logic rải rác. **Điều tra:** Package chia theo tầng (controller/service/repository), không theo nghiệp vụ. Module Loan gọi thẳng repository Card; event mang entity JPA; không có test ranh giới. Spring Modulith {{verify()}} fail 200+ vi phạm. **Nguyên nhân gốc:** Monolith lộn xộn, không có bounded context, dependency cycle Loan → Card → Loan. **Xử lý:** (1) Chia lại package theo bounded context: {{loan}}, {{card}}, {{loyalty}}, {{customer}}; (2) Mỗi module có {{api}}, {{internal}}, {{persistence}}; (3) Spring Modulith {{ApplicationModules.verify()}} trong CI, dùng {{FreezingArchRule}} chặn vi phạm mới, giảm dần 50/Tháng; (4) Giao tiếp qua event ({{LoanApproved}} → {{Disbursement}}), không join bảng chéo; (5) {{@ApplicationModuleTest}} test mỗi module độc lập. **Kết quả đo được:** 6 tháng sau, {{verify()}} xanh, deploy Loan không còn ảnh hưởng Card, thêm Loyalty 3 ngày (chỉ module mới + event), p99 API ổn định, onboarding dev mới hiểu ranh giới 30 phút (trước 2 tuần).
+
+### Trả lời mẫu khi phỏng vấn
+"Modular monolith là một deployable nhưng chia module theo bounded context, ranh giới được kiểm tra tự động. Spring Modulith coi mỗi package con trực tiếp là module; chỉ package gốc là API công khai. Dùng {{ApplicationModules.verify()}} trong CI bắt cycle dependency và truy cập internal. Giao tiếp module qua API công khai hoặc application event lưu bền (outbox pattern nội bộ). Tách service chỉ khi có lý do đo được: scale khác biệt, nhịp deploy khác, team độc lập, yêu cầu cô lập. Tôi từng gặp monolith 300k LOC, deploy Loan làm sập Card, chia package theo tầng. Refactor sang Modulith: chia package theo bounded context, {{verify()}} trong CI, FreezingArchRule giảm vi phạm, giao tiếp qua event. 6 tháng sau verify xanh, deploy độc lập, thêm module 3 ngày."
 
 > Senior tip: tôi chỉ đồng ý tách microservice khi modular monolith đã chạy vài tháng mà {{verify()}} xanh và các module chỉ nói chuyện qua event hoặc API công khai. Lúc đó tách là việc cơ học. Ngược lại, nếu không giữ nổi ranh giới trong một codebase, team sẽ không giữ nổi nó qua mạng.`,
   follow: [
@@ -3661,6 +4005,12 @@ Bảng mapping nên là cấu hình có version và có test dựa trên message
 | Kênh mới phát triển nhanh, model sạch | Mapping phải bảo trì liên tục |
 | Bảo vệ core khỏi tải kênh số | Rủi ro thành bottleneck tổ chức |
 
+### Ví dụ đời thực
+Một ngân hàng lớn tích hợp 3 kênh số (app, internet banking, open API) với core banking T24. **Triệu chứng:** Mỗi khi T24 nâng cấp phiên bản (năm 2 lần), 3 team kênh số đều phải sửa code, trung bình 3 tuần/team, tổng 9 tuần effort. Mã lỗi T24 (hàng trăm mã) rò rỉ ra API mobile app, client hiển thị "ERR_99" thay vì thông báo thân thiện. Logic xử lý giờ đóng sổ (COB 17:00–17:30) bị copy sang 5 service, một service quên check gây giao dịch lọt vào batch, sai số dư. **Điều tra:** Không có ACL; kênh số import thư viện T24 SDK trực tiếp, mapping mã lỗi rải rác, logic COB duplicate. **Nguyên nhân gốc:** Domain mới phụ thuộc model legacy, vi phạm DIP. **Xử lý:** (1) Tạo {{CoreBankingPort}} interface do domain sở hữu ({{holdFunds}}, {{postTransfer}}, {{getAccount}}); (2) {{AcmeWalletAdapter}} dịch mã lỗi T24 sang enum {{RejectReason}} vài chục giá trị, mã lạ → {{UNKNOWN_CORE_ERROR}} + alert; (3) ACL xử lý COB: store-and-forward queue, hạch toán sau batch; (4) Idempotency store + circuit breaker bảo vệ core; (5) ArchUnit test cấm import T24 SDK ngoài package ACL. **Kết quả đo được:** Nâng cấp T24 chỉ sửa ACL (1 team, 3 ngày thay vì 9 tuần), mã lỗi T24 không còn rò ra API, 0 sự cố COB 12 tháng, mapping mã lỗi có test tự động với sample thật từ sandbox T24.
+
+### Trả lời mẫu khi phỏng vấn
+"Anti-corruption layer là lớp dịch giữa bounded context mới và legacy: domain mới chỉ nói qua port bằng ngôn ngữ của mình ({{holdFunds}}, {{postTransfer}}, {{Money}}), ACL lo giao thức core, mapping mã lỗi/sản phẩm, idempotency, timeout, COB. Tôi từng gặp 3 kênh số dùng chung T24 SDK, nâng cấp T24 mất 9 tuần, mã lỗi T24 rò ra API mobile. Giải pháp: {{CoreBankingPort}} interface do domain sở hữu, adapter dịch mã lỗi T24 sang enum {{RejectReason}}, ACL xử lý COB store-and-forward, ArchUnit cấm import T24 SDK ngoài ACL. Kết quả: nâng cấp T24 3 ngày, 0 rò rỉ mã lỗi. Trade-off: thêm hop độ trễ, mapping bảo trì, rủi ro bottleneck tổ chức. ACL tốt là grep codebase kênh số không thấy mã lỗi/core field nào ngoài ACL."
+
 > Senior tip: thước đo một ACL tốt là grep codebase của các kênh: không được thấy mã lỗi, tên field hay mã giao dịch của core ở bất kỳ đâu ngoài ACL. Tôi đưa điều đó thành test kiến trúc, và yêu cầu mọi mã lỗi lạ từ core sinh alert thay vì bị map âm thầm thành "lỗi hệ thống".`,
   follow: [
     'Core banking không có API idempotent: ACL đảm bảo không hạch toán hai lần khi timeout thế nào?',
@@ -3740,6 +4090,12 @@ Bẫy: quên {{@Order}} thì thứ tự không được đảm bảo; handler c�
 | Template Method | Chỉ có một biến thể; hoặc nhiều trục thay đổi độc lập (dùng strategy) |
 | Observer | Bên phát cần kết quả của bên nghe, hoặc thứ tự giữa listener quan trọng |
 | CoR | Chỉ 2 bước cố định; if tuần tự rõ ràng hơn |
+
+### Ví dụ đời thực
+Một hệ thống thanh toán xử lý 500k giao dịch/ngày. **Triệu chứng:** Deploy version 2.3.1 làm lỗi thanh toán VNPAY — khách không nhận email xác nhận, đơn hàng bị tạo trùng khi khách retry, tiền bị trừ 2 lần. Log chỉ thấy "transaction rolled back" nhưng DB vẫn có đơn commit từ các lần retry. Team debug 6 giờ mới tìm ra nguyên nhân. **Điều tra:** {{OrderService.create()}} có {{@Transactional}} (REQUIRED), bên trong gọi {{this.sendConfirmationEmail()}} có {{@Transactional(propagation = REQUIRES_NEW)}}. Gọi {{this.method()}} trong cùng class là self-invocation: **bỏ qua proxy**, nên REQUIRES_NEW không áp dụng và {{sendConfirmationEmail}} chạy cùng transaction với {{create()}}. Khi SMTP ném exception, cả hai cùng rollback; đơn không tạo, email không gửi — log chỉ in "transaction rolled back" của transaction ngoài nên team nhầm rằng order đã commit và email lỗi riêng. Khách không thấy xác nhận → retry thanh toán → tạo trùng đơn, trừ tiền 2 lần. **Nguyên nhân gốc:** Self-invocation bypass proxy — {{@Transactional}} trên method gọi bằng {{this()}} bị bỏ qua hoàn toàn. Code review không bắt được vì "logic trông đúng", test integration pass vì SMTP mock không timeout. **Xử lý:** (1) Tách {{sendConfirmationEmail}} ra {{NotificationService}} bean riêng; (2) Thêm ArchUnit rule: method {{@Transactional}} không được gọi method {{@Transactional}} khác trong cùng class; (3) Ép CGLIB qua {{spring.aop.proxy-target-class=true}} và tránh {{final}} class/method; (4) Viết test integration thực sự timeout SMTP. **Kết quả đo được:** 0 sự cố self-invocation 12 tháng sau; deploy payment an tâm hơn; team mới onboarding đọc ArchUnit report hiểu quy tắc ngay.
+
+### Trả lời mẫu khi phỏng vấn
+"Template Method cố định khung quy trình ở lớp cha, lớp con thay bước cụ thể (import sao kê ngân hàng). Observer phát sự kiện không biết ai nghe (đơn hàng xong → tích điểm, gửi email); Spring dùng ApplicationEventPublisher + @EventListener/@TransactionalEventListener. Chain of Responsibility chuyển request qua chuỗi handler (kiểm tra trước khi chuyển tiền). Bẫy: Template Method dùng kế thừa dễ cứng; listener mặc định chạy đồng bộ cùng transaction, lỗi listener rollback giao dịch chính; CoR phụ thuộc @Order, quên thì thứ tự sai. Tôi từng debug 6 giờ bug trừ tiền 2 lần do {{OrderService.create()}} gọi {{this.sendEmail()}} có REQUIRES_NEW — self-invocation bỏ qua proxy, transaction không tách. Sửa: tách bean riêng hoặc inject self. Khi debug transaction không rollback hay cache không ăn, tôi xem class bean có hậu tố {{$$SpringCGLIB$$}} và kiểm tra lời gọi có qua proxy."
 
 > Senior tip: Observer trong process là thứ tôi thấy gây sự cố nhiều nhất: dev nghĩ "phát event là tách rời rồi" nhưng listener lỗi vẫn làm rollback giao dịch chính, hoặc ngược lại event mất khi pod restart. Luôn hỏi: listener này chạy trong transaction nào, thread nào, và nếu app chết ngay sau commit thì sao?`,
   follow: [
@@ -3824,6 +4180,12 @@ Cách thực dụng: luật quan trọng nhất (domain không phụ thuộc h�
 - Luật viết sai package pattern nên luôn pass (không match class nào). ArchUnit mặc định báo lỗi khi phần {{should}} không nhận class nào; cấu hình {{archRule.failOnEmptyShould=false}} sẽ tắt bảo vệ này, nên chỉ dùng {{allowEmptyShould(true)}} khi rỗng là có chủ ý.
 - Viết quá nhiều luật chi li, team bắt đầu thêm ngoại lệ hàng loạt. Bắt đầu với 3–5 luật có lý do rõ ràng, ghi lý do trong {{because(...)}}.
 
+### Ví dụ đời thực
+Một fintech 3 năm, team 12 dev, modular monolith 8 module. **Triệu chứng:** Sprint 15, module Billing deploy gây lỗi module Pricing — test Pricing pass nhưng production tính phí sai cho 4.000 đơn trong 2 giờ. Nguyên nhân: Billing thêm cột {{discount_percent}} vào bảng {{orders}} (JPA entity), Pricing đọc entity này trực tiếp thay vì qua port. **Điều tra:** ArchUnit check chưa có (chỉ có sơ đồ architecture). Domain Pricing import {{jakarta.persistence}} và dùng {{OrderJpaEntity}} thay vì {{Order}} domain. Mapping thủ công giữa domain/JPA entity bị bỏ qua vì "nhanh". **Nguyên nhân gốc:** Không enforce dependency rule; team áp dụng Clean Architecture chỉ trên sơ đồ, code thực tế domain phụ thuộc JPA, adapter lẫn lộn. **Xử lý:** (1) Viết ArchUnit test: {{noClasses().that().resideInAPackage("..domain..").should().dependOnClassesThat().resideInAPackage("..persistence..")}}; (2) Bắt buộc mapping domain ↔ JPA entity bằng {{MapStruct}} trong adapter; (3) CI fail nếu ArchUnit violation; (4) Refactor Pricing: tạo {{OrderRepository}} port, implement {{JpaOrderRepository}} adapter, Pricing chỉ dùng {{Order}} domain. **Kết quả đo được:** 0 violation ArchUnit sau 6 tháng; deploy module độc lập không còn gây lỗi chéo; onboarding dev mới đọc ArchUnit report hiểu ranh giới module 30 phút thay vì 2 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"ArchUnit biến quy tắc kiến trúc thành test CI. Luật cốt lõi: domain không phụ thuộc Spring/JPA/adapter; tầng web/application/persistence chỉ truy cập domain theo chiều phụ thuộc vào trong; không cycle giữa feature package. Dùng {{FreezingArchRule}} cho codebase đã vi phạm: ghi nhận vi phạm cũ, chỉ chặn vi phạm mới, giảm dần. Tôi từng gặp modular monolith 8 module: Billing deploy làm sai Pricing vì domain Pricing đọc JPA entity của Billing. Sửa: ArchUnit cấm domain import persistence, bắt buộc {{MapStruct}} mapping, CI fail violation. 6 tháng sau 0 violation, deploy độc lập, onboarding 30 phút. Luật quan trọng đẩy lên {{Maven}} module, còn lại {{ArchUnit}}. Luôn kèm {{.because()}} viết ngôn ngữ nghiệp vụ để dev hiểu lý do."
+
 > Senior tip: tôi luôn kèm {{.because("...")}} vào từng luật, viết bằng ngôn ngữ nghiệp vụ ("domain phải test được không cần DB"). Khi test fail, dev đọc được lý do thay vì nghĩ đây là luật quan liêu và tìm cách lách.`,
   follow: [
     'Bạn áp dụng ArchUnit cho một codebase có 500 vi phạm sẵn mà không làm team nản thế nào?',
@@ -3901,7 +4263,13 @@ Cài {{MultiTenantConnectionProvider}}: với schema-per-tenant, lấy connectio
 ### Lộ trình gợi ý
 Bắt đầu với discriminator + RLS cho đa số; thiết kế sẵn khả năng "chuyển tenant lớn sang DB riêng" (routing theo tenant, dữ liệu export/import theo tenant). Khách hàng yêu cầu cô lập (ngân hàng, quỹ có quy định) thì cấp DB riêng ngay, tính phí tương ứng.
 
-> Senior tip: tôi viết một bộ test tự động "tenant isolation": tạo dữ liệu cho hai tenant, gọi mọi API list/search/export bằng token tenant A và khẳng định không có bản ghi nào của B. Bộ test này chạy trong CI cho mọi endpoint mới, vì lỗi rò rỉ giữa tenant là loại sự cố làm mất khách nhanh nhất của một SaaS.`,
+### Ví dụ đời thực
+  Một công ty cung cấp phần mềm quản lý bán hàng cho 2.000 khách hàng doanh nghiệp đang dùng chung discriminator column + Row Level Security trên PostgreSQL. **Triệu chứng:** một khách hàng A phàn nàn thấy được hóa đơn của khách hàng B trong lịch sử giao dịch. **Điều tra:** kiểm tra log application thấy request của tenant A đi vào với {{tenant_id = 'A'}} đúng; tra PostgreSQL với {{sql SELECT * FROM pg_stat_activity WHERE state = 'active'\g}} thấy kết nối được dùng lại trong pool — một connection vừa xử lý tenant A xong, chưa set {{SET LOCAL app.tenant_id = 'B'}} cho tenant B, mà tenant B dùng lại luôn connection đó. **Nguyên nhân gốc:** ứng dụng dùng chung connection pool và set tenant context bằng session-level setting thay vì transaction-level; khi tenant B mượn connection, tenant_id vẫn còn giá trị 'A' từ tenant trước. **Xử lý:** (1) đổi {{SET LOCAL}} (transaction-level) thay vì {{SET}} (session-level), đảm bảo reset trong {{finally}}; (2) thêm PgBouncer với {{pool_mode = transaction}} để kết nối được trả về pool ở trạng thái sạch; (3) thêm middleware set {{tenant_id}} ngay khi bắt đầu transaction và clear sau commit/rollback; (4) chạy bộ test tenant isolation tự động trong CI: tạo dữ liệu cho hai tenant, gọi mọi endpoint với token A và khẳng định không có bản ghi nào của B. **Kết quả:** sau 2 tuần, không còn sự cố rò rỉ, connection pool vẫn dùng chung được 4.000 tenant mà không cần tách DB.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi hỏi về multi-tenancy, tôi bắt đầu bằng cách so sánh ba mô hình: database-per-tenant cô lập mạnh nhất nhưng với 2.000 tenant thì connection pool bùng nổ — 100.000 connection nếu không có PgBouncer; schema-per-tenant là trung gian; discriminator column với một cột tenant_id trên mọi bảng là rẻ và dễ scale nhất. Với Hibernate 6, tôi dùng {{@TenantId}} trên entity để Hibernate tự thêm điều kiện tenant vào truy vấn HQL/Criteria, kết hợp {{MultiTenantConnectionProvider}} để chọn schema hoặc DB. Cơ chế then chốt là {{CurrentTenantIdentifierResolver}} set tenant từ claim xác thực vào ThreadLocal, và một middleware set {{SET LOCAL app.tenant_id = 'B'}} trong transaction để PostgreSQL Row Level Security là lớp bảo vệ thứ hai. Trade-off lớn nhất là rò rỉ dữ liệu: nếu developer viết native SQL quên tenant_id, hoặc pool dùng lại connection chưa reset, hoặc cache key thiếu tenant prefix — thì dữ liệu tenant này lọt sang tenant kia. Vì vậy tôi luôn có bộ test tenant isolation trong CI và dùng {{SET LOCAL}} thay vì {{SET}}. Kinh nghiệm thực tế: với 2.000 tenant, discriminator + RLS là lựa chọn phổ biến; tenant lớn hoặc có yêu cầu pháp lý đặc biệt (ngân hàng, quỹ tín dụng) thì cấp DB riêng ngay, tính phí tương ứng."
+
+  > Senior tip: tôi viết một bộ test tự động "tenant isolation": tạo dữ liệu cho hai tenant, gọi mọi API list/search/export bằng token tenant A và khẳng định không có bản ghi nào của B. Bộ test này chạy trong CI cho mọi endpoint mới, vì lỗi rò rỉ giữa tenant là loại sự cố làm mất khách nhanh nhất của một SaaS.`,
   follow: [
     'Một tenant lớn chiếm 40% tải và làm chậm các tenant khác trên cùng DB: bạn xử lý thế nào?',
     'Cách migrate một tenant từ shared schema sang database riêng mà không downtime?',
@@ -3957,7 +4325,13 @@ Client -> Transfer API -> DB transaction
 - Row lock đơn giản, dễ hiểu nhưng account hot giới hạn throughput. Optimistic version giảm lock khi ít tranh chấp, song phải retry transaction và vẫn cần xử lý exhaustion.
 - Bạn xử lý refund bằng sửa transfer cũ hay bút toán đảo? Một giao dịch có nhiều account ở shard khác bảo đảm invariant ra sao? DB commit thành công mà response mất thì API retry làm gì?
 
-> Senior tip: monitor idempotency retries, lock wait/deadlock (hoặc version conflict nếu dùng optimistic), outbox age và chênh lệch balance projection. Ledger “cân theo ngày” nhưng không drill-down được tới transfer vẫn khó vận hành.`,
+### Ví dụ đời thực
+  Một ví điện tử có 5 triệu ví đang chạy ledger double-entry với balance projection materialized. **Triệu chứng:** vào ngày nhận lương, p99 latency của {{POST /transfers}} tăng từ 120 ms lên 4 giây, và dashboard hiện {{lock_wait}} trung bình 800 ms. **Điều tra:** {{sql SELECT * FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'transactionid'\g}} thấy hàng nghìn transaction đang chờ lock trên account_id của tài khoản nhận lương (tài khoản trả lương dùng chung của hàng nghìn nhân viên). **Nguyên nhân gốc:** design dùng {{SELECT ... FOR UPDATE}} trên hai account theo thứ tự ID tăng dần, nhưng account nhận lương có ID nhỏ hơn account chuyển tiền nên lock thứ tự luôn ổn định — tuy nhiên account nhận lương bị hàng nghìn transfer đồng thời tranh lock cùng một dòng account_balance. Row lock đơn giản nhưng không đủ throughput cho account hot. **Xử lý:** (1) chuyển sang optimistic locking với {{version}} column: {{UPDATE account_balance SET posted = posted + ?, version = version + 1 WHERE account_id = ? AND version = ?}}, retry tối đa 3 lần khi version conflict; (2) shard account_balance theo {{hash(account_id) % N}} để account hot không còn là điểm nghẽn duy nhất; (3) thêm read replica cho balance projection, chỉ ghi trên primary. **Kết quả:** p99 trở về 180 ms, không còn lock_wait, và số lượng retry version conflict dưới 0.5% — chấp nhận được cho payment.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi hỏi về ledger, tôi bắt đầu bằng một nguyên tắc: ledger là nguồn sự thật bất biến, không bao giờ UPDATE posting; chỉ append. Một transfer gồm debit và credit cân bằng, ghi trong cùng một DB transaction. Để xử lý retry, tôi dùng idempotency key scoped theo client với unique constraint — cùng key cùng payload trả kết quả cũ, khác payload trả 409. Để giữ số dư không âm khi nhiều transfer đồng thời, tôi dùng hai cách: row lock {{SELECT ... FOR UPDATE}} theo thứ tự account_id tăng dần để tránh deadlock, hoặc optimistic version column với retry. Trade-off là row lock đơn giản nhưng account hot giới hạn throughput; optimistic lock giảm lock nhưng phải retry transaction khi conflict. Projection balance là cache để đọc nhanh, có thể tái dựng từ posting, và phải đối chiếu định kỳ. Kinh nghiệm thực tế: tôi từng thấy account nhận lương bị lock hàng nghìn transfer đồng thời — giải pháp là shard balance theo hash(account_id) và dùng optimistic locking với retry. Luôn monitor lock_wait, version conflict rate và chênh lệch balance projection."
+
+  > Senior tip: monitor idempotency retries, lock wait/deadlock (hoặc version conflict nếu dùng optimistic), outbox age và chênh lệch balance projection. Ledger “cân theo ngày” nhưng không drill-down được tới transfer vẫn khó vận hành.`,
   follow: ['Làm sao ngăn overdraft khi hai request cùng lúc?', 'Có được sửa posting đã ghi không?', 'Bạn rebuild projection thế nào khi ledger liên tục được ghi?'],
   tags: ['ledger', 'double-entry', 'idempotency', 'balance', 'reconciliation']
 },
@@ -4006,7 +4380,13 @@ INQUIRY -> vẫn mơ hồ        -> giữ hold, mở case tra soát
 - Làm sao chuyển provider trong lúc lệnh đang chạy mà giữ reference?
 - Ai xử lý case unknown vượt SLA và bằng chứng nào được lưu?
 
-> Senior tip: alert theo tuổi UNKNOWN và tổng tiền bị hold. Timeout ngắn có thể tạo backlog lớn dù phần lớn lệnh cuối cùng thành công.`,
+### Ví dụ đời thực
+  Một ngân hàng đã triển khai adapter Napas 24/7 cho chuyển khoản nhanh. **Triệu chứng:** sau khi timeout 15 giây, application trả về "Giao dịch thất bại" cho khách hàng, nhưng Napas sau đó hoàn tất giao dịch — khách hàng bị trừ tiền twice. **Điều tra:** log application thấy worker gọi rail, timeout sau 15 giây, ghi state = FAILED và release hold. Napas side log cho thấy command đã nhận và processing, response về sau 16 giây. **Nguyên nhân gốc:** ứng dụng coi timeout là thất bại, trong khi với payment rail timeout là {{UNKNOWN}} — không biết lệnh đã hoàn tất hay chưa. Hold được release trong khi command vẫn đang chạy ở rail, và client retry tạo command thứ hai. **Xử lý:** (1) đổi state FAILED thành UNKNOWN, giữ hold trong policy window 30 phút; (2) thêm inquiry API tra cứu trạng thái theo rail reference trước khi retry; (3) chỉ release hold khi có xác nhận thất bại rõ ràng từ inquiry hoặc settlement file; (4) thêm alert theo tuổi UNKNOWN và tổng tiền hold. **Kết quả:** sau 1 tháng, không còn trường hợp trừ tiền twice, và số lượng UNKNOWN peak giảm từ 500/lần xuống còn 12/lần — đều được inquiry giải quyết trong vòng 2 phút.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi hỏi về payment rail timeout, tôi bắt đầu bằng nhận định quan trọng: timeout ở payment rail là UNKNOWN, không phải thất bại. Cơ chế là tôi lưu state machine bền vững với các trạng thái RECEIVED → VALIDATED → HELD → SUBMITTED → UNKNOWN → INQUIRY → COMPLETED/RELEASED. Khi timeout, tôi giữ hold trong policy window và tạo inquiry để tra cứu trạng thái theo rail reference — không bao giờ retry mù khi kết quả unknown, không bao giờ release hold theo timer chỉ. Dùng outbox pattern để không mất command sau commit DB, worker at-least-once với idempotency key phía đối tác. Circuit breaker giảm tải khi rail lỗi nhưng không dùng breaker để đánh dấu lệnh đã SUBMITTED là thất bại. Trade-off là inquiry thêm độ trễ nhưng tránh ghi nợ hai lần; retry mù nhanh hơn nhưng có thể tạo duplicate. Kinh nghiệm thực tế: tôi từng thấy timeout 15 giây được coi là thất bại, dẫn đến trừ tiền twice — giải pháp là giữ hold 30 phút và inquiry trước khi retry. Luôn alert theo tuổi UNKNOWN và tổng tiền hold."
+
+  > Senior tip: alert theo tuổi UNKNOWN và tổng tiền bị hold. Timeout ngắn có thể tạo backlog lớn dù phần lớn lệnh cuối cùng thành công.`,
   follow: ['State nào khách hàng nhìn thấy khi rail còn mơ hồ?', 'Callback cũ có thể ghi lùi state thế nào?', 'Bạn giải quyết case tra soát kéo dài ra sao?'],
   tags: ['Napas', 'payment rail', 'timeout', 'state machine', 'reconciliation']
 },
@@ -4052,7 +4432,13 @@ Giao dịch:   Payment API -> Challenge Store (digest bất biến + nonce + exp
 - Cooling period giảm chiếm quyền nhưng cản khách hợp pháp. Tuning theo amount, device reputation và hành vi, có quy trình hỗ trợ rõ.
 - Điện thoại bị malware nhưng seed còn trong keystore thì threat còn gì? Có thể revoke khi registry lỗi? Khách mất cả máy và SIM khôi phục thế nào?
 
-> Senior tip: theo dõi approve rồi reversal, enrollment theo kênh, challenge expiry và lockout false positive. Đo ma sát khách thật cùng hiệu quả chống fraud.`,
+### Ví dụ đời thực
+  Một ứng dụng ngân hàng đã triển khai Smart OTP cho 3 triệu user. **Triệu chứng:** sau khi đổi điện thoại, 5.000 user trong ngày không thể đăng ký OTP mới — hệ thống trả về "Thiết bị không hợp lệ" dù đã xác thực bằng OTP email. **Điều tra:** log device registry thấy trạng thái của thiết bị cũ là REVOKED, nhưng challenge verify vẫn check device theo userId mà không filter theo active device; challenge được tạo cho thiết bị cũ đã revoke, và proof từ thiết bị mới không match vì challenge bind với device_id cũ. **Nguyên nhân gốc:** quy trình đổi máy revoke thiết bị cũ nhưng không invalidate challenge đã phát hành cho device_id cũ; challenge store không check device active trước khi consume. **Xử lý:** (1) thêm check {{device.status = 'ACTIVE'}} trong consume challenge; (2) revoke thiết bị cũ đồng thời invalidate tất cả challenge chưa consume của device_id đó; (3) thêm cooling period 24h sau revoke trước khi enrollment mới; (4) thêm test tự động: revoke device, tạo challenge, khẳng định challenge bị từ chối. **Kết quả:** sau 1 tuần, không còn user nào bị lock sau đổi máy, và enrollment mới thành công 99.8%.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi hỏi về Smart OTP, tôi bắt đầu bằng nhận định: Smart OTP là credential gắn với thiết bị và tài khoản, không chỉ là mã số. Cơ chế là enrollment phải xác thực mạnh — yêu cầu factor hiện có, risk checks, cooling period trước khi kích hoạt. Khi tạo giao dịch, server đóng băng digest của amount, currency, beneficiary và sinh nonce dùng một lần; thiết bị tạo OTP/MAC/challenge-response trên challenge đó. Verify là nguyên tử: challenge chưa hết hạn/chưa consume, device active, proof hợp lệ, attempts dưới ngưỡng — consume challenge bằng conditional update {{UPDATE ... SET consumed_at = now() WHERE id = :id AND consumed_at IS NULL AND expires_at > now()}}, kiểm tra số dòng = 1. Trade-off là TOTP (RFC 6238) dễ triển khai nhưng chỉ chứng minh có seed trong cửa sổ thời gian, không ràng buộc giao dịch; challenge-response ràng buộc transaction tốt hơn nhưng cần bảo vệ thiết bị. Kinh nghiệm thực tế: tôi từng thấy user đổi máy bị lock vì challenge vẫn bind với device_id cũ đã revoke — giải pháp là consume challenge phải check device active và revoke invalidate challenge. Recovery là lỗ hổng lớn: không tắt Smart OTP chỉ dựa trên dữ liệu dễ đoán."
+
+  > Senior tip: theo dõi approve rồi reversal, enrollment theo kênh, challenge expiry và lockout false positive. Đo ma sát khách thật cùng hiệu quả chống fraud.`,
   follow: ['TOTP khác transaction signing ở rủi ro nào?', 'Bạn backup secret mà không làm lộ thế nào?', 'Recovery cần kiểm soát nào để tránh social engineering?'],
   tags: ['Smart OTP', 'device binding', 'transaction signing', 'recovery', 'security']
 },
@@ -4096,7 +4482,13 @@ Scheduler -> Job table -> workers -> read replica / snapshot
 - PDF phát hành rồi phát hiện thiếu posting thì versioning ra sao?
 - Account doanh nghiệp lớn không được làm chậm mọi partition thế nào?
 
-> Senior tip: dashboard cần completion percentile theo partition, replica lag tại watermark, mismatch count và tuổi job lớn nhất. Tổng số job thành công che mất một partition luôn trễ.`,
+### Ví dụ đời thực
+  Một ngân hàng đã triển khai sinh sao kê tháng cho 10 triệu tài khoản. **Triệu chứng:** vào cuối tháng, dashboard cho thấy 12% job timeout sau 6 giờ, và khách hàng A tải statement kỳ 2026-11 nhưng nhận được file của kỳ 2026-10. **Điều tra:** worker log thấy một worker crash giữa chừng sau khi claim job, attempt object còn tồn tại; worker mới chạy lại logical job nhưng không dọn object attempt cũ, và manifest publish không có fencing token — worker cũ (đã mất lease nhưng restart chậm) publish manifest version 2 ghi đè version 1 do worker mới tạo. **Nguyên nhân gốc:** lease expired nhưng worker chưa stop, và publish không kiểm tra fencing token; thêm nữa watermark chốt kỳ dùng {{max(id)}} thay vì cut-off time, nên posting có booking_time cũ nhưng id lớn hơn watermark bị bỏ sót. **Xử lý:** (1) thêm fencing token (attempt number) vào manifest publish, worker mới phải có attempt cao hơn mới được publish; (2) watermark dùng cut-off time confirmed, không dùng max(id); (3) thêm checkpoint theo account để retry không chạy lại cả kỳ; (4) dọn object attempt khi lease expired. **Kết quả:** sau 2 tuần, job completion percentile 95% tăng từ 78% lên 99.6%, và không còn trường hợp tải sai kỳ.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi hỏi về statement generation, tôi bắt đầu bằng chốt kỳ: không nhận thêm posting có booking date thuộc kỳ cũ và chờ các transaction đang chạy commit xong. Watermark phải dùng cut-off time, không dùng max(id) vì posting đến muộn có thể mang booking_time cũ, còn sequence PostgreSQL cấp số trước khi commit nên id nhỏ có thể commit sau id lớn. Chia workload theo hash(accountId) hoặc range, worker claim job bằng lease có expiry, đọc keyset pagination thay vì OFFSET lớn. Nhất quán nhờ lọc theo watermark của kỳ đã đóng — dữ liệu kỳ cũ không đổi, nên mỗi account đọc bằng transaction ngắn; tránh REPEATABLE READ kéo dài hàng giờ vì giữ xmin gây bloat. Retry dùng cùng logical job, object attempt cũ được dọn, và unique (account, period, version) giữ lịch sử version. Publish kiểm tra fencing token để worker cũ đã mất lease nhưng vẫn chạy không ghi đè. Trade-off: snapshot vật lý tốn storage nhưng tái lập được; query động rẻ hơn nhưng kết quả đổi theo correction. Kinh nghiệm thực tế: tôi từng thấy worker crash giữa chừng và publish không có fencing token khiến khách tải sai kỳ — giải pháp là fencing token và checkpoint theo account."
+
+  > Senior tip: dashboard cần completion percentile theo partition, replica lag tại watermark, mismatch count và tuổi job lớn nhất. Tổng số job thành công che mất một partition luôn trễ.`,
   follow: ['Snapshot isolation nào phù hợp khi ledger liên tục ghi?', 'Bạn dọn object tạm khi worker chết ra sao?', 'Làm sao tái lập chính xác statement đã phát hành?'],
   tags: ['statement', 'batch', 'partitioning', 'snapshot', 'object storage']
 },
@@ -4137,6 +4529,12 @@ Analyst labels -> case system -> evaluation -> approved bundle
 - Ngưỡng challenge dựa trên expected loss, chi phí ma sát và năng lực review, không chỉ precision.
 - Nếu audit sink không ghi được, policy có thể yêu cầu fail closed ở một số giao dịch; quyết định phụ thuộc risk appetite và quy định nội bộ đã xác minh.
 - Làm sao phân biệt drift với mùa vụ? Fallback approve có cap exposure nào? Analyst tự tạo rule thế nào mà vẫn có kiểm soát?
+
+### Ví dụ đời thực
+  Một công ty fintech đã triển khai rule bundle mới chặn giao dịch từ thiết bị mới có velocity cao. **Triệu chứng:** sau khi rollout phiên bản bundle v12, false positive tăng gấp 3 — khoảng 400 khách thật/ngày bị decline, chủ yếu khách nhận lương vào ngày cố định dùng thiết bị mới. **Điều tra:** dashboard decision log thấy action = DECLINE, rule version = v12, reason code = NEW_DEVICE_HIGH_VELOCITY, feature freshness bình thường; log gateway không lỗi latency (p99 45 ms < 100 ms). **Nguyên nhân gốc:** rule mới chưa qua shadow mode, việc chỉnh ngưỡng velocity từ 3 lên 5 giao dịch/giờ bỏ qua đánh giá trên khách thật, và analyst override không có expiry nên rule cũ còn chồng chéo. **Xử lý:** (1) kill switch ngay quay lại bundle v11; (2) replay trên 7 ngày dữ liệu cũ với bundle v12 để đo false positive trước khi mở rộng; (3) shadow mode trên 5% traffic, chỉ ghi log không chặn; (4) canary 1% rồi tăng dần, theo dõi challenge rate và loss; (5) analyst override thêm role access, reason, audit và expiry 7 ngày. **Kết quả:** false positive giảm từ 400 xuống dưới 20 khách/ngày, p99 latency vẫn dưới 100 ms, không còn decline khách thật sau 2 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+  "Khi một rule mới làm chặn nhầm khách thật, tôi không restart toàn hệ thống. Tôi dùng rule bundle bất biến, version hóa, có kill switch ngay lập tức quay lại phiên bản cũ. Truyền rollout qua replay dữ liệu cũ, shadow mode chỉ ghi log không chặn, rồi canary cohort nhỏ tăng dần theo challenge rate và p99 latency. Đo false positive trên mẫu xác minh theo cohort, kênh, thiết bị, khách mới/cũ, báo confidence interval và label delay. Analyst override cần role access, reason, audit và expiry, không bỏ qua hard control vô hạn. Fallback khi feature store chậm là chính sách risk owner phê duyệt, platform không tự chọn. Kinh nghiệm thực tế: model AUC tốt hơn nhưng chặn nhầm khách nhận lương vào ngày cố định vẫn là rollout xấu, nên luôn có guardrail theo tỷ lệ challenge/decline theo cohort."
 
 > Senior tip: guardrail rollout gồm tỷ lệ challenge/decline theo cohort và p99 latency. Model AUC tốt hơn nhưng chặn nhầm khách nhận lương vào ngày cố định vẫn là rollout xấu.`,
   follow: ['False positive đo thế nào khi nhãn đến sau nhiều tuần?', 'Bạn rollback rule mà không restart toàn hệ thống ra sao?', 'Khi nào feature thiếu khiến quyết định phải fail closed?'],
@@ -4181,6 +4579,12 @@ Refund -> reversal posting -> balance policy
 - Đơn hoàn sau 30 ngày nhưng khách đã tiêu điểm thì xử lý sao?
 - Batch ID giống nhau nhưng checksum khác thì ai quyết định?
 - Expiry và redemption đồng thời tranh cùng lot được tuần tự hóa thế nào?
+
+### Ví dụ đời thực
+Một chương trình điểm thưởng giữa ngân hàng và chuỗi bán lẻ (loyalty points: điểm tích lũy đổi quà/giảm giá; cashback: tiền hoàn lại). **Triệu chứng:** sau chiến dịch cuối tuần, khoảng 1.200 thành viên phản ánh điểm tăng gấp đôi, trong khi báo cáo đối tác chỉ ghi một giao dịch cho mỗi đơn; tổng nợ điểm (liability: số điểm doanh nghiệp còn phải "trả") lệch +8% so với dự kiến. **Điều tra:** truy vấn {{points_event}} theo {{event_id}} thấy một số event có 2 posting do consumer xử lý lại webhook (at-least-once: message có thể được giao lại); kiểm tra {{partner_batch}} thấy file settlement của đối tác A đến trễ 2 ngày, checksum đúng nhưng kỳ (period) bị đánh sai; log redemption cho thấy 37 đơn hoàn tiền xảy ra sau khi khách đã đổi điểm. **Nguyên nhân gốc:** thiếu unique constraint {{(partner, event_id)}} ở luồng cũ, matcher batch tự suy đoán kỳ khi file trễ, và policy hoàn tiền chưa chốt cách xử lý điểm đã tiêu. **Xử lý:** thêm durable inbox + unique {{(partner, event_id)}} và so sánh payload hash; accrual tạo pending lot, chỉ activate sau settlement khớp; file trễ hoặc checksum/kỳ bất thường đưa vào exception có SLA, không tự khớp; refund tạo reversal posting, nếu điểm đã tiêu thì ghi nợ điểm theo policy có duyệt thủ công. **Kết quả đo được:** điểm cộng trùng giảm về 0 trên 30 ngày, lệch liability sau đối soát giảm dưới 0,5%, thời gian xử lý exception batch có SLA rõ (4 giờ làm việc).
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu em thiết kế loyalty points và cashback giữa ngân hàng, merchant và đối tác, em coi điểm là một ledger riêng, append-only, không cập nhật số dư bằng cách ghi đè. Mỗi giao dịch có business event ID; em dùng unique constraint và durable inbox để webhook bị gửi lặp không cộng điểm hai lần, và lưu payload hash để phát hiện cùng ID nhưng nội dung khác. Điểm chia thành pending và available: earn tạo pending lot theo rule version tại thời điểm giao dịch, chỉ activate sau settlement hoặc hết thời hạn đổi trả. Redemption chọn lot theo policy, ví dụ điểm sắp hết hạn dùng trước, và reserve bằng transaction/conditional update để tránh tranh chấp. Expiry xử lý theo bucket theo ngày hết hạn, chỉ trừ phần remaining. Refund tạo reversal posting; nếu khách đã tiêu điểm thì áp dụng policy nợ điểm hoặc thu hồi kỳ sau, không xoá lịch sử. Với file đối tác đến muộn, em giữ trạng thái pending và đối soát theo batch checksum/kỳ, mismatch đưa vào exception có SLA thay vì tự suy đoán."
 
 > Senior tip: theo dõi liability theo expiry bucket, orphan event, batch mismatch và negative balance. Spike điểm sắp hết hạn có thể do lỗi timezone/job retry chứ không phải chiến dịch marketing.`,
   follow: ['Pending points giữ bao lâu khi settlement trễ?', 'Balance âm có được phép không và ai duyệt?', 'Bạn dựng lại balance sau bug earn rule thế nào?'],
@@ -4269,6 +4673,12 @@ Thực tế: luôn có status API (nguồn sự thật), thêm webhook hoặc SS
 - Bảng jobs phình to và (với PostgreSQL) bloat vì UPDATE liên tục: chuyển job xong sang bảng lưu trữ hoặc partition theo ngày, xoá theo partition.
 - Không giới hạn số job mỗi tenant: một tenant gửi 10.000 job chiếm hết worker. Đặt quota và claim công bằng theo tenant.
 
+### Ví dụ đời thực
+Một sản phẩm SaaS xuất báo cáo doanh thu chạy đồng bộ mất 2-5 phút. **Triệu chứng:** giờ cao điểm 180 người bấm xuất, gateway trả 504 sau 60 giây; mỗi người bấm lại 2-3 lần, cuối ngày có khoảng 420 job trùng tạo ~12.000 file trên S3. **Điều tra:** xem access log thấy cùng {{Idempotency-Key}} bị thiếu nên mỗi POST tạo một dòng job; metric {{job_queue_oldest_age_seconds}} tăng lên 900 giây; {{reaper_reclaimed_total}} tăng đột biến sau mỗi lần deploy. **Nguyên nhân gốc:** API giữ request dài, không có idempotency key, và worker bị SIGTERM khi deploy nên job RUNNING mất owner. **Xử lý:** chuyển sang {{POST /reports}} trả 202 kèm {{Location}}, unique {{(tenant_id, idempotency_key)}}; worker claim bằng {{FOR UPDATE SKIP LOCKED}}, lease 90 giây, heartbeat 30 giây tách thread riêng; reaper mỗi 30 giây trả job quá hạn về QUEUED với backoff + jitter; shutdown ngừng claim và chờ checkpoint. **Kết quả đo được:** tỷ lệ 504 của endpoint xuất báo cáo giảm từ 38% xuống < 1%, job trùng giảm về 0, tuổi job QUEUED lâu nhất ở peak còn 45 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi gặp API chạy 2-5 phút bị load balancer cắt và người dùng bấm lại tạo trùng, em tách nhận yêu cầu khỏi thực thi. API ghi một dòng job có {{Idempotency-Key}} theo tenant rồi trả 202 kèm link trạng thái; bấm lại cùng key chỉ trả đúng job cũ. Worker lấy việc bằng {{FOR UPDATE SKIP LOCKED}} để tránh hai worker claim trùng, giữ job bằng lease và heartbeat định kỳ, đồng thời fencing bằng {{lease_owner}} và {{attempts}} để worker bị GC pause tỉnh dậy không ghi đè kết quả. Một reaper thu hồi job RUNNING quá lease và đưa về QUEUED với exponential backoff cộng jitter; lỗi dữ liệu sai thì fail ngay, không retry mù. Client poll status API hoặc nhận webhook đã ký HMAC và tự dedup theo event id. Ở production, em theo dõi tuổi job QUEUED lâu nhất và số lần reaper thu hồi để phát hiện heartbeat bị chậm trước khi người dùng thấy trễ."
+
 > Senior tip: metric quan trọng nhất là **tuổi của job QUEUED lâu nhất** và **số lần reaper thu hồi lease**. Reaper thu hồi nhiều thường không phải worker chết mà do heartbeat chạy chung thread pool với job nặng nên bị trễ: tách heartbeat ra thread riêng, và đặt lease ít nhất 3 lần chu kỳ heartbeat.`,
   follow: [
     'Worker bị GC pause dài hơn lease rồi tỉnh dậy: điều gì ngăn nó ghi đè kết quả?',
@@ -4338,6 +4748,12 @@ XAUTOCLAIM jobs workers w2 60000 0-0 COUNT 10   -- nhận lại job pending > 60
 - Chọn Kafka cho "queue email" rồi phải tự viết retry topic, DLT, delay: tốn gấp nhiều lần so với SQS.
 - Dùng Redis List ({{LPUSH}}/{{BRPOP}}) làm queue: worker chết sau khi pop là **mất job**, vì không có PEL. Streams hoặc pattern có danh sách đang xử lý mới an toàn.
 - Bảng DB queue nằm chung DB nghiệp vụ, worker poll 100 lần/s mỗi pod: DB tốn CPU chỉ để trả lời "không có job".
+
+### Ví dụ đời thực
+Một nền tảng thương mại điện tử cần gửi email xác nhận, resize ảnh và đồng bộ tồn kho đối tác. **Triệu chứng:** sau đợt sale, email trễ 20-40 phút; DB nghiệp vụ CPU tăng cao dù traffic đọc ổn định. **Điều tra:** metric DB cho thấy ~4.000 truy vấn poll "có job không" mỗi phút từ 8 worker; bảng jobs tăng ~2 triệu dòng/ngày do UPDATE liên tục; log cho thấy resize ảnh nặng 10-30 giây làm hàng chờ email bị nghẽn. **Nguyên nhân gốc:** dùng bảng DB chung cho mọi loại job, không tách workload nặng/nhẹ, và job được tạo sau khi commit đơn hàng bằng hai bước riêng nên một số job mất khi service lỗi giữa chừng. **Xử lý:** job nghiệp vụ quan trọng (gửi email xác nhận) chuyển sang SQS với DLQ và visibility timeout phù hợp; tạo job bằng transactional outbox từ DB nghiệp vụ để không dual-write; resize ảnh dùng worker pool riêng và giới hạn concurrency; job nội bộ cần query trạng thái theo tenant giữ ở bảng DB nhưng thêm index {{jobs_ready}} và giảm poll. **Kết quả đo được:** email xác nhận P95 giảm từ 28 phút xuống 90 giây, CPU DB giảm ~35% giờ cao điểm, không còn mất job khi deploy nhờ outbox.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chọn nền tảng chạy background job, em không chọn công nghệ trước mà hỏi 4 câu: job có phải ghi cùng transaction với dữ liệu nghiệp vụ không, có cần ack/retry/delay từng job không, throughput bao nhiêu, và có cần replay cho nhiều consumer không. Nếu job phải chắc chắn đi cùng đơn hàng và lưu lượng vài chục đến vài trăm job mỗi giây, bảng DB với {{FOR UPDATE SKIP LOCKED}} là lựa chọn đơn giản và nhất quán. Nếu job độc lập, trên AWS em thường dùng SQS vì có retry, visibility timeout và DLQ sẵn; khi job sinh ra từ transaction DB thì dùng outbox để tránh dual-write. Redis Streams hợp khi cần độ trễ thấp nhưng phải chấp nhận độ bền yếu hơn và tự làm delay/claim lại. Kafka chỉ hợp khi job thực chất là event cần nhiều hệ thống nghe và replay. Dù chọn gì, em luôn coi handler là at-least-once và bắt buộc idempotent."
 
 > Senior tip: ở mọi lựa chọn, ngữ nghĩa thực tế đều là **at-least-once**, nên handler idempotent là bắt buộc, không phải tuỳ chọn. Bắt đầu bằng bảng DB hoặc SQS; chỉ chuyển sang thứ phức tạp hơn khi metric (tuổi job, tải DB, throughput) cho thấy cần, và ghi lại lý do bằng ADR.`,
   follow: [
@@ -4450,6 +4866,12 @@ Chọn **Kafka** (managed: Amazon MSK) cho luồng sự kiện đơn hàng.
 - **Không ghi "Consequences" và điều kiện xem lại:** quyết định trông đúng mãi. Ghi rõ "review lại nếu throughput < 500 msg/s hoặc team không còn vận hành được Kafka".
 - **ADR nằm ngoài repo (Confluence, Google Doc):** lệch khỏi code, khó tìm. Lưu {{docs/adr/}} trong repo, review qua PR như code.
 
+### Ví dụ đời thực
+Một hệ thống thương mại điện tử có 5 service cần phản ứng khi đơn hàng đổi trạng thái. **Triệu chứng:** team tranh luận kéo dài 3 tuần giữa Kafka, RabbitMQ và SNS+SQS; mỗi người đưa lý do khác nhau, quyết định bị lặp lại mỗi cuộc họp. **Điều tra:** Tech Lead thu thập số liệu: ~3.000 sự kiện/giây giờ cao điểm, tăng gấp 3 ngày sale; 4 consumer độc lập (Inventory, Notification, Analytics, Fraud); Analytics cần replay 7 ngày khi đổi logic; độ trễ chấp nhận < 2 giây; team 8 dev, 1 SRE, chưa vận hành Kafka production. **Nguyên nhân gốc:** thiếu một bản ghi quyết định có bối cảnh đo được và trade-off rõ, nên cuộc thảo luận dựa vào sở thích cá nhân. **Xử lý:** viết ADR-0007 trong {{docs/adr/}}, nêu Context, 3 lựa chọn, bảng so sánh, quyết định dùng Kafka (Amazon MSK) cho luồng sự kiện đơn hàng, ghi rõ trade-off vận hành và điều kiện xem lại sau 3 tháng; chốt qua PR có Tech Lead, Architect, SRE. **Kết quả đo được:** quyết định được chốt trong 2 ngày sau khi có ADR, spike 1 tuần chứng minh consumer idempotent và replay; sau 3 tháng, team có runbook và không phát sinh tranh luận lặp về lựa chọn broker.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi team chọn giữa Kafka và RabbitMQ, em dùng ADR để ghi quyết định có thể truy vết. Em viết ADR khi quyết định khó đảo ngược, tốn kém nếu đổi, hoặc ảnh hưởng nhiều team. Cấu trúc em dùng gồm Status, Deciders, Date, Context có số liệu, các lựa chọn, quyết định, lý do, lý do không chọn phương án khác, và hệ quả kèm điều kiện xem lại. Với ví dụ Kafka hay RabbitMQ, em nêu rõ throughput giờ cao điểm, số consumer độc lập, nhu cầu replay, độ trễ chấp nhận và năng lực vận hành của team. Nếu cần nhiều consumer và replay, Kafka thường hợp hơn; nếu cần per-message ack, routing phức tạp, retry/DLQ sẵn và không cần replay, RabbitMQ hợp hơn. ADR được lưu trong repo, review qua PR như code; khi bối cảnh đổi, em tạo ADR mới đánh dấu ADR cũ là Superseded thay vì sửa lịch sử."
+
 > Senior tip: ADR tốt nhất là ADR khiến người phản đối cũng thấy lập luận của mình đã được ghi nhận trong mục "Why not others". Nếu ADR chỉ ca ngợi lựa chọn được chọn, nó là văn bản bán hàng, không phải quyết định kỹ thuật. Khi tôi review ADR, tôi tìm phần trade-off bị chấp nhận — nếu không có, tôi yêu cầu bổ sung trước khi Approve.`,
   follow: [
     'Khi bối cảnh thay đổi (ví dụ traffic giảm mạnh), bạn cập nhật ADR cũ thế nào mà vẫn giữ lịch sử?',
@@ -4540,6 +4962,12 @@ Dấu hiệu CHƯA nên tách: team < 10 người, chưa có observability tốt
 - **Tách service quá sớm khi ranh giới sai:** phải gộp lại hoặc sống với API mạng vụng về + saga phức tạp. Chi phí sửa ranh giới trên mạng cao gấp nhiều lần trong monolith.
 - **Transaction xuyên module:** {{@Transactional}} bọc gọi 2 module tưởng là nguyên tử — đúng trong monolith, nhưng đây là coupling ẩn; nếu mai tách service sẽ vỡ. Cần nhận diện và thiết kế lại (eventual consistency) cho các điểm này.
 
+### Ví dụ đời thực
+Một monolith thương mại điện tử 8 năm tuổi có 12 dev, deploy 2 lần/tuần. **Triệu chứng:** mỗi lần sửa module Catalog có thể làm hỏng Order vì code gọi chéo repository và entity nội bộ; thời gian review tăng, refactor bị trì hoãn vì sợ ảnh hưởng lan. **Điều tra:** dùng ArchUnit quét phụ thuộc, phát hiện 63 vi phạm: {{order.internal}} import {{catalog.persistence}}, {{payment}} join thẳng bảng {{orders}}, và 5 chu kỳ phụ thuộc giữa package. **Nguyên nhân gốc:** ranh giới module chỉ là quy ước, không có cơ chế kiểm tra tự động; schema DB chung không có chủ sở hữu. **Xử lý:** tách API công khai cho từng module, chuyển truy cập chéo sang facade/event, đặt ArchUnit rule chặn import {{*.internal.*}} và chu kỳ; dùng {{FreezingArchRule}} để không tăng vi phạm mới rồi giảm dần 63 vi phạm theo từng sprint. Module Search có tải cao ngày sale được chuẩn bị tách service sau khi ranh giới ổn định. **Kết quả đo được:** sau 3 tháng, vi phạm ArchUnit giảm từ 63 xuống 4, thời gian build/test không đổi đáng kể, số lỗi hồi quy giữa Order/Catalog giảm rõ trong 4 release.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu modular monolith là một ứng dụng deploy một đơn vị nhưng bên trong chia module có ranh giới rõ: mỗi module sở hữu dữ liệu và logic của mình, module khác chỉ gọi qua API công khai hoặc event, không chạm vào {{internal}} hay bảng của module khác. Em chọn modular monolith khi team chưa có lý do đo được để chịu chi phí phân tán của microservice. Để ranh giới không chỉ nằm trên giấy, em dùng ArchUnit hoặc Spring Modulith để kiểm tra tự động trong CI: cấm phụ thuộc vào package nội bộ, cấm chu kỳ, và cô lập persistence. Khi nào tách service? Em chỉ tách khi có số liệu: scale khác biệt, nhịp deploy khác, yêu cầu cô lập dữ liệu/mạng, hoặc team độc lập thật sự và ranh giới đã ổn định. Em tránh tách quá sớm vì sửa ranh giới sai qua network và migration dữ liệu đắt hơn nhiều so với refactor trong monolith."
+
 > Senior tip: tôi coi modular monolith là "trạng thái mặc định tốt" cho team nhỏ/vừa. Câu hỏi phỏng vấn hay bị trả lời sai là liệt kê lợi ích microservice mà quên chi phí; câu trả lời mạnh là: "Tôi giữ monolith modular, đặt ArchUnit từ đầu, và chỉ tách service khi có số liệu (scale/deploy/isolation) chứng minh module đó cần sống riêng." Nhớ kèm ví dụ số liệu bạn từng gặp.`,
   follow: [
     'Làm sao xử lý transaction cần ghi vào hai module (ví dụ Order + Inventory) trong modular monolith?',
@@ -4627,6 +5055,12 @@ Tắt theo từng phần: thu hồi quyền truy cập, tắt route, tắt CDC, 
 - **Quên consumer ẩn của legacy DB:** report, script kế toán, integration đối tác đọc thẳng DB cũ. Phải rà soát toàn bộ kết nối trước khi tắt.
 - **Không có shadow comparison:** tưởng hệ mới đúng nhưng lệch logic tính thuế/khuyến mãi — phát hiện khi khách khiếu nại. Chạy song song và so diff trên traffic thật (ẩn PII) trước khi cutover.
 
+### Ví dụ đời thực
+Một monolith đặt hàng 12 năm tuổi không được ngừng dịch vụ. **Triệu chứng:** team muốn thay hệ mới nhưng business chỉ chấp nhận downtime gần như 0; lần thử big-bang trước đó bị huỷ vì rủi ro cutover. **Điều tra:** lập bản đồ endpoint và consumer DB legacy, phát hiện 38 endpoint public, 11 job batch và 4 báo cáo đọc thẳng DB cũ; endpoint "xem chi tiết đơn" chiếm 42% traffic đọc và ít phụ thuộc ghi. **Nguyên nhân gốc:** hệ cũ là hộp đen, dữ liệu và logic gắn chặt, nên không thể thay toàn bộ an toàn trong một đêm. **Xử lý:** đặt routing facade trước legacy; chọn lát cắt đầu tiên là GET /orders, dựng service mới, backfill dữ liệu lịch sử, dùng CDC một chiều từ legacy DB sang new DB cho giai đoạn chuyển tiếp; chạy shadow compare 2 tuần, rồi canary 1% → 10% → 100%; event sync gắn {{source=sync}} để chống vòng lặp. **Kết quả đo được:** sau 4 tuần, 42% traffic đọc đơn chạy trên hệ mới với tỷ lệ khác biệt shadow < 0,2% (đều là mapping hiển thị), không downtime; legacy giảm dần theo bảng endpoint còn lại.
+
+### Trả lời mẫu khi phỏng vấn
+"Với hệ thống legacy không được ngừng dịch vụ, em dùng Strangler Fig để di trú tăng dần, không big-bang. Em đặt một routing facade trước hệ cũ: request nào đã migrate thì đi hệ mới, chưa migrate thì đi legacy. Em cắt theo lát cắt nghiệp vụ dọc, ví dụ bắt đầu từ khả năng đọc ít rủi ro, sau đó mới tới luồng ghi phức tạp. Phần khó nhất là dữ liệu: nếu có thể em chọn một nguồn sự thật; nếu legacy không sửa được thì dùng CDC như Debezium, đảm bảo consumer idempotent, có cơ chế chống vòng lặp bằng metadata nguồn, và reconcile định kỳ. Trước khi cutover em chạy shadow hoặc parallel compare trên traffic thật. Em chỉ tắt phần legacy khi 100% traffic đã route ổn định, không còn consumer ẩn đọc DB cũ, dữ liệu đã backfill/đối chiếu, và có thời gian read-only trước khi decommission."
+
 > Senior tip: Tiêu chí thành công của strangler không phải "hệ mới xong" mà là "mỗi tháng tắt được thêm một phần legacy đo được". Lập bảng: endpoint nào còn trên legacy, % traffic, ngày mục tiêu tắt. Nếu 3 tháng bảng không thay đổi, bạn đang xây hệ mới song song chứ không phải strangler — phải quay lại cắt lát cắt nhỏ hơn.`,
   follow: [
     'Bạn xử lý trường hợp legacy và hệ mới có mô hình dữ liệu khác nhau (ví dụ 1 bảng cũ tách thành 3 bảng mới)?',
@@ -4694,6 +5128,16 @@ jdbc.execute("SET LOCAL app.tenant_id = '" + tenantId + "'");
 - **Cache dùng chung key không có tenant:** {{cache.get("product:123")}} trả sản phẩm của tenant A cho tenant B. Luôn đưa {{tenant_id}} vào cache key.
 - **Connection pool bùng nổ với DB/schema-per-tenant:** 500 tenant × 5 connection × 10 instance = 25.000 connection. Cần pooler (PgBouncer), pool lười, hoặc giới hạn tenant hoạt động đồng thời.
 - **Migration N lần thất bại giữa chừng:** 200/500 schema đã migrate, 201 lỗi → trạng thái không đồng nhất. Cần công cụ migration per-tenant có theo dõi phiên bản và khả năng chạy lại (idempotent).
+
+### Ví dụ đời thực
+- **Triệu chứng:** Sản phẩm SaaS B2B dùng shared schema, phục vụ ~1.800 tenant. Một buổi sáng, đội hỗ trợ nhận 6 phiếu từ công ty A báo thấy đơn hàng của công ty B trong màn hình quản trị. Tổng ~120 bản ghi bị lộ trong 25 phút trước khi phát hiện.
+- **Điều tra:** Tra log truy cập API thấy các request đều đi qua endpoint export báo cáo. Kiểm tra metric truy vấn theo tenant (nhãn {{tenant_id}} gắn ở tầng ứng dụng) cho thấy endpoint này ghi nhận truy vấn không kèm ngữ cảnh tenant. Đọc mã nguồn: đường đi export gọi câu SQL thô để tối ưu hiệu năng, ghép điều kiện ngày tháng nhưng quên thêm {{tenant_id}}; đường đi này cũng bỏ qua Hibernate filter vì không dùng repository chuẩn.
+- **Nguyên nhân gốc:** Phòng thủ chỉ có một lớp (filter ở ORM). Khi một luồng code "đi tắt" dùng SQL thô và không qua lớp đó, không còn lớp chặn thứ hai. Bảng PostgreSQL chưa bật Row Level Security (RLS) nên database chấp nhận mọi truy vấn hợp lệ cú pháp.
+- **Cách xử lý:** (1) Ngắn hạn (trong 40 phút): tắt endpoint export, xoá dữ liệu cache phản hồi liên quan, thông báo khách hàng bị ảnh hưởng theo quy trình sự cố. (2) Trung hạn (1–2 tuần): bật RLS cho các bảng nghiệp vụ, đặt {{SET LOCAL app.tenant_id}} trong transaction sau bước xác thực, viết lại truy vấn export qua tầng có kiểm soát tenant. (3) Bổ sung test tự động: quét truy vấn SQL trong codebase và bài kiểm tra tích hợp tạo hai tenant, xác nhận tenant A không đọc được dữ liệu tenant B trên mọi API nhạy cảm.
+- **Kết quả đo được:** Sau 30 ngày, 0 sự cố rò rỉ chéo. Bộ kiểm tra cô lập tenant chạy trong CI chặn 2 lần code mới thiếu điều kiện tenant trước khi merge. Độ trễ endpoint export tăng ~8 ms do RLS đánh giá policy, chấp nhận được so với rủi ro tuân thủ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế multi-tenancy cho SaaS B2B, em bắt đầu từ mức cô lập dữ liệu và chi phí vận hành. Ba lựa chọn là shared schema có {{tenant_id}}, schema-per-tenant và DB-per-tenant. Với giai đoạn nhiều tenant nhỏ, em thường chọn shared schema vì chi phí và khả năng mở rộng số tenant tốt, nhưng em không tin vào việc mỗi developer luôn nhớ thêm điều kiện lọc. Em đặt phòng thủ hai lớp: lớp ứng dụng gắn ngữ cảnh tenant từ token đã xác thực và lớp cơ sở dữ liệu dùng Row Level Security của PostgreSQL để tự chặn truy vấn quên điều kiện. Vấn đề tiếp theo là noisy neighbor, tức một tenant chạy báo cáo nặng làm tenant khác chậm, nên em giới hạn tốc độ theo tenant, tách tác vụ nặng vào hàng đợi xử lý công bằng, và đặt {{statement_timeout}} cho truy vấn dài. Thực tế em từng gặp sự cố rò rỉ 120 bản ghi do một endpoint dùng SQL thô bỏ qua ORM filter; sau khi bật RLS và thêm kiểm tra cô lập tenant trong CI, lỗi kiểu đó không tái diễn. Em cũng thiết kế {{TenantRouter}} từ đầu để tenant lớn hoặc có yêu cầu tuân thủ có thể tách sang DB riêng mà không phải viết lại."
 
 > Senior tip: Trong phỏng vấn, đừng chỉ chọn một mô hình — hãy nói "tôi chọn shared schema ban đầu nhưng thiết kế TenantContext + TenantRouter để có thể tách tenant lớn sau, vì yêu cầu cô lập thường tăng theo giá trị hợp đồng". Và luôn nhắc hai lớp phòng thủ (code + RLS): một bug ứng dụng không được phép trở thành sự cố rò rỉ dữ liệu khách hàng.`,
   follow: [
@@ -4774,6 +5218,16 @@ Event sống mãi (append-only), code thì đổi — đây là thách thức l�
 - **Event quá to hoặc quá chi tiết:** lưu cả blob/ảnh trong event → store phình; hoặc event "mọi lần gõ phím" → không mang nghĩa nghiệp vụ. Event nên là **fact nghiệp vụ có ý nghĩa**.
 - **Không version event từ đầu:** 6 tháng sau đổi schema không còn đường lên. Đặt {{schemaVersion}} và cơ chế upcast ngay từ event đầu tiên.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Hệ thống ví điện tử dùng event sourcing cho sổ cái giao dịch (aggregate tài khoản). Sau 18 tháng vận hành, một số tài khoản hoạt động dày (nhà bán lẻ) tích ~60.000 event. Khi gọi API lấy số dư/chi tiết tài khoản, p95 độ trễ tăng từ 120 ms lên 2,8 giây vào giờ cao điểm; thread pool xử lý lệnh nạp/rút bắt đầu xếp hàng.
+- **Điều tra:** Bật theo dõi thời gian load aggregate thấy phần lớn thời gian nằm ở bước đọc và phát lại (replay) hàng chục nghìn event từ event store. Kiểm tra metric cho thấy tài khoản chậm đều có {{event_count}} rất lớn; truy vấn DB vẫn dùng index {{(aggregate_id, version)}} nhưng số bản ghi đọc mỗi lần là vấn đề.
+- **Nguyên nhân gốc:** Thiết kế ban đầu chưa bật snapshot. Mỗi thao tác đều replay toàn bộ lịch sử từ version 1, nên chi phí load tăng tuyến tính theo tuổi và tần suất giao dịch của aggregate.
+- **Cách xử lý:** (1) Triển khai snapshot: sau mỗi 500 event (hoặc khi load vượt ngưỡng), lưu trạng thái tài khoản kèm {{version}}. Luồng load đổi thành "đọc snapshot gần nhất + replay phần event còn lại". (2) Chạy job dựng snapshot nền cho các aggregate "nóng" để lần load đầu sau triển khai không phải trả hết chi phí replay. (3) Thiết lập giám sát {{events_replayed_per_load}} và {{aggregate_event_count}}; đặt cảnh báo khi replay trung bình vượt 1.000 event.
+- **Kết quả đo được:** Với tài khoản ~60.000 event, số event replay mỗi lần load giảm xuống còn 0–500. p95 API lấy số dư giảm từ 2,8 giây về 150 ms; tải đọc trên event store giảm khoảng 70% cho nhóm tài khoản hoạt động dày. Snapshot bị xoá thử nghiệm cho một aggregate vẫn dựng lại đúng trạng thái từ event, xác nhận snapshot chỉ là tối ưu.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu event sourcing là cách lưu mọi thay đổi trạng thái dưới dạng chuỗi sự kiện bất biến, ví dụ tài khoản được mở, tiền nạp vào, tiền rút ra, rồi suy ra trạng thái hiện tại bằng cách phát lại các sự kiện đó. Cách này rất mạnh khi bài toán cần audit và truy vết, như sổ cái tài chính, vì bản thân event store đã là lịch sử đầy đủ. Nhưng em không dùng nó cho mọi CRUD, vì truy vấn phức tạp hơn, team phải tư duy theo event và thường cần thêm read model. Khi dùng thật, hai vấn đề em luôn chuẩn bị là snapshot và tiến hoá lược đồ event. Snapshot giúp aggregate có nhiều sự kiện không phải replay từ đầu; snapshot chỉ là tối ưu, nguồn sự thật vẫn là event. Với schema evolution, event đã ghi là hợp đồng bất biến, nên thay đổi tương thích thì thêm field tuỳ chọn, còn thay đổi không tương thích thì em dùng upcasting khi đọc hoặc version hoá event, không sửa event cũ. Em từng xử lý một case tải tài khoản 60.000 event mất gần 3 giây; sau khi thêm snapshot mỗi 500 event, p95 giảm còn khoảng 150 mili giây."
+
 > Senior tip: Câu trả lời senior không phải "event sourcing tuyệt vời" mà là "tôi dùng event sourcing cho phần cần audit/replay (ví dụ sổ cái giao dịch) và giữ CRUD thường cho phần còn lại trong cùng hệ thống". Event sourcing là công cụ cho đúng bài toán, không phải kiến trúc mặc định cho mọi thứ. Nếu interviewer hỏi "khi nào KHÔNG dùng" mà bạn không nêu được, đó là dấu hiệu chưa dùng thực tế.`,
   follow: [
     'Event sourcing khác gì chỉ lưu audit log hoặc dùng CDC/outbox? Khi nào audit log là đủ?',
@@ -4845,6 +5299,16 @@ Không phải mọi thứ chia theo cell được:
 - **Cell không đều (hot cell):** vài tenant "cá voi" dồn vào một cell → cell đó quá tải. Cần giám sát per cell, đặt tenant lớn vào cell riêng hoặc chia lại.
 - **Vận hành N cell:** deploy, migrate schema, quan sát nhân lên N lần. Bắt buộc tự động hoá (IaC, deploy theo sóng cell) — làm tay không scale.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Nền tảng SaaS chạy một cụm ứng dụng và một cụm cơ sở dữ liệu dùng chung cho ~20.000 tenant. Một lần phát hành tính năng báo cáo mới, một truy vấn thiếu index chỉ bị kích hoạt với kiểu dữ liệu của một nhóm tenant. DB CPU tăng lên 98% trong 6 phút, hàng đợi kết nối cạn, và 100% tenant (kể cả tenant không dùng báo cáo) gặp lỗi 5xx hoặc chậm nghiêm trọng.
+- **Điều tra:** Dashboard toàn cụm cho thấy CPU/connection tăng đột ngột ngay sau deploy. Truy vấn chậm hàng đầu (từ thống kê truy vấn chậm) là câu SQL của tính năng mới; tần suất tăng theo một nhóm tenant thử tính năng. Không có cách cô lập nhóm này vì mọi tenant đi chung một cụm ứng dụng và chung kết nối DB.
+- **Nguyên nhân gốc:** Blast radius (bán kính ảnh hưởng) của toàn hệ là 100%: một thay đổi xấu hoặc một mẫu tải bất thường lan ra mọi tenant. Hệ thống thiếu ranh giới cô lập failure domain.
+- **Cách xử lý:** (1) Ngắn hạn: rollback bản phát hành, thêm giới hạn thời gian truy vấn và index thiếu, khôi phục dịch vụ. (2) Trung hạn: chuyển sang mô hình cell-based. Chia 20.000 tenant thành 20 cell, mỗi cell ~1.000 tenant với stack ứng dụng + DB riêng; đặt cell router mỏng, stateless tra bảng ánh xạ {{tenant -> cell}} (cache cục bộ, dữ liệu gốc đặt ở kho cấu hình bền). (3) Rollout về sau đi theo sóng từng cell, có giám sát per-cell (độ trễ, lỗi, CPU DB).
+- **Kết quả đo được:** Khi tái diễn một truy vấn nặng tương tự ở môi trường thử nghiệm có cell, chỉ cell chứa tenant kích hoạt (≈5% tenant) bị ảnh hưởng, các cell khác giữ p95 ổn định. Thời gian deploy tăng do rollout 20 sóng, nhưng được tự động hoá bằng pipeline; rủi ro ảnh hưởng toàn hệ giảm rõ rệt so với cụm đơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu cell-based architecture là chia hệ thống thành nhiều ô độc lập, mỗi ô có đủ stack để phục vụ một nhóm tenant, thay vì một cụm lớn phục vụ tất cả. Mục tiêu chính là giới hạn blast radius: nếu một deploy lỗi, một truy vấn xấu hay một tenant quá tải gây sự cố, chỉ ô đó bị ảnh hưởng. Về thiết kế, em cần một cell router rất mỏng và stateless để tra ánh xạ tenant sang cell rồi chuyển tiếp; router phải đơn giản và sẵn sàng cao vì nó là điểm còn có thể ảnh hưởng toàn hệ. Dữ liệu nghiệp vụ của tenant nằm trong cell, còn mapping tenant-to-cell và cấu hình toàn cục cần một control plane riêng, tách khỏi data plane. Em cũng phải tính trước việc di chuyển tenant khi cell đầy và xử lý state toàn cục như danh mục dùng chung. Trong một tình huống thực tế, một truy vấn thiếu index sau deploy đã làm 20.000 tenant lỗi vì dùng cụm chung; sau khi chia 20 cell, lỗi tương tự chỉ ảnh hưởng khoảng 5% tenant. Em thường nhấn mạnh cell-based không phải bước đầu, chỉ dùng khi chi phí sự cố lan rộng lớn hơn chi phí vận hành nhiều cell."
+
 > Senior tip: Cell-based không phải bước đầu tiên. Hãy nói: "Tôi chỉ dùng cell khi đã thấy sự cố một tenant/deploy làm ảnh hưởng toàn hệ và chi phí sự cố vượt chi phí vận hành N cell." Nhấn mạnh hai điểm interviewer hay hỏi: router phải cực đơn giản (nó là blast radius còn lại), và phải đo được kích thước cell = blast radius mục tiêu bằng số liệu, không chọn cảm tính.`,
   follow: [
     'Làm sao deploy phiên bản mới an toàn trên 50 cell (rollout strategy)?',
@@ -4899,6 +5363,16 @@ Tổng minh hoạ: A ~\$4.530/tháng vs B ~\$1.690/tháng cho cùng chức năng
 - **Dữ liệu chuyển mạng (data transfer) bị quên:** cross-AZ, NAT Gateway, egress internet tính tiền theo GB — kiến trúc chatty giữa service có thể làm mục này phình bất ngờ.
 - **Tài nguyên mồ côi:** EBS không gắn, load balancer không có target, snapshot cũ, môi trường dev chạy cuối tuần. Tự động tắt/xoá tài nguyên không dùng.
 - **Cắt chi phí làm vỡ SLO:** giảm replica, tắt multi-AZ, xoá log để rẻ → sự cố kéo dài, mất niềm tin. FinOps tối ưu **lãng phí**, không tối ưu **độ bền cần thiết**.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Hoá đơn AWS của một hệ thương mại điện tử tăng từ ~\$6.200/tháng lên ~\$14.800/tháng trong 2 tháng, trong khi lượng đơn hàng chỉ tăng ~15%. Không có sự cố hiệu năng rõ rệt, nên chi phí bị xem là "tăng trưởng tự nhiên" cho đến khi đội tài chính yêu cầu giải trình.
+- **Điều tra:** Phân tích hoá đơn theo tag {{service}} và {{env}} cho thấy ba khoản tăng lớn: (1) log ứng dụng lưu và index 90 ngày ở mức chi tiết cao (~\$3.900/tháng), (2) data transfer qua NAT Gateway tăng do hai service gọi nhau rất chatty theo từng mục giỏ hàng (~\$2.100/tháng), (3) cụm worker over-provision luôn chạy đủ cho giờ cao điểm (~\$1.700/tháng). Metric đơn vị cho thấy {{cost per 1.000 orders}} tăng 2,1 lần.
+- **Nguyên nhân gốc:** Các quyết định kiến trúc được chốt theo tính năng: bật log debug kéo dài "để tiện tra cứu", tách service nhưng thiết kế API chatty, và cấp tài nguyên cố định cho peak. Không có chủ sở hữu chi phí theo service và không theo dõi chỉ số đơn vị.
+- **Cách xử lý:** (1) Log/quan sát: giữ log hot 30 ngày, mẫu (sampling) log thành công, chuyển log cũ sang lưu trữ giá rẻ; giữ đầy đủ log lỗi và trace khi có sự cố. (2) Giao tiếp: gộp nhiều lời gọi thành một API batch, thêm cache dữ liệu đọc nhiều; không loại bỏ multi-AZ vì mục tiêu là giảm data transfer không cần thiết, không cắt độ bền. (3) Compute: autoscale worker 3→12 theo hàng đợi, dùng reserved cho tải nền ổn định; job batch không nhạy trễ dùng spot với cơ chế thử lại. (4) Quy trình: gắn tag bắt buộc, đặt mục tiêu {{cost per 1.000 orders}}, rà soát hàng tháng.
+- **Kết quả đo được:** Sau 6 tuần, hoá đơn giảm còn ~\$8.100/tháng (~45%) dù lượng đơn tiếp tục tăng nhẹ. {{cost per 1.000 orders}} về gần mức trước đợt tăng. SLO p95 và tỷ lệ lỗi không xấu đi; thời gian tra cứu log cũ dài hạn tăng nhưng vẫn đáp ứng khi cần nhờ lưu trữ lạnh.
+
+### Trả lời mẫu khi phỏng vấn
+"Em xem chi phí cloud là một thuộc tính kiến trúc, không phải việc chỉ xử lý sau khi hệ thống chạy. Quyết định chọn serverless hay container luôn chạy, dùng managed database nào, giữ log bao lâu, các service gọi nhau chatty hay batch, hay bật multi-AZ đều ảnh hưởng trực tiếp đến hoá đơn. Cách em tiếp cận theo FinOps là đo chi phí theo đơn vị, ví dụ cost per 1.000 request hoặc cost per order, rồi gắn trách nhiệm chi phí cho từng service bằng tag. Khi tối ưu, em bắt đầu từ những khoản lớn nhất thay vì tối ưu vi mô. Ví dụ em từng gặp hoá đơn tăng gấp hơn hai lần trong khi đơn hàng chỉ tăng 15%; nguyên nhân nằm ở log giữ quá lâu, data transfer qua NAT do API chatty và worker cấp cố định cho peak. Sau khi đổi chiến lược log, gộp lời gọi, thêm cache và autoscale kết hợp reserved cho tải nền, chi phí giảm khoảng 45% mà SLO không xấu đi. Em luôn cân bằng chi phí với độ tin cậy: FinOps là cắt lãng phí, không cắt các cơ chế HA hay quan sát mà hệ thống thực sự cần."
 
 > Senior tip: Khi trình bày quyết định kiến trúc, tôi kèm ước tính chi phí bậc lớn (order of magnitude) và chỉ số cost-per-request, ví dụ "phương án A ~\$2k/tháng, B ~\$600/tháng nhưng RTO tăng từ 5 phút lên 30 phút — với hệ thanh toán tôi chọn A, với báo cáo nội bộ tôi chọn B". Điều đó cho thấy bạn xem chi phí là ràng buộc thiết kế thật, không phải việc của đội tài chính sau khi deploy.`,
   follow: [
@@ -4963,6 +5437,16 @@ Arch -> Team: ghi ADR, dat moc review
 - **Không đặt mốc review:** quyết định sai sống mãi vì "đã chốt rồi". Ghi trong ADR: "review sau 8 tuần; nếu chi phí vận hành > Y hoặc p95 > Z thì xét lại phương án B".
 - **Bỏ qua tiếng nói ít nói:** người im lặng (junior, người mới, remote) có thể thấy rủi ro thật. RFC dạng viết giúp họ góp ý không phải tranh miệng.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Team backend 8 người tranh luận 3 tuần về việc tách module thanh toán thành service riêng hay giữ trong modular monolith. Hai nhóm giữ lập trường ngược nhau, cuộc họp kéo dài, quyết định bị trì hoãn; tính năng thanh toán mới chậm tiến độ. Mỗi bên viện dẫn kinh nghiệm cá nhân ("microservice linh hoạt hơn", "monolith dễ vận hành hơn") nhưng không có dữ liệu chung.
+- **Điều tra (làm rõ vấn đề):** Kiến trúc sư viết RFC 2 trang nêu bối cảnh: module thanh toán hiện nhận ~40 request/giây (giờ cao điểm 120), team có 1 người trực vận hành, deadline tính năng mới là 6 tuần, mục tiêu là giảm rủi ro deploy ảnh hưởng đơn hàng. RFC liệt kê ba phương án (giữ modular monolith, tách service, tách sau khi đạt tiêu chí), kèm tiêu chí đã chốt với team: tác động tới deadline, công vận hành, khả năng cô lập lỗi, độ phức tạp giao dịch, chi phí ước tính.
+- **Nguyên nhân gốc (của bế tắc):** Bất đồng thực ra là khác ưu tiên (tốc độ giao hàng vs cô lập dài hạn) và có giả định chưa kiểm chứng (tách service có chắc cô lập lỗi tốt hơn với team 1 người vận hành?). Tranh luận miệng không tách được hai lớp này.
+- **Cách xử lý:** (1) Chốt tiêu chí và trọng số trước khi chấm điểm. (2) Chạy spike 3 ngày có time-box: dựng một service thanh toán tối giản trong môi trường dev, đo effort triển khai, quan sát luồng giao dịch (cần bù trừ khi lỗi), và đánh giá vận hành (log, deploy, theo dõi). (3) Kết quả spike cho thấy đáp ứng được chức năng nhưng tăng độ phức tạp giao dịch và vận hành so với deadline 6 tuần. (4) Quyết định: giữ modular monolith, siết ranh giới module bằng interface rõ và kiểm tra kiến trúc tự động; ghi ADR với điều kiện review sau 8 tuần hoặc khi tải thanh toán vượt ngưỡng đã định thì xét lại việc tách.
+- **Kết quả đo được:** Quyết định chốt trong 5 ngày sau RFC (so với 3 tuần bế tắc). Tính năng mới ra đúng kế hoạch; 8 tuần sau, hai sự cố deploy không làm gián đoạn luồng thanh toán nhờ ranh giới module rõ hơn. ADR giúp cuộc thảo luận về sau dựa trên tiêu chí và mốc đo, không lặp lại tranh luận cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi team không đồng ý với quyết định kiến trúc của em, mục tiêu của em không phải thắng tranh luận mà là đi đến quyết định tốt nhất theo bằng chứng và để team cam kết thực hiện. Em thường bắt đầu bằng RFC ngắn: nêu rõ vấn đề, ràng buộc, các phương án kể cả phương án em không thích, và tiêu chí đánh giá. Trước khi tranh luận phương án, em chốt tiêu chí với team, ví dụ tác động deadline, độ trễ, công vận hành, chi phí và mức team quen. Nếu còn giả định chưa kiểm chứng, em dùng spike có time-box, thường 1 đến 3 ngày, để trả lời một câu hỏi cụ thể và lấy dữ liệu. Sau đó người chịu trách nhiệm quyết định dựa trên tiêu chí, ghi nhận ý kiến phản đối, và chốt ADR có mốc review lại. Em từng gặp trường hợp team tranh luận ba tuần về tách service thanh toán; RFC và một spike ba ngày cho thấy chi phí vận hành và giao dịch vượt deadline, nên em quyết định giữ modular monolith, siết ranh giới module và đặt điều kiện review sau tám tuần. Kể cả khi dữ liệu cho thấy em sai, em đổi ý và ghi rõ lý do."
+
 > Senior tip: Dấu hiệu bạn dẫn dắt tốt là sau quyết định, người từng phản đối có thể giải thích được "vì sao team chọn vậy" gần đúng như bạn — nghĩa là họ thấy lập luận của mình được xét đến. Trong phỏng vấn, kể một câu chuyện thật: bất đồng gì, bạn dùng RFC/spike/tiêu chí nào, kết quả ra sao (kể cả khi bạn đã sai và đổi ý nhờ dữ liệu) — điều đó thể hiện trưởng thành hơn là kể bạn luôn đúng.`,
   follow: [
     'Khi spike cho thấy phương án bạn đề xuất kém hơn, bạn xử lý thế nào trước team?',
@@ -4981,18 +5465,143 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế notification service đa kênh.',
-  a: `**Tóm tắt:** at-least-once + dedup theo (dedupKey,channel), hàng đợi theo kênh, ưu tiên, retry+jitter, circuit breaker.
+  a: `**Tóm tắt:** Notification service đa kênh (gửi thông báo qua nhiều kênh như email, SMS, push, in-app) cần thiết kế theo **at-least-once delivery** (ít nhất một lần: hệ thống đảm bảo gửi, nhưng có thể gửi lặp nếu mất ACK — gói xác nhận), kết hợp **khử trùng** (dedup) bằng khóa nghiệp vụ. Mỗi kênh có hàng đợi, SLA (mức cam kết thời gian), giới hạn tốc độ và nhà cung cấp (provider) riêng. Ưu tiên thông báo quan trọng (OTP — mã xác thực một lần), dùng retry có backoff + jitter (độ trễ ngẫu nhiên) và circuit breaker (cầu dao: ngắt tạm khi provider lỗi liên tục) để bảo vệ hệ thống.
 
-> Senior tip: OTP ưu tiên.` ,
-  follow: ['OTP ưu tiên thế nào?','Tại sao cần jitter?'],
-  tags: ['notification','queue','dedup']
+### 1. Vì sao at-least-once chứ không exactly-once?
+Exactly-once (đúng một lần) trên mạng là rất khó/không thực tế vì lỗi mạng, timeout và crash (bài toán tương tự "hai vị tướng"): producer (bên gửi) không biết ACK bị mất hay xử lý chưa xong nên phải retry. Cách thực dụng: **at-least-once + dedup phía nhận/xử lý**. Gửi có thể lặp, nhưng xử lý lặp thì bỏ qua nhờ khóa trùng.
+
+### 2. Khử trùng (dedup)
+- **dedup key** = hàm băm của các yếu tố nghiệp vụ, ví dụ {{hash(userId + templateId + businessEventId + channel)}}. Dùng {{businessEventId}} (id sự kiện gốc, như id đơn hàng) để retry của cùng sự kiện không tạo thông báo mới.
+- Lưu key trong Redis bằng thao tác nguyên tử {{SET key NX EX 86400}} (chỉ đặt nếu chưa có, hết hạn sau 24h). Key đã tồn tại → bỏ qua (skip).
+- Cửa sổ dedup (TTL) chọn theo nghiệp vụ: OTP vài phút, thông báo giao dịch vài giờ/1 ngày, marketing dài hơn nhưng vẫn cần chặn trùng chiến dịch.
+
+### 3. Hàng đợi theo kênh và ưu tiên
+Mỗi kênh (email/SMS/push/in-app) một hàng đợi riêng vì:
+- **SLA khác nhau:** OTP SMS cần < 5 giây; email giao dịch có thể 30 giây; marketing có thể trễ hơn.
+- **Provider khác nhau:** lỗi của nhà cung cấp SMS không được làm tắc email.
+- **Rate limit khác nhau:** provider giới hạn số gửi/giây; worker phải điều tiết theo kênh.
+
+Ưu tiên (priority): **OTP > giao dịch > marketing**. OTP đi hàng đợi riêng có worker chuyên dụng, bypass (đi tắt) mọi hàng đợi marketing để không bị "đói" tài nguyên.
+
+### 4. Retry, backoff và jitter
+- Retry khi lỗi tạm (timeout, 5xx, throttling). Không retry mù khi lỗi vĩnh viễn (số điện thoại sai, unsubscribe) — phân loại lỗi.
+- Exponential backoff: 1s, 2s, 4s, 8s... giới hạn số lần và tổng thời gian (ví dụ tối đa 5 lần trong 10 phút cho giao dịch).
+- **Jitter (ngẫu nhiên hoá):** dùng full jitter {{random(0, backoff)}} thay vì chờ đúng mốc, để tránh thundering herd (bầy đàn: hàng nghìn request retry cùng lúc khi provider vừa hồi phục).
+
+### 5. Circuit breaker cho provider
+Khi tỷ lệ lỗi của provider vượt ngưỡng (ví dụ > 50% trong 10 giây) → **open** (mở cầu dao, ngừng gọi) một khoảng (30 giây) → **half-open** (thử thăm dò vài request). Nếu probe thành công thì đóng lại. Mục đích: không làm quá tải provider đang chết và không lãng phí worker chờ timeout. Kết hợp fallback kênh nếu hợp lý (push lỗi tạm thời → thử in-app), nhưng OTP phải cẩn trọng với bảo mật và chi phí SMS.
+
+### 6. Luồng xử lý tổng quát
+~~~seq
+title: Luồng gửi notification đa kênh
+actors: App | NotifySvc | Dedup | Queue | Provider
+App -> NotifySvc: event (user, template, data)
+NotifySvc -> Dedup: check dedupKey
+Dedup --> NotifySvc: new / duplicate
+NotifySvc -> Queue: enqueue theo kênh + priority
+Queue -> Provider: worker gửi (rate limit)
+Provider --> Queue: ACK / fail
+Queue -> NotifySvc: retry backoff+jitter / DLQ
+~~~
+- **DLQ (dead-letter queue — hàng đợi thư chết):** sau khi vượt số lần retry, đưa vào DLQ để điều tra thủ công, không chặn luồng chính.
+
+### 7. Dữ liệu và tuỳ chọn người dùng
+- Lưu trạng thái gửi ({{PENDING/SENT/DELIVERED/FAILED}}) để tra cứu và hỗ trợ khách hàng, nhưng nguồn phát là sự kiện nghiệp vụ.
+- Tôn trọng tuỳ chọn nhận (opt-in/opt-out) theo kênh và loại thông báo; OTP/bảo mật thường không cho opt-out.
+- Template tách nội dung khỏi code, có biến động ({{amount}}, {{orderId}}) và phiên bản theo ngôn ngữ.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Nền tảng thương mại điện tử gửi ~2 triệu thông báo/ngày (email, push, SMS OTP). Đợt khuyến mãi cuối tuần, đội marketing phát chiến dịch 1,2 triệu email trong 20 phút. Cùng lúc, người dùng phản ánh OTP đăng nhập/đặt hàng đến sau 3–8 phút; tỷ lệ đăng nhập thành công giảm rõ trong 30 phút.
+- **Điều tra:** Kiểm tra dashboard hàng đợi thấy một hàng đợi chung cho nhiều loại thông báo đang tích ~900.000 message, thời gian chờ tăng vọt. Worker xử lý lần lượt nên email marketing chiếm phần lớn slot. Metric provider SMS vẫn bình thường (độ trễ provider ~400 ms), nhưng thời điểm worker lấy được job OTP đã trễ. Log cho thấy không có phân biệt ưu tiên giữa OTP và marketing.
+- **Nguyên nhân gốc:** Thiết kế dùng hàng đợi/worker chung và không tách ưu tiên kênh. Tải marketing (throughput lớn, SLA lỏng) làm "đói" OTP (throughput thấp, SLA < 5 giây). Ngoài ra, cơ chế retry cũ không có jitter nên khi một đợt lỗi tạm xảy ra trước đó, retry dồn cụm gây tải tăng.
+- **Cách xử lý:** (1) Ngắn hạn: tạm dừng chiến dịch marketing, tăng worker cho luồng giao dịch, xử lý backlog OTP. (2) Thiết kế lại: tách hàng đợi theo kênh và loại — **OTP đi queue riêng với worker chuyên dụng**, giới hạn SLA nội bộ; marketing có queue/rate limit riêng. Thêm priority, dedup key theo {{businessEventId + channel}}, retry exponential backoff với full jitter, và circuit breaker cho từng provider. (3) Đặt cảnh báo theo tuổi message OTP trong queue (ví dụ > 10 giây) và tỷ lệ gửi trễ.
+- **Kết quả đo được:** Sau thay đổi, 99% OTP được gửi trong < 4 giây ngay cả khi chiến dịch marketing chạy song song (đã giới hạn tốc độ). Số khiếu nại "không nhận OTP" giảm từ ~120/giờ ở đỉnh sự cố xuống < 5/giờ. Thời gian gửi email marketing tăng nhẹ (chấp nhận theo SLA), không còn ảnh hưởng luồng xác thực.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu thiết kế notification service đa kênh, em sẽ tách rõ luồng gửi theo kênh và theo mức ưu tiên, vì email, SMS, push, in-app có SLA, provider và rate limit khác nhau. Về độ tin cậy, em chọn at-least-once delivery vì exactly-once trên mạng rất khó; để tránh gửi trùng khi retry, em dùng dedup key dựa trên sự kiện nghiệp vụ như {{businessEventId}} kết hợp user và channel, lưu trong Redis với thao tác nguyên tử và TTL phù hợp. Mỗi kênh có hàng đợi riêng, worker điều tiết theo rate limit provider. OTP là loại quan trọng nhất nên em cho đi queue riêng có worker chuyên dụng, không bao giờ dùng chung với marketing, mục tiêu dưới 5 giây. Với lỗi tạm, em retry bằng exponential backoff có full jitter để tránh thundering herd, còn lỗi vĩnh viễn thì không retry mù mà đưa vào dead-letter queue. Em cũng đặt circuit breaker cho từng provider để ngừng gọi khi lỗi liên tục. Em từng gặp case chiến dịch marketing làm OTP trễ tới 8 phút vì dùng hàng đợi chung; sau khi tách queue OTP, thêm dedup, jitter và cảnh báo theo tuổi message, 99% OTP gửi dưới 4 giây."
+
+> Senior tip: OTP phải đi queue riêng với worker dedicated và SLA < 5s; marketing có thể bị delay. Jitter full (random 0..backoff) chứ không equal jitter, để tránh đồng bộ retry.`,
+  follow: ['OTP ưu tiên thế nào?', 'Tại sao cần jitter?', 'Khi provider SMS và push cùng lỗi, bạn fallback và bảo vệ trải nghiệm người dùng ra sao?'],
+  tags: ['notification', 'queue', 'dedup']
 },
 {
   id: 'design-031',
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế leaderboard realtime.',
-  a: `**Tóm tắt:** Redis ZSET, ZINCRBY atomic, ZREVRANGE/ZREVRANK, DB source of truth.`,
+  a: `**Tóm tắt:** Leaderboard realtime dùng Redis Sorted Set (ZSET): ZINCRBY atomic để cộng điểm, ZREVRANGE lấy top, ZREVRANK lấy thứ hạng user, DB là source of truth để khôi phục.
+
+### 1. Vì sao Redis ZSET?
+
+ZSET lưu member-score và tự sort O(log N) mỗi op. In-memory → latency ms. Phù hợp leaderboard cần update liên tục.
+
+### 2. Các lệnh chính
+
+- ZINCRBY lb score userId → cộng điểm atomic.
+- ZREVRANGE lb 0 9 WITHSCORES → top 10.
+- ZREVRANK lb userId → thứ hạng (0-based).
+- ZSCORE lb userId → điểm hiện tại.
+
+### 3. Tie-breaker
+
+Redis tie-break theo member string lexicographically. Nếu muốn tie-break theo thời gian đạt điểm, encode score thành composite: score * 1e9 + (MAX_TS - ts) để người đạt sớm xếp trên.
+
+### 4. Khôi phục sau crash
+
+Redis là cache; DB lưu score history. Khi Redis mất: rebuild ZSET từ DB (batch). Hoặc dùng Redis persistence (AOF everysec) + replica.
+
+### 5. Scale
+
+- Sharding theo leaderboard key (global vs per-game).
+- Nếu leaderboard quá lớn (triệu user) → top-N only in Redis, rank chính xác cho top; user thường dùng approximate rank qua bucket.
+
+### Pitfall
+
+- Dùng INCR trên String rồi SORT → O(N log N) mỗi query → chậm.
+- Không persist → mất data khi restart.
+- Hot key single leaderboard → bottleneck; partition.
+
+### Cơ chế chi tiết: ZSET internals
+
+ZSET lưu cặp (member, điểm) và tự động sắp xếp theo điểm. Bên trong Redis dùng hai cấu trúc kết hợp:
+- **Skip list (danh sách nhảy):** cấu trúc phân cấp giúp tìm, xóa, chèn trong O(log N) trung bình. Mỗi node có các pointer "nhảy" theo nhiều mức (mức 1 = linked list đơn, múc 2 = nhảy mỗi 2 nút...). Đơn giản hơn cây đỏ-đen nhưng tốn hơn một chút bộ nhớ.
+- **Hash table:** tra cứu member -> điểm trong O(1), dùng cho ZSCORE.
+
+Với 10 triệu user, mỗi entry khoảng 72 bytes → ~720 MB, vừa vặn trong một Redis instance 2–4 GB. Đây là lý do ZSET phù hợp leaderboard: đọc top-K và tra thứ hạng nhanh, cập nhật thường xuyên.
+
+### Idempotent score update
+
+{{ZINCRBY}} là atomic (thực hiện trọn vẹn, không bị xen giữa) nhưng **không idempotent**: nếu client gửi lại cùng lệnh (ví dụ retry do mạng timeout), điểm sẽ được cộng nhiều lần. Hai cách khắc phục:
+- **Client request_id:** server lưu bộ nhớ request_id đã xử lý (TTL 24h). Nhận request -> kiểm tra -> nếu đã có thì trả kết quả cũ; chưa có thì {{ZINCRBY}} và đánh dấu đã xử lý.
+- **ZADD với GT (Redis 6.2+):** {{ZADD lb GT điểm userId}} chỉ cập nhật nếu điểm mới cao hơn điểm cũ. Phù hợp khi client gửi tổng điểm mới (không phải delta). Nếu client chỉ gửi delta (+10), dùng request_id.
+
+### Tie-breaker (xếp hạng cùng điểm)
+
+Redis chia như nhau theo chuỗi member theo thứ tự từ điển. Nếu muốn xếp hạng theo thời gian đạt điểm, mã hoá điểm thành composite: {{điểm * 1e9 + (MAX_TS - ts)}}. Điểm nguyên occupies phần cao, timestamp occupies phần thấp. MAX_TS là thời gian tương lai xa (ví dụ năm 2100). Công thức: {{composite = points * 1_000_000_000 + (MAX_TS - achieved_at_ms)}}. Người đạt sớm hơn có {{achieved_at_ms}} nhỏ hơn -> {{MAX_TS - achieved_at_ms}} lớn hơn -> composite lớn hơn -> xếp trên.
+
+### Sharding và approximate rank
+
+Khi một leaderboard nhận hàng triệu update/giây, một ZSET key trở thành bottleneck (Redis đơn luồng). Sharding: chia thành N shard ZSET lb:{shard_i}, shard_key = hash(userId) % N.
+- **Top-K global:** query top-K từ mỗi shard, merge K-way bằng min-heap O(K × log N).
+- **Rank user:** ZREVRANK trong shard + ZCOUNT đếm số user có điểm cao hơn trong shard, cộng rank các shard khác.
+- **Approximate rank:** chia khoảng điểm thành bucket (0–1000, 1001–2000...). Mỗi bucket đếm số user. Rank ≈ tổng bucket trên + offset trong bucket. Sai số < kích thước bucket.
+
+### Monitoring và operations
+
+- Metric bắt buộc: ZADD ops/s, ZREVRANGE latency p99, memory usage, key eviction rate.
+- Hot key detection: theo dõi ops/s theo key; nếu một key vượt ngưỡng (ví dụ 10k ops/s), cảnh báo và gợi ý sharding.
+- Persistence: AOF everysec + replica; khi Redis mất, rebuild từ DB (pipeline {{ZADD}} batch 5000, ~30s cho 10M user).
+- Anti-drift: rebuild hàng tuần từ DB để đối chiếu điểm Redis với DB score_history; nếu lệch, alert và fix.
+
+### Ví dụ đời thực: game leaderboard bị trùng điểm do client retry
+
+Một game di động có leaderboard theo điểm, hàng chục triệu người chơi. **Triệu chứng:** vào cuối tuần, một số người phàn nàn thứ hạng bị nhảy lên rồi xuống; hai người cùng điểm nhưng thứ hạng thay đổi giữa hai lần tải trang. **Điều tra:** log backend thấy nhiều lệnh {{ZINCRBY}} cho cùng userId đến cùng lúc do client retry khi mạng timeout. Mỗi retry là một {{ZINCRBY}} +10, nên userId bị cộng thêm 10 điểm dù chỉ hoàn thành level một lần. **Nguyên nhân gốc:** {{ZINCRBY}} atomic nhưng **không idempotent**: lặp lại lệnh lặp lại hiệu ứng. Ngoài ra, tie-break bằng chuỗi member (userId theo bảng chữ cái) không phản ánh thời gian đạt điểm, nên thứ hạng bất ổn. **Xử lý:** (1) thêm {{client_request_id}} vào request; server lưu set request_id gần nhất, nếu lặp trả kết quả cũ; hoặc dùng {{ZADD}} với {{GT}}. (2) Mã hoá thời gian vào điểm: {{điểm = points * 1_000_000_000 + (MAX_TS - achieved_at_ms)}}. (3) Rebuild hàng tuần từ DB score_history để đối chiếu Redis. **Kết quả đo được:** trùng điểm giảm từ ~2% xuống 0.03%, thứ hạng ổn định qua các lần reload.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về leaderboard, tôi chọn Redis Sorted Set vì {{ZINCRBY}} atomic, {{ZREVRANGE}} lấy top O(log N), {{ZREVRANK}} tra thứ hạng — hết trong bộ nhớ, latency dưới 5ms. Điểm mấu chốt là **idempotency**: {{ZINCRBY}} cộng thêm điểm mỗi lần client retry, nên tôi luôn ghi nhận request_id để lặp lại không tăng điểm. Với tie-break, tôi mã hoá thời gian đạt điểm vào điểm bằng {{điểm * 1e9 + (MAX_TS - ts)}} để người đạt sớm xếp trên. Cuối cùng, Redis chỉ là view nhanh; tôi giữ CSDL làm source of truth và có script rebuild khôi phục khi Redis mất — cache có thể mất, điểm người dùng không được mất."
+
+> Senior tip: Luôn có DB source of truth + rebuild script; Redis chỉ là view. Tie-break encode vào score để deterministic, tránh race.` ,
   follow: ['Tie-breaker?', 'Khôi phục?'],
   tags: ['leaderboard','redis']
 },
@@ -5001,7 +5610,62 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế chat 1-1 và nhóm realtime.',
-  a: `**Tóm tắt:** WebSocket, lưu trước broadcast, fan-out hybrid, presence, push khi offline.`,
+  a: `**Tóm tắt:** Chat realtime dùng WebSocket, lưu message trước rồi broadcast, fan-out hybrid (direct cho nhóm nhỏ, pub/sub cho nhóm lớn), presence tracking, push notification khi offline.
+
+### 1. Lưu trước broadcast
+
+Persist message vào DB trước khi broadcast để đảm bảo durability và ordering; client ACK bằng message id.
+
+### 2. Fan-out hybrid
+
+- Nhóm nhỏ (< 1000): server fan-out trực tiếp tới connection của từng member.
+- Nhóm lớn (celebrity channel): pub/sub qua Redis/Kafka, client subscribe topic.
+
+### 3. Presence
+
+Heartbeat mỗi 30s; TTL 60s trong Redis. Offline → push notification.
+
+### 4. Reconnect
+
+Client exponential backoff reconnect; resume từ lastMessageId (cursor) để không mất message.
+
+### 5. Ordering
+
+Per-conversation sequence number; client reorder theo seq.
+
+### Pitfall
+
+- Broadcast trước persist → mất message khi crash.
+- Presence storm với triệu connection → dùng distributed presence.
+- WebSocket sticky session → load balancer phải consistent hash.
+
+### Cơ chế chi tiết: Fan-out hybrid
+
+Với nhóm nhỏ (< 1000 thành viên), server duy trì bản ghi conversationId -> danh sách connectionId của từng thành viên đang online (trong bộ nhớ hoặc Redis). Khi có message mới, server lặp qua danh sách và gọi gửi trực tiếp xuống từng WebSocket. Độ phức tạp O(N) với N = số thành viên online. Phù hợp vì N nhỏ, latency thấp, không qua trung gian.
+
+Với nhóm lớn / kênh công khai (celebrity, livestream chat), fan-out trực tiếp sẽ tốn quá nhiều CPU/memory trên gateway và gây thundering herd (nhiều quá trình cùng kích hoạt cùng lúc) khi broadcast. Chuyển sang mô hình pub/sub (công cấu publish-subscribe - người gửi publish message vào một kênh, nhiều người dùng subscribe kênh đó nhận message): message đẩy vào Redis Stream hoặc Kafka topic chat:{conversationId}. Các gateway instance subscribe topic này, nhận message và đẩy xuống connection của thành viên đang online trên instance đó. Số lượng subscriber = số gateway instance (thường 10–100), không phụ thuộc vào số user. Latency tăng thêm khoảng 1–2 ms do qua message broker, nhưng scale gần như vô hạn.
+
+Ngưỡng chuyển đổi: thường đặt ở 500–1000 thành viên online. Có thể dùng feature flag (cờ điều khiển tính năng) bật/tắt pub/sub cho từng conversationId để xử lý sự cố nóng.
+
+### Cơ chế chi tiết: Presence và Reconnect
+
+**Presence (trạng thái hiện diện - biết ai đang online):** Mỗi connection gửi ping (heartbeat) mỗi 30 giây. Gateway cập nhật khóa Redis presence:{userId}:{deviceId} với TTL 60 giây (thời gian sống - key tự xóa sau TTL). User coi là online nếu ít nhất một thiết bị còn TTL > 0. Khi TTL hết, gateway phát sự kiện user_offline cho **chỉ những người đang mở chat với user đó** - không broadcast cho cả danh bạ (tránh presence storm - tình trạng quá nhiều kết nối presence cùng lúc làm quá tải hệ thống với triệu kết nối).
+
+**Reconnect:** Client lưu lastMessageId (cursor - con trỏ đánh dấu tin nhắn cuối đã xem) của từng cuộc trò chuyện. Khi reconnect, client gửi RESUME conversationId lastMessageId. Server truy vấn CSDL lấy message WHERE id > lastMessageId ORDER BY id LIMIT 100 và đẩy xuống. Nếu lastMessageId quá cũ (khoảng cách lớn), server trả lỗi FULL_SYNC_REQUIRED và client tải lại toàn bộ lịch sử gần nhất. Exponential backoff (lùi theo số mũ): 1s, 2s, 4s, 8s, max 30s + jitter ngẫu nhiên 0–500 ms để tránh reconnect storm (nhiều client reconnect cùng lúc khi gateway vừa khởi động lại).
+
+### Cơ chế chi tiết: Ordering và Idempotency
+
+Mỗi cuộc trò chuyện có một sequence number (số thứ tự) tăng dần (có thể dùng Redis INCR conv:seq:{conversationId} hoặc cột identity của CSDL). Khi client gửi message, server gán seq rồi persist. Client nhận ACK kèm seq. Nếu client không nhận được ACK (mạng đứt), client retry cùng clientMessageId (UUID do client sinh). Server kiểm tra clientMessageId đã xử lý chưa (bộ nhớ Redis msg:processed:{clientMessageId} TTL 24h) — nếu có thì trả ACK cũ, không tạo message mới. Đây là **idempotency ở tầng ứng dụng** (thao tác lặp lại cho cùng kết quả).
+
+### Ví dụ đời thực: message trùng lặp và mất tin khi reconnect
+
+Một ứng dụng chat 2 triệu DAU dùng WebSocket + Redis pub/sub cho nhóm lớn. **Triệu chứng:** người dùng trong nhóm 5000 thành viên báo nhận được cùng một tin nhắn 2–3 lần liên tiếp; một số người reconnect sau khi đổi mạng 4G->WiFi thì mất 5–10 tin nhắn. **Điều tra:** log gateway thấy client gửi tin, server persist thành công nhưng ACK bị mất do mạng timeout; client retry (không có clientMessageId) -> server tạo message thứ 2 với seq mới. Với reconnect: client không lưu lastMessageId, reconnect thì server đẩy toàn bộ lịch sử (1000 tin) -> client hiển thị trùng lặp và lag. **Nguyên nhân gốc:** (1) thiếu idempotency key ở client -> retry tạo message trùng; (2) reconnect không dùng cursor -> server không biết client đã thấy đâu. **Xử lý:** (1) client sinh clientMessageId UUID cho mỗi tin, gửi kèm request; server lưu clientMessageId trong bộ nhớ Redis set TTL 24h, nếu thấy trùng trả ACK cũ; (2) client lưu lastMessageId mỗi cuộc trò chuyện vào localStorage; reconnect gửi RESUME conversationId lastMessageId; server chỉ trả message seq > lastMessageId; (3) thêm FULL_SYNC_REQUIRED khi gap > 5000 message. **Kết quả đo được:** message trùng giảm từ ~2% xuống 0.01%; reconnect mất tin giảm từ 5% xuống 0%; p99 latency reconnect < 800 ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi thiết kế chat realtime, tôi bắt đầu bằng nguyên tắc persist trước, broadcast sau - message phải ghi vào CSDL trước khi đẩy cho người nhận, đảm bảo không mất dữ liệu khi gateway crash. Với fan-out, tôi dùng hybrid: nhóm nhỏ (< 1k) đẩy trực tiếp từ gateway, nhóm lớn chuyển sang pub/sub qua Redis Stream/Kafka để tránh quá tải gateway. Presence theo dõi heartbeat 30s, TTL 60s trong Redis, chỉ thông báo cho người đang mở chat chứ không broadcast cho cả danh bạ. Điểm mấu chốt là idempotency: client phải gửi clientMessageId UUID, server deduplicate bằng bộ nhớ Redis set; và reconnect có cursor - client lưu lastMessageId, reconnect chỉ kéo message mới. Tôi từng gặp case thiếu hai thứ này khiến message trùng lặp 2% và reconnect mất tin 5%; sau khi thêm dedup key và cursor-based resume, cả hai đều gần như bằng 0."
+
+> Senior tip: Luôn persist-first + cursor-based resume; presence là best-effort, không block message delivery.` ,
   follow: ['Fan-out?', 'Reconnect?'],
   tags: ['chat','websocket']
 },
@@ -5010,7 +5674,72 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế news feed với celebrity.',
-  a: `**Tóm tắt:** Hybrid fan-out, cursor-based pagination.`,
+  a: `**Tóm tắt:** News feed celebrity dùng hybrid fan-out: push cho user thường (write-time fan-out), pull cho celebrity (read-time merge), cursor-based pagination.
+
+### 1. Vấn đề celebrity
+
+Fan-out on write cho celebrity có triệu follower → write amplification lớn, chậm. Fan-out on read cho tất cả → read chậm cho mọi user.
+
+### 2. Hybrid
+
+- User thường: write-time fan-out vào feed cache của follower.
+- Celebrity: không fan-out; khi follower đọc feed, merge celebrity posts on read.
+
+### 3. Cursor-based pagination
+
+Dùng cursor (timestamp+id) thay vì OFFSET để tránh skip/duplicate khi data thay đổi. OFFSET lớn → O(N) scan.
+
+### 4. Ranking
+
+Score = affinity + recency + engagement; top-K merge từ nhiều source.
+
+### 5. Cache & invalidation
+
+Feed cache TTL ngắn; celebrity post invalidate follower feeds lazily.
+
+### 6. Monitoring
+
+Track fan-out lag, feed freshness, read latency p99.
+
+### Pitfall
+
+- Cache stampede khi celebrity post → coalescing.
+- Cursor không stable khi clock skew → dùng snowflake id.
+- Hot celebrity post → thundering herd.
+
+### Cơ chế chi tiết: Fan-out worker
+
+Fan-out worker tiêu thụ sự kiện post-created từ Kafka (hệ thống tin nhắn phân tán - các ứng dụng gửi/nhận message qua topic). Mỗi worker xử lý một partition (phân vùng - phần của topic được phân tán), đọc batch 100–500 sự kiện/lần. Với mỗi sự kiện, worker lấy danh sách follower từ cache (Redis followers:{userId} - ZSET lưu follow_time). Nếu số follower < ngưỡng (mặc định 10k), worker dùng Redis pipeline (gom nhiều lệnh gửi cùng lúc để giảm round-trip) ZADD feed:{followerId} {timestamp} {postId} cho từng follower. Pipeline gom 100–500 lệnh gửi một lần giảm round-trip từ khoảng 500ms xuống ~5ms. Nếu số follower >= ngưỡng, worker **không push**, chỉ cập nhật recent_posts:{authorId} (ZSET lưu 500 bài mới nhất của celebrity). Worker scale ngang bằng thêm partition Kafka; mỗi partition chỉ xử lý một tập con tác giả.
+
+Vấn đề hot partition: bài của celebrity rơi vào một partition -> worker đó quá tải. Giải pháp: pre-split partition theo băm authorId, hoặc detect celebrity trước khi vào Kafka (routing key = celebrity thì vào topic riêng, xử lý bởi worker pool riêng với concurrency cao hơn).
+
+### Cơ chế chi tiết: Read path và merge
+
+Khi client gọi GET /feed?cursor=... feed service:
+1. Đọc từ feed:{userId} (Redis ZSET) top N bài đã push (thường 50–100).
+2. Lấy danh sách celebrity mà user follow từ cache celebrity_follows:{userId}.
+3. Với mỗi celebrity, đọc recent_posts:{celebrityId} top M bài (M = 10–20).
+4. Merge K danh sách đã sắp xếp (K = 1 push + số celebrity follow) bằng **k-way merge** dùng min-heap O(tổng × log K). Loại bỏ duplicate postId (dùng hash set - cấu trúc lưu giá trị duy nhất).
+5. Hydrate chi tiết bài (content, author, media) từ cache/CSDL theo batch postId — tránh N+1 query (tránh truy vấn CSDL nhiều lần lặp cho từng bài).
+6. Trả về cursor (score, postId) của bài cuối để trang sau.
+
+Cursor ổn định: điều kiện điểm < điểmCuoi HOẶC (điểm = điểmCuoi VÀ postId < postIdCuoi) đảm bảo không skip/duplicate khi data thay đổi giữa hai request. Không dùng OFFSET vì OFFSET lớn sẽ quét O(N) và khi data thay đổi liên tục sẽ gây skip/duplicate.
+
+### Cơ chế chi tiết: Cache invalidation và lan truyền xoá
+
+Khi celebrity xoá/sửa bài:
+- Sửa: chỉ cập nhật bài gốc trong CSDL; feed chỉ lưu postId nên tự động đúng — không cần invalidate.
+- Xoá: phát sự kiện post-deleted -> fan-out worker nhận và ZREM feed:{followerId} {postId} cho TẤT CẢ follower (dùng pipeline batch 500). Đồng thời xóa khỏi recent_posts:{authorId}. Nếu số follower lớn (celebrity), dùng job nền chia nhỏ theo batch 10k follower/lần, hoàn tất trong vài giây. Không chờ TTL 2h.
+
+### Ví dụ đời thực: feed bị duplicate bài khi merge push và pull
+
+Một nền tảng nội dung có 5 triệu DAU dùng hybrid fan-out: push cho user thường, pull cho celebrity. **Triệu chứng:** người dùng báo thấy cùng một bài twice trong feed (lần ở vị trí 3 và vị trí 15), và khi cuộn xuống bài bị mất. **Điều tra:** kiểm tra log feed service thấy hai nguồn trả về cùng postId: feed ZSET của user (push) trả bài do worker fan-out, và celebrity recent_posts (pull) cũng trả bài đó — merge không loại bỏ trùng. Ngoài ra, khi celebrity xoá bài, feed ZSET của follower vẫn giữ id cũ đến khi TTL (2h). **Nguyên nhân gốc:** merge push và pull là hai đường dữ liệu độc lập, không có cơ chế dedup (loại trùng) theo postId; và xoá bài không lan truyền sang feed cache đã push. **Xử lý:** (1) merge theo postId, loại bỏ id trùng trước khi trả; (2) dùng cursor phân trang ổn định (score, postId) để không skip/duplicate khi data thay đổi; (3) khi celebrity xoá bài, phát sự kiện post-deleted để fan-out worker gỡ id khỏi feed ZSET (dùng ZREM batch); (4) hydrate chi tiết bài qua batch, lọc bỏ bài đã xoá ở lớp cuối. **Kết quả đo được:** duplicate bài giảm từ ~3% xuống 0.1%, và bài xoá biến mất khỏi feed trung bình trong 2 giây thay vì 2h.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về news feed celebrity, tôi giải thích ngay rằng push cho celebrity có triệu follower là không thể: một bài = 50 triệu ZADD, worker sẽ bị nghẽn. Vì vậy tôi dùng hybrid: push cho follower dưới ngưỡng (ví dụ 10k), pull cho celebrity. Khi đọc, feed service lấy từ Redis ZSET của người dùng kết hợp recent_posts của celebrity, merge theo timestamp, và dùng cursor (score, postId) để phân trang — không dùng OFFSET vì OFFSET lớn sẽ quét O(N) và khi data thay đổi liên tục sẽ gây skip/duplicate. Điểm hay bị bỏ qua là merge: hai nguồn push và pull có thể trả cùng postId, phải dedup theo postId trước khi trả; và khi xoá bài, phải phát sự kiện để worker gỡ id khỏi feed cache đã push, không thể chờ TTL 2h."
+
+> Senior tip: Hybrid fan-out là trade-off write vs read; chọn threshold follower count (ví dụ 10k) để chuyển sang pull.` ,
   follow: ['Tại sao hybrid?', 'Cursor khác OFFSET?'],
   tags: ['news-feed','fan-out']
 },
@@ -5019,7 +5748,105 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế lưu file có deduplication.',
-  a: `**Tóm tắt:** Content-addressable, chunking, reference counting.`,
+  a: `**Tóm tắt:** File storage dedup dùng content-addressable storage (CAS): hash content làm id, chunking để dedup partial, reference counting để GC.
+
+### 1. Content-addressable
+
+File id = SHA-256(content). Upload cùng content → cùng id → skip lưu, tăng ref count.
+
+### 2. Chunking
+
+Chia file thành chunk (ví dụ 4MB) để dedup partial (delta). Hữu ích cho backup/versioning.
+
+### 3. Reference counting
+
+Mỗi file/chunk có ref count; khi 0 → GC (soft delete + hard delete sau TTL).
+
+### 4. Integrity
+
+Verify hash sau upload/download; corruption → re-fetch từ replica.
+
+### 5. Storage tiers
+
+Hot (SSD) cho recent, cold (S3 Glacier) cho archive.
+
+### 6. Upload flow
+
+Client hash → check existence → upload missing chunks → commit manifest.
+
+### 7. Concurrency & consistency
+
+Manifest commit dùng optimistic locking trên file id; conflict → retry. Chunk upload idempotent theo chunk hash.
+
+### 8. Cost optimization
+
+Tiering + lifecycle policy tự động chuyển cold sau 30 ngày không truy cập.
+
+### Pitfall extra
+
+- Orphan chunks khi upload fail → GC sweep.
+- Dedup cross-tenant phải cẩn thận privacy (hash leak existence) → salt per tenant.
+
+### Cơ chế chi tiết: Chunking strategy
+
+Có hai cách chia chunk:
+- **Fixed-size chunking (chia cố định 4MB):** đơn giản, dễ triển khai. Nhược điểm: thay đổi 1 byte ở đầu file làm dịch chuyển toàn bộ chunk sau đó -> không dedup được phần còn lại. Phù hợp cho file ít thay đổi (backup, lớp ảnh container).
+- **Content-Defined Chunking - CDC (chia theo nội dung, dùng Rabin fingerprinting - kỹ thuật vân tay nội dung):** ranh giới chunk quyết định bởi nội dung (hash cửa sổ trượt). Thay đổi cục bộ chỉ ảnh hưởng chunk chứa thay đổi -> dedup tốt cho file thường sửa (disk VM, kho code). Chi phí CPU cao hơn, nhưng tỷ lệ dedup tốt hơn 2–3x so với fixed-size.
+
+Production thường dùng CDC cho backup/VM, fixed-size cho object storage đơn giản. Kết hợp: file nhỏ (< 8MB) không chunk, file lớn dùng CDC. CDC tham số: kích thước cửa sổ (48–64 byte), min/max chunk size (2KB–512KB), kích thước trung bình mục tiêu (64KB–1MB). Chunk size quá nhỏ -> manifest lớn; quá lớn -> mức chi tiết dedup thô.
+
+### Cơ chế chi tiết: Cấu trúc manifest
+
+~~~json
+{
+  "fileId": "sha256:abc123...",
+  "size": 104857600,
+  "chunks": [
+    {"hash": "sha256:chunk1...", "size": 4194304, "offset": 0},
+    {"hash": "sha256:chunk2...", "size": 4194304, "offset": 4194304}
+  ],
+  "createdAt": "2026-11-01T10:00:00Z",
+  "tenantId": "tenant-123"
+}
+~~~
+
+Manifest được lưu như một object riêng (cũng có content hash), ref count = số file tham chiếu. Luồng upload: client tính hash chunk -> kiểm tra sự tồn tại -> upload chunk thiếu -> POST manifests với danh sách hash chunk -> server xác thực và commit (tăng ref count từng chunk). Bước commit manifest là nguyên tử: nếu thất bại giữa chừng, chunk trở thành orphan (ref count = 0).
+
+### Cross-tenant privacy và salt
+
+Nếu dùng chung kho lưu trữ chunk cho nhiều tenant (khách hàng), hash chunk có thể rò rỉ thông tin: kẻ tấn công upload file đoán -> nếu chunk tồn tại -> biết tenant khác có file đó. Giải pháp: **salt per tenant** (muối cho mỗi tenant) — chunk hash = SHA-256(salt_tenant + nội dung chunk). Salt lưu trong cấu hình tenant, xoay thay đổi định kỳ. Trade-off: mất dedup cross-tenant (chấp nhận được vì bảo mật > lượng dung lượng saves). Nếu bắt buộc dedup cross-tenant (ví dụ kho chứa container công khai), dùng **convergent encryption** (mã hóa hoán quy - mã hóa chunk với khóa = hash(chunk)), nhưng cần mô hình mối đe dọa kỹ (kẻ tấn công có thể tra cứu từ điển).
+
+### Kiểm tra toàn vẹn và sửa chữa
+
+Mỗi chunk lưu kèm crc32c (nhanh) và sha256 (chắc chắn). Job nền:
+- **Scrub hàng tuần:** đọc 1% chunk ngẫu nhiên, xác thực sha256. Sai -> đánh dấu corrupt, trigger sao chép lại từ replica khỏe.
+- **Sửa chữa:** chunk corrupt -> tìm replica đúng hash -> sao chép lại -> xác thực. Nếu tất cả replica corrupt -> alert P1, cần khôi phục từ bản sao lưu.
+- **Kiểm tra tính nhất quán manifest:** hàng ngày so sánh ref count manifest với kho chunk thực tế; lệch -> sửa ref count.
+
+### Garbage Collection cho orphan chunk
+
+- **Soft delete:** khi xóa file/manifest, ref count giảm. Chunk có ref count = 0 -> đánh dấu orphaned_at, không xóa ngay.
+- **Hard delete sau TTL:** orphan chunk sau 7–30 ngày mới xóa (để khôi phục nếu commit manifest thất bại do mạng).
+- **Pending TTL:** chunk upload xong nhưng commit manifest thất bại trong 1h -> xóa (tránh orphan tăng dần).
+- GC job chạy định kỳ (mỗi giờ), batch 1000 chunk/lần, ghi log tỉ lệ orphan để cảnh báo.
+
+### Tách tầng lưu trữ và tối ưu chi phí
+
+- **Hot tier (SSD):** chunk gần đây (< 30 ngày), truy cập thường xuyên.
+- **Warm tier (HDD/object storage):** chunk 30–90 ngày.
+- **Cold tier (S3 Glacier / băng):** chunk > 90 ngày, khôi phục trong vài giờ.
+
+Chính sách vòng đời tự động chuyển theo thời gian truy cập gần nhất. Dedup giúp tách tầng hiệu quả hơn: cùng nội dung chỉ lưu 1 lần ở mỗi tầng.
+
+### Ví dụ đời thực: orphan chunk bít tắc lưu trữ sau khi upload thất bại
+
+Một dịch vụ lưu file doanh nghiệp có hàng triệu người dùng, dùng CAS (content-addressable storage - lưu theo hash nội dung) với chunk 4MB và reference counting. **Triệu chứng:** dung lượng disk tăng 30% trong 2 tuần dù người dùng chỉ upload lượng file nhỏ; dashboard cho thấy số orphan chunk tăng dần. **Điều tra:** kiểm tra log upload service thấy nhiều request timeout ở bước "commit manifest" — client upload xong các chunk nhưng request commit bị thất bại; chunk đã được lưu với hash nhưng manifest (danh sách chunk + ref count) chưa được ghi. **Nguyên nhân gốc:** upload chunk là idempotent theo chunk hash (nên lặp lại không sao), nhưng bước commit manifest là ghi ref count — nếu thất bại giữa chừng, chunk trở thành orphan (ref count = 0). Job GC chỉ chạy mỗi ngày và chỉ xóa chunk có ref count = 0 và không nằm trong manifest nào đang chờ. **Xử lý:** (1) thêm TTL cho chunk pending (1h) — chunk không được commit trong 1h thì xóa; (2) commit manifest dùng optimistic locking trên file id, conflict -> retry; (3) job GC chạy mỗi giờ thay vì mỗi ngày, và ghi log tỉ lệ orphan để cảnh báo; (4) thêm kiểm tra toàn vẹn hàng tuần: xác thực hash của mỗi chunk với lưu trữ. **Kết quả đo được:** orphan chunk giảm từ 30% xuống dưới 1%, dung lượng disk ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về lưu file dedup, tôi bắt đầu bằng content-addressable storage: id file = SHA-256(content), upload cùng nội dung -> cùng id -> skip lưu. Với file lớn, chunking 4MB giúp dedup phần — hai file có cùng phần đầu thì chunk đó không cần upload lại, rất hữu ích cho backup/versioning. Mỗi chunk/file có reference count; khi về 0 thì GC (xóa mềm + xóa cứng sau TTL). Điểm hay bị bỏ là orphan chunk: nếu upload xong chunk nhưng commit manifest thất bại, chunk trở thành orphan — tôi dùng TTL cho chunk pending và job GC chạy thường xuyên hơn. Với dedup cross-tenant, cần salt per tenant vì hash leak có thể cho biết tenant A có file nào đó. Cuối cùng, kiểm tra toàn vẹn xác thực hash sau upload/download để phát hiện hư hỏng dữ liệu."
+
+> Senior tip: CAS + ref count là nền tảng của Dropbox/borg; luôn có GC job và integrity check.` ,
   follow: ['Tại sao chunking?', 'Reference counting?'],
   tags: ['dedup','chunking']
 },
@@ -5028,8 +5855,947 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'lead',
   q: 'Thiết kế đặt vé chống overbook.',
-  a: `**Tóm tắt:** Hold TTL + SELECT FOR UPDATE, expiry worker, confirm atomic.`,
+  a: `**Tóm tắt:** Đặt vé chống overbook dùng hold TTL + SELECT FOR UPDATE, expiry worker giải phóng ghế hết hạn, confirm atomic chuyển hold → booked.
+
+### 1. Hold phase
+
+User chọn ghế → INSERT hold với expires_at = now + 10min, status=HOLD. Dùng SELECT FOR UPDATE trên seat row để serialize concurrent hold.
+
+### 2. Expiry worker
+
+Job định kỳ UPDATE seat SET status=AVAILABLE WHERE status=HOLD AND expires_at < now.
+
+### 3. Confirm
+
+Payment success → UPDATE seat SET status=BOOKED WHERE id=? AND status=HOLD AND expires_at > now (conditional). Nếu 0 rows → hold expired → fail.
+
+### 4. Pessimistic vs optimistic
+
+- Pessimistic (FOR UPDATE): serialize, an toàn, throughput thấp.
+- Optimistic (version column): throughput cao, retry khi conflict; phù hợp low contention.
+
+### Pitfall
+
+- Hold TTL quá ngắn → user chưa thanh toán xong.
+- Expiry worker race với confirm → conditional update bảo vệ.
+- Over-sell nếu không conditional.
+
+### Cơ chế chi tiết: Hold phase và Seat map
+
+Hold phase là bước quan trọng nhất. Mô hình dữ liệu:
+~~~sql
+CREATE TABLE seat (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT NOT NULL,
+  section VARCHAR(20), row_num INT, seat_num INT,
+  status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE', -- AVAILABLE, HOLD, BOOKED
+  hold_expires_at TIMESTAMPTZ,
+  hold_token UUID,           -- khóa idempotency từ client
+  version INT NOT NULL DEFAULT 0,
+  UNIQUE (event_id, section, row_num, seat_num)
+);
+CREATE INDEX idx_seat_event_status ON seat(event_id, status);
+~~~
+
+Khi user chọn ghế (có thể chọn nhiều), client gửi danh sách seatId kèm hold_token (UUID). Server chạy trong **một transaction**:
+1. SELECT * FROM seat WHERE id IN (...) AND status = 'AVAILABLE' FOR UPDATE — khoá row, serialize concurrent hold.
+2. Kiểm tra tất cả seat đều AVAILABLE. Nếu có seat đã HOLD/BOOKED -> rollback, trả lỗi SEAT_TAKEN.
+3. UPDATE seat SET status='HOLD', hold_expires_at=now() + interval '10 minutes', hold_token=?, version=version+1 WHERE id IN (...).
+4. Commit. Trả hold_id (UUID gom nhóm) cho client.
+
+hold_token quan trọng: nếu client gửi lại cùng request (retry), server thấy hold_token đã tồn tại -> trả hold hiện có thay vì tạo mới (idempotency).
+
+### Cơ chế chi tiết: Expiry worker design
+
+Expiry worker không chỉ đơn giản UPDATE seat SET status='AVAILABLE' WHERE status='HOLD' AND hold_expires_at < now(). Cần thiết kế an toàn:
+- **Batch size:** mỗi lần xử lý 100–500 seat, tránh khoá bảng quá lâu.
+- **Conditional update:** chỉ cập nhật nếu vẫn còn HOLD và đã hết hạn:
+UPDATE seat
+   SET status='AVAILABLE', hold_token=NULL, hold_expires_at=NULL, version=version+1
+ WHERE id IN (...) AND status='HOLD' AND hold_expires_at < now()
+Chỉ cập nhật nếu vẫn còn HOLD và đã hết hạn. Nếu payment callback vừa đổi sang BOOKED, affected rows = 0 -> không làm gì.
+- **Cursor-based pagination:** dùng WHERE id > last_processed_id thay vì OFFSET để tránh skip khi data thay đổi.
+- **Idempotent:** chạy lại nhiều lần cũng an toàn nhờ điều kiện status='HOLD'.
+- **Schedule:** chạy mỗi 30s–1p. Có feature flag bật/tắt ngay lập tức.
+
+### Cơ chế chi tiết: Waitlist
+
+Khi event sold out (hết vé), user đăng ký waitlist:
+~~~sql
+CREATE TABLE waitlist (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  seat_preference JSONB,      -- section/row ưu tiên
+  status VARCHAR(20) DEFAULT 'WAITING', -- WAITING, OFFERED, EXPIRED, FULFILLED
+  offered_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,     -- TTL cho offer (ví dụ 10 phút)
+  UNIQUE (event_id, user_id)
+);
+~~~
+
+Khi seat bị release (expiry hoặc user hủy), worker lấy waitlist đầu tiên (FIFO theo created_at), tạo hold mới cho user đó, gửi thông báo (email/push), set offered_at=now(), expires_at=now()+10min. User phải confirm trong TTL; hết hạn -> chuyển user tiếp theo. Waitlist storm khi hàng loạt seat release cùng lúc -> batch processing + rate limit notification (ví dụ chỉ gửi 100 notification/giây).
+
+### Cơ chế chi tiết: Pessimistic vs Optimistic locking
+
+- **Pessimistic locking (SELECT FOR UPDATE):** khoá row ngay khi bắt đầu transaction. An toàn tuyệt đối, không có retry. Nhược điểm: throughput thấp (chỉ một transaction khoá row tại một thời điểm), dễ deadlock nếu khoá nhiều row (phải khoá theo thứ tự cố định). Phù hợp với hold phase (contention cao: nhiều user chọn cùng ghế).
+- **Optimistic locking (version column):** không khoá row; UPDATE có điều kiện WHERE id=? AND version=x. Nếu affected rows = 0 -> version thay đổi (conflict) -> rollback và retry (exponential backoff). Throughput cao, nhưng retry có thể lên đến 10–20 lần khi contention cao. Phù hợp với confirm phase (contention thấp: chỉ một user confirm một ghế).
+- **SELECT ... FOR UPDATE SKIP LOCKED:** tính năng Postgres — khoá row và bỏ qua row đã bị khoá bởi transaction khác. Dùng cho expiry worker: SELECT id FROM seat WHERE status='HOLD' AND expires_at < now() ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED — worker không cần đợi row đang được khoá bởi worker khác.
+
+### Ví dụ đời thực: hold hết hạn và payment callback đến trễ -> oversell nhẹ
+
+Một nền tảng đặt vé máy bay có 20 triệu vé/năm, dùng hold TTL 10 phút + expiry worker + conditional confirm. **Triệu chứng:** hàng tháng có ~50 đơn bị từ chối dù đã thanh toán thành công ("đơn của bạn đã bị hủy vì hết thời gian giữ chỗ"), và 3 trường hợp vé bị bán quá 1 lần (sau khi đối chiếu). **Điều tra:** kiểm tra log expiry worker thấy job chạy mỗi 1 phút; một lần chạy bắt đầu lúc 10:00:00 và kết thúc lúc 10:02:30 (quá 2 phút do CSDL chậm). Trong khoảng đó, payment callback của 12 đơn đến và ghi BOOKED — nhưng expiry worker đã đọc row với status=HOLD và sau đó UPDATE thành AVAILABLE. **Nguyên nhân gốc:** expiry worker không dùng conditional update (chỉ WHERE status=HOLD AND expires_at < now) nên khi chạy sau payment callback, nó ghi Available lên một row vừa được BOOKED. Expiry worker và payment callback race trên cùng row. **Xử lý:** (1) expiry worker dùng conditional update WHERE status='HOLD' AND expires_at < now() — nếu payment callback vừa đổi sang BOOKED, affected rows = 0; (2) payment callback dùng conditional WHERE status='HOLD' AND expires_at > now() — nếu expiry worker vừa đổi sang AVAILABLE, affected rows = 0; (3) thêm column version để optimistic locking; (4) callback và expiry worker cùng khoá theo seat row (SELECT FOR UPDATE) khi cần. **Kết quả đo được:** oversell nhẹ từ 3 xuống 0, đơn bị hủy nhầm giảm từ 50 xuống 2 (2 đơn còn do payment provider chậm hơn 10 phút).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi hỏi về đặt vé chống overbook, tôi bắt đầu bằng hold phase: user chọn ghế -> INSERT hold với expires_at = now + 10 phút, status=HOLD, và dùng SELECT FOR UPDATE trên seat row để serialize concurrent hold. Expiry worker là job định kỳ UPDATE seat SET status=AVAILABLE WHERE status=HOLD AND expires_at < now — nhưng điều hay bị bỏ là worker đó phải dùng conditional update, nếu không nó có thể ghi Available lên một row vừa được payment callback đổi sang BOOKED. Confirm cũng conditional: UPDATE seat SET status=BOOKED WHERE id=? AND status=HOLD AND expires_at > now; nếu 0 rows thì hold đã hết hạn. Với pessimistic vs optimistic: pessimistic (SELECT FOR UPDATE) serialize và an toàn nhưng throughput thấp, phù hợp với hold phase; optimistic (version column) throughput cao, retry khi conflict, phù hợp với confirm phase khi contention thấp. Luôn có expiry worker chỉ là cleanup, không phải authority."
+
+> Senior tip: Luôn conditional update với status check; expiry worker chỉ là cleanup, không phải authority.` ,
   follow: ['Pessimistic vs optimistic?', 'Hold hết hạn?'],
   tags: ['ticketing','overbook']
+},
+{
+  id: 'architecture-031',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Distributed lock bằng Redis (SET NX PX) trông đơn giản nhưng tại sao nó không an toàn tuyệt đối? Giải thích từng bước các kịch bản hỏng (GC pause, clock), cơ chế fencing token hoạt động ra sao, và khi nào nên dùng DB row lock thay thế.',
+  a: `**Tóm tắt:** Distributed lock (khóa phân tán - cơ chế đảm bảo tại một thời điểm chỉ một tiến trình trên nhiều máy được làm một việc) bằng Redis {{SET key token NX PX ttl}} đủ cho mục tiêu "giảm trùng lặp", nhưng **không đủ** cho mục tiêu "không bao giờ ghi đè sai" khi không có fencing token (số thứ tự tăng dần mà tài nguyên đích kiểm tra). Nguyên nhân gốc: lock hết hạn theo thời gian trong khi client vẫn đang giữ quyền truy cập tài nguyên; GC pause, clock skew, hoặc mạng chậm có thể khiến client cũ ghi đè client mới. Với dữ liệu quan trọng (tiền, tồn kho), ưu tiên ràng buộc DB (row lock, conditional update) thay vì lock Redis thuần.
+
+### Thuật ngữ nền (đọc nếu chưa quen)
+- **GC pause / stop-the-world (STW):** khoảng thời gian máy ảo Java (JVM) tạm dừng mọi thread ứng dụng để dọn rác bộ nhớ. Với heap lớn, pause có thể kéo dài từ vài trăm mili-giây đến hàng chục giây.
+- **Clock skew (lệch đồng hồ):** các máy chủ có giờ hệ thống khác nhau do NTP đồng bộ không hoàn hảo hoặc bước nhảy giờ; hai máy có thể lệch vài mili-giây đến vài giây.
+- **TTL (Time To Live):** thời gian sống của key; hết TTL Redis tự xóa key (tức lock tự hết hạn).
+- **Nguyên tử (atomic):** thao tác được thực hiện trọn vẹn, không bị xen giữa bởi thao tác khác.
+
+### Redis lock cơ bản: từng bước bên trong
+Mục tiêu: chỉ một worker xử lý job {{report:2026-11}}.
+1. Worker A tạo token ngẫu nhiên {{tA = uuid()}} (để chỉ chính A mới được nhả lock của A).
+2. A gửi: {{SET lock:report:2026-11 tA NX PX 30000}}.
+   - {{NX}} (Not eXists): chỉ đặt nếu key chưa tồn tại. Redis xử lý lệnh này đơn luồng (single-threaded event loop) nên hai lệnh SET NX đến cùng lúc không thể cùng thành công - đây là điểm "nguyên tử" tạo nên mutual exclusion (loại trừ lẫn nhau).
+   - {{PX 30000}}: TTL 30 giây. Redis lưu thời điểm hết hạn và xóa key khi đến hạn (active + passive expiry).
+3. Nếu trả {{OK}}, A giữ lock; nếu {{nil}}, A không giữ lock.
+4. A làm việc (ví dụ tính báo cáo 8 giây), ghi kết quả.
+5. A nhả lock: **không được** {{DEL lock:report:2026-11}} trần, vì nếu lock đã hết hạn và B đã vào, A sẽ xóa lock của B. Phải dùng Lua script (chạy nguyên tử trong Redis):
+~~~text
+-- KEYS[1]=lock key, ARGV[1]=token
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0  -- lock đã thuộc về người khác, không xóa
+end
+~~~
+
+### Vì sao vẫn không an toàn: 3 kịch bản hỏng
+**Kịch bản 1 - GC pause / process treo (phổ biến nhất):**
+~~~text
+t=0s   A acquire lock (TTL 30s), token=tA
+t=1s   A bắt đầu ghi báo cáo (nhiều object, heap căng)
+t=2s   JVM của A vào Full GC stop-the-world, mọi thread A đứng im
+t=30s  Redis xóa lock (TTL hết) - A không biết, đang bị treo
+t=31s  B acquire lock, token=tB, bắt đầu ghi
+t=40s  B ghi xong báo cáo phiên bản V2
+t=42s  GC của A kết thúc, A tỉnh dậy, vẫn "nghĩ" mình giữ lock
+t=43s  A ghi đè báo cáo -> V2 bị mất, dữ liệu sai
+~~~
+Tăng TTL (ví dụ 5 phút) chỉ giảm xác suất, không loại bỏ: GC pause dài, VM bị swap, container bị CPU throttle đều có thể vượt TTL. Giảm thời gian xử lý cũng không đảm bảo.
+
+**Kịch bản 2 - Clock skew / bước nhảy thời gian (NTP):**
+Redis tính TTL theo đồng hồ monotonic của chính nó (tốt), nhưng nếu bạn tự kiểm tra "còn bao lâu" bằng đồng hồ ứng dụng lệch, hoặc trong thiết lập phức tạp (Redlock dùng thời gian cục bộ để ước lượng), bước nhảy NTP có thể làm bạn đánh giá sai thời gian còn lại. Độc lập hơn, nếu TTL được quản lý bởi tầng ứng dụng dựa trên {{System.currentTimeMillis()}} (wall clock, có thể nhảy lùi/tiến), logic gia hạn/hết hạn sẽ sai.
+
+**Kịch bản 3 - Mất lock khi failover (Redis không durable):**
+Nếu dùng Redis master-replica bất đồng bộ (async replication): A acquire trên master, master chưa kịp replicate key lock sang replica thì master chết; replica được thăng lên master nhưng không có key lock -> B acquire được. Hai client cùng giữ lock.
+
+### Fencing token: cơ chế sửa đúng gốc rễ
+Lock một mình chỉ là "lời hứa mềm". Cần **fencing token**: một số nguyên tăng dần, cấp mỗi lần acquire thành công, và **tài nguyên đích phải từ chối token cũ**.
+~~~text
+Bước 1: Lấy token tăng dần (nguồn cấp phát phải có thứ tự)
+  - Redis: token = INCR fence:report:2026-11  -> ví dụ A nhận 33
+  - Hoặc dùng DB sequence / etcd revision
+Bước 2: A acquire lock kèm token 33, bắt đầu làm việc
+Bước 3: A bị GC pause, lock hết hạn, B acquire -> nhận token 34
+Bước 4: B ghi vào storage: "ghi V2 nếu token >= token_đã_thấy"
+  -> storage đang nhớ token_max=0, nhận 34 -> chấp nhận, cập nhật token_max=34
+Bước 5: A tỉnh dậy, ghi với token 33
+  -> storage thấy 33 < 34 -> TỪ CHỐI (stale writer)
+~~~
+Ví dụ kiểm tra fencing ở DB (Postgres):
+~~~sql
+-- Bảng lưu token cao nhất đã chấp nhận cho mỗi tài nguyên
+UPDATE report_output
+   SET content = ?, fence_token = 34
+ WHERE report_id = '2026-11'
+   AND fence_token < 34;  -- chỉ ghi nếu token mới hơn
+-- affected rows = 0 => bị từ chối, client biết mình đã mất lock
+~~~
+**Điểm mấu chốt:** nếu tài nguyên đích không thể kiểm tra token (ghi file S3 thuần, gọi API bên thứ ba không hỗ trợ version), fencing token không áp dụng được - khi đó lock Redis **không bảo vệ được** tính đúng đắn.
+
+### Khi nào dùng DB row lock thay thế
+| Nhu cầu | Lựa chọn | Vì sao |
+|---|---|---|
+| Tránh hai job chạy trùng, chấp nhận hiếm khi trùng | Redis SET NX PX + token + TTL + handler idempotent | Rẻ, đủ cho "best effort" |
+| Cập nhật đúng một hàng dữ liệu (tồn kho, số dư) | {{SELECT ... FOR UPDATE}} hoặc {{UPDATE ... WHERE điều_kiện}} trong transaction DB | DB là nguồn sự thật, atomic ở mức row, không cần lock ngoài |
+| Xử lý job hàng đợi trong Postgres | {{SELECT ... FOR UPDATE SKIP LOCKED}} | Claim nguyên tử, không lock chéo, tích hợp sẵn fencing bằng điều kiện |
+| Khóa logic theo tenant/user trong 1 DB | Postgres {{pg_advisory_xact_lock(key)}} | Lock gắn transaction, tự nhả khi commit/rollback, không lệ thuộc Redis |
+| Tọa độ giữa nhiều hệ thống không chung DB | Redis/etcd + fencing token ở mọi storage đích | Chỉ khi thật sự cần cross-system |
+
+Ví dụ DB row lock thay Redis cho trừ tồn kho (đúng hơn, đơn giản hơn):
+~~~sql
+UPDATE inventory
+   SET available = available - 1
+ WHERE sku = 'SKU-1' AND available >= 1;
+-- affected rows = 1 => thành công; 0 => hết hàng
+-- Không cần lock Redis, không lo GC pause ghi đè
+~~~
+
+### Trên production
+- **Triệu chứng:** báo cáo bị ghi đè ngẫu nhiên, job chạy trùng (hai dòng log "started" cùng jobId), tồn kho âm hiếm khi (nếu dùng lock thay vì điều kiện DB). Tỉ lệ lỗi tăng vào lúc GC căng (heap đầy, promotion failure) hoặc khi NTP bước giờ.
+- **Cách đo:** log {{lock_acquire, token, lease_ms, lock_release}}; metric thời gian giữ lock và số lần release trả 0 (mất lock). Correlate với GC log ({{-Xlog:gc*:file=gc.log}} JDK 17+) - nếu mất lock trùng thời điểm STW dài, đó là bằng chứng.
+- **Tuning/cấu hình có thật (Redis):** dùng {{PX}} (ms) thay {{EX}}; đặt TTL >= 3-5x p99 thời gian xử lý; watchdog gia hạn (Redisson {{RLock}} có watchdog mặc định 30s, gia hạn mỗi 10s) nhưng **watchdog không cứu process bị treo hoàn toàn** (STW, SIGSTOP). Bật {{appendonly yes}} và chấp nhận lock có thể mất khi failover nếu dùng async replication; cần correctness thì dùng replication có xác nhận hoặc chuyển sang hệ consensus.
+- **Nguyên tắc vận hành:** handler phía sau lock phải **idempotent** (chạy 2 lần cho cùng kết quả) - đó là lưới an toàn cuối khi lock thất bại.
+
+### Ví dụ đời thực: báo cáo tài chính bị ghi đè do GC pause
+
+Một hệ thống xử lý báo cáo doanh thu hàng ngày của ngân hàng, chạy lúc 02:00 sáng. Mỗi báo cáo mất khoảng 25 giây tính toán (tổng hợp 50 triệu giao dịch), dùng Redis lock TTL 60s. **Triệu chứng:** sau 3 tháng, team phát hiện báo cáo ngày 15/10 bị sai lệch 2,3 tỷ so với dữ liệu gốc; log thấy hai worker cùng ghi report_output cho cùng report_id=2024-10-15 trong vòng 2 giây. **Điều tra:** GC log (JDK 17, G1GC, heap 16GB) cho thấy lúc 02:15:23 worker A vào Full GC STW kéo dài 48 giây (humongous allocation + promotion failure). Lúc đó lock TTL 60s đã hết hạn (acquire lúc 02:14:55). Worker B acquire lock lúc 02:15:35, tính xong ghi V2 lúc 02:16:00. Worker A sau khi GC xong (02:16:11) vẫn nghĩ mình giữ lock, ghi đè V1 -> V2 mất. **Nguyên nhân gốc:** lock Redis hết hạn theo thời gian thực nhưng worker không biết; không có fencing token nên storage chấp nhận write từ worker cũ. **Xử lý:** (1) Thêm fencing token: Redis INCR fence:report:2024-10-15 cấp token mỗi acquire; (2) report_output thêm cột fence_token BIGINT DEFAULT 0; (3) Worker ghi DB với WHERE fence_token < $new_token (conditional update); (4) Tăng lock TTL lên 300s + bật Redisson watchdog gia hạn 10s; (5) Thêm alert: metric lock_lost_total > 0 hoặc GC pause > 30s -> PagerDuty. **Kết quả đo được:** 6 tháng sau, 0 sự cố ghi đè báo cáo; lock_lost_total = 0; p99 báo cáo 28s (trong TTL).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi nói về distributed lock Redis, tôi luôn bắt đầu bằng: SET NX PX chỉ là mutual exclusion best-effort, không phải correctness guarantee. Vấn đề cốt lõi là lock hết hạn theo thời gian thực (TTL) trong khi code chạy theo thời gian logic — GC pause, CPU throttle, network partition đều có thể làm TTL hết mà worker không hay. Tôi từng gặp case Full GC 48s làm lock hết hạn, worker cũ ghi đè báo cáo tài chính đã được worker mới tính xong. Giải pháp đúng là fencing token: mỗi lần acquire lock, lấy token tăng dần từ Redis INCR (hoặc DB sequence); storage đích (DB, S3 versioned, v.v.) chỉ chấp nhận write nếu token mới hơn token đã thấy. Nếu storage không hỗ trợ compare-and-swap (ví dụ API thứ ba), lock Redis không bảo vệ được — lúc đó phải dùng DB row lock (UPDATE ... WHERE version = x) hoặc etcd/consensus. Tóm lại: Redis lock giảm trùng lặp, fencing token + conditional write mới đảm bảo đúng đắn."
+
+
+> Senior tip: Tôi coi Redis lock là "đèn giao thông gợi ý", còn fencing token + ràng buộc DB là "rào chắn vật lý". Trong phỏng vấn, nếu bạn nói "dùng Redis lock" mà không nhắc GC pause và fencing, interviewer senior sẽ đào tiếp; nếu bạn chủ động nói "lock chỉ giảm trùng, tính đúng đắn nằm ở conditional write với token/version", đó là câu trả lời của người đã từng bị mất dữ liệu.`,
+  follow: ['Redisson watchdog gia hạn lock tự động; nó có giải quyết được kịch bản GC stop-the-world 40 giây không? Vì sao?', 'Bạn thiết kế fencing token khi storage đích là một API HTTP bên thứ ba không hỗ trợ version/compare-and-swap như thế nào?', 'Postgres advisory lock khác row lock (SELECT FOR UPDATE) ở điểm nào, và khi nào advisory lock phù hợp hơn?'],
+  refs: [{"type":"article","title":"How to do distributed locking (Martin Kleppmann)","url":"https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"},{"type":"doc","title":"Redis: Distributed Locks","url":"https://redis.io/docs/latest/develop/use/patterns/distributed-locks/"}],
+},
+{
+  id: 'architecture-032',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Giải thích consensus Raft ở mức đủ hiểu để vận hành: leader election, log replication và quorum hoạt động từng bước thế nào? Liên hệ với etcd và Kafka KRaft - tại sao chúng cần Raft và điều gì xảy ra khi leader chết?',
+  a: `**Tóm tắt:** Consensus (đồng thuận - các nút trong cụm thống nhất cùng một giá trị/thứ tự dù có nút chết hoặc mạng chậm) là bài toán cốt lõi của hệ phân tán. Raft là thuật toán consensus được thiết kế để dễ hiểu: một cụm bầu ra **leader** duy nhất, mọi ghi đi qua leader, leader sao chép log (nhật ký lệnh) sang follower và chỉ **commit** khi đa số (quorum) đã nhận. etcd dùng Raft để lưu metadata/cấu hình nhất quán; Kafka KRaft dùng biến thể dựa trên Raft (metadata quorum) để thay ZooKeeper quản lý metadata broker/topic.
+
+### Thuật ngữ nền
+- **Node (nút):** một tiến trình/server tham gia cụm (ví dụ một instance etcd).
+- **Quorum (đa số):** số nút tối thiểu phải đồng ý để quyết định có hiệu lực. Cụm N nút, quorum = floor(N/2)+1. Ví dụ N=3 -> 2; N=5 -> 3.
+- **Log (nhật ký):** danh sách lệnh có thứ tự, mỗi mục có {{index}} và {{term}} (nhiệm kỳ).
+- **Term (nhiệm kỳ):** số nguyên tăng dần; mỗi lần bầu cử bắt đầu term mới. Term giúp phân biệt leader cũ/mới.
+- **Commit:** một mục log được coi là chắc chắn khi leader biết nó đã được sao chép tới quorum; sau commit, trạng thái máy (state machine) mới áp dụng lệnh.
+
+### Cấu trúc dữ liệu Raft nhìn từ bên trong
+Mỗi nút giữ:
+~~~text
+persistent (lưu đĩa, sống qua restart):
+  currentTerm = 5          -- term hiện tại
+  votedFor = nodeB         -- đã bầu cho ai trong term này (hoặc null)
+  log[] = [ {idx:1,term:1,cmd:x}, {idx:2,term:3,cmd:y}, ... ]
+
+volatile (trong RAM):
+  commitIndex = 7          -- index cao nhất đã commit
+  lastApplied = 7          -- index cao nhất đã áp dụng vào state machine
+Leader thêm:
+  nextIndex[follower]      -- index tiếp theo sẽ gửi cho follower
+  matchIndex[follower]     -- index cao nhất follower đã xác nhận
+~~~
+
+### 1) Leader election - bầu leader từng bước
+Trạng thái nút: {{Follower}} (mặc định) / {{Candidate}} / {{Leader}}.
+~~~seq
+title: Raft - Leader election (3 nút)
+actors: F1 | F2 | F3
+note F1..F3: Ban đầu đều Follower, nhận heartbeat từ leader cũ
+F1 -> F1: Hết election timeout (ngẫu nhiên, ví dụ 150-300ms)
+F1 -> F1: Chuyển Candidate, term=6, tự bầu cho mình
+F1 -> F2: RequestVote(term=6, lastLogIndex,lastLogTerm)
+F1 -> F3: RequestVote(term=6, lastLogIndex,lastLogTerm)
+F2 -> F1: VoteGranted (log F1 ít nhất mới bằng F2)
+F3 -> F1: VoteGranted
+F1 -> F1: Đạt quorum (2/3) -> thành Leader term 6
+F1 -> F2: AppendEntries rỗng (heartbeat)
+F1 -> F3: AppendEntries rỗng (heartbeat)
+~~~
+Quy tắc quan trọng:
+- Mỗi nút chỉ bầu **1 phiếu mỗi term** (tránh 2 leader cùng term).
+- Follower chỉ bầu cho candidate có log **ít nhất cập nhật bằng** mình (so sánh {{lastLogTerm}} rồi {{lastLogIndex}}). Điều này ngăn leader mới thiếu dữ liệu đã commit.
+- **Election timeout ngẫu nhiên** (randomized) giảm xác suất hai nút cùng ứng cử -> split vote. Nếu split vote, hết timeout lại bầu term mới.
+- Khi nhận message có {{term}} cao hơn, nút lập tức hạ xuống Follower và cập nhật {{currentTerm}}.
+
+### 2) Log replication - sao chép log từng bước
+Mọi lệnh ghi từ client chỉ đi vào **leader**.
+~~~seq
+title: Raft - ghi thành công (commit khi đủ quorum)
+actors: Client | Leader | F1 | F2
+Client -> Leader: PUT x=5
+Leader -> Leader: Append {idx:8,term:6,cmd:PUT x=5} vào log local
+Leader -> F1: AppendEntries(prevIdx=7,prevTerm=5, entries=[idx8], leaderCommit=7)
+Leader -> F2: AppendEntries(prevIdx=7,prevTerm=5, entries=[idx8], leaderCommit=7)
+F1 -> F1: Kiểm tra prevIdx/prevTerm khớp -> append idx8
+F1 -> Leader: Success (matchIndex=8)
+Leader -> Leader: Đếm ack: leader+F1 = 2/3 (quorum) -> commitIndex=8
+F2 -> Leader: Success
+Leader -> Client: OK (đã commit)
+Leader -> F1: Heartbeat kèm leaderCommit=8 -> F1 apply idx8
+~~~
+Nếu log follower lệch (thiếu mục): leader phát hiện qua {{prevLogIndex/prevLogTerm}} không khớp, giảm {{nextIndex}} của follower đó và gửi lại từ điểm khớp (backtrack) cho đến khi đồng bộ.
+
+### 3) Vì sao quorum (đa số) là chìa khóa
+Quorum đảm bảo **giao nhau** (intersection): bất kỳ hai tập đa số nào cũng có ít nhất 1 nút chung. Nút chung đó mang thông tin về mục đã commit, nên leader mới (được bầu bởi đa số) chắc chắn có log chứa mọi mục đã commit. Đây là nền tảng an toàn (safety) của Raft.
+- N=3 chịu được 1 nút chết; N=5 chịu được 2. Tăng N tăng chịu lỗi nhưng tăng độ trễ ghi (phải chờ nhiều ack) và chi phí.
+- Nếu mất quorum (ví dụ 2/3 nút chết), cụm **không bầu được leader mới và không nhận ghi** - đây là chọn C (consistency) thay vì A (availability) khi partition theo CAP.
+
+### Liên hệ etcd
+- **etcd** (kho key-value phân tán, dùng bởi Kubernetes lưu toàn bộ trạng thái cluster) chạy Raft: ghi {{kubectl apply}} -> API server ghi etcd -> chỉ thành công khi quorum etcd commit. Vì vậy etcd cần 3 hoặc 5 thành viên, đặt trên failure domain khác nhau.
+- Đọc có thể {{linearizable}} (qua leader, chắc chắn mới nhất) hoặc {{serializable}} (từ follower, nhanh hơn nhưng có thể hơi cũ) tùy cấu hình client.
+
+### Liên hệ Kafka KRaft
+- Trước đây Kafka dùng **ZooKeeper** (hệ consensus riêng) để lưu metadata: broker nào sống, partition leader ở đâu, topic config. KRaft (Kafka Raft Metadata mode) thay ZooKeeper bằng một **controller quorum** chạy giao thức dựa trên Raft, lưu metadata trong một internal log topic ({{__cluster_metadata}}).
+- Điều xảy ra khi controller leader chết: các controller còn lại bầu leader mới bằng quorum; metadata đã commit không mất. Broker tiếp tục phục vụ produce/consume dựa trên metadata đã biết, nhưng thay đổi metadata (tạo topic, bầu partition leader mới) phải chờ controller quorum ổn.
+- Lợi ích thực tế: bỏ phụ thuộc ZooKeeper, mở rộng số partition tốt hơn, thời gian khôi phục controller nhanh và nhất quán hơn.
+
+### Trên production
+- **Triệu chứng khi quorum mất:** etcd báo {{etcdserver: no leader}}, {{request timed out}}; Kubernetes API server lỗi ghi; Kafka controller không bầu được leader, không tạo topic mới. Ứng dụng phía trên có thể vẫn đọc cache nhưng không thay đổi trạng thái cluster.
+- **Cách đo:** metric etcd {{etcd_server_has_leader}}, {{etcd_server_leader_changes_seen_total}} (tăng bất thường = bầu lại liên tục), {{etcd_disk_wal_fsync_duration_seconds}} (đĩa chậm làm chậm commit). Kafka: {{ActiveControllerCount}} (phải = 1 trên toàn cụm).
+- **Tuning/cấu hình có thật:** election timeout phải lớn hơn thời gian round-trip mạng và thời gian fsync đĩa; etcd khuyến nghị SSD, tách đĩa WAL; không đặt cụm 2 nút (mất 1 là mất quorum). Giám sát leader change: bầu lại thường xuyên thường do mạng không ổn, GC pause trên node controller, hoặc đĩa chậm.
+- **Trade-off cốt lõi:** Raft chọn an toàn và dễ hiểu, đổi lại ghi phải qua leader (leader là điểm nóng ghi) và độ trễ ghi >= 1 round-trip đến quorum.
+
+> Senior tip: Khi ai đó nói "dùng Raft nên dữ liệu luôn an toàn", hãy hỏi thêm: quorum có còn không, đĩa có fsync trước khi ack không, và client đọc từ leader hay follower. Raft đảm bảo an toàn theo mô hình giả định (crash fault, không Byzantine); cấu hình sai (tắt fsync, cụm 2 nút, network bất ổn) vẫn mất dữ liệu.`,
+  follow: ['Nếu hai node cùng thành Candidate do split vote, Raft đảm bảo không có hai leader cùng commit một index khác nhau như thế nào?', 'Linearizable read trong Raft (read qua leader) khác gì với đọc từ follower, và ReadIndex/lease read giải quyết ra sao?', 'Khi Kafka chuyển từ ZooKeeper sang KRaft, rủi ro vận hành chính trong quá trình migration là gì và tại sao metadata quorum phải tách biệt với data broker?'],
+  refs: [{"type":"doc","title":"The Raft Consensus Algorithm","url":"https://raft.github.io/"},{"type":"doc","title":"etcd: Why etcd","url":"https://etcd.io/docs/v3.5/learning/why/"}],
+},
+{
+  id: 'architecture-033',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Thời gian trong hệ phân tán: tại sao không thể dùng timestamp đồng hồ máy để sắp xếp sự kiện một cách đáng tin cậy? Giải thích clock skew, NTP, Lamport clock và vector clock từng bước, kèm ví dụ khi sắp xếp sai gây hậu quả trong ngân hàng/thương mại điện tử.',
+  a: `**Tóm tắt:** Trong hệ phân tán không có đồng hồ toàn cục hoàn hảo. Đồng hồ máy (wall clock) bị **clock skew** (lệch giữa các máy) và có thể nhảy lùi/tiến khi NTP hiệu chỉnh, nên sắp xếp sự kiện chỉ bằng timestamp máy có thể cho thứ tự sai nhân quả. **Lamport clock** cho thứ tự logic nhất quán với quan hệ "xảy ra trước" nhưng không phân biệt được hai sự kiện song song. **Vector clock** phát hiện được quan hệ nhân quả và concurrency (song song). Trong thực tế: dùng đồng hồ vật lý cho hiển thị/log gần đúng, dùng version/logical clock/HLC cho thứ tự nhân quả và giải quyết xung đột.
+
+### Thuật ngữ nền
+- **Wall clock (đồng hồ tường):** giờ thực tế trên máy, ví dụ {{2026-11-07T10:00:01Z}}; lấy bằng {{System.currentTimeMillis()}} (Java) - có thể nhảy do NTP.
+- **Monotonic clock (đồng hồ đơn điệu):** chỉ tăng, không nhảy lùi, dùng để đo khoảng thời gian; {{System.nanoTime()}} - **không** dùng để so sánh giữa các máy.
+- **Clock skew:** độ lệch giữa đồng hồ hai máy tại cùng thời điểm (ví dụ máy A nhanh hơn B 120ms).
+- **Clock drift:** tốc độ đồng hồ chạy nhanh/chậm so với chuẩn do phần cứng thạch anh.
+- **NTP (Network Time Protocol):** giao thức đồng bộ giờ qua mạng; máy hỏi NTP server và chỉnh đồng hồ. Độ chính xác điển hình vài mili-giây trong LAN, chục mili-giây qua Internet; NTP có thể **bước nhảy** (step) hoặc **chỉnh từ từ** (slew) - bước nhảy làm timestamp lùi/tiến đột ngột.
+- **Happened-before (xảy ra trước), ký hiệu A -> B:** A có thể ảnh hưởng B (cùng tiến trình theo thứ tự, hoặc gửi/nhận message). Nếu không A->B và không B->A thì A, B **concurrent** (song song).
+
+### Vì sao timestamp máy không đủ: ví dụ từng bước
+Hệ thống ngân hàng: hai giao dịch trên cùng tài khoản, số dư ban đầu 1.000.000đ.
+~~~text
+Máy A (đồng hồ NHANH hơn thực tế 500ms):
+  10:00:01.600 A ghi "rút 800.000đ" (thực tế xảy ra lúc 10:00:01.100)
+
+Máy B (đồng hồ ĐÚNG):
+  10:00:01.300 B ghi "nạp 200.000đ" (thực tế xảy ra lúc 10:00:01.300)
+
+Nếu sắp xếp theo timestamp máy: A(1.600) sau B(1.300)
+  -> hiểu nhầm nạp trước, rút sau (đúng ngẫu nhiên ở đây)
+Nhưng nếu A nhanh hơn 600ms:
+  A(1.700) vẫn sau? A ghi 1.700, B ghi 1.300 -> rút sau nạp.
+Nếu B ghi lúc 10:00:01.800 (thực tế 1.800) nhưng NTP bước lùi B 300ms:
+  B timestamp thành 1.500 -> hệ thống nghĩ nạp xảy ra trước rút? thứ tự đảo.
+~~~
+Trong thương mại điện tử: "đặt hàng" (máy web) và "hủy đơn" (máy worker) có thể bị sắp sai -> hệ thống hủy một đơn chưa được ghi nhận, hoặc hoàn tiền sai. Log ghép từ nhiều máy theo timestamp sẽ kể sai câu chuyện sự cố.
+
+### Lamport clock - đồng hồ logic (thứ tự nhất quán với nhân quả)
+Mỗi tiến trình giữ bộ đếm số nguyên {{L}}.
+~~~text
+Quy tắc:
+1. Trước mỗi sự kiện nội bộ: L = L + 1
+2. Khi gửi message m: L = L + 1; gửi kèm timestamp t=L
+3. Khi nhận message có timestamp t: L = max(L, t) + 1
+
+Ví dụ 3 tiến trình P1,P2,P3 (bắt đầu đều L=0):
+P1: e1(L=1) --gửi m(t=2)-->        e4(L=3)
+P2:                 nhận m: L=max(0,2)+1=3, e2(L=3) --gửi n(t=4)-->
+P3:                                  nhận n: L=max(0,4)+1=5, e3(L=5)
+
+Thứ tự Lamport: e1(1), m(2), e2(3), e4(3), n(4), e3(5)
+~~~
+Tính chất: nếu {{A -> B}} (nhân quả) thì {{L(A) < L(B)}}. **Nhưng chiều ngược lại không đúng**: {{L(e2)=3, L(e4)=3}} bằng nhau nên không nói được e2 (ở P2) và e4 (ở P1) ai xảy ra trước - hai sự kiện đó **concurrent** (song song). Lamport clock **không phát hiện concurrency**.
+
+### Vector clock - phát hiện nhân quả và song song
+Mỗi tiến trình {{Pi}} giữ vector {{V[i]}} có N phần tử (N tiến trình).
+~~~text
+Quy tắc:
+1. Sự kiện nội bộ tại Pi: V[i] = V[i] + 1
+2. Gửi message: V[i] = V[i] + 1; gửi kèm V
+3. Nhận message kèm Vmsg tại Pi:
+     V[j] = max(V[j], Vmsg[j]) với mọi j; rồi V[i] = V[i] + 1
+
+So sánh V và W:
+  V <= W nếu mọi k: V[k] <= W[k]
+  V <  W nếu V <= W và tồn tại k: V[k] < W[k]  (V xảy ra trước W)
+  Song song (concurrent) nếu không V<W và không W<V
+
+Ví dụ:
+P1: (1,0,0) --gửi--> (2,0,0)
+P2:             nhận -> (2,1,0) --gửi--> (2,2,0)
+P3: (0,0,1)  (sự kiện độc lập, không nhận message)
+
+So sánh (2,2,0) với (0,0,1):
+  (2,2,0) có phần tử 1,2 lớn hơn nhưng phần tử 3 = 0 < 1
+  (0,0,1) có phần tử 3 lớn hơn -> KHÔNG cái nào <= cái kia => SONG SONG
+~~~
+Vector clock cho biết chính xác hai phiên bản dữ liệu có quan hệ nhân quả hay xung đột concurrent (cần merge/resolve). Nhược điểm: vector lớn khi nhiều tiến trình (phải nén, dùng dotted version vector trong thực tế như Riak).
+
+### Áp dụng thực tế
+| Bài toán | Cách dùng thời gian |
+|---|---|
+| Hiển thị "gửi lúc 10:01" | Wall clock (chấp nhận sai lệch nhỏ) |
+| Sắp xếp log nhiều máy để debug | Wall clock + ghi rõ offset NTP; chấp nhận gần đúng, đối chiếu thêm request/correlation id |
+| Thứ tự giao dịch tiền trong 1 tài khoản | Một nguồn sự thật (DB sequence/serializable transaction) hoặc single-writer per account - **không** dùng timestamp máy |
+| Phát hiện xung đột ghi song song (eventual consistency) | Version, vector clock/dotted version, hoặc last-write-wins có hiểu rủi ro |
+| Phiên bản trong Raft/etcd | {{term}} + {{index}} (thứ tự logic toàn cụm qua consensus) |
+| Deadline/timeout | Monotonic clock ({{nanoTime}}) để đo khoảng, không dùng wall clock |
+
+### Trên production
+- **Triệu chứng do clock sai:** token/session hết hạn sớm hoặc sống quá lâu; log timeline đảo lộn gây chẩn đoán sai sự cố; last-write-wins chọn sai bản ghi "mới hơn"; chứng chỉ TLS bị từ chối (not yet valid/expired) khi clock lệch mạnh.
+- **Cách đo:** theo dõi offset NTP ({{chronyc tracking}} trên Linux: field {{System time}}; hoặc metric node exporter {{node_timex_offset_seconds}}). Cảnh báo khi lệch > 50-100ms trong datacenter.
+- **Tuning/cấu hình có thật:** chạy {{chrony}} hoặc {{ntpd}} trên mọi node; ưu tiên NTP server nội bộ; cấu hình chrony tránh step nhảy lớn khi đang chạy (slew) trừ khi lệch quá ngưỡng an toàn; trong JVM không dùng {{currentTimeMillis}} cho logic timeout quan trọng - dùng {{nanoTime}} hoặc thư viện deadline.
+- **Nguyên tắc:** với dữ liệu tiền/banking, **không bao giờ** quyết định đúng-sai nghiệp vụ dựa vào so sánh timestamp từ hai máy khác nhau; dùng transaction DB, sequence, hoặc consensus.
+
+> Senior tip: Câu trả lời senior không phải "dùng NTP cho chính xác". NTP giảm skew nhưng không xóa nó về 0 và không sửa được bước nhảy. Câu trả lời đúng là: nhận ra bài toán cần **thứ tự vật lý** hay **thứ tự nhân quả**; nhân quả thì dùng logical clock/version/consensus, còn vật lý chỉ dùng cho hiển thị và chấp nhận sai số đo được.`,
+  follow: ['Google Spanner dùng TrueTime với khoảng bất định [earliest, latest] để đạt external consistency; ý tưởng "chờ hết bất định" giải quyết clock skew ra sao và đánh đổi gì?', 'Hybrid Logical Clock (HLC) kết hợp wall clock và Lamport clock như thế nào, và vì sao nó hữu ích cho database phân tán (ví dụ CockroachDB)?', 'Trong hệ event sourcing, bạn gắn thứ tự sự kiện bằng timestamp hay sequence number; khi nào cần cả hai và mỗi cái dùng cho mục đích gì?'],
+  refs: [{"type":"doc","title":"chrony documentation (clock synchronization)","url":"https://chrony-project.org/documentation.html"},{"type":"article","title":"Time, Clocks, and the Ordering of Events (Lamport)","url":"https://lamport.azurewebsites.net/pubs/time-clocks.pdf"}],
+},
+{
+  id: 'architecture-034',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Consistent hashing (băm nhất quán) và virtual node giải quyết vấn đề gì khi thêm/bớt node trong cụm cache hoặc storage phân tán? Giải thích cấu trúc vòng băm, cách định tuyến key, và vì sao rebalancing ít tốn kém hơn băm modulo.',
+  a: `**Tóm tắt:** Consistent hashing (băm nhất quán - kỹ thuật ánh xạ key và node lên cùng một vòng băm để khi số node đổi, chỉ một phần nhỏ key phải di chuyển) giải quyết bài toán: {{hash(key) % N}} khiến gần như **mọi key đổi chỗ** khi N thay đổi. Với consistent hashing, thêm 1 node chỉ làm di chuyển khoảng {{1/(N+1)}} key. **Virtual node** (vnode - mỗi node vật lý chiếm nhiều vị trí trên vòng) khắc phục phân bố lệch khi ít node hoặc khi node có sức mạnh khác nhau.
+
+### Bối cảnh: vì sao modulo gây thảm họa khi scale
+Giả sử 3 node cache (N=3), key {{user:42}} đi vào node {{hash(user:42) % 3 = 1}}.
+~~~text
+Trước (N=3):  key K -> hash(K) % 3
+  user:42 (hash 10) % 3 = 1  -> Node1
+  user:17 (hash 11) % 3 = 2  -> Node2
+  user:99 (hash 12) % 3 = 0  -> Node0
+
+Thêm Node3 (N=4):  key K -> hash(K) % 4
+  user:42 (10 % 4 = 2) -> Node2  (ĐỔI CHỖ)
+  user:17 (11 % 4 = 3) -> Node3  (ĐỔI CHỖ)
+  user:99 (12 % 4 = 0) -> Node0  (giữ nguyên)
+~~~
+Gần {{~75%}} key bị remap (kỳ vọng {{(N)/(N+1)}}). Hậu quả: cache miss hàng loạt (cache stampede) dồn vào DB, có thể làm sập hệ thống ngay lúc bạn vừa scale up - ngược mục đích.
+
+### Consistent hashing: cấu trúc vòng băm từng bước
+**Bước 1 - Vòng băm (hash ring):** chọn hàm băm có không gian lớn (ví dụ MD5 128-bit hoặc 32-bit), tưởng tượng giá trị băm nằm trên một vòng tròn khép kín {{0 -> 2^32-1 -> 0}}.
+~~~text
+              0
+          .---+---.
+       .-'         '-.
+   330 '-.         .-'  40
+                 /
+       N-A *-----* key:user42 (hash=55) -> đi xuôi chiều kim đồng hồ
+          /    /
+      200*   *-* 90
+          '-' '-'
+           N-C  N-B
+
+Vị trí node (băm tên/IP node): N-A=330, N-B=90, N-C=200
+Vị trí key: user42=55
+~~~
+**Bước 2 - Đặt node lên vòng:** {{pos(N-A)=hash("nodeA")}}, {{pos(N-B)=hash("nodeB")}}, {{pos(N-C)=hash("nodeC")}}.
+**Bước 3 - Định tuyến key:** băm key được vị trí {{p = hash(key)}}. Đi **xuôi chiều kim đồng hồ** trên vòng từ {{p}} đến gặp node đầu tiên -> key thuộc node đó.
+~~~text
+user42 -> hash=55  -> gặp N-B tại 90 đầu tiên  => lưu ở N-B
+user17 -> hash=150 -> gặp N-C tại 200         => lưu ở N-C
+user99 -> hash=350 -> vòng qua 0, gặp N-A 330  => lưu ở N-A
+~~~
+**Cấu trúc dữ liệu thực thi:** lưu vị trí node trong cây tìm kiếm cân bằng (sorted map / TreeMap trong Java) để tra cứu "node kế tiếp" theo {{ceiling(hash(key))}} trong {{O(log M)}} (M = số vnode).
+
+### Thêm/bớt node: chỉ di chuyển phần nhỏ
+~~~text
+Thêm N-D tại vị trí 60 (giữa 55 và 90):
+  Trước: key 55 -> N-B(90)
+  Sau:   key 55 -> N-D(60)  (CHỈ các key nằm giữa N-A(330 qua vòng) và N-D(60)? 
+         chính xác: key có hash trong khoảng (330, 60] trên vòng giờ thuộc N-D
+         thay vì trước đó thuộc N-B. Chỉ đoạn cung đó bị ảnh hưởng.)
+
+Xóa N-B(90):
+  Các key từng thuộc N-B (khoảng (60,90]) chuyển sang N-C(200).
+~~~
+Kỳ vọng: thêm 1 node vào cụm N node chỉ di chuyển {{K/(N+1)}} key (K tổng key). Bỏ 1 node chỉ ảnh hưởng key của chính node đó. Đây là khác biệt cốt lõi so với modulo.
+
+### Virtual node (vnode): vì sao cần
+Vấn đề khi ít node vật lý: 3 node chỉ tạo 3 điểm trên vòng -> các cung rất lệch (node A có thể "sở hữu" 70% vòng, B 10%). Node mạnh/yếu cũng bị đối xử ngang nhau.
+~~~text
+Giải pháp: mỗi node vật lý có V vnode (ví dụ V=150)
+  N-A -> hash("N-A#1"), hash("N-A#2"), ..., hash("N-A#150") rải đều trên vòng
+  N-B -> hash("N-B#1")..hash("N-B#150")
+  N-C -> hash("N-C#1")..hash("N-C#150")
+
+Key vẫn map tới vnode gần nhất theo chiều kim đồng hồ,
+nhưng vnode được quy chiếu về node vật lý (N-A, N-B, N-C).
+~~~
+Lợi ích:
+- **Phân bố đều hơn:** luật số lớn - nhiều điểm ngẫu nhiên rải đều hơn.
+- **Node heterogenous:** node mạnh gấp đôi cho 300 vnode, node yếu 75 vnode.
+- **Rebalance mịn khi node chết:** key của node chết rải sang nhiều node khác (mỗi vnode đổ vào node kế tiếp khác nhau) thay vì dồn hết vào 1 hàng xóm.
+
+### Áp dụng thực tế
+- **Redis Cluster:** dùng 16384 hash slot (một dạng phân mảnh cố định, tư tưởng tương tự chia miền đều); key map qua {{CRC16(key) mod 16384}} vào slot, slot gán cho node. Thêm node -> migrate một số slot (và key trong slot) thủ công/reshard.
+- **Cassandra / Dynamo / Riak:** consistent hashing + vnode để phân vùng token ring; replica đặt trên N vnode kế tiếp thuộc node vật lý khác.
+- **Client-side cache sharding:** thư viện (memcached client, ketama) dùng consistent hashing để chọn server.
+
+### Trên production
+- **Triệu chứng:** thêm node cache nhưng DB vẫn spike (remap quá nhiều do modulo hoặc vnode quá ít); một node nhận tải gấp 3 node khác (vòng lệch, quá ít vnode); sau rebalance, latency tăng do cold cache trên key vừa di chuyển.
+- **Cách đo:** phân bố key/QPS theo node (phải gần đều); tỉ lệ cache hit trước/sau thêm node; thời gian và lượng dữ liệu di chuyển khi reshard. Redis Cluster: {{CLUSTER NODES}}, {{redis-cli --cluster check}}.
+- **Tuning/cấu hình có thật:** chọn số vnode đủ lớn (thường 100-256/node vật lý tùy hệ) để cân bằng chi phí bộ nhớ metadata; khi thêm node mới, **warm up** dần (shadow traffic hoặc prefill) trước khi nhận full traffic để tránh cache stampede; dùng replication factor >= 2 để node chết không mất dữ liệu, chỉ cần promote replica.
+- **Lưu ý:** consistent hashing giải quyết "key nào đi đâu"; nó **không** tự xử lý replication, consistency, hay chuyển dữ liệu - tầng lưu trữ phải có cơ chế migrate (Redis reshard, Cassandra streaming).
+
+> Senior tip: Khi thiết kế sharding, tôi luôn hỏi "thêm 1 node thì bao nhiêu % dữ liệu phải di chuyển và mất bao lâu". Consistent hashing cho câu trả lời ~1/N; modulo cho ~100%. Nhưng đừng dừng ở đó: rebalance an toàn còn cần giới hạn tốc độ migrate, ưu tiên replica, và kế hoạch chống cache stampede khi key vừa đổi chỗ.`,
+  follow: ['Hash slot của Redis Cluster (16384 slot cố định) khác gì với consistent hashing + vnode truyền thống, và vì sao Redis chọn cách đó?', 'Khi một node chết đột ngột, làm sao đảm bảo key của nó vẫn phục vụ được (replication) và rebalancing xảy ra an toàn mà không gây overload?', 'Hot key (một key được đọc cực nhiều) có được consistent hashing giải quyết không? Nếu không, bạn xử lý hot key trên cụm sharded thế nào?'],
+  refs: [{"type":"doc","title":"Redis Cluster specification (hash slots)","url":"https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/"}],
+},
+{
+  id: 'architecture-035',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'So sánh các consistency model: linearizable, sequential, causal và eventual. Giải thích từng mô hình bằng ví dụ thật trong ngân hàng/thương mại điện tử (số dư, đơn hàng, tồn kho hiển thị), và vì sao "mạnh hơn" luôn có cái giá về độ trễ/khả dụng.',
+  a: `**Tóm tắt:** Consistency model (mô hình nhất quán - cam kết về việc các nút/tiến trình nhìn thấy dữ liệu theo thứ tự nào) là "hợp đồng" giữa hệ thống và người dùng. **Linearizable** (tuyến tính hóa) mạnh nhất: mọi thao tác như xảy ra tức thì tại một thời điểm, dễ suy luận nhưng tốn độ trễ và giảm khả dụng khi lỗi mạng. **Sequential** giữ cùng thứ tự quan sát, không ràng buộc thời gian thực. **Causal** chỉ giữ thứ tự nhân quả, cho phép song song độc lập. **Eventual** chỉ hứa cuối cùng hội tụ. Chọn mô hình theo tác động nghiệp vụ của việc đọc sai, không chọn theo "càng mạnh càng tốt".
+
+### Thuật ngữ nền
+- **Replica (bản sao):** nhiều nút giữ bản sao dữ liệu để tăng chịu lỗi/tốc độ đọc.
+- **Latency (độ trễ):** thời gian từ lúc gửi yêu cầu đến lúc nhận kết quả.
+- **Availability (khả dụng):** hệ thống vẫn trả lời (không lỗi) khi có nút/mạng hỏng.
+
+### Phổ mô hình từ mạnh đến yếu (nhìn theo "thứ tự được bảo đảm")
+~~~text
+Mạnh hơn  <----------------------------------------------  Yếu hơn
+Linearizable > Sequential > Causal > Read-your-writes > Eventual
+   (đắt: chờ phối hợp/quorum, có thể từ chối khi partition)
+   (rẻ: phản hồi nhanh, chịu được partition, nhưng đọc có thể cũ/xung đột)
+~~~
+
+### 1) Linearizable (tuyến tính hóa)
+Cam kết: tồn tại một thứ tự toàn cục của mọi thao tác, và thứ tự đó **khớp thời gian thực**. Nếu thao tác A hoàn thành trước khi B bắt đầu (theo thời gian thực), mọi người thấy A trước B. Mỗi đọc trả về giá trị của ghi gần nhất đã hoàn tất.
+~~~text
+Ví dụ ngân hàng - chuyển tiền giữa hai tài khoản:
+t1: Client chuyển 500k từ A(1tr) sang B(0)
+    [txn: A=500k, B=500k] COMMIT (linearizable)
+t2 (sau khi t1 hoàn tất): Client đọc số dư A -> PHẢI thấy 500k
+Không bao giờ thấy trạng thái giữa chừng (A đã trừ, B chưa cộng)
+~~~
+**Vì sao đắt:** ghi/đọc thường phải qua leader hoặc chờ quorum (Raft, Paxos). Nếu mạng partition, nút thiểu số phải từ chối phục vụ để không trả dữ liệu cũ -> hy sinh availability (CP theo CAP).
+**Khi dùng:** số dư ví, ledger, trừ tồn kho, khóa/điều phối (etcd/ZooKeeper), bất kỳ nơi "đọc sai một lần = thiệt hại tiền/pháp lý".
+
+### 2) Sequential consistency (nhất quán tuần tự)
+Cam kết: mọi tiến trình thấy **cùng một thứ tự** các thao tác, và thứ tự của mỗi tiến trình được giữ; nhưng thứ tự toàn cục **không nhất thiết khớp thời gian thực**.
+~~~text
+P1: write(x,1) hoàn tất lúc 10:00:01
+P2: (bắt đầu lúc 10:00:02) read(x) có thể thấy 0 rồi mới thấy 1
+    miễn là MỌI tiến trình đều thấy cùng kịch bản (0 rồi 1)
+~~~
+Khác linearizable ở ràng buộc thời gian thực. Ít hệ thực tế quảng cáo "sequential thuần"; hữu ích để hiểu nền tảng lý thuyết. Một số hệ cung cấp sequential khi đọc từ replica theo cùng thứ tự log.
+
+### 3) Causal consistency (nhất quán nhân quả)
+Cam kết: nếu {{A -> B}} (nhân quả: B đọc/nhận kết quả của A, hoặc cùng client theo thứ tự), mọi nơi thấy A trước B. Các thao tác **song song** (không liên quan) có thể được thấy theo thứ tự khác nhau ở các replica khác nhau.
+~~~text
+Ví dụ thương mại điện tử - bình luận trả lời:
+User X: đăng "Áo này đẹp" (sự kiện A)
+User Y: đọc A, trả lời "Mua ở đâu?" (sự kiện B, có nhân quả A->B)
+User Z: đăng "Ship nhanh không?" (sự kiện C, song song, không liên quan A,B)
+
+Causal đảm bảo: không ai thấy B ("Mua ở đâu?") trước A ("Áo này đẹp")
+Cho phép: một replica thấy C trước A, replica khác thấy A trước C (vì C song song)
+~~~
+**Vì sao rẻ hơn linearizable:** không cần phối hợp toàn cục cho thao tác song song; có thể dùng metadata nhân quả (vector clock, dependency tracking). **Đổi lại:** không đủ cho bài toán cần một thứ tự toàn cục duy nhất (ví dụ hai người cùng mua món hàng cuối cùng).
+**Khi dùng:** mạng xã hội, bình luận, giỏ hàng cộng tác, hệ thống "read-your-writes" mở rộng.
+
+### 4) Eventual consistency (nhất quán cuối cùng)
+Cam kết: nếu không có ghi mới, **cuối cùng** mọi replica hội tụ về cùng giá trị. Không hứa khi nào, và trong lúc hội tụ các replica có thể trả giá trị khác nhau.
+~~~text
+Ví dụ thương mại điện tử - hiển thị tồn kho trên trang sản phẩm:
+Kho thật: 3 sản phẩm
+Replica Asia (chậm 2s): hiển thị "còn 5"
+Replica EU: hiển thị "còn 3"
+Vài giây sau không ghi thêm: cả hai hội tụ về 3
+~~~
+**Khi dùng:** số lượt xem, tồn kho hiển thị (gần đúng - nhưng **trừ kho thực sự** khi đặt hàng phải linearizable/điều kiện), feed, cache, analytics.
+**Cạm bẫy:** eventual cần cơ chế chống phân kỳ vĩnh viễn (anti-entropy, read repair, conflict resolution). "Last write wins" dùng timestamp máy sẽ sai khi clock skew - cần version có ý nghĩa nhân quả.
+
+### Áp dụng ngân hàng / thương mại điện tử
+| Dữ liệu | Mô hình tối thiểu hợp lý | Vì sao | Công nghệ ví dụ |
+|---|---|---|---|
+| Số dư, ledger, chuyển tiền | Linearizable / serializable transaction | Sai 1 đồng = sự cố pháp lý; không được đọc số dư cũ để quyết định rút | Postgres (transaction), Spanner |
+| Trừ tồn kho khi chốt đơn | Linearizable (conditional write) | Tránh bán quá (oversell) | {{UPDATE .. WHERE stock>=1}}, Redis Lua atomic (với chốt DB) |
+| Tồn kho hiển thị trên trang | Eventual (vài giây) | Sai hiển thị chấp nhận được; chốt đơn mới kiểm tra thật | Cache/replica, search index |
+| Lịch sử đơn hàng của chính user | Read-your-writes | User vừa đặt phải thấy đơn của mình | Đọc primary sau ghi, session token |
+| Giỏ hàng | Causal / read-your-writes | Thêm rồi xem phải thấy; merge concurrent giữa thiết bị | DynamoDB, versioned cart |
+| Feed khuyến mãi | Eventual | Trễ vài giây không ảnh hưởng | CDN, replica, cache |
+
+### Trên production
+- **Triệu chứng chọn sai mô hình:** (quá yếu) user thấy "đặt hàng thành công" nhưng mở lịch sử không có (chưa read-your-writes); bán quá tồn kho (trừ kho eventual). (quá mạnh) p99 ghi cao, cụm từ chối ghi khi mất 1 node/quorum, latency cross-region lớn.
+- **Cách đo:** đo replication lag (Postgres {{pg_stat_replication}}: {{write_lag, flush_lag, replay_lag}}; metric {{seconds_behind_master}}); tỉ lệ đọc stale (so sánh version); lỗi timeout do chờ quorum.
+- **Tuning/cấu hình có thật:** Postgres đọc replica chấp nhận lag -> route đọc quan trọng về primary hoặc dùng {{synchronous_commit}} + synchronous standby (đánh đổi latency). Cassandra có tunable consistency per query ({{ONE/QUORUM/ALL}}). DynamoDB có {{ConsistentRead}}. Luôn ghi rõ trong code/query: đọc này chấp nhận stale bao nhiêu.
+- **Nguyên tắc:** vẽ bảng dữ liệu và gắn mô hình cho từng loại; "toàn hệ thống linearizable" hoặc "toàn hệ thống eventual" đều thường là sai.
+
+> Senior tip: Trong phỏng vấn, đừng chỉ liệt kê định nghĩa. Hãy lấy một luồng thật (đặt hàng: giữ chỗ -> trừ kho -> ghi đơn -> hiện lịch sử -> cập nhật trang sản phẩm) và chỉ ra mỗi bước cần consistency nào. Đó là cách chứng minh bạn chọn mô hình theo nghiệp vụ, không theo giáo trình.`,
+  follow: ['Read-your-writes và monotonic reads là session guarantee; bạn triển khai read-your-writes khi đọc đi qua replica (replication lag) bằng cách nào?', 'Tại sao last-write-wins (LWW) dùng timestamp máy nguy hiểm trong eventual consistency, và CRDT/version vector cải thiện điều gì?', 'Một hệ thống có thể cung cấp linearizable cho một phần dữ liệu và eventual cho phần khác trong cùng kiến trúc không? Ranh giới và rủi ro là gì?'],
+  refs: [{"type":"doc","title":"Jepsen: Consistency Models","url":"https://jepsen.io/consistency"}],
+},
+{
+  id: 'architecture-036',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Thundering herd, cache stampede và retry storm: ba hiện tượng khuếch đại tải này khác nhau thế nào, cơ chế gây ra từng cái ra sao, và bạn thiết kế phòng chống bằng request coalescing, jitter, circuit breaker, load shedding như thế nào trên production?',
+  a: `**Tóm tắt:** **Thundering herd** (đàn thú dồn ập - nhiều tiến trình cùng thức dậy tranh một tài nguyên), **cache stampede** (cache hết hạn -> nhiều request cùng đổ về DB), và **retry storm** (lỗi -> mọi client cùng retry -> làm hệ thống tệ hơn) là ba dạng **khuếch đại tải** (load amplification): một sự kiện nhỏ tạo ra N lần công việc. Phòng chống dựa trên 4 kỹ thuật bổ trợ nhau: **request coalescing** (gộp yêu cầu trùng), **jitter** (ngẫu nhiên hóa thời điểm), **circuit breaker** (ngắt mạch khi downstream lỗi), **load shedding** (chủ động từ chối bớt khi quá tải).
+
+### Thuật ngữ nền
+- **Downstream:** hệ thống/phụ thuộc mà bạn gọi tới (DB, service khác). **Upstream:** nơi gọi vào bạn.
+- **Cache miss:** tra cache không có dữ liệu, phải lấy từ nguồn gốc (thường là DB).
+- **Backoff:** chờ lâu dần giữa các lần retry. **Exponential backoff:** thời gian chờ tăng theo lũy thừa (1s, 2s, 4s...).
+
+### 1) Cache stampede - cơ chế từng bước
+~~~text
+Bối cảnh: key "hot:product:99" được 5.000 req/s đọc, cache TTL hết hạn lúc t=10s.
+
+t=9.999  5.000 req/s đều HIT cache -> DB 0 req/s
+t=10.000 TTL hết, key bị xóa
+t=10.001 5.000 req đồng thời MISS cache
+         -> cả 5.000 req cùng gọi DB: SELECT * FROM product WHERE id=99
+         -> DB QPS spike 0 -> 5.000 (hoặc hơn do pile-up)
+         -> DB chậm/sập -> các req timeout -> user lỗi hàng loạt
+t=10.050 một req may mắn lấy được từ DB, set lại cache
+         -> nhưng 4.999 req khác đã gửi/đang gửi query
+~~~
+Đây là khuếch đại: 1 key hết hạn -> 5.000 truy vấn DB giống hệt nhau.
+
+### 2) Thundering herd (tổng quát)
+Xảy ra khi nhiều worker chờ cùng một tín hiệu và cùng thức dậy: ví dụ hàng nghìn process chờ cùng lock/file descriptor (cấp OS), hoặc hàng nghìn client được hẹn "retry sau 30s" và cùng retry đúng giây 30. Trong kiến trúc dịch vụ, stampede là một dạng herd; herd còn gặp ở: leader election timeout trùng nhau (nếu không random), cron job cùng giờ 00:00, reconnect đồng loạt sau khi DB phục hồi.
+
+### 3) Retry storm - cơ chế từng bước
+~~~text
+Bối cảnh: Service A gọi Service B (đang quá tải, p99 5s, nhiều timeout).
+Mỗi request A có retry 3 lần, không backoff/jitter.
+
+t=0   1.000 req/s tới A -> gọi B -> B quá tải, 60% timeout
+t=1s  600 req timeout + 600 retry ngay lập tức = 1.600 req/s tới B
+      -> B càng quá tải, 80% timeout
+t=2s  1.280 timeout + retry -> ~2.300 req/s -> B sập hoàn toàn
+A cũng cạn connection/thread vì chờ B -> A sập theo (cascade failure)
+~~~
+Khuếch đại: lỗi một phần -> retry biến thành tấn công từ chính hệ thống (self-DDoS).
+
+### Phòng chống 1: Request coalescing (gộp yêu cầu)
+Chỉ cho **một** request đi load dữ liệu khi cache miss; các request khác chờ kết quả đó (singleflight).
+~~~java
+// Ý tưởng (dùng lock per-key, ví dụ Redis SET NX hoặc local map)
+String key = "product:99";
+Product v = cache.get(key);
+if (v != null) return v;
+
+String lockKey = "lock:" + key;
+// NX: chỉ set nếu chưa có; PX: TTL lock ngắn (tránh deadlock nếu holder chết)
+boolean won = redis.setIfAbsent(lockKey, "1", Duration.ofMillis(3000));
+if (won) {
+  try {
+    Product p = db.load(99);               // chỉ 1 req chạm DB
+    long ttl = 600 + rand.nextInt(60);      // jitter TTL (xem dưới)
+    cache.set(key, p, Duration.ofSeconds(ttl));
+    return p;
+  } finally { redis.delete(lockKey); }
+} else {
+  Thread.sleep(50);                         // chờ ngắn rồi đọc lại cache
+  return getWithCoalescing(key);            // hoặc trả stale nếu có
 }
+~~~
+Lưu ý: cần TTL cho lock; có thể dùng thư viện local singleflight (per-instance) + cache L1 để giảm round-trip Redis. Biến thể: **stale-while-revalidate** - trả dữ liệu cũ hết hạn ngay, một luồng nền làm mới.
+
+### Phòng chống 2: Jitter (ngẫu nhiên hóa)
+Jitter phá sự đồng bộ.
+~~~text
+TTL cache: base=600s -> ttl = 600 + random(0,60) giây
+  => 10.000 key không hết hạn cùng lúc (chống avalanche)
+
+Retry backoff + full jitter (công thức phổ biến):
+  base=1s, cap=30s, attempt=n
+  sleep = random(0, min(cap, base * 2^n))
+  attempt1: random(0,2s), attempt2: random(0,4s), attempt3: random(0,8s)...
+  => các client dàn đều, không dồn lại cùng thời điểm
+
+Election/reconnect timeout: 150ms + random(0,150ms) (Raft dùng cách này)
+~~~
+Bảng so sánh backoff (tư duy): không backoff -> storm; backoff cố định -> herd theo nhịp; exponential + jitter -> dàn đều.
+
+### Phòng chống 3: Circuit breaker (ngắt mạch)
+Ngắt mạch (giống cầu dao điện): khi downstream lỗi quá ngưỡng, **ngừng gọi** một lúc để downstream hồi phục, thay vì tiếp tục dội request.
+~~~text
+Trạng thái:
+  CLOSED (đóng, bình thường): gọi đi; đếm lỗi
+    -> tỉ lệ lỗi vượt ngưỡng (ví dụ 50% trên 20 req) => OPEN
+  OPEN (mở, ngắt): từ chối ngay (fail fast) hoặc trả fallback, KHÔNG gọi downstream
+    -> sau thời gian chờ (ví dụ 30s) => HALF_OPEN
+  HALF_OPEN (thử): cho vài req thăm dò
+    -> thành công => CLOSED; thất bại => OPEN
+~~~
+Thư viện Java thực tế: **Resilience4j** ({{CircuitBreaker}}, {{Bulkhead}}, {{Retry}}, {{RateLimiter}}). Kết hợp: retry chỉ với lỗi tạm thời và **đặt trong** circuit breaker (không retry khi mạch mở); đặt timeout ngắn để không giữ thread.
+
+### Phòng chống 4: Load shedding (chủ động cắt tải)
+Khi quá tải, **từ chối bớt** request có kiểm soát để phần còn lại được phục vụ đúng, thay vì cố gắng xử lý hết rồi sập cả cụm.
+~~~text
+Cách làm (từ rẻ đến tinh vi):
+- Giới hạn concurrency/bulkhead: tối đa 50 req đồng thời tới DB; vượt -> 503
+- Hàng đợi có giới hạn: queue đầy -> từ chối (không xếp hàng vô hạn)
+- Từ chối theo ưu tiên: giữ request thanh toán, cắt request gợi ý/analytics
+- Shed theo độ trễ: nếu p99 nội bộ vượt ngưỡng, trả 503 + Retry-After
+- Rate limit ở gateway (token bucket) như lớp ngoài cùng
+~~~
+Nguyên tắc: {{503 nhanh}} + {{Retry-After}} (kèm jitter phía client) tốt hơn {{timeout chậm}} sau 30s, vì timeout giữ tài nguyên (thread, connection) lâu hơn.
+
+### Phối hợp trên production
+~~~text
+Client -> [Rate limit + jitter retry] -> Gateway -> [Bulkhead + Timeout]
+       -> Service [Circuit breaker -> Downstream]
+       -> Cache [Coalescing + TTL jitter + stale fallback] -> DB
+~~~
+Mỗi lớp chặn một dạng khuếch đại; không có lớp nào thay thế được tất cả.
+
+### Trên production
+- **Triệu chứng:** DB QPS spike nhọn theo chu kỳ TTL; latency tăng đột biến rồi lan sang service khác (cascade); metric retry count tăng cùng lúc error rate; CPU/connection pool cạn dù traffic user không tăng tương ứng.
+- **Cách đo:** dashboard cache hit/miss theo thời gian (stampede thấy miss spike nhọn), DB QPS, tỉ lệ retry, trạng thái circuit breaker (Resilience4j expose metric), tỉ lệ 503 do shedding. So sánh {{traffic vào}} vs {{traffic ra downstream}} - nếu ra >> vào là đang khuếch đại.
+- **Tuning/cấu hình có thật:** Resilience4j {{CircuitBreakerConfig}} ({{failureRateThreshold}}, {{waitDurationInOpenState}}, {{slidingWindowSize}}), {{RetryConfig}} ({{maxAttempts}}, {{waitDuration}}, {{IntervalFunction.ofExponentialRandomBackoff}}), {{BulkheadConfig}} ({{maxConcurrentCalls}}). DB connection pool (HikariCP {{maximumPoolSize}}) là bulkhead tự nhiên - đừng đặt quá lớn.
+- **Runbook:** khi storm xảy ra, ưu tiên (1) bật shedding/rate limit hạ traffic vào, (2) mở circuit breaker thủ công nếu cần bảo vệ downstream, (3) kiểm tra retry config của caller, (4) sau khi ổn mới tắt dần.
+
+> Senior tip: Retry là liều thuốc có thể thành độc dược. Quy tắc tôi dùng: chỉ retry lỗi **tạm thời** (timeout, 503, connection reset), không retry lỗi **xác định** (400, 401, logic fail), luôn có backoff+jitter+giới hạn số lần, và tổng thời gian retry phải nằm trong deadline của request gốc. Nếu mọi tầng đều retry mù, một lỗi 1% có thể nhân lên thành outage 100%.`,
+  follow: ['Làm sao phân biệt trên dashboard một spike do traffic thật tăng (user đông) với spike do cache stampede hoặc retry storm?', 'Bulkhead pattern (cô lập tài nguyên) bổ sung cho circuit breaker như thế nào, và bạn chia bulkhead theo gì (theo downstream, theo loại request)?', 'Stale-while-revalidate trả dữ liệu cũ có rủi ro nghiệp vụ gì? Những loại dữ liệu nào tuyệt đối không được dùng cơ chế này?'],
+},
+{
+  id: 'architecture-037',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Ở góc độ lead, bạn chọn cơ chế phối hợp phân tán nào cho từng bài toán: Redis lock, etcd/ZooKeeper lease, hay ràng buộc DB? Phân tích trade-off qua case leader election của scheduler, claim job, và cập nhật tồn kho - kèm cơ chế lease/heartbeat/fencing end-to-end.',
+  a: `**Tóm tắt:** Không có "distributed lock tốt nhất", chỉ có cơ chế **đủ đúng** cho từng mức hậu quả. Lead cần chọn theo câu hỏi: "nếu hai tiến trình cùng chạy, thiệt hại là gì?". Trùng job báo cáo (gây tốn CPU) chấp nhận best-effort; trùng trừ tiền là thảm họa - phải có fencing ở tầng dữ liệu. Ba họ công cụ: **Redis lock** (rẻ, nhanh, best-effort), **etcd/ZooKeeper** (consensus, lease + session, phù hợp leader election/coordination), **DB constraint/transaction** (nguồn sự thật, fencing tự nhiên bằng điều kiện/version).
+
+### Khung ra quyết định
+~~~text
+Hậu quả nếu chạy trùng?
+  |-- Nhẹ (tốn tài nguyên, gửi mail trùng có thể chấp nhận)
+  |     -> Redis SET NX PX + handler idempotent
+  |-- Trung bình (dữ liệu sai nhưng sửa/đối soát được)
+  |     -> etcd/ZooKeeper lease HOẶC DB claim (SKIP LOCKED) + idempotent
+  |-- Nặng (mất tiền, oversell, vi phạm hợp đồng)
+        -> KHÔNG tin lock phân tán thuần
+           Dùng: transaction DB + conditional write + unique/version (fencing)
+~~~
+
+### Case 1: Leader election cho scheduler (chỉ 1 node điều phối cron)
+Mục tiêu: trong 5 instance scheduler, chỉ 1 instance "materialize" cron thành job mỗi phút. Nếu hiếm khi 2 instance cùng chạy, job có {{UNIQUE(name, scheduled_at)}} nên chỉ 1 insert thành công -> chấp nhận được.
+**Chọn:** etcd lease hoặc DB advisory/lease table.
+~~~seq
+title: Leader election bằng lease (etcd/DB)
+actors: S1 | S2 | etcd
+S1 -> etcd: grant lease TTL=15s -> leaseId=7
+S1 -> etcd: put leader=S1 với leaseId=7 (thành công nếu key trống)
+S1 -> S1: Trở thành leader, materialize cron
+S1 -> etcd: keepAlive leaseId=7 (gia hạn mỗi 5s)
+S1 -> etcd: keepAlive leaseId=7 (heartbeat tiếp)
+note S2: S2 thử put leader -> thất bại, watch key leader
+S1 -> S1: S1 chết (không keepAlive)
+etcd -> etcd: Lease 7 hết TTL -> xóa key leader
+etcd -> S2: Watch notify: leader key bị xóa
+S2 -> etcd: put leader=S2 với lease mới -> thành leader
+~~~
+**Cơ chế lease:** lease là "hợp đồng có hạn"; sống sót nhờ heartbeat gia hạn. Nếu leader treo (GC pause dài, mạng tách), heartbeat không đến -> lease hết -> leader bị thu hồi. Đây là **fail-safe** (an toàn khi im lặng) nhưng có cửa sổ: trong khoảng pause, leader cũ có thể vẫn đang hành động.
+**Fencing:** gắn {{leaseId}}/revision tăng dần vào hành động ghi (ví dụ ghi job kèm {{fence = leaseRevision}}; consumer kiểm tra). etcd cung cấp {{mod_revision}}/transaction compare-and-swap tự nhiên.
+
+### Case 2: Claim job từ hàng đợi trong Postgres
+Mục tiêu: 20 worker lấy job, không ai lấy trùng.
+~~~sql
+-- Mỗi worker chạy trong transaction ngắn (chỉ claim)
+UPDATE job
+   SET status = 'RUNNING',
+       worker_id = 'w7',
+       lease_until = now() + interval '5 minutes',
+       attempts = attempts + 1,
+       fence = fence + 1            -- fencing token tăng dần
+ WHERE id = (
+   SELECT id FROM job
+    WHERE status = 'PENDING' AND next_run_at <= now()
+    ORDER BY next_run_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED          -- bỏ qua hàng đang bị lock
+ )
+ RETURNING *;
+~~~
+Worker xử lý xong ghi kết quả **có điều kiện fencing**:
+~~~sql
+UPDATE job SET status = 'DONE', result = ?
+ WHERE id = ? AND worker_id = 'w7' AND fence = ? AND status = 'RUNNING';
+-- affected rows = 0 => worker đã mất lease, bỏ kết quả (stale)
+~~~
+**Vì sao tốt:** không cần Redis/etcd; DB vừa là queue vừa là nguồn fencing. {{SKIP LOCKED}} cho throughput cao (worker không chờ nhau). Lease {{lease_until}} + reaper xử lý worker chết.
+
+### Case 3: Cập nhật tồn kho (không dùng lock phân tán)
+~~~sql
+-- Đúng: conditional write nguyên tử trong DB, không race condition
+UPDATE inventory
+   SET available = available - 1
+ WHERE sku = 'SKU-1' AND available >= 1;
+-- affected rows = 1 => giữ hàng thành công
+-- Không Redis lock, không lo GC pause, không lo clock
+~~~
+Nếu phải phối hợp nhiều hệ thống (giữ kho ở inventory-service, trừ ví ở payment-service): dùng **saga + idempotency + outbox**; mỗi bước tự bảo vệ bằng ràng buộc DB cục bộ và bút toán bù (compensate). Distributed lock bao trùm saga là anti-pattern (giữ lock qua network call = mong manh).
+
+### So sánh nhanh
+| Tiêu chí | Redis lock (SET NX PX) | etcd/ZooKeeper lease | DB conditional/row lock |
+|---|---|---|---|
+| Độ trễ | Rất thấp (sub-ms) | Thấp-vừa (ms, qua consensus) | Vừa (ms, phụ thuộc txn) |
+| Đúng đắn khi client treo | Yếu nếu không fencing | Tốt hơn (session/lease) + fencing | Tốt (txn gắn kết nối; fencing bằng điều kiện) |
+| Chịu lỗi hạ tầng | Mất lock nếu failover async | Chịu được nếu còn quorum | Theo HA của DB |
+| Vận hành | Đơn giản | Cụm consensus cần chăm sóc | Tận dụng DB sẵn có |
+| Phù hợp | Best-effort dedup | Leader election, coordination | Dữ liệu nghiệp vụ là nguồn sự thật |
+
+### Trên production
+- **Triệu chứng chọn sai:** dùng Redis lock cho tồn kho -> oversell hiếm gặp khó tái hiện; dùng etcd cho mọi thứ -> độ trễ tăng, etcd thành bottleneck; giữ {{SELECT FOR UPDATE}} lâu qua HTTP call -> deadlock/connection pool cạn.
+- **Cách đo:** thời gian giữ lock/lease; số lần fencing từ chối (stale writer) - con số > 0 là bình thường nhỏ, tăng vọt là có worker treo; tỉ lệ job chạy trùng; p99 transaction DB.
+- **Tuning/cấu hình có thật:** lease TTL đủ lớn hơn chu kỳ heartbeat (thường heartbeat = TTL/3); timeout xử lý < TTL hoặc có cơ chế checkpoint/fencing; Postgres {{lock_timeout}}, {{statement_timeout}} để tránh giữ lock vô hạn. Với scheduler dùng DB, index {{(status, next_run_at)}} partial cho PENDING.
+- **Review thiết kế (lead):** với mỗi "lock" trong sơ đồ, đặt câu hỏi "fencing ở đâu, idempotency ở đâu, hậu quả nếu trùng là gì". Nếu câu trả lời là "Redis lo", đó là rủi ro cần ghi nhận.
+
+> Senior tip: Lead giỏi không phải người biết nhiều loại lock, mà là người **thiết kế để không cần lock** cho đường dẫn tiền/dữ liệu quan trọng: dùng conditional write, unique constraint, single-writer partition, hoặc idempotency key. Lock phân tán dành cho coordination (ai là leader, ai claim việc) - còn correctness của dữ liệu phải tự bảo vệ ở tầng lưu trữ.`,
+  follow: ['Trong Kubernetes, leader election (client-go) dùng Lease object trên API server; cơ chế này ánh xạ thế nào sang lease/heartbeat/fencing bạn vừa mô tả?', 'Khi worker bị GC pause vượt lease TTL rồi tỉnh dậy, ngoài fencing token ở DB, bạn cần xử lý gì với side effect bên ngoài (gọi API payment, gửi email)?', 'Bạn thuyết phục team chuyển từ "Redis lock bọc quanh logic trừ kho" sang "conditional update + idempotency" như thế nào (rủi ro, migration, kiểm chứng)?'],
+},
+{
+  id: 'architecture-038',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Giải thích linearizability sâu hơn ở mức cơ chế: read/write quorum, leader-based read, và vì sao đọc từ replica có thể trả dữ liệu cũ dù ghi đã "thành công"? Phân tích đánh đổi latency vs correctness trong ngân hàng (đọc số dư) và thương mại điện tử (xác nhận đơn) qua từng lựa chọn kỹ thuật.',
+  a: `**Tóm tắt:** Một ghi được "thành công" chưa chắc mọi nơi đọc thấy ngay - điều đó phụ thuộc vào **đường đọc** và **mô hình nhất quán**. Linearizable (tuyến tính hóa - đọc luôn thấy ghi mới nhất đã hoàn tất theo thời gian thực) đạt được bằng cách buộc đọc và ghi đi qua cùng một thứ tự toàn cục (leader/quorum có phối hợp). Đọc từ replica rẻ và nhanh nhưng có thể stale (cũ) do replication lag. Lead phải chọn theo tác động nghiệp vụ: đọc số dư để quyết định cho rút tiền phải linearizable; hiển thị "đơn đã đặt" có thể read-your-writes; danh sách gợi ý chỉ cần eventual.
+
+### Cơ chế 1: Leader-based replication và cửa sổ stale
+~~~seq
+title: Ghi thành công nhưng đọc replica bị stale
+actors: ClientW | Leader | F1(replica) | ClientR
+ClientW -> Leader: write(x=10)
+Leader -> Leader: ghi local log/index
+Leader -> F1: replicate x=10 (async)
+Leader -> ClientW: OK (ack sau khi leader ghi / hoặc sau quorum)
+note F1: F1 chưa kịp áp dụng (replication lag 200ms)
+ClientR -> F1: read(x)
+F1 -> ClientR: x=5 (STALE - cũ)
+F1 -> F1: áp dụng x=10 (trễ 200ms)
+~~~
+**"Ghi thành công" nghĩa là gì** phụ thuộc cấu hình ack:
+- Ack khi leader ghi: nhanh nhất, nhưng leader chết trước khi replicate -> mất ghi đã ack.
+- Ack khi quorum (đa số) ghi: an toàn hơn (ghi sống qua mất leader), nhưng đọc từ follower ngoài quorum vẫn có thể stale cho đến khi follower đuổi kịp.
+
+### Cơ chế 2: Quorum read/write (R + W > N)
+Với N replica, ghi cần W ack, đọc hỏi R replica, chọn giá trị có version mới nhất.
+~~~text
+N=3 (replica A,B,C), mỗi bản ghi có version tăng dần
+Chọn W=2, R=2 => R+W=4 > 3 => giao nhau ít nhất 1 replica
+
+Ghi x=10 (version v3): ghi vào A,B thành công (W=2) -> ack
+Đọc: hỏi B,C (R=2) -> nhận (B: v3=10), (C: v2=5) -> chọn v3=10 (mới nhất)
+
+Vì sao an toàn? Tập ghi {A,B} và tập đọc {B,C} giao nhau tại B,
+B đã có v3 nên đọc thấy v3.
+~~~
+**Cạm bẫy thực tế:**
+- Cần **version/timestamp đáng tin** để chọn "mới nhất" (không dùng wall clock lệch - xem clock skew; dùng version đơn điệu từ leader/log index).
+- Chưa chắc linearizable theo thời gian thực trong mọi triển khai (xung đột concurrent, repair). Dynamo-style quorum thường cho eventual/tunable; linearizable cần thêm (ví dụ read repair cẩn thận, hoặc giao thức kiểu Raft).
+- {{W=1}} (ghi nhanh) + {{R=1}} (đọc nhanh): {{1+1 <= 3}} -> có thể đọc stale. Nhanh nhưng yếu.
+
+### Cơ chế 3: Linearizable read qua leader/consensus
+~~~text
+Cách A - Đọc qua leader: mọi read gửi tới leader -> leader biết commitIndex mới nhất.
+  Đắt: leader thành bottleneck đọc; latency cao nếu client xa leader.
+
+Cách B - ReadIndex (Raft): follower hỏi leader "commitIndex hiện tại là bao nhiêu?",
+  chờ local apply đến index đó rồi trả đọc. Không chuyển dữ liệu qua leader,
+  nhưng vẫn 1 round-trip tới leader để xác nhận.
+
+Cách C - Lease read: leader giữ "lease" (cam kết còn là leader trong khoảng thời gian
+  an toàn dựa trên clock/heartbeat). Trong lease, leader đọc local không cần hỏi quorum.
+  Rủi ro: nếu giả định clock/lease sai, có thể đọc stale trong trường hợp hiếm.
+
+Cách D - Đọc follower kèm version tối thiểu (read-your-writes):
+  client gửi kèm "tôi cần thấy ít nhất version v3 (vừa ghi)";
+  follower chờ đuổi kịp v3 rồi trả lời. Không linearizable toàn cục, nhưng đủ cho session.
+~~~
+
+### Áp dụng ngân hàng: đọc số dư để quyết định rút tiền
+~~~text
+Kịch bản nguy hiểm (stale read):
+  Số dư thật = 500k (vừa rút còn 500k, ghi đã commit trên leader)
+  App đọc số dư từ replica stale -> thấy 1.000k
+  App cho phép rút 800k -> ghi lệnh rút
+  -> Nếu không có ràng buộc DB: overspend. Nếu có: lệnh rút bị từ chối muộn (UX tệ)
+
+Thiết kế đúng (chọn 1 hoặc kết hợp):
+  1. Đọc số dư phục vụ quyết định ghi -> đọc linearizable (primary/ReadIndex)
+  2. Quyết định cho phép rút nằm trong DB: 
+     UPDATE account SET balance = balance - 800000
+      WHERE id=? AND balance >= 800000;  (fencing bằng điều kiện)
+     -> kể cả đọc hiển thị stale, thao tác tiền vẫn đúng
+  3. Hiển thị số dư "tham khảo" có thể stale vài trăm ms, ghi chú "đang cập nhật"
+~~~
+**Nguyên tắc ngân hàng:** đường dẫn **ghi tiền/quyết định tiền** phải dựa trên nguồn sự thật có điều kiện tuyến tính hóa; đường dẫn **hiển thị** có thể nới lỏng.
+
+### Áp dụng thương mại điện tử: xác nhận đơn
+~~~text
+Luồng: User bấm "Đặt hàng" -> ghi đơn (commit) -> redirect trang "Đơn #123 thành công"
+Vấn đề: trang xác nhận đọc từ replica -> chưa thấy đơn #123 -> "Không tìm thấy đơn"
+  (user hoảng, bấm lại -> nguy cơ đặt trùng nếu không idempotent)
+
+Giải pháp theo mức:
+  - Read-your-writes: sau ghi, đọc đơn #123 từ primary (hoặc kèm version) trong phiên đó
+  - Trả thẳng dữ liệu đơn trong response của request tạo đơn (không cần đọc lại)
+  - Idempotency key cho nút đặt hàng để bấm lại không tạo đơn trùng
+  - Eventual cho danh sách "tất cả đơn hàng" (trễ 1s chấp nhận được)
+~~~
+
+### Bảng đánh đổi
+| Cách đọc | Độ trễ | Tải leader | Đảm bảo | Dùng cho |
+|---|---|---|---|---|
+| Local replica | Thấp nhất | Không | Eventual (stale) | Gợi ý, feed, analytics |
+| Replica + chờ version | Thấp-vừa | Không (trừ check) | Read-your-writes | Trang xác nhận sau ghi |
+| ReadIndex / quorum read | Vừa | Có (nhẹ) | Linearizable | Đọc phục vụ quyết định quan trọng |
+| Qua leader / txn serializable | Cao hơn | Có (nhiều) | Linearizable/serializable | Tiền, tồn kho chốt đơn |
+
+### Trên production
+- **Triệu chứng stale read:** "tôi vừa lưu mà mở lại không thấy", đơn xác nhận 404 thoáng qua, số dư hiển thị nhảy lên xuống. Tăng khi replica lag cao (mạng, replica yếu, ghi burst).
+- **Cách đo:** {{replication lag}} (byte/seconds); sampled consistency check (ghi giá trị + version, đọc từ replica, đo thời gian đến khi thấy); tỉ lệ lỗi "not found sau create" theo route đọc.
+- **Tuning/cấu hình có thật:** Postgres {{synchronous_standby_names}} cho replica đồng bộ (linearizable hơn nhưng tăng latency ghi, giảm availability khi standby chết); route đọc/ghi ở tầng ứng dụng ({{@Transactional(readOnly=true)}} tới replica chỉ cho truy vấn chấp nhận stale). CockroachDB/Spanner cung cấp bounded/strong staleness tùy câu lệnh.
+- **Thiết kế API:** endpoint ghi trả về resource + version; client dùng version đó cho lần đọc sau. Đừng buộc client "đợi 1 giây rồi load lại" - đó là che giấu vấn đề consistency bằng timing.
+
+> Senior tip: Câu hỏi lead không phải "chọn CP hay AP", mà là "với từng câu query trong luồng này, stale tối đa chấp nhận bao nhiêu và hậu quả nếu vượt?". Tôi thường vẽ luồng đặt hàng và gắn nhãn từng chỗ đọc: {{[linearizable]}}, {{[read-your-writes]}}, {{[eventual 2s]}}. Bảng đó vừa là thiết kế, vừa là hợp đồng với team và là cơ sở chọn hạ tầng.`,
+  follow: ['Synchronous replication (standby sync) trong Postgres cải thiện linearizable read như thế nào và đánh đổi availability/latency ra sao khi standby chậm hoặc chết?', 'Read-your-writes triển khai bằng cách "ghi nhớ version đã ghi vào session/cookie và gửi kèm request đọc" có rủi ro gì khi user đổi thiết bị hoặc session bị xoay?', 'Trong CockroachDB/Spanner, bounded staleness read cho phép đọc dữ liệu "cũ tối đa X giây" nhanh hơn; bạn chọn X và xác định query nào được dùng bounded staleness dựa trên tiêu chí gì?'],
+}
+  ,
+  {
+    id: 'design-036',
+    topic: 'design',
+    level: 'senior',
+    q: 'Proxy, Decorator và Adapter khác nhau thế nào? Ví dụ Spring AOP, java.io, HandlerAdapter.',
+    a: `**Tóm tắt:** Proxy kiểm soát truy cập (Spring AOP), Decorator thêm trách nhiệm (java.io streams), Adapter chuyển đổi interface (Spring MVC HandlerAdapter).
+
+### 1. Proxy
+
+Kiểm soát truy cập tới object thật: lazy init, access control, logging, transaction. Spring AOP dùng proxy (JDK dynamic proxy hoặc CGLIB). Gọi tự thân không đi qua proxy → khuyên lệnh không chạy.
+
+### 2. Decorator
+
+Thêm trách nhiệm động mà không đổi interface. java.io: BufferedInputStream bao bọc InputStream, thêm buffer. Có thể xếp nhiều decorator.
+
+### 3. Adapter
+
+Chuyển interface của class thành interface client mong đợi. Spring MVC: HandlerAdapter chuyển Controller method thành HandlerExecutionChain invocation.
+
+### 4. So sánh
+
+- Proxy: cùng interface, kiểm soát.
+- Decorator: cùng interface, thêm hành vi.
+- Adapter: khác interface, chuyển đổi.
+
+### Cạm bẫy
+
+- Decorator lồng sâu → khó gỡ lỗi.
+- Proxy gọi tự thân (Spring AOP).
+- Adapter lạm dụng → thiết kế quá phức tạp.
+
+> Senior tip: Proxy = kiểm soát, Decorator = thêm, Adapter = chuyển. Nhớ bẫy gọi tự thân của Spring AOP.` ,
+    follow: ['Spring AOP gọi tự thân vì sao không chạy?', 'Decorator trong java.io có nhược điểm gì?', 'Adapter khác Facade thế nào?'],
+    tags: ['design-patterns','proxy','decorator','adapter']
+  }
 );

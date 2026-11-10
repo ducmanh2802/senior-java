@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/q-banking.js — task T664. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-banking.js — task T1151. Format: js/core/i18n.js (content overlay).
  * ids: banking-021 banking-022
  */
 App.i18n.content({
@@ -89,8 +89,7 @@ Consumers **must be idempotent** because the bus delivers at-least-once: check t
 > Senior tip: The interviewer's real question is not "how many boxes can you draw" but two questions: "who owns the balance" and "who is allowed to declare a transaction successful". Answer concisely: the ledger owns the balance, payment owns the lifecycle state, everywhere else there are only read copies that are allowed to be a few seconds late. Then talk about the trade-off: for posting you choose consistency and accept a temporary drop in serving capacity; for information you choose capacity and accept consistency arriving later — that very distinction is why sagas and outboxes exist.
 
 > Terms: A saga is a chain of local steps where each step has a compensating step to undo it at business level when a later step fails; it is not one transaction stretched across several databases. An outbox is a table that records the event inside the business transaction itself, so publishing is never lost and never happens before the data exists.
-
-  `,
+`,
     follow: [
       'Why should the payment service not store its own balance column, even only for fast display?',
       'The notification fails to send after the ledger has already posted: how does the system behave and what does the customer see?',
@@ -185,13 +184,12 @@ Your 99.95% SLA cannot stand alone if the link to the interbank switching system
 > Senior tip: Answer with three settled points: (1) the RPO for data already reported successful must be 0, so posting is replicated synchronously, and I accept the trade-off of higher latency plus pausing writes when the link is lost; (2) RTO is the sum of a chain of steps, each with a named owner, I allocate a time budget per step and rehearse to measure the real numbers; (3) the SLA is capped by external dependencies, so I compute it as a chain and renegotiate the scope of the commitment. A fourth point that earns credit: a resilient payment system is one that is **replayable** — a lost connection does not lose money because every transaction already has a unique reference and a reconciliation record.
 
 > Terms: Split-brain is the situation where two copies both believe they are the primary and both accept writes, producing two different balance histories. Failback is the step of bringing traffic back to the original data center after it is repaired; it is usually harder than failover because the data produced in the meantime must be synced in the reverse direction.
-
-  `,
+`,
     follow: [
       'Why does RPO 0 for transactions already reported successful force synchronous replication, and what is the price?',
       'The link between the two data centers breaks: how must the system behave so there are not two versions of the balance?',
       'After a failover the customer complains "I pressed the transfer twice" — which data do you rely on to answer?'
     ]
-  },
+  }
 
 });

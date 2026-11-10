@@ -75,6 +75,17 @@ ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "org.springframework.boot.loader.
 ### Trả lời miệng 1 phút
 Tôi dùng multi-stage build: stage đầu có JDK để build bằng Maven wrapper và tách layered jar bằng {{-Djarmode=tools}}, stage cuối chỉ có JRE. Lý do là Docker cache theo layer: tôi copy pom trước, tải dependency với cache mount của BuildKit, rồi mới copy source; ở image cuối tôi copy các layer theo thứ tự dependencies, loader, snapshot, application, nên sửa code chỉ làm đổi layer vài trăm KB. Về an toàn, tôi chạy user non-root với UID số, ENTRYPOINT dạng exec để java là PID 1 nhận SIGTERM và graceful shutdown chạy được, đặt MaxRAMPercentage thay cho Xmx cứng, pin base image theo version hoặc digest, và truyền credential bằng BuildKit secret thay vì ARG. Trade-off: Alpine nhỏ nhưng musl dễ lỗi với native lib, distroless an toàn nhưng không có shell để debug. Thực tế sau khi tách layer, mỗi lần deploy chỉ đẩy vài trăm KB thay vì hơn trăm MB.
 
+### Ví dụ đời thực
+Triệu chứng: dịch vụ thanh toán Spring Boot 3 đóng gói thành fat jar khoảng 120 MB. Mỗi lần lập trình viên sửa một dòng code và deploy, pipeline build lại và đẩy image lên registry mất 6–8 phút, pod khởi động chậm, ổ đĩa registry đầy nhanh.
+
+Điều tra: chạy {{docker history payment:latest}} thấy một layer duy nhất khoảng 110 MB, vì toàn bộ jar được COPY thành một lớp. Docker tính digest theo layer: layer nào đổi thì mọi layer phía sau cũng phải build lại và push lại.
+
+Nguyên nhân gốc: COPY cả fat jar thành một layer, nên code thay đổi hằng ngày làm đổi layer lớn nhất; registry phải lưu trữ và node phải pull lại toàn bộ 120 MB mỗi deployment.
+
+Cách xử lý: chuyển sang multi-stage build: stage build có JDK, dùng {{-Djarmode=tools}} tách layered jar thành dependencies, spring-boot-loader, snapshot-dependencies, application; stage cuối chỉ có JRE, copy các layer theo thứ tự ít thay đổi nhất trước.
+
+Kết quả đo được: image giảm từ 120 MB xuống khoảng 45 MB. Sửa code chỉ thay đổi layer application vài trăm KB, thời gian push từ 6–8 phút xuống dưới 1 phút, ổ đĩa registry tiết kiệm rõ rệt với 50 service.
+
 > Senior tip: Đo bằng {{docker history}} hoặc công cụ dive: sau khi tách layer, một commit sửa code thường chỉ đẩy layer application vài trăm KB thay vì cả trăm MB. Với 50 service và 20 deploy/ngày, registry và thời gian pull trên node giảm rõ rệt. Có thể dùng Buildpacks ({{spring-boot:build-image}}) nếu team không muốn tự bảo trì Dockerfile.`,
     follow: [
       'Distroless hoặc jlink custom runtime có ưu nhược điểm gì so với image JRE thường?',
@@ -149,6 +160,17 @@ JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -XX:Activ
 
 ### Trả lời miệng 1 phút
 Container không phải VM nhẹ: VM có kernel riêng chạy trên hypervisor, còn container chỉ là process trên host, dùng chung kernel, được cô lập bằng namespaces và bị giới hạn tài nguyên bằng cgroups. Vì vậy container khởi động nhanh và gần như không tốn overhead, nhưng cô lập yếu hơn VM. Với Java, vấn đề là JVM tự chọn heap, GC và số thread theo "máy" nó thấy. JDK 17/21 đọc được cgroup, nhưng mặc định heap chỉ 25% limit, và nếu CPU limit là 1 thì JVM chọn SerialGC. Tôi thường đặt MaxRAMPercentage khoảng 75 để chừa chỗ cho metaspace, thread stack, direct buffer; memory request bằng limit; và chú ý CPU throttling vì CFS quota tính theo chu kỳ 100 ms. Kinh nghiệm của tôi: khi p99 tăng mà CPU trung bình thấp, xem metric throttling trước khi nghi ngờ code.
+
+### Ví dụ đời thực
+Triệu chứng: pod Java trên Kubernetes đặt giới hạn bộ nhớ 2 GB, stderr không có OutOfMemoryError, nhưng pod thoát với mã 137 và Kubernetes báo OOMKilled.
+
+Điều tra: lệnh {{kubectl top pod payment-abc}} cho RSS khoảng 1,9 GB, gần limit 2 GB. Lệnh {{java -XshowSettings:system -version}} trong container cho MaxHeapSize chỉ 512 MB (25% limit), còn phần bên ngoài heap (metaspace, stack thread, direct buffer của Netty) đẩy tổng RSS vượt 2 GB, kernel cgroup thực thi giới hạn.
+
+Nguyên nhân gốc: JVM mặc định chỉ dùng 25% limit cho heap và không tính phần non-heap, nên RSS dễ vượt limit và bị OOM killer giết (mã 137) mà JVM kịp ghi heap dump.
+
+Cách xử lý: đặt {{JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"}} để heap khoảng 1,5 GB, chừa 500 MB cho non-heap; đặt memory request bằng limit để pod được lên node đủRAM; bật {{-XX:NativeMemoryTracking=summary}} và dùng {{jcmd PID VM.native_memory summary}} khi nghi ngờ rò rỉ native.
+
+Kết quả đo được: sau khi áp dụng, pod không còn OOMKilled, ổn định ở RSS khoảng 1,6–1,7 GB với limit 2 GB, restart giảm từ vài lần mỗi tuần xuống 0 trong tháng sau.
 
 > Senior tip: Khi pod bị OOMKilled mà heap dump trống, hãy so RSS của process với limit và bật {{-XX:NativeMemoryTracking=summary}} rồi {{jcmd 1 VM.native_memory summary}} để xem phần ngoài heap. Khi p99 tăng mà CPU thấp, xem metric {{container_cpu_cfs_throttled_periods_total}}: đây là nguyên nhân rất hay gặp trên cluster ngân hàng đặt limit 500m cho service Java.`,
     follow: [
@@ -233,6 +255,17 @@ Biến môi trường chỉ đọc lúc container khởi động: sửa ConfigMa
 
 ### Trả lời miệng 1 phút
 Request đi theo chuỗi: DNS của api.bank.vn trỏ tới load balancer, load balancer chuyển vào Ingress controller. Ingress controller đọc rule Ingress theo host và path để chọn Service account-svc. Service là tên DNS và IP ảo ổn định; nó chọn Pod qua label selector, và chỉ những Pod qua readiness probe mới nằm trong EndpointSlice. kube-proxy hoặc eBPF chuyển gói tin tới IP của một Pod, nơi Spring Boot lắng nghe cổng 8080. Deployment không nằm trên đường đi của request, nó chỉ đảm bảo đủ Pod đúng version và lo rolling update. ConfigMap và Secret cấp cấu hình cho Pod lúc khởi động; lưu ý Secret mặc định chỉ base64, cần encryption at rest và RBAC. Khi debug "gọi không tới", tôi đi từ trong ra ngoài: port-forward vào Pod, curl Service từ Pod khác, rồi mới tới Ingress.
+
+### Ví dụ đời thực
+Triệu chứng: sau deploy dịch vụ tài khoản, người dùng gặp lỗi 503 khi gọi https://api.bank.vn/accounts/123, trong khi các service khác vẫn bình thường.
+
+Điều tra: chạy {{kubectl get endpointslices -l kubernetes.io/service-name=account-svc}} cho danh sách rỗng. Chạy {{kubectl describe pod account-7d9f}} thấy Pod khởi động lại liên tục, readiness probe thất bại vì cổng container sai (8081 thay vì 8080).
+
+Nguyên nhân gốc: Service account-svc dùng selector app=account nhưng Pod nhắn nhầm label là app=acount (sai một chữ), hoặc Pod chưa vượt readiness probe nên không nằm trong EndpointSlice; Ingress controller và kube-proxy không có Pod nào để forward, trả 503.
+
+Cách xử lý: sửa label trong Deployment thành app=account, sửa cổng container và readiness probe, rollout lại. Kiểm tra lại bằng {{kubectl get endpointslices}} xem có IP Pod Ready hay không, rồi curl Service từ Pod khác trong cùng namespace.
+
+Kết quả đo được: EndpointSlice có 2 Pod, lỗi 503 biến mất ngay, latency p95 quay lại dưới 100 ms.
 
 > Senior tip: Khi debug "gọi không tới", đi từng chặng từ trong ra ngoài: {{kubectl port-forward}} vào Pod, rồi curl Service từ một Pod khác, rồi mới tới Ingress. Ngoài ra Kubernetes đang khuyến khích chuyển từ Ingress sang **Gateway API** (HTTPRoute) vì Ingress thiếu chuẩn cho header routing, traffic split; nên biết để trả lời khi bị hỏi xu hướng.`,
     follow: [
@@ -336,6 +369,17 @@ Phía Spring Boot: {{server.shutdown=graceful}} (mặc định từ Boot 3.4) v�
 ### Trả lời miệng 1 phút
 Lỗi 502/503 khi deploy đến từ hai đầu: Pod mới nhận traffic khi chưa sẵn sàng, và Pod cũ bị tắt trong lúc vẫn còn được route tới. Với Pod mới, tôi dùng readiness probe đúng nghĩa trên {{/actuator/health/readiness}}, startupProbe cho app khởi động chậm, và rolling update với maxUnavailable 0, maxSurge 1 để luôn đủ Pod Ready. Với Pod cũ, việc gỡ endpoint và gửi SIGTERM chạy song song, nên tôi thêm preStop sleep khoảng 10 giây cho mọi proxy kịp quên Pod, bật Spring graceful shutdown với timeout khoảng 30 giây, và đặt terminationGracePeriodSeconds lớn hơn tổng hai khoảng đó. Trade-off là deploy chậm hơn một chút và tốn thêm một Pod trong lúc rollout. Để chứng minh, tôi chạy load test liên tục trong lúc deploy trên staging và yêu cầu 0 lỗi; schema DB cũng phải tương thích ngược vì hai version chạy song song.
 
+### Ví dụ đời thực
+Triệu chứng: mỗi lần deploy dịch vụ thanh toán qua rolling update, monitoring ghi nhận vài chục request 502/503 trong khoảng 10–15 giây, dù chỉ thêm một pod mỗi lần.
+
+Điều tra: log Ingress cho thấy connection refused tới IP của pod cũ trong trạng thái Terminating. Chạy {{kubectl describe pod}} thấy pod mới Ready nhưng pod cũ đã nhận SIGTERM trong khi Ingress vẫn chưa kịp gỡ nó khỏi EndpointSlice.
+
+Nguyên nhân gốc: việc gỡ endpoint và gửi SIGTERM chạy song song; không có preStop để chờ các proxy quên pod, và Spring Boot tắt cổng ngay khi nhận SIGTERM nên request mới vẫn đến pod đang tắt, gây connection refused hoặc 502.
+
+Cách xử lý: thêm preStop sleep 10 giây, bật {{server.shutdown=graceful}} với {{spring.lifecycle.timeout-per-shutdown-phase=30s}}, đặt maxUnavailable 0 và maxSurge 1, terminationGracePeriodSeconds 60 lớn hơn tổng thời gian trên.
+
+Kết quả đo được: chạy k6 liên tục trong lúc deploy trên staging, số lỗi 5xx từ vài chục xuống 0; deploy chậm hơn khoảng 20 giây nhưng không rơi request.
+
 > Senior tip: Thay đổi schema DB phải tương thích ngược (expand-contract) vì trong lúc rolling update, version cũ và mới chạy song song. Kiểm chứng zero-downtime bằng cách chạy k6/JMeter liên tục trong lúc deploy trên staging và yêu cầu 0 lỗi; với service thanh toán đây nên là một bước trong checklist release.`,
     follow: [
       'Consumer Kafka trong Pod đang bị tắt cần làm gì để không xử lý trùng hoặc mất message?',
@@ -412,6 +456,17 @@ kubectl top pod -n payment                          # cần metrics-server
 
 ### Trả lời miệng 1 phút
 Tôi luôn đi theo ba lệnh: get pod để thấy trạng thái và số lần restart, describe pod để đọc Events, Last State và Exit Code, rồi logs --previous để đọc log của lần chạy vừa chết. Pending là vấn đề lập lịch: không node nào đủ request, thiếu toleration, affinity sai hoặc PVC chưa bind; lưu ý scheduler xét request chứ không xét mức dùng thực. ImagePullBackOff là sai tag, thiếu imagePullSecrets hoặc cert registry hết hạn. CrashLoopBackOff gần như luôn là lỗi app hoặc cấu hình, như thiếu property, Flyway fail, hay liveness giết app khởi động chậm. OOMKilled là kernel giết process vì RSS vượt limit, khác với OutOfMemoryError của JVM, nên tôi xem lại MaxRAMPercentage và native memory. Kinh nghiệm: xoá Pod để tạo lại không sửa được gì vì lỗi nằm ở spec; tôi đặt alert theo số restart và reason OOMKilled.
+
+### Ví dụ đời thực
+Triệu chứng: pod dịch vụ thanh toán vào trạng thái CrashLoopBackOff, số lần restart tăng nhanh (10s, 20s, 40s...), ứng dụng không phục vụ được.
+
+Điều tra: chạy {{kubectl get pod}} thấy STATUS CrashLoopBackOff và RESTARTS 15. Chạy {{kubectl describe pod}} thấy Last State: Terminated, Exit Code: 1. Chạy {{kubectl logs --previous}} thấy stack trace: Flyway migration thất bại vì cột đã tồn tại, ứng dụng ném exception và thoát ngay khi khởi động.
+
+Nguyên nhân gốc: script migration Flyway chạy lại trên cơ sở dữ liệu đã áp dụng một phần, ứng dụng khởi động không thành công, kubelet restart liên tục và chờ lâu dần giữa các lần thử.
+
+Cách xử lý: sửa script migration thành idempotent (chỉ thêm cột nếu chưa có), quay về revision ổn định bằng {{kubectl rollout undo}}, sau đó rollout lại phiên bản đã sửa. Khi tạo cột mới, đảm bảo schema tương thích ngược vì phiên bản cũ vẫn chạy song song trong lúc rolling update.
+
+Kết quả đo được: pod về trạng thái Running, RESTARTS dừng tại 15, không restart thêm; dịch vụ quay lại phục vụ bình thường trong vòng 5 phút.
 
 > Senior tip: Đặt alert cho {{kube_pod_container_status_restarts_total}} tăng và cho reason OOMKilled thay vì chờ người dùng báo. Trong ngân hàng, lỗi ImagePullBackOff lúc 2 giờ sáng thường do cert của Harbor nội bộ hết hạn hoặc robot account bị rotate: hãy đưa ngày hết hạn cert và token vào checklist vận hành.`,
     follow: [
@@ -508,6 +563,17 @@ Với Kafka, KEDA có sẵn scaler theo consumer lag và có thể scale về 0;
 
 ### Trả lời miệng 1 phút
 HPA tính số replica theo công thức ceil của replica hiện tại nhân metric hiện tại chia target, đánh giá mỗi 15 giây, và phần trăm CPU tính theo request. CPU dễ dùng nhưng là chỉ số gián tiếp: service I/O-bound có latency tăng mà CPU vẫn thấp. Vì vậy với consumer Kafka tôi scale theo lag bằng KEDA, với API chờ DB tôi cân nhắc RPS qua Prometheus Adapter. Java scale chậm vì Spring Boot khởi động 30–90 giây và JIT warm-up làm CPU Pod mới tăng vọt, nên từ lúc tải tăng tới lúc Pod mới phục vụ tốt có thể mất 2–3 phút. Tôi xử lý bằng minReplicas đủ gánh tải nền, scaleUp nhanh và scaleDown chậm, scale theo lịch cho ngày lương, và giảm thời gian khởi động bằng CDS hoặc AOT cache. Tôi luôn tính maxReplicas nhân connection pool để chắc DB chịu được.
+
+### Ví dụ đời thực
+Triệu chứng: trong giờ cao điểm (ví dụ ngày lương), lượng gọi API tăng gấp 3 lần, latency p95 từ 100 ms lên 3 giây, nhưng HPA không scale thêm pod.
+
+Điều tra: sự kiện HPA cho thấy CPU trung bình chỉ 40% so với request, dưới target 60%, nên số pod mong muốn không thay đổi. Theo dõi ứng dụng thấy phần lớn thread đang chờ phản hồi từ database, CPU thấp vì dịch vụ chờ I/O chứ không phải tính toán.
+
+Nguyên nhân gốc: CPU là chỉ số gián tiếp; dịch vụ chờ DB hay HTTP có latency tăng mà CPU vẫn thấp, nên HPA theo CPU không phản ứng kịp tải thật.
+
+Cách xử lý: chuyển sang scale theo custom metric gần tải thật (RPS hay độ dài hàng đợi) qua Prometheus Adapter, hoặc dùng KEDA scaler theo consumer lag nếu là dịch vụ Kafka. Đặt minReplicas đủ lớn gánh tải bình thường, scaleUp nhanh (gấp đôi mỗi 30 giây) và scaleDown chậm (stabilization window 600 giây) để tránh dao động.
+
+Kết quả đo được: trong đợt tăng tải, pod tăng từ 4 lên 12, p95 quay lại dưới 200 ms; sau cao điểm, pod giảm dần về 4 trong 10 phút thay vì dao động liên tục.
 
 > Senior tip: Trước mùa cao điểm, chạy load test đo năng lực một Pod (ví dụ 400 RPS ở p99 dưới 200 ms) rồi tính minReplicas từ đó, đừng trông chờ HPA. Luôn nhân số connection pool với maxReplicas để chắc DB chịu được, và nhớ HPA với VPA không nên cùng điều khiển CPU/memory của một Deployment.`,
     follow: [

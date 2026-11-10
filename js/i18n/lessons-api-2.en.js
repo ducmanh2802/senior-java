@@ -74,7 +74,7 @@ A senior interviewer will ask immediately: "What happens if two requests with th
 - Null, empty or whitespace-only key → throw {{IllegalArgumentException}}.
 - Must be safe when multiple threads call with the same key concurrently: action must run **exactly once**, and all threads receive the same result.
 
-{{Stored}} is a provided record with {{status}} and {{body}} of the response.`,
+        {{Stored}} is a provided record with {{status}} and {{body}} of the response.`,
         hints: [
           'Use {{ConcurrentHashMap.computeIfAbsent(key, ...)}} to merge "check existence" and "store result" into one atomic operation; do not write {{if (map.containsKey(...))}} then {{map.put(...)}}.',
           'Store both the **body fingerprint** and the {{Stored}} so you can distinguish a valid retry from a key reused for a different transaction.',

@@ -125,18 +125,18 @@ public double calculate(String formulaId, Bindings vars) {
     ],
   },
   'lab-gc-011': {
-    title: 'Young GC 20 times per second: creating a new ObjectMapper per request and large log string concatenation',
-    scenario: `REST payment service running Spring Boot 3 + JDK 17 in a container with 4 vCPU / 4 GB heap. After traffic increased, the GC log shows Young GC continuously ~20 times per second, GC CPU ~40%, p99 latency rising from 80 ms to 600 ms. JFR allocation profiling points to two hotspots: an ObjectMapper created for every request, and large concatenated log messages. Total heap ~1.2 GB, young gen ~300 MB, allocation rate ~6 GB/s. No Full GC; heap after young GC returns to ~200 MB.`,
+    title: 'Young GC 20 times/sec: creating an ObjectMapper per request and concatenating log strings',
+    scenario: `REST payment service running Spring Boot 3 + JDK 17 on a container with 4 vCPU / 4 GB heap. After traffic grew, the GC log shows Young GC continuously ~20 times/sec, GC CPU ~40%, p99 latency rising from 80 ms to 600 ms. JFR allocation profiling points to two hotspots: an ObjectMapper created for every request, and large concatenated log messages. Total heap ~1.2 GB, young gen ~300 MB, allocation rate ~6 GB/s. No Full GC; heap after young GC returns to ~200 MB.`,
     questions: [
-      'What is the root cause of Young GC happening so frequently? Cite evidence from the GC log and JFR.',
-      'How would you fix it in the short and long term, and how would you measure the improvement?'
+      'What is the root cause of Young GC happening so often? Cite evidence from the GC log and JFR.',
+      'How would you fix it short-term and long-term, and how would you measure the improvement?'
     ],
     hints: [
       'Read the GC log: one young GC every ~50 ms, Eden 300 MB fills very quickly.',
       'JFR shows ObjectMapper.<init> accounts for 38% of allocations.',
       'Large concatenated log messages create temporary StringBuilder/char[].'
     ],
-    answer: `**Summary:** Young GC happens 20 times per second because the allocation rate of ~6 GB/s far exceeds the collection throughput; the two main sources are an ObjectMapper created per request (38% of allocations) and large concatenated log messages. ObjectMapper is thread-safe and should be reused as a single instance; logging should use SLF4J parameterized messages. After the fix the allocation rate drops sharply.
+    answer: `**Summary:** Young GC happens 20 times/sec because the allocation rate ~6 GB/s far exceeds collection throughput; the two main sources are an ObjectMapper created per request (38% of allocations) and large concatenated log messages. ObjectMapper is thread-safe and should be reused as a single instance; logging should use SLF4J parameterized messages. After the fix the allocation rate drops sharply.
 
 ### 1) Mechanism: why Young GC happens so often
 
@@ -173,7 +173,7 @@ Configuring an ObjectMapper after sharing it affects all threads. Increasing hea
     scenario: `Gateway service using Netty 4 + Reactor Netty on JDK 17, container limit 2 GB (cgroup). After a few hours of running, the application throws OutOfMemoryError: Cannot reserve direct buffer memory and the container is OOMKilled by kubelet. jcmd VM.native_memory shows Direct (reserved/committed) ~1.8 GB while -XX:MaxDirectMemorySize=1g. Heap is only ~600 MB. There is evidence that Netty does not release ByteBuf (a reference count leak) in a custom handler.`,
     questions: [
       'What is the root cause of the direct buffer OOM? Cite evidence from the error log, NMT, and flags.',
-      'How would you fix it in the short and long term, and how would you prevent recurrence?'
+      'How would you fix it short-term and long-term, and how would you prevent recurrence?'
     ],
     hints: [
       'Direct memory is not part of the heap; NMT shows Direct committed ~1.8 GB > MaxDirectMemorySize 1 GB.',

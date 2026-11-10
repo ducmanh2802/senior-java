@@ -124,16 +124,16 @@ Decorator order in the test: {{new PiiMask(new TimestampDecorator(mem))}} — ma
     ]
   },
   'lesson-architecture-008': {
-    title: 'Text editor Undo/Redo: the Command pattern, bounded history and merging consecutive typing',
+    title: 'Text Editor Undo/Redo: Command Pattern, Bounded History, and Merging Consecutive Typing',
     goals: [
-      'Use the Command pattern so each action knows how to do and undo itself',
-      'Bound the undo history size with a bounded deque',
-      'Merge consecutive typed characters into one command so undo returns the whole word'
+      'Use the Command pattern so each action knows how to execute and undo itself',
+      'Bound the undo history size with a limited-capacity deque',
+      'Merge consecutive typed characters into a single command so undo reverts the whole word'
     ],
-    body: `**Summary:** A text editor uses the Command pattern for undo/redo, merges consecutive typing actions and bounds history with a deque to save memory.
+    body: `**Summary:** A text editor uses the Command pattern for undo/redo, merges consecutive typing actions, and bounds history with a deque to save memory.
 
 ### The LLD loop for an editor with Undo/Redo
-In a word processor or editor (VS Code, Google Docs) every received character is a tiny diff — a file with thousands of letters must still undo *the whole run*, not one character at a time. This LLD interview exercise exploits the Command pattern: each action (typing, deleting) is a command that knows how to execute and undo itself; the history is a collection of commands; redo re-executes them. Two clarifying questions up front: how large may the history be (memory is finite)? Do two consecutive keystrokes count as one action or two? (The second question yields the "merge" requirement: adjacent consecutive typing merges into a single command.)
+In a word processor or editor (VS Code, Google Docs), every keystroke is a small diff — but a file with thousands of characters must still undo *a whole run*, not one character at a time. This LLD interview exercise uses the Command pattern: each action (typing, deleting) is a command that knows how to execute and undo itself; the history is a collection of commands; redo re-executes them. Ask two clarifying questions up front: how large can the history grow (memory is finite)? Do two keystrokes in a row count as one action or two? (The second question leads to "merging": adjacent consecutive typing is merged into a single command.)
 
 ### Class diagram
 ~~~text
@@ -151,36 +151,36 @@ Editor
 ~~~
 
 ### Two stacks for undo and redo
-One stack is not enough: on undo, the command is pushed onto redoStack; on redo, it returns to undoStack. Every time the user **performs a new action** (type, delete, or run a custom command), the system clears every pending command in redoStack — there is no path back to the old branch any more, because the history has branched. Therefore: after an undo, once the user types something new, redoStack must be empty.
+One stack is not enough: on undo, the command is pushed onto redoStack; on redo, it returns to undoStack. Every time the user **performs a new action** (type, delete, or run a custom command), the system clears every pending command in redoStack — there is no path back to the old branch anymore, because the history has branched. So: after an undo, once the user types something new, redoStack must be empty.
 
 ### Merging consecutive typing
-When the user types {{type("he")}} then {{type("llo")}} while the cursor sits right after the text of the previous insert command, a real editor treats the two keystrokes as a single command. The rule: **the new command is an InsertCmd, there is no pending command in history (redoStack is empty), and the cursor position is exactly at the end of the text of the InsertCmd on top of the stack** — then just append to the old command's text: {{top.text += s}}. If the user has undone (or deleted characters with delete) beforehand, or the command on top is a DeleteCmd, a new command must be opened. Merging cannot cross the boundary of a different command type.
+When the user types {{type("he")}} then {{type("llo")}} while the cursor sits right after the text of the previous insert command, a real editor treats the two keystrokes as a single command. The rule: **the new action is an InsertCmd, there is no pending command in history (redoStack is empty), and the cursor position is exactly at the end of the text of the InsertCmd on top of the stack** — then just append to the old command's text: {{top.text += s}}. If the user has undone (or deleted characters with delete) beforehand, or the command on top is a DeleteCmd, a new command must be opened. Merging cannot cross the boundary of a different command type.
 
-The interesting part: merging does **not** grow the history size. Yet one merged command of many letters still undoes in a single step — exactly what the user feels.
+The interesting part: merging does **not** grow the history size. Yet one merged command of many letters still undoes in a single step — exactly what the user expects.
 
 ### Bounding the history
-Because memory is finite, the history keeps only the {{limit}} most recent commands: when a push makes the size exceed the limit, **drop the oldest command** (deque removeLast). This forces the tester to check: after a long sequence of actions, {{historySize() <= limit}} always holds; once past the mark, older commands can no longer be undone — the cursor and buffer stay consistent because they are decided per action, while undo only lives on the commands that remain.
+Because memory is finite, the history keeps only the {{limit}} most recent commands: when a push makes the size exceed the limit, **drop the oldest command** (deque removeLast). This forces the tester to check: after a long sequence of actions, {{historySize() <= limit}} always holds; once past the limit, older commands can no longer be undone — the cursor and buffer stay consistent because they are decided per action, while undo only lives on the commands that remain.
 
 ### Where SOLID applies
-- **OCP:** adding a new command type does not require changing the Editor ({{run(Cmd)}} stays as is): "Replace All", "Auto-link" or a MacroCommand are all just a new class.
-- **SRP:** each command only knows how to execute and undo itself; the Editor only manages the buffer, cursor and the two stacks.
+- **OCP:** adding a new command type does not require changing the Editor ({{run(Cmd)}} stays as is): "Replace All", "Auto-link", or a MacroCommand are all just a new class.
+- **SRP:** each command only knows how to execute and undo itself; the Editor only manages the buffer, cursor, and the two stacks.
 - **DIP:** the Editor depends on the Cmd class; the test can write a custom UpperCmd.
 
 ### Trade-offs
-| Implementation direction | Pros | Cons | When to choose |
+| Implementation approach | Pros | Cons | When to choose |
 |---|---|---|---|
 | Full buffer snapshot per edit | Easy to explain | Very memory-hungry with large files | Editors larger than a few hundred KB |
 | Command pattern + diff | Memory-light, undo per action | Must implement execute and undo for each new command type | Text editors, design tools |
-| CRDT / operational transform | Many people can edit together | Far more complex | Google Docs, Figma |
+| CRDT / operational transform | Many people can edit together | Much more complex | Google Docs, Figma |
 
 ### Interview relevance
-Prepare two follow-up questions in advance: "What if several people edit the same file (realtime)?" — the answer is Operational Transform or CRDT, and undo there is far more complex; and "What if you want undo by word instead of by character?" — the answer is the cursor-based merge rule used in this lesson, or time-based merging. When asked to go deeper, explain that Command is a discrete class with execute, undo and redo in place; the Editor only manages the two stacks.
+Prepare two follow-up questions in advance: "What if several people edit the same file (realtime)?" — the answer is Operational Transform or CRDT, and undo there is far more complex; and "What if you want undo by word instead of by character?" — the answer is the cursor-based merge rule used in this lesson, or time-based merging. When asked to go deeper, explain that Command is a discrete class with execute, undo, and redo in place; the Editor only manages the two stacks.
 
-> Senior tip: I once saw an office application that saved the whole buffer as a String for every undo level → with a 1 MB file, 100 undo levels consumed 100 MB. The Command pattern is a little heavier to code, but it is the only choice that keeps up with scale. The cost is worth paying because the memory savings are in the dozens of times.`,
+> Senior tip: I once saw an office application that saved the whole buffer as a String for every undo level — with a 1 MB file, 100 undo levels consumed 100 MB. The Command pattern is a little heavier to code, but it is the only choice that scales. The cost is worth paying because the memory savings are dozens of times.`,
     exercises: [
       {
-        title: 'Editor: bounded undo/redo with merging of consecutive typing',
-        prompt: `Complete the {{Editor}} class using the provided {{Cmd}}, {{InsertCmd}} and {{DeleteCmd}} classes.
+        title: 'Editor: Bounded Undo/Redo with Merging of Consecutive Typing',
+        prompt: `Complete the {{Editor}} class using the provided {{Cmd}}, {{InsertCmd}}, and {{DeleteCmd}} classes.
 
 Required API:
 - {{type(String s)}}: if {{s}} is empty, ignore it. If the top of undoStack is an {{InsertCmd}} and the {{cursor}} position sits right after its text and there is **no** pending command in redoStack, then **merge**: {{top.text += s}}, insert s into buf at the cursor, advance the cursor by {{s.length}}. Otherwise run a new InsertCmd through {{run(Cmd)}}.
@@ -202,11 +202,11 @@ Required API:
         q: 'Why use the Command pattern instead of saving a snapshot of the buffer on every edit?',
         options: [
           'Snapshots are faster when there are many users',
-          'Command stores only the diff, so it is memory-light; it also carries its own undo behaviour with no snapshot needed',
+          'Command stores only the diff, so it is memory-light; it also carries its own undo behavior with no snapshot needed',
           'Snapshots cannot be used with StringBuilder',
           'Command is always simpler because it has to implement execute and undo'
         ],
-        explain: `A full buffer snapshot eats memory with large files; Command stores the diff and knows how to undo itself, and adding a new command type does not require changing the Editor.`
+        explain: `A full buffer snapshot consumes memory with large files; Command stores the diff and knows how to undo itself, and adding a new command type does not require changing the Editor.`
       },
       {
         q: 'After typing a few characters right after an undo, what state must redoStack be in?',
@@ -229,7 +229,7 @@ Required API:
         explain: `The standard for real editors: the history is a bounded deque, and the oldest command is dropped; the buffer and cursor stay consistent because they are updated per action, while undo only works on the commands that remain.`
       },
       {
-        q: 'Try merging typing "he" and "llo": which condition is **not** required for merging?',
+        q: 'When merging typing "he" and "llo": which condition is **not** required for merging?',
         options: [
           'The top of undoStack is an InsertCmd and the cursor sits right after its text',
           'redoStack is empty (the user has not just undone)',

@@ -1,23 +1,23 @@
 /*
- * English translation of js/data/lessons-security.js — task T462, re-synced with the Vietnamese source in T502.
+ * English translation of js/data/lessons-security.js — task T1122, re-synced with the Vietnamese source.
  * Format: js/core/i18n.js (content overlay).
  * ids: lesson-security-003
  */
 App.i18n.content({
   'lesson-security-003': {
-    title: 'Rate limiting with a token bucket: bursts, refill and an injected clock',
+    title: 'Rate limiter by token bucket: burst, refill and an injected clock',
     goals: [
-      'Explain that a token bucket is defined by exactly two numbers — capacity (how large a burst you accept at once) and refill rate (the sustained speed) — and choose them from the SLA (the service-level agreement: the written promise on throughput and latency)',
-      'Implement refill-on-demand with an injected clock so the tests are deterministic and never read real time',
-      'Compare the token bucket with the fixed window and the sliding window (log and counter), and explain how to enforce one shared limit across many servers with Redis',
+      'Explain that a token bucket consists of capacity and refill rate, and choose these two parameters according to the SLA (service-level agreement: the written commitment on throughput and latency)',
+      'Implement refill-on-demand with an injected clock so tests are deterministic and never read real time',
+      'Compare token bucket with fixed window, sliding window log/counter, and describe how to distribute with Redis',
     ],
-    body: `### A token bucket: two parameters instead of one number
-A requirement such as "at most 100 requests/minute" says nothing about whether those 100 requests arrive inside the first 100 milliseconds or are spread evenly over the whole minute. A token bucket separates those two ideas into two numbers:
+    body: `### Token bucket: two parameters instead of one number
+The requirement "at most 100 requests/minute" says nothing about whether those 100 requests arrive within the first 100 milliseconds or are spread evenly over the whole minute. The token bucket separates these two ideas:
 
-- **capacity** (also called **burst**): the maximum number of tokens the bucket can hold — the burst you accept at one instant (for example 20 requests landing in the same second).
-- **refill rate**: how many tokens are added per unit of time — the sustained rate you allow in the long run (for example 100 requests per minute, however they are spread out).
+- **capacity** (also called **burst**): the maximum number of tokens the bucket can hold — the burst you accept immediately.
+- **refill rate**: the number of tokens added per unit of time — the sustained rate you allow in the long run.
 
-Every request "withdraws" one token: if one is available the request passes and the token is subtracted; if not, it is rejected with HTTP **429 Too Many Requests**. When the bucket is full, refilling stops, because any extra token would be clipped back at {{capacity}}.
+Every request "withdraws" one token: if one is available, the request passes and the token is subtracted; if not, it is rejected (HTTP 429). When the bucket is full, refilling stops, because any extra token would be clipped back at {{capacity}}.
 
 ~~~java
 // refill-on-demand: no timer, no dedicated thread per bucket
@@ -28,14 +28,14 @@ private void refill(long nowMs) {
 }
 ~~~
 
-Every check is O(1) and the refill is computed only when somebody calls in. That is why **refill-on-demand** (work out the refill lazily, at the moment of the request) is far more common than keeping a timer thread that feeds tokens into every bucket.
+Each attempt is O(1) and refill is computed only when someone calls in. That is why refill-on-demand is more common than keeping a timer thread that feeds tokens into every bucket.
 
 ### The clock is passed in, not read inside
-If {{tryAcquire}} called {{System.currentTimeMillis}} itself, a test would have to {{Thread.sleep}} before it could observe a refill: slow, flaky on CI, and it could never reproduce "the clock running backwards" or "the clock jumping ahead" — two situations that really happen when **NTP** (Network Time Protocol: the service that keeps the machine clock aligned with time servers, and occasionally steps it backwards) adjusts a machine. Passing {{nowMs}} in (or taking a time supplier in the constructor) turns every situation into plain input data:
+If {{tryAcquire}} called {{System.currentTimeMillis}} itself, the test would have to {{Thread.sleep}} before it could observe a refill: slow, flaky on CI, and it could never reproduce "clock went backwards" or "clock jumped ahead" — two situations that really happen when **NTP** (Network Time Protocol: the service that keeps the machine clock aligned with time servers, and occasionally steps it backwards) adjusts a machine. Passing {{nowMs}} in (or taking a time supplier in the constructor) turns every situation into plain input data:
 
 ~~~java
 bucket.tryAcquire(0);        // full: drains all 5 tokens
-bucket.tryAcquire(3);        // 3 ms later with a rate of 1 token/ms: exactly 3 tokens have been refilled
+bucket.tryAcquire(3);        // 3 ms later with a rate of 1 token/ms: exactly 3 tokens refilled
 bucket.tryAcquire(-500);     // clock went backwards: no extra tokens may be minted
 ~~~
 
@@ -45,7 +45,7 @@ In production, inside a single **JVM** (the Java process running your applicatio
 | Algorithm | Pros | Cons |
 |---|---|---|
 | Fixed window | simple, O(1) memory | bursts at the boundary: 100 requests at the end of minute 1 + 100 requests at the start of minute 2 = 200 requests in a couple of seconds |
-| Sliding window log | absolutely accurate (every request timestamp is kept) | memory O(number of requests in the window) |
+| Sliding window log | absolutely accurate | memory O(number of requests in the window) |
 | Sliding window counter | a balance between accuracy and memory | an estimate, not absolutely accurate |
 | Token bucket | controlled bursts, O(1) | you must tune both capacity and rate |
 | Leaky bucket | even output, smooths traffic for downstream services | no bursts allowed; requests must queue and wait |
@@ -53,8 +53,8 @@ In production, inside a single **JVM** (the Java process running your applicatio
 ### In production
 - **Key**: per IP (the client's network address), per user, or both, together with a **cap on the number of buckets** — an LRU map (least recently used: when the map is full, the bucket nobody has touched for the longest time is evicted) — so an attacker creating millions of fake keys cannot balloon memory.
 - **Concurrency**: reading and writing {{tokens}} is a read-modify-write; use {{synchronized}} (fast enough because the critical section is tiny) or a CAS loop (compare-and-swap: retry the update if another thread changed the value in the meantime) on {{AtomicLong}}, so two threads cannot withdraw the same token. The Bucket4j library does all of this for you, including the distributed version.
-- **Distribution**: a bucket sitting in each instance's own RAM multiplies the total allowance by the number of instances (five servers at 100 requests/minute each = 500 requests/minute in total). Put the bucket in **Redis** (an in-memory key-value store that all your servers talk to — effectively a shared HashMap living outside the JVMs) behind a **Lua script**: Lua runs inside Redis as one atomic step (read, refill, subtract and write back in a single script), so two servers cannot race. A dedicated gateway is the other common place to enforce the limit.
-- **Response**: return {{429}} with a {{Retry-After}} header holding the number of seconds until the next attempt, and make clients add **jitter** (a small random delay) when they retry, so the whole herd does not come back at the same instant.
+- **Distribution**: a bucket in each instance's own RAM multiplies the total allowance by the number of instances (five servers at 100 requests/minute each = 500 requests/minute in total). Put the bucket in **Redis** (an in-memory key-value store that all your servers talk to — effectively a shared HashMap living outside the JVMs) behind a **Lua script**: Lua runs inside Redis as one atomic step (read, refill, subtract and write back in a single script), so two servers cannot race. A dedicated gateway is the other common place to enforce the limit.
+- **Response**: return {{429}} with a {{Retry-After}} header holding the number of seconds until the next attempt, and require clients to add **jitter** (a small random delay) when they retry, so the whole herd does not come back at the same instant.
 - **Capacity vs rate**: capacity = the burst you truly accept, rate = the sustained level in the contract. For example "100 requests/minute, allow a burst of 20" gives capacity 20 and a rate of 100/60 ≈ 1.67 tokens/second. Setting capacity 100 and rate 100 tokens/second means allowing a burst of up to 100 requests and a sustained 6000 requests/minute — far beyond the limit.
 
 ### Common traps
@@ -68,11 +68,11 @@ In production, inside a single **JVM** (the Java process running your applicatio
 Interviewers often ask: "which rate-limiting algorithm would you choose, and why?", "how do you keep it correct across many instances?", "what do you do when the clocks on two machines disagree?", "how do you return {{429}} to clients properly?". Once you finish the two exercises below — a token bucket with an injected clock and a sliding window log — you have enough material to answer all four questions with your own code.`,
     exercises: [
       {
-        title: 'Write TokenBucket: capacity, refill rate and an injected clock',
-        prompt: `Complete {{TokenBucket}} — a token-bucket rate limiter that is fully deterministic (the test supplies the time):
+        title: 'Write TokenBucket: capacity, refill rate and clock passed in',
+        prompt: `Complete {{TokenBucket}} — a token-bucket rate limiter that is fully deterministic (time is supplied by the test):
 
-- {{TokenBucket(capacity, tokensPerSecond, nowMs)}}: the bucket starts **full**, with {{capacity}} tokens; {{refillPerMs}} = {{tokensPerSecond / 1000.0}}. An invalid capacity or rate throws {{IllegalArgumentException}}.
-- {{tryAcquire(nowMs)}}: refill the tokens for the time that has elapsed (capped at {{capacity}}), then subtract 1 if there are enough; return false if not. {{tryAcquire(nowMs, permits)}} does the same for a larger number of tokens.
+- {{TokenBucket(capacity, tokensPerSecond, nowMs)}}: the bucket starts **full** with {{capacity}} tokens; {{refillPerMs}} = {{tokensPerSecond / 1000.0}}. An invalid capacity or rate throws {{IllegalArgumentException}}.
+- {{tryAcquire(nowMs)}}: refill tokens for the elapsed time (capped at {{capacity}}), then subtract 1 if there are enough; return false if not. {{tryAcquire(nowMs, permits)}} does the same for a larger number of tokens.
 - {{available(nowMs)}}: the number of tokens available after refilling; {{retryAfterMs(nowMs)}}: 0 if a token can be taken right now, otherwise the number of milliseconds until the next possible attempt.
 - A backwards clock ({{nowMs}} earlier than the latest time seen) must **not** mint extra tokens.
 
@@ -90,7 +90,7 @@ On floating point: the tests use a rate of 1000 tokens/second, so {{refillPerMs 
       },
       {
         title: 'Write SlidingWindow: an exact limit inside a sliding window',
-        prompt: `Complete {{SlidingWindow}} — a limit based on a **sliding window** (a log of the recent requests: absolutely exact, no fudging at the boundary):
+        prompt: `Complete {{SlidingWindow}} — a limit based on a **sliding window** (absolutely exact, no fudging at the boundary):
 
 - {{SlidingWindow(windowMs, maxPermits, nowMs)}}: the window is {{windowMs}} milliseconds long and allows at most {{maxPermits}} requests inside it. Invalid parameters throw {{IllegalArgumentException}}.
 - {{tryAcquire(nowMs)}}: a request counts at time {{nowMs}} if, after dropping the requests that have left the window, fewer than {{maxPermits}} remain; if it passes, record the request.
@@ -99,7 +99,7 @@ On floating point: the tests use a rate of 1000 tokens/second, so {{refillPerMs 
 
 Use only the JDK, never real time.`,
         hints: [
-          'Keep the timestamps in an {{ArrayDeque}} (a double-ended queue with cheap insert/remove at both ends) in ascending order; before deciding, remove from the head every timestamp with {{nowMs - t >= windowMs}}.',
+          'Keep the timestamps in an {{ArrayDeque}} in ascending order; before deciding, remove from the head every timestamp with {{nowMs - t >= windowMs}}.',
           'Remember {{clock = max(nowMs, clock)}} so a clock running backwards cannot widen the window; every operation uses this frozen value.',
           'When {{hits.size() >= maxPermits}} reject; otherwise {{addLast}} the frozen timestamp and then return true.',
         ],

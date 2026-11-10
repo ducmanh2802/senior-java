@@ -29,16 +29,16 @@ Luồng típ của "xem số dư qua app":
 5. Core đọc số dư từ cơ sở dữ liệu và trả về: dịch vụ → gateway → app hiển thị cho khách.
 
 ~~~seq
-title: Khach xem so du qua app
-actors: Khach | App | Gateway | Core | DB
-Khach -> App: mo app, nhan xem so du
-App -> Gateway: GET tai khoan so du
-Gateway -> Core: tra cuu so du khach A
-Core -> DB: doc so du
-DB --> Core: tra ve 10.000.000 VND
+title: Khách xem số dư qua app
+actors: Khách | App | Gateway | Core | DB
+Khách -> App: mở app, nhấn xem số dư
+App -> Gateway: GET số dư tài khoản
+Gateway -> Core: tra cứu số dư khách A
+Core -> DB: đọc số dư
+DB --> Core: trả về 10.000.000 VND
 Core --> Gateway: 10.000.000 VND
-Gateway --> App: 200 OK + so du
-App --> Khach: hien thi 10.000.000 VND
+Gateway --> App: 200 OK + số dư
+App --> Khách: hiển thị 10.000.000 VND
 ~~~
 
 ### Tại sao core thường chạy batch cuối ngày (EOD)
@@ -89,15 +89,15 @@ Các thành viên liên quan:
 - Khách gửi và khách nhận.
 
 ~~~seq
-title: Chuyen khoan lien ngan hang 24/7 qua NAPAS
-actors: Khach gui | Ngan hang gui | NAPAS | Ngan hang nhan | Khach nhan
-Khach gui -> Ngan hang gui: yeu cau chuyen tien 5 trieu VND
-Ngan hang gui -> NAPAS: gui goi giao dich
-NAPAS -> Ngan hang nhan: kiem tra tai khoan va cap nhat so du
-Ngan hang nhan --> NAPAS: chấp nhận, tien da den
-NAPAS --> Ngan hang gui: thong bao thanh cong
-Ngan hang gui --> Khach gui: thong bao da chuyen xong
-Ngan hang nhan --> Khach nhan: thong bao nhan tien
+title: Chuyển khoản liên ngân hàng 24/7 qua NAPAS
+actors: Khách gửi | Ngân hàng gửi | NAPAS | Ngân hàng nhận | Khách nhận
+Khách gửi -> Ngân hàng gửi: yêu cầu chuyển tiền 5 triệu VND
+Ngân hàng gửi -> NAPAS: gửi gói giao dịch
+NAPAS -> Ngân hàng nhận: kiểm tra tài khoản và cập nhật số dư
+Ngân hàng nhận --> NAPAS: chấp nhận, tiền đã đến
+NAPAS --> Ngân hàng gửi: thông báo thành công
+Ngân hàng gửi --> Khách gửi: thông báo đã chuyển xong
+Ngân hàng nhận --> Khách nhận: thông báo nhận tiền
 ~~~
 
 ### Giao dịch bị timeout xử lý thế nào
@@ -158,13 +158,13 @@ Ví dụ chuyển 2.000.000 VND từ A sang B (hai tài khoản cùng ngân hàn
 Sau giao dịch, số dư A = số dư cũ - 2.000.000, số dư B = số dư cũ + 2.000.000. Nếu tổng không bằng 0, có lỗi trong code, hệ thống phải tự động từ chối giao dịch.
 
 ~~~seq
-title: Ghi giao dich chuyen tien vao so cai kep
-actors: App | Dich vu | LedgerDB | App
-App -> Dich vu: yeu cau chuyen 2 trieu A -> B
-Dich vu -> LedgerDB: ghi dong 1: A -2 trieu
-Dich vu -> LedgerDB: ghi dong 2: B +2 trieu
-LedgerDB --> Dich vu: kiem tra tong bang 0, commit
-Dich vu --> App: thong bao thanh cong
+title: Ghi giao dịch chuyển tiền vào sổ cái kép
+actors: App | Dịch vụ | LedgerDB
+App -> Dịch vụ: yêu cầu chuyển 2 triệu A -> B
+Dịch vụ -> LedgerDB: ghi dòng 1: A -2 triệu
+Dịch vụ -> LedgerDB: ghi dòng 2: B +2 triệu
+LedgerDB --> Dịch vụ: kiểm tra tổng bằng 0, commit
+Dịch vụ --> App: thông báo thành công
 ~~~
 
 ### Tại sao phải append-only (chỉ thêm, không sửa/xóa)
@@ -300,7 +300,7 @@ Mỗi ngày, ngân hàng có hàng trăm/hàng nghìn giao dịch trong và ngo�
 Nguồn lệch thường gặp:
 - Giao dịch timeout: ngân hàng gửi đã trừ tiền nhưng thông báo bị mất, ngân hàng nhận chưa biết -> tiền bị "mat" giữa hai ben.
 - Lỗi hệ thống: mạng mất, server chậm, code bug ghi sai so tien.
-- Giao dich chua khop: mot ben ghi giao dich, ben kia chua ghi (vi du nhan vien nhap sai ma tai khoan).
+- Giao dịch chưa khớp: một bên ghi giao dịch, bên kia chưa ghi (ví dụ nhân viên nhập sai mã tài khoản).
 - Ngay le/gio bao tri: he thong nghi, giao dich bi tre, den ngay moi moi khop.
 
 ### Quy trình xử lý khi phát hiện lệch
@@ -316,16 +316,16 @@ Nguồn lệch thường gặp:
 Ví dụ số liệu: ngân hàng A gửi 100 giao dịch sang ngân hàng B qua NAPAS, tổng 500 triệu. B báo nhận 99 giao dịch, tổng 495 triệu. Có một giao dịch 5 triệu lệch. Tra soát kết quả: giao dịch đó timeout, tiền đã được trừ ở A nhưng thông báo bị mất, B chưa biết. Xử lý: cộng 5 triệu cho tài khoản nhận ở B, cập nhật trạng thái giao dịch, thông báo cả hai khách.
 
 ~~~seq
-title: Doi soat cuoi ngay va xu ly lech
-actors: Ngan hang A | NAPAS | Ngan hang B | Nhan vien tra sot
-Ngan hang A -> NAPAS: gui 100 giao dich, 500 trieu
-NAPAS -> Ngan hang B: chuyen tien
-Ngan hang B --> NAPAS: nhan 99 giao dich, 495 trieu
-NAPAS --> Ngan hang A: bao cao 99/100, lech 5 trieu
-Nhan vien tra sot -> Ngan hang A: kiem tra nhat ky giao dich lech
-Nhan vien tra sot -> Ngan hang B: xac nhan chua nhan 5 trieu
-Nhan vien tra sot -> Ngan hang B: cong 5 trieu tai khoan nhan
-Nhan vien tra sot --> Ngan hang A: bao cao ket qua
+title: Đối soát cuối ngày và xử lý lệch
+actors: Ngân hàng A | NAPAS | Ngân hàng B | Nhân viên tra soát
+Ngân hàng A -> NAPAS: gửi 100 giao dịch, 500 triệu
+NAPAS -> Ngân hàng B: chuyển tiền
+Ngân hàng B --> NAPAS: nhận 99 giao dịch, 495 triệu
+NAPAS --> Ngân hàng A: báo cáo 99/100, lệch 5 triệu
+Nhân viên tra soát -> Ngân hàng A: kiểm tra nhật ký giao dịch lệch
+Nhân viên tra soát -> Ngân hàng B: xác nhận chưa nhận 5 triệu
+Nhân viên tra soát -> Ngân hàng B: cộng 5 triệu tài khoản nhận
+Nhân viên tra soát --> Ngân hàng A: báo cáo kết quả
 ~~~
 
 ### Lỗi hay gặp
@@ -374,13 +374,13 @@ Khi tính tổng số ngày để tính lãi hoặc tính hạn, chỉ đếm ng
 Ví dụ số liệu: khách gửi tiền 100 triệu vào ngày Chủ Nhật (ngày nghỉ, giờ cắt đã qua). Ngân hàng chấp nhận giao dịch, tính value date là ngày làm việc đầu tiên của tuần sau. Lãi tiền được tính từ value date, không tính từ ngày Chủ Nhật.
 
 ~~~seq
-title: Giao dich vao ngay le sau cut-off
-actors: Khach | App | Ngan hang | He thong xu ly
-Khach -> App: gui tien 100 trieu luc 23h ngay Chu Nhat
-App -> Ngan hang: gui giao dich
-Ngan hang -> He thong xu ly: chấp nhận, tinh value date = ngay lam viec dau tien tuan sau
-He thong xu ly --> Ngan hang: da chấp nhận
-Ngan hang --> Khach: thong bao da chấp nhận, tien cong ngay lam viec tiep theo
+title: Giao dịch vào ngày lễ sau giờ cut-off
+actors: Khách | App | Ngân hàng | Hệ thống xử lý
+Khách -> App: gửi tiền 100 triệu lúc 23h ngày Chủ Nhật
+App -> Ngân hàng: gửi giao dịch
+Ngân hàng -> Hệ thống xử lý: chấp nhận, tính value date ngày làm việc đầu tuần sau
+Hệ thống xử lý --> Ngân hàng: đã chấp nhận
+Ngân hàng --> Khách: thông báo chấp nhận, tiền cộng ngày làm việc kế tiếp
 ~~~
 
 ### Lỗi hay gặp
@@ -442,15 +442,15 @@ Back-office của ngân hàng có nhiều bộ phận (tài chính, kiểm toán
 Quyền hạn được kiểm tra mỗi lần nhân viên nhấn nút, không chỉ kiểm tra khi đăng nhập. Ví dụ nhân viên thủ ngân nhấn mục "duyệt chuyển tiền", hệ thống phải từ chối ngay.
 
 ~~~seq
-title: Maker-checker chuyen tien trong back-office
-actors: Maker | Checker | He thong | Nhan vien
-Maker -> He thong: tao yeu cau chuyen 500 trieu
-He thong --> Maker: da luu, trang thai cho duyet
-Maker --> Checker: thong bao co yeu cau moi
-Checker -> He thong: xem yeu cau, kiem tra tai khoan
-Checker -> He thong: duyet yeu cau
-He thong --> Checker: da duyet, tien duoc chuyen
-He thong -> Nhan vien: ghi audit trail (mai, duyet, 14:32, 500 trieu)
+title: Maker-checker chuyển tiền trong back-office
+actors: Maker | Checker | Hệ thống
+Maker -> Hệ thống: tạo yêu cầu chuyển 500 triệu
+Hệ thống --> Maker: đã lưu, trạng thái chờ duyệt
+Maker --> Checker: thông báo có yêu cầu mới
+Checker -> Hệ thống: xem yêu cầu, kiểm tra tài khoản
+Checker -> Hệ thống: duyệt yêu cầu
+Hệ thống --> Checker: đã duyệt, tiền được chuyển
+Hệ thống -> Maker: ghi audit trail (tạo, duyệt, 14:32)
 ~~~
 
 ### Lỗi hay gặp
@@ -509,12 +509,12 @@ Ví dụ hiển thị thẻ:
 - Số thẻ đã che: **** **** **** 3456
 
 ~~~seq
-title: Nhan vien xem thong tin khach da che
-actors: Nhan vien | He thong | Co so du lieu
-Nhan vien -> He thong: xem tai khoan khach A
-He thong -> Co so du lieu: lay thong tin khach
-Co so du lieu --> He thong: CMND da ma hoa, so the da che
-He thong --> Nhan vien: hien thi ho ten, CMND che, the che
+title: Nhân viên xem thông tin khách đã che
+actors: Nhân viên | Hệ thống | CSDL
+Nhân viên -> Hệ thống: xem tài khoản khách A
+Hệ thống -> CSDL: lấy thông tin khách
+CSDL --> Hệ thống: CMND đã mã hóa, số thẻ đã che
+Hệ thống --> Nhân viên: hiển thị họ tên, CMND che, thẻ che
 ~~~
 
 ### Lỗi hay gặp
@@ -567,13 +567,13 @@ Ví dụ log sai: "Giao dịch thẻ 1234 5678 9012 3456 thành công" -> lộ t
 Ví dụ log đúng: "Giao dịch thẻ **** **** **** 3456 thành công" -> an toàn.
 
 ~~~seq
-title: Thanh toan the voi token va log che
-actors: Khach | He thong thanh toan | Token Vault | Log
-Khach -> He thong thanh toan: nhap so the, thanh toan
-He thong thanh toan -> Token Vault: doi so the thanh token
-Token Vault --> He thong thanh toan: tra ve token tok_abc123
-He thong thanh toan -> Log: ghi log "the **** **** **** 3456 thanh cong"
-Log --> He thong thanh toan: da ghi
+title: Thanh toán thẻ với token và log che
+actors: Khách | Hệ thống thanh toán | Token Vault | Log
+Khách -> Hệ thống thanh toán: nhập số thẻ, thanh toán
+Hệ thống thanh toán -> Token Vault: đổi số thẻ thành token
+Token Vault --> Hệ thống thanh toán: trả về token tok_abc123
+Hệ thống thanh toán -> Log: ghi "thẻ ****3456 thành công"
+Log --> Hệ thống thanh toán: đã ghi
 ~~~
 
 ### Lỗi hay gặp
@@ -634,16 +634,16 @@ Ví dụ thông báo ISO 20022 có thể chứa: tên người gửi "Nguyễn V
 Ví dụ: rút tiền tại ATM dùng ISO 8583 (nhanh, ít dữ liệu). Chuyển tiền 200 triệu qua NAPAS có thể dùng ISO 20022 (chi tiết, có lý do thanh toán).
 
 ~~~seq
-title: Rut tien ATM dung ISO 8583
-actors: Khach | ATM | He thong the | Mang the | Ngan hang
-Khach -> ATM: chụp thẻ, nhap ma pin, rut 2 trieu
-ATM -> He thong the: gui thong bao ISO 8583 MTI 0100
-He thong the -> Mang the: chuyen tiep yeu cau
-Mang the -> Ngan hang: kiem tra tai khoan, so du
-Ngan hang --> Mang the: tra loi MTI 0110, ma 00 thanh cong
-Mang the --> He thong the: tra loi ket qua
-He thong the --> ATM: cho phep rut tien
-ATM --> Khach: phat 2 trieu, in hoa don
+title: Rút tiền ATM dùng ISO 8583
+actors: Khách | ATM | Hệ thống thẻ | Mạng thẻ | Ngân hàng
+Khách -> ATM: đưa thẻ, nhập PIN, rút 2 triệu
+ATM -> Hệ thống thẻ: gửi ISO 8583 MTI 0100
+Hệ thống thẻ -> Mạng thẻ: chuyển tiếp yêu cầu
+Mạng thẻ -> Ngân hàng: kiểm tra tài khoản, số dư
+Ngân hàng --> Mạng thẻ: trả lời MTI 0110, mã 00 thành công
+Mạng thẻ --> Hệ thống thẻ: trả kết quả
+Hệ thống thẻ --> ATM: cho phép rút tiền
+ATM --> Khách: phát 2 triệu, in hóa đơn
 ~~~
 
 ### Lỗi hay gặp
@@ -696,13 +696,13 @@ Quy tắc làm tròn quan trọng:
 - Không được làm tròn hai lần (làm tròn tron), vì sẽ sai.
 
 ~~~seq
-title: Tinh lai tien gui voi BigDecimal
-actors: App | Tinh lai | CSDL | App
-App -> Tinh lai: yeu tinh lai 100 trieu, 6% nam, 30 ngay
-Tinh lai -> CSDL: doc du no, lai suat, so ngay
-CSDL --> Tinh lai: du no 100 trieu, 6%, 30 ngay
-Tinh lai --> App: 493.150.68 VND (da lam tron)
-App --> Khach: hien thi so tien lai
+title: Tính lãi tiền gửi với BigDecimal
+actors: App | Tính lãi | CSDL
+App -> Tính lãi: tính lãi 100 triệu, 6%/năm, 30 ngày
+Tính lãi -> CSDL: đọc dư nợ, lãi suất, số ngày
+CSDL --> Tính lãi: dư nợ 100 triệu, 6%, 30 ngày
+Tính lãi --> App: 493.150,68 VND (đã làm tròn)
+App --> Khách: hiển thị số tiền lãi
 ~~~
 
 ~~~java
@@ -882,7 +882,7 @@ record Hold(String paymentId, BigDecimal authorized, BigDecimal captured, Instan
 BigDecimal capturable(Hold h, BigDecimal requested, Instant now) {
     if (h == null || h.expiresAt().isBefore(now)) return BigDecimal.ZERO;
     BigDecimal remaining = h.authorized().subtract(h.captured());
-    return remaining.min(requested);      // capture khong bao lon hon so con duoc giu
+    return remaining.min(requested);      // capture không báo lớn hơn số còn được giữ
 }
 ~~~
 
@@ -938,14 +938,14 @@ Chuẩn phổ biến là EMVCo QR, các trường viết dạng TLV (Tag-Length-
 - Trường 63: CRC, 4 ký tự kiểm tra cuối chuỗi, giúp phát hiện QR bị cắt hoặc bị sửa.
 
 ~~~text
-Vi du minh hoa cau truc TLV (khong phai payload that cua ngan hang nao):
+Ví dụ minh họa cấu trúc TLV (không phải payload thật của ngân hàng nào):
 00 02 01            : phien ban
 01 02 12            : kieu QR (12 = thanh toan hang hoa, dich vu)
 26 26 0010 970436 0114 1028394056 : BIN ngan hang tho huong + so tai khoan
 52 04 5311          : MCC cua hang ban le
 53 03 704           : tien te VND
 54 06 250.00        : so tien
-59 15 CUA HANG A    : ten nguoi ban
+59 15 CUA HANG A    : tên người bán
 60 06 HA NOI        : thanh phan
 58 02 VN            : quoc gia
 62 17 01 13 A123456 : ma don hang (truong con ben trong)
@@ -957,17 +957,17 @@ Số tiền trong QR chỉ là **đề nghị**; khách vẫn có thể đổi (
 ### Luồng từ app khách tới tài khoản người bán
 ~~~seq
 title: Khach quet VietQR thanh toan 250.000
-actors: Khach | App khach | NAPAS | Core nguoi ban | POS nguoi ban
-Khach -> App khach: mo app, quet QR
-App khach -> App khach: doc TLV, hien ten va so tien
-Khach -> App khach: xac nhan "Chuyen 250.000"
-App khach -> NAPAS: lenh chuyen khoan nhanh 24/7
-NAPAS -> Core nguoi ban: ghi co tai khoan nguoi ban
-Core nguoi ban --> NAPAS: da cap nhat so du
-NAPAS --> App khach: thanh cong, kem ma tham chieu
-App khach --> Khach: hien thi "Da chuyen"
-Core nguoi ban -> POS nguoi ban: webhook bao co
-POS nguoi ban -> POS nguoi ban: doi chieu, xac nhan don A123456
+actors: Khách | App khách | NAPAS | Core người bán | POS người bán
+Khách -> App khách: mở app, quét QR
+App khách -> App khách: đọc TLV, hiện tên và số tiền
+Khách -> App khách: xác nhận "Chuyển 250.000"
+App khách -> NAPAS: lệnh chuyển khoản nhanh 24/7
+NAPAS -> Core người bán: ghi có tài khoản người bán
+Core người bán --> NAPAS: đã cập nhật số dư
+NAPAS --> App khách: thành công, kèm mã tham chiếu
+App khách --> Khách: hiển thị "Đã chuyển"
+Core người bán -> POS người bán: webhook báo có
+POS người bán -> POS người bán: đối chiếu, xác nhận đơn A123456
 ~~~
 
 ### Vì sao phải đối soát, không tin ảnh chụp
@@ -984,8 +984,8 @@ webhook luôn có thể được gửi trùng (phía ngân hàng retry), nên ha
 ~~~sql
 CREATE TABLE merchant_order (
   id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  order_code    VARCHAR(32)  NOT NULL UNIQUE,      -- ma don in trong noi dung chuyen khoan
-  amount        NUMERIC(20,0) NOT NULL,            -- VND, khong dung so thap phan
+  order_code    VARCHAR(32)  NOT NULL UNIQUE,      -- mã đơn in trong nội dung chuyển khoản
+  amount        NUMERIC(20,0) NOT NULL,            -- VND, không dùng số thập phân
   status        VARCHAR(20)  NOT NULL,             -- AWAITING | PAID | EXPIRED | CANCELLED
   qr_expires_at TIMESTAMPTZ,
   paid_ref      VARCHAR(64)  UNIQUE,               -- ma tham chieu NAPAS, chong xac nhan trung
@@ -1055,7 +1055,7 @@ CREATE TABLE debit_run (
   amount      NUMERIC(20,2) NOT NULL,
   status      VARCHAR(16)  NOT NULL,          -- PENDING | SUCCESS | INSUFFICIENT | ABANDONED
   attempts    SMALLINT     NOT NULL DEFAULT 0,
-  PRIMARY KEY (mandate_id, period_key)        -- mot ky chi duoc thu mot lan
+  PRIMARY KEY (mandate_id, period_key)        -- một kỳ chỉ được thu một lần
 );
 ~~~
 
@@ -1455,13 +1455,13 @@ Extract → Transform → Load → Reconcile.
 Bẫy kinh điển: chỉ so tổng. Thiếu 1 tỷ ở tài khoản A và thừa 1 tỷ ở tài khoản B thì tổng vẫn đẹp. Vì vậy tầng 3 là bắt buộc, không phải tùy chọn.
 
 ~~~text
-So du cuoi lan chay thu #4  (toan bo 2.113.402 tai khoan)
+Số dư cuối lần chạy thứ #4  (toàn bộ 2.113.402 tài khoản)
 MATCH            2.113.398
 EXPLAINED             4   (3 tai khoan chet da doi soat tay, 1 lenh phí - da co bien ban)
 UNEXPLAINED           0   <-- dieu kien can de cut-over: bang 0
 Tong GL vs tong so du:  chenh 0
 So du am bat thuong:     0
-Tai khoan khong map duoc san pham: 0
+Tài khoản không map được sản phẩm: 0
 ~~~
 
 ~~~java
@@ -1473,7 +1473,7 @@ static String classify(AccountDiff d, Map<String, String> approvedExceptions) {
     BigDecimal delta = d.delta();
     if (delta.signum() == 0) return "MATCH";
     String note = approvedExceptions.get(d.accountNo());
-    return note != null ? "EXPLAINED: " + note : "UNEXPLAINED";   // con UNEXPLAINED thi khong cat
+    return note != null ? "EXPLAINED: " + note : "UNEXPLAINED";   // còn UNEXPLAINED thì không cắt
 }
 ~~~
 
@@ -1548,7 +1548,7 @@ actors: Khach | Payment | Ledger | Outbox | Notification
 Khach -> Payment: nap 500.000 dong tu the
 Payment -> Payment: xin authorization tu issuer
 Payment -> Ledger: lenh ke toan no trung gian co vi khach
-Ledger -> Ledger: kiem tra can bang, ghi append-only
+Ledger -> Ledger: kiểm tra cân bằng, ghi append-only
 Ledger -> Outbox: ghi event cung transaction voi so du
 Ledger --> Payment: da ghi so, ma bu toan LE-9931
 Payment --> Khach: nap thanh cong
@@ -1570,7 +1570,7 @@ CREATE TABLE outbox_event (
 );
 CREATE INDEX ix_outbox_unsent ON outbox_event (id) WHERE sent_at IS NULL;
 
-CREATE TABLE consumer_dedup (               -- phia nhan, chong xu ly trung
+CREATE TABLE consumer_dedup (               -- phía nhận, chống xử lý trùng
   consumer   VARCHAR(40) NOT NULL,
   event_id   BIGINT      NOT NULL,
   handled_at TIMESTAMPTZ NOT NULL,
@@ -1671,11 +1671,11 @@ actors: Khach | Dinh tuyen | DC A | Trong tai | DC B
 Khach -> Dinh tuyen: yeu cau thanh toan
 Dinh tuyen -> DC A: chuyen yeu cau
 DC A --> Dinh tuyen: khong phan hoi
-Trong tai -> DC A: kiem tra su song, that bai
+Trọng tải -> DC A: kiểm tra sự sống, thất bại
 Trong tai -> DC B: quorum dong y, coi DC A da chet
 Dinh tuyen -> DC B: chuyen dinh tuyen ve DC B
 DC B -> DC B: nang DB standby len primary
-DC B -> DC B: kiem tra giao dich cuoi da ap dung
+DC B -> DC B: kiểm tra giao dịch cuối đã áp dụng
 DC B --> Dinh tuyen: san phuc vu
 Khach -> Dinh tuyen: yeu cau thanh toan tiep theo
 Dinh tuyen -> DC B: phuc vu, khach khong biet DC A chet
@@ -1875,7 +1875,7 @@ Nếu bạn coi timeout = thất bại và cho khách gửi lại (hoặc tự r
 ~~~text
 [INIT] --gui yeu cau--> [SENT]
 [SENT] --nhan SUCCESS--> [SUCCESS] (ket thuc)
-[SENT] --nhan FAILED--> [FAILED]  (ket thuc, xem xet hoan tien neu da hold)
+[SENT] --nhận FAILED--> [FAILED]  (kết thúc, xem xét hoàn tiền nếu đã hold)
 [SENT] --timeout/loi mang--> [PENDING_UNKNOWN]
 [PENDING_UNKNOWN] --inquiry: SUCCESS--> [SUCCESS]
 [PENDING_UNKNOWN] --inquiry: FAILED--> [FAILED]
@@ -1893,7 +1893,7 @@ Napas -> DoiTacNH: ghi co cho B
 DoiTacNH --> Napas: thanh cong
 Napas --> PaymentSvc: timeout mat phan hoi
 PaymentSvc -> PaymentSvc: chuyen trang thai PENDING_UNKNOWN
-PaymentSvc --> AppKhach: "Dang xu ly, vui long cho" (khong bao loi)
+PaymentSvc --> AppKhach: "Đang xử lý, vui lòng chờ" (không báo lỗi)
 PaymentSvc -> Napas: inquiry(tx_id) - tra soat
 Napas --> PaymentSvc: ket qua SUCCESS
 PaymentSvc -> PaymentSvc: cap nhat SUCCESS, chot tru tien A
@@ -1982,7 +1982,7 @@ CoreLedger --> HeThong: tx hoan thanh cong, status=APPLIED
 public void approve(long requestId, User checker, String comment) {
     var req = repo.findPending(requestId).orElseThrow();
     if (req.getMakerId().equals(checker.getId())) {
-        throw new BusinessException("Maker khong duoc tu duyet yeu cau cua minh");
+        throw new BusinessException("Maker không được tự duyệt yêu cầu của mình");
     }
     if (!checker.hasRole("APPROVER") || !checker.canApprove(req.getActionType(), req.getAmount())) {
         throw new AccessDeniedException("Khong du quyen duyet");
@@ -2321,7 +2321,7 @@ Rủi ro: Redis là bộ nhớ; cần chiến lược bền vững (persistence)
 title: Reserve han muc ngay (atomic, chong vuot)
 actors: App | LimitService | DB | PaymentSvc
 App -> LimitService: chuyen 800000 (idempo_key=K1)
-LimitService -> DB: kiem tra idempo_key K1 da xu ly?
+LimitService -> DB: kiểm tra idempo_key K1 đã xử lý?
 DB --> LimitService: chua
 LimitService -> DB: UPDATE ... SET used=used+800000 WHERE used+800000<=limit
 DB --> LimitService: 1 row (OK) hoac 0 row (vuot)
@@ -2422,27 +2422,27 @@ Một giao dịch chuyển tiền không diễn ra ở một nơi, mà đi qua n
 Ví dụ đời thường: khách nhấn "Chuyen 5 trieu", mạng giật, khách không thấy kết quả nên nhấn lại. Nếu hệ thống không kiểm tra, hai lệnh "chuyen 5 trieu" sẽ đi đến core và tiền bị trừ 10 trieu thay vì 5 trieu.
 
 ### Các lớp bảo vệ
-1. Mobile: tat nut ngay sau khi khach nhan, tao khoa idempotency duy nhat (UUID), luu tren thiet bi de lan thu lai cung dung khoa cu.
-2. API gateway: gioi han so yeu cau cua moi khach (rate limit), kiem tra trung theo khoa idempotency trong bo nho dem ngan han; neu khoa da co, tra ket qua da luu khong chuyen tiep.
-3. Dich vu nghiep vu: kiem tra khoa trong co so du lieu; neu da xu ly, tra ket qua cu; neu chua, xu ly moi.
-4. Core banking: rang buoc duy nhat tren cot khoa idempotency, giao dich ACID, kiem tra so du truoc khi tru tien.
+1. Mobile: tắt nút ngay sau khi khách nhận, tạo khóa idempotency duy nhất (UUID), lưu trên thiết bị để lần thử lại cũng dùng khóa cũ.
+2. API gateway: giới hạn số yêu cầu của mỗi khách (rate limit), kiểm tra trùng theo khóa idempotency trong bộ nhớ đệm ngắn hạn; nếu khóa đã có, trả kết quả đã luu khong chuyen tiep.
+3. Dịch vụ nghiệp vụ: kiểm tra khóa trong cơ sở dữ liệu; nếu đã xử lý, trả kết quả cũ; nếu chưa, xử lý mới.
+4. Core banking: ràng buộc duy nhất trên cột khóa idempotency, giao dịch ACID, kiểm tra số dư trước khi trừ tiền.
 
 ### Thu tu xu ly (buoc chi tiet)
-1. Khach nhan chuyen tien tren mobile; app tao khoa K (ma duy nhat, vi dung UUID) va gui yeu cau kem K.
-2. Gateway kiem tra bo nho dem: neu K da co -> tra ket qua da luu, khong xu ly lai.
+1. Khách nhận chuyển tiền trên mobile; app tạo khóa K (mã duy nhất, ví dụ UUID) và gửi yêu cầu kèm K.
+2. Gateway kiểm tra bộ nhớ đệm: nếu K đã có -> trả kết quả đã lưu, không xử lý lại.
 3. Neu K chua co, gateway chuyen tiep yeu cau den dich vu nghiep vu.
-4. Dich vu kiem tra co so du lieu: neu K da duoc xu ly -> tra ket qua cu.
+4. Dịch vụ kiểm tra cơ sở dữ liệu: nếu K đã được xử lý -> trả kết quả cũ.
 5. Neu chua, dich vu goi core banking de tru tien.
-6. Core thuc hien trong mot giao dich ACID: kiem tra so du, tru tien, luu K cung ket qua.
+6. Core thực hiện trong một giao dịch ACID: kiểm tra số dư, trừ tiền, lưu K cùng kết quả.
 7. Ket qua chuyen nguc: dich vu -> gateway -> mobile.
 
-Vi du so lieu: khach chuyen 5.000.000 VND, khoa K = "a1b2-c3d4". Mat mang sau khi gui, khach nhan "Thu lai" cung khoa K. Gateway/dich vu tim thay K da xu ly -> tra ve "thanh cong" cu, khong tru them 5 trieu.
+Ví dụ số liệu: khách chuyển 5.000.000 VND, khóa K = "a1b2-c3d4". Mất mạng sau khi gửi, khách nhận "Thử lại" cùng khóa K. Gateway/dịch vụ tìm thấy K đã xử lý -> tra ve "thanh cong" cu, khong tru them 5 trieu.
 
 ### Lỗi hay gặp
-- Mobile tao khoa moi moi lan thu lai -> khong chan duoc yeu cau trung, tien co the bi tru nhieu lan.
-- Bo nho dem gateway het han truoc khi core xu ly xong -> yeu cau duoc xu ly hai lan (trung).
-- Core khong co rang buoc duy nhat tren cot khoa -> hai yeu cau cung khoa deu duoc tru tien.
-- Khach tao yeu cau moi thay vi thu lai cung yeu cu cu -> sinh giao dich moi, khong lien quan den khoa cu.
+- Mobile tạo khóa mới mỗi lần thử lại -> không chặn được yêu cầu trùng, tiền có thể bị trừ nhiều lần.
+- Bộ nhớ đệm gateway hết hạn trước khi core xử lý xong -> yêu cầu được xử lý hai lần (trùng).
+- Core không có ràng buộc duy nhất trên cột khóa -> hai yêu cầu cùng khóa đều được trừ tiền.
+- Khách tạo yêu cầu mới thay vì thử lại cùng yêu cầu cũ -> sinh giao dịch mới, không liên quan đến khóa cũ.
 
 > Senior tip: Trong pho van, hay ve so do cac lac va chi rang moi lac bao ve o cap nao. Nhấn mạnh khoa idempotency phai do khach tao (khong phai server) va di xuan sut tu mobile den core. Doi voi tien, vie chan trung quan trong hon vie khong cho bo qua yeu cau.
 
@@ -2516,13 +2516,13 @@ Một ví đối soát thủ công bằng Excel với 3 ngân hàng đối tác:
   a: `**Tóm tắt:** Core banking truyền thống thường chạy trên máy tính chính (mainframe) với xử lý batch cuối ngày và sổ cái có thể sửa trực tiếp. Core banking hiện đại dùng sổ cái bất biến (append-only), kiến trúc hướng sự kiện (event-driven), các dịch vụ độc lập (microservices); batch cuối ngày vẫn còn nhưng nhẹ hơn, chỉ dùng để tổng kết và đối soát. Trade-off: hiện đại linh hoạt và xử lý ngay hơn nhưng phức tạp hơn; mainframe ổn định và kiểm soát tốt nhưng khó thay đổi và kết nối với hệ thống mới.
 
 ### Mainframe truyền thống
-- Chay tren may chu lon (vi du IBM z/OS), xu ly lon theo lo (batch) vao cuoi ngay.
-- So cai co the sua truc tiep (mutable), kiem tra lai khong de.
-- On dinh, xu ly nhieu giao dich (throughput cao), nhung khong ket noi duoc voi he thong moi.
+- Chạy trên máy chủ lớn (ví dụ IBM z/OS), xử lý lớn theo lô (batch) vào cuối ngày.
+- Số cái có thể sửa trực tiếp (mutable), kiểm tra lại không dễ.
+- Ổn định, xử lý nhiều giao dịch (throughput cao), nhưng không kết nối được với hệ thống mới.
 
 ### Hệ thống core banking hiện đại
-- So cai bat bien: chi duoc them dong moi, khong sua/xoa dong cu; moi thay doi la mot su kien.
-- Huong su kien: moi giao dich phat ra mot su kien, cac he thong lien quan nhan va phan ung ngay (thuc thoi).
+- Số cái bất biến: chỉ được thêm dòng mới, không sửa/xóa dòng cũ; mỗi thay đổi là một sự kiện.
+- Hướng sự kiện: mỗi giao dịch phát ra một sự kiện, các hệ thống liên quan nhận và phản ứng ngay (thực thời).
 - Microservices: tach core, thanh toan, kenh so thanh cac dich vu doc lap.
 - Batch cuoi ngay van con nhung nhe hon, chi tong ket so lieu va doi soat.
 
@@ -2531,15 +2531,15 @@ Một ví đối soát thủ công bằng Excel với 3 ngân hàng đối tác:
 | Toc do thay doi | Cham | Nhanh |
 | Thuc thoi | Khong de | De |
 | Do phuc tap | Thap (tap trung) | Cao (phan tan) |
-| Kiem toan | Khong de | De (nhat ky su kien) |
+| Kiểm toán | Không dễ | Dễ (nhật ký sự kiện) |
 | Chi phi ban dau | Cao | Trung binh |
 | Ru ro van hanh | Thap | Cao hon |
 
-Vi du so lieu: mot ngan hang lon, on dinh, gan khong doi giao dich co the giu mainframe cho so cai; mot ngan hang so can phat hanh tinh nang moi lien tuc nen chon kien truc hien dai.
+Ví dụ số liệu: một ngân hàng lớn, ổn định, gần không đổi giao dịch có thể giữ mainframe cho số cái; một ngân hàng số cần phát hành tính năng mới liên tục nên chon kien truc hien dai.
 
 ### Lỗi hay gặp
-- Chuyen sang hien dai nhung khong giu nhat ky kiem tra -> mat quyen kiem soat.
-- Huong su kien khong co co che chan trung -> xu ly giao dich hai lan.
+- Chuyển sang hiện đại nhưng không giữ nhật ký kiểm tra -> mất quyền kiểm soát.
+- Hướng sự kiện không có cơ chế chặn trùng -> xử lý giao dịch hai lần.
 - Batch cuoi ngay van qua nang -> nghen vao buoi dem.
 
 ### Ví dụ đời thực

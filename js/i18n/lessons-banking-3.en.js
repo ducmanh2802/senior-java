@@ -11,19 +11,19 @@ App.i18n.content({
       'Explain why a duplicate callback must be a no-op and why a late SUCCESS must not credit money automatically',
       'Write {{TransferStateMachine}} that only allows legal transitions and throws {{IllegalStateException}} otherwise',
     ],
-    body: `### A true story: the money already landed somewhere else, the app still shows red
+    body: `### A true story: the money already landed in another account, the app still shows red
 
-At 8:59 a.m. Minh makes a transfer in the app. The app reports "Transaction unsuccessful, the money will be refunded within 3–5 working days". At 9:00 he opens the receiving bank's app: **the money is already there**. At 10:30 he gets an SMS "transaction successful". Meanwhile Lan (the sender) was debited at 8:59 and her app **still reports an error**. Nobody stole anybody's money — it happens only because two systems **knew different things at different moments**, and Lan's app displays a **state**, not **the truth**.
+At 8:59 a.m., Minh transferred money via the app. The app reported "Transaction unsuccessful, money will be refunded within 3–5 working days". At 9:00 he opened the receiving bank's app: **the money was already there**. At 10:30 he received an SMS "transaction successful". Meanwhile Ms. Lan (the sender) was debited at 8:59 and her app **still reports an error**. Nobody took anyone's money — just because two systems **knew different things at different moments**, and Lan's app displays a **state** rather than **the truth**.
 
-An interbank transfer goes through a **switching hub** (switching = collecting orders from many banks and forwarding each one to the right receiving bank; in Vietnam this role is played by **NAPAS** — the Vietnam National Payment Corporation), so the business is not "success / failure" but a **state machine**: a finite set of states plus a table that says which state may move to which state when which event arrives.
+An interbank transfer goes through a **switching hub** (switching = collecting orders from many banks and forwarding each to the right receiving bank; in Vietnam this role is played by **NAPAS** — the Vietnam National Payment Corporation), so the business is not "success / failure" but a **state machine**: a finite set of states plus a table saying which state may move to which state when which event arrives.
 
-> Term: *state machine* = an object that stands in exactly one state at a time, and every single move must match the table. Everyday example: a traffic light has 3 states; there is no "red → green" step if the table says it must pass through "yellow".
+> Term: *state machine* = an object that stands in exactly one state at a time, and every move must match the table. Everyday example: a traffic light has 3 states; there is no "red → green" step if the table says it must pass through "yellow".
 
 ### Five states, three groups of meaning
 
 | State | Meaning | Who knows it | Final yet |
 |---|---|---|---|
-| {{PENDING}} | the sender side has been debited, we are waiting for the receiving side to answer | sending bank | no |
+| {{PENDING}} | the sender side has been debited, waiting for the receiving side to answer | sending bank | no |
 | {{TIMEOUT}} | **the waiting deadline passed with no answer** | sending bank | no |
 | {{SUCCESS}} | the partner confirms the money has been credited | both sides | yes |
 | {{FAILED}} | the partner states it did **not** accept the money (wrong account number, receiving bank refused) | both sides | yes |
@@ -129,9 +129,9 @@ The table collapses into a single rule: **an event whose target equals the curre
 
 {{state()}} and {{history()}} are already given; you only write {{apply(Event)}}. Hint: extract one {{next(State from, Event e)}} method that returns the target state, or {{null}} when the move is not legal — the whole table logic then lives in a single place.`,
         hints: [
-          'Do not write long if-else chains scattered around; put the table into one {{next(from, event)}} method that returns the target state or null.',
-          'A no-op is exactly the case where {{next}} returns the very same {{from}}: test {{to == from}} and {{return}} **before** writing any history.',
-          'Throw {{IllegalStateException}} when there is no transition, and remember **not** to touch {{state}} or {{history}} in the error branch.',
+          'Do not write long scattered if-else chains; consolidate the table into one {{next(from, event)}} function returning the target state or null.',
+          'A no-op is exactly when {{next}} returns the same {{from}}: check {{to == from}} then {{return}} **before** writing history.',
+          'Throw {{IllegalStateException}} when there is no transition, and remember **not** to change {{state}} or {{history}} in the error branch.',
           'The hardest part: {{TIMEOUT}} + {{SUCCESS}} must go to {{NEEDS_INQUIRY}}, while {{PENDING}} + {{SUCCESS}} goes straight to {{SUCCESS}}.',
         ],
         explain: `The state machine has **one door in**, {{apply}}, so every piece of behaviour lives in the {{next}} table — that is the habit this lesson wants you to keep: adding a new state means editing one place only.

@@ -213,41 +213,47 @@ That is why seeing {{G1 Humongous Allocation}} frequently means you are manufact
 > Senior tip: two details interviewers like to dig into. (1) The "half a region" threshold explains why the same 6 MB array may or may not be humongous depending on {{-XX:G1HeapRegionSize}} — always verify with {{jcmd}} using the {{VM.flags}} command, or read the {{Humongous regions}} line from {{-Xlog:gc+heap}}. (2) A greedy {{MaxGCPauseMillis}} (say 20 ms) makes G1 shrink the young gen to hold the pause, which pushes surviving objects into the old gen sooner and makes the problem worse; if your workload genuinely has many giant objects, ZGC (it has no region-copy model like this, and its pauses do not scale with heap size) is usually the better fit — but measure the allocation rate before you switch GC.`
   },
   "qz-jvm-024": {
-    "q": `A Java 21 service runs happily with {{-Xmx31g}}. To "get rid of the OOMs", the team raises it to {{-Xmx48g}} on the same node. Afterwards: RSS grows by **more** than the exact 48/31 ratio, throughput drops by roughly 12–15%, while the GC log shows the GC count and the live data size essentially unchanged. Most plausible cause?`,
+    "q": `A Java 21 service runs fine with {{-Xmx31g}} (31 GB max heap). To "get rid of OOMs" (OutOfMemoryError, when the JVM runs out of memory), the team raises it to {{-Xmx48g}} on the same node. Afterwards: RSS (resident set size, the physical RAM the process actually uses) grows by **more** than the exact 48/31 ratio, throughput (work done per second) drops by roughly 12-15%, while the GC (Garbage Collector, the runtime component that frees unused objects) log shows the GC count and the live data size are essentially unchanged. What is the most plausible cause?`,
     "options": [
-      `Above 31 GB, G1 automatically switches to the serial Full GC algorithm because there are not enough regions to parallelise`,
-      `The JVM disables the JIT once the heap passes 32 GB, to save memory for objects, so the code falls back to the interpreter`,
-      `Above the 32 GB threshold HotSpot stops using compressed oops: every reference field inflates from 4 to 8 bytes, objects get bigger, fewer objects fit in one cache line, and RAM traffic increases`,
-      `Linux can only address 32 GB for a single 64-bit Java process, and the excess gets swapped out`
+      `Above 31 GB, G1 automatically switches to the serial Full GC algorithm because there are not enough regions to parallelize`,
+      `The JVM disables the JIT (Just-In-Time compiler, which turns hot bytecode into fast native code) when the heap passes 32 GB to save memory for objects, so code falls back to the interpreter`,
+      `Above the 32 GB threshold, HotSpot (the standard JVM implementation) stops using compressed oops: every reference field inflates from 4 to 8 bytes, objects get bigger, fewer objects fit in one cache line (a small, fast CPU memory block, typically 64 bytes), and RAM traffic increases`,
+      `Linux can only address 32 GB for a single 64-bit Java process, and the excess gets swapped out to disk`
     ],
-    "explain": `**Correct answer: past about 32 GB, compressed oops is switched off, and every object containing references gets larger.**
+    "explain": `**Correct answer: past about 32 GB, compressed oops are switched off, and every object that contains references gets larger.**
 
-### What compressed oops are
-"oop" = **ordinary object pointer**, the way the JVM stores a **reference to a heap object** inside another object's field or inside an array. On a 64-bit JVM, instead of spending 8 bytes, HotSpot stores only **4 bytes** and decodes them on use:
+### What compressed oops are (the core idea)
+An "oop" means **ordinary object pointer** - it is how the JVM stores a **reference (a pointer/link) to a heap object** inside another object's field or inside an array. On a 64-bit JVM, a raw pointer would take 8 bytes. To save space, HotSpot often stores only **4 bytes** and decodes the real address when it needs it:
 ~~~text
 address = HEAP_BASE + (stored_value << 3)
 ~~~
-This **3-bit** left shift is legal because every object is **aligned to 8 bytes**, so the low 3 bits are always 0 — which is how 32 bits can describe a heap of up to **2^32 × 8 = 32 GB**. The condition: the heap region (more precisely, the address range the JVM reserves, including all reserved parts) stays within that limit; ergonomics turns compressed oops off by itself once {{-Xmx}} passes about 32 GB.
+This **3-bit left shift** works because every object is **aligned to 8 bytes** (its address is a multiple of 8), so the lowest 3 bits are always 0 and do not need to be stored. Thanks to that trick, 32 stored bits can describe a heap up to **2^32 x 8 = 32 GB**. The condition: the heap region the JVM reserves (more precisely, the JVM's reserved address range, including reserved parts) must stay within that limit. The JVM's ergonomics (automatic tuning) turns compressed oops off by itself once {{-Xmx}} passes about 32 GB.
 
-### Why crossing the threshold makes things slower
-| | heap ≤ 32 GB | heap > 32 GB |
+### Why crossing the threshold makes things slower (step by step)
+| | heap <= 32 GB | heap > 32 GB |
 |---|---|---|
-| reference field | 4 bytes | 8 bytes |
-| example object: header 12 + 3 refs | 12 + 12 = 24 bytes | 12 + 24 = 36 -> padded to 40 bytes |
+| reference field size | 4 bytes | 8 bytes |
+| example object: header 12 + 3 references | 12 + 12 = 24 bytes | 12 + 24 = 36 -> padded to 40 bytes |
 | objects fitting in a 64-byte cache line | more | fewer |
-The chain of consequences: the heap "inflates" relative to the real live data, **more bytes have to be scanned/copied** on every GC, and there are **more RAM accesses** because one cache line holds fewer live objects. That is why throughput drops even though the GC count does not change — the well-known "32 GB cliff".
 
-### Verifying and what to do about it
-- Check the flags actually in effect: {{java -XX:+PrintCommandLineFlags -version}}, or {{jcmd}} with the {{VM.flags}} command and look for {{UseCompressedOops}}; MAT also reports "compressed oops" in a heap dump.
-- **Keep the heap at about ≤ 31 GB and run more instances** (usually the right answer for a web service: smaller young GCs, smaller blast radius).
-- {{-XX:ObjectAlignmentInBytes=16}} allows compressed oops up to a 64 GB heap, but every object gets padded to a multiple of 16 bytes — typically a net loss for workloads full of small objects.
-- Move large data **off-heap** (direct buffers, an external cache, RocksDB) or use **ZGC** for a very large heap, and measure again.
+Chain of consequences:
+- The heap "inflates" relative to the real live data (the objects that are actually still in use), so **RSS grows more** than the heap-size ratio alone.
+- **More bytes must be scanned and copied** on every GC, even if the number of live objects did not change.
+- **More RAM accesses** happen because one cache line holds fewer live objects, so the CPU waits on memory more often.
+
+That is why throughput drops even though the GC count stays about the same - the well-known **"32 GB cliff"**.
+
+### How to verify and what to do
+- Check the flags actually in effect: {{java -XX:+PrintCommandLineFlags -version}}, or use {{jcmd}} with the {{VM.flags}} command and look for {{UseCompressedOops}}. A heap dump tool like MAT (Eclipse Memory Analyzer) also reports whether compressed oops were used.
+- **Keep the heap at about <= 31 GB and run more instances** (often the best answer for a web service: smaller young GCs and a smaller blast radius when something goes wrong).
+- {{-XX:ObjectAlignmentInBytes=16}} can allow compressed oops up to a 64 GB heap, but every object gets padded to a multiple of 16 bytes - usually a net loss for workloads with many small objects.
+- Move large data **off-heap** (outside the Java heap), for example direct buffers, an external cache, or RocksDB, or consider **ZGC** (a low-pause garbage collector) for a very large heap. Measure again before deciding.
 
 ### Why the other options are wrong
-- **G1 switches to serial Full GC**: G1's Full GC has been multithreaded since JDK 10, and the region count has nothing to do with the 32 GB threshold.
-- **Disables the JIT**: no such mechanism exists; {{UseCompressedOops}} has no bearing on compiled code either.
-- **Linux can only address 32 GB**: a 64-bit process can address hundreds of TB; 32 GB is only the limit used to **force** references down to 4 bytes.
+- **G1 switches to serial Full GC**: G1's Full GC has been multithreaded since JDK 10, and the region count is not tied to the 32 GB compressed-oops threshold.
+- **Disables the JIT**: no such mechanism exists. {{UseCompressedOops}} controls pointer encoding, not compiled code.
+- **Linux can only address 32 GB**: a 64-bit process can address hundreds of terabytes of virtual memory. 32 GB is only the limit for keeping references compressed to 4 bytes.
 
-> Senior tip: there are two independent "compressions" that people mix up: **compressed oops** depends on the **heap size**, whereas **compressed class pointers** (references to a {{Klass}}) depend on the **Metaspace** (a 2 GB range by default) and stay on regardless of heap size. So do not answer in an interview that "the heap is over 32 GB, therefore class pointers are off too". Beyond that, this is a textbook case of treating "raise {{-Xmx}}" as a fix without understanding the cause: if the real live set is 40 GB, a 48 GB heap only buys time, and if the live set is 20 GB you should ask why {{-Xmx31g}} reported OOM at all — usually fragmentation, humongous allocation, or off-heap growth, not a heap that is too small.`
+> Senior tip: there are two independent "compressions" people often mix up. **Compressed oops** depend on the **heap size**. **Compressed class pointers** (references to a class's metadata, the {{Klass}} structure) depend on the **Metaspace/Compressed Class Space** range (a separate area, with a 2 GB class-pointer range by default) and can stay on even when the heap is large. So do not answer in an interview that "heap > 32 GB means class pointers are off too". Also, this is a textbook case of treating "raise {{-Xmx}}" as a fix without understanding the cause: if the real live set (data truly in use) is 40 GB, a 48 GB heap only buys time; if the live set is 20 GB, ask why {{-Xmx31g}} reported OOM at all - often fragmentation, humongous allocations, or off-heap growth, not a heap that is simply too small.`
   },
 });

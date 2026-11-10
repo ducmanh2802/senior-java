@@ -68,6 +68,8 @@ Traffic tăng 10 lần:
 ### Trả lời miệng 1 phút
 "Tôi chọn nơi chạy dựa trên hai câu hỏi: ai sẽ vận hành hạ tầng, và workload trông như thế nào. EC2 cho toàn quyền OS nhưng tôi phải tự vá và trực máy; ECS Fargate cho tôi chạy container mà không có server để quản; EKS là Kubernetes managed, mạnh khi công ty đã có platform K8s; còn Lambda chạy theo event, scale trong vài giây và trả tiền theo request. Trade-off chính là Lambda rẻ khi tải thấp, thất thường nhưng có cold start, giới hạn 15 phút và khó quản connection pool; EKS linh hoạt nhất nhưng chi phí con người cao. Với API Spring Boot chạy 24/7, mặc định của tôi là ECS Fargate sau ALB; Lambda tôi dùng cho webhook, xử lý file, cron nhỏ, và luôn đo Init Duration trước khi quyết định."
 
+### Ví dụ đời thực
+Một đội 6 người vận hành API Spring Boot nội bộ trên EC2 m5.large (2 instance) sau ALB, chạy 24/7. Triệu chứng: sáng chiều traffic ít, tối tuần spike, chi phí EC2 ước hơn 200 USD/tháng trong khi CPU trung bình chỉ 30-40%; scale out khi spike mất 3-5 phút (bật máy + JVM khởi động), khách thấy chậm. Đội tra qua CloudWatch: CPUUtilization thấp hơn 40% phần lớn thời gian, instance không thể thu nhỏ trong ngày vì phải vá OS và quản AMI. Nguyên nhân gốc: trả tiền cho thời gian instance bật dù ít request, và JVM khởi động chậm làm scale-out chậm. Xử lý: đóng gói Spring Boot thành Docker image, đẩy ECR, chuyển sang ECS Fargate 2 task (0,5 vCPU, 1 GB) sau ALB, task definition khai báo CPU/memory/IAM task role, HikariCP pool 10. Kết quả: không còn vá OS instance, chi phí compute ước giảm một phần ba, scale từ phút xuống vài giây; sau 3 tháng task ổn định 50-70% CPU, không còn OOM khi spike.
 > Senior tip: với đa số đội Java 5–20 người, ECS Fargate + ALB + RDS là con đường ngắn nhất tới production ổn định. Chỉ nhảy lên EKS khi có người thực sự trực cluster; chi phí ẩn của Kubernetes là con người, không phải hoá đơn AWS.`,
   follow: [
     'Nếu service cần xử lý job 30 phút thì Lambda xử lý thế nào?',
@@ -164,6 +166,8 @@ Lambda cấp CPU theo memory (ví dụ 1.769 MB tương đương 1 vCPU). Tăng 
 ### Trả lời miệng 1 phút
 "Cold start của Java trên Lambda gồm ba phần: tạo môi trường, khởi động JVM và chạy code khởi tạo như Spring context, trong đó phần khởi tạo thường tốn nhất. Tôi có ba công cụ. SnapStart chụp snapshot sau khi init lúc publish version, cold start chỉ còn là restore, thường dưới một giây, đổi lại phải xử lý connection và giá trị ngẫu nhiên sau restore bằng hook CRaC. GraalVM native biên dịch AOT nên khởi động cực nhanh và ít memory, nhưng build lâu, phải khai báo reflection và mất JIT. Tăng memory thì có thêm CPU, init nhanh hơn và nhiều khi còn rẻ hơn. Thực tế tôi đo Init Duration trước, bật SnapStart và chỉnh memory đầu tiên vì rẻ nhất; chỉ chọn native cho function nhỏ, ít dependency."
 
+### Ví dụ đời thực
+Một hàm Lambda Java nhận webhook từ cổng thanh toán, dùng Spring Boot 3, 1 GB memory, gọi $LATEST. Triệu chứng: thanh toán khách bị timeout, cold start p99 khoảng 6-8 giây. Đội đọc dòng log REPORT: Init Duration 5-6 giây mỗi lần cold start, Restore Duration không xuất hiện vì trigger gọi $LATEST chứ không phải version đã publish. Nguyên nhân gốc: Spring dựng context, Hibernate đọc metadata và connection pool khởi tạo trong init phase, mất phần lớn vài giây. Xử lý: publish version, trỏ API Gateway qua alias, bật SnapStart; trong afterRestore (hook CRaC) đóng và mở lại connection pool, sinh idempotency key bằng SecureRandom trong handler chứ không phải trong init. Kết quả: cold start xuống dưới 1 giây (restore khoảng 300-600 ms), p99 từ 8 giây xuống 1,2 giây, và sau restore không còn lỗi connection reset tới RDS.
 > Senior tip: đừng tối ưu cold start trước khi đo. Bật Lambda Insights hoặc đọc dòng log REPORT để xem Init Duration; nếu p99 chấp nhận được thì giữ JVM bình thường. SnapStart gần như luôn là bước tăng tốc rẻ nhất cho Java, nhưng nhớ test kỹ các connection và random sau restore.`,
   follow: [
     'Sau khi SnapStart restore, connection pool tới RDS nên được xử lý thế nào?',
@@ -251,6 +255,8 @@ Thực tế 95% kiểm soát nên nằm ở Security Group. Đừng mở {{0.0.0
 ### Trả lời miệng 1 phút
 "VPC là mạng riêng của tôi trên AWS. Tôi chia mỗi AZ một public subnet cho ALB và NAT, các private subnet cho app và database; private subnet đi ra Internet qua NAT Gateway của chính AZ đó để không có điểm chết chung và không tốn phí cross-AZ. Kiểm soát truy cập tôi dồn vào Security Group vì nó stateful và tham chiếu được SG khác, ví dụ chỉ SG của app mới vào được cổng 5432 của SG database; NACL stateless nên tôi chỉ dùng để chặn dải IP thô. Để giảm phí NAT và không phụ thuộc Internet, tôi luôn có gateway endpoint cho S3, DynamoDB và interface endpoint cho ECR, Secrets Manager, CloudWatch Logs. Kinh nghiệm của tôi là đa số sự cố 'không gọi được S3' nằm ở route table hoặc thiếu endpoint, nên tôi bật VPC Flow Logs ngay từ đầu."
 
+### Ví dụ đời thực
+Một đội chạy 3 service ECS Fargate trong private subnet gọi API đối tác và đọt file lên S3. Triệu chứng: hoá đơn NAT Gateway tăng vọt mỗi lần deploy (kéo image Docker qua NAT), và sau khi đổi route table các task không gọi được S3. Đội tra qua VPC Flow Logs và route table: traffic S3 đi qua NAT (tính phí theo GB), không có gateway endpoint; một NAT chung cho hai AZ nên AZ chứa NAT gặp sự cố là toàn hệ mất egress, ngày thường còn phát sinh phí cross-AZ. Nguyên nhân gốc: thiếu VPC endpoint và NAT không chia theo AZ. Xử lý: thêm gateway endpoint cho S3 và DynamoDB (miễn phí, vào route table), thêm interface endpoint cho ECR, CloudWatch Logs, Secrets Manager bật private DNS, và đặt một NAT Gateway trong mỗi AZ, route table private của AZ nào trỏ NAT của AZ đó. Kết quả: chi phí NAT ước giảm 70%, task kéo image không qua NAT, các service gọi S3 không ra Internet, và mất một AZ không làm ngắt egress của các AZ còn lại.
 > Senior tip: hãy vẽ route table trước khi vẽ diagram. Phần lớn sự cố "service không gọi được S3/Secrets Manager" là do thiếu endpoint hoặc route, không phải do code. Bật VPC Flow Logs gửi về CloudWatch/S3 để điều tra nhanh.`,
   follow: [
     'Vì sao NAT Gateway nên đặt mỗi AZ một cái dù tốn thêm tiền?',
@@ -345,6 +351,8 @@ CHO PHÉP
 ### Trả lời miệng 1 phút
 "IAM user là danh tính lâu dài với access key cố định, còn IAM role là danh tính được assume, STS trả về credential tạm có session token và tự hết hạn. Ứng dụng của tôi luôn dùng role: task role trên ECS, IRSA hoặc Pod Identity trên EKS, execution role trên Lambda; AWS SDK tự lấy và làm mới credential qua provider chain nên code không chứa key nào. Khi đánh giá quyền, explicit Deny luôn thắng, sau đó mới tới Allow, còn lại bị từ chối ngầm. Để least privilege, tôi tách role theo service và môi trường, giới hạn ARN cụ thể, thêm condition như VPC endpoint, và dùng IAM Access Analyzer sinh policy từ CloudTrail. Câu tôi luôn hỏi khi review là: nếu service này bị chiếm, kẻ tấn công chạm được gì."
 
+### Ví dụ đời thực
+Một service ECS cần đọc file đơn hàng trên S3. Ban đầu team thêm quyền vào execution role "để chạy nhanh", sau lâu lại nhúng access key vào biến môi trường container để test nhanh. Triệu chứng: bot quét tìm access key trong vài phút, GuardDuty báo gọi S3 từ IP lạ; code gọi S3 lại bị AccessDenied vì quyền nằm ở execution role chứ không phải task role. Đội tra qua CloudTrail: request đến từ access key rò rỉ và từ role không đủ quyền trên bucket. Nguyên nhân gốc: nhầm task role (quyền của code) với execution role (quyền ECS agent kéo image, đọc secret, ghi log), và giữ credential lâu dài. Xử lý: xoá và rotate access key ngay, không lưu key trong image hay env; task role chỉ có s3:GetObject trên arn:aws:s3:::orders-docs/* với điều kiện aws:SourceVpce, execution role giữ quyền pull image và ghi log. Kết quả: AccessDenied biến mất, không còn credential lâu dài trong container, và nếu service bị chiếm thì kẻ tấn công chỉ chạm được một bucket cụ thể.
 > Senior tip: hãy coi mỗi service là một principal riêng. Khi review, câu hỏi đầu tiên không phải "có chạy không" mà "nếu service này bị chiếm, kẻ tấn công chạm được gì". Ranh giới role tốt biến sự cố lớn thành sự cố nhỏ.`,
   follow: [
     'Task role và execution role trên ECS khác nhau ở điểm nào?',
@@ -426,6 +434,8 @@ RDS Multi-AZ             Aurora                          DynamoDB
 ### Trả lời miệng 1 phút
 "RDS là PostgreSQL hoặc MySQL quen thuộc được AWS quản lý: tôi chọn instance, Multi-AZ cho HA và read replica để scale đọc. Aurora tương thích PostgreSQL/MySQL nhưng tách compute khỏi storage: dữ liệu có 6 bản trên 3 AZ, ghi theo quorum 4/6, tối đa 15 reader dùng chung storage nên failover nhanh và replica lag thấp. DynamoDB là key-value: truy cập theo partition key thì vài mili giây ở mọi quy mô, nhưng không join, không query linh hoạt, mọi access pattern phải biết trước. Trade-off là linh hoạt truy vấn so với khả năng scale dự đoán được. Với hệ mới có dữ liệu quan hệ, mặc định của tôi là Aurora PostgreSQL; tôi chỉ chọn DynamoDB khi liệt kê được rõ các truy vấn chính, ví dụ session, giỏ hàng, trạng thái event."
 
+### Ví dụ đời thực
+Một hệ thương mại điện tử mới chọn DynamoDB lưu mọi thứ vì "scale vặn vanner". Triệu chứng: sau hai tuần, yêu cầu "xem tất cả đơn hàng của khách hàng trong tháng" buộc quét toàn bảng (Scan), ConsumedRCU tăng gấp mười, API chậm dần theo dữ liệu, hoá đơn DynamoDB quá ngân sách. Đội tra qua CloudWatch metric ConsumedRCU và throttling. Nguyên nhân gốc: DynamoDB truy cập chỉ hiệu quả qua partition key, không có join, mọi access pattern phải biết trước; truy vấn ad-hoc không phù hợp. Xử lý: chuyển đơn hàng và thanh toán sang Aurora PostgreSQL (dữ liệu quan hệ, transaction, JOIN), giữ DynamoDB chỉ cho session và giỏ hàng theo access pattern đã liệt kê (khách hàng → đơn hàng qua GSI, TTL cho session). Kết quả: báo cáo chạy trong vài giây thay vì phút, chi phí DynamoDB giảm nửa, dự án đi sản xuất đúng hạn mà không viết join ở tầng ứng dụng.
 > Senior tip: mặc định của tôi cho hệ mới là **Aurora PostgreSQL** nếu dữ liệu quan hệ và đội quen SQL; **DynamoDB** chỉ khi access pattern rõ và cần scale/độ trễ dự đoán được. Đừng chọn NoSQL vì "trend" rồi phải tự viết join ở tầng ứng dụng.`,
   follow: [
     'Aurora Serverless v2 khác gì so với provisioned, khi nào nó lại đắt hơn?',
@@ -510,6 +520,8 @@ QueryRequest req = QueryRequest.builder()
 ### Trả lời miệng 1 phút
 "DynamoDB băm partition key để quyết định item nằm ở partition vật lý nào, mỗi partition có trần khoảng 3.000 RCU và 1.000 WCU. Nếu key phân bố đều như userId thì tải trải đều; nếu key ít giá trị như status hay ngày thì một partition bị nóng và throttle dù bảng còn capacity. Sort key cho phép query theo khoảng trong cùng partition, rất hợp cho kiểu 'đơn hàng của user theo thời gian'. GSI là bảng phụ với key khác, cập nhật bất đồng bộ, có capacity riêng và cũng có thể bị hot partition, thậm chí throttle ngược bảng gốc. Khi buộc phải dùng key lệch, tôi thêm shard suffix và đọc scatter-gather. Kinh nghiệm của tôi là bắt đầu thiết kế bằng danh sách access pattern kèm tần suất, chứ không bằng ERD."
 
+### Ví dụ đời thực
+Một bảng đơn hàng dùng pk = ngày tạo, ví dụ 2025-03-10, để "dễ lấy đơn theo ngày". Triệu chứng: mọi ghi dồn vào partition của ngày hôm nay, gặp ProvisionedThroughputExceededException dù bảng tổng thể còn WCU. Đội tra qua CloudWatch: một partition chạm trần 1.000 WCU, các partition khác gần không dùng. Nguyên nhân gốc: partition key ít giá trị khác nhau, tất cả write cùng ngày băm về cùng một phân vùng — hot partition. Xử lý: đổi pk = orderId (UUID, cardinality cao), sk = ORDER#2025-03-10#orderId; nếu vẫn cần lấy đơn theo ngày, thêm GSI có pk là ngày, sk là orderId với projection gọn, hoặc dùng shard suffix (ngày#0 đến ngày#9) rồi đọc scatter-gather. Kết quả: WCU phân bố đều, throttling biến mất, và lấy đơn của khách 42 trong tháng 3 dùng một Query pk = USER#42, begins_with(sk, "ORDER#") thay vì Scan toàn bảng.
 > Senior tip: thiết kế DynamoDB bắt đầu bằng danh sách access pattern, không bắt đầu bằng ERD. Nếu bạn không liệt kê được 10 truy vấn chính kèm tần suất, chưa nên chọn DynamoDB.`,
   follow: [
     'Vì sao dùng ngày/tháng làm partition key thường gây hot partition?',
@@ -2622,7 +2634,7 @@ DB:   Oracle on-prem ══ DMS full load ══ CDC liên tục ═════
   id: 'aws-031',
   topic: 'aws',
   level: 'mid',
-  q: 'Route 53 ho tro cac ban ghi A, AAAA, CNAME, Alias va MX/TXT. Vi sao khong dat CNAME o apex (root domain), va TTL anh huong the nao khi cutover?',
+  q: 'Route 53 hỗ trợ các bản ghi A, AAAA, CNAME, Alias và MX/TXT. Vì sao không đặt CNAME ở apex (root domain), và TTL ảnh hưởng thế nào khi cutover?',
   a: `**Tóm tắt:** DNS (Domain Name System - hệ thống "danh bạ" đổi tên miền như {{app.example.com}} thành địa chỉ IP để máy tính kết nối được) trên Route 53 có các bản ghi A/AAAA (tên -> IP), CNAME (tên -> tên khác), MX (máy chủ mail), TXT (xác thực) và Alias (đặc thù Route 53). Không đặt CNAME ở apex (tên miền gốc, ví dụ {{example.com}}) vì chuẩn DNS cấm CNAME đi cùng các bản ghi khác tại cùng tên; dùng Alias trỏ tới tài nguyên AWS. TTL (Time To Live - thời gian resolver/ISP được cache bản ghi) phải hạ thấp trước cutover (chuyển đổi hệ thống) để client nhận IP mới nhanh, rồi nâng lên sau khi ổn định để giảm chi phí và tải DNS.
 
 ### Cái gì và vì sao cần hiểu rõ từng loại bản ghi
@@ -2675,18 +2687,14 @@ Hệ thống ngân hàng chuyển frontend từ on-prem (A record {{203.0.113.10
 "DNS trên Route 53 có A/AAAA trỏ tên tới IP, CNAME trỏ tên tới tên khác, MX cho mail, TXT cho xác thực, và Alias là bản ghi đặc thù AWS trỏ tới tài nguyên như ALB hay CloudFront. Em không đặt CNAME ở apex vì theo RFC, một tên có CNAME thì không được có bản ghi khác, trong khi apex bắt buộc có NS và SOA nên sẽ xung đột gây SERVFAIL; giải pháp là dùng Alias A/AAAA ở apex. Về TTL, đó là thời gian resolver cache bản ghi. Khi cutover em hạ TTL xuống 60-300 giây từ 24-48 giờ trước để cache cũ hết hạn, rồi mới đổi bản ghi; sau khi ổn định em nâng TTL lại để giảm truy vấn và chi phí. Thực tế có ISP cache cứng nên em luôn giữ hệ cũ chạy song song một lúc và xem đây là điểm rollback nhanh nhất - chỉ cần đổi bản ghi ngược lại."
 
 > Senior tip: Trước mọi cutover DNS, ghi lại giá trị và TTL hiện tại, dùng {{dig +trace}} kiểm tra propagation, và giữ đường rollback (hệ cũ còn chạy) trong vài giờ. Với ngân hàng, DNS là nút rollback nhanh nhất nhưng cũng dễ gây sự cố dây chuyền nếu quên MX/TXT.`,
-  follow: [
-    'Khac biet giua weighted, latency, failover routing policy cua Route 53?',
-    'Health check cua Route 53 hoat dong the nao va khi nao failover?',
-    'Khi migrate domain tu on-prem DNS sang Route 53, thu tu lam the nao de khong downtime?'
-  ],
+  follow: ['Khác biệt giữa weighted, latency, failover routing policy của Route 53?', 'Health check của Route 53 hoạt động thế nào và khi nào failover?', 'Khi migrate domain từ DNS on-prem sang Route 53, làm theo thứ tự nào để không downtime?'],
   tags: ['DNS', 'Route53', 'Alias', 'TTL', 'cutover']
 },
 {
   id: 'aws-032',
   topic: 'aws',
   level: 'senior',
-  q: 'Request qua ALB tra ve HTTP 400 trong khi backend van song va traffic lon. Nguyen nhan nao, va phan biet ALB tu tra loi voi target tra loi bang metric va access log?',
+  q: 'Request qua ALB trả về HTTP 400 trong khi backend vẫn sống và traffic lớn. Nguyên nhân nào, và phân biệt ALB tự trả lời với target trả lời bằng metric và access log thế nào?',
   a: `**Tóm tắt:** HTTP 400 qua ALB (Application Load Balancer - bộ cân bằng tải tầng ứng dụng HTTP/HTTPS của AWS) có thể do ALB tự từ chối (request/header sai chuẩn, Host header bất thường, header/URI quá lớn, cơ chế chống HTTP desync chặn) hoặc do target (ứng dụng backend, ví dụ Spring Boot) trả 400 (validate lỗi, JSON sai). Phân biệt bằng hai metric CloudWatch: {{HTTPCode_ELB_4XX_Count}} (ALB tự sinh) và {{HTTPCode_Target_4XX_Count}} (target trả), kết hợp ALB access log để xem {{elb_status_code}} và {{target_status_code}}.
 
 ### Cái gì và vì sao phải phân biệt hai nguồn 400
@@ -2741,11 +2749,7 @@ SpringBoot --> Client: 400 (Target-side) nếu validate lỗi
 "Khi ALB trả HTTP 400, em tách hai khả năng: ALB tự từ chối hoặc target ứng dụng trả về. ALB-side thường do header/request sai chuẩn, vượt giới hạn kích thước header/URI, Host header bất thường hoặc cơ chế chống HTTP desync chặn request mơ hồ. Target-side thường là lỗi validate hoặc parse JSON trong Spring Boot. Em khoanh vùng nhanh bằng CloudWatch: {{HTTPCode_ELB_4XX_Count}} là lỗi do ALB sinh ra, {{HTTPCode_Target_4XX_Count}} là lỗi target trả; so sánh hai metric trong khung một phút là biết hướng. Sau đó em đọc ALB access log: nếu {{target_status_code}} là dấu gạch ngang thì request không tới backend. Em từng gặp case JWT làm header vượt giới hạn, metric ELB 4xx tăng còn target 4xx phẳng, fix bằng cách rút gọn claim và loại cookie dư thừa."
 
 > Senior tip: Luôn bật ALB access log và đặt alarm cho {{HTTPCode_ELB_4XX_Count}} lẫn {{HTTPCode_Target_4XX_Count}}. Khi sự cố, 30 giây đầu nhìn hai metric để biết "lỗi ở cửa" hay "lỗi ở nhà", tránh điều tra sai tầng.`,
-  follow: [
-    'ALB tra 502/503/504 khac nhau the nao va nguyen nhan?',
-    'Cach cau hinh connection draining va deregistration delay?',
-    'Khi nao dung NLB thay ALB (TCP/UDP, static IP, PrivateLink)?'
-  ],
+  follow: ['ALB trả 502/503/504 khác nhau thế nào và nguyên nhân là gì?', 'Cấu hình connection draining và deregistration delay thế nào?', 'Khi nào dùng NLB thay ALB (TCP/UDP, static IP, PrivateLink)?'],
   tags: ['ALB', 'HTTP400', 'desync', 'CloudWatch', 'access-log', 'troubleshooting']
 },
 {
@@ -2794,7 +2798,7 @@ Một công ty bảo hiểm cần RPO dưới 1 phút và RTO dưới 1 giờ ch
   id: 'aws-034',
   topic: 'aws',
   level: 'senior',
-  q: 'Ket noi private tu on-premise len AWS: Site-to-Site VPN vs Direct Connect (private/transit VIF, DX + VPN backup). So sanh thoi gian trien khai, bang thong, do tre, chi phi.',
+  q: 'Kết nối private từ on-premise lên AWS: Site-to-Site VPN vs Direct Connect (private/transit VIF, DX + VPN backup). So sánh thời gian triển khai, băng thông, độ trễ, chi phí.',
   a: `**Tóm tắt:** Để kết nối private từ on-premise (hạ tầng tại chỗ, ví dụ data center công ty) lên AWS, hai lựa chọn chính là Site-to-Site VPN (mã hóa IPsec qua Internet, triển khai nhanh, rẻ nhưng băng thông/độ trễ biến động) và Direct Connect - DX (đường truyền riêng vật lý, ổn định, băng thông lớn, độ trễ thấp nhưng triển khai tuần-tháng và chi phí cao). Thực tế production thường dùng DX làm đường chính và VPN làm dự phòng (failover qua BGP - giao thức định tuyến động).
 
 ### Cái gì: các thành phần chính
@@ -2850,11 +2854,7 @@ Ngân hàng có core on-prem, chuyển dần service sang AWS (3 VPC: prod, non-
 "Khi kết nối private từ on-prem lên AWS, em cân nhắc Site-to-Site VPN và Direct Connect. VPN chạy IPsec qua Internet, dựng được trong vài giờ, chi phí thấp nhưng băng thông và độ trễ biến động. Direct Connect là đường vật lý riêng, độ trễ ổn định, băng thông lớn và có SLA, nhưng mất vài tuần triển khai và chi phí cao hơn; DX không mã hóa mặc định nên với ngân hàng em xem thêm MACsec hoặc IPsec. Thực tế em hay chọn DX làm đường chính và VPN làm dự phòng, dùng BGP để failover tự động. Khi thiết kế em chú ý MTU để tránh fragmentation trên VPN, kiểm tra capacity đường backup, và luôn diễn tập failover thật trước go-live vì BGP hội tụ có thể mất vài chục giây và ứng dụng phải chịu được."
 
 > Senior tip: Đừng chỉ vẽ sơ đồ HA - hãy diễn tập rút đường chính. Với ngân hàng, yêu cầu dual DX ở hai location khác nhau + VPN backup là phổ biến, nhưng giá trị thật nằm ở việc đã test failover và đo được thời gian hội tụ BGP.`,
-  follow: [
-    'BGP route advertisement va AS path prepending dung de uu tien DX the nao?',
-    'Khi DX down, VPN backup co du bang thong khong? Plan capacity ra sao?',
-    'Direct Connect Gateway dung de ket noi nhieu region the nao?'
-  ],
+  follow: ['BGP route advertisement và AS path prepending dùng để ưu tiên DX thế nào?', 'Khi DX down, VPN backup có đủ băng thông không? Lên kế hoạch capacity ra sao?', 'Direct Connect Gateway dùng để kết nối nhiều region thế nào?'],
   tags: ['VPN', 'DirectConnect', 'BGP', 'hybrid', 'networking', 'banking']
 },
 {
@@ -2975,7 +2975,7 @@ Một startup dựng hệ thống trên một AZ, một NAT gateway, RDS Single-
   id: 'aws-038',
   topic: 'aws',
   level: 'senior',
-  q: 'Security Group stateful vs NACL stateless trong su co thuc te: ephemeral port bi NACL chan chieu ve, cach debug bang VPC Flow Logs va Reachability Analyzer.',
+  q: 'Security Group stateful vs NACL stateless trong sự cố thực tế: ephemeral port bị NACL chặn chiều về, cách debug bằng VPC Flow Logs và Reachability Analyzer.',
   a: `**Tóm tắt:** Security Group (SG - tường lửa gắn vào ENI/tài nguyên, ví dụ EC2) là **stateful** (có nhớ trạng thái kết nối: cho phép chiều đi thì tự cho phép chiều về), còn NACL (Network ACL - tường lửa gắn vào subnet) là **stateless** (không nhớ, phải khai báo rule cả hai chiều). Sự cố kinh điển: NACL cho phép inbound tới server nhưng chặn outbound ephemeral port (cổng tạm, dải 1024-65535) khiến phản hồi không về được -> client timeout dù server đã xử lý. Debug bằng VPC Flow Logs (thấy {{REJECT}}) và VPC Reachability Analyzer (chỉ ra hop/rule chặn).
 
 ### Cái gì và vì sao hai lớp này dễ gây nhầm
@@ -3029,11 +3029,7 @@ Hệ thống nội bộ ngân hàng: service A (subnet app) gọi service B (sub
 "Security Group là stateful nên nếu cho phép request đi vào, phản hồi tự được phép đi ra. NACL gắn ở subnet là stateless, phải khai báo rule cả inbound và outbound cho từng chiều. Sự cố em hay gặp là NACL cho inbound tới port 443 nhưng quên outbound dải ephemeral 1024-65535, nên server nhận request nhưng phản hồi về client bị NACL chặn, dẫn tới timeout dù backend vẫn sống. Khi debug em bật VPC Flow Logs để tìm bản ghi REJECT theo 5-tuple và xác định port đích là ephemeral; sau đó dùng Reachability Analyzer để chỉ ra đúng NACL hoặc route table nào chặn. Cách phòng ngừa là chuẩn hóa rule NACL, ưu tiên kiểm soát chi tiết bằng SG, và luôn test kết nối sau thay đổi mạng."
 
 > Senior tip: Với môi trường ngân hàng, nhiều đội giữ NACL gần như allow-all và kiểm soát bằng SG để tránh outage khó debug; nếu compliance bắt buộc NACL, hãy chuẩn hóa template mở ephemeral 1024-65535 có chủ đích và review mọi thay đổi qua IaC + kiểm thử tự động.`,
-  follow: [
-    'Khi nao can dung NACL thay vi chi SG?',
-    'VPC Flow Logs format va cach query bang Athena?',
-    'Reachability Analyzer khac Network Access Analyzer the nao?'
-  ],
+  follow: ['Khi nào cần dùng NACL thay vì chỉ SG?', 'Định dạng VPC Flow Logs và cách query bằng Athena?', 'Reachability Analyzer khác Network Access Analyzer thế nào?'],
   tags: ['Security-Group', 'NACL', 'Flow-Logs', 'Reachability-Analyzer', 'troubleshooting', 'networking']
 },
 {

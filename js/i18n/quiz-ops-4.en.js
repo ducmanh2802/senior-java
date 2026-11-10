@@ -581,19 +581,37 @@ kubectl rollout undo deployment/orders                   # rollback performed by
 > Senior tip: set resource requests correctly so the HPA works; the scale-down stabilization window prevents flapping.`
   },
   'qz-devops-050': {
-    q: 'Terraform plan shows that a resource will be destroyed and recreated. What is the usual cause?',
+    q: 'The {{terraform plan}} output for an AWS RDS instance shows {{# aws_db_instance.orders must be replaced}} (destroy then create). The only change in your code is {{engine_version = "16.3"}} (it used to be {{16.2}}). In production this database holds customer orders. What is the usual reason Terraform replaces the resource, and what should you do before applying?',
     options: [
-      'A change to an immutable attribute (force a new resource)',
-      'A change to a tag',
-      'A change to a description',
-      'A change to count'
+      'The changed attribute is immutable for that resource (it forces a new resource). Review the plan, confirm a safe maintenance window and backups/snapshots, and consider {{prevent_destroy}} or a blue/green migration if downtime is unacceptable',
+      'Any change to a managed resource always destroys and recreates it; this is how Terraform guarantees a clean state',
+      'The state file drifted from reality; run {{terraform refresh}} and the replacement will turn into an in-place update',
+      'Terraform recreates the resource because the provider version changed; pinning the provider will make the change in-place'
     ],
-    explain: `**Summary:** some attributes are immutable (for example an AMI id, a subnet); changing them makes Terraform destroy and create the resource again. Read the plan carefully, and lifecycle ignore_changes can help.
+    explain: `**Summary:** Terraform only destroys and recreates a resource when you change an attribute that the cloud provider marks as **immutable** (cannot be changed in place) — that is called "forces new resource" (or "ForceNew"). Upgrading an RDS {{engine_version}} is usually an in-place modification, but other attributes (for example {{identifier}}, {{engine}}, {{storage_encrypted}} on some setups) are immutable. You must read the plan carefully, because "replace" on a database means data loss risk and downtime unless you migrate safely.
 
-### Why the other options are wrong
-- Tags and descriptions are normally updated in place.
-- Changing count can add or remove instances, but does not necessarily recreate all of them.
+### What is happening, step by step
+- **Terraform**: an Infrastructure as Code (IaC) tool — you describe infrastructure (servers, databases, networks) in {{.tf}} files, and Terraform makes the real cloud match that description.
+- **State file** ({{terraform.tfstate}}): Terraform's record of "what exists in the cloud right now and how it maps to my code". {{terraform plan}} compares: desired config vs state vs real cloud, then shows actions: {{+ create}}, {{~ update in-place}}, {{-/+ replace}} (destroy then create), {{- destroy}}.
+- **Immutable attribute (forces new resource)**: the provider cannot call an API to change that field on an existing object, so the only way to satisfy your new config is to create a new object and delete the old one. In the plan you will see {{forces replacement}} next to that attribute.
+- **Why this is dangerous for stateful resources**: replacing a VM loses its local disk; replacing {{aws_db_instance}} can drop the database. Terraform may take a final snapshot only if configured ({{skip_final_snapshot}} defaults and {{final_snapshot_identifier}} matter) — never assume.
 
-> Senior tip: use moved blocks / state mv to avoid recreation when refactoring; review the plan in CI.`
-  },
-});
+### What to do before applying
+1. Read the full plan and find which attribute shows {{forces replacement}}.
+2. Check if the change can be done in-place via a different attribute or a two-step migration (blue/green, read replica promotion, or create-new + data migrate + switch).
+3. Ensure backups/snapshots exist and tested restore works; schedule a maintenance window.
+4. Use {{lifecycle { prevent_destroy = true }}} on critical data stores to make accidental replacement fail the plan.
+5. For refactors (renaming a resource in code without changing the real object), use {{moved}} blocks or {{terraform state mv}} so Terraform updates the mapping instead of recreating.
+
+~~~bash
+# Inspect exactly which attributes force replacement
+terraform plan -out=tfplan
+terraform show -json tfplan | grep -n "replace\|delete"
+~~~
+
+### Common interview pitfalls
+- Treating every plan change as safe. Always scan for {{-/+}} on data stores, load balancers, and anything with persistent data or DNS/IP that other systems depend on.
+- Confusing "immutable in Terraform/provider" with "impossible in the cloud": sometimes the cloud supports in-place change but the provider models it as ForceNew in a specific version — check provider docs/changelog.
+
+> Senior tip: make {{terraform plan}} a required review gate in CI and fail the pipeline (or require explicit approval) when a plan contains replacements of stateful or production-critical resources. A human should never "just apply" a plan they have not read line by line.`
+  },});

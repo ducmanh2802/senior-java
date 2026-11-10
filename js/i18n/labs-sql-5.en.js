@@ -108,7 +108,7 @@ ANALYZE shipment;   -- extended statistics only have data after ANALYZE
   },
   'lab-sql-010': {
     title: 'Only the largest customer is slow at 11 seconds, rerunning in psql takes 40 ms: the prepared statement generic plan',
-    scenario: `**Context.** The e-invoicing SaaS **EInvoice** (multi-tenant, one shared database) runs {{invoice-api}} on 12 Spring Boot 3.3 pods, Spring Data JPA (Hibernate 6.4), pgjdbc driver 42.7 (default {{prepareThreshold=5}}), HikariCP 30 connections per pod, PostgreSQL **16.3**. The {{invoice}} table has **60 million** rows across about 4,200 tenants. The data **is heavily skewed**: tenant 7 (the **MegaMart** supermarket chain) accounts for **35%** of the table (21 million rows); 90% of tenants have fewer than 10 thousand invoices.
+    scenario: `**Context.** The e-invoicing SaaS **EInvoice** (multi-tenant, shared database) runs {{invoice-api}} on 12 Spring Boot 3.3 pods, Spring Data JPA (Hibernate 6.4), pgjdbc driver 42.7 (default {{prepareThreshold=5}}), HikariCP 30 connections per pod, PostgreSQL **16.3**. The {{invoice}} table has **60 million** rows across about 4,200 tenants. The data **is heavily skewed**: tenant 7 (the **MegaMart** supermarket chain) accounts for **35%** of the table (21 million rows); 90% of tenants have fewer than 10 thousand invoices.
 
 The "Unpaid invoices" screen calls:
 ~~~sql

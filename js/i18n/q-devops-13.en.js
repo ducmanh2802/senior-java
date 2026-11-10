@@ -334,19 +334,19 @@ I build the runbook along the lifecycle Detect, Triage, Mitigate, Communicate, R
 - **umask**: the default permission mask applied when creating files (022 → file 644, dir 755; 027 → file 640, dir 750).
 
 ### Granting minimum privileges to a deploy user
-1. Create a dedicated deploy user: useradd -m -s /bin/bash deploy.
-2. Create an app group and add deploy: usermod -aG app deploy.
-3. App directory owned by group app, mode 2750 (setgid so new files inherit the group): chown -R root:app /opt/app && chmod 2750 /opt/app.
-4. sudoers only for needed commands: deploy ALL=(root) NOPASSWD: /bin/systemctl restart myapp, /bin/journalctl -u myapp. Edit with visudo; never allow sudo su or sudo bash.
-5. umask 027 in deploy's ~/.bashrc.
-6. Deploy private key mode 600.
+1. Create a dedicated deploy user: {{useradd -m -s /bin/bash deploy}}.
+2. Create an app group and add deploy: {{usermod -aG app deploy}}.
+3. App directory owned by group app, mode 2750 (setgid so new files inherit the group): {{chown -R root:app /opt/app && chmod 2750 /opt/app}}.
+4. sudoers only for needed commands: {{deploy ALL=(root) NOPASSWD: /bin/systemctl restart myapp, /bin/journalctl -u myapp}}. Edit with visudo; never allow {{sudo su}} or {{sudo bash}}.
+5. umask: {{027}} in {{deploy}}'s {{.bashrc}}.
+6. Deploy private key mode {{600}}.
 
 ### Pitfalls
-- chmod -R 777 is an anti-pattern.
-- sudo NOPASSWD for apt/yum is effectively full root.
-- setuid on shell scripts is ignored by the kernel.
+- {{chmod -R 777}} is an anti-pattern.
+- {{sudo NOPASSWD}} for apt/yum is effectively full root.
+- {{setuid}} on shell scripts is ignored by the kernel.
 
-> Senior tip: Least-privilege principle: the deploy user needs no root shell, only service restart and log reading. Audit sudoers periodically (sudo -l -U deploy).`,
+> Senior tip: Least-privilege principle: the deploy user needs no root shell, only service restart and log reading. Audit sudoers periodically ({{sudo -l -U deploy}}).`,
     follow: [
       'What is the difference between chmod and chown? When do you use ACLs (setfacl)?',
       'What does the setgid bit on a directory do for newly created files?',
@@ -354,35 +354,22 @@ I build the runbook along the lifecycle Detect, Triage, Mitigate, Communicate, R
     ],
   },
   'devops-066': {
-    q: 'Write a bash deploy script that handles errors: set -euo pipefail, trap ERR/EXIT, exit codes, bounded retry, logging, idempotency.',
+    q: 'Write a bash deploy script that handles errors: set -euo pipefail, trap ERR/EXIT, exit codes, bounded retry, logging, idempotent.',
     a: `**Summary:** A reliable deploy script = set -euo pipefail for fail-fast, trap for cleanup/logging, bounded retry for network operations, timestamped logging, and idempotent steps (re-running does no harm).
-
-### set -euo pipefail
-- set -e: exit immediately when a command fails.
-- set -u: error on use of an unset variable.
-- set -o pipefail: a pipeline fails if any command in it fails (not only the last).
-
-### trap
-- trap cleanup EXIT: runs cleanup when the script ends (success or failure).
-- trap 'echo "fail at line LINENO" >&2' ERR: logs the failing line.
-
-### Bounded retry
-retry() { local n=0 max=5 delay=2; until "$@"; do n=$((n+1)); [ $n -ge $max ] && return 1; sleep $delay; delay=$((delay*2)); done; }
-Use for curl health checks, image pulls, scp.
-
-### Logging
-- exec > >(tee -a /var/log/deploy.log) 2>&1 or a function log() { echo "[$(date -Is)] $*"; }.
-- Add a correlation id (deploy id) for tracing.
-
-### Idempotency
-- Check before acting: if the file/service is already in the desired state, skip.
-- Use checksum/version to decide whether to deploy.
-- Atomic: deploy into a new directory then switch a symlink; rollback = switch the symlink back.
+    
+### The "safe shell" toolkit
+- {{set -e}}: exit immediately when a command fails.
+- {{set -u}}: error on use of an unset variable.
+- {{set -o pipefail}}: pipeline fails if any command in it fails (not only the last).
+- {{trap cleanup EXIT}}: runs {{cleanup}} on exit (success/failure).
+- {{trap 'on_err $LINENO' ERR}}: logs failing line.
+- **Bounded retry + backoff**: {{until "$@"; ...}} with exponential sleep.
+- **Idempotency**: check desired state (version/checksum) before acting.
 
 ### Pitfalls
-- set -e does not catch errors inside if/while conditions; check explicitly.
-- trap ERR does not run on exit due to a signal; also trap INT/TERM.
-- Infinite retry causes hangs; always have a max.
+- {{set -e}} is disabled inside {{if}} conditions; check {{rc=$?}} explicitly.
+- {{trap ERR}} ignores signals; add {{trap cleanup INT TERM}}.
+- Always use {{ln -sfn}} for atomic symlink swaps, not {{rm/ln}}.
 
 > Senior tip: Production deploy scripts should support --dry-run, use a lock file (flock) to prevent two deploys running at once, and have clear exit codes (0 ok, 1 general error, 2 lock, 3 health fail) so CI/CD can classify outcomes.`,
     follow: [

@@ -5,11 +5,11 @@
 App.i18n.content({
   'english-123': {
     q: 'Why would you choose Playwright over Selenium for a new UI automation project? When might Selenium still be the right choice?',
-    a: `**Summary:** Playwright is often the better fit for a new project because of **auto-waiting** (waiting for elements to be ready automatically), its modern architecture, strong parallelism, and convenient debugging (trace/video). Selenium still makes sense when you need special browser/legacy support, the team has invested heavily in Selenium Grid/infrastructure, or the organization has tooling constraints. A strong answer compares by **context**, not declaring one tool "absolutely wins".
+    a: `**Summary:** Playwright is often suitable for new projects because of **auto-waiting** (automatically waiting for elements to be ready), its modern architecture, strong parallelism, and convenient debugging (trace/video). Selenium is still reasonable when specific browser/legacy support is needed, the team has a large investment in Selenium Grid/infrastructure, or the organization has tooling constraints. A strong answer compares by **context**, not declaring one tool "wins absolutely".
 
 ### What — where do Playwright and Selenium differ?
 - **Selenium** (older, very popular) drives the browser through the WebDriver protocol. Each action is usually a separate request; waiting for elements to stabilize or handling timing sometimes requires writing your own waits.
-- **Playwright** (Microsoft, more modern) communicates with the browser through a stronger control channel and has **auto-wait** built in: before clicking/filling, it waits for the element to be visible, stable, and to receive events — reducing many timing errors.
+- **Playwright** (Microsoft, more modern) communicates with the browser through a stronger control channel and has built-in **auto-wait**: before clicking/filling, it waits for the element to be visible, stable, and to receive events — reducing many timing errors.
 
 Everyday analogy: Selenium is like driving a manual car — you control many steps but can make mistakes if you miss the clutch/throttle timing. Playwright is like having automatic gear assistance in many situations — you still need to drive well, but fewer small mistakes.
 
@@ -28,7 +28,7 @@ So my decision is based on project context: for greenfield work, Playwright is o
 | Criterion | Playwright | Selenium |
 |---|---|---|
 | Auto-wait | Strong built-in, less manual waiting | Usually needs careful explicit/fluent waits |
-| Debugging | Trace viewer, video, screenshot convenient | Depends on extra tools/logging |
+| Debug | Trace viewer, video, screenshot convenient | Depends on extra tools/logging |
 | Ecosystem | Newer, developing fast | Very large, long-standing docs and community |
 | Legacy/enterprise | Good for modern web | Sometimes fits existing infra/constraints |
 | Migration cost | High if deeply using Selenium | Low if already invested heavily |
@@ -45,7 +45,19 @@ So my decision is based on project context: for greenfield work, Playwright is o
 - Ignoring team factor: a "better" tool the team cannot operate still fails.
 - Not mentioning trade-offs: a senior answer always has conditions ("it depends").
 
-> Senior tip: If asked deeper, talk about **migration risk**: run both frameworks in parallel for a while, pick a small pilot suite, measure flaky rate and execution time before expanding. A data-driven approach builds more trust than slogans.`,
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for English interviews
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
+> Senior tip: If asked deeper, talk about **risk of migration**: run both frameworks in parallel for a while, pick a small pilot suite, measure flaky rate and execution time before expanding. A data-driven approach builds more trust than slogans.`,
     follow: [
       'How would you migrate an existing Selenium suite to Playwright safely?',
       'What kinds of tests are still better done at API or unit level instead of UI?',
@@ -96,6 +108,18 @@ Finally, we added rules: no arbitrary sleeps, control external dependencies with
 - Adding long {{sleep}}: tests get slower but can still be flaky.
 - Quarantining forever: a "test graveyard" — nobody fixes them.
 - No owner: everyone knows it is flaky, nobody is responsible.
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for English interviews
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Talk about a **service level for the test suite** (e.g. flaky rate < 2%, PR suite < 15 minutes). With measurable targets, quarantine/fix/priority decisions become clear and easier to justify to managers.`,
     follow: [
@@ -148,6 +172,18 @@ Result: We fixed the bug before release, so customers were not charged the wrong
 - Blaming the developer: keep a neutral tone focused on product and process.
 - Forgetting "lesson learned": interviewer wants to see you learn and improve.
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for English interviews
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: Prepare 2–3 bug stories at different levels (UI, API, data). Pick the one matching the role you are applying for. For SDET, always include "how we prevented it from happening again" — that is what distinguishes a tester from a quality engineer.`,
     follow: [
       'How did you decide the severity of that bug?',
@@ -198,6 +234,18 @@ I try to keep the conversation practical: I explain the risk, show how the chang
 - Requesting large changes late in the sprint: easily rejected.
 - Focusing only on UI: testability also lives in API contract, logging, data setup.
 - Not acknowledging dev benefits (prod debugging, faster bug reproduction).
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for English interviews
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Use the phrase "shift-left collaboration" (collaborating early in the development cycle) but explain it simply. A testability suggestion accepted before coding is done is often many times cheaper than patching flaky tests after release.`,
     follow: [
@@ -259,6 +307,18 @@ Finally, I keep the strategy practical: it should help the team make a confident
 - Only UI E2E: suite slow, flaky, late feedback.
 - Ignoring test data and external dependencies: plan looks good but cannot run.
 - Not stating release criteria: team does not know what "good enough" means.
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for English interviews
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: When presenting strategy, state the **trade-off** explicitly: you choose fewer E2E but cover business logic well via API/unit for fast feedback. A strong SDET does not just find bugs — they help the team make evidence-based release decisions.`,
     follow: [

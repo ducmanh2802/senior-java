@@ -21,6 +21,18 @@ I would show one simple GC log line and decode it: "GC pause 45 ms, 200 MB to 80
 - **a long pause usually comes from there**: the long stop-the-world stop normally originates in the old generation
 - **do not tune before you measure**: change GC flags only after you have data
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: When you explain something technical to a junior, **your precision has to be higher than usual**, because they will memorise your wording verbatim. Do not say "GC deletes objects you don't use"; say "GC deletes objects that are no longer referenced". Pronunciation: **heap** /hiːp/, **pause** /pɔːz/, and **reclaim** /rɪˈkleɪm/ with the stress on the second syllable.`,
     follow: [
       'What is the difference between minor and major GC?',
@@ -48,6 +60,18 @@ I end with a recommendation and a condition: "I recommend option one now, with a
 - **a trigger to revisit**: a condition agreed in advance that makes us re-open the decision
 - **I end with a recommendation**: I close by naming the option I would choose, not an open question
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: A PM does not need to know what a GIN index or an inverted index is; they need **money, time, and risk**. Do not say "it depends" and stop there — that is how you dodge responsibility. Always give one recommendation with an explicit condition. Pronunciation: **residency** /rɪˈzɪdənsi/, and **trade-off** is read /ˈtreɪd ɒf/ (noun) or /ˈtreɪd ɒf/ (verb).`,
     follow: [
       'What if the PM insists on the most expensive option?',
@@ -73,6 +97,18 @@ We chose option three. I wrote the decision into the release notes so nobody was
 - **nobody was surprised**: everyone had been told before it happened
 - **a weekly checkpoint**: a short status review every week to catch slippage early
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: Do not say "I pushed back" without describing **how you said it** — the interviewer is looking for the soft skill. Avoid a bare "no"; always pair it with "yes, if..." or "yes, but...". Pronunciation: **push back** is a phrasal verb, with light stress on both "push" and "back"; **scope** /skoʊp/ is one syllable, do not add a vowel sound at the end.`,
     follow: [
       'What if the product owner refused to cut scope?',
@@ -97,6 +133,18 @@ The second improvement is rollback. Today rollback is manual and takes about fiv
 - **context-switch while waiting**: lose focus on the task in hand while the suite runs
 - **quarantine it**: move the unreliable test aside so it no longer blocks anybody
 - **automated rollback on a spike**: the system reverts the deploy by itself when error rate or latency jumps
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Do not just list tools ("we use Jenkins, Docker, Kubernetes"); the interviewer asks "what would you improve" to see whether you have **a systems view**. Every improvement should come with a **measurable reason** (time, risk) and a **cost**. Pronunciation: **pipeline** /ˈpaɪplaɪn/, and **quarantine** /ˈkwɒrəntiːn/ with the stress on the first syllable.`,
     follow: [
@@ -125,6 +173,18 @@ If I disagree with the approach, I ask for a short call rather than a long threa
 - **I praise good code explicitly**: I say out loud what is good, not only what is wrong
 - **a long thread**: an ever-growing comment chain between two people
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: Do not review the diff top to bottom; reading the **intent first** stops you from wasting time on irrelevant detail. Separate **blocking** from **non-blocking** clearly so the author knows exactly what must change. Pronunciation: **authorisation** (UK) vs **authorization** (US) — pick one and stay consistent; **nit** /nɪt/ is short for nitpick.`,
     follow: [
       'How do you handle a PR that is too large to review well?',
@@ -150,6 +210,18 @@ I am not looking for just any job; I am looking for a team where I can stay for 
 - **I am clear about what I want next**: I know the specific kind of role I am targeting
 - **I am not looking for just any job**: I am selective, not desperate
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: Do not recount negative details about the old company — the interviewer will suspect that you were the problem. Also do not say "I was laid off" and then go silent; always attach **the action you are taking now** to show initiative. Pronunciation: **layoff** /ˈleɪɒf/ stresses the first syllable, and **restructuring** /riːˈstrʌktʃərɪŋ/ stresses the second.`,
     follow: [
       'What did you learn from the experience of being laid off?',
@@ -174,6 +246,18 @@ Then I listen. If the answer is "not now", I ask what the path looks like and by
 - **I write it down**: I record the agreed path so it is not forgotten later
 - **an ultimatum usually backfires**: a threat normally produces the opposite result
 - **trust is damaged**: the relationship loses its foundation even if you get the money
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Do not say "I deserve a raise" — it sounds like you are claiming an entitlement. Use **"I am looking for"** and **"what would need to be true"** to turn a demand into a conversation. Timing matters: ask after a large achievement, not in the middle of a difficult quarter. Pronunciation: **compensation** /ˌkɒmpenˈseɪʃn/ stresses the third syllable, and **adjustment** /əˈdʒʌstmənt/ stresses the second.`,
     follow: [
@@ -201,6 +285,18 @@ Then I thank them, ask about next steps and timeline, and follow up with a short
 - **makes you hesitate**: gives you a reason to doubt
 - **address it now**: answer the concern while you are still in the room
 - **follow up with a short email**: send a brief message after the interview
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Do not end with "I think I did well" — that is self-grading and sounds weak. Do not brag at length either; 60 seconds is enough. "Is there anything that makes you hesitate?" is powerful because it **invites the objection** and gives you the chance to fix it on the spot. Pronunciation: **hesitate** /ˈhezɪteɪt/ stresses the first syllable, and **fit** /fɪt/ in this context means how well you match the role.`,
     follow: [
@@ -230,6 +326,18 @@ If I still do not understand after one repeat, I say so honestly: "I want to mak
 - **just to make sure I follow**: so that I am sure I am tracking your question
 - **are you asking about X or Y**: offering two readings so the interviewer picks one
 - **let me rephrase what I heard**: I restate it in my own words and you correct me
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Vietnamese speakers often say "Can you repeat again?" — that is wrong, because "repeat" already contains "again"; say "Could you repeat that?" or "Could you say that again?". Also avoid repeating "I don't understand"; "Could you clarify...?" sounds more professional. Pronunciation: **clarify** /ˈklærɪfaɪ/ stresses the first syllable, and **rephrase** /riːˈfreɪz/ stresses the second.`,
     follow: [
@@ -289,6 +397,18 @@ note App..Core banking: Stuck overnight -> daily reconciliation finds it
 - Countable nouns losing their article: "it is ledger" → "it is **a** ledger"; "we use queue" → "we use **a** queue".
 - Mixing up statuses and saying "OK, Completed"; natural English is "we reply Accepted, not Completed".
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: An answer that contains **an explicit intermediate state** (PENDING, then SUCCESS/FAILED) proves you have run a real system, because newcomers usually assume every API returns the final result immediately. Add a number if you have one: "reconciliation runs at 2 a.m. and typically clears under ten exceptions a day". Pronunciation: **ledger** /ˈledʒə/ stresses the first syllable, **reconciliation** /rɪˌkɒnsɪliˈeɪʃn/ stresses the fourth.`,
     follow: [
       'Why do you return Accepted instead of waiting for the core system callback?',
@@ -330,6 +450,18 @@ The third line covers the gap between our service and the outside world, which i
 - "money are lost" — **money** is uncountable, it is always "money is".
 - Overclaiming: do not say "guarantee one hundred percent exactly-once"; say "at-least-once delivery plus deduplication makes it effectively exactly-once" — that is the mature answer.
 
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
 > Senior tip: The line that earns you the points is "the order stays pending, it does not disappear" — it shows you design for **the in-between state** (pending), the one textbooks ignore but production is full of. If you have been on-call, add a real number: "we typically see two to three outbox replays a week after core maintenance windows". Pronunciation: **idempotency** /aɪˌdɛmpəˈtɛnsi/ stresses the fourth syllable, **transactional** /trænˈzæktʃənəl/ stresses the second.`,
     follow: [
       'What is the difference between at-least-once and exactly-once delivery, and which do you rely on?',
@@ -370,6 +502,18 @@ I documented as I learned: I drew the transfer sequence diagram and wrote a one-
 - "Although the code was old, but I still learned fast" — never use "although" and "but" in the same sentence.
 - Badmouthing the old system ("the code was terrible") — stay neutral: "the service had grown over many years and the documentation lagged behind".
 - "I studied the whole source code in one week" — nobody believes it; a step-by-step strategy is more convincing than a prodigy story.
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: Close with an impact you can measure ("the next junior was productive in three days instead of three weeks") — that is how you turn an apprentice story into evidence of leadership. Legacy code is not a topic for showing how fast you learn, it is a topic for showing your **method**. Pronunciation: **legacy** /ˈlɛɡəsi/ stresses the first syllable; **productive** /prəˈdʌktɪv/ stresses the second.`,
     follow: [
@@ -415,6 +559,18 @@ And I would close by asking, "Which option feels right for you?" to keep it a co
 - Using jargon with a PO: "the endpoint is not idempotent under concurrency" — replace it with the real consequence.
 - "If we don't fix, will appear incident" — the subject and the object are missing; correct: "if we do not fix it, we will have an incident".
 - A blaming or threatening tone ("this is because the team rushed") — stay neutral and oriented toward the decision.
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
 
 > Senior tip: The strongest line in the sample is "that decision is written down, with the reasoning" — it is both a governance discipline (especially in a bank, where auditors read everything) and protection for you; but say it in a collaborative tone, never like an ultimatum. Pronunciation: **risk** /rɪsk/ (one syllable, not "ris-ker"); **recommend** /ˌrɛkəˈmɛnd/ stresses the third syllable.`,
     follow: [
