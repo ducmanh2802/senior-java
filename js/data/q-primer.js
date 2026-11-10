@@ -1669,6 +1669,16 @@ Giả sử service Order nhận 300 request/giây, mỗi request chờ DB trung 
 ### Trả lời phỏng vấn thế nào
 Nên trả lời theo 3 lớp: (1) định nghĩa ngắn gọn từng khái niệm, (2) nêu quan hệ: 1 JVM là 1 process chứa nhiều thread, core là tài nguyên phần cứng thực thi, (3) đưa ví dụ backend thực tế (Tomcat thread pool, I/O-bound vs CPU-bound) và một trade-off (nhiều thread tốt cho I/O chờ, nhưng context switch và tranh lock có chi phí).
 
+### Ví dụ đời thực
+- **Triệu chứng:** Service Order (Spring Boot, 1 instance JVM, máy 4 vCPU) bắt đầu trả chậm giờ cao điểm: P95 latency tăng từ 120ms lên 2.8s, dashboard CPU báo 98-100% liên tục, nhưng DB CPU chỉ ~30%.
+- **Điều tra:** Chạy {{uptime}} thấy load average 18 (cao so với 4 core). Lấy thread dump bằng {{jstack <pid>}} 3 lần cách nhau 10s: thấy ~420 thread, trong đó phần lớn ở trạng thái RUNNABLE đang thực thi hàm serialize JSON lớn (CPU-bound). Metric Prometheus {{jvm_threads_live_threads}} tăng vọt từ 80 lên 420; Tomcat busy threads chạm {{server.tomcat.threads.max}} (mặc định 200, team đã tăng lên 400 trước đó).
+- **Nguyên nhân gốc:** Request trả payload rất lớn (danh sách 20k bản ghi) khiến serialize tốn CPU; team đã tăng thread pool để "chịu tải" nhưng 4 core không chạy song song nổi 400 thread CPU-bound, dẫn đến context switch liên tục và chậm toàn bộ.
+- **Cách xử lý:** Trả về response phân trang (page size 100), bật nén gzip, hạ {{threads.max}} về 200 (phù hợp core + I/O). Scale ngang thêm 2 instance sau load balancer.
+- **Kết quả đo được:** CPU mỗi instance xuống 55-65%, P95 giảm còn 180ms, load average ~3.5, throughput tăng từ 250 req/s lên 900 req/s (3 instance).
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu process là một chương trình đang chạy có không gian bộ nhớ riêng, còn thread là luồng thực thi nhỏ hơn bên trong process và dùng chung heap. Core CPU là phần cứng thực sự chạy lệnh, nên số core quyết định chạy song song thật được bao nhiêu việc cùng lúc. Trong thực tế, một ứng dụng Spring Boot là một JVM process với nhiều thread Tomcat xử lý HTTP. Em luôn phân biệt workload I/O-bound và CPU-bound: với I/O-bound, nhiều thread hơn core vẫn có lợi vì thread chờ DB hoặc mạng thì core làm việc khác; nhưng với CPU-bound, thêm thread quá số core chỉ gây context switch và chậm hơn. Em từng gặp case latency tăng mạnh dù DB bình thường, thread dump cho thấy hàng trăm thread RUNNABLE serialize payload lớn trên máy 4 core. Cách xử lý là phân trang response, giảm thread pool cho phù hợp và scale ngang thay vì tăng thread mù quáng. Khi điều tra em luôn nhìn load average, CPU và thread dump cùng nhau để xác định bottleneck thật."
+
 > Senior tip: khi điều tra "CPU cao" trên production, luôn nhìn thêm **load average** và **thread dump** ({{jstack}}). CPU 100% do 4 thread tính toán nặng (bình thường nếu đủ core) rất khác với CPU 100% do 500 thread tranh lock/context switch. Con số thread và trạng thái thread (RUNNABLE, BLOCKED, WAITING) mới cho bạn nguyên nhân gốc.`,
   follow: ['Khi nào nên tăng số thread, khi nào nên tăng số instance (process)?', 'Context switch là gì và vì sao quá nhiều thread lại làm chậm hệ thống?'],
   tags: ['process', 'thread', 'CPU core', 'concurrency', 'OS', 'nhập môn']
@@ -1761,6 +1771,16 @@ Java luôn truyền **giá trị của biến**: với object, giá trị đư�
 ### Trả lời phỏng vấn thế nào
 Nói rõ: stack cho lời gọi hàm/biến cục bộ mỗi thread, heap cho object dùng chung do GC quản lý. Vẽ nhanh sơ đồ "reference trên stack trỏ object trên heap". Kèm 2 lỗi kinh điển (StackOverflowError vs OOM heap) và cách phân biệt hướng debug. Nhấn mạnh Java truyền giá trị reference (giải thích được ví dụ rename/reassign).
 
+### Ví dụ đời thực
+- **Triệu chứng:** Service Notification (Java 17, {{-Xmx2g}}) sau mỗi lần deploy chạy ổn, nhưng sau 6-8 giờ heap dùng tăng dần từ 400MB lên sát 2GB, GC full chạy liên tục, P99 tăng từ 90ms lên 3s rồi cuối cùng ném {{OutOfMemoryError: Java heap space}}.
+- **Điều tra:** Metric Micrometer {{jvm_memory_used_bytes}} (label {{area="heap"}}) cho thấy đường heap hình "răng cưa" nhưng đáy tăng dần sau mỗi chu kỳ GC (dấu hiệu leak). Khi heap chạm 90%, chạy {{jmap -dump:live,format=b,file=/tmp/heap.hprof <pid>}} và tải file về phân tích bằng Eclipse MAT.
+- **Nguyên nhân gốc:** Dominator Tree trong MAT chỉ ra một {{HashMap}} static trong class {{SessionCache}} giữ ~1.2 triệu entry (mỗi entry ~700 byte, tổng ~840MB). Code thêm session vào map khi user login nhưng không bao giờ xóa khi session hết hạn hay user logout.
+- **Cách xử lý:** Thay {{HashMap}} static bằng cache có giới hạn và TTL (ví dụ Caffeine với {{maximumSize}} và {{expireAfterAccess}}), bổ sung test kiểm tra kích thước cache không tăng vô hạn.
+- **Kết quả đo được:** Sau bản vá, heap dao động ổn định 350-500MB trong 72 giờ, không còn full GC kéo dài, P99 trở lại 95ms, không phát sinh OOM.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nói về bộ nhớ trong Java, em phân biệt rõ stack và heap. Stack là vùng nhớ riêng cho mỗi thread, chứa stack frame với biến cục bộ kiểu primitive và reference; nó được cấp phát và giải phóng tự động khi vào ra hàm nên rất nhanh. Heap là vùng nhớ chung của JVM để lưu object tạo bằng new và được GC quản lý. Hiểu điều này giúp em debug đúng hướng: StackOverflowError thường do đệ quy quá sâu làm đầy stack, còn OutOfMemoryError heap space liên quan đến object tích lũy trên heap. Em từng xử lý một vụ heap tăng dần tới OOM, thay vì tăng Xmx em lấy heap dump bằng jmap và phân tích bằng Eclipse MAT. Dominator Tree cho thấy một HashMap static giữ hơn một triệu session không bao giờ bị xóa. Em thay bằng cache có TTL và giới hạn kích thước, sau đó heap ổn định trở lại. Em cũng lưu ý Java truyền giá trị của reference, nên sửa field trong hàm thì object trên heap đổi nhưng gán lại reference cục bộ thì bên ngoài không bị ảnh hưởng."
+
 > Senior tip: khi nghi ngờ rò rỉ bộ nhớ, đừng đoán. Lấy **heap dump** lúc bộ nhớ cao ({{jmap -dump:live,format=b,file=heap.hprof <pid>}}) và mở bằng Eclipse MAT: nhìn "Dominator Tree" để thấy object nào giữ nhiều bộ nhớ nhất và ai đang giữ reference tới nó. Đó là cách tìm leak có căn cứ, thay vì "thử tăng Xmx".`,
   follow: ['StackOverflowError và OutOfMemoryError khác nhau về nguyên nhân và cách xử lý thế nào?', 'Vì sao String trong Java là immutable và điều đó liên quan gì đến heap?'],
   tags: ['stack', 'heap', 'memory', 'JVM', 'GC', 'nhập môn']
@@ -1845,6 +1865,16 @@ spring:
 ### Trả lời phỏng vấn thế nào
 Trình bày 3-way handshake (SYN, SYN-ACK, ACK) và nhấn mạnh chi phí round-trip + tài nguyên. Sau đó giải thích connection pool tái dùng kết nối, giảm độ trễ, giới hạn tải DB. Đưa ví dụ HikariCP và một lỗi thực tế (không trả kết nối / pool quá lớn). Nếu interviewer hỏi sâu, nối sang TLS handshake và HTTP keep-alive.
 
+### Ví dụ đời thực
+- **Triệu chứng:** API Checkout của hệ thống thương mại điện tử (Spring Boot + Postgres, 6 instance, HikariCP {{maximum-pool-size}} = 20/instance) bị timeout hàng loạt lúc flash sale: lỗi {{SQLTransientConnectionException: Connection is not available, request timed out after 30000ms}}, P99 tăng từ 200ms lên trên 30s.
+- **Điều tra:** Dashboard Micrometer cho thấy {{hikaricp_connections_active}} chạm 20 và {{hikaricp_connections_pending}} tăng vọt trên mọi instance; {{hikaricp_connections_acquire_seconds_max}} tăng mạnh. Trong khi đó metric DB ({{pg_stat_activity}}) cho thấy nhiều query {{SELECT}} trên bảng {{inventory}} chạy 8-12s và giữ connection lâu. Kiểm tra log chậm của Postgres ({{log_min_duration_statement = 1000ms}}) xác nhận query thiếu index.
+- **Nguyên nhân gốc:** Pool tổng 120 kết nối (20 x 6 instance) nhưng mỗi query chậm giữ connection ~10s nên thông lượng thực tế rất thấp; request mới phải xếp hàng chờ mượn connection tới khi hết {{connection-timeout}}.
+- **Cách xử lý:** Thêm index phù hợp cho truy vấn tồn kho (giảm query xuống 40ms), rà soát code để dùng try-with-resources đảm bảo trả connection, giảm {{maximum-pool-size}} xuống 10/instance để tránh dồn ép DB.
+- **Kết quả đo được:** Active connections dao động 3-6, pending về 0, P99 ổn định 180-220ms trong suốt đợt sale tiếp theo, không còn timeout mượn connection.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nói về TCP, em mô tả bắt tay 3 bước: client gửi SYN, server trả SYN-ACK, client gửi ACK rồi mới truyền dữ liệu. Quá trình này tốn ít nhất một round-trip và tài nguyên socket, nếu có TLS thì còn thêm chi phí handshake nữa. Vì vậy với backend, mở kết nối mới cho mỗi request tới database là rất lãng phí và dễ quá tải. Thực tế em luôn dùng connection pool như HikariCP để tái dùng kết nối đã mở sẵn, vừa giảm độ trễ vừa giới hạn số kết nối đồng thời tới DB. Em từng gặp sự cố pool exhaustion lúc traffic cao: metric cho thấy active connections chạm max và pending tăng, trong khi nguyên nhân gốc là query chậm giữ connection quá lâu do thiếu index. Cách xử lý là tối ưu query, đảm bảo trả connection bằng try-with-resources và đặt pool size phù hợp với khả năng của DB thay vì để quá lớn. Khi API chậm, em kiểm tra connection pool wait time và active vs max connections trước khi kết luận DB yếu."
+
 > Senior tip: khi API bỗng chậm đột ngột, kiểm tra metric **connection pool wait time** và **active vs max connections** (HikariCP/Micrometer expose sẵn). Pool wait tăng trước khi DB CPU tăng là dấu hiệu app đang "xếp hàng chờ kết nối" — nguyên nhân thường là query chậm giữ connection lâu hoặc pool size không phù hợp, chứ không phải "DB yếu" ngay lập tức.`,
   follow: ['Connection pool bị cạn (pool exhaustion) thường do nguyên nhân nào, bạn điều tra thế nào?', 'HTTP keep-alive liên quan gì đến việc tái dùng kết nối TCP?'],
   tags: ['TCP', 'handshake', 'connection pool', 'HikariCP', 'network', 'nhập môn']
@@ -1917,6 +1947,16 @@ Spring Boot gọi: RestClient.get().uri("https://api.partner.com/v1/pay").retrie
 ### Trả lời phỏng vấn thế nào
 Giải thích DNS là ánh xạ tên miền → IP. Nêu luồng hỏi qua cache → resolver → root/TLD → authoritative (ngắn gọn, có sơ đồ). Nêu vai trò TTL/cache và một ví dụ thực tế backend (đổi IP, {{UnknownHostException}}, DNS trong Kubernetes). Nhấn mạnh: app Java phụ thuộc DNS nên cấu hình hostname, TTL và quan sát lỗi phân giải rất quan trọng khi vận hành.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Sau khi đối tác thanh toán chuyển hệ thống sang IP mới, 2 trên 8 instance của service Payment vẫn gọi vào IP cũ và nhận {{ConnectException: Connection timed out}} khoảng 5% request trong gần 10 phút, trong khi 6 instance còn lại hoạt động bình thường.
+- **Điều tra:** Từ pod bị lỗi chạy {{dig api.partner.com}} và {{nslookup api.partner.com}} thấy resolver nội bộ thỉnh thoảng trả IP cũ. Kiểm tra bản ghi DNS bằng {{dig api.partner.com +ttlid}} cho thấy TTL trước đó đặt 600 giây. Log ứng dụng (đã bổ sung log hostname khi lỗi) và metric latency kết nối cho thấy lỗi chỉ xuất hiện ở các instance giữ cache DNS cũ.
+- **Nguyên nhân gốc:** TTL 600s quá dài và cache DNS tồn tại ở nhiều tầng (resolver, OS, JVM), nên các instance không làm mới cùng thời điểm sau khi bản ghi A được cập nhật; một resolver upstream còn cache lâu hơn TTL mong đợi.
+- **Cách xử lý:** Phối hợp đối tác giữ song song IP cũ và mới trong thời gian chuyển đổi; về phía mình hạ TTL xuống 60s trước các đợt thay đổi hạ tầng (thực hiện trước 1 ngày), và cấu hình {{networkaddress.cache.ttl}} phù hợp để JVM tôn trọng TTL. Sau khi xác nhận mọi resolver trả IP mới, mới tắt IP cũ.
+- **Kết quả đo được:** Ở lần chuyển đổi tiếp theo, 100% instance chuyển sang IP mới trong vòng 90 giây, không còn timeout do lệch IP, lỗi kết nối liên quan DNS giảm về 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu DNS là hệ thống phân giải tên miền thành địa chỉ IP để ứng dụng biết kết nối tới đâu. Khi Spring Boot gọi một domain, ứng dụng sẽ hỏi resolver, resolver kiểm tra cache và nếu cần sẽ truy vấn theo chuỗi từ root tới TLD rồi tới authoritative DNS server của domain đó. Kết quả được cache theo TTL nên thay đổi IP không phản ánh ngay lập tức. Trong thực tế em luôn dùng hostname thay vì hard-code IP để linh hoạt khi hạ tầng thay đổi, nhưng cũng phải chú ý TTL và cache ở nhiều tầng như JVM, OS và resolver. Em từng gặp sự cố một phần instance vẫn gọi IP cũ sau khi đối tác đổi server, nguyên nhân là TTL dài và cache không đồng đều. Cách xử lý là hạ TTL trước khi migration, giữ song song hai IP trong thời gian chuyển đổi và kiểm tra phân giải trực tiếp từ môi trường chạy bằng dig hoặc nslookup. Em cũng phân biệt rõ UnknownHostException do không phân giải được tên với ConnectException do không kết nối được tới IP và cổng."
+
 > Senior tip: khi gặp lỗi kết nối "ngẫu nhiên" tới một đối tác, hãy log cả **hostname và IP đã phân giải** (nếu thư viện cho phép) cùng thời gian DNS lookup. Rất nhiều sự cố "app lỗi" thực ra là DNS trả IP sai/cũ, một node trong cụm DNS trả lời khác node khác, hoặc TTL/cache gây hành vi không đồng đều giữa các instance.`,
   follow: ['UnknownHostException và ConnectException khác nhau thế nào, bạn khoanh vùng ra sao?', 'Vì sao khi chuyển server sang IP mới người ta hay hạ TTL DNS từ trước?'],
   tags: ['DNS', 'network', 'TTL', 'hostname', 'nhập môn']
@@ -1983,6 +2023,16 @@ Client -> Server: 10) HTTP request/response được mã hóa bằng session key
 
 ### Trả lời phỏng vấn thế nào
 Nêu 3 mục tiêu: mã hóa, xác thực, toàn vẹn. Mô tả handshake ở mức ý tưởng: client nhận chứng chỉ → verify (CA, hạn, domain) → hai bên tạo khóa phiên đối xứng → mã hóa dữ liệu. Giải thích vì sao handshake tốn RTT và liên hệ connection reuse. Kèm 1-2 lỗi thực tế (chứng chỉ hết hạn, PKIX) và cách xử lý đúng (không tắt verify).
+
+### Ví dụ đời thực
+- **Triệu chứng:** Lúc 00:05, tất cả request từ service Billing (Java 17, Spring Boot) tới {{https://api.bank-gateway.example}} bắt đầu lỗi 100% với {{javax.net.ssl.SSLHandshakeException: PKIX path building failed: unable to find valid certification path to requested target}}; tỉ lệ thanh toán thành công rơi về 0 trong 12 phút.
+- **Điều tra:** Kiểm tra nhanh bằng {{openssl s_client -connect api.bank-gateway.example:443 -servername api.bank-gateway.example -showcerts}} thấy chuỗi chứng chỉ mới dùng intermediate CA chưa có trong truststore mặc định của image JRE đang chạy. Đối chiếu log deploy cho thấy gateway vừa thay chứng chỉ lúc 00:00. Trên JVM, bật tạm {{-Djavax.net.debug=ssl,handshake}} ở môi trường staging tái hiện lỗi và xác nhận bước validate chain thất bại.
+- **Nguyên nhân gốc:** Image container dùng bản JRE cũ, truststore {{cacerts}} không chứa intermediate CA mới; client không dựng được chuỗi tin cậy nên từ chối handshake dù chứng chỉ server hợp lệ.
+- **Cách xử lý:** Cập nhật base image JRE có truststore mới, đồng thời bổ sung quy trình kiểm tra chuỗi chứng chỉ trước khi đối tác thay đổi; cấu hình cảnh báo hết hạn/đổi chứng chỉ và test kết nối TLS trong staging.
+- **Kết quả đo được:** Sau khi rollout image mới (12 phút), tỉ lệ handshake thành công trở lại 100%, thanh toán phục hồi hoàn toàn; các lần thay chứng chỉ sau đó được phát hiện trước nhờ job kiểm tra {{openssl s_client}} và cảnh báo tự động.
+
+### Trả lời mẫu khi phỏng vấn
+"Em hiểu HTTPS là HTTP chạy trên TLS để đảm bảo ba việc: mã hóa dữ liệu, xác thực server và đảm bảo toàn vẹn. Sau TCP handshake, client và server thực hiện TLS handshake: thống nhất phiên bản và cipher, server gửi chứng chỉ, client kiểm tra chứng chỉ theo CA tin cậy, hạn dùng và tên miền, sau đó hai bên thiết lập khóa phiên đối xứng để mã hóa dữ liệu thực tế. Vì handshake tốn thêm round-trip nên tái dùng kết nối với keep-alive hoặc connection pool cũng giúp giảm độ trễ. Trong thực tế em từng xử lý sự cố PKIX path building failed khi đối tác đổi chứng chỉ và intermediate CA chưa có trong truststore của JVM. Em xác minh chuỗi chứng chỉ bằng openssl s_client, tái hiện ở staging với log handshake, rồi cập nhật base image và truststore thay vì tắt verify SSL. Em cũng theo dõi ngày hết hạn chứng chỉ và kiểm tra chuỗi tin cậy trước các thay đổi để tránh outage tương tự. Với em, xử lý đúng TLS là vừa khôi phục dịch vụ nhanh vừa giữ an toàn, không đánh đổi bảo mật."
 
 > Senior tip: luôn giám sát **ngày hết hạn chứng chỉ** và tự động gia hạn (Let's Encrypt/ACM). Sự cố "HTTPS bỗng chết toàn hệ thống" vì quên gia hạn là loại outage rất phổ biến và hoàn toàn tránh được. Khi debug {{SSLHandshakeException}}, bật log {{-Djavax.net.debug=ssl,handshake}} tạm thời ở môi trường an toàn để xem chính xác bước nào fail (nhưng cẩn thận dữ liệu nhạy cảm trong log).`,
   follow: ['TLS bảo vệ bạn khỏi những rủi ro nào, và không bảo vệ khỏi rủi ro nào?', 'Khi gặp lỗi PKIX path building failed trong Java, bạn xử lý thế nào cho đúng?'],
@@ -2066,6 +2116,16 @@ SELECT * FROM orders WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 20;
 
 ### Trả lời phỏng vấn thế nào
 Bắt đầu bằng mục lục sách (trực quan), rồi mô tả B-tree: cây cân bằng, đi từ gốc xuống lá qua vài bước so sánh, tránh full scan. Nêu đánh đổi (đọc nhanh, ghi chậm, tốn chỗ). Kèm 2-3 trường hợp index không tác dụng (hàm bọc cột, {{LIKE '%...'}}, chọn lọc thấp) và nhắc {{EXPLAIN}} để kiểm chứng.
+
+### Ví dụ đời thực
+- **Triệu chứng:** API tra cứu đơn hàng theo {{order_code}} trên Postgres (bảng {{orders}} ~12 triệu dòng) tăng độ trễ: P95 từ 40ms lên 3.2s vào giờ cao điểm, CPU DB tăng 85%.
+- **Điều tra:** Bật {{pg_stat_statements}} thấy query {{SELECT * FROM orders WHERE order_code = $1}} chiếm top thời gian. Chạy {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy kế hoạch {{Seq Scan on orders}} đọc ~12 triệu dòng, {{Buffers: shared hit/read}} rất cao, thời gian thực thi ~2800ms.
+- **Nguyên nhân gốc:** Cột {{order_code}} không có index nên DB phải quét toàn bảng cho mỗi lần tra cứu; dữ liệu tăng theo thời gian làm chi phí scan tăng tuyến tính.
+- **Cách xử lý:** Tạo index B-tree {{CREATE INDEX CONCURRENTLY idx_orders_code ON orders(order_code);}} (dùng {{CONCURRENTLY}} để giảm khóa ghi trên production), sau đó chạy lại {{EXPLAIN (ANALYZE, BUFFERS)}} và kiểm tra kích thước index cũng như ảnh hưởng lên ghi.
+- **Kết quả đo được:** Kế hoạch đổi sang {{Index Scan using idx_orders_code}}, thời gian query giảm còn 3-6ms, P95 API về 55ms, CPU DB giảm xuống 35%. Tác động ghi tăng nhẹ (~4% thời gian insert đo trong batch test) nhưng chấp nhận được so với lợi ích đọc.
+
+### Trả lời mẫu khi phỏng vấn
+"Em giải thích index như mục lục của cuốn sách: thay vì đọc hết bảng, database tra cứu cấu trúc phụ để nhảy tới đúng dòng. Với B-tree, các khóa được lưu có thứ tự trong cây cân bằng nhiều nhánh nên việc tìm một giá trị thường chỉ đi qua vài nút từ gốc xuống lá, tránh full table scan trên bảng lớn. Đổi lại, index tốn dung lượng và làm chậm thao tác ghi vì phải cập nhật thêm cấu trúc index. Khi trả lời em cũng nêu các trường hợp index kém hiệu quả như bọc cột trong hàm ở WHERE, LIKE với ký tự đại diện ở đầu, hoặc cột có độ chọn lọc thấp. Trong thực tế, em từng xử lý query tra cứu đơn hàng chậm trên bảng hàng chục triệu dòng: EXPLAIN ANALYZE cho thấy seq scan, sau khi thêm B-tree index phù hợp và kiểm tra lại kế hoạch, thời gian giảm từ giây xuống mili-giây. Em luôn dùng EXPLAIN ANALYZE, BUFFERS và đo trước sau khi thêm index để đảm bảo tối ưu đúng chỗ và hiểu đánh đổi với ghi."
 
 > Senior tip: trước khi thêm index trên production, luôn chạy {{EXPLAIN (ANALYZE, BUFFERS)}} với dữ liệu/query thật để xem kế hoạch thực thi, số dòng ước lượng vs thực tế, và I/O. Một index "đúng lý thuyết" vẫn có thể bị bỏ qua nếu thống kê cũ hoặc điều kiện trả về quá nhiều dòng. Sau khi thêm, đo lại và theo dõi ảnh hưởng tới ghi.`,
   follow: ['Composite index (a, b) khác index (b, a) thế nào về các query nó hỗ trợ?', 'Khi nào bạn chọn không tạo index dù cột xuất hiện trong WHERE?'],
