@@ -5333,6 +5333,12 @@ spring:
 - **Status 204 thì không có body**: dùng {{ResponseEntity.noContent().build()}}, đừng trả object kèm 204 (client sẽ bỏ qua body).
 - Jackson thuần ghi date thành timestamp (số); Spring Boot đã tắt sẵn {{WRITE_DATES_AS_TIMESTAMPS}} cho {{ObjectMapper}} được auto-config. Bẫy là tự {{new ObjectMapper()}} ở chỗ khác ⇒ mất cấu hình này và mất cả module {{JavaTimeModule}}.
 
+### Ví dụ đời thực
+Trên hệ thống đặt hàng, màn hình chi tiết đơn hàng đôi khi load chậm và client báo lỗi 500. Triệu chứng: API /orders/{id} trả JSON lớn, kèm cả lịch sử thay đổi của đơn (lazy loading). Điều tra qua log ứng dụng thấy lỗi {{org.hibernate.LazyInitializationException}} khi Jackson serialize entity, và bảo mật phát hiện JSON chứa {{passwordHash}} của nhân viên xử lý đơn. Nguyên nhân gốc: controller trả trực tiếp entity {{Order}} (mapping khóa ngoài Customer, fetch LAZY) thay vì DTO; Jackson kích hoạt lazy loading khi duyệt getter → N+1 query và lộ field nhạy cảm. Cách xử lý: tạo {{OrderDto}} chỉ chứa trường cần hiển thị (id, mã đơn, tổng tiền, trạng thái, ngày tạo), controller trả {{ResponseEntity.ok(dto)}}, và gắn {{@JsonIgnore}} lên field nhạy cảm của entity. Kết quả đo được: response giảm từ khoảng 150KB xuống dưới 10KB, không còn lỗi lazy loading, và field nhạy cảm không bao giờ ra API.
+
+### Trả lời mẫu khi phỏng vấn
+"{{@RestController}} là kết hợp của {{@Controller}} và {{@ResponseBody}}, nên mọi phương thức trả về object được Jackson tự động serialize thành JSON vào response body – thích hợp cho REST API. {{@Controller}} truyền thống dùng cho server-side rendering: trả về tên view, rồi Thymeleaf hay JSP render HTML gửi về trình duyệt. {{ResponseEntity<T>}} cho tôi kiểm soát chính xác status code, header và body, ví dụ trả 201 kèm header Location khi tạo đơn mới. Jackson theo mặc định serialize getter public và field public, nên tôi dùng DTO thay vì entity – tránh lộ field nhạy cảm như {{passwordHash}} và tránh Jackson kích hoạt lazy loading gây N+1 query. Tôi cũng hạn chế tự new ObjectMapper ở nhiều nơi, để giữ cấu hình date ISO-8601 và JavaTimeModule mà Spring Boot đã chuẩn bị sẵn. Mỗi lần phỏng vấn, tôi nhấn mạnh điểm này vì đây là anti-pattern gặp nhiều nhất trên production. Trade-off: viết DTO tốn thêm class nhưng là hợp đồng API ổn định, đổi schema bên trong không làm vỡ API cho client."
+
 > Senior tip: **luôn trả DTO cho API**, không bao giờ trả entity. DTO là hợp đồng API – bạn quyết định field nào lộ, tên gì, format ra sao. Entity là nội bộ – đổi schema không được phép vỡ API.`,
   follow: [
     'Vì sao trả entity JPA trực tiếp cho REST API là anti-pattern?',
@@ -5409,6 +5415,9 @@ CRASH sau fsync  : replay WAL #1, #2 -> A và B đúng như đã commit (D)
 
 ### Trả lời miệng 1 phút
 "ACID là bốn bảo đảm của transaction, lấy ví dụ chuyển tiền A sang B. Atomicity: hai lệnh trừ và cộng hoặc cùng thành công hoặc cùng huỷ, InnoDB dùng undo log, PostgreSQL đánh dấu transaction aborted. Consistency: các constraint như CHECK số dư không âm, FK, UNIQUE được DB kiểm tra nên dữ liệu không bao giờ sai luật. Isolation: MVCC cho người đọc thấy snapshot cũ, row lock ngăn hai người sửa chồng. Durability: commit chỉ trả OK sau khi WAL đã fsync xuống đĩa, crash thì replay WAL. Trade-off: durability tốn một lần fsync mỗi commit, có thể nới bằng synchronous_commit nhưng không cho dữ liệu tiền. Kinh nghiệm: tôi luôn đặt constraint ở DB vì kiểm tra ở Java không chống được race condition."
+
+### Ví dụ đời thực
+Trên ứng dụng ví điện tử, khách hàng báo trường hợp trừ tiền hai lần nhưng số dư lại âm. Triệu chứng: log thấy hai request {{transfer}} cùng lúc đối với cùng một tài khoản, mỗi request đọc số dư 100.000, thấy đủ, rồi đều trừ 120.000. Điều tra qua log DB và code thấy code Java chỉ kiểm tra {{balance >= amount}} trong ứng dụng rồi mới UPDATE, không có CHECK constraint và không khóa hàng. Nguyên nhân gốc: race condition – hai giao dịch đọc số dư cũ cùng lúc, cả hai đều vượt qua kiểm tra, ghi đè lên nhau, và DB không có ràng buộc ngăn số dư âm nên lưu thành âm. Cách xử lý: thêm {{CHECK (balance >= 0)}} ở DB, viết {{UPDATE account SET balance = balance - ? WHERE id = ? AND balance >= ?}}, kiểm tra số dòng cập nhật (phải là 1), tất cả trong một transaction. Kết quả đo được: sau khi triển khai, không còn trường hợp số dư âm, và các yêu cầu đồng thời được xử lý đúng – chỉ một giao dịch thành công, kia bị từ chối do số dư không đủ.
 
 > Senior tip: khi design schema, **luôn define constraint ở DB** (FK, CHECK, UNIQUE) – đó là lớp phòng thủ cuối cùng. App có thể bug, race condition có thể xảy ra, nhưng DB constraint áp dụng cho mọi đường ghi (app, script, batch) – trừ khi ai đó chủ động tắt nó.`,
   follow: [
@@ -5487,6 +5496,9 @@ Cần **trigger / application logic** đồng bộ {{customer_name}} khi {{custo
 
 ### Trả lời miệng 1 phút
 "Chuẩn hoá nhằm mỗi sự thật chỉ lưu một chỗ để tránh anomaly khi thêm, sửa, xoá. 1NF yêu cầu mỗi ô một giá trị nguyên tử. 2NF yêu cầu cột không khoá phụ thuộc toàn bộ khoá chính, không phụ thuộc một phần khoá composite. 3NF bỏ phụ thuộc bắc cầu, ví dụ dept_name phụ thuộc dept_id chứ không phụ thuộc trực tiếp emp_id. Với OLTP tôi mặc định thiết kế tới 3NF. Denormalize là đánh đổi: đọc nhanh hơn, ít join hơn, nhưng phải có cơ chế đồng bộ – cùng transaction, trigger hoặc CDC. Tôi chỉ denormalize khi đo được join là nút thắt, và phân biệt rõ với dữ liệu lịch sử như giá tại thời điểm mua, thứ vốn phải được chép vào đơn hàng."
+
+### Ví dụ đời thực
+Trên hệ thống bán hàng, bảng {{orders}} chứa cột {{customer_name}} để tránh join với {{customers}} khi hiển thị danh sách đơn. Triệu chứng: sau khi khách hàng đổi tên từ "Nguyen Van A" thành "Nguyen Van B", toàn bộ đơn hàng cũ của khách đó trên màn hình quản trị cũng hiển thị tên mới, và báo cáo doanh thu theo khách bị trộn lẫn. Điều tra bằng truy vấn so sánh {{orders.customer_name}} và {{customers.name}} thấy hàng trăm đơn không khớp. Nguyên nhân gốc: denormalize (chép lại tên khách vào đơn) mà không có cơ chế đồng bộ khi bảng gốc thay đổi, đồng thời quên rằng tên khách trên đơn phải là "sự thật lịch sử" tại thời điểm mua. Cách xử lý: giữ tên khách trong đơn hàng (snapshot) và không cập nhật nó khi khách đổi hồ sơ; nếu cần hiển thị tên mới, hãy join bảng {{customers}} khi truy vấn. Kết quả: đơn hàng cũ hiển thị đúng tên lúc đặt, báo cáo doanh thu khớp thực tế, và không còn dữ liệu lệch giữa hai bảng.
 
 > Senior tip: mặc định **chuẩn hoá 3NF** cho OLTP. Chỉ denormalize khi **đo được** join là bottleneck và có kế hoạch sync rõ ràng (trigger, CDC, hoặc app-level sync). Đừng denormalize "dự phòng".`,
   follow: [
@@ -5567,6 +5579,9 @@ PK 8 byte (BIGINT) vs 36 byte (UUID dạng chuỗi): 5 secondary index x 100 tri
 
 ### Trả lời miệng 1 phút
 "Trong InnoDB, primary key chính là clustered index: lá của B-tree PK chứa toàn bộ dòng, còn secondary index chứa giá trị PK, nên tra theo secondary là hai lần duyệt cây. PostgreSQL và Oracle mặc định dùng heap: dữ liệu nằm riêng, mọi index kể cả PK chỉ chứa địa chỉ vật lý TID hay ROWID. Hệ quả thực tế: với InnoDB, PK phải ngắn và tăng dần, vì nó lặp trong mọi secondary index và PK ngẫu nhiên gây page split; với PostgreSQL, mỗi UPDATE tạo tuple mới, nên cần thiết kế để tận dụng HOT update bằng fillfactor và tránh index trên cột hay đổi. Kinh nghiệm: khi chuyển từ MySQL sang PostgreSQL, workload update nhiều cần theo dõi n_tup_hot_upd và autovacuum ngay từ đầu."
+
+### Ví dụ đời thực
+Trên hệ thống đơn hàng MySQL InnoDB, bảng {{orders}} dùng cột {{id}} kiểu UUID (36 ký tự) làm primary key. Triệu chứng: khi tải cao, INSERT mới chậm hơn và dung lượng bảng tăng nhanh bất thường. Điều tra qua {{SHOW TABLE STATUS}} và xem kích thước index thấy các secondary index to hơn dự kiến, và buffer pool bị áp lực. Nguyên nhân gốc: UUID ngẫu nhiên làm clustered index (B-tree của PK) liên tục tách trang (page split) vì các giá trị mới không nằm liền nhau; hơn nữa, giá trị PK (36 byte) được lặp lại trong mỗi secondary index, khiến index phình to. Cách xử lý: đổi PK thành {{BIGINT AUTO_INCREMENT}} tăng dần, hoặc dùng UUIDv7 có tính chất thời gian tăng dần; giữ UUID làm cột business key với unique index riêng. Kết quả đo được: thời gian INSERT giảm đáng kể, kích thước secondary index thu hẹp khoảng một nửa, và buffer pool hiệu quả hơn.
 
 > Senior tip: khi migrate từ MySQL sang PostgreSQL, đừng giữ tư duy "PK clustered = nhanh nhất". PostgreSQL heap + index đều non-clustered, mỗi UPDATE tạo một phiên bản dòng mới – workload update nhiều phải được thiết kế để tận dụng HOT update và vacuum kịp. Hãy benchmark thực tế trên dữ liệu production.`,
   follow: [
@@ -5690,7 +5705,10 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE status = 'PENDING';
 ### Trả lời miệng 1 phút
 "Index B-tree giống như mục lục sách: nó chỉ giúp bạn tra nhanh khi bạn biết từ đầu của mục lục. Nếu bạn gói cột trong hàm, dùng wildcard ở đầu LIKE, viết OR mà chỉ một bên có index, so sánh kiểu khác gây ép kiểu ngầm, hoặc cột chỉ có ít giá trị riêng biệt, optimizer thường không dùng index mà quét toàn bộ bảng. Giải pháp cơ bản là viết điều kiện trực tiếp trên cột (ví dụ range thay vì hàm), và nếu thực sự cần thì dùng expression index hoặc partial index. Trước khi thêm index, tôi luôn đo bằng EXPLAIN ANALYZE trên dữ liệu gần production để tránh thêm index thừa làm chậm ghi."
 
-> Senior tip: trước khi thêm index, hãy **đo bằng EXPLAIN ANALYZE** trên dữ liệu production-like. Một index thừa không chỉ tốn disk mà còn làm UPDATE chậm hơn đáng kể. Nguyên tắc: mỗi index phải có một lý do đo được。
+### Ví dụ đời thực
+Trên hệ thống đơn hàng có bảng {{orders}} hơn 1 triệu dòng, màn hình báo cáo doanh thu theo ngày chạy quá 10 giây. Triệu chứng: truy vấn {{WHERE DATE(created_at) = '2026-01-01'}} chậm kéo dài. Điều tra bằng {{EXPLAIN (ANALYZE, BUFFERS)}} thấy plan là {{Seq Scan}} đọc cả 1 triệu dòng, không dùng index trên {{created_at}}. Nguyên nhân gốc: hàm {{DATE()}} bao bọc cột trong WHERE, nên giá trị trong index (datetime đầy đủ) không khớp giá trị sau hàm, optimizer bỏ qua index. Cách xử lý: viết lại dưới dạng range trên cột thuần: {{WHERE created_at >= '2026-01-01' AND created_at < '2026-01-02'}}. Kết quả đo được: cùng truy vấn chỉ đọc vài trăm dòng của ngày đó, thời gian chạy từ hơn 10 giây xuống dưới 100 miligiây.
+
+> Senior tip: trước khi thêm index, hãy **đo bằng EXPLAIN ANALYZE** trên dữ liệu production-like. Một index thừa không chỉ tốn disk mà còn làm UPDATE chậm hơn đáng kể. Nguyên tắc: mỗi index phải có một lý do đo được.
 `,
   follow: [
     'Vì sao LIKE "%abc" không dùng được B-tree nhưng "abc%" được?',
@@ -5743,6 +5761,9 @@ Hãy tưởng tượng Redis như một quầy thuốc tiên tiến: String gi�
 
 ### Trả lời miệng 1 phút
 "Redis không chỉ là key-value đơn giản, mà là cửa hàng cấu trúc dữ liệu trong bộ nhớ. Mỗi cấu trúc giải quyết một bài toán: String dùng cho cache đơn giản và counter, Hash dùng cho session và object cache, List dùng cho hàng đợi đơn giản, Set dùng cho tagging và khách độc lập, Sorted Set dùng cho bảng xếp hạng và giới hạn tốc độ trượt, Bitmap dùng cho chấm điểm, HyperLogLog dùng cho ước lượng số lượng duy nhất, Stream dùng cho hàng đợi tin nhắn có xác nhận. Tôi chọn cấu trúc theo yêu cầu: session thường dùng Hash để cập nhật từng trường, leaderboard dùng Sorted Set, rate limit sliding window dùng Sorted Set, queue cần xác nhận dùng Stream. Tránh dùng String + JSON cho session vì mỗi cập nhật phải đọc-ghi toàn bộ đối tượng."
+
+### Ví dụ đời thực
+Trên hệ thống đăng nhập, thông tin session ({{user_id}}, {{role}}, {{last_seen}}) được lưu dưới dạng String dưới dạng JSON. Triệu chứng: khi nhiều tab cùng hoạt động, trường {{last_seen}} bị ghi đè và thời gian hoạt động cuối cùng sai; đôi khi session bị mất một trường sau khi cập nhật. Điều tra qua code thấy mỗi lần cập nhật một trường phải {{GET}} toàn bộ JSON, deserialize, sửa, {{serialize}}, {{SET}} lại – hai request cùng làm sẽ ghi đè lẫn nhau (race condition). Nguyên nhân gốc: String lưu toàn bộ đối tượng làm một giá trị, không thể cập nhật từng trường một. Cách xử lý: chuyển sang Hash {{session:<id>}} với các field {{user_id}}, {{role}}, {{last_seen}}, dùng {{HSET}} cập nhật một trường duy nhất và {{HGETALL}} khi cần toàn bộ. Kết quả: cập nhật {{last_seen}} không đọc lại toàn bộ đối tượng, không còn race condition trên trường đó, và giảm lưu lượng Redis mỗi request.
 
 > Senior tip: Redis không phải "cache thôi". Nắm vững 8 cấu trúc dữ liệu và biết khi nào dùng cái nào là dấu hiệu dev senior. Ví dụ: rate limit dùng Sorted Set (sliding window) hoặc String (fixed window/token bucket); leaderboard dùng Sorted Set; session thường dùng Hash (Spring Session Redis cũng lưu session dạng Hash); queue cần ack thì dùng Stream.
 `,
