@@ -1,6 +1,6 @@
 # T552 — Dịch lại (nội dung đã sửa): q-sql-2 (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-sql-2.en.js`
 
@@ -13,3 +13,7 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-sql-2 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+Đã dịch lại toàn bộ 8 entry (sql-009 … sql-016) từ bản tiếng Việt hiện tại trong `js/data/q-sql.js`, giữ nguyên key và chỉ dùng field `q`, `a`, `follow` như các entry khác. Mỗi entry bám đúng cấu trúc mới của bản Việt (Tóm tắt / Hiểu nhanh / Thuật ngữ / Cơ chế từng bước / ví dụ số liệu / SQL / So sánh / Hiệu năng / Lỗi hay gặp / Trả lời miệng / Senior tip); comment và chuỗi tiếng Việt trong code mẫu đã dịch sang tiếng Anh.
+
+Kiểm tra: `node scripts/check-i18n.js q-sql-2` → `OK — 8 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` Không đụng file nào khác, không commit.
