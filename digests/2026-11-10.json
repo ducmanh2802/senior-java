@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-10",
+  "intro": "Hôm nay có bài học migration Redis sang Valkey không đổi code ứng dụng, Spring AI 2.1.0-RC2 với vài thay đổi cần chú ý khi nâng cấp, cô lập pod bằng VM trên EKS, và một ví dụ value class của Project Valhalla kèm số đo thực tế.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Topstep chuyển 53 triệu key từ Redis tự quản sang ElastiCache for Valkey",
+      "title": "Topstep's migration journey: Self-managed Redis OSS to Amazon ElastiCache for Valkey",
+      "url": "https://aws.amazon.com/blogs/database/topsteps-migration-journey-self-managed-redis-oss-to-amazon-elasticache-for-valkey/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Topstep chạy một node Redis OSS 7.4 duy nhất (khoảng 53 triệu key, không replica) và chuyển sang ElastiCache for Valkey Multi-AZ. Họ dùng RedisShake ở chế độ PSYNC để đồng bộ, rồi cutover blue/green bằng cách đổi record Route 53 sang CNAME với TTL 30 giây, nên ứng dụng chỉ cần chỉnh nhỏ cấu hình TLS. Sau đó độ trễ đọc P99 khoảng 1,25 ms, có failover tự động và patch theo maintenance window.",
+      "why": "Dev Java dùng Redis cho cache, session hay queue (Lettuce, Redisson, Spring Data Redis) sẽ gặp bài toán tương tự. Bài chỉ rõ những chỗ dễ vấp: TLS hostname verification khi đi qua CNAME, Lua script chạy trên engine mới, và việc nên đặt lớp DNS trước endpoint từ đầu.",
+      "interview_q": "Bạn sẽ chuyển một Redis đang chạy production sang dịch vụ managed với downtime gần bằng 0 thế nào? Kiểm tra gì trước và sau cutover, rollback ra sao?",
+      "related": ["aws-011"],
+      "tags": ["redis", "valkey", "migration"]
+    },
+    {
+      "title_vi": "Spring AI 2.1.0-RC2: DecisionModel, stream tool call và các lưu ý khi nâng cấp",
+      "title": "Spring AI 2.1.0-RC2 Available Now",
+      "url": "https://spring.io/blog/2026/11/09/spring-ai-2-1-0-RC2-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Bản RC2 thêm DecisionModel API trả quyết định có kiểu (yes/no, lựa chọn, điểm) kèm xác suất, cùng reranker và filter cho RAG xây trên nó. Có stream từng phần tool call cho Anthropic, OpenAI, Bedrock Converse và DeepSeek, và hỗ trợ upsert embedding tự tính cho thêm vài vector store. Khi nâng cấp cần lưu ý: Anthropic bỏ temperature/topP/topK, API key gửi dạng Bearer, và số token prompt giờ đã gồm cache token.",
+      "why": "Nếu team đang dựng RAG hay agent bằng Spring AI trên Spring Boot 4.x, các thay đổi hành vi (tham số bị loại, cách đếm token) có thể làm đổi chi phí và dashboard mà không báo lỗi biên dịch.",
+      "interview_q": "Bạn đo và kiểm soát chi phí token khi dùng LLM trong service Spring thế nào, và làm sao tránh việc đếm trùng cache token?",
+      "related": ["ai-041", "ai-003"],
+      "tags": ["spring-ai", "rag"]
+    },
+    {
+      "title_vi": "AWS Nitro Sandboxes: mỗi pod EKS chạy trong một VM riêng",
+      "title": "AWS Nitro Sandboxes: Hardware-enforced workload isolation on Amazon EKS",
+      "url": "https://aws.amazon.com/blogs/containers/aws-nitro-sandboxes-hardware-enforced-workload-isolation-on-amazon-eks/",
+      "source": "AWS Containers Blog",
+      "category": "devops",
+      "summary": "Nitro Sandboxes chạy mỗi pod trong một VM nhẹ có kernel riêng, được Nitro Hypervisor cô lập bằng phần cứng, nhưng với Kubernetes vẫn là pod bình thường. Chỉ cần thêm {{runtimeClassName: isolated-sandbox}} vào pod spec; image và entrypoint không đổi. Chế độ confidential còn dùng attestation để KMS chỉ trả secret cho sandbox chạy đúng image. Yêu cầu Kubernetes 1.36 trở lên, dễ nhất với EKS Auto Mode.",
+      "why": "Các nền tảng multi-tenant hoặc chạy code không tin cậy (build, plugin, agent AI) thường bị hỏi về mức cô lập của container. Đây là một lựa chọn mạnh hơn namespace và seccomp mà không phải sửa ứng dụng Java.",
+      "interview_q": "Container chia sẻ kernel với host, vậy khi chạy workload không tin cậy trên Kubernetes bạn tăng cô lập bằng những lớp nào, và đánh đổi gì?",
+      "related": [],
+      "tags": ["eks", "security", "kubernetes"]
+    },
+    {
+      "title_vi": "Value class trong Project Valhalla: nén ticker chứng khoán vào một int",
+      "title": "A Valhalla Ticker in One int",
+      "url": "https://inside.java/2026/11/09/inside-java-ticker-value-class/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Bài minh hoạ một value class lưu mã chứng khoán 1–5 ký tự (bảng 37 ký hiệu, 6 bit mỗi ký tự) trong một trường int, vẫn implement CharSequence và Comparable; so sánh trực tiếp trên giá trị đã nén mà giữ đúng thứ tự chuỗi. Value class thuộc JEP 401, đang là preview trong JDK 28. Benchmark tác giả đo duyệt mảng nhanh hơn khoảng 1,4–1,5 lần so với bản identity, và khuyên tự đo bằng JMH trên workload thật.",
+      "why": "Valhalla sẽ đổi cách nghĩ về object, bộ nhớ và GC trong Java; hiểu trước giúp bạn trả lời được khi bị hỏi về chi phí object header, boxing và mảng đối tượng.",
+      "interview_q": "Vì sao mảng các object nhỏ trong Java tốn bộ nhớ và chậm hơn mảng int, và value class hứa hẹn cải thiện điều gì? Có những giới hạn nào?",
+      "related": [],
+      "tags": ["valhalla", "jvm"]
+    },
+    {
+      "title_vi": "Điểm tin AWS tuần 9/11: DynamoDB bulk put, Lambda queue mode cho Kafka, AgentCore Runtime V2",
+      "title": "AWS Weekly Roundup: AgentCore Runtime V2, Amazon DynamoDB bulk put items, and more (November 9, 2026)",
+      "url": "https://aws.amazon.com/blogs/aws/aws-weekly-roundup-agentcore-runtime-v2-amazon-dynamodb-bulk-put-items-and-more-november-9-2026/",
+      "source": "AWS News Blog",
+      "category": "cloud",
+      "summary": "DynamoDB có job bulk put nạp file từ S3 vào bảng có sẵn, mỗi record có thể kèm condition expression riêng; huỷ job không rollback các item đã ghi. Lambda queue mode cho Kafka tự quản cho phép nhiều invocation song song xử lý một partition qua share group (cần Kafka 4.2 trở lên), đổi lại không đảm bảo thứ tự và chỉ at-least-once. AgentCore Runtime V2 giảm cold start cho agent.",
+      "why": "Lambda queue mode phá giả định quen thuộc một partition là một consumer tuần tự, nên consumer Java phải idempotent và không dựa vào thứ tự. Bulk put giúp bài toán backfill dữ liệu DynamoDB rẻ và đơn giản hơn.",
+      "interview_q": "Khi xử lý song song nhiều message trên cùng một partition Kafka, bạn mất những đảm bảo nào và thiết kế consumer idempotent ra sao?",
+      "related": [],
+      "tags": ["dynamodb", "kafka", "lambda"]
+    }
+  ]
+}
