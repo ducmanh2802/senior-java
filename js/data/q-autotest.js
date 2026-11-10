@@ -2048,7 +2048,7 @@ assertThat(page.getByTestId("order-id")).isVisible();
 - Dùng {{Thread.sleep}} "cho chắc" → test chậm và vẫn flaky; hãy dùng assertion/waitFor có điều kiện.
 - Đặt timeout quá lớn toàn cục → test fail thật nhưng chờ rất lâu mới báo.
 - Assert bằng {{page.locator(...).textContent()}} (đọc 1 lần) thay vì {{assertThat(...).hasText(...)}} → tự mất lợi ích retry.
-- Quên rằng {{toBeVisible}} khác "có trong DOM": phần tử có thể tồn tại nhưng ẩn.
+- Quên rằng {{assertThat(locator).isVisible()}} khác "có trong DOM": phần tử có thể tồn tại nhưng ẩn.
 
 ### Trả lời phỏng vấn thế nào
 Giải thích 3 ý: (1) action chờ **actionability**, (2) {{assertThat}} **retry** (web-first), (3) timeout cấu hình nhiều mức. Nêu rõ "gần như không cần explicit wait" nhưng **vẫn cần** chờ response/URL cho điều kiện nghiệp vụ – và cho ví dụ {{waitForResponse}} bọc quanh click submit (so sánh với Selenium {{autotest-005}}).
@@ -3071,6 +3071,12 @@ Cách sửa: mỗi test tự thiết lập điều kiện cần (arrange) trong 
 ### Trả lời phỏng vấn thế nào
 Nêu 3 dấu hiệu trọng tâm (assert yếu, sleep, phụ thuộc thứ tự), mỗi cái kèm ví dụ ngắn "yếu → tốt hơn" và lý do. Mở rộng thêm 2–3 dấu hiệu khác (chia sẻ state, test quá lớn) và chốt bằng checklist review. Thể hiện tư duy: test là tài sản cần bảo trì, chất lượng test ảnh hưởng trực tiếp niềm tin phát hành.
 
+### Ví dụ đời thực
+Một team web bán hàng (Java Spring Boot + Playwright) có 180 test UI chạy trên CI GitHub Actions. Tỉ lệ đỏ ngẫu nhiên (flaky) trôi quanh 8–10% mỗi tuần, team quen bấm "Re-run" và merge. Lead phân tích 2 tuần: 60% fail do {{Thread.sleep}} cố định 3–5 giây chờ trang load; 25% do assert yếu chỉ check {{statusCode 200}} hoặc tiêu đề trang, không kiểm tra nội dung đơn hàng; 15% do test {{testPayOrder}} phụ thuộc {{testCreateOrder}} tạo dữ liệu (chạy riêng thì đỏ). Hậu quả: pipeline mất 35 phút, dev mất niềm tin, 3 bug payment lọt production trong 1 tháng vì test xanh giả. Sửa: (1) thay toàn bộ {{sleep}} bằng chờ điều kiện {{page.waitForURL('**/orders/*')}} và {{assertThat(locator).hasText("CREATED")}}; (2) viết lại assert yếu thành check field nghiệp vụ ({{orderId}}, {{totalAmount}}, {{status}}); (3) tách test độc lập: mỗi test tự tạo dữ liệu qua API helper hoặc dùng fixture, gom 2 test cũ thành 1 scenario end-to-end. Kết quả sau 3 tuần: flaky giảm từ 9% xuống 1.2%, pipeline từ 35 phút xuống 12 phút, 0 bug payment lọt production. Team đo lường bằng chỉ số "defect leakage" (bug lọt production / tổng bug) giảm từ 12% xuống 2%.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi review test, tôi tìm ba dấu hiệu cốt lõi: assert yếu – ví dụ chỉ check HTTP 200 mà không xem orderId hay totalAmount đúng chưa; chờ mù – Thread.sleep 3 giây thay vì chờ URL hoặc element trạng thái; phụ thuộc thứ tự – test sau dùng dữ liệu test trước tạo ra, chạy riêng thì vỡ. Tôi có một ví dụ thực tế: suite 180 test UI flaky 9%, 3 bug payment lọt production. Tôi thay sleep bằng chờ có điều kiện, viết assert gắn vào field nghiệp vụ, tách test độc lập qua API helper. Kết quả: flaky 1.2%, pipeline 12 phút, leakage từ 12% xuống 2%. Nguyên tắc: test phải cho niềm tin, không chỉ cho điểm xanh."
+
 > Senior tip: Đoán chất lượng suite bằng một câu hỏi: "bao nhiêu test đỏ là bug thật, bao nhiêu là do test?" Nếu tỉ lệ đỏ giả cao, đội ngũ sẽ ngừng tin – lúc đó thêm test mới chỉ làm nợ xấu nhiều hơn. Ưu tiên sửa assert yếu và chờ mù trước khi tăng số lượng test.`,
   follow: [
     'Bạn phân biệt "một test nhiều assert" (nhiều kiểm chứng của cùng một hành vi) với "một test làm nhiều việc" (nhiều hành vi) thế nào?',
@@ -3240,6 +3246,12 @@ CI --> Lead: tín hiệu (pass/flaky/thời gian, bug rò rỉ theo dõi)
 ### Trả lời phỏng vấn thế nào
 Nêu lập luận bằng chi phí/phản hồi (có số liệu), mô hình trách nhiệm chia sẻ (dev sở hữu tầng thấp, QA/SDET dẫn chiến lược/rủi ro/tooling), và cách triển khai tăng dần (bắt đầu từ bug fix/regression). Với áp lực release: giữ tối thiểu không thương lượng, cắt phạm vi, dùng tầng rủi ro, và quản lý nợ test minh bạch.
 
+### Ví dụ đời thực
+Một công ty fintech 50 dev, 5 QA. Mỗi sprint 2 tuần dồn 15–20 story, regression thủ công 2 ngày, production rò rỉ 6–8 bug/tháng (chủ yếu logic thanh toán, phân quyền). Hotfix chiếm 35% thời lượng dev. Lead đề xuất: (1) "bug fix kèm test regression" là bắt buộc, đưa vào Definition of Done; (2) template unit test cho service mới, helper Testcontainers cho integration, CI affected-test chỉ chạy module liên quan (8 phút thay vì 45 phút); (3) SDET pair 45 phút với dev module payment khi viết test đầu tiên cho luồng hoàn tiền; (4) QA chuyển sang làm test plan rủi ro, contract test giữa service, coach dev viết E2E cho 5 luồng tiền quan trọng. Sprint đầu tiên: 12 dev ngại, 3 bug fix không kèm test → PR bị block, lead giữ nguyên rule. Tháng 2: 80% PR có test, coverage logic nghiệp vụ từ 35% lên 68%. Tháng 4: bug rò rỉ giảm còn 2/tháng, hotfix 15% thời lượng, dev tự đề xuất refactor có test. Khi release gấp Black Friday: cắt 3 story rủi ro thấp, nhưng giữ smoke + test vùng thay đổi + contract bắt buộc. Kết quả 6 tháng: bug rò rỉ 1.5/tháng, CI PR 9 phút, dev tự bảo vệ test vì thấy giá trị.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không ép dev viết test bằng mệnh lệnh, mà dùng dữ liệu: project trước hotfix 35% thời lượng, rò rỉ 6 bug/tháng. Tôi bắt đầu từ quy tắc nhỏ: bug fix phải có test regression, đưa vào DoD. Cung cấp template, helper Testcontainers, CI affected-test 8 phút. SDET pair với dev module khó. QA làm test plan, contract, coach E2E 5 luồng tiền. Khi release gấp, cắt scope feature, không cắt test smoke và vùng thay đổi. 6 tháng sau: rò rỉ 1.5 bug/tháng, hotfix 15%, dev tự refactor có test. Chìa khóa: làm cho việc đúng dễ hơn việc sai, và chỉ số thực tế (leakage, hotfix time) nói lên mọi thứ."
+
 > Senior tip: Mục tiêu của lead không phải "ép dev viết nhiều test" mà là làm cho **phát hành an toàn trở thành đường mặc định dễ đi nhất**. Khi CI nhanh, template sẵn, và quy ước nhỏ nhưng được giữ nhất quán, hành vi đúng sẽ bền hơn mọi bài diễn văn về chất lượng.`,
   follow: [
     'Bạn phản hồi thế nào khi một dev nói "code của tôi đơn giản, không cần test"?',
@@ -3310,6 +3322,12 @@ Không dùng: "số lượng test" tăng mà không gắn ca; coverage dòng cod
 
 ### Trả lời phỏng vấn thế nào
 Bắt đầu bằng định nghĩa + baseline (đo đúng). Trình bày lộ trình 4 giai đoạn với mốc tháng, nhấn mạnh nền tảng và ổn định (không lao vào viết test ồ ạt). Nêu chỉ số (phủ mục tiêu, flaky, thời gian CI, leakage) và 2–3 rủi ro chính với cách giảm thiểu. Thể hiện tư duy lead: kết quả kinh doanh (rò rỉ bug, tốc độ release) quan trọng hơn con số % đơn lẻ.
+
+### Ví dụ đời thực
+Sản phẩm web Java/Spring Boot + Playwright, 12 dev, 3 QA. Baseline tháng 0: 300 ca regression thủ công, 30 ca tự động (10%), chạy 2 ngày/người, flaky 12%, leakage 8 bug/release. Tháng 1: chọn Playwright Java + REST Assured/Testcontainers, dựng POM, data factory, CI smoke 10 ca ổn định (flaky < 2%), quy ước review (assert gắn nghiệp vụ, không sleep). Tháng 2–3: tự động ưu tiên API/integration cho 5 luồng tiền (đăng ký, đăng nhập, giỏ hàng, thanh toán, đơn hàng) – 120 ca lõi, dùng contract test giữa service. Tháng 4: bổ sung 60 ca hạng trung (tìm kiếm, lọc, coupon), song song 4 worker, CI 18 phút. Tháng 5: xử lý i18n (3 locale), ca biên tiền (0, âm, làm tròn), artifact Allure + trace khi fail. Tháng 6: giảm flaky từ 8% xuống 1.5% (quarantine 3 test còn flaky, sửa gốc), tài liệu runbook, bàn giao ownership cho 2 cặp dev+QA. Kết quả: 210/300 ca lõi tự động (70%), CI 18 phút, leakage 1.2 bug/release, dev tin dùng CI làm cổng release.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu bằng định nghĩa rõ: regression lõi là 300 ca, baseline 10% tự động, flaky 12%. Tháng 1 dựng nền tảng: Playwright Java, REST Assured, POM, data factory, CI smoke 10 ca flaky < 2%. Tháng 2–3 tự động 5 luồng tiền qua API/integration + contract test: 120 ca. Tháng 4 thêm 60 ca hạng trung, song song 4 worker, CI 18 phút. Tháng 5 ca biên tiền, i18n. Tháng 6 ổn định flaky 1.5%, bàn giao ownership. Kết quả: 70% ca lõi tự động, CI 18 phút, leakage từ 8 xuống 1.2 bug/release. Nguyên tắc: đo đúng (phủ ca lõi, không đếm test mù), ngưỡng dừng mở rộng nếu flaky vượt hạn, kết quả kinh doanh quan trọng hơn con số %."
 
 > Senior tip: "70%" chỉ có ý nghĩa khi gắn với **danh mục ca đã thống nhất** và test đó **đáng tin**. Một suite 70% nhưng flaky 15% tệ hơn 40% ổn định. Hãy đặt ngưỡng dừng mở rộng: nếu flaky vượt ngưỡng, chuyển sprint sang ổn định trước khi thêm ca mới.`,
   follow: [
