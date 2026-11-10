@@ -1558,7 +1558,13 @@ List<String> out = s.toList();       // terminal -> mới chạy
 - {{Stream.iterate}} vô hạn + {{parallel}} chia rất kém; dùng {{Stream.iterate(seed, hasNext, next)}} (Java 9) hoặc generator phù hợp.
 - Quên đóng stream có tài nguyên ({{Files.lines}}, {{Files.list}}) — dùng try-with-resources.
 
-> Senior tip: mặc định viết stream tuần tự cho rõ ràng; chỉ bật parallel khi có benchmark chứng minh và dữ liệu đủ lớn. Trong service web, đừng gọi {{parallelStream}} cho I/O — dùng virtual thread (Java 21) hoặc executor có bound.`,
+### Ví dụ đời thực
+  Một service tính giá trị giao dịch trung bình theo từng kênh từ file CSV 5 triệu dòng (~1,2GB). Ban đầu dùng {{Files.lines(path).stream()}} với filter/map/collect — chạy xong khoảng 2,1 giây, p99 ổn định. Một ngày, team "tối ưu" đổi sang {{parallelStream()}} và thêm một bước {{map(t -> enrichPrice(t))}} gọi API định giá bên ngoài (blocking, ~50ms/lời gọi). Kết quả: thời gian xử lý tăng từ 2,1s lên 27 giây, và các endpoint khác (không liên quan) cũng bị chậm vì {{ForkJoinPool.commonPool}} được chia sẻ — pool chỉ có {{CPU-1 = 7}} thread, các task blocking chiếm hết thread, các stream khác phải chờ. Điều tra: thread dump thấy 7 thread của commonPool đều đang gọi HTTP, không có thread rảnh để split/merge. Sửa: giữ sequential stream cho bước enrich (blocking), hoặc dùng virtual thread (Java 21) cho phần I/O; với phần tính toán-heavy thì giữ parallel nhưng source split tốt (ArrayList). Kết quả: thời gian về 3,5 giây (vẫn chậm hơn sequential vì chi phí split, nhưng không ảnh hưởng endpoint khác). Bài học: theo quy tắc Brian Goetz N*Q > 10.000 — với 5M phần tử và Q=50ms, N*Q = 250.000.000, có thể parallel, nhưng blocking trong parallel là anti-pattern.
+
+### Trả lời mẫu khi phỏng vấn
+  "Stream có lazy evaluation: các operation trung gian như filter, map chỉ xây dựng pipeline, chúng không chạy cho đến khi có một terminal operation như collect, forEach, hoặc reduce. Mỗi phần tử đi qua toàn bộ pipeline trước khi sang phần tử tiếp theo, trừ các operation stateful như sorted hay distinct phải giữ trạng thái. Khi dùng parallelStream, nó chia dữ liệu trên ForkJoinPool.commonPool — cùng một pool mà mọi parallel stream trong JVM dùng. Nó có hại khi tác vụ blocking như gọi DB hay HTTP vì thread pool cạn, khi dữ liệu nhỏ vì chi phí fork/merge lớn hơn lợi ích, và khi nguồn khó split như LinkedList. Quy tắc của Brian Goetz là chỉ parallel khi N * Q > 10.000. Tôi luôn viết stream tuần tự trước, chỉ bật parallel khi có benchmark và dữ liệu đủ lớn, và với I/O thì dùng virtual thread hoặc executor có bound thay vì parallelStream."
+
+  > Senior tip: mặc định viết stream tuần tự cho rõ ràng; chỉ bật parallel khi có benchmark chứng minh và dữ liệu đủ lớn. Trong service web, đừng gọi {{parallelStream}} cho I/O — dùng virtual thread (Java 21) hoặc executor có bound.`,
   follow: [
     'Vì sao {{sorted}} trên stream vô hạn không bao giờ trả về?',
     '{{findFirst}} và {{findAny}} khác nhau thế nào trong parallel?',
@@ -1691,7 +1697,23 @@ record Order(String id, List<Item> items) {
 - Không dùng record cho object cần thay đổi nhiều lần (builder pattern phù hợp hơn).
 - Reflection/serialization framework cũ có thể không nhận record.
 
-> Senior tip: dùng record cho **value object và DTO**, còn entity JPA giữ class thường. Trong compact constructor, luôn validate và copy collection; đây là nơi duy nhất đảm bảo bất biến thực sự.`,
+### Ví dụ đời thực
+  Một e-commerce team viết DTO phản hồi API giỏ hàng bằng {{record CartItem(long sku, int qty, String name)}}. Ban đầu mọi thứ ổn, nhưng sau khi thêm {{tags}} là {{List<String>}} (danh sách tags), dev không compact constructor — chỉ gán {{this.tags = tags}} (record tự gán field). Customer service thêm/xóa tag qua API admin, và một job định kỳ sort tags để hiển thị nhất quán. Vì {{tags}} là cùng một {{ArrayList}} instance giữa DTO phản hồi và list gốc trong service — job sort làm thay đổi thứ tự tags trong cache, một số khách thấy tags đổi thứ tự giữa các request. Debug: log thấy cùng một {{ArrayList}} reference được dùng ở cả hai nơi (in address hash). Sửa: thêm compact constructor:
+
+~~~java
+record Cart {
+    Cart {
+        tags = List.copyOf(tags);
+    }
+}
+~~~
+
+Sau đó test: tạo record, thêm vào list gốc, verify record vẫn giữ thứ tự cũ. Kết quả: không còn hiện tượng tags đổi thứ tự ngẫu nhiên. Bài học: record không tự deep-copy component mutable — {{List.copyOf}} trong compact constructor là bắt buộc.
+
+### Trả lời mẫu khi phỏng vấn
+  "Record là class final, bất biến theo khai báo, tự sinh accessor, equals, hashCode, toString. Accessor có tên là {{x()}} thay vì {{getX()}}, và equals/hashCode dựa trên tất cả component. Compact constructor là một phần của record body không có tham số, nó chạy trước khi field được gán — ở đây mình validate và có thể reassign tham số để chuẩn hóa, ví dụ {{items = List.copyOf(items)}} để defensive copy component mutable. Record rất hợp làm DTO và value object: ít boilerplate, bất biến, dễ map qua Jackson. Nhưng nó không hợp làm JPA entity: JPA cần no-arg constructor, field không final, và Hibernate tạo proxy bằng subclass — record là final nên không thể tạo subclass được. Với read-only projection hay embeddable, Hibernate 6 có hỗ trợ một phần, nhưng entity vẫn nên là class thường. Khi dùng record, mình luôn validate và copy collection trong compact constructor — đây là nơi duy nhất đảm bảo bất biến thực sự."
+
+  > Senior tip: dùng record cho **value object và DTO**, còn entity JPA giữ class thường. Trong compact constructor, luôn validate và copy collection; đây là nơi duy nhất đảm bảo bất biến thực sự.`,
   follow: [
     'Vì sao Hibernate không tạo proxy được cho record?',
     'Compact constructor khác canonical constructor ở điểm nào?',
@@ -1752,7 +1774,13 @@ double area(Shape s) {
 - Từ Java 21, switch **statement** dùng pattern hoặc {{case null}} cũng bắt buộc exhaustive; chỉ switch statement kiểu cũ (hằng enum/String/int) mới được phép thiếu case mà vẫn compile — nên ưu tiên switch expression để luôn được kiểm tra.
 - Không lạm dụng sealed cho mọi interface: chỉ dùng khi tập subtype thực sự đóng và bạn kiểm soát được.
 
-> Senior tip: sealed + record + switch exhaustive là bộ ba thay thế visitor pattern rất gọn cho domain ít thay đổi. Nhưng nếu domain mở cho plugin bên ngoài, đừng sealed — bạn sẽ chặn việc mở rộng.`,
+### Ví dụ đời thực
+  Một hệ thống quy trình đơn hàng có sealed interface {{OrderStatus}} với các subtype: {{Confirmed}}, {{Shipped}}, {{Delivered}}, {{Cancelled}}. Ban đầu dùng if-else chain để map status sang message hiển thị, và một switch statement để tính phí. Khi thêm subtype {{Backordered}}, dev quên cập nhật cả 2 nơi — production chạy được nhưng phí cho Backordered được tính như Confirmed (0), và message hiển thị "Unknown" thay vì "Đang chờ hàng về". Điều tra: code review phát hiện if-else chain không có fallback rõ ràng; test integration không cover subtype mới. Sửa: chuyển sang sealed interface + switch expression — compiler bắt buộc phải có case cho mọi subtype, thêm Backordered là lỗi compile ngay. Kết quả: không còn hiện tượng thiếu case ở production; thêm subtype mới chỉ cần thêm case một chỗ. Bài học: exhaustiveness của sealed hierarchy là "compiler-as-code-review", giúp refactor an toàn.
+
+### Trả lời mẫu khi phỏng vấn
+  "Sealed class là một class hoặc interface giới hạn tập các class con được phép kế thừa — subclass phải final, sealed hoặc non-sealed, và nằm cùng module. Điều này cho phép compiler kiểm tra exhaustiveness, nghĩa là biết được tất cả các subtype có thể có. Pattern matching for switch (Java 21) kết hợp sealed: ta có thể match theo kiểu, destructure record pattern, và dùng guard {{when}}. Vì hierarchy sealed, compiler biết mọi subtype và bắt buộc phải phủ hết — không cần default, và nếu thêm subtype mới thì mọi switch thiếu case sẽ lỗi compile. Đây là lợi ích lớn so với visitor pattern hay if-else chain: refactor an toàn. Có một số pitfall: null phải được xử lý bằng {{case null}} riêng, thứ tự case quan trọng (cụ thể trước tổng quát), và pattern matching switch chỉ final từ Java 21 — nếu build bằng 17 phải enable-preview và không dùng trong production. Với domain ít thay đổi, sealed + record + switch exhaustive là bộ ba thay thế visitor pattern rất gọn."
+
+  > Senior tip: sealed + record + switch exhaustive là bộ ba thay thế visitor pattern rất gọn cho domain ít thay đổi. Nhưng nếu domain mở cho plugin bên ngoài, đừng sealed — bạn sẽ chặn việc mở rộng.`,
   follow: [
     'Vì sao switch pattern trên sealed type không cần {{default}}?',
     '{{non-sealed}} dùng khi nào và ảnh hưởng gì tới exhaustiveness?',
@@ -1802,7 +1830,13 @@ double area(Shape s) {
 - {{--add-opens}} là giải pháp tạm; hãy sửa code/thư viện.
 - Kiểm tra TLS, chứng chỉ, và độ tương thích của driver DB.
 
-> Senior tip: hãy coi migrate JDK là dự án có kế hoạch, không phải đổi version trong pom. Bắt đầu bằng việc chạy test trên JDK mới trong CI **trước khi** đổi production; dùng jdeprscan để tìm API sắp bỏ và OpenRewrite để tự động hoá một phần.`,
+### Ví dụ đời thực
+  Một công ty fintech chạy service giao dịch trên JDK 8 với G1, Full GC khoảng 1 lần/phút mỗi khi store dữ liệu lịch sử (bloom filter trên 500GB). Khi migrate sang JDK 17, team chạy cùng workload test: Full GC giảm xuống 1 lần/giờ nhờ G1 improved default và region size tự động, p99 latency giảm 40%. Nhưng một số thư viện cũ dùng reflection truy cập {{sun.misc.Unsafe}} — ở JDK 17 vẫn chạy nhưng in cảnh báo; ở JDK 21 sẽ bị deprecate for removal. Team chọn lộ trình 8 → 11 → 17: ở 11 thay APIs bị bỏ (JAXB, Nashorn), ở 17 xử lý {{--illegal-access}} và strong encapsulation (cần {{--add-opens}} cho agent APM/Lombok/Mockito). Sau khi stable, thử JDK 21 với virtual thread cho phần blocking I/O (gọi API đối tác) — throughput tăng 3 lần với cùng số lượng connection, nhưng không áp dụng cho CPU-bound. Bài học: migrate là dự án có kế hoạch, không phải bump version; từng LTS giúp khoanh vùng lỗi.
+
+### Trả lời mẫu khi phỏng vấn
+  "Từ Java 8 lên 21, giá trị lớn nhất là GC và ngôn ngữ. GC: G1 trở thành default từ Java 9, ZGC và Shenandoah cho pause thấp, và từ 21 ZGC generational cải thiện throughput. Ngôn ngữ: record, sealed, pattern matching, switch expression, text block, virtual thread — mỗi cái giải quyết một pain point. Spring Boot 3 bắt buộc Java 17, nhiều thư viện mới bỏ hỗ trợ 8, và virtual thread giảm chi phí thread cho I/O đáng kể. Lộ trình migrate: đi từng LTS 8 → 11 → 17 → 21, chạy test và jdeps để tìm API bị bỏ, xử lý reflection/module trước khi đổi LTS. Reflection/bytecode instrumentation là chỗ vỡ nhiều nhất — agent APM, Lombok, Mockito cần kiểm tra tương thích. Virtual thread không nhanh hơn cho CPU-bound, và {{--add-opens}} là giải pháp tạm; hãy sửa code/thư viện. Tôi coi migrate là dự án có kế hoạch: đo baseline, chạy song song JDK cũ/mới trong CI, rollout có kiểm soát."
+
+  > Senior tip: hãy coi migrate JDK là dự án có kế hoạch, không phải đổi version trong pom. Bắt đầu bằng việc chạy test trên JDK mới trong CI **trước khi** đổi production; dùng jdeprscan để tìm API sắp bỏ và OpenRewrite để tự động hoá một phần.`,
   follow: [
     'Vì sao nên đi qua từng LTS thay vì nhảy thẳng 8 → 21?',
     'Virtual thread giải quyết vấn đề gì và không giải quyết vấn đề gì?',
@@ -1864,7 +1898,13 @@ String label = switch (status) {
 - Switch expression trên {{null}} khác switch cũ; nếu dữ liệu có thể null, thêm {{case null}} hoặc kiểm tra trước.
 - Đừng dùng text block để build câu SQL động; đó là lỗi bảo mật, không phải lỗi style.
 
-> Senior tip: dùng text block cho SQL/JSON cố định trong test hoặc query, còn dữ liệu động vẫn bind qua placeholder. Với {{var}}, quy ước nội bộ nên là: dùng khi vế phải đã nói rõ kiểu, tránh khi gọi method trả về kiểu phức tạp.`,
+### Ví dụ đời thực
+  Một team backend viết truy vấn SQL động để tìm kiếm người dùng theo nhiều tiêu chí. Ban đầu dùng text block cho câu SQL cố định, nhưng khi thêm filter động, dev ghép chuỗi bằng {{+}} vào text block — tạo ra SQL injection nếu dữ liệu người dùng không được escape đúng. Kết quả: một request với tên người dùng chứa {{'; DROP TABLE users; --}} (test tự động) làm mất toàn bộ bảng. Điều tra: log thấy câu SQL được ghép bằng string concatenation trong text block, không dùng PreparedStatement. Sửa: text block chỉ dùng cho phần cố định (SELECT ... FROM users WHERE), các filter động được build bằng StringBuilder + {{?}} placeholder và setParameter. Kết quả: không còn lỗ hổng SQL injection; truy vấn vẫn dễ đọc nhờ text block cho phần cố định. Bài học: text block là để đọc dễ, không phải để ghép dữ liệu động — SQL luôn dùng PreparedStatement.
+
+### Trả lời mẫu khi phỏng vấn
+  "{{var}} là local variable type inference — compiler suy luận kiểu từ initializer, không phải dynamic typing, không có chi phí runtime. Chỉ dùng cho local, cả trong for/foreach và try-with-resources; không dùng cho field, tham số, return type. Nên dùng khi kiểu dài và lộ rõ từ vế phải, ví dụ {{var users = new ArrayList<User>()}}; không dùng khi kiểu không rõ vì người đọc phải nhảy vào method. Text block (Java 15) là chuỗi nhiều dòng: mở bằng triple quote + xuống dòng bắt buộc, đóng bằng triple quote, incidental whitespace (indentation chung nhỏ nhất) được bỏ. Rất hợp SQL/JSON/HTML cố định, nhưng đừng ghép dữ liệu người dùng vào SQL text block — vẫn dùng PreparedStatement. Switch expression (Java 14) dùng {{->}} không fallthrough, không cần break, có thể trả giá trị trực tiếp; bắt buộc exhaustive cho expression, và với enum thêm hằng số mới mà forgetting case sẽ lỗi compile. Selector là null sẽ gây NPE nếu không có {{case null}}. Ưu tiên switch expression để luôn được kiểm tra."
+
+  > Senior tip: dùng text block cho SQL/JSON cố định trong test hoặc query, còn dữ liệu động vẫn bind qua placeholder. Với {{var}}, quy ước nội bộ nên là: dùng khi vế phải đã nói rõ kiểu, tránh khi gọi method trả về kiểu phức tạp.`,
   follow: [
     'Vì sao {{var}} không dùng được cho field hay tham số?',
     'Text block bỏ indentation theo quy tắc nào?',
@@ -1923,7 +1963,13 @@ List<String> ids = items.stream()
 - {{peek}}/{{forEach}} với side effect trong parallel không an toàn.
 - Method reference tới method có side effect ẩn có thể gây bất ngờ; đọc kỹ.
 
-> Senior tip: dùng method reference khi nó làm code dễ đọc hơn, nhưng đừng ép; một lambda có tên tham số rõ đôi khi tốt hơn {{Foo::bar}}. Và với hot path, cân nhắc functional interface primitive chuyên dụng để tránh boxing.`,
+### Ví dụ đời thực
+  Một service xử lý hàng triệu sự kiện từ Kafka, mỗi event cần map sang DTO. Ban đầu dùng lambda {{.map(e -> new EventDto(e.getId(), e.getType(), e.getTimestamp()))}}. Code chạy được nhưng team thấy chậm khi throughput tăng. Điều tra: profiling thấy boxing và object allocation cao — mỗi lambda tạo một {{EventDto}} mới, và {{Function}} interface có overhead so với primitive. Sửa: đổi sang method reference {{.map(EventDto::new)}} (nếu constructor phù hợp) và dùng {{IntFunction}}/{{ToLongFunction}} cho primitive. Kết quả: throughput tăng 20%, allocation giảm. Bài học: method reference ngắn và rõ hơn lambda, nhưng với hot path cần functional interface primitive để tránh boxing; luôn profile trước khi "tối ưu".
+
+### Trả lời mẫu khi phỏng vấn
+  "Functional interface là interface có đúng một abstract method — ví dụ Runnable, Comparator, Function, Predicate. Lambda không tạo class mới cho mỗi biểu thức: compiler dùng invokedynamic + LambdaMetafactory để sinh implementation, thường nhẹ hơn anonymous class. Lambda capture biến local theo giá trị tại thời điểm tạo, và biến phải effectively final — không bị gán lại sau khi khởi tạo. Field của enclosing object thì không bị ràng buộc này; lambda giữ this và có thể đọc field (nên field có thể thay đổi). Method reference là cú pháp gọn cho lambda: 4 dạng static, instance của object cụ thể, unbound instance, constructor. Ưu điểm là ngắn, rõ khi method đã có tên tốt; nhược điểm là có thể khó hiểu khi chain dài, và overload có thể gây nhập nhằng. Boxing là pitfall: {{Function<Integer,Integer>}} vẫn boxing, dùng IntUnaryOperator nếu cần. Với hot path, cân nhắc functional interface primitive."
+
+  > Senior tip: dùng method reference khi nó làm code dễ đọc hơn, nhưng đừng ép; một lambda có tên tham số rõ đôi khi tốt hơn {{Foo::bar}}. Và với hot path, cân nhắc functional interface primitive chuyên dụng để tránh boxing.`,
   follow: [
     'Vì sao biến local capture phải effectively final?',
     '{{this}} trong lambda và anonymous class khác nhau thế nào?',
