@@ -1259,6 +1259,17 @@ Timeout phải xếp tầng: client > LB > Nginx > timeout của app > timeout g
 ### Trả lời miệng 1 phút
 Ba lỗi này đều do giá trị mặc định của Nginx. 413 là vì client_max_body_size mặc định 1 MB, tôi tăng lên khoảng 10 MB cho location upload và chỉnh multipart của Spring cho khớp. 504 sau đúng 60 giây là vì proxy_read_timeout mặc định 60 giây, tức khoảng lặng giữa hai lần đọc chứ không phải tổng thời gian; tôi đặt timeout riêng dài hơn cho endpoint báo cáo, nhưng hướng đúng là chuyển báo cáo nặng sang bất đồng bộ, trả 202 rồi cho tải file sau. POST bị gửi hai lần là do retry: Nginx từ 1.9.13 mặc định không retry request non-idempotent, nhưng nếu ai đó bật non_idempotent hoặc client, load balancer retry sau timeout thì vẫn trùng, nên API tiền bắt buộc có idempotency key. Timeout phải xếp tầng từ client tới DB. Khi có báo cáo 502/504, việc đầu tiên tôi làm là xem upstream_response_time và upstream_addr trong access log.
 
+### Ví dụ đời thực
+Triệu chứng: ngay sau đợt release, nhóm vận hành nhận được hàng chục ticket khách hàng không upload được sao kê Excel 5 MB (lỗi 413), các báo cáo tài chính chậm trả về 504 sau đúng 60 giây, và một giao dịch chuyển tiền bị ghi nhận hai lần trên core banking.
+
+Điều tra: truy xuất access log Nginx thấy {{$upstream_response_time}} của endpoint báo cáo thường 55–70 giây trong khi {{$request_time}} của client chỉ 60 giây, chứng tỏ Nginx cắt trước khi backend xong. Lệnh {{docker exec nginx nginx -T | grep client_max_body_size}} cho thấy giá trị mặc định 1m. Xem log ứng dụng Spring Boot thấy idempotency key trùng lặp xuất hiện ở hai request POST /api/transfer cách nhau 60 giây, trùng với timeout Nginx.
+
+Nguyên nhân gốc: cấu hình Nginx chưa chỉnh proxy_read_timeout cho endpoint báo cáo và client_max_body_size cho upload; proxy_next_upstream mặc định không retry request non-idempotent, nhưng load balancer AWS ALB phía trước có retry mặc định trên lỗi 5xx/timeout, khiến request chuyển tiền đến backend hai lần khi Nginx trả 504.
+
+Cách xử lý: tăng client_max_body_size lên 10m cho location /api/upload/; đặt proxy_read_timeout 300s cho location /api/reports/; thêm idempotency key bắt buộc (header X-Idempotency-Key) cho mọi API POST tiền, kiểm tra Redis SETNX với TTL 24h trước khi xử lý; cấu hình ALB retry policy giới hạn max retries và tắt retry cho 504 nếu không an toàn.
+
+Kết quả đo được: upload 5 MB thành công 100%; báo cáo 3 phút trả về 200 thay vì 504; thử load test 10.000 request POST trùng idempotency key, chỉ 1 request được xử lý, 9.999 trả về kết quả đã lưu.
+
 > Senior tip: Bật log có {{$upstream_response_time}}, {{$request_time}} và {{$upstream_addr}} trong log_format: so hai giá trị thời gian cho biết chậm do backend hay do mạng/client, còn upstream_addr chỉ ra instance nào có vấn đề. Đây là bằng chứng đầu tiên cần lấy khi có báo cáo 502/504.`,
     follow: [
       '502 Bad Gateway và 504 Gateway Timeout khác nhau thế nào? Mỗi loại thường do nguyên nhân gì phía backend?',
@@ -1340,6 +1351,17 @@ Một RFC tốt có: phạm vi, artifact digest và version, kết quả test UA
 ### Trả lời miệng 1 phút
 Tôi tổ chức theo vùng: vùng trung gian có Nexus proxy Maven Central và Harbor proxy cache, là cửa duy nhất ra internet và chỉ outbound theo whitelist; vùng build có GitLab, runner, SonarQube; vùng prod chỉ có Harbor prod read-only với dev, cluster và Argo CD. Thư viện đi qua Nexus kèm chính sách chặn CVE và license, base image do platform team phát hành. Pipeline build một lần, quét, ký image rồi replicate có phê duyệt sang prod. Mỗi release gắn với RFC có digest, kết quả UAT, tiêu chí rollback, và tách quyền người viết code, người duyệt, người deploy. Để vẫn nhanh, tôi tự động hoá bằng chứng gắn vào RFC, dùng GitOps để phê duyệt merge request chính là phê duyệt deploy, và thương lượng chuyển các thay đổi lặp lại thành standard change. Hotfix vẫn đi emergency change, không bao giờ bỏ qua hoàn toàn.
 
+### Ví dụ đời thực
+Triệu chứng: khi Log4Shell (CVE-2021-44228) được công bố, team phải xác định 47 service Spring Boot đang chạy log4j-core 2.x trong môi trường air-gapped production, và vá xong trong 4 giờ để tuân thủ chính sách bảo mật ngân hàng.
+
+Điều tra: chạy query trên Nexus IQ (hoặc SCA tool trong pipeline) lọc artifact có {{log4j-core}} version {{< 2.15.0}}; đối chiếu với SBOM (CycloneDX) của từng image trong Harbor prod để ra danh sách 47 image bị ảnh hưởng. Kiểm tra Harbor replication log thấy 12 image chưa được replicate sang prod vì đang chờ duyệt RFC.
+
+Nguyên nhân gốc: quy trình duyệt RFC thủ công làm chậm việc đẩy bản vá; pipeline không tự động quét CVE nghiêm trọng và promote gấp.
+
+Cách xử lý: tạo emergency change (ECAB duyệt trong 30 phút), build image mới với log4j 2.17.1, quét Trivy/Snyk trong pipeline, ký image cosign, replicate qua Harbor replication policy "critical-cve" tự động bỏ qua duyệt thủ công cho CVE CVSS ≥ 9.0; Argo CD sync wave deploy theo thứ tự ưu tiên: payment → core banking → reporting.
+
+Kết quả đo được: 47 service vá xong trong 3 giờ 45 phút; audit trail trên GitOps repo thể hiện đầy đủ: commit SHA, digest image, kết quả scan, RFC emergency ID, thời gian deploy từng service. Không service nào bị bỏ sót.
+
 > Senior tip: Ở Việt Nam, các yêu cầu về an toàn hệ thống thông tin ngân hàng của NHNN và kiểm toán nội bộ sẽ hỏi: ai thay đổi gì, khi nào, ai duyệt, bằng chứng test ở đâu. Thiết kế pipeline sao cho mỗi câu đều trả lời được bằng một đường link thay vì một thư mục email; đó cũng là luận điểm mạnh nhất để thuyết phục CAB cho phép release thường xuyên hơn.`,
     follow: [
       'Log4Shell xuất hiện: trong môi trường không internet, bạn xác định service bị ảnh hưởng và vá trong bao lâu, bằng cách nào?',
@@ -1416,6 +1438,17 @@ Tăng CPU limit hoặc giảm số thread đồng thời thường hiệu quả 
 
 ### Trả lời miệng 1 phút
 Đầu tiên tôi kiểm tra JVM thấy gì bằng -XshowSettings:system và PrintFlagsFinal để xem MaxHeapSize, ActiveProcessorCount, số GC thread và GC đang dùng. JDK 17/21 đọc cpu.max và memory.max của cgroup, nên Pod 2 CPU, 4 GiB sẽ thấy 2 CPU và chọn G1. Tôi đặt MaxRAMPercentage 75 để heap khoảng 3 GiB, chừa 1 GiB cho metaspace, thread stack, code cache, direct buffer, và không đặt Xmx song song vì Xmx sẽ thắng. Hiện tượng CPU trung bình 40% mà p99 tăng là dấu hiệu CFS throttling: nhiều thread và GC worker tiêu hết quota trong vài chục mili giây đầu chu kỳ rồi bị dừng. Tôi xác minh bằng tỷ lệ throttled periods chia periods; nếu cao thì tăng CPU limit hoặc giảm số thread đồng thời trước, chỉ chỉnh ParallelGCThreads, ConcGCThreads khi đã đo. ActiveProcessorCount tôi chỉ dùng khi không đặt CPU limit trên node nhiều core.
+
+### Ví dụ đời thực
+Triệu chứng: service thanh toán Pod 2 CPU/4Gi, giờ cao điểm p99 latency tăng từ 120 ms lên 850 ms, CPU trung bình dashboard chỉ 38%, GC log thấy young GC pause trung bình 45 ms nhưng có lúc spike 320 ms, không có OOM.
+
+Điều tra: chạy {{kubectl top pod payment-xxx --containers}} thấy CPU usage 0.76/2 cores. Query Prometheus {{rate(container_cpu_cfs_throttled_periods_total[1m]) / rate(container_cpu_cfs_periods_total[1m])}} cho tỷ lệ throttling 18% (ngưỡng lo > 5%). {{jcmd 1 GC.heap_info}} cho heap 2.9 GiB / 3 GiB (MaxRAMPercentage=75), metaspace 280 MiB, code cache 240 MiB, thread stack ~350 MiB (khoảng 350 thread). Thread dump thấy 200 Tomcat thread + 2 G1 worker + 1 G1 concurrent thread + 12 Netty event loop.
+
+Nguyên nhân gốc: CFS quota 2 CPU (200ms/100ms) bị tiêu hết khi 200+ thread cùng chạy, GC song song (ParallelGCThreads mặc định = 2, ConcGCThreads = 1 cho 2 CPU) vẫn tranh quota với application thread, làm request bị treo 75 ms mỗi chu kỳ 100 ms.
+
+Cách xử lý: giảm Tomcat {{max-threads}} từ 200 xuống 80; tăng CPU limit lên 3 core (request=limit=3) sau khi load test xác nhận DB chịu được connection pool tăng; (tuỳ chọn) giảm thêm GC thread nếu vẫn throttling.
+
+Kết quả đo được: throttling giảm từ 18% xuống 3%; p99 latency 850 ms → 140 ms; young GC pause trung bình 35 ms, max 80 ms; throughput tăng 22% vì ít context switch.
 
 > Senior tip: Trước khi tăng limit, hãy load test và xem tỷ lệ throttling; nhiều đội tăng limit gấp đôi mà p99 không cải thiện vì nút cổ chai là DB pool. Với JDK 21, virtual thread giúp giảm thread stack nhưng không miễn nhiễm CFS throttling: carrier thread vẫn bị chặn theo quota.`,
     follow: [
@@ -1503,6 +1536,17 @@ Khởi động xong context không có nghĩa là phục vụ tốt: connection 
 
 ### Trả lời miệng 1 phút
 Ba probe có ba nhiệm vụ: startup che quá trình khởi động chậm, liveness restart khi process treo không tự hồi phục, readiness gỡ Pod khỏi traffic khi tạm thời chưa phục vụ được. Nếu trỏ cả ba vào /actuator/health tổng hợp, DB chậm 30 giây sẽ làm liveness fail ở mọi Pod, tất cả restart cùng lúc, mất cache và dồn tải lên DB, tức là tự tạo sự cố dây chuyền. Tôi dùng health group của Actuator: liveness chỉ gồm livenessState, readiness gồm readinessState cộng db nếu service hoàn toàn không phục vụ được khi DB chết. Kafka không có indicator mặc định, nếu cần thì tự viết có timeout ngắn và cache. Với app khởi động 90 giây, startup probe period 5 giây, failureThreshold 30 cho tối đa 150 giây. Trước khi lên prod, tôi chặn DB trên staging và kiểm tra: liveness xanh, readiness đỏ, không Pod nào restart.
+
+### Ví dụ đời thực
+Triệu chứng: service tài khoản khởi động 95 giây (Flyway migration + JIT warm-up), deployment rolling update gây ra 3 lần restart dây chuyền trong 2 tuần: DB primary failover 30 giây → liveness probe fail tất cả 6 Pod → restart cùng lúc → connection pool cạn → DB overload → failover kéo dài 5 phút.
+
+Điều tra: liveness probe trỏ {{/actuator/health}} tổng hợp (kể cả {{db}} indicator). Khi DB failover, {{DataSourceHealthIndicator}} trả {{DOWN}} trong 30 giây, liveness failureThreshold 3 × period 10s = 30s, tất cả Pod bị restart đồng thời. Readiness cũng fail nhưng không gây restart. Startup probe không có nên liveness chạy ngay từ đầu.
+
+Nguyên nhân gốc: liveness probe kiểm tra dependency (DB) thay vì chỉ trạng thái nội tại; không có startup probe che giai đoạn khởi động chậm; restart dây chuyền làm mất cache Caffeine và dồn 600 connection mới lên DB vừa recover.
+
+Cách xử lý: tách health group: liveness chỉ {{livenessState}}; readiness thêm {{db}} và custom {{paymentWarmup}} indicator (kiểm tra pool active ≥ 10); thêm startup probe {{/actuator/health/liveness}} period 5s failureThreshold 30 (150s). Trên staging chủ động failover DB: liveness xanh, readiness đỏ 30s, 0 Pod restart.
+
+Kết quả đo được: 3 đợt failover DB sau đó, readiness gỡ Pod khỏi traffic 15s, liveness không fail, 0 restart dây chuyền, p99 latency tăng 200ms trong 30s failover rồi về bình thường.
 
 > Senior tip: Trong staging, hãy chủ động chặn DB/Kafka rồi quan sát: liveness phải xanh, readiness phải đỏ, không có Pod nào restart. Đây là bài test bắt buộc trước khi lên production; nếu liveness đỏ, bạn đang tự tạo thảm hoạ.`,
     follow: [
@@ -1593,6 +1637,17 @@ Với Kafka, thời gian còn phụ thuộc rebalance và commit. Chia nhỏ bat
 ### Trả lời miệng 1 phút
 Khi Pod bị xoá, có hai nhánh chạy song song: control plane gỡ Pod khỏi EndpointSlice, còn kubelet chạy preStop rồi gửi SIGTERM; hết terminationGracePeriodSeconds mà JVM còn sống thì SIGKILL. server.shutdown=graceful chỉ lo HTTP: ngừng nhận request mới và chờ request đang chạy tới timeout-per-shutdown-phase. Nó không tự chờ executor tự tạo, task @Scheduled, thread non-daemon, và với Kafka phải đảm bảo record đang xử lý xong và offset được commit trước khi đóng. Cấu hình của tôi: preStop khoảng 10 giây cho proxy kịp quên Pod, Spring timeout 20 giây, executor chờ task hoàn tất, Kafka commit sau khi xử lý và consumer idempotent, grace period khoảng 60 giây, lớn hơn tổng các khoảng trên. Trade-off là rollout chậm hơn. Tôi kiểm chứng bằng load test trong lúc rolling update, yêu cầu 0 lỗi 5xx, không trùng hay mất message, và đếm SIGKILL sau release.
 
+### Ví dụ đời thực
+Triệu chứng: mỗi lần rolling update service thanh toán (6 replica, maxSurge 1), monitoring ghi nhận 15–20 message Kafka bị mất (không có offset commit) và 3–5 request HTTP 503, dù đã bật {{server.shutdown=graceful}}. Log chỉ thấy "Commencing graceful shutdown" mà không có "Graceful shutdown complete".
+
+Điều tra: {{terminationGracePeriodSeconds}} mặc định 30s; preStop không có; Spring {{timeout-per-shutdown-phase}} 30s. Khi Pod Terminating, SIGTERM đến ngay lập tức (t=0), Spring bắt đầu chờ request HTTP (t=0), nhưng Kafka listener container (SmartLifecycle phase mặc định) vẫn đang poll record. Record xử lý 15s, commit offset sau xử lý; lúc t=30s SIGKILL giết JVM, offset chưa commit → message bị redeliver sau rebalance.
+
+Nguyên nhân gốc: grace period 30s < preStop (0) + Spring timeout (30s) + Kafka processing (15s) + rebalance buffer. Không có preStop làm Ingress/kube-proxy vẫn route request mới tới Pod đang tắt. Kafka listener không dừng graceful trước khi context đóng.
+
+Cách xử lý: đặt {{terminationGracePeriodSeconds: 60}}; preStop httpGet {{/internal/drain}} (sleep 10s + set readiness OUT_OF_SERVICE); {{spring.lifecycle.timeout-per-shutdown-phase=20s}}; {{spring.task.execution.shutdown.await-termination=true}} + {{await-termination-period=15s}}; Kafka {{AckMode=RECORD}} (commit sau mỗi record), {{spring.kafka.listener.idle-event-interval=5s}} để detect idle; executor custom bean {{@PreDestroy shutdown()}}.
+
+Kết quả đo được: chạy k6 200 RPS liên tục trong 10 lần rolling update: 0 lỗi 5xx, 0 message trùng/mất (đếm offset commit vs produce), log có đầy đủ "Commencing graceful shutdown" → "Graceful shutdown complete", rollout time 65s/replica (trước 45s nhưng có lỗi).
+
 > Senior tip: Đo rollout thật bằng load test và đếm lỗi theo từng giây; đừng tin cảm giác "đã bật graceful". Với service thanh toán, tôi thường đặt grace 60 s, preStop 10 s, Spring timeout 20 s, và theo dõi SIGKILL trong 24 giờ sau release.`,
     follow: [
       'Kafka listener nên dừng trước hay sau khi web server ngừng nhận request? Vì sao?',
@@ -1682,6 +1737,17 @@ Chọn metric gần tải thật: RPS/concurrency cho API I/O-bound, queue depth
 
 ### Trả lời miệng 1 phút
 metrics-server chỉ cung cấp CPU và RAM, nên với service I/O-bound tôi đưa metric gần tải thật vào HPA. Kiến trúc là app phơi /actuator/prometheus, Prometheus scrape, rồi Prometheus Adapter biến PromQL thành custom.metrics.k8s.io hoặc external.metrics.k8s.io; với Kafka, RabbitMQ hay cron tôi dùng KEDA vì có scaler sẵn và bên dưới vẫn tạo HPA. Chọn metric: RPS hoặc số request đồng thời cho API, lag hoặc độ sâu queue cho consumer, CPU cho service tính toán; tránh memory vì heap Java ít trả lại, và tránh latency vì đó là tín hiệu trễ, dễ dao động. Target đặt thấp hơn năng lực một Pod đo bằng load test khoảng 20–30%. Bẫy với Java: vòng phản hồi 2–4 phút vì khởi động và JIT, consumer vượt số partition thì ngồi không, và quên CPU request. Vì vậy tôi giữ minReplicas theo đỉnh lịch và chỉ để HPA xử lý phần bất thường.
+
+### Ví dụ đời thực
+Triệu chứng: service thanh toán (API I/O-bound, phụ thuộc PostgreSQL) cấu hình HPA theo CPU target 70%. Giờ cao điểm 10:00–11:00, RPS từ 200 lên 1.200, p99 latency từ 150 ms tăng vọt lên 2.400 ms, HPA chỉ scale từ 4 lên 6 Pod sau 8 phút, CPU trung bình Pod vẫn chỉ 45%.
+
+Điều tra: PromQL {{rate(container_cpu_usage_seconds_total[1m])}} cho 0.9 cores/Pod (limit 2 cores), {{rate(http_server_requests_seconds_count[1m])}} cho 300 RPS/Pod. HPA sync 15s, Prometheus scrape 30s, adapter 10s, Spring boot 60s, JIT warm-up 90s → tổng 3–4 phút vòng phản hồi. Khi HPA quyết định scale, tải đã đỉnh và bắt đầu giảm. Consumer Kafka topic 12 partition, HPA scale lên 18 Pod → 6 Pod idle, rebalance storm làm lag tăng thêm.
+
+Nguyên nhân gốc: CPU metric không phản ánh tải I/O-bound (chờ DB/network); HPA vòng phản hồi chậm (3–4 phút) do Java cold start + JIT; target CPU 70% quá bảo thủ; không có minReplicas theo lịch.
+
+Cách xử lý: thêm Prometheus Adapter rule {{http_requests_per_second}} (rate http_server_requests_seconds_count[1m]); HPA custom metric {{type: Pods, target: AverageValue: "250"}} (load test: 1 Pod chịu 300 RPS p99 < 200ms); behavior scaleUp stabilization 0s, policy 100%/30s; scaleDown stabilization 600s; {{minReplicas: 8}} (cover baseline 1.600 RPS), KEDA cron scale lên 12 lúc 09:30 trước giờ cao điểm.
+
+Kết quả đo được: giờ cao điểm sau khi điều chỉnh, p99 latency 150 ms (ổn định), HPA không scale reactive (đã đủ minReplicas), CPU trung bình 55%, không rebalance storm Kafka. Chi phí Pod tăng 20% (8 thay vì 4 baseline) nhưng SLO latency 100% tuân thủ.
 
 > Senior tip: HPA không thay thế năng lực dự báo. Với hệ thống ngân hàng, tôi giữ minReplicas theo đỉnh lịch (ngày lương, cuối tháng), dùng KEDA cron nâng trước 30 phút, và chỉ để HPA xử lý phần bất thường. Đo {{container_cpu_cfs_throttled_periods_total}} cùng lúc với HPA để biết scale có thực sự giúp hay chỉ làm DB căng hơn.`,
     follow: [
