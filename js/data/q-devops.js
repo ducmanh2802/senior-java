@@ -682,6 +682,17 @@ journalctl -u payment.service --since '10 min ago' -f
 ### Trả lời miệng 1 phút
 Tôi đi theo thứ tự tài nguyên để không đoán mò. Đầu tiên uptime và top để xem load và CPU, chú ý %wa là chờ disk và %st là bị hypervisor lấy CPU. Nếu một process java ăn CPU, tôi dùng top -H tìm thread nóng, đổi thread id sang dạng nid trong thread dump rồi xem nó đang chạy gì; nếu đó là thread GC thì vấn đề là bộ nhớ. Tiếp theo free -m xem cột available và swap, dmesg để biết OOM killer đã ra tay chưa. Sau đó df -h và df -i cho dung lượng và inode, lsof +L1 cho file đã xoá mà còn giữ. Rồi ss để đếm kết nối, đặc biệt CLOSE_WAIT. Cuối cùng là log ứng dụng và journalctl. Quan trọng nhất: thu bằng chứng như thread dump, class histogram trước khi restart, vì restart xoá sạch dấu vết.
 
+### Ví dụ đời thực
+Triệu chứng: dịch vụ thanh toán Spring Boot 3 đóng gói thành fat jar khoảng 120 MB. Mỗi lần lập trình viên sửa một dòng code và deploy, pipeline build lại và đẩy image lên registry mất 6–8 phút, pod khởi động chậm, ổ đĩa registry đầy nhanh.
+
+Điều tra: chạy {{docker history payment:latest}} thấy một layer duy nhất khoảng 110 MB, vì toàn bộ jar được COPY thành một lớp. Docker tính digest theo layer: layer nào đổi thì mọi layer phía sau cũng phải build lại và push lại.
+
+Nguyên nhân gốc: COPY cả fat jar thành một layer, nên code thay đổi hằng ngày làm đổi layer lớn nhất; registry phải lưu trữ và node phải pull lại toàn bộ 120 MB mỗi deployment.
+
+Cách xử lý: chuyển sang multi-stage build: stage build có JDK, dùng {{-Djarmode=tools}} tách layered jar thành dependencies, spring-boot-loader, snapshot-dependencies, application; stage cuối chỉ có JRE, copy các layer theo thứ tự ít thay đổi nhất trước.
+
+Kết quả đo được: image giảm từ 120 MB xuống khoảng 45 MB. Sửa code chỉ thay đổi layer application vài trăm KB, thời gian push từ 6–8 phút xuống dưới 1 phút, ổ đĩa registry tiết kiệm rõ rệt với 50 service.
+
 > Senior tip: Chuẩn bị sẵn một script thu thập (top, ss, df, 3 thread dump cách nhau 5 giây, jstat) và chạy ngay khi có sự cố; ở ngân hàng việc được SSH vào prod thường phải xin quyền theo phiên, nên mỗi phút trên server phải thu được tối đa bằng chứng. Nếu chạy trên Kubernetes, các lệnh tương đương là kubectl top, kubectl exec, và jcmd bên trong container.`,
     follow: [
       'Số kết nối CLOSE_WAIT tăng dần theo thời gian. Lỗi nằm ở phía client hay server, và trong code Java thường do đâu?',
@@ -769,6 +780,17 @@ git reflog                     # cứu commit "mất" sau reset --hard (trong th
 ### Trả lời miệng 1 phút
 Merge giữ nguyên lịch sử thật và tạo merge commit có hai parent; rebase chép commit của tôi lên đỉnh nhánh đích nên lịch sử thẳng nhưng hash thay đổi; squash gộp cả nhánh thành một commit, hợp với PR nhỏ có nhiều commit nháp. Cherry-pick tôi dùng để mang đúng một bản sửa từ main sang nhánh release đang chạy prod, kèm -x để truy vết. Revert tạo commit mới đảo ngược thay đổi nên an toàn trên nhánh chung; reset dời con trỏ nhánh và viết lại lịch sử, chỉ dùng ở local. Quy tắc cấm là rebase, reset rồi force push lên nhánh người khác đang dùng. Trade-off: lịch sử thẳng dễ đọc và bisect hơn, nhưng phải đổi bằng việc viết lại commit. Team tôi rebase để cập nhật nhánh cá nhân, squash khi đóng PR, revert để gỡ lỗi trên main, và bật branch protection.
 
+### Ví dụ đời thực
+Triệu chứng: team phát triển đang làm việc trên nhánh feature/checkout-gateway kéo dài 3 tuần. Khi cố gắng merge vào develop, gặp conflict ở 47 file, mất 4 tiếng để giải quyết và còn bỏ sót một bản sửa lỗi bảo mật quan trọng, dẫn đến bug trên UAT.
+
+Điều tra: nhánh feature không được rebase theo develop trong 3 tuần, trong khi develop đã nhận 120 commit từ các nhánh khác. Lịch sử commit lộn xộn, nhiều commit nhỏ như "fix typo", "update config" làm cho git bisect khó khăn.
+
+Nguyên nhân gốc: chiến lược nhánh feature dài hạn (long-lived branch) tích hợp muộn gây conflict lớn và rủi ro mất code.
+
+Cách xử lý: chuyển sang quy trình rebase nhánh cá nhân hàng ngày vào develop, squash các commit nháp trước khi mở PR, merge PR bằng squash hoặc merge commit tiêu chuẩn. Hotfix prod sửa trên main rồi cherry-pick sang release branch.
+
+Kết quả đo được: thời gian giải quyết conflict giảm từ 4 tiếng xuống dưới 30 phút mỗi PR, số bug do conflict giảm 80%, lịch sử main sạch và dễ bisect.
+
 > Senior tip: Hầu hết team dùng quy tắc: rebase để cập nhật nhánh cá nhân, squash hoặc merge khi đóng PR theo chuẩn của repo, revert để gỡ trên main, và bật branch protection cấm force push vào main/release. Đặt {{git config --global pull.rebase true}} giúp tránh các merge commit "Merge branch main into main" vô nghĩa.`,
     follow: [
       'Một merge commit đã được revert trên main. Giờ bạn muốn merge lại feature đó sau khi sửa lỗi, làm thế nào?',
@@ -845,6 +867,17 @@ main  --*--*--*--*--*--*--*--*--*--*--   (CI xanh mọi lúc, mỗi commit có t
 
 ### Trả lời miệng 1 phút
 Tôi chọn trunk-based kết hợp nhánh release. Git Flow phân tách rõ develop, release, hotfix và hợp với nhiều version cùng tồn tại, nhưng feature branch sống vài tuần gây conflict lớn, và hotfix phải merge vào hai nơi nên dễ quên. Với trunk-based, dev làm nhánh ngắn dưới hai ngày, PR có review và pipeline xanh, tính năng dở dang được tắt bằng feature flag. Đến ngày code freeze, tôi cắt nhánh release từ main, build một artifact, đưa qua SIT, UAT rồi CAB duyệt đúng digest đó. Lỗi UAT hay hotfix prod đều sửa trên main trước rồi cherry-pick sang release, gắn tag và đi luồng emergency change nhưng vẫn chạy đủ pipeline. Trade-off là cần test tự động tốt, CI nhanh và kỷ luật dọn flag. Để thuyết phục quản lý, tôi đo DORA trước và sau khi chuyển đổi.
+
+### Ví dụ đời thực
+Triệu chứng: team core banking release theo Git Flow mỗi 2 tuần. Nhánh develop tích hợp 15 feature branch, merge cuối sprint gây conflict 60 file, hotfix prod phải merge vào cả main và develop, lần trước quên merge vào develop khiến lỗi bảo mật quay lại ở release sau.
+
+Điều tra: DORA metrics cho thấy lead time 14 ngày, deployment frequency 2/tuần, change failure rate 15%. Feature branch sống trung bình 10 ngày, merge conflict tiêu tốn 30% thời gian sprint.
+
+Nguyên nhân gốc: nhánh feature dài hạn (long-lived branch) tích hợp muộn, hotfix quy trình hai bước dễ quên, không có feature flag nên code dở dang phải tách nhánh.
+
+Cách xử lý: chuyển sang trunk-based, feature branch tối đa 2 ngày, merge bằng squash, tính năng dở dang ẩn bằng feature flag (Unleash). Release cắt nhánh release/2.x từ main khi code freeze, hotfix sửa trên main trước rồi cherry-pick sang release. CI bắt buộc pass trước khi merge.
+
+Kết quả đo được: lead time giảm từ 14 xuống 3 ngày, deployment frequency tăng lên 3/tuần, change failure rate giảm từ 15% xuống 3%, thời gian giải quyết conflict gần như bằng 0.
 
 > Senior tip: Đo bằng các chỉ số DORA (lead time, deployment frequency, change failure rate, MTTR) trước và sau khi đổi chiến lược để thuyết phục quản lý bằng số liệu. Với auditor, điều quan trọng là truy vết được: từ ticket tới commit, PR, pipeline, artifact digest và bản ghi phê duyệt; đặt tên nhánh và commit theo mã ticket (ví dụ CORE-1234) giúp làm việc này tự động.`,
     follow: [
@@ -926,10 +959,21 @@ Flyway/Liquibase chạy như một bước riêng (Job hoặc init) trước khi
 ### Trả lời miệng 1 phút
 Pipeline của tôi chia hai phần. CI chạy trên mỗi commit: build và unit test, integration test với Testcontainers, SonarQube quality gate, SAST và quét dependency, đóng gói image gắn version cộng git sha, sinh SBOM, ký image, quét image rồi đẩy lên Harbor với tag bất biến. CD đưa đúng digest đó qua DEV, SIT, UAT rồi PROD; mỗi chặng có gate như smoke test, regression, performance test, và phê duyệt CAB gắn với change request. Nguyên tắc tôi bắt buộc là build once, promote many, cấu hình môi trường nằm ngoài image, và mọi bước truy vết được. Với CD, tôi thích GitOps vì Git là audit log, rollback bằng revert, và CI không cần giữ credential prod. Trade-off là thêm stage thì pipeline chậm, nên tôi chạy song song và giữ CI dưới 15 phút. Migration DB chạy thành bước riêng và phải tương thích ngược.
 
+### Ví dụ đời thực
+Triệu chứng: team thanh toán release thủ công bằng script deploy riêng cho từng môi trường. Prod chạy bản build khác UAT vì base image cập nhật giữa chừng, gây bug tính phí sai lệch 0.5% trên 10 triệu giao dịch/ngày. Auditor yêu cầu chứng minh bản prod chính là bản UAT duyệt.
+
+Điều tra: pipeline build lại cho từng môi trường với profile khác nhau, tag image dùng "latest", không có SBOM. UAT duyệt image digest A, nhưng prod chạy digest B vì build lại kéo base image mới có thay đổi timezone.
+
+Nguyên nhân gốc: vi phạm nguyên tắc "build once, promote many", thiếu digest immutable và SBOM, cấu hình nướng trong image thay vì ConfigMap/Secret.
+
+Cách xử lý: thiết kế pipeline build một lần, image tag = version + git sha, đẩy lên Harbor, sinh SBOM CycloneDX, ký image cosign. CD dùng Argo CD kéo cùng digest qua DEV, SIT, UAT, PROD. Gate: unit coverage ≥ 80%, Sonar quality gate, Trivy scan chặn CVE Critical, contract test Pact, performance test p99 không tăng > 10%.
+
+Kết quả đo được: auditor duyệt ngay vì digest UAT = digest PROD, SBOM trả lời Log4Shell trong 5 phút thay vì 2 ngày, rollback 1 lệnh revert Git. Pipeline CI < 12 phút, CD tự động không can thiệp tay.
+
 > Senior tip: Ở ngân hàng, auditor sẽ hỏi "chứng minh bản trên prod chính là bản đã được UAT duyệt". Hãy lưu digest, SBOM, kết quả scan và người phê duyệt cùng change request; Kubernetes admission policy (Kyverno/OPA Gatekeeper) chỉ cho chạy image đã ký từ Harbor nội bộ. Khi dependency có CVE mới như Log4Shell, SBOM giúp trả lời trong vài phút "service nào bị ảnh hưởng" thay vì vài ngày.`,
     follow: [
       'Một CVE Critical xuất hiện trong thư viện nhưng chưa có bản vá. Gate chặn pipeline, bạn xử lý thế nào để vẫn release được?',
-      'So sánh deploy bằng Jenkins chạy helm upgrade với Argo CD về bảo mật và audit.',
+      'So sánh deploy bằng Jenkins chạy {{helm upgrade}} với Argo CD về bảo mật và audit.',
       'Rollback tự động dựa trên tín hiệu gì và làm sao tránh rollback nhầm?'
     ],
     tags: ['CI/CD', 'DevSecOps', 'GitOps', 'Pipeline', 'SBOM']
@@ -1018,7 +1062,18 @@ Ngoài ra bật encryption at rest cho etcd và RBAC chặt (dev không có quy�
 - Chart chung quá nhiều if/else cho từng service thì không ai dám sửa; giữ chart nhỏ, có test ({{helm lint}}, {{helm unittest}} plugin).
 
 ### Trả lời miệng 1 phút
-Với 30 service và 4 môi trường, tôi không copy YAML cho từng nơi vì sửa một probe sẽ phải sửa 120 chỗ. Tôi dùng một chart Helm chung do platform team quản lý version, mỗi service một file values nhỏ, mỗi môi trường một file values ghi đè. Helm cho template, release, history và rollback, và là chuẩn để cài phần mềm bên thứ ba. Kustomize thì không template, chỉ vá YAML thuần theo base và overlay, dễ review hơn, hợp khi khác biệt giữa môi trường nhỏ; hai cái có thể kết hợp qua Argo CD. Secret không bao giờ commit dạng base64: tôi dùng External Secrets Operator kéo từ Vault, hoặc Sealed Secrets hay SOPS nếu bắt buộc lưu trong Git, cộng encryption at rest cho etcd và RBAC chặt. Trong pipeline tôi luôn chạy helm template và kubectl diff để review trước khi áp dụng lên prod.
+Với 30 service và 4 môi trường, tôi không copy YAML cho từng nơi vì sửa một probe sẽ phải sửa 120 chỗ. Tôi dùng một chart Helm chung do platform team quản lý version, mỗi service một file values nhỏ, mỗi môi trường một file values ghi đè. Helm cho template, release, history và rollback, và là chuẩn để cài phần mềm bên thứ ba. Kustomize thì không template, chỉ vá YAML thuần theo base và overlay, dễ review hơn, hợp khi khác biệt giữa môi trường nhỏ; hai cái có thể kết hợp qua Argo CD. Secret không bao giờ commit dạng base64: tôi dùng External Secrets Operator kéo từ Vault, hoặc Sealed Secrets hay SOPS nếu bắt buộc lưu trong Git, cộng encryption at rest cho etcd và RBAC chặt. Trong pipeline tôi luôn chạy {{helm template}} và {{kubectl diff}} để review trước khi áp dụng lên prod.
+
+### Ví dụ đời thực
+Triệu chứng: team quản lý 30 service Spring Boot, mỗi môi trường (DEV/SIT/UAT/PROD) copy một bộ YAML riêng. Sửa liveness probe mất 2 tiếng (sửa 120 file), prod bị lệch cấu hình so với UAT (replicas 4 vs 6, limit memory 2Gi vs 4Gi), secret DB commit dạng base64 bị lộ khi repo bị clone.
+
+Điều tra: 30 service × 4 môi trường = 120 bộ YAML, không có cơ chế chia sẻ. Secret DB ở prod để plain base64 trong Git, ai có quyền đọc repo đều thấy mật khẩu. Helm chart của team khác nhau, không có versioning.
+
+Nguyên nhân gốc: thiếu abstraction layer (chart chung), cấu hình lặp lại (DRY vi phạm), secret management yếu.
+
+Cách xử lý: xây một chart Helm chuẩn "springboot-service" do platform team version (v1.2.0, v1.3.0...), mỗi service chỉ có file values-service.yaml (image, resource, probe) và values-prod.yaml (replicas, limit, ingress). Secret dùng External Secrets Operator trỏ Vault, Git chỉ lưu ExternalSecret CRD. Pipeline chạy {{helm template}} + {{kubectl diff}} trước apply prod.
+
+Kết quả đo được: sửa probe từ 2 tiếng xuống 5 phút (sửa 1 chỗ chart, bump version, 30 service tự cập nhật), secret DB không còn trong Git, auditor pass, cấu hình prod = UAT đảm bảo bởi cùng chart version.
 
 > Senior tip: Ở ngân hàng, mô hình hay được auditor chấp nhận: một chart chuẩn do platform team quản lý version, mỗi service một file values nhỏ trong repo GitOps, secret nằm ở Vault với policy theo namespace, Argo CD đồng bộ và mọi thay đổi prod đi qua merge request có phê duyệt. Khi rotate mật khẩu DB, ESO cập nhật Secret nhưng app vẫn giữ connection cũ; cần quy trình restart có kiểm soát hoặc dùng Spring Cloud Vault với credential động.`,
     follow: [
@@ -1097,6 +1152,17 @@ Trong Loki, **không** đưa traceId hay userId thành label: số giá trị kh
 
 ### Trả lời miệng 1 phút
 Tôi cho app ghi log ra stdout dạng JSON một dòng, không ghi file trong container, vì Pod là phù du và stdout là chuẩn chung để kubelet rotate và agent thu gom. Trên mỗi node có agent DaemonSet như Fluent Bit hoặc Grafana Alloy đọc log, gắn metadata namespace, pod, label rồi đẩy về Elasticsearch, OpenSearch hoặc Loki. Để nối một giao dịch qua 6 service, tôi dùng Micrometer Tracing: traceId nằm trong MDC nên mọi dòng log đều có, và được truyền qua header W3C traceparent ở HTTP client và Kafka. Khi điều tra chỉ cần tìm theo trường traceId, hoặc nhảy từ trace trong Tempo sang log. Trade-off: ELK tìm kiếm tự do mạnh nhưng tốn RAM và disk; Loki rẻ hơn nhưng chỉ index label, và tuyệt đối không đưa traceId làm label. Kinh nghiệm của tôi là chuẩn hoá schema ECS qua starter nội bộ và mask PII ngay ở tầng logging.
+
+### Ví dụ đời thực
+Triệu chứng: giao dịch chuyển tiền qua 6 service (gateway, account, ledger, fraud, notification, corebanking) thất bại ngẫu nhiên, support mất 2 tiếng mới tìm được dòng log lỗi "insufficient balance" ở service ledger vì log phân rải, không có traceId chung, mỗi service log format khác nhau (text, JSON, syslog).
+
+Điều tra: Log gateway và account dùng JSON, ledger dùng text nhiều dòng, fraud log ra file container, notification dùng syslog. Không có traceId truyền giữa service, phải grep thủ công 6 file log khác nhau, stack trace text bị cắt thành nhiều dòng.
+
+Nguyên nhân gốc: thiếu chuẩn hóa logging (format, output, traceId propagation), không có centralized logging.
+
+Cách xử lý: thống nhất schema ECS, log ra stdout JSON một dòng, Micrometer Tracing bridge OpenTelemetry sinh traceId, gắn vào MDC, truyền qua header W3C traceparent (HTTP) và header Kafka. DaemonSet Fluent Bit thu log, gắn k8s metadata, đẩy Loki (label: namespace, app, level; không index traceId). Tìm kiếm trên Grafana: {{app=ledger | json | traceId=4bf92f...}} thấy toàn bộ chuỗi.
+
+Kết quả đo được: MTTR từ 2 tiếng xuống 8 phút, auditor pass vì log không chứa PII (accountId masked ***4521), Loki tiết kiệm 70% chi phí so với ELK.
 
 > Senior tip: Thống nhất một schema log chung (ECS) cho toàn bộ service ngay từ đầu, đưa vào starter nội bộ; ghép log, metric và trace bằng cùng traceId sẽ rút thời gian điều tra sự cố từ hàng giờ xuống vài phút. Lưu ý Promtail đã bị Grafana ngừng phát triển, hệ thống mới nên dùng Grafana Alloy hoặc Fluent Bit.`,
     follow: [
