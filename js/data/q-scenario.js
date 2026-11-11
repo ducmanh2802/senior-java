@@ -4848,6 +4848,19 @@ Tranh luận 3 tuần thường có lý do ngoài kỹ thuật: muốn được 
 ### Trả lời miệng 1 phút
 "Ba tuần tranh luận nghĩa là thiếu cơ chế quyết định chứ không thiếu ý tưởng. Tôi rút tranh luận khỏi PR, hẹn một buổi họp có hạn chót và nói rõ nếu không đồng thuận thì tôi quyết. Luồng hoàn tiền là quyết định khó đảo ngược nên đáng phân tích, nhưng tính bằng ngày chứ không bằng tuần. Tôi cho hai bên thống nhất tiêu chí và trọng số trước, rồi mới chấm phương án; phần thiếu dữ liệu thì spike có thời hạn. Quyết xong ghi ADR kèm điều kiện xem xét lại, yêu cầu disagree and commit, và nói chuyện riêng với người không được chọn để giữ động lực của họ."
 
+### Ví dụ đời thực
+Một team ngân hàng digital tranh luận 2 tuần về luồng hoàn tiền: một bên muốn mỗi đơn hoàn tiền là một sự kiện trên Kafka (hệ thống nhiều máy truyền sự kiện giữa các dịch vụ), bên kia muốn gọi API đối tác đồng bộ và ghi vào bảng outbox (bảng chứa sự kiện cần gửi sau khi lưu dữ liệu). PR bị comment hơn 40 lần, hai luồng hoàn tiền đang chờ triển khai.
+
+Triệu chứng: đơn hoàn tiền từ khách hàng mất hơn 24 giờ mới về số dư, và trong 1 tháng có ít nhất 3 đơn "biến mất" giữa hệ thống bán hàng và hệ thống chủ sở hữu tài khoản.
+
+Điều tra: kiểm tra log dịch vụ hoàn tiền, thấy mỗi đơn gửi đi 2–3 lần vì không có khóa duy nhất (mã duy nhất chặn xử lý lặp); bảng outbox trống do chưa thiết kế; Kafka cluster chưa có trong team nên không ai biết vận hành (consumer là chương trình tiêu thụ sự kiện).
+
+Nguyên nhân gốc: hai bên tối ưu tiêu chí khác nhau — bên A quan trọng "các team khác nghe sự kiện", bên B quan trọng "khách thấy kết quả ngay và không mất tiền". Không có tiêu chí thống nhất nên tranh luận vô tận.
+
+Cách xử lý: lead dừng tranh luận trên PR, hẹn họp 45 phút, yêu cầu mỗi bên viết tiêu chí và trọng số trước. Sau khi chấm, chọn REST + outbox vì Correctness (không mất/trùng) trọng số cao nhất và team chưa vận hành Kafka. Ghi ADR (tài liệu quyết định kiến trúc) kèm điều kiện xem xét lại khi có thêm 3 consumer cần sự kiện hoàn tiền.
+
+Kết quả: sau khi triển khai, hoàn tiền xử lý trong vòng 5 phút, 0 đơn biến mất trong 3 tháng sau, và team đã có tài liệu vận hành outbox để mở rộng sau.
+
 > Senior tip: tôi đưa vào team quy tắc "**tranh luận quá 2 vòng comment thì chuyển sang gặp trực tiếp**" và mẫu ADR một trang. Phần lớn bất đồng kỹ thuật kéo dài là do hai người tối ưu cho hai tiêu chí khác nhau mà không ai nói ra; buộc viết tiêu chí trước giải quyết được nhiều hơn mọi cuộc tranh luận về công nghệ.`,
   follow: [
     'Nếu chính bạn là một trong hai bên tranh luận thì bạn đảm bảo công bằng thế nào?',
@@ -4915,6 +4928,19 @@ Nếu PM vẫn ép: "Em hiểu áp lực. Nếu giữ toàn bộ scope, em cần
 
 ### Trả lời miệng 1 phút
 "Tôi báo sớm bằng số liệu: tốc độ thực tế 4 sprint, phần việc còn lại, khoảng thiếu bao nhiêu tuần. Làm thêm giờ không phải kế hoạch, thêm người giai đoạn cuối thường làm chậm hơn. Tôi xếp scope theo MoSCoW, giữ nguyên đối soát và bảo mật vì là tính năng tiền, rồi đưa 3–4 phương án có trade-off và một đề xuất, thường là giữ ngày, cắt phần Should/Could sang đợt 2 và mở dần bằng feature flag. Người có quyền quyết định; nếu họ chọn giữ toàn bộ scope, tôi ghi nhận rủi ro bằng văn bản. Sau đó cập nhật dự báo mỗi tuần."
+
+### Ví dụ đời thực
+Team 5 người còn 4 tuần ra mắt tính năng vay trả góp theo cam kết với ngân hàng đối tác, nhưng chỉ xong gần 60%; theo tốc độ thực tế còn cần khoảng 10 tuần. PM đề nghị cả team làm thêm giờ đến cuối tháng.
+
+Triệu chứng: sprint gần nhất chỉ hoàn thành 18 điểm, còn lại khoảng 100 điểm cần làm; nếu tiếp tục như cũ, tính năng sẽ trễ ít nhất 4 tuần, vỡ cam kết đối tác và phí quảng cáo đã bỏ tiền ra.
+
+Điều tra: theo dõi velocity (tốc độ làm việc) 4 sprint cuối (18, 22, 19, 21 điểm/2 tuần ≈ 20 điểm), liệt kê scope và phân loại MoSCoW (Must/Should/Could/Won't: phải có/nên có/có được thì tốt/không làm đợt này) cùng PO. Thêm người mới vào giai đoạn cuối theo định luật Brooks (thêm người vào nhóm muộn thường làm chậm hơn vì phải hướng dẫn và phối hợp); làm thêm giờ 2 tuần đầu có thể nhanh 10–20% nhưng sau đó lỗi tăng, người mệt.
+
+Nguyên nhân gốc: scope quá lớn so với thời gian còn lại, và không có phân loại "phải có" versus "có được thì tốt".
+
+Cách xử lý: đề xuất giữ ngày ra mắt, cắt phần Should/Could (trả góp 24 tháng, trang quản trị tự cấu hình) sang đợt 2 sau 4–5 tuần; giữ đăng ký trả góp 3/6/12 tháng, đối soát và audit log (bản ghi hành vi); ẩn phần chưa xong sau feature flag (cờ bật/tắt tính năng); báo định kỳ mỗi tuần.
+
+Kết quả: ra mắt đúng hạn với luồng đăng ký và đối soát đầy đủ; đợt 2 hoàn thành sau 4 tuần; không xảy ra sự cố liên quan tiền trong tuần đầu ra mắt.
 
 > Senior tip: tôi không đợi tới khi trễ mới nói chuyện scope. Ngay từ đầu dự án, tôi thống nhất với PM danh sách Must và thứ tự cắt; khi số liệu xấu đi, cuộc nói chuyện chỉ còn là "kích hoạt kế hoạch đã thống nhất" thay vì một cuộc đàm phán căng thẳng.`,
   follow: [
@@ -4986,6 +5012,17 @@ void feeCalculation_currentBehavior() {
 ### Trả lời miệng 1 phút
 "Tôi coi onboarding như sản phẩm có số đo: thời gian tới PR đầu tiên, PR thứ 10, lần on-call đầu tiên. Ngày đầu phải chạy được app bằng một lệnh. Tuần đầu, buddy dẫn đi một request xuyên hệ thống cùng sơ đồ C4 tối thiểu và từ điển nghiệp vụ, và người mới có PR nhỏ ngay. Việc tăng dần, có pair programming; với code ít test, tôi dạy viết characterization test trước khi sửa. Buddy được giảm tải thật, người mới sửa tài liệu khi thấy sai, và tôi hỏi họ điều gì làm chậm nhất để sửa cho lượt sau."
 
+### Ví dụ đời thực
+Một team nhận 2 kỹ sư mới vào monolith (ứng dụng lớn gộp chung một khối) 400 nghìn dòng chạy Spring 4, Java 8, test bao phủ khoảng 15%. Hai người trước đó mất hơn 3 tháng mới có PR đáng kể đầu tiên, một người đã nghỉ.
+
+Triệu chứng: tuần đầu cả hai mất 3 ngày mới chạy được app trên máy cá nhân vì cấu hình rải rác và phụ thuộc vào DB dùng chung; tuần thứ 3 vẫn chưa tự sửa được bug nhỏ vì sợ chạm "vùng nguy hiểm" ít test. Dữ liệu đo: thời gian đến PR đầu tiên trung bình 24 ngày, đến PR thứ 10 là 70 ngày.
+
+Điều tra: hỏi người mới điều gì làm chậm nhất, ghi lại từng chỗ bị kẹt. Phát hiện 3 nguyên nhân gốc: (1) môi trường local không có script dựng một lệnh, phải làm tay nhiều bước; (2) không có bản đồ hệ thống và từ điển nghiệp vụ, nên không biết đọc code từ đâu; (3) buddy không được giảm tải, chỉ hỗ trợ "khi rảnh".
+
+Cách xử lý: chuẩn bị {{docker compose up}} cùng dữ liệu mẫu để ngày đầu chạy được app; vẽ sơ đồ C4 (sơ đồ ngữ cảnh và container của hệ thống) và luồng một request "đặt hàng" từ controller tới DB, kèm từ điển nghiệp vụ; chọn buddy và giảm 25% khối lượng sprint của buddy trong tháng đầu; tuần đầu có PR nhỏ (thêm log/sửa thông báo lỗi) và dạy viết characterization test (test ghi lại hành vi hiện tại trước khi sửa) cho module legacy; người mới sửa tài liệu ngay khi thấy sai.
+
+Kết quả: sau 4 tuần, thời gian đến PR đầu tiên giảm còn 3 ngày, đến PR thứ 10 còn 28 ngày; cả hai tự xử lý được bug nhỏ ở một module và tham gia shadow on-call (trực xử lý sự cố cùng người có kinh nghiệm) ở tuần thứ 6. Tài liệu onboarding được cập nhật 12 chỗ dựa trên ghi chú kẹt của hai người mới.
+
 > Senior tip: mỗi người mới là **cơ hội kiểm thử miễn phí** cho tài liệu và môi trường dev của team. Tôi yêu cầu họ ghi lại mọi chỗ bị kẹt trong 2 tuần đầu; danh sách đó luôn chỉ ra nợ kỹ thuật thật mà người cũ đã quen tới mức không còn thấy.`,
   follow: [
     'Characterization test khác unit test viết theo đặc tả thế nào?',
@@ -5046,6 +5083,19 @@ Mục tiêu là cùng giảm rủi ro, không phải chặn người khác; luô
 ### Trả lời miệng 1 phút
 "PR 4.200 dòng trộn refactor, migration và logic tiền thì không ai review hiệu quả được. Tôi xem diff stat để phân loại, đề nghị tách thành refactor thuần, migration và thay đổi hành vi, và đưa đường đi tiếp: phần rủi ro thấp lên bản thứ Sáu, phần retry review kỹ sau. Tôi review theo rủi ro: idempotency, transaction, concurrency, tương thích ngược của migration, test cho lỗi giữa chừng. Tôi chạy thử, cố ý làm hỏng code xem test có bắt không. Cuối cùng đưa logic mới lên sau feature flag với tỉ lệ nhỏ và có kế hoạch rollback."
 
+### Ví dụ đời thực
+Một PR 4.200 dòng thay đổi logic retry thanh toán, đồng thời refactor package và thêm migration DB. Tác giả muốn merge vào bản phát hành chiều thứ Sáu.
+
+Triệu chứng: reviewer đọc cả ngày vẫn cảm thấy "lướt qua", và team đã từng có sự cố: retry thanh toán (gửi lại yêu cầu khi lỗi) trừ tiền hai lần vì không có khóa duy nhất.
+
+Điều tra: chạy git diff --stat thấy khoảng 3.300 dòng là di chuyển package/đổi tên (rủi ro thấp), chỉ 600 dòng là logic retry (rủi ro cao) và 300 dòng migration (thay đổi cấu trúc bảng dữ liệu) + test. Xem từng vùng theo rủi ro: retry có idempotency key (mã duy nhất chặn xử lý lặp) không? Gọi HTTP bên trong @Transactional (gom thao tác DB thành một đơn vị thành công hết hoặc thất bại hết) không? Migration có khóa bảng lớn và tương thích ngược với code cũ đang chạy trong lúc rolling deploy không?
+
+Nguyên nhân gốc: trộn nhiều loại thay đổi trong một PR làm giảm hiệu quả review; lỗi idempotency dễ bị lọt khi đọc hàng nghìn dòng.
+
+Cách xử lý: đề nghị tách thành PR1 refactor thuần, PR2 migration, PR3 logic retry; PR1 và PR2 có thể lên bản thứ Sáu, PR3 chỉ chạy sau feature flag (cờ bật/tắt tính năng). Chạy test cố ý làm hỏng một dòng quan trọng để kiểm tra test có bắt không. Kết nối payment mới bật cho 5% giao dịch, theo dõi tỉ lệ thành công và số lần retry.
+
+Kết quả: phát hiện thiếu idempotency key trước khi merge, sửa kịp; bản phát hành thứ Sáu không chứa logic tiền rủi ro, và rollback plan (kế hoạch hoán ngược) đã được viết sẵn.
+
 > Senior tip: tôi tách comment thành "**chặn**" (đúng sai, an toàn, dữ liệu) và "**gợi ý**" (đặt tên, phong cách), ghi rõ ở đầu comment. Tác giả biết chính xác điều gì phải sửa trước khi merge, và reviewer buộc mình ưu tiên thứ quan trọng. Về lâu dài, PR nhỏ là văn hoá: tôi khuyến khích stacked PR và feature flag để không ai phải chọn giữa "PR to" và "branch sống 3 tuần".`,
   follow: [
     'Làm sao chia một thay đổi lớn thành nhiều PR nhỏ mà vẫn merge được vào main từng phần?',
@@ -5104,6 +5154,19 @@ Nói rõ rủi ro còn lại sau 4 tuần (ví dụ: "loại lệch do đối t�
 
 ### Trả lời miệng 1 phút
 "Đây là bus factor 1 đã thành hiện thực. Tuần đầu tôi kiểm kê: job, bảng, đối tác, các loại lệch trong 6 tháng, và chuyển ngay mọi quyền, key, cron cá nhân sang tài khoản team. Tôi chọn hai người nhận. Tuần 2 họ quan sát người cũ làm thật và viết runbook, tuần 3 đảo vai, tuần 4 họ tự xử lý, người cũ chỉ dự phòng; không có ca thật thì dựng lại trên staging. Tôi hỏi những câu lộ kiến thức ngầm và ghi hình buổi giải thích. Với người sắp nghỉ, tôi biến chuyển giao thành việc chính của họ. Và tôi báo cấp trên rủi ro còn lại cùng phương án dự phòng."
+
+### Ví dụ đời thực
+Kỹ sư duy nhất hiểu module đối soát thanh toán (chạy batch mỗi đêm, mỗi tháng 2–3 lần lệch số phải xử lý tay) báo nghỉ việc, còn 4 tuần.
+
+Triệu chứng: trước đó khi anh ấy nghỉ phép, một ca lệch số chờ 5 ngày mới xử lý vì không ai biết chạy script hay liên hệ đối tác nào.
+
+Điều tra: kiểm kê mọi thứ module làm: job nào, chạy lúc nào, đọc/ghi bảng nào, gọi đối tác nào, cấu hình ở đâu, quyền truy cập gì. Lịch sử 6 tháng các ca lệch: loại lệch, nguyên nhân, cách xử lý, script đã chạy; xếp hạng 5 loại sự cố hay gặp nhất. Phát hiện cron (lệnh hẹn giờ chạy tự động) chạy trên máy riêng và key SFTP đối tác nằm trong thư mục home của anh ấy.
+
+Nguyên nhân gốc: kiến thức ngầm (biết nhưng không ghi lại) chỉ nằm ở một người (bus factor = 1), và tài sản truy cập không thuộc team.
+
+Cách xử lý: chuyển ngay quyền, key, cron sang tài khoản team tuần 1; chọn hai người nhận (một chính, một phụ). Tuần 2 người cũ làm và nói to, người nhận ghi runbook (hướng dẫn từng bước xử lý sự cố) cho 5 loại lệch; tuần 3 đảo vai (người nhận làm, người cũ chỉ can thiệp khi sắp sai); tuần 4 người nhận tự xử lý, kể cả trực đêm batch, người cũ chỉ dự phòng. Nếu không có ca lệch thật, dựng lại ca trên staging (môi trường mô phỏng) với dữ liệu mẫu.
+
+Kết quả: runbook 5 loại lệch được hoàn thành; người nhận tự xử lý một ca lệch thật độc lập; sau khi kỹ sư nghỉ, module vẫn vận hành ổn định, không có sự cố do thiếu kiến thức.
 
 > Senior tip: thời điểm rẻ nhất để xử lý bus factor là **trước** khi có người nghỉ. Tôi rà định kỳ mỗi quý: module nào chỉ một người từng deploy, từng trực sự cố hoặc từng review? Rồi luân chuyển on-call và review chéo cho đúng những module đó. Câu hỏi "nếu người này nghỉ phép 3 tuần thì sao?" nên có câu trả lời trước khi nó thành "nghỉ việc".`,
   follow: [
@@ -5972,6 +6035,19 @@ DB audit: transfer_id, status, actor, timestamp
 
 ### Trả lời mẫu khi phỏng vấn
 "Tuần đầu tôi ưu tiên hiểu luồng nghiệp vụ hơn đọc code từ đầu tới cuối. Ngày đầu tôi hỏi tech lead ba luồng quan trọng nhất về doanh thu và rủi ro, ví dụ đặt hàng, thanh toán, hoàn tiền, và xin sơ đồ hệ thống nếu có. Sau đó tôi đi theo từng luồng từ đầu đến cuối: dùng thử sản phẩm trên staging, rồi theo một request thật qua trace hoặc log, từ API, qua service, xuống bảng DB và message Kafka. Tôi đọc schema các bảng chính, các trạng thái và chuyển trạng thái, và ghi lại câu hỏi để hỏi BA hoặc người viết code trong các buổi ngắn. Tôi cũng xem các sự cố gần đây và runbook, vì chúng cho thấy hệ thống hay hỏng ở đâu. Cuối tuần tôi viết lại tài liệu ngắn về các luồng đó và nhờ team sửa, vừa kiểm tra hiểu biết của mình vừa để lại giá trị cho người đến sau. Và tôi nhận một ticket nhỏ ngay tuần đầu để đi hết quy trình deploy."
+
+### Ví dụ đời thực
+Tuần đầu vào dự án ngân hàng về chuyển tiền, nhiều developer mới cố đọc toàn bộ service layer và bị ngợp vì không biết bắt đầu từ đâu.
+
+Triệu chứng: đọc code 3 ngày vẫn chưa trả lời được câu hỏi "giao dịch chuyển tiền bị từ chối vì lý do gì, và tiền có bị khóa không?".
+
+Điều tra: chọn một luồng thực tế: "chuyển tiền nội bộ" từ ứng dụng mobile → API Gateway (cổng vào quản lý yêu cầu) → validation → tài khoản nguồn → tài khoản đích → ghi sổ cái (hạch toán) → thông báo. Ngồi cùng BA chạy thử trên môi trường UAT (môi trường mô phỏng trước khi đưa ra khách), ghi từng màn hình và tình huống lỗi. Lần theo một request thành công bằng traceId (mã dùng để theo dõi một yêu cầu qua nhiều hệ thống) từ API Gateway qua service, xuống bảng ledger_entries và balance update, tới thông báo SMS. Vẽ sequence diagram đơn giản và đọc bảng trạng thái (PENDING/APPROVED/REJECTED/CANCELLED) plus bảng lịch sử thay đổi trạng thái.
+
+Nguyên nhân gốc: đọc code trước khi hiểu nghiệp vụ dễ đi sai hướng và không biết tại sao code viết như vậy; chỉ nhìn happy path (luồng đi bình thường) thì bỏ qua luồng ngoại lệ quan trọng nhất cho bảo trì.
+
+Cách xử lý: làm theo lộ trình 5 ngày (định hướng, quan sát người dùng, trace end-to-end theo một yêu cầu thật từ đầu đến cuối, hiểu quy tắc nghiệp vụ, tổng hợp); cuối tuần viết tài liệu ngắn về luồng và nhờ team sửa; nhận một ticket nhỏ ngay tuần đầu để đi hết quy trình deploy.
+
+Kết quả: sau 1 tuần vẽ được bản đồ nghiệp vụ chính + ngoại lệ, hiểu được state machine (máy trạng thái) của giao dịch, và có thể tự xử lý ticket nhỏ từ yêu cầu đến deploy.
 
 > Senior tip: Nguyên tắc vàng là "follow the data". Đừng theo call stack vô tội vạ - hãy theo 1 giao dịch thật trong DB (tìm 1 transfer_id) rồi lần ngược lại xem nó đi qua những service nào. Cách này nhanh gấp 3-5 lần so với đọc toàn bộ service.`,
   follow: [
