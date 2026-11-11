@@ -2046,6 +2046,19 @@ Application service chỉ dùng {{TransferCommand}}/{{TransferResult}}. Adapter 
 
 Đừng retry mọi lỗi giống nhau; giữ raw response đã redacted để điều tra, nhưng không log credential/PII. Đặt timeout theo latency budget và circuit breaker để bảo vệ thread, vẫn cần reconciliation cho pending.
 
+### Cơ chế từng bước
+1. **Ranh giới tích hợp:** ứng dụng nội bộ không gọi trực tiếp API core banking và không dùng model của core banking. Đặt một lớp adapter ở ranh giới, bắt mọi lệnh ra ngoài và mọi phản hồi quay lại.
+2. **Adapter chuyển đổi:** adapter nhận {{TransferCommand}} (lệnh nội bộ), gọi core banking qua {{T24Client}}, rồi chuyển phản hồi của core banking thành {{TransferResult}} (model nội bộ). Chi tiết giao thức, mã lỗi, trường dữ liệu của core banking được giữ trong adapter, không rò ra business logic.
+3. **Ánh xạ mã lỗi và trạng thái:** core banking có thể trả "accepted" hoặc "pending" thay vì success/fail. Adapter ánh xạ mã lỗi vendor sang nhóm lỗi nội bộ (lỗi nghiệp vụ, lỗi xác thực, lỗi tạm thời, kết quả chưa xác định) và giữ trạng thái pending thay vì ép thành boolean.
+4. **Correlation ID và timeout:** mỗi lệnh gắn mã liên kết duy nhất (correlation ID) để theo dõi. Đặt timeout theo ngân sách latency. Nếu timeout sau khi gửi, không tự khẳng định thất bại — phải tra cứu trạng thái theo reference trước khi retry, tránh xử lý hai lần.
+5. **Circuit breaker và reconciliation:** circuit breaker bảo vệ luồng xử lý khi core banking bị chậm/hết hạn. Có job đối soát định kỳ xử lý lệnh còn trạng thái pending.
+
+### Ví dụ đời thực
+Ngân hàng gửi lệnh rút tiền qua core banking T24. Lúc đầu dev dùng DTO của T24 toàn hệ thống, nên khi T24 thêm trường, nhiều màn hình nội bộ cũng bị ảnh hưởng. Sau đó chuyển sang ACL: adapter nhận {{TransferCommand}}, gọi T24, trả về {{TransferResult}}. Một sáng, core banking trả mã lỗi "99" (chưa xác định) và client timeout. Nhờ correlation ID, đội vận hành tra cứu trạng thái theo mã tham chiếu và thấy lệnh đã ghi nợ thành công ở core, chỉ phản hồi bị mất. Họ khôi phục thành "completed" thay vì retry và gây nợ hai lần. Số lần lệnh xử lý lại sai giảm từ nhiều trường hợp mỗi tuần xuống 0 trong tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Em sẽ đặt một lớp adapter ở ranh giới tích hợp, nhận lệnh nội bộ và chuyển sang định dạng của core banking, sau đó chuyển phản hồi quay lại thành model nội bộ. Mọi chi tiết giao thức và mã lỗi của core banking được giữ trong adapter, không để rò ra business logic. Nếu core trả accepted hoặc pending thay vì success, domain giữ trạng thái pending thay vì ép thành boolean. Mỗi lệnh gắn correlation ID, đặt timeout, và sau timeout tra cứu trạng thái theo reference trước khi retry, tránh nợ hai lần. Kèm theo circuit breaker và job đối soát định kỳ để xử lý lệnh pending."
+
 > Senior tip: ghi metric theo operation, kết quả chuẩn hóa và version adapter; khi core nâng version, canary một luồng trước khi mở toàn bộ traffic.
 `,
   follow: ['Bạn biểu diễn trạng thái UNKNOWN/PENDING trong domain ra sao?', 'Làm thế nào version hóa adapter mà không downtime?'],
@@ -2081,6 +2094,19 @@ TransferRecord reserve(String key, String payloadHash) {
 - Exactly-once qua hai hệ độc lập không thể đạt chỉ bằng retry; cần dedup và trạng thái bền vững ở cả hai đầu.
 - Nếu partner không có query/idempotency, retry tự động có thể tạo duplicate; chuyển sang hàng chờ xử lý thủ công có kiểm soát.
 
+### Cơ chế từng bước
+1. **Timeout là kết quả chưa biết, không phải thất bại:** khi ứng dụng gửi lệnh chuyển tiền và client timeout, ứng dụng không biết core banking đã ghi nợ hay chưa. Không được tự chuyển trạng thái thành FAILED hay tự retry ngay.
+2. **Idempotency key / tham chiếu duy nhất:** mỗi lệnh mang một tham chiếu duy nhất (reference/idempotency key) xuyên suốt, gắn với hash nội dung. Nếu cùng key gửi lại với nội dung khác, core từ chối. Điều này ngăn xử lý hai lần.
+3. **Lưu trạng thái cục bộ trước khi gọi:** ứng dụng ghi bản ghi lệnh với trạng thái {{CREATED}}, rồi chuyển sang {{SENT}} sau khi gửi, trong cùng transaction hoặc outbox. Không giữ transaction DB mở trong khi gọi mạng.
+4. **Sau timeout:** truy vấn trạng thái của core banking cùng tham chiếu cũ, hoặc chờ callback/reconciliation. Không sinh tham chiếu mới. Chỉ retry nếu core cam kết idempotent theo hợp đồng.
+5. **Job đối soát:** tìm các lệnh {{UNKNOWN}} quá ngưỡng và đưa vào xử lý có kiểm soát, kiểm tra xem cuối cùng có trạng thái kết thúc (terminal) hay chưa.
+
+### Ví dụ đời thực
+Ứng dụng chuyển tiền cho khách hàng, client timeout sau 10 giây. Nếu dev mặc định timeout = thất bại và cho retry, lệnh có thể được gửi lần hai và khách bị ghi nợ hai lần. Thiết kế đúng: trước khi gọi, ghi bảng lệnh với mã tham chiếu duy nhất và trạng thái {{SENT}}. Sau timeout, ứng dụng gọi API truy vấn trạng thái của core banking cùng mã tham chiếu. Core trả "đang xử lý" (pending) → ứng dụng giữ trạng thái {{UNKNOWN}} và thông báo khách hàng tra cứu sau. Core trả "thành công" → ứng dụng ghi {{FINAL}} thành công, không retry. Trong tháng, có 3 trường hợp lệnh {{UNKNOWN}}, toàn bộ được giải quyết qua đối soát, không phát sinh giao dịch trùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em coi timeout là kết quả chưa biết, chứ không phải thất bại. Mỗi lệnh có tham chiếu duy nhất gắn với nội dung, lưu trạng thái cục bộ trước khi gọi, và không giữ transaction DB mở khi gọi mạng. Sau timeout, em truy vấn trạng thái của core banking cùng tham chiếu cũ thay vì sinh tham chiếu mới. Chỉ retry nếu core cam kết idempotent. Nếu không rõ, giữ trạng thái {{UNKNOWN}} và để job đối soát xử lý sau. Bên cạnh đó, thời gian giữ idempotency key ở core phải dài hơn cửa sổ retry và đối soát."
+
 > Senior tip: dashboard phải tách timeout, reject và unknown; theo dõi số UNKNOWN theo tuổi và đảm bảo mọi record cuối cùng có trạng thái terminal hoặc case điều tra.
 `,
   follow: ['Nếu partner không hỗ trợ idempotency key, phương án giảm rủi ro là gì?', 'Vì sao không giữ transaction DB mở trong lúc gọi core?'],
@@ -2107,6 +2133,19 @@ Tạo canonical command/result nội bộ chỉ chứa khái niệm cần cho us
 - Không giả định mọi ISO 20022 bên đối tác dùng cùng schema hoặc transport.
 - Giữ version của profile, không log PAN/PII nguyên dạng; log masked identifiers và correlation ID.
 - Unknown response code phải được xử lý an toàn và cảnh báo, không map mặc định thành approved.
+
+### Cơ chế từng bước
+1. **Khác biệt cơ bản:** ISO 8583 là họ thông điệp giao dịch thẻ/tài chính, thường dùng bitmap (mã bit cho biết trường nào có dữ liệu) và data element (trường dữ liệu), cùng processing code và mã phản hồi, tùy theo profile (bản thỏa thuận hai bên). ISO 20022 định nghĩa mô hình thông điệp và schema, thường triển khai bằng XML, còn JSON là biểu diễn riêng của API/đối tác.
+2. **Không suy ý nghĩa từ tên trường:** cùng tên "amount" ở hai chuẩn có thể khác ý nghĩa. Phải theo profile, phiên bản và quy ước của đối tác, không tự đoán từ tiêu chuẩn chung.
+3. **Số tiền (amount):** phân biệt đơn vị nhỏ (minor, ví dụ cents) và đơn vị lớn (major, ví dụ dollars), số mũ của đơn vị tiền tệ (currency exponent), dấu và làm tròn. Không dùng số thực (floating point) để xử lý tiền, dùng loại số chính xác (ví dụ {{BigDecimal}} trong Java).
+4. **Trạng thái giao dịch:** authorization (xét duyệt), clearing (dọn dẹp), settlement (quyết toán), reversal/return (hoàn/lưu ý) là các giai đoạn khác nhau. Phản hồi thành công không đồng nghĩa tiền đã quyết toán cuối cùng.
+5. **Thiết kế mapping:** tạo lệnh/kết quả chuẩn nội bộ chỉ chứa khái niệm cần thiết. Adapter giữ dữ liệu thô có kiểm soát, xác thực schema/độ dài, ánh xạ bảng mã và lưu mã liên kết. Kiểm tra bằng fixture: thông điệp mẫu, trường tùy chọn vắng mặt, mã không biết, bản sao và payload hỏng.
+
+### Ví dụ đời thực
+Một ứng dụng thanh toán cần sửa bản tin ISO 8583 và API ISO 20022. Ban đầu dev mapping trường "amount" theo tên, được 100 (hiểu là 100 đồng) nhưng đối tác dùng đơn vị nhỏ nên thực ra là 1.000.000 đồng → khách bị trừ sai. Sau đó đội ngũ tạo lớp mapping chuẩn nội bộ, chuyển amount sang {{BigDecimal}}, kiểm tra currency exponent và profile của đối tác, rồi viết test với thông điệp mẫu đã ẩn danh (anonymize). Lần sau đối tác nâng phiên bản schema, đội phát hiện qua test vector trước khi ảnh hưởng production.
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyên không suy ý nghĩa chỉ từ tên trường hay tiêu chuẩn chung, mà phải theo profile, phiên bản và quy ước của đối tác. ISO 8583 dùng bitmap và data element, còn ISO 20022 định nghĩa mô hình thông điệp và schema thường là XML. Với số tiền, em phân biệt đơn vị nhỏ/lớn, số mũ tiền tệ và dùng {{BigDecimal}} thay vì số thực để tránh sai làm tròn. Trạng thái như authorization, clearing, settlement là các giai đoạn khác nhau, phản hồi thành công chưa chắc tiền đã quyết toán. Em cũng viết test vector từ sample đã ẩn danh để kiểm tra khi đối tác nâng phiên bản."
 
 > Senior tip: trong review tích hợp, yêu cầu sample đã anonymize từ đối tác và xác nhận bằng test vector; tiêu chuẩn không thay thế đặc tả triển khai hai bên.
 `,
@@ -2146,6 +2185,19 @@ Không chọn theo khẩu hiệu. Kiểm tra HA, transaction support, ordering, 
 - Partition key account giữ thứ tự một account nhưng có thể tạo hot partition.
 - Retry vô hạn giữ poison message; DLQ cần owner và thao tác replay an toàn.
 - Outbox cleanup chỉ xóa sau retention/audit policy; đừng xóa event chưa được xác nhận.
+
+### Cơ chế từng bước
+1. **Không dual-write:** không ghi vào DB và gửi event vào broker trong cùng đoạn code rồi hy vọng cả hai thành công. Nếu DB ghi xong mà broker gửi thất bại (hoặc ngược lại), dữ liệu sẽ không nhất quán.
+2. **Outbox pattern:** trong một transaction DB, ghi bản ghi nghiệp vụ (ví dụ cộng trừ tiền) và bảng outbox (chứa sự kiện) cùng lúc, rồi commit. Nếu crash, cả hai cùng thành công hoặc cùng hủy.
+3. **Publisher gửi lặp có thể xảy ra:** publisher lấy các hàng outbox chưa gửi, gửi sự kiện, rồi đánh dấu đã gửi. Nếu crash giữa khi gửi và đánh dấu, sự kiện có thể được gửi lại → consumer phải idempotent (xử lý trùng không gây sai) theo ID sự kiện.
+4. **Consumer ghi mã deduplication và cập nhật nghiệp vụ trong cùng transaction.**
+5. **Theo dõi:** backlog (số sự kiện chờ), tuổi sự kiện, retry/dead-letter, và có quy trình replay lại sự kiện khi cần.
+
+### Ví dụ đời thực
+Hệ thống thanh toán ghi giao dịch vào DB rồi cần gửi thông báo vào {{IBM MQ}}. Ban đầu code ghi DB rồi gọi {{mq.send()}} ngay sau, nhưng nếu máy chủ bị mất điện giữa chừng, DB có giao dịch còn MQ không có event → khách hàng không nhận thông báo. Sau khi áp dụng outbox: mỗi lần ghi giao dịch cũng ghi hàng outbox trong cùng transaction, một trình phát tán đọc hàng outbox và gửi event, sau đó đánh dấu đã gửi. Trong quý, có 2 lần publisher gửi lại sự kiện nhưng consumer dùng ID sự kiện để deduplicate, không gửi thông báo trùng. Số sự kiện thất bại giảm xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không ghi DB và gửi event broker trong cùng đoạn code vì nếu một bên thành công một bên thất bại thì dữ liệu không nhất quán. Thay vào đó, em dùng outbox pattern: ghi bản ghi nghiệp vụ và sự kiện vào bảng outbox trong cùng transaction DB, rồi một publisher đọc hàng outbox và gửi event, sau đó đánh dấu đã gửi. Vì publisher có thể gửi lại, consumer phải xử lý trùng theo ID sự kiện (idempotent). Em cũng theo dõi backlog, tuổi sự kiện và dead-letter, cùng có quy trình replay khi cần. Chọn {{IBM MQ}} hay Kafka tùy hệ sinh thái và năng lực vận hành của tổ chức, không theo khẩu hiệu."
 
 > Senior tip: đo outbox oldest age và consumer lag; đặt SLO cho thời gian phát tán, kèm đối soát DB với event để phát hiện lỗi publisher lâu ngày.
 `,
@@ -2220,6 +2272,19 @@ approvalRepository.insert(command.id(), actor.id(), command.version(), reason);
 - Audit ghi sau commit có thể mất nếu process crash; ghi cùng transaction hoặc outbox.
 - Đồng hồ máy lệch làm thứ tự mơ hồ; giữ sequence/version và đồng bộ thời gian.
 - DBA có quyền sửa audit DB; tách quyền, export sang storage kiểm soát độc lập và cảnh báo tamper.
+
+### Cơ chế từng bước
+1. **Tách quyền tạo và quyền duyệt:** người lập giao dịch (maker) không được là người duyệt (checker) của chính mình. Checker phải độc lập.
+2. **Trạng thái workflow:** giao dịch đi qua {{DRAFT}} → {{PENDING_APPROVAL}} → {{APPROVED}}/{{REJECTED}} → {{EXECUTED}}. Chỉ chuyển trạng thái qua quy trình được phân quyền, không gọi trực tiếp DB.
+3. **Lưu quyết định bất biến:** mỗi quyết định duyệt lưu người duyệt, thời gian, lý do, phiên bản (version) và nội dung giao dịch lúc duyệt (snapshot hoặc hash). Nếu maker sửa số tiền hoặc người nhận sau khi duyệt, phải hủy duyệt và duyệt lại.
+4. **Kiểm soát ở server:** separation-of-duty (phân chia nhiệm vụ) thực thi ở phía server, không chỉ ẩn nút trên UI.
+5. **Audit và DB đặc quyền:** audit ghi ai, làm gì, đối tượng, trước/sau, mã liên kết, thời gian, nguồn xác thực, cùng transaction với quyết định nghiệp vụ. Quyền DB đặc quyền (DBA) được tách, xuất sang lưu trình tự kiểm soát riêng, có break-glass với ticket và thời hạn.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán cho phép nhân viên lập giao dịch lớn (maker) và một nhân viên khác duyệt (checker). Một ngày, operator có quyền DB muốn đổi trạng thái giao dịch trực tiếp trên bảng để "vượt quá quy trình". Do audit chỉ ghi ở ứng dụng và DBA có quyền sửa bảng, sự can thiệp không được ghi lại. Sau sự cố, đội ngũ thêm kiểm soát: mọi thay đổi trạng thái phải qua API có maker-checker, audit ghi cùng transaction và xuất sang hệ thống log độc lập, quyền DBA được hạn chế và có break-glass với ticket. Số trường hợp can thiệp trực tiếp DB giảm xuống 0 sau ba tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em sẽ tách quyền tạo và quyền duyệt, bắt buộc người duyệt phải khác người lập. Giao dịch đi qua trạng thái {{DRAFT}}, {{PENDING_APPROVAL}}, {{APPROVED}}/{{REJECTED}} rồi {{EXECUTED}}, và chỉ chuyển trạng thái qua quy trình phân quyền. Mỗi quyết định duyệt lưu người duyệt, thời gian, lý do, phiên bản và nội dung lúc duyệt; nếu người lập sửa sau khi duyệt thì hủy duyệt và duyệt lại. Kiểm soát được thực hiện ở server, không chỉ ẩn nút trên UI. Audit ghi cùng transaction với quyết định nghiệp vụ và xuất sang hệ thống log độc lập để DBA không thể xóa hoặc sửa giấu audit. Can thiệp trực tiếp DB phải qua break-glass có ticket và thời hạn."
 
 > Senior tip: kiểm thử cả đường API trực tiếp và batch/admin path; mỗi đường thay đổi trạng thái phải chịu cùng policy, audit và maker-checker rule.
 `,
@@ -2723,6 +2788,9 @@ Ngắn hạn: hotfix chuyển {{InsufficientStockException}} thành unchecked v�
 
 ### Trả lời miệng 1 phút
 "Tôi nghi ngay ba nguyên nhân kinh điển: exception là checked nên Spring mặc định vẫn commit; method được gọi nội bộ qua this nên không đi qua proxy; hoặc method private. Tôi bật log TRACE của TransactionInterceptor để xem transaction có được mở không, kiểm tra cây kế thừa của exception, rồi viết test tích hợp tái hiện. Ở case này cả hai lỗi cùng xảy ra. Tôi sửa bằng cách đổi exception sang unchecked, đặt ranh giới transaction ở method public được gọi từ controller, chạy script đối soát 37 đơn, và thêm test nhánh lỗi cùng job đối soát để phòng tái diễn."
+
+### Ví dụ đời thực
+Hệ thống thanh toán có 12.000 đơn mỗi 3 ngày, trong đó 37 đơn có trạng thái PAID nhưng bảng stock_movement không có dòng trừ hàng. Log cùng lúc ném {{InsufficientStockException}} (lỗi khai báo, extends Exception). Nguyên nhân: method {{checkout()}} gọi {{placeOrder()}} qua {{this}} nên không qua proxy, và {{InsufficientStockException}} là checked nên Spring commit dù có lỗi. Đội ngũ sửa bằng chuyển exception thành unchecked, đặt {{@Transactional}} ở method public được gọi từ controller, viết test tích hợp nhánh lỗi và thêm job đối soát hàng ngày: đơn PAID phải có stock_movement, lệch thì cảnh báo. Sau khi sửa, số đơn PAID thiếu stock giảm từ 37 xuống 0.
 
 > Senior tip: khi review code, cứ thấy {{@Transactional}} là hỏi hai câu: "ai gọi method này, có qua proxy không?" và "exception nào làm nó rollback?". Ở một dự án thanh toán, chỉ riêng việc thêm test "ném lỗi giữa chừng rồi assert DB" vào mỗi use case ghi dữ liệu đã bắt được 4 lỗi rollback trước khi lên production.`,
   follow: [
