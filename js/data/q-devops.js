@@ -2947,6 +2947,17 @@ spec:
 - **SBOM từ Maven và SBOM từ image khác nhau**: plugin CycloneDX của Maven chỉ thấy dependency Java, không thấy glibc/openssl. Spring Boot 3.3+ có thể nhúng SBOM của ứng dụng vào jar và phơi qua {{/actuator/sbom}}; vẫn cần thêm SBOM của image cho phần OS.
 - **Trivy tải DB lỗ hổng mỗi lần chạy**: pipeline chậm và hỏng khi mất mạng; cache hoặc mirror DB trong CI.
 
+### Ví dụ đời thực
+**Triệu chứng:** Lúc 9:10 sáng, feed bảo mật công bố một CVE CRITICAL trong thư viện {{org.apache.commons:commons-text}} (giống kiểu Text4Shell) đã có bản vá. CISO hỏi: "Bao nhiêu service đang chạy bản có lỗ hổng và mất bao lâu để chặn image mới bị ảnh hưởng?"
+
+**Điều tra:** Team tra Dependency-Track (nơi lưu SBOM CycloneDX đã đẩy từ CI cho từng image digest) bằng purl {{pkg:maven/org.apache.commons/commons-text@1.9}}. Kết quả: 7 image của 4 service (payment-api, invoice-worker, reporting, gateway) đang chạy trên namespace {{payments-prod}} và {{billing-prod}} dính bản 1.9. Kiểm tra policy Kyverno thấy rule {{require-signed-images}} đang ở chế độ {{Audit}} (chưa Enforce) nên trước đó vẫn có vài deploy thủ công lọt.
+
+**Nguyên nhân gốc:** (1) Chuỗi supply chain chưa khép kín: thiếu kho SBOM tập trung nên trước đây phải grep thủ công từng repo. (2) Policy admission chưa Enforce nên không ngăn được image không đạt chuẩn.
+
+**Cách xử lý:** (1) Mở ticket P1 cho từng owner service, nâng {{commons-text}} lên 1.10.0, CI rebuild sinh SBOM/scan mới và cosign ký lại digest. (2) Thêm rule Trivy fail build với {{--severity CRITICAL,HIGH --ignore-unfixed --exit-code 1}} cho thư viện này trong PR. (3) Sau 2 tuần Audit không còn vi phạm, chuyển Kyverno sang {{Enforce}} cho namespace prod và bật {{mutateDigest}} để pin đúng image đã verify.
+
+**Kết quả đo được:** Trong 25 phút sau thông báo có danh sách 7 image/4 service/2 namespace bị ảnh hưởng (trước đây ước tính mất ~1 ngày dò thủ công). 4 service được vá và rollout xong trong 3 giờ; từ đó mọi image mới thiếu chữ ký hợp lệ hoặc có CRITICAL đã có bản vá bị admission từ chối ngay, không còn deploy tay lọt vào prod.
+
 > Senior tip: thước đo thật là câu hỏi "CVE kiểu Log4Shell công bố lúc 9 giờ sáng — 9 giờ 30 bạn đã có danh sách service, version và namespace đang chạy thư viện đó chưa?". Chỉ SBOM lưu tập trung mới trả lời được. Khi bật policy, tôi chạy chế độ **Audit** 2–4 tuần để thấy ai vi phạm (thường là image bên thứ ba và sidecar), rồi mới chuyển **Enforce** theo từng namespace.`,
     follow: [
       'SLSA provenance khác chữ ký image ở điểm nào, và mức SLSA nào là thực tế cho team bạn?',
@@ -3020,6 +3031,20 @@ Cách nhẹ nhàng hơn: bật Actuator {{threaddump}} và {{heapdump}} trên **
 - **Chuyển sang image JRE rồi mới phát hiện không có jcmd/jstack** đúng lúc cần thread dump giữa sự cố. Chuẩn bị trước: Actuator, ephemeral container, hoặc JFR bật sẵn ghi ra volume.
 - **Không rebuild định kỳ**: base tối giản vẫn có CVE mới mỗi tháng. Pin base image theo digest để build tái lập được, và dùng Renovate/Dependabot tự mở PR nâng digest hằng tuần.
 - **Heap dump ghi vào filesystem của container**: image nhỏ không cứu được một file dump 3 GB làm Pod vượt giới hạn ephemeral-storage.
+
+### Ví dụ đời thực
+**Triệu chứng:** Service {{order-api}} dùng image {{eclipse-temurin:21-jdk}} nặng ~480 MB; mỗi lần quét Trivy báo 62 CVE (12 HIGH/CRITICAL) phần lớn thuộc gói OS. Thời gian pull image khi scale-out mất ~45 giây trên node mới.
+
+**Điều tra:** Chạy {{docker history}} và {{syft}} thấy lớp JDK và nhiều gói apt chiếm phần lớn dung lượng; runtime thực tế chỉ cần chạy jar Spring Boot. Smoke test cho thấy app gọi HTTPS, kết nối PostgreSQL và xuất PDF (dùng font).
+
+**Nguyên nhân gốc:** Dùng JDK image đầy đủ cho production mang theo compiler/công cụ và rất nhiều gói OS không cần thiết, làm tăng bề mặt tấn công và thời gian kéo image.
+
+**Cách xử lý:** (1) Chuyển Dockerfile sang multi-stage: stage build dùng {{eclipse-temurin:21-jdk}} để tạo app jar + runtime jlink (thêm {{jdk.crypto.ec,jdk.management}}), stage chạy dùng {{gcr.io/distroless/java21-debian12:nonroot}} copy {{/opt/jre}} và jar vào. (2) Bật Actuator trên management port riêng ({{/actuator/threaddump}}, {{/actuator/heapdump}}) và quy trình {{kubectl debug}} với ephemeral container JDK để thay {{jcmd}}. (3) Thêm job CI rebuild image theo digest base hằng tuần (Renovate) và smoke test TLS/DB trên image cuối.
+
+**Kết quả đo được:** Kích thước image giảm từ ~480 MB xuống ~145 MB, thời gian pull khi scale-out còn ~12 giây. Số CVE mức OS giảm từ 62 xuống 3 (0 HIGH/CRITICAL); số CVE thuộc dependency jar giữ nguyên và được theo dõi riêng. Khi có sự cố treo thread, team lấy được thread dump qua Actuator trong < 1 phút mà không cần shell trong container.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi sẽ không dùng JDK image cho production vì nó nặng và mang nhiều gói, công cụ không cần thiết nên bề mặt lỗ hổng lớn. Với Spring Boot tôi thường đi theo lộ trình: build bằng JDK đầy đủ trong multi-stage, rồi chạy bằng JRE hoặc distroless Java để cắt bớt lớp OS. Nếu cần tối ưu thêm tôi dùng jlink tạo runtime chỉ gồm module ứng dụng cần, nhưng phải chạy smoke test vì jdeps có thể bỏ sót module nạp động như {{jdk.crypto.ec}}. Tôi tránh Alpine trừ khi đã test kỹ vì musl có thể gây lỗi thư viện native hoặc DNS. Đổi lại, image tối giản không có shell và jcmd, nên tôi chuẩn bị sẵn Actuator thread/heap dump trên port nội bộ và dùng ephemeral debug container khi cần. Trong thực tế, khi chuyển một service sang distroless + jlink chúng tôi giảm image từ gần 500 MB xuống khoảng 140 MB và cắt mạnh CVE mức OS, nhưng vẫn phải rebuild định kỳ và vá dependency jar riêng."
 
 > Senior tip: đổi từ JDK image sang distroless thường cắt số CVE mức OS từ vài chục xuống còn một con số — nhưng đó chỉ là phần dễ. Rủi ro thực tế thường nằm ở jar (Spring, Jackson, driver). Tôi trình bày với security team hai số tách biệt: CVE của base image (giải quyết bằng chọn base và rebuild định kỳ) và CVE của dependency (giải quyết bằng nâng version), để không ai nghĩ "đổi sang distroless là xong".`,
     follow: [
@@ -3114,6 +3139,20 @@ envs/
 - {{force-unlock}} trong khi job kia vẫn chạy: hai tiến trình cùng ghi state.
 - Một state khổng lồ hàng nghìn resource: plan mất 15 phút, chạm rate limit API AWS, ai cũng ngại chạy nên drift tích tụ.
 
+### Ví dụ đời thực
+**Triệu chứng:** 09:12 sáng, sau khi hai engineer cùng apply, {{terraform plan}} trên nhánh main báo {{+ aws_db_instance.main will be created}} cho cụm RDS {{payment-prod-db}} đang phục vụ ~2.000 giao dịch/phút. Đồng thời state trong Git bị conflict và một người chọn bản cũ.
+
+**Điều tra:** Kiểm tra lịch sử: An apply lúc 09:10 tạo RDS (state local serial 41, chưa push), Bình apply lúc 09:12 dựa trên serial 40 lấy từ Git và ghi đè state serial 41 lên remote tạm (file commit). Không có remote backend, không lock, không audit ai apply gì. So sánh {{aws rds describe-db-instances}} thấy DB thật vẫn tồn tại (ID khớp) nhưng state hiện tại không có địa chỉ {{aws_db_instance.main}}.
+
+**Nguyên nhân gốc:** State lưu rời rạc (laptop + Git) và thiếu cơ chế khoá nên lần ghi sau làm mất thông tin lần ghi trước; Terraform dựa vào state nên "quên" tài nguyên thật.
+
+**Cách xử lý:** (1) Dừng mọi apply. (2) Dùng {{terraform import aws_db_instance.main payment-prod-db}} (hoặc khối {{import}}) để đưa RDS về lại state, chạy plan tới khi sạch. (3) Chuyển sang backend S3 bật versioning + mã hoá KMS và khóa state qua bảng DynamoDB, chỉ CI role được ghi. (4) Thiết lập quy trình PR: CI chạy {{fmt/validate/plan}} và đính kèm plan; merge mới apply đúng file plan đã review; bật {{prevent_destroy}} và {{deletion_protection}} cho RDS. (5) Job đêm chạy {{plan -detailed-exitcode}} để phát hiện drift.
+
+**Kết quả đo được:** Không có RDS nào bị tạo lại/xoá; từ khi chuyển sang CI-only apply và lock, trong 6 tháng không còn xung đột state. Thời gian plan giảm từ ~12 phút xuống ~2 phút nhờ tách state theo {{envs/prod/network}} và {{envs/prod/payment}}, và các thay đổi delete/replace trên tài nguyên stateful đều được chặn để review 2 người.
+
+### Trả lời mẫu khi phỏng vấn
+"State của Terraform là bản đồ nối code với tài nguyên thật, nên nếu mất đồng bộ thì plan có thể đòi tạo lại hoặc xoá nhầm hạ tầng quan trọng. Tôi đã từng gặp trường hợp state để trên laptop và commit Git, hai người apply cùng lúc làm mất entry của RDS đang chạy. Cách tôi xử lý là không apply vội, dùng {{terraform import}} để đưa tài nguyên về lại state, sau đó chuyển sang remote backend trên S3 có versioning, mã hoá và lock để chỉ một apply ghi tại một thời điểm. Về quy trình, tôi cho CI chạy plan trên PR và chỉ apply đúng file plan đã review sau khi merge, con người không có quyền ghi trực tiếp prod. Tôi cũng tách state theo môi trường và theo thành phần để giảm blast radius, bật {{prevent_destroy}} cho tài nguyên stateful, và chạy plan định kỳ để phát hiện drift. Nhờ vậy team tránh được xung đột state và giảm rủi ro thay đổi nhầm database."
+
 > Senior tip: tôi đặt luật cứng: **plan có delete hoặc replace trên tài nguyên stateful** (RDS, S3, EBS, DynamoDB) thì cần hai người duyệt và phải ghi rõ lý do trong PR. Luật đơn giản này chặn được kiểu sự cố "đổi một tham số nhỏ khiến database bị tạo lại" — loại sự cố mà backup cũng không cứu kịp RPO.`,
     follow: [
       'Bạn đưa một tài nguyên đã tạo tay trên console vào Terraform quản lý thế nào mà không phải tạo lại?',
@@ -3204,6 +3243,20 @@ spec:
 - **Keep-alive nhưng idle timeout của client dài hơn của đối tác hoặc load balancer**: client dùng lại kết nối mà phía kia đã đóng, nhận "Connection reset". Đặt idle timeout phía client ngắn hơn (LB 60 giây thì client khoảng 50 giây).
 - **Conntrack đầy** trên node Kubernetes ({{nf_conntrack: table full}} trong dmesg) cho triệu chứng giống hết port nhưng là giới hạn khác.
 
+### Ví dụ đời thực
+**Triệu chứng:** Giờ cao điểm 20:00, service {{payment-api}} (Java 21, chạy trên Kubernetes) gọi API đối tác {{https://api.partner.com}} ~900 RPS. Log xuất hiện hàng loạt {{java.io.IOException: Too many open files}} và {{java.net.BindException: Cannot assign requested address}}; tỉ lệ lỗi 5xx tăng từ 0,1% lên 6%.
+
+**Điều tra:** SSH/ephemeral debug vào Pod: {{grep "open files" /proc/1/limits}} cho thấy hard limit 1024; {{ls /proc/1/fd | wc -l}} dao động sát 1024. {{ss -s}} và {{ss -tan state time-wait | wc -l}} cho thấy ~27.000 socket TIME_WAIT trỏ về cùng {{203.0.113.10:443}}, trong khi ESTABLISHED rất ít. {{lsof -p 1}} cho thấy phần lớn fd là IPv4 socket.
+
+**Nguyên nhân gốc:** Mỗi request tạo mới {{HttpClient}} ({{HttpClient.newHttpClient()}}) thay vì dùng bean dùng chung, nên không tái sử dụng kết nối keep-alive: mỗi lần gọi mở TCP+TLS handshake mới rồi đóng, để lại socket TIME_WAIT 60 giây. Với ~900 kết nối mới/giây tới một đích, dải ephemeral port ~28.000 cạn nhanh và số fd/socket vượt giới hạn process.
+
+**Cách xử lý:** (1) Refactor: tạo một {{HttpClient}} (hoặc {{RestClient/WebClient}} có pool) dùng chung, đặt {{connectTimeout}} và idle timeout nhỏ hơn phía đối tác/LB. (2) Tạm thời tăng {{LimitNOFILE}}/ulimit container lên 65536 và mở rộng {{ip_local_port_range}} + bật {{tcp_tw_reuse=1}} (sysctl safe) để ổn định. (3) Thêm metric {{process_files_open_files}} và theo dõi {{ss}}/TIME_WAIT theo đích, alert khi vượt 80%.
+
+**Kết quả đo được:** Sau deploy, số socket TIME_WAIT tới đối tác giảm xuống ~300–500 ổn định, fd mở của process còn ~250. Lỗi EMFILE/EADDRNOTAVAIL biến mất, tỉ lệ 5xx trở về 0,1% và p99 HTTP ổn định ~140 ms. Nửa đêm không còn cần restart Pod thủ công.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thấy 'Too many open files' và 'Cannot assign requested address' cùng lúc, tôi nghĩ ngay tới việc process mở quá nhiều file descriptor hoặc tạo quá nhiều kết nối TCP mới. File descriptor là định danh cho mọi thứ process mở, kể cả socket, còn ephemeral port là dải cổng tạm phía client khi kết nối ra ngoài, socket đóng xong sẽ nằm ở TIME_WAIT khoảng 60 giây. Tôi sẽ chẩn đoán bằng {{/proc/PID/limits}}, {{/proc/PID/fd}}, {{lsof}} để biết fd tăng theo loại gì, và {{ss -s}}, {{ss -tan}} để xem phân bố TIME_WAIT/CLOSE_WAIT theo đích. Thường gốc rễ nằm ở code: tạo mới HTTP client mỗi request hoặc không đóng response nên không reuse kết nối. Tôi từng xử lý một service Java tạo {{HttpClient}} mỗi lần gọi đối tác, gây hàng chục nghìn TIME_WAIT và chạm trần fd; sau khi dùng một client dùng chung có pool, đặt timeout hợp lý, và thêm metric fd, lỗi biến mất và số TIME_WAIT giảm mạnh. Tăng ulimit hay sysctl chỉ là nới biên, không thay được việc sửa cách quản lý kết nối."
+
 > Senior tip: đưa {{process_files_open_files}} và {{process_files_max_files}} (Micrometer xuất sẵn qua Actuator) lên dashboard và cảnh báo khi vượt 80% — rò fd luôn là đường tăng dần đều nhiều giờ trước khi nổ, phát hiện sớm thì chỉ cần một bản sửa thường thay vì hotfix nửa đêm. Với lỗi hết port, tôi luôn hỏi một câu trước tiên: "client HTTP được tạo ở đâu, bao nhiêu lần?".`,
     follow: [
       'Vì sao TIME_WAIT tồn tại, và tắt nó bằng SO_LINGER = 0 gây rủi ro gì?',
@@ -3286,6 +3339,28 @@ Trên Prometheus, theo dõi {{coredns_dns_responses_total}} theo nhãn {{rcode}}
 - **Image Alpine (musl)** xử lý search/ndots và các option khác glibc, nên cùng một cấu hình mà hành vi khác; luôn kiểm chứng trên đúng image.
 - **Đặt ndots 1 cho cả cluster**: tên dạng {{orders.shop}} bị hỏi ra resolver bên ngoài trước — thêm độ trễ và làm lộ tên dịch vụ nội bộ ra ngoài.
 - **Đổ lỗi cho đối tác**: trace chỉ cho thấy "HTTP client chậm 5 giây". Bật log/metric thời gian phân giải hoặc tách span DNS để nhìn thấy nó.
+
+### Ví dụ đời thực
+**Triệu chứng:** Service {{payment-api}} trên Kubernetes gọi {{https://api.partner.com}}. p50 ~110 ms nhưng p99 thỉnh thoảng vọt lên ~5,1 giây (khoảng 0,8% request), gây timeout dây chuyền cho checkout. Log CoreDNS ghi rất nhiều NXDOMAIN dạng {{api.partner.com.payments.svc.cluster.local}}.
+
+**Điều tra:** {{kubectl exec}} vào Pod kiểm tra {{/etc/resolv.conf}} thấy {{search payments.svc.cluster.local svc.cluster.local cluster.local ap-southeast-1.compute.internal}} và {{ndots:5}}. Dùng {{dig +search +showsearch api.partner.com}} (netshoot) thấy mỗi lần phân giải thử lần lượt 4 search domain (A+AAAA) rồi mới hỏi tên gốc → ~10 truy vấn, phần lớn NXDOMAIN. Metric coredns_dns_responses_total với label rcode NXDOMAIN chiếm ~70% lưu lượng DNS; trace cho thấy độ trễ nằm ở bước phân giải tên, không phải TLS hay server đối tác.
+
+**Nguyên nhân gốc:** {{api.partner.com}} có 2 dấu chấm < ndots:5 nên bị ghép search domain trước, sinh nhiều truy vấn vô ích. Trên node dùng iptables/kube-proxy, gói UDP DNS đôi khi bị drop do race conntrack khi A/AAAA gửi song song; resolver glibc chờ timeout mặc định 5 giây rồi retry, tạo "đuôi" p99 đúng 5 giây.
+
+**Cách xử lý:** (1) Đặt dnsConfig.options cho các Deployment gọi nhiều ra ngoài:
+~~~yaml
+dnsConfig:
+  options:
+    - name: ndots
+      value: "2"
+    - name: single-request-reopen
+~~~
+(2) Bật NodeLocal DNSCache để cache tại node và tránh conntrack cho DNS. (3) Tăng replica CoreDNS theo autoscaler và đảm bảo HTTP client/connection pool dùng keep-alive (giảm số lần resolve). (4) Giữ JVM DNS cache TTL hợp lý (30–60 giây), không đặt vĩnh viễn.
+
+**Kết quả đo được:** Tỷ lệ NXDOMAIN trên CoreDNS giảm từ ~70% xuống ~15%, số truy vấn DNS mỗi request ra ngoài giảm từ ~10 xuống 2. p99 của {{payment-api}} khi gọi đối tác giảm từ ~5,1 giây xuống ~180 ms, lỗi timeout checkout do spike DNS biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong Kubernetes, Pod thường có {{resolv.conf}} với search domain và {{ndots:5}}, nghĩa là tên có ít hơn 5 dấu chấm sẽ bị ghép với các search domain trước khi hỏi tên gốc. Vì vậy một domain ngoài như {{api.partner.com}} có thể sinh nhiều truy vấn NXDOMAIN vào CoreDNS. Khi số gói UDP DNS tăng, có thể xảy ra rớt gói do race conntrack, và resolver glibc mặc định chờ 5 giây rồi mới retry, tạo ra độ trễ p99 rất đặc trưng. Khi gặp vấn đề tương tự, tôi kiểm tra {{resolv.conf}}, dùng {{dig +search}} và xem metric NXDOMAIN/latency của CoreDNS để xác nhận. Cách xử lý là giảm ndots cho workload gọi ra ngoài, bật NodeLocal DNSCache, scale CoreDNS phù hợp, và dùng connection pool keep-alive để giảm tần suất resolve. Ở một case thực tế, sau khi chỉnh ndots và bật cache tại node, NXDOMAIN giảm mạnh và p99 từ khoảng 5 giây xuống còn dưới 200 ms. Tôi cũng nhắc team không cache DNS vĩnh viễn trong JVM vì IP phía đối tác hoặc load balancer có thể đổi."
 
 > Senior tip: với cluster chưa tối ưu, NXDOMAIN thường chiếm phần lớn lưu lượng CoreDNS — hãy nhìn tỷ lệ này trước khi tăng replica. Khi thấy độ trễ **đúng bội số của 5 giây** (5 s, 10 s), nghĩ ngay tới timeout của resolver DNS; khi thấy đúng 1 hoặc 3 giây, nghĩ tới TCP SYN retransmit. Con số "tròn" là manh mối mạnh nhất trong chẩn đoán mạng.`,
     follow: [
@@ -3374,6 +3449,20 @@ containers:
 - **Request thấp, limit cao** ("overcommit cho tiết kiệm"): scheduler xếp quá nhiều Pod lên node vì chỉ nhìn request → node pressure trở thành chuyện hằng đêm.
 - **Pod Evicted nằm lại** ở trạng thái Failed và chỉ được dọn khi vượt ngưỡng {{terminated-pod-gc-threshold}} (mặc định 12500) — danh sách Pod rối, dễ đọc nhầm khi điều tra.
 - **Mọi service đều gán priority cao**: priority mất ý nghĩa, preemption đá nhau lung tung.
+
+### Ví dụ đời thực
+**Triệu chứng:** 02:10 sáng, node worker {{ip-10-0-12-45}} báo memory pressure. Pod {{payment-api}} (request 1Gi, limit 4Gi, dùng thực ~3Gi) bị Evicted dù chưa chạm limit; trong khi Pod {{report-batch}} của team khác (BestEffort, không đặt request/limit, dùng ~0,5Gi) vẫn chạy. Một số request thanh toán bị cắt ngang (hard eviction, không graceful).
+
+**Điều tra:** {{kubectl describe node}} thấy sự kiện {{MemoryPressure}} và {{eviction-hard memory.available<100Mi}}. {{kubectl get events}} ghi "The node was low on resource: memory. Container app was using 3072Mi, which exceeds its request of 1024Mi." So sánh usage/request: payment vượt +2Gi, batch vượt +0,5Gi, pod khác dùng dưới request. {{kubectl describe pod payment-api}} không có OOMKilled, lý do Failed/Evicted → đây là node-pressure eviction của kubelet, không phải container vượt limit.
+
+**Nguyên nhân gốc:** Overcommit bộ nhớ: payment khai báo request thấp hơn usage thực nên đứng đầu danh sách eviction khi node thiếu RAM. Batch BestEffort sống hơn vì mức vượt request nhỏ hơn. Thiếu PriorityClass cho workload quan trọng và thiếu kiểm soát request/limit theo đo đạc.
+
+**Cách xử lý:** (1) Đặt {{memory request = limit = 3Gi}} cho payment-api (QoS Burstable/Guaranteed về memory), cấu hình JVM {{-XX:MaxRAMPercentage=70}} để chừa chỗ cho metaspace/thread/direct buffer; giữ CPU request theo p95 và bỏ CPU limit, đặt {{ActiveProcessorCount}}. (2) Gán {{PriorityClass}} {{business-critical}} cho payment/auth và {{batch-low}} ({{preemptionPolicy: Never}}) cho batch. (3) Bắt buộc LimitRange/ResourceQuota: không cho Pod BestEffort trên namespace prod. (4) Dùng VPA {{updateMode: Off}} và metric {{usage/request}} để điều chỉnh định kỳ.
+
+**Kết quả đo được:** Sau 4 tuần, không còn eviction do memory trên node prod; payment-api giữ đủ replica khi node pressure, trong khi batch bị scale down/evict trước. Tỉ lệ usage/request memory của payment-api ổn định ~85–95% (không vượt request), và sự cố cắt ngang request thanh toán lúc 2 giờ sáng không tái diễn.
+
+### Trả lời mẫu khi phỏng vấn
+"Trên Kubernetes cần phân biệt hai trường hợp: container vượt memory limit thì bị OOMKilled trong cgroup, còn node thiếu RAM thì kubelet evict Pod theo mức dùng vượt request, rồi tới priority và mức vượt. Vì vậy một Pod Burstable khai báo request thấp nhưng dùng nhiều vẫn có thể bị evict trước cả Pod BestEffort dùng ít. Tôi từng gặp service thanh toán request 1Gi nhưng dùng 3Gi bị evicted lúc node pressure, dù chưa chạm limit. Để xử lý, tôi đặt memory request bằng limit cho workload Java quan trọng để nó không vượt request, cấu hình heap theo phần trăm limit và chừa bộ nhớ ngoài heap, đồng thời gán PriorityClass cao cho service quan trọng và hạ priority cho batch. Tôi cũng thêm LimitRange/Quota để tránh Pod không khai báo resources và theo dõi tỷ lệ usage/request bằng VPA recommend mode. Kết quả là giảm rõ rệt eviction bất ngờ và hành vi khi node thiếu tài nguyên trở nên dễ dự đoán hơn."
 
 > Senior tip: mỗi tuần tôi xem tỷ lệ **usage/request memory** theo Pod (dùng VPA ở chế độ {{updateMode: "Off"}} chỉ để lấy gợi ý). Pod nào thường xuyên trên 100% là ứng viên bị evict tiếp theo — sửa request trước khi node thiếu RAM lúc 2 giờ sáng sửa giúp bạn.`,
     follow: [
