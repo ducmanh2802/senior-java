@@ -5607,6 +5607,20 @@ groups:
 - **Bỏ qua on-call wellbeing**: giảm alert xong nhưng vẫn xoay ca 1 tuần/người, không compensation, không hồi phục sau ca nặng → người vẫn nghỉ. Rota và compensation quan trọng không kém kỹ thuật.
 - **Chỉ đo infrastructure SLI**: CPU, memory, pod count — không phản ánh trải nghiệm user. SLI phải đo từ góc nhìn user (request success, latency ở entry point).
 
+### Ví dụ đời thực
+Triệu chứng: team 8 người xoay ca on-call, 2 người nghỉ việc sau 6 tháng vì kiệt sức. Alert channel nhận 220 alert/tuần, trong đó 150 là noise (disk 75%, pod restart tự hồi phục, batch job ngắn). On-call nhận page lúc 3 sáng vì "CPU 85%" nhưng service vẫn phục vụ bình thường, sau 30 phút mới biết là false alarm. Thời gian phản hồi incident thực (SLO violation) trung bình 45 phút vì người trực đang mỏi và không tin vào alert.
+
+Điều tra: chạy script phân loại alert 4 tuần. Kết quả: 70% alert không có runbook, 40% alert trên cause (CPU, memory) chứ không phải symptom (error rate, latency). Rota: 1 người trực 1 tuần, không có secondary, không bù ngày nghỉ sau ca đêm nhiều page.
+
+Nguyên nhân gốc: alert fatigue do noise quá nhiều, rota không công bằng, thiếu SLO-based alerting để lọc signal từ noise, và văn hóa "on-call là gánh nặng" chứ không phải trách nhiệm chia sẻ.
+
+Cách xử lý: (1) Alert audit: xóa 100 alert noise, chuyển 40 alert sang ticket, giữ 60 alert page có runbook. (2) Triển khai SLO cho payment-api, account-api, core-banking: SLO 99.9% success rate, burn rate alert 14.4x (1h+5m). (3) Rota mới: primary + secondary, xoay tuần, bù 1 ngày nghỉ sau ca > 2 page đêm, on-call không nhận feature work. (4) Review hàng tháng: error budget report, on-call health.
+
+Kết quả đo được: alert/tuần giảm từ 220 xuống 65, page/tuần từ 15 xuống 1.2, on-call satisfaction từ 2/10 lên 7/10, 0 người nghỉ vì on-call trong 6 tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế on-call bền vững dựa trên 3 trụ cột: rota công bằng, giảm alert fatigue bằng alert audit, và SLO-based alerting. Với 8 team 4–5 người, tôi đặt primary + secondary xoay tuần, bù ngày nghỉ sau ca đêm nhiều page, on-call không nhận feature deadline. Alert audit phân loại 200 alert/tuần: xóa noise, chuyển sang ticket, chỉ giữ page có runbook. Thay vì alert từng metric, tôi dùng error budget burn rate: SLO 99.9% success rate 30 ngày, alert khi burn rate 14.4x (1h+5m window). Kết quả thực tế: page/tuần giảm từ 15 xuống 1.2, team không còn kiệt sức. Chìa khóa là coi on-call là sự kết hợp văn hóa và kỹ thuật, không chỉ config Prometheus."
+
 > Senior tip: On-call bền vững là vấn đề **văn hóa + kỹ thuật**, không chỉ kỹ thuật. Bắt đầu bằng alert audit (xóa noise — hiệu quả ngay tuần đầu, team cảm nhận được). Song song xây SLO cho 2–3 service quan trọng. Chỉ số sức khỏe on-call quan trọng nhất: **số page ban đêm có thể hành động/tuần** — mục tiêu < 2. Nếu > 2 liên tục 2 tuần, đó là incident của chính quy trình on-call, cần ưu tiên xử lý như production incident. Track "on-call toil" (thời gian xử lý việc lặp lại, không tạo giá trị lâu dài) — nếu > 50% thời gian on-call là toil, team cần đầu tư automation, không phải thêm người trực.`,
     follow: [
       'Bạn đặt SLO 99.9% cho payment-api (30 ngày). Tháng này đã dùng 60% error budget trong 10 ngày đầu do 1 incident lớn. 20 ngày còn lại bạn vận hành thế nào — freeze deploy, chấp nhận rủi ro, hay điều chỉnh SLO?',
@@ -5694,6 +5708,25 @@ Stack đọc từ trên xuống: frame trên cùng là nơi thread đang chạy.
 3. **Đổi nhầm chiều hex/thập phân**: {{printf '%x'}} chuyển thập phân → hex; {{printf '%d' 0x306f}} chuyển ngược. Nhiều người tra nhầm nên không tìm thấy {{nid}}.
 4. **Bỏ qua thread GC**: nếu thread nóng là {{GC task thread}} hoặc {{G1 Conc#0}}, nguyên nhân gốc là bộ nhớ (heap gần đầy, allocation rate cao), không phải code nghiệp vụ. Tối ưu code lúc này vô ích; cần xem {{-Xmx}}, {{jstat}}, heap dump.
 
+### Ví dụ đời thực
+Triệu chứng: lúc cao điểm (11h trưa), service payment-api báo CPU 198% trên máy 2 core, p99 latency từ 80 ms nhảy lên 2.5 giây. Monitoring chỉ thấy "CPU cao", không rõ thread nào.
+
+Điều tra: chạy {{top -H -p 12345}} thấy thread 12399 ăn 99% CPU, thread 12401 ăn 98%. Chuyển sang hex: {{printf '%x'}} cho 12399 ra 306f, 12401 ra 3071. Lấy 3 thread dump bằng {{jstack 12345}} cách nhau 5 giây. Grep {{nid=0x306f}} thấy stack trace kẹt ở {{Pattern.match}} dòng {{Validator.java:87}} (regex email):
+~~~text
+^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+~~~
+Thread thứ hai cũng kẹt ở regex tương tự cho phone number. Input gây ra: email dài 200 ký tự với nhiều dấu chấm, khiến regex backtracking mũ.
+
+Nguyên nhân gốc: regex không được tối ưu cho input xấu, không giới hạn độ dài input từ client, và không dùng possessive quantifier.
+
+Cách xử lý: (1) Hotfix: thêm {{@Size(max=100)}} vào DTO input, đổi regex sang dạng possessive:
+~~~text
+^[a-zA-Z0-9._%+-]++@[a-zA-Z0-9.-]++\.[a-zA-Z]{2,}$
+~~~
+(2) Thêm WAF rule chặn request body > 10 KB. (3) Thêm unit test cho regex với input tấn công.
+
+Kết quả đo được: sau fix, CPU cao điểm giảm từ 198% xuống 45%, p99 latency 80 ms, 0 thread kẹt regex trong 2 tuần.
+
 ### Trả lời phỏng vấn
 Khi service Java ăn 100% CPU, em dùng {{top -H -p <PID>}} để tìm thread cụ thể đang tiêu thụ CPU (TID). Sau đó chuyển TID sang hex bằng {{printf '%x'}} vì thread dump của HotSpot ghi native id ở dạng {{nid=0x...}}. Em lấy ít nhất 3 thread dump cách nhau 5 giây bằng {{jstack}} hoặc {{jcmd}}, rồi grep {{nid}} để thấy stack trace. Từ stack, em phân biệt: nếu là code nghiệp vụ hoặc regex thì sửa logic; nếu là thread GC thì vấn đề nằm ở bộ nhớ, em chuyển sang phân tích {{jstat -gcutil}} và GC log. Em luôn thu bằng chứng trước khi restart vì restart làm mất trạng thái.
 
@@ -5775,6 +5808,23 @@ lsof -p <PID> | wc -l   # nhiều file mở?
 2. **So sánh load giữa máy khác số core**: load 8 trên 4 core (gấp đôi) tệ hơn load 8 trên 32 core (nhàn). Cách tránh: luôn chia load cho {{nproc}}.
 3. **Nhầm load average của Linux với các hệ Unix khác**: một số hệ Unix (BSD truyền thống) không tính I/O wait vào load. Tài liệu đọc trên mạng có thể gây nhầm; trên Linux, D-state được tính.
 4. **Bỏ qua xu hướng 1/5/15 phút**: một spike 1 phút có thể là deploy hoặc batch job ngắn; load 15 phút cao mới cho thấy vấn đề bền vững.
+
+### Ví dụ đời thực
+Triệu chứng: máy application server 4 core (c5.xlarge) báo load average 12.0, 8.5, 4.2 (xu hướng tăng). Dashboard CPU chỉ thấy %us 8%, %wa 72%. Ứng dụng Java Spring Boot phản hồi chậm, p99 từ 120 ms lên 3 giây, health check thỉnh thoảng timeout.
+
+Điều tra: chạy {{vmstat 1 5}} thấy cột {{b}} (blocked/D-state) trung bình 9, cột {{r}} (runnable) chỉ 2. {{iostat -x 1 3}} cho thấy {{nvme1n1}} (đĩa data) %util 98%, await 45 ms (bình thường < 5 ms). {{pidstat -d 1 5}} chỉ ra PID 12345 (Java payment service) ghi 180 MB/s, đọc 50 MB/s. Kiểm tra log ứng dụng: log level DEBUG bị bật vô tình từ sáng, ghi 200 MB/h so với bình thường 20 MB/h. GC log cũng ghi đồng bộ ra cùng đĩa.
+
+Nguyên nhân gốc: log DEBUG ghi ồ ạt làm bão hòa IOPS đĩa EBS gp3 (cấu hình 3000 IOPS), gây I/O wait cao, load average tăng do process chờ đĩa (D-state), CPU thực tế nhàn.
+
+Cách xử lý: (1) Tắt DEBUG log ngay bằng lệnh sau:
+~~~bash
+curl -X POST localhost:8081/actuator/loggers/ROOT \
+  -H "Content-Type: application/json" \
+  -d '{"configuredLevel":"INFO"}'
+~~~
+(2) Cấu hình logback {{SizeAndTimeBasedRollingPolicy}} max 100 MB/file, tổng 2 GB. (3) Tách GC log ra đĩa riêng (hoặc stdout). (4) Nâng EBS gp3 IOPS lên 10000 hoặc dùng gp3 provisioned.
+
+Kết quả đo được: sau tắt DEBUG, %wa từ 72% xuống 3%, load average từ 12 xuống 1.2, p99 latency 130 ms, IOPS đĩa từ 3000 xuống 800.
 
 ### Trả lời phỏng vấn
 Load average trên Linux là số process trung bình đang chạy hoặc chờ I/O không ngắt được (D-state) trong 1, 5, 15 phút. Điểm quan trọng là Linux tính cả I/O wait vào load, nên load cao không có nghĩa CPU bận. Ví dụ load 12 trên máy 4 core: nếu {{vmstat}} cho thấy cột {{b}} cao và {{%wa}} cao trong {{top}}, vấn đề là I/O (đĩa, storage mạng), em sẽ dùng {{iostat -x}} và {{pidstat -d}} để tìm nguồn; nếu {{%us}} cao và cột {{r}} cao, mới là CPU-bound. Em luôn đọc ba con số theo xu hướng và chia cho số core để đánh giá mức độ.
@@ -5862,6 +5912,19 @@ ls -l /proc/12345/fd/3
 2. **{{kill -9}} process Java ngay lập tức**: giải phóng fd nhưng mất cơ hội thu thread dump/heap dump, và có thể gây hỏng dữ liệu đang ghi. Cách tránh: thu bằng chứng, thử truncate/xoay log trước; restart theo quy trình.
 3. **Bỏ qua inode**: {{df -h}} còn trống nhưng vẫn "No space left" — nhiều người bối rối. Cách tránh: luôn kiểm tra {{df -i}} cùng lúc.
 4. **Chạy {{du}} trên mount khác**: {{du -sh /}} có thể đi vào {{/proc}}, {{/sys}}, mount mạng và cho kết quả sai/chậm. Cách tránh: dùng {{du -shx /}} ({{-x}}: không vượt filesystem boundary).
+
+### Ví dụ đời thực
+Triệu chứng: lúc 2 giờ sáng, monitoring báo disk full trên server payment-prod-01 ({{/}} 100%). On-call SSH vào, chạy {{df -h}} thấy 50G/50G, nhưng {{du -shx /}} chỉ ra 28G. {{df -i}} inode còn 60%. Chạy {{lsof +L1}} phát hiện:
+{{java    12345 app    3w   REG  259,1 21474836480    0 123456 /var/log/app/payment.log (deleted)}}
+Log file 20 GB bị {{rm}} bởi script cleanup thủ công lúc 1h sáng nhưng app Java vẫn giữ fd 3 mở để ghi.
+
+Điều tra: script cleanup chạy {{rm /var/log/app/payment.log}} thay vì logrotate. App dùng Logback {{FileAppender}} không có rolling policy, fd vẫn trỏ tới inode đã unlink. Kernel không giải phóng block vì link count = 0 nhưng fd count > 0.
+
+Nguyên nhân gốc: vận hành xoá file log tay không hiểu cơ chế fd, thiếu logrotate, logging framework không cấu hình rolling.
+
+Cách xử lý: (1) Truncate an toàn: {{cp /proc/12345/fd/3 /tmp/payment.log.rescued && : > /proc/12345/fd/3}} — giải phóng 20 GB ngay, giữ log để debug. (2) Cấu hình Logback {{SizeAndTimeBasedRollingPolicy}} maxFileSize=100MB, maxHistory=14, totalSizeCap=2GB. (3) Thêm alert Prometheus: {{node_filesystem_avail_bytes < 10GB}} và {{lsof +L1 count > 0}}.
+
+Kết quả đo được: disk từ 100% xuống 40% sau truncate, 0 sự cố disk full trong 3 tháng sau, auditor pass vì log rotation chuẩn hoá.
 
 ### Trả lời phỏng vấn
 Khi {{df}} báo đầy nhưng {{du}} cộng lại nhỏ hơn, em nghi file đã bị xoá tên nhưng process vẫn giữ file descriptor mở. {{df}} tính block đã cấp phát ở mức filesystem; {{du}} chỉ tính file còn đường dẫn. Em dùng {{lsof +L1}} để tìm các entry có {{NLINK=0}} và cột {{SIZE/OFF}} lớn — thường là log file Java bị {{rm}} nhưng app chưa reopen. Cách xử lý an toàn là truncate qua {{/proc/<PID>/fd/<FD>}} hoặc trigger log rotation/restart có kiểm soát; em tránh {{kill -9}} khi chưa thu bằng chứng. Em cũng kiểm tra {{df -i}} vì hết inode gây cùng thông báo lỗi. Về lâu dài, em dùng log rotation, giám sát disk/inode, và trong container thì đẩy log ra stdout.
@@ -5969,6 +6032,17 @@ Với JDBC: luôn đóng {{ResultSet}}, {{Statement}}, {{Connection}} (try-with-
 1. **Nhầm CLOSE_WAIT là lỗi mạng/peer**: CLOSE_WAIT nghĩa là peer đã đóng đúng phần của nó; lỗi nằm ở app bạn chưa đóng. Cách tránh: tìm {{ss -tanp state close-wait}} xem PID/fd, rồi soi code path dùng fd đó.
 2. **Cố "xoá" TIME_WAIT bằng sysctl liều lĩnh**: {{tcp_tw_recycle}} đã bị xoá khỏi kernel mới và gây hỏng NAT; chỉnh bừa gây lỗi khó debug. Cách tránh: sửa code để reuse kết nối.
 3. **Chỉ nhìn tổng số kết nối, không nhìn theo đích/trạng thái**: 5000 TIME_WAIT phân tán khác 5000 TIME_WAIT tới một đích (gây hết cổng tạm tới đích đó). Cách tránh: {{ss}} + {{awk/sort/uniq}} theo cột đích.
+
+### Ví dụ đời thực
+Triệu chứng: service payment-gateway gọi API ngân hàng đối tác {{api.bank-partner.vn}}. Monitoring thấy p99 latency tăng từ 200 ms lên 8 giây, error rate 5%. {{ss -tan state time-wait}} cho thấy 18.000 TIME_WAIT tới {{10.20.30.40:443}}, {{ss -tan state close-wait}} cho thấy 450 CLOSE_WAIT cùng PID 12345 (Java app). Lỗi ứng dụng: {{java.net.BindException: Cannot assign requested address}} (EADDRNOTAVAIL) khi burst gọi.
+
+Điều tra: {{ss -tanp state close-wait}} gắn PID 12345, fd 187-630. Code review phát hiện: mỗi request tạo {{HttpClient.newHttpClient()}} mới (không reuse), response body không consume trong khối try-catch khi exception. CLOSE_WAIT do quên {{resp.close()}} khi parse JSON fail; TIME_WAIT do tạo client mới mỗi lần, kết nối đóng sau mỗi request.
+
+Nguyên nhân gốc: code tạo HTTP client per-request, thiếu try-with-resources cho response, không dùng connection pool.
+
+Cách xử lý: (1) Refactor: {{HttpClient}} thành singleton bean, cấu hình connection pool. (2) Sửa toàn bộ code gọi HTTP: với Apache HttpClient dùng try-with-resources cho {{CloseableHttpResponse}} và consume entity; với {{java.net.http.HttpClient}} luôn đọc/consume {{HttpResponse.BodyHandler}} và không tự tạo client mới mỗi request. (3) Thêm metric {{process_files_open_files}} và dashboard socket state. (4) Nới {{net.ipv4.ip_local_port_range=1024 65535}} và bật {{net.ipv4.tcp_tw_reuse=1}} tạm thời.
+
+Kết quả đo được: TIME_WAIT tới đích đó từ 18.000 xuống < 200, CLOSE_WAIT từ 450 xuống 0, EADDRNOTAVAIL biến mất, p99 latency 210 ms, error rate 0.05%.
 
 ### Trả lời phỏng vấn
 Em phân biệt TIME_WAIT và CLOSE_WAIT bằng {{ss -tan}}. TIME_WAIT nằm ở phía chủ động đóng, tồn tại ~60 giây để bảo vệ gói trễ; nhiều TIME_WAIT tới cùng một đích thường do code tạo kết nối mới cho mỗi request thay vì dùng connection pool và keep-alive — rủi ro là hết ephemeral port. CLOSE_WAIT nằm ở phía bị động sau khi nhận FIN, nhưng app chưa {{close()}}; CLOSE_WAIT tăng dần gần như chắc chắn là bug rò rỉ socket, ví dụ HTTP response entity không được consume/đóng trong Java. Em dùng {{ss -tanp state close-wait}} để gắn với PID/fd, rồi kiểm tra code dùng try-with-resources. Sửa gốc ở code; chỉnh sysctl chỉ là biện pháp tạm.
@@ -6079,6 +6153,17 @@ grep partner /etc/hosts
 2. **Chỉ sửa DNS record nhưng quên TTL ở nhiều lớp**: DNS authoritative TTL, resolver cache, OS cache, JVM cache, connection pool giữ kết nối tới IP cũ. Cách tránh: khi lên kế hoạch failover, hạ TTL trước (giờ/ngày tuỳ), hiểu toàn bộ chuỗi cache.
 3. **Đổ lỗi cho "Java chậm" mà không đo tầng OS**: {{dig/getent}} mất 3 giây thì JVM cũng vậy. Cách tránh: chẩn đoán từ dưới lên (network → resolver → OS NSS → JVM).
 4. **Nhầm {{tcp_fin_timeout}}/sysctl khác với DNS**: các tham số TCP không sửa DNS. Cách tránh: khoanh vùng đúng tầng.
+
+### Ví dụ đời thực
+Triệu chứng: service payment-gateway gọi {{api.bank-partner.vn}}. Sau khi đối tác failover DR (đổi IP endpoint từ {{203.0.113.10}} sang {{203.0.113.20}}), app vẫn gọi IP cũ 25 phút, error rate 100% tới IP cũ. Monitoring không thấy DNS query mới từ app.
+
+Điều tra: trong pod, {{dig api.bank-partner.vn}} trả IP mới ngay. {{cat /etc/resolv.conf}} thấy nameserver CoreDNS {{10.96.0.10}}. Kiểm tra JVM: app không set {{networkaddress.cache.ttl}}, dùng mặc định JDK 17 (không có Security Manager) = 30 giây. Nhưng connection pool HikariCP giữ kết nối TCP tới IP cũ, không validate khi lấy từ pool. Kết hợp: DNS cache 30s đã hết, nhưng connection pool reuse socket cũ không resolve lại.
+
+Nguyên nhân gốc: (1) JVM DNS cache TTL mặc định 30s — hợp lý, nhưng (2) connection pool không có cơ chế evict stale connection khi IP thay đổi, (3) thiếu health check validate connection trước khi dùng.
+
+Cách xử lý: (1) Set {{networkaddress.cache.ttl=10}} và {{networkaddress.cache.negative.ttl=5}} trong {{java.security}} cho service quan trọng. (2) Cấu hình HikariCP để tránh giữ kết nối cũ quá lâu: {{maxLifetime=300000}}, {{keepaliveTime=30000}}, và {{connectionTimeout}} hợp lý; đảm bảo pool kiểm tra/tạo kết nối mới định kỳ thay vì reuse mãi. (3) Thêm retry logic với backoff khi connection fail. (4) Runbook failover: hạ DNS TTL authoritative trước 1 giờ, restart rolling app sau khi DNS propagate.
+
+Kết quả đo được: lần failover sau, app chuyển IP mới trong 15 giây (DNS TTL 10s + connection validation), error rate < 0.1%, 0 ticket support.
 
 ### Trả lời phỏng vấn
 JVM cache DNS trong {{InetAddress}}. Mặc định hiện đại (không có Security Manager) thường cache lookup thành công khoảng 30 giây và lookup lỗi 10 giây; có thể cấu hình {{networkaddress.cache.ttl}} và {{networkaddress.cache.negative.ttl}} trong {{java.security}} hoặc set sớm bằng {{Security.setProperty}}. TTL quá dài gây app gọi IP cũ sau failover; TTL 0 gây quá nhiều lookup. Khi DNS chậm, em chẩn đoán từ OS: {{/etc/resolv.conf}}, {{nsswitch.conf}}, đo bằng {{getent}} và {{dig}} để tách resolver chậm khỏi app chậm. Trên Kubernetes em chú ý {{ndots}}/search domain làm tăng số query. Em cũng dùng connection pool để giảm tần suất resolve.
