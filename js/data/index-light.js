@@ -2177,6 +2177,10 @@ window.DATA_INDEX = {
     {"id":"nashtech-vietnam","name":"NashTech Vietnam","focus":["core","collections","spring","jpa","db","microservices","english","architecture","testing","behavioral"]},
     {"id":"cmc-global","name":"CMC Global","focus":["core","jvm","collections","spring","jpa","db","microservices","design","architecture","english","devops","aws","testing"]},
     {"id":"dxc-technology-vietnam","name":"DXC Technology Vietnam","focus":["core","jvm","collections","spring","jpa","db","microservices","architecture","english","devops","testing","behavioral"]},
+    {"id":"bosch-global-software-vietnam","name":"Bosch Global Software Technologies Vietnam (BGSV)","focus":["core","spring","microservices","design","architecture","english","devops","aws","azure"]},
+    {"id":"tiki","name":"Tiki","focus":["core","spring","microservices","design","db","concurrency","devops","architecture","scenario"]},
+    {"id":"wizeline-vietnam","name":"Wizeline Vietnam","focus":["design","microservices","core","english","behavioral","architecture","devops","testing","scenario"]},
+    {"id":"trusting-social","name":"Trusting Social","focus":["core","microservices","design","db","concurrency","scenario","english","architecture","devops","ai"]},
   ],
   quiz: [
     ["qz-devops-001","devops"],

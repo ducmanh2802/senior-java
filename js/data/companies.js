@@ -1449,5 +1449,188 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       { title: 'DXC Vietnam tuyển Fresher Cobol/Java (5/2025)', url: 'https://fit.sgu.edu.vn/site/dxc-vietnam-tuyen-dung-15-vi-tri-cobol-va-java-fresher_may-2025/' }
     ],
     confidence: 'high'
+  },
+  {
+    id: 'bosch-global-software-vietnam',
+    name: 'Bosch Global Software Technologies Vietnam (BGSV)',
+    type: 'bigtech',
+    icon: '⚙️',
+    summary: 'Bosch Global Software Technologies Vietnam (BGSV) là trung tâm phát triển phần mềm đầu tiên của Bosch tại Đông Nam Á (khởi động 2010), hơn 4.000 associates, thuộc sở hữu 100% Robert Bosch GmbH. Cung cấp giải pháp Engineering, IT, Business Solutions end-to-end cho các sector Mobility, Industrial Technology, Consumer Goods, Energy & Building Technology. Môi trường tiếng Anh, cơ hội onsite toàn cầu, phúc lợi tốt (tháng 13, thưởng năm, bảo hiểm cao cấp, 16+ ngày nghỉ). Đạt Great Place to Work 10 năm liên tiếp, Vietnam Best IT Companies 2024.',
+    stack: ['Java', 'Spring Boot', '.NET', 'C#', 'SAP ABAP', 'SAP FI/CO/MM/SD', 'Embedded C/C++', 'AWS', 'Azure', 'GCP', 'Kubernetes', 'Docker', 'Kafka', 'React', 'Angular', 'Microservices', 'CI/CD', 'GitLab'],
+    process: [
+      { round: 'Vòng 1 — HR screen tiếng Anh (review intern 2024, blog thu4n)', detail: 'HR kiểm tra kỹ năng nói tiếng Anh và xác nhận ứng viên hiểu vị trí ứng tuyển. Thường qua nhanh nếu tiếng Anh giao tiếp được.' },
+      { round: 'Vòng 2 — Phỏng vấn kỹ thuật với Tech Lead (review intern 2024, blog thu4n)', detail: 'Phỏng vấn onsite/online, hỏi sâu theo CV. Ví dụ: phân biệt Java/Go/C#, câu hỏi Linux, nguyên tắc OOP, vẽ sơ đồ kiến trúc dự án (Azure Kubernetes Service, OpenFaaS). Review voz.vn (frontend 2024) kể pv bằng tiếng Anh, dự án Angular 2+ / Java Spring.' },
+      { round: 'Vòng 3 — (Tuỳ vị trí Senior/Lead) Phỏng vấn thêm với Manager/Architect', detail: 'Một số vị trí cao hơn có vòng bổ sung hỏi system design, kiến trúc phân tán, decision making, leadership. Hỏi recruiter để xác nhận số vòng chính xác cho team cụ thể.' }
+    ],
+    focus: ['core', 'spring', 'microservices', 'design', 'architecture', 'english', 'devops', 'aws', 'azure'],
+    algoWeight: 0.3,
+    englishRequired: true,
+    questions: [
+      'Phân biệt Java, Go, C# về mô hình concurrency, memory management và use case điển hình.',
+      'Giải thích kiến trúc dự án bạn đã làm: vẽ sơ đồ, lý do chọn công nghệ, trade-off.',
+      'Linux commands cơ bản và cách debug production issue trên Kubernetes.',
+      'Nguyên tắc SOLID và ví dụ áp dụng trong codebase Java/Spring thực tế.',
+      'Thiết kế API idempotent cho hệ thống thanh toán/giao dịch phân tán.',
+      'Spring Boot bean lifecycle, @Transactional propagation/isolation, cách xử lý exception.',
+      'Kinh nghiệm với SAP (ABAP/FI/CO/MM/SD) hoặc Embedded C/C++ nếu apply domain tương ứng.',
+      'Tự giới thiệu và trình bày dự án bằng tiếng Anh.'
+    ],
+    tips: [
+      'Chuẩn bị tốt phần trình bày dự án (architecture diagram, tech stack, trade-off) — đây là trọng tâm vòng Tech Lead.',
+      'Luyện nói tiếng Anh kỹ thuật: tự giới thiệu, giải thích kiến trúc, trả lời behavioral questions.',
+      'Ôn Java core, Spring Boot, microservices patterns, Kubernetes, cloud (AWS/Azure/GCP).',
+      'Hỏi recruiter rõ team/domain (Enterprise Software, Embedded Automotive, SAP, AI/ML...) để tập trung ôn stack phù hợp.',
+      'Môi trường ổn định, WLB tốt, phúc lợi cao — phù hợp muốn phát triển lâu dài tại bigtech sản phẩm.'
+    ],
+    pay: [
+      { role: 'Software Engineer Intern (DevOps, 2024)', yoe: '0 năm', amount: 'không công bố', year: '2024', note: 'Bosch Summer Bootcamp 2024, full-time 2 tháng, có mentor, Udemy for Business miễn phí', url: 'https://thu4n.github.io/posts/bosch-summer-bootcamp' }
+    ],
+    sources: [
+      { title: 'thu4n blog — How I spent my summer as an intern at Bosch (2024)', url: 'https://thu4n.github.io/posts/bosch-summer-bootcamp' },
+      { title: 'voz.vn — Tư vấn xin review công ty Bosch (frontend 2024)', url: 'https://voz.vn/t/tu-van-xin-review-cong-ty-bosch.300235' },
+      { title: 'Bosch Vietnam — Trang chủ chính thức, BGSW Vietnam 15 năm (10/2025)', url: 'https://e.vnexpress.net/news/business/bosch-bgsw-marks-15-years-of-growth-and-innovation-in-vietnam-4948621.html' },
+      { title: 'Bosch Careers — Junior Java Developer (1-3 năm) JD và quy trình', url: 'https://jobs.bosch.com/en/job/REF265809E-eta-3-junior-java-developer-1-3-years-of-experience' },
+      { title: 'ITviec — Bosch Global Software Technologies Company Limited (327 reviews, 3.4/5, 74% recommend)', url: 'https://itviec.com/companies/bosch-global-software-technologies-company-limited' },
+      { title: 'Bosch Vietnam — Company overview trang chủ (6.000 associates, 6 locations)', url: 'https://www.bosch.com.vn/en/our-company/bosch-in-vietnam' }
+    ],
+    confidence: 'medium'
+  },
+  {
+    id: 'tiki',
+    name: 'Tiki',
+    type: 'product',
+    icon: '🛍️',
+    summary: 'Tiki là nền tảng thương mại điện tử hàng đầu Việt Nam (thành lập 2010, 4.000+ nhân viên), giá trị cốt lõi "Tốt và Nhanh". Đã migrate 70% hệ thống lên Google Cloud (GKE 200+ services), cải thiện hiệu năng API 30% (80ms→55ms), giảm thời gian cấp server từ vài ngày xuống vài phút. Stack backend chính: Java, Go, microservices, Kubernetes, Kafka, Redis, PostgreSQL, MongoDB. Tuyển dụng Senior Backend Engineer (Java/Go) thường xuyên. Môi trường hybrid, phúc lợi tốt, thưởng hiệu suất, culture "Tốt và Nhanh".',
+    stack: ['Java', 'Golang', 'Spring Boot', 'Microservices', 'Kubernetes (GKE)', 'Google Cloud', 'Kafka', 'Redis', 'PostgreSQL', 'MongoDB', 'gRPC', 'GraphQL', 'CI/CD', 'Docker', 'Prometheus', 'Grafana', 'Elasticsearch'],
+    process: [
+      { round: 'Vòng 1 — HR screen', detail: 'Trao đổi kinh nghiệm, kỳ vọng lương, kiểm tra culture fit với giá trị "Tốt và Nhanh".' },
+      { round: 'Vòng 2 — Technical interview (backend Java/Go)', detail: 'Hỏi sâu Java/Go core, concurrency, microservices patterns, database (PostgreSQL/MongoDB), system design quy mô nhỏ (service discovery, caching, message queue). Có thể live coding hoặc take-home. Review ITviec (2024–2025) cho thấy kỹ thuật khá rộng.' },
+      { round: 'Vòng 3 — System design / Architecture discussion', detail: 'Thiết kế hệ thống e-commerce: catalog, search, order, payment, inventory. Trade-off consistency/availability, scale read/write, idempotency, event-driven architecture.' },
+      { round: 'Vòng 4 — Culture fit / Hiring manager', detail: 'Trao đổi với hiring manager về định hướng, cách làm việc, xử lý conflict, alignment giá trị cốt lõi. Có thể gặp team lead hoặc director.' }
+    ],
+    focus: ['core', 'spring', 'microservices', 'design', 'db', 'concurrency', 'devops', 'architecture', 'scenario'],
+    algoWeight: 0.35,
+    englishRequired: true,
+    questions: [
+      'Thiết kế service Product Discovery (catalog, search, recommendation) chịu tải cao: schema, indexing, caching, scale.',
+      'Giải thích cách xử lý idempotency cho API đặt hàng/thanh toán khi client retry sau timeout.',
+      'So sánh Java và Go cho microservices: khi nào chọn cái nào, trade-off concurrency, memory, developer velocity.',
+      'Kubernetes/GKE: cách config deployment, HPA, rolling update, xử lý pod OOM/killed.',
+      'Kafka: tại sao dùng, partition strategy, consumer group, exactly-once semantics, xử lý duplicate message.',
+      'Database: PostgreSQL vs MongoDB cho catalog/product, indexing strategy, recursive CTE cho category tree.',
+      'Microservices communication: sync (gRPC/REST) vs async (Kafka), circuit breaker, distributed tracing.',
+      'Câu chuyện incident production: triệu chứng → root cause → fix → preventive measures (review ITviec 2024–2025).'
+    ],
+    tips: [
+      'Ôn sâu Java core, Go concurrency, microservices patterns — Tiki dùng cả hai ngôn ngữ song song.',
+      'Luyện system design e-commerce: catalog, search (Elasticsearch), order, payment, inventory, promotion.',
+      'Chuẩn bị trình bày incident/post-mortem thực tế: Tiki scale lớn, interviewer quan tâm cách bạn xử lý sự cố.',
+      'Tiếng Anh đọc hiểu tài liệu, giao tiếp cơ bản — team có expat, doc tiếng Anh.',
+      'Hỏi recruiter team cụ thể (Product Discovery, Transportation, Payment, Platform...) vì stack/domain khác nhau.'
+    ],
+    pay: [
+      { role: 'Senior Backend Engineer (Java/Go)', yoe: '4–6 năm', amount: 'thương lượng (theo JD 2024–2025)', year: '2025', note: 'ITviec reviews 2024–2025 nhắc lương tốt, thưởng performance, tháng 13, hybrid, health check, personal leave', url: 'https://tuyendung.tiki.vn/job_detail?request_id=TIKI_Product%20and%20Engineering_03072024_819' }
+    ],
+    sources: [
+      { title: 'Google Cloud Case Study — Tiki (migrate to GKE, 200+ services, 30% API perf gain)', url: 'https://cloud.google.com/customers/tiki-en' },
+      { title: 'Tuyendung.tiki.vn — Trang tuyển dụng chính thức, JD Senior Backend Engineer Java/Go', url: 'https://tuyendung.tiki.vn/job_detail?request_id=TIKI_Product%20and%20Engineering_03072024_819' },
+      { title: 'ITviec — Tiki reviews (46 reviews, 2024–2025, lương tốt, hybrid, culture Tốt và Nhanh)', url: 'http://itviec.com/companies/tiki/review' },
+      { title: 'e27 — How Tiki manages its hiring process (culture fit, internal headhunting, competitive pay)', url: 'https://e27.co/how-tiki-manages-its-hiring-process-20200813' }
+    ],
+    confidence: 'medium'
+  },
+  {
+    id: 'wizeline-vietnam',
+    name: 'Wizeline Vietnam',
+    type: 'service',
+    icon: '🌐',
+    summary: 'Wizeline là công ty product development toàn cầu (HQ Mỹ, 500+ nhân viên), delivery center tại HCMC từ 2016. Làm việc cho khách hàng enterprise (AirAsia, Arc XP/Washington Post, True Digital, Mastercard...). Đặc trưng: pair programming, problem-solving capabilities thay vì ngôn ngữ cụ thể, tiếng Anh là ngôn ngữ làm việc chính. Glassdoor HCMC 3.8/5, 80% recommend (22 reviews 2025). Dataford (192 reports 2026): 6 vòng, difficulty 5.1/10, offer rate 51%. Stack đa dạng: Java, JavaScript/React, Node, Go, Python, AWS, Kafka, Kubernetes, Docker, GCP.',
+    stack: ['Java', 'Spring Boot', 'JavaScript', 'TypeScript', 'React', 'Node.js', 'Go', 'Python', 'AWS', 'GCP', 'Kubernetes', 'Docker', 'Kafka', 'Kinesis', 'DynamoDB', 'Aurora', 'Elasticsearch', 'ElastiCache', 'Lambda', 'ECS', 'CI/CD', 'Terraform', 'GitLab', 'JUnit', 'Mockito', 'Cypress'],
+    process: [
+      { round: 'Vòng 1 — Recruiter call (Talent Ambassador)', detail: '30 phút: giới thiệu Wizeline, hỏi background, technical skills, career goals, kiểm tra tiếng Anh. PDF chính thức Wizeline nêu rõ vòng này.' },
+      { round: 'Vòng 2 — HR screening + English evaluation', detail: 'Kiểm tra tiếng Anh sâu hơn (reading, speaking), alignment kỳ vọng, culture fit sơ bộ. Dataford 2026 ghi nhận vòng này tách biệt.' },
+      { round: 'Vòng 3 — Technical screening (pair programming / coding)', detail: '1–2 bài coding easy-medium (có thể chọn ngôn ngữ), focus problem-solving, communication. Wizeline PDF: "We don\'t focus on specific languages... focus on problem-solving capabilities".' },
+      { round: 'Vòng 4 — On-site / Virtual full day (4 technical sessions)', detail: 'Theo PDF Wizeline SWE: Debugging (tìm bug CSV reader), Design (test strategy trên whiteboard), Pair Programming (code review/refactor legacy PHP/Java), Architectural Discussion (design system ingest/process/store real-time analytics). Mỗi session ~1 giờ.' },
+      { round: 'Vòng 5 — Decision & Offer', detail: 'Hiring team đánh giá toàn bộ insights, Talent Ambassador phản hồi next business day. Dataford: 2–4 weeks total.' }
+    ],
+    focus: ['design', 'microservices', 'core', 'english', 'behavioral', 'architecture', 'devops', 'testing', 'scenario'],
+    algoWeight: 0.5,
+    englishRequired: true,
+    questions: [
+      'Pair programming: review legacy Java/PHP codebase, chỉ ra 2 performance bottlenecks và refactor để cải thiện readability/execution speed.',
+      'Debugging: code đọc CSV crash khi gặp malformed row — locate bug và viết robust solution.',
+      'Design: propose test strategy cho scenario cho trước (whiteboard), cover unit/integration/e2e, tools, processes.',
+      'Architectural discussion: design system ingest/process/store large-volume real-time analytical data (Kafka, stream processing, storage).',
+      'System design: optimize nested DB queries/API calls causing latency in backend service.',
+      'Microservices patterns: saga, outbox, circuit breaker, distributed tracing (Wizeline case study Arc XP: Kafka MSK, DynamoDB, Aurora).',
+      'AWS/GCP: Lambda, ECS, DynamoDB, Aurora, Kinesis — khi nào chọn managed service vs self-hosted.',
+      'Behavioral: strength/weakness, challenge solved, career goals, why Wizeline (culture: continuous learning, self-organization, technical excellence).'
+    ],
+    tips: [
+      'Tập trung pair programming: nói to suy nghĩ, code sạch, thêm test/edge case, giải thích trade-off — Wizeline đánh giá quá trình, không chỉ đáp án.',
+      'Tiếng Anh là bắt buộc: luyện speaking technical, trình bày thiết kế, hỏi clarification khi pair programming.',
+      'Ôn system design thực tế (event-driven, stream processing, microservices) thay vì chỉ LeetCode.',
+      'Đọc case study Wizeline (Arc XP, AirAsia) để hiểu stack và scale thực tế.',
+      'Chuẩn bị câu hỏi ngược cho Talent Ambassador: project types, career path, certification support (AWS/GCP/K8s miễn phí).'
+    ],
+    pay: [
+      { role: 'Software Engineer (Mid/Senior, tham khảo quốc tế)', yoe: '3–5 năm', amount: 'không công bố VN', year: '2026', note: 'Glassdoor HCMC 2025: "High salary, fair, opportunities", Dataford 192 reports offer rate 51%; VN thường thấp hơn US/Mexico, hỏi recruiter range cụ thể', url: 'https://www.glassdoor.com/Reviews/Wizeline-Ho-Chi-Minh-City-Reviews-EI_IE868055.0,8_IL.9,25_IM1746.htm' }
+    ],
+    sources: [
+      { title: 'Wizeline Official PDF — Interviewing at Wizeline for Software Engineer (pair programming, debugging, design, architecture)', url: 'https://cdn.wizeline.com/uploads/2020/06/Interviewing-At-Wizeline-for-SWE-1.pdf' },
+      { title: 'Dataford — Wizeline Interview Process 2026 (192 reports, 6 rounds, difficulty 5.1/10, offer rate 51%)', url: 'https://dataford.io/interview-guides/wizeline' },
+      { title: 'PracHub — Wizeline Software Engineer Interview Questions Guide 2026', url: 'https://prachub.com/interview-guide/wizeline-software-engineer-interview-questions-guide-2026' },
+      { title: 'Wizeline Blog — Behind the Scenes of Wizeline APAC: AirAsia Superapp (Java, Go, Python, AWS, Kafka)', url: 'https://www.wizeline.com/behind-the-scenes-of-wizeline-apac-collaborating-to-expand-improve-airasias-superapp' },
+      { title: 'Glassdoor — Wizeline Ho Chi Minh City Reviews (22 reviews, 3.8/5, 80% recommend, 2025)', url: 'https://www.glassdoor.com/Reviews/Wizeline-Ho-Chi-Minh-City-Reviews-EI_IE868055.0,8_IL.9,25_IM1746.htm' },
+      { title: 'Wizeline Blog — Celebrating 5 Years of Wizeline Vietnam (2021, history, growth, certifications)', url: 'https://www.wizeline.com/celebrating-5-years-of-wizeline-vietnam' }
+    ],
+    confidence: 'high'
+  },
+  {
+    id: 'trusting-social',
+    name: 'Trusting Social',
+    type: 'fintech',
+    icon: '💳',
+    summary: 'Trusting Social là AI Fintech pioner (HQ Singapore, team engineering 50+ người tại HCMC Quận 1), sứ mệnh "Advancing AI to Meet the Financial Needs of Everyday Consumers with Empathy". Đã assess 1 tỷ+ consumers across 4 quốc gia (VN, ID, IN, PH), mục tiêu 100 triệu credit lines. Sản phẩm chính: Digital Onboarding Platform (DOP - automate 100% registration/approval/decision), EVO Platform (instant credit decision + card issuance), Co-Lending partnership với ngân hàng. Stack: Go, Java, Python, Flutter, Rust, Scala, Elixir, Kubernetes, Docker, AWS, GCP. Culture: ownership, integrity, agility, AI-native development, WLB tốt (hybrid 2 days office, lunch provided, happy hour Thứ 5).',
+    stack: ['Go', 'Java', 'Spring Boot', 'Python', 'Flutter', 'Rust', 'Scala', 'Elixir', 'Kubernetes', 'Docker', 'AWS', 'GCP', 'Kafka', 'gRPC', 'PostgreSQL', 'Redis', 'MongoDB', 'CI/CD', 'GitLab', 'Prometheus', 'Grafana', 'OpenTelemetry', 'WebRTC', 'LiveKit', 'LLM/AI Agents'],
+    process: [
+      { round: 'Vòng 1 — Recruiter / HR screen', detail: 'Trao đổi background, tech stack (Go/Java/Python), kiểm tra tiếng Anh (môi trường đa quốc gia, HQ Singapore). JD Backend Engineer (Go, Java) nêu rõ 5+ năm exp, BS/MS CS.' },
+      { round: 'Vòng 2 — Technical interview (Backend/Platform)', detail: 'Hỏi sâu Go/Java concurrency, microservices, scalable API design (millions transactions/day), database optimization, lock-free algorithms, CI/CD, Kubernetes. Senior Backend Engineer AGI JD nêu: low-latency APIs cho realtime AI Agents, optimize DB calls, lock-free orchestration.' },
+      { round: 'Vòng 3 — System design / Architecture', detail: 'Thiết kế Digital Onboarding Platform hoặc EVO: idempotency, fault-tolerance, bank integration, event-driven, data consistency, security/compliance (PCI-DSS, data privacy).' },
+      { round: 'Vòng 4 — Culture fit / Hiring manager / Director', detail: 'Trao đổi với Engineering Manager hoặc Director (Siddharth Ravichandran - Senior Director): ownership, integrity, agility values, behavioral, career goals. AmbitionBox 2025: 3.5/5, culture/WLB rating cao.' }
+    ],
+    focus: ['core', 'microservices', 'design', 'db', 'concurrency', 'scenario', 'english', 'architecture', 'devops', 'ai'],
+    algoWeight: 0.35,
+    englishRequired: true,
+    questions: [
+      'Thiết kế API idempotent cho Digital Onboarding Platform: client retry sau timeout, tránh duplicate approval/decision.',
+      'Go vs Java cho high-throughput microservices: concurrency model (goroutine vs virtual thread), memory, latency, khi nào chọn cái nào.',
+      'Lock-free algorithms cho orchestration AI Agents: CAS, atomic operations, verschillende patterns, trade-off complexity vs performance.',
+      'Database optimization cho low-latency realtime voice agents: connection pooling, query optimization, read replicas, caching strategy.',
+      'Event-driven architecture cho Co-Lending partnership: Kafka, saga pattern, outbox pattern, exactly-once, reconciliation với ngân hàng.',
+      'Kubernetes/GCP/AWS: deploy canary/blue-green, HPA, observability (OpenTelemetry, Prometheus, Grafana), chaos engineering.',
+      'Security/Compliance fintech: PCI-DSS, data encryption, PII protection, audit logging, consumer data privacy (GDPR/PDPA).',
+      'AI-native development: cách dùng coding agents (Cursor, Claude Code, Copilot) trong workflow hàng ngày, eval/harness cho LLM output.'
+    ],
+    tips: [
+      'Chuẩn bị mạnh Go/Java concurrency, microservices patterns, scalable API design — đây là core stack backend.',
+      'Luyện system design fintech: idempotency, ledger, audit trail, reconciliation, bank integration, compliance.',
+      'Tiếng Anh bắt buộc: HQ Singapore, team đa quốc gia, doc/code review tiếng Anh.',
+      'Nắm vững AI/LLM application thực tế: RAG, agents, eval, voice AI (ASR/TTS) — Trusting Social đầu tư mạnh AGI.',
+      'Culture fit quan trọng: ownership (chủ động end-to-end), integrity (đúng/thẳng), agility (nhanh, lặp lại) — chuẩn bị ví dụ STAR thể hiện 3 giá trị này.'
+    ],
+    pay: [
+      { role: 'Backend Engineer (Go, Java) - DOP/EVO', yoe: '5+ năm', amount: 'thương lượng (theo JD 2025)', year: '2025', note: 'JD nêu generous leave, central D1 office near metro, lunch, Grab allowance, happy hour Thứ 5, unlimited coffee/snacks', url: 'https://trustingsocial.com/careers/openings/backend-engineer-(go-java)-dop-674454' },
+      { role: 'Senior Backend Engineer - AGI', yoe: '4+ năm', amount: 'thương lượng (theo JD 2025)', year: '2025', note: 'Low-latency APIs cho realtime AI Agents, lock-free algorithms, AI-native delivery', url: 'https://trustingsocial.com/careers/openings/senior-backend-engineer-agi-674227' }
+    ],
+    sources: [
+      { title: 'Trusting Social Careers — Backend Engineer (Go, Java) DOP JD (2025)', url: 'https://trustingsocial.com/careers/openings/backend-engineer-(go-java)-dop-674454' },
+      { title: 'Trusting Social Careers — Senior Backend Engineer AGI JD (2025)', url: 'https://trustingsocial.com/careers/openings/senior-backend-engineer-agi-674227' },
+      { title: 'Trusting Social Careers — Full-Stack AI Engineer JD (2025)', url: 'https://trustingsocial.com/careers/openings/full-stack-ai-engineer-701894' },
+      { title: 'ITviec — Director of Engineering Fintech Trusting Social (2025, 50-person team, Java/Python/Node.js, microservices, AI, big data)', url: 'https://itviec.com/it-jobs/director-of-engineering-fintech-trusting-social-2541' },
+      { title: 'AmbitionBox — Trusting Social Reviews (5 reviews, 3.5/5, culture 4.9, WLB 4.9, 2025)', url: 'https://www.ambitionbox.com/reviews/trusting-social-reviews' },
+      { title: 'Clodura.AI — Trusting Social Tech Stack (Go, Java, Python, Rust, Scala, Elixir, K8s, AWS, GCP, Kafka)', url: 'https://www.clodura.ai/directory/company/trusting-social' }
+    ],
+    confidence: 'medium'
   }
 ];
