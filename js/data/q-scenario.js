@@ -7511,6 +7511,13 @@ Thông tin rời rạc giữa con người và hệ thống, cần **quyết đ�
 ### Trả lời mẫu khi phỏng vấn
 "Là người chỉ huy, việc đầu tiên tôi làm là tổ chức chứ không tự debug: mở kênh sự cố, tuyên bố mức độ, chia vai gồm người điều tra cho từng giả thuyết, người liên lạc và người ghi dòng thời gian. Các giả thuyết được kiểm tra song song bằng những câu hỏi nhanh: lỗi bắt đầu lúc nào so với thời điểm deploy, lỗi nằm ở đâu, đối tác có báo sự cố không, DB có lock wait không. Tôi ưu tiên giảm thiệt hại: hành động rẻ và đảo ngược được như rollback hay dừng một job thì làm ngay khi có dấu hiệu. Tôi cập nhật mỗi 15 phút theo mẫu ảnh hưởng, đang làm gì, lần cập nhật tiếp theo, và không đoán nguyên nhân khi chưa xác nhận. Sau đó là postmortem không đổ lỗi với hành động cụ thể để không lặp lại."
 
+### Ví dụ đời thực
+- **Triệu chứng:** 21:05 thứ Sáu, dashboard thanh toán báo tỉ lệ lỗi tăng từ 0,5% lên 30% trong 8 phút (khoảng 1.800 giao dịch thất bại/giờ), doanh thu rơi nhanh và CS nhận khiếu nại hàng loạt.
+- **Điều tra:** IC mở kênh sự cố, dừng deploy đang treo, giao tiếp nội bộ mỗi 10 phút. Song song kiểm tra: (1) deploy 20:30 — diff chỉ thay UI, metric lỗi đã tăng trước khi pod mới nhận traffic; (2) DB — {{pg_stat_activity}} cho thấy kết nối chờ lock tăng mạnh, p99 truy vấn tăng từ 40 ms lên 600 ms, pool gần cạn; (3) cổng thanh toán (payment gateway, dịch vụ bên thứ ba xử lý thẻ) — trang trạng thái và log tích hợp đều 200 OK, tỉ lệ timeout không đổi. IC hỏi "2 giờ qua ai vừa chạy lệnh nặng?" và rà audit log.
+- **Nguyên nhân gốc:** một kỹ sư vận hành bật nhầm feature flag {{payment_retry_strict=true}} trên console lúc 20:58 để thử ở staging nhưng chọn nhầm môi trường production; cờ này từ chối mọi giao dịch cần retry mềm, đúng với nhánh lỗi {{RETRY_REQUIRED}} tăng vọt.
+- **Xử lý:** 21:22 tắt flag về {{false}} (rollback cấu hình), xác nhận tỉ lệ lỗi giảm còn 0,7% sau 3 phút; theo dõi thêm 30 phút, thông báo khách hàng thử lại.
+- **Kết quả đo được:** thời gian ảnh hưởng 24 phút, thiệt hại ước tính ~2.100 giao dịch; postmortem bổ sung chặn chọn nhầm môi trường, bắt buộc ghi audit + liên kết thay đổi thủ công vào timeline sự cố.
+
 > Senior tip: hỏi **"điều gì đã thay đổi trong 2 giờ qua?"** ngay phút đầu, và hỏi cả con người (ai vừa chạy gì, bật gì) chứ không chỉ xem lịch deploy. Rất nhiều sự cố lớn bắt nguồn từ một thao tác tay không nằm trong bất kỳ hệ thống theo dõi nào.`,
   follow: [
     'Khi nào bạn chọn rollback, khi nào chọn sửa nóng (fix forward)?',
