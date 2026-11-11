@@ -5132,6 +5132,30 @@ deploy-dev:   image-scan, dep-scan
 3. Đợt 2 = các bước giờ đã hết phụ thuộc. Lặp lại tới khi hết bước.
 Với ví dụ trên: đợt 1 = build, dep-scan; đợt 2 = it-test, unit-test; đợt 3 = image; đợt 4 = image-scan; đợt 5 = deploy-dev. Các bước trong cùng một đợt **chạy song song** được. Thời gian pipeline ≈ tổng thời gian bước **lâu nhất** của mỗi đợt (đường găng — critical path), không phải tổng mọi bước.
 
+### Cơ chế từng bước: thuật toán Kahn theo tầng (level-by-level)
+Để hiểu **VÌ SAO** thuật toán này cho ra đúng thứ tự đợt, hãy đi từng bước như sau:
+1. **Đếm in-degree (số phụ thuộc chưa xong) cho mỗi bước**: Duyệt qua toàn bộ danh sách phụ thuộc, bước nào không phụ thuộc ai (danh sách rỗng) có in-degree = 0. Các bước này sẵn sàng cho **đợt 1**.
+2. **Tạo đợt 1**: Lấy tất cả bước có in-degree = 0. Sắp xếp theo tên để kết quả xác định. Đây là các bước chạy song song đầu tiên.
+3. **Giả lập "xong" đợt 1**: Với mỗi bước trong đợt 1, tìm tất cả các bước phụ thuộc vào nó (reverse adjacency). Giảm in-degree của các bước đó đi 1. Nếu in-degree nào về 0, bước đó không còn phụ thuộc chưa xong → vào **đợt 2**.
+4. **Lặp lại**: Chuyển sang đợt 2, làm giống hệt bước 3. Quá trình dừng khi không còn bước nào in-degree = 0.
+5. **Phát hiện vòng**: Nếu tổng số bước đã xếp vào các đợt **nhỏ hơn** tổng số bước ban đầu, nghĩa là còn bước chưa xếp mà không bước nào in-degree = 0 → có vòng phụ thuộc (cycle).
+
+Tại sao dùng in-degree thay vì DFS? Kahn theo tầng **tự nhiên cho ra các đợt song song** (level order), còn DFS chỉ cho ra một thứ tự tuyến tính (topological sort) — mất thông tin bước nào có thể chạy cùng lúc. Cả hai đều phát hiện được vòng, nhưng Kahn gọn hơn cho pipeline.
+
+~~~java
+// Minh hoạ: tính in-degree và reverse adjacency (đảo ngược cạnh)
+Map<String, Integer> inDegree = new HashMap<>();
+Map<String, List<String>> reverse = new HashMap<>();
+for (Map.Entry<String, List<String>> e : deps.entrySet()) {
+    String step = e.getKey();
+    inDegree.put(step, new HashSet<>(e.getValue()).size());
+    for (String d : new HashSet<>(e.getValue()))
+        reverse.computeIfAbsent(d, k -> new ArrayList<>()).add(step);
+}
+// Bây giờ inDegree giữ số phụ thuộc chưa xong, reverse giữ "ai phụ thuộc vào bước này"
+// Dùng cho bước 3 ở trên: giảm inDegree[dep]-- khi "xong" bước done
+~~~
+
 ### Hai lỗi cấu hình phải phát hiện trước khi chạy
 - **Phụ thuộc vòng**: A cần B, B cần A → không bước nào bắt đầu được; pipeline treo hoặc báo lỗi khó hiểu. Thuật toán trên phát hiện được: nếu tới lúc không còn bước nào hết phụ thuộc mà vẫn còn bước chưa xếp → có vòng.
 - **Phụ thuộc vào bước không tồn tại** (gõ sai tên "unit-tests" thay vì "unit-test"): phải báo lỗi rõ ràng ngay, không bỏ qua im lặng.
@@ -5157,8 +5181,19 @@ for (List<String> wave : waves) {
 
 > Trong platform team, bạn không viết pipeline cho từng service mà viết **pipeline dùng lại được** (reusable workflow, template). Kiểm tra DAG ngay khi đọc cấu hình giúp mọi đội nhận lỗi cấu hình trong vài giây thay vì sau 10 phút chờ runner.
 
+### Lỗi hay gặp trên production
+- **Phụ thuộc vòng do copy-paste**: Dev copy một job từ repo khác, quên sửa {{needs:}} → A cần B, B cần C, C cần A. Pipeline treo hàng giờ trước khi ai nhận ra. Cách sửa: **validate DAG ngay khi commit** (pre-commit hook hoặc CI lint) — bài tập dưới đây làm chính việc này.
+- **Phụ thuộc vào job không tồn tại (typo)**: Gõ {{unit-tests}} thay vì {{unit-test}}. GitHub Actions/GitLab CI xác thực DAG ngay khi lập lịch — job thiếu dependency bị từ chối chạy ngay, không đợi vài phút. Cách sửa: validate tên job **trước khi chạy** (schema check) hoặc dùng reusable workflow có type-check.
+- **Runner giới hạn làm pipeline chậm không hiểu**: DAG báo 5 đợt, đợt 2 có 4 job song song nhưng runner chỉ có 2 slot → thực tế đợt 2 mất gấp đôi thời gian ước lượng. Cách sửa: tính **critical path thực tế** bằng cách mô phỏng runner giới hạn (tham khảo bài "thuật toán HPA"), hoặc đặt {{concurrency}} group để tránh chen chúc.
+- **Cache dependency sai khoá**: Dùng khoá cache như sau nhưng quên {{gradle.lockfile}} hoặc {{package-lock.json}} → dependency thay đổi mà cache không invalidate. Cách sửa: khoá cache = hash của **tất cả file lock** (pom.xml + gradle.lockfile / package-lock.json / go.sum).
+~~~yaml
+cache-key: \${{ runner.os }}-maven-\${{ hashFiles('**/pom.xml') }}
+~~~
+
 ### Liên hệ phỏng vấn
-Câu hỏi "làm sao giảm pipeline từ 40 phút xuống 10 phút?" thực chất hỏi bạn có nhìn pipeline như một DAG không: tìm đường găng, song song hoá bước độc lập, cache đúng khoá, chỉ chạy phần bị ảnh hưởng. Nói được "thời gian pipeline bằng tổng bước dài nhất của mỗi đợt, nên tối ưu bước ngoài đường găng không giúp gì" là tín hiệu Senior rõ ràng.`,
+Câu hỏi 1: "Pipeline 40 phút, bạn giảm xuống 10 phút như thế nào?" — Trả lời: nhìn pipeline như DAG, tìm **đường găng** (critical path), song song hoá bước độc lập, cache đúng khoá nội dung file lock, chỉ chạy module bị ảnh hưởng (affected graph). Nêu được "thời gian pipeline = tổng bước lâu nhất mỗi đợt, tối ưu bước ngoài đường găng không giúp gì" là tín hiệu Senior.
+Câu hỏi 2: "Phát hiện vòng phụ thuộc trong pipeline như thế nào?" — Trả lời: thuật toán Kahn theo tầng đếm in-degree; nếu hết bước sẵn sàng (in-degree = 0) mà còn bước chưa xếp → có vòng. Validate **trước khi chạy** (lint) thay vì chờ pipeline treo.
+Câu hỏi 3: "Monorepo 50 module, PR sửa 1 file. Làm sao chỉ build/test module đó?" — Trả lời: dựng **affected graph** từ thay đổi file (tracing import/dependency ngược), chạy DAG con thay vì toàn bộ; fallback an toàn: file chung (shared lib, config) thì chạy hết.`,
   exercises: [{
     title: 'Lập lịch pipeline thành các đợt chạy song song',
     prompt: `Viết {{PipelinePlanner.plan(Map<String, List<String>> deps)}}: key là tên bước, value là danh sách bước nó phụ thuộc.
@@ -5265,6 +5300,7 @@ Lỗi hay gặp: duyệt đệ quy DFS mà không đánh dấu "đang thăm" nê
     { q: 'Pipeline có 3 đợt; thời gian các bước: đợt 1 {4, 2} phút, đợt 2 {6, 1, 3} phút, đợt 3 {2} phút. Với runner không giới hạn, pipeline mất bao lâu?', options: ['12 phút', '18 phút', '6 phút', '10 phút'], answer: 0, explain: 'Mỗi đợt chạy song song nên chỉ tính bước lâu nhất: 4 + 6 + 2 = 12 phút. 18 phút là tổng mọi bước (chạy tuần tự). 6 phút chỉ là bước lâu nhất một đợt. 10 phút bỏ sót đợt 3 hoặc tính sai.' },
     { q: 'Bạn tối ưu bước "dep-scan" từ 3 phút xuống 1 phút nhưng pipeline vẫn mất đúng thời gian như cũ. Giải thích hợp lý nhất?', options: ['dep-scan không nằm trên đường găng: bước khác cùng đợt vẫn lâu hơn', 'Cache bị hỏng', 'Runner chạy tuần tự nên mọi tối ưu đều vô nghĩa', 'Pipeline có vòng phụ thuộc'], answer: 0, explain: 'Thời gian một đợt bằng bước lâu nhất của đợt đó; rút ngắn bước không phải lâu nhất không đổi tổng. Cache hỏng thường làm chậm hơn chứ không giữ nguyên. Nếu chạy tuần tự thì tối ưu bất kỳ bước nào cũng giảm tổng. Có vòng thì pipeline không chạy được.' },
     { q: 'Khoá cache dependency Maven tốt nhất nên dựa trên gì?', options: ['Hash nội dung pom.xml (và file lock nếu có)', 'Tên nhánh git', 'Ngày chạy pipeline', 'Số build tăng dần'], answer: 0, explain: 'Khoá theo nội dung file khai báo dependency: dependency không đổi thì dùng lại cache, đổi thì tải mới. Theo nhánh làm mọi nhánh mới tải lại từ đầu. Theo ngày hay số build thì gần như không bao giờ trúng cache.' },
+    { q: 'Pipeline có A→B, A→C, B→D, C→D. Số đợt tối thiểu và job mỗi đợt?', options: ['3 đợt: {A}, {B,C}, {D}', '4 đợt: {A}, {B}, {C}, {D}', '2 đợt: {A,B}, {C,D}', '1 đợt: {A,B,C,D}'], answer: 0, explain: 'Đợt 1: A (không phụ thuộc); đợt 2: B, C (phụ thuộc A, chạy song song); đợt 3: D (phụ thuộc B và C). Tổng 3 đợt.' },
   ],
   related: ['devops-010', 'devops-020', 'devops-072'],
   tags: ['CI/CD', 'pipeline', 'DAG', 'topological sort', 'platform engineering'],
@@ -5294,6 +5330,36 @@ Quality gate là **cổng tự động** trong pipeline: đọc kết quả củ
 | Số lỗ hổng HIGH ≤ ngưỡng | Kiểm soát dần | Ngưỡng quá chặt khi mới áp dụng → mọi PR đỏ |
 | Không có secret trong code | Lộ credential | Báo động giả với chuỗi test |
 
+### Cơ chế từng bước: quality gate đánh giá PR như thế nào
+Khi một Pull Request được mở hoặc cập nhật, pipeline chạy và quality gate đánh giá theo trình tự sau:
+1. **Thu thập dữ liệu (report)**: Pipeline chạy test, coverage, security scan. Kết quả gom thành một object {{Report}} gồm: số test fail, coverage code mới (%), danh sách finding (id, severity: CRITICAL/HIGH/MEDIUM/LOW).
+2. **Chuẩn hoá waiver**: Từ danh sách waiver (findingId, expires), lọc ra tập {{waived}} chứa id các finding có waiver **còn hạn** (hôm nay ≤ expires). Bước này O(1) tra cứu nhờ {{HashSet}}.
+3. **Kiểm tra theo thứ tự ưu tiên**:
+   - Test fail → {{TESTS_FAILED}} (nghiêm trọng nhất, chặn ngay).
+   - Coverage code mới < ngưỡng → {{COVERAGE}}.
+   - Duyệt findings theo thứ tự report: CRITICAL không trong {{waived}} → thêm {{CRITICAL:id}}; HIGH không trong {{waived}} → đếm.
+   - Sau duyệt: nếu số HIGH > {{policy.maxHigh()}} → thêm {{HIGH_COUNT}}.
+4. **Trả kết quả**: {{passed = reasons.isEmpty()}}. Danh sách {{reasons}} giữ thứ tự ổn định để diff giữa các lần chạy dễ đọc.
+
+Vì sao truyền {{LocalDate today}} thay vì gọi {{LocalDate.now()}}? Để hàm **xác định (deterministic)** — test được với bất kỳ ngày nào mà không phụ thuộc giờ hệ thống. Đây là pattern **Clock injection** (xem bài "thuật toán HPA").
+
+~~~java
+// Minh hoạ logic cốt lõi: waiver Set + duyệt findings theo thứ tự
+Set<String> waived = new HashSet<>();
+for (Waiver w : waivers) if (!today.isAfter(w.expires())) waived.add(w.findingId());
+List<String> reasons = new ArrayList<>();
+if (report.failedTests() > 0) reasons.add("TESTS_FAILED");
+if (report.newCodeCoverage() < policy.minNewCoverage()) reasons.add("COVERAGE");
+int high = 0;
+for (Finding f : report.findings()) {
+    if (waived.contains(f.id())) continue;
+    if ("CRITICAL".equals(f.severity())) reasons.add("CRITICAL:" + f.id());
+    else if ("HIGH".equals(f.severity())) high++;
+}
+if (high > policy.maxHigh()) reasons.add("HIGH_COUNT");
+return new GateResult(reasons.isEmpty(), List.copyOf(reasons));
+~~~
+
 ### Ngoại lệ có hạn dùng (waiver)
 Khi một lỗ hổng CRITICAL nằm trong thư viện **chưa có bản vá** và đã đánh giá là không bị khai thác trong ngữ cảnh của bạn, đội cần một cách tiếp tục làm việc **mà không tắt cả gate**. Cách đúng là **waiver**: ngoại lệ cho đúng mã lỗ hổng đó, có lý do, người duyệt và **ngày hết hạn**. Hết hạn mà chưa xử lý → gate lại chặn. Waiver không có hạn sẽ tồn tại mãi và gate dần mất ý nghĩa.
 
@@ -5310,8 +5376,16 @@ Developer cần biết **phải sửa gì**: "COVERAGE: 72% < 80% trên code m�
 
 > Ở quy mô platform, chính sách gate nên được **quản lý như code** (file cấu hình trong repo chung, có review) và **áp dụng dần**: chế độ cảnh báo vài tuần (chỉ báo, không chặn) rồi mới bật chặn — nếu không, ngày đầu tiên 80% PR đỏ và các đội sẽ phản đối cả nền tảng.
 
+### Lỗi hay gặp trên production
+- **Waiver hết hạn vô thanh**: Dev tạo waiver cho CVE-2024-1234 hết hạn 30 ngày, quên xử lý. Ngày 31 gate chặn PR quan trọng lúc 2h sáng. Cách sửa: **alert tự động** khi waiver sắp hết hạn (7 ngày trước), và dashboard hiển thị waiver active theo team.
+- **Coverage gamed bằng test rác**: Dev thêm test không có assertion ({{assertTrue(true)}}) để đẩy coverage lên 80%. Cách sửa: bật **mutation testing** (PITest) trong gate, hoặc yêu cầu test có assertion thật; coverage chỉ là chỉ số tham chiếu.
+- **Secret scanner false positive chặn release**: Chuỗi test {{"password123"}} trong unit test bị quét là secret. Cách sửa: allowlist pattern test ({{test}}, {{mock}}, {{fixture}}) trong config scanner, hoặc đặt secret scanner **chỉ quét code production** ({{src-main}}).
+- **CRITICAL trong transitive dependency không thể nâng cấp**: Thư viện A dùng thư viện B có CVE CRITICAL, B chưa có bản vá. Cách sửa: waiver có hạn + **mitigation** (network policy chặn egress, WAF rule) + theo dõi bản vá B hàng ngày.
+
 ### Liên hệ phỏng vấn
-Câu hỏi "bạn thiết kế quality gate cho 30 service thế nào?" kiểm tra bạn có cân bằng giữa an toàn và tốc độ: coverage trên code mới thay vì toàn repo, chặn theo mức nghiêm trọng, waiver có hạn và có người duyệt, bật dần từ chế độ cảnh báo, và trả lý do rõ ràng cho developer.`,
+Câu hỏi 1: "Quality gate cho 30 service, bạn thiết kế ra sao?" — Trả lời: coverage trên code mới (không phải toàn repo), chặn CRITICAL, giới hạn HIGH, waiver có hạn+hết hạn+người duyệt, bật dần từ chế độ cảnh báo, trả lý do rõ ràng theo thứ tự ổn định.
+Câu hỏi 2: "Dev báo waiver hết hạn chặn PR lúc 2h sáng, xử lý thế nào?" — Trả lời: waiver không được tạo mà không có alert hết hạn (7 ngày trước). Khi xảy ra: extend waiver 48h nếu mitigation đủ, hoặc rollback PR và hotfix. Không bao giờ tắt gate.
+Câu hỏi 3: "Coverage 85% nhưng production vẫn lỗi logic, gate có sai không?" — Trả lời: coverage đo **số dòng chạy**, không đo **chất lượng test**. Gate cần bổ sung mutation testing hoặc yêu cầu review test. Coverage chỉ là "necessary but not sufficient".`,
   exercises: [{
     title: 'Đánh giá quality gate với waiver có hạn dùng',
     prompt: `Viết {{QualityGate.evaluate(report, policy, waivers, today)}} trả về {{GateResult(boolean passed, List<String> reasons)}}. Kiểm tra theo **đúng thứ tự** và thêm lý do:
@@ -5418,6 +5492,7 @@ Lỗi hay gặp: dùng {{today.isBefore(expires)}} làm waiver hết hiệu lự
     { q: 'Vì sao nên đặt ngưỡng coverage trên **code mới** thay vì toàn bộ repo cho một codebase cũ?', options: ['Để mọi PR mới phải có test mà không bắt đội sửa hết code cũ trước khi được merge', 'Vì coverage toàn repo không đo được', 'Vì code cũ không chạy test được', 'Để tăng tốc pipeline'], answer: 0, explain: 'Coverage toàn repo của codebase cũ thường thấp, đặt ngưỡng cao sẽ chặn mọi PR dù PR đó có test tốt; đo trên code mới tạo áp lực đúng chỗ. Coverage toàn repo vẫn đo được. Code cũ vẫn chạy test được. Ngưỡng không ảnh hưởng tốc độ pipeline.' },
     { q: 'Một CVE CRITICAL trong thư viện chưa có bản vá chặn mọi PR. Cách xử lý đúng?', options: ['Tạo waiver cho đúng CVE đó, có lý do, người duyệt và ngày hết hạn', 'Tắt quét lỗ hổng cho tới khi có bản vá', 'Hạ mức CRITICAL thành HIGH trong cấu hình', 'Cho phép merge thủ công không cần gate'], answer: 0, explain: 'Waiver có hạn giữ gate hoạt động cho mọi lỗ hổng khác và tự chặn lại khi hết hạn. Tắt quét hay bỏ gate làm mất bảo vệ hoàn toàn. Đổi mức nghiêm trọng là che giấu rủi ro và ảnh hưởng mọi CVE khác.' },
     { q: 'Platform team muốn áp dụng quality gate mới cho 30 service. Cách triển khai ít gây phản đối nhất?', options: ['Chạy chế độ cảnh báo vài tuần, công bố số liệu, rồi mới bật chặn', 'Bật chặn ngay cho tất cả để tạo kỷ luật', 'Để mỗi đội tự chọn có dùng gate hay không', 'Chỉ áp dụng cho service mới, service cũ không bao giờ áp dụng'], answer: 0, explain: 'Chế độ cảnh báo cho các đội thời gian sửa và cho platform dữ liệu để điều chỉnh ngưỡng. Bật chặn ngay thường làm phần lớn PR đỏ trong ngày đầu. Tự chọn dẫn tới không ai dùng. Bỏ hẳn service cũ để lại rủi ro lớn nhất không được kiểm soát.' },
+    { q: 'PR có test fail và coverage 70% (ngưỡng 80%). Quality gate trả lý do theo thứ tự nào?', options: ['COVERAGE trước, TESTS_FAILED sau', 'TESTS_FAILED trước, COVERAGE sau', 'Chỉ TESTS_FAILED', 'Chỉ COVERAGE'], answer: 1, explain: 'Gate kiểm tra theo thứ tự ưu tiên: test fail nghiêm trọng nhất → chặn ngay (TESTS_FAILED), rồi mới đến coverage. Thứ tự ổn định giúp diff dễ đọc.' },
   ],
   related: ['devops-099', 'devops-103', 'devops-031'],
   tags: ['CI/CD', 'quality gate', 'security scanning', 'policy', 'platform engineering'],
