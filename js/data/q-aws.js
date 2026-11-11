@@ -1159,6 +1159,11 @@ Với Spring Boot có thể dùng {{spring-cloud-aws-secrets-manager-config}} ho
 ### Trả lời miệng 1 phút
 "Parameter Store hợp cho cấu hình và secret đơn giản, rẻ, có SecureString mã hoá bằng KMS; Secrets Manager dành cho secret có vòng đời: xoay vòng tự động, tích hợp sẵn RDS, có staging label AWSCURRENT và AWSPREVIOUS, replication sang region khác. Bên dưới, KMS dùng envelope encryption: KMS key không bao giờ rời KMS, nó chỉ mã hoá một data key nhỏ; dữ liệu lớn được mã hoá cục bộ bằng data key đó, nên nhanh và không vướng giới hạn 4 KB của KMS. Ứng dụng Java của tôi lấy secret bằng IAM role lúc khởi động, cache trong bộ nhớ có TTL chứ không gọi mỗi request, và khi gặp lỗi xác thực thì nạp lại. Bài học của tôi là rotation chỉ an toàn khi ứng dụng đã được thiết kế để nhận secret mới mà không cần restart."
 
+
+
+### Ví dụ đời thực
+Hệ thống đặt hàng production dùng RDS PostgreSQL, mật khẩu lưu trong Secrets Manager và bật xoay vòng mỗi 30 ngày. Một ngày quản trị kích hoạt xoay vòng thủ công. Triệu chứng: 3–5 phút sau, báo lỗi "đăng nhập thất bại" gấp 10 lần và connection pool của toàn bộ app bị cạn. Điều tra: CloudTrail cho thấy GenerateSecret vừa chạy; lập lại trên staging thấy app vẫn dùng mật khẩu cũ từ lúc khởi động. Nguyên nhân gốc: code lấy secret một lần khi khởi động và cache vĩnh viễn, không reload sau khi rotation. Xử lý: thêm TTL cache 10 phút, khi gặp lỗi xác thực thì gọi lại Secrets Manager và tạo lại DataSource; dùng chiến lược alternating users để mật khẩu cũ vẫn hoạt động một thời gian. Kết quả: lần xoay sau không gây gián đoạn, lỗi đăng nhập về 0, và team không còn phải restart app mỗi khi đổi mật khẩu.
+
 > Senior tip: secret là dữ liệu có vòng đời, hãy thiết kế như dữ liệu có vòng đời: có owner, có lịch xoay, có cảnh báo khi sắp hết hạn, và có đường lui khi xoay lỗi. Đừng biến "lấy secret lúc start" thành "cache đến khi restart".`,
   follow: [
     'Vì sao KMS dùng envelope encryption thay vì mã hoá trực tiếp dữ liệu lớn?',
@@ -1245,6 +1250,13 @@ Ví dụ hoá đơn 20.000 USD/tháng (minh hoạ):
 
 ### Trả lời miệng 1 phút
 "Chi phí AWS của hệ Java thường dồn vào compute, database, data transfer và log. Tôi bắt đầu bằng đo lường: tag bắt buộc, Cost Explorer theo team, budget có cảnh báo. Sau đó làm theo thứ tự: rightsizing theo p95 chứ không theo trung bình, rồi mới mua Savings Plans cho phần nền ổn định, Spot cho worker chịu được gián đoạn, Graviton cho service Java vì gần như không phải sửa code. Khoản hay bị bỏ quên là data transfer: kéo image qua NAT, traffic cross-AZ, Internet egress; tôi xử lý bằng VPC endpoint và CloudFront. Trade-off cần nhớ là cắt quá tay có thể làm tổng tiền tăng vì autoscale bù lại. Kinh nghiệm của tôi là một buổi review một giờ mỗi tháng, nhìn top 5 dòng tăng chi phí, hiệu quả hơn mọi công cụ đắt tiền."
+
+
+
+### Ví dụ đời thực
+Hóa đơn AWS tháng trước của một hệ thống Java nhảy từ 15.000 lên 18.500 USD. Điều tra qua Cost Explorer theo tag env=prod thấy dòng NATGateway tăng 2.200 USD, các dòng khác ổn định. Log VPC Flow Logs cho thấy mỗi lần CI/CD build, runner trong private subnet kéo image Docker từ ECR qua NAT Gateway, mỗi image 600 MB, deploy 20 lần mỗi ngày. Nguyên nhân: không có VPC endpoint cho ECR, traffic đi qua NAT tính phí theo GB. Xử lý: thêm gateway endpoint cho S3 và interface endpoint cho ECR, build image trong cùng region. Kết quả: tháng sau chi phí NAT giảm từ 2.500 xuống 400 USD, tổng hóa đơn về 15.700 USD, và team bổ quy tắc "luôn dùng endpoint thay NAT cho dịch vụ AWS".
+
+Kết quả thêm: sau quy tắc mới, metric NatGateway processed bytes giảm 90% và team xem chi phí NAT hàng tuần trong Cost Explorer thay vì chờ đến cuối tháng. Mô hình là "endpoint trước, NAT sau", vì NAT chỉ dành cho traffic ra Internet thật sự.
 
 > Senior tip: tối ưu chi phí là bài toán liên tục, không phải chiến dịch một lần. Hãy gắn tag bắt buộc ngay từ đầu, đặt budget theo team, và review top 5 service tăng chi phí mỗi tháng. Một buổi review 1 giờ/tháng thường tiết kiệm hơn nhiều so với mua công cụ đắt tiền.`,
   follow: [
@@ -1336,6 +1348,11 @@ Chọn CloudFormation khi đội thuần AWS và muốn ít công cụ. Chọn C
 ### Trả lời miệng 1 phút
 "CloudFormation là IaC gốc của AWS, state do AWS quản; CDK cho tôi viết hạ tầng bằng Java hoặc TypeScript rồi sinh ra CloudFormation; Terraform đa cloud, hệ sinh thái provider lớn nhưng tôi phải tự quản state trên S3 có khoá. Tôi chọn theo bối cảnh: thuần AWS và đội mạnh code thì CDK, đa cloud hoặc công ty đã chuẩn hoá thì Terraform. Dù chọn gì, nguyên tắc vẫn vậy: mọi thứ trong code, state tách theo môi trường và tầng để giảm blast radius, plan được review như code. CI/CD tôi tách pipeline hạ tầng và pipeline ứng dụng; image build một lần, tag theo commit SHA, đi qua dev, staging, rồi prod có approval với canary và rollback tự động theo alarm. Bẫy lớn nhất tôi gặp là migration DB không tương thích ngược, nên luôn dùng expand/contract."
 
+
+
+### Ví dụ đời thực
+Một đội dùng Terraform quản network và database trên AWS. Một engineer vào console thay đổi kích thước instance RDS từ db.t3.medium lên db.t3.large để xử lý giờ cao điểm, nhưng quên cập nhật code. Ba tuần sau, khi apply Terraform thêm một nút cache, Terraform bắt đầu tính toán co lại RDS về medium trong giờ cao điểm. Triệu chứng: terraform plan hiển thị tài nguyên sẽ bị thay đổi trái ý định. Nguyên nhân gốc: drift — hạ tầng thật khác code vì ai đó sửa tay ở console. Xử lý: quay lại kích thước lớn qua console tạm thời, import trạng thái thật vào Terraform, rồi áp dụng thay đổi qua pipeline. Kết quả: sau đó mọi thay đổi phải đi qua PR và plan, team bật drift detection định kỳ, không còn xảy ra sự cố "code và hạ tầng không khớp".
+
 > Senior tip: IaC chỉ có giá trị khi nó là con đường duy nhất để thay đổi hạ tầng. Nếu vẫn còn người click console cho prod, hãy coi đó là sự cố quy trình. Bắt đầu nhỏ: network + data + một service, rồi mở rộng.`,
   follow: [
     'Vì sao nên tách state Terraform theo môi trường và theo tầng?',
@@ -1415,6 +1432,11 @@ Kết quả đo được: 7 HRI -> 2 HRI sau 3 tháng
 
 ### Trả lời miệng 1 phút
 "Well-Architected có sáu trụ cột: Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization và Sustainability. Tôi không dùng nó như lý thuyết mà như quy trình review: chọn một workload cụ thể, hỏi từng trụ cột bằng câu hỏi đòi bằng chứng, ví dụ đã diễn tập mất một AZ chưa, ai có quyền deploy prod, metric nào phát hiện sự cố trong năm phút. Mỗi rủi ro được ghi mức độ, owner, đưa vào backlog và review lại sau một đến ba tháng, lưu milestone trong Well-Architected Tool để thấy tiến bộ. Trade-off là các trụ cột kéo nhau, ví dụ tăng reliability thì tăng chi phí, nên tôi trình bày với business bằng rủi ro và tiền. Một buổi review thành công với tôi là có quyết định cụ thể, không phải một tài liệu dài."
+
+
+
+### Ví dụ đời thực
+Một hệ thống đặt vé trên Spring Boot chạy qua 2 AZ, nhưng chưa bao giờ chạy thử việc mất một AZ. Buổi review Well-Architected theo trụ cột Reliability, người điều phối hỏi: "Mất một AZ, DB và app xử lý ra sao? Đã diễn tập chưa?" Câu trả lời ban đầu là "có AZ thì an toàn", nhưng không có bằng chứng. Ghi nhận rủi ro cao: chưa test failover, owner là dev lead, deadline 2 tuần. Đội chạy drill failover Aurora trên staging, thấy ứng dụng ghi lỗi read-only trong 90 giây do HikariCP giữ connection cũ; sau đó cấu hình max-lifetime ngắn hơn và retry, thử lại là khôi phục dưới 30 giây. Kết quả: số HRI giảm từ 7 xuống 2 trong 3 tháng, và mỗi rủi ro có người chịu trách nhiệm rõ ràng thay vì tài liệu dài không ai đọc.
 
 > Senior tip: hãy dùng Well-Architected như công cụ đàm phán với business: mỗi risk đi kèm chi phí khắc phục và rủi ro nếu không khắc phục. Review tốt nhất là review có một quyết định cụ thể được đưa ra, không phải một tài liệu dài được lưu trữ.`,
   follow: [
@@ -1512,6 +1534,13 @@ WebSocket là một loại API thứ ba, không thuộc bảng này. Chọn HTTP
 
 ### Trả lời miệng 1 phút
 "Với API Gateway cộng Lambda tôi thiết kế quanh ba giới hạn. Timeout tích hợp khoảng 29 giây: vượt thì client nhận 504 nhưng Lambda vẫn chạy, nên API có side effect phải có idempotency key, và việc dài thì trả 202 kèm jobId rồi xử lý qua SQS hoặc Step Functions. Payload thực tế 6 MB vì giới hạn invoke đồng bộ của Lambda, nên file đi qua presigned URL S3. Concurrency: mỗi environment chỉ xử lý một request, nghìn request đồng thời là nghìn connection tới database, nên cần RDS Proxy và pool size một. Về loại API, HTTP API rẻ và đơn giản với JWT authorizer; REST API khi cần WAF, usage plan, cache hoặc private endpoint. Tôi không dùng Lambda khi request thường xuyên dài, traffic nền cao đều, hoặc Spring Boot nặng không tối ưu được cold start."
+
+
+
+### Ví dụ đời thực
+API thanh toán dùng API Gateway (REST) + Lambda viết bằng Java. Khách báo lỗi khi upload ảnh hóa đơn: Lambda ném lỗi payload quá lớn và API Gateway trả 502. Điều tra: metric 4xxError của API Gateway nhảy, log CloudWatch của Lambda ghi payload vượt giới hạn. Nguyên nhân: ảnh base64 phình khoảng 33%, cùng header vượt 6 MB giới hạn invoke đồng bộ của Lambda. Xử lý: bỏ nhận file qua Lambda, đổi thành tạo S3 presigned URL từ Lambda, client upload trực tiếp lên S3, rồi gửi thông báo qua webhook. Kết quả: lỗi payload quá lớn về 0, upload ảnh 10 MB hoàn thành dưới 5 giây, và chi phí Lambda giảm vì không còn xử lý bytes file.
+
+Kết quả thêm: sau chuyển đổi, metric payload quá lớn về 0, upload ảnh 10 MB hoàn thành dưới 5 giây, và chi phí Lambda giảm một nửa vì không còn xử lý bytes file. Bảo luật: file lớn không qua compute, S3 presigned URL là cách chuẩn xử lý upload trên serverless.
 
 > Senior tip: ghi rõ trong ADR "endpoint nào được phép chạy quá 3 giây". Nếu danh sách đó không rỗng, tách chúng sang luồng bất đồng bộ ngay từ đầu; đợi đến khi client gặp 504 rồi mới sửa thì phải đổi cả contract API.`,
   follow: [
@@ -1619,6 +1648,11 @@ Ngoài đoạn trên còn cần: scheduler quét saga treo, timeout từng bư�
 
 ### Trả lời miệng 1 phút
 "Với quy trình mở tài khoản tôi nghiêng về Step Functions Standard. Nó là orchestrator managed: mỗi bước có trạng thái, retry với backoff và catch khai báo sẵn, bước duyệt tay dùng task token nên có thể chờ nhiều ngày mà không tốn compute, và execution history cho kiểm toán biết ai duyệt, lúc nào, input là gì. Nếu tự viết saga trong Java, tôi phải tự lưu trạng thái sau từng bước, tự viết scheduler quét saga treo, timeout, compensation và màn hình tra cứu. Đổi lại Step Functions khoá vào AWS, payload mỗi bước tối đa 256 KB nên tài liệu lớn phải để trên S3, và history chỉ giữ 90 ngày. Dù chọn cách nào, các bước đích vẫn phải idempotent; tôi đặt tên execution theo mã hồ sơ và đẩy sự kiện quan trọng sang kho audit riêng."
+
+
+
+### Ví dụ đời thực
+Ngân hàng số mở tài khoản qua 4 bước: eKYC, chấm điểm, duyệt tay, tạo tài khoản core. Ban đầu đội viết saga trong Java, nhưng bước duyệt tay thường chờ 2–3 ngày, code phải tự lưu trạng thái, viết scheduler quét hồ sơ treo và tự xử lý timeout — sau 2 tháng mới ổn định. Sau đó chuyển sang Step Functions Standard: mỗi bước là một Lambda, bước duyệt dùng task token nên execution tạm dừng không tốn compute, chuyên viên duyệt trên màn hình nội bộ rồi backend gọi SendTaskSuccess. Execution history ghi lại ai duyệt, lúc nào, input là gì, phục vụ kiểm toán. Kết quả: thời gian triển khai quy trình giảm từ 2 tháng xuống 2 tuần, số hồ sơ bị treo trong quy trình về 0, và đội chỉ cần lo logic nghiệp vụ trong Lambda thay vì tự dựng orchestrator.
 
 > Senior tip: ở ngân hàng, lý do mạnh nhất chọn Step Functions thường là audit: kiểm toán hỏi "hồ sơ này ai duyệt, lúc nào, input là gì" thì có ngay execution history. Nhưng history chỉ giữ 90 ngày, nên vẫn phải đẩy sự kiện quan trọng sang kho audit riêng có thời hạn lưu theo quy định.`,
   follow: [
