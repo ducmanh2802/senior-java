@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-11",
+  "intro": "Hôm nay ít tin mới nhưng có vài điểm đáng chú ý: Spring for Apache Pulsar chuyển sang Apache Software Foundation, hai bài kiến trúc AWS về failover đa Region và định tuyến Direct Connect, cùng một case study multi-agent trên Bedrock.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring for Apache Pulsar chuyển về Apache Software Foundation",
+      "title": "Announcing a New Home for Spring for Apache Pulsar",
+      "url": "https://spring.io/blog/2026/11/10/spring-pulsar-new-home-asf",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring for Apache Pulsar trở thành subproject của Apache Pulsar tại ASF, đổi tên thành Apache Pulsar support for Spring. Bản 2.0.8 là bản cuối do Spring phát hành; Spring ngừng vá lỗi và cập nhật cho project này. Spring Boot starter không còn được duy trì (2.0.8 vẫn dùng được với Spring Boot 4.2.0), còn Pulsar binder sẽ nằm trong Spring Cloud Stream 5.1.0.",
+      "why": "Nếu hệ thống dùng Pulsar qua Spring, bạn cần lên kế hoạch đổi dependency coordinates và package import sang project mới để tiếp tục nhận bản vá. Đây cũng là ví dụ về rủi ro phụ thuộc vào module ngoài core của Spring.",
+      "interview_q": "Một thư viện tích hợp bạn đang dùng trong production bị ngừng duy trì ở upstream. Bạn đánh giá rủi ro và lên kế hoạch di chuyển thế nào?",
+      "related": [],
+      "tags": ["spring", "pulsar", "messaging"]
+    },
+    {
+      "title_vi": "Failover đa Region tự phục vụ với ARC Region Switch và ingress tập trung",
+      "title": "Self-service regional failover with Amazon Application Recovery Controller Region Switch and centralized ingress controls",
+      "url": "https://aws.amazon.com/blogs/architecture/self-service-regional-failover-with-amazon-application-recovery-controller-region-switch-and-centralized-ingress-controls/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Trong ngành bị quản lý chặt, fleet ingress proxy tập trung làm team ứng dụng khó tự chạy DR failover. Bài đề xuất team hạ tầng sở hữu Transit Gateway, còn team ứng dụng sở hữu Route 53 private hosted zone với failover record để quyết định Region đang active. ARC Region Switch điều phối các bước failover (promote replica, scale, đổi health check, gọi Lambda) và có thể kích hoạt từ CloudWatch alarm.",
+      "why": "Backend Java chạy multi-Region cần failover lặp lại được và kiểm chứng được cho audit. Bài cho thấy cách chia trách nhiệm giữa team nền tảng và team ứng dụng mà không cần phối hợp lúc sự cố.",
+      "interview_q": "Bạn thiết kế DR multi-Region cho dịch vụ thanh toán như thế nào để team ứng dụng tự failover được mà vẫn qua lớp ingress tập trung của công ty?",
+      "related": ["aws-001"],
+      "tags": ["aws", "dr", "route53"]
+    },
+    {
+      "title_vi": "DeepL giữ định tuyến closest-exit khi bảo trì Direct Connect bằng Cloud WAN",
+      "title": "How DeepL keeps closest-exit routing during maintenance with AWS Cloud WAN",
+      "url": "https://aws.amazon.com/blogs/architecture/how-deepl-keeps-closest-exit-routing-during-maintenance-with-aws-cloud-wan/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "DeepL cần rút một đường Direct Connect ra khỏi vận hành mà không đổi lối ra của các Region khác. Chỉnh local preference sẽ ảnh hưởng mọi Region, nên họ prepend AS_PATH (5 lần) trên virtual interface Dublin để chỉ eu-west-1 chuyển sang Copenhagen hoặc Stockholm. BGP session vẫn giữ nên không có khoảng trễ hội tụ. Cần prepend ít nhất 2 lần và chú ý phí truyền dữ liệu giữa các Region.",
+      "why": "Dù hạ tầng mạng không phải việc hằng ngày của dev Java, hiểu BGP và hybrid networking giúp bạn trả lời tốt các câu hỏi kiến trúc về kết nối on-premises với AWS và ảnh hưởng đến latency, chi phí.",
+      "interview_q": "Khi cần bảo trì một đường kết nối hybrid mà không gián đoạn traffic, bạn có những cách nào và đánh đổi gì?",
+      "related": ["aws-002"],
+      "tags": ["aws", "networking", "bgp"]
+    },
+    {
+      "title_vi": "FleetGPT: multi-agent trên Amazon Bedrock biến dữ liệu IoT thành can thiệp an toàn",
+      "title": "Transforming fleet analytics for Novus Hi-Tech through agentic AI",
+      "url": "https://aws.amazon.com/blogs/architecture/transforming-fleet-analytics-for-novus-hi-tech-through-agentic-ai/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Novus Hi-Tech xây FleetGPT cùng đội AWS PACE: một supervisor agent điều phối sub-agent Text-to-SQL và xử lý dữ liệu bằng Python, dùng Strands Agents SDK trên Bedrock. Dữ liệu nằm ở Aurora PostgreSQL (pgvector) và DynamoDB, chạy trên Fargate/ECS; truy vấn được giới hạn theo fleet ID của từng người dùng. Kết quả công bố: giảm 46% vi phạm hành vi lái xe và 55% cảnh báo buồn ngủ trên 1.000 km.",
+      "why": "Backend Java ngày càng phải tích hợp agent/LLM với dữ liệu nghiệp vụ. Bài minh hoạ các vấn đề thực tế: multi-tenancy ở tầng dữ liệu, human approval trước khi hành động, và tách model theo chi phí.",
+      "interview_q": "Bạn thiết kế dịch vụ cho phép LLM agent truy vấn SQL thay người dùng như thế nào để đảm bảo cách ly dữ liệu giữa các tenant?",
+      "related": ["ai-001"],
+      "tags": ["ai", "bedrock", "multi-tenant"]
+    },
+    {
+      "title_vi": "This Week in Spring (10/11/2026): Spring AI, formatter và bảo mật",
+      "title": "This Week in Spring - November 10th, 2026",
+      "url": "https://spring.io/blog/2026/11/10/this-week-in-spring-november-10th-2026",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Số tuần này chủ yếu là nội dung cộng đồng: phân tích bốn công cụ format Java kèm plugin spring-javaformat, recipe di chuyển sang Session Memory và tăng tốc RAG bằng embedding nhanh hơn trong Spring AI, bài về vá lỗi phần mềm mã nguồn mở trong thời đại khai thác bằng AI, và một cuốn sách mới về xây ứng dụng thông minh với Spring AI.",
+      "why": "Là cách nhanh để theo dõi hệ sinh thái Spring, đặc biệt mảng Spring AI đang thay đổi nhanh và cần có chiến lược cập nhật dependency, vá bảo mật.",
+      "interview_q": "Bạn theo dõi và áp dụng bản vá bảo mật cho các dependency open-source trong dự án Spring như thế nào để vừa nhanh vừa an toàn?",
+      "related": ["spring-001"],
+      "tags": ["spring", "spring-ai"]
+    }
+  ]
+}
