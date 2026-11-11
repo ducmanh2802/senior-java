@@ -1821,6 +1821,17 @@ Cả ba chiến lược đều yêu cầu **expand-contract** khi đổi schema:
 ### Trả lời miệng 1 phút
 Tôi không chọn một chiến lược cho mọi thứ. Rolling update là mặc định cho thay đổi nhỏ vì rẻ, chỉ tốn surge vài Pod, nhưng hai version chạy song song và nếu version mới lỗi thì một phần người dùng đã chịu ảnh hưởng. Blue-green cho release lớn hoặc đổi nền tảng: rollback gần tức thì bằng đổi selector, nhưng gần gấp đôi tài nguyên, gấp đôi connection pool tới DB. Canary cho thay đổi rủi ro: blast radius nhỏ, nhưng cần hạ tầng chia traffic, đủ traffic để có ý nghĩa thống kê, và metric so sánh với baseline cùng thời điểm. Ràng buộc trên hết là dữ liệu: cả ba đều cần migration expand-contract. Về quyền rollback, tiêu chí định lượng được chốt trước release, như 5xx trên 1% trong 5 phút; release owner và SRE on-call đều được dừng, và Argo Rollouts có thể tự abort khi analysis fail.
 
+### Ví dụ đời thực
+Triệu chứng: sau deployment phiên bản thanh toán mới bằng rolling update, tỷ lệ 5xx tăng nhẹ trong 10 phút nhưng team chưa biết nên dừng hay tiếp tục, và khi hỏi "ai có quyền rollback" thì developer và SRE nhìn nhau.
+
+Điều tra: mở dashboard Argo Rollouts so sánh canary với baseline trong cùng cửa sổ thời gian, xem metric 5xx trên 1% trong 5 phút và p99 trên 800 ms.
+
+Nguyên nhân gốc: thiếu tiêu chí rollback định lượng trước khi release và chưa phân công quyền dừng rõ ràng cho ai.
+
+Cách xử lý: chốt trước "nếu 5xx trên 1% trong 5 phút thì dừng rollout", release owner và SRE on-call cùng được quyền dừng, Argo Rollouts tự abort khi analysis fail.
+
+Kết quả đo được: rollback được quyết định trong 5 phút thay vì bàn luận hàng giờ, và ảnh hưởng giới hạn ở nhóm canary thay vì toàn bộ traffic.
+
 > Senior tip: Đừng chọn công cụ trước khi có SLO và metric tin cậy. Một canary 5% chỉ đáng tin khi bạn có dashboard so sánh baseline/canary theo cùng cửa sổ thời gian và đủ traffic; nếu không, blue-green với cutover có kiểm soát và rollback một nút bấm còn an toàn hơn. Ở ngân hàng, tôi luôn canary cho nhân viên nội bộ trước, rồi mới mở cho khách hàng theo cohort.`,
     follow: [
       'Canary cho Kafka consumer khác gì canary cho API? Bạn chia traffic theo partition thế nào?',
@@ -1914,6 +1925,17 @@ Không dùng chung một database staging cho mọi job: test song song sẽ gi�
 ### Trả lời miệng 1 phút
 Pipeline của tôi đi từ rẻ tới đắt: compile và checkstyle, unit test, integration test với Testcontainers, SAST và quét dependency, rồi build image, quét image. Các stage này chặn merge vì chúng rẻ và bắt được phần lớn lỗi. Image chỉ build một lần, tag theo commit SHA, registry bật immutable tag, rồi promote đúng digest đó qua DEV, SIT và PROD; mỗi môi trường chỉ khác cấu hình. Nếu rebuild cho từng môi trường thì không chứng minh được thứ chạy prod là thứ đã test. Migration DB tôi chạy bằng Job hoặc initContainer riêng trước khi rollout, không để mỗi Pod tự migrate, và migration phải tương thích ngược vì lúc rolling hai version chạy cùng nhau. Trade-off là thêm stage thì chậm, nên tôi cache .m2, chia shard test, đặt timeout cho job, và giữ pipeline dưới 15 phút. Test flaky phải sửa trong ngày, không cho retry vô hạn.
 
+### Ví dụ đời thực
+Triệu chứng: team thanh toán deploy thủ công bằng script riêng cho mỗi môi trường. Prod chạy image khác UAT vì base image cập nhật giữa chừng, gây bug tính phí sai lệch 0.5% trên 10 triệu giao dịch/ngày. Auditor yêu cầu chứng minh bản prod chính là bản UAT đã duyệt.
+
+Điều tra: pipeline build lại cho từng môi trường với profile khác nhau, tag image dùng "latest", không có SBOM. UAT duyệt image digest A, nhưng prod chạy digest B vì build lại kéo base image mới có thay đổi múi giờ.
+
+Nguyên nhân gốc: vi phạm nguyên tắc "build once, promote many", thiếu digest bất biến và SBOM, cấu hình nướng trong image thay vì ConfigMap/Secret.
+
+Cách xử lý: thiết kế pipeline build một lần, image tag = version + git sha, đẩy lên Harbor, sinh SBOM CycloneDX, ký image cosign. CD dùng Argo CD kéo cùng digest qua DEV, SIT, UAT, PROD. Gate: unit coverage ≥ 80%, Sonar quality gate, Trivy scan chặn CVE Critical, contract test Pact, performance test p99 không tăng > 10%.
+
+Kết quả đo được: auditor duyệt ngay vì digest UAT = digest PROD, SBOM trả lời Log4Shell trong 5 phút thay vì 2 ngày, rollback 1 lệnh revert Git.
+
 > Senior tip: Mục tiêu thực tế là pipeline dưới 15 phút từ push tới môi trường dev, và mọi gate trên merge request phải tái lập được trên máy dev bằng một lệnh. Đo lead time và tỷ lệ pipeline đỏ; nếu pipeline đỏ vì test flaky, sửa test ngay trong ngày thay vì cho retry vô hạn, vì retry vô hạn dạy cả team bỏ qua tín hiệu.`,
     follow: [
       'Bạn đặt quality gate nào cho dependency scan mà không làm pipeline chậm và hay fail vặt?',
@@ -1996,6 +2018,17 @@ WHERE status_new IS NULL
 ### Trả lời miệng 1 phút
 Rollback DB gần như không thể vì dữ liệu đã ghi, và Flyway Community không có undo, nên tôi thiết kế để không cần rollback DB. Mỗi thay đổi phá vỡ được chia theo expand-contract: expand thêm cột hoặc bảng mới cho phép null; release sau app dual-write cả cũ và mới; job backfill chép dữ liệu cũ theo lô nhỏ; rồi switch sang đọc cột mới; chỉ contract, tức xoá cột cũ, sau một hai release khi không còn version nào đọc nó. Nhờ vậy rollback app chỉ là deploy lại digest cũ, vì version cũ vẫn chạy được trên schema mới. Khi migration sai, tôi forward-fix bằng migration mới; restore hay PITR chỉ dùng khi mất dữ liệu nghiêm trọng vì sẽ mất cửa sổ dữ liệu sau backup. Trade-off là một thay đổi kéo dài nhiều release. Tôi luôn chạy migration trên snapshot cỡ prod, đặt lock_timeout và không bao giờ sửa file migration đã áp dụng.
 
+### Ví dụ đời thực
+Triệu chứng: cần đổi cột status từ varchar sang enum trong bảng thanh toán 50 triệu dòng. Nếu chạy ALTER TABLE đổi kiểu ngay, bảng bị khóa vài phút và cả hai version app (cũ và mới) trong lúc rolling update đều không chạy được.
+
+Điều tra: chạy ALTER TABLE trên bản snapshot cỡ prod, thấy khóa bảng 10 phút, WAL phình to, replication lag tăng.
+
+Nguyên nhân gốc: thay đổi schema phá vỡ không thể hoàn tác dữ liệu đã ghi, và Flyway Community không có undo.
+
+Cách xử lý: expand-contract. V10 thêm cột status_new, index CONCURRENTLY. App mới dual-write cả hai cột. Job backfill chép dữ liệu cũ theo lô 10.000 dòng, nghỉ giữa các lô. Rồi switch sang đọc status_new. Sau 1–2 release, contract xoá cột cũ.
+
+Kết quả đo được: migration không khóa bảng lâu, rollback app chỉ là deploy lại digest cũ vì version cũ vẫn đọc được schema mới.
+
 > Senior tip: Hãy coi mỗi migration là một API công khai giữa các version app. Tôi luôn yêu cầu migration chạy trên snapshot prod trong staging, có số đo thời gian lock và kế hoạch forward-fix trước khi deploy. Một migration "chỉ mất 2 giây" trên bảng 100.000 dòng có thể mất 20 phút trên 100 triệu dòng.`,
     follow: [
       'Bạn dual-write và backfill thế nào để không tăng tải DB trong giờ cao điểm?',
@@ -2068,6 +2101,17 @@ Spring Boot
 
 ### Trả lời miệng 1 phút
 Tôi chia việc rõ ràng: Micrometer là facade cho metric, Actuator phơi /actuator/prometheus để Prometheus scrape; Micrometer Tracing với bridge OpenTelemetry tạo traceId, spanId, đưa vào MDC và truyền qua header traceparent, gửi span bằng OTLP tới OTel Collector; log JSON ra stdout có traceId để nối với trace. Collector làm batch, retry, memory limiter, che dữ liệu nhạy cảm và tail sampling để giữ trace lỗi, chậm mà vẫn chỉ lấy mẫu 5–10% phần còn lại. Bẫy chi phí lớn nhất là cardinality: tag userId hay URI chứa ID thật có thể làm Prometheus OOM, nên tôi chặn bằng MeterFilter. Bẫy khác là bật cả OTel Java agent và Micrometer Tracing gây span trùng, và sampling 100% ở prod. Tôi bắt đầu từ SLO và ba dashboard RED, USE, nghiệp vụ, alert theo burn rate, và chuẩn hoá mọi thứ trong một starter nội bộ cho 20 service.
+
+### Ví dụ đời thực
+Triệu chứng: giao dịch thanh toán qua 5 service bị chậm ngẫu nhiên, p99 từ 150 ms lên 2 giây, nhưng dashboard chỉ nhìn thấy CPU thấp và không biết chậm ở service nào.
+
+Điều tra: tìm traceId trong log của service gateway, nhảy sang trace trong Tempo, thấy span DB ở service ledger chiếm 1,8 giây do thiếu index.
+
+Nguyên nhân gốc: thiếu chuẩn hoá traceId, log không có traceId nên không tương quan được, và cardinality cao do gắn userId vào metric làm Prometheus OOM.
+
+Cách xử lý: thống nhất schema ECS qua starter nội bộ, log JSON ra stdout có traceId, Micrometer Tracing truyền traceparent qua HTTP và Kafka, OTel Collector tail sampling giữ trace lỗi/chậm. Chặn tag userId bằng MeterFilter.
+
+Kết quả đo được: MTTR từ 2 tiếng xuống 10 phút, chi phí Prometheus giảm 30% sau khi cắt tag cardinality cao.
 
 > Senior tip: Bắt đầu từ SLO và ba dashboard, rồi mới chọn tool. Chuẩn hoá bằng một starter nội bộ (metric naming, log format, trace propagation, tag bắt buộc) để 20 service không mỗi nơi một kiểu. Mỗi quý rà lại top metric theo cardinality và top log theo volume; cắt 20% tín hiệu ít dùng thường không làm mất khả năng điều tra mà giảm hoá đơn rõ rệt.`,
     follow: [
@@ -2154,6 +2198,17 @@ Thêm dependency {{spring-boot-docker-compose}} (scope chỉ cho dev, ví dụ M
 ### Trả lời miệng 1 phút
 "Tôi đặt một file compose.yaml trong repo, khai báo PostgreSQL, Redis, Kafka với version cố định, cổng publish cho app chạy trong IDE, named volume để dữ liệu còn sau khi down, và healthcheck cho từng dịch vụ. Service nào phụ thuộc DB thì depends_on với condition service_healthy để đợi DB sẵn sàng thật chứ không chỉ container chạy. Trong cùng compose, container gọi nhau bằng tên service chứ không phải localhost. Từ Spring Boot 3.1, tôi thêm spring-boot-docker-compose để app tự chạy compose và tự cấu hình kết nối. Kết quả: dev mới chỉ cần clone và chạy một lệnh, và reset sạch bằng down -v."
 
+### Ví dụ đời thực
+Triệu chứng: dev mới vào team mất 2 ngày cài PostgreSQL 16, Redis 7, Kafka trên máy mới, mỗi máy một version, chạy xong service vẫn không kết nối được DB.
+
+Điều tra: dev cài tay PostgreSQL phiên bản khác với production, không có healthcheck nên app khởi động trước DB sẵn sàng gây "Connection refused".
+
+Nguyên nhân gốc: thiếu môi trường dev chuẩn hóa, mỗi dev cài khác nhau và không đợi service sẵn sàng.
+
+Cách xử lý: viết compose.yaml trong repo khai báo postgres:16.4, redis:7.4, kafka với version cố định, healthcheck pg_isready, named volume pgdata, và depends_on với condition service_healthy. Thêm spring-boot-docker-compose để app tự chạy compose và cấu hình datasource.
+
+Kết quả đo được: dev mới chỉ cần clone và chạy "docker compose up -d", chạy được trong 15 phút, dữ liệu vẫn còn sau lần down nhờ named volume.
+
 > Senior tip: hãy coi {{compose.yaml}} là **tài liệu sống** của hệ thống — dev mới đọc nó để biết service cần những gì. Đặt mục tiêu "clone tới chạy được trong 15 phút" và đo lại mỗi quý bằng một máy sạch. Với máy dev RAM 16 GB, Kafka + vài DB đã ăn 3–4 GB; dùng profiles để chỉ bật thứ thật sự cần cho task đang làm.`,
     follow: [
       'Khi nào dùng Testcontainers thay vì Docker Compose cho test tích hợp?',
@@ -2226,6 +2281,17 @@ docker exec orders-api getent hosts postgres
 
 ### Trả lời miệng 1 phút
 "Mỗi container có network namespace riêng nên localhost bên trong là chính container, không phải host. Để app gọi DB, tôi cho cả hai vào cùng user-defined network rồi gọi bằng tên container; mạng bridge mặc định không có DNS theo tên. Nếu DB nằm trên host thì dùng host.docker.internal. Để từ host vào app phải publish cổng với -p host:container; EXPOSE chỉ là tài liệu. Còn dữ liệu, mọi thứ ghi vào writable layer sẽ mất khi xoá container, nên tôi dùng named volume cho dữ liệu cần giữ, bind mount khi cần map thư mục cụ thể, và production thì lưu file lên object storage."
+
+### Ví dụ đời thực
+Triệu chứng: app Spring Boot trong container báo không kết nối PostgreSQL ở localhost:5432 dù DB chạy trên máy, mở trình duyệt localhost:8080 không vào được app, và mỗi lần xoá container thì file upload mất.
+
+Điều tra: trong container app, localhost là chính container đó không phải host; quên -p 8080:8080 nên host không vào được port; file upload nằm trong writable layer của container.
+
+Nguyên nhân gốc: mỗi container có network namespace riêng, publish cổng thiếu, và dữ liệu ghi trong lớp ghi container mất khi xoá container.
+
+Cách xử lý: tạo user-defined network "backend", chạy DB và app cùng network, app gọi DB bằng tên service postgres, host publish -p 8080:8080, file upload dùng named volume uploads:/app/uploads (production lưu object storage S3).
+
+Kết quả đo được: app kết nối DB được, host truy cập localhost:8080 bình thường, file upload còn lại sau khi xoá container.
 
 > Senior tip: khi debug mạng container, **vào trong container mà thử** ({{docker exec -it orders-api sh}}, rồi {{getent hosts postgres}}, {{nc -zv postgres 5432}}) thay vì đoán từ host — đa số lỗi là nhầm "đang đứng ở đâu". Và trên server, kiểm tra kỹ cổng publish: Docker tự thêm rule iptables nên cổng publish có thể vượt qua firewall kiểu ufw mà bạn tưởng đã chặn.`,
     follow: [
