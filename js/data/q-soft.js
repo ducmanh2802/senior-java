@@ -3531,6 +3531,12 @@ Luật bất biến: **mỗi lần sửa legacy phải có test xanh trước v�
 - Characterization assert cả response có timestamp/id ⇒ đỏ mọi lần, team bỏ luôn test.
 - Khi test đỏ thì **sửa test theo code mới** mà không ai review ⇒ lưới bị vô hiệu hoá âm thầm.
 
+### Ví dụ đời thực
+Một hệ thống xử lý đơn hàng 5 năm tuổi (Spring Boot 2.7, Java 11, Oracle 19c) gần như không có test tự động, tài liệu đã lỗi thời. Triệu chứng: mỗi khi sửa logic tính phí vận chuyển, team mất 2–3 ngày test thủ công và vẫn lọt bug ra production (sai phí khu vực, sai xử lý đơn hàng vượt trọng lượng). Điều tra: tôi chạy {{git log --since=12.months --name-only}} và thấy module {{shipping-fee}} nằm trong top 5 file được sửa nhiều nhất (churn), đồng thời có 4 incident tính phí sai trong 6 tháng, mỗi lần tốn ~6 giờ người khắc phục. Nguyên nhân gốc: code tính phí rải rác trong 3 class, phụ thuộc {{OracleTimestamp}} static, không inject được {{Clock}}, và test thủ công chỉ phủ happy path. Cách xử lý: (1) dựng môi trường "một lệnh" bằng Docker Compose (Oracle 19c + Testcontainers + Flyway seed), mất 2 ngày; (2) viết characterization test cho 5 case tính phí đại diện (nội thành, ngoại thành, vượt kg, COD, miễn phí), dùng golden master so sánh JSON output, chuẩn hoá timestamp/ID; (3) thêm seam: bọc {{OracleTimestamp.now()}} thành {{ClockProvider}} interface, inject vào {{ShippingFeeCalculator}}; (4) thêm {{RateSource}} interface cho bảng phí, fake in-memory cho test. Kết quả đo được: characterization test 5 case chạy < 3 giây, phát hiện ngay 2 bug logic biên (đơn 0 kg, khu vực không tồn tại) mà test thủ công bỏ sót. Sau đó team refactor an toàn module {{shipping-fee}} trong 1 tuần, không còn bug tính phí ra production trong 3 tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhận một hệ thống legacy không có test, tôi không refactor ngay mà xây lưới an toàn trước. Bước 1: dựng characterization test — test mô tả hành vi hiện tại bằng golden master, chuẩn hoá các giá trị biến động như timestamp, ID. Bước 2: dùng seam (parameter, interface, inheritance, link) để phá phụ thuộc static, DB, thời gian với thay đổi nhỏ nhất. Bước 3: ưu tiên theo rủi ro = tần suất thay đổi × tác động, dùng git churn ghép incident để chọn 5 luồng rủi ro cao nhất. Bước 4: chỉ sửa code sau khi test xanh. Ví dụ thực tế: module tính phí 5 năm tuổi, tôi dựng characterization 5 case, thêm seam Clock và RateSource, refactor an toàn trong 1 tuần, không còn bug tính phí ra production."
+
 > Senior tip: ở hệ thống legacy, thứ tạo niềm tin không phải số lượng test mà là **tốc độ dựng được một môi trường tái hiện được lỗi**. Hãy ưu tiên làm cho "clone repo → chạy 1 lệnh → có DB giống thật → chạy được test" trong ngày đầu tiên; mọi thứ sau đó nhanh gấp nhiều lần. Khi quản lý hỏi "bao lâu", hãy trả lời theo luồng: "characterization cho luồng tính phí mất 2 ngày, sau đó ta có thể sửa an toàn" chứ không trả lời theo phần trăm coverage.`,
   follow: [
     'Bạn thuyết phục quản lý dành bao nhiêu % capacity cho lưới an toàn, và đo hiệu quả bằng gì?',
@@ -3603,6 +3609,12 @@ Luật: mỗi service có **một bảng p95 mục tiêu** hiển thị ở dash
 - Đo trên môi trường nhỏ rồi **ngoại suy** ra production theo tỉ lệ máy — thường sai vì chỗ nghẽn (DB, connection pool) không scale tuyến tính.
 - Chỉ số đẹp nhờ cache chưa "nguội": luôn có pha warm-up rồi mới đo.
 - Báo cáo "p99 = 250 ms" mà không nói bao nhiêu request, dữ liệu bao nhiêu dòng, máy gì.
+
+### Ví dụ đời thực
+Team 15 dev sở hữu service đặt hàng (Spring Boot 3.2, Postgres 15, Kubernetes EKS). Triệu chứng: PR nhỏ thêm một query {{findByStatusIn}} trong vòng lặp làm p95 API {{/api/orders}} tăng từ 180 ms lên 2,4 giây, nhưng test unit/slice đều xanh, chỉ phát hiện khi QA test thủ công staging. Điều tra: CI chỉ chạy unit + integration (8 phút), không có perf smoke. Tôi thiết lập pipeline 3 tầng: (1) Smoke perf mỗi PR: k6 {{ramping-arrival-rate}} 50→200 VU trong 3 phút, ngưỡng p95 > 1.2× baseline chặn merge, chạy trên GitHub Actions runner 2 vCPU (tương đối so với baseline cùng runner); (2) Benchmark chuẩn mỗi merge main: 15 phút, 500 VU constant 5 phút, ghi {{perf/baseline.json}} (p50, p95, p99, rps, errorRate, dbCpu, gcPause) commit vào repo; (3) Soak hàng tuần trước release: 4 giờ, 300 VU, tìm rò rỉ heap. Baseline reset khi thêm index (status, created_at) — p95 giảm từ 1,9 giây xuống 210 ms ở 800 RPS, DB CPU từ 78% xuống 23%. Dashboard Grafana hiển thị trend p95/p99 theo commit, team nhìn thấy regression ngay. Kết quả: 6 tháng sau, 0 regression perf lọt production, 3 PR bị chặn ở smoke perf (đều do query thiếu index hoặc N+1).
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia perf test trong CI thành 3 tầng: smoke perf 2–5 phút mỗi PR so sánh p95 với baseline (ngưỡng tương đối 1.2×), benchmark chuẩn 10–20 phút khi merge main ghi baseline.json, và soak 2–8 giờ hàng tuần trước release. Baseline là file commit trong repo, dashboard hiển thị trend theo commit. Lỗi diễn giải hay gặp: trung bình percentile thay vì gộp histogram, mẫu quá nhỏ cho p99, coordinated omission do dùng closed model, so sánh khác môi trường. Ví dụ thực tế: team 15 dev, PR thêm query trong vòng lặp làm p95 tăng 13×, tôi dựng smoke perf k6 arrival-rate chặn merge, benchmark main ghi baseline, soak tuần. Kết quả: 0 regression perf ra production 6 tháng, 3 PR bị chặn sớm."
 
 > Senior tip: câu nói tạo uy tín trong lĩnh vực này là một câu có **ba con số và một cơ chế**: "thêm index (status, created_at) cho query danh sách đơn ⇒ p95 giảm từ 1,9 giây xuống 210 ms ở 800 RPS, DB CPU từ 78% xuống 23%". Và khi phải bảo vệ ngân sách cho tầng soak (đắt tiền nhất), hãy quy về chi phí lỗi: "mỗi lần nghẽn lúc mở bán làm mất khoảng X đơn trong 20 phút; một giờ môi trường perf mỗi tuần rẻ hơn rất nhiều".`,
   follow: [
@@ -3683,6 +3695,12 @@ Gate nào dev không biết cách sửa trong một buổi thì gate đó sẽ b
 - Chiến lược 40 trang không ai đọc; chuẩn dùng được là 1 trang + template trong repo.
 - Một người duy nhất hiểu toàn bộ hạ tầng test ⇒ không mở rộng và không duy trì được.
 
+### Ví dụ đời thực
+Team 15 dev, pipeline 25 phút, 70% test là E2E thủ công, change failure rate 22% (6 tháng). Triệu chứng: mỗi release mất 3 ngày QA thủ công, vẫn lọt bug mapping HTTP/SQL ra production. Điều tra: tôi phân loại 40 incident 6 tháng — 55% do mapping JSON/validation (tầng controller), 25% do query thiếu index/constraint (tầng repository), 15% logic nghiệp vụ, 5% tích hợp. Pipeline: unit 3 phút, integration 8 phút, E2E 14 phút (flake rate 18%). Kết quả chẩn đoán: kim tự tháp bị đảo, đầu tư vào slice test (@WebMvcTest, @DataJpaTest) + Testcontainers Postgres. Thực hiện: Phase 1 (6 tuần): dọn flake, pipeline < 10 phút, branch protection; Phase 2 (8 tuần): 2 module lõi (order, payment) viết test slice + contract, mutation score baseline 65%; Phase 3: gate coverage delta 60% file mới, regression test bắt buộc cho bug production, contract verify. Số liệu báo cáo quản lý: change failure rate 22% → 9% sau 2 quý, MTTR 6 giờ → 1.5 giờ, pipeline p95 25 phút → 9 phút, flake rate 18% → 2%. QA thủ công giảm từ 3 ngày → 4 giờ (chỉ exploratory).
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu bằng chẩn đoán số liệu: incident 6 tháng phân loại theo tầng, pipeline duration, flake rate, git churn. Kết quả quyết định hình kim tự tháp của team — ví dụ 60% bug từ mapping HTTP/SQL thì đầu tư slice test. Chiến lược 3 phase: Stabilise (dọn flake, pipeline < 10p), Seed (2 module lõi viết test đúng tầng, mutation baseline), Expand (gate theo vùng, contract, smoke perf). Quality gate tăng dần: compile → branch protection → coverage delta file mới → regression test bug production → mutation nightly → contract verify. Báo cáo quản lý bằng DORA: change failure rate, MTTR, pipeline p95, flake rate. Ví dụ thực tế: team 15 dev, change failure rate 22% → 9%, MTTR 6h → 1.5h, pipeline 25p → 9p sau 2 quý."
+
 > Senior tip: lập luận mạnh nhất với cấp trên không phải "code sạch" mà là **kinh tế của lỗi**: "change failure rate 18%, mỗi sự cố tốn khoảng 6 người-giờ ⇒ tầm X giờ công mỗi quý; đầu tư 1 kỹ sư trong một quý cho hạ tầng test và flake để kéo về 8%". Đồng thời chủ động nói giới hạn: "gate sẽ làm tốc độ merge giảm khoảng 2 tuần đầu, đổi lại pipeline đáng tin". Lead nói bằng đánh đổi và bằng số, không nói bằng nguyên tắc.`,
   follow: [
     'Team chống lại ("test là việc của QA") — bạn xử lý bằng quy trình hay bằng ví dụ cụ thể?',
@@ -3734,11 +3752,17 @@ STAR là khung kể chuyện: **S**ituation (bối cảnh), **T**ask (nhiệm v�
 - **Chọn dự án fail mà không có phần học:** được phép kể dự án khó, nhưng phải có "tôi đã làm gì để cứu/giảm thiểu" và "sau đó thay đổi gì".
 - **Dài dòng phần bối cảnh:** dành 3 phút mô tả công ty, 30 giây nói về bạn. Hãy đảo lại.
 
+### Ví dụ đời thực
+Một dev Java 5 năm tại công ty fintech được giao tái cấu trúc module thanh toán (Spring Boot 2.7 → 3.2, Java 11 → 17). Triệu chứng: module cũ dùng {{RestTemplate}} đồng bộ, không có retry, khi gateway ngân hàng chậm 5 giây thì luồng checkout treo, gây timeout cascade xuống order-service; trong 3 tháng có 12 sự cố payment timeout, mỗi lần mất trung bình 15 đơn hàng. Điều tra: tôi bật distributed tracing (Micrometer + Zipkin), thấy p99 gọi ngân hàng lên tới 8 giây, không có circuit breaker; log chỉ ghi "timeout" không có request/response ID để truy vết. Nguyên nhân gốc: thiết kế đồng bộ chặt, không có timeout hợp lý, thiếu idempotency key nên không dám retry an toàn. Cách xử lý: (1) tách gọi ngân hàng ra worker riêng dùng {{CompletableFuture}} + {{Resilience4j}} circuit breaker + retry 3 lần exponential backoff; (2) thêm idempotency key (UUID) vào request, lưu trạng thái vào bảng {{payment_outbox}}, worker đọc bảng để xử lý bất đồng bộ; (3) đặt timeout 3 giây cho gọi ngân hàng, fallback trả về "đang xử lý" cho FE polling. Kết quả đo được: p99 checkout giảm từ 8 giây xuống 1,2 giây, số sự cố timeout giảm từ 12/quý xuống 1/quý, không còn mất đơn do timeout; team nắm được pattern async + outbox áp dụng cho 2 module khác sau đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Dự án tôi tự hào nhất là tái cấu trúc module thanh toán từ đồng bộ sang bất đồng bộ để khử timeout cascade. Tôi làm tech lead cho 3 người, module cũ dùng RestTemplate gọi ngân hàng chặn luồng checkout — gateway chậm 5 giây là cả hệ thống treo. Tôi thiết kế worker riêng với Resilience4j circuit breaker, retry, và pattern outbox lưu idempotency key để retry an toàn. Khó khăn lớn nhất là thuyết phục team và stakeholder rằng giải pháp bất đồng bộ phức tạp hơn nhưng an toàn hơn; tôi làm POC 1 tuần chứng minh p99 giảm từ 8s xuống 1.2s. Kết quả: timeout cascade giảm 90%, không mất đơn, pattern này sau đó áp dụng cho module notification và refund. Bài học: với thay đổi rủi ro cao, hãy đo lường trước, làm POC nhỏ, và rollout dần."
+
 > Senior tip: chuẩn bị **1 dự án "tâm đắc" và 1 dự án "thất bại có bài học"** theo cùng khung STAR. Nhiều vòng phỏng vấn công ty Việt Nam (tech lead, manager) sẽ hỏi biến thể của câu này ("dự án khó nhất", "thứ bạn tự hào nhất"); bạn chỉ cần đổi góc nhấn, không cần câu chuyện mới.`,
   follow: [
     'Nếu làm lại dự án đó hôm nay, bạn sẽ thay đổi quyết định kỹ thuật nào và vì sao?',
     'Trong dự án đó, phần nào bạn phụ thuộc vào người khác, và bạn xử lý rủi ro phụ thuộc ra sao?',
-    'Bạn đo lường "thành công" của dự án đó bằng chỉ số nào sau khi đãgo-live (go-live, chạy thật cho người dùng)?'
+    'Bạn đo lường "thành công" của dự án đó bằng chỉ số nào sau khi đã go-live (chạy thật cho người dùng)?'
   ],
   tags: ['behavioral', 'STAR', 'project', 'ownership']
 },
@@ -3786,6 +3810,12 @@ STAR là khung kể chuyện: **S**ituation (bối cảnh), **T**ask (nhiệm v�
 - **Chỉ nói về lương:** biến mình thành người chỉ chạy theo tiền; nếu lương là một phần, đặt trong bức tranh "tổng thu nhập và cơ hội".
 - **Trả lời quá dài:** biến câu hỏi 1 phút thành 5 phút kể khổ.
 - **Mâu thuẫn với CV:** nếu bạn rời sau 6 tháng, cần lời giải thích nhất quán (dự án kết thúc, thử nghiệm không phù hợp, tái cấu trúc) — không né tránh.
+
+### Ví dụ đời thực
+Một dev Java 4 năm tại công ty outsource làm dự án CRM cho khách hàng retail. Triệu chứng: team 5 dev duy trì 3 dự án song song, đổi context liên tục, code review chỉ là hình thức, deployment handbook 2 năm chưa cập nhật; trong 6 tháng có 3 lần deploy sai môi trường (push production config lên staging), mỗi lần rollback mất 2 giờ và gây mất niềm tin khách hàng. Điều tra: tôi xem git history, thấy 40% commit không có review, CI chỉ có unit test, không có staging gate; handover giữa dev và ops chỉ qua Slack. Nguyên nhân gốc: quy trình release thủ công, thiếu automation, và culture "xong ticket là xong" không chịu trách nhiệm end-to-end. Cách xử lý: (1) tôi đề xuất và setup GitHub Actions pipeline: lint → test → build Docker → deploy staging tự động → manual approve production; (2) viết runbook 2 trang (checklist deploy, rollback, contact on-call); (3) quy ước "deploy xong phải verify smoke test 5 phút trước khi báo xong". Kết quả đo được: sau 2 tháng, 0 lần deploy sai môi trường, lead time từ commit đến production giảm từ 4 giờ xuống 45 phút, khách hàng feedback tích cực về tốc độ phản hồi. Lý do tôi muốn chuyển: tôi tìm môi trường product-focused để sở hữu end-to-end một hệ thống, được áp dụng CI/CD và observability ở mức sâu hơn — điều mà outsource đa dự án khó cho phép.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi học được nhiều về API và quy trình team tại công ty hiện tại 2 năm qua. Lý do chuyển là tôi muốn làm product-focused, sở hữu end-to-end một hệ thống quy mô lớn, được áp dụng CI/CD, observability sâu hơn — trong outsource đa dự án thì context switching nhiều, khó đi sâu. Tôi đã tự cải tiến pipeline nội bộ: setup GitHub Actions, runbook, staging gate, giảm lead time deploy từ 4h xuống 45p. Vị trí này khớp hướng đó nên tôi ứng tuyển. Về counter-offer: tôi đánh giá cao đề nghị giữ lại, nhưng quyết định dựa trên định hướng công việc (phạm vi, quy mô, học hỏi) chứ không chỉ thu nhập. Tôi muốn chuyển đi trong thiện chí, bàn giao đầy đủ."
 
 > Senior tip: viết sẵn một câu trả lời "lý do rời" cho **từng** lần chuyển việc trên CV, mỗi câu tối đa 2 câu nói. Khi interviewer hỏi nối tiếp ("vậy lần trước thì sao?"), bạn sẽ nhất quán và bình tĩnh thay vì ứng biến.`,
   follow: [
@@ -3839,6 +3869,12 @@ Chọn điểm yếu **thật nhưng quản lý được**, và luôn có: ví d
 - **Biến điểm yếu thành "flex":** nghe rất thiếu chân thành.
 - **Nói điểm yếu liên quan trực tiếp kỹ năng cốt lõi** của vị trí mà không có lộ trình cải thiện rõ.
 - **Chuẩn bị quá một chiều:** chỉ nghĩ điểm mạnh kỹ thuật; với vai trò senior, điểm mạnh về phối hợp/ủng hộ người khác cũng có giá trị nếu có bằng chứng.
+
+### Ví dụ đời thực
+Một dev Java 4 năm tham gia dự án migration monolith sang microservices (Spring Boot 3, Kubernetes). Triệu chứng: team 8 người chia 4 service, nhưng ownership mơ hồ — ai phụ trách shared library, ai quyết định contract API? Trong 2 sprint, 3 lần deploy gây breaking change cho service khác vì không có contract test; lead phải can thiệp liên tục, velocity team giảm 30%. Điều tra: tôi tổ chức workshop mapping dependency, thấy 12 interface dùng chung không có owner rõ, versioning ad-hoc. Nguyên nhân gốc: thiếu governance nhẹ — không ai chịu trách nhiệm "shared kernel", team chỉ code feature không lo contract. Cách xử lý: (1) tôi nhận ownership shared library (common-dto, common-exception), thiết lập semantic versioning, publish internal npm/maven; (2) thêm Pact contract test giữa các service, gate CI chặn breaking change; (3) quy ước "API change phải có owner review + 1 tuần deprecation". Kết quả đo được: sau 3 sprint, 0 breaking change không báo trước, shared library release tuần 1 lần có changelog rõ ràng, team bớt phải hỏi nhau "field này đổi chưa". Điểm mạnh tôi thể hiện ở đây: ownership chủ động, thiết lập quy trình nhẹ nhưng hiệu quả. Điểm yếu: lúc đầu tôi ngần ngại nhận shared library vì sợ thành "bình chứa" — sau đó học cách delegate review cho 2 bạn khác, giữ vai maintainer cuối.
+
+### Trả lời mẫu khi phỏng vấn
+"Điểm mạnh của tôi là ownership chủ động thiết lập quy trình nhẹ: dự án migration microservices, shared library không có owner gây breaking change liên tục. Tôi nhận ownership, setup versioning + Pact contract test, 0 breaking change sau 3 sprint. Điểm yếu tôi đang cải thiện: ngần ngại delegate vì sợ mất kiểm soát — lúc đầu tự review hết PR shared library, bị chậm. Tôi thay đổi: phân quyền review cho 2 bạn, tôi chỉ duyệt cuối, dùng checklist; 2 quý gần đây review kịp thời, team tự chủ hơn. Tôi đang học coaching để nhân rộng cách này cho team to hơn."
 
 > Senior tip: trước phỏng vấn, xin feedback thật từ 1–2 đồng nghiệp hoặc người quản lý gần nhất: "Anh/chị thấy em mạnh ở đâu, và cần cải thiện gì?" Bạn sẽ có ví dụ trung thực hơn, và câu trả lời sẽ khớp với những gì người tham chiếu (reference) có thể nói về bạn.`,
   follow: [
