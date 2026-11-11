@@ -4646,6 +4646,16 @@ resource "aws_ecs_service" "app" {
 - **{{terraform_remote_state}} đọc state chưa có output**: consumer plan fail. Đảm bảo thứ tự apply: networking trước, app sau. Dùng {{depends_on}} gián tiếp qua CI pipeline ordering.
 - **Count/for_each thay đổi index**: đổi từ {{count}} sang {{for_each}}, hoặc đổi key, cũng làm địa chỉ thay đổi → cần {{moved}} block cho từng phần tử. Đây là nguồn destroy/create bất ngờ phổ biến nhất.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Sprint refactor, team tách RDS và S3 từ state monolith (180 resource, 1 file state trên S3) sang state {{data/prod}}. PR chỉ đổi code module, không có {{moved}} block. Reviewer thấy {{terraform plan}}: "Plan: 1 to add, 1 to destroy" cho {{aws_db_instance.payment}} và "1 to add, 1 to destroy" cho {{aws_s3_bucket.invoices}} — tưởng là đổi tên bình thường.
+- **Điều tra**: Tech lead chặn merge, chạy {{terraform state list | grep payment}} thấy địa chỉ cũ {{aws_db_instance.payment}}; đối chiếu code mới thấy {{module.data.aws_db_instance.payment}}. Xác nhận state chưa cập nhật địa chỉ nên Terraform hiểu nhầm là xóa tài nguyên cũ và tạo mới.
+- **Nguyên nhân gốc**: Refactor thay đổi địa chỉ resource nhưng không khai báo ánh xạ state ({{moved}} block hoặc {{state mv}}). Với RDS, destroy/create đồng nghĩa mất endpoint, downtime và nguy cơ mất dữ liệu nếu không snapshot đúng lúc.
+- **Xử lý**: Bổ sung {{moved}} block cho từng resource, chạy {{terraform plan}} lại trên cùng workspace remote → kết quả "Plan: 0 to add, 0 to change, 0 to destroy, 2 to move". Apply trong maintenance window ngắn; {{terraform state pull > backup.tfstate}} trước khi apply.
+- **Kết quả**: Không có tài nguyên nào bị tạo lại, thời gian apply 40 giây, không downtime. Team bổ sung rule CI: fail PR nếu plan chứa destroy trên resource có tag {{critical=true}} khi không có thay đổi {{prevent_destroy}} được phê duyệt.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi refactor Terraform, nguyên tắc của em là không để thay đổi địa chỉ resource kéo theo destroy/create ngoài ý muốn. Em phân biệt rõ: code mô tả muốn gì, còn state là bản đồ nối code với tài nguyên thật trên cloud. Nếu chuyển resource vào module hoặc tách state, em dùng {{moved}} block trong cùng PR để Terraform cập nhật ánh xạ địa chỉ khi plan/apply, hoặc {{terraform state mv}} cho trường hợp thủ công và luôn chạy {{terraform plan}} để xác nhận 'No changes'. Khi tách sang state mới, em {{state rm}} ở state cũ rồi {{import}} vào state mới, và dùng {{terraform_remote_state}} để chia sẻ output như VPC ID hay subnet. Trong thực tế, em từng chặn một PR refactor có nguy cơ recreate RDS nhờ review plan; sau khi thêm {{moved}} block, plan chỉ còn thao tác move. Trade-off là phải kỷ luật quy trình và backup state, nhưng đổi lại tránh được outage và mất dữ liệu."
+
 > Senior tip: Đặt quy tắc team — "mọi thay đổi địa chỉ resource phải đi kèm {{moved}} block trong cùng PR, và CI phải fail nếu plan có destroy trên resource có tag {{prevent_destroy}} hoặc là database/storage". Với monolith state trên 100 resource, ưu tiên tách theo vòng đời (networking + data layer tách riêng, app layer tách riêng) trước — đó là nơi blast radius giảm nhiều nhất với effort thấp nhất.`,
     follow: [
       'Bạn đang đổi một resource từ {{count}} sang {{for_each}}. Viết {{moved}} block để ánh xạ {{aws_subnet.private[0]}} sang {{aws_subnet.private["ap-southeast-1a"]}} và giải thích tại sao không làm sẽ gây mất subnet.',
@@ -4805,6 +4815,16 @@ exporters:
 - **{{memory_limiter}} đặt sau {{tail_sampling}}**: buffer tail sampling ăn RAM trước, memory_limiter không kịp can thiệp → Collector OOM. **memory_limiter phải là processor đầu tiên** trong pipeline.
 - **Lọc health check ở SDK nhưng quên ở Collector**: nếu có service khác (không phải Java, không dùng SDK chung) vẫn gửi health span → vẫn tốn tiền. Lọc ở Collector là lưới an toàn chung.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống 20 microservice Java, lưu traces trên Tempo + logs trên Loki. Hóa đơn observability tăng từ 4.200 USD lên 12.600 USD/tháng trong 6 tháng, trong khi traffic chỉ tăng ~20%.
+- **Điều tra**: Truy vấn {{rate(spans_received_total[1d])}} và thống kê theo {{http.route}} cho thấy 45% span là {{/actuator/health}} và {{/actuator/prometheus}}; 30% trace còn lại là request 200 OK dưới 100ms. Kiểm tra Collector thấy không có {{filter}} và đang dùng head sampling 100%. Một số team Node.js gửi trace trực tiếp, không qua chuẩn SDK chung.
+- **Nguyên nhân gốc**: Thu thập "mọi thứ" (100% trace, health check, metric cardinality cao từ label động) và thiếu lớp lọc tập trung tại Collector.
+- **Xử lý**: Triển khai 2 tầng Collector (gateway + sampling). Thêm {{filter/traces}} bỏ health/static, {{tail_sampling}} giữ 100% lỗi và trace > 2s, probabilistic 10% cho phần còn lại, {{memory_limiter}} đứng đầu pipeline, và loadbalancing exporter route theo {{traceID}}. Rà soát metric label, bỏ {{userId}}/{{path param}}.
+- **Kết quả**: Span ingest giảm 68%, chi phí trace giảm từ 7.800 xuống 2.500 USD/tháng, vẫn giữ 100% trace HTTP 5xx và trace chậm để điều tra sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chi phí observability tăng nhanh, em không cắt mù mà tối ưu theo giá trị của dữ liệu. Em thiết kế OTel Collector pipeline rõ ràng: receivers nhận OTLP, processors xử lý theo thứ tự ({{memory_limiter}} trước, rồi filter, tail sampling, batch), exporters đẩy sang Tempo/Prometheus/Loki. Em lọc span không có giá trị như health check, che dữ liệu nhạy cảm, và giảm cardinality metric. Điểm mấu chốt là tail-based sampling: Collector đợi đủ span của trace rồi quyết định, nên giữ 100% trace lỗi và chậm, còn trace bình thường lấy mẫu 10%. Trade-off là tốn RAM và cần load balancing theo {{traceID}} để các span cùng trace về đúng instance. Ở một hệ thống 20 service Java, cách này giúp em giảm hơn 60% chi phí trace mà vẫn giữ được dữ liệu để debug incident."
+
 > Senior tip: Bắt đầu bằng **head-based 10% + giữ 100% lỗi** ở SDK (đơn giản, không cần infrastructure thêm). Khi chi phí vẫn cao hoặc cần "giữ trace chậm" chính xác, mới chuyển sang tail sampling — nhưng phải đầu tư đúng: 2 tầng Collector (gateway route + sampling stateful), giám sát buffer/drop metrics, và test với traffic thật. Chi phí vận hành tail sampling (RAM, complexity) đôi khi lớn hơn tiền tiết kiệm được nếu hệ thống nhỏ; với 20 service Java traffic trung bình, head-based sampling + filter health check thường đã giảm 60–80% chi phí trace.`,
     follow: [
       'Tại sao {{memory_limiter}} phải đứng đầu danh sách processors? Điều gì xảy ra nếu bạn đặt nó sau {{tail_sampling}} và {{batch}}?',
@@ -4962,6 +4982,16 @@ Xoay mật khẩu DB trong secret manager (hoặc tạo SealedSecret mới) ch�
 - **Argo CD diff luôn hiện "OutOfSync"**: ESO tạo Secret với metadata/annotation mà Git manifest không có → Argo CD thấy khác. Cấu hình {{ignoreDifferences}} trong Argo CD Application cho Secret do ESO quản lý.
 - **App cache connection với credential cũ**: DB password đổi, Secret cập nhật, Pod restart — nhưng connection pool giữ connection cũ (vẫn hoạt động với một số DB cho đến khi connection bị đóng). Hiểu behavior của DB và pool.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Lúc 02:00 rotation mật khẩu RDS tự động. Sau 20 phút, service {{payment-api}} (Spring Boot, HikariCP) bắt đầu lỗi {{FATAL: password authentication failed}}, tỉ lệ lỗi 5xx tăng 12% dù Pod vẫn Running.
+- **Điều tra**: Kiểm tra AWS Secrets Manager thấy password mới đã có từ 02:00; {{kubectl describe externalsecret db-credentials}} cho thấy {{refreshInterval: 1h}} nên K8s Secret mới sync lúc 03:00. Một số Pod restart thủ công nhưng vẫn lỗi vì env {{DB_PASSWORD}} được inject lúc khởi động, còn Pod cũ dùng connection trong pool tạo trước khi revoke.
+- **Nguyên nhân gốc**: Quy trình rotation mới chỉ cập nhật "nguồn" (Secrets Manager) mà không đảm bảo chuỗi đồng bộ xuống cluster và ứng dụng; ứng dụng không có cơ chế nhận credential mới an toàn.
+- **Xử lý**: Giảm {{refreshInterval}} xuống 5 phút, cài {{Reloader}} để rolling restart Deployment khi Secret đổi, cấu hình HikariCP {{maxLifetime}} ngắn hơn TTL credential tạm thời và bật kiểm tra kết nối. Với DB quan trọng dùng chiến lược dual-user/overlap khi rotate để có cửa sổ chuyển tiếp.
+- **Kết quả**: Lần rotation sau, credential mới được áp dụng trong 6 phút, không phát sinh 5xx; audit CloudTrail ghi nhận đầy đủ truy cập secret.
+
+### Trả lời mẫu khi phỏng vấn
+"Với GitOps, em không bao giờ commit plaintext secret. Em chọn giải pháp theo nhu cầu: Sealed Secrets phù hợp team nhỏ vì mã hóa bằng public key và commit ciphertext vào Git; SOPS phù hợp khi muốn mã hóa từng field trong Helm values và dùng KMS; còn External Secrets Operator phù hợp production vì Git chỉ giữ tham chiếu, giá trị thật nằm ở AWS Secrets Manager hoặc Vault, có audit và rotation thuận tiện. Em luôn nhấn mạnh rotation không chỉ là đổi mật khẩu ở nguồn: phải sync xuống Kubernetes Secret, rồi làm app nhận giá trị mới bằng rolling restart có kiểm soát hoặc cơ chế reload, đồng thời cấu hình connection pool như HikariCP để không giữ credential cũ quá lâu. Trade-off của ESO là thêm hạ tầng và phụ thuộc secret manager, nhưng đổi lại vận hành và tuân thủ tốt hơn. Ở thực tế em từng xử lý lỗi sau rotation bằng cách chỉnh refreshInterval, thêm Reloader và overlap credential để không gián đoạn."
+
 > Senior tip: Với team mới bắt đầu GitOps, **Sealed Secrets** là điểm khởi đầu hợp lý (ít thành phần, GitOps thuần). Khi số secret tăng, cần rotation tự động, hoặc audit/compliance yêu cầu truy vết — chuyển sang **ESO + AWS Secrets Manager/Vault**. Đừng trộn 3 cách trong cùng cluster nếu không có quy ước rõ ràng (mỗi namespace một pattern) — sẽ gây nhầm lẫn "secret này quản lý ở đâu?". Dù dùng cách nào, luôn cấu hình **encryption at rest** cho etcd (KMS provider) và RBAC chặt cho phép đọc {{secrets}} resource.`,
     follow: [
       'Bạn dùng ESO với AWS Secrets Manager. DBA vừa rotate mật khẩu RDS. Mô tả toàn bộ chuỗi từ lúc đổi mật khẩu đến khi app Java dùng mật khẩu mới, kể cả trường hợp app dùng HikariCP connection pool.',
@@ -5102,6 +5132,16 @@ rules:
 - **Target RPS quá cao**: 1 Pod Java handle 200 RPS ở warm state nhưng chỉ 50 RPS lúc cold → HPA tính theo 200, scale ra ít Pod → Pod mới cold nhận traffic → latency spike. Đặt target theo throughput **cold/warm trung bình**, không phải peak benchmark.
 - **Custom metric lag**: Prometheus scrape mỗi 15–30s, Adapter query có delay → HPA quyết định dựa trên dữ liệu 30–60s trước. Kết hợp với {{minReplicas}} buffer cho burst.
 - **Readiness probe trả 200 ngay khi Spring context up**: traffic đổ vào Pod chưa JIT warm → p99 spike 5–10x trong 1–2 phút đầu. Dùng custom readiness: chỉ UP sau khi xử lý N request warm-up hoặc sau delay.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Flash sale, traffic {{checkout-api}} (Java 17, Spring Boot) tăng từ 300 lên 1.200 RPS trong 90 giây. HPA cấu hình target CPU 70% nhưng p99 latency tăng từ 180ms lên 2,8s trong 3 phút, tỉ lệ timeout 6%.
+- **Điều tra**: {{kubectl describe hpa}} thấy desiredReplicas tăng chậm; metric CPU trung bình chỉ 55% vì service I/O-bound chờ DB. Pod mới Ready sau 20s nhưng 90s đầu JIT chưa warm nên p99 của Pod mới gấp 4 lần Pod cũ. Scale-down từng xảy ra sau đợt trước với stabilization mặc định ngắn, gây dao động.
+- **Nguyên nhân gốc**: (1) Dùng CPU metric không phản ánh tải thật, (2) readiness probe báo sẵn sàng quá sớm, (3) hành vi scale-up/scale-down chưa phù hợp đặc tính JVM warm-up.
+- **Xử lý**: Chuyển HPA sang custom metric {{http_requests_per_second}} (Prometheus Adapter) kết hợp CPU làm sàn; đặt {{minReplicas: 4}}, {{behavior.scaleUp}} phản ứng nhanh, {{behavior.scaleDown.stabilizationWindowSeconds: 600}}, thêm {{preStop}} và {{terminationGracePeriodSeconds: 120}}. Bật startup probe đủ dài và readiness chỉ UP sau warm-up ngắn.
+- **Kết quả**: Khi ramp tương tự, số Pod đạt mức cần trong ~2 phút, p99 ổn định ở 420ms, không còn flapping khi traffic giảm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi dùng HPA cho service Java, em không chỉ nhìn CPU vì Java I/O-bound có thể latency cao dù CPU thấp, còn GC có thể làm CPU tăng giả. Em chọn metric gần tải thật như RPS hoặc queue depth, đôi khi kết hợp CPU làm sàn. Em cấu hình HPA với {{minReplicas}} có buffer, scale-up nhanh (stabilization 0, policy tăng mạnh) nhưng scale-down chậm (stabilization 5–10 phút) để tránh giết Pod vừa warm-up. Ở phía ứng dụng, em tối ưu startup (CDS, cấu hình Spring hợp lý), đặt startup/readiness/liveness probe đúng nghĩa và dùng preStop để drain request. Trade-off là tốn thêm tài nguyên ở baseline và cần hệ thống metric ổn định. Trong một đợt flash sale, sau khi chuyển sang RPS metric và chỉnh stabilization, hệ thống scale kịp và p99 không còn spike như trước."
 
 > Senior tip: Với Java trên Kubernetes, HPA là **cần nhưng chưa đủ**. Công thức thực tế: (1) {{minReplicas}} đủ gánh baseline + buffer 30%, (2) HPA scale theo **RPS hoặc custom metric** (không chỉ CPU), (3) scaleUp nhanh + scaleDown chậm (stabilization 10 phút), (4) tối ưu startup (CDS, readiness đúng nghĩa), (5) PDB + graceful shutdown. Đo bằng load test: ramp traffic từ baseline lên 3x trong 2 phút, xem p99 có spike không và HPA mất bao lâu để ổn định — con số đó mới là "thời gian phản ứng thật" của hệ thống, không phải 15s sync period.`,
     follow: [
@@ -5295,6 +5335,16 @@ metrics:
 - **Canary và stable dùng chung DB migration chưa tương thích**: canary chạy code mới cần cột mới, stable chạy code cũ — migration phải **backward-compatible** (expand-contract pattern). Canary analysis sẽ pass nhưng rollback sau đó có thể fail.
 - **{{abortScaleDownDelaySeconds}} quá ngắn**: abort xong, canary Pod bị xóa ngay → mất log/metric để debug. Đặt 30–60s hoặc giữ Pod ở trạng thái {{Paused}} để điều tra.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Deploy {{payment-api}} bằng Argo Rollouts (5% → 25% → 50% → 100%). Ở bước 5% lúc 14:10, rollout tự động abort dù dashboard tổng thể nhìn ổn; 2 tuần sau, một bản phát hành khác promote 100% nhưng sau 40 phút xuất hiện lỗi tính phí sai ở 0,8% giao dịch.
+- **Điều tra**: Với lần abort oan, Prometheus cho thấy canary có 30 RPS trong cửa sổ 5 phút, p99 spike từ 220ms lên 900ms chỉ trong 90s đầu do JVM cold start, {{failureLimit}} đặt 1. Với lần bỏ sót, error rate HTTP 5xx vẫn 0,2% (trong ngưỡng) nhưng business metric {{payment_success_ratio}} giảm 0,7% so với stable — AnalysisTemplate không đo chỉ số này và cửa sổ quan sát quá ngắn.
+- **Nguyên nhân gốc**: False positive do sample nhỏ + warm-up chưa được tính tới; false negative do chọn metric sai (chỉ kỹ thuật, thiếu nghiệp vụ) và ngưỡng/lịch phân tích chưa đủ nhạy.
+- **Xử lý**: Thêm bước warm-up (scale canary trước, delay analysis), dùng baseline comparison canary vs stable cho error rate và p99, tăng {{count}}/{{pause}} ở bước đầu, bổ sung analysis business metric và synthetic check; giữ manual gate trước 100% cho luồng thanh toán.
+- **Kết quả**: Trong 10 release tiếp theo, không còn rollback oan do cold start; một lỗi logic được chặn ở bước 25% nhờ {{payment_success_ratio}} lệch 0,6% so với stable.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Argo Rollouts canary, em coi AnalysisTemplate như bộ test chạy trên traffic thật. Em thường bắt đầu với error rate 5xx và p99 latency, nhưng so sánh canary với stable cùng thời điểm để tránh false positive khi hệ thống chung đang xấu. Em cấu hình bước 5% có pause đủ dài, warm-up Pod trước khi nhận traffic, và dùng {{count}}, {{interval}}, {{failureLimit}} hợp lý để tránh quyết định trên sample quá nhỏ. Ở service quan trọng, em thêm business metric và giữ manual gate trước 100%. Trade-off là rollout chậm hơn, nhưng giảm rủi ro. Em từng gặp cả hai trường hợp: rollback oan do cold start và bỏ sót lỗi logic vì chỉ nhìn HTTP 5xx; sau khi đổi sang baseline comparison và thêm metric nghiệp vụ, chất lượng quyết định cải thiện rõ."
+
 > Senior tip: Canary analysis chỉ tốt bằng metric bạn đo. Bắt đầu với 2 metric: **error rate** (5xx) và **p99 latency** — so sánh baseline (canary vs stable), không dùng ngưỡng cố định. Thêm business metric (conversion, success rate) khi đã ổn định. Luôn có **manual gate** (bước {{pause}} không có duration, chờ {{kubectl argo rollouts promote}}) ở bước trước 100% cho service critical — tự động hóa hoàn toàn là mục tiêu, nhưng đến đó cần nhiều iteration tuning analysis. Ghi lại mọi lần false positive/negative và điều chỉnh {{failureLimit}}, {{count}}, {{interval}} — analysis template là "bộ test production", cần maintain như test code.`,
     follow: [
       'Tại sao baseline comparison (canary vs stable cùng thời điểm) tốt hơn ngưỡng cố định? Cho ví dụ cụ thể khi ngưỡng cố định gây false positive dù canary không có lỗi.',
@@ -5407,6 +5457,16 @@ Không bắt KPI "100% team phải dùng golden path trong Q3" — đó là áp 
 - **Platform team thành bottleneck**: mọi thay đổi pipeline phải qua platform team review/merge → team chờ đợi, platform team quá tải. Cho phép team contribute vào template (inner-source model), platform team review nhưng không phải người duy nhất sửa.
 - **Không maintain template**: template tạo 1 năm trước, dependency cũ, base image có CVE → service mới sinh ra đã nợ kỹ thuật. Lên lịch cập nhật template định kỳ, tự động PR bump dependency.
 - **Ép migration "big bang"**: yêu cầu 20 team chuyển pipeline trong 1 tháng → kháng cự, lỗi, burnout. Migration dần: team mới dùng golden path mặc định, team cũ migrate khi có dịp (refactor, thêm feature). Đặt deadline mềm, hỗ trợ migration.
+
+### Ví dụ đời thực
+- **Triệu chứng**: 20 team Java có 20 pipeline CI/CD khác nhau; onboarding dev mới trung bình 10 ngày mới deploy được lần đầu; 6 tháng ghi nhận 14 incident do lỗi cấu hình pipeline/deploy (thiếu scan, sai manifest, script thủ công).
+- **Điều tra**: Platform team phỏng vấn 6 team và đo "time to first deploy" (median 9,5 ngày), tỉ lệ deploy tự phục vụ (40%), và số ticket ops liên quan môi trường (35/tháng). Nguyên nhân lặp lại: mỗi team tự copy YAML cũ, thiếu template chuẩn, thiếu observability mặc định và tài liệu.
+- **Nguyên nhân gốc**: Không có golden path và không có sản phẩm nền tảng rõ ràng; mỗi team tối ưu cục bộ tạo ra phân mảnh và tải nhận thức cao khi người chuyển team.
+- **Xử lý**: Xây golden path cho Spring Boot REST API: template repo (Dockerfile, Helm/Kustomize, CI chuẩn, OTel, dashboard), Backstage scaffolding, và GitOps bằng Argo CD. Pilot với 3 team trong 6 tuần, co-design pipeline, cho phép extension point. Team cũ migrate dần khi chạm vào service, không ép big bang.
+- **Kết quả**: Với service mới trên golden path, time to first deploy giảm từ 9,5 ngày xuống 4 giờ; ticket ops giảm 55%; incident liên quan pipeline giảm từ 14 xuống 5 trong quý tiếp theo; khảo sát hài lòng nội bộ đạt 8/10.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu nhiều team tự dựng pipeline dẫn đến phân mảnh, em sẽ tiếp cận bằng Internal Developer Platform và một golden path, không phải bằng mệnh lệnh áp đặt. Golden path là con đường mặc định tốt nhất: từ template service Java, CI/CD chuẩn, bảo mật, observability đến deploy GitOps đều có sẵn, để dev tập trung vào nghiệp vụ. Em bắt đầu từ pain thật bằng cách phỏng vấn và đo các chỉ số như time to first deploy, lead time, và số incident do pipeline. Em co-design với vài team, làm pilot nhỏ, cung cấp extension point và tài liệu để team có thể đi chệch khi cần nhưng vẫn tự chịu trách nhiệm. Trade-off là platform team phải vận hành như một sản phẩm và tránh thành bottleneck, nên em ưu tiên self-service và inner-source. Khi golden path thực sự nhanh và đáng tin cậy, adoption sẽ tự tăng thay vì cần ép."
 
 > Senior tip: IDP thành công khi developer **không nghĩ về platform** — họ chỉ thấy "tạo service mới mất 10 phút, deploy dễ, có dashboard sẵn". Đo lường thành công bằng "time to first deploy" và "developer satisfaction", không phải "số feature của platform". Bắt đầu nhỏ: 1 golden path cho 1 loại service phổ biến nhất (Spring Boot REST API), làm thật tốt, có 3–5 team dùng thành công và nói tốt về nó — rồi mới mở rộng. Platform team 2–3 người phục vụ 20 team là khả thi nếu golden path giảm 80% ticket ops, nhưng chỉ khi scope được kiểm soát chặt.`,
     follow: [
