@@ -1727,6 +1727,20 @@ Hệ thống đăng ký sự kiện cho một triệu khách hàng. Form đăng 
 - Làm tròn HALF_UP vs HALF_EVEN (banker's) khác nhau ở .5; fintech thường HALF_UP.
 - Audit trail phải lưu input + output để reconcile.
 
+### Ví dụ đời thực
+Hệ thống quỹ tiết kiệm chia lãi theo 3 kỳ (1, 3, 6 tháng) cho 1,2 triệu tài khoản. Lần đầu triển khai, mỗi kỳ được round HALF_UP xuống 2 chữ số thập phân riêng biệt: 100.000 đồng chia 3 kỳ → 33.333, 33.333, 33.333 → tổng 99.999, mất 1 đồng. Với 1,2 triệu tài khoản, tổng hệ thống mất khoảng 1,2 triệu đồng so với số tiền gốc — phát hiện khi đối chiếu với ledger. Điều tra: code dùng {{BigDecimal.valueOf(100000).divide(BigDecimal.valueOf(3), 2, RoundingMode.HALF_UP)}} cho từng kỳ riêng biệt, không biết tổng. Sửa: tính tổng trước, mỗi kỳ = total.divide(N, 2, HALF_DOWN), phần dư = total.subtract(sum các kỳ đã tính), cộng vào kỳ cuối. Với 100.000 chia 3: kỳ 1 = 33.333, kỳ 2 = 33.333, kỳ 3 = 33.334 → tổng = 100.000. Lưu input (100.000, N=3) và rule version (HALF_UP, scale=2) vào bảng audit để reconcile. Sau fix, job đối chiếu tổng phân bổ = tổng nguồn cho 1,2 triệu tài khoản, lệch về 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chia tiền cho nhiều kỳ, làm tròn từng kỳ riêng lẻ sẽ sinh phần dư — mỗi kỳ round xuống thì tổng bao giờ nhỏ hơn hoặc bằng nguồn, và nếu có kỳ round lên thì có thể vượt. Tôi luôn tính tổng trước: chia total cho N với quy tắc round đã chọn, sau đó tính phần dư bằng total trừ tổng các kỳ đã tính, và phân bổ phần dư vào kỳ cuối (hoặc round-robin nếu cần công bằng). Dùng BigDecimal khởi tạo từ chuỗi hoặc long theo minor unit, không bao giờ double. Quy tắc HALF_UP hay HALF_EVEN phải được ghi rõ trong hợp đồng hoặc quy định nghiệp vụ, và tôi lưu input cùng rule version để audit có thể reconcile. Kiểm tra quan trọng là tổng các kỳ phải bằng chính xác tổng nguồn — đó là invariant tôi đặt vào cuối job."
+
+### Cơ chế từng bước
+1. **Vấn đề:** Khi chia một số tiền S cho N kỳ bằng cách round từng kỳ xuống đơn vị nhỏ nhất (ví dụ 0.01), tổng các kỳ sau round thường ≠ S. Ví dụ 100.000 / 3 → 33.333 × 3 = 99.999, mất 0.001.
+2. **Nguyên nhân gốc:** Mỗi kỳ round một cách độc lập, không biết tổng. Round DOWN thì tổng ≤ S, round UP thì tổng ≥ S.
+3. **Cách đúng:** Tính từng kỳ bằng round, sau đó điều chỉnh kỳ cuối bằng chính phần dư: kỳ cuối = S − sum(các kỳ trước). Hoặc phân bổ round-robin: thêm 1 đơn vị nhỏ nhất vào các kỳ theo thứ tự cho đến khi tổng bằng S.
+4. **Vì sao BigDecimal:** double có thể sinh sai số thập phân (0.1 + 0.2 = 0.30000000000000004). BigDecimal với scale cố định và RoundingMode cho phép kiểm soát hoàn toàn.
+5. **Pitfall:** Quy tắc round (HALF_UP vs HALF_EVEN) khác nhau ở trường hợp .5 — HALF_EVEN (banker's) làm tròn về số chẵn gần nhất, thường dùng trong ngân hàng để trung lập, còn HALF_UP làm tròn lên. Chọn theo quy định nghiệp vụ, không tự ý chọn.
+6. **Audit:** Lưu input, rule version và kết quả để reconcile; tổng các kỳ phải bằng tổng nguồn theo cùng đơn vị.
+
 > Senior tip: test amount không chia hết, amount âm và nhiều currency; assertion quan trọng là tổng phân bổ bằng chính xác tổng nguồn.
 `,
   follow: ['BigDecimal vs double cho tiền?', 'Làm sao reconcile tổng tiền với ledger?'],
@@ -1754,6 +1768,20 @@ Hệ thống đăng ký sự kiện cho một triệu khách hàng. Form đăng 
 - Reload truststore runtime phức tạp; rolling restart đơn giản hơn và an toàn.
 - Pin cert (certificate pinning) tăng security nhưng rotation khó; cân nhắc.
 
+### Ví dụ đời thực
+Hệ thống tích hợp với đối tác thanh toán qua HTTPS, dùng Java keystore/truststore chuẩn (cacerts + truststore riêng). Một buổi sáng, mọi call đến đối tác trả về {{SSLHandshakeException: certificate has expired}}. Điều tra: leaf cert của đối tác hết hạn từ ngày trước (hết hạn 30 ngày, không ai cảnh báo vì monitoring chỉ check 7 ngày). Đội vận hành phải upload cert mới vào truststore trên 12 pod, restart toàn bộ để JVM load truststore mới — mất 20 phút, các giao dịch bị treo. Sửa: (1) script check expiry bằng {{openssl s_client -connect host:443 -showcerts}} chạy mỗi ngày, alert khi còn 30/14/7 ngày; (2) truststore được quản lý tập trung — thay vì embedded trong image, mount từ Secret/ConfigMap và reload bằng rolling restart có kiểm soát; (3) trên staging, diễn tập rotation: đổi CA test, upload trust anchor mới, verify handshake; (4) dev profile dùng trust-all (ignore SSL) chỉ ở local. Sau đó, đối tác thông báo đổi CA trước 2 tuần — team thay trust anchor mới, restart theo lịch, không downtime.
+
+### Trả lời mẫu khi phỏng vấn
+"Chứng chỉ SSL hết hạn hoặc đổi CA là một trong những nguyên nhân làm sập tích hợp phổ biến và dễ bỏ sót vì không có ai cảnh báo. Tôi thiết kế giám sát expiry tự động: script check bằng openssl hoặc library, alert khi còn 30, 14 và 7 ngày — không chỉ check leaf cert mà cả chuỗi (intermediate, root) và hostname/SAN. Truststore được quản lý tập trung: không embed trong image, mà mount từ secret store và reload bằng rolling restart có kiểm soát, không restart cùng lúc mọi pod. Trước khi đối tác đổi CA, tôi diễn tập rotation trên staging: upload trust anchor mới, verify handshake, sau đó áp dụng production theo lịch. Trong dev/test profile, trust-all chỉ dùng để debug, không bao giờ dùng trên production. Nếu client hỗ trợ, reload SSLContext runtime là lựa chọn tốt hơn restart, nhưng không phải client nào cũng hỗ trợ — kiểm tra trước."
+
+### Cơ chế từng bước
+1. **Cái gì:** Truststore là kho chứa CA cert được JVM tin tưởng. Khi server certificate chain không match truststore (hết hạn, đổi CA, sai hostname), TLS handshake fail → {{SSLHandshakeException}}.
+2. **Vì sao cần:** Không có giám sát, cert hết hạn là sự cố im lặng — ứng dụng chỉ hỏng khi có lưu lượng truy cập. Tích hợp ngắt kết nối vào giờ cao điểm (ví dụ cổng thanh toán).
+3. **Hoạt động:** JVM nạp truststore khi khởi động, không tự refresh lại. Cert có notBefore/notAfter. Khi server trình bày cert, JVM kiểm tra chuỗi cert theo truststore.
+4. **Ví dụ:** {{openssl s_client -connect api.partner.com:443 -showcerts | openssl x509 -noout -dates}} → notAfter = 2026-10-01 (hết hạn).
+5. **Lỗi hay gặp:** Chỉ check leaf cert, bỏ sót intermediate/root; truststore embedded trong Docker image (phải rebuild image để rotate); bật trust-all trên production nhầm lẫn.
+6. **Trả lời phỏng vấn:** Nói trong phỏng vấn: script kiểm tra expiry, truststore tập trung, diễn tập rotation trên staging, trust-all chỉ dùng trong dev, rolling restart ưu tiên hơn reload runtime.
+
 > Senior tip: theo dõi cả chuỗi và hostname/SAN, không chỉ ngày hết hạn leaf; diễn tập rotation trên staging trước cửa sổ thay cert.
 `,
   follow: ['Certificate pinning có nên dùng không?', 'Làm sao reload truststore không restart?'],
@@ -1778,6 +1806,20 @@ Hệ thống đăng ký sự kiện cho một triệu khách hàng. Form đăng 
 ### Trade-off & pitfall
 - Leeway quá lớn giảm security (token hết hạn vẫn chấp nhận thêm N giây).
 - NTP failure → clock drift; monitor NTP sync status.
+
+### Ví dụ đời thực
+Hệ thống xác thực dùng JWT access token (hạn 15 phút) và refresh token. Sau khi deploy 2 instance mới vào cùng cụm, một số request bị reject với {{JwtSignatureException}}/{{JWT expired}} ngẫu nhiên — chỉ xảy ra ở một phần requests, không đều theo thời gian. Điều tra: so sánh {{date}} trên 3 instance, thấy instance mới chạy lệch 45 giây so với instance cũ (chưa đồng bộ NTP, dùng clock hệ điều hành thay vì chrony). Với token 15 phút, lệch 45s → token tạo trên instance cũ bị coi là "chưa có hiệu lực" (nbf) hoặc "đã hết hạn" (exp) trên instance mới. Sửa: (1) bật chrony/systemd-timesyncd trên mọi instance, monitor offset < 100ms; (2) thêm leeway 60s trong validator — Auth0 java-jwt: {{JWTVerifier verifier = JWT.require(algorithm).build()}} → dùng {{JWTVerifier.Builder}} với {{acceptNotBefore()}} và {{acceptExpiresAt()}} để điều chỉnh leeway; Spring Security: {{JwtTimestampValidator(Duration.ofSeconds(60))}}; (3) ghi log lý do từ chối (exp/nbf/signature) để debug; (4) token lifetime 15 phút + refresh 7 ngày. Sau fix, không còn reject ngẫu nhiên; offset NTP luôn < 50ms.
+
+### Trả lời mẫu khi phỏng vấn
+"JWT bị từ chối ngẫu nhiên do lệch đồng hồ là một lỗi phổ biến và khó debug vì nó không cố định ở một endpoint hay một user nào. Nguyên nhân là JWT có claim exp (hết hạn) và nbf (hiệu lực), và nếu server A tạo token, server B validate thì đồng hồ lệch nhau → token bị coi là chưa có hiệu lực hoặc đã hết hạn. Cách sửa: thứ nhất, đồng bộ đồng hồ trên mọi server bằng NTP (chrony hoặc systemd-timesyncd) và monitor offset; thứ hai, thêm leeway (clock skew) vào validator — JJWT dùng clockSkewSeconds, Spring Security dùng JwtTimestampValidator(Duration.ofSeconds(...)) — leeway nới cửa sổ chấp nhận token; thứ ba, ghi log lý do từ chối để debug; thứ tư, dùng short-lived token với refresh token để leeway không cần quá lớn. Leeway quá lớn giảm security, nên chọn theo sai số đo được, không chọn đại 60s cho mọi hệ thống."
+
+### Cơ chế từng bước
+1. **Cái gì:** JWT có exp (expiry time), nbf (not before), iat (issued at). Validator kiểm tra: now ≥ nbf và now ≤ exp.
+2. **Vì sao cần:** Server tạo token và server validate token có thể lệch đồng hồ → token hợp lệ bị reject.
+3. **Hoạt động:** Clock skew → token tạo ở server A (clock +45s) bị server B (clock chuẩn) coi là "chưa hiệu lực" (nbf) hoặc "đã hết hạn" (exp).
+4. **Ví dụ:** Token 15 phút, exp = now + 900s. Server A tạo token, server B lệch −45s → B coi token đã hết hạn 45s trước đó.
+5. **Lỗi hay gặp:** Leeway quá lớn (token hết hạn vẫn chấp nhận thêm N giây); không monitor NTP status; log rejection reason → debug chậm; dùng token lifetime quá dài (1 giờ) → leeway không đủ.
+6. **Trả lời phỏng vấn:** Nói trong phỏng vấn: đồng bộ NTP, leeway trong validator (JJWT vs Spring Security), log lý do từ chối, token ngắn hạn + refresh.
 
 > Senior tip: log clock offset và claim thời gian đã kiểm tra (không log token); đặt skew theo độ lệch đo được và xác nhận với validator thực tế.
 `,
@@ -1864,6 +1906,20 @@ Kiến trúc gợi ý (ví dụ)
 - Schema evolution: mapping changes cần reindex; version mapping carefully.
 - Debezium connector failure → lag tăng; monitor lag.
 
+### Ví dụ đời thực
+Hệ thống tìm kiếm sản phẩm dùng Elasticsearch (ES) để phục vụ trang danh sách. Ban đầu, app ghi DB (PostgreSQL) rồi ghi ES bằng REST API trong cùng request — dual write. Khi ES cluster reboot (rolling update), một phần product bị mất trong ES nhưng vẫn có trong DB → người dùng không thấy sản phẩm. Điều tra: so sánh count DB vs ES theo category, thấy lệch khoảng 3% product. Sửa: (1) loại bỏ dual write — app chỉ write DB; (2) Debezium capture WAL → Kafka → ES sink connector, document id = DB primary key → idempotent upsert; (3) reindex không downtime: tạo index mới {{products_v2}} với mapping mới, backfill bằng CDC offset/checkpoint, khi đủ dữ liệu → {{_aliases}} request chuyển {{products}} alias từ index cũ sang index mới atomically; (4) xóa index cũ sau rollback window 24h; (5) xử lý delete: Debezium phát delete event → Kafka tombstone → sink xóa document (nếu không, dữ liệu đã xóa trong DB vẫn sót trong ES). Sau fix, lệch về 0; CDC lag thường < 5s.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi Elasticsearch lệch DB, nguyên nhân thường là dual write — app ghi DB rồi ghi ES, và một trong hai bước fail → lệch. Cách đúng là chọn một nguồn sự thật: DB. App chỉ write DB, còn việc đồng bộ sang ES dùng CDC (Debezium) đọc transaction log (WAL/binlog) → Kafka → ES sink connector, document id = primary key → idempotent upsert. Reindex không downtime: tạo index mới với mapping mới, backfill bằng CDC offset/checkpoint, khi đủ dữ liệu chuyển alias atomically qua _aliases request — client không bị downtime. Xử lý delete: Debezium phát delete event và Kafka tombstone, sink phải map thành xóa document, nếu không dữ liệu đã xóa vẫn còn trong ES. CDC giúp giảm rủi ro dual write nhưng không loại bỏ — vẫn cần reconciliation định kỳ, rebuild procedure, monitoring lag và kế hoạch chuyển alias khi có thay đổi đồng thời."
+
+### Cơ chế từng bước
+1. **Cái gì:** Dual write = app ghi DB và ES trong cùng request; nếu một bước fail → lệch. CDC = Debezium đọc DB transaction log → Kafka → ES sink.
+2. **Vì sao cần:** Dual write không atomic — hai hệ thống, không có transaction chung. CDC một chiều, DB là nguồn sự thật.
+3. **Hoạt động:** Debezium capture WAL → Kafka → ES sink connector → ES. Document id = DB primary key → idempotent upsert.
+4. **Ví dụ:** Dual write → ES fail → product lost in ES. CDC → WAL → Kafka → ES, document id = product_id → upsert.
+5. **Lỗi hay gặp:** CDC lag → ES eventual consistent; schema evolution → mapping change → reindex; Debezium connector failure → lag tăng; delete event không được map → document sót.
+6. **Trả lời phỏng vấn:** Nói trong phỏng vấn: nguồn sự thật duy nhất (DB), CDC (Debezium), reindex bằng hoán đổi alias, xử lý xóa, reconciliation + giám sát.
+
 > Senior tip: CDC giảm rủi ro dual write nhưng vẫn cần reconciliation, rebuild procedure, monitoring lag và kế hoạch chuyển alias khi có thay đổi đồng thời.
 `,
   follow: ['Debezium vs application-level outbox?', 'ES index alias swap procedure?'],
@@ -1892,6 +1948,20 @@ Kiến trúc gợi ý (ví dụ)
 - Sampling có thể miss rare errors; giữ full log khi status >= 500.
 - Structured logging giúp truy vấn theo field nhưng chi phí serialize, ingest và lưu trữ phụ thuộc payload/volume; tránh body lớn và đo overhead.
 
+### Ví dụ đời thực
+Sau một release thêm tính năng "log mọi request body để debug", chi phí log tăng từ 50GB/ngày lên 600GB/ngày — chi phí ELK tăng 12 lần. Điều tra: (1) logback level vẫn DEBUG trên prod (profile không được apply); (2) health check endpoint log mỗi request → 20k request/giây × 1KB = 20MB/giây; (3) một endpoint log full response object (List/Product) → mỗi request 50KB. Sửa: (1) profile-based level — prod INFO, dev DEBUG; (2) structured JSON logging (Logstash encoder) để parse dễ; (3) sampling cho high-volume endpoint — log 1/10 request, full log khi status ≥ 500; (4) PII redaction — mask email/phone/card, không log password/token; (5) retention — hot 7 ngày trong ELK, warm 30 ngày, cold 90 ngày S3 Glacier. Sau fix: log volume về 60GB/ngày, chi phí giảm 10 lần, vẫn giữ full log khi error.
+
+### Trả lời mẫu khi phỏng vấn
+"Chi phí log tăng vọt sau release thường do debug level còn bật, log mọi request, hoặc log object lớn. Tôi xử lý theo nhiều lớp. Log level theo environment: prod INFO, dev DEBUG — profile-based, không hardcode. Structured logging (JSON) giúp parse dễ và truy vấn theo field, nhưng cần đo overhead serialize/ingest. Sampling cho high-volume endpoint: log 1/N request, nhưng giữ full log khi status ≥ 500 để không mất rare errors. PII redaction: mask email/phone/card, không log password/token — dùng allowlist field thay vì ghi rồi che. Retention: hot/warm/cold theo nhu cầu điều tra, quy định và ngân sách. Đo bytes/ngày và chi phí theo service trước/sau thay đổi để có số liệu."
+
+### Cơ chế từng bước
+1. **Cái gì:** Log level (TRACE < DEBUG < INFO < WARN < ERROR), structured logging (JSON), sampling (log 1/N request), PII redaction, retention.
+2. **Vì sao cần:** Log volume tăng → chi phí storage, ingest, và slow query. PII trong log → compliance risk (Nghị định 13, GDPR).
+3. **Hoạt động:** Logback/Log4j2 profile-based level; Logstash encoder → JSON; sampling filter; PII redaction appender; retention policy.
+4. **Ví dụ:** DEBUG + log body → 600GB/ngày → INFO + sampling + redaction → 60GB/ngày.
+5. **Lỗi hay gặp:** Sampling miss rare errors → giữ full log khi status ≥ 500; structured logging overhead → avoid large body; PII regex miss → test với dataset thật.
+6. **Trả lời phỏng vấn:** Nói trong phỏng vấn: level theo môi trường, JSON có cấu trúc, sampling (1/N + toàn bộ khi lỗi), che PII (danh sách cho phép), lớp lưu giữ, đo trước/sau.
+
 > Senior tip: đo bytes/ngày và chi phí theo service trước/sau thay đổi; thiết kế sampling để vẫn giữ lỗi và trace cần cho điều tra.
 `,
   follow: ['Structured logging với MDC context?', 'Log aggregation pipeline (ELK/Loki)?'],
@@ -1918,6 +1988,20 @@ Kiến trúc gợi ý (ví dụ)
 ### Trade-off & pitfall
 - Virtual threads không giải quyết downstream chậm; vẫn cần timeout + CB.
 - Thread-pool bulkhead tiêu thụ worker/queue; semaphore bulkhead không cách ly thread đang block. Chọn theo loại lời gọi và giới hạn queue để tránh tích request.
+
+### Ví dụ đời thực
+Hệ thống đặt vé dùng Tomcat (default 200 worker threads) và gọi service đối tác xác thực bằng RestTemplate (timeout không cấu hình → vô hạn). Khi đối tác chậm 30s, mọi worker thread bị giữ, pool cạn → mọi request mới bị reject (503). Điều tra: thread dump thấy 200 thread cùng block ở {{socket read}} tới đối tác; metrics hàng đợi request tăng vọt. Sửa: (1) timeout 2s (connect 500ms, read 2s) trên RestTemplate; (2) Resilience4j circuit breaker (failure rate > 50% trong 10s → mở 30s); (3) bulkhead giới hạn 50 concurrent calls cho dependency này; (4) retry 2 lần backoff 500ms; (5) sau đó chuyển sang WebClient non-blocking. Sau fix, khi đối tác chậm 30s, tối đa 50 thread bị giữ, còn 150 thread xử lý request khác → không 503.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi request thread bị giữ trong lời gọi downstream chậm, Tomcat có thể hết worker để xử lý request mới — hiện tượng pool exhaustion. Chẩn đoán bằng thread dump (xem worker đang chờ ở đâu: socket read, lock, queue) và metrics hàng đợi/latency theo route. Cách cô lập: thứ nhất, giới hạn timeout rõ ràng cho connect/read — không để default vô hạn; thứ hai, circuit breaker fail-fast khi dependency đang lỗi; thứ ba, bulkhead giới hạn concurrency mỗi dependency (thread-pool bulkhead tách pool riêng, semaphore bulkhead chỉ giới hạn số lượng); thứ tư, retry có backoff + jitter với idempotency. Spring Boot 3.2+ hỗ trợ virtual threads với JDK 21 — giảm chi phí thread chờ I/O nhưng không tăng năng lực downstream, vẫn cần timeout + CB. Chọn thread-pool hay semaphore bulkhead tùy loại lời gọi và giới hạn queue để tránh tích request."
+
+### Cơ chế từng bước
+1. **Cái gì:** Tomcat mỗi request một thread; thread block trên I/O (HTTP call, DB) → pool cạn → request mới reject.
+2. **Vì sao cần:** Một dependency chậm có thể chiếm hết pool → toàn bộ service không phản hồi (cascade failure).
+3. **Hoạt động:** Thread dump → worker RUNNABLE ở native socket read → xác nhận đang chờ downstream. Metrics: active/max threads, request queue, latency theo route.
+4. **Ví dụ:** 200 thread, 180 đang chờ RestTemplate (timeout vô hạn) → 20 thread còn → request mới reject.
+5. **Lỗi hay gặp:** Virtual threads không giải quyết downstream chậm; thread-pool bulkhead tiêu thụ worker; semaphore bulkhead không cách ly thread đang block; timeout default 2s/5s không phù hợp mọi hệ thống.
+6. **Trả lời phỏng vấn:** Nói trong phỏng vấn: thread dump + metrics, timeout per dependency, circuit breaker, bulkhead (thread-pool vs semaphore), retry với backoff, giới hạn virtual threads.
 
 > Senior tip: đối chiếu active/max threads, request queue, latency và timeout theo route; dump cho biết worker đang chờ ở đâu, metrics cho biết mức độ và thời điểm nghẽn.
 `,
