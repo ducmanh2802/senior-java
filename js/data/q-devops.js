@@ -2370,6 +2370,17 @@ volumes:
 ### Trả lời miệng 1 phút
 "Tôi build một image duy nhất và đưa cấu hình theo môi trường từ ngoài vào. Cấu hình thường như URL, profile, feature flag đặt trong ConfigMap và nạp bằng envFrom; Spring relaxed binding map SPRING_DATASOURCE_URL thành spring.datasource.url, và biến môi trường đè application.yml trong jar. Secret tôi mount thành file và đọc bằng spring.config.import configtree, vì biến môi trường dễ lộ qua dump. Secret chỉ là base64 nên phải có RBAC và encryption at rest. Khi sửa ConfigMap, biến môi trường không đổi cho tới khi Pod restart, nên tôi luôn đi kèm rollout restart có readiness, hoặc gắn hash ConfigMap vào annotation để mỗi thay đổi cấu hình là một lần rollout có kiểm soát."
 
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi DBA đổi mật khẩu PostgreSQL, team cập nhật Secret {{orders-secret}} và đổi {{SPRING_DATASOURCE_URL}} trong ConfigMap sang endpoint failover. 10 phút sau, khoảng 30% request tạo đơn báo {{FATAL: password authentication failed}}, trong khi 70% vẫn thành công. Lúc rollout thủ công, có lúc 2 Pod lỗi, 3 Pod chạy bình thường.
+
+**Điều tra:** Kiểm tra Pod đang chạy: {{kubectl exec deploy/orders-api -n prod -- printenv SPRING_DATASOURCE_URL}} trên Pod cũ vẫn trả URL cũ; Pod mới (do HPA scale lúc cao điểm) đã nhận URL mới. Mật khẩu: app đọc từ biến môi trường {{SPRING_DATASOURCE_PASSWORD}} (envFrom cũ), không phải từ file mount configtree, nên Secret đã sửa nhưng container cũ vẫn giữ giá trị env lúc khởi động. Log cho thấy connection pool (HikariCP) tiếp tục dùng credential cũ cho kết nối hiện có.
+
+**Nguyên nhân gốc:** (1) Biến môi trường không tự cập nhật khi ConfigMap/Secret đổi. (2) Mật khẩu nhạy cảm đi qua env nên khó kiểm soát và không thể thay nóng. (3) Scale-out tạo Pod mới dùng cấu hình mới trong khi Pod cũ dùng cấu hình cũ, gây trạng thái hỗn hợp.
+
+**Cách xử lý:** (1) Chuyển secret DB sang mount file {{/etc/secrets}} + {{spring.config.import=optional:configtree:/etc/secrets/}} và đọc password từ đó. (2) Sau mỗi lần đổi ConfigMap/Secret, thực hiện {{kubectl rollout restart deployment/orders-api}} và theo dõi readiness. (3) Thêm annotation checksum ConfigMap/Secret vào Pod template (Helm) để mỗi thay đổi tự kích hoạt rollout có lịch sử.
+
+**Kết quả đo được:** Sau rollout 6 phút (rolling, maxUnavailable 1), 100% Pod dùng endpoint và mật khẩu mới, tỷ lệ lỗi xác thực về 0. Các lần đổi cấu hình sau đều có một rollout rõ ràng trong lịch sử Deployment, dễ truy vết "Pod nào chạy giá trị nào".
+
 > Senior tip: hãy coi **thay đổi cấu hình như một lần deploy**: có review, có rollout từng Pod, có rollback. Tự động reload cấu hình nóng nghe hấp dẫn nhưng làm khó trả lời câu hỏi "lúc 14:00 Pod nào đang chạy giá trị nào". Kỹ thuật checksum annotation (Helm hay dùng) cho bạn lịch sử rõ ràng mà không cần thư viện reload nào.`,
     follow: [
       'Khi nào nên lấy secret trực tiếp từ AWS Secrets Manager/Vault thay vì Secret của Kubernetes?',
@@ -2440,6 +2451,17 @@ docker images --digests 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/orders
 
 ### Trả lời miệng 1 phút
 "latest là tag di động: mỗi lần push nó trỏ sang image mới, nên Pod trên node khác nhau kéo ở thời điểm khác nhau sẽ chạy phiên bản khác nhau, và rollback về template cũ vẫn ghi latest nên chẳng quay về đâu. Tôi tag mỗi build bằng git SHA, thêm semver khi release, bật tag immutability trên registry để không ai ghi đè. Manifest dùng tag SHA hoặc digest, nên mọi Pod cùng nội dung và rollout undo quay về đúng bản cũ. Image được build một lần rồi promote cùng digest qua DEV, UAT, PROD. Cuối cùng có lifecycle policy giữ đủ số bản để rollback và xoá image không tag."
+
+### Ví dụ đời thực
+**Triệu chứng:** Sau hotfix thanh toán lúc 14:30, 2/10 Pod báo lỗi {{NullPointerException}} ở luồng hoàn tiền, 8 Pod còn lại xử lý bình thường. Team chạy {{kubectl rollout undo deployment/payment-api}} nhưng lỗi vẫn còn trên cùng các Pod.
+
+**Điều tra:** Chạy lệnh kiểm tra image trên Pod: {{kubectl get pods -o wide -l app=payment}} và xem {{imageID}} trong {{status.containerStatuses}} cho thấy tất cả Pod cùng ghi {{payment-api:latest}}. So sánh digest: 2 Pod trỏ digest {{sha256:7c1…}} (bản hotfix lỗi), 8 Pod trỏ {{sha256:4ab…}} (bản sáng). Manifest trong Git lịch sử cũng là {{latest}} nên {{rollout undo}} không đổi nội dung image.
+
+**Nguyên nhân gốc:** Tag {{latest}} bị ghi đè khi push hotfix; node chưa có image mới dùng cache cũ ({{IfNotPresent}} thực tế), node mới kéo bản mới → lệch phiên bản. Rollback vô nghĩa vì template không gắn với digest cụ thể.
+
+**Cách xử lý:** (1) Push lại image ổn định với tag bất biến {{git-3f9c2a1}} và cập nhật Deployment sang tag đó, rollout. (2) Bật tag immutability trên ECR cho các tag release/SHA. (3) Pipeline gắn {{org.opencontainers.image.revision}} và ghi tag+digest vào biên bản release; {{/actuator/info}} expose git SHA.
+
+**Kết quả đo được:** Trong 3 phút tất cả Pod chạy cùng digest {{sha256:4ab…}}, lỗi hoàn tiền về 0. Lần sau khi cần rollback, {{rollout undo}} đưa về đúng tag SHA trước đó trong 90 giây, và team trả lời "production đang chạy commit nào" trong dưới 10 giây.
 
 > Senior tip: hỏi nhanh "production đang chạy commit nào?" — nếu team mất hơn 30 giây để trả lời thì chiến lược tag đang có vấn đề. Tôi luôn để pipeline gắn thêm label OCI {{org.opencontainers.image.revision}} chứa git SHA vào image, và expose nó qua {{/actuator/info}}: một lệnh curl là biết ngay, kể cả khi ai đó đã deploy tay.`,
     follow: [
@@ -2530,6 +2552,17 @@ Trust policy của role {{gha-orders-deploy}} có điều kiện {{token.actions
 
 ### Trả lời miệng 1 phút
 "Tôi bỏ access key dài hạn và chuyển sang OIDC: job deploy có quyền id-token write, action configure-aws-credentials đổi token OIDC của GitHub lấy credential tạm của một IAM role, và trust policy ràng buộc audience lẫn claim sub đúng repo và environment production, nên repo khác không assume được và không còn key nào để lộ. Build dùng setup-java với cache maven để không tải lại dependency. Job deploy gắn environment production có required reviewers, cộng concurrency group để hai lần merge không deploy chồng, và cancel-in-progress tắt cho deploy. Cuối cùng permissions mặc định chỉ contents read, và action bên thứ ba ghim theo commit SHA."
+
+### Ví dụ đời thực
+**Triệu chứng:** (1) Job build Maven trung bình 8 phút, phần lớn do tải lại ~500 MB dependency mỗi lần. (2) Hai PR merge sát nhau (10:01 và 10:03) gây hai lần deploy production chồng lên nhau; lần deploy sau hoàn tất trước, lần trước ghi đè cấu hình cũ, khiến production quay về bản lỗi đã sửa. (3) Audit bảo mật phát hiện access key AWS sống 14 tháng trong repo secrets.
+
+**Điều tra:** Log Actions cho thấy {{~/.m2}} trống mỗi run. Lịch sử workflow không có {{concurrency}} nên cả hai run deploy chạy song song. Trên IAM, access key có lần dùng cuối từ IP lạ 3 tuần trước, chưa bị xoay vòng.
+
+**Nguyên nhân gốc:** Không có cache dependency, không có concurrency group, và dùng credential dài hạn dễ rò rỉ/khó thu hồi.
+
+**Cách xử lý:** (1) {{actions/setup-java}} với {{cache: maven}} (key theo hash {{pom.xml}}). (2) Tạo IAM OIDC provider cho GitHub, role deploy với trust policy ràng buộc {{sub}} = {{repo:acme/orders-api:environment:production}}, xoá access key cũ. (3) Job deploy gắn {{environment: production}} + required reviewers, thêm concurrency group {{deploy-production}} với {{cancel-in-progress: false}}. (4) Ghim action bên thứ ba theo SHA, đặt {{permissions: contents: read}} mặc định.
+
+**Kết quả đo được:** Thời gian build giảm từ 8 phút xuống ~2 phút 20 giây (cache hit). Hai lần merge liên tiếp chỉ chạy 1 deploy tại một thời điểm, lần sau xếp hàng. Không còn credential dài hạn; CloudTrail truy vết mỗi deploy về đúng workflow run qua session name.
 
 > Senior tip: sau khi chuyển sang OIDC, hãy **xoá hẳn** access key cũ trong IAM chứ không chỉ xoá khỏi GitHub secrets — key "không dùng nữa" nhưng còn hiệu lực là thứ hay bị khai thác nhất. Tách role theo môi trường (deploy UAT không assume được role production), và bật CloudTrail để mỗi lần deploy đều truy được về đúng lần chạy workflow qua tên session.`,
     follow: [
@@ -2624,6 +2657,17 @@ public static void main(String[] a) {
 ### Trả lời miệng 1 phút
 "CronJob tạo Job, Job tạo Pod, và Kubernetes chỉ hứa xấp xỉ một lần mỗi lịch, nên tôi thiết kế job idempotent theo ngày nghiệp vụ trước. Về cấu hình: timeZone Asia/Ho_Chi_Minh để khỏi lệch UTC; concurrencyPolicy Forbid để job chậm hôm trước không chạy chồng với hôm nay; startingDeadlineSeconds khoảng 30 phút để lỡ giờ vẫn chạy bù và tránh tình trạng ngừng lên lịch sau quá nhiều lịch bị lỡ; backoffLimit nhỏ; activeDeadlineSeconds để job treo không chạy tới sáng. App Spring Boot chạy không web, logic trong ApplicationRunner, cuối cùng System.exit với exit code của Spring để Job biết thành công hay thất bại. Cuối cùng là alarm khi job thất bại và cả khi tới hạn mà không thấy lần chạy thành công."
 
+### Ví dụ đời thực
+**Triệu chứng:** Job tính lãi cuối ngày (kỳ vọng 23:00, chạy ~40 phút) có đêm ghi lãi trùng cho ~12.000 tài khoản; đêm sau không có bản ghi lãi nào; đêm thứ ba Pod vẫn {{Running}} lúc 06:30 sáng, chặn job ngày mới.
+
+**Điều tra:** {{kubectl get jobs}} cho thấy hai Job cùng ngày chạy chồng (concurrencyPolicy mặc định Allow) do lần chạy trước kéo dài 55 phút. Ngày không chạy: control plane bảo trì lúc 23:00, không đặt {{startingDeadlineSeconds}} nên controller bỏ qua lịch sau khi lỡ. Ngày treo: app Spring Boot giữ web server không tắt, transaction chờ khoá DB, không có {{activeDeadlineSeconds}}.
+
+**Nguyên nhân gốc:** Thiếu Forbid, thiếu startingDeadlineSeconds/activeDeadlineSeconds, app không thoát sau khi hoàn tất và job không idempotent theo ngày nghiệp vụ.
+
+**Cách xử lý:** Đặt {{timeZone: Asia/Ho_Chi_Minh}}, {{schedule "0 23 * * *"}}, {{concurrencyPolicy: Forbid}}, {{startingDeadlineSeconds: 1800}}, {{backoffLimit: 2}}, {{activeDeadlineSeconds: 7200}}. App chạy {{web-application-type=none}}, kiểm tra {{runs.isDone(day)}} (idempotent), ghi theo lô, thoát bằng {{System.exit(SpringApplication.exit(ctx))}}. Thêm alert "không có Job thành công sau 00:30".
+
+**Kết quả đo được:** 30 ngày tiếp theo không ghi trùng lãi; đêm control plane bảo trì job vẫn chạy bù trong 10 phút; một lần treo do DB lock bị dừng sau 2 giờ và báo Failed (thay vì chạy tới sáng), sau khi sửa lock job hoàn tất trong 38 phút.
+
 > Senior tip: job tài chính nên chạy **theo lô có checkpoint** (ví dụ 10.000 tài khoản một lô, ghi lại lô cuối đã xong) để khi bị dừng giữa chừng thì chạy lại tiếp tục từ lô đó thay vì làm lại 40 phút. Và hãy theo dõi **thời lượng job theo ngày** — job tăng từ 40 lên 90 phút trong ba tháng là tín hiệu sớm trước khi nó đụng activeDeadlineSeconds vào một đêm cuối tháng.`,
     follow: [
       'Khi nào dùng Spring Batch thay vì tự viết ApplicationRunner cho job dài?',
@@ -2711,6 +2755,17 @@ topologySpreadConstraints:
 ### Trả lời miệng 1 phút
 "Drain node dùng Eviction API, và Eviction API tôn trọng PodDisruptionBudget, nên tôi đặt PDB cho service thanh toán, thường maxUnavailable 1 với 3 replica: drain chỉ đuổi Pod khi còn đủ Pod ready, Pod thứ hai phải chờ Pod thay thế ready. Nhưng PDB không cứu được nếu cả ba Pod chung một node, và không bảo vệ khi node chết đột ngột, nên tôi thêm topologySpreadConstraints theo hostname và theo zone để Pod luôn rải ra. Readiness phải đúng vì PDB đếm Pod ready, và graceful shutdown để Pod bị đuổi không làm rơi request. Tôi tránh PDB minAvailable 1 cho Deployment 1 replica vì nó chặn drain vĩnh viễn."
 
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi lần nâng cấp node pool (drain từng node), service thanh toán 3 replica trả 503 trong 2–4 phút; tỉ lệ lỗi đỉnh 18%. Có lần một node drain xong thì cả 3 Pod biến mất cùng lúc.
+
+**Điều tra:** {{kubectl get pod -o wide -l app=payment}} lúc trước drain cho thấy cả 3 Pod trên {{node-1}} (scheduler đặt dồn do node khác đầy tạm thời). Không có PDB: {{kubectl drain node-1}} evict cả 3 Pod gần như đồng thời. Pod mới mất ~45 giây khởi động Spring Boot, readiness chưa pass nên chưa nhận traffic.
+
+**Nguyên nhân gốc:** Không rải Pod theo node/zone nên mất một node = mất toàn bộ replica; không có PDB nên drain không chờ Pod thay thế sẵn sàng.
+
+**Cách xử lý:** (1) Thêm {{topologySpreadConstraints}} {{maxSkew: 1}} theo {{kubernetes.io/hostname}} (DoNotSchedule) và theo zone (ScheduleAnyway). (2) Tạo PDB {{maxUnavailable: 1}} cho 3 replica. (3) Kiểm tra readiness probe phản ánh khả năng nhận request thật và cấu hình graceful shutdown ({{preStop}} + {{terminationGracePeriodSeconds}}).
+
+**Kết quả đo được:** Sau thay đổi, 3 Pod luôn nằm 3 node khác nhau. Drain một node trong giờ làm việc: chỉ 1 Pod bị evict, 2 Pod còn lại phục vụ 100% traffic, tỉ lệ 5xx = 0, Pod thay thế ready trong ~50 giây rồi drain tiếp node sau. Bài kiểm tra "drain node bất kỳ" được đưa vào quy trình định kỳ.
+
 > Senior tip: hãy đưa **"drain một node bất kỳ giữa giờ làm việc"** vào bài kiểm tra định kỳ — nếu dashboard lỗi không nhúc nhích thì cấu hình đã đúng. Tôi cũng thêm policy (Kyverno/Gatekeeper) cảnh báo mọi Deployment production thiếu PDB hoặc có PDB chặn drain, vì platform team thường chỉ phát hiện vào đúng đêm nâng cấp cluster.`,
     follow: [
       'Cluster autoscaler thu hồi node có tôn trọng PDB không, và điều đó ảnh hưởng chi phí thế nào?',
@@ -2796,6 +2851,17 @@ spec:
 
 ### Trả lời miệng 1 phút
 "Tôi chia ranh giới theo namespace cho mỗi team và môi trường. RBAC gắn với nhóm SSO: team có quyền edit ở UAT, chỉ view ở production vì deploy production đi qua pipeline. ResourceQuota giới hạn tổng CPU, RAM, số Pod mỗi namespace, LimitRange đặt request mặc định để Pod quên khai báo vẫn bị tính quota. NetworkPolicy default deny ingress rồi mở đúng đường, với điều kiện CNI hỗ trợ và nhớ mở DNS nếu chặn egress. Pod Security Admission mức restricted chặn container root và privileged, Kyverno bắt buộc probe, request, label owner, image nội bộ. Namespace là ranh giới mềm vì chung kernel và control plane, nên workload PCI hay của khách hàng ngoài tôi tách cluster riêng."
+
+### Ví dụ đời thực
+**Triệu chứng:** Cluster dùng chung 8 team: (1) team A chạy job batch tạo 400 Pod không khai báo limit, chiếm hết CPU node, khiến service thanh toán team B timeout p99 tăng từ 120 ms lên 2,8 s. (2) Developer team C {{kubectl get secret -n payments-prod}} đọc được credential DB của team B. (3) Pod debug của team D chạy privileged và mount {{/var/run/docker.sock}}.
+
+**Điều tra:** Không có ResourceQuota/LimitRange nên Pod không limit được scheduler chấp nhận. RBAC cấp {{ClusterRoleBinding}} edit cho nhóm dev chung → đọc secret mọi namespace. Không có NetworkPolicy/Pod Security Admission; CNI (Calico) hỗ trợ nhưng chưa áp policy.
+
+**Nguyên nhân gốc:** Thiếu ranh giới namespace: không quota, RBAC quá rộng, không cô lập mạng, không chuẩn bảo mật Pod.
+
+**Cách xử lý:** (1) Tách namespace theo team+môi trường ({{payments-prod}}, {{payments-uat}}…), gắn label owner/cost-center. (2) RBAC theo nhóm SSO: edit ở UAT, view ở prod. (3) ResourceQuota (CPU/RAM/Pod) + LimitRange đặt request/limit mặc định. (4) NetworkPolicy default-deny ingress, mở đúng luồng (ingress-nginx, service gọi nhau), mở egress DNS 53. (5) Pod Security {{restricted}} + Kyverno bắt buộc probe/request/limit/image nội bộ. (6) Kiểm thử {{curl}} chéo namespace để xác nhận policy có hiệu lực.
+
+**Kết quả đo được:** Job batch team A bị quota chặn ở 60 Pod, không ảnh hưởng team B (p99 ổn định ~130 ms). Thử đọc secret cross-namespace trả {{Forbidden}}. Pod privileged bị admission từ chối. Thời gian onboarding team mới giảm xuống ~1 giờ nhờ template GitOps.
 
 > Senior tip: **thành công của cluster dùng chung đo bằng thời gian onboarding** — nếu một team mới phải chờ platform hai tuần để có namespace thì họ sẽ đòi cluster riêng. Hãy đóng gói toàn bộ bộ ranh giới (namespace, RBAC, quota, NetworkPolicy, PSA label) thành một template trong GitOps: team mở một pull request, review xong là có môi trường chuẩn trong một giờ.`,
     follow: [
