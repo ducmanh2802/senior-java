@@ -981,6 +981,14 @@ Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12
 - **Không nói về rủi ro và con người**: nếu không có gì về cách bạn xử lý rủi ro, câu trả lời thiếu chiều sâu của vai trò lead.
 - **Nhảy số liệu không có nguồn**: "tăng 300% hiệu năng" mà không nói đo thế nào sẽ bị hỏi lại.
 
+### Ví dụ đời thực
+
+Trong dự án tách module đơn hàng khỏi monolith, hai tuần trước ngày ra mắt tôi nhận báo p99 API tạo đơn nhảy từ 200ms lên 3,2 giây và CPU cơ sở dữ liệu từ 40% lên 90%. Tôi chạy lệnh {{SHOW PROCESSLIST}} và thấy hàng trăm câu {{UPDATE}} cùng lúc từ tác vụ backfill dữ liệu lịch sử.
+~~~text
+SHOW PROCESSLIST;
+~~~
+Nguyên nhân gốc: tác vụ backfill ghi mỗi lần 10.000 dòng trong một giao dịch, giữ khóa bảng đơn hàng quá lâu. Tôi xử lý bằng cách giảm batch size xuống 500 dòng, nghỉ 100ms giữa các batch, và chỉ chạy tác vụ vào khung giờ ít lượt (2h–4h sáng). Kết quả đo được: p99 quay lại 250ms, CPU cơ sở dữ liệu giảm về 45%, backfill hoàn tất trong 3 đêm mà không gây downtime. Bài học: khi chạy tác vụ xử lý dữ liệu lớn, phải giới hạn batch size và theo dõi metric cơ sở dữ liệu liên tục.
+
 > Senior tip: hãy chuẩn bị câu chuyện bằng **cấu trúc slide 3 phần**: mục tiêu và ràng buộc, kế hoạch giai đoạn kèm rủi ro, và kết quả kèm phần chưa đạt. Câu chuyện có cấu trúc khiến bạn nghe như đang **quản lý**, không kể lể — và đó chính là điều họ đang tìm ở một ứng viên lead.`,
   follow: [
     'Bạn làm thế nào để ước lượng công việc khi dự án có nhiều phần chưa rõ?',
@@ -1021,6 +1029,10 @@ Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12
 - **Hứa "real-time" cho mọi thứ** rồi không kịp giao: mất niềm tin.
 - **Không đưa ra lựa chọn kèm đánh đổi**: cần nói rõ cái nào nhanh, cái nào rẻ, cái nào tốn công.
 - **Bỏ qua mối lo ngại thật sự**: nếu stakeholder lo về trải nghiệm khách hàng chứ không phải hệ thống, hãy nói về trải nghiệm.
+
+### Ví dụ đời thực
+
+Bộ phận kinh doanh yêu cầu xây dựng báo cáo doanh thu theo thời gian thực, vì họ cho rằng cấp đạo cần xem số liệu ngay lập tức sau mỗi đơn hàng. Thay vì đồng ý ngay, tôi hỏi họ báo cáo này dùng để làm gì và xem bao lâu một lần. Câu trả lời: báo cáo chỉ xem vào buổi sáng hôm sau trong buổi họp nhóm, và 90 phần trăm quyết định không phụ thuộc vào số liệu phút giây. Tôi kiểm tra log truy cập và xác nhận trang báo cáo cũ chỉ được mở khoảng hai lần mỗi ngày. Nguyên nhân gốc là hiểu sai nhu cầu thực sự — họ cần số liệu hôm nay gửi vào sáng mai, chứ không phải real-time. Tôi đề xuất thay bằng báo cáo gửi email tự động vào 8h30 mỗi sáng. Kết quả: cấp đạo hài lòng, đội thiết kế tiết kiệm khoảng ba tuần làm việc, và hệ thống không phải chịu tải truy vấn real-time không cần thiết.
 
 > Senior tip: hãy luôn kết thúc bằng câu **"điều bạn thực sự cần là X"** — thể hiện rằng bạn đã dịch đúng từ yêu cầu sang mục tiêu. Câu này, cùng một con số, là đủ để phân biệt ứng viên senior với ứng viên chỉ giỏi code.`,
   follow: [
@@ -1066,6 +1078,10 @@ Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12
 - **Nói quá nhiều về điểm yếu**: nêu 1 điểm thật, xử lý sâu, đó là đủ.
 - **Không dám hỏi ngược**: câu hỏi ở cuối là dấu hiệu của sự tự tin và hướng vào phát triển.
 
+### Ví dụ đời thực
+
+Trong một sprint trước, tôi cam kết giao tính năng xuất file Excel vào cuối sprint dựa trên ước lượng của riêng tôi. Kết quả tính năng trött ba tuần vì tôi chưa tính tới việc đội phát triển API khác vẫn đang thiết kế điểm kết nối. Tôi đã chủ động hỏi đội đó và mới biết API sẽ sẵn sàng chậm hơn dự kiến hai tuần. Nguyên nhân gốc là lập kế hoạch dựa trên giả định chưa xác nhận và không ghi nhận rủi ro phụ thuộc bên ngoài. Tôi xử lý bằng cách thêm mục "rủi ro và giả định" vào mọi kế hoạch, gửi kế hoạch sớm cho các đội liên quan để nhận phản hồi trước khi cam kết với khách hàng. Trong bốn sprint sau, tôi lập kế hoạch cho sáu dự án và không dự án nào trött mốc, so với tỷ lệ trött trước đây là một trên ba.
+
 > Senior tip: hãy chọn điểm yếu **liên quan tới vai trò ứng tuyển** và thể hiện bằng chứng đo được — ví dụ "tôi hay trễ deadline khi phụ thuộc bên ngoài, nên tôi đã thay đổi cách lập kế hoạch và tỷ lệ trượt giảm từ 1/3 xuống 0/6". Một điểm yếu có sẵn hành động và số liệu sẽ biến thành điểm mạnh trong mắt interviewer.`,
   follow: [
     'Bạn nghĩ ở vị trí này, điều gì sẽ khiến bạn thất bại?',
@@ -1110,6 +1126,10 @@ Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12
 - **Tập trung quá nhiều vào công nghệ mới**: "tôi muốn refactor sang công nghệ X" trong 90 ngày đầu là tín hiệu đỏ lớn.
 - **Không có tiêu chí đo**: "sẽ quen hệ thống" không phải tiêu chí.
 - **Không gặp ai ngoài team kỹ thuật**: đặc biệt khi vai trò có tính chất product/business.
+
+### Ví dụ đời thực
+
+Vào tuần thứ ba tại công ty mới, tôi nhận phản hồi từ bộ phận vận hành rằng API thanh toán chậm và khách hàng khiếu nại nhiều. Tôi không sửa ngay mà đầu tiên xem log truy vấn chậm và tìm thấy nhiều câu {{SELECT}} lặp lại cho cùng một đơn hàng — dấu hiệu của vấn đề N+1 query. Tôi dùng công cụ theo dõi hiệu năng và xác định thiếu lệnh nạp dữ liệu liên quan trước. Tôi sửa bằng cách thêm fetch join trong truy vấn, chỉ sửa một phần nhỏ và viết test kèm theo. Kết quả: thời gian phản hồi API từ ba giây xuống 400ms, và khiếu nại từ khách hàng giảm gần không còn. Bài học: trong 90 ngày đầu, nên chọn vấn đề nhỏ, rủi ro thấp nhưng có giá trị đo được để đóng góp sớm và theo dõi số liệu trước sau khi sửa.
 
 > Senior tip: hãy chèn vào câu trả lời một chi tiết **cho thấy bạn đã nghĩ đến việc giữ mình không phá hệ thống mới** — ví dụ "giai đoạn đầu tôi sẽ ưu tiên đọc và viết test hơn là sửa logic". Interviewer đánh giá cao sự cẩn trọng này hơn là ngạc nhiên về tham vọng.`,
   follow: [
@@ -1163,6 +1183,10 @@ Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12
 - **Câu hỏi quá chung chung** ("môi trường làm việc thế nào?") hoặc **hỏi quá nhiều (8–10 câu)**: không ai trả lời hữu ích, và bạn biến buổi phỏng vấn thành phỏng vấn ngược lại.
 - **Không lắng nghe rồi hỏi tiếp cùng chủ đề**, hoặc **không chuẩn bị câu nào cả**: "Em chưa nghĩ qua" là tín hiệu không chuẩn bị.
 
+### Ví dụ đời thực
+
+Ở một cuộc phỏng vấn trước, tôi hỏi người phỏng vấn: "quyết định kỹ thuật nào gần đây đội ngũ đã tranh luận, và kết quả ra sao?". Câu trả lời cho tôi biết đội này vừa quyết định chuyển sang kiến trúc microservice nhưng chưa có người phụ trách rõ ràng cho từng service, và các vụ sự cố thường bị đẩy trách nhiệm lẫn nhau. Thông tin này giúp tôi nhận ra môi trường này có thể thiếu quy trình vận hành rõ ràng, và tôi đã cân nhắc kỹ trước khi nhận lời mời. Nếu tôi chỉ hỏi chung chung "môi trường làm việc thế nào", tôi sẽ không khám phá được vấn đề này. Ví dụ này cho thấy câu hỏi cụ thể, đi vào chi tiết vận hành, giúp bạn ra quyết định chính xác hơn về việc đi làm hay không.
+
 > Senior tip: câu hỏi hay nhất mà ít người hỏi là **"quyết định kỹ thuật nào gần đây team đã tranh luận"**. Nó cho bạn thấy team có văn hóa phản biện hay không, và khiến cuộc trò chuyện đi vào chiều sâu thay vì xã giao.`,
   follow: [
     'Nếu bạn chỉ được hỏi một câu duy nhất, bạn chọn câu nào?',
@@ -1205,6 +1229,10 @@ Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12
 - **Đàm phán quá cứng ở lượt đầu**, hoặc dùng đòn bẩy "tôi có offer khác" khi chưa thật.
 - **Bỏ qua thưởng, phúc lợi, bảo hiểm, cổ phiếu** — ở Việt Nam, phần lớn giá trị offer nằm ngoài lương cứng.
 - **Không cân nhắc hợp đồng khi remote**: EOR hay contractor ảnh hưởng lớn tới thuế và bảo hiểm.
+
+### Ví dụ đời thực
+
+Ở một công ty, mức lương cứng đã khóa ở mức median và người phỏng vấn nói không thể tăng thêm. Thay vì về lại, tôi tập trung đàm phán phần thưởng quý, ngân sách đào tạo, và quyền làm việc từ xa ba ngày mỗi tuần. Tôi tính toán: thưởng quý hai tháng lương tương đương tăng thêm gần 17 phần trăm tổng thu nhập hàng năm, và làm việc từ xa giúp tôi tiết kiệm khoảng hai triệu đồng chi phí đi lại mỗi tháng. Tôi cũng yêu cầu công ty ghi rõ tiêu chí thưởng quý vào hợp đồng để tránh bị thay đổi sau này. Kết quả: tuy lương cứng không đổi, nhưng tổng gói phúc lợi tăng rõ rệt, và tôi vẫn giữ được mối quan hệ tốt với nhà tuyển dụng. Bài học: khi lương cứng không thể thương lượng, hãy nhìn sang tổng giá trị và phần biến động.
 
 > Senior tip: hãy xác định **mức lương tối thiểu chấp nhận được (walk-away)** trước khi phỏng vấn và ghi lại bằng số. Khi đã có con số đó trong đầu, bạn thương lượng rất khác — bạn bình tĩnh hơn, và biết chính xác lúc nào nên dừng. Người không có mức walk-away thường nhận lại offer kém hơn mức họ có thể đạt, chỉ vì sợ nói "không".`,
   follow: [
