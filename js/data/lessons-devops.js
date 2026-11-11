@@ -4795,6 +4795,47 @@ Hệ thống có 3 backend {{A, B, C}} sau HAProxy, {{fall=3}}, {{rise=2}}, {{in
 ### Authorizer.can
 Mô phỏng kubectl auth can-i: kiểm tra subject có rule cho phép verb trên resource trong namespace không. Wildcard * khớp mọi giá trị. Namespace null trong rule nghĩa rule áp dụng mọi namespace (cluster-scoped). Nếu namespace truyền vào null → chỉ kiểm tra rule có namespace null.
 
+### Cơ chế từng bước: từ request đến allow hoặc từ chối
+Gọi Kubernetes API, apiserver xử lý quyền theo chuỗi:
+1. **Xác thực (authentication)**: apiserver xác định request từ ai — user, group, hoặc ServiceAccount của pod. Sai thì 401, chưa tới RBAC.
+2. **Tìm rule khớp**: authorizer duyệt rule của Role/ClusterRole gán cho subject. Rule khớp khi đủ 4 điều kiện: subject, verb (*), resource (*), namespace trùng (rule null áp dụng mọi namespace).
+3. **Mặc định từ chối**: không có rule khớp thì 403 Forbidden. RBAC không có rule "từ chối" (deny) — chỉ có allow. Quên grant quyền là nguyên nhân phổ biến của lỗi 403 lạ trên pod.
+4. **Vì sao mặc định từ chối**: nếu ServiceAccount bị đánh cắp, attacker chỉ làm được những gì rule cho phép — least privilege (quyền thấp nhất cần thiết).
+
+Ví dụ Role/RoleBinding cho ServiceAccount CI:
+
+~~~yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployer
+  namespace: staging
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deploy
+  namespace: staging
+subjects:
+- kind: ServiceAccount
+  name: ci-sa
+  namespace: staging
+roleRef:
+  kind: Role
+  name: deployer
+~~~
+
+| Đối tượng | Phạm vi | Dùng cho |
+|---|---|---|
+| Role | Một namespace | Quyền workload/dev trong namespace đó |
+| ClusterRole | Toàn cụm | Resource cluster-scoped (nodes, persistentvolumes), hoặc tái sử dụng qua RoleBinding |
+| RoleBinding | Một namespace | Gán role cho subject trong namespace đó |
+| ClusterRoleBinding | Toàn cụm | Gán ClusterRole cho subject toàn cụm (admin, controller) |
+
 **Tóm tắt:** RBAC mặc định từ chối, chỉ cho phép qua rule; Role namespace, ClusterRole toàn cụm; Binding gán cho subject; ClusterRole qua RoleBinding chỉ hiệu lực trong namespace đó; wildcard * khớp mọi thứ.
 
 ### Ví dụ đời thực
@@ -4809,7 +4850,18 @@ Interviewer hỏi "Làm sao giới hạn ServiceAccount chỉ deploy trong 1 nam
 - Không audit RBAC → quyền tích luỹ qua thời gian (privilege creep).
 - ServiceAccount token tự động mount vào pod → attacker có thể dùng nếu pod bị compromise. Dùng automountServiceAccountToken: false khi không cần.
 
-> Senior tip: Luôn dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace; audit định kỳ bằng kubectl auth can-i --list; tránh wildcard * trong production; đặt automountServiceAccountToken false khi pod không cần gọi API server.`,
+### Lỗi hay gặp trên production (triệu chứng → nguyên nhân → cách sửa)
+- **Pod gọi API nhận 403 mặc dù đã tạo RoleBinding**: subject không khớp — RoleBinding gán user khác hoặc namespace khác pod. Cách sửa: gán cho ServiceAccount đúng namespace ({{system:serviceaccount:<ns>:<sa>}}), xác minh bằng {{kubectl auth can-i --as=system:serviceaccount:<ns>:<sa> <verb> <resource> -n <ns>}}.
+- **Ứng dụng khởi chạy báo 403 khi đọc ConfigMap/Secret hoặc ghi event mặc dù đã có quyền Deployment**: default deny nghĩa mỗi resource/verb cần rule riêng; developer thường liệt kê thiếu. Cách sửa: liệt kê đầy đủ resource ứng dụng dùng {{configmaps, secrets, events, pods/log…}}, kiểm tra bằng {{kubectl auth can-i}} trước khi rollout.
+- **Sửa RoleBinding xong mà pod vẫn bị từ chối (hoặc vẫn được phép) trong vài giây**: apiserver cache authorization vài giây. Cách sửa: đợi hết hạn rồi kiểm tra bằng {{kubectl auth can-i}}.
+
+> Senior tip: Luôn dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace; audit định kỳ bằng kubectl auth can-i --list; tránh wildcard * trong production; đặt automountServiceAccountToken false khi pod không cần gọi API server.
+
+### Liên hệ phỏng vấn
+- "Phân biệt Role và ClusterRole, khi nào dùng cái nào?" — Role chỉ trong một namespace (workload, dev của namespace đó); ClusterRole toàn cụm (nodes, persistentvolumes, hoặc RoleBinding trong namespace).
+- "RBAC xử lý request thế nào, có quy tắc từ chối (deny) không?" — Mặc định từ chối mọi request; chỉ allow qua rule, không deny; thiếu rule thì 403.
+- "Giới hạn ServiceAccount chỉ được deploy trong một namespace làm sao?" — Tạo Role (không ClusterRole) với verbs create/update/delete/get/list trên deployments của namespace đó, RoleBinding gán ServiceAccount, tránh wildcard *, kiểm tra bằng kubectl auth can-i.
+`,
   exercises: [
     {
       title: 'Authorizer: kiểm tra quyền RBAC thu nhỏ',
@@ -4866,6 +4918,7 @@ Interviewer hỏi "Làm sao giới hạn ServiceAccount chỉ deploy trong 1 nam
   check: [
     { q: 'RBAC mặc định là gì?', options: ['Allow all', 'Deny all', 'Deny chỉ resource nhạy cảm', 'Allow nếu authenticated'], answer: 1, explain: 'RBAC mặc định từ chối mọi request; chỉ những gì rule cho phép mới được thực hiện. Không có deny rule.' },
     { q: 'ClusterRole gán qua RoleBinding có hiệu lực ở đâu?', options: ['Toàn cụm', 'Chỉ namespace của binding', 'Chỉ cluster-scoped resources', 'Mọi namespace trừ system'], answer: 1, explain: 'RoleBinding giới hạn phạm vi vào namespace của binding, kể cả khi role là ClusterRole.' },
+    { q: 'kubectl auth can-i --as=system:serviceaccount:staging:ci-sa create deployments -n staging trả "yes". Điều bắt buộc phải có?', options: ['ClusterRoleBinding gán quyền toàn cụm cho ci-sa', 'RoleBinding trong namespace staging gán Role có verb create trên deployments cho ServiceAccount ci-sa', 'Pod có automountServiceAccountToken: true', 'ServiceAccount ci-sa nằm trong namespace kube-system'], answer: 1, explain: 'Đáp án đúng là B: RoleBinding gán Role cho ServiceAccount trong cùng namespace mới cho phép verb đó. ClusterRoleBinding là toàn cụm (quá rộng, không bắt buộc); automountServiceAccountToken chỉ quyết định token có mount vào pod, không phân quyền; ServiceAccount phải ở namespace staging chứ không phải kube-system.' },
   ],
   related: ['devops-002','devops-004'],
   tags: ['Kubernetes','RBAC','Authorizer','ServiceAccount'],
@@ -4902,6 +4955,50 @@ StorageClass với volumeBindingMode: WaitForFirstConsumer → PV chỉ được
 - **Delete**: xoá PV (và underlying storage) khi PVC bị xoá.
 - **Retain**: giữ PV, admin phải xóa thủ công; dữ liệu còn.
 
+### Cơ chế từng bước: từ PVC đến pod mount dữ liệu
+1. Pod (qua Deployment/StatefulSet) khai báo PersistentVolumeClaim (PVC): dung lượng, access mode (ReadWriteOnce, ReadOnlyMany, ReadWriteMany), storageClassName. PVC ban đầu Pending.
+2. Controller Kubernetes quan sát PVC: tìm PersistentVolume (PV) có dung lượng lớn hơn hoặc bằng yêu cầu, access mode khớp, storageClassName khớp (hoặc StorageClass mặc định của cụm). Nếu có nhiều PV phù hợp, chọn PV nhỏ nhất đủ dùng — tránh lãng phí storage.
+3. Nếu không có PV sẵn và StorageClass có provisioner: controller yêu cầu provisioner tạo PV mới tự động — dynamic provisioning (ví dụ tạo EBS volume trên AWS). PVC vẫn Pending cho đến khi PV được tạo và bound.
+4. PVC và PV được bind: pod mount volume vào đường dẫn trong container (ví dụ /data), ứng dụng đọc/ghi như ổ cứng thường.
+5. Khi PVC bị xoá: reclaim policy quy định làm gì với PV — Delete xoá PV và storage bên dưới, Retain giữ PV để admin xử lý hoặc sao lưu.
+
+Vì sao chọn PV nhỏ nhất đủ dùng? Tránh chiêu bức — dùng PV 2 TiB cho PVC 10Gi lãng phí storage và có thể ảnh hưởng quota của cụm.
+
+Ví dụ manifest StorageClass và PVC (gp3 trên AWS):
+
+~~~yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-data
+  namespace: staging
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 10Gi
+~~~
+
+Vì sao WaitForFirstConsumer? Provisioner chỉ tạo PV sau khi pod được lập lịch, nên biết pod chạy ở zone nào — tạo EBS ở zone đó, tránh tạo volume ở zona A mà pod lập lịch ở zona B thì không mount được (EBS gắn liền với một zona).
+
+| Access mode | Nghĩa | Dùng cho |
+|---|---|---|
+| ReadWriteOnce (RWO) | Một node đọt ghi một lúc | Database đơn instance |
+| ReadOnlyMany (ROX) | Nhiều node chỉ đọc | Template, nội dung công khai chỉ đọc |
+| ReadWriteMany (RWX) | Nhiều node đọt ghi | Chia sẻ file giữa nhiều replica; cần storage hỗ trợ, EBS không hỗ trợ |
+
 **Tóm tắt:** PVC bind PV phù hợp (dung lượng ≥, access mode, storageClass); dynamic provisioning tạo PV khi thiếu; WaitForFirstConsumer chờ pod scheduled; reclaim Delete xoá, Retain giữ.
 
 ### Ví dụ đời thực
@@ -4919,7 +5016,18 @@ Khi PVC Pending, kiểm tra theo thứ tự: kubectl describe pvc để xem even
 - Reclaim Delete → xoá PVC là mất data vĩnh viễn; luôn backup trước.
 - RWX trên cloud block storage (EBS) không hỗ trợ → PVC Pending.
 
-> Senior tip: Luôn đặt storageClassName rõ ràng; dùng WaitForFirstConsumer cho multi-zone; backup trước khi xoá PVC với Retain; giám sát Pending PVC; kiểm tra provisioner logs.`,
+### Lỗi hay gặp trên production (triệu chứng → nguyên nhân → cách sửa)
+- **PVC Pending mãi vì yêu cầu dung lượng lớn hơn mọi PV sẵn**: dung lượng trong PVC là giá trị tối thiểu, PV phải lớn hơn hoặc bằng; sau khi bind không thể co kích thước PV. Cách sửa: dùng StorageClass có provisioner để tạo PV đúng dung lượng (dynamic provisioning), hoặc tạo PV đủ lớn trước; chỉ có thể tăng kích thước (cần allowVolumeExpansion và CSI hỗ trợ), không thể giảm.
+- **Pod mount volume báo lỗi hoặc volume không attach được**: volumeMode của PVC không khớp với cách pod sử dụng — Filesystem là mặc định (mount như thư mục), Block dùng cho thiết bị thô (raw block device, ví dụ database tự quản lý hệ thống tệp). Cách sửa: thiết lập volumeMode trong spec của PVC phù hợp với workload.
+- **PVC Pending với sự kiện {{"no storage class available"}}**: sai tên storageClassName hoặc không có StorageClass mặc định. Cách sửa: {{kubectl get storageclass}} xác nhận tên; chỉ đánh dấu một StorageClass làm mặc định qua annotation {{storageclass.kubernetes.io/is-default-class: "true"}}.
+
+> Senior tip: Luôn đặt storageClassName rõ ràng; dùng WaitForFirstConsumer cho multi-zone; backup trước khi xoá PVC với Retain; giám sát Pending PVC; kiểm tra provisioner logs.
+
+### Liên hệ phỏng vấn
+- "PVC Pending mãi, bạn kiểm tra thứ tự gì?" — Xem sự kiện (kubectl describe pvc); xác nhận StorageClass tồn tại và provisioner chạy; WaitForFirstConsumer yêu cầu pod đã được lập lịch; zone PV và pod phải khớp nhau.
+- "Phân biệt Reclaim policy Delete và Retain, khi nào dùng cái nào?" — Delete xoá PV và storage bên dưới khi PVC bị xoá (dữ liệu tạm, dễ tạo lại); Retain giữ PV và dữ liệu để admin sao lưu (dữ liệu quan trọng production).
+- "WaitForFirstConsumer là gì và lợi ích của nó?" — PV chỉ được tạo hoặc provision sau khi pod được lập lịch, nên provisioner chọn storage ở zone/node phù hợp với pod, tránh tạo volume ở zona khác rồi pod không mount được.
+`,
   exercises: [
     {
       title: 'VolumeController: bind/provision/release',
@@ -4986,6 +5094,7 @@ Khi PVC Pending, kiểm tra theo thứ tự: kubectl describe pvc để xem even
   check: [
     { q: 'PVC Pending mãi, nguyên nhân nào sau đây?', options: ['Không có PV và không có provisioner', 'StorageClass không tồn tại', 'WaitForFirstConsumer chờ pod scheduled', 'Tất cả các đáp án trên'], answer: 3, explain: 'Tất cả đều có thể gây Pending: thiếu PV/provisioner, StorageClass không tồn tại, hoặc WaitForFirstConsumer chờ pod được lập lịch.' },
     { q: 'Reclaim policy Delete làm gì khi PVC bị xoá?', options: ['Giữ PV và dữ liệu', 'Xoá PV và underlying storage', 'Chỉ xoá PVC, PV còn', 'Backup tự động'], answer: 1, explain: 'Delete xoá PV và storage bên dưới. Retain giữ PV và dữ liệu để admin xử lý thủ công.' },
+    { q: 'PVC yêu cầu 10Gi RWO storageClass gp3, không có PV sẵn, nhưng StorageClass có provisioner. Điều gì xảy ra?', options: ['Dynamic provisioner tạo PV 10Gi rồi bind với PVC', 'PVC Pending vĩnh viễn vì không có PV sẵn', 'Pod bị CrashLoopBackOff ngay lập tức', 'PVC bị xóa tự động sau 5 phút'], answer: 0, explain: 'Đáp án đúng là A: khi không có PV sẵn nhưng StorageClass có provisioner, controller thực hiện dynamic provisioning — tạo PV mới với dung lượng 10Gi, access mode RWO, storageClass gp3, rồi bind với PVC. PVC chỉ Pending trong thời gian provisioner tạo volume, không phải Pending vĩnh viễn; pod không CrashLoopBackOff vì lý do storage; và PVC không bị xóa tự động sau 5 phút.' },
   ],
   related: ['devops-002','devops-004'],
   tags: ['Kubernetes','PVC','PV','StorageClass','Storage'],
