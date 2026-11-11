@@ -3022,6 +3022,22 @@ Khi đã chọn, đàm phán **một vòng** với nơi bạn chọn bằng offe
 - Nhận offer A "cho chắc" rồi rút khi B tới: hợp pháp nhưng làm mất uy tín, và giới tuyển dụng IT ở Việt Nam khá nhỏ.
 - Nghỉ việc cũ trước khi có offer ký chính thức.
 
+### Ví dụ đời thực
+
+Triệu chứng: Năm trước tôi phỏng vấn vòng cuối tại một công ty tín dụng, sau đó im lặng sáu ngày không gửi email cảm ơn. Đồng thời tôi nhận offer từ nơi A với hạn ba ngày, trong khi nơi B còn vòng cuối sau một tuần. Tôi không biết phải nhắc B hay không, và cuối cùng bị lỡ hai bên.
+
+Điều tra: Tôi mở lại ghi chú buổi phỏng vấn — có hai câu về xử lý sự cố production trả lời hơi hời, và recruiter của A chưa gửi hợp đồng. Tôi nhận ra vấn đề không nằm ở trình độ kỹ năng, mà ở việc không follow-up đúng lúc.
+
+Nguyên nhân gốc: Không có bảng theo dõi quy trình, nên không biết recruiter nào đã phản hồi, hạn offer đến khi nào, và phải nhắc lại lần cuối khi nào.
+
+Cách xử lý: Tôi gửi email cảm ơn ngắn trong 24 giờ, nêu một chi tiết cuộc trò chuyện khiến tôi hứng thú. Tôi nhắc lại recruiter A một lần sau bốn ngày làm việc. Với B, tôi nói trung thực: "Tôi vừa nhận offer có hạn thứ Sáu, vị trí bên anh/chị là ưu tiên, có thể đẩy nhanh vòng cuối không?" Tôi cũng nhờ A gia hạn thêm ba đến năm ngày.
+
+Kết quả: B đẩy nhanh và mời vòng cuối vào thứ Tư. Tôi nhận hai offer cùng tuần, dùng bảng so sánh (lương, bảo hiểm, phạm vi việc, thời gian di chuyển) để chọn B, đàm phán tăng 10 phần trăm lương gross bằng offer của A, rồi từ chối A lịch sự vào thứ Sáng. Cả hai bên vẫn giữ liên hệ cho lần sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Sau mỗi buổi phỏng vấn, tôi dành khoảng một giờ để ghi lại câu hỏi đã được hỏi và câu trả lời nào còn yếu, rồi ôn lại các điểm đó. Trong vòng 24 giờ, tôi gửi email cảm ơn ngắn, nêu rõ một chi tiết trong cuộc trò chuyện khiến tôi hứng thú hơn với vị trí, không xin xỏ. Nếu bị từ chối, tôi trả lời lịch sự và xin một điểm cụ thể cần cải thiện, ví dụ ở vòng system design, vì câu hỏi này dễ được recruiter trả lời hơn yêu cầu chung chung "cho tôi feedback". Khi có hai offer với hạn khác nhau, tôi nói trung thực với nơi tôi ưu tiên về offer kia và yêu cầu đẩy nhanh vòng cuối, đồng thời nhờ nơi khác gia hạn thêm ba đến năm ngày. Tôi so sánh bằng bảng tổng thể: lương, bảo hiểm, phạm vi việc, thời gian di chuyển, ổn định team. Sau khi chọn, tôi đàm phán một vòng bằng offer thật, rồi từ chối nơi còn lại lịch sự và sớm để giữ cửa cho lần sau."
+
 > Senior tip: Lập một bảng theo dõi quy trình: công ty, vòng hiện tại, ngày hẹn phản hồi, người liên hệ, hạn offer. Khi phỏng vấn nhiều nơi cùng lúc, cố gắng xếp lịch để các vòng cuối rơi vào cùng 1–2 tuần; có các offer cùng thời điểm là lợi thế đàm phán lớn nhất, và hoàn toàn trung thực.`,
   follow: [
     'Bạn có nên nói với công ty A rằng bạn đang chờ kết quả công ty B không?',
@@ -3090,6 +3106,22 @@ class OrderRepositoryIT extends PgIT { /* 60 test, không khởi động thêm c
 - Bỏ Ryuk để "cho nhanh" ⇒ container rác tích tụ, runner self-hosted chết vì hết ổ.
 - Bật parallel khi các lớp test ghi vào **cùng một schema** ⇒ red ngẫu nhiên, mất cả tuần debug.
 
+### Ví dụ đời thực
+
+Triệu chứng: Repository test của team chạy trên H2 với chế độ {{MODE=PostgreSQL}}, cả suite xanh trong hai phút. Nhưng sau khi deploy lên production Postgres 16, API tạo đơn hàng báo lỗi cú pháp SQL khi dùng lệnh {{ON CONFLICT DO UPDATE}}, và tính năng tìm đơn theo mã JSON bị hỏng hoàn toàn.
+
+Điều tra: Tôi chạy lại test trên container Postgres thật bằng Testcontainers, cùng dữ liệu và truy vấn như production. Test đỏ ngay ở dòng lưu cột {{jsonb}} và câu {{ON CONFLICT}} — H2 không hỗ trợ cú pháp này đúng như Postgres, dù chúng ta đã cấu hình {{MODE=PostgreSQL}}.
+
+Nguyên nhân gốc: H2 là database viết bằng Java, chỉ "gần giống" Postgres qua chế độ mô phỏng, vẫn là code khác. Các tính năng đặc thù như {{jsonb}}, {{ON CONFLICT}}, khóa chỉ mục {{GIN}}, hoặc sắp xếp theo collation tiếng Việt vẫn chạy sai hoặc ném lỗi trên Postgres thật.
+
+Cách xử lý: Chuyển toàn bộ test repository sang Testcontainers với {{PostgreSQLContainer}} 16, dùng chung một container cho cả module qua lớp cha trừu tượng (static + final), và pin image {{postgres:16-alpine}} để build tái lập. Mỗi class test chỉ cần extends lớp cha, không khởi động container mới.
+
+Kết quả: Suite 300 test repository chậm hơn H2 khoảng tám đến mười giây, chứ không phải ba trăm lần. Trong 12 tháng qua team bắt được bốn lỗi SQL chỉ lộ trên Postgres trước khi deploy, mỗi lần nếu sai production mất khoảng một ngày xử lý.
+
+### Trả lời mẫu khi phỏng vấn
+
+"H2 chỉ nên dùng khi repository chỉ dùng JPQL chuẩn và CRUD đơn giản. Vừa chạm đến SQL đặc thù của Postgres như {{jsonb}}, {{ON CONFLICT}}, khóa, hoặc hàm phân tích cửa sổ, tôi bắt buộc phải dùng Testcontainers vì H2 chỉ "gần giống" Postgres qua {{MODE=PostgreSQL}}, vẫn là code khác. Chi phí thật không phải mất ba mươi giây mỗi test, mà nằm ở việc pull image và runner có Docker hay không. Nếu cả module dùng chung một container qua lớp cha trừu tượng, suite ba trăm test chỉ chậm thêm khoảng mười giây. Tôi luôn pin phiên bản image, dùng {{@Transactional}} để rollback, và bật reused container chỉ ở local, không bao giờ ở CI. Nếu runner CI không có Docker, tôi chạy test repository trên database thật qua container riêng hoặc môi trường staging, không để test xanh trên H2 mà production lại đỏ."
+
 > Senior tip: khi trình bày quyết định này với lead hoặc manager, đừng nói "H2 không đáng tin". Hãy nói bằng số của chính team: "suite repository 300 test chạy 4 phút 20 với Postgres container dùng chung so với 1 phút 10 với H2; đổi lại 12 tháng qua chúng ta bắt được 4 lỗi SQL chỉ lộ trên Postgres, mỗi lần sửa production mất khoảng một ngày". Đó là lập luận của kỹ sư có kinh nghiệm.`,
   follow: [
     'Runner CI của bạn có Docker sẵn không, và nếu không thì bạn chạy test trên DB thật bằng cách nào?',
@@ -3157,6 +3189,22 @@ Ba chính sách làm mô hình này thật sự an toàn:
 - **Pact phình vô hạn**: mỗi test sinh một interaction → provider verify 500 case chậm. Gom các case quan trọng, dọn pact của version consumer đã ngừng chạy production.
 - **Không có quyền ghi (write) từ CI**: broker cần auth theo pipeline, nếu không ai cũng publish được pact rác.
 - **Provider verify trên DB rỗng** (không có provider state) ⇒ mọi case lỗi không được kiểm.
+
+### Ví dụ đời thực
+
+Triệu chứng: Hai service đặt hàng và thanh toán đã chạy production sáu tháng. Một sprint, developer của service thanh toán đổi tên trường {{amount}} thành {{totalAmount}} trong response API, nhưng không thông báo cho team đặt hàng. Sau khi deploy, service đặt hàng crash vì đọc trường {{amount}} không còn tồn tại.
+
+Điều tra: Tôi xem log ứng dụng — ngoại lệ "UnrecognizedFieldException" mỗi khi gọi thanh toán. Xem lại lịch sử commit, trường đã bị đổi trong PR được merge hôm qua mà team đặt hàng không biết.
+
+Nguyên nhân gốc: Không có contract ràng buộc giữa hai service. Mỗi bên tự thay đổi API, và chỉ khi chạy production mới phát hiện sự không khớp.
+
+Cách xử lý: Team áp dụng contract test với Pact. Service đặt hàng (consumer) viết pact mô tả request và response mong đợi, rồi publish lên Pact Broker. Service thanh toán (provider) CI kéo pact, verify bằng ứng dụng thật với provider state, và chỉ được deploy khi gate {{can-i-deploy}} cho phép. Như vậy, mỗi lần provider đổi trường, build đỏ ngay tại bước verify trước khi deploy.
+
+Kết quả: Trong quý sau, team bắt được ba lần thay đổi phá contract trong CI, mỗi lần chỉ cần sửa trong ba mươi phút thay vì sửa incident production mất mấy giờ.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Contract test gồm ba artefact: file pact do consumer viết để mô tả request và response mong đợi, provider state để chuẩn bị dữ liệu trước mỗi interaction, và kết quả verify do provider ghi lại. Pact Broker lưu cả ba theo phiên bản commit, là nơi liên kết hai phía. Luồng chạy là: consumer CI publish pact, provider CI kéo pact về, verify bằng ứng dụng thật với request giả lập, rồi ghi kết quả. Nếu provider trả lời khác pact, build của provider đỏ trước khi deploy, và gate {{can-i-deploy}} chặn cả hai phía. Contract test bắt được đổi tên trường, đổi kiểu dữ liệu, bỏ trường bắt buộc, nhưng không bắt được nghiệp vụ sai như tính tiền nhầm, và không bắt được timeout hay hiệu năng. Vì vậy tôi vẫn giữ vài test E2E mỏng bên cạnh."
 
 > Senior tip: giá trị của contract test chỉ thuyết phục được team khi họ **thấy nó đỏ**. Hãy dành 30 phút demo trong tech-sharing: rename một field trong response của provider, chạy pipeline, cho xem build chặn ở bước verify và {{can-i-deploy}} từ chối deploy consumer. Một lần như vậy có sức nặng hơn mọi slide về microservices.`,
   follow: [
@@ -3238,6 +3286,22 @@ Chờ theo điều kiện, không chờ theo thời gian. {{Thread.sleep(2000)}}
 | {{@SpringBootTest(webEnvironment = RANDOM_PORT)}} + gọi HTTP thật | request chạy ở thread của server, test không rollback được | tự dọn dữ liệu, hoặc dùng MockMvc |
 | Retry/backoff {{@Retryable}} chờ thật | test mất 30 giây vì backoff | đặt max delay ngắn trong profile test + injected clock |
 
+### Ví dụ đời thực
+
+Triệu chứng: Một tác vụ {{@Async}} ghi đơn hàng vào database và gửi email thông báo. Trong local mọi thứ xanh, nhưng trên production sau khi deploy, có đơn hàng bị thiếu email, và team phát hiện sau hai ngày khi khách hàng phàn nàn.
+
+Điều tra: Tôi xem log ứng dụng — tác vụ nộp cho executor rồi trả về ngay, nhưng exception trong tác vụ bị nắm bởi {{AsyncUncaughtExceptionHandler}} và không bao giờ nổi lên. Test trước đây assert ngay sau khi gọi method, trước khi tác vụ nền kịp chạy, nên vẫn xanh.
+
+Nguyên nhân gốc: Test assert trước khi tác vụ nền hoàn tất, và exception của method trả về {{void}} bị nuốt. {{@Transactional}} trên class test chỉ quản lý transaction của thread test, nên phần async commit thật và để lại dữ liệu rác.
+
+Cách xử lý: Tôi viết test logic dùng {{SyncTaskExecutor}} để tác vụ chạy ngay trên thread gọi, assert nhanh và deterministic. Giữ một integration test chạy executor thật, dùng {{Awaitility}} chờ tác động quan sát được thay vì {{Thread.sleep}}. Method async trả {{CompletableFuture}} để caller có thể join và bắt exception.
+
+Kết quả: Sau khi áp dụng, team không còn bỏ sót email do tác vụ async bị lặng, và test repository phát hiện sớm mọi lỗi logic của tác vụ nền trước khi deploy.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi chia xử lý {{@Async}} thành ba lớp. Lần đầu, tôi tránh assert ngay sau khi gọi method vì tác vụ nền chưa kịp chạy, và exception của method trả về {{void}} bị nắm bởi {{AsyncUncaughtExceptionHandler}} nên test xanh dù code chết. Vì vậy tôi dùng ba kỹ thuật: nếu method trả {{CompletableFuture}}, tôi gọi {{get}} với timeout năm giây để fail nhanh; trong test logic, tôi thay executor bằng {{SyncTaskExecutor}} của Spring để tác vụ chạy ngay trên thread gọi, {{@Transactional}} rollback lại hoạt động và test xác định; cuối cùng, tôi giữ một integration test chạy executor thật, dùng {{Awaitility}} chờ tác động quan sát được thay vì {{Thread.sleep}}. Với {{@Scheduled}}, tôi tách logic ra method riêng, test gọi thẳng method đó, và không nạp {{@EnableScheduling}} trong test để scheduler tự chạy không gây nhiễu. Nếu tác vụ chạy thread khác, {{@Transactional}} trên class test chỉ quản lý transaction của thread test, nên tôi bỏ nó và tự dọn dữ liệu bằng {{@Sql}}."
+
 > Senior tip: đặt quy ước trong review checklist: "code async phải có đường để test chạy đồng bộ" — tức executor được inject qua constructor chứ không {{new Thread()}} trong method. Cùng lúc, yêu cầu **đúng một** IT chạy executor thật cho mỗi luồng nghiệp vụ quan trọng: nó là thứ duy nhất bảo vệ bạn khỏi lỗi "hai thread cùng ghi một bản ghi" mà executor giả không bao giờ thấy.`,
   follow: [
     'Bạn làm gì khi tác vụ async vừa ghi DB vừa gửi message, và test cần kiểm tra cả hai?',
@@ -3294,6 +3358,22 @@ done
 - **Thêm sleep lớn hơn**: flake chỉ chậm lại, và CI ăn thêm thời gian.
 - **Tăng timeout gấp 10**: che luôn cả bug thật, vì bug giờ mới có đủ thời gian để lộ ra ở production thay vì ở test.
 - **Bớt assert đi cho xanh**: test vẫn chạy code nhưng không còn phát hiện lỗi — coverage tăng, giá trị giảm.
+
+### Ví dụ đời thực
+
+Triệu chứng: Một test của team fail khoảng một lần trong ba mươi lần chạy, không có thay đổi code. Test đỏ trên CI nhưng xanh trên máy dev, và team bắt đầu bấm "rerun" theo phản xạ, mất niềm tin vào CI.
+
+Điều tra: Tôi chạy đúng commit đó năm mươi lần, đếm có hai lần đỏ. Xem log, lỗi là {{String.toLowerCase()}} trả về kết quả khác trên CI vì máy dev dùng tiếng Việt, còn CI dùng locale Thổ Nhĩ Kỳ, trong đó chữ i chuyển sang dạng khác.
+
+Nguyên nhân gốc: Test dùng {{String.toLowerCase()}} không chỉ định locale, và hành vi thay đổi theo locale của máy chạy. Đây là flake nhóm "locale/múi giờ".
+
+Cách xử lý: Tôi sửa test bằng cách chỉ định {{Locale.ROOT}} và thêm regression test với locale Thổ Nhĩ Kỳ để phát hiện sớm. Đồng thời, team áp dụng quy trình: gắn {{@Tag("flaky")}} và chạy ở job riêng, thêm ticket với tên người phụ trách, hạn chót năm ngày làm việc, quá hạn thì viết lại ở tầng thấp hơn hoặc xoá.
+
+Kết quả: Flake rate của team giảm từ trên một phần trăm xuống dưới nửa phần trăm mỗi tuần, và dev không còn bấm rerun mù quáng vì pipeline trong lại đáng tin cậy.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Flaky test là cùng một commit cho kết quả khác nhau, và luôn có nguồn không xác định đứng sau: thời gian, thứ tự chạy, state dùng chung, port, dữ liệu, hay hạ tầng CI. Khi phát hiện flake, tôi không bao giờ chỉ bấm rerun, mà chạy đúng commit đó hai mươi đến năm mươi lần để xác nhận và đếm số lần đỏ. Sau đó tôi cô lập test ngay bằng {{@Tag("flaky")}} chạy ở job riêng, tạo ticket với tên người phụ trách, và tìm nguồn theo bảng phân loại: đổi thứ tự chạy, đổi múi giờ và locale, chạy một class duy nhất, tắt parallel. Khi tìm được gốc, tôi inject {{Clock}}, thay {{Thread.sleep}} bằng {{Awaitility}}, tách state tĩnh, dùng port động và dữ liệu riêng theo từng test. Nếu nguyên nhân là race trong code production, tôi sửa code chứ không sửa test. Ở team 15 dev, tôi áp dụng luật retry không được coi là fix, flake bị quarantine tối đa năm ngày làm việc, quá hạn thì viết lại ở tầng thấp hơn hoặc xoá, và theo dõi flake rate hàng tuần, giữ dưới nửa phần trăm."
 
 > Senior tip: con số quyết định tất cả là **flake rate**, và nó chỉ đáng tin khi bạn tính đúng: "số lần CI đỏ ở cùng một commit không đổi code chia cho tổng số lần chạy". Report con số đó cùng pipeline duration và change failure rate trong họp kỹ thuật hằng tháng. Khi dev bắt đầu bấm "rerun" theo phản xạ thì pipeline đã mất tác dụng — đó là lúc bạn cần nguồn lực để dọn, và flake rate là lập luận dễ hiểu nhất với quản lý.`,
   follow: [
@@ -3364,6 +3444,22 @@ mvn -DtargetClasses=com.acme.order.domain.* org.pitest:pitest-maven:mutationCove
 - Đặt KPI mutation score toàn công ty ⇒ sinh test vô nghĩa để giết mutant (đúng căn bệnh của coverage).
 - Chạy trên module có test E2E nặng ⇒ mỗi mutant khởi động cả context, chậm kinh hoàng. Mutation test đi kèm **unit test nhanh**.
 - Đọc điểm tổng mà không mở báo cáo HTML: giá trị nằm ở danh sách mutant sống sót, không ở con số.
+
+### Ví dụ đời thực
+
+Triệu chứng: Team viết test cho hàm tính giảm giá theo hạng thành viên. Mọi dòng code đều được chạy ít nhất một lần, báo cáo cobertura hiển thị line coverage trăm phần trăm. Nhưng sau khi deploy, hàm tính sai tiền cho hạng SILVER và BRONZE, và khách hàng phàn nàn về hóa đơn sai.
+
+Điều tra: Tôi chạy PIT (mutation testing) trên module. PIT sinh ra các bản "sai có chủ đích" gọi là mutant, ví dụ đổi 0.05 thành 0.06, hoặc trả về giá trị không giảm giá. Test vẫn xanh với những mutant này vì test hiện có chỉ kiểm hạng GOLD với một giá trị.
+
+Nguyên nhân gốc: Line coverage chỉ nói dòng code đã chạy, không nói dòng đó đã được kiểm tra chặt chẽ hay chưa. Test chỉ covering một nhánh và không assert giá trị trả về của hai nhánh còn lại.
+
+Cách xử lý: Tôi viết thêm test cho hạng SILVER (giảm năm phần trăm) và BRONZE (không giảm), assert chặt giá trị trả về thay vì chỉ kiểm "không ném lỗi". Chạy lại PIT, mutation score tăng từ khoảng năm chục phần trăm lên gần trăm phần trăm, và báo cáo HTML không còn liệt kê mutant sống sót ở hàm này.
+
+Kết quả: Team không còn yên tâm với con số coverage trăm phần trăm mà mở báo cáo mutant sống sót, biến mỗi mutant thành issue nhỏ "thêm assert". Sau hai quý, test của team thực sự phát hiện lỗi thay vì chỉ chạy qua dòng code.
+
+### Trả lời mẫu khi phỏng vấn
+
+"PIT hoạt động bằng cách sửa bytecode của class đang test thành các bản "sai có chủ đích" gọi là mutant, ví dụ đổi phép so sánh {{>=}} thành {{>}}, đổi dấu cộng thành trừ, hoặc xoá một lời gọi method. Rồi PIT chạy lại test: test đỏ nghĩa là mutant bị giết, test xanh nghĩa là mutant sống sót — và chỗ mutant sống sót chính là chỗ test của bạn thiếu assert. Mutation score tính bằng số mutant bị giết chia cho tổng mutant được xét, mutant nằm ngoài coverage bị loại khỏi mẫu số. Tôi có ví dụ: hàm giảm giá theo hạng GOLD, SILVER, BRONZE, test chỉ chạy hạng GOLD, line coverage đạt trăm phần trăm nhưng PIT sinh mười hai mutant, năm mutant sống sót, mutation score chỉ khoảng năm chục phần trăm. Bảng mutant sống sót chỉ thẳng là thiếu hai nhánh SILVER và BRONZE, và thiếu assert trên giá trị trả về. Tôi viết thêm hai test đó, mutation score tăng gần trăm phần trăm. Mục tiêu không phải trăm phần trăm mutation score — mutant tương đương như {{x + 0}} vẫn được tính sống sót — mà là dùng báo cáo mutant sống sót làm "đơn đặt hàng test" cụ thể, chạy nightly theo diff và biến mỗi mutant thành issue nhỏ thêm assert."
 
 > Senior tip: cách dùng PIT hiệu quả nhất là **theo diff**: chạy nightly trên module lõi, lấy mutant sống sót của code thay đổi trong tuần, biến mỗi mutant thành một issue nhỏ "thêm assert". Sau hai quý, team không còn viết test "cho có assert" nữa vì họ đã thấy máy chỉ ra chỗ họ hổng. Đó là lúc mutation score tự tăng, mà không cần ai ra lệnh.`,
   follow: [
