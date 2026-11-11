@@ -6544,6 +6544,21 @@ API --> UserB: ghế đã có người giữ
 - **Double charge (trừ tiền 2 lần)**: client retry vì mạng chậm. Dùng {{idempotency key}} (client gửi key duy nhất cho mỗi lần checkout; server lưu kết quả, request trùng trả kết quả cũ) ở bước thanh toán.
 - **Tin cache "còn ghế"**: UI hiển thị từ cache → user bấm mua mới phát hiện hết. Cache chỉ để hiển thị, quyết định cuối cùng luôn dựa trên DB trong transaction.
 
+### Ví dụ đời thực
+
+Sự kiện flash sale 10:00, 30.000 người cùng vào, 1.000 vé khuyến mãi. Ban đầu ứng dụng chỉ đọc "còn vé" rồi ghi DB → hai request cùng đọc "còn 1 vé" và cùng ghi "Đã bán" → bán trùng 50 đơn, phải hoàn tiền và xử lý khiếu nại.
+
+Triệu chứng: p99 đặt vé nhảy từ 100ms lên 3s, DB CPU 85%, nhiều transaction giữ lock ghế lâu vì người dùng giữ chỗ rồi quên thanh toán.
+
+Nguyên nhân gốc: kiểm tra "còn trống → giữ ghế" không nguyên tử (không thể tách nhỏ, phải thành một khối duy nhất) ở ứng dụng; không có TTL (thời gian sống) nên ghế bị giữ mãi ("ghế ma"); không có idempotency key (khóa duy nhất mỗi lần thanh toán, server lưu kết quả và trả kết quả cũ khi request trùng) nên client retry do mạng chậm gây trừ tiền 2 lần.
+
+Xử lý: (1) transaction dùng {{SELECT FOR UPDATE}} khóa dòng ghế khi đọc; (2) cột {{version}} phòng vệ optimistic lock; (3) status {{HELD}} với {{hold_until}} = NOW() + 5 phút, job release ghế hết hạn; (4) bước thanh toán tạo idempotency key.
+
+Kết quả: giờ cao điểm 40.000 RPS, không còn đơn trùng ghế, lock giữ trung bình < 100ms, hoàn tiền do bán trùng xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hai người cùng mua ghế cuối, tôi sẽ không để ứng dụng tự kiểm tra "còn trống" rồi ghi, vì hai request có thể cùng đọc AVAILABLE và bán trùng. Thay vào đó, tôi dùng transaction với {{SELECT FOR UPDATE}} để khóa dòng ghế ngay khi đọc, request khác phải chờ, sau khi commit thấy HELD thì từ chối. Tôi cũng chuyển ghế sang HELD với TTL 5 phút và có job release nếu không thanh toán kịp, tránh ghế bị "ma". Ở thanh toán, tôi dùng idempotency key: mỗi checkout một key duy nhất, server lưu kết quả, request trùng trả kết quả cũ, tránh trừ tiền 2 lần. Trade-off: khóa pessimistic an toàn nhưng giảm throughput khi tranh chấp cao, nên tôi chỉ dùng cho ghế cuối; flash sale cực lớn tôi xếp hàng qua queue trước để giảm tải DB. Đây là cách tôi đã xử lý trước đây."
+
 > Senior tip: Với ghế cuối (tranh chấp cực cao trên đúng 1 row), pessimistic {{FOR UPDATE}} + TTL hold đơn giản và an toàn nhất. Đo conflict/lock-wait time; nếu p99 lock-wait > 500ms thì cân nhắc queue. Luôn thêm idempotency key ở payment và ghi audit log (ai giữ/mua ghế nào, lúc nào) để đối soát.`,
     follow: ['Idempotency key thiết kế thế nào?', 'Làm sao tránh double charge?'],
     tags: ['concurrency', 'locking', 'booking']
@@ -6602,6 +6617,23 @@ Trong {{EXPLAIN}}, thấy {{Index Scan}} / {{Bitmap Index Scan}} (PG) hoặc {{r
 - **Composite index (chỉ mục nhiều cột) sai thứ tự**: index {{(a,b)}} giúp {{WHERE a=?}} và {{WHERE a=? AND b=?}}, nhưng **không** giúp {{WHERE b=?}} đứng một mình (quy tắc leftmost prefix — tiền tố trái).
 - **Quên {{ANALYZE}}**: thống kê cũ khiến planner chọn nhầm plan (bỏ index). Sau import dữ liệu lớn, chạy {{ANALYZE}}.
 
+### Ví dụ đời thực
+
+Bảng {{orders}} 10 triệu dòng, query lấy đơn của khách {{WHERE user_id = 123 AND status = 'PAID'}} chậm khoảng 3 giây, khách phàn nàn trang đơn tải lâu.
+
+Triệu chứng: dashboard xem đơn hàng p99 3s, DB CPU cao giờ cao điểm.
+
+Điều tra: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} thấy {{Seq Scan}} (quét tuần tự — DB đọc từng trang của cả bảng) 10 triệu dòng thay vì dùng index.
+
+Nguyên nhân gốc: chưa có index trên cột lọc, hoặc index không khớp query (ví dụ cột {{user_id}} là số nhưng query so sánh với chuỗi '123' gây implicit cast — ép kiểu ngầm, khiến index không được dùng).
+
+Xử lý: tạo index composite {{(user_id, status)}} theo đúng thứ tự cột lọc, viết lại query không bọc hàm và không ép kiểu. Query sink xuống 15ms. Sau đó tôi thấy INSERT chậm hơn 20% vì mỗi ghi phải cập nhật mọi index → dùng {{pg_stat_user_indexes}} tìm index không ai dùng và bỏ bớt.
+
+Kết quả: p99 dashboard từ 3s xuống 50ms, DB CPU giảm, ghi dữ liệu không bị ảnh hưởng rõ rệt.
+
+### Trả lời mẫu khi phỏng vấn
+"Index giống mục lục sách: dữ liệu 10 triệu dòng, không index thì DB phải sequential scan — quét tuần tự từng trang đĩa, rất chậm. Có index B-Tree (cây cân bằng bậc cao, mỗi node chứa nhiều key nên ít đọc đĩa) thì DB đi từ gốc xuống lá theo giá trị cần, chỉ đọc vài trang (miligiây). Tôi dùng B-Tree vì phù hợp dữ liệu lớn nằm trên đĩa, khác cây nhị phân dễ lệch thành đường thẳng nếu dữ liệu vào tăng dần. Kiểm tra bằng {{EXPLAIN (ANALYZE, BUFFERS)}}: thấy Index Scan hoặc Bitmap Index Scan là dùng index, thấy Seq Scan hoặc ALL là quét hết bảng. Không tạo index cho cột ít giá trị phân biệt (boolean, giới tính) hay bảng ghi liên tục vì làm chậm write. Quy trình thực tế: lấy query chậm từ slow log → EXPLAIN → thêm đúng 1 index phục vụ query đó → đo lại. Một index đúng có thể đưa query từ 3s xuống dưới 20ms."
+
 > Senior tip: Index là đánh đổi read/write — đừng tạo theo cảm giác. Quy trình: lấy query chậm từ slow log/pg_stat_statements → {{EXPLAIN (ANALYZE, BUFFERS)}} → thêm đúng 1 index phục vụ query đó → đo lại. Trên bảng chục triệu dòng, một index đúng có thể đưa query từ ~3s xuống < 20ms.`,
     follow: ['Composite index thứ tự cột?', 'Index covering là gì?'],
     tags: ['index', 'database', 'btree']
@@ -6657,6 +6689,23 @@ COMMIT;
 - **Transaction dài giữ lock**: mở transaction, gọi API ngoài, rồi mới commit → giữ row lock hàng chục giây, request khác xếp hàng, p99 tăng vọt. Quy tắc: transaction càng ngắn càng tốt, không gọi mạng bên trong transaction.
 - **Nhầm isolation với atomicity**: isolation là giữa các transaction song song; atomicity (A trong ACID) là tất-cả-hoặc-không trong 1 transaction.
 
+### Ví dụ đời thực
+
+Hệ thống lương, hai quản lý cùng duyệt một bản lương 50 triệu đồng vào lúc gần như đồng thời. T1 đọc trạng thái "chờ duyệt", T2 cũng đọc "chờ duyệt", cả hai nhấn duyệt → tiền được chuyển hai lần.
+
+Triệu chứng: khách báo số dư sai, log thấy hai giao dịch cùng mã đơn.
+
+Điều tra: database mặc định Read Committed, nhưng code chỉ đọc trạng thái rồi ghi mới mà không khóa → hai transaction đều thấy "chờ duyệt" (non-repeatable read — đọc không lặp lại, kết quả thay đổi giữa chừng vì transaction khác đã commit).
+
+Nguyên nhân gốc: không dùng khóa khi thực hiện mô hình "đọc rồi ghi", nên hai giao dịch dựa trên dữ liệu cũ.
+
+Xử lý: dùng {{SELECT ... FOR UPDATE}} khóa dòng khi đọc trạng thái, hoặc thêm ràng buộc {{CHECK}} và xử lý duy nhất ở DB; nếu lỗi serialization (giao dịch bị hủy do xung đột) thì retry lại giao dịch.
+
+Kết quả: không còn chuyển tiền trùng, số dư luôn chính xác, tôi chia giao dịch dài thành nhỏ để không giữ lock lâu.
+
+### Trả lời mẫu khi phỏng vấn
+"Isolation level (mức cô lập) quy định một giao dịch nhìn thấy thay đổi của giao dịch khác như thế nào, có bốn mức từ thấp đến cao: Read Uncommitted, Read Committed, Repeatable Read, Serializable. Càng cao càng an toàn nhưng càng chậm. PostgreSQL mặc định Read Committed — đủ cho hầu hết API, nhưng logic "đọc số dư rồi trừ" vẫn cần {{SELECT ... FOR UPDATE}} để khóa hàng, tránh hai giao dịch cùng trừ dựa trên số dư cũ. Tôi chỉ nâng lên Serializable cho sổ cái nhạy cực vì throughput giảm và phải xử lý lỗi hủy giao dịch rồi thử lại. Locking (cơ chế khóa) là cách DB hiện thực mức cô lập: shared lock cho đọc, exclusive lock cho ghi, deadlock (khóa vòng) là hai bên cùng chờ khóa của nhau thì DB tự hủy một bên. Thực tế tôi giữ Read Committed, dùng {{FOR UPDATE}} đúng chỗ đọc-rồi-ghi, và giữ transaction càng ngắn càng tốt — không gọi mạng bên trong transaction."
+
 > Senior tip: Thực dụng nhất là giữ Read Committed và dùng {{SELECT ... FOR UPDATE}} / ràng buộc {{UNIQUE}} / {{CHECK}} đúng chỗ "đọc-rồi-ghi". Theo dõi {{pg_stat_activity}} (lock chờ) và deadlock count; nếu lock-wait p99 > 200ms, rà lại transaction dài và thứ tự khóa.`,
     follow: ['MVCC hoạt động thế nào?', 'Gap lock là gì?'],
     tags: ['isolation', 'transaction', 'locking']
@@ -6709,6 +6758,21 @@ Email -> Email: gửi xác nhận
 - **Sai partition key**: key null/random → event cùng {{orderId}} rơi khác partition → mất thứ tự. Chọn key theo thực thể cần giữ thứ tự.
 - **Không quản lý schema**: producer đổi format message làm consumer vỡ. Dùng Schema Registry (Avro/Protobuf/JSON Schema) và quy tắc tương thích.
 - **Consumer lag (tụt lại)**: consumer xử lý chậm, backlog tăng. Monitor {{consumer lag}}; scale consumer (tối đa bằng số partition) hoặc tối ưu xử lý.
+
+### Ví dụ đời thực
+
+Hệ thống đặt vé online, ban đầu service đặt vé gọi REST lần lượt đến Payment, Email, SMS, Analytics để xử lý một đơn. Latency lên 1,2 giây; khi Email service lỗi, cả đơn thất bại dù đơn đã hợp lệ; thêm consumer mới phải sửa service đặt vé.
+
+Triệu chứng: p99 tạo đơn 1,2 giây, tỷ lệ lỗi đơn cao giờ cao điểm.
+
+Nguyên nhân gốc: coupling chặt (service gọi trực tiếp service khác và chờ kết quả), xử lý nhiều việc khác loại trên luồng gọi chính.
+
+Xử lý: chuyển sang Kafka, service đặt vé chỉ publish (đăng tải) một sự kiện {{OrderCreated}} vào topic, các service khác consume (tiêu dùng) sự kiện đó riêng lẻ. Message lưu trên đĩa theo offset (vị trí), consumer có thể đọc lại sau khi phục hồi.
+
+Kết quả: p99 tạo đơn xuống 200ms; khi Email service down 10 phút, message không bị mất, consumer đọc lại khi phục hồi; throughput 5.000 đơn/phút. Lỗi gặp: consumer không idempotent (chạy lại cho cùng kết quả) dẫn trừ kho hai lần cho cùng sự kiện → sửa bằng lưu eventId đã xử lý hoặc thao tác upsert (cập nhật hoặc chèn nếu chưa có).
+
+### Trả lời mẫu khi phỏng vấn
+"Kafka là hệ thống sự kiện stream phân tán: producer (bên gửi) ghi message vào topic (kênh), topic chia thành nhiều partition (phân vùng) để xử lý song song, message lưu trên đĩa theo offset nên consumer (bên nhận) có thể đọc lại, khác hàng đợi truyền thống xóa message ngay sau khi đọc. Tôi dùng Kafka khi cần xử lý bất đồng bộ, nhiều hệ thống tiêu thụ cùng một sự kiện (ví dụ đơn vừa tạo vừa trừ kho, gửi email, cộng điểm), hoặc cần replay (đọc lại sự kiện cũ) và đệm tải đột biến. Dùng REST/RPC khi cần kết quả ngay (đăng nhập trả token, kiểm tra số dư). Rủi lớn nhất của Kafka là consumer không idempotent — Kafka có thể giao trùng message, nên tôi lưu eventId đã xử lý hoặc dùng upsert. Kết hợp cả hai: REST nhận request và trả phản hồi nhanh, phía sau phát Kafka event để xử lý nặng."
 
 > Senior tip: Quyết định theo câu hỏi "caller có cần kết quả ngay để trả user không?" — có thì REST/gRPC, không thì cân nhắc Kafka. Bắt đầu đơn giản, chuyển sang Kafka khi thấy nhu cầu thật về decoupling/replay/buffer. Luôn làm consumer idempotent và theo dõi consumer lag (cảnh báo nếu lag > ngưỡng, vd 10k message hoặc > 60s).`,
     follow: ['Consumer group là gì?', 'Exactly-once semantics?'],
@@ -6770,6 +6834,21 @@ App --> Client: product
 - **Stale data (dữ liệu cũ)**: cập nhật DB nhưng quên xóa cache → user thấy dữ liệu cũ. Quy tắc: mọi đường ghi phải invalidate key liên quan; chấp nhận eventual consistency trong TTL nếu dùng TTL-only.
 - **Cache penetration (xuyên thủng)**: query id không tồn tại → luôn miss → luôn chọc DB. Cache giá trị null ngắn (30–60s) hoặc dùng Bloom filter (bộ lọc xác suất) để chặn key chắc chắn không có.
 - **Object lớn/serialization chậm**: cache cả entity nặng tốn RAM và CPU. Chỉ cache field cần thiết, chọn format gọn (JSON/protobuf).
+
+### Ví dụ đời thực
+
+Trang chi tiết sản phẩm của trang bán hàng, 5.000 RPS giờ cao điểm, mỗi trang gọi 6 truy vấn DB, DB CPU 90%, p99 800ms. Dữ liệu sản phẩm chỉ thay đổi vài lần mỗi giờ khi người bán cập nhật.
+
+Triệu chứng: trang sản phẩm chậm, khách thoát trang, DB quá tải.
+
+Nguyên nhân gốc: đọc lại cùng dữ liệu sản phẩm từ DB hàng nghìn lần mỗi phút dù dữ liệu gần như không đổi.
+
+Xử lý: áp dụng cache-aside (đọc từ cache trước, miss thì đọc DB rồi ghi vào cache) với Redis, key {{product:42}}, TTL 300 giây (thời gian sống, sau đó tự hết hạn). Hit (có trong cache) trả ngay, miss (không có) đọc DB rồi ghi cache.
+
+Kết quả: hit ratio (tỉ lệ đọc trúng cache) 95%, p99 xuống 80ms, DB CPU 45%. Lỗi gặp: cache stampede (đàn thú dồn dập — key hot hết TTL đúng lúc, hàng nghìn request cùng miss đánh DB) giảm bằng jitter TTL (thêm ngẫu nhiên ±10%) và để một request rebuild cache; cache penetration (xuyên thủng — truy vấn id không tồn tại luôn miss và chọc DB) bằng cache giá trị null ngắn 30-60 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Cache là lưu tạm bản sao dữ liệu trong RAM (Redis) để đọc nhanh, tránh gọi DB lặp lại. Mẫu cache-aside: ứng dụng đọc cache trước — hit (có dữ liệu) trả ngay, miss (không có) đọc DB rồi ghi vào cache kèm TTL (thời gian sống). Tôi chỉ cache dữ liệu đọc nhiều, ghi ít, tính lại được, dung lượng vừa. Khi dữ liệu đổi, tôi xóa key liên quan (invalidation — hủy bản cache cũ) thay vì cập nhật cache, tránh race ghi giá trị cũ. Lỗi hay gặp: cache stampede (nhiều request cùng miss khi key hết TTL) giảm bằng jitter TTL và để một request rebuild; cache penetration (truy vấn id không tồn tại luôn chọc DB) bằng cache giá trị null ngắn 30-60 giây. Mắt quan trọng: Redis chỉ là lớp tối ưu, DB vẫn là nguồn sự thật, mọi luồng phải chạy đúng khi Redis chết."
 
 > Senior tip: Cache là lớp tối ưu, **DB vẫn là nguồn sự thật** — mọi luồng phải chạy đúng khi Redis rỗng hoặc chết (fallback DB, có thể chậm hơn nhưng không lỗi). Đặt TTL mọi key (tránh key sống mãi rò rỉ RAM), theo dõi hit ratio (mục tiêu thường > 90% cho key hot) và memory {{used/max}}; p99 đọc cache Redis nội mạng thường < 2ms.`,
     follow: ['Cache avalanche là gì?', 'Write-behind cache?'],
@@ -6834,6 +6913,23 @@ CREATE INDEX ON events_2026_05 (user_id, created_at);
 - **Partition mà quên partition key trong WHERE**: query {{WHERE user_id=42}} (không lọc {{created_at}}) trên bảng partition theo thời gian → quét mọi partition, không pruning. Thiết kế query và partition key phải đi cùng nhau.
 - **Migrate sang partition trên bảng live tỷ dòng**: lock lâu, downtime. Cần kế hoạch (tạo bảng mới partitioned, backfill theo batch, dual-write/cutover) và đo trên staging.
 - **{{OFFSET 1000000}}**: DB vẫn phải đọc & bỏ qua 1 triệu dòng. Dùng keyset pagination ({{WHERE (created_at,id) < (:c,:i) ORDER BY created_at DESC, id DESC LIMIT 100}}).
+
+### Ví dụ đời thực
+
+Bảng {{events}} 1,2 tỷ dòng ghi log hành vi 18 tháng. Query "lấy 100 sự kiện của user trong 7 ngày" có index {{(user_id, created_at)}} nhưng p99 vẫn 4-6 giây, DB chờ I/O cao giờ cao điểm.
+
+Triệu chứng: trang lịch sử hành vi chậm, users phàn nàn.
+
+Điều tra: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} thấy Index Scan nhưng actual time cao, buffers read lớn (đọc quá nhiều trang), estimated rows lệch xa actual rows (thống kê phân bố dữ liệu cũ).
+
+Nguyên nhân gốc: planner (bộ chọn kế hoạch của database) ước tính sai số lượng dòng trả về nên chọn kế hoạch kém, cùng lúc index quét quá nhiều dữ liệu.
+
+Xử lý: viết lại query không bọc hàm trên cột lọc, chỉ SELECT cột cần; tạo covering index (chỉ mục chứa luôn cột trả về) {{(user_id, created_at) INCLUDE (id, type)}} để Index Only Scan, không đọc bảng chính; chạy {{ANALYZE events}} cập nhật thống kê; phân vùng bảng theo tháng (partition), planner dùng partition pruning (bỏ qua phân vùng không liên quan) chỉ quét 1-2 phân vùng.
+
+Kết quả: p99 từ 5 giây xuống 40ms, dữ liệu phải quét giảm từ 100% xuống dưới 2%.
+
+### Trả lời mẫu khi phỏng vấn
+"Đã có index không có nghĩa planner (bộ chọn kế hoạch của database) sẽ dùng. Tôi luôn kiểm chứng bằng {{EXPLAIN (ANALYZE, BUFFERS)}}: Seq Scan là index không dùng, Index Scan với actual time cao và buffers read lớn là quét quá nhiều dòng, sort tràn đĩa do bộ nhớ work_mem không đủ, estimated rows lệch actual rows là thống kê cũ. Nguyên nhân thường gặp: bọc hàm lên cột như DATE(created_at) làm index vô dụng, ép kiểu ngầm, thứ tự cột composite index sai theo quy tắc leftmost prefix (tiền tố trái). Sửa: viết query sargable (lọc dùng được index), tạo covering index để Index Only Scan, chạy ANALYZE cập nhật stats. Nếu bảng tỷ dòng và truy vấn theo thời gian, tôi phân vùng theo tháng, planner bỏ qua phân vùng không liên quan. Thực tế: query 7 ngày trên 1,2 tỷ dòng giảm từ vài giây xuống vài chục ms."
 
 > Senior tip: Quy trình cố định: (1) {{EXPLAIN (ANALYZE, BUFFERS)}} + so estimated vs actual, (2) sửa query/index cho sargable (lọc dùng được index), (3) {{ANALYZE}} cập nhật stats, (4) nếu vẫn phải chạm quá nhiều dòng → partition/prune dữ liệu. Trên bảng ~1 tỷ dòng partition đúng theo tháng, query 7 ngày thường giảm từ quét cả bảng xuống < 2% dữ liệu và p99 từ giây về vài chục ms.`,
     follow: ['Partition pruning là gì?', 'Khi nào dùng materialized view?'],
