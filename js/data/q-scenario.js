@@ -4378,6 +4378,13 @@ Bài học: **dịch vụ "phụ" (NAT, log, transfer) mới là thứ tăng âm
 ### Trả lời miệng 1 phút
 "Tôi không đoán mà dùng Cost Explorer theo ngày, nhóm theo service rồi theo usage type để thấy chính xác hạng mục nào tăng và tăng từ ngày nào, rồi đối chiếu với lịch deploy. Khi chi phí tăng mà traffic không tăng, thủ phạm thường là NAT Gateway, CloudWatch Logs, data transfer giữa AZ hoặc tài nguyên bị bỏ quên. Ví dụ tải S3 qua NAT thì chuyển sang gateway endpoint miễn phí, log DEBUG thì về INFO và đặt retention. Sau đó tôi bật Budgets, Cost Anomaly Detection và tag theo team để lần sau phát hiện trong một ngày chứ không phải cuối tháng."
 
+### Ví dụ đời thực
+Triệu chứng: hoá đơn AWS tháng 4 là 36.000 USD (tháng trước 12.000 USD) trong khi request chỉ tăng khoảng 15%. CFO yêu cầu giải trình trong 2 ngày.
+Điều tra: mở Cost Explorer, granularity Daily, group by Service thấy EC2-Other tăng mạnh từ ngày 8 (từ ~120 USD/ngày lên ~420 USD/ngày). Group by Usage type trong EC2-Other cho thấy {{NatGateway-Bytes}} ~200 TB và {{DataTransfer-Regional-Bytes}} tăng. Song song CloudWatch {{DataProcessing-Bytes}} tăng rõ. Đối chiếu lịch deploy ngày 8: service ảnh tải ảnh gốc từ S3 để resize và deploy có bật log DEBUG cho luồng upload.
+Nguyên nhân gốc: (1) tải ảnh S3 đi qua NAT Gateway (~200 TB x 0,045 USD/GB) vì subnet private chưa có S3 Gateway VPC Endpoint; (2) log DEBUG sinh khoảng 15 TB ingestion; (3) consumer đọc chéo AZ tăng transfer nội vùng.
+Cách xử lý: tạo S3 Gateway VPC Endpoint và cập nhật route table; hạ log về INFO, bật sampling request thành công, đặt retention 14 ngày; cấu hình ứng dụng ưu tiên endpoint cùng AZ (AZ affinity) để giảm cross-AZ transfer; dọn EBS unattached và snapshot cũ.
+Kết quả đo được: sau 10 ngày, NatGateway-Bytes giảm hơn 95%, CloudWatch ingestion giảm ~80%, hoá đơn ước tính cuối tháng giảm còn ~14.500 USD. Bật AWS Budgets và Cost Anomaly Detection để cảnh báo trong 24 giờ nếu usage type tăng bất thường.
+
 > Senior tip: báo cáo cho CFO bằng ba cột: **nguyên nhân, số tiền, đã sửa chưa**, kèm dự báo tháng sau. Lãnh đạo chấp nhận sai sót, không chấp nhận "chưa biết". Và tôi đưa chi phí thành một metric của team như latency: khi mỗi team thấy hoá đơn của mình hằng tuần, phần lớn lãng phí tự biến mất.`,
   follow: [
     'Vì sao NAT Gateway hay là nguồn chi phí bất ngờ trên AWS?',
@@ -4450,6 +4457,13 @@ await().atMost(Duration.ofSeconds(5))                    // Awaitility: tối đ
 ### Trả lời miệng 1 phút
 "Test flaky là test cho kết quả khác nhau khi code không đổi, và nó làm team mất niềm tin vào CI, như tuần trước bug thật đã lọt. Tôi bật rerun của Surefire để report đánh dấu test flaky, rồi tái hiện bằng cách chạy lặp và xáo thứ tự. Nguyên nhân thường là state dùng chung giữa test, thời gian thật, sleep cố định với code async, thứ tự không xác định hoặc port/DB dùng chung. Tôi sửa bằng inject Clock, Awaitility, dọn dữ liệu mỗi test. Trong lúc chờ sửa, test bị cách ly có ticket, người sở hữu và hạn chót, không bấm re-run vô hạn."
 
+### Ví dụ đời thực
+Triệu chứng: pipeline CI của service order đỏ ~25% (khoảng 20/80 build mỗi tuần), bấm "Re-run" thường xanh. Một tuần trước, bug tính phí thực bị merge vì người review nghĩ "lại flaky".
+Điều tra: bật {{mvn test -Dsurefire.rerunFailingTestsCount=2}} và tổng hợp JUnit XML 2 tuần, thấy {{OrderServiceTest.shouldExpireAtMidnight}} fail 12 lần và {{OrderAsyncTest.shouldMarkPaid}} fail 9 lần. Chạy lặp {{OrderServiceTest}} 50 lần thấy fail ~8% vào khoảng cuối ngày; chạy {{mvn test -Dsurefire.runOrder=random}} thấy {{OrderAsyncTest}} fail khi chạy sau test khác ghi cùng bảng DB.
+Nguyên nhân gốc: (1) test dùng {{LocalDate.now()}} và so sánh ngày hết hạn nên lệch khi chạy sát mốc 00:00 theo timezone CI; (2) test async dùng {{Thread.sleep(500)}} trong khi publish event trên CI chậm có lúc 1,2 giây; (3) dữ liệu DB không được dọn giữa test nên trạng thái rò rỉ.
+Cách xử lý: inject {{Clock}} và dùng {{Clock.fixed(...)}} trong test; thay sleep bằng Awaitility {{await().atMost(Duration.ofSeconds(5)).untilAsserted(...)}}; dọn bảng liên quan trong {{@BeforeEach}} và dùng dữ liệu riêng cho mỗi test. Test chưa sửa kịp được gắn {{@Tag("quarantine")}} có ticket, owner và hạn 2 tuần.
+Kết quả đo được: sau 1 sprint, tỉ lệ build đỏ do flaky giảm từ ~25% xuống ~2%, thời gian trung bình chờ merge giảm ~18 phút/build, và không còn bug thật bị bỏ qua vì "quen re-run".
+
 > Senior tip: một phần đáng kể test flaky thực ra là **bug thật** trong code production (race condition, phụ thuộc timezone). Trước khi "sửa test", tôi luôn hỏi: người dùng có thể gặp đúng tình huống này không? Nếu có, sửa code chứ không sửa test.`,
   follow: [
     'Vì sao inject Clock tốt hơn dùng mock static cho LocalDate.now()?',
@@ -4519,6 +4533,13 @@ Vụ 40 phút lỗi tuần trước: lỗi 30% thì burn rate là 300, alert nà
 
 ### Trả lời miệng 1 phút
 "Alert rác dạy người trực lờ đi, nên alert thật bị bỏ qua. Tôi kiểm kê bốn tuần lịch sử: alert nào kêu mà không ai hành động thì xoá hoặc hạ thành ticket. Page chỉ dành cho triệu chứng ảnh hưởng người dùng, đo bằng SLO và burn rate nhiều cửa sổ, ví dụ burn rate 14,4 trong cả 1 giờ và 5 phút. Tôi gom nhóm và inhibit ở Alertmanager, mỗi page có runbook, và review alert mỗi tuần khi bàn giao on-call. Mục tiêu là vài page mỗi ca và gần như page nào cũng cần hành động."
+
+### Ví dụ đời thực
+Triệu chứng: đội on-call nhận ~300 alert/tuần, >90% không cần làm gì, nhiều người tắt thông báo ban đêm. Tuần trước, API thanh toán lỗi 40 phút nhưng không ai phản ứng vì alert thật chìm giữa alert rác.
+Điều tra: xuất lịch sử alert 4 tuần từ Alertmanager/Prometheus. "CPU > 80%" kêu 85 lần/tuần, 0 lần hành động; "Pod restart" 60 lần/tuần nhưng đa số tự hồi phục; "Disk > 70%" kêu sớm nhưng không dự báo tốc độ đầy. Alert "Payment error rate" kêu 2 lần và cả 2 lần đều cần xử lý nhưng bị trôi trong kênh chung.
+Nguyên nhân gốc: alert tập trung vào nguyên nhân hạ tầng (CPU, heap, restart) thay vì triệu chứng người dùng; ngưỡng tĩnh không có cửa sổ thời gian; thiếu gom nhóm/inhibit nên một sự cố sinh hàng chục thông báo; page không có runbook rõ.
+Cách xử lý: xoá/hạ cấp alert không hành động được (CPU cao thành dashboard), đổi disk alert sang dự báo đầy trong 4 giờ bằng {{predict_linear}}; tạo alert SLO burn rate cho payment (page khi burn rate > 14,4 trong 1h và 5m); cấu hình {{group_by}} và {{inhibit_rules}} trong Alertmanager; thêm {{runbook_url}} cho mọi page; review alert mỗi tuần.
+Kết quả đo được: sau 6 tuần, số page giảm từ ~300 xuống ~18/tuần, tỉ lệ page có hành động tăng lên ~92%, và sự cố lỗi thanh toán mô phỏng 30% được phát hiện trong ~4 phút thay vì bị bỏ lỡ.
 
 > Senior tip: con số tôi theo dõi là **tỉ lệ page có hành động**. Dưới khoảng 50% là hệ thống alert đang hỏng. Và khi thuyết phục team xoá alert, tôi đổi câu hỏi từ "lỡ cần thì sao" thành "lần cuối alert này giúp ta phát hiện sự cố là khi nào?". Thường không ai nhớ.`,
   follow: [
@@ -4593,6 +4614,13 @@ App ghi file log vào filesystem của container hoặc {{emptyDir}} không gi�
 
 ### Trả lời miệng 1 phút
 "Xoá file đang được process mở thì Linux chỉ xoá tên, dữ liệu còn tới khi process đóng file, nên df vẫn 100%. Tôi dùng lsof +L1 tìm file đã xoá còn mở và truncate qua /proc/pid/fd, hoặc restart process. Rồi tìm vì sao log tới 40 GB: thường là một exception lặp lại không backoff, cộng với rolling policy không có total-size-cap, mà mặc định của Spring Boot là không giới hạn. Tôi đặt max-file-size, max-history, total-size-cap, sửa vòng lặp, alert theo tốc độ đầy. Trên Kubernetes thì log ra stdout và đặt giới hạn ephemeral-storage để một pod không làm đầy cả node."
+
+### Ví dụ đời thực
+Triệu chứng: 02:00 sáng, service report trên VM báo {{java.io.IOException: No space left on device}}, không ghi được file tạm và trả lỗi cho request. On-call đã {{rm}} file log 40 GB nhưng {{df -h}} vẫn 100%.
+Điều tra: {{df -h}} cho thấy {{/var}} đầy; {{df -i}} còn inode; {{lsof +L1}} hiện {{java (pid 4121)}} giữ {{/var/log/report/app.log (deleted)}} khoảng 40 GB. Đọc cuối log (qua fd hoặc bản rotate gần nhất) thấy stack trace lỗi kết nối DB lặp ~3.000 dòng/giây do retry không backoff. Kiểm tra cấu hình Logback: có {{max-history}} nhưng {{total-size-cap}} để mặc định (0, không giới hạn).
+Nguyên nhân gốc: vòng retry lỗi DB in full stack trace liên tục + rolling policy không giới hạn tổng dung lượng + {{rm}} file đang mở nên dung lượng không được trả lại.
+Cách xử lý: giải phóng ngay bằng {{: > /proc/4121/fd/7}}, xác nhận {{df -h}} giảm xuống ~55%; restart service để chắc chắn trạng thái sạch. Sau đó cấu hình {{max-file-size: 100MB}}, {{max-history: 7}}, {{total-size-cap: 2GB}} trong Spring Boot, thêm backoff cho retry và giảm log trùng lặp. Đặt alert "đầy trong 4 giờ" bằng {{predict_linear}} trên metric filesystem.
+Kết quả đo được: dung lượng {{/var}} ổn định dưới 60% trong các tuần tiếp theo, không còn sự cố đầy đĩa ban đêm; khi DB lỗi thử nghiệm, log tăng nhưng bị chặn trong giới hạn 2 GB thay vì phình vô hạn.
 
 > Senior tip: trong mọi template service, tôi đặt sẵn {{total-size-cap}} và giới hạn {{ephemeral-storage}}, vì sự cố đầy đĩa gần như luôn đến vào ban đêm, do một lỗi khác kích hoạt. Đầy đĩa hiếm khi là nguyên nhân gốc; nó là **triệu chứng thứ hai** che khuất lỗi thật, nên sau khi dọn chỗ hãy đọc phần log trước lúc đầy.`,
   follow: [
@@ -4672,6 +4700,13 @@ Cập nhật tiếp: 21:15.
 ### Trả lời miệng 1 phút
 "Việc đầu tiên của tôi không phải debug mà là tạo trật tự. Tôi tuyên bố SEV1, nhận vai IC, giao người dẫn kỹ thuật, người lo giao tiếp và người ghi timeline, dồn về một kênh, và khoá thay đổi: mọi thao tác production phải báo trong kênh và được duyệt. Người không có vai rời call. Tôi ưu tiên giảm tác động: rollback, tắt flag, chuyển đối tác, vì hành động đảo ngược được thì làm ngay. Tôi cập nhật mỗi 30 phút theo mẫu tác động, đã làm, đang làm, lần cập nhật tiếp, để CEO và CSKH không phải hỏi từng người. Đóng sự cố khi chỉ số ổn định đủ lâu, rồi hẹn postmortem."
 
+### Ví dụ đời thực
+Triệu chứng: 20:00 thứ Sáu, tỉ lệ thanh toán thành công giảm từ 99% xuống 60%. Trong 15 phút có 9 kỹ sư vào kênh, mỗi người debug một hướng; một người restart DB replica không báo ai; CSKH không biết trả lời khách; CEO nhắn riêng hỏi.
+Điều tra/điều phối: tôi nhận vai IC, tuyên bố SEV1, tạo kênh #inc-0412-payment và gọi điện cầu nối. Giao Nam lead kỹ thuật, Lan phụ trách comms, Huy ghi timeline. Tôi yêu cầu dừng thay đổi tự phát và chỉ làm thao tác được Nam đồng ý trong kênh. Timeline cho thấy deploy payment-service 19:40; metric lỗi tăng từ 19:52; restart replica lúc 20:05 không cải thiện.
+Nguyên nhân gốc (xác định sau): thay đổi cấu hình timeout trong bản deploy 19:40 làm request sang đối tác hết hạn sớm và retry dồn. Trong lúc sự cố, ưu tiên giảm tác động thay vì chứng minh nguyên nhân.
+Cách xử lý: 20:31 rollback payment-service về bản 3.18 (chưa hồi phục đủ vì đối tác đang nghẽn), 20:44 chuyển 50% traffic sang đối tác dự phòng, 20:58 chuyển 100%. Lan cập nhật CSKH/status page mỗi 30 phút theo mẫu. 21:20 tỉ lệ thành công về 98,8% và ổn định.
+Kết quả đo được: tác động giảm còn ~28 phút ở mức lỗi nặng sau khi có IC và quyết định rollback/chuyển traffic; không có thay đổi xung đột thêm; đối soát giao dịch dở dang hoàn tất trong đêm. Postmortem họp sau 2 ngày với action item có owner.
+
 > Senior tip: thứ quyết định một sự cố được xử lý tốt nằm ở **trước** sự cố: định nghĩa SEV sẵn, kênh tạo tự động, mẫu cập nhật, danh sách người dự phòng, và luyện tập (game day). Tôi cũng xoay vòng vai IC cho cả người không phải giỏi kỹ thuật nhất, vì IC cần bình tĩnh và giao tiếp rõ hơn là biết sâu mọi hệ thống.`,
   follow: [
     'Khi tech lead và IC bất đồng về rollback trong lúc sự cố, ai quyết định?',
@@ -4740,6 +4775,14 @@ Trách nhiệm (accountability) vẫn còn: thuộc về **người sở hữu a
 
 ### Trả lời miệng 1 phút
 "Blameless không phải là không ai chịu trách nhiệm, mà là hỏi hệ thống nào cho phép một thao tác bình thường làm sập 40 phút. Ở đây có ít nhất bốn yếu tố: migration chạy tự động lúc deploy giờ cao điểm, không có lock_timeout, CI không kiểm tra câu lệnh khoá bảng, staging quá nhỏ để thấy rủi ro. Postmortem gồm tác động có số liệu, timeline, các yếu tố góp phần, điều làm tốt và action item có owner, hạn chót. Với trưởng phòng, tôi giải thích nêu tên làm người ta giấu lỗi và bất kỳ ai cũng có thể mắc lỗi này; trách nhiệm nằm ở owner action item và ở tôi."
+
+### Ví dụ đời thực
+Triệu chứng: 10:02 sáng, deploy chạy migration {{CREATE INDEX}} trên bảng {{orders}} (80 triệu dòng). Từ 10:05 không tạo được đơn hàng, checkout lỗi tăng vọt trong 40 phút. Trưởng phòng yêu cầu ghi tên người chạy migration trong postmortem.
+Điều tra: timeline cho thấy 09:58 merge PR #1842, 10:02 Flyway chạy khi deploy, 10:05 alert lỗi tạo đơn, 10:21 phát hiện khoá ghi trên {{orders}}, 10:43 index tạo xong và hệ thống hồi phục. Kiểm tra DB thấy câu lệnh {{CREATE INDEX}} không dùng {{CONCURRENTLY}} và không đặt {{lock_timeout}}. Trên staging (50 nghìn dòng) migration chạy ~1 giây nên reviewer không thấy rủi ro.
+Nguyên nhân gốc: DDL tạo index thông thường chặn ghi trên bảng lớn; migration chạy tự động vào giờ cao điểm.
+Yếu tố góp phần: CI không lint migration nguy hiểm, thiếu {{lock_timeout}} (nếu có thể fail nhanh sau 5 giây), thiếu checklist review về khoá bảng, và kiến thức DDL lock chỉ nằm ở vài người.
+Cách xử lý: sau sự cố thêm rule CI chặn {{CREATE INDEX}} không {{CONCURRENTLY}} trên bảng lớn, đặt {{SET lock_timeout = '5s'}} cho user migration, tách migration nguy hiểm chạy ngoài giờ cao điểm, và cập nhật tài liệu/chạy hướng dẫn cho team.
+Kết quả đo được: ~3.100 đơn thất bại được đối soát và xử lý; trong 2 quý tiếp theo, 3 migration nguy hiểm bị CI chặn trước khi merge và không còn sự cố khoá bảng production tương tự.
 
 > Senior tip: tôi đo chất lượng văn hoá postmortem bằng **tỉ lệ action item hoàn thành đúng hạn** và bằng việc người gây ra sự cố có **tự nguyện** viết hoặc trình bày postmortem không. Khi một junior tự đứng lên kể "em đã làm gì và vì sao lúc đó em nghĩ nó đúng", team đó đang học nhanh hơn mọi team khác.`,
   follow: [
