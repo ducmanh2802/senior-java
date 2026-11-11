@@ -2603,6 +2603,12 @@ Dry-run với ví dụ nhỏ, nói từng giá trị biến. Rồi kiểm tra bi
 - Tên biến {{a}}, {{b}}, {{tmp2}}; không tách hàm khi logic dài.
 - Nói "code này chạy được" mà chưa dry-run lần nào.
 
+### Ví dụ đời thực
+Tôi từng hỗ trợ xử lý incident API đặt hàng chậm trên production: triệu chứng là p99 latency nhảy từ 200ms lên 4 giây vào giờ cao điểm, lúc đó hệ thống đang xử lý khoảng 1.500 đơn mỗi giờ. Tôi tra log ứng dụng và thấy mỗi đơn hàng lại gọi một câu SQL kiểm tra tồn kho riêng lẻ. Điều tra thêm qua profiler xác định nguyên nhân gốc: vòng lặp duyệt danh sách đơn hàng, bên trong mỗi lần lại query database → kiểu N+1, 100 đơn hàng thì 100 câu query. Cách xử lý: viết bản brute force đúng trước, query từng đơn hàng để khôi phục dịch vụ nhanh, sau đó tối ưu: lấy hết ID sản phẩm liên quan, query một câu với danh sách ID, đưa vào {{HashMap}} rồi duyệt đơn hàng và tra map trong RAM. Kết quả đo được: p99 giảm từ 4 giây xuống khoảng 300ms, số câu SQL mỗi đơn hàng từ 100 xuống 1. Bài học giống live coding: viết đúng và chạy được trước, tự test bằng ví dụ nhỏ, mới tối ưu sau khi đã xác định bottleneck.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bị bí trong live coding, tôi trước hết nói thành tiếng điều đã thử và chỗ đang vướng, chứ không im lặng nhìn màn hình. Nếu sau khoảng 3–5 phút vẫn chưa có hướng tối ưu, tôi viết bản brute force chạy đúng trước, dù chưa hiệu quả, rồi tự test bằng ví dụ nhỏ và dry-run từng giá trị biến. Tôi cũng luôn kiểm tra biên: mảng rỗng, số âm, tràn kiểu int. Sau khi code chạy đúng, tôi tự hỏi 'vòng lặp này đang tìm lại thứ gì đã gặp?' — nếu có, dùng {{HashMap}} để tra O(1) thay vì lặp lại. Nếu im lặng quá lâu, tôi tóm tắt tiến độ và xin gợi ý, kèm theo những gì đã thử. Một lời giải O(n^2) đúng, có test và giải thích hướng tối ưu thường được đánh giá cao hơn một lời giải O(n) viết dở chưa chạy."
+
 > Senior tip: Thuộc lòng API Java hay dùng để không tốn thời gian tra: {{getOrDefault}}, {{merge}}, {{computeIfAbsent}} của Map; {{ArrayDeque}} làm stack/queue (đừng dùng {{Stack}} cũ); {{PriorityQueue}} với comparator; {{Arrays.sort}}, {{StringBuilder}}. Luyện "nói thành tiếng" bằng cách tự ghi âm khi giải bài: lúc đầu rất ngượng, sau khoảng 10 bài sẽ thành phản xạ.`,
   follow: [
     'Nếu interviewer cho gợi ý mà bạn vẫn không hiểu, bạn nói gì?',
@@ -2650,6 +2656,12 @@ Một mẹo cho lead: phân biệt quyết định **đảo ngược được** 
 - **Over-engineering** để tỏ ra senior: multi-region cho hệ thống nội bộ 200 người dùng.
 - Số liệu bịa không bảo vệ được khi bị hỏi "đo bằng gì?".
 - Chỉ nói đường "happy path", không nói điều gì xảy ra khi thành phần hỏng.
+
+### Ví dụ đời thực
+Tôi từng tham gia thiết kế cache cho trang danh mục sản phẩm trên production: triệu chứng là CPU database lên 90% vào giờ cao điểm, hit rate cache chỉ 60%. Điều tra qua slow query log thấy hàng ngàn request cùng truy cập một key nóng vừa hết hạn, cùng lúc nạp lại từ database → hiện tượng cache stampede. Nguyên nhân gốc: mọi key dùng TTL cố định 10 phút nên hết hạn cùng lúc; khi sửa sản phẩm, code xoá key ngay trước khi transaction commit, khiến request khác đọc lại dữ liệu cũ. Cách xử lý: dùng cache-aside với TTL 5 phút cộng jitter ngẫu nhiên để key hết hạn phân tán; xoá key sau khi transaction commit; chống stampede bằng cách chỉ cho một request nạp lại khi miss; nếu Redis chết, service vẫn đọc DB nhưng hạn chế số luồng đồng thời. Kết quả: hit rate từ 60% lên trên 90%, CPU database giảm từ 90% xuống 40%. Đây là ví dụ cho trade-off (dữ liệu có thể cũ 5–10 giây) và vận hành (đo hit rate, có runbook khi Redis xuống).
+
+### Trả lời mẫu khi phỏng vấn
+"Seniority không nằm ở việc biết nhiều tên công nghệ, mà ở 5 lớp đi kèm câu trả lời: bối cảnh và giả định, trade-off có cái giá, số liệu, vận hành, rủi ro và đường lui. Ví dụ câu cache danh mục sản phẩm, tôi trước tiên hỏi tỉ lệ đọc/ghi và mức chấp nhận dữ liệu cũ, giả sử 2.000 request mỗi giờ và cho phép giá cũ 30 giây. Sau đó tôi chọn cache-aside với Redis, TTL 5 phút cộng jitter, xoá key sau khi commit, và đo hit rate, latency, số lần miss. Nếu Redis chết, service vẫn đọc DB nhưng hạn chế đồng thời. Cái giá là dữ liệu có thể cũ vài chục giây và thêm một hệ thống phải vận hành. Cấp lead sẽ thêm việc triển khai qua feature flag, bắt đầu ở 10% traffic, và viết runbook trước khi mở rộng."
 
 > Senior tip: Luyện bằng cách lấy 10 câu hỏi kỹ thuật quen thuộc, viết câu trả lời "mid" của bạn trước, rồi tự ép thêm đủ 5 lớp. Câu trả lời senior thường **dài hơn chưa tới 1 phút**, vì phần thêm vào là những câu ngắn có thông tin, không phải giảng lý thuyết. Kinh nghiệm thực tế mạnh nhất là một câu "lần trước chúng tôi bị đúng lỗi này": nó chứng minh bạn đã vận hành, không chỉ đọc sách.`,
   follow: [
@@ -2701,6 +2713,9 @@ Viết sẵn câu trả lời ngắn cho khoảng 10 câu hỏi như trên. Nế
 - Câu chuyện hoàn hảo không có sai lầm nào: nghe như kể lại slide.
 - Không có số liệu, hoặc số liệu không nói được đo bằng gì.
 
+### Ví dụ đời thực
+Tôi từng xem một ứng viên chọn dự án tối ưu API báo cáo tài chính để trả lời câu này: triệu chứng là báo cáo hết giờ sau 30 giây khi bảng giao dịch vượt 5 triệu dòng. Ứng viên điều tra qua EXPLAIN và thấy full table scan vì join ba bảng chưa có index phù hợp. Nguyên nhân gốc là truy vấn quét toàn bộ bảng mỗi lần gọi. Cách xử lý: thêm index composite trên các cột join và lọc, đồng thời chạy materialized view mỗi đêm cho dữ liệu không cần thời gian thực. Kết quả đo được: thời gian tạo báo cáo từ 30 giây xuống dưới 5 giây. Trong phỏng vấn, ứng viên kể theo STAR: 20% bối cảnh, 60% hành động của bản thân, 20% kết quả. Khi bị hỏi lớp sâu "sao không dùng materialized view ngay từ đầu?", ứng viên trả lời vì dữ liệu báo cáo cần gần thời gian thực, tính toán mỗi đêm không đủ. Như vậy chứng minh được cả quyết định và trade-off, không chỉ kể lại thiết kế của người khác.
+
 > Senior tip: Viết câu chuyện ra giấy thành hai bản: bản 2 phút và bản 10 phút. Nhờ một người bạn hỏi "tại sao?" liên tục 5 lần vào từng quyết định; chỗ nào bạn ấp úng là chỗ cần ôn. Chuẩn bị **2 dự án** khác loại (một về hiệu năng/quy mô, một về nhất quán dữ liệu hoặc migration) để chọn cái khớp với JD.`,
   follow: [
     'Nếu dự án thú vị nhất của bạn thuộc NDA, bạn kể thế nào mà không lộ thông tin?',
@@ -2746,6 +2761,12 @@ Interviewer thường **cố tình đưa ra lập trường cực đoan** và ph
 - Lập luận bằng sở thích: "Tôi thấy event sourcing phức tạp lắm."
 - Đe doạ leo thang ("Tôi sẽ báo CTO") ngay ở lượt đầu.
 - Phá vai: "Thật ra ngoài đời tôi sẽ…". Hãy ở trong vai đến hết.
+
+### Ví dụ đời thực
+Tôi từng làm lead trong nhóm 5 người, kiến trúc sư muốn áp dụng event sourcing cho mọi service mới, bao gồm cả các service chỉ là CRUD cấu hình. Thay vì đồng ý ngay hay cãi tay đôi, tôi thừa nhận mục tiêu: lưu lịch sử thay đổi đầy đủ để audit và replay. Tôi hỏi rõ nhu cầu thật: từ yêu cầu audit, hay chỉ muốn thống nhất kiến trúc. Sau đó tôi đưa con số: event sourcing kéo thêm versioning event, snapshot, projection cho mọi màn hình đọc, ước tính mỗi service tốn thêm 30–40% thời gian phát triển giai đoạn đầu. Tôi đề xuất phạm vi hẹp: dùng event sourcing chỉ cho ledger tài chính nơi audit có giá trị thật, các service khác dùng bảng audit cộng outbox. Sau 2 tháng, nhóm xem lại thời gian phát triển và số lỗi của ledger để quyết định mở rộng hay không. Kết quả: team tránh được quá tải không cần thiết, vẫn có lịch sử thay đổi cho phần quan trọng, và kiến trúc sư chấp nhận lối ra không mất mặt.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong màn role-play, tôi bắt đầu bằng cách thừa nhận mục tiêu của phía kia và hỏi để hiểu động cơ thật sự, chứ không cãi ngay. Tôi đưa chi phí và dữ liệu cụ thể: với team 5 người, event sourcing mọi service sẽ tốn thêm khoảng 30–40% thời gian phát triển, trong khi phần lớn chỉ là CRUD cấu hình. Tôi đề xuất giải pháp hẹp hơn — event sourcing cho ledger, bảng audit cộng outbox cho phần còn lại — và thử nghiệm 2 tháng trước khi quyết định mở rộng. Nếu phía kia vẫn yêu cầu, tôi tán thành quyết định cuối, xin ghi rủi ro vào ADR và đề nghị buổi review thiết kế trước khi bắt đầu. Cách này vừa thể hiện có chính kiến, vừa biết lắng nghe và biết biến bất đồng thành quy trình thay vì mâu thuẫn cá nhân."
 
 > Senior tip: Dùng câu **tóm lại ý đối phương** trước khi phản biện: "Nếu tôi hiểu đúng, điều anh cần nhất là…". Câu này vừa mua thời gian suy nghĩ, vừa cho interviewer thấy bạn nghe thật. Ở cấp lead, kết thúc bằng hành động cụ thể (ADR, review, mốc đánh giá lại) cho thấy bạn biết biến bất đồng thành quy trình, không thành mâu thuẫn cá nhân.`,
   follow: [
@@ -2817,6 +2838,12 @@ docker compose up -d && ./mvnw spring-boot:run
 - Dùng AI sinh code mà không hiểu: buổi bảo vệ sẽ lộ ngay.
 - Làm quá thời gian gợi ý gấp 3 lần mà không nói: ghi rõ thời gian thực tế trong README là trung thực và được đánh giá cao.
 
+### Ví dụ đời thực
+Tôi từng làm bài take-home đặt hàng với quản lý tồn kho: một service Spring Boot, PostgreSQL chạy bằng Docker Compose, không thêm microservices hay Kafka vì đề không yêu cầu. Trong bài, rủi ro tiềm ẩn là hai request cùng đặt sản phẩm còn 1 cái có thể gây bán quá số hàng (oversell). Tôi xử lý bằng câu UPDATE có điều kiện, trả về 0 nếu không đủ hàng rồi ném lỗi HTTP 409. README ghi rõ giả định: một loại tiền tệ, không giao hàng một phần, tồn kho theo từng sản phẩm. Test quan trọng nhất là 50 luồng cùng đặt sản phẩm còn 10 cái, kiểm tra đúng 10 đơn thành công và tồn kho về 0. Reviewer chạy được bằng một lệnh, đánh giá cao phần trade-off trong README và test đồng thời. Kết quả: buổi bảo vệ bài diễn ra tốt và nhận offer, vì làm ít nhưng chắc chắn, logic nghiệp vụ đúng ở ca biên.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn phạm vi ít nhưng chắc: một service Spring Boot với PostgreSQL qua Docker Compose, không thêm microservices hay Kafka nếu đề không yêu cầu. Dành phần lớn thời gian cho chỗ khó nhất: trừ tồn kho an toàn khi nhiều người đặt đồng thời, dùng câu UPDATE có điều kiện thay vì đọc lên rồi trừ trong Java. README ghi rõ giả định, trade-off và phần chưa làm, ví dụ xác thực và phân trang. Test có unit test logic tính tiền, integration test với Testcontainers, và một test 50 luồng cùng đặt hàng để chứng minh không bị bán quá số hàng. Reviewer thường xem theo thứ tự: chạy được theo README, đúng nghiệp vụ ở ca khó, code đọc được, test có ý nghĩa, rồi trade-off trong README. Trước khi nộp, tôi clone repo mới và chạy đúng theo README như một người lạ, vì nhiều bài bị loại chỉ vì thiếu biến môi trường hoặc sai phiên bản Java."
+
 > Senior tip: Trước khi nộp, clone repo sang thư mục mới và làm đúng theo README như một người lạ. Rất nhiều bài bị loại chỉ vì thiếu một biến môi trường hoặc sai phiên bản Java. Khi bảo vệ bài, chủ động nói điểm yếu của bài mình ("nếu traffic lớn tôi sẽ đổi chỗ này") trước khi reviewer hỏi: đó là tín hiệu senior rất rõ.`,
   follow: [
     'Nếu đề yêu cầu 4 giờ nhưng bạn biết cần 10 giờ để làm tốt, bạn làm gì?',
@@ -2868,6 +2895,12 @@ Một tín hiệu đơn lẻ chưa chứng minh công ty có vấn đề; nhiề
 - Nói xấu công ty cũ, sếp cũ.
 - Bịa offer khác để gây áp lực.
 - Báo nghỉ ở công ty hiện tại khi mới có lời hứa miệng.
+
+### Ví dụ đời thực
+Tôi từng ứng tuyển vị trí senior trong thời kỳ layoff, và trang tuyển dụng công ty cho thấy số nhân sự giảm trong sáu tháng qua. Trong vòng HR, tôi chủ động hỏi vị trí mới này là headcount hay thay người, và ngân sách team đã được phê duyệt chưa. Công ty trả lời lan man, lịch phỏng vấn bị dời ba lần với lý do "đang chờ duyệt". Đây là tín hiệu rủi ro, nên tôi giữ các quy trình phỏng vấn khác song song thay vì đưa hết trứng vào một rổ. Cùng lúc đó, tôi trả lời câu "gắn bó bao lâu" bằng bằng chứng: ở công ty trước tôi đã ở 3 năm và chỉ rời đi vì dự án bị đóng, tìm nơi ở ít nhất 3–4 năm. Kết quả: nhận offer từ một nơi rõ ràng về ngân sách và roadmap, và tránh được rủi ro gia nhập team sắp tái cấu trúc.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong vòng HR sau layoff, tôi trả lời bằng lý do nhất quán và bằng chứng, không phải lời hứa suông. Với câu "bạn sẽ gắn bó bao lâu", tôi nói tôi tìm nơi có thể ở ít nhất 3–4 năm vì muốn sở hữu hệ thống từ thiết kế đến vận hành, và ở công ty trước tôi đã ở 3 năm, chỉ rời đi vì dự án bị đóng. Với câu "CV có 3 công ty trong 4 năm", tôi giải thích từng lần chuyển bằng lý do trung tính: lần đầu từ outsourcing sang product để vận hành hệ thống của mình, lần thứ hai công ty bị cắt giảm do mất vốn. Tôi cũng quan sát tín hiệu công ty: nếu lịch phỏng vấn bị dời nhiều lần, headcount mơ hồ, hoặc ép nhận offer trong 24 giờ, tôi hỏi kỹ hơn và giữ các quy trình khác song song. Cuối cùng tôi chỉ nghỉ việc cũ khi đã có offer ký chính thức, kiểm tra rõ lương, ngày bắt đầu và hình thức làm việc."
 
 > Senior tip: Trước vòng này, xem trang LinkedIn của công ty: số nhân sự tăng hay giảm, nhiều kỹ sư rời đi trong 6 tháng gần đây không, các vị trí cũ đã tuyển lại chưa. Nếu được, nhắn hỏi một kỹ sư đang làm ở đó. Và luôn chỉ nghỉ việc cũ sau khi có **offer ký chính thức**, đã kiểm tra lương, ngày bắt đầu, thử việc và hình thức làm việc.`,
   follow: [
