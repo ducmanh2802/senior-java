@@ -6098,6 +6098,9 @@ Rule: chỉ PENDING mới được cập nhật, COMPLETED là immutable
 ### Trả lời mẫu khi phỏng vấn
 "Schema là tài liệu trung thực nhất về nghiệp vụ, vì code có thể nói dối nhưng dữ liệu thì không. Tôi bắt đầu từ các bảng lớn nhất và được ghi nhiều nhất, xem qua thống kê của DB, vì đó thường là thực thể cốt lõi như giao dịch hay đơn hàng. Tôi vẽ quan hệ qua khoá ngoại, hoặc qua các cột kiểu xxx_id nếu không có ràng buộc. Tôi đặc biệt chú ý các cột trạng thái và giá trị thực tế của chúng bằng câu GROUP BY, vì đó là máy trạng thái của nghiệp vụ; các ràng buộc unique, check cho biết quy tắc bất biến; các cột thời gian và cột version cho biết vòng đời và cách chống ghi đè. Tôi theo một bản ghi thật qua các bảng, ví dụ một lệnh chuyển tiền từ lúc tạo tới lúc hạch toán. Những chỗ lạ như cột không dùng, giá trị trạng thái không có trong code, tôi ghi lại thành câu hỏi cho người hiểu nghiệp vụ."
 
+### Ví dụ đời thực
+Vào dự án bảo hiểm nhân thọ 200 triệu bản ghi policies, team mới không có tài liệu cập nhật. Tôi dùng phương pháp trên: (1) {{SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC}} → top 5 bảng: policies, claims, payments, beneficiaries, policy_status_history; (2) đọc {{policy_status_history}} thấy chuỗi {{PENDING → UNDERWRITING → ACTIVE → LAPSED/CLAIMED/EXPIRED}}; (3) xem {{claims}} có {{claim_status}} tương tự và FK tới {{policies}}; (4) trace một policy từ lúc tạo qua underwriting (có bảng {{underwriting_tasks}}), phát hành, thanh toán phí định kỳ (bảng {{payments}} có {{policy_id}}, {{due_date}}, {{paid_date}}), đến khi claim. Kết quả: trong 2 ngày tôi vẽ được domain model đầy đủ, tìm ra 3 quy tắc ẩn (lapse grace period 30 ngày, auto-renewal logic, beneficiary payout priority) mà tài liệu cũ không đề cập. Các quy tắc này sau thành test case và runbook cho team.
+
 > Senior tip: Một kỹ thuật hiệu quả là "reverse engineer từ transaction". Tìm 1 giao dịch thành công gần nhất trong bảng transaction chính, truy vết tất cả bảng có liên quan qua FK/ref_no, vẽ mối quan hệ. Sau 2-3 giao dịch như vậy bạn sẽ hiểu 80% domain model.`,
   follow: [
     'Làm sao phân biệt bảng nghiệp vụ (master/transaction) và bảng cấu hình?',
@@ -6151,6 +6154,9 @@ Thay vì đọc spec dài dòng, cả team cùng dán sticky note lên bảng: a
 
 ### Trả lời mẫu khi phỏng vấn
 "Event Storming là một buổi làm việc chung giữa dev, BA, nghiệp vụ, trong đó mọi người viết các sự kiện nghiệp vụ đã xảy ra, ở thì quá khứ như 'đơn đã được đặt', 'thanh toán đã được xác nhận', lên giấy dán màu cam, rồi sắp theo dòng thời gian. Sau đó thêm lệnh gây ra sự kiện, tác nhân, các quy tắc và hệ thống bên ngoài, và đánh dấu những chỗ có tranh cãi hay câu hỏi. Khi vào team mới, tôi dùng một buổi mini một đến hai tiếng cho một luồng quan trọng: nó cho tôi bức tranh toàn cảnh nhanh hơn nhiều so với đọc tài liệu, và quan trọng hơn là làm lộ ra những chỗ mà chính các bên đang hiểu khác nhau. Kết quả là danh sách sự kiện, ranh giới nghiệp vụ có thể thành bounded context, và các câu hỏi mở. Tôi chụp lại và chuyển thành tài liệu ngắn để team cùng giữ."
+
+### Ví dụ đời thực
+Vào team logistics xử lý 10 triệu đơn/ngày, tôi tổ chức mini Event Storming 90 phút cho luồng "giao hàng thất bại". Tham gia: 1 BA, 1 PO, 2 dev, 1 CSKH trưởng nhóm. Kết quả: (1) phát hiện 7 domain event ({{DeliveryAttempted}}, {{DeliveryFailed}}, {{Rescheduled}}, {{ReturnedToHub}}, {{CustomerContacted}}, {{ExceptionLogged}}, {{Closed}}); (2) lộ ra 3 chỗ nghiệp vụ hiểu khác nhau: CSKH cho là "gọi khách 1 lần là xong", Operation cho là "gọi 3 lần mới trả hàng", dev code chỉ retry 2 lần; (3) tìm ra external system thiếu: {{CustomerFeedback}} service chưa được nối vào luồng. Sau buổi, team chốt rule: "gọi tối đa 3 lần trong 2 ngày, lần cuối gửi Zalo/Email, sau đó tự động {{ReturnedToHub}}". Dev cập nhật code, thêm event {{CustomerContacted}} với kênh liên lạc,deploy tuần sau. Số đơn "gọi không nghe máy" trả hàng tự động giảm từ 12% xuống 3%.
 
 > Senior tip: Bạn không cần tổ chức Event Storming đầy đủ. Chỉ cần mượn 30 phút của BA/PO, vẽ timeline trên giấy/board với 5-10 event quan trọng nhất của luồng bạn đang tìm hiểu. Thường nhanh hơn đọc cả tài liệu thiết kế.`,
   follow: [
@@ -6237,14 +6243,38 @@ Dev mới hỏi BA: "Logic hoàn tiền là gì?" — câu hỏi quá rộng, nh
 ### English version ngắn
 *"I start by tracing one real transaction end-to-end - from UI to database. I shadow business users, read audit tables to understand state transitions, and ask targeted questions about edge cases. My goal is to build a mental map of the business rules first, so I can make safe changes later."*
 
-### Lỗi hay gặp khi phỏng vấn
-- **Chỉ nói "đọc tài liệu"**: Quá thụ động, không đủ với Senior
-- **Chỉ nói "đọc code"**: Cho thấy tư duy kỹ thuật thuần túy
-- **Không nhấn mạnh ngoại lệ**: Thiếu chiều sâu
-- **Trả lời quá dài**: Giữ 1-2 phút là đủ
+### Trả lời mẫu khi phỏng vấn
+"Trước hết, tôi không đọc hết codebase. Tôi chọn 1 luồng nghiệp vụ quan trọng nhất - ví dụ chuyển tiền - và lần theo nó từ UI đến DB để vẽ bản đồ. Tôi ngồi shadow BA chạy thực tế trên UAT, đọc bảng history để hiểu state machine. Đồng thời tôi trace log với traceId để xem từng bước. Từ đó tôi xây glossary riêng và liệt kê câu hỏi về ngoại lệ. Mục tiêu là sau tuần đầu, tôi có thể tự giải thích luồng đó cho người khác mà không nhìn code. Cách này giúp tôi hiểu cả 'vì sao' lẫn 'như thế nào', và tránh sửa sai do không hiểu nghiệp vụ."
+
+### Cơ chế từng bước: quy trình onboard domain mới
+1. **Ngày 1–2: Chọn luồng quan trọng & trace end-to-end**
+   - Xác định 1–2 luồng cốt lõi (doanh thu cao, rủi ro cao, hoặc luồng bị bug nhiều).
+   - Dùng traceId/correlationId đi theo log từ gateway → service → DB → message queue.
+   - Vẽ sequence diagram đơn giản: ai gọi ai, data chảy như thế nào, state thay đổi ở đâu.
+
+2. **Ngày 3–4: Đọc DB & history table (state machine ẩn)**
+   - Tìm bảng cốt lõi (aggregate root) và bảng {{*_history}}/{{*_audit}}.
+   - {{SELECT status, count(*) FROM core_table GROUP BY status}} → xem phân bố trạng thái thực tế.
+   - Đọc {{history}} table: {{SELECT * FROM order_history WHERE order_id = '...' ORDER BY changed_at}} → hiểu full lifecycle.
+
+3. **Ngày 5–7: Shadow BA/PO & mini Event Storming**
+   - Ngồi cùng BA chạy thực tế trên UAT/staging: "Anh/chị làm gì, hệ thống phản hồi gì, lúc nào cần phê duyệt?"
+   - Tổ chức 30–60 phút vẽ timeline event trên board: Command → Event → Rule → External.
+   - Ghi chú các chỗ tranh cãi/ngoại lệ → thành câu hỏi cho sprint planning.
+
+4. **Tuần 2: Viết glossary & characterization test**
+   - Glossary cá nhân: term, định nghĩa, ví dụ, bảng/col liên quan, người xác nhận.
+   - Viết test dùng dữ liệu thật (không mock) để ghi lại hành vi hiện tại: input X → output Y. Test này vừa doc vừa chống regression.
+
+5. **Tuần 3+: Sửa bug thật đầu tiên**
+   - Chọn 1 bug nhỏ có ticket rõ ràng, sửa end-to-end (code + test + deploy + verify).
+   - Qua việc sửa, hiểu sâu thêm rule, exception, integration point.
 
 ### Ví dụ đời thực
-Hai ứng viên cùng được hỏi câu này. Ứng viên A: "Em sẽ đọc tài liệu và code thật kỹ" — interviewer ghi "thụ động". Ứng viên B kể một lần thật: vào dự án bảo hiểm, tuần đầu theo một hồ sơ bồi thường từ app tới DB qua trace, tổ chức một buổi Event Storming 2 giờ với nghiệp vụ, phát hiện 3 quy tắc ẩn trong stored procedure, và sau 3 tuần đã tự sửa được lỗi tính tiền bồi thường mà người cũ để lại; còn viết tài liệu luồng mà team dùng cho người mới. Interviewer hỏi tiếp về cách tìm quy tắc ẩn — đúng phần B chuẩn bị kỹ nhất. Bài học: câu trả lời Senior có **phương pháp + một câu chuyện có kết quả đo được + giá trị để lại cho team**.
+Vào dự án fintech chuyển tiền liên ngân hàng (50k RPS peak), tuần đầu tôi chọn luồng "chuyển tiền trong ngày". Trace log thấy 12 service tham gia, 3 external gateway. Đọc {{transfer_status_history}} phát hiện 9 trạng thái (code chỉ comment 5). Shadow BA 2 giờ phát hiện rule: "chuyển > 50tr cần OTP thứ 2, > 500tr cần duyệt hand-sign". Viết characterization test 15 case bao phủ happy path + 8 ngoại lệ. Tuần 3 sửa bug "lệch số dư khi gateway timeout": tìm thấy missing idempotency key ở callback, thêm key + reconciliation job. Sau 1 tháng, tôi tự handle incident "double charge" mà không cần hỏi senior.
+
+### English version ngắn
+"I start by tracing one real transaction end-to-end - from UI to database. I shadow business users, read audit tables to understand state transitions, and ask targeted questions about edge cases. My goal is to build a mental map of the business rules first, so I can make safe changes later."
 
 > Senior tip: Nhà tuyển dụng muốn nghe "bạn có biết cách học nhanh domain mới mà không phụ thuộc vào người hướng dẫn mãi mãi không?". Câu trả lời trên chứng minh bạn chủ động, có phương pháp và quan tâm đến vận hành thực tế.`,
   follow: [
@@ -6298,6 +6328,19 @@ Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiệ
 
 ### Trả lời mẫu khi phỏng vấn
 "Quy tắc nghiệp vụ ẩn thường nằm ở những chỗ ít ai nhìn: điều kiện if lồng nhau trong code cũ, stored procedure và trigger trong DB, ràng buộc và giá trị mặc định của bảng, file cấu hình và bảng tham số, job batch chạy đêm, và cả trong đầu những người lâu năm. Tôi phát hiện chúng bằng vài cách. Đọc dữ liệu thật: phân phối giá trị của các cột trạng thái hay số tiền thường lộ ra quy tắc như hạn mức hay làm tròn. Đọc lịch sử sự cố và ticket bug, vì nhiều quy tắc sinh ra từ một sự cố trong quá khứ. Viết characterization test với dữ liệu thật để ghi lại hành vi hiện tại. Và hỏi người vận hành, CSKH những trường hợp đặc biệt họ hay xử lý tay. Mỗi quy tắc tìm được tôi ghi lại kèm nguồn, ví dụ và người xác nhận, trong một tài liệu chung của team."
+
+### Ví dụ đời thực
+Dự án ví điện tử xử lý khoảng 2 triệu giao dịch chuyển tiền mỗi tháng. Sau khi đổi gói khách hàng vip, team bắt đầu nhận khiếu nại: khách vip trên 500 triệu VND/ngày bị từ chối giao dịch dù số dư còn đủ.
+
+Triệu chứng: log có mã {{LIMIT_EXCEEDED}} tăng gấp 5 lần, metric transfer_rejected_total nhảy từ 2 lên 120 mỗi giây.
+
+Điều tra: grep log theo mã lỗi, lần ngược về class {{TransferLimitValidator}}, thấy dòng {{if (amount > dailyLimit) throw LimitExceeded()}}. Truy vấn bảng {{customer_tier}}: khách vip có {{daily_limit}} bằng 500 triệu. Config hệ thống không đổi, code đọc đúng giá trị, nhưng BA vừa giảm hạn mức vip xuống 500 triệu mà chưa cập nhật spec.
+
+Nguyên nhân gốc: quy tắc hạn mức chỉ tồn tại trong code và cơ sở dữ liệu, tài liệu cũ chưa ghi lại.
+
+Cách xử lý: bổ sung glossary team với format {{Rule ID | Mô tả | Điều kiện | Hành động | Nguồn}}, viết characterization test dùng dữ liệu thật (giao dịch 499 triệu và 501 triệu của khách vip), gửi BA duyệt văn bản quy tắc mới.
+
+Kết quả: sau khi triển khai, transfer_rejected_total quay lại mức bình thường và không còn khiếu nại vip bị chặn sai trong hai tuần tiếp theo.
 
 > Senior tip: Rule vàng là "code là specification đang chạy". Nếu spec và code khác nhau, hãy tin code (sau khi xác nhận với BA). Và đừng quên ghi nguồn (file:line) để dễ tra sau này.`,
   follow: [
@@ -6360,11 +6403,18 @@ note SDK Cache..Redis: refresh 30s hoặc pub/sub invalidate
 - **Hash không ổn định khi đổi thuật toán/seed**: user đang ở nhóm A bỗng nhảy sang B giữa phiên → trải nghiệm vỡ. Dùng hash ổn định (Murmur3) và không đổi seed.
 - **Evaluate khác nhau giữa các service**: nếu mỗi service tự implement, kết quả lệch. Chuẩn hóa bằng SDK chung.
 
+### Ví dụ đời thực
+Công ty logistique xử lý 50.000 đơn mỗi giờ muốn thay đổi công thức tính phí vận chuyển. Team áp dụng feature flag: bật cho 5% đơn hàng trước, quan sát p99 latency (độ trễ của 99% yêu cầu chậm nhất) và tỷ lệ lỗi trong hai ngày, sau đó tăng lên 10%, 50%, cuối cùng 100%.
+
+Ngày thứ ba, p99 latency của API tính phí nhảy từ 80ms lên 450ms sau khi tăng sang 10%. Kill switch (tắt khẩn cấp) được bấm ngay, hoàn trả về công thức cũ trong chưa đầy một phút, không cần deploy lại. Sau khi sửa lỗi truy vấn DB mới trong công thức tính phí, team tiếp tục rollout và hoàn tất ở ngày thứ năm. Trong toàn quá trình, đơn hàng cũ không bị gián đoạn và không có giao dịch nào bị tính sai phí.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế feature flag, tôi để cơ sở dữ liệu là nguồn sự thật và để SDK trong ứng dụng nhớ cấu hình trong bộ nhớ, cập nhật mỗi mười đến ba mươi giây hoặc qua pub/sub, để đánh giá cờ dưới một miligiây chứ không gọi cơ sở dữ liệu mỗi request. Tôi chia user vào các nhóm ổn định bằng hash, ưu tiên ghi đè cho user cụ thể, rồi quy tắc phân đoạn, phần trăm triển khai, cuối cùng là giá trị mặc định. Mỗi cờ phải có chủ sở hữu và ngày hết hạn, cùng nhật ký ai bật hoặc tắt khi nào. Có công tắc tắt khẩn cấp để tắt tính năng ngay khi độ trễ hoặc lỗi tăng, không cần triển khai lại code."
+
 > Senior tip: Xem feature flag là "technical debt có chủ đích" — đặt expiry date và owner ngay khi tạo. Ở 50k RPS, in-memory cache + pub/sub invalidate giúp p99 evaluate < 0.5ms; dùng Redis làm lớp chia sẻ cấu hình, không đặt Redis trong hot path của từng request nếu có thể tránh.`,
     follow: ['Làm sao rollout an toàn 1% → 100%?', 'Kill switch khác feature flag thế nào?'],
     tags: ['feature-flag', 'system-design'],
-    refs: [{ type: 'article', title: 'voz interview review Ninjavan', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-1#post-22629633' }]
-  },
+    },
   {
     id: 'scenario-110',
     topic: 'scenario',
@@ -6381,11 +6431,18 @@ API public nhận 20k RPS bình thường, nhưng một bot gửi 2k RPS vào en
 3. **Sliding Window (cửa sổ trượt)**: tính theo khoảng thời gian trượt (vd 60 giây gần nhất) → mượt hơn, nhưng tốn bộ nhớ hơn (lưu timestamp từng request hoặc dùng 2 counter).
 
 ~~~java
-// Fixed window đơn giản với Redis (atomic bằng Lua nếu cần chính xác)
+// Fixed window với Redis — INCR + EXPIRE atomic bằng Lua script
+String lua = """
+    local key = KEYS[1]
+    local limit = tonumber(ARGV[1])
+    local window = tonumber(ARGV[2])
+    local cnt = redis.call('INCR', key)
+    if cnt == 1 then redis.call('EXPIRE', key, window) end
+    return cnt
+    """;
 String key = "rl:user:" + userId + ":" + (System.currentTimeMillis() / 60000);
-Long count = redis.incr(key);              // tăng 1, atomic
-if (count == 1) redis.expire(key, 60);     // đặt TTL 60s cho key mới
-if (count > 100) throw new TooManyRequests(); // quá 100 req/phút
+Long count = (Long) redis.eval(lua, List.of(key), List.of("100", "60"));
+if (count > 100) throw new TooManyRequests();
 ~~~
 
 ### Triển khai ở scale lớn
@@ -6405,6 +6462,22 @@ if (count > 100) throw new TooManyRequests(); // quá 100 req/phút
 - **Key theo IP sau NAT (mạng chia sẻ IP)**: cả văn phòng/công ty dùng chung 1 IP bị chặn nhầm. Với user đã login, ưu tiên key theo {{userId}}/{{apiKey}}.
 - **Không trả {{Retry-After}}**: client retry ngay lập tức → tạo "retry storm" làm tệ hơn. Luôn trả 429 + header {{Retry-After}} (giây) và hỗ trợ exponential backoff (lùi thời gian thử lại theo cấp số nhân).
 - **Quên whitelist**: health-check, partner quan trọng, webhook callback bị chặn → gián đoạn dịch vụ.
+
+### Ví dụ đời thực
+API công khai của nền tảng thương mại điện tử bình thường 20.000 request mỗi giây. Một bot tấn công endpoints {{/login}} và {{/otp}} với tốc độ 2.000 request mỗi giây, làm CPU tăng vọt, connection pool cơ sở dữ liệu cạn kiệt, khách thật bị timeout khi đăng nhập.
+
+Triệu chứng: Grafana cho thấy số lỗi 429 ở các endpoint auth tăng từ gần không lên hơn 10.000 mỗi phút.
+
+Điều tra: xem access log, các địa chỉ IP gửi nhiều nhất là mấy chục bot mới tạo. Lần về code, endpoint {{/login}} chỉ kiểm tra mật khẩu, không giới hạn số lần thử theo người dùng.
+
+Nguyên nhân gốc: không có giới hạn tần suất riêng cho endpoint nhạy cảm và chưa phân biệt user thật với bot.
+
+Cách xử lý: đặt giới hạn ở API Gateway sớm nhất, trước khi request đi vào ứng dụng hay cơ sở dữ liệu. Theo {{userId}} cho đã đăng nhập, {{apiKey}} cho đối tác, {{IP}} cho khách vãng lai; dùng Redis chung với script Lua để đếm nguyên tử giữa nhiều instance, tránh mỗi máy tự đếm khiến tổng thực tế vượt quá giới hạn. Trả {{429}} kèm header {{Retry-After}} và khuyên ứng dụng khách dùng exponential backoff (thử lại cách đấy từng bước một). Danh sách trắng cho health-check và webhook quan trọng.
+
+Kết quả: lưu lượng bot giảm 95%, khách hàng hợp lệ không bị ảnh hưởng, p99 đăng nhập quay lại dưới 200ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi API bị spam, tôi đặt giới hạn ở lớp gateway sớm nhất, trước khi request đi vào ứng dụng hay cơ sở dữ liệu. Tôi phân loại khóa theo người dùng đã đăng nhập, khóa đối tác và địa chỉ IP cho khách vãng lai, dùng Redis chung với script Lua để đếm nguyên tử giữa nhiều instance, tránh tình huống mỗi máy tự đếm khiến tổng thực tế vượt quá giới hạn. Mỗi endpoint có giới hạn khác nhau: đăng nhập và OTP chặt nhất, trang đọc rộng hơn. Khi vượt mức, trả 429 kèm header Retry-After và khuyên ứng dụng khách lùi thời gian thử lại theo cấp số nhân, đồng thời danh sách trắng cho health-check và webhook quan trọng."
 
 > Senior tip: Đặt limit khác nhau theo hành vi: read (GET) rộng hơn write (POST), endpoint nhạy cảm (login/OTP) chặt hơn (vd 5/phút/user). Ở 20k RPS, dùng Redis Cluster + Lua script; theo dõi metric {{rate_limit_rejected_total}} để tune — nếu user thật bị chặn nhiều, limit đang quá chặt.`,
     follow: ['Rate limit theo tier free/pro thế nào?', 'Throttling vs rate limiting?'],
