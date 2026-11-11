@@ -129,7 +129,14 @@ while true; do
     grep -q '^Status: DONE$' "$f" || continue
     [ -n "${COMMITTED[$f]:-}" ] && continue
     grep -q '^Verify-failed:' "$f" && continue
-    dirty "$f" || continue
+    if ! dirty "$f"; then
+      # DONE but its owned files hold nothing new (work already in HEAD, e.g. redone task): commit just the task file,
+      # otherwise the next task of its chain (After: $id) waits forever
+      if [ -n "$(git status --porcelain -- "$f")" ] && ! open_owner "$f" "$id" >/dev/null; then
+        git reset -q; git add -- "$f" && git commit -q -m "Task $id: DONE, no content change left to commit (work already in HEAD)" -- "$f" && touch logs/push-pending && log "committed task file only: $id"
+      fi
+      continue
+    fi
     open_owner "$f" "$id" >/dev/null && continue
     if grep -q '^Reviewed-by:' "$f"; then
       commit_task "$f" "$id"
