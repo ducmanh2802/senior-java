@@ -1246,5 +1246,208 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       { title: 'voz.vn — Offer Senior Software Engineer GSM (2024)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1050#post-38213942' }
     ],
     confidence: 'low'
+  },
+
+  {
+    id: 'fpt-software',
+    name: 'FPT Software',
+    type: 'service',
+    icon: '🧩',
+    summary: 'Công ty outsourcing phát triển phần mềm lớn nhất Việt Nam, thuộc tập đoàn FPT. Quy trình tuyển dụng thường có sàng lọc CV, bài test online (kỹ thuật + tiếng Anh), phỏng vấn kỹ thuật với tech lead/team lead (thường bằng tiếng Anh do làm việc với khách quốc tế), và có thể có vòng phỏng vấn với khách hàng (client interview). Đa số dự án là outsourcing cho khách hàng Mỹ, Âu, Nhật, Úc nên yêu cầu tiếng Anh tốt. Stack phổ biến: Java 11/17, Spring Boot, REST API, Oracle/PostgreSQL, MyBatis/JPA, Redis, Docker, Git, CI/CD, Kubernetes, AWS/Azure.',
+    stack: ['Java', 'Spring Boot', 'Spring Cloud', 'Microservices', 'Oracle', 'PostgreSQL', 'MySQL', 'Redis', 'Kafka', 'Docker', 'Kubernetes', 'AWS', 'Azure', 'GitLab CI', 'JUnit', 'Mockito', 'SonarQube'],
+    process: [
+      { round: 'Vòng 1 — Sàng lọc CV và bài test online (review 2024–2026)', detail: 'HR sàng lọc CV, sau đó gửi bài test trên nền tảng (iMocha/Codility/HackerRank) gồm Java core (exception, thread, collections), Spring (bean, DI/IoC, JPA), design pattern, SQL và tiếng Anh. Fresher/intern thường có bài test IQ + tiếng Anh + kỹ thuật trước khi được phỏng vấn (review passinterview.app 2026, FPT Software Internship Program 2025).' },
+      { round: 'Vòng 2 — Phỏng vấn kỹ thuật với Tech Lead / Team Lead (review 2024–2026)', detail: 'Phỏng vấn online hoặc onsite, thường dùng tiếng Anh. Hỏi sâu về các dự án trên CV, Java core (JVM, GC, concurrency, collections), Spring Boot (bean lifecycle, @Transactional, Spring Security), microservices, database (index, isolation level, transaction), system design nhỏ, và bài coding easy–medium. Một số vị trí Senior có 2 vòng technical: 1 với lead Philippines/khách hàng, 1 với lead Việt Nam (Glassdoor Senior Java 10/2024).' },
+      { round: 'Vòng 3 — Phỏng vấn với khách hàng / Manager (tuỳ dự án, review 2024–2026)', detail: 'Vì là outsourcing, nhiều vị trí có vòng client interview: khách hàng (có thể là CTO/Architect nước ngoài) đánh giá kỹ thuật, tiếng Anh và phù hợp văn hóa dự án. Nếu không có client interview thì gặp Hiring Manager/Delivery Manager trao đổi về kỳ vọng, soft skill, deal lương (claveprep.com 2026).' },
+      { round: 'Vòng 4 — HR deal lương và onboarding', detail: 'Trao đổi package, benefit (FPTCare, bảo hiểm, đào tạo chứng chỉ, du lịch), ngày gia nhập. Một số review 2026 cho thấy quy trình nhanh, có thể chỉ 1 vòng technical cho vị trí cấp gấp (LinkedIn 8/2025).' }
+    ],
+    focus: ['core', 'jvm', 'collections', 'spring', 'db', 'microservices', 'design', 'english', 'architecture', 'testing'],
+    algoWeight: 0.3,
+    englishRequired: true,
+    questions: [
+      'Giải thích cách Spring quản lý transaction (@Transactional), propagation và isolation level.',
+      'HashMap và ConcurrentHashMap khác nhau thế nào, khi nào dùng cái nào?',
+      'Thiết kế API idempotent cho thanh toán: client retry sau timeout thì xử lý ra sao?',
+      'Khi database commit thành công nhưng publish Kafka thất bại, làm sao giữ nhất quán?',
+      'Giải thích OOP 4 tính chất và cho ví dụ áp dụng trong dự án thực tế.',
+      'Spring Bean lifecycle: từ khởi tạo đến hủy bỏ, các callback interface nào?',
+      'N+1 select problem trong JPA/Hibernate là gì, cách khắc phục?',
+      'Bạn xử lý conflict trong team và áp lực deadline như thế nào?',
+      'Tự giới thiệu và trình bày dự án tâm đắc bằng tiếng Anh.',
+      'Một bài coding easy–medium: ví dụ merge 2 sorted list, tìm duplicate trong mảng, hoặc implement LRU cache.'
+    ],
+    tips: [
+      'Ôn chắc Java core (JVM, GC, concurrency, collections), Spring Boot, SQL và design pattern — đây là trọng tâm bài test và phỏng vấn.',
+      'Luyện nói tiếng Anh trình bày dự án, giải thích kỹ thuật vì hầu như dự án đều làm với khách nước ngoài.',
+      'Chuẩn bị 1–2 dự án kể theo STAR: bối cảnh → vấn đề → giải pháp → kết quả đo được, sẵn sàng bị hỏi sâu.',
+      'Hỏi recruiter trước về BU (Business Unit), stack dự án, có client interview hay không để tập trung chuẩn bị.',
+      'Một số review cho thấy offer có thể thấp hơn kỳ vọng; chuẩn bị range lương thực tế và deal dựa trên kinh nghiệm + tiếng Anh.'
+    ],
+    pay: [
+      { role: 'Java Developer (retail global project)', yoe: '4+ năm', amount: 'upto 50tr gross/tháng', year: '2025', note: 'theo tin tuyển dụng LinkedIn 8/2025, dự án quốc tế, tiếng Anh tốt', url: 'https://www.linkedin.com/posts/my2307_javadeveloper-retailglobal-50m-activity-7361308579657601025-qM4l' },
+      { role: 'Fresher/Intern (tham khảo)', yoe: '0 năm', amount: '5–7 triệu đồng/tháng (trợ cấp)', year: '2025', note: 'theo chương trình Internship/Fresher 2025, kèm đào tạo tiếng Anh 6–8h/tuần', url: 'https://www.scribd.com/document/885448995/02-FPT-Software-Internship-Program-2025' }
+    ],
+    sources: [
+      { title: 'Glassdoor — FPT Software Senior Java Developer interview questions (10/2024)', url: 'https://www.glassdoor.com.au/Interview/FPT-Software-Senior-Java-Developer-Interview-Questions-EI_IE472026.0,12_KO13,34.htm' },
+      { title: 'passinterview.app — Phỏng vấn FPT Software review 2026', url: 'https://passinterview.app/vi/companies/fpt-software' },
+      { title: 'note8.vn — Phỏng vấn FPT Software (2026)', url: 'https://note8.vn/phong-van-dn/cong-ty-tnhh-phan-mem-fpt-11' },
+      { title: 'FPT Software Internship Program 2025 (PDF)', url: 'https://www.scribd.com/document/885448995/02-FPT-Software-Internship-Program-2025' },
+      { title: 'LinkedIn — FPT Software tuyển Java Developer dự án Retail Global (8/2025)', url: 'https://www.linkedin.com/posts/my2307_javadeveloper-retailglobal-50m-activity-7361308579657601025-qM4l' },
+      { title: 'claveprep.com — FPT Hiring Process Guide 2026', url: 'https://claveprep.com/blog/fpt-hiring-process-guide-2026' }
+    ],
+    confidence: 'high'
+  },
+
+  {
+    id: 'nashtech-vietnam',
+    name: 'NashTech Vietnam',
+    type: 'service',
+    icon: '🌐',
+    summary: 'Công ty dịch vụ công nghệ toàn cầu thuộc Harvey Nash Group (UK), chuyên outsourcing phát triển phần mềm, testing và digital transformation cho khách hàng quốc tế. Tại Việt Nam có chương trình "Rookie to Engineer" dành cho fresher (3 tháng đào tạo, offer lên đến 17 triệu). Quy trình Senior/Mid thường: CV screen → Technical test (3 bài thuật toán 2 easy 1 medium + English test) → Technical interview (OOP, SOLID, Spring, DB, microservices, project deep-dive) → HR/Manager. Môi trường quốc tế, yêu cầu tiếng Anh tốt, làm việc với khách Mỹ/Anh/Úc, có thể gặp chênh lệch múi giờ.',
+    stack: ['Java', 'Spring Boot', 'Spring Cloud', '.NET', 'Python', 'Microservices', 'AWS', 'Azure', 'Kubernetes', 'Docker', 'Kafka', 'RabbitMQ', 'PostgreSQL', 'Oracle', 'SQL Server', 'JUnit', 'Mockito', 'Selenium', 'Cypress', 'Jenkins', 'GitLab CI'],
+    process: [
+      { round: 'Vòng 1 — CV screening và Technical Test (review 2023–2025)', detail: 'Sàng lọc CV, sau đó bài test trên-site/online: 3 bài thuật toán (2 easy, 1 medium) trong 60 phút + bài test tiếng Anh (reading comprehension, fill in the blanks, short essay). Chương trình Rookie to Engineer 2025 cũng có Technical Test (Java/.NET/Python/AUTE) + English Proficiency Test tại Open Day (Hà Nội, Đà Nẵng, HCM) (Glassdoor 2/2023, 2/2025, careers.nashtechglobal.com 12/2024).' },
+      { round: 'Vòng 2 — Phỏng vấn kỹ thuật (review 2023–2026)', detail: 'Online/onsite với Tech Lead/Hiring Manager (có thể người Việt hoặc nước ngoài). Hỏi OOP 4 tính chất, SOLID principles, Spring (DI/IoC, bean lifecycle, annotation, Spring Security), database (isolation level, transaction, indexing), microservices patterns, concurrency, và đào sâu dự án trên CV. Một số vị trí có live coding thêm (voz.vn 2024–2025, Glassdoor 2/2025).' },
+      { round: 'Vòng 3 — HR / Manager interview (review 2023–2025)', detail: 'Trao đổi kỳ vọng lương, định hướng nghề nghiệp, kiểm tra soft skill, tiếng Anh giao tiếp, culture fit. Chương trình Rookie có thêm group discussion và panel interview (FPT University news 2/2025).' }
+    ],
+    focus: ['core', 'collections', 'spring', 'jpa', 'db', 'microservices', 'english', 'architecture', 'testing', 'behavioral'],
+    algoWeight: 0.35,
+    englishRequired: true,
+    questions: [
+      'Giải thích 4 tính chất OOP và nguyên tắc SOLID kèm ví dụ trong dự án.',
+      'Spring Bean lifecycle: các phase và interface callback (InitializingBean, DisposableBean, @PostConstruct, @PreDestroy).',
+      'Transaction isolation level: READ_COMMITTED vs REPEATABLE_READ vs SERIALIZABLE, khi nào dùng cái nào?',
+      'Thiết kế giao dịch phân tán cho service Spring Boot tích hợp Kafka (saga pattern, outbox pattern).',
+      'Khi nào dùng CompletableFuture thay vì Future; xử lý exception và timeout ra sao?',
+      'Microservices: communication patterns (sync vs async), circuit breaker, distributed tracing.',
+      'Database indexing: B-tree vs Hash, covering index, khi nào dùng composite index.',
+      'Bài coding: implement LRU cache, merge k sorted lists, hoặc tìm cycle trong linked list.',
+      'Tự giới thiệu dự án và giải quyết conflict trong team bằng tiếng Anh.',
+      'Tại sao muốn làm ở NashTech và làm thế nào để thích nghi với múi giờ khách hàng quốc tế?'
+    ],
+    tips: [
+      'Luyện LeetCode easy–medium (array, string, linked list, tree, hashmap) và thóiquen code sạch, giải thích rõ tư duy.',
+      'Ôn sâu OOP, SOLID, Spring core, JPA/Hibernate, SQL, microservices — đây là bộ câu hỏi cốt lõi.',
+      'Chuẩn bị tiếng Anh giao tiếp tốt: tự giới thiệu, trình bày dự án, trả lời behavioral questions.',
+      'Tìm hiểu chương trình Rookie to Engineer nếu là fresher/junior: 3 tháng training miễn phí, offer 17M, hỗ trợ đi lại/ăn trưa.',
+      'Một số review nhắc quy trình phỏng vấn hơi lằng nhăng, HR Việt Nam không có quyền quyết định cuối cùng; kiên nhẫn theo dõi kết quả.'
+    ],
+    pay: [
+      { role: 'Mid Software Engineer', yoe: '~4 năm', amount: '46tr gross/tháng', year: '2026', note: 'tháng 13, performance bonus, full remote, BHXH full lương, bảo hiểm tư nhân gia đình (theo bài chia sẻ voz 2026)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1204#post-40732006' },
+      { role: 'Associate Software Engineer (fresher)', yoe: '0 năm', amount: '~14tr gross/tháng', year: '2022', note: 'lương tăng theo năm; tháng 13 + performance bonus (theo bài chia sẻ voz 2022–2024)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1104#post-38952425' },
+      { role: 'Rookie to Engineer (training)', yoe: '0 năm', amount: '17tr gross/tháng (sau training)', year: '2025', note: 'theo careers.nashtechglobal.com 12/2024, 3 tháng training có trợ cấp', url: 'https://careers.nashtechglobal.com/news/rookie-to-engineer-2025-open-day-embarking-on-the-journey-to-conquer-technology/' }
+    ],
+    sources: [
+      { title: 'Glassdoor — NashTech Global interview questions (2023–2025)', url: 'https://www.glassdoor.co.uk/Interview/NashTech-Global-Interview-Questions-E2154116.htm' },
+      { title: 'voz.vn — Tư vấn SystemExe vs NashTech + review phỏng vấn (3/2024–8/2025)', url: 'https://voz.vn/t/tu-van-gap-systemexe-vs-nashtech.933065/' },
+      { title: 'FPT University — NashTech Rookie to Engineer recruitment event (2/2025)', url: 'https://daihoc.fpt.edu.vn/en/school-activities/general-news/Nashtech-is-looking-for-young-talents-at-FPT-University./' },
+      { title: 'careers.nashtechglobal.com — Rookie to Engineer 2025 Open Day (12/2024)', url: 'https://careers.nashtechglobal.com/news/rookie-to-engineer-2025-open-day-embarking-on-the-journey-to-conquer-technology/' },
+      { title: '1900.com.vn — Lương và quy trình phỏng vấn NashTech (3/2025)', url: 'https://1900.com.vn/luong-va-quy-trinh-phong-van-tai-nashtech-nhu-the-nao-5460' },
+      { title: 'note8.vn — NASHTECH reviews (449 reviews, cập nhật 2025)', url: 'https://note8.vn/danh-gia-dn/cong-ty-tnhh-nashtech-viet-nam-189' }
+    ],
+    confidence: 'high'
+  },
+
+  {
+    id: 'cmc-global',
+    name: 'CMC Global',
+    type: 'service',
+    icon: '🧩',
+    summary: 'Công ty outsourcing/dịch vụ công nghệ lớn thuộc tập đoàn CMC, chuyên phát triển phần mềm cho khách hàng quốc tế (banking, enterprise, logistics...). Quy trình: CV screen → Technical test (tiếng Anh + core programming, DS/Algo, DB, IQ) → Technical interview sâu (SQL, microservices, Spring, Java core, project deep-dive) → Client interview (đặc trưng outsourcing) → HR/Offer. Có chương trình Fresher 3 tháng (English speaking, TOEIC, technical test 60 câu). Yêu cầu tiếng Anh đọc hiểu tài liệu, một số vị trí Middle/Senior yêu cầu giao tiếp tốt. Stack: Java, Spring Boot, Hibernate/JPA, Microservices, AWS, PostgreSQL, MS SQL, Redis, Kafka, Docker, Kubernetes, CI/CD, Git.',
+    stack: ['Java', 'Spring Boot', 'Spring Cloud', 'Hibernate', 'JPA', 'Microservices', 'AWS', 'PostgreSQL', 'MS SQL', 'Oracle', 'Redis', 'Kafka', 'RabbitMQ', 'Docker', 'Kubernetes', 'Jenkins', 'GitLab CI', 'Git', 'JUnit', 'Mockito', 'SonarQube'],
+    process: [
+      { round: 'Vòng 1 — Technical Test (review 2022, 2024, 2025)', detail: 'Bài test online/offline bằng tiếng Anh: 60 câu trắc nghiệm bao gồm Core Programming, Basic Front-end, Data Structure & Algorithm, Database, IQ & Logic (CMC University 8/2024). Fresher program cũng test English Speaking (1-1) + TOEIC listening/reading.' },
+      { round: 'Vòng 2 — Phỏng vấn kỹ thuật sâu (review 2022, 2024, 2025)', detail: 'Phỏng vấn với 2–3 người từ các DU (Delivery Unit) khác nhau cùng lúc. Hỏi rất sâu: Java core (JVM, compile vs runtime), Spring Boot (DI, bean lifecycle, annotation), SQL (index, isolation level, query phức tạp, recursive CTE), microservices (token mechanism, multi-db, saga), system design (payment flow, feature flags), CI/CD, Git, Kubernetes. Reviewer 2022, 2024, 2025 đều nhắc vòng này nặng kỹ thuật và có thể dùng tiếng Anh.' },
+      { round: 'Vòng 3 — Client Interview (đặc thước outsourcing, review 2022, 2024)', detail: 'Sau khi pass vòng technical, ứng viên gặp khách hàng (client) — có thể là Architect/CTO/Project Manager nước ngoài. Vòng này đánh giá kỹ thuật thực chiến, tiếng Anh, và culture fit với team dự án. Một review 2022 kể pass vòng 1 deal lương để gặp client, nhưng hôm sau báo full slot.' },
+      { round: 'Vòng 4 — HR deal lương và onboarding (review 2024, 2025)', detail: 'Trao đổi package: lương negotiable, performance review 2 lần/năm, tháng 14, KPI bonus, gói phúc lợi 16–18M/năm (Tết, sinh nhật, quà trung thu...), cơ hội onsite US/EU/Japan, hybrid. Một số review 2025 cho thấy quy trình nhanh, chỉ 1 vòng technical cho vị trí cấp gấp (LinkedIn 10/2025).' }
+    ],
+    focus: ['core', 'jvm', 'collections', 'spring', 'jpa', 'db', 'microservices', 'design', 'architecture', 'english', 'devops', 'aws', 'testing'],
+    algoWeight: 0.3,
+    englishRequired: true,
+    questions: [
+      'Khi run file jar thì JVM làm gì, khi compile thì JDK làm gì? (Phân biệt rõ JVM vs JDK)',
+      'Spring Boot DI/IoC: @Autowired, @Qualifier, @Primary, constructor injection vs field injection.',
+      'Database: isolation level, lock, index (B-tree, composite, covering), recursive CTE cho cấu trúc cây (phòng ban lồng nhau).',
+      'Microservices: token mechanism (JWT/OAuth2), khi nào dùng multi-database, saga pattern vs 2PC cho distributed transaction.',
+      'Thanh toán call 2 API: làm sao tránh mất dữ liệu, nếu 1 API pending thì xử lý ra sao (async, compensation, idempotency)?',
+      'CI/CD pipeline: Git flow, Jenkins/GitLab CI stages, Docker build, deploy Kubernetes (rolling update, blue-green).',
+      'Feature flags: thiết kế DB bật/tắt tính năng theo user segment, SQL vs NoSQL, tối ưu hiệu năng kiểm tra flag.',
+      'Bài live coding: implement singleton thread-safe, LRU cache, hoặc refactor đoạn code legacy.',
+      'Tiếng Anh: tự giới thiệu, đọc hiểu requirement, trao đổi kỹ thuật cơ bản.',
+      'Kể dự án tâm đắc: vai trò, kiến trúc, khó khăn (concurrency, performance, data consistency) và giải pháp.'
+    ],
+    tips: [
+      'Ôn rất kỹ Java core (JVM, class loading, GC), Spring Boot internals, SQL nâng cao (index, isolation, recursive query) — đây là điểm mạnh của CMC.',
+      'Chuẩn bị client interview: luyện tiếng Anh kỹ thuật, thuyết trình dự án, trả lời behavioral questions.',
+      'Hỏi recruiter rõ DU (Delivery Unit) và domain dự án (banking, logistics, enterprise...) để tập trung ôn domain knowledge.',
+      'Một số review nhắc thái độ interviewer có thể hơi "hàn lâm" hoặc(confusing JDK/JVM); giữ bình tĩnh, giải thích rõ ràng, không tranh cãi.',
+      'Package phúc lợi khá tốt (tháng 14, 16–18M/năm extra, onsite 기회를, hybrid); deal lương dựa trên level và tiếng Anh.'
+    ],
+    pay: [
+      { role: 'Middle Java Developer', yoe: '2+ năm', amount: 'upto 40tr gross/tháng', year: '2024', note: 'theo LinkedIn 9/2024, không yêu cầu tiếng Anh, phúc lợi 16–18M/năm', url: 'https://www.linkedin.com/posts/nguyen-le-my-huyen_cmcglobal-hcm-hn-activity-7243932560630677504-cSBY' },
+      { role: 'Middle/Senior Java Developer', yoe: '4+ năm', amount: 'thương lượng', year: '2025', note: 'theo LinkedIn 10/2025, ưu tiên onboard ngay, dự án enterprise quốc tế', url: 'https://www.linkedin.com/posts/quynh-nhu-ngo-2194b3216_javadeveloper-backenddeveloper-cmglobal-activity-7386227049121841152-s7bi' },
+      { role: 'Fresher Java Developer (Banking)', yoe: '0 năm', amount: 'thương lượng', year: '2025', note: 'theo UIT forum 10/2025, dự án banking dài hạn, mentor 1:1, tháng 14, KPI bonus, 16M/năm extra', url: 'https://forum.uit.edu.vn/t/cmc-global-fresher-java-developer/159146' }
+    ],
+    sources: [
+      { title: 'voz.vn — Xin kinh nghiệm phỏng vấn CMC Global (trang 2, review 2022, 2024, 2025)', url: 'https://voz.party/d/591622-xin-kinh-nghiem-phong-van-o-cmc-global?page=2' },
+      { title: 'LinkedIn — CMC Global tuyển Middle/Senior Java Developer (9/2024)', url: 'https://www.linkedin.com/posts/nguyen-le-my-huyen_cmcglobal-hcm-hn-activity-7243932560630677504-cSBY' },
+      { title: 'bulletinvietnam.org — CMC Global review môi trường và lương thưởng (1/2025)', url: 'https://bulletinvietnam.org/uncategorized/cmc-global-tong-quan-tuyen-dung/' },
+      { title: 'CMC University — Sinh viên đánh giá năng lực trước thực tập CMC Global (8/2024)', url: 'https://cmcu.edu.vn/sinh-vien-cong-nghe-thong-tin-tham-gia-danh-gia-nang-luc-dau-vao-truoc-ky-thuc-tap-tai-cong-ty-cmc-global/' },
+      { title: 'UIT Forum — CMC Global Fresher Java Developer Banking (10/2025)', url: 'https://forum.uit.edu.vn/t/cmc-global-fresher-java-developer/159146' },
+      { title: 'TopCV — Java Developer CMC Global (11/2024)', url: 'https://www.topcv.vn/viec-lam/java-developer/1436388.html' }
+    ],
+    confidence: 'high'
+  },
+
+  {
+    id: 'dxc-technology-vietnam',
+    name: 'DXC Technology Vietnam',
+    type: 'service',
+    icon: '🌐',
+    summary: 'Chi nhánh Việt Nam của tập đoàn DXC Technology (Mỹ) — công ty dịch vụ CNTT toàn cầu lớn, chuyên modernize hệ thống legacy (mainframe/COBOL), cloud, security, analytics. Quy trình: CV screen (Workday) → English check → Technical interview (Core Java, Spring, Hibernate, SQL, OOP, design patterns, REST/SOAP/gRPC, Docker) → Managerial/HR → Director (vị trí senior) → Offer. Fresher program 3 tháng: TOEIC >800/IELTS >6.0, cam kết 30 tháng, mentor 1:1. Nhiều dự án yêu cầu tiếng Nhật N2/N3 hoặc tiếng Trung. Môi trường WLB tốt, remote/hybrid, nhưng lương tăng chậm, quy trình nội bộ nhiều lớp.',
+    stack: ['Java', 'Spring', 'Spring Boot', 'Spring MVC', 'Hibernate', 'JPA', 'JDBC', 'Servlet/JSP', 'SOAP', 'REST', 'gRPC', 'Oracle', 'MSSQL', 'PostgreSQL', 'COBOL', 'Mainframe', 'WebSphere', 'JBoss', 'Tomcat', 'Maven', 'Gradle', 'Ant', 'Git', 'Docker', 'Kubernetes', 'AWS', 'Azure', 'JUnit', 'Mockito', 'SonarQube', 'Jenkins'],
+    process: [
+      { round: 'Vòng 1 — Nộp CV và sàng lọc (review 2023–2025)', detail: 'Nộp trên careers.dxc.com (Workday), lọc location Vietnam. Recruiter đối chiếu với yêu cầu dự án: Java, .NET, COBOL/mainframe, ServiceNow, automation testing. Fresher bắt buộc có chứng chỉ tiếng Anh (TOEIC/IELTS/TOEFL/VSTEP) (passviec.com, DXC Vietnam tuyển fresher 5/2025).' },
+      { round: 'Vòng 2 — Kiểm tra tiếng Anh (review 2023–2025)', detail: 'HR call hoặc meeting kiểm tra listening/speaking. Một số vị trí yêu cầu tiếng Nhật/Trung. Đây là vòng loại quan trọng vì làm việc với team toàn cầu (note8.vn 2025, voz.vn 2023).' },
+      { round: 'Vòng 3 — Phỏng vấn kỹ thuật (review 2023–2025)', detail: 'Với Project Manager/Team Lead/Technical Architect. Hỏi Core Java (OOP 4 tính chất, String immutable, ArrayList vs LinkedList, HashMap internal, Exception handling, Multithreading), Spring/Spring Boot (annotation, bean lifecycle, @Transactional, Tomcat port config, DB connection), Hibernate/JPA (annotations, fetch type, N+1), SQL (LEFT OUTER JOIN, query tuning), REST vs SOAP vs gRPC, Docker (container version mismatch), design patterns (Singleton, Factory, Builder). Junior được hỏi nền tảng OOP/SQL; Senior hỏi sâu architecture, scalability, legacy modernization (GeeksforGeeks 2/2023, Glassdoor 11/2024, voz.vn 2023).' },
+      { round: 'Vòng 4 — Managerial / HR / Director (review 2023–2025)', detail: 'Behavioral: cách làm việc, xử lý áp lực, giải quyết critical issue, tối ưu scalability, conflict resolution. Với Senior có thể gặp Director/VP. HR trao đổi kỳ vọng lương, cam kết (fresher 30 tháng), khả năng làm theo giờ khách hàng (passviec.com, GeeksforGeeks 6/2023, note8.vn 2025).' }
+    ],
+    focus: ['core', 'jvm', 'collections', 'spring', 'jpa', 'db', 'microservices', 'architecture', 'english', 'devops', 'testing', 'behavioral'],
+    algoWeight: 0.25,
+    englishRequired: true,
+    questions: [
+      '4 đặc tính OOP: encapsulation, inheritance, polymorphism, abstraction — ví dụ thực tế trong dự án.',
+      'ArrayList vs LinkedList: cấu trúc dữ liệu, độ phức tạp thêm/xóa/truy cập, khi nào dùng cái nào.',
+      'HashMap internal working: bucket, hash collision, treeify threshold (Java 8+), ConcurrentHashMap khác nhau thế nào.',
+      'String immutable: vì sao, StringBuilder vs StringBuffer, string pool.',
+      'Spring Boot: cách đổi port Tomcat (server.port), cấu hình DataSource, @Transactional propagation/isolation.',
+      'Hibernate/JPA: @Entity, @Table, @OneToMany/@ManyToOne, FetchType.LAZY vs EAGER, N+1 problem và giải pháp.',
+      'SQL: LEFT OUTER JOIN vs INNER JOIN, index strategy, transaction isolation level.',
+      'REST vs SOAP vs gRPC: ưu nhược điểm, khi nào chọn cái nào cho enterprise integration.',
+      'Docker: container chạy version cũ, app version mới — xử lý ra sao (rebuild, rolling update, image tag strategy).',
+      'Legacy modernization: kinh nghiệm migration mainframe/COBOL, strangler fig pattern, API gateway.',
+      'Behavioral: xử lý critical bug/production issue, conflict với đồng nghiệp/manager, tối ưu performance.',
+      'Tiếng Anh: tự giới thiệu, đọc requirement, trao đổi technical cơ bản.'
+    ],
+    tips: [
+      'Ôn chắc Core Java, Spring/Hibernate, SQL — đây là bộ ba được hỏi ở mọi level. Senior thêm architecture, legacy modernization.',
+      'Tiếng Anh là bắt buộc: luyện listening/speaking technical, một số dự án yêu cầu tiếng Nhật N2/N3 hoặc tiếng Trung — hỏi rõ recruiter.',
+      'Fresher: chuẩn bị TOEIC >800/IELTS >6.0, cam kết 30 tháng, có mentor 1:1, training 3 tháng (trợ cấp 5M/tháng) (DXC Vietnam 5/2025).',
+      'WLB tốt, remote/hybrid linh hoạt, nhưng lương tăng chậm, quy trình nội bộ nhiều lớp (bureaucracy) — review Glassdoor 2025 nhắc rõ.',
+      'Frame CV nhấn mạnh: vận hành/hiện đại hóa hệ thống legacy, SLA, quy trình, tài liệu, English communication, teamwork đa quốc gia.'
+    ],
+    pay: [
+      { role: 'Middle Java Developer', yoe: '4+ năm', amount: 'thương lượng', year: '2025', note: 'theo Lumirole 2025, Core Java, Servlet/JSP, JDBC, SOAP/REST, Hibernate, Spring, Oracle, MSSQL, design patterns', url: 'https://lumirole.com/job/middle-java-developer-dxc-technology/98882338-1392-4c82-b33e-692d348f4835' },
+      { role: 'Fresher Java Developer', yoe: '0 năm', amount: '5tr gross/tháng (trợ cấp training)', year: '2025', note: 'theo DXC Vietnam tuyển 15 vị trí Cobol/Java Fresher 5/2025, training 3 tháng, cam kết 30 tháng, TOEIC >800/IELTS >6.0', url: 'https://fit.sgu.edu.vn/site/dxc-vietnam-tuyen-dung-15-vi-tri-cobol-va-java-fresher_may-2025/' }
+    ],
+    sources: [
+      { title: 'Glassdoor — DXC Technology Software Developer reviews Vietnam (2024–2025)', url: 'https://www.glassdoor.com/Reviews/DXC-Technology-Software-Developer-Vietnam-Reviews-EI_IE1603125.0,14_KO15,33_IL.34,41_IN251.htm' },
+      { title: 'GeeksforGeeks — DXC Technology Interview Experience for Java Developer (2/2023)', url: 'https://www.geeksforgeeks.org/interview-experiences/dxc-technology-interview-experience-for-java-developer/' },
+      { title: 'voz.vn — Review phỏng vấn DXC Technology (2023, trang 67)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-67' },
+      { title: 'note8.vn — Phỏng vấn DXC Technology Vietnam (2025, 23 phỏng vấn)', url: 'https://note8.vn/phong-van-dn/cong-ty-dxc-technology-service-vietnam-410' },
+      { title: 'passviec.com — DXC Technology Vietnam quy trình phỏng vấn 5 bước', url: 'https://passviec.com/companies/dxc/' },
+      { title: 'DXC Vietnam tuyển Fresher Cobol/Java (5/2025)', url: 'https://fit.sgu.edu.vn/site/dxc-vietnam-tuyen-dung-15-vi-tri-cobol-va-java-fresher_may-2025/' }
+    ],
+    confidence: 'high'
   }
 ];

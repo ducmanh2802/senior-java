@@ -2173,6 +2173,10 @@ window.DATA_INDEX = {
     {"id":"nam-a-bank","name":"Nam A Bank (Ngân hàng số)","focus":["spring","microservices","db","security","scenario"]},
     {"id":"covergo","name":"CoverGo","focus":["design","microservices","db","english","scenario"]},
     {"id":"gsm","name":"GSM (Xanh SM)","focus":["design","microservices","db","scenario"]},
+    {"id":"fpt-software","name":"FPT Software","focus":["core","jvm","collections","spring","db","microservices","design","english","architecture","testing"]},
+    {"id":"nashtech-vietnam","name":"NashTech Vietnam","focus":["core","collections","spring","jpa","db","microservices","english","architecture","testing","behavioral"]},
+    {"id":"cmc-global","name":"CMC Global","focus":["core","jvm","collections","spring","jpa","db","microservices","design","architecture","english","devops","aws","testing"]},
+    {"id":"dxc-technology-vietnam","name":"DXC Technology Vietnam","focus":["core","jvm","collections","spring","jpa","db","microservices","architecture","english","devops","testing","behavioral"]},
   ],
   quiz: [
     ["qz-devops-001","devops"],
