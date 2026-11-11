@@ -323,7 +323,7 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
     englishRequired: true,
     questions: [
       'Thiết kế service C đứng giữa service A (phát X message/giây) và service B (xử lý Y message/giây), rồi viết code xử lý.',
-      'Làm sao đảm bảo dữ liệu nhất quán và mức isolation trong database ở dự án旧?',
+      'Làm sao đảm bảo dữ liệu nhất quán và mức isolation trong database ở dự án cũ?',
       'Kiến thức về REST, DNS, TCP và UDP.',
       'Microservices: cache, database, logging, tracing, monitoring.',
       'Behavioral: vì sao đổi việc, bug lớn nhất bạn từng sửa, vấn đề khó nhất từng giải, điều bạn tự hào nhất.',

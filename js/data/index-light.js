@@ -373,7 +373,6 @@ window.DATA_INDEX = {
     ["spring-046","spring","lead"],
     ["jpa-038","jpa","senior"],
     ["jpa-039","jpa","senior"],
-    ["jpa-041","jpa","senior"],
     ["jpa-042","jpa","senior"],
     ["jpa-043","jpa","lead"],
     ["jpa-044","jpa","senior"],

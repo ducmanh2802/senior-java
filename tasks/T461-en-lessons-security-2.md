@@ -1,6 +1,6 @@
 # T461 — Dịch sang tiếng Anh: lessons-security (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-security-2.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-security-2.en.js` và `node scripts/check-i18n.js lessons-security-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lesson-security-002` vào `js/i18n/lessons-security-2.en.js`: title, goals (3), body (6 mục, giữ bảng + 2 code block), exercises (2: title/prompt/hints/explain, đúng thứ tự), check (3: q/options/explain).
+- Giữ nguyên markup và code; chỉ dịch comment tiếng Việt trong code block của `body`; không chép starter/tests/reference.
+- `node scripts/check-i18n.js lessons-security-2` → OK (1 mục); chạy toàn bộ → OK (1741 mục). `node scripts/validate.js` → OK.
+- Lưu ý: lệnh `node --check <file>` bị lớp phân quyền shell của phiên chặn (chỉ chạy được `node scripts/*.js`). File đã được parse khi chạy `check-i18n.js` qua `vm.runInNewContext` — tương đương kiểm tra cú pháp, không lỗi.
+- Không sửa file nào khác ngoài file được sở hữu và file task này.

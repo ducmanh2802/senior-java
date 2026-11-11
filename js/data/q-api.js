@@ -192,14 +192,12 @@ DispatcherServlet (Front Controller)
     ├──► HandlerMapping (RequestMappingHandlerMapping)
     │      └─ Tìm @RequestMapping match → HandlerExecutionChain (controller + interceptors)
     │
-    ├──► HandlerAdapter (RequestMappingHandlerAdapter)
+├──► HandlerAdapter (RequestMappingHandlerAdapter)
     │      ├─ Resolve @RequestParam, @PathVariable, @RequestBody, @ModelAttribute
+    │      │    └─ HttpMessageConverter đọc body JSON → object (read)
     │      ├─ Gọi Controller method
-    │      └─ Xử lý return value → ModelAndView / ResponseBody
-    │
-    ├──► HttpMessageConverter (MappingJackson2HttpMessageConverter)
-    │      ├─ Request: JSON → Java object (read)
-    │      └─ Response: Java object → JSON (write)
+    │      └─ Xử lý return value → ModelsAndView / ResponseBody
+    │              └─ HttpMessageConverter ghi object → JSON (write, cho @ResponseBody)
     │
     ├──► ViewResolver (nếu trả view) / ResponseBodyEmitter (streaming)
     │
@@ -301,7 +299,19 @@ Response
 | **Business audit log** | AOP (@AfterReturning trên @Service) | Có domain object, method args, return value tự nhiên |
 | **Retry/Idempotency check** | AOP / Interceptor | Cần business context (idempotency key, entity) |
 
-> Senior tip: **Đừng lạm dụng AOP cho logging request/response** — overhead proxy + khó debug stack trace. Dùng **Filter** cho MDC, CORS, body logging; **Interceptor** cho timing, rate limit, API key check; **AOP** cho @Transactional, @Retryable, audit domain event. Spring Boot 3.x: {{@Order(Ordered.HIGHEST_PRECEDENCE)}} cho Filter MDC.`,
+### Ví dụ đời thực
+Hệ thống chuyển tiền của một ngân hàng thương mại: vào giờ cao điểm (9h–11h), p99 latency của API /transfers tăng vọt từ 180ms lên 2,4s, và tỉ lệ timeout client tăng từ 0,2% lên 4%. Team điều tra bằng thread dump và thấy hơn 65% thread đang block trong một HandlerInterceptor tên FraudCheckInterceptor — nó gọi đồng bộ service kiểm tra rủi ro qua HTTP sang một hệ thống bên thứ ba (trung bình 850ms), và làm như vậy **trong preHandle()**, tức là trước khi controller chạy. Vì preHandle() trả false thì request bị từ chối, interceptor này đã trở thành cổng bảo vệ nhưng lại là điểm nghẽn: mỗi request giữ một thread của Tomcat, và với 200 thread max, throughput giảm xuống còn ~250 req/s thay vì 2.000 req/s.
+
+Nguyên nhân gốc: interceptor được viết để kiểm tra fraud cho mọi request, nhưng gọi external service đồng bộ trong interceptor là anti-pattern — interceptor nằm trên chuỗi request chính, và khi interceptor block 850ms, toàn bộ thread pool bị giữ cho đến khi response về.
+
+Cách xử lý: (1) Di chuyển logic kiểm tra rủi ro sang một @Aspect với @Around advice trên method TransferService.execute(), cho phép cache kết quả 30s và fallback async khi downstream chậm. (2) Trong interceptor, chỉ giữ lại việc kiểm tra rate limit nhẹ (nhìn local counter, không gọi external). (3) Filter tiếp tục chỉ làm MDC traceId và logging — không làm gì nặng. (4) Thêm bulkhead: giới hạn số request đồng thời đi đến fraud service bằng semaphore 50, các request vượt hàng đợi nhận 429 thay vì làm chậm cả hệ thống.
+
+Kết quả sau 2 tuần: p99 latency giảm từ 2,4s xuống 310ms, throughput tăng từ 250 lên 1.900 req/s, và không có request nào bị từ chối do interceptor quá tải. Filter/Interceptor/AOP được phân công rõ ràng: Filter làm MDC, Interceptor làm rate limit, AOP làm fraud check có thể cache — mỗi lớp làm một việc và không làm việc của lớp khác.
+
+### Trả lời mẫu khi phỏng vấn
+"Ba thứ này nằm ở ba tầng khác nhau và tôi chọn dựa trên trách nhiệm, không phải tùy ngẫu nhiên. Filter là lớp đầu tiên, chạy trên Servlet container, bao trùm cả static files và error pages — tôi dùng Filter cho mọi thứ cần chạy trước DispatcherServlet: set MDC traceId để correlate logs, character encoding, CORS preflight, và caching response body bằng ContentCachingRequestWrapper. HandlerInterceptor chạy sau HandlerMapping, có access đến controller và interceptors khác — tôi dùng để rate limit theo endpoint, API key validation, và đo latency request. AOP là thứ gần business logic nhất, chạy qua proxy của Spring bean — tôi dùng cho @Transactional, retry, audit log, và các logic cần method args hoặc return value. Bài học lớn nhất từ một production incident: một interceptor gọi external service đồng bộ trong preHandle đã làm p99 tăng từ 200ms lên 2,4s vì nó block thread pool — interceptor chỉ nên làm việc nhẹ, logic nặng phải chuyển sang AOP hoặc async."
+
+  > Senior tip: **Đừng lạm dụng AOP cho logging request/response** — overhead proxy + khó debug stack trace. Dùng **Filter** cho MDC, CORS, body logging; **Interceptor** cho timing, rate limit, API key check; **AOP** cho @Transactional, @Retryable, audit domain event. Spring Boot 3.x: {{@Order(Ordered.HIGHEST_PRECEDENCE)}} cho Filter MDC.`,
     follow: [
       'Làm sao log request/response body trong Filter mà không làm hỏng stream cho controller?',
       'Spring Security filter chain chạy ở đâu so với Filter/Interceptor tùy chỉnh?'
@@ -313,7 +323,7 @@ Response
     topic: 'api',
     level: 'mid',
     q: 'Phân biệt @RequestParam, @PathVariable, @RequestBody, @ModelAttribute: khi nào dùng cái nào, validate input và trả lỗi chuẩn RFC 7807?',
-    a: `**Tóm tắt:** @RequestParam lấy query param (GET /search?q=java), @PathVariable lấy URI template variable (GET /accounts/{id}), @RequestBody deserialize JSON body (POST /transfers), @ModelAttribute bind form/query vào object (GET /search?page=0&size=20). Validate dùng @Valid + BindingResult hoặc @Validated trên method, trả ProblemDetail (RFC 7807).
+    a: `**Tóm tắt:** @RequestParam lấy query param (GET /search?q=java), @PathVariable lấy URI template variable (GET /accounts/{id}), @RequestBody deserialize JSON body (POST /transfers), @ModelAttribute bind form/query vào object (GET /search?page=0&size=20). Validate dùng @Valid + BindingResult hoặc @Validated trên service (method-level validation), trả ProblemDetail (RFC 9457).
 
 ### So sánh nhanh
 | Annotation | Nguồn dữ liệu | Content-Type | Dùng cho | Ví dụ |
@@ -327,7 +337,6 @@ Response
 ~~~java
 @RestController
 @RequestMapping("/api/accounts")
-@Validated  // enable method-level validation
 public class AccountController {
 
     @PostMapping
@@ -340,7 +349,7 @@ public class AccountController {
 
     @GetMapping("/{id}")
     public AccountResponse get(@PathVariable @NotNull @Positive Long id) {
-        return service.get(id);  // 400 nếu id null/<=0 (ConstraintViolationException)
+        return service.get(id);  // 400 nếu id null/<=0 (HandlerMethodValidationException)
     }
 
     @GetMapping
@@ -394,10 +403,16 @@ class GlobalExceptionHandler {
 
 ### Sai phổ biến
 - Dùng @RequestBody cho GET → violation HTTP spec (GET không nên có body), một số proxy/gateway drop body.
-- {{@PathVariable Long id}} nhận "abc" → Spring ném MethodArgumentTypeMismatchException → **400** nhưng body mặc định không theo format chung ⇒ thêm handler trong @ControllerAdvice. Còn giá trị sai nghĩa (0, số âm) thì cần {{@Positive}} + {{@Validated}} trên class.
+- {{@PathVariable Long id}} nhận "abc" → Spring ném MethodArgumentTypeMismatchException → **400** nhưng body mặc định không theo format chung ⇒ thêm handler trong @ControllerAdvice. Còn giá trị sai nghĩa (0, số âm) thì cần {{@Positive}} trên tham số (Spring Framework 6.1 / Boot 3.2+ tự validate tham số, không cần {{@Validated}}).
 - @ModelAttribute không @Valid → binding thành công nhưng data rác. Luôn {{@Valid @ModelAttribute}}.
 
-> Senior tip: dùng **record** làm DTO request (Java 17+): public record CreateAccountRequest(@Email String email, @Positive BigDecimal initialBalance) {} – constraint đặt trên record component, kích hoạt bằng {{@Valid}} ở tham số controller. Record immutable, ít code boilerplate. Dùng {{@JsonProperty}} map tên field JSON ↔ Java.`,
+### Ví dụ đời thực
+Một công ty fintech cung cấp API cho đối tác tích hợp: API dùng @RequestParam cho tất cả tham số, kể cả body JSON phức tạp. Khi đối tác gửi POST /transfers với Content-Type application/json và body {...}, server trả về 400 vì @RequestParam không thể deserialize JSON — team phải viết adapter chuyển body JSON thành map tham số. Sau khi đổi sang @RequestBody cho POST, mọi request bắt đầu thành công. Nhưng một đối tác lớn gửi GET /accounts/{id} với body JSON (họ tưởng GET cũng có thể có body) — API gateway tự động drop body theo HTTP spec, đối tác không hiểu tại sao luôn nhận 400. Sau khi thêm @ControllerAdvice trả ProblemDetail (RFC 9457) với field errors chi tiết từng field, đối tác có thể tự debug thay vì gọi support. Kết quả: tỉ lệ ticket support giảm 60% trong 3 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng bốn annotation này để phân biệt nguồn dữ liệu: @RequestParam lấy từ query string, dùng cho filter, phân trang, tìm đơn giản — ví dụ ?status=ACTIVE&page=0&size=20. @PathVariable lấy từ URI path, dùng cho resource identifier — ví dụ /accounts/{id}. @RequestBody deserialize JSON body, dùng cho create/update với input phức tạp — ví dụ POST /transfers với TransferRequest. @ModelAttribute bind form/query vào một object, dùng cho form submission hoặc search criteria DTO. Validate thì dùng @Valid trên tham số controller (Spring Framework 6.1/Boot 3.2+ tự validate @PathVariable/@RequestParam, không cần @Validated), kết hợp @Validated trên service cho method-level validation; lỗi validation được gom trong @ControllerAdvice trả ProblemDetail theo RFC 9457 với mảng errors theo field. Bài học lớn nhất: team cũ dùng @RequestParam cho body JSON nên đối tác luôn nhận 400 — phải chọn annotation phù hợp Content-Type, và luôn trả error chuẩn để client tự debug."
+
+  > Senior tip: dùng **record** làm DTO request (Java 17+): public record CreateAccountRequest(@Email String email, @Positive BigDecimal initialBalance) {} – constraint đặt trên record component, kích hoạt bằng {{@Valid}} ở tham số controller. Record immutable, ít code boilerplate. Dùng {{@JsonProperty}} map tên field JSON ↔ Java.`,
     follow: [
       'Validate nested object trong @RequestBody (List<@Valid Item>) như thế nào?',
       'Cách custom validator annotation (ví dụ @ValidVietnamPhone) dùng chung cho Param/Body?'
@@ -486,6 +501,12 @@ public class SecurityConfig {
 - Quên {{exposedHeaders}} → client JS không đọc được header custom (X-Total-Count, Retry-After).
 - Không set {{maxAge}} → không có header Access-Control-Max-Age, browser chỉ cache preflight rất ngắn (mặc định 5s) → gần như mỗi request thêm một OPTIONS. Browser cũng tự giới hạn trần (Chrome tối đa 2h).
 
+### Trả lời mẫu khi phỏng vấn
+"CORS là cơ chế browser thực thi Same-Origin Policy — chỉ trình duyệt mới bị constrain, Postman/curl không chạy JS của origin khác nên không bị ảnh hưởng. Preflight là request OPTIONS tự động gửi bởi browser trước request "không đơn giản" (method ngoài GET/HEAD/POST, hoặc custom header, hoặc Content-Type application/json). Gửi cookie hay credentials không tự gây preflight — preflight chỉ do method/header/content-type. Trên Spring Security 6, tôi dùng CorsConfigurationSource với setAllowedOriginPatterns cho multiple subdomain, setAllowCredentials(true) cho cookie, và setMaxAge(3600) để cache preflight 1 giờ. Spring Security 6: http.cors(cors -> cors.configurationSource(corsConfigurationSource())). Bài học lớn nhất: team cũ dùng wildcard origin với credentials=true — browser từ chối và Spring throw exception; phải list origin cụ thể hoặc dùng pattern matching, và luôn test bằng curl -H 'Origin: https://evil.com' -v để xác minh bị chắn."
+
+### Ví dụ đời thực
+Hệ thống internet banking của một ngân hàng: ban đầu chỉ có origin https://app.bank.vn, nhưng sau khi phát triển, thêm web admin (https://admin.bank.vn), app mobile API (https://api.bank.vn), và đối tác fintech (https://partner.bank.vn). Ban đầu team dùng setAllowedOrigins(List.of("*")) với setAllowCredentials(true) — browser từ chối response vì CORS spec cấm wildcard khi credentials=true, và Spring ném IllegalArgumentException khi xử lý request. Khách hàng báo "không thể kết nối" nhưng không biết nguyên nhân. Sau khi đổi sang setAllowedOriginPatterns(List.of("https://*.bank.vn")) và cấu hình setExposedHeaders(List.of("X-Total-Count", "Retry-After")), mọi request thành công. Một sự cố khác: đối tác fintech gửi request với custom header X-Partner-Key nhưng không gửi preflight OPTIONS — server trả 403 vì header không được allow. Sau khi thêm header vào setAllowedHeaders, hệ thống hoạt động ổn định. Kết quả: thời gian downtime do CORS giảm từ 4 tiếng xuống 0, và đối tác có thể tích hợp trong vòng 1 ngày thay vì 1 tuần.
+
 > Senior tip: Ngân hàng thường có **multiple subdomain** (app, admin, partner). Dùng **pattern matching** thay vì list cứng: {{config.setAllowedOriginPatterns(List.of("https://*.bank.vn"))}} (Spring 5.3+). Với mobile app (không có origin), config riêng endpoint {{/api/mobile/**}} không require credentials. Luôn test CORS bằng {{curl -H "Origin: https://evil.com\" -v}} để xác minh chặn đúng.`,
     follow: [
       'CORS với WebSocket (STOMP over SockJS) cấu hình khác như thế nào?',
@@ -545,7 +566,13 @@ public class SecurityConfig {
 - **Nhưng**: logout, password change, role update, token compromise → cần **revocation**.
 - Giải pháp: **Short expiry (5-15min) + refresh rotation** → window tấn công nhỏ. Không cần blocklist phức tạp.
 
-> Senior tip: **Đừng lưu JWT trong localStorage** cho app ngân hàng web. Dùng **cookie HttpOnly + SameSite=Strict + CSRF token (Double Submit Cookie pattern)**. Spring Security 6: {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} cho SPA (JS đọc cookie XSRF-TOKEN rồi gửi lại trong header X-XSRF-TOKEN; Spring Security 6 còn cần cấu hình CsrfTokenRequestHandler phù hợp cho SPA). Mobile app: lưu access/refresh trong **iOS Keychain / Android Keystore**, dùng **certificate pinning** cho API call.`,
+### Ví dụ đời thực
+Một app internet banking dùng JWT trong localStorage cho authentication. Một ngày nọ, khách hàng nhấp vào link quảng cáo trong email → mở trang lừa đảo có script malicious → script này đọc localStorage và gửi token về server attacker. Attacker có token truy cập tài khoản khách hàng trong 15 phút (access token expiry) và không thể logout vì không có session server-side. Attacker chuyển tiền 50 triệu từ tài khoản này sang tài khoản của mình. Khách hàng khiếu nại, hệ thống không có log logout hay revocation — vì JWT stateless. Sau khi chuyển sang cookie HttpOnly + SameSite=Strict + Refresh Token Rotation, cùng một script malicious không thể đọc cookie (HttpOnly) và không thể gửi request cross-origin (SameSite=Strict). Kết quả: 0 trường hợp đánh cắp token sau 3 tháng, và thời gian phát hiện compromise giảm từ 15 phút xuống còn 0 (vì refresh rotation phát hiện reuse).
+
+### Trả lời mẫu khi phỏng vấn
+"Với app ngân hàng, tôi luôn chọn cookie HttpOnly thay vì localStorage. Lý do đầu tiên là XSS: localStorage có thể đọc bởi bất kỳ script nào chạy trên trang, trong khi HttpOnly cookie không thể đọc bởi JavaScript — chỉ trình duyệt tự gửi. Lý do thứ hai là SameSite: với SameSite=Strict, browser không gửi cookie khi request đến từ origin khác, điều này ngăn CSRF. Với refresh token rotation, mỗi lần refresh tạo cặp token mới và revoke token cũ; nếu attacker reuse token cũ, hệ thống phát hiện và revoke toàn bộ session. Mobile app thì khác — lưu token trong iOS Keychain hoặc Android Keystore, không để trong SharedPreferences hay UserDefaults. Bài học lớn nhất: team cũ dùng localStorage cho JWT và mất 50 triệu trong một đợt XSS — chuyển sang cookie HttpOnly + refresh rotation đã khắc phục ngay lập tức."
+
+  > Senior tip: **Đừng lưu JWT trong localStorage** cho app ngân hàng web. Dùng **cookie HttpOnly + SameSite=Strict + CSRF token (Double Submit Cookie pattern)**. Spring Security 6: {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} cho SPA (JS đọc cookie XSRF-TOKEN rồi gửi lại trong header X-XSRF-TOKEN; Spring Security 6 còn cần cấu hình CsrfTokenRequestHandler phù hợp cho SPA). Mobile app: lưu access/refresh trong **iOS Keychain / Android Keystore**, dùng **certificate pinning** cho API call.`,
     follow: [
       'Implement refresh token rotation với reuse detection (OAuth 2.0 Security BCP, RFC 9700) như thế nào?',
       'So sánh JWT opaque token vs self-contained JWT cho microservice internal call?'
@@ -629,7 +656,13 @@ class Account {
 - Không trả {{ETag}} header trong response PUT/POST → client không có version để gửi If-Match lần sau.
 - Quên handle {{If-None-Match: *}} (tạo mới, fail nếu tồn tại) → dùng cho idempotent create.
 
-> Senior tip: Ngân hàng **bắt buộc** optimistic locking cho tài khoản (balance, status). Kết hợp {{@Version}} JPA + {{If-Match}} header. Client mobile/web: GET → cache ETag → PUT kèm If-Match. Nếu 412 → re-fetch GET → merge local change → retry. Không dùng {{Last-Modified}} cho việc này vì HTTP-date chỉ chính xác tới **giây** – hai update trong cùng giây không phân biệt được.`,
+### Ví dụ đời thực
+Hệ thống quản lý tài khoản của một ngân hàng: khách hàng A và B cùng truy cập trang sửa thông tin cá nhân. A xem trang, browser cache ETag "7". Sau đó, admin đổi số điện thoại của A (version lên 8). A nhập địa chỉ mới và submit — browser gửi If-Match: "7" nhưng server đã có version 8, trả 412. A reload trang, thấy version 8, nhập lại địa chỉ mới — thành công. Một trường hợp khác: khách hàng C không dùng If-Match (client cũ), server trả 428 yêu cầu thêm If-Match. Sau khi hướng dẫn client gửi If-Match, tỉ lệ lost update giảm từ 100% xuống 0. Kết quả: sau 1 tháng, không còn khiếu nại "thông tin của tôi bị mất khi người khác cùng sửa".
+
+### Trả lời mẫu khi phỏng vấn
+"ETag là fingerprint của resource version — thường là version counter từ @Version JPA. GET request có If-None-Match → server so sánh ETag, nếu giống trả 304 Not Modified (client dùng cache). PUT/PATCH request có If-Match → server chỉ ghi nếu version hiện tại khớp, nếu không trả 412 Precondition Failed. Spring hỗ trợ ShallowEtagHeaderFilter cho GET cache, và manual ETag qua ResponseEntity.eTag() cho write conditional. Với ngân hàng, tôi dùng strong ETag (version số) cho If-Match — weak ETag (W/...) không bao giờ khớp vì If-Match dùng strong comparison. Bài học lớn nhất: team cũ không trả ETag sau khi PUT, client không có version mới, lần sau chắc chắn 412 — luôn trả ETag trong response write."
+
+  > Senior tip: Ngân hàng **bắt buộc** optimistic locking cho tài khoản (balance, status). Kết hợp {{@Version}} JPA + {{If-Match}} header. Client mobile/web: GET → cache ETag → PUT kèm If-Match. Nếu 412 → re-fetch GET → merge local change → retry. Không dùng {{Last-Modified}} cho việc này vì HTTP-date chỉ chính xác tới **giây** – hai update trong cùng giây không phân biệt được.`,
     follow: [
       'So sánh ETag vs Last-Modified cho cache: ưu nhược điểm?',
       'Làm sao generate ETag cho collection resource (GET /accounts?page=1)?'
@@ -757,7 +790,13 @@ void notifyWebhook(AsyncJob job) {
 - Partner phải handle duplicate delivery (network retry).
 - Gửi {{X-Delivery-ID}} (UUID) + {{X-Timestamp}}. Partner deduplicate theo ID.
 
-> Senior tip: **Polling interval nên exponential backoff** (5s, 10s, 20s, max 60s) + jitter ±10% tránh thundering herd. UI hiển thị progress bar từ {{estimatedCompletion}}. Với export lớn (>100MB), dùng **pre-signed S3 URL** (TTL 1h) trong {{resultUrl}} thay vì trả file qua API. Spring Boot 3.2+: job I/O-bound có thể chạy trên virtual thread ({{SimpleAsyncTaskExecutor}} với virtual threads) – không pool virtual thread, giới hạn số job đồng thời bằng concurrency limit.`,
+### Ví dụ đời thực
+Hệ thống báo cáo của một ngân hàng: mỗi ngày có 5.000 yêu cầu export danh sách giao dịch, mỗi export mất 3-5 phút. Ban đầu API trả 200 OK sau khi xong — client phải poll mỗi 10 giây, tạo 30-50 request rác mỗi export. Sau khi đổi sang 202 Accepted + Location header, client nhận job ID và poll /api/jobs/{jobId}. Kết quả: số request poll giảm từ 30 xuống 3-5 mỗi export, và server không còn block thread trong 5 phút. Một đối tác khác dùng webhook: khi job xong, server POST kết quả về URL của đối tác — đối tác nhận ngay lập tức không cần poll. Kết quả: thời gian từ job xong đến đối tác nhận được giảm từ 5-10 phút (poll) xuống dưới 1 giây (webhook).
+
+### Trả lời mẫu khi phỏng vấn
+"Với tác vụ chạy lâu hơn 5-10 giây, tôi không bao giờ giữ HTTP connection — trả 202 Accepted ngay với Location header để client poll, hoặc webhook để server push. Polling đơn giản và phù hợp UI dashboard; webhook gần real-time và phù hợp partner integration. Spring Boot: dùng @Async với dedicated TaskExecutor, lưu job status trong DB (PENDING → RUNNING → COMPLETED/FAILED), và client poll /api/jobs/{jobId}. Với webhook, ký HMAC trên payload, retry exponential backoff, và partner deduplicate theo X-Delivery-ID. Bài học lớn nhất: team cũ trả 200 sau 5 phút — client poll mỗi 10 giây tạo 30 request rác; đổi sang 202 + polling/backoff giảm xuống 3 request và cải thiện trải nghiệm."
+
+  > Senior tip: **Polling interval nên exponential backoff** (5s, 10s, 20s, max 60s) + jitter ±10% tránh thundering herd. UI hiển thị progress bar từ {{estimatedCompletion}}. Với export lớn (>100MB), dùng **pre-signed S3 URL** (TTL 1h) trong {{resultUrl}} thay vì trả file qua API. Spring Boot 3.2+: job I/O-bound có thể chạy trên virtual thread ({{SimpleAsyncTaskExecutor}} với virtual threads) – không pool virtual thread, giới hạn số job đồng thời bằng concurrency limit.`,
     follow: [
       'Thiết kế retry với exponential backoff + jitter cho webhook delivery?',
       'Làm sao cleanup job cũ (TTL) và handle job bị treo (stuck RUNNING)?'
@@ -874,6 +913,12 @@ ResponseEntity<String> receive(
 - Dispatcher poll outbox (CDC hoặc scheduler) → publish.
 - Tránh dual-write problem (DB commit OK nhưng publish fail).
 
+### Ví dụ đời thực
+Một ngân hàng thương mại tích hợp với ví điện tử đối tác (e-wallet) để gửi thông báo giao dịch hoàn thành real-time. Hệ thống ngân hàng mỗi ngày phát sinh ~200.000 sự kiện TXN_COMPLETED. Ban đầu dùng HTTP POST đơn giản không có chữ ký, không retry, không idempotency. Khi ví điện tử bảo trì 30 phút, ngân hàng mất toàn bộ event trong khoảng đó — khách hàng ví không thấy tiền về, phải đối soát thủ công 2 ngày. Sau khi áp dụng kiến trúc production-grade: (1) Ngân hàng lưu event vào outbox table trong cùng transaction ghi ledger, không bao giờ mất event. (2) Dispatcher đọc outbox, ký HMAC-SHA256 payload + timestamp, gửi kèm X-Delivery-ID (UUID) và X-Sequence theo account. (3) Với partner down, dispatcher retry exponential backoff: 10s, 30s, 1m, 5m, 15m, 1h… tối đa 72h, sau đó chuyển DLQ. (4) Partner verify HMAC constant-time, INSERT inbox unique trên (provider, event_id) để chặn trùng, trả 202 ngay, xử lý async. (5) Partner theo dõi sequence per account; phát hiện gap thì gọi lại API ngân hàng lấy trạng thái chuẩn. Kết quả: sau 3 tháng, 0 event mất, 0 giao dịch trùng, tỷ lệ retry do partner down giảm từ 15% xuống 0.2% nhờ circuit breaker ở dispatcher. Chi phí vận hành: 3 DB table (outbox, inbox, dlq), 2 dispatcher pod, 1 cron job đối soát hàng ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế webhook theo mô hình outbox + dispatcher: event ghi vào outbox table cùng transaction nghiệp vụ, dispatcher poll và gửi HTTPS callback kèm HMAC-SHA256 signature trên raw body, X-Delivery-ID để partner deduplicate, X-Sequence cho ordering per account. Partner verify chữ ký constant-time, INSERT inbox với unique constraint (provider, event_id) — DB là trọng tài chặn trùng — rồi trả 202 accepted, xử lý async. Retry dùng exponential backoff + jitter, max 72h rồi DLQ. Với ordering, tôi partition dispatcher theo accountId để single-threaded per partition, partner track lastSequence. Bài học lớn: team cũ gửi POST đơn giản, partner bảo trì 30 phút làm mất 200k event — phải đối soát thủ công 2 ngày. Chuyển sang outbox + HMAC + idempotency key đã khắc phục triệt để."
+
 > Senior tip: Ngân hàng dùng **Kafka/EventHub** làm backbone, webhook dispatcher là consumer. Partner chỉ nhận HTTPS callback. **Luôn version webhook API** ({{/webhook/v1/}}, {{/webhook/v2/}}) — partner migrate dần. Test webhook với **ngrok** local + **signature verification** tự động trong CI.`,
     follow: [
       'Outbox relay: polling publisher vs CDC (Debezium) khác nhau như thế nào?',
@@ -961,7 +1006,13 @@ tomcat_connections_current_connections / tomcat_connections_config_max_connectio
 histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
 ~~~
 
-> Senior tip: **Luôn bật access log có thời gian xử lý request** (%{ms}T hoặc %D micro-giây) — debug production không có log request time là mù. Spring Boot 3.2+: {{spring.threads.virtual.enabled=true}} là game-changer cho blocking I/O. Nhưng **không phải silver bullet**: CPU-bound workload không nhanh hơn, synchronized (trước JDK 24) vẫn pin carrier. Profile bằng {{jcmd <pid> Thread.print}} hoặc {{async-profiler}} trước khi tune.`,
+### Ví dụ đời thực
+Hệ thống internet banking của một ngân hàng: vào giờ cao điểm (9h–11h sáng), p99 latency của API /accounts/{id}/transactions tăng vọt từ 120ms lên 4,2s, và tỷ lệ timeout client tăng từ 0,1% lên 3,5%. Team điều tra bằng thread dump ({{jcmd <pid> Thread.print}}) và thấy hơn 180/200 thread Tomcat đang ở trạng thái RUNNABLE trong {{SocketInputStream.read}} — dấu hiệu điển hình của blocking I/O đồng bộ. Profiler (async-profiler) xác nhận 70% thời gian CPU nằm ở JDBC driver chờ response từ PostgreSQL. Cấu hình ban đầu: {{maxThreads=200}}, {{maxConnections=8192}}, {{connectionTimeout=60s}}, không bật virtual threads. HikariCP pool size 50, nhưng query chậm (thiếu index trên account_id + created_at) khiến connection giữ 3-5 giây, pool nhanh hết. Cách xử lý: (1) Thêm composite index {{(account_id, created_at DESC, id DESC)}} — query từ 3.200ms xuống 15ms. (2) Bật {{spring.threads.virtual.enabled=true}} (Spring Boot 3.2+, Java 21) — mỗi request chạy trên virtual thread, blocking JDBC không còn cạn thread Tomcat. (3) Giảm {{connectionTimeout}} xuống 20s, set {{maxConnections=2000}} phù hợp tải thực. (4) Bật HikariCP {{leakDetectionThreshold=30000}} và {{maxLifetime=1800000}}. (5) Cấu hình access log có pattern %{ms}T để đo request time. Kết quả: p99 latency giảm từ 4,2s xuống 85ms, throughput tăng từ 180 lên 3.500 req/s, thread Tomcat idle > 80% ngay cả lúc peak. Chi phí: 0 code change ngoài config và index.
+
+### Trả lời mẫu khi phỏng vấn
+"Tomcat embedded dùng thread pool (maxThreads mặc định 200) xử lý request. Request treo khi thread pool exhausted — thường do sync blocking I/O (JDBC, HTTP client sync) giữ thread quá lâu. Cấu hình then chốt: maxThreads, acceptCount (TCP backlog khi đủ maxConnections), connectionTimeout (read timeout), maxConnections. Với Java 21 + Spring Boot 3.2+, bật virtual threads ({{spring.threads.virtual.enabled=true}}) là game-changer: mỗi request = 1 virtual thread, blocking I/O không block carrier thread, throughput tăng gấp 10-20 lần. Nhưng virtual thread không phải silver bullet: CPU-bound workload (Jackson serialize) vẫn chiếm carrier, synchronized (trước JDK 24) pin carrier. Bài học lớn: team cũ maxThreads=200, query thiếu index 3s, thread pool cạn, p99 4s. Thêm index + bật virtual threads + giảm connectionTimeout, p99 về 85ms. Luôn bật access log có pattern %{ms}T để có dữ liệu debug production."
+
+> Senior tip: **Luôn bật access log có thời gian xử lý request** (pattern %{ms}T hoặc %D micro-giây) — debug production không có log request time là mù. Spring Boot 3.2+: {{spring.threads.virtual.enabled=true}} là game-changer cho blocking I/O. Nhưng **không phải silver bullet**: CPU-bound workload không nhanh hơn, synchronized (trước JDK 24) vẫn pin carrier. Profile bằng {{jcmd <pid> Thread.print}} hoặc {{async-profiler}} trước khi tune.`,
     follow: [
       'Cấu hình Tomcat cho gRPC (h2c) khác HTTP/1.1 như thế nào?',
       'Làm sao detect connection leak HikariCP trong production không restart app?'
@@ -1034,6 +1085,12 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
 - **gRPC cho public API** → partner kêu khổ vì tooling; nhiều proxy/WAF doanh nghiệp không chuyển tiếp HTTP/2 end-to-end hoặc làm rơi trailer.
 - **GraphQL cho service-to-service** → tight coupling, N+1 death spiral, khó trace.
 - **REST cho high-frequency internal call** → JSON serialization overhead, no streaming.
+
+### Ví dụ đời thực
+Một ngân hàng có 3 biên: mobile app (5 triệu user), web admin (200 nhân viên), đối tác fintech (50 công ty). Ban đầu toàn bộ dùng REST/JSON. Vấn đề: (1) Mobile app màn hình dashboard cần gọi 8 API khác nhau (accounts, cards, loans, transactions, limits, notifications, settings, profile) — over-fetching, chatty, p99 800ms trên 4G. (2) Service nội bộ transfer-svc gọi ledger-svc 50.000 lần/giây qua REST — JSON serialization tốn 40% CPU, latency P99 45ms. (3) Đối tác fintech tích hợp dùng Postman test REST dễ, nhưng versioning lủng củng. Giải pháp hybrid: (1) Mobile app → GraphQL BFF (Spring GraphQL): một request duy nhất, client chọn field, BFF aggregate từ 3 service gRPC phía sau — p99 dashboard xuống 180ms, bandwidth giảm 60%. (2) Internal sync: transfer-svc ↔ ledger-svc ↔ limit-svc dùng gRPC (Protobuf, HTTP/2 multiplexing, deadline propagation) — payload giảm 65%, P99 latency 8ms, CPU serialization giảm 40%. (3) Đối tác: REST + OpenAPI 3.1, versioning {{/v1/}}, {{/v2/}}, deprecation 12 tháng, generate SDK cho partner. Kết quả: mobile app rating tăng từ 4.2 lên 4.6, internal throughput tăng 3x, partner onboarding từ 2 tuần xuống 3 ngày. Chi phí vận hành: 3 bộ tooling (springdoc, buf, graphql-codegen), 3 cách versioning, 3 dashboards observability — đội platform 3 người maintain.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn protocol theo biên, không theo sở thích. Đối tác/public: REST + JSON + OpenAPI — firewall mở 443, curl được, SDK mọi ngôn ngữ, cache HTTP native. Service nội bộ sync: gRPC — Protobuf nhỏ, contract-first, HTTP/2 multiplexing, deadline propagation, streaming native. Mobile app/UI phức tạp: GraphQL ở tầng BFF — client tự chọn field, giảm over-fetching, một request thay 8. Kiến trúc thực tế hybrid: mobile → BFF (GraphQL) → internal services (gRPC) → Kafka cho async. Bài học lớn: team cũ toàn bộ REST, mobile gọi 8 API (p99 800ms), internal JSON serialization tốn 40% CPU. Chuyển sang hybrid: BFF GraphQL cho mobile (p99 180ms), gRPC cho internal (P99 8ms), REST cho partner. Chi phí là 3 bộ tooling, 3 cách versioning, 3 dashboards — chỉ đáng khi mỗi biên có lý do rõ ràng."
 
 > Senior tip: Mô hình phổ biến ở ngân hàng: **REST cho public/open banking**, **gRPC cho core banking internal** (transfer, ledger, limit check), **GraphQL cho BFF mobile/web**. Spring Boot 3.x: Spring gRPC (dự án chính thức, còn mới), {{spring-graphql}} (official). Luôn có **API Gateway** (Spring Cloud Gateway / Kong / Apigee) terminate TLS, auth, rate limit, route REST↔gRPC translation.`,
     follow: [
@@ -1194,6 +1251,12 @@ jobs:
 - **Header versioning**: {{Accept: application/vnd.bank.v2+json}} (clean URL, khó test).
 - **Deprecation policy**: Hỗ trợ phiên bản cũ tối thiểu 12 tháng, header {{Sunset}}, {{Deprecation}}.
 
+### Ví dụ đời thực
+Một ngân hàng phát hành API mở cho 30 đối tác fintech. Ban đầu dev dùng code-first (springdoc generate spec từ annotation), không có baseline, không có CI gate. Kết quả: một PR thêm field {{phone}} vào response {{/v1/accounts/<id>}} (optional) khiến 5 đối tác bị crash vì code generator của họ sinh class không có field này — họ dùng {{strict}} mode deserialization. Một PR khác đổi status code 200 thành 201 cho endpoint tạo beneficiary — monitoring của đối tác alert sai vì kỳ vọng 200. Team triển khai quy trình API-first: (1) Viết spec YAML trước, review bởi Arch + Security + 2 partner lớn. (2) Baseline commit vào main với git tag {{v1.0.0}}. (3) Dev generate server stub (openapi-generator-maven-plugin, delegatePattern=true) implement {{AccountApiDelegate}}. (4) Contract test: MockMvc + swagger-request-validator kiểm tra request/response khớp spec baseline. (5) CI gate: {{oasdiff}} so sánh spec PR với baseline, fail build nếu breaking change (xóa field, đổi type, thêm required). (6) Release: tag version, publish spec lên Stoplight portal. (7) Partner generate SDK từ spec portal. Kết quả: 6 tháng sau, 0 breaking change lọt production, partner onboarding từ 3 ngày xuống 4 giờ (generate SDK + test contract). Chi phí: 2 tiếng review spec mỗi thay đổi, 5 phút CI gate.
+
+### Trả lời mẫu khi phỏng vấn
+"API-first nghĩa là viết OpenAPI spec trước khi code. Quy trình: Design spec YAML → Review (Arch, Security, Partner) → Baseline (git tag) → Generate server stub (openapi-generator, delegate pattern) → Contract test (MockMvc + swagger-request-validator) → CI gate (oasdiff so sánh với baseline, fail nếu breaking) → Publish spec portal → Partner generate SDK. Breaking change: xóa field, đổi type, thêm required field request, đổi status code. Non-breaking: thêm optional field response, thêm endpoint. Spring Boot 3: springdoc-openapi-starter-webmvc-ui, bật {{spring.mvc.problemdetails.enabled=true}} cho lỗi chuẩn RFC 9457. Bài học lớn: team cũ code-first, thêm optional field {{phone}} làm crash 5 partner dùng strict deserialization, đổi 200→201 làm sai monitoring. Triển khai API-first + oasdiff CI gate, 6 tháng 0 breaking change lọt production."
+
 > Senior tip: **Đừng generate client SDK cho partner từ code** — generate từ **spec đã review & baseline**. Dùng {{buf}} (Protobuf) hoặc {{oasdiff}} (OpenAPI) trong CI để catch breaking change sớm. Khai báo response lỗi kiểu {{ProblemDetail}} (springdoc đọc được @ExceptionHandler trong @ControllerAdvice) để spec có schema lỗi thống nhất. Doc portal (Redocly/Stoplight) deploy tự động từ {{main}} branch — partner luôn thấy spec mới nhất.`,
     follow: [
       'Consumer-driven contract (Pact) vs Provider-driven (OpenAPI) khác nhau như thế nào?',
@@ -1284,6 +1347,12 @@ public ResponseEntity<String> pay(String key, PayRequest req) {
 - **Retry tự động bên trong**: không được tự retry 5xx khi chưa chắc PSP đã xử lý; retry phải đi qua cùng key.
 - **Record IN_PROGRESS bị treo**: process chết sau reserve nhưng trước khi ghi kết quả. Dùng lease ngắn và job đối soát trạng thái với PSP; không tự động gọi lại PSP cho record đang treo.
 
+### Ví dụ đời thực
+Cổng thanh toán của một ngân hàng xử lý 50.000 giao dịch/ngày qua PSP (Payment Service Provider) VNPAY. Khách hàng bấm "Thanh toán" trên app, app gửi POST /payments với Idempotency-Key (UUID v4). Trước khi có idempotency: khi mạng chậm, app timeout 10s và tự retry — PSP đã trừ tiền thành công nhưng app không nhận response, retry lần 2 khiến PSP trừ tiền lần nữa. Hàng ngày ~200 giao dịch bị nhân đôi, tổng ~150 triệu VND phải hoàn thủ công. Triển khai idempotency: (1) Client sinh UUID, gửi header {{Idempotency-Key}}. (2) Server {{INSERT ... ON CONFLICT DO NOTHING}} vào bảng {{payment_idempotency}} (PK: merchant_id, idem_key) với {{request_hash}} = SHA-256(body). Insert thành công → status {{IN_PROGRESS}}. (3) Gọi PSP (truyền cùng key nếu PSP hỗ trợ). (4) PSP trả kết quả → update status {{COMPLETED}}/{{FAILED}}, lưu {{response_status}}, {{response_body}}. (5) Request retry cùng key: đọc record, hash khớp, status {{COMPLETED}} → replay response cũ, header {{Idempotent-Replayed: true}}. (6) PSP timeout: xoá record reserve, client retry cùng key an toàn vì PSP nhận lại key cũ. TTL 7 ngày, job hàng tuần drop partition cũ. Kết quả: giao dịch nhân đôi giảm từ 200/ngày xuống 0, tỷ lệ {{Idempotent-Replayed}} ~0,3% (chỉ do retry hợp lệ), không còn khiếu nại hoàn tiền do trùng. Chi phí: bảng 50k rows/ngày, partition tháng, 2 index.
+
+### Trả lời mẫu khi phỏng vấn
+"POST /payments không idempotent — client timeout retry có thể trừ tiền 2 lần. Tôi thiết kế Idempotency-Key: client sinh UUID cho mỗi ý định thanh toán, giữ nguyên khi retry. Server reserve trước: {{INSERT ... ON CONFLICT DO NOTHING}} vào bảng có PK (merchant_id, idem_key) + request_hash. Insert OK → status IN_PROGRESS → gọi PSP. PSP xong → update COMPLETED/FAILED, lưu response. Retry cùng key: hash khớp → replay response cũ, header Idempotent-Replayed. PSP timeout: xoá reserve, client retry an toàn. TTL 7 ngày, partition tháng. Bài học lớn: team cũ ghi key SAU khi gọi PSP, process chết giữa chừng → tiền đã trừ, key chưa có, retry trừ lại. Luôn reserve TRƯỚC, unique constraint ở DB là trọng tài, không check-exists-then-insert trong code."
+
 > Senior tip: Ở cổng thanh toán lớn, bảng idempotency tăng vài triệu dòng/ngày — partition theo tháng và drop partition cũ thay vì DELETE. Theo dõi tỉ lệ {{Idempotent-Replayed}}: tăng vọt thường là dấu hiệu client timeout hàng loạt hoặc PSP chậm, không phải bug idempotency. Với chuyển tiền nội bộ, dùng thêm **reference id do hệ thống sinh** và đối soát cuối ngày để bắt các ca "đã trừ nhưng response mất".`,
     follow: [
       'Nếu PSP không hỗ trợ idempotency key thì xử lý thế nào?',
@@ -1355,6 +1424,12 @@ Business logic chỉ nằm ở service; controller v1 chỉ map dữ liệu. Đ�
 - Đếm request theo {{api_key}} + version trong access log/Micrometer; dashboard "consumer còn gọi v1".
 - Với đối tác lớn: thỏa thuận ngày sunset bằng văn bản; giữ ngoại lệ có thời hạn thay vì trì hoãn cả hệ thống.
 - Theo dõi 4xx tăng sau khi đổi default — dấu hiệu client phụ thuộc hành vi cũ.
+
+### Ví dụ đời thực
+Một ngân hàng cung cấp API mở cho 40 đối tác (e-wallet, BNPL, ERP). API {{/v1/transfers}} cần đổi schema: thêm field bắt buộc {{purpose_code}} (theo quy định mới của NHNN), đổi tên {{amount}} → {{amount_vnd}}, bổ sung {{currency}} mặc định VND. Đây là breaking change (thêm required, đổi tên field, đổi ý nghĩa). Quy trình deprecation 14 tháng: (T0) Thông báo qua portal + email, xuất bản migration guide, spec {{/v2}} trên Stoplight. (T0) Response {{/v1}} thêm header {{Deprecation: true}}, {{Sunset: Sat, 01 Mar 2025 00:00:00 GMT}}, {{Link: <https://api.bank.vn/migrate/v2>; rel="deprecation"}}. (T1) {{/v2}} chạy song song 6 tháng, parity test hàng ngày so sánh response {{/v1}} vs {{/v2}} (adapter map field). (T2) Brownout: thứ 2 hàng tuần 09h–09h05 {{/v1}} trả 503 Retry-After=300 — log ghi consumer nào bị ảnh hưởng. (T3) Đo usage: dashboard Micrometer theo dõi {{api_key}} + version, còn 3 đối tác nhỏ gọi {{/v1}} — hỗ trợ trực tiếp migrate. (T4) Sunset: tắt {{/v1}}, trả 410 Gone + Link migration guide. Kết quả: 37/40 đối tác tự migrate trước T2, 3 đối tác nhỏ hỗ trợ 1 tuần, 0 incident production. Chi phí: 2 controller mỏng (adapter), 1 parity test job, 1 brownout schedule.
+
+### Trả lời mẫu khi phỏng vấn
+"Với API public cho đối tác, tôi chọn URI versioning ({{/v1/}}, {{/v2/}}) vì dễ route gateway, dễ đọc log/metric, dễ test curl. Deprecation là quy trình có telemetry, thông báo, thời gian chờ, brownout — không phải tắt một ngày. T0: thông báo + migration guide + header Deprecation/Sunset/Link. T1: {{v2}} chạy song song, parity test. T2: brownout ({{v1}} trả 503 cửa sổ ngắn) ép client lộ ra. T3: đo usage theo {{api_key}}, chỉ sunset khi không còn traffic quan trọng. T4: tắt hẳn, 410 Gone + Link migration. Breaking change: xóa/đổi field, thêm required, đổi status code, đổi default. Bài học lớn: team cũ tắt {{v1}} ngay khi ra {{v2}} — 10 đối tác sập, rollback mất 2 ngày. Triển khai brownout 5 phút/tuần, đối tác migrate chủ động, sunset êm ru."
 
 > Senior tip: Ngân hàng thường cam kết hỗ trợ 12–24 tháng cho API đối tác, nhưng chi phí thật nằm ở **hai bộ test và hai bug surface**. Cách giảm: giữ version cũ như một **adapter mỏng** trên model mới (map field, không copy business logic), và bật brownout sớm — đội đối tác sẽ migrate nhanh hơn nhiều so với email nhắc nhở. Đừng để client không gửi version rơi vào "latest" một cách âm thầm; hãy ghim về một version mặc định đã công bố.`,
     follow: [
@@ -1436,6 +1511,14 @@ String encode(Cursor c) throws Exception {
 - Đừng chạy {{count(*)}} mỗi trang. Nếu UI cần, dùng ước lượng ({{reltuples}} sau ANALYZE) hoặc job count chạy nền.
 - Prev page: đảo điều kiện và đảo thứ tự rồi reverse kết quả; hoặc trả cả {{prev_cursor}}.
 - Với export toàn bộ: chạy trong transaction {{repeatable read}} hoặc snapshot để các trang nhất quán.
+
+### Ví dụ đời thực
+
+Ngân hàng có bảng transactions 80 triệu dòng, API lịch sử giao dịch dùng OFFSET. Triệu chứng: p99 lúc lật trang sâu khoảng 8 giây; khách báo thấy giao dịch trùng hoặc biến mất sau khi hệ thống import batch vào đêm hôm trước. Điều tra: slow query log cho thấy truy vấn OFFSET 100000 LIMIT 20 quét hơn 100.000 dòng index rồi bỏ; cursor chỉ chứa created_at, thiếu id nên nhiều giao dịch cùng microsecond bị nhảy trang. Xử lý: tạo composite index (account_id, created_at DESC, id DESC), đổi sang keyset WHERE (created_at, id) < (?, ?), cursor mã hóa base64 JSON + ký HMAC, kèm filterHash của (accountId, từ, đến, trạng thái). Kết quả: p99 giảm từ 8 giây xuống dưới 60 miligiây mỗi trang, không còn trùng/mất dòng kể cả khi insert liên tục, và không trả count(*) nên tránh OOM.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ không dùng OFFSET cho lịch sử giao dịch. Với 80 triệu dòng, OFFSET khiến PostgreSQL phải quét toàn bộ index từ đầu cho mỗi trang, nên p99 tăng theo thứ tự trang và bị nổ ở trang sâu. Tôi dùng cursor pagination: WHERE (created_at, id) < (cursor_ts, cursor_id) ORDER BY created_at DESC, id DESC. Cursor chứa timestamp và id; id là tie-breaker bắt buộc, tránh mất hoặc trùng dòng khi nhiều giao dịch cùng giây (ví dụ batch import). Cursor được mã hóa base64, ký HMAC để chống sửa, và kèm hash của bộ lọc (accountId, khoảng thời gian, trạng thái) để khách hàng không dùng cursor của bộ lọc này cho bộ lọc khác. Mỗi trang lấy LIMIT size + 1 để biết has_more, không trả total vì count(*) chậm. Chi phí mỗi trang O(log n + page size), ổn định ngay cả khi có insert liên tục giữa các lần gọi. Nếu UI cần prev page, tôi đảo điều kiện và đảo thứ tự rồi reverse kết quả, không chạy count(*) mỗi trang."
 
 > Senior tip: Hãy test phân trang bằng cách chèn dữ liệu **trong lúc** client đang lật trang — đó là lúc bug lộ ra. Spring Data 3.1+ có {{Window}} và {{ScrollPosition}} để bớt phải tự viết SQL, nhưng phần ký cursor và filterHash vẫn phải tự lo. Đừng đưa cursor vào query string rồi log nguyên văn nếu nó chứa dữ liệu nhạy cảm; hãy ký và mã hóa đủ để lộ cũng vô hại.`,
     follow: [
@@ -1540,6 +1623,14 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 - **Trả {{errors}} dạng chuỗi nối** → client không highlight được field.
 - **Lộ thông tin qua 404/409**: kẻ tấn công dò được mã giao dịch có tồn tại hay không.
 
+### Ví dụ đời thực
+
+API ngân hàng có hai team tự định nghĩa lỗi: team A trả {code: 4001, message: ...}, team B trả problem+json. SDK đối tác phải parse hai kiểu và hay bị lỗi khi team A đổi khóa message. Triệu chứng: số ticket hỗ trợ đối tác tăng, integration test thất bại ngẫu nhiên. Điều tra: ghi log response của cả hai endpoint, thấy type và status không nhất quán, detail đôi khi lộ tên bảng SQL. Xử lý: chốt danh sách type như enum trong OpenAPI, tất cả endpoint dùng ProblemDetail, type trỏ tới trang tài liệu giải thích cách sửa; viết contract test kiểm tra mọi lỗi 4xx/5xx đều là application/problem+json, detail nói người dùng cần làm gì không lộ stack. Kết quả: SDK đối tác chỉ xử lý một format, ticket hỗ trợ giảm hơn 70% trong tháng đầu.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ áp dụng RFC 9457 cho toàn bộ API ngân hàng. Mỗi lỗi trả body application/problem+json có type, title, status, detail, instance, và các extension như balance hoặc traceId. Client switch trên type và status, không bao giờ parse detail vì detail là văn bản dành cho người, có thể đổi ngôn ngữ. Lỗi validation gom theo field vào extension errors, mỗi field một entry để client highlight được. 5xx trả traceId để support tra cứu, không lộ stack trace. Tôi sẽ chốt type như enum trong OpenAPI và viết contract test cho mọi lỗi 4xx/5xx. Type đặt theo nguyên nhân (insufficient-funds) chứ không theo tầng (db-error), vì khách hàng cần biết phải làm gì, không cần biết lỗi phát sinh ở đâu. Với Spring Boot 3, tôi bật spring.mvc.problemdetails.enabled=true và viết @RestControllerAdvice extends ResponseEntityExceptionHandler để cả lỗi framework và lỗi nghiệp vụ đều trả cùng format. Type là URL trỏ tới trang tài liệu, đối tác đọc được cách xử lý, giảm ticket support."
+
 > Senior tip: Hãy chốt bộ {{type}} như một **enum trong OpenAPI** và review như public API — thêm type mới là thay đổi hợp đồng cần thông báo. Đặt tên theo **nguyên nhân/hành động** (insufficient-funds, card-expired) chứ không theo tầng (db-error, service-exception): client cần biết phải làm gì, không cần biết lỗi phát sinh ở đâu. Và luôn có một contract test kiểm tra mọi lỗi 4xx/5xx đều là problem+json.`,
     follow: [
       'Làm sao để Spring Security cũng trả problem+json thay vì body mặc định?',
@@ -1633,6 +1724,14 @@ Content-Type: application/problem+json
 - Thanh toán/đăng nhập: **fail-closed** hoặc hạn mức local rất thấp — ưu tiên an toàn.
 - Ghi rõ quyết định này vào runbook; đừng để on-call tự đoán lúc 2 giờ sáng.
 
+### Ví dụ đời thực
+
+API công khai chạy 10 pod sau load balancer, giới hạn 100 yêu cầu/phút mỗi consumer. Ban đầu mỗi pod đếm bucket riêng → client thực tế nhận 1000/phút, hạn mức vô nghĩa, và thêm pod qua autoscaling làm tình trạng tồi hơn. Triệu chứng: latency tăng, lưu lượng request đến Redis bùng đột ngột. Điều tra: log mỗi pod thấy bucket cục bộ cạn kiệt khác nhau, tổng lượng quét vượt hạn mức phép. Xử lý: chuyển sang Redis Lua script nguyên tử đọc-modify-ghi token trong một lần chạy, key theo consumerId plus endpoint; mỗi pod chỉ giữ cache cục bộ khoảng 10% limit để lọc thô khi bị flood. Trả 429 kèm Retry-After, client retry phải có jitter nếu không toàn bộ quay lại cùng một giây tạo sóng thứ hai. Kết quả: hạn mức chuẩn xác 100/phút bất kể số pod, tải Redis giảm 90%, không còn sóng retry đồng thời.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ dùng token bucket đếm tập trung trong Redis bằng Lua script nguyên tử. Tại sao Redis: nếu mỗi pod đếm riêng với 10 pod và limit 100/phút, client thực tế nhận 1000/phút, hạn mức mất ý nghĩa và phụ thuộc autoscaling. Lua script đọc-modify-ghi trong một lần chạy, Redis đơn luồng nên không có race; đừng lấy GET rồi SET từ Java vì hai request sẽ cùng thấy còn token và cùng cho qua. Trả 429 kèm Retry-After để client biết chờ bao lâu, plus RateLimit headers, và client retry phải có jitter nếu không toàn bộ quay lại cùng một giây tạo sóng thứ hai. Key theo API key/consumer chứ không chỉ IP, vì NAT và IPv6 làm nhiều người chung IP. Redis chết: fail-open cho API tra cứu, fail-closed cho thanh toán."
+
 > Senior tip: Rate limit không thay thế **bulkhead** và timeout. Một consumer hợp lệ vẫn có thể đốt hết connection pool; hãy giới hạn đồng thời (semaphore) cho từng loại tài nguyên. Đặt alert trên tỉ lệ 429 theo consumer: tăng đột biến thường là client retry loop hoặc key bị lộ, không phải "hệ thống chậm". Và hãy đo bằng một con số: nếu limit 100/phút thì 1% traffic bị 429 là bình thường, 30% là sự cố cần gọi cho đối tác.`,
     follow: [
       'Rate limit theo user và theo IP nên kết hợp thế nào để chống cả bot lẫn lạm dụng tài khoản?',
@@ -1725,6 +1824,14 @@ int updateIfVersion(long id, long expected, String name, BigDecimal limit);
 - Retry có backoff + giới hạn số lần; mỗi lần retry phải GET lại, không giữ If-Match cũ.
 - Với PATCH từng phần, cân nhắc JSON Merge Patch và vẫn giữ If-Match; JSON Patch có op "test" nhưng không thay thế được version check ở DB.
 
+### Ví dụ đời thực
+
+Hai thiết bị cùng sửa hạn mức người hưởng: A lưu trước 20 triệu, B ghi đè sau 15 triệu, thay đổi của A biến mất. Triệu chứng: khách khiếu niệu hạn mức sai, giao dịch bị chặn do vượt hạn mức thực tế. Điều tra: log thấy hai request cùng đọc version 7, server không kiểm tra If-Match nên "last write wins" âm thầm. Xử lý: thêm cột @Version, trả ETag sau mỗi ghi, endpoint PUT bắt buộc If-Match; nếu không có → 428, nếu version không khớp → 412 kèm ETag hiện tại. Câu UPDATE có điều kiện where id = ? and version = ? atomic trong DB. Kết quả: không còn mất cập nhật, tỉ lệ 412 dưới 1% và được alert để phát hiện UI cache quá lâu.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi sẽ dùng optimistic locking bằng cột @Version và ETag. Mỗi resource có version tăng đơn điệu, trả qua ETag; client gửi If-Match khi PUT/PATCH. Server chỉ ghi nếu version hiện tại khớp, ngược lại trả 412 Precondition Failed. Thiếu If-Match ở endpoint bắt buộc trả 428; xung đột nghiệp vụ như trùng mã trả 409. Quan trọng: check-and-update phải là một câu UPDATE có điều kiện trong DB, không phải đọc version rồi so sánh trong Java, nếu không hai request vẫn chen giữa lúc so và lúc ghi. Khi 412, client GET lại, merge nếu sửa field khác nhau, hoặc hiện diff cho người dùng chọn. Tôi không cho client tự ghi đè khi 412 với dữ liệu tiền, và đo tỉ lệ 412 để phát hiện UI cache quá lâu."
+
 > Senior tip: Với dữ liệu tiền, tôi thường **không** cho client chọn "ghi đè" khi 412 — bắt buộc tải lại và xác nhận. Đo tỉ lệ 412 theo endpoint: cao bất thường nghĩa là UI cache quá lâu hoặc nhiều tab cùng sửa. Và đừng dùng pessimistic lock cho form người dùng: giữ row lock qua một request HTTP là cách nhanh nhất để cạn connection pool.`,
     follow: [
       'Khi nào optimistic locking không đủ và phải dùng pessimistic lock?',
@@ -1788,6 +1895,14 @@ Partner ──► API Gateway ──► REST /partner/v1 ───┤─► tran
 ### Cách migrate không big-bang
 - Đặt gateway trước, chuyển từng route (strangler), chạy song song, so sánh kết quả (shadow traffic) trước khi cắt.
 - Bắt đầu bằng **một** protocol mới ở một biên có pain rõ ràng; đừng chuyển toàn bộ chỉ vì "gRPC nhanh hơn".
+
+### Ví dụ đời thực
+
+Ngân hàng có app mobile, web admin, đối tác và 30 microservice. Ban đầu toàn bộ dùng REST, màn hình lịch sử giao dịch trên mobile phải gọi 8 endpoint liên tiếp, chậm và tiêu nhiều dữ liệu di động. Điều tra: APM thấy 8 round trip cho một màn hình, nhiều field không dùng. Xử lý: GraphQL BFF cho mobile/web (tổng hợp dữ liệu theo màn hình), gRPC giữa các service nội bộ (payload nhỏ, deadline lan truyền qua metadata), REST + OpenAPI cho đối tác (firewall mở 443, SDK mọi ngôn ngữ, curl được). Gateway làm authn và rate limit. Kết quả: mobile giảm từ 8 request xuống 1-2, nội bộ giảm payload 30-60%, đối tác vẫn tích hợp dễ dàng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi chọn protocol theo biên, không theo sở thích. Đối tác và public dùng REST + JSON + OpenAPI vì firewall mở 443, curl được và SDK mọi ngôn ngữ. Service nội bộ đồng bộ dùng gRPC vì protobuf nhỏ, HTTP/2 multiplex, deadline lan truyền qua metadata. Client đa dạng cần tổng hợp dữ liệu dùng GraphQL ở tầng BFF, giảm over-fetching cho màn hình phức tạp. Cái giá là ba bộ tooling, ba cách version và ba cách quan sát: trace phải chuẩn W3C traceparent, định danh dùng một thư viện chung, test contract riêng cho từng protocol. Tôi không chuyển toàn bộ chỉ vì gRPC nhanh hơn; bắt đầu bằng một protocol mới ở biên có pain rõ ràng, chạy song song rồi cắt dần."
 
 > Senior tip: Trong ngân hàng, ràng buộc lớn nhất thường không phải hiệu năng mà là **khả năng chứng minh tuân thủ và debug khi có sự cố**. REST/JSON để lại access log đọc được, đó là lý do nó vẫn là mặc định ở biên đối tác. gRPC tiết kiệm payload thật (thường thấy 30–60% với DTO lớn) nhưng chỉ đáng ở nội bộ nơi bạn kiểm soát toàn bộ client. GraphQL chỉ nên xuất hiện khi số màn hình và biến thể client đủ lớn để chi phí N+1/complexity được bù lại.`,
     follow: [
@@ -1876,6 +1991,14 @@ public ResponseEntity<Void> receive(
 - Rate limit riêng cho endpoint webhook theo provider — retry storm là chuyện sẽ xảy ra, phải có van.
 - Đối soát cuối ngày với sao kê/ledger đối tác để bắt event bị mất hoàn toàn (at-least-once không bảo đảm không mất nếu bên gửi bỏ cuộc).
 - Load test bằng cách replay 10.000 event trùng trong 1 phút: hệ thống đúng phải ack hết mà không tạo bút toán trùng.
+
+### Ví dụ đời thực
+
+Ngân hàng đối tác gửi webhook at-least-once, có thể trùng và sai thứ tự, retry trong 72 giờ. Ban đầu endpoint xử lý đồng bộ 5 giây, đối tác timeout sau 3 giây và retry → hai worker cộng tiền hai lần. Triệu chứng: số dư khách sai, khách khiếu niệu bị cộng trùng. Điều tra: log thấy cùng event_id được xử lý hai lần trong khoảng vài giây. Xử lý: xác thực chữ ký HMAC trên raw body (không parse lại vì thứ tự field thay đổi làm chữ ký sai), ghi event vào bảng inbox có unique (provider, event_id) — DB là trọng tài, trả 200/202 ngay, sau đó worker xử lý idempotent theo event_id; lỗi tạm thời vào DLQ và retry theo lịch của mình, không để đối tác retry 72 giờ gây storm. Không tin thứ tự event; nếu nghi ngờ, gọi API đối tác lấy trạng thái chuẩn. Cuối ngày có job đối soát với sao kê để phát hiện event bị mất hoàn toàn.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi thiết kế endpoint webhook theo nguyên tắc ack nhanh, xử lý sau. Nhận request, xác thực chữ ký HMAC trên raw body, kiểm tra timestamp trong cửa sổ 5 phút để chặn replay. Ghi event vào bảng inbox có unique (provider, event_id) — DB là trọng tài, không dùng exists rồi save vì có race. Trả 200/202 ngay, sau đó worker xử lý idempotent theo event_id; lỗi tạm thời vào DLQ và retry theo lịch của mình, không để đối tác retry 72 giờ gây storm. Không tin thứ tự event; nếu nghi ngờ, gọi API đối tác lấy trạng thái chuẩn. Cuối ngày có job đối soát với sao kê để phát hiện event bị mất hoàn toàn."
 
 > Senior tip: Đừng bao giờ để endpoint webhook gọi thẳng service nghiệp vụ nặng. Tôi đã thấy một đợt retry của đối tác biến 3.000 event thành 40.000 request trong 10 phút và làm nghẽn luôn API người dùng — vì endpoint vừa xử lý đồng bộ vừa không có rate limit. Inbox + worker + DLQ là mô hình tối thiểu; phần khó nhất không phải code mà là **đối soát**: phải có job so khớp với đối tác, nếu không bạn chỉ biết mất event khi khách hàng gọi lên.`,
     follow: [
@@ -1972,6 +2095,9 @@ Server **không nhìn thấy byte nào**: không tốn RAM, không tốn băng t
 - **Làm tên file từ client thành đường dẫn**: {{filename=../../config/app.yml}}. Tên hiển thị phải lược bỏ dấu chấm gạch chéo; khoá object thì do server ghép (tiền tố user + UUID), không lấy nguyên tên file.
 - **Retry tạo bản sao**: client timeout rồi gửi lại multipart → 2 file trùng. Cách tránh: client sinh {{X-Upload-Id}} dạng UUID, server kiểm tra định dạng rồi ghép khoá {{docs/<userId>/<uploadId>}} để lần gửi lại ghi đè đúng chỗ — nhớ có tiền tố user, nếu không client A có thể ghi đè file của client B bằng cách gửi id của B.
 
+### Ví dụ đời thực
+Hệ thống internet banking của một ngân hàng cho khách tải lên ảnh CCCD và sao kê (tối đa 100 MB/file). Triệu chứng: vào giờ cao điểm (17h–19h), khách khiếu nại upload thất bại sau 60–90 giây, log app hiện {{MaxUploadSizeExceededException}} nhưng file thực tế chỉ 15 MB, đồng thời heap usage tăng vọt từ 2 GB lên 10 GB gây full GC 15 giây. Điều tra: (1) access log nginx cho thấy request lên tới 120 giây mới đến app — vì {{client_max_body_size}} mặc định 1 MB, file 15 MB bị nginx chặn nhưng cấu hình app {{spring.servlet.multipart.max-file-size: 100MB}} nên log app báo sai nguyên nhân; (2) thread dump thấy 40 thread đang ở {{file.getBytes()}} — code cũ đọc toàn bộ file vào RAM trước khi ghi S3, 20 request song song × 15 MB = 300 MB heap, nhưng GC không kịp dọn. Nguyên nhân gốc: thiếu cấu hình nginx, code dùng {{getBytes()}} thay vì stream, và không có presigned URL cho file lớn. Cách xử lý: (1) set {{client_max_body_size 100m}} ở nginx; (2) đổi code sang {{file.getInputStream()}} stream thẳng S3; (3) file > 20 MB chuyển sang presigned PUT (URL hết hạn 5 phút). Kết quả sau 1 tuần: tỷ lệ upload thất bại giảm từ 12% xuống 0,3%, heap ổn định ở 2.5 GB, p99 latency upload 50 MB giảm từ 85 giây xuống 12 giây, không còn full GC khi upload.
+
 ### Trả lời miệng 1 phút
 "Tôi tách upload theo kích thước. Dưới khoảng 10 MB thì nhận multipart tại server: body chia phần bằng boundary, Spring ra {{MultipartFile}}, tôi kiểm tra kích thước, phần mở rộng và magic bytes rồi stream {{InputStream}} lên S3, không bao giờ {{getBytes()}}. Bắt buộc siết ở cả nginx lẫn {{spring.servlet.multipart}} vì mặc định Spring chỉ cho 1 MB — thiếu tầng nào khách cũng gặp 413 hoặc 500. Trên 10 MB tôi chuyển sang presigned URL: client xin URL ký sẵn, PUT thẳng lên S3 rồi báo {{complete}} để server đối chiếu kích thước và ETag; server không đi qua byte nào nên vừa không tốn RAM vừa không bị proxy cắt. Mọi đường upload đều idempotent theo mã upload do client sinh để retry không tạo file trùng."
 
@@ -2054,6 +2180,9 @@ ResponseEntity<Resource> download(@PathVariable long id) {
 - **Proxy cắt kết nối**: nếu app mất hơn 60 giây mới gửi byte đầu (ví dụ chờ lấy file từ kho chậm) thì nginx trả 504 ({{proxy_read_timeout}}); nếu client đọc quá chậm thì {{send_timeout}} của nginx cắt kết nối giữa chừng. Cách tránh: gửi byte đầu sớm, chỉnh hai timeout này cho route download, hoặc đẩy sang presigned URL.
 - **Nén gzip cho PDF**: PDF đã nén sẵn, bật thêm chỉ tốn CPU và tăng độ trễ. Chỉ nén JSON/text.
 
+### Ví dụ đời thực
+Hệ thống ngân hàng cung cấp API tải sao kê PDF (30–60 MB) cho 200.000 khách hàng/ngày. Triệu chứng: (1) khách báo tải 90% rồi đứt, tải lại từ đầu mất 10 phút; (2) p99 latency download tăng từ 8 giây lên 45 giây vào cuối tháng; (3) thread pool Tomcat cạn kiệt (200/200), health check lỗi 503. Điều tra: (1) access log nginx ghi {{proxy_read_timeout}} 60s — app stream từ S3 mất 70s byte đầu do cold start, nginx cắt kết nối trả 504; (2) code dùng {{InputStreamResource}} nên Spring không hỗ trợ Range, client không resume được; (3) heap dump thấy 150 thread giữ {{byte[]}} 50 MB do code cũ dùng {{Files.readAllBytes}} cho file nhỏ. Nguyên nhân gốc: thiếu {{Content-Length}} và Range support, proxy timeout quá thấp, code đọc hết file vào RAM. Cách xử lý: (1) đổi sang {{FileSystemResource}} (đĩa tạm) hoặc presigned GET S3 cho file > 20 MB; (2) set {{proxy_read_timeout 300s}} và {{send_timeout 300s}} cho route download; (3) bật {{Content-Length}} từ metadata S3 trước khi stream. Kết quả: p99 latency 30 MB giảm từ 45 giây xuống 9 giây, tỷ lệ resume thành công từ 15% lên 98%, thread Tomcat idle > 70% ngay cả lúc peak, không còn 503 do cạn thread.
+
 ### Trả lời miệng 1 phút
 "Trước hết tôi không bao giờ đọc cả file vào bộ nhớ: response trả {{Resource}} với {{contentLength}} lấy từ metadata, nên 50 MB không nằm trong heap mà chỉ có buffer 64 KB; đổi lại tải chậm thì thread bị giữ, vì thế tôi giới hạn số download đồng thời. Để khách tải tiếp được khi đứt mạng, tôi dùng {{Resource}} đọc lại được để Spring tự xử lý {{Range}}/{{If-Range}} và trả 206 — lưu ý {{InputStreamResource}} **không** được Spring hỗ trợ Range, nếu nguồn chỉ cho stream một lần thì tôi truyền khoảng byte xuống S3 hoặc cấp presigned GET. Tên file tiếng Việt dùng {{ContentDisposition.filename(..., UTF_8)}} tránh thành dấu chấm hỏi. Thực tế với file trên 20 MB tôi cấp presigned GET có hạn để client tải thẳng từ S3/CDN: server không tốn băng thông, CDN lo Range và timeout, tôi chỉ kiểm tra quyền trước khi ký URL."
 
@@ -2086,7 +2215,7 @@ Giống quầy tiếp nhận ở bệnh viện: **kiểm tra form** (đủ chữ
 ### Cơ chế từng bước
 1. Dev đặt annotation trên DTO. Vì sao: ràng buộc nằm cạnh dữ liệu, ai đọc DTO cũng thấy ngay.
 2. Controller nhận {{@Valid @RequestBody CreateAccountRequest req}}. Spring chạy HV **trước khi vào method**; nếu sai thì ném {{MethodArgumentNotValidException}}, gom tất cả lỗi field chứ không dừng ở lỗi đầu.
-3. Với {{@PathVariable}}/{{@RequestParam}} trên controller: từ Spring Framework 6.1 (Boot 3.2+) Spring MVC tự validate tham số và ném {{HandlerMethodValidationException}} (thường trả 400), không cần {{@Validated}}. Ở tầng **service** thì {{@Validated}} trên class bật proxy method validation, lỗi là {{ConstraintViolationException}}.
+3. Với {{@PathVariable}}/{{@RequestParam}} trên controller: từ Spring Framework 6.1 (Boot 3.2+) Spring MVC tự validate tham số và ném {{HandlerMethodValidationException}} (thường trả 400), **không cần {{@Validated}}** — lưu ý: đặt {{@Validated}} lên controller class sẽ chuyển sang proxy AOP và_throw {{ConstraintViolationException}} (thường là 500), nên hãy bỏ nó ở controller. Ở tầng **service** thì {{@Validated}} trên class vẫn đúng (proxy method validation, lỗi là {{ConstraintViolationException}}).
 4. Lỗi được @ControllerAdvice chuyển thành ProblemDetail kèm danh sách {{field, message}}.
 5. Kiểm tra nghiệp vụ (email trùng) nằm ở service: ưu tiên để **DB chặn cuối** bằng unique constraint, bắt {{DataIntegrityViolationException}} rồi trả 409.
 
@@ -2134,7 +2263,7 @@ public record BeneficiaryReq(
         @Valid AccountRef account,             // cascade xuống object lồng
         List<@Positive Long> amounts) {}       // ràng buộc áp lên TỪNG phần tử (container element)
 ~~~
-Lúc validate phải chỉ rõ nhóm: ở controller dùng {{@Validated(Create.class) @RequestBody BeneficiaryReq req}} ({{@Valid}} không nhận tham số nhóm), gọi tay thì {{validator.validate(req, Create.class)}}. Nếu gọi validate ở nhóm mặc định (Default) thì các ràng buộc đã gán nhóm **không chạy**; ngược lại khi gọi {{Create.class}}, các ràng buộc **không gán nhóm** (như {{@NotBlank name}} ở trên, thuộc Default) cũng bị bỏ qua. Vì vậy hoặc gán nhóm cho mọi ràng buộc, hoặc truyền cả hai: {{validator.validate(req, Create.class, Default.class)}} — đây là lỗi im lặng hay gặp nhất của groups.
+Lúc validate phải chỉ rõ nhóm: ở controller chỉ cần {{@Valid @RequestBody BeneficiaryReq req}} ({{@Valid}} là nested constraint, không nhận tham số nhóm; đặt {{@Validated}} trên controller class sẽ chuyển sang proxy AOP và throw {{ConstraintViolationException}} → 500, nên controller không cần {{@Validated}}). Nhóm chỉ dùng khi validate tay bằng {{validator.validate(req, Create.class)}}. Nếu gọi validate ở nhóm mặc định (Default) thì các ràng buộc đã gán nhóm **không chạy**; ngược lại khi gọi {{Create.class}}, các ràng buộc **không gán nhóm** (như {{@NotBlank name}} ở trên, thuộc Default) cũng bị bỏ qua. Vì vậy hoặc gán nhóm cho mọi ràng buộc, hoặc truyền cả hai: {{validator.validate(req, Create.class, Default.class)}} — đây là lỗi im lặng hay gặp nhất của groups.
 
 ### Lỗi format hay nghiệp vụ? Đặt status đúng
 | Loại | Ai bắt | Ví dụ | Status |
@@ -2150,6 +2279,9 @@ Lúc validate phải chỉ rõ nhóm: ở controller dùng {{@Validated(Create.c
 - **Nhầm {{@Valid}} với {{@Validated}}**: {{@Valid}} để cascade object và validate body; {{@Validated}} bật method validation (kèm nhóm) cho service. Với controller, từ Spring 6.1 ràng buộc trên {{@PathVariable}}/{{@RequestParam}} đã chạy sẵn nên đặt {{@Validated}} lên controller class chỉ tạo proxy không cần thiết. Đặt sai chỗ thì ràng buộc im lặng không chạy — lỗi nguy hiểm vì code vẫn xanh.
 - **Nhóm không đặt khi dùng chung DTO**: bản Update gửi thiếu id bị chặn vì {{@NotNull}} của Create. Cách tránh: gán {{groups}} ngay từ đầu cho mọi ràng buộc bắt buộc.
 - **Thông báo mặc định tiếng Anh**: khách không hiểu. Dùng {{ValidationMessages.properties}} (hoặc {{messages_vi.properties}}) và đọc theo {{LocaleContextHolder.getLocale()}}.
+
+### Ví dụ đời thực
+Hệ thống mở tài khoản online của một ngân hàng xử lý 5.000 request/ngày. Triệu chứng: (1) log hiện {{ConstraintViolationException}} từ validator custom @ValidVietnamPhone gọi DB kiểm tra "số điện thoại đã đăng ký" — p99 validator tăng từ 5 ms lên 120 ms; (2) một ca race condition: hai request cùng số điện thoại mới, validator SELECT thấy "chưa có", cả hai INSERT, unique constraint chặn cái sau nhưng cái trước đã commit — khách khiếu nại số điện thoại trùng; (3) DTO BeneficiaryReq dùng chung cho Create/Update nhưng quên gán {{groups}} cho {{@NotBlank name}} → bản Update gửi thiếu name vẫn pass validator. Điều tra: (1) thread dump thấy validator block ở {{jdbcTemplate.query}}; (2) slow query log xác nhận SELECT phone chạy 80 ms do thiếu index; (3) test integration xác định lỗi groups. Nguyên nhân gốc: validator làm việc DB, thiếu unique constraint là hàng rào cuối, groups config không đầy đủ. Cách xử lý: (1) xóa DB call khỏi validator, chỉ check format regex; (2) thêm unique index {{phone}} ở DB, service bắt {{DataIntegrityViolationException}} trả 409; (3) gán groups cho mọi constraint, validate tay bằng {{validator.validate(req, Create.class, Default.class)}}. Kết quả: validator p99 từ 120 ms xuống 3 ms, 0 ca trùng số điện thoại sau deploy, 0 lỗi validation im lặng.
 
 ### Trả lời miệng 1 phút
 "Bean Validation là lưới kiểm tra thứ nhất, dành cho định dạng: annotation trên DTO, Spring chạy Hibernate Validator trước khi vào controller, gom hết lỗi field rồi trả 400/422 kèm danh sách lỗi. Custom annotation như @ValidVietnamPhone gồm hai phần: annotation khai báo {{Constraint}} và class {{ConstraintValidator}} — phần kiểm tra chỉ được động tới chuỗi, không được gọi DB. Nhóm Create/Update dùng interface rỗng để cùng một DTO áp đúng bộ ràng buộc theo ngữ cảnh, còn object lồng phải có {{@Valid}} nếu không ràng buộc bên trong không chạy. Lưới thứ hai là nghiệp vụ ở service: email trùng, số dư không đủ thì trả 409/422, và cuối cùng unique constraint của DB là trọng tài vì check trước insert bao giờ cũng có race."
@@ -2233,6 +2365,9 @@ Nếu quy định bảo mật cấm lưu số dư ở máy người dùng thì d
 - **GET có side effect** (tăng số lượt xem, sinh log nghiệp vụ): proxy cache nuốt mất lượt gọi. Cách tránh: việc ghi phải nằm ở POST hoặc xử lý riêng.
 - **Chỉ bật cache ở server mà quên client**: fetch của trình duyệt mặc định vẫn dùng cache HTTP; muốn luôn lấy mới thì client phải {{cache: "no-store"}} — nhưng nhớ lý do thật sự là gì.
 
+### Ví dụ đời thực
+Hệ thống ngân hàng mobile 1,2 triệu user gọi GET /api/accounts/{id}/balance mỗi 30 giây. Triệu chứng: (1) khách khiếu nại thấy số dư cũ 2–3 phút sau khi chuyển tiền thành công; (2) CDN metrics hit ratio 95% nhưng log ứng dụng thấy số dư trả về không khớp DB; (3) security audit phát hiện response có {{Cache-Control: public, max-age=60}} cho endpoint cần Bearer token. Điều tra: (1) code dùng {{CacheControl.maxAge(60)}} thay vì {{noCache()}} cho endpoint balance; (2) CDN cache theo URL, bỏ qua Authorization header nên cache key trùng giữa user A và B; (3) ETag sinh từ {{System.currentTimeMillis()}} thay vì {{account.version}} → mỗi request ETag khác, 304 không bao giờ xảy ra. Nguyên nhân gốc: nhầm {{public}} cho {{private}}, ETag sai ngữ nghĩa, thiếu {{Vary: Authorization}}. Cách xử lý: (1) đổi sang {{CacheControl.noCache().cachePrivate()}} + ETag từ {{@Version}}; (2) thêm {{Vary: Authorization, Cookie}}; (3) test bằng {{curl -H "Authorization: Bearer ..." -I}} kiểm tra header. Kết quả: 0 khiếu nại số dư sai, hit ratio CDN giảm về 12% (mong đợi cho private data), p99 latency balance 45 ms (304 cache hit), audit security pass.
+
 ### Trả lời miệng 1 phút
 "Tôi bắt đầu bằng việc phân loại dữ liệu. Số dư và thông tin cá nhân thì {{no-store}} — không tầng nào được giữ bản sao; nếu muốn rẻ hơn thì {{private, no-cache}} kèm ETag để trình duyệt chỉ tốn một request 304. Dữ liệu công khai như biểu phí thì {{public, max-age}} để CDN trả lời, kèm {{Vary}} để cache không trộn bản theo header. ETag phải sinh từ phiên bản dữ liệu, không sinh từ thời điểm request, nếu không sẽ không bao giờ khớp. Điều tôi luôn kiểm tra là response sau đăng nhập không bao giờ được để {{public}}: khoá cache mặc định chỉ là URL, nên nếu CDN bị cấu hình cache bừa thì nó có thể trả số dư của người này cho người kia — đó là sự cố bảo mật chứ không phải lỗi hiệu năng."
 
@@ -2313,6 +2448,9 @@ String detail = messageSource.getMessage(
 - **Cấu hình nén chồng nhau**: app và nginx cùng bật nén thì rất khó biết body do tầng nào nén; proxy tự viết lại (hoặc CDN không kiểm tra {{Content-Encoding}}) có thể nén thêm lần nữa → CPU phung phí, đôi khi body hỏng. Chọn **một nơi** nén (thường là proxy) và để nén ở app tắt ({{server.compression.enabled}} mặc định là false).
 - **Thiếu {{Vary}}**: cache có một ô khoá duy nhất là URL → bản gzip và bản thường, bản vi và bản en cùng một khoá → lỗi ngẫu nhiên rất khó debug. Khi có nén hoặc đa ngôn ngữ, {{Vary}} là bắt buộc chứ không phải lựa chọn.
 - **Trả thẳng {{String}} từ controller**: client kỳ vọng JSON nhận được {{text/plain}}. Trả object hoặc set {{produces}}.
+
+### Ví dụ đời thực
+Hệ thống API ngân hàng cung cấp endpoint báo cáo cho đối tác fintech. Triệu chứng: (1) đối tác báo lỗi 406 khi gọi GET /api/reports/123 với {{Accept: application/xml}} — trước đây chạy bình thường; (2) log nginx thấy 200 OK nhưng body là gzip, client không nén được báo "corrupted"; (3) khách hàng Việt Nam thấy thông báo lỗi tiếng Anh thay vì tiếng Việt. Điều tra: (1) deploy mới thêm Jackson XML converter nhưng không đăng ký {{MediaType.APPLICATION_XML}} trong {{produces}} → Spring match */* trước, chọn JSON converter, client nhận JSON mà parser XML fail; (2) nginx bật {{gzip on}} và Spring Boot bật {{server.compression.enabled=true}} — double compression, client nhận body gzip của gzip; (3) {{Accept-Language: vi-VN}} nhưng {{messages_vi.properties}} thiếu key {{error.insufficient-funds}} → fallback default locale en. Nguyên nhân gốc: content negotiation config không nhất quán, double compression, i18n resource thiếu. Cách xử lý: (1) khai báo {{produces = "application/json"}} tường minh cho mọi endpoint, không phụ thuộc Accept; (2) tắt nén ở Spring ({{server.compression.enabled=false}}), chỉ bật ở nginx; (3) audit i18n key, thêm {{messages_vi.properties}} đầy đủ, set {{LocaleContextHolder.setLocale()}} từ {{Accept-Language}} header. Kết quả: 0 lỗi 406, 0 double compression, 100% thông báo lỗi đúng ngôn ngữ, partner onboarding từ 2 tuần xuống 3 ngày.
 
 ### Trả lời miệng 1 phút
 "Content negotiation gồm ba trục. Trục định dạng: Spring so {{Accept}} với danh sách {{HttpMessageConverter}}, chọn theo trọng số q, không khớp thì 406 — vì vậy tôi luôn khai {{produces}} rõ ràng cho từng endpoint. Trục ngôn ngữ: {{Accept-Language}} quyết định bundle trong {{MessageSource}}, tôi dùng nó cho thông báo lỗi nhưng giữ nguyên {{type}} cho máy đọc. Trục nén: {{Accept-Encoding}} cho phép gzip, và đây là chỗ hay sai nhất — phải kèm {{Vary: Accept-Encoding}} nếu không cache sẽ trộn bản nén với bản thường, cũng như thiếu {{Vary: Accept-Language}} sẽ làm người dùng thấy sai ngôn ngữ. Nén thì tôi chỉ bật ở một tầng, thường là proxy, để tránh nén kép."
@@ -2402,7 +2540,7 @@ static JsonNode merge(JsonNode base, JsonNode patch) {
     return out;
 }
 ~~~
-Với JSON Patch, Jackson (jackson-core) chỉ có {{JsonPointer}} và {{JsonNode.at(...)}} để trỏ đường dẫn, **không** có sẵn class áp patch trong {{jackson-databind}}. Muốn nhận {{application/json-patch+json}} phải thêm thư viện như {{com.github.java-json-tools:json-patch}} (API {{JsonPatch.fromJson(node).apply(target)}}) hoặc {{com.flipkart.zjsonpatch:zjsonpatch}}; trỏ sai đường dẫn hay {{test}} không khớp sẽ ném {{JsonPatchException}} → trả 400 (patch sai cú pháp), 422 (patch không áp được lên tài liệu) hoặc 409 (test/trạng thái xung đột) kèm chi tiết.
+Với JSON Patch, Jackson trong jackson-databind chỉ có {{JsonPointer}} và {{JsonNode.at(...)}} để trỏ đường dẫn, **không** có sẵn class áp patch. Muốn nhận {{application/json-patch+json}} phải thêm thư viện như {{com.github.java-json-tools:json-patch}} (API {{JsonPatch.fromJson(node).apply(target)}}) hoặc {{com.flipkart.zjsonpatch:zjsonpatch}}; trỏ sai đường dẫn hay {{test}} không khớp sẽ ném {{JsonPatchException}} → trả 400 (patch sai cú pháp), 422 (patch không áp được lên tài liệu) hoặc 409 (test/trạng thái xung đột) kèm chi tiết.
 
 ### Lỗi hay gặp
 - **Gửi sai Content-Type** ({{application/json}} thay vì {{application/merge-patch+json}}) → 415. Đây là lỗi phía client, nhưng phải ghi rõ trong tài liệu và trả ProblemDetail dễ hiểu.
@@ -2410,6 +2548,9 @@ Với JSON Patch, Jackson (jackson-core) chỉ có {{JsonPointer}} và {{JsonNod
 - **Dùng PUT với body thiếu field**: PUT nghĩa là "thay thế toàn bộ", field không gửi sẽ bị mất. Đây là lý do form sửa một phần nên chọn PATCH.
 - **JSON Patch {{test}} fail**: trả **409 Conflict** (RFC 5789), không phải 400 — vì cú pháp đúng, chỉ trạng thái hiện tại không khớp. Dành **412** cho header điều kiện {{If-Match}}.
 - **Mạng/WAF chặn PATCH**: một số proxy, WAF hoặc gateway mặc định không cho {{PATCH}} qua (405). Kiểm tra tầng ngoài trước khi đổ lỗi cho code.
+
+### Ví dụ đời thực
+Hệ thống cập nhật hồ sơ khách hàng ngân hàng cho phép sửa một phần thông tin (điện thoại, email, địa chỉ). Triệu chứng: (1) khách khiếu nại "địa chỉ bị reset về cũ" sau khi cùng lúc cập nhật với nhân viên CSKH; (2) log thấy 415 Unsupported Media Type cho request PATCH từ app mobile v2.1; (3) WAF trả 405 Method Not Allowed cho PATCH /api/profiles. Điều tra: (1) form sửa dùng Merge Patch nhưng không kèm {{If-Match}} — client A và B cùng đọc version 5, A sửa phone, B sửa email, B ghi sau ghi đè mất phone của A; (2) app v2.1 gửi {{Content-Type: application/json}} thay vì {{application/merge-patch+json}} → Spring trả 415; (3) API Gateway rule chặn PATCH method, chỉ cho GET/POST/PUT. Nguyên nhân gốc: thiếu optimistic locking (If-Match), client dùng sai media type, infra chặn PATCH. Cách xử lý: (1) bắt buộc {{If-Match}} cho PATCH, trả 412 kèm ETag hiện tại; (2) cập nhật app mobile gửi đúng {{application/merge-patch+json}}, version cũ fallback sang PUT full body; (3) cấu hình API Gateway cho phép PATCH. Kết quả: 0 ca lost update, 415 giảm từ 200/ngày xuống 0, WAF pass rate 100%, p99 PATCH latency 35 ms.
 
 ### Trả lời miệng 1 phút
 "PATCH là cập nhật một phần, và tôi chia hai định dạng theo mức độ phức tạp của client. Merge Patch là một object nêu phần muốn đổi, null nghĩa là xoá, phần còn lại giữ nguyên — idempotent, dễ sinh, nên tôi dùng làm mặc định cho các form sửa thông tin. JSON Patch là mảng thao tác kèm JSON Pointer, mạnh hơn với chèn vào mảng và phép {{test}} điều kiện, nhưng client phải hiểu cấu trúc và có chỗ áp lại là không idempotent, vì vậy tôi chỉ dùng khi cần thao tác cấu trúc. Điểm quan trọng nhất không phải chọn định dạng mà là đọc trạng thái mới nhất ở server rồi mới áp delta, kèm If-Match để trả 412 nếu dữ liệu đã đổi — nếu không thì patch chính xác đến đâu cũng mất thay đổi của người khác."
@@ -2506,9 +2647,19 @@ Không có pub-sub thì triệu chứng là **"một nửa số client thấy gi
 - **Mobile**: app vào nền thì hệ điều hành cắt kết nối; ngoài SSE còn cần push notification (FCM) làm lưới an toàn.
 
 ### Trả lời miệng 1 phút
-"Tôi chọn theo yêu cầu độ trễ và trạng thái phía server. Polling kèm ETag là nền: mỗi lượt chỉ tốn một request 304, độ trễ bằng chu kỳ hỏi, không cần giữ trạng thái nên chạy sau bao nhiêu instance cũng được. Khi nghiệp vụ yêu cầu dưới một giây thì tôi thêm SSE: client mở một request, server giữ kết nối và đẩy text/event-stream, EventSource tự nối lại và gửi Last-Event-ID để lấy phần bị đứt — điều kiện là proxy phải tắt buffering, có heartbeat, và đa instance phải có pub-sub để event sinh bên này tới được client đang nối bên kia. WebSocket tôi chỉ dùng khi client thật sự phải gửi dữ liệu real-time cùng lúc, vì giá của nó là trạng thái kết nối, sticky session và rất nhiều ca lỗi chỉ xuất hiện khi có hàng nghìn kết nối."
+"Tôi chọn theo yêu cầu độ trễ và trạng thái phía server. Polling kèm ETag là nền: mỗi lượt chỉ tốn một request 304, độ trễ bằng chu kỳ hỏi, không cần giữ trạng thái nên chạy sau bao nhiêu instance cũng được. Khi nghiệp vụ yêu cầu dưới một giây thì tôi thêm SSE: client mở một request, server giữ kết nối và đẩy {{text/event-stream}}, {{EventSource}} tự nối lại và gửi {{Last-Event-ID}} để lấy phần bị đứt — điều kiện là proxy phải tắt buffering, có heartbeat, và đa instance phải có pub-sub để event sinh bên này tới được client đang nối bên kia. WebSocket tôi chỉ dùng khi client thật sự phải gửi dữ liệu real-time cùng lúc, vì giá của nó là trạng thái kết nối, sticky session và rất nhiều ca lỗi chỉ xuất hiện khi có hàng nghìn kết nối."
 
-> Senior tip: bắt đầu bằng polling + ETag cho mọi màn hình, nâng lên SSE đúng một chỗ cần thật sự tức thì — tôi đã thấy đội trả giá rất đắt cho WebSocket khi chỉ cần push một chiều. Trước khi mở SSE cho production, test bằng curl giữ kết nối qua đúng dải proxy/ingress thật và đo thời gian từ lúc sinh event tới lúc client nhận; nếu con số không dưới ngưỡng mục tiêu thì vấn đề nằm ở buffer/heartbeat, không nằm ở code Java.`,
+### Ví dụ đời thực
+App internet banking của một ngân hàng thương mại: màn hình "Giao dịch mới nhất" trên mobile phải hiện ngay sau khi khách chuyển tiền xong, nhưng team đầu tiên dùng **polling mỗi 30 giây**. Triệu chứng: khách chuyển tiền xong rồi quay lại màn hình, phải chờ 25–30 giây mới thấy giao dịch — tỉ lệ gọi support "Tại sao giao dịch chưa hiện?" là 1.200 ticket/ngày, và vào giờ cao điểm (12h–13h) độ trễ thực tế lên đến 45 giây do server quá tải. Điều tra bằng metric: rate request polling tăng từ 200 req/s lên 2.500 req/s (12 client × chu kỳ 30s × 7.000 client đang online), CPU instance đạt 85%, và log server cho thấy 94% request polling trả về 304 (không có data mới) — tức là 94% công suất đi vào không có giá trị.
+
+Cách xử lý: (1) Thay polling 30s bằng **SSE** trên endpoint /api/accounts/{id}/events với {{SseEmitter}} timeout 30 phút, heartbeat ping mỗi 20 giây, và {{proxy_buffering off}} ở nginx ingress. (2) Khi chuyển tiền thành công, service phát event lên **Redis Pub/Sub** kênh transfer.done.{accountId}; instance nào giữ kết nối của client nhận được rồi push xuống. (3) Client dùng {{EventSource}} với {{withCredentials: true}}, gửi {{Last-Event-ID}} khi reconnect để lấy event bị miss. (4) Giữ polling mỗi 5 phút làm lưới an toàn khi SSE mất kết nối (app vào nền, mạng di động chuyển 4G↔WiFi).
+
+Kết quả sau 4 tuần: độ trễ từ lúc khách chuyển tiền tới lúc màn hình cập nhật giảm từ 25–45 giây xuống **trung bình 800ms (p99 1,2s)**; ticket support giảm 91%; CPU instance giảm từ 85% xuống 42% vì polling request giảm 98%; và khi có 2 instance, pub-sub đảm bảo event sinh ở instance nào cũng tới được client đang nối ở instance kia — không còn hiện tượng "một nửa client thấy, một nửa không".
+
+### Trả lời mẫu khi phỏng vấn
+"Về bản chất, tôi chọn công nghệ dựa trên hai câu hỏi: client có cần **nhận** dữ liệu tức thì không, và client có cần **gửi** dữ liệu real-time không. Nếu chỉ cần nhận, đầu tiên là polling kèm ETag: đơn giản, không cần giữ trạng thái, chạy được sau bao nhiêu instance, và mỗi lượt chỉ tốn một request 304 khi không có data mới. Khi nghiệp vụ yêu cầu độ trễ dưới một giây, tôi nâng lên SSE: client mở một HTTP request, server giữ kết nối và đẩy event dạng {{text/event-stream}}; trình duyệt tự nối lại và gửi {{Last-Event-ID}} để lấy phần bị miss. Điều kiện bắt buộc là proxy phải tắt buffering, có heartbeat định kỳ, và đa instance phải dùng Redis Pub/Sub để event sinh ở instance nào tới được client đang nối ở instance kia. Cuối cùng, WebSocket tôi chỉ chọn khi client thật sự phải gửi dữ liệu real-time cùng lúc — ví dụ chat hoặc multiplayer game — vì giá của nó là trạng thái kết nối, sticky session, và rất nhiều ca lỗi chỉ lộ ra khi có hàng nghìn kết nối. Trên mobile, ngoài SSE tôi vẫn giữ polling làm lưới an toàn khi app vào nền hoặc mất mạng, vì hệ điều hành sẽ cắt kết nối TCP và không có gì thay thế push notification."
+
+  > Senior tip: bắt đầu bằng polling + ETag cho mọi màn hình, nâng lên SSE đúng một chỗ cần thật sự tức thì — tôi đã thấy đội trả giá rất đắt cho WebSocket khi chỉ cần push một chiều. Trước khi mở SSE cho production, test bằng curl giữ kết nối qua đúng dải proxy/ingress thật và đo thời gian từ lúc sinh event tới lúc client nhận; nếu con số không dưới ngưỡng mục tiêu thì vấn đề nằm ở buffer/heartbeat, không nằm ở code Java.`,
     follow: [
       'Nếu dùng SSE thì quyền truy cập kiểm tra lúc nào, khi EventSource không gửi được header Authorization tùy ý?',
       'Điều phối pub-sub giữa nhiều instance với Redis có mất event khi Redis restart không?',
@@ -2589,7 +2740,17 @@ major  ngừng trả field cũ (đây là lúc cần version mới, xem chính s
 ### Trả lời miệng 1 phút
 "Nguyên tắc của tôi là trong cùng major version chỉ cộng thêm, không sửa xoá: thêm field optional thì an toàn, còn đổi tên hay bỏ field thì phải thêm field mới và giữ field cũ đọc được thêm vài tháng, sau đó đo xem còn ai dùng mới bỏ ở lần nâng cấp version. Ở phía đọc, client luôn là tolerant reader: bỏ qua field lạ, có nhánh mặc định cho enum lạ bằng JsonEnumDefaultValue, và không giả định mọi field đều có mặt — vì app đã lên store thì không sửa được. Để chắc chắn, tôi dựng contract test: JSON mẫu của app cũ phải parse được bằng đúng parser của app cũ ngay trong CI, rồi chạy staging với APK cũ trước khi lên production. Thay đổi format ngày giờ hay default cũng coi là breaking, vì nó làm hiển thị sai thay vì crash nên càng khó phát hiện."
 
-> Senior tip: hãy xem **"broke được bao nhiêu version client"** là chỉ số của mỗi lần deploy API, ngang bằng với tỉ lệ lỗi 5xx. Công cụ rẻ nhất là contract test với JSON golden file của N-2 phiên bản; thứ hai là telemetry theo {{X-Client-Version}} để biết field nào sắp hết người dùng trước khi xoá. Và khi buộc phải breaking thì nâng major version đúng nghĩa (giữ song song, có {{Sunset}}), đừng "nói nội bộ thôi rồi đổi luôn" — mọi tích hợp bên thứ ba đều coi đó là sự cố.`,
+### Ví dụ đời thực
+App mobile v2.3 của một ví điện tử đã có 3 triệu người dùng hoạt động, và team backend muốn đổi response: thêm field {{balanceVnd}} (số dư bằng VND), đổi tên field {{amount}} thành {{amountMinor}} (đổi sang đơn vị cent/minor để chuẩn hóa), và thêm giá trị enum {{SETTLED}} vào {{TxStatus}} (hiện tại chỉ có PENDING, SUCCESS, FAILED). App v2.3 không thể ép nâng cấp vì store đã duyệt và người dùng không thể chờ. Triệu chứng đầu tiên nếu deploy thô: app cũ parse {{amount}} thành null → màn hình lịch sử hiện trống, và switch trên enum thiếu {{SETTLED}} → crash ngay khi có giao dịch mới.
+
+Cách xử lý: (1) Giữ field {{amount}} trả về thêm 3 tháng, đồng thời thêm {{amountMinor}} — cả hai cùng có giá trị. (2) Log metric theo {{X-Client-Version}}: sau 1 tuần, {{amount}} vẫn được 94% client đọc, {{amountMinor}} chỉ 6% — chưa thể bỏ. (3) Enum: thêm {{SETTLED}} và đánh dấu {{@JsonEnumDefaultValue UNKNOWN}} trên enum; client phải có nhánh default. (4) Contract test: lưu JSON response mẫu của app v2.3 làm golden file, CI deserialize bằng parser của app v2.3 — test đỏ ngay khi server đổi field. (5) Staging chạy APK v2.3 trên emulator trước khi deploy.
+
+Kết quả: deploy không làm crash một app nào; sau 3 tháng {{amount}} còn 0,8% lượt đọc → đưa vào danh sách bỏ; và telemetry theo {{X-Client-Version}} giúp team biết chính xác field nào sắp hết người dùng trước khi xoá.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi app đã phát hành và không thể ép người dùng nâng cấp, nguyên tắc của tôi là trong cùng major version chỉ cộng thêm, không sửa xoá: thêm field optional thì an toàn, còn đổi tên hay bỏ field thì phải thêm field mới và giữ field cũ đọc được thêm vài tháng, sau đó đo xem còn ai dùng mới bỏ ở lần nâng cấp version. Ở phía đọc, client luôn là tolerant reader: bỏ qua field lạ, có nhánh mặc định cho enum lạ bằng JsonEnumDefaultValue, và không giả định mọi field đều có mặt — vì app đã lên store thì không sửa được. Để chắc chắn, tôi dựng contract test: JSON mẫu của app cũ phải parse được bằng đúng parser của app cũ ngay trong CI, rồi chạy staging với APK cũ trước khi lên production. Thay đổi format ngày giờ hay default cũng coi là breaking, vì nó làm hiển thị sai thay vì crash nên càng khó phát hiện."
+
+  > Senior tip: hãy xem **"broke được bao nhiêu version client"** là chỉ số của mỗi lần deploy API, ngang bằng với tỉ lệ lỗi 5xx. Công cụ rẻ nhất là contract test với JSON golden file của N-2 phiên bản; thứ hai là telemetry theo {{X-Client-Version}} để biết field nào sắp hết người dùng trước khi xoá. Và khi buộc phải breaking thì nâng major version đúng nghĩa (giữ song song, có {{Sunset}}), đừng "nói nội bộ thôi rồi đổi luôn" — mọi tích hợp bên thứ ba đều coi đó là sự cố.`,
     follow: [
       'Nếu cả hai version cũ và mới phải chạy song song một thời gian thì code và database sắp xếp thế nào?',
       'Làm sao đo được "còn bao nhiêu client đọc field này" nếu client không gửi phiên bản app?',
@@ -2939,11 +3100,53 @@ Rate limit như quota nước: fixed window là "mỗi giờ 100 lít" — phút
 - Token bucket: bucket capacity + refill rate; consume token per request; cho burst up to capacity.
 - Leaky bucket: queue FIFO với rate cố định; smoothing, không burst.
 
+### Cơ chế từng bước: Token Bucket trên Redis (Lua)
+Dưới đây là quy trình chi tiết khi một request đến và được kiểm tra bởi token bucket:
+
+1. **Client gửi request** kèm key định danh (user_id, IP, API key).
+2. **Redis nhận key**, Lua script được thực thi nguyên tử (atomic) trên single-threaded Redis:
+   - Lấy hash hiện tại: {{tokens, last_refill_ts}} từ key ratelimit:{key}.
+   - Tính {{elapsed = now - last_refill_ts}} (ms).
+   - Tính {{new_tokens = min(capacity, tokens + elapsed * refill_rate / 1000)}}.
+   - Nếu {{new_tokens >= 1}}: trừ 1 token, cập nhật hash với {{tokens = new_tokens - 1}}, {{last_refill_ts = now}}, đặt TTL = window_size * 2. Trả về {{allowed: true, remaining: new_tokens - 1}}.
+   - Nếu {{new_tokens < 1}}: không trừ token, trả về {{allowed: false, remaining: 0, retry_after_ms: (1 - new_tokens) / refill_rate * 1000}}.
+3. **Application nhận kết quả**: nếu allowed → xử lý request; nếu không → trả 429 với header {{Retry-After}} và {{X-RateLimit-Remaining: 0}}.
+4. **Cleanup**: key tự hết hạn sau TTL, không cần job dọn dẹp riêng.
+
+### So sánh chi tiết
+| Tiêu chí | Fixed Window | Sliding Window Log | Sliding Window Counter | Token Bucket | Leaky Bucket |
+|---|---|---|---|---|---|
+| Độ chính xác | Thấp (boundary spike) | Cao | Trung bình (xấp xỉ) | Cao | Cao |
+| Memory | O(1) | O(N requests) | O(1) | O(1) | O(1) |
+| Burst handling | Không | Không | Một phần | Có (tới capacity) | Không |
+| Latency impact | Thấp | Cao (duyệt sorted set) | Thấp | Thấp | Thấp |
+| Implementation | Đơn giản | Phức tạp | Trung bình | Trung bình | Trung bình |
+| Phù hợp | Brute-force protection | Billing, quota chính xác | General purpose | Public API, burst-friendly | Strict fairness, smoothing |
+
 ### Redis Lua atomic
 - INCR + EXPIRE không atomic qua nhiều instance → race.
 - Lua script chạy atomic trên Redis single-threaded.
 - Sliding window counter: cần 2 key (prev, curr) + Lua compute weighted.
-- Token bucket: lưu {tokens, last_refill} hash; Lua compute refill và consume.
+- Token bucket: lưu {{tokens, last_refill}} hash; Lua compute refill và consume.
+
+### Lua script mẫu cho Token Bucket
+~~~lua
+-- KEYS[1] = ratelimit:{key}, ARGV[1] = capacity, ARGV[2] = refill_rate (tokens/sec), ARGV[3] = now_ms, ARGV[4] = ttl_ms
+local bucket = redis.call('HMGET', KEYS[1], 'tokens', 'last_refill')
+local tokens = tonumber(bucket[1]) or tonumber(ARGV[1])
+local last_refill = tonumber(bucket[2]) or tonumber(ARGV[3])
+local elapsed = tonumber(ARGV[3]) - last_refill
+local new_tokens = math.min(tonumber(ARGV[1]), tokens + elapsed * tonumber(ARGV[2]) / 1000)
+if new_tokens >= 1 then
+  new_tokens = new_tokens - 1
+  redis.call('HMSET', KEYS[1], 'tokens', new_tokens, 'last_refill', ARGV[3])
+  redis.call('PEXPIRE', KEYS[1], ARGV[4])
+  return {1, new_tokens}
+else
+  local retry_after = math.ceil((1 - new_tokens) / tonumber(ARGV[2]) * 1000)
+  return {0, 0, retry_after}
+end
+~~~
 
 ### Chọn thế nào
 - Public API: token bucket (burst friendly).
@@ -2955,6 +3158,13 @@ Rate limit như quota nước: fixed window là "mỗi giờ 100 lít" — phút
 - Triệu chứng: 429 storm khi traffic burst → token bucket capacity tuning.
 - Đo: 429 rate, latency Redis, key cardinality.
 - Tuning: per-user/per-IP/per-endpoint keys; Redis Cluster hash tag để cùng slot.
+
+### Lỗi hay gặp trên production
+- **Dùng INCR + EXPIRE riêng biệt**: pod crash giữa hai lệnh → key không bao giờ hết hạn, user bị chặn vĩnh viễn. Luôn dùng Lua atomic hoặc {{SET key value EX NX}} (Redis 2.6.12+).
+- **Không dùng hash tag trong Redis Cluster**: key {{ratelimit:user:123}} và {{ratelimit:user:456}} rơi vào slot khác → Lua script báo lỗi {{CROSSSLOT}}. Dùng ratelimit:{user}:123 để cùng slot.
+- **Refill rate tính sai đơn vị**: refill_rate là tokens/giây nhưng {{elapsed}} tính bằng ms → phải chia 1000. Sai lệch này làm bucket refill quá nhanh hoặc quá chậm.
+- **Không set TTL hợp lý**: TTL quá ngắn → key bị xóa khi user vẫn đang request; TTL quá dài → memory leak. TTL = window_size * 2 là an toàn.
+- **Burst capacity quá lớn**: cho phép burst 1000 request đồng thời có thể làm downstream sập. Capacity nên dựa trên throughput thực tế của downstream.
 
 ### Trả lời miệng 1 phút
 "Fixed window đơn giản nhưng boundary spike; sliding window counter cân bằng chính xác và memory; token bucket cho burst + refill. Trên Redis dùng Lua script atomic để tránh race giữa instance."
@@ -2999,15 +3209,67 @@ Cache như tủ lạnh: max-age là hạn sử dụng, ETag là tem kiểm tra c
 - Vary: Accept, Accept-Encoding, Accept-Language → cache key gồm các header đó.
 - Vary: * → disable caching hiệu quả.
 
-### CDN vs browser
-- Browser cache: per-user, max-age ngắn, phù hợp personalized.
-- CDN: shared, s-maxage dài, edge gần user, phù hợp static/public.
-- Kết hợp: max-age=60, s-maxage=3600, stale-while-revalidate=86400.
+### Cơ chế từng bước: Request flow với cache
+1. **Client gửi request** kèm header If-None-Match: "etag-value" (nếu có cached response) và Accept-Encoding: gzip, br.
+2. **CDN nhận request**, kiểm tra cache key (URL + Vary headers). Nếu cache hit:
+   - Kiểm tra max-age/s-maxage còn hạn không.
+   - Nếu còn hạn → trả cached response ngay (hit).
+   - Nếu hết hạn nhưng có stale-while-revalidate → trả stale response ngay, **bật async revalidate** ngầm.
+3. **Async revalidate** (nếu stale-while-revalidate): CDN gửi request lên origin kèm If-None-Match. Origin so sánh ETag:
+   - Giống → trả 304, CDN cập nhật cache, gia hạn TTL.
+   - Khác → trả 200 với body mới, CDN thay thế cache.
+4. **Cache miss** hoặc **stale-if-error** (khi origin lỗi 5xx): CDN forward request lên origin, cache response mới (nếu 2xx), trả về client.
+5. **Client nhận response**: nếu 304 → dùng cached body; nếu 200 → cache body mới với ETag mới.
+
+### ETag generation strategies
+- **Strong ETag**: hash nội dung response (MD5/SHA256 của body). Đảm bảo byte-for-byte identical. Dùng cho PUT/PATCH response và resource mutable.
+- **Weak ETag** (W/"..."): semantic equivalence, không đảm bảo byte-for-byte. Ví dụ: version number, timestamp, hash của field quan trọng. Dùng khi strong ETag tốn kém (response lớn, streaming).
+- **Generation point**: tại application layer (Spring: ShallowEtagHeaderFilter tính hash body) hoặc reverse proxy (Nginx etag on tính từ file static).
+- **Pitfall**: Weak ETag không dùng được cho If-Match (chỉ dùng cho If-None-Match). Nếu dùng weak ETag cho conditional PUT → server có thể chấp nhận ghi đè sai dữ liệu.
+
+### Cache key design cho CDN
+Cache key = scheme + host + path + query params (có filter) + Vary headers.
+- **Query params**: chỉ include params ảnh hưởng response (filter, sort, page). Loại bỏ tracking params (utm_*, fbclid).
+- **Vary headers**: Accept-Encoding (gzip/br), Accept-Language (i18n), Accept (JSON/XML). Không Vary theo User-Agent (quá nhiều variant).
+- **Cookie**: **không** include cookie vào cache key trừ khi cache personalized content ở CDN (thường không làm). Dùng private directive để chặn CDN cache.
+
+### CDN vs browser — so sánh chi tiết
+| Tiêu chí | Browser Cache | CDN (Shared Cache) |
+|---|---|---|
+| Phạm vi | Per-user, per-device | Shared across users |
+| Directive | max-age, no-store, private | s-maxage, public |
+| Invalidation | Hard (phải clear browser cache hoặc versioned URL) | Easy (purge API, cache tag) |
+| Phù hợp | Personalized data, auth pages | Static assets, public API, HTML public |
+| Kích thước | Nhỏ (hàng trăm MB) | Lớn (GB-TB) |
+| Latency | 0 ms (local) | 1-50 ms (edge) |
+
+### Kết hợp real-world: Multi-layer caching
+~~~text
+Response headers:
+Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=86400
+ETag: "sha256-abc123..."
+Vary: Accept-Encoding, Accept-Language
+
+Flow:
+Browser (max-age=60s) → CDN (s-maxage=1h, SWR=24h) → Origin
+- 0-60s: Browser cache hit (0 ms)
+- 60s-1h: Browser miss → CDN hit (edge, ~5 ms)
+- 1h-24h: CDN stale → trả stale + async revalidate (user không thấy độ trễ)
+- >24h: CDN miss → Origin (full latency)
+~~~
 
 ### Trên production
 - Triệu chứng: stale data sau deploy → purge CDN hoặc versioned URL.
 - Đo: hit ratio, origin load, bandwidth.
 - Tuning: cache key design, purge API, versioned assets.
+
+### Lỗi hay gặp trên production
+- **Cache authenticated response ở shared cache**: quên private directive → CDN cache response có Set-Cookie hoặc body user-specific → user A thấy data của user B. Luôn dùng Cache-Control: private, no-store cho endpoint cần auth.
+- **Vary: User-Agent** → nghìn variant cache cho cùng một URL (mỗi browser version một cache entry) → hit ratio gần 0. Chỉ Vary theo header thực sự ảnh hưởng response (Accept-Encoding, Accept-Language).
+- **Không purge CDN sau deploy static asset**: user vẫn tải JS/CSS cũ → UI broken. Dùng versioned URL (/app.v20240115.js) hoặc purge API trong CI/CD.
+- **ETag weak cho conditional PUT**: server chấp nhận ghi đè dựa trên weak ETag → lost update. Chỉ dùng strong ETag cho If-Match.
+- **stale-while-revalidate quá dài** (ví dụ 1 năm): client thấy data cũ quá lâu sau khi data thay đổi. SWR nên ≤ 24h cho API dynamic.
+- **Query param không ổn định trong cache key**: ?timestamp=12345 hoặc ?request_id=uuid làm cache key unique mỗi request → hit ratio = 0. Strip tracking params ở CDN layer.
 
 ### Trả lời miệng 1 phút
 "Cache-Control với max-age/s-maxage điều khiển TTL client/CDN; ETag cho conditional 304; Vary phân biệt theo header; stale-while-revalidate trả stale trong khi revalidate. CDN cho public/shared, browser cho personalized."

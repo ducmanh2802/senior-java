@@ -1,6 +1,6 @@
 # T465 — Dịch sang tiếng Anh: lessons-testing (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-testing-2.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-testing-2.en.js` và `node scripts/check-i18n.js lessons-testing-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lesson-testing-003` trong `js/i18n/lessons-testing-2.en.js`: title, goals (3), body (7 mục `###`, 2 code block `~~~java`, 1 bảng 6 dòng, 5 bullet giới hạn), 1 exercise (title/prompt/3 hints/explain), 3 câu check (q/4 options/explain). Không chép `starter`/`tests`/`reference`/`related`/`tags`.
+- Giữ nguyên markup và mọi `{{code}}`; comment trong code block đã dịch sang tiếng Anh; `> Senior tip:` giữ nguyên; "### Liên hệ phỏng vấn" → "### Interview relevance".
+- Kiểm tra: `node scripts/check-i18n.js lessons-testing-2` → `OK — 1 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý môi trường: lệnh `node --check js/i18n/lessons-testing-2.en.js` bị sandbox từ chối quyền chạy (không chạy được trên máy này); cú pháp đã được xác minh gián tiếp vì `check-i18n.js` biên dịch và chạy chính file đó trong `vm` (nếu sai cú pháp sẽ báo "không chạy được").
+

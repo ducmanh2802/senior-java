@@ -1,6 +1,6 @@
 # T489 — Dịch lại (nội dung đã sửa): algo-17 (13 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-17.en.js`
 
@@ -13,3 +13,8 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js algo-17 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+- `js/i18n/algo-17.en.js` đã có bản dịch đầy đủ 13 mục (algo-118 … algo-130) từ lần chạy trước bị gián đoạn; đã đọc lại và đối chiếu từng mục với bản tiếng Việt hiện tại trong `js/data/algo.js` (sau commit rewrite 9b9bcd3) — nội dung khớp, không còn câu tiếng Việt, không cần sửa.
+- Mỗi entry giữ đúng key và cùng tập field `prompt`, `hints`, `solution`, `follow`; code Java, id, số liệu, sơ đồ ASCII giữ nguyên, chỉ comment trong code block được dịch sang tiếng Anh.
+- Markup giữ nguyên (`**`, `{{code}}`, `###`, bảng, `~~~lang` … `~~~`); không có backtick, không có `${`; `two\'s complement` / `Manacher\'s` đã escape đúng.
+- Kiểm tra: `node scripts/check-i18n.js algo-17` → `OK — 13 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`

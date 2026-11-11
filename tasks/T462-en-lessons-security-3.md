@@ -1,6 +1,6 @@
 # T462 — Dịch sang tiếng Anh: lessons-security (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-security-3.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-security-3.en.js` và `node scripts/check-i18n.js lessons-security-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ `lesson-security-003` (title, 3 goals, body, 2 exercises: title/prompt/hints/explain, 3 check: q/options/explain) sang `js/i18n/lessons-security-3.en.js`; giữ nguyên markup, code block (chỉ dịch comment tiếng Việt), thuật ngữ và số liệu.
+- `node scripts/check-i18n.js lessons-security-3` → `OK — 1 mục đã dịch.` (script chạy file qua vm nên cũng xác nhận cú pháp hợp lệ; lệnh `node --check` bị chính sách shell chặn).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Không sửa file nào ngoài `js/i18n/lessons-security-3.en.js` và file task này; không commit.

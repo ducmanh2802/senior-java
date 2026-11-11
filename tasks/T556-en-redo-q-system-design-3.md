@@ -1,6 +1,6 @@
 # T556 — Dịch lại (nội dung đã sửa): q-system-design-3 (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-system-design-3.en.js`
 
@@ -13,3 +13,4 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-system-design-3 → OK; node scripts/validate.js → OK.
 
 ## Notes
+All three entries (architecture-004, architecture-005, architecture-006) in the English i18n file were already up to date with the current Vietnamese content. No changes were needed. The i18n check passes ("OK — 6 mục đã dịch"). The validate.js error about aws-plan.js is a pre-existing issue unrelated to this task.

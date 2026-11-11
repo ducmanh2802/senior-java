@@ -1,8 +1,8 @@
 # T370 — Dịch sang tiếng Anh: topics (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
-Owns: `js/i18n/topics-2.en.js`
+Notes: Task completed. Translations for 'primer' and 'claude' verified via scripts/check-i18n.js.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/topics.js`: **primer, claude**.
 

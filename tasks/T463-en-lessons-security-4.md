@@ -1,6 +1,6 @@
 # T463 — Dịch sang tiếng Anh: lessons-security (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-security-4.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-security-4.en.js` và `node scripts/check-i18n.js lessons-security-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 2 bài: `lesson-security-004` (server-side session: sid cookie, CSRF, session fixation, phiên anonymous) và `lesson-security-005` (RBAC role × domain × action, deny-by-default, tách GRANT, IDOR/BOLA). Mỗi mục gồm đúng các field được dịch: title, goals, body, exercises[].{title,prompt,hints,explain}, check[].{q,options,explain}; không chép starter/tests/reference.
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, bảng, `~~~java`), nhãn "**Summary:**", "> Senior tip:", "### Interview relevance" (đồng bộ các bài lessons-security trước). Trong code block chỉ dịch comment; chuỗi `" tren "` trong assert giữ nguyên vì là code.
+- Kiểm tra: `node scripts/check-i18n.js lessons-security-4` → `OK — 2 mục đã dịch.` (script này biên dịch file bằng vm nên cũng xác nhận cú pháp); `node scripts/validate.js` → `OK — không có lỗi.`
+- Ghi chú môi trường: shell phiên này chỉ cho chạy các lệnh `node scripts/*.js`; `node --check js/i18n/lessons-security-4.en.js` bị sandbox chặn nên không chạy trực tiếp được — cú pháp đã được xác nhận qua `check-i18n.js` (vm.runInNewContext).

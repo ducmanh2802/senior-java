@@ -1,6 +1,6 @@
 # T487 — Dịch lại (nội dung đã sửa): algo-15 (4 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-15.en.js`
 

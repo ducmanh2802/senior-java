@@ -1,6 +1,6 @@
 # T452 — Dịch sang tiếng Anh: lessons-spring (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-spring-2.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-spring-2.en.js` và `node scripts/check-i18n.js lessons-spring-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Translation completed for lesson-spring-006 (Flyway-style Migration Runner) and lesson-spring-007 (Jackson-style JSON Mapper). Both translations preserve all markup, technical terminology, code blocks (only comments translated), and maintain the same level of detail as the Vietnamese originals. Validation passes with `node scripts/check-i18n.js lessons-spring-2` and full `node scripts/validate.js` → OK.

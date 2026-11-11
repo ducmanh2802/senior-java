@@ -1,6 +1,6 @@
 # T285 — Thuật toán ByteByteGo (phần 4): bài có test Java tự chấm
 
-Status: TODO
+Status: DONE
 Agent: opencode
 After: T284
 Owns: `js/data/algo.js`
@@ -17,3 +17,15 @@ Owns: `js/data/algo.js`
 Mỗi bài: prompt (### Ví dụ ~~~text, ### Ràng buộc), ≥ 3 hints tăng dần, solution (### Ý tưởng, ~~~java có comment, ### Lưu ý khi phỏng vấn), complexity, starter (class Solution + chữ ký), tests ≥ 4 case gồm edge case. `node scripts/test-algos.js` và `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Audit bằng `node`: tất cả 25 bài mục tiêu đã có sẵn trong `js/data/algo.js` (cùng bài khác tên cũng tính) → **không thêm mới**, bỏ qua.
+
+- Đối chiếu với dữ liệu hiện có:
+  - Graphs (DFS/BFS): Number of Islands (algo-028, algo-077), Clone Graph (algo-106), Course Schedule (algo-029, algo-073), Pacific Atlantic Water Flow (algo-107), Rotten Oranges (algo-108 — đúng bí danh Rotting Oranges).
+  - Topological Sort: algo-109..112.
+  - Tries: algo-113 (`Implement Trie (Prefix Tree)`), algo-114..116.
+  - Union Find: algo-061 (Count Connected Components), algo-117..119.
+  - Bit Manipulation: algo-120..123.
+  - Math + Geometry: algo-124..127.
+
+- Đã xác minh: mỗi bài trên có `starter` + `tests`; `node scripts/test-algos.js <id>` → `Harness OK` cho từng bài; `node scripts/validate.js` → `OK — không có lỗi.`Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua
