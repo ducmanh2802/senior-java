@@ -3287,7 +3287,11 @@ Hãy tưởng tượng bạn cần vận chuyển hàng. **ECS Fargate** giống
 ### Trả lời miệng 1 phút
 "ECS Fargate là container service managed của AWS: tôi đóng image, khai báo task definition, AWS lo phần chạy, không có node để vá. EKS là Kubernetes managed, mạnh khi công ty đã có platform K8s, nhiều team, cần CRD/operator/service mesh. Cái giá của EKS là độ phức tạp và chi phí con người. Với đội Java 5–20 người và service HTTP bình thường, mặc định của tôi là ECS Fargate; chỉ nhảy lên EKS khi có người trực cluster và nhu cầu thật."
 
-> Senior tip: chi phí ẩn của Kubernetes là con người, không phải hoá đơn AWS. Nếu không có người trực cluster, EKS sẽ ngốn thời gian của cả đội phát triển.`,
+### Ví dụ đời thực
+Một công ty fintech có 8 service, ban đầu chọn EKS vì "công ty lớn đều dùng". Triệu chứng: sau 6 tháng, platform team (2 người) dành 60% thời gian nâng cấp cluster (1.22 → 1.23 → 1.24), sửa ingress, add-on conflict, và mỗi service một kiểu YAML. Deployment một service mới mất 2 ngày (tạo namespace, RBAC, Helm chart, policy). Đội phát triển phàn nàn: deploy chậm, environment không nhất quán. Điều tra: đội xem metrics qua {{kubectl top nodes}} và AWS Console — cluster utilization 20-30%, số pod mỗi service chỉ 1-2, không có CRD/operator/service mesh nào thực sự cần; thời gian deploy được ghi lại: trung bình 2,2 ngày/service. Nguyên gốc: EKS quá phức tạp cho 8 service đơn giản, không có người trực platform thực sự, và không cần hệ sinh thái K8s; chi phí con người (nâng cấp, sửa add-on, chuẩn hóa YAML) lớn hơn lợi ích. Xử lý: giữ EKS cho 2 service cần service mesh (payment, fraud detection), chuyển 6 service còn lại sang ECS Fargate với task definition chung, ALB, Application Auto Scaling; viết Helm chart chung và CI/CD tự deploy. Kết quả: deploy từ 2,2 ngày xuống 15 phút/service, không còn nâng cấp cluster, chi phí platform team giảm 70%, và team phát triển tự deploy được mà không cần platform can thiệp.
+
+> Senior tip: chi phí ẩn của Kubernetes là con người, không phải hoà đơn AWS. Nếu không có người trực cluster, EKS sẽ ngốn thời gian của cả đội phát triển.
+`,
   follow: [
     'Karpenter khác gì Cluster Autoscaler trên EKS?',
     'IRSA và EKS Pod Identity khác nhau thế nào?',
@@ -3343,7 +3347,11 @@ Hãy tưởng tượng bạn cần vận chuyển hàng. **ECS Fargate** giống
 ### Trả lời miệng 1 phút
 "IRSA dùng OIDC provider để pod assume role qua JWT của ServiceAccount; EKS Pod Identity dùng agent trên node và association qua EKS API. Cả hai cấp credential tạm cho SDK, không cần access key. IRSA là cách cũ, cần OIDC provider và trust policy theo cluster; Pod Identity đơn giản hơn và là khuyến nghị cho cluster mới. Tôi chọn Pod Identity cho cluster mới, IRSA cho cluster cũ đã setup OIDC."
 
-> Senior tip: đừng để pod thừa hưởng quyền của node. Luôn gắn role riêng cho từng workload qua IRSA hoặc Pod Identity, và review trust policy như review code.`,
+### Ví dụ đời thực
+Một đội dùng EKS cluster mới (1.27) để chạy 12 microservice. Ban đầu chọn IRSA vì "chuẩn". Triệu chứng: mỗi service cần một IAM role, trust policy phải include OIDC URL của cluster cụ thể (arn:aws:iam::123456789012:oidc/provider/oidc.eks.us-east-1.amazonaws.com/id/xxx) và condition theo ServiceAccount. Khi cluster bị thay thế (rebuild), OIDC provider mới phải tạo lại và cập nhật 12 trust policy. Khi cần cross-account (service A ở account staging, role ở account prod), IRSA trở nên rắc rối vì trust policy phải trust OIDC provider ở account khác. Đội tra qua IAM Access Analyzer và CloudTrail: nhiều role có trust policy quá rộng (sub=*). Nguyên gốc: IRSA cần OIDC provider per cluster và trust policy theo cluster, phức tạp khi có nhiều cluster hoặc cross-account. Xử lý: cài EKS Pod Identity add-on, thay thế IRSA. Với Pod Identity, tạo association giữa ServiceAccount và IAM role qua EKS API, không cần trust policy theo cluster OIDC. Kết quả: không cần OIDC provider, trust policy đơn giản hơn, cross-account dễ dàng, và khi rebuild cluster không cần cập nhật policy. Deployment time giảm từ 30 phút xuống 5 phút mỗi service.
+
+> Senior tip: đừng để pod thừa hưởng quyền của node. Luôn gắn role riêng cho từng workload qua IRSA hoặc Pod Identity, và review trust policy như review code.
+`,
   follow: [
     'Vì sao pod không nên dùng node role?',
     'Trust policy của IRSA cần condition gì để an toàn?',
@@ -3399,7 +3407,11 @@ Lưu ý: SCP và boundary chỉ **giới hạn** (filter), không cấp quyền.
 ### Trả lời miệng 1 phút
 "IAM đánh giá theo thứ tự: explicit Deny thắng tất cả; sau đó cần Allow khớp và không bị SCP hay permission boundary chặn; còn lại implicit deny. SCP và boundary chỉ giới hạn, không cấp quyền. Khi gặp AccessDenied, tôi đọc CloudTrail để lấy principal và action thực sự, rồi kiểm tra identity policy, resource policy, SCP, boundary và condition theo thứ tự. Tôi dùng IAM Policy Simulator để test combination và luôn nhớ rằng principal thực sự có thể là role assumed, không phải user gốc."
 
-> Senior tip: 80% AccessDenied là do condition (VPC endpoint, source IP) hoặc SCP, không phải policy identity. Luôn đọc CloudTrail trước khi sửa policy.`,
+### Ví dụ đời thực
+Một service ECS Fargate cần đọc secret trên Secrets Manager. Identity policy đã Allow secretsmanager:GetSecretValue trên arn:aws:secretsmanager:us-east-1:123456789012:secret:app-db-* nhưng vẫn bị AccessDenied. Triệu chứng: CloudTrail event errorCode "AccessDenied", userIdentity.arn là arn:aws:sts::123456789012:assumed-role/app-task-role/session, requestParameters.name=/app/db. Đội debug theo thứ tự: (1) identity policy đã Allow và không explicit Deny; (2) resource policy của secret không có Deny; (3) kiểm tra SCP ở account: có statement Effect=Deny với Action=["secretsmanager:GetSecretValue"], Resource=* trong OU production; (4) permission boundary của role Allow tất cả nên không phải nguyên nhân. Nguyên gốc: SCP ở cấp OU production cấm secretsmanager:GetSecretValue cho toàn account, dù identity policy đã Allow. Xử lý: thay đổi SCP để Allow cho resource ARN cụ thể hoặc tạo exception theo condition, đồng thời thêm condition aws:SourceVpce cho endpoint. Kết quả: service đọc được secret, và SCP vẫn bảo vệ các secret khác. Sau đó thêm condition aws:SourceVpce để chỉ endpoint trong VPC mới có thể đọc secret.
+
+> Senior tip: 80% AccessDenied là do condition (VPC endpoint, source IP) hoặc SCP, không phải policy identity. Luôn đọc CloudTrail trước khi sửa policy.
+`,
   follow: [
     'SCP khác permission boundary ở điểm nào?',
     'Làm sao test policy mà không gọi thật?',
@@ -3450,6 +3462,9 @@ Ví dụ: app kéo 50 GB Docker image/tháng qua NAT → 50 × 0,045 = 2,25 USD/
 
 ### Trả lời miệng 1 phút
 "NAT Gateway tính phí theo giờ và GB xử lý, nên traffic lớn qua NAT (image, log, S3) làm hoá đơn tăng vọt. Tôi giảm bằng VPC endpoint: gateway endpoint miễn phí cho S3 và DynamoDB, interface endpoint cho ECR, CloudWatch Logs, Secrets Manager, KMS, SQS. NAT chỉ dành cho traffic Internet thật. Kiến trúc: mỗi AZ một NAT cho HA, endpoint cho mọi dịch vụ AWS, bật private DNS. Tôi bật VPC Flow Logs để phát hiện traffic bất thường đi qua NAT."
+
+### Ví dụ đời thực
+Một team vận hành service xử lý ảnh: mỗi ngày kéo 3 TB ảnh từ S3, xử lý, trả kết quả. Ban đầu service chạy trong private subnet, mọi traffic S3 đi qua NAT Gateway. Triệu chứng: hóa đơn NAT Gateway tăng vọt — tháng trước 4.200 USD, trong khi service chỉ chạy 30% thời gian. Điều tra: đội kiểm tra CloudWatch metric NatGatewayBytesProcessed — trung bình 90 TB/tháng, và Cost Explorer filter NAT Gateway cho thấy 95% là traffic tới S3. Nguyên gốc: thiếu Gateway Endpoint cho S3 nên traffic S3 phải đi qua NAT (tính 0,045 USD/GB), thay vì đi đường nội bộ AWS miễn phí; ngoài ra pod kéo image ECR và gửi CloudWatch Logs cũng qua NAT. Xử lý: thêm Gateway Endpoint cho S3 (miễn phí, chỉ cần thêm route pl-xxxx → vpce vào route table của private subnet), thêm Interface Endpoint cho ECR (api + dkr) và CloudWatch Logs, Secrets Manager, bật private DNS cho endpoint. Kết quả: lưu lượng qua NAT giảm 92%, hóa đơn NAT từ 4.200 USD xuống còn khoảng 350 USD/tháng (chỉ còn traffic Internet thật), và service không phụ thuộc Internet để gọi S3. Sau đó thêm endpoint policy để chỉ cho phép truy cập bucket của công ty, tăng bảo mật.
 
 > Senior tip: vẽ route table trước khi vẽ diagram. Phần lớn sự cố 'chi phí NAT cao' là do thiếu endpoint. Bật VPC Flow Logs gửi về S3/CloudWatch để phân tích traffic theo destination.`,
   follow: [
@@ -3506,6 +3521,9 @@ Tối ưu chi phí giống giảm cân: đừng mua thuốc giảm cân (Savings
 
 ### Trả lời miệng 1 phút
 "Tối ưu chi phí tôi làm theo thứ tự: right-sizing trước (đo và cắt thừa), sau đó Graviton (ARM, thường rẻ hơn 20% và nhanh hơn cho Java), rồi Savings Plans cho baseline ổn định, Spot cho worker và batch, cuối cùng architecture như caching và serverless. Quan trọng là đo trước khi làm: dùng Compute Optimizer và CloudWatch. Java chạy tốt trên Graviton từ JDK 17, chỉ cần build multi-arch image. Spot chỉ cho workload chịu được gián đoạn và phải handle interruption gracefully."
+
+### Ví dụ đời thực
+Một công ty vận hành 40 ECS Fargate service, mỗi service chạy 2 task (1 vCPU, 2 GB) 24/7, tổng chi phí compute khoảng 12.000 USD/tháng. Ban đầu team chọn instance type theo cảm tính và không đo. Triệu chứng: sau 6 tháng, chi phí tăng 40% mà traffic không tăng; team không biết service nào dư thừa. Điều tra: đội dùng Compute Optimizer và CloudWatch — phát hiện 60% task đang chạy ở CPU trung bình 10-20% và memory utilization dưới 30%, nhiều service có thể chạy 0,5 vCPU/1 GB; ngoài ra 15 service chỉ chạy từ 8h-17h weekdays nhưng task vẫn chạy 24/7. Nguyên gốc: không right-sizing trước khi mua Savings Plans, và không tự động scale theo thời gian. Xử lý: right-sizing 60% task xuống 0,5 vCPU/1 GB (giảm 40% chi phí compute), thêm Application Auto Scaling theo CPU và schedule-based scaling cho 15 service (tắt task ngoài giờ làm), sau khi baseline ổn định mua Compute Savings Plans 1 năm cho phần 24/7 (giảm thêm ~35%). Kết quả: chi phí compute từ 12.000 USD xuống còn khoảng 4.800 USD/tháng (~60% giảm), và không cần migrate Graviton ngay vì sau right-size đã đạt mục tiêu; sau đó test Graviton trên 1 service: cùng traffic, CPU utilization giảm 25% nên team quyết định migrate dần trong quý sau.
 
 > Senior tip: đừng mua Savings Plans khi chưa right-size. Nhiều hệ đang chạy instance lớn gấp đôi cần thiết; cắt trước có thể giảm 30-50% mà không cần commit gì.`,
   follow: [
@@ -3567,6 +3585,9 @@ Cách 3: Mount secret vào env var qua ECS/Lambda (ít linh hoạt, không reloa
 
 ### Trả lời miệng 1 phút
 "Secrets Manager có rotation tự động và audit tốt nhưng đắt; Parameter Store rẻ hơn, phù hợp config. Spring Boot đọc qua AWS SDK caching client hoặc Spring Cloud AWS. Rotation không downtime cần app hỗ trợ reload secret (@RefreshScope hoặc caching client với TTL) và dual-credential window trong thời gian chuyển đổi. Secret quan trọng (DB password) dùng Secrets Manager; config/feature flag dùng Parameter Store Standard."
+
+### Ví dụ đời thực
+Một hệ thống giao dịch cần rotation DB password mỗi 30 ngày theo chính sách bảo mật. Ban đầu team dùng Parameter Store và tự viết cron job đổi password, nhưng app phải restart để reload secret — mỗi rotation gây downtime khoảng 2 phút/lần, xảy ra 3 lần/tháng do script lỗi. Triệu chứng: khách bị error 5xx khi app reload midway, và sau rotation một số instance vẫn dùng password cũ nên kết nối fail. Điều tra: team kiểm tra CloudTrail và log — rotation script không idempotent (chạy hai lần thì tạo secret mới rồi xóa nhầm), và app không có cơ chế reload secret runtime (chỉ đọc env var lúc start). Nguyên gốc: Parameter Store không có rotation tự động, tự viết script dễ lỗi; app cache secret mãi không reload. Xử lý: chuyển DB password sang Secrets Manager, bật rotation tự động với Lambda rotation function (idempotent: kiểm tra version trước khi đổi); app dùng Secrets Manager caching client với TTL 5 phút hoặc @RefreshScope + actuator refresh endpoint để reload secret runtime mà không restart. Kết quả: rotation tự động mỗi 30 ngày, downtime giảm từ 2 phút xuống 0 (dual-credential window: cả password cũ và mới đều hợp lệ trong thời gian chuyển đổi), và script lỗi không còn. Sau đó thêm secret reference vào task definition (ECS) để secret không xuất hiện plaintext trong IaC, và dùng IAM policy với condition aws:SourceVpce để chỉ endpoint trong VPC mới được đọc secret.
 
 > Senior tip: đừng lưu secret trong env var plaintext của task definition. Dùng secret reference để ECS/Lambda tự inject từ Secrets Manager/Parameter Store, và secret không xuất hiện trong IaC hay console.`,
   follow: [
