@@ -5549,6 +5549,35 @@ String render(String text, Map<String, String> values) {
 }
 ~~~
 
+### Cơ chế từng bước
+**Golden path** (con đường chuẩn, được "lát sẵn" như đường nhựa để đi dễ) hoạt động hiệu quả khi template được xử lý theo quy trình chặt, có thể kiểm tra tự động. Đi từng bước và **vì sao**:
+
+1. **Thu thập tham số**: người dùng nhập {{name}}, {{team}}, {{port}} (hoặc chọn từ form). Vì sao: tên service và team là "danh tính" sẽ đi vào DNS (hệ thống phân giải tên miền), Kubernetes object, metric và quyền sở hữu on-call (người trực xử lý sự cố).
+2. **Kiểm tra (validate) trước khi sinh**: từ chối {{name}} sai định dạng, {{port}} ngoài khoảng, {{team}} rỗng. Vì sao: sửa sai ở bước đầu rẻ; nếu sinh ra repo rồi mới phát hiện, lỗi sẽ lan vào CI, deploy và phải dọn dẹp thủ công.
+3. **Chuẩn hoá giá trị**: trim khoảng trắng {{team}}, chuyển port sang số. Vì sao: dữ liệu "bẩn" (thừa space) gây khác biệt khó thấy khi so sánh hoặc tra cứu.
+4. **Render template**: duyệt từng file mẫu, thay placeholder trong **đường dẫn** và **nội dung** bằng {{String.replace}} (thay mọi lần xuất hiện, không dùng regex). Vì sao: thay bằng regex dễ hiểu nhầm ký tự đặc biệt trong giá trị; quên thay trong đường dẫn sẽ tạo thư mục/file tên {{__NAME__}}.
+5. **Quét placeholder còn sót**: sau khi thay, tìm mẫu dạng {{__CHU_HOA__}} còn lại trong bất kỳ đường dẫn/nội dung nào. Vì sao: template tiến hoá (người thêm {{__REGION__}} nhưng quên tham số) — sót placeholder chỉ lộ ra lúc deploy, rất khó hiểu.
+6. **Xuất kết quả xác định (deterministic)**: trả {{TreeMap}} để thứ tự file ổn định. Vì sao: commit và review diff dễ đọc, test so sánh được.
+
+~~~java
+// Bước 4-5 rút gọn: render rồi chặn placeholder sót
+Map<String, String> out = new TreeMap<>();
+for (var e : templates.entrySet()) {
+    String path = fill(e.getKey(), values);
+    String body = fill(e.getValue(), values);
+    if (hasPlaceholder(path) || hasPlaceholder(body)) {
+        throw new IllegalStateException("placeholder chưa được thay trong " + path);
+    }
+    out.put(path, body);
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** service mới deploy lỗi vì tên chứa ký tự không hợp lệ (chữ hoa, gạch dưới). **Nguyên nhân:** không validate {{name}} theo quy tắc DNS/Kubernetes. **Cách sửa:** kiểm tra chặt trước khi sinh (3–30 ký tự, a-z0-9 và "-", bắt đầu bằng chữ, không "--", không kết thúc "-").
+- **Triệu chứng:** file sinh ra còn chuỗi {{__REGION__}}, Helm render hoặc app khởi động thất bại với lỗi khó hiểu. **Nguyên nhân:** template thêm placeholder mới nhưng scaffolder không có tham số tương ứng. **Cách sửa:** bước quét placeholder sót sau render; fail fast (dừng sớm, báo rõ).
+- **Triệu chứng:** hai service trỏ cùng owner/team hoặc team ghi sai, khi sự cố không tìm được người on-call. **Nguyên nhân:** {{team}} không rỗng nhưng không nằm trong danh sách đội hợp lệ. **Cách sửa:** validate team theo danh mục (catalog); bắt buộc owner trong {{catalog-info.yaml}}.
+- **Triệu chứng:** golden path bị bỏ, đội tự làm Dockerfile/pipeline riêng. **Nguyên nhân:** template sinh ra chưa chạy được end-to-end, hoặc cập nhật template không lan xuống service cũ. **Cách sửa:** đo thời gian "tạo → chạy dev", cung cấp lệnh nâng cấp (codemod/script) và hỗ trợ migration.
+
 > Đo golden path như một sản phẩm: **thời gian từ lúc bấm "tạo service" tới khi service chạy trên môi trường dev**, tỉ lệ service mới dùng template, số lần đội phải hỏi platform team. Nếu template khó dùng hơn tự làm, các đội sẽ không dùng nó.
 
 ### Liên hệ phỏng vấn
@@ -5688,6 +5717,7 @@ Lỗi hay gặp: dùng {{replaceAll}} khiến chuỗi giá trị có ký tự đ
     { q: 'Điều gì phân biệt golden path với một "quy định bắt buộc"?', options: ['Golden path là con đường dễ nhất được nền tảng hỗ trợ; đi đường khác vẫn được nhưng đội tự chịu trách nhiệm', 'Golden path cấm mọi cách làm khác', 'Golden path chỉ là tài liệu hướng dẫn, không có công cụ', 'Golden path chỉ áp dụng cho service mới viết bằng Java'], answer: 0, explain: 'Golden path thu hút bằng sự tiện lợi và hỗ trợ, không cấm. Cấm mọi cách khác là quy định cứng và thường gây phản ứng. Golden path đi kèm công cụ như template và pipeline chứ không chỉ tài liệu. Nó không giới hạn ở một ngôn ngữ.' },
     { q: 'Vì sao phải quét placeholder còn sót sau khi render template?', options: ['Template do nhiều người sửa; một placeholder mới thiếu tham số sẽ lọt vào service và gây lỗi khó hiểu lúc deploy', 'Để tăng tốc render', 'Vì String.replace không thay được mọi lần xuất hiện', 'Để kiểm tra tên service hợp lệ'], answer: 0, explain: 'Quét sau render bắt lỗi template trước khi tạo repo. Nó không giúp tăng tốc. String.replace thay mọi lần xuất hiện. Kiểm tra tên là việc kiểm tra đầu vào, làm trước khi render.' },
     { q: 'Chỉ số nào phản ánh tốt nhất chất lượng golden path từ góc nhìn developer?', options: ['Thời gian từ lúc tạo service tới khi nó chạy trên môi trường dev', 'Số dòng code trong template', 'Số service đang chạy trong cluster', 'Số lần platform team deploy mỗi tuần'], answer: 0, explain: 'Golden path phục vụ developer nên đo trải nghiệm của họ: thời gian tới service chạy được. Số dòng template không nói lên giá trị. Số service đang chạy phụ thuộc nhiều yếu tố khác. Tần suất deploy của platform team không đo trải nghiệm người dùng nền tảng.' },
+    { q: 'Sau khi render template, vì sao cần quét lại để tìm placeholder dạng {{__CHU_HOA__}} còn sót?', options: ['Vì {{String.replace}} không thay được trong đường dẫn file', 'Vì template có thể thêm placeholder mới nhưng thiếu tham số, để fail fast trước khi tạo repo/deploy', 'Vì placeholder làm code chạy chậm', 'Vì Kubernetes tự động thay placeholder còn sót'], answer: 1, explain: 'Quét đầu ra phát hiện placeholder mới chưa được map tham số và dừng sớm với lỗi rõ. {{String.replace}} vẫn thay được trong đường dẫn nếu được gọi. Placeholder sót không ảnh hưởng hiệu năng lúc chạy mà gây lỗi cấu hình. Kubernetes không tự thay chuỗi {{__...__}} tuỳ ý trong manifest.' },
   ],
   related: ['devops-119', 'devops-055', 'devops-023'],
   tags: ['golden path', 'template', 'Backstage', 'internal developer platform', 'platform engineering'],
@@ -5731,6 +5761,39 @@ long median = n % 2 == 1 ? xs.get(n / 2) : (xs.get(n / 2 - 1) + xs.get(n / 2)) /
 - **Không chia cho 0**: khoảng thời gian không có deploy hay không có sự cố phải trả về giá trị hợp lý (0 hoặc rỗng), không ném lỗi.
 - **Lấy dữ liệu tự động** từ hệ thống (Git, pipeline, công cụ incident), không nhập tay.
 - **Không dùng để chấm điểm cá nhân hay so sánh đội**: chỉ số sẽ bị "làm đẹp" (chia nhỏ deploy vô nghĩa, không khai báo sự cố). Dùng để thấy xu hướng và tìm điểm nghẽn.
+
+### Cơ chế từng bước
+Mục tiêu là tính 4 chỉ số **DORA** (DevOps Research and Assessment — bộ nghiên cứu đo hiệu quả giao phần mềm) từ dữ liệu thô một cách **tự động, nhất quán, có thể lặp lại**. Đi từng bước:
+
+1. **Thu thập dữ liệu thô từ hệ thống** (Git, pipeline CI/CD, công cụ incident như PagerDuty/Jira): mỗi lần deploy ghi {{committedAt}} (lúc commit), {{deployedAt}} (lúc lên production), {{causedIncident}} (deploy này có gây sự cố không). Vì sao: dữ liệu tự động tránh "làm đẹp" khi nhập tay.
+2. **Chuẩn hoá định nghĩa**: thống nhất "deploy" (một lần đưa bản lên production thành công), "sự cố" (rollback, hotfix, hoặc incident mức P1–P2), và khoảng thời gian đo. Vì sao: nếu mỗi đội đếm khác nhau, chỉ số không so sánh và không tin cậy được.
+3. **Tính Deployment frequency** = {{số deploy / số ngày}}. Vì sao: phản ánh nhịp giao nhỏ, thường xuyên; nhưng cần gắn với ổn định (bước 5).
+4. **Tính Lead time for changes** = trung vị của {{deployedAt − committedAt}} (tính giây). Với số phần tử chẵn, lấy trung bình hai giá trị giữa. Vì sao dùng **trung vị (median)**: lead time có đuôi dài (đa số vài giờ, thỉnh thoảng một thay đổi chờ 3 tuần); trung bình bị kéo lệch, trung vị phản ánh trải nghiệm điển hình.
+5. **Tính Change failure rate** = {{số deploy có causedIncident / tổng deploy}}. Vì sao: đo ổn định — deploy nhiều mà lỗi liên tục là chưa tốt.
+6. **Tính Time to restore (MTTR, Mean Time To Restore — thời gian khôi phục trung bình)** = trung bình {{resolvedAt − startedAt}}. Vì sao: đo khả năng phục hồi khi có sự cố (sửa nhanh quan trọng không kém ngăn lỗi).
+7. **Xử lý trường hợp biên**: danh sách rỗng trả {{Duration.ZERO}} hoặc 0.0; {{days <= 0}} ném {{IllegalArgumentException}}. Vì sao: không chia cho 0, không ném lỗi ngoài ý muốn khi không có dữ liệu.
+8. **Nhìn xu hướng, không xếp hạng cá nhân**: so sánh trước/sau khi cải tiến nền tảng, tìm điểm nghẽn. Vì sao: nếu dùng chấm điểm cá nhân, chỉ số bị tối ưu giả (chia nhỏ deploy vô nghĩa, giấu sự cố).
+
+~~~java
+// Bước 4: trung vị lead time (giây) — không dùng regex, không phụ thuộc giờ hệ thống
+Duration medianLeadTime(List<Deploy> deploys) {
+    if (deploys.isEmpty()) return Duration.ZERO;
+    List<Long> secs = new ArrayList<>();
+    for (Deploy d : deploys)
+        secs.add(Duration.between(d.committedAt(), d.deployedAt()).getSeconds());
+    Collections.sort(secs);
+    int n = secs.size();
+    long m = (n % 2 == 1) ? secs.get(n / 2)
+                          : (secs.get(n / 2 - 1) + secs.get(n / 2)) / 2; // chẵn: trung bình 2 giữa
+    return Duration.ofSeconds(m);
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** lead time báo cáo "rất cao" (hàng chục giờ) dù đa số thay đổi lên nhanh. **Nguyên nhân:** dùng trung bình, bị một vài thay đổi chờ tuần kéo lệch. **Cách sửa:** dùng trung vị; nếu cần thêm thông tin, báo cả p90.
+- **Triệu chứng:** dashboard ném lỗi NaN hoặc crash khi tuần không có deploy/sự cố. **Nguyên nhân:** chia cho 0, không xử lý danh sách rỗng. **Cách sửa:** trả {{Duration.ZERO}}/0.0 khi rỗng, kiểm tra {{days > 0}}.
+- **Triệu chứng:** change failure rate thấp bất thường nhưng người dùng vẫn than phiền. **Nguyên nhân:** định nghĩa "sự cố" quá hẹp hoặc đội không khai báo (vì bị xếp hạng). **Cách sửa:** thống nhất định nghĩa (rollback/hotfix/P1–P2), lấy dữ liệu tự động, cam kết không dùng để chấm điểm cá nhân.
+- **Triệu chứng:** chỉ số "cải thiện" nhưng trải nghiệm thật không đổi. **Nguyên nhân:** tối ưu con số (chia deploy nhỏ vô nghĩa, tách commit) thay vì cải tiến quy trình. **Cách sửa:** nhìn bộ 4 chỉ số cùng lúc (tốc độ + ổn định) và kết hợp phản hồi developer.
 
 > Câu chuyện mạnh nhất cho CV của platform engineer có dạng: "sau khi đưa golden path và canary tự động vào, lead time trung vị giảm từ 4 ngày xuống 6 giờ, change failure rate từ 18% xuống 6%". Bài tập dưới đây chính là cách bạn tính ra những con số đó.
 
@@ -5837,6 +5900,7 @@ Lỗi hay gặp: dùng trung bình cho lead time; quên trường hợp danh sá
     { q: 'Lead time của 5 thay đổi: 1h, 2h, 3h, 4h, 200h. Vì sao nên báo cáo trung vị thay vì trung bình?', options: ['Trung vị 3h phản ánh trải nghiệm điển hình; trung bình 42h bị một giá trị lớn kéo lệch', 'Trung bình khó tính hơn', 'Trung vị luôn lớn hơn trung bình', 'DORA cấm dùng trung bình'], answer: 0, explain: 'Phân phối có đuôi dài nên trung bình (42h) không đại diện cho đa số thay đổi; trung vị (3h) thì có. Độ khó tính toán không phải lý do. Trung vị không luôn lớn hơn trung bình — ở đây nhỏ hơn nhiều. Không có quy định cấm.' },
     { q: 'Chỉ số DORA nào đo độ ổn định?', options: ['Change failure rate và time to restore', 'Deployment frequency và lead time', 'Chỉ deployment frequency', 'Số dòng code mỗi tuần'], answer: 0, explain: 'Tỉ lệ thay đổi gây lỗi và thời gian khôi phục đo ổn định; tần suất deploy và lead time đo tốc độ. Số dòng code không phải chỉ số DORA và không phản ánh giá trị.' },
     { q: 'Ban lãnh đạo muốn xếp hạng từng developer theo chỉ số DORA. Phản hồi phù hợp nhất?', options: ['Chỉ số dùng cho hệ thống và đội để thấy xu hướng; xếp hạng cá nhân sẽ khiến chỉ số bị làm đẹp và mất giá trị', 'Đồng ý vì chỉ số khách quan', 'Chỉ xếp hạng theo deployment frequency', 'Xếp hạng nhưng không công bố'], answer: 0, explain: 'Khi chỉ số thành mục tiêu đánh giá cá nhân, người ta tối ưu con số (chia nhỏ deploy, không báo sự cố) thay vì kết quả thật. Chỉ dùng một chỉ số tốc độ còn khuyến khích bỏ qua ổn định. Xếp hạng kín vẫn tạo động cơ làm đẹp số liệu.' },
+    { q: 'Tuần này không có deploy nào và không có sự cố. Hàm tính chỉ số DORA nên trả về gì cho lead time/MTTR và change failure rate?', options: ['Ném ngoại lệ vì không có dữ liệu', 'Trả {{Duration.ZERO}} hoặc 0.0 (xử lý danh sách rỗng) thay vì chia cho 0', 'Trả {{null}} và để UI tự xử lý', 'Lấy giá trị tuần trước'], answer: 1, explain: 'Trường hợp rỗng phải được xử lý tường minh: lead time/MTTR rỗng → {{Duration.ZERO}}, failure rate rỗng → 0.0, để tránh NaN hoặc crash. Ném ngoại lệ làm hỏng dashboard. {{null}} đẩy rủi ro chia 0 sang nơi khác. Sao chép tuần trước làm sai dữ liệu.' },
   ],
   related: ['devops-126', 'devops-127', 'devops-075'],
   tags: ['DORA', 'metrics', 'platform as product', 'platform engineering'],
