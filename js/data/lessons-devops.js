@@ -4483,32 +4483,69 @@ Kể lại trong phỏng vấn theo mạch thực dụng: đọc {{head -3}} đ�
     'Mô tả được chuỗi trạng thái inactive → pending → firing → resolved',
     'Viết được AlertEvaluator nhận chuỗi (thời điểm, giá trị) với đồng hồ giả và trả danh sách sự kiện chuyển trạng thái',
   ],
-  body: `### Cảnh báo kiểu Prometheus là gì
-Prometheus Alertmanager đánh giá **rule** trên chuỗi mẫu metric theo thời gian. Một rule có điều kiện (ví dụ CPU > 80%) và **for** (ví dụ 5 phút): chỉ khi điều kiện đúng liên tục trong suốt thời gian for mới chuyển sang firing. Mục đích: tránh báo động giả do spike ngắn.
+  body: `**Tóm tắt:** Cảnh báo kiểu Prometheus chỉ chuyển sang **firing** khi điều kiện đúng liên tục trong khoảng {{for}}; trạng thái đi theo chuỗi {{inactive → pending → firing → resolved}}. Gộp (grouping) và ức chế (inhibition) giúp tránh spam khi một sự cố gây nhiều alert.
 
-**Tóm tắt:** Prometheus rule chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp cảnh báo để tránh spam.
+### Cảnh báo kiểu Prometheus là gì
+- **Metric** (chỉ số): con số đo được theo thời gian, ví dụ CPU 85%. Prometheus thu thập metric bằng cách kéo (scrape) dữ liệu từ ứng dụng theo chu kỳ (thường 15s).
+- **PromQL** (ngôn ngữ truy vấn của Prometheus): dùng để viết biểu thức như {{node_cpu_usage > 0.8}}.
+- **Alert rule** (luật cảnh báo): một biểu thức PromQL + thời gian {{for}} + nhãn/mô tả. Prometheus đánh giá rule theo **evaluation interval** (chu kỳ đánh giá, ví dụ mỗi 15s).
+- **Recording rule**: rule tính sẵn và lưu lại metric mới để truy vấn nhanh hơn (không gửi cảnh báo).
+- **Alertmanager**: thành phần nhận alert từ Prometheus, chịu trách nhiệm gộp, ức chế, định tuyến và gửi thông báo (Slack, PagerDuty, email).
 
-### Trạng thái
-- **inactive**: điều kiện sai.
-- **pending**: điều kiện đúng nhưng chưa đủ for.
-- **firing**: điều kiện đúng đủ for, cảnh báo gửi đi.
-- **resolved**: trước đây firing, giờ điều kiện sai.
+Vì sao cần {{for}}? Hệ thống thật luôn có biến động ngắn: GC pause, spike traffic vài giây, network jitter. Nếu cứ vượt ngưỡng là báo ngay, on-call sẽ bị "alert fatigue" (mệt mỏi vì quá nhiều cảnh báo giả) và dễ bỏ lỡ sự cố thật.
 
-### for và grace
-Khi điều kiện đúng liên tục, pending bắt đầu. Nếu đủ for → firing. Nếu điều kiện sai trước khi đủ for → về inactive, không báo. Khi firing rồi điều kiện sai → resolved.
+### Cơ chế từng bước
+1. **Scrape & lưu mẫu**: Prometheus lấy metric theo chu kỳ và lưu chuỗi thời gian (time series).
+2. **Đánh giá rule**: mỗi evaluation interval, Prometheus chạy biểu thức. Nếu kết quả rỗng hoặc sai → điều kiện không thỏa.
+3. **inactive**: điều kiện sai, không có gì xảy ra.
+4. **pending**: điều kiện bắt đầu đúng. Prometheus ghi nhận thời điểm bắt đầu và chờ; nếu ở lần đánh giá tiếp theo điều kiện vẫn đúng và đã trôi qua ≥ {{for}} thì mới chuyển bước.
+5. **firing**: điều kiện đúng liên tục suốt {{for}}. Prometheus gửi alert sang Alertmanager.
+6. **resolved**: trước đó đang firing nhưng điều kiện trở lại sai. Alertmanager có thể gửi thông báo "đã phục hồi" (tùy cấu hình {{send_resolved}}).
 
-### Gộp cảnh báo (grouping)
-Nhiều alert cùng labels được gộp thành một notification để tránh spam. Mỗi group có route riêng.
+~~~java
+// Mô phỏng đánh giá rule: điều kiện phải đúng liên tục trong forSeconds
+enum State { INACTIVE, PENDING, FIRING }
+
+class RuleEval {
+    State state = State.INACTIVE;
+    long pendingSince = -1;
+
+    State onSample(long tSec, boolean breach, long forSec) {
+        if (!breach) {                 // điều kiện sai
+            if (state == State.FIRING) { state = State.INACTIVE; return State.INACTIVE; } // resolved về phía Alertmanager
+            state = State.INACTIVE; pendingSince = -1;
+            return state;
+        }
+        // điều kiện đúng
+        if (state == State.INACTIVE) { state = State.PENDING; pendingSince = tSec; }
+        if (state == State.PENDING && tSec - pendingSince >= forSec) state = State.FIRING;
+        return state;
+    }
+}
+~~~
+
+| Khái niệm | Mục đích | Ví dụ |
+|---|---|---|
+| {{for}} | Tránh nhiễu ngắn, chỉ báo khi sự cố kéo dài | {{for: 5m}} cho CPU cao |
+| **grouping** (gộp) | Gom nhiều alert cùng nhãn thành 1 thông báo | 20 pod cùng lỗi DB → 1 trang |
+| **inhibition** (ức chế) | Tắt alert con khi alert cha đang firing | Cả cụm down thì ức chế alert từng node |
+| **routing** (định tuyến) | Chọn kênh/người nhận theo nhãn | {{severity=critical}} → PagerDuty |
 
 ### Ví dụ đời thực
-Service CPU spike 2 phút do GC, ngưỡng 80% for 5m → pending rồi inactive, không paging. Nếu CPU cao 10 phút → firing, on-call nhận 1 alert gộp.
+Service thanh toán chạy trên 10 pod. Lúc 10:00 GC pause làm CPU pod-3 chạm 92% trong 2 phút rồi giảm: rule {{CPUHigh for 5m}} đi {{inactive → pending (10:00) → inactive (10:02)}}, không paging ai. Lúc 14:00 truy vấn DB bị chậm kéo dài, CPU 9/10 pod > 85% suốt 12 phút: sau 5 phút rule chuyển {{firing}}, Alertmanager gộp 9 alert cùng {{service=payment, alertname=CPUHigh}} thành 1 thông báo gửi kênh on-call; khi DB hồi phục lúc 14:12, alert chuyển resolved và gửi thông báo phục hồi.
 
-### Trả lời mẫu khi phỏng vấn
-"Rule Prometheus chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp alert cùng labels để tránh spam."
+### Lỗi hay gặp trên production
+- **{{for}} quá ngắn (0s hoặc 30s)**: spike GC/ngắn hạn gây alert storm. Triệu chứng: pager kêu liên tục rồi tự tắt. Sửa: đặt {{for}} 3–5 phút cho tài nguyên (CPU/mem), ngắn hơn (1m) cho lỗi tỉ lệ (error rate).
+- **Thiếu hoặc sai nhãn (label) khi grouping**: mỗi pod/instance tạo một thông báo riêng → spam hàng chục trang cho cùng một sự cố. Sửa: cấu hình {{group_by}} theo {{alertname, service, cluster}} thay vì theo {{instance}}.
+- **Không đặt inhibition**: khi mất kết nối cả cụm, vừa bắn "cluster down" vừa bắn hàng trăm alert con "node/pod unreachable". Sửa: thêm rule inhibition để ức chế alert con khi alert cha firing.
+- **Quên xử lý resolved hoặc flapping**: alert liên tục firing→resolved→firing làm nhiễu. Sửa: tăng {{for}}, dùng {{repeat_interval}} hợp lý và kiểm tra ngưỡng/hysteresis.
 
-> Senior tip: Luôn đặt for đủ dài (3-5m) cho metric CPU/mem để tránh alert storm do spike ngắn.
+### Liên hệ phỏng vấn
+- **Hỏi:** "Vì sao alert rule cần {{for}} và trạng thái pending dùng để làm gì?" → **Trả lời ngắn:** {{for}} yêu cầu điều kiện đúng liên tục để lọc nhiễu ngắn; {{pending}} là giai đoạn chờ đủ {{for}}, giúp phân biệt spike tạm thời với sự cố kéo dài và tránh alert giả.
+- **Hỏi:** "Phân biệt grouping, inhibition, routing trong Alertmanager?" → **Trả lời ngắn:** grouping gom nhiều alert giống nhau thành một thông báo; inhibition ức chế alert con khi alert cha đang firing; routing quyết định gửi thông báo tới kênh/người nhận nào dựa trên nhãn.
+- **Hỏi:** "Khi nào dùng alert rule, khi nào dùng recording rule?" → **Trả lời ngắn:** alert rule dùng để phát hiện và gửi cảnh báo khi vi phạm điều kiện; recording rule tính sẵn biểu thức PromQL phức tạp thành metric mới để dashboard/truy vấn nhanh và nhất quán, không gửi cảnh báo.
 
-Thêm giải thích chi tiết cho người mới: PromQL vector, evaluation interval, alert rule, recording rule, for duration, pending/firing/resolved, inhibition, grouping, routing. Giải thích từng bước cái gì→vì sao→hoạt động thế nào→ví dụ→lỗi hay gặp→trả lời phỏng vấn. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. `,
+> Senior tip: Thiết kế ngưỡng dựa trên SLO (mục tiêu mức độ tin cậy dịch vụ) và tỉ lệ lỗi thực tế thay vì con số cảm tính; luôn gắn nhãn {{service}}, {{severity}}, {{runbook}} vào alert để on-call biết tác động và cách xử lý ngay.`,
   exercises: [
     {
       title: 'AlertEvaluator: danh sách sự kiện chuyển trạng thái',
@@ -4575,8 +4612,10 @@ class AlertEvaluator {
     },
   ],
   check: [
-    { q: 'for=5m nghĩa là gì?', options: ['Cảnh báo sau 5 phút', 'Điều kiện phải đúng liên tục 5 phút mới firing', 'Lặp lại mỗi 5 phút', 'Tắt sau 5 phút'], answer: 1, explain: 'for là thời gian điều kiện phải đúng liên tục trước khi firing.' },
-    { q: 'Spike 2 phút với for 5m thì sao?', options: ['Firing', 'Pending rồi inactive, không báo', 'Resolved', 'Lỗi'], answer: 1, explain: 'Chưa đủ for nên không firing, về inactive.' },
+    { q: 'for=5m trong một alert rule Prometheus nghĩa là gì?', options: ['Cảnh báo sẽ được gửi sau đúng 5 phút kể từ khi tạo rule', 'Prometheus lặp lại việc gửi cảnh báo mỗi 5 phút', 'Điều kiện phải đúng liên tục trong 5 phút thì alert mới chuyển sang firing', 'Alert tự động tắt sau 5 phút nếu không ai xác nhận'], answer: 2, explain: 'Đáp án đúng là C: {{for}} là khoảng thời gian điều kiện phải giữ đúng liên tục trước khi chuyển từ pending sang firing. A sai vì mốc tính từ lúc điều kiện thỏa, không phải lúc tạo rule. B sai vì lặp gửi do {{repeat_interval}} của Alertmanager quyết định. D sai vì việc tắt/ack không do {{for}} điều khiển.' },
+    { q: 'CPU vượt ngưỡng 2 phút rồi giảm, trong khi rule đặt {{for: 5m}}. Trạng thái nào xảy ra?', options: ['Firing rồi Resolved', 'Pending rồi quay về Inactive, không gửi cảnh báo', 'Inactive suốt vì chưa đủ dữ liệu scrape', 'Resolved vì hệ thống đã tự hồi phục'], answer: 1, explain: 'Đáp án đúng là B: điều kiện đúng làm rule vào pending nhưng chưa đủ 5 phút đã sai nên quay về inactive, không firing. A sai vì không bao giờ đạt firing. C sai vì vẫn có mẫu vượt ngưỡng trong 2 phút. D sai vì resolved chỉ dùng khi trước đó đã từng firing.' },
+    { q: 'Mục đích chính của grouping trong Alertmanager là gì?', options: ['Tăng tốc độ đánh giá biểu thức PromQL', 'Tự động sửa lỗi gây ra cảnh báo', 'Xóa bớt metric cũ để tiết kiệm bộ nhớ', 'Gộp nhiều alert liên quan thành một thông báo để giảm spam'], answer: 3, explain: 'Đáp án đúng là D: grouping gom các alert cùng nhãn (ví dụ cùng service) thành một thông báo, tránh on-call bị quá tải. A sai vì đánh giá PromQL do Prometheus thực hiện, không phải Alertmanager. B sai vì Alertmanager chỉ thông báo, không tự khắc phục. C sai vì lưu trữ/retention metric thuộc về Prometheus storage.' },
+    { q: 'Khi "cluster down" đang firing, tại sao nên dùng inhibition cho các alert "node unreachable" con?', options: ['Để ức chế alert con, tránh trùng lặp thông báo khi nguyên nhân gốc đã được báo', 'Để các alert con firing nhanh hơn', 'Để tự động khởi động lại các node bị lỗi', 'Để chuyển alert con thành recording rule'], answer: 0, explain: 'Đáp án đúng là A: inhibition ức chế (tắt thông báo) alert con khi alert cha đang firing vì chúng cùng một nguyên nhân gốc, giúp giảm nhiễu. B sai vì inhibition không làm alert firing nhanh hơn mà ngược lại còn chặn thông báo. C sai vì Alertmanager không tự khởi động lại hạ tầng. D sai vì recording rule là khái niệm khác (tính sẵn metric), không liên quan inhibition.' },
   ],
   related: ['devops-001', 'devops-007'],
   tags: ['Prometheus', 'Alerting', 'for', 'pending', 'firing', 'resolved'],
@@ -4593,32 +4632,58 @@ class AlertEvaluator {
     'Mô phỏng round-robin bỏ qua backend down',
     'Hiểu VIP chuyển sang node backup theo priority với Keepalived',
   ],
-  body: `### Health check là gì
-Load balancer (HAProxy, nginx) định kỳ gọi health check đến backend. Sau **fall** lần fail liên tiếp → backend bị đánh dấu DOWN, không nhận traffic. Sau **rise** lần success liên tiếp → UP lại.
+  body: `**Tóm tắt:** Hệ thống cân bằng tải (load balancer, ví dụ HAProxy) dùng **health check** (kiểm tra sức khỏe) để loại backend lỗi: sau **fall** lần thất bại liên tiếp → đánh dấu DOWN, sau **rise** lần thành công liên tiếp → UP lại. Thuật toán **round-robin** (xoay vòng) bỏ qua backend DOWN. **Keepalived** dùng VRRP để chuyển **VIP** (địa chỉ IP ảo) sang nút dự phòng khi nút chính hỏng.
 
-**Tóm tắt:** Backend down sau N lỗi liên tiếp (fall) và up sau M thành công (rise); round-robin bỏ qua down; VIP failover theo priority Keepalived.
+### Health check, load balancer và failover là gì
+- **Load balancer (LB)**: thành phần đứng trước, nhận request từ client rồi phân phối sang nhiều backend (máy chủ ứng dụng) để chia tải và tăng sẵn sàng.
+- **Health check**: LB định kỳ gửi yêu cầu kiểm tra (HTTP {{/health}}, TCP connect, v.v.) tới từng backend để biết còn sống hay không.
+- **Failover (chuyển đổi dự phòng)**: khi một thành phần hỏng, hệ thống tự chuyển sang thành phần dự phòng để dịch vụ tiếp tục chạy.
 
-### fall và rise
-- **fall**: số lần check fail liên tiếp để chuyển DOWN.
-- **rise**: số lần check success liên tiếp để chuyển UP.
+Vì sao cần fall/rise? Mạng có thể chập chờn hoặc một request lỗi thoáng qua; nếu chỉ 1 lần lỗi đã loại backend thì dễ "false positive" (báo nhầm). Ngược lại, nếu đòi quá nhiều lần mới phục hồi thì backend đã khỏe vẫn bị bỏ qua lâu.
 
-Ví dụ fall=3, rise=2: 3 fail liên tiếp → DOWN; 2 success liên tiếp → UP.
+### Cơ chế từng bước
+1. **Kiểm tra định kỳ**: LB gửi health check theo {{interval}} (ví dụ 2 giây). Kết quả mỗi lần là thành công (OK) hoặc thất bại (timeout, HTTP 5xx, không kết nối được).
+2. **Đếm fall**: mỗi lần thất bại liên tiếp tăng bộ đếm lỗi và đặt lại bộ đếm thành công. Khi bộ đếm lỗi đạt **fall** (ví dụ 3) → backend chuyển **DOWN**, LB ngừng gửi traffic tới nó.
+3. **Đếm rise**: backend DOWN vẫn được kiểm tra. Mỗi lần thành công liên tiếp tăng bộ đếm thành công. Khi đạt **rise** (ví dụ 2) → backend chuyển **UP**, LB đưa trở lại vòng phân phối.
+4. **Round-robin bỏ qua DOWN**: LB giữ con trỏ xoay vòng; khi chọn backend tiếp theo, nếu backend đang DOWN thì bỏ qua và thử backend kế tiếp. Nếu tất cả DOWN, LB trả lỗi (ví dụ 503).
+5. **Failover VIP với Keepalived/VRRP**: **VIP** (Virtual IP, IP ảo) là địa chỉ IP mà client kết nối tới. **VRRP** (Virtual Router Redundancy Protocol) là giao thức bầu chọn nút giữ VIP. Nút **master** có **priority** (độ ưu tiên) cao hơn giữ VIP; nút **backup** chờ. Khi master không còn gửi gói quảng bá (do hỏng/mất mạng), backup có priority cao nhất tiếp quản VIP. **Preempt** (giành lại): nếu bật, khi master cũ phục hồi nó có thể lấy lại VIP.
 
-### Round-robin bỏ qua down
-LB phân phối request round-robin nhưng chỉ chọn backend đang UP.
+~~~java
+// Mô phỏng fall/rise: DOWN sau fall lỗi liên tiếp, UP sau rise thành công liên tiếp
+class BackendHealth {
+    boolean up = true; int fail = 0, ok = 0;
+    final int fall = 3, rise = 2;
 
-### Failover VIP (Keepalived)
-Keepalived dùng VRRP: node master có priority cao giữ VIP. Khi master down, backup có priority cao nhất tiếp quản VIP. Failback khi master up lại (tùy preempt).
+    void onCheck(boolean success) {
+        if (success) { ok++; fail = 0; if (!up && ok >= rise) up = true; }
+        else         { fail++; ok = 0; if (up && fail >= fall) up = false; }
+    }
+}
+~~~
+
+| Khái niệm | Ý nghĩa | Giá trị thường dùng |
+|---|---|---|
+| {{fall}} | Số lần fail liên tiếp để coi là DOWN | 2–3 |
+| {{rise}} | Số lần success liên tiếp để coi là UP | 2 |
+| {{interval}} | Chu kỳ health check | 1–5 giây |
+| **round-robin** | Xoay vòng lần lượt qua backend UP | đơn giản, chia đều |
+| **leastconn** | Chọn backend có ít kết nối nhất | hợp khi request thời lượng khác nhau |
 
 ### Ví dụ đời thực
-3 backend, 1 down sau 3 fail liên tiếp → LB chỉ gửi traffic tới 2 backend còn lại; khi backend phục hồi, 2 success → UP lại.
+Hệ thống có 3 backend {{A, B, C}} sau HAProxy, {{fall=3}}, {{rise=2}}, {{interval=2s}}. Lúc 09:10 backend B bị full GC và treo: 3 lần check liên tiếp thất bại (6 giây) → B chuyển DOWN, LB chỉ xoay vòng A, C. Lưu lượng giảm 1/3 khả năng nhưng dịch vụ vẫn sống. Lúc 09:13 B hồi phục: sau 2 lần check thành công (4 giây) → B UP trở lại và nhận traffic. Ở tầng IP, Keepalived chạy trên 2 nút LB: {{LB1 priority 101 (master)}} giữ VIP {{10.0.0.10}}, {{LB2 priority 100 (backup)}}. LB1 mất điện → LB2 không nhận quảng bá VRRP, tiếp quản VIP trong vài giây, client vẫn kết nối tới {{10.0.0.10}} không cần đổi cấu hình.
 
-### Trả lời mẫu khi phỏng vấn
-"Health check với fall/rise: backend down sau N lỗi liên tiếp, up sau M thành công; round-robin bỏ qua down; Keepalived failover VIP theo priority."
+### Lỗi hay gặp trên production
+- **Chỉ dùng TCP check cho ứng dụng HTTP**: cổng mở nhưng ứng dụng treo hoặc trả 500, TCP check vẫn "thành công" nên traffic tiếp tục đổ vào backend hỏng. Triệu chứng: user thấy lỗi 5xx dù LB báo backend UP. Sửa: dùng HTTP health check và kiểm tra mã trạng thái/nội dung (ví dụ {{GET /health}} trả 200).
+- **{{fall}}/{{interval}} quá lớn**: mất nhiều giây/phút mới phát hiện backend chết, trong thời gian đó request vẫn bị gửi vào và thất bại. Sửa: cân bằng {{fall=3, interval=2s}} để phát hiện trong ~6s nhưng vẫn tránh nhiễu.
+- **Không bật hoặc cấu hình sai preempt của VRRP**: sau khi master cũ hồi phục, nếu preempt bật nhưng priority/chênh lệch không đúng có thể gây "flap" VIP qua lại. Sửa: hiểu rõ preempt, đặt priority cách nhau rõ và theo dõi sự kiện chuyển VIP.
+- **Quên health check cho phụ thuộc**: endpoint {{/health}} chỉ trả 200 mà không kiểm tra DB/kết nối quan trọng, backend "UP" nhưng thực tế không phục vụ được. Sửa: phân biệt liveness (tiến trình sống) và readiness (sẵn sàng nhận traffic, phụ thuộc OK).
 
-> Senior tip: Đặt fall=3, rise=2 và health check interval 2s để phát hiện lỗi nhanh mà không false positive.
+### Liên hệ phỏng vấn
+- **Hỏi:** "Phân biệt {{fall}} và {{rise}} trong health check? Vì sao không dùng cùng một ngưỡng?" → **Trả lời ngắn:** {{fall}} là số lần thất bại liên tiếp để đánh dấu DOWN, {{rise}} là số lần thành công liên tiếp để đánh dấu UP; tách hai ngưỡng giúp loại nhanh backend lỗi nhưng chỉ đưa trở lại khi đã ổn định, tránh flap.
+- **Hỏi:** "Keepalived dùng VIP/VRRP để failover như thế nào?" → **Trả lời ngắn:** nhiều nút chia sẻ một VIP; nút master (priority cao nhất) giữ VIP và phát quảng bá VRRP, khi master hỏng backup tiếp quản VIP nên client vẫn kết nối cùng địa chỉ; preempt quyết định master cũ có giành lại VIP khi phục hồi.
+- **Hỏi:** "Khác nhau giữa round-robin và leastconn, khi nào chọn cái nào?" → **Trả lời ngắn:** round-robin xoay vòng đều, phù hợp khi request tương đương nhau; leastconn chọn backend có ít kết nối đang mở nhất, phù hợp khi thời gian xử lý request chênh lệch lớn.
 
-Thêm giải thích chi tiết: VRRP, priority, preempt, VIP, health check types (HTTP/TCP), fall/rise, round-robin, leastconn, backup server, drain. Giải thích từng bước cho người mới. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  `,
+> Senior tip: Thiết kế health check theo readiness (chỉ UP khi phụ thuộc sẵn sàng) để LB ngừng gửi traffic đúng lúc; đặt {{fall/rise/interval}} theo SLO và luôn giám sát sự kiện chuyển trạng thái backend/VIP để phát hiện flap sớm.`,
   exercises: [
     {
       title: 'LoadBalancer: fall/rise, round-robin, failover',
@@ -4696,8 +4761,10 @@ Thêm giải thích chi tiết: VRRP, priority, preempt, VIP, health check types
     },
   ],
   check: [
-    { q: 'fall=3 nghĩa là gì?', options: ['3 giây', '3 lần fail liên tiếp → down', '3 backend', '3 request'], answer: 1, explain: 'fall là số lần check fail liên tiếp để chuyển down.' },
-    { q: 'Khi tất cả backend down, next() trả về?', options: ['0', '-1', 'ném lỗi', 'null'], answer: 1, explain: 'Không còn backend up → trả -1.' },
+    { q: '{{fall=3}} trong health check có nghĩa là gì?', options: ['Sau 3 lần kiểm tra thất bại liên tiếp thì đánh dấu backend DOWN', 'Chờ 3 giây rồi mới đánh dấu backend down', 'Backend được thử lại tối đa 3 lần trong cả vòng đời', 'Cần 3 backend cùng lỗi thì mới chuyển traffic'], answer: 0, explain: 'Đáp án đúng là A: fall là số lần health check thất bại liên tiếp cần đạt để chuyển trạng thái sang DOWN. B sai vì thời gian phụ thuộc cả {{interval}}. C sai vì bộ đếm áp dụng cho chuỗi thất bại liên tiếp, không phải tổng số lần. D sai vì fall xét trên từng backend riêng lẻ.' },
+    { q: 'Load balancer dùng round-robin và backend B đang DOWN. Điều gì xảy ra?', options: ['Vẫn gửi request tới B nhưng giảm một nửa', 'Dừng toàn bộ hệ thống cho đến khi B UP lại', 'Bỏ qua B và phân phối request cho các backend đang UP', 'Chuyển B sang chế độ backup nhưng vẫn nhận traffic đọc'], answer: 2, explain: 'Đáp án đúng là C: round-robin chỉ chọn trong tập backend UP nên sẽ bỏ qua B. A sai vì backend DOWN không nhận traffic. B sai vì các backend UP khác vẫn phục vụ. D sai vì DOWN nghĩa là không nhận traffic (trừ khi cấu hình backup riêng, không phải hành vi mặc định mô tả ở đây).' },
+    { q: 'Trong Keepalived/VRRP, VIP (địa chỉ IP ảo) được dùng để làm gì?', options: ['Lưu trữ cấu hình health check của HAProxy', 'Mã hóa lưu lượng giữa client và server', 'Thay thế hoàn toàn DNS trong hệ thống', 'Là địa chỉ IP cố định cho client kết nối, được nút master giữ và chuyển sang backup khi failover'], answer: 3, explain: 'Đáp án đúng là D: VIP là IP ảo mà client luôn kết nối tới; nút master giữ VIP và khi master hỏng, backup tiếp quản VIP để dịch vụ không đổi địa chỉ. A sai vì VIP không phải nơi lưu cấu hình. B sai vì VIP không thực hiện mã hóa (TLS mới làm việc đó). C sai vì VIP và DNS là cơ chế khác nhau, VIP không thay thế DNS.' },
+    { q: 'Vì sao nên tách {{rise}} và {{fall}} thay vì dùng cùng một ngưỡng?', options: ['Để tiết kiệm băng thông health check', 'Để loại nhanh backend lỗi nhưng chỉ đưa trở lại khi ổn định, tránh trạng thái flap', 'Vì VRRP bắt buộc hai tham số này phải khác nhau', 'Để round-robin tính toán nhanh hơn'], answer: 1, explain: 'Đáp án đúng là B: tách ngưỡng giúp phản ứng đủ nhanh khi hỏng (fall) nhưng yêu cầu nhiều lần thành công liên tiếp mới phục hồi (rise), giảm dao động UP/DOWN liên tục. A sai vì băng thông không phải lý do chính. C sai vì đây là cấu hình health check của LB, không phải ràng buộc bắt buộc của VRRP. D sai vì thuật toán phân phối không phụ thuộc vào việc tách fall/rise.' },
   ],
   related: ['devops-002', 'devops-014'],
   tags: ['HAProxy', 'Keepalived', 'Health check', 'Failover', 'Round-robin', 'VRRP'],
