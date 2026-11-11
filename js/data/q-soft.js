@@ -1738,6 +1738,12 @@ Nêu **hành vi** (S: bối cảnh, B: hành vi, I: tác động), rồi mở đ
 - **Góp ý trước mặt cả team** hoặc **báo cáo lên trên ngay lần đầu gặp**: làm người đó mất mặt, mất cơ hội hỗ trợ và làm hỏng niềm tin.
 - **Tự làm thay phần việc của người đó** để "giúp", hoặc **để chuyện kéo dài nhiều tháng**: tạo tiền lệ mất niềm tin và cuối cùng chấp nhận rủi ro bằng im lặng.
 
+### Ví dụ đời thực
+Một team backend 8 người chịu trách nhiệm module thanh toán. Triệu chứng: trong 3 sprint liên tiếp, velocity giảm 35% (từ 72 story point xuống 47), số bug production tăng từ 2 lên 9, và 2 lần deploy phải rollback vì thiếu test tích hợp. Điều tra: tôi dùng Git log và Jira để đo — một thành viên (2 năm kinh nghiệm) đóng góp 3% commit, PR trung bình chờ review 4.2 ngày (team 1.1 ngày), và 68% PR của người này phải sửa ≥ 3 lần do thiếu test, sai convention, quên cập nhật migration. Trao đổi 1-1: người này nhận đang lo lắng về kiến trúc mới (event-driven) nhưng ngại hỏi vì sợ bị coi là yếu. Nguyên nhân gốc: thiếu onboarding kỹ thuật cho kiến trúc mới và thiếu safety net (test, checklist). Cách xử lý: (1) ghép cặp với senior 2 tuần, mỗi ngày 1h pair programming trên task thật; (2) bổ sung checklist PR bắt buộc (test unit, test tích hợp, migration, log); (3) đặt mục tiêu 4 tuần: PR review < 1 ngày, số vòng sửa < 2. Kết quả đo được: sau 5 tuần, velocity team hồi phục 68 story point, bug production giảm còn 1, PR của người này review trung bình 0.9 ngày, 0 lần rollback do phần việc của họ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi một thành viên làm việc kém, tôi đầu tiên phân biệt nguyên nhân: thiếu năng lực, thiếu bối cảnh hay vấn đề động lực — bằng cách quan sát hành vi cụ thể có số liệu (velocity, số lần sửa PR, thời gian review). Tôi dùng mô hình SBI (bối cảnh, hành vi, tác động) để trao đổi 1-1, không gán nhãn tính cách. Sau đó đặt kế hoạch hỗ trợ 4–8 tuần với tiêu chí đo được (ví dụ: giảm thời gian review PR từ 4 ngày xuống 1 ngày), ghép cặp mentoring, bổ sung safety net như checklist PR. Tôi theo dõi hàng tuần và chỉ leo thang khi đã có bằng chứng đầy đủ và người đó vẫn không cải thiện. Quan trọng là tạo môi trường an tâm để họ nói ra khó khăn, thay vì im lặng chịu đựng."
+
 > Senior tip: chuẩn bị **hai phiên bản**: một trường hợp đã thành công (bạn giúp được người đó cải thiện, có số liệu trước/sau), và một trường hợp **không** thành công (bạn đã làm hết phần mình nhưng kết quả vẫn không đổi, và bạn xử lý nó đúng quy trình). Phiên bản thứ hai thuyết phục hơn, vì nó cho thấy bạn hiểu ranh giới giữa "việc của tôi" và "việc không phải của tôi".`,
 
   follow: [
@@ -1787,6 +1793,12 @@ Nêu **hành vi** (S: bối cảnh, B: hành vi, I: tác động), rồi mở đ
 - **Đề xuất không kèm bằng chứng**: "kinh nghiệm cho thấy" không thuyết phục được kỹ sư giỏi.
 - **Im lặng chịu đựng rồi kêu lên sau 3 tháng**: lúc đó vấn đề không còn là kỹ thuật nữa mà là niềm tin.
 - **Cố thuyết phục người không có quyền quyết định**: hãy tìm người có quyền từ đầu.
+
+### Ví dụ đời thực
+Một dự án tích hợp cổng thanh toán mới yêu cầu đội Mobile thêm trường {{device_fingerprint}} vào mọi request API để phòng chống gian lận. Triệu chứng: đội Mobile từ chối vì cho rằng đây là việc của backend, và sprint của họ đã kín 3 tuần tới. Điều tra: tôi lấy số liệu từ hệ thống fraud detection — trong 6 tháng qua có 1.840 giao dịch nghi ngờ, trong đó 420 giao dịch (23%) không có device fingerprint nên không thể chấm điểm rủi ro, dẫn đến 67 giao dịch giả mạo vượt qua (tổn thất ~320 triệu VNĐ). Nguyên nhân gốc: thiếu quy trình bắt buộc device fingerprint ở tầng client, và backend không từ chối request thiếu trường này. Cách xử lý: (1) tôi viết thư viện nhẹ cho iOS/Android (2 file, ~150 dòng) tự sinh fingerprint và gắn vào header qua interceptor đã có sẵn — đội Mobile chỉ cần bump version thư viện, 0 dòng code sửa; (2) backend từ chối request thiếu fingerprint với mã lỗi rõ ràng; (3) pilot 1 tuần với 5% traffic. Kết quả đo được: sau 4 tuần, 100% request có fingerprint, giao dịch giả mạo giảm 91% (từ 67 xuống 6), đội Mobile sau đó tự đề xuất thêm fingerprint cho 3 API cũ khác.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi phải thuyết phục team khác không có quyền lực, tôi tìm lợi ích chung bằng dữ liệu mà họ quan tâm. Tôi không bắt đầu bằng yêu cầu, mà bằng câu hỏi về điểm đau của họ, rồi lấy số liệu thực tế từ hệ thống chung để chứng minh tác động. Đề xuất phải rẻ cho họ: tôi tự làm phần nặng (viết thư viện, xử lý backend), họ chỉ cần cập nhật dependency. Bắt đầu bằng pilot nhỏ, có thể đảo ngược, đo kết quả rồi lan rộng. Tạo tiền lệ để sau đó họ chủ động hỏi ý kiến. Nếu không thuyết phục được, tôi đưa vào họp có người quyết định, viết văn bản có mốc deadline, và chuẩn bị phương án dự phòng giảm phụ thuộc."
 
 > Senior tip: trước khi đi thuyết phục ai, hãy tự trả lời ba câu: **họ đang bị đau gì, họ sợ mất gì, và đề xuất của tôi giúp họ giảm đau đó bằng cách nào**. Nếu không trả lời được câu thứ ba, bạn đang đi thuyết phục, chứ không phải đang giải quyết vấn đề — và sẽ thất bại theo đúng cách đó.`,
   follow: [
@@ -1844,6 +1856,12 @@ Nêu **hành vi** (S: bối cảnh, B: hành vi, I: tác động), rồi mở đ
 - **Đổ lỗi**: kể cả khi nguyên nhân nằm ở hệ thống, bạn vẫn là người nhận cam kết.
 - **Che giấu bằng cách gửi bản báo cáo "gần đúng"**: rất nhanh bị phát hiện và tệ hơn nhiều lần so với nói thẳng.
 
+### Ví dụ đời thực
+Một dự án báo cáo doanh thu hàng ngày cho hội đồng quản trị. Triệu chứng: báo cáo thứ 5 gửi lúc 10h sáng (trễ 2h so với mốc 8h), thiếu dữ liệu 2 ngày cuối tuần do job ETL lỗi silent, CEO phải dùng số liệu cũ cho hội nghị quý. Điều tra: tôi kiểm tra log Airflow và DB — job ETL fail 3/10 lần do timeout kết nối DB cũ (không có retry), alert không gửi vì Slack webhook hết hạn, và tôi không có runbook xử lý sự cố. Nguyên nhân gốc: thiếu monitoring cho job critical, thiếu retry/alert, và tôi cam kết mốc 8h mà không kiểm tra độ tin cậy pipeline. Cách xử lý: (1) thêm retry exponential backoff (3 lần, max 10 phút) cho job ETL; (2) setup alert PagerDuty cho job fail + Slack webhook mới; (3) viết runbook 1 trang: bước kiểm tra, lệnh chạy lại thủ công, người liên lạc; (4) đổi cam kết từ "8h sáng" thành "8h sáng hoặc báo trước 7h nếu lỗi". Kết quả đo được: 8 tuần liên tiếp báo cáo đúng giờ, 2 lần job fail được tự retry thành công, 0 lần CEO phải dùng số liệu cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi trễ deadline, tôi báo ngay khi chắc chắn không kịp, không đợi tới hạn. Tôi dùng khung 4 câu: tình hình (gì trễ, bao lâu), ảnh hưởng (ai bị tác động, mức nào), phương án (lựa chọn cụ thể), và điều cần từ đối tác. Tôi báo cho người chịu hậu quả trực tiếp trước, sau đó team và người quyết định ưu tiên. Quan trọng là mang theo lựa chọn, không chỉ vấn đề. Sau sự cố, tôi phân tích nguyên nhân gốc (thường là giả định chưa kiểm tra, thiếu monitoring, hoặc cam kết không thực tế), sửa quy trình (thêm retry, alert, runbook, mốc trung gian), và cam kết khác đi. Cách báo tin xấu quan trọng hơn bản thân tin xấu — nó quyết định niềm tin team có bị tổn thương hay không."
+
 > Senior tip: hãy chuẩn bị **ba phiên bản câu trả lời** cho câu này: tin xấu do lỗi của bạn, tin xấu do bên ngoài, và một lần bạn **phát hiện sớm** rủi ro và báo trước khi nó xảy ra. Phiên bản thứ ba thường gây ấn tượng nhất, vì nó cho thấy bạn có hệ thống cảnh báo sớm chứ không chỉ phản ứng khi sự việc đã hỏng.`,
   follow: [
     'Bạn báo tin xấu qua kênh nào — họp trực tiếp, tin nhắn hay email? Vì sao chọn kênh đó?',
@@ -1894,6 +1912,12 @@ Nguyên tắc: đi leo thang **cùng dữ liệu và phương án**, không đi 
 - **Tự ý làm thay việc của team khác**: tạo nợ kỹ thuật và xung đột.
 - **Ra tối hậu thư hoặc đe dọa**: mất quan hệ mà vấn đề vẫn còn.
 - **Đổi đề xuất liên tục** mà không giải thích lý do — người ta sẽ không còn tin đề xuất nào của bạn.
+
+### Ví dụ đời thực
+Một dự án microservices chuyển từ REST sang gRPC cho communication nội bộ. Triệu chứng: team Platform (chịu trách nhiệm shared library gRPC) không release version mới hỗ trợ timeout config được 3 sprint, khiến team Order không thể implement circuit breaker đúng cách, 2 lần production bị cascade failure do downstream chậm (mất ~150 đơn/ngày). Điều tra: tôi đọc Jira epic của Platform — họ đang refactor authentication core (ưu tiên P0 từ security audit), gRPC library nằm ở P2, capacity 2 dev. Nguyên nhân gốc: dependency không có mốc cam kết, và team Order không chia sẻ được rủi ro production cho Platform. Cách xử lý: (1) tôi viết wrapper timeout/retry tạm thời cho Order (2 ngày, không đụng shared lib), giảm cascade failure 80%; (2).setup meeting 30 phút với Platform lead, trình bày rủi ro production bằng số liệu (150 đơn/ngày, ~500 triệu VNĐ/tháng), đề xuất họ chỉ thêm 1 config field vào library (1 ngày công); (3) cam kết bằng văn bản: Platform release patch trong 5 ngày, Order tự maintain wrapper tạm thời. Kết quả: Platform release đúng hẹn, Order bỏ wrapper, dependency board được tạo cho mọi cross-team dependency sau đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bị chặn bởi team khác, tôi đầu tiên định lượng chặn cụ thể: hạng mục gì, bao nhiêu ngày công, tác động ra sao (số liệu production). Tìm đúng người có quyền quyết định, không phải người truyền tin. Hiểu ràng buộc của họ (đang làm gì, ưu tiên gì) để đề xuất phương án có lợi cho họ — chia việc, cho mượn người, hoặc nhận phần nặng nhất. Tách phần mình làm được để dự án tiến. Leo thang đúng thứ tự: nói trực tiếp với owner → họp có trung gian → văn bản có mốc quyết định → cấp quản lý. Leo thang để xin quyết định, không tố cáo. Nếu không thể gỡ, tôi chấp nhận trade-off tạm thời (như viết wrapper) và document rõ để sau này xử lý triệt để."
 
 > Senior tip: câu trả lời mạnh cho câu này không phải là "tôi đã giải quyết được chặn" — vì nhiều khi bạn không thể. Điều được đánh giá là bạn có **gọi đúng tên vấn đề**, đã **thử những gì trong tầm tay mình**, **mang tới một lựa chọn cụ thể**, và **biết khi nào cần một quyết định từ trên xuống** thay vì cứ thuyết phục mãi.`,
   follow: [
@@ -1949,6 +1973,12 @@ Nguyên tắc: đi leo thang **cùng dữ liệu và phương án**, không đi 
 - **Tự kết luận "tôi vốn đã biết"**: làm mất đúng cái thông tin bạn cần.
 - **Nhận góp ý về hành vi cá nhân rồi tổn thương vô ích** — hãy tách phần hành vi ra.
 
+### Ví dụ đời thực
+Một team frontend 5 người maintain design system dùng cho 3 product. Triệu chứng: trong 2 quý, 12 PR của team bị reject vì "không tuân thủ design token", 3 bug production do màu sai contrast (violate WCAG AA), và onboarding dev mới mất 3 tuần. Điều tra: tôi audit 50 PR gần nhất — 68% dùng hardcode color thay vì design token, 41% không có visual regression test, và design token doc chưa cập nhật 4 tháng. Nguyên nhân gốc: thiếu enforcement tự động, doc cũ, và review chỉ kiểm tra logic không kiểm tra UI. Cách xử lý: (1) tích hợp Stylelint + design-token plugin vào CI, fail build nếu hardcode color; (2) thêm Chromatic visual test cho 20 component core; (3) gán 1 dev owner cập nhật doc hàng tuần, bắt buộc PR cập nhật token phải update doc. Kết quả đo được: 6 tuần sau, hardcode color trong PR giảm 94% (từ 34 xuống 2 case), visual regression bắt 4 bug trước merge, onboarding dev mới còn 1 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhận feedback khó nghe, tôi dừng lại vài giây để không phản ứng nóng, rồi xác nhận mình hiểu đúng ý ('Anh muốn em ưu tiên readability hơn velocity, đúng không?'). Tôi hỏi lại để lấy tiêu chí cụ thể ('Cụ thể anh muốn thấy gì khác trong PR?'), tách nội dung hành vi khỏi cảm xúc cá nhân. Sau đó chốt hành động có mốc và cách đo: ví dụ đặt tiêu chí hàm ≤ 30 dòng, tên hàm rõ trách nhiệm, follow up sau 2 tháng. Tôi lấy dữ liệu thay vì tranh luận — đo độ dài hàm trung bình, số vòng review. Feedback khó nghe thường có phần đúng về vấn đề, dù cách nói khiến khó chịu; nhiệm vụ là tách hai thứ ra. Quan trọng là thay đổi hành vi bền vững, không phải sửa một lần xong."
+
 > Senior tip: hãy chuẩn bị feedback **thật gần đây nhất** (trong 3 tháng) và kể điều bạn đã làm khác đi. Interviewer đánh giá cao sự trung thực hơn câu chuyện hoàn hảo — câu kiểu "tôi chưa bao giờ nhận feedback nào làm mình khó chịu" gần như chắc chắn sẽ bị đào sâu.`,
   follow: [
     'Bạn có hỏi feedback chủ động không, và hỏi ai, bao lâu một lần?',
@@ -1997,6 +2027,12 @@ Hãy coi đây là **xu hướng để thích nghi**, không phải quy luật v
 - **Gửi bản dịch máy mà không đọc lại** và **dùng thành ngữ, viết tắt nội bộ**: rất dễ hiểu sai; hãy viết câu ngắn, rõ ràng, kèm ví dụ cụ thể.
 - **Tự suy diễn "người Nhật thì chậm quyết định"** hoặc **bỏ qua yêu cầu tuân thủ địa phương**: ấn tượng xấu và rủi ro hợp đồng.
 - **Hẹn giờ linh hoạt đến mức bạn phải online lúc 23h**: giải quyết bằng tài liệu bất đồng bộ.
+
+### Ví dụ đời thực
+Một dự án tích hợp API ngân hàng Châu Âu (PSD2) cho app ví điện tử. Triệu chứng: sandbox test fail 40% case do error {{invalid_scope}} và {{consent_expired}}, UAT kéo dài 6 tuần (dự kiến 2 tuần), compliance team từ chối sign-off do thiếu audit log. Điều tra: tôi so sánh spec OpenAPI với implementation — 3 endpoint thiếu header {{PSU-IP-Address}} bắt buộc, consent flow không redirect đúng SCA URL, và log không ghi {{consent_id}} cho audit. Nguyên nhân gốc: dev team chưa đọc kỹ RTS (Regulatory Technical Standards) của EBA, giả định OAuth2 standard đủ, và thiếu compliance checklist. Cách xử lý: (1) tạo compliance checklist 15 mục từ RTS, gán owner cho mỗi mục; (2) sửa 3 endpoint thêm header bắt buộc, fix consent redirect flow; (3) thêm structured log JSON có {{consent_id}}, {{psu_ip}}, {{timestamp}} cho audit; (4) chạy lại full test suite sandbox. Kết quả đo được: sandbox pass rate từ 60% lên 100%, UAT đóng trong 1 tuần, compliance sign-off ngay, 0 finding trong audit sau 3 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Làm việc với khách hàng quốc tế, tôi điều chỉnh quy trình: viết quyết định bằng văn bản bất đồng bộ, đặt mốc theo múi giờ đối tác, thiết kế API theo chuẩn quốc tế (OpenAPI, GDPR/APPI/CCPA compliance). Tôi không khái quát hóa văn hóa mà hỏi lại để xác nhận. Ví dụ với đối tác Châu Âu (PSD2), tôi tạo compliance checklist từ RTS, bắt buộc structured log cho audit, cam kết API version 6 tháng. Kết quả: UAT từ 6 tuần xuống 1 tuần, pass audit. Ba nguyên tắc: document mọi quyết định, deadline theo múi giờ người đọc, luôn kết thúc bằng câu hỏi cụ thể có ngày giờ. Điều này loại bỏ phần lớn hiểu lầm xuyên múi giờ."
 
 > Senior tip: công cụ đơn giản và hiệu quả nhất khi làm việc xuyên múi giờ là **ba nguyên tắc**: viết mọi quyết định vào tài liệu, đặt deadline theo múi giờ của người đọc, và luôn kết thúc bằng một câu hỏi cụ thể có ngày giờ. Ba thứ đó loại bỏ phần lớn sự cố lệch múi giờ, mà không cần "học giao tiếp văn hoá" chung chung.`,
 
