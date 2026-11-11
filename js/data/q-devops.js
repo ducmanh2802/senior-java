@@ -6258,6 +6258,13 @@ grep -n "OutOfMemoryError" /var/log/app/app.log
 3. **Nhầm OOME {{unable to create new native thread}} là heap**: tăng {{-Xmx}} có thể làm tệ hơn vì bớt RAM native cho thread. Cách tránh: đọc kỹ thông điệp OOME; kiểm tra số thread, {{-Xss}}, {{ulimit -u}}.
 4. **Chỉ nhìn log app khi process biến mất**: OOM killer không để lại log app. Cách tránh: luôn kiểm tra kernel log/K8s events.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Service thanh toán Java 17 trên Kubernetes restart liên tục lúc 2h sáng, dashboard báo container restart count tăng 6 lần trong 20 phút. Người trực nhìn log ứng dụng chỉ thấy log khởi động lặp lại, không có {{OutOfMemoryError}} hay stack trace lỗi cuối.
+- **Điều tra:** {{kubectl describe pod payment-api-7f9d8-abc}} cho thấy {{Last State: Terminated, Reason: OOMKilled, Exit Code: 137, Finished At 02:14}}. Trên node worker, {{dmesg -T | grep -i "killed process"}} ghi {{Out of memory: Killed process 41288 (java) anon-rss:1835008kB}}. Đối chiếu cấu hình: container limit 2Gi, JVM chạy {{-Xmx1536m}} nhưng còn metaspace, thread stack (200 thread Tomcat × ~1MB) và direct buffer Netty, tổng RSS thực tế vượt 2Gi khi traffic batch tăng.
+- **Nguyên nhân gốc:** Kernel OOM killer giết process do cgroup memory limit bị vượt (SIGKILL), không phải JVM tự ném OOME; heap 1536m chiếm quá nhiều phần trong limit 2Gi nên không đủ chỗ cho vùng nhớ native.
+- **Cách xử lý:** Đổi sang {{-XX:MaxRAMPercentage=60.0}}, giảm {{-Xss512k}} và giới hạn thread pool, đặt {{resources.limits.memory}} lên 2304Mi sau khi đo RSS thực tế; bổ sung alert {{container_memory_working_set_bytes}} ở ngưỡng 85%.
+- **Kết quả đo được:** Trong 14 ngày sau deploy, không còn {{OOMKilled}}, restart count về 0 ngoài rolling deploy, p99 latency ổn định ~180ms trong khung batch đêm.
+
 ### Trả lời phỏng vấn
 Em phân biệt hai trường hợp. OutOfMemoryError là JVM ném ra khi heap/metaspace/direct memory/... không đủ — log app có stack trace, có thể có heap dump nếu bật {{HeapDumpOnOutOfMemoryError}}. OOM killer là kernel Linux giết process (thường SIGKILL, exit 137) khi hệ thống hoặc cgroup cạn RAM — log app thường im lặng, bằng chứng nằm ở {{dmesg -T}} hoặc {{journalctl -k}} và trên Kubernetes là {{OOMKilled}}. Cách sửa khác nhau: OOME thì phân tích heap dump, chỉnh {{-Xmx}} hoặc sửa leak; OOM killer thì đảm bảo memory limit đủ cho tổng RSS (heap + non-heap + thread + direct buffer), dùng {{MaxRAMPercentage}} thay vì hardcode {{-Xmx}} quá sát limit.
 
@@ -6374,6 +6381,13 @@ Ngoài ra: {{DirectoryStream}} (NIO) phải close; {{WatchService}} nếu tạo 
 2. **Sửa {{/etc/security/limits.conf}} cho systemd service**: không có tác dụng. Cách tránh: đặt {{LimitNOFILE}} trong unit file systemd.
 3. **Nhầm "Too many open files" chỉ là file trên đĩa**: phần lớn trường hợp trên service mạng là **socket**. Cách tránh: dùng {{lsof}} phân loại theo TYPE.
 4. **Đóng resource ở nhánh happy-path nhưng quên khi exception**: rò rỉ chỉ xuất hiện khi có lỗi. Cách tránh: luôn dùng try-with-resources cho {{Closeable}}/{{AutoCloseable}}.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Service import hồ sơ chạy liên tục 3 ngày thì bắt đầu ném {{java.io.IOException: Too many open files}} khi gọi đối tác; sau đó API upload lỗi hàng loạt, phải restart pod mới hết tạm thời.
+- **Điều tra:** {{cat /proc/23140/limits}} thấy {{Max open files 4096}}; {{ls /proc/23140/fd | wc -l}} trả về 4091. Chạy {{lsof -nP -p 23140}} rồi thống kê cột TYPE cho thấy 3720 bản ghi {{REG}} trỏ vào {{/data/tmp/import}}. Metric {{process_files_open_files}} tăng đều ~2 fd/phút từ lúc deploy.
+- **Nguyên nhân gốc:** Code dùng {{Files.lines(path).forEach(...)}} trong batch job mà không đặt trong try-with-resources, nên Stream giữ file descriptor mở tới khi GC dọn; khi job chạy chậm/exception, fd tích lũy và chạm {{RLIMIT_NOFILE}}.
+- **Cách xử lý:** Đổi sang dùng try-with-resources với {{Files.lines(path)}} (ví dụ: {{try (var lines = Files.lines(path))}} rồi xử lý trong block) và rà soát các chỗ {{Files.list/walk}}; thêm {{LimitNOFILE=65536}} trong unit systemd như biện pháp an toàn, bật alert khi {{open_fds/max_fds > 0.7}}.
+- **Kết quả đo được:** Sau bản vá, số fd dao động ổn định 180–260 trong 7 ngày, không còn lỗi "Too many open files", job import 50.000 hồ sơ/đêm hoàn tất mà không cần restart thủ công.
 
 ### Trả lời phỏng vấn
 "Too many open files" nghĩa là process chạm {{RLIMIT_NOFILE}}. Em kiểm tra giới hạn thực của process qua {{/proc/<PID>/limits}} (không chỉ {{ulimit}} trong shell) vì systemd/container có thể đặt khác. Em đo số fd bằng {{ls /proc/<PID>/fd | wc -l}} và phân loại bằng {{lsof -p}} để biết là socket hay file thường. Trong Java, nguyên nhân hay gặp là quên đóng resource: {{Files.lines/list/walk}} trả Stream giữ fd, {{InputStream}}/{{Socket}}/{{ZipFile}} không close, hoặc HTTP/DB connection không trả về pool — fix bằng try-with-resources và cấu hình pool đúng. Em tăng {{LimitNOFILE}} (systemd) hoặc ulimit container như biện pháp an toàn, nhưng luôn xử lý leak gốc và thêm giám sát {{open_files}} theo thời gian.
@@ -6492,6 +6506,13 @@ tar czf $OUT.tgz $OUT
 2. **Restart reflex (phản xạ restart)**: dập triệu chứng nhưng lặp lại, không có dữ liệu root cause. Cách tránh: checklist "thu bằng chứng tối thiểu" trước restart; tự động hoá thu thập.
 3. **Postmortem biến thành buổi quy lỗi**: mọi người giấu thông tin lần sau. Cách tránh: blameless, tập trung vào guardrail (alert, test, circuit breaker, limit, review).
 4. **Action items mơ hồ, không owner/deadline**: "cải thiện monitoring" không bao giờ xong. Cách tránh: mỗi action có người chịu trách nhiệm, hạn, và tiêu chí hoàn thành.
+
+### Ví dụ đời thực
+- **Triệu chứng:** 20:05 ngày thứ Sáu, alert SEV1 báo tỉ lệ giao dịch thanh toán thành công giảm từ 99,8% xuống 72% trong 8 phút; p99 API {{/pay}} tăng từ 350ms lên 9s. CS nhận khoảng 120 ticket "chờ mã OTP/xác nhận mãi".
+- **Điều tra:** On-call mở runbook, đặt Incident Commander, chụp bằng chứng trước khi can thiệp: 3 thread dump cách 10 giây bằng {{jcmd}}, {{ss -s}}, {{lsof -p}}, {{dmesg -T | tail}} và snapshot dashboard. Thread dump cho thấy 180/200 thread Tomcat đang chờ lấy connection từ pool Hikari ({{maxPoolSize}}=20) do truy vấn bảng {{payment_session}} giữ lock lâu; deploy 19:40 vừa thêm truy vấn thiếu index.
+- **Nguyên nhân gốc:** Thay đổi schema/query trong bản deploy làm câu lệnh quét bảng và giữ lock dài, kéo cạn connection pool; retry từ client làm tải tăng thêm (contributing factor: chưa có circuit breaker phía gọi).
+- **Cách xử lý:** Mitigate bằng rollback image về bản 19:30 (theo tiêu chí SEV1 đã chốt), xác nhận giao dịch treo với nghiệp vụ để tránh double-charge; sau khi ổn, resolve bằng thêm index và load test truy vấn mới.
+- **Kết quả đo được:** Sau rollback lúc 20:18, success rate phục hồi 99,7% và p99 về 320ms trong 6 phút; tổng thời gian ảnh hưởng 21 phút (~2.400 giao dịch lỗi/timeout). Postmortem 48 giờ sau sinh 4 action items có owner (index, alert lock wait, circuit breaker, cập nhật runbook).
 
 ### Trả lời phỏng vấn (góc lead)
 Em xây runbook theo vòng đời Detect, Triage, Mitigate, Communicate, Resolve, Postmortem. Phần quan trọng nhất với Java là checklist thu bằng chứng trước khi restart: 3 thread dump cách nhau, thông tin heap/GC, số fd/socket, và {{dmesg}} để phân biệt OOM killer với OOME — vì restart xoá trạng thái RAM. Em phân mức SEV rõ, có Incident Commander, mẫu cập nhật stakeholder định kỳ, và ma trận escalation để đúng người tham gia trong vài phút. Sau sự cố là blameless postmortem với action items có owner và deadline. Mục tiêu của em là giảm MTTR và lặp lại sự cố, không phải tìm ai sai. Trong bối cảnh thanh toán, em thêm bước kiểm soát ảnh hưởng giao dịch và phối hợp nghiệp vụ/tuân thủ.
@@ -7038,6 +7059,16 @@ Một team ra mắt tính năng chuyển tiền nhanh: **SA** quyết định d�
 ### Câu trả lời phỏng vấn nên nói thế nào
 "Em hiểu ở ngân hàng DevOps thường tách vai: SA thiết kế kiến trúc tổng thể và trade-off, Platform/DevOps xây CI/CD và nền tảng K8s, Infra lo máy chủ/mạng/Linux, SRE lo SLO, giám sát và xử lý sự cố, còn Cloud Security lo IAM, cô lập mạng và tuân thủ. Với nền tảng dev Java 4 năm, em nhắm vai Platform hoặc SRE vì em hiểu cách ứng dụng build/chạy/hỏng (probe, graceful shutdown, connection pool, JVM), và em đang bổ sung Linux, container/K8s, pipeline và observability để đóng được phần hạ tầng quanh ứng dụng."
 
+### Ví dụ đời thực
+- **Triệu chứng:** Một ngân hàng có 12 team chuyển dần hệ thống lên AWS; mỗi sự cố production phải họp cả nhóm lớn nhưng không rõ ai quyết định rollback, ai xem log hạ tầng, ai chịu trách nhiệm IAM, dẫn đến MTTR trung bình 70 phút dù lỗi ứng dụng không phức tạp.
+- **Điều tra:** Sau 2 tháng ghi nhận incident, SRE tổng hợp 15 sự cố: 6 vụ chậm do thiếu SLO/alert rõ, 4 vụ deploy lỗi do pipeline mỗi team tự làm khác nhau, 3 vụ nghẽn mạng/IAM do chưa có ranh giới Platform-Infra-Security, 2 vụ thiết kế tích hợp không chịu tải cao vì SA tham gia muộn. {{postmortem}} cho thấy runbook và owner không được phân vai theo mảng.
+- **Nguyên nhân gốc:** Tổ chức gọi chung là "DevOps" nhưng không định nghĩa trách nhiệm: thiếu Platform chuẩn hóa CI/CD-K8s, thiếu SRE đo độ tin cậy, Security tham gia muộn, SA không có checklist kiến trúc trước go-live.
+- **Cách xử lý:** Tách vai rõ: Platform xây Helm chart/pipeline chuẩn, SRE định nghĩa SLO p99 và on-call/runbook, Infra quản lý mạng/Linux, Cloud Security review IAM và guardrail, SA chủ trì thiết kế tích hợp. Dev Java nền tảng ứng dụng được luân chuyển sang Platform để đóng khoảng trống giữa app và triển khai.
+- **Kết quả đo được:** Sau 1 quý, thời gian triển khai môi trường mới giảm từ 5 ngày xuống 1 ngày, tỉ lệ deploy lỗi giảm ~40%, MTTR trung bình giảm còn 28 phút nhờ runbook và owner rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nói về DevOps trong ngân hàng đang lên cloud, em không xem đó là một vai duy nhất mà là tập hợp vai trò phối hợp. SA thiết kế kiến trúc tổng thể và cân nhắc trade-off giữa chi phí, bảo mật, độ tin cậy và tuân thủ. DevOps hoặc Platform xây đường ống CI/CD, chuẩn hóa cách đóng gói và triển khai lên Kubernetes. Infra hoặc System lo máy chủ, mạng, Linux, còn SRE tập trung vào SLO, quan sát, cảnh báo và xử lý sự cố để giữ hệ thống ổn định. Cloud Security kiểm soát IAM, cô lập mạng, mã hóa và yêu cầu tuân thủ. Với nền tảng dev Java khoảng bốn năm, em thấy hướng tự nhiên nhất là Platform hoặc SRE vì em đã hiểu cách ứng dụng Spring Boot build, chạy, log, dùng connection pool và hỏng như thế nào. Em đang bổ sung Linux, container, Kubernetes và observability để đóng góp tốt ở lớp vận hành quanh ứng dụng."
+
 > Senior tip: Khi phỏng vấn bất kỳ vai "DevOps" nào ở ngân hàng, hãy hỏi ba điều: (1) bạn sẽ **xây nền tảng** hay **vận hành hệ thống có sẵn**, (2) có **on-call** và quy trình incident không, (3) ranh giới với Security/Infra ở đâu. Câu trả lời cho thấy vai thật sự, và giúp bạn không nhận nhầm một việc thuần vận hành khi mục tiêu là Platform/SRE.`,
   follow: ['Sự khác nhau giữa SRE và DevOps truyền thống là gì? (gợi ý: SLO, error budget, toil)', 'Một Platform Engineer cần hiểu gì về ứng dụng Java để hỗ trợ team dev tốt (probe, resource, JVM)?', 'Khi SA thiết kế hệ thống lên AWS cho ngân hàng, những ràng buộc tuân thủ/bảo mật nào thường ảnh hưởng quyết kiến trúc?'],
   tags: ['devops-roles', 'SA', 'SRE', 'platform', 'cloud-security', 'career'],
@@ -7481,6 +7512,16 @@ sudo journalctl -u loan-service -f              # theo dõi real-time
 | ss -tlnp | xem port đang listen và process | Thay netstat, cần quyền root để xem PID |
 | uptime | xem load average | 3 số là trung bình 1/5/15 phút |
 
+### Ví dụ đời thực
+- **Triệu chứng:** Sau khi reboot server bảo trì lúc 02:00, ứng dụng Spring Boot {{loan-service}} không phục vụ request; healthcheck báo kết nối bị từ chối trên port 8080, khách hàng không tra cứu được khoản vay.
+- **Điều tra:** {{systemctl status loan-service}} trả về {{failed (Result: exit-code)}} với {{Active: activating (auto-restart)}} lặp lại. {{journalctl -u loan-service -n 100 --since "02:00"}} thấy {{Error: Unable to access jarfile /opt/loan-service/loan-service.jar}} và {{Permission denied}}. Kiểm tra {{ls -l /opt/loan-service}} cho thấy file jar thuộc {{root:root}} quyền {{640}}, trong khi unit chạy {{User=loansvc}}.
+- **Nguyên nhân gốc:** Khi deploy bản mới, người thao tác copy jar bằng root nhưng quên {{chown loansvc:loansvc}}; systemd restart theo {{Restart=always}} nhưng process thoát ngay vì không đọc được jar.
+- **Cách xử lý:** {{sudo chown loansvc:loansvc /opt/loan-service/loan-service.jar}} và {{sudo chmod 640 /opt/loan-service/loan-service.jar}}, sau đó {{systemctl restart loan-service}}. Bổ sung bước kiểm tra quyền vào script deploy và alert khi service {{failed}} quá 3 lần/phút.
+- **Kết quả đo được:** Service lên lại sau 4 phút từ lúc phát hiện, {{systemctl is-active}} trả {{active}} ổn định; trong 30 ngày tiếp theo không còn sự cố khởi động do quyền file.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi cần chạy một ứng dụng Spring Boot như dịch vụ trên Linux, tôi viết unit file systemd với user riêng, đặt WorkingDirectory, ExecStart trỏ tới java -jar và cấu hình Restart=always kèm RestartSec để tự hồi phục khi process chết. Tôi luôn chạy daemon-reload, enable để tự khởi động sau reboot, rồi kiểm tra bằng systemctl status. Khi dịch vụ không lên, tôi đi theo chuỗi: xem status và exit code, đọc journalctl -u theo mốc thời gian, rồi kiểm tra các nguyên nhân hay gặp như quyền đọc jar, biến môi trường/profile thiếu, port bị chiếm bằng ss -tlnp, hoặc giới hạn bộ nhớ. Ví dụ thực tế, sau một lần reboot app restart liên tục do jar copy bằng root sai quyền; journalctl cho thấy Permission denied, tôi sửa chown/chmod và bổ sung bước kiểm tra quyền vào deploy. Với dịch vụ Java tôi cũng đặt MemoryMax và cấu hình -Xmx phù hợp để tránh OOM kill."
+
 > Senior tip: Trên production, đừng để app chạy dưới root. Nếu app cần bind port dưới 1024 (ví dụ 80/443), hãy dùng {{setcap cap_net_bind_service=+ep}} trên java binary hoặc để reverse proxy (Nginx) lắng nghe port 80/443 rồi chuyển tiếp qua port 8080 (app chạy port cao, an toàn hơn).`,
   follow: ['Khi app Java khởi động rồi lập tức died, bạn kiểm tra thứ tự gì đầu tiên? (gợi ý: journalctl, systemctl status, quyền file, port đã chiếm chưa)', 'Tại sao nên đặt Restart=always nhưng kèm RestartSec, thay vì để systemctl restart liên tục không chờ?', 'Làm sao giới hạn RAM cho Java service trên Linux tránh OOM Kill? (gợi ý: -Xmx, MemoryMax, cgroup)'],
   tags: ['linux', 'systemd', 'java-service', 'journalctl', 'troubleshooting']
@@ -7578,6 +7619,16 @@ Rồi chỉ cần {{ssh app}}.
 | AllowUsers | Đăng nhập của user không mong muốn | Thấp |
 | fail2ban | Brute-force SSH, quét port | Thấp |
 | Bastion/ProxyJump | Server đính Internet bị tấn công trực tiếp | Trung bình (dùng thêm server) |
+
+### Ví dụ đời thực
+- **Triệu chứng:** Một server ứng dụng mở port 22 ra Internet xuất hiện cảnh báo bảo mật: {{/var/log/auth.log}} ghi hàng nghìn dòng {{Failed password for invalid user}} từ nhiều IP trong 2 giờ, CPU tăng nhẹ do sshd xử lý kết nối liên tục.
+- **Điều tra:** {{grep "Failed password" /var/log/auth.log | wc -l}} cho ~18.000 lần thử; {{lastb}} và {{journalctl -u sshd}} cho thấy bot thử các username phổ biến (root, admin, ubuntu). Kiểm tra {{sshd -T | grep -E 'permitrootlogin|passwordauthentication'}} thấy {{permitrootlogin yes}} và {{passwordauthentication yes}} trên server cũ chưa harden.
+- **Nguyên nhân gốc:** SSH cho phép đăng nhập root bằng mật khẩu và không có cơ chế chặn brute-force, tạo bề mặt tấn công lớn; mật khẩu yếu hoặc lộ có thể dẫn tới chiếm quyền.
+- **Cách xử lý:** Tạo khóa SSH cho admin, cấu hình {{PermitRootLogin no}}, {{PasswordAuthentication no}}, {{AllowUsers}} chỉ định tài khoản vận hành, cài {{fail2ban}} ({{maxretry 3}}, {{bantime 1h}}) và đưa server vào private subnet, truy cập qua bastion với {{ProxyJump}}. Sau thay đổi, kiểm tra bằng session SSH thứ hai trước khi đóng session cũ.
+- **Kết quả đo được:** Trong 7 ngày theo dõi, số lần đăng nhập thất bại còn ~40/ngày (đa số bị {{fail2ban}} chặn sau vài lần), không còn đăng nhập root trực tiếp, và mọi truy cập quản trị đều đi qua bastion có log tập trung.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bảo mật SSH trên Linux, tôi ưu tiên giảm bề mặt tấn công theo từng lớp. Trước hết tôi dùng khóa SSH thay mật khẩu vì không thể brute-force như mật khẩu và dễ thu hồi; sau đó tôi tắt đăng nhập root và chỉ cho phép các user cần thiết bằng AllowUsers, buộc thao tác đặc quyền đi qua sudo có kiểm soát. Tôi cài fail2ban để tự chặn IP thử sai nhiều lần và, với hệ thống production, tôi không để server ứng dụng lộ port 22 ra Internet mà truy cập qua bastion/jump host bằng ProxyJump. Khi thay đổi cấu hình sshd tôi luôn giữ một phiên đang mở và dùng sshd -t để tránh tự khóa mình. Trong một trường hợp thực tế, server bị hàng nghìn lần thử mật khẩu do còn bật PasswordAuthentication; sau khi chuyển sang khóa, cấm root và thêm fail2ban, số lần thất bại giảm mạnh và truy cập được kiểm soát qua bastion."
 
 > Senior tip: Trên production, hãy centralized tập hợp public key của team vào một repos và dùng công cụ (ví dụ Ansible, Terraform, hoặc ssh-ca) để đẩy/thu hồi khóa tự động. Cứ thủ công sửa {{authorized_keys}} trên mỗi server sẽ sớm rối và khóa cũ không bao giờ bị xoá. Ghi log mọi phiên SSH ({{/var/log/auth.log}}) và gửi về SIEM để kiểm tra khi có sự cố.`,
   follow: ['Tại sao nên dùng khóa SSH thay vì mật khẩu trên server production?', 'Làm sao kiểm tra xem fail2ban đã chặn IP nào chưa? (gợi ý: fail2ban-client status sshd)', 'Khi không thể ssh vào server, bạn kiểm tra thứ tự gì: sshd đang chạy, port, firewall, hay khóa sai?'],
