@@ -692,6 +692,12 @@ Bộ integration test 600 case chạy 18 phút và khoảng 1/5 số lần chạ
 - **Quên phần "thay đổi để không lặp lại"**: đây mới là phần phân biệt senior với mid.
 - **Bịa sự cố**: nếu chưa từng gặp P1, hãy kể sự cố nghiêm trọng nhất bạn có — tính trung thực quan trọng hơn độ dramatic.
 
+### Ví dụ đời thực
+Một dịch vụ đặt hàng (Spring Boot 3.1, Postgres 15) gặp sự cố P1 lúc 19:30 thứ Sáu — giờ cao điểm cuối tuần. Triệu chứng: API tạo đơn trả về 500, error rate 42%, khoảng 8.500 đơn bị ảnh hưởng trong 28 phút. Điều tra: tôi truy xuất log APM (Datadog) và thấy p99 latency của endpoint {{/api/orders}} nhảy từ 180 ms lên 4,1 giây; đồng thời connection pool Hikari cạn kiệt (active = maxPoolSize = 30, idle = 0). Tôi kiểm tra {{pg_stat_activity}} trên Postgres và thấy 30 session đang chạy query {{SELECT * FROM order_items WHERE order_id = ?}} — mỗi request tạo đơn đang chạy 6 truy vấn con lồng nhau (N+1) do code mới deploy hôm đó thêm logic tính phí ship cho từng món. Nguyên nhân gốc: PR thêm tính năng phí ship dùng vòng lặp gọi repository thay vì batch query, và config connection pool không được điều chỉnh cho tải cao. Cách xử lý: (1) rollback deploy trong 3 phút khôi phục 80% traffic; (2) hotfix đổi vòng lặp thành {{findAllByOrderIdIn}} một truy vấn, deploy lại; (3) tăng maxPoolSize từ 30 lên 60 và thêm {{minimumIdle=10}}. Kết quả đo được: error rate giảm từ 42% xuống 0,05% trong 15 phút; p99 ổn định ở 210 ms; trong 3 tháng sau không còn sự cố cạn pool nào, MTTR trung bình giảm từ 35 phút xuống 9 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Sự cố nghiêm trọng nhất tôi xử lý là một sự cố P1 tại dịch vụ đặt hàng lúc giờ cao điểm cuối tuần. API tạo đơn bị lỗi 500, error rate 42%, 8.500 đơn bị ảnh hưởng trong 28 phút. Tôi ngay lập tức rollback bản deploy gây ra sự cố trong 3 phút để cắt thiệt hại, sau đó điều tra bằng APM và {{pg_stat_activity}}. Nguyên nhân gốc là code mới thêm logic phí ship dùng N+1 query (6 truy vấn con mỗi request) mà connection pool vẫn giữ ở 30 — ở tải cao pool cạn kiệt. Tôi hotfix đổi thành batch query một lần, tăng pool lên 60, thêm minimumIdle. Kết quả: p99 từ 4,1 giây xuống 210 ms, error rate dưới 0,1%, và 3 tháng sau không còn sự cố pool, MTTR giảm từ 35 xuống 9 phút. Bài học: mọi thay đổi logic DB phải đi kèm load test và điều chỉnh pool size."
+
 > Senior tip: chuẩn bị sẵn **3 câu chuyện** ở 3 mức: một sự cố do bạn gây ra (thể hiện chủ động), một sự cố do người khác gây ra (thể hiện phối hợp), và một lần bạn phải nói "tôi đã sai" (thể hiện trung thực). Ba câu chuyện đó, dùng lại được cho cả phỏng vấn behavioral lẫn phỏng vấn kỹ thuật.`,
   follow: [
     'Nếu sự cố xảy ra lúc 2 giờ sáng và bạn không phải người trực, bạn nhận biết qua kênh nào?',
@@ -736,6 +742,12 @@ Interviewer giỏi sẽ hỏi tiếp "có lần nào bạn không thuyết phụ
 - **Câu chuyện kết thúc ở việc "tôi thắng"**: interviewer muốn biết bạn xử lý thế nào **dù thắng hay thua**.
 - **Bỏ qua khía cạnh con người**: một câu chuyện bất đồng mà không có chi tiết về cách bạn bảo vệ quan hệ làm việc sẽ thiếu thuyết phục.
 
+### Ví dụ đời thực
+Một dự án thanh toán (Spring Boot 3.0, PostgreSQL 14, Redis 7) đang chịu tải 2.000 RPS ở cao điểm. Tech lead đề xuất cache toàn bộ giỏ hàng vào Redis để giảm tải DB 40%. Triệu chứng sau khi triển khai bản thử 5% traffic trong 3 ngày: cache hit rate chỉ 18% vì giỏ hàng bị sửa liên tục (mỗi lần sửa xoá cache), serialization overhead làm p99 latency đọc tăng 12 ms, tổng latency gần như không giảm, trong khi đội infra phải vận hành thêm cụm Redis. Điều tra: tôi dùng {{pg_stat_statements}} và phát hiện 2/3 tải giỏ hàng đến từ một query thiếu composite index ({{user_id, status, updated_at}}) và một API header gọi đếm số món ở mọi trang. Cách xử lý: tôi trình bày số liệu cho tech lead — hit rate 18%, p99 +12ms, DB load giảm không đáng kể, thêm chi phí vận hành Redis. Tech lead đồng ý dừng cache, team chuyển sang thêm composite index và trả số món trong response giỏ hàng. Kết quả đo được sau 2 tuần: tổng tải DB giảm 28% không thêm hạ tầng, p99 API giỏ hàng từ 380 ms xuống 210 ms, chi phí Redis tiết kiệm ~$400/tháng. Tech lead sau đó mời tôi review cùng các đề xuất cache tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Một lần tech lead muốn cache toàn bộ giỏ hàng vào Redis để giảm 40% tải DB. Tôi không phản đối vấn đề nhưng phản đối cách giải quyết. Tôi đề xuất đo thử 5% traffic 3 ngày: hit rate chỉ 18% vì giỏ hàng sửa liên tục, serialization làm p99 tăng 12ms, tổng latency không giảm, còn phải thêm cụm Redis. Tôi dùng {{pg_stat_statements}} tìm ra 2/3 tải do query thiếu index và API đếm số món gọi ở mọi trang. Tôi trình bày bằng số liệu: hit rate thấp, latency tăng, chi phí thêm. Tech lead đồng ý dừng, team thêm composite index và trả số món trong response. Kết quả: DB load giảm 28%, p99 từ 380ms xuống 210ms, tiết kiệm $400/tháng Redis. Bài học: bất đồng phải dùng bằng chứng, không dùng cảm tính, và luôn đề xuất phương án thay thế có đo được."
+
 > Senior tip: chuẩn bị **hai phiên bản** cho cùng một sự kiện: một phiên bản cho vị trí senior và một cho vị trí lead. Ở vai trò senior, bạn tập trung vào việc **làm rõ vấn đề và đưa ra bằng chứng**; ở vai trò lead, bạn tập trung vào việc **đưa ra lựa chọn đã cân nhắc chi phí cơ hội và tự quyết khi không thể có đồng thuận**. Cùng một sự kiện, hai mức kỳ vọng hoàn toàn khác nhau.`,
   follow: [
     'Bạn có bao giờ phải **không** thuyết phục được người khác không? Bạn xử lý việc đó thế nào?',
@@ -777,6 +789,12 @@ Interviewer giỏi sẽ hỏi tiếp "có lần nào bạn không thuyết phụ
 - **Bỏ qua việc cần nuôi dưỡng quan hệ**: mentoring chỉ hiệu quả khi người đó tin bạn.
 - **Không kết nối mentoring với công việc thật**: bạn phải giao việc có độ khó tăng dần, nếu không không có gì để đo.
 
+### Ví dụ đời thực
+Một kỹ sư mới (8 tháng kinh nghiệm) được giao module thanh toán VNPAY/MoMo. Vấn đề: PR phải sửa 2,8 vòng trung bình, review thời gian 2 ngày, hay bỏ sót null check và race condition khi tạo đơn. Tôi thiết kế hệ thống mentoring 5 tháng: (1) mục tiêu 'tự review PR trước khi gửi'; (2) review ngược — tôi gửi lại PR kèm số lượng lỗi (không chỉ vị trí), để bạn tự tìm và đối chiếu; (3) 1-1 hàng tháng với câu hỏi 'tháng này bạn tự bắt lỗi gì mà trước đây không bắt được?'. Kết quả đo được: vòng sửa PR từ 2,8 xuống 1,1; review time từ 2 ngày xuống 4 giờ; bạn tự viết 4 module mới không cần review trước; sau đó được lên lead nhóm 3 người. Bổ sung: một người khác tôi mentoring 3 tháng không tiến (vẫn PR sửa 3 vòng) vì ngại hỏi và không làm bài tập review ngược — tôi chuyển sang pairing trực tiếp 2h/tuần, sau 6 tuần vòng sửa xuống 1,5.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi mentoring một kỹ sư 8 tháng kinh nghiệm làm module thanh toán. Vấn đề: PR sửa 2,8 vòng, review 2 ngày, hay bỏ sót null check và race condition. Tôi đặt mục tiêu 'tự review PR trước khi gửi', dùng review ngược (tôi gửi lại PR kèm số lượng lỗi để bạn tự tìm), và 1-1 hàng tháng hỏi 'bạn tự bắt lỗi gì tháng này?'. Kết quả 5 tháng: vòng sửa từ 2,8 xuống 1,1, review time từ 2 ngày xuống 4 giờ, bạn tự viết 4 module mới và lên lead nhóm 3 người. Có một người mentoring 3 tháng không tiến do ngại hỏi, tôi chuyển sang pairing 2h/tuần, 6 tuần sau vòng sửa xuống 1,5. Bài học: mentoring phải thiết kế để người học tự tạo phản hồi, không phải nói thay, và phải điều chỉnh phương pháp cho từng người."
+
 > Senior tip: khi bạn được hỏi về mentoring ở vòng phỏng vấn senior/lead, hãy chuẩn bị **một câu chuyện có số liệu trước/sau** và **một câu chuyện về một người bạn không mentoring thành công**. Câu thứ hai cho thấy bạn hiểu mentoring không phải công thức áp cho mọi người, và đó là dấu hiệu của tư duy lead.`,
   follow: [
     'Bạn đo lường hiệu quả của mentoring bằng cách nào ngoài cảm nhận chủ quan?',
@@ -817,6 +835,12 @@ Interviewer giỏi sẽ hỏi tiếp "có lần nào bạn không thuyết phụ
 - **Kết thúc bằng "bài học là phải cẩn thận hơn"**: câu này không có giá trị, hãy nói rõ bạn đã **thay đổi quy trình thế nào**.
 - **Đổ lỗi bối cảnh**: "quyết định đó là của kiến trúc sư" — vẫn là quyết định bạn đồng ý chịu trách nhiệm.
 - **Không nói rõ mình đã gây ra thiệt hại bao nhiêu**: sự cụ thể là điều tác giả của câu trả lời tin vào bạn.
+
+### Ví dụ đời thực
+Một dịch vụ sàn TMĐT (Spring Boot 2.7, PostgreSQL 13) quyết định đọc tồn kho từ read replica để giảm tải primary. Triệu chứng: test tải bình thường lag replica 200-300ms, mọi thứ ổn. Ngày flash sale, ghi hàng loạt làm lag replica nhảy tới 4 giây. Hệ quả: hệ thống bán oversell 0,7% (1.900 đơn), phải hoàn tiền và bù hàng dự bị. Điều tra: replication lag tại cao điểm không được đo trước; quyết định chỉ dựa trên 80% query đọc ở tải trung bình. Cách xử lý: (1) chuyển đọc tồn kho về primary (strong consistency); (2) thêm bảng {{inventory_reserved}} ghi nhận khi đặt hàng, job đối soát hàng đêm; (3) bắt buộc mọi quyết định hạ tầng kèm mục 'hành vi khi tải đột biến' trong ADR và load test trước khi release. Kết quả đo được: 6 tháng sau 0 sự cố oversell, ADR template áp dụng cho 12 quyết định hạ tầng, load test bắt buộc chặn 3 thay đổi cấu hình pool rủi ro trước khi merge.
+
+### Trả lời mẫu khi phỏng vấn
+"Quyết định sai rõ ràng nhất: đọc tồn kho từ read replica Postgres để giảm tải primary. Lý do: 80% query là đọc. Cái tôi không kiểm tra: replication lag tại cao điểm. Test bình thường lag 200-300ms ổn, nhưng ngày flash sale lag nhảy 4 giây khiến oversell 0,7% (1.900 đơn). Tôi sửa bằng cách đọc từ primary, thêm bảng reserved và job đối soát. Quan trọng hơn: tôi nhận ra quy trình thiếu bước 'xét hành vi tải đột biến'. Tôi đề xuất ADR bắt buộc kèm mục đó và load test trước release. 6 tháng sau: 0 oversell, template áp dụng 12 quyết định, load test chặn 3 cấu hình rủi ro. Bài học: quyết định hạ tầng phải có số liệu tải cực đại, không chỉ trung bình."
 
 > Senior tip: hãy chuẩn bị sẵn 2 câu chuyện: một lỗi do **quyết định kiến trúc** (thể hiện tư duy hệ thống) và một lỗi do **thiếu cẩn trọng về vận hành** (thể hiện sự trưởng thành). Câu hỏi này cũng là nơi bạn thể hiện khả năng **nói thẳng điều chưa tốt** — với nhiều interviewer, đó là tín hiệu đáng tin cậy nhất mà họ tìm kiếm.`,
   follow: [
@@ -860,6 +884,12 @@ Interviewer giỏi sẽ hỏi tiếp "có lần nào bạn không thuyết phụ
 - **Đổ lỗi PM**: "PM bảo sai" — hãy nói bạn đã **đưa ra lựa chọn và đề xuất cách xử lý**.
 - **Không đưa ra lựa chọn cụ thể**: nói "chúng ta có thể làm nhanh hơn" mà không kèm danh sách đánh đổi là vô nghĩa.
 
+### Ví dụ đời thực
+PM cam kết khách hàng có tính năng 'xuất báo cáo tổng hợp' trong 12 ngày. Backlog 3 hạng mục 21 story points, 2 dev velocity 13 points/2 tuần. Tôi phân rã task nhỏ: lộ ra điểm bất định là 'định nghĩa báo cáo ai xem gì' cần chờ khách hàng. Tôi đưa ra 3 phương án cho PM trước khi cam kết: (A) 21 points đầy đủ, rủi ro trễ 50%; (B) 13 points báo cáo duy nhất cho quản lý dùng filter cũ, chi tiết ra sprint sau; (C) cắt chất lượng (không test, không xử lý lỗi). PM chọn B, tôi cam kết 13/21 points, ghim mốc giữa sprint rà soát. Kết quả: giao đúng hạn 13 points, 0 P1, khách hàng dùng ngay, không yêu cầu đột xuất. Sprint sau giao 8 points còn lại đúng hạn. Bổ sung: một dự án khác PM không đồng ý cắt scope, tôi đề xuất gia hạn 1 tuần + thêm 1 dev tạm, PM chấp nhận, giao trễ 3 ngày nhưng đầy đủ chất lượng.
+
+### Trả lời mẫu khi phỏng vấn
+"PM cam kết báo cáo tổng hợp trong 12 ngày, backlog 21 points, 2 dev velocity 13/2 tuần. Tôi phân rã task, phát hiện điểm bất định 'định nghĩa báo cáo' cần chờ khách. Tôi đưa 3 phương án: A) đầy đủ rủi ro trễ, B) 13 points báo cáo quản lý dùng filter cũ, chi tiết sprint sau, C) cắt chất lượng. PM chọn B, tôi cam kết 13/21 points, ghim mốc giữa sprint. Kết quả: giao đúng hạn, 0 P1, khách hàng hài lòng. Sprint sau giao nốt 8 points. Có lần PM không đồng ý cắt, tôi đề xuất gia hạn 1 tuần + thêm dev, PM chấp nhận, trễ 3 ngày nhưng đầy đủ chất lượng. Bài học: deadline gấp thương lượng scope và ưu tiên, không phải thời gian, và phải làm ở đầu chu kỳ."
+
 > Senior tip: hãy luôn chuẩn bị **cách tính ước lượng của bạn** (velocity, điểm tương đương, hoặc bằng lịch trình ngược từ deadline) cùng với câu chuyện. Nhiều người trả lời câu này bằng trải nghiệm nhưng không dám nói "tôi ước lượng kiểu này" — và đó chính là thứ phân biệt một senior với một mid trong mắt interviewer.`,
   follow: [
     'Bạn có dùng story point không, và điểm story có thực sự giúp ích không?',
@@ -902,6 +932,12 @@ Interviewer giỏi sẽ hỏi tiếp "có lần nào bạn không thuyết phụ
 - **Hứa "sẽ dọn dẹp sau"**: không có ngân sách cụ thể thì nợ chỉ được dồn sang sprint sau.
 - **Tranh luận về nguyên tắc kỹ thuật thay vì mục tiêu sản phẩm**: ví dụ tranh cãi về việc dùng framework nào.
 - **Không nói rõ mình đã đo được gì** trước khi đề xuất.
+
+### Ví dụ đời thực
+Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12) velocity thực tế 25-28 points/sprint nhưng PM plan 40 points. Team cắt test, viết tạm, velocity giảm dần 3 quý. Tôi đo APM: màn hình báo cáo doanh thu chiếm 35% query time, bảng 80 triệu bản ghi, 3 sub-query mỗi load, p95 4,2s, 240 user/ngày, 30% đóng tab mở lại. Tôi trình bày PM: '3,3s chờ thừa × 240 người × 50 lần/ngày ≈ 11h công mất/ngày'. Đề xuất: 20% capacity/sprint (5-6 points) cho nợ, cam kết số liệu 2 sprint. Sửa: đưa báo cáo sang bảng tổng hợp ngày (materialized view refresh 1h). Kết quả 2 sprint: p95 4,2s→0,9s, ticket P1 báo cáo giảm 70%, ngân sách 20% thành quy ước team (vẫn hiệu lực sau khi tôi chuyển việc). Bổ sung: một module khác nợ do thiếu index, tôi không sửa ngay mà ghi nhận ADR 'accepted debt' với điều kiện monitor p95 < 2s, 6 tháng sau vẫn ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Team velocity 25-28 nhưng PM plan 40, team cắt test gây nợ tích lũy. Tôi không nói 'làm bớt feature' mà đo APM: báo cáo doanh thu 35% query time, p95 4,2s, 240 user, 30% reload. Tôi quy đổi: 3,3s chờ thừa × 240 × 50 ≈ 11h công mất/ngày. Đề xuất 20% capacity/sprint cho nợ, cam kết số liệu 2 sprint. Sửa: materialized view refresh 1h. Kết quả: p95 4,2s→0,9s, P1 giảm 70%, ngân sách 20% thành quy ước. Có module nợ thiếu index tôi ghi nhận ADR 'accepted debt' monitor p95<2s, 6 tháng ổn. Bài học: nợ phải nói bằng tiền/giờ, cần ngân sách cố định, không phải hứa hẹn."
 
 > Senior tip: hãy chuẩn bị **một câu số liệu quy đổi** mà bạn dùng để nói về nợ kỹ thuật với người không kỹ thuật — ví dụ '3,3 giây chờ thừa × 240 nhân viên × khoảng 50 lần mở báo cáo mỗi ngày ≈ 11 giờ công mất đi mỗi ngày'. Nói rõ cách tính để người nghe tự kiểm tra được. Một câu như vậy thuyết phục tốt hơn cả một slide kiến trúc.`,
   follow: [
