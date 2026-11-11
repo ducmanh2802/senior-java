@@ -2890,6 +2890,9 @@ Với audit log, tôi khuyên **truyền actor tường minh**: dữ liệu ki�
 ### Trả lời miệng 1 phút
 "SecurityContext và MDC đều nằm trong ThreadLocal, còn @Async chạy trên thread khác của pool nên mất user và traceId. Tôi xác minh bằng cách log tên thread và authentication ở hai phía. Cách sửa là một TaskDecorator chụp context ở thread gọi, khôi phục ở thread worker và luôn clear trong finally, vì pool tái sử dụng thread. Tôi tránh MODE_INHERITABLETHREADLOCAL vì nó chỉ copy lúc tạo thread nên rò context giữa các request. Riêng audit log, tôi truyền actorId tường minh vào tham số để không phụ thuộc ThreadLocal."
 
+### Ví dụ đời thực
+Hệ thống duyệt khoản vay: khi nhân viên nhấn duyệt, service gọi {{@Async}} để ghi audit log không chặn giao diện. Sau kiểm toán, thấy hàng chục bản ghi audit có actor là {{anonymousUser}} hoặc NULL, không liên kết được request nào. Điều tra: log tên thread và authentication thấy thread HTTP là {{http-nio-8080-exec-7}} mang user "hoang", còn thread async là {{task-2}} có authentication null và log không có traceId. Nguyên nhân gốc: {{SecurityContext}} và MDC được lưu trong ThreadLocal, gắn với một thread; pool async chạy trên thread khác nên không thấy user và mã theo dõi của request gốc. Sửa: viết TaskDecorator chụp context ở thread gọi, khôi phục ở thread worker, luôn clear trong {{finally}}; thêm tham số actorId tường minh vào method ghi audit. Kết quả: actor audit đúng 100%, log async có traceId để nối với request trên Kibana.
+
 > Senior tip: hãy coi "context rò sang request khác" là **sự cố bảo mật**, không chỉ là bug log. Ở một hệ thống tôi từng làm, audit ghi nhầm người duyệt khoản vay vì InheritableThreadLocal + thread pool; sau đó team cấm cấu hình này bằng rule review và thêm test hai user liên tiếp cho mọi luồng async.`,
   follow: [
     'Virtual thread trong Java 21 có giải quyết được việc mất context không?',
@@ -2980,6 +2983,9 @@ public class OrderQueryService {
 
 ### Trả lời miệng 1 phút
 "Cảnh báo open-in-view là manh mối chính. OSIV giữ EntityManager mở suốt request nên khi Jackson serialize entity, mỗi quan hệ lazy bắn thêm query, thành N+1 ẩn ngoài service. Tôi bật Hibernate statistics để đếm query: 101 query cho 50 đơn. Cách sửa: tắt open-in-view, tải dữ liệu cần trong service read-only bằng EntityGraph cho quan hệ ToOne, batch fetch cho collection, map sang DTO trước khi rời transaction. Cuối cùng thêm test đếm số query với dữ liệu đủ lớn để chặn tái phát."
+
+### Ví dụ đời thực
+API danh sách đơn hàng {{GET /orders?size=50}}: ở dev chạy 40ms vì chỉ 3 đơn, nhưng production p95 900ms và HikariCP báo hết connection lúc cao điểm. Điều tra: bật Hibernate statistics, gọi API một lần, thấy 101 query (1 lấy đơn + 50 lấy khách hàng + 50 lấy danh mục), stack trace của câu SQL nằm trong Jackson khi serialize response. Nguyên nhân gốc: OSIV giữ EntityManager mở hết request, khi Jackson chạm quan hệ lazy ngoài transaction thì Hibernate bắn thêm query mỗi lần. Sửa: tắt {{spring.jpa.open-in-view=false}}, dùng {{@EntityGraph}} load kèm khách hàng, {{@BatchSize}} cho danh mục, map sang DTO trong transaction read-only. Kết quả: p95 xuống 85ms, pending connection về 0, số query mỗi request giảm từ 101 xuống 3.
 
 > Senior tip: ở dự án mới, tôi đặt {{spring.jpa.open-in-view=false}} ngay từ commit đầu tiên. Ở dự án cũ, tắt OSIV là thay đổi lớn: tôi bật nó theo từng nhóm endpoint sau khi đã có test đếm query, và thường thấy p95 các API danh sách giảm 3 đến 10 lần, connection pool bớt căng rõ rệt lúc cao điểm.`,
   follow: [
@@ -3088,6 +3094,9 @@ public class InvoiceService {
 ### Trả lời miệng 1 phút
 "Lỗi chỉ xuất hiện khi đông người là dấu hiệu race condition. Bean Spring mặc định là singleton, nên field currentInvoice và SimpleDateFormat được mọi request dùng chung. Tôi tái hiện bằng test 32 thread gọi song song và kiểm tra chủ hoá đơn. Cách sửa là đưa state vào biến cục bộ, thay SimpleDateFormat bằng DateTimeFormatter bất biến. Vì đây là lộ dữ liệu khách hàng, tôi còn phối hợp bảo mật để đánh giá phạm vi, và thêm rule tĩnh chặn field mutable trong singleton."
 
+### Ví dụ đời thực
+Chức năng tải PDF hoá đơn: khoảng 1 hoá đơn mỗi 20.000 lại in tên và số tiền của khách khác, chỉ xảy ra khi hơn 50 request đồng thời, máy dev không bao giờ tái hiện. Điều tra: kiểm tra code thấy {{InvoiceService}} là bean singleton có field {{currentInvoice}} và {{SimpleDateFormat}} có thể thay đổi. Viết test 32 thread gọi song song 2.000 lần, thấy khoảng 0,3% kết quả sai người. Nguyên nhân gốc: tất cả request dùng chung một đối tượng service, field nằm trên heap bị ghi đè xen kẽ giữa các thread; {{SimpleDateFormat}} giữ một Calendar chung bên trong nên cũng bị race. Sửa: đưa state vào biến cục bộ, thay {{SimpleDateFormat}} bằng {{DateTimeFormatter}} bất biến. Kết quả: test đồng thời 0 sai, không còn khiếu nại hoá đơn sai người.
+
 > Senior tip: quy tắc đơn giản nhất cho team: **service bean chỉ có field {{final}} trỏ tới dependency hoặc object bất biến**. Constructor injection với field final làm vi phạm lộ ra ngay khi review. Lỗi này hiếm khi gây crash, nó gây **sai dữ liệu âm thầm**, nên luôn đáng một test đồng thời.`,
   follow: [
     'Inject bean prototype vào singleton thì chuyện gì xảy ra, và sửa bằng {{ObjectProvider}} thế nào?',
@@ -3165,6 +3174,9 @@ Spring Boot tự bật các health group {{liveness}} và {{readiness}} khi phá
 
 ### Trả lời miệng 1 phút
 "CrashLoopBackOff mà không OOMKilled, tôi xem ngay Events của pod: thấy Liveness probe failed và container bị restart khoảng 60 giây sau khi start, trong khi app cần 92 giây. Lần restart lúc chạy thì trùng Full GC 14 giây trong GC log. Tôi thêm startupProbe cho giai đoạn khởi động, cho liveness trỏ vào health group liveness nhẹ, không kiểm tra DB, với timeout và threshold chịu được pause, còn readiness lo chuyện nhận traffic. Song song tôi xử lý gốc: rút ngắn startup và tìm vì sao heap đầy gây Full GC."
+
+### Ví dụ đời thực
+Pod order-service khởi động mất 92 giây vì warm-up cache lớn, nhưng liveness probe bắt đầu sau 30 giây, thất bại 3 lần mỗi 10 giây nên kubelet kill container ở khoảng 60 giây, trước khi ứng dụng sẵn sàng. Kết quả: CrashLoopBackOff, RESTARTS tăng đều, không có OOMKilled. Điều tra: {{kubectl describe pod}} hiển thị sự kiện "Liveness probe failed", xem log lần chạy trước bằng {{kubectl logs --previous}}. Nguyên nhân gốc: liveness kiểm tra quá sớm trong giai đoạn khởi động, và GC pause dài làm probe timeout liên tiếp. Sửa: thêm {{startupProbe}} cho tối đa 150 giây khởi động, liveness nhẹ chỉ kiểm tra process còn sống với {{timeoutSeconds: 3}} và {{failureThreshold: 6}}, readiness riêng cho traffic. Kết quả: pod không còn restart, ứng dụng nhận traffic sau khi sẵn sàng thật.
 
 > Senior tip: nguyên tắc của tôi là **liveness chỉ fail khi restart thực sự chữa được bệnh** (deadlock, process treo). Mọi phụ thuộc bên ngoài để ở readiness hoặc circuit breaker. Một sự cố tôi từng gặp: Postgres failover 40 giây, liveness có check DB, cả 30 pod restart cùng lúc và mất thêm 5 phút khởi động lại, lâu gấp mấy lần chính sự cố DB.`,
   follow: [
@@ -3258,6 +3270,9 @@ Khi bắt đầu tắt, Spring Boot cũng chuyển readiness sang trạng thái 
 ### Trả lời miệng 1 phút
 "Nguyên nhân là race: khi xoá pod, Kubernetes gửi SIGTERM và gỡ endpoint song song, ingress cần vài giây mới cập nhật nên vẫn đổ traffic vào JVM đang tắt. Tôi xác minh bằng cách so log SIGTERM với lúc IP rời EndpointSlice và access log 502 của ingress. Tôi sửa bằng preStop sleep 10 giây, server.shutdown graceful với timeout 40 giây, grace period 60 giây, maxUnavailable 0, và readiness chỉ UP sau warm-up. Cuối cùng chạy load test trong lúc rollout restart để chứng minh 0 lỗi."
 
+### Ví dụ đời thực
+Rolling deploy service thanh toán (10 pod): mỗi lần deploy, client nhận 200–400 lỗi 502/503 và "connection reset" trong 1–2 phút. Điều tra: access log ingress cho thấy 502 tới IP của pod cũ sau khi pod đã nhận SIGTERM; log pod cũ tắt trong dưới 1 giây sau SIGTERM, không chờ request đang chạy. Nguyên nhân gốc: Kubernetes gửi SIGTERM và gỡ endpoint song song, ingress cần vài giây cập nhật nên vẫn đổ traffic vào JVM đang tắt. Sửa: preStop sleep 10 giây chờ endpoint bị gỡ, {{server.shutdown: graceful}} chờ request chạy xong, {{terminationGracePeriodSeconds: 60}}, {{maxUnavailable: 0}}. Kết quả: 0 lỗi 5xx trong cửa sổ deploy, team tự tin deploy giữa giờ hành chính.
+
 > Senior tip: con số grace period phải tính từ **request dài nhất bạn chấp nhận hoàn tất**, không chọn đại. Với dịch vụ gọi ngân hàng p99.9 là 15 giây, tôi đặt shutdown timeout 40 giây và grace 60 giây; sau thay đổi, lỗi trong mỗi lần deploy giảm từ vài trăm xuống 0, và team dám deploy giữa giờ hành chính.`,
   follow: [
     'Vì sao readiness probe đã có mà vẫn cần preStop?',
@@ -3345,6 +3360,9 @@ Kèm theo:
 
 ### Trả lời miệng 1 phút
 "HPA tính utilization theo CPU request. Pod JVM mới đốt nhiều CPU lúc warm-up nên kéo trung bình lên, HPA scale up, sau đó CPU tụt và sau 5 phút stabilization lại scale down, thành vòng lặp. Tôi xác minh bằng events của HPA và CPU theo tuổi pod. Tôi sửa bằng behavior: stabilization 60 giây khi tăng, 10 phút khi giảm, giới hạn +50% mỗi phút; đặt request theo p95 thực tế; readiness chỉ UP sau warm-up; và nếu service chủ yếu chờ I/O thì scale theo RPS thay vì CPU."
+
+### Ví dụ đời thực
+HPA service catalog dao động 4 → 12 → 4 cứ 6–7 phút khi traffic phẳng. Điều tra: {{kubectl describe hpa}} sự kiện "cpu resource utilization above target" rồi "All metrics below target"; pod mới dùng 1.5–2 core trong 30–60 giây đầu (class loading, JIT, warm-up), tức 300–400% so với request 500m. Nguyên nhân gốc: CPU khởi động của pod mới kéo trung bình lên, HPA scale up; vài phút sau CPU về thấp, hết cửa sổ ổn định 5 phút thì scale down, lặp lại. Sửa: {{behavior}} stabilization 60 giây khi tăng, 600 giây khi giảm, giới hạn +50% mỗi phút; đặt CPU request theo p95 thực tế; readiness chỉ UP sau warm-up. Kết quả: replica ổn định ở 6–8, không còn dao động, latency không còn tăng do pod chưa warm.
 
 > Senior tip: hãy nhớ mỗi replica mới còn **nhân thêm connection tới DB**. Tôi từng thấy HPA nhảy từ 8 lên 40 pod trong một đỉnh giả, mỗi pod Hikari 20 connection, tổng 800 connection vượt {{max_connections}} của Postgres và chính autoscale gây sự cố. Luôn tính {{maxReplicas × pool size}} so với giới hạn DB.`,
   follow: [
