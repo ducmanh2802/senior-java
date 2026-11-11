@@ -1753,7 +1753,9 @@ RDS Proxy giữ kết nối phía client và tự chuyển sang writer mới, gi
 ### Trả lời miệng 1 phút
 "Failover của Aurora chỉ đổi DNS của cluster endpoint sang writer mới, nhưng ứng dụng Java có ba lớp làm chậm: JVM cache địa chỉ IP cũ, HikariCP vẫn giữ connection tới instance cũ nay đã thành reader nên mọi lệnh ghi bị lỗi read-only, và TCP có thể treo khi instance cũ chết mà không gửi RST. Tôi xử lý từng lớp: đặt networkaddress.cache.ttl khoảng 5 giây, max-lifetime vài phút, connection-timeout và socketTimeout ngắn để fail nhanh. Tốt nhất là dùng AWS Advanced JDBC Wrapper với plugin failover và efm, nó đọc topology từ chính database và nối thẳng tới writer mới mà không chờ DNS. Dù vậy transaction đang chạy luôn mất, nên ứng dụng phải retry có giới hạn và idempotent. Mục tiêu tôi đo là thời gian không ghi được từ phía ứng dụng, và diễn tập hằng quý."
 
-> Senior tip: mục tiêu đo được nên là "thời gian không ghi được" từ góc nhìn ứng dụng, không phải thời gian failover trên console. Với cấu hình mặc định con số này hay là vài phút; sau khi chỉnh DNS TTL, pool và wrapper, nhiều đội đưa được về dưới một phút. Hãy diễn tập hằng quý và ghi số liệu vào runbook.`,
+### Ví dụ đời thực
+  Một hệ thống ghi nhận đơn hàng chạy Spring Boot trên ECS Fargate kết nối Aurora PostgreSQL cluster (writer endpoint). Đội vận hành chủ động failover cluster để test DR: {{aws rds failover-db-cluster --db-cluster-identifier orders-cluster}}. Failover hoàn tất sau 30 giây trên console, nhưng ứng dụng tiếp tục báo lỗi {{cannot execute INSERT in a read-only transaction}} suốt 2-3 phút. Đội tra CloudWatch: error rate tăng vọt, các task vẫn healthy theo ALB. Nguyên nhân: failover đổi DNS cluster endpoint sang writer mới, nhưng JVM vẫn cache IP của writer cũ (DNS cache 30 giây), HikariCP giữ 20 connection tới instance cũ nay đã promote thành reader, và TCP half-open làm socket timeout treo tới 60 giây. Xử lý: đặt {{Security.setProperty("networkaddress.cache.ttl", "5")}} lúc khởi động, config HikariCP {{max-lifetime: 300000}}, {{connection-timeout: 3000}}, driver {{socketTimeout: 5000}}, và chuyển sang AWS Advanced JDBC Wrapper với plugin failover,efm. Kết quả: lần failover tiếp theo sau khi cấu hình xong, thời gian không ghi được từ ứng dụng xuống còn 30 giây, và wrapper tự kết nối thẳng tới writer mới mà không chờ DNS.
+  > Senior tip: mục tiêu đo được nên là "thời gian không ghi được" từ góc nhìn ứng dụng, không phải thời gian failover trên console. Với cấu hình mặc định con số này hay là vài phút; sau khi chỉnh DNS TTL, pool và wrapper, nhiều đội đưa được về dưới một phút. Hãy diễn tập hằng quý và ghi số liệu vào runbook.`,
   follow: [
     'FailoverSuccessSQLException xảy ra giữa một giao dịch chuyển tiền: bạn xử lý thế nào để không trừ tiền hai lần?',
     'Read/write splitting với Aurora reader endpoint có bẫy gì về replica lag?',
@@ -1837,6 +1839,17 @@ Client -> CloudFront (TLS, cache, WAF, Shield) -> ALB (chỉ nhận từ CloudFr
 
 ### Trả lời miệng 1 phút
 "Tôi đặt CloudFront trước ALB hoặc API Gateway để kết thúc TLS ở edge, hấp thụ tấn công tầng mạng và cache phần công khai như cấu hình, danh sách ngân hàng với TTL ngắn; mọi thứ cá nhân hoá như số dư thì tắt cache. Trên CloudFront gắn AWS WAF với managed rules cho IP xấu và payload tấn công, rate-based rule, và Bot Control cùng Account Takeover Prevention chỉ áp cho /login để kiểm soát chi phí; rule mới luôn chạy Count trước. Shield Standard miễn phí lo DDoS tầng 3 và 4, Shield Advanced khi cần đội phản ứng và bảo vệ chi phí. Origin phải khoá bằng prefix list của CloudFront cộng header bí mật. Kinh nghiệm của tôi: credential stuffing thật dùng hàng chục nghìn IP, nên rate limit theo IP gần như vô dụng, phải dựa vào tín hiệu bot và thiết bị."
+
+### Ví dụ đời thực
+**Triệu chứng:** Ví điện tử có API {{/login}} sau ALB bị credential stuffing ~2 triệu lần thử/giờ từ ~40.000 IP; CPU ECS tăng, p99 tăng, autoscale bật vô ích dù user thật không tăng.
+
+**Điều tra:** WAF rate-based rule theo IP (ngưỡng 100/5 phút) hầu như không chặn vì mỗi IP chỉ ~50 request/giờ; truy vấn Athena trên WAF log thấy top ASN là hosting/residential proxy, dấu hiệu bot (User-Agent thay đổi, hành vi lặp).
+
+**Nguyên nhân gốc:** rate limit theo IP không hiệu quả với botnet phân tán và thiếu tín hiệu nhận diện tài khoản bị lộ.
+
+**Cách xử lý:** đặt CloudFront trước ALB, khoá origin bằng prefix list {{com.amazonaws.global.cloudfront.origin-facing}} + custom header; gắn WAF (IP reputation, core rule set) và bật Bot Control, ATP chỉ cho {{/login}} (scope-down) ở chế độ Count 7 ngày rồi chuyển Block; cache policy CachingDisabled cho endpoint nhạy cảm.
+
+**Kết quả đo được:** WAF chặn ~85% request xấu, request tới ALB giảm rõ, autoscale ổn định, p99 của {{/login}} trở lại mức bình thường và không ghi nhận đăng nhập trái phép hàng loạt.
 
 > Senior tip: đo hiệu quả bằng số liệu WAF log trong Athena: tỷ lệ request bị chặn theo rule, top IP/ASN, false positive do CSKH báo. Một đợt credential stuffing thực tế thường dùng hàng chục nghìn IP, mỗi IP vài request; rate limit theo IP gần như vô dụng, phải dựa vào Bot Control/ATP và tín hiệu thiết bị.`,
   follow: [
@@ -1946,6 +1959,17 @@ Giới hạn region (ví dụ chỉ ap-southeast-1) nên dùng control có sẵn
 ### Trả lời miệng 1 phút
 "Account là ranh giới cách ly mạnh nhất trên AWS: tách IAM, quota, chi phí và phạm vi sự cố. Với ngân hàng đang dùng chung hai account, tôi dựng landing zone bằng Control Tower: management account chỉ lo billing, OU Security có log-archive và security tooling, OU Infrastructure có network và CI/CD, OU Workloads chia prod và non-prod theo từng hệ thống, CDE của thẻ tách riêng. Người dùng đăng nhập qua IAM Identity Center, không có IAM user. SCP là trần quyền, không cấp quyền; nó áp cả cho root của account con nhưng không áp cho management account, nên tôi dùng nó để cấm tắt CloudTrail, rời organization, dùng region không được duyệt. Chuyển đổi tôi làm dần: dựng song song, bật log và GuardDuty toàn tổ chức, chuyển non-prod trước rồi tới prod. Với ban lãnh đạo, tôi nói bằng phạm vi kiểm toán PCI thu hẹp và chi phí rõ theo sản phẩm."
 
+### Ví dụ đời thực
+**Triệu chứng:** Ngân hàng chạy mọi workload (prod, dev, CI) trong 2 account chung; một lần dev chạy load test làm Lambda concurrency và API Gateway throttle cạn kiệt, ảnh hưởng API thanh toán production; chi phí hàng tháng không phân bổ được theo team.
+
+**Điều tra:** CloudTrail và Cost Explorer cho thấy traffic test và prod dùng chung quota account; review IAM phát hiện dev có quyền đọc dữ liệu prod do policy rộng trong cùng account.
+
+**Nguyên nhân gốc:** thiếu ranh giới account, quota và blast radius chia sẻ; phạm vi kiểm toán PCI phình to vì hệ thống thẻ nằm chung.
+
+**Cách xử lý:** dựng landing zone bằng Control Tower (OU Security có log-archive/audit, OU Workloads chia Prod/NonProd, account CDE tách riêng), bật organization trail, GuardDuty, Security Hub; áp SCP cấm tắt CloudTrail/rời org/region lạ; chuyển non-prod trước rồi từng workload prod.
+
+**Kết quả đo được:** sự cố quota chéo dev-prod không còn tái diễn, chi phí tách rõ theo account/team, và phạm vi kiểm toán PCI thu hẹp còn các account CDE thay vì toàn bộ hạ tầng.
+
 > Senior tip: khi trình bày với ban lãnh đạo, đừng nói "best practice của AWS". Hãy nói bằng rủi ro và tiền: thu hẹp phạm vi kiểm toán PCI, một sự cố ở dev không thể chạm prod, và chi phí hiện rõ theo sản phẩm. Đó là ba lý do giúp dự án landing zone được duyệt.`,
   follow: [
     'Vì sao SCP không áp cho management account, và hệ quả về vận hành?',
@@ -2036,6 +2060,17 @@ Dùng dịch vụ "PCI compliant" không làm hệ thống của bạn compliant
 ### Trả lời miệng 1 phút
 "Theo shared responsibility model, AWS lo bảo mật của cloud như datacenter, phần cứng, hạ tầng dịch vụ và có chứng nhận PCI DSS Level 1; tôi lo bảo mật trong cloud: IAM, cấu hình mạng, mã hoá, dữ liệu, ứng dụng và log. Chiến lược đầu tiên của tôi là thu nhỏ phạm vi: tokenization để chỉ một vault trong account riêng chạm số thẻ, các service khác chỉ thấy token. Mã hoá bằng KMS customer managed key, tách người quản trị key khỏi người dùng key, thêm mã hoá cấp ứng dụng cho PAN. Audit bằng organization trail vào account log-archive có Object Lock và integrity validation, giữ ít nhất 12 tháng. Với yêu cầu dữ liệu tại Việt Nam, tôi để pháp chế chốt diễn giải, rồi thiết kế hybrid và dùng SCP chặn region không được duyệt. Thứ tiết kiệm nhất là giảm số hệ thống chạm dữ liệu thẻ."
 
+### Ví dụ đời thực
+**Triệu chứng:** Trong đợt rà soát PCI DSS, đội phát hiện PAN (số thẻ) xuất hiện trong log ứng dụng và một bucket S3 báo cáo; phạm vi kiểm toán (CDE) lan sang gần 40 service.
+
+**Điều tra:** Dùng Macie quét S3 và tìm kiếm log trên CloudWatch/Athena thấy chuỗi 16 số; truy vết CloudTrail cho thấy nhiều role đọc được bucket chứa dữ liệu nhạy cảm.
+
+**Nguyên nhân gốc:** không tokenization, PAN đi qua nhiều service; masking log chưa áp dụng; quyền đọc S3/KMS quá rộng.
+
+**Cách xử lý:** dựng token vault trong account CDE riêng, chỉ vault nhận PAN và trả token; các service khác lưu token + 4 số cuối; mã hoá bằng KMS CMK tách quyền quản trị/dùng; bật organization trail, S3 Object Lock và integrity validation vào log-archive, cấu hình Config/Security Hub PCI DSS; phối hợp pháp chế để xác định dữ liệu nào phải lưu tại Việt Nam.
+
+**Kết quả đo được:** phạm vi CDE thu hẹp còn 3 service (vault, payment gateway adapter, log), số phát hiện PAN ngoài CDE về 0 trong lần quét tiếp theo, và đáp ứng yêu cầu audit log lưu ≥12 tháng.
+
 > Senior tip: thứ tiết kiệm nhiều tiền kiểm toán nhất không phải là thêm công cụ bảo mật mà là giảm số hệ thống chạm vào dữ liệu thẻ. Mỗi service bạn đưa ra khỏi CDE nhờ tokenization là bớt một hạng mục phải chứng minh hằng năm.`,
   follow: [
     'Tokenization khác mã hoá thế nào về phạm vi PCI DSS?',
@@ -2111,6 +2146,17 @@ Với một team nhỏ chỉ có một môi trường, đặt mọi thứ ở m�
 
 ### Trả lời miệng 1 phút
 "Region là khu vực địa lý, trong đó có nhiều AZ độc lập về điện và mạng; edge location là điểm CDN gần người dùng. Hầu hết dịch vụ tôi dùng hằng ngày như EC2, ECS, RDS, Lambda, S3 bucket đều gắn với region, còn IAM, Route 53, CloudFront là global. Với khách ở Việt Nam, tôi mặc định Singapore vì độ trễ thấp, nhưng quyết định bằng cách đo thật từ nhiều ISP, so sánh giá, kiểm tra dịch vụ cần có và yêu cầu tuân thủ. Production luôn trải ít nhất hai AZ; multi-region chỉ làm khi RTO/RPO yêu cầu. Tôi cũng nhớ cert ACM cho ALB phải cùng region, và dùng AZ ID thay vì tên a/b/c khi cần đối chiếu giữa các account."
+
+### Ví dụ đời thực
+**Triệu chứng:** API Spring Boot đặt ở {{us-east-1}} theo tutorial; người dùng Việt Nam phàn nàn p50 ~200 ms dù CPU/DB trong region bình thường.
+
+**Điều tra:** Đo {{curl -w}} từ mạng Viettel/VNPT/FPT thấy {{time_connect}} tới {{us-east-1}} cao hơn {{ap-southeast-1}} rõ rệt; CloudWatch RUM xác nhận độ trễ mạng chiếm phần lớn thời gian request.
+
+**Nguyên nhân gốc:** chọn region xa người dùng; tài nguyên tĩnh chưa qua edge.
+
+**Cách xử lý:** di chuyển stack chính (ECS, ALB, RDS, S3) sang {{ap-southeast-1}}, trải tối thiểu 2 AZ; đặt CloudFront trước ALB để cache static tại edge; kiểm tra dịch vụ/giá và tuân thủ trước khi chốt.
+
+**Kết quả đo được:** p50 API từ Việt Nam giảm còn ~60–80 ms tuỳ ISP, tài nguyên tĩnh trả từ edge trong vài ms, và không còn phụ thuộc đường truyền xuyên Thái Bình Dương cho request động.
 
 > Senior tip: đừng tin cảm giác "Singapore nhanh nhất" — hãy đo bằng CloudWatch RUM hoặc script từ nhiều mạng, vì tuyến cáp và ISP có thể đổi. Khi làm multi-AZ, dùng **AZ ID** trong tài liệu và dashboard: tên AZ a/b/c được map ngẫu nhiên cho từng account, nên hai account cùng ghi "AZ a" có thể đang chạy ở hai toà nhà khác nhau và bạn sẽ vẽ sai sơ đồ sự cố.`,
   follow: [
@@ -2215,6 +2261,17 @@ Không có inbound SSH cũng có nghĩa một lỗ hổng SSH không thể bị 
 
 ### Trả lời miệng 1 phút
 "Tôi chọn instance theo số đo: CPU p95, RSS, heap sau full GC và số thread, rồi chọn family theo hình dạng tải — m7g cho cân bằng, c7g cho CPU, r7g cho RAM lớn. Với JVM tôi đặt MaxRAMPercentage khoảng 75 để chừa chỗ cho Metaspace, thread stack và OS, và load test ở 1,5–2 lần tải đỉnh. Dữ liệu bền nằm trên EBS gp3, instance store chỉ làm cache vì stop/start là mất. Phần chạy 24/7 tôi mua Savings Plan, batch và CI dùng Spot với code idempotent và xử lý tín hiệu interruption. Tôi không mở SSH: vào máy bằng SSM Session Manager, không key pair, có audit. Định kỳ right-size bằng Compute Optimizer."
+
+### Ví dụ đời thực
+**Triệu chứng:** Service Spring Boot chạy trên EC2 {{t3.medium}} (2 vCPU, 4 GB) thỉnh thoảng bị OOM killer giết lúc tải tăng; giờ khác CPU "kẹt" và latency tăng dù request không cao bất thường.
+
+**Điều tra:** {{dmesg}} ghi "Out of memory: Killed process java"; CloudWatch thấy {{CPUCreditBalance}} cạn trong giờ cao điểm (chế độ standard) và RSS vượt mức an toàn; cấu hình JVM dùng {{-Xmx3g}} trên máy 4 GB.
+
+**Nguyên nhân gốc:** heap đặt quá sát RAM (không chừa Metaspace, thread stack, direct buffer, OS) và dùng burstable instance cho tải CPU tương đối đều.
+
+**Cách xử lý:** chuyển sang {{m7g.large}} (2 vCPU, 8 GB), đặt {{-XX:MaxRAMPercentage=75}}, tách volume dữ liệu EBS gp3, truy cập qua SSM Session Manager (đóng port 22), mua Savings Plan cho phần chạy 24/7.
+
+**Kết quả đo được:** không còn OOM killer trong 30 ngày theo dõi, p99 ổn định ở tải đỉnh, và Compute Optimizer không còn khuyến nghị tăng size; chi phí dự báo giảm so với cấu hình dư/thiếu trước đó.
 
 > Senior tip: món tiết kiệm lớn nhất thường không phải mặc cả giá instance mà là **giảm instance thừa**. Một service 2 vCPU chạy 15% CPU suốt ngày là tiền đổ đi; hãy gộp service, giảm replica hoặc chuyển sang Fargate/Lambda trước khi mua Savings Plan 3 năm cho một cấu hình sai.`,
   follow: [
