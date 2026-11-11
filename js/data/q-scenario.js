@@ -3919,6 +3919,12 @@ enum Status { CREATED, SHIPPING, DELIVERED, @JsonEnumDefaultValue UNKNOWN }
 ### Trả lời miệng 1 phút
 "Ưu tiên đầu là cầm máu: backend là bên duy nhất đổi nhanh được, nên tôi rollback hoặc hotfix trả cả field cũ và mới, map enum mới về giá trị cũ cho bản 3.2 dựa trên header phiên bản, rồi theo dõi crash rate trên Crashlytics về mức nền. Sau đó tôi đặt quy tắc tiến hoá API: chỉ thay đổi additive, expand–contract với ngưỡng traffic theo phiên bản, client tolerant reader với enum UNKNOWN, contract test cho mọi bản app còn đáng kể, versioning khi buộc phải phá vỡ và cơ chế phiên bản tối thiểu cho trường hợp đặc biệt."
 
+### Ví dụ đời thực
+Tháng 3/2024, team mobile phát hành bản 4.1. Backend release ngày 10/3 đổi field {{fullName}} → {{name}} và thêm enum {{PARTIALLY_SHIPPED}}. App bản 3.2 (chiếm 28% DAU) crash rate nhảy từ 0,08% lên 14% trong 5 phút. Crashlytics: {{JsonDataException: Required value 'fullName' missing}}. Backend không rollback được vì migration DB đã chạy. Hotfix: thêm {{X-App-Version}} header, trong controller map {{PARTIALLY_SHIPPED}} → {{SHIPPING}} cho version ≤ 3.2. Crash rate giảm về 0,1% sau 12 phút. Dự án sau: contract test (Pact) cho mọi bản app > 1% traffic, dashboard theo dõi % request theo version, gate PR: không merge nếu phá hợp đồng bản cũ. Kết quả: 6 tháng sau không còn sự cố breaking change nào.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi crash rate app cũ nhảy vọt sau release backend, việc đầu tiên tôi làm là xác nhận tương quan qua Crashlytics và log API theo version. Backend là bên duy nhất hotfix được trong vài phút, nên tôi trả thêm field cũ {{fullName}} và map enum mới về giá trị cũ dựa trên header version của app. Crash rate giảm từ 14% về mức nền trong 12 phút. Sau đó tôi thiết lập quy trình expand–contract: chỉ thêm field mới, giữ field cũ cho đến khi traffic bản cũ dưới 1–2%, client đọc tolerant (bỏ qua field lạ, enum lạ thành UNKNOWN), contract test cho mọi bản app còn đáng kể, và versioning khi buộc phải phá vỡ. Điều quan trọng nhất là coi mỗi bản app như một khách hàng riêng không bao giờ biến mất."
+
 > Senior tip: với API phục vụ mobile, hãy coi mỗi bản app đã phát hành là **một khách hàng riêng không bao giờ biến mất**. Tôi yêu cầu mọi response có thể map theo phiên bản client ngay từ đầu (header phiên bản bắt buộc), vì nó biến một sự cố "phải đợi store duyệt 2 ngày" thành một hotfix 15 phút ở server.`,
   follow: [
     'So sánh versioning qua URL, header và media type: bạn chọn cái nào cho mobile?',
@@ -4004,6 +4010,12 @@ private final Semaphore dbPermits = new Semaphore(40);
 ### Trả lời miệng 1 phút
 "Virtual thread làm việc chờ I/O rẻ hơn, nhưng không tăng sức chứa DB. Khi bỏ giới hạn 200 thread của Tomcat, hàng nghìn request cùng tranh 20 connection nên Hikari timeout. Còn chuyện treo hẳn là pinning trên Java 21: virtual thread chặn trong synchronized giữ luôn carrier, 4 carrier cùng kẹt là cả service đứng. Tôi xác minh bằng JFR event VirtualThreadPinned và thread dump JSON. Tôi sửa bằng Semaphore giới hạn đồng thời theo sức chứa DB, đổi synchronized quanh I/O sang ReentrantLock, nâng thư viện, và cân nhắc JDK 24 nơi JEP 491 bỏ phần lớn pinning."
 
+### Ví dụ đời thực
+Tháng 11/2023, service order lên Java 21 + Spring Boot 3.2, bật {{spring.threads.virtual.enabled=true}}. Trước: Tomcat 200 thread, p99 180ms. Sau deploy: p99 250ms, mỗi vài tiếng treo 30s rồi tự hồi phục. HikariCP báo {{hikaricp_connections_pending}} vọt 3.000, 4 pod 4 core (4 carrier thread). JFR {{jdk.VirtualThreadPinned}} cho thấy 4 carrier đều kẹt trong {{synchronized(cache)}} đang gọi {{priceClient.fetch()}} (HTTP client bên trong synchronized). Semaphore 40 permit + {{ReentrantLock}} thay {{synchronized}} → p99 190ms, không còn treo. Nâng Spring Boot 3.3 (thư viện đã sửa pinning) + JDK 21.0.2 → ổn định hoàn toàn.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bật virtual thread, Tomcat không còn giới hạn 200 thread nên hàng nghìn request cùng tranh 20 connection Hikari → timeout. Việc treo hẳn là do pinning trên Java 21: virtual thread chặn trong synchronized không unmount được, giữ chặt carrier thread. Với 4 core chỉ có 4 carrier, 4 request cùng pin là cả service đứng. Tôi chẩn đoán bằng JFR event VirtualThreadPinned và thread dump JSON. Giải pháp: Semaphore giới hạn đồng thời theo sức chứa DB (40 permit), đổi synchronized quanh I/O sang ReentrantLock để cho unmount, nâng thư viện, và lên JDK 24 nếu có thể vì JEP 491 bỏ pinning do synchronized. Quan trọng: virtual thread tháo giới hạn ngầm của thread pool cũ, nên phải thêm backpressure tường minh ở tài nguyên khan hiếm."
+
 > Senior tip: trước khi bật virtual thread cho một service, tôi chạy load test với JFR bật event pinning và ghi lại **tài nguyên khan hiếm thật sự** (pool DB, rate limit đối tác). Virtual thread tháo bỏ giới hạn ngầm mà thread pool cũ vô tình tạo ra, nên phải thêm giới hạn tường minh ở đúng chỗ, nếu không bạn chỉ chuyển sự cố từ app sang DB.`,
   follow: [
     'Vì sao không nên đặt virtual thread vào một thread pool cố định?',
@@ -4077,6 +4089,12 @@ public void preCheck(String ip, String username) {
 ### Trả lời miệng 1 phút
 "Mỗi IP vài request nhưng username gần như không lặp lại, tỉ lệ thành công khoảng 1%: đó là credential stuffing chứ không phải brute force. Tôi chặn ở biên bằng WAF rate-based và bot rule, bật challenge cho login, và trong app thêm kiểm tra rẻ bằng Redis trước bcrypt, vì bcrypt 3.000 lần mỗi giây đã tự gây DoS. Song song tôi tìm các login thành công đáng ngờ, thu hồi session, buộc reset mật khẩu và khoá đổi số điện thoại. Dài hạn là MFA, kiểm tra mật khẩu đã lộ và step-up cho thao tác nhạy cảm."
 
+### Ví dụ đời thực
+Tháng 6/2023, 22h thứ 7: login {{/api/auth/login}} tăng từ 50 → 3.200 req/s, 98% trả 401, CPU pod auth 95%. Sáng chủ nhật 40 khách báo số điện thoại bị đổi. Log: 3.100 username khác nhau, 28.000 IP (residential proxy), mỗi IP 1–2 request, success rate 0,8%. Bcrypt cost 12: 3.000 × 120ms = 360 core → tự DoS. Xử lý: 1) WAF rate-based + Bot Control challenge login toàn bộ. 2) Redis pre-check trước bcrypt: đếm IP + HyperLogLog đếm user khác nhau/IP, >20 req/IP hoặc >5 user/IP → challenge. 3) Lọc login thành công từ IP/ASN proxy, revoke session, force reset password, khoá đổi SĐT 24h. Kết quả: tấn công chặn được, 12 tài khoản bị chiếm khôi phục, 0 tài khoản bị đổi SĐT sau đó. Dài hạn: MFA (passkey), Pwned Passwords k-anonymity, step-up cho thao tác nhạy cảm.
+
+### Trả lời mẫu khi phỏng vấn
+"Tấn công này là credential stuffing: kẻ dùng danh sách email/mật khẩu bị lộ từ site khác, mỗi tài khoản chỉ thử 1 lần, xoay hàng chục nghìn IP proxy. Brute force thì thử nhiều lần một tài khoản. Tôi nhận ra ngay vì username gần như không lặp, success rate ~1%. Việc đầu tiên: bật WAF rate-based rule và Bot Control challenge cho login, chặn ở biên. Trong app, thêm Redis pre-check trước bcrypt: đếm request/IP và HyperLogLog đếm user khác nhau/IP, vượt ngưỡng thì trả challenge (429/CAPTCHA) không gọi bcrypt — vì 3.000 bcrypt/s đã tự gây DoS CPU. Song song lọc các login thành công từ IP proxy đáng ngờ, thu hồi session, buộc reset mật khẩu, khoá đổi số điện thoại 24h. Dài hạn: MFA ưu tiên passkey, kiểm tra Pwned Passwords khi đăng ký, step-up authentication cho thao tác nhạy cảm."
+
 > Senior tip: theo dõi **số username khác nhau trên mỗi IP, ASN và fingerprint thiết bị**, không chỉ số request. Và luôn có sẵn một "công tắc" bật challenge cho toàn bộ login (feature flag hoặc rule WAF để sẵn ở chế độ Count) để bật trong 1 phút khi bị tấn công, thay vì viết code lúc 22 giờ đêm.`,
   follow: [
     'Vì sao khoá cứng tài khoản sau 5 lần sai lại nguy hiểm trong trường hợp này?',
@@ -4147,6 +4165,12 @@ Kẻ tấn công điều khiển DNS của domain: lần phân giải để ki�
 ### Trả lời miệng 1 phút
 "Đây là SSRF, mức nghiêm trọng cao vì trên EC2 với IMDSv1 bước tiếp theo là lấy được access key của role. Tôi tắt tính năng, bật IMDSv2 bắt buộc, hop limit 1, rồi tra CloudTrail xem credential role có bị dùng từ IP lạ không. Về code, chỉ cho https, phân giải DNS và chặn mọi IP nội bộ, link-local, IPv6 local, không follow redirect, giới hạn kích thước và timeout. Nhưng vì DNS rebinding, tôi bắt mọi request ra ngoài đi qua egress proxy có allowlist, và nếu được thì đổi thiết kế sang upload qua presigned URL."
 
+### Ví dụ đời thực
+Tháng 8/2023, tính năng "đổi avatar bằng URL" cho phép user nhập link ảnh. Pentester báo: nhập {{http://169.254.169.254/latest/meta-data/iam/security-credentials/}} trả về tên IAM role {{ecs-task-role-payment}}. Instance chạy IMDSv1 ({{HttpTokens=optional}}). CloudTrail: không có API call lạ từ IP ngoài (phát hiện sớm). Xử lý: 1) Tắt tính năng ngay. 2) Bật IMDSv2 {{required}} + hop limit 1 qua AWS CLI. 3) Code fix: chỉ cho https, resolve DNS → kiểm tra mọi IP (loopback, link-local 169.254.0.0/16, site-local, unique-local fc00::/7, 100.64.0.0/10), không follow redirect, timeout 3s, limit 5MB, decode ảnh rồi mới lưu. 4) Vì DNS rebinding, bắt request đi qua egress proxy Squid allowlist chỉ IP công khai. 5) Thay thiết kế: client upload thẳng S3 qua presigned URL, server không bao giờ fetch URL ngoài. Kết quả: pentest lại không bypass được, không rủi ro metadata leak.
+
+### Trả lời mẫu khi phỏng vấn
+"Đây là SSRF mức cao vì trên EC2 với IMDSv1, bước tiếp theo kẻ tấn công lấy được access key tạm thời của IAM role. Tôi xử lý theo 4 lớp: ngay lập tức tắt tính năng, bật IMDSv2 bắt buộc (yêu cầu PUT lấy token rồi đính header) và hop limit 1 để container không truy cập metadata. Lớp code: chỉ chấp nhận https, phân giải DNS rồi chặn mọi IP nội bộ (loopback, link-local 169.254.x, site-local, IPv6 unique-local fc00::/7, carrier-grade NAT 100.64.0.0/10), không follow redirect, timeout 3s, limit 5MB, decode thử ảnh. Lớp mạng: vì DNS rebinding (DNS trả IP công khai lúc check, IP nội bộ lúc connect), tôi bắt mọi request ra ngoài đi qua egress proxy có allowlist IP công khai. Lớp thiết kế: nếu được, đổi sang client upload thẳng S3 qua presigned URL — server không bao giờ gọi URL lạ. Kết hợp 4 lớp này mới chắc chắn."
+
 > Senior tip: mỗi khi thấy tính năng "nhập URL" (webhook, import từ link, preview link, PDF render HTML), coi như một bề mặt SSRF. Tôi gom tất cả về **một** HTTP client dùng chung có sẵn chặn IP, timeout, giới hạn kích thước và đi qua egress proxy, để dev mới không tự viết lại và quên một bước.`,
   follow: [
     'IMDSv2 chặn được SSRF qua cơ chế nào, và trường hợp nào nó không chặn được?',
@@ -4215,6 +4239,12 @@ Trong Spring Boot, file cấu hình chỉ nên tham chiếu biến môi trườn
 
 ### Trả lời miệng 1 phút
 "Commit xoá chỉ sửa phiên bản mới nhất; lịch sử, clone, fork và PR cũ vẫn chứa key, và bot quét GitHub tìm key trong vài phút. Nên việc đầu tiên là deactivate key trong IAM, thay key mới, rồi tra CloudTrail xem key đã bị dùng chưa. Sau đó tôi dọn lịch sử bằng git filter-repo hoặc BFG trên mirror clone, force push, yêu cầu mọi người clone lại và nhờ GitHub Support xoá cache nếu cần. Cuối cùng bật push protection, pre-commit scan và chuyển hẳn sang Secrets Manager hoặc IAM role để không còn access key dài hạn."
+
+### Ví dụ đời thực
+Tháng 1/2024, GitHub secret scanning cảnh báo AWS access key {{AKIA...}} trong {{application-dev.yml}} commit 3 tuần trước. Dev đã commit xoá dòng đó. Xử lý: 1) 5 phút đầu: AWS Console → IAM → deactivate key cũ, tạo key mới, cập nhật ECS task environment, deploy rolling. 2) CloudTrail lọc {{AccessKeyId=AKIA...}}: 0 API call lạ (may mắn chưa bị dùng). 3) Dọn lịch sử: {{git clone --mirror}}, {{git filter-repo --replace-text replacements.txt}} (chứa {{AKIA...==>***REMOVED***}}), {{git push --force --mirror}}. 4) Yêu cầu 12 dev clone lại, 3 PR đóng mở lại. 5) GitHub Support ticket xoá cache PR cũ. 6) Bật push protection, cài pre-commit {{gitleaks}}, migration sang AWS Secrets Manager + IRSA cho EKS. Kết quả: 0 rủi ro sau 24h, quy trình chặn tái phát áp dụng cho 35 repo.
+
+### Trả lời mẫu khi phỏng vấn
+"Commit xoá chỉ làm key biến mất khỏi HEAD; lịch sử Git, mọi clone, fork, PR cũ và CI cache vẫn giữ nguyên key. Bot quét GitHub tìm AWS key chạy liên tục, 3 tuần là quá đủ để bị khai thác. Vì vậy thứ tự đúng là: Bước 1: xoay key ngay trong IAM — deactivate key cũ, tạo key mới, cập nhật env, deploy. Bước 2: tra CloudTrail xem key đã bị dùng chưa (tạo EC2, đọc S3...). Bước 3: dọn lịch sử bằng git filter-repo hoặc BFG trên mirror clone, force push, yêu cầu team clone lại, nhờ GitHub Support xoá cache PR cũ. Bước 4: bật push protection trên GitHub, pre-commit hook gitleaks, và quan trọng nhất: chuyển hẳn sang IAM role (IRSA/EKS Pod Identity) và Secrets Manager để không còn access key dài hạn nào trong code. Mục tiêu không phải là dọn lịch sử sạch, là không có secret để lộ."
 
 > Senior tip: mục tiêu thật là **không có secret dài hạn nào để lộ**: ứng dụng trên AWS dùng IAM role (EC2 instance profile, IRSA/EKS Pod Identity, ECS task role), CI dùng OIDC federation thay cho access key lưu trong secret của pipeline. Khi đó một commit lỡ tay chỉ lộ cấu hình, không lộ quyền.`,
   follow: [
@@ -4285,6 +4315,9 @@ Chia ca: không ai làm 30 giờ liên tục; người mệt deploy nhầm còn 
 
 ### Trả lời miệng 1 phút
 "Tôi chia bốn pha có người phụ trách. Đầu tiên kiểm kê trong vài giờ bằng dependency tree và quét image đang chạy thật, vì phụ thuộc bắc cầu là chỗ hay sót, ghi vào một bảng chung. Song song, giảm thiểu tạm cho service lộ Internet bằng WAF rule, cấu hình hoặc gỡ class lỗi và chặn egress. Rồi vá theo thứ tự rủi ro, ghi đè phiên bản trong BOM của Spring Boot và xác minh trong artifact. Cuối cùng tra log xem đã bị khai thác chưa, kể cả trước ngày công bố. Sau sự cố, tôi đưa SBOM và quét dependency vào CI để lần sau kiểm kê mất vài phút thay vì vài giờ."
+
+### Ví dụ đời thực
+Tháng 12/2021, CVE-2021-44228 (Log4Shell) công bố, CVSS 10, mã khai thác công khai. Công ty có 38 service Java, không ai chắc dùng log4j-core hay không. Điều phối viên chia làm hai nhóm: nhóm A chạy {{mvn dependency:tree -Dincludes=org.apache.logging.log4j}} trên 38 repo và {{trivy image}} trên registry, nhóm B theo dõi WAF log. Kết quả: 6 service dùng log4j-core qua spring-boot-starter-log4j2, 2 service shade log4j vào jar riêng, 4 service chỉ có log4j-to-slf4j (không lỗi). WAF chặn mẫu jndi:ldap:// từ sáng hôm sau. Xử lý: gỡ {{JndiLookup.class}} khỏi jar, ghi đè {{log4j2.version=2.17.1}} trong BOM, rebuild, xác minh bằng {{unzip -l app.jar | grep log4j-core}}. 48 giờ sau 8 service đã vá. Áp SBOM vào mọi build và quét dependency trong CI; CVE sau kiểm kê trong 30 phút thay vì 4 tiếng.
 
 > Senior tip: thời gian trả lời câu "chúng ta có bị ảnh hưởng không?" là thước đo độ trưởng thành. Khi mỗi build sinh **SBOM** (ví dụ CycloneDX) và lưu cùng image, kiểm kê chỉ còn là một truy vấn. Tôi cũng đặt SLA vá theo mức độ (ví dụ critical lộ Internet: 48 giờ) và có sẵn pipeline "rebuild tất cả service" để nâng một thư viện cho 35 service trong một buổi chiều.`,
   follow: [
