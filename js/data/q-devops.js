@@ -3571,6 +3571,20 @@ spec:
 - Sealed Secrets mất private key của controller là mất khả năng giải mã toàn bộ: backup key, có quy trình re-seal khi xoay key.
 - Vault là điểm lỗi tập trung: Vault sập thì Pod mới không khởi động được. Chạy HA và có runbook khẩn cấp.
 
+### Ví dụ đời thực
+Triệu chứng: trong đợt audit PCI DSS, auditor yêu cầu chứng minh: (1) namespace {{payments}} không có đường ra internet trực tiếp, (2) mật khẩu DB không nằm trong Git, (3) mọi kết nối ra cổng thanh toán đều được log. Kiểm tra bằng {{kubectl get networkpolicy -n payments}} chỉ thấy một policy cho ingress từ ingress-nginx, không có default-deny egress; {{kubectl get secret -n payments}} thấy Secret {{payment-db}} dạng base64.
+
+Điều tra: CNI staging là Calico (hỗ trợ NetworkPolicy), prod dùng AWS VPC CNI chưa bật network-policy; ESO chưa cài, dev copy key vào Secret thủ công và commit vào repo GitOps. Mọi luồng egress đều mở, DB password thấy được trong {{kubectl get secret -o yaml}}.
+
+Nguyên nhân gốc: thiếu default-deny egress, CNI prod không enforce policy, secret management chưa tập trung.
+
+Cách xử lý: cài Cilium trên prod thay thế VPC CNI (hỗ trợ NetworkPolicy và FQDN); áp dụng default-deny ingress+egress như mẫu trên, thêm rule egress cho DNS, RDS subnet, egress-proxy; triển khai External Secrets Operator trỏ AWS Secrets Manager, xoá Secret thủ công, xoá key khỏi Git history bằng BFG. Thêm job test trong pipeline: Pod thử {{curl https://api.payment-gateway.vn}} phải bị chặn trừ khi qua egress-proxy.
+
+Kết quả đo được: auditor chấp nhận flow log Cilium Hubble thể hiện 100% traffic egress đi qua proxy, 0 kết nối trực tiếp ra internet; secret rotation tự động qua ESO, 0 key tĩnh trong Git.
+
+### Trả lời mẫu khi phỏng vấn
+"Với PCI DSS, tôi thiết kế default-deny cho cả ingress và egress trong namespace payments, chỉ mở luồng cần thiết: ingress từ ingress-nginx, egress cho DNS, RDS subnet, và một egress proxy duy nhất ra internet vì NetworkPolicy chuẩn không lọc FQDN. Secret không bao giờ vào Git: dùng External Secrets Operator đồng bộ từ AWS Secrets Manager, hoặc Vault Agent CSI cho credential động. Etcd bật encryption at rest KMS, RBAC chặt quyền đọc secret. Quan trọng nhất là bằng chứng: pipeline có test tự động đảm bảo Pod không gọi ra internet trực tiếp, và xuất flow log Cilium Hubble cho auditor đọc. Điều này biến audit từ kiểm tra cấu hình thành đọc báo cáo số liệu."
+
 > Senior tip: với audit PCI, **bằng chứng quan trọng hơn cấu hình**. Tôi sinh ma trận luồng mạng (nguồn, đích, port, lý do) trực tiếp từ policy, chạy test kết nối tự động trong pipeline — một Pod thử gọi các luồng bị cấm và test **phải fail** — mỗi lần đổi policy, rồi xuất flow log (Cilium Hubble hoặc VPC Flow Logs) và log truy cập secret cho auditor. Audit lúc đó chỉ còn là đọc báo cáo.`,
     follow: [
       'Làm sao rotate mật khẩu DB của service đang chạy 20 Pod mà không có downtime?',
@@ -3651,6 +3665,20 @@ Với SLI độ trễ, Spring Boot tạo sẵn bucket ở ngưỡng SLO bằng {
 - **Đếm 4xx là lỗi** thì client gửi sai cũng đốt budget; ngược lại trả 200 kèm body lỗi nghiệp vụ thì lỗi thật không bị đếm.
 - **Xoá sạch alert nguyên nhân**: vẫn giữ cảnh báo "sắp hỏng" như đĩa sắp đầy, chứng chỉ TLS sắp hết hạn — dạng ticket, hoặc page nếu thời gian còn lại quá ngắn.
 
+### Ví dụ đời thực
+Triệu chứng: on-call nhận 40 cảnh báo/tuần (CPU > 80%, heap > 85%, 5xx đơn lẻ), phần lớn tự hết; sự cố thật lại do khách hàng báo: API thanh toán p99 tăng từ 200 ms lên 5 giây trong 20 phút, lỗi 5xx 1.2% nhưng không page ai. Kiểm tra Prometheus thấy alert CPU > 80% kêu 15 lần/tuần do batch cuối ngày và JIT warm-up, alert heap > 85% kêu mỗi lần GC, alert "có 5xx" kêu mỗi khi có 1–2 lỗi trong 1 triệu request.
+
+Điều tra: alert dựa trên metric nền tảng thay vì SLI người dùng; không có SLO/error budget nên không biết ngưỡng nào mới đáng page; burn rate không được tính.
+
+Nguyên nhân gốc: thiếu khung SLO/SLI, alert nhầm nguyên nhân (CPU, heap) là triệu chứng.
+
+Cách xử lý: định nghĩa SLI = request không 5xx + request < 300 ms; SLO 99.9% trong 30 ngày cuộn; error budget 0.1%. Cấu hình multi-window burn rate: page khi burn rate ≥ 14.4 (1h + 5m) hoặc ≥ 6 (6h + 30m); ticket khi burn rate ≥ 1 (3 ngày + 6h). Chuyển alert CPU/heap sang dashboard; thêm synthetic probe đo SLI từ load balancer. Viết error budget policy ký với product: budget cạn → đóng băng feature.
+
+Kết quả đo được: page giảm từ 40/tuần xuống 3–4/tuần, 95% page dẫn tới hành động; MTTD từ 20 phút (khách báo) xuống 3 phút (alert burn rate); postmortem blameless cho ra 12 action item, 10 đã đóng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xây alert trên SLI/SLO chứ không phải metric nền tảng. SLI là tỷ lệ request thành công và tỷ lệ request nhanh hơn 300 ms, SLO 99.9% trong 30 ngày, error budget 0.1%. Chỉ page khi burn rate cao: ≥ 14.4 lần mức cho phép trong 1 giờ kết hợp 5 phút, hoặc ≥ 6 lần trong 6 giờ kết hợp 30 phút — multi-window giúp vừa bắt nhanh vừa tự tắt sau khi sửa. CPU, heap chuyển sang dashboard. Sau sự cố, postmortem blameless: timeline có giờ cụ thể, tìm yếu tố góp phần của hệ thống chứ không đổ lỗi cá nhân, action item có owner và hạn. Error budget policy ký trước với product biến tranh luận 'ra feature hay sửa lỗi' thành đọc số liệu."
+
 > Senior tip: đo chính hệ thống cảnh báo: **số page mỗi ca trực** và **tỷ lệ page dẫn tới hành động thật**. Mục tiêu của tôi là vài page mỗi tuần và gần như page nào cũng cần làm gì đó; page nào không cần hành động thì sửa hoặc xoá alert ngay trong tuần đó. On-call tin vào alert là điều kiện để họ phản ứng nhanh lúc 3 giờ sáng.`,
     follow: [
       'Bạn đặt SLO thế nào cho một service phụ thuộc vào DB và ba service khác, mỗi cái có độ sẵn sàng riêng?',
@@ -3729,6 +3757,20 @@ ALB có stickiness, nhưng NGINX mở (community) không có directive sticky (c
 - Redis sập: toàn bộ user mất phiên — phải có Redis HA và chấp nhận đây là dependency mới của auth.
 - Bật Spring Session nhưng vẫn đọc request.getAttribute từ session Tomcat cũ ở code legacy.
 
+### Ví dụ đời thực
+Triệu chứng: sau khi scale service thanh toán từ 1 lên 3 Pod, khách hàng bị bật đăng nhập ngẫu nhiên (mỗi 3 request), file báo cáo upload 5 MB biến mất khi tải lại, và job tính lãi hàng ngày chạy đúng 3 lần khiến số dư khách tăng gấp 3. Kiểm tra log: request đăng nhập luân phiên rơi vào 3 Pod, mỗi Pod có session memory riêng; upload ghi vào {{/tmp}} của Pod, tải về rơi Pod khác báo 404; {{@Scheduled}} chạy trong cả 3 replica.
+
+Điều tra: app giữ state trong process: HTTP session trong Tomcat memory, file multipart trên local disk, job cron không có distributed lock. Service chia traffic round-robin giữa 3 Pod, Pod là ephemeral — restart là mất hết state.
+
+Nguyên nhân gốc: app không stateless khi thiết kế cho single instance, thiếu chuẩn hóa cho Kubernetes.
+
+Cách xử lý: thêm Spring Session Data Redis (session vào Redis Sentinel HA); upload stream thẳng lên S3 qua presigned URL, DB chỉ lưu key; job {{@Scheduled}} thêm {{@SchedulerLock}} (ShedLock với Redis) hoặc tách ra CronJob đơn lẻ. Checklist stateless: không session memory, không file local, job có lock, cache có TTL+invalidate.
+
+Kết quả đo được: k6 test 500 user đồng thời, {{kubectl delete pod --force}} một replica giữa phiên — 0 user bị bật đăng nhập, 0 file mất, job chạy đúng 1 lần/ngày. Scale từ 3 lên 10 Pod không thay đổi hành vi.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi scale từ 1 lên 3 Pod, ba lỗi đều do app giữ state trong process: session Tomcat memory làm mất đăng nhập vì request rơi Pod khác, file ghi {{/tmp}} biến mất vì Pod không chia sẻ disk, {{@Scheduled}} chạy đa replica làm job chạy 3 lần. Tôi sửa bằng: Spring Session đưa session vào Redis HA, upload stream thẳng S3 qua presigned URL, job thêm ShedLock hoặc tách CronJob. Nguyên tắc: app phải stateless — mọi thứ cần sống sót qua Pod (session, file, lock, cache) đều nằm ở Redis, S3, DB, queue. Kiểm chứng bằng k6 load test kèm {{kubectl delete pod}} giữa phiên: user không nhận ra gì ngoài chậm một nhịp. Sticky session chỉ là băng keo tạm, không thay thế thiết kế stateless."
+
 > Senior tip: tiêu chí nghiệm thu tôi hay áp: chạy k6 tạo tải có đăng nhập, trong lúc đó {{kubectl delete pod --force}} một replica giữa phiên — người dùng phải không nhận ra gì ngoài chậm hơn một nhịp. Test này bắt được 90% lỗi stateless trước khi lên prod.`,
     follow: [
       'Đã dùng Spring Session với Redis mà Redis chết: người dùng gặp gì và bạn thiết kế graceful thế nào?',
@@ -3795,6 +3837,17 @@ Dùng AWS SSO ({{aws sso login}}) với role dev, hoặc profile tạm hết h�
 - Quên region làm gọi STS/SDK treo hoặc UnknownHostException — luôn đặt {{AWS_REGION}} (hoặc env cluster-defaults).
 - SDK v1 quá cũ: có phiên bản không tự làm mới web identity token → job batch chết sau 1 giờ đúng nửa đêm; nâng SDK v2.
 - Tự cache {{BasicSessionCredentials}} vào static variable — đừng đấu với SDK.
+
+### Ví dụ đời thực
+Triệu chứng: service thanh toán trên EKS dùng access key + secret key trong ConfigMap để ghi S3 và gửi SQS. Audit phát hiện: key nằm trong ConfigMap plain text trong etcd, một key chia sẻ cho 5 service, rotate thủ công mỗi quý mất 2 ngày và thường sót chỗ khiến service lỗi 403. CloudTrail chỉ thấy "key X gọi s3:DeleteObject" không biết service nào.
+
+Điều tra: ConfigMap lưu plain text, ai có quyền get trong namespace đều đọc được; key không có TTL, nhân sự nghỉ vẫn xài được; 5 service dùng chung một key nên audit không truy vết được service cụ thể; SDK v1 không tự làm mới token → job batch chết sau 1 giờ.
+
+Nguyên nhân gốc: dùng static credential thay vì IAM role cho Pod, thiếu least privilege, SDK cũ.
+
+Cách xử lý: triển khai IRSA: tạo OIDC provider cho cluster, IAM role {{payment-s3-sqs}} với trust policy {{system:serviceaccount:payments:payment-sa}}, permission policy giới hạn prefix bucket {{bank/payments/*}} và queue ARN cụ thể; SA {{payment-sa}} annotation role ARN; nâng SDK lên v2. Mỗi service một role riêng. Dev local dùng AWS SSO profile, test dùng LocalStack.
+
+Kết quả đo được: 0 static key trong Git/ConfigMap; CloudTrail log rõ service nào gọi API nào; credential tự rotate 1 giờ, 0 sự cố 403 do hết hạn; audit pass zero-finding. Xoá key cũ IAM sau 1 tuần theo dõi CloudTrail.
 
 ### Trả lời phỏng vấn
 Chuỗi ý: key tĩnh có vấn đề gì → chain credential → IRSA/Pod Identity cơ chế → least privilege theo từng service → dev local bằng SSO. Kết bằng lợi ích audit: mỗi service một danh tính, mọi call truy vết được.
@@ -3864,6 +3917,20 @@ Git không chứa secret; hai lựa chọn phổ biến: **External Secrets Oper
 - Repo cấu hình phình to (30 service × 4 môi trường) → render chậm; tách apps/infra và dùng ApplicationSet.
 - Văn hoá "thôi kubectl cho nhanh" sống sót sau selfHeal — phải kỷ luật: prod access chỉ còn break-glass có log.
 - Argo CD là single point of failure: mất Argo thì cluster vẫn chạy, nhưng bạn mất cách deploy an toàn — cần runbook.
+
+### Ví dụ đời thực
+Triệu chứng: team dùng Jenkins chạy {{kubectl apply}} từ ngoài cluster. Deploy mất 20 phút, rollback phải tìm job cũ hoặc gõ {{kubectl rollout undo}}, không ai nhớ version nào đang chạy. Dev sửa resource tay ({{kubectl edit deployment}}) quên commit, lần sau Jenkins deploy lại ghi đè. Secret DB commit vào repo GitOps, auditor phát hiện. CI giữ kubeconfig admin prod — nếu Jenkins bị hack thì toàn bộ cluster rơi.
+
+Điều tra: push-based CI/CD có credential cluster ở ngoài; không có nguồn sự thật duy nhất (Git); sửa tay không bị phát hiện; secret vào Git; rollback không có audit trail.
+
+Nguyên nhân gốc: thiếu mô hình GitOps, tách quyền không chặt.
+
+Cách xử lý: triển khai Argo CD pull-based; repo cấu hình apps tách biệt, CI chỉ bump image tag commit vào apps repo; bật selfHeal + ignoreDifferences cho HPA replicas; rollback bằng {{git revert}} commit bump image, Argo sync tự động; secret dùng External Secrets Operator pull từ Vault; prod access chỉ break-glass có log. Pipeline CI < 10 phút, deploy bằng merge PR.
+
+Kết quả đo được: deploy từ 20 phút xuống 3 phút (merge PR → Argo sync); rollback 1 lệnh {{git revert}} < 1 phút; auditor pass (Git log = audit trail, 0 secret trong repo); drift = 0 nhờ selfHeal; 30 service quản bằng ApplicationSet, thêm service mới 1 commit.
+
+### Trả lời mẫu khi phỏng vấn
+"GitOps nghĩa là trạng thái mong muốn của cluster nằm trong Git, Argo CD trong cluster kéo thực tế về khớp Git. CI không còn deploy — chỉ bump image tag commit vào apps repo. Deploy hằng ngày = merge PR. Rollback = {{git revert}} commit bump image, Argo sync lại, lịch sử deploy = git log. Sửa tay ({{kubectl edit}}) bị Argo phát hiện là drift và self-heal đè lại (trừ HPA replicas ignoreDifferences). Secret không vào Git, dùng External Secrets Operator. Thay đổi lớn: dev không cần quyền prod, chỉ cần quyền merge PR vào apps repo; auditor thấy Git log thay vì xin log Jenkins. Drill phá staging dựng lại từ Git + registry dưới 30 phút là tiêu chí nghiệm thu."
 
 > Senior tip: trước khi chuyển, chạy drill "tường lửa": phá cluster staging, dựng lại từ trắng, chỉ dùng Git + registry — mục tiêu dưới 30 phút. Drill này đồng thời test GitOps, backup image, Terraform và tài liệu; team nào không làm được là GitOps còn hổng thật.`,
     follow: [
@@ -3948,6 +4015,20 @@ Khi abort: canary scale về 0, rollout dừng ở trạng thái aborted, metric
 - Canary-by-header: tester bắn hỏng → abort không đúng vì traffic test không được analysis đếm (đọc theo header, weight vẫn 0).
 - Chạy canary đồng thời với DB migration coalesce → không còn "old code path" để lui.
 - Pause vô hạn bị quên: rollout treo 3 ngày giữa 5%, hai ReplicaSet cùng tồn tại, dev tưởng đã xong.
+
+### Ví dụ đời thực
+Triệu chứng: team triển khai canary cho service thanh toán: 5% traffic 10 phút → 25% → 50% → 100%. Lần đầu canary 5% p99 tăng từ 150 ms lên 800 ms trong 3 phút, analysis abort oan; lần sau tester dùng canary-by-header bắn tải test làm abort; lần thứ ba rollout treo 3 ngày ở 5% vì pause vô hạn bị quên.
+
+Điều tra: pod canary mới JIT chưa warm (p99 cao vài phút đầu) mà analysis đo ngay; tester dùng header bypass weight làm analysis tính sai; pause đầu tiên để vô hạn mà không ai theo dõi. Migration DB không expand-contract khiến canary và stable dùng chung schema mới, stable lỗi.
+
+Nguyên nhân gốc: thiếu warmupDurationSecs, analysis đo p99 thay vì 5xx rate, canary-by-header không trừ vào analysis, pause không có timeout, migration không tương thích ngược.
+
+Cách xử lý: thêm warmupDurationSecs 120s cho canary, analysis chỉ bắt đầu sau pause; analysis dùng 5xx rate + business error rate (ít nhiễu hơn p99); canary-by-header traffic không đếm vào analysis; pause đầu tiên 10 phút, pause sau có duration; migration phải expand-contract, Flyway chạy ở sync-wave 1 trước Deployment. Thêm script promote/abort từng bước khi incident.
+
+Kết quả đo được: 5 deploy canary liên tiếp: 0 abort oan, p99 canary 5% ổn định 180 ms (JIT warm), deploy tự động 5%→25%→50%→100% trong 45 phút, rollback abort < 30 giây. Tìm được 1 bug thật (gateway từ chối tăng 2%) ở bước 25% nhờ analysis.
+
+### Trả lời mẫu khi phỏng vấn
+"Argo Rollouts dùng CRD Rollout thay Deployment, điều phối stable/canary qua steps: setWeight, pause, AnalysisTemplate query Prometheus. Canary 5% traffic 10 phút, 25%, 50%, 100%, tự abort nếu 5xx rate > 1% (failureLimit 2). Traffic chia qua NGINX ingress canary-weight. Ba điều Java phải nhớ: (1) pod canary mới JIT lạnh p99 cao — dùng warmupDurationSecs, đo sau pause; (2) DB state chia sẻ — migration phải expand-contract; (3) sample nhỏ traffic thấp p99 nhiễu — dùng 5xx rate, pause vô hạn đầu để người xem log. Lỗi hay gặp: readiness lạc quan, canary-by-header test traffic không trừ analysis, pause quên. Tôi bắt đầu bằng 5xx rate + business error rate, pause 10 phút người xem, chỉ tin máy sau khi nó bắt đúng 2–3 vụ thật."
 
 > Senior tip: với service thanh toán, bắt đầu phân tích bằng **tỷ lệ lỗi 5xx + tỷ lệ lỗi nghiệp vụ (gateway từ chối)** thay vì p99 — hai metric này ít nhiễu ở sample nhỏ. Giữ bước pause đầu tiên vô hạn để con người nhìn log canary 10 phút; chỉ tin máy sau khi bạn thấy analysis máy đã bắt đúng 2–3 vụ thật.`,
     follow: [
@@ -11505,7 +11586,7 @@ Một app đặt lịch dùng MongoDB 3 node với {{w: 1}} do "cấu hình cũ"
 ### Trả lời mẫu khi phỏng vấn
 "MongoDB replica set có một primary nhận ghi, các secondary kéo oplog của primary để sao chép. Nếu primary mất liên lạc với đa số quá khoảng 10 giây, các node bầu primary mới theo giao thức dựa trên Raft, ưu tiên node có priority cao và dữ liệu mới. Điều tôi quan tâm nhất là write concern: với dữ liệu quan trọng tôi dùng w majority, cũng là mặc định từ 5.0, để ghi đã xác nhận không bị rollback khi failover. Với w 1, primary bị cô lập vẫn nhận ghi và sau election những ghi đó bị rollback. Fencing ở đây là primary mất đa số tự step down, và ghi majority vào phía thiểu số không bao giờ được xác nhận. Tôi dùng ba node dữ liệu thay vì arbiter, chuỗi kết nối liệt kê đủ các host, bật retryWrites, và cân nhắc đọc secondary chỉ khi chấp nhận dữ liệu cũ vài giây."
 
-> Senior tip: kiểm tra ngay write concern thực tế ở chuỗi kết nối và ở mặc định của cluster ({{getDefaultRWConcern}}). Các hệ thống tạo trước MongoDB 5.0 thường vẫn chạy w 1 mà không ai biết.`,
+> Senior tip: kiểm tra ngay write concern thực tế ở chuỗi kết nối và ở mặc định của cluster ({{getDefaultWriteConcern}}). Các hệ thống tạo trước MongoDB 5.0 thường vẫn chạy w 1 mà không ai biết.`,
     follow: ['Arbiter là gì, khi nào dùng?', 'Read preference primary/secondary?', 'Sharded cluster HA?'],
     tags: ['MongoDB', 'ReplicaSet', 'HA']
   }
