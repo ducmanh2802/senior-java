@@ -1035,4 +1035,163 @@ GreenLine Printing`,
   ],
   tags: ["vendor", "invoice"]
 },
+{
+  id: "toeic-w3-001",
+  part: "w3",
+  prompt: "Some companies allow employees to choose their own work schedule. Do you think this is a good idea? Give reasons and examples to support your answer.",
+  outline: ["Tiết kiệm thời gian đi lại, giảm căng thẳng", "Nhân viên tự quản lý thời gian hiệu quả hơn", "Cần có khung giờ chung để hợp tác nhóm", "Một số công việc không phù hợp với lịch linh hoạt", "Kết luận: tốt nếu có quy định rõ ràng"],
+  sample: `I believe allowing employees to choose their own work schedule is a good idea for many reasons. A flexible schedule gives people more control over their day, but it works best when the company also sets clear expectations about availability and results.
+
+
+First, it can save commuting time and reduce stress. Employees who travel during rush hour may spend a long time in traffic or on crowded trains before they even begin work. For example, a colleague who lives outside the city now starts at seven in the morning and finishes at four. She avoids the busiest traffic and has more time to pick up her child in the evening. She is also less tired when she arrives at the office.
+
+
+Second, people do not all do their best work at the same hour. Some employees can concentrate early in the morning, while others are more focused later in the day. If they can arrange their schedules around their most productive hours, they may finish important tasks with fewer interruptions. A designer, for instance, might use a quiet early morning to complete detailed work and leave routine meetings for the afternoon.
+
+
+However, flexibility should not mean that coworkers are impossible to reach. Teams need time to make decisions, share progress, and solve urgent problems together. A company could set core hours from ten to three, when everyone is expected to be available, and let employees choose their start and finish times outside that period. It should also agree on how quickly people need to respond to messages.
+
+
+Some roles, such as customer service and factory work, require staff to cover specific hours. Managers should therefore offer flexibility where the job allows it, rather than applying one schedule to every position.
+
+
+In conclusion, I support employee choice because it can improve well-being and help people organize their work. With shared hours, reliable communication, and schedules suited to each role, companies can give employees freedom without weakening teamwork.`,
+  tips: [
+    "Mở bài nêu rõ quan điểm ngay: I believe… is a good idea for many reasons; tránh dài dòng vào đề.",
+    "Dùng First, Second, However, In addition, In conclusion để tạo cấu trúc rõ ràng; mỗi đoạn chỉ nêu một ý chính.",
+    "Kết hợp ví dụ cá nhân (my colleague) và lập luận chung (some jobs) để bài luận đa dạng và thuyết phục.",
+    "Tránh dùng I think nhiều lần; thay bằng I believe, In my opinion, Overall."
+  ],
+  tags: ["workplace", "flexible schedule"]
+},
+{
+  id: "toeic-w3-002",
+  part: "w3",
+  prompt: "Some people think that companies should only hire candidates with formal education. Others believe that work experience is more important. Which view do you agree with?",
+  outline: ["Học vấn chính quy cung cấp nền tảng lý thuyết vững", "Kinh nghiệm thực tế giúp làm việc hiệu quả ngay", "Kết hợp cả hai là lý tưởng nhất", "Một số ngành yêu cầu bằng cấp bắt buộc", "Kết luận: tùy vị trí nhưng kinh nghiệm có thể bù đắp"],
+  sample: `I agree that work experience is more important than formal education when hiring for most positions. A degree can show that a person has studied a subject, but experience gives employers evidence of how that person uses knowledge to complete real tasks and work with other people.
+
+
+To begin with, experienced employees can often contribute sooner. They may already understand common workplace tools, deadlines, and the need to communicate when a problem appears. For example, when our company hired a marketing specialist with five years of experience, she reviewed customer feedback, suggested a campaign plan, and coordinated with the sales team during her first week. A recent graduate could have the same potential, but might need more time and support to learn the company's process.
+
+
+Experience can also help a candidate develop skills that are difficult to measure through grades alone. Working on a project teaches people how to divide responsibilities, explain an idea clearly, and adjust when a plan changes. These abilities matter in nearly every office role. In an interview, employers can ask candidates to describe a specific challenge they faced and what they learned from it, rather than relying only on the number of years they have worked.
+
+
+However, education remains essential for some careers. Doctors need extensive medical training, and engineers may need formal study to understand safety standards and technical principles. Even in other jobs, a strong educational foundation can help a new employee learn unfamiliar tasks more quickly. Employers should not assume that every candidate without a degree lacks ability.
+
+
+In conclusion, I would give more weight to relevant experience for most business positions because it shows practical judgment and the ability to work with a team. The best decision is to assess the actual skills required for each role. When education is legally or technically necessary, it should be a requirement; otherwise, demonstrated ability and results deserve greater attention.`,
+  tips: [
+    "Chọn một lập trường rõ ràng và bảo vệ bằng lý do cụ thể; tránh lưỡng lự giữa hai phương án.",
+    "Dùng To begin with, Furthermore, Of course, However để chuyển ý và thể hiện sự cân bằng trong lập luận.",
+    "Ví dụ nên từ bối cảnh công việc cụ thể (marketing campaign, team leadership) để bài luận gần gũi với TOEIC.",
+    "Tránh dùng personal experience quá nhiều; nên nói for example, a candidate who… để tránh bị cho là thiên vị."
+  ],
+  tags: ["hiring", "career"]
+},
+{
+  id: "toeic-w3-003",
+  part: "w3",
+  prompt: "Do you think businesses should prioritize making profits over protecting the environment? Give reasons with specific examples.",
+  outline: ["Lợi nhuận quan trọng để duy trì hoạt động và tạo việc làm", "Bảo vệ môi trường là trách nhiệm xã hội của doanh nghiệp", "Chi phí môi trường ban đầu có thể tiết kiệm lâu dài", "Khách hàng ngày càng quan tâm đến sản phẩm xanh", "Kết luận: cần cân bằng, không phải chọn một bên"],
+  sample: `I disagree with the idea that businesses should prioritize profits over environmental protection. A company needs to earn money to pay employees and remain open, but pursuing short-term savings while ignoring waste and pollution can create greater costs later.
+
+
+First, customers notice how a business treats the environment. If a company makes large claims but continues to waste materials, people may lose trust and choose another brand. By contrast, clear and practical steps can strengthen a company's reputation. For example, a local clothing store could offer reusable bags and explain which products use recycled fabric. It should describe these efforts honestly instead of claiming that every product is completely harmless to the environment.
+
+
+Second, some environmental improvements also reduce operating expenses. An office that replaces old lights with efficient ones and switches off unused equipment can use less electricity. At my workplace, the facilities team tracked monthly energy bills before and after changing the lighting in two busy areas. The lower bills helped pay back part of the initial cost, while employees still had well-lit work spaces. Measuring the result made it easier to decide whether to expand the program.
+
+
+I recognize that not every company can afford expensive equipment immediately. A small business may need to protect its cash flow and continue serving customers. It can begin with affordable actions, such as reducing unnecessary printing, repairing equipment, or choosing suppliers that use less packaging. Managers should compare the cost, expected savings, and environmental benefit before making a larger investment.
+
+
+In conclusion, businesses should protect the environment while maintaining a healthy financial position. Profit is important, but it should not be the only measure of success. Practical changes, supported by honest communication and measurable results, allow companies to serve customers responsibly and remain competitive over time. Regularly reviewing the results helps them keep improving.`,
+  tips: [
+    "Nêu quan điểm rõ ràng ngay từ đầu: I disagree; tránh viết mơ hồ khiến người chấm không biết bạn đứng về phía nào.",
+    "Dùng First, Second, However, In conclusion cho cấu trúc 5 đoạn kinh điển; mỗi đoạn thân bài nên có một lý do và một ví dụ.",
+    "Ví dụ cần có số liệu cụ thể (thirty percent) để tăng sự thuyết phục; tránh ví dụ chung chung như it helps the environment.",
+    "Thừa nhận mặt khó khăn (initial investment, small businesses) để câu trả lời cân bằng và trưởng thành hơn."
+  ],
+  tags: ["environment", "business"]
+},
+{
+  id: "toeic-w3-004",
+  part: "w3",
+  prompt: "Some people believe that success in life comes from hard work and determination. Others think success depends more on luck and opportunities. Which do you agree with?",
+  outline: ["Nỗ lực và quyết tâm là nền tảng của thành công", "May mắn và cơ hội mở ra những khả năng mới", "Hai yếu tố bổ trợ lẫn nhau", "Ví dụ về người thành công nhờ nỗ lực", "Kết luận: nỗ lực quan trọng hơn nhưng cần nắm bắt cơ hội"],
+  sample: `I believe success depends mainly on hard work and determination, although luck and opportunity also matter. People cannot control every condition around them, but steady effort helps them prepare for opportunities and continue when a first attempt does not work.
+
+
+To begin with, hard work builds skills that a person can use again and again. Someone who practices regularly learns from mistakes and becomes more capable over time. For example, a student preparing for an important exam may not understand every topic at first. By reviewing a small amount each day, asking a teacher for help, and correcting practice answers, the student can make progress that a lucky guess cannot provide. Determination is especially important when results take weeks or months to appear.
+
+
+In addition, consistent effort often produces more lasting success. A worker who takes responsibility for projects and learns from coworkers gradually earns their trust. That experience can lead to more challenging assignments in the future. If a person receives a promotion only because of a fortunate connection but does not develop the required skills, it may be difficult to perform well in the new role. Preparation gives people a better chance of keeping an opportunity once it arrives.
+
+
+At the same time, I do not believe that effort alone guarantees success. A person's family, health, education, and local job market can affect what choices are available. For instance, two equally capable graduates may have different access to internships because one lives near a large business center. Companies and communities can help by offering fair hiring practices and affordable training. Individuals should also look for opportunities, such as applying for a role or asking to join a project, rather than waiting for perfect conditions.
+
+
+In conclusion, luck and opportunity can influence the path, but hard work and determination are more dependable factors. They help people improve, respond to setbacks, and make good use of chances when they appear. We may not choose every starting point, but we can choose how consistently we learn and act.`,
+  tips: [
+    "Với câu hỏi so sánh hai quan điểm, hãy chọn một bên và bảo vệ bằng lý do mạnh; thừa nhận bên kia nhưng không để nó làm yếu lập luận chính.",
+    "Dùng To begin with, Furthermore, Of course, In conclusion để tạo luồng rõ ràng; tránh nhảy lung tung giữa các ý.",
+    "Ví dụ nên gần gũi với người học như học tập, thi cử, hoặc khởi nghiệp — tránh ví dụ quá xa lạ.",
+    "Chú ý phân biệt luck (may mắn ngẫu nhiên) với opportunity (cơ hội có thể nắm bắt); dùng đúng ngữ cảnh."
+  ],
+  tags: ["success", "motivation"]
+},
+{
+  id: "toeic-w3-005",
+  part: "w3",
+  prompt: "Should companies evaluate employee performance more frequently than once a year? Give your opinion with reasons and examples.",
+  outline: ["Đánh giá thường xuyên giúp phát hiện vấn đề sớm", "Nhân viên biết rõ mình đang làm tốt hay chưa", "Có thể tốn thời gian và gây áp lực không cần thiết", "Nên kết hợp đánh giá thường xuyên với phản hồi chính thức", "Kết luận: tốt nếu được thực hiện đúng cách"],
+  sample: `I believe companies should discuss employee performance more frequently than once a year. A single annual review may come too late to correct a problem or recognize good work, while regular conversations can help both employees and managers make practical improvements.
+
+
+First, frequent feedback allows a manager to address difficulties before they become serious. If an employee is unsure how to use a new process, waiting many months to mention it may lead to repeated mistakes. A short monthly check-in gives the manager a chance to clarify expectations, answer questions, and agree on a next step. For example, a new customer service representative might benefit from reviewing a few difficult calls with a supervisor early in the job instead of hearing about them at the end of the year.
+
+
+Second, employees can make better plans when they understand what they are doing well and what they should improve. At a previous company, monthly one-on-one meetings helped me learn that my reports were accurate but sometimes arrived later than the team needed. I began sharing an early draft and then completing the details. That small change made it easier for my colleagues to plan their work, and I did not have to wait for an annual meeting to hear the feedback.
+
+
+However, frequent evaluation should not mean constant surveillance or a long formal review every week. Too many meetings can interrupt focused work and make employees feel that every small mistake will be recorded. Companies should keep routine conversations brief and supportive, and reserve a more detailed review for a few times each year. Managers should also use clear goals so that feedback is based on work rather than personal preference.
+
+
+In conclusion, I support regular performance discussions because they encourage improvement and prevent surprises. The process should be consistent but not burdensome. Monthly check-ins combined with a formal review once or twice a year can give employees useful guidance while allowing them enough time to do their jobs.`,
+  tips: [
+    "Nêu quan điểm rõ ràng ngay đầu: I believe companies should…; tránh lối mở đầu mô tả chung.",
+    "Dùng First, Second, However, In conclusion cho cấu trúc rõ ràng; mỗi đoạn thân bài có một ý chính và ví dụ hỗ trợ.",
+    "Ví dụ từ trải nghiệm công việc cụ thể (monthly one-on-one meetings) làm bài luận chân thực hơn.",
+    "Tránh tuyệt đối hóa: nói hỗ trợ đánh giá thường xuyên nhưng thừa nhận cần cân bằng với công việc chính."
+  ],
+  tags: ["management", "performance"]
+},
+{
+  id: "toeic-w3-006",
+  part: "w3",
+  prompt: "Do you think it is important for children to learn a foreign language at a young age? Give reasons and examples to support your answer.",
+  outline: ["Trẻ em học ngôn ngữ tự nhiên và nhanh hơn người lớn", "Biết nhiều ngôn ngữ mở ra cơ hội học tập và nghề nghiệp", "Có thể gây áp lực nếu học quá sớm hoặc không đúng cách", "Nên kết hợp với phương pháp vui vẻ, không gượng ép", "Kết luận: quan trọng nhưng cần cách tiếp cận phù hợp"],
+  sample: `I believe children should have the chance to learn a foreign language at a young age. Early exposure gives them more time to become comfortable with another language, although the lessons should be enjoyable and appropriate for their age.
+
+
+First, young learners can become familiar with sounds and common expressions through regular practice. They do not need to memorize long grammar rules at the beginning. A teacher can use songs, picture books, and simple conversations to help children understand words in context. For example, a child might learn the names of food while playing a pretend restaurant game. Because the activity feels like play, the child can practice speaking without worrying too much about making a mistake.
+
+
+Second, starting early gives children more years to build their skills gradually. A student who studies a language for a short time each week can later read simple stories, follow classroom instructions, and communicate with visitors. This ability may be useful when the student travels or applies to a university. It can also help children learn about other cultures and understand that people may express ideas in different ways.
+
+
+However, early lessons should not become an extra source of pressure. Children have many subjects to study, and expecting perfect pronunciation or quick progress may discourage them. In my neighborhood, one family found that their child enjoyed a weekly conversation club but disliked long vocabulary tests. The parents changed the routine to include games and short practice at home, and the child became more willing to speak. A supportive teacher and realistic goals are more valuable than forcing a child to study for hours.
+
+
+In conclusion, learning a foreign language early can be beneficial because it creates time for steady practice and cultural learning. Parents and schools should focus on curiosity and communication rather than perfection. When lessons are positive and manageable, children can develop a useful skill without losing their interest in learning.`,
+  tips: [
+    "Mở đầu bằng quan điểm mạnh: I strongly believe, followed by the main reason; tránh dùng I think nhiều lần.",
+    "Dùng First, Second, However, In conclusion cho cấu trúc rõ ràng; ví dụ nên so sánh trẻ em với người lớn để thấy sự khác biệt.",
+    "Tránh nói trẻ em luôn học tốt hơn; thừa nhận yếu tố phương pháp (poor teaching methods, forced to study).",
+    "Chú ý từ vựng: language acquisition, native-like accent, proficiency, bilingual employees — phù hợp bài luận TOEIC."
+  ],
+  tags: ["education", "language"]
+},
 );
