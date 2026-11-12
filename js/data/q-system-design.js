@@ -5465,12 +5465,12 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế notification service đa kênh.',
-  a: `**Tóm tắt:** Notification service đa kênh (gửi thông báo qua nhiều kênh như email, SMS, push, in-app) cần thiết kế theo **at-least-once delivery** (ít nhất một lần: hệ thống đảm bảo gửi, nhưng có thể gửi lặp nếu mất ACK — gói xác nhận), kết hợp **khử trùng** (dedup) bằng khóa nghiệp vụ. Mỗi kênh có hàng đợi, SLA (mức cam kết thời gian), giới hạn tốc độ và nhà cung cấp (provider) riêng. Ưu tiên thông báo quan trọng (OTP — mã xác thực một lần), dùng retry có backoff + jitter (độ trễ ngẫu nhiên) và circuit breaker (cầu dao: ngắt tạm khi provider lỗi liên tục) để bảo vệ hệ thống.
+  a: `**Tóm tắt:** Notification service đa kênh (gửi thông báo qua nhiều kênh như email, SMS, push, in-app) cần thiết kế theo **at-least-once delivery** (ít nhất một lần: hệ thống đảm bảo gửi, nhưng có thể gửi lặp nếu mất ACK — gói xác nhận), kết hợp **khử trùng lặp** (dedup) bằng khóa nghiệp vụ. Mỗi kênh có hàng đợi, SLA (mức cam kết thời gian), giới hạn tốc độ và nhà cung cấp (provider) riêng. Ưu tiên thông báo quan trọng (OTP — mã xác thực một lần), dùng retry có backoff + jitter (độ trễ ngẫu nhiên) và circuit breaker (cầu dao: ngắt tạm khi provider lỗi liên tục) để bảo vệ hệ thống.
 
 ### 1. Vì sao at-least-once chứ không exactly-once?
 Exactly-once (đúng một lần) trên mạng là rất khó/không thực tế vì lỗi mạng, timeout và crash (bài toán tương tự "hai vị tướng"): producer (bên gửi) không biết ACK bị mất hay xử lý chưa xong nên phải retry. Cách thực dụng: **at-least-once + dedup phía nhận/xử lý**. Gửi có thể lặp, nhưng xử lý lặp thì bỏ qua nhờ khóa trùng.
 
-### 2. Khử trùng (dedup)
+### 2. Khử trùng lặp (dedup)
 - **dedup key** = hàm băm của các yếu tố nghiệp vụ, ví dụ {{hash(userId + templateId + businessEventId + channel)}}. Dùng {{businessEventId}} (id sự kiện gốc, như id đơn hàng) để retry của cùng sự kiện không tạo thông báo mới.
 - Lưu key trong Redis bằng thao tác nguyên tử {{SET key NX EX 86400}} (chỉ đặt nếu chưa có, hết hạn sau 24h). Key đã tồn tại → bỏ qua (skip).
 - Cửa sổ dedup (TTL) chọn theo nghiệp vụ: OTP vài phút, thông báo giao dịch vài giờ/1 ngày, marketing dài hơn nhưng vẫn cần chặn trùng chiến dịch.
