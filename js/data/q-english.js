@@ -9143,4 +9143,160 @@ With incomplete information, I chose asynchronous events with a simple schema an
   tags: ['english', 'leadership', 'architecture', 'adr', 'decision-making'],
   lang: 'en'
 },
+{
+  id: 'english-166',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Tell me about a time you resolved a conflict between two senior engineers on your team. What did you do, and what was the outcome?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn xử lý xung đột giữa các kỹ sư giỏi mà không đứng về phe, giữ được chất lượng kỹ thuật và quan hệ làm việc. Hãy trả lời theo cấu trúc: bối cảnh, nguyên nhân gốc (khác quan điểm kỹ thuật hay va chạm cá nhân), cách bạn tạo không gian trao đổi công bằng, tiêu chí quyết định, và kết quả đo được.
+
+### Sample answer
+Last year, two senior engineers on my team of eight disagreed about how to redesign our payment retry service. One wanted an event-driven approach with Kafka (a message broker: hệ thống trung gian nhận và chuyển tiếp thông điệp giữa các service), and the other preferred a simpler database polling solution. The debate lasted almost two weeks and started to slow the sprint.
+
+I asked each of them to write a short one-page proposal with risks, cost, and rollout plan. Then I ran a 45-minute meeting with clear ground rules: focus on trade-offs, not personal opinions. We compared the options against three criteria: delivery time, operational complexity, and failure recovery. The event-driven design was better for scale, but our current traffic was only about 5,000 retries per day, and we had no on-call experience with Kafka.
+
+We agreed to ship the polling solution in four weeks and define a clear threshold: if retry volume passed 50,000 per day, we would revisit the event-driven design. Both engineers supported the decision, the feature launched on time, and our retry success rate improved from 96.2 percent to 99.1 percent. I learned that a lead resolves conflict by making criteria explicit and protecting mutual respect.
+
+### Useful phrases
+- **There was a disagreement between two senior engineers** — có bất đồng giữa hai kỹ sư cấp cao.
+- **I made sure both sides felt heard** — tôi đảm bảo cả hai bên đều được lắng nghe.
+- **I asked them to focus on trade-offs, not opinions** — tôi yêu cầu họ tập trung vào đánh đổi, không phải ý kiến cá nhân.
+- **We agreed on clear decision criteria** — chúng tôi thống nhất tiêu chí quyết định rõ ràng.
+- **I facilitated the discussion, not took sides** — tôi điều phối cuộc thảo luận, không đứng về phe nào.
+- **We documented the decision and the review point** — chúng tôi ghi lại quyết định và mốc xem lại.
+- **The outcome was measurable** — kết quả đo được bằng số liệu.
+
+### Lỗi người Việt hay mắc
+- **Chỉ nói "I told them to stop arguing":** Nghe áp đặt, thiếu kỹ năng lãnh đạo. Hãy mô tả cách bạn tạo quy tắc trao đổi và tiêu chí khách quan.
+- **Không nêu số liệu và kết quả:** Câu chuyện chung chung sẽ yếu. Nêu quy mô team, thời gian, lưu lượng, hoặc chỉ số cải thiện.
+- **Đổ lỗi cho một người:** Tránh nói ai đúng ai sai theo cảm tính. Hãy nói bạn tập trung vào vấn đề và dữ liệu.
+- **Ngữ pháp thì quá khứ lẫn lộn:** Khi kể chuyện đã xảy ra, dùng quá khứ đơn nhất quán: "I asked", "we agreed", "we launched".
+
+> Senior tip: Khi hai senior xung đột, vai trò của lead là làm rõ tiêu chí và rủi ro, không phải chứng tỏ ai giỏi hơn. Một quyết định có mốc xem lại giúp team tiến lên mà không ai cảm thấy bị phủ nhận hoàn toàn.`,
+  follow: [
+    "What would you do if the two engineers still could not agree after your meeting?",
+    "How do you prevent personal tension from affecting future collaboration?",
+    "When is it appropriate for a lead to make the final call?"
+  ],
+  tags: ['english', 'leadership', 'conflict', 'communication', 'teamwork'],
+  lang: 'en'
+},
+{
+  id: 'english-167',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "How do you estimate a large project and commit to a deadline when there is uncertainty?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn ước lượng dự án lớn một cách thực tế, thừa nhận độ bất định, và cam kết deadline có trách nhiệm. Hãy nêu cách chia nhỏ công việc, dùng dữ liệu/kinh nghiệm, tính rủi ro (buffer), và trao đổi phạm vi khi cần thay vì hứa suông.
+
+### Sample answer
+In my previous role, I led the estimate for migrating a legacy billing module to a new service. The scope was large: about 12 APIs, data migration for 2 million records, and integration with three external systems. Management wanted a fixed date within three months.
+
+I broke the work into smaller deliverables and asked four engineers to estimate each part. We used story points and also converted them into calendar time based on our recent velocity (the amount of work a team usually finishes in a sprint). For uncertain areas, such as the data migration script, we added a one-week spike to validate assumptions. Our first estimate was 14 weeks, not 12.
+
+Instead of committing to an unrealistic date, I proposed two options: deliver the full scope in 14 weeks, or deliver a core version in 11 weeks covering 80 percent of customer use cases and move the rest to phase two. I also included a 15 percent buffer for risks like integration delays. Leadership chose the phased plan. We delivered phase one one day early, and phase two three weeks later with no critical defects. I learned that a credible commitment is based on transparency, not optimism.
+
+### Useful phrases
+- **I broke the project down into smaller pieces** — tôi chia dự án thành các phần nhỏ hơn.
+- **We estimated based on team velocity and past data** — chúng tôi ước lượng dựa trên tốc độ team và dữ liệu trước đó.
+- **There was uncertainty, so we added a buffer** — có độ bất định nên chúng tôi thêm thời gian dự phòng.
+- **I presented options instead of a single risky promise** — tôi đưa ra các lựa chọn thay vì một lời hứa rủi ro.
+- **We aligned on scope, timeline, and trade-offs** — chúng tôi thống nhất phạm vi, thời gian và đánh đổi.
+- **I communicated risks early** — tôi trao đổi rủi ro sớm.
+- **We committed to a realistic deadline** — chúng tôi cam kết một mốc thời gian thực tế.
+
+### Lỗi người Việt hay mắc
+- **Cam kết ngay để làm hài lòng quản lý:** Nói "Yes, we can finish in two months" khi chưa phân tích sẽ mất uy tín. Hãy giải thích giả định và rủi ro.
+- **Ước lượng bằng cảm giác:** Thiếu chia nhỏ công việc và dữ liệu tham chiếu. Nên nói rõ bạn dựa vào velocity, kinh nghiệm, hoặc thử nghiệm ngắn.
+- **Không nhắc đến buffer (dự phòng):** Dự án lớn luôn có bất định. Không có buffer nghĩa là kế hoạch dễ vỡ.
+- **Nói "deadline" như áp lực một chiều:** Lead cần thương lượng phạm vi và ưu tiên, không chỉ nhận áp lực. Dùng cấu trúc: "We can do A by date X, or A+B by date Y."
+
+> Senior tip: Khi ước lượng dự án lớn, hãy cam kết vào một kế hoạch có giả định rõ ràng và mốc kiểm tra, không chỉ vào một con số. Minh bạch về rủi ro sớm thường được đánh giá cao hơn là báo trễ ở phút cuối.`,
+  follow: [
+    "How do you handle it when stakeholders reject your estimate and push for an earlier date?",
+    "What do you do if the project is already slipping halfway through?",
+    "How do you estimate work in an area where the team has little experience?"
+  ],
+  tags: ['english', 'leadership', 'estimation', 'planning', 'deadline'],
+  lang: 'en'
+},
+{
+  id: 'english-168',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "How do you onboard and grow junior developers on your team? Can you give a specific example?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn có kế hoạch phát triển người khác, không chỉ tự làm tốt. Hãy mô tả cách bạn giúp junior hòa nhập (onboarding: quá trình hướng dẫn người mới làm quen với hệ thống, công cụ, quy trình), giao việc phù hợp, phản hồi thường xuyên, và đo được sự tiến bộ.
+
+### Sample answer
+Last year, I onboarded two junior developers into our backend team of seven people. In their first week, I prepared a simple onboarding plan: set up the development environment, explain our service architecture, and walk them through one small end-to-end feature. I also assigned each of them a buddy (a teammate who helps answer daily questions) so they did not feel blocked.
+
+In the first month, I gave them small, well-defined tasks, such as adding a validation rule and writing unit tests. During code reviews, I explained not only what to change but why, for example how input validation prevents bad data from reaching the database. We had a 20-minute one-on-one meeting every week to discuss progress, questions, and confidence.
+
+After three months, both juniors could handle medium-sized tasks independently. One of them delivered an API endpoint for order history that passed review with only minor comments, and our average review cycles for their pull requests dropped from four rounds to about two. I learned that growing juniors requires clear expectations, safe opportunities to practice, and timely feedback.
+
+### Useful phrases
+- **I created a structured onboarding plan** — tôi tạo một kế hoạch hòa nhập có cấu trúc.
+- **I assigned a buddy to support them day to day** — tôi phân công một người hỗ trợ hằng ngày.
+- **I started with small, well-defined tasks** — tôi bắt đầu với các nhiệm vụ nhỏ, rõ ràng.
+- **I explained the reason behind each change** — tôi giải thích lý do đằng sau mỗi thay đổi.
+- **We had regular one-on-one check-ins** — chúng tôi có các buổi trao đổi một kèm một định kỳ.
+- **I tracked their progress over time** — tôi theo dõi sự tiến bộ của họ theo thời gian.
+- **They became more independent** — họ trở nên tự chủ hơn.
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung "I help juniors a lot":** Không có ví dụ cụ thể sẽ không thuyết phục. Hãy nêu thời gian, loại nhiệm vụ, và kết quả.
+- **Chỉ nói về training, quên phản hồi:** Onboarding không chỉ là tài liệu. Code review và one-on-one mới giúp junior tiến bộ.
+- **Giao việc quá khó hoặc quá dễ:** Lead cần chọn mức độ phù hợp để junior học mà không bị quá tải. Hãy mô tả cách bạn tăng dần độ khó.
+- **Dùng từ "teach" liên tục nghe nặng:** Có thể xen kẽ "support", "guide", "coach" (hướng dẫn, đồng hành) để tự nhiên hơn.
+
+> Senior tip: Phát triển junior là đầu tư dài hạn cho team. Khi trả lời, hãy cho thấy bạn tạo môi trường an toàn để hỏi, đưa ra phản hồi cụ thể, và đo được mức tự chủ tăng lên theo thời gian.`,
+  follow: [
+    "How do you balance helping juniors with delivering your own work?",
+    "What do you do if a junior developer is not improving after feedback?",
+    "How do you know when a junior is ready for more complex tasks?"
+  ],
+  tags: ['english', 'leadership', 'mentoring', 'onboarding', 'people'],
+  lang: 'en'
+},
+{
+  id: 'english-169',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Describe a time you led a production outage as the incident commander and communicated with stakeholders. What did you do?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn giữ bình tĩnh khi hệ thống production (môi trường chạy thật cho người dùng) gặp sự cố, điều phối xử lý, và giao tiếp rõ ràng với các bên liên quan. Hãy nêu vai trò **incident commander** (người điều phối xử lý sự cố: phân công việc, theo dõi tiến độ, quyết định ưu tiên), các bước giảm ảnh hưởng, và cách cập nhật thông tin.
+
+### Sample answer
+Six months ago, I acted as the incident commander during a production outage in our checkout service. At 10:15 a.m., error rates jumped from 0.5 percent to 18 percent, and about 1,200 customers could not complete payments within 20 minutes.
+
+My first priority was to reduce impact and coordinate the team. I opened an incident channel, assigned one engineer to investigate logs, another to check recent deployments, and a third to prepare a rollback (quay lại phiên bản ổn định trước). I also asked everyone to post updates in one place to avoid confusion. At the same time, I communicated with stakeholders every 15 minutes: I explained what users were experiencing, what we knew, what we were doing, and the next update time. I avoided guessing the root cause before we had evidence.
+
+We found that a configuration change had increased database connection timeouts. We rolled back the change at 10:42 a.m., and the error rate returned to normal by 10:50 a.m. After the incident, I led a blameless postmortem (buổi rà soát sau sự cố không đổ lỗi cá nhân) and we added a configuration check in our release process. I learned that clear roles and calm communication are as important as technical debugging.
+
+### Useful phrases
+- **I took the role of incident commander** — tôi đảm nhận vai trò người điều phối sự cố.
+- **My first priority was to reduce user impact** — ưu tiên đầu tiên của tôi là giảm ảnh hưởng đến người dùng.
+- **I assigned clear roles to the team** — tôi phân công vai trò rõ ràng cho team.
+- **I provided regular updates to stakeholders** — tôi cập nhật thường xuyên cho các bên liên quan.
+- **I shared what we knew and what we did not know yet** — tôi chia sẻ điều đã biết và điều chưa biết.
+- **We rolled back to restore service quickly** — chúng tôi quay lại phiên bản cũ để khôi phục dịch vụ nhanh.
+- **We ran a blameless postmortem** — chúng tôi tổ chức buổi rà soát không đổ lỗi cá nhân.
+
+### Lỗi người Việt hay mắc
+- **Nhảy thẳng vào chi tiết kỹ thuật mà quên điều phối:** Incident commander cần nói về phân công, ưu tiên, và giao tiếp, không chỉ debug.
+- **Hứa hẹn thời gian sửa xong khi chưa chắc:** Nói "It will be fixed in 5 minutes" mà không có bằng chứng sẽ làm mất tin tưởng. Hãy hứa thời điểm cập nhật tiếp theo.
+- **Dùng giọng đổ lỗi:** "The developer broke it" gây phòng thủ. Trong incident, tập trung vào khôi phục dịch vụ; nguyên nhân chi tiết để sau postmortem.
+- **Quên cập nhật stakeholders:** Im lặng trong lúc sự cố khiến bên liên quan lo lắng và liên tục hỏi. Cập nhật ngắn, đều đặn (ví dụ mỗi 15 phút) rất quan trọng.
+
+> Senior tip: Khi dẫn dắt sự cố production, hãy tách hai mục tiêu: khôi phục dịch vụ nhanh và học sau sự cố. Giao tiếp rõ ràng, trung thực về mức độ chắc chắn, và có nhịp cập nhật cố định thể hiện sự trưởng thành ở level lead.`,
+  follow: [
+    "How do you decide between rolling back and applying a quick fix during an outage?",
+    "What information do you include in stakeholder updates during an active incident?",
+    "What actions do you take after the outage to prevent the same issue?"
+  ],
+  tags: ['english', 'leadership', 'incident', 'outage', 'communication'],
+  lang: 'en'
+},
 );
