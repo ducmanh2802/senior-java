@@ -68,21 +68,142 @@
 .view-speak .sp-empty { display: grid; gap: 8px; }
 .view-speak .sp-empty p { margin: 0; }
 
+/* --- Touch targets & focus visibility --- */
+.view-speak .btn,
+.view-speak .chip,
+.view-speak .select,
+.view-speak [data-act],
+.view-speak [data-tab],
+.view-speak [data-assess],
+.view-speak .sp-filter select {
+  min-height: 40px;
+  min-width: 40px;
+}
+.view-speak .btn:focus-visible,
+.view-speak .chip:focus-visible,
+.view-speak .select:focus-visible,
+.view-speak [data-act]:focus-visible,
+.view-speak [data-tab]:focus-visible,
+.view-speak [data-assess]:focus-visible,
+.view-speak .sp-filter select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Recording state prominence --- */
+.view-speak .mic-btn.recording {
+  background: var(--bad);
+  color: var(--bad-contrast, #fff);
+  animation: sp-pulse 1s ease-in-out infinite;
+}
+@keyframes sp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.view-speak .sp-rec {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0; color: var(--bad); font-size: .85rem; font-weight: 600;
+}
+.view-speak .sp-rec::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--bad); animation: sp-blink 1s ease-in-out infinite;
+}
+@keyframes sp-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* --- Loading state --- */
+.view-speak .sp-loading {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; color: var(--muted); font-size: .85rem;
+}
+.view-speak .sp-loading::before {
+  content: ""; width: 14px; height: 14px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: sp-spin 0.8s linear infinite;
+}
+@keyframes sp-spin { to { transform: rotate(360deg); } }
+
+/* --- Error state --- */
+.view-speak .sp-error {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--bad-soft); border: 1px solid var(--bad);
+  color: var(--bad); font-size: .85rem; flex-wrap: wrap;
+}
+.view-speak .sp-error .btn { margin-left: auto; }
+
+/* --- Empty state enhancement --- */
+.view-speak .sp-empty {
+  display: grid; gap: 12px; text-align: center; padding: 24px 16px;
+}
+.view-speak .sp-empty .icon { font-size: 2.5rem; opacity: 0.5; }
+.view-speak .sp-empty p { margin: 0; font-size: 1rem; }
+.view-speak .sp-empty .muted { font-size: .85rem; }
+
+/* --- Voice selector mobile --- */
+.view-speak .sp-voice .select { width: 100%; max-width: 100%; }
+
+/* --- Progress/navigation --- */
+.view-speak .sp-nav .btn { min-width: 80px; }
+
+/* --- Auto mode indicator --- */
+.view-speak .chip[data-act="auto"].active {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+/* --- Interim transcript --- */
+.view-speak .sp-interim {
+  min-height: 1.4em; overflow-wrap: anywhere;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px dashed var(--border);
+  color: var(--muted); font-size: .95rem; line-height: 1.5;
+}
+.view-speak .sp-interim:not(:empty) { color: var(--text); }
+
+/* --- Phrases chips --- */
+.view-speak .sp-phrases .badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border-radius: 999px; font-size: .8rem;
+  transition: background 0.15s, color 0.15s;
+}
+.view-speak .sp-phrases .badge.ok { background: var(--ok-soft); color: var(--ok); }
+.view-speak .sp-phrases .badge:not(.ok) { background: var(--surface-2); color: var(--muted); }
+
+/* --- Assess buttons --- */
+.view-speak .sp-assess .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.view-speak .sp-assess .btn { min-width: 72px; }
+
+/* --- QA question hidden state --- */
+.view-speak .sp-qa-question .sp-hidden-q {
+  display: flex; align-items: center; gap: 8px; height: 100%;
+  color: var(--muted); font-weight: 500;
+}
+
+/* --- Term IPA display --- */
+.view-speak .sp-ipa { margin: 4px 0 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.view-speak .sp-ipa span[lang="en"] { font-family: var(--mono); font-size: .95rem; }
+.view-speak .sp-audio-src { font-size: .75rem; color: var(--muted); }
+
+/* --- Voice selector card --- */
+.view-speak .sp-voice { padding: 12px 14px; display: grid; gap: 8px; }
+
 @media (max-width: 560px) {
   .view-speak .sp-stats { grid-template-columns: 1fr; }
   .view-speak .sp-filter { flex: 1 1 100%; min-width: 0; }
   .view-speak .sp-pos { width: 100%; margin-left: 0; }
   .view-speak .sp-term-info { grid-template-columns: 1fr; gap: 2px; }
   .view-speak .sp-term-info dd { margin-bottom: 8px; }
+  .view-speak .sp-voice { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 360px) {
-  .view-speak .sp-controls .btn { flex: 1 1 auto; }
+  .view-speak .sp-controls .btn { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  .view-speak .sp-controls .btn[data-act="listen"],
+  .view-speak .sp-controls .btn[data-act="listen-term"],
+  .view-speak .sp-controls .btn[data-act="listen-example"] { flex: 1 1 100%; }
   .view-speak .sp-en, .view-speak .sp-qa-question { font-size: 1.05rem; }
   .view-speak .sp-term { font-size: 1.6rem; }
+  .view-speak .sp-nav .btn { flex: 1 1 calc(50% - 5px); min-width: 0; text-align: center; padding: 10px 8px; }
+  .view-speak .sp-assess .btn { flex: 1 1 calc(50% - 4px); min-width: 0; }
+  .view-speak .sp-rate .select { width: 100%; }
 }
-
-.view-speak .sp-voice { padding: 12px 14px; }
-.view-speak .sp-ipa { margin: 4px 0 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
-.view-speak .sp-ipa span[lang="en"] { font-family: var(--mono); font-size: .95rem; }
-.view-speak .sp-audio-src { font-size: .75rem; color: var(--muted); }
