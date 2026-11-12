@@ -6081,7 +6081,14 @@ Lead -> Team: Chuẩn hóa template, review, vận hành
 - Cân bằng tốc độ giao hàng và đầu tư nền tảng.
 - Phát triển người khác, xây năng lực team bền vững.
 
-> Senior tip: Với công nghệ mới, hãy đặt "điều kiện dừng/mở rộng" trước khi bắt đầu: ví dụ nếu sau 2 tuần PoC không đạt P95 mục tiêu hoặc team không vận hành được alert/runbook, quay lại phương án đơn giản hơn. Lead giỏi không phải người theo công nghệ mù quáng, mà là người kiểm soát rủi ro thay đổi.`,
+### Trả lời mẫu khi phỏng vấn
+  "Dạ, em cảm ơn anh chị đã đặt câu hỏi. Em chia làm 3 bước: thứ nhất, em làm rõ mục tiêu kinh doanh trước khi nói công nghệ — ở đây là module gửi thông báo đang làm nghẽn monolith, API tạo đơn P95 1.8 giây ở giờ cao điểm, và leadership muốn dùng Kafka để xử lý bất đồng bộ. Tiêu chí thành công là giảm P95 xuống dưới 500ms, không mất sự kiện nghiệp vụ quan trọng, và có thể replay khi cần.
+
+  Thứ hai, em chọn phạm vi thí điểm hẹp: chỉ chuyển luồng gửi email/thông báo trước, không chuyển thanh toán. Thiết lập feature flag và đường chạy song song ngắn hạn nếu cần. Để giảm rủi ro, em phối hợp Platform/Ops chuẩn bị môi trường, monitoring lag, và viết runbook xử lý consumer chết. Với team chưa quen Kafka, em tổ chức buổi học ngắn về producer/consumer, partition, offset, idempotency, retry/DLQ, rồi pair programming trong 2 tuần đầu cùng 2–3 thành viên.
+
+  Thứ ba, em quản lý kháng cự bằng lắng nghe và dữ liệu. Thay vì ép đổi tất cả một lúc, em demo kết quả PoC sau 6 tuần: P95 giảm từ 1800ms xuống 420ms, thông báo trễ > 2 phút từ 6% xuống 0.5%, không mất thông điệp nào nhờ DLQ + replay test, và số thành viên tự xử lý task Kafka độc lập tăng từ 1/6 lên 4/6. Sau retrospective, em mới mở rộng sang luồng khác."
+
+  > Senior tip: Với công nghệ mới, hãy đặt "điều kiện dừng/mở rộng" trước khi bắt đầu: ví dụ nếu sau 2 tuần PoC không đạt P95 mục tiêu hoặc team không vận hành được alert/runbook, quay lại phương án đơn giản hơn. Lead giỏi không phải người theo công nghệ mù quáng, mà là người kiểm soát rủi ro thay đổi.`,
   follow: [
     'Bạn xử lý thế nào khi một senior trong team phản đối mạnh việc đổi công nghệ?',
     'Làm sao bạn đảm bảo chất lượng và kiến thức không phụ thuộc vào một "chuyên gia Kafka" duy nhất?',
