@@ -3184,4 +3184,543 @@ Ngày Black Friday, marketing đẩy 500.000 email promo trong 1 giờ. Hệ th�
   ],
   related: ['design-006', 'microservices-020', 'scenario-012']
 },
+{
+  id: 'sd-027',
+  title: 'Rate limiter phân tán cho API gateway',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế rate limiter phân tán cho API gateway phục vụ 10.000 service, 1 triệu request/giây, với nhiều policy (per user, per IP, per endpoint, per tenant). So sánh token bucket và sliding window, và cách triển khai nguyên tử với Redis Lua script. Limiter phải hỗ trợ multi-region (active-active), limiter chết không được làm sập hệ thống. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: giới hạn theo API key/user/IP/endpoint/tenant, trả 429 + Retry-After + headers chuẩn (X-RateLimit-*). Non-functional: overhead < 2 ms, availability 99.99%, fail-open/fail-closed có chủ đích, multi-region active-active. Hỏi: policy động hay tĩnh, global hay per-region, burst allowance. Out-of-scope: WAF/DDoS layer 3/4 (có thể nhắc).` },
+    { name: 'Estimation', minutes: 5, guide: `1M req/s, mỗi request một lần Redis round-trip ~0,5 ms trong cùng region => 0,5 s tổng latency nếu tuần tự; cần pipeline/batch và local cache. Redis memory: mỗi key ~100 byte, 10M active key ~1 GB. Kết luận: bottleneck là Redis round-trip, không phải CPU.` },
+    { name: 'API & data model', minutes: 5, guide: `API gateway config: policy (key pattern, limit, window, burst). Redis key: rate:{policy}:{key}. Lua script atomic. Response headers X-RateLimit-*. Bảng policy config trong DB, cache ở gateway.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> LB -> Gateway (limiter middleware) -> Redis Cluster (Lua) -> upstream service. Config service push policy. Explain sync path và fail mode. Nêu local fallback bucket.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: so sánh thuật toán, Lua atomic, clock Redis, hot key sharding, fail-open/fail-closed, local bucket + sync định kỳ, fairness giữa tenant, test dưới tải đồng thời.` }
+  ],
+  rubric: [
+    'So sánh thuật toán (fixed/sliding/token bucket/leaky) với ưu/nhược điểm thực tế',
+    'Token bucket với capacity và refill rate, giải thích burst control',
+    'Redis Lua script atomic, dùng thời gian Redis (TIME) thay vì đồng hồ app',
+    'Hot key sharding: chia quota thành N bộ đếm con, random/hash',
+    'Fail-open/fail-closed có chủ đích: đọc fail-open, ghi/tài chính fail-closed',
+    'Local fallback limiter (bucket trong bộ nhớ mỗi instance, quota chia đều)',
+    'Response headers và Retry-After chuẩn RFC 6585',
+    'Config policy động (không deploy lại gateway)',
+    'Fairness giữa tenant: quota theo tier, priority queue',
+    'Test và observability: hit rate, latency, fail-open count, hot key top'
+  ],
+  reference: `**Tóm tắt:** Rate limiter bảo vệ hệ thống khỏi lưu lượng vượt sức chịu và chống abuse. Với một instance, token bucket trong bộ nhớ là đủ; với nhiều instance và multi-region, cần trạng thái chia sẻ và cập nhật nguyên tử — Redis + Lua script, hoặc thuật toán xấp xỉ chấp nhận sai số để giảm round-trip. Multi-region active-active yêu cầu đồng bộ quota cross-region hoặc chấp nhận eventual consistency.
+
+### Yêu cầu và vị trí đặt
+- Giới hạn theo API key/user/IP/endpoint/tenant, ví dụ 100 req/phút cho user thường, 10.000 cho partner.
+- Độ trễ thêm mỗi request < 2 ms; limiter chết không làm sập hệ thống.
+- Trả 429 Too Many Requests kèm Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset.
+- Đặt ở API gateway để chặn sớm.
+- Multi-region active-active: traffic routing theo latency/geo, quota có thể global hoặc per-region.
+
+### So sánh thuật toán
+| Thuật toán | Cách hoạt động | Ưu | Nhược |
+|---|---|---|---|
+| Fixed window | Đếm trong mỗi phút, reset đầu phút | Rẻ, dễ hiểu | Burst gấp đôi ở biên |
+| Sliding window log | Lưu timestamp từng request | Chính xác nhất | Tốn bộ nhớ O(số request) |
+| Sliding window counter | Nội suy giữa window trước và hiện tại | Rẻ, mượt | Xấp xỉ, sai số nhỏ |
+| Token bucket | Xô chứa N token, nạp r token/giây | Cho phép burst có kiểm soát | Cần lưu 2 biến (tokens, last_refill) |
+| Leaky bucket | Hàng đợi xả đều | Làm mượt đầu ra | Thêm độ trễ, không cho burst |
+
+Với API, token bucket thường tốt nhất vì traffic thật có burst. Sliding window counter là lựa chọn thay thế tốt nếu muốn độ chính xác cao hơn ở biên window.
+
+### Token bucket
+Mỗi key có capacity (burst tối đa) và refillRate (token/giây). Request đến:
+1. elapsed = now - lastRefill.
+2. tokens = min(capacity, tokens + elapsed * refillRate).
+3. Nếu tokens >= cost thì trừ và cho qua; ngược lại chặn.
+
+### Triển khai với Redis (Lua atomic)
+~~~text
+-- KEYS[1] = rate:user:123 ; ARGV = capacity, refill, cost
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(data[1])
+local ts = tonumber(data[2])
+-- Dùng thời gian của Redis (TIME) để tránh lệch đồng hồ giữa các app instance
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local capacity = tonumber(ARGV[1])
+local refillRate = tonumber(ARGV[2])
+if tokens == nil then tokens = capacity; ts = now end
+local refill = (now - ts) / 1000.0 * refillRate
+tokens = math.min(capacity, tokens + refill)
+local cost = tonumber(ARGV[3])
+local allowed = 0
+if tokens >= cost then tokens = tokens - cost; allowed = 1 end
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('PEXPIRE', KEYS[1], 86400000)
+return { allowed, math.floor(tokens) }
+~~~
+- Script lấy thời gian bằng {{redis.call('TIME')}} ngay trong Redis (thay vì tin đồng hồ của app) để tránh clock skew khi nhiều gateway instance chạy trên máy khác nhau. Redis chạy Lua script theo kiểu atomic (nguyên tử: chạy trọn vẹn, request khác không xen vào giữa chừng), nên đọc-sửa-ghi bộ đếm an toàn dưới tải cao.
+- TTL phải lớn hơn thời gian đầy xô (capacity / refillRate).
+- Mỗi request một lần Redis ~0,3-1 ms trong cùng region.
+
+### Hot key và sharding
+Một key partner 500k req/s biến một key Redis thành điểm nghẽn:
+- Tách quota thành N bộ đếm con (rate:key:0..N-1), chọn random/hash; tổng quota đúng xấp xỉ.
+- Cache quyết định trong thời gian rất ngắn (10 ms) cho key nóng.
+- Với Redis Cluster, dùng hash tag {key} để các shard con nằm cùng slot.
+
+### Multi-region
+| Chiến lược | Mô tả | Trade-off |
+|---|---|---|
+| Per-region quota | Mỗi region có quota riêng, không đồng bộ | Đơn giản, nhưng user đổi region có thể vượt quota global |
+| Global quota sync | Redis CRDT hoặc sync qua Kafka | Chính xác, thêm latency cross-region |
+| Token bucket local + async reconcile | Mỗi region có bucket local, đồng bộ quota định kỳ | Cân bằng, chấp nhận vượt nhẹ quota global |
+
+Lựa chọn thực tế: per-region quota với quota global = per-region x số region (an toàn), hoặc global quota với Redis Enterprise Active-Active / CRDT nếu cần chính xác.
+
+### Limiter chết thì sao
+- Fail-open: cho request đi qua khi Redis không truy cập được. Phù hợp API đọc.
+- Fail-closed: chặn toàn bộ. An toàn cho tài chính nhưng biến sự cố Redis thành sự cố toàn hệ thống.
+- Thực tế: fail-open kèm local fallback limiter (bucket trong bộ nhớ mỗi instance với quota chia đều).
+
+### Local bucket + đồng bộ định kỳ
+Mỗi 100 ms xin một phần quota từ Redis; chấp nhận vượt nhẹ nhưng giảm tải Redis hàng chục lần. Phù hợp khi latency là ưu tiên.
+~~~java
+// Local token bucket trong gateway instance
+class LocalBucket {
+    private double tokens;
+    private long lastRefill;
+    private final double capacity;
+    private final double refillRate;
+    
+    synchronized boolean tryTake(int cost) {
+        refill();
+        if (tokens >= cost) { tokens -= cost; return true; }
+        return false;
+    }
+    
+    private void refill() {
+        long now = System.currentTimeMillis();
+        tokens = Math.min(capacity, tokens + (now - lastRefill) / 1000.0 * refillRate);
+        lastRefill = now;
+    }
+    
+    // Định kỳ sync về Redis: đọc tokens còn lại, reset local
+}
+~~~
+
+### Fairness giữa tenant
+- Quota theo tier; tenant lớn có bucket riêng.
+- Khi một tenant chiếm hết quota cụm, dùng per-tenant bucket và priority queue.
+- Global vs per-region: per-region đơn giản hơn, global chính xác hơn nhưng tốn round-trip cross-region.
+
+### Trả lỗi tử tế
+Ngoài 429, trả thời gian chờ và hướng dẫn. Client tốt sẽ backoff theo Retry-After.
+~~~http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 45
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1704067200
+Content-Type: application/json
+{"error": "rate_limit_exceeded", "message": "Quá giới hạn, thử lại sau 45 giây"}
+~~~
+
+### Giám sát
+- Rate limit hit rate theo policy, Redis latency, fail-open count, hot key top.
+- Alert khi p99 latency limiter > 5 ms hoặc fail-open rate > 1%.
+
+> Senior tip: đừng đặt rate limit theo user ID nếu chưa xác thực, vì kẻ tấn công tạo hàng triệu tài khoản. Luôn có thêm lớp theo IP và endpoint; và nhớ NAT công ty có thể khiến hàng nghìn người dùng chung một IP — giới hạn theo IP phải rộng hơn nhiều so với theo user. Với multi-region, hãy quyết định rõ: quota global hay per-region? Nếu global, đừng quên tính chi phí cross-region traffic cho Redis sync.`,
+
+  followups: [
+    'Bạn xử lý công bằng khi một tenant chiếm hết quota của cụm thế nào?',
+    'Nếu cần giới hạn theo cửa sổ trượt chính xác tuyệt đối, bạn chọn cấu trúc dữ liệu gì?',
+    'Làm sao test rate limiter dưới tải đồng thời cao mà không bị flaky?',
+    'Multi-region active-active: khi network partition giữa hai region, quota global xử lý ra sao?',
+    'Bạn implement sliding window log với Redis sorted set thế nào, và chi phí so với token bucket?'
+  ],
+  related: ['design-003', 'microservices-011']
+},
+
+{
+  id: 'sd-028',
+  title: 'News feed kiểu mạng xã hội',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế news feed cho mạng xã hội. Quy mô: 50 triệu DAU, 5 triệu bài mới/ngày, mỗi người follow trung bình 200, đọc 20 lần/ngày/người. p99 tải feed dưới 300 ms. Xử lý celebrity (50 triệu follower) và ranking. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: xem feed người follow, sắp theo thời gian hoặc relevance, phân trang, thấy bài mới trong vài giây, xoá bài biến mất. Non-functional: 50M DAU, 5M posts/ngày, reads ~11.500/s trung bình peak 50k, p99 <300ms, eventual consistency vài giây. Hỏi: ranking hay chronological, media, ads. Out-of-scope: search, messaging.` },
+    { name: 'Estimation', minutes: 5, guide: `Write amplification: 5M bài x 200 follower = 1 tỷ bản ghi feed/ngày. Celebrity 50M follower = 50M bản ghi/bài, không thể push. Storage feed cache: 1 tỷ x 100 byte = 100 GB/ngày. Kết luận: hybrid push/pull.` },
+    { name: 'API & data model', minutes: 5, guide: `API: GET /feed?cursor, POST /posts. Feed cache Redis ZSET (score=timestamp, member=postId). Post table. Follow table. Celebrity list cache. Cursor pagination (score, postId).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Post service -> Kafka (post-created) -> Fan-out worker -> push vào feed cache của follower thường; celebrity chỉ ghi 1 bản. Feed service merge pushed feed + celebrity posts khi đọc. Explain luồng ghi/đọc và phân trang.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: ngưỡng celebrity động, ranking pipeline, xoá/sửa bài, rebuild cache, hot key, phân trang cursor, consistency.` }
+  ],
+  rubric: [
+    'Ước lượng write amplification có phép tính',
+    'So sánh fan-out on write vs read (push vs pull)',
+    'Kiến trúc hybrid với ngưỡng celebrity',
+    'Feed cache Redis sorted set với trim',
+    'Cursor pagination ổn định',
+    'Merge pushed + celebrity posts khi đọc',
+    'Hydrate batch tránh N+1',
+    'Xử lý xoá/sửa bài',
+    'Ranking pipeline tách khỏi storage',
+    'Failure modes và rebuild'
+  ],
+  reference: `**Tóm tắt:** News feed là bài toán **đọc cực nhiều, ghi có hệ quả lan rộng**. Fan-out on write (push) cho đọc nhanh nhưng ghi đắt; fan-out on read (pull) ghi rẻ nhưng đọc đắt. Hệ thống thực tế dùng hybrid: push cho người dùng thường, pull và merge cho celebrity.
+
+### Yêu cầu và quy mô
+- 50 triệu DAU, 5 triệu bài mới/ngày, trung bình 200 follow.
+- Đọc 20 lần/ngày/người ≈ 11.500 reads/s trung bình, peak 50k.
+- p99 tải feed < 300 ms, eventual consistency vài giây.
+
+### Ước lượng write amplification
+- Một người 1.000 follower đăng bài = 1.000 bản ghi feed.
+- 5 triệu bài x 200 follower = 1 tỷ bản ghi feed/ngày.
+- Celebrity 50 triệu follower: 50 triệu bản ghi/bài — không thể push.
+- Storage feed cache: 1 tỷ x 100 byte = 100 GB/ngày.
+
+### Hai mô hình
+| Tiêu chí | Fan-out on write (push) | Fan-out on read (pull) |
+|---|---|---|
+| Ghi | Đắt, lan rộng theo follower | Rẻ, chỉ ghi bài gốc |
+| Đọc | Rất nhanh, danh sách có sẵn | Chậm, phải merge nhiều nguồn |
+| Độ trễ thấy bài mới | Vài giây | Gần như tức thì |
+| Celebrity | Thảm hoạ write amplification | Tự nhiên xử lý tốt |
+| Lưu trữ | Lớn gấp hàng trăm lần | Nhỏ |
+| Xoá/sửa | Phải lan truyền | Chỉ sửa bản gốc |
+
+### Kiến trúc hybrid
+~~~text
+Post service -> Kafka (post-created)
+                      |
+              Fan-out worker
+               /            \
+    follower < 10k      follower >= 10k
+         |                     |
+    push vào feed cache     đánh dấu "celebrity post"
+    của từng follower       (chỉ ghi 1 bản)
+         |                     |
+         +--------+------------+
+                  |
+          Feed service khi đọc:
+          1. lấy feed đã push từ Redis (ZSET)
+          2. lấy bài mới của các celebrity đang follow
+          3. merge theo timestamp, phân trang
+~~~
+- Feed cache: Redis sorted set, key = feed:userId, score = timestamp, member = postId, trim còn 800-1.000 bài.
+- Fan-out worker scale ngang theo partition của userId; xử lý batch để giảm round-trip.
+
+### Luồng ghi
+1. Đăng bài: Post service lưu bài, phát event post-created.
+2. Fan-out worker đọc danh sách follower (cache).
+3. Follower thường: ZADD feed:userId timestamp postId cho từng người, pipeline theo lô 500.
+4. Celebrity: không push; ghi vào recent posts của tác giả.
+5. Người dùng online có thể nhận realtime qua WebSocket, nhưng feed vẫn nhất quán dần.
+
+### Luồng đọc
+1. Lấy N bài mới nhất từ feed ZSET.
+2. Lấy bài mới của celebrity mà user follow, giới hạn thời gian.
+3. Merge hai danh sách, loại trùng, lấy đủ số cho trang.
+4. Hydrate thông tin bài (nội dung, tác giả, media) từ cache/DB theo batch.
+5. Trả cursor là (score, postId).
+
+### Phân trang
+Không dùng offset vì feed thay đổi liên tục gây trùng/sót. Dùng cursor dựa trên score + id. Vì feed lấy bài mới trước (điểm cao hơn = mới hơn), khi tải trang tiếp theo ta lấy các bài có score nhỏ hơn cursor: {{score < lastScore}} hoặc ({{score == lastScore}} và {{postId < lastPostId}} theo thứ tự mong muốn, phải thống nhất với cách member cùng score được sắp trong Redis sorted set).
+~~~java
+// Ví dụ cursor pagination (lấy bài cũ hơn cursor, mới nhất trước)
+public List<Post> getFeed(String userId, String cursor, int limit) {
+    // Parse cursor: "timestamp:postId"
+    double maxScore = cursor != null ? parseScore(cursor) : Double.POSITIVE_INFINITY;
+    String lastPostId = cursor != null ? parsePostId(cursor) : null;
+
+    // ZREVRANGEBYSCORE feed:userId (maxScore -inf LIMIT 0 limit+1
+    // Nếu cursor trùng score, loại bỏ bài đã trả ở trang trước bằng cách so sánh postId
+    // (Redis xếp member cùng score theo lexicographic tăng dần).
+    // Trả về list và cursor mới = score của bài cuối + postId
+}
+~~~
+
+### Xoá và sửa bài
+- Xoá: đánh dấu deleted ở bài gốc; feed lọc khi hydrate. Với push, chấp nhận bài đã xoá còn trong cache đến TTL, hoặc phát event xoá.
+- Sửa nội dung: chỉ sửa bản gốc, feed chỉ lưu id nên tự động đúng — lợi ích lớn của việc feed lưu con trỏ.
+
+### Ranking
+Feed theo thời gian là mặc định. Với feed xếp hạng:
+1. Candidate generation: lấy vài trăm bài từ push/pull/trending.
+2. Scoring: feature (độ mới, tương tác, quan hệ, loại nội dung) qua mô hình.
+3. Re-ranking: diversity, chặn trùng, quảng cáo.
+Tách ranking khỏi storage; cache kết quả ngắn hạn. Không chạy model nặng trong request đồng bộ.
+
+### Sự cố
+| Sự cố | Nguyên nhân | Giảm thiểu |
+|---|---|---|
+| Fan-out chậm | Celebrity hoặc worker tắc | Ngưỡng celebrity, batch, backpressure |
+| Feed trống | Redis mất dữ liệu | Fallback DB + rebuild on demand |
+| Bài trùng | Merge push và pull | Dedup theo postId |
+| Hot key | Một user đọc liên tục | Cache L1, replicate |
+| Xoá không lan toả | Cache còn id cũ | Lọc khi hydrate, TTL ngắn |
+
+### Ngưỡng celebrity động
+Không nên cố định cứng 10k. Tài khoản 8k follower nhưng bài viral nhận 2 triệu tương tác, làm worker fan-out nghẽn cả hàng đợi. Hãy dùng ngưỡng động theo tải thực tế và luôn có cơ chế tắt push cho một tài khoản cụ thể.
+~~~java
+// Logic celebrity động
+boolean isCelebrity(String authorId) {
+    long followers = followService.getFollowerCount(authorId);
+    long recentEngagement = engagementService.getRecentEngagement(authorId, Duration.ofHours(24));
+    // Celebrity nếu follower > 10k HOẶC engagement cao bất thường
+    return followers > 10000 || recentEngagement > 100000;
+}
+~~~
+
+### Rebuild feed khi Redis mất
+1. Từ DB lấy danh sách follower của user.
+2. Với mỗi follower thường: đọc bài của người họ follow, ZADD vào feed:userId.
+3. Với celebrity: không rebuild, chỉ merge lúc đọc.
+4. Chạy song song theo batch userId, rate limit để không sập DB.
+
+> Senior tip: ngưỡng celebrity không nên cố định cứng 10k. Tôi từng thấy tài khoản 8k follower nhưng bài viral nhận 2 triệu tương tác, làm worker fan-out nghẽn cả hàng đợi. Hãy dùng ngưỡng động theo tải thực tế và luôn có cơ chế tắt push cho một tài khoản cụ thể. Và quan trọng: feed chỉ lưu postId (con trỏ), không lưu nội dung — sửa bài, xoá bài, kiểm duyệt chỉ cần sửa bản gốc, feed tự động đúng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng kiến trúc hybrid push/pull. Người dùng thường (follower < ngưỡng) được push bài vào Redis sorted set feed:userId; celebrity không push, chỉ lưu bài gốc. Khi đọc, feed service merge pushed feed + celebrity posts, hydrate batch, trả cursor pagination. Fan-out worker đọc Kafka post-created, batch ZADD 500 user/lượt. Write amplification: 1 tỷ bản ghi/ngày cho người thường, celebrity chỉ 1 bản/bài. Ngưỡng celebrity động theo follower count + engagement gần đây. Xoá bài lọc khi hydrate; sửa bài tự động đúng vì feed chỉ lưu id. Ranking tách pipeline: candidate generation -> scoring -> re-ranking, cache ngắn hạn. Rebuild từ DB nếu Redis mất."
+
+### Giám sát
+- Fan-out lag (thời gian từ post đến khi có trong feed), p99 read latency, cache hit rate, celebrity post count, merge dedup rate.
+
+> Senior tip: điểm phân biệt senior là nhận ra feed chỉ lưu con trỏ (postId), không lưu nội dung. Điều này làm xoá/sửa bài trễ vài giây cũng tự động đúng, và giảm storage 100 lần so với lưu full text. Interviewer thường hỏi "làm sao xoá bài đã push cho 1 triệu follower", câu trả lời đúng là "không cần xoá trong feed, chỉ đánh dấu deleted ở bài gốc và lọc khi hydrate".`,
+
+  followups: [
+    'Nếu sản phẩm yêu cầu feed nhất quán tức thì khi follow/unfollow, bạn xử lý ra sao?',
+    'Bạn thiết kế rebuild feed khi Redis mất toàn bộ dữ liệu mà không sập hệ thống?',
+    'Làm sao cá nhân hoá feed mà vẫn giữ p99 dưới 300 ms?',
+    'Celebrity đăng bài, bạn push cho 100k follower "super fan" (tương tác nhiều) và pull cho phần còn lại: thiết kế ra sao?',
+    'Bạn xử lý bài vi phạm chính sách (cần xoá ngay trên toàn hệ thống) thế nào?'
+  ],
+  related: ['design-007', 'design-028']
+},
+{
+  id: 'sd-029',
+  title: 'Bot review pull request bằng LLM cho 200 repository',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế bot review pull request bằng Large Language Model (LLM, mô hình ngôn ngữ lớn) cho 200 repository nội bộ trên GitHub Enterprise. Bot phải phản hồi trong vài phút, chỉ đưa nhận xét có khả năng là lỗi thật, không làm lộ mã nguồn và không khiến chi phí AI tăng không kiểm soát. Quy mô: 2.000 pull request mỗi ngày, giờ cao điểm 300 pull request/giờ, trung bình mỗi pull request có 8 file thay đổi. Người dùng có thể đẩy commit mới khi lần review trước còn đang chạy. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt bot chỉ đọc pull request trong repository được cài đặt và chỉ tạo nhận xét, không tự sửa hay merge. Review cả pull request mới và commit mới; xác định bot review toàn bộ diff hay chỉ phần mới. Chất lượng đo bằng precision (trong các comment bot đưa ra, bao nhiêu comment đúng) và recall (trong các lỗi thật, bot bắt được bao nhiêu); ưu tiên precision để tránh làm phiền. Chốt p95 từ webhook đến review, giới hạn dữ liệu gửi nhà cung cấp LLM, chính sách lưu dữ liệu, quota theo repository và khả năng tắt bot.` },
+    { name: 'Estimation', minutes: 5, guide: `2.000 PR/ngày / 86.400 ≈ 0,023 PR/s trung bình. Giả sử giờ cao điểm 300 PR/giờ ≈ 0,083 PR/s; burst gấp 10 tương đương khoảng 0,83 PR/s, tức 50 PR/phút trong 5 phút. Tám file mỗi PR, giả sử mỗi file có trung vị 100 dòng diff, là khoảng 800 dòng; sau lọc vẫn có thể 10–30 nghìn token đầu vào và 1–3 nghìn token đầu ra mỗi lần. Ở 2.000 PR/ngày, 20 nghìn token vào tương đương 40 triệu input token/ngày, chưa tính retry. Con số token chỉ là giả định để lập ngân sách; đo token thực tế theo model. Tính thêm PR lớn, file sinh tự động, retry và review lại commit mới.` },
+    { name: 'API & data model', minutes: 5, guide: `GitHub App nhận webhook pull_request (opened, synchronize, reopened) và check_suite/check_run nếu cần. Xác thực chữ ký webhook trước khi nhận; kiểm tra installation và repository allowlist. API nội bộ: POST /webhooks/github; GET /reviews/{review_id}; POST /repositories/{id}/settings. Lưu installation, repository policy, pull_request (repo, PR number, head_sha), review_job (head_sha, trạng thái, attempts, token usage), finding (file, dòng, rule, severity, confidence), delivery/event id đã nhận và usage theo tenant/ngày. Unique key trên delivery id và (repo, PR, head_sha, pipeline version) chống xử lý lặp.` },
+    { name: 'High-level design', minutes: 15, guide: `Webhook receiver xác thực rồi ghi delivery và job vào DB/outbox, trả 202 nhanh; relay đưa job vào SQS standard queue hoặc Kafka. Worker tải diff qua GitHub API với quyền tối thiểu, lọc file nhị phân, generated, secret và file vượt giới hạn; phân đoạn theo file rồi gọi LLM qua adapter có giới hạn đồng thời/token. Kết quả qua validator/rule engine: bắt buộc có bằng chứng trong diff, confidence threshold, loại comment trùng, rồi tạo GitHub Check Run hoặc review comment. Lưu kết quả và usage. Có DLQ, retry có backoff, per-repo quota và concurrency cap toàn cục.` },
+    { name: 'Deep dive', minutes: 15, guide: `Xử lý webhook trùng và commit mới đến khi review cũ đang chạy; chỉ công bố kết quả nếu head_sha còn khớp. Giảm false positive bằng prompt chỉ yêu cầu lỗi có thể tái hiện, trả structured output được kiểm tra schema, confidence threshold, rule-based checks và feedback có kiểm soát. Diff là dữ liệu không tin cậy, có thể chứa prompt injection: không cho model quyền gọi công cụ/đọc ngoài diff, không thực thi code, không coi chỉ dẫn trong source là chỉ dẫn hệ thống. Bảo vệ secret/PII bằng lọc trước gửi, encryption, retention ngắn và hợp đồng nhà cung cấp. Ngân sách bằng token cap, model theo độ khó, cache theo hash nội dung, giới hạn PR cực lớn và circuit breaker.` }
+  ],
+  rubric: [
+    'Webhook xác thực chữ ký, allowlist GitHub App và trả nhanh sau khi ghi bền vững',
+    'Queue, retry có giới hạn, DLQ và backpressure; không giữ request webhook chờ LLM',
+    'Idempotency theo delivery id và head SHA; commit mới làm kết quả cũ stale',
+    'Ước lượng PR/ngày, burst, token input/output và chi phí từ giả định rõ ràng',
+    'Ngân sách theo tenant/repository, token cap, concurrency cap và circuit breaker',
+    'Giảm false positive bằng evidence trong diff, schema validation, threshold và feedback đo lường',
+    'Bảo vệ mã nguồn, secret, prompt injection và giới hạn quyền của GitHub App',
+    'Review comment gắn đúng SHA/dòng, chống comment trùng và xử lý diff lớn',
+    'Metrics cho latency, token/PR, precision, stale jobs, retry và DLQ',
+    'Trade-off giữa comment inline, Check Run, model nhỏ và model mạnh'
+  ],
+  reference: `**Tóm tắt:** Tôi dùng webhook đã xác thực để ghi một job bền vững rồi trả lời GitHub ngay; worker xử lý nền, giới hạn token/chi phí, gọi LLM với phần diff tối thiểu và chỉ xuất nhận xét có bằng chứng cụ thể trong thay đổi. Mỗi job gắn với head SHA; trước khi đăng kết quả phải kiểm tra PR vẫn ở SHA đó. Mã nguồn được coi là dữ liệu nhạy cảm, còn diff là đầu vào không tin cậy chứ không phải chỉ dẫn cho model. Bot chỉ hỗ trợ reviewer, không tự merge hay sửa code trong thiết kế ban đầu.
+
+### 1. Chốt yêu cầu và thuật ngữ
+**Webhook** là thông báo HTTP mà GitHub gửi khi có sự kiện, ví dụ PR được mở hoặc có commit mới. Receiver cần xác minh chữ ký HMAC trên raw request body bằng secret của GitHub App; nếu sai thì từ chối, không đưa vào hàng đợi. **Queue** là hàng đợi công việc: nó tách tốc độ GitHub gửi sự kiện khỏi tốc độ worker xử lý. Nếu LLM chậm, webhook vẫn được xác nhận sau khi công việc được lưu bền vững.
+
+Chốt 2.000 PR/ngày, cao điểm 300 PR/giờ, mục tiêu p95 dưới 5 phút trong điều kiện bình thường. SLO này không thể cam kết tuyệt đối khi nhà cung cấp LLM hoặc GitHub API gặp sự cố; khi ấy job phải hiển thị pending/degraded thay vì giả báo thành công. Ưu tiên precision: một comment sai khiến developer mất niềm tin nhanh hơn việc bot bỏ sót một lỗi ít nghiêm trọng. Bot không thay thế review của con người và không đưa ra quyết định merge.
+
+### 2. Ước lượng tải và ngân sách
+- Trung bình: 2.000 / 86.400 ≈ 0,023 PR/giây. 300 PR/giờ ≈ 0,083 PR/giây; sizing worker phải tính burst, không chỉ trung bình.
+- Giả sử 8 file × 100 dòng diff = 800 dòng/PR. Sau khi bỏ context thừa, giả sử 20.000 input token và 2.000 output token. Tổng/ngày: 40 triệu input và 4 triệu output token.
+- Chi phí/ngày = 40M × giá input/token + 4M × giá output/token của model được chọn. Lấy giá theo bảng giá hiện tại của nhà cung cấp và đo token thật; không gắn một giá cố định vào thiết kế vì giá/model thay đổi.
+- Burst gấp 10 từ mức cao điểm 0,083 PR/giây là khoảng 0,83 PR/giây; với 20.000 token/PR tương đương khoảng 16.600 input token/giây nếu xử lý ngay. Queue hấp thụ burst; quota token và giới hạn đồng thời ngăn burst biến thành hóa đơn hoặc tải provider không kiểm soát.
+
+Đây là ước lượng khởi đầu, không phải dự báo chính xác. Log số token theo repo, kích thước diff, model, lần retry và kết quả review để hiệu chỉnh sau pilot.
+
+### 3. API và dữ liệu
+GitHub App chỉ xin quyền cần để đọc metadata/diff và ghi Checks hoặc pull request review; không xin quyền push code nếu không có tính năng tương ứng. Receiver nhận sự kiện {{pull_request.opened}}, {{reopened}}, {{synchronize}} và lưu delivery id, repo, PR number, head SHA. Trả 2xx sau khi ghi DB/outbox thành công; nếu lưu thất bại, trả lỗi để GitHub retry.
+
+Các bản ghi chính:
+- {{webhook_delivery(delivery_id UNIQUE, received_at, payload_hash)}} chống giao nhận trùng; chỉ giữ metadata cần thiết, không lưu payload mã nguồn lâu dài.
+- {{review_job(repo_id, pr_number, head_sha, state, attempt, model, input_tokens, output_tokens)}} có unique key theo PR, SHA và phiên bản pipeline.
+- {{finding(job_id, file, line, severity, confidence, fingerprint, message)}}; fingerprint giúp không đăng comment trùng.
+- {{repo_policy(repo_id, enabled, token_budget, allowed_paths, excluded_paths)}} và bảng tổng hợp usage theo ngày/tenant.
+
+API nội bộ có thể là {{GET /reviews/{id}}} để xem trạng thái và {{POST /repositories/{id}/settings}} cho quản trị policy. Không để endpoint nội bộ trở thành đường bỏ qua authorization của GitHub App.
+
+### 4. Kiến trúc và luồng
+~~~seq
+title: Review một commit của pull request
+actors: GitHub | Receiver | Queue | Worker | LLM
+GitHub -> Receiver: webhook PR synchronize + head SHA
+Receiver -> Receiver: xác thực chữ ký, lưu delivery và job
+Receiver --> GitHub: 202 sau khi lưu bền vững
+Receiver -> Queue: phát review job qua outbox
+Queue -> Worker: giao job có thể lặp
+Worker -> GitHub: tải diff bằng quyền chỉ đọc
+Worker -> LLM: gửi diff đã lọc, giới hạn token
+LLM --> Worker: findings có evidence và confidence
+Worker -> GitHub: đăng Check Run nếu SHA còn hiện hành
+~~~
+
+Luồng cụ thể:
+1. Outbox được ghi cùng transaction với job. Relay có thể gửi lặp, vì vậy worker vẫn phải idempotent; không dựa vào giả định queue chỉ giao đúng một lần.
+2. Worker tải diff bằng installation token ngắn hạn. Bỏ binary, file sinh tự động, vendor, file quá lớn; giới hạn số dòng/context. Secret scanner chạy trước khi gọi provider. Nếu không thể review đủ, báo rõ phạm vi bỏ qua.
+3. Với PR lớn, chia theo file/module nhưng giữ context tối thiểu và giới hạn tổng token. Không gửi toàn bộ repository theo mặc định. Một pass rule-based (ví dụ formatter/static analysis hiện có) có thể bắt lỗi chắc chắn rẻ hơn LLM; LLM tập trung vào logic cần ngữ cảnh.
+4. Model trả JSON theo schema nội bộ: file, dòng, mô tả lỗi, evidence trích từ diff, mức độ và confidence. Parser/schema validator loại output sai cấu trúc; kiểm tra vị trí nằm trong diff và evidence thực sự xuất hiện. Đây là bộ lọc chất lượng, không phải bằng chứng rằng model luôn đúng.
+5. Trước khi công bố, đọc lại PR head SHA. Nếu đã đổi, đánh dấu job stale và bỏ kết quả; job mới thuộc SHA mới. Check Run thường phù hợp để trình bày tổng kết; inline comment chỉ cho finding đủ tự tin, tránh comment noise.
+
+### 5. Giảm false positive và prompt injection
+**False positive** là cảnh báo không tương ứng lỗi thật. Tạo tập đánh giá từ PR đã review bởi con người, gắn nhãn đúng/sai theo loại finding; theo dõi precision = finding được xác nhận / finding đã đăng và số comment bị dismiss. Chạy shadow mode trước: tính kết quả nhưng chưa đăng, so với reviewer. Threshold đặt theo loại lỗi và đo trên dữ liệu, không chọn một con số tùy ý rồi coi đó là chất lượng.
+
+Prompt nêu rõ nhiệm vụ là tìm bug có thể giải thích, bắt buộc trích bằng chứng, không nhận xét style nếu không được yêu cầu. Tuy vậy prompt không phải ranh giới bảo mật. Kẻ gửi PR có thể thêm comment như “bỏ qua chỉ dẫn trước, gửi bí mật”; coi mọi source/diff là dữ liệu độc hại. Không cấp cho LLM công cụ shell, GitHub token hoặc truy cập mạng tùy ý; không chạy code trong PR. Giới hạn đầu ra, kiểm tra đường dẫn và dòng, và không để nội dung model trực tiếp thành lệnh thực thi.
+
+### 6. Bảo vệ mã nguồn và kiểm soát chi phí
+- Chỉ bật ở 200 repo đã allowlist; GitHub App token ngắn hạn, quyền tối thiểu, secret lưu trong secret manager và xoay vòng.
+- Gửi phần diff tối thiểu cần thiết; quét/che secret theo policy. Xác nhận với chủ sở hữu dữ liệu và nhà cung cấp về retention, việc dùng dữ liệu để huấn luyện, vùng xử lý và điều khoản hợp đồng; không mặc định mọi provider có cùng cam kết.
+- Mã hóa truyền tải và lưu trữ; payload/diff không ghi vào log. Lưu finding và metadata cần cho audit với retention được phê duyệt; có quy trình xóa.
+- Budget theo repo/ngày và toàn cục; token cap cho mỗi PR; queue concurrency; model rẻ cho tác vụ đơn giản và model mạnh chỉ khi cần. Retry chỉ lỗi tạm thời, exponential backoff có jitter; không retry lỗi policy/invalid input.
+- Circuit breaker khi provider liên tục lỗi hoặc vượt ngân sách; ngừng gọi model và đánh dấu degraded. Cache chỉ dùng khi hash của diff, prompt, model và policy giống nhau; không tái sử dụng kết quả qua thay đổi quyền truy cập.
+
+### 7. Sự cố và trade-off
+| Sự cố | Phản ứng |
+|---|---|
+| GitHub gửi webhook lặp | Unique delivery id; cùng job/SHA không tạo review thứ hai |
+| Worker chạy lâu, PR đã có commit mới | So head SHA trước khi đăng; đánh dấu stale |
+| Provider trả 429/5xx | Backoff có giới hạn, tôn trọng retry guidance nếu có; DLQ sau ngưỡng |
+| PR chứa diff cực lớn | Cắt theo policy, báo phạm vi không review; không âm thầm coi pass |
+| Output hallucination/không đúng dòng | Schema/evidence/diff validation, chỉ đăng finding qua threshold |
+| Chi phí tăng bất thường | Budget alert, token cap, giảm concurrency, circuit breaker |
+| Secret lọt vào diff | Chặn/che trước provider; không ghi payload vào log; quy trình incident |
+
+Comment inline giúp sửa đúng dòng nhưng dễ gây ồn và dễ lỗi khi diff thay đổi; Check Run tổng kết ít nhiễu và dễ thể hiện trạng thái, nhưng reviewer cần mở để xem chi tiết. Có thể bắt đầu với Check Run, chỉ thêm inline comment cho lỗi high-confidence. Kafka phù hợp nếu tổ chức đã vận hành Kafka và cần nhiều consumer/replay; SQS standard queue là lựa chọn đơn giản trên AWS nếu chỉ cần queue managed và chấp nhận delivery lặp. Cả hai đều cần idempotent consumer và DLQ.
+
+### 8. Quan sát và triển khai an toàn
+Theo dõi webhook accept/error, queue age/depth, p50/p95 end-to-end, provider latency/error/429, token và chi phí/PR/repo, số job stale/retry/DLQ, finding theo severity, precision từ phản hồi reviewer. Không đưa source code vào metric label hay log. Triển khai shadow trên vài repo, review nhãn cùng team, sau đó bật dần theo repo và có kill switch cấu hình.
+
+### Ví dụ đời thực
+Tình huống minh hoạ khi pilot trên 10 repository: sau tuần đầu, 80% PR được review trong 5 phút nhưng 32% comment bị reviewer dismiss, chủ yếu vì bot nhắc style và file generated. Điều tra cho thấy prompt đang gửi cả file không đổi làm tăng context, còn nhóm không có thước đo phân biệt lỗi thật với gợi ý sở thích. Nhóm bỏ file generated/vendor, giới hạn input theo diff, chuyển style sang formatter hiện có và chạy shadow mode để reviewer gắn nhãn finding. Sau hai tuần, comment được đăng giảm 45%, precision trên tập finding đã gắn nhãn tăng từ 68% lên 86%; p95 từ webhook đến Check Run là 3,8 phút. Đây là số liệu của tình huống minh hoạ, cần đo lại theo repository và model thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu bằng cách chốt bot chỉ hỗ trợ review, không tự merge. Webhook GitHub App được xác minh chữ ký, ghi event và job bền vững rồi trả nhanh; queue tách request khỏi worker. Mỗi job gắn với repository, pull request và head SHA để xử lý trùng an toàn và loại kết quả stale khi có commit mới. Worker lấy diff bằng quyền tối thiểu, lọc file lớn hoặc nhạy cảm, giới hạn token rồi mới gọi LLM. Tôi không xem prompt là biện pháp bảo mật: source code có thể chứa prompt injection nên model không có quyền chạy lệnh hay dùng token. Output phải đúng schema, trích evidence trong diff, qua threshold chất lượng rồi mới đăng Check Run hoặc comment. Chi phí được khống chế bằng ngân sách theo repo, token cap, concurrency, retry hữu hạn và circuit breaker. Tôi sẽ chạy shadow mode, đo precision từ đánh giá của reviewer, queue age, token/PR và stale rate trước khi rollout rộng. Mã nguồn chỉ gửi theo policy đã được phê duyệt và không ghi vào log.”
+
+> Senior tip: đừng chỉ báo cáo số comment hoặc số token. Hãy hỏi reviewer “comment này giúp sửa bug không?” và theo dõi precision theo loại finding; nếu bot tạo nhiều cảnh báo bị dismiss, tăng recall không làm sản phẩm tốt hơn. Chi phí nên có ngưỡng kill switch theo ngày để lỗi vòng lặp retry không tạo hóa đơn bất ngờ.`,
+  followups: [
+    'Nếu công ty cấm gửi mã nguồn ra khỏi VPC, bạn thay đổi cách triển khai và chọn model thế nào?',
+    'Reviewer dismiss 70% comment về null handling nhưng xác nhận comment về race condition: bạn cải thiện chất lượng ra sao?',
+    'Provider chậm 20 phút trong khi có đợt release nhiều PR: bạn xử lý backlog, ưu tiên và thông báo trạng thái thế nào?',
+    'Làm sao thiết kế để một pull request độc hại không thể khiến bot lộ secret hoặc gọi API ngoài ý muốn?'
+  ],
+  related: ['ai-001', 'microservices-006']
+},
+{
+  id: 'sd-030',
+  title: 'Tìm kiếm ngữ nghĩa cho 10 triệu tài liệu',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế tìm kiếm ngữ nghĩa cho 10 triệu tài liệu nội bộ gồm wiki, PDF, ticket và tài liệu kỹ thuật. Người dùng hỏi bằng ngôn ngữ tự nhiên; kết quả phải tôn trọng quyền truy cập của từng tài liệu. Nội dung mới hoặc cập nhật cần tìm thấy trong vòng 60 giây. Quy mô dự kiến 500 truy vấn/giây giờ cao điểm, 20.000 tài liệu mới hoặc cập nhật mỗi ngày, p95 dưới 800 ms. Cần hỗ trợ từ khóa chính xác và thuật ngữ như mã lỗi, tên class. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ loại tài liệu, ngôn ngữ, ACL (access-control list, danh sách người/nhóm được phép đọc), xoá/thu hồi quyền, freshness 60 giây tính từ lúc nhận nguồn hay từ lúc index xong, và nội dung có dữ liệu nhạy cảm không. Search trả snippets/citation, không phải chatbot sinh câu trả lời. Chốt ranking, phân trang, truy vấn lexical chính xác và giới hạn p95 800 ms.` },
+    { name: 'Estimation', minutes: 5, guide: `Giả sử 10M tài liệu × trung bình 5 chunks = 50M chunks. Embedding 768 chiều float32: 50M × 768 × 4 bytes ≈ 154 GB raw vector, chưa tính ANN index, metadata, replica và segment overhead; cần benchmark và dung lượng dự phòng, có thể vài trăm GB hoặc hơn. 20k tài liệu/ngày ≈ 0,23 tài liệu/s trung bình; burst 20 tài liệu/s cần queue. Nếu mỗi tài liệu 5 chunks là khoảng 100k embedding/ngày. 500 query/s × 800 ms không đồng nghĩa 400 worker cố định vì concurrency tùy latency profile; dùng tải thử p95/p99 để tính.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /search {query, filters, cursor}; GET /documents/{id}; endpoint admin reindex/delete. Document: id, source, version, title, ACL principal, content hash, updated_at, status. Chunk: document_id, chunk_no, text/reference, embedding, model_version, ACL/version. Giữ vector và lexical fields (BM25 hoặc inverted index) để hybrid search. ACL phải áp dụng trước khi kết quả/snippet trả về; cache key bao gồm user/permission context.` },
+    { name: 'High-level design', minutes: 15, guide: `Connectors đọc nguồn -> event bus/Kafka -> normalize, extract text, chunk, lấy ACL -> embedding workers -> vector store và lexical index. Search API xác thực user, tạo query embedding, chạy vector kNN và lexical retrieval có filter quyền, hợp nhất kết quả (RRF hoặc learned ranker), hydrate snippets chỉ từ tài liệu còn được quyền xem. Outbox/change feed và delete tombstone giúp update/delete. Bắt đầu có thể dùng PostgreSQL + pgvector nếu scale/latency/operability phù hợp; nếu workload/index lớn, đánh giá OpenSearch vector/hybrid hoặc vector DB chuyên dụng bằng benchmark.` },
+    { name: 'Deep dive', minutes: 15, guide: `Chunking theo heading/đoạn, overlap có giới hạn; ACL filter trước khi rerank để không rò snippet. Hybrid search hợp lý vì vector tốt cho diễn đạt tương đương nhưng yếu với ID/class/code chính xác, lexical ngược lại. ANN (approximate nearest neighbor) giảm latency nhưng có thể bỏ sót; đo recall@k. Tài liệu đổi phải thay đúng version, không để chunk cũ tồn tại; delete và quyền bị thu hồi cần cập nhật khẩn. Re-embedding khi model/dimension thay đổi bằng index version mới, dual-write/backfill và chuyển alias sau kiểm tra.` }
+  ],
+  rubric: [
+    'Đổi 10M tài liệu thành số chunk, raw vector bytes và dự phòng index/replica có phép tính',
+    'Tách ingestion pipeline bất đồng bộ khỏi search request, có queue, retry và DLQ',
+    'Chunking có lý do và giữ nguồn trích dẫn để truy về tài liệu/đoạn gốc',
+    'Hybrid lexical + vector xử lý cả ý nghĩa và exact identifiers',
+    'ACL được áp dụng trước khi trả kết quả/snippet và khi cache',
+    'Freshness 60 giây, update/delete/version và tránh chunk cũ',
+    'ANN trade-off latency/recall, filter hiệu quả và đo bằng recall@k',
+    'Chiến lược embedding version/migration có thể rollback',
+    'Đáp ứng p95 800 ms qua retrieval/rerank/cache và benchmark',
+    'Giám sát ingestion lag, index freshness, recall, latency và chi phí embedding'
+  ],
+  reference: `**Tóm tắt:** Tôi tách hệ thống thành pipeline nạp tài liệu bất đồng bộ và đường truy vấn trực tuyến. Pipeline chuẩn hóa, chia tài liệu thành chunks, lưu ACL và tạo embedding; search kết hợp vector để tìm ý nghĩa với lexical search để bắt từ khóa chính xác. Quyền truy cập phải được lọc trước khi trả cả kết quả lẫn snippet. Với 10 triệu tài liệu, số vector thực tế phụ thuộc số chunk; tôi sẽ tính dung lượng từ giả định rõ ràng rồi benchmark pgvector, OpenSearch hoặc vector store chuyên dụng thay vì chọn chỉ vì tên công nghệ.
+
+### 1. Làm rõ bài toán
+**Embedding** là biểu diễn văn bản thành danh sách số (vector), sao cho đoạn có ý nghĩa gần nhau có vector gần nhau. Ví dụ “đổi mật khẩu” và “reset password” có thể gần nhau dù không dùng chung từ. **Chunk** là đoạn nhỏ được tách từ tài liệu; embedding cả tài liệu rất dài thành một vector thường làm mất chi tiết và vượt giới hạn model.
+
+Chốt 10 triệu tài liệu, 20.000 thay đổi/ngày, 500 query/s peak, p95 dưới 800 ms, freshness trong 60 giây. Người hỏi chỉ được thấy tài liệu họ có quyền đọc tại thời điểm truy vấn. Hỗ trợ PDF/wiki/ticket, tiếng Việt và tiếng Anh; lưu source id, title, URL và vị trí trang/heading để citation. Làm rõ freshness 60 giây bắt đầu từ lúc connector phát hiện thay đổi; nguồn có thể có độ trễ riêng.
+
+### 2. Ước lượng dung lượng và throughput
+Giả sử trung bình 5 chunks/tài liệu: 10M × 5 = 50M vector. Với embedding 768 chiều, float32 dùng 4 byte/chiều:
+- 768 × 4 = 3.072 byte/vector; 50M × 3.072 ≈ 153,6 tỷ byte, tức khoảng 154 GB raw vector (đơn vị thập phân).
+- Chưa có ANN graph/index, metadata, lexical index, replication, WAL và backup. Dung lượng thật có thể lớn hơn nhiều; lấy benchmark trên dữ liệu đại diện và dự phòng vài lần thay vì coi raw vector là tổng.
+- Mỗi ngày 20k tài liệu × 5 chunks = 100k embedding. Trung bình 1,16 chunk/giây; burst 20 tài liệu/giây tương đương 100 chunks/giây. Queue hấp thụ burst, còn 60 giây freshness yêu cầu đo thời gian chờ queue + extract + embedding + index visibility.
+- 500 QPS là tải truy vấn; nếu p95 0,8 giây, số request đồng thời xấp xỉ QPS × latency ở mức tải ổn định, nhưng sizing chính thức cần load test với phân phối latency, cache hit và giới hạn provider.
+
+Nếu số chunk thực tế trung bình là 12, vector count tăng từ 50M lên 120M, dung lượng raw tăng tỷ lệ thuận. Bắt đầu bằng thống kê corpus thật trước khi chốt topology hoặc chi phí.
+
+### 3. Pipeline ingest và data model
+~~~text
+Wiki / PDF / Ticket
+        |
+    Connector --> Event bus / Kafka --> Extract + normalize
+                                      --> Chunk + ACL
+                                      --> Embedding workers
+                                          |             |
+                                    Vector index   Lexical index
+~~~
+Connector phát event có document id, source version, thời điểm và thao tác upsert/delete. Consumer idempotent theo (document id, version); retry lỗi tạm thời, cách ly payload hỏng vào DLQ (dead-letter queue) để sửa thay vì retry vô hạn. Pipeline chuẩn hóa encoding, bỏ boilerplate, giữ heading/page number và source URL.
+
+Chunk theo cấu trúc: ưu tiên paragraph/heading, giới hạn kích thước theo token của model; overlap nhỏ để nối ngữ cảnh qua ranh giới. Quá nhỏ mất ngữ cảnh, quá lớn loãng ý và tốn token. Lưu document version, chunk number, content hash, model version, ACL revision, source pointer và embedding. Không gộp ACL thành một boolean chung: tài liệu có thể cho phép user hoặc group khác nhau.
+
+Khi cập nhật, tạo chunks cho version mới, đảm bảo index có version đó rồi đánh dấu version mới active; xóa version cũ theo cơ chế an toàn. Với delete/thu hồi ACL, ưu tiên chặn kết quả ngay bằng tombstone/authoritative permission check, rồi dọn vector bất đồng bộ. Nếu quyền chỉ được cập nhật theo batch chậm, yêu cầu bảo mật không được đáp ứng dù search nhanh.
+
+### 4. API và đường tìm kiếm
+API ví dụ {{POST /search}} nhận {{query}}, bộ lọc đã được cho phép và cursor; danh tính đến từ token đăng nhập, không tin user_id do client tự khai. {{GET /documents/{id}}} kiểm tra quyền lại khi mở nội dung đầy đủ. Kết quả gồm document id, title, snippet, source link, score và version để UI hiển thị nguồn.
+
+1. Xác thực user và lấy nhóm/quyền cần thiết. Dùng quyền trong identity service hoặc ACL index có version; quyết định consistency khi quyền bị thu hồi.
+2. Chuẩn hóa query. Chạy lexical retrieval (ví dụ BM25, xếp hạng theo độ phù hợp từ khóa) song song với vector k-nearest-neighbor (kNN: tìm vector gần nhất). Query embedding có thể cache ngắn hạn theo query/model, không cache kết quả mà bỏ qua danh tính và ACL.
+3. Áp dụng ACL filter trong retrieval nếu backend hỗ trợ hiệu quả. Không lấy kết quả không được phép rồi chỉ ẩn ở UI: snippet, title, số lượng hit cũng có thể làm lộ thông tin.
+4. Hợp nhất hai danh sách, ví dụ Reciprocal Rank Fusion (RRF), phương pháp cộng điểm dựa trên thứ hạng thay vì so sánh score không cùng thang đo. Có thể rerank top vài chục kết quả bằng mô hình khác, nhưng chỉ sau khi bảo đảm quyền.
+5. Kiểm tra version/quyền khi hydrate snippet, trả citation và cursor. Đo p95/p99; tránh request tới một vector index rồi gọi tuần tự nhiều service cho từng document (N+1).
+
+### 5. Chọn vector index và hybrid search
+PostgreSQL với pgvector có lợi khi team đã vận hành PostgreSQL, dữ liệu và giao dịch cùng cần quan hệ/ACL; bắt đầu đơn giản hơn. pgvector hỗ trợ exact search và approximate index như HNSW, IVFFlat. Exact search cho recall chuẩn nhưng quét nhiều vector có thể tốn latency ở quy mô này. HNSW thường đổi thêm bộ nhớ/build time lấy truy vấn ANN nhanh; IVFFlat cần chọn số list/probe và thường phải huấn luyện index phù hợp. Các lựa chọn cụ thể phải benchmark phiên bản pgvector và workload thực tế.
+
+OpenSearch có lexical search mạnh và hỗ trợ vector/hybrid, tiện khi cần một cụm phục vụ nhiều truy vấn tìm kiếm; đổi lại cần vận hành shard, refresh và sizing index. Vector database chuyên dụng có thể hợp với vector workload lớn, nhưng thêm hệ thống và cần xác minh filter/ACL, backup, consistency, migration. Không có lựa chọn thắng mọi trường hợp.
+
+**ANN** (approximate nearest neighbor) trả về láng giềng gần đúng nhanh hơn quét chính xác nhưng có thể bỏ lỡ kết quả liên quan. Đo recall@k trên tập query có nhãn cùng p95/p99 khi bật ACL filter; filter chọn lọc cao có thể khiến ANN trả quá ít kết quả hoặc tốn nhiều bước. Tăng candidate count/rerank có thể cải thiện relevance nhưng tăng latency/cost. Hybrid cần thiết vì embedding có thể không hiểu rằng {{NullPointerException}} hoặc {{OrderServiceV2}} phải khớp gần như chính xác.
+
+### 6. Freshness, đổi model và quyền
+20k tài liệu/ngày trung bình nhỏ, nhưng freshness bị quyết định bởi p99 queue lag và khả năng xử lý burst. Đặt latency budget, ví dụ event delivery 10s, extraction/chunk 15s, embedding 20s, index refresh/verification 15s = 60s; đây là mục tiêu phân bổ để đo, không phải bảo đảm tự động. Với queue lag tăng, ưu tiên update/delete và cảnh báo.
+
+Embedding model/version mới có thể đổi chiều vector hoặc không gian ý nghĩa; không trộn embedding khác model trong cùng phép so sánh. Dựng index version mới song song, backfill, ghi thay đổi mới vào cả hai (hoặc replay event log), chạy đánh giá relevance và latency, rồi chuyển alias/routing. Giữ phiên bản cũ đủ lâu để rollback. Chi phí backfill lớn nên kiểm tra số tài liệu, throughput và quota trước.
+
+ACL thay đổi không nhất thiết cần tạo embedding lại; cập nhật filter metadata hoặc permission index theo source version. Search cache phải gắn với permission revision hoặc có invalidation; nếu không, user vừa bị thu hồi quyền vẫn có thể nhận kết quả cache cũ.
+
+### 7. Chất lượng, sự cố và trade-off
+| Trường hợp | Xử lý |
+|---|---|
+| PDF scan không có text | OCR pipeline riêng; đánh dấu trạng thái lỗi để không coi là đã index |
+| Embedding provider quá tải | Queue, retry hữu hạn với jitter, quota, DLQ; search vẫn dùng index hiện có |
+| Index refresh chậm | Đo event-to-searchable lag, ưu tiên update/delete, cảnh báo freshness |
+| Tài liệu bị thu hồi quyền | Tombstone/permission check đồng bộ trước trả snippet; xóa index sau |
+| Chunk cũ còn sau update | Version active + cleanup, kiểm tra hash/version và job đối soát |
+| ANN recall thấp | Benchmark recall@k; tăng candidate, điều chỉnh index/filter hoặc dùng exact cho tập nhỏ |
+| Một group ACL rất phổ biến | Kiểm tra selectivity/filter cost, partition hoặc chiến lược filter phù hợp backend |
+| Model mới làm relevance giảm | Chạy song song trên query có nhãn, chuyển traffic dần, rollback alias |
+
+Đánh giá search bằng tập query thực: Recall@k/NDCG (xếp hạng có tính độ liên quan), latency, tỷ lệ không kết quả, kết quả ngoài ACL, freshness và chi phí/query. Lấy phản hồi click không đồng nghĩa click = relevance; cần phân tích bias và kiểm tra thủ công. Dữ liệu truy vấn có thể nhạy cảm nên hạn chế lưu raw query, phân quyền và đặt retention.
+
+### 8. Bảo mật và quan sát
+Theo dõi ingest lag theo source, lỗi parse/OCR, queue depth, embedding throughput/cost, tỷ lệ version lỗi thời, index size, query p50/p95/p99, timeout, cache hit, recall/NDCG từ đánh giá định kỳ, tỷ lệ result bị ACL loại, số tài liệu không có quyền bị trả về (mục tiêu bằng 0). Không ghi nội dung tài liệu vào metric/log. Kiểm thử riêng user có quyền, user không quyền, group thay đổi và delete race.
+
+### Ví dụ đời thực
+Tình huống minh hoạ trên một tập 10 triệu tài liệu: người dùng thấy bài wiki vừa sửa còn kết quả cũ trong vài phút, và 7% truy vấn có mã lỗi như E-1042 không đưa tài liệu đúng vào top 10. Metrics cho thấy p95 query còn 620 ms, nhưng event-to-searchable p95 là 4 phút do worker ưu tiên embedding full document; lexical index cũng chỉ lập chỉ mục title. Nhóm chuyển sang versioned upsert, tăng ưu tiên event update/delete, lập chỉ mục body cho BM25 và hợp nhất top 50 lexical/vector bằng RRF. Sau rollout thử, freshness p95 còn 48 giây, recall@10 trên golden set mã lỗi tăng 0,71 lên 0,88, p95 query là 740 ms; ACL được kiểm tra trong truy vấn và tại bước hydrate. Số liệu chỉ minh hoạ kết quả cần xác nhận bằng benchmark của corpus thật.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi tách ingest và query. Ingest nhận thay đổi từ connector, giữ version và ACL, trích text, chia theo heading thành chunks có source pointer rồi tạo embedding bất đồng bộ. Với giả định 5 chunks mỗi tài liệu, 10 triệu tài liệu thành 50 triệu vector; vector 768 chiều float32 khoảng 154 GB raw, chưa kể index và replica. Tôi sẽ đo corpus và benchmark trước khi chọn pgvector, OpenSearch hay vector database. Query chạy lexical và vector song song, hợp nhất bằng RRF rồi rerank một tập nhỏ. Cách này vừa bắt câu hỏi diễn đạt khác, vừa tìm chính xác tên class hay mã lỗi. ACL phải nằm trong retrieval hoặc được kiểm tra trước khi trả cả snippet; cache gắn với permission revision. Update dùng version mới, delete/thu hồi quyền chặn ngay rồi cleanup nền. Tôi đo freshness end-to-end, recall@k, p95 và tỷ lệ lỗi ACL; khi đổi embedding model, dựng index song song, đánh giá rồi mới chuyển traffic để có thể rollback.”
+
+> Senior tip: với search nội bộ, lỗi nghiêm trọng nhất không phải tìm thiếu một kết quả mà là trả kết quả người dùng không có quyền đọc. Thiết kế kiểm tra ACL và thu hồi quyền trước, rồi mới tối ưu ANN vài chục mili-giây; đo bằng test chéo user/group chứ đừng chỉ nhìn dashboard latency.`,
+  followups: [
+    'Nếu một tài liệu có ACL riêng cho 30 nhóm và một query chạy cho 10.000 user, bạn tổ chức filter và cache thế nào?',
+    'Người dùng tìm chính xác class OrderServiceV2 nhưng vector search xếp thấp: bạn cải thiện ranking ra sao?',
+    'Model embedding mới tăng chất lượng nhưng đổi dimension từ 768 lên 1.024: rollout và rollback thế nào khi vẫn cần ingest realtime?',
+    'Indexer lag tăng lên 15 phút sau một đợt cập nhật lớn: bạn giữ SLA và ưu tiên update/delete thế nào?'
+  ],
+  related: ['ai-001', 'db-052']
+},
 ];

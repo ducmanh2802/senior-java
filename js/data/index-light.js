@@ -1985,6 +1985,10 @@ window.DATA_INDEX = {
     {"id":"sd-024","title":"LLM gateway dùng chung cho nhiều team"},
     {"id":"sd-025","title":"Nền tảng chạy agent tự động xử lý ticket hỗ trợ khách hàng"},
     {"id":"sd-026","title":"Hệ thống thông báo đa kênh: push, email, SMS với template, ưu tiên, giờ yên lặng, chống trùng"},
+    {"id":"sd-027","title":"Rate limiter phân tán cho API gateway"},
+    {"id":"sd-028","title":"News feed kiểu mạng xã hội"},
+    {"id":"sd-029","title":"Bot review pull request bằng LLM cho 200 repository"},
+    {"id":"sd-030","title":"Tìm kiếm ngữ nghĩa cho 10 triệu tài liệu"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
