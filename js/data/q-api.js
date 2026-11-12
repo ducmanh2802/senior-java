@@ -3334,5 +3334,1155 @@ Một hệ thống 25 microservice, mỗi service tự kiểm tra JWT, tự rate
       'Gateway aggregation vs client-side composition: trade-off latency và coupling.'
     ],
     tags: ['API Gateway', 'Service Mesh', 'Spring Cloud Gateway', 'Envoy', 'mTLS']
+  },
+{
+    id: 'api-039',
+    topic: 'api',
+    level: 'senior',
+    q: 'HATEOAS (Hypermedia as the Engine of Application State) có thực sự cần thiết cho API ngân hàng hiện đại không? So sánh với OpenAPI client generation, GraphQL, và gRPC reflection: trade-off phát triển, bảo trì, và trải nghiệm client.',
+    a: `**Tóm tắt:** HATEOAS đưa link điều hướng vào response (next, prev, related actions) để client khám phá API tại runtime mà không cần documentation. Thực tế: API ngân hàng **hiếm khi dùng HATEOAS thuần túy** vì (1) OpenAPI generate SDK cho phép client biết hết endpoint tại build time, (2) GraphQL client tự chọn field, (3) gRPC reflection/cần schema registry. Chi phí thêm link vào mọi response, version link khi đổi endpoint, và client vẫn phải hard-code logic nghiệp vụ. Dùng khi: public API cực kỳ động, client không thể update thường xuyên (IoT, smart TV).
+### HATEOAS cơ bản
+~~~json
+GET /accounts/123
+{
+  "id": 123,
+  "balance": 5000000,
+  "_links": {
+    "self": { "href": "/accounts/123" },
+    "transactions": { "href": "/accounts/123/transactions" },
+    "transfer": { "href": "/transfers", "method": "POST" },
+    "close": { "href": "/accounts/123", "method": "DELETE" }
   }
+}
+~~~
+Client đọc {{_links.transfer.href}} để POST thay vì hard-code URL.
+### So sánh thực tế
+| Tiêu chí | HATEOAS | OpenAPI + SDK | GraphQL | gRPC |
+|---|---|---|---|---|
+| **Khám phá runtime** | Có (link trong response) | Không (build-time) | Có (introspection) | Có (reflection) |
+| **Client coupling** | Thấp (chỉ biết entry point) | Cao (SDK gắn endpoint) | Trung bình (query tự viết) | Cao (proto gắn method) |
+| **Phát triển server** | Phức tạp (sinh link, version) | Đơn giản (annotation) | Trung bình (resolver) | Trung bình (proto) |
+| **Breaking change** | An toàn hơn (client follow link) | Phải version SDK | An toàn (thêm field) | An toàn (field number) |
+| **Tooling** | Yếu (HAL, JSON:API, Siren) | Rất mạnh (springdoc, openapi-generator) | Mạnh (Apollo, Relay) | Mạnh (buf, protoc) |
+| **Cache/CDN** | Khó (link động) | Dễ (URL cố định) | Khó (POST query) | Không áp dụng |
+### Khi nào HATEOAS giá trị
+- API public cho thiết bị nhúng (IoT, POS, ATM) không thể update firmware thường xuyên — server đổi URL, client vẫn chạy nhờ follow link.
+- Workflow phức tạp nhiều trạng thái (đơn xin vay: draft → submitted → approved → disbursed → closed) — link {{nextAction}} thay đổi theo state.
+- Client generic (API explorer, dashboard tự động) cần render UI từ metadata.
+### Khi nào KHÔNG dùng
+- Mobile app, web app, partner integration: team client và server cùng công ty hoặc có quy trình release đồng bộ → OpenAPI generate SDK nhanh hơn, type-safe, IDE autocomplete.
+- Microservice nội bộ: gRPC + protobuf reflection/schema registry hiệu quả hơn.
+- Performance critical: thêm {{_links}} làm payload to 10-30%, serialize tốn CPU.
+### Ví dụ đời thực
+Một ngân hàng thiết kế API public theo HATEOAS (HAL+JSON) cho 50 đối tác fintech. Triệu chứng: (1) payload tăng 25% do {{_links}} lặp lại cho mỗi item trong danh sách 100 tài khoản; (2) đổi endpoint {{/v1/transfers}} → {{/v1/payments}} phải cập nhật link generator ở 12 controller, test regression 3 ngày; (3) đối tác vẫn hard-code URL vì SDK của họ không parse {{_links}} — HATEOAS trở thành "dead code". Sau 6 tháng, team bỏ HATEOAS, chuyển sang OpenAPI 3.1 + springdoc, generate TypeScript/Java/Kotlin SDK cho partner. Kết quả: payload giảm 25%, onboard partner từ 2 tuần xuống 3 ngày (generate SDK + test), breaking change bắt được ở CI bằng oasdiff.
+### Trả lời mẫu khi phỏng vấn
+"HATEOAS ý tưởng đẹp: client chỉ biết entry point, follow link để khám phá API, server đổi URL client không hỏng. Nhưng thực tế ngân hàng: (1) OpenAPI generate SDK cho type-safe client, IDE autocomplete, breaking change bắt ở CI — nhanh và an toàn hơn. (2) GraphQL client tự chọn field, introspection tại runtime. (3) gRPC reflection/schema registry cho nội bộ. Chi phí HATEOAS: sinh link mọi response, version link khi đổi route, payload to 30%, tooling yếu (HAL/JSON:API/Siren không chuẩn hóa hẳn). Tôi chỉ dùng HATEOAS khi client không thể update (IoT firmware, POS offline) hoặc workflow state machine phức tạp cần {{nextAction}} động. Còn mobile/web/partner: OpenAPI + SDK là lựa chọn thực dụng."
+> Senior tip: Đừng ép HATEOAS chỉ vì "REST level 3 Richardson Maturity Model". Hãy đo: bao nhiêu % client thực sự dùng link động? Nếu < 5%, chi phí không đáng. Spring HATEOAS (spring-boot-starter-hateoas) sinh link dùng Link.of(...).withRel(...) — dùng khi cần, không ép toàn hệ thống.`,
+    follow: [
+      'Spring HATEOAS sinh link như thế nào cho pagination (first, next, last)?',
+      'HAL vs JSON:API vs Siren: format nào phổ biến và tooling thế nào?'
+    ],
+    tags: ['HATEOAS', 'Hypermedia', 'REST', 'OpenAPI', 'GraphQL', 'API Design']
+  },
+  {
+    id: 'api-040',
+    topic: 'api',
+    level: 'lead',
+    q: 'Thiết kế chiến lược versioning API cho hệ sinh thái ngân hàng: 30 microservice, 5 đội phát triển, mobile app (iOS/Android), web admin, 40 đối tác fintech. So sánh URI versioning, header versioning, media type versioning, và composite approach. Làm sao quản lý deprecation, sunset, và migration mà không làm vỡ tích hợp?',
+    a: `**Tóm tắt:** Không có "silver bullet". Chiến lược thực tế: **URI versioning cho public/partner** ({{/v1/}}, {{/v2/}}) vì gateway route dễ, log/metric tách biệt, partner test curl được; **header versioning cho internal sync** ({{Accept: application/vnd.bank.v2+json}}) để URL sạch, tránh version leak vào resource; **media type versioning cho GraphQL** (persisted query + {{@deprecated}} directive). Composite: URI major + header minor. Deprecation pipeline: telemetry → communication → brownout → sunset → 410 Gone.
+### Ba chiến lược chính
+| Chiến lược | Ví dụ | Ưu | Nhược | Phù hợp |
+|---|---|---|---|---|
+| **URI** | {{/v1/accounts}}, {{/v2/accounts}} | Rõ ràng, gateway route prefix, log tách series, curl test | URL "bẩn", client thấy version | Public API, partner, mobile app |
+| **Header** | {{Accept: application/vnd.bank.v2+json}} | Resource URL ổn định, cache key tự nhiên | Proxy/CDN dễ bỏ header, khó debug log | Internal sync, service mesh |
+| **Media type param** | {{Accept: application/json; version=2}} | Tách version khỏi media type | Tương tự header, thêm complexity | GraphQL persisted query |
+### Composite approach (khuyến nghị ngân hàng)
+~~~text
+Public/Partner:     /v1/... , /v2/...           (major version trong URI)
+Internal sync:      /accounts + Accept: vnd.bank.v2+json  (minor trong header)
+GraphQL:            persisted query ID + schema directive @deprecated
+Mobile app:         Gateway rewrite /app/v2/... → internal /v2/... + header
+~~~
+### Vòng đời deprecation có telemetry
+1. **Design**: Viết spec v2, review Arch+Security+Partner, baseline git tag {{api/v2.0.0}}.
+2. **Announce (T0)**: Email, portal, changelog. Response v1 thêm header:
+   {{Deprecation: true}}, {{Sunset: Sat, 01 Mar 2026 00:00:00 GMT}},
+   {{Link: <https://api.bank.vn/docs/migrate-v2>; rel="deprecation"}}
+3. **Parity (T0+30d)**: v2 chạy song song, parity test hàng ngày so sánh response v1↔v2 (adapter map field).
+4. **Brownout (T0+90d)**: v1 trả {{503 Service Unavailable}} + {{Retry-After: 300}} theo cửa sổ (Thứ 2 09:00-09:05). Log consumer bị ảnh hưởng, alert team partner.
+5. **Measure (T0+180d)**: Dashboard Micrometer
+~~~text
+api_requests_total{version="v1", consumer="..."}
+~~~
+. Chỉ sunset khi < 1% traffic quan trọng.
+6. **Sunset (T0+365d)**: Tắt v1, trả {{410 Gone}} + {{Link: <https://api.bank.vn/docs/migrate-v2>; rel="successor-version"}}.
+### Quản lý đa đội (polyrepo/monorepo)
+- **Contract repo**: Chứa OpenAPI spec + Protobuf + GraphQL SDL. Mỗi service là một package. CI gate: {{oasdiff}} (REST), {{buf breaking}} (gRPC), {{graphql-inspector}} (GraphQL).
+- **Version policy**: Major = breaking (xóa field, đổi type, thêm required). Minor = non-breaking (thêm optional field, thêm endpoint). Patch = bugfix/internal.
+- **Release train**: Mỗi quý một major release window. Service không breaking thì không bắt buộc bump major.
+- **Gateway as version router**: Spring Cloud Gateway / Kong route {{/v1/*}} → service v1, {{/v2/*}} → service v2. Canary deploy v2, so sánh error rate/latency trước khi cắt traffic.
+### Ví dụ đời thực
+Ngân hàng 30 service, 5 team, 40 partner. Ban đầu mỗi team version tuỳ hứng: team A dùng URI, team B header, team C không version — partner tích hợp 3 cách khác nhau, breaking change lọt production 4 lần/năm. Triển khai composite: (1) Contract repo tập trung, CI gate bắt breaking change. (2) Gateway rewrite: partner {{/partner/v1/}} → internal header {{vnd.bank.v1+json}}. (3) Deprecation pipeline 12 tháng với brownout tuần. (4) Parity test job so sánh v1/v2 adapter. Kết quả: 18 tháng 0 breaking change lọt production, partner onboarding 3 ngày (generate SDK từ contract repo), team deploy độc lập mà không lo version conflict. Chi phí: 2 FTE platform maintain contract repo + gateway, 1 parity test job/ngày.
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn composite: URI major cho public/partner (gateway route dễ, log tách), header minor cho internal (URL sạch), GraphQL dùng persisted query + {{@deprecated}}. Deprecation không phải tắt một ngày: T0 announce + header Deprecation/Sunset/Link, T+30d parity test, T+90d brownout 5 phút/tuần ép client lộ ra, T+180d đo usage theo consumer, T+365d sunset {{410 Gone}}. Contract repo tập trung + CI gate (oasdiff/buf/graphql-inspector) bắt breaking change ở PR. Gateway làm version router, canary deploy so sánh error rate trước khi cắt. Bài học: team cũ mỗi người version một kiểu, partner đau khổ, breaking change lọt production. Chuẩn hóa composite + contract repo + deprecation pipeline đã khắc phục triệt để."
+> Senior tip: Chi phí thật của versioning không phải code mà là **hai bộ test, hai bug surface, hai docs**. Giảm thiểu bằng: adapter mỏng (controller v1 map từ model v2), brownout sớm (đội partner migrate nhanh hơn email nhắc), và **không bao giờ** để client không gửi version rơi vào "latest" âm thầm — hãy ghim mặc định một version đã công bố.`,
+    follow: [
+      'Làm sao handle breaking change trong gRPC (field number) so với REST (URL/header)?',
+      'Khi nào nên dùng "tolerant reader" (bỏ qua field lạ) thay vì versioning?'
+    ],
+    tags: ['API Versioning', 'Deprecation', 'Sunset', 'Gateway', 'Contract Testing', 'Architecture']
+  },
+  {
+    id: 'api-041',
+    topic: 'api',
+    level: 'senior',
+    q: 'Thiết kế xác thực và phân quyền cho API ngân hàng: OAuth 2.0 Authorization Code + PKCE cho mobile/web, Client Credentials cho service-to-service, mTLS cho internal mesh. So sánh JWT opaque vs self-contained, token exchange, và cách xử lý revocation real-time.',
+    a: `**Tóm tắt:** Biên công khai (mobile, web, partner) dùng **OAuth 2.0 Authorization Code + PKCE** (RFC 7636) cấp **short-lived access token (JWT, 5-15 min)** + **refresh token rotation (RTR)**. Biên nội bộ service-to-service dùng **Client Credentials Grant** hoặc **mTLS** (certificate-based). Access token nên là **opaque reference token** (introspection) cho revocation real-time; self-contained JWT chỉ dùng khi latency introspection không chấp nhận được. Token exchange (RFC 8693) cho delegation (user → service A → service B).
+### OAuth 2.0 flows cho ngân hàng
+| Flow | Dùng cho | Token type | Revocation |
+|---|---|---|---|
+| Auth Code + PKCE | Mobile app, SPA, Web | Access (JWT 5-15m) + Refresh (RTR) | Refresh revoke = logout toàn bộ |
+| Client Credentials | Service-to-service sync | Access (JWT 10-30m) hoặc opaque | Introspection endpoint |
+| Device Authorization | TV, IoT, CLI | Access + Refresh | Refresh revoke |
+| mTLS (Certificate) | Service mesh internal | Không token (cert = identity) | Cert revocation (CRL/OCSP) |
+### JWT opaque vs self-contained
+| Tiêu chí | Opaque (reference) | Self-contained JWT |
+|---|---|---|
+| **Payload** | Random string (UUID) | Claims (sub, roles, exp, custom) |
+| **Validate** | Gọi **introspection endpoint** (Redis/DB) | Verify chữ ký local (JWKS), không gọi network |
+| **Latency** | +1-2ms network call | 0ms (chỉ CPU verify) |
+| **Revocation** | **Real-time** (xoá entry Redis/DB) | Chờ exp hoặc dùng blocklist/short expiry |
+| **Payload size** | Nhỏ (36 chars) | Lớn (500-2000 bytes) |
+| **Phù hợp** | Payment, high-security, cần revoke ngay | Internal low-latency, read-heavy, revoke 5-15m sau được chấp nhận |
+### Refresh Token Rotation (RTR) - bắt buộc
+~~~text
+1. Client login → nhận access_token (JWT, 5m) + refresh_token (opaque, 30d)
+2. Access hết hạn → client POST /token {{grant_type=refresh_token, refresh_token=...}}
+3. Server: KHÁM refresh_token trong DB → nếu hợp lệ:
+   - Xoá refresh_token cũ (revoke)
+   - Cấp access_token MỚI + refresh_token MỚI (rotation)
+   - Lưu refresh_token mới (hash SHA-256)
+4. Nếu refresh_token bị replay (cũ và mới cùng dùng) → phát hiện reuse → **revoke TOÀN BỘ session**, force re-login.
+~~~
+### Token Exchange (RFC 8693) - delegation
+User login → mobile có access_token_user. Mobile gọi Service A (API Gateway) → Service A cần gọi Service B thay mặt user.
+~~~http
+POST /token
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+subject_token=<access_token_user>
+subject_token_type=urn:ietf:params:oauth:token-type:access_token
+requested_token_type=urn:ietf:params:oauth:token-type:access_token
+audience=service-b
+~~~
+Service B nhận token có {{act}} (actor) = service-a, {{sub}} = user. Service B authorize dựa trên cả hai.
+### Revocation real-time
+- **Opaque token**: Redis {{DEL token:<jti>}} → introspection trả {{active: false}} ngay.
+- **Self-contained JWT**: Short expiry (5m) + **JWKS rotation** (kid thay đổi). Không blocklist phức tạp — cửa sổ 5m là rủi ro chấp nhận được. Nếu bắt buộc revoke ngay: Redis blocklist {{jti}} + TTL = remaining expiry, introspection check blocklist.
+### mTLS cho internal mesh
+- Mỗi service có cert X.509 (SPIFFE/SPIRE hoặc cert-manager). Identity = {{spiffe://bank.vn/ns/prod/sa/transfer-svc}}.
+- Sidecar (Envoy) hoặc application (Spring Boot 3 + Netty) terminate mTLS.
+- Authorization: OPA/Rego policy đọc {{spiffe_id}} từ cert, map với policy.
+- Cert rotation: 24h TTL, auto-rotate, không downtime.
+### Ví dụ đời thực
+Ngân hàng chuyển từ session cookie sang OAuth 2.0 + PKCE cho mobile/web, Client Credentials cho 30 service nội bộ. Ban đầu dùng self-contained JWT 30m cho mọi nơi — khi user đổi mật khẩu, token cũ vẫn hợp lệ đến hết hạn (30m), attacker dùng token cũ truy cập được. Triển khai: (1) Mobile/web: Auth Code + PKCE, access 5m, refresh RTR 30d. (2) Internal: Client Credentials cấp opaque token, introspection Redis (sub-ms). (3) Critical path (ledger, limit check): mTLS + SPIFFE, không token. (4) Token exchange cho API Gateway → service B thay mặt user. Kết quả: revoke real-time khi đổi mật khẩu/lock tài khoản, 0 incident token leak sau 6 tháng. Chi phí: 1 Auth Server (Keycloak/custom), 1 introspection Redis cluster, cert-manager cho mTLS.
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách xác thực theo biên: mobile/web dùng Auth Code + PKCE (access 5m JWT + refresh RTR 30d), service-to-service dùng Client Credentials (opaque token + introspection Redis) hoặc mTLS cho critical path. Self-contained JWT chỉ dùng khi latency introspection không chấp nhận được, và phải short expiry (5m) vì revoke không real-time. RTR bắt buộc: mỗi refresh xoá token cũ, cấp mới, phát hiện reuse thì revoke toàn bộ session. Token exchange (RFC 8693) cho delegation user→service A→service B. mTLS với SPIFFE cho service mesh internal — cert = identity, không quản lý token. Bài học: team cũ dùng JWT 30m cho tất cả, đổi mật khẩu vẫn truy cập được 30 phút. Chuyển sang opaque + introspection + RTR đã khắc phục revoke real-time."
+> Senior tip: **Đừng tự implement OAuth server** — dùng Keycloak, Auth0, hoặc Spring Authorization Server (chuẩn hóa). Tự viết dễ bỏ sót PKCE, RTR, token exchange, JWKS rotation. Với ngân hàng, compliance (PCI-DSS, NHNN) yêu cầu audit trail mọi cấp/refresh/revoke token — commercial/serverless Auth server có sẵn log này.`,
+    follow: [
+      'Làm sao implement PKCE đúng chuẩn (code_verifier, code_challenge_method=S256)?',
+      'mTLS với SPIFFE/SPIRE: sidecar Envoy vs application-native (Netty) trade-off gì?'
+    ],
+    tags: ['OAuth 2.0', 'PKCE', 'Client Credentials', 'mTLS', 'Token Exchange', 'Revocation', 'Security']
+  },
+  {
+    id: 'api-042',
+    topic: 'api',
+    level: 'lead',
+    q: 'Consumer-driven contract testing (Pact) vs Provider-driven (OpenAPI): khi nào dùng cái nào, cách tích hợp vào CI/CD đa team, và làm sao xử lý breaking change detection khi consumer và provider deploy độc lập (polyrepo)?',
+    a: `**Tóm tắt:** **Provider-driven (OpenAPI)**: provider viết spec, publish, consumer generate SDK — phù hợp public API, partner nhiều, provider kiểm soát. **Consumer-driven (Pact)**: consumer viết contract (expected request/response), provider verify — phù hợp internal microservice, consumer ít, provider muốn đảm bảo không vỡ consumer cụ thể. Thực tế ngân hàng: **kết hợp** — OpenAPI cho public/partner, Pact cho internal service-to-service. Polyrepo: dùng **Pact Broker** (hoặc Specmatic) làm contract registry, CI gate {{can-i-deploy}} trước khi deploy bất kỳ service nào.
+### So sánh hai tư duy
+| Tiêu chí | Provider-driven (OpenAPI) | Consumer-driven (Pact) |
+|---|---|---|
+| **Ai viết contract** | Provider (Arch/API team) | Consumer (team dùng API) |
+| **Scope** | Toàn bộ API surface | Chỉ field/consumer cần |
+| **Breaking change detection** | CI gate so sánh spec mới vs baseline | Provider CI chạy {{pact verify}} contre consumer contract |
+| **Phù hợp** | Public API, partner nhiều, SDK generation | Internal microservice, ít consumer, deploy độc lập |
+| **Tooling** | springdoc, oasdiff, openapi-generator | Pact (JVM, JS, Go, .NET), Pact Broker |
+| **Versioning** | Spec version (v1, v2) | Consumer version tag (prod, staging) |
+### Kết hợp thực tế (Hybrid)
+~~~text
+Public/Partner API:
+  Provider-driven: OpenAPI spec → springdoc → oasdiff CI gate → publish Stoplight/Redocly
+  Consumer: generate SDK (TypeScript, Kotlin, Java, Go) từ spec portal
+
+Internal Service-to-Service:
+  Consumer-driven: Team A (consumer) viết Pact test → publish Pact Broker tag "prod"
+  Provider (Team B): CI {{pact verify}} against "prod" tag trước khi merge/deploy
+  Pact Broker: {{can-i-deploy}} check version matrix trước khi release
+~~~
+### Pact flow chi tiết
+1. **Consumer test** (JUnit/Pact JVM):
+   ~~~java
+   @ExtendWith(PactConsumerTestExt.class)
+   class AccountConsumerTest {
+       @Pact(consumer = "mobile-bff", provider = "account-svc")
+       V4Pact getAccount(PactDslWithProvider builder) {
+           return builder
+               .given("account 123 exists")
+               .uponReceiving("request for account 123")
+               .path("/accounts/123")
+               .method("GET")
+               .willRespondWith()
+               .status(200)
+               .body(newJsonBody(o -> {
+                   o.stringType("id", "123");
+                   o.stringType("name", "Nguyen Van A");
+                   o.numberType("balance", 5000000);
+               }).build())
+               .toPact(V4Pact.class);
+       }
+       @Test
+       @PactTestFor(pactMethod = "getAccount")
+       void testGetAccount(MockServer mockServer) {
+           AccountClient client = new AccountClient(mockServer.getUrl());
+           Account acc = client.get("123");
+           assertEquals(5000000, acc.getBalance());
+       }
+   }
+   ~~~
+2. **Publish**: {{mvn pact:publish}} → Pact Broker, tag {{prod}}/{{staging}} theo branch.
+3. **Provider verify** (JUnit/Pact JVM + Spring):
+   ~~~java
+   @Provider("account-svc")
+   @PactBroker(url = "http://pact-broker", tags = "prod")
+   class AccountProviderTest {
+       @TestTemplate
+       @ExtendWith(PactVerificationInvocationContextProvider.class)
+       void verify(PactVerificationContext ctx) {
+           ctx.verifyInteraction();  // chạy request thật contre controller, so khớp response
+       }
+       @State("account 123 exists")
+       void setup() { testData.setupAccount123(); }
+   }
+   ~~~
+4. **Can-i-deploy**: Trước khi deploy service bất kỳ, chạy {{pact-broker can-i-deploy --pacticipant=account-svc --version=1.2.3 --to=prod}}. Nếu consumer {{mobile-bff}} ở prod có contract chưa verified bởi version này → **chặn deploy**.
+### Polyrepo CI/CD
+- Mỗi service một repo, một pipeline.
+- **Contract repo** (hoặc Pact Broker) là nguồn sự thật chia sẻ.
+- Provider CI: {{pact verify}} (chạy provider verify against consumer contracts).
+- Consumer CI: {{pact publish}} (chạy consumer test, publish pact).
+- **Release gate**: {{pact-broker can-i-deploy}} trong pipeline deploy của **cả consumer và provider**.
+- **Webhook**: Pact Broker webhook trigger provider CI khi consumer publish pact mới.
+### Xử lý breaking change
+- Consumer thêm field mới trong expectation → provider verify pass (provider trả thêm field không sao).
+- Consumer đổi type/expectation → provider verify **fail** → CI chặn merge.
+- Provider muốn đổi breaking: phải coordinate consumer (tạo pact mới, deploy consumer trước, sau đó provider).
+- **Tolerant reader**: Provider trả thêm field, consumer bỏ qua — Pact hỗ trợ {{matchingRules}} (type, min/max, regex) thay vì exact match.
+### Ví dụ đời thực
+Ngân hàng 30 service, 5 team, polyrepo. Ban đầu chỉ dùng OpenAPI, team A đổi field {{phone}} → {{phoneNumber}} trong account-svc, team B (mobile-bff) không biết, deploy sau 2 ngày → crash runtime. Triển khai Pact: (1) Mỗi consumer team viết Pact test cho field họ dùng. (2) Pact Broker tập trung, tag {{prod}}/{{staging}}. (3) Provider CI chạy {{pact verify}} against {{prod}} tag. (4) Deploy gate {{can-i-deploy}}. (5) Webhook trigger provider CI khi consumer publish pact. Kết quả: 12 tháng 0 breaking change lọt production, team deploy độc lập (account-svc deploy 5 lần/ngày, mobile-bff 2 lần/ngày) mà không coordinate thủ công. Chi phí: 1 Pact Broker cluster, 2 FTE platform, consumer test maintenance (~10% test code).
+### Trả lời mẫu khi phỏng viên
+"Tôi dùng hybrid: OpenAPI cho public/partner (provider-driven, generate SDK), Pact cho internal service-to-service (consumer-driven, đảm bảo không vỡ consumer cụ thể). Polyrepo: Pact Broker làm registry, consumer publish pact tag {{prod}}, provider verify against {{prod}} trong CI, deploy gate {{can-i-deploy}} chặn nếu contract chưa verified. Breaking change: consumer đổi expectation → provider verify fail ở CI; provider muốn breaking → coordinate consumer tạo pact mới, deploy consumer trước. Tolerant reader: dùng matchingRules (type, regex) thay vì exact value. Bài học: team cũ chỉ OpenAPI, đổi field {{phone}}→{{phoneNumber}} làm crash mobile-bff 2 ngày sau. Pact Broker + can-i-deploy đã khắc phục, deploy độc lập an toàn."
+> Senior tip: **Pact không thay thế OpenAPI** — chúng giải quyết bài toán khác. OpenAPI = documentation + SDK generation + public contract. Pact = safety net cho internal deploy độc lập. Đừng viết Pact cho public API (partner không viết Pact test). Và hãy dùng **matchingRules** (type, regex, min/max) thay vì exact value — provider trả thêm field hoặc giá trị khác format nhưng cùng type vẫn pass.`,
+    follow: [
+      'Pact vs Spring Cloud Contract: khác nhau ở đâu, khi nào chọn cái nào?',
+      'Làm sao handle contract evolution khi consumer thêm field bắt buộc (required) mới?'
+    ],
+    tags: ['Pact', 'Consumer Driven Contract', 'OpenAPI', 'Contract Testing', 'CI/CD', 'Polyrepo', 'Microservices']
+  },
+  {
+    id: 'api-043',
+    topic: 'api',
+    level: 'senior',
+    q: 'GraphQL N+1 problem: DataLoader hoạt động như thế nào, batching và caching per-request, khi nào DataLoader không đủ (nested list, authorization per-field), và giải pháp thay thế (join trong resolver, @defer/@stream, persisted query)?',
+    a: `**Tóm tắt:** N+1 xảy ra khi resolver lồng nhau gọi DB lần lượt cho mỗi item cha (1 query lấy 10 user → 10 query lấy address của từng user). **DataLoader** gom các key trong cùng tick event-loop, batch thành một query:
+~~~text
+WHERE id IN (...)
+~~~
+, cache kết quả per-request. DataLoader **không giải quyết** được: (1) nested list (user → posts → comments → author), (2) authorization per-field (kiểm tra quyền từng field), (3) field phụ thuộc context động. Giải pháp: join ở resolver, {{@defer}}/{{@stream}} cho field chậm, persisted query + complexity analysis.
+### N+1 minh họa
+~~~graphql
+query {
+  users(limit: 10) {
+    id
+    name
+    address { city }   # N+1: 1 query users + 10 query address
+  }
+}
+~~~
+Resolver {{address}} chạy 10 lần, mỗi lần {{SELECT * FROM address WHERE user_id = ?}}.
+### DataLoader cơ chế
+~~~java
+// Spring GraphQL DataLoader
+@DataLoader
+public class AddressDataLoader implements MappedBatchLoader<Long, Address> {
+    private final AddressRepository repo;
+    
+    @Override
+    public CompletionStage<Map<Long, Address>> load(Set<Long> userIds) {
+        // Gọi 1 lần: SELECT * FROM address WHERE user_id IN (...)
+        List<Address> list = repo.findByUserIdIn(userIds);
+        Map<Long, Address> map = list.stream()
+            .collect(Collectors.toMap(Address::getUserId, a -> a, (a,b) -> a));
+        // Key không có data → put null hoặc absent (DataLoader xử lý)
+        return CompletableFuture.completedFuture(map);
+    }
+}
+~~~
+- **Batching**: Tất cả {{address}} resolver calls trong cùng request context được gom, chờ tick tiếp theo (microtask), batch một lần.
+- **Caching per-request**: Map {{userId → Address}} lưu trong {{DataLoaderRegistry}} của request. Gọi lại cùng key trong cùng request → lấy cache, không query DB.
+- **Key point**: DataLoader **chỉ cache trong một request** (request-scoped), không cache cross-request (đó là việc của Redis/Caffeine).
+### Khi nào DataLoader KHÔNG đủ
+| Trường hợp | Vì sao DataLoader fail | Giải pháp |
+|---|---|---|
+| **Nested list** {{users → posts → comments → author}} | DataLoader batch được 1 level, nhưng {{comments}} là list của list, key không phẳng | Join trong resolver gốc hoặc {{@defer}} tách field chậm |
+| **Authorization per-field** | {{email}} chỉ hiện cho admin, {{balance}} chỉ chủ tài khoản — DataLoader batch không biết context từng field | Đưa auth vào resolver, hoặc dùng {{@defer}} cho field nhạy cảm |
+| **Field phụ thuộc argument động** | {{transactions(limit: $limit, from: $from)}} — mỗi user args khác nhau, không batch gọn | Tách resolver: batch lấy transaction IDs, rồi fetch chi tiết riêng |
+| **Circular reference** | {{user.friends → user.friends.friends}} — DataLoader cache gây deadlock hoặc lặp vô tận | {{maxDepth}} directive, hoặc {{@skip}}/{{@include}} client-side |
+### Giải pháp thay thế / bổ sung
+1. **Join trong resolver (fetch gốc)**: Resolver {{users}} join sẵn {{address}} (JPA {{@EntityGraph}}, {{@BatchSize}}, hoặc query custom). Trả {{UserWithAddress}} DTO, GraphQL map field. DataLoader chỉ dùng cho quan hệ không join được (service khác, REST call).
+2. **{{@defer}} / {{@stream}} (GraphQL spec)**:
+   ~~~graphql
+   query {
+     users(limit: 10) {
+       id
+       name
+       address @defer { city }  # Trả users trước, address stream sau
+     }
+   }
+   ~~~
+   Client nhận partial response ngay, field chậm đến sau. Spring GraphQL 1.2+ hỗ trợ {{@defer}} qua {{DeferredResult}}/{{Flux}}.
+3. **Persisted Query + Complexity Analysis**: Client đăng ký query hash, server chỉ cho phép query đã đăng ký. Tính complexity (depth, node count, field cost) từ AST — từ chối query > ngưỡng (ví dụ 1000 points). Chặn N+1 ở mức query shape chứ không phải runtime.
+4. **Batch loading cho service khác (REST/gRPC)**: DataLoader không chỉ cho DB — dùng cho bất kỳ key→value lookup nào (REST call sang user-service, gRPC call sang limit-service). Key = composite (service, id), batch = gọi batch endpoint của service đó.
+### Ví dụ đời thực
+Mobile BFF GraphQL query màn hình dashboard: {{users → accounts → transactions → merchant}}. N+1: 10 users → 10 accounts → 100 transactions → 100 merchants = 221 query. p99 2.3s. DataLoader batch {{accounts}}, {{transactions}}, {{merchants}} giảm xuống 4 query (1 users + 1 accounts + 1 transactions + 1 merchants). p99 380ms. Vẫn chậm do {{transactions}} có filter động ({{from}}, {{to}}, {{type}}) mỗi user khác nhau. Giải pháp cuối: resolver {{users}} join {{accounts}}, {{transactions}} dùng batch endpoint {{/transactions/batch?userIds=...}} của transaction-service (gRPC), {{merchants}} batch endpoint của merchant-service. p99 95ms. Complexity analysis chặn query:
+~~~graphql
+query {
+  users(limit: 1000) {
+    transactions {
+      merchant { ... }
+    }
+  }
+}
+~~~
+(10.000 points > ngưỡng 1000).
+### Trả lời mẫu khi phỏng vấn
+"N+1 là bệnh điển hình GraphQL: resolver lồng nhau gọi DB từng item. DataLoader gom key trong cùng tick, batch:
+~~~text
+WHERE id IN (...)
+~~~
+, cache per-request. Nhưng DataLoader không xử lý được nested list (list của list), authorization per-field, hay argument động. Tôi dùng mix: join ở resolver gốc cho quan hệ cục bộ, DataLoader cho service-call batch, {{@defer}} cho field chậm/nhạy cảm, persisted query + complexity analysis chặn query shape độc hại ở gateway. Bài học: team cũ chỉ dùng DataLoader, nested list {{posts.comments.author}} vẫn N+1. Thêm join ở resolver gốc + batch endpoint gRPC cho service khác đã giảm p99 từ 2.3s xuống 95ms."
+> Senior tip: **Đừng tin DataLoader là Silver bullet**. Hãy đo: bao nhiêu % query bị N+1 sau DataLoader? Nếu > 20%, cần join/batch endpoint. Spring GraphQL: {{@DataLoader}} annotation tự register, {{MappedBatchLoader}} cho map key→value, {{BatchLoader}} cho list. Và luôn có **complexity limit** ở gateway — query độc hại tốn tài nguyên gấp 1000 lần query bình thường.`,
+    follow: [
+      'Spring GraphQL {{@BatchMapping}} vs {{@DataLoader}} khác nhau như thế nào?',
+      'Làm sao implement complexity analysis cho persisted query (AST visitor, cost map)?'
+    ],
+    tags: ['GraphQL', 'N+1', 'DataLoader', 'Batching', 'Caching', '@defer', 'Persisted Query']
+  },
+  {
+    id: 'api-044',
+    topic: 'api',
+    level: 'senior',
+    q: 'Thiết kế observability cho API ngân hàng: distributed tracing (W3C traceparent), metrics (RED/USE), logging (structured JSON, correlation ID), và alerting. Làm sao correlate trace-log-metric trong một request, và debug production incident từ dashboard đến root cause?',
+    a: `**Tóm tắt:** Ba trụ cột: **Trace** (W3C traceparent, OpenTelemetry, Jaeger/Tempo) — xem luồng request xuyên service; **Metrics** (RED: Rate, Errors, Duration; USE: Utilization, Saturation, Errors) — Prometheus + Grafana dashboard; **Log** (structured JSON, {{trace_id}}, {{span_id}}, {{level}}, {{message}}) — Loki/Elasticsearch. Correlation: mọi log line trong request phải có {{trace_id}} và {{span_id}} (MDC), metric có label {{trace_id}} (exemplar). Debug incident: alert → dashboard → trace → log.
+### Ba trụ cột chi tiết
+| Trụ | Công nghệ | Nội dung quan trọng |
+|---|---|---|
+| **Trace** | OpenTelemetry Java Agent, Jaeger/Tempo/Zipkin | {{trace_id}}, {{span_id}}, {{parent_span_id}}, service name, operation, duration, status, attributes (http.method, url, status_code, db.statement) |
+| **Metrics** | Micrometer + Prometheus, Grafana | **RED**: {{http_server_requests_seconds_count/sum}} (rate, latency p50/p95/p99),
+~~~text
+http_server_requests_seconds_count{status=~"5.."}
+~~~
+ (error rate). **USE**: {{tomcat_threads_busy}}, {{hikaricp_connections_active}}, {{jvm_memory_used_bytes}} |
+| **Log** | Logback + Logstash encoder, Loki/Elastic | JSON:
+~~~json
+{"timestamp":..., "level":"INFO", "trace_id":"4bf9...", "span_id":"a1b2...", "logger":"c.b.a.AccountController", "message":"GET /accounts/123", "http.status":200, "duration_ms":45}
+~~~
+### Correlation: trace_id xuyên suốt
+1. **Ingress**: API Gateway / Filter đầu tiên đọc header {{traceparent}} (W3C) hoặc sinh mới. Set vào **MDC** ({{MDC.put("trace_id", traceId)}}).
+2. **Propagation**: OpenTelemetry Java Agent tự propagate {{traceparent}}/{{tracestate}} qua HTTP header, gRPC metadata, Kafka header, JMS header. Không cần code thủ công.
+3. **Log**: Logback pattern:
+~~~text
+%X{trace_id} %X{span_id}
+~~~
+→ mọi line có ID. Structured JSON encoder (LogstashEncoder) xuất field riêng.
+4. **Metric exemplar**: Micrometer + OpenTelemetry Exemplar gắn {{trace_id}} vào histogram bucket → từ Grafana p99 click vào exemplar → mở trace Jaeger/Tempo.
+5. **Span attribute**: {{@WithSpan}} / {{Span.current().setAttribute("user.id", userId)}} — thêm business context vào trace.
+### Debug production incident (runbook)
+~~~text
+1. ALERT: P99 latency /api/transfers > 2s (Prometheus rule)
+2. DASHBOARD: Grafana panel RED cho transfer-svc — thấy error rate 0, latency p99 tăng, throughput bình thường
+3. TRACE: Click exemplar (trace_id) từ metric panel → mở Jaeger
+   - Trace: API Gateway (5ms) → transfer-svc (1800ms) → ledger-svc (5ms) → DB (1750ms)
+   - Span DB: {{db.statement}} = "SELECT * FROM accounts WHERE id = ? FOR UPDATE" — lock contention
+4. LOG: Loki query {{trace_id="4bf9..."}} — thấy 50 dòng "Lock wait timeout exceeded" cùng trace
+5. ROOT CAUSE: Thiếu index trên {{accounts(version)}} → SELECT FOR UPDATE quét full table → lock hàng chục ngàn row
+6. FIX: Thêm index, deploy canary, verify P99 về 50ms
+~~~
+### Structured logging best practice
+- **Không** log PII (số thẻ, CCCD, OTP) — mask: {{card: ****1234}}.
+- **Không** log full request/response body (payload lớn, PII) — log size, hash, hoặc sample 1%.
+- **Luôn** có {{trace_id}}, {{span_id}}, {{service_name}}, {{environment}}.
+- **Level**: ERROR/WARN có stack trace; INFO chỉ business milestone; DEBUG chỉ bật tạm khi debug.
+### Metrics naming & labeling
+- **Dùng** suffix {{_total}} cho counter, {{_seconds}} cho histogram (Prometheus convention).
+- **Label** cardinality thấp: {{service}}, {{endpoint}}, {{method}}, {{status}} (không label {{user_id}}, {{request_id}}).
+- **Histogram buckets** tùy chỉnh cho latency ngân hàng: {{[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]}} (giây).
+### Alerting philosophy
+- **Alert trên symptom (latency, error rate, saturation)**, không alert trên cause (CPU, memory) — cause thay đổi, symptom không.
+- **Multi-window, multi-burn-rate** (Google SRE): alert nếu 5% request lỗi trong 5m VÀ 2% trong 1h.
+- **Runbook link** trong annotation alert: {{runbook: https://wiki.bank.vn/runbook/transfer-latency}}.
+### Ví dụ đời thực
+Ngân hàng 30 service, trước đây log plain text, metric cơ bản, không trace. Sự cố: transfer-svc p99 5s, team debug 2 giờ mới tìm ra ledger-svc deadlock. Triển khai: (1) OpenTelemetry Java Agent tất cả service (0 code change). (2) Logback LogstashEncoder + MDC filter set {{trace_id}}/{{span_id}}. (3) Micrometer + Prometheus + Grafana RED dashboard. (4) Jaeger/Tempo cho trace, Loki cho log. (5) Exemplar gắn {{trace_id}} vào metric. Sự cố sau: alert P99 > 2s → click exemplar → trace thấy DB lock → log xác nhận → thêm index → xong 15 phút. MTTD từ 2h xuống 5m, MTTR từ 4h xuống 30m.
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế observability theo ba trụ: Trace (OpenTelemetry, W3C traceparent, Jaeger/Tempo), Metrics (Prometheus RED/USE, Grafana), Log (structured JSON, Loki). Correlation quan trọng: Filter đầu tiên set {{trace_id}} vào MDC, OpenTelemetry agent propagate tự động qua HTTP/gRPC/Kafka, logback pattern:
+~~~text
+%X{trace_id}
+~~~
+, metric exemplar gắn {{trace_id}} vào histogram. Debug incident: alert → dashboard RED → click exemplar mở trace → trace chỉ service/span chậm → log cùng trace_id xác nhận root cause. Structured log không PII, label cardinality thấp, alert trên symptom (latency/error) không phải cause. Bài học: team cũ log plain text, không trace, debug 2h tìm deadlock. Triển khai correlation trace-log-metric, MTTD 2h→5m, MTTR 4h→30m."
+> Senior tip: **OpenTelemetry Java Agent ({{-javaagent:otel-javaagent.jar}})** cho trace/metric auto-instrumentation — 0 code change, upgrade agent là nâng cấp instrumentation. Đừng tự thêm span thủ công khắp nơi. Và hãy đầu tư **runbook** cho mỗi alert: alert không có runbook = noise.`,
+    follow: [
+      'Làm sao correlate trace qua async boundary (Kafka, @Async, CompletableFuture)?',
+      'OpenTelemetry Exemplar: cấu hình Micrometer + Prometheus + Grafana để click exemplar mở trace?'
+    ],
+    tags: ['Observability', 'Distributed Tracing', 'OpenTelemetry', 'W3C traceparent', 'Metrics', 'Logging', 'Alerting']
+  },
+  {
+    id: 'api-045',
+    topic: 'api',
+    level: 'lead',
+    q: 'mTLS (mutual TLS) cho service-to-service trong Kubernetes: SPIFFE/SPIRE identity, cert rotation, sidecar Envoy vs application-native (Netty), authorization với OPA/Rego, và debug khi handshake fail.',
+    a: `**Tóm tắt:** mTLS = cả client và server đều trình chứng chỉ X.509, verify lẫn nhau. Identity = **SPIFFE ID** ({{spiffe://bank.vn/ns/prod/sa/transfer-svc}}). **SPIRE** (SPIFFE Runtime Environment) cấp cert ngắn hạn (24h), auto-rotate, không downtime. Triển khai: **sidecar Envoy** (service mesh Istio/Linkerd/Cilium) hoặc **application-native** (Spring Boot 3 + Netty, gRPC Java). Authorization: OPA/Rego policy đọc {{spiffe_id}} từ cert. Debug: {{openssl s_client}}, {{kubectl exec}} check cert, SPIRE server log.
+### Tại sao mTLS thay vì token
+| Tiêu chí | mTLS (cert) | OAuth Client Credentials (token) |
+|---|---|---|
+| **Identity** | Cert = identity (SPIFFE ID) | Token reference → introspection |
+| **Rotation** | Auto 24h (SPIRE) | Manual/refresh token |
+| **Revocation** | CRL/OCSP (chậm) hoặc short TTL | Real-time (introspection) |
+| **Latency** | Handshake 1 lần, session resumption | Mỗi request (hoặc cache token) |
+| **Operational** | Cần PKI, SPIRE, cert-manager | Cần Auth Server, Redis |
+| **Phù hợp** | High-throughput internal, zero-trust network | Cross-cluster, partner, legacy |
+### SPIFFE/SPIRE kiến trúc
+~~~text
+SPIRE Server (control plane)          SPIRE Agent (node daemon)
+      │                                      │
+      ├─ CA root cert                        ├─ Workload API (Unix socket)
+      ├─ Signing cert (intermediate)         │     │
+      │                                      ▼     ▼
+      │                                 Envoy    App (native)
+      │                                  │        │
+      └───────── SVID (X.509-SVID) ──────┘        └─ X.509-SVID + key
+            (TTL 24h, auto-rotate 12h trước hết hạn)
+~~~
+- **SVID** (SPIFFE Verifiable Identity Document) = cert + key + SPIFFE ID ({{spiffe://bank.vn/ns/prod/sa/transfer-svc}}).
+- Agent attest workload (K8s SA, pod label) → Server sign SVID → Agent cấp cho workload qua Workload API.
+- Rotation: TTL 24h, agent renew trước 12h, **không restart pod**, workload reload cert từ Workload API.
+### Triển khai hai cách
+**1. Sidecar Envoy (Service Mesh - Istio/Linkerd/Cilium):**
+- Envoy terminate mTLS, app nói HTTP/gRPC plaintext với localhost.
+- Lợi: 0 code change, mesh quản lý cert, policy L7 (rate limit, retry), telemetry tự động.
+- Hại: Resource overhead (Envoy ~50-100MB RAM/pod), complexity (Istio control plane), debug khó (cert trong Envoy).
+**2. Application-native (Spring Boot 3 + Netty / gRPC Java):**
+~~~yaml
+# application.yml (Spring Boot 3.2+ Netty SSL)
+server:
+  ssl:
+    enabled: true
+    key-store: file:\${SPIFFE_SVID_PATH}/svid.pem
+    key-store-password: ""
+    key-store-type: PEM
+    trust-store: file:\${SPIFFE_BUNDLE_PATH}/bundle.pem
+    trust-store-type: PEM
+    client-auth: need  # mTLS: yêu cầu client cert
+~~~
+- gRPC Java: {{NettyChannelBuilder.forAddress(...).sslContext(GrpcSslContexts.forClient().trustManager(bundle).keyManager(svid).build())}}
+- Lợi: Không sidecar, kiểm soát code, debug dễ (cert trong app), latency thấp hơn.
+- Hại: Tự reload cert (watch file/SPIFFE Workload API), tự implement health check cert expiry.
+### Authorization với OPA/Rego
+- Sidecar: Envoy ext_authz gọi OPA, OPA đọc {{x-spiffe-id}} header (Envoy set từ cert).
+- Native: Spring {{WebFilter}} / gRPC {{Metadata}} đọc {{X-Forwarded-Client-Cert}} hoặc custom header từ reverse proxy, gửi OPA.
+~~~rego
+package bank.authz
+
+default allow = false
+
+allow {
+  input.method == "POST"
+  input.path == "/api/v1/transfers"
+  input.spiffe_id == "spiffe://bank.vn/ns/prod/sa/account-svc"
+  input.claims.roles contains "transfer.initiate"
+}
+~~~
+### Cert rotation zero-downtime
+- SPIRE Agent renew SVID trước 12h, ghi file mới ({{svid.pem.new}} → atomic rename {{svid.pem}}).
+- Workload **phải reload** cert/key mới: Spring Boot 3.2+ Netty hỗ trợ {{SslBundles}} reload qua {{SslBundleRegistry}}; gRPC Java {{SslContextBuilder}} không reload động → cần tái tạo channel hoặc dùng {{FileBasedSslContext}} watch file.
+- Health check: endpoint {{/actuator/health}} kiểm tra {{svid.pem}} expiry > 1h.
+### Debug handshake fail
+| Lỗi | Nguyên nhân | Cách xác minh |
+|---|---|---|
+| {{certificate verify failed}} | Trust bundle thiếu CA root | {{openssl s_client -connect svc:port -CAfile bundle.pem -cert svid.pem -key key.pem}} |
+| {{certificate expired}} | SVID hết hạn, agent không renew | {{kubectl exec pod -- cat /spiffe/svid.pem | openssl x509 -noout -dates}} |
+| {{SPIFFE ID mismatch}} | Workload attest sai (pod label, SA) | {{spire-server entry show -spiffeID spiffe://...}} |
+| {{no shared cipher}} | TLS version/cipher không khớp | {{openssl s_client -connect ... -tls1_2 -cipher 'ECDHE+AESGCM'}} |
+| {{handshake timeout}} | Network policy chặn port, mTLS port sai | {{kubectl exec netshoot -- nc -zv svc.port}} |
+### Ví dụ đời thực
+Ngân hàng 30 service trên K8s, ban đầu dùng OAuth Client Credentials cho service-to-service. Vấn đề: (1) Auth Server thành SPOF, (2) token introspection thêm 2ms latency, (3) token leak khi pod bị compromise. Triển khai mTLS với SPIRE + sidecar Envoy (Istio ambient mode, không sidecar full): (1) SPIRE Server 3 replica, Agent DaemonSet. (2) Istio ambient: ztunnel (node daemon) terminate mTLS, waypoint proxy cho L7 policy. (3) OPA Gatekeeper policy đọc {{spiffe_id}} từ cert. (4) Cert rotation 24h TTL, auto-renew 12h trước. Kết quả: 0 dependency Auth Server cho internal call, latency intra-service giảm 2ms, zero-trust network thực sự. Sự cố một lần: cert expiry monitor thiếu → 3 service hết hạn SVID cùng lúc, handshake fail. Thêm health check expiry > 1h + alert, không tái diễn.
+### Trả lời mẫu khi phỏng vấn
+"mTLS dùng SPIFFE/SPIRE: identity = SPIFFE ID ({{spiffe://bank.vn/ns/prod/sa/transfer-svc}}), SPIRE cấp X.509-SVID 24h TTL, auto-rotate. Triển khai hai cách: sidecar Envoy (Istio/Linkerd/Cilium) — 0 code change, mesh quản lý; hoặc application-native (Spring Boot 3 Netty, gRPC Java) — kiểm soát code, debug dễ. Authorization: OPA/Rego đọc {{spiffe_id}} từ cert. Rotation zero-downtime: agent renew trước 12h, workload reload cert (Spring {{SslBundleRegistry}}, gRPC watch file). Debug: {{openssl s_client}} với bundle, check expiry, SPIFFE ID mismatch. Bài học: team cũ dùng OAuth token cho internal, Auth Server down làm toàn bộ internal call fail. mTLS + SPIRE loại bỏ SPOF, latency giảm 2ms, nhưng phải invest PKI, SPIRE, cert rotation monitoring."
+> Senior tip: **Istio ambient mode (ztunnel + waypoint)** là sweet spot 2024: không sidecar full (tiết kiệm 50% RAM), vẫn có mTLS + L7 policy. Nếu team nhỏ, không muốn vận hành Istio: **Cilium** (eBPF-based) hoặc **Linkerd** (nhẹ, đơn giản) hoặc **application-native** với Spring Boot 3 Netty + SPIRE Workload API client. Đừng tự implement cert rotation — dùng SPIRE agent.`,
+    follow: [
+      'SPIFFE trust domain federation: hai cluster K8S khác trust domain làm sao mTLS cho nhau?',
+      'Spring Boot 3 Netty {{SslBundles}} reload cert động như thế nào không restart?'
+    ],
+    tags: ['mTLS', 'SPIFFE', 'SPIRE', 'Service Mesh', 'Zero Trust', 'Cert Rotation', 'OPA', 'Authorization']
+  },
+  {
+    id: 'api-046',
+    topic: 'api',
+    level: 'senior',
+    q: 'Chiến lược test API cho ngân hàng: contract test (OpenAPI/Pact), integration test (Testcontainers), load test (k6/Gatling), chaos test (Litmus/Chaos Mesh), và canary analysis (Kayenta/Flagger). Làm sao gom thành pipeline "deploy với niềm tin"?',
+    a: `**Tóm tắt:** Không có một loại test nào đủ. Pipeline tin cậy: **Contract test** (PR gate) → **Integration test** (Testcontainers, PR/nightly) → **Load test** (nightly/release branch) → **Chaos test** (staging, scheduled) → **Canary analysis** (production deploy). Mỗi tầng bắt loại lỗi khác nhau, cùng gom vào "quality gate" trước khi traffic production.
+### Ma trận test
+| Loại | Bắt lỗi gì | Khi nào chạy | Tool | Thời gian |
+|---|---|---|---|---|
+| **Contract (OpenAPI)** | Breaking change spec, response không khớp spec | Mỗi PR (provider) | springdoc + oasdiff / Pact + can-i-deploy | < 2 min |
+| **Contract (Pact)** | Provider vỡ consumer cụ thể | Mỗi PR (provider) | Pact JVM + Pact Broker | < 3 min |
+| **Integration** | Logic sai, DB schema, transaction, external mock | Mỗi PR + nightly | Testcontainers (PostgreSQL, Kafka, LocalStack), WireMock | 5-15 min |
+| **Load (k6/Gatling)** | P99 latency, throughput, resource saturation, memory leak | Nightly + release branch | k6 (JS/TS), Gatling (Scala) | 30-60 min |
+| **Chaos (Litmus)** | Pod kill, network partition, latency injection, disk full | Staging, scheduled (tuần) | LitmusChaos, Chaos Mesh | 15-30 min |
+| **Canary (Kayenta/Flagger)** | Regression production (error rate, latency, business metric) | Mỗi deploy production | Flagger (progressive delivery), Kayenta (automated analysis) | 10-30 min |
+### Contract test chi tiết
+**OpenAPI (provider-driven)**: {{springdoc}} generate spec từ code → {{oasdiff}} so sánh với baseline (git tag) → fail nếu breaking change (xóa field, đổi type, thêm required). Chạy trong PR provider.
+**Pact (consumer-driven)**: Consumer viết test định nghĩa expectation → publish Pact Broker tag {{prod}} → Provider CI {{pact verify}} against {{prod}} tag → fail nếu response không khớp expectation. {{pact-broker can-i-deploy}} gate trước deploy.
+### Integration test với Testcontainers
+~~~java
+@SpringBootTest
+@Testcontainers
+class TransferIntegrationTest {
+    @Container static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16")
+        .withDatabaseName("bank")
+        .withUsername("test")
+        .withPassword("test");
+    
+    @Container static KafkaContainer kafka = new KafkaContainer("confluentinc/cp-kafka:7.6.0");
+    
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", pg::getJdbcUrl);
+        r.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+    }
+    
+    @Test
+    void transfer_idempotent() {
+        // Given: account A 10tr, B 0
+        // When: POST /transfers idempotency-key=k1 (gửi 2 lần)
+        // Then: chỉ trừ 1 lần, balance A=5tr, B=5tr
+    }
+}
+~~~
+- **Testcontainers** khởi container thật (PostgreSQL, Kafka, Redis, LocalStack AWS) — không mock, confidence cao.
+- **WireMock** cho external dependency (PSP, core banking) — record/playback, fault injection.
+- Chạy trong PR (fast subset) và nightly (full suite).
+### Load test với k6
+~~~javascript
+// k6 script: transfer-load.js
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+import { Rate } from 'k6/metrics';
+
+const errorRate = new Rate('errors');
+
+export const options = {
+  stages: [
+    { duration: '2m', target: 100 },   // ramp up
+    { duration: '10m', target: 500 },  // sustained
+    { duration: '2m', target: 1000 },  // stress
+    { duration: '5m', target: 0 },     // ramp down
+  ],
+  thresholds: {
+    'http_req_duration{p99}': ['p(99)<500'],      // p99 < 500ms
+    'http_req_failed': ['rate<0.01'],             // error rate < 1%
+    'errors': ['rate<0.05'],                      // business error < 5%
+  },
+};
+
+export default function () {
+  const payload = JSON.stringify({ from: 'A', to: 'B', amount: 100000, idempotencyKey: 'k1-' + __VU + '-' + __ITER });
+  const params = { headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + __ENV.TOKEN } };
+  const res = http.post('https://staging-api.bank.vn/api/transfers', payload, params);
+  const ok = check(res, { 'status 201': (r) => r.status === 201 });
+  errorRate.add(!ok);
+  sleep(Math.random() * 2);
+}
+~~~
+- Chạy nightly trên staging, so sánh với baseline (p99, error rate, throughput).
+- **Smoke test** (1-2 VU, 30s) trong PR gate cho critical path.
+### Chaos test (Litmus/Chaos Mesh)
+~~~yaml
+# litmus-pod-kill.yaml
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: transfer-svc-pod-kill
+spec:
+  appinfo:
+    appns: banking
+    applabel: "app=transfer-svc"
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60'
+            - name: CHAOS_INTERVAL
+              value: '10'
+            - name: FORCE
+              value: 'false'
+~~~
+- **Pod kill**: K8s reschedule, kiểm tra readiness/liveness probe, graceful shutdown.
+- **Network partition**: {{tc}} netem inject latency 500ms, packet loss 1% giữa service.
+- **CPU/Memory stress**: {{stress-ng}} trong container, kiểm tra HPA scale, circuit breaker.
+- **Disk full**: {{dd if=/dev/zero of=/tmp/fill bs=1M count=90%}}, kiểm tra log rotation, alert.
+- Chạy tuần một lần trên staging, có runbook rollback.
+### Canary analysis (Flagger + Kayenta)
+~~~yaml
+# Flagger Canary resource
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: transfer-svc
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: transfer-svc
+  progressDeadlineSeconds: 600
+  service:
+    port: 8080
+    targetPort: 8080
+    portName: http
+  analysis:
+    interval: 1m
+    threshold: 5
+    maxWeight: 50
+    stepWeight: 10
+    metrics:
+      - name: request-success-rate
+        thresholdRange:
+          min: 99
+        interval: 1m
+      - name: request-duration-p99
+        thresholdRange:
+          max: 500
+        interval: 1m
+      - name: business-error-rate
+        thresholdRange:
+          max: 1
+        interval: 1m
+    webhooks:
+      - name: kayenta-analysis
+        url: http://kayenta/canary
+        metadata:
+          account: staging
+          judge: netflix
+~~~
+- Flagger: progressive delivery (10% → 20% → ... → 100%), rollback tự động nếu metric vượt ngưỡng.
+- Kayenta: statistical analysis (Mann-Whitney U test) so sánh canary vs baseline — phát hiện regression tinh vi (p99 tăng 50ms mà threshold 500ms vẫn pass).
+### Pipeline "Deploy với niềm tin"
+~~~text
+PR opened
+  │
+  ├─ Unit test (parallel)          < 2 min
+  ├─ Contract test (OpenAPI/Pact)  < 3 min
+  ├─ Integration test (Testcontainers subset)  < 10 min
+  ├─ Build & Scan (SAST, SCA, container scan)  < 5 min
+  │
+  └─ PR Gate: ALL PASS → merge
+       │
+       ▼
+Nightly (main branch)
+  │
+  ├─ Full integration test       < 30 min
+  ├─ Load test (k6)              < 60 min
+  ├─ Security scan (DAST)        < 30 min
+  │
+  └─ Nightly Gate: PASS → tag release candidate
+       │
+       ▼
+Release branch
+  │
+  ├─ Full test suite             < 45 min
+  ├─ Load test (extended)        < 90 min
+  ├─ Chaos test (staging)        < 30 min
+  │
+  └─ Release Gate: PASS → promote to production
+       │
+       ▼
+Production Deploy (Flagger Canary)
+  │
+  ├─ 10% traffic → metrics check (1m interval)
+  ├─ 20% → check
+  ├─ ...
+  ├─ 100% → Kayenta statistical analysis
+  │
+  └─ PASS → full traffic, FAIL → auto rollback
+~~~
+### Ví dụ đời thực
+Ngân hàng 30 service, deploy 20 lần/ngày. Ban chỉ có unit test, deploy thủ công. Sự cố: team A đổi validation {{phone}} → {{phoneNumber}}, team B mobile-bff crash runtime (không có contract test). Triển khai pipeline: (1) PR gate: unit + contract (OpenAPI oasdiff + Pact can-i-deploy) + integration subset (Testcontainers). (2) Nightly: full integration + load test k6 (p99 < 500ms, error < 1%). (3) Staging tuần: chaos test (pod kill, network latency). (4) Production: Flagger canary 10%→100% 30 phút, Kayenta analysis. Kết quả: 6 tháng 0 regression production, MTTD từ 30p xuống 2p (canary detect), deploy frequency 20→50 lần/ngày. Chi phí: 1 platform team 4 người, CI runner GPU cho k6, staging cluster 30% production size.
+### Trả lời mẫu khi phỏng vấn
+"Tôi xây dựng pipeline đa tầng: PR gate (unit + contract OpenAPI/Pact + integration Testcontainers subset) → Nightly (full integration + load test k6 + security) → Staging tuần (chaos Litmus: pod kill, network partition) → Production (Flagger canary 10%→100% + Kayenta statistical analysis). Contract test bắt breaking change spec (oasdiff) và consumer-specific (Pact can-i-deploy). Integration test dùng Testcontainers container thật (PostgreSQL, Kafka) không mock. Load test k6 chạy nightly trên staging, threshold p99/error rate. Chaos test tuần kiểm tra resilience. Canary Flagger + Kayenta detect regression tinh vi trước khi full traffic. Bài học: team cũ chỉ unit test, deploy thủ công, breaking change lọt production. Pipeline đa tầng + quality gate tự động đã giảm regression production về 0, deploy frequency từ 20 lên 50 lần/ngày."
+> Senior tip: **Đừng chạy full test suite trong PR** — chậm, developer chán, bypass gate. Chia: PR gate = fast subset (<10 min), Nightly = full. Và hãy đầu tư **test data management**: Testcontainers + Flyway migration + snapshot restore (PostgreSQL {{pg_dump}}/{{pg_restore}} hoặc ZFS snapshot) để integration test không bị flaky do data bẩn.`,
+    follow: [
+      'Làm sao manage test data cho Testcontainers (Flyway, snapshot, parallel test isolation)?',
+      'k6 vs Gatling: khi nào chọn cái nào cho team Java?'
+    ],
+    tags: ['Testing', 'Contract Test', 'Pact', 'OpenAPI', 'Testcontainers', 'Load Test', 'k6', 'Chaos Test', 'Canary', 'Flagger', 'Kayenta', 'CI/CD']
+  },
+{
+  id: 'api-047',
+  topic: 'api',
+  level: 'mid',
+  q: 'Một client có thể tự tạo ID cho tài nguyên trước khi gửi request. Bạn chọn PUT vào URI đã biết hay POST vào collection, và dùng status code nào để phân biệt tạo mới, gửi lặp và xung đột?',
+  a: `**Tóm tắt:** Nếu client biết trước URI của tài nguyên và việc đặt trạng thái tại URI đó có ngữ nghĩa rõ ràng, {{PUT /resources/id}} phù hợp: request tạo mới thường trả 201, lần gửi lại trả trạng thái hiện tại mà không nhân đôi hiệu ứng. {{POST /resources}} phù hợp hơn khi server chọn ID hoặc mỗi lần gọi là một lệnh tạo mới; không thể chỉ dựa vào status code để chống gửi lặp nếu POST chưa có cơ chế idempotency.
+
+### Chọn danh tính trước khi chọn method
+**Resource (tài nguyên)** là một thứ API có thể định danh và đọc lại, như một yêu cầu thanh toán. Hỏi trước: ai quyết định ID?
+- Server quyết định ID sau khi nhận lệnh: thường dùng POST lên collection.
+- Client đã có ID ổn định cho cùng một ý định: PUT lên URI cụ thể có thể diễn đạt “hãy để tài nguyên ở URI này có trạng thái như body”.
+
+Ví dụ client tạo UUID khi người dùng bắt đầu lập yêu cầu chuyển tiền. Nó phải giữ nguyên UUID nếu gửi lại cùng ý định sau timeout; tạo UUID mới cho mỗi lần retry sẽ phá tính idempotent.
+
+~~~http
+PUT /api/transfer-requests/8d21
+If-None-Match: *
+Content-Type: application/json
+
+{"from":"A12","to":"B34","amount":250000}
+~~~
+
+{{If-None-Match: *}} nghĩa là chỉ thực hiện nếu resource chưa tồn tại. Nếu tạo thành công, trả {{201 Created}} và {{Location}}. Nếu client retry nguyên request có điều kiện sau khi response bị mất, server trả {{412 Precondition Failed}} vì URI đã tồn tại; client GET resource và so sánh với ý định ban đầu để xác nhận lần tạo trước thành công. Nếu cần replay nguyên response, lưu kết quả theo operation ID. Nếu không dùng precondition, PUT lặp cùng body vẫn phải giữ cùng trạng thái cuối và không được tạo side effect mới mỗi lần gọi.
+
+### PUT không tự động làm nghiệp vụ an toàn
+Idempotent là cùng request lặp lại có cùng hiệu ứng cuối trên server. Nó không có nghĩa mọi thứ phụ trợ chỉ chạy một lần: gửi email, phát event hoặc gọi cổng thanh toán thêm lần nữa vẫn là tác dụng phụ trùng.
+- Tạo **bản mô tả yêu cầu** ở URI cố định có thể là PUT idempotent.
+- Thực thi giao dịch tiền là một command có hiệu ứng không đảo ngược; cần trạng thái chuyển tiếp rõ ràng và khóa duy nhất theo ID ý định để chỉ một worker được thực hiện.
+- Nếu cùng URI nhưng body khác, không âm thầm coi như retry. Trả lỗi xung đột theo contract (thường 409) hoặc yêu cầu client đọc tài nguyên hiện có; không thay dữ liệu của một giao dịch đã chạy.
+
+### Bảng chọn nhanh
+| Tình huống | Cách gọi thường hợp lý | Ý nghĩa thành công |
+|---|---|---|
+| Server cấp ID cho mỗi lần tạo mới | POST collection | 201 + Location mới |
+| Client có ID ổn định, muốn tạo trạng thái tại URI đó | PUT item | 201 nếu mới; 200/204 nếu đã tồn tại và được thay thế |
+| Chỉ được tạo nếu chưa có | PUT + If-None-Match: * | 201 hoặc 412 |
+| Thực hiện command tài chính | POST command + khóa idempotency | Replay kết quả đã lưu khi cùng ý định retry |
+
+### Pitfall production
+- Không dùng PUT cho “cộng 250.000 vào số dư”: request lặp vẫn cộng hai lần; PUT phải đặt một representation/trạng thái, không phải lặp delta.
+- Không giả định client giữ ID đúng: scope ID theo tenant/người dùng và kiểm tra quyền trên tài nguyên, nếu không có thể lộ hoặc ghi đè tài nguyên khác.
+- Không trả 201 ở mọi lần PUT retry nếu contract cần phân biệt tạo mới với tài nguyên đã có; 201 nghĩa là resource được tạo trong lần xử lý đó.
+- Race giữa hai lần tạo phải được quyết định bằng unique constraint hoặc kiểm tra nguyên tử trong DB; “SELECT rồi INSERT” có thể để cả hai request cùng thấy chưa tồn tại.
+
+### Ví dụ đời thực
+Một ứng dụng di động tạo yêu cầu upload sao kê, nhưng mạng thường ngắt sau khi server đã ghi nhận. Trước đây server luôn nhận POST và tự sinh ID, nên app retry sau timeout tạo hai yêu cầu, hai lần quét tệp và hai khoản phí xử lý. Nhóm chuyển sang client tạo UUID một lần cho mỗi lần upload, PUT vào URI chứa UUID, đặt unique key theo (customer_id, request_id), và chỉ enqueue xử lý khi insert đầu tiên thành công. Retry cùng body nhận 412 do precondition rồi GET để xác nhận resource đã tạo; cùng ID nhưng body khác bị từ chối. Trong thử tải 10.000 request lặp, DB chỉ có một yêu cầu cho mỗi ID và queue không phát sinh job trùng.
+
+### Trả lời mẫu khi phỏng vấn
+“Em chọn method theo danh tính và ngữ nghĩa, không theo việc endpoint trông giống CRUD. Nếu server chọn ID và mỗi request là một lần tạo độc lập, em dùng POST lên collection và trả 201 cùng Location; muốn retry an toàn thì POST phải có idempotency key. Nếu client đã có ID ổn định và muốn tạo tài nguyên tại URI đó, PUT phù hợp hơn. Em có thể thêm If-None-Match: * để chỉ tạo khi chưa tồn tại; tạo mới trả 201, còn điều kiện sai trả 412. Nhưng với giao dịch tiền, PUT không tự biến side effect thành an toàn: em lưu ý định và trạng thái bằng khóa duy nhất, chỉ một lần chuyển trạng thái mới được gọi hệ thống thanh toán. Cùng ID nhưng body khác không được âm thầm ghi đè; API phải trả xung đột theo contract. Cuối cùng, race được xử lý bằng ràng buộc duy nhất ở DB, không phải bằng kiểm tra tồn tại trước rồi mới insert.”
+
+> Senior tip: Hãy tách “tạo yêu cầu” khỏi “thực thi giao dịch” nếu thao tác có side effect. ID ổn định giúp retry tạo resource, còn một transition nguyên tử và idempotency ở hệ thống thanh toán mới bảo vệ tiền.`,
+  follow: [
+    'PUT trả 201 ở lần đầu và 200 ở lần retry có làm mất tính idempotent không? Vì sao?',
+    'Nếu hai request PUT cùng URI nhưng body khác đến đồng thời, hệ thống cần đảm bảo điều gì?',
+    'Khi nào If-None-Match: * hữu ích hơn idempotency key trong POST?'
+  ],
+  tags: ['REST', 'PUT', 'POST', 'HTTP Status', 'Idempotency']
+},
+{
+  id: 'api-048',
+  topic: 'api',
+  level: 'senior',
+  q: 'Một workflow xét duyệt khoản vay có hành động khác nhau theo trạng thái và quyền của từng người dùng. HATEOAS link nên thể hiện điều gì, và làm sao tránh biến link thành lời hứa bảo mật hoặc hợp đồng khó nâng cấp?',
+  a: `**Tóm tắt:** HATEOAS (Hypermedia as the Engine of Application State) là cách response trả các link/affordance mô tả bước tiếp theo mà client có thể khám phá. Trong workflow, link như {{submit}} hay {{approve}} có thể giúp UI biết hành động phù hợp với trạng thái hiện tại; nhưng link chỉ là gợi ý điều hướng, không thay thế authorization ở server, và không nên chứa quyền hạn như một bí mật.
+
+### Từ dữ liệu sang affordance
+**Affordance** là một hành động khả dụng được biểu diễn cùng representation, ví dụ link đến thao tác “nộp hồ sơ”. Nếu khoản vay đang ở {{DRAFT}}, response có thể có link submit; sau khi nộp, link đó mất và có link xem trạng thái. Client theo link thay vì tự ghép URL hoặc đoán transition.
+
+~~~json
+{
+  "id": "loan-82",
+  "status": "DRAFT",
+  "_links": {
+    "self": {"href": "/loans/loan-82"},
+    "submit": {"href": "/loans/loan-82/submissions", "method": "POST"}
+  }
+}
+~~~
+
+Server tạo representation sau khi biết trạng thái workflow và principal (người gọi đã xác thực). Vì vậy hai người dùng có thể nhận cùng thông tin khoản vay nhưng danh sách hành động khác nhau. Mỗi request action vẫn phải kiểm tra lại quyền và trạng thái trong transaction: client có thể giữ response cũ, sửa URL, hoặc gửi lại request sau khi quyền đã bị thu hồi.
+
+### Link không phải cơ chế bảo mật
+- Ẩn link approve khỏi người không có quyền làm UI dễ dùng, nhưng API vẫn phải trả 403 hoặc che tài nguyên theo chính sách khi họ gọi trực tiếp.
+- Link không nên là capability chứa token bí mật; URL thường xuất hiện trong log, lịch sử trình duyệt và hệ thống quan sát.
+- Thao tác ghi có thể dùng action resource hoặc link có method/media type, nhưng method, body và lỗi vẫn cần được mô tả trong OpenAPI để client/tooling biết cách gọi.
+
+### Trade-off khi triển khai
+| Cách | Điểm mạnh | Chi phí / giới hạn |
+|---|---|---|
+| URL cố định + OpenAPI/SDK | Dễ codegen, cache, test, phổ biến | Client thường giữ logic trạng thái |
+| Link động theo state | Server dẫn đường theo workflow | Client cần hiểu format/link relation; test và cache phức tạp |
+| Kết hợp | Dùng link cho điều hướng, OpenAPI cho schema/action | Cần giữ quan hệ link ổn định |
+
+Đừng đổi relation {{approve}} thành tên riêng theo từng phiên bản mà không có kế hoạch tương thích. Coi rel (tên quan hệ của link) là một phần hợp đồng; có thể bổ sung rel mới, giữ cũ trong thời gian chuyển đổi, và đo client còn dùng relation cũ.
+
+### Pitfall production
+- Link tồn tại rồi client tưởng thao tác chắc chắn thành công; giữa lúc GET và POST trạng thái có thể đổi. Server phải validate transition nguyên tử và trả 409 nếu workflow không còn cho phép.
+- Cache representation theo URL nhưng quên quyền người dùng; response của reviewer có link approve bị cache và đưa cho người xem khác. Không dùng cache công khai cho dữ liệu cá nhân hoặc representation thay đổi theo quyền.
+- Gắn toàn bộ schema request vào link khiến client không biết validation, code generation và tài liệu khó dùng; link discovery không thay thế contract.
+- Trả quá nhiều link cho từng hàng trong collection làm payload phình và tạo nhiều logic link không được client sử dụng.
+
+### Ví dụ đời thực
+Portal khoản vay có 120.000 hồ sơ đang xử lý. Trước đó web client tự suy luận “DRAFT thì hiện Submit, PENDING thì hiện Approve”; sau khi workflow thêm trạng thái NEEDS_DOCUMENT, 3 phiên bản UI xử lý không đồng nhất, trong 2 tuần có 420 lần người dùng bấm hành động không hợp lệ. Nhóm trả affordance theo trạng thái và role, UI chỉ render hành động được cung cấp; API vẫn kiểm tra quyền và version khi POST. Hợp đồng OpenAPI mô tả các endpoint và schema, còn link relation được giữ ổn định. Lỗi 409 được hiển thị như “hồ sơ đã thay đổi, tải lại”; số request sai transition giảm 93%, nhưng quyền truy cập vẫn được kiểm thử ở server.
+
+### Trả lời mẫu khi phỏng vấn
+“Với workflow nhiều trạng thái, HATEOAS có giá trị khi server muốn hướng dẫn client về hành động kế tiếp mà không buộc client tự nhân bản toàn bộ state machine. Ví dụ hồ sơ DRAFT có link submit; sau khi chuyển sang PENDING, response chỉ đưa link hợp lệ cho reviewer. Tuy nhiên link chỉ là affordance, không phải quyền: client có thể giữ response cũ hoặc gọi URL trực tiếp, nên server luôn authorize và kiểm tra transition trong transaction, trả 409 nếu trạng thái đã đổi. Em cũng chú ý cache vì representation có thể khác theo role; không được chia sẻ response có link nhạy cảm qua cache công khai. Với tích hợp đối tác, OpenAPI vẫn cần mô tả endpoint, schema và lỗi để sinh client; HATEOAS bổ sung điều hướng chứ không thay thế contract. Em chỉ triển khai khi client thực sự hưởng lợi từ link động, rồi đo mức sử dụng từng relation trước khi duy trì.”
+
+> Senior tip: Phân biệt “UI có nên hiện nút” với “server có cho phép hành động”. Link động giải quyết phần đầu; authorization và kiểm tra state/version ở server mới bảo vệ phần sau.`,
+  follow: [
+    'Representation có link khác nhau theo role thì cache HTTP cần được cấu hình thế nào?',
+    'Làm sao xử lý client POST một affordance được lấy từ response đã cũ?',
+    'OpenAPI và HATEOAS bổ sung cho nhau như thế nào thay vì chọn một trong hai?'
+  ],
+  tags: ['HATEOAS', 'REST', 'Workflow', 'Authorization', 'Caching']
+},
+{
+  id: 'api-049',
+  topic: 'api',
+  level: 'senior',
+  q: 'API tìm giao dịch cho phép lọc, sort và phân trang tùy ý. Làm thế nào thiết kế query parameter dễ dùng nhưng không cho client tạo SQL nguy hiểm hoặc truy vấn làm quá tải database?',
+  a: `**Tóm tắt:** Filter, sort và pagination nên có cú pháp nhỏ, được validate và ánh xạ qua allowlist (danh sách field/operator cho phép), không nối trực tiếp tên cột từ query string vào SQL. Giới hạn số điều kiện, kích thước trang và khoảng thời gian; đặt thứ tự sort xác định có tie-breaker. Cursor giúp đi tiếp trên tập đã sắp xếp, nhưng không thay thế kiểm soát chi phí truy vấn.
+
+### Từ URL đến câu SQL an toàn
+Client có thể gọi:
+~~~http
+GET /transactions?status=SETTLED&from=2026-10-01&to=2026-10-31&sort=-createdAt,id&limit=50
+~~~
+
+Server không nên xây SQL kiểu {{ORDER BY }} + chuỗi sort tùy ý. Giá trị bind parameter bảo vệ **giá trị** (ví dụ ngày, status), nhưng tên cột SQL không phải value parameter; tên field phải tra trong allowlist:
+~~~java
+Map<String, String> columns = Map.of(
+    "createdAt", "created_at",
+    "amount", "amount",
+    "id", "id");
+String column = columns.get(requestedField);
+if (column == null) throw new BadRequestException("sort field is not supported");
+// Direction cũng chỉ nhận ASC hoặc DESC; values vẫn bind parameter.
+~~~
+Đây là minh họa ánh xạ, không phải bộ query hoàn chỉnh. Trong Spring, bind các giá trị qua repository/Criteria thay vì ghép chúng vào SQL.
+
+### Cú pháp API nên giới hạn
+- Chọn một quy ước: ví dụ {{status=SETTLED}}, {{from}}, {{to}}, {{sort=-createdAt,id}}, {{limit}}. Tránh nhiều cú pháp tương đương.
+- Cho phép các operator cụ thể; không để client gửi tên property lồng nhau tùy ý.
+- Validate khoảng ngày ({{from <= to}}), timezone và giá trị enum; trả 400/Problem Details có tên parameter sai.
+- Mặc định thứ tự ổn định: {{created_at DESC, id DESC}}. Nếu chỉ sort timestamp, hai dòng cùng timestamp có thể bị lặp/mất giữa trang.
+- Giới hạn {{limit}} (ví dụ tối đa 100) và khoảng thời gian tối đa phù hợp nghiệp vụ. Client cần export hàng năm nên dùng job/export API thay vì giữ query tương tác không giới hạn.
+
+### Filter có thể đúng nhưng vẫn tốn kém
+Index cần khớp điều kiện thường dùng. Với truy vấn theo account và thời gian, index bắt đầu bằng account_id rồi created_at có thể hữu ích; một truy vấn tùy tiện trên JSON field hoặc nhiều wildcard không có index có thể quét bảng lớn. Không tạo index cho mọi bộ lọc tưởng tượng: mỗi index tiêu tốn storage và làm ghi chậm hơn.
+
+| Quyết định | Lợi ích | Đánh đổi |
+|---|---|---|
+| Allowlist filter/sort | Chi phí và hành vi dự đoán được | Cần version hóa khi thêm field |
+| Giới hạn page size / date range | Chặn truy vấn quá lớn | Client phải chia nhỏ |
+| Cursor + sort bất biến | Trang sâu ổn định | Không nhảy tùy ý đến trang số N |
+| Total count | UI biết tổng số | COUNT có thể đắt trên tập lớn |
+
+### Pitfall production
+- Field hợp lệ ở API nhưng không có index gây full scan; theo dõi query plan và p95/p99 theo filter shape, không chỉ latency chung.
+- Sort theo cột thay đổi được làm bản ghi “nhảy” qua cursor khi cập nhật; ưu tiên sort theo khóa bất biến hoặc chấp nhận snapshot/export riêng.
+- Cho client sort theo mọi cột rồi tạo index từng cột sẽ tăng write amplification (chi phí ghi thêm do cập nhật index).
+- Trả lỗi 500 khi query string sai khiến client không biết sửa; invalid field/operator phải là 4xx.
+
+### Ví dụ đời thực
+API lịch sử giao dịch nhận 700 request/giây. Một client gửi {{sort=description}} trên cột text không có index cùng {{limit=5000}}; database CPU tăng từ 42% lên 94%, p99 tăng từ 180ms lên 4,6 giây. Nhóm giới hạn trang tối đa 100, chỉ cho sort {{createdAt}} và {{amount}}, giới hạn khoảng ngày 90 ngày cho truy vấn tương tác, đồng thời thêm index cho account_id/created_at. Truy vấn sort không hợp lệ nhận 400 thay vì chạy scan. Sau triển khai, p99 giảm còn 210ms, CPU đỉnh còn 55%, client export dài được chuyển sang job bất đồng bộ.
+
+### Trả lời mẫu khi phỏng vấn
+“Em coi filter và sort là một ngôn ngữ truy vấn nhỏ của API, không phải SQL tùy ý. Em công bố allowlist field và operator, bind mọi giá trị qua repository, còn tên cột được ánh xạ từ enum nội bộ chứ không nối chuỗi do client gửi. Em giới hạn số điều kiện, page size và khoảng ngày; truy vấn export lớn đi qua job riêng. Sort mặc định phải ổn định và có tie-breaker, ví dụ createdAt rồi id, để cursor không lặp hoặc bỏ dòng. Sau đó em xem query plan với các filter phổ biến và thiết kế index theo truy vấn thực tế, vì index cũng làm tăng chi phí ghi. Một lần API cho phép sort bất kỳ đã làm CPU DB tăng từ 42% lên 94%; giới hạn allowlist và page size kéo p99 từ 4,6 giây về 210ms. Em cũng trả 4xx rõ ràng cho parameter sai thay vì để database báo lỗi thành 500.”
+
+> Senior tip: Theo dõi latency và tỷ lệ full scan theo “query shape” đã chuẩn hóa, không log nguyên văn giá trị lọc nhạy cảm. Số tổ hợp filter hữu ích thường ít hơn rất nhiều số tổ hợp mà API có thể cho phép.`,
+  follow: [
+    'Vì sao bind parameter không đủ để bảo vệ tên cột trong ORDER BY?',
+    'Khi nào cần snapshot nhất quán thay vì cursor trên dữ liệu đang thay đổi?',
+    'Bạn chọn index dựa trên metric và query plan nào trong PostgreSQL?'
+  ],
+  tags: ['REST', 'Filtering', 'Sorting', 'Pagination', 'PostgreSQL', 'Performance']
+},
+{
+  id: 'api-050',
+  topic: 'api',
+  level: 'lead',
+  q: 'Bạn cần đổi field response và constraint database trong khi app mobile cũ vẫn hoạt động. Hãy lập kế hoạch backward-compatible theo expand-and-contract, telemetry và deprecation thay vì chỉ phát hành /v2.',
+  a: `**Tóm tắt:** Backward-compatible migration cần đảm bảo mọi phiên bản server đang chạy đều hiểu dữ liệu trong lúc deploy cuốn chiếu và client cũ vẫn đọc được response. Dùng expand-and-contract: bổ sung field/cột mới trước, ghi song song hoặc chuyển đổi có kiểm soát, migrate client, đo mức dùng field cũ rồi mới ngừng nó ở một mốc đã thông báo. Deprecation phải dựa trên telemetry theo consumer/version, không dựa vào giả định “chắc không ai dùng”.
+
+### Vì sao rollout nhiều bước
+Trong deploy rolling, một lúc có thể tồn tại server cũ và mới. App mobile cũ có thể còn gọi API nhiều tháng. Nếu deploy cùng lúc “đổi tên field + xóa cột”, request có thể đi qua instance khác phiên bản và thất bại.
+
+Ví dụ đổi {{amount}} thành {{amountMinor}}:
+1. **Expand DB:** thêm cột mới nullable, migration tương thích với code cũ; không xóa cột cũ.
+2. **Expand application:** bản mới đọc cột mới nếu có, fallback cột cũ; khi ghi, cập nhật cả hai trong cùng transaction hoặc dùng một nguồn chuẩn đã xác định.
+3. **Backfill:** job theo batch điền giá trị mới, có checkpoint và metric tiến độ; tránh transaction khổng lồ khóa bảng.
+4. **Chuyển API:** trả cả field cũ và mới, đánh dấu cũ deprecated trong OpenAPI và tài liệu.
+5. **Đo consumer:** metric theo client version/API key cho biết ai còn gọi hoặc dùng field cũ; với field response, server thường chỉ quan sát được request/version chứ không biết client có đọc field nào, nên cần telemetry phía client hoặc contract test.
+6. **Contract:** khi usage đạt điều kiện và support window kết thúc, ngừng field cũ theo lịch; xóa cột cũ ở migration sau cùng.
+
+### Ma trận tương thích
+| Client / server | Server cũ | Server mới (expand) |
+|---|---|---|
+| Client cũ | Hoạt động | Vẫn đọc field cũ |
+| Client mới | Phải fallback nếu field mới chưa có | Ưu tiên field mới |
+
+Tolerant reader là client bỏ qua field JSON không biết; nhưng không phải mọi client đều tolerant. Enum mới, field bắt buộc, đơn vị đo thay đổi, timezone hoặc default mới đều có thể phá client dù schema JSON “trông vẫn hợp lệ”.
+
+### Deprecation có thể kiểm chứng
+Thông báo endpoint/field deprecated trong tài liệu và header phù hợp nếu API hỗ trợ; nêu migration guide, ngày sunset và kênh liên hệ. Dashboard cần tách traffic theo consumer/version. Làm canary/brownout có kiểm soát để phát hiện client còn phụ thuộc, nhưng không dùng 503 định kỳ tùy tiện cho API tài chính nếu chưa thống nhất SLA. Sau sunset, 410 có thể nói resource/endpoint đã bị loại bỏ; route cũ không nên âm thầm chuyển sang semantics mới.
+
+### Pitfall production
+- Dual-write có thể lệch nếu một đường ghi cập nhật cột mới còn đường khác chỉ ghi cột cũ; tập trung logic ghi và có job kiểm tra mismatch.
+- Backfill dùng giá trị quy đổi sai hoặc chạy không giới hạn gây lock/I/O; chia batch, giới hạn tốc độ, theo dõi replication lag.
+- Metric request theo app version không chứng minh app đã ngừng đọc field cũ; bổ sung client instrumentation hoặc contract test.
+- Xóa API field và DB column trong cùng release khiến rollback không còn dữ liệu cũ để phục hồi.
+
+### Ví dụ đời thực
+Một ví điện tử đổi đơn vị lưu tiền từ số thập phân sang minor unit (số nguyên của đơn vị nhỏ nhất). API đang có 2,4 triệu thiết bị hoạt động và ba phiên bản server deploy luân phiên. Thay đổi trực tiếp khiến app cũ parse sai số tiền và rollback không khôi phục được cột đã xóa. Nhóm thêm cột mới, triển khai dual-read có fallback, backfill mỗi batch 5.000 dòng với giới hạn tải, rồi phát response gồm cả hai field. Trong 8 tuần, telemetry cho thấy 99,7% traffic đã chuyển; nhóm liên hệ 4 đối tác còn lại, hoàn thành migration sau 12 tuần rồi mới dừng field cũ. Checksum theo account phát hiện 17 dòng sai quy đổi trong staging trước khi chuyển đọc. Không phát sinh lỗi số tiền sau rollout.
+
+### Trả lời mẫu khi phỏng vấn
+“Em không đổi API và schema database trong một bước vì mobile client cũ và server rolling deployment cùng tồn tại. Em làm expand-and-contract: thêm cột mới tương thích, triển khai code có thể đọc cũ/mới, backfill theo batch, sau đó trả cả field cũ lẫn mới. Client mới ưu tiên field mới nhưng vẫn fallback trong giai đoạn chuyển tiếp. Em đo traffic theo consumer/version; với response field, server không thể tự biết client có thực sự đọc nó nên cần telemetry hoặc contract test. Khi mức dùng field cũ bằng 0 trong support window đã cam kết, em thông báo sunset, bỏ field ở API trước, rồi mới xóa cột trong migration riêng. Em có checksum, cảnh báo mismatch và rollback plan. Trong một lần đổi đơn vị tiền, bước backfill theo batch phát hiện 17 dòng sai ở staging; nếu xóa cột cũ ngay thì không còn đường đối chiếu. Mục tiêu là tương thích ở từng bước deploy, không chỉ ở trạng thái cuối.”
+
+> Senior tip: Một migration an toàn phải rollback được trong từng bước. Giữ cột cũ đến sau khi code mới ổn định và dữ liệu được đối soát; “deploy thành công” không chứng minh dữ liệu đã chuyển đúng.`,
+  follow: [
+    'Làm sao thực hiện dual-write mà tránh code path ghi hai nơi bị lệch?',
+    'Bạn đo được client còn dùng field response cũ bằng cách nào nếu client không gửi telemetry?',
+    'Backfill bảng lớn cần kiểm soát lock, replication lag và rollback ra sao?'
+  ],
+  tags: ['Backward Compatibility', 'Deprecation', 'Expand Contract', 'Database Migration', 'Mobile API']
+},
+{
+  id: 'api-051',
+  topic: 'api',
+  level: 'senior',
+  q: 'Khi viết OpenAPI contract trước implementation, bạn mô tả field optional, nullable, enum mở rộng và lỗi validation ra sao để generated client không hiểu sai hành vi?',
+  a: `**Tóm tắt:** OpenAPI contract-first có ích khi schema diễn đạt đúng sự khác nhau giữa “field không gửi”, “field gửi null” và “field có giá trị”, đồng thời mô tả response/error thực tế mà server cam kết. Optional và nullable không đồng nghĩa: optional là field có thể vắng mặt; nullable là field có thể mang giá trị null. Generated SDK chỉ đáng tin khi contract được review, test với implementation và giữ tương thích với client cũ.
+
+### Ba trạng thái của một field
+Giả sử request cập nhật địa chỉ:
+- Field {{phone}} bị bỏ qua: client không yêu cầu thay đổi số điện thoại.
+- {{phone}} có giá trị chuỗi: thay số điện thoại.
+- {{phone=null}}: có thể có nghĩa xóa số điện thoại, nếu contract quy định như vậy.
+
+Nếu DTO Java chỉ dùng {{String phone}}, binding thông thường khó phân biệt “vắng mặt” với “null” sau khi deserialize. Với PATCH, cần biểu diễn trạng thái presence rõ ràng (ví dụ JSON tree hoặc kiểu wrapper có trạng thái missing/null/value) và test từng trường hợp; không suy luận rằng OpenAPI tự giải quyết ngữ nghĩa này.
+
+OpenAPI 3.0 và 3.1 biểu diễn nullability khác nhau. Trong 3.0 dùng {{nullable: true}}; trong 3.1 schema theo JSON Schema có thể dùng union type cho null. Chọn version spec phù hợp với generator và toolchain của consumer, rồi kiểm tra schema được sinh thực tế, không chỉ YAML nhìn có vẻ đúng.
+
+### Contract cần mô tả behavior, không chỉ shape
+- Request required fields, format, giới hạn (min/max), enum và semantics của null.
+- Response thành công theo status code (201, 202, 204…) cùng header quan trọng như Location hoặc Retry-After.
+- Error response ổn định, ví dụ Problem Details: status, title, detail và mã lỗi máy đọc được.
+- Enum response nên có chiến lược cho giá trị tương lai; client generator có thể tạo enum đóng và ném lỗi parse khi server thêm giá trị.
+- Security scheme, pagination/filter limits và version/deprecation policy cần thể hiện rõ.
+
+### Contract-first workflow
+1. Product, API consumer và backend thống nhất ví dụ request/response trước khi code.
+2. Review spec: required/optional/null, status/error, auth, limits và ví dụ.
+3. Sinh interface/model/client nếu có ích; không chỉnh trực tiếp file generated.
+4. Implement server và kiểm tra request/response thực tế khớp contract bằng contract test.
+5. So spec của pull request với baseline để bắt field bị xóa, type/status đổi hoặc request mới trở nên bắt buộc.
+6. Publish đúng artifact đã review; không để tài liệu live tự sinh từ code lệch với spec được duyệt.
+
+### Pitfall production
+- Thêm enum response mới có thể làm SDK client crash dù thay đổi nhìn như additive.
+- Ghi “optional” nhưng server thực tế yêu cầu field sẽ khiến client sinh hợp lệ theo spec nhưng nhận 400.
+- Schema cho phép null nhưng implementation coi null là “giữ nguyên” thay vì “xóa”, dẫn đến dữ liệu cũ còn tồn tại ngoài ý muốn.
+- Dùng {{additionalProperties: false}} quá chặt ở response có thể làm client cũ từ chối field mới; dùng quá lỏng ở request lại có thể che lỗi chính tả. Chọn khác nhau theo hướng đọc/ghi.
+- Chỉ so sánh schema không bắt được đổi semantics/default; cần review con người và behavior test.
+
+### Ví dụ đời thực
+Một đối tác sinh Java SDK từ OpenAPI cho endpoint cập nhật người thụ hưởng. Spec đánh dấu phone nullable nhưng không mô tả sự khác nhau giữa missing và null; server hiểu cả hai là “xóa”. Sau release, app web chỉ gửi city và vô tình xóa 18.000 số điện thoại. Điều tra cho thấy generated DTO deserialization tạo null cho field không gửi; contract test trước đó chỉ kiểm tra field có giá trị. Nhóm định nghĩa PATCH presence semantics, thêm test cho ba payload (missing/null/value), cập nhật spec, chạy generator phiên bản consumer thực dùng và kiểm tra lại SDK trước publish. Sau deploy, không còn xóa nhầm; contract test cũng bắt một enum mới mà SDK đối tác không hỗ trợ.
+
+### Trả lời mẫu khi phỏng vấn
+“Em xem OpenAPI là hợp đồng về behavior chứ không chỉ danh sách field. Với mỗi field em phân biệt rõ required, optional và nullable; trong PATCH, missing, null và value có thể mang ba ý nghĩa khác nhau nên implementation phải giữ được presence thay vì để DTO gộp tất cả thành null. Em xác nhận phiên bản OpenAPI và generator của consumer hiểu schema giống nhau, vì nullability ở 3.0 và 3.1 được biểu diễn khác. Contract cần cả status code, header, lỗi, giới hạn, enum và security. Sau khi viết spec, em generate model/client nếu hữu ích, implement và chạy contract test trên response thật; CI so sánh với baseline để phát hiện breaking change. Một thay đổi thêm enum response có thể làm SDK strict crash dù schema diff coi là additive, nên em chạy generator và compatibility test của client quan trọng. Khi API đổi, publish spec đúng bản đã review, không để docs lệch với code.”
+
+> Senior tip: Với mỗi field có thể null, ghi một bảng semantics “missing / null / value” vào review. Đây là vài phút làm rõ contract nhưng tránh được những lần xóa dữ liệu âm thầm rất khó phục hồi.`,
+  follow: [
+    'OpenAPI 3.0 và 3.1 mô tả nullable khác nhau thế nào, và bạn chọn dựa trên điều gì?',
+    'Khi nào thêm enum response được xem là breaking change với generated SDK?',
+    'Làm sao contract test phát hiện response implementation lệch OpenAPI?'
+  ],
+  tags: ['OpenAPI', 'Contract-first', 'Schema Evolution', 'Jackson', 'Generated Client']
+},
+{
+  id: 'api-052',
+  topic: 'api',
+  level: 'lead',
+  q: 'Webhook sender nhận 429, 5xx, timeout và 410 từ nhiều partner khác nhau. Bạn xây retry policy, backpressure và quy trình replay như thế nào để vừa không làm mất event vừa không tạo retry storm?',
+  a: `**Tóm tắt:** Webhook sender nên ghi event bền vững trước khi gửi, dùng retry có giới hạn tốc độ và phân loại response; retry không thể đảm bảo “exactly once” vì timeout không cho biết receiver đã xử lý hay chưa. Giữ ổn định delivery ID qua mọi lần gửi, ký payload, tôn trọng {{Retry-After}} khi có, áp exponential backoff với jitter, cô lập partner chậm và đưa event hết hạn vào hàng chờ điều tra/replay thay vì bỏ âm thầm.
+
+### Retry là một chính sách, không phải vòng lặp
+Webhook là HTTP callback: hệ thống của bạn chủ động gửi event tới endpoint đối tác. Nếu response mất sau khi đối tác đã xử lý, sender không biết kết quả; gửi lại có thể tạo duplicate, không gửi lại có thể mất event. Do đó mô hình thực tế là at-least-once delivery và receiver phải deduplicate theo delivery/event ID.
+
+### Phân loại response
+| Kết quả gửi | Hành vi gợi ý |
+|---|---|
+| 2xx | Đánh dấu delivered; chỉ sau khi nhận response hợp lệ |
+| Timeout / lỗi mạng / 5xx | Lỗi có thể tạm thời; backoff và retry cùng delivery ID |
+| 429 | Tôn trọng Retry-After nếu hợp lệ; giảm tốc độ cho partner |
+| 400 / 401 / 403 | Thường là payload/cấu hình/auth sai; không retry dồn dập, cảnh báo và giữ trạng thái cần can thiệp |
+| 410 Gone | Có thể endpoint đã bị gỡ; disable subscription theo contract và báo owner |
+
+Không có quy tắc chung nào bắt mọi provider dùng cùng mapping; thỏa thuận retry/ack phải được công bố. Retry count tối đa, tuổi event tối đa, retention và quy trình replay là quyết định sản phẩm/vận hành.
+
+### Hàng đợi và giới hạn tải
+Persist event vào outbox trong cùng transaction nghiệp vụ trước khi dispatcher gửi. Worker lấy event đến hạn, claim bằng lease để hai instance không gửi đồng thời quá mức, cập nhật next_attempt_at theo backoff có jitter. Giới hạn concurrency và requests-per-second theo subscription/partner; circuit breaker chỉ tạm ngưng gọi endpoint đang lỗi, không xóa delivery. Partner A chậm không được chiếm toàn bộ worker của partner B.
+
+~~~text
+event committed
+  -> outbox pending
+  -> attempt with stable delivery_id
+  -> 2xx: delivered
+  -> transient failure: scheduled retry
+  -> attempts/age exceeded: DLQ + alert + controlled replay
+~~~
+
+Dead-letter queue (DLQ) là nơi giữ bản ghi không thể giao tự động để con người hoặc quy trình kiểm soát quyết định tiếp. Replay phải giữ event ID, payload/version và audit trail; nếu payload đã lỗi thì replay nguyên xi chỉ lặp lỗi. Không log secret hoặc dữ liệu cá nhân trong dashboard delivery.
+
+### Pitfall production
+- Tạo delivery ID mới mỗi retry làm dedup phía receiver vô hiệu.
+- Retry tất cả 4xx biến lỗi cấu hình lâu dài thành storm.
+- Backoff giống hệt nhau không có jitter khiến hàng nghìn event cùng thức dậy một lúc sau sự cố.
+- Xóa event sau N lần retry mà không DLQ/alert tạo mất dữ liệu “êm”.
+- Replay song song với dòng event mới có thể phá ordering; nếu ordering theo aggregate là bắt buộc, tuần tự hóa theo key hoặc gửi sequence và yêu cầu consumer xử lý gap.
+
+### Ví dụ đời thực
+Nền tảng ngân hàng gửi 600.000 webhook/ngày tới 80 đối tác. Khi một partner trả 429 trong 10 phút, dispatcher cũ retry ngay mọi event, tạo 18.000 request/phút; partner còn lại bị chậm vì dùng chung worker. Nhóm lưu lịch giao trong outbox, tôn trọng Retry-After, thêm exponential backoff với jitter và giới hạn concurrency riêng từng subscription. Event quá 24 giờ chuyển DLQ có cảnh báo, không bị xóa; replay cần quyền vận hành và giữ nguyên delivery ID. Trong lần thử lỗi kế tiếp, retry giảm còn dưới 900 request/phút, 79 partner khác giữ p99 ổn định, không event nào mất và duplicate được receiver loại theo ID.
+
+### Trả lời mẫu khi phỏng vấn
+“Em giả định webhook at-least-once: timeout không chứng minh đối tác chưa xử lý, nên mọi lần gửi lại giữ nguyên delivery ID và receiver cần idempotent. Event được ghi outbox cùng transaction nghiệp vụ; dispatcher lưu trạng thái, lần thử kế tiếp và lỗi cuối. 2xx là delivered, timeout/5xx retry có giới hạn với exponential backoff và jitter, 429 tôn trọng Retry-After; 4xx cấu hình như 401 hoặc 410 cần cảnh báo/disable có kiểm soát thay vì retry vô hạn. Em cô lập concurrency theo partner để một endpoint chậm không làm nghẽn toàn hệ thống. Hết retry hoặc tuổi lưu trữ thì đưa vào DLQ, đo oldest pending và cho replay có audit, giữ nguyên ID. Trong một sự cố, retry ngay đã tạo 18.000 request mỗi phút; backoff và quota riêng kéo xuống dưới 900 mà không mất event. Em cũng không tuyên bố exactly-once vì phía sender không thể biết kết quả khi response bị mất.”
+
+> Senior tip: Theo dõi ít nhất oldest pending age, delivery success rate, retry rate và DLQ depth theo partner. Số lần retry trung bình có thể đẹp trong khi một subscription quan trọng đã bị kẹt hàng giờ.`,
+  follow: [
+    'Tại sao timeout sau khi gửi webhook không cho biết có nên retry hay không?',
+    'Làm sao tách hàng đợi để partner lỗi không gây head-of-line blocking cho partner khác?',
+    'Khi replay DLQ, bạn bảo toàn ordering và audit như thế nào?'
+  ],
+  tags: ['Webhook', 'Retry', 'Backpressure', 'DLQ', 'Outbox', 'Idempotency']
+},
+{
+  id: 'api-053',
+  topic: 'api',
+  level: 'senior',
+  q: 'Một API PATCH được client retry sau timeout và có thể nhận cùng request đồng thời. Làm sao đánh giá idempotency của từng phép cập nhật và ngăn side effect chạy hai lần?',
+  a: `**Tóm tắt:** PATCH chỉ có nghĩa là cập nhật một phần; bản thân method không đảm bảo phép cập nhật idempotent. Gán giá trị cụ thể như {{status=PAUSED}} thường có cùng trạng thái cuối khi lặp, còn phép delta như “tăng số lượng thêm 1” hoặc append phần tử có thể lặp tác dụng. Hãy định nghĩa semantics của patch, kiểm soát phiên bản khi ghi, và dùng khóa idempotency/outbox cho side effect không nằm trong phép cập nhật DB.
+
+### Nhìn vào phép toán, không nhìn tên method
+Idempotent có nghĩa áp dụng cùng một request nhiều lần tạo cùng hiệu ứng cuối lên resource. So sánh:
+- {{nickname = "Lan"}}: đặt field về một giá trị cụ thể; lặp lại vẫn là Lan.
+- {{balanceDelta = -50000}}: trừ thêm 50.000 mỗi lần; không idempotent.
+- JSON Patch {{add /tags/-}}: mỗi lần có thể thêm một tag nữa.
+
+Vì vậy PATCH có thể idempotent hoặc không tùy media type và semantics. Với tài chính, không biểu diễn giao dịch bằng delta PATCH có thể retry mù; tạo command/giao dịch có ID riêng và deduplicate.
+
+### Bảo vệ ghi đồng thời
+Hai client cùng GET version 4, rồi PATCH khác field. Nếu server đọc-sửa-ghi toàn object, request đến sau có thể ghi đè field của request trước (lost update). Dùng {{ETag}}/{{If-Match}} hoặc cột version trong DB:
+~~~sql
+update profiles
+set phone = :phone, version = version + 1
+where id = :id and version = :expected_version;
+~~~
+Nếu số dòng cập nhật bằng 0, version đã đổi; trả 412 cho precondition sai và yêu cầu client đọc lại/merge. Không kiểm tra version rồi update trong hai bước tách rời vì race vẫn xảy ra; điều kiện và update phải atomic ở DB.
+
+### Side effect tách khỏi request retry
+Ghi DB rồi gửi email trực tiếp có thể bị timeout sau khi DB commit; retry PATCH có thể gửi email lần nữa. Ghi một outbox record cùng transaction khi trạng thái chuyển thật sự; worker gửi email/event, dùng event ID ổn định và consumer idempotent. Không phát event mỗi lần request lặp nếu không có transition mới.
+
+| Kiểu patch | Thường idempotent? | Kiểm soát cần thiết |
+|---|---|---|
+| Set field bằng giá trị | Có về trạng thái resource | If-Match nếu cần chống ghi đè |
+| Tăng/giảm theo delta | Không | Command ID/idempotency record |
+| Add vào cuối collection | Không | ID phần tử duy nhất hoặc dedup |
+| Conditional transition | Có nếu chỉ chuyển một lần | Update có điều kiện + outbox khi transition thành công |
+
+### Pitfall production
+- Tin rằng “PATCH = idempotent” hoặc “PATCH = non-idempotent” là sai; xét operation cụ thể.
+- ETag được tạo nhưng update không dùng version predicate ở DB thì concurrent write vẫn bị mất.
+- Dedupe event sau khi side effect đã xảy ra quá muộn; dedup marker và mutation cần cùng transaction hoặc downstream idempotency.
+- Client retry với key mới mỗi lần bấm lại; ID phải đại diện cho cùng một ý định nghiệp vụ và giữ nguyên qua retry.
+
+### Ví dụ đời thực
+API quản lý hạn mức cho phép PATCH {{limitDelta}} để tăng hạn mức. Mobile timeout sau khi DB commit rồi retry; 4.000 user bị tăng hạn mức hai lần trong một tuần. Nhóm đổi request thành command {{POST /limit-changes}} với client-generated operation ID, unique constraint theo customer/operation ID và lưu kết quả; cùng ID replay kết quả cũ, body khác bị từ chối. Với sửa thông tin hồ sơ bằng PATCH set-value, server dùng If-Match và update có điều kiện. Event thông báo được ghi vào outbox chỉ khi DB thực sự chuyển trạng thái. Sau một tháng, duplicate mutation giảm về 0 và conflict bị trả 412 có thể được client xử lý rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+“Em không suy ra tính idempotent từ chữ PATCH. Nếu patch đặt một field thành giá trị xác định thì áp lại có thể cho cùng trạng thái; nếu là delta, append hoặc cộng tiền thì lặp lại tạo thêm hiệu ứng. Em chọn contract phù hợp: cập nhật hồ sơ dùng set-value kèm If-Match; thao tác tài chính dùng command có operation ID và khóa duy nhất, không dùng delta PATCH để retry mù. Kiểm tra version phải nằm trong câu update nguyên tử ở DB, nếu không hai request vẫn có thể lost update. Các side effect như phát event hoặc gửi email được ghi vào outbox cùng transaction, và chỉ phát khi transition thành công. Một API tăng hạn mức theo delta đã tăng gấp đôi sau timeout; operation ID cùng unique constraint đã loại duplicate, còn PATCH profile trả 412 khi client đang sửa bản cũ. Cuối cùng, response và lỗi cần hướng dẫn client khi nào đọc lại, khi nào retry cùng ID.”
+
+> Senior tip: Hãy lập danh sách phép cập nhật theo tính chất toán học: set, increment, append, remove, transition. Cách phân loại này thường phát hiện endpoint retry-unsafe nhanh hơn việc chỉ audit HTTP verb.`,
+  follow: [
+    'Một phép set field idempotent nhưng vẫn có thể gây side effect trùng trong trường hợp nào?',
+    'Tại sao kiểm tra ETag rồi update trong hai câu SQL riêng lại không đủ?',
+    'Nếu client timeout sau khi DB commit nhưng trước khi nhận response, API nên replay thế nào?'
+  ],
+  tags: ['PATCH', 'Idempotency', 'If-Match', 'Concurrency', 'Outbox']
+},
+{
+  id: 'api-054',
+  topic: 'api',
+  level: 'lead',
+  q: 'Bạn nhận webhook từ partner dùng chung secret lâu năm và có thể xoay khóa bất cứ lúc nào. Thiết kế xác thực, replay protection, idempotency và rollout key rotation sao cho không làm mất sự kiện hợp lệ.',
+  a: `**Tóm tắt:** Receiver cần xác thực chữ ký trên raw body và timestamp trước khi tin payload, sau đó lưu event bền vững với unique key rồi mới ACK. Key rotation cần định danh key (key ID), cho phép secret hiện tại và secret kế tiếp cùng hợp lệ trong cửa sổ chuyển tiếp, ghi nhận key đã xác thực và có quy trình thu hồi; không xoay bằng cách đổi một secret duy nhất tức thời khi hai bên chưa đồng bộ.
+
+### Thứ tự xử lý request
+1. Giới hạn kích thước body và kiểm tra header bắt buộc; không parse/log dữ liệu lớn trước khi xác thực.
+2. Đọc timestamp và key ID; lấy secret tương ứng từ kho quản lý bí mật, không từ request body.
+3. Tính HMAC trên timestamp và **raw bytes** body; so sánh chữ ký constant-time. Nếu serialize JSON lại, khác khoảng trắng/thứ tự field có thể làm chữ ký sai.
+4. Kiểm tra timestamp trong cửa sổ cho phép để giảm replay từ request bị đánh cắp.
+5. Parse event, kiểm tra schema và lưu inbox bằng unique constraint (provider_id, event_id). Chỉ trả 2xx sau khi lưu bền vững; worker xử lý sau.
+
+Timestamp không thay thế deduplication: kẻ gửi hợp lệ có thể retry trong cửa sổ, và cùng event có thể đến từ nhiều lần gửi mới với timestamp khác. Event ID là khóa idempotency của nghiệp vụ.
+
+### Quy trình xoay secret
+~~~text
+1. Receiver cài secret K2, vẫn chấp nhận K1 và K2 qua key_id.
+2. Provider bắt đầu ký bằng K2 và gửi key_id=K2.
+3. Receiver đo delivery xác thực bằng K2, theo dõi K1 còn xuất hiện không.
+4. Sau cửa sổ retry tối đa + thời gian dự phòng, ngừng K1.
+5. Thu hồi K1, xác nhận không còn traffic, lưu audit.
+~~~
+
+Giữ secret trong secret manager/keystore với quyền tối thiểu; log key ID và kết quả xác thực, không log secret, signature đầy đủ hoặc raw payload nhạy cảm. Nếu provider không hỗ trợ key ID, thỏa thuận cụ thể cách thử một số ít secret đang hoạt động và giới hạn thời gian/chính sách; tránh thử mọi khóa không giới hạn.
+
+### Status code và độ tin cậy
+| Tình huống | Response gợi ý |
+|---|---|
+| Chữ ký sai/không có key hợp lệ | 401 hoặc 400 theo contract; không đưa chi tiết giúp đoán secret |
+| Timestamp ngoài cửa sổ | Từ chối; ghi metric an toàn |
+| Event đã lưu trước đó | 2xx, vì provider không cần gửi lại |
+| DB/inbox tạm thời không ghi được | 5xx để provider retry |
+| Payload hợp lệ nhưng nghiệp vụ không áp dụng được | Persist, ACK, xử lý/reconcile nội bộ thay vì retry vô hạn |
+
+### Pitfall production
+- Thay secret đột ngột làm mọi callback trong lúc deploy trả 401; partner retry dồn hoặc bỏ cuộc.
+- Kiểm tra timestamp nhưng không dedup event ID khiến callback hợp lệ lặp vẫn chạy nghiệp vụ nhiều lần.
+- ACK trước khi lưu inbox: process crash sau ACK làm event mất vì provider đã dừng retry.
+- Timestamp kiểm tra theo đồng hồ lệch; đồng bộ clock, chọn cửa sổ theo SLA mạng và đo drift.
+- Không có quy trình revoke khi secret bị lộ; key rotation cần người chịu trách nhiệm, audit và đường emergency revoke.
+
+### Ví dụ đời thực
+Ngân hàng nhận 90.000 callback/ngày từ 12 partner. Một partner xoay secret ngay lập tức trong đợt deploy; 8 phút sau mới cập nhật cấu hình sender. Trong khoảng đó 640 callback nhận 401 và một phần partner đã hết retry. Nhóm triển khai key ID và dual-key window: receiver chấp nhận K1/K2, provider gửi K2, dashboard đo tỷ lệ xác thực theo key; chỉ thu hồi K1 sau khi qua thời gian retry tối đa cộng 48 giờ dự phòng. Receiver ghi inbox với unique (partner,event_id) rồi mới trả 202; job đối soát phục hồi 11 event partner đã bỏ retry. Lần xoay sau không có event mất; metric invalid-signature phát hiện một cấu hình K1 chưa được cập nhật trước khi tắt khóa.
+
+### Trả lời mẫu khi phỏng vấn
+“Ở receiver, em xác thực chữ ký trên raw body trước khi tin payload, dùng timestamp để giới hạn replay và so sánh HMAC constant-time. Sau xác thực, em deduplicate bằng event ID trong inbox có unique constraint; timestamp không thay thế dedup vì retry có thể có timestamp mới. Em chỉ trả 2xx sau khi event đã persist bền vững, còn nghiệp vụ chạy async. Với rotation, em dùng key ID: receiver triển khai secret mới trước và tạm chấp nhận cả khóa cũ lẫn mới, provider chuyển sang khóa mới, dashboard đo traffic theo key ID. Chỉ thu hồi khóa cũ sau retry window và thời gian dự phòng đã thỏa thuận; có audit và đường khẩn cấp nếu khóa bị lộ. Một lần đổi secret đột ngột đã làm 640 callback bị 401, trong đó 11 event không được retry; dual-key window và reconciliation giải quyết được cả downtime lẫn khoảng trống dữ liệu. Secret không bao giờ xuất hiện trong log.”
+
+> Senior tip: Rotation hoàn tất khi telemetry chứng minh khóa cũ không còn được dùng trong toàn bộ retry window, không phải khi cấu hình provider báo “đã cập nhật”. Luôn có reconciliation để tìm event bị bỏ sau khi retry hết hạn.`,
+  follow: [
+    'Vì sao timestamp hợp lệ không đủ để loại webhook trùng?',
+    'Khi nào nên trả 2xx nếu payload hợp lệ nhưng bước xử lý nghiệp vụ thất bại?',
+    'Nếu partner không hỗ trợ key ID, bạn giảm rủi ro khi chuyển secret như thế nào?'
+  ],
+  tags: ['Webhook', 'HMAC', 'Key Rotation', 'Replay Protection', 'Idempotency']
+},
 );
