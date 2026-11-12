@@ -23,7 +23,8 @@
       questions: ['q-java.js', 'q-kotlin.js', 'q-concurrency-jvm.js', 'q-spring-data.js', 'q-sql.js', 'q-api.js',
         'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-banking.js', 'q-aws.js', 'q-ai.js',
         'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js', 'q-autotest.js', 'q-remote.js'],
-      quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js'],
+      quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js',
+        'quiz-cca-1.js', 'quiz-cca-2.js', 'quiz-cca-3.js', 'quiz-cca-4.js', 'quiz-cca-5.js'],
       exams: ['exams.js'],                                    // exam registry (#/exam)
       algos: ['algo.js'],
       companies: ['companies.js'],
@@ -42,7 +43,7 @@
       stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
-      aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js'],
+      aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js', 'aws-sap-5.js', 'aws-dop-5.js'],
     },
     routes: {
       // dashboard: SRS due list + stats, next lesson, today's plan, interview plan — all from the light index via
