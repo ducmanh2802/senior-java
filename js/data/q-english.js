@@ -9813,4 +9813,144 @@ Key phrase I use with stakeholders: "If we do X, we cannot do Y this sprint. Whi
   ],
   tags: ['prioritization', 'time-management', 'stakeholder-communication', 'wsjf', 'trade-offs']
 },
+{
+  id: 'english-182',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How would you describe your testing strategy for a new backend feature?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn có tư duy chất lượng hệ thống (quality mindset): không chỉ viết unit test, mà biết chọn loại test phù hợp từng tầng, cân bằng tốc độ phát triển và độ tin cậy. Hãy trả lời theo cấu trúc: bối cảnh tính năng → các lớp kiểm thử (unit, integration, end-to-end) → cách ưu tiên rủi ro (risk-based) → số liệu và bài học.
+
+### Sample answer
+In my current team, we built a new payment reconciliation feature for an e-commerce platform. We were four backend engineers, and the release window was three weeks. My testing strategy started with clear acceptance criteria so we knew what "done" meant. I wrote unit tests with JUnit 5 (JUnit là framework kiểm thử phổ biến cho Java) to cover business rules, like how fees and refunds were calculated. That gave us fast feedback in under two minutes on every commit. Next, I added integration tests (integration test là kiểm thử xem nhiều thành phần làm việc cùng nhau đúng không, ví dụ code + database) using Testcontainers to run against a real PostgreSQL instance. This caught a date-time bug we would not see with mocks. Before release, we ran a small end-to-end flow in staging and added monitoring alerts for mismatch rates. As a result, we shipped on time and had zero reconciliation incidents in the first month. The trade-off was slower pipelines, so I kept heavy tests in nightly runs and fast tests on every pull request.
+
+### Useful phrases
+- **acceptance criteria** — tiêu chí nghiệm thu, điều kiện để coi tính năng là hoàn thành
+- **fast feedback loop** — vòng phản hồi nhanh, biết lỗi sớm sau mỗi thay đổi
+- **risk-based testing** — kiểm thử dựa trên rủi ro, ưu tiên phần dễ gây lỗi nghiêm trọng
+- **unit test vs. integration test** — kiểm thử đơn vị và kiểm thử tích hợp
+- **test coverage is not the same as test quality** — độ phủ test không đồng nghĩa với chất lượng test
+- **catch regressions early** — phát hiện lỗi hồi quy (lỗi quay lại sau khi sửa/thêm code) sớm
+- **trade-off between speed and confidence** — đánh đổi giữa tốc độ và độ tin cậy
+- **monitoring and alerts in production** — giám sát và cảnh báo trên môi trường thật
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung "I write unit tests":** Quá mơ hồ. Hãy nêu cụ thể test cái gì, dùng công cụ gì, và tại sao chọn tầng đó.
+- **Nhầm "integration test" với "end-to-end test":** Integration test thường kiểm tra vài thành phần phối hợp (ví dụ service + DB). End-to-end test kiểm tra luồng từ đầu đến cuối như người dùng thật. Nên phân biệt rõ.
+- **Dùng sai thì khi kể dự án:** Khi kể kinh nghiệm đã làm, dùng quá khứ: "I wrote", "we caught", "we shipped" (không dùng "I write" cho việc đã xong).
+- **Bỏ qua số liệu:** Chỉ nói "it worked well" nghe yếu. Thêm số: thời gian chạy test, số bug chặn được, tỉ lệ lỗi sau release.
+
+> Senior tip: Khi trả lời, hãy nhấn mạnh bạn không chạy mọi thứ mọi lúc: test nhanh trên mỗi pull request, test nặng hơn theo lịch hoặc trước release. Điều này cho thấy bạn hiểu chi phí thực tế của CI/CD (continuous integration/continuous delivery - quy trình tự động build và kiểm thử khi có thay đổi code).`,
+  follow: [
+    "How do you decide what should be a unit test versus an integration test?",
+    "If the team has very little time before release, what would you cut from your test plan and why?",
+    "Can you give an example of a bug that was only caught by an integration or end-to-end test?"
+  ],
+  tags: ['testing', 'strategy', 'quality', 'ci-cd']
+},
+{
+  id: 'english-183',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "Is there a technology you would like to learn next, and why?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá tinh thần học hỏi, khả năng chọn ưu tiên phù hợp công việc và cách bạn biến việc học thành giá trị thực tế. Trả lời theo cấu trúc: công nghệ muốn học → lý do gắn với mục tiêu/đội nhóm → kế hoạch học cụ thể → cách áp dụng vào dự án.
+
+### Sample answer
+I would like to learn Kubernetes (Kubernetes, hay K8s, là nền tảng điều phối container - container là gói đóng gói ứng dụng và môi trường chạy của nó - giúp tự động triển khai, mở rộng và tự phục hồi dịch vụ). In my current role, I deploy Spring Boot services, but another team usually manages the cluster, so I do not fully understand how scaling and health checks work in production. I want to close that gap because it will help me debug deployment issues faster and design services that are easier to operate. My plan is practical: over the next two months, I will spend about four hours per week following the official documentation, running a local cluster with kind, and deploying a small Java service with proper readiness and liveness probes (probe là cơ chế kiểm tra xem ứng dụng đã sẵn sàng nhận traffic hay còn sống hay không). After that, I want to improve one internal service by adding better resource limits and rollout settings. I believe this will make me more effective in cross-team discussions, not just in writing code.
+
+### Useful phrases
+- **close a knowledge gap** — thu hẹp khoảng trống kiến thức
+- **hands-on practice** — thực hành trực tiếp, tự làm thay vì chỉ đọc
+- **apply it to a real project** — áp dụng vào dự án thực tế
+- **production environment** — môi trường chạy thật phục vụ người dùng
+- **scalability and reliability** — khả năng mở rộng và độ tin cậy
+- **learning roadmap** — lộ trình học tập
+- **cross-team collaboration** — phối hợp giữa các nhóm
+- **continuous learning** — học liên tục, cập nhật kiến thức thường xuyên
+
+### Lỗi người Việt hay mắc
+- **Chọn công nghệ quá xa với công việc mà không giải thích:** Nói muốn học thứ "hot" nhưng không nối với vai trò hiện tại nghe thiếu thực tế. Hãy giải thích vì sao nó giúp bạn làm việc tốt hơn.
+- **Không có kế hoạch cụ thể:** "I want to learn it someday" nghe mơ hồ. Nên nói thời gian, cách học (docs, lab, dự án nhỏ).
+- **Phát âm/nhấn âm tên công nghệ chưa quan trọng bằng cách diễn đạt rõ:** Không sao nếu phát âm chưa chuẩn, nhưng hãy nói chậm, rõ ràng từng phần (ví dụ "Kuber-net-es").
+- **Dùng "I am interesting in":** Sai ngữ pháp. Câu đúng là "I am interested in..." hoặc "I am interested in learning...".
+
+> Senior tip: Chọn một công nghệ bổ sung trực tiếp cho điểm yếu hoặc khoảng trống trong công việc hiện tại (operability, observability, security...). Interviewer đánh giá cao người học có mục tiêu và đo được tiến bộ, hơn là người liệt kê nhiều công nghệ đang "thịnh hành".`,
+  follow: [
+    "How do you usually balance learning new technologies with your daily work?",
+    "Can you tell me about the last technology you learned and how you applied it?",
+    "What would success look like after you learn this technology?"
+  ],
+  tags: ['learning', 'career-growth', 'motivation', 'kubernetes']
+},
+{
+  id: 'english-184',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How do you answer a technical interview question when you do not know the answer?",
+  a: `**Tóm tắt:** Interviewer không chỉ kiểm tra kiến thức, mà còn đánh giá sự trung thực, cách suy luận khi thiếu thông tin và cách bạn xử lý tình huống không chắc chắn. Hãy trả lời theo cấu trúc: thừa nhận rõ điều chưa biết → nêu phần mình biết liên quan → suy luận có cấu trúc (structured guessing) → nói cách bạn sẽ kiểm tra lại.
+
+### Sample answer
+If I do not know the answer, I stay calm and honest instead of guessing confidently. For example, in a mock interview I was asked about a specific Kafka configuration I had never used. Kafka là một hệ thống message broker (phần mềm trung gian truyền thông điệp giữa các dịch vụ) dùng để xử lý luồng dữ liệu. I said, "I have not used that exact setting in production, but I can explain what I think it affects based on my experience." Then I broke the problem into parts: what the producer does, what the broker stores, and how consumers read messages. I shared my assumption clearly, such as "I believe this parameter is related to batching, so changing it may trade latency for throughput (latency là độ trễ, throughput là lượng xử lý trong một khoảng thời gian), but I would need to verify that in the documentation." I also explained how I would confirm it: check the official docs, run a small benchmark, and observe metrics. Interviewers usually appreciate this approach because it shows clear thinking, safe assumptions, and a habit of verifying facts instead of making things up.
+
+### Useful phrases
+- **to be honest, I am not sure** — thành thật mà nói, tôi không chắc
+- **based on my understanding** — dựa trên hiểu biết của tôi
+- **let me think out loud** — để tôi suy nghĩ thành tiếng (để interviewer theo dõi cách bạn suy luận)
+- **break the problem into parts** — chia vấn đề thành từng phần nhỏ
+- **make a reasonable assumption** — đưa ra giả định hợp lý
+- **I would verify this in the documentation** — tôi sẽ kiểm tra lại trong tài liệu chính thức
+- **separate what I know from what I guess** — tách rõ điều tôi biết và điều tôi suy đoán
+- **trade-off** — sự đánh đổi giữa hai lựa chọn
+
+### Lỗi người Việt hay mắc
+- **Im lặng quá lâu hoặc trả lời vòng vo:** Im lặng khiến interviewer không biết bạn đang nghĩ gì. Hãy nói "Let me think out loud for a moment" rồi trình bày từng bước.
+- **Bịa câu trả lời cho có vẻ tự tin:** Nói sai một cách chắc chắn rất tệ. Tốt hơn là thừa nhận giới hạn rồi suy luận có cơ sở.
+- **Không phân biệt "biết" và "đoán":** Hãy gắn nhãn rõ: "I know that..." và "I assume that..." để người nghe đánh giá đúng.
+- **Quên nói cách kiểm tra lại:** Sau khi suy luận, nên nêu bước xác minh (đọc docs, làm thử, hỏi đồng đội) để thể hiện thói quen làm việc cẩn thận.
+
+> Senior tip: Structured guessing (suy luận có cấu trúc) là kỹ năng quan trọng ở level senior: bạn có thể không nhớ chi tiết cấu hình, nhưng nếu bạn đi từ nguyên lý, nêu giả định và nói rõ cách xác minh, bạn vẫn cho thấy tư duy kỹ sư đáng tin cậy.`,
+  follow: [
+    "Can you give an example of a time you were wrong but corrected yourself quickly?",
+    "How do you prepare for topics you are less familiar with before an interview?",
+    "What signals tell you that it is better to admit you do not know rather than keep guessing?"
+  ],
+  tags: ['communication', 'honesty', 'problem-solving', 'interview-skills']
+},
+{
+  id: 'english-185',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "How would you explain a gap or a weak point in your CV during an interview?",
+  a: `**Tóm tắt:** Interviewer muốn kiểm tra sự trung thực, trách nhiệm và cách bạn biến điểm yếu/khoảng trống thành câu chuyện trưởng thành. Trả lời theo cấu trúc ngắn: nêu thẳng vấn đề → giải thích ngắn gọn, không đổ lỗi → nói bạn đã làm gì để cải thiện → kết nối với giá trị hiện tại.
+
+### Sample answer
+If an interviewer asks about a weak point in my CV, I answer directly and keep the explanation factual. For example, I had a six-month gap last year after my previous contract ended. During that time, my father was ill, so I needed to support my family. I kept the explanation brief because I did not want to overshare personal details. At the same time, I did not stop learning: I spent about eight hours per week reviewing Java core topics, practicing SQL (SQL là ngôn ngữ truy vấn cơ sở dữ liệu quan hệ), and building a small Spring Boot project to refresh my skills. I also did two mock interviews to improve how I explain technical decisions in English. Because of that, when I returned to job searching, I could contribute quickly in coding tasks and discussions. I see that period as a challenge I handled responsibly, and now I am fully available and focused on a long-term role where I can keep growing.
+
+### Useful phrases
+- **be transparent and concise** — minh bạch và ngắn gọn
+- **keep it factual** — trình bày dựa trên sự thật, không kể lể cảm xúc
+- **take responsibility** — nhận trách nhiệm về phần việc của mình
+- **use that time productively** — sử dụng khoảng thời gian đó một cách có ích
+- **refresh my skills** — làm mới, ôn lại kỹ năng
+- **fully available now** — hiện tại sẵn sàng làm việc toàn thời gian
+- **focus on what I learned** — tập trung vào điều tôi đã học được
+- **relevant to the role** — liên quan trực tiếp đến vị trí ứng tuyển
+
+### Lỗi người Việt hay mắc
+- **Phòng thủ hoặc đổ lỗi cho công ty/người khác:** Nói xấu nơi làm việc cũ tạo ấn tượng tiêu cực. Hãy giữ giọng trung lập, tập trung vào sự thật và hành động của bạn.
+- **Kể quá chi tiết chuyện cá nhân:** Interviewer cần hiểu bối cảnh, không cần chi tiết riêng tư. Một đến hai câu là đủ.
+- **Xin lỗi quá nhiều:** Một câu thừa nhận là đủ. Nói "sorry" lặp lại làm bạn trông thiếu tự tin.
+- **Không nói phần cải thiện:** Chỉ nêu khoảng trống mà không nói bạn đã làm gì trong thời gian đó sẽ để lại dấu hỏi. Hãy nêu hoạt động học, dự án, hoặc kỹ năng đã củng cố.
+
+> Senior tip: Hãy chuẩn bị trước một câu trả lời 30-45 giây cho điểm yếu hoặc gap trong CV và luyện nói to. Mục tiêu không phải che giấu, mà là cho thấy bạn kiểm soát được câu chuyện nghề nghiệp của mình: rõ ràng, trưởng thành và hướng về tương lai.`,
+  follow: [
+    "What would you say if the gap was longer, for example one year?",
+    "How do you choose which weakness to mention when asked directly?",
+    "How can you show on your CV that you stayed active during a career gap?"
+  ],
+  tags: ['career-gap', 'weakness', 'self-awareness', 'interview-skills']
+},
 );
