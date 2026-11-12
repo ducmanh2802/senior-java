@@ -2015,6 +2015,8 @@ window.DATA_INDEX = {
     {"id":"sd-030","title":"Tìm kiếm ngữ nghĩa cho 10 triệu tài liệu"},
     {"id":"sd-031","title":"URL shortener: sinh mã, chống trùng, cache, analytics click, hết hạn link"},
     {"id":"sd-032","title":"Hệ thống chat 1-1 và nhóm: WebSocket, lưu tin nhắn, đã đọc, presence, đồng bộ nhiều thiết bị"},
+    {"id":"sd-033","title":"Hệ thống thanh toán/chuyển tiền nội bộ (ledger double-entry, idempotency, đối soát, saga gọi cổng ngoài)"},
+    {"id":"sd-034","title":"Distributed job scheduler (lập lịch cron cho hàng triệu job, đảm bảo chạy đúng một lần, retry, phân vùng theo shard)"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

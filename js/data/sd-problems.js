@@ -3839,4 +3839,386 @@ Tình huống minh hoạ trên một tập 10 triệu tài liệu: người dùn
     'db-024'
   ]
 },
+{
+  id: 'sd-033',
+  title: 'Hệ thống thanh toán/chuyển tiền nội bộ (ledger double-entry, idempotency, đối soát, saga gọi cổng ngoài)',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Bạn là kiến trúc sư cho một ví điện tử / ngân hàng số 10 triệu người dùng (3 triệu DAU). Thiết kế hệ thống chuyển tiền **nội bộ** giữa người dùng trong cùng hệ thống: ledger double-entry, idempotency end-to-end, đối soát hàng ngày, và **saga** khi cần gọi cổng thanh toán ngoài (napas, ngân hàng đối tác) để nạp/rút tiền. Quy mô: peak 5.000 TPS chuyển tiền nội bộ, SLA 99,99%, p99 < 500 ms, không mất tiền, không trừ hai lần, audit retention 7 năm. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: chuyển tiền theo số điện thoại/user_id, request money, lịch sử, sao kê, huỷ/hoàn tiền (nếu chưa settle), hạn mức ngày. Non-functional: TPS peak, p99 latency, availability, consistency (tiền phải đúng tuyệt đối), audit retention 7 năm. Hỏi rõ contract cổng ngoài: async/sync, timeout, retry policy, idempotency key có hỗ trợ không, trạng thái treo tối đa bao lâu. Chốt out-of-scope: FX, crypto, bulk payment, AML batch. Chốt giả định: client retry là chắc chắn, at-least-once.` },
+    { name: 'Estimation', minutes: 5, guide: `TPS peak 5.000, trung bình 500-1.000. Storage: 5.000 txn/s x 86.400 x 1,5 KB ~ 650 GB/ngày nếu peak liên tục; thực tế ~20-50 GB/ngày. Retention 7 năm ~ 130 TB. Ledger double-entry: 2 entry/txn. Redis idempotency cache: 5.000 keys/s x TTL 24h ~ 432 triệu key/ngày, cần sharding. Cổng ngoài bandwidth: 500 req/s x 2 KB ~ 1 MB/s, không phải bottleneck. Kết luận: DB ledger là bottleneck chính, cần partition theo thời gian và account.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /transfers {{to_user_id|phone, amount, note, idempotency_key}} -> {{transfer_id, status}}, GET /transfers/{{id}}, POST /transfers/{{id}}/cancel (nếu chưa settle), GET /ledger/statement?from&to. State machine: INITIATED -> PENDING_EXTERNAL -> SETTLED/FAILED/REVERSED. Bảng transfer (id, idem_key unique, from_user, to_user, amount_minor, currency, status, external_ref, created_at, updated_at). Bảng ledger_entry append-only double-entry (txn_id, account_id, direction D/C, amount_minor, currency, created_at). Outbox table cùng DB transaction. Bảng {{external_gateway_txn}} (transfer_id, gateway, ref, status, raw_response). Unique constraints để chống trùng.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API -> Transfer service -> Ledger DB (primary) + Outbox -> External gateway adapter -> Cổng ngoài (Napas/ngân hàng). Async worker đọc outbox publish Kafka -> Gateway adapter. Webhook receiver nhận kết quả cổng ngoài. Status query từ DB/Redis cache. Giải thích luồng ghi và đọc khác nhau. Nêu vì sao không gọi cổng ngoài đồng bộ trong request (timeout làm client retry). Tách internal transfer (cùng hệ thống, strong consistency) và external transfer (saga, eventual).` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: idempotency end-to-end (client key -> server -> external ref), trạng thái treo và reconciliation hằng ngày, xử lý cổng ngoài timeout (retry với cùng {{external_ref}}, không tạo mới), deadlock avoidance (khoá account theo thứ tự id tăng dần), failure modes (cổng ngoài down, DB primary failover, duplicate webhook, client retry), monitoring (lag, pending count, mismatch, external gateway latency).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu và con số scale, chốt out-of-scope, phân biệt internal vs external transfer',
+    'Idempotency key từ client đến cổng ngoài, xử lý retry an toàn',
+    'State machine có trạng thái treo PENDING_EXTERNAL và timeout rõ ràng',
+    'Double-entry ledger append-only, số tiền lưu bằng số nguyên đơn vị nhỏ nhất',
+    'Outbox pattern thay vì dual-write DB + Kafka',
+    'Xử lý cổng ngoài timeout/retry bằng cùng {{external_ref}}, không tạo giao dịch mới',
+    'Reconciliation hằng ngày với file quyết toán cổng ngoài, dashboard lệch',
+    'Khoá tài khoản theo thứ tự id tăng dần để tránh deadlock',
+    'Giám sát pending count theo tuổi, external gateway success rate, reconciliation mismatch count, DLQ size',
+    'Tóm tắt trade-off và failure mode, giải thích vì sao không dùng 2PC'
+  ],
+  reference: `**Tóm tắt:** Chuyển tiền nội bộ là bài toán **đúng đắn và truy vết**, không phải tốc độ. Ba trụ cột: idempotency key cho mọi lệnh ghi, double-entry ledger append-only làm nguồn sự thật, và reconciliation hằng ngày với cổng ngoài. Không có exactly-once thần kỳ — chỉ có at-least-once cộng với xử lý idempotent. Phân biệt rõ: internal transfer (cùng hệ thống, một local transaction, strong consistency) vs external transfer (gọi cổng ngoài, saga, eventual consistency).
+
+### Yêu cầu và quy mô
+- 10 triệu user, 3 triệu DAU, peak 5.000 TPS chuyển tiền nội bộ, p99 < 500 ms, availability 99,99%.
+- Không mất tiền, không trừ hai lần, audit retention 7 năm.
+- Cổng ngoài (Napas, ngân hàng) trả kết quả bất đồng bộ sau 1-30 giây, có thể timeout; client retry là chắc chắn.
+- Internal transfer: từ A -> B trong cùng hệ thống. External transfer: nạp/rút qua cổng ngoài.
+
+### Ước lượng
+- Peak 5.000 TPS, trung bình 500-1.000 TPS.
+- Storage: 5.000 x 86.400 x 1,5 KB ~ 650 GB/ngày nếu peak liên tục; thực tế 20-50 GB/ngày; 7 năm ~ 130 TB. Cần partition theo tháng.
+- Ledger: 2 entry/txn, append-only.
+- Redis idempotency: 5.000 keys/s x TTL 24h ~ 432 triệu key/ngày, phải shard Redis Cluster.
+- Cổng ngoài: ~500 req/s peak, bandwidth ~1 MB/s, không phải bottleneck.
+
+### Phân loại: Internal vs External Transfer
+| Đặc điểm | Internal Transfer | External Transfer (nạp/rút) |
+|---|---|---|
+| Consistency | Strong (1 local transaction) | Eventual (saga, vài giây-phút) |
+| Latency | < 50 ms | 1-30 giây (phụ thuộc cổng ngoài) |
+| Failure handling | Rollback ngay | Retry + compensation + reconciliation |
+| Idempotency | Client key + server unique | Client key + server + external ref |
+
+### State Machine
+~~~text
+Internal:          INITIATED -> SETTLED
+                      |           |
+                      +-> FAILED <-+ (insufficient balance, limit)
+External (nạp):    INITIATED -> PENDING_EXTERNAL -> SETTLED
+                      |              |                 |
+                      +-> FAILED <---+                 +-> REVERSED (hoàn tiền)
+External (rút):    INITIATED -> PENDING_EXTERNAL -> SETTLED
+                      |              |                 |
+                      +-> FAILED <---+                 +-> REVERSED
+~~~
+Mỗi chuyển trạng thái là conditional update WHERE status = 'PENDING_EXTERNAL' (hoặc INITIATED). Không cho nhảy trạng thái tuỳ tiện.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE transfer (
+  id            UUID PRIMARY KEY,
+  idem_key      VARCHAR(64) NOT NULL,
+  type          VARCHAR(20) NOT NULL CHECK (type IN ('INTERNAL','DEPOSIT','WITHDRAWAL')),
+  from_user     BIGINT,
+  to_user       BIGINT,
+  amount_minor  BIGINT NOT NULL CHECK (amount_minor > 0),
+  currency      CHAR(3) NOT NULL,
+  status        VARCHAR(20) NOT NULL,
+  external_ref  VARCHAR(64),
+  external_gateway VARCHAR(30),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (idem_key)
+);
+CREATE TABLE ledger_entry (
+  id           BIGSERIAL PRIMARY KEY,
+  txn_id       UUID NOT NULL,
+  account_id   BIGINT NOT NULL,
+  direction    CHAR(1) NOT NULL CHECK (direction IN ('D','C')),
+  amount_minor BIGINT NOT NULL,
+  currency     CHAR(3) NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uk_ledger_idem ON ledger_entry (txn_id, account_id, direction);
+CREATE TABLE outbox (
+  id           BIGSERIAL PRIMARY KEY,
+  aggregate_id UUID NOT NULL,
+  type         VARCHAR(50) NOT NULL,
+  payload      JSONB NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ
+);
+CREATE TABLE {{external_gateway_txn}} (
+  id              BIGSERIAL PRIMARY KEY,
+  transfer_id     UUID NOT NULL,
+  gateway         VARCHAR(30) NOT NULL,
+  external_ref    VARCHAR(64) NOT NULL,
+  request_payload JSONB NOT NULL,
+  response_raw    JSONB,
+  status          VARCHAR(20) NOT NULL,
+  attempt         INT NOT NULL DEFAULT 0,
+  next_retry_at   TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (transfer_id, gateway, external_ref)
+);
+~~~
+- Tiền lưu bằng số nguyên đơn vị nhỏ nhất (VND minor = VND, USD minor = cent). Ledger append-only: sửa sai bằng reversal, không xoá.
+- {{external_gateway_txn}} theo dõi mọi lần gọi cổng ngoài để reconciliation.
+
+### Kiến trúc
+~~~text
+Client -> API gateway -> Transfer service -> Ledger DB (primary)
+                              |                |
+                              |          outbox table
+                              v                |
+                         Internal:          External gateway adapter <-- outbox relay -> Kafka
+                         credit/debit           |                                  |
+                         in 1 txn           Cổng ngoài (Napas/                    v
+                                              Bank)                        Settlement/recon job
+                                              |                                  |
+                                       Webhook receiver ----------------------+
+~~~
+- API chỉ nhận và trả 202 kèm id tra cứu, không gọi cổng ngoài đồng bộ.
+- Outbox: ghi transfer + ledger + outbox trong cùng DB transaction; relay đọc outbox và publish. Tránh dual-write.
+- External gateway adapter idempotent theo {{external_ref}} (gateway sinh hoặc dùng transfer.id).
+
+### Luồng Internal Transfer (cùng hệ thống)
+1. Client gửi POST /transfers với Idempotency-Key (UUID).
+2. Transfer service kiểm tra key: mới thì xử lý; đã có và body giống thì trả response cũ; đã có nhưng body khác thì 409.
+3. Kiểm tra hạn mức ngày (UPDATE daily_limits ... used + amt <= limit).
+4. Lấy khoá hai tài khoản theo thứ tự {{LEAST(from_user, to_user)}} trước, {{GREATEST(...)}} sau để tránh deadlock.
+5. Kiểm tra số dư: {{UPDATE wallets SET balance = balance - amt WHERE id = from_user AND balance >= amt}} (conditional update).
+6. Ghi transfer SETTLED + 2 ledger entry (from: D, to: C) + outbox(event cho notification) trong **cùng một transaction**.
+7. Trả 200 kèm transfer id. Notification async qua outbox/Kafka.
+
+### Luồng External Transfer (nạp/rút qua cổng ngoài)
+1. Client tạo transfer type DEPOSIT/WITHDRAWAL, Idempotency-Key.
+2. Transfer service ghi transfer INITIATED + outbox trong 1 transaction.
+3. Outbox relay -> Kafka -> External gateway adapter.
+4. Adapter sinh {{external_ref = transfer.id}} (hoặc UUID mới), ghi {{external_gateway_txn}} attempt=1, gọi cổng ngoài.
+5. Trả 202 cho client, status = PENDING_EXTERNAL.
+6. Cổng ngoài xử lý, sau đó gọi webhook hoặc adapter poll kết quả.
+7. Webhook receiver: xác thực chữ ký, idempotent theo {{external_event_id}}, conditional update transfer PENDING_EXTERNAL -> SETTLED/FAILED, ghi ledger (nạp: credit user; rút: debit user + credit external), cập nhật {{external_gateway_txn}}.
+8. Nếu webhook không đến sau N phút: adapter retry với **cùng {{external_ref}}** (idempotent ở phía cổng ngoài), attempt++.
+
+### Xử lý cổng ngoài timeout
+- Adapter retry với cùng {{external_ref}}; cổng ngoài phải idempotent theo ref (hoặc adapter kiểm tra trạng thái trước khi gửi lại).
+- Nếu cổng ngoài không phản hồi sau N lần (ví dụ 5 lần trong 30 phút), transfer ở PENDING_EXTERNAL; job nền query cổng ngoài theo ref để chốt.
+- Webhook từ cổng ngoài idempotent theo {{external_event_id}} (do cổng ngoài sinh).
+- **Quan trọng**: Không bao giờ tạo transfer mới khi retry. Không retry "trừ tiền mù quáng" — chỉ tra cứu hoặc gửi lại cùng ref.
+
+### Trạng thái treo và reconciliation
+- Transfer PENDING_EXTERNAL quá X phút (ví dụ 10) được job quét; query cổng ngoài; nếu cổng nói thành công thì settle, nếu thất bại thì reverse, nếu không rõ thì giữ pending và alert.
+- **Hằng ngày** tải file quyết toán (settlement file) từ cổng ngoài (CSV/SFTP/API), so khớp theo {{external_ref}}:
+  - Có ở ta không có ở cổng ngoài (treo, webhook mất) -> query cổng, chốt.
+  - Có ở cổng ngoài không có ở ta (webhook mất, adapter down) -> tạo transfer, settle.
+  - Lệch số tiền -> alert, điều tra, bút toán điều chỉnh.
+- Kết quả reconciliation lưu lại và có dashboard; "không có lệch" cũng phải chứng minh.
+
+### Cô lập và khoá (deadlock avoidance)
+- Chuyển tiền hai chiều (A->B và B->A cùng lúc): khoá tài khoản theo thứ tự {{account_id}} tăng dần (LEAST/GREATEST trong SQL, hoặc sort trong code trước khi UPDATE).
+- Transaction ngắn; SERIALIZABLE cân nhắc kỹ vì gây retry.
+- Số dư đọc từ bảng materialized balance, đối soát với ledger định kỳ.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Cổng ngoài down | Transfer treo PENDING_EXTERNAL | Giữ pending, retry exponential, alert, không tự reverse |
+| DB primary failover | Mất ghi | Replica lag monitor, failover tự động, idempotency bảo vệ retry |
+| Duplicate webhook | Settle hai lần | Conditional update WHERE status = PENDING_EXTERNAL |
+| Client retry | Tạo hai transfer | Idempotency key unique |
+| Outbox relay chậm | Cổng ngoài nhận trễ | Monitor lag, scale relay |
+| Cổng ngoài trả lệch số tiền | Sai số dư | Reconciliation bắt, bút toán điều chỉnh, alert |
+
+### Giám sát
+- Pending count theo tuổi (0-5p, 5-30p, 30p+), p99 latency end-to-end, external gateway success rate theo gateway, reconciliation mismatch count, DLQ size.
+- Alert khi pending quá hạn tăng hoặc mismatch > 0.
+
+> Senior tip: bài học đắt nhất là đừng bao giờ để số dư là nguồn sự thật duy nhất. Khi có sự cố, ledger append-only cho phép dựng lại toàn bộ lịch sử và chứng minh với cổng ngoài; một bảng balance bị UPDATE sai thì không có cách nào biết nó sai từ lúc nào. Và **luôn sinh {{external_ref = transfer.id}}** (không random) để reconciliation tra cứu được 1-1 mà không cần mapping table phức tạp.`,
+  followups: [
+    'Nếu traffic tăng x10 trong 1 giờ (flash sale nạp tiền), kiến trúc thay đổi thế nào?',
+    'Mất một region (multi-region), bạn khôi phục và đối soát ra sao?',
+    'Cổng ngoài thay đổi từ async sang sync, bạn điều chỉnh gì?',
+    'Thiết kế API hoàn tiền một phần (partial refund) trên ledger ra sao?',
+    'Nếu cổng ngoài không hỗ trợ idempotency key, bạn đảm bảo không trừ hai lần thế nào?'
+  ],
+  related: ['design-005', 'banking-004', 'microservices-022']
+},
+{
+  id: 'sd-034',
+  title: 'Distributed job scheduler (lập lịch cron cho hàng triệu job, đảm bảo chạy đúng một lần, retry, phân vùng theo shard)',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Công ty cần một **job scheduler dùng chung** (platform nội bộ) cho 50 team: các team đăng ký job cron ("chạy 02:00 mỗi ngày"), job delayed ("gọi webhook X sau 3 ngày"), job recurring với rate limit. Quy mô: **50 triệu job/ngày**, trong đó 20% (10 triệu) dồn đúng các giờ tròn (00:00, 02:00, 06:00, 09:00). Yêu cầu: chạy trễ không quá 5 giây so với giờ hẹn, **không mất job**, **chạy đúng một lần** (exactly-once semantic cho phía downstream), không làm sập service đích (rate limit, backpressure), multi-tenant fairness. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: tạo/huỷ job một lần (run_at), cron có timezone (IANA), payload JSON, retry policy (max_attempts, backoff), callback HTTP hoặc publish Kafka, idempotency key cho callback. Non-functional: at-least-once (exactly-once downstream nhờ idempotency key), trễ < 5 giây, multi-tenant, rate limit theo service đích. Hỏi: độ chính xác cần thiết (có chấp nhận dàn tải không), job xa nhất (1 năm?), có cần exactly-once thực sự không (thường không, đích phải idempotent). Out-of-scope: workflow engine (DAG), human approval.` },
+    { name: 'Estimation', minutes: 5, guide: `50M/ngày => ~580 job/s trung bình. Nếu 20% (10M) hẹn đúng 09:00:00 thì cần 10M trong vài giây - không thể; dàn đều trong cửa sổ max_delay (mặc định 10 phút) => ~16.700 job/s. Lưu: 50M x 500 B = 25 GB/ngày; giữ lịch sử 30 ngày ~ 750 GB => partition theo ngày. Metadata: 50M job x ~1 KB = 50 GB, cần shard.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /jobs {{tenant, run_at | cron_expr + tz, target {{type: http|kafka, url|topic, headers}}, payload, idempotency_key, max_delay_sec, retry_policy}} -> job_id; DELETE /jobs/{{id}}; GET /jobs/{{id}}/history. Bảng jobs (id, shard_key, due_at, status, attempt, lease_until, tenant, target, payload, idempotency_key, cron_expr, tz, next_run_at, version), partition theo due_at (ngày), index (shard_key, status, due_at). Bảng job_executions (job_id, attempt, started_at, finished_at, status, response_code, error).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: API -> DB (sharded by tenant/hash, partition by day); Scheduler node sở hữu lease trên một số shard -> quét job sắp tới hạn (due_at <= now + 60s) bằng FOR UPDATE SKIP LOCKED -> nạp vào timing wheel trong RAM -> đúng giờ đẩy vào Kafka topic jobs.due (key = target) -> Executor pool gọi đích (rate limit theo target) -> cập nhật trạng thái; retry với backoff; DLQ. Cron: sau khi chạy xong, tính next_run_at và INSERT lần kế tiếp trong cùng transaction.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: claim job không trùng (SKIP LOCKED + lease), node chết thì job được claim lại, giờ cao điểm 09:00 (dàn tải max_delay), backpressure khi đích chậm (token bucket per target), cron và DST (múi giờ có DST), fairness giữa tenant (priority queue theo tier), chỉ số lag = now - due_at, exactly-once downstream (idempotency key + sink idempotent).` }
+  ],
+  rubric: [
+    'Ước lượng trung bình và đỉnh tại giờ tròn, nhận ra cần dàn tải (max_delay_sec)',
+    'Lưu job bền vững trong DB, partition theo thời gian (ngày), shard theo tenant/hash',
+    'Claim job bằng FOR UPDATE SKIP LOCKED + lease, node chết thì job được claim lại',
+    'Hai tầng: DB cho job xa, timing wheel/hàng đợi trong RAM cho job sắp tới',
+    'At-least-once + idempotency key gửi kèm cho đích, sink idempotent',
+    'Rate limit và backpressure theo service đích (token bucket per target)',
+    'Retry có exponential backoff + jitter, DLQ và replay tool',
+    'Cron: tính lần chạy kế tiếp theo timezone, xử lý DST và misfire policy',
+    'Fairness giữa tenant (quota, priority queue, tier)',
+    'Metric lag = thời điểm chạy thật - due_at, p99 lag < 5 giây, alert theo tenant'
+  ],
+  reference: `**Tóm tắt:** Job được lưu bền trong DB chia shard theo tenant/hash và partition theo ngày. Mỗi scheduler node giữ **lease** trên một nhóm shard, cứ vài giây quét các job sắp tới hạn bằng **FOR UPDATE SKIP LOCKED**, nạp vào **timing wheel** trong RAM, đến giờ thì đẩy sang Kafka cho executor gọi đích. Giao **at-least-once** nên đích phải idempotent; đỉnh giờ tròn được xử lý bằng dàn tải (max_delay_sec) và rate limit theo đích. Cron được xử lý bằng việc tính {{next_run_at}} sau mỗi lần chạy và INSERT trong cùng transaction.
+
+### Yêu cầu
+- Job một lần (run_at) và cron có timezone (IANA, ví dụ Asia/Ho_Chi_Minh). Đích là HTTP callback hoặc topic Kafka.
+- Trễ < 5 giây, không mất job, chạy ít nhất một lần (exactly-once thực sự là không thể khi gọi HTTP ra ngoài — downstream phải idempotent).
+- Không biến scheduler thành "vũ khí DDoS" bắn 1 triệu request vào service đích lúc 09:00.
+- Multi-tenant: 50 team, cách ly quota và độ ưu tiên.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Trung bình | 50.000.000 / 86.400 | ~580 job/s |
+| Dồn đúng 09:00 | 20% x 50M = 10M job | không thể chạy trong 1 giây |
+| Dàn trong 10 phút (max_delay_sec=600) | 10.000.000 / 600 | ~16.700 job/s |
+| Lưu trữ/ngày | 50M x 500 B | 25 GB |
+| Giữ 30 ngày | 25 GB x 30 | ~750 GB |
+
+Bài học: phải hỏi chủ job "có cần đúng 09:00:00 không?". Phần lớn job nhắc nhở, báo cáo chấp nhận trễ vài phút => API có trường {{max_delay_sec}} (mặc định 600s) để scheduler được phép dàn ra.
+
+### Kiến trúc
+~~~text
+  Team A/B/C --POST /jobs--> [Job API] --INSERT--> [DB: 64 shards, partition by day]
+                                                            ^      |
+                                             lease shard 0..15  |      | quét: due_at <= now() + 60s
+                                                            |      v
+                                               [Scheduler node 1] timing wheel (RAM, ô 1 giây)
+                                               [Scheduler node 2] ...       |
+                                               [Scheduler node 3] ...       | đến giờ
+                                                                           v
+                                                                 [Kafka: jobs.due, key = target]
+                                                                           |
+                                                             [Executor pool] -- rate limit per target --> service đích
+                                                                   | thành công: DONE | lỗi: retry backoff | hết lượt: DLQ
+~~~
+
+### Claim job không trùng (SKIP LOCKED + Lease)
+~~~sql
+-- Chạy mỗi 5 giây trên mỗi shard mà node đang giữ lease
+WITH due AS (
+  SELECT id FROM jobs
+  WHERE shard_key = :shard AND status = 'PENDING' AND due_at <= now() + interval '60 seconds'
+  ORDER BY due_at
+  LIMIT 1000
+  FOR UPDATE SKIP LOCKED          -- node khác đang claim thì bỏ qua, không chờ
+)
+UPDATE jobs j SET status = 'CLAIMED', lease_until = now() + interval '2 minutes', attempt = attempt + 1
+FROM due WHERE j.id = due.id
+RETURNING j.id, j.due_at, j.target, j.payload, j.idempotency_key, j.retry_policy;
+~~~
+- **Vì sao cần lease?** Node claim xong rồi chết thì job kẹt ở CLAIMED. Một tiến trình dọn (reaper) chạy mỗi 30 giây: {{UPDATE jobs SET status = 'PENDING' WHERE status = 'CLAIMED' AND lease_until < now()}} => node khác chạy lại. Đây là nguồn chạy trùng duy nhất, chấp nhận được vì at-least-once + idempotency key.
+- **Vì sao 2 tầng (DB + timing wheel)?** Quét DB mỗi giây để bắt đúng giây là rất tốn. Quét trước 60 giây, nạp vào timing wheel (mảng 60 ô, mỗi ô là danh sách job của giây đó) rồi một thread tick mỗi giây lấy ô hiện tại => chính xác tới giây mà DB chỉ bị quét mỗi 5 giây.
+
+### Timing Wheel trong RAM
+~~~java
+// Mỗi scheduler node có một timing wheel cục bộ cho các shard nó sở hữu
+class TimingWheel {
+    private final List<List<Job>> slots = new ArrayList<>(60); // 60 giây
+    private int currentSlot = 0;
+    private final ScheduledExecutorService tick = Executors.newSingleThreadScheduledExecutor();
+
+    TimingWheel() {
+        for (int i = 0; i < 60; i++) slots.add(new ArrayList<>());
+        tick.scheduleAtFixedRate(this::tick, 1, 1, TimeUnit.SECONDS);
+    }
+
+    void add(Job job) {
+        int delaySec = (int) (job.dueAt.toEpochMilli() - System.currentTimeMillis()) / 1000;
+        if (delaySec < 0) delaySec = 0;
+        if (delaySec >= 60) delaySec = 59; // không nên xảy ra vì quét 60s
+        int slot = (currentSlot + delaySec) % 60;
+        slots.get(slot).add(job);
+    }
+
+    void tick() {
+        List<Job> due = slots.get(currentSlot);
+        slots.set(currentSlot, new ArrayList<>());
+        currentSlot = (currentSlot + 1) % 60;
+        for (Job job : due) {
+            // đẩy sang Kafka jobs.due, key = target.url hoặc target.topic
+            kafkaProducer.send(new ProducerRecord<>("jobs.due", job.targetKey, job));
+        }
+    }
+}
+~~~
+- Mỗi node chỉ quản lý timing wheel cho các shard nó lease.
+- Job đẩy sang Kafka với {{key = target}} (URL hoặc topic) để cùng một đích rơi vào cùng partition -> executor xử lý tuần tự theo đích.
+
+### Backpressure và Fairness
+- Kafka key = target nên một đích chậm chỉ làm chậm partition của nó, không chặn đích khác.
+- Executor có **token bucket** cho từng target (ví dụ billing-service tối đa 500 req/s, notification-service 5.000 req/s). Vượt thì job chờ trong bộ nhớ executor, lag tăng có chủ đích thay vì làm sập đích.
+- **Fairness giữa tenant:** Mỗi tenant có quota job/phút (ví dụ tier FREE 1.000, PRO 10.000, ENTERPRISE 100.000). Scheduler node ưu tiên claim job của tenant tier cao hơn khi tải cao (priority queue trong claim query: {{ORDER BY tenant_priority DESC, due_at}}). Hoặc tách shard theo tier.
+
+### Cron, Timezone, DST
+- Lưu {{cron_expr}} (ví dụ {{0 2 * * *}}) + {{tz}} (IANA {{Asia/Ho_Chi_Minh}}). Sau mỗi lần chạy, tính {{next_fire_at}} bằng {{java.time.ZonedDateTime}} rồi {{INSERT}} lần kế tiếp **trong cùng transaction** với đánh dấu job hiện tại {{DONE}}.
+- Ở vùng có DST, 02:30 có thể không tồn tại (spring forward) hoặc xảy ra hai lần (fall back): quy định rõ chính sách (ví dụ: spring forward -> chạy lúc 03:00; fall back -> chạy lần đầu, bỏ qua lần hai). Dùng {{ZonedDateTime}} với {{ZoneRules}} xử lý tự động.
+- **Misfire policy** (scheduler dừng 1 giờ, job lỡ giờ): tenant chọn một trong ba: {{FIRE_ALL_MISSED}} (chạy bù tất cả), {{FIRE_LATEST_ONLY}} (chỉ chạy lần gần nhất), {{SKIP_MISSED}} (bỏ qua). Mặc định {{FIRE_LATEST_ONLY}}.
+
+### Exactly-once cho phía downstream
+Không có exactly-once delivery xuyên suốt HTTP. Cách đạt được **kết quả như exactly-once**:
+1. Client cung cấp {{idempotency_key}} khi tạo job (hoặc scheduler sinh từ {{job_id + attempt}}).
+2. Executor gửi HTTP kèm header {{Idempotency-Key: <key>}}; nếu Kafka thì {{key = idempotency_key}}.
+3. Sink (đích) khử trùng theo key này.
+4. Executor chỉ đánh dấu job {{DONE}} sau khi đích trả 2xx (hoặc Kafka ack). Lỗi 5xx/timeout -> retry.
+5. Nếu executor chết sau khi đích đã xử lý nhưng chưa cập nhật DB: lần retry sau sẽ gửi lại cùng key -> đích khử trùng -> không chạy logic nghiệp vụ hai lần.
+
+### Retry và DLQ
+- Retry chỉ với lỗi tạm thời: timeout, 429, 5xx. Lỗi vĩnh viễn (4xx trừ 429) -> {{FAILED}} ngay, không retry.
+- Exponential backoff + jitter: 10s, 1m, 5m, 30m, 2h, 6h (configurable trong {{retry_policy}}).
+- Giới hạn {{max_attempts}} (mặc định 6) rồi đẩy {{DLQ}} (dead letter queue: bảng {{job_dlq}} hoặc Kafka topic {{jobs.dlq}}).
+- DLQ phải có UI xem, công cụ replay (sửa payload rồi retry), và alert khi DLQ > 0.
+
+### Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| DB + SKIP LOCKED + timing wheel | Bền, truy vấn/huỷ job dễ, quen thuộc | Phải tự viết lease, tune index |
+| Redis sorted set (score = due_at) | Rất nhanh, ZRANGEBYSCORE đơn giản | Bền vững kém hơn, RAM đắt khi giữ job 1 năm |
+| Dịch vụ cloud (EventBridge Scheduler) | Không phải vận hành | Quota, chi phí theo số lần gọi, khoá vendor |
+| Quartz cluster | Có sẵn cho Spring | Khoá DB tập trung, khó lên hàng chục triệu job/ngày |
+
+### Senior vs Lead trả lời khác gì
+- **Senior**: SKIP LOCKED + lease, at-least-once + idempotency key, retry/DLQ, timing wheel, partition theo ngày, cron next_run_at trong transaction.
+- **Lead** thêm: SLO rõ ràng (99,9% job trễ < 5 giây) và metric lag theo tenant, onboarding/quota như một platform nội bộ, chính sách khi đích chậm (ai chịu trách nhiệm), kế hoạch rebalance shard khi thêm node, chi phí tự xây so với dịch vụ cloud, và dàn tải giờ tròn như một **chính sách sản phẩm** (max_delay_sec) chứ không chỉ là kỹ thuật. Còn phải xử lý multi-region active-active cho disaster recovery.
+
+### Lỗi hay gặp
+- Mọi node cùng SELECT job tới hạn không có SKIP LOCKED => chạy trùng hàng loạt hoặc chờ khoá nhau.
+- Một leader duy nhất quét toàn bộ DB: leader trở thành nút thắt và điểm chết.
+- Không gửi idempotency key cho đích, rồi trách scheduler khi khách bị gọi hai lần.
+- Lưu job đã chạy chung bảng không partition => bảng phình, index chậm dần; xoá bằng DELETE thay vì DROP PARTITION.
+- Cron dùng {{cron4j}}/{{Spring @Scheduled}} đơn luồng: một job lâu làm trễ toàn bộ hệ thống.
+
+### Trả lời miệng 1 phút
+"Trung bình chỉ ~580 job/giây, nhưng giờ tròn có thể dồn 10 triệu job, nên tôi dàn tải trong cửa sổ max_delay (mặc định 10 phút), ra khoảng 16.700 job/giây. Job lưu bền trong DB chia 64 shard theo tenant/hash, partition theo ngày. Scheduler node giữ lease trên nhóm shard, mỗi 5 giây claim job sắp tới hạn trong 60 giây bằng FOR UPDATE SKIP LOCKED, nạp vào timing wheel để bắn đúng giây sang Kafka. Executor gọi đích có token bucket rate limit theo target, retry exponential backoff + jitter, DLQ. Giao at-least-once nên mỗi lần gọi kèm idempotency key. Cron: sau khi chạy xong, tính next_run_at bằng ZonedDateTime (xử lý DST tự động) và INSERT trong cùng transaction. Metric chính là lag (now - due_at) theo percentile và theo tenant; alert khi p99 lag > 5 giây."
+
+> Senior tip: metric quan trọng nhất của scheduler là **lag** (now - due_at) theo percentile và theo tenant, không phải số job chạy. Alert khi p99 lag > 5 giây sẽ bắt được mọi sự cố: DB chậm, node mất lease, đích bị rate limit, consumer Kafka dừng. Và **luôn hỏi chủ job "max_delay_sec bao nhiêu?"** — câu trả lời quyết định kiến trúc dàn tải.
+
+### Ví dụ đời thực
+Team marketing đăng ký job gửi email 1 triệu user lúc 09:00, {{max_delay_sec = 3600}} (1 giờ). Scheduler dàn 1 triệu job ra 277 job/s trong 1 giờ. Executor gọi email-service với rate limit 500 req/s, thực tế gửi ~277/s, hoàn thành trong 1 giờ. Cùng lúc team billing có job đối soát 100 job lúc 09:00, {{max_delay_sec = 60}} (1 phút), tier ENTERPRISE ưu tiên cao hơn => claim trước, chạy ngay, không bị chặn bởi job marketing.
+
+### Giám sát
+- Lag p50/p95/p99 theo tenant, theo target, tổng thể.
+- Throughput job/s (claimed, executed, succeeded, failed, dlq).
+- Queue depth per target (số job chờ rate limit).
+- Lease health: số shard có lease, số shard lease hết hạn (node chết).
+- Cron misfire count.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế scheduler làm platform nội bộ. Job lưu trong Postgres sharded 64 shard, partition theo ngày. Mỗi scheduler node lease một nhóm shard, dùng FOR UPDATE SKIP LOCKED claim job sắp tới hạn 60 giây, nạp vào timing wheel RAM để bắn đúng giây sang Kafka. Executor có token bucket rate limit từng đích, retry backoff, DLQ. Giao at-least-once, khách hàng cung cấp idempotency_key khi tạo job, executor truyền kèm cho đích. Cron: sau khi chạy xong, dùng ZonedDateTime tính next_run_at (xử lý DST), INSERT lần kế tiếp trong cùng transaction. Dọn dẹp job cũ bằng DROP PARTITION. Metric vàng là lag p99 < 5s theo tenant. Lỗi thường gặp: không có SKIP LOCKED dẫn đến chạy trùng, không có idempotency key khiến đích chạy hai lần, cron dùng Spring @Scheduled đơn luồng bị một job chặn hết."
+
+### Follow-ups
+- 'Một job hẹn chạy sau 1 năm: lưu ở đâu cho rẻ, và huỷ nó thế nào?',
+- 'Nếu một team cần đúng exactly-once (ví dụ trừ phí định kỳ), bạn phối hợp với service đích ra sao?',
+- 'Thêm scheduler node mới thì chia lại shard thế nào mà không chạy trùng hoặc bỏ sót?',
+- 'Service đích chết 2 giờ: 3 triệu job tồn đọng xử lý thế nào khi nó sống lại?',
+- 'Multi-region active-active: job tạo ở region A, chạy ở region B khi A sập, thiết kế lease và timing wheel thế nào?'
+`,
+  followups: [
+    'Một job hẹn chạy sau 1 năm: lưu ở đâu cho rẻ, và huỷ nó thế nào?',
+    'Nếu một team cần đúng exactly-once (ví dụ trừ phí định kỳ), bạn phối hợp với service đích ra sao?',
+    'Thêm scheduler node mới thì chia lại shard thế nào mà không chạy trùng hoặc bỏ sót?',
+    'Service đích chết 2 giờ: 3 triệu job tồn đọng xử lý thế nào khi nó sống lại?',
+    'Multi-region active-active: job tạo ở region A, chạy ở region B khi A sập, thiết kế lease và timing wheel thế nào?'
+  ],
+  related: ['design-013', 'design-029', 'microservices-051']
+},
 ];
