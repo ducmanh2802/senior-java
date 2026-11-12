@@ -4813,4 +4813,366 @@ class AgentRouter {
   ],
   tags: ['feature flag', 'shadow mode', 'canary rollout', 'safe deployment', 'kill switch']
 },
+{
+  id: 'ai-071',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một agent nhận yêu cầu tự nhiên, gọi tool và trả kết quả cho khách hàng. Bạn đặt guardrail ở những ranh giới nào để validate input/output, chỉ cho gọi tool trong allowlist và không thực thi dữ liệu chưa hợp lệ?',
+  a: `**Tóm tắt:** Tôi coi model là thành phần không đáng tin cậy, không phải nơi thực thi quyền. Guardrail (hàng rào kiểm soát) phải nằm ở code phía server: chuẩn hoá và kiểm tra input, chỉ công bố tool được phép, xác thực lại mọi tool call và kiểm tra kết quả trước khi trả lời hoặc ghi dữ liệu.
+
+### Cái gì, vì sao cần
+Model có thể hiểu sai yêu cầu, sinh tham số thiếu/sai kiểu hoặc đề xuất một thao tác ngoài nghiệp vụ. Schema hợp lệ chỉ có nghĩa dữ liệu đúng hình dạng; nó không chứng minh người dùng có quyền hay thao tác đó đúng nghiệp vụ. Ví dụ {{accountId}} là chuỗi hợp lệ nhưng vẫn có thể là tài khoản của người khác.
+
+### Luồng kiểm soát từng bước
+1. **Input:** xác thực người dùng trước khi gọi model; giới hạn độ dài/kích thước, kiểm enum và kiểu dữ liệu, chuẩn hoá mã định danh, gắn {{userId}} và {{tenantId}} từ session đã xác thực. Không lấy quyền từ câu chữ hay đối số do model sinh.
+2. **Tool allowlist:** backend chọn danh sách tool theo use case và quyền hiện tại. Model chỉ chọn tên trong tập đó; không cho phép tên tool tuỳ ý, SQL/shell tự do hoặc URL tuỳ ý.
+3. **Arguments:** parse theo kiểu dữ liệu, từ chối field lạ, kiểm miền giá trị và gọi domain service để kiểm quyền/trạng thái một lần nữa. Ví dụ số tiền phải dương, nằm trong hạn mức, tài khoản thuộc tenant và giao dịch còn hiệu lực.
+4. **Thực thi:** phân biệt tool đọc và ghi. Hành động có side effect phải có policy phù hợp, giao dịch/idempotency khi cần, và phê duyệt người dùng nếu mức rủi ro yêu cầu. Model không được tự biến một thao tác đọc thành thao tác ghi.
+5. **Tool result / output:** giới hạn kích thước kết quả, lọc dữ liệu nhạy cảm, kiểm lỗi và kiểm schema câu trả lời. Nếu output không đạt hợp đồng thì không gửi như thể thành công; trả thông báo an toàn hoặc yêu cầu thử lại.
+
+~~~java
+record ToolCall(String name, Map<String, Object> args) {}
+
+Result dispatch(ToolCall call, AuthContext auth) {
+    Tool tool = registry.allowedFor(auth.permissions()).get(call.name());
+    if (tool == null) throw new ForbiddenException();
+    Command command = tool.parseAndValidate(call.args());
+    policy.check(auth.userId(), auth.tenantId(), command);
+    return tool.execute(command);
+}
+~~~
+Đây là minh hoạ ranh giới kiểm soát, không phải API cụ thể của Spring AI. Framework có thể giúp khai báo tool, nhưng quyền và quy tắc domain vẫn phải do ứng dụng kiểm tra.
+
+### Trade-off và khi nào dùng
+| Cách | Ưu điểm | Hạn chế |
+|---|---|---|
+| Kiểm tra schema | Nhanh, rõ lỗi kiểu/field | Không thay authorization hay business rule |
+| Allowlist tool | Giới hạn được khả năng model | Cần cập nhật khi nghiệp vụ thêm tool |
+| Rule/classifier nội dung | Chặn được một số input/output | Có false positive/negative, không phải ranh giới quyền |
+| Duyệt người dùng | Hợp với thao tác rủi ro cao | Tăng thời gian và mệt mỏi khi duyệt quá nhiều |
+
+### Pitfall production
+- Chỉ kiểm tra JSON schema rồi gọi thẳng repository: schema không ngăn truy cập chéo tenant.
+- Đưa cả tool nguy hiểm vào prompt và dặn model đừng dùng: lời dặn không phải authorization.
+- Catch mọi lỗi rồi trả “thành công”: khiến người dùng tin dữ liệu đã được ghi.
+- Validate trước nhưng dùng lại quyền cũ sau khi trạng thái thay đổi; kiểm tra phải sát thời điểm thực thi.
+
+### Ví dụ đời thực
+Agent tra cứu đơn và tạo yêu cầu đổi địa chỉ xử lý 8.000 phiên/ngày. Ban đầu backend nhận {{tenantId}} từ arguments của model; kiểm thử nội bộ không phát hiện lỗi, nhưng audit cho thấy 11 request thử truy cập mã đơn ngoài tenant. Nhóm chuyển tenant/user sang context đã xác thực, allowlist riêng cho mỗi vai trò, kiểm lại quyền trong domain service và giới hạn tool tạo yêu cầu chỉ ghi bản nháp. Trong 30 ngày sau đó, 37 tool call sai đối số bị từ chối trước khi ghi; không phát sinh thay đổi dữ liệu ngoài quyền.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không để model quyết định quyền hoặc gọi trực tiếp tài nguyên. Đầu tiên tôi xác thực người dùng, chuẩn hoá input và lấy tenant từ session đáng tin cậy. Backend chỉ đưa cho agent các tool trong allowlist phù hợp vai trò. Mỗi tool call được parse theo schema nhưng sau đó vẫn kiểm tra quyền, trạng thái và quy tắc domain, vì schema chỉ kiểm tra hình dạng chứ không kiểm tra đúng người hay đúng nghiệp vụ. Tool ghi dữ liệu cần idempotency và có thể cần xác nhận người dùng. Cuối cùng tôi kiểm tra kết quả tool và schema output; lỗi không được biến thành câu trả lời thành công giả. Tôi đo số lần bị từ chối, lỗi validation và false positive để điều chỉnh mà không nới quyền chỉ vì UX. Trước khi phát hành, tôi kiểm thử trường hợp sai tenant, quyền vừa bị thu hồi và tool trả dữ liệu quá lớn. Quyền luôn được áp dụng trong backend ở mỗi request, không dựa vào prompt hay bộ nhớ của agent.”
+
+> Senior tip: Viết test cho từng ranh giới: sai tenant, field lạ, enum không hợp lệ, tool không nằm allowlist và quyền bị thu hồi giữa phiên. Mục tiêu là model có thể đề xuất sai nhưng backend không thể thực thi sai.`,
+  follow: [
+    'Schema hợp lệ nhưng người dùng không có quyền trên resource thì kiểm tra ở lớp nào?',
+    'Bạn phân biệt tool đọc với tool ghi và quyết định yêu cầu xác nhận ra sao?',
+    'Khi output guard từ chối một câu trả lời hợp lệ thì bạn đo và xử lý false positive thế nào?'
+  ],
+  tags: ['agent guardrails', 'tool allowlist', 'validation', 'authorization', 'output validation']
+},
+{
+  id: 'ai-072',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Bạn có prompt mới cho agent và muốn chứng minh nó tốt hơn trước khi phát hành. Bạn kết hợp golden set với A/B prompt thế nào để phép so sánh công bằng, có ý nghĩa thống kê và không làm người dùng chịu rủi ro?',
+  a: `**Tóm tắt:** Tôi dùng golden set để kiểm tra lặp lại trên các ca đã biết trước, rồi dùng A/B test có phân nhóm ngẫu nhiên để đo tác động trên traffic thật. Hai prompt phải chạy cùng input và điều kiện; quyết định không dựa vào một điểm tổng duy nhất mà xét chất lượng, an toàn, latency, chi phí và các nhóm người dùng quan trọng.
+
+### Cái gì, vì sao cần
+Golden set là tập tình huống chuẩn có đầu vào, ngữ cảnh và tiêu chí chấm; nó giống bộ đề thi cố định để phát hiện prompt làm hỏng ca từng chạy đúng. A/B test là thử hai biến thể trên các nhóm người dùng tương đương; nhóm A thấy prompt hiện hành, nhóm B thấy prompt mới. Offline giúp rẻ và tái lập, còn online cho biết hành vi thực tế nhưng có rủi ro và nhiễu.
+
+### Thiết kế phép thử
+1. Tạo ca từ câu hỏi thật đã ẩn danh, gồm ca thường, biên, phải từ chối và câu có dữ liệu thiếu. Giữ riêng một holdout (tập kiểm tra chưa dùng để sửa prompt) để tránh viết prompt chỉ nhằm trả lời đúng bộ đề.
+2. Chạy A và B trên cùng snapshot dữ liệu, model, cấu hình và tool giả lập. Ghim version prompt/model; nếu model thay đổi cùng lúc thì không biết yếu tố nào gây khác biệt.
+3. Chấm phần xác định bằng rule, như tool được gọi, schema JSON, hoặc citation có trong context. Dùng judge có rubric cho chất lượng mở, nhưng kiểm định mẫu với người chấm.
+4. Chỉ khi offline không có regression về an toàn và chất lượng mới chạy online. Chọn trước metric chính, ví dụ tỷ lệ giải quyết thành công; metric bảo vệ gồm tool call sai, khiếu nại, p95 latency và chi phí/phiên.
+5. Phân nhóm ổn định theo user hoặc tenant để một người không đổi prompt giữa các lượt hội thoại. Đặt thời lượng, cỡ mẫu và ngưỡng dừng trước khi xem kết quả; phân tích riêng ngôn ngữ, loại yêu cầu và khách hàng lớn.
+6. Giới hạn tỷ lệ rollout, tắt nhanh nếu lỗi an toàn tăng; lưu prompt version và assignment để truy vết.
+
+~~~java
+// Minh hoạ: cùng một người giữ nguyên nhánh trong suốt thử nghiệm.
+Variant variantFor(String stableUserKey, int bucketCount) {
+    int bucket = Math.floorMod(stableUserKey.hashCode(), bucketCount);
+    return bucket < bucketCount / 2 ? Variant.CONTROL : Variant.CANDIDATE;
+}
+~~~
+Trong hệ thống thật cần hash có tính ổn định, xử lý người dùng mới và tránh đưa dữ liệu nhạy cảm vào log. Ví dụ chỉ giải thích phân nhóm, không phải triển khai thử nghiệm đầy đủ.
+
+### Trade-off
+| Phương pháp | Phù hợp | Điểm mù |
+|---|---|---|
+| Golden set offline | Bắt regression tái lập, an toàn trước traffic | Không đại diện hết câu hỏi mới |
+| A/B online | Đo hành vi thật và hiệu quả sản phẩm | Nhiễu, cần traffic/thời gian, có thể gây tác động xấu |
+| Shadow | So sánh output mà không đổi câu trả lời người dùng | Tốn thêm model call; tool phải giả lập để tránh side effect |
+
+Không nên tối ưu theo click hoặc thời gian hội thoại đơn thuần: câu trả lời sai nhưng hấp dẫn có thể tăng tương tác. Xác định trước metric chính và guardrail; dùng thống kê phù hợp với loại metric, không dừng thử ngay khi thấy một lần tăng đẹp.
+
+### Pitfall production
+- Thay prompt và model cùng lúc: không quy nguyên nhân được.
+- Để cùng user thấy cả hai nhánh qua từng request: hội thoại không nhất quán và dữ liệu bị nhiễm chéo.
+- Chạy nhiều metric rồi chỉ chọn metric có kết quả thuận lợi; cần công bố metric chính trước.
+- Judge model khác phiên bản hoặc prompt giữa hai nhánh, làm điểm so sánh lệch.
+- Chỉ nhìn trung bình: regression nhỏ ở nhóm ít người nhưng rủi ro cao có thể bị che.
+
+### Ví dụ đời thực
+Agent hỗ trợ nhân viên tra quy trình có 24.000 phiên/tuần. Golden set 600 ca cho thấy prompt mới tăng điểm judge từ 4,1 lên 4,3/5 nhưng làm tool call không cần thiết tăng từ 0,4% lên 1,2%; nhóm sửa trước khi online. A/B tiếp theo chia đều theo nhân viên trong 7 ngày, giữ nguyên model và kho tài liệu. Tỷ lệ hoàn tất tác vụ tăng 3,2 điểm phần trăm, p95 tăng 80 ms, chi phí/phiên tăng 2%; nhóm rủi ro cao không tăng lỗi. Sau khi xác nhận cỡ mẫu và metric chính đạt ngưỡng, đội mới mở rộng.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu với golden set có dữ liệu thật đã ẩn danh, bao gồm cả ca phải hỏi lại và ca phải từ chối. Tôi giữ một holdout không dùng để tinh chỉnh. Trên offline, hai prompt dùng cùng model, dữ liệu và tool giả lập; kiểm tra bằng rule các kết quả xác định và dùng judge đã hiệu chỉnh cho câu trả lời mở. Nếu qua ngưỡng an toàn, tôi chạy A/B phân nhóm ổn định theo người dùng, đặt trước metric chính, thời gian, cỡ mẫu và ngưỡng dừng. Tôi theo dõi cả chất lượng, tool sai, latency và chi phí, rồi phân tích theo nhóm thay vì chỉ nhìn trung bình. Nếu guardrail bị vi phạm thì tắt candidate. Như vậy offline bắt lỗi đã biết, online kiểm tra tính đại diện thực tế. Tôi không đổi model, retrieval và prompt cùng lúc vì sẽ không biết yếu tố nào tạo ra chênh lệch. Sau thử nghiệm, tôi kiểm tra mẫu lỗi với product và vận hành, rồi mới tăng traffic theo từng bước.”
+
+> Senior tip: Đừng coi “judge score tăng” là bằng chứng đủ. Luôn xem các ca thất bại riêng lẻ và metric an toàn; một tỷ lệ lỗi hiếm ở tool ghi có thể quan trọng hơn mức tăng nhỏ của điểm trung bình.`,
+  follow: [
+    'Bạn chọn đơn vị phân nhóm theo user, session hay tenant khi hội thoại có trạng thái?',
+    'Cỡ mẫu và thời gian A/B nên được xác định trước dựa trên điều gì?',
+    'Nếu điểm judge tăng nhưng tool call sai cũng tăng thì quyết định phát hành ra sao?'
+  ],
+  tags: ['golden set', 'A/B testing', 'prompt evaluation', 'release quality', 'LLM judge']
+},
+{
+  id: 'ai-073',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Chatbot RAG phải trả lời có trích dẫn. Làm thế nào để kiểm tra mỗi khẳng định thực sự được hỗ trợ bởi nguồn được trích dẫn, thay vì chỉ tạo ra URL hoặc số trang có vẻ thuyết phục?',
+  a: `**Tóm tắt:** Citation (trích dẫn) chỉ có ích nếu nó trỏ tới nguồn mà hệ thống đã truy xuất và nội dung nguồn hỗ trợ đúng khẳng định. Tôi giữ định danh nguồn và đoạn văn xuyên suốt retrieval, kiểm tra citation ở mức từng claim (khẳng định), rồi yêu cầu agent nói rõ chưa đủ bằng chứng thay vì lấp chỗ trống bằng suy đoán.
+
+### Cái gì, vì sao cần
+Hallucination là nội dung nghe hợp lý nhưng không được dữ liệu xác nhận. Citation hallucination xảy ra khi model bịa nguồn, dẫn sai đoạn, hoặc gắn nguồn có thật với một kết luận không xuất phát từ nguồn đó. Chỉ kiểm tra URL tồn tại là chưa đủ: tài liệu thật có thể không nói điều chatbot khẳng định.
+
+### Thiết kế luồng bằng chứng
+1. Khi nạp tài liệu, gán mỗi chunk (đoạn nhỏ được lập chỉ mục) một source ID ổn định, version tài liệu và vị trí như trang/heading. Không để model tự tạo URL hoặc trang.
+2. Retrieval chỉ trả các chunk mà user được phép xem; ứng dụng giữ mapping source ID → tài liệu, đoạn và version.
+3. Yêu cầu đầu ra có danh sách claim và source ID được chọn từ danh sách context. Đây là hợp đồng định dạng, không phải đảm bảo nội dung đúng.
+4. Server kiểm source ID có thuộc request/context không, kiểm version và quyền; sau đó đánh giá claim có được đoạn nguồn hỗ trợ. Với yêu cầu chính xác cao, dùng rule/domain validation hoặc bước entailment/judge đã kiểm nghiệm; kết quả không chắc thì hạ mức khẳng định hoặc abstain (từ chối trả lời vì thiếu bằng chứng).
+5. UI hiển thị trích dẫn do server dựng từ metadata, không render link tùy ý model sinh. Khi nhiều nguồn mâu thuẫn, nêu ngày/version và yêu cầu làm rõ thay vì âm thầm chọn một.
+
+~~~java
+record Claim(String text, List<String> sourceIds) {}
+
+Answer validate(GeneratedAnswer answer, Set<String> retrievedIds) {
+    for (Claim claim : answer.claims()) {
+        if (claim.sourceIds().isEmpty()) return Answer.abstain();
+        if (!retrievedIds.containsAll(claim.sourceIds())) return Answer.reject();
+        if (!evidenceCheck.supports(claim, answer.context())) return Answer.abstain();
+    }
+    return renderWithServerOwnedLinks(answer);
+}
+~~~
+{{evidenceCheck}} là phần kiểm chứng cần được chọn và đánh giá theo miền; không có một thuật toán tổng quát nào chứng minh mọi câu văn tự nhiên. Câu trả lời về số dư, quyền lợi hay quyết định pháp lý có thể cần dữ liệu có cấu trúc hoặc chuyên gia, không nên phó mặc cho judge.
+
+### Cách đo và đánh đổi
+| Kiểm tra | Bắt được | Không đảm bảo |
+|---|---|---|
+| Citation ID thuộc context | Nguồn bịa hoặc ngoài retrieval | Claim có thật sự được hỗ trợ |
+| Đối chiếu claim–evidence | Trích dẫn sai ý, thiếu hỗ trợ | Judge cũng có thể sai |
+| Review người dùng/chuyên gia | Lỗi tinh tế, mâu thuẫn | Chi phí cao, khó chạy mọi request |
+| Abstain khi thiếu nguồn | Giảm câu trả lời bịa | Có thể giảm độ bao phủ |
+
+Nên theo dõi citation precision (tỷ lệ trích dẫn được hỗ trợ) và claim coverage (tỷ lệ claim quan trọng có bằng chứng), không chỉ tỷ lệ câu trả lời có link. Đánh giá trên tập có nhãn, kiểm tra thủ công mẫu, và bổ sung ca lỗi sản xuất vào eval.
+
+### Pitfall production
+- Yêu cầu “hãy trích nguồn” trong prompt rồi tin model sẽ trung thực.
+- Chỉ kiểm tra URL hoặc source ID tồn tại, không kiểm nội dung hỗ trợ.
+- Chunk bị cập nhật nhưng link vẫn trỏ tài liệu mới; câu trả lời cũ không còn tái lập được.
+- Hiển thị trích dẫn ngoài quyền người dùng hoặc vô tình để lộ tiêu đề tài liệu nhạy cảm.
+- Lấy điểm entailment tự động làm chân lý; judge cần hiệu chuẩn theo miền và có ngưỡng abstain.
+
+### Ví dụ đời thực
+Chatbot chính sách bảo hiểm phục vụ 15.000 câu hỏi/ngày. Audit 300 câu trả lời có link phát hiện 9% có citation tồn tại nhưng không hỗ trợ mức khấu trừ được nêu. Nhóm giữ source ID/version/page từ ingestion, tách claim về số tiền thành trường cần xác minh với bảng quyền lợi có cấu trúc, và từ chối nêu con số khi không khớp. Sau hai tuần, tỷ lệ citation không hỗ trợ trong mẫu audit giảm từ 9% xuống 1,5%; tỷ lệ abstain tăng 2 điểm phần trăm và được chuyển sang nhân viên tư vấn.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không xem citation do model viết là bằng chứng. Trong ingestion, mỗi đoạn có source ID, version và vị trí; retrieval chỉ lấy tài liệu người dùng được phép xem. Model trả claim cùng các ID nguồn từ context, backend kiểm tra ID, quyền và version, rồi kiểm tra claim có được hỗ trợ. Link và tiêu đề cuối cùng do ứng dụng dựng từ metadata, không tin URL tự do của model. Với số liệu quan trọng tôi ưu tiên kiểm tra bằng dữ liệu có cấu trúc; nếu bằng chứng mâu thuẫn hoặc judge không chắc, tôi abstain hoặc chuyển người thật. Tôi đo citation precision, claim coverage và audit mẫu thủ công, vì kiểm tra link tồn tại không phát hiện nguồn có thật nhưng bị diễn giải sai. Tôi cũng giữ snapshot hoặc version tài liệu để điều tra được câu trả lời cũ sau khi nguồn cập nhật. Khi domain có hậu quả pháp lý hay tài chính, tôi đưa tiêu chí ngưỡng cho chuyên gia nghiệp vụ duyệt thay vì để model tự kết luận.”
+
+> Senior tip: Gắn version hoặc ngày hiệu lực của nguồn vào trace và citation. Khi tài liệu thay đổi, bạn cần tái tạo được câu trả lời dựa trên phiên bản nào, đặc biệt với chính sách và số liệu có thời hạn.`,
+  follow: [
+    'Bạn kiểm tra claim được hỗ trợ bởi đoạn trích thế nào nếu câu trả lời diễn đạt lại bằng từ khác?',
+    'Khi hai tài liệu có hiệu lực khác nhau đưa ra thông tin mâu thuẫn, UI nên thể hiện ra sao?',
+    'Bạn cân bằng tỷ lệ abstain với nguy cơ trả lời sai bằng metric nào?'
+  ],
+  tags: ['RAG citations', 'hallucination', 'evidence validation', 'abstention', 'source versioning']
+},
+{
+  id: 'ai-074',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Nhiều instance Spring Boot cùng phục vụ nhiều tenant và gọi LLM đồng thời. Bạn thực thi hard budget theo user/tenant thế nào để request song song không vượt hạn mức, nhưng vẫn phân bổ công bằng?',
+  a: `**Tóm tắt:** Hard budget là giới hạn mà hệ thống phải từ chối hoặc hạ cấp khi chạm ngưỡng, không chỉ gửi cảnh báo sau khi hóa đơn đã phát sinh. Tôi tách quota theo request, user và tenant; đặt chỗ ngân sách nguyên tử trước khi gọi model, quyết toán theo usage thực tế sau đó, và định nghĩa rõ chính sách khi store quota tạm lỗi.
+
+### Vì sao không chỉ đếm trong bộ nhớ
+Mỗi instance có bộ đếm riêng nên nếu chạy bốn instance, một tenant có thể vượt quota gần bốn lần. Hơn nữa chi phí cuối cùng mới biết chính xác sau response; nếu chỉ trừ sau khi model trả lời, hàng chục request đồng thời đều có thể thấy còn ngân sách và cùng chạy.
+
+### Luồng reserve → call → settle
+1. Xác thực tenant/user từ identity provider; không dùng tenant do prompt hoặc client tự khai nếu chưa kiểm quyền.
+2. Ước lượng mức tiêu thụ tối đa dựa trên giới hạn input/output và giá model. Tạo reservation (đặt trước ngân sách) nguyên tử theo bucket thời gian, tenant và user. Nếu không đủ ngân sách thì từ chối, xếp hàng hoặc dùng chế độ rẻ hơn theo policy.
+3. Chỉ sau khi reservation thành công mới gọi model. Gắn operation ID để request lặp không đặt chỗ hai lần; áp concurrency limit để không cho một tenant chiếm mọi worker.
+4. Khi nhận usage thực tế, settle: trừ phần đã dùng, trả lại phần dư. Nếu timeout không biết model đã xử lý chưa, giữ reservation trong trạng thái pending rồi đối soát theo request ID/usage, không giải phóng ngay lập tức.
+5. Reservation hết hạn chỉ được giải phóng sau reconciliation (đối soát) hoặc quy tắc rõ ràng. Ghi audit, alert gần ngưỡng và hiển thị quota dễ hiểu cho quản trị viên.
+
+~~~java
+record Reservation(String id, long reservedUnits) {}
+
+Result callWithinBudget(Tenant tenant, Prompt prompt) {
+    long estimate = estimator.maxUnits(prompt);
+    Reservation hold = quotaStore.reserveAtomically(tenant.id(), estimate);
+    if (hold == null) throw new QuotaExceededException();
+    try {
+        UsageResult result = model.call(prompt);
+        quotaStore.settle(hold.id(), result.actualUnits());
+        return result.value();
+    } catch (UnknownOutcomeException e) {
+        quotaStore.markPending(hold.id()); // đối soát trước khi hoàn quota
+        throw e;
+    }
+}
+~~~
+{{reserveAtomically}} phải được triển khai bằng một primitive nguyên tử phù hợp datastore, chẳng hạn transaction/conditional update; đoạn mã chỉ mô tả hợp đồng. Không giả định một thao tác đọc rồi ghi rời rạc là an toàn trước concurrency.
+
+### Fairness và phân cấp quota
+| Giới hạn | Mục đích | Ví dụ |
+|---|---|---|
+| Request | Chặn một request quá lớn | Max input/output units |
+| User | Ngăn một tài khoản chiếm hạn mức team | Quota ngày hoặc concurrency |
+| Tenant | Giữ trần hóa đơn tổ chức | Ngân sách tháng và cảnh báo |
+| Global | Bảo vệ quota nhà cung cấp | Token/request rate toàn hệ thống |
+
+Hạn mức phân cấp phải được quyết định trong cùng một transaction/operation nguyên tử, nếu không các user cùng tenant có thể đồng thời vượt tenant cap. Có thể ưu tiên một phần ngân sách cho tác vụ thiết yếu, nhưng phải công khai rule; quota cứng và hàng đợi có thể làm tăng latency.
+
+### Pitfall production
+- Dùng số token ước tính như số billing chính xác; tokenizer, cache và giá theo model có thể khác.
+- Không giữ reservation khi timeout mơ hồ, rồi retry tạo thêm request có tính phí.
+- Redis hoặc datastore quota không sẵn sàng: fail-open có thể vượt ngân sách, fail-closed có thể làm gián đoạn dịch vụ; chọn theo mức rủi ro và có giới hạn dự phòng rõ.
+- Chỉ có monthly cap: tenant có thể tiêu hết ngay đầu tháng; kết hợp rate, daily alert và concurrency.
+- Quota user không công bằng khi nhiều request cùng lúc; cần reservation nguyên tử và per-tenant concurrency.
+
+### Ví dụ đời thực
+Nền tảng trợ lý doanh nghiệp có 120 tenant và 3 instance. Một tenant chiếm 35% tổng token dù chỉ 8% người dùng. Bộ đếm cục bộ trước đó cho phép burst vượt ngân sách khoảng 2,7 lần. Nhóm thêm reservation atomic theo tenant/ngày, user cap, concurrency 20 và settle theo usage trả về; request timeout được giữ pending tối đa đến lúc đối soát. Trong tháng tiếp theo, mức vượt dự toán giảm từ 170% xuống 6% do sai số ước tính, và các tenant khác giữ được phần quota đã cam kết.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không dựa vào bộ đếm trong JVM vì nhiều instance sẽ nhìn thấy trạng thái khác nhau. Sau khi xác thực tenant, tôi ước lượng trần chi phí và reserve nguyên tử ở quota store theo cả tenant lẫn user trước khi gọi model. Nếu reservation không thành công, request bị từ chối hoặc chuyển sang phương án đã định nghĩa. Khi có usage thật, tôi settle và trả phần dư. Timeout mơ hồ không được giải phóng ngay; cần giữ trạng thái pending và đối soát để tránh retry làm vượt ngân sách. Tôi đặt thêm giới hạn request, concurrency và global provider quota, theo dõi sai số estimate. Cuối cùng phải quyết định rõ fail-open hay fail-closed khi quota store lỗi, dựa trên rủi ro tài chính và yêu cầu sẵn sàng. Tôi dùng operation ID để request lặp không giữ chỗ hai lần và đặt cảnh báo trước khi chạm trần. Khi giới hạn theo cả user và tenant, việc reserve cần cập nhật đồng bộ cả hai bucket để không có cửa sổ vượt quota.”
+
+> Senior tip: Đo chênh lệch giữa reservation và usage thực tế theo model, tenant và loại tác vụ. Nếu p95 sai số lớn, hãy tăng safety margin hoặc giảm max output thay vì nâng quota cho toàn hệ thống.`,
+  follow: [
+    'Khi datastore quota tạm không sẵn sàng, bạn chọn fail-open hay fail-closed cho từng loại endpoint?',
+    'Bạn xử lý reservation bị treo nếu process chết sau khi provider đã tính phí thế nào?',
+    'Làm sao công bằng khi một tenant có burst ngắn nhưng ngân sách ngày còn dư?'
+  ],
+  tags: ['LLM cost budget', 'tenant quota', 'atomic reservation', 'fairness', 'Spring Boot']
+},
+{
+  id: 'ai-075',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn cân nhắc semantic cache cho chatbot RAG. Làm thế nào quyết định câu hỏi đủ giống để dùng lại câu trả lời mà không trả sai theo quyền, tenant, phiên bản tài liệu hoặc ý định khác nhau?',
+  a: `**Tóm tắt:** Semantic cache tìm câu hỏi gần nghĩa bằng embedding thay vì chỉ so chuỗi giống hệt. Nó hữu ích khi nhiều người hỏi cùng một FAQ, nhưng độ gần vector không chứng minh hai câu hỏi có cùng ý định hay quyền truy cập; cache phải được scope theo ngữ cảnh bảo mật và chỉ bật cho loại câu hỏi có thể dùng lại an toàn.
+
+### Cái gì và luồng hoạt động
+Embedding là biểu diễn câu thành vector số để câu gần nghĩa thường có vector gần nhau. Semantic cache lưu câu hỏi, metadata và câu trả lời; request mới được embed, tìm ứng viên gần nhất trong phạm vi phù hợp, rồi chỉ trả cache khi đạt các điều kiện đã định. Khác exact cache (khớp key chính xác), semantic cache có thể gộp câu chữ khác nhau nhưng cũng dễ gộp nhầm ý.
+
+1. Chọn tác vụ phù hợp: FAQ ổn định, không cá nhân hoá và dữ liệu ít đổi là ứng viên tốt. Không cache câu hỏi về số dư, quyền lợi theo hồ sơ hoặc nội dung cần dữ liệu thời gian thực.
+2. Tạo key/scope gồm tenant, quyền hoặc ACL fingerprint, locale, loại tác vụ, version prompt/model và version corpus/index. Không tìm lân cận qua phạm vi có quyền khác.
+3. Tìm top candidate, kiểm similarity threshold cùng điều kiện metadata. Ngưỡng không có con số chung; hiệu chỉnh bằng cặp câu tương đương và cặp “gần chữ nhưng khác nghĩa”, tối ưu theo chi phí lỗi.
+4. Với câu trả lời RAG, kiểm tài liệu nguồn còn hiệu lực, user vẫn có quyền và cache entry chưa hết TTL. Khi corpus hoặc ACL đổi, invalidate theo version hoặc xóa theo phạm vi.
+5. Nếu bất định, cache miss và gọi pipeline bình thường. Ghi metric hit, false hit qua feedback/audit, latency và chi phí đã tiết kiệm.
+
+~~~java
+Optional<CachedAnswer> lookup(Query q, AccessContext access) {
+    CacheScope scope = CacheScope.from(access, q.locale(), q.intent());
+    Candidate c = vectorCache.nearest(q.embedding(), scope);
+    if (c == null || c.score() < threshold.forIntent(q.intent())) return Optional.empty();
+    if (!access.canRead(c.sourceIds()) || !corpus.isCurrent(c.version())) return Optional.empty();
+    return Optional.of(c.answer());
+}
+~~~
+{{threshold}} phụ thuộc dữ liệu và mức độ rủi ro; không nên chọn chỉ vì một demo vài câu có vẻ chạy tốt. Cache cần giữ metadata đủ để xác thực lại quyền, không chỉ lưu chuỗi câu trả lời.
+
+### Trade-off
+| Chiến lược | Lợi ích | Rủi ro |
+|---|---|---|
+| Exact cache | Dễ giải thích, ít nhầm | Hit thấp khi cách diễn đạt khác |
+| Semantic cache | Hit cao với câu đồng nghĩa | False hit khi ý định gần nhưng điều kiện khác |
+| Không cache | Luôn chạy retrieval/model mới | Tốn tiền và latency |
+| Cache theo intent/tenant | Giảm phạm vi sai | Nhiều partition, hit rate thấp hơn |
+
+Ví dụ “đổi địa chỉ giao hàng” và “đổi địa chỉ xuất hoá đơn” có embedding gần nhau nhưng thao tác khác. Entity (mã đơn, thời điểm, sản phẩm), ngữ cảnh hội thoại và trạng thái hiện tại cũng có thể làm câu trả lời cũ không dùng lại được.
+
+### Pitfall production
+- Dùng một cache key chung cho mọi tenant, làm rò dữ liệu hoặc chính sách.
+- Chỉ dựa vào similarity score; model embedding và phân phối dữ liệu đổi thì score không còn cùng ý nghĩa.
+- Cache câu trả lời có tên, số liệu cá nhân hoặc nguồn đã hết hiệu lực.
+- TTL dài nhưng không invalidation khi tài liệu/ACL cập nhật.
+- Tính hit rate là thành công mà không đo false hit; một lần trả nhầm có thể gây tổn thất lớn hơn nhiều lần cache miss.
+
+### Ví dụ đời thực
+Chatbot nội bộ có 60.000 câu hỏi/tuần, 28% hỏi về chính sách chung. Semantic cache ban đầu dùng ngưỡng 0,82 trên toàn bộ nhân viên; audit phát hiện 6 câu trả lời sai do “ngày nghỉ phép” gần nghĩa với “ngày nghỉ không lương”, và 2 câu thuộc tài liệu nhóm khác. Nhóm tách cache theo tenant/ACL, loại câu hỏi cá nhân hoá, bổ sung điều kiện intent/entity, và hiệu chỉnh ngưỡng bằng 1.500 cặp đã gán nhãn. Hit rate giảm từ 34% xuống 21%, nhưng false hit trong mẫu audit giảm từ 1,8% xuống 0,2%; p95 latency giảm 0,7 giây cho các câu cache hit.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi chỉ dùng semantic cache cho loại câu hỏi có thể tái sử dụng, thường là FAQ ổn định. Embedding đo độ gần ngữ nghĩa chứ không chứng minh hai câu có cùng điều kiện. Vì vậy tôi scope tìm kiếm theo tenant, quyền, locale, intent và version dữ liệu; sau đó kiểm threshold đã hiệu chỉnh bằng positive lẫn hard-negative pairs. Với câu hỏi cá nhân hoá hoặc cần dữ liệu mới, tôi không cache. Trước khi trả kết quả, tôi kiểm quyền và hiệu lực nguồn, dùng TTL/invalidation khi corpus thay đổi. Tôi theo dõi false hit chứ không chỉ hit rate; nếu không đủ chắc thì cache miss an toàn hơn là trả một câu cũ nghe hợp lý. Tôi bắt đầu bằng exact cache làm baseline, rồi so sánh chất lượng và chi phí theo nhóm intent. Các ca sai gần nghĩa được lưu thành hard negatives để hiệu chỉnh và test lại mỗi lần đổi embedding hoặc corpus.”
+
+> Senior tip: Xây bộ “hard negatives” gồm câu gần nhau nhưng khác đối tượng, thời hạn hoặc phủ định. Các cặp này thường cho biết ngưỡng semantic cache có an toàn hơn hàng trăm câu FAQ dễ hay không.`,
+  follow: [
+    'Bạn thiết kế cache scope thế nào khi user thuộc nhiều nhóm ACL và quyền thay đổi trong ngày?',
+    'Bạn đo false-hit rate nếu không có nhãn đúng cho mọi câu hỏi production ra sao?',
+    'Khi tài liệu nguồn bị cập nhật, bạn chọn versioned key, TTL hay chủ động invalidation?'
+  ],
+  tags: ['semantic cache', 'embeddings', 'pgvector', 'tenant isolation', 'cache invalidation']
+},
+{
+  id: 'ai-076',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Model chính của agent ngừng hoạt động, nhưng model dự phòng khác về khả năng tool calling, output schema và chất lượng. Bạn thiết kế fallback chain thế nào để chỉ failover khi phù hợp và không âm thầm làm sai nghiệp vụ?',
+  a: `**Tóm tắt:** Fallback không chỉ là gọi một model khác khi model chính lỗi. Tôi định nghĩa capability contract cho từng tác vụ, phân loại lỗi và mức quan trọng, rồi chỉ chuyển sang model đã được kiểm thử tương thích; nếu không đảm bảo được schema, tool semantics hoặc chất lượng thì degrade rõ ràng hay từ chối thay vì giả vờ thành công.
+
+### Capability contract
+Model dự phòng có thể hỗ trợ text nhưng không hỗ trợ cùng tool schema, giới hạn context, ngôn ngữ hoặc cấu trúc output. Capability contract là tập yêu cầu tối thiểu của tác vụ, ví dụ JSON đúng schema, không gọi tool ngoài danh sách, tiếng Việt đạt mức chất lượng và không quá giới hạn latency. Contract được kiểm bằng eval, không suy ra từ tên model hay API cùng chuẩn.
+
+### Quyết định failover từng bước
+1. **Phân loại lỗi:** lỗi cấu hình/auth/request không nên retry hay đổi model một cách mù quáng. Timeout, 429 hoặc provider unavailable có thể là lỗi tạm thời; circuit breaker (cầu dao ngắt lời gọi khi lỗi liên tục) giúp ngừng dồn tải vào provider đang hỏng.
+2. **Kiểm tra task:** chỉ failover các tác vụ có fallback đã được eval. Tác vụ đọc/tóm tắt có thể chấp nhận model yếu hơn; quyết định tín dụng hoặc tool ghi tiền có thể phải dừng và chuyển người xử lý.
+3. **Kiểm soát chi phí/thời gian:** ngân sách request bao gồm retry và fallback. Giới hạn số lần thử, tôn trọng Retry-After khi có, không gọi tuần tự mọi provider cho mỗi request.
+4. **Giữ hợp đồng output:** validate schema và business invariants sau response như thường lệ. Nếu fallback không đạt, không dùng output lỗi để gọi tool; trả trạng thái degraded hoặc yêu cầu thử lại.
+5. **Phân biệt hai ý định:** retry cùng request giữ correlation/idempotency; một tool side effect không được chạy lại chỉ vì response model bị mất. Failover model không thay thế kiểm tra trạng thái tool.
+6. **Quan sát và phục hồi:** ghi provider/model, lý do failover, latency, chi phí và pass-rate; circuit breaker đóng lại có kiểm soát sau khi provider phục hồi, không đổi model âm thầm vô hạn.
+
+~~~java
+Result answer(Request request) {
+    try {
+        return validate(primary.call(request), request.contract());
+    } catch (ProviderUnavailableException e) {
+        if (!fallbackPolicy.allowed(request.task())) throw e;
+        Result candidate = fallback.call(request);
+        return validate(candidate, request.contract()); // không hợp lệ thì báo lỗi
+    }
+}
+~~~
+Đây là phác thảo nguyên lý. Cần phân biệt exception retryable với lỗi ứng dụng và đặt timeout/circuit breaker ở lớp gateway; không nên bắt mọi exception rồi chuyển provider.
+
+### Trade-off
+| Lựa chọn | Khi phù hợp | Đánh đổi |
+|---|---|---|
+| Fallback model | Tác vụ có model tương thích đã eval | Chất lượng/format có thể khác, thêm phí |
+| Cache kết quả | Câu trả lời ổn định, quyền còn hợp lệ | Có thể cũ hoặc không đúng context hiện tại |
+| Degrade | Có thể trả ít tính năng hơn an toàn | UX giảm, cần thông báo rõ |
+| Fail closed/chuyển người | Hành động rủi ro cao, output không chắc | Tăng thời gian và tải vận hành |
+
+### Pitfall production
+- Chỉ kiểm tra model dự phòng có endpoint mà chưa kiểm tool calling và JSON schema.
+- Fallback chain dài làm latency/chi phí nhân lên khi outage.
+- Retry timeout mù dù request trước vẫn chạy và có thể tính phí.
+- Provider dự phòng trả được text nhưng chất lượng thấp hơn; không gắn trạng thái degraded nên nhân viên tin tuyệt đối.
+- Dùng output fallback để thực thi hành động nhạy cảm mà không chạy guardrail/policy như đường chính.
+
+### Ví dụ đời thực
+Agent phân loại khiếu nại có 18.000 request/ngày và model chính đôi lúc trả 503. Dự phòng ban đầu tạo JSON hợp lệ 97% nhưng nhầm nhãn “gian lận” ở 4,2% ca, so với 0,8% của model chính. Đội chia capability theo tác vụ: model phụ chỉ nhận phân loại thông thường dưới ngưỡng rủi ro; ca gian lận chuyển hàng đợi người duyệt. Gateway giới hạn một lần failover, validate schema và ghi nhãn degraded. Trong outage 22 phút, 92% request thông thường hoàn tất, 8% ca nhạy cảm được xếp hàng thay vì phân loại tự động sai; chi phí tăng 11% trong sự cố, nằm trong budget.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không xem fallback là danh sách model gọi lần lượt. Mỗi tác vụ có capability contract và eval riêng: tool, schema, ngôn ngữ, chất lượng và latency tối thiểu. Gateway phân loại lỗi; lỗi cấu hình không được che bằng failover, còn provider unavailable có thể chuyển model đã được kiểm thử. Tôi giới hạn số lần và tổng ngân sách, dùng circuit breaker để tránh gọi dồn. Kết quả của model dự phòng vẫn qua validation, authorization và business rules; nếu không đạt thì degrade có thông báo hoặc chuyển người xử lý. Với tool ghi dữ liệu, tôi kiểm trạng thái/idempotency để failover không gây side effect lặp. Cuối cùng tôi đo tỷ lệ failover, chất lượng theo task và chi phí để biết fallback thực sự hữu ích. Mỗi model dự phòng phải có bộ ca riêng cho chức năng mà nó thay thế, không chỉ điểm benchmark chung. Nếu phần output không đạt contract, tôi không thử gọi thêm model vô hạn mà trả trạng thái có thể khôi phục.”
+
+> Senior tip: Đánh giá fallback theo từng loại tác vụ và mức độ rủi ro, không chỉ theo một điểm benchmark tổng. Có thể chấp nhận câu tóm tắt kém trau chuốt; không thể chấp nhận nhầm một quyết định ảnh hưởng tiền hoặc quyền truy cập.`,
+  follow: [
+    'Bạn tách lỗi provider tạm thời khỏi lỗi request/auth để tránh failover che lỗi cấu hình thế nào?',
+    'Model dự phòng đạt schema nhưng chất lượng giảm ở nhóm nhạy cảm thì policy nên xử lý ra sao?',
+    'Làm sao tránh gọi lại tool có side effect khi model chính timeout trước khi trả kết quả?'
+  ],
+  tags: ['LLM fallback', 'provider resilience', 'capability contract', 'circuit breaker', 'degradation']
+},
 );
