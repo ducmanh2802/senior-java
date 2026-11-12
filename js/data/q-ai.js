@@ -3469,4 +3469,552 @@ Một công ty luật số đánh giá 5 model trên 420 mẫu tiếng Việt. K
   ],
   tags: ['AI', 'model selection', 'evaluation', 'Vietnamese', 'LLM', 'case study', 'solution architect']
 },
+{
+  id: 'ai-053',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Kiến trúc một agent (vòng lặp model → tool_use → thực thi tool → tool_result) hoạt động ra sao? Điều kiện dừng, giới hạn số bước và ngân sách token nên thiết kế thế nào để không mất kiểm soát?',
+  a: `**Tóm tắt:** Agent là vòng lặp mà model tự quyết định gọi tool nào, ứng dụng thực thi rồi gửi kết quả lại cho model, lặp lại cho đến khi model trả lời cuối hoặc đạt giới hạn. Production bắt buộc có giới hạn cứng do code kiểm soát: số bước tối đa, tổng token, thời gian thực thi, và phát hiện gọi lặp cùng tool/cùng tham số; không tin model tự dừng.
+
+### Vòng lặp agent cơ bản
+1. Ứng dụng gửi prompt kèm **danh sách tool** (tên, mô tả, JSON schema tham số) và state hiện tại.
+2. Model **không chạy code**; nó trả về một **tool call** gồm tên tool + tham số JSON (hoặc nhiều tool calls trong một lượt).
+3. Ứng dụng validate tham số, kiểm tra quyền, thực thi tool (DB, HTTP, tính toán).
+4. Ứng dụng gửi kết quả dưới dạng **tool result** message trở lại cho model.
+5. Model tổng hợp câu trả lời cuối, hoặc gọi tiếp tool khác → quay lại bước 2.
+
+~~~java
+// Khung vòng lặp agent tự viết: điều kiện dừng nằm trong code, không phụ thuộc model
+record AgentBudget(int maxSteps, long maxTokens, Duration maxTime) {
+    boolean exceeded(int steps, long tokens, Instant start) {
+        return steps >= maxSteps || tokens >= maxTokens || Duration.between(start, Instant.now()).compareTo(maxTime) >= 0;
+    }
+}
+
+AgentResult run(Conversation conv, List<Tool> tools, AgentBudget budget) {
+    Instant start = Instant.now();
+    long tokensUsed = 0;
+    Map<String, Integer> callCount = new HashMap<>(); // key = toolName + argsJson
+    int steps = 0;
+    while (true) {
+        if (budget.exceeded(steps, tokensUsed, start))
+            return AgentResult.handoff("Vượt ngân sách: steps=" + steps + ", tokens=" + tokensUsed);
+        ModelTurn turn = llm.next(conv, tools); // một lần gọi model
+        tokensUsed += turn.tokens();
+        steps++;
+        if (turn.isFinalAnswer()) return AgentResult.answer(turn.text());
+        ToolCall call = turn.toolCall(); // giả sử một tool call mỗi lượt
+        String key = call.name() + call.argsJson();
+        if (callCount.merge(key, 1, Integer::sum) > 2) // cùng tool cùng tham số lần thứ 3
+            return AgentResult.handoff("Phát hiện lặp: " + call.name());
+        Tool tool = registry.get(call.name());
+        if (tool.risk() == Risk.WRITE) // side effect: dừng xin xác nhận
+            return AgentResult.needsApproval(call);
+        ToolResult result = safeExecute(tool, call); // lỗi trả về dạng có cấu trúc
+        conv.addToolResult(call, result);
+    }
+}
+~~~
+
+### Các giới hạn bắt buộc
+| Giới hạn | Giá trị thường dùng | Lý do |
+|---|---|---|
+| **maxSteps** | 5–15 | Ngăn vòng lặp vô hạn, context phình to |
+| **maxTokens** | 20.000–50.000 | Chi phí token input+output cả phiên |
+| **maxTime** | 30–60 giây | Provider chậm không kéo sập request |
+| **Phát hiện lặp** | >2 lần cùng tool+cùng args | Model gọi lại cùng tham số khi tool lỗi mơ hồ |
+| **maxToolCallsPerTurn** | 1–3 | Tránh model gọi 20 tool cùng lúc làm context bùng nổ |
+
+### Tool có side effect
+- **Tool đọc** (tra cứu, tìm kiếm): chạy tự do, vẫn kiểm tra quyền theo session.
+- **Tool ghi đảo ngược được** (khoá thẻ tạm thời): yêu cầu khách xác nhận trên UI, có audit.
+- **Tool ghi khó đảo ngược** (hoàn tiền, chuyển tiền): bắt buộc nhân viên duyệt hoặc xác thực mạnh, có **idempotency key**, hạn mức.
+- **Idempotent**: mọi tool ghi phải có khóa idempotent (ví dụ requestId) để model gọi lặp hoặc retry không gây tác động hai lần.
+
+### Xử lý lỗi tool
+- Trả lỗi **có cấu trúc** kèm gợi ý hành động: {{NOT_FOUND: không có giao dịch trong 30 ngày, đừng gọi lại}} tốt hơn stack trace.
+- Phân biệt **lỗi tạm thời** (timeout, 5xx): code tự retry có backoff, không để model retry.
+- Phân biệt **lỗi vĩnh viễn** (400, {{NOT_FOUND}}): báo model để nó đổi hướng hoặc hỏi lại khách.
+- Timeout riêng cho từng tool; tool chậm không được kéo cả phiên.
+
+### Bẫy production
+- Không có giới hạn bước: model gọi tool 40 lần liên tiếp khi tool trả lỗi mơ hồ.
+- Tool trả về entity JPA đầy đủ: lộ trường nhạy cảm, kích hoạt lazy loading ngoài transaction.
+- CustomerId lấy từ tham số model điền: model có thể tra tài khoản người khác (IDOR).
+- Lỗi tool gửi stack trace cho model: lộ cấu trúc nội bộ, model không biết có nên retry hay đổi hướng.
+- Không log tool call: không thể điều tra tại sao agent làm hành động sai.
+
+### Ví dụ đời thực
+- **Triệu chứng**: trên staging, agent hỗ trợ khách hàng có 3 tool ({{lookupTransactions}}, {{lockCard}}, {{createRefund}}) gặp hai sự cố. Sự cố 1: tool tra cứu trả lỗi {{TIMEOUT}} mơ hồ, model gọi lại {{lookupTransactions}} 40 lần trong 6 phút, tiêu tốn 180.000 token. Sự cố 2: khách nhắn "hoàn 2.000.000 cho giao dịch gần nhất" nhưng giao dịch gần nhất là nạp tiền của người khác trong ghi chú; model suýt chọn sai để hoàn tiền vì không có bước xác nhận.
+- **Điều tra**: xem trace từng bước (prompt version, tool call, tham số, kết quả, token, thời gian). Thấy vòng lặp không có giới hạn bước, không phát hiện gọi lặp, {{createRefund}} phân loại như tool thường, customerId lấy từ tham số model, lỗi tool trả stack trace.
+- **Nguyên nhân gốc**: thiếu giới hạn cứng trong code, thiếu phân loại rủi ro tool, thiếu human-in-the-loop cho hành động khó đảo ngược, thiếu kiểm soát quyền theo session.
+- **Cách xử lý**: thêm lớp điều phối với ngân sách cứng (8 bước, 20.000 token, 45 giây), chặn khi cùng {{toolName+argsJson}} xuất hiện lần thứ 3; phân loại tool: đọc tự do, {{lockCard}} cần khách xác nhận, {{createRefund}} cần nhân viên duyệt + idempotency key; customerId chỉ lấy từ session; chuẩn hoá lỗi tool ({{NOT_FOUND}}, {{TIMEOUT}}, {{FORBIDDEN}}) kèm gợi ý hành động; audit log mọi bước. Bổ sung bộ test kịch bản: giao dịch không tồn tại, tool lỗi liên tục, prompt injection trong ghi chú.
+- **Kết quả**: chạy lại 200 kịch bản regression, không phiên nào vượt 8 bước; 100% hoàn tiền qua xác nhận; chi phí token trung bình giảm 37%.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi làm agent có tool nhạy cảm, tôi không tin model tự biết dừng. Tôi đặt giới hạn cứng trong code: tối đa số bước, ngân sách token, thời gian và phát hiện gọi lặp cùng tool cùng tham số; vượt ngưỡng thì chuyển người xử lý. Tôi phân loại tool theo rủi ro: tool đọc chạy tự do nhưng kiểm tra quyền theo session; tool có side effect đảo ngược được cần khách xác nhận; hành động khó đảo ngược như hoàn tiền phải qua xác thực mạnh hoặc nhân viên duyệt, có idempotency key và hạn mức. Lỗi tool trả về có cấu trúc kèm gợi ý hành động, lỗi tạm thời code tự retry có backoff. Khi cần duyệt, hiển thị chính xác tool và tham số sẽ chạy, lưu trạng thái hội thoại để tiếp tục sau. Trace mọi bước và chạy bộ kịch bản regression mỗi lần đổi prompt hoặc model."
+
+> Senior tip: phần lớn bài toán "agent" ở ngân hàng nên là workflow cố định với vài điểm ra quyết định bằng LLM. Chỉ trao quyền tự chọn bước cho model ở phần đọc dữ liệu; mọi hành động động đến tiền của khách đi qua đường có xác nhận, hạn mức và audit như giao dịch thường.`,
+  follow: [
+    'Làm sao phát hiện agent đang lặp khi tham số thay đổi chút ít mỗi lần?',
+    'Prompt injection qua nội dung ghi chú giao dịch: bạn phòng thủ ở tầng nào?',
+    'Ngân sách mỗi phiên nên đặt dựa trên số liệu gì?'
+  ],
+  tags: ['agent', 'tool calling', 'human-in-the-loop', 'budget', 'guardrails', 'idempotency']
+},
+{
+  id: 'ai-054',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Gọi Claude API từ Java để thực hiện tool calling: định nghĩa tool như thế nào, JSON schema cho tham số ra sao, và xử lý nhiều tool_use trong một lượt trả về như thế nào?',
+  a: `**Tóm tắt:** Tool calling với Claude API: ứng dụng gửi {{tools}} (mảng định nghĩa: name, description, input_schema JSON Schema) kèm prompt; Claude trả về {{tool_use}} block(s) chứa {{name}}, {{input}} (JSON), {{id}}; ứng dụng thực thi tool, gửi lại {{tool_result}} block với cùng {{id}}; vòng lặp tiếp tục cho đến khi Claude trả {{text}} không có {{tool_use}}. Nhiều {{tool_use}} trong một lượt được xử lý song song hoặc tuần tự tuỳ thiết kế.
+
+### Định nghĩa tool gửi cho Claude
+Mỗi tool là một object với ba trường bắt buộc:
+
+~~~json
+{
+  "name": "get_account_balance",
+  "description": "Tra cứu số dư tài khoản của khách ĐANG ĐĂNG NHẬP. Chỉ dùng khi khách hỏi số dư của chính họ.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "account_type": { "type": "string", "enum": ["CHECKING", "SAVINGS", "CREDIT"], "description": "Loại tài khoản" }
+    },
+    "required": ["account_type"],
+    "additionalProperties": false
+  }
+}
+~~~
+
+- **name**: định danh duy nhất, dùng để mapping sang method Java.
+- **description**: **quan trọng nhất** để model chọn tool đúng; viết như tài liệu API public: tool làm gì, khi nào dùng, khi nào KHÔNG dùng.
+- **input_schema**: JSON Schema Draft 2020-12; nên đặt {{additionalProperties: false}} để chặn tham số lạ; dùng {{enum}} thay vì string tự do khi có tập giá trị cố định.
+
+### Vòng lặp tool calling với Claude
+
+~~~text
+Client -> Claude: prompt + tools[]
+Claude --> Client: tool_use {id, name, input}
+Client -> Tool: thực thi method Java, validate input, kiểm tra quyền
+Client -> Claude: tool_result {tool_use_id: id, content: [...]}
+Claude --> Client: tool_use (lần 2) HOẶC text (câu trả lời cuối)
+~~~
+
+### Nhận diện tool_use trong response
+Trong SDK Anthropic (Java), response có {{content}} là list block. Mỗi block có {{type}}: {{text}} | {{tool_use}} | {{tool_result}}.
+
+~~~java
+// Phân tích response
+List<ContentBlock> blocks = response.getContent();
+for (ContentBlock block : blocks) {
+    if ("tool_use".equals(block.getType())) {
+        ToolUseBlock tu = (ToolUseBlock) block;
+        String toolName = tu.getName();
+        JsonNode input = tu.getInput();      // Jackson JsonNode
+        String toolUseId = tu.getId();
+        // Thực thi tool, lấy kết quả
+        Object result = executeTool(toolName, input);
+        // Gửi lại tool_result trong lượt sau
+        toolResults.add(ToolResultBlock.builder()
+            .toolUseId(toolUseId)
+            .content(List.of(TextBlock.of(result.toString())))
+            .build());
+    }
+}
+~~~
+
+### Xử lý nhiều tool_use trong một lượt
+Claude có thể trả về **nhiều {{tool_use}} block cùng một lúc** (parallel tool use). Hai chiến lược:
+1. **Song song**: gọi tất cả tool cùng lúc, gom kết quả, gửi một lượt {{tool_result}} nhiều block. Nhanh hơn nhưng phức tạp hơn khi một tool lỗi.
+2. **Tuần tự**: thực thi theo thứ tự, gửi {{tool_result}} từng cái, gọi lại Claude sau mỗi cái. Đơn giản, dễ debug, dễ implement retry/fallback cho từng tool.
+
+Khuyến nghị production: **tuần tự** cho tool có side effect; **song song** chỉ cho tool đọc độc lập và idempotent. Luôn giới hạn số {{tool_use}} mỗi lượt (ví dụ ≤ 3).
+
+### Truyền danh tính khách (quan trọng)
+**Không bao giờ** để model điền {{customer_id}} hoặc {{account_id}} vào tham số tool. Lấy từ session đã xác thực:
+
+~~~java
+// ToolContext tương tự Spring AI: dữ liệu không đi qua model
+Map<String, Object> ctx = Map.of("customerId", session.getCustomerId());
+ToolResult result = executeTool(toolName, input, ctx);
+~~~
+
+Trong method Java, đọc {{customerId}} từ context, validate quyền sở hữu tài khoản trước khi truy vấn.
+
+### Xử lý lỗi tool
+- Lỗi validate input (model truyền sai kiểu, thiếu required): trả {{tool_result}} với {{is_error: true}} và message hướng dẫn model sửa (ví dụ "Tham số account_type bắt buộc, giá trị hợp lệ: CHECKING|SAVINGS|CREDIT").
+- Lỗi nghiệp vụ (tài khoản không tồn tại): trả lỗi có cấu trúc {{NOT_FOUND}}, không stack trace.
+- Lỗi tạm thời (timeout DB): retry ở tầng code với backoff, chỉ retry 1–2 lần; nếu vẫn lỗi thì trả {{UNAVAILABLE}} để model biết có thể thử lại sau.
+
+### Bẫy production
+- Mô tả tool mơ hồ ("lấy dữ liệu khách hàng"): model gọi cho mọi câu hỏi, tốn token và lệch hướng.
+- Không đặt {{additionalProperties: false}}: model truyền tham số lạ, method Java ném exception.
+- Gửi {{customerId}} do model điền: lỗ hổng IDOR, model có thể tra tài khoản người khác.
+- Tool trả entity JPA đầy đủ: lộ trường nhạy cảm, kích hoạt lazy loading.
+- Không giới hạn số {{tool_use}} mỗi lượt: model trả 15 tool_use, context bùng nổ.
+- Không có idempotency key cho tool ghi: model gọi lặp (do lỗi network hoặc lặp) gây tác động hai lần.
+
+### Ví dụ đời thực
+- **Triệu chứng**: chatbot tra cứu giao dịch dùng Claude API tool calling cho 15.000 phiên/tháng. Kiểm toán phát hiện 9 phiên câu trả lời chứa 6 chữ số giữa của số tài khoản đối ứng; 2% request lỗi 500 do {{LazyInitializationException}}; p95 tăng từ 1,8s lên 4,6s khi khách hỏi mơ hồ khiến model gọi 5–6 {{tool_use}} một lượt.
+- **Điều tra**: tool {{recentTransactions}} trả thẳng {{List<Transaction>}} entity JPA, có {{counterpartyAccount}} đầy đủ và quan hệ {{@ManyToOne(fetch=LAZY)}} tới {{Customer}}; model truyền {{days=3650}} dù nghiệp vụ chỉ cần 90 ngày; lỗi 500 do method tool chạy ngoài transaction.
+- **Nguyên nhân gốc**: tool lộ entity, không validate tham số, không giới hạn số {{tool_use}}, lỗi nội bộ rò rỉ.
+- **Cách xử lý**: tool trả DTO {{TxView}} đã mask (chỉ 4 số cuối), giới hạn 10 bản ghi; {{days}} clamp 1..90, {{customerId}} chỉ lấy từ context; giới hạn 3 {{tool_use}} mỗi lượt, dùng {{return_direct}} cho tool chỉ hiển thị danh sách; chuẩn hoá lỗi trả model ("Không lấy được giao dịch, vui lòng thử lại"), log chi tiết server.
+- **Kết quả**: 0 sự cố lộ số tài khoản 60 ngày, lỗi 500 giảm xuống 0,05%, p95 còn 2,1s.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Claude API tool calling, tôi gửi mảng {{tools}} kèm {{name}}, {{description}} chi tiết và {{input_schema}} JSON Schema chặt ({{additionalProperties: false}}, {{enum}} cho giá trị cố định). Model trả {{tool_use}} block(s), tôi thực thi method Java tương ứng, validate input, kiểm tra quyền qua {{customerId}} từ session (không bao giờ từ tham số model), rồi gửi {{tool_result}} với cùng {{id}}. Nhiều {{tool_use}} trong một lượt tôi xử lý tuần tự cho đơn giản và an toàn, chỉ song song cho tool đọc độc lập. Tool ghi bắt buộc có idempotency key. Tôi giới hạn tối đa 3 {{tool_use}} mỗi lượt, clamp tham số số liệu về miền hợp lệ, và trả lỗi có cấu trúc cho model thay vì stack trace. Quan trọng: model chỉ quyết định **gọi tool gì**, code quyết định **được phép gì**."
+
+> Senior tip: hãy thiết kế tool như API public cho một client không tin cậy: tên/mô tả rõ, tham số hẹp, kết quả nhỏ và đã mask, quyền lấy từ session. Model chỉ nên quyết định **gọi gì**, còn **được phép gì** luôn do code quyết định.`,
+  follow: [
+    'Model yêu cầu gọi song song nhiều tool trong một lượt: bạn xử lý timeout và lỗi từng phần thế nào?',
+    'Bạn viết test thế nào để biết model chọn đúng tool với đúng tham số?',
+    'Tool khai báo bằng @Tool trong ứng dụng khác gì so với tool cung cấp qua MCP server?'
+  ],
+  tags: ['tool calling', 'Claude API', 'Anthropic SDK', 'JSON Schema', 'agent', 'security']
+},
+{
+  id: 'ai-055',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Spring AI vs LangChain4j vs gọi SDK trực tiếp (Anthropic/OpenAI): khi nào chọn cái nào? So sánh về abstraction, tool calling, structured output, quan sát và khóa nhà cung cấp.',
+  a: `**Tóm tắt:** Spring AI phù hợp ứng dụng Spring Boot (cấu hình YML, DI, Micrometer, Observation); LangChain4j mạnh AiServices (khai báo interface sinh implementation), tool calling phong phú, ít ràng buộc Spring; SDK trực tiếp cho kiểm soát tối đa, abstraction mỏng, khi cần tính năng mới ngay của nhà cung cấp. Cả ba đều hỗ trợ structured output và nhiều provider.
+
+### Spring AI
+- **API chính**: {{ChatModel}} (low-level) và **{{ChatClient}}** (fluent, high-level, advisor chain).
+- **Advisors** là điểm mở rộng kiểu interceptor: {{MessageChatMemoryAdvisor}} (hội thoại), {{QuestionAnswerAdvisor}} (RAG), {{LoggingAdvisor}}, {{SafeGuardAdvisor}}.
+- **Tích hợp Spring**: cấu hình qua {{application.yml}}, Observation/Micrometer tự động, DI bean, Spring Boot auto-config.
+- **Provider**: OpenAI, Azure OpenAI, Anthropic, Bedrock, Vertex, Ollama, Mistral... qua starter riêng ({{spring-ai-openai}}, {{spring-ai-anthropic}}...).
+- **Structured output**: {{.call().entity(Record.class)}} dùng {{BeanOutputConverter}}, hoặc {{ParameterizedTypeReference}} cho generic.
+- **Tool calling**: khai báo {{@Tool}} trong class tool, đăng ký qua {{.tools(new MyTools())}}; Spring AI sinh JSON schema và xử lý vòng lặp.
+- **Streaming**: {{Flux<String> stream().content()}} (WebFlux) hoặc {{SseEmitter}} (Spring MVC).
+- **Quan sát**: Micrometer Observation tự động ghi span cho mỗi lời gọi model, token, lỗi.
+- **Hạn chế**: phụ thuộc Spring Boot; một số tính năng provider mới chậm cập nhật; retry mặc định hào phóng (cần chỉnh).
+
+### LangChain4j
+- **API chính**: {{ChatModel}} (trước 1.0 tên {{ChatLanguageModel}}) low-level; **{{AiServices}}** khai báo interface, tự sinh implementation.
+- **AiServices** mạnh: {{@SystemMessage}}, {{@UserMessage}}, {{@V}} (variable), {{@Tool}} trong class tool riêng, {{@MemoryId}} cho hội thoại, {{contentRetriever}} cho RAG.
+- **Tool calling**: method gắn {{@Tool}} trong class tool, đăng ký qua {{.tools(toolInstance)}}; mô tả lấy từ JavaDoc hoặc tham số annotation.
+- **Ít ràng buộc Spring**: dùng được Quarkus, Micronaut, Java thuần, Android.
+- **Module nhiều**: memory, RAG ({{EmbeddingStore}}, {{ContentRetriever}}, splitter), document loader, nhiều vector store (pgvector, Pinecone, Qdrant, OpenSearch...).
+- **Structured output**: AiServices trả về POJO/record trực tiếp, parse JSON nội bộ.
+- **Streaming**: {{streamingChatModel.stream(...)}} hoặc {{AiServices}} với {{StreamingResponseHandler}}.
+- **Quan sát**: có {{Observation}} module riêng, ít tự động hơn Spring AI.
+
+### Gọi SDK trực tiếp (Anthropic Java SDK, OpenAI Java SDK)
+- **Ưu điểm**: truy cập 100% tính năng mới nhất (ví dụ prompt caching control, thinking mode, batch API mới), không chờ wrapper cập nhật; kiểm soát request/response nguyên bản; không phụ thuộc framework.
+- **Nhược điểm**: tự viết retry, timeout, circuit breaker, structured output parser, observability, abstraction đổi provider; code rải rác nếu không tự đóng gói lớp service.
+- **Khi dùng**: cần tính năng mới ngay, không muốn abstraction che mất prompt, team đủ năng lực tự xây hạ tầng resilience.
+
+### Bảng so sánh nhanh
+| Tiêu chí | Spring AI | LangChain4j | SDK trực tiếp |
+|---|---|---|---|
+| **Hệ sinh thái** | Spring Boot native | Đa framework (Quarkus, Micronaut, plain) | Không framework |
+| **Abstraction mức** | ChatClient (fluent) + Advisors | AiServices (interface-based) | Tự quyết định |
+| **Tool calling** | @Tool trong class, đăng ký cho ChatClient | @Tool trong class, đăng ký cho AiServices | Tự sinh JSON schema, tự xử lý vòng lặp |
+| **Structured output** | BeanOutputConverter + entity(Record.class) | AiServices tự parse về POJO | Tự parse JSON + validate |
+| **Quan sát (Observability)** | Micrometer Observation tự động | Module Observation riêng | Tự implement |
+| **Cấu hình** | application.yml + starter | Java config / CDI / DI thủ công | Code thủ công |
+| **Khóa nhà cung cấp** | Trung bình (interface ChatModel) | Thấp (ChatModel interface) | Cao (nếu không tự abstraction) |
+| **Độ chậm cập nhật feature mới** | Có (chờ release) | Có (chờ release) | Không (dùng SDK mới nhất) |
+
+### Khi nào chọn cái nào
+| Bối cảnh | Gợi ý |
+|---|---|
+| Ứng dụng Spring Boot, muốn cấu hình/DI/Observation đồng nhất | **Spring AI** |
+| Cần nhiều integration lạ, tool calling phong phú, không thuần Spring | **LangChain4j** |
+| Muốn abstraction mỏng, tự kiểm soát prompt và HTTP, cần feature mới nhất | **SDK trực tiếp** + tự viết lớp service mỏng |
+| Cần chạy đa model, thử nghiệm nhanh | Cả hai đều ổn; chọn theo đội đã biết |
+
+### Điểm chung quan trọng
+- **Đừng để framework che mất prompt**: prompt là tài sản nghiệp vụ, cần version, review, test.
+- **Luôn bao quanh một lớp service mỏng** (ví dụ {{LlmService}} hoặc {{ChatPort}}) để đổi provider/model không sửa khắp nơi.
+- **Structured output**: cả ba đều hỗ trợ; validate bằng Jackson + Bean Validation ở tầng ứng dụng, không tin model.
+- **Observability**: Spring AI tự động, LangChain4j cần config thêm, SDK tự viết; nhưng kết quả cuối cùng đều cần trace ID, prompt version, token, latency.
+
+### Ví dụ đời thực
+- **Team A (Spring Boot 3.2, Micrometer, PostgreSQL)**: chọn Spring AI. Cấu hình {{spring.ai.openai.chat.options.temperature=0.2}} trong YML, dùng {{ChatClient.Builder}} inject, {{MessageChatMemoryAdvisor}} cho hội thoại, {{Observation}} tự ghi trace. Triển khai 2 tuần, đổi từ OpenAI sang Bedrock chỉ sửa starter và YML.
+- **Team B (Quarkus, cần nhiều vector store, tool calling phức tạp)**: chọn LangChain4j. Dùng {{AiServices}} khai báo interface {{Assistant}}, {{@Tool}} cho 12 tool, {{EmbeddingStore}} cho Pinecone + pgvector song song. Không phụ thuộc Spring, deploy nhẹ hơn.
+- **Team C (cần prompt caching control của Anthropic, thinking mode của OpenAI o1)**: dùng SDK trực tiếp. Viết {{AnthropicClientWrapper}} có retry, timeout, circuit breaker, structured output parser dùng Jackson. Kiểm soát chính xác header {{anthropic-beta: prompt-caching-2024-07-31}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không xem Spring AI và LangChain4j là đối thủ cạnh tranh trực tiếp mà là hai cách đóng gói khả năng tương tự. Spring AI phù hợp khi dự án đã dùng Spring Boot vì cấu hình YML, tích hợp Micrometer, Observation tự động. LangChain4j mạnh hơn về AiServices (khai báo interface Java, tự sinh implementation) và tool calling phong phú, dùng được Quarkus/Micronaut/plain Java. Cả hai đều hỗ trợ structured output và nhiều provider. Nếu cần feature mới nhất của nhà cung cấp (prompt caching, thinking mode) thì dùng SDK trực tiếp nhưng phải tự xây resilience layer. Nguyên tắc chung: đừng để framework che mất prompt, hãy bao quanh một lớp service mỏng để đổi provider dễ dàng, validate output bằng Jackson chứ không tin model."
+
+> Senior tip: với đội Spring, Spring AI cho tốc độ tích hợp nhanh nhất, nhưng hãy giữ một lớp service mỏng bao quanh ChatClient để có thể đổi model/nhà cung cấp mà không sửa khắp nơi. Đừng để abstraction rò rỉ vào domain logic.`,
+  follow: [
+    'Khi nào nên dùng ChatModel low-level thay vì ChatClient trong Spring AI?',
+    'Làm sao validate structured output và xử lý khi model trả JSON hỏng?',
+    'Bạn version hoá prompt và test prompt trong CI thế nào?'
+  ],
+  tags: ['Spring AI', 'LangChain4j', 'SDK', 'structured output', 'tool calling', 'observability']
+},
+{
+  id: 'ai-056',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Structured output (đầu ra có cấu trúc) với LLM: cách ép model trả JSON theo schema, validate bằng Jackson + Bean Validation, và chiến lược retry/fallback khi model trả sai?',
+  a: `**Tóm tắt:** Đừng tin output của model là đúng định dạng. Thiết kế nhiều lớp: (1) dùng cơ chế ép schema của nhà cung cấp nếu có (structured output theo JSON Schema hoặc tool calling), (2) parse bằng Jackson vào record với cấu hình nghiêm ngặt, (3) validate ngữ nghĩa bằng Bean Validation và luật nghiệp vụ, (4) retry có giới hạn kèm thông báo lỗi cụ thể cho model, (5) hết lượt thì chuyển người xử lý, không bao giờ đoán.
+
+### Các mức đảm bảo định dạng
+| Mức | Cách làm | Đảm bảo |
+|---|---|---|
+| Chỉ dặn trong prompt | "Trả về JSON với các field..." | Không đảm bảo gì |
+| JSON mode | Bật tuỳ chọn của API | Là JSON hợp lệ, nhưng không chắc đúng schema |
+| Structured output theo schema | Gửi JSON Schema, model bị ràng buộc khi sinh | Đúng cấu trúc (các model hỗ trợ) |
+| Tool calling | Khai báo tool có input schema | Gần như structured output |
+
+Kể cả khi cấu trúc đúng, **nội dung** vẫn có thể sai: số tài khoản bịa ra, số tiền đọc nhầm "5 triệu" thành 5000. Vì vậy validate ngữ nghĩa là bắt buộc.
+
+### Thiết kế kiểu dữ liệu
+- Dùng **record + enum** thay vì String tự do: model chỉ được chọn trong tập hợp hợp lệ.
+- Tiền dùng **{{BigDecimal}}**, không dùng {{double}}.
+- Có field cho trường hợp "không chắc": cho phép model trả {{null}} thay vì bịa.
+
+~~~java
+enum Currency { VND, USD }
+enum AccountType { CHECKING, SAVINGS, CREDIT }
+
+record TransferIntent(
+    @NotBlank @Pattern(regexp = "[0-9]{6,19}") String toAccount,
+    @NotNull @Positive BigDecimal amount,
+    @NotNull Currency currency,
+    @Size(max = 500) String note
+) {}
+
+record ExtractionResult<T>(T data, List<String> warnings, boolean needsReview) {}
+~~~
+
+### Parse, validate, retry
+~~~java
+ExtractionResult<TransferIntent> extract(String message) {
+    String feedback = "";
+    for (int attempt = 1; attempt <= 2; attempt++) { // giới hạn 2 lần thử (1 lần gọi + 1 retry)
+        String raw = chatClient.prompt()
+            .system(SYSTEM_PROMPT_WITH_SCHEMA) // system prompt nhúng JSON schema hoặc chỉ dẫn chặt
+            .user(message + feedback)
+            .call().content();
+        try {
+            // ObjectMapper Nghiêm Ngặt
+            TransferIntent t = strictMapper.readValue(raw, TransferIntent.class);
+            Set<ConstraintViolation<TransferIntent>> errs = validator.validate(t);
+            if (errs.isEmpty()) return new ExtractionResult<>(t, List.of(), false);
+            feedback = "\nKết quả trước vi phạm: " + errs.iterator().next().getMessage();
+        } catch (JsonProcessingException e) { // JSON hỏng, sai kiểu, enum lạ
+            feedback = "\nKết quả trước không đúng JSON schema: " + e.getOriginalMessage();
+        }
+    }
+    // Hết lượt: chuyển người xử lý, KHÔNG BAO GIỜ đoán
+    throw new NeedsHumanReviewException(message);
+}
+~~~
+
+### Vì sao từng chi tiết quan trọng
+- **ObjectMapper nghiêm ngặt**: Spring Boot mặc định tắt {{FAIL_ON_UNKNOWN_PROPERTIES}} → field thừa hoặc gõ sai tên bị bỏ qua im lặng. Dùng mapper riêng bật lại, và {{FAIL_ON_NULL_FOR_PRIMITIVES}} nếu có kiểu nguyên thuỷ.
+- **Feedback cụ thể**: gửi lại lỗi đúng chỗ giúp lần thử sau sửa được; retry mù chỉ tốn thêm tiền.
+- **Giới hạn 1–2 lần retry**: nếu model sai hai lần thì đầu vào thật sự mơ hồ; retry thêm làm tăng latency và chi phí.
+- **Kiểm tra nghiệp vụ sau validate**: tài khoản đích có tồn tại, số tiền trong hạn mức, lệnh chuyển tiền luôn yêu cầu người dùng xác nhận trước khi thực hiện.
+- **Một số model bọc JSON trong markdown**: xử lý bằng cách bật structured output, hoặc cắt chuỗi từ dấu ngoặc nhọn đầu tới cuối trước khi parse.
+
+### Spring AI và LangChain4j
+Cả hai đều có cơ chế map output sang class Java (Spring AI: {{.entity(Class)}}; LangChain4j: AI Service trả về POJO). Chúng tạo hướng dẫn định dạng và parse giúp bạn, nhưng **không thay thế** Bean Validation, kiểm tra nghiệp vụ và chính sách retry của riêng bạn.
+
+### Metric cần theo dõi
+- Tỷ lệ parse lỗi, tỷ lệ phải retry, tỷ lệ chuyển người theo phiên bản prompt/model.
+- Tỷ lệ này tăng đột ngột thường là dấu hiệu nhà cung cấp đổi model hoặc prompt bị sửa.
+
+### Ví dụ đời thực
+- **Triệu chứng**: service trích xuất lệnh chuyển tiền ("chuyển 5 triệu cho số 0123456789") chạy ổn định 3 tuần, tỷ lệ chuyển người ~2,5%. Sau đổi phiên bản model, tỷ lệ tăng vọt lên 11% trong 2 giờ, p95 latency từ 900ms lên 1,8s do retry nhiều. Một số trả JSON thiếu dấu ngoặc đóng, một số trả {{amount}} là chuỗi "5,000,000", 7 trường hợp model tự điền {{toAccount}} là 10 chữ số 0.
+- **Điều tra**: log có cấu trúc cho từng bước parse/validate. 62% lỗi {{JsonProcessingException}}, 28% vi phạm Bean Validation, 10% lỗi nghiệp vụ. Nguyên nhân: model mới ít tuân thủ hướng dẫn "chỉ trả JSON", hệ thống chưa bật structured output theo JSON Schema.
+- **Nguyên nhân gốc**: (1) chỉ dựa prompt ép định dạng; (2) ObjectMapper mặc định Spring Boot bỏ qua lệch nhỏ; (3) không có field "không chắc" nên model bịa số tài khoản; (4) retry mù không kèm lỗi cụ thể.
+- **Cách xử lý**: bật structured output theo JSON Schema (hoặc tool calling); ObjectMapper riêng bật {{FAIL_ON_UNKNOWN_PROPERTIES}} và {{FAIL_ON_NULL_FOR_PRIMITIVES}}; thêm field tuỳ chọn {{confidence}} và cho phép {{toAccount}} {{null}} khi mơ hồ; retry tối đa 2 lần kèm lỗi cụ thể; hết lượt ném {{NeedsHumanReviewException}} chuyển luồng xác nhận. Bổ sung kiểm tra nghiệp vụ: tra tài khoản đích, số tiền trong hạn mức, luôn yêu cầu xác nhận.
+- **Kết quả**: parse lỗi giảm từ 6,8% xuống 0,4%, retry giảm từ 9% xuống 1,1%, chuyển người ổn định 2,8%, không còn tự điền số tài khoản giả. p95 latency giảm còn 1,0s.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi dùng LLM trích xuất dữ liệu ra JSON, tôi coi output như dữ liệu không tin cậy và thiết kế nhiều lớp bảo vệ. Lớp 1: dùng structured output theo JSON Schema hoặc tool calling để ràng buộc cấu trúc ngay lúc sinh. Lớp 2: parse bằng Jackson vào record với ObjectMapper nghiêm ngặt (bật FAIL_ON_UNKNOWN_PROPERTIES). Lớp 3: Bean Validation + kiểm tra nghiệp vụ (regex tài khoản, BigDecimal tiền, enum đơn vị, tra cứu tồn tại). Nếu parse/validate lỗi, retry tối đa 1–2 lần kèm thông báo lỗi cụ thể; hết lượt thì chuyển người xử lý, không bao giờ đoán hay tự điền. Với lệnh chuyển tiền, luôn yêu cầu người dùng xác nhận trước khi thực hiện. Tôi cũng theo dõi tỷ lệ parse lỗi, retry, chuyển người theo phiên bản prompt/model để phát hiện sớm khi nhà cung cấp đổi model."
+
+> Senior tip: hãy coi output của LLM như input từ người dùng không tin cậy: parse nghiêm ngặt, validate đầy đủ, không bao giờ đưa thẳng vào câu lệnh SQL hoặc lệnh chuyển tiền. Schema tốt nhất là schema nhỏ và phẳng; mỗi cấp lồng nhau thêm vào là thêm một nguồn lỗi.`,
+  follow: [
+    'Structured output theo schema có làm giảm chất lượng suy luận của model không, xử lý thế nào?',
+    'Khi model trả về amount null vì tin nhắn không rõ, luồng UX nên thế nào?',
+    'Bạn viết test cho lớp trích xuất này ra sao mà không gọi model thật?'
+  ],
+  tags: ['structured output', 'JSON schema', 'Jackson', 'Bean Validation', 'retry', 'Spring AI']
+},
+{
+  id: 'ai-057',
+  topic: 'ai',
+  level: 'mid',
+  q: 'Stream câu trả lời LLM từ Spring Boot tới trình duyệt bằng SSE: triển khai thế nào, xử lý khi người dùng bấm dừng, timeout, heartbeat cho proxy, và lưu câu trả lời đầy đủ khi kết thúc?',
+  a: `**Tóm tắt:** Dùng **Server-Sent Events (SSE)**: một HTTP response giữ mở, server đẩy từng sự kiện {{text/event-stream}}. Trong Spring Boot, trả về {{Flux<ServerSentEvent<String>>}} (WebFlux) hoặc {{SseEmitter}} (Spring MVC + virtual thread). Bắt buộc xử lý: client ngắt thì huỷ lời gọi tới nhà cung cấp, idle timeout giữa hai chunk, heartbeat để proxy không cắt kết nối, tắt buffering ở proxy, lưu câu trả lời đầy đủ khi kết thúc.
+
+### Vì sao streaming
+- Model sinh vài chục token/giây; câu trả lời 500 token mất nhiều giây. Không stream, người dùng nhìn màn hình trống.
+- Stream không làm tổng thời gian ngắn lại, nhưng **time to first token** giảm còn ~1 giây, cảm nhận tốt hẳn.
+
+### SSE hay WebSocket
+| Tiêu chí | SSE | WebSocket |
+|---|---|---|
+| Hướng | Server → client | Hai chiều |
+| Giao thức | HTTP thường, qua proxy/LB dễ | Cần upgrade, config riêng |
+| Tự reconnect | Có (EventSource) | Tự viết |
+| Hợp với | Stream câu trả lời LLM | Chat realtime nhiều chiều, voice |
+
+### Code Spring Boot (WebFlux + Spring AI)
+~~~java
+@PostMapping(value = "/api/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+Flux<ServerSentEvent<String>> chat(@RequestBody Ask ask, Principal user) {
+    StringBuilder full = new StringBuilder();
+    Flux<ServerSentEvent<String>> tokens = chatClient.prompt()
+        .user(ask.question())
+        .stream().content()                              // Flux<String> từng đoạn
+        .timeout(Duration.ofSeconds(20))                 // 20s không có chunk mới -> lỗi
+        .doOnNext(full::append)
+        .map(chunk -> ServerSentEvent.builder(chunk).event("token").build())
+        .concatWith(Flux.just(ServerSentEvent.builder("").event("done").build()));
+    Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(15))
+        .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+    return Flux.merge(tokens, heartbeat)
+        .takeUntil(e -> "done".equals(e.event()))       // gặp done thì dừng cả heartbeat
+        .doFinally(signal -> audit.save(user, ask, full.toString(), signal)); // COMPLETE/CANCEL/ERROR
+}
+~~~
+**Chú ý**: không subscribe {{tokens}} hai lần (ví dụ vừa merge vừa dùng làm tín hiệu dừng): mỗi subscribe = một lần gọi model và trả tiền.
+
+### Khi người dùng bấm dừng
+- Client đóng kết nối → Spring huỷ subscription → Reactor lan tín hiệu cancel ngược lên, HTTP client tới nhà cung cấp đóng request, model ngừng sinh và thường ngừng tính tiền phần chưa sinh.
+- Với {{SseEmitter}} trên thread blocking, phải tự bắt {{onCompletion}}/{{onError}} và tự dừng vòng đọc stream, nếu không thread tiếp tục đọc và trả tiền token cho không ai.
+- Lưu câu trả lời dở dang với trạng thái "đã huỷ" để audit.
+
+### Phía trình duyệt
+- {{EventSource}} chỉ hỗ trợ GET, không gửi header Authorization tuỳ ý. Với POST + bearer token, dùng {{fetch}} đọc {{response.body}} bằng reader, tự tách sự kiện theo dòng trống.
+- Huỷ bằng {{AbortController}} khi người dùng bấm dừng hoặc rời trang.
+
+~~~javascript
+const controller = new AbortController();
+const res = await fetch('/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ question }), signal: controller.signal
+});
+const reader = res.body.getReader();
+while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    // parse SSE lines từ value (Uint8Array -> text)
+}
+function stop() { controller.abort(); }
+~~~
+
+### Proxy, load balancer, timeout
+- Nginx mặc định buffer response → stream đến dồn một cục: tắt {{proxy_buffering}} hoặc trả header {{X-Accel-Buffering: no}}.
+- ALB mặc định idle timeout 60 giây: heartbeat mỗi 15–30 giây giữ kết nối sống.
+- Spring MVC async timeout ({{spring.mvc.async.request-timeout}}): đặt lớn hơn thời gian trả lời dài nhất.
+- Bật gzip cho {{text/event-stream}} có thể gây buffer; kiểm tra cấu hình nén.
+
+### Bẫy production
+- Mỗi stream giữ một connection lâu: Spring MVC truyền thống cân nhắc virtual thread ({{spring.threads.virtual.enabled}}) hoặc WebFlux.
+- Rate limit theo số request mà quên số stream đồng thời.
+- Hiển thị markdown từng đoạn có thể vỡ định dạng giữa chừng; render lại toàn bộ đoạn đã nhận.
+
+### Ví dụ đời thực
+- **Triệu chứng**: chatbot Spring Boot (Spring MVC + JDK 21, virtual thread) chuyển sang SSE. Sau lên production: 6% phiên "chữ hiện một cục", 2% ngắt sau đúng 60s (câu trả lời dài), bấm dừng vẫn tốn thêm vài trăm token.
+- **Điều tra**: Nginx {{proxy_buffering}} bật; ALB idle timeout 60s; server không heartbeat. Huỷ phía client không lan xuống HTTP client gọi nhà cung cấp (blocking trong virtual thread không tôn trọng cancel). Client dùng {{EventSource}} (GET) -> phải gửi câu hỏi qua query string, reconnect tự động tạo câu trả lời mới -> trùng.
+- **Nguyên nhân gốc**: (1) proxy buffer phá SSE; (2) thiếu heartbeat; (3) huỷ client không lan xuống model; (4) {{EventSource}} không phù hợp POST+Auth; (5) không có {{Last-Event-ID}} để tránh trùng.
+- **Cách xử lý**: tắt buffering ({{X-Accel-Buffering: no}}), heartbeat comment 15s, đặt async request timeout lớn, tăng ALB idle timeout. Backend dùng {{Flux}} từ {{stream().content()}} với {{timeout}}, merge heartbeat, {{takeUntil(done)}}, lưu câu trả lời đầy đủ + trạng thái trong {{doFinally}}. Đảm bảo huỷ subscription đóng HTTP request tới nhà cung cấp. Client chuyển {{fetch}} + {{ReadableStream}} reader + {{AbortController}}; gắn {{id}} cho sự kiện nếu cần nối lại, tắt reconnect khi người dùng chủ động dừng.
+- **Kết quả**: time to first token p95 từ 3,2s xuống 0,9s; tỷ lệ "hiện một cục" < 0,5%; không còn ngắt 60s (test tới 4 phút); token sau khi bấm dừng giảm 95%.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi stream LLM từ Spring Boot tới trình duyệt, tôi dùng SSE vì đi trên HTTP thường, dễ qua proxy, đủ cho chatbot một chiều. Backend trả {{Flux<ServerSentEvent<String>>}} từ {{stream().content()}} của Spring AI, gắn event {{token}} và {{done}}, heartbeat 15-30s để LB không cắt. Tắt buffering ở proxy bằng {{X-Accel-Buffering: no}}. Quan trọng là huỷ đúng: client bấm dừng -> {{AbortController}} đóng kết nối -> subscription Reactor cancel -> lan xuống lời gọi nhà cung cấp -> model ngừng sinh token, backend lưu câu trả lời dở dang kèm trạng thái huỷ trong {{doFinally}}. Trình duyệt dùng {{fetch}} + {{ReadableStream}} vì cần POST + Authorization. Tôi đo riêng time to first token và tổng thời gian, vì lợi ích lớn nhất của streaming là người dùng thấy chữ sớm; nếu guardrail chờ đủ câu trả lời thì phải thiết kế kiểm tra theo đoạn hoặc sau khi xong kèm khả năng thu hồi."
+
+> Senior tip: đo hai chỉ số riêng: time to first token và tổng thời gian. Người dùng chịu được câu trả lời 10 giây nếu chữ đầu tiên xuất hiện sau dưới 1 giây; ngược lại, chặn guardrail đầu ra chờ đủ câu trả lời sẽ phá mất lợi ích của streaming, nên thiết kế kiểm tra đầu ra theo từng đoạn hoặc sau khi xong kèm khả năng thu hồi.`,
+  follow: [
+    'Guardrail kiểm tra nội dung đầu ra kết hợp với streaming thế nào?',
+    'Kết nối SSE rớt giữa chừng: client nối lại và tiếp tục từ đâu?',
+    'SseEmitter và Flux khác nhau thế nào về thread và backpressure?'
+  ],
+  tags: ['SSE', 'streaming', 'Spring Boot', 'Reactor', 'Spring AI', 'timeout']
+},
+{
+  id: 'ai-058',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Quản lý hội thoại và context dài cho chatbot LLM: sliding window, summarization, RAG với memory, và tách chat memory khỏi audit history — thiết kế thế nào?',
+  a: `**Tóm tắt:** LLM không có trí nhớ; "memory" là các message cũ ứng dụng nạp lại vào prompt theo một **khoá hội thoại**. Hội thoại dài cần chiến lược: cửa sổ trượt (giữ N message gần), tóm tắt phần cũ, hoặc lưu facts vào store và truy xuất lại. Quan trọng: tách **chat memory** (phần nạp vào prompt) khỏi **chat history** (bản ghi đầy đủ cho audit/CSKH), và bảo vệ dữ liệu nhạy cảm trong memory.
+
+### Vì sao cần quản lý context
+- Context window là tổng input + output tối đa một lần gọi (vài nghìn đến hàng trăm nghìn token).
+- Nhồi đầy context: tốn tiền, giảm chất lượng (lost in the middle), latency tăng.
+- Không có bộ nhớ giữa các lần gọi — ứng dụng phải tự gửi lại lịch sử hoặc tóm tắt.
+
+### Các chiến lược
+1. **Sliding window (cửa sổ trượt)**: giữ 10–20 message gần nhất (Spring AI {{MessageWindowChatMemory}} mặc định 20; LangChain4j {{TokenWindowChatMemory}} theo token budget). Đơn giản, nhưng mất ngữ cảnh xa.
+2. **Summarization (tóm tắt)**: khi lịch sử vượt ngưỡng, dùng LLM tóm tắt phần cũ thành 1–2 message {{system}}/{{assistant}}, giữ message gần nguyên văn. Cần prompt tóm tắt riêng, chi phí thêm một lần gọi LLM.
+3. **RAG với memory / Fact extraction**: trích xuất thực thể, sự kiện, sở thích từ hội thoại, lưu vào vector store/DB có metadata (userId, thời gian). Khi hỏi, retrieve fact liên quan thay vì nạp toàn bộ lịch sử. Phức tạp hơn nhưng scale tốt.
+4. **Hybrid**: sliding window cho 5–10 lượt gần + summary cho phần cũ + fact retrieval cho thông tin cụ thể (tên, sở thích, tài khoản).
+
+### Spring AI: MessageChatMemoryAdvisor
+~~~java
+// Cấu hình memory cho một conversation
+MessageChatMemoryAdvisor advisor = MessageChatMemoryAdvisor.builder(
+    MessageWindowChatMemory.builder()
+        .chatMemoryRepository(new JdbcChatMemoryRepository(jdbcTemplate)) // bền, dùng chung giữa instance
+        .maxMessages(20)                                                 // cửa sổ trượt
+        .build())
+    .build();
+
+chatClient.prompt()
+    .user(question)
+    .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationKey)) // khoá do server sinh
+    .call().content();
+~~~
+- {{conversationKey}} **phải do server sinh và gắn với user đã xác thực** (ví dụ {{userId:conversationId}}), không bao giờ lấy từ client để tránh IDOR.
+- {{JdbcChatMemoryRepository}} lưu message bền, dùng chung giữa nhiều instance.
+- Spring AI 1.0.7+/1.1.6+ bắt buộc có {{CONVERSATION_ID}}, thiếu thì ném {{IllegalArgumentException}}.
+
+### LangChain4j: ChatMemory + AiServices
+~~~java
+ChatMemoryStore store = new JdbcChatMemoryStore(dataSource); // hoặc InMemory
+ChatMemory memory = TokenWindowChatMemory.with(store, chatModel, 4000); // ngân sách token
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .chatMemoryProvider(id -> memory) // một memory cho mỗi @MemoryId
+    .build();
+~~~
+- {{@MemoryId}} trên method interface để AiServices biết dùng memory nào.
+- **Lưu ý**: tài liệu LangChain4j ghi rõ không được gọi AI Service **đồng thời với cùng {{@MemoryId}}** — chặn double-submit hoặc khoá theo hội thoại.
+
+### Bảo vệ dữ liệu nhạy cảm trong memory
+- Memory chứa nguyên văn câu hỏi, có thể có số tài khoản, CCCD, số dư.
+- **Mask trước khi lưu**: thay PII bằng nhãn ổn định ({{[TK_1]}}, {{[CCCD_1]}}) trong phạm vi một conversation; bảng ánh xạ chỉ nằm trong gateway, dùng để khôi phục khi hiển thị cho nhân viên.
+- **Mã hoá at-rest** (cột message content trong DB).
+- **TTL**: xoá message cũ sau 30–90 ngày; xoá ngay khi khách yêu cầu (GDPR/PDPA).
+- **Tách chat memory khỏi audit history**: Spring AI cũng khuyên lưu history riêng (Spring Data, quyền đọc chặt) cho CSKH/audit; memory chỉ chứa phần nạp vào prompt.
+- Kết quả tool (số dư, giao dịch) chỉ nên sống trong lượt hiện tại; Spring AI 1.0 hiện cũng không lưu tool call vào memory.
+
+### Bẫy production
+- Chỉ test với một user nên không bao giờ thấy lỗi rò rỉ chéo.
+- Conversation id tăng dần, dễ đoán → dùng UUID.
+- Lên nhiều instance mà vẫn dùng memory in-process: khách đổi instance là "mất trí nhớ", rồi ai đó vá vội bằng cách nới lỏng khoá.
+- Cache câu trả lời thiếu userId trong key: câu trả lời cá nhân trả cho người khác.
+- Không giới hạn kích thước memory: context phình, tốn token, latency tăng.
+- Lưu PII nguyên văn trong memory: rủi ro rò rỉ qua log, backup, hoặc prompt injection.
+
+### Ví dụ đời thực
+- **Triệu chứng**: chatbot ngân hàng thêm tính năng nhớ hội thoại. Sau 1 tuần, khách A nhận câu trả lời nhắc giao dịch của khách B. Log prompt cho thấy context chứa message của user khác.
+- **Điều tra**: conversation id lấy từ param URL do client gửi, không kiểm quyền; hai user dùng cùng id mặc định vì advisor không được truyền id.
+- **Nguyên nhân gốc**: thiếu ownership check và dùng id mặc định chung.
+- **Cách xử lý**: server sinh conversation id gắn với user đã xác thực, query {{findByIdAndOwnerId}}, khoá memory gồm {{userId}}, thêm test hai user xen kẽ và log prompt đã mask.
+- **Kết quả**: không còn rò chéo, test tự động bắt được khi regression.
+
+### Trả lời mẫu khi phỏng vấn
+"Memory của LLM thực ra là các message cũ được ứng dụng nạp lại vào prompt theo một khoá hội thoại. Hội thoại dài tôi dùng hybrid: sliding window 10–20 lượt gần, tóm tắt phần cũ thành system message, và trích xuất fact (tên, tài khoản, sở thích) lưu vào store để retrieve khi cần. Quan trọng: conversation id do server sinh, gắn với user đã xác thực, kiểm quyền mỗi request ({{findByIdAndOwnerId}}), không bao giờ lấy từ client. Memory tách biệt với audit history; PII trong memory được mask trước khi lưu, mã hoá at-rest, có TTL. Spring AI dùng {{MessageChatMemoryAdvisor}} + {{JdbcChatMemoryRepository}}; LangChain4j dùng {{TokenWindowChatMemory}} + {{@MemoryId}}. Tôi cũng test tự động: hai user xen kẽ hội thoại, assert prompt không chứa message user kia."
+
+> Senior tip: hãy coi conversation id như resource id trong REST: có owner, kiểm quyền mỗi lần dùng, không đoán được. Và log (đã mask) prompt thực sự gửi đi cho một mẫu request: lỗi rò memory nhìn vào prompt là thấy ngay, nhìn vào code thì rất khó.`,
+  follow: [
+    'Khi hội thoại dài, bạn tóm tắt memory thế nào mà không làm mất dữ kiện quan trọng?',
+    'Bạn viết test tự động nào để bắt lỗi rò memory giữa hai người dùng?',
+    'Khách yêu cầu xoá dữ liệu cá nhân: chatbot phải xoá ở những nơi nào?'
+  ],
+  tags: ['chat memory', 'context window', 'Spring AI', 'LangChain4j', 'sliding window', 'summarization', 'PII', 'multi-tenant']
+},
 );
