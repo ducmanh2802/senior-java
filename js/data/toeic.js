@@ -187,7 +187,7 @@
     "Your sports centre is planning a new running club. What would you suggest to make the club successful?"
   ],
   samples: [
-    "I play badminton most often, usually twice a week with some colleagues from my office. We book a court near the office and play for about two hours.",
+    "I play badminton most often, usually twice a week with some colleagues from my office. We book a court near the office and play for about two hours on Tuesday evenings.",
     "About five hours a week, I would say. I play badminton on Tuesdays and Thursdays, and I go swimming at the weekend, normally on Sunday morning when the pool is quite quiet.",
     "I would suggest three things. First, offer sessions early in the morning and after work, because most members are busy during the day. Second, organise a short group run every Saturday so beginners do not feel alone. Finally, keep the first month's fee low to attract new members and make the club popular. I think these ideas would help the club grow quickly."
   ],
@@ -284,7 +284,7 @@ Please bring your name badge. Parking is free for participants.`,
     "Please tell me the time and the topic of each session, and the length of the coffee break."
   ],
   samples: [
-    "The workshop begins at nine o'clock in the morning. Registration opens half an hour earlier, at half past eight, on the second floor, and it takes only a few minutes to finish.",
+    "The workshop begins at nine o'clock in the morning. Registration opens half an hour earlier, at half past eight, and it takes only a few minutes to finish.",
     "Lunch will be served in the Garden Room. It starts at half past twelve, right after the question and answer session ends at twelve thirty, so nobody has to wait for a table.",
     "There are two sessions. The first one is at twenty past nine and it is about understanding your customers. The second one is at ten to eleven, and it covers social media on a small budget. The coffee break is twenty minutes long, from half past ten to ten to eleven, which is enough for a quick cup of coffee as well."
   ],
@@ -316,7 +316,7 @@ Please bring a passport or ID card and a copy of your CV.`,
   ],
   samples: [
     "At twenty past ten he will meet Mr. Robert Hayes, the technical lead. They have a technical interview together, and it starts right after the short welcome session ends at ten o'clock.",
-    "In Computer Lab 2, which is on the second floor. The test lasts forty-five minutes, and he should bring his passport or ID card with him, as well as a copy of his CV.",
+    "In Computer Lab 2. The test lasts forty-five minutes, and he should bring his passport or ID card with him, as well as a copy of his CV.",
     "The day starts at ten with a welcome session in Meeting Room 1. The technical interview begins at twenty past ten, also with the technical lead. At a quarter past eleven he moves to Computer Lab 2 for the written test, which finishes at noon. After that there is lunch in the staff cafeteria, and at one o'clock he meets the engineering manager."
   ],
   tips: [
@@ -380,7 +380,7 @@ Training ends at 12:00.`,
   ],
   samples: [
     "On the first day it starts at nine o'clock in the morning, with the new employee handbook. The trainer is Ms. Anne Lee, and the room is Room 105.",
-    "They will use Room 210, which is on the second floor. That session is on Tuesday afternoon, from half past one to three o'clock, and it is about the customer service standards.",
+    "They will use Room 210 for that session. It is on Tuesday afternoon, from half past one to three o'clock, and it is about the customer service standards.",
     "The training begins on Monday at nine with the employee handbook, and at eleven the participants move to the computer lab to set up the IT systems. On Tuesday morning they learn the health and safety rules in the main hall, and in the afternoon they study customer service standards. On the last day there is a team meeting at nine and a final quiz at a quarter past eleven. The training ends at twelve."
   ],
   tips: [
