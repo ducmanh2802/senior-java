@@ -104,12 +104,18 @@
     revealed: {},     // id -> true (đã bấm xem đáp án khi bật chế độ ẩn)
     aiResult: {},     // id -> kết quả App.ai.grade
     speech: {},       // id -> metrics của lần đọc gần nhất
+    answerCollapsed: {}, // id -> true (thân đáp án đang thu gọn)
   };
 
   const HIDE_KEY = 'sjp.bank.hideAnswer';
+  const READ_KEY = 'sjp.bank.readPos';
   let rootEl = null;
   let searchTimer = null;
   let mic = null;   // { id, handle } — chỉ một phiên ghi âm tại một thời điểm
+  let keyCleanup = null; // App.onKey cleanup
+  let filtersOpen = false; // thu gọn bộ lọc trên mobile
+  let pendingScrollId = null; // id câu hỏi cần cuộn tới sau render
+  let lastOpenId = null; // câu hỏi đang đọc (để nhớ vị trí)
 
   function esc(s) { return App.esc(s); }
 
@@ -118,6 +124,32 @@
   }
   function setHideAnswer(on) {
     try { localStorage.setItem(HIDE_KEY, on ? '1' : '0'); } catch (e) { /* private mode */ }
+  }
+  function saveReadPos(id) {
+    if (!id) return;
+    try { localStorage.setItem(READ_KEY, JSON.stringify({ id: id, y: window.scrollY || 0, t: Date.now() })); } catch (e) { /* ignore */ }
+  }
+  function loadReadPos() {
+    try { return JSON.parse(localStorage.getItem(READ_KEY) || 'null'); } catch (e) { return null; }
+  }
+
+  /** Tạo id ổn định cho heading trong đáp án. */
+  function secId(qid, n) { return 'bank-sec-' + qid + '-' + n; }
+
+  /** Trích các mục ### từ markup đáp án để làm mục lục. */
+  function tocItems(answer) {
+    const lines = String(answer || '').replace(/\r/g, '').split('\n');
+    const items = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf('### ') === 0) items.push(lines[i].slice(4).trim());
+    }
+    return items;
+  }
+
+  /** Gắn id tuần tự vào các thẻ <h4> trong HTML đã render. */
+  function addHeadingIds(html, qid) {
+    let n = 0;
+    return html.replace(/<h4>/g, function () { return '<h4 id="' + esc(secId(qid, n++)) + '">'; });
   }
 
   /** Câu hỏi sau khi áp dụng filter. */
@@ -215,9 +247,23 @@
       encodeURIComponent('Sai nội dung: ' + q.id) + '&body=' +
       encodeURIComponent('ID: ' + q.id + '\nTrang: ' + location.href + '\n\nSai ở đâu / nên sửa thế nào:\n') +
       '&labels=content';
-    return '<div class="md">' + App.md(q.a) + '</div>' +
+    const items = tocItems(q.a);
+    let toc = '';
+    if (items.length > 1) {
+      const links = items.map((t, i) => '<a href="#' + esc(secId(q.id, i)) + '" data-toc="' + esc(q.id) + '" data-idx="' + i + '">' + esc(t) + '</a>').join('');
+      toc = '<nav class="bank-toc" aria-label="Mục lục đáp án"><div class="bank-toc-title">Mục lục</div><div class="bank-toc-list">' + links + '</div></nav>';
+    }
+    const collapsed = S.answerCollapsed[q.id] === true;
+    const inner = addHeadingIds(App.md(q.a), q.id);
+    return '<div class="bank-answer-wrap">' +
+      '<div class="bank-answer-head"><button type="button" class="btn sm" data-toggle-answer="' + esc(q.id) + '">' + (collapsed ? 'Mở rộng đáp án' : 'Thu gọn đáp án') + '</button></div>' +
+      toc +
+      '<div class="bank-answer-body' + (collapsed ? ' is-collapsed' : '') + '" data-answer-body="' + esc(q.id) + '">' +
+        '<div class="md">' + inner + '</div>' +
+      '</div>' +
       '<div class="bank-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="' +
-      App.esc(reportUrl) + '">🚩 Báo sai</a></div>';
+        App.esc(reportUrl) + '">🚩 Báo sai</a></div>' +
+    '</div>';
   }
 
   /** Mức tự đánh giá mà AI gợi ý (chỉ để highlight, người dùng tự bấm). */
@@ -285,6 +331,9 @@
 
   /** Thanh lọc: tìm kiếm + topic + level + trạng thái. */
   function filterBar() {
+    const open = filtersOpen;
+    const activeInfo = (S.topic !== 'all' || S.status !== 'all' || S.level !== 'all' || S.q)
+      ? '<span class="badge bank-filter-badge">đang lọc</span>' : '';
     return '<section class="card bank-filters">' +
       '<div class="bank-search-row">' +
         '<label class="field bank-search"><span>' + App.t('bank.searchLabel') + '</span>' +
@@ -292,10 +341,16 @@
           esc(S.q) + '" autocomplete="off"></label>' +
         levelSelect() +
       '</div>' +
-      '<label class="bank-toggle"><input type="checkbox" id="bankHideAnswer"' +
-        (hideAnswer() ? ' checked' : '') + '> <span>' + App.t('bank.hideAnswerLabel') + '</span></label>' +
-      topicChips() +
-      statusChips() +
+      '<div class="bank-filter-toggle-row">' +
+        '<label class="bank-toggle"><input type="checkbox" id="bankHideAnswer"' +
+          (hideAnswer() ? ' checked' : '') + '> <span>' + App.t('bank.hideAnswerLabel') + '</span></label>' +
+        '<button type="button" class="btn sm bank-filters-toggle" id="bankFiltersToggle" aria-expanded="' + (open ? 'true' : 'false') + '">Bộ lọc ' + (open ? '▲' : '▼') + '</button>' +
+        activeInfo +
+      '</div>' +
+      '<div class="bank-filter-body' + (open ? ' is-open' : '') + '" id="bankFilterBody">' +
+        topicChips() +
+        statusChips() +
+      '</div>' +
     '</section>';
   }
 
@@ -303,8 +358,11 @@
   function listHtml() {
     const all = filtered();
     if (!all.length) {
-      return '<div class="empty"><p>' + App.t('bank.emptyTitle') + '</p>' +
-        '<p class="small">' + App.t('bank.emptyHint') + '</p></div>';
+      return '<div class="empty bank-empty">' +
+        '<p><strong>' + App.t('bank.emptyTitle') + '</strong></p>' +
+        '<p class="small muted">' + App.t('bank.emptyHint') + '</p>' +
+        '<button type="button" class="btn sm" id="bankClearFilters">Xoá bộ lọc</button>' +
+      '</div>';
     }
     const slice = all.slice(0, S.shown);
     const cards = slice.map((q, i) => cardHtml(q, i + 1)).join('');
@@ -321,11 +379,76 @@
     if (!listWrap) return;
     const all = filtered();
     const count = document.getElementById('bankCount');
-    if (count) count.textContent = App.t('bank.countDisplay', {n: all.length});
+    if (count) count.textContent = all.length + ' câu hỏi đang hiển thị';
     // Dừng ghi âm trước khi thay DOM, tránh ghi vào textarea đã bị gỡ.
     if (mic) stopMic();
     listWrap.innerHTML = listHtml();
     syncExpandButtons(all);
+    if (pendingScrollId) {
+      const id = pendingScrollId; pendingScrollId = null;
+      scrollToQuestion(id);
+    }
+  }
+
+  function scrollToQuestion(id) {
+    if (!rootEl) return;
+    const card = rootEl.querySelector('.bank-card[data-id="' + CSS.escape(id) + '"]');
+    if (card) card.scrollIntoView({ block: 'start', behavior: 'auto' });
+  }
+
+  /** Tìm index (1-based trong danh sách lọc) của một card. */
+  function findCardIndex(card) {
+    if (!card) return -1;
+    const list = rootEl ? rootEl.querySelectorAll('.bank-card') : [];
+    for (let i = 0; i < list.length; i++) if (list[i] === card) return i;
+    return -1;
+  }
+
+  /** Đặt lại toàn bộ bộ lọc về mặc định. */
+  function clearFilters() {
+    S.topic = 'all'; S.level = 'all'; S.status = 'all'; S.q = '';
+    S.shown = PAGE_SIZE;
+    // render lại toàn view để đồng bộ input/select/chips
+    if (rootEl) {
+      const params = S.topic === 'all' ? [] : [S.topic];
+      // gọi lại render bằng cách cập nhật url và rebuild UI đơn giản
+    }
+    syncUrl();
+    rebuildUI();
+  }
+
+  function rebuildUI() {
+    if (!rootEl) return;
+    const container = rootEl.parentElement || rootEl;
+    const all = filtered();
+    const head =
+      '<div class="page-head">' +
+        '<div><h1>Ngân hàng câu hỏi</h1>' +
+        '<p class="muted">Lọc theo chủ đề, level, trạng thái; mở đáp án mẫu và tự đánh giá để lên lịch ôn SRS.</p></div>' +
+        '<div class="row bank-head-actions">' +
+          '<span class="small muted" id="bankCount">' + all.length + ' câu hỏi đang hiển thị</span>' +
+          '<button type="button" class="btn sm" id="bankExpandAll">Mở tất cả</button>' +
+        '</div>' +
+      '</div>';
+    const resume = renderResumeBanner(all);
+    rootEl.innerHTML = head + filterBar() + resume + '<div id="bankListWrap">' + listHtml() + '</div>';
+    bindEvents();
+    syncExpandButtons(all);
+  }
+
+  /** Banner gợi ý tiếp tục đọc câu hỏi lần trước. */
+  function renderResumeBanner(all) {
+    const pos = loadReadPos();
+    if (!pos || !pos.id) return '';
+    if (all.some(q => q.id === pos.id) && !S.expanded[pos.id]) {
+      return '<div class="card bank-resume" id="bankResume">' +
+        '<div><strong>Tiếp tục đọc</strong> <span class="small muted">bạn đang dở câu hỏi trước đó.</span></div>' +
+        '<div class="row bank-resume-actions">' +
+          '<button type="button" class="btn sm primary" id="bankResumeBtn" data-resume="' + esc(pos.id) + '">Mở lại</button>' +
+          '<button type="button" class="btn sm" id="bankResumeDismiss">Ẩn</button>' +
+        '</div></div>';
+    }
+    return '';
   }
 
   /** Cập nhật trạng thái nút "Mở/Thu gọn tất cả". */
@@ -452,6 +575,54 @@
         return;
       }
 
+      const tocLink = e.target.closest('[data-toc]');
+      if (tocLink) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = tocLink.dataset.toc;
+        const idx = Number(tocLink.dataset.idx || 0);
+        const target = document.getElementById(secId(id, idx));
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+
+      const toggleAns = e.target.closest('[data-toggle-answer]');
+      if (toggleAns) {
+        e.stopPropagation();
+        const id = toggleAns.dataset.toggleAnswer;
+        S.answerCollapsed[id] = !S.answerCollapsed[id];
+        refreshCard(id);
+        return;
+      }
+
+      if (e.target.closest('#bankFiltersToggle')) {
+        filtersOpen = !filtersOpen;
+        const body = document.getElementById('bankFilterBody');
+        const btn = document.getElementById('bankFiltersToggle');
+        if (body) body.classList.toggle('is-open', filtersOpen);
+        if (btn) { btn.setAttribute('aria-expanded', filtersOpen ? 'true' : 'false'); btn.textContent = 'Bộ lọc ' + (filtersOpen ? '▲' : '▼'); }
+        return;
+      }
+
+      if (e.target.closest('#bankClearFilters')) {
+        clearFilters();
+        return;
+      }
+
+      if (e.target.closest('#bankResumeBtn')) {
+        const id = e.target.closest('#bankResumeBtn').dataset.resume;
+        const banner = document.getElementById('bankResume');
+        if (banner) banner.remove();
+        openAndScroll(id);
+        return;
+      }
+      if (e.target.closest('#bankResumeDismiss')) {
+        const banner = document.getElementById('bankResume');
+        if (banner) banner.remove();
+        try { localStorage.removeItem(READ_KEY); } catch (ex) { /* ignore */ }
+        return;
+      }
+
       const micBtn = e.target.closest('[data-mic]');
       if (micBtn) {
         e.stopPropagation();
@@ -493,6 +664,20 @@
     }
   }
 
+  /** Mở một câu và cuộn tới nó (kể cả nếu chưa render do phân trang). */
+  function openAndScroll(id) {
+    if (!id) return;
+    const all = filtered();
+    const idx = all.findIndex(q => q.id === id);
+    if (idx === -1) return;
+    if (idx >= S.shown) S.shown = Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE;
+    S.expanded[id] = true;
+    lastOpenId = id;
+    saveReadPos(id);
+    pendingScrollId = id;
+    renderList();
+  }
+
   /** Mở/thu gọn một câu hỏi (render lại card đó). */
   function toggleCard(id) {
     S.expanded[id] = !S.expanded[id];
@@ -501,6 +686,7 @@
     const q = App.questions().find(x => x.id === id);
     if (!q) return;
     const open = !!S.expanded[id];
+    if (open) { lastOpenId = id; saveReadPos(id); }
     card.classList.toggle('is-open', open);
     card.innerHTML = headHtml(q, card.querySelector('.bank-idx') ? Number(card.querySelector('.bank-idx').textContent) : 0) +
       (open ? bodyHtml(q) : '');
@@ -650,20 +836,43 @@
           '<p class="muted">Lọc theo chủ đề, level, trạng thái; mở đáp án mẫu và tự đánh giá để lên lịch ôn SRS.</p></div>' +
           '<div class="row bank-head-actions">' +
             '<span class="small muted" id="bankCount">' + all.length + ' câu hỏi đang hiển thị</span>' +
-            '<button type="button" class="btn sm" id="bankExpandAll">' + App.t('bank.expandAll') + '</button>' +
+            '<button type="button" class="btn sm" id="bankExpandAll" title="Phím tắt: E">Mở tất cả <kbd>E</kbd></button>' +
           '</div>' +
         '</div>';
+      const resume = renderResumeBanner(all);
+      const kbdHint = '<p class="small muted bank-kbd-hint" aria-label="Phím tắt">Phím tắt: <kbd>/</kbd> tìm kiếm · <kbd>E</kbd> mở/thu gọn tất cả · <kbd>F</kbd> bộ lọc</p>';
 
-      root.innerHTML = '<div id="bankRoot">' + head + filterBar() +
+      root.innerHTML = '<div id="bankRoot">' + head + filterBar() + kbdHint + resume +
         '<div id="bankListWrap">' + listHtml() + '</div></div>';
 
       rootEl = document.getElementById('bankRoot');
       bindEvents();
       syncExpandButtons(all);
+      keyCleanup = App.onKey(function (e) {
+        if (!rootEl) return;
+        if (e.key === '/') {
+          e.preventDefault();
+          const s = document.getElementById('bankSearch');
+          if (s) { s.focus(); s.select(); }
+          return;
+        }
+        if (e.key === 'e' || e.key === 'E') {
+          const btn = document.getElementById('bankExpandAll');
+          if (btn) toggleAll(btn.dataset.mode === 'close' ? 'close' : 'open');
+          return;
+        }
+        if (e.key === 'f' || e.key === 'F') {
+          const t = document.getElementById('bankFiltersToggle');
+          if (t) t.click();
+        }
+      });
 
       return () => {
         clearTimeout(searchTimer);
         if (mic) stopMic();
+        if (keyCleanup) keyCleanup();
+        keyCleanup = null;
+        if (lastOpenId) saveReadPos(lastOpenId);
         rootEl = null;
       };
     },
