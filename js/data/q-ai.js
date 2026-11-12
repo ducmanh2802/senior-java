@@ -4017,4 +4017,377 @@ Assistant assistant = AiServices.builder(Assistant.class)
   ],
   tags: ['chat memory', 'context window', 'Spring AI', 'LangChain4j', 'sliding window', 'summarization', 'PII', 'multi-tenant']
 },
+{
+  id: 'ai-059',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn đưa RAG từ bản demo lên production với tài liệu thường xuyên cập nhật: chọn pgvector hay OpenSearch, kết hợp keyword + vector + rerank, và bảo đảm kết quả không dùng chunk cũ thế nào?',
+  a: `**Tóm tắt:** Tôi xem RAG như một pipeline có phiên bản từ tài liệu nguồn tới câu trả lời, không chỉ là truy vấn vector. Tôi chọn kho tìm kiếm theo khả năng vận hành và bộ lọc, đo hybrid retrieval trên tập câu hỏi thật, dùng reranker khi cần độ chính xác, và thay index theo phiên bản để không trộn dữ liệu cũ mới.
+
+### Từ tài liệu tới kết quả truy xuất
+RAG (Retrieval-Augmented Generation) là cách tìm đoạn tài liệu liên quan rồi đưa vào prompt để mô hình trả lời có căn cứ. Mỗi đoạn gọi là chunk. **Embedding** là dãy số biểu diễn ý nghĩa văn bản; câu gần nghĩa thường có vector gần nhau. Pipeline thường có các bước:
+1. Trích xuất văn bản và metadata như documentId, quyền truy cập, ngôn ngữ, ngày hiệu lực.
+2. Tách theo cấu trúc trước: tiêu đề, mục, đoạn văn; sau đó mới giới hạn độ dài theo token (đơn vị văn bản mà model xử lý). Chồng lấn một phần giữa hai chunk giúp không mất nghĩa ở ranh giới, nhưng overlap quá lớn làm tăng chi phí và kết quả trùng.
+3. Tính embedding bằng đúng model/version dự kiến dùng khi truy vấn, rồi ghi chunk cùng vector và metadata.
+4. Khi hỏi, áp dụng quyền và bộ lọc trước hoặc trong truy vấn, tìm ứng viên, xếp hạng lại, rồi chỉ gửi vài chunk có nguồn tới LLM.
+
+### Chọn kho và xếp hạng
+{{pgvector}} lưu vector ngay trong PostgreSQL, thuận lợi khi dữ liệu nghiệp vụ và quyền truy cập đã ở đó: transaction, SQL join và backup quen thuộc. Cần đo tải vector, index, bộ lọc và dung lượng; không mặc định PostgreSQL chịu được mọi quy mô. {{OpenSearch}} phù hợp khi cần một dịch vụ tìm kiếm riêng với inverted index cho keyword, vector search và scale tìm kiếm độc lập, đổi lại có thêm cluster, đồng bộ và chi phí vận hành.
+
+Vector search bắt tốt nghĩa gần nhau nhưng có thể bỏ lỡ mã như {{ERR-42}}. Keyword/BM25 (xếp hạng dựa trên độ khớp từ) bắt mã và cụm chính xác nhưng kém với cách diễn đạt khác. Hybrid search hợp nhất hai danh sách, ví dụ Reciprocal Rank Fusion (RRF): cộng điểm theo thứ hạng thay vì cộng score khác thang đo. Reranker là mô hình nhỏ hơn đánh giá lại từng cặp câu hỏi–chunk; tăng chất lượng top kết quả nhưng thêm latency và chi phí. Không chạy reranker trên toàn kho: lấy một danh sách ứng viên vừa phải rồi rerank top đó.
+
+~~~seq
+title: Nạp và truy vấn RAG có phiên bản
+actors: Ingest | Search | App
+Ingest -> Search: Ghi chunk v8 theo documentId
+Search -> Search: Kiểm tra số lượng và metadata
+Search --> Ingest: Báo v8 sẵn sàng
+App -> Search: Hybrid search với ACL và phiên bản
+Search --> App: Top chunk kèm nguồn
+~~~
+
+### Cập nhật index an toàn
+Mỗi lần nạp tài liệu nên mang {{documentId}}, {{version}}, checksum nội dung và trạng thái. Xoá hoặc thay tài liệu phải xoá/ẩn toàn bộ chunk thuộc phiên bản cũ, không chỉ những chunk mới tạo. Với thay đổi lớn (đổi embedding model hoặc cách chunk), dựng index mới bên cạnh index đang phục vụ; kiểm tra số tài liệu, mẫu truy vấn và độ trễ rồi mới chuyển alias/config sang bản mới. Alias là tên logic trỏ tới index vật lý, giúp đổi đích mà client không phải đổi code. Giữ bản cũ một khoảng rollback rồi dọn theo chính sách.
+
+| Lựa chọn | Dùng khi | Chi phí/rủi ro |
+|---|---|---|
+| pgvector | PostgreSQL đã là nguồn dữ liệu, cần join và quy mô đo được | Tranh chấp tài nguyên DB, phải benchmark index và lọc |
+| OpenSearch | Cần tìm kiếm chuyên dụng, keyword + vector và scale riêng | Thêm đồng bộ, phân quyền, cluster và cảnh báo |
+| Hybrid + rerank | Có cả truy vấn ngữ nghĩa lẫn mã/từ chính xác | Nhiều bước tăng latency; cần đo từng bước |
+
+### Pitfall production
+- Không lọc ACL (quyền đọc) trong truy vấn trước khi đưa chunk vào prompt: mô hình có thể làm lộ tài liệu dù câu trả lời nghe vô hại.
+- Đổi model embedding nhưng không tái tạo vector tương ứng; vector ở hai không gian khác nhau không thể so sánh đáng tin cậy.
+- Cập nhật một phần rồi xoá bản cũ theo tên file; tài liệu bị đổi tên sẽ để lại chunk mồ côi.
+- Chỉ xem câu trả lời cuối, không lưu documentId/version/rank để biết nó lấy chứng cứ nào.
+- Tối ưu mỗi câu hỏi bằng mắt, không có bộ golden set gồm câu hỏi, tài liệu đúng và expected source.
+
+### Ví dụ đời thực
+Một cổng tra cứu nội bộ có 120.000 đoạn chính sách và khoảng 8.000 câu hỏi/ngày; nhân viên tìm mã lỗi {{ERR-42}} thường nhận sai tài liệu vì vector search chỉ tìm các đoạn nói chung về lỗi. Đội ngũ thêm BM25 rồi hợp nhất top 50 ứng viên, rerank còn 8 đoạn, lọc ACL theo nhóm nhân viên và lưu version nguồn vào trace. Trên 400 câu hỏi gán nhãn, hit@5 (tỷ lệ có tài liệu đúng trong 5 kết quả đầu) tăng từ 78% lên 92%; p95 tăng 180 ms do rerank. Với lần đổi embedding, đội dựng index song song, chạy so sánh truy vấn trước khi chuyển alias; không có khoảng thời gian tài liệu mới và cũ bị trộn.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu từ câu hỏi nghiệp vụ và dữ liệu được phép đọc, không chọn vector database theo xu hướng. Nếu PostgreSQL hiện hữu và tải benchmark đạt mục tiêu, pgvector giảm số hệ thống phải đồng bộ; nếu cần tìm kiếm chuyên dụng, keyword và vector scale độc lập, tôi cân nhắc OpenSearch. Tôi chunk theo cấu trúc tài liệu, gắn document ID, version, quyền và thời hạn hiệu lực. Truy vấn dùng hybrid vì vector tốt về ý nghĩa còn BM25 tốt với mã và cụm chính xác; RRF giúp hợp nhất thứ hạng khác thang điểm. Tôi chỉ rerank một tập ứng viên giới hạn, rồi ghi nguồn và version vào trace để kiểm chứng câu trả lời. Khi thay tài liệu hoặc embedding model, tôi xây index mới, kiểm tra golden set và quyền truy cập rồi chuyển alias; giữ index trước để rollback. Tôi theo dõi recall@k, hit rate, p95, tỷ lệ không có nguồn và chi phí mỗi câu hỏi. Chất lượng thấp cần biết là lỗi chunk, retrieval, ACL hay model trước khi tăng số token.”
+
+> Senior tip: theo dõi riêng freshness (độ mới của dữ liệu) bằng thời gian từ lúc nguồn đổi tới lúc truy vấn thấy bản mới; một RAG có recall tốt nhưng trễ đồng bộ vài giờ vẫn sai nghiệp vụ.`,
+  follow: [
+    'Bạn thiết kế bộ golden set thế nào để tách lỗi chunking khỏi lỗi ranking?',
+    'RRF và cộng trực tiếp cosine score với BM25 score khác nhau ở đâu?',
+    'Khi tài liệu bị thu hồi quyền, bạn bảo đảm chunk không còn xuất hiện trong câu trả lời ra sao?'
+  ],
+  tags: ['RAG', 'pgvector', 'OpenSearch', 'hybrid search', 'reranking', 'index freshness', 'embedding']
+},
+{
+  id: 'ai-060',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một agent cần nhớ mục tiêu và kết quả trong phiên hiện tại, đồng thời ghi nhớ sở thích ổn định của người dùng qua nhiều phiên. Bạn thiết kế short-term memory, long-term memory và summarization thế nào để không lưu nhầm hoặc làm phình context?',
+  a: `**Tóm tắt:** Tôi tách bộ nhớ theo mục đích và độ tin cậy: trạng thái công việc hiện tại phải đủ chính xác để tiếp tục chạy, còn memory dài hạn chỉ lưu facts hữu ích đã được kiểm chứng và có chủ sở hữu. Summary giúp nén lịch sử nhưng không phải nguồn sự thật; mọi memory đều cần giới hạn, TTL, quyền xoá và khả năng truy ra nguồn.
+
+### Ba khái niệm dễ nhầm
+- **Short-term memory** (bộ nhớ ngắn hạn) là trạng thái của phiên hoặc tác vụ hiện tại: mục tiêu, bước đã làm, kết quả tool, việc còn dang dở. Nó giống bảng checklist cho một chuyến đi.
+- **Long-term memory** (bộ nhớ dài hạn) là thông tin có ích qua nhiều phiên, ví dụ người dùng thích câu trả lời bằng tiếng Việt. Nó giống hồ sơ tuỳ chọn, không phải nhật ký mọi câu nói.
+- **Summarization** (tóm tắt) biến nhiều lượt hội thoại thành bản ghi ngắn. Bản tóm tắt có thể bỏ sót phủ định, con số, thời hạn; vì vậy phải coi là dữ liệu dẫn đường, không thay thế bản ghi gốc hay dữ liệu giao dịch.
+
+### Thiết kế vòng đời memory
+1. Khi bắt đầu tác vụ, nạp state theo {{userId}} và {{taskId}} đã xác thực; không tin ID do client tự chọn nếu chưa kiểm ownership.
+2. Cập nhật state sau mỗi bước quan trọng bằng sự kiện có cấu trúc: mục tiêu, hành động, kết quả, bước kế tiếp và thời điểm. Không lưu toàn bộ chain-of-thought; chỉ lưu trạng thái cần để tiếp tục.
+3. Trước khi lưu long-term fact, kiểm tra nguồn và độ nhạy. Fact do người dùng nói trực tiếp khác với suy luận của model; gắn nguồn, thời gian, confidence và trạng thái cần xác nhận. Không biến suy đoán thành hồ sơ sự thật.
+4. Khi context sắp vượt ngân sách token, giữ yêu cầu mới và các kết quả cần thiết, tóm tắt phần cũ theo schema có trường rõ ràng. Đối chiếu tên, số, phủ định và các việc chưa hoàn tất; nếu sai thì không ghi đè state.
+5. Khi dựng prompt, truy xuất facts liên quan theo user, mục đích, quyền và thời hạn; không nhồi tất cả memory.
+
+~~~java
+record MemoryFact(String userId, String text, String source,
+                  double confidence, Instant expiresAt) {}
+
+// Ghi fact có chủ sở hữu và thời hạn; suy luận chưa xác nhận không tự thành sự thật.
+void savePreference(String userId, String preference, Instant expiresAt) {
+    repository.upsert(userId, preference, "user-confirmed", expiresAt);
+}
+~~~
+Đây là minh hoạ hợp đồng ứng dụng, không phải API cố định của framework. Với dữ liệu nhạy cảm, schema cần phân loại và chính sách lưu riêng; có thể không lưu nội dung đó chút nào.
+
+### Nên lưu ở đâu, và khi nào
+- State tác vụ cần ghi bền qua restart: DB quan hệ/Key-value có schema, optimistic locking hoặc version để hai worker không ghi đè nhau.
+- Fact văn bản nhiều và cần truy vấn theo nghĩa: vector store có metadata user/tenant, nhưng vẫn phải lọc quyền ở server.
+- Câu nói gốc phục vụ audit: kho lịch sử riêng với retention và quyền truy cập riêng.
+- Không cần memory dài hạn cho tác vụ một lần; memory tăng độ phức tạp, nguy cơ lưu dữ liệu sai và chi phí truy xuất.
+
+### Pitfall production
+- Summary cập nhật theo kiểu đọc rồi ghi mà không có version: hai request song song có thể làm mất một kết quả.
+- Tóm tắt làm mất từ “không”, đơn vị tiền hoặc trạng thái “đã huỷ”; giữ facts quan trọng có cấu trúc và kiểm tra trước khi commit.
+- Truy xuất memory thiếu tenant/user filter tạo rò dữ liệu giữa người dùng.
+- Không có xoá lan truyền: người dùng xoá fact nhưng còn bản trong vector index, cache hoặc backup không theo chính sách.
+- Lưu phản hồi tool, mật khẩu, token hoặc thông tin thanh toán trong prompt memory không cần thiết.
+
+### Ví dụ đời thực
+Agent hỗ trợ nhân viên xử lý hồ sơ bảo hiểm giữ toàn bộ hội thoại 60 lượt, khiến prompt tăng từ 5.000 lên 28.000 token và p95 tăng từ 4,1 lên 9,3 giây. Một summary tự động còn biến “khách không đồng ý gia hạn” thành “khách đồng ý”, gây đề xuất sai. Nhóm tách state hồ sơ thành các trường có version, trạng thái xác nhận và nguồn; summary chỉ lưu mục tiêu, quyết định đã xác nhận và việc chờ xử lý. Preferences dài hạn lưu riêng theo user, có TTL và nút xoá; câu chuyện gốc vẫn nằm trong audit store. Ngân sách prompt giảm còn 7.000 token ở p95, và test hồi quy thêm các ca phủ định, ngày tháng cùng cập nhật đồng thời.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không coi memory là một chuỗi chat duy nhất. Short-term memory là state có cấu trúc của tác vụ hiện tại, gồm mục tiêu, kết quả đã xác nhận và bước tiếp theo; long-term memory chỉ lưu facts có ích qua phiên như ngôn ngữ ưa thích, kèm user, nguồn, thời hạn và trạng thái xác nhận. Summary giúp nén lịch sử khi gần hết context, nhưng không được dùng thay dữ liệu giao dịch hay audit. Tôi giữ những trường quan trọng như phủ định, số tiền, deadline ở dạng cấu trúc và kiểm tra summary trước khi ghi. Khi lấy memory, server luôn giới hạn theo owner và quyền; khi lưu dùng version để tránh hai lượt song song ghi đè. Tôi áp dụng TTL, mã hoá và quy trình xoá gồm DB, vector index và cache. Cuối cùng đo token, độ trễ, tỉ lệ fact đúng và tỷ lệ truy xuất memory không liên quan. Nếu một tác vụ không cần nhớ lâu, tôi không bật long-term memory.”
+
+> Senior tip: kiểm thử summary bằng bộ hội thoại có phủ định, sửa thông tin, số liệu và quyết định đổi ý; đo mức giữ đúng các fact quan trọng thay vì chỉ đánh giá văn bản nghe trôi chảy.`,
+  follow: [
+    'Bạn sẽ xử lý thế nào khi user sửa một preference đã được lưu thành long-term memory?',
+    'Hai worker cùng cập nhật state tác vụ: bạn ngăn lost update bằng cách nào?',
+    'Bạn kiểm chứng summary giữ nguyên phủ định và số liệu quan trọng ra sao?'
+  ],
+  tags: ['agent memory', 'short-term memory', 'long-term memory', 'summarization', 'privacy', 'state']
+},
+{
+  id: 'ai-061',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Một tác vụ phân tích hồ sơ có thể tách thành nhiều phần độc lập. Bạn quyết định dùng một agent hay mô hình orchestrator–worker nhiều agent thế nào để cân bằng chất lượng, latency và chi phí?',
+  a: `**Tóm tắt:** Multi-agent là kiến trúc trong đó một agent điều phối giao các việc con cho worker chuyên trách; nó có ích khi các phần việc thật sự độc lập hoặc cần chuyên môn khác nhau, không phải cứ nhiều agent là thông minh hơn. Tôi chỉ triển khai khi benchmark chứng minh lợi ích vượt chi phí token, gọi model, đồng bộ, lỗi và độ khó kiểm soát.
+
+### Orchestrator và worker là gì?
+**Orchestrator** là thành phần lập kế hoạch, chia việc, phân phối và tổng hợp kết quả. **Worker** là agent thực hiện một nhiệm vụ nhỏ, có hướng dẫn và quyền giới hạn. Ví dụ xử lý hồ sơ gồm: trích xuất thông tin, kiểm tra quy tắc, đối chiếu tài liệu. Nếu các bước cần dữ liệu của nhau thì không thể chạy song song tuỳ tiện; nếu độc lập, orchestrator có thể giao cùng lúc.
+
+Luồng cơ bản:
+1. Orchestrator biến yêu cầu thành danh sách việc có input/output schema rõ ràng.
+2. Mỗi worker chỉ nhận dữ liệu cần thiết, model phù hợp và tool allowlist (danh sách công cụ được phép).
+3. Worker trả kết quả có cấu trúc, nguồn và trạng thái lỗi; orchestrator xác thực schema, không tin câu trả lời chỉ vì nó là JSON hợp lệ.
+4. Tổng hợp, xử lý xung đột, áp dụng giới hạn bước/thời gian/token và trả lời hoặc yêu cầu con người kiểm tra.
+
+~~~seq
+title: Orchestrator giao việc độc lập
+actors: Client | Orchestrator | Workers
+Client -> Orchestrator: Yêu cầu phân tích hồ sơ
+Orchestrator -> Workers: Trích xuất và kiểm quy tắc
+Workers --> Orchestrator: Kết quả có schema và nguồn
+Orchestrator -> Orchestrator: Kiểm tra xung đột, tổng hợp
+Orchestrator --> Client: Kết luận hoặc yêu cầu duyệt
+~~~
+
+### Ước lượng chi phí và lợi ích
+Giả sử một agent gọi model 3 lần, mỗi lượt 2.000 input + 500 output token. Tổng là 7.500 token và 3 lần gọi. Ba worker chạy độc lập, mỗi worker dùng 1.500 input + 300 output, rồi orchestrator gọi thêm một lượt tổng hợp 4.500 input + 700 output: tổng 10.100 token và 4 lần gọi. Số này chỉ là ví dụ để chỉ cách tính; giá thực tế phụ thuộc model và cache. Parallel có thể giảm latency từ tổng các thời gian worker xuống xấp xỉ worker chậm nhất cộng thời gian tổng hợp, nhưng tốn tiền hơn và tăng tải đồng thời.
+
+| Phương án | Phù hợp | Đổi lại |
+|---|---|---|
+| Một agent tuần tự | Tác vụ ngắn, phụ thuộc nhiều bước, yêu cầu ít | Chậm nếu nhiều việc độc lập |
+| Orchestrator + worker song song | Phân tích độc lập, có schema và evaluator | Nhiều token, fan-out lỗi, tổng hợp phức tạp |
+| Workflow cố định | Quy trình có bước và quy tắc rõ | Ít linh hoạt nhưng dễ dự đoán và kiểm thử |
+
+Trước khi tách agent, thử prompt/tool tốt hơn, caching, model nhỏ hoặc workflow cố định. Tính **cost per successful task** (chi phí cho một tác vụ hoàn thành đúng), không chỉ token mỗi lần gọi. Có thể worker dùng model rẻ để trích xuất, nhưng quyết định rủi ro cần bước kiểm tra mạnh hơn hoặc con người.
+
+### Kiểm soát độ tin cậy
+- Giới hạn số worker, fan-out, bước, token, deadline và số lần retry; tất cả phải có budget tổng, không chỉ budget từng worker.
+- Dùng schema có trường {{status}}, {{evidence}} và {{confidence}}; kiểm tra dữ liệu, nguồn và xung đột trước khi tổng hợp.
+- Retry chỉ lỗi transient (tạm thời như timeout), có backoff và idempotency cho side effect; không retry vô hạn câu trả lời sai định dạng.
+- Worker chỉ có quyền đọc hoặc tool tối thiểu cần dùng. Không để worker tự tạo worker vô hạn.
+- Ghi trace parent/child: ai giao việc nào, model, token, latency, lỗi, phiên bản prompt và lý do bỏ kết quả.
+
+### Pitfall production
+- Tạo nhiều worker chạy cùng prompt khiến kết quả trùng và chi phí tăng mà không thêm coverage.
+- Tổng hợp bằng cách nối văn bản: kết luận mâu thuẫn nhưng vẫn trình bày như sự thật.
+- Parallel hóa bước phụ thuộc: worker dùng dữ kiện chưa được xác minh rồi khuếch đại sai lệch.
+- Chỉ giới hạn từng worker, quên tổng ngân sách một request; fan-out lớn gây quá tải provider hoặc thread pool.
+- So sánh latency p50 mà không đo p95, tỷ lệ hoàn tất, chất lượng và chi phí theo nhóm tác vụ.
+
+### Ví dụ đời thực
+Một hệ thống phân loại hồ sơ có 10 trường cần trích xuất. Bản một agent mất p95 8,4 giây, chi phí trung bình 0,012 USD/tác vụ và đạt 91% trường đúng. Nhóm thử 3 worker độc lập theo nhóm trường, rồi một bước kiểm tra chéo; p95 giảm còn 4,6 giây nhưng chi phí lên 0,019 USD và có 3% kết quả xung đột. Sau đó họ chỉ bật parallel cho hồ sơ dài, giữ workflow đơn giản cho hồ sơ ngắn, thêm validator và đưa xung đột sang hàng duyệt. Tỷ lệ trường đúng đạt 96%, chi phí bình quân toàn hệ thống 0,014 USD. Kết quả chứng minh kiến trúc lai tốt hơn mặc định fan-out cho mọi request.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu bằng cách đo baseline một agent và xem các bước nào độc lập. Orchestrator–worker hợp lý khi có phần việc tách biệt, output có schema và tôi xác minh được; nếu bước sau phụ thuộc dữ liệu bước trước, workflow tuần tự thường an toàn hơn. Tôi tính token và số lượt gọi cho cả worker lẫn bước tổng hợp, rồi so cost per successful task, p95, chất lượng và tỷ lệ xung đột. Khi chạy song song, tôi giới hạn fan-out, deadline và ngân sách tổng, cấp tool tối thiểu, xác thực evidence và có quy tắc xử lý kết quả trái nhau. Retry lỗi tạm thời có backoff, nhưng không retry vô hạn lỗi logic. Trace phải nối được request cha với từng worker để điều tra chi phí và lỗi. Tôi thường triển khai chọn lọc theo độ phức tạp của request, không bật multi-agent cho tất cả. Nếu workflow cố định giải quyết được bài toán, tôi ưu tiên workflow vì dễ dự đoán, kiểm thử và vận hành.”
+
+> Senior tip: thử nghiệm A/B theo nhóm tác vụ và báo cáo đồng thời chất lượng, p95, chi phí trên một tác vụ thành công; giảm latency nhưng làm số hồ sơ sai tăng không phải là tối ưu.`,
+  follow: [
+    'Bạn tổng hợp thế nào khi hai worker đưa ra kết luận trái ngược nhưng đều có evidence?',
+    'Bạn thiết kế budget tổng ra sao để retry và fan-out không làm bùng chi phí?',
+    'Dấu hiệu nào cho thấy nên thay multi-agent bằng workflow cố định?'
+  ],
+  tags: ['multi-agent', 'orchestrator', 'worker', 'cost', 'latency', 'workflow', 'observability']
+},
+{
+  id: 'ai-062',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn cần viết MCP server bằng Java để agent truy cập một hệ thống tra cứu nội bộ. Bạn tổ chức tools, transport, xác thực và kiểm tra quyền thế nào để agent chỉ thấy và làm đúng phần được phép?',
+  a: `**Tóm tắt:** MCP (Model Context Protocol) là giao thức chuẩn để ứng dụng AI khám phá và gọi tools hoặc đọc resources từ một server. MCP server không thay thế authorization của hệ thống nội bộ: mỗi lần gọi vẫn phải xác thực người dùng, kiểm quyền trên tài nguyên, validate input và giới hạn kết quả. Tôi bọc API nghiệp vụ bằng một lớp tool nhỏ, không mở database hay công cụ tuỳ ý cho model.
+
+### MCP server làm gì?
+MCP định nghĩa trao đổi thông điệp theo JSON-RPC: client khởi tạo kết nối, khám phá capability, liệt kê tools/resources, rồi gửi yêu cầu gọi tool. Tool có tên, mô tả và input schema để client/model biết khi nào gọi và tham số nào hợp lệ. Server trả kết quả có cấu trúc. Đây là hợp đồng giao tiếp, không phải quyền truy cập; model đề nghị gọi tool nhưng ứng dụng server quyết định có thực thi hay không.
+
+Phân biệt:
+- **Tool** thực hiện hành động như tra trạng thái đơn hàng.
+- **Resource** cung cấp dữ liệu đọc được theo một định danh, nếu ứng dụng muốn expose theo dạng đó.
+- **Prompt** là mẫu hướng dẫn có thể công bố cho client; nó không phải cơ chế bảo vệ.
+
+### Ranh giới Java an toàn
+Giữ logic nghiệp vụ trong service Java hiện có, rồi tạo handler MCP mỏng: parse và validate input, lấy principal đã xác thực từ transport/session, kiểm quyền, gọi service và chuyển kết quả thành response nhỏ. Không cho model truyền SQL, URL tuỳ ý, tên bảng hoặc userId không kiểm chứng.
+
+~~~java
+record OrderLookup(String orderId) {}
+
+OrderView lookupOrder(Principal principal, OrderLookup input) {
+    requireValidOrderId(input.orderId());
+    // Quyền kiểm tra theo chủ sở hữu ở service, không tin userId từ tool arguments.
+    return orderService.findVisibleTo(principal.userId(), input.orderId())
+        .orElseThrow(NotFoundException::new);
+}
+~~~
+Đây là minh hoạ lớp nghiệp vụ; tên API MCP phụ thuộc Java SDK và phiên bản được chọn. Nên dùng SDK tương thích phiên bản giao thức của client, đọc ví dụ chính thức đúng version, và không tự bịa tên annotation hay handler.
+
+### Transport và xác thực
+Với tool chạy cục bộ do một desktop host khởi chạy, {{stdio}} (standard input/output) đơn giản và không mở cổng mạng; stdout chỉ dành cho protocol message, log ghi stderr. Với server dùng chung từ xa, chọn transport HTTP được MCP hỗ trợ trong phiên bản triển khai, dùng TLS và cơ chế xác thực phù hợp môi trường. Không mặc định rằng khởi tạo MCP đồng nghĩa với đăng nhập; danh tính và token phải được gắn với từng session/request một cách an toàn, token không được đưa vào prompt hay log.
+
+Mỗi tool call cần kiểm tra lại quyền theo resource. Scope (phạm vi quyền) nên hẹp, ví dụ chỉ đọc đơn hàng của tenant hiện tại. Giới hạn page size, thời gian, kích thước response và số lần gọi; lọc PII trước khi trả về. Thông báo lỗi không nên tiết lộ tài nguyên thuộc người khác. Tool ghi dữ liệu phải có xác nhận/quy trình duyệt nếu rủi ro cao.
+
+### Vận hành và kiểm thử
+- Version tools/schema và giữ mô tả chính xác; thay schema phải kiểm thử với client tương thích.
+- Ghi audit gồm identity, tool name, resource ID đã che/mã hoá phù hợp, kết quả cho phép/từ chối, latency và correlation ID; không log secret hoặc payload PII nguyên văn.
+- Có timeout, rate limit, giới hạn concurrency, graceful shutdown và readiness/health check theo môi trường triển khai.
+- Test gọi tool thiếu quyền, input sai, tenant khác, response quá lớn, timeout và prompt injection trong dữ liệu trả về.
+
+### Pitfall production
+- Tin rằng mô tả “chỉ tra cứu dữ liệu của user” sẽ giới hạn model; description không phải authorization.
+- Dùng userId lấy từ arguments để quyết định quyền thay vì identity đã xác thực.
+- Đưa API admin chung vào tool và dựa vào prompt để model không gọi.
+- Ghi JSON-RPC đầy đủ có bearer token, email hoặc dữ liệu cá nhân vào log.
+- Cho phép resource/tool trả quá nhiều nội dung; context phình và dữ liệu vượt quyền dễ bị lộ qua tóm tắt.
+
+### Ví dụ đời thực
+Một MCP server Java nội bộ expose tool tra cứu hồ sơ hỗ trợ cho 60 nhân viên. Bản đầu nhận {{employeeId}} từ arguments và backend service chỉ query theo ID; red-team test phát hiện nhân viên đổi ID có thể lấy hồ sơ người khác. Nhóm chuyển sang identity từ phiên đã xác thực, kiểm tra quyền theo phòng ban và tenant tại service, giới hạn 20 kết quả/trang, bỏ trường nhạy cảm và thêm audit cho cả allow/deny. Trong 2.000 lượt test chéo tenant, không còn truy cập trái phép; response p95 vẫn dưới 250 ms. Một tool sửa dữ liệu được tách riêng và yêu cầu luồng xác nhận, không dùng cùng quyền với tool đọc.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi xem MCP là giao thức discovery và gọi tool, không phải lớp authorization. Trong Java, tôi giữ nghiệp vụ trong service hiện hữu và để handler MCP làm nhiệm vụ parse schema, lấy principal từ transport, validate, kiểm quyền rồi gọi đúng use case. Model không được truyền SQL, tenant hay userId để tự chọn phạm vi quyền. Tôi expose tool nhỏ, mô tả rõ input/output, giới hạn kết quả và lọc PII. Server local có thể dùng stdio; server dùng chung cần transport từ xa được hỗ trợ, TLS và xác thực rõ ràng theo request. Tôi cũng kiểm tra tương thích phiên bản giao thức/SDK, test input xấu và tenant chéo, có timeout, rate limit và audit không chứa secret. Tool chỉ đọc và tool gây side effect có quyền, xác nhận khác nhau. Mọi quyền quan trọng được enforce trong backend service, nên ngay cả khi model bị prompt injection, server vẫn từ chối hành động không được phép.”
+
+> Senior tip: kiểm thử như một API công khai: mọi tool call là input không tin cậy, dù lời gọi đến từ agent nội bộ; quyền phải được kiểm tra tại service đang sở hữu dữ liệu.`,
+  follow: [
+    'Nếu MCP server phục vụ nhiều tenant, bạn gắn tenant context vào request và kiểm tra chéo ra sao?',
+    'Bạn tách quyền của tool đọc khỏi tool ghi thế nào?',
+    'Bạn xử lý phiên bản tool schema không tương thích giữa client và server ra sao?'
+  ],
+  tags: ['MCP', 'Java', 'authorization', 'tools', 'JSON-RPC', 'stdio', 'security']
+},
+{
+  id: 'ai-063',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Agent có thể chuyển tiền hoặc xoá dữ liệu theo yêu cầu bằng ngôn ngữ tự nhiên. Bạn thiết kế human-in-the-loop thế nào để người duyệt hiểu chính xác hành động, tránh duyệt nhầm, phát lại hoặc dùng dữ liệu đã lỗi thời?',
+  a: `**Tóm tắt:** Human-in-the-loop (HITL) là điểm dừng bắt buộc để con người xem và phê duyệt hành động rủi ro trước khi hệ thống thực thi. Approval phải gắn với đúng người, đúng nội dung, đúng thời hạn và đúng lần thực thi; nút “Đồng ý” không thể chỉ là cờ boolean chung cho cả phiên agent.
+
+### Tách đề xuất khỏi thực thi
+Agent chỉ tạo **proposal** (đề xuất) có kiểu dữ liệu: hành động, đối tượng, số tiền/đơn vị, người nhận, lý do, nguồn dữ liệu và hạn hiệu lực. Backend kiểm tra policy độc lập với model: quyền của người yêu cầu, hạn mức, tài khoản hợp lệ, trạng thái hiện tại và các rule bắt buộc. Mô hình không được tự khẳng định rằng hành động an toàn.
+
+Luồng an toàn:
+1. Agent tạo proposal nhưng chưa gọi side effect.
+2. Server chuẩn hoá tham số, tính fingerprint/hash của nội dung chính xác, lưu proposal bất biến với người tạo, version dữ liệu và expiresAt.
+3. UI hiển thị rõ “từ tài khoản nào, tới ai, bao nhiêu, phí nào, xoá đối tượng nào”, không chỉ hiển thị prompt model.
+4. Người có quyền đăng nhập và xác nhận đúng proposal, có thể yêu cầu xác thực tăng cường cho hành động giá trị cao.
+5. Server kiểm tra lại approver, trạng thái, hạn, hash, quyền và dữ liệu hiện tại; nếu thay đổi thì huỷ approval và yêu cầu duyệt lại.
+6. Thực thi một lần theo idempotency key, lưu audit cả đề xuất, quyết định và kết quả.
+
+~~~seq
+title: Duyệt hành động rủi ro
+actors: Agent | Backend | Reviewer
+Agent -> Backend: Tạo proposal chưa thực thi
+Backend --> Reviewer: Hiển thị chi tiết và nguồn
+Reviewer -> Backend: Duyệt proposalId và challenge
+Backend -> Backend: Kiểm tra hash, quyền, hạn, trạng thái
+Backend --> Agent: Trả kết quả thực thi có audit
+~~~
+
+### An toàn khi duyệt
+Approval là một capability có phạm vi hẹp: gắn với {{proposalId}}, hash nội dung, approver, thời hạn, trạng thái {{PENDING/APPROVED/EXECUTED/REJECTED/EXPIRED}}. Dùng cập nhật có điều kiện hoặc transaction để chỉ một tiến trình chuyển từ APPROVED sang EXECUTED; request phát lại không tạo lần chuyển tiền thứ hai. Nếu người duyệt và người yêu cầu phải tách biệt, policy cần enforce separation of duties.
+
+Không cho UI gửi lại toàn bộ action sau khi duyệt rồi tin nội dung: server lấy proposal đã lưu, so hash và dùng đúng tham số đó. Nếu tiền, người nhận hoặc đối tượng xoá thay đổi dù chỉ một trường, hash khác thì approval không còn hợp lệ. Với nghiệp vụ tài chính, giao dịch chính vẫn phải qua ledger/payment service có kiểm soát riêng; HITL không thay kiểm soát nghiệp vụ hay chống gian lận.
+
+### Chọn mức xác nhận
+| Rủi ro | Cách phù hợp |
+|---|---|
+| Đọc dữ liệu, không gây side effect | Thường không cần duyệt, vẫn kiểm quyền |
+| Hành động có thể hoàn tác, tác động nhỏ | Confirm rõ nội dung, audit và undo nếu nghiệp vụ hỗ trợ |
+| Chuyển tiền, xoá vĩnh viễn, thay đổi quyền | Duyệt độc lập, xác thực tăng cường, hạn mức và kiểm tra lại trước commit |
+
+Thêm friction có chi phí: tăng thời gian, reviewer fatigue (mệt vì quá nhiều yêu cầu), hoặc bottleneck vận hành. Gom nhóm chỉ khi từng item vẫn rõ ràng và không che khuất rủi ro. Không tự động duyệt dựa trên câu trả lời model; chỉ policy xác định và có thể audit mới được quyết định ngoại lệ.
+
+### Pitfall production
+- Duyệt nội dung prompt hoặc bản tóm tắt thay vì payload sẽ thực thi.
+- Proposal hết hạn nhưng vẫn được approve từ tab mở lâu; không kiểm tra thời hạn và trạng thái server-side.
+- Approval dùng chung theo session, nên agent đổi người nhận/amount sau khi người dùng bấm xác nhận.
+- Endpoint duyệt không chống CSRF/replay hoặc không kiểm quyền của reviewer.
+- Log chỉ ghi “approved” mà không giữ ai duyệt, version/hash nào, policy nào và kết quả.
+
+### Ví dụ đời thực
+Một trợ lý thanh toán tạo 900 đề xuất/ngày; bản đầu cho agent thực thi ngay khi model trả tool call. Một lần retry sau timeout tạo hai yêu cầu cùng 4.500.000 đồng, trong khi người dùng tưởng chỉ có một. Nhóm chuyển sang proposal có hash, hiển thị người nhận và số tiền, approval hết hạn sau 5 phút, xác thực lại cho khoản trên 2.000.000 đồng và trạng thái chuyển một chiều trong DB. Nếu payload đổi hoặc dữ liệu tài khoản thay đổi, yêu cầu quay lại chờ duyệt. Sau triển khai, tỷ lệ proposal hết hạn là 6% và được gửi lại có chủ đích; không còn giao dịch trùng trong 30 ngày theo dõi. Mọi kết quả vẫn được đối chiếu với ledger, không dựa vào câu trả lời của agent.
+
+### Trả lời mẫu khi phỏng vấn
+“Với chuyển tiền hoặc xoá dữ liệu, agent chỉ được tạo đề xuất; backend chưa gọi tool gây side effect. Đề xuất được chuẩn hoá và lưu bất biến, bao gồm đối tượng, tham số, nguồn và hash. Màn hình duyệt phải cho thấy chính payload sẽ thực thi, không chỉ lời giải thích của model. Người duyệt cần đúng quyền, có thể cần xác thực tăng cường, và approval gắn với proposal cụ thể cùng thời hạn ngắn. Khi thực thi, server nạp proposal đã lưu, xác minh hash, kiểm tra lại quyền, hạn mức và trạng thái dữ liệu rồi chuyển trạng thái nguyên tử sang executing/executed với idempotency key. Payload thay đổi hoặc proposal hết hạn thì bắt buộc duyệt lại. Tôi audit người yêu cầu, người duyệt, policy, hash và kết quả. HITL là lớp kiểm soát bổ sung; nó không thay thế authorization, kiểm soát ledger hay quy trình chống gian lận.”
+
+> Senior tip: đo cả tỷ lệ approve, reject, hết hạn và số lần chỉnh sửa proposal; tỷ lệ duyệt gần 100% quá nhanh có thể là dấu hiệu reviewer chỉ bấm cho xong chứ không thực sự kiểm tra.`,
+  follow: [
+    'Nếu reviewer duyệt xong nhưng số dư hoặc trạng thái đối tượng đổi trước lúc thực thi thì xử lý thế nào?',
+    'Bạn chống replay khi cùng một nút approve bị bấm hai lần bằng cách nào?',
+    'Khi nào cần tách người yêu cầu khỏi người phê duyệt?'
+  ],
+  tags: ['human-in-the-loop', 'approval', 'payments', 'deletion', 'audit', 'authorization']
+},
+{
+  id: 'ai-064',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Agent gọi tool ghi dữ liệu, nhưng request bị timeout sau khi hệ thống đích đã xử lý và agent retry. Bạn thiết kế idempotency thế nào để không tạo giao dịch hoặc side effect trùng?',
+  a: `**Tóm tắt:** Timeout không chứng minh rằng tool thất bại: server có thể đã commit nhưng phản hồi bị mất. Idempotency là bảo đảm cùng một ý định được nhận nhiều lần nhưng side effect chỉ xảy ra một lần; tôi dùng key ổn định theo hành động nghiệp vụ, lưu kết quả bền vững và phân biệt retry với một ý định mới.
+
+### Vì sao retry nguy hiểm?
+Agent thường retry khi timeout, lỗi mạng hoặc worker restart. Ví dụ lệnh “tạo yêu cầu hoàn tiền 500.000 đồng” đã được hệ thống thanh toán xử lý, nhưng response mất trên đường về. Agent thấy timeout và gọi lại. Nếu backend chỉ thực hiện mỗi request độc lập, khách có thể được hoàn hai lần. Đây là bài toán **at-least-once delivery**: thông điệp có thể đến một hay nhiều lần; thực tế thường khó bảo đảm gửi đúng một lần xuyên nhiều hệ thống.
+
+### Thiết kế idempotency end-to-end
+1. Sinh {{operationId}} khi tạo ý định nghiệp vụ, trước lần gọi tool đầu tiên. Lưu nó cùng user, loại hành động và canonical payload (payload chuẩn hoá).
+2. Mọi lần retry của đúng ý định gửi lại cùng key; một hành động mới phải có key mới. Không sinh UUID mới mỗi lần retry.
+3. Tool server lưu key với hash payload, trạng thái và kết quả. Cùng key + cùng payload trả lại kết quả đã lưu; cùng key nhưng payload khác bị từ chối để không tái sử dụng nhầm.
+4. Trong DB, dùng unique constraint trên phạm vi thích hợp, ví dụ tenant + operationId. Ghi bản ghi idempotency và thay đổi nghiệp vụ trong cùng transaction nếu cùng database.
+5. Nếu gọi dịch vụ ngoài, truyền key ổn định nếu dịch vụ hỗ trợ. Nếu không, dùng transactional outbox: ghi ý định gửi vào DB cùng transaction, worker gửi có retry; consumer cũng dedupe theo event ID. Outbox không tự làm API đích idempotent, nên cần thiết kế cả hai đầu.
+6. Lưu trạng thái {{IN_PROGRESS}}, {{SUCCEEDED}}, {{FAILED_RETRYABLE}} hoặc {{FAILED_FINAL}} và quy tắc khôi phục khi tiến trình chết giữa chừng. Không trả “thất bại” nếu trạng thái thực tế chưa rõ; trả trạng thái đang xác minh hoặc truy vấn kết quả theo operationId.
+
+~~~java
+// Key sinh một lần cho ý định nghiệp vụ, không sinh lại khi retry.
+Result execute(String operationId, Command command) {
+    String hash = canonicalHash(command);
+    return transaction(() -> {
+        StoredResult old = repository.findForUpdate(operationId);
+        if (old != null) {
+            if (!old.payloadHash().equals(hash)) throw new KeyReuseException();
+            return old.result();
+        }
+        Result result = domainService.apply(command);
+        repository.insert(operationId, hash, result);
+        return result;
+    });
+}
+~~~
+Đây là mô hình minh hoạ; xử lý insert đồng thời cần unique constraint và bắt conflict đúng cách. Không dựa riêng vào bước “query rồi insert”, vì hai request cùng lúc có thể đều thấy chưa có bản ghi.
+
+### Phạm vi và thời hạn của key
+Key cần được scope theo loại action/tenant hoặc principal để không đụng giữa người dùng. TTL phải dài hơn cửa sổ retry và thời gian xử lý bất đồng bộ; xoá record quá sớm sẽ mở lại khả năng thực hiện trùng. Không dùng conversationId làm key chung: cùng một hội thoại có thể chứa hai yêu cầu chuyển tiền hợp lệ khác nhau. Payload hash nên tính trên biểu diễn canonical để khác thứ tự field không tạo ý nghĩa khác; trường thời gian ngẫu nhiên không liên quan không nên làm đổi hash.
+
+| Trường hợp | Hành vi |
+|---|---|
+| Cùng key, cùng payload, đã thành công | Trả lại kết quả đã lưu |
+| Cùng key, cùng payload, đang chạy | Trả trạng thái đang xử lý hoặc cho client chờ có giới hạn |
+| Cùng key, payload khác | Từ chối và audit |
+| Key mới, ý định mới | Thực thi theo policy bình thường |
+
+### Pitfall production
+- Retry tạo key mới nên dedupe không bao giờ nhận ra cùng ý định.
+- Hai request đồng thời vượt qua check-then-act; cần unique constraint/atomic insert.
+- Record key lưu ở Redis nhưng TTL ngắn hơn retry hoặc mất khi failover; hành động nhạy cảm thường cần kho bền theo đảm bảo nghiệp vụ.
+- Đánh dấu thành công trước khi side effect commit, hoặc commit side effect rồi chết trước khi lưu kết quả, tạo trạng thái không nhất quán.
+- Idempotency được hiểu là “mọi lỗi đều trả thành công”; lỗi payload khác hoặc validation vẫn phải báo rõ, không được che giấu.
+
+### Ví dụ đời thực
+Một agent hỗ trợ hoàn tiền nhận 1.200 lệnh/ngày. Trong giờ cao điểm, 0,4% request tới payment service timeout sau khi xử lý, và retry trước đó tạo 3 khoản hoàn trùng mỗi tuần. Nhóm tạo operationId khi proposal được duyệt, lưu hash cùng trạng thái trong DB và đặt unique constraint; payment provider nhận cùng idempotency key khi retry. Với timeout không rõ kết quả, agent tra trạng thái theo operationId thay vì phát lệnh mới. Sau 6 tuần, có 74 timeout nhưng cả 74 được đối chiếu thành một kết quả cuối; không có hoàn tiền trùng. Record giữ 30 ngày, dài hơn retry tối đa 7 ngày và chu kỳ đối soát.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không coi timeout là thất bại vì side effect có thể đã commit nhưng response mất. Tôi tạo operation ID một lần cho ý định nghiệp vụ, trước khi gọi tool, rồi giữ nguyên key qua mọi retry. Server lưu key, payload hash, trạng thái và kết quả bền vững; cùng key cùng payload trả kết quả cũ, còn payload khác bị từ chối. Unique constraint xử lý race giữa request đồng thời, và thay đổi nghiệp vụ cùng bản ghi idempotency nên nằm trong transaction nếu cùng DB. Với hệ thống ngoài, tôi truyền key nếu họ hỗ trợ; nếu dùng outbox thì consumer vẫn cần dedupe. Khi trạng thái chưa rõ, agent truy vấn operation ID và báo đang xác minh, không tự tạo key mới. Tôi chọn TTL dài hơn cửa sổ retry, audit và kiểm thử kill/restart tại các điểm giữa commit. Đây là idempotent effect ở biên nghiệp vụ, không phải lời hứa exactly-once thần kỳ giữa mọi hệ thống.”
+
+> Senior tip: thử fault injection đúng sau commit nhưng trước khi gửi response; đây là cửa sổ timeout dễ lộ duplicate nhất và thường bị bỏ qua nếu chỉ test lỗi trước khi ghi dữ liệu.`,
+  follow: [
+    'Hai request cùng operationId đến đồng thời: transaction và unique constraint phối hợp thế nào?',
+    'Nếu payment provider không hỗ trợ idempotency key thì bạn giảm rủi ro duplicate ra sao?',
+    'Bạn chọn TTL cho idempotency record dựa trên cửa sổ retry và đối soát thế nào?'
+  ],
+  tags: ['idempotency', 'agent retry', 'tool calling', 'transactional outbox', 'payments', 'retry']
+},
 );
