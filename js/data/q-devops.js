@@ -8781,6 +8781,20 @@ HPA -> HPA: compute desiredReplicas
 ### Trả lời phỏng vấn
 "HPA tính desired = ceil(currentReplicas * currentMetric / target) cho từng metric, áp tolerance, chọn giá trị đáp ứng metric căng nhất trong min/max. Stabilization window (scale down mặc định 300s) giữ lịch sử đề xuất để tránh flapping. Custom metric đi từ app -> Prometheus -> Adapter -> Custom Metrics API -> HPA, nên có độ trễ chục giây. Em chọn metric gần tải (RPS/lag) hơn CPU cho service I/O-bound, scale up nhanh/scale down chậm, và luôn kiểm tra giới hạn downstream như DB connections khi đặt maxReplicas."
 
+### Ví dụ đời thực
+Triệu chứng: service order-consumer (Spring Boot consumer Kafka) config HPA theo CPU target 70%. Khi traffic đơn hàng tăng gấp 4 lần dịp Black Friday, lag Kafka của consumer group leo từ 0 lên 150.000 message trong 10 phút, nhưng HPA chỉ scale từ 6 lên 8 pod (maxReplicas=8) vì CPU trung bình chỉ 45%. Latency xử lý đơn hàng tăng từ 200ms lên 12 giây, SLA vi phạm.
+
+Điều tra: {{kubectl describe hpa order-consumer}} cho current CPU 45%, desired 8, metric RPS/lag không được cấu hình. Chạy PromQL {{sum(rate(kafka_consumergroup_lag[5m])) by (consumergroup)}} xác nhận lag tăng đều. CPU thấp vì app phần lớn thời gian chờ poll Kafka và I/O DB, không tính toán nặng.
+
+Nguyên nhân gốc: HPA dùng CPU làm metric chính cho workload I/O-bound. CPU không phản ánh tải thực (lag Kafka, RPS, in-flight requests). Hơn nữa maxReplicas=8 thấp hơn số partition Kafka (24), dẫn đến partition bị bỏ qua.
+
+Cách xử lý: thêm custom metric RPS per-pod và lag per-pod qua Prometheus Adapter; đặt target RPS=100, target lag=5000. Cấu hình HPA behavior scaleUp nhanh (stabilizationWindowSeconds=0, policies +100%/30s), scaleDown chậm (300s, -1 pod/60s). Nâng maxReplicas lên 24 (bằng partition), minReplicas=6. Thêm PDB maxUnavailable=1.
+
+Kết quả đo được: đợt sale tiếp theo, traffic tăng tương tự, HPA scale từ 6 lên 20 pod trong 3 phút, lag giữ dưới 2.000, p99 latency 350ms. Chi phí node tăng 30% trong 2 giờ cao điểm nhưng SLA đạt 99.9%.
+
+### Trả lời mẫu khi phỏng vấn
+"HPA dùng công thức desired = ceil(currentReplicas * currentMetric / target) cho từng metric, lấy giá trị cao nhất, kẹp trong min/max. Stabilization window 300s cho scale down giúp tránh flapping. Custom metric đi app -> Prometheus -> Adapter -> Custom Metrics API -> HPA, độ trễ chục giây. Em ưu tiên metric gần tải: RPS/in-flight cho API, lag cho consumer Kafka. Cấu hình scale up nhanh, scale down chậm, maxReplicas không vượt partition Kafka và DB pool. Thực tế từng gặp service consumer Kafka scale chậm vì dùng CPU metric — chuyển sang lag-based HPA giúp lag từ 150k xuống dưới 2k trong 3 phút."
+
 > Senior tip: Luôn {{kubectl describe hpa}} để xem metric HPA thực sự nhìn thấy — nhiều sự cố autoscale do adapter/PromQL trả giá trị khác kỳ vọng. Đừng quên maxReplicas * connection pool có thể tự DDoS database.`,
     follow: [
       'Khi HPA dùng nhiều metric, làm sao debug trường hợp replica bị đẩy lên do một metric phụ?',
@@ -8861,6 +8875,20 @@ Replicas nhỏ (2-3) cẩn thận với {{minAvailable}} tuyệt đối; đảm 
 
 ### Trả lời phỏng vấn (lead)
 "HPA quyết định replica theo metric, CA quyết định node khi Pod Pending thiếu tài nguyên — hai vòng lặp khác tốc độ. PDB bảo vệ số Pod tối thiểu khi gián đoạn tự nguyện (drain), nên có thể chặn eviction nếu quá chặt. Em thiết kế: minReplicas đủ nền, HPA scale up nhanh/scale down chậm, maxReplicas ràng buộc downstream (DB pool), PDB cho phép drain tiến triển (maxUnavailable 1) và luôn đủ replicas để PDB khả thi. Burst khó đoán thì chấp nhận headroom/scheduled scaling; bảo trì thì tăng replica trước, kiểm tra Allowed disruptions. PDB không bảo vệ khỏi node crash hay OOMKilled — đó là việc của HA và thiết kế chịu lỗi."
+
+### Ví dụ đời thực
+Triệu chứng: dịp Tết, traffic dịch vụ thanh toán tăng 5 lần trong 30 phút. HPA scale desired từ 8 lên 32 pod (maxReplicas=32), nhưng 24 pod ở trạng thái Pending (Insufficient cpu/memory). Cluster Autoscaler (AWS ASG) cần 6 phút provision node m6i.xlarge mới, kéo image 2 phút. Trong 8 phút đó, p99 latency leo từ 120ms lên 4.5s, error rate 2.3%, SLO 99.9% vi phạm.
+
+Điều tra: {{kubectl get events --sort-by=.lastTimestamp}} cho hàng chục FailedScheduling "0/8 nodes are available: 8 Insufficient cpu". Log CA ghi scale-up triggered nhưng node group đã hit maxSize=10. PDB payment-pdb có maxUnavailable=1, khi team drain node cũ để patch kernel, drain kẹt 15 phút vì replicas sẵn sàng chỉ còn 7 (1 pod đang khởi động trên node mới, 1 pod evicted chờ PDB).
+
+Nguyên nhân gốc: maxReplicas=32 nhưng node group maxSize=10 (8 CPU * 10 = 80 CPU, request 2 CPU/pod * 32 = 64 CPU — lý thuyết đủ nhưng buffer không tính overhead kubelet, CNI, node-exporter). PDB maxUnavailable=1 quá chặt khi replicas biến đổi mạnh do HPA. Không có scheduled scaling cho đỉnh Tết.
+
+Cách xử lý: nâng node group maxSize lên 20; đặt minReplicas=12 trước Tết (scheduled scaling CronHPA); PDB đổi sang maxUnavailable: 25% để drain linh hoạt hơn; bật warm image pre-pull trên node mới (image pull secrets + daemonset pre-pull). Cấu hình CA skip-nodes-with-local-storage=false, scale-down-unneeded-time=10m.
+
+Kết quả đo được: đợt sale sau đó, traffic tăng tương tự, 32 pod lên trong 4 phút (node đã sẵn sàng nhờ minReplicas), p99 latency 180ms, error rate 0.02%. Drain node patch kernel xong trong 3 phút thay vì 15 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"HPA và CA là hai vòng lặp khác tốc độ: HPA scale replica theo metric (phút), CA scale node khi Pod Pending (phút đến chục phút). PDB bảo vệ số Pod tối thiểu khi drain, có thể chặn eviction nếu quá chặt. Em thiết kế: minReplicas đủ nền + scheduled scaling cho đỉnh biết trước, HPA scale up nhanh/scale down chậm, maxReplicas ràng buộc DB pool, PDB maxUnavailable phần trăm để drain tiến triển. Burst khó đoán thì chấp nhận headroom/overprovisioning. Thực tế từng gặp drain kẹt 15 phút vì PDB minAvailable bằng replicas, và CA hit maxSize node group khi traffic spike — fix bằng scheduled scaling và nâng quota."
 
 > Senior tip: Trước nâng cấp node pool: replicas đủ, {{kubectl describe pdb}} còn Allowed disruptions, CA/quota cloud đủ, dashboard SLO sẵn sàng. Nhiều ca "drain kẹt 2 giờ" chỉ vì PDB minAvailable bằng đúng số replica hiện tại.`,
     follow: [
@@ -8994,6 +9022,52 @@ deploy:
 - Kiểm tra: pipeline duration, cache hit rate (GitLab metrics), artifact storage.
 - Bảo mật: protected variables, runner tag restrict, audit log.
 
+### Cơ chế chi tiết: Cache key design
+Cache key quyết định khi nào cache được tái dùng vs khi nào bị miss. Với Maven/Gradle, khuyến nghị key dựa trên hash của lock file:
+~~~yaml
+cache:
+  key: "\${CI_COMMIT_REF_SLUG}-\${CI_JOB_NAME}-\$([ -f pom.xml ] && sha256sum pom.xml | cut -c1-8 || echo 'no-pom')"
+  paths: [.m2/repository]
+  policy: pull-push
+~~~
+- {{code}}: nhánh (feature/login, main) — cache tách theo nhánh.
+- {{code}}: tách cache giữa job build/test/deploy.
+- Hash {{code}}/{{code}}: đổi dependency thì key đổi, cache miss, tải dependency mới.
+- {{code}} (mặc định): job đầu push, job sau pull; có thể {{code}} cho job đọc, {{code}} cho job ghi.
+
+### Cơ chế chi tiết: Needs DAG
+Mặc định stage chạy tuần tự: build -> test -> deploy. Với {{code}}, job khai báo phụ thuộc rõ ràng, GitLab xây dựng DAG (Directed Acyclic Graph) cho phép chạy song song tối đa:
+~~~yaml
+test:
+  stage: test
+  needs: [build]          # chỉ cần build xong, không chờ stage build khác
+  script: mvn test
+deploy:
+  stage: deploy
+  needs: [build]          # deploy không cần chờ test (nếu test là gate riêng)
+  script: ./deploy.sh
+  rules: [if: \$CI_COMMIT_BRANCH == "main"]
+~~~
+Giảm thời gian pipeline từ 20 phút xuống 12 phút trên project thực tế.
+
+### Ví dụ đời thực
+Triệu chứng: team 12 dev, pipeline GitLab CI trung bình 22 phút (build 8m, test 10m, deploy 4m). Cache hit rate chỉ 35% do key cache dùng {{code}} — mỗi commit trên feature branch tạo cache mới, không chia sẻ được. Artifacts {{code}} 120MB upload/download mất 3 phút. Runner shared bị noisy neighbor khi job test chạy parallel 8 thread, CPU throttle.
+
+Điều tra: GitLab CI/CD Analytics cho cache hit rate 35%, median pipeline duration 22m. Job {{code}} trên feature branch luôn download dependency thay vì dùng cache main. Artifacts không có {{code}}, storage registry 500GB/Tháng.
+
+Nguyên nhân gốc: cache key thiếu hash dependency file, artifacts quá lớn và không hết hạn, dùng runner shared cho workload nặng không giới hạn resource.
+
+Cách xử lý: 
+1. Sửa cache key thêm hash {{code}}, bật {{code}} cho job test, {{code}} cho job build.
+2. Artifacts chỉ giữ {{code}} (có {{code}}), tách {{code}} riêng cho job test.
+3. Tự host specific runner (AWS ASG, docker executor, 4 CPU/16GB) gán tag {{code}}, convert job nặng sang runner này.
+4. Bật {{code}} cho job deploy không phụ thuộc test (chỉ cần build artifact), chạy song song.
+
+Kết quả đo được: pipeline duration giảm từ 22 phút xuống 9 phút (build 4m nhờ cache hit 85%, test 4m song song, deploy 1m). Cache hit rate 85%. Chi phí runner tự host $180/tháng, tiết kiệm 65% so với shared runner minutes.
+
+### Trả lời mẫu khi phỏng vấn
+"GitLab CI chạy pipeline theo stage (tuần tự) và job (song song trong stage). Cache dùng để tái dùng dependency (Maven .m2, npm node_modules), key nên có hash lock file để tránh cache miss vô ích; artifacts truyền file kết quả (jar, test report) giữa stage, phải có expire_in. Runner có executor shell (nhanh, state leak) và docker (sạch, reproducible), Kubernetes executor scale pod theo job. Biến masked che giá trị trong log, protected chỉ inject vào protected branch/tag. Tôi dùng needs để DAG pipeline, tách runner heavy workload, cache key có hash pom.xml. Thực tế giảm pipeline từ 22p xuống 9p nhờ cache hit 85% và needs DAG."
+
 > Senior tip: Dùng needs để DAG pipeline giảm thời gian; artifacts expire để tiết kiệm storage; tách build/test/deploy image để cache layer hiệu quả.`,
     follow: ['Cache key nên thiết kế thế nào cho Maven/Gradle?', 'Làm sao tránh leak secret trong log?', 'Rollback pipeline khi deploy fail?'],
     tags: ['GitLabCI', 'Pipeline', 'Secrets']
@@ -9046,6 +9120,65 @@ pipeline {
 - Kiểm tra: queue time, agent utilization, plugin update cadence.
 - Bảo mật: least privilege credentials, RBAC, audit.
 
+### Cơ chế chi tiết: Agent và Kubernetes Plugin
+Jenkins Kubernetes Plugin (agent kubernetes) tạo pod agent cho mỗi stage/job:
+~~~groovy
+agent {
+  kubernetes {
+    yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: maven
+    image: maven:3.9-eclipse-temurin-17
+    command: ['cat']
+    tty: true
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1"
+      limits:
+        memory: "4Gi"
+        cpu: "2"
+"""
+  }
+}
+~~~
+- Mỗi job chạy trong pod riêng, tự dọn dẹp sau khi xong (scale to zero).
+- {{code}} + {{code}} giữ container sống chờ Jenkins điều khiển.
+- Resources request/limit quan trọng: tránh pod agent bị OOMKilled khi build, tránh node quá tải.
+
+### Cơ chế chi tiết: Shared Library versioning
+Shared library nên version theo Git tag (semver) để tránh breaking change:
+~~~groovy
+@Library('my-shared-lib@v1.4.2') _  // pin version
+// hoặc
+@Library('my-shared-lib@release/1.4') _  // branch
+~~~
+- Tag {{code}} bất biến, an toàn cho production.
+- Branch {{code}} cho hotfix, nhưng có thể di chuyển.
+- Tránh {{code}} (mặc định {{code}}) — rủi ro thay đổi không kiểm soát.
+- Unit test library bằng {{code}} (Groovy Spock) để test logic pipeline mà không cần Jenkins thật.
+
+### Ví dụ đời thực
+Triệu chứng: team 20 dev chia sẻ 1 Jenkins controller (8 CPU/32GB), 50 job chạy song song lúc 9h sáng. Queue time trung bình 12 phút, build timeout 60 phút thường fail do chờ agent. Plugin 120 cái, 15 cái conflict version sau update, log lỗi "NoSuchMethodError" lúc deploy. Shared library trên branch {{code}} bị dev A sửa function {{code}} làm dev B deploy sai namespace.
+
+Điều tra: Jenkins Monitoring (Prometheus) cho {{code}} p95 18 phút. Thread dump controller thấy 200+ thread handle plugin. Shared library commit history: 5 commit/tuần, không tag, không test.
+
+Nguyên nhân gốc: controller đơn lẻ không scale được concurrency; plugin hell; shared library không versioning, không test.
+
+Cách xử lý:
+1. Tách controller: 1 controller cho orchestration (lightweight), 3 controller chuyên build (heavy) qua Kubernetes plugin, mỗi controller quản lý agent pool riêng.
+2. Plugin audit: xoá 40 plugin không dùng, lock version còn lại trong {{code}} (Jenkins Configuration as Code - JCasC).
+3. Shared library: tag {{code}}, setup Pipeline Unit test, require PR review + test pass mới merge, bump version semver.
+4. Migration dần sang GitHub Actions cho repo mới, Jenkins chỉ giữ legacy.
+
+Kết quả đo được: queue time p95 từ 18 phút xuống 2 phút. Build success rate từ 78% lên 96%. Zero plugin conflict 6 tháng. Shared library release cadence 2 tuần/lần, 0 breaking change production.
+
+### Trả lời mẫu khi phỏng vấn
+"Jenkinsfile declarative khai báo pipeline trong Groovy DSL: agent (any, label, docker, kubernetes), stages, post, environment, credentials. Shared library (vars/, src/) tái dùng logic across repos, phải version bằng Git tag semver và unit test bằng Pipeline Unit. So với GitLab CI/GitHub Actions (SaaS, managed runner, config YAML), Jenkins tự host, plugin phong phú nhưng rủi ro plugin hell, controller bottleneck. Tôi chọn Jenkins cho enterprise on-prem complex, greenfield thì ưu tiên GitHub Actions/GitLab CI giảm vận hành. Thực tế từng tối ưu Jenkins: tách controller, JCasC lock plugin, shared library versioning — queue time p95 từ 18p xuống 2p."
+
 > Senior tip: Jenkins phù hợp enterprise legacy/complex on-prem; greenfield ưu tiên GitHub Actions/GitLab CI để giảm vận hành; nếu dùng Jenkins, giữ plugin tối thiểu và version lock.`,
     follow: ['Khi nào chọn self-hosted runner?', 'Cách version shared library?', 'Blue ocean vs classic UI?'],
     tags: ['Jenkins', 'CI', 'Comparison']
@@ -9090,6 +9223,50 @@ mvn -B verify sonar:sonar \\
 - Sai lầm: coverage threshold 0 ban đầu rồi không tăng; gate chỉ warning không block.
 - Kiểm tra: gate pass rate, new code coverage trend, false positive count.
 - Bảo mật: token masked, SonarQube HTTPS, RBAC.
+
+### Cơ chế chi tiết: New Code Period (Leak Period)
+SonarQube phân biệt **Overall code** (toàn bộ codebase) và **New code** (code mới từ leak period). Quality gate nên chỉ áp dụng cho New code:
+- **Previous version**: so với version trước (tag Git).
+- **Number of days**: ví dụ 30 ngày.
+- **Specific date**: mốc cố định.
+- **SCM reference**: so với branch target (main/develop) — phù hợp CI/CD.
+
+Khi PR tạo ra, SonarQube chỉ tính metric trên dòng code thêm/sửa trong PR (diff). Legacy debt (code cũ có smell, coverage thấp) **không** làm fail gate. Điều này cho phép team delivery liên tục mà không bị chặn bởi nợ kỹ thuật cũ.
+
+### Cơ chế chi tiết: Quality Gate conditions
+Quality gate là tập điều kiện (conditions) áp dụng cho New code:
+~~~text
+Condition                  | Operator | Value | Error/Warning
+---------------------------|----------|-------|--------------
+Coverage on New Code       | <        | 80%   | Error
+Blocker issues on New Code | >        | 0     | Error
+Critical issues on New Code| >        | 0     | Error
+Major issues on New Code   | >        | 0     | Warning
+Security Hotspots reviewed | <        | 100%  | Warning
+Duplicated lines on New Code| >      | 3%    | Warning
+~~~
+- {{code}} làm fail gate (chặn merge), {{code}} chỉ báo.
+- Điều kiện có thể dùng {{code}} (A-E) cho Reliability, Security, Maintainability.
+- Tự tạo quality gate profile cho từng loại dự án (library, service, frontend).
+
+### Ví dụ đời thực
+Triệu chứng: repo core-payment 8 năm tuổi, 250k LOC, coverage overall 42%, 1.200 code smell, 45 blocker. Team mới join không dám sửa vì SonarQube fail mọi PR. Lead đặt quality gate "coverage overall ≥ 80%" — pipeline đỏ toàn bộ, team không merge được gì 2 tuần.
+
+Điều tra: SonarQube dashboard cho Overall coverage 42%, New code coverage (30 ngày) 78%. Legacy debt tập trung ở module {{code}} (viết 2016, không test, 15k LOC). Quality gate cũ dùng Overall metric.
+
+Nguyên nhân gốc: Quality gate áp dụng Overall metric thay vì New code. Legacy debt chặn delivery hoàn toàn. Không có leak period config, PR decoration không hiện rõ metric new code.
+
+Cách xử lý:
+1. Tạo quality gate mới "Payment Service Gate" chỉ dùng New code (leak period: Previous version — tag Git).
+2. Điều kiện: New code coverage ≥ 80%, 0 blocker/critical, Major ≤ 5, Duplicated lines ≤ 3%.
+3. Bật PR decoration trên GitLab/GitHub, required status check "SonarQube".
+4. Legacy module {{code}}:exclude khỏi analysis ({{code}}) tạm thời, lập plan rewrite dần.
+5. Tăng ngưỡng coverage new code 5%/quý: Q1 80%, Q2 85%, Q3 90%.
+
+Kết quả đo được: PR pass rate từ 15% lên 92% trong 1 tháng. New code coverage trung bình 83%. Legacy debt không còn chặn delivery. Team tự tin refactor module cũ vì gate chỉ xét code mới.
+
+### Trả lời mẫu khi phỏng vấn
+"SonarQube scanner chạy trong CI, gửi report lên server, quality gate so sánh metric New code (code mới từ leak period) với ngưỡng. Chặn merge qua PR decoration + required status check. Maven: {{code}}, Jacoco cho coverage. Gradle: plugin {{code}}. Key point: dùng New code period (leak period) để legacy debt không chặn delivery, tăng ngưỡng coverage dần theo quý. Thực tế từng gặp repo 8 năm coverage overall 42% fail mọi PR — chuyển sang New code gate 80% giúp PR pass rate từ 15% lên 92%."
 
 > Senior tip: Dùng "new code" period (leak period) để tránh legacy debt chặn delivery; tăng ngưỡng coverage dần theo quý.`,
     follow: ['Làm sao xử lý false positive?', 'Coverage nên đo unit hay integration?', 'SonarLint trong IDE?'],
@@ -9147,6 +9324,70 @@ ENTRYPOINT ["java","-jar","app.jar"]
 - Sai lầm: root user, secret trong layer (ENV password), image base cũ.
 - Kiểm tra: image size, scan report, không có secret (trivy secret scan).
 - Base image update strategy: rebuild định kỳ theo base image digest.
+
+### Cơ chế chi tiết: Layered Jar cho Docker cache tối ưu
+Spring Boot 3.3+ hỗ trợ tách layered jar tốt hơn (cũ dùng {{code}}, mới dùng {{code}}). Thay vì COPY cả fat jar, tách thành 4 layer:
+~~~dockerfile
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -B dependency:go-offline
+COPY src ./src
+RUN mvn -B package -DskipTests
+# Tách layered jar
+RUN java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination /out
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /out/dependencies/ ./
+COPY --from=build /out/spring-boot-loader/ ./
+COPY --from=build /out/snapshot-dependencies/ ./
+COPY --from=build /out/application/ ./
+USER 1000
+ENTRYPOINT ["java","-XX:MaxRAMPercentage=75","org.springframework.boot.loader.launch.JarLauncher"]
+~~~
+- {{code}}: thư viện bên thứ ba (95% dung lượng, ít đổi).
+- {{code}}: launcher classes.
+- {{code}}: SNAPSHOT dependency (nếu có).
+- {{code}}: code của bạn (vài trăm KB, đổi thường).
+Khi chỉ sửa code, chỉ layer {{code}} mới build lại + push, tiết kiệm 90% bandwidth và thời gian.
+
+### Cơ chế chi tiết: Trivy scanning strategy
+Trivy quét 3 loại:
+- **OS packages**: {{code}} (default).
+- **Language packages**: {{code}} — quét dependency trong jar (Maven/Gradle lock file).
+- **Secrets**: {{code}} — tìm API key, password trong layer.
+
+Pipeline khuyến nghị:
+~~~yaml
+trivy_scan:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed $IMAGE_TAG
+    - trivy image --scanners secret --exit-code 1 $IMAGE_TAG
+  allow_failure: false
+~~~
+- {{code}}: bỏ qua CVE chưa có fix (tránh false positive block).
+- Exception list: file {{code}} với CVE ID, lý do, expiry date.
+
+### Ví dụ đời thực
+Triệu chứng: service order-api build image fat jar 180MB, push Harbor mất 4 phút, pull lên node K8s mất 2 phút. Deploy 6 lần/ngày → 36 phút chỉ cho push/pull. Trivy scan báo 47 CVE HIGH/CRITICAL (nhiều CVE trong base image alpine 3.18 cũ), pipeline fail, dev phải thêm exception thủ tục. Image chạy user root, secret DB vô tình commit vào layer {{code}}.
+
+Điều tra: {{code}} cho 1 layer 175MB (fat jar). Base image {{code}} digest 6 tháng tuổi, 32 CVE. {{code}} tìm thấy password trong layer ENV.
+
+Nguyên nhân gốc: Dockerfile copy fat jar thành 1 layer, không tận dụng layered jar. Base image không rebuild định kỳ. Secret hard-code trong Dockerfile/ENV. Trivy exception không có expiry, tích lũy 47 CVE.
+
+Cách xử lý:
+1. Chuyển multi-stage + layered jar extract (như Dockerfile trên). Image giảm 180MB -> 52MB.
+2. Base image pin digest, rebuild hàng tuần qua scheduled pipeline (Dependabot/Renovate auto PR bump base image digest).
+3. Secret: dùng BuildKit {{code}} cho build-time, runtime lấy từ K8s Secret/External Secrets Operator.
+4. Trivy: fail chỉ HIGH/CRITICAL có fix, exception bắt buộc có justification + expiry 30 ngày, review hàng tuần.
+
+Kết quả đo được: image size 52MB, push 45s, pull 20s, deploy 6 lần/ngày chỉ tốn 6.5 phút. Trivy critical 0, high 3 (đã exception có hạn). Zero secret leak 6 tháng. Rollback time < 2 phút nhờ tag SHA.
+
+### Trả lời mẫu khi phỏng vấn
+"Build image Java dùng multi-stage Dockerfile: build stage Maven/Gradle, runtime stage JRE slim/distroless. Layer cache: copy pom trước, dependency:go-offline, BuildKit cache mount. Tối ưu hơn: Spring Boot layered jar extract (dependencies, loader, snapshot, application) — sửa code chỉ rebuild layer application vài trăm KB. Tag = commit SHA + semver, production không dùng latest. Push Harbor/ECR, Trivy scan OS + Java dependency + secret, fail HIGH/CRITICAL có fix. Thực tế: image từ 180MB xuống 52MB, push/pull từ 6 phút xuống 1 phút, zero secret leak, Trivy critical 0."
 
 > Senior tip: Dùng distroless JRE để giảm attack surface; tag theo SHA để truy vết 1:1 với commit; bật image signing + verify ở deploy.`,
     follow: ['Làm sao cache Maven trong Docker build?', 'Image signing Cosign?', 'Base image update strategy?'],
