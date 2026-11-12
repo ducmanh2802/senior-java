@@ -12588,6 +12588,386 @@ Một nền tảng bán hàng dùng Galera 3 node, ghi round-robin; mỗi đợt
 > Senior tip: đo **thời gian ứng dụng phục hồi** sau failover, không chỉ thời gian DB failover. DB chuyển vai trong 20 giây nhưng pool giữ kết nối chết và DNS cache 60 giây có thể biến nó thành vài phút lỗi phía người dùng.`,
     follow: ['Aurora HA khác gì?', 'Multi-region DB strategy?', 'Connection pooling với HA DB?'],
     tags: ['PostgreSQL', 'MariaDB', 'MongoDB', 'HA', 'Comparison']
-  }
+  },
+{
+  id: 'devops-144',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Dockerfile hiện copy nguyên executable JAR của Spring Boot vào image JRE, nên mỗi lần đổi một dòng code, image phải tải lại cả dependency và deploy rất chậm. Bạn sẽ tận dụng layered JAR để cache đúng phần ít thay đổi, đồng thời giữ image runtime nhỏ và chạy an toàn bằng non-root như thế nào?',
+  a: `**Tóm tắt:** Tách JAR Spring Boot thành các layer có tốc độ thay đổi khác nhau, copy dependency trước rồi mới copy code ứng dụng để Docker cache không bị vô hiệu hóa vô ích. Dùng multi-stage build để chỉ mang JRE và artifact cần chạy sang runtime image, chạy bằng UID không phải root và dùng exec-form ENTRYPOINT.
 
+### Cái gì và vì sao cần
+Docker image là tập các layer bất biến xếp chồng lên nhau; Docker có thể dùng lại layer nếu lệnh và đầu vào của nó không đổi. Nếu copy toàn bộ JAR trong một lệnh, chỉ một thay đổi nhỏ trong code cũng làm hash JAR đổi, khiến layer chứa cả JAR bị build lại. Layered JAR của Spring Boot tách phần ít đổi như thư viện bên thứ ba khỏi phần đổi thường xuyên như class ứng dụng.
+
+### Cơ chế từng bước
+1. Stage build dùng JDK và Maven/Gradle để tạo JAR. Với Spring Boot, cấu hình layered archive trước khi build; tùy phiên bản, có thể dùng jarmode tools để trích layer từ executable JAR.
+2. Stage runtime bắt đầu từ image JRE phù hợp với Java 17/21, không mang theo compiler, Maven cache hay source code.
+3. Copy lần lượt dependencies, Spring Boot loader, snapshot dependencies rồi application classes. Dependency đổi ít nên layer đầu thường được cache; code đổi thường xuyên nằm ở layer cuối.
+4. Chạy bằng UID/GID không đặc quyền, chỉ cấp quyền đọc JAR và ghi đúng thư mục tạm/log nếu ứng dụng thực sự cần.
+
+~~~text
+FROM eclipse-temurin:17-jdk AS build
+WORKDIR /workspace
+COPY . .
+RUN ./mvnw -DskipTests package
+
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY --from=build --chown=10001:10001 /workspace/target/app.jar app.jar
+USER 10001:10001
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=70", "-jar", "/app/app.jar"]
+~~~
+
+Đây là bản tối giản để minh họa multi-stage và quyền chạy. Để cache từng layer của Spring Boot, stage runtime cần copy các layer đã trích xuất theo thứ tự ít đổi đến hay đổi; không nên hiểu ví dụ một JAR đơn là đã bật layered caching.
+
+### Trade-off và lựa chọn
+| Cách làm | Ưu điểm | Đổi lại |
+|---|---|---|
+| Copy một JAR | Đơn giản, ít lệnh | Code đổi làm layer JAR thay đổi toàn bộ |
+| Tách layered JAR | Tái sử dụng dependency layer, push nhanh hơn | Dockerfile phụ thuộc cấu trúc layer và phiên bản Spring Boot |
+| JRE nhỏ/distroless | Ít thành phần runtime | Debug trực tiếp trong container khó hơn |
+
+Chọn layered JAR khi build thường xuyên và registry/network là nút thắt. Chọn image runtime có shell ở môi trường cần điều tra khẩn cấp, nhưng giữ công cụ debug ở ephemeral container thay vì nhét cả JDK vào mọi production image.
+
+### Pitfall production
+Không copy layer theo thứ tự application trước dependencies, vì sẽ phá cache. Không dùng tag base image mơ hồ cho quy trình cần tái lập; pin phiên bản/digest và cập nhật image có chủ đích. Non-root có thể làm ứng dụng lỗi nếu ghi vào thư mục root-owned. ENTRYPOINT dạng chuỗi shell có thể khiến JVM không nhận SIGTERM đúng PID; exec form ở ví dụ giúp tín hiệu tới process Java trực tiếp.
+
+### Ví dụ đời thực
+Một team build image 10 lần mỗi ngày, JAR 180 MB trong đó 150 MB là thư viện ổn định. Trước khi tách layer, mỗi lần sửa endpoint phải upload gần 180 MB. Sau khi copy dependency layers riêng, phần lớn lần build chỉ đẩy layer ứng dụng khoảng 12 MB; thời gian push trong pipeline giảm từ 95 giây xuống 18 giây. Khi deploy, đội vận hành vẫn kiểm tra image digest và xác nhận UID 10001 có quyền đọc artifact trước khi bật chính sách read-only filesystem.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ bắt đầu bằng việc đo thời gian build và push, sau đó xem thay đổi code đang làm layer nào bị invalidated. Với Spring Boot, em bật layered archive và sắp thứ tự copy từ dependencies ít đổi tới application classes hay đổi. Build bằng JDK trong stage riêng, nhưng runtime chỉ mang JRE cùng các layer cần thiết. Em đặt user không phải root và chỉ cấp quyền ghi cho những thư mục ứng dụng thật sự cần. ENTRYPOINT dùng exec form để JVM nhận SIGTERM trong lúc Kubernetes dừng Pod. Em cũng không mặc định rằng image nhỏ nhất luôn tốt nhất: distroless giảm thành phần nhưng làm debug khó, nên cần quy trình debug an toàn riêng. Trước khi phát hành, pipeline kiểm tra image theo digest, quét lỗ hổng, chạy smoke test và xác nhận quyền file. Cuối cùng, em so sánh kích thước layer và thời gian push trước-sau; cache layer chỉ có ý nghĩa khi thứ tự copy ổn định và được đo trên pipeline thật.
+
+> Senior tip: Theo dõi bytes thực sự được upload mỗi build, không chỉ kích thước tổng image; cache tốt có thể giảm đáng kể thời gian deploy dù image cuối không đổi kích thước.`,
+  follow: [
+    'Spring Boot layered JAR tổ chức dependency và application layer thế nào, và bạn xác minh Docker cache đang được dùng ra sao?',
+    'Nếu ứng dụng cần ghi file tạm nhưng root filesystem là read-only, bạn cấu hình volume và quyền tối thiểu thế nào?',
+    'Vì sao exec-form ENTRYPOINT giúp ứng dụng xử lý graceful shutdown tốt hơn shell-form?'
+  ],
+  tags: ['Docker', 'Spring Boot', 'layered JAR', 'image', 'non-root']
+},
+{
+  id: 'devops-145',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Một Pod Java có memory limit 2 GiB nhưng bị OOMKilled khi heap trong dashboard mới dùng 1.1 GiB. Bạn giải thích cách JVM nhận biết giới hạn cgroup, chọn MaxRAMPercentage và dành ngân sách cho native memory như thế nào để vừa tránh OOM vừa không lãng phí RAM?',
+  a: `**Tóm tắt:** Container memory limit là trần cho tổng bộ nhớ của process, không chỉ Java heap. JVM hiện đại nhận biết giới hạn container từ cgroup; MaxRAMPercentage quyết định kích thước heap tối đa theo giới hạn mà JVM nhìn thấy, vì vậy phải chừa đủ RAM cho metaspace, thread stack, direct buffer, code cache và các phần native khác.
+
+### Từ giới hạn container tới heap
+Container không phải máy ảo đầy đủ; process Java dùng chung kernel với host nhưng bị cgroup giới hạn tài nguyên. Cgroup là cơ chế Linux đo và áp trần CPU/RAM cho một nhóm process. Nếu Kubernetes đặt memory limit 2 GiB, kernel có thể kết thúc process khi tổng RAM tính cho cgroup vượt trần, bất kể biểu đồ heap còn thấp.
+
+Ở các JVM hiện đại, ergonomics (cách JVM tự chọn cấu hình mặc định) đọc container limits. MaxRAMPercentage đặt tỷ lệ heap tối đa dựa trên RAM khả dụng được JVM nhận diện, chứ không phải phần trăm đảm bảo heap luôn dùng. Ví dụ 60% của 2 GiB xấp xỉ 1.2 GiB heap max; 0.8 GiB còn lại phải đủ cho mọi phần ngoài heap và dao động tải. Không chọn một tỷ lệ cố định cho mọi ứng dụng: nhiều thread hoặc direct buffer lớn cần headroom nhiều hơn.
+
+~~~text
+2 GiB cgroup limit
+├── heap: tối đa khoảng 1.2 GiB (60%)
+├── metaspace + code cache
+├── thread stacks
+├── direct/native buffers
+└── JVM + thư viện native + khoảng dự phòng
+~~~
+
+Đo bằng container memory working set/RSS và JVM metrics, không chỉ heap-used. Có thể bật Native Memory Tracking để điều tra phần JVM native (có overhead); đối chiếu số thread, direct buffer, GC log, heap dump khi phù hợp. Heap dump cũng có thể cần thêm dung lượng tạm và làm tăng áp lực I/O.
+
+### Tuning có kiểm soát
+| Cấu hình | Tác động | Cần quan sát |
+|---|---|---|
+| MaxRAMPercentage thấp hơn | Nhiều headroom native | GC thường xuyên hơn, heap pressure |
+| MaxRAMPercentage cao hơn | Heap lớn, ít GC hơn trong một số tải | Cgroup OOM nếu native peak không còn chỗ |
+| Xmx cố định | Kích thước heap rõ ràng | Không tự thích nghi khi limit đổi |
+
+Đặt cùng một giá trị phần trăm không thay thế load test. Trên Java 17/21, xác minh JVM thật sự thấy container limit bằng cờ runtime/diagnostic phù hợp và xem log khởi động, thay vì suy luận từ manifest. CPU limit cũng có thể làm số processor JVM nhận diện thay đổi, ảnh hưởng số GC worker và thread pool.
+
+### Pitfall production
+Heap metric có thể thấp vì OOM xảy ra ở native memory hoặc một spike ngắn giữa hai lần scrape. RSS/working set không bằng heap; direct ByteBuffer và native library tiêu thụ ngoài heap. Một limit quá sát gây restart loop; heap quá nhỏ lại tạo GC thrashing và tăng p99. Không chữa bằng cách tăng MaxRAMPercentage trước khi biết phần nào đang chiếm RAM. Heap dump và NMT cần cân nhắc chi phí, dung lượng đĩa và dữ liệu nhạy cảm.
+
+### Ví dụ đời thực
+Một API có limit 2 GiB và MaxRAMPercentage 75, tức heap tối đa khoảng 1.5 GiB. Khi traffic tăng, dashboard heap báo 1.1 GiB nhưng container lên 2 GiB rồi exit 137. Điều tra cho thấy 350 thread với stack, direct buffer của HTTP client và metaspace đã dùng gần 700 MiB ở peak. Đội giảm heap target xuống khoảng 60%, giới hạn thread pool theo concurrency thực tế, đo lại NMT và container RSS dưới tải. Sau kiểm thử peak 1.6 GiB, Pod không còn bị OOMKilled và GC vẫn trong SLO.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ không coi heap dashboard là tổng memory của JVM. Trước tiên em xác nhận Pod limit, cgroup version và JVM version, rồi đối chiếu container RSS hoặc working set với heap, metaspace và số thread. MaxRAMPercentage áp trên giới hạn RAM mà JVM nhận diện để đặt mức heap tối đa; nó không dành ngân sách tự động an toàn cho mọi native allocation. Em sẽ ước tính heap cần thiết từ dữ liệu tải, giữ headroom cho thread stack, direct buffer, code cache và thư viện native, sau đó kiểm tra bằng load test có quan sát cả cgroup và GC. Nếu heap còn thấp nhưng cgroup chạm trần, em tìm native memory, thread tăng bất thường hoặc buffer không được giải phóng thay vì chỉ tăng heap. Nếu giảm heap, em theo dõi GC pause và allocation rate để tránh chuyển lỗi OOM thành latency cao. Cuối cùng em đặt cảnh báo theo bộ nhớ container và kiểm thử limit mới trước khi rollout.
+
+> Senior tip: Chọn heap theo peak native usage trong tải đại diện, không theo trung bình; giữ khoảng dự phòng và xác minh bằng RSS/cgroup ở thời điểm cao điểm.`,
+  follow: [
+    'Bạn phân biệt heap exhaustion, native-memory exhaustion và cgroup OOMKilled bằng những dấu hiệu nào?',
+    'MaxRAMPercentage tác động ra sao khi memory limit của Pod thay đổi giữa các môi trường?',
+    'Khi nào bạn bật Native Memory Tracking hoặc lấy heap dump, và những chi phí/rủi ro nào cần tính?'
+  ],
+  tags: ['JVM', 'cgroup', 'MaxRAMPercentage', 'memory', 'OOMKilled']
+},
+{
+  id: 'devops-146',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn cần đặt Kubernetes requests/limits cho một API Java có tải biến động, đồng thời điều tra Pod đôi lúc bị OOMKilled dù node còn RAM. Requests và limits thực sự điều khiển scheduler/kernel thế nào, bạn lấy số liệu gì để chọn giá trị và xử lý sự cố ra sao?',
+  a: `**Tóm tắt:** Request là lượng tài nguyên Kubernetes dùng để đặt chỗ khi scheduler chọn node và là cơ sở cho một số quyết định điều phối; limit là trần do runtime/cgroup thực thi. Memory vượt limit có thể khiến kernel OOM-kill container, còn CPU chạm limit thường gây throttling chứ không giết process. Cần sizing theo tải thực và phân biệt container OOM với node pressure eviction.
+
+### Requests và limits khác nhau thế nào
+Scheduler cộng requests của các Pod để quyết định node còn đủ chỗ hay không; request không phải cam kết rằng process luôn được cấp đúng từng byte/CPU khi node quá tải. CPU request ảnh hưởng mức chia sẻ tương đối dưới tranh chấp, còn CPU limit thường được thực thi bằng quota, có thể làm thread Java bị throttled. Memory request phục vụ lập lịch và một số hành vi ưu tiên khi node thiếu RAM; memory limit là giới hạn cứng cho container.
+
+Khi process trong cgroup vượt memory limit, kernel có thể chọn process để OOM-kill; Kubernetes sau đó thường hiển thị reason OOMKilled và exit code 137. Đây khác với kubelet eviction do node pressure: node thiếu bộ nhớ tổng thể, kubelet có thể trục xuất Pod trước khi container chạm limit. Status Pod, events, lastState, node condition và metric cgroup giúp phân biệt hai đường đi.
+
+~~~yaml
+resources:
+  requests:
+    cpu: "500m"
+    memory: "1Gi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+~~~
+
+Đây chỉ là ví dụ minh họa, không phải con số khuyến nghị. Requests ảnh hưởng khả năng scheduler xếp nhiều Pod lên node; limits cần đủ cho peak nhưng không vượt khả năng node. Với workload nhạy latency, cân nhắc tác động CPU quota và kiểm tra throttling thay vì chỉ nhìn CPU trung bình.
+
+### Cách chọn từ dữ liệu
+1. Thu thập CPU, memory working set/RSS, heap, GC pause, số thread và throttling trong cả giờ cao điểm lẫn batch.
+2. Dùng tải đại diện và kiểm thử burst để tìm peak cùng thời gian tồn tại; average không thể đại diện peak.
+3. Đặt request gần nhu cầu thường xuyên đủ để scheduler không overcommit quá mức; đặt memory limit có headroom cho dao động native và tải.
+4. Rollout nhỏ, quan sát restart/OOM, GC, p95/p99 và node allocatable trước khi nhân rộng.
+
+### Pitfall production
+CPU trung bình thấp không loại trừ throttling ngắn nhưng gây p99 cao. Memory request quá thấp làm scheduler nhồi Pod lên node và tăng rủi ro eviction; request quá cao gây Pending, lãng phí capacity. Không đặt memory limit cao tùy tiện trên node nhỏ, cũng không lấy heap làm đại diện tổng RAM. Thay đổi resource có thể ảnh hưởng HPA, QoS và scheduling; xem cả toàn bộ Pod và sidecar, không chỉ container Java.
+
+### Ví dụ đời thực
+Một API khai báo request 256 MiB/250m, limit 1 GiB/1 CPU. Bình thường RSS 600 MiB; giờ đối soát, buffer tăng làm container chạm 1 GiB và OOMKilled, còn HPA không scale vì CPU chỉ 35%. Nhóm kiểm tra {{lastState}}, event và cgroup memory, xác nhận đây là OOM tại limit chứ không phải node eviction. Họ đo peak RSS 1.35 GiB qua tải batch, điều chỉnh request lên 1 GiB, limit 2 GiB, giới hạn concurrency tạo buffer và theo dõi HPA theo tín hiệu phù hợp. Sau thử nghiệm, không còn exit 137 trong 7 ngày; số Pod Pending vẫn nằm trong capacity đã hoạch định.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ giải thích rõ request và limit không cùng vai trò. Request ảnh hưởng quyết định xếp Pod và mức chia sẻ tài nguyên, còn limit là trần thực thi; CPU bị giới hạn có thể bị throttle, memory vượt limit có thể bị OOM-kill. Đầu tiên em phân loại sự cố qua Pod status, events, node condition và metric cgroup để biết container vượt limit hay node chịu pressure. Sau đó em xem RSS/working set cùng heap, thread, direct buffer, GC và sidecar dưới tải peak. Em chọn request theo nhu cầu vận hành và capacity planning, limit theo peak có headroom chứ không theo trung bình. Với CPU, em kiểm tra throttling và p99 để cân nhắc limit có đang làm latency xấu đi không. Cuối cùng rollout từng bước, theo dõi OOM, Pending, eviction và chi phí node; các con số chỉ chốt sau khi thử nghiệm tải đại diện và kiểm tra tổng capacity của cluster.
+
+> Senior tip: Cảnh báo theo sự kiện OOM/eviction và xu hướng memory cgroup; một biểu đồ heap đơn lẻ có thể bỏ lỡ phần lớn nguyên nhân.`,
+  follow: [
+    'Bạn dùng Pod status và Kubernetes events thế nào để phân biệt OOMKilled với node-pressure eviction?',
+    'CPU request và CPU limit ảnh hưởng khác nhau thế nào tới scheduler, throttling và p99 latency?',
+    'Bạn thay đổi request/limit theo quy trình nào để tránh tạo đồng loạt Pod Pending hoặc tăng chi phí node?'
+  ],
+  tags: ['Kubernetes', 'requests', 'limits', 'OOMKilled', 'resource sizing']
+},
+{
+  id: 'devops-147',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Service Spring Boot có thời gian khởi động thay đổi từ 20 đến 100 giây, phụ thuộc PostgreSQL và Kafka; cấu hình readiness, liveness và startup probe thế nào để không nhận traffic quá sớm nhưng cũng không restart hàng loạt khi DB tạm lỗi?',
+  a: `**Tóm tắt:** Startup probe cho ứng dụng thời gian khởi động; readiness quyết định Pod có nhận traffic hay không; liveness chỉ phát hiện process không thể tự hồi phục để Kubernetes restart. Tách rõ ba mục đích và tránh đưa mọi dependency vào liveness, vì DB gặp sự cố ngắn hạn không nên khiến toàn bộ service restart dây chuyền.
+
+### Ba tín hiệu, ba câu hỏi
+Probe là phép kiểm tra định kỳ từ kubelet tới container. Startup hỏi “ứng dụng đã khởi động xong chưa?”; khi chưa thành công, Kubernetes chưa chạy liveness/readiness theo cấu hình thông thường. Readiness hỏi “Pod có thể phục vụ request mới ngay bây giờ không?”; thất bại sẽ gỡ endpoint khỏi Service nhưng không restart container. Liveness hỏi “process còn tiến triển được không, hay đang treo và cần restart?”.
+
+Với Spring Boot Actuator, health groups readiness và liveness có thể được bật để xuất health endpoint riêng. Readiness có thể bao gồm dependency thật sự bắt buộc cho request, nhưng liveness nên phản ánh trạng thái nội tại của process. Nếu readiness phụ thuộc DB, DB lỗi có thể gỡ Pod khỏi traffic; nếu liveness cũng phụ thuộc DB, mọi Pod có thể bị restart cùng lúc, tạo thêm tải reconnect khi DB đang yếu.
+
+~~~yaml
+startupProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  periodSeconds: 5
+  failureThreshold: 30
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  periodSeconds: 5
+~~~
+
+Ví dụ startup trên cho tối đa khoảng 150 giây trước khi kết luận chưa khởi động; cần thiết kế ngưỡng từ phân bố startup thật, không sao chép nguyên mẫu. Cấu hình Spring Boot phải bật health probes và đảm bảo endpoint không bị chặn bởi security hoặc chỉ bind trên interface kubelet không thể truy cập.
+
+### Chọn dependency và timeout
+Readiness có thể chứa database nếu request đồng bộ cần DB để phục vụ; không nhất thiết đưa Kafka vào nếu ứng dụng vẫn phục vụ API khi broker tạm ngắt. Không probe từng dịch vụ downstream quá thường xuyên với timeout dài: kiểm tra health có thể tự tạo tải và làm hàng loạt Pod không sẵn sàng vì một dependency chập chờn. Liveness không nên gọi network ngoài process.
+
+### Pitfall production
+Probe timeout quá ngắn gây flap; startup threshold quá nhỏ biến cold start hợp lệ thành restart loop. Endpoint Actuator có thể báo “UP” nhưng app chưa sẵn sàng nếu readiness group không được cấu hình đúng. Ngược lại, readiness kiểm tra quá nhiều dependency khiến mọi Pod bị rút khỏi Service cùng lúc. Đảm bảo graceful shutdown và readiness chuyển sang false khi dừng để ngừng nhận request mới trước khi process kết thúc.
+
+### Ví dụ đời thực
+Một service mất 20–100 giây khởi động sau khi deploy. Liveness bắt đầu sau 10 giây và gọi health check DB; khi DB có sự cố 15 giây, 12 Pod đều bị restart và tạo thêm hàng trăm kết nối mới. Nhóm bật startup probe cho phép khởi động tối đa 150 giây, chuyển readiness sang group riêng, và bỏ DB khỏi liveness. Khi DB gián đoạn, Pod không nhận request mới nhưng JVM không bị restart hàng loạt; số kết nối reconnect giảm từ hơn 300 xuống dưới 30 và API phục hồi sau khi DB khỏe lại.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ bắt đầu bằng việc xác định các trạng thái mà probe cần điều khiển. Startup probe bảo vệ app khỏi bị liveness giết trong lúc Spring context, connection pool và warm-up đang hoàn tất. Readiness là tín hiệu nhận traffic, nên chỉ kiểm tra những điều kiện cần để xử lý request; có thể bao gồm database nếu API không thể hoạt động thiếu DB. Liveness chỉ kiểm tra process nội tại có bị treo không, tránh phụ thuộc dịch vụ bên ngoài vì sự cố dependency có thể tạo restart storm. Em cấu hình health groups riêng của Actuator, xác nhận kubelet truy cập endpoint và đặt timeout/threshold từ số liệu startup thực tế. Sau đó thử tình huống DB chậm, broker mất kết nối, cold start và shutdown trong staging. Em theo dõi số lần probe fail, thời gian Ready và lỗi request để điều chỉnh, thay vì tăng threshold cho đến khi cảnh báo biến mất.
+
+> Senior tip: Thiết kế liveness như công tắc cứu process, không phải health check tổng hợp của cả hệ thống; readiness mới điều khiển khả năng nhận traffic.`,
+  follow: [
+    'Trường hợp nào dependency nên ảnh hưởng readiness nhưng tuyệt đối không nên ảnh hưởng liveness?',
+    'Bạn tính startupProbe failureThreshold từ dữ liệu startup và timeout ra sao?',
+    'Khi Pod nhận SIGTERM trong rollout, readiness và graceful shutdown phối hợp thế nào để không cắt request đang chạy?'
+  ],
+  tags: ['Kubernetes', 'Spring Boot', 'probes', 'readiness', 'liveness']
+},
+{
+  id: 'devops-148',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Một dịch vụ thanh toán có 6 replica, traffic tăng mạnh theo giờ và không thể chịu downtime. Bạn chọn rolling update, blue-green hay canary theo rủi ro, khả năng chia traffic, capacity và rollback như thế nào; những điều kiện nào phải có trước khi phát hành?',
+  a: `**Tóm tắt:** Rolling update thay Pod theo từng đợt, tiết kiệm tài nguyên nhưng hai phiên bản có thể chạy song song. Blue-green chuẩn bị môi trường mới rồi chuyển traffic một lần, rollback nhanh nhưng cần capacity dư. Canary chuyển một tỷ lệ nhỏ traffic sang bản mới và tăng dần theo tín hiệu, giảm blast radius nhưng cần routing và đo lường đáng tin cậy. Không chiến lược nào tự làm schema hoặc hành vi hai version tương thích.
+
+### Cách chọn chiến lược
+Rolling update là cơ chế mặc định của Kubernetes Deployment: tạo Pod mới theo maxSurge và thu hẹp Pod cũ theo maxUnavailable. Dùng khi app stateless, version cũ/mới tương thích, readiness tốt và không cần routing theo tỷ lệ chính xác. Phải tính capacity tạm thời cho Pod cũ và mới cùng tồn tại.
+
+Blue-green duy trì hai nhóm môi trường: blue đang phục vụ, green là bản mới đã kiểm tra. Sau smoke test, load balancer/route chuyển sang green. Cách này thuận tiện rollback về blue nếu còn giữ tài nguyên và dữ liệu tương thích, nhưng có thể gần gấp đôi capacity trong giai đoạn chuyển và cần đảm bảo background job không chạy trùng.
+
+Canary đưa một phần request thật qua version mới, ví dụ 5%, đo lỗi và latency, rồi mới tăng. Cần ingress/service mesh hoặc controller có khả năng phân luồng phù hợp; chia replica không luôn tương đương tỷ lệ request vì session affinity, keep-alive hoặc lưu lượng không đều. Phải có metric đủ mẫu và điều kiện abort rõ ràng.
+
+### Bảng trade-off
+| Chiến lược | Blast radius | Tài nguyên | Rollback |
+|---|---|---|---|
+| Rolling | Tăng dần theo số Pod mới | Thấp đến vừa | Tạo rollout ngược; cần tương thích |
+| Blue-green | Chuyển traffic lớn một lần | Cao trong lúc chạy đôi | Nhanh nếu môi trường cũ còn sẵn |
+| Canary | Nhỏ lúc bắt đầu | Vừa, tăng theo giai đoạn | Dừng/đảo traffic tự động hoặc thủ công |
+
+Trước rollout, kiểm tra readiness, error budget/SLO, database migration theo kiểu expand-contract, cấu hình, feature flag và kế hoạch rollback. Expand-contract nghĩa là mở rộng schema tương thích cả hai phiên bản trước, chuyển code/traffic, rồi chỉ xóa cấu trúc cũ sau khi đã hết khả năng rollback.
+
+### Pitfall production
+Rollback ứng dụng không hoàn tác side effect đã ghi vào DB hoặc message queue. Canary 5% traffic có thể chỉ tạo vài request, không đủ kết luận thống kê; cửa sổ đo phải tính lượng request và độ trễ metric. Background consumer không tự giảm tỷ lệ khi traffic HTTP giảm. Blue-green cùng DB vẫn phải hỗ trợ cả hai schema. Không tự động rollback theo một spike đơn lẻ nếu chưa lọc deploy noise và dependency outage.
+
+### Ví dụ đời thực
+Một API thanh toán có 6 replica, giờ cao điểm 1.200 request/giây. Rolling update nhanh nhưng sự cố ở bản mới có thể ảnh hưởng hàng nghìn request trước khi phát hiện. Team chọn canary 5% trong 10 phút, tương đương khoảng 36.000 request nếu tải ổn định; chỉ tăng lên 25% khi 5xx, p99 và tỷ lệ lỗi nghiệp vụ không xấu hơn ngưỡng đã thống nhất. Họ giữ đủ capacity để bản cũ nhận lại traffic, dùng expand-contract cho schema và tắt rollout khi lượng mẫu thấp hoặc metric không có dữ liệu. Sau phát hành, rollback traffic mất dưới 2 phút và không tạo giao dịch trùng.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ chọn dựa trên khả năng tương thích, mức độ rủi ro và hạ tầng traffic chứ không dựa vào tên chiến lược. Với app stateless và thay đổi nhỏ, rolling update thường đơn giản, nhưng phải đặt maxSurge/maxUnavailable và giữ hai version tương thích. Blue-green phù hợp khi cần chuyển traffic nhanh và có capacity dự phòng, nhưng rollback chỉ an toàn nếu database và side effect vẫn tương thích. Canary hữu ích cho thay đổi rủi ro cao vì giảm blast radius, song cần routing theo tỷ lệ, metric đủ mẫu và tiêu chí dừng trước khi deploy. Em chuẩn bị dashboard lỗi, latency và metric nghiệp vụ, kiểm tra migration theo expand-contract, xác định người có quyền abort và bảo đảm traffic quay lại bản cũ được. Sau đó em quan sát cả request lẫn consumer/background jobs; một lần chuyển traffic thành công chưa chứng minh mọi luồng đều an toàn.
+
+> Senior tip: Đừng promote canary chỉ vì 5xx thấp; kiểm tra số mẫu, p99 và metric nghiệp vụ như giao dịch thất bại/trùng lặp trong cùng cửa sổ.`,
+  follow: [
+    'Tại sao rollback ứng dụng có thể không an toàn sau khi migration database đã chạy?',
+    'Bạn chọn cửa sổ phân tích và tỷ lệ traffic canary thế nào để vừa có đủ mẫu vừa giới hạn blast radius?',
+    'Trong blue-green, bạn ngăn background job chạy đồng thời ở cả hai môi trường ra sao?'
+  ],
+  tags: ['deployment', 'rolling update', 'blue-green', 'canary', 'rollback']
+},
+{
+  id: 'devops-149',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Ứng dụng Spring Boot trên Kubernetes đọc mật khẩu DB qua Secret, nhưng quy trình rotation hiện yêu cầu restart thủ công từng Pod và có nguy cơ lộ credential. Bạn thiết kế quyền truy cập, cập nhật Secret và xoay vòng không downtime ra sao?',
+  a: `**Tóm tắt:** Kubernetes Secret là đối tượng phân phối dữ liệu nhạy cảm trong cluster, nhưng base64 chỉ là encoding, không phải mã hóa. Giới hạn quyền đọc Secret bằng RBAC, bảo vệ dữ liệu at rest, tránh đưa giá trị vào Git/log, rồi thiết kế rotation sao cho ứng dụng và database chấp nhận credential cũ-mới trong một khoảng chuyển tiếp. Secret đổi không đồng nghĩa mọi tiến trình đã nạp giá trị mới.
+
+### Secret đi từ nơi lưu tới ứng dụng
+Kubernetes API lưu Secret theo namespace và cấp cho Pod qua environment variable hoặc volume. Người có quyền đọc Secret qua API có thể lấy plaintext sau khi decode; do đó cần RBAC (quyền theo vai trò) tối thiểu và encryption at rest cho dữ liệu trong datastore cluster. Base64 chỉ đổi cách biểu diễn byte, ai có quyền đọc vẫn có thể giải mã.
+
+Khi Secret được đưa qua environment variable, giá trị được thiết lập lúc tạo process; sửa Secret không sửa environment của process đang chạy. Secret volume được cập nhật theo cơ chế eventual, nhưng ứng dụng Java thường chỉ đọc file cấu hình một lần lúc khởi động. Vì vậy phải có cách reload đáng tin cậy hoặc rollout Pod có kiểm soát.
+
+~~~yaml
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: api
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+~~~
+
+Đây là ví dụ wiring, không phải khuyến nghị rằng env luôn an toàn hơn file. Tránh in env/config khi startup, crash report hoặc debug endpoint. Trong hệ thống lớn có thể dùng secret manager ngoài cluster hoặc operator đồng bộ; vẫn phải quản lý quyền, log, trạng thái đồng bộ và hành vi reload ở ứng dụng.
+
+### Rotation không gián đoạn
+Quy trình an toàn thường tạo credential mới trước, cấu hình DB chấp nhận cả credential cũ và mới trong thời gian chuyển, cập nhật secret source, khởi động/rollout Pod theo đợt, xác minh kết nối mới rồi thu hồi credential cũ. Nếu DB chỉ cho phép một password đơn, cân nhắc user kép hoặc quy trình đổi có thời gian overlap; phối hợp connection pool để kết nối mới dùng credential mới, còn transaction đang chạy không bị cắt đột ngột.
+
+### Pitfall production
+Không commit Secret plaintext hoặc mã hóa khóa nằm cùng Git; không xem base64 là bảo mật. RBAC cho cả namespace quá rộng làm tăng blast radius. Secret controller cập nhật Kubernetes object nhưng không bắt buộc app tự reload. Pod rollout có thể thất bại nếu credential mới chưa được DB chấp nhận. Rotation đồng thời ở nhiều service hoặc connection pool chưa refresh có thể gây lỗi xác thực hàng loạt. Audit ai đọc và khi nào, nhưng không ghi chính giá trị Secret vào audit log.
+
+### Ví dụ đời thực
+Một service có 8 replica và pool 20 kết nối mỗi Pod. Đội trước đổi password DB rồi cập nhật Secret, nhưng process giữ password cũ; tất cả Pod mới khởi động lỗi trong lúc Pod cũ vẫn chạy. Thiết kế lại bằng user rotation: tạo credential mới có quyền tương đương, phát hành Secret phiên bản mới, rollout 2 Pod mỗi đợt và kiểm tra connection success/error. Khi đủ 8 Pod dùng credential mới và pool cũ đã thoát, thu hồi credential cũ. Thời gian rotation giảm từ 25 phút gián đoạn chập chờn xuống 6 phút không có lỗi xác thực, với audit xác nhận chỉ service account của ứng dụng được đọc Secret.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ phân biệt ba phần: nơi quản lý Secret, cách cấp cho Pod và cách ứng dụng nạp lại. Kubernetes Secret không tự mã hóa vì base64 chỉ là encoding, nên em giới hạn RBAC, bật bảo vệ at-rest theo chính sách cluster và không commit plaintext. Nếu dùng environment variable, em giả định process phải được tạo lại để nhận giá trị mới; mount file cũng không đảm bảo Spring Boot tự reload. Để rotation không downtime, em tạo credential mới trước và duy trì khoảng tương thích, rollout Pod theo từng đợt, xác nhận pool kết nối dùng credential mới, sau đó mới thu hồi credential cũ. Em kiểm tra quyền tối thiểu, audit, log và failure mode nếu secret sync chậm. Với DB chỉ hỗ trợ một mật khẩu, em phối hợp maintenance hoặc user kép thay vì đổi tức thời rồi hy vọng mọi Pod cập nhật cùng lúc. Cuối cùng, em diễn tập rotation và rollback định kỳ.
+
+> Senior tip: Rotation hoàn tất khi credential cũ đã bị thu hồi và mọi connection pool mới đã xác thực bằng credential mới, không phải khi Secret object vừa đổi.`,
+  follow: [
+    'Secret qua env và Secret volume khác nhau thế nào khi Kubernetes Secret được cập nhật?',
+    'Bạn cấp quyền RBAC tối thiểu để một workload đọc đúng Secret cần thiết như thế nào?',
+    'Nếu database không cho phép hai mật khẩu cùng tồn tại, bạn xây kế hoạch rotation an toàn ra sao?'
+  ],
+  tags: ['Kubernetes', 'Secret', 'RBAC', 'rotation', 'Spring Boot']
+},
+{
+  id: 'devops-150',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Một request thanh toán chậm qua 4 service Java nhưng dashboard chỉ cho thấy latency tổng; bạn thiết kế metrics, logs và traces với Micrometer/OpenTelemetry ra sao để tìm đúng service gây chậm mà không tạo cardinality và chi phí lưu trữ quá lớn?',
+  a: `**Tóm tắt:** Metrics cho biết xu hướng và mức độ ảnh hưởng, logs lưu sự kiện chi tiết, traces nối các bước của một request qua nhiều service. Micrometer cung cấp API đo lường và tích hợp Spring Boot; Micrometer Tracing/OpenTelemetry hỗ trợ tạo và truyền context trace. Thiết kế cần cùng trace context, metric label có giới hạn và sampling có chủ đích.
+
+### Mỗi tín hiệu trả lời một câu hỏi
+Metric là chuỗi số theo thời gian, hữu ích để cảnh báo “bao nhiêu request chậm/lỗi”; label (nhãn) dùng phân nhóm như route chuẩn hóa hoặc status. Log là bản ghi sự kiện có timestamp và ngữ cảnh. Trace là hành trình một request; mỗi span ghi thời gian của một thao tác như HTTP call hoặc DB query. Correlation/trace ID cho phép nhảy từ log sang trace tương ứng.
+
+Trong Spring Boot 3, Micrometer Observation là lớp quan sát thống nhất cho instrumentation; Micrometer metrics có thể xuất sang Prometheus, và Micrometer Tracing có thể nối với bridge/exporter tương thích OpenTelemetry. OTel Collector có thể nhận telemetry, batch/xử lý rồi gửi backend. W3C trace context thường được truyền qua HTTP headers; với Kafka, cần instrumentation/propgation phù hợp khi producer tạo message và consumer tiếp tục xử lý.
+
+~~~text
+Client -> API: traceparent
+API -> Order: truyền trace context
+Order -> Payment: tạo span con
+Payment -> DB: đo thời gian query
+Logs: cùng traceId/spanId để tra cứu
+~~~
+
+Metrics nên theo dõi request rate, error rate, duration histogram, saturation của pool/queue và metric nghiệp vụ cần thiết. Log dạng cấu trúc có timestamp, service, severity, traceId; không log token, mật khẩu hay dữ liệu thanh toán nhạy cảm. Trace giúp thấy thời gian bị tiêu ở service hoặc dependency nào, nhưng không thay metric tổng hợp.
+
+### Cardinality và sampling
+Cardinality là số lượng chuỗi metric khác nhau do mọi tổ hợp label tạo ra. Dùng route template như {{/orders/id}} có số giá trị giới hạn; label {{orderId}} hoặc user ID tạo một chuỗi mới cho mỗi giao dịch, làm tăng RAM và chi phí backend. Dùng route template, không dùng ID cá nhân. Với trace, head sampling quyết định sớm ở đầu request; tail sampling có thể giữ trace lỗi/chậm sau khi đã thấy toàn bộ, nhưng cần collector giữ buffer và điều phối trace theo cùng trace ID.
+
+### Pitfall production
+Metric có histogram bucket quá chi tiết hoặc label không giới hạn sẽ bùng cardinality. Instrumentation thủ công trùng với agent tự động có thể tạo span duplicate. Nếu context không truyền qua Kafka hoặc executor async, trace bị đứt. Sampling thấp có thể bỏ trace lỗi hiếm; sampling cao làm bill tăng. Logs phải có retention, redaction và quyền truy cập phù hợp, không đưa toàn bộ request body vào telemetry.
+
+### Ví dụ đời thực
+Dashboard cho thấy p99 thanh toán tăng từ 400 ms lên 1.8 s nhưng không chỉ ra service nào. Team bổ sung span HTTP/DB, trace context qua 4 service và log JSON có traceId. Trace mẫu chỉ ra Payment chờ DB 1.2 s vì connection pool gần đầy; metric pool active/pending xác nhận. Họ thêm alert theo latency và saturation, giữ metric label theo route/status (không theo transaction ID), đồng thời sampling 5% request bình thường và giữ toàn bộ trace lỗi/chậm qua tail-sampling pipeline. Cardinality giảm khoảng 70% sau khi bỏ các ID khỏi label, còn điều tra incident giảm từ 40 phút xuống 12 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ không cố dùng một loại telemetry cho mọi câu hỏi. Metrics trả lời tình trạng chung và kích hoạt cảnh báo, logs cung cấp sự kiện có ngữ cảnh, traces cho thấy request đi qua service nào và tốn thời gian ở đâu. Trong Spring Boot, em dùng Micrometer/Observation cho instrumentation, cấu hình tracing tương thích OpenTelemetry và đảm bảo context được truyền qua HTTP cũng như message broker. Log cấu trúc có traceId để nối với trace, nhưng tuyệt đối không đưa credential hay dữ liệu thanh toán vào. Em giới hạn metric label ở các chiều có cardinality thấp như route template và status; không dùng order ID. Với trace, em chọn sampling dựa trên chi phí và mức cần điều tra, có thể giữ ưu tiên trace lỗi/chậm nếu pipeline hỗ trợ tail sampling. Sau triển khai, em kiểm thử trace propagation, so sánh metric với traffic thật và đặt retention/budget theo giá trị điều tra.
+
+> Senior tip: Theo dõi số time series mới và chi phí theo service; label chứa ID thường là nguyên nhân tăng cardinality nhanh nhất.`,
+  follow: [
+    'Vì sao không nên dùng customerId hoặc transactionId làm label của Prometheus metric?',
+    'Trace context thường được truyền qua HTTP và Kafka như thế nào, và điều gì làm trace bị đứt?',
+    'Head-based và tail-based sampling khác nhau thế nào về khả năng giữ lại trace lỗi?'
+  ],
+  tags: ['Micrometer', 'OpenTelemetry', 'metrics', 'logs', 'tracing']
+},
+{
+  id: 'devops-151',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Trong rolling update, Kubernetes gửi SIGTERM cho Pod cũ nhưng một số request tạo giao dịch mất hơn 30 giây bị cắt giữa chừng. Bạn phối hợp readiness, endpoint removal, Spring Boot graceful shutdown và termination grace period thế nào để xử lý request đang chạy an toàn?',
+  a: `**Tóm tắt:** Dừng Pod an toàn cần ngừng nhận request mới trước, chờ traffic routing cập nhật, cho request đang chạy hoàn tất trong giới hạn thời gian, rồi mới kết thúc process. Readiness, Kubernetes termination grace period và Spring Boot graceful shutdown phải được cấu hình nhất quán; không giả định SIGTERM lập tức làm mọi load balancer ngừng gửi traffic.
+
+### Vòng đời khi Pod bị xóa
+Khi Pod bắt đầu termination, Kubernetes đánh dấu Pod đang dừng và cập nhật endpoint được Service dùng. Thay đổi endpoint và trạng thái readiness cần thời gian truyền tới kube-proxy/ingress/load balancer; trong lúc đó có thể còn request mới tới. Container nhận SIGTERM và có một khoảng terminationGracePeriodSeconds trước khi kubelet gửi SIGKILL. Nếu ứng dụng đóng server ngay hoặc grace period hết trước khi request kết thúc, request đang chạy bị cắt.
+
+Spring Boot hỗ trợ graceful shutdown cho embedded web server khi được bật qua {{server.shutdown=graceful}}; thời gian chờ cần cấu hình với lifecycle timeout phù hợp phiên bản Spring Boot. Khi shutdown, server ngừng nhận kết nối mới và cho request đang thực thi hoàn tất trong khoảng thời gian được cấp. Đây không thay thế readiness: readiness ngăn routing mới sớm hơn, còn graceful shutdown xử lý các request đã vào process.
+
+~~~yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: api
+      lifecycle:
+        preStop:
+          exec:
+            command: ["/bin/sh", "-c", "sleep 5"]
+~~~
+
+Đoạn manifest chỉ minh họa một khoảng đệm, không phải cấu hình tối ưu phổ quát. Sleep giữ container sống trong lúc endpoint update lan truyền, nhưng tiêu tốn thời gian grace period và phụ thuộc shell có trong image. Với distroless, lệnh shell này không chạy; nên chọn cơ chế phù hợp, tránh thêm preStop chỉ theo thói quen. Cấu hình Spring Boot graceful shutdown và giới hạn request phải được thử nghiệm cùng ingress.
+
+### Chọn timeout và bảo vệ giao dịch
+Grace period phải dài hơn thời gian propagation cộng thời gian request tối đa được phép xử lý và shutdown hooks. Nếu request có thể treo vô hạn, đặt timeout ở server/client và thiết kế idempotency (gửi lại không tạo giao dịch lặp). Request vượt grace period vẫn có thể bị kill; với công việc dài, chuyển sang job/queue có checkpoint thay vì giữ HTTP connection lâu.
+
+### Pitfall production
+preStop sleep không làm readiness tự chuyển false ngay nếu probe vẫn báo sẵn sàng. Grace period quá ngắn dẫn SIGKILL; quá dài kéo chậm rollout và drain node. Load balancer connection keep-alive, HTTP/2 và request đang dùng cần kiểm tra riêng. Shutdown hook không đảm bảo transaction ngoài DB tự rollback trong mọi tình huống; cần transaction boundary, idempotency key và reconciliation cho kết quả không rõ.
+
+### Ví dụ đời thực
+Một API có request tạo lệnh chuyển tiền p99 8 giây nhưng một số luồng chờ đối tác tới 35 giây. Pod bị terminate sau grace period 30 giây, làm client timeout và retry; 0.2% request tạo trạng thái không rõ. Team bật Spring graceful shutdown, đặt readiness ngừng nhận traffic khi dừng, thêm khoảng drain 5 giây và tăng grace period lên 60 giây sau khi giới hạn downstream timeout. Họ giữ idempotency key để retry không nhân đôi giao dịch. Trong thử nghiệm 500 lần rollout, không còn request bị reset do dừng Pod và tỷ lệ giao dịch phải reconcile giảm từ 0.2% xuống dưới 0.01%.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ xem đây là một chuỗi phối hợp chứ không phải chỉ tăng termination grace period. Khi Pod bị terminate, endpoint cần được rút khỏi routing để ngừng request mới, nhưng propagation không tức thời. Readiness cho tín hiệu phục vụ, còn Spring Boot graceful shutdown xử lý request đã vào server sau SIGTERM. Em bật graceful shutdown, đặt lifecycle timeout và Kubernetes grace period sao cho có thời gian drain cộng thời gian request tối đa, rồi kiểm thử qua ingress thật. Nếu dùng preStop, em xác nhận image có lệnh đó và tính thời gian của hook vào tổng grace period. Em cũng đặt timeout cho downstream và dùng idempotency cho giao dịch vì client có thể retry khi kết quả không rõ. Sau rollout thử nghiệm, em đo connection reset, request đang chạy khi shutdown, thời gian termination và trạng thái giao dịch. Nếu workload vốn kéo dài hàng phút, em chuyển nó sang job/queue bền vững thay vì giữ HTTP request.
+
+> Senior tip: Graceful shutdown giảm request bị cắt nhưng không thay thế idempotency; mọi luồng giao dịch cần xử lý an toàn khi client không biết kết quả cuối cùng.`,
+  follow: [
+    'Kubernetes terminationGracePeriodSeconds được tính thế nào khi Pod có preStop hook?',
+    'Readiness và Spring Boot graceful shutdown giải quyết hai giai đoạn nào khác nhau của quá trình drain?',
+    'Vì sao giao dịch dài vẫn cần idempotency dù đã cấu hình graceful shutdown?'
+  ],
+  tags: ['Kubernetes', 'graceful shutdown', 'Spring Boot', 'readiness', 'rolling update']
+},
 );
