@@ -10244,4 +10244,171 @@ A Worker service reads from the queue and sends the actual email or push message
   follow: ["How would your design change if the number of notifications increased ten times?","What happens if the message queue or an external provider becomes unavailable?","Which part of this system would you monitor most closely in production?"],
   tags: ["system-design","architecture","communication","diagram"]
 },
+{
+  id: "english-194",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Tell me about a time you handled a failed deployment and had to roll back. What happened, and what did you learn?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn xử lý sự cố khi **deployment** (triển khai: đưa phiên bản code mới lên môi trường chạy thật) thất bại như thế nào: nhận biết vấn đề, quyết định **rollback** (quay lui: trả hệ thống về phiên bản ổn định trước đó), phối hợp với team và rút bài học. Hãy kể theo cấu trúc tình huống → hành động → kết quả có số liệu, thể hiện bình tĩnh và trách nhiệm.
+
+### Giải thích thuật ngữ cơ bản
+- **Deployment (triển khai):** giống như bạn thay công thức nấu ăn trong nhà hàng đang phục vụ khách; nếu công thức mới sai, món ăn ra lỗi ngay.
+- **Rollback (quay lui):** quay lại công thức cũ đã ổn định để nhà hàng tiếp tục phục vụ bình thường trong khi bạn sửa công thức mới.
+- **Release (bản phát hành):** gói thay đổi được đưa lên môi trường production (môi trường thật cho người dùng).
+- **Monitoring (giám sát):** theo dõi sức khỏe hệ thống bằng số liệu và log (nhật ký sự kiện) để phát hiện bất thường sớm.
+- **Incident (sự cố):** tình huống khiến hệ thống không hoạt động đúng như mong đợi và ảnh hưởng người dùng.
+
+### Sample answer
+In my previous role as a backend engineer on a team of eight, we deployed a new payment validation feature to production during a Friday afternoon release. Within about ten minutes, our monitoring dashboard showed that the error rate jumped from 0.3 percent to 7 percent, and around 500 customers could not complete checkout.
+
+I immediately informed the team lead and the on-call group in our chat channel. I compared the new logs with the previous version and found a null value issue in a request field. Because the impact was growing quickly, I suggested a rollback instead of trying a risky hotfix. I ran the rollback script, and within five minutes the service returned to the stable version. I stayed online for another thirty minutes to confirm that error rates and payment success returned to normal.
+
+After the incident, I wrote a short postmortem, added a missing validation check, and improved our pre-release tests. The next deployment passed without issues. This experience taught me that a fast, safe rollback is often better than debugging under pressure.
+
+### Useful phrases
+- **our monitoring dashboard showed** — bảng giám sát của chúng tôi hiển thị
+- **the error rate jumped from 0.3 percent to 7 percent** — tỷ lệ lỗi tăng vọt từ 0,3% lên 7%
+- **I immediately informed the team lead** — tôi lập tức thông báo cho trưởng nhóm
+- **I suggested a rollback instead of a risky hotfix** — tôi đề xuất quay lui thay vì sửa nóng đầy rủi ro
+- **the service returned to the stable version** — dịch vụ trở lại phiên bản ổn định
+- **I wrote a short postmortem** — tôi viết một bản tổng kết sau sự cố
+- **improved our pre-release tests** — cải thiện các bài kiểm thử trước khi phát hành
+- **debugging under pressure** — gỡ lỗi dưới áp lực thời gian
+
+### Lỗi người Việt hay mắc
+- **Kể lan man, không có mốc thời gian:** chỉ nói "system failed" mà không nêu bao lâu phát hiện, bao nhiêu người bị ảnh hưởng, mất bao lâu để rollback. Hãy thêm số liệu cụ thể để câu chuyện đáng tin.
+- **Đổ lỗi cho người khác:** nói "QA missed it" hoặc "DevOps did wrong" nghe thiếu trách nhiệm. Nên dùng "we" và tập trung vào hành động của bản thân.
+- **Quên phần bài học:** kể sự cố xong mà không nói đã cải thiện quy trình/test/monitoring thế nào. Interviewer rất coi trọng phần học được sau thất bại.
+- **Dùng sai thì hoặc thiếu chủ ngữ:** nói "rollback immediately" thay vì "I suggested a rollback and we executed it" nghe không tự nhiên. Hãy dùng câu đầy đủ, rõ ai làm gì.
+
+> Senior tip: Khi trả lời câu này, hãy nhấn mạnh tiêu chí ra quyết định: ưu tiên giảm ảnh hưởng người dùng trước (rollback nhanh, an toàn), rồi mới tìm nguyên nhân gốc. Một bản postmortem có hành động cụ thể (thêm test, thêm cảnh báo) cho thấy bạn trưởng thành hơn sau sự cố.`,
+  follow: ["How do you decide between rolling back and applying a quick hotfix during a production incident?","What steps do you take after a rollback to make sure the same issue does not happen again?","How do you communicate with stakeholders while the deployment issue is still ongoing?"],
+  tags: ["deployment","rollback","incident","communication","production"]
+},
+{
+  id: "english-195",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "How do you work with QA and testers to deliver high-quality software? Can you give a specific example?",
+  a: `**Tóm tắt:** Interviewer muốn biết bạn hợp tác với **QA** (Quality Assurance: đội/người kiểm tra chất lượng phần mềm) và tester như thế nào để giảm lỗi trước khi tới người dùng. Cần nêu cách giao tiếp sớm, làm rõ yêu cầu, hỗ trợ tái hiện bug và chia sẻ trách nhiệm chất lượng, kèm ví dụ cụ thể có kết quả đo được.
+
+### Giải thích thuật ngữ cơ bản
+- **QA/Tester:** người kiểm tra phần mềm theo kịch bản và tình huống thực tế để tìm lỗi. Hãy hình dung như người "thử dùng sản phẩm" trước khách hàng để phát hiện chỗ hỏng.
+- **Bug (lỗi phần mềm):** hành vi sai so với mong đợi, ví dụ bấm nút thanh toán nhưng không trừ tiền hoặc trừ hai lần.
+- **Test case (ca kiểm thử):** một bước kiểm tra cụ thể với dữ liệu đầu vào và kết quả mong đợi.
+- **Reproduce (tái hiện lỗi):** làm lại đúng các bước để lỗi xuất hiện lần nữa, giúp lập trình viên tìm nguyên nhân nhanh hơn.
+- **Acceptance criteria (tiêu chí chấp nhận):** điều kiện rõ ràng để xem một tính năng là "xong" và đúng yêu cầu.
+
+### Sample answer
+I see QA and testers as partners, not as a separate gate at the end. In my last project, I worked with two QA engineers on a new order tracking feature for a logistics app used by about 30,000 users. Before development, I joined a short refinement meeting to review the acceptance criteria and clarify edge cases, such as delayed updates and missing tracking numbers.
+
+During development, I shared an early build in the staging environment and asked QA to try risky scenarios first. When they found a bug where the status did not refresh after a network timeout, I sat with the tester to reproduce it, checked the logs, and fixed the retry logic within the same day. I also added unit tests so the issue would not return.
+
+As a result, we reduced critical bugs found in the final week from six in the previous release to one, and we delivered on time. I learned that early communication and fast feedback with QA saves much more time than fixing surprises at the end.
+
+### Useful phrases
+- **I see QA and testers as partners** — tôi xem QA và tester là đồng đội
+- **review the acceptance criteria** — rà soát tiêu chí chấp nhận
+- **clarify edge cases** — làm rõ các trường hợp biên (tình huống hiếm, dễ bỏ sót)
+- **shared an early build in the staging environment** — chia sẻ bản dựng sớm trên môi trường staging (môi trường thử gần giống thật)
+- **reproduce it, checked the logs, and fixed the logic** — tái hiện lỗi, kiểm tra log và sửa logic
+- **added unit tests** — thêm kiểm thử đơn vị (test tự động cho từng phần nhỏ của code)
+- **reduced critical bugs** — giảm số lỗi nghiêm trọng
+- **early communication and fast feedback** — giao tiếp sớm và phản hồi nhanh
+
+### Lỗi người Việt hay mắc
+- **Nói QA chỉ "test cuối cùng":** cách nhìn này dễ tạo xung đột. Hãy nhấn mạnh QA tham gia sớm từ lúc làm rõ yêu cầu và test case.
+- **Mô tả chung chung "we work well together":** thiếu ví dụ cụ thể. Nên kể rõ tính năng, số lượng tester/người dùng, loại bug và kết quả cải thiện.
+- **Tránh nhận trách nhiệm khi có bug:** nói "tester found many bugs" nghe tiêu cực. Tốt hơn là mô tả cách bạn phối hợp tái hiện và sửa nhanh.
+- **Nhầm từ kỹ thuật:** "staging" (môi trường thử) khác "production" (môi trường thật). Dùng đúng từ giúp interviewer thấy bạn quen quy trình phát triển chuyên nghiệp.
+
+> Senior tip: Hãy cho thấy bạn chủ động giúp QA tái hiện lỗi (cung cấp log, bước rõ ràng, dữ liệu mẫu) và biến lỗi thành bài học (thêm test tự động, cập nhật checklist). Tư duy "chất lượng là trách nhiệm chung" là dấu hiệu của kỹ sư senior.`,
+  follow: ["What do you do when you disagree with a QA engineer about whether an issue is really a bug?","How early should developers involve QA in the development process, and why?","Can you describe a time when working closely with QA helped you prevent a production issue?"],
+  tags: ["qa","testing","collaboration","quality","communication"]
+},
+{
+  id: "english-196",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Can you talk about your experience with cloud services, especially AWS? What services have you used and why?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá kinh nghiệm thực tế của bạn với **cloud services** (dịch vụ đám mây: thuê hạ tầng/máy chủ/dịch vụ qua Internet thay vì tự mua máy) và cụ thể là **AWS** (Amazon Web Services: nền tảng đám mây của Amazon). Hãy nêu bạn dùng dịch vụ nào, để giải quyết vấn đề gì, quy mô ra sao, và bạn hiểu lợi ích/đánh đổi cơ bản.
+
+### Giải thích thuật ngữ cơ bản
+- **Cloud service (dịch vụ đám mây):** giống thuê căn hộ có sẵn điện nước thay vì tự xây nhà; bạn dùng tài nguyên theo nhu cầu và trả tiền theo mức sử dụng.
+- **EC2:** máy chủ ảo trên AWS (như một máy tính chạy trên đám mây) để chạy ứng dụng.
+- **S3:** nơi lưu trữ file/đối tượng (ảnh, tài liệu, bản sao lưu) trên AWS, giống ổ cứng dung lượng lớn trên mạng.
+- **RDS:** dịch vụ cơ sở dữ liệu quan hệ được quản lý (AWS giúp lo cài đặt, sao lưu, vá lỗi cơ bản).
+- **CloudWatch:** dịch vụ giám sát log và số liệu (CPU, bộ nhớ, lỗi) để biết hệ thống đang khỏe hay gặp sự cố.
+- **IAM:** quản lý danh tính và quyền truy cập (ai được làm gì trên tài nguyên AWS).
+
+### Sample answer
+I have about three years of hands-on experience with AWS in my previous company. I mainly worked on a backend system for an e-commerce platform that served around 50,000 monthly users. We deployed our Spring Boot services on EC2 instances and stored product images and invoices in S3 because it was reliable and easy to scale for file storage.
+
+For the database, we used Amazon RDS for PostgreSQL. It reduced our operational work because automated backups and patching were managed by AWS. I also used CloudWatch to monitor application logs, CPU usage, and error alarms, which helped us detect issues faster. For access control, we followed basic IAM practices by giving each service only the permissions it needed.
+
+In one project, moving static files to S3 and adding CloudFront for caching reduced average image load time by about 30 percent. I am still learning more advanced AWS topics, but I am comfortable using these core services to build, deploy, and monitor backend applications.
+
+### Useful phrases
+- **hands-on experience with AWS** — kinh nghiệm thực hành trực tiếp với AWS
+- **deployed our Spring Boot services on EC2 instances** — triển khai dịch vụ Spring Boot trên các máy chủ EC2
+- **reliable and easy to scale for file storage** — đáng tin cậy và dễ mở rộng cho lưu trữ file
+- **automated backups and patching were managed by AWS** — sao lưu tự động và vá lỗi được AWS quản lý
+- **monitor application logs and error alarms** — giám sát log ứng dụng và cảnh báo lỗi
+- **giving each service only the permissions it needed** — cấp cho mỗi dịch vụ chỉ những quyền cần thiết (nguyên tắc tối thiểu)
+- **reduced average image load time by about 30 percent** — giảm thời gian tải ảnh trung bình khoảng 30%
+- **comfortable using these core services** — tự tin sử dụng các dịch vụ cốt lõi này
+
+### Lỗi người Việt hay mắc
+- **Liệt kê tên dịch vụ như "thuộc lòng":** nói EC2, S3, Lambda, EKS nhưng không giải thích đã dùng để làm gì. Interviewer quan tâm mục đích và kết quả thực tế.
+- **Phóng đại kinh nghiệm:** nói "expert in AWS" khi chỉ dùng vài dịch vụ cơ bản. Hãy trung thực về phạm vi đã làm và thể hiện tinh thần học hỏi.
+- **Không nhắc đến chi phí/đánh đổi:** cloud tiện nhưng có chi phí và cần quản lý quyền truy cập. Nêu một trade-off nhỏ (ví dụ cần cấu hình IAM cẩn thận) cho thấy tư duy thực tế.
+- **Dùng câu quá dài, khó hiểu:** khi nói tiếng Anh, hãy dùng câu ngắn: dịch vụ nào → dùng cho việc gì → kết quả ra sao.
+
+> Senior tip: Khi nói về AWS, hãy gắn mỗi dịch vụ với một vấn đề cụ thể bạn giải quyết (lưu file, chạy app, giám sát, phân quyền) và nếu có thì thêm một con số cải thiện. Nếu chưa dùng dịch vụ sâu (như Kubernetes/EKS), hãy nói rõ và nhấn mạnh nền tảng bạn đã nắm vững.`,
+  follow: ["How do you decide which AWS service to use for a new backend component?","What basic security practices do you follow when working with AWS resources?","Can you describe a challenge you faced while using a cloud service and how you solved it?"],
+  tags: ["aws","cloud","ec2","s3","rds","infrastructure"]
+},
+{
+  id: "english-197",
+  topic: "english",
+  level: "mid",
+  lang: "en",
+  q: "What would your teammates say about you if I asked them for feedback?",
+  a: `**Tóm tắt:** Interviewer muốn hiểu bạn nhìn nhận bản thân qua góc nhìn của đồng đội: điểm mạnh khi làm việc nhóm, cách bạn hỗ trợ người khác và bạn có tự nhận thức (self-awareness: biết rõ ưu/nhược điểm của mình) hay không. Hãy trả lời cân bằng: nêu 1-2 điểm mạnh đồng đội hay khen kèm ví dụ, và 1 điểm bạn đang cải thiện.
+
+### Giải thích thuật ngữ cơ bản
+- **Feedback (phản hồi):** ý kiến nhận xét từ người khác về cách bạn làm việc, giống như bạn nhờ bạn bè góp ý sau một buổi thuyết trình.
+- **Reliable (đáng tin cậy):** người khác có thể yên tâm giao việc vì bạn làm đúng hẹn và rõ ràng.
+- **Collaboration (hợp tác):** cùng làm việc, chia sẻ thông tin và hỗ trợ nhau để đạt mục tiêu chung.
+- **Self-awareness (tự nhận thức):** biết mình giỏi ở đâu và đang cần cải thiện ở đâu, không tự tâng bốc quá mức.
+- **Constructive feedback (góp ý mang tính xây dựng):** nhận xét thẳng nhưng nhằm giúp cải thiện, không phải chê bai.
+
+### Sample answer
+I think my teammates would say that I am reliable and easy to work with. In my last team of six engineers, I usually took ownership of backend tasks and kept others updated on my progress. For example, during a three-month project to improve our reporting feature, I delivered my parts on time and shared short daily updates in our team channel, so the frontend developer could plan their work.
+
+They would also say that I am willing to help. When a junior teammate struggled with debugging a database query, I spent about thirty minutes walking through the problem with him instead of just fixing it myself. One area they might mention for improvement is that I sometimes focus too much on details before asking for feedback. Recently, I have tried to share early drafts sooner so I can get input earlier and avoid rework. Overall, I believe they would describe me as supportive, responsible, and open to learning.
+
+### Useful phrases
+- **I am reliable and easy to work with** — tôi đáng tin cậy và dễ làm việc cùng
+- **took ownership of backend tasks** — chủ động chịu trách nhiệm các nhiệm vụ backend
+- **kept others updated on my progress** — cập nhật tiến độ cho mọi người
+- **delivered my parts on time** — hoàn thành phần việc của tôi đúng hạn
+- **willing to help** — sẵn sàng giúp đỡ
+- **walking through the problem with him** — cùng đi qua từng bước của vấn đề với bạn ấy
+- **an area for improvement** — một điểm cần cải thiện
+- **open to learning** — cởi mở để học hỏi
+
+### Lỗi người Việt hay mắc
+- **Chỉ tự khen, không có ví dụ:** nói "I am hardworking" nhưng không chứng minh bằng tình huống cụ thể. Hãy đưa ra hành động và kết quả để người nghe tin.
+- **Nói điểm yếu giả tạo:** kiểu "my weakness is I work too hard" nghe không thật. Nên chọn một điểm yếu thật, nhỏ, và nói rõ bạn đang cải thiện thế nào.
+- **Trả lời quá ngắn:** chỉ 1-2 câu làm mất cơ hội thể hiện kỹ năng làm việc nhóm. Hãy dùng 3 phần: điểm mạnh + ví dụ + điểm đang cải thiện.
+- **Dùng từ chung chung:** "good", "nice" không rõ nghĩa. Thay bằng từ cụ thể như reliable (đúng hẹn), supportive (hay hỗ trợ), clear in communication (giao tiếp rõ ràng).
+
+> Senior tip: Hãy chọn điểm mạnh mà đồng đội thực sự cảm nhận được trong công việc hằng ngày (đúng hẹn, hỗ trợ, giao tiếp rõ). Khi nêu điểm cần cải thiện, hãy kèm hành động bạn đang làm để tiến bộ — điều này cho interviewer thấy bạn có tự nhận thức và tinh thần phát triển.`,
+  follow: ["Can you share a specific example of when a teammate gave you constructive feedback?","How do you usually support junior teammates when they are stuck on a task?","What have you done recently to improve the weakness you mentioned?"],
+  tags: ["teamwork","feedback","self-awareness","collaboration","strengths"]
+}
 );
