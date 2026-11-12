@@ -10409,6 +10409,14 @@ spec:
 - **Sự cố thật:** dev {{kubectl run}} image {{docker.io/...}} lạ để debug → rủi ro mã độc. Admission chặn image ngoài registry nội bộ.
 - **Quy trình:** quét tạo tín hiệu (PR/CI), nhưng chính sách chặn (admission) mới là điểm kiểm soát cuối. Xử lý CVE: phân loại reachable/không, nâng bản vá, rebuild image (base image patch định kỳ) rồi promote lại.
 
+
+
+### Ví dụ đời thực
+Đội ngũ vận hành dịch vụ order-api trên Kubernetes, image được đẩy lên registry nội bộ my-registry-local với tag 1.4.2. Một ngày có CVE mới công bố ảnh hưởng đến một thư viện logging phổ biến dùng trong nhiều image. Trước khi có SBOM, vận hành phải hỏi từng develop và mở console từng Pod để tìm image chứa thư viện đó, mất vài ngày vẫn không chắc đã kiểm tra hết. Lúc này leader truy vấn kho SBOM đã gắn kèm mỗi build: 'image nào chứa thư viện logging phiên bản X?' Kết quả trong vài phút cho thấy chỉ 2 trong tổng số 12 image đang chạy trên production bị ảnh hưởng. Team chỉ rebuild 2 image đó, chạy Trivy lại (không còn HIGH/CRITICAL), ký bằng Cosign, rồi đẩy lên registry. Kyverno trên cluster cho phép Pod chạy image mới vì chữ ký hợp lệ và image đến từ registry tin cậy. Khắc phục hoàn chỉnh trong khoảng 3 giờ, thay vì 2–3 ngày như trước.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi sẽ đặt nhiều lớp kiểm soát thay vì tin vào một lớp duy nhất. Trong mã, tôi dùng Dependabot hoặc Renovate để cảnh báo thư viện thứ ba bị CVE. Sau khi build image, tôi chạy Trivy quét cả gói hệ thống và thư viện ứng dụng, đồng thời xuất SBOM – bảng kê thành phần – gắn kèm artifact để truy vết nhanh khi có lỗ hổng mới công bố. Tôi ký image bằng Cosign để chứng minh nguồn gốc, rồi dùng Kyverno hoặc OPA Gatekeeper làm admission policy: cluster chỉ nhận image từ registry nội bộ và đã ký, từ chối mọi image lạ hoặc chưa ký. Khi có CVE nghiêm trọng, tôi dùng SBOM để biết ngay dịch vụ nào bị ảnh hưởng, rồi rebuild, quét lại, ký và rolling deploy. Điều quan trọng là tham chiếu image bằng digest chứ không phải tag, vì tag có thể bị trỏ sang image khác sau khi đã quét và ký."
+
 > Senior tip: "Quét" mà không có "chặn" thì chỉ là báo cáo. Hãy khóa pipeline theo digest ({{@sha256:...}}) chứ không phải tag trôi ({{latest}}), vì tag có thể trỏ sang image khác sau khi đã quét/đã ký.`,
     follow: [
       'Khác nhau giữa ký image bằng key pair và ký keyless (OIDC) của Cosign?',
@@ -10495,6 +10503,14 @@ docker exec -t db pg_restore -U app -d orders --clean --if-exists /tmp/orders.du
 - **Sự cố thật:** đặt DB trong container không có volume (dùng lớp ghi) → {{docker rm}} mất sạch dữ liệu.
 - **Sự cố thật:** script trong {{/docker-entrypoint-initdb.d}} "không chạy" — vì thư mục data đã có dữ liệu từ lần trước; init script chỉ chạy khi khởi tạo lần đầu (data dir trống).
 - **Kiểm tra:** giám sát dung lượng volume, thời gian backup, cảnh báo khi restore test thất bại; {{pg_isready}} chỉ báo nhận kết nối, không thay thế kiểm tra ứng dụng/query thực.
+
+
+
+### Ví dụ đời thực
+Một cửa hàng online chạy PostgreSQL trong container cho môi trường dev, dữ liệu nằm trên volume pgdata. Một sáng, develop vô tình gỡ container (docker rm) và quên rằng dữ liệu chỉ nằm trong lớp ghi tạm của container, không có volume → toàn bộ dữ liệu đơn hàng test bị mất mà không có bản sao. Sau sự cố, team quy định: dữ liệu phải nằm trên volume, mỗi tối chạy pg_dump tạo file SQL nén, sao lưu ra ngoài host, và một lần mỗi tuần thực hiện restore vào container trống để kiểm tra bản sao vẫn dùng được. Healthcheck dùng pg_isready để orchestrator biết database đã sẵn sàng nhận truy vấn, tránh ứng dụng khởi động trước database. Với phát triển, team chỉ để database và Redis trong Compose, còn chạy ứng dụng Java trên IDE để vòng phản hồi nhanh, hạn chế dùng tài nguyên laptop.
+
+### Trả lời mẫu khi phỏng vấn
+"Chạy database bằng Docker rất hợp cho phát triển và kiểm thử: một lệnh dựng đúng phiên bản, cả team dùng cùng môi trường, dễ reset. Nhưng cho production quan trọng tôi thường khuyên dùng cơ sở dữ liệu được quản lý (managed DB), trừ khi team có năng lực vận hành stateful. Dữ liệu phải nằm trên volume, không để trong lớp ghi tạm của container. Backup nên dùng công cụ gốc của database, ví dụ pg_dump cho PostgreSQL, và quan trọng là phải thử restore định kỳ – bản sao chưa từng restore chưa gọi là bản sao. Healthcheck phải kiểm tra database thực sự nhận truy vấn, không chỉ kiểm tra container đã bật. Cần lưu ý bộ nhớ: shared_buffers của PostgreSQL phải hợp lý với giới hạn RAM của container để tránh bị OOM-kill, và shm_size có thể cần tăng tùy workload."
 
 > Senior tip: "Chạy được" trong Docker không đồng nghĩa "an toàn cho production". Với dữ liệu tiền/bệnh án/đơn hàng, câu hỏi không phải là Docker có chạy DB được không, mà là team có quy trình backup-restore-failover đã diễn tập chưa; nếu chưa, managed database thường rẻ hơn một lần mất dữ liệu.`,
     follow: [
@@ -10596,6 +10612,14 @@ volumes:
 - Dùng **Flyway/Liquibase** cho schema thay vì trông chờ init script — migration chạy được lặp lại và khớp mọi môi trường.
 - Với Java dev: hot reload trong container cần mount source + cấu hình build tool; đơn giản hơn là chạy app trên IDE, chỉ để DB/Redis/Kafka trong Compose (hybrid) — chọn một cách và chuẩn hóa.
 
+
+
+### Ví dụ đời thực
+Một team sáu develop chia sẻ một file compose.yaml chạy ứng dụng Java, PostgreSQL, Redis và Kafka. Ban đầu họ thường gặp tình trạng ứng dụng khởi động xong nhưng lỗi kết nối database, vì depends_on chỉ đợi container PostgreSQL bật, chưa đợi database sẵn sàng nhận truy vấn; khắc phục bằng healthcheck pg_isready và condition: service_healthy. Lần khác, develop sửa file init SQL nhưng database vẫn chạy schema cũ, vì script trong /docker-entrypoint-initdb.d chỉ chạy khi thư mục dữ liệu trống; team quy định dùng Flyway cho migration và lệnh docker compose down -v khi cần reset sạch. Cổng 5432 hoặc 6379 đôi khi bị trùng khi nhiều develop chạy stack trên cùng máy, nên team cho phép override cổng qua biến môi trường (.env). Kafka chỉ bật qua profile khi thực sự cần, để laptop không quá tải. Cuối cùng team ghi README: một lệnh chạy, cách reset, cách xem log, và không commit file .env có secret thật.
+
+### Trả lời mẫu khi phỏng vấn
+"Compose cho phát triển không chỉ là danh sách các service, mà là môi trường có thể tái lập cho cả team. Bẫy phổ biến nhất là depends_on: nó chỉ đợi container khởi động, chưa đợi database sẵn sàng nhận truy vấn, nên tôi luôn kết hợp healthcheck thật và condition: service_healthy. Script khởi tạo database chỉ chạy lần đầu tiên, nên khi đổi schema tôi dùng migration (Flyway/Liquibase) thay vì trông chờ init script, và có lệnh reset chuẩn (docker compose down -v) để mọi người có dữ liệu giống nhau. Để tránh xung đột cổng khi nhiều develop chạy cùng stack, tôi cho phép override cổng qua biến môi trường. Image hạ tầng tôi ghim phiên bản cố định, không dùng :latest, và dùng profile để chỉ bật Kafka khi cần, giảm tải máy develop. Cuối cùng, file compose.yaml và .env.example được commit, còn .env có secret thật không được commit."
+
 > Senior tip: Môi trường dev "gần prod" là mục tiêu tốt, nhưng đừng copy y nguyên bảo mật/prod topology vào laptop. Tối ưu cho vòng phản hồi nhanh và khả năng reset; khác biệt có chủ đích (ví dụ không bật TLS nội bộ ở dev) phải được ghi rõ để không bất ngờ khi lên staging.`,
     follow: [
       'Khi nào nên chạy app Java trên IDE còn hạ tầng trong Compose (hybrid) thay vì container hóa cả app?',
@@ -10646,6 +10670,14 @@ T4: Xác nhận không còn kết nối dùng P1 -> thu hồi P1
 - **Sự cố thật:** rotation đổi DB password một phía → toàn bộ app mất kết nối. Nguyên nhân: không có cửa sổ chấp nhận kép và không có thứ tự phối hợp.
 - **Kiểm tra:** audit log "ai đọc secret nào lúc nào", cảnh báo secret sắp hết hạn/chưa rotate, quét repo/image (secret scanning) trong CI.
 
+
+
+### Ví dụ đời thực
+Một dịch vụ thanh toán lưu mật khẩu database trong biến môi trường của container. Một ngày develop mở trang debug của ứng dụng và vô tình thấy toàn bộ cấu hình – kèm mật khẩu – được in ra màn hình, đồng thời mật khẩu cũng được lưu trong log của hệ thống giám sát. Sau sự cố, team chuyển mật khẩu vào Kubernetes Secret dạng file gắn vào container (in-memory), ứng dụng đọc file này thay vì lấy từ biến môi trường, và giảm quyền truy cập theo least privilege: mỗi service chỉ đọc secret của mình. Để xoay vòng mật khẩu mà không gián đoạn dịch vụ, team áp dụng mẫu hai pha: tạo mật khẩu mới, cấu hình database chấp nhận cả mật khẩu cũ và mới trong một cửa sổ chuyển tiếp, phát mật khẩu mới đến ứng dụng qua Secret Manager, ứng dụng nạp và mở kết nối mới, sau khi xác nhận không còn kết nối nào dùng mật khẩu cũ thì thu hồi nó. Toàn bộ ai đọc secret nào và lúc nào được ghi lại trong audit log.
+
+### Trả lời mẫu khi phỏng vấn
+"Biến môi trường tiện nhưng dễ rò rỉ qua log, trang debug, bản sao lưu bộ nhớ (crash dump) hoặc tệp /proc/<pid>/environ trên Linux, và tiến trình con có thể kế thừa vô tình. Tôi khuyên dùng file gắn vào container (tương đương Kubernetes Secret volume) hoặc hệ thống chuyên dụng như Vault, AWS Secrets Manager: tập trung kiểm soát quyền truy cập, có audit và hỗ trợ xoay vòng. Việc xoay vòng an toàn cần mẫu hai pha: hệ thống chấp nhận cả mật khẩu cũ và mới trong khoảng thời gian chuyển tiếp, phát mật khẩu mới đến ứng dụng, ứng dụng nạp và dùng kết nối mới, sau khi xác nhận không còn kết nối cũ thì thu hồi mật khẩu cũ. Nếu có dynamic secret (thời gian sống ngắn), ứng dụng xin thông tin mới trước khi hết hạn, giảm nhu cầu dùng mật khẩu 'sống mãi'. Khi phỏng vấn tôi nhấn mạnh mục tiêu là giảm thiệt hại nếu secret lộ: quyền hẹp, thời gian ngắn, có audit, và ứng dụng chịu được thay đổi thông tin đăng nhập."
+
 > Senior tip: Mục tiêu trưởng thành không phải "giấu secret khỏi code" (bước 1) mà là **giảm blast radius**: secret ngắn hạn, phạm vi hẹp, có audit, rotation tự động, và app chịu được thay đổi credential. Khi phỏng vấn, hãy nói rõ trade-off: reload phức tạp vs rolling restart đơn giản nhưng cần nhiều replica.`,
     follow: [
       'Làm sao ứng dụng Java nhận secret mới khi dùng connection pool mà không rớt request?',
@@ -10694,6 +10726,14 @@ T4: Xác nhận không còn kết nối dùng P1 -> thu hồi P1
 - **Tự động hóa quyết định lặp lại:** chặn tự động HIGH/CRITICAL có bản vá trên main/prod artifact; cho phép ngoại lệ có hạn (ticket + chủ sở hữu + ngày hết hạn) thay vì "tắt scanner".
 - **Nền tảng cung cấp đường mặc định an toàn:** base image chuẩn, template Dockerfile/Helm đã harden, pipeline dùng chung — team sản phẩm không phải tự phát minh.
 - **Đo lường:** thời gian từ "CVE công bố" đến "biết phạm vi" và đến "prod chạy bản vá"; tỉ lệ image prod ký hợp lệ; số lần admission từ chối (tín hiệu guardrail hoạt động).
+
+
+
+### Ví dụ đời thực
+Một công ty có nhiều đội develop chia sẻ cùng cluster. Một ngày một CVE nghiêm trọng (zero-day) được công bố ảnh hưởng đến thư viện hệ thống phổ biến trong image cơ sở. Nhờ đường ray đã thiết lập – mỗi image có SBOM và kho hàng tồn kho registry – leader truy vấn 'dịch vụ nào, image nào chứa thư viện này?' và nhận câu trả lời trong vài phút: 4 dịch vụ trên production đang chạy image chứa thư viện bị ảnh hưởng. Team phân loại: có bản vá không, dịch vụ có bị khai thác dựa trên ngữ cảnh sử dụng không. Họ chọn rebuild image có bản vá, quét lại bằng Trivy, ký bằng Cosign, rồi rolling deploy ưu tiên dịch vụ rủi ro cao và truy cập từ ngoài. Kết quả khắc phục trong khoảng 4 giờ thay vì mấy ngày, và toàn bộ mọi phát đều biết chính xác phạm vi ảnh hưởng thay phải kiểm tra từng máy.
+
+### Trả lời mẫu khi phỏng vấn
+"Ở quy mô nhiều đội, an toàn container không thể dựa vào kỷ luật cá nhân mà phải là rào chắn tự động: đường ray. Tôi thiết lập một registry nội bộ tin cậy là nguồn duy nhất, pipeline chuẩn build – quét – tạo SBOM – ký – advance, chỉ artifact đạt chuẩn mới được đẩy sang registry production. Trên cluster, admission policy (ví dụ Kyverno) chặn image sai nguồn, chưa ký hoặc vi phạm bảo mật tối thiểu. Khi có CVE nghiêm trọng, tôi dùng SBOM và kho hàng tồn kho để biết ngay dịch vụ nào bị ảnh hưởng, phân loại mức độ khai thác trong ngữ cảnh của mình, rồi rebuild, quét lại, ký và rolling deploy ưu tiên dịch vụ rủi ro cao. Tôi không theo đuổi KPI 'không có CVE' (mục tiêu không thực tế), mà theo đuổi thời gian trung bình khắc phục và khả năng trả lời 'chúng ta có bị ảnh hưởng không?' trong vài phút nhờ SBOM."
 
 > Senior tip: KPI "không có CVE" là ảo; KPI hữu ích là **mean time to remediate** và khả năng trả lời "ta có bị ảnh hưởng không?" trong vài phút nhờ SBOM. Khi nói với lãnh đạo, hãy khung an toàn container như năng lực giao hàng: guardrails tốt giúp team ship nhanh hơn vì bớt tranh luận ad-hoc ở phút cuối.`,
     follow: [
@@ -10808,6 +10848,14 @@ kubectl get certificate,certificaterequest,challenge -A  # trạng thái cert-ma
 ~~~
 - **Sự cố hay gặp:** (1) Ingress trả 503 "Service Temporarily Unavailable" vì Service không có endpoint (selector sai hoặc Pod chưa Ready). Kiểm tra {{kubectl get endpointslices}}. (2) Upload file lớn bị 413: chưa đặt {{proxy-body-size}}. (3) Backend xử lý lâu bị 504: timeout mặc định ingress-nginx là 60s; tăng {{proxy-read-timeout}} nhưng cũng phải xem app có tối ưu được không. (4) Cert không được cấp: {{kubectl describe challenge}} xem lỗi ACME (DNS chưa trỏ đúng, firewall chặn port 80 cho HTTP-01).
 - **IngressClass:** cluster có thể có nhiều controller; luôn đặt {{ingressClassName}} để rule đi đúng controller.
+
+
+
+### Ví dụ đời thực
+Một ứng dụng ngân hàng điện tử chạy trên Kubernetes với domain shop.bank.vn. Người dùng truy cập qua DNS, yêu cầu đến Load Balancer do cloud cấp, rồi vào Pod ingress-nginx. Ingress-nginx giải mã TLS, khớp rule host shop.bank.vn và path /api/orders, proxy tới Service order-svc, rồi Service chọn một Pod đang Ready và gửi qua cổng 8080. cert-manager được cấu hình với ClusterIssuer Let's Encrypt; khi Ingress có annotation cert-manager.io/cluster-issuer, cert-manager tự gửi yêu cầu ACME, hoàn thành thử thách HTTP-01 qua Ingress, và lưu chứng chỉ vào Secret shop-tls, sau đó tự gia hạn trước khi hết hạn. Một ngày upload file lớn bị lỗi 413; team kiểm tra logs ingress-nginx và thấy chưa đặt annotation proxy-body-size, sau đó thêm giới hạn 10MB và sự cố biến mất. Lúc kiểm tra, team dùng kubectl get endpointslices để xem Pod nào đang nhận traffic và kubectl describe ingress để xem sự kiện lỗi 502/504.
+
+### Trả lời mẫu khi phỏng vấn
+"Service tạo một địa chỉ ổn định trước các Pod: ClusterIP chỉ dùng bên trong cluster, NodePort mở cổng trên mọi nút, LoadBalancer nhờ cloud tạo cân bằng tải bên ngoài, ExternalName trỏ sang tên miền ngoài cluster. Ingress là bộ quy tắc L7 (tên miền, đường dẫn, TLS) do controller – ví dụ ingress-nginx – thực thi. Luồng yêu cầu đi từ trình duyệt qua DNS vào Load Balancer, rồi ingress-nginx giải mã TLS, khớp host và đường dẫn, proxy tới Service, cuối cùng Service chọn Pod đang sẵn sàng. Tôi gắn chứng chỉ TLS bằng cert-manager (Let's Encrypt) để tự gia hạn trước hết hạn. Annotation của ingress-nginx dùng để cấu hình thời gian chờ (proxy-read-timeout) và kích thước tập tin upload (proxy-body-size). Trên production tôi chỉ tạo một LoadBalancer cho ingress-nginx và dùng Ingress để chia traffic cho nhiều dịch vụ, tiết kiệm chi phí. Tôi luôn kiểm tra endpointslices và logs của ingress-nginx khi gặp lỗi 502/504, và pin phiên bản ingress-nginx đồng thời theo dõi thông báo bảo mật."
 
 > Senior tip: Chỉ tạo **một** Service kiểu LoadBalancer cho ingress-nginx và dùng Ingress để chia traffic cho nhiều service — tiết kiệm chi phí và IP public. Với ngân hàng, thường dùng private Load Balancer + WAF phía trước, và TLS kết thúc tại Ingress (hoặc passthrough nếu cần end-to-end). Luôn pin version ingress-nginx và theo dõi thông báo bảo mật; dự án ingress-nginx đã thông báo ngừng bảo trì (retirement), nên lên kế hoạch đánh giá Gateway API (HTTPRoute) cho các tính năng routing chuẩn hơn.`,
     follow: [
