@@ -12,6 +12,14 @@
 .view-career .cr-practice { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .view-career .cr-spoken-preview { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0 14px; padding: 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
 .view-career .cr-theme-list { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 20px; }
+.view-career .cr-template-catalog { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.view-career .cr-template-catalog h2 { margin-top: 0; }
+.view-career .cr-template-filters { display: grid; gap: 8px; }
+.view-career .cr-template-filters .cr-theme-list { gap: 6px; margin: 0 0 8px; }
+.view-career .cr-template-filters button { font: inherit; cursor: pointer; }
+.view-career .cr-filter-label { margin: 8px 0 5px; font-size: .9em; font-weight: 600; }
+.view-career .cr-template-actions { margin-top: 16px; }
+.view-career .cr-template-detail > p { overflow-wrap: anywhere; }
 .view-career .cr-story { padding: 12px 0; border-top: 1px solid var(--border); }
 .view-career .cr-story h3, .view-career .cr-log-card h3 { margin: 0; }
 .view-career .cr-story .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }

@@ -48,7 +48,12 @@
       'career.whereCol': 'Vị trí', 'career.problemCol': 'Vấn đề', 'career.fixCol': 'Gợi ý sửa',
       'career.themeProd': 'Sự cố production', 'career.themeConflict': 'Xung đột', 'career.themeLead': 'Dẫn dắt',
       'career.themeFail': 'Thất bại', 'career.themeDeadline': 'Deadline gấp', 'career.themePersuade': 'Thuyết phục',
-      'career.themeMentoring': 'Mentoring', 'career.langLabel': 'Ngôn ngữ',
+      'career.themeMentoring': 'Mentoring', 'career.themePerf': 'Hiệu năng', 'career.themeDesign': 'Thiết kế', 'career.themeProactive': 'Chủ động', 'career.langLabel': 'Ngôn ngữ',
+      'career.templatesTitle': 'Mẫu câu chuyện STAR', 'career.templatesSubtitle': 'Chọn mẫu gần với tình huống của bạn, rồi sửa chi tiết thành câu chuyện thật của chính bạn.',
+      'career.useTemplate': 'Dùng mẫu này', 'career.openTemplate': 'Xem mẫu', 'career.backToList': '← Quay lại danh sách', 'career.adaptTitle': 'Cần thay bằng chi tiết thật của bạn',
+      'career.levelLabel': 'Mức độ', 'career.allThemes': 'Tất cả chủ đề', 'career.allLevels': 'Tất cả mức', 'career.projectLabel': 'Dự án',
+      'career.spokenViLabel': 'Bản nói tiếng Việt', 'career.spokenEnLabel': 'Bản nói tiếng Anh', 'career.themeFilter': 'Chủ đề', 'career.levelFilter': 'Mức độ',
+      'career.noTemplates': 'Không có mẫu nào phù hợp.', 'career.templatesCount': '{n} mẫu', 'career.storyTitle': 'Tiêu đề câu chuyện',
     },
     en: {
       'career.title': 'Career', 'career.starTitle': 'STAR Stories', 'career.starSubtitle': 'Turn work experience into concise behavioral answers with concrete results.', 'career.cvTitle': 'CV Feedback', 'career.cvSubtitle': 'Get feedback on clarity, impact and fit for your target role.', 'career.logTitle': 'Interview Log', 'career.logSubtitle': 'Record each round to learn and find questions to review.', 'career.tabStar': 'STAR Stories', 'career.tabCv': 'CV Feedback', 'career.tabLog': 'Interview Log', 'career.addStory': 'Add story', 'career.editStory': 'Edit STAR story', 'career.notesLabel': 'Raw notes: context, what you did, result', 'career.themeLabel': 'Theme (optional)', 'career.themePlaceholder': 'E.g. Leadership, production incident', 'career.generateStar': '🤖 Write STAR', 'career.situation': 'Situation', 'career.task': 'Task', 'career.action': 'Action', 'career.result': 'Result', 'career.spoken': 'Complete spoken version', 'career.saveStar': 'Save story', 'career.cancelStar': 'Cancel', 'career.gapsTitle': 'Needs supplement', 'career.followUpTitle': 'Follow-up questions', 'career.practiceTitle': 'Practice telling in ~2 minutes', 'career.practiceBtn': '🎤 Practice', 'career.behavioralTopics': 'Common behavioral topics', 'career.behavioralNote': 'Topics with at least one saved story are marked.', 'career.savedStories': 'Saved stories', 'career.editBtn': 'Edit', 'career.deleteBtn': 'Delete', 'career.cvLabel': 'CV content', 'career.cvPlaceholder': 'Paste CV text here…', 'career.targetLabel': 'Target role / JD (optional)', 'career.targetPlaceholder': 'Senior Java Backend Engineer…', 'career.reviewCv': '🤖 Review CV', 'career.strengths': 'Strengths', 'career.missingKeywords': 'Missing keywords', 'career.missingNote': 'Only add keywords if you actually did that work.', 'career.editSuggestions': 'Edit suggestions', 'career.copyBtn': 'Copy', 'career.likelyQuestions': 'Likely questions', 'career.noIssues': 'No specific fixes needed.', 'career.noQuestions': 'No suggested questions.', 'career.logFormTitle': 'Add interview', 'career.company': 'Company', 'career.companyPlaceholder': 'Company name', 'career.position': 'Position', 'career.positionPlaceholder': 'Senior Java Engineer', 'career.date': 'Date', 'career.round': 'Round', 'career.result': 'Result', 'career.pending': 'Pending', 'career.passed': 'Passed', 'career.failed': 'Failed', 'career.questionsLabel': 'Questions asked (one per line)', 'career.notesLog': 'Notes / lessons', 'career.saveLog': 'Save session', 'career.historyTitle': 'History ({n})', 'career.session': 'session', 'career.passRate': 'pass rate', 'career.companyCount': 'companies', 'career.logEmpty': 'No interview logs yet.', 'career.exportBtn': 'Export missing', 'career.exportNote': 'Download questions not found in the bank as .txt.', 'career.deleteLog': 'Delete log', 'career.noNewQuestions': 'No new questions.', 'career.copyDone': 'Copied', 'career.copyFailed': 'Copy failed', 'career.speechHint': 'Target ~2 minutes; {detail}', 'career.speechShort': 'add more detail.', 'career.speechLong': 'shorten to be concise.', 'career.okLength': 'duration looks good.', 'career.cvTooShort': 'CV must be at least 300 characters for review.', 'career.noteTooShort': 'Add at least 80 characters for enough context.',
@@ -64,15 +69,20 @@
       'career.whereCol': 'Where', 'career.problemCol': 'Problem', 'career.fixCol': 'Suggested fix',
       'career.themeProd': 'Production incident', 'career.themeConflict': 'Conflict', 'career.themeLead': 'Leadership',
       'career.themeFail': 'Failure', 'career.themeDeadline': 'Tight deadline', 'career.themePersuade': 'Persuasion',
-      'career.themeMentoring': 'Mentoring', 'career.langLabel': 'Language',
+      'career.themeMentoring': 'Mentoring', 'career.themePerf': 'Performance', 'career.themeDesign': 'Design', 'career.themeProactive': 'Initiative', 'career.langLabel': 'Language',
+      'career.templatesTitle': 'STAR Story Templates', 'career.templatesSubtitle': 'Pick a template close to your situation, then replace the details with your real story.',
+      'career.useTemplate': 'Use this template', 'career.openTemplate': 'View template', 'career.backToList': '← Back to list', 'career.adaptTitle': 'Replace with your real details',
+      'career.levelLabel': 'Level', 'career.allThemes': 'All themes', 'career.allLevels': 'All levels', 'career.projectLabel': 'Project',
+      'career.spokenViLabel': 'Vietnamese version', 'career.spokenEnLabel': 'English version', 'career.themeFilter': 'Theme', 'career.levelFilter': 'Level',
+      'career.noTemplates': 'No matching templates.', 'career.templatesCount': '{n} templates', 'career.storyTitle': 'Story title',
     },
   });
 
   const esc = App.esc;
   const CV_KEY = 'sjp.career.cv';
   const CV_RESULT_KEY = 'sjp.career.cvResult';
-  const THEMES = ['Sự cố production', 'Xung đột', 'Dẫn dắt', 'Thất bại', 'Deadline gấp', 'Thuyết phục', 'Mentoring'];
-  const THEME_KEYS = { 'Sự cố production': 'career.themeProd', 'Xung đột': 'career.themeConflict', 'Dẫn dắt': 'career.themeLead', 'Thất bại': 'career.themeFail', 'Deadline gấp': 'career.themeDeadline', 'Thuyết phục': 'career.themePersuade', 'Mentoring': 'career.themeMentoring' };
+  const THEMES = ['Sự cố production', 'Xung đột', 'Dẫn dắt', 'Thất bại', 'Deadline gấp', 'Thuyết phục', 'Mentoring', 'Hiệu năng', 'Thiết kế', 'Chủ động'];
+  const THEME_KEYS = { 'Sự cố production': 'career.themeProd', 'Xung đột': 'career.themeConflict', 'Dẫn dắt': 'career.themeLead', 'Thất bại': 'career.themeFail', 'Deadline gấp': 'career.themeDeadline', 'Thuyết phục': 'career.themePersuade', 'Mentoring': 'career.themeMentoring', 'Hiệu năng': 'career.themePerf', 'Thiết kế': 'career.themeDesign', 'Chủ động': 'career.themeProactive' };
   const themeLabel = t => (THEME_KEYS[t] ? App.t(THEME_KEYS[t]) : t);
   const ROUNDS = ['HR', 'Technical', 'System design', 'Manager', 'Final'];
   const resultLabel = r => App.t('career.' + (r === 'passed' ? 'passed' : r === 'failed' ? 'failed' : 'pending'));
@@ -87,7 +97,7 @@
     get title() { return App.t('career.title'); },
     render(root, params) {
       const tab = ['cv', 'log'].includes(params && params[0]) ? params[0] : 'star';
-      let draftStar = null, speech = null, busy = false;
+      let draftStar = null, speech = null, busy = false, tmpl = null, tmplFilter = { theme: '', level: '' };
 
       const tabs = `<nav class="cr-tabs" aria-label="${App.t('career.navAria')}">
         <a class="btn${tab === 'star' ? ' primary' : ''}" href="#/career/star">${App.t('career.tabStar')}</a>
@@ -95,9 +105,40 @@
         <a class="btn${tab === 'log' ? ' primary' : ''}" href="#/career/log">${App.t('career.tabLog')}</a>
       </nav>`;
 
+      function templateCatalog(templates, filtered) {
+        return `<section class="cr-template-catalog"><h2>${App.t('career.templatesTitle')}</h2><p class="muted small">${App.t('career.templatesSubtitle')}</p>
+          <p class="muted small">${App.t('career.templatesCount', { n: filtered.length })}</p>
+          <div class="cr-template-filters"><div><p class="cr-filter-label">${App.t('career.themeFilter')}</p><div class="cr-theme-list">${['', ...THEMES].map(t => `<button type="button" class="chip${tmplFilter.theme === t ? ' active' : ''}" data-act="tmpl-theme" data-val="${esc(t)}" aria-pressed="${tmplFilter.theme === t}">${t ? esc(themeLabel(t)) : App.t('career.allThemes')}</button>`).join('')}</div></div>
+          <div><p class="cr-filter-label">${App.t('career.levelFilter')}</p><div class="cr-theme-list">${['', 'mid', 'senior', 'lead'].map(l => `<button type="button" class="chip${tmplFilter.level === l ? ' active' : ''}" data-act="tmpl-level" data-val="${esc(l)}" aria-pressed="${tmplFilter.level === l}">${l ? esc(App.LEVELS[l] || l) : App.t('career.allLevels')}</button>`).join('')}</div></div></div>
+          ${filtered.length ? filtered.map(t => `<article class="cr-story"><h3>${esc(t.title || '')}</h3><div class="chips"><span class="badge">${esc(App.LEVELS[t.level] || t.level)}</span><span class="chip">${esc(themeLabel(t.theme))}</span></div><p class="muted">${esc(t.project || '')}</p><p class="muted">${esc((t.situation || '').slice(0, 160))}${(t.situation || '').length > 160 ? '…' : ''}</p><div class="row"><button type="button" class="btn sm" data-act="view-template" data-id="${esc(t.id)}">${App.t('career.openTemplate')}</button></div></article>`).join('') : `<p class="muted">${App.t('career.noTemplates')}</p>`}</section>`;
+      }
+
       function renderStar() {
         const stories = visible('stories').slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
         const represented = new Set(stories.flatMap(s => s.themes || []));
+        const templates = (window.STAR_STORIES || []).slice();
+        const filtered = templates.filter(t => (!tmplFilter.theme || t.theme === tmplFilter.theme) && (!tmplFilter.level || t.level === tmplFilter.level));
+        if (tmpl) {
+          root.innerHTML = `<div class="page-head"><h1>${App.t('career.starPage')}</h1><p class="muted">${App.t('career.starSubtitle')}</p></div>${tabs}
+            <div class="cr-layout"><section class="card cr-template-detail"><h2>${esc(tmpl.title || App.t('career.templatesTitle'))}</h2>
+              <button type="button" class="btn sm" data-act="back-templates">${App.t('career.backToList')}</button>
+              <div class="chips"><span class="badge">${esc(App.LEVELS[tmpl.level] || tmpl.level)}</span><span class="chip">${esc(themeLabel(tmpl.theme))}</span></div>
+              <p class="muted small">${App.t('career.projectLabel')}: ${esc(tmpl.project || '')}</p>
+              <h3>${App.t('career.situation')}</h3><p>${esc(tmpl.situation || '')}</p>
+              <h3>${App.t('career.task')}</h3><p>${esc(tmpl.task || '')}</p>
+              <h3>${App.t('career.action')}</h3><p>${esc(tmpl.action || '')}</p>
+              <h3>${App.t('career.result')}</h3><p>${esc(tmpl.result || '')}</p>
+              <h3>${App.t('career.spokenViLabel')}</h3><div class="cr-spoken-preview" lang="vi">${esc(tmpl.spoken || '')}</div>
+              <h3>${App.t('career.spokenEnLabel')}</h3><div class="cr-spoken-preview" lang="en">${esc(tmpl.spoken_en || '')}</div>
+              ${(tmpl.adapt || []).length ? `<h3>${App.t('career.adaptTitle')}</h3>${list(tmpl.adapt, App.t('career.gapsTitle'))}` : ''}
+              ${(tmpl.follow || []).length ? `<h3>${App.t('career.followUpTitle')}</h3>${list(tmpl.follow, App.t('career.noComment'))}` : ''}
+              <div class="row cr-template-actions"><button type="button" class="btn primary" data-act="use-template">${App.t('career.useTemplate')}</button>
+                ${App.speech.supported ? `<button type="button" class="btn mic-btn" data-act="practice-en">${App.t('career.practiceBtn')}</button>` : ''}</div>
+              ${App.speech.supported ? '<div class="cr-speech-result" aria-live="polite"></div>' : ''}
+            </section>${templateCatalog(templates, filtered)}<aside class="card"><h2>${App.t('career.behavioralTopics')}</h2><p class="muted small">${App.t('career.behavioralNote')}</p><div class="cr-theme-list">${THEMES.map(t => `<span class="badge${represented.has(t) ? ' ok' : ''}">${represented.has(t) ? '✓ ' : '○ '}${esc(themeLabel(t))}</span>`).join('')}</div>
+              <h2>${App.t('career.savedStories')} (${stories.length})</h2>${stories.length ? stories.map(s => `<article class="cr-story"><h3>${esc(s.title || s.themes && s.themes[0] || App.t('career.starTitle'))}</h3><div class="chips">${(s.themes || []).map(t => `<span class="chip">${esc(t)}</span>`).join('')}</div><p class="muted">${esc((s.spoken || s.notes || '').slice(0, 240))}${(s.spoken || s.notes || '').length > 240 ? '…' : ''}</p><div class="row"><button class="btn sm" data-act="edit-story" data-id="${esc(s.id)}">${App.t('career.editBtn')}</button><button class="btn sm bad" data-act="delete-story" data-id="${esc(s.id)}">${App.t('career.deleteBtn')}</button></div></article>`).join('') : `<p class="muted">${App.t('career.noStories')}</p>`}</aside></div>`;
+          return;
+        }
         root.innerHTML = `<div class="page-head"><h1>${App.t('career.starPage')}</h1><p class="muted">${App.t('career.starSubtitle')}</p></div>${tabs}
           <div class="cr-layout"><section class="card"><h2>${draftStar ? App.t('career.editStory') : App.t('career.addStory')}</h2>
             <label class="cr-label" for="cr-notes">${App.t('career.notesLabel')}</label>
@@ -106,7 +147,8 @@
             <datalist id="cr-themes">${THEMES.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
             <div class="cr-field"><label for="cr-lang">${App.t('career.langLabel')}</label><select id="cr-lang" class="select"><option value="vi"${!draftStar || draftStar.lang !== 'en' ? ' selected' : ''}>Tiếng Việt</option><option value="en"${draftStar && draftStar.lang === 'en' ? ' selected' : ''}>English</option></select></div>
             <div class="row"><button type="button" class="btn primary" data-act="generate-star">${App.t('career.generateStar')}</button><span class="cr-ai-status" aria-live="polite"></span></div>
-            ${draftStar ? `<div class="cr-star-editor"><label class="cr-label" for="cr-s">${App.t('career.situation')}</label><textarea id="cr-s" class="textarea" rows="3">${esc(draftStar.situation || '')}</textarea>
+            ${draftStar ? `<div class="cr-star-editor"><label class="cr-label" for="cr-title">${App.t('career.storyTitle')}</label><input id="cr-title" class="input" value="${esc(draftStar.title || '')}">
+              <label class="cr-label" for="cr-s">${App.t('career.situation')}</label><textarea id="cr-s" class="textarea" rows="3">${esc(draftStar.situation || '')}</textarea>
               <label class="cr-label" for="cr-t">${App.t('career.task')}</label><textarea id="cr-t" class="textarea" rows="3">${esc(draftStar.task || '')}</textarea>
               <label class="cr-label" for="cr-a">${App.t('career.action')}</label><textarea id="cr-a" class="textarea" rows="4">${esc(draftStar.action || '')}</textarea>
               <label class="cr-label" for="cr-r">${App.t('career.result')}</label><textarea id="cr-r" class="textarea" rows="3">${esc(draftStar.result || '')}</textarea>
@@ -116,7 +158,7 @@
               <div class="row"><button type="button" class="btn primary" data-act="save-star">${App.t('career.saveStar')}</button><button type="button" class="btn" data-act="cancel-star">${App.t('career.cancelStar')}</button></div>
               <section class="cr-practice"><h3>${App.t('career.practiceTitle')}</h3><div class="cr-spoken-preview" lang="${draftStar.lang === 'en' ? 'en' : 'vi'}">${esc(draftStar.spoken || App.t('career.spokenPending'))}</div>
                 ${App.speech.supported ? `<button type="button" class="btn mic-btn" data-act="practice">${App.t('career.practiceBtn')}</button>` : `<p class="muted small">${App.t('career.speechUnsupported')}</p>`}<div class="cr-speech-result" aria-live="polite"></div></section>` : ''}
-          </section><aside class="card"><h2>${App.t('career.behavioralTopics')}</h2><p class="muted small">${App.t('career.behavioralNote')}</p><div class="cr-theme-list">${THEMES.map(t => `<span class="badge${represented.has(t) ? ' ok' : ''}">${represented.has(t) ? '✓ ' : '○ '}${esc(themeLabel(t))}</span>`).join('')}</div>
+          </section><aside class="card">${templateCatalog(templates, filtered)}<h2>${App.t('career.behavioralTopics')}</h2><p class="muted small">${App.t('career.behavioralNote')}</p><div class="cr-theme-list">${THEMES.map(t => `<span class="badge${represented.has(t) ? ' ok' : ''}">${represented.has(t) ? '✓ ' : '○ '}${esc(themeLabel(t))}</span>`).join('')}</div>
             <h2>${App.t('career.savedStories')} (${stories.length})</h2>${stories.length ? stories.map(s => `<article class="cr-story"><h3>${esc(s.title || s.themes && s.themes[0] || App.t('career.starTitle'))}</h3><div class="chips">${(s.themes || []).map(t => `<span class="chip">${esc(t)}</span>`).join('')}</div><p class="muted">${esc((s.spoken || s.notes || '').slice(0, 240))}${(s.spoken || s.notes || '').length > 240 ? '…' : ''}</p><div class="row"><button class="btn sm" data-act="edit-story" data-id="${esc(s.id)}">${App.t('career.editBtn')}</button><button class="btn sm bad" data-act="delete-story" data-id="${esc(s.id)}">${App.t('career.deleteBtn')}</button></div></article>`).join('') : `<p class="muted">${App.t('career.noStories')}</p>`}</aside></div>`;
       }
 
@@ -207,7 +249,7 @@
           case 'generate-star': generateStar(act); break;
           case 'save-star': {
             if (!draftStar) return;
-            const s = { ...draftStar, situation: root.querySelector('#cr-s').value, task: root.querySelector('#cr-t').value, action: root.querySelector('#cr-a').value, result: root.querySelector('#cr-r').value, spoken: root.querySelector('#cr-spoken').value, updatedAt: Date.now() };
+            const s = { ...draftStar, title: root.querySelector('#cr-title').value.trim(), situation: root.querySelector('#cr-s').value, task: root.querySelector('#cr-t').value, action: root.querySelector('#cr-a').value, result: root.querySelector('#cr-r').value, spoken: root.querySelector('#cr-spoken').value, updatedAt: Date.now() };
             if (!s.id) { s.id = uid(); (App.store.data.stories = App.store.data.stories || []).push(s); }
             else { const i = (App.store.data.stories || []).findIndex(x => x.id === s.id); if (i >= 0) App.store.data.stories[i] = s; else App.store.data.stories.push(s); }
             saveStore(); draftStar = null; renderStar(); break;
@@ -220,6 +262,25 @@
             let r; try { r = JSON.parse(readLocal(CV_RESULT_KEY)); } catch (err) { r = null; }
             const fix = r && r.issues && r.issues[Number(act.dataset.index)] && r.issues[Number(act.dataset.index)].fix;
             if (fix && navigator.clipboard) navigator.clipboard.writeText(fix).then(() => { act.textContent = App.t('career.copyDone'); }).catch(() => { act.textContent = App.t('career.copyFailed'); });
+            break;
+          }
+          case 'tmpl-theme': { tmplFilter = { theme: act.dataset.val, level: tmplFilter.level }; renderStar(); break; }
+          case 'tmpl-level': { tmplFilter = { theme: tmplFilter.theme, level: act.dataset.val }; renderStar(); break; }
+          case 'view-template': { tmpl = (window.STAR_STORIES || []).find(t => t.id === act.dataset.id); if (tmpl) renderStar(); break; }
+          case 'back-templates': { tmpl = null; renderStar(); break; }
+          case 'use-template': {
+            if (!tmpl) return;
+            const themes = [tmpl.theme];
+            draftStar = { title: tmpl.title, notes: '', themes, lang: 'vi', situation: tmpl.situation, task: tmpl.task, action: tmpl.action, result: tmpl.result, spoken: tmpl.spoken, adapt: tmpl.adapt || [], follow_ups: tmpl.follow || [] };
+            tmpl = null; renderStar();
+            const editor = root.querySelector('.cr-star-editor');
+            if (editor) editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            break;
+          }
+          case 'practice-en': {
+            if (speech) { const metrics = speech.stop(); speech = null; act.classList.remove('recording'); act.textContent = App.t('career.practiceBtn'); const out = root.querySelector('.cr-speech-result'); if (out && metrics) out.innerHTML = App.ui.speechStats(metrics) + `<p class="muted small">${App.t('career.speechHint', { detail: App.t(metrics.seconds < 90 ? 'career.speechShort' : metrics.seconds > 150 ? 'career.speechLong' : 'career.okLength') })}</p>`; return; }
+            act.classList.add('recording'); act.textContent = App.t('career.stopPractice');
+            speech = App.speech.start({ lang: 'en', onText(final, interim) { const out = root.querySelector('.cr-speech-result'); if (out) out.textContent = (final || '') + (interim ? ' ' + interim : ''); }, onError(msg) { const out = root.querySelector('.cr-speech-result'); if (out) out.textContent = msg; } });
             break;
           }
           case 'practice': {
