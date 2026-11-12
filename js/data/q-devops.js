@@ -9432,6 +9432,25 @@ helm rollback app 42 -n prod
 - Kiểm tra: rollback time (MTTR), SLO, deploy success rate.
 - Feature flag vs deploy rollback: flag tắt feature nhanh hơn rollback image.
 
+### Cơ chế từng bước
+- Commit code → CI build và test (unit, integration, phân tích mã tĩnh) → build Docker image → push registry (gắn tag theo mã commit) → deploy staging → chạy smoke test trên staging.
+- Bán tự động (semi-auto): production cần một người duyệt (manual approval / gate) trước khi rollout image mới. Phù hợp ngân hàng, y tế cần kiểm toán và hội đồng thay đổi.
+- Tự động hoàn toàn (full CD): mỗi commit qua hết gate thì deploy production ngay. Cần feature flag, giám sát và rollback tự động để an toàn.
+- Rollback nhanh: quay lại image tag trước đó bằng kubectl rollout undo hoặc helm rollback, thường hoàn thành trong vài phút.
+- Migration CSDL phải backward-compatible: thêm cột cho phép null trước → deploy code đọc/ghi cả hai cột → backfill dữ liệu → mới thêm NOT NULL và xóa cột cũ. Như vậy code cũ và mới cùng chạy được trong khoảng thời gian chuyển đổi, rollback code không phá schema.
+
+### Ví dụ đời thực
+Order service (Java/Spring Boot) trên Kubernetes production đang chạy image {{order-api:1.4.1}}. Lúc 10:00 deploy {{order-api:1.4.2}}, dashboard Grafana cho thấy p99 latency nhảy từ 200 ms lên 2 giây, error rate 5xx tăng từ 0,1% lên 2%, số đơn đặt hàng giảm 30%.
+
+Điều tra: chạy {{kubectl rollout history deployment/order-api -n prod}} thấy revision mới là 2; {{kubectl logs deployment/order-api -n prod}} báo {{org.postgresql.util.PSQLException: ERROR: null value in column "status" violates not-null constraint}}. Lập trình viên mới thêm cột {{status NOT NULL}} mà không có giá trị mặc định, nên các insert cũ bị lỗi.
+
+Xử lý: ngay lập tức {{kubectl rollout undo deployment/order-api -n prod}} quay về image 1.4.1. Sau 3 phút p99 quay lại 200 ms, error rate dưới 0,1%. Sau incident, migration được viết lại theo expand/contract: thêm cột {{status}} cho phép null, deploy code đọc/ghi cả hai cột, backfill dữ liệu, rồi mới thêm NOT NULL và xóa cột cũ. Lần sau deploy {{order-api:1.4.3}} diễn ra suôn sẻ.
+
+Kết quả: MTTR (thời gian khôi phục dịch vụ) là 3 phút, dưới mục tiêu 5 phút; không dữ liệu bị mất vì không xóa cột ngay lập tức.
+
+### Trả lời mẫu khi phỏng vấn
+“Khi team deploy production, mình thường chia làm hai luồng: dev và staging tự động deploy sau khi CI xanh, còn production cần một người nhấn nút duyệt (manual approval) trước khi rollout — đây là bán tự động, phù hợp dự án yêu cầu kiểm toán như ngân hàng. Nếu muốn tự động hoàn toàn (continuous deployment), mỗi commit qua test thì deploy ngay, nhưng bắt buộc có feature flag, giám sát và rollback tự động. Rollback nhanh nhất là quay lại image tag cũ bằng kubectl rollout undo hoặc helm rollback, trong vòng vài phút; migration CSDL phải backward-compatible (thêm cột nullable trước, xóa sau) để code cũ và mới cùng chạy được. Trước khi nhấn deploy, mình kiểm tra dashboard latency và error rate, và sau deploy quan sát p99 trong 5–10 phút. Mình luôn giữ image tag trước đó và luyện rollback trong staging để đảm bảo MTTR dưới 5 phút, tránh trạng thái “không biết rollback thế nào” khi incident xảy ra thật.”"
+
 > Senior tip: Expand/contract migration để rollback an toàn; luôn giữ previous image tag và test rollback trong staging; đo thời gian rollback < 5 phút.`,
     follow: ['Database migration rollback strategy?', 'Feature flag vs deploy rollback?', 'Canary vs blue-green?'],
     tags: ['CD', 'Rollback', 'Deployment']
@@ -9480,6 +9499,22 @@ npx semantic-release
 - Kiểm tra: release frequency, hotfix count, lead time.
 - Trunk-based + feature flag giảm nhu cầu release branch.
 
+### Cơ chế từng bước
+- SemVer (MAJOR.MINOR.PATCH): MAJOR = breaking change (API không tương thích), MINOR = tính năng mới backward-compatible, PATCH = sửa bug; pre-release như 1.2.3-rc.1 dùng cho bản thử trước khi release chính thức.
+- Release branch: tạo release/1.2.0 từ main khi feature freeze; chỉ cherry-pick bug fix vào nhánh này; sau khi ổn định merge về main, gắn tag v1.2.0.
+- Hotfix: tạo nhánh hotfix/* từ main (production), sửa tối thiểu, merge về main và develop, bump phiên bản PATCH (1.2.1), kích hoạt pipeline release tự động.
+- Nhiều service phối hợp: dùng API có phiên bản (/v1, /v2) để các service không phải triển khai cùng lúc (lock-step); contract testing (Pact) giữa service gọi và service được gọi phát hiện breaking change trước khi deploy; changelog tự động từ conventional commits (semantic-release); chính sách ngừng dùng (deprecation): thông báo trước, chỉ định ngày hết hạn, theo dõi lượng sử dụng rồi mới bỏ endpoint cũ.
+
+### Ví dụ đời thực
+Payment service lên phiên bản 2.0 thay đổi API /payments: trường amount đổi từ số nguyên sang chuỗi, và tên trường currency đổi thành currency_code. Order service gọi cả hai phiên bản trong khoảng chuyển đổi. Hai tuần sau khi deploy, dashboard cho thấy lỗi 400 Bad Request tăng từ dưới 0,1% lên 5%, số đơn thanh toán thất bại tăng gấp 3 lần.
+
+Điều tra: người trên call kiểm tra APM, thấy lỗi bắt đầu từ bản deploy Payment 2.0 lúc 14:00; hợp đồng (contract) giữa order và payment không khớp vì trường amount thay đổi kiểu dữ liệu. Xử lý: ngay lập tức rollback order service về bản gọi API /v1, đồng thời Payment publish API /v2 riêng và giữ /v1 hoạt động thêm 3 tháng để các team gọi khác có thời gian di dời. Sau đó giao team payment viết contract test (Pact) vào CI để mọi breaking change bị chặn trước khi deploy.
+
+Kết quả: incident breaking change giảm từ khoảng 4 lần/tháng xuống 0 trong 6 tháng sau khi áp dụng versioned API + contract test; không còn hotfix do sự cố phiên bản API.
+
+### Trả lời mẫu khi phỏng vấn
+“Quản lý release của mình dựa trên SemVer: MAJOR cho thay đổi phá tương thích, MINOR cho tính năng mới chưa phá, PATCH cho sửa lỗi. Khi có nhiều tính năng sẵn sàng, mình tạo nhánh release từ main, chỉ nhập sửa lỗi vào nhánh đó, sau khi ổn định merge về main và gắn tag. Lỗi production khẩn cấp thì tạo nhánh hotfix từ main, sửa tối thiểu, merge về cả main và develop, bump phiên bản PATCH. Với nhiều service, mình không buộc tất cả triển khai cùng lúc: dùng API có phiên bản (/v1, /v2) và viết contract test (Pact) giữa service gọi và service được gọi để phát hiện breaking change sớm trong CI. Khi cần bỏ một endpoint cũ, mình thông báo trước, chỉ định ngày ngừng dùng và theo dõi lượng sử dụng bằng metric trước khi xóa. Mình cũng ưu tiên trunk-based phát triển kèm feature flag để giảm sự phụ thuộc vào nhánh release, chỉ giữ nhánh release cho sản phẩm yêu cầu kiểm toán nghiêm ngặt.”"
+
 > Senior tip: Trunk-based development + feature flag cho phần lớn team; giữ release branch chỉ cho regulated product; contract test bắt buộc cho multi-service.`,
     follow: ['Làm sao communicate breaking change?', 'Deprecation policy?', 'Release notes automation?'],
     tags: ['Release', 'SemVer', 'Hotfix', 'Leadership']
@@ -9526,6 +9561,21 @@ security:
 - Sai lầm: scan chỉ report không block; alert fatigue; exception vĩnh viễn.
 - Kiểm tra: findings trend, MTTR, % pipeline block.
 - Shift-left: scan sớm trong PR, không chỉ pipeline main.
+
+### Cơ chế từng bước
+- Quét secret: gitleaks/trufflehog quét lịch sử commit và thư mục làm việc tìm API key, token, mật khẩu; pre-commit hook chặn commit chứa secret trước khi push. Nếu đã rò rỉ: thu hồi key, xoay khóa mới (rotate), làm sạch lịch sử git (git filter-repo) và thông báo bảo mật.
+- Quét dependency: OWASP Dependency-Check, Snyk, Trivy fs so sánh thư viện dùng với danh sách lỗ hổng NVD (CVE); pipeline thất bại nếu có CVE critical/high chưa được phê duyệt exceptions; xuất SBOM (CycloneDX/SPDX) kèm artifact để kiểm toán.
+- SAST/DAST: SAST (SonarQube, Semgrep) phân tích mã nguồn tìm SQL injection, XSS, deserialization không an toàn mà không cần chạy app; DAST (OWASP ZAP) quét ứng dụng đang chạy trên staging để tìm lỗ hổng runtime.
+- Policy as code: OPA/Conftest kiểm tra Dockerfile và manifest Kubernetes (không chạy root, image đã ký, có giới hạn tài nguyên) ở cổng CI; admission controller (Kyverno/Gatekeeper) thực thi chính sách khi chạy trên cụm.
+- Quan trọng: quét phải chặn pipeline (allow_failure: false), không chỉ báo cáo; dịch chuyển sang trái (shift-left): quét sớm trong pull request, không chỉ khi merge main.
+
+### Ví dụ đời thực
+Lúc 9:30 sáng, một developer commit vào nhánh feature chứa nhầm AWS access key trong file cấu hình. Pipeline CI chạy gitleaks detect --exit-code 1 và thất bại ngay, chặn code vào main. Đội ngũ bảo mật nhận cảnh báo: thu hồi access key đó, tạo khóa mới, làm sạch lịch sử commit bằng git filter-repo, và thông báo tất cả service có thể đã nhận key. Trong cùng tuần, trivy fs phát hiện thư viện logging có CVE critical trong bản build order-service; đội ngũ nâng thư viện lên bản có bản vá, rebuild image, quét lại xanh mới promote lên production.
+
+Kết quả: số lỗ hổng phát hiện trong pipeline giảm từ khoảng 12 bản/tháng xuống 1 bản/tháng sau hai tháng áp dụng quét trong pull request; không còn sự cố key rò rỉ vào mã nguồn trong 6 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+“Pipeline bảo mật của mình có nhiều lớp và mỗi lớp phải chặn, không chỉ báo cáo. Trước khi commit, pre-commit hook chạy gitleaks để chặn khóa API, token rò rỉ vào mã. Trong CI, mình quét dependency (trivy fs/Snyk) so với danh sách CVE và khiến build thất bại nếu có lỗ hổng critical/high chưa được chấp nhận, đồng thời xuất SBOM để biết chính xác image nào chứa thư viện bị lỗi khi có CVE mới công bố. Mã nguồn được quét bằng SAST (SonarQube/Semgrep) để tìm SQL injection, XSS, deserialization không an toàn; ứng dụng chạy trên staging được quét bằng DAST (OWASP ZAP). Cuối cùng, OPA/Conftest kiểm tra Dockerfile và manifest Kubernetes (không chạy root, có giới hạn tài nguyên) trước khi cho triển khai. Nếu phát hiện secret rò rỉ, mình thu hồi key, xoay khóa, làm sạch lịch sử git và thông báo bảo mật ngay. Mình cũng ưu tiên quét sớm trong pull request (shift-left) thay vì chỉ quét khi merge main, và xem xét lại danh sách exceptions định kỳ.”"
 
 > Senior tip: Secret scanning + dependency scanning là baseline bắt buộc; policy as code turning security into automated gate; review exception list định kỳ.`,
     follow: ['SBOM nên lưu ở đâu?', 'Image signing verification runtime?', 'Compliance audit?'],
@@ -10089,6 +10139,9 @@ services:
 - Publish cổng DB ra {{0.0.0.0}} trên máy dev nối mạng công cộng → lộ DB.
 - Tin vào IP container hard-code → hỏng sau khi {{docker compose up --force-recreate}}.
 
+### Trả lời mẫu khi phỏng vấn
+“Khi chạy app Java và PostgreSQL mỗi thứ trong một container trên cùng máy, mình luôn đặt cả hai vào cùng một Compose project để Docker tự tạo mạng bridge riêng cho project. App kết nối PostgreSQL bằng tên service ({{jdbc:postgresql://db:5432/orders}}), KHÔNG dùng localhost, vì mỗi container có mạng riêng (network namespace); localhost bên trong container app chỉ trỏ về chính container đó, không phải PostgreSQL. Chỉ publish cổng 8080 của app ra host để trình duyệt và IDE truy cập; cổng 5432 của PostgreSQL không publish ra host, giúp giảm bề mặt tấn công. Các container trên cùng mạng gọi nhau trực tiếp bằng tên service qua DNS nội bộ của Docker, không cần publish port. Nếu cần các container trên máy khác gọi nhau, dùng overlay (Docker Swarm) hoặc trong Kubernetes dùng Service và CoreDNS. Lỗi hay gặp là kết nối bằng localhost:5432 từ bên trong container app, publish cổng DB ra 0.0.0.0 trên mạng công cộng, hoặc hard-code IP container — cả ba đều hỏng sau khi tái tạo container vì IP có thể thay đổi.”"
+
 > Senior tip: Coi publish port là "mở cửa ra ngoài" — chỉ mở những gì thực sự cần từ host. Giữa các service nội bộ, để chúng nói chuyện trên mạng Compose riêng bằng tên service; sang Kubernetes tư duy tương tự nhưng tên phân giải qua Service/DNS của cluster.`,
     follow: [
       'Khác nhau giữa EXPOSE trong Dockerfile và ports trong Compose là gì?',
@@ -10165,6 +10218,18 @@ WORKDIR /app
 COPY --chown=10001:10001 target/app.jar /app/app.jar
 ENTRYPOINT ["java","-jar","/app/app.jar"]
 ~~~
+
+### Ví dụ đời thực
+Ứng dụng Java Spring Boot chạy trong container image {{eclipse-temurin:21-jre}} với user {{10001:10001}} (non-root). Lúc triển khai vào staging, team bind mount thư mục {{./logs}} trên host (thuộc về user host UID 1000) vào {{/app/logs}} trong container để đọc log. Sau khi khởi động, ứng dụng in ra {{java.io.FileNotFoundException: /app/logs/app.log (Permission denied)}} và không ghi được log.
+
+Điều tra: trên host, thư mục {{./logs}} được tạo bởi user UID 1000; trong container, tiến trình chạy với UID 10001. nhân Linux kiểm tra quyền theo số UID trên inode, nên UID 10001 không có quyền ghi vào thư mục thuộc UID 1000, mặc dù bên trong container thư mục {{/app/logs}} "thấy" tồn tại.
+
+Xử lý: chuyển sang named volume {{applogs:/app/logs}} do Docker quản lý (Docker khởi tạo quyền dựa trên thư mục trong image) và build image với user cố định {{10001:10001}}, thư mục {{/app/logs}} đã {{chown}} {{10001:10001}} trong Dockerfile. Bind mount {{./config}} chỉ dùng với chế độ chỉ đọc {{:ro}} để inject cấu hình. Sau thay đổi, ứng dụng ghi log bình thường và không còn lỗi quyền.
+
+Kết quả: khởi động container thành công, log được ghi vào {{/app/logs}}, team tuân theo nguyên tắc non-root mà không phải chạy lại bằng root hay dùng {{chmod 777}}.
+
+### Trả lời mẫu khi phỏng vấn
+“Volume là vùng lưu dữ liệu do Docker quản lý (thường dưới {{/var/lib/docker/volumes}}), bền vững và phù hợp cho dữ liệu cơ sở dữ liệu; bind mount gắn thẳng một thư mục trên máy host vào container, phù hợp khi muốn sửa code hoặc cấu hình trên host và thấy ngay trong container. Lỗi Permission denied khi chạy user non-root xảy ra vì tiến trình trong container dùng UID/GID khác với chủ sở hữu file trên host; nhân Linux kiểm tra quyền theo số, không theo tên, nên UID 10001 không ghi được vào thư mục thuộc UID 1000. Cách xử lý an toàn: ưu tiên named volume cho dữ liệu cần ghi (log, dữ liệu app), bind mount chỉ dùng ở chế độ chỉ đọc {{:ro}} cho cấu hình, hoặc căn UID/GID — build image tạo user với UID cố định và chown thư mục cần ghi trong Dockerfile. Không nên chạy lại bằng root hay dùng {{chmod 777}}, vì cả hai phá vỡ mô hình bảo mật. Trên SELinux, bind mount có thể cần cờ {{:z}} hoặc {{:Z}}, dùng cẩn thận.”"
 
 > Senior tip: Quyền file trong container là "điểm mù" kinh điển khi chuyển từ chạy root sang non-root. Hãy chọn một UID cố định cho image, ghi rõ trong README, và dùng named volume cho mọi đường dẫn ghi; bind mount chỉ dành cho dữ liệu read-only hoặc source code ở môi trường dev.`,
     follow: [
@@ -10252,6 +10317,16 @@ spec:
 ### Trên production
 - **Sự cố thật:** container chạy root bị RCE qua lỗ hổng dependency; kẻ tấn công cài công cụ đào coin vào {{/tmp}}. Với read-only rootfs + {{/tmp}} là tmpfs có {{noexec}} (nâng cao) và drop capabilities, tác động bị thu hẹp.
 - **Kiểm tra:** {{docker inspect}} xem {{ReadonlyRootfs}}, {{CapDrop}}; trên K8s dùng {{kubectl auth can-i --as=system:serviceaccount:...}} và công cụ policy (Kyverno/OPA) để bắt pod vi phạm. Quét cấu hình bằng {{trivy config}} hoặc {{kube-bench}}/policy audit.
+
+### Ví dụ đời thực
+Một container Java chạy order-api với quyền root mặc định trên production. Lúc 22:00, kẻ tấn công khai thác lỗ hổng trong một thư viện logging (RCE) và cài công cụ đào coin vào thư mục {{/tmp}} của container, CPU của nút (node) nhảy lên 90%, độ trễ API tăng từ 100 ms lên 5 giây.
+
+Điều tra: đội ngũ vận hành kiểm tra {{docker ps}}, thấy container order-api chạy như root; {{docker inspect}} cho thấy {{ReadonlyRootfs=false}}, {{CapDrop}} trống; logs ứng dụng có dấu hiệu nhập liệu độc hại vào trường tìm kiếm. Xử lý: ngay lập tức tách container ra khỏi mạng (hoặc dừng container), rebuild image chạy user {{10001:10001}}, bật {{read_only: true}}, mount tmpfs vào {{/tmp}}, {{cap_drop: ALL}}, {{security_opt no-new-privileges:true}}. Triển khai lại qua rolling update.
+
+Kết quả: sau khi hardening, dù tấn công tương tự được thử lại, kẻ tấn công không thể ghi mã độc vào filesystem (read-only) và không thể leo thang quyền (no-new-privileges), CPU quay lại bình thường, độ trễ API quay lại 100 ms. Nhà vận hành cũng đặt Pod Security Admission mức restricted cho namespace prod.
+
+### Trả lời mẫu khi phỏng vấn
+“Gia cố runtime container nghĩa là giảm quyền của tiến trình xuống mức tối thiểu cần thiết (least privilege). Mình luôn chạy ứng dụng Java bằng user non-root (ví dụ 10001:10001) để nếu có lỗ hổng RCE, kẻ tấn công khó thao tác hệ thống. Bật filesystem gốc chỉ đọc (read-only rootfs) để ngăn kẻ tấn công ghi mã độc, kèm tmpfs cho {{/tmp}} vì Java và một số thư viện cần ghi file tạm. Loại bỏ hết khả năng Linux ({{cap_drop: ALL}}), chỉ thêm lại khi thực sự cần (ví dụ {{CAP_NET_BIND_SERVICE}} nếu ứng dụng lắng nghe port dưới 1024), và bật {{no-new-privileges}} để chặn việc lấy thêm quyền qua file setuid. Trên Kubernetes, các điều này ánh xạ vào {{securityContext}} ({{runAsNonRoot}}, {{runAsUser}}, {{readOnlyRootFilesystem}}, {{capabilities.drop}}, {{allowPrivilegeEscalation: false}}, {{seccompProfile}}). Mình cũng khuyến khích đặt Pod Security Admission mức restricted cho namespace production và kiểm tra manifest trong CI trước khi triển khai, chứ không đợi sự cố mới vá.”"
 
 > Senior tip: Gia cố runtime là "phòng thủ theo chiều sâu" — image sạch (ít CVE) nhưng chạy privileged vẫn nguy hiểm. Hãy đặt Pod Security Admission mức {{restricted}} cho namespace prod và biến vi phạm thành lỗi CI (render manifest rồi quét) thay vì vá sau khi đã lên cụm.`,
     follow: [
