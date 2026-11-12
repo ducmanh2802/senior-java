@@ -54,6 +54,13 @@
       'exam.domainScore': 'Điểm theo domain', 'exam.domainHint': 'Dưới 72% (đỏ/vàng) là domain cần ôn thêm.',
       'exam.wrongList': 'Câu sai ({n})', 'exam.perfect': 'Không sai câu nào. 🎉',
       'exam.youChose': 'Bạn chọn:', 'exam.blankAns': 'bỏ trống', 'exam.correctAns': 'Đáp án đúng:',
+      'exam.loading': 'Đang tải ngân hàng câu hỏi…',
+      'exam.errorTitle': 'Không thể tải đề thi',
+      'exam.errorDesc': 'Có lỗi xảy ra khi tải dữ liệu. Vui lòng thử lại.',
+      'exam.retry': 'Thử lại',
+      'exam.emptyPool': 'Ngân hàng câu hỏi trống cho đề này.',
+      'exam.addQuestions': 'Thêm câu hỏi vào ngân hàng',
+      'exam.progressLabel': 'Tiến độ',
     },
     en: {
       'exam.title': 'Mock exams',
@@ -96,6 +103,13 @@
       'exam.domainScore': 'Score by domain', 'exam.domainHint': 'Below 72% (red/yellow) needs more study.',
       'exam.wrongList': 'Wrong answers ({n})', 'exam.perfect': 'No mistakes. 🎉',
       'exam.youChose': 'You chose:', 'exam.blankAns': 'blank', 'exam.correctAns': 'Correct answer:',
+      'exam.loading': 'Loading question bank…',
+      'exam.errorTitle': 'Failed to load exam',
+      'exam.errorDesc': 'An error occurred while loading data. Please try again.',
+      'exam.retry': 'Retry',
+      'exam.emptyPool': 'Question bank is empty for this exam.',
+      'exam.addQuestions': 'Add questions to bank',
+      'exam.progressLabel': 'Progress',
     },
   });
   const t = (k, v) => App.t(k, v);
@@ -103,18 +117,19 @@
   const OTHER = 'Khác';
 
   const E = {
-    phase: 'setup',        // pick | setup | exam | result
-    exam: null,            // đề hiện tại (object trong window.EXAMS hoặc đề tạm)
-    practice: false,       // luyện tập: không giờ, hiện đáp án ngay
-    list: [],              // [{ q, options, answer: [idx], multi, domain }]
-    sel: [],               // sel[i] = [idx đã chọn]
-    checked: [],           // practice: câu đã kiểm tra
-    flag: [],              // flag[i] = true nếu đánh dấu xem lại
+    phase: 'pick',        // pick | setup | exam | result
+    exam: null,           // đề hiện tại (object trong window.EXAMS hoặc đề tạm)
+    practice: false,      // luyện tập: không giờ, hiện đáp án ngay
+    list: [],             // [{ q, options, answer: [idx], multi, domain }]
+    sel: [],              // sel[i] = [idx đã chọn]
+    checked: [],          // practice: câu đã kiểm tra
+    flag: [],             // flag[i] = true nếu đánh dấu xem lại
     idx: 0,
     startedAt: 0,
-    endAt: 0,              // 0 = không giới hạn giờ
+    endAt: 0,             // 0 = không giới hạn giờ
     timer: null,
     result: null,
+    error: null,          // lỗi tải dữ liệu
   };
   let rootEl = null;
 
@@ -227,7 +242,7 @@
   function begin(list, practice) {
     stopTimer();
     Object.assign(E, { phase: 'exam', practice: practice, list: list, sel: list.map(() => []), checked: [], flag: [],
-      idx: 0, startedAt: Date.now(), result: null });
+      idx: 0, startedAt: Date.now(), result: null, error: null });
     E.endAt = practice ? 0 : Date.now() + examMinutes(E.exam, list.length) * 60000;
     save();
     startTimer();
@@ -275,12 +290,27 @@
     stopTimer();
     E.timer = setInterval(() => {
       if (E.phase !== 'exam') return;
-      const el = rootEl && rootEl.querySelector('#examTimer');
+      const timerEl = rootEl && rootEl.querySelector('#examTimer');
+      const progressEl = rootEl && rootEl.querySelector('#examTimerProgress');
       if (E.endAt) {
         const s = left();
-        if (el) { el.textContent = fmt(s); el.classList.toggle('low', s <= 300); }
+        const totalSec = examMinutes(E.exam, E.list.length) * 60;
+        const pct = Math.max(0, Math.min(100, (s / totalSec) * 100));
+        if (timerEl) {
+          timerEl.textContent = fmt(s);
+          timerEl.classList.toggle('warn', s <= 300 && s > 60);
+          timerEl.classList.toggle('critical', s <= 60);
+          timerEl.classList.toggle('low', s <= 300); // backward compat
+        }
+        if (progressEl) {
+          progressEl.style.width = pct + '%';
+          progressEl.classList.toggle('warn', s <= 300 && s > 60);
+          progressEl.classList.toggle('critical', s <= 60);
+        }
         if (s <= 0) submit(true);
-      } else if (el) el.textContent = fmt(Math.round((Date.now() - E.startedAt) / 1000));
+      } else if (timerEl) {
+        timerEl.textContent = fmt(Math.round((Date.now() - E.startedAt) / 1000));
+      }
     }, 1000);
   }
   function stopTimer() { if (E.timer) { clearInterval(E.timer); E.timer = null; } }
@@ -384,6 +414,12 @@
     const sel = E.sel[E.idx] || [];
     const revealed = E.practice && E.checked[E.idx];
     const answered = E.sel.filter(s => s && s.length).length;
+    const totalSec = examMinutes(E.exam, E.list.length) * 60;
+    const elapsedSec = Math.round((Date.now() - E.startedAt) / 1000);
+    const pct = E.endAt ? Math.max(0, Math.min(100, (left() / totalSec) * 100)) : (totalSec ? Math.min(100, (elapsedSec / totalSec) * 100) : 0);
+    const timerLabel = E.endAt ? t('exam.timeLeft') : t('exam.timeUsed');
+    const timeText = E.endAt ? fmt(left()) : fmt(elapsedSec);
+    const timerClass = E.endAt ? (left() <= 60 ? 'critical' : left() <= 300 ? 'warn' : '') : '';
     const opts = it.options.map((text, i) => {
       const on = sel.indexOf(i) >= 0;
       let cls = on ? ' selected' : '';
@@ -396,12 +432,18 @@
         (E.practice && E.checked[i] ? (isCorrect(x, E.sel[i]) ? ' ok' : ' bad') : '');
       return '<button type="button" class="exam-cell' + c + '" data-go="' + i + '" aria-label="' + t('exam.cell', { n: i + 1 }) + '">' + (i + 1) + '</button>';
     }).join('');
-    const timeText = E.endAt ? fmt(left()) : fmt(Math.round((Date.now() - E.startedAt) / 1000));
+    const keys = it.options.length > 1 ? '1–' + it.options.length : '1';
     return '<div class="card exam-head">' +
         '<span class="badge">' + (E.practice ? t('exam.badgePractice') : t('exam.badgeExam')) + '</span>' +
         '<span class="exam-progress">' + t('exam.progress', { i: E.idx + 1, n: E.list.length, done: answered }) + '</span>' +
-        '<span class="exam-timer" id="examTimer" title="' + (E.endAt ? t('exam.timeLeft') : t('exam.timeUsed')) + '">' + timeText + '</span>' +
-        '<button type="button" class="btn sm primary" data-act="submit">' + (E.practice ? t('exam.finish') : t('exam.submit')) + '</button>' +
+        '<div class="exam-timer-wrap" aria-live="polite" aria-label="' + timerLabel + '">' +
+          '<span class="exam-timer' + (timerClass ? ' ' + timerClass : '') + '" id="examTimer" title="' + timerLabel + '">' + timeText + '</span>' +
+        '</div>' +
+        '<button type="button" class="btn sm primary" data-act="submit" aria-label="' + (E.practice ? t('exam.finish') : t('exam.submit')) + '">' + (E.practice ? t('exam.finish') : t('exam.submit')) + '</button>' +
+      '</div>' +
+      '<div class="exam-timer-progress" role="progressbar" aria-valuenow="' + Math.round(pct) + '" aria-valuemin="0" aria-valuemax="100" aria-label="' + t('exam.progressLabel') + '">' +
+        '<span class="exam-timer-label">' + timerLabel + '</span>' +
+        '<div class="progress"><i id="examTimerProgress" style="width:' + pct + '%" class="' + timerClass + '"></i></div>' +
       '</div>' +
       '<div class="exam-body">' +
         '<section class="card exam-q"' + (E.exam.lang === 'en' ? ' lang="en"' : '') + '>' +
@@ -416,11 +458,23 @@
             '<button type="button" class="btn' + (E.flag[E.idx] ? ' warn' : '') + '" data-act="flag">' + (E.flag[E.idx] ? t('exam.unflag') : t('exam.flag')) + ' <kbd>F</kbd></button>' +
             '<button type="button" class="btn primary" data-act="next"' + (E.idx + 1 < E.list.length ? '' : ' disabled') + '>' + t('exam.next') + ' <kbd>N</kbd></button>' +
           '</div>' +
-          '<p class="small muted">' + t('exam.keys', { k: '<kbd>1</kbd>–<kbd>' + it.options.length + '</kbd>' }) + '</p>' +
+          '<p class="small muted exam-keys-hint">' + t('exam.keys', { k: '<kbd>1</kbd>–<kbd>' + it.options.length + '</kbd>' }) + '</p>' +
         '</section>' +
         '<aside class="card exam-grid-card"><h4>' + t('exam.list') + '</h4><div class="exam-grid">' + grid + '</div>' +
           '<p class="small muted"><span class="exam-dot done"></span> ' + t('exam.legendDone') + ' · <span class="exam-dot flagged"></span> ' + t('exam.legendFlag') + '</p></aside>' +
       '</div>';
+  }
+
+  function loadingHtml() {
+    return '<div class="exam-loading card"><span class="exam-loading-spinner" aria-hidden="true"></span><span class="exam-loading-text">' + t('exam.loading') + '</span></div>';
+  }
+
+  function errorHtml() {
+    return '<div class="exam-error card"><h3>' + t('exam.errorTitle') + '</h3><p>' + t('exam.errorDesc') + '</p><button type="button" class="btn primary exam-error-retry" data-act="retry">' + t('exam.retry') + '</button></div>';
+  }
+
+  function emptyPoolHtml() {
+    return '<div class="exam-empty card"><span class="exam-empty-icon">📭</span><h2>' + t('exam.emptyPool') + '</h2><p class="muted">Không có câu trắc nghiệm nào trong ngân hàng cho đề này.</p><button type="button" class="btn primary" data-act="addQuestions">' + t('exam.addQuestions') + '</button></div>';
   }
 
   function resultHtml() {
@@ -436,9 +490,10 @@
     const wrong = E.list.map((it, i) => ({ it: it, sel: E.sel[i] || [] })).filter(x => !isCorrect(x.it, x.sel));
     const wrongHtml = wrong.map((x, n) =>
       '<details class="card exam-wrong"' + (ex.lang === 'en' ? ' lang="en"' : '') + '><summary>' + (n + 1) + '. <span class="chip">' + App.esc(x.it.domain) + '</span> ' + App.esc(stripTag(x.it.q.q)) + '</summary>' +
+        '<div class="exam-wrong-body">' +
         '<p class="small"><strong>' + t('exam.youChose') + '</strong> ' + (x.sel.length ? x.sel.map(i => App.esc(x.it.options[i])).join(' · ') : '<em>' + t('exam.blankAns') + '</em>') + '</p>' +
         '<p class="small"><strong>' + t('exam.correctAns') + '</strong> ' + x.it.answer.map(i => App.esc(x.it.options[i])).join(' · ') + '</p>' +
-        '<div class="md">' + App.md(x.it.q.explain) + '</div></details>').join('');
+        '<div class="md">' + App.md(x.it.q.explain) + '</div></div></details>').join('');
     let weakest = null;
     doms.forEach(d => { const v = r.byDomain[d], p = v.correct / v.total; if (!weakest || p < weakest.p) weakest = { d: d, p: p }; });
     const big = ex.passScore ? r.score + '<small>/1000</small>' : r.pct + '<small>%</small>';
@@ -464,14 +519,29 @@
   let viewGen = 0;
   function render() {
     if (!rootEl) return;
+    if (E.phase === 'exam' && E.error) {
+      rootEl.innerHTML = errorHtml();
+      rootEl.addEventListener('click', onErrorClick);
+      return;
+    }
     if (E.phase !== 'pick' && !App.hasData(['quiz'])) {
       const gen = viewGen;
-      rootEl.innerHTML = '<div class="empty" role="status" aria-busy="true">…</div>';
+      rootEl.innerHTML = loadingHtml();
       App.need(['glossary']);   // term tooltips: not awaited, they re-index when the group arrives
-      App.need(['quiz']).then(() => { if (gen === viewGen) render(); });
+      App.need(['quiz']).then(() => { if (gen === viewGen) render(); }).catch(() => { if (gen === viewGen) { E.error = true; render(); } });
+      return;
+    }
+    // Check for empty pool in setup/exam phase
+    if ((E.phase === 'setup' || E.phase === 'exam') && E.exam && !pool().length) {
+      rootEl.innerHTML = emptyPoolHtml();
       return;
     }
     rootEl.innerHTML = E.phase === 'pick' ? pickHtml() : E.phase === 'exam' ? examHtml() : E.phase === 'result' ? resultHtml() : setupHtml();
+  }
+
+  function onErrorClick(e) {
+    const b = e.target.closest('[data-act="retry"]');
+    if (b) { E.error = null; render(); }
   }
 
   // ---------- events (delegation trên root) ----------
@@ -495,6 +565,8 @@
     else if (act === 'next') go(E.idx + 1);
     else if (act === 'flag') toggleFlag();
     else if (act === 'check') check();
+    else if (act === 'addQuestions') { App.navigate('#/quiz'); }
+    else if (act === 'retry') { E.error = null; render(); }
   }
   function onKey(e) {
     if (E.phase === 'pick') {
@@ -515,14 +587,16 @@
       rootEl = root;
       viewGen++;
       stopTimer();
+      E.error = null;
       const id = params && params[0];
       E.exam = id ? examById(id) : null;
       E.phase = E.exam ? 'setup' : 'pick';
       E.result = null;
       render();
       root.addEventListener('click', onClick);
+      root.addEventListener('click', onErrorClick);
       const off = App.onKey(onKey);
-      return () => { stopTimer(); save(); off(); root.removeEventListener('click', onClick); };
+      return () => { stopTimer(); save(); off(); root.removeEventListener('click', onClick); root.removeEventListener('click', onErrorClick); };
     },
   });
 })();
