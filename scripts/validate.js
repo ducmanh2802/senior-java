@@ -329,6 +329,27 @@ for (const z of sandbox.window.LESSONS || []) {
   console.log(`Câu chuyện STAR mẫu: ${(sandbox.window.STAR_STORIES || []).length}`);
 }
 
+// ---- TOEIC Speaking & Writing (#/toeic) ----
+{
+  const PARTS = { s1: ['text', 'stress'], s2: ['scene', 'sample'], s3: ['context', 'questions', 'samples'], s4: ['info', 'questions', 'samples'], s5: ['prompt', 'sample'], w1: ['scene', 'words', 'sample'], w2: ['email', 'task', 'sample'], w3: ['prompt', 'outline', 'sample'] };
+  const seen = new Set(), words = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).length;
+  const RANGE = { s1: ['text', 40, 90], s2: ['sample', 45, 100], s5: ['sample', 100, 180], w2: ['sample', 70, 170], w3: ['sample', 280, 420] };
+  const byPart = {};
+  for (const t of sandbox.window.TOEIC || []) {
+    const f = 'toeic.js', id = t.id || '(no id)', need = PARTS[t.part];
+    if (!need) { err(f, `${id}: part phải là ${Object.keys(PARTS).join('|')}`); continue; }
+    byPart[t.part] = (byPart[t.part] || 0) + 1;
+    if (!new RegExp('^toeic-' + t.part + '-\\d{3}$').test(t.id || '') || seen.has(t.id)) err(f, `id thiếu/trùng/sai dạng (toeic-${t.part}-NNN): ${id}`);
+    seen.add(t.id);
+    Object.keys(t).forEach(k => { if (!['id', 'part', 'tips', 'tags', '__file', ...need].includes(k)) err(f, `${id}: field lạ "${k}"`); });
+    need.forEach(k => { const x = t[k]; if (Array.isArray(x) ? !x.length : typeof x !== 'string' || !x.trim()) err(f, `${id}: thiếu ${k}`); });
+    if (t.questions && (t.questions.length !== 3 || !Array.isArray(t.samples) || t.samples.length !== 3)) err(f, `${id}: cần đúng 3 questions và 3 samples`);
+    if (t.part === 'w1' && (!Array.isArray(t.words) || t.words.length !== 2)) err(f, `${id}: words cần đúng 2 từ`);
+    if (RANGE[t.part]) { const [k, lo, hi] = RANGE[t.part], w = words(t[k]); if (w < lo || w > hi) err(f, `${id}: ${k} cần ${lo}–${hi} từ (đang ${w})`); }
+  }
+  console.log(`TOEIC S&W: ${(sandbox.window.TOEIC || []).length} bài ${JSON.stringify(byPart)}`);
+}
+
 // ---- SDLC simulation (#/sdlc) ----
 const SDLC_STAGES = ['requirement', 'analysis', 'design', 'dev', 'review', 'test', 'deploy', 'bugfix'];
 const sdlc = sandbox.window.SDLC || [];

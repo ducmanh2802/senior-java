@@ -38,6 +38,7 @@
       projects: ['projects.js'],
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
       bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
+      toeic: ['toeic.js'],                                    // #/toeic TOEIC Speaking & Writing practice (window.TOEIC)
       stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
@@ -70,13 +71,14 @@
       projects: ['projects', 'lessons', 'questions', 'glossary'],
       career: ['questions', 'companies', 'stars'],
       sdlc: ['sdlc'],
+      toeic: ['toeic'],
       bugs: ['bugs', 'questions', 'glossary'],               // related-questions widget
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
     },
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs', 'bugs'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs', 'bugs', 'toeic'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)
