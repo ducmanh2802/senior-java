@@ -2047,6 +2047,8 @@ window.DATA_INDEX = {
     {"id":"sd-032","title":"Hệ thống chat 1-1 và nhóm: WebSocket, lưu tin nhắn, đã đọc, presence, đồng bộ nhiều thiết bị"},
     {"id":"sd-033","title":"Hệ thống thanh toán/chuyển tiền nội bộ (ledger double-entry, idempotency, đối soát, saga gọi cổng ngoài)"},
     {"id":"sd-034","title":"Distributed job scheduler (lập lịch cron cho hàng triệu job, đảm bảo chạy đúng một lần, retry, phân vùng theo shard)"},
+    {"id":"sd-035","title":"Dịch vụ ghi âm và tóm tắt cuộc họp bằng AI cho 50.000 người dùng"},
+    {"id":"sd-036","title":"Nền tảng feature flag dùng chung cho nhiều ứng dụng"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

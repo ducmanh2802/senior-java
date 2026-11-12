@@ -4221,4 +4221,205 @@ Team marketing đăng ký job gửi email 1 triệu user lúc 09:00, {{max_delay
   ],
   related: ['design-013', 'design-029', 'microservices-051']
 },
+{
+  id: 'sd-035',
+  title: 'Dịch vụ ghi âm và tóm tắt cuộc họp bằng AI cho 50.000 người dùng',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế dịch vụ cho 50.000 người dùng có thể tải bản ghi âm cuộc họp lên, nhận bản chép lời và bản tóm tắt có mục hành động. Trung bình mỗi người có 2 cuộc họp mỗi tuần, dài 45 phút; file có thể dài tới 4 giờ. Xử lý bất đồng bộ, thông báo khi xong, chịu được nhà cung cấp speech-to-text hoặc LLM chậm/lỗi, kiểm soát chi phí và bảo vệ nội dung nhạy cảm. Người dùng có thể xem, chia sẻ và yêu cầu xoá cuộc họp. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt ai được tải/xem/chia sẻ; định dạng và giới hạn file; ngôn ngữ; có cần nhận diện người nói không; thời hạn lưu; xoá cả audio, transcript và bản tóm tắt; thông báo tiến độ; cho phép tải lại không. Chốt kỳ vọng: upload có thể tiếp tục sau mất mạng, xử lý không đồng bộ, 95% cuộc họp 45 phút hoàn tất trong 10 phút kể từ khi upload xong, còn file 4 giờ có thể lâu hơn. Nội dung âm thanh không được đưa vào log hay dùng huấn luyện nếu chưa có đồng ý.` },
+    { name: 'Estimation', minutes: 5, guide: `Giả định 50.000 người dùng hoạt động, 2 cuộc họp/người/tuần: 100.000/7 ≈ 14.300 cuộc/ngày. Mỗi cuộc 45 phút => khoảng 643.000 phút audio/ngày. Nén audio mono 32 kbit/s: 32.000 bit/s ÷ 8 × 60 ≈ 240 KB/phút; 45 phút ≈ 10,8 MB; tổng gần 154 GB/ngày, chưa tính bản sao và metadata. Trung bình 446 phút audio/phút đồng hồ; nếu upload dồn giờ làm việc, dự trù đỉnh 10 lần ≈ 4.500 phút audio/phút. Tách bài toán dung lượng lưu trữ khỏi throughput STT; đặt quota và tính chi phí theo phút audio cùng token LLM, không đoán một mức giá nhà cung cấp cố định.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /meetings tạo bản ghi và trả meeting_id, upload URL có thời hạn (URL ký sẵn cho upload trực tiếp vào object storage) và giới hạn kích thước. POST /meetings/{id}/complete xác nhận upload; GET /meetings/{id} trả trạng thái; GET /meetings/{id}/transcript; DELETE /meetings/{id} yêu cầu xoá; POST /meetings/{id}/share tạo quyền chia sẻ. Bảng meetings (id, tenant_id, owner_id, status, object_key, duration_sec, language, created_at, deleted_at, version); meeting_chunks (meeting_id, chunk_no, time_offset, status, transcript_ref); outputs (meeting_id, kind, object_key, model_version); ACL/share grants. Lưu file lớn trong object storage như S3, không trong PostgreSQL hay Kafka.` },
+    { name: 'High-level design', minutes: 15, guide: `Client -> API/Auth -> PostgreSQL + outbox; API phát URL ký sẵn để client upload multipart vào S3. Khi xác nhận upload, outbox relay đưa meeting_id và object_key (không phải audio bytes) vào Kafka. Worker kiểm định file, chia thành đoạn nếu cần, gọi speech-to-text (STT: chuyển giọng nói thành văn bản) qua provider adapter; lưu transcript có timestamp/speaker. Bước tóm tắt gửi transcript đã làm sạch tới LLM (mô hình ngôn ngữ lớn), lưu summary/action items; cập nhật trạng thái và phát notification. Kafka consumer xử lý at-least-once, mỗi bước idempotent theo meeting_id + phiên bản pipeline + chunk.` },
+    { name: 'Deep dive', minutes: 15, guide: `File 4 giờ: chia đoạn 10–15 phút, overlap vài giây để không mất câu ở ranh giới; lưu offset thời gian để nối transcript. Tóm tắt phân cấp (tóm tắt từng đoạn rồi tổng hợp), giữ action item gắn timestamp, không gửi toàn bộ audio vào LLM. Quota theo tenant, giới hạn concurrency, queue riêng ưu tiên; retry lỗi tạm thời có exponential backoff+jitter, lỗi vĩnh viễn/DLQ có công cụ replay. Xử lý xoá đang chạy và race giữa retry với DELETE. KMS mã hoá object/database, TLS, IAM tối thiểu, kiểm tra quyền theo tenant trên mọi API, retention và audit; không ghi transcript vào log. Theo dõi queue age, phút audio chờ, tỉ lệ lỗi theo provider, chi phí mỗi phút và thời gian hoàn tất.` }
+  ],
+  rubric: [
+    'Nêu giả định sử dụng và tính số meeting, audio-minutes, dung lượng nén/ngày, peak theo burst',
+    'Upload trực tiếp multipart vào object storage bằng URL ký sẵn; không chuyển audio lớn qua API, DB hoặc Kafka',
+    'Mô hình trạng thái bất đồng bộ và outbox để không mất job giữa commit database và publish Kafka',
+    'Chia file dài thành chunks có overlap, giữ offset và xử lý thứ tự/ghép transcript',
+    'Tóm tắt phân cấp để không vượt context window, kiểm soát token và chi phí',
+    'At-least-once + idempotency theo meeting/version/chunk; retry lỗi tạm thời, DLQ lỗi vĩnh viễn',
+    'Provider adapter, giới hạn concurrency/quota, circuit breaker và fallback có kiểm soát',
+    'Mã hoá, kiểm tra quyền tenant, consent, retention, xoá audio và mọi output, tránh nội dung trong log',
+    'Nêu trade-off SLA và chi phí, ưu tiên queue và metrics theo phút audio/chi phí',
+    'Nêu race/failure: upload dở dang, worker chết, callback trễ, xoá trong khi job chạy'
+  ],
+  reference: `**Tóm tắt:** Tôi tách dịch vụ thành control plane (API, quyền, trạng thái) và worker xử lý nền. Audio tải thẳng vào object storage, Kafka chỉ mang tham chiếu và trạng thái job; worker chuyển giọng nói thành transcript theo chunk, rồi dùng LLM tóm tắt phân cấp. Mỗi bước có trạng thái bền vững, idempotency, quota và chính sách xoá xuyên suốt audio lẫn kết quả. Chi phí được dự toán từ phút audio và token, không để một lần retry tạo chi phí vô hạn hay kết quả trùng lặp.
+
+### 1. Yêu cầu và giả định
+- 50.000 người dùng hoạt động, trung bình 2 cuộc họp mỗi tuần; cuộc họp 45 phút, trường hợp dài nhất 4 giờ.
+- Upload có thể tiếp tục sau lỗi mạng; người dùng thấy trạng thái QUEUED, TRANSCRIBING, SUMMARIZING, COMPLETED hoặc FAILED.
+- Chủ sở hữu mới xem được nội dung; chia sẻ phải cấp quyền rõ ràng và có thể thu hồi. Nội dung mặc định riêng tư.
+- Mục tiêu đề xuất: 95% cuộc họp 45 phút hoàn tất trong 10 phút sau upload. Không cam kết cùng SLA cho file 4 giờ hoặc lúc nhà cung cấp suy giảm.
+- Có chính sách lưu giữ, đồng ý ghi âm, khu vực lưu dữ liệu và xoá theo yêu cầu. Đây là yêu cầu sản phẩm/pháp lý cần xác nhận, không mặc định tự dùng dữ liệu để huấn luyện.
+
+### 2. Ước lượng có thể kiểm tra
+14.300 cuộc/ngày x 45 phút ≈ 643.500 phút audio/ngày. Audio mono nén 32 kbit/s tương đương khoảng 240 KB/phút; 643.500 x 240 KB ≈ 154 GB/ngày. Dữ liệu thực tế phụ thuộc codec, ngôn ngữ và audio stereo; đo trên sample trước khi chốt ngân sách.
+
+643.500 / 1.440 ≈ 447 phút audio mỗi phút đồng hồ trung bình. Nếu upload giờ làm việc tạo đỉnh gấp 10 lần, STT phải tiêu thụ gần 4.470 phút audio/phút. Đây là throughput của audio được xử lý, không phải số request HTTP: file 45 phút là một job nhưng tốn 45 phút năng lực STT. Nếu chia chunk 15 phút thì trung bình mỗi cuộc có 3 chunk; file 4 giờ có 16 chunk.
+
+Chi phí biến đổi xấp xỉ: tổng phút audio x đơn giá STT/phút + tổng input/output token LLM x đơn giá tương ứng + lưu trữ, request và egress. Ước token bằng transcript thực tế theo ngôn ngữ; ví dụ 45 phút họp có 4.500 từ thì transcript có thể vào khoảng vài nghìn token, còn cách chia chunk và lời nhắc làm thay đổi lượng token. Đặt ngân sách tenant, giới hạn độ dài, hiển thị ước tính và đo chi phí trên từng meeting; không giả định giá cố định vì giá và chất lượng khác provider/model.
+
+### 3. API và dữ liệu
+1. {{POST /meetings}}: xác thực tenant, tạo meeting UPLOADING, trả ID và URL ký sẵn có hạn ngắn. Client upload nhiều phần trực tiếp lên S3; API không giữ kết nối hàng giờ.
+2. {{POST /meetings/{id}/complete}}: xác nhận upload hoàn tất. Server kiểm tra owner, kích thước, checksum, loại file và quota trước khi chuyển sang QUEUED.
+3. {{GET /meetings/{id}}}: trả trạng thái, tiến độ theo giai đoạn và lỗi đã làm sạch; {{GET /meetings/{id}/transcript}} trả transcript nếu caller có quyền.
+4. {{DELETE /meetings/{id}}}: đánh dấu DELETING ngay, từ chối đọc/chạy job mới, sau đó xoá object, transcript, summary và bản sao theo retention.
+
+Bảng {{meetings}} lưu id, tenant_id, owner_id, status, object_key, duration_sec, language, version, created_at, deleted_at. {{meeting_chunks}} lưu chunk_no, time_offset, trạng thái và transcript_ref. {{outputs}} lưu phiên bản transcript/summary và model/pipeline version. ACL tách quyền xem/chia sẻ. PostgreSQL giữ metadata và trạng thái; object storage giữ file audio và output lớn. Không đưa audio bytes vào Kafka vì log broker sẽ phình và khó áp dụng chính sách xoá.
+
+### 4. Luồng kiến trúc
+~~~seq
+title: Upload và xử lý cuộc họp
+actors: Client | API | S3 | Kafka | Worker | STT/LLM
+Client -> API: POST /meetings, nhận URL ký sẵn
+Client -> S3: Upload multipart audio
+Client -> API: complete upload
+API -> Kafka: meeting_id + object_key qua outbox
+Kafka -> Worker: nhận job, kiểm tra phiên bản
+Worker -> S3: đọc audio, chia chunk
+Worker -> STT/LLM: transcript rồi summary
+Worker -> API: ghi output, cập nhật trạng thái
+API --> Client: trạng thái COMPLETED / notification
+~~~
+
+**Outbox** là bảng ghi event cùng transaction với thay đổi database. Nếu chỉ commit meeting rồi publish Kafka, tiến trình có thể chết ở khoảng giữa và job bị mất; outbox relay thử publish lại, consumer khử trùng bằng ID. Kafka giao ít nhất một lần trong nhiều cấu hình thực tế, vì vậy worker phải chấp nhận cùng event đến lặp.
+
+### 5. File dài và pipeline
+Kiểm tra container/codec, thời lượng, checksum và malware trước khi gọi provider. Chia audio dài thành chunk khoảng 10–15 phút với overlap nhỏ, ví dụ 2 giây; ghi offset gốc để câu nói ở ranh giới không mất và timestamps ghép lại chính xác. Chunk có khoá duy nhất (meeting_id, pipeline_version, chunk_no); retry ghi đè cùng kết quả thay vì tạo transcript thứ hai.
+
+Sau STT, chuẩn hoá transcript theo timestamp và người nói nếu provider hỗ trợ. Không giả định diarization (ước lượng ai đang nói) luôn chính xác; cho phép sửa tay và thể hiện độ không chắc. Với transcript dài, chia theo đoạn/chủ đề, yêu cầu LLM tóm tắt từng đoạn, rồi tổng hợp các bản tóm tắt thành quyết định, vấn đề mở và action items. Cách map-reduce này tránh gửi văn bản dài vượt giới hạn ngữ cảnh; lưu liên kết timestamp để người dùng kiểm chứng. LLM có thể bịa hoặc bỏ sót, nên tóm tắt là gợi ý có nguồn dẫn chứ không thay transcript.
+
+### 6. Hàng đợi, lỗi và độ trễ
+Lưu state machine ở database; Kafka phân phối job. Dùng consumer group để tăng worker, nhưng đặt concurrency theo quota của provider và tenant. Queue age (tuổi job cũ nhất), phút audio đang chờ, thời gian STT/LLM và tỉ lệ retry là tín hiệu scale hữu ích hơn chỉ nhìn CPU.
+
+Timeout hoặc 429/5xx: retry có exponential backoff và jitter, giới hạn số lần; lỗi file không hỗ trợ hoặc vượt quota là lỗi vĩnh viễn để FAILED, không retry tốn tiền. Sau giới hạn, đưa metadata vào DLQ (dead-letter queue) để điều tra/replay có kiểm soát. Circuit breaker tạm ngừng gọi provider đang lỗi; adapter cho phép đổi provider, nhưng không tự gửi cùng nội dung sang provider khác nếu chính sách tenant/region chưa cho phép. Gửi thông báo chỉ sau khi trạng thái đã commit.
+
+### 7. Bảo mật, xoá và chi phí
+TLS khi truyền; mã hoá object và database bằng khoá quản lý như AWS KMS; IAM giới hạn worker theo bucket/prefix. URL ký sẵn chỉ có quyền upload một object, thời hạn ngắn; mọi API kiểm tra tenant và ACL ở server, không tin tenant_id do client tự khai. Không ghi audio, transcript, prompt hoặc token vào log/trace; che dữ liệu nhạy cảm khỏi thông báo.
+
+DELETE đặt cờ DELETING và tăng version để worker cũ không thể công bố output sau khi xoá. Huỷ job đang chờ, xoá audio/chunks/transcript/summary, thu hồi share, xử lý bản sao/backup theo retention đã công bố, rồi ghi audit event không chứa nội dung. Có thể giữ bằng chứng xoá tối thiểu theo nghĩa vụ pháp lý, nhưng phải quyết định rõ.
+
+Chi phí được giới hạn bằng quota phút/ngày, max duration, ngân sách theo tenant, giới hạn token, model rẻ cho việc thường và model tốt hơn chỉ khi cần. Retry có thể gây gọi provider lần nữa nếu timeout xảy ra sau khi provider đã xử lý; ghi attempt và chi phí theo provider, dùng idempotency phía provider nếu có, không hứa rằng request mạng là exactly-once.
+
+### Trade-off và tình huống thực tế
+Đánh đổi: upload nhanh và pipeline async dễ chịu file lớn nhưng người dùng phải chờ; gọi STT/LLM chất lượng cao hơn nhưng tăng chi phí/latency; giữ audio lâu giúp kiểm chứng nhưng tăng rủi ro và chi phí. Một đợt họp cuối ngày làm queue tăng: ưu tiên tenant trong quota, scale worker tới hạn concurrency của provider, hiển thị thời gian chờ thay vì mở rộng vô hạn và vượt ngân sách.
+
+Ví dụ vận hành: sau một đợt upload 3.000 bản ghi 45 phút, dashboard cho thấy queue age tăng từ 2 lên 18 phút, nhưng worker CPU vẫn thấp. Phân tích cho thấy STT provider trả 429; tăng pod không giúp vì giới hạn nằm ở nhà cung cấp. Hệ thống giảm concurrency, áp dụng backoff+jitter, dừng retry lỗi vĩnh viễn và chuyển người dùng sang trạng thái đang chờ. Khi quota được nâng, backlog giảm; chi phí được đối chiếu từ số phút audio và số lần gọi thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi sẽ bắt đầu bằng upload trực tiếp lên object storage, dùng URL có chữ ký ngắn hạn để API không phải proxy file hàng trăm megabyte. Sau complete, ghi trạng thái và outbox trong cùng transaction; Kafka chỉ mang meeting ID và object key. Worker kiểm tra file, chia audio dài thành chunk có overlap và timestamp, gọi STT, sau đó tóm tắt phân cấp để transcript không vượt giới hạn ngữ cảnh của LLM. Mỗi chunk và mỗi phiên bản pipeline có khoá idempotent vì queue giao at-least-once. Với 50.000 người, giả định hai cuộc họp mỗi tuần thì khoảng 643.000 audio-minutes mỗi ngày; tôi dùng con số đó để tính throughput và dự toán theo giá STT/phút, token, storage. Tôi giới hạn quota/concurrency, retry lỗi tạm thời có backoff và DLQ cho lỗi vĩnh viễn. Cuối cùng, quyền theo tenant, mã hoá, không log nội dung và DELETE phải xoá cả audio lẫn mọi output, kể cả ngăn worker cũ ghi kết quả trở lại.
+
+> Senior tip: theo dõi chi phí trên mỗi audio-minute và queue age theo tenant. Đừng chỉ scale theo CPU: STT thường bị giới hạn bởi quota nhà cung cấp, còn retry sau timeout có thể bị tính phí dù client chưa nhận response.`,
+  followups: [
+    'Nếu provider STT trả kết quả theo callback nhưng callback có thể đến trùng hoặc sai thứ tự, bạn lưu và hợp nhất thế nào?',
+    'Người dùng yêu cầu xoá đúng lúc LLM đang chạy; làm sao ngăn output được tạo lại sau khi đã xoá?',
+    'Làm sao chứng minh một câu action item trong summary xuất phát từ đoạn transcript nào?',
+    'Nếu dữ liệu của tenant phải ở một region cụ thể, thay đổi routing, storage và provider thế nào?',
+    'Provider bị 429 trong giờ cao điểm; bạn chọn giữa queue lâu, từ chối upload hay chuyển provider ra sao?'
+  ],
+  related: ['design-016', 'ai-001', 'microservices-051']
+},
+{
+  id: 'sd-036',
+  title: 'Nền tảng feature flag dùng chung cho nhiều ứng dụng',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế nền tảng feature flag dùng chung cho 50 team và nhiều ứng dụng backend, web, mobile. Team cần tạo flag, nhắm theo thuộc tính người dùng, rollout theo phần trăm, tắt khẩn cấp và xem ai đã đổi cấu hình. Đánh giá flag phải nhanh, không làm request nghiệp vụ phụ thuộc mạng điều khiển; thay đổi phải lan tới ứng dụng trong vài giây. So sánh đánh giá tại client/server, thiết kế cache, phân phối cấu hình, rollout ổn định, audit và xử lý khi control plane hoặc mạng bị lỗi. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ loại flag: release, experiment, operational kill switch; ai tạo/sửa/duyệt; số environment và region; SLA cập nhật; cần targeting thuộc tính nào; flag client có chứa dữ liệu nhạy cảm không; ai được tắt khẩn cấp. Chốt đánh giá local dưới 1 ms p99 trong ứng dụng, cập nhật cấu hình trong 5 giây p95, SDK vẫn đánh giá được khi control plane mất mạng. Flag không phải authorization: quyền truy cập vẫn phải được kiểm tra độc lập.` },
+    { name: 'Estimation', minutes: 5, guide: `Giả định 50 team, 20 ứng dụng/team, 20 instance/app => 20.000 instance SDK. Mỗi instance đánh giá local 500 lần/giây => 10 triệu đánh giá/giây, nhưng không đi qua server trung tâm. Nếu instance lấy snapshot mỗi 30 giây thì khoảng 667 lần lấy/giây; 10 KB cấu hình/app tương đương khoảng 200 MB mỗi lần nhân bản cho toàn bộ instance, nên cần delta, cache CDN/edge hoặc streaming và nén. Control plane ghi cấu hình thấp hơn nhiều, ví dụ vài trăm thay đổi/phút; cần ưu tiên an toàn và audit hơn throughput ghi.` },
+    { name: 'API & data model', minutes: 5, guide: `Management API: POST /projects/{p}/flags; PATCH /flags/{key}/rules; POST /flags/{key}/publish; GET /audit?flag_key=. Runtime: SDK lấy snapshot có version/ETag, stream notification phiên bản mới; server evaluation endpoint chỉ là lựa chọn khi rule nhạy cảm hoặc cần kết quả tập trung. Model: project/environment, flag(key, type, default, owner, expiry), immutable flag_version, ordered rules/segments, audit_event(actor, action, before_hash, after_hash, reason, time). Mỗi flag có unique project+environment+key; giữ phiên bản cũ để rollback.` },
+    { name: 'High-level design', minutes: 15, guide: `Control plane: UI/API -> auth/RBAC -> PostgreSQL -> audit + event/outbox -> config publisher. Data plane: SDK bootstrap lấy snapshot có version; cập nhật qua SSE/long polling hoặc polling có jitter; snapshot được cache tại CDN/edge nếu phù hợp. SDK kiểm tra rules local và cache evaluation theo context/version. Server-side SDK giữ attributes nhạy cảm; client SDK chỉ nhận rule an toàn đã lọc hoặc evaluated values. Kill switch phát thay đổi ưu tiên cao; SDK cập nhật local atomic snapshot, không để cấu hình nửa cũ nửa mới.` },
+    { name: 'Deep dive', minutes: 15, guide: `Rollout 10%: bucket ổn định từ hash(flag key + stable subject ID + salt) thành 0..9999; bật khi bucket < 1000. Không dùng random mỗi request vì user đổi trạng thái liên tục. Xác định ưu tiên rule, segment, multi-variate allocation, missing attribute và default. Cache theo flag + context đã chuẩn hoá + config version; không cache toàn cục kết quả nếu phụ thuộc user. Mất kết nối: dùng snapshot cuối cùng có TTL và default an toàn theo từng flag; phân biệt release flag với kill switch. Audit bất biến, RBAC, approval cho production, rollout canary, rollback; metric propagation delay, stale SDK, evaluation error, rule count.` }
+  ],
+  rubric: [
+    'Tách control plane (quản lý/publish) khỏi data plane (đánh giá lúc runtime)',
+    'So sánh local SDK evaluation với remote/server evaluation về latency, availability, rule secrecy và consistency',
+    'Tính tải evaluation nhưng không đẩy mọi lần evaluate qua control plane; tính quy mô config propagation',
+    'Thiết kế snapshot versioned, atomic update, ETag/delta/stream hoặc polling có jitter',
+    'Rollout phần trăm deterministic theo flag + stable subject ID + salt, nhất quán qua request',
+    'Rule precedence, default khi thiếu thuộc tính, cache key/version và tránh rò dữ liệu giữa user',
+    'Offline/stale policy khác nhau theo loại flag; kill switch cần cơ chế lan truyền ưu tiên',
+    'Audit append-only, RBAC, approval/rollback, owner và expiry để dọn flag cũ',
+    'Không dùng feature flag thay authorization; không gửi secret targeting rules xuống client',
+    'Nêu metrics, sự cố propagation/mạng và trade-off consistency vs availability'
+  ],
+  reference: `**Tóm tắt:** Tôi tách control plane quản trị flag khỏi data plane đánh giá flag. SDK lấy snapshot có phiên bản và đánh giá ngay trong tiến trình để request không phụ thuộc một lần gọi mạng; cấu hình mới được phân phối bằng stream hoặc polling có cache. Rollout phần trăm dựa trên hash ổn định của flag và subject, không random mỗi request. Với client, chỉ phát rule không nhạy cảm; audit, phân quyền và cách dùng snapshot cũ phải được định nghĩa rõ cho từng loại flag.
+
+### 1. Yêu cầu và SLO
+- Nền tảng cho 50 team và backend/web/mobile; flag có kiểu boolean hoặc variant, môi trường dev/staging/prod, rule theo thuộc tính và rollout.
+- Evaluation local p99 < 1 ms; cấu hình publish lan tới SDK p95 < 5 giây, p99 < 30 giây. Đây là mục tiêu cần đo ở từng region, không phải cam kết khi client offline.
+- Tắt khẩn cấp phải được ưu tiên phân phối. Tạo/sửa flag cần owner, lý do, quyền theo project/environment và audit.
+- Feature flag điều khiển bật/tắt tính năng, không thay thế authorization. Không được cho phép user truy cập dữ liệu chỉ vì flag trả true.
+
+### 2. Ước lượng
+Giả sử 50 team x 20 ứng dụng/team x 20 instance/ứng dụng = 20.000 SDK instance. Mỗi instance xử lý 500 evaluation/giây => 10.000.000 evaluation/giây toàn nền tảng. Nếu mỗi lần gọi trung tâm, backend phải phục vụ 10 triệu request/giây và mọi request sản phẩm bị phụ thuộc mạng; vì vậy SDK local là lựa chọn mặc định.
+
+Nếu mỗi instance kiểm tra cập nhật 30 giây/lần, trung bình 20.000/30 ≈ 667 lần lấy snapshot/giây; jitter làm đều các lần poll, tránh tất cả instance cùng thức một lúc. Với snapshot 10 KB, nhân bản 20.000 lần tốn 200 MB cho mỗi vòng cập nhật toàn bộ; nén, CDN/edge cache, ETag/long polling hoặc delta giúp giảm đáng kể. Thay đổi cấu hình thấp hơn nhiều so với evaluation, nhưng một kill switch có thể tạo fan-out lớn nên cần đo thời gian publish-to-last-SDK.
+
+### 3. API và mô hình dữ liệu
+Management API tạo và publish: {{POST /projects/{p}/flags}}, {{PATCH /flags/{key}/rules}}, {{POST /flags/{key}/publish}}; xem audit: {{GET /audit?flag_key=...}}. Mỗi thay đổi tạo version immutable, không sửa âm thầm version đã phát hành. Có thể rollback bằng cách phát một version mới có nội dung cũ.
+
+SDK runtime lấy snapshot theo project/environment và version; ETag cho phép trả không thay đổi nếu cấu hình vẫn mới. SSE (kênh server gửi event một chiều) hoặc long polling báo có version mới; polling định kỳ là phương án dự phòng. Evaluation endpoint chỉ dùng khi rule cần giữ bí mật hoặc cần đánh giá tập trung; đánh đổi là thêm network latency và phụ thuộc availability.
+
+Dữ liệu gồm project, environment, flag (key, type, default, owner, expiry), flag_version, ordered rules, segment và audit_event (actor, thời điểm, lý do, hành động, version trước/sau). Audit append-only; quyền xem/sửa/publish tách biệt, production có thể cần approval hai người. Key duy nhất theo project + environment để tránh cấu hình nhầm ứng dụng.
+
+### 4. Luồng phân phối
+~~~seq
+title: Publish flag và evaluate trong ứng dụng
+actors: Operator | Control API | DB | Publisher | SDK
+Operator -> Control API: sửa rule, yêu cầu publish
+Control API -> DB: ghi version và audit transaction
+DB -> Publisher: outbox báo version mới
+Publisher -> SDK: notification version qua SSE
+SDK -> Control API: lấy snapshot version mới
+Control API --> SDK: snapshot có ETag/version
+SDK -> SDK: cập nhật snapshot atomic
+SDK -> SDK: evaluate local theo context
+~~~
+
+Control plane là nơi quản lý quyền, lịch sử và phát hành; data plane là phần đọc cấu hình và đánh giá ở runtime. Ghi version và outbox cùng transaction tránh trường hợp UI báo publish thành công nhưng không có event phát đi. Publisher có thể gửi notification trùng; SDK so version và tải snapshot mới nhất. SDK thay snapshot nguyên tử (atomic), nghĩa là một evaluation nhìn thấy toàn bộ version cũ hoặc mới, không nhìn thấy nửa bộ rule.
+
+### 5. Rollout phần trăm ổn định
+Với rollout 10%, ánh xạ subject ID thành bucket 0..9999 bằng hash ổn định trên flag key, subject ID và salt của flag; bật nếu bucket < 1000. Cùng user/flag luôn vào cùng bucket dù request tới instance khác. Không dùng random mỗi lần evaluate vì user sẽ thấy tính năng bật rồi tắt; không dùng Java String.hashCode làm giao thức chung nếu client Java, JS và mobile phải cho kết quả như nhau. Chọn thuật toán hash cụ thể, serialization và test vector chung cho mọi SDK.
+
+Rule có thứ tự và ưu tiên rõ: deny/allow segment cụ thể trước rollout tổng quát, cuối cùng default. Thiếu thuộc tính như country không được diễn giải tuỳ tiện thành match; rule phải định nghĩa fallback. Với experiment nhiều biến thể, phân vùng bucket không chồng lấn và giữ nguyên salt trong suốt experiment. Stable subject ID cần pseudonymous; không đưa email hay dữ liệu cá nhân vào hash nếu không cần.
+
+### 6. Local, server và cache
+| Cách đánh giá | Ưu | Nhược |
+|---|---|---|
+| Local SDK với snapshot | Rất nhanh, tiếp tục chạy khi control plane lỗi | Có độ trễ phân phối; rule trong client có thể bị xem |
+| Server evaluation | Giữ rule/attribute nhạy cảm phía server, dễ kiểm soát trung tâm | Thêm network hop, tải lớn, phụ thuộc availability |
+| Hybrid | Local cho backend, server cho quyết định cần bí mật | Hai luồng cần test để tránh khác kết quả |
+
+Mặc định backend đánh giá local. Cache snapshot theo project/environment/version. Có thể cache kết quả theo flag + subject/context đã chuẩn hoá + version; nếu rule phụ thuộc thuộc tính thì cache key phải gồm các thuộc tính liên quan hoặc không cache kết quả. Không cache một giá trị theo flag rồi dùng chung cho mọi user. Client chỉ nhận các rule/segment được phép công khai; rule nhắm theo nhóm nhạy cảm nên đánh giá server-side.
+
+SDK khởi động bằng snapshot nhúng hoặc cache gần nhất, rồi cập nhật nền. Mỗi flag cần policy khi stale: flag UI/release có thể dùng giá trị cuối cùng trong TTL ngắn; kill switch liên quan vận hành có thể chọn default fail-safe cụ thể, nhưng không có lựa chọn chung đúng cho mọi hệ thống. Ghi rõ tuổi snapshot và cảnh báo stale. Đừng để SDK đồng bộ gọi mạng trong hot path.
+
+### 7. Audit, rollout an toàn và failure modes
+Audit lưu ai đổi gì, ở môi trường nào, lý do, version và thời điểm; hạn chế quyền sửa prod, yêu cầu review cho thay đổi rủi ro, hỗ trợ rollback bằng version mới. Canary 1% rồi 10%, 50%, 100% dựa trên error rate/latency; có kill switch nhưng không thay cho rollback code. Gắn owner và expiry date; flag tồn lâu làm tăng nhánh điều kiện và test matrix.
+
+Mạng đứt: tiếp tục từ snapshot cuối cùng theo TTL/policy; không làm request nghiệp vụ thất bại chỉ vì control plane không truy cập được. SSE rớt thì reconnect từ version đã biết rồi lấy full snapshot nếu delta thiếu. Publisher chậm: metric propagation delay và stale instance, ưu tiên kill switch. DB/control plane lỗi: không nhận publish mới nhưng evaluation local tiếp tục. Version sai hoặc schema không hỗ trợ: SDK giữ snapshot tốt gần nhất, báo lỗi telemetry, không áp dụng dữ liệu nửa đọc.
+
+### Trade-off và tình huống thực tế
+Local evaluation chọn độ trễ và availability thay vì cập nhật tức thời tuyệt đối: trong vài giây, hai instance có thể dùng version khác nhau. Nếu tính năng cần consistency mạnh (ví dụ hạn mức tiền), không dùng flag làm nguồn quyết định nghiệp vụ và không dựa vào propagation để khóa giao dịch; dùng cơ chế nghiệp vụ phù hợp.
+
+Ví dụ: rollout 10% cho phiên bản checkout, một SDK dùng user ID còn SDK khác dùng session ID nên cùng khách thay đổi nhóm qua web/mobile và số liệu experiment sai. Khắc phục bằng contract subject ID thống nhất, hash test vector dùng chung và tăng canary theo version. Khi publish kill switch, đo timestamp publish tới SDK cuối cùng thay vì chỉ xác nhận API đã trả 200.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi sẽ đặt API quản trị và lưu version/audit trong control plane, còn SDK là data plane. Mỗi instance tải snapshot theo environment, cập nhật bằng SSE hoặc polling có jitter, cache version gần nhất và evaluate local; như vậy hàng triệu evaluation mỗi giây không đi qua một service trung tâm. Rollout 10% dùng hash ổn định của flag key, subject ID và salt thành bucket 0 đến 9999, nên cùng user luôn nhận cùng kết quả trên mọi instance. Rule cần thứ tự và default rõ, còn cache phải gắn version và đủ context để không dùng nhầm kết quả của user khác. Client chỉ nhận rule không nhạy cảm; quyết định quyền truy cập vẫn kiểm tra ở backend. Tôi lưu audit bất biến, giới hạn quyền publish production, hỗ trợ rollback và expiry cho flag cũ. Khi mạng lỗi, SDK dùng snapshot theo policy từng flag và phát telemetry về độ stale; kill switch có ưu tiên phân phối, nhưng không giả vờ rằng mọi instance cập nhật tức thì.
+
+> Senior tip: đo propagation delay từ lúc publish đến lúc SDK cuối cùng áp dụng version, cùng tỷ lệ SDK stale theo region. Evaluation nhanh mà một phần fleet vẫn dùng snapshot cũ là lỗi người dùng nhìn thấy; riêng kill switch nên có SLO và cảnh báo tách khỏi polling thông thường.`,
+  followups: [
+    'Làm thế nào để Java, JavaScript và mobile SDK tính cùng một rollout bucket với một user?',
+    'Một kill switch phải lan trong 2 giây nhưng 5% SDK đang offline; bạn định nghĩa SLO và fallback ra sao?',
+    'Cache kết quả của rule phụ thuộc country và plan thế nào để không trả nhầm flag giữa hai user?',
+    'Flag nhắm theo nhóm nhân viên thử nghiệm có thuộc tính nhạy cảm; nên evaluate ở client hay server?',
+    'Làm sao dọn flag hết hạn mà rollback vẫn kiểm toán và không làm hỏng client cũ?'
+  ],
+  related: ['design-013', 'microservices-006', 'architecture-014']
+},
 ];
